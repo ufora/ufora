@@ -124,6 +124,8 @@ class PythonObjectRehydrator:
         if 'classObject' in jsonResult:
             members = {k:self.convertJsonResultToPythonObject(v) for k,v in jsonResult['members'].iteritems()}
             return self._classObjectFromFilenameAndLine(jsonResult['classObject'][0], jsonResult['classObject'][1], members)
+        if 'stacktrace' in jsonResult:
+            return jsonResult['stacktrace']
         
         raise Exceptions.ForaToPythonConversionError("not implemented: cant convert %s" % jsonResult)
 

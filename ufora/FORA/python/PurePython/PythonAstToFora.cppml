@@ -1385,6 +1385,109 @@ PythonAstConverter::convertPythonAstExpressionToForaFunctionBodyAndPattern(
     return std::make_pair(functionBody, pattern);
     }    
 
+Expression PythonAstConverter::convertPythonAstFunctionDefToForaWrappingBodyInTryCatch(
+        const PythonAstStatement_FunctionDefType& functionDef,
+        const SimpleParseRange& extent
+        ) const
+    {
+    const std::string& functionName = functionDef.name();
+
+    std::pair<Expression, TuplePattern> functionBodyAndPattern = 
+        convertPythonAstExpressionToForaFunctionBodyAndPattern(
+            functionDef,
+            extent
+            );
+
+    Expression functionBody = wrapFunctionBodyInTryCatch(
+        functionBodyAndPattern.first
+        );
+
+    functionBody = introduceLetBindingsForUnboundVariables(
+        functionBody,
+        functionBodyAndPattern.second
+        );
+
+    Function function = Function::Term(
+        functionBodyAndPattern.second,
+        functionBody,
+        Function::Empty()
+        );
+
+    return createObjectImplementingCallOperatorForFunction(
+        function,
+        functionName,
+        extent
+        );
+    }
+
+Expression PythonAstConverter::wrapFunctionBodyInTryCatch(
+        const Expression& functionBody
+        ) const
+    {
+    Symbol catchVar = freshVarname(
+        "exception_var",
+        mentionedVariables(
+            functionBody
+            )
+        );
+
+    // TODO not dealing with intermediate assigned variables yet
+
+    Symbol stacktraceVar = Symbol("@stacktrace");
+
+    Function catchFun = 
+        Function::Term(
+            TuplePattern(
+                emptyTreeVec() +
+                    TuplePatternElement::Normal(
+                        null(),
+                        PatternWithName(
+                            Pattern::Anything(),
+                            null() << catchVar,
+                            null(),
+                            ExpressionLocationMetadata::Empty()
+                            ),
+                        null()
+                        )
+                ),
+            Expression::Return(
+                mPythonTupleConverter->createTupleExpression(
+                    Expression::CreateTuple(
+                        emptyTreeVec() +
+                        ApplyArgument::Normal(
+                            null(),
+                            Expression::Constant(
+                                CSTValue(
+                                    mConstantConverter->convertInt(1)
+                                    )
+                                )
+                            ) +
+                        ApplyArgument::Normal(
+                            null(),
+                            Expression::Variable(
+                                stacktraceVar
+                                )
+                            ) +
+                        ApplyArgument::Normal(
+                            null(),
+                            Expression::Variable(catchVar)
+                            )
+                        )
+                    )
+                ),
+            Function::Empty()
+            );
+
+    // TODO not dealing wtih "stacktrace" member in ExpressionTry
+
+    return Expression::Try(
+        functionBody,
+        catchFun,
+        null() << stacktraceVar,
+        false     // wtf is a raw catch?
+        );        
+    }
+
 Expression PythonAstConverter::convertPythonAstFunctionDefToFora(
         const PythonAstStatement_FunctionDefType& functionDef,
         const SimpleParseRange& extent
@@ -1397,6 +1500,19 @@ Expression PythonAstConverter::convertPythonAstFunctionDefToFora(
         extent
         );
 
+    return createObjectImplementingCallOperatorForFunction(
+        function,
+        functionName,
+        extent
+        );
+    }
+
+Expression PythonAstConverter::createObjectImplementingCallOperatorForFunction(
+        const Function& function,
+        const std::string& functionName,
+        const SimpleParseRange& extent
+        ) const
+    {
     return Expression::CreateObject(
         functionName,
         ObjectDefinition(
@@ -1413,8 +1529,9 @@ Expression PythonAstConverter::convertPythonAstFunctionDefToFora(
             ExpressionLocationMetadata::WithSimpleParseRange(extent)
             ),
         CSTValue()
-        ); 
+        );
     }
+
 
 /*
 Called from convertPythonClassBodyFunctionDefToForaClassDefinitionTerm which verifies

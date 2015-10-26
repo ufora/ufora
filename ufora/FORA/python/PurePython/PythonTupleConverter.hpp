@@ -43,6 +43,10 @@ public:
         const ImmutableTreeVector<ImplValContainer>& tupleElements
         ) const;
 
+    virtual Expression createTupleExpression(
+        const Expression& rawTupleExpression
+        ) const = 0;
+
     //if this is a tuple, extract its elements as IVCs
     virtual Nullable<ImmutableTreeVector<ImplValContainer> > invertTuple(ImplValContainer possibleTuple) = 0;
 

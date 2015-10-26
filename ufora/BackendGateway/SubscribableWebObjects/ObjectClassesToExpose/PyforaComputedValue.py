@@ -66,7 +66,10 @@ class PyforaComputedValue(ComputedValue.ComputedValue):
         if stringDictToIVC is None:
             return None
 
-        return {'isException': False, 'dictOfProxies':  {k: PyforaDictionaryElement(baseCV=self, keyname=k) for k in stringDictToIVC}}
+        return {
+            'isException': False,
+            'dictOfProxies':  {k: PyforaDictionaryElement(baseCV=self, keyname=k) for k in stringDictToIVC}
+            }
 
     def pyforaTupleToTuple(self):
         if self.valueIVC is None:
@@ -86,7 +89,10 @@ class PyforaComputedValue(ComputedValue.ComputedValue):
         if tupleIVC is None:
             return None
 
-        return {'isException': False, 'tupleOfComputedValues': tuple([PyforaTupleElement(baseCV=self, index=ix) for ix in range(len(tupleIVC))])}
+        return {
+            'isException': False,
+            'tupleOfComputedValues': tuple([PyforaTupleElement(baseCV=self, index=ix) for ix in range(len(tupleIVC))])
+            }
 
     @ComputedGraph.ExposedProperty()
     def jsonStatusRepresentation(self):
@@ -124,7 +130,7 @@ class PyforaComputedValue(ComputedValue.ComputedValue):
 
     @ComputedGraph.ExposedProperty()
     def jsonValueRepresentation(self):
-        return PyforaResultAsJson(computedValue=self,maxBytecount=None).result
+        return PyforaResultAsJson(computedValue=self, maxBytecount=None).result
 
     def exceptionValueAsString(self):
         if not self.isException:
@@ -145,12 +151,16 @@ class PyforaComputedValue(ComputedValue.ComputedValue):
             return "<unknown exception>"
 
     def exceptionCodeLocationsAsJson(self):
-        if not self.isException:
-            return None
-
         if self.valueIVC.isTuple():
+            tup = self.valueIVC.getTuple()
+            if len(tup) != 2:
+                return None
+
             _, stacktraceAndVarsInScope = self.valueIVC.getTuple()
             hashes = stacktraceAndVarsInScope[0].getStackTrace()
+
+            if hashes is None:
+                return None
             
             codeLocations = [ForaNative.getCodeLocation(h) for h in hashes]
 
@@ -179,7 +189,7 @@ class PyforaResultAsJson(ComputedGraph.Location):
     #the value to extract
     computedValue = object
 
-    #the maximum number of byes we'll permit, or None
+    #the maximum number of bytes we'll permit, or None
     #note that this isn't a perfect calculation, since we're going to encode as json. We assume a 
     #fixed byte overhead for every object because of the json encoding
     maxBytecount = object
@@ -238,7 +248,13 @@ class PyforaResultAsJson(ComputedGraph.Location):
             except Exception as e:
                 import pyfora.Exceptions as Exceptions
                 if self.computedValue.isException and isinstance(e, Exceptions.ForaToPythonConversionError):
-                    return {'result': {"untranslatableException": str(self.computedValue.valueIVC)}, 'isException': True, 'trace': self.computedValue.exceptionCodeLocationsAsJson}
+                    return {
+                        'result': {
+                            "untranslatableException": str(self.computedValue.valueIVC)
+                            }, 
+                        'isException': True,
+                        'trace': self.computedValue.exceptionCodeLocationsAsJson
+                        }
                 else:
                     raise
 
@@ -246,13 +262,24 @@ class PyforaResultAsJson(ComputedGraph.Location):
                 return None
             else:
                 if self.computedValue.isException:
-                    return {'result': res, 'isException': True, 'trace': self.computedValue.exceptionCodeLocationsAsJson}
+                    return {
+                        'result': res,
+                        'isException': True,
+                        'trace': self.computedValue.exceptionCodeLocationsAsJson
+                        }
                 else:
-                    return {'result': res, 'isException': False}
+                    return {
+                        'result': res,
+                        'isException': False
+                        }
 
         except PyforaToJsonTransformer.HaltTransformationException:
             if self.computedValue.isException:
-                return {'maxBytesExceeded': True, 'isException': True, 'trace': self.computedValue.exceptionCodeLocationsAsJson}
+                return {
+                    'maxBytesExceeded': True,
+                    'isException': True,
+                    'trace': self.computedValue.exceptionCodeLocationsAsJson
+                    }
             else:
                 return {'maxBytesExceeded': True, 'isException': False}
 

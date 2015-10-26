@@ -122,7 +122,7 @@ class WithBlockExecutor(object):
         self.sourceText = None
         self.stackFrame = None
         self.sourceFileName = None
-        self.computationErrorToRaise = None
+        self.traceAndException = None
         self.frame = None
         self.downloadPolicy = DownloadPolicy.DownloadNonePolicy()
 
@@ -176,29 +176,22 @@ class WithBlockExecutor(object):
 
         f_result_proxy = f_proxy().result()
 
-        tupleOfProxiesOrException = f_result_proxy.toTupleOfProxies()
+        tuple_of_proxies = f_result_proxy.toTupleOfProxies().result()
 
-        #because we don't yet have logic in place to catch exception in with-block
-        #code, we simply catch them at the 'tupleOfProxies' call, which will return
-        #a ComputationError if the computation on which it is based raised an exception
-        if tupleOfProxiesOrException.exception() is not None:
-            self.computationErrorToRaise = tupleOfProxiesOrException.exception()
+        proxy_trace = tuple_of_proxies[1]
+        trace = proxy_trace.toLocal().result()
 
-            #in this implementation, we don't have variable to update
+        if isinstance(trace, tuple):
+            self.traceAndException = (trace, tuple_of_proxies[2].toLocal().result())
+
+            # will fill this out soon
             return None
-        else:
-            proxy_tuple = tupleOfProxiesOrException.result()
 
-            proxy_int = proxy_tuple[0]
-            proxy_int.toLocal().result()
+        proxy_dict = tuple_of_proxies[0]
 
-            # indexing with 0 here works if I happened to send a dict
-            # in that slot
-            proxy_dict = proxy_tuple[1]
+        dict_of_proxies = proxy_dict.toDictOfProxies().result()
 
-            dict_of_proxies = proxy_dict.toDictOfProxies().result()
-
-            return dict_of_proxies
+        return dict_of_proxies
 
     def trace(self, frame, event, arg):
         try:
@@ -226,9 +219,9 @@ class WithBlockExecutor(object):
         except:
             logging.error("Exception in With-Block handler: %s", traceback.format_exc())
 
-        if self.computationErrorToRaise is not None:
-            exceptionValue = self.computationErrorToRaise.exceptionValue
-            tb = syntheticTraceback(self.computationErrorToRaise.trace)
+        if self.traceAndException is not None:
+            exceptionValue = self.traceAndException[1]
+            tb = syntheticTraceback(self.traceAndException[0])
             
             #setting the line number causes the trace to not call __exit__ and instead to
             #resume in the parent stackframe at the with block itself with the raised exception.

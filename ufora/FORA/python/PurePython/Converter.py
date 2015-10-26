@@ -616,7 +616,7 @@ class Converter(object):
         sourcePath = objectIdToObjectDefinition[withBlockDescription.sourceFileId].path
 
         foraFunctionExpression = \
-            ForaNative.convertPythonAstFunctionDefToForaOrParseError(
+            ForaNative.convertPythonAstFunctionDefToForaOrParseErrorWrappingBodyInTryCatch(
                 nativeWithBodyAst.asFunctionDef,
                 nativeWithBodyAst.extent,
                 ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath]),
@@ -670,10 +670,9 @@ class Converter(object):
         return nativeWithBodyAst
 
     def _computeReturnStatementForWithBlockFun(self, assignedVariables):
-        # not for real, just retuning a dict in the first spot for fun
-        dictStr = "({'1':2}, {" + \
+        dictStr = "({" + \
             ",".join(("'%s': %s" % (var, var) for var in assignedVariables)) \
-            + "})"
+            + "}, 0, 0)"
         return ast.parse("return " + dictStr).body[0]
 
     def convertFile(self, objectDefinition):
@@ -903,7 +902,7 @@ class Converter(object):
         transformer - an instance of PyforaToJsonTransformer that receives data and builds the relevant
             representation that we will return.
         """
-        #see if it's a primitive
+
         value = self.constantConverter.invertForaConstant(implval)
         if value is not None:
             if isinstance(value, tuple):
@@ -937,8 +936,6 @@ class Converter(object):
                 return transformer.transformInvalidPythonOperationException(value)
 
         value = self.nativeTupleConverter.invertTuple(implval)
-
-        #see if it's a tuple
         if value is not None:
             return transformer.transformTuple(
                 [self.transformPyforaImplval(x, transformer, vectorContentsExtractor) for x in value]
@@ -960,6 +957,11 @@ class Converter(object):
                 return transformer.transformList(
                     [self.transformPyforaImplval(x,transformer, vectorContentsExtractor) for x in contents]
                     )
+
+        if implval.isTuple():
+            stackTraceAsJsonOrNone = self.getStackTraceAsJsonOrNone(implval)
+            if stackTraceAsJsonOrNone is not None:
+                return stackTraceAsJsonOrNone
 
         if implval.isObject():
             defPoint = implval.getObjectDefinitionPoint()
@@ -1012,9 +1014,45 @@ class Converter(object):
                     members
                     )
 
-
         raise Exceptions.ForaToPythonConversionError(
             "Computation references a value of type %s that cannot be translated back to python."
                 % (str(implval.type))
             )
+
+    def getStackTraceAsJsonOrNone(self, implval):
+        tup = implval.getTuple()        
+
+        if len(tup) != 2:
+            return None
+
+        return self.exceptionCodeLocationsAsJson(tup)
+
+    def exceptionCodeLocationsAsJson(self, stacktraceAndVarsInScope):
+        hashes = stacktraceAndVarsInScope[0].getStackTrace()
+
+        if hashes is None:
+            return None
+            
+        codeLocations = [ForaNative.getCodeLocation(h) for h in hashes]
+
+        def formatCodeLocation(c):
+            if not c.defPoint.isExternal():
+                return None
+            def posToJson(simpleParsePosition):
+                return {
+                    'characterOffset': simpleParsePosition.rawOffset, 
+                    'line': simpleParsePosition.line, 
+                    'col': simpleParsePosition.col 
+                    }
+            return {
+                'path': list(c.defPoint.asExternal.paths), 
+                'range': {
+                    'start': posToJson(c.range.start),
+                    'stop': posToJson(c.range.stop)
+                    }
+                }
+
+        return {
+            'stacktrace': [x for x in [formatCodeLocation(c) for c in codeLocations] if x is not None]
+            }
 

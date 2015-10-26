@@ -15,15 +15,13 @@
 import ufora.FORA.python.PurePython.EquivalentEvaluationTestCases as EquivalentEvaluationTestCases
 import ufora.FORA.python.PurePython.InMemorySimulationExecutorFactory as InMemorySimulationExecutorFactory
 import pyfora.RemotePythonObject as RemotePythonObject
-import sys
+
+import pyfora.Exceptions
+
 import unittest
 import traceback
 import logging
 
-
-# TODO: Need tests for 
-# 1. See that we're actually executing fora code (can do via perf, translation errors, ...)
-# 2. See that the settraces don't affect global state poorly.
 
 class ExecutorWithBlock_test(unittest.TestCase, EquivalentEvaluationTestCases.EquivalentEvaluationTestCases):
     @classmethod
@@ -66,7 +64,6 @@ class ExecutorWithBlock_test(unittest.TestCase, EquivalentEvaluationTestCases.Eq
                 res = func()
             self.assertEqual(res.toLocal().result(), func())
 
-
     def test_assignment_1(self):
         with self.create_executor() as fora:
             x = 5
@@ -83,8 +80,11 @@ class ExecutorWithBlock_test(unittest.TestCase, EquivalentEvaluationTestCases.Eq
                 b = 4 + 5
                 ix = b + 2
 
-            result = b.toLocal().result()
-            self.assertEqual(result, 9)
+            b_result = b.toLocal().result()
+            self.assertEqual(b_result, 9)
+
+            ix_result = ix.toLocal().result()
+            self.assertEqual(ix_result, 11)
 
     def test_reassignments(self):
         fora = self.create_executor()
@@ -95,8 +95,11 @@ class ExecutorWithBlock_test(unittest.TestCase, EquivalentEvaluationTestCases.Eq
                     b = ix
                     ix = ix + 1
 
-            result = b.toLocal().result()
-            self.assertEqual(result, 9)
+            b_result = b.toLocal().result()
+            self.assertEqual(b_result, 9)
+
+            ix_result = ix.toLocal().result()
+            self.assertEqual(ix_result, 10)
 
     def test_complicated_function(self):
         fora = self.create_executor()
