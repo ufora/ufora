@@ -15,14 +15,11 @@
 import pyfora.Exceptions
 import ufora.FORA.python.PurePython.OperationsToTest as OperationsToTest
 import unittest
-import ufora.FORA.python.FORA as FORA
 import pyfora.Connection as Connection
-import ufora.distributed.S3.InMemoryS3Interface as InMemoryS3Interface
 import ufora.BackendGateway.SubscribableWebObjects.InMemorySocketIoJsonInterface as InMemorySocketIoJsonInterface
 import ufora.BackendGateway.SubscribableWebObjects.MessageProcessor as MessageProcessor
 import ufora.cumulus.distributed.CumulusGatewayInProcess as CumulusGatewayInProcess
 import ufora.BackendGateway.ComputedValue.ComputedValueGateway as ComputedValueGateway
-import ufora.FORA.python.PurePython.InMemoryExecutorTestCases as InMemoryExecutorTestCases
 import ufora.distributed.SharedState.tests.SharedStateTestHarness as SharedStateTestHarness
 
 class TestAllBinaryOperators(unittest.TestCase):
@@ -117,9 +114,3 @@ class TestAllBinaryOperators(unittest.TestCase):
                         def f():
                             return op(v1, v2)
                         self.equivalentEvaluationTestThatHandlesExceptions(executor, f)
-
-
-if __name__ == '__main__':
-    import ufora.config.Mainline as Mainline
-    Mainline.UnitTestMainline([FORA])
-
