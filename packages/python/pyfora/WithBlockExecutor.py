@@ -184,9 +184,6 @@ class WithBlockExecutor(object):
         if isinstance(trace, tuple):
             self.traceAndException = (trace, tuple_of_proxies[2].toLocal().result())
 
-            # will fill this out soon
-            return None
-
         proxy_dict = tuple_of_proxies[0]
 
         dict_of_proxies = proxy_dict.toDictOfProxies().result()
@@ -207,14 +204,13 @@ class WithBlockExecutor(object):
 
             globalsToSet = self.blockOperation(frame)
 
-            if globalsToSet is not None:
-                policyInstances = {}
+            policyInstances = {}
 
-                for keyname in list(globalsToSet.keys()):
-                    policyInstances[keyname] = self.downloadPolicy.initiatePolicyCheck(keyname, globalsToSet[keyname])
+            for keyname in list(globalsToSet.keys()):
+                policyInstances[keyname] = self.downloadPolicy.initiatePolicyCheck(keyname, globalsToSet[keyname])
 
-                for k, v in globalsToSet.iteritems():
-                    f_locals[k] = self.downloadPolicy.resolveToFinalValue(policyInstances[k])
+            for k, v in globalsToSet.iteritems():
+                f_locals[k] = self.downloadPolicy.resolveToFinalValue(policyInstances[k])
                 
         except:
             logging.error("Exception in With-Block handler: %s", traceback.format_exc())

@@ -34,13 +34,9 @@ empytObjectExpression = ForaNative.parseStringToExpression(
     emptyCodeDefinitionPoint,
     ""
     )
-createInstanceImplVal = ForaNative.ImplValContainer(
-    ForaNative.makeSymbol("CreateInstance")
-    )
-callImplVal = ForaNative.ImplValContainer(
-    ForaNative.makeSymbol("Call")
-    )
-
+createInstanceImplVal = ForaNative.makeSymbol("CreateInstance")
+callImplVal = ForaNative.makeSymbol("Call")
+Symbol_uninitialized = ForaNative.makeSymbol("@uninitialized")
 
 class Converter(object):
     def __init__(self,
@@ -608,7 +604,7 @@ class Converter(object):
             withBlockDescription,
             objectIdToObjectDefinition
             ):
-        nativeWithBodyAst = self._getNativePythonFunctionDefFromWithBlockDescription(
+        nativeWithBodyAst, assignedVariables = self._getNativePythonFunctionDefFromWithBlockDescription(
             withBlockDescription,
             objectIdToObjectDefinition
             )
@@ -624,7 +620,8 @@ class Converter(object):
                 self.nativeListConverter,
                 self.nativeTupleConverter,
                 self.nativeDictConverter,
-                self.pyObjectMixinBaseIVC
+                self.pyObjectMixinBaseIVC,
+                list(assignedVariables)
                 )
 
         return foraFunctionExpression
@@ -667,13 +664,18 @@ class Converter(object):
             sourceLineOffsets
             )
 
-        return nativeWithBodyAst
+        return nativeWithBodyAst, assignedVariables
 
     def _computeReturnStatementForWithBlockFun(self, assignedVariables):
-        dictStr = "({" + \
+        # it would be nice if we could return None here instead of 0 and 0.
+        # in this returnTuple, elt 0 is the assigned vars,
+        # elt 1 is the traceback (which is not a list so it's handled properly later)
+        # and elt 2 is the exception value
+        
+        returnTuple = "({" + \
             ",".join(("'%s': %s" % (var, var) for var in assignedVariables)) \
             + "}, 0, 0)"
-        return ast.parse("return " + dictStr).body[0]
+        return ast.parse("return " + returnTuple).body[0]
 
     def convertFile(self, objectDefinition):
         return objectDefinition.text
@@ -879,12 +881,14 @@ class Converter(object):
 
         res = {}
 
-        for pyforaKeyIVC, pyforaValue in pyforaDict.iteritems():
-            maybePyforaKeyString = self.constantConverter.invertForaConstant(pyforaKeyIVC)
-            if isinstance(maybePyforaKeyString, tuple) and isinstance(maybePyforaKeyString[0], str):
-                res[maybePyforaKeyString[0]] = pyforaValue
-            else:
-                return None
+        for pyforaKey, pyforaValue in pyforaDict.iteritems():
+            if pyforaValue != Symbol_uninitialized:
+                maybePyforaKeyString = self.constantConverter.invertForaConstant(pyforaKey)
+                if isinstance(maybePyforaKeyString, tuple) and isinstance(maybePyforaKeyString[0], str):
+                    res[maybePyforaKeyString[0]] = pyforaValue
+                else:
+                    return None
+                    
         return res
 
     def unwrapPyforaTupleToTuple(self, tupleIVC):

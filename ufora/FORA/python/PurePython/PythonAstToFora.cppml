@@ -20,6 +20,7 @@
 #include "PythonToForaConversionError.hppml"
 #include "PythonConstantConverter.hppml"
 #include "../../Judgment/JudgmentOnValue.hppml"
+#include "../../Core/ImplValContainerUtilities.hppml"
 #include "../../Language/ExpressionLocationMetadata.hppml"
 #include "../../../core/cppml/CPPMLVisit.hppml"
 #include "../../../core/cppml/CPPMLTransform.hppml"
@@ -1387,7 +1388,8 @@ PythonAstConverter::convertPythonAstExpressionToForaFunctionBodyAndPattern(
 
 Expression PythonAstConverter::convertPythonAstFunctionDefToForaWrappingBodyInTryCatch(
         const PythonAstStatement_FunctionDefType& functionDef,
-        const SimpleParseRange& extent
+        const SimpleParseRange& extent,
+        const ImmutableTreeVector<std::string>& assignedVariables
         ) const
     {
     const std::string& functionName = functionDef.name();
@@ -1398,10 +1400,17 @@ Expression PythonAstConverter::convertPythonAstFunctionDefToForaWrappingBodyInTr
             extent
             );
 
-    Expression functionBody = wrapFunctionBodyInTryCatch(
-        functionBodyAndPattern.first
+    Expression functionBody = wrapWithBlockFunctionBodyInTryCatch(
+        functionBodyAndPattern.first,
+        assignedVariables
         );
 
+    functionBody = initializeAssignedVariablesForWithBlockFunction(
+        functionBody,
+        assignedVariables
+        );
+
+    // we probably don't need this ... do we?
     functionBody = introduceLetBindingsForUnboundVariables(
         functionBody,
         functionBodyAndPattern.second
@@ -1420,8 +1429,59 @@ Expression PythonAstConverter::convertPythonAstFunctionDefToForaWrappingBodyInTr
         );
     }
 
-Expression PythonAstConverter::wrapFunctionBodyInTryCatch(
-        const Expression& functionBody
+Expression PythonAstConverter::initializeAssignedVariablesForWithBlockFunction(
+        const Expression& functionBody,
+        const ImmutableTreeVector<std::string>& namedVariables
+        ) const
+    {
+    Expression tr = functionBody;
+
+    for (const auto& name: namedVariables)
+        {
+        tr = Expression::Let(
+            Symbol(name),
+            Expression::Constant(
+                CSTValue(
+                    ImplValContainerUtilities::createSymbol(
+                        Symbol("@uninitialized")
+                        )
+                    )
+                ),
+            tr
+            );
+        }
+         
+    return tr;
+    }
+
+Expression PythonAstConverter::getDictOfAssignedVariables(
+        const ImmutableTreeVector<std::string>& assignedVariables
+        ) const
+    {
+    ImmutableTreeVector<Expression> keys;
+    ImmutableTreeVector<Expression> values;
+
+    for (const auto& name: assignedVariables)
+        {
+        keys = keys + Expression::Constant(
+            CSTValue(
+                mConstantConverter->convertString(name)
+                )
+            );
+        values = values + Expression::Variable(
+            Symbol(name)
+            );
+        }
+
+    return mPythonDictConverter->createDictExpr(
+        keys,
+        values
+        );
+    }
+
+Expression PythonAstConverter::wrapWithBlockFunctionBodyInTryCatch(
+        const Expression& functionBody,
+        const ImmutableTreeVector<std::string>& assignedVariables
         ) const
     {
     Symbol catchVar = freshVarname(
@@ -1456,11 +1516,7 @@ Expression PythonAstConverter::wrapFunctionBodyInTryCatch(
                         emptyTreeVec() +
                         ApplyArgument::Normal(
                             null(),
-                            Expression::Constant(
-                                CSTValue(
-                                    mConstantConverter->convertInt(1)
-                                    )
-                                )
+                            getDictOfAssignedVariables(assignedVariables)
                             ) +
                         ApplyArgument::Normal(
                             null(),

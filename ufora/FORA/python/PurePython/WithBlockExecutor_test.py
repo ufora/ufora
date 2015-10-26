@@ -23,7 +23,7 @@ import traceback
 import logging
 
 
-class ExecutorWithBlock_test(unittest.TestCase, EquivalentEvaluationTestCases.EquivalentEvaluationTestCases):
+class WithBlockExecutors_test(unittest.TestCase, EquivalentEvaluationTestCases.EquivalentEvaluationTestCases):
     @classmethod
     def setUpClass(cls):
         cls.executor = None
@@ -250,31 +250,61 @@ class ExecutorWithBlock_test(unittest.TestCase, EquivalentEvaluationTestCases.Eq
             self.assertEqual(l2.toLocal().result(), 100)
     """
 
-    """
-    def test_invalid_assign_in_with_block(self):
-        with self.assertRaises(pyfora.Exceptions.PyforaError):
-            fora = self.create_executor()
-            with fora:
+    def test_assigned_vars_and_exceptions_1(self):
+        with self.create_executor() as fora:
+            try:
                 with fora.remotely:
-                    l = [0]
-                    l[0] = 1
+                    a = 0
+                    b = 1
+                    raise UserWarning("omg")
+                    c = 2
+                    d = 3
+            except UserWarning as e:
+                pass
 
-    """
+            self.assertEqual(a.toLocal().result(), 0)
+            self.assertEqual(b.toLocal().result(), 1)
+            with self.assertRaises(UnboundLocalError):
+                c
+            with self.assertRaises(UnboundLocalError):
+                d
 
-    """
-    def test_divide_by_zero(self):
+    def test_assigned_vars_and_exceptions_2(self):
+        with self.create_executor() as fora:
+            try:
+                with fora.remotely:
+                    a = 0
+                    b = 1
+                    for ix in range(10):
+                        b = b + 1
+                    raise UserWarning("omg")
+                    c = 2
+                    d = 3
+            except UserWarning as e:
+                pass
+
+            self.assertEqual(a.toLocal().result(), 0)
+            self.assertEqual(b.toLocal().result(), 11)
+
+            # doesn't work
+            # self.assertEqual(ix.toLocal().result(), 0)
+
+            with self.assertRaises(UnboundLocalError):
+                c
+            with self.assertRaises(UnboundLocalError):
+                d
+
+    def test_more_assignments(self):
         with self.create_executor() as fora:
             with fora.remotely:
-                def f(x):
-                    return 1/x
-                arg = 0
-                a = f(arg)
-
-            with self.assertRaises(pyfora.Exceptions.ComputationError):
-                a.toLocal().result()
-    """
-
+                x = 0
+                for ix in xrange(10):
+                    x = x + 1
             
+            self.assertEqual(x.toLocal().result(), 10)
+
+            # doesn't work
+            # self.assertEqual(ix.toLocal().result(), 10)
 
 if __name__ == "__main__":
     import ufora.config.Mainline as Mainline
