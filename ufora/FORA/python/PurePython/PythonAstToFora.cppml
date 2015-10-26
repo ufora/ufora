@@ -1304,7 +1304,52 @@ Expression PythonAstConverter::convertPythonAstClassDefToFora(
         );
     }
 
-Expression PythonAstConverter::convertPythonAstFunctionDefToFora(
+Function PythonAstConverter::convertPythonAstExpressionToForaFunction(
+        const PythonAstStatement_FunctionDefType& functionDef,
+        const SimpleParseRange& extent
+        ) const
+    {
+    std::pair<Expression, TuplePattern> functionBodyAndPattern = 
+        convertPythonAstExpressionToForaFunctionBodyAndPattern(
+            functionDef,
+            extent
+            );
+
+    Expression functionBody = introduceLetBindingsForUnboundVariables(
+        functionBodyAndPattern.first,
+        functionBodyAndPattern.second
+        );
+
+    return Function::Term(
+        functionBodyAndPattern.second,
+        functionBody,
+        Function::Empty()
+        );
+    }
+    
+Expression PythonAstConverter::introduceLetBindingsForUnboundVariables(
+        const Expression& functionBody,
+        const TuplePattern& pattern
+        ) const
+    {
+    //look at all the variables we assign to at the root scope. If they are not bound
+    //then they are 'free', but also assigned. We don't allow globals, so they'll all need
+    //null let bindings
+    ImmutableTreeSet<Symbol> bound = pattern.boundVariables();
+    ImmutableTreeSet<Symbol> assigned = functionBody.assignedVariables();
+
+    ImmutableTreeSet<Symbol> needingBindings = assigned - bound;
+
+    Expression tr = functionBody;
+
+    for (auto s: needingBindings)
+        tr = Expression::Let(s, Expression::Constant(CSTValue()), tr);
+
+    return tr;
+    }
+
+std::pair<Expression, TuplePattern> 
+PythonAstConverter::convertPythonAstExpressionToForaFunctionBodyAndPattern(
         const PythonAstStatement_FunctionDefType& functionDef,
         const SimpleParseRange& extent
         ) const
@@ -1328,17 +1373,6 @@ Expression PythonAstConverter::convertPythonAstFunctionDefToFora(
     TuplePattern pattern = TuplePattern(foraArgs);
     Expression functionBody = convertPythonAstStatementsToExpression(body);
 
-    //look at all the variables we assign to at the root scope. If they are not bound
-    //then they are 'free', but also assigned. We don't allow globals, so they'll all need
-    //null let bindings
-    ImmutableTreeSet<Symbol> bound = pattern.boundVariables();
-    ImmutableTreeSet<Symbol> assigned = functionBody.assignedVariables();
-
-    ImmutableTreeSet<Symbol> needingBindings = assigned - bound;
-
-    for (auto s: needingBindings)
-        functionBody = Expression::Let(s, Expression::Constant(CSTValue()), functionBody);
-
     functionBody = Expression::Sequence(
         functionBody,
         Expression::Return(
@@ -1348,13 +1382,28 @@ Expression PythonAstConverter::convertPythonAstFunctionDefToFora(
             )
         );
 
+    return std::make_pair(functionBody, pattern);
+    }    
+
+Expression PythonAstConverter::convertPythonAstFunctionDefToFora(
+        const PythonAstStatement_FunctionDefType& functionDef,
+        const SimpleParseRange& extent
+        ) const
+    {
+    const std::string& functionName = functionDef.name();
+
+    Function function = convertPythonAstExpressionToForaFunction(
+        functionDef,
+        extent
+        );
+
     return Expression::CreateObject(
         functionName,
         ObjectDefinition(
             ObjectDefinitionBody::Term(
                 ObjectDefinitionTermWithMetadata(
                     ObjectDefinitionTerm::Call(
-                        Function::Term(pattern, functionBody, Function::Empty())
+                        function
                         ),
                     CSTValue()
                     ),
