@@ -45,23 +45,24 @@ class PyforaComputedValue(ComputedValue.ComputedValue):
     def __str__(self):
         return "PyforaComputedValue" + str(tuple(self.argIds))
 
-    def pyforaDictToStringDict(self):
+    def pyforaDictToDictOfAssignedVarsToProxyValues(self):
         if self.valueIVC is None:
             return None
 
         assert not self.isException, "We should not allow exceptions to be thrown here. Instead we should " +\
             " be wrapping the code in try/catch and returning data that contains any updated variables after the exception."
 
-        result = PyforaObjectConverter.PyforaObjectConverter().unwrapPyforaDictToPyStringDict(self.valueIVC)
+        result = PyforaObjectConverter.PyforaObjectConverter()\
+                    .unwrapPyforaDictToDictOfAssignedVars(self.valueIVC)
         assert isinstance(result, dict)
         return result
 
     @ComputedGraph.ExposedProperty()
-    def pyforaDictToStringDictOfComputedValues(self):
+    def pyforaDictToAssignedVarsToComputedValues(self):
         if self.isException:
             return self.jsonValueRepresentation
 
-        stringDictToIVC = self.pyforaDictToStringDict
+        stringDictToIVC = self.pyforaDictToDictOfAssignedVarsToProxyValues
 
         if stringDictToIVC is None:
             return None

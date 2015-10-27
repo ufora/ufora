@@ -188,7 +188,7 @@ class Executor(object):
 
         return future
 
-    def _expandComputedValueToDictOfProxies(self, computedValue):
+    def _expandComputedValueToDictOfAssignedVarsToProxyValues(self, computedValue):
         future = Future.Future()
 
         def onExpanded(jsonResult):
@@ -197,8 +197,15 @@ class Executor(object):
                 return
 
             if jsonResult['isException']:
-                result = self.objectRehydrator.convertJsonResultToPythonObject(jsonResult['result'])
-                future.set_exception(Exceptions.ComputationError(result, jsonResult['trace']))
+                result = self.objectRehydrator.convertJsonResultToPythonObject(
+                    jsonResult['result']
+                    )
+                future.set_exception(
+                    Exceptions.ComputationError(
+                        result,
+                        jsonResult['trace']
+                        )
+                    )
                 return
 
             assert isinstance(jsonResult['dictOfProxies'], dict)
@@ -209,7 +216,10 @@ class Executor(object):
 
             future.set_result(dictOfProxies)
 
-        self.connection.expandComputedValueToDictOfProxies(computedValue, onExpanded)
+        self.connection.expandComputedValueToDictOfAssignedVarsToProxyValues(
+            computedValue,
+            onExpanded
+            )
 
         return future
 

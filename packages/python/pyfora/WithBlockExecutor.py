@@ -186,7 +186,7 @@ class WithBlockExecutor(object):
 
         proxy_dict = tuple_of_proxies[0]
 
-        dict_of_proxies = proxy_dict.toDictOfProxies().result()
+        dict_of_proxies = proxy_dict.toDictOfAssignedVarsToProxyValues().result()
 
         return dict_of_proxies
 

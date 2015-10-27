@@ -83,8 +83,8 @@ class ComputedRemotePythonObject(RemotePythonObject):
     def toLocal(self, maxBytecount=None):
         return self.executor._downloadComputedValueResult(self.computedValue, maxBytecount)
 
-    def toDictOfProxies(self):
-        return self.executor._expandComputedValueToDictOfProxies(self.computedValue)
+    def toDictOfAssignedVarsToProxyValues(self):
+        return self.executor._expandComputedValueToDictOfAssignedVarsToProxyValues(self.computedValue)
 
     def toTupleOfProxies(self):
         return self.executor._expandComputedValueToTupleOfProxies(self.computedValue)

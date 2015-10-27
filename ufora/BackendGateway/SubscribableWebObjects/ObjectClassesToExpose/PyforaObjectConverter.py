@@ -99,9 +99,9 @@ class PyforaObjectConverter(ComputedGraph.Location):
         return objectIdToIvc_[objectId]
 
     @ComputedGraph.Function
-    def unwrapPyforaDictToPyStringDict(self, dictIVC):
+    def unwrapPyforaDictToDictOfAssignedVars(self, dictIVC):
         """Take a Pyfora dictionary, and return a dict {string->IVC}. Returns None if not possible."""
-        return converter_[0].unwrapPyforaDictToPyStringDict(dictIVC)
+        return converter_[0].unwrapPyforaDictToDictOfAssignedVars(dictIVC)
     
     @ComputedGraph.Function
     def unwrapPyforaTupleToTuple(self, tupleIVC):

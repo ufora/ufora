@@ -162,7 +162,7 @@ class Connection(object):
             'onFailure': onFailure
             })
 
-    def expandComputedValueToDictOfProxies(self, computedValue, onExpanded):
+    def expandComputedValueToDictOfAssignedVarsToProxyValues(self, computedValue, onExpanded):
         """Given a computedValue that should represent a dictionary, expand it to a dictionary of ComputedValues.
 
         If it's not a dictionary, or something else happens, this will resolve to a PyforaError.
@@ -182,7 +182,7 @@ class Connection(object):
                     )
 
         computedValue.increaseRequestCount({}, {'onSuccess': lambda *args: None, 'onFailure': lambda *args: None})
-        computedValue.subscribe_pyforaDictToStringDictOfComputedValues({
+        computedValue.subscribe_pyforaDictToAssignedVarsToComputedValues({
             'onSuccess': onResult,
             'onFailure': onFailure,
             'onChanged': onResult

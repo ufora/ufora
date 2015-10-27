@@ -873,7 +873,7 @@ class Converter(object):
         
         return pyAst
 
-    def unwrapPyforaDictToPyStringDict(self, dictIVC):
+    def unwrapPyforaDictToDictOfAssignedVars(self, dictIVC):
         """Take a Pyfora dictionary, and return a dict {string->IVC}. Returns None if not possible."""
         pyforaDict = self.nativeDictConverter.invertDict(dictIVC)
         if pyforaDict is None:

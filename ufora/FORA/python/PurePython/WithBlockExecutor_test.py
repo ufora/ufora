@@ -170,7 +170,7 @@ class WithBlockExecutors_test(unittest.TestCase, EquivalentEvaluationTestCases.E
                 return {'1':1,'2':2,'3':3}
 
             res = fora.submit(f).result()
-            proxies = res.toDictOfProxies().result()
+            proxies = res.toDictOfAssignedVarsToProxyValues().result()
             results = {k:v.toLocal().result() for k,v in proxies.iteritems()}
 
             self.assertEqual(results, {'1':1,'2':2,'3':3})
