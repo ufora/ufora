@@ -51,8 +51,25 @@ class ExecutorTestCases(
                 executor.__exit__(None, None, None)
 
 
+    @staticmethod
+    def defaultComparison(x, y):
+        if isinstance(x, basestring) and isinstance(y, basestring):
+            return x == y
+
+        if hasattr(x, '__len__') and hasattr(y, '__len__'):
+            l1 = len(x)
+            l2 = len(y)
+            if l1 != l2:
+                return False
+            for idx in range(l1):
+                if not ExecutorTestCases.defaultComparison(x[idx], y[idx]):
+                    return False
+            return True
+        else:
+            return x == y and type(x) is type(y)
+
     def equivalentEvaluationTest(self, func, *args, **kwds):
-        comparisonFunction = lambda x, y: x == y
+        comparisonFunction = ExecutorTestCases.defaultComparison
         if 'comparisonFunction' in kwds:
             comparisonFunction = kwds['comparisonFunction']
 
@@ -569,7 +586,7 @@ class ExecutorTestCases(
         def f():
             return x
 
-        self.equivalentEvaluationTest(f)
+        self.equivalentEvaluationTest(f, comparisonFunction=lambda x, y: x == y)
 
     def test_returnClassObjectWithClosure(self):
         x = 10
