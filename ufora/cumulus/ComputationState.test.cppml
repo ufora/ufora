@@ -1,0 +1,305 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ComputationState.hppml"
+#include "ComputationStateTestHarness.hpp"
+#include "../core/UnitTest.hpp"
+#include "../core/UnitTestCppml.hpp"
+
+using namespace Cumulus;
+using namespace boost;
+
+class CumulusComputationStateTestFixture {
+public:
+	void testCachecall(bool testSerialization)
+		{
+		PolymorphicSharedPtr<ComputationState> state = 
+			testHarness.createComputationEvaluating("cached(1(),2(),3())");
+
+		BOOST_CHECK(true);
+
+		if (testSerialization)
+			state = testHarness.deepcopyComputationState(state);
+
+		CreatedComputations threadsCreated;
+
+		threadsCreated = state->compute(hash_type());
+
+		BOOST_CHECK(threadsCreated.computations().size() == 3);
+
+		@match ComputationStatus(state->currentComputationStatus())
+			-| BlockedOnComputations(threadIds) ->> {
+				for (long k = 0; k < threadIds.size();k++)
+					BOOST_CHECK(threadsCreated.computations().contains(threadIds[k]));
+				}
+			-| _ ->> {
+				BOOST_CHECK(false);
+				}
+
+
+		if (testSerialization)
+			state = testHarness.deepcopyComputationState(state);
+
+		BOOST_CHECK(true);
+
+		for (auto it = threadsCreated.computations().begin(); it != threadsCreated.computations().end(); ++it)
+			{
+			@match ComputationDefinition(it->second)
+				-| Root(terms) ->> {
+					ImmutableTreeVector<ImplValContainer> values;
+					for (long k = 0; k < terms.size(); k++)
+						@match ComputationDefinitionTerm(terms[k])
+							-| Value(v) ->> { values = values + v; }
+							-| _ ->> { lassert(false); }
+
+
+					state->addComputationResult(
+						ComputationResult(
+							it->first, 
+							SerializedObject::serialize(
+								Fora::Interpreter::ComputationResult::Result(
+									ImplValContainer(values),
+									ImplValContainer()
+									),
+								testHarness.vdm()->getMemoryManager()
+								),
+							ComputationStatistics()
+							)
+						);
+
+					if (testSerialization)
+						state = testHarness.deepcopyComputationState(state);
+					}
+				-| _ ->> {
+					BOOST_CHECK(false);
+					}
+			}
+		
+		BOOST_CHECK(state->currentComputationStatus().isComputable());
+
+		Nullable<Fora::Interpreter::ComputationResult> result = state->getResult();
+
+		CreatedComputations threadsCreated2;
+
+		threadsCreated2 = state->compute(hash_type());
+
+		BOOST_CHECK_EQUAL(threadsCreated2.computations().size(), 0);
+
+		ImplValContainer resultIvc = testHarness.assertIsFinished(state);
+
+		BOOST_CHECK_EQUAL(resultIvc, testHarness.evaluate("((1,`Call),(2,`Call),(3,`Call))"));
+		}
+
+
+	ComputationStateTestHarness testHarness;
+};
+
+
+BOOST_AUTO_TEST_SUITE( test_Cumulus_ComputationState )
+
+std::string sumFunctionText = (
+	"let sum = fun(a,b) {\n"
+	"    if (a >= b) return 0;\n"
+	"    if (a+1 == b) return a;\n"
+	"    let mid = (a+b) / 2;\n"
+	"    sum(a,mid) + sum(mid,b)\n"
+	"}\n"
+	);
+
+BOOST_FIXTURE_TEST_CASE( test_calculate_basic, CumulusComputationStateTestFixture )
+	{
+	BOOST_CHECK_EQUAL(
+		testHarness.calculateSimple(
+			testHarness.evaluate("(1, `Operator, `+, 2)")
+			), 
+		ImplValContainer(testHarness.evaluate("3"))
+		);
+	}
+
+BOOST_FIXTURE_TEST_CASE( test_subcomputations_simple, CumulusComputationStateTestFixture )
+	{
+	//this computes 3 ** 2 == 9 using subcomputations
+	ComputationDefinition threeSquared = 
+		ComputationDefinition::Root(emptyTreeVec() + 
+			ComputationDefinitionTerm::Subcomputation(
+				ComputationDefinitionTerm::ApplyFromTuple(testHarness.evaluate("(1, `Operator, `+, 2)"))
+				) + 
+			ComputationDefinitionTerm::UnnamedValue(testHarness.evaluate("`Operator")) + 
+			ComputationDefinitionTerm::UnnamedValue(testHarness.evaluate("`**")) + 
+			ComputationDefinitionTerm::Subcomputation(
+				ComputationDefinitionTerm::ApplyFromTuple(testHarness.evaluate("(1, `Operator, `+, 1)"))
+				) 
+			);
+
+	ComputationDefinition threeToTheThreeSquared = 
+		ComputationDefinition::Root(emptyTreeVec() + 
+			ComputationDefinitionTerm::Subcomputation(
+				ComputationDefinitionTerm::ApplyFromTuple(testHarness.evaluate("(1, `Operator, `+, 2)"))
+				) + 
+			ComputationDefinitionTerm::UnnamedValue(testHarness.evaluate("`Operator")) + 
+			ComputationDefinitionTerm::UnnamedValue(testHarness.evaluate("`**")) + 
+			ComputationDefinitionTerm::Subcomputation(
+				threeSquared.getRoot().terms()
+				) 
+			);
+
+	BOOST_CHECK_EQUAL_CPPML(
+		testHarness.computeSimple(threeSquared),
+		Fora::Interpreter::ComputationResult::Result(
+			testHarness.evaluate("3**2"),
+			ImplValContainer()
+			)
+		);
+
+	BOOST_CHECK_EQUAL_CPPML(
+		testHarness.computeSimple(threeToTheThreeSquared),
+		Fora::Interpreter::ComputationResult::Result(
+			testHarness.evaluate("3**(3**2)"),
+			ImplValContainer()
+			)
+		);
+	}
+
+BOOST_FIXTURE_TEST_CASE( test_subcomputations_duplicated, CumulusComputationStateTestFixture )
+	{
+	//this computes 3 ** 3 == 27 using subcomputations
+	ComputationDefinition threeCubed = 
+		ComputationDefinition::Root(emptyTreeVec() + 
+			ComputationDefinitionTerm::Subcomputation(
+				ComputationDefinitionTerm::ApplyFromTuple(testHarness.evaluate("(1, `Operator, `+, 2)"))
+				) + 
+			ComputationDefinitionTerm::UnnamedValue(testHarness.evaluate("`Operator")) + 
+			ComputationDefinitionTerm::UnnamedValue(testHarness.evaluate("`**")) + 
+			ComputationDefinitionTerm::Subcomputation(
+				ComputationDefinitionTerm::ApplyFromTuple(testHarness.evaluate("(1, `Operator, `+, 2)"))
+				) 
+			);
+
+	BOOST_CHECK_EQUAL_CPPML(
+		testHarness.computeSimple(threeCubed),
+		Fora::Interpreter::ComputationResult::Result(
+			testHarness.evaluate("3**3"),
+			ImplValContainer()
+			)
+		);
+	}
+
+BOOST_FIXTURE_TEST_CASE( test_subcomputations_with_exception, CumulusComputationStateTestFixture )
+	{
+	ComputationDefinition throwsAnException = 
+		ComputationDefinition::Root(emptyTreeVec() + 
+			ComputationDefinitionTerm::Subcomputation(
+				ComputationDefinitionTerm::ApplyFromTuple(testHarness.evaluate("(1, `Operator, `+++, 2)"))
+				) + 
+			ComputationDefinitionTerm::UnnamedValue(testHarness.evaluate("`Operator")) + 
+			ComputationDefinitionTerm::UnnamedValue(testHarness.evaluate("`**")) + 
+			ComputationDefinitionTerm::Subcomputation(
+				ComputationDefinitionTerm::ApplyFromTuple(testHarness.evaluate("(1, `Operator, `+, 1)"))
+				) 
+			);
+
+	BOOST_CHECK(testHarness.computeSimple(throwsAnException).isException());
+	}
+
+
+void verifyThreadBlocksAreSame(CreatedComputations c1, CreatedComputations c2)
+	{
+	lassert(c1.computations().size() == c2.computations().size());
+
+	std::set<hash_type> thread1;
+	std::set<hash_type> thread2;
+
+	for (auto def: c1.computations())
+		thread1.insert(def.second.hash());
+
+	for (auto def: c2.computations())
+		thread2.insert(def.second.hash());
+
+	lassert(thread1 == thread2);
+	}
+
+BOOST_FIXTURE_TEST_CASE( test_resubmit_cachecalls, CumulusComputationStateTestFixture )
+	{
+	PolymorphicSharedPtr<ComputationState> state = 
+		testHarness.createComputationEvaluating("cached(1(),2(),3())");
+
+	CreatedComputations threadsCreated = state->compute(hash_type());
+
+	lassert(state->canResubmitBlockingThreads());
+
+	CreatedComputations threadsCreated2 = state->resubmitBlockingThreads(hash_type());
+	
+	verifyThreadBlocksAreSame(threadsCreated, threadsCreated2);
+	}
+
+BOOST_FIXTURE_TEST_CASE( test_resubmit_cache_computations_works, CumulusComputationStateTestFixture )
+	{
+	PolymorphicSharedPtr<ComputationState> state = 
+		testHarness.createComputationEvaluating("cached(1(),2(),3())");
+
+	CreatedComputations threadsCreated = state->compute(hash_type());
+
+	lassert(state->canResubmitBlockingThreads())
+
+	CreatedComputations threadsCreated2 = state->resubmitBlockingThreads(hash_type());
+
+	verifyThreadBlocksAreSame(threadsCreated, threadsCreated2);
+	}
+
+BOOST_FIXTURE_TEST_CASE( test_calculate_cachecall, CumulusComputationStateTestFixture )
+	{
+	testCachecall(false);
+	}
+
+BOOST_FIXTURE_TEST_CASE( test_serialization, CumulusComputationStateTestFixture )
+	{
+	testCachecall(true);
+	}
+
+ComputationId discardNewComputations(ComputationDefinition def)
+	{
+	BOOST_CHECK(false);
+	return ComputationId::CreateIdOnWorker(def, hash_type());
+	}
+
+BOOST_FIXTURE_TEST_CASE( test_sequential_splits_are_possible, CumulusComputationStateTestFixture )
+	{
+	//verify that a computation that splits once, is resumed, and splits again will work.
+	
+	//TODO: write this test
+	}
+
+
+BOOST_AUTO_TEST_SUITE_END( )
+
+BOOST_FIXTURE_TEST_CASE( test_Cumulus_ComputationState_EvaluateThroughput, CumulusComputationStateTestFixture ) 
+	{
+	ComputationStateTestHarness testHarness;
+
+	double t0 = curClock();
+	
+	for (long k = 0; k < 1000;k++)
+		testHarness.evaluate("1+" + boost::lexical_cast<string>(k));
+	
+	cout << "took " << curClock() - t0 << " to evaluate 1000 ExecutionContexts.\n";
+	
+	t0 = curClock();
+	
+	for (long k = 0; k < 1000;k++)
+		testHarness.evaluate("1+" + boost::lexical_cast<string>(k));
+
+	cout << "took " << curClock() - t0 << " to evaluate the next 1000 ExecutionContexts.\n";
+	}
+

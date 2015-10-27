@@ -1,0 +1,265 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../../core/containers/ImmutableTreeSet.hppml"
+#include "../../core/PolymorphicSharedPtr.hpp"
+#include "../../core/containers/TwoWaySetMap.hpp"
+#include "../../core/containers/MapWithIndex.hpp"
+#include "../../core/EventBroadcaster.hpp"
+#include "../Core/ExecutionContext.hppml"
+#include "PageRefcountEvent.hppml"
+#include "PageId.hppml"
+#include "BigVectorId.hppml"
+#include "../TypedFora/ABI/BigVectorPageLayout.hppml"
+#include <boost/thread.hpp>
+#include <boost/unordered_map.hpp>
+#include <boost/unordered_set.hpp>
+
+namespace Cumulus {
+
+class CumulusWorkerAddDropEvent;
+class AddDropFinalState;
+
+}
+
+namespace TypedFora {
+namespace Abi {
+
+class BigVectorLayouts;
+
+}
+}
+
+/*********
+PageRefcountTracker
+
+Track what pages we have loaded (somewhere in the system) and how they're related to each other.
+
+This class is responsible for maintaining the complete model of what we have in our cache (both
+disk and RAM).
+
+This class is thread-safe.
+
+**********/
+
+namespace Fora {
+namespace Interpreter {
+
+class ExecutionContextImpl;
+
+}
+}
+
+
+class PageRefcountTracker : public PolymorphicSharedPtrBase<PageRefcountTracker> {
+public:
+	PageRefcountTracker(
+			PolymorphicSharedPtr<TypedFora::Abi::BigVectorLayouts> handles,
+			PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler 
+			);
+
+	EventBroadcaster<pair<Fora::PageRefcountEvent, long> >& onPageRefcountEvent();
+
+	bool validateStateAgainstAddDropState(
+						const Cumulus::AddDropFinalState& finalState, 
+						Cumulus::MachineId ownMachineId
+						);
+
+	void setWarnIfChangesAreMade(bool inShouldWarn);
+
+	bool pageIsOnDisk(const Fora::PageId& inPage);
+
+	bool pageIsInRam(const Fora::PageId& inPage);
+
+	//is the page in RAM and also pinned
+	bool pageIsInRamAndPinned(const Fora::PageId& inPage);
+
+	//is the page in RAM and also unpinned
+	bool pageIsInRamAndUnpinned(const Fora::PageId& inPage);
+
+	void markPageAsNotLoadable(const Fora::PageId& inPage);
+
+	void pageReferencedInByBigvecLoadedFromPersistentCache(
+				const Fora::PageId& inPage, 
+				const ImmutableTreeSet<Fora::BigVectorId>& referencedBigvecs
+				);
+
+	//create a 'synthetic page'. This page will maintain a refcount on 'bigvecId'
+	//until we see it 'materialized' in which case we can drop its definition.
+	void createSyntheticPage(
+				const Fora::PageId& inPageId, 
+				const TypedFora::Abi::BigVectorPageLayout& layout
+				);
+
+	void realizeSyntheticPage(const Fora::PageId& inPageId);
+
+	uword_t totalBytesInRam();
+
+	//a page was added to the RAM cache
+	void pageAddedToRAM(
+				Fora::PageId inPage, 
+				const std::set<Fora::BigVectorId>& referencedPages
+				);
+
+	Nullable<ImmutableTreeSet<Fora::BigVectorId> > 
+		getBigvecsReferencedByPage(Fora::PageId inPage);
+
+	//a page was moved from RAM to disk
+	void pageSentToDisk(
+				Fora::PageId inPage, 
+				const std::set<Fora::BigVectorId>& referencedPages
+				);
+
+	//a page was dropped from RAM
+	void pageDroppedFromRam(Fora::PageId inPage);
+
+	//a page was dropped from disk
+	void pageDroppedFromDisk(Fora::PageId inPage);
+
+	void pageMarkedUnpinned(Fora::PageId inPage);
+
+	void pageMarkedPinned(Fora::PageId inPage);
+
+	//returns whether the page is pinned and in RAM at the end
+	bool pinPageIfInRAM(Fora::PageId inPage);
+
+	std::set<Fora::PageId> getCopyOfPinnedPages();
+
+	std::set<Fora::PageId> getPagesHeldInRAM();
+
+	std::set<Fora::PageId> getPagesHeldOnDisk();
+
+	void pageNoLongerExistsAcrossSystem(Fora::PageId inPage);
+
+	void broadcastBigvecsInFlight(
+		ImmutableTreeSet<Fora::BigVectorId> id, 
+		int32_t refcount,
+		hash_type inMoveGuid
+		);
+
+	void bigVectorIncreffed(TypedFora::Abi::BigVectorPageLayout id);
+
+	void bigVectorIncreffed(Fora::BigVectorId id);
+
+	void bigVectorDecreffed(Fora::BigVectorId id);
+
+	void bigVectorHeldInPersistentCache(Fora::BigVectorId inBigvec);
+
+	void executionIsBlockedChanged(bool isBlocked);
+
+	bool isExecutionCurrentlyBlocked(void);
+
+	void totalMemoryUsageChanged(const Fora::MemoryUsage& usage);
+
+	Fora::MemoryUsage curMemoryUsage();
+
+	uword_t getPageRefcount(Fora::PageId inPage);
+
+	long sendCurrentState(boost::function1<void, pair<Fora::PageRefcountEvent, long> > eventConsumer);
+
+	void sendAddDropState(boost::function1<void, Cumulus::CumulusWorkerAddDropEvent> eventConsumer);
+
+	PolymorphicSharedPtr<TypedFora::Abi::BigVectorLayouts> getBigVectorLayouts()
+		{
+		return mBigVectorLayouts;
+		}
+
+	uword_t bytesInRamPinned() const
+		{
+		return mBytesInRamPinned;
+		}
+
+	uword_t bytesInRamUnpinned() const
+		{
+		return mBytesInRamUnpinned;
+		}
+
+	void setMachineId(Cumulus::MachineId inMachineId)
+		{
+		mMachineId = inMachineId;
+		}
+
+	Cumulus::MachineId getMachineId() const
+		{
+		return mMachineId;
+		}
+
+	PolymorphicSharedPtr<CallbackScheduler> getCallbackScheduler() const
+		{
+		return mCallbackScheduler;
+		}
+
+	boost::unordered_map<Fora::BigVectorId, uword_t> getTotalBigvecRefcounts();
+
+	long getCurrentEventCount()
+		{
+		return mEventCount;
+		}
+
+private:
+	boost::recursive_mutex mMutex;
+
+	Cumulus::MachineId mMachineId;
+
+	void broadcastEvent_(const Fora::PageRefcountEvent& event);
+
+	long mEventCount;
+
+	uword_t mBytesInRamPinned;
+
+	uword_t mBytesInRamUnpinned;
+
+	void incref_(Fora::BigVectorId vec);
+
+	void decref_(Fora::BigVectorId vec);
+
+	bool mIsExecutionCurrentlyBlocked;
+
+	EventBroadcaster<pair<Fora::PageRefcountEvent, long> > mOnPageRefcountEvent;
+
+	boost::unordered_map<Fora::BigVectorId, uword_t> mTotalBigvecRefcounts;
+
+	boost::unordered_set<Fora::BigVectorId> mBigvecsHeldInPersistentCache;
+
+	boost::unordered_set<Fora::PageId> mPagesUnmapped;
+
+	Fora::MemoryUsage mLastMemoryUsageBroadcast;
+
+	boost::unordered_map<Fora::PageId, std::set<Fora::BigVectorId> > mPageBigvecRefcounts;
+
+	boost::unordered_set<Fora::PageId> mPagesInRam;
+
+	boost::unordered_set<Fora::PageId> mPagesOnDisk;
+
+	boost::unordered_set<Fora::PageId> mPagesUnpinned;
+
+	boost::unordered_set<Fora::Interpreter::ExecutionContextImpl*> mScheduledExecutionContexts;
+
+	void pageNotInRamOrOnDisk_(const Fora::PageId& inHash);
+
+	PolymorphicSharedPtr<TypedFora::Abi::BigVectorLayouts> mBigVectorLayouts;
+
+	PolymorphicSharedPtr<CallbackScheduler> mCallbackScheduler;
+
+	bool mWarnIfChangesAreMade;
+};
+
+
+
+
+
+

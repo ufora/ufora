@@ -1,0 +1,314 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../NativeCode.hppml"
+#include "../NativeTypeFor.hpp"
+#include "../../../core/containers/TwoWaySetMap.hpp"
+
+namespace TypedFora {
+namespace Abi {
+
+class VectorRecord;
+
+}
+}
+
+namespace NativeCFGTransforms {
+
+typedef ImmutableTreeVector<uword_t> path_type;
+
+@type VectorArgument = 
+	NativeBlockID block,
+	long slotIndex,
+	path_type path
+	;
+
+macro_defineCppmlComparisonOperators(VectorArgument)
+
+//In a given jump expression, how are we mapping our original VectorArguments
+//to destination arguments?
+@type VectorJumpMapping = 
+	NativeBlockID sourceBlock,
+	long indexInBlock,
+	NativeBlockID targetBlock,
+	//for each vector in the dest block that we can trace, which vector went to it?
+	ImmutableTreeMap<VectorArgument, VectorArgument> vectorArgumentMapping
+	;	
+
+//represents a composite that may contain some set of VectorArguments
+@type VectorMappingValue = 
+	ImmutableTreeVector<pair<path_type, VectorArgument> > pathsToArgs
+{
+public:
+	VectorMappingValue operator+(VectorArgument arg) const
+		{
+		return VectorMappingValue(pathsToArgs() + make_pair(arg.path(), arg));
+		}
+
+	VectorMappingValue operator+(VectorMappingValue arg) const
+		{
+		return VectorMappingValue(pathsToArgs() + arg.pathsToArgs());
+		}
+
+	VectorMappingValue placeInCompositeWithSlot(long slot) const
+		{
+		ImmutableTreeVector<pair<path_type, VectorArgument> > args;
+
+		for (auto p: pathsToArgs())
+			args = args + make_pair(slot + p.first, p.second);
+
+		return args;
+		}
+
+	bool isEmpty() const
+		{
+		return pathsToArgs().size();
+		}
+
+	VectorMappingValue valueExtract(path_type p) const
+		{
+		ImmutableTreeVector<pair<path_type, VectorArgument> > result;
+
+		for (auto subpathAndArg: pathsToArgs())
+			if (subpathAndArg.first.size() >= p.size() && subpathAndArg.first.slice(0,p.size()) == p)
+				result = result + make_pair(
+					subpathAndArg.first.slice(p.size()),
+					subpathAndArg.second
+					);
+
+		return VectorMappingValue(result);
+		}
+
+	Nullable<VectorArgument> getSingleVectorArg() const
+		{
+		if (pathsToArgs().size() != 1)
+			return null();
+		if (pathsToArgs()[0].first.size())
+			return null();
+
+		return null() << pathsToArgs()[0].second;
+		}
+};
+
+/************************
+
+Summarize the flow of vector data in a CFG.  We track the location (in tuple arguments)
+of every VectorRecord value in the block, and trace whether they are passed from one to another
+
+************************/
+
+@type VectorVariableFlow =
+	Nullable<NativeBlockID> currentBlock,
+	long currentJump,
+	ImmutableTreeVector<VectorArgument> sourceArgs,
+	ImmutableTreeVector<VectorArgument> reads,
+	ImmutableTreeMap<pair<NativeBlockID, long>, VectorJumpMapping> jumpMappings,
+	map<NativeVariable, VectorMappingValue> liveVectorValues
+{
+public:
+	ImmutableTreeVector<path_type> pathsToVectors(const NativeType& type)
+		{
+		if (type == NativeTypeFor<TypedFora::Abi::VectorRecord>::get())
+			return emptyTreeVec() + path_type();
+
+		ImmutableTreeVector<path_type> result;
+
+		@match NativeType(type)
+			-| Composite(elts) ->> {
+				for (long k = 0; k < elts.size(); k++)
+					{
+					for (auto path: pathsToVectors(elts[k]))
+						result = result + (k + path);
+					}
+				}
+			-| _ ->> {}
+			;
+		
+		return result;
+		}
+
+	VectorVariableFlow(const NativeCFG& inCfg)
+		{
+		for (auto nameAndBlock: inCfg.blocks())
+			pullFromBlock(nameAndBlock.second, nameAndBlock.first);
+		}
+
+	VectorVariableFlow(const NativeBlock& block, const NativeBlockID& blockID)
+		{
+		pullFromBlock(block, blockID);
+		}
+
+	void pullFromBlock(const NativeBlock& block, const NativeBlockID& blockID)
+		{
+		if (!blockID.isInternal())
+			return;
+
+		for (long k = 0; k < block.args().size(); k++)
+			{
+			ImmutableTreeVector<path_type> paths = pathsToVectors(block.args()[k].type());
+			for (auto p: paths)
+				{
+				VectorArgument vecArg(blockID, k, p);
+
+				sourceArgs() = sourceArgs() + vecArg;
+				liveVectorValues()[block.args()[k]] = liveVectorValues()[block.args()[k]] + vecArg;
+				}
+			}
+		currentBlock() = blockID;
+		currentJump() = 0;
+		::visit(block.expression(), *this);
+		currentBlock() = null();
+		}
+
+	VectorMappingValue valueForExpression(const NativeExpression& e)
+		{
+		@match NativeExpression(e)
+			-| Variable(v) ->> {
+				auto it = liveVectorValues().find(v);
+				if (it == liveVectorValues().end())
+					return VectorMappingValue();
+				return it->second;
+				}
+			-| ValueExtract(indices, subE) ->> {
+				return valueForExpression(subE).valueExtract(indices);
+				}
+			-| CreateComposite(exprs) ->> {
+				VectorMappingValue final;
+
+				for (long k = 0; k < exprs.size(); k++)
+					final = final + valueForExpression(exprs[k]).placeInCompositeWithSlot(k);
+
+				return final;
+				}
+			-| _ ->> { 
+				return VectorMappingValue(); 
+				}
+		}
+
+	void processDown(const NativeExpression& r, bool& b)
+		{
+		@match NativeExpression(r)
+			-| Tagged(_, HomogenousVectorLookup(expr)) ->> {
+				VectorMappingValue val = valueForExpression(expr);
+
+				Nullable<VectorArgument> single = val.getSingleVectorArg();
+
+				if (single)
+					reads() = reads() + *single;
+				}
+			-| Let(nv, ValueExtract(indices, Variable(otherVar))) ->> {
+				auto it = liveVectorValues().find(otherVar);
+				if (it != liveVectorValues().end())
+					{
+					VectorMappingValue newVal = it->second.valueExtract(indices);
+					if (!newVal.isEmpty())
+						liveVectorValues()[nv] = newVal;
+					}
+				}
+			-| Let(nv, Variable(otherVar)) ->> {
+				auto it = liveVectorValues().find(otherVar);
+				if (it != liveVectorValues().end())
+					liveVectorValues()[nv] = it->second;
+				}
+			-| Jump(targetID, expressions) ->> {
+				ImmutableTreeMap<VectorArgument, VectorArgument> targets;
+
+				for (long targetSlotIx = 0; targetSlotIx < expressions.size();targetSlotIx++)
+					{
+					VectorMappingValue val = valueForExpression(expressions[targetSlotIx]);
+
+					for (auto pathAndVal: val.pathsToArgs())
+						{
+						VectorArgument targetArg(targetID, targetSlotIx, pathAndVal.first);
+
+						targets = targets + targetArg + pathAndVal.second;
+						}
+					}
+
+				//we want to find out how many jumps we've visited 
+				long jumpBlockId = currentJump();
+				currentJump()++;
+
+				jumpMappings() = jumpMappings() + 
+					make_pair(*currentBlock(), jumpBlockId) + 
+					VectorJumpMapping(*currentBlock(), jumpBlockId, targetID,targets)
+					;
+				}
+			-| _ ->> {
+				}
+			;
+		}
+
+	ImmutableTreeSet<VectorArgument> calculateVectorArgsReadFromAndDownstream() const
+		{
+		TwoWaySetMap<VectorArgument, VectorArgument> vectorFlow;
+
+		for (auto idAndJump: jumpMappings())
+			for (auto destAndSource: idAndJump.second.vectorArgumentMapping())
+				vectorFlow.insert(destAndSource.second, destAndSource.first);
+
+		std::set<VectorArgument> used;
+		std::set<VectorArgument> dirty;
+		for (auto read: reads())
+			{
+			used.insert(read);
+			dirty.insert(read);
+			}
+
+		while (dirty.size())
+			{
+			VectorArgument arg = *dirty.begin();
+			dirty.erase(arg);
+
+			for (auto child: vectorFlow.getValues(arg))
+				if (used.find(child) == used.end())
+					{
+					used.insert(child);
+					dirty.insert(child);
+					}
+			}
+
+		return ImmutableTreeSet<VectorArgument>(used);
+		}
+
+	template<class T>
+	void processDown(const T& t, bool& b) { }
+
+	template<class T>
+	void processUp(const T& t) { }
+	
+	void processDown(const NativeCFG& c, bool& outContinue)
+		{
+		//don't go down into child NativeCFGs
+		outContinue = false;
+		}
+
+	void processDown(const NativeType& c, bool& outContinue)
+		{
+		outContinue = false;
+		}
+	
+	static ImmutableTreeVector<VectorArgument> getReads(const NativeCFG& in)
+		{
+		VectorVariableFlow flow(in);
+
+		return flow.reads();
+		}
+};
+
+}
+

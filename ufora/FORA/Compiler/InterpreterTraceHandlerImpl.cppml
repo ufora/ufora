@@ -1,0 +1,423 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "InterpreterTraceHandlerImpl.hppml"
+#include "InterpreterTraceVisitor.hppml"
+#include "CompilerInstructionGraph/InstructionGraph.hppml"
+#include "CompilerInstructionGraph/Instruction.hppml"
+#include "../TypedFora/JitCompiler/CompilerThreadCount.hppml"
+#include "../../core/StringUtil.hpp"
+
+using Fora::Compiler::CompilerInstructionGraph::InstructionPtr;
+
+namespace Fora {
+namespace Compiler {
+
+namespace {
+
+bool instructionFlowIsValid(InstructionPtr i1, InstructionPtr i2)
+	{
+	for (long k = 0; k < i1->flowsToCount(); k++)
+		{
+		Fora::Compiler::CompilerInstructionGraph::InstructionPtr f = i1->flowsTo(k);
+		
+		if (f->getGraph() == i2->getGraph() && f->getLabel() == i2->getLabel() &&
+				::covers(i2->jovs(), f->jovs()))
+			return true;
+		}
+
+	return false;
+	}
+
+}
+
+InterpreterTraceHandlerImpl::InterpreterTraceHandlerImpl(
+			PolymorphicSharedPtr<Fora::Interpreter::InstructionGraph> inInstructionGraph,
+			PolymorphicSharedPtr<Fora::Compiler::CompilerInstructionGraph::InstructionGraph> inCompilerInstructionGraph,
+			PolymorphicSharedPtr<Axioms> inAxioms
+			) : 
+		mInstructionGraph(inInstructionGraph),
+		mCompilerInstructionGraph(inCompilerInstructionGraph),
+		mAxioms(inAxioms)
+	{
+	mProcessIncomingTracesThread.reset(
+		new boost::thread(
+			boost::bind(
+				&InterpreterTraceHandlerImpl::processIncomingTracesLoop,
+				this
+				)
+			)
+		);
+	}
+
+
+void InterpreterTraceHandlerImpl::setTraceLoggerFunction(
+			boost::function1<void, ImmutableTreeVector<InterpreterTraceTerm> > inHandler
+			)
+	{
+	mTraceLogger = inHandler;
+	}
+
+void InterpreterTraceHandlerImpl::addTrace(
+		boost::shared_ptr<Fora::JudgmentOnInterpreterTrace::Trace> inTrace,
+		bool blockUntilConsumed
+		)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (mUnconsumedTrace)
+		return;
+
+	mUnconsumedTrace = inTrace;
+
+	if (mTraceLogger)
+		mTraceLogger(
+			ImmutableTreeVector<Fora::InterpreterTraceTerm>(
+				inTrace->getTraceTerms()
+				)
+			);
+
+	mHasUnconsumedTrace.notify_all();
+
+	if (blockUntilConsumed)
+		{
+		while (mUnconsumedTrace == inTrace)
+			mHasUnconsumedTrace.wait(lock);
+		}
+	}
+
+bool InterpreterTraceHandlerImpl::shouldStopTracing(InterpreterTraceVisitor* visitor)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (mUnconsumedTrace)
+		return true;
+	
+	return false;
+	}
+
+void InterpreterTraceHandlerImpl::processIncomingTracesLoop()
+	{
+	Fora::CompilerThreadCount::Scope compiling;
+
+	while (true)
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		while (!mUnconsumedTrace)
+			{
+			compiling.unlock();
+			mHasUnconsumedTrace.wait(lock);
+			compiling.lock();
+			}
+
+		lock.unlock();
+
+		using namespace Fora::JudgmentOnInterpreterTrace;
+		
+		Nullable<pair<const Term*, const Term*> > loop = mUnconsumedTrace->searchForLoop();
+
+		if (!loop)
+			LOG_CRITICAL << "received a trace without a valid loop!";
+		else
+			processTrace(loop->first, loop->second);
+
+		lock.lock();
+
+		mUnconsumedTrace.reset();
+
+		mHasUnconsumedTrace.notify_all();
+		}
+	}
+
+bool jovIsMoreSpecificThanAnyInJOR(JudgmentOnResult jor, JOV jov)
+	{
+	if (jor.vals().contains(jov))
+		return false;
+
+	for (auto jorJov: jor.vals())
+		if (jov.covers(jorJov))
+			return false;
+
+	return true;
+	}
+
+CompilerInstructionGraph::InstructionPtr  InterpreterTraceHandlerImpl::instructionFor(
+					const Fora::JudgmentOnInterpreterTrace::Term* term
+					)
+	{
+	return mCompilerInstructionGraph->createNonrootInstruction(
+		term->location().graph(), 
+		term->location().label(), 
+		term->jovs()
+		);
+	}
+
+void InterpreterTraceHandlerImpl::processTrace(
+		const Fora::JudgmentOnInterpreterTrace::Term* inStart, 
+		const Fora::JudgmentOnInterpreterTrace::Term* inStop
+		)
+	{
+	if (SHOULD_LOG_DEBUG_SCOPED("InterpreterTrace::Trace"))
+		{
+		double t0 = curClock();
+
+		LOGGER_DEBUG_T log = LOGGER_DEBUG_SCOPED("InterpreterTrace::Trace");
+
+		std::ostringstream s;
+		
+		inStart->getTrace()->dumpToTextStream(s, inStart, inStop);
+
+		log << s.str();
+
+		log << "dumping took " << curClock() - t0;
+
+		log << "terms = " << inStart->getTrace()->getTraceTerms();
+		}
+
+	if (SHOULD_LOG_INFO())
+		{
+		double t0 = curClock();
+
+		LOGGER_INFO_T log = LOGGER_INFO_SCOPED("InterpreterTrace::Trace");
+
+		std::ostringstream s;
+		
+		inStart->getTrace()->dumpToTextStream(s, inStart, inStop, true);
+
+		log << s.str();
+
+		log << "dumping took " << curClock() - t0;
+		}
+
+	double t0 = curClock();
+
+	//get rid of any instructions added by the interpreter
+		{
+		mCompilerInstructionGraph->updateJoasAndResultJoasForAllChangedNodes();
+
+		std::set<InstructionPtr> changedConts, changedApplyTargets, added, focused;
+
+		mCompilerInstructionGraph->collectChangedInstructions(changedConts, changedApplyTargets, added, focused);
+		}
+	
+	for (const Fora::JudgmentOnInterpreterTrace::Term* s = inStart; s != inStop; s = s->flowsTo())
+		if (s->shouldAddToInstructionGraph())
+			instructionFor(s);
+
+	//now wire up any pairs where we have an axiom apply with a more specialized trace
+	//than what the axiom outputs
+	for (const Fora::JudgmentOnInterpreterTrace::Term* s = inStart; s != inStop; s = s->flowsTo())
+		{
+		if (s->shouldAddToInstructionGraph())
+			{
+			Fora::Compiler::CompilerInstructionGraph::InstructionPtr i1 = instructionFor(s);
+
+			Fora::Compiler::CompilerInstructionGraph::InstructionPtr i2 = instructionFor(s->flowsTo());
+
+			if (i1->isAxiomApply() && !s->isMachineCodeTerm() && !s->flowsTo()->isMachineCodeTerm())
+				{
+				//check that the JOA holds the specialized result
+				if (!s->result())
+					{
+					std::ostringstream stream;
+
+					stream << "term doesn't have a backprop result:\n";
+
+					inStart->getTrace()->dumpToTextStream(stream, s, s->flowsTo());
+
+					stream << "\n\nwithin\n";
+					inStart->getTrace()->dumpToTextStream(stream, inStart, inStop);
+
+					stream << "\n\nentire =\n";
+					inStart->getTrace()->dumpToTextStream(stream);
+
+					lassert_dump(false, stream.str());
+					}	
+				
+				bool isException = s->result()->isException();
+				JOV resultJOV = s->result()->value();
+
+				JudgmentOnAction curJOA = i1->resultJOA().joa();
+
+				JudgmentOnResult curJOR = curJOA[isException];
+
+				if (jovIsMoreSpecificThanAnyInJOR(curJOR, resultJOV))
+					{
+					JudgmentOnAction joaToMerge = 
+						isException ? 
+							JudgmentOnAction::Throws(resultJOV) : 
+							JudgmentOnAction::Value(resultJOV)
+						;
+
+					i1->setAxiomSpecializations(
+						joaToMerge | i1->getAxiomSpecializations()
+						);
+					}
+				}
+			}
+		}
+
+	updatedChangedInstructions_();
+
+	if (SHOULD_LOG_DEBUG())
+		{
+		LOGGER_DEBUG_T log = LOGGER_DEBUG;
+
+		for (const Fora::JudgmentOnInterpreterTrace::Term* s = inStart; 
+							s && s->index() < inStop->index(); s = s->flowsToInCurrentFrame())
+			{
+			if (s->shouldAddToInstructionGraph() && s->flowsToInCurrentFrame())
+				{
+				Fora::Compiler::CompilerInstructionGraph::InstructionPtr i1 = instructionFor(s);
+
+				Fora::Compiler::CompilerInstructionGraph::InstructionPtr i2 = instructionFor(s->flowsToInCurrentFrame());
+
+				bool i1Toi2 = false;
+
+				for (long k = 0; k < i1->flowsToCount(); k++)
+					if (i1->flowsTo(k) == i2)
+						i1Toi2 = true;
+
+				log << s->locationAndJudgmentHash() << " -- " << i1->toString(true) << "\n";
+
+				if (!i1Toi2)
+					for (long k = 0; k < i1->flowsToCount(); k++)
+						log << "\t\t" << i1->flowsTo(k)->toString(true);
+				}
+			}
+		}
+
+	LOG_INFO << "trace added in " << curClock() - t0 << " seconds total.";
+	}
+
+boost::shared_ptr<InterpreterTraceVisitor> InterpreterTraceHandlerImpl::allocateTraceVisitor()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (mTraceVisitorsActive.size() > 0 || mUnconsumedTrace)
+		return boost::shared_ptr<InterpreterTraceVisitor>();
+
+	InterpreterTraceVisitor* visitor = new InterpreterTraceVisitor(this->shared_from_this());
+
+	mTraceVisitorsAllocated.insert(visitor);
+	mTraceVisitorsActive.insert(visitor);
+
+	return boost::shared_ptr<InterpreterTraceVisitor>(visitor);
+	}
+
+void InterpreterTraceHandlerImpl::traceVisitorDestroyed(InterpreterTraceVisitor* visitor)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	mTraceVisitorsAllocated.erase(visitor);
+	mTraceVisitorsActive.erase(visitor);
+	}
+
+void InterpreterTraceHandlerImpl::traceVisitorPaused(InterpreterTraceVisitor* visitor)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	mTraceVisitorsActive.erase(visitor);
+	}
+
+void InterpreterTraceHandlerImpl::traceVisitorResumed(InterpreterTraceVisitor* visitor)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	mTraceVisitorsActive.insert(visitor);
+	}
+
+void InterpreterTraceHandlerImpl::updatedChangedInstructions_()
+	{
+	mCompilerInstructionGraph->updateJoasAndResultJoasForAllChangedNodes();
+
+	std::set<InstructionPtr> changed;
+
+		{
+		std::set<InstructionPtr> changedConts, changedApplyTargets, added, focused;
+
+		mCompilerInstructionGraph->collectChangedInstructions(changedConts, changedApplyTargets, added, focused);
+
+		for (auto instructionPtr: changedConts)
+			changed.insert(instructionPtr);
+		
+		for (auto instructionPtr: changedApplyTargets)
+			changed.insert(instructionPtr);
+
+		for (auto instructionPtr: added)
+			changed.insert(instructionPtr);
+
+		for (auto instructionPtr: focused)
+			changed.insert(instructionPtr);
+		}
+
+
+	std::set<boost::shared_ptr<InstructionCycle> > newCycles;
+
+	std::set<boost::shared_ptr<CompiledInstructionGroup> > deprecatedCigs;
+
+	InstructionCycle::updateInstructions(changed, newCycles, deprecatedCigs);
+
+	if (deprecatedCigs.size())
+		{
+		LOGGER_INFO_T log = LOGGER_INFO;
+		
+		for (auto it = deprecatedCigs.begin(); it != deprecatedCigs.end(); ++it)
+			{
+			log << "deprecating " << (*it)->getLinkerName() << "\n";
+			(*it)->unlinkFromInstruction();
+			}
+
+		}
+
+	std::vector<boost::shared_ptr<InstructionCycle> > cyclesInOrder;
+
+	InstructionCycle::orderCyclesDownstreamFirst(newCycles, cyclesInOrder);
+
+	for (auto it = cyclesInOrder.begin(); it != cyclesInOrder.end(); ++it)
+		{
+		LOG_DEBUG << "cycle: " << &*it << "\n" << Ufora::indent((*it)->toString());
+		boost::shared_ptr<CompiledInstructionGroup> cig = (*it)->getCIG();
+
+		if (cig)
+			cig->initialize();
+		}
+
+	for (auto it = cyclesInOrder.begin(); it != cyclesInOrder.end(); ++it)
+		{
+		boost::shared_ptr<CompiledInstructionGroup> cig = (*it)->getCIG();
+
+		if (cig && !cig->isDefined())
+			cig->define();
+		}
+
+	for (auto it = cyclesInOrder.begin(); it != cyclesInOrder.end(); ++it)
+		{
+		boost::shared_ptr<CompiledInstructionGroup> cig = (*it)->getCIG();
+
+		if (cig && cig->generatesAnEntrypoint())
+			{
+			cig->compileAndLinkToInstructions(false);
+			}
+		}
+	}
+
+}
+}
+
+

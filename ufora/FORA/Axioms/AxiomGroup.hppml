@@ -1,0 +1,607 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#ifndef FORA_AxiomGroup_hppml_
+#define FORA_AxiomGroup_hppml_
+
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include <boost/lexical_cast.hpp>
+#include "../Runtime.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
+#include "NativeAxiomVars.hppml"
+#include "../../core/PolymorphicSharedPtr.hpp"
+#include "../Core/CSTValue.hppml"
+#include "../Core/ApplyArg.hppml"
+
+class Axiom;
+class AxiomJOA;
+class AxiomGroupInterpreterCache;
+
+class NativeExpression;
+class NativeExpressionTag;
+class ControlFlowGraph;
+
+/***********
+AxiomGroup
+
+An Axiom Group represents an infinite collection of axioms grouped under
+a single JOVT called the 'signature'.
+
+The AxiomGroup object is responsible for taking a JOVT that is covered by its
+signature and producing an Axiom that uses as much available information
+as is available in the JOVT to produce a better axiom.
+
+As an example, we might have an AxiomGroup for
+
+	((... *), `GetItem, {Int64})
+
+that describes how to use GetItem on a tuple. Depending on how much information
+is known about the first item of the tuple, the axiom can be more specific.
+For instance, we might actually know the type of the tuple and the value of
+the index, in which case we can produce a much more specific axiom than if
+we don't.
+
+AxiomGroups must obey the rule that the more specific the argument, the more
+specific the output JOA should be.  That is, the output of 
+
+	X[{Int64}]
+	
+should obviously cover the output for
+
+	X[0]
+
+since the axiom set has to be consistent.
+	
+Clients should use 'bestAxiom' to get the most detailed axiom possible, and
+axiomJOA to get a description of the output of an axiom without actually
+generating the whole body.
+
+Subclasses should override axiomJOA and axiom to provide a coherent set
+of axioms.
+
+Some AxiomGroup functions may return 'null()' indicating that not enough
+information has been provided to actually generate the axiom. In general,
+an AxiomGroup may often not have enough information to generate a valid axiom.
+
+For instance, it might be the case that we have an addition axiom for all pairs
+of integer types, but we defer the creation of that axiom until we actually know
+the types involved.
+
+In this case, the AxiomGroup may have signature
+
+	({Integer}, `Operator, `+, {Integer})
+
+but will return null() if the types are not given in the first and last
+arguments. In this case, the Interpreter will maintain a subtree of axioms and
+will generate them on the fly as needed.
+
+NOTE FOR IMPLEMENTORS: Subclasses may return an axiom with a weaker signature
+in 'axiom' than in 'axiomJOA'.  'bestAxiom' will wrap the actual native
+implementation given in 'axiom' in the signature specified by axiom JOA. This
+allows 'axiom' to be a simpler function, but means that if you access that
+axiom directly, it will not be consistent with axiomJOA.
+
+Most clients can use the helper functions defined below to produce AxiomGroups
+that perform simple tasks such as calling library functions or evaluating
+NativeExpressions directly.  We only need to subclass when the axioms
+involve varied levels of code generation.
+	
+************/
+
+typedef Nullable<AxiomJOA> (*axiom_signature_to_joa_function_ptr)(const JOVT&);
+
+class AxiomGroup : public PolymorphicSharedPtrBase<AxiomGroup> {
+public:
+		AxiomGroup(const JudgmentOnValueTuple& in) : mVars(in)
+			{
+			}
+		
+		AxiomGroup(const JudgmentOnValueTuple& in, const CSTValue& metadata)
+				:	mVars(in), mMetadata(metadata)
+			{
+			}
+
+		virtual	~AxiomGroup()
+			{
+			}
+
+		//TODO CLEANUP anybody: these should all have 'AxiomGroup' appended
+		//to their names to differentiate between the 'Axiom' versions.
+		
+		//these functions are exactly parallel to the ones below, and produce
+		//AxiomGroup objects that just produce the given axiom for anything
+		//matching their judgments
+		static PolymorphicSharedPtr<AxiomGroup> libcall(
+							const JudgmentOnValueTuple& jovt,
+							JudgmentOnValue out,
+							string name,
+							ImmutableTreeVector<uword_t> args,
+							const NativeExpressionTag& inTag,
+							const Nullable<NativeExpression>& toPrepend
+							);
+
+		static PolymorphicSharedPtr<AxiomGroup> libcall(
+							const JudgmentOnValueTuple& jovt,
+							JudgmentOnValue out,
+							JudgmentOnValue outE,
+							string name,
+							ImmutableTreeVector<uword_t> args,
+							const NativeExpressionTag& inTag,
+							const Nullable<NativeExpression>& toPrepend
+							);
+
+		static PolymorphicSharedPtr<AxiomGroup> libcall(
+							const JudgmentOnValueTuple& jovt,
+							ImmutableTreeVector<pair<bool, JOV> > returnValueSlots,
+							string name,
+							ImmutableTreeVector<uword_t> args,
+							const Nullable<NativeExpression>& toPrepend
+							);
+
+		static PolymorphicSharedPtr<AxiomGroup> libcall(
+							const JudgmentOnValueTuple& jovt,
+							JudgmentOnValue out,
+							string name,
+							ImmutableTreeVector<uword_t> args,
+							const Nullable<NativeExpression>& toPrepend
+							);
+
+		static PolymorphicSharedPtr<AxiomGroup> libcall(
+							const JudgmentOnValueTuple& jovt,
+							JudgmentOnValue inAxiomResult,
+							axiom_signature_to_joa_function_ptr inAxiomResultSpecializer,
+							string name,
+							ImmutableTreeVector<uword_t> args,
+							const Nullable<NativeExpression>& toPrepend
+							);
+
+		static PolymorphicSharedPtr<AxiomGroup> libcall(
+							const JudgmentOnValueTuple& jovt,
+							JudgmentOnValue out,
+							JudgmentOnValue outE,
+							axiom_signature_to_joa_function_ptr inAxiomResultSpecializer,
+							string name,
+							ImmutableTreeVector<uword_t> args,
+							const Nullable<NativeExpression>& toPrepend
+							);
+
+		static PolymorphicSharedPtr<AxiomGroup> libcall(
+							const JudgmentOnValueTuple& jovt,
+							JudgmentOnValue out,
+							JudgmentOnValue outE,
+							string name,
+							ImmutableTreeVector<uword_t> args,
+							const Nullable<NativeExpression>& toPrepend
+							);
+
+		static PolymorphicSharedPtr<AxiomGroup> libcall(
+							const JudgmentOnValueTuple& jovt,
+							JudgmentOnValue out,
+							string name,
+							ImmutableTreeVector<uword_t> args,
+							const NativeExpressionTag& inTag
+							);
+
+		static PolymorphicSharedPtr<AxiomGroup> libcall(
+							const JudgmentOnValueTuple& jovt,
+							JudgmentOnValue out,
+							JudgmentOnValue outE,
+							string name,
+							ImmutableTreeVector<uword_t> args,
+							const NativeExpressionTag& inTag
+							);
+
+		static PolymorphicSharedPtr<AxiomGroup> libcall(
+							const JudgmentOnValueTuple& jovt,
+							ImmutableTreeVector<pair<bool, JOV> > returnValueSlots,
+							string name,
+							ImmutableTreeVector<uword_t> args
+							);
+
+		static PolymorphicSharedPtr<AxiomGroup> libcall(
+							const JudgmentOnValueTuple& jovt,
+							JudgmentOnValue out,
+							string name,
+							ImmutableTreeVector<uword_t> args
+							);
+
+		static PolymorphicSharedPtr<AxiomGroup> libcall(
+							const JudgmentOnValueTuple& jovt,
+							JudgmentOnValue inAxiomResult,
+							axiom_signature_to_joa_function_ptr inAxiomResultSpecializer,
+							string name,
+							ImmutableTreeVector<uword_t> args
+							);
+
+		static PolymorphicSharedPtr<AxiomGroup> libcall(
+							const JudgmentOnValueTuple& jovt,
+							JudgmentOnValue out,
+							JudgmentOnValue outE,
+							axiom_signature_to_joa_function_ptr inAxiomResultSpecializer,
+							string name,
+							ImmutableTreeVector<uword_t> args
+							);
+
+		static PolymorphicSharedPtr<AxiomGroup> libcall(
+							const JudgmentOnValueTuple& jovt,
+							JudgmentOnValue out,
+							JudgmentOnValue outE,
+							string name,
+							ImmutableTreeVector<uword_t> args
+							);
+
+		static PolymorphicSharedPtr<AxiomGroup> throws(
+							const JudgmentOnValueTuple& jovt,
+							CSTValue val
+							);
+		static PolymorphicSharedPtr<AxiomGroup> returns(
+							const JudgmentOnValueTuple& jovt,
+							CSTValue val
+							);
+		static PolymorphicSharedPtr<AxiomGroup> simple(
+							const NativeAxiomVars& jovt,
+							JudgmentOnValue out,
+							const NativeExpression& e,
+							bool isThrow
+							);
+		static PolymorphicSharedPtr<AxiomGroup> simple(
+							const Axiom& inAxiom
+							);
+
+		//generates an Axiom that calls a C function named "name" in the main
+		//binary.  Assumes that the function returns uword_t indicating whether
+		//the axiom exited as an exception or normally. As arguments,
+		//the function should take two pointers (to the normal and exception
+		//outputs, respectively, and then the rest of the arguments.
+		//args indicates which of the judgment arguments to pass to the function
+		//Note that any "extra" arguments get passed as a single ImplVal
+		static Axiom libcallAxiom(
+							const JudgmentOnValueTuple& jovt,
+							JudgmentOnValue out,
+							string name,
+							ImmutableTreeVector<uword_t> args,
+							const Nullable<NativeExpression>& toPrepend
+							);
+		
+		static Axiom libcallAxiom(
+							const JudgmentOnValueTuple& jovt,
+							JudgmentOnValue out,
+							string name,
+							ImmutableTreeVector<uword_t> args
+							);
+		
+		//generates an Axiom that calls a C function named "name" in the main
+		//binary.  Assumes that the function returns uword_t indicating whether
+		//the axiom exited as an exception or normally. As arguments,
+		//the function should take two pointers (to the normal and exception
+		//outputs, respectively, and then the rest of the arguments.
+		//args indicates which of the judgment arguments to pass to the function
+		//Note that any "extra" arguments get passed as a single ImplVal
+		static Axiom libcallAxiom(
+							const JudgmentOnValueTuple& jovt,
+							JudgmentOnValue normal,
+							JudgmentOnValue exception,
+							string name,
+							ImmutableTreeVector<uword_t> args,
+							const Nullable<NativeExpression>& toPrepend
+							);
+
+		static Axiom libcallAxiom(
+							const JudgmentOnValueTuple& jovt,
+							JudgmentOnValue normal,
+							JudgmentOnValue exception,
+							string name,
+							ImmutableTreeVector<uword_t> args
+							);
+
+		//like the function above, but assumes the function returns 0/1/2 for the three
+		//possible exit paths
+		static Axiom libcallAxiom(
+							const JudgmentOnValueTuple& jovt,
+							ImmutableTreeVector<pair<bool, JOV> > returnValueSlots,
+							string name,
+							ImmutableTreeVector<uword_t> args,
+							const Nullable<NativeExpression>& toPrepend
+							);
+
+		static Axiom libcallAxiom(
+							const JudgmentOnValueTuple& jovt,
+							ImmutableTreeVector<pair<bool, JOV> > returnValueSlots,
+							string name,
+							ImmutableTreeVector<uword_t> args
+							);
+
+		//same as above, but tags the NativeExpression::Call with the tag
+		//passed in the last argument
+		static Axiom libcallAxiom(
+							const JudgmentOnValueTuple& jovt,
+							JudgmentOnValue out,
+							string name,
+							ImmutableTreeVector<uword_t> args,
+							const NativeExpressionTag& inTag,
+							const Nullable<NativeExpression>& toPrepend
+							);
+
+		static Axiom libcallAxiom(
+							const JudgmentOnValueTuple& jovt,
+							JudgmentOnValue out,
+							string name,
+							ImmutableTreeVector<uword_t> args,
+							const NativeExpressionTag& inTag
+							);
+
+		static Axiom libcallAxiom(
+							const JudgmentOnValueTuple& jovt,
+							JudgmentOnValue out,
+							string name,
+							ImmutableTreeVector<uword_t> args,
+							const Nullable<NativeExpressionTag>& inTag,
+							const Nullable<NativeExpression>& toPrepend
+							);
+
+		static Axiom libcallAxiom(
+							const JudgmentOnValueTuple& jovt,
+							JudgmentOnValue out,
+							string name,
+							ImmutableTreeVector<uword_t> args,
+							const Nullable<NativeExpressionTag>& inTag
+							);
+
+		static Axiom libcallAxiom(
+							const JudgmentOnValueTuple& jovt,
+							JudgmentOnValue normal,
+							JudgmentOnValue exception,
+							string name,
+							ImmutableTreeVector<uword_t> args,
+							const NativeExpressionTag& inTag,
+							const Nullable<NativeExpression>& toPrepend
+							);
+
+		static Axiom libcallAxiom(
+							const JudgmentOnValueTuple& jovt,
+							JudgmentOnValue normal,
+							JudgmentOnValue exception,
+							string name,
+							ImmutableTreeVector<uword_t> args,
+							const NativeExpressionTag& inTag
+							);
+
+		static Axiom libcallAxiom(
+							const JudgmentOnValueTuple& jovt,
+							JudgmentOnValue normal,
+							JudgmentOnValue exception,
+							string name,
+							ImmutableTreeVector<uword_t> args,
+							const Nullable<NativeExpressionTag>& inTag,
+							const Nullable<NativeExpression>& toPrepend
+							);
+
+		static Axiom libcallAxiom(
+							const JudgmentOnValueTuple& jovt,
+							JudgmentOnValue normal,
+							JudgmentOnValue exception,
+							string name,
+							ImmutableTreeVector<uword_t> args,
+							const Nullable<NativeExpressionTag>& inTag
+							);
+
+		//produces an axiom that just throws the given CSTValue whenever the
+		//JOVT is matched
+		static Axiom throwsAxiom(const JudgmentOnValueTuple& jovt, CSTValue val);
+		//produces an axiom that just returns the given CSTValue whenever the
+		//JOVT is matched
+		static Axiom returnsAxiom(const JudgmentOnValueTuple& jovt, CSTValue val);
+		
+		//produces an axiom that evaluates 'e' in the context of the variables
+		//described in 'jovt'. JudgmentOnValue out indicates what kind of
+		//values we're producing, and 'isThrow' indicates whether this function's
+		//expression should be construed as a throw or a return
+		static Axiom simpleAxiom(
+							const NativeAxiomVars& jovt,
+							const JudgmentOnValue& out,
+							const NativeExpression& e,
+							bool isThrow
+							);
+		
+		//produces an axiom that evaluates 'e' in the context of the variables
+		//described in 'jovt'. JudgmentOnValue outNormal/outException indicate
+		//what kind of values we're producing in the two return cases.
+		//'e' should return through path 0 if it's normal, path 1 if it's a throw
+		static Axiom simpleAxiom(
+							const NativeAxiomVars& jovt,
+							const JudgmentOnValue& outNormal,
+							const JudgmentOnValue& outException,
+							const NativeExpression& e
+							);
+		static Axiom simpleAxiom(
+							const NativeAxiomVars& jovt,
+							const JudgmentOnAction& inJOA,
+							const NativeExpression& e
+							);
+
+		//given a live tuple value, produce the weakest JudgmentOnValueTuple
+		//that is guaranteed to have an implementation. The interpreter
+		//will call this if no axiom is available. The default version will
+		//return the axiom's signature. It's not defined to call this function
+		//with an implval that's not covered by the axiom's signature. Some
+		//implementations may assert this, but don't depend on it.
+		virtual
+		JudgmentOnValueTuple	weakestAxiomFor(const Fora::ApplyArgFrame& inValues);
+
+		//choose the weakest set of argument JOVs that are guaranteed to produce an axiom specialization
+		//that's covered by the argument. This allows us to determine how much detail we need
+		//in the arguments to produce a given level of detail in the output. Returns null if it's
+		//not possible to reliably produce this output.
+		virtual Nullable<JudgmentOnValueTuple>	weakestArgumentsProducingResultCoveredBy(
+														TypedFora::Compiler& c,
+														const JudgmentOnValueTuple& args,
+														const JudgmentOnAction& result
+														);
+	
+
+		//choose the weakest set of argument JOVs that are guaranteed to produce an axiom specialization
+		//that expands to the given graph.
+		virtual Nullable<JudgmentOnValueTuple> weakestArgumentsProducingExpansion(
+												TypedFora::Compiler& c,
+												const JudgmentOnValueTuple& args,
+												const ControlFlowGraph& graph
+												);
+
+		//given a JOVT 's' that matches this axiom group, produce an axiom
+		//that actually matches the AxiomJOA that this group provides.
+		//essentially, the Axiom is not required to be as precise as the AxiomJOA
+		//and this code used the TypedNativeCallWrapper to make it precise enough
+		//to match the AxiomJOA.
+		//Returns 'null' if not enough information has been generated to
+		//produce an axiom
+		
+		Nullable<Axiom>	bestAxiom(
+							TypedFora::Compiler& c,
+							const JudgmentOnValueTuple& s
+							);
+		
+		Nullable<Axiom>	bestAxiomWithJoa(
+							TypedFora::Compiler& c,
+							const JudgmentOnValueTuple& s,
+							const JudgmentOnAction& joaWithSpecializations
+							);
+		
+		//implemented in AxiomGroupInterpreterCache.cppml
+		virtual
+		boost::shared_ptr<AxiomGroupInterpreterCache> createInterpreterCache();
+		
+protected:
+		//Given a JOVT 's' that matches 'signature', return an Axiom for it.
+		//
+		//If no axiom may be produced at this level of specialization,
+		//returns 'null()'.
+		//
+		//This may not return 'null()' if the JOVT is the actual judgment for
+		//a live value (e.g. the result of JudgmentOnValue::FromLiveValue).
+		//
+		//The returned axiom may be a relaxation of the tuple that's given
+		//and doesn't need to be as precise as the AxiomJOA that's produced
+		//by AxiomJOA.  Clients shouldn't call this unless they know what
+		//they are doing, which is why it's protected.
+		//
+		//Subclasses must override this function.
+		
+		virtual
+		Nullable<Axiom>		axiom(
+								TypedFora::Compiler& c,
+								const JudgmentOnValueTuple& s
+								) = 0;
+
+		virtual
+		Nullable<Axiom>		axiom(
+								TypedFora::Compiler& c,
+								const JudgmentOnValueTuple& s,
+								const JudgmentOnAction& joaWithSpecializations
+								);
+public:		
+		//given a JOVT 's' that matches 'signature', produce a description of
+		//the most detailed axiom we could produce.  'bestAxiom' is responsible
+		//for using this information to do the 'last mile' of typecasting
+		//on the Axiom we produce.
+		//
+		//If no axiom may be produced at this level of specialization,
+		//returns 'null()'.
+		//
+		//This may not return 'null()' if the JOVT is the actual judgment for
+		//a live value (e.g. the result of JudgmentOnValue::FromLiveValue).
+		//
+		//Subclasses must override this function
+		virtual Nullable<AxiomJOA>	axiomJOA(const JudgmentOnValueTuple& s) = 0;
+
+		//the JOVT that this AxiomGroup covers.
+		const JudgmentOnValueTuple& signature() const
+			{
+			return mVars.signature();
+			}
+		
+		//a set of variables that can be used in the NativeCode signature
+		//for any implementation of this AxiomGroup that is not more specialized
+		//than the default
+		const NativeAxiomVars& vars() const
+			{
+			return mVars;
+			}
+
+		void setMetadata(const CSTValue& metadata)  
+			{
+			mMetadata = metadata;
+			}
+
+		CSTValue metadata() const 
+			{
+			return mMetadata;
+			}
+		
+
+private:
+		NativeAxiomVars mVars;
+
+		CSTValue mMetadata;	
+};
+
+/********
+AxiomGroups
+
+a simple class to hold a group of axioms statically, so that we can
+register them using global constructors.
+
+*********/
+
+class AxiomGroups {
+private:
+	std::string mGroupName;
+public:
+	AxiomGroups(std::string inGroupName) :
+			mGroupName(inGroupName)
+		{
+		}
+
+	void operator+=(AxiomGroup* group)
+		{
+		add(mGroupName, group);
+		}
+
+	void operator+=(PolymorphicSharedPtr<AxiomGroup> group)
+		{
+		add(mGroupName, group);
+		}
+
+	static map<string, vector<PolymorphicSharedPtr<AxiomGroup> > >& groups(void)
+		{
+		static map<string, vector<PolymorphicSharedPtr<AxiomGroup> > > g;
+
+		return g;
+		}
+
+	static void add(std::string groupName, AxiomGroup* group)
+		{
+		groups()[groupName].push_back(PolymorphicSharedPtr<AxiomGroup>(group));
+		}
+
+	static void add(std::string groupName, PolymorphicSharedPtr<AxiomGroup> group)
+		{
+		groups()[groupName].push_back(PolymorphicSharedPtr<AxiomGroup>(group));
+		}
+
+};
+
+
+#endif
+

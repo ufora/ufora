@@ -1,0 +1,196 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#Markdown("""### RegressionModel
+
+#### Description
+
+A class representing a gradient-boosted regression tree model fit to 
+data.
+
+""")
+class { 
+    member mAdditiveRegressionTree;
+    member mX;
+    member mXDimensions;
+    member m_yAsSeries;
+    member mLoss;
+    member mRegressionTreeBuilder;
+    member mLearningRate;
+
+    score: 
+#Markdown("""
+#### Usage
+
+    regressionModel.score(X, yTrue)
+
+#### Description
+
+Returns the coefficient of determination R^2 of the prediction.
+
+The coefficient R^2 is defined as (1 - u / v), where u is the regression sum of 
+squares ((yTrue - yPredicted) ** 2).sum() and v is the residual sum of squares 
+((yTrue - yTrue.mean()) ** 2).sum(). Best possible score is 1.0, lower 
+values are worse.""")
+    fun(*args) {
+        mAdditiveRegressionTree.score(*args)
+        };
+
+    predict: 
+#Markdown("""#### Usage
+
+    regressionModel.predict(dataframe.DataFrame(df))
+    regressionModel.predict(row)
+
+#### Description
+
+Use the regression model to predict the values of 
+the rows of `df` or on a single row `row`.
+
+""")
+    fun(dataframe.DataFrame(df), nEstimators:= nothing) {
+        mAdditiveRegressionTree.predict(df, nEstimators: nEstimators)        
+        }
+    ;
+
+    predictWithPreviousResult: fun(previousPredictions, *args) {
+        previousPredictions + mAdditiveRegressionTree.getTree(-1).predict(*args)        
+        };
+
+    pseudoResidualsAndPredictions: fun(previousPredictions:) {
+        let predictions = 
+            if (previousPredictions is nothing)
+                {
+                predict(mX)
+                }
+            else
+                {
+                predictWithPreviousResult(previousPredictions, mX)
+                }
+        
+        return (mLoss.negativeGradient(m_yAsSeries, predictions),
+               predictions);
+        };
+
+    static getInitialModel: 
+    fun(X, yAsSeries, loss, learningRate, treeBuilderArgs) {
+        let additiveRegressionTree = loss.initialModel(yAsSeries);
+
+        let XDimensions = Vector.range(X.numColumns);
+
+        let baseModelBuilder = math.tree.RegressionTreeBuilder(*treeBuilderArgs);
+
+        if (loss.needsOriginalYValues)
+            X = X.addColumn(yAsSeries)
+
+        createInstance(
+            cls, mAdditiveRegressionTree: additiveRegressionTree,
+            mX: X, mXDimensions: XDimensions,
+            m_yAsSeries: yAsSeries, mLoss: loss,
+            mRegressionTreeBuilder: baseModelBuilder,
+            mLearningRate:learningRate
+            );
+        };
+
+    boost: fun(predictions, pseudoResiduals) {
+        let localX = mX;
+        let targetDim = localX.numColumns;
+
+        localX = localX.addColumn(pseudoResiduals);
+
+        if (mLoss.needsPredictedValues)
+            localX = localX.addColumn(predictions);
+        
+        let nextRegressionTree =  mRegressionTreeBuilder.fit_(
+            localX, yDim: targetDim, xDimensions: mXDimensions,
+            leafValueFun: mLoss.leafValueFun(mLearningRate, yDim: targetDim - 1)
+            );
+
+        return RegressionModel(
+            mAdditiveRegressionTree: mAdditiveRegressionTree + nextRegressionTree,
+            mX: mX, mXDimensions: mXDimensions, 
+            m_yAsSeries: m_yAsSeries, mLoss: mLoss, 
+            mRegressionTreeBuilder: mRegressionTreeBuilder,
+            mLearningRate: mLearningRate
+            );
+        };
+
+    featureImportances: 
+    #Markdown(
+        """#### Usage
+
+            regressionModel.featureImportances()
+
+        #### Description
+
+        Return a `math.tree.FeatureImportances` object, which summarizes a measure of 
+        feature importance for the regression tree proposed by Breiman et al.
+
+        Element-wise, this measure gives the average feature importance for each of 
+        the tree-wise importances of the feature for each of the trees making up 
+        the GBM ensemble.
+
+        The tree-wise importance of feature `i` is a sort of weighted sum of 
+        impurity improvements of any internal nodes in the tree for which feature 
+        `i` is the split dimension.
+
+        Feature importances are normalized to sum to 1 with larger values being more
+        "important".
+
+        """)
+    fun()
+        {
+        let importances = rawFeatureImportances();
+
+        math.tree.FeatureImportances(importances, mX.columnNames);
+        };
+
+    rawFeatureImportances: 
+    #Markdown(
+        """#### Usage
+
+            regressionModel.rawFatureImportances()
+
+        #### Description
+
+        Return Vector of feature importance for the regression tree proposed by 
+        Breiman et al.
+
+        Element-wise, this measure gives the average feature importance for each of 
+        the tree-wise importances of the feature for each of the trees making up 
+        the GBM ensemble.
+
+        The tree-wise importance of feature `i` is a sort of weighted sum of 
+        impurity improvements of any internal nodes in the tree for which feature 
+        `i` is the split dimension.
+
+        Feature importances are normalized to sum to 1 with larger values being more
+        "important".
+
+        """)
+     fun()
+        {
+        let featureImportancesByTree =
+            mAdditiveRegressionTree.trees()[1,].apply(
+                fun(tree) { math.Matrix(tree.rawFeatureImportances()) }
+                );
+        let tr = featureImportancesByTree.sum();
+
+        return (tr / (mAdditiveRegressionTree.numTrees() - 1.0)).columnMajorData();
+        };
+
+    };
+
+

@@ -1,0 +1,101 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+"""Given a vector of observations (x: ..., t: ...), produce a timeseries in which we 'copy forward'
+the last value at every point in time.
+
+If the iterator is empty, we return nothing.
+"""
+iteratorToTimeseries: fun(iterator) 
+        {
+        if (iterator is nothing)
+            {
+            return nothing;
+            }
+
+        let value = (pull iterator);
+        
+        if (iterator is nothing)
+            return iteratorToTimeseries(firstVal: value, secondVal: nothing, iterator: nothing)
+
+        let value2 = (pull iterator);
+
+        if (value.t >= value2.t)
+            throw "Values didn't monotonically increase!"
+
+        return iteratorToTimeseries(firstVal: value, secondVal: value2, iterator: iterator)
+        }
+    (firstVal: firstVal, secondVal: secondVal, iterator:iterator) 
+        {
+        object {
+            sample: fun(t)
+                {
+                if (t is nothing)
+                    throw "Can't sample with t=nothing";
+                    
+                if (t >= firstVal.t and (secondVal is nothing or t < secondVal.t))
+                    return firstVal.x;
+                if (t == secondVal.t)
+                    return secondVal.x;
+
+                throw ("Time out of bounds", validRange: (firstVal.t, secondVal.t), badTime: t)
+                };
+            firstSampleTime: firstVal.t;
+            secondSampleTime: (if (secondVal is nothing) return nothing else return secondVal.t);
+            nextSample: (
+                if (iterator is nothing)
+                    {
+                    if (secondVal is nothing)
+                        return nothing
+                    return iteratorToTimeseries(
+                                firstVal: secondVal,
+                                secondVal: nothing,
+                                iterator:nothing
+                                )
+                    };
+
+                let newIterator = iterator; 
+                let thirdVal = (pull newIterator);
+
+                return iteratorToTimeseries(
+                            firstVal: secondVal,
+                            secondVal: thirdVal,
+                            iterator: newIterator
+                            )
+                );
+            convert(String) {
+                "Timeseries(" + String(firstVal) + ", "
+                        + String(secondVal) + ", " + String(iterator) + ")"
+                };
+
+            sampleForTime: fun(t) {
+                let timeseries = self;
+                while (timeseries.secondSampleTime is not nothing
+                            and t >= timeseries.secondSampleTime)
+                    timeseries = timeseries.nextSample;
+                return timeseries;
+                };
+            operator ()(t)
+                {
+                if (t < self.firstSampleTime)
+                    return nothing;
+                if (self.secondSampleTime is nothing or t < self.secondSampleTime)
+                    return self.sample(t);
+                return self.nextSample(t)
+                };
+            }
+        }
+    ;
+

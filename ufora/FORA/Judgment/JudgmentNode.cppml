@@ -1,0 +1,210 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "JudgmentNode.hppml"
+#include "../ControlFlowGraph/ControlFlowGraph.hppml"
+#include "JudgmentOnValue.hppml"
+
+
+JudgmentOnValue getJudgment(const ControlFlowArg& arg, 
+							const ImmutableTreeVector<JudgmentOnValue>& jmts
+							)
+	{
+	@match ControlFlowArg(arg)
+		-|	Arg(ht) ->> {
+			return jmts[ht];
+			}
+		-|	Constant(c) ->> {
+			return  JudgmentOnValue::Constant(c);
+			}
+		;
+	}
+
+JudgmentOnValueTuple getJudgment(
+							const ControlFlowContinuationTupleArg& tupleArg, 
+							const ImmutableTreeVector<JudgmentOnValue>& jmts,
+							const Nullable<JudgmentOnValue>& result,
+							const Nullable<ControlFlowNodeBody>& node
+							)
+	{
+	@match ControlFlowContinuationTupleArg(tupleArg)
+		-| Normal(symbol, arg) ->> {
+			return JOVT(
+				emptyTreeVec() + getJudgment(arg, jmts, result, node),
+				emptyTreeVec() + symbol
+				);
+			}
+		-| TupleCall(arg) ->> {
+			return getJudgment(arg, jmts, result, node).asTupleCallJovt();
+			}
+	}
+
+JudgmentOnValue getJudgment(const ControlFlowContinuationArg& arg, 
+							const ImmutableTreeVector<JudgmentOnValue>& jmts,
+							const Nullable<JudgmentOnValue>& result,
+							const Nullable<ControlFlowNodeBody>& node
+							)
+	{
+	@match ControlFlowContinuationArg(arg)
+		-|	Arg(Arg(ht)) ->> {
+			return jmts[ht];
+			}
+		-|	Arg(Constant(c)) ->> {
+			return JudgmentOnValue::Constant(c);
+			}
+		-|	Result() ->> {
+			return *result;
+			}
+		-|	MakeTuple(makeTupleArgs) ->> {
+			JOVT jovt;
+
+			for (long k = 0; k < makeTupleArgs.size(); k++)
+				jovt = JudgmentOnValueTuple::merge(
+							jovt,
+							getJudgment(makeTupleArgs[k], jmts, result, node)
+							);
+
+			return JOV::Tuple(jovt);
+			}
+		-|	TupleElement(index) ->> {
+			ControlFlowGraphTupleExpandInfo info = getTupleExpandInfo(*node);
+
+			JOV toExpand = jmts[info.argIndex()];
+
+			if (!toExpand.isTuple())
+				return JOV::Unknown();
+
+			JOVT jovt = toExpand.getTuple().jov();
+
+			return jovt[index];
+			}
+		-|	TupleRemainingElements() ->> {
+			ControlFlowGraphTupleExpandInfo info = getTupleExpandInfo(*node);
+
+			JOV toExpand = jmts[info.argIndex()];
+
+			if (!toExpand.isTuple())
+				return JOV::Unknown();
+
+			JOVT jovt = toExpand.getTuple().jov();
+
+			return JOV::Tuple(jovt.slice(info.arity()));
+			}
+		;
+	}
+
+ImmutableTreeVector<JudgmentOnValue> getJudgment(
+							const ImmutableTreeVector<ControlFlowArg>& args, 
+							const ImmutableTreeVector<JudgmentOnValue>& jmts,
+							const Nullable<ControlFlowNodeBody>& node
+							)
+	{
+	ImmutableTreeVector<JudgmentOnValue> tr;
+	for (long k = 0; k < args.size();k++)
+		tr = tr + getJudgment(args[k], jmts);
+	return tr;
+	}
+
+ImmutableTreeVector<JudgmentOnValue> getJudgment(
+							const ImmutableTreeVector<ControlFlowContinuationArg>& args,
+							const ImmutableTreeVector<JudgmentOnValue>& jmts,
+							const Nullable<JudgmentOnValue>& result,
+							const Nullable<ControlFlowNodeBody>& node)
+	{
+	ImmutableTreeVector<JudgmentOnValue> tr;
+	for (long k = 0; k < args.size();k++)
+		tr = tr + getJudgment(args[k], jmts, result, node);
+	return tr;
+	}
+
+JudgmentOnValueTuple getApplyTupleJudgment(
+							const ControlFlowApplyArg& applyArg, 
+							const ImmutableTreeVector<JudgmentOnValue>& vars,
+							const Nullable<ControlFlowNodeBody>& node
+							)
+	{
+	@match ControlFlowApplyArg(applyArg)
+		-|	Normal(field, arg) ->> {
+				return JudgmentOnValueTuple(
+					emptyTreeVec() + getJudgment(arg, vars),
+					emptyTreeVec() + field
+					);
+				}
+		-|	TupleCall(arg) ->> {
+				JudgmentOnValue jov = getJudgment(arg, vars);
+				
+				if (jov.isTuple())
+					return jov.getTuple().jov();
+				
+				if (jov.isUnknown())
+					return JOVT(emptyTreeVec(), emptyTreeVec(), JOVTE::Extras());
+				
+				return JOVT(emptyTreeVec() + jov, emptyTreeVec() + Nullable<Symbol>());
+				}
+		;
+	}
+
+JudgmentOnValueTuple getApplyTupleJudgment(
+							const ImmutableTreeVector<ControlFlowApplyArg>& args, 
+							const ImmutableTreeVector<JudgmentOnValue>& vars,
+							const Nullable<ControlFlowNodeBody>& node
+							)
+	{
+	JudgmentOnValueTuple tr;
+
+	for (long k = 0; k < args.size();k++)
+		tr = JudgmentOnValueTuple::merge(tr, getApplyTupleJudgment(args[k], vars, node));
+	
+	return tr;
+	}
+
+JudgmentOnValue getApplyJovJudgment(
+							const ControlFlowApplyArg& applyArg, 
+							const ImmutableTreeVector<JudgmentOnValue>& vars,
+							const Nullable<ControlFlowNodeBody>& node
+							)
+	{
+	@match ControlFlowApplyArg(applyArg)
+		-|	Normal(field, arg) ->> {
+				return getJudgment(arg, vars);
+				}
+		-|	TupleCall(arg) ->> {
+				JudgmentOnValue jov = getJudgment(arg, vars);
+				
+				if (jov.isTuple())
+					return jov;
+				
+				if (jov.isNotTuple())
+					return JOV::Tuple(JOVT(emptyTreeVec() + jov, emptyTreeVec() + Nullable<Symbol>()));
+
+				return JOV::Tuple(JOVT(emptyTreeVec(), emptyTreeVec(), JOVTE::Extras()));
+				}
+		;
+	}
+
+ImmutableTreeVector<JudgmentOnValue> getApplyJovJudgment(
+							const ImmutableTreeVector<ControlFlowApplyArg>& args, 
+							const ImmutableTreeVector<JudgmentOnValue>& vars,
+							const Nullable<ControlFlowNodeBody>& node
+							)
+	{
+	ImmutableTreeVector<JudgmentOnValue> result;
+
+	for (long k = 0; k < args.size();k++)
+		result = result + getApplyJovJudgment(args[k], vars, node);
+	
+	return result;
+	}
+

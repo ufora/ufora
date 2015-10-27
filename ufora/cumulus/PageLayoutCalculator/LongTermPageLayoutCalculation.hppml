@@ -1,0 +1,370 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../../core/math/Smallest.hpp"
+#include "../../core/threading/Queue.hpp"
+#include "../../core/PolymorphicSharedPtr.hpp"
+#include "../ComputationId.hppml"
+#include "NeighborhoodSpectralTree.hppml"
+#include "NeighborhoodsOnMachines.hppml"
+#include "NeighborhoodSet.hppml"
+#include "NeighborhoodLoadHistory.hppml"
+#include "NeighborhoodLoadBalancer.hppml"
+#include "../../FORA/TypedFora/ABI/VectorDataIDSlice.hppml"
+#include "GroupTrackingNeighborhoodSpectralTreeWatcher.hppml"
+
+namespace Cumulus {
+
+namespace PageLayoutCalculator {
+
+class LongTermPageLayoutCalculation : public PolymorphicSharedPtrBase<LongTermPageLayoutCalculation> {
+public:
+	@type Event = 
+		-| DropComputationLoad of ComputationId id
+		-| SetComputationLoad of ComputationId id, Neighborhood n, double load
+		-| ObservedLoad of Neighborhood n, double load
+		-| PageDroppedAcrossSystem of Fora::PageId page
+		;
+
+	LongTermPageLayoutCalculation(double usableMemoryRatio, double maxMachineMemoryRatio, long seed) : 
+			mLargestBlockAsFractionOfMachineMemory(maxMachineMemoryRatio),
+			mMemoryRatio(usableMemoryRatio),
+			mSeed(seed),
+			mMbPerSecondToAssume(250)
+		{
+		}
+
+	int64_t averageBytesAvailable() const
+		{
+		int64_t bytes = 0;
+		int64_t count = 0;
+
+		for (auto machineAndSize: mMachineSizes)
+			{
+			bytes += machineAndSize.second;
+			count++;
+			}
+
+		return bytes / count;
+		}
+
+	int64_t totalBytesAvailable() const
+		{
+		int64_t bytes = 0;
+
+		for (auto machineAndSize: mMachineSizes)
+			bytes += machineAndSize.second;
+
+		return bytes;
+		}
+
+	void updateLayout()
+		{
+		if (!mMachineSizes.size() || averageBytesAvailable() < 1)
+			return;
+
+		long eventCount = mUnconsumedEvents.size();
+
+		if (!mGrouperTree)
+			{
+			mWatcher.reset(new GroupTrackingNeighborhoodSpectralTreeWatcher());
+
+			NeighborhoodSpectralTreeParams params(1);
+
+			params.largestBlockSize() = averageBytesAvailable() * mLargestBlockAsFractionOfMachineMemory;
+
+			params.smallestBlockSize() = params.largestBlockSize() / 20;
+			params.neighborhoodChanges() = &*mWatcher;
+
+			mGrouperTree = NeighborhoodSpectralTree::construct(params);
+			}
+
+
+		double eventT0 = curClock();
+
+		consumeChanges();
+
+		double mergeT0 = curClock();
+
+		moveLoadHistoriesIntoTree();
+
+		double updateT0 = curClock();
+		
+		mGrouperTree->update();
+
+		double balanceT0 = curClock();
+
+		NeighborhoodLoadBalancer balancer(
+			mMachineSizes, 
+			mMachineCoreCount,
+			mTargetLayout,
+			mLoadHistory,
+			*mWatcher,
+			mMbPerSecondToAssume,
+			mMemoryRatio
+			);
+
+		double seconds = totalCoreCount() / 4.0;
+
+		mLoadHistory.setBlockSizeInSeconds(seconds);
+
+		long neighborhoodsMoved = mWatcher->neighborhoodsMovedOrAdded().size();
+
+		mLoadHistory.updateBlockLoads(*mWatcher);
+
+		while (true)
+			{
+			if (!balancer.consumeSeconds(seconds))
+				break;
+
+			seconds = seconds * 2;
+			}
+
+		mLongTermLayout = balancer.getTargetLayout();
+
+		logSomeStuff(eventT0, mergeT0, updateT0, balanceT0, eventCount, balancer);
+		}
+
+	int64_t totalCoreCount()
+		{
+		int64_t cores = 0;
+		
+		for (auto machineAndCores: mMachineCoreCount)
+			cores += machineAndCores.second;
+
+		return cores;
+		}
+
+	int64_t coresPerBox()
+		{
+		if (!mMachineCoreCount.size())
+			return 0;
+
+		return mMachineCoreCount.begin()->second;
+		}
+
+	void logSomeStuff(
+				double eventT0, 
+				double mergeT0, 
+				double updateT0, 
+				double balanceT0, 
+				long eventCount, 
+				NeighborhoodLoadBalancer& balancer
+				)
+		{
+		LOGGER_INFO_T log = LOGGER_INFO;
+
+		long activeLoadsInCurrent = 0;
+		long activeLoadsInTarget = 0;
+		long activeLoadsInLongterm = 0;
+
+		long neighborhoodsWantedAndThenCreated = 0;
+		long neighborhoodsNeededLastTime = mNeighborhoodsWantedSinceLast.size();
+
+		for (auto n: mNeighborhoodsWantedSinceLast)
+			if (mCurrentLayout.machinesContainingOrCovering(n).size())
+				neighborhoodsWantedAndThenCreated++;
+		mNeighborhoodsWantedSinceLast.clear();
+
+		for (auto compAndLoad: mLoadHistory.activeLoads())
+			{
+			Neighborhood n = mLoadHistory.loadedNeighborhoodForComputation(compAndLoad.first);
+
+			if (mTargetLayout.machinesContainingOrCovering(n).size() > 0)
+				activeLoadsInTarget++;
+			
+			if (mCurrentLayout.machinesContainingOrCovering(n).size() > 0)
+				activeLoadsInCurrent++;
+			else
+				mNeighborhoodsWantedSinceLast.insert(n);
+
+			if (mLongTermLayout.machinesContainingOrCovering(n).size() > 0)
+				activeLoadsInLongterm++;
+			}
+		
+		long totalNeighborhoodsNotRealized = 0;
+		for (auto nAndM: mLongTermLayout.neighborhoods().getValuesToKeys())
+			if (mCurrentLayout.machinesContainingOrCovering(nAndM.first).size() == 0)
+				totalNeighborhoodsNotRealized++;
+
+		long pagesDropped = 0;
+		for (auto& pageAndNeighborhoods: mLoadHistory.pagesToNeighborhoods())
+			if (!mLongTermLayout.pageIsOnAnyMachine(pageAndNeighborhoods.first) 
+						&& !isDropped(pageAndNeighborhoods.first))
+				pagesDropped += pageAndNeighborhoods.first.bytecount();
+
+		log << "Long-term layout handled " 
+			<< mWatcher->allNeighborhoods().size()
+			<< " neighboorhoods ("
+			<< totalNeighborhoodsNotRealized << " missing). "
+			<< eventCount << " events."
+			<< " (" 
+			<< std::fixed << std::setprecision(2)
+			<< (mergeT0 - eventT0) << " eventing, "
+			<< std::fixed << std::setprecision(2)
+			<< (updateT0 - mergeT0) << " adding, "
+			<< std::fixed << std::setprecision(2)
+			<< (balanceT0 - updateT0) << " merging, "
+			<< std::fixed << std::setprecision(2)
+			<< (curClock() - balanceT0) << " balancing)"
+			<< ". oRF=" << mGrouperTree->outputReplicationFactor()
+			<< ". pages=" << mGrouperTree->bytesInPages() / 1024 / 1024.0 / 1024.0 << " GB"
+			<< ". " << mLoadHistory.getBlocks().size() << " blocks of load. "
+			<< mLoadHistory.totalLoadPerNeighborhood().size() << " neigh, create=("
+			<< neighborhoodsWantedAndThenCreated << "/" << neighborhoodsNeededLastTime
+			<< ")"
+			<< mLoadHistory.activeLoads().size() << " comp. ("
+			<< activeLoadsInCurrent << "/" << activeLoadsInTarget << "/" << activeLoadsInLongterm << ". " 
+			<< " " << mLoadHistory.accumulatedLoadInSeconds() << " seconds,"
+			<< " replication=" << balancer.averageReplication()
+			<< ". unrepresented="
+			<< pagesDropped / 1024 / 1024.0 / 1024.0 << " GB."
+			<< ". total space=" << totalBytesAvailable() / 1024 / 1024.0 / 1024.0 << " GB"
+			<< ". largestBlock=" << mGrouperTree->getParams().largestBlockSize() / 1024 / 1024.0 / 1024.0 << " GB"
+			;
+		}
+
+	const NeighborhoodsOnMachines& getLongTermLayout() const
+		{
+		return mLongTermLayout;
+		}
+
+	void updateInternalState(
+				const std::vector<Event>& events,
+				const std::set<MachineId>& machines,
+				const std::map<MachineId, int64_t>& machineSizes,
+				const std::map<MachineId, int64_t>& machineCoreCounts,
+				NeighborhoodsOnMachines currentLayout,
+				NeighborhoodsOnMachines targetLayout
+				)
+		{
+		for (auto e: events)
+			mUnconsumedEvents.push_back(e);
+
+		mMachines = machines;
+		mMachineSizes = machineSizes;
+		mMachineCoreCount = machineCoreCounts;
+
+		mCurrentLayout = currentLayout;
+		mTargetLayout = targetLayout;
+		}
+
+private:
+	void consumeChanges()
+		{
+		mNeighborhoodsMentionedSinceLast.clear();
+
+		for (auto e: mUnconsumedEvents)
+			handleEvent(e);
+		
+		mUnconsumedEvents.clear();
+		}
+
+	void moveLoadHistoriesIntoTree()
+		{
+		auto dropped = mLoadHistory.getChanges().dropped();
+		
+		mGrouperTree->dropNeighborhoods(dropped);
+
+		auto added = mLoadHistory.getChanges().added();
+		
+		for (auto a: added)
+			mGrouperTree->addNeighborhood(a);
+
+		mLoadHistory.getChanges().clear();
+		}
+
+	void handleEvent(const Event& e)
+		{
+		@match Event(e)
+			-| DropComputationLoad(id) ->> {
+				mLoadHistory.dropComputationLoad(id);
+				}
+			-| SetComputationLoad(id, n, load) ->> {
+				for (auto p: n.pages())
+					if (isDropped(p))
+						return;
+
+				mNeighborhoodsMentionedSinceLast.insert(n);
+
+				mLoadHistory.setComputationLoad(id, n, load);
+				}
+			-| ObservedLoad(neighborhood, load) ->> {
+				for (auto p: neighborhood.pages())
+					if (isDropped(p))
+						return;
+				
+				mNeighborhoodsMentionedSinceLast.insert(neighborhood);
+				
+				mLoadHistory.observeActualLoad(neighborhood, load);
+				}
+			-| PageDroppedAcrossSystem(page) ->> {
+				mLoadHistory.pageDroppedAcrossSystem(page);
+				mCurrentLayout.dropPage(page);
+				mTargetLayout.dropPage(page);
+				mLongTermLayout.dropPage(page);
+				mAllDroppedPages.insert(page);
+				}
+		}
+
+	bool isDropped(Fora::PageId page)
+		{
+		return mAllDroppedPages.find(page) != mAllDroppedPages.end();
+		}
+
+	long mSeed;
+
+	double mLargestBlockAsFractionOfMachineMemory;
+
+	double mMemoryRatio;
+
+	double mMbPerSecondToAssume;
+
+	std::set<Neighborhood> mNeighborhoodsMentionedSinceLast;
+
+	std::set<Neighborhood> mNeighborhoodsWantedSinceLast;
+
+	NeighborhoodLoadHistory mLoadHistory;
+
+	NeighborhoodsOnMachines mCurrentLayout;
+
+	NeighborhoodsOnMachines mTargetLayout;
+
+	NeighborhoodsOnMachines mLongTermLayout;
+
+	map<MachineId, int64_t> mMachineSizes;
+
+	map<MachineId, int64_t> mMachineCoreCount;
+
+	set<MachineId> mMachines;
+
+	std::vector<Event> mUnconsumedEvents;
+
+	std::set<Fora::PageId> mAllDroppedPages;
+
+	NeighborhoodSpectralTreeParams mParams;
+
+	boost::shared_ptr<NeighborhoodSpectralTree> mGrouperTree;
+
+	boost::shared_ptr<GroupTrackingNeighborhoodSpectralTreeWatcher> mWatcher;
+
+};
+
+}
+
+}
+

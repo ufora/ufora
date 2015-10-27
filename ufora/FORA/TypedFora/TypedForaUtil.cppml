@@ -1,0 +1,1276 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "TypedForaUtil.hppml"
+#include "../Native/NativeCode.hppml"
+#include "../Native/NativeCFGTransforms/Transforms.hppml"
+#include "ABI/NativeLayoutType.hppml"
+#include "ABI/TypedForaValueTypecasting.hppml"
+
+using namespace TypedFora::Abi;
+
+namespace TypedFora {
+
+long pickSmallestTypeIndex(const ImmutableTreeVector<Type>& types)
+	{
+	long cur = 0;
+	
+	for (long k = 1; k < types.size();k++)
+		if (types[cur].jov().covers(types[k].jov()))
+			cur = k;
+
+	return cur;
+	}
+
+ImmutableTreeVector<Type> sortTypesFromTightestToWidest(ImmutableTreeVector<Type> types)
+	{
+	ImmutableTreeVector<Type> tr;
+
+	while (types.size())
+		{
+		long index = pickSmallestTypeIndex(types);
+		
+		tr = tr + types[index];
+
+		types = types.slice(0, index) + types.slice(index+1);
+		}
+
+	return tr;
+	}
+
+bool isSimpleCallable(const Callable& inCallable)
+	{
+	@match Callable(inCallable)
+		-| SingleExpression(_, expr) ->> {
+			return isSimpleExpression(expr);
+			}
+		-| _ ->> {
+			return false;
+			}
+	}
+
+bool expressionDefinitelyHasValue(const Expression& inExpression)
+	{
+	if (!inExpression.type())
+		return false;
+
+	@match Expression(inExpression)
+		-| Var(v) ->> { 
+			return true; 
+			}
+		-| Constant() ->> { 
+			return true; 
+			}
+		-| Let(_, e1, e2) ->> { 
+			return expressionDefinitelyHasValue(e1) && expressionDefinitelyHasValue(e2); 
+			}
+		-| DiscardFirst(e1, e2) ->> { 
+			return expressionDefinitelyHasValue(e1) && expressionDefinitelyHasValue(e2); 
+			}
+		-| If(c, e1, e2) ->> {
+			return expressionDefinitelyHasValue(c) 
+				&& expressionDefinitelyHasValue(e1) 
+				&& expressionDefinitelyHasValue(e2); 
+			}
+		-| InterruptCheck() ->> {
+			return true;
+			}
+		-| Halt() ->> {
+			return false;
+			}
+		-| KickCheck() ->> {
+			return false;
+			}
+		-| TransferToInterpreter() ->> {
+			return false;
+			}
+		-| Call(target, arguments, conts) ->> {
+			for (long k = 0; k < arguments.size(); k++)
+				if (!expressionDefinitelyHasValue(arguments[k]))
+					return false;
+
+			for (long k = 0; k < conts.size(); k++)
+				if (!expressionDefinitelyHasValue(conts[k].first.resumption()))
+					return false;
+
+			return true;
+			}
+		-| TransferTo() ->> {
+			return false;
+			}
+		-| Jump() ->> {
+			return false;
+			}
+		-| Return() ->> {
+			return false;
+			}
+		-| IsTuple(e) ->> {
+			return expressionDefinitelyHasValue(e);
+			}
+		-| GetItem(e, _) ->> { 
+			return expressionDefinitelyHasValue(e); 
+			}
+		-| GetSlice(e, _) ->> { 
+			return expressionDefinitelyHasValue(e); 
+			}
+		-| ChangeClassBody(e, _) ->> { 
+			return expressionDefinitelyHasValue(e); 
+			}
+		-| CastWithoutCheck(e, _) ->> { 
+			return expressionDefinitelyHasValue(e); 
+			}
+		-| MakeTuple(args) ->> { 
+			for(long k = 0; k < args.size(); k++)
+				if (!expressionDefinitelyHasValue(args[k].arg()))
+					return false;
+
+			return true;
+			}
+		-| InlineNativeOperation(variableMap) ->> {
+			for (long k = 0; k< variableMap.size(); k++)
+				if (!expressionDefinitelyHasValue(variableMap[k].externalArgSource()))
+					return false;
+			return true;
+			}
+		-| TypeCheck(e, conts) ->> {
+			if (!expressionDefinitelyHasValue(e))
+				return false;
+
+			for (long k = 0; k < conts.size(); k++)
+				if (!expressionDefinitelyHasValue(conts[k].resumption()))
+					return false;
+
+			return true;
+			}
+		;
+	}
+
+
+bool isSimpleExpression(const Expression& inExpression)
+	{
+	@match Expression(inExpression)
+		-| Var(v) ->> { return true; }
+		-| Constant() ->> { return true; }
+		-| Let(_, e1, e2) ->> { return isSimpleExpression(e1) && isSimpleExpression(e2); }
+		-| DiscardFirst(e1, e2) ->> { return isSimpleExpression(e1) && isSimpleExpression(e2); }
+		-| GetItem(e, _) ->> { return isSimpleExpression(e); }
+		-| GetSlice(e, _) ->> { return isSimpleExpression(e); }
+		-| ChangeClassBody(e, _) ->> { return isSimpleExpression(e); }
+		-| CastWithoutCheck(e, _) ->> { return isSimpleExpression(e); }
+		-| InlineNativeOperation(variableMap) ->> {
+			for (long k = 0; k< variableMap.size(); k++)
+				if (!isSimpleExpression(variableMap[k].externalArgSource()))
+					return false;
+			return true;
+			}
+		-| MakeTuple(args) ->> { 
+			for(long k = 0; k < args.size(); k++)
+				if (!isSimpleExpression(args[k].arg()))
+					return false;
+
+			return true;
+			}
+		-| _ ->> { return false; }
+		;
+	}
+
+
+NativeExpression mapVariablesInNativeExpressionToSpecificVars(
+						const NativeExpression& inNativeExpr,
+						const ImmutableTreeVector<InlineNativeOperationArg>& varmap,
+						const ImmutableTreeVector<NativeVariable>& actualVarmap
+						)
+	{
+	map<NativeVariable, NativeVariable> renames;
+
+	for (long k = 0; k < varmap.size(); k++)
+		{
+		InlineNativeOperationArg p = varmap[k];
+
+		renames[*p.internalArg()] = actualVarmap[k];
+		}
+
+	return NativeCFGTransforms::renameVariables(inNativeExpr, renames);
+	}
+
+Callable graphFromNativeCfgPassingOwned(
+						const JOVT& inSignature, 
+						const ImmutableTreeVector<NativeVariable>& inArgumentVariables,
+						const JudgmentOnValue& inJov, 
+						bool isException,
+						const NativeExpression& inExpression
+						)
+	{
+	ImmutableTreeVector<Type> callSig = callSignatureFromJovtAsUnownedValues(inSignature);
+
+	ImmutableTreeVector<Variable> vars = callVariablesFromSignature(callSig);
+
+	ImmutableTreeVector<InlineNativeOperationArg> varmap;
+
+	for (long k = 0 ; k < inArgumentVariables.size(); k++)
+		if (inExpression.freeVariables().contains(inArgumentVariables[k]))
+			{
+			varmap = varmap + 
+				InlineNativeOperationArg(
+					CPPMLOpaqueHandle<NativeVariable>(inArgumentVariables[k]),
+					vars[k].type(),
+					vars[k].expr()
+					);
+			}
+
+	Callable result = Callable::SingleExpression(
+		vars, 
+		Expression::InlineNativeOperation(
+			varmap,
+			CPPMLOpaqueHandle<NativeExpression>(inExpression),
+			Type(inJov, RefcountStyle::AsValueOwned()),
+			false,
+			emptyTreeVec()
+			),
+		Type(inJov, RefcountStyle::AsValueOwned()),
+		isException,
+		false
+		);
+
+	return result;
+	}
+
+NativeType nativeTypeForPassingAsOwnedValue(const JudgmentOnValue& inJOV)
+	{
+	return nativeTypeForForaType(Type(inJOV, RefcountStyle::AsValueOwned()));
+	}
+
+Callable graphFromNativeCfgPassingOwned(
+						const JOVT& inSignature, 
+						const JudgmentOnAction& inJoa, 
+						const NativeCFG& cfg
+						)
+	{
+	lassert(cfg[NativeBlockID::entry()].args()[0].type() == NativeTypeFor<NativeRuntimeCallbacks>::get().ptr());
+
+	return 
+		Callable::NativeOperation(
+			resultSignatureFromJoaAsOwnedValues(inJoa),
+			emptyTreeMap() + 
+				TypedFora::BlockID::entry() + 
+				callSignatureFromJovtAsUnownedValues(inSignature)
+				,
+			CPPMLOpaqueHandle<NativeCFG>(cfg)
+			);
+	}
+
+Callable graphFromNativeCfg(
+						const ImmutableTreeVector<Type>& inSignature,
+						const JudgmentOnAction& inJoa, 
+						const RefcountStyle& inResultStyle,
+						const NativeCFG& cfg
+						)
+	{
+	lassert(cfg[NativeBlockID::entry()].args()[0].type() == 
+								NativeTypeFor<NativeRuntimeCallbacks>::get().ptr());
+
+	return 
+		Callable::NativeOperation(
+			resultSignatureFromJoa(inJoa, inResultStyle),
+			emptyTreeMap() + 
+				TypedFora::BlockID::entry() + 
+					inSignature
+				,
+			CPPMLOpaqueHandle<NativeCFG>(cfg)
+			);
+	}
+
+ImmutableTreeVector<Variable>	variablesFromJOVs(
+				const ImmutableTreeVector<JudgmentOnValue>& inJOVs, 
+				const RefcountStyle& inStyle
+				)
+	{
+	ImmutableTreeVector<Variable> result;
+
+	for (long k = 0; k < inJOVs.size(); k++)
+		result = result + Variable::Temp(Type(inJOVs[k], inStyle));
+	
+	return result;
+	}
+
+
+ImmutableTreeVector<Variable>	variablesFromTypes(
+				const ImmutableTreeVector<Type>& inTypes
+				)
+	{
+	ImmutableTreeVector<Variable> result;
+
+	for (long k = 0; k < inTypes.size(); k++)
+		result = result + Variable::Temp(inTypes[k]);
+	
+	return result;
+	}
+
+ImmutableTreeVector<Type>	typesFromJOVs(
+				const ImmutableTreeVector<JudgmentOnValue>& inJOVs, 
+				const RefcountStyle& inStyle
+				)
+	{
+	ImmutableTreeVector<Type> result;
+
+	for (long k = 0; k < inJOVs.size(); k++)
+		result = result + Type(inJOVs[k], inStyle);
+	
+	return result;
+	}
+
+Continuation simplePassthroughContinuation(const Type& inType)
+	{
+	Variable v = Variable::Temp(inType);
+	return Continuation(v, Expression::Var(v), null() << inType, 1.0);
+	}
+
+Expression upgradeNativeExpression(
+				const ImmutableTreeVector<Variable>& inVariables,
+				const NativeExpression& inExpression, 
+				const Type& outputType,
+				bool isException,
+				const ImmutableTreeVector<Expression>& inArguments
+				)
+	{
+	Continuation cont = simplePassthroughContinuation(outputType);
+
+	ContinuationFrame contFrame;
+	if (isException)
+		contFrame = ContinuationFrame(emptyTreeVec(), emptyTreeVec() + cont);
+	else
+		contFrame = ContinuationFrame(emptyTreeVec() + cont, emptyTreeVec());
+
+	lassert_dump(
+		inExpression.type() && *inExpression.type() == nativeTypeForForaType(outputType),
+		"NativeExpression had type " << prettyPrintString(inExpression.type()) << " but expected "
+			<< prettyPrintString(nativeTypeForForaType(outputType))
+		);
+
+	return Expression::Call(
+		CallTarget::Subgraph(
+			Callable::NativeOperation(
+				resultSignatureFromTypeAndFlag(outputType, isException),
+				emptyTreeMap() + 
+					TypedFora::BlockID::entry() + 
+					typeListFromVariables(inVariables)
+					,
+				CPPMLOpaqueHandle<NativeCFG>(
+					NativeCFG(
+						emptyTreeVec() + nativeTypeForForaType(outputType),
+						NativeVariable::Temp(NativeTypeFor<NativeRuntimeCallbacks>::get().ptr()) + 
+							nativeVariablesForForaVariables(inVariables), 
+						NativeExpression::Return(0, inExpression)
+						)
+					)
+				),
+			BlockID::entry()
+			),
+		inArguments,
+		contFrame,
+		emptyTreeVec()
+		);
+	}
+
+
+ImmutableTreeVector<Expression>	expressionsFromMakeTupleArgs(
+				const ImmutableTreeVector<MakeTupleArgument>& inArgs
+				)
+	{
+	ImmutableTreeVector<Expression> tr;
+
+	for (long k = 0; k < inArgs.size(); k++)
+		tr = tr + inArgs[k].arg();
+
+	return tr;
+	}
+
+ResultSignature resultSignatureFromTypeAndFlag(
+										const Type& outputType, 
+										bool isException
+										)
+	{
+	if (isException)
+		return ResultSignature(emptyTreeVec(), emptyTreeVec() + outputType, false);
+	else
+		return ResultSignature(emptyTreeVec() + outputType, emptyTreeVec(), false);
+	}
+
+
+NativeVariable nativeVariableFor(const Variable& inVar)
+	{
+	return NativeVariable(inVar.varID(), nativeTypeForForaType(inVar.type()));
+	}
+
+Type boolType(void)
+	{
+	return Type(JOV::OfType(::Type::Bool()), RefcountStyle::AsValueUnowned());
+	}
+
+bool anyHaveNullType(const ImmutableTreeVector<Expression>& in)
+	{
+	for(long k = 0; k < in.size(); k++)
+		if (!in[k].type())
+			return true;
+	return false;
+	}
+
+bool anyHaveNullType(const ImmutableTreeVector<MakeTupleArgument>& in)
+	{
+	for(long k = 0; k < in.size(); k++)
+		if (!in[k].arg().type())
+			return true;
+	return false;
+	}
+
+ImmutableTreeVector<Type> interpreterCallSignature()
+	{
+	return emptyTreeVec() + Type(JOV::Unknown(), RefcountStyle::AsValueUnowned());
+	}
+
+ImmutableTreeVector<NativeVariable>	nativeVariablesForForaVariables(
+				const ImmutableTreeVector<Variable>& inVariables
+				)
+	{
+	ImmutableTreeVector<NativeVariable> tr;
+	for (long k = 0; k < inVariables.size(); k++)
+		tr = tr + nativeVariableFor(inVariables[k]);
+	return tr;
+	}
+
+ImmutableTreeVector<JudgmentOnValue>
+jovListFromTypes(const ImmutableTreeVector<Type>& inTypes)
+	{
+	ImmutableTreeVector<JudgmentOnValue> tr;
+	for (long k = 0; k < inTypes.size(); k++)
+		tr = tr + inTypes[k].jov();
+	return tr;
+	}
+
+JOVT jovtFromTypes(const ImmutableTreeVector<Type>& inTypes)
+	{
+	return JOVT::Unnamed(jovListFromTypes(inTypes));
+	}
+
+ImmutableTreeVector<Type>
+typeListFromContinuationArgTypes(const ImmutableTreeVector<Continuation>& inContinuations)
+	{
+	ImmutableTreeVector<Type> tr;
+	for (long k = 0; k < inContinuations.size(); k++)
+		tr = tr + inContinuations[k].var().type();
+	return tr;
+	}
+
+
+ImmutableTreeVector<Type>
+typeListFromVariables(const ImmutableTreeVector<Variable>& inVars)
+	{
+	ImmutableTreeVector<Type> tr;
+	for (long k = 0; k < inVars.size(); k++)
+		tr = tr + inVars[k].type();
+	return tr;
+	}
+
+ImmutableTreeVector<Type>
+typeListFromExpressions(const ImmutableTreeVector<Expression>& inExprs)
+	{
+	ImmutableTreeVector<Type> tr;
+	for (long k = 0; k < inExprs.size(); k++)
+		tr = tr + *inExprs[k].type();
+	return tr;
+	}
+
+ImmutableTreeVector<Nullable<Type> >
+nullableTypeListFromContinuations(const ImmutableTreeVector<Continuation>& inConts)
+	{
+	ImmutableTreeVector<Nullable<Type> > tr;
+	for (long k = 0; k < inConts.size(); k++)
+		tr = tr + inConts[k].resumption().type();
+	return tr;
+	}
+
+ImmutableTreeVector<Type>
+typeListFromMakeTupleArguments(const ImmutableTreeVector<MakeTupleArgument>& inArgs)
+	{
+	ImmutableTreeVector<Type> tr;
+	for (long k = 0; k < inArgs.size(); k++)
+		tr = tr + *inArgs[k].arg().type();
+	return tr;
+	}
+
+ImmutableTreeSet<Variable> variableSetFromCallVariables(
+								const ImmutableTreeVector<Variable>& inVars
+								)
+	{
+	return ImmutableTreeSet<Variable>(inVars);
+	}
+
+bool isSingleTypeResultSignature(const ResultSignature& inSig)
+	{
+	return inSig.normalTypes().size() + inSig.exceptionTypes().size() == 1;
+	}
+
+Type singleTypeFromResultSignature(const ResultSignature& inSignature)
+	{
+	if (inSignature.normalTypes().size())
+		return inSignature.normalTypes()[0];
+
+	if (inSignature.exceptionTypes().size())
+		return inSignature.exceptionTypes()[0];
+
+	throw standardLogicErrorWithStacktrace("signature was empty");
+	}
+
+Nullable<Type> typeForMergedControlFlowPaths(	const Nullable<Type>& inLeft, 
+												const Nullable<Type>& inRight
+												)
+	{
+	if (!inLeft && !inRight)
+		return null();
+	if (!inLeft)
+		return inRight;
+	if (!inRight)
+		return inLeft;
+	
+	return null() << 
+		Type(
+			inLeft->jov().smallestCovering(inRight->jov()),
+			bestCommonRefcountStyle(
+				inLeft->refcountStyle(),
+				inRight->refcountStyle()
+				)
+			);
+	}
+
+bool expressionsMatchCallSignature(	const ImmutableTreeVector<Expression>& inExprs,
+									const ImmutableTreeVector<Type>& inCallSignature)
+	{
+	if (inCallSignature.size() != inExprs.size())
+		return false;
+
+	for (long k = 0; k < inCallSignature.size(); k++)
+		if (!typeDirectlyCastable(*inExprs[k].type(), inCallSignature[k]))
+			return false;
+
+	return true;
+	}
+
+bool anyContinuationHasAType(const ImmutableTreeVector<Continuation>& conts)
+	{
+	for (long k = 0; k < conts.size(); k++)
+		if (conts[k].resumption().type())
+			return true;
+
+	return false;
+	}
+
+ResultSignature resultSignatureFromJoaAsOwnedValues(const JudgmentOnAction& inJOA)
+	{
+	return resultSignatureFromJoa(inJOA, RefcountStyle::AsValueOwned());
+	}
+
+ResultSignature resultSignatureFromJoaAsPooledValues(const JudgmentOnAction& inJOA)
+	{
+	return resultSignatureFromJoa(inJOA, RefcountStyle::Pooled());
+	}
+
+ResultSignature	resultSignatureFromJoa(	const JudgmentOnAction& inJOA, 
+										const RefcountStyle& inStyleNormal,
+										const RefcountStyle& inStyleException
+										)
+	{
+	ImmutableTreeVector<Type> normalTs, exceptionTs;
+	
+	for (long k = 0; k < inJOA.resultPart().size(); k++)
+		normalTs = normalTs + Type(inJOA.resultPart()[k], inStyleNormal);
+	
+	for (long k = 0; k < inJOA.throwPart().size(); k++)
+		exceptionTs = exceptionTs + Type(inJOA.throwPart()[k], inStyleException);
+
+	return ResultSignature(normalTs, exceptionTs, inJOA.hasSideEffects());
+	}
+
+RefcountStyle pickRefcountStyleFromResultSignature(
+							const JudgmentOnValue& inJOV, 
+							const ResultSignature& inSig,
+							bool isException
+							)
+	{
+	Nullable<uword_t> index = 
+		pickResultSignatureIndexForType(
+			Type(inJOV, RefcountStyle::AsValueUnowned()),
+			inSig,
+			isException
+			);
+
+	if (index)
+		return inSig[*index].first.refcountStyle();
+
+	return RefcountStyle::AsValueOwned();
+	}
+
+ResultSignature resultSignatureFromJoaWithLayoutsFrom(
+											const JudgmentOnAction& inJOA, 
+											const ResultSignature& inResultSignature
+											)
+	{
+	ImmutableTreeVector<Type> normalTs, exceptionTs;
+	
+	for (long k = 0; k < inJOA.resultPart().size(); k++)
+		normalTs = normalTs + Type(
+			inJOA.resultPart()[k], 
+			pickRefcountStyleFromResultSignature(inJOA.resultPart()[k], inResultSignature, false)
+			);
+	
+	for (long k = 0; k < inJOA.throwPart().size(); k++)
+		exceptionTs = exceptionTs + Type(
+			inJOA.throwPart()[k], 
+			pickRefcountStyleFromResultSignature(inJOA.throwPart()[k], inResultSignature, true)
+			);
+
+	return ResultSignature(normalTs, exceptionTs, inJOA.hasSideEffects());
+	}
+
+ResultSignature	resultSignatureFromJoa(		const JudgmentOnAction& inJOA, 
+											const RefcountStyle& inStyle
+											)
+	{
+	return resultSignatureFromJoa(inJOA, inStyle, inStyle);
+	}
+
+ImmutableTreeVector<Type> 
+transferSignatureFromJovsAsOwnedValues(const ImmutableTreeVector<JudgmentOnValue>& inJovs)
+	{
+	ImmutableTreeVector<Type> tr = 
+		typesFromJOVs(inJovs, RefcountStyle::AsValueOwned());
+
+	return tr;
+	}
+
+ImmutableTreeVector<Type> 
+callSignatureFromJovtAsUnownedValues(const JudgmentOnValueTuple& inJovt)
+	{
+	return callSignatureFromJovt(inJovt, RefcountStyle::AsValueUnowned());
+	}
+
+ImmutableTreeVector<Type> 
+callSignatureFromJovt(const JOVT& inJovt, const RefcountStyle& inStyle)
+	{
+	ImmutableTreeVector<Type> tr = 
+		typesFromJOVs(inJovt.jovs(), inStyle);
+
+	if (inJovt.extras().isExtras())
+		return tr + Type(
+			JOV::Tuple(JOVT() + inJovt.extras()), 
+			inStyle
+			);
+	return tr;
+	}
+
+ImmutableTreeVector<Type> 
+callSignatureFromJovtWithLayoutsFrom(const JOVT& inJovt, const ImmutableTreeVector<Type>& inTypes)
+	{
+	ImmutableTreeVector<Type> tr;
+
+	for (long k = 0; k < inJovt.jovs().size(); k++)
+		tr = tr + Type(inJovt.jovs()[k], inTypes[std::min<long>(k, inTypes.size()-1)].refcountStyle());
+
+	if (inJovt.extras().isExtras())
+		return tr + Type(
+			JOV::Tuple(JOVT() + inJovt.extras()), 
+			inTypes.back().refcountStyle()
+			);
+
+	return tr;
+	}
+
+
+
+bool continuationsMatchResultSignature(	
+			const ContinuationFrame& inFrame,
+			const ResultSignature& inSignature
+			)
+	{
+	//verify that there is at least one target for every continuation type in the
+	//result signature
+	for (long k = 0; k < inSignature.normalTypes().size(); k++)
+		if (!pickContinuationForType(inSignature.normalTypes()[k], 
+				inFrame.normalContinuations()))
+			return false;
+	
+	for (long k = 0; k < inSignature.exceptionTypes().size(); k++)
+		if (!pickContinuationForType(inSignature.exceptionTypes()[k], 
+				inFrame.exceptionContinuations()))
+			return false;
+	
+	return true;
+	}
+
+Nullable<uword_t> pickContinuationForType(	
+						const Type& inType, 	
+						const ImmutableTreeVector<Continuation>& inContinuations
+						)
+	{
+	for (uword_t k = 0; k < inContinuations.size(); k++)
+		if (typeDirectlyCastable(inType, inContinuations[k].var().type()))
+			return null() << k;
+	return null();
+	}
+
+Nullable<uword_t> pickResultSignatureIndexForType(	
+						const Type& inType, 	
+						const ResultSignature& inSignature,
+						bool isException
+						)
+	{
+	for (uword_t k = 0; k < inSignature.size(); k++)
+		if (inSignature[k].second == isException && 
+							typeDirectlyCastable(inType, inSignature[k].first))
+			return null() << k;
+	return null();
+	}
+
+Nullable<uword_t> pickSingleResultSignatureIndexForType(	
+						const Type& inType, 	
+						const ResultSignature& inSignature,
+						bool isException
+						)
+	{
+	Nullable<uword_t> index;
+
+	for (uword_t k = 0; k < inSignature.size(); k++)
+		if (inSignature[k].second == isException && 
+							typeDirectlyCastable(inType, inSignature[k].first))
+			{
+			if (!index)
+				index = k;
+			else
+				return null();
+			}
+
+	return index;
+	}
+
+Nullable<uword_t> pickResultSignatureIndexForTypeAllowingUncheckedCasting(	
+						const Type& inType, 	
+						const ResultSignature& inSignature,
+						bool isException
+						)
+	{
+	//there should be exactly one that's not disjoint from this one
+	Nullable<uword_t> index;
+
+	for (uword_t k = 0; k < inSignature.size(); k++)
+		if (inSignature[k].second == isException && 
+					!inType.jov().disjoint(inSignature[k].first.jov()))
+			{
+			if (!index)
+				index = k;
+			else
+				//we already found one and we should exit with None since it's ambiguous
+				return null();
+			}
+
+	return index;
+	}
+
+Continuation simpleReturnContinuation(const Type& inType, bool isException)
+	{
+	Variable var = Variable::Temp(inType);
+	return Continuation(var, Expression::Return(isException, var.expr()), null(), 1.0);
+	}
+
+ImmutableTreeVector<Variable> 
+callVariablesFromSignature(const ImmutableTreeVector<Type>& inCallSignature)
+	{
+	ImmutableTreeVector<Variable> vars;
+	for (long k = 0; k < inCallSignature.size(); k++)
+		vars = vars + Variable::Temp(inCallSignature[k]);
+	return vars;
+	}
+
+ContinuationFrame simpleReturnContinuationsForResultSignature(
+											const ResultSignature& inSignature
+											)
+	{
+	ImmutableTreeVector<Continuation> normalConts;
+	ImmutableTreeVector<Continuation> exceptionConts;
+
+	for (long k = 0; k < inSignature.size(); k++)
+		{
+		Continuation cont = simpleReturnContinuation(
+				inSignature[k].first, 
+				inSignature[k].second
+				);
+		if (inSignature[k].second)
+			exceptionConts = exceptionConts + cont;
+		else
+			normalConts = normalConts + cont;
+		}
+
+	return ContinuationFrame(normalConts, exceptionConts);
+	}
+
+Continuation generateReturnContinuationInMoreSpecificEnvironment(
+									const ResultSignature& inSignature,
+									const Type& inType,
+									bool isException,
+									bool fullTypecheck
+									)
+	{
+	if (!fullTypecheck)
+		{
+		//if there's any valid return, we can just use that
+		for (long k = 0; k < inSignature.size(); k++)
+			if (typeDirectlyCastable(inType, inSignature[k].first) && inSignature[k].second == isException)
+				return simpleReturnContinuation(inType, isException);
+		}
+
+	//we are receiving a value 'inType', which is _less_ specific than the values in 'inSignature'.
+	//we'd like to pick the most specific value within 'inSignature'. If there is only one,
+	//then we'll use that. Otherwise, we'll have to check all non-disjoint continuations, ordered
+	//correctly.
+
+	//first see if there is a valid continuation in the outer signature that works
+	Nullable<uword_t> singleResultIndex = 
+		pickSingleResultSignatureIndexForType(inType, inSignature, isException);
+
+	Nullable<uword_t> singleNonDisjointIndex = 
+		pickResultSignatureIndexForTypeAllowingUncheckedCasting(
+			inType,
+			inSignature,
+			isException
+			);
+
+	if (singleResultIndex && singleNonDisjointIndex)
+		//there's only one thing we can directly return to, and it's the only one that's not
+		//disjoint from us.
+		return simpleReturnContinuation(inType, isException);
+	
+	Variable var = Variable::Temp(inType);
+
+	if (!singleResultIndex && singleNonDisjointIndex)
+		return Continuation(
+			var,
+			Expression::Return(
+				isException,
+				Expression::CastWithoutCheck(
+					var.expr(),
+					inSignature[*singleNonDisjointIndex].first
+					)
+				),
+			null(),
+			1.0
+			);
+
+	//it's ambiguous, so we need to check
+	ImmutableTreeVector<Type> outputTypes = 
+		isException ? inSignature.exceptionTypes() : inSignature.normalTypes();
+
+	outputTypes = sortTypesFromTightestToWidest(outputTypes);
+
+	ImmutableTreeVector<Continuation> returnConts;
+	for (long k = 0; k < outputTypes.size(); k++)
+		{
+		if (!outputTypes[k].jov().disjoint(inType.jov()))
+			returnConts = returnConts + simpleReturnContinuation(outputTypes[k], isException);
+		}
+
+	lassert_dump(
+		returnConts.size() > 1 || returnConts.size() == 0,
+		"We expected more than one typecheck - otherwise, we should have just assumed the type was "
+			<< "valid and downcasted immediately. outputTypes = " << prettyPrintString(outputTypes)
+			<< " and Type = " << prettyPrintString(inType) << ". returnConts = " 
+			<< prettyPrintString(returnConts)
+		);
+
+	return Continuation(
+		var,
+		Expression::TypeCheck(
+			var.expr(),
+			returnConts
+			),
+		null(),
+		1.0
+		);
+	}
+
+ContinuationFrame adaptReturnContinuationsForResultSignature(
+											const ResultSignature& inSignature,
+											const ResultSignature& inOuterSig,
+											bool fullTypecheck
+											)
+	{
+	ImmutableTreeVector<Continuation> normalConts;
+	ImmutableTreeVector<Continuation> exceptionConts;
+
+	for (long k = 0; k < inSignature.size(); k++)
+		{
+		const Type& innerType = inSignature[k].first;
+		bool innerIsException = inSignature[k].second;
+
+		Continuation cont = 
+			generateReturnContinuationInMoreSpecificEnvironment(
+				inOuterSig, 
+				innerType, 
+				innerIsException,
+				fullTypecheck
+				);
+
+		if (inSignature[k].second)
+			exceptionConts = exceptionConts + cont;
+		else
+			normalConts = normalConts + cont;
+		}
+
+	return ContinuationFrame(normalConts, exceptionConts);
+	}
+
+Callable adaptSimpleExpressionCallSignature(
+						const Callable& target,
+						const ImmutableTreeVector<Variable>& newOuterVariables,
+						const ImmutableTreeVector<Expression>& argsAsFunctionOfVariables
+						)
+	{
+	@match Callable(target)
+		-| SingleExpression(vars, expression, resultType, isException, hasSideEffects) ->> {
+			ImmutableTreeVector<pair<Variable, Expression> > lets;
+			for (long k = 0; k < vars.size(); k++)
+				{
+				if (!argsAsFunctionOfVariables[k].type() ||
+						vars[k].type() == *argsAsFunctionOfVariables[k].type())
+					lets = lets + make_pair(vars[k], argsAsFunctionOfVariables[k]);
+				else
+					{
+					//A bit of a hack: if argsAsFunctionOfVariables[k] has owned type and refcount
+					//1 (for example, the result of a MakeTuple Expression), then we can run into
+					//problems if we assign an unowned reference to it. This ensures that
+					//argsAsFunctionOfVariables[k] has refcount at least two.
+					Variable holdingVar = Variable::Temp(*argsAsFunctionOfVariables[k].type());
+					lets = lets + make_pair(holdingVar, argsAsFunctionOfVariables[k]);
+					lets = lets + make_pair(vars[k], holdingVar.expr());
+					}
+				}
+
+			return Callable::SingleExpression(
+				newOuterVariables,
+				wrapExpressionInLetBindings(lets, expression),
+				resultType,
+				isException,
+				hasSideEffects
+				);
+			}
+	}
+
+Callable adaptSignatureOfCallable(
+						const Callable& target,
+						const JudgmentOnValueTuple& inCallSignature,
+						const JudgmentOnValueTuple& inDesiredCallSignature,
+						const ResultSignature& inResultSignature,
+						bool fullTypeCheckingOnResult
+						)
+	{
+	//first check if there is nothing to do
+	if (!fullTypeCheckingOnResult &&
+			inResultSignature == target.resultSignature() && 
+			inCallSignature == inDesiredCallSignature)
+		return target;
+
+	lassert_dump(inCallSignature.covers(inDesiredCallSignature),
+		prettyPrintString(inCallSignature)
+			<< " doesn't cover " 
+			<< prettyPrintString(inDesiredCallSignature)
+		);
+
+	ImmutableTreeVector<Type> targetTypes = target.callSignature(BlockID::entry());
+
+	ImmutableTreeVector<Variable> callVariables = 
+		callVariablesFromSignature(
+			callSignatureFromJovtWithLayoutsFrom(inDesiredCallSignature, targetTypes)
+			);
+	
+	ImmutableTreeVector<Expression> callExprs;
+
+	if (inCallSignature.hasExtras())
+		{
+		//we have to pack the remaining arguments into a tuple
+		callExprs = passthroughArgsForCallVars(
+			callVariables.slice(0, inCallSignature.jovs().size())
+			);
+
+		ImmutableTreeVector<MakeTupleArgument> tupleArgs;
+
+		for (long k = inCallSignature.jovs().size(); k < callVariables.size(); k++)
+			if (k + 1 == callVariables.size() && inDesiredCallSignature.hasExtras())
+				tupleArgs = tupleArgs + MakeTupleArgument::TupleCall(callVariables[k].expr());
+			else
+				tupleArgs = tupleArgs + MakeTupleArgument::Normal(
+					inDesiredCallSignature.names()[k], 
+					callVariables[k].expr()
+					);
+
+		callExprs = callExprs + Expression::MakeTuple(tupleArgs);
+		}
+	else
+		{
+		//it's one to one - we can just pass them through
+		callExprs = passthroughArgsForCallVars(callVariables);
+		}
+
+	if (inResultSignature.size() == 1)
+		@match Callable(target)
+			-| SingleExpression() ->> {
+				return adaptSimpleExpressionCallSignature(
+					adaptSimpleExpressionResultSignatureAllowingUncheckedCasting(
+						target, 
+						inResultSignature
+						),
+					callVariables,
+					callExprs
+					);
+				}
+			-| _ ->> {}
+			;
+
+	ContinuationFrame returnContinuations =
+		adaptReturnContinuationsForResultSignature(
+			target.resultSignature(), 
+			inResultSignature,
+			fullTypeCheckingOnResult
+			);
+
+	return Callable::Graph(
+		inResultSignature,
+		emptyTreeMap() + 
+			BlockID::entry() + 
+			Block(
+				callVariables,
+				Expression::Call(
+					CallTarget::Subgraph(target, BlockID::entry()),
+					callExprs,
+					returnContinuations,
+					emptyTreeVec()
+					),
+				1.0
+				)
+		);
+	}
+
+Callable adaptSimpleExpressionResultSignatureAllowingUncheckedCasting(
+					const Callable& target,
+					const ResultSignature& inDesiredResultSignature
+					)
+	{
+	@match Callable(target)
+		-| SingleExpression(vars, expression, resultType, isException) ->> {
+
+			Nullable<uword_t> index = 
+				pickResultSignatureIndexForType(
+					*expression.type(), 
+					inDesiredResultSignature, 
+					isException
+					);
+			
+			if (!index)
+				index = pickResultSignatureIndexForTypeAllowingUncheckedCasting(
+					*expression.type(), 
+					inDesiredResultSignature, 
+					isException
+					);
+
+			lassert_dump(index,
+				"can't adapt resultSignature of " << prettyPrintString(target.resultSignature()) 
+					<< " to " << prettyPrintString(inDesiredResultSignature)
+				);
+
+			Type targetType = inDesiredResultSignature[*index].first;
+
+			TypedFora::Expression targetExpression;
+
+
+			if (targetExpression.type() && targetExpression.type()->jov().covers(targetType.jov()))
+				targetExpression = TypedFora::Expression::CastWithoutCheck(expression, targetType);
+			else
+				targetExpression = expression;
+
+			return Callable::SingleExpression(
+				vars,
+				targetExpression,
+				targetType,
+				isException,
+				inDesiredResultSignature.hasSideEffects()
+				);
+			}
+		
+	}
+
+
+ImmutableTreeVector<Expression> passthroughArgsForCallVars(
+									const ImmutableTreeVector<Variable>& callVariables
+									)
+	{
+	ImmutableTreeVector<Expression> arguments;
+
+	for (long k = 0; k < callVariables.size(); k++)
+		arguments = arguments + callVariables[k].expr();
+
+	return arguments;
+	}
+
+ImmutableTreeVector<Expression>	expressionsFromVariables(
+				const ImmutableTreeVector<Variable>& inArgs
+				)
+	{
+	ImmutableTreeVector<Expression> tr;
+
+	for (long k = 0; k < inArgs.size(); k++)
+		tr = tr + inArgs[k].expr();
+	
+	return tr;
+	}
+
+Callable addDummyArgumentsPassByValueUnowned(
+						const Callable& inCallTarget, 
+						const ImmutableTreeVector<JudgmentOnValue>& inJOVs
+						)
+	{
+	ImmutableTreeVector<Type> sig = inCallTarget.callSignature(BlockID::entry());
+
+	ImmutableTreeVector<Type> sig2 = 
+		typesFromJOVs(inJOVs, RefcountStyle::AsValueUnowned()) + sig;
+
+	ImmutableTreeVector<Variable> callVariables = callVariablesFromSignature(sig2);
+
+	return Callable::Graph(
+		inCallTarget.resultSignature(),
+		emptyTreeMap() + BlockID::entry() + 
+			Block(
+				callVariables,
+				Expression::Call(
+					CallTarget::Subgraph(inCallTarget, BlockID::entry()),
+					passthroughArgsForCallVars(callVariables).slice(inJOVs.size()),
+					simpleReturnContinuationsForResultSignature(
+						inCallTarget.resultSignature()
+						),
+					emptyTreeVec()
+					),
+				1.0
+				)
+		);
+	}
+
+ImmutableTreeVector<NativeType> nativeReturnTypesForResultSignature(
+									const ResultSignature& inSignature
+									)
+	{
+	ImmutableTreeVector<NativeType> tr;
+	for (long k = 0; k < inSignature.size(); k++)
+		tr = tr + nativeTypeForForaType(inSignature[k].first);
+	return tr;
+	}
+
+ResultSignature interpreterResultSignature()
+	{
+	return resultSignatureFromJoaAsPooledValues(JudgmentOnAction::Unknown());
+	}
+
+Continuation adaptContinuationToType(const Continuation& inCont, const Type& inNewType)
+	{
+	if (inCont.var().type() == inNewType)
+		return inCont;
+
+	Variable newVar = Variable::Temp(inNewType);
+
+	return Continuation(
+		newVar,
+		Expression::Let(
+			inCont.var(),
+			newVar.expr(),
+			inCont.resumption()
+			),
+		inCont.type(),
+		inCont.relativeFrequency()
+		);
+	}
+
+Expression wrapExpressionInLetBindings(
+					const ImmutableTreeVector<pair<Variable, Expression> >& letBindings,
+					const Expression& expr
+					)
+	{
+	Expression tr = expr;
+
+	for (long k = ((long)letBindings.size())-1; k >= 0; k--)
+		tr = TypedFora::Expression::Let(
+			letBindings[k].first, 
+			letBindings[k].second, 
+			tr
+			);
+
+	return tr;
+	}
+
+Type applyNewClassBodyToType(const Type& inType, const Nullable<ClassBody>& inNewClassBody)
+	{
+	return Type(
+		applyNewClassBodyToJOV(inType.jov(), inNewClassBody), 
+		inType.refcountStyle()
+		);
+	}
+
+JOV applyNewClassBodyToJOV(const JOV& inJOV, const Nullable<ClassBody>& inNewClassBody)
+	{
+	@match JOV(inJOV)
+		-| Tuple((elements, names, NoExtras())) ->> {
+			if (!inNewClassBody)
+				return inJOV;
+			return JOV::Class(
+				JudgmentOnValueClass::Class(elements, *inNewClassBody)
+				);
+			}
+		-| Class(Class(elements)) ->> {
+			if (!inNewClassBody)
+				return JOV::Tuple(JOVT::Unnamed(elements));
+
+			return JOV::Class(JudgmentOnValueClass::Class(elements, *inNewClassBody));
+			}
+		-| _ ->> {
+			lassert_dump(false, "Invalid JOV: " << prettyPrintString(inJOV));
+			}
+	}
+
+bool jovAlreadyHasClassBody(const JOV& inJOV, const Nullable<ClassBody>& inNewClassBody)
+	{
+	@match JOV(inJOV)
+		-| Tuple((elements, names, NoExtras())) ->> {
+			if (!inNewClassBody)
+				return true;
+
+			return false;
+			}
+		-| Class(Class(elements, classBody)) ->> {
+			if (!inNewClassBody)
+				return false;
+
+			return classBody == *inNewClassBody;
+			}
+		-| _ ->> {
+			lassert_dump(false, "Invalid JOV: " << prettyPrintString(inJOV));
+			}
+	}
+
+}
+
+

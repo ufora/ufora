@@ -1,0 +1,368 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "SchedulerToPipelineMessage.hppml"
+#include "PipelineToSchedulerMessage.hppml"
+#include "DataTasksToGlobalSchedulerMessage.hppml"
+#include "../SystemwideComputationScheduler/GlobalSchedulerToDataTasksMessage.hppml"
+#include "DataTaskMachineMemoryAllocation.hppml"
+
+namespace Cumulus {
+
+class DataTaskGlobalScheduler {
+public:
+	DataTaskGlobalScheduler(
+				boost::function1<void, SchedulerToPipelineMessageCreated> inSendPipelineMessage,
+				boost::function1<void, DataTasksToGlobalSchedulerMessage> inSendGlobalSchedulerMessage,
+				boost::function3<void, hash_type, ImplValContainer, hash_type> inOnTaskFinished,
+				const std::set<MachineId>& allMachines
+				) : 
+			mSplitRequestCount(0),
+			mSendPipelineMessage(inSendPipelineMessage),
+			mSendGlobalSchedulerMessage(inSendGlobalSchedulerMessage),
+			mOnTaskFinished(inOnTaskFinished),
+			mAllMachines(allMachines),
+			mHandshakeCount(0)
+		{
+		}
+
+	void taskCreated(hash_type taskId, MachineId initialMachine, int64_t messages, int64_t bytecount)
+		{
+		mTaskMemoryAllocations[taskId].reset(new DataTaskMachineMemoryAllocation(taskId, messages, bytecount, initialMachine));
+		
+		mTaskCompletionStateMachines[taskId].reset(new TaskCompletionStateMachine(messages, mAllMachines.size()));
+
+		for (auto m: mAllMachines)
+			mSendPipelineMessage(
+				SchedulerToPipelineMessageCreated(
+					SchedulerToPipelineMessage::InitializeTask(taskId, initialMachine),
+					m
+					)
+				);
+
+		processTaskState(taskId);
+		}
+
+	void processTaskState(hash_type taskId)
+		{
+		lassert(mTaskCompletionStateMachines[taskId]);
+		lassert(mTaskMemoryAllocations[taskId]);
+
+		mTaskCompletionStateMachines[taskId]->setLooksFinished(mTaskMemoryAllocations[taskId]->looksFinished());
+		
+		@match Nullable<TaskCompletionStateMachine::StateTransition> (mTaskCompletionStateMachines[taskId]->nextStateTransition())
+			-| Null() ->> {}
+			-| Value(UnfreezeAll()) ->> {
+				for (auto m: mAllMachines)
+					mSendPipelineMessage(
+						SchedulerToPipelineMessageCreated(
+							SchedulerToPipelineMessage::Unfreeze(taskId),
+							m
+							)
+						);
+				}
+			-| Value(TaskIsFinished()) ->> {
+				sortFinalBlocksAndFinish(taskId);
+				return;
+				}
+			-| Value(RequestStatusFromAll(counter, shouldFreeze)) ->> {
+				for (auto m: mAllMachines)
+					mSendPipelineMessage(
+						SchedulerToPipelineMessageCreated(
+							SchedulerToPipelineMessage::CheckMemoryUsage(taskId, counter, shouldFreeze),
+							m
+							)
+						);
+				}
+
+		//update any outstanding memory requests
+		while (auto request = mTaskMemoryAllocations[taskId]->getMemoryReservationRequest())
+			{
+			LOG_INFO << "Requesting " << request << " from scheduler";
+
+			mSendGlobalSchedulerMessage(
+				DataTasksToGlobalSchedulerMessage::AllocateTaskMemory(taskId, request->second, request->first)
+				);
+			}
+
+		while (auto request = mTaskMemoryAllocations[taskId]->getBytecountAndMessagecountQuotaChange())
+			{
+			LOG_INFO << "Increasing quota: " << request;
+
+			mSendPipelineMessage(
+				SchedulerToPipelineMessageCreated(
+					SchedulerToPipelineMessage::SetTaskMemory(
+						taskId, 
+						request->second.first,
+						request->second.second
+						),
+					request->first
+					)
+				);
+			}
+
+		while (auto request = mTaskMemoryAllocations[taskId]->getSplitRequest())
+			{
+			LOG_INFO << "Splitting: " << request;
+
+			hash_type splitGuid(mSplitRequestCount++);
+
+			mSendPipelineMessage(
+				SchedulerToPipelineMessageCreated(
+					SchedulerToPipelineMessage::SplitAndMoveSomething(taskId, splitGuid, request->second),
+					request->first
+					)
+				);
+			}
+		}
+
+	void handlePipelineToSchedulerMessage(const PipelineToSchedulerMessage& message)
+		{
+		@match PipelineToSchedulerMessage(message)
+			-| AccumulatorState(taskId, machine, valuesInAccumulator, valuesUnprocessed, isBlocked) ->> {
+				if (mTaskMemoryAllocations.find(taskId) == mTaskMemoryAllocations.end())
+					return;
+
+				mTaskMemoryAllocations[taskId]->setAccumulatorState(machine, valuesInAccumulator, valuesUnprocessed);
+
+				processTaskState(taskId);
+				}
+			-| TaskResult(taskId, result, moveGuid) ->> {
+				mOnTaskFinished(taskId, result, moveGuid);
+				}
+			-| CheckMemoryUsageResult(taskId, onMachine, valuesInAccumulator, valuesUnprocessed, handshakeId, splitHash, isFrozen) ->> {
+				if (mTaskMemoryAllocations.find(taskId) == mTaskMemoryAllocations.end())
+					return;
+
+				mTaskMemoryAllocations[taskId]->setAccumulatorState(onMachine, valuesInAccumulator, valuesUnprocessed);
+
+				LOG_INFO << "Task " << taskId << " received handshake #" << handshakeId << " update from " << onMachine 
+					<< ". acc=" << valuesInAccumulator 
+					<< ". unprocess=" << valuesUnprocessed
+					<< ". splitHash=" << splitHash
+					<< ". isFrozen=" << isFrozen
+					;
+				
+				mTaskCompletionStateMachines[taskId]->statusUpdate(handshakeId, onMachine, valuesInAccumulator, splitHash, isFrozen);
+
+				processTaskState(taskId);
+				}
+			-| SplitResponse(taskId, splitGuid, onMachine, targetMachine, valuesInAccumulator, valuesUnprocessed, splitSucceeded) ->> {
+				if (mTaskMemoryAllocations.find(taskId) == mTaskMemoryAllocations.end())
+					return;
+
+				mTaskMemoryAllocations[taskId]->splitResponse(onMachine, targetMachine, valuesInAccumulator, valuesUnprocessed, splitSucceeded);
+
+				processTaskState(taskId);
+				}
+		}
+
+	void handleGlobalSchedulerToDataTasksMessage(const GlobalSchedulerToDataTasksMessage& msg)
+		{
+		@match GlobalSchedulerToDataTasksMessage(msg)
+			-| TaskMemoryAllocated(taskId, allocations) ->> {
+				mTaskMemoryAllocations[taskId]->memoryReservationResponse(allocations);
+
+				processTaskState(taskId);
+				}
+		}
+
+	void sortFinalBlocksAndFinish(hash_type taskId)
+		{
+		mSendPipelineMessage(
+			SchedulerToPipelineMessageCreated(
+				SchedulerToPipelineMessage::FinalizeTask(taskId),
+				mTaskMemoryAllocations[taskId]->initialMachine()
+				)
+			);
+
+		mTaskMemoryAllocations.erase(taskId);
+
+		mTaskCompletionStateMachines.erase(taskId);
+
+		mSendGlobalSchedulerMessage(
+			DataTasksToGlobalSchedulerMessage::ReleaseTaskMemory(taskId)
+			);
+		}
+
+private:
+	boost::function1<void, SchedulerToPipelineMessageCreated> mSendPipelineMessage;
+
+	boost::function1<void, DataTasksToGlobalSchedulerMessage> mSendGlobalSchedulerMessage;
+
+	boost::function3<void, hash_type, ImplValContainer, hash_type> mOnTaskFinished;
+
+	int64_t mSplitRequestCount;
+
+	const std::set<MachineId>& mAllMachines;
+
+	map<hash_type, boost::shared_ptr<DataTaskMachineMemoryAllocation> > mTaskMemoryAllocations;
+
+	class TaskCompletionStateMachine {
+	public:
+		TaskCompletionStateMachine(int64_t expectedMessageCount, int64_t totalMachineCount) : 
+				mExpectedMessageCount(expectedMessageCount),
+				mCurrentlyLooksFinished(false),
+				mIsFinished(false),
+				mHandshakeCounter(0),
+				mTotalMachineCount(totalMachineCount)
+			{
+			}
+
+		@type StateTransition = 
+			-| UnfreezeAll of ()
+			-| RequestStatusFromAll of int64_t counter, bool shouldFreeze
+			-| TaskIsFinished of ()
+			;
+
+		void setLooksFinished(bool looksFinished)
+			{
+			if (mCurrentlyLooksFinished && looksFinished)
+				return;
+			if (!mCurrentlyLooksFinished && !looksFinished)
+				return;
+
+			mCurrentlyLooksFinished = looksFinished;
+
+			clearState();
+				
+			if (!looksFinished)
+				{
+				lassert(!mIsFinished);
+
+				mTransition = StateTransition::UnfreezeAll();
+				}
+			else
+				initiateCompletionHandshake(false);
+			}
+
+		void statusUpdate(int64_t handshakeId, MachineId machine, DataTaskMemoryFootprint accumulator, hash_type splitHash, bool isFrozen)
+			{
+			//if we got an old handshake, just ignore it
+			if (mIsFinished || !mCurrentHandshakeId || *mCurrentHandshakeId != handshakeId)
+				return;
+
+			mSplitHashes.set(machine, splitHash);
+
+			mCurrentFootprint += accumulator - mCurrentAccumulators[machine];
+			mCurrentAccumulators[machine] = accumulator;
+
+			mIsFrozen.set(machine, isFrozen);
+
+			//now check if we can move to the next state
+			if (mSplitHashes.size() == mTotalMachineCount)
+				{
+				if (currentStateLooksComplete())
+					{
+					if (mIsFrozen.getKeys(true).size() == mTotalMachineCount)
+						{
+						//we're finished, and everybody is frozen
+						mIsFinished = true;
+						mTransition = StateTransition::TaskIsFinished();
+						}
+					else
+						{
+						//we weren't able to freeze everyone. Try again, but attempt to freeze this time
+						initiateCompletionHandshake(true);
+						}
+					}
+				else
+					{
+					//if we don't look finished, we should have reset the state machine
+					lassert(mCurrentlyLooksFinished);
+
+					initiateCompletionHandshake(false);
+					}
+				}
+			}
+
+		Nullable<StateTransition> nextStateTransition()
+			{
+			if (!mTransition)
+				return null();
+			
+			auto res = *mTransition;
+
+			mTransition = null();
+
+			return null() << res;
+			}
+
+	private:
+		bool currentStateLooksComplete()
+			{
+			if (mCurrentFootprint.totalMessages() != mExpectedMessageCount)
+				return false;
+			if (mSplitHashes.size() != mTotalMachineCount)
+				return false;
+			if (mSplitHashes.getValueToKeys().size() != 1)
+				return false;
+			return true;
+			}
+
+		void initiateCompletionHandshake(bool tryToFreeze)
+			{	
+			clearState();
+
+			//we now think it's finished.
+			mHandshakeCounter++;
+
+			mCurrentHandshakeId = mHandshakeCounter;
+
+			mTransition = StateTransition::RequestStatusFromAll(*mCurrentHandshakeId, tryToFreeze);
+			}
+
+		void clearState()
+			{
+			mSplitHashes.clear();
+			mCurrentHandshakeId = null();
+			mCurrentAccumulators.clear();
+			mIsFrozen.clear();
+			mCurrentFootprint = DataTaskMemoryFootprint();
+			}
+
+		int64_t mExpectedMessageCount;
+
+		bool mCurrentlyLooksFinished;
+
+		bool mIsFinished;
+
+		int64_t mHandshakeCounter;
+
+		int64_t mTotalMachineCount;
+
+		Nullable<int64_t> mCurrentHandshakeId;
+
+		std::map<MachineId, DataTaskMemoryFootprint> mCurrentAccumulators;
+
+		DataTaskMemoryFootprint mCurrentFootprint;
+
+		MapWithIndex<MachineId, hash_type> mSplitHashes;
+
+		MapWithIndex<MachineId, bool> mIsFrozen;
+
+		Nullable<StateTransition> mTransition;
+	};
+
+	std::map<hash_type, boost::shared_ptr<TaskCompletionStateMachine> > mTaskCompletionStateMachines;
+
+	std::set<hash_type> mFinalizedTasks;
+
+	int64_t mHandshakeCount;
+};
+
+}

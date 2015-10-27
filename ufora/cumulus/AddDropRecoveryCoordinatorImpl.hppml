@@ -1,0 +1,175 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "ComputationState.hppml"
+#include "AddDropFinalState.hppml"
+#include "CumulusComponentMessageCreated.hppml"
+#include "CumulusClientOrMachine.hppml"
+#include "../FORA/VectorDataManager/VectorDataManager.hppml"
+#include "PersistentCache/PersistentCacheIndex.hppml"
+#include "AddDropSystemCalculations.hppml"
+#include "AddDropPersistedState.hppml"
+#include "../FORA/Core/ExecutionContextConfiguration.hppml"
+
+namespace Cumulus {
+
+/****************************
+
+AddDropRecoveryCoordinator
+
+A class used by Cumulus to coordinate rebuilding its state after a machine
+has been added or dropped.
+
+This class is implemented sychronously - you can think of it really as a part of Cumulus,
+rather than a traditional "component", mostly because all the "components" are disabled.
+
+*****************************/
+
+class AddDropRecoveryCoordinatorImpl {
+public:
+	AddDropRecoveryCoordinatorImpl(
+				PolymorphicSharedPtr<VectorDataManager> inVDM,
+				boost::function1<void, CumulusComponentMessageCreated> inOnCumulusComponentMessageCreated,
+				boost::function0<void> inOnAddDropExchangeComplete,
+				boost::function0<void> inOnAllWorkersReadyToCompute,
+				MachineId ownMachineId,
+				hash_type regime,
+				bool inIsTheLeader,
+				Fora::Interpreter::ExecutionContextConfiguration inEcConfig,
+				PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler
+				);
+
+	void addMachine(MachineId inMachine);
+
+	void handleCumulusComponentMessage(
+						CumulusComponentMessage message, 
+						CumulusClientOrMachine source, 
+						CumulusComponentType component
+						);
+
+	bool areAllMachinesAreReadyToCompute();
+
+	bool haveAllMachinesHaveSentLocalState();
+
+	//stage 1: local workers call this repeatedly to upload all of their local state into the coordinator
+	void handleLocalStateEvent(const CumulusWorkerAddDropEvent& inEvent);
+
+	//stage 2: local workers call this method to indicate that they've sent all their state
+	void allLocalStateIsProvided();
+
+	//stage 3: all workers have indicated to us that they have sent their state
+	void allLocalStateSentByAllMachines();
+
+	//stage 4: check what we're going to have to drop and request any checkpoint summaries we need
+	//for recovery, and load any bigvec layouts we're missing
+	void performCheckpointCalculation();
+
+	void handleCheckpointSummary(CheckpointRequest req, CheckpointSummary summary);
+
+	void handleBigvecLayout(hash_type guid, TypedFora::Abi::BigVectorPageLayout pageLayout);
+
+	//stage 5: indicate to each worker what it should add or drop
+	void checkIfCanSendCheckpointLoadRequests();
+
+	//stage 6: the leader has told us what to add or drop. Load whatever we need to from
+	//the persistent cache
+	void applyAddDropChanges(const AddDropChanges& changes);
+
+	//stage 7: see if everyone has completed add/drop and can proceed to local recovery
+	void checkIfCanProceedToLocalRecovery();
+
+	//stage 8: the global leader has sent us everything we need to know to perform
+	//recovery, and we should proceed directly
+	void performLocalRecovery(const AddDropFinalState& finalCheckpointState);
+
+	//stage 9: all workers have indicated to us that they are ready to compute,
+	//so begin computing
+	void triggerAllWorkersReadyToCompute();
+
+	const AddDropFinalState& getAddDropState() const;
+
+	void setComputationStates(std::map<ComputationId, PolymorphicSharedPtr<ComputationState> >& states);
+
+	const std::map<ComputationId, PolymorphicSharedPtr<ComputationState> >& getComputationStates();
+
+	void clearComputationStates();
+
+	const std::set<ComputationId>& computationsLostOnLocalMachine() const;
+
+private:
+	Fora::Interpreter::ExecutionContextConfiguration mEcConfig;
+
+	PolymorphicSharedPtr<CallbackScheduler> mCallbackScheduler;
+
+	void requestCheckpointSummary(CheckpointRequest checkpoint);
+
+	void requestBigvecDefinition(hash_type guid);
+
+	void checkIfAllAddDropChangesAreAppliedOrRequestNextFile();
+
+	void handleCheckpointFile(
+			pair<CheckpointRequest, hash_type> request, 
+			PolymorphicSharedPtr<NoncontiguousByteBlock> data
+			);
+	
+	AddDropFinalState mFinalAddDropState;
+
+	PolymorphicSharedPtr<VectorDataManager> mVDM;
+
+	std::set<ComputationId> mComputationsLostOnLocalMachine;
+
+	std::map<ComputationId, PolymorphicSharedPtr<ComputationState> > mComputationStates;
+
+	ImmutableTreeMap<ComputationId, ComputationStatusOnMachine> mLoadedComputationStatuses;
+
+	boost::function1<void, CumulusComponentMessageCreated> mOnCumulusComponentMessageCreated;
+
+	boost::function0<void> mOnAddDropExchangeComplete;
+
+	boost::function0<void> mOnAllWorkersReadyToCompute;
+
+	std::set<MachineId> mMachinesWithAllLocalStateSent;
+
+	std::set<MachineId> mMachinesWithAllAddDropChangesApplied;
+
+	std::set<MachineId> mMachinesReadyToCompute;
+
+	std::map<hash_type, CheckpointRequest> mPendingCheckpointSummaries;
+
+	std::map<hash_type, hash_type> mPendingBigvecDefinitions;
+
+	std::map<hash_type, pair<CheckpointRequest, hash_type> > mPendingCheckpointFiles;
+
+	std::set<pair<CheckpointRequest, hash_type> > mCheckpointFilesToProcess;
+
+	std::set<ComputationId> mCheckpointComputationsToLoad;
+
+	AddDropSystemState mAddDropSystemState;
+
+	AddDropSystemCalculations mAddDropSystemCalculations;
+
+	AddDropPersistedState mAddDropPersistedState;
+
+	MachineId mOwnMachineId;
+
+	std::set<MachineId> mMachines;
+
+	bool mIsTheLeader;
+};
+
+
+}

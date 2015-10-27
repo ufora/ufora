@@ -1,0 +1,200 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#ifndef JudgmentOnValueTree_hppml
+#define JudgmentOnValueTree_hppml
+
+#include "JudgmentOnValue.hppml"
+#include "../../core/serialization/BoostContainerSerializers.hpp"
+#include "../../core/cppml/CPPMLPrettyPrinterUnorderedContainers.hppml"
+
+/**********
+decision tree over JOV and JOVT objects.
+
+This code speeds up the rule matching mechanism for Axioms.
+
+**********/
+
+//a single rule that either accepts or rejects a tuple
+@type JudgmentOnValueTreeBinaryRule =
+		ExactCount of uword_t size
+		//does it match all values at dim and above, regardless of symbol
+	-|	MatchesAllAbove of uword_t dim, JudgmentOnValue jov
+		//matches at 'dim', which must exist, only if jov matches
+		//and it has the right name
+	-|	Matches of uword_t dim, JudgmentOnValue jov, Nullable<Symbol> fieldName
+	{
+	public:
+			bool covers(const JudgmentOnValueTreeBinaryRule& other) const;
+			bool disjoint(const JudgmentOnValueTreeBinaryRule& other) const;
+			bool covers(const Fora::ApplyArgFrame& frame) const;
+
+			//returns true if the rule covers all instances of the JOVT, false if it's disjoint
+			//from all instances, and null() otherwise.
+			Nullable<bool> covers(const JudgmentOnValueTuple& inJOVTuple) const;
+	}
+	;
+
+macro_defineCppmlComparisonOperators(JudgmentOnValueTreeBinaryRule)
+
+//a decision tree to filter out a subset of JOVTs
+@type JudgmentOnValueTree =
+		//indicates that we have a match with index 'value'
+		Leaf of uword_t value
+		//if we match 'rule', check ifTrue. otherwise, try 'ifFalse'
+	-|	Rule of 	JudgmentOnValueTreeBinaryRule rule,
+					JudgmentOnValueTree ifTrue,
+					JudgmentOnValueTree ifFalse,
+					//indices that all nodes below us might be able to produce
+					set<uword_t> commonSubIndices
+		//checks whether the type of the argument in slot 'dim'
+		//has a hash equivalent to one of the ones in the map
+		//only matches unnamed arguments. if none are matched
+		//resolves to 'ifFalse'
+	-|	TypeMap of 	uword_t dim,
+					map<hash_type, pair<JudgmentOnValue, JudgmentOnValueTree> > matches,
+					JudgmentOnValueTree ifFalse,
+					//a judgment for everything in the 'matches' category. If we're disjoint from
+					//this, we can skip to 'ifFalse'
+					JudgmentOnValue commonJOV,
+					//indices that all nodes below us might be able to produce
+					set<uword_t> commonSubIndices
+		//looks the symbol up in a map of symbols or types.
+		//the bool in the map indicates whether the match hash
+		//is for a symbol or for a type. only matches unnamed arguments
+	-|	ConstantMap of 	uword_t dim,
+						map<pair<bool, hash_type>, pair<JOV, JudgmentOnValueTree> > matches,
+						JudgmentOnValueTree ifFalse,
+						//indices that all nodes below us might be able to produce
+						set<uword_t> commonSubIndices
+with
+	set<uword_t> childLeafIndices = (this->computeChildLeafIndices()),
+	hash_type hash = (hashCPPMLDirect(*this))
+{
+public:
+	//compute the set of indices contained in Leaf objects in our children
+	set<uword_t> computeChildLeafIndices(void) const;
+
+	//constructor functions to compute commonSubIndices where necessary
+	static JudgmentOnValueTree Rule(
+				const JudgmentOnValueTreeBinaryRule& inRule,
+				const JudgmentOnValueTree& ifTrue,
+				const JudgmentOnValueTree& ifFalse
+				);
+	static  JudgmentOnValueTree TypeMap(
+				uword_t inDimension,
+				const map<hash_type, pair<JudgmentOnValue, JudgmentOnValueTree> >& matches,
+				const JudgmentOnValueTree& ifFalse,
+				const JudgmentOnValue& inCommon
+				);
+	static JudgmentOnValueTree ConstantMap(
+				uword_t inDimension,
+				const map<pair<bool, hash_type>, pair<JOV, JudgmentOnValueTree> >& matches,
+				const JudgmentOnValueTree& ifFalse
+				);
+}
+	;
+
+//simplify a JudgmentOnValueTree by collapsing subsequent checks on type
+//and symbol (which happen a lot) into TypeMap and ConstantMap operations
+JudgmentOnValueTree collapseJOVTree(const JudgmentOnValueTree& inTree);
+
+//search for the right element in a tree to apply to an argframe
+uword_t searchJOVTree(	const JudgmentOnValueTree& in,
+						const Fora::ApplyArgFrame& vals
+						);
+
+//search the tree, given that we've already determined that it's not possible to choose
+//exactly one branch
+Nullable<uword_t> searchJOVTreeGivenAmbiguousJOVT(
+						const JudgmentOnValueTree& in,
+						const JudgmentOnValueTuple& inJOVT
+						);
+
+//returns null if the JOVT could match multiple tree elements.
+Nullable<uword_t> searchJOVTree(
+						const JudgmentOnValueTree& in,
+						const JudgmentOnValueTuple& inJOVT
+						);
+
+//build a JudgmentOnValueTree that's equivalent to searching for the first
+//element in 'm' that matches.  Balances the tree based on the relative frequency
+//passed in in 'frequency'.  The tree must always terminate in a valid match,
+//so somewhere there needs to be a (*) term
+JudgmentOnValueTree createJOVTreeRuleDirect(
+						const ImmutableTreeVector<JudgmentOnValueTuple>& m,
+						const ImmutableTreeVector<uword_t>& frequency
+						);
+
+//calls createJOVTreeRule based on some frequency function
+template<class frequency_function>
+JudgmentOnValueTree createJOVTreeRule(
+					const ImmutableTreeVector<
+							pair<JudgmentOnValueTuple, uword_t> >& m,
+					const frequency_function& f,
+					bool collapse = true
+					)
+	{
+	//first, make a list of buckets
+	ImmutableTreeVector<JudgmentOnValueTuple> jovts;
+	ImmutableTreeVector<uword_t> ts;
+	ImmutableTreeVector<uword_t> frequencies;
+	for (long k = 0; k < m.size();k++)
+		{
+		ts = ts + m[k].second;
+		jovts = jovts + m[k].first;
+		frequencies = frequencies + f(m[k].second);
+		}
+	
+	JudgmentOnValueTree tree = createJOVTreeRuleDirect(jovts, frequencies);
+
+	if (collapse)
+		tree = collapseJOVTree(tree);
+
+	return tree;
+	}
+
+class EqualFrequency {
+public:
+		template<class T>
+		uword_t operator()(const T& inT) const
+			{
+			return 1;
+			}
+};
+//creates a rule in which every element is equally weighted.
+inline JudgmentOnValueTree createJOVTreeRule(
+			const ImmutableTreeVector<pair<JudgmentOnValueTuple, uword_t> >& m)
+	{
+	return createJOVTreeRule(m, EqualFrequency());
+	}
+
+//return a JOVTree with an extra set of checks. Maybe try to balance the tree
+//assumes that this check occurs _before_ all other checks. Start with a
+//tree that maps everything to a canonical value (e.g.
+//	JudgmentOnValueTree::Leaf(0) )
+//and then add additional values
+
+JudgmentOnValueTree	addRuleToJOVTree(const JudgmentOnValueTuple& jovt,
+									 const JudgmentOnValueTree& toTree,
+									 uword_t inIndex
+									 );
+
+
+
+
+
+#endif
+

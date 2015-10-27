@@ -1,0 +1,127 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <sstream>
+#include <ctime>
+#include <algorithm>
+#include <unordered_set>
+#include <boost/thread.hpp>
+
+#include "KeyspaceAuthorizationTable.hppml"
+#include "KeyState.hppml"
+
+
+namespace SharedState {
+
+class KeyspaceCache;
+class FileStorage;
+
+static Keyspace client_info_keyspace("ComparisonKeyType", Ufora::Json::String("__CLIENT_INFO_SPACE__"), 2);
+
+class KeyspaceManager : public PolymorphicSharedPtrBase<KeyspaceManager> {
+
+public:
+	using pointer_type = PolymorphicSharedPtr<KeyspaceManager>;
+	
+	KeyspaceManager(
+			uint32_t inSeedVal, 
+			uint32_t numManagers, 
+			uint32_t backupInterval, 
+			double pingInterval, 
+			std::string inHmacKey,
+			PolymorphicSharedPtr<FileStorage> inStorage
+			);
+
+    void add(manager_channel_ptr_type inChannel);
+	void addEvent(const PartialEvent& event);
+	void activeKeyspaces(const std::map<Keyspace, uint32_t>& inKeyspaces);
+	void check();
+	void shutdown();
+	vector<Keyspace> getAllKeyspaces();
+	PolymorphicSharedPtr<FileStorage> storage();
+
+private:
+	uint32_t mManagerId;
+	uint64_t mStatusEventUniqueID;
+	double mPingInterval;
+	KeyspaceAuthorizationTable mAuthTable;
+	uint64_t mNumEventsHandled;
+	uint32_t mBackupInterval;
+	PolymorphicSharedPtr<FileStorage> mStorage;
+
+	RandomGenerator mRandGenerator;
+	mutable boost::recursive_mutex mMutex;
+	map<Keyspace, vector<boost::shared_ptr<KeyspaceCache>>> mKeyEvents;
+	std::unordered_set<manager_channel_ptr_type> mChannels;
+	std::map<manager_channel_ptr_type, uint64_t> mChannelMaxIdentifiers;
+	boost::thread mCheckIdsThread;
+	std::map<manager_channel_ptr_type, KeyRangeSet> mRanges;
+	std::map<manager_channel_ptr_type, uint32_t> mChannelIds;
+	std::map<Keyspace, uint32_t> mSubscribersPerKeyspace;
+
+private:
+	static void checkIdsLoop(PolymorphicSharedWeakPtr<KeyspaceManager> pWeakThis, double interval);
+
+	static void incomingMessageLoop(
+			PolymorphicSharedWeakPtr<KeyspaceManager> pWeakThis,
+			manager_channel_type::weak_ptr_type inChannel
+			);
+
+	void compact(uint64_t id);
+
+	void initializeClient(
+		manager_channel_ptr_type inChannel,
+		uint32_t clientId,
+		Nullable<RandomGenerator> generator);
+
+	bool wantsToShutDownCheckIdsLoop() const;
+
+	void handleIncomingMessage(manager_channel_ptr_type inChannel, MessageOut msg);
+
+	bool isAlive(manager_channel_ptr_type inPtr) const;
+
+	void disconnect(manager_channel_ptr_type inChannel);
+
+	void removeKeyspaceSubscriber(const Keyspace& keyspace);
+
+	void pushEvent(const PartialEvent& event);
+
+	set<manager_channel_ptr_type> getChannelsForKey(const Key& key);
+
+	void addKeyspaceSubscriber(const Keyspace& keyspace);
+
+	bool isValidEventFromClient(manager_channel_ptr_type inChannel, const PartialEvent& inEvent);
+
+	PartialEvent statusEvent(manager_channel_ptr_type inChannel, UpdateType update);
+
+	uint32_t getChannelId(manager_channel_ptr_type channel) const;
+
+	pair<uint64_t, uint64_t> computeMinAndMaxIDs();
+
+	decltype(mKeyEvents)::iterator loadKeyspaceCaches(const Keyspace& keyspace);
+	decltype(mKeyEvents)::mapped_type getKeyspaceCaches(const Keyspace& keyspace);
+	boost::shared_ptr<KeyspaceCache> getCache(const KeyRange& range);
+
+	uint32_t numLoadedKeyspaces();
+	uint64_t totalLoadedKeys();
+	void writeKeyRangeTo(KeyRange range, manager_channel_ptr_type inChannel);
+	void closeAllFiles();
+}; //KeyspaceManager
+
+
+} //SharedState
+

@@ -1,0 +1,1761 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#Markdown("""
+### DataFrame
+
+#### Description
+
+A class that provides a convenience wrapper for working with a columnar dataset.
+
+It enables manipulating data more efficiently with a concise syntax and attempts wherever possible
+to execute operations in parallel and maintain good overall compiler performance.
+
+For more information on usage, see [the tutorial](LINKROOT/index/tutorials/dataframe.html).
+""")
+class {
+    #Markdown("""
+    #### Description
+
+    Contains a Vector of Series instances.
+    """)
+    member columns;
+
+    #Markdown("""
+    #### Description
+
+    Contains a Vector of Strings that holds the names of the columns.
+    """)
+    member columnNames;
+
+    #Markdown("""
+    #### Description
+
+    The number of rows contained by the dataframe.
+    """)
+    member numRows;
+
+    #Markdown("""
+    #### Description
+
+    The number of columns contained by the dataframe.
+    """)
+    member numColumns;
+
+    equals: 
+    #Markdown("""
+    #### Usage
+
+        df1.equals(df2)
+
+    #### Description
+
+    Returns true if `df1.columns == df2.columns and 
+        df1.columnNames == df2.columnNames`.
+    """)
+    fun(DataFrame(df)) { 
+        columns == df.columns and 
+        columnNames == df.columnNames
+        };
+
+    ...(`size) { self.numRows };
+
+    #Markdown("""
+    #### Usage
+
+        String(df)
+
+    #### Description
+
+    Return a `String` representation of a dataframe.
+    """)
+    convert (String) {
+        try {
+            if (isEmpty())
+                return "<empty dataframe>"
+
+            builtin.drawGrid(
+                fun(rowObj, col) {
+                    rowObj[col]
+                    },
+                self.getRow,
+                self.numRows,
+                self.numColumns,
+                columnNames:self.columnNames
+                )
+
+        } catch (e) {
+            return "DataFrame[numColumns=%s, numRows=%s]"
+                .format(self.numColumns, self.numRows)
+            }
+        };
+
+    `hidden
+    static processColumn_:
+    fun (filters.IsVector(vector)) {
+        Series(vector)
+        }
+    (Series(series) ) {
+        series
+        }
+    ;
+
+    `hidden
+    static columnNameFromIndex_:
+    fun (index) {
+        "C" + String(index)
+        };
+
+    `hidden
+    static getValidColumnName_:
+    fun (name, index) {
+        match (name) with
+            (filters.IsString(s)) { s }
+            (nothing) { cls.columnNameFromIndex_(index) }
+            (filters.IsSymbol(s)) { String(s)[1,] }
+        };
+
+    `hidden
+    static checkColumnNames_: fun
+    (numColumns, nothing) {
+        // Provide a set of default names.
+        Vector.range(
+            numColumns, 
+            fun(ix) {
+                columnNameFromIndex_(ix)
+                }
+            )
+        }
+    (_, filters.IsVector(columnNames)) {
+        columnNames.applyWithIndex(cls.getValidColumnName_)
+        }
+    (_, columnNames) {
+        checkColumnNames_(nothing, `ProcessToVector(columnNames))
+        }
+    ;
+
+    `hidden
+    static computeColumnLUT_: fun(columnNames) {
+        // Returns a named tuple from column name to index. 
+        // Used to get columns by name.
+        `tupleNamify(columnNames, Tuple..range(size(columnNames)));
+        };
+
+    `hidden
+    static createEmptyDataFrame: fun() {
+        return createInstance(
+            cls,
+            columns: [],
+            columnNames: [],
+            numRows: 0,
+            numColumns: 0
+            )
+        };
+
+    #Markdown("""
+    Accepts a vector of vectors. Wraps each vector in a Series instance.
+
+        * vectors -- Vector of Vectors containing the data to wrap.
+        * columnNames -- Column names as a Vector of Strings
+
+    If `columnNames` is not provided, the dataframe will generate column names of the form
+    "C0", "C1", ... as Strings for each column.
+    """)
+    operator new 
+    (columns: columns,
+            columnNames: columnNames,
+            numRows: numRows,
+            numColumns: numColumns
+            )
+        {
+        createInstance(
+            cls,
+            columns: columns,
+            columnNames: columnNames,
+            numRows: numRows,
+            numColumns: numColumns
+            )
+        }
+    (Support.IsVectorOfVectorsAndSeries(columns), columnNames:= nothing) {
+        columnNames = 
+            cls.checkColumnNames_(size(columns), columnNames);
+
+        assertions.assertEqual(size(columnNames), size(columns))
+
+        let columnsAsSeries = columns.apply(cls.processColumn_);
+
+        let numColumns = size(columns);
+
+        if (numColumns == 0)
+            return cls.createEmptyDataFrame()
+
+        let numRows = max(columns.apply(size));
+
+        createInstance(
+            cls,
+            columns: columnsAsSeries,
+            columnNames: columnNames,
+            numRows: numRows,
+            numColumns: numColumns
+            )
+        }
+    (Support.IsVectorOfTuples(vectorOfTuples), columnNames:=nothing) {
+        let numColumns = size(vectorOfTuples[0]);
+
+        columnNames = 
+            cls.checkColumnNames_(columnNames, vectorOfTuples[0]..names);
+
+        let extractColumn = fun (columnIndex) {
+            let columnVector = vectorOfTuples.apply( {_[columnIndex] });
+            cls.processColumn_(columnVector)
+            };
+
+        let columns = Vector.range(numColumns, extractColumn);
+
+        if (size(columnNames) != size(columns)) {
+            throw Exception(
+                "Number of columns (%d) doesn't match the number of given names (%d)".format(
+                    size(columns), size(columnNames)
+                    )
+                );
+            }
+
+        let numRows = max(columns.apply(size));
+
+        createInstance(
+            cls,
+            columns: columns,
+            columnNames: columnNames,
+            numRows: numRows,
+            numColumns: numColumns
+            )
+        }
+    (dataframe.DataFrame(df)) { df }
+    (math.Matrix(...) m) {
+        let numRows = m.dim[0];
+        let numColumns = m.dim[1];
+        let columnMajorData = m.columnMajorData();
+        let columns = Vector.range(
+            numColumns,
+            fun(colIx) {
+                columnMajorData[colIx * numRows, (colIx + 1) * numRows]
+                }
+            )
+        return DataFrame(columns)
+        }
+    () {
+        cls.createEmptyDataFrame()
+        }
+    (*namedColumns) {
+        let columnNames = cls.checkColumnNames_(nothing, namedColumns..names);
+
+        let columns = [];
+        for ix in sequence(size(namedColumns))
+            {
+            columns = columns :: processColumn_(namedColumns[ix])
+            }
+
+        let numColumns = size(namedColumns);
+        let numRows = max(namedColumns..apply(size));
+
+        createInstance(
+            cls,
+            columns: columns,
+            columnNames: columnNames,
+            numRows: numRows,
+            numColumns: numColumns
+            )
+        }
+    ;
+
+    `hidden
+    operator match 
+    (DataFrame _) { (self,) }
+    (Visualizable _) {
+        let spacing = "    ";
+        (#Markdown(spacing + String(self).replace("\n", "\n" + spacing)),)
+        }
+    (Streamable _) {
+        (StreamableDataFrame(self),)
+        };
+
+    columnIndex: 
+    #Markdown("""
+        #### Usage
+ 
+            df.columnIndex(columnName)
+
+        #### Description
+
+        Return the index of the column in `df` having name `columnName`, provided 
+        it exists. If no such column is found, an exception is thrown.
+
+        #### Examples
+
+            let df = dataframe.DataFrame(a: [1,2,3], b: [4,5,6]);
+            df.columnIndex("a") // OK, returns 0
+            df.columnIndex("b") // OK, returns 1
+            df.columnIndex("c") // raises an exception
+        
+        """)
+    fun(columnName) {
+        for ix in sequence(size(self.columns))
+            if (columnNames[ix] == columnName)
+                return ix
+
+        throw Exception("column name %s not found".format(columnName))
+        };
+
+    renameColumn: 
+#Markdown("""
+#### Usage
+
+    df.renameColumn(columnIndex, newName)
+    df.renameColumn(currentName, newName)
+
+#### Description
+
+Return a new dataframe with a renamed column.
+
+#### Examples
+
+    let df = dataframe.DataFrame(a: [1,2], b: [3,4]);
+    df.renameColumn(0, "A");
+    df.renameColumn("a", "A")
+
+""")
+    fun
+    (filters.IsNumeric(columnIxToReplace), newName) {
+        let newColumnNames = (columnNames[,columnIxToReplace] :: newName) + 
+            columnNames[columnIxToReplace + 1,];
+        
+        DataFrame(
+            columns: columns,
+            columnNames: newColumnNames,
+            numRows: numRows,
+            numColumns: numColumns
+            );
+        }
+    (filters.IsString(columnNameToReplace), newName) {
+        let newColumnNames = [];
+        
+        for ix in sequence(size(columnNames)) {
+            let thisName = columnNames[ix];
+            if (thisName == columnNameToReplace)
+                newColumnNames = newColumnNames :: newName
+            else
+                newColumnNames = newColumnNames :: thisName
+            }
+
+        DataFrame(
+            columns: columns,
+            columnNames: newColumnNames,
+            numRows: numRows,
+            numColumns: numColumns
+            );
+        }
+    ;
+
+    withColumnNames:
+#Markdown("""
+#### Usage
+
+    df.withColumnNames(newColumnNames)
+
+#### Description
+
+Return a new dataframe with new column names.
+
+#### Examples
+
+    let df = dataframe.DataFrame(a: [1,2], b: [3,4]);
+    df.withColumnNames(["A", "B"]) // OK
+    df.withColumnNames(["A", "B", "C"]) // Exception -- wrong length
+
+""")
+    fun(newColumnNames) {
+        assertions.assertEqual(size(newColumnNames), numColumns);
+
+        DataFrame(
+            columns: self.columns,
+            columnNames: newColumnNames,
+            numRows: self.numRows,
+            numColumns: self.numColumns
+            )
+        };
+
+    renameColumns: 
+#Markdown("""
+#### Usage
+
+    df.renameColumns(dictionaryRenameMapping)
+    df.renameColumns(namedTupleRenameMapping)
+
+#### Description
+
+Return a new dataframe with new column names.
+
+#### Examples
+
+    let df = dataframe.DataFrame(a: [1,2], b: [3,4]);
+    df.renameColumns({'a': 'A', 'b': 'B'})
+    df.renameColumns(a: 'A', b: 'B')
+
+""")
+    fun
+    (filters.IsDictionary(renameMapping)) {
+       let newColumnNames = [];
+
+        for ix in sequence(size(columnNames)) {
+            let thisName = columnNames[ix];
+            if (thisName in renameMapping)
+                newColumnNames = newColumnNames :: renameMapping[thisName]
+            else
+                newColumnNames = newColumnNames :: thisName
+            }
+
+        DataFrame(
+            columns: columns,
+            columnNames: newColumnNames,
+            numRows: numRows,
+            numColumns: numColumns
+            );
+        }
+    (*namedTupleOfNames) {
+        let newColumnNames = [];
+        let namesToReplace = namedTupleOfNames..names;
+
+        for ix in sequence(size(columnNames)) {
+            let thisName = columnNames[ix];
+            let thisNameAsSymbol = Symbol(thisName);
+            if (thisNameAsSymbol in namesToReplace)
+                newColumnNames = newColumnNames :: namedTupleOfNames[thisNameAsSymbol]
+            else
+                newColumnNames = newColumnNames :: thisName
+            }
+
+        DataFrame(
+            columns: columns,
+            columnNames: newColumnNames,
+            numRows: numRows,
+            numColumns: numColumns
+            );
+        }
+        ;
+
+    getColumn:
+    #Markdown("""
+    #### Usage
+
+        df.getColumn("columnName")
+        df.getColumn(0)
+        df.getColumn(`columnName)
+
+    #### Description
+
+    Returns a Series object representing the column of a dataframe with the given name or index.
+
+    #### Arguments
+
+    * name -- String or Integer. Which column to get, either by name or index.
+    """)
+    fun 
+    (filters.IsNumeric(columnIndex)) {
+        self.columns[Int64(columnIndex)]
+        }
+    (columnName) {
+        let index = self.columnIndex(columnName);
+        self.columns[index]
+        };
+
+    asMatrix:
+    #Markdown("""
+    #### Usage
+
+        df.asMatrix()
+
+    #### Description
+
+    Coerces the data held by this dataframe into a math.Matrix instance.
+    """)
+    fun () {
+        let dims = (self.numRows, self.numColumns);
+        let dataVec = sum(0, self.numColumns, {self.columns[_].dataVec});
+        math.Matrix(dataVec, dims)
+        };
+
+    index: 
+#Markdown("""
+#### Usage
+
+    df.index(columnNameAsString) // case 1
+    df.index(rowToKeyFun)        // case 2
+
+#### Description
+
+Cases 1 builds a dataframe `Index` on a given column of a dataframe.
+
+Case 3 builds a dataframe `Index` out of a the values of `rowToKeyFun` 
+applied to the rows of `dataframe`.
+
+An _Index_ is, roughly speaking, a map from _keys_ to the rows of a dataframe 
+which match that key (returned as a dataframe). In cases 1 and 2 from above, 
+the keys are just the values of the dataframe in a given column. In case 3, 
+the keys are the whatever `rowToKeyFun` computes for each row. For example,
+
+    let df = dataframe.DataFrame([[0, 1, 2, 3], [0, 1, 0, 2]], columnNames: [`a, `b])
+    let indexOnColumnB = df.index(`b)
+
+For column b, we have values `[0, 1, 0, 2]`, so these elements give us the existent "keys"
+in `indexOnColumnB`. We may access them by the get-item operator (ie, indexing),
+so the following are true:
+
+    indexOnColumnB[0].equals(dataframe.DataFrame([[0, 2], [0, 0]], columnNames: df.columnNames))
+    indexOnColumnB[1].equals(dataframe.DataFrame([[1], [1]], columnNames: df.columnNames))
+    indexOnColumnB[2].equals(dataframe.DataFrame([[3], [2]], columnNames: df.columnNames))
+
+For nonexistent keys, for example 42, indexing gives an empty dataframe:
+
+    indexOnColumnB[42].equals(dataframe.DataFrame([[], []], columnNames: df.columnNames))
+
+As an example of case 3, consider
+
+    let rowToKeyFun = fun(row) { row.sum() % 2 }
+    let indexForRowToKeyFun = df.index(rowToKeyFun)
+
+In this case, the "key" of a row is its mod-2 sum. So for example,
+
+    indexForRowToKeyFun[0].equals(dataframe.DataFrame([[0, 1, 2], [0, 1, 0]], columnNames: df.columnNames))
+    indexForRowToKeyFun[1].equals(dataframe.DataFrame([[3], [2]], columnNames: df.columnNames))
+
+100 is not a valid mod-2 value, so 
+
+    indexForRowToKeyFun[100].equals(dataframe.DataFrame([[], []], columnNames: df.columnNames))
+
+Dataframe `Index`es support a few other operations. Please see `help(dataframe.Index)` for 
+more information.
+
+""")
+    fun
+        (filters.IsString(column)) { index(fun(row) { row[column] }) }
+        (selector) {
+            Index(
+                sorting.sort(
+                    Vector.range(self.numRows, 
+                        fun(index) {
+                            (selector(self[index]), index)
+                            }
+                        )
+                    ),
+                self
+                )
+            };
+
+    describe:
+    #Markdown("""
+    #### Usage
+
+        df.describe()
+
+    #### Description
+
+    Returns a set of summary statistics about each column in the dataframe.
+
+    Equivalent to:
+
+        df.columnApply(math.stats.summary)
+    """)
+    fun () {
+        columnApply(math.stats.summary)
+        };
+
+    drop:
+    #Markdown("""
+    #### Usage
+
+        df.drop(valueToDrop)
+
+    #### Description
+
+    Remove all rows of the dataframe that contain the value given.
+
+    Typically used to remove rows with bad values, such as NaN or nothing.
+    """)
+    fun (valueToDrop) {
+        self.select({valueToDrop not in _})
+        };
+
+    #Markdown("""
+    #### Usage
+
+        df.select(*args)
+
+    #### Description
+
+    Alias for `df.select(*args)`.
+    """)
+    filter:
+    fun (*args) {
+        select(*args)
+        };
+
+    filterWithIndex:
+    #Markdown("""
+    #### Usage
+
+        df.filterWithIndex(*args)
+
+    #### Description
+
+    Alias for `df.filterWithIndex(*args)`.
+    """)
+    fun(*args) {
+        selectWithIndex(*args)
+        };
+
+    selectWithIndex:
+    #Markdown("""
+    #### Usage
+
+        df.selectWithIndex(function)
+
+    #### Description
+
+    Return a new dataframe consisting of the rows of `df` for which 
+    `function(row, rowIndex)` returns true where `rowIndex` is the index of `row` 
+    in `df`.
+
+    #### Example
+
+        let df = dataframe.DataFrame(a: Vector.range(100));
+        df.selectWithIndex(
+            fun(_, ix) { ix % 4 == 0 }
+            );
+        /* result = 
+        dataframe.DataFrame(
+            a: Vector.range(25, fun(ix) { ix * 4 })
+            )
+            */
+        );
+    """)
+    fun(function, *args) {
+        select(
+            fun(row) {
+                function(row, row.rowIndex())
+                },
+            *args
+            )
+        };
+
+    select:
+    #Markdown("""
+    #### Usage
+
+        df.select(function)
+
+    #### Description
+
+    Return a new dataframe with the rows for which the given function returns true.
+    """)
+    fun (predicate, sliceRange:= nothing, splitLimit:= 1000000) {
+        if (sliceRange is nothing)
+            sliceRange = (0, size(self))
+
+        let (low, high) = sliceRange;
+        let sliceSize = high - low;
+        if (sliceSize > splitLimit) {
+            let mid = (high + low) / 2;
+            let d1 = select(
+                predicate, 
+                sliceRange: (low, mid),
+                splitLimit: splitLimit
+                );
+            let d2 = select(
+                predicate,
+                sliceRange: (mid, high),
+                splitLimit: splitLimit
+                );
+            return d1.append(d2);
+            }
+        
+        let shouldInclude = [];
+        
+        for ix in sequence(low, high)
+            shouldInclude = shouldInclude :: predicate(self[ix])
+        
+        let selectColumn = fun(column) {
+            let newColumn = [];
+            
+            for ix in sequence(size(shouldInclude)) {
+                if (shouldInclude[ix])
+                    newColumn = newColumn :: column[low + ix]
+                }
+            
+            dataframe.Series(newColumn)
+            };
+
+        let newColumns = self.columns.apply(selectColumn);
+
+        dataframe.DataFrame(
+            columns: newColumns,
+            columnNames: self.columnNames,
+            numRows: if (size(newColumns)) size(newColumns[0]) else 0,
+            numColumns: self.numColumns
+            );
+        };
+
+    rowApply:
+    #Markdown("""
+    #### Usage
+
+        df.rowApply(function)
+
+    #### Description
+
+    Returns a Series object which results from calling the function with each row 
+    of the dataframe.
+
+    #### Example
+
+        let df = dataframe.DataFrame(a: [1,6,3,8], b: [5,2,7,4]);
+        df.rowApply(fun(row) { max(row) })
+        // result = dataframe.Series([5, 6, 7, 8])
+
+    """)
+    fun (expr) {
+        Series(Vector.range(self.numRows, { expr(self[_]) }))
+        };
+
+    rowApplyWithIndex:
+    #Markdown("""
+    #### Usage
+
+        df.rowApplyWithIndex(function)
+
+    #### Description
+
+    Returns a series object which results from calling the function on each row and
+    corresponding row index of `df`.
+
+    #### Example
+
+
+        let df = dataframe.DataFrame(a: [1,6,3,8], b: [5,2,7,4]);
+        df.rowApplyWithIndex(fun(row, rowIx) { (max(row), rowIx) })
+        // result = dataframe.Series([(5,0), (6,1), (7,2), (8,3)])
+
+    """)
+    fun(f) {
+        Series(
+            Vector.range(
+                self.numRows, 
+                fun(rowIx) {
+                    f(self[rowIx], rowIx)
+                    }
+                )
+            );
+        };
+
+    columnApply:
+    #Markdown("""
+    #### Usage
+
+        df.columnApply(function)
+
+    #### Description
+
+    Returns a Vector that results from calling the function with each column.
+
+    #### Arguments
+
+    * function -- A Fora function that accepts a single Series instance.
+
+    """)
+    fun (function) {
+        self.columns.apply({ _(function) })
+        };
+
+    applyToColumn:
+    #Markdown("""
+    #### Usage
+
+        df.applyToColumn(function, name: name)
+
+    #### Description
+
+    Returns a new dataframe with the function applied to each element of the column.
+
+    This is equivalent to:
+
+        let newColumn = df.getColumn(name).apply(function);
+        df.replaceColumn(newColumn, name: name);
+
+    #### Arguments
+
+    * function -- A function that accepts an element of a column and returns a new value.
+    * columnName -- The name of the column as a String.
+
+    #### Example
+
+    Convert a column to Float64.
+
+        let columns = [
+            [2.0, 4.0, 6.0, 8.0],
+            ["1.0", "3.0", "5.0", "7.0"]
+            ];
+        let columnNames = (`evens, `odds);
+
+        let df = dataframe.DataFrame(
+            columns,
+            columnNames: columnNames
+            );
+
+        df.applyToColumn(Float64, name: `odds)
+
+or
+
+        df.applyToColumn(Float64, name: "odds")
+
+
+    """)
+    fun (function, name: columnName) {
+        let column = self.getColumn(columnName);
+        let newColumn = column.apply(function);
+        self.replaceColumn(newColumn, name:columnName)
+        };
+
+    replaceColumn:
+    #Markdown("""
+    #### Usage
+
+        df.replaceColumn(series, name: "nameOfColumnToReplace")
+        df.replaceColumn(vector, name: "nameOfColumnToReplace")
+        df.replaceColumn(function, name: "nameOfColumnToReplace")
+
+    #### Description
+
+    Returns a new dataframe with the named column replaced by the given value.
+
+    * series -- A Series instance with the values of the new column.
+    * vector -- A Vector instance with the values of the new column.
+    * function -- A Function of a single row that calculates a new value of the column for that row.
+    * columnName -- A String that holds the name of the column to replace.
+
+    #### Example
+
+    Convert a column to Float64.
+
+        let columns = [
+            [2.0, 4.0, 6.0, 8.0],
+            ["1.0", "3.0", "5.0", "7.0"]
+            ];
+        let columnNames = ("evens", "odds");
+
+        let df = dataframe.DataFrame(
+            columns,
+            columnNames: columnNames
+            );
+
+        df.replaceColumn(fun(row) { Float64(row..odds) }, name: "odds")
+    """)
+    fun (Series(column), name: columnName) {
+        let index = self.columnIndex(columnName);
+
+        let preColumns = self.columns[,index];
+        let postColumns = self.columns[index + 1,];
+
+        let preColumnNames = self.columnNames[,index];
+        let postColumnNames = self.columnNames[index + 1,];
+
+        DataFrame(
+            columns: preColumns + [column] + postColumns, 
+            columnNames: preColumnNames + [columnName] + postColumnNames,
+            numRows: self.numRows,
+            numColumns: self.numColumns
+            )
+        }
+    (filters.IsVector(columnVector), name: columnName) {
+        self.replaceColumn(Series(columnVector), name: columnName)
+        }
+    (f, name: columnName) { 
+        self.replaceColumn(Series(self.rowApply(f)), name: columnName)
+        };
+
+    #Markdown("""
+    #### Usage
+
+        df ~~ function
+
+    #### Description
+
+    Apply 'function' to each element in the DataFrame, 
+    returning a new DataFrame with the same names.
+
+    Equivalent to 
+
+        df.each(function)
+
+    #### Examples
+
+        let df = dataframe.DataFrame(a: [1,2,3], b: [4,5,6])
+        df ~~ { _ * 2 } // double each element in the dataframe
+    """)
+    operator ~~(func) {
+        DataFrame(
+            columns: self.columns.apply(fun(column) { column ~~ func }),
+            columnNames: self.columnNames,
+            numRows: self.numRows,
+            numColumns: self.numColumns
+            )        
+        };
+
+    each:
+    #Markdown("""
+    #### Usage
+
+        df.each(function)
+
+    #### Description
+
+    Apply a function to every element in the DataFrame, 
+    returning a new DataFrame with the same names.
+    """)
+    fun (func) {
+        DataFrame(
+            columns: self.columns.apply( {_.apply(func)} ),
+            columnNames: self.columnNames,
+            numRows: numRows,
+            numColumns: numColumns
+            )
+        };
+
+    addColumns:
+    #Markdown("""
+    #### Usage
+
+        df.addColumns([vector1, vector2], names:(`Column1, `Column2))
+
+    #### Description
+
+    Returns a new dataframe with the given values added as columns.
+    """)
+    fun (columnConstructors, names:= nothing) {
+        names = checkColumnNames_(columnConstructors, names)
+
+        let df = self;
+        for i in sequence(size(columnConstructors)) {
+            df = df.addColumn(columnConstructors[i], name: names[i])
+            }
+
+        return df;
+        };
+
+    isEmpty: 
+    #Markdown("""
+    #### Usage
+
+        df.isEmpty()
+
+    #### Description
+
+    Check whether a dataframe is empty or not. A dataframe is considered empty
+    if it has zero rows and zero columns.
+    """)
+    fun() {
+        self.numColumns == 0 and self.numRows == 0
+        };
+
+    addColumn:
+    #Markdown("""
+    #### Usage
+
+        df.addColumn(series, name: columnName)
+        df.addColumn(function, name: columnName)
+        df.addColumn(vector, name: columnName)
+
+    #### Description
+
+    Adds a column to the dataframe with the given name.
+
+    This method accepts Series instances, functions, and Vectors as the value of the column to add.
+    For the second case, the function is called with each row of the dataframe to produce the
+    new column values. It is equivalent to:
+
+        let column = d.rowApply(function)
+        df.addColumn(column, name: columnName)
+
+    """)
+    fun (Series(series), name:= nothing) {
+        if (isEmpty())
+            return dataframe.DataFrame([series], columnNames: [name]); 
+
+        name = getValidColumnName_(name, size(self.columns))
+        if (name in self.columnNames) {
+            if (name is nothing) {
+                throw Exception("Please provide a name for the column.")
+                }
+            else {
+                throw Exception(
+                    "Name " + String(name) + """ exists in dataframe. 
+                     To add this, as a new column, please run `addColumn` 
+                     again with a different name argument"""
+                    )
+                }
+            }
+
+        DataFrame(
+            columns: self.columns :: series, 
+            columnNames: self.columnNames :: name,
+            numRows: self.numRows,
+            numColumns: self.numColumns + 1
+            )
+        }
+    (filters.IsVector(vector), name:= nothing) {
+        if (size(vector) < self.numRows)
+            vector = vector + Vector.range(self.numRows - size(vector), {nothing});
+        // TODO If the size > numRows, add 'nothing' to all the other columns. 
+        // Or have a strategy to return 'nothing' when needed, 
+        // without actually appending those values.
+        addColumn(Series(vector), name: name)
+        }
+    (f, name:= nothing) {
+        self.addColumn(
+            self.rowApply(f),
+            name: name
+            );
+        }
+    ;
+
+    at:
+    #Markdown("""
+    #### Usage
+
+        df.at(rowIndex)
+
+    #### Description
+
+    Get a row from the dataframe (as a DataFrameRow instance).
+    """)
+    fun (rowIndex) {
+        self.iloc(rowIndex)
+        };
+
+    loc:
+    #Markdown("""
+    #### Usage
+
+        df.loc(rowIndex)
+
+    #### Description
+
+    Get a row from the dataframe (as a DataFrameRow instance).
+    """)
+    fun (rowIndex) {
+        self.iloc(rowIndex)
+        };
+
+    get:
+    #Markdown("""
+    #### Usage
+
+        df.get(rowIndex)
+
+    #### Description
+
+    Get a row from the dataframe (as a DataFrameRow instance).
+    """)
+    fun (rowIndex) {
+        self.iloc(rowIndex)
+        };
+
+    getRow:
+    #Markdown("""
+    #### Usage
+
+        df.getRow(rowIndex)
+
+    #### Description
+
+    Get a row from the dataframe (as a DataFrameRow instance).
+    """)
+    fun (rowIndex) {
+        self.iloc(rowIndex)
+        };
+
+    iloc:
+    #Markdown("""
+    #### Usage
+
+        df.iloc(rowIndex)
+
+    #### Description
+
+    Get a row from the dataframe (as a DataFrameRow instance).
+    """)
+    fun (rowIndex) {
+        if (rowIndex < -self.numRows or rowIndex >= self.numRows)
+            throw Exception("Index out of bounds. Acceptable range is [-numRows, numRows).")
+        DataFrameRow(self, Int64(rowIndex))
+        };
+
+    #Markdown("""
+    #### Usage
+
+        df[0]             // Get a row
+        df[1,5]           // Slice the dataframe by rows
+        df[1,5,2]         // Slice the dataframe by rows with a step
+        df[function]      // Select rows
+        df[`columnName]  // Get a column
+        df["columnName"]  // Get a column
+
+    #### Description
+
+    Depending on the arguments passed in, the [] ("get item") operator will perform different functions:
+
+    1. A single integer will return a DataFrameRow object representing the row of the dataframe.
+    2. Two integers will return a new DataFrame, the same as `df.slice`, holding only those rows.
+    3. Three integers will also return a new DataFrame, as `df.slice`, stepped by the third parameter.
+    4. A function will act as `df.select`.
+    5. A string will return a column, equivalent to `df.getColumn`.
+
+    With the integer forms, they behave just as Vector slicing does, where omitted values for the
+    start or end will mean the beginning or end of the dataframe, respectively.
+
+    #### Example
+
+        let columns = [
+            [2.0, 4.0, 6.0, 8.0],
+            [1.0, 3.0, 5.0, 7.0]
+            ];
+        let columnNames = (`evens, `odds);
+
+        let df = dataframe.DataFrame(
+            columns,
+            columnNames: columnNames
+            );
+
+        df[,,2]
+
+        // Will include rows [2.0, 1.0] and [6.0, 5.0]
+
+    """)
+    operator []
+    (filters.IsNumeric(rowIndex)) {
+        self.iloc(Int64(rowIndex))
+        }
+    (filters.IsString(columnName)) {
+        self.getColumn(columnName)
+        }
+    (start=nothing, end=nothing, step=nothing) {
+        if (start is nothing)
+            start = 0
+        if (end is nothing)
+            end = self.numRows
+        if (step is nothing)
+            step = 1
+        self.slice(Int64(start), Int64(end), Int64(step))
+        };
+
+    slice:
+    #Markdown("""
+    #### Usage
+
+        df.slice(start, end)
+        df.slice(start, end, step)
+
+    #### Description
+
+    Returns a new dataframe containing rows indicated by the arguments provided. 
+    Similar to vector slicing.
+
+    Just as vectors can be sliced given lower and upper indices, so can dataframes. 
+    Given two integers, the resulting dataframe will contain the rows starting from 
+    the lower index inclusive, and ending with the upper index, exclusive.
+    
+    The step parameter will dictate how many elements to skip during the slicing. 
+    By default, the slicing returns every row in the range. 
+    A step of 2 will return every other row, etc.
+    """)
+    fun (filters.IsInteger(start), filters.IsInteger(end)) {
+        let newColumns = self.columns.apply({ _[start, end] });
+        DataFrame(
+                columns:newColumns, 
+                columnNames: self.columnNames,
+                numRows: if (size(newColumns)) size(newColumns[0]) else 0,
+                numColumns: self.numColumns
+                )
+        }
+    (filters.IsInteger(start), filters.IsInteger(end), filters.IsInteger(step)) {
+        let newColumns = self.columns.apply({ _[start, end, step] });
+        DataFrame(
+                columns:newColumns, 
+                columnNames: self.columnNames,
+                numRows: if (size(newColumns)) size(newColumns[0]) else 0,
+                numColumns: self.numColumns
+                )
+        };
+
+    #Markdown("""
+    #### Usage
+
+        dataframe("col1", "col2")   
+        dataframe(["col1", "col2"])
+        dataframe(("col1", "col2"))
+
+    #### Description
+
+    Produces a new dataframe consisting only of the columns whose names are passed.
+
+    This simply does a select over the columns.
+    """)
+    operator ()
+    (filters.IsVector(newColumnNames)) {
+        self.dataframeFromSelectedColumns_(newColumnNames)
+        }
+    (filters.IsTuple(newColumnNames)) {
+        self.dataframeFromSelectedColumns_(newColumnNames)
+        }
+    (*newColumnNames) {
+        self.dataframeFromSelectedColumns_(iter.toVector(newColumnNames))
+        };
+
+    `hidden
+    dataframeFromSelectedColumns_:
+    fun (newColumnNames) {
+        newColumnNames = 
+            checkColumnNames_(newColumnNames, newColumnNames);
+
+        let columnsVec = [];
+
+        for columnName in newColumnNames {
+            columnsVec = columnsVec :: self.getColumn(columnName)
+            }
+
+        let newNumColumns = size(newColumnNames);
+
+        DataFrame(
+            columns: columnsVec, 
+            columnNames: newColumnNames,
+            numRows: self.numRows,
+            numColumns: newNumColumns
+            )
+        };
+
+    head:
+    #Markdown("""
+    #### Usage
+
+        df.head()
+
+    #### Description
+
+    By default, returns a dataframe containing the first 5 rows of this dataframe.
+    """)
+    fun (numRowsAtStart=5) {
+        self[,numRowsAtStart]
+        };
+
+    tail:
+    #Markdown("""
+    #### Usage
+
+        df.tail()
+
+    #### Description
+
+    By default, returns a dataframe containing the last 5 rows of this dataframe.
+    """)
+    fun (numRowsAtEnd=5) {
+        self[-numRowsAtEnd,]
+        };
+
+    `hidden
+    appendWithIdenticalNames_:
+    fun (DataFrame(otherDataFrame))
+        {
+        let newColumns = Vector.range(
+            self.numColumns,
+            fun(columnIndex) {
+                getColumn(columnIndex).append(otherDataFrame.getColumn(columnIndex))
+                }
+            );
+
+        DataFrame(
+            columns: newColumns,
+            columnNames: self.columnNames,
+            numRows: self.numRows + otherDataFrame.numRows,
+            numColumns: self.numColumns
+            )
+        };
+
+    append:
+    #Markdown("""
+    #### Usage
+
+        df.append(otherDataFrame)
+
+    #### Description
+
+    Concatenates two dataframes by appending the rows of `otherDataFrame` 
+    to the end of `dataframe`.
+
+    Columns with like names will contain the values from both dataframes, 
+    but columns unique to `dataframe` will be filled with `nothing` in the 
+    appended rows, and columns unique to `otherDataFrame` will be prepended
+    with `nothing` in the rows contained originally by `dataframe`.
+    
+    Thus, the following dataframes when appended, will result in:
+
+        A  B     A  C           A  B        C
+        1  2     5  6   ---->   1  2        nothing
+        3  4     7  8           3  4        nothing
+                                5  nothing  6
+                                7  nothing  8
+    """)
+    fun (DataFrame(otherDataFrame)) {
+        if (columnNames == otherDataFrame.columnNames) // can't use `is` on vectors D:  >
+            return appendWithIdenticalNames_(otherDataFrame);
+
+        // TODO BUG this is not handling duplicate columns correctly
+
+        // Line up the columns on name
+        let columnNames = self.columnNames;
+        let otherColumnNames = otherDataFrame.columnNames;
+        let allColumnNames = Support.union(columnNames, otherColumnNames);
+
+        let columnsToConcat = Support.intersection(columnNames, otherColumnNames);
+        let columnsToFill = Support.disjoint(columnNames, otherColumnNames);
+
+        let buildColumn = fun(columnIndex) {
+            let columnName = allColumnNames[columnIndex];
+            let newColumn = nothing;
+
+            if (columnName in columnsToConcat) {
+                let column = self.getColumn(columnName);
+                let otherColumn = otherDataFrame.getColumn(columnName);
+                newColumn = column.append(otherColumn)
+                }
+            else if (columnName in columnsToFill)
+                {
+                let fillAtEnd = columnName in columnNames;
+                if (fillAtEnd) {
+                    let column = self.getColumn(columnName);
+                    let numRowsToFill = otherDataFrame.numRows;
+                    newColumn = column.append(
+                        Vector.range(numRowsToFill, fun(x){nothing})
+                        );
+                    }
+                else {
+                    let column = otherDataFrame.getColumn(columnName);
+                    let numRowsToFill = self.numRows;
+                    newColumn = column.prepend(
+                        Vector.range(numRowsToFill, fun(x){nothing})
+                        );
+                    }
+                }
+            else
+                {
+                throw Exception("A column name wasn't found: " 
+                                + String(columnName))
+                }
+
+            (names:[columnName], data:[newColumn])
+            };
+
+        let mergeFun = fun(col1, col2) {
+            (names:col1.names + col2.names, data:col1.data + col2.data)
+            };
+        let newColumns =
+            sum(0, size(allColumnNames), buildColumn, mergeFun)
+
+        DataFrame(
+            newColumns.data, 
+            columnNames:newColumns.names
+            )
+        };
+
+    `hidden
+    _defaultLess: fun(x, y) { x < y };
+
+    sort: 
+    #Markdown("""
+    #### Usage
+
+        df.sort(`C1), less:=fun(x, y) { x < y })
+        df.sort("C1"), less:=fun(x, y) { x < y })
+        df.sort(`C1, `C2, `C3), less:=fun(x, y) { x < y })
+        df.sort((`C1, `C2, `C3)), less:=fun(x, y) { x < y })
+        df.sort("C1","C2","C3"), less:=fun(x, y) { x < y })
+        df.sort(("C1","C2","C3")), less:=fun(x, y) { x < y })
+        df.sort(predicate: fun(row) { (row..C1, row..C2) } ), less:=fun(x, y) { x < y })
+
+    #### Description
+
+    Sort a dataframe. The sorting criteria can either be a list of column
+    names (specified as strings), or it can be a function that 
+    returns a value to sort (as a proxy for the row). The optional named 
+    argument `less` can be used as a custom comparator on elements. 
+        
+    """)
+    fun (filters.IsString(columnName), less:= _defaultLess) { 
+            sortByColumn(columnName, less:less)
+            }
+        (predicate:, less:= _defaultLess) { 
+            let df2 = addColumn(self.rowApply(predicate))
+            let df3 = df2.sortByColumn(df2.columnNames[-1], less:less)
+            return DataFrame(
+                columns: df3.columns[,-1], 
+                columnNames: df3.columnNames[,-1],
+                numRows: df3.numRows,
+                numColumns: df3.numColumns - 1
+                )
+            }
+        ((*columnNames), less:= _defaultLess) { 
+            sort(predicate: fun(row) { 
+                columnNames..apply(fun(name) { row[name] } ) }, 
+                less:less)
+            }
+        (*columnNames, less:= _defaultLess) {
+            sort(columnNames, less:less)
+            };
+
+    `hidden
+    sortByColumn: fun(by=nothing, less:=_defaultLess) {
+        if (by is nothing)
+            throw Exception("Provide a column to sort by in the 'by:' argument.")
+
+        let sortColumn = self.getColumn(by);
+
+        if (sorting.isSorted(sortColumn))
+            return self;
+
+        let sortIndex = self.columnIndex(by);
+        let sortVector = sortColumn.dataVec;
+
+        // Get a list of indices that doesn't include the index column above.
+        let allOtherColumnIndices = 
+            [ix for ix in sequence(self.numColumns) if ix != sortIndex];
+
+        // Convert all the columns to be sorted to the indexed form.
+        let sortableOtherColumns =
+            allOtherColumnIndices.apply(fun(i){
+                zipWith(fun(*args) { args }, sortVector, self.getColumn(i).dataVec)
+                });
+
+        // Sort the given column (as vector) against the index.
+        let columnSorter = fun(col) {
+            sorting.sort(col, fun(a, b) { less(a[0], b[0]) })
+            };
+
+        // Actually perform all the sorting operations on each column.
+        let sortedIndex = Series(sorting.sort(sortVector, less));
+        let sortedOtherColumns = sortableOtherColumns.apply(columnSorter);
+
+        sortedOtherColumns = sortedOtherColumns.apply(
+            fun(vec) { Series(vec.apply({ _[1] })) }
+            )
+
+        let newColumns = 
+            sortedOtherColumns[,sortIndex] 
+            + [sortedIndex] 
+            + sortedOtherColumns[sortIndex,]
+
+        dataframe.DataFrame(
+            columns: newColumns, 
+            columnNames: self.columnNames,
+            numRows: self.numRows,
+            numColumns: self.numColumns
+            )
+        };
+
+
+    ...(`Operator, op, DataFrame(other)) {
+        let newColumns = [];
+        let newNames = [];
+        
+        for name in self.columnNames {
+            let column = self.getColumn(name);
+            
+            if (name in other.columnNames) {
+                let otherSeries = other.getColumn(name);
+                let newSeries = column`(`Operator, op, otherSeries);
+                newColumns = newColumns :: newSeries;
+                newNames = newNames :: name;
+                }
+            else {
+                newColumns = newColumns :: column;
+                newNames = newNames :: name;
+                }
+            }
+        
+        let namesAlreadyAdded = newNames;
+        for name in other.columnNames {
+            if (name not in namesAlreadyAdded) {
+                let otherColumn = other.getColumn(name);
+                newColumns = newColumns :: otherColumn;
+                newNames = newNames :: name;
+                }
+            }
+        
+        DataFrame(newColumns, columnNames:newNames)
+        };
+    
+    ...(`Operator, op, nonDataFrameValue) {
+        let applyOperatorToSeries = {
+            _`(`Operator, op, nonDataFrameValue)
+            };
+        let newColumns = self.columns.apply(applyOperatorToSeries);
+        DataFrame(newColumns, columnNames: columnNames)
+        };
+
+    ...(`ReverseOperator, op, nonDataFrameValue) {
+        let applyOperatorToSeries = {
+            nonDataFrameValue`(`Operator, op, _)
+            };
+        let newColumns = self.columns.apply(applyOperatorToSeries);
+        DataFrame(newColumns, columnNames: columnNames)
+        };
+
+    reverse:
+#Markdown("""
+#### Usage
+ 
+    df.reverse()
+
+#### Description
+
+Reverse each column in a dataframe `df`, producing a new dataframe.
+""")
+    fun() {
+        DataFrame(
+            columns: self.columns ~~ { _.reverse() },
+            columnNames: self.columnNames,
+            numRows: self.numRows,
+            numColumns: self.numColumns
+            )
+        };
+
+    dropColumn: 
+    #Markdown("""
+    #### Usage
+
+        df.dropColumn(columnNameOrIndex)
+
+    #### Description
+
+    Return a new dataframe which is the result of dropping the column
+    described by `columnNameOrIndex` from `df`. `columnNameOrIndex` should 
+    either be a `String`, which describes the column to drop by 
+    name, or an integer, which defines the index of the column to drop.
+
+    If the requested column does not exist, then no exception is thrown, and 
+    the original dataframe is returned.
+
+    #### Examples
+
+        let df = dataframe.DataFrame(
+            a: [0, 1, 2],
+            b: [3, 4, 5]
+            )
+
+        // the following all accomplish the same thing
+        df.dropColumn('a')
+        df.dropColumn(0)
+
+    """)
+    fun(filters.IsString(columnNameToDrop)) {
+        let newColumns = [];
+        let newNames = [];
+        
+        for ix in sequence(self.numColumns)
+            {
+            let nextName = self.columnNames[ix]
+            if (nextName != columnNameToDrop)
+                {
+                newNames = newNames :: nextName;
+                newColumns = newColumns :: self.columns[ix]
+                }
+            }
+
+        DataFrame(
+            newColumns,
+            columnNames: newNames
+            );
+        }
+    (filters.IsInteger(columnIxToDrop)) {
+        let newColumns = [];
+        let newNames = [];
+        
+        for ix in sequence(self.numColumns)
+            {
+            if (ix != columnIxToDrop)
+                {
+                newNames = newNames :: self.columnNames[ix]
+                newColumns = newColumns :: self.columns[ix]
+                }
+            }
+
+        DataFrame(
+            newColumns,
+            columnNames: newNames
+            );
+        }
+        ;
+
+    dropColumns: 
+    #Markdown("""
+    #### Usage
+
+        df.dropColumns(*columnsToDrop)
+
+    #### Description
+
+    Drop the specified names from a dataframe (in a new dataframe, of course).
+
+    Each member in `columnsToDrop` may either be a `String`, representing a 
+    column to drop by name, or an `Integer`, specifying the column to drop by 
+    index. 
+
+    Note: if a name or index in `columnsToDrop` does not appear in `df`, 
+    _no exception is thrown_.
+
+    #### Examples
+
+    let df = dataframe.DataFrame(a: [1,2,3], b: [4,5,6])
+    df.dropColumns("a", "b") // drops all columns
+    df.dropColumns("a") // drop just column "a"
+    df.dropColumns("a", 1) // drops all columns
+    """)
+    fun(*columnsToDrop) {
+        let shouldDrop = fun
+        (filters.IsString(s)) { 
+            s in columnsToDrop
+            }
+        (filters.IsInteger(columnIx)) {
+            columnIx in columnsToDrop
+            }
+        ;
+        
+        let newColumns = [];
+        let newNames = [];
+        
+        for ix in sequence(self.numColumns)
+            {
+            let nextName = self.columnNames[ix]
+            if (not (shouldDrop(nextName) or shouldDrop(ix)))
+                {
+                newNames = newNames :: self.columnNames[ix]
+                newColumns = newColumns :: self.columns[ix]
+                }
+            }
+
+        DataFrame(
+            newColumns,
+            columnNames: newNames
+            );
+        }
+    ;
+
+    groupBy: 
+#Markdown(
+"""#### Usage
+
+    df.groupBy(key)
+    df.groupBy(key:)
+    df.groupBy((*keys))
+    df.groupBy(keys: (*keys))
+
+#### Description
+
+Group the rows of a dataframe into a `GroupBy` object, according to a key (or keys). 
+
+Use `help(dataframe.GroupBy)` for more information on `GroupBy` objects.
+
+#### Examples
+
+    let df = dataframe.DataFrame(
+        A: ['foo', 'bar', 'foo', 'bar', 
+            'foo', 'bar', 'foo', 'foo'], 
+        B: ['one', 'one', 'two', 'three', 
+            'two', 'two', 'one', 'three'], 
+        C: Vector.range(8),
+        D: Vector.range(8, { _ + 8 })
+        );
+
+    df.groupBy(`A)
+
+""")
+    fun(*args) {
+        GroupBy(self, *args)
+        };
+
+    join: 
+#Markdown(
+"""#### Usage
+
+    df.join(other, on:, how:= `left)
+
+#### Description
+
+Database-style joining for dataframes.
+
+Note this is currently only implemented for joining on single columns.
+
+#### Arguments
+
+* `other` -- `DataFrame`. The other `DataFrame` to join with `df`.
+* `on` -- The `String` column name giving the 'key' column on which to join.
+* `how` -- The method of joining: one of `` `inner ``, `` `outer ``, `` `left ``, or `` `right ``.
+
+#### Examples
+
+    let dfLeft = dataframe.DataFrame(
+        key: ['foo', 'foo', 'bar'],
+        lval: [1, 2, 3]
+        )
+    let dfRight = dataframe.DataFrame(
+        key: ['foo', 'baz', 'foo'],
+        rval: [4,5,6]
+        )
+
+    dfLeft.join(dfRight, on: "key")
+    dfLeft.join(dfRight, on: "key", how: `left)
+    dfLeft.join(dfRight, on: "key", how: `right)
+    dfLeft.join(dfRight, on: "key", how: `inner)
+    dfLeft.join(dfRight, on: "key", how: `outer)
+
+"""
+)
+    fun(otherDf, on:, how:= `left, leftSuffix:= "", 
+        rightSuffix:= "", chunkSize:= nothing, areSorted:= false)
+        {
+        let joiner = 
+            match(how) with
+                (`inner) { dataframe.joining.InnerJoiner }
+                (`outer) { dataframe.joining.OuterJoiner }
+                (`left)  { dataframe.joining.LeftJoiner }
+                (`right) { dataframe.joining.RightJoiner }
+            ;
+
+        joiner(self, otherDf, on: on, 
+               leftSuffix: leftSuffix, 
+               rightSuffix: rightSuffix, 
+               chunkSize: chunkSize,
+               areSorted: areSorted
+               ).join()
+        };
+    
+    };
+

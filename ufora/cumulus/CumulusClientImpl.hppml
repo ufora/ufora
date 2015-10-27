@@ -1,0 +1,251 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../core/EventBroadcaster.hpp"
+#include "../core/math/Random.hpp"
+#include "../core/PolymorphicSharedPtr.hpp"
+#include "../core/Json.hppml"
+#include "../core/threading/CallbackScheduler.hppml"
+#include "ComputationDependencyGraph.hpp"
+#include "SystemwideComputationScheduler/ComputationBehaviorPredictor.hppml"
+#include "ClientComputationCreatedResponse.hppml"
+#include "MachineComputationMap.hppml"
+#include "CheckpointStatusUpdateMessage.hppml"
+#include "ComputationResult.hppml"
+#include "VectorLoadedResponse.hppml"
+#include "RootComputationComputeStatusChanged.hppml"
+#include "RootToRootDependencyCreated.hppml"
+#include "../FORA/VectorDataManager/PageRefcountEvent.hppml"
+#include "GlobalSchedulerToCumulusClientMessage.hppml"
+#include "CumulusComponentMessageCreated.hppml"
+#include "CumulusComponentType.hppml"
+#include "GlobalUserFacingLogMessage.hppml"
+#include "Regime.hppml"
+#include "ExternalIoTask/ExternalIoTask.hppml"
+#include "ExternalIoTask/ExternalIoTaskCompleted.hppml"
+
+class SystemwidePageRefcountTracker;
+class VectorDataManager;
+template<class TOut, class TIn> class Channel;
+
+namespace Cumulus {
+
+typedef PolymorphicSharedPtr<Channel<std::string, std::string> > string_channel_ptr;
+
+class ComputationClientCommunicationState;
+class ComputationResultFromMachine;
+class ComputationStatusOnMachineChanged;
+class CumulusClientToWorkerMessage;
+class CumulusWorkerToClientMessage;
+class PageLoader;
+class VectorLoadRequest;
+
+typedef PolymorphicSharedPtr<Channel<std::string, std::string> > unknown_channel_ptr_type;
+
+typedef Channel<CumulusClientToWorkerMessage, CumulusWorkerToClientMessage>	
+																client_to_worker_channel_type;
+
+
+typedef PolymorphicSharedPtr<client_to_worker_channel_type>	client_to_worker_channel_ptr_type;
+
+typedef Channel<CumulusWorkerToClientMessage, CumulusClientToWorkerMessage>	
+																worker_to_client_channel_type;
+
+typedef PolymorphicSharedPtr<worker_to_client_channel_type>	worker_to_client_channel_ptr_type;
+
+
+class CumulusClientImpl : public PolymorphicSharedPtrBase<CumulusClientImpl> {
+public:
+	CumulusClientImpl(
+				PolymorphicSharedPtr<VectorDataManager> inVDM,
+				CumulusClientId inOwnClientId,
+				PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler
+		);
+ 
+	~CumulusClientImpl();
+
+	Ufora::Json getJsonViewOfSystem();
+
+	void polymorphicSharedPtrBaseInitialized();
+
+	void handleVectorLoadResponse(
+				VectorLoadedResponse response
+				);
+	
+	void addMachine(
+				MachineId machine, 
+				client_to_worker_channel_ptr_type inChannel
+				);
+
+	hash_type requestCheckpointStatus();
+
+	Nullable<ComputationStatus> currentActiveStatus(const ComputationId& inComputation);
+
+	void handleComputationStatusOnMachineChanged_(const ComputationStatusOnMachineChanged& msg);
+
+	void handleCumulusComponentMessageToSelf_(
+								CumulusComponentMessage msg, 
+								CumulusClientOrMachine source,
+								CumulusComponentType sourceComponent
+								);
+
+	void handleCrossComponentMessage_(
+								CumulusComponentMessage msg,
+								ImmutableTreeSet<CumulusComponentType> targetComponents, 
+								CumulusComponentType sourceComponent,
+								CumulusClientOrMachine sourceEndpoint
+								);
+
+	void handleLocallyProducedCumulusComponentMessage(
+											CumulusComponentMessageCreated message,
+											CumulusComponentType componentType,
+											hash_type regime
+											);
+
+	ExternalIoTaskId createExternalIoTask(ExternalIoTask task);
+
+	void handleRegimeChangedMessage(MachineId machine, Nullable<Regime> inRegime);
+	
+	void handleComputationResumed(MachineId machine, hash_type inRegime);
+
+	void handleComputationResultFromMachine_(const ComputationResultFromMachine& in);
+
+	void handleClientComputationCreatedResponse_(ClientComputationCreatedResponse response);
+
+	void handleLocalPageRefcountEvent(pair<Fora::PageRefcountEvent,long> event);
+
+	void handleWorkerToClientMessage(MachineId inMachine, CumulusWorkerToClientMessage msg);
+
+	void handleWorkerToClientMessage_(MachineId inMachine, CumulusWorkerToClientMessage msg);
+
+	void writeMessageToWorker_(MachineId machine, const CumulusClientToWorkerMessage& msg);		
+
+	void handleGlobalSchedulerToCumulusClientMessage_(GlobalSchedulerToCumulusClientMessage msg);
+
+	void initializeStateForNewRegime_(Regime newRegime);
+
+	void resubmitAllWorkToWorkers_();
+
+	void checkCurrentRegime_();
+
+	void processPendingRegimeMessages_();
+
+	void dropMachine(MachineId machine);
+
+	void triggerCheckpoint();
+
+	void triggerCheckpointGarbageCollection(bool completePurge);
+
+	std::string outstandingMsg_();
+
+	ComputationId createComputation(const ComputationDefinition& inComputationDefinition);
+
+	bool setComputationPriority(ComputationId computation, ComputationPriority inPriority);
+
+	void resetComputationState();
+
+	void requestVectorLoad(VectorLoadRequest inPageId);
+
+	void requestComputationCheckpoint(ComputationId inComputation);
+
+	CumulusClientId getOwnClientId();
+
+	MachineId pickARandomMachine_();
+
+	void regimeHasBeenReset_();
+
+	pair<Nullable<Regime>, bool> computeNewRegime_();
+
+	void checkComputation_(ComputationId inId);
+
+	boost::recursive_mutex mMutex;
+
+	//regime-specific state
+	MapWithIndex<MachineId, Nullable<Regime> > mMachineCurrentRegimes;
+
+	MapWithIndex<MachineId, hash_type> mMachinesReadyToCompute;
+
+	PolymorphicSharedPtr<PageLoader> mPageLoader;
+
+	PolymorphicSharedPtr<SystemwidePageRefcountTracker> mSystemwidePageRefcountTracker;
+
+	std::map<ComputationId, pair<MachineId, ComputationStatusOnMachine> > mComputationStatuses;
+
+	Nullable<Regime> mCurrentRegime;
+
+	bool mAreAllWorkersReadyToCompute;
+
+	std::map<hash_type, std::vector<pair<MachineId, CumulusWorkerToClientMessage> > > mPendingMessagesByRegime;
+
+	//current external queries - this is the state we are expected to communicate to clients
+	TwoWaySetMap<VectorDataID, VectorDataID> mOutstandingVectorLoads;
+
+	set<hash_type> mOutstandingCheckpointStatuses;
+
+	std::map<ComputationId, ComputationClientCommunicationState> mOutstanding;
+
+	//permanent state
+	PolymorphicSharedPtr<CallbackScheduler> mCallbackScheduler;
+
+	CumulusClientId mOwnClientId;
+
+	std::set<MachineId> mActiveMachines;
+
+	std::set<MachineId> mMachinesEverSeen;
+
+	std::set<MachineId> mMachinesDropped;
+
+	std::set<hash_type> mBigvecHashesAdded;
+
+	EventBroadcaster<MachineId> mOnWorkerDrop;
+
+	EventBroadcaster<MachineId> mOnWorkerAdd;
+
+	std::map<MachineId, client_to_worker_channel_ptr_type> mWorkerChannels;
+
+	EventBroadcaster<ComputationStatusOnMachineChanged> mOnComputationStatusOnMachineChanged;
+
+	EventBroadcaster<ComputationIsCurrentlyCheckpointing> mOnComputationIsCurrentlyCheckpointing;
+
+	EventBroadcaster<ExternalIoTaskCompleted> mOnExternalIoTaskCompleted;
+
+	EventBroadcaster<ComputationResult> mOnComputationResultReceived;
+
+	EventBroadcaster<VectorLoadedResponse> mOnVectorLoadResponse;
+
+	EventBroadcaster<CheckpointStatusUpdateMessage> mOnCheckpointStatusUpdateMessage;
+
+	EventBroadcaster<GlobalUserFacingLogMessage> mOnGlobalUserFacingLogMessage;
+
+	EventBroadcaster<RootComputationComputeStatusChanged> mOnRootComputationComputeStatusChanged;
+
+	EventBroadcaster<RootToRootDependencyCreated> mOnRootToRootDependencyCreated;
+
+	EventBroadcaster<pair<hash_type, Ufora::Json> > mOnCheckpointStatusReturned;
+
+	Ufora::math::Random::Uniform<double> mRandomGenerator;
+
+	RandomHashGenerator mGuidGen;
+
+	PolymorphicSharedPtr<VectorDataManager> mVDM;
+
+	long mMessageCountHandled;
+};
+
+}
+
+

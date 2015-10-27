@@ -1,0 +1,951 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "FORAValuePrinter.hppml"
+
+#include "../Core/Type.hppml"
+#include "../../core/StringUtil.hpp"
+
+#include "../Core/TupleCategory.hppml"
+#include "../TypedFora/ABI/MutableVectorHandle.hpp"
+
+#include <boost/lexical_cast.hpp>
+
+#include "../Core/ClassMediator.hppml"
+#include "../Primitives/String.hppml"
+#include "../Primitives/ExternalFunctionDescription.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
+#include "../Primitives/Symbol.hpp"
+#include "../Runtime.hppml"
+#include "../Vector/MutableVectorRecord.hppml"
+#include "../TypedFora/ABI/VectorRecord.hpp"
+#include "../Native/NativeCode.hppml"
+#include "../Serialization/SerializedObject.hpp"
+
+using TypedFora::Abi::VectorRecord;
+
+namespace FORAValuePrinting {
+
+//anonymous namespace for helper functions
+namespace {
+
+ImmutableTreeSet<Symbol> variablesInObjectTerm(const ObjectDefinitionTerm& objectTerm);
+
+//prepares the data pointers ahead of time as order in lexicalBindings is not gauranteed
+ImmutableTreeVector<char*> prepareTypeDataPointers(char* data,
+												   ImmutableTreeVector<Type> typeObjects)
+	{
+	ImmutableTreeVector<char*> dataPointers;
+	for (int i = 0; i < typeObjects.size(); i++)
+		{
+		if (i == 0)
+			dataPointers = dataPointers + data;
+		else
+			dataPointers = dataPointers
+							+ (dataPointers[i-1]
+							+ typeObjects[i-1].size());
+		}
+	return dataPointers;
+	}
+
+pair<Type,char*> boundTypeUnbinder(pair<Type,char*> typeWithData,
+								   ImmutableTreeVector<uint32_t>::const_iterator unbindSequenceIterator,
+								   ImmutableTreeVector<uint32_t>::const_iterator end)
+	{
+	if (end == ++unbindSequenceIterator)
+		return typeWithData;
+
+	@match Type(typeWithData.first)
+			-|	Class(types) ->> {
+					ImmutableTreeVector<char*> dataPointers
+						= prepareTypeDataPointers(typeWithData.second,types);
+					int unbindIndex = *unbindSequenceIterator;
+					if (unbindIndex < types.size()
+					   && unbindIndex < dataPointers.size())
+						{
+						return boundTypeUnbinder(pair<Type,char*>(types[unbindIndex],
+																   dataPointers[unbindIndex]),
+																   unbindSequenceIterator,
+																   end);
+						}
+					return pair<Type,char*>();
+					}
+			-|	_ ->> {
+					lassert(false);
+					}
+			;
+	}
+
+ImmutableTreeSet<Symbol> variablesInClassTerm(const ClassDefinitionTerm& objectTerm)
+	{
+	@match ClassDefinitionTerm(objectTerm)
+		-| DataMember() ->> {
+			return emptyTreeSet();
+			}
+		-| Constructor(fun) ->> {
+			return mentionedVariables(fun);
+			}
+		-| Static(term) ->> {
+			return variablesInObjectTerm(term);
+			}
+		-| ObjectTerm(term) ->> {
+			return variablesInObjectTerm(term);
+			}
+
+	}
+
+ImmutableTreeSet<Symbol> variablesInObjectTerm(const ObjectDefinitionTerm& objectTerm)
+	{
+	@match ObjectDefinitionTerm(objectTerm)
+		-|	Member(name,expression) ->> {
+				return mentionedVariables(expression) + name;
+				}
+		-|	MatchFilter(function) ->> {
+				return mentionedVariables(function);
+				}
+		-|	Filter(function) ->> {
+				return mentionedVariables(function);
+				}
+		-|	Convert(function) ->> {
+				return mentionedVariables(function);
+				}
+		-|	Operator(operatorSymbol,function) ->> {
+				return mentionedVariables(function) + operatorSymbol;
+				}
+		-|	ReverseOperator(operatorSymbol,function) ->> {
+				return mentionedVariables(function) + operatorSymbol;
+				}
+		-|	LeftOperator(operatorSymbol,function) ->> {
+				return mentionedVariables(function) + operatorSymbol;
+				}
+		-|	RightOperator(operatorSymbol,function) ->> {
+				return mentionedVariables(function) + operatorSymbol;
+				}
+		-|	Mixin(expr) ->> {
+				return mentionedVariables(expr);
+				}
+		-|	GetItem(function) ->> {
+				return mentionedVariables(function);
+				}
+		-|	SetItem(function) ->> {
+				return mentionedVariables(function);
+				}
+		-|	Anything(function) ->> {
+				return mentionedVariables(function);
+				}
+		-| _ ->> {
+				return ImmutableTreeSet<Symbol>();
+				}
+		;
+	}
+
+ImmutableTreeSet<Symbol> variablesInObjectBody(const ObjectDefinitionBody& objectBody)
+	{
+	ImmutableTreeSet<Symbol> mentionedVariables;
+	@match ObjectDefinitionBody(objectBody)
+		-| 	Empty() ->> {;}
+	-| 	Term((term,_), otherwise) ->> {
+				mentionedVariables = mentionedVariables
+									+ variablesInObjectTerm(term)
+									+ variablesInObjectBody(otherwise);
+				}
+		;
+	return mentionedVariables;
+	}
+
+ImmutableTreeSet<Symbol> variablesInClassBody(const ClassDefinitionBody& objectBody)
+	{
+	ImmutableTreeSet<Symbol> mentionedVariables;
+
+	@match ClassDefinitionBody(objectBody)
+		-| 	Empty() ->> {;}
+	-| 	Term((term,_), otherwise) ->> {
+				mentionedVariables = mentionedVariables
+									+ variablesInClassTerm(term)
+									+ variablesInClassBody(otherwise);
+				}
+		;
+	return mentionedVariables;
+	}
+
+ImmutableTreeSet<Symbol> variablesInObject(const ObjectDefinition& object)
+	{
+	ImmutableTreeSet<Symbol> mentionedVariables;
+
+	mentionedVariables = mentionedVariables + variablesInObjectBody(object.body());
+	if (object.selfName())
+		mentionedVariables = mentionedVariables + *object.selfName();
+	return mentionedVariables;
+	}
+
+ImmutableTreeSet<Symbol> variablesInClass(const ClassDefinition& object)
+	{
+	ImmutableTreeSet<Symbol> mentionedVariables;
+
+	mentionedVariables = mentionedVariables + variablesInClassBody(object.body());
+
+	if (object.selfName())
+		mentionedVariables = mentionedVariables + *object.selfName();
+
+	if (object.className())
+		mentionedVariables = mentionedVariables + *object.className();
+	
+	return mentionedVariables;
+	}
+
+//forward declarations to break dependency chain
+ImmutableTreeMap<symbol_type,symbol_type> checkIfMemberOfObject(FORAValuePrinter printer,
+																void* data,
+																ImmutableTreeVector<Type> types,
+																ImmutableTreeSet<symbol_type> usedNames,
+																LexicalBindingMap lexicalSurroundings);
+ImmutableTreeMap<symbol_type,symbol_type> boundVariablesToString(FORAValuePrinter printer,
+																void* data,
+																ImmutableTreeVector<Type> types,
+																ImmutableTreeSet<symbol_type> usedNames,
+																LexicalBindingMap lexicalSurroundings);
+
+//called only from FORAValuePrinter::toString(type::class)
+void classToString(FORAValuePrinter printer,
+				  void* data,
+				  ImmutableTreeVector<Type> types,
+				  CPPMLOpaqueHandle<ClassMediator> mediatorHandle
+				  )
+	{
+	ImmutableTreeSet<symbol_type> usedNames = printer.reservedNames();
+	//only print at all if type::classes are being printed
+	if (printer.printClasses())
+		{
+		ImmutableTreeMap<symbol_type,symbol_type> variableSwap;		
+		ClassMediator mediator = mediatorHandle.get();
+		@match ClassMediator(mediator)
+			-|	Function(function,lexicalSurroundings) ->> {
+					usedNames = usedNames + mentionedVariables(function);
+					variableSwap = checkIfMemberOfObject(printer,
+														data,
+														types,
+														usedNames,
+														lexicalSurroundings);
+					}
+			-|	Lambda(function,lexicalSurroundings) ->> {
+					usedNames = usedNames + mentionedVariables(function);
+					variableSwap = checkIfMemberOfObject(printer,
+														data,
+														types,
+														usedNames,
+														lexicalSurroundings);
+					}
+			-|	Object(object,lexicalSurroundings) ->> {
+					usedNames = usedNames + variablesInObject(object);
+					variableSwap = checkIfMemberOfObject(printer,
+														data,
+														types,
+														usedNames,
+														lexicalSurroundings);
+					}
+			-|	Class(cls,lexicalSurroundings) ->> {
+					usedNames = usedNames + variablesInClass(cls);
+					variableSwap = checkIfMemberOfObject(printer,
+														data,
+														types,
+														usedNames,
+														lexicalSurroundings);
+					}
+			-|  Axiom(axiomFun) ->>{
+					printer.toString(axiomFun);
+					}
+				;
+		//update the printer with the new variable swapping map
+		FORAValuePrinter updated = printer.withMap(printer.variableSwap() + variableSwap);
+		updated.toString(mediator);
+		}
+	else
+		{
+		printer.stream() << mediatorHandle->name() << "(...*)";
+		}
+	}
+
+void boundTypeClassPrinter(FORAValuePrinter printer,
+							void* data,
+							ImmutableTreeVector<Type> types,
+							CPPMLOpaqueHandle<ClassMediator> mediatorHandle,
+							ImmutableTreeSet<symbol_type> usedNames,
+							string callersName)
+	{
+	//only print out if we are supposed to print bound Type::class
+	if (printer.printBoundClasses())
+		{
+		ImmutableTreeMap<symbol_type,symbol_type> variableSwap = printer.variableSwap();
+		ClassMediator mediator = mediatorHandle.get();
+		@match ClassMediator(mediator)
+			-|	Function(fun,lexicalSurroundings) ->> {
+					variableSwap = variableSwap 
+									+ boundVariablesToString(printer,
+															data,
+															types,
+															usedNames,
+															lexicalSurroundings);
+					}
+			-|	Lambda(fun,lexicalSurroundings) ->> {
+					variableSwap = variableSwap 
+									+ boundVariablesToString(printer,
+															data,
+															types,
+															usedNames,
+															lexicalSurroundings);
+					}
+			-|	Class(cls,lexicalSurroundings) ->> {
+					variableSwap = variableSwap 
+									+ boundVariablesToString(printer,
+															data,
+															types,
+															usedNames,
+															lexicalSurroundings);
+					}
+			-|	Object(object,lexicalSurroundings) ->> {
+					variableSwap = variableSwap 
+									+ boundVariablesToString(printer,
+															data,
+															types,
+															usedNames,
+															lexicalSurroundings);
+					}
+			-|  Axiom(axiomFun) ->>{
+					printer.toString(axiomFun);
+					}
+				;
+			;
+		printer.stream() << "let " << callersName << " = ";
+
+		//update the printer with the new variable swapping map
+		FORAValuePrinter updated = printer.withMap(variableSwap);
+		updated.toString(mediator);
+		}
+	else
+		{
+		printer.stream() << "let " << callersName << " = ... ";
+		}
+	printer.stream() << ";\n";
+	}
+
+//called to print out a specific bound variable, returns a map to be added to
+//varswap of oldName to newName which the printer will then use to make
+//replacements later if necessary
+ImmutableTreeMap<symbol_type,symbol_type> boundVariablePrinter(FORAValuePrinter printer,
+																ImmutableTreeVector<uint32_t> unbindIndexSequence,
+																ImmutableTreeVector<Type> types,
+																ImmutableTreeVector<char*> dataPointers,
+																ImmutableTreeSet<symbol_type> usedNames,
+																symbol_type symbol)
+	{
+	ImmutableTreeMap<symbol_type,symbol_type> variableSwap;
+	int unbindIndex = unbindIndexSequence[0];									
+	if (unbindIndex < types.size()
+	   && unbindIndex < dataPointers.size())
+		{
+		pair<Type,char*> typeWithData = pair<Type,char*>(types[unbindIndex],
+														 dataPointers[unbindIndex]);
+		typeWithData = boundTypeUnbinder(typeWithData,
+										unbindIndexSequence.begin(),
+										unbindIndexSequence.end());
+		//only print if it found a valid type object
+		if (typeWithData.second)
+			{
+			symbol_type newSymbol = symbol;
+			for (int j = 1; usedNames.contains(newSymbol); j++)
+				{
+				newSymbol = symbol_type(newSymbol.toString()
+										+ boost::lexical_cast<std::string>(j));
+				}
+
+			//if it is a type::class, it's bound variables must be printed first
+			if (typeWithData.first.isClass()
+			   && typeWithData.first.getClass().classBody().mediator()
+			   && (typeWithData.first.getClass().classBody().mediator().get().isObject()
+			   		|| typeWithData.first.getClass().classBody().mediator().get().isFunction()))
+				{
+				//also check that it is not on the list of blocked ImplVal's
+				if (printer.shouldPrint(ImplVal(typeWithData.first,typeWithData.second)))
+					{
+					//add this type::class's name to the usedList (necessary in case
+					//its name got changed into one conflicting with one of its bound vars)
+					//update the printer to reflect this...				
+					variableSwap = variableSwap + make_pair(symbol,newSymbol);
+					usedNames = usedNames + newSymbol;
+					FORAValuePrinter updated = printer.withMap(printer.variableSwap()
+																+ make_pair(symbol,newSymbol));
+					boundTypeClassPrinter(updated,
+										typeWithData.second,
+										typeWithData.first.getClass().elements(),
+										typeWithData.first.getClass().classBody().mediator(),
+										usedNames,
+										newSymbol.toString());
+					}
+				}
+			else
+				{
+				//add new pair to varSwap
+				variableSwap = variableSwap + make_pair(symbol,newSymbol);
+				printer.stream() << "let " << newSymbol << " = ";
+				printer.toString(typeWithData.first,typeWithData.second);
+				printer.stream() << ";\n";
+				}
+			}
+		}
+	return variableSwap;
+	}
+
+ImmutableTreeMap<symbol_type,symbol_type> boundVariablesToString(FORAValuePrinter printer,
+																void* data,
+																ImmutableTreeVector<Type> types,
+																ImmutableTreeSet<symbol_type> usedNames,
+																LexicalBindingMap lexicalSurroundings)
+	{
+	ImmutableTreeMap<symbol_type,symbol_type> variableSwap;
+	ImmutableTreeVector<char*> dataPointers
+		= prepareTypeDataPointers((char*)data,types);
+	ImmutableTreeMap<symbol_type,LexicalBinding> bindingMap
+		= lexicalSurroundings.bindings();
+
+	for (long k = 0; k < lexicalSurroundings.boundVariables().size(); k++)
+		{
+		symbol_type symbol = lexicalSurroundings.boundVariables()[k];
+		ImmutableTreeVector<uint32_t> unbindIndexSequence
+			= (*bindingMap[symbol]).unbindIndexSequence();
+
+		//if its zero, don't need to go print it
+		if (unbindIndexSequence.size() != 0)
+			{
+			ImmutableTreeMap<symbol_type,symbol_type> toAdd
+				= boundVariablePrinter(printer,
+										unbindIndexSequence,
+										types,
+										dataPointers,
+										usedNames,
+										symbol);
+			//want to add to used names to avoid rebinding downstream
+			//don't really care if symbol gets in there 2x
+			usedNames = usedNames + symbol + toAdd.keySet();
+			variableSwap = variableSwap + toAdd;
+			}
+		}
+	return variableSwap;
+	}
+
+bool memberOfObjectBoundVariablesToString(FORAValuePrinter printer,
+											ImmutableTreeVector<uint32_t> unbindIndexSequence,
+											ImmutableTreeVector<Type> types,
+											ImmutableTreeVector<char*> dataPointers,
+											ImmutableTreeSet<symbol_type> usedNames,
+											string& name)
+	{
+	//lets caller know that this would have printed, but it was blocked
+	bool blocked = false;
+
+	int unbindIndex = unbindIndexSequence[0];
+	if (unbindIndex < types.size()
+	   && unbindIndex < dataPointers.size())
+		{
+		//call object unbinder to search for the correct binding
+		pair<Type,char*> typeWithData = make_pair(types[unbindIndex],
+													dataPointers[unbindIndex]);
+
+		typeWithData = boundTypeUnbinder(typeWithData,
+										unbindIndexSequence.begin(),
+										unbindIndexSequence.end());
+
+		//only print if it found a valid Type::Class
+		if (typeWithData.second && typeWithData.first.isClass())
+			{
+			if (printer.shouldPrint(ImplVal(typeWithData.first, typeWithData.second)))
+				{
+				//need to check inside Type::Class for conflicts as well
+				@match ClassMediator(typeWithData.first.getClass().classBody().mediator().get())
+					-| Object(obj) ->> {
+					   usedNames = usedNames + variablesInObject(obj);
+					   }
+					-| Class(obj) ->> {
+					   usedNames = usedNames + variablesInClass(obj);
+					   }
+					-| _ ->> { 
+					   //do we need a similar method call here??
+					   lassert(false); 
+					   }
+					;				
+					
+				name = "o";
+				symbol_type objectSymbol = symbol_type(name);
+				for (int j = 1; usedNames.contains(objectSymbol); j++)
+					{
+					name = "o" + boost::lexical_cast<std::string>(j);
+					objectSymbol = symbol_type(name);
+					}
+
+				//now that the name for this object doesnt conflict with
+				//the member originally being printed, usedNames should
+				//only reflect this object's name and the printer's map
+				usedNames = printer.reservedNames() + objectSymbol;
+				//it is an typeclass, so print bound variables first
+				boundTypeClassPrinter(printer,
+									typeWithData.second,
+									typeWithData.first.getClass().elements(),
+									typeWithData.first.getClass().classBody().mediator(),
+									usedNames,
+									name);
+				}
+			else
+				blocked = true;
+			}
+		}
+	return blocked;
+	}
+
+//called first by classToString to determine if what was being printed is in fact
+//a member of a larger object. If so, we need to print that object, name it,
+//and print it with its bound variables, which are a superset of the member's bound
+//variables
+ImmutableTreeMap<symbol_type,symbol_type> checkIfMemberOfObject(FORAValuePrinter printer,
+																void* data,
+																ImmutableTreeVector<Type> types,
+																ImmutableTreeSet<symbol_type> usedNames,
+																LexicalBindingMap lexicalSurroundings)
+	{
+	ImmutableTreeMap<symbol_type,symbol_type> variableSwap;
+	ImmutableTreeVector<char*> dataPointers
+		= prepareTypeDataPointers((char*)data,types);
+	ImmutableTreeMap<symbol_type,LexicalBinding> bindingMap
+		= lexicalSurroundings.bindings();
+
+	bool memberOfObject = false;
+
+	for (long k = 0; k < lexicalSurroundings.boundVariables().size(); k++)
+		{
+		symbol_type symbol = lexicalSurroundings.boundVariables()[k];
+		ImmutableTreeVector<uint32_t> unbindIndexSequence
+			= (*bindingMap[symbol]).unbindIndexSequence();
+		
+		if ( unbindIndexSequence.size() != 0
+			&& (*bindingMap[symbol]).member()
+			&& printer.printBoundClasses())
+			{
+			//need to name object and rename vars bound to it
+			string name = "";
+			bool blocked = false;
+			blocked = memberOfObjectBoundVariablesToString(printer,
+															unbindIndexSequence,
+															types,
+															dataPointers,
+															usedNames,
+															name);
+			if (name != "")
+				{
+				//actually a member of a valid object, the proper bound vars have been printed
+				memberOfObject = true;
+				variableSwap = variableSwap + make_pair(symbol_type(symbol.toString()),
+														symbol_type(name+"."+symbol.toString()));
+				}
+
+			if (blocked)
+				memberOfObject = true;
+			}
+		}
+	if (!memberOfObject)
+		{
+		//no longer care about names inside the original class being
+		//printed,care about which ones will be bound in the lexical
+		//scope outside of it (ie it binds funcs that bind other stuff)
+		usedNames = printer.reservedNames();
+		variableSwap = boundVariablesToString(printer,
+												data,
+												types,
+												usedNames,
+												lexicalSurroundings);
+		}
+
+	return variableSwap;
+	}
+}//end anonymous namespace
+
+ void FORAValuePrinter::printTupleAsCallArgs(const Type& typeObject, void* data) const
+	 {
+	 @match Type(typeObject)
+		-|  Tuple(types, names) ->> {
+			 if (types.size() > 1) 
+				 typeObject.toString(stream(), data);
+			 else 
+				 {
+				 uword_t offset = 0;
+				 stream() << "(";
+					 {
+					 CPPMLPrettyPrintStream s2 = stream().group();
+					 
+					 for (long k = 0; k < types.size(); k++)
+						 {
+						 if (k != 0)
+							 s2 << ", " << s2.sep;
+						 
+						 if (names[k])
+							 s2 << *names[k] << ": ";
+						 
+						 types[k].toString(s2, ((char*)data) + offset);
+						 offset = offset + types[k].size();
+						 }
+					 }
+				 stream() << ")";
+				 }			 
+			 }
+	 	-|  _ ->> { lassert(false); }
+	 	;
+	 }
+
+void FORAValuePrinter::toString(const Type& typeObject, void* data) const
+	{
+	if (this == 0)
+		{
+		stream() << "<null type object>";
+		return;	
+		}
+	@match Type(typeObject)
+			-|	Nothing() ->> { stream() << "nothing"; }
+			-|	Symbol() ->> {
+					stream() << "`" << *((symbol_type*)data);
+					}
+			-|	Tag() ->> {
+					stream() << "#" << *((symbol_type*)data);
+					}
+			-|	String() ->> {
+					if (((string_type*)data)->size() > 2000)
+						{
+						stream().writeRaw(stringToStringConstant(std::string(((string_type*)data)->c_str(), 2000)));
+						stream().writeRaw("...");
+						}
+					else
+						stream().writeRaw(stringToStringConstant( ((string_type*)data)->stdString() ));
+					}
+			-|	DateTime() ->> {
+					stream() << "DateTime("
+						<< stringToStringConstant( ((date_time_type*)data)->stdString() )
+						<< ")";
+					}
+			-|	TimeDuration() ->> {
+					stream() << "TimeDuration("
+						<< stringToStringConstant( ((time_duration_type*)data)->stdString() )
+						<< ")";
+					}
+			-|	ExternalFunction() ->> {
+					ExternalFunctionDescriptor& desc = *((ExternalFunctionDescriptor*)data);
+
+					stream() << prettyPrintString(desc);
+					}
+			-|	JOVAsValue() ->> {
+					((JOV*)data)->toString(stream(), true);
+					}
+			-|	StackTrace() ->> {
+					ForaStackTrace& trace(*(ForaStackTrace*)data);
+					
+					stream() << trace;
+					}
+			-|	Integer(bits, isSigned) ->> {
+					if (isSigned)
+						{
+						switch (bits)
+							{
+							case 8: {
+								auto converted = *(char*)data;
+								if (converted == (char)0x80)  //min value
+									stream() <<       "0x80"; //print as hex, not dec.
+								else
+									stream() << (int32_t)converted; //Don't print as ascii!
+								stream() << "s8";
+								break;
+								}
+							
+							case 16: {
+								auto converted = *(int16_t*)data;
+								if (converted == (int16_t)0x8000)  //min value
+									stream() <<          "0x8000"; //print as hex, not dec.
+								else
+									stream() << converted;
+								stream() << "s16";
+								break;
+								}
+							
+							case 32: {
+								auto converted = *(int32_t*)data;
+								if (converted == (int32_t)0x80000000)  //min value
+									stream() <<          "0x80000000"; //print as hex, not dec.
+								else
+									stream() << converted;
+								stream() << "s32";
+								break;
+								}
+							
+							case 64: {
+								auto converted = *(int64_t*)data;
+								if (converted == (int64_t)0x8000000000000000)  //min value
+									stream() <<          "0x8000000000000000"; //print as hex, not dec.
+								else
+									stream() << converted;
+								break;
+								}
+							
+							default: lassert(false);
+							}
+						}
+					else //unsigned
+						{
+						switch (bits)
+							{
+							case 1: 
+								stream() << ((*(unsigned char*)data) ? "true" : "false");
+								break;
+							case 8:
+								stream() << (uint32_t)*(unsigned char*)data << "u8";
+								break;
+							case 16:
+								stream() << *(uint16_t*)data << "u16";
+								break;
+							case 32:
+								stream() << *(uint32_t*)data << "u32";
+								break;
+							case 64:
+								stream() << *(uint64_t*)data << "u";
+								break;
+							
+							default: lassert(false);
+							}
+						}
+					}
+			-|	Float(bits) ->> {
+					if (bits == 32)
+						{
+						ostringstream st;
+						st << setprecision(20) << (((float*)data)[0]);
+						
+						std::string toWrite = st.str();
+						stream() << toWrite << "f32";
+						}
+					else if (bits == 64)
+						{
+						ostringstream st;
+						st << setprecision(15) << (((double*)data)[0]);
+						
+						std::string toWrite = st.str();
+						
+						int i = toWrite.find("e");
+						
+						if (i != std::string::npos &&
+								toWrite.find(".") == std::string::npos)
+							{
+							stream() << toWrite.substr(0,i) << ".0" << toWrite.substr(i);
+							}
+
+						else if (toWrite.find('.') == std::string::npos 
+							&& toWrite.find("nan") == std::string::npos
+							&& toWrite.find("inf") == std::string::npos
+							)
+							stream() << toWrite << ".0";
+						else
+							stream() << toWrite;
+						}
+					else
+						{
+						lassert(false);
+						}
+					}
+			-|	Alternative(alternativeType) ->> {
+					AlternativeData& alt = *(AlternativeData*)data;
+
+					stream() << "#" << alt.symbol;
+					
+					if (alternativeType.isTuple())
+						printTupleAsCallArgs(alternativeType, alt.data);
+					else // don't think this should ever happen ...
+						alternativeType.toString(stream(), alt.data);
+					}
+			-| Class(types, (mediator, resume)) ->> {
+					classToString(*this, data, types, mediator);
+					}
+			-|	Tuple(types, names) ->> {
+					uword_t offset = 0;
+					stream() << "(";
+						{
+						CPPMLPrettyPrintStream s2 = stream().group();
+						
+						for (long k = 0; k < types.size(); k++)
+							{
+							if (k != 0)
+								s2 << ", " << s2.sep;
+							
+							if (names[k])
+								s2 << *names[k] << ": ";
+							
+							types[k].toString(s2, ((char*)data) + offset);
+							offset = offset + types[k].size();
+							}
+						}
+  				    if (types.size() == 1)
+						stream() << ",)";
+					else
+						stream() << ")";
+					}
+			-|	Vector() ->> {
+					VectorRecord& vec = *(VectorRecord*)data;
+					
+					stream() << "Vector(" << vec.jor()
+							<< ", sz=" << vec.size();
+
+					/*************
+					std::vector<VectorLeafRecord> leaves;
+					vec.extractPopulatedLeaves(leaves);
+
+					for (long k = 0; k < leaves.size();k++)
+						stream() << ", " << boost::lexical_cast<string>(leaves[k].dataPtr);
+					*************/
+
+					stream() << ")";
+					}
+			-|	MutableVector() ->> {
+					const MutableVectorRecord& vec = *(MutableVectorRecord*)data;
+					
+					stream() << "MutableVector(" << vec.elementJOV()
+							<< ", sz=" << vec.size() << ")";
+					}
+			-|	Dictionary(isCST) ->> {
+					// When showing a dictionary, only show the first few pairs,
+					// because they may be big.
+					bool done = false;
+					bool first = true;
+					size_t numPairs = ((dict_type*)data)->size();
+					
+					stream() << "{";
+					
+					if (numPairs)
+						{
+						for (size_t k = 0; k < numPairs && !done; k++)
+							{
+							if (!first)
+								stream() << ", ";
+							else
+								first = false;
+							
+							stream() << ((dict_type*)data)->pairAtPosition(k).first;
+							stream() << ": ";
+							stream() << ((dict_type*)data)->pairAtPosition(k).second;
+							
+							if (k > 25)
+								{
+								done = true;
+								stream() << " ...";
+								}
+							}
+						}
+					else
+						stream() << ":";
+					
+					stream() << "}";
+					
+					}
+			-|	_ ->> {
+					stream() << "<bad type object>";
+					}
+			;
+	}
+
+void FORAValuePrinter::toString(const Type& typeObject) const
+	{
+	@match Type(typeObject)
+		-|	Nothing() ->> {
+			stream() << "Nothing";
+			}
+		-|	String() ->> {
+			stream() << "String";
+			}
+		-|	ExternalFunction(isCST) ->> {
+			stream() << (isCST ? "ConstantExternalFunction" : "ExternalFunction");
+			}
+		-|	JOVAsValue() ->> {
+			stream() << "JOV";
+			}
+		-|	DateTime() ->> {
+			stream() << "DateTime" ;
+			}
+		-|	TimeDuration() ->> {
+			stream() << "TimeDuration";
+			}
+		-|	StackTrace() ->> {
+			stream() << "StackTrace";
+			}
+		-|	Integer(bits, isSigned) ->> {
+			stream() << (
+						bits ==1 && !isSigned ? "Bool" : 
+						std::string(isSigned ? "Int":"UInt")
+							+ boost::lexical_cast<string>(bits)
+						);
+			}
+		-|	Float(bits) ->> {
+			stream() << "Float" << boost::lexical_cast<string>(bits);
+			}
+		-|	Symbol() ->> {
+			stream() << "Symbol";
+			}
+		-|	Tag() ->> {
+			stream() << "Tag";
+			}
+		-|	Alternative(t) ->> {
+			stream() << "Alternative(";
+			
+			toString(t);
+			
+			stream() << ")";
+			}
+		-|	Vector() ->> {
+			stream() << "Vector";
+			}
+		-|	MutableVector() ->> {
+			stream() << "MutableVector";
+			}
+		-|	Tuple(elements, names) ->> {
+			stream() << "Tuple(";
+			
+			for (long k = 0; k < elements.size(); k++)
+				{
+				if (k > 0)
+					stream() << ", ";
+
+				if (names[k])
+					{
+					stream() << names[k] << ": ";
+					}
+				
+				toString(elements[k]);
+				}
+
+			stream() << ")";
+			}
+		-| Class(types, (mediator, resumption)) ->> {
+			stream() << "C(.)";
+			}
+		-|	Dictionary(isCST) ->> {
+			stream() << "Dictionary(" << (isCST ?"CST":"Mutable") << ")";
+			}
+		-|	_ ->> {
+			stream() << "<bad type>";
+			}
+		;
+	}
+
+}
+

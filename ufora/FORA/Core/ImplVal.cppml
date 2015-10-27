@@ -1,0 +1,322 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "../../core/lassert.hpp"
+#include "../../core/SymbolExport.hpp"
+#include "../../core/Memory.hpp"
+#include "../FORAValuePrinting/FORAValuePrinter.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
+#include "../Primitives/Symbol.hpp"
+#include "ImplVal.hppml"
+#include "Integers.hppml"
+#include "Type.hppml"
+#include "CSTValue.hppml"
+#include "TupleCategory.hppml"
+
+#include <boost/lexical_cast.hpp>
+
+bool ImplVal::isDataAsIVRPtr() const
+	{
+	return mFlag == flag_dataAsIVRPtr;
+	}
+
+bool ImplVal::isDataInline() const
+	{
+	return mFlag == flag_dataInline;
+	}
+
+bool ImplVal::isDataAsRawPtr() const
+	{
+	return mFlag == flag_dataAsRawPtr;
+	}
+
+void	ImplVal::ImplValRecord::incrementRefcount()
+	{
+	lassert(AO_fetch_and_add_full(&refcount, 1) != 0);
+	}
+
+bool	ImplVal::ImplValRecord::decrementRefcount()
+	{
+	return AO_fetch_and_add_full(&refcount, -1) == 1;
+	}
+
+AO_t ImplVal::ImplValRecord::mTotalImplValRecords = 0;
+
+uword_t ImplVal::ImplValRecord::totalImplValRecords()
+	{
+	return mTotalImplValRecords;
+	}
+
+const Type& ImplVal::type(void) const
+	{
+	return ((const Type*)&mHolder)[0];
+	}
+
+bool ImplVal::typeIsPassByValue(const Type& inType)
+	{
+	return inType.size() <= pass_by_value_size && inType.isPOD();
+	}
+
+bool ImplVal::isCST(void) const
+	{
+	return type().isCST(data());
+	}
+
+ImplVal::ImplValRecord* ImplVal::ImplValRecord::allocate(uword_t size)
+	{
+	ImplVal::ImplValRecord* ivr =
+		(ImplVal::ImplValRecord*)Ufora::Memory::bsa_malloc(size + sizeof(ImplVal::ImplValRecord));
+
+	ivr->refcount = 1;
+
+	AO_fetch_and_add_full(&mTotalImplValRecords, 1);
+
+	return ivr;
+	}
+
+void ImplVal::ImplValRecord::free(ImplValRecord* record)
+	{
+	Ufora::Memory::bsa_free(record);
+
+	lassert(AO_fetch_and_add_full(&mTotalImplValRecords, -1) != 0);
+	}
+
+extern "C" {
+
+//return a pointer to fresh ImplVal data.
+//we return a pointer to the data that the ImplVal will use, not the malloced block itself
+//as a result, the refcount is 8 bytes _behind_ the actual implval data pointer
+BSA_DLLEXPORT
+void*	FORA_clib_freshImplValRecord(uword_t sz)
+	{
+	return ImplVal::ImplValRecord::allocate(sz)->data;
+	}
+}
+
+//creates a raw implementation of whatever type this is
+ImplVal ImplVal::introduce(const Type& t)
+	{
+	static_assert(sizeof(ImplVal::TypeHolder) == sizeof(Type),
+		"TypeHolder and Type should have the same size");
+
+	ImplVal result;
+
+	new ((Type*)&result.mHolder) Type(t);
+
+	if (!typeIsPassByValue(t))
+		{
+		result.mFlag = flag_dataAsIVRPtr;
+
+		ImplValRecord* record = ImplValRecord::allocate(t.size());
+
+		((void**)(result.mData))[0] = record->data;
+		}
+	else
+		result.mFlag = flag_dataInline;
+
+	return result;
+	}
+
+//creates a raw implementation of whatever type this is
+ImplVal ImplVal::unincrementedInline(const Type& t)
+	{
+	ImplVal v;
+	v.mHolder = ((TypeHolder*)&t)[0];
+
+	lassert(typeIsPassByValue(t));
+	v.mFlag = flag_dataInline;
+
+	return v;
+	}
+
+//creates a raw implementation of whatever type this is
+ImplVal ImplVal::unincrementedInline(const Type& t, char* inData)
+	{
+	ImplVal v;
+
+	v.mHolder = ((TypeHolder*)&t)[0];
+
+	lassert(typeIsPassByValue(t));
+	v.mFlag = flag_dataInline;
+
+	pass_by_value_type* targetPtr = ((pass_by_value_type*)v.data());
+	pass_by_value_type* sourcePtr = ((pass_by_value_type*)inData);
+
+	uword_t sz = t.size();
+
+	//NOTE: we can't just copy 'sizeof(pass_by_value_type)' bytes because we might be reading
+	//over the edge of a page boundary, which could cause a segfault.
+	if (sz == sizeof(pass_by_value_type))
+		*targetPtr = *sourcePtr;
+		else
+	if (t.size() == sizeof(uint64_t))
+		((uint64_t*)targetPtr)[0] = ((uint64_t*)sourcePtr)[0];
+		else
+	if (t.size() == sizeof(uint32_t))
+		((uint32_t*)targetPtr)[0] = ((uint32_t*)sourcePtr)[0];
+		else
+	if (t.size() == sizeof(uint16_t))
+		((uint16_t*)targetPtr)[0] = ((uint16_t*)sourcePtr)[0];
+		else
+	if (t.size() == sizeof(uint8_t))
+		((uint8_t*)targetPtr)[0] = ((uint8_t*)sourcePtr)[0];
+		else
+		memcpy(targetPtr, sourcePtr, sz);
+
+	return v;
+	}
+
+Type*	ImplVal::allocNothingType()
+	{
+	return new Type((Type::Nothing()));
+	}
+
+char CPPMLEquality<ImplVal, void>::cmp(const ImplVal& lhs, const ImplVal& rhs)
+	{
+	if (lhs.type() < rhs.type())
+		return -1;
+	if (lhs.type() > rhs.type())
+		return 1;
+	return lhs.type().cmp(lhs.data(), rhs.data());
+	}
+
+
+ImplVal::ImplVal(const CSTValue& t)
+	{
+	*this = introduce(t.type());
+	t.type().initialize(data(), t.getData());
+	}
+
+bool ImplVal::convertToBoolean() const
+	{
+	@match Type(this->type())
+		-|	Integer(sz, isSigned) ->> {
+			if (sz == 64)
+				return this->cast<int64_t>();
+			if (sz == 32)
+				return this->cast<int32_t>();
+			if (sz == 16)
+				return this->cast<int16_t>();
+			if (sz == 8)
+				return this->cast<int8_t>();
+			if (sz == 1)
+				return this->cast<int8_t>() & 0x1;
+
+			unsigned char* dat = (unsigned char*)this->data();
+			clearUnusedIntegerBits(dat, sz);
+
+			uword_t bytes = (sz + 7)/8;
+			while (bytes--)
+				if (*dat++)
+					return true;
+
+			return false;
+			}
+		-|	_ ->> {
+			return false;
+			}
+		;
+	}
+
+void ImplVal::destroy(void)
+	{
+	lassert(!isDataAsRawPtr());
+	if (isDataAsIVRPtr())
+		{
+		//decrement the remote refcount and update
+		if (record().decrementRefcount())
+			{
+			type().destroy(record().data);
+
+			ImplVal::ImplValRecord::free(&record());
+			}
+		}
+
+	type().~Type();
+	}
+
+ImplVal ImplVal::duplicate(void) const
+	{
+	if (isDataAsRawPtr())
+		{
+		ImplVal tr = ImplVal::introduce(type());
+		type().initialize(tr.data(), data());
+		return tr;
+		}
+	else
+		{
+		ImplVal tr = *this;
+		if (tr.isDataAsIVRPtr())
+			tr.record().incrementRefcount();
+
+		new ((Type*)&tr.mHolder) Type(type());
+		return tr;
+		}
+	}
+
+void CPPMLPrettyPrint<ImplVal>::prettyPrint(CPPMLPrettyPrintStream& stream,
+											const ImplVal& toPrint)
+	{
+	toPrint.toString(stream);
+	}
+
+string ImplVal::toString(void) const
+	{
+	return prettyPrintString(*this);
+	}
+
+void ImplVal::toString(CPPMLPrettyPrintStream& stream) const
+	{
+	FORAValuePrinting::FORAValuePrinter printer(stream);
+	printer.toString(*this);
+	}
+
+void ImplVal::toParsableString(CPPMLPrettyPrintStream& stream, const ImplVal& blockedObjects) const
+	{
+	ImmutableTreeMap<Symbol,ImplVal> blockedMap;
+
+	//generate blockedMap from dictionary implVal
+	lassert(blockedObjects.type().isDictionary());
+
+	dict_type* data = (dict_type*)blockedObjects.data();
+
+	size_t numPairs = data->size();
+	for (size_t k = 0; k < numPairs; k++)
+		{
+		CSTValue c = data->pairAtPosition(k).first;
+		if(c.type().isSymbol())
+			{
+			blockedMap = blockedMap + make_pair(*((symbol_type*)c.getData()),
+												data->pairAtPosition(k).second.getReference());
+			}
+		}
+	FORAValuePrinting::FORAValuePrintingParameters parameters(true,
+																true,
+																ImmutableTreeMap<Symbol,Symbol>(),
+																blockedMap);
+	FORAValuePrinting::FORAValuePrinter printer(stream,parameters);
+	printer.toString(*this);
+	}
+
+void ImplVal::toParsableString(CPPMLPrettyPrintStream& stream) const
+	{
+	FORAValuePrinting::FORAValuePrintingParameters parameters(true,
+																true,
+																ImmutableTreeMap<Symbol,Symbol>(),
+																ImmutableTreeMap<Symbol,ImplVal>());
+	FORAValuePrinting::FORAValuePrinter printer(stream,parameters);
+	printer.toString(*this);
+	}
+

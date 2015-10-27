@@ -1,0 +1,497 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "DistributedDataTasksImpl.hppml"
+#include "../../core/threading/CallbackSchedulerFactory.hppml"
+#include "../../core/PolymorphicSharedPtrBinder.hpp"
+#include "../../core/threading/TimedLock.hpp"
+#include "../../FORA/TypedFora/ABI/ImplValVisitor.hppml"
+#include "../../FORA/Core/ImplValContainerUtilities.hppml"
+#include "../../FORA/VectorDataManager/VectorPage.hppml"
+#include "../../FORA/VectorDataManager/ExtractBigVectorReferencesVisitor.hppml"
+#include "../../core/math/Largest.hpp"
+
+namespace Cumulus {
+
+const static double kMessagePipelineHeartbeatInterval = 0.1;
+const static double kLogLoopDelay = 5.0;
+
+DistributedDataTasksImpl::DistributedDataTasksImpl(	
+			PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+			PolymorphicSharedPtr<VectorDataManager> inVDM,
+			PolymorphicSharedPtr<SystemwidePageRefcountTracker> inSPRT,
+			PolymorphicSharedPtr<OfflineCache> inOfflineCache,
+			MachineId inOwnMachineId
+			) :
+		mVDM(inVDM),
+		mSPRT(inSPRT),
+		mOwnMachineId(inOwnMachineId),
+		mOnExternalIoTaskCompleted(inCallbackScheduler),
+		mOnCrossDistributedDataTasksMessage(inCallbackScheduler),
+		mOnDataTasksToGlobalSchedulerMessage(inCallbackScheduler),
+		mMainScheduler(inCallbackScheduler),
+		mIsTornDown(0),
+		mRandom(inOwnMachineId.guid()[0]),
+		mTasksGlobalScheduler(
+			boost::bind(&DistributedDataTasksImpl::sendSchedulerToPipelineMessage_, this, boost::arg<1>()),
+			boost::bind(&DistributedDataTasksImpl::sendTaskSchedulerToGlobalSchedulerMessage_, this, boost::arg<1>()),
+			boost::bind(&DistributedDataTasksImpl::onTaskFinished_, this, boost::arg<1>(), boost::arg<2>(), boost::arg<3>()),
+			mAllMachines
+			)
+	{
+	mAllMachines.insert(mOwnMachineId);
+	LOG_INFO << "Initialize DistributedDataTasksImpl: " << mOwnMachineId;
+	}
+
+DistributedDataTasksImpl::~DistributedDataTasksImpl()
+	{
+	LOG_INFO << "Destroy DistributedDataTasksImpl: " << mOwnMachineId;
+	}
+
+void DistributedDataTasksImpl::sendSchedulerToPipelineMessage_(SchedulerToPipelineMessageCreated msg)
+	{
+	mOnCrossDistributedDataTasksMessage.broadcast(
+		CrossDistributedDataTasksMessageCreated(
+			CrossDistributedDataTasksMessage::SchedulerToPipeline(msg.message()),
+			msg.target()
+			)
+		);
+	}
+
+void DistributedDataTasksImpl::sendTaskSchedulerToGlobalSchedulerMessage_(DataTasksToGlobalSchedulerMessage msg)
+	{
+	mOnDataTasksToGlobalSchedulerMessage.broadcast(msg);
+	}
+
+void DistributedDataTasksImpl::handleGlobalSchedulerToDataTasksMessage(GlobalSchedulerToDataTasksMessage msg)
+	{
+	TimedLock lock(mMutex, "DistributedDataTasks");
+	
+	mTasksGlobalScheduler.handleGlobalSchedulerToDataTasksMessage(msg);
+	}
+
+void DistributedDataTasksImpl::handleMessagePipelineProducedSchedulerMessage(PipelineToSchedulerMessage msg)
+	{
+	TimedLock lock(mMutex, "DistributedDataTasks");
+	
+	MachineId leaderMachine = *mAllMachines.begin();
+
+	mOnCrossDistributedDataTasksMessage.broadcast(
+		CrossDistributedDataTasksMessageCreated(
+			CrossDistributedDataTasksMessage::PipelineToScheduler(msg),
+			leaderMachine
+			)
+		);
+	}
+
+void DistributedDataTasksImpl::polymorphicSharedPtrBaseInitialized()
+	{
+	mMessagePipeline.reset(
+		new MessagePipeline(
+			mVDM,
+			mMainScheduler,
+			mMainScheduler->getFactory()->createScheduler("DistributedDataTasksImpl::MessagePipeline", 4),
+			boost::bind(
+				PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(&DistributedDataTasksImpl::cannotAcquireLockOnPage),
+				polymorphicSharedWeakPtrFromThis(),
+				boost::arg<1>(),
+				boost::arg<2>()
+				),
+			mOwnMachineId,
+			mVDM->maxPageSizeInBytes() * 2, //maxBytesInNonlocalIncomingTasks
+			mVDM->maxPageSizeInBytes() * 2, //maxBytesInLocalIncomingTasks
+			mVDM->maxPageSizeInBytes() * 4, //maxBytesInOutgoingTasks
+			mVDM->maxPageSizeInBytes() / 5, //bytesToSendGranularity
+			mVDM->maxPageSizeInBytes() * 2 //maxBytesPerAccumulatorTask
+			)
+		);
+
+	mMessagePipeline->onCrossPipelineMessageCreated().subscribe(
+		polymorphicSharedWeakPtrFromThis(),
+		&DistributedDataTasksImpl::handleCrossPipelineMessageCreated
+		);
+
+	mMessagePipeline->onPipelineToSchedulerMessage().subscribe(
+		polymorphicSharedWeakPtrFromThis(),
+		&DistributedDataTasksImpl::handleMessagePipelineProducedSchedulerMessage
+		);
+
+	mVDM->getPageRefcountTracker()->onPageRefcountEvent().subscribe(
+		polymorphicSharedWeakPtrFromThis(),
+		&DistributedDataTasksImpl::handlePageEvent
+		);
+
+	mMainScheduler->schedule(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&DistributedDataTasksImpl::logLoop
+				),
+			polymorphicSharedWeakPtrFromThis()
+			),
+		curClock() + kLogLoopDelay
+		);
+
+	mMainScheduler->schedule(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&DistributedDataTasksImpl::messagePipelineHeartbeat
+				),
+			polymorphicSharedWeakPtrFromThis()
+			),
+		curClock() + kMessagePipelineHeartbeatInterval
+		);
+	}
+
+void DistributedDataTasksImpl::handleCrossPipelineMessageCreated(CrossPipelineMessageCreated created)
+	{
+	@match CrossPipelineMessageTarget(created.target())
+		-| SpecificMachine(m) ->> {
+			mOnCrossDistributedDataTasksMessage.broadcast(
+				CrossDistributedDataTasksMessageCreated(
+					CrossDistributedDataTasksMessage::CrossPipeline(created.msg(), created.sourceMachine()),
+					m
+					)
+				);
+			}
+		-| AllMachines() ->> {
+			broadcastMessageToAllMachines_(
+				CrossDistributedDataTasksMessage::CrossPipeline(created.msg(), created.sourceMachine()),
+				false
+				);
+			}
+	}
+
+void DistributedDataTasksImpl::handlePageEvent(pair<Fora::PageRefcountEvent, long> event)
+	{
+	}
+
+void DistributedDataTasksImpl::teardown()
+	{
+	TimedLock lock(mMutex, "DistributedDataTasks");
+
+	mIsTornDown = true;
+	}
+
+void DistributedDataTasksImpl::addMachine(MachineId inMachineId)
+	{
+	TimedLock lock(mMutex, "DistributedDataTasks");
+
+	mAllMachines.insert(inMachineId);
+
+	mMessagePipeline->addMachine(inMachineId);
+	}
+
+void DistributedDataTasksImpl::logLoop()
+	{
+	logState();
+
+	mMainScheduler->schedule(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&DistributedDataTasksImpl::logLoop
+				),
+			polymorphicSharedWeakPtrFromThis()
+			),
+		curClock() + kLogLoopDelay
+		);
+	}
+
+void DistributedDataTasksImpl::logState()
+	{
+	LOGGER_INFO_T log = LOGGER_INFO;
+	log << "DistributedDataTasks on " << mOwnMachineId << ":\n" 
+		<< "\tNonlocal Messages: " << mMessagePipeline->totalNonlocalMessagesToProcess() 
+		<< ". max=" << mMessagePipeline->maxBytesInNonlocalIncomingTasks() 
+		<< (mMessagePipeline->totalNonlocalMessagesToProcess().totalBytesAllocatedFromOS() >= mMessagePipeline->maxBytesInNonlocalIncomingTasks() ? ". blocked." :"")
+		<< "\n"
+		<< "\tLocal Messages: " << mMessagePipeline->totalLocalMessagesToProcess()
+		<< ". max=" << mMessagePipeline->maxBytesInLocalIncomingTasks() 
+		<< (mMessagePipeline->totalLocalMessagesToProcess().totalBytesAllocatedFromOS() >= mMessagePipeline->maxBytesInLocalIncomingTasks() ? ". blocked." :"")
+		<< "\n"
+		<< "\tOutgoing Messages: " << mMessagePipeline->totalOutgoingTasks()
+		<< ". max=" << mMessagePipeline->maxBytesInOutgoingTasks() 
+		<< (mMessagePipeline->totalOutgoingTasks().totalBytesAllocatedFromOS() >= mMessagePipeline->maxBytesInOutgoingTasks() ? ". blocked." :"")
+		<< "\n"
+		<< "outgoing by machine = " << mMessagePipeline->outgoingTasksByMachine()
+		<< "\n"
+		<< "\tAccumulated Messages: " << mMessagePipeline->totalAccumulatedTasks() 
+		<< ". max=" << mMessagePipeline->totalAccumulatorSpace().totalBytesAllocatedFromOS()
+		<< (mMessagePipeline->totalAccumulatedTasks().totalBytesAllocatedFromOS() >= 
+				mMessagePipeline->totalAccumulatorSpace().totalBytesAllocatedFromOS() ? ". blocked." :"")
+		<< "\n"
+		<< "Queued pages = " << mMessagePipeline->totalQueuedPages()
+		<< "\n"
+		<< "totalPageValuesCopied = " << mMessagePipeline->totalPageValuesCopied()
+		<< "\n"
+		<< "pagesToPushIntoMessagePipeline.size() = " << mPagesToPushIntoMessagePipeline.size()
+		;
+	}
+
+void DistributedDataTasksImpl::onTaskFinished_(hash_type taskGuid, ImplValContainer finalResult, hash_type incomingMoveGuid)
+	{
+	LOG_INFO << mOwnMachineId << ": ExternalIoTask " << taskGuid << " finished on " << mOwnMachineId;
+
+	for (auto guidAndPage: mTaskPageRequestGuids[taskGuid])
+		mOnDataTasksToGlobalSchedulerMessage.broadcast(
+			DataTasksToGlobalSchedulerMessage::DropTaskDependency(guidAndPage.first, guidAndPage.second)
+			);
+	mTaskPageRequestGuids.erase(taskGuid);
+
+	pair<hash_type, ImmutableTreeSet<Fora::BigVectorId> > moveGuidAndBigvecs = 
+		ImplValContainerUtilities::initiateValueSend(finalResult, &*mVDM);
+
+	//do the finalize after we do the drop, so that we retain a positive refcount
+	ImplValContainerUtilities::finalizeValueSend(finalResult, &*mVDM, incomingMoveGuid);
+
+	if (mTaskRoots.getValue(taskGuid) == mOwnMachineId)
+		{
+		mOnExternalIoTaskCompleted.broadcast(
+			ExternalIoTaskCompleted(
+				ExternalIoTaskId(taskGuid),
+				ExternalIoTaskResult::TaskResultAsForaValue(
+					Fora::Interpreter::ComputationResult::Result(
+						finalResult,
+						ImplValContainer()
+						),
+					moveGuidAndBigvecs.second,
+					moveGuidAndBigvecs.first
+					)
+				)
+			);
+		}
+	else
+		{
+		mOnCrossDistributedDataTasksMessage.broadcast(
+			CrossDistributedDataTasksMessageCreated(
+				CrossDistributedDataTasksMessage::RootTaskCompleted(
+					taskGuid,
+					ExternalIoTaskResult::TaskResultAsForaValue(
+						Fora::Interpreter::ComputationResult::Result(
+							finalResult,
+							ImplValContainer()
+							),
+						moveGuidAndBigvecs.second,
+						moveGuidAndBigvecs.first
+						)
+					),
+				mTaskRoots.getValue(taskGuid)
+				)
+			);
+		}
+	}
+
+void DistributedDataTasksImpl::broadcastMessageToAllMachines_(CrossDistributedDataTasksMessage msg, bool includingSelf)
+	{
+	for (auto machineId: mAllMachines)
+		if (machineId != mOwnMachineId)
+			mOnCrossDistributedDataTasksMessage.broadcast(
+				CrossDistributedDataTasksMessageCreated(
+					msg,
+					machineId
+					)
+				);
+
+	if (includingSelf)
+		mMainScheduler->scheduleImmediately(
+			boost::bind(
+				PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+					&DistributedDataTasksImpl::handleCrossDistributedDataTasksMessage
+					),
+				polymorphicSharedWeakPtrFromThis(),
+				msg
+				),
+			"DistributedDataTasksImpl::handleCrossDistributedDataTasksMessage"
+			);
+	}
+
+void DistributedDataTasksImpl::handleNewTask(ExternalIoTaskId taskId, DistributedDataOperation dataOperation)
+	{
+	TimedLock lock(mMutex, "DistributedDataTasks");
+
+	if (mOwnMachineId == *mAllMachines.begin())
+		handleTaskCreatedOnLeader_(taskId.guid(), dataOperation, mOwnMachineId);
+	else
+		mOnCrossDistributedDataTasksMessage.broadcast(
+			CrossDistributedDataTasksMessageCreated(
+				CrossDistributedDataTasksMessage::RootTaskCreated(taskId.guid(), dataOperation, mOwnMachineId),
+				*mAllMachines.begin()
+				)
+			);
+	}
+
+void DistributedDataTasksImpl::handleTaskCreatedOnLeader_(hash_type taskId, DistributedDataOperation dataOperation, MachineId origMachine)
+	{
+	LOG_INFO << mOwnMachineId << ": ExternalIoTask " << taskId << " created on " << mOwnMachineId << " with orig=" << origMachine;
+
+	mTaskRoots.set(taskId, origMachine);
+
+	@match DistributedDataOperation(dataOperation)
+		-| Sort(bigvecGuid) ->> {
+			auto layout = *mVDM->getBigVectorLayouts()->tryGetLayoutForId(bigvecGuid);
+
+			std::map<MachineId, int64_t> totals;
+			for (auto page: layout.getPagesReferenced())
+				{
+				std::set<Cumulus::MachineId> machines;
+				mSPRT->machinesWithPageInRam(page, machines);
+
+				for (auto m: machines)
+					totals[m] += page.bytecount() / machines.size();
+				}
+
+			Largest<MachineId> biggest;
+			for (auto mAndSize: totals)
+				biggest.observe(mAndSize.first, mAndSize.second);
+
+			mTasksGlobalScheduler.taskCreated(
+				taskId, 
+				biggest.largest() ? *biggest.largest() : origMachine,
+				layout.size(),
+				layout.bytecount()
+				);
+
+			for (auto page: layout.getPagesReferenced())
+				schedulePageToBePushedIntoPipeline_(taskId, page);
+			}
+	}
+
+void DistributedDataTasksImpl::schedulePageToBePushedIntoPipeline_(hash_type taskId, Fora::PageId page)
+	{
+	std::set<Cumulus::MachineId> machines;
+
+	mSPRT->machinesWithPageInRam(page, machines);
+	if (machines.size())
+		{
+		MachineId machine = Ufora::math::Random::pickRandomlyFromSet(machines, mRandom);
+
+		if (machine == mOwnMachineId)
+			tryToQueuePageInPipeline_(taskId, page, mOwnMachineId);
+		else
+			mOnCrossDistributedDataTasksMessage.broadcast(
+				CrossDistributedDataTasksMessageCreated(
+					CrossDistributedDataTasksMessage::SchedulePageForSorting(taskId, page, mOwnMachineId),
+					machine
+					)
+				);
+		}
+	else
+		{
+		LOG_WARN << "Couldn't find " << page << " in RAM anywhere.";
+
+		mPagesToPushIntoMessagePipeline.push_back(make_pair(taskId, page));
+
+		hash_type guid = mVDM->newVectorHash();
+
+		mTaskPageRequestGuids[taskId].push_back(make_pair(guid, page));
+
+		mOnDataTasksToGlobalSchedulerMessage.broadcast(
+			DataTasksToGlobalSchedulerMessage::CreateTaskDependency(guid, page)
+			);
+		}
+	}
+
+void DistributedDataTasksImpl::tryToQueuePageInPipeline_(hash_type taskId, Fora::PageId pageId, MachineId sourceMachine)
+	{
+	mMessagePipeline->queuePageForSorting(taskId, pageId);
+	}
+
+void DistributedDataTasksImpl::cannotAcquireLockOnPage(hash_type task, Fora::PageId page)
+	{
+	TimedLock lock(mMutex, "DistributedDataTasks");
+
+	LOG_INFO << mOwnMachineId << " in task " << task << " failed to acquire lock on page " << page;
+
+	//send this to the leader machine
+	if (mOwnMachineId == *mAllMachines.begin())
+		pageNotFoundInVDM_(task, page);
+	else
+		mOnCrossDistributedDataTasksMessage.broadcast(
+			CrossDistributedDataTasksMessageCreated(
+				CrossDistributedDataTasksMessage::PageNotFound(task, page),
+				*mAllMachines.begin()
+				)
+			);	
+	}
+
+void DistributedDataTasksImpl::pageNotFoundInVDM_(hash_type task, Fora::PageId page)
+	{
+	mPagesToPushIntoMessagePipeline.push_back(make_pair(task, page));
+	}
+
+void DistributedDataTasksImpl::messagePipelineHeartbeat()
+	{
+	TimedLock lock(mMutex, "DistributedDataTasks");
+
+	auto toPush = mPagesToPushIntoMessagePipeline;
+	mPagesToPushIntoMessagePipeline.clear();
+
+	for (auto taskIdAndPage: toPush)
+		{
+		LOG_INFO << "Trying to schedule page " << taskIdAndPage.second << " for task " 
+			<< taskIdAndPage.first << " again.";
+
+		schedulePageToBePushedIntoPipeline_(taskIdAndPage.first, taskIdAndPage.second);
+		}
+
+	mMessagePipeline->scheduleAllOutgoingMessages();
+
+	mMainScheduler->schedule(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&DistributedDataTasksImpl::messagePipelineHeartbeat
+				),
+			polymorphicSharedWeakPtrFromThis()
+			),
+		curClock() + kMessagePipelineHeartbeatInterval
+		);
+	}
+
+void DistributedDataTasksImpl::handleCrossDistributedDataTasksMessage(CrossDistributedDataTasksMessage msg)
+	{
+	TimedLock lock(mMutex, "DistributedDataTasks");
+
+	@match CrossDistributedDataTasksMessage(msg)
+		-| RootTaskCreated(guid, op, onMachine) ->> {
+			handleTaskCreatedOnLeader_(guid, op, onMachine);
+			}
+		-| RootTaskCompleted(guid, result) ->> {
+			mOnExternalIoTaskCompleted.broadcast(
+				ExternalIoTaskCompleted(
+					ExternalIoTaskId(guid),
+					result
+					)
+				);
+			}
+		-| CrossPipeline(msg, source) ->> {
+			mMessagePipeline->handleCrossPipelineMessage(source, msg);
+			}
+		-| SchedulePageForSorting(guid, page, sourceMachine) ->> {
+			tryToQueuePageInPipeline_(guid, page, sourceMachine);
+			}
+		-| PageNotFound(guid, page) ->> {
+			pageNotFoundInVDM_(guid, page);
+			}
+		-| PipelineToScheduler(msg) ->> {
+			mTasksGlobalScheduler.handlePipelineToSchedulerMessage(msg);
+			}
+		-| SchedulerToPipeline(msg) ->> {
+			mMessagePipeline->handleSchedulerToPipelineMessage(msg);
+			}
+		-| _ ->> {
+			lassert_dump(false, "Can't handle " << msg.tagName());
+			}
+	}
+}
+

@@ -1,0 +1,175 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ScopedLoggingHandles.hppml"
+#include "threading/ThreadSafeMap.hpp"
+
+namespace Ufora {
+
+namespace {
+
+class BadRegex {};
+
+boost::regex getRegexFromCache(const std::string& inString)
+	{
+	//TODO BUG anybody: ensure that we don't get too many regexes and run out of RAM
+	static ThreadSafeMap<std::string, boost::regex> parsedRegexes;
+
+	static ThreadSafeMap<std::string, std::string> badRegexes;
+
+	Nullable<boost::regex> nRegex = parsedRegexes.get(inString);
+	if (nRegex)
+		return *nRegex;
+
+	Nullable<std::string> nError = badRegexes.get(inString);
+
+	if (nError)
+		throw BadRegex();
+
+	try {
+		boost::regex regex(inString.c_str());
+
+		parsedRegexes.set(
+			inString, 
+			regex
+			);
+
+		return regex;
+		}
+	catch(boost::regex_error& err)
+		{
+		badRegexes.set(inString, err.what());
+
+		LOG_WARN << "Bad regex used in logging filter: " << inString << ". error = " << err.what();
+
+		throw BadRegex();
+		}
+	}
+
+}
+
+ScopedLoggingHandles::ScopedLoggingHandles(LogLevel* inDefaultLogLevelPtr) : 
+		mDefaultLogLevelPtr(inDefaultLogLevelPtr)
+	{
+	}
+
+bool ScopedLoggingEntry::matchesPattern(const ScopedLoggingEntry& otherPattern) const
+	{
+	try {
+		return 
+			boost::regex_search(scope(), getRegexFromCache(otherPattern.scope())) && 
+			boost::regex_search(file(), getRegexFromCache(otherPattern.file()))
+			;
+		}
+	catch(BadRegex& e)
+		{
+		return false;
+		}
+	}
+
+LogLevel** ScopedLoggingHandles::getHandle(const ScopedLoggingEntry& entry)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	auto it = mLogLevelPtrs.find(entry);
+
+	if (it != mLogLevelPtrs.end())
+		return &it->second;
+
+	updatePointerForEntry_(entry);
+
+	return &mLogLevelPtrs[entry];
+	}
+
+void ScopedLoggingHandles::addPattern(const ScopedLoggingEntry& entry, Nullable<LogLevel> level)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+	
+	mPatterns.push_back(std::make_pair(entry, level));
+
+	resetPointersMatching_(entry);
+
+	mPatternCount[entry]++;
+
+	checkIfPatternIsDuplicated_(entry);
+
+	dropUselessFrontPatterns_();
+	}
+
+void ScopedLoggingHandles::resetPointersMatching_(const ScopedLoggingEntry& entry)
+	{
+	for (auto it = mLogLevelPtrs.begin(); it != mLogLevelPtrs.end(); ++it)
+		if (it->first.matchesPattern(entry))
+			updatePointerForEntry_(it->first);
+	}
+
+void ScopedLoggingHandles::updatePointerForEntry_(const ScopedLoggingEntry& entry)
+	{
+	Nullable<LogLevel> desired;
+
+	for (auto it = mPatterns.begin(); it != mPatterns.end(); ++it)
+		if (entry.matchesPattern(it->first))
+			desired = it->second;
+
+	if (desired)
+		{
+		if (!mLogLevelPointerOverrides[entry])
+			mLogLevelPointerOverrides[entry].reset(new LogLevel(*desired));
+		else
+			*mLogLevelPointerOverrides[entry] = *desired;
+
+		mLogLevelPtrs[entry] = mLogLevelPointerOverrides[entry].get();
+		}
+	else
+		mLogLevelPtrs[entry] = mDefaultLogLevelPtr;
+	}
+
+void ScopedLoggingHandles::checkIfPatternIsDuplicated_(const ScopedLoggingEntry& entry)
+	{
+	while (mPatternCount[entry] > 1)
+		{
+		for (long k = 0; k < mPatterns.size();k++)
+			if (mPatterns[k].first == entry)
+				{
+				dropPatternInSlot_(k);
+				k = mPatterns.size();
+				}
+		}
+	}
+
+void ScopedLoggingHandles::dropUselessFrontPatterns_()
+	{
+	//if the initial pattern
+	while (frontPatternDoesNothing_())
+		dropPatternInSlot_(0);
+	}
+
+void ScopedLoggingHandles::dropPatternInSlot_(long slot)
+	{
+	mPatternCount[mPatterns[slot].first]--;
+	
+	if (mPatternCount.find(mPatterns[slot].first) == mPatternCount.end())
+		mPatternCount.erase(mPatterns[slot].first);
+
+	mPatterns.erase(mPatterns.begin() + slot);
+	}	
+
+bool ScopedLoggingHandles::frontPatternDoesNothing_() const
+	{
+	return mPatterns.size() && !mPatterns[0].second;
+	}
+
+}
+

@@ -1,0 +1,298 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <map>
+#include <boost/unordered_set.hpp>
+#include <boost/unordered_map.hpp>
+
+#include "../Core/MemoryPool.hpp"
+#include "../../core/Common.hppml"
+#include "../../core/EventBroadcaster.hpp"
+#include "../../core/PolymorphicSharedPtr.hpp"
+#include "../../core/containers/MapWithIndex.hpp"
+#include "../../core/math/RandomHashGenerator.hpp"
+#include "../../core/threading/Gate.hpp"
+#include "LargeMemoryBlockTracker.hppml"
+
+/***********
+VectorDataMemoryManager
+
+Manages a set of pages mmapped from the operating system.
+************/
+
+class MemoryPool;
+
+class VectorDataMemoryManager : public PolymorphicSharedPtrBase<VectorDataMemoryManager> {
+public:
+	static const uint64_t DEFAULT_MAX_BYTES_PER_POOL;
+	static const uint64_t DEFAULT_MAX_TOTAL_BYTES;
+	static const uint64_t DEFAULT_CALLBACK_GRANULARITY;
+
+	VectorDataMemoryManager(
+				PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+				PolymorphicSharedPtr<CallbackScheduler> inCallbackSchedulerForMappableMemoryPoolOps,
+				uint64_t maxBytesPerPool,
+				uint64_t maxTotalBytes,
+				RandomHashGenerator& inRandomHashGenerator
+				);
+
+	VectorDataMemoryManager(
+				PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+				PolymorphicSharedPtr<CallbackScheduler> inCallbackSchedulerForMappableMemoryPoolOps,
+				uint64_t maxBytesPerPool = DEFAULT_MAX_BYTES_PER_POOL,
+				uint64_t maxTotalBytes = DEFAULT_MAX_TOTAL_BYTES,
+				uint64_t callbackGranularity = DEFAULT_CALLBACK_GRANULARITY,
+				RandomHashGenerator& inRandomHashGenerator = RandomHashGenerator::singleton()
+				);
+
+	~VectorDataMemoryManager();
+
+	boost::shared_ptr<Ufora::threading::Gate> getTeardownGate() const;
+
+	//total bytecount with Pagelets that are held in multiple contexts double counted
+	//this is the accurate memory count we would expect if we copied all pagelets into their
+	//parent pools, which could actually happen...
+	uint64_t totalBytesUsedByExecutionContextsIncludingPagelets() const;
+
+	uint64_t totalBytesUsedByVectorsIncludingPagelets() const;
+
+	uint64_t totalBytesUsedByPageletsInDataTasks() const;
+
+	void enableCountTcMallocMemoryAsEcMemory();
+
+	//bytecounts used across the system
+	uint64_t totalBytesUsedSingleCountingPagelets() const;
+
+	uint64_t totalBytesAllocatedByClients() const;
+
+	uint64_t totalBytesUsedByDataTasks() const;
+
+	uint64_t totalBytesUsedByExecutionContextsExcludingPagelets() const;
+
+	uint64_t totalBytesUsedByVectorsExcludingPagelets() const;
+
+	uint64_t totalBytesUsedByPagelets() const;
+
+	uint64_t tcmallocMemoryCountedAsEcMemory() const;
+
+	uint64_t totalBytesUsedByPageletsInVectors() const;
+
+	uint64_t totalBytesUsedByBigVectorHandles() const;
+
+	uint64_t totalBytesUsedByOtherPools() const;
+
+	uint64_t totalBytesMmapped() const;
+
+	uint64_t totalBytesMmappedCumulatively() const;
+
+	void allowAllExecutionContextsBlockedOnMemoryToCheckState();
+
+	void* mmapForPool(MemoryPool* inPool, uint64_t size);
+
+	int munmapForPool(MemoryPool* inPool, void* addr, uint64_t size);
+
+	bool detachFromPool(MemoryPool* inPool, void* addr, uint64_t size);
+
+	void attachToPool(MemoryPool* inPool, void* addr, uint64_t size);
+
+	void* mremapForPool(MemoryPool* inPool, void* addr, uint64_t oldSize, uint64_t newSize, int flags);
+
+	void checkBytecounts();
+
+	bool mremapForPoolWithoutMoving(MemoryPool* inPool, void* addr, uint64_t oldSize, uint64_t newSize);
+
+	void poolNowHoldingPagelet(MemoryPool* poolThatsDoubleCounting, MemoryPool* pagelet);
+
+	void poolNoLongerHoldingPagelet(MemoryPool* poolThatsDoubleCounting, MemoryPool* pagelet);
+
+	uint64_t getMaxBytesPerPool();
+
+	void setMaxBytesPerPool(uint64_t bytes);
+
+	uint64_t getMaxTotalBytes();
+
+	void setMaxTotalBytes(uint64_t bytes);
+
+	uint64_t getMemoryCallbackGranularity();
+
+	void setMemoryCallbackGranularity(uint64_t bytes);
+
+	size_t getOsPageSize() const
+		{
+		return mOsPageSize;
+		}
+
+	EventBroadcaster<uint64_t>& onTotalBytesUsedByExecutionContextsChanged();
+
+	EventBroadcaster<uint64_t>& onTotalBytesUsedByChanged();
+
+	EventBroadcaster<bool>& onIsFullChanged();
+
+	hash_type newVectorHash();
+
+	bool permitAllocation(MemoryPool* inPool, uint64_t size);
+
+	PolymorphicSharedPtr<CallbackScheduler> getCallbackSchedulerForMappableMemoryPools()
+		{
+		return mCallbackSchedulerForMappableMemoryPoolOps;
+		}
+
+	int64_t getSlabSize() const
+		{
+		return mSlabSize;
+		}
+
+	int64_t getSmallAllocSize() const
+		{
+		return mSmallAllocSize;
+		}
+
+	int64_t getVerySmallAllocSize() const
+		{
+		return mVerySmallAllocSize;
+		}
+
+	int64_t getTotalBytesMmappedHighWaterMark() const
+		{
+		return mTotalBytesMmappedHighWaterMark;
+		}
+
+	void pageletFrozen(int64_t totalBytes, int64_t totalBytesFromOS);
+
+	void pageletDropped(int64_t totalBytes, int64_t totalBytesFromOS);
+	
+private:
+	bool permitAllocationAndBlockUntilAvailable_(
+					MemoryPool* inPool, 
+					uint64_t size, 
+					boost::mutex::scoped_lock& ioLock
+					);
+
+	void blockExecutionContextAllocation_(
+					MemoryPool* inPool,
+					boost::mutex::scoped_lock& ioLock
+					);
+
+	mutable boost::mutex mMutex;
+
+	EventBroadcaster<uint64_t> mOnTotalBytesUsedByExecutionContextsChanged;
+
+	EventBroadcaster<uint64_t> mOnTotalBytesUsedChanged;
+
+	EventBroadcaster<bool> mOnIsFullChanged;
+
+	void bytecountChange_(int64_t netBytes, MemoryPool::MemoryPoolType type);
+
+	uint64_t mTotalBytesMmapped;
+
+	uint64_t mTotalBytesUsed;
+
+	uint64_t mMaxTotalBytes;
+
+	uint64_t mTotalBytesUsedByExecutionContexts;
+
+	uint64_t mTotalBytesUsedByVectorPages;
+
+	uint64_t mTotalBytesUsedByDataTasks;
+
+	uint64_t mTotalBytesUsedByPagelets;
+
+	uint64_t mTotalBytesUsedByBigVectorHandles;
+
+	uint64_t mMaxBytesPerPool;
+
+	uint64_t mMemoryCallbackGranularity;
+
+	uint64_t mTotalBytesEverMMapped;
+
+	double mTimestampOfLastLogMessage;
+
+	void* mmapFromOS_(int64_t bytes);
+
+	void munmapFromOS_(void* addr, int64_t bytes);
+
+	bool makeLargeAllocSpace_(uint64_t size);
+
+	void logMapFailed_();
+
+	uint64_t mTotalBytesMMappedAtLastLogMessage;
+
+	size_t mOsPageSize;
+
+	boost::shared_ptr<Ufora::threading::Gate> mTeardownGate;
+
+	AO_t mPageletBytesWithinExecutionContexts;
+
+	AO_t mPageletBytesWithinVectorPages;
+
+	AO_t mPageletBytesWithinDataTasks;
+
+	boost::condition_variable mTotalMemoryChangedCondition;
+
+	RandomHashGenerator& mHashGenerator;
+
+	PolymorphicSharedPtr<CallbackScheduler> mCallbackScheduler;
+
+	PolymorphicSharedPtr<CallbackScheduler> mCallbackSchedulerForMappableMemoryPoolOps;
+
+	int64_t totalBytesAllocatedByClients_() const;
+
+	uint64_t totalBytesOfUnallocatedECMemory_() const;
+
+	uint64_t totalBytesOfUnallocatedECMemory() const;
+
+	//free blocks of size mSmallAllocSize
+	std::vector<uint8_t*> mFreeSmallBlocks;
+
+	//allocated blocks of size mSmallAllocSize
+	boost::unordered_set<uint8_t*> mAllocatedSmallBlocks;
+
+	std::vector<uint8_t*> mFreeVerySmallBlocks;
+
+	//allocated blocks of size mSmallAllocSize
+	boost::unordered_set<uint8_t*> mAllocatedVerySmallBlocks;
+
+	LargeMemoryBlockTracker mLargeAllocTracker;
+
+	int64_t mBytesAllocatedInLargeBlocks;
+
+	int64_t mTotalBytesInDataTasks;
+
+	int64_t mSlabSize;
+
+	int64_t mSmallAllocSize;
+
+	int64_t mVerySmallAllocSize;
+
+	int64_t mTotalBytesInFrozenPagelets;
+
+	int64_t mTotalBytesAllocatedByFrozenPagelets;
+
+	int64_t mTotalPagelets;
+
+	int64_t mTcMallocMemoryCountedInEcMemory;
+
+	int64_t mTotalBytesMmappedHighWaterMark;
+
+	double mLastTimeTcMallocMemoryChecked;
+
+	bool mTcMallocMemoryIsECMemory;
+};
+
+
+
+

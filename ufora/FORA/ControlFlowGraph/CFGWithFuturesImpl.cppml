@@ -1,0 +1,1145 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "CFGWithFuturesImpl.hppml"
+
+#include "SimulationState.hppml"
+
+#include "../Core/ComputationResult.hppml"
+#include "../Core/ImplValContainerUtilities.hppml"
+#include "../Core/TupleCategory.hppml"
+#include "../Language/ApplySignature.hppml"
+#include "../../core/Logging.hpp"
+
+using Fora::Interpreter::ComputationResult;
+using Fora::Interpreter::PausedComputationFrame;
+
+namespace {
+
+ImplValContainer resultOfSlot(
+        const FutureSlot& inSlot
+        )
+    {
+    @match FutureSlot(inSlot)
+        -|  Current(result) ->> { 
+            return result;
+            }
+        -|  _ ->> {
+            lassert(false);
+            }
+        ;
+    }
+
+Nullable<ImplValContainer> futureToImplVal(
+        const FutureValue& inFutureValue,
+        const Nullable<std::vector<FutureSlot>>& inSlots
+        )
+    {
+    @match FutureValue(inFutureValue)
+        -|  Current(value, _, _) ->> {
+            return null() << value;
+            }
+        -|  Future(index) ->> {
+            lassert(!inSlots.isNull());
+
+            @match FutureSlot(inSlots->at(index))
+                -|  Current(value) ->> {
+                    return null() << value;
+                    }
+                -|  Future(_, _) ->> {
+                    return null();
+                    }
+                -|  GarbageCollected() ->> {
+                    return null() << ImplValContainer();
+                    }
+                ;
+            }
+        -|  Tuple(args) ->> {
+            std::vector<std::pair<Nullable<Symbol>, 
+                                  ImplValContainer>> namesAndValues;
+            for (auto arg: args)
+                {
+                @match FutureValueTupleArg(arg)
+                    -|  Normal(fieldName, arg) ->> {
+                        Nullable<ImplValContainer> implValOrNull = 
+                            futureToImplVal(arg, inSlots);
+
+                        if (implValOrNull.isNull())
+                            return null();
+
+                        namesAndValues.push_back(
+                            std::make_pair(
+                                fieldName, 
+                                *implValOrNull
+                                )
+                            );
+                        }
+                    -|  TupleCall(arg) ->> {
+                        Nullable<ImplValContainer> implValOrNull = 
+                            futureToImplVal(arg, inSlots);
+
+                        if (implValOrNull.isNull())
+                            return null();
+
+                        if (implValOrNull->type().isTuple())
+                            {
+                            ImplValContainerUtilities::iterateTupleContentsWithNames(
+                                *implValOrNull,
+                                [&namesAndValues](
+                                    const ImplValContainer& value,
+                                    const Nullable<Symbol>& name
+                                    ) { 
+                                    namesAndValues.push_back(
+                                        std::make_pair(name, value)
+                                        );
+                                    }
+                                );
+                            }
+                        else {
+                            namesAndValues.push_back(
+                                std::make_pair(
+                                    null(), *implValOrNull
+                                    )
+                                );
+                            }
+                        }
+                }
+                
+            return null() << ImplValContainerUtilities::createTupleFromIterators(
+                namesAndValues.begin(), namesAndValues.end()
+                );
+            }
+        ;
+    }
+
+Nullable<ImmutableTreeVector<ImplValContainer>> futureValuesToImplVals(
+        const ImmutableTreeVector<FutureValue>& inFutureValues, 
+        const Nullable<std::vector<FutureSlot>>& inSlots
+        )
+    {
+    ImmutableTreeVector<ImplValContainer> tr;
+
+    for (auto futureValue: inFutureValues)
+        {
+        Nullable<ImplValContainer> implValOrNull = 
+            futureToImplVal(futureValue, inSlots);
+
+        if (implValOrNull.isNull())
+            return null();
+
+        tr = tr + *implValOrNull;
+        }
+        
+    return null() << tr;
+    }
+
+bool valueMatchesTupleContinuation(
+        const ImplValContainer& inToExpand, 
+        const ControlFlowTupleContinuation& inTupleCont
+        )
+    {
+    bool tr = false;
+    uint32_t arity = inTupleCont.arity();
+    bool arityIsExact = inTupleCont.arityIsExact();
+
+    if (inToExpand.type().isTuple())
+        {
+        uword_t size = ImplValContainerUtilities::tupleSize(inToExpand);
+
+        if (arityIsExact)
+            {
+            if (size == arity)
+                tr = true;
+            }
+        else if (size >= arity)
+            {
+            tr = true;
+            }
+        }
+
+    return tr;
+    }
+
+ComputationResult computationResultFor(
+        const ImplValContainer& inValue, bool inIsException
+        )
+    {
+    if (!inIsException)
+        {
+        return ComputationResult::Result(
+            inValue,
+            ImplValContainer()
+            );            
+        }
+
+    return ComputationResult::Exception(
+        inValue,
+        ImplValContainer()
+        );
+    }
+
+Nullable<ImplValContainer> controlFlowArgToImplVal(
+        const ControlFlowArg& inArg,
+        const ImmutableTreeVector<FutureValue>& inValues,
+        const Nullable<std::vector<FutureSlot>>& inSlots
+        )
+    {
+    @match ControlFlowArg(inArg)
+        -|  Arg(index) ->> { 
+            return futureToImplVal(
+                inValues[index],
+                inSlots
+                );
+            }
+        -|  Constant(value) ->> {
+            return null() << ImplValContainer(value);
+            }
+        ;
+    }
+
+ControlFlowContinuation whichContinuationForBranch(
+        const ImplValContainer& inBranchValue,
+        const ControlFlowContinuation& inNormal,
+        const ControlFlowContinuation& inException
+        )
+    {
+    if (inBranchValue.convertToBoolean())
+        return inNormal;
+
+    return inException;
+    }
+
+ControlFlowContinuation whichContinuationForSwitch(
+        const ImplValContainer& inSwitchValue,
+        const ImmutableTreeMap<CSTValue, ControlFlowContinuation>& inBranches,
+        const ControlFlowContinuation& inOtherwise
+        )
+    {
+    // this map is different from the way things are set up in the interpreter,
+    // which maps based on type, to a map based on type-hash of value,
+    // but I _believe_ the results should be the same
+    auto brachesOnHashValues = inBranches.map(
+        [](const std::pair<CSTValue, ControlFlowContinuation>& p) {
+            return std::make_pair(p.first.hash(), p.second);
+            }
+        );
+
+    Nullable<const ControlFlowContinuation&> whichBranch = 
+        brachesOnHashValues[inSwitchValue.hash()];
+
+    if (!whichBranch.isNull())
+        return *whichBranch;
+    
+    return inOtherwise;
+    }
+
+bool allValuesAreConst(const ImmutableTreeVector<ImplValContainer>& values)
+    {
+    for (auto value: values)
+        {
+        if (!value.isCST())
+            return false;
+        }
+
+    return true;
+    }
+
+} // end anonymous namespace
+
+ImmutableTreeVector<FutureValue> CFGWithFuturesImpl::implValsToFutureValues(
+        const ImmutableTreeVector<ImplValContainer>& inValues
+        )
+    {
+    ImmutableTreeVector<FutureValue> tr;
+
+    for (auto value: inValues)
+        {
+        tr = tr + FutureValue::Current(value, false, null());
+        }
+
+    return tr;
+    }
+
+FutureValue CFGWithFuturesImpl::applyArgToFutureValue(
+        const ControlFlowArg& inControlFlowArg, 
+        const ImmutableTreeVector<FutureValue>& inCurrentValues
+        )
+    {
+    @match ControlFlowArg(inControlFlowArg) 
+        -|  Arg(index) ->> {
+            return inCurrentValues[index];
+            }
+        -|  Constant(value) ->> {
+            return FutureValue::Current(
+                ImplValContainer(value), false, null()
+                );
+            }
+        ;       
+    }
+
+ImplValContainer CFGWithFuturesImpl::controlFlowContinuationArgAndValuesToImplVal(
+        const ControlFlowContinuationArg& inArg,
+        const ImmutableTreeVector<ImplValContainer>& inCurrentNodeValues,
+        const Nullable<ImplValContainer>& inApplyResult,
+        const Nullable<CFGWithFuturesImpl::TupleExpandInfo>& inTupleExpandInfo
+        )
+    {
+    @match ControlFlowContinuationArg(inArg)
+        -|  Arg(Arg(index)) ->> {
+            return inCurrentNodeValues[index];
+            }
+        -|  Arg(Constant(value)) ->> {
+            return ImplValContainer(value);
+            }
+        -|  Result() ->> {
+            lassert(!inApplyResult.isNull());
+
+            return *inApplyResult;
+            }
+        -|  TupleElement(index) ->> {
+            lassert(!inTupleExpandInfo.isNull());
+
+            return ImplValContainerUtilities::tupleGetItem(
+                inTupleExpandInfo->valueToExpand(), index
+                );
+            }
+        -|  TupleRemainingElements() ->> {
+            lassert(!inTupleExpandInfo.isNull());
+
+            return ImplValContainerUtilities::tupleGetSlice(
+                inTupleExpandInfo->valueToExpand(),
+                inTupleExpandInfo->arity(),
+                ImplValContainerUtilities::tupleSize(
+                    inTupleExpandInfo->valueToExpand()
+                    )
+                );
+            }
+        -|  MakeTuple(args) ->> {
+            std::vector<std::pair<Nullable<Symbol>, 
+                                  ImplValContainer>> namesAndValues;
+            for (auto arg: args)
+                {
+                @match ControlFlowContinuationTupleArg(arg)
+                    -|  Normal(fieldName, arg) ->> {
+                        namesAndValues.push_back(
+                            std::make_pair(
+                                fieldName, 
+                                controlFlowContinuationArgAndValuesToImplVal(
+                                    arg, 
+                                    inCurrentNodeValues, 
+                                    inApplyResult, 
+                                    inTupleExpandInfo
+                                    )
+                                )
+                            );
+                        }
+                    -|  TupleCall(arg) ->> {
+                        ImplValContainer argAsImplVal = 
+                            controlFlowContinuationArgAndValuesToImplVal(
+                                arg, 
+                                inCurrentNodeValues, 
+                                inApplyResult, 
+                                inTupleExpandInfo
+                                );
+                        
+                        if (argAsImplVal.type().isTuple())
+                            {
+                            ImplValContainerUtilities::iterateTupleContentsWithNames(
+                                argAsImplVal,
+                                [&namesAndValues](
+                                    const ImplValContainer& value,
+                                    const Nullable<Symbol>& name
+                                    ) {
+                                    namesAndValues.push_back(
+                                        std::make_pair(name, value)
+                                        );
+                                    }
+                                );
+                            }
+                        else {
+                            namesAndValues.push_back(
+                                std::make_pair(
+                                    null(), argAsImplVal
+                                    )
+                                );
+                            }
+                        }
+                }
+
+            return ImplValContainerUtilities::createTupleFromIterators(
+                namesAndValues.begin(), namesAndValues.end()
+                );            
+            }
+        ;
+    }
+
+ImmutableTreeVector<ImplValContainer> 
+CFGWithFuturesImpl::controlFlowContinuationArgsAndValuesToImplvals(
+        const ImmutableTreeVector<ControlFlowContinuationArg>& inArgs,
+        const ImmutableTreeVector<ImplValContainer>& inCurrentNodeValues,
+        const Nullable<ImplValContainer>& inApplyResult,
+        const Nullable<CFGWithFuturesImpl::TupleExpandInfo>& inTupleExpandInfo
+        )
+    {
+    ImmutableTreeVector<ImplValContainer> tr;
+
+    for (auto arg: inArgs)
+        {
+        tr = tr + controlFlowContinuationArgAndValuesToImplVal(
+            arg, inCurrentNodeValues, inApplyResult, inTupleExpandInfo
+            );
+        }
+
+    return tr;
+    }
+
+ImmutableTreeVector<FutureValue> 
+CFGWithFuturesImpl::controlFlowContinuationArgsToFutureValues(
+        const ImmutableTreeVector<ControlFlowContinuationArg>& inArgs,
+        const ImmutableTreeVector<FutureValue>& inCurrentValues,
+        const Nullable<FutureValue>& inCurrentResult,
+        const Nullable<CFGWithFuturesImpl::TupleExpandInfo>& inTupleExpandInfo
+        )
+    {
+    ImmutableTreeVector<FutureValue> tr;
+
+    for (auto arg: inArgs)
+        {
+        tr = tr + controlFlowContinuationArgToFutureValue(
+            arg, inCurrentValues, inCurrentResult, inTupleExpandInfo
+            );
+        }
+        
+    return tr;
+    }
+
+FutureValue CFGWithFuturesImpl::controlFlowContinuationArgToFutureValue(
+        const ControlFlowContinuationArg& inArg,
+        const ImmutableTreeVector<FutureValue>& inCurrentValues,
+        const Nullable<FutureValue>& inCurrentResult,
+        const Nullable<CFGWithFuturesImpl::TupleExpandInfo>& inTupleExpandInfo
+        )
+    {
+    @match ControlFlowContinuationArg(inArg)
+        -|  Arg(controlFlowArg) ->> {
+            return applyArgToFutureValue(controlFlowArg, inCurrentValues);
+            }
+        -|  Result() ->> {
+            lassert(!inCurrentResult.isNull());
+        
+            return *inCurrentResult;
+            }
+        -|  TupleElement(index) ->> {
+            lassert(!inTupleExpandInfo.isNull());
+            
+            return FutureValue::Current(
+                ImplValContainerUtilities::tupleGetItem(
+                    inTupleExpandInfo->valueToExpand(), index
+                    ),
+                false,
+                null()
+                );
+            }
+        -|  TupleRemainingElements() ->> {
+            lassert(!inTupleExpandInfo.isNull());
+
+            return FutureValue::Current(
+                ImplValContainerUtilities::tupleGetSlice(
+                    inTupleExpandInfo->valueToExpand(), 
+                    inTupleExpandInfo->arity(),
+                    ImplValContainerUtilities::tupleSize(
+                        inTupleExpandInfo->valueToExpand()
+                        )
+                    ),
+                false,
+                null()
+                );
+            }
+        -|  MakeTuple(args) ->> {
+            ImmutableTreeVector<FutureValueTupleArg> tupleElements;
+            for (auto arg: args)
+                {
+                @match ControlFlowContinuationTupleArg(arg)
+                    -|  Normal(fieldName, arg) ->> {
+                        tupleElements = tupleElements + 
+                            FutureValueTupleArg::Normal(
+                                fieldName,
+                                controlFlowContinuationArgToFutureValue(
+                                    arg,
+                                    inCurrentValues,
+                                    inCurrentResult,
+                                    inTupleExpandInfo
+                                    )
+                                );
+                        }
+                    -|  TupleCall(arg) ->> {
+                        tupleElements = tupleElements + 
+                            FutureValueTupleArg::TupleCall(
+                                controlFlowContinuationArgToFutureValue(
+                                    arg,
+                                    inCurrentValues,
+                                    inCurrentResult,
+                                    inTupleExpandInfo
+                                    )
+                                );
+                        }
+                    ;
+                }
+
+            return FutureValue::Tuple(tupleElements);
+            }
+        ;
+    }
+
+std::string CFGWithFuturesImpl::toString(bool inShowGraph) const
+    {
+    std::ostringstream oss;
+
+    oss << "CFGWithFuturesImpl:\n"
+        << mSimulationStatePtr->toString()
+        << "\n";
+
+    return oss.str();
+    }
+
+bool CFGWithFuturesImpl::isSubmittable(uint64_t inSlotIndex) const
+    {
+    return mSimulationStatePtr->isSubmittable(inSlotIndex);
+    }
+
+Nullable<ImmutableTreeVector<ImplValContainer>> CFGWithFuturesImpl::futureValuesToImplVals(
+        const ImmutableTreeVector<FutureValue>& inFutureValues
+        ) const
+    {
+    return ::futureValuesToImplVals(inFutureValues, null() << getSlots());
+    }
+
+PolymorphicSharedPtr<CFGWithFuturesImpl> CFGWithFuturesImpl::createCfgWithFutures(
+        const ControlFlowGraph& inGraph,
+        const Nullable<std::string>& inLabel,
+        const ImmutableTreeVector<ImplValContainer>& inCurrentValues
+        )
+    {
+    if (!allValuesAreConst(inCurrentValues))
+        return PolymorphicSharedPtr<CFGWithFuturesImpl>();
+
+    Nullable<SimulationHead>
+        nextSimulationHead = CFGWithFuturesImpl::nextSimulationHead(
+            inGraph, inLabel, implValsToFutureValues(inCurrentValues)
+            );
+
+    if (nextSimulationHead.isNull())
+        return PolymorphicSharedPtr<CFGWithFuturesImpl>();
+
+    return PolymorphicSharedPtr<CFGWithFuturesImpl>(
+        new CFGWithFuturesImpl(*nextSimulationHead)
+        );
+    }
+
+FutureValue CFGWithFuturesImpl::currentResultAtLastSlot() const
+    {
+    FutureValue tr;
+
+    lassert(getSlots().size());
+
+    uint64_t slotIndex = getSlots().size() - 1;
+    @match FutureSlot(getSlots()[slotIndex])
+        -|  Future(_, _, _) ->> {
+            tr = FutureValue::Future(slotIndex);
+            }
+        -|  Current(result, isException) ->> {
+            tr = FutureValue::Current(result, isException, null() << slotIndex);
+            }
+        -|  GarbageCollected() ->> {
+            lassert_dump(false, "shouldn't have a garbage-collected node here");
+            }
+        ;
+
+    return tr;
+    }
+
+bool CFGWithFuturesImpl::couldExitIfAllValuesWereFinished() const
+    {
+    ControlFlowNodeBody body = simulationHead().body();
+
+    if (!body.isApply())
+        return false;
+
+    lassert(body.getContinuationCount() > 0);
+
+    return body.getContinuationByIndex(0).isReturn();
+    }
+
+bool CFGWithFuturesImpl::continueSimulation()
+    {
+    if (mustBailEarly())
+        return false;
+
+    Nullable<FutureValue> currentResult;
+    Nullable<TupleExpandInfo> tupleExpandInfo;
+    ControlFlowContinuation continuationToFollow;
+    Nullable<std::string> nextLabel;
+    ImmutableTreeVector<FutureValue> currentValues = currentNodeValues();
+
+    @match ControlFlowNodeBody(simulationHead().body())
+        -|  Cached(_, normal, _) ->> {
+            continuationToFollow = normal;
+
+            currentResult = currentResultAtLastSlot();
+            }
+        -|  Apply(_, normal, _) ->> {
+            continuationToFollow = normal;
+
+            currentResult = currentResultAtLastSlot();
+            }
+        -|  Branch(arg, normal, exception) ->> {
+            Nullable<ImplValContainer> branchValueOrNull = 
+                controlFlowArgToImplVal(
+                    arg, simulationHead().values(), null() << getSlots()
+                    );
+
+            if (branchValueOrNull.isNull())
+                return false;
+
+            continuationToFollow = whichContinuationForBranch(
+                *branchValueOrNull, normal, exception
+                );
+            }
+        -|  Switch(arg, branches, otherwise) ->> {
+            Nullable<ImplValContainer> switchValueOrNull = 
+                controlFlowArgToImplVal(
+                    arg, simulationHead().values(), null() << getSlots()
+                    );
+                
+            if (switchValueOrNull.isNull())
+                return false;
+
+            continuationToFollow = whichContinuationForSwitch(
+                *switchValueOrNull, branches, otherwise
+                );
+            }
+        -|  TupleExpand(argIndex, ifMatch, ifNoMatch) ->> {
+            /*
+              TODO optimization Tom:
+              We could attempt to TupleExpand FutureValues which are Tuples
+              having the proper shape, giving a FutureValue result. This would 
+              require changing the TupleExpandInfo type to hold a FutureValue
+              instead of an ImplValContainer. Refcounting shouldn't be a 
+              problem here.
+            */
+
+            Nullable<ImplValContainer> valueToExpandOrNull = 
+                futureToImplVal(simulationHead().values()[argIndex]);
+                
+            if (valueToExpandOrNull.isNull())
+                return false;
+
+            if (valueMatchesTupleContinuation(*valueToExpandOrNull, ifMatch))
+                {
+                tupleExpandInfo = TupleExpandInfo(
+                    *valueToExpandOrNull, ifMatch.arity()
+                    );
+                continuationToFollow = ifMatch.continuation();
+                }
+            else {
+                continuationToFollow = ifNoMatch;
+                }
+            }
+        -|  Jump(_) ->> { 
+            lassert_dump(false, "we shouldn't ever be stopped at a jump"); 
+            }
+        ;
+
+    @match ControlFlowContinuation(continuationToFollow)
+        -|  Return(_) ->> { return false; }
+        -|  Node(label, args) ->> {
+            nextLabel = label;
+            currentValues = controlFlowContinuationArgsToFutureValues(
+                args, currentValues, currentResult, tupleExpandInfo
+                );
+            }
+        ;
+
+    Nullable<SimulationHead>
+        nextSimulationHead = CFGWithFuturesImpl::nextSimulationHead(
+            graph(), nextLabel, currentValues
+            );
+
+    if (nextSimulationHead.isNull())
+        {
+        return false;
+        }
+
+    advanceSimulationHead(*nextSimulationHead);
+
+    const auto& count = mVisitedApplyAndCacheNodesCounts.find(nextSimulationHead->label());
+
+    if (!maxRepeatNodesAllowed().isNull() and 
+        count != mVisitedApplyAndCacheNodesCounts.end() and 
+        count->second > *maxRepeatNodesAllowed())
+        {
+        lassert(getSlots().size() > 0);
+        lassert(getSlots().back().isFuture());
+
+        mBailEarlyState = BailEarlyState(
+            getSlots().size() - 1,
+            getSlots().back().getFuture().valuesNeededIfWeGetAnException(),
+            BailEarlyType::RepeatIndex()
+            );
+        }
+
+    return true;
+    }
+
+Nullable<uint64_t> CFGWithFuturesImpl::maxRepeatNodesAllowed() const
+    {
+    return mMaxRepeatNodesAllowed;
+    }
+
+bool CFGWithFuturesImpl::repeatNodesAreAllowed() const 
+    {
+    return mMaxRepeatNodesAllowed.isNull();
+    }
+    
+void CFGWithFuturesImpl::advanceSimulationHead(
+        const SimulationHead& inSimulationHead
+        )
+    {
+    mSimulationStatePtr->
+        advanceSimulationHeadAndRegisterDependencies(inSimulationHead);
+
+    auto nextBody = inSimulationHead.graph()[inSimulationHead.label()].body();
+    
+    if (nextBody.isApply() or nextBody.isCached())
+        mVisitedApplyAndCacheNodesCounts[inSimulationHead.label()]++;
+    }
+
+bool CFGWithFuturesImpl::hasResolvedToSimpleState() const
+    {
+    if (!mustBailEarly())
+        {
+        return mSimulationStatePtr->hasResolvedToSimpleState();
+        }
+
+    lassert(!mBailEarlyState.isNull());
+
+    return mSimulationStatePtr
+        ->hasResolvedToSimpleStateAtIndex(mBailEarlyState->slotIndex());
+    }
+
+void CFGWithFuturesImpl::disallowRepeatNodes()
+    {
+    mMaxRepeatNodesAllowed = 1;
+    }
+
+void CFGWithFuturesImpl::setMaxRepeatNodesAllowed(uint64_t count)
+    {
+    mMaxRepeatNodesAllowed = count;
+    }
+
+CFGWithFuturesImpl::CFGWithFuturesImpl(
+        const SimulationHead& inSimulationHead
+        ) :
+    mSimulationStatePtr(
+        new SimulationState(inSimulationHead)
+        )
+    {
+    auto nextBody = inSimulationHead.graph()[inSimulationHead.label()].body();
+    
+    if (nextBody.isApply() or nextBody.isCached())
+        mVisitedApplyAndCacheNodesCounts[inSimulationHead.label()]++;
+    }
+
+void CFGWithFuturesImpl::registerExceptionOrMutable(
+        uint64_t inExceptionOrMutableSlotIndex,
+        const ImmutableTreeVector<FutureValue>& inContinuationArgs,
+        bool isException
+        )
+    {
+    if (mBailEarlyState.isNull() or 
+            inExceptionOrMutableSlotIndex < mBailEarlyState->slotIndex())
+        {
+        mBailEarlyState = BailEarlyState(
+            inExceptionOrMutableSlotIndex,
+            inContinuationArgs,
+            isException ? BailEarlyType::Exception() : BailEarlyType::Mutable()
+            );
+        }
+    }
+
+void CFGWithFuturesImpl::slotCompleted(
+        uint64_t inSlotIndex, const ComputationResult& inResult
+        )
+    {
+    FutureSlot slot = mSimulationStatePtr->getSlot(inSlotIndex);
+
+    lassert(slot.isFuture());
+
+    @match ComputationResult(inResult)
+        -|  Failure(errorState) ->> {
+            lassert_dump(false, "don't know how to handle an Failure here ...");
+            }
+        -|  Exception(exception, computationLog) ->> {
+            mSimulationStatePtr->slotCompleted(
+                inSlotIndex, exception, computationLog, 
+                true
+                );
+
+            registerExceptionOrMutable(
+                inSlotIndex, 
+                slot.getFuture().valuesNeededIfWeGetAnException(),
+                true
+                );
+            }
+        -|  Result(result, computationLog) ->> {
+            mSimulationStatePtr->slotCompleted(
+                inSlotIndex, result, computationLog, 
+                false
+                );
+
+            if (!result.isCST())
+                {
+                registerExceptionOrMutable(
+                    inSlotIndex, 
+                    slot.getFuture().valuesNeededIfWeGetAnException(),
+                    false
+                    );
+                }
+            }
+        ;
+    }
+
+Nullable<SimulationHead>
+CFGWithFuturesImpl::nextSimulationHead(
+        const ControlFlowGraph& inGraph,
+        const Nullable<std::string>& inLabel,
+        const ImmutableTreeVector<FutureValue>& inCurrentValues
+        )
+    {
+    ControlFlowContinuation normalContinuation;
+    Nullable<std::string> currentLabel = inLabel;
+    ImmutableTreeVector<FutureValue> currentNodeValues = inCurrentValues;
+
+    lassert(inGraph[inLabel].argCount() == inCurrentValues.size());
+
+    @match ControlFlowNodeBody(inGraph[inLabel].body())
+        -|  Jump(continuation) ->> {
+            normalContinuation = continuation;
+            }
+        -|  _ ->> {
+            return null() <<
+                SimulationHead(inGraph, currentLabel, currentNodeValues);
+            }
+        ;
+
+    for (uint32_t ix = 0; ix < 10000; ++ix)
+        {
+        @match ControlFlowContinuation(normalContinuation)
+            -|  Return (arg) ->> { return null(); }
+            -|  Node(label, args) ->> {
+                currentLabel = label;
+
+                currentNodeValues = 
+                    controlFlowContinuationArgsToFutureValues(
+                        args, currentNodeValues, null(), null()
+                        );
+                }
+            ;
+
+        @match ControlFlowNodeBody(inGraph[currentLabel].body())
+            -|  Jump(continuation) ->> {
+                normalContinuation = continuation;
+                }
+            -|  _ ->> {
+                return null() << 
+                    SimulationHead(inGraph, currentLabel, currentNodeValues);
+                }
+            ;
+        }
+
+    LOG_WARN << "nextSimulationHead returning null() due to an unexpectedly "
+        "large number of adjacent Jump nodes";
+
+    return null();
+    }
+
+const SimulationHead& CFGWithFuturesImpl::simulationHead() const
+    {
+    return mSimulationStatePtr->simulationHead();
+    }    
+
+const Nullable<std::string>& CFGWithFuturesImpl::currentLabel() const 
+    {
+    return simulationHead().label();
+    }
+
+const ControlFlowGraph& CFGWithFuturesImpl::graph() const
+    {
+    return simulationHead().graph();
+    }
+
+const ImmutableTreeVector<FutureValue>& 
+CFGWithFuturesImpl::currentNodeValues() const
+    {
+    return simulationHead().values();
+    }
+
+const std::vector<FutureSlot>& CFGWithFuturesImpl::getSlots() const
+    {
+    return mSimulationStatePtr->getSlots();
+    }
+
+const std::set<uint64_t>& CFGWithFuturesImpl::indicesOfSubmittableFutures() const
+    {
+    return mSimulationStatePtr->indicesOfSubmittableFutures();
+    }
+
+Nullable<ImplValContainer> CFGWithFuturesImpl::futureToImplVal(
+        const FutureValue& inFutureValue
+        ) const
+    {
+    return ::futureToImplVal(inFutureValue, null() << getSlots());
+    }
+
+Nullable<CFGWithFutures::SimulationResult> 
+CFGWithFuturesImpl::getFinalResultAtSlot(
+        const FutureSlot& inSlot, 
+        const ImmutableTreeVector<FutureValue>& inNodeArgs
+        ) const
+    {
+    lassert(inSlot.isCurrent());
+
+    return getFinalResultAtNode(
+        graph()[inSlot.label()].body(),
+        inNodeArgs,
+        null() << inSlot.getCurrent()
+        );
+    }
+
+Nullable<CFGWithFutures::SimulationResult> 
+CFGWithFuturesImpl::getFinalResultAtNode(
+        const ControlFlowNodeBody& inBody,
+        const ImmutableTreeVector<FutureValue>& inNodeArgs,
+        const Nullable<FutureSlot_CurrentType>& inResult
+        ) const
+    {
+    ControlFlowContinuation continuationToFollow;
+    Nullable<ImplValContainer> resultImplValOrNull;
+    Nullable<TupleExpandInfo> tupleExpandInfo;
+
+    if (!inResult.isNull())
+        resultImplValOrNull = inResult->result();
+
+    @match ControlFlowNodeBody(inBody)
+        -|  Cached(_, normal, exception) ->> {
+            lassert(!inResult.isNull());
+        
+            if (inResult->isException())
+                continuationToFollow = exception;
+            else
+                continuationToFollow = normal;
+            }
+        -|  Apply(_, normal, exception) ->> {
+            lassert(!inResult.isNull());
+        
+            if (inResult->isException())
+                continuationToFollow = exception;
+            else
+                continuationToFollow = normal;
+            }
+        -|  Branch(arg, normal, exception) ->> {
+            Nullable<ImplValContainer> branchValueOrNull = 
+                controlFlowArgToImplVal(
+                    arg, simulationHead().values(), null() << getSlots()
+                    );
+
+            if (branchValueOrNull.isNull())
+                return null();
+
+            continuationToFollow = whichContinuationForBranch(
+                *branchValueOrNull, normal, exception
+                );
+            }
+        -|  Switch(arg, branches, otherwise) ->> { 
+            Nullable<ImplValContainer> switchValueOrNull = 
+                controlFlowArgToImplVal(
+                    arg, simulationHead().values(), null() << getSlots()
+                    );
+
+            if (switchValueOrNull.isNull())
+                return null();
+
+            continuationToFollow = whichContinuationForSwitch(
+                *switchValueOrNull, branches, otherwise
+                );
+            }
+        -|  TupleExpand(argIndex, ifMatch, ifNoMatch) ->> {
+            Nullable<ImplValContainer> valueToExpandOrNull = 
+                futureToImplVal(simulationHead().values()[argIndex]);
+
+            if (valueToExpandOrNull.isNull())
+                return null();
+
+            if (valueMatchesTupleContinuation(*valueToExpandOrNull, ifMatch))
+                {
+                tupleExpandInfo = TupleExpandInfo(*valueToExpandOrNull, ifMatch.arity());
+                continuationToFollow = ifMatch.continuation();
+                }
+            else {
+                continuationToFollow = ifNoMatch;
+                }
+
+            }
+        -|  Jump(continuation) ->> {
+            continuationToFollow = continuation;
+            }
+        ;
+
+    @match ControlFlowContinuation(continuationToFollow)
+        -|  Return(arg, isException) ->> {
+            Nullable<ImmutableTreeVector<ImplValContainer>> 
+                futureValuesOrNull = futureValuesToImplVals(currentNodeValues());
+
+            if (futureValuesOrNull.isNull())
+                return null();
+
+            ImplValContainer result = 
+                controlFlowContinuationArgAndValuesToImplVal(
+                    arg, 
+                    *futureValuesOrNull,
+                    resultImplValOrNull,
+                    tupleExpandInfo
+                    );
+            
+            ComputationResult computationResult = 
+                computationResultFor(result, isException);
+            
+            return null() << 
+                CFGWithFutures::SimulationResult::Result(computationResult);
+            }
+        -|  Node(label, args) ->> {
+            Nullable<ImmutableTreeVector<ImplValContainer>> implValsOrNull = 
+                futureValuesToImplVals(inNodeArgs);
+
+            if (implValsOrNull.isNull())
+                return null();
+
+            return null() << 
+                CFGWithFutures::SimulationResult::Paused(
+                    PausedComputationFrame(
+                        controlFlowContinuationArgsAndValuesToImplvals(
+                            args,
+                            *implValsOrNull,
+                            resultImplValOrNull,
+                            tupleExpandInfo
+                            ),
+                        graph(),
+                        null() << label
+                        )
+                    );
+           }
+       ;
+    }
+
+Nullable<CFGWithFutures::SimulationResult> 
+CFGWithFuturesImpl::getFinalResult() const
+    {
+    if (!hasResolvedToSimpleState())
+        return null();
+
+    if (mustBailEarly())
+        {
+        lassert(!mBailEarlyState.isNull());
+
+        return getFinalResultAtSlot(
+            mSimulationStatePtr->getSlot(mBailEarlyState->slotIndex()),
+            mBailEarlyState->args()
+            );
+        }
+
+    if (simulationHead().body().isApply() or simulationHead().body().isCached())
+        {
+        lassert(mSimulationStatePtr->nSlots() > 0);
+
+        return getFinalResultAtSlot(
+            getSlots().back(),
+            simulationHead().values()
+            );
+        }
+
+    return getFinalResultAtNode(
+        simulationHead().body(),
+        simulationHead().values(),
+        null()
+        );
+    }
+
+Nullable<uint64_t> CFGWithFuturesImpl::lowestKnownBailEarlyIndex() const
+    {
+    if (mBailEarlyState.isNull())
+        return null();
+
+    return null() << mBailEarlyState->slotIndex();
+    }
+
+bool CFGWithFuturesImpl::mustBailEarly() const
+    {
+    return !mBailEarlyState.isNull();
+    }
+
+Nullable<CFGWithFutures::SubmittableArgs>
+CFGWithFuturesImpl::asSubmittable(uint64_t inSlotIndex) const
+    {
+    if (not isSubmittable(inSlotIndex))
+        return null();
+
+    FutureSlot slotToSubmit = getSlots().at(inSlotIndex);
+
+    lassert(slotToSubmit.isFuture());
+
+    ControlFlowNode cfgNode = graph()[slotToSubmit.label()];
+
+    ApplySignature signature;
+
+    @match ControlFlowNodeBody(cfgNode.body())
+        -|  Apply(args, _, _) ->> {
+            signature = args;
+            }
+        -|  Cached(arg, _, _) ->> {
+            signature = ImmutableTreeVector<ControlFlowApplyArg>() + 
+                ControlFlowApplyArg::Normal(null(), arg);
+            }
+        -|  _ ->> { lassert(false); }
+        ;
+
+    Nullable<ImmutableTreeVector<ImplValContainer>> valuesOrNull = 
+        futureValuesToImplVals(slotToSubmit.getFuture().applyArgs());
+
+    if (valuesOrNull.isNull())
+        return null();
+
+    lassert(signature.terms().size() == valuesOrNull->size());
+
+    CFGWithFutures::ApplyArgs applyArgs(signature, *valuesOrNull);
+    CFGWithFutures::SubmittableArgs tr;
+
+    if (cfgNode.body().isApply())
+        tr = CFGWithFutures::SubmittableArgs::Apply(applyArgs);
+    else
+        tr = CFGWithFutures::SubmittableArgs::Cached(applyArgs);
+            
+    return null() << tr;
+    }
+

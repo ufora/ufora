@@ -1,0 +1,132 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ControlInstanceRoot.hppml"
+#include "ControlInstance.hppml"
+
+namespace {
+
+template<class T2>
+static T2 popFront(set<T2>& m)
+	{
+	T2 p = *m.begin();
+	m.erase(m.begin());
+	return p;
+	}
+
+template<class T1, class T2>
+static T2 popFront(map<T1, set<T2> >& m)
+	{
+	T2 p = *m.begin()->second.begin();
+	m.begin()->second.erase(m.begin()->second.begin());
+	if (m.begin()->second.size() == 0)
+		m.erase(m.begin());
+	return p;
+	}
+
+template<class T1, class T2>
+static T2 popBack(map<T1, set<T2> >& m)
+	{
+	T2 p = *m.rbegin()->second.begin();
+	
+	m.rbegin()->second.erase(m.rbegin()->second.begin());
+	
+	if (m.rbegin()->second.size() == 0)
+		m.erase(m.rbegin()->first);
+
+	return p;
+	}
+
+}
+
+ControlInstanceRoot::ControlInstanceRoot(GraphPtr inGraph, boost::python::object inRoot) :
+			mExceptionChildGenerator("exceptionText", "ufora.BackendGateway.control.Control"),
+			mRoot(inRoot),
+			mGraph(inGraph)
+	{
+	mDebugDisplay = false;
+	}
+
+void ControlInstanceRoot::pruneDirtyChildren(void)
+	{
+	for (auto it = mChildrenDirty.begin(), it_end = mChildrenDirty.end(); it != it_end; ++it)
+		for (auto it2 = it->second.begin(), it2_end = it->second.end();it2 != it2_end; ++it2)
+			{
+			ControlInstancePtr p = it2->lock();
+			if (p)
+				{
+				double t0 = curClock();
+				p->preResetChildren();
+
+				double pruneTime = curClock() - t0;
+				if (pruneTime > .03)
+					LOG_WARN << "Pruning a control took " << pruneTime << " seconds.";
+				}
+			}
+	}
+
+boost::python::object ControlInstanceRoot::getRoot(void)
+	{
+	return mRoot;
+	}
+
+bool ControlInstanceRoot::anyDirtyItems()
+	{
+	if (mChildrenDirty.size())
+		return true;
+
+	return false;
+	}
+
+void ControlInstanceRoot::update()
+	{
+	if (!anyDirtyItems())
+		return;
+
+	while (anyDirtyItems())
+		{
+		ControlInstancePtr p;
+		if (mChildrenDirty.size())
+			{
+			p = popFront(mChildrenDirty).lock();
+			if (p)
+				{
+				p->preResetChildren();
+				p->resetChildren();
+				}
+			}
+		}
+	
+	checkAnyErr();
+	}
+
+bool ControlInstanceRoot::checkAnyErr(void)
+	{
+	if (PyErr_Occurred())
+		{
+		LOG_CRITICAL << "INTERNAL ERROR...\n";
+		PyErr_Print();
+		return false;
+		}
+	return false;
+	}
+
+void ControlInstanceRoot::markChildrenDirty(ControlInstance* instance)
+	{
+	int32_t level = instance->getLevel();
+	
+	mChildrenDirty[level].insert(WeakControlInstancePtr(instance->polymorphicSharedPtrFromThis()));
+	}
+

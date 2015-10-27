@@ -1,0 +1,115 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "UnionUtil.hppml"
+#include "../../Native/NativeCode.hppml"
+#include "../TypedFora.hppml"
+#include "../../Judgment/JudgmentOnValue.hppml"
+#include "NativeLayoutType.hppml"
+#include "../../Native/TypedNativeLibraryFunction.hpp"
+
+namespace TypedFora {
+namespace Abi {
+
+NativeExpression foreachUnionAlternative(
+				const JudgmentOnValue& unionJOV, 
+				const NativeExpression& e, 
+				boost::function2<NativeExpression, NativeExpression, JudgmentOnValue> toApply
+				)
+	{
+	ImmutableTreeSet<JOV> jovs = unionJOV.unionAlternatives();
+
+	NativeExpression result = 
+		NativeExpression::Halt("Invalid Union index encountered");
+
+	for (long index = ((long)jovs.size()-1); index >= 0; index--)
+		result = 
+			NativeExpression::If(
+				e[0] == NativeExpression::ConstantULong(index),
+				toApply(e[index+1], jovs[index]),
+				result,
+				//conditional probability of taking this branch is 1/jovs.size() for the 
+				//first index, and 100% for the last index
+				1.0 / (jovs.size() - index) * .99999999
+				);
+
+	return result;
+	}
+
+NativeExpression createUnionExpression(
+				const JOV& unionJOV, 
+				const NativeExpression& indexExpression,
+				boost::function2<NativeExpression, long, JudgmentOnValue> toApply
+				)
+	{
+	ImmutableTreeVector<NativeExpression> exprs;
+
+	exprs = exprs + indexExpression;
+
+	for (long k = 0; k < unionJOV.unionAlternatives().size(); k++)
+		exprs = exprs + toApply(k, unionJOV.unionAlternatives()[k]);
+
+	return NativeExpression::CreateComposite(exprs);
+	}
+
+
+long extractUnionIndexFromLiveValue(const JudgmentOnValue& unionJov, void* unionData)
+	{
+	return *(uword_t*)unionData;
+	}
+
+void setUnionIndexInLiveValue(const JudgmentOnValue& unionJOV, void* unionData, long index)
+	{
+	lassert(index >= 0 && index < unionJOV.unionAlternatives().size());
+
+	((uword_t*)unionData)[0] = index;
+	}
+
+pair<JOV, void*> getPointerToUnionValue(const JudgmentOnValue& unionJov, void* unionData, long index)
+	{
+	NativeType t = nativeLayoutType(unionJov);
+
+	return make_pair(
+		unionJov.unionAlternatives()[index], 
+		((char*)unionData) + t.compositeSlotOffset(index + 1)
+		);
+	}
+
+long pickBestUnionIndex(const JudgmentOnValue& unionJOV, const JudgmentOnValue& valueJOV)
+	{
+	lassert(unionJOV.isUnion());
+
+	Nullable<uword_t> index = unionJOV.getUnion().jov().alternatives().smallestCovering(valueJOV);
+
+	lassert_dump(index, "unionJOV doesn't cover valueJOV");
+
+	return *index;
+	}
+
+long pickBestUnionIndex(const JudgmentOnValue& unionJOV, const ImplVal& value)
+	{
+	lassert(unionJOV.isUnion());
+
+	Nullable<uword_t> index = unionJOV.getUnion().jov().alternatives().smallestCovering(value);
+
+	lassert_dump(index, "unionJOV doesn't cover value");
+
+	return *index;
+	}
+
+
+}
+}
+

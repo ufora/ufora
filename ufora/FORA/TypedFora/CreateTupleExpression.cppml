@@ -1,0 +1,524 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "CreateTupleExpression.hppml"
+#include "../../core/SymbolExport.hpp"
+#include "../Core/TupleCategory.hppml"
+#include "ABI/NativeLayoutType.hppml"
+#include "../Native/NativeExpressionBuilder.hppml"
+#include "../Native/NativeCodeUtilities.hppml"
+#include "../Native/TypedNativeLibraryFunction.hpp"
+#include "ABI/TypedForaValueTypecasting.hppml"
+#include "ABI/ArbitraryNativeConstantForCSTValue.hpp"
+#include "../Core/ExecutionContext.hppml"
+#include "../Core/RefcountPool.hppml"
+
+using TypedFora::Abi::transferCastExpression;
+
+namespace {
+
+NativeExpression symbolExpr(Symbol s)
+	{
+	return TypedFora::Abi::ArbitraryNativeConstantForCSTValue::expressionForCSTValueTyped(CSTValue(s));
+	}
+
+template<class T>
+class FuncFromPointer {
+public:
+	FuncFromPointer(T* inArgs) : mArgs(inArgs)
+		{
+		}
+
+	const T& operator()(uword_t inIndex) const
+		{
+		return mArgs[inIndex];
+		}
+	
+private:
+	T* mArgs;
+};
+
+class NullableSymbolFromPointers {
+public:
+	NullableSymbolFromPointers(Symbol* inSymbols, uword_t* inSymbolsNotNull) : 
+			mSymbols(inSymbols),
+			mSymbolsNotNull(inSymbolsNotNull)
+		{
+		}
+
+	Nullable<Symbol> operator()(uword_t inIndex) const
+		{
+		if (mSymbolsNotNull[inIndex])
+			return null() << mSymbols[inIndex];
+		return null();
+		}
+	
+private:
+	Symbol* mSymbols;
+	uword_t* mSymbolsNotNull;
+};
+
+}
+
+extern "C" {
+
+BSA_DLLEXPORT
+ImplVal FORA_clib_returnOwnedTupleAsImplVal_TransfersOwnershipFromArguments(
+										uword_t argCount,
+										ImplVal* args,
+										uword_t* argIsTupleCall,
+										Symbol* syms,
+										uword_t* symsFilled
+										)
+	{
+	ImplVal tr = TupleCategory::createNewTupleWithTupleCalling(
+		argCount,
+		FuncFromPointer<ImplVal>(args),
+		NullableSymbolFromPointers(syms, symsFilled),
+		FuncFromPointer<uword_t>(argIsTupleCall)
+		);
+
+	for (long k = 0; k < argCount; k++)
+		args[k].destroy();
+
+	return tr;
+	}
+
+
+BSA_DLLEXPORT
+ImplVal FORA_clib_returnPooledTupleAsImplVal_UnownedArguments(
+										uword_t argCount,
+										ImplVal* args,
+										uword_t* argIsTupleCall,
+										Symbol* syms,
+										uword_t* symsFilled
+										)
+	{
+	ImplVal tr = TupleCategory::createNewTupleWithTupleCalling(
+		argCount,
+		FuncFromPointer<ImplVal>(args),
+		NullableSymbolFromPointers(syms, symsFilled),
+		FuncFromPointer<uword_t>(argIsTupleCall)
+		);
+
+	Fora::Interpreter::ExecutionContext::currentExecutionContext()
+		->getRefcountPool()
+		->addAlreadyRefcounted(tr);
+
+	return tr;
+	}
+
+
+
+BSA_DLLEXPORT
+ImplVal FORA_clib_extractTupleElementOwned(
+		uword_t index, uword_t extractAllRemaining, const ImplVal& elt
+		)
+	{
+	if (!extractAllRemaining)
+		return TupleCategory::getItem(elt, index).duplicate();
+	else
+		return TupleCategory::getSliceReturnsOwned(elt, index);
+	}
+
+BSA_DLLEXPORT
+ImplVal FORA_clib_extractTupleElementPooled(
+		uword_t index, uword_t extractAllRemaining, const ImplVal& elt
+		)
+	{
+	ImplVal tr;
+
+	if (!extractAllRemaining)
+		tr = TupleCategory::getItem(elt, index).duplicate();
+	else
+		tr = TupleCategory::getSliceReturnsOwned(elt, index);
+
+	Fora::Interpreter::ExecutionContext::currentExecutionContext()
+		->getRefcountPool()
+		->addAlreadyRefcounted(tr);
+
+	return tr;
+	}
+
+}
+
+
+namespace TypedFora {
+
+Type tupleResultType(const JOV& inJov, const Type& inSourceType)
+	{
+	if (!inSourceType.jov().type())
+		{
+		if (inSourceType.refcountStyle().isPooled())
+			return Type(inJov, RefcountStyle::Pooled());
+		else
+			return Type(inJov, RefcountStyle::AsValueOwned());
+		}
+
+	if (inSourceType.refcountStyle().isPooled())
+		return Type(inJov, RefcountStyle::Pooled());
+	
+	return Type(inJov, RefcountStyle::AsValueUnowned());
+	}
+
+NativeExpression nativeExprTupleGetItem(
+							const NativeVariable& inVar, 
+							const Type& inType, 
+							uword_t index,
+							const Type& outType
+							)
+	{
+	if (outType.jov().constant())
+		return TypedFora::Abi::nativeExpressionForConstant(*outType.jov().constant());
+
+	lassert_dump(
+		!inType.jov().constant(), 
+		"Input type is " << prettyPrintString(inType) << " which is constant. But output is "
+			<< prettyPrintString(outType) << " which is not constant."
+		);
+
+	NativeExpression rawValueExpr = inVar.expr();
+
+	if (!inType.jov().type())
+		{
+		lassert(*rawValueExpr.type() == TypedFora::Abi::nativeTypeForImplVal());
+
+		NativeExpressionBuilder builder;
+
+		NativeExpression implValPtr = 
+			builder.getPointerExprToCopyOnStack(
+				rawValueExpr
+				);
+
+		NativeExpression untypedTuple = 
+			builder(
+				makeTypedNativeLibraryFunction(
+					outType.refcountStyle().isPooled() ? 
+					&FORA_clib_extractTupleElementPooled
+					:	&FORA_clib_extractTupleElementOwned
+					)(
+						NativeExpression::ConstantULong(index),  //argument to extract
+						NativeExpression::ConstantULong(0),  //should this be all args remaining?
+						implValPtr
+						).getExpression()
+				);
+
+		return transferCastExpression(
+			untypedTuple,
+			Type(JOV::Unknown(), outType.refcountStyle()),
+			outType
+			);
+		}
+
+	return rawValueExpr[index];
+	}
+
+NativeExpression nativeExprTupleGetSlice(
+							const NativeVariable& inVar, 
+							const Type& inType, 
+							uword_t index,
+							const Type& outType
+							)
+	{
+	if (outType.jov().constant())
+		return TypedFora::Abi::nativeExpressionForConstant(*outType.jov().constant());
+
+	if (!inType.jov().type())
+		{
+		lassert(*inVar.expr().type() == TypedFora::Abi::nativeTypeForImplVal());
+
+		NativeExpressionBuilder builder;
+
+		NativeExpression implValPtr = 
+			builder.getPointerExprToCopyOnStack(
+				inVar.expr()
+				);
+
+		NativeExpression untypedTuple = 
+			builder(
+				makeTypedNativeLibraryFunction(
+					outType.refcountStyle().isPooled() ? 
+					&FORA_clib_extractTupleElementPooled
+					:	&FORA_clib_extractTupleElementOwned
+					)(
+						NativeExpression::ConstantULong(index),  //argument to extract
+						NativeExpression::ConstantULong(1),  //should this be all args remaining?
+						implValPtr
+						)
+				.getExpression()
+				);		
+
+		return transferCastExpression(
+			untypedTuple,
+			Type(JOV::Unknown(), outType.refcountStyle()),
+			outType
+			);
+		}
+
+	ImmutableTreeVector<NativeExpression> slices;
+	uword_t arity = inType.jov().getTuple().jov().jovs().size();
+
+	for (long k = 0; k < arity; k++)
+		slices = slices + inVar.expr()[k];
+
+	return NativeExpression::CreateComposite(slices);
+	}
+
+Type tupleGetItemType(const Type& inType, uword_t inIndex)
+	{
+	if (inType.jov().isTuple())
+		{
+		JOV subJov = inType.jov().getTuple().jov()[inIndex];
+		
+		return tupleResultType(subJov, inType);
+		}
+
+	lassert(inType.jov().isUnknown() || inType.jov().isUnknownCSTKnown());
+
+	return tupleResultType(inType.jov(), inType);
+	}
+
+Type tupleGetSliceType(const Type& inType, uword_t inIndex)
+	{
+	if (inType.jov().isTuple())
+		{
+		JOV subJov = JOV::Tuple(inType.jov().getTuple().jov().slice(inIndex));
+
+		return tupleResultType(subJov, inType);
+		}
+
+	lassert(inType.jov().isUnknown() || inType.jov().isUnknownCSTKnown());
+	
+	return tupleResultType(inType.jov(), inType);
+	}
+
+Nullable<Type> makeTupleType(const ImmutableTreeVector<Expression>& arguments)
+	{
+	return makeTupleType(expressionsToNormalUnnamedMakeTupleArgs(arguments));
+	}
+
+ImmutableTreeVector<MakeTupleArgument> 
+expressionsToNormalUnnamedMakeTupleArgs(const ImmutableTreeVector<Expression>& inExpressions)
+	{
+	ImmutableTreeVector<MakeTupleArgument> tr;
+
+	for (long k = 0; k < inExpressions.size(); k++)
+		tr = tr + MakeTupleArgument::Normal(null(), inExpressions[k]);
+
+	return tr;
+	}
+
+Nullable<Type> makeTupleType(const ImmutableTreeVector<MakeTupleArgument>& arguments)
+	{
+	for (long k = 0; k < arguments.size(); k++)
+		if (!arguments[k].arg().type())
+			return null();
+	
+	JudgmentOnValueTuple jovt;
+
+	bool anyArgsArePooled = false;
+
+	for (long k = 0; k < arguments.size(); k++)
+		{
+		@match MakeTupleArgument(arguments[k])
+			-|	Normal(fieldName, arg) ->> {
+				jovt = JudgmentOnValueTuple::merge(
+					jovt,
+					JOVT(
+						emptyTreeVec() + arg.type()->jov(),
+						emptyTreeVec() + fieldName
+						)
+					);
+				}
+			-|	TupleCall(arg) ->> {
+				jovt = JudgmentOnValueTuple::merge(
+					jovt,
+					arg.type()->jov().asTupleCallJovt()
+					);
+				}
+			;
+		if (arguments[k].arg().type()->refcountStyle().isPooled())
+			anyArgsArePooled = true;
+		}
+
+	JOV jov = JOV::Tuple(jovt);
+	
+	if (jov.type())
+		return null() << 
+			Type(jov, anyArgsArePooled ? RefcountStyle::Pooled() : RefcountStyle::AsValueUnowned());
+		
+
+	return null() << 
+		Type(jov, RefcountStyle::Pooled());
+	}
+
+
+NativeExpression createTupleExpression(
+		const ImmutableTreeVector<NativeExpression>& expressions,
+		const ImmutableTreeVector<MakeTupleArgument>& makeTupleArgs,
+		const Type& inTargetType
+		)
+	{
+	if (inTargetType.jov().constant())
+		return NativeExpression::Nothing();
+		else
+	if (inTargetType.jov().type())
+		return createTypedTupleExpression(expressions, makeTupleArgs, inTargetType);
+	else
+		return createUntypedTupleExpression(expressions, makeTupleArgs, inTargetType);
+	}
+
+
+NativeExpression createTypedTupleExpression(
+		const ImmutableTreeVector<NativeExpression>& expressions,
+		const ImmutableTreeVector<MakeTupleArgument>& makeTupleArgs,
+		const Type& inTargetType
+		)
+	{
+	ImmutableTreeVector<NativeExpression> exprs;
+	NativeExpressionBuilder builder;
+
+	for (long k = 0; k < makeTupleArgs.size(); k++)
+		{
+		const JOV& eltJov = makeTupleArgs[k].arg().type()->jov();
+
+		NativeExpression ourCopy = builder.add(
+			TypedFora::Abi::castExpression(
+				expressions[k], 
+				*makeTupleArgs[k].arg().type(),
+				TypedFora::Type(JOV::OfType(*eltJov.type()), inTargetType.refcountStyle())
+				)
+			);
+
+		@match MakeTupleArgument(makeTupleArgs[k])
+			-|	Normal(fieldName) ->> {
+				exprs = exprs + ourCopy;
+				}
+			-|	TupleCall() ->> {
+				if (eltJov.isTuple())
+					{
+					if (ourCopy.type()->packedSize() == 0)
+						{
+						//push one 'nothing' per item
+						uword_t arity = eltJov.getTuple().jov().jovs().size();
+						for (long k = 0; k < arity; k++)
+							exprs = exprs + NativeExpression::Nothing();
+						}
+					else
+						{
+						lassert_dump(
+							ourCopy.type()->isComposite(),
+							prettyPrintString(ourCopy.type())
+							);
+						uword_t arity = ourCopy.type()->getComposite().elements().size();
+
+						for (long k = 0; k < arity; k++)
+							exprs = exprs + ourCopy[k];
+						}
+					}
+				else
+					exprs = exprs + ourCopy;
+				}
+		}
+
+	NativeExpression tr = builder(NativeExpression::CreateComposite(exprs));
+
+	if (tr.type()->packedSize() == 0)
+		return NativeExpression::Nothing();
+
+	return tr;
+	}
+
+NativeExpression createUntypedTupleExpression(
+		const ImmutableTreeVector<NativeExpression>& expressions,
+		const ImmutableTreeVector<MakeTupleArgument>& makeTupleArgs,
+		const Type& inTargetType
+		)
+	{
+	ImmutableTreeVector<NativeExpression> exprs;
+	ImmutableTreeVector<NativeExpression> symbolExprs;
+	ImmutableTreeVector<NativeExpression> symbolsUsedExprs;
+	ImmutableTreeVector<NativeExpression> isTupleCallExprs;
+	
+	for (long k = 0; k < expressions.size(); k++)
+		{
+		exprs = exprs + 
+			TypedFora::Abi::castExpression(
+				expressions[k], 
+				*makeTupleArgs[k].arg().type(),
+				TypedFora::Type(
+					JOV::Unknown(), 
+					inTargetType.refcountStyle().isAsValueOwned() ? 
+						RefcountStyle::AsValueOwned()
+					:	RefcountStyle::AsValueUnowned()
+					)
+				);
+
+		@match MakeTupleArgument(makeTupleArgs[k])
+			-|	Normal(fieldName) ->> {
+				symbolExprs = symbolExprs + symbolExpr(fieldName ? *fieldName : Symbol());
+				symbolsUsedExprs = symbolsUsedExprs + NativeExpression::ConstantULong(fieldName?1:0);
+				isTupleCallExprs = isTupleCallExprs + NativeExpression::ConstantULong(0);
+				}
+			-|	TupleCall() ->> {
+				symbolExprs = symbolExprs + symbolExpr(Symbol());
+				symbolsUsedExprs = symbolsUsedExprs + NativeExpression::ConstantULong(0);
+				isTupleCallExprs = isTupleCallExprs + NativeExpression::ConstantULong(1);
+				}
+		}
+
+	NativeCodeUtilities::NativeLetBinding implValArray = 
+		NativeCodeUtilities::packExpressionsIntoArray(TypedFora::Abi::nativeTypeForImplVal(), exprs);
+
+	NativeCodeUtilities::NativeLetBinding symbolArray = 
+		NativeCodeUtilities::packExpressionsIntoArray(
+			TypedFora::Abi::nativeLayoutType(::Type::Symbol()), 
+			symbolExprs
+			);
+
+	NativeCodeUtilities::NativeLetBinding symbolsUsedArray = 
+		NativeCodeUtilities::packExpressionsIntoArray(NativeType::uword(), symbolsUsedExprs);
+
+	NativeCodeUtilities::NativeLetBinding isTupleCallArray = 
+		NativeCodeUtilities::packExpressionsIntoArray(NativeType::uword(), isTupleCallExprs);
+	
+	NativeExpression tr = 
+		implValArray.wrap(
+			symbolArray.wrap(
+				symbolsUsedArray.wrap(
+					isTupleCallArray.wrap(
+						makeTypedNativeLibraryFunction(
+							inTargetType.refcountStyle().isAsValueOwned() ? 
+								&FORA_clib_returnOwnedTupleAsImplVal_TransfersOwnershipFromArguments
+							:	&FORA_clib_returnPooledTupleAsImplVal_UnownedArguments
+							)(
+								NativeExpression::ConstantULong(exprs.size()),
+								implValArray.variable().expr(),
+								isTupleCallArray.variable().expr(), 
+								symbolArray.variable().expr(),
+								symbolsUsedArray.variable().expr()
+								)
+						.getExpression()
+						)
+					)
+				)
+			);
+	
+	return tr;
+	}
+
+
+}
+

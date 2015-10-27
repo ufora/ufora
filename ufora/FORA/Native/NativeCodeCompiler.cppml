@@ -1,0 +1,766 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "NativeCodeCompiler.hppml"
+
+#include "../../core/STLOps.hpp"
+#include "../../core/Clock.hpp"
+#include "../../core/ScopedProfiler.hppml"
+#include "../../core/StringUtil.hpp"
+#include <boost/lexical_cast.hpp>
+#include "stdint.h"
+#include <iomanip>
+#include "LLVMFunctionBuilder.hppml"
+#include "NativeCFGTransforms/Transforms.hppml"
+#include "SharedObjectLibraryFromSource.hppml"
+#include "../TypedFora/JitCompiler/Compiler.hppml"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include "../Interpreter/RuntimeConfig.hppml"
+#include "../Core/Type.hppml"
+#include "../../core/SymbolExport.hpp"
+#include "SharedObjectLibraryFromSourceCompiler.hppml"
+
+#include "llvm/Transforms/IPO/PassManagerBuilder.h"
+
+
+#include <iostream>
+#include <fstream>
+#include <boost/filesystem.hpp>
+#include <dlfcn.h>
+
+
+#include "../../core/Logging.hpp"
+
+using namespace std;
+
+
+namespace {
+
+
+llvm::legacy::FunctionPassManager* generateFunctionPassManager(llvm::Module* inModule)
+	{
+	using namespace llvm;
+
+	llvm::legacy::FunctionPassManager* tr = new llvm::legacy::FunctionPassManager(inModule);
+
+	PassManagerBuilder Builder;
+	Builder.OptLevel = 3;
+	Builder.populateFunctionPassManager(*tr);
+
+	return tr;
+	}
+
+llvm::legacy::FunctionPassManager* generateFunctionPassManagerSimple(llvm::Module* inModule)
+	{
+	using namespace llvm;
+
+	llvm::legacy::FunctionPassManager* tr = new llvm::legacy::FunctionPassManager(inModule);
+
+	tr->add(createInstructionCombiningPass());
+	tr->add(createReassociatePass());
+	tr->add(createGVNPass());
+	tr->add(createCFGSimplificationPass());
+	tr->add(createPromoteMemoryToRegisterPass());// Kill useless allocas
+	tr->doInitialization();
+
+	return tr;
+	}
+
+}
+
+NativeCodeCompiler::NativeCodeCompiler(TypedFora::Compiler& inTypedForaCompiler) :
+		mLLVMContext(*(new llvm::LLVMContext())),
+		mTypedForaCompiler(inTypedForaCompiler)
+	{
+	mFastcallWrapper = 0;
+	mJumpFuncType[0] = 0;
+	mJumpFuncType[1] = 0;
+	mBlockPtrType = 0;
+	mRegularToFastcallWrapper = 0;
+
+	mDummyContinuationTarget = 0;
+	mDummyContinuationTargetPtr = 0;
+	
+	using namespace llvm;
+
+	mModule = new Module("FORARuntime" + boost::lexical_cast<string>((uword_t)&mLLVMContext), mLLVMContext);
+
+	string err;
+	
+	mExecutionEngine = 
+		EngineBuilder(mModule)
+			.setErrorStr(&err)
+			.setEngineKind(EngineKind::JIT)
+            .create();
+
+	lassert_dump(mExecutionEngine, err);
+	
+	//Specify the optimizations we want LLVM to run on our code.
+	mFunctionPassManager = generateFunctionPassManager(mModule);
+	mFunctionPassManagerSimple = generateFunctionPassManagerSimple(mModule);
+	}
+
+				
+Fora::SharedObjectLibraryFromSource::BuildResult 
+NativeCodeCompiler::buildLibraryFromSource(
+				const Fora::SharedObjectLibraryFromSource::LibrarySource& inSource
+				)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	//check the cache
+	auto buildSourceIt = mBuildSharedObjects.find(inSource.hash());
+
+	if (buildSourceIt != mBuildSharedObjects.end())
+		return buildSourceIt->second;
+
+	pair<Fora::SharedObjectLibraryFromSource::BuildResult, llvm::Module*> result;
+
+	Fora::SharedObjectLibraryFromSource::Compiler libCompiler(&mLLVMContext, mExecutionEngine);
+
+	result = libCompiler.buildLibraryFromSource(inSource);
+
+	mBuildSharedObjects[inSource.hash()] = result.first;
+
+	if (result.second)
+		mBuildSharedObjectModules[inSource.hash()] = result.second;
+
+	return mBuildSharedObjects[inSource.hash()];
+	}
+
+
+void* NativeCodeCompiler::functionPointerForLibraryFunctionFromSource(
+				const Fora::SharedObjectLibraryFromSource::Library& inLibrary,
+				std::string inName
+				)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	using namespace Fora::SharedObjectLibraryFromSource;
+
+	BuildResult res = buildLibraryFromSource(inLibrary.source());
+
+	lassert_dump(
+		res.isSuccess(), 
+		"We shouldn't be trying to load a function from a non-compiling library"
+		);
+
+	@match BuildResult(res)
+		-| Success((lib, (manifest))) ->> {
+
+			lassert_dump(
+				manifest.contains(inName), 
+				"we should already have verified that " << inName << " exists within the library."
+				);
+
+			lassert_dump(
+				mBuildSharedObjectModules[lib.hash()],
+				"The function should already be compiled into a module."
+				);
+
+			llvm::Function* func = mBuildSharedObjectModules[lib.hash()]->getFunction(
+				manifest[inName]->mangledFunctionName()
+				);
+
+			lassert_dump(func, "Somehow this function doesn't exist in the module");
+
+			return mExecutionEngine->getPointerToFunction(func);
+			}
+	}
+
+void* NativeCodeCompiler::compile(
+				const string& name,
+				uint64_t gen,
+				const NativeCFG& code,
+				NativeType& outSlotsType,
+				map<uword_t,
+				ImmutableTreeVector<
+					NativeContinuationMetadataSerialized> >&
+								outMetadataMap,
+				map<uword_t, NativeIndividualContinuationMetadata>& outIndividualMetadataMap
+				)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	llvm::Function* f;
+	string fullName = name + "_gen_" + boost::lexical_cast<string>(gen);
+	
+	llvm::Module* module;
+	llvm::ExecutionEngine* executionEngine;
+	llvm::legacy::FunctionPassManager* fpm;
+
+	module = mModule;
+	executionEngine = mExecutionEngine;
+	if (mTypedForaCompiler.getConfig().useLLVMOptimization())
+		fpm = mFunctionPassManager;
+	else
+		fpm = mFunctionPassManagerSimple;
+
+
+	LLVMFunctionBuilder(
+		*this, 
+		f, 
+		outSlotsType, 
+		outMetadataMap,
+		outIndividualMetadataMap,
+		fullName, 
+		code, 
+		module
+		);
+
+	//Delete any unused blocks, as they cause llvm to crash.
+	typedef llvm::Function::BasicBlockListType::iterator BbListIter;
+	std::vector<llvm::PHINode*> toDelete;
+	for (BbListIter it = f->getBasicBlockList().begin(); it != f->getBasicBlockList().end(); ++it)
+		for (llvm::BasicBlock::iterator it2 = it->begin(); it2 != it->end(); ++it2)
+			if (llvm::isa<llvm::PHINode>(it2)) //FIXME: This should use llvm::dyn_cast. (H)
+				{
+				llvm::PHINode* phi = llvm::cast<llvm::PHINode>(it2);
+				if (phi->getNumIncomingValues() == 0)
+					{
+					phi->replaceAllUsesWith(llvm::Constant::getNullValue(phi->getType()));
+					toDelete.push_back(phi);
+					}
+				}
+
+	for (long k = 0; k < toDelete.size(); k++)
+		toDelete[k]->eraseFromParent();
+	
+	if (llvm::verifyFunction(*f, &llvm::errs()))
+		{
+		//The code has failed verification.
+		LOG_CRITICAL << "Verification failure!" << endl << "Code is:" << endl
+			         << Ufora::indent(prettyPrintString(code)) << endl;
+		string s;
+		llvm::raw_string_ostream stdoutS(s);
+		f->print(stdoutS);
+		lassert_dump(false, s);
+		}
+	
+		{
+		Ufora::ScopedProfiler<std::string> profiler("NativeCodeCompiler::Optimization");
+		double t0 = curClock();
+		fpm->run(*f);
+		LOG_INFO << "LLVM Optimizing " << fullName << " took " << curClock() - t0;
+		}
+	
+	double t0 = curClock();
+	void * tr = executionEngine->getPointerToFunction(f);
+	lassert_dump(tr, "failed to build " << name);
+
+	if (curClock() - t0 > .1)
+		{
+		uword_t instCount = 0;
+		for (BbListIter it = f->getBasicBlockList().begin(); it != f->getBasicBlockList().end(); ++it)
+			instCount += it->size();
+	
+		LOG_INFO << "Compiling LLVM for " << name << " of gen " << gen << " with " << instCount << " instructions took " << curClock() - t0;
+		}
+	LOG_INFO << "Compiling LLVM for " << name << " of gen " << gen << " instructions took " << curClock() - t0;
+	return tr;
+	}
+
+extern "C" {
+
+BSA_DLLEXPORT
+void FORA_clib_dummyContinuationTargetFun(MemBlock** mem, uword_t continuation, void* inFrame)
+	{
+	((uword_t*)inFrame)[0] = continuation;
+	}
+};
+
+void* NativeCodeCompiler::dummyContinuationTarget()
+	{
+	if (mDummyContinuationTargetPtr)
+		return mDummyContinuationTargetPtr;
+	
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+	
+	//Check again, now that we have the lock.
+	if (mDummyContinuationTargetPtr)
+		return mDummyContinuationTargetPtr;
+	
+	llvm::Function* f =
+		llvm::Function::Create(
+			jumpFuncType(true),
+			llvm::Function::ExternalLinkage,
+			"dummyContinuationTarget",
+			mModule
+			);
+	
+	f->setCallingConv(llvm::CallingConv::Fast);
+	f->setVisibility(llvm::GlobalValue::HiddenVisibility);
+	
+	llvm::Function::arg_iterator it = f->arg_begin();
+	
+	llvm::Value* memBlockPtr = LLVMValue(it++, NativeType::uint8().ptr().ptr());
+	llvm::Value* branchIDVal = LLVMValue(it++, NativeType::uword());
+	llvm::Value* funcArgsVar = LLVMValue(it++, NativeType::uint8().ptr());
+	
+	llvm::Function* libVersion = getLibFunc(
+			NativeLibraryFunctionTarget::ByName("FORA_clib_dummyContinuationTargetFun"),
+            NativeType::Nothing(),
+            emptyTreeVec()
+            	+ NativeType::uint8().ptr().ptr()
+            	+ NativeType::uword()
+            	+ NativeType::uint8().ptr(),
+            mModule
+            );
+	
+	llvm::BasicBlock* block = llvm::BasicBlock::Create(mLLVMContext, "function_entrypoint", f);
+	llvm::IRBuilder<> builder(block);
+	
+	builder.CreateCall3(libVersion, memBlockPtr, branchIDVal, funcArgsVar);
+	builder.CreateRetVoid();
+	
+	mDummyContinuationTarget = f;
+	mDummyContinuationTargetPtr = mExecutionEngine->getPointerToFunction(mDummyContinuationTarget);
+	return mDummyContinuationTargetPtr;
+	}
+void* NativeCodeCompiler::getFastcallWrapper(void)
+	{
+	if (!mFastcallWrapper)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+		//Check again, now that we have the lock.
+		if (!mFastcallWrapper)
+			{
+			//generate the fastcall wrapper
+			llvm::FunctionType* funtype = llvm::FunctionType::get(
+					llvm::Type::getVoidTy(mModule->getContext()),
+					toLLVM(emptyTreeVec() +
+						NativeType::uint8().ptr() + 
+						NativeType::uint8().ptr().ptr() + //void** for the curMemBlock
+						NativeType::uword() + //block
+						NativeType::Pointer(NativeType::Nothing())  //void* for function input
+						),
+					false);
+			
+			llvm::Function* f =
+				llvm::Function::Create(
+					funtype,
+					llvm::Function::ExternalLinkage,
+					"fastcallWrapperFun",
+					mModule
+					);
+			
+			llvm::Function::arg_iterator it = f->arg_begin();
+		
+			llvm::Value* funarg = it++;
+			llvm::Value* memBlockPtr = it++;
+			llvm::Value* branchIDVal = it++;
+			llvm::Value* funcArgsVar = it++;
+		
+			llvm::BasicBlock* block = llvm::BasicBlock::Create(mLLVMContext, "function_entrypoint", f);
+			llvm::IRBuilder<> builder(block);
+
+			llvm::Value* functionPointer =
+				builder.CreatePointerCast(
+					funarg, llvm::PointerType::get(jumpFuncType(true), 0));
+	
+			llvm::CallInst* c =
+				builder.CreateCall3(functionPointer, memBlockPtr, branchIDVal, funcArgsVar);
+			c->setCallingConv(llvm::CallingConv::Fast);
+			c->setTailCall(true);
+			
+			builder.CreateRetVoid();
+			
+			mFastcallWrapper = mExecutionEngine->getPointerToFunction(f);
+			//LOG_INFO << "mFastcallWrapper in " << (unsigned long)this
+			//         << " = " << (unsigned long)mFastcallWrapper << endl;
+			}
+		}
+	
+	return mFastcallWrapper;
+	}
+
+void* NativeCodeCompiler::wrapCPPCallbackFunPtr(void)
+	{
+	//Generate a wrapper function.
+	if (mRegularToFastcallWrapper == 0)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+		
+		//Check again, now that we have the lock.
+		if (mRegularToFastcallWrapper)
+			return mRegularToFastcallWrapper;
+		
+		llvm::FunctionType* funtype = jumpFuncType(true);
+		
+		llvm::Function* f =
+			llvm::Function::Create(
+				funtype,
+				llvm::Function::ExternalLinkage,
+				"cppCallbackWrapper",
+				mModule
+				);
+		
+		llvm::Function::arg_iterator it = f->arg_begin();
+	
+		llvm::Value* memBlockPtr = it++;
+		llvm::Value* branchIDVal = it++;
+		llvm::Value* funcArgsVar = it++;
+	
+		llvm::BasicBlock* block = llvm::BasicBlock::Create(mLLVMContext, "function_entrypoint", f);
+		llvm::IRBuilder<> builder(block);
+	
+		
+		NativeType frameType =
+			NativeType::Composite(
+				emptyTreeVec() +
+					NativeType::Nothing().ptr() +
+					NativeType::Nothing().ptr()
+				)
+			.ptr()
+			;
+		llvm::Value* framePtrCast = builder.CreatePointerCast(funcArgsVar, toLLVM(frameType));
+		llvm::Value* targetJumpPtr = builder.CreateLoad(builder.CreateConstGEP2_32(framePtrCast, 0, 0));
+		llvm::Value* targetCallFrame = builder.CreateLoad(builder.CreateConstGEP2_32(framePtrCast, 0, 1));
+		
+		vector<llvm::Value*> vals2;
+		vals2.push_back(memBlockPtr);
+		vals2.push_back(funcArgsVar);
+		
+		//free the frame
+		builder.CreateCall(
+			getLibFunc(
+				NativeLibraryFunctionTarget::ByName("FORA_clib_freeMem"),
+				toLLVM(NativeType::Nothing()),
+				toLLVM(emptyTreeVec() +
+					NativeType::uint8().ptr().ptr() + //void** for the curMemBlock
+					NativeType::uint8().ptr()
+					),
+				mModule
+				),
+			llvm::ArrayRef<llvm::Value*>(vals2)
+			);
+		
+		//call the relevant function
+		llvm::FunctionType* cppJumpFuncType = jumpFuncType(false);
+		
+		llvm::Value* targetJumpPtrCast =
+			builder.CreatePointerCast(targetJumpPtr, llvm::PointerType::get(cppJumpFuncType, 0));
+
+		llvm::Value* cppfunValue =
+			builder.CreateCall3(targetJumpPtrCast, memBlockPtr, branchIDVal, targetCallFrame);
+		
+		//now follow the cppfunValue which is actually a fastcall!
+		llvm::Value* fastcallJumpPtr = builder.CreateExtractValue(cppfunValue, 0);
+		llvm::Value* targSlots = builder.CreateExtractValue(cppfunValue, 1);
+		llvm::Value* targBlockID = builder.CreateExtractValue(cppfunValue, 3);
+		
+		llvm::Value* fastcallJumpPtrCast =
+			builder.CreatePointerCast(fastcallJumpPtr, llvm::PointerType::get(jumpFuncType(true), 0));
+		
+		llvm::CallInst* c = builder.CreateCall3(fastcallJumpPtrCast, memBlockPtr, targBlockID, targSlots);
+		c->setCallingConv(llvm::CallingConv::Fast);
+		c->setTailCall(true);
+		
+		builder.CreateRetVoid();
+		
+		f->setVisibility(llvm::GlobalValue::HiddenVisibility);
+		f->setCallingConv(llvm::CallingConv::Fast);
+		mRegularToFastcallWrapper = mExecutionEngine->getPointerToFunction(f);
+		}
+	return mRegularToFastcallWrapper;
+	}
+
+extern "C" {
+
+void* FORA_clib_pointer_unwrap(uword_t index)
+	{
+	return (char*)index;
+	}
+
+}
+
+llvm::Value* NativeCodeCompiler::inlinePointer(llvm::BasicBlock* block, void* ptr, NativeType targetType)
+	{
+	return
+		llvm::IRBuilder<>(block).CreateIntToPtr(
+			llvm::ConstantInt::get(toLLVM(NativeType::uword()), (uword_t)ptr),
+			toLLVM(targetType)
+			);
+	}
+
+
+llvm::Value* NativeCodeCompiler::rawDataConstant(string val, llvm::BasicBlock* block)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+		
+	if (mRawDataConstants.find(val) == mRawDataConstants.end())
+		mRawDataConstants.insert(val);
+
+	/*printf("RawStringConstant: %x -> %s\n", 
+		mRawDataConstants.find(val)->c_str(),
+		mRawDataConstants.find(val)->c_str()
+		);*/
+
+	return inlinePointer(block, (void*)mRawDataConstants.find(val)->c_str(), NativeType::Integer(8, false).ptr());
+	}
+
+vector<llvm::Type*> NativeCodeCompiler::toLLVM(const ImmutableTreeVector<NativeType>& types)
+	{
+	//Is this lock really needed?
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+		
+	vector<llvm::Type*> tr;
+	for (long k = 0; k < types.size();k++)
+		tr.push_back(toLLVM(types[k]));
+	return tr;
+	}
+
+vector<llvm::Type*> NativeCodeCompiler::toLLVM(const ImmutableTreeVector<NativeVariable>& vars)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+		
+	vector<llvm::Type*> tr;
+	for (long k = 0; k < vars.size();k++)
+		tr.push_back(toLLVM(vars[k].type()));
+	return tr;
+	}
+
+llvm::Type* NativeCodeCompiler::llvmFloatTypeFromBitCount(uword_t bits)
+	{
+	if (bits == 32)
+		return llvm::Type::getFloatTy(mLLVMContext);
+	if (bits == 64)
+		return llvm::Type::getDoubleTy(mLLVMContext);
+	if (bits == 80)
+		return llvm::Type::getX86_FP80Ty(mLLVMContext);
+	if (bits == 128)
+		return llvm::Type::getFP128Ty(mLLVMContext);
+
+	throw standardLogicErrorWithStacktrace(
+		"can't allocate a float of " + boost::lexical_cast<string>(bits) + " bits"
+		);
+	}
+llvm::Type* NativeCodeCompiler::toLLVM(const NativeType& type)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+		
+	try {
+		@match NativeType(type)
+			-|	Nothing() ->> {
+				return  llvm::ArrayType::get(llvm::Type::getInt8Ty(mLLVMContext), 0);
+				}
+			-|	Integer(bits, isSigned) ->> {
+				return  llvm::IntegerType::get(mLLVMContext, bits);
+				}
+			-|	Float(bits) ->> {
+				return llvmFloatTypeFromBitCount(bits);
+				}
+			-|	Pointer(Nothing()) ->> {
+				return  (llvm::Type*)llvm::PointerType::get(toLLVM(NativeType::uint8()), 0);
+				}
+			-|	Pointer(t) ->> {
+				return  (llvm::Type*)llvm::PointerType::get(toLLVM(t), 0);
+				}
+			-|	Composite(elts) ->> {
+				return  (llvm::Type*)llvm::StructType::get(mLLVMContext, toLLVM(elts), true /* pack it, since we don't know how to look up alignment yet */);
+				}
+			-|	Array(elts, ct) ->> {
+				return  (llvm::Type*)llvm::ArrayType::get(toLLVM(elts), ct);
+				}
+			-|	Continuations(t) ->> {
+				return  toLLVM(NativeType::Composite(
+					emptyTreeVec() +
+						NativeType::Pointer(NativeType::Nothing()) +
+						NativeType::Pointer(NativeType::Nothing()) +
+						NativeType::uword() +
+						NativeType::Composite(
+							(emptyTreeVec() + 
+								NativeType::Composite(
+									emptyTreeVec() + 
+										NativeType::uword() +
+										NativeType::Pointer(NativeType::Nothing())
+									)) * t.size()
+							)
+						))
+					;
+				}
+			;
+		}
+	catch(...)
+		{
+		lassert_dump(false, "can't convert " << prettyPrintString(type) << " to llvm type.");
+		}
+	}
+
+llvm::FunctionType* NativeCodeCompiler::jumpFuncType(bool isInternal)
+	{
+	if (mJumpFuncType[0])
+		return mJumpFuncType[isInternal ? 1 : 0];
+	
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+	
+	//Check again, now that we have the lock.
+	if (mJumpFuncType[0])
+		return mJumpFuncType[isInternal ? 1 : 0];
+	
+	mJumpFuncType[0] = llvm::FunctionType::get(
+			toLLVM(
+				//This is equivalent to NativeRuntimeContinuationValue<1>
+				NativeType::Composite(emptyTreeVec() +
+					NativeType::uint8().ptr() +
+					NativeType::uint8().ptr() +
+					NativeType::uword() +
+					NativeType::uword() +
+					NativeType::uint8().ptr()
+					)
+				),
+			toLLVM(emptyTreeVec() +
+				NativeType::uint8().ptr().ptr() + //void** for the curMemBlock
+				NativeType::uword() + //block
+				NativeType::Pointer(NativeType::Nothing())  //void* for function input
+				),
+			false);
+	mJumpFuncType[1] = llvm::FunctionType::get(
+			llvm::Type::getVoidTy(mLLVMContext),
+			toLLVM(emptyTreeVec() +
+				NativeType::uint8().ptr().ptr() + //void** for the curMemBlock
+				NativeType::uword() + //block
+				NativeType::Pointer(NativeType::Nothing())  //void* for function input
+				),
+			false);
+	
+	return mJumpFuncType[isInternal ? 1 : 0];
+	}
+
+llvm::Function* NativeCodeCompiler::getLibFunc(
+										NativeLibraryFunctionTarget name, 
+										NativeType t, 
+										const ImmutableTreeVector<NativeType>& args, 
+										llvm::Module* inModule
+										)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+		
+	vector<llvm::Type*> l;
+	for (long k = 0; k < args.size();k++)
+		l.push_back(toLLVM(args[k]));
+
+	return getLibFunc(name, toLLVM(t), l, inModule);
+	}
+
+llvm::Function* NativeCodeCompiler::getLibFunc(
+										NativeLibraryFunctionTarget target,
+										llvm::Type* t, 
+										vector<llvm::Type*> args, 
+										llvm::Module* inModule
+										)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+	
+	std::string name;
+
+	if (target.isByName())
+		{
+		name = target.getByName().name();
+		
+		llvm::Function* tr = inModule->getFunction(name);
+		
+		if (tr)
+			return tr;
+
+		return llvm::Function::Create(
+				llvm::FunctionType::get(t, args, false), 
+				llvm::Function::ExternalLinkage, 
+				name, 
+				inModule
+				);
+		}
+	else
+		{
+		name = "function_by_pointer_" + boost::lexical_cast<std::string>(target.getByPointer().pointer());
+
+		llvm::Function* tr = inModule->getFunction(name);
+		
+		if (tr)
+			return tr;
+
+		tr = llvm::Function::Create(
+				llvm::FunctionType::get(t, args, false), 
+				llvm::Function::ExternalLinkage, 
+				name, 
+				inModule
+				);
+		
+		mExecutionEngine->addGlobalMapping(tr, (void*)target.getByPointer().pointer());
+
+		return tr;
+		}
+	}
+llvm::Constant* NativeCodeCompiler::getNullConstantFor(NativeType t)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+		
+	return llvm::Constant::getNullValue(toLLVM(t));
+	}
+
+llvm::Type* NativeCodeCompiler::blockPtrType()
+	{
+	using namespace llvm;
+
+	if (!mBlockPtrType)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+		//Check again, now that we have the lock.
+		if (!mBlockPtrType)
+			{
+			StructType* memBlockTy =
+				StructType::create(mLLVMContext, "FORA_internals_memBlock");
+			StructType* slabTy =
+				StructType::create(mLLVMContext, "FORA_internals_slabType");
+			
+			vector<llvm::Type*> memBlockElts;
+			memBlockElts.push_back((llvm::Type*)PointerType::get(slabTy, 0));
+			memBlockElts.push_back((llvm::Type*)PointerType::get(memBlockTy, 0));
+			memBlockElts.push_back((llvm::Type*)PointerType::get(memBlockTy, 0));
+			memBlockElts.push_back((llvm::Type*)toLLVM(NativeType::uword()));
+			memBlockElts.push_back((llvm::Type*)toLLVM(NativeType::Array(NativeType::uint8(), 1)));
+			
+			vector<llvm::Type*> slabBlockElts;
+			slabBlockElts.push_back((llvm::Type*)PointerType::get(slabTy, 0)); //priorSlab
+			slabBlockElts.push_back((llvm::Type*)PointerType::get(slabTy, 0)); //nextSlab
+			slabBlockElts.push_back((llvm::Type*)toLLVM(NativeType::uword())); //slabSize
+			slabBlockElts.push_back((llvm::Type*)PointerType::get(memBlockTy, 0));  //topBlock
+			slabBlockElts.push_back((llvm::Type*)memBlockTy); //baseBlock
+			
+			memBlockTy->setBody(memBlockElts, true);
+			slabTy->setBody(slabBlockElts, true);
+			
+			mBlockPtrType = PointerType::get(memBlockTy, 0);
+			}
+		}
+
+	return mBlockPtrType;
+	}
+
+llvm::Value* NativeCodeCompiler::llvmUInt32(uint32_t x)
+	{
+	//Is this lock needed?
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+		
+	return llvm::ConstantInt::get(toLLVM(NativeType::uint32()), x);
+	}
+llvm::Value* NativeCodeCompiler::llvmULong(uword_t x)
+	{
+	//Is this lock needed?
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+		
+	return llvm::ConstantInt::get(toLLVM(NativeType::Integer(8 * sizeof(uword_t))), x);
+	}
+

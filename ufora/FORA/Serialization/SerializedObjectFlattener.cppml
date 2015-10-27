@@ -1,0 +1,472 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "SerializedObjectFlattener.hpp"
+#include "../../core/cppml/CPPMLVisit.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include "../TypedFora/ABI/ForaValueArray.hppml"
+#include "../VectorDataManager/PageletTree.hppml"
+#include "../Core/MemoryPool.hpp"
+#include "../Core/TypeContainedTypesAndExpressionsVisitor.hppml"
+#include "../VectorDataManager/VectorDataManager.hppml"
+#include "../TypedFora/TypedFora.hppml"
+#include "../Core/ClassMediator.hppml"
+#include "../../core/Logging.hpp"
+#include "../../core/Memory.hpp"
+#include "ForaValueSerializationStream.hppml"
+#include "../../cumulus/ComputationDefinition.hppml"
+
+namespace {
+		
+template<class T>
+bool hasKey(const map<hash_type, T>& inMap, const hash_type& inKey)
+	{
+	return inMap.find(inKey) != inMap.end();
+	}
+
+
+const uint32_t WARN_DATA_THRESHOLD_BYTES = 1024 * 1024;
+
+//track how much memory we're using by noticing how much the stream position
+//goes up. Because we might be memoizing things recursively, we record
+//the original stream position and write back to it. That way, only the
+//outermost stream watcher write takes effect.
+class StreamPositionWatcher {
+public:
+		StreamPositionWatcher(uint32_t& toIncrement, OBinaryStream& inStream) : 
+				mIncrement(toIncrement),
+				mOrigIncrement(toIncrement),
+				mStream(inStream),
+				mOrigPos(inStream.position())
+			{
+			}
+		~StreamPositionWatcher()
+			{
+			mIncrement = mOrigIncrement + mStream.position() - mOrigPos;
+			}
+private:
+		uint32_t mOrigIncrement;
+		uint32_t& mIncrement;
+		OBinaryStream& mStream;
+		uint32_t mOrigPos;
+};
+};
+
+
+void SerializedObjectFlattenerSerializer::serialize(const Type& inType)
+	{
+	if (hasKey(mFlattener.mTypesReferenced, inType.hash()))
+		serialize(mFlattener.mTypesReferenced[inType.hash()]);
+		else
+		{
+		StreamPositionWatcher watcher(mFlattener.mMemoizedSize, getStream());
+
+		//this is a new value
+		uint32_t index = mFlattener.mTypesReferenced.size();
+		mFlattener.mTypesReferenced[inType.hash()] = index;
+		serialize(index);
+
+		//serialize the cppml object directly now
+		CPPMLSerializer<Type, Type::metadata>::serialize(*this,inType);
+		}
+	}
+
+void SerializedObjectFlattenerSerializer::serialize(const JOV& inType)
+	{
+	if (hasKey(mFlattener.mJovsReferenced, inType.hash()))
+		serialize(mFlattener.mJovsReferenced[inType.hash()]);
+		else
+		{
+		StreamPositionWatcher watcher(mFlattener.mMemoizedSize, getStream());
+
+		//this is a new value
+		uint32_t index = mFlattener.mJovsReferenced.size();
+		mFlattener.mJovsReferenced[inType.hash()] = index;
+		serialize(index);
+
+		//serialize the cppml object directly now
+		CPPMLSerializer<JOV, JOV::metadata>::serialize(*this,inType);
+		}
+	}
+
+void SerializedObjectFlattenerSerializer::serialize(const ControlFlowGraph& inControlFlowGraph)
+	{
+	if (hasKey(mFlattener.mControlFlowGraphsReferenced, inControlFlowGraph.hash()))
+		serialize(mFlattener.mControlFlowGraphsReferenced[inControlFlowGraph.hash()]);
+		else
+		{
+		StreamPositionWatcher watcher(mFlattener.mMemoizedSize, getStream());
+
+		//this is a new value
+		uint32_t index = mFlattener.mControlFlowGraphsReferenced.size();
+		mFlattener.mControlFlowGraphsReferenced[inControlFlowGraph.hash()] = index;
+		serialize(index);
+
+		//serialize the cppml object directly now
+		CPPMLSerializer<ControlFlowGraph, ControlFlowGraph::metadata>::serialize(*this,inControlFlowGraph);
+		}
+	}
+
+void SerializedObjectFlattenerSerializer::serialize(const Expression& inExpr)
+	{
+	if (hasKey(mFlattener.mExpressionsReferenced, inExpr.hash()))
+		serialize(mFlattener.mExpressionsReferenced[inExpr.hash()]);
+		else
+		{
+		StreamPositionWatcher watcher(mFlattener.mMemoizedSize, getStream());
+
+		//this is a new value
+		uint32_t index = mFlattener.mExpressionsReferenced.size();
+		mFlattener.mExpressionsReferenced[inExpr.hash()] = index;
+		serialize(index);
+
+		//serialize the cppml object directly now
+		CPPMLSerializer<Expression, Expression::metadata>::serialize(*this,inExpr);
+		}
+	}
+
+void SerializedObjectFlattenerSerializer::serialize(const MutableVectorRecord& inExpr)
+	{
+	serializeToMemoStorage(inExpr);
+	}
+
+void SerializedObjectFlattenerSerializer::serialize(const Cumulus::ComputationDefinitionTerm& inExpr)
+	{
+	serializeToMemoStorage(inExpr);
+	}
+
+void SerializedObjectFlattenerSerializer::serialize(TypedFora::Abi::VectorHandlePtr const& inExpr)
+	{
+	Serializer<TypedFora::Abi::VectorHandlePtr, Fora::ForaValueSerializationStream>
+		::serialize(*this, inExpr);
+	}
+
+void SerializedObjectFlattenerSerializer::serialize(boost::shared_ptr<Fora::Pagelet> const& in)
+	{
+	Ufora::threading::ScopedThreadLocalContext<Fora::Interpreter::ExecutionContext> setECContextToNull;
+
+	this->serialize(*in->getValues());
+	}
+
+
+void SerializedObjectInflaterDeserializer::deserialize(Type& outType)
+	{
+	uint32_t index;
+	deserialize(index);
+
+	const set<Type>& types(mInflater.mTypesReferenced.getKeys(index));
+	lassert(types.size() <= 1);
+
+	if (types.size() == 1)
+		{
+		outType = *types.begin();
+		return;
+		}
+	
+	CPPMLSerializer<Type, Type::metadata>::deserialize(*this,outType);
+	mInflater.mTypesReferenced.set(outType, index);
+	}
+
+void SerializedObjectInflaterDeserializer::deserialize(JOV& outType)
+	{
+	uint32_t index;
+	deserialize(index);
+
+	const set<JOV>& types(mInflater.mJovsReferenced.getKeys(index));
+	lassert(types.size() <= 1);
+
+	if (types.size() == 1)
+		{
+		outType = *types.begin();
+		return;
+		}
+	
+	CPPMLSerializer<JOV, JOV::metadata>::deserialize(*this,outType);
+	mInflater.mJovsReferenced.set(outType, index);
+	}
+
+void SerializedObjectInflaterDeserializer::deserialize(ControlFlowGraph& outControlFlowGraph)
+	{
+	uint32_t index;
+	deserialize(index);
+
+	const set<ControlFlowGraph>& ControlFlowGraphs(mInflater.mControlFlowGraphsReferenced.getKeys(index));
+	lassert(ControlFlowGraphs.size() <= 1);
+
+	if (ControlFlowGraphs.size() == 1)
+		{
+		outControlFlowGraph = *ControlFlowGraphs.begin();
+		return;
+		}
+	
+	CPPMLSerializer<ControlFlowGraph, ControlFlowGraph::metadata>::deserialize(*this,outControlFlowGraph);
+	mInflater.mControlFlowGraphsReferenced.set(outControlFlowGraph, index);
+	}
+
+void SerializedObjectInflaterDeserializer::deserialize(Expression& outExpression)
+	{
+	uint32_t index;
+	deserialize(index);
+
+	const set<Expression>& expressions(mInflater.mExpressionsReferenced.getKeys(index));
+	lassert(expressions.size() <= 1);
+
+	if (expressions.size() == 1)
+		{
+		outExpression = *expressions.begin();
+		return;
+		}
+	
+	CPPMLSerializer<Expression, Expression::metadata>::deserialize(*this,outExpression);
+	mInflater.mExpressionsReferenced.set(outExpression, index);
+	}
+
+void SerializedObjectInflaterDeserializer::deserialize(MutableVectorRecord& inExpr)
+	{
+	deserializeFromMemoStorage(inExpr);
+	}
+
+void SerializedObjectInflaterDeserializer::deserialize(Cumulus::ComputationDefinitionTerm& inExpr)
+	{
+	deserializeFromMemoStorage(inExpr);
+	}
+
+void SerializedObjectInflaterDeserializer::deserialize(TypedFora::Abi::VectorHandlePtr& inExpr)
+	{
+	Deserializer<TypedFora::Abi::VectorHandlePtr, Fora::ForaValueDeserializationStream>
+		::deserialize(*this, inExpr);
+	}
+
+void SerializedObjectInflaterDeserializer::deserialize(boost::shared_ptr<Fora::Pagelet>& out)
+	{
+	double t0 = curClock();
+	static double timeElapsed = 0;
+
+	out.reset(new Fora::Pagelet(getVDMM()));
+
+	SerializedObjectInflaterDeserializer newDeserializer(mInflater, getStream(), getVDMM(), &*out);
+
+	lassert(newDeserializer.getTargetPool() == &*out);
+
+		{
+		Ufora::threading::ScopedThreadLocalContext<Fora::Interpreter::ExecutionContext> setECContextToNull;
+
+		Deserializer<TypedFora::Abi::ForaValueArray, Fora::ForaValueDeserializationStream>
+			::deserialize(newDeserializer, *out->getValues());
+		}
+
+	out->freeze();
+
+	double elapsed = curClock() - t0;
+
+	if (int(elapsed+timeElapsed) != int(timeElapsed))
+		LOG_INFO << timeElapsed + elapsed << " total spent deserializing Pagelets. "
+			<< elapsed << " deserializing " << out->getValues()->size() 
+			<< " x " << out->getValues()->currentJor()
+			;
+
+	timeElapsed += elapsed;
+	}
+
+void SerializedObjectFlattener::considerValueAlreadyWritten(const ImplValContainer& inBuiltins)
+	{
+	double t0 = curClock();
+	
+	//walk the Type graph of this object and memoize all of the visitor contained within
+	const TypeContainedTypesAndExpressionsVisitor& visitor(
+		TypeContainedTypesAndExpressionsVisitor::cachedVisitorFor(inBuiltins)
+		);
+
+	for (auto it = visitor.containedTypes.begin(); it != visitor.containedTypes.end();++it)
+		{
+		uint32_t index = mTypesReferenced.size();
+		mTypesReferenced[it->hash()] = index;
+		}
+
+	for (auto it = visitor.containedExpressions.begin(); it != visitor.containedExpressions.end();++it)
+		{
+		uint32_t index = mExpressionsReferenced.size();
+		mExpressionsReferenced[it->hash()] = index;
+		}
+
+	LOG_INFO << "SerializedObjectFlattener assuming " << visitor.containedTypes.size()
+		 << " types and "
+		 << visitor.containedExpressions.size()
+		 << " expressions from builtins already serialized in " << curClock() - t0
+		 ;
+	}
+
+
+PolymorphicSharedPtr<NoncontiguousByteBlock>
+SerializedObjectFlattener::flattenOnce(const PolymorphicSharedPtr<SerializedObject>& inSerializedObject)
+	{
+	PolymorphicSharedPtr<SerializedObjectFlattener> flattener(
+		new SerializedObjectFlattener()
+		);
+	
+	return flattener->flatten(inSerializedObject);
+	}
+
+PolymorphicSharedPtr<NoncontiguousByteBlock>
+SerializedObjectFlattener::flatten(const PolymorphicSharedPtr<SerializedObject>& inSerializedObject)
+	{
+	ONoncontiguousByteBlockProtocol				protocol;
+	
+		{
+		OBinaryStream stream(protocol);
+		
+		SerializedObjectFlattenerSerializer serializer(*this, stream);
+
+		serializer.serialize(inSerializedObject);
+		}
+	
+	return protocol.getData();
+	}
+
+void SerializedObjectFlattener::flatten(
+				OBinaryStream& stream, 
+				const PolymorphicSharedPtr<SerializedObject>& inSerializedObject
+				)
+	{
+	SerializedObjectFlattenerSerializer serializer(*this, stream);
+
+	serializer.serialize(inSerializedObject);
+	}
+
+void SerializedObjectFlattener::flattenOnce(
+							OBinaryStream& stream, 
+							const PolymorphicSharedPtr<SerializedObject>& inSerializedObject
+							)
+	{
+	PolymorphicSharedPtr<SerializedObjectFlattener> flattener(
+		new SerializedObjectFlattener()
+		);
+	
+	flattener->flatten(stream, inSerializedObject);
+	}
+
+
+uint32_t SerializedObjectFlattener::getMemoizedSize(void) const 
+	{
+	return mMemoizedSize;
+	}
+
+
+SerializedObjectInflater::SerializedObjectInflater()
+	{
+	}
+
+
+SerializedObjectInflater::~SerializedObjectInflater()
+	{
+	}
+
+void SerializedObjectInflater::considerValueAlreadyRead(const ImplValContainer& inBuiltins)
+	{
+	double t0 = curClock();
+	
+	//walk the Type graph of this object and memoize all of the visitor contained within
+	const TypeContainedTypesAndExpressionsVisitor& visitor(
+		TypeContainedTypesAndExpressionsVisitor::cachedVisitorFor(inBuiltins)
+		);
+
+	for (auto it = visitor.containedTypes.begin(); it != visitor.containedTypes.end();++it)
+		{
+		uint32_t index = mTypesReferenced.size();
+		mTypesReferenced.set(*it, index);
+		}
+
+	for (auto it = visitor.containedExpressions.begin(); it != visitor.containedExpressions.end();++it)
+		{
+		uint32_t index = mExpressionsReferenced.size();
+		mExpressionsReferenced.set(*it, index);
+		}
+	}
+
+
+
+
+PolymorphicSharedPtr<SerializedObject>	
+SerializedObjectInflater::inflate(const PolymorphicSharedPtr<NoncontiguousByteBlock>& inData)
+	{
+	return inflate(inData, PolymorphicSharedPtr<VectorDataMemoryManager>());
+	}
+
+PolymorphicSharedPtr<SerializedObject>	
+SerializedObjectInflater::inflate(
+						const PolymorphicSharedPtr<NoncontiguousByteBlock>& inData,
+						PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM
+						)
+	{
+	INoncontiguousByteBlockProtocol	protocol(inData);
+
+	PolymorphicSharedPtr<SerializedObject> serializedObject;
+
+		{
+		IBinaryStream stream(protocol);
+		
+		SerializedObjectInflaterDeserializer deserializer(
+			*this, 
+			stream,
+			inVDMM
+			);
+
+		deserializer.deserialize(serializedObject);
+		}
+	
+	return serializedObject;
+	}
+
+
+PolymorphicSharedPtr<SerializedObject> 
+SerializedObjectInflater::inflateOnce(	const PolymorphicSharedPtr<NoncontiguousByteBlock>& inData
+										)
+	{
+	PolymorphicSharedPtr<SerializedObjectInflater> inflater(
+		new SerializedObjectInflater()
+		);
+	
+	return inflater->inflate(inData);
+	}
+
+
+PolymorphicSharedPtr<SerializedObject>	SerializedObjectInflater::inflate(IBinaryStream& stream)
+	{
+	SerializedObjectInflaterDeserializer deserializer(
+		*this, 
+		stream, 
+		PolymorphicSharedPtr<VectorDataMemoryManager>()
+		);
+
+	PolymorphicSharedPtr<SerializedObject> serializedObject;
+
+	deserializer.deserialize(serializedObject);
+	
+	return serializedObject;
+	}
+
+
+PolymorphicSharedPtr<SerializedObject> SerializedObjectInflater::inflateOnce(
+											IBinaryStream& stream
+											)
+	{
+	PolymorphicSharedPtr<SerializedObjectInflater> inflater(
+		new SerializedObjectInflater()
+		);
+	
+	return inflater->inflate(stream);
+	}
+

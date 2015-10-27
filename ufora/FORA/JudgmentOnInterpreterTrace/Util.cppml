@@ -1,0 +1,638 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Util.hppml"
+#include "../Axioms/Axiom.hppml"
+#include "../Judgment/JudgmentNode.hppml"
+#include "../../core/Logging.hpp"
+#include "../../core/StringUtil.hpp"
+#include "../../core/containers/MapWithIndex.hpp"
+
+namespace Fora {
+namespace JudgmentOnInterpreterTrace {
+
+void updateJov(JudgmentOnValue& ioJov, JOV toUpdateWith)
+	{
+	JudgmentOnResult intersection = ioJov.intersectWith(toUpdateWith);
+
+	Nullable<JOV> smallest = intersection.smallestJOVCoveringAll();
+
+	lassert_dump(
+		smallest,
+		"Can't intersect " << prettyPrintString(ioJov) << " and " << prettyPrintString(toUpdateWith)
+		);
+
+	ioJov = *smallest;
+	}
+
+void updateJovList(ImmutableTreeVector<JudgmentOnValue>& ioJovs, long index, JOV jov)
+	{
+	JOV outJOV = ioJovs[index];	
+	updateJov(outJOV, jov);
+
+	ioJovs = ioJovs.slice(0, index) + outJOV + ioJovs.slice(index+1);
+	}
+
+ImmutableTreeVector<JOV> typedJovs(const ImmutableTreeVector<JOV>& in)
+	{
+	ImmutableTreeVector<JOV> jovs;
+
+	for (long k = 0; k < in.size(); k++)
+		{
+		JOV termJOV = in[k];
+
+		jovs = jovs + relaxedJOV(termJOV);
+		}
+
+	return jovs;
+	}
+
+//TODO brax TEST: test this function
+JudgmentOnValueTuple extractTupleMergeAndRemoveFromTarget(
+						const JOVT& tupleCallJovt, 
+						JOVT& ioTargetJovt
+						)
+	{
+	if (tupleCallJovt.extras().isNoExtras())
+		{
+		if (ioTargetJovt.jovs().size() >= tupleCallJovt.jovs().size())
+			{
+			//this is the simple case
+			long ct = tupleCallJovt.jovs().size();
+
+			JOVT result(
+				ioTargetJovt.jovs().slice(0, ct),
+				ioTargetJovt.names().slice(0, ct)
+				);
+
+			ioTargetJovt = ioTargetJovt.slice(ct);
+
+			return result;
+			}
+		else
+			{
+			//ensure that this actually makes sense to do
+			lassert(ioTargetJovt.extras().isExtras());
+
+			JOVT result = ioTargetJovt;
+
+			//slice off all of the JOVs
+			ioTargetJovt = ioTargetJovt.slice(ioTargetJovt.jovs().size());
+
+			return result;
+			}
+		}
+	else
+		{
+		if (ioTargetJovt.jovs().size() >= tupleCallJovt.jovs().size())
+			{
+			long ct = tupleCallJovt.jovs().size();
+
+			JOVT result(
+				ioTargetJovt.jovs().slice(0, ct),
+				ioTargetJovt.names().slice(0, ct)
+				);
+
+			ioTargetJovt = ioTargetJovt.slice(ct).collapseEntirelyIntoExtras();
+
+			result.extras() = ioTargetJovt.extras();
+
+			return result;
+			}
+		else
+			{
+			//ensure that this actually makes sense to do
+			lassert(ioTargetJovt.extras().isExtras());
+
+			JOVT result = ioTargetJovt;
+
+			//slice off all of the JOVs
+			ioTargetJovt = ioTargetJovt.slice(ioTargetJovt.jovs().size()).collapseEntirelyIntoExtras();
+
+			return result;
+			}
+		}
+	}
+
+JOV weakestTupleMatching(const JOV& sourceJOV, const ControlFlowGraphTupleExpandInfo& tupleInfo)
+	{
+	lassert(sourceJOV.isTuple());
+	
+	JOVT jovt = sourceJOV.getTuple().jov();
+
+	//this came from a live value, so it shouldn't have an unknown number of extras
+	lassert(jovt.extras().isNoExtras());
+
+	if (tupleInfo.arityExact())
+		{
+		lassert(jovt.jovs().size() == tupleInfo.arity());
+		}
+	else
+		{
+		lassert(jovt.jovs().size() >= tupleInfo.arity());
+		}
+
+	return JOV::Tuple(
+		JOVT(
+			(emptyTreeVec() + JOV::Unknown()) * tupleInfo.arity(),
+			jovt.names(),
+			tupleInfo.arityExact() ? 
+				JOVTE::NoExtras() : 
+				JOVTE::Extras(JOV::Unknown())
+			)
+		);
+	}
+
+void updateTupleJovForIndex(	const ImmutableTreeVector<JOV>& origJovs,
+								ImmutableTreeVector<JOV>& ioJovs,
+								const ControlFlowGraphTupleExpandInfo& tupleInfo,
+								long index,
+								const JOV& targetJov
+								)
+	{
+	JOV sourceJOV = ioJovs[tupleInfo.argIndex()];
+
+	if (sourceJOV.isUnknown())
+		{
+		sourceJOV = weakestTupleMatching(
+			origJovs[tupleInfo.argIndex()],
+			tupleInfo
+			);
+		}
+
+	if (sourceJOV.isTuple())
+		{
+		JOVT jovt = sourceJOV.getTuple().jov();
+
+		if (jovt.jovs().size() > index)
+			{
+			ImmutableTreeVector<JOV> jovs = jovt.jovs();
+
+			updateJovList(jovs, index, targetJov);
+
+			sourceJOV = JOV::Tuple(JOVT(jovs, jovt.names(), jovt.extras()));
+			}
+		}
+
+	ioJovs = 
+		ioJovs.slice(0, tupleInfo.argIndex())
+			+ sourceJOV
+			+ ioJovs.slice(tupleInfo.argIndex() + 1)
+			;
+	}
+
+ImmutableTreeVector<JOV> intersectJovList(
+							const ImmutableTreeVector<JudgmentOnValue>& first,
+							const ImmutableTreeVector<JudgmentOnValue>& second
+							)
+	{
+	lassert(first.size() == second.size());
+
+	ImmutableTreeVector<JudgmentOnValue> result;
+
+	for (long k = 0; k < first.size(); k++)
+		{
+		JOV f = first[k];
+		updateJov(f, second[k]);
+		result = result + f;
+		}
+
+	return result;
+	}
+
+JOVT intersectJovts(const JudgmentOnValueTuple& toUpdate, const JudgmentOnValueTuple& intersectWith)
+	{
+	if (!intersectWith.hasExtras() && toUpdate.hasExtras())
+		{
+		lassert(toUpdate.jovs().size() <= intersectWith.jovs().size());
+
+		ImmutableTreeVector<JOV> newJOVs = 
+			intersectJovList(toUpdate.jovs(), intersectWith.jovs().slice(0, toUpdate.jovs().size())) + 
+				intersectWith.jovs().slice(toUpdate.jovs().size());
+
+		ImmutableTreeVector<Nullable<Symbol> > newNames = 
+			toUpdate.names() + 
+				intersectWith.names().slice(toUpdate.names().size());
+
+		return JudgmentOnValueTuple(newJOVs, newNames);
+		}
+		else
+	if (!toUpdate.hasExtras() && intersectWith.hasExtras())
+		return intersectJovts(intersectWith, toUpdate);
+		else
+	if (!intersectWith.hasExtras() && !toUpdate.hasExtras())
+		{
+		lassert(toUpdate.jovs().size() == intersectWith.jovs().size());
+
+		return JudgmentOnValueTuple(
+			intersectJovList(toUpdate.jovs(), intersectWith.jovs()), 
+			intersectWith.names()
+			);
+		}
+	else
+		{
+		//both have extras
+		long sz = std::max(toUpdate.jovs().size(), intersectWith.jovs().size());
+
+		ImmutableTreeVector<JOV> left, right;
+
+		left = toUpdate.jovs();
+		while (left.size() < sz)
+			left = left + toUpdate.extras().getExtras().jov();
+
+		right = intersectWith.jovs();
+		while (right.size() < sz)
+			right = right + intersectWith.extras().getExtras().jov();
+
+		JOV commonExtras = toUpdate.extras().getExtras().jov();
+		updateJov(commonExtras, intersectWith.extras().getExtras().jov());
+
+		return JOVT(
+			intersectJovList(left, right),
+			sz == toUpdate.names().size() ? toUpdate.names() : intersectWith.names(),
+			JudgmentOnValueTupleExtras::Extras(commonExtras)
+			);
+		}
+	}
+
+void updateTupleJovForRemainingElts(	
+								const ImmutableTreeVector<JOV>& origJovs,
+								ImmutableTreeVector<JOV>& ioJovs,
+								const ControlFlowGraphTupleExpandInfo& tupleInfo,
+								const JOV& targetJov
+								)
+	{
+	JOV sourceJOV = ioJovs[tupleInfo.argIndex()];
+
+	if (sourceJOV.isUnknown())
+		{
+		sourceJOV = weakestTupleMatching(
+			origJovs[tupleInfo.argIndex()],
+			tupleInfo
+			);
+		}
+
+	if (sourceJOV.isTuple() && targetJov.isTuple())
+		{
+		JOVT sourceJovt = sourceJOV.getTuple().jov();
+		JOVT targetJovt = targetJov.getTuple().jov();
+
+		long arity = tupleInfo.arity();
+
+		//what can we learn about 'sourceJovt' given that we know that all the elements from
+		//'arity' on are covered by targetJovt
+		if (sourceJovt.jovs().size() >= arity)
+			{
+			JOVT jovtToUpdate = sourceJovt.slice(arity);
+
+			JOVT updated = intersectJovts(jovtToUpdate, targetJovt);
+
+			sourceJOV = JOV::Tuple(
+				JOVT(
+					sourceJovt.jovs().slice(0, arity) + updated.jovs(),
+					sourceJovt.names().slice(0, arity) + updated.names(),
+					updated.extras()
+					)
+				);
+			}
+		}
+
+	ioJovs = 
+		ioJovs.slice(0, tupleInfo.argIndex())
+			+ sourceJOV
+			+ ioJovs.slice(tupleInfo.argIndex() + 1)
+			;
+	}
+
+
+bool isDisjointFromBranches(
+					const ImmutableTreeMap<CSTValue, ControlFlowContinuation>& branches,
+					const JOV& value
+					)
+	{
+	for (long k = 0; k < branches.size(); k++)
+		if (value.covers(branches.pairAtPosition(k).first))
+			return false;
+	return true;
+	}
+
+JOV weakestJOVDisjointFrom(
+					const ImmutableTreeMap<CSTValue, ControlFlowContinuation>& branches,
+					const JOV& jovToWeaken
+					)
+	{
+	if (jovToWeaken.type())
+		{
+		JOV typeJov = JOV::OfType(*jovToWeaken.type());
+		if (isDisjointFromBranches(branches, typeJov))
+			return typeJov;
+		}
+
+	JOV relaxed = relaxedJOV(jovToWeaken);
+	if (isDisjointFromBranches(branches, relaxed))
+		return relaxed;
+
+	return jovToWeaken;
+	}
+
+
+
+
+void impliedJudgmentsAtSource(	const ControlFlowNodeBody& nodeBody,
+								const ImmutableTreeVector<JOV>& origJovs,
+								const Nullable<Result>& origResult,
+								ImmutableTreeVector<JOV>& ioJovs,
+								Nullable<Result>& ioResult,
+								ImmutableTreeVector<ControlFlowContinuationTupleArg> args,
+								JOVT targetJovt
+								)
+	{
+	for (long k = 0; k < args.size(); k++)
+		{
+		const ControlFlowContinuationTupleArg& tupleArg = args[k];
+
+		@match ControlFlowContinuationTupleArg(tupleArg)
+			-| Normal(symbol, arg) ->> {
+				if (targetJovt.jovs().size())
+					{
+					lassert(targetJovt.names()[0] == symbol);
+
+					impliedJudgmentsAtSource(
+						nodeBody,
+						origJovs, 
+						origResult, 
+						ioJovs, 
+						ioResult, 
+						arg,
+						targetJovt.jovs()[0]
+						);
+
+					targetJovt = targetJovt.slice(1);
+					}
+				else
+					{
+					lassert(targetJovt.extras().isExtras());
+
+					impliedJudgmentsAtSource(
+						nodeBody,
+						origJovs, 
+						origResult,
+						ioJovs, 
+						ioResult, 
+						arg, 
+						targetJovt.extras().getExtras().jov()
+						);	
+					}
+				}
+			-| TupleCall(arg) ->> {
+				//first get a specialized form of the tuple, which we'll relax
+				JOV sourceArgJOV = getJudgment(
+					arg, 
+					origJovs, 
+					origResult ? null() << origResult->value() : null(), 
+					null() << nodeBody
+					);
+
+				JOVT tupleCallJovt = sourceArgJOV.asTupleCallJovt();
+
+				//then see how much this tuple overlaps with the original JOVs
+				//we're targeting
+				JOVT toMergeJOVT = extractTupleMergeAndRemoveFromTarget(tupleCallJovt, targetJovt);
+
+				JOV toMergeJOV;
+
+				if (!sourceArgJOV.type())
+					//we don't know what kind of argument we had - no point in continuing the backprop
+					return;
+					else
+				if (sourceArgJOV.type()->isTuple())
+					//we were a tuple-apply on this tuple
+					toMergeJOV = JOV::Tuple(toMergeJOVT);
+				else
+					{
+					//our source wasn't a tuple
+					lassert(toMergeJOVT.jovs().size() == 1);
+					lassert(toMergeJOVT.names().size() == 1);
+					lassert(!toMergeJOVT.names()[0]);
+
+					toMergeJOV = toMergeJOVT.jovs()[0];
+					}
+					
+				lassert(sourceArgJOV.type());
+
+				impliedJudgmentsAtSource(
+					nodeBody,
+					origJovs,
+					origResult,
+					ioJovs,
+					ioResult,
+					arg,
+					toMergeJOV
+					);
+				}
+		}
+
+	lassert(!targetJovt.jovs().size());
+	}
+
+
+void impliedJudgmentsAtSource(	const ControlFlowNodeBody& nodeBody,
+								const ImmutableTreeVector<JOV>& origJovs,
+								const Nullable<Result>& origResult,
+								ImmutableTreeVector<JOV>& ioJovs,
+								Nullable<Result>& ioResult,
+								const ControlFlowContinuationArg& continuationArg,
+								const JOV& targetJov
+								)
+	{
+	@match ControlFlowContinuationArg(continuationArg)
+		-| Arg(Constant(c)) ->> {
+			//nothing to do
+			}
+		-| Arg(Arg(ix)) ->> {
+			updateJovList(ioJovs, ix, targetJov);
+			}
+		-| Result() ->> {
+			updateJov(ioResult->value(), targetJov);
+			}
+		-| MakeTuple(tupleArgs) ->> {
+			@match JOV(targetJov)
+				-| Tuple(jovt) ->> {
+					impliedJudgmentsAtSource(
+						nodeBody,
+						origJovs, 
+						origResult, 
+						ioJovs, 
+						ioResult, 
+						tupleArgs, 
+						jovt
+						);
+					}
+				-| _ ->> {
+					}
+			}
+		-| TupleElement(index) ->> {
+			updateTupleJovForIndex(
+				origJovs,
+				ioJovs,
+				getTupleExpandInfo(nodeBody),
+				index,
+				targetJov
+				);
+			}
+		-| TupleRemainingElements() ->> {
+			updateTupleJovForRemainingElts(
+				origJovs,
+				ioJovs,
+				getTupleExpandInfo(nodeBody),
+				targetJov
+				);
+			}
+	}
+
+
+void impliedJudgmentsAtSource(	const ControlFlowNodeBody& nodeBody,
+								const ImmutableTreeVector<JOV>& origJovs,
+								const Nullable<Result>& origResult,
+								ImmutableTreeVector<JOV>& ioJovs,
+								Nullable<Result>& ioResult,
+								const ControlFlowContinuation& continuation,
+								const ImmutableTreeVector<JOV>& targetJovs,
+								const Nullable<Result>& result
+								)
+	{
+	@match ControlFlowContinuation(continuation)
+		-| Return(arg, isException) ->> {
+			lassert(result);
+
+			impliedJudgmentsAtSource(nodeBody, origJovs, origResult, ioJovs, ioResult, arg, result->value());
+			}
+		-| Node(label, args) ->> {
+			for (long k = 0; k < args.size(); k++)
+				impliedJudgmentsAtSource(nodeBody, origJovs, origResult, ioJovs, ioResult, args[k], targetJovs[k]);
+			}
+	}
+
+
+
+bool allAreNormalApplyArgs(const ImmutableTreeVector<ControlFlowApplyArg>& applyArgs)
+	{
+	for (long k = 0; k < applyArgs.size(); k++)
+		if (!applyArgs[k].isNormal())
+			return false;
+
+	return true;
+	}
+
+void impliedJudgmentsAtSourceOfApplyTuple(
+								const ImmutableTreeVector<JOV>& sourceJovs,
+								ImmutableTreeVector<JOV>& ioJovs,
+								const ImmutableTreeVector<ControlFlowApplyArg>& applyArgs,
+								const JOVT& targetJovs
+								)
+	{
+	lassert_dump(
+		targetJovs.jovs().size() == applyArgs.size(),
+		prettyPrintString(applyArgs) << " had " << applyArgs.size() << " args but " 
+			<< "target had " << targetJovs.jovs().size() << " jovs."
+		);
+
+	for (long k = 0; k < applyArgs.size(); k++)
+		@match ControlFlowApplyArg(applyArgs[k])
+			-| Normal(name, Arg(ix)) ->> {
+				updateJovList(ioJovs, ix, targetJovs.jovs()[k]);
+				}
+			-| Normal(name, Constant(c)) ->> {
+				//nothing to do
+				}
+			-| TupleCall(Arg(ix)) ->> {
+				if (!sourceJovs[ix].type()->isTuple())
+					{
+					JudgmentOnValue targetJOV = targetJovs.jovs()[k];
+
+					if (targetJOV.isTuple())
+						{
+						JOVT targetElementJovt = targetJOV.getTuple().jov();
+						lassert(targetElementJovt.jovs().size() == 1);
+						
+						updateJovList(ioJovs, ix, targetElementJovt.jovs()[0]);
+						}
+					}
+				else
+					{
+					JudgmentOnValue targetJOV = targetJovs.jovs()[k];
+
+					updateJovList(ioJovs, ix, targetJOV);
+					}
+				}
+			-| TupleCall(Constant(c)) ->> {
+				//nothing to do
+				}
+	}
+
+//TODO test this function more thoroughly.
+ImmutableTreeVector<JudgmentOnValue> unflattenApplyTupleJudgment(
+										JudgmentOnValueTuple flattenedJovt,
+										const ImmutableTreeVector<JudgmentOnValue>& unflattenedJOVs,
+										const ImmutableTreeVector<ControlFlowApplyArg>& applyArgs
+										)
+	{
+	JudgmentOnValueTuple origJ = flattenedJovt;
+
+	ImmutableTreeVector<JudgmentOnValue> result;
+
+	for (long k = 0; k < applyArgs.size(); k++)
+		{
+		JudgmentOnValue current = unflattenedJOVs[k];
+
+		if (applyArgs[k].isTupleCall() && !current.isNotTuple())
+			{
+			if (current.isTuple())
+				{
+				JOVT origTuple = current.getTuple().jov();
+
+				JOVT updated = extractTupleMergeAndRemoveFromTarget(origTuple, flattenedJovt);
+
+				updateJov(current, JOV::Tuple(updated));
+				}
+			else
+				{
+				flattenedJovt = flattenedJovt.collapseEntirelyIntoExtras();
+				}
+			}
+		else
+			{
+			if (flattenedJovt.jovs().size())
+				{
+				updateJov(current, flattenedJovt.jovs()[0]);
+				flattenedJovt = flattenedJovt.slice(1);
+				}
+			else
+				{
+				lassert(flattenedJovt.extras().isExtras());
+				updateJov(current, flattenedJovt.extras().getExtras().jov());
+				}
+			}
+
+		result = result + current;
+		}
+
+	return result;
+	}
+
+		
+
+}
+}

@@ -1,0 +1,285 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "OfflineCache.hpp"
+#include "../../core/Common.hppml"
+#include "../../core/InstanceCounter.hpp"
+#include "../../core/PolymorphicSharedPtr.hpp"
+#include "../../core/containers/ImmutableTreeSet.hppml"
+#include "../../core/containers/MapWithIndex.hpp"
+#include "../../core/containers/TwoWaySetMap.hpp"
+#include "../../core/RefcountingPtr.hppml"
+#include "../../core/math/IntegerSequence.hppml"
+#include "../../core/math/IntegerSequence.hppml"
+#include "../../core/math/RandomHashGenerator.hpp"
+#include "../../core/threading/CallbackScheduler.hppml"
+#include "../../core/threading/ScopedThreadLocalContext.hpp"
+#include "../../core/threading/ThreadSafeMap.hpp"
+#include "../../core/threading/Gate.hpp"
+#include "../../cumulus/MachineId.hppml"
+#include "../Core/Type.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
+#include "../Vector/VectorDataID.hppml"
+#include "PageId.hppml"
+#include "BigVectorId.hppml"
+#include <boost/shared_ptr.hpp>
+#include <boost/thread/condition.hpp>
+#include <string>
+#include "../../networking/Channel.hpp"
+#include <boost/unordered_set.hpp>
+#include "BigVectorSlice.hppml"
+
+class ValueDeepcopierState;
+class PageRefcountTracker;
+class MemoryPool;
+class ImplValContainer;
+class VectorDataMemoryManager;
+class SerializedObject;
+class Type;
+class VectorPage;
+
+
+namespace Fora {
+
+class PageletTree;
+
+typedef RefcountingPtr<PageletTree> PageletTreePtr;
+
+}
+
+namespace TypedFora {
+namespace Abi {
+
+class ForaValueArray;
+class VectorHandle;
+class VectorLoadRequest;
+class BigVectorPageLayout;
+class BigVectorLayouts;
+
+typedef RefcountingPtr<VectorHandle> VectorHandlePtr;
+
+}
+}
+
+namespace Cumulus {
+
+class AddDropFinalState;
+
+namespace PersistentCache {
+class PersistentCacheIndex;
+}
+
+};
+
+namespace Fora {
+namespace Interpreter {
+
+class ExecutionContext;
+class ExecutionContextImpl;
+
+}
+}
+
+typedef Fora::Interpreter::ExecutionContext* execution_context_ptr;
+
+class VectorDataManagerImpl;
+
+class VectorDataManager : 
+		public PolymorphicSharedPtrBase<VectorDataManager>,
+		public InstanceCounter<VectorDataManager>
+{
+public:
+	VectorDataManager(
+			PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+			uword_t inCumulusMaxVectorChunkSizeBytes,
+			RandomHashGenerator& inHashGenerator = RandomHashGenerator::singleton()
+			);
+
+	void teardown();
+
+	bool isTornDown();
+	
+	typedef PolymorphicSharedPtr<VectorDataManager> pointer_type;
+
+	void setPersistentCacheIndex(PolymorphicSharedPtr<Cumulus::PersistentCache::PersistentCacheIndex> inCache);
+
+	PolymorphicSharedPtr<Cumulus::PersistentCache::PersistentCacheIndex> getPersistentCacheIndex();
+
+	const PolymorphicSharedPtr<PageRefcountTracker>& getPageRefcountTracker();
+
+	const PolymorphicSharedPtr<VectorDataMemoryManager>& getMemoryManager();
+
+	PolymorphicSharedPtr<CallbackScheduler> getCallbackScheduler();
+
+	PolymorphicSharedPtr<TypedFora::Abi::BigVectorLayouts> getBigVectorLayouts();
+
+	Nullable<Cumulus::MachineId> getMachineId();
+
+	//if we don't have a SystemwideComputationScheduler to tell us when to drop pages, we need
+	//to do it ourselves.
+	void setDropUnreferencedPagesWhenFull(bool inShouldDrop);
+
+	void setMachineId(Cumulus::MachineId inMachineId);
+	
+	void setOfflineCache(PolymorphicSharedPtr<OfflineCache> inPlugin);
+
+	PolymorphicSharedPtr<OfflineCache> getOfflineCache();
+
+	size_t vectorDataTotalBytesAllocated(void);
+
+	void restrictToAddDropState(const Cumulus::AddDropFinalState& state);
+
+	//get the current memory limit. this is the maximum amount of loaded
+	//vector-space memory that the system should ever allow. If we can't
+	//stay under it, the process should exit.
+	uword_t getMemoryLimit() const;
+	
+	//set the current memory limit.
+	void setMemoryLimit(uint64_t maxVectorBytes, uint64_t maxTotalBytes);
+
+	//get the 'load ratio'. this is the fraction of vectors that should
+	//be kept actively linked in to VectorHandle objects.  The remainder
+	//are kept around, but are not loaded into anything - this enables
+	//us to unload them without an active interrupt. We can also tell
+	//which vectors are being used (without actually tracking accesses
+	//explicitly) since if we unload a vector that's in constant use
+	//the interpreter will immediately re-request it.
+	double getLoadRatio() const;
+	
+	//set the load ratio
+	void setLoadRatio(double inRatio);
+
+	void allowAllExecutionContextsBlockedOnMemoryToCheckState();
+
+	//current number of bytes we're using
+	size_t curTotalUsedBytes();
+	
+	void checkGcStatus(std::string reason);
+
+	void unloadAllPossible();
+	
+	void gcAllContextsAndBlockUntilCompleted();
+
+	void triggerUnmapOfAllVectorPagesAndBlock();
+
+	void resumeMappingOfVectorPages();
+
+	pair<PolymorphicSharedPtr<SerializedObject>, ImmutableTreeSet<Fora::BigVectorId> >
+				extractVectorPageIfPossible(Fora::PageId identity);
+	
+	TypedFora::Abi::VectorHandlePtr pagedVectorHandle(
+				const Fora::BigVectorId& identity,
+				const Fora::PageletTreePtr& inPagelet,
+				MemoryPool* inPool
+				);
+	
+	TypedFora::Abi::VectorHandlePtr pagedVectorHandleWithVDID(
+				const Fora::BigVectorId& identity,
+				const Fora::PageletTreePtr& inPagelet,
+				Nullable<VectorDataID> source,
+				MemoryPool* inPool
+				);
+
+	//create a synthetic page, e.g. a page that's produced from other pages
+	//but not yet present in the system
+	Fora::PageId createSyntheticPage(const TypedFora::Abi::BigVectorPageLayout& inLayout);
+
+	void registerSyntheticPage(Fora::PageId inPage, const TypedFora::Abi::BigVectorPageLayout& inLayout);
+
+	void syntheticPageRealized(Fora::PageId inPage);
+
+	void resetSyntheticPageState();
+	
+	bool dropPageWithoutWritingToDisk(Fora::PageId inPage);
+	
+	bool loadSerializedVectorPage(
+						Fora::PageId page,
+						const PolymorphicSharedPtr<SerializedObject>& data
+						);
+
+	bool loadByteArrayIntoExternalDatasetPageFromFileDescriptor(
+						VectorDataID id,
+						int fd,
+						int64_t inByteCount
+						);
+	
+	bool loadByteArrayIntoExternalDatasetPage(
+						VectorDataID id,
+						uint8_t* data,
+						uword_t inByteCount
+						);
+
+	TypedFora::Abi::VectorHandlePtr loadImplvalIntoUnloadedVectorHandle(
+						MemoryPool* owningPool,
+						const VectorDataID& vdid,
+						ImplValContainer inForaValue
+						);
+	
+	TypedFora::Abi::VectorHandlePtr loadByteArrayIntoNewVector(
+						MemoryPool* owningPool,
+						uint8_t* data,
+						uword_t inByteCount
+						);
+			
+	TypedFora::Abi::VectorHandlePtr loadByteArrayIntoNewVector(
+						MemoryPool* owningPool,
+						uint8_t* data,
+						uword_t inByteCount,
+						const Type& type
+						);
+			
+	Ufora::threading::Gate& executionContextsCanRunGate();
+			
+	bool loadByteArrayIntoExternalDatasetPageAsVector(
+						VectorDataID id,
+						uint8_t* data,
+						uword_t inByteCount
+						);
+						
+	uword_t	getVectorPageCount(void) const;
+	
+	uword_t getTotalBytesLoaded(void) const;
+
+	uword_t getTotalBytesInUnloadCache(void) const;
+	
+	uword_t	maxPageSizeInBytes(void) const;
+
+	void dropPageUnreferencedAcrossSystem(Fora::PageId inPages);
+
+	bool visitAnyLoadedDataForVector(
+						const Fora::BigVectorId& identity,
+						IntegerSequence values,
+						boost::function2<void, TypedFora::Abi::ForaValueArray*, IntegerSequence> visitor
+						);
+
+	boost::shared_ptr<VectorPage> getPageFor(Fora::PageId inPage);
+
+	bool hasDataForVectorPage(const Fora::PageId& inPage);
+
+	hash_type newVectorHash();
+
+	PolymorphicSharedPtr<VectorDataManagerImpl> getImpl()
+		{
+		return mImpl;
+		}
+
+private:
+	PolymorphicSharedPtr<VectorDataManagerImpl> mImpl;
+
+	friend class Fora::Interpreter::ExecutionContextImpl;
+};
+

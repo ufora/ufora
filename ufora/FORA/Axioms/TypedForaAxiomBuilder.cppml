@@ -1,0 +1,290 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "TypedForaAxiomBuilder.hppml"
+#include "../TypedFora/TypedFora.hppml"
+#include "../TypedFora/TypedForaUtil.hppml"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include "../Native/NativeCode.hppml"
+
+namespace TypedFora {
+
+namespace {
+
+ImmutableTreeVector<NativeVariable> nativeVarsFor(const ImmutableTreeVector<Variable>& vars)
+	{
+	ImmutableTreeVector<NativeVariable> tr;
+
+	for (long k = 0; k < vars.size();k++)
+		tr = tr + NativeVariable::Temp(TypedFora::Abi::nativeTypeForForaType(vars[k].type()));
+	
+	return tr;
+	}
+
+}
+
+class TypedForaAxiomBuilderImpl {
+public:
+	TypedForaAxiomBuilderImpl(
+				const JOVT& signature
+				) : 
+			mSignature(signature)
+		{
+		mCallSignature = 
+			TypedFora::callSignatureFromJovt(
+				mSignature,
+				RefcountStyle::AsValueUnowned()
+				);
+
+		mVariables = TypedFora::callVariablesFromSignature(mCallSignature);
+
+		mNativeVariables = nativeVarsFor(mVariables);
+		}
+
+	TypedForaAxiomBuilderImpl(
+				const JOVT& signature,
+				const TypedFora::RefcountStyle& argumentLayout
+				) : 
+			mSignature(signature)
+		{
+		mCallSignature = 
+			TypedFora::callSignatureFromJovt(
+				mSignature,
+				argumentLayout
+				);
+
+		mVariables = TypedFora::callVariablesFromSignature(mCallSignature);
+
+		mNativeVariables = nativeVarsFor(mVariables);
+		}
+
+	TypedForaAxiomBuilderImpl(
+				const JOVT& signature,
+				const ImmutableTreeVector<TypedFora::Type>& argumentTypes
+				) : 
+			mSignature(signature),
+			mCallSignature(argumentTypes)
+		{
+		mVariables = TypedFora::callVariablesFromSignature(mCallSignature);
+
+		mNativeVariables = nativeVarsFor(mVariables);
+		}
+
+
+	TypedFora::Variable var(uword_t inIndex) const
+		{
+		return mVariables[inIndex];
+		}
+
+	Axiom axiomForExpression(
+				const TypedFora::Expression& inExpression, 
+				const TypedFora::RefcountStyle& outputLayout,
+				const JudgmentOnValue& outputJov,
+				bool isException
+				) const
+		{
+		return 
+			Axiom::Native(
+				mSignature, 
+				isException ? 
+					JudgmentOnAction::Throws(outputJov)
+				:	JudgmentOnAction::Value(outputJov)
+					,
+				TypedFora::Callable::SingleExpression(
+					mVariables,
+					inExpression,
+					TypedFora::Type(outputJov, outputLayout),
+					isException,
+					false
+					)
+				);
+		}
+
+	Axiom axiomForNativeExpression(
+					const NativeExpression& inNativeExpression, 
+					const RefcountStyle& outRefcountStyle,
+					const JudgmentOnResult& outNormalJOR,
+					const JudgmentOnResult& outExceptionJOR
+					) const
+		{
+		JudgmentOnAction joa = JudgmentOnAction::Throws(outExceptionJOR) | 
+										JudgmentOnAction::Value(outNormalJOR);
+
+		return 
+			Axiom::Native(
+				mSignature, 
+				joa,
+				TypedFora::graphFromNativeCfg(
+					mCallSignature, 
+					joa, 
+					outRefcountStyle, 
+					NativeCFG(
+						NativeVariable("callbacks", NativeTypeFor<NativeRuntimeCallbacks>::get().ptr()) + 
+							mNativeVariables,
+						inNativeExpression
+						)
+					)
+				);
+		}
+
+	NativeVariable nativeVar(uword_t inIndex) const
+		{
+		return mNativeVariables[inIndex];
+		}
+
+	Axiom axiomForNativeExpression(
+					const NativeExpression& inNativeExpression, 
+					const RefcountStyle& outRefcountStyle,
+					const JudgmentOnValue& outputJov,
+					bool isException
+					) const
+		{
+		ImmutableTreeVector<InlineNativeOperationArg> varmap;
+
+		ImmutableTreeSet<NativeVariable> nativeVarSet;
+
+		for (long k = 0; k < mCallSignature.size();k++)
+			if (inNativeExpression.freeVariables().contains(nativeVar(k)))
+				{
+				varmap = varmap + 
+					InlineNativeOperationArg(
+						CPPMLOpaqueHandle<NativeVariable>(nativeVar(k)),
+						mVariables[k].type(),
+						mVariables[k].expr()
+						);
+				nativeVarSet = nativeVarSet + nativeVar(k);
+				}
+
+		ImmutableTreeSet<NativeVariable> freeVarSet = 
+			(inNativeExpression.freeVariables() - nativeVarSet)
+				- NativeVariable("callbacks", NativeTypeFor<NativeRuntimeCallbacks>::get().ptr());
+
+		lassert_dump( 
+			freeVarSet.size() == 0,
+			prettyPrintString(inNativeExpression) << "\n\nhas free variables " << 
+			prettyPrintString(freeVarSet));
+
+		TypedFora::Expression typedForaExpression = 
+			TypedFora::Expression::InlineNativeOperation(
+				varmap,
+				CPPMLOpaqueHandle<NativeExpression>(inNativeExpression),
+				TypedFora::Type(outputJov, outRefcountStyle),
+				false,
+				emptyTreeVec()
+				);
+
+		return axiomForExpression(
+			typedForaExpression,
+			outRefcountStyle,
+			outputJov,
+			isException
+			);
+		}
+
+
+private:
+	JudgmentOnValueTuple mSignature;
+
+	TypedFora::RefcountStyle mArgumentPassingStyle;
+
+	ImmutableTreeVector<TypedFora::Type> mCallSignature;
+
+	ImmutableTreeVector<TypedFora::Variable> mVariables;
+
+	ImmutableTreeVector<NativeVariable> mNativeVariables;
+};
+
+
+TypedForaAxiomBuilder::TypedForaAxiomBuilder(
+			const JudgmentOnValueTuple& signature
+			) : 
+		mImpl(new TypedForaAxiomBuilderImpl(signature))
+	{
+	}
+
+TypedForaAxiomBuilder::TypedForaAxiomBuilder(
+			const JudgmentOnValueTuple& signature, 
+			const TypedFora::RefcountStyle& argumentPassingStyle
+			) : 
+		mImpl(new TypedForaAxiomBuilderImpl(signature, argumentPassingStyle))
+	{
+	}
+
+TypedForaAxiomBuilder::TypedForaAxiomBuilder(
+			const JudgmentOnValueTuple& signature, 
+			const ImmutableTreeVector<TypedFora::Type>& argumentVariables
+			) : 
+		mImpl(new TypedForaAxiomBuilderImpl(signature, argumentVariables))
+	{
+	}
+
+TypedFora::Variable TypedForaAxiomBuilder::var(uword_t inIndex) const
+	{
+	return mImpl->var(inIndex);
+	}
+
+NativeVariable TypedForaAxiomBuilder::nativeVar(uword_t inIndex) const
+	{
+	return mImpl->nativeVar(inIndex);
+	}
+
+Axiom TypedForaAxiomBuilder::axiomForNativeExpression(
+			const NativeExpression& inNativeExpression, 
+			const RefcountStyle& outRefcountStyle,
+			const JudgmentOnValue& outputJov,
+			bool isException
+			) const
+	{
+	return mImpl->axiomForNativeExpression(
+		inNativeExpression, 
+		outRefcountStyle, 
+		outputJov, 
+		isException
+		);
+	}
+
+Axiom TypedForaAxiomBuilder::axiomForNativeExpression(
+			const NativeExpression& inNativeExpression, 
+			const RefcountStyle& outRefcountStyle,
+			const JudgmentOnResult& outNormalJOR,
+			const JudgmentOnResult& outExceptionJOR
+			) const
+	{
+	return mImpl->axiomForNativeExpression(
+		inNativeExpression,
+		outRefcountStyle,
+		outNormalJOR,
+		outExceptionJOR
+		);
+	}
+
+Axiom TypedForaAxiomBuilder::axiomForExpression(
+			const TypedFora::Expression& inExpression, 
+			const TypedFora::RefcountStyle& outputLayout,
+			const JudgmentOnValue& outputJov,
+			bool isException
+			) const
+	{
+	return mImpl->axiomForExpression(
+		inExpression,
+		outputLayout,
+		outputJov,
+		isException
+		);
+	}
+
+
+}
+

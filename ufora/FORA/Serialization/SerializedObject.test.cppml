@@ -1,0 +1,433 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "SerializedObject.hpp"
+#include "SerializedObjectFlattener.hpp"
+#include "../Language/Parser.hppml"
+#include "../Core/ClassMediator.hppml"
+#include "../Core/MemoryPool.hpp"
+#include "../Core/Type.hppml"
+#include "../Vector/VectorUtilities.hpp"
+#include "../VectorDataManager/VectorDataManager.hppml"
+#include "../Core/ImplValContainerUtilities.hppml"
+#include "../../core/UnitTest.hpp"
+#include "../../core/lassert.hpp"
+#include "../../core/threading/CallbackScheduler.hppml"
+#include "../../cumulus/ComputationDefinition.hppml"
+
+namespace {
+
+template<class T>
+T	deepCopier(const T& in, PolymorphicSharedPtr<VectorDataMemoryManager> memoryManager)
+	{
+	PolymorphicSharedPtr<NoncontiguousByteBlock> data = 
+		SerializedObjectFlattener::flattenOnce(SerializedObject::serialize(in, memoryManager));
+
+	T tr;
+
+	PolymorphicSharedPtr<SerializedObject> serializedObject = 
+					SerializedObjectInflater::inflateOnce(data);
+
+	SerializedObject::deserialize(
+		serializedObject, 
+		memoryManager, 
+		tr
+		);
+
+	return tr;
+	}
+
+}
+
+
+namespace {
+	PolymorphicSharedPtr<CallbackScheduler> scheduler(CallbackScheduler::singletonForTesting());
+}
+
+
+#define CHECK_deepCopier(x) { CSTValue toCheck(x);  BOOST_CHECK_EQUAL(deepCopier(toCheck, memoryManager), toCheck); };
+	
+BOOST_AUTO_TEST_CASE( test_FORA_SerializedObject_Simple )
+{
+	PolymorphicSharedPtr<VectorDataManager> manager(new VectorDataManager(scheduler, 32 * 1024));
+	PolymorphicSharedPtr<VectorDataMemoryManager> memoryManager = manager->getMemoryManager();
+
+	CHECK_deepCopier("");
+	CHECK_deepCopier("hello");
+	CHECK_deepCopier(10);
+	CHECK_deepCopier(CSTValue::Tag(Symbol("A Tag")));
+	CHECK_deepCopier(
+		CSTValue::Tuple(
+			emptyTreeVec() +
+				CSTValue(10) +
+				CSTValue(20) +
+				CSTValue("30") +
+				CSTValue(20) +
+				CSTValue("20")
+			)
+		);
+	CHECK_deepCopier(
+		CSTValue::Tuple(
+			emptyTreeVec() + CSTValue(10) + CSTValue("20"),
+			emptyTreeVec() + (null() << Symbol("a")) + (null() << Symbol("b"))
+			)
+		);
+	
+		{	
+		ImplValContainer ivc = 
+				createFORAVector(
+					emptyTreeVec(),
+					MemoryPool::getFreeStorePool(),
+					hash_type()
+					);
+		
+		CHECK_deepCopier(CSTValue(ivc.getReference()));
+		}
+
+		{	
+		ImplValContainer ivc = 
+				createFORAVector(
+					emptyTreeVec() + 
+						ImplValContainer(CSTValue(1)),
+					MemoryPool::getFreeStorePool(),
+					hash_type()
+					);
+		
+		CHECK_deepCopier(CSTValue(ivc.getReference()));
+		}
+
+		{	
+		ImplValContainer anEmptyVec = 
+				createFORAVector(
+					emptyTreeVec(),
+					MemoryPool::getFreeStorePool(),
+					hash_type()
+					);
+
+
+		ImplValContainer ivc = 
+				createFORAVector(
+					emptyTreeVec() + anEmptyVec,
+					MemoryPool::getFreeStorePool(),
+					hash_type()
+					);
+
+		CHECK_deepCopier(CSTValue(ivc.getReference()));
+		}
+
+		{	
+		ImplValContainer ivc = 
+				createFORAVector(
+					emptyTreeVec() + 
+						ImplValContainer(CSTValue(1)) +
+						ImplValContainer(CSTValue("2")) +
+						ImplValContainer(CSTValue(3)) +
+						ImplValContainer(CSTValue("4")) +
+						ImplValContainer(CSTValue(5)),
+					MemoryPool::getFreeStorePool(),
+					hash_type()
+					);
+		
+		CHECK_deepCopier(CSTValue(ivc.getReference()));
+
+		ImplValContainer ivcSliced = 
+			ImplValContainerUtilities::vectorGetSlice(ivc, 1, -1, 1);
+
+		CHECK_deepCopier(CSTValue(ivcSliced.getReference()));
+		}
+	
+}
+
+
+BOOST_AUTO_TEST_CASE( test_FORA_SerializedObject_ForaValueArrays )
+	{
+	PolymorphicSharedPtr<VectorDataManager> manager(new VectorDataManager(scheduler, 32 * 1024));
+	PolymorphicSharedPtr<VectorDataMemoryManager> memoryManager = manager->getMemoryManager();
+
+	ImplValContainer ivc = 
+			createFORAVector(
+				emptyTreeVec() + 
+					ImplValContainer(CSTValue(1)) +
+					ImplValContainer(CSTValue()) +
+					ImplValContainer(CSTValue(3)) +
+					ImplValContainer(CSTValue()) +
+					ImplValContainer(CSTValue(5)) +
+					ImplValContainer(CSTValue("hello")) +
+					ImplValContainer(CSTValue(5)),
+				MemoryPool::getFreeStorePool(),
+				hash_type()
+				);
+	
+	CHECK_deepCopier(CSTValue(ivc.getReference()));
+	}
+
+BOOST_AUTO_TEST_CASE( test_FORA_SerializedObject_Compression )
+{
+	PolymorphicSharedPtr<VectorDataManager> manager(new VectorDataManager(scheduler, 32 * 1024));
+	PolymorphicSharedPtr<VectorDataMemoryManager> memoryManager = manager->getMemoryManager();
+
+	
+		{
+		//create a type object with code
+		Function tr = parseStringToFunction(
+			"let x = 0; let y = 0; while (x<1000) { x = x + 1 y = y + 1 }; y",
+			true,
+			CodeDefinitionPoint(),
+			""
+			);
+
+		Type ofFunType = 
+			Type::Class(
+				emptyTreeVec(), 
+				ClassBody(
+					CPPMLOpaqueHandle<ClassMediator>(
+						ClassMediator::Function(
+							tr, 
+							LexicalBindingMap(), 
+							CSTValue()
+							)
+						), 
+					ClassMediatorResumption::Entry()
+					)
+				);
+
+		ImplValContainer ivc = ImplValContainer(CSTValue::blankOf(ofFunType));
+
+		PolymorphicSharedPtr<SerializedObjectFlattener> flattener(new SerializedObjectFlattener());
+
+		PolymorphicSharedPtr<NoncontiguousByteBlock> m1 = flattener->flatten(ivc);
+		PolymorphicSharedPtr<NoncontiguousByteBlock> m2 = flattener->flatten(ivc);
+
+		PolymorphicSharedPtr<SerializedObjectInflater> inflater(
+			new SerializedObjectInflater()
+			);
+
+		ImplValContainer ivc_out_1;
+		ImplValContainer ivc_out_2;
+
+	 	inflater->inflate(m1, ivc_out_1);
+	 	inflater->inflate(m2, ivc_out_2);
+	 	
+		BOOST_CHECK(ivc == ivc_out_1);
+		BOOST_CHECK(ivc == ivc_out_2);
+
+		BOOST_CHECK(m1->totalByteCount() > m2->totalByteCount() * 10);
+		}
+
+}
+
+void verifySerializationMaintainsVectorHash(const ImmutableTreeVector<ImplValContainer>& vals)
+	{
+	PolymorphicSharedPtr<VectorDataManager> manager(new VectorDataManager(scheduler, 32 * 1024));
+
+	ImplValContainer ivc = 
+			createFORAVector(
+				vals,
+				MemoryPool::getFreeStorePool(),
+				hash_type(1)
+				);
+	
+	ImplValContainer ivc2 = deepCopier(ivc, manager->getMemoryManager());
+
+	lassert_dump(
+		ivc.hash() == ivc2.hash(), 
+		"Values " << prettyPrintString(vals) << " didn't serialize correctly"
+		);
+	}
+
+BOOST_AUTO_TEST_CASE( test_FORA_SerializedObject_VectorsBasic )
+{
+	verifySerializationMaintainsVectorHash(ImmutableTreeVector<ImplValContainer>());
+
+	verifySerializationMaintainsVectorHash(
+		emptyTreeVec() + ImplValContainer(CSTValue(0))
+		);
+
+	verifySerializationMaintainsVectorHash(
+		emptyTreeVec() + 
+			ImplValContainer(CSTValue(0)) + 
+			ImplValContainer(CSTValue(1))
+		);
+	
+	verifySerializationMaintainsVectorHash(
+		emptyTreeVec() + 
+			ImplValContainer(CSTValue(0)) + 
+			ImplValContainer(CSTValue("HARO"))
+		);
+	
+	verifySerializationMaintainsVectorHash(
+		emptyTreeVec() + 
+			ImplValContainer(CSTValue(0)) + 
+			ImplValContainer(CSTValue("HARO")) +
+			ImplValContainer(CSTValue(0)) + 
+			ImplValContainer(CSTValue("HARO"))
+		);
+
+	ImmutableTreeVector<ImplValContainer> vals;
+	for (uint64_t k = 0; k < 10; k++)
+		vals = vals 
+			+ ImplValContainer(CSTValue(k))
+			+ ImplValContainer(CSTValue("sep"));
+	
+	verifySerializationMaintainsVectorHash(vals);
+}
+
+BOOST_AUTO_TEST_CASE( test_FORA_SerializedObject_Inflation )
+{
+	PolymorphicSharedPtr<VectorDataManager> manager(new VectorDataManager(scheduler, 32 * 1024));
+	PolymorphicSharedPtr<VectorDataMemoryManager> memoryManager = manager->getMemoryManager();
+
+		//check refcounting on a simple vector
+		{
+		Nullable<ImplValContainer> vectorVal;
+
+		for (uint64_t k = 0; k < 1000; k++)
+			{
+			ImmutableTreeVector<ImplValContainer> vals;
+			vals = vals 
+				+ ImplValContainer(CSTValue(k))
+				+ ImplValContainer(CSTValue("sep"));
+
+			ImplValContainer vec = 
+				createFORAVector(
+					vals,
+					MemoryPool::getFreeStorePool(),
+					hash_type(k)
+					);
+
+			if (!vectorVal)
+				vectorVal = vec;
+			else
+				vectorVal = 
+					ImplValContainerUtilities::concatenateVectors(
+						*vectorVal, 
+						vec, 
+						MemoryPool::getFreeStorePool(),
+						&*manager,
+						hash_type(k, 2)
+						);
+			}
+		
+		vectorVal = deepCopier(*vectorVal, memoryManager);
+		}
+	
+	//check refcounting on a more complex vector
+		{
+		//create a vector with a _lot_ of leaves
+		ImmutableTreeVector<ImplValContainer> vals;
+		for (uint64_t k = 0; k < 1000; k++)
+			vals = vals 
+				+ ImplValContainer(CSTValue(k))
+				+ ImplValContainer(CSTValue("sep"));
+		
+		ImplValContainer ivcInner = 
+				createFORAVector(
+					vals,
+					MemoryPool::getFreeStorePool(),
+					hash_type()
+					);
+
+			{
+			ImplValContainer ivcOuter = 
+					createFORAVector(
+						(emptyTreeVec() + 
+							ivcInner + 
+							ivcInner + 
+							ivcInner) * 5,
+						MemoryPool::getFreeStorePool(),
+						hash_type()
+						);
+			
+			deepCopier(ivcOuter, memoryManager);
+			}
+		
+		BOOST_CHECK_EQUAL(ivcInner.cast<TypedFora::Abi::VectorRecord>().dataPtr()->refcount(), 1);
+		}
+}
+
+
+BOOST_AUTO_TEST_CASE( test_FORA_SizeOfMultipleVectors )
+{
+	PolymorphicSharedPtr<VectorDataManager> manager(new VectorDataManager(scheduler, 32 * 1024));
+	PolymorphicSharedPtr<VectorDataMemoryManager> memoryManager = manager->getMemoryManager();
+
+	ImmutableTreeVector<ImplValContainer> vals;
+
+	for (uint64_t k = 0; k < 10000; k++)
+		vals = vals + ImplValContainer(CSTValue(k));
+
+	ImplValContainer vec = 
+		createFORAVector(
+			vals,
+			MemoryPool::getFreeStorePool(),
+			hash_type(0)
+			);
+
+	ImplValContainer tup2 = ImplValContainer(emptyTreeVec() + vec + vec);
+	
+	PolymorphicSharedPtr<NoncontiguousByteBlock> data1 = 
+		SerializedObjectFlattener::serializeEntireObjectGraph(vec);
+
+	PolymorphicSharedPtr<NoncontiguousByteBlock> data2 = 
+		SerializedObjectFlattener::serializeEntireObjectGraph(tup2);
+
+	BOOST_CHECK(data2->totalByteCount() - data1->totalByteCount() < data1->totalByteCount() / 10);
+}
+
+
+BOOST_AUTO_TEST_CASE( test_serialize_computation_definition )
+	{
+	using namespace Cumulus;
+
+	ImmutableTreeVector<ComputationDefinitionTerm> terms;
+
+	terms = terms + 
+		ComputationDefinitionTerm::Value(ImplValContainer(CSTValue(10)), null()) + 
+		ComputationDefinitionTerm::Value(ImplValContainer(CSTValue(20)), null());
+
+	std::vector<long> counts;
+
+	for (long k = 0; k < 20; k++)
+		{
+		terms = emptyTreeVec() + 
+			ComputationDefinitionTerm::Subcomputation(
+				emptyTreeVec() + terms[0] + terms[1]
+				) + 
+			ComputationDefinitionTerm::Subcomputation(
+				emptyTreeVec() + terms[1] + terms[0]
+				);
+
+		counts.push_back(
+			SerializedObjectFlattener::serializeEntireObjectGraph(terms)->totalByteCount()
+			);
+
+		ImmutableTreeVector<ComputationDefinitionTerm> terms2 = 
+			deepCopier(terms, PolymorphicSharedPtr<VectorDataMemoryManager>());
+
+		lassert_dump(hashValue(terms) == hashValue(terms2),
+			prettyPrintString(terms) << " vs. " << prettyPrintString(terms2)
+			);
+
+		BOOST_CHECK_EQUAL(
+			SerializedObjectFlattener::serializeEntireObjectGraph(terms2)->totalByteCount(),
+			counts.back()
+			);
+		
+		}
+
+	BOOST_CHECK(counts[10] - counts[5] < 10 * (counts[5] - counts[4]));
+	}
+
+

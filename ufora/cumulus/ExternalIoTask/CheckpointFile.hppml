@@ -1,0 +1,163 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../../FORA/Serialization/SerializedObjectFlattener.hpp"
+#include "../CheckpointSummary.hppml"
+#include "../CheckpointedComputationStatus.hppml"
+
+namespace Cumulus {
+
+class CheckpointFile {
+public:
+	CheckpointFile(hash_type inGuid) : 
+			mGuid(inGuid),
+			mFlattener(new SerializedObjectFlattener()),
+			mTotalBytes(0),
+			mTotalSecondsOfCompute(0),
+			mIsRootFinished(false)
+		{
+		}
+
+	void addComputation(
+			ComputationId computation, 
+			ImmutableTreeSet<ComputationId> children, 
+			ImmutableTreeSet<Fora::BigVectorId> bigvecs, 
+			PolymorphicSharedPtr<SerializedObject> object,
+			uint64_t bytesUsedWhenDeserialized,
+			double totalSecondsOfCompute,
+			bool isFinished
+			)
+		{
+		lassert(!mComputationStatuses.contains(computation));
+
+		mMessages.push_back(make_pair(computation, mFlattener->flatten(object)->toString()));
+
+		mTotalBytes += mMessages.back().second.size();
+
+		mTotalSecondsOfCompute += totalSecondsOfCompute;
+
+		ImmutableTreeSet<hash_type> bigvecHashes;
+
+		for (auto b: bigvecs)
+			{
+			bigvecHashes = bigvecHashes + b.guid();
+			mBigvecsReferenced.insert(b.guid());
+			}
+
+		mComputationStatuses = mComputationStatuses + 
+			computation + 
+			CheckpointedComputationStatus(
+				bigvecHashes,
+				children,
+				bytesUsedWhenDeserialized,
+				totalSecondsOfCompute
+				)
+			;
+
+		if (isFinished && computation.isRoot())
+			mIsRootFinished = true;
+
+		for (auto c: children)
+			if (c.rootComputation() != computation.rootComputation())
+				mRootComputationDependencies.insert(c.rootComputation());
+		}
+
+	CheckpointSummary checkpointSummary()
+		{
+		ImmutableTreeSet<hash_type> childHashes;
+		for (auto c: mRootComputationDependencies)
+			childHashes = childHashes + *c.rootComputation().computationHash();
+
+		return CheckpointSummary(
+			emptyTreeMap() + mGuid + CheckpointFileSummary(mComputationStatuses, mTotalBytes),
+			emptyTreeSet(),
+			emptyTreeMap(),
+			emptyTreeMap(),
+			mTotalBytes,
+			mTotalSecondsOfCompute,
+			mIsRootFinished,
+			childHashes
+			);
+		}
+
+	hash_type guid() const
+		{
+		return mGuid;
+		}
+
+	size_t size() const
+		{
+		return mTotalBytes;
+		}
+
+	ImmutableTreeSet<hash_type> bigvecsReferenced() const
+		{
+		return ImmutableTreeSet<hash_type>(mBigvecsReferenced);
+		}
+
+	PolymorphicSharedPtr<NoncontiguousByteBlock> toByteBlock() const
+		{
+		return PolymorphicSharedPtr<NoncontiguousByteBlock>(
+			new NoncontiguousByteBlock(serialize(mMessages))
+			);
+		}
+
+	static void deserializeFile(
+					PolymorphicSharedPtr<NoncontiguousByteBlock> data, 
+					map<ComputationId, PolymorphicSharedPtr<SerializedObject> >& outStates,
+					PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM
+					)
+		{
+		std::vector<pair<ComputationId, std::string> > messages = 
+			::deserialize<std::vector<pair<ComputationId, std::string> > >(data->toString());
+
+		SerializedObjectInflater inflater;
+
+	 	for (auto m: messages)
+		 	{
+		 	outStates[m.first] = inflater.inflate(
+		 		PolymorphicSharedPtr<NoncontiguousByteBlock>(
+		 			new NoncontiguousByteBlock(m.second)
+		 			),
+		 		inVDMM
+		 		);
+		 	lassert(outStates[m.first]);
+		 	}
+		}
+
+private:
+	hash_type mGuid;
+
+	bool mIsRootFinished;
+
+	size_t mTotalBytes;
+
+	double mTotalSecondsOfCompute;
+
+	//root computation ids of other computations we depend on
+	std::set<ComputationId> mRootComputationDependencies;
+
+	boost::shared_ptr<SerializedObjectFlattener> mFlattener;
+
+	std::vector<pair<ComputationId, std::string> > mMessages;
+
+	std::set<hash_type> mBigvecsReferenced;
+
+	ImmutableTreeMap<ComputationId, CheckpointedComputationStatus> mComputationStatuses;
+};
+
+}

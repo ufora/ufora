@@ -1,0 +1,1989 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ForaValueArray.hppml"
+#include "ForaValueArrayImpl.hppml"
+#include "../../Core/ShareableMemoryBlock.hppml"
+#include "../../Core/MemoryPool.hpp"
+#include "../../Judgment/JudgmentOnValue.hppml"
+#include "../../../core/Logging.hpp"
+#include "../../../core/Clock.hpp"
+#include "../../../core/cppml/MemoizedAlternativePointer.hppml"
+#include "ForaValueArraySpaceRequirements.hppml"
+#include <boost/unordered_set.hpp>
+
+using TypedFora::Abi::RawJOV;
+using TypedFora::Abi::ForaValueArray;
+using TypedFora::Abi::ForaValueArrayImpl;
+using TypedFora::Abi::ForaValueArraySpaceRequirements;
+using TypedFora::Abi::PackedForaValues;
+using TypedFora::Abi::ScatteredForaValues;
+
+namespace {
+
+const static int MAX_JUDGMENTS_TO_USE_SEPARATE_LOOPS = 4;
+
+const static int DEFAULT_COUNT_TO_ALLOCATE_FOR = 8;
+
+const static float GROWTH_RATE = 1.5;
+
+const static JudgmentOnValue jovNothing;
+
+template<class receiver, class getter>
+void copyJudgments(receiver r, getter g, long count)
+	{
+	for (long k = 0; k < count; k++)
+		r.set(k, g.get(k));
+	}
+
+@type JudgmentTableReceiverByMap = uint8_t* array, map<RawJOV, int>* slotMap {
+public:
+	void set(long index, RawJOV j)
+		{
+		auto it = slotMap()->find(j);
+
+		lassert(it != slotMap()->end());
+
+		array()[index] = it->second;
+		}
+};
+
+@type JudgmentTableReceiverBySearch = uint8_t* array, RawJOV* slots, long slotCount {
+public:
+	void set(long index, RawJOV j)
+		{
+		for (long k = 0; k < slotCount(); k++)
+			if (slots()[k] == j)
+				{
+				array()[index] = k;
+				return;
+				}
+
+		lassert(false);
+		}
+};
+
+@type JudgmentArrayReceiver = RawJOV* array {
+public:
+	void set(long index, RawJOV j)
+		{
+		array()[index] = j;
+		}
+};
+
+@type JudgmentArrayGetter = RawJOV* array {
+public:
+	RawJOV get(long index) const
+		{
+		return array()[index];
+		}
+};
+
+@type JudgmentTableGetter = uint8_t* indices, RawJOV* array {
+public:
+	RawJOV get(long index) const
+		{
+		return array()[indices()[index]];
+		}
+};
+
+@type ConstJudgmentGetter = RawJOV j {
+public:
+	RawJOV get(long index) const
+		{
+		return j();
+		}
+};
+
+@type HomogenousOffsetGetter = uint8_t* base, size_t stride {
+public:
+	uint8_t* get(long index) const
+		{
+		return base() + index * stride();
+		}
+};
+
+@type OffsetTableGetter = uint8_t** table {
+public:
+	uint8_t* get(long index) const
+		{
+		return table()[index];
+		}
+};
+
+//callback 'inFunc' with an offset getter and a jov getter appropriate
+//to the array. This allows us to abstract away the details of extracting
+//offsets and jovs from client algorithms.
+template<class F>
+void callbackVisitorWithJovAndOffsetAccessors(const F& inFunc, ForaValueArrayImpl& array)
+	{
+	if (array.isHomogenous())
+		{
+		ConstJudgmentGetter jovGetter(array.getHomogenousJOV());
+
+		if (array.usingOffsetTable())
+			{
+			OffsetTableGetter offsetGetter(array.mOffsetTablePtr);
+
+			inFunc(offsetGetter, jovGetter);
+			}
+		else
+			{
+			HomogenousOffsetGetter offsetGetter(array.mDataPtr, array.homogenousStride());
+
+			inFunc(offsetGetter, jovGetter);
+			}
+		}
+		else
+	if (array.usingJudgmentTable())
+		{
+		JudgmentTableGetter jovGetter((uint8_t*)array.mPerValueJudgments, (RawJOV*)array.mJudgmentLookupTable);
+
+		if (array.usingOffsetTable())
+			{
+			OffsetTableGetter offsetGetter(array.mOffsetTablePtr);
+
+			inFunc(offsetGetter, jovGetter);
+			}
+		else
+			{
+			HomogenousOffsetGetter offsetGetter(array.mDataPtr, array.homogenousStride());
+
+			inFunc(offsetGetter, jovGetter);
+			}
+		}
+	else
+		{
+		lassert(!array.usingJudgmentTable());
+	
+		JudgmentArrayGetter jovGetter((RawJOV*)array.mPerValueJudgments);
+
+		if (array.usingOffsetTable())
+			{
+			OffsetTableGetter offsetGetter(array.mOffsetTablePtr);
+
+			inFunc(offsetGetter, jovGetter);
+			}
+		else
+			{
+			HomogenousOffsetGetter offsetGetter(array.mDataPtr, array.homogenousStride());
+
+			inFunc(offsetGetter, jovGetter);
+			}
+		}
+	}
+
+//Represents a partially bound callback, where we have expanded array2, but
+//not array1.
+template<class Array2OffsetGetter, class Array2JovGetter, class F>
+class HalfBoundCallback {
+public:
+	HalfBoundCallback(
+				const Array2OffsetGetter& inOffsetGetter, 
+				const Array2JovGetter& inJovGetter, 
+				const F& inF
+				) :
+			mArray2OffsetGetter(inOffsetGetter),
+			mArray2JovGetter(inJovGetter),
+			mF(inF)
+		{
+		}
+
+	template<class Array1OffsetGetter, class Array1JovGetter>
+	void operator()(const Array1OffsetGetter& array1OffsetGetter, const Array1JovGetter& array1JovGetter) const
+		{
+		mF(array1OffsetGetter, array1JovGetter, mArray2OffsetGetter, mArray2JovGetter);
+		}
+
+private:
+	const Array2OffsetGetter& mArray2OffsetGetter;
+	const Array2JovGetter& mArray2JovGetter;
+	const F& mF;
+};
+
+template<class F>
+class UnboundCallback {
+public:
+	UnboundCallback(const F& inF, ForaValueArrayImpl& array1) :
+			mF(inF),
+			mArray1(array1)
+		{
+		}
+
+	template<class Array2OffsetGetter, class Array2JovGetter>
+	void operator()(const Array2OffsetGetter& offsetGetter, const Array2JovGetter& jovGetter) const
+		{
+		callbackVisitorWithJovAndOffsetAccessors(
+			HalfBoundCallback<Array2OffsetGetter, Array2JovGetter, F>(
+				offsetGetter, 
+				jovGetter, 
+				mF
+				),
+			mArray1
+			);
+		}
+
+private:
+	const F& mF;
+	ForaValueArrayImpl& mArray1;
+};
+
+
+//callback 'inFunc' with an offset getter and a jov getter appropriate
+//to array1, and same thing with array2. E.g. inFunc(offset1, jov1, offset2, jov2)
+template<class F>
+void callbackVisitorWithJovAndOffsetAccessors(const F& inFunc, ForaValueArrayImpl& array1, ForaValueArrayImpl& array2)
+	{
+	callbackVisitorWithJovAndOffsetAccessors(UnboundCallback<F>(inFunc, array1), array2);
+	}
+
+}
+
+ForaValueArrayImpl::ForaValueArrayImpl(MemoryPool* inOwningMemoryPool) : 
+		mOwningMemoryPool(inOwningMemoryPool),
+		mDataPtr(0),
+		mBytesReserved(0),
+		mOffsetTablePtr(0),
+		mPerValueOffsetOrOffsetTableCountAllocated(0),
+		mJudgmentLookupTable(0),
+		mJudgmentLookupTableSize(0),
+		mPerValueJudgmentsAllocated(0),
+		mPerValueJudgments(0),
+		mValueCount(0),
+		mIsWriteable(true),
+		mCurrentJORIncludesValuesTo(0),
+		mJOVToUseIfReferencingOneJOV(jovNothing),
+		mCurrentJOR(0),
+		mMappedValuesAreContiguous(true)
+	{
+	}
+
+ForaValueArrayImpl::ForaValueArrayImpl(const ForaValueArrayImpl& inOtherArray) : 
+		mOwningMemoryPool(inOtherArray.mOwningMemoryPool),
+		mDataPtr(0),
+		mBytesReserved(0),
+		mOffsetTablePtr(0),
+		mPerValueOffsetOrOffsetTableCountAllocated(0),
+		mJudgmentLookupTable(0),
+		mJudgmentLookupTableSize(0),
+		mPerValueJudgmentsAllocated(0),
+		mPerValueJudgments(0),
+		mValueCount(0),
+		mIsWriteable(true),
+		mCurrentJORIncludesValuesTo(0),
+		mJOVToUseIfReferencingOneJOV(jovNothing),
+		mCurrentJOR(0),
+		mMappedValuesAreContiguous(true)
+	{
+	append(inOtherArray);
+
+	mCurrentJORIncludesValuesTo = inOtherArray.mCurrentJORIncludesValuesTo;
+	if (inOtherArray.mCurrentJOR)
+		mCurrentJOR = new JudgmentOnResult(*inOtherArray.mCurrentJOR);
+	}
+
+ForaValueArrayImpl& ForaValueArrayImpl::getImpl()
+	{
+	return *this;
+	}
+
+const ForaValueArrayImpl& ForaValueArrayImpl::getImpl() const
+	{
+	return *this;
+	}
+
+ForaValueArraySpaceRequirements ForaValueArrayImpl::getSpaceRequirements() const
+	{
+	return getSpaceRequirements(0, mValueCount);
+	}
+
+ForaValueArraySpaceRequirements ForaValueArrayImpl::getSpaceRequirements(long lowIndex, long highIndex) const
+	{
+	if (lowIndex < 0)
+		lowIndex = 0;
+	
+	if (highIndex > (long)size())
+		highIndex = size();
+
+	if (lowIndex >= highIndex)
+		return ForaValueArraySpaceRequirements(0,0,JudgmentOnResult());
+
+	return ForaValueArraySpaceRequirements(
+		//offsetFor(highIndex) is not necessarily valid in mapped arrays
+		offsetPlusStrideFor(highIndex - 1) - offsetFor(lowIndex),
+		highIndex - lowIndex, 
+		currentJor()
+		);
+	}
+
+void ForaValueArrayImpl::prepareForAppending(const ForaValueArraySpaceRequirements& requirements)
+	{
+	lassert(mIsWriteable);
+
+	lassert(mValueCount == 0);
+	lassert(mOffsetTablePtr == 0);
+	lassert(mPerValueJudgments == 0);
+
+	if (requirements.valueCount() == 0)
+		return;
+
+	if (!requirements.isHomogenous())
+		{
+		Nullable<size_t> stride = requirements.strideIfShouldBeEvenlySpaced();
+
+		if (!stride)
+			{
+			resizeOffsetTable(requirements.valueCount() + 1);
+			reserveBytes(requirements.bytesReservedForData());
+			mOffsetTablePtr[0] = mDataPtr;
+			}
+		else
+			{
+			mPerValueOffsetOrOffsetTableCountAllocated = *stride;
+			reserveBytes(requirements.valueCount() * *stride);
+			}
+
+		if (requirements.jor().size() <= MAX_JUDGMENTS_TO_USE_JUDGMENT_TABLE)
+			{
+			prepareJudgmentTable(requirements.jor(), requirements.valueCount());
+			}
+		else
+			resizePerValueJudgments(requirements.valueCount() + 1);
+		}
+	else
+		{
+		reserveBytes(requirements.bytesReservedForData());
+		prepareJudgmentTable(requirements.jor(), 0);
+		mPerValueOffsetOrOffsetTableCountAllocated = 
+			*requirements.strideIfShouldBeEvenlySpaced();
+		}
+	}
+
+ForaValueArrayImpl::~ForaValueArrayImpl()
+	{
+	if (mValueCount && mDataPtr && !allValuesArePOD())
+		{
+		if (isHomogenous())
+			{
+			lassert(getHomogenousJOV().type());
+
+			getHomogenousJOV().type()->destroy(
+				mDataPtr,
+				mValueCount
+				);
+			}
+		else
+			{
+			visitScatteredValues(
+				0,
+				mValueCount,
+				[&](ScatteredForaValues values) {
+					if (!values.elementJOV().type()->isPOD())
+						{
+						values.elementJOV().type()->destroyScattered(
+							values.data(),
+							values.count(),
+							values.nudge()
+							);
+						}
+					}
+				);
+			}
+		}
+
+	if (mDataPtr)
+		mOwningMemoryPool->free(mDataPtr);
+
+	if (mOffsetTablePtr)
+		mOwningMemoryPool->free((uint8_t*)mOffsetTablePtr);
+
+	//its OK to just free these because JOV and Type objects are both unrefcounted
+	if (mJudgmentLookupTable)
+		mOwningMemoryPool->free((uint8_t*)mJudgmentLookupTable);
+	
+	if (mPerValueJudgments)
+		mOwningMemoryPool->free((uint8_t*)mPerValueJudgments);
+
+	if (mCurrentJOR)
+		delete mCurrentJOR;
+	}
+
+
+void ForaValueArrayImpl::fillOutJovIndexTable(std::vector<uint8_t>& outJovIndices, JudgmentOnResult jorLayout) const
+	{
+	lassert(!isHomogenous());
+
+	outJovIndices.resize(mValueCount);
+	uint8_t* dest = &outJovIndices[0];
+
+	if (usingJudgmentTable())
+		{
+		uint8_t mapping[MAX_JUDGMENTS_TO_USE_JUDGMENT_TABLE];
+
+		for (long k = 0; k < mJudgmentLookupTableSize; k++)
+			mapping[k] = jorLayout.vals().lowerBound(mJudgmentLookupTable[k]);
+
+		uint8_t* source = (uint8_t*)mPerValueJudgments;
+
+		for (long k = 0; k < mValueCount; k++)
+			dest[k] = mapping[source[k]];
+		}
+	else
+		{
+		boost::unordered_map<RawJOV, long> lookup;
+		
+		for (long k = 0; k < jorLayout.vals().size();k++)
+			lookup[jorLayout.vals()[k]] = k;
+
+		RawJOV* source = (RawJOV*)mPerValueJudgments;
+
+		for (long k = 0; k < mValueCount; k++)
+			dest[k] = lookup[source[k]];
+		}
+	}
+
+void ForaValueArrayImpl::prepareForIncomingDataGivenJovs(const std::vector<uint8_t>& jovIndices, JudgmentOnResult jorLayout)
+	{
+	lassert(usingJudgmentTable());
+	lassert(mPerValueJudgmentsAllocated >= jovIndices.size());
+
+	lassert(mValueCount == 0);
+
+	uint8_t mapping[MAX_JUDGMENTS_TO_USE_JUDGMENT_TABLE];
+
+	for (long k = 0; k < mJudgmentLookupTableSize; k++)
+		{
+		lassert(jorLayout.vals().contains(mJudgmentLookupTable[k]));
+		mapping[jorLayout.vals().lowerBound(mJudgmentLookupTable[k])] = k;
+		}
+
+	uint8_t* dest = (uint8_t*)mPerValueJudgments;
+	uint8_t* source = (uint8_t*)&jovIndices[0];
+
+	for (long k = 0; k < jovIndices.size(); k++)
+		dest[k] = mapping[source[k]];
+
+	//now we need to fill out the offset points
+	if (usingOffsetTable())
+		{
+		lassert(mPerValueOffsetOrOffsetTableCountAllocated > mValueCount);
+
+		size_t offsets[MAX_JUDGMENTS_TO_USE_JUDGMENT_TABLE];
+		for (long k = 0; k < mJudgmentLookupTableSize; k++)
+			offsets[k] = PackedForaValues::strideFor(mJudgmentLookupTable[k]);
+
+		uint8_t* base = mDataPtr;
+		mOffsetTablePtr[0] = base;
+
+		for (long k = 0; k < jovIndices.size(); k++)
+			{
+			base += offsets[source[k]];
+			mValueCount++;
+			mOffsetTablePtr[mValueCount] = base;
+			}
+		}
+	else
+		mValueCount = jovIndices.size();
+
+	lassert(offsetFor(mValueCount) - offsetFor(0) <= bytesReserved());
+	}
+
+bool ForaValueArrayImpl::isHomogenousPodArray() const
+	{
+	return isHomogenous() && getHomogenousJOV().type() && getHomogenousJOV().type()->isPOD();
+	}
+
+bool ForaValueArrayImpl::usingJudgmentTable() const
+	{
+	return mJudgmentLookupTable != 0;
+	}
+
+uint8_t* ForaValueArrayImpl::getPerValueJudgmentIndices() const
+	{
+	lassert(mJudgmentLookupTable);
+	return (uint8_t*)mPerValueJudgments;
+	}
+
+size_t ForaValueArrayImpl::judgmentCount() const
+	{
+	lassert(mJudgmentLookupTable);
+	return mJudgmentLookupTableSize;
+	}
+
+JudgmentOnValue ForaValueArrayImpl::judgmentTableLookup(uint32_t index) const
+	{
+	lassert(mJudgmentLookupTable);
+	return mJudgmentLookupTable[index];
+	}
+
+bool ForaValueArrayImpl::isHomogenous() const
+	{
+	return mJudgmentLookupTable && mJudgmentLookupTableSize == 1;
+	}
+
+JudgmentOnValue ForaValueArrayImpl::getHomogenousJOV() const
+	{
+	lassert(isHomogenous());
+	return judgmentTableLookup(0);
+	}
+
+void ForaValueArrayImpl::validateInternalState() const
+	{
+	if (mValueCount)
+		{
+		lassert(mBytesReserved > 0);
+		lassert(mDataPtr);
+		}
+
+	if (mJudgmentLookupTable)
+		{
+		if (mJudgmentLookupTableSize == 1)
+			{
+			//this is the homogenous case
+			lassert(!mPerValueJudgments);
+			lassert(mPerValueJudgmentsAllocated == 0);
+			lassert(mPerValueOffsetOrOffsetTableCountAllocated == 
+						PackedForaValues::strideFor(mJudgmentLookupTable[0]));
+			lassert(!mOffsetTablePtr);
+			}
+		else
+			{
+			//nonhomogenous case
+			lassert(mPerValueJudgmentsAllocated >= mValueCount);
+			lassert(mPerValueJudgments);
+
+			//we may be packed or strided
+			if (!mOffsetTablePtr)
+				{
+				//every value is separated by a constant amount. Make sure that amount
+				//is large enough for all the values we're holding
+				for (long k = 0; k < mJudgmentLookupTableSize; k++)
+					lassert(PackedForaValues::strideFor(mJudgmentLookupTable[k]) 
+							<= mPerValueOffsetOrOffsetTableCountAllocated);
+
+				//ensure we have enough space for all of our values
+				lassert(mBytesReserved >= mValueCount * mPerValueOffsetOrOffsetTableCountAllocated);
+				}
+			else
+				{
+				//we have an offset table. Ensure we have enough offsets
+				lassert(mPerValueOffsetOrOffsetTableCountAllocated >= mValueCount);
+				}
+			}
+		}
+	else
+		{
+		//we are using per-value judgments
+		lassert(mPerValueJudgmentsAllocated >= mValueCount);
+		lassert(mPerValueJudgments);
+
+		if (mOffsetTablePtr)
+			{
+			//we need at least one extra value per offset
+			lassert(mPerValueOffsetOrOffsetTableCountAllocated > mValueCount);
+
+			//make sure all of the offsets are in-bounds
+			for (long k = 0; k <= mPerValueOffsetOrOffsetTableCountAllocated; k++)
+				lassert(mOffsetTablePtr[k] >= mDataPtr && mOffsetTablePtr[k] <= mDataPtr + mBytesReserved);
+			}
+		else
+			{	
+			//we are using a constant offset per value. Make sure we have enough space
+			lassert(mBytesReserved >= mValueCount * mPerValueOffsetOrOffsetTableCountAllocated);
+
+			//and make sure that the stride is big enough for all the values we're holding
+			for (long k = 0; k < mValueCount; k++)
+				lassert(PackedForaValues::strideFor(jovFor(k)) <= 
+							mPerValueOffsetOrOffsetTableCountAllocated);
+			}
+		}
+	}
+
+
+size_t ForaValueArrayImpl::size() const
+	{
+	return mValueCount;
+	}
+
+bool ForaValueArrayImpl::isWriteable() const
+	{
+	return mIsWriteable;
+	}
+
+void ForaValueArrayImpl::markUnwriteable(bool releaseUnusedMemory)
+	{
+	if (!mIsWriteable)
+		return;
+
+	if (releaseUnusedMemory)
+		{
+		//trim our allocations
+		reallocDataPtr(offsetFor(mValueCount) - offsetFor(0));
+		
+		if (usingOffsetTable())
+			resizeOffsetTable(mValueCount+1);
+
+		if (!isHomogenous())
+			resizePerValueJudgments(mValueCount);
+		}
+
+	mIsWriteable = false;
+	}
+
+void ForaValueArrayImpl::append(const ImplValContainer& inValue)
+	{
+	lassert(mIsWriteable);
+	
+	JOV jov = JOV::VectorElementJOVFromLiveValue(inValue.getReference());
+
+	append(
+		PackedForaValues(
+			jov,
+			(uint8_t*)inValue.data(),
+			1,
+			PackedForaValues::strideFor(jov)
+			)
+		);
+	}
+
+void ForaValueArrayImpl::append(const ForaValueArray& inOtherArray, bool targetArrayWillBeWriteable)
+	{
+	lassert(mIsWriteable);
+	append(inOtherArray, 0, inOtherArray.size(), targetArrayWillBeWriteable);
+	}
+
+void ForaValueArrayImpl::append(
+				const ForaValueArray& inOtherArrayBase, 
+				long lowIndex, 
+				long highIndex, 
+				bool targetArrayWillBeWriteable
+				)
+	{
+	append(
+		inOtherArrayBase, 
+		lowIndex, 
+		highIndex, 
+		[](ScatteredForaValues dest, ScatteredForaValues source) {
+			dest.elementJOV().type()->initializeScattered(
+				dest.data(),
+				(const void**)source.data(),
+				source.count(),
+				dest.nudge(),
+				source.nudge()
+				);
+			},
+		targetArrayWillBeWriteable
+		);
+	}
+
+
+void ForaValueArrayImpl::append(
+				const ForaValueArray& inOtherArrayBase, 
+				long lowIndex, 
+				long highIndex, 
+				boost::function<void (ScatteredForaValues, ScatteredForaValues)> memoryCopyOperation,
+				bool targetArrayWillBeWriteable
+				)
+	{
+	const ForaValueArrayImpl& inOtherArray(inOtherArrayBase.getImpl());
+	
+	if (lowIndex >= highIndex)
+		return;
+
+	lassert(mIsWriteable);
+
+	lassert_dump(
+		lowIndex >= 0 && lowIndex <= inOtherArray.size() && 
+		highIndex >= 0 && highIndex <= inOtherArray.size() && lowIndex <= highIndex,
+		"[" << lowIndex << ", " << highIndex << ") not in bounds in " 
+			<< "[0," << inOtherArray.size() << ")"
+		);
+	
+	if (this == &inOtherArray)
+		{
+		ForaValueArrayImpl array(mOwningMemoryPool);
+		array.append(inOtherArray, lowIndex, highIndex);
+		append(array, 0, highIndex - lowIndex, memoryCopyOperation, targetArrayWillBeWriteable);
+		return;
+		}
+
+	if (!inOtherArray.size())
+		return;
+
+	if (inOtherArray.isHomogenousPodArray())
+		{
+		appendHomogenousPodArray(
+			inOtherArray, 
+			lowIndex, 
+			highIndex, 
+			targetArrayWillBeWriteable
+			);
+
+		return;
+		}
+
+	//we are appending another array. We have to maintain each of the three
+	//major fields: data, offsets, and judgments. Data and offsets are somewhat
+	//coupled to each other, but offsets can be done separately
+	appendJudgmentsFromArray(inOtherArray, lowIndex, highIndex);
+
+	appendValuesFromArray(
+		inOtherArray, 
+		lowIndex, 
+		highIndex,
+		memoryCopyOperation
+		);
+	}
+
+void ForaValueArrayImpl::appendJudgmentsFromArray(const ForaValueArrayImpl& inOtherArray, long lowIndex, long highIndex)
+	{
+	lassert(lowIndex >= 0 && highIndex <= inOtherArray.size());
+
+	if (usingJudgmentTable() || isHomogenous())
+		{
+		//we need to see if we can continue to use the judgment table
+		JudgmentOnResult otherJOR = inOtherArray.currentJor();
+
+		JudgmentOnResult newJOR = otherJOR + currentJor();
+
+		if (newJOR.size() > MAX_JUDGMENTS_TO_USE_JUDGMENT_TABLE)
+			upgradeToFullJovPerValue(mValueCount + highIndex - lowIndex);
+		else
+			prepareJudgmentTable(
+				newJOR, 
+				std::max<long>(
+					mValueCount + highIndex - lowIndex,
+					usingJudgmentTable() ? mPerValueJudgmentsAllocated : 0
+					)
+				);
+		}
+	else
+		{
+		if (mPerValueJudgmentsAllocated < mValueCount + highIndex - lowIndex)
+			resizePerValueJudgments(mValueCount + highIndex - lowIndex);
+		}
+
+	if (isHomogenous())
+		return;
+
+	lassert_dump(
+		mPerValueJudgmentsAllocated >= mValueCount + highIndex - lowIndex,
+		"Expected " << mValueCount << " + " << highIndex - lowIndex << " but had "
+			<< mPerValueJudgmentsAllocated
+		);
+	
+	if (usingJudgmentTable())
+		{
+		if (inOtherArray.isHomogenous())
+			copyJudgments(
+				JudgmentTableReceiverByMap(
+					(uint8_t*)mPerValueJudgments + mValueCount,
+					&mJovToJudgmentTableSlot
+					),
+				ConstJudgmentGetter(inOtherArray.getHomogenousJOV()),
+				highIndex - lowIndex
+				);
+			else
+		if (inOtherArray.usingJudgmentTable())
+			copyJudgments(
+				JudgmentTableReceiverByMap(
+					(uint8_t*)mPerValueJudgments + mValueCount,
+					&mJovToJudgmentTableSlot
+					),
+				JudgmentTableGetter(
+					(uint8_t*)inOtherArray.mPerValueJudgments + lowIndex,
+					(RawJOV*)inOtherArray.mJudgmentLookupTable
+					),
+				highIndex - lowIndex
+				);
+		else
+			copyJudgments(
+				JudgmentTableReceiverByMap(
+					(uint8_t*)mPerValueJudgments + mValueCount,
+					&mJovToJudgmentTableSlot
+					),
+				JudgmentArrayGetter(
+					(RawJOV*)inOtherArray.mPerValueJudgments + lowIndex
+					),
+				highIndex - lowIndex
+				);
+		}
+	else
+		{
+		if (inOtherArray.isHomogenous())
+			copyJudgments(
+				JudgmentArrayReceiver(
+					(RawJOV*)mPerValueJudgments + mValueCount
+					),
+				ConstJudgmentGetter(inOtherArray.getHomogenousJOV()),
+				highIndex - lowIndex
+				);
+			else
+		if (inOtherArray.usingJudgmentTable())
+			copyJudgments(
+				JudgmentArrayReceiver(
+					(RawJOV*)mPerValueJudgments + mValueCount
+					),
+				JudgmentTableGetter(
+					(uint8_t*)inOtherArray.mPerValueJudgments + lowIndex,
+					(RawJOV*)inOtherArray.mJudgmentLookupTable
+					),
+				highIndex - lowIndex
+				);
+		else
+			copyJudgments(
+				JudgmentArrayReceiver(
+					(RawJOV*)mPerValueJudgments + mValueCount
+					),
+				JudgmentArrayGetter(
+					(RawJOV*)inOtherArray.mPerValueJudgments + lowIndex
+					),
+				highIndex - lowIndex
+				);
+		}
+	}
+
+void ForaValueArrayImpl::appendValuesFromArray(
+				const ForaValueArrayImpl& inOtherArray, 
+				long lowIndex, 
+				long highIndex,
+				boost::function<void (ScatteredForaValues, ScatteredForaValues)> 
+					memoryCopyOperation
+				)
+	{
+	JudgmentOnResult targetJOR = 
+		currentJor() + 
+		inOtherArray.getSpaceRequirements(lowIndex, highIndex).jor()
+		;
+
+	Nullable<size_t> newStride = 
+		ForaValueArraySpaceRequirements::strideIfShouldBeEvenlySpaced(targetJOR);
+
+	//if either array is using an offset table, the resulting array will use an offset table
+	if (!newStride)
+		upgradeToPerValueOffsets(mValueCount + highIndex - lowIndex);
+	
+	if (!usingOffsetTable())
+		{
+		//first, calculate how many bytes we'll need in the new homogenous array
+		size_t newMinBytes = *newStride * (mValueCount + highIndex - lowIndex);
+
+		if (mBytesReserved < newMinBytes || mBytesReserved == 0)
+			reserveBytes(newMinBytes);
+
+		expandHomogenousStride(*newStride);
+
+		mValueCount += highIndex - lowIndex;
+		}
+	else
+		{
+		if (mPerValueOffsetOrOffsetTableCountAllocated < mValueCount + highIndex - lowIndex + 1)
+			resizeOffsetTable(mValueCount + highIndex - lowIndex + 1);
+
+		uint8_t* curOffset = offsetFor(mValueCount);
+
+		if (usingJudgmentTable())
+			{
+			size_t sizeTable[MAX_JUDGMENTS_TO_USE_JUDGMENT_TABLE];
+			for (long k = 0; k < mJudgmentLookupTableSize; k++)
+				sizeTable[k] = PackedForaValues::strideFor(mJudgmentLookupTable[k]);
+
+			for (long k = 0; k < highIndex - lowIndex; k++)
+				{
+				curOffset += sizeTable[((uint8_t*)mPerValueJudgments)[mValueCount]];
+				mValueCount++;
+				mOffsetTablePtr[mValueCount] = curOffset;
+				}
+			}
+		else
+			{
+			JOV* jovs = (JOV*)mPerValueJudgments;
+			for (long k = 0; k < highIndex - lowIndex; k++)
+				{
+				curOffset += PackedForaValues::strideFor(jovs[mValueCount]);
+				mValueCount++;
+				mOffsetTablePtr[mValueCount] = curOffset;
+				}
+			}
+
+		size_t newMinBytes = curOffset - mDataPtr;
+		if (mBytesReserved < newMinBytes || mBytesReserved == 0)
+			reserveBytes(newMinBytes);
+		}
+
+	visitScatteredValues(
+		mValueCount - (highIndex - lowIndex),
+		mValueCount,
+		lowIndex,
+		inOtherArray,
+		memoryCopyOperation
+		);
+	}
+
+class SingleScatteredValueVisitor {
+private:
+	long mOffset;
+	long mCount;
+	boost::function<void (ScatteredForaValues)> mVisitor;
+
+public:
+	SingleScatteredValueVisitor(
+				long offset,
+				long count,
+				boost::function<void (ScatteredForaValues)> visitor
+				) :
+			mOffset(offset),
+			mCount(count),
+			mVisitor(visitor)
+		{
+
+		}
+
+	template<class OffsetGetter1, class JudgmentGetter1>
+	void operator()(
+			const OffsetGetter1& offset1, 
+			const JudgmentGetter1& jov1
+			) const
+		{
+		const static int kBufferSize = 1024;
+		const static int kBuffers = 16;
+
+		void* buffer[kBuffers][kBufferSize];
+
+		long bufferCounts[kBuffers];
+		MemoizedAlternativePointer<JOV> bufferJovs[kBuffers];
+
+		for (long k = 0; k < kBuffers; k++)
+			bufferCounts[k] = 0;
+
+		long curOffset = mOffset;
+
+		long slotToFlush = 0;
+
+		while (curOffset < mOffset + mCount)
+			{
+			MemoizedAlternativePointer<JOV> curJOV = jov1.get(curOffset);
+
+			long slot = -1;
+			for (long k = 0; k < kBuffers && slot == -1; k++)
+				if (bufferCounts[k] == 0 || bufferJovs[k] == curJOV)
+					slot = k;
+
+			if (slot == -1)
+				{
+				slot = slotToFlush;
+				slotToFlush = (slotToFlush + 1) % kBuffers;
+
+				if (bufferCounts[slot])
+					mVisitor(
+						ScatteredForaValues(
+							*bufferJovs[slot],
+							buffer[slot],
+							bufferCounts[slot],
+							0
+							)
+						);
+
+				bufferCounts[slot] = 0;
+				}
+
+			long& count = bufferCounts[slot];
+
+			bufferJovs[slot] = curJOV;
+			buffer[slot][count] = offset1.get(curOffset);
+			
+			count++;
+
+			if (count >= kBufferSize)
+				{
+				mVisitor(
+					ScatteredForaValues(
+						*bufferJovs[slot],
+						buffer[slot],
+						bufferCounts[slot],
+						0
+						)
+					);
+
+				count = 0;
+				}
+
+			curOffset++;
+			}
+
+		for (long slot = 0; slot < kBuffers; slot++)
+			if (bufferCounts[slot])
+				mVisitor(
+					ScatteredForaValues(
+						*bufferJovs[slot],
+						buffer[slot],
+						bufferCounts[slot],
+						0
+						)
+					);
+		}
+};
+
+void ForaValueArrayImpl::visitScatteredValues(
+				long indexLow,
+				long indexHigh,
+				boost::function<void (ScatteredForaValues)> visitor
+				)
+	{
+	if (indexLow >= indexHigh)
+		return;
+
+	lassert(indexLow >= 0 && indexHigh <= mValueCount);
+	
+	SingleScatteredValueVisitor valueVisitor(indexLow, indexHigh - indexLow, visitor);
+
+	callbackVisitorWithJovAndOffsetAccessors(valueVisitor, *this);
+	}
+
+
+
+class DualScatteredValueVisitor {
+private:
+	long mOffsetLeft;
+	long mOffsetRight;
+	long mCount;
+	boost::function<void (ScatteredForaValues, ScatteredForaValues)> mVisitor;
+
+public:
+	DualScatteredValueVisitor(
+				long offsetLeft, 
+				long offsetRight, 
+				long count, 
+				boost::function<void (ScatteredForaValues, ScatteredForaValues)> visitor
+				) :
+			mOffsetLeft(offsetLeft),
+			mOffsetRight(offsetRight),
+			mCount(count),
+			mVisitor(visitor)
+		{
+
+		}
+
+	template<class OffsetGetter1, class JudgmentGetter1, class OffsetGetter2, class JudgmentGetter2>
+	void operator()(
+			const OffsetGetter1& offset1, 
+			const JudgmentGetter1& jov1, 
+			const OffsetGetter2& offset2, 
+			const JudgmentGetter2& jov2
+			) const
+		{
+		const static int kBufferSize = 1024;
+		const static int kBuffers = 16;
+
+		void* buffer[kBuffers][kBufferSize];
+		void* buffer2[kBuffers][kBufferSize];
+
+		long bufferCounts[kBuffers];
+		MemoizedAlternativePointer<JOV> bufferJovs[kBuffers];
+
+		for (long k = 0; k < kBuffers; k++)
+			bufferCounts[k] = 0;
+
+		long curOffset = mOffsetLeft;
+
+		long slotToFlush = 0;
+
+		while (curOffset < mOffsetLeft + mCount)
+			{
+			MemoizedAlternativePointer<JOV> curJOV = jov1.get(curOffset);
+
+			long slot = -1;
+			for (long k = 0; k < kBuffers && slot == -1; k++)
+				if (bufferCounts[k] == 0 || bufferJovs[k] == curJOV)
+					slot = k;
+
+			if (slot == -1)
+				{
+				slot = slotToFlush;
+				slotToFlush = (slotToFlush + 1) % kBuffers;
+
+				if (bufferCounts[slot])
+					mVisitor(
+						ScatteredForaValues(
+							*bufferJovs[slot],
+							buffer[slot],
+							bufferCounts[slot],
+							0
+							),
+						ScatteredForaValues(
+							*bufferJovs[slot],
+							buffer2[slot],
+							bufferCounts[slot],
+							0
+							)
+						);
+
+				bufferCounts[slot] = 0;
+				}
+
+			long& count = bufferCounts[slot];
+
+			bufferJovs[slot] = curJOV;
+			buffer[slot][count] = offset1.get(curOffset);
+			buffer2[slot][count] = offset2.get(curOffset - mOffsetLeft + mOffsetRight);
+
+			count++;
+
+			if (count >= kBufferSize)
+				{
+				mVisitor(
+					ScatteredForaValues(
+						*bufferJovs[slot],
+						buffer[slot],
+						bufferCounts[slot],
+						0
+						),
+					ScatteredForaValues(
+						*bufferJovs[slot],
+						buffer2[slot],
+						bufferCounts[slot],
+						0
+						)
+					);
+
+				count = 0;
+				}
+
+			curOffset++;
+			}
+
+		for (long slot = 0; slot < kBuffers; slot++)
+			if (bufferCounts[slot])
+				mVisitor(
+					ScatteredForaValues(
+						*bufferJovs[slot],
+						buffer[slot],
+						bufferCounts[slot],
+						0
+						),
+					ScatteredForaValues(
+						*bufferJovs[slot],
+						buffer2[slot],
+						bufferCounts[slot],
+						0
+						)
+					);
+		}
+};
+
+void ForaValueArrayImpl::visitScatteredValues(
+				long indexLow,
+				long indexHigh,
+				long indexLowInOther,
+				const ForaValueArrayImpl& array2,
+				boost::function<void (ScatteredForaValues, ScatteredForaValues)> visitor
+				)
+	{
+	if (indexLow >= indexHigh)
+		return;
+
+	lassert(indexLow >= 0 && indexHigh <= mValueCount);
+	lassert(indexLowInOther >= 0 && indexLowInOther + (indexHigh - indexLow) <= array2.mValueCount);
+	
+	DualScatteredValueVisitor valueVisitor(indexLow, indexLowInOther, indexHigh - indexLow, visitor);
+
+	callbackVisitorWithJovAndOffsetAccessors(valueVisitor, *this, (ForaValueArrayImpl&)array2);
+	}
+
+namespace{
+
+//if we have values packed as 'T', spread them out so
+//that they're packed with separation of 'newStride'.
+//this is just a direct memory copy
+template<class T>
+void expandStride(uint8_t* ptr, long valueCount, size_t newStride)
+	{
+	T* target = (T*)ptr;
+
+	for (long curValue = valueCount - 1; curValue >= 0; curValue--)
+		((T*)(ptr + curValue * newStride))[0] = target[curValue];
+	}
+
+template<class T>
+void copyStridedWhereSourceIsT(
+			uint8_t* target, 
+			size_t targetStride, 
+			uint8_t* source,
+			long valueCount
+			)
+	{
+	T* sourceAsT = (T*)source;
+
+	for (long k = 0; k < valueCount; k++)
+		((T*)(target + k * targetStride))[0] = sourceAsT[k];
+	}
+
+}
+
+void ForaValueArrayImpl::expandHomogenousStride(size_t newStride)
+	{
+	lassert(mValueCount * newStride <= mBytesReserved);
+	lassert_dump(newStride >= homogenousStride(), newStride << " vs " << homogenousStride());
+
+	size_t curStride = homogenousStride();
+
+	if (newStride == curStride)
+		return;
+
+	if (curStride == sizeof(uint8_t))
+		expandStride<uint8_t>(mDataPtr, mValueCount, newStride);
+		else
+	if (curStride == sizeof(uint16_t))
+		expandStride<uint16_t>(mDataPtr, mValueCount, newStride);
+		else
+	if (curStride == sizeof(uint32_t))
+		expandStride<uint32_t>(mDataPtr, mValueCount, newStride);
+		else
+	if (curStride == sizeof(uint64_t))
+		expandStride<uint64_t>(mDataPtr, mValueCount, newStride);
+	else
+		{
+		for (long curValue = mValueCount - 1; curValue >= 0; curValue--)
+			memmove(mDataPtr + curValue * newStride, mDataPtr + curValue * curStride, curStride);
+		}
+
+	mPerValueOffsetOrOffsetTableCountAllocated = newStride;
+	}
+
+void ForaValueArrayImpl::copyStridedForeignValuesDirectly(
+				uint8_t* targetMemory,
+				size_t targetStride,
+				uint8_t* sourceMemory,
+				size_t sourceStride,
+				long count
+				)
+	{
+	lassert(targetStride >= sourceStride);
+
+	if (sourceStride == sizeof(uint8_t))
+		copyStridedWhereSourceIsT<uint8_t>(targetMemory, targetStride, sourceMemory, count);
+		else
+	if (sourceStride == sizeof(uint16_t))
+		copyStridedWhereSourceIsT<uint16_t>(targetMemory, targetStride, sourceMemory, count);
+		else
+	if (sourceStride == sizeof(uint32_t))
+		copyStridedWhereSourceIsT<uint32_t>(targetMemory, targetStride, sourceMemory, count);
+		else
+	if (sourceStride == sizeof(uint64_t))
+		copyStridedWhereSourceIsT<uint64_t>(targetMemory, targetStride, sourceMemory, count);
+	else
+		{	
+		for (long k = 0; k < count; k++)
+			memcpy(targetMemory + targetStride * k, sourceMemory + sourceStride * k, sourceStride);
+		}
+	}
+
+void ForaValueArrayImpl::appendHomogenousPodArray(
+				const ForaValueArray& inOtherArrayBase, 
+				long lowIndex, 
+				long highIndex, 
+				bool targetArrayWillBeWriteable
+				)
+	{
+	const ForaValueArrayImpl& inOtherArray = inOtherArrayBase.getImpl(); 
+	
+	//try to append the array by just copying its data over. This can be much faster
+	//in the POD case because we only move a handle, we don't actually have to copy bytes
+	if (mValueCount == 0 && mDataPtr == 0 
+			&& !inOtherArray.isWriteable()
+			&& inOtherArray.isHomogenousPodArray()
+			&& lowIndex == 0 && highIndex == inOtherArray.size()
+			&& !targetArrayWillBeWriteable
+			)
+		{
+		//we can just move the memory over directly
+		lassert(!inOtherArray.usingOffsetTable());
+
+		Fora::ShareableMemoryBlockHandle handle;
+		handle = inOtherArray.getOwningMemoryPool()->convertPointerToShareableMemoryBlock(
+			inOtherArray.offsetFor(0),
+			inOtherArray.bytesReserved()
+			);
+
+		if (!handle.isEmpty())
+			{
+			//we can import this handle directly - no need to actually copy the memory.
+			initializeForJudgment(inOtherArray.getHomogenousJOV());
+
+			uint8_t* newDataPtr = mOwningMemoryPool->importShareableMemoryBlock(handle);
+
+			mDataPtr = newDataPtr;
+			mValueCount = inOtherArray.size();
+			mBytesReserved = inOtherArray.bytesReserved();
+			mIsWriteable = false;
+
+			return;
+			}
+		}
+
+	append(
+		inOtherArray.getHomogenousJOV(), 
+		inOtherArray.offsetFor(lowIndex),
+		highIndex - lowIndex,
+		inOtherArray.homogenousStride()
+		);
+	}
+
+PackedForaValues ForaValueArrayImpl::appendUninitialized(JudgmentOnValue inJudgment, uint32_t inCount)
+	{
+	lassert(mIsWriteable);
+
+	lassert(inJudgment.isValidVectorElementJOV());
+
+	if (size() == 0)
+		initializeForJudgment(inJudgment);
+
+	if (isHomogenous() && getHomogenousJOV() == inJudgment)
+		return appendUninitializedHomogenously(inJudgment, inCount);
+	
+	int judgmentSlot = -1;
+	if (usingJudgmentTable())
+		{
+		auto it = mJovToJudgmentTableSlot.find(inJudgment);
+		if (it != mJovToJudgmentTableSlot.end())
+			judgmentSlot = it->second;
+
+		if (judgmentSlot == -1)
+			upgradeToFullJovPerValue();
+		}
+	else
+		upgradeToFullJovPerValue();
+
+	size_t stride = PackedForaValues::strideFor(inJudgment);
+
+	if (!usingOffsetTable() && stride > homogenousStride())
+		upgradeToPerValueOffsets();
+
+	//ensure we have space to write into
+	if (usingOffsetTable())
+		ensureSpaceForValues(inCount * stride, inCount);
+	else
+		ensureSpaceForValues(inCount * homogenousStride(), inCount);
+
+	uint32_t curOffset = offsetFor(mValueCount) - mDataPtr;
+
+	if (usingJudgmentTable())
+		{
+		for (long k = 0; k < inCount; k++)
+			((uint8_t*)mPerValueJudgments)[k + mValueCount] = judgmentSlot;
+		}
+	else
+		{
+		for (long k = 0; k < inCount; k++)
+			((JudgmentOnValue*)mPerValueJudgments)[k + mValueCount] = inJudgment;
+		}
+
+	if (usingOffsetTable())
+		{
+		for (long k = 0; k < inCount; k++)
+			mOffsetTablePtr[k + mValueCount + 1] = mDataPtr + curOffset + stride * (k+1);
+		
+		lassert_dump(
+			curOffset + inCount * stride <= mBytesReserved,
+			"curOffset: " << curOffset << ". " << 
+			"inCount: " << inCount << ". " << 
+			"stride: " << stride << ". " << 
+			"mBytesReserved: " << mBytesReserved << ". "
+			"mOffsetTablePtr[0]: " << (void*)mOffsetTablePtr[0] << ". "
+			"mDataPtr: " << (void*)mDataPtr << ". "
+			);
+
+		mValueCount += inCount;
+		
+		return PackedForaValues(inJudgment, mDataPtr + curOffset, inCount, stride);
+		}
+	else
+		{
+		lassert(curOffset + inCount * homogenousStride() <= mBytesReserved);
+
+		mValueCount += inCount;
+
+		return PackedForaValues(inJudgment, mDataPtr + curOffset, inCount, homogenousStride());
+		}
+	}
+
+void ForaValueArrayImpl::append(
+					const JudgmentOnValue& inJudgment, 
+					uint8_t* data, 
+					uint32_t inCount, 
+					uint32_t inStride
+					)
+	{
+	append(PackedForaValues(inJudgment, data, inCount, inStride));
+	}
+
+void ForaValueArrayImpl::append(PackedForaValues valuesToAppend)
+	{
+	lassert(mIsWriteable);
+
+	PackedForaValues values = appendUninitialized(
+		valuesToAppend.elementJOV(), 
+		valuesToAppend.count()
+		);
+
+	values.initialize(valuesToAppend);
+	}
+
+void ForaValueArrayImpl::ensureSpaceForValues(size_t inBytesOfData, size_t inElementCount)
+	{
+	lassert(mIsWriteable);
+
+	if (usingOffsetTable() && offsetTableSize() <= mValueCount + inElementCount)
+		{
+		resizeOffsetTable(
+			std::max<size_t>(
+				mValueCount + inElementCount + 8, 
+				offsetTableSize() * GROWTH_RATE
+				)
+			);
+		}
+
+	if (!isHomogenous() && mPerValueJudgmentsAllocated < mValueCount + inElementCount)
+		{
+		resizePerValueJudgments(
+			std::max<size_t>(
+				mValueCount + inElementCount + 8, 
+				mPerValueJudgmentsAllocated * GROWTH_RATE
+				)
+			);
+		}
+
+	if (bytesUsed() + inBytesOfData > mBytesReserved)
+		{
+		size_t newMinBytesReserved = 
+			std::max<size_t>(bytesUsed() + inBytesOfData, mBytesReserved * GROWTH_RATE);
+
+		reallocDataPtr(newMinBytesReserved);
+		}
+
+	if (mDataPtr == 0)
+		reallocDataPtr(8);
+	}
+
+
+size_t ForaValueArrayImpl::bytesUsed() const
+	{
+	if (mValueCount == 0)
+		return 0;
+
+	if (usingOffsetTable())
+		return mOffsetTablePtr[mValueCount] - mDataPtr;
+
+	return mValueCount * homogenousStride();
+	}
+
+size_t ForaValueArrayImpl::bytesReserved() const
+	{
+	return mBytesReserved;
+	}
+
+uint32_t ForaValueArrayImpl::offsetTableSize() const
+	{
+	lassert(usingOffsetTable());
+
+	return mPerValueOffsetOrOffsetTableCountAllocated;
+	}
+
+void ForaValueArrayImpl::resizeOffsetTable(uint32_t inNewSize)
+	{
+	mOffsetTablePtr = 
+		(uint8_t**)mOwningMemoryPool->realloc(
+			(uint8_t*)mOffsetTablePtr, 
+			sizeof(uint8_t*) * (inNewSize + 1)
+			);
+
+	lassert(mOffsetTablePtr);
+
+	mPerValueOffsetOrOffsetTableCountAllocated = inNewSize;
+	}
+
+void ForaValueArrayImpl::resizePerValueJudgments(uint32_t inNewSize)
+	{
+	mPerValueJudgments = 
+		mOwningMemoryPool->realloc(
+			(uint8_t*)mPerValueJudgments, 
+			(usingJudgmentTable() ? sizeof(uint8_t) : sizeof(JudgmentOnValue)) * inNewSize
+			);
+
+	lassert(mPerValueJudgments || inNewSize == 0);
+
+	mPerValueJudgmentsAllocated = inNewSize;
+	}
+	
+void ForaValueArrayImpl::upgradeToPerValueOffsets(int64_t valueCount)
+	{
+	lassert(mIsWriteable);
+
+	lassert(valueCount > 0);
+	lassert(valueCount >= mValueCount);
+
+	if (usingOffsetTable())
+		{
+		if (offsetTableSize() < valueCount)
+			resizeOffsetTable(valueCount);
+		return;
+		}
+
+	uint8_t** offsets = (uint8_t**)mOwningMemoryPool->allocate(sizeof(uint8_t*) * (valueCount+1));
+
+	lassert(offsets);
+
+	size_t stride = homogenousStride();
+
+	for (long k = 0; k <= mValueCount; k++)
+		offsets[k] = mDataPtr + k * stride;
+
+	mOffsetTablePtr = offsets;
+
+	mPerValueOffsetOrOffsetTableCountAllocated = valueCount + 1;
+	}
+	
+void ForaValueArrayImpl::upgradeToPerValueOffsets()
+	{
+	lassert(mIsWriteable);
+
+	if (!mValueCount)
+		return;
+
+	upgradeToPerValueOffsets(mValueCount);
+	}
+
+void ForaValueArrayImpl::upgradeToFullJovPerValue()
+	{
+	lassert(mIsWriteable);
+	
+	if (!mValueCount)
+		return;
+
+	upgradeToFullJovPerValue(mValueCount);
+	}
+
+void ForaValueArrayImpl::upgradeToFullJovPerValue(int64_t values)
+	{
+	lassert(values >= mValueCount);
+	lassert(values > 0);
+
+	if (isHomogenous())
+		{
+		JudgmentOnValue homogenousJOV = getHomogenousJOV();
+
+		//by default we'll use an unpacked array
+		mPerValueJudgments = mOwningMemoryPool->allocate(sizeof(JOV) * values);
+
+		lassert(mPerValueJudgments || values == 0);
+
+		JudgmentOnValue* jovPtr = (JudgmentOnValue*)mPerValueJudgments;
+
+		for (long k = 0; k < mValueCount; k++)
+			jovPtr[k] = homogenousJOV;
+		
+		mOwningMemoryPool->free((uint8_t*)mJudgmentLookupTable);
+		mJudgmentLookupTable = 0;
+		mJudgmentLookupTableSize = 0;
+
+		mPerValueJudgmentsAllocated = values;
+		}
+		else
+	if (usingJudgmentTable())
+		{
+		JudgmentOnValue* jovPtr = 
+			(JudgmentOnValue*)mOwningMemoryPool->allocate(sizeof(JOV) * values);
+
+		lassert(jovPtr || values == 0);
+
+		for (long k = 0; k < values; k++)
+			jovPtr[k] = jovFor(k);
+
+		mOwningMemoryPool->free((uint8_t*)mJudgmentLookupTable);
+
+		mJudgmentLookupTable = 0;
+		mJudgmentLookupTableSize = 0;
+
+		if (mPerValueJudgments)
+			mOwningMemoryPool->free((uint8_t*)mPerValueJudgments);
+
+		mPerValueJudgments = jovPtr;
+
+		mPerValueJudgmentsAllocated = values;
+		}
+	else
+		resizePerValueJudgments(values);
+	}
+
+PackedForaValues ForaValueArrayImpl::appendUninitializedHomogenously(JudgmentOnValue elementJOV, uint32_t inCount)
+	{
+	lassert(mIsWriteable);
+	
+	size_t newMinBytesReserved = 
+		std::max<size_t>(
+			(mValueCount + inCount) * mPerValueOffsetOrOffsetTableCountAllocated,
+			DEFAULT_COUNT_TO_ALLOCATE_FOR
+			);
+
+	if (newMinBytesReserved > mBytesReserved)
+		{
+		newMinBytesReserved = std::max<size_t>(newMinBytesReserved, mBytesReserved * GROWTH_RATE);
+
+		reallocDataPtr(newMinBytesReserved);
+
+		lassert(mDataPtr);
+		}
+
+	PackedForaValues tr(
+		elementJOV,
+		offsetFor(mValueCount),
+		inCount,
+		mPerValueOffsetOrOffsetTableCountAllocated
+		);
+
+	mValueCount += inCount;
+
+	return tr;
+	}
+
+void ForaValueArrayImpl::initializeForJudgment(const JudgmentOnValue& inJudgment)
+	{
+	if (mJudgmentLookupTable || mPerValueJudgments)
+		//we've already been initialized
+		return;
+
+	mPerValueOffsetOrOffsetTableCountAllocated = PackedForaValues::strideFor(inJudgment);
+	
+	lassert_dump(
+		mValueCount == 0 && mOffsetTablePtr == 0 && mPerValueJudgments == 0,
+		"values: " << mValueCount
+			<< ". mPerValueOffsetOrOffsetTableCountAllocated=" 
+			<< mPerValueOffsetOrOffsetTableCountAllocated
+			<< ". mOTP = " << (void*)mOffsetTablePtr
+			<< ". mPVJ = " << (void*)mPerValueJudgments
+			<< ". mPVJA = " << mPerValueJudgmentsAllocated
+			<< ". mJLTSize = " << mJudgmentLookupTableSize
+			<< ". mBytesReserved = " << mBytesReserved
+		);
+
+	mJudgmentLookupTable = (JudgmentOnValue*)mOwningMemoryPool->allocate(sizeof(JudgmentOnValue));
+
+	lassert(mJudgmentLookupTable);
+
+	new (mJudgmentLookupTable) JudgmentOnValue(inJudgment);
+	
+	mJudgmentLookupTableSize = 1;
+	}
+
+
+void ForaValueArrayImpl::reserveBytes(size_t newMinBytesReserved)
+	{
+	if (newMinBytesReserved < 8)
+		newMinBytesReserved = 8;
+	
+	lassert(mIsWriteable);
+	
+	if (newMinBytesReserved > mBytesReserved)
+		reallocDataPtr(newMinBytesReserved);
+	}
+
+void ForaValueArrayImpl::reallocDataPtr(size_t newMinBytesReserved)
+	{
+	lassert(mIsWriteable);
+	
+	if (newMinBytesReserved < 8)
+		newMinBytesReserved = 8;
+
+	lassert_dump(newMinBytesReserved < 10e10,
+		mBytesReserved << ". "
+		);
+
+	uint8_t* data = (uint8_t*)mOwningMemoryPool->realloc(mDataPtr, newMinBytesReserved);
+
+	lassert(data || newMinBytesReserved == 0);
+
+	if (mOffsetTablePtr)
+		{
+		for (long k = 0; k < mValueCount + 1; k++)
+			mOffsetTablePtr[k] = mOffsetTablePtr[k] - mDataPtr + data;
+		}
+
+	mDataPtr = data;
+
+	mBytesReserved = newMinBytesReserved;
+	}
+
+ImplValContainer ForaValueArrayImpl::operator[](uint32_t index) const
+	{
+	lassert(index >= 0 && index < mValueCount);
+
+	JudgmentOnValue jov = jovFor(index);
+	
+	return ImplValContainer(ImplVal(*jovFor(index).type(), offsetFor(index)));
+	}
+
+uint32_t ForaValueArrayImpl::homogenousStride() const
+	{
+	return mPerValueOffsetOrOffsetTableCountAllocated;
+	}
+
+bool ForaValueArrayImpl::usingOffsetTable() const
+	{
+	return mOffsetTablePtr != 0;
+	}
+
+uint8_t* ForaValueArrayImpl::offsetPlusStrideFor(uint32_t index) const
+	{
+	return offsetFor(index) + PackedForaValues::strideFor(jovFor(index));
+	}
+
+uint8_t* ForaValueArrayImpl::offsetFor(uint32_t index) const
+	{
+	if (usingOffsetTable())
+		return mOffsetTablePtr[index];
+
+	return mDataPtr + mPerValueOffsetOrOffsetTableCountAllocated * index;
+	}
+
+JudgmentOnValue ForaValueArrayImpl::jovFor(uint32_t index) const
+	{
+	if (isHomogenous())
+		return getHomogenousJOV();
+
+	if (usingJudgmentTable())
+		return judgmentTableLookup(((uint8_t*)mPerValueJudgments)[index]);
+
+	return ((JudgmentOnValue*)mPerValueJudgments)[index];
+	}
+
+MemoryPool* ForaValueArrayImpl::getOwningMemoryPool() const
+	{
+	return mOwningMemoryPool;
+	}
+
+bool jovIsPod(JOV jov)
+	{
+	return jov.type() && jov.type()->isPOD();
+	}
+
+bool ForaValueArrayImpl::allValuesArePOD() const
+	{
+	if (isHomogenous())
+		return jovIsPod(getHomogenousJOV());
+
+	if (usingJudgmentTable())
+		{
+		for (long k = 0; k < mJudgmentLookupTableSize; k++)
+			if (!jovIsPod(judgmentTableLookup(k)))
+				return false;
+			
+		return true;
+		}
+
+	JudgmentOnResult jor = currentJor();
+
+	for (long k = 0; k < jor.size(); k++)
+		if (!jovIsPod(jor[k]))
+			return false;
+
+	return true;
+	}
+
+JudgmentOnResult ForaValueArrayImpl::currentJor() const
+	{
+	boost::mutex::scoped_lock lock(mCurrentJorMutex);
+
+	if (!mCurrentJOR)
+		mCurrentJOR = new JudgmentOnResult();
+
+	if (mCurrentJORIncludesValuesTo == mValueCount)
+		return *mCurrentJOR;
+
+	if (isHomogenousPodArray())
+		{
+		*mCurrentJOR = JudgmentOnResult(getHomogenousJOV());
+		mCurrentJORIncludesValuesTo = mValueCount;
+		}
+
+	boost::unordered_set<MemoizedAlternativePointer<JOV> > newJOVs;
+
+	if (usingJudgmentTable())
+		{
+		for (long k = 0; k < mJudgmentLookupTableSize; k++)
+			newJOVs.insert(judgmentTableLookup(k));
+			
+		mCurrentJORIncludesValuesTo = mValueCount;
+		}
+	else
+		{
+		JOV* jovPtr = (JOV*)mPerValueJudgments;
+
+		while (mCurrentJORIncludesValuesTo < mValueCount)
+			{
+			MemoizedAlternativePointer<JOV> jov = jovPtr[mCurrentJORIncludesValuesTo];
+
+			bool isNew = true;
+
+			if (mCurrentJORIncludesValuesTo > 0 && 
+					MemoizedAlternativePointer<JOV>(jovPtr[mCurrentJORIncludesValuesTo-1]) == jov)
+				isNew = false;
+
+			if (mCurrentJORIncludesValuesTo > 1 && 
+					MemoizedAlternativePointer<JOV>(jovPtr[mCurrentJORIncludesValuesTo-2]) == jov)
+				isNew = false;
+
+			if (mCurrentJORIncludesValuesTo > 2 && 
+					MemoizedAlternativePointer<JOV>(jovPtr[mCurrentJORIncludesValuesTo-3]) == jov)
+				isNew = false;
+
+			if (isNew)
+				newJOVs.insert(jov);
+
+			mCurrentJORIncludesValuesTo++;
+			}
+		}
+
+	for (auto j: newJOVs)
+		*mCurrentJOR = *mCurrentJOR + JudgmentOnResult(*j);
+
+	return *mCurrentJOR;
+	}
+
+void ForaValueArrayImpl::prepareJudgmentTable(JudgmentOnResult jor, size_t valuesToAllocate)
+	{
+	lassert(mIsWriteable);
+
+	lassert(jor.size() >= 1);
+
+	if (!mCurrentJOR)
+		mCurrentJOR = new JudgmentOnResult();
+
+	mCurrentJORIncludesValuesTo = valuesToAllocate;
+	*mCurrentJOR = jor;
+
+	if (mValueCount == 0 && !mPerValueJudgmentsAllocated && jor.size() == 1)
+		{
+		mJudgmentLookupTable = 
+			(JudgmentOnValue*)mOwningMemoryPool->realloc(
+				(uint8_t*)mJudgmentLookupTable,
+				sizeof(JudgmentOnValue)
+				);
+		mJudgmentLookupTableSize = 1;
+		mJudgmentLookupTable[0] = jor.vals()[0];
+		mJovToJudgmentTableSlot[jor.vals()[0]] = 0;
+		mPerValueOffsetOrOffsetTableCountAllocated = PackedForaValues::strideFor(jor.vals()[0]);
+		return;
+		}
+
+	lassert(valuesToAllocate > 0);
+	lassert(valuesToAllocate >= mValueCount);
+
+	if (usingJudgmentTable() || mValueCount == 0 && !mPerValueJudgmentsAllocated)
+		{
+		long newJudgments = 0;
+
+		for (auto j: jor.vals())
+			if (mJovToJudgmentTableSlot.find(j) == mJovToJudgmentTableSlot.end())
+				newJudgments++;
+
+		lassert(newJudgments + mJudgmentLookupTableSize <= MAX_JUDGMENTS_TO_USE_JUDGMENT_TABLE);
+
+		mJudgmentLookupTable = 
+			(JudgmentOnValue*)mOwningMemoryPool->realloc(
+				(uint8_t*)mJudgmentLookupTable,
+				sizeof(JudgmentOnValue) * (newJudgments + mJudgmentLookupTableSize)
+				);
+
+		for (auto j: jor.vals())
+			if (mJovToJudgmentTableSlot.find(j) == mJovToJudgmentTableSlot.end())
+				{
+				mJudgmentLookupTable[mJudgmentLookupTableSize] = j;
+				mJovToJudgmentTableSlot[j] = mJudgmentLookupTableSize;
+
+				mJudgmentLookupTableSize++;	
+				}
+
+		if (!mPerValueJudgments)
+			{
+			if (mJudgmentLookupTableSize > 1)
+				{
+				//we were a homogenous array, so we need to fill out the new per-value-judgment-array with
+				//slot '0' which will still contain the original judgment of whatever values we were holding
+				resizePerValueJudgments(valuesToAllocate);
+				for (long k = 0; k < mValueCount; k++)
+					((uint8_t*)mPerValueJudgments)[k] = 0;
+				}
+			}
+			else
+		if (mPerValueJudgmentsAllocated < valuesToAllocate)
+			resizePerValueJudgments(valuesToAllocate);
+		}
+	else
+		{
+		uint8_t* newJudgmentIndices = mOwningMemoryPool->allocate(valuesToAllocate);
+
+		RawJOV* newJudgmentTable = 
+			(RawJOV*)mOwningMemoryPool->allocate(sizeof(RawJOV) * jor.size());
+
+		std::map<RawJOV, int> lookupTable;
+
+		for (long k = 0; k < jor.size();k++)
+			{
+			new (newJudgmentTable + k) RawJOV(jor.vals()[k]);
+			lookupTable[jor.vals()[k]] = k;
+			}
+
+		if (mValueCount > 0)
+			{
+			if (isHomogenous())
+				{
+				JOV jov = getHomogenousJOV();
+				auto it = lookupTable.find(jov);
+				lassert(it != lookupTable.end());
+
+				long slot = it->second;
+
+				for (long k = 0; k < mValueCount;k++)
+					newJudgmentIndices[k] = slot;
+				}
+			else
+				{	
+				lassert(mPerValueJudgments);
+
+				JOV* priorJovs = (JOV*)mPerValueJudgments;
+
+				for (long k = 0; k < mValueCount; k++)
+					{
+					auto it = lookupTable.find(priorJovs[k]);
+					lassert(it != lookupTable.end());
+					newJudgmentIndices[k] = it->second;
+					}
+				}
+			}
+
+		if (mPerValueJudgments)
+			mOwningMemoryPool->free((uint8_t*)mPerValueJudgments);
+
+		std::swap(lookupTable, mJovToJudgmentTableSlot);
+
+		mJudgmentLookupTable = (JOV*)newJudgmentTable;
+		mJudgmentLookupTableSize = jor.size();
+
+		mPerValueJudgmentsAllocated = valuesToAllocate;
+		mPerValueJudgments = newJudgmentIndices;
+		}
+	}
+
+

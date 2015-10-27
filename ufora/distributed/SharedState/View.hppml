@@ -1,0 +1,204 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <boost/thread.hpp>
+#include <boost/thread/condition.hpp>
+
+#include "Types.hppml"
+#include "Message.hppml"
+#include "KeyType.hppml"
+#include "Subscription.hppml"
+#include "FrozenView.hppml"
+#include "KeyRangeSet.hppml"
+#include "RandomGenerator.hppml"
+
+#include <ctime>
+#include <limits>
+#include "../../core/math/Hash.hpp"
+#include "../../core/Logging.hpp"
+#include "../../core/threading/Queue.hpp"
+#include "../../core/threading/BackgroundInitializedResource.hpp"
+#include "../../core/PolymorphicSharedPtr.hpp"
+
+namespace SharedState {
+
+class Index;
+
+
+typedef PolymorphicSharedPtr<Subscription> 				subscription_ptr_type;
+
+class Listener : public PolymorphicSharedPtrBase<Listener> {
+public:
+		typedef PolymorphicSharedPtr<Listener> pointer_type;
+
+		virtual ~Listener()
+			{
+			}
+		virtual void changed(const set<Key>& inKeys)
+			{
+			}
+		virtual void subscriptionLoadStarted(subscription_ptr_type inSub)
+			{
+			}
+		virtual void subscriptionLoadFinished(subscription_ptr_type inSub)
+			{
+			}
+		virtual void queryResponded(const uint32_t& inId)
+			{
+			}
+		virtual void disconnected(void)
+			{
+			}
+};
+
+class View : public PolymorphicSharedPtrBase<View> {
+public:
+
+		View(bool debugPrint);
+		~View();
+
+		Hash rand(void);
+
+		uint32_t randInt(void);
+
+		void add(channel_ptr_type inChannel);
+
+		void waitConnect(void);
+
+		bool waitConnectTimeout(double inTimeout);
+
+		Nullable<ValueType> getValue(const Key& inKey);
+
+		Nullable<Key> prevKey(const Key& inKey);
+
+		Nullable<Key> nextKey(const Key& inKey);
+
+		void write(const KeyUpdate& update);
+
+		uint32_t size(void) const;
+
+		void flush(bool assertNotFrozen);
+
+		bool connected(void) const;
+
+		bool hasWrites(void) const;
+
+		void begin(void);
+
+		uint32_t abort(void);
+
+		void disconnect(void);
+
+		void end();
+
+		bool rangeReceived(const KeyRange& inRange) const;
+
+		bool isFrozen(void) const;
+
+		void unsubscribe(KeyRange inRange);
+
+		map<channel_ptr_type, set<KeyRange> > subscribeChannels(const set<KeyRange>& toAdd);
+
+		//send an auth message and block until we recieve an ack (true) or a nack (false).
+		//if we time out, we return false
+		bool sendAuthorizationMessage(
+						std::string javaWebToken,
+						double inTimeout
+						);
+
+		void subscribe(KeyRange inRange, bool inWait);
+
+		bool setRecieved(const set<KeyRange>& in);
+
+		bool waitForSubscription(const set<KeyRange>& in);
+
+		void addListener(const PolymorphicSharedPtr<Listener>& inListener);
+
+		void channelDisconnected(channel_ptr_type inChannel);
+
+
+		uint32_t getClientId(void);
+
+		Nullable<uint32_t> getClientIdNowait(void) const;
+
+        void setMustSubscribe(bool);
+
+		void teardown(void);
+
+private:
+		bool isValidEvent(const PartialEvent&) const;
+
+		void loadSubscription_(subscription_ptr_type inSub);
+
+		UniqueId getNextId(void);
+
+		void incomingMessage(const MessageIn& inMessage, channel_ptr_type inChannel);
+		void updateState(void);
+
+		static void serviceChannelLoop(PolymorphicSharedWeakPtr<View> inState, channel_ptr_type channel);
+
+                std::deque<subscription_ptr_type>::iterator findSubscription(const Key& key);
+
+		std::deque<subscription_ptr_type>::iterator findSubscription(const KeyRange& range);
+
+		void triggerChangeListeners(void);
+
+		void triggerSubscriptionListeners(subscription_ptr_type sub, bool isFinished);
+
+		mutable boost::recursive_mutex mMutex;
+
+		//the minimum ID number that the server would ever accept in a transactino
+		Nullable<uint64_t> mMinId;
+
+		//the current ID counter we're using
+		uint64_t mMaxId;
+
+
+		BackgroundInitializedResource<uint32_t> mClientId;
+		BackgroundInitializedResource<channel_ptr_type> mChannel;
+		channel_ptr_type mChannelPendingConnect;
+		map<uint32_t, boost::shared_ptr<BackgroundInitializedResource<uint32_t>>> mFlushResponses;
+
+
+		uint32_t mFlushId;
+		bool mChannelAddedOrPending;
+
+		bool mDebugPrint;
+		bool mIsFrozen;
+		bool mMustSubscribe;
+
+		vector<PolymorphicSharedWeakPtr<Listener>> mListeners;
+		boost::shared_ptr<FrozenView> mFrozenView;
+		vector<KeyUpdate> mWrites;
+		map<pair<vector<uint32_t>, Keyspace>, PolymorphicSharedPtr<Index>> mIndices;
+
+		deque<boost::shared_ptr<Queue<bool>>> mPendingAuthRequests;
+
+
+		KeyRangeSet mReceivedKeyRanges;
+		KeyRangeSet mRequestedKeyRanges;
+
+		deque<subscription_ptr_type> mPendingSubscriptions;
+		deque<PartialEvent> mPendingEvents;
+		RandomGenerator mRandomGenerator;
+};
+
+ostream& operator<<(ostream& tr, const View& view);
+
+}; // shared_state
+
+

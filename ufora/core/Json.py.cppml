@@ -1,0 +1,212 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Json.hppml"
+
+#include <boost/python.hpp>
+#include <boost/random.hpp>
+
+#include "../native/Registrar.hpp"
+#include "python/CPPMLWrapper.hpp"
+#include "python/CPPMLToSimple.hpp"
+#include "python/ScopedPyThreads.hpp"
+#include "../FORA/python/FORAPythonUtil.hppml"
+#include "containers/ImmutableTreeVector.py.hpp"
+
+
+using Ufora::Json;
+using Ufora::JsonParseError;
+
+
+class JsonWrapper :
+		public native::module::Exporter<JsonWrapper> {
+public:
+		std::string		getModuleName(void)
+			{
+			return "Json";
+			}
+				
+		static void jpeErrorTranslator(JsonParseError arg)
+			{
+			PyErr_SetString(PyExc_UserWarning, ("JsonParseError: " + prettyPrintString(arg)).c_str());
+			}
+
+		class IndexError{};
+
+		static void indexError(IndexError arg)
+			{
+			PyErr_SetString(PyExc_IndexError, "Index out of range");
+			}
+
+		static Json JsonGetItem(Json& in, boost::python::object index)
+			{
+			if (in.isArray())
+				{
+				boost::python::extract<int> extract(index);
+
+				if (!extract.check())
+					throw IndexError();
+
+				int i = extract();
+
+				if (i < 0 || i >= in.getArray().elements().size())
+					throw IndexError();
+
+				return in.getArray().elements()[i];
+				}
+				else
+			if (in.isObject())
+				{
+				boost::python::extract<std::string> extract(index);
+				
+				if (!extract.check())
+					throw IndexError();
+
+				std::string i = extract();
+
+				Nullable<const Json&> out = in.getObject().members()[i];
+
+				if (!out)
+					throw IndexError();
+
+				return *out;
+				}
+			else
+				throw IndexError();
+			}
+
+		static long JsonGetLength(Json& in)
+			{
+			@match Json(in)
+				-| Object(e) ->> {
+					return e.size();
+					}
+				-| Array(e) ->> {
+					return e.size();
+					}
+				-| _ ->> {
+					return 0;
+					}
+			}
+
+		static Json* ConstructJson(boost::python::object o)
+			{
+			return new Json(getFromSimplePythonRepresentation<Json>(o));
+			}
+
+		template<class T>
+		static int32_t lexicalCompare(const T& in, boost::python::object& b)
+			{
+			boost::python::extract<T> extractor(b);
+			
+			if (!extractor.check())
+				return -1;
+			
+			T t2 = extractor();
+			
+			ScopedPyThreads threads;
+			
+			return cppmlCmp(in, t2);
+			}
+		
+		static Json addJson(Json& lhs, Json& rhs)
+			{
+			@match Json(lhs)
+				-| Array(x) ->> {
+					@match Json(rhs) 
+						-| Array(y) ->> {
+							return Json::Array(x+y);
+							}
+						-| _ ->> {}
+					}
+				-| Object(x) ->> {
+					@match Json(rhs) 
+						-| Object(y) ->> {
+							return Json::Object(x+y);
+							}
+						-| _ ->> {}
+					}
+				-| _ ->> {}
+
+			lassert_dump(false, "Can't add Json objects " 
+					<< lhs.tagName() << " and " << rhs.tagName());
+			}
+
+		static bool jsonArrayStartsWith(Json& lhs, Json& rhs)
+			{
+			@match Json(lhs)
+				-| Array(a) ->> {
+					@match Json(rhs)
+						-| Array(b) ->> {
+							return a.size() >= b.size() && a.slice(0, b.size()) == b;
+							}
+						-| _ ->> {}
+						}
+					-| _ ->> {}
+
+			return false;
+			}
+
+		static Json getLowestValue()
+			{
+			return Json::Boolean(false);
+			}
+
+		void exportPythonWrapper()
+			{
+			using namespace boost::python;
+			
+			boost::python::register_exception_translator<IndexError>(&indexError);
+			boost::python::register_exception_translator<JsonParseError>(&jpeErrorTranslator);
+
+			Ufora::python::CPPMLWrapper<Json>("Json", true).class_()
+				.def("__init__", boost::python::make_constructor(ConstructJson))
+				.def("__str__", FORAPythonUtil::scopedPrettyPrinter<Json>)
+				.def("__repr__", FORAPythonUtil::scopedPrettyPrinterWithoutWrapping<Json>)
+				.add_property("hash", FORAPythonUtil::scopedHashValue<Json>)
+				.def("__hash__", FORAPythonUtil::hasher<Json>)
+				.def("__cmp__", lexicalCompare<Json>)
+				.def("__add__", addJson)
+
+				.def("arrayStartswith", jsonArrayStartsWith)
+
+				.def("__getitem__", JsonGetItem)
+				.def("__len__", JsonGetLength)
+
+				.def("__getstate__", &serialize<Json>)
+				.def("__setstate__", &setStateDeserialize<Json>)
+				.enable_pickling()
+
+				.def("toSimple", &CPPMLToSimple<Json>::toSimple)
+				.def("fromSimple", &getFromSimplePythonRepresentation<Json>)
+				.staticmethod("fromSimple")
+
+				.def("parse", Json::parse)
+				.staticmethod("parse")
+				;
+
+			def("lowestValue", getLowestValue);
+			}
+};
+
+
+//explicitly instantiating the registration element causes the linker to need
+//this file
+template<>
+char native::module::Exporter<JsonWrapper>::mEnforceRegistration =
+		native::module::ExportRegistrar<
+			JsonWrapper>::registerWrapper();
+
+

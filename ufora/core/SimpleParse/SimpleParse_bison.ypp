@@ -1,0 +1,1056 @@
+%{
+#define YYSTYPE SimpleParseNode*
+
+//create an anonymous namespace to hold all the yyparse stuff
+//since we don't want the names spilling out of C++.
+
+typedef const char* char_ptr;
+
+#include "SimpleParse.hppml"
+#include <boost/thread.hpp>
+#include <ctype.h>
+#include <sstream>
+#include "../../core/Logging.hpp"
+
+using namespace std;
+
+class SimpleParseState {
+public:
+		SimpleParseState(std::string data) : mData(data), mLow(mData.c_str()), mHigh(mData.c_str() + mData.size())
+			{
+			mLastOff = mFirstOff = 0;
+			mFirstLine = mFirstCol = mLastLine = mLastCol = 1;
+			}
+		~SimpleParseState();
+		void lexResult(const SimpleParseNode& n);
+
+		SimpleParseNode* operator()(const SimpleParseNode& n);
+
+		void terminate(const SimpleParseNode& n)
+			{
+			if (!mError)
+				mTerminal = n;
+			}
+		void error(const SimpleParseError& n)
+			{
+			if (!mError)
+				mError = n;
+			}
+		SimpleParseNode getTerminal() const
+			{
+			if (mError)
+				throw *mError;
+				else
+				return *mTerminal;
+			}
+
+		std::string unpadQuoteString(std::string s, SimpleParsePosition quoteStart);
+
+		uint32_t remaining() const;
+		char operator[](uint32_t ix) const;
+		char peek() const;            //(*this)[0]
+		char peek(uint32_t ix) const; //(*this)[ix]
+		void consume();
+		void consume(uint32_t ix);
+		char next(); //peeks, then consumes
+
+		void skipUntil(const string& s);
+		void skipWhitespace();
+		bool nextIsComment();
+		void consumeComment();
+		bool operator==(const string& s);
+		bool operator!=(const string& s);
+
+		int simplelex();
+		
+		void consumeExponent(vector<char>& out);
+		void consumeDigits(vector<char>& out);
+		void consumeHexDigits(vector<char>& out);
+
+		SimpleParseRange curRange() const
+			{
+			return SimpleParseRange(SimpleParsePosition(mFirstOff, mFirstLine, mFirstCol), SimpleParsePosition(mLastOff, mLastLine, mLastCol));
+			}
+
+		//tests whether the next 'ct' characters are all equal to ct
+		//returns false if there are not enough left
+		bool nextNCharsAre(char c, uint32_t ct)
+			{
+			if (remaining() < ct)
+				return false;
+			for (long k = 0; k < ct; k++)
+				if (peek(k) != c)
+					return false;
+			return true;
+			}
+private:
+		Nullable<SimpleParseNode>	mTerminal;
+		Nullable<SimpleParseError>	mError;
+
+		string 					mData;
+		set<SimpleParseNode*>	mNodes;
+
+		const char* mLow;
+		const char* mHigh;
+		
+		uint32_t mFirstLine, mFirstCol, mFirstOff, mLastLine, mLastCol, mLastOff;
+};
+
+SimpleParseNode merge(const SimpleParseNode& left, const SimpleParseSeparator& sep, const SimpleParseNode& right)
+	{
+	ImmutableTreeVector<SimpleParseNode> nodes;
+
+	if (left.isSequence() && left.getSequence().sep() == sep)
+		nodes = nodes + left.getSequence().nodes();
+	else
+		nodes = nodes + left;
+	
+	if (right.isSequence() && right.getSequence().sep() == sep)
+		nodes = nodes + right.getSequence().nodes();
+	else
+		nodes = nodes + right;
+
+	return SimpleParseNode::Sequence(SimpleParseRange(left.extent().start(), right.extent().stop()), sep, nodes);
+	}
+
+int yylex (SimpleParseState& toParse);
+void yyerror (SimpleParseState& toParse, char const *);
+%}
+
+/* Bison declarations.  */
+%lex-param { SimpleParseState& state }
+%parse-param { SimpleParseState& state }
+
+%token NUMBER
+%token QUOTE
+%token OPERATOR
+%token IDENTIFIER
+%token UNKNOWN_TOKEN
+%token END 0
+
+%start whole_parser
+
+%% /* The grammar follows.  */
+
+whole_parser:
+	END					{ $$ = $1; state.terminate(SimpleParseNode::Empty(SimpleParseRange())); }
+|	node_list_semis END { $$ = $1; state.terminate(*$$); }
+|	node_list_semis ')'	{ $$ = $1; state.error(SimpleParseError::ExcessTerminator($2->extent(), SimpleParseGroup::Parens())); YYERROR; }
+|	node_list_semis '}'	{ $$ = $1; state.error(SimpleParseError::ExcessTerminator($2->extent(), SimpleParseGroup::Braces())); YYERROR; }
+|	node_list_semis ']'	{ $$ = $1; state.error(SimpleParseError::ExcessTerminator($2->extent(), SimpleParseGroup::Brackets())); YYERROR; }
+|	')'	{ state.error(SimpleParseError::ExcessTerminator($1->extent(), SimpleParseGroup::Parens())); YYERROR; }
+|	'}'	{ state.error(SimpleParseError::ExcessTerminator($1->extent(), SimpleParseGroup::Braces())); YYERROR; }
+|	']'	{ state.error(SimpleParseError::ExcessTerminator($1->extent(), SimpleParseGroup::Brackets())); YYERROR; }
+	;
+
+node:
+	NUMBER
+|	QUOTE
+|	OPERATOR
+|	IDENTIFIER
+|	'(' ')' { $$ = state(SimpleParseNode::Grouping(
+							SimpleParseRange($1->extent().start(), $2->extent().stop()),
+							SimpleParseGroup::Parens(),
+							SimpleParseNode::Empty(SimpleParseRange($1->extent().stop(), $2->extent().start()))
+							)
+						);
+			}
+|	'{' '}' { $$ = state(SimpleParseNode::Grouping(
+							SimpleParseRange($1->extent().start(), $2->extent().stop()),
+							SimpleParseGroup::Braces(),
+							SimpleParseNode::Empty(SimpleParseRange($1->extent().stop(), $2->extent().start()))
+							)
+						);
+			}
+|	'[' ']' { $$ = state(SimpleParseNode::Grouping(
+							SimpleParseRange($1->extent().start(), $2->extent().stop()),
+							SimpleParseGroup::Brackets(),
+							SimpleParseNode::Empty(SimpleParseRange($1->extent().stop(), $2->extent().start()))
+							)
+						);
+			}
+
+|	'(' node_list_semis ')'	{ $$ = state(
+									SimpleParseNode::Grouping(
+										SimpleParseRange($1->extent().start(),$3->extent().stop()),
+										SimpleParseGroup::Parens(),
+										*$2
+										)
+									);
+							}
+|	'{' node_list_semis '}'	{ $$ = state(
+									SimpleParseNode::Grouping(
+										SimpleParseRange($1->extent().start(),$3->extent().stop()),
+										SimpleParseGroup::Braces(),
+										*$2
+										)
+									);
+							}
+|	'[' node_list_semis ']'	{ $$ = state(
+									SimpleParseNode::Grouping(
+										SimpleParseRange($1->extent().start(),$3->extent().stop()),
+										SimpleParseGroup::Brackets(),
+										*$2
+										)
+									);
+							}
+
+|	UNKNOWN_TOKEN			{
+							state.error(SimpleParseError::UnknownToken($1->extent()));
+							YYERROR;
+							}
+|	'[' node_list_semis '}'	{ state.error(SimpleParseError::GroupMismatch(SimpleParseRange($1->extent().start(),$3->extent().stop()), SimpleParseGroup::Brackets(), SimpleParseGroup::Braces())); YYERROR;}
+|	'[' node_list_semis ')'	{ state.error(SimpleParseError::GroupMismatch(SimpleParseRange($1->extent().start(),$3->extent().stop()), SimpleParseGroup::Brackets(), SimpleParseGroup::Parens())); YYERROR;}
+|	'(' node_list_semis '}'	{ state.error(SimpleParseError::GroupMismatch(SimpleParseRange($1->extent().start(),$3->extent().stop()), SimpleParseGroup::Parens(), SimpleParseGroup::Braces())); YYERROR; }
+|	'(' node_list_semis ']'	{ state.error(SimpleParseError::GroupMismatch(SimpleParseRange($1->extent().start(),$3->extent().stop()), SimpleParseGroup::Parens(), SimpleParseGroup::Brackets())); YYERROR; }
+|	'{' node_list_semis ']'	{ state.error(SimpleParseError::GroupMismatch(SimpleParseRange($1->extent().start(),$3->extent().stop()), SimpleParseGroup::Braces(), SimpleParseGroup::Brackets())); YYERROR;}
+|	'{' node_list_semis ')'	{ state.error(SimpleParseError::GroupMismatch(SimpleParseRange($1->extent().start(),$3->extent().stop()), SimpleParseGroup::Braces(), SimpleParseGroup::Parens())); YYERROR; }
+|	'{' node_list_semis END	{ state.error(SimpleParseError::GroupUnterminated(SimpleParseRange($1->extent().start(),$2->extent().stop()), SimpleParseGroup::Braces())); YYERROR; }
+|	'(' node_list_semis END	{ state.error(SimpleParseError::GroupUnterminated(SimpleParseRange($1->extent().start(),$2->extent().stop()), SimpleParseGroup::Parens())); YYERROR; }
+|	'[' node_list_semis END	{ state.error(SimpleParseError::GroupUnterminated(SimpleParseRange($1->extent().start(),$2->extent().stop()), SimpleParseGroup::Brackets())); YYERROR; }
+	;
+
+|	'[' '}'	{ state.error(SimpleParseError::GroupMismatch(SimpleParseRange($1->extent().start(),$2->extent().stop()), SimpleParseGroup::Brackets(), SimpleParseGroup::Braces())); YYERROR;}
+|	'[' ')'	{ state.error(SimpleParseError::GroupMismatch(SimpleParseRange($1->extent().start(),$2->extent().stop()), SimpleParseGroup::Brackets(), SimpleParseGroup::Parens())); YYERROR;}
+|	'(' '}'	{ state.error(SimpleParseError::GroupMismatch(SimpleParseRange($1->extent().start(),$2->extent().stop()), SimpleParseGroup::Parens(), SimpleParseGroup::Braces())); YYERROR; }
+|	'(' ']'	{ state.error(SimpleParseError::GroupMismatch(SimpleParseRange($1->extent().start(),$2->extent().stop()), SimpleParseGroup::Parens(), SimpleParseGroup::Brackets())); YYERROR; }
+|	'{' ']'	{ state.error(SimpleParseError::GroupMismatch(SimpleParseRange($1->extent().start(),$2->extent().stop()), SimpleParseGroup::Braces(), SimpleParseGroup::Brackets())); YYERROR;}
+|	'{' ')'	{ state.error(SimpleParseError::GroupMismatch(SimpleParseRange($1->extent().start(),$2->extent().stop()), SimpleParseGroup::Braces(), SimpleParseGroup::Parens())); YYERROR; }
+|	'{' END	{ state.error(SimpleParseError::GroupUnterminated(SimpleParseRange($1->extent().start(),$1->extent().stop()), SimpleParseGroup::Braces())); YYERROR; }
+|	'(' END	{ state.error(SimpleParseError::GroupUnterminated(SimpleParseRange($1->extent().start(),$1->extent().stop()), SimpleParseGroup::Parens())); YYERROR; }
+|	'[' END	{ state.error(SimpleParseError::GroupUnterminated(SimpleParseRange($1->extent().start(),$1->extent().stop()), SimpleParseGroup::Brackets())); YYERROR; }
+	;
+	
+node_list_semis:
+	node_list_commas						{ $$ = $1; }
+|	node_list_semis ';' node_list_commas	{ $$ = state(merge(*$1, SimpleParseSeparator::Semicolon(), *$3)); }
+|					';' node_list_commas	{ $$ = state(merge(SimpleParseNode::Empty(SimpleParseRange($1->extent().left())), SimpleParseSeparator::Semicolon(), *$2)); }
+|	node_list_semis ';' 					{ $$ = state(merge(*$1, SimpleParseSeparator::Semicolon(), SimpleParseNode::Empty(SimpleParseRange($2->extent().right())))); }
+|	';'										{ $$ = state(
+													SimpleParseNode::Sequence(
+														$1->extent(),
+														SimpleParseSeparator::Semicolon(),
+														emptyTreeVec() +
+															SimpleParseNode::Empty($1->extent().left()) +
+															SimpleParseNode::Empty($1->extent().right())
+														)
+													);
+											}
+	;
+node_list_commas:
+	node_list_colons						{ $$ = $1; }
+|	node_list_commas ',' node_list_colons	{ $$ = state(merge(*$1, SimpleParseSeparator::Comma(), *$3)); }
+|					',' node_list_colons	{ $$ = state(merge(SimpleParseNode::Empty(SimpleParseRange($1->extent().left())), SimpleParseSeparator::Comma(), *$2)); }
+|	node_list_commas ',' 					{ $$ = state(merge(*$1, SimpleParseSeparator::Comma(), SimpleParseNode::Empty(SimpleParseRange($2->extent().right())))); }
+|	','										{ $$ = state(
+													SimpleParseNode::Sequence(
+														$1->extent(),
+														SimpleParseSeparator::Comma(),
+														emptyTreeVec() +
+															SimpleParseNode::Empty($1->extent().left()) +
+															SimpleParseNode::Empty($1->extent().right())
+														)
+													);
+											}
+	;
+node_list_colons:
+	node_list_concat							{ $$ = $1; }
+|	node_list_colons ':' node_list_concat	{ $$ = state(merge(*$1, SimpleParseSeparator::Colon(), *$3)); }
+|					 ':' node_list_concat	{ $$ = state(merge(SimpleParseNode::Empty(SimpleParseRange($1->extent().left())), SimpleParseSeparator::Colon(), *$2)); }
+|	node_list_colons ':' 					{ $$ = state(merge(*$1, SimpleParseSeparator::Colon(), SimpleParseNode::Empty(SimpleParseRange($2->extent().right())))); }
+|	':'										{ $$ = state(
+													SimpleParseNode::Sequence(
+														$1->extent(),
+														SimpleParseSeparator::Colon(),
+														emptyTreeVec() +
+															SimpleParseNode::Empty($1->extent().left()) +
+															SimpleParseNode::Empty($1->extent().right())
+														)
+													);
+											}
+	;
+
+
+node_list_concat:
+	node							{ $$ = $1; }
+|	node_list_concat node			{ $$ = state(merge(*$1, SimpleParseSeparator::Concatenation(), *$2)); }
+	;
+
+%%
+
+int yylex(SimpleParseState& state)
+	{
+	return state.simplelex();
+	}
+void yyerror (SimpleParseState& toParse, char const * err)
+	{
+	toParse.error(SimpleParseError::UnknownToken(toParse.curRange()));
+	}
+
+
+bool isOpCharacter(char c)
+	{
+	return c == '/' ||
+	       c == '|' ||
+	       c == '-' ||
+	       c == '+' ||
+	       c == '=' ||
+	       c == '~' ||
+	       c == ':' ||
+	       c == '<' ||
+	       c == '>' ||
+	       c == '?' ||
+	       c == '!' ||
+	       c == '$' ||
+	       c == '%' ||
+	       c == '^' ||
+	       c == '&' ||
+	       c == '*';
+	}
+uint32_t hexCharacterToValue(char c)
+	{
+	if (c >= '0' && c <= '9')
+		return c - '0';
+	if (c >= 'a' && c <= 'f')
+		return 10 + (c - 'a');
+	if (c >= 'A' && c <= 'F')
+		return 10 + (c - 'A');
+	throw std::out_of_range("");
+	}
+uint32_t octalCharacterToValue(char c)
+	{
+	if (c >= '0' && c <= '7')
+		return c - '0';
+	throw std::out_of_range("");
+	}
+char hexValueToCharacter(uint32_t val)
+	{
+	if (val < 10)
+		return '0' + val;
+	if (val < 16)
+		return 'a' + (val - 10);
+	lassert_dump(false, "can't turn " << val << " into a hex digit");
+	}
+void escapeStringConstant(std::ostringstream& str, const string& inString, bool tripleQuoted)
+	{
+	uint32_t quotesInARow = 0;
+	
+	for (long k = 0; k < inString.size(); k++)
+		if (inString[k] == '\\')
+			str << "\\\\";
+		else if (!tripleQuoted)
+			{
+			if (inString[k] == '"')
+				str << "\\\"";
+			else
+			if (inString[k] == '\a')
+				str << "\\a";
+			else
+			if (inString[k] == '\b')
+				str << "\\b";
+			else
+			if (inString[k] == '\f')
+				str << "\\f";
+			else
+			if (inString[k] == '\n')
+				str << "\\n";
+			else
+			if (inString[k] == '\r')
+				str << "\\r";
+			else
+			if (inString[k] == '\t')
+				str << "\\t";
+			else
+			if (!isprint(inString[k]))
+				str << "\\x" <<
+					hexValueToCharacter( ((unsigned char)inString[k]) >> 4 ) <<
+					hexValueToCharacter( ((unsigned char)inString[k]) & 0xF )
+					;
+			else
+				str << inString[k];
+			}
+		else
+			{
+			if (inString[k] == '"')
+				{
+				if (quotesInARow == 2 || k + 1 == inString.size())
+					{
+					str << "\\\"";
+					quotesInARow = 0;
+					}
+				else
+					{
+					str << "\"";
+					quotesInARow++;
+					}
+				}
+			else
+				{
+				quotesInARow = 0;
+				if (inString[k] == '\\')
+					str << "\\\\";
+				else
+				if (inString[k] == '\a' ||
+						inString[k] == '\b' ||
+						inString[k] == '\f' ||
+						inString[k] == '\n' ||
+						inString[k] == '\r' ||
+						inString[k] == '\t')
+					str << inString[k];
+					else
+				if (!isprint(inString[k]))
+					str << "\\x" <<
+						hexValueToCharacter( ((unsigned char)inString[k]) >> 4 ) <<
+						hexValueToCharacter( ((unsigned char)inString[k]) & 0xF )
+						;
+				else
+					str << inString[k];
+				}
+			}
+	}
+
+std::string escapeStringConstant(const string& inString, bool tripleQuoted)
+	{
+	std::ostringstream str;
+	
+	escapeStringConstant(str, inString, tripleQuoted);
+
+	return str.str();
+	}
+
+string stringToStringConstant(const string& inString, bool allowTripleQuotedString)
+	{
+	std::ostringstream str;
+	
+	//if inString uses " or \n, and we're allowed, we'll use a """ style string
+	bool usesQuoteOrNewline = false;
+	
+	for (long k = 0; k < inString.size() && !usesQuoteOrNewline;k++)
+		if (inString[k] == '"' || inString[k] == '\n')
+			usesQuoteOrNewline = true;
+	
+	bool tripleQuoted = allowTripleQuotedString && usesQuoteOrNewline;
+	
+	if (tripleQuoted)
+		str << "\"\"\"";
+	else
+		str << "\"";
+	
+	escapeStringConstant(str, inString, tripleQuoted);
+
+	if (tripleQuoted)
+		str << "\"\"\"";
+	else
+		str << "\"";
+	
+	return str.str();
+	}
+
+namespace {
+	bool isHexDigit(char ch)
+		{
+		return isdigit(ch)
+			|| 'a' <= ch && ch <= 'f'
+			|| 'A' <= ch && ch <= 'F';
+		}
+}
+
+void SimpleParseState::consumeExponent(vector<char>& out)
+	{
+	bool sawDigits = false;
+	if (peek() == '-' || peek() == '+')
+		out.push_back(next());
+	if (!isdigit(peek()))
+		throw SimpleParseError::BadNumericConstant(curRange(), "exponent digits expected");
+	consumeDigits(out);
+	}
+
+void SimpleParseState::consumeHexDigits(vector<char>& out)
+	{
+	bool atStart = true;
+	bool lastWasUnderscore = false;
+	while (peek() == '_' || isHexDigit(peek()))
+		if (peek() != '_') {
+			out.push_back(next());
+			lastWasUnderscore = false;
+			atStart = false;
+			}
+		else {
+			if (lastWasUnderscore)
+				throw SimpleParseError::BadNumericConstant(curRange(), "consecutive '_'s");
+			if (atStart)
+				throw SimpleParseError::BadNumericConstant(curRange(), "'_' at start of digits");
+			consume();
+			lastWasUnderscore = true;
+			atStart = false;
+			}
+	if (lastWasUnderscore)
+		throw SimpleParseError::BadNumericConstant(curRange(), "'_' at end of digits");
+	}
+
+void SimpleParseState::consumeDigits(vector<char>& out)
+	{
+	//if !remaining(), then peek() == 0, which is not a digit.
+	while (isdigit(peek()))
+		out.push_back(next());
+	}
+
+namespace {
+
+bool isTabOrSpace(char c)
+	{
+	return c == '\t' || c == ' ';
+	}
+
+bool isNewlineOrCR(char c)
+	{
+	return c == '\n' || c == '\r';
+	}
+
+bool substringMatches(const std::string& s, long index, const std::string& toMatch)
+	{
+	if (index + toMatch.size() > s.size())
+		return false;
+
+	for (long k = 0; k < toMatch.size(); k++)
+		if (s[index+k] != toMatch[k])
+			return false;
+	
+	return true;
+	}
+}
+
+std::string SimpleParseState::unpadQuoteString(std::string quote, SimpleParsePosition position)
+	{
+	//search to the left to find the current line leading whitespace
+	long lineStart = position.rawOffset();
+	while (lineStart >= 0 && !isNewlineOrCR(mData[lineStart]))
+		lineStart--;
+
+	lineStart++;
+
+	long whitespaceEnd = lineStart;
+	while (whitespaceEnd < mData.size() && isTabOrSpace(mData[whitespaceEnd]))
+		whitespaceEnd++;
+
+	std::string toRemove = std::string(mData.begin() + lineStart, mData.begin() + whitespaceEnd);
+
+	if (toRemove.size() == 0)
+		return quote;
+
+	//if every nonblank line in 'quote' other than the first starts with 'toRemove', remove it
+	//everywhere. otherwise, don't
+	for (long k = 0; k + 1 < quote.size(); k++)
+		if (isNewlineOrCR(quote[k]) && !isNewlineOrCR(quote[k+1]))
+			if (!substringMatches(quote, k + 1, toRemove))
+				return quote;
+	
+	for (long k = 0; k + 1 < quote.size(); k++)
+		if (isNewlineOrCR(quote[k]) && !isNewlineOrCR(quote[k+1]))
+			if (!substringMatches(quote, k + 1, toRemove))
+				return quote;
+	
+	std::vector<char> chars;
+
+	for (long k = 0; k < quote.size(); k++)
+		{
+		chars.push_back(quote[k]);
+		
+		if (k+1 < quote.size() && isNewlineOrCR(quote[k]) && !isNewlineOrCR(quote[k+1]))
+			{
+			if (substringMatches(quote, k + 1, toRemove))
+				k += toRemove.size();
+			}
+		}
+
+	return std::string(chars.begin(), chars.end());
+	}
+
+int SimpleParseState::simplelex()
+	{
+	mFirstLine = mLastLine;
+	mFirstCol = mLastCol;
+	mFirstOff = mLastOff;
+
+	skipWhitespace();
+
+	if (!remaining())
+		return 0;
+
+	mFirstLine = mLastLine;
+	mFirstCol = mLastCol;
+	mFirstOff = mLastOff;
+				
+	//Try to process a numeric literal.
+	//Note: Stuff like '-128s8' currently doesn't work.
+	if (isdigit(peek())
+			|| peek() == '.'
+				&& remaining() > 1
+				&& isdigit(peek(1)))
+		{
+		vector<char> s;
+		
+		//Binary or hex literal.
+		if (peek() == '0' && remaining() > 1
+		                  && (peek(1) == 'b' ||
+		                  	  peek(1) == 'B' ||
+		                  	  peek(1) == 'x' ||
+		                  	  peek(1) == 'X'))
+			{
+			s.push_back(next()); //'0'
+			s.push_back(next()); //'b'/'x'
+			consumeHexDigits(s);
+			} //End binary/hex.
+		else if (peek() == '0' && remaining() > 1 && isdigit(peek(1)))
+			throw SimpleParseError::BadNumericConstant(curRange(), "octal literals are not supported");
+		else //Decimal literal.
+			{
+			//Consume digits at the front, if any.
+			consumeDigits(s);
+			
+			//Have we hit a radix point? If so, consume it, then any digits thereafter.
+			if (remaining() > 1 && peek() == '.')
+				{
+				s.push_back(next()); //Consume '.'.
+				consumeDigits(s);
+				}
+			
+			//Have we hit an exponent marker? If so, consume it, then the exponent thereafter.
+			if (remaining() && peek() == 'e' || peek() == 'E')
+				{
+				s.push_back(next()); //Consume 'e'.
+				consumeExponent(s);
+				}
+			} //End decimal.
+		//For all numeric literals:
+		
+		//Is there a typeflag? If so, consume it.
+		if (peek() == 's' || peek() == 'u' || peek() == 'f' || peek() == 'L')
+			{
+			s.push_back(next());
+			consumeDigits(s);
+			}
+		
+		lexResult(SimpleParseNode::Number(curRange(), string(s.begin(), s.end())));
+
+		return NUMBER;
+		}
+	
+	if (isalpha(peek()) || peek() == '`' || peek() == '#' || peek() == '_' || peek() == '@')
+		{
+		bool keepOps = peek() == '`' || peek() == '#';
+		bool keepDots = keepOps;
+
+		vector<char> s;
+		
+		if (peek() == '`')
+			{
+			//grab all the '`' characters
+			while (remaining() > 1 && peek() == '`' && peek(1) == '`')
+				s.push_back(next());
+			}
+		else if (peek() == '#')
+			{
+			//grab all the '#' characters
+			while (remaining() > 1 && peek() == '#' && peek(1) == '#')
+				s.push_back(next());
+			}
+		
+		uint32_t ix = 0;
+		do {
+			if (ix > 0 && !isOpCharacter(peek()))
+				keepOps = false;
+			
+			s.push_back(next());
+			
+			ix++;
+			}
+		while (
+			isalnum(peek()) ||
+			peek() == '@' ||
+			peek() == '_' ||
+			(keepDots && peek() == '.') ||
+			(keepOps && isOpCharacter(peek()))
+			);
+
+		string ident(s.begin(), s.end());
+
+		lexResult(SimpleParseNode::Identifier(curRange(), string(s.begin(), s.end())));
+
+		return IDENTIFIER;
+		}
+	
+	if (peek() == '"' || peek() == '\'')
+		{
+		SimpleParsePosition quoteRangeBegin = curRange().stop();
+
+		char quoteChar = next();
+		
+		vector<char> s;
+
+		//count quotes in a row
+		uint32_t quoteCount = 1;
+		while(remaining() && peek() == quoteChar && quoteCount < 3)
+			{
+			consume();
+			quoteCount++;
+			}
+		
+		if (quoteCount == 2)
+			{
+			//it's the empty string
+			lexResult(SimpleParseNode::Quote(curRange(), string()));
+			return QUOTE;
+			}
+		
+		bool isLongQuote = (quoteCount == 3);
+		
+		while (remaining())
+			{
+			//are we at the end?
+			if (nextNCharsAre(quoteChar, quoteCount))
+				{
+				consume(quoteCount);
+
+				std::string quoteString = string(s.begin(), s.end());
+
+				if (quoteCount == 3)
+					quoteString = unpadQuoteString(quoteString, curRange().start());
+
+				lexResult(SimpleParseNode::Quote(curRange(), quoteString));
+				return QUOTE;
+				}
+			
+			//no, we are not.  check for a valid next character
+			char c = next();
+			
+			if ((c == '\n' || c == '\r') && !isLongQuote)
+				{
+				error(
+					SimpleParseError::UnterminatedStringConstant(
+						SimpleParseRange(quoteRangeBegin, curRange().stop())
+						)
+					);
+				return 0;
+				}
+			
+			if (c != '\\')
+				s.push_back(c);
+			else
+				{
+				if (!remaining())
+					//we ended with a '\\', which is an error
+					{
+					error(
+						SimpleParseError::UnterminatedStringConstant(
+							SimpleParseRange(quoteRangeBegin, curRange().stop())
+							)
+						);
+					return 0;
+					}
+				
+				//we have an escape sequence
+				SimpleParsePosition escapeSequenceStartPoint = curRange().stop();
+
+				c = next();
+				
+				if (c == '\\' || c == '\'' || c == '"') s.push_back(c);
+				else if (c == 'a') s.push_back('\a');
+				else if (c == 'b') s.push_back('\b');
+				else if (c == 'f') s.push_back('\f');
+				else if (c == 'n') s.push_back('\n');
+				else if (c == 't') s.push_back('\t');
+				else if (c == 'r') s.push_back('\r');
+				else if (c == 'v') s.push_back('\v');
+				else if (c == '\n') ; //pass; it's an escaped newline
+				else if (c == 'x')
+					{
+					if (remaining() < 2)
+						{
+						error(
+							SimpleParseError::UnterminatedStringConstant(
+								SimpleParseRange(quoteRangeBegin, curRange().stop())
+								)
+							);
+						return 0;
+						}
+					char h1 = peek();
+					char h2 = peek(1);
+					consume(2);
+					
+					try {
+						s.push_back(
+							(char)(hexCharacterToValue(h1) * 16 + hexCharacterToValue(h2))
+							);
+						}
+					catch (std::out_of_range r)
+						{
+						error(
+							SimpleParseError::InvalidEscapeSequence(
+								SimpleParseRange(escapeSequenceStartPoint, curRange().stop())
+								)
+							);
+						return 0;
+						}
+					}
+					else
+					{
+					//last ditch effort to parse as octal. requires zeros
+					if (remaining() < 2)
+						{
+						error(
+							SimpleParseError::UnterminatedStringConstant(
+								SimpleParseRange(quoteRangeBegin, curRange().stop())
+								)
+							);
+						return 0;
+						}
+					
+					char o1 = c;
+					char o2 = peek();
+					char o3 = peek(1);
+					consume(2);
+					
+					try {
+						s.push_back(
+							(char)(
+								octalCharacterToValue(o1) * 64 +
+								octalCharacterToValue(o2) * 8 +
+								octalCharacterToValue(o3)
+								)
+							);
+						}
+					catch (std::out_of_range r)
+						{
+						error(
+							SimpleParseError::InvalidEscapeSequence(
+								SimpleParseRange(escapeSequenceStartPoint, curRange().stop())
+								)
+							);
+						return 0;
+						}
+					}
+				}
+			}
+		error(
+			SimpleParseError::UnterminatedStringConstant(
+				SimpleParseRange(quoteRangeBegin, curRange().stop())
+				)
+			);
+		return 0;
+		}
+	
+	if (peek() == '.' || peek() == '=')
+		{
+		vector<char> s;
+
+		do
+			s.push_back(next());
+		while (peek() == s[0]);
+
+		string o(s.begin(), s.end());
+
+		lexResult(SimpleParseNode::Operator(curRange(), o));
+
+		return OPERATOR;
+		}
+	
+	if (isOpCharacter(peek()))
+		{
+		vector<char> s;
+
+
+		do
+			s.push_back(next());
+		while (isOpCharacter(peek()));
+
+		string o(s.begin(), s.end());
+
+		lexResult(SimpleParseNode::Operator(curRange(), o));
+
+		if (o == ":")
+			return ':';
+
+		return OPERATOR;
+		}
+	
+	int c = peek();
+	string s;
+	s.push_back(c);
+
+	consume();
+	
+	lexResult(SimpleParseNode::Operator(curRange(), s));
+
+	switch (c)
+		{
+		case ';':
+		case ',':
+		case '(':
+		case ')':
+		case '{':
+		case '}':
+		case '[':
+		case ']':
+			return c;
+		
+		default:
+			lexResult(SimpleParseNode::Quote(curRange(), string()));
+			return UNKNOWN_TOKEN;
+		}
+	}
+
+bool SimpleParseState::operator==(const string& s)
+	{
+	if (remaining() < s.size())
+		return false;
+	for (long k = 0; k < s.size(); k++)
+		if (peek(k) != s[k])
+			return false;
+	return true;
+	}
+bool SimpleParseState::operator!=(const string& s)
+	{
+	return !(*this == s);
+	}
+
+void SimpleParseState::skipUntil(const string& s)
+	{
+	while (*this != s && remaining())
+		consume();
+	}
+
+void SimpleParseState::skipWhitespace()
+	{
+	while (remaining())
+		{
+		if (isspace(peek()))
+			consume();
+		else if (nextIsComment())
+			consumeComment();
+		else
+			return;
+		}
+	}
+
+bool SimpleParseState::nextIsComment()
+	{
+	return *this == "//" || *this == "/*";
+	}
+
+void SimpleParseState::consumeComment()
+	{
+	if (*this == "//")
+		{
+		skipUntil("\n");
+		consume(); //Consume '\n'
+		}
+	else if (*this == "/*")
+		{
+		SimpleParsePosition commentStartPos(mLastOff, mLastLine, mLastCol);
+
+		uint32_t commentsRemaining = 1;
+		consume(2);
+		
+		while (commentsRemaining > 0 && remaining())
+			{
+			if (*this == "/*")
+				{
+				commentsRemaining++;
+				consume(2);
+				}
+			else if (*this == "*/")
+				{
+				consume(2);
+				commentsRemaining--;
+				}
+			else
+				consume();
+			}
+		if (commentsRemaining && !remaining())
+			error(
+				SimpleParseError::UnterminatedComment(
+					SimpleParseRange(
+						commentStartPos,
+						SimpleParsePosition(mLastOff, mLastLine, mLastCol)
+						)
+					)
+				);
+		}
+	}
+
+void SimpleParseState::lexResult(const SimpleParseNode& n)
+	{
+	SimpleParseNode* n2 = new SimpleParseNode(n);
+	mNodes.insert(n2);
+	yylval = n2;
+	}
+
+uint32_t SimpleParseState::remaining() const
+	{
+	return (mHigh > mLow) ? mHigh - mLow : 0;
+	}
+char SimpleParseState::operator[](uint32_t ix) const
+	{
+	if (remaining())
+		return mLow[ix];
+	return 0;
+	}
+char SimpleParseState::next()
+	{
+	char c = peek();
+	consume();
+	return c;
+	}
+char SimpleParseState::peek() const
+	{
+	return (*this)[0];
+	}
+char SimpleParseState::peek(uint32_t ix) const
+	{
+	return (*this)[ix];
+	}
+void SimpleParseState::consume(uint32_t ct)
+	{
+	while (ct-- && remaining())
+		consume();
+	}
+void SimpleParseState::consume()
+	{
+	char c = peek();
+	mLastCol++;
+	mLow++;
+	mLastOff++;
+
+	if (c == '\n' || c == '\r')
+		{
+		mLastLine++;
+		mLastCol = 1;
+		}
+	}
+SimpleParseNode* SimpleParseState::operator()(const SimpleParseNode& n)
+	{
+	SimpleParseNode* n2 = new SimpleParseNode(n);
+	mNodes.insert(n2);
+	return n2;
+	}
+SimpleParseState::~SimpleParseState()
+	{
+	while (mNodes.size())
+		{
+		delete *mNodes.begin();
+		mNodes.erase(mNodes.begin());
+		}
+	}
+
+SimpleParseNode parseStringToSimpleParse(std::string s)
+	{
+	static boost::recursive_mutex mutex;
+	boost::recursive_mutex::scoped_lock lock(mutex);
+	
+	SimpleParseState state(s);
+
+	yyparse(state);
+
+	return state.getTerminal();
+	}

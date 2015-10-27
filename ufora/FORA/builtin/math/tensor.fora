@@ -1,0 +1,672 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#Markdown("""
+## Tensor
+
+#### Description
+
+Module for tensors, multi-dimensional arrays, inspired by Python numpy arrays.
+
+""");
+
+`hidden
+dimsize:
+	"""given a tuple of dim_, compute the product of the terms within"""
+	fun (()) { 1 * 1 }
+		((x, *args)) { x * dimsize(args) * 1 }
+		;
+`hidden
+extent:
+	"""given two named arguments (dim_, strides), compute the maximum
+	index offset that will be applied to the elements inside of a Vector
+	"""
+	fun (dim: (), strides: ()) {0*0}
+		(dim: (d, *dims), strides:	 (s, *strs))
+		{
+		(d - 1) * s + extent(dim: dims, strides: strs)
+		}
+		;
+
+`hidden
+convertStrides:
+	fun	(`column, (), soFar = 1*1) { () }
+		(`column, dims, soFar = 1*1) {
+			(soFar,) + convertStrides(`column, dims[1,], soFar * dims[0])
+			}
+		(`row, (), soFar = 1*1) { () }
+		(`row, dims, soFar = 1*1) {
+			convertStrides(`row, dims[,-1], soFar * dims[-1]) + (soFar,)
+			}
+		(strides, dims) { strides }
+		;
+		
+`hidden
+reverseTuple:
+	fun ((x,*args)) { reverseTuple(args) + (x,) }
+		(()) { () }
+		;
+
+Tensor:
+#Markdown(
+"""
+#### `Tensor`
+
+#### Description
+
+A class for multi-dimensional arrays, inspired by numpy arrays.
+
+Each `Tensor` instance has four data-members: `dim`, `data_`, `strides_`, and 
+`offset_`.
+
+`dim` is a tuple decribing the shape of the tensor. Also refered to as the _shape_. 
+`size(dim)` is also referred to as the tensor _rank_.
+`data_` is a vector which holds the elements of the tensor (in some unspecified order).
+`strides_` is a tuple, satisfying `size(strides_) == size(dim)` which gives partial
+information on how to extract elements from `data_`.
+The integer `offset_` is the other piece of information which describes how the 
+elements of the tensor are layed-out in `data_`.
+
+More precisely, suppose that `t` is an instance of `Tensor`. 
+Write `N = size(dim)` (`== size(strides_)`). For each tuple of non-negative integers 
+`(i_1, i_2, ..., i_N)`, the element `t[i_1, i_2, ..., i_N]` 
+is given by 
+
+    data_[offset_ + i_1 * strides_[0] + i_2 * strides_[1] + ... + i_N * strides_[N - 1]]
+
+The members `data_`, `strides_`, and `offset_` have underscores in their names, indicating
+that they are implementation details, and are not true properties of the mathematical 
+tensor we are representing.
+
+#### Aliases
+
+    math.Tensor
+
+""")
+class {
+
+#Markdown("""#### Description
+
+The dimensions of the tensor, a tuple.
+""")
+	member dim;
+#Markdown("""#### Description
+
+A vector containing the elements of the tensor in some unspecified order.
+""")
+
+	member data_;
+#Markdown("""#### Description
+
+A tuple satisfying `size(strides_) == size(dim)` which gives partial information 
+on how to extract elements in the tensor from the vector `data_`.
+""")
+
+	member strides_;
+#Markdown("""#### Description
+
+An integer which, together with `strides_`, completely describes how to extract 
+elements from `data_`.
+""") 
+
+	member offset_;
+#Markdown(
+"""#### Usage
+
+    math.Tensor(data, dim)
+
+#### Description
+
+Construct a `math.Tensor` instance with underlying data vector `data` and dimensions `dim`. 
+
+Equivalent to calling 
+
+    math.Tensor(data, dim, `column).
+
+#### Arguments
+
+    data - Vector containing the elements of the tensor.
+    dim - Tuple of int, giving the shape of the tensor.
+
+#### Return Value
+
+A `math.Tensor` instance.
+
+#### Examples
+
+    math.Tensor(Vector.range(120.0), (2,3,4))
+	
+""")
+	static operator ()(data, dim)
+		{
+		Tensor(data, dim, `column, 0)
+		};
+
+#Markdown(
+"""#### Usage
+
+    math.Tensor(data, dim, strides)
+
+#### Description
+
+Constructs a `math.Tensor` instance with underlying data vector `data`, dimensions `dim`, strides 
+`strides`, and offset `0`.  
+
+Equivalent to calling `math.Tensor(data, dim, strides, 0)`
+
+#### Arguments
+
+    data - a Vector containing the elements of the tensor.
+    dim - Tuple of int, giving the dimensions of the tensor.
+    strides - Tuple of int, describing how the elements of the tensor are to be read from data, or the value `column, indicating that the elements of the tensor should be read from data in column-major order, or the value `row, indicating that the elements of the tensor should be read from data in row-major order.
+
+#### Examples
+
+Suppose we bind 
+
+    let t = math.Tensor(Vector.range(8), (2,2,2), (1,0,2))
+
+Then 
+
+	String(t) == "Tensor(Int64, dim=(2, 2, 2), [[[0, 2], [0, 2]], [[1, 3], [1, 3]]])"
+
+	math.Tensor(Vector.range(8), (2,2,2), `column) == math.Tensor(Vector.range(8), (2,2,2), (1,2,4))
+   
+""")
+	static operator ()(data, dim, strides)
+		{
+		Tensor(data, dim, strides, 0)
+		};
+
+#Markdown(
+"""#### Usage
+
+    math.Tensor(data, dim, strides, offset)
+
+#### Description
+
+Constructs a `math.Tensor` instance with underlying data vector `data`, dimensions `dim`, 
+strides `strides`, and offset `offset`. Writing `N = size(dim)`, for each tuple of non-negative integers 
+`(i_1, i_2, ..., i_N)`, `math.Tensor(data, dim, strides)[i_1, i_2, ..., i_N]` is defined to be 
+
+    data[offset + i_1 * strides[0] + i_2 * strides[1] + ... + i_N * strides[N - 1]]
+
+if `strides` is a Tuple. 
+
+``math.Tensor(data, dim, `column, offset)`` is equivalent to `math.Tensor(data, dim, (1, dim[0], dim[0] * dim[1], ... , dim[0] * dim[1] * ... * dim[N - 2]), offset)`
+
+``math.Tensor(data, dim, `row, offset)`` is equivalent to `math.Tensor(data, dim, (dim[1] * dim[2] * ... * dim[N - 1], dim[2] * dim[3] * ... * dim[N - 1], ... , dim[N - 1], 1), offset)`.
+
+#### Arguments
+
+    data - a Vector containing the elements of the tensor.
+    dim - Tuple of int, giving the dimensions of the tensor.
+    strides - Tuple of int, describing how the elements of the tensor are to be read from data, or the value `column, indicating that the elements of the tensor should be read from data in column-major order, or the value `row, indicating that the elements of the tensor should be read from data in row-major order.
+	offset - an integer which, together with strides, tells how to read off elements in the tensor from the data vector.
+
+#### Examples
+
+    math.Tensor(Vector.range(12000.0), (2,3,4,5), `row, 100)
+
+""")
+	operator new(filters.IsVector(data), dim, strides, offset)
+		{
+		strides = convertStrides(strides, dim);
+
+		let e = extent(dim: dim, strides: strides);
+		if (offset < 0 or offset >= size(data) or
+			offset + e < 0 or offset + e >= size(data)
+		   )
+			throw "strides of " + String(strides) + ", dim of " +
+			String(dim) + ", and offset of " + String(offset) +
+			" exceed valid size of data, which is " + String(size(data));
+		
+		createInstance(cls, dim: dim, data_: data, strides_: strides, offset_: offset)
+		};
+
+#Markdown(
+"""#### Usage
+
+    t.rank
+
+#### Description
+
+Returns the tensor rank of `t`, defined to be `size(t.dim)`
+""")
+	rank: size(dim)
+	;
+
+#Markdown(
+""" 
+#### Description
+
+The `match operator` on tensors.
+
+`Tensor` instances are matched by the tag `math.Tensor`, 
+and a possible dimension to be matched.
+
+#### Examples
+
+Suppose we bind
+
+    let t1 = math.Tensor(Vector.range(8.0), (2,2,2))
+
+Then
+
+    match (t1) with (math.Tensor((2,_,2))) { true }
+
+evaluates to true, as does
+   
+    match (t1) with (math.Tensor(_)) { true } 
+
+as does
+
+    match (t1) with (math.Tensor(_, (...))) { true }
+
+as does
+
+    match (t1) with (math.Tensor(_, _)) { true }
+ 
+and as does 
+
+    match (t1) with (math.Tensor(...)) { true }
+   
+""")
+	operator match(tag if tag is Tensor) { dim };
+
+	...(`size) { 
+		let res = 1;
+		let dimTup = dim;
+
+		while (size(dimTup))
+			{
+			res = res * dimTup[0]
+			dimTup = dimTup[1,]
+			}
+
+		res
+		};
+
+#Markdown(
+"""#### Usage
+ 
+    String(t)
+
+for any `Tensor` instance `t`.
+
+#### Description
+
+Returns a `String` representation of `t`.
+
+#### Examples
+
+    String(math.Tensor(Vector.range(8), (2,2,2), (1,0,2))) == "Tensor(Int64, dim=(2, 2, 2), [[[0, 2], [0, 2]], [[1, 3], [1, 3]]])"
+	String(math.Tensor(Vector.range(8), (2,2,2))) == "Tensor(Int64, dim=(2, 2, 2), [[[0, 4], [2, 6]], [[1, 5], [3, 7]]])"
+    String(math.Tensor(Vector.range(8), (2,4))) == "Tensor(Int64, dim=(2, 4), [[0, 2, 4, 6], [1, 3, 5, 7]])"
+ 
+""")
+	convert (String) {
+		let tr = "Tensor(dim=" + String(dim) + ", ";
+		tr = tr + self.dataStringRep_(size(tr)) + ")";
+		tr
+	};
+
+#Markdown(
+"""#### Usage
+
+    t.dataStringRep_(n)
+
+#### Description 
+
+Returns a string representation of the elements in the tensor `t`, using `n` to limit
+ the number of characters in the returned string.
+
+#### Arguments
+
+    n - Integer
+
+#### Examples 
+
+	math.Tensor(Vector.range(8), (2,2,2)).dataStringRep_(0) == "[[[0, 4], [2, 6]], [[1, 5], [3, 7]]]"
+    math.Tensor(Vector.range(8), (2,2,2)).dataStringRep_(101) == "..."
+
+""")
+	dataStringRep_: fun(charsSoFar) 
+		{
+		if (charsSoFar > 100) return "..."
+		let tr = "["
+		if (size(dim) == 0) tr = tr + String(self[])
+		else 
+			for ix in sequence(dim[0]) {
+				if (size(tr) + charsSoFar > 100)
+				    return tr + " ...]"
+			
+				if (ix > 0)
+				    tr = tr + ", "
+				if (size(dim) > 1)
+				    tr = tr + self[ix].dataStringRep_(size(tr) + charsSoFar)
+				else
+					tr = tr + String(self[ix])
+				}
+		tr + "]"
+		};
+
+#Markdown(
+"""#### Usage
+ 
+    t.implIsColumnMajor_
+
+#### Description
+
+Computes whether or not the elements of the tensor `t` are layed out in 
+column-major order in `x.data`.
+
+#### Examples
+
+    math.Tensor(Vector.range(8), (2,2,2)).implIsColumnMajor_ == true
+    math.Tensor(Vector.range(8), (2,2,2), `row).implIsColumnMajor_ == false // though this tensor's data vector is layed out in _row_-major order
+    math.Tensor(Vector.range(8), (2,2), (2,2)).implIsColumnMajor_ == false // this tensor's data vector has neither row nor column-major layout.
+
+#### Pitfalls
+
+`t.implIsColumnMajor_` is not in general equal to `!t.implIsRowMajor_`, due to the 
+existence of tensors having neither row nor column-major layout.
+""")
+	implIsColumnMajor_:
+	strides_ == convertStrides(`column, dim)
+	;
+
+#Markdown(
+"""#### Usage
+ 
+    t.implIsRowMajor__
+
+#### Description
+
+Computes whether or not the elements of the tensor `t` are layed out in 
+row-major order in `x.data`.
+
+#### Examples
+
+    math.Tensor(Vector.range(8), (2,2,2)).implIsRowMajor_ == false // though this tensor's data vector is layed out in _column_-major order
+    math.Tensor(Vector.range(8), (2,2,2), `row).implIsRowMajor_ == true 
+    math.Tensor(Vector.range(8), (2,2), (2,2)).implIsColumnMajor_ == false // this tensor's data vector has neither row nor column-major layout.
+
+#### Pitfalls
+
+`t.implIsRowMajor_` is not in general equal to `!t.implIsColumnMajor_`, due to the 
+existence of tensors having neither row nor column-major layout.
+""")
+	implIsRowMajor_:
+	strides_ == convertStrides(`row, dim)
+	;
+
+	transpose:
+#Markdown(
+"""#### Usage
+
+    t.transpose()
+
+#### Description
+
+Returns the tensor transpose of `t`.
+
+This returns `math.Tensor(t.data_, reverseTuple(t.dim), reverseTuple(t.strides_), t.offset_)`.
+""")
+	fun()
+		{
+		Tensor(data_, reverseTuple(dim), reverseTuple(strides_), offset_ )
+		};
+
+#Markdown(
+"""#### Usage
+
+    t.columnMajorData()
+
+#### Description
+
+Given a `math.Tensor` instance `t`, this returns a vector `v` satisfying
+
+    math.Tensor(v, t.dim) == t
+
+Note though that this is only implemented for tensors of rank two.
+
+#### Examples
+
+    math.Tensor([1,2,3,4], (2,2)).columnMajorData() == [1,2,3,4]
+    math.Tensor([1,2,3,4], (2,2), `row).columnMajorData() == [1,3,2,4]
+    math.Tensor([1,2,3,4], (2,2), (0,1)).columnMajorData() == [1, 1, 2, 2]
+
+""")
+	columnMajorData:
+	fun()
+	    {
+		if (size(dim) != 2)
+		    throw "`columnMajorData` is currently only implemented for tensors of rank 2"
+
+		if (self.implIsColumnMajor_)
+			return self.data_[offset_, size(self) + offset_];
+		
+		let resultData = []
+		for j in sequence(dim[1]) {
+			for i in sequence(dim[0]) {
+				resultData = resultData :: data_[offset_ + i * strides_[0] + j * strides_[1]]
+				}
+			}		
+
+		resultData			
+		};
+
+#Markdown(
+"""#### Usage
+
+    t.rowMajorData()
+
+#### Description
+
+Given a `math.Tensor` instance `t`, this returns a vector `v` satisfying
+
+    math.Tensor(v, t.dim, `row) == t
+
+Note though that this is only implemented for tensors of rank two.
+
+#### Examples
+
+    math.Tensor([1,2,3,4], (2,2)).rowMajorData() == [1,3,2,4]
+    math.Tensor([1,2,3,4], (2,2), `row).rowMajorData() == [1,2,3,4]
+    math.Tensor([1,2,3,4], (2,2), (0,1)).columnMajorData() == [1, 1, 2, 2]
+
+""")
+	rowMajorData:
+	fun()
+		{
+		if (size(dim) != 2)
+		    throw "`rowMajorData` is only currently implemented for rank-two tensors"
+
+		if (self.implIsRowMajor_)
+			return self.data_[offset_, size(self) + offset_];
+
+		let resultData = []
+		for i in sequence(dim[0]) {
+			for j in sequence(dim[1]) {
+				resultData = resultData :: data_[offset_ + i * strides_[0] + j * strides_[1]]
+				}
+			}
+
+		resultData
+		};
+
+#Markdown(
+"""#### Usage
+
+    t[]
+    t[*slices, r]
+
+#### Description
+
+Slices a tensor `t`, producing new tensors (or values).
+
+#### Examples
+
+    let t = math.Tensor(Vector.range(8), (2,2,2));
+    t[] == t;
+    t[0] == math.Tensor([0,2,4,6], (2,2);
+    t[1] == math.Tensor([1,3,5,7], (2,2));
+    t[0,1] == math.Tensor([2,6], (2,));
+    t[0,1,1] == 6;
+
+""")
+	operator [](){ if (dim is ()) data_[offset_] else self };
+	operator [](*slices, r)
+		{
+		//check if the dimension is too large
+		if (size(slices) >= size(dim))
+			throw "Can't request slice of rank of " + String(size(slices) + 1)
+			+ " from matrix of rank " + String(size(dim))
+		;
+		
+		//are we expecting to pull out a value here?
+		if (slices is () and size(dim) == 1u)
+			{
+			return data_[offset_ + strides_[0] * (if (r >= 0) r else (dim[0] + r))]
+			}
+		
+		//we're just slicing
+		let nSlices = size(slices);
+		let newDim = dim[,nSlices] + dim[nSlices,][1,];
+
+		let newStrides = strides_[,nSlices] + strides_[nSlices,][1,];
+		let newOffset = offset_ + (if (r >= 0) r else (dim[nSlices] + r)) * strides_[nSlices];
+		
+		return Tensor(data_, newDim, newStrides, newOffset)[*slices];
+		};
+
+#Markdown(
+"""#### Usage
+
+    t1 == t2
+
+#### Description
+
+The equality operator for tensors
+
+""")
+	operator ==(Tensor(...) other) 
+		{
+		if (dim != other.dim)
+			return false;
+
+		for ix in sequence(dim[0])
+		if (self[ix] != other[ix])
+			return false
+		return true
+		};
+
+    apply:
+#Markdown(
+"""#### Usage
+
+    t.apply(f)
+
+#### Description
+
+Applies a function `f` to each entry of a tensor `t`, producing a new tensor with those values.
+
+Equivalent to calling `math.Tensor(t.data_.apply(f), t.dim, t.strides_, t.offset_)`.
+""")
+    fun(applierFun)
+    	{
+        math.Tensor(data_.apply(applierFun), dim, strides_, offset_)
+    	};
+
+#Markdown(
+"""#### Usage
+
+    t * x
+
+#### Description
+
+Multiplies each element in a tensor `t` by `x`, producing a new tensor.
+
+#### Examples
+
+    math.Tensor(Vector.range(8.0), (2,2,2)) * 2.0 == math.Tensor(Vector.range(16.0), (2,2,2), (2,4,8))
+
+""")
+	operator *(x) 
+		{
+        Tensor(math.blasWrappers.scal(size(data_), x, data_), dim, strides_);
+		};		
+
+#Markdown(
+"""#### Usage
+
+    x * t
+
+#### Description
+
+Multiplies each element in a tensor `t` by `x`, producing a new tensor.
+
+#### Examples
+
+    2 * math.Tensor(Vector.range(8.0), (2,2,2)) == math.Tensor(Vector.range(16.0), (2,2,2), (2,4,8))
+
+""")
+    reverse operator *(x)
+	    {
+        self * x    
+	    };
+
+#Markdown(
+"""#### Usage
+
+    -t
+
+#### Description
+
+Multiplies each element in a tensor by -1, producing a new tensor. 
+
+Equivalent to calling `-1 * t`.
+""")
+	left operator -()
+		{
+		-1.0 * self
+		};
+
+	static uniform:
+#Markdown(
+"""#### Usage
+
+    math.Tensor.uniform(dim, value = 0.0)
+
+#### Description
+
+Return a tensor with a single given value in every entry.
+	
+#### Arguments
+    dim - Tuple of Integers. The dimension of the desired tensor.
+    value - the value to place in the diagonal. 
+""")
+	fun(dim, value = 0.0) 
+		{
+		Tensor(
+			Vector.uniform(dimsize(dim),value),
+			dim
+			)
+		}
+		;
+
+	};
+

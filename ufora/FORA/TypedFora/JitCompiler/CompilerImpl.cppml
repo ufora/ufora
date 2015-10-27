@@ -1,0 +1,801 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "CompilerImpl.hppml"
+#include "../ABI/NativeLayoutType.hppml"
+#include "../Converter.hppml"
+#include "../../Core/MemBlock.hpp"
+#include "../../../core/debug/StackTrace.hpp"
+#include "../../Native/SharedObjectLibraryFromSource.hppml"
+#include "CompilerThreadCount.hppml"
+#include "../../Native/LLVMUtil.hppml"
+#include "../Validation.hppml"
+
+#include <iostream>
+#include <fstream>
+#include <boost/filesystem.hpp>
+
+
+namespace TypedFora {
+
+namespace {
+
+const float kCompileThreadStartDelay = .01;
+
+/****
+these define the priority levels
+
+we have 1 thread that only takes 'high' priority items
+we have 1 thread that takes items of all priorities
+all other threads take items of priority_medium or higher, taking highest
+	priority items first
+
+*****/
+const int priority_low = 0;
+const int priority_medium = 1;
+const int priority_high = 1000;
+}
+
+//CompilerImpl is the actual implementation of TypedFora::Compiler, all of whose
+//functions essentially pass through to this class.
+
+CompilerImpl::CompilerImpl(
+			const RuntimeConfig& inConfiguration, 
+			TypedFora::Compiler& inRuntime
+			) : 
+		mConfig(inConfiguration),
+		mRuntime(inRuntime),
+		mCFGTable(),
+		mFuncPtrTable(),
+		mStaticInliner(
+			inConfiguration.inlineComplexity(),
+			mConfig
+			),
+		mStats(inRuntime),
+		mNativeCodeCompilers(
+			boost::function0<boost::shared_ptr<NativeCodeCompiler> >(
+				[&]() {
+					return boost::shared_ptr<NativeCodeCompiler>(
+						new NativeCodeCompiler(mRuntime)
+						);
+					}
+				)
+			),
+		mThreadPool(inConfiguration.compilerThreadCount())
+	{
+	}
+
+void CompilerImpl::initialize()
+	{
+	//initialize LLVM
+
+	#ifdef LLVM_3_0
+	// In LLVM 3.1, these global options have been removed.  Instead, we need to
+	// set them on the TargetOptions we pass in to LLVM when we construct
+	// compilers, jits, etc.  We do this in NativeCodeCompiler.cppml
+	llvm::GuaranteedTailCallOpt = true;
+	llvm::JITEmitDebugInfo = true;
+	#endif // LLVM_3_0
+
+	llvm::InitializeNativeTarget();
+
+  	llvm::InitializeNativeTargetAsmPrinter();
+  	lassert(!llvm::InitializeNativeTargetDisassembler());
+
+	lassert(llvm::llvm_is_multithreaded());
+	
+	//start building our compilers
+	mWrapperCompiler.reset(new NativeCodeCompiler(mRuntime));
+	
+	string out;
+	
+	if (llvm::sys::DynamicLibrary::LoadLibraryPermanently(
+				mConfig.sharedObjectLibraryPath().c_str(),
+				&out
+				)
+			)
+		//Problem loading the library.
+		lassert_dump(false, out);	
+	
+	if (mConfig.useDynamicInlining())
+		{
+		//start the dynamic inliner
+		mDynamicInliner.reset(new DynamicInliner(mStaticInliner, mStats, mCFGTable, mRuntime));
+		
+		mDynamicInliningThread.reset(
+			new boost::thread(
+				[=]() { 
+					try {
+						mDynamicInliner->runInliningTask();
+						}
+					catch(std::logic_error& e)
+						{
+						LOG_CRITICAL << "dynamic inliner loop failed:\n"
+							<< e.what();
+						throw;
+						}
+					}
+				)
+			);
+		}
+	}
+
+void CompilerImpl::scheduleTask(
+		CompilationTask task, 
+		long priority, 
+		ImmutableTreeVector<CompilationTask> subtasks
+		)
+	{
+	mThreadPool.addTask(
+		task,
+		boost::bind(
+			&CompilerImpl::executeTask,
+			this,
+			task
+			),
+		priority,
+		subtasks,
+		true
+		);
+	}
+
+
+void CompilerImpl::executeTask(CompilationTask task)
+	{
+	@match CompilationTask(task)
+		-| TranslateTypedForaToNativeCode(name) ->> {
+			translateTypedForaToNativeCode_(name);
+			}
+		-| Compile(name) ->> {
+			compileFunction_(name);
+			}
+		-| Link(names) ->> {
+			linkFunctions_(names);
+			}
+	}
+
+void CompilerImpl::translateTypedForaToNativeCode_(std::string name)
+	{
+	Converter converter;
+
+	Nullable<TypedFora::Callable> callable = mTypedForaDefinitions.get(name);
+
+	lassert_dump(callable, "Expected a Callable for " << name);
+
+	NativeCFG code = converter.convertCallable(*callable);
+
+	define(name, code);
+	}
+
+void CompilerImpl::define(const std::string& name, const NativeCFG& code)
+	{
+	LOG_INFO << "TypedFora::Compiler: Defining " << name << " with height "
+		<< code.height() << " and complexity " << code.complexity()
+		;
+	
+	code.validate();
+	
+	if (code.freeVariables().size())
+		throwLogicErrorWithStacktrace("cannot define " + name + " as\n"
+			+ Ufora::indent(prettyPrintString(code)) +
+			"\nas it has free variables " +
+			prettyPrintString(code.freeVariables())
+			);
+		
+	
+	//TODO CLEANUP brax: break dependency of TypedFora::Compiler on specific client types
+	static ImmutableTreeSet<NativeType> *typesToExclude = 0;
+	
+	if (!typesToExclude)
+		typesToExclude = new ImmutableTreeSet<NativeType>(
+			emptyTreeSet() +
+				TypedFora::Abi::nativeTypeForImplVal() +
+				NativeTypeFor<NativeRuntimeCallbacks>::get().ptr()
+			);
+	
+	//tell the inliner about the definition.
+	//newlyDefined will contain all the functions that are now
+	//ready to be compiled.  We need to allocate their
+	//function pointer slots according to the callgroups
+	//inside of them
+	set<string> newlyDefined;
+	
+	NativeCFG newCode = 
+		NativeCFGTransforms::cleanupAndSimplify(
+			NativeCFGTransforms::renameVariables(code)
+			);
+
+	mStaticInliner.define(
+		name,
+		newCode,
+		newlyDefined
+		);
+	
+	for (auto it = newlyDefined.begin(); it != newlyDefined.end(); ++it)
+		LOG_INFO << "Now able to define " << *it << " which has group " 
+			<< prettyPrintString(mStaticInliner.getCallGroup(*it));
+
+	try {
+		scheduleCompilationForNewFunctions(newlyDefined);
+		}
+	catch(std::exception& e)
+		{
+		LOG_CRITICAL
+			<< "error while defining "
+			<< name << ":\n\n"
+			<< e.what();
+		throw;
+		}
+	}
+
+void CompilerImpl::compileFunction_(pair<std::string, long> nameAndGen)
+	{
+	Fora::CompilerThreadCount::Scope markCompiling;
+
+	std::string toBuildName = nameAndGen.first;
+	long toBuildGeneration = nameAndGen.second;
+
+	NativeType slotsType;
+	map<uword_t, ImmutableTreeVector<
+			NativeContinuationMetadataSerialized> > metadataMap;
+
+	map<uword_t, NativeIndividualContinuationMetadata> metadataMapIndividual;
+	
+	double t0 = curClock();
+	
+	//if this is the first generation, ask the static inliner
+	//to process the code
+	if (toBuildGeneration == 0)
+		{
+		lassert_dump(mStaticInliner.hasDefined(toBuildName),
+				"Don't have a definition for " << toBuildName);
+
+		const NativeCFG& preprocessedCFG = mStaticInliner.getProcessed(toBuildName);
+		
+		NativeCFG taggedCFG =
+			mStats.tagAndInstrument(toBuildName, preprocessedCFG);
+		
+		mCFGTable.define(toBuildName, taggedCFG);
+		}
+	
+	NativeCFG code = mCFGTable.getVersion(toBuildName, toBuildGeneration);
+	
+	double t1 = curClock();
+	
+	writeCodeToCompilerDefinitionDir(code, toBuildName, toBuildGeneration);
+	
+	double t2 = curClock();
+	
+	NativeFunctionPointer ptr;
+	try {
+		ptr = NativeFunctionPointer(
+			mNativeCodeCompilers.get()->compile(
+				toBuildName,
+				toBuildGeneration,
+				code,
+				slotsType,
+				metadataMap,
+				metadataMapIndividual
+				)
+			);
+		}
+	catch(std::logic_error& e)
+		{
+		throw std::logic_error("NativeCodeCompiler threw "
+			"exception during compile of\n" +
+			prettyPrintString(toBuildName) + "\n\n" +
+			e.what() + "\n\nCode = " +
+			prettyPrintString(code)
+			);
+		}
+	
+	mCompiledNativeCode.set(nameAndGen, ptr);
+	mCompiledNativeCodeReverse.set(ptr, nameAndGen);
+
+	double curtime = curClock();
+	
+	LOG_INFO_SCOPED("TypedFora::Compiler/Timing") << "TypedFora::Compiler: Compiling took "
+		<< (curtime - t0)
+		<< " for cfg of complexity " << code.complexity()
+		<< ". "
+		<< "(gen = " << toBuildGeneration
+		<< ", name = " << toBuildName << "). "
+		<< "get  took " << (t1 - t0) << ". "
+		<< "dump took " << (t2 - t1)
+		;
+	
+	//add the metadata to the map
+		{
+		boost::unique_lock<boost::shared_mutex> lock(mMetadataTableMutex);
+
+		mFunctionSlotsType[ptr] = slotsType;
+		mFunctionContMetadata[ptr] = metadataMap;
+		mFunctionContMetadataIndividual[ptr] = metadataMapIndividual;
+		}
+	
+	if (toBuildGeneration > 0)
+		{
+		//it's an update, so we can push it in directly. That is,
+		//its not possible for any of our dependencies to not
+		//be compiled since we're the second generation of a
+		//function.
+		for (auto blockIdAndCode: code.blocks())
+			if (!blockIdAndCode.first.isInternal())
+				mFuncPtrTable.updateSlotContents(
+					make_pair(toBuildName, blockIdAndCode.first), 
+					toBuildGeneration, 
+					NativeFunctionPointerAndEntrypointId(ptr, blockIdAndCode.first.index())
+					);
+		
+		//kick any prior versions
+		if (mConfig.kickIntoInterpreterOnInline())
+			{
+			LOG_INFO << "kicking prior versions of " << toBuildName 
+				<< " gen " << toBuildGeneration << "\n";
+			
+			for (long priorVersion = 0;
+						priorVersion < toBuildGeneration;
+						priorVersion++)
+				{
+				mCFGTable.triggerKickToInterpreter(
+								toBuildName,
+								priorVersion
+								);
+				}
+			}
+		}
+	}
+
+void CompilerImpl::linkFunctions_(ImmutableTreeSet<std::string> names)
+	{
+	std::map<pair<std::string, NativeBlockID>, NativeFunctionPointerAndEntrypointId> pointers;
+
+	for (long k = 0; k < names.size();k++)
+		for (auto blockIdAndCode: mStaticInliner.getProcessed(names[k]).blocks())
+			if (!blockIdAndCode.first.isInternal())
+				{
+				pointers[make_pair(names[k], blockIdAndCode.first)] = 
+					NativeFunctionPointerAndEntrypointId(
+						*mCompiledNativeCode.get(make_pair(names[k], 0)),
+						blockIdAndCode.first.index()
+						);
+
+				lassert(!pointers[make_pair(names[k], blockIdAndCode.first)].isEmpty());
+				}
+	
+	//write the pointers into the function pointer table
+	mFuncPtrTable.initializeSlotContents(pointers);
+
+	boost::mutex::scoped_lock lock(mLinkTaskNotificationMutex);
+
+	mLinkTaskCompleted.notify_all();
+	}
+
+void CompilerImpl::kickAllVersionsBackIntoInterpreter(const std::string& name)
+	{	
+	mCFGTable.triggerKickToInterpreterForAllVersions(name);
+	}
+
+//Compile a block of external source code
+Fora::SharedObjectLibraryFromSource::BuildResult CompilerImpl::buildLibraryFromSource(
+		const Fora::SharedObjectLibraryFromSource::LibrarySource& inSource
+		)
+	{
+	boost::mutex::scoped_lock lock(mWrapperCompilerMutex);
+
+	return mWrapperCompiler->buildLibraryFromSource(inSource);
+	}
+
+//Get a callable for a relevant library
+void* CompilerImpl::functionPointerForLibraryFunctionFromSource(
+		const Fora::SharedObjectLibraryFromSource::Library& inLibrary,
+		std::string inName
+		)
+	{
+	boost::mutex::scoped_lock lock(mWrapperCompilerMutex);
+	
+	return mWrapperCompiler->functionPointerForLibraryFunctionFromSource(inLibrary, inName);
+	}
+
+void CompilerImpl::writeCodeToCompilerDefinitionDir(
+									const NativeCFG& code, 
+									const std::string& toBuildName,
+									uint32_t toBuildGeneration
+									)
+	{
+	if (mConfig.compilerDefinitionDumpDir() != "")
+		{
+		using boost::filesystem::path;
+		
+		ofstream outfile;
+		
+		//sanitize the name so that it doesn't contain
+		//any non alphanumeric characters by sticking _'s in.
+		std::string unsanitizedFilename = 
+			toBuildName + "_" + boost::lexical_cast<string>(toBuildGeneration) + ".native.txt";
+		
+		path fname =
+			  path(mConfig.compilerDefinitionDumpDir())
+			/ path(Ufora::sanitizeFilename(unsanitizedFilename));
+		
+		outfile.open(fname.string().c_str(), ios_base::trunc);
+		outfile << "NAME: " << toBuildName << "\n";
+		outfile << "Complexity: " << code.complexity() << "\n";
+		outfile << prettyPrintString(code) << "\n";
+
+		outfile.close();
+		}
+	}
+
+const RuntimeConfig&	CompilerImpl::getConfig(void) const
+	{
+	return mConfig;
+	}
+
+void	CompilerImpl::increasePriority(const std::string& name)
+	{
+	//currently a no-op
+	}
+
+void 	CompilerImpl::define(const std::string& name, const TypedFora::Callable& code)
+	{
+	validateTypedForaJumpTargets(code);
+
+	mTypedForaDefinitions.set(name, code);
+
+	scheduleTask(
+		CompilationTask::TranslateTypedForaToNativeCode(name),
+		0,
+		ImmutableTreeVector<CompilationTask>()
+		);
+	}
+
+void CompilerImpl::scheduleCompilationForNewFunctions(const std::set<std::string>& inNewlyDefined)
+	{
+	//divide the functions into groups and make space for them in the linker
+	ImmutableTreeVector<ImmutableTreeSet<std::string> > groups;
+
+	std::set<std::string> newlyDefined = inNewlyDefined;
+
+	while (newlyDefined.size())
+		{
+		string n = *newlyDefined.begin();
+		
+		//schedule linking for the group, which will depend on compilation for the group
+		ImmutableTreeSet<string>	callgroup = mStaticInliner.getCallGroup(n) + n;
+		
+		groups = groups + callgroup;
+
+		vector<pair<string, NativeBlockID> > slotsToDefine;
+		for (long k = 0; k < callgroup.size();k++)
+			{
+			std::string functionName = callgroup[k];
+
+			newlyDefined.erase(functionName);
+
+			for (auto blockIdAndBlock: mStaticInliner.getProcessed(functionName).blocks())
+				if (!blockIdAndBlock.first.isInternal())
+					slotsToDefine.push_back(make_pair(functionName, blockIdAndBlock.first));
+			}
+		
+		//create the slots that will hold the actual live function pointers after linking
+		mFuncPtrTable.createNullSlots(slotsToDefine);
+		}
+
+	//now we can start compiling stuff
+	for (auto name: inNewlyDefined)
+		scheduleTask(
+			CompilationTask::Compile(make_pair(name, 0)), 
+			0, 
+			ImmutableTreeVector<CompilationTask>()
+			);
+
+	//after compilation is complete we link
+	for (auto group: groups)
+		{
+		ImmutableTreeVector<CompilationTask> subtasks;
+
+		//get a list of subgroups - we need to ensure that these are all linked first.
+		ImmutableTreeSet<ImmutableTreeSet<std::string> > subgroups;
+
+		for (auto name: group)
+			{
+			for (auto callee: mStaticInliner.getFunctionsCalledBy(name))
+				if (!group.contains(callee))
+					{
+					ImmutableTreeSet<string> subgroup = mStaticInliner.getCallGroup(callee) + callee;
+					subgroups = subgroups + subgroup;
+					}
+			}
+
+		for (auto subgroup: subgroups)
+			subtasks = subtasks + CompilationTask::Link(subgroup);
+
+		for (auto name: group)
+			subtasks = subtasks + CompilationTask::Compile(make_pair(name, 0));
+
+		scheduleTask(CompilationTask::Link(group), 0, subtasks);
+		}
+	}
+
+TypedFora::TypedJumpTarget	CompilerImpl::getJumpTarget(
+											const std::string& name,
+											TypedFora::BlockID inLabel,
+											bool blockUntilCompleted
+											)
+	{
+	FunctionPointerHandle handle = 
+		getJumpTarget(
+			name, 
+			NativeBlockID::external(labelFor(inLabel, name)),
+			blockUntilCompleted
+			);
+
+	return TypedFora::TypedJumpTarget(
+		mTypedForaDefinitions.get(name)->resultSignature(),
+		mTypedForaDefinitions.get(name)->callSignature(inLabel),
+		name,
+		handle
+		);
+	}
+
+FunctionPointerHandle				CompilerImpl::getJumpTarget(
+											const std::string& name,
+											NativeBlockID blockId,
+											bool blockUntilCompleted
+											)
+	{
+	mFuncPtrTable.blockUntilSlotExists(make_pair(name, blockId));
+
+	FunctionPointerHandle slot = mFuncPtrTable.getExistingSlot(make_pair(name, blockId));
+
+	if (blockUntilCompleted)
+		{
+		boost::mutex::scoped_lock lock(mLinkTaskNotificationMutex);
+
+		while (slot.isEmpty())
+			mLinkTaskCompleted.wait(lock);
+		
+		lassert(!slot.isEmpty());
+		}
+	
+	return slot;
+	}
+
+
+bool	CompilerImpl::isDefined(const std::string& name)
+	{
+	return mStaticInliner.hasDefined(name);
+	}
+
+Callable 	CompilerImpl::getDefinition(const std::string& name)
+	{
+	return *mTypedForaDefinitions.get(name);
+	}
+
+ImmutableTreeSet<string>	CompilerImpl::getMutuallyRecursiveFunctions(
+											const std::string& name)
+	{
+	return mStaticInliner.getCallGroup(name);
+	}
+
+NativeRuntimeContinuationValueVector 	CompilerImpl::generateDummyContinuation(
+											void* targetData,
+											uword_t* targetContinuation,
+											uword_t continuationIndexLow,
+											uword_t continuationIndexHigh
+											)
+	{
+	boost::mutex::scoped_lock lock(mWrapperCompilerMutex);
+	
+	NativeRuntimeContinuationValueVector vec(
+		NativeRuntimeContinuationBase(
+			NativeFunctionPointer(mWrapperCompiler->dummyContinuationTarget()),
+			targetContinuation,
+			0
+			)
+		);
+
+	for (long k = continuationIndexLow; k < continuationIndexHigh; k++)
+		vec = vec + NativeRuntimeContinuationSlot(k, targetData);
+
+	return vec;
+	}
+
+NativeRuntimeContinuationValue<1> 	CompilerImpl::generateDummyContinuation(
+											void* targetData,
+											uword_t* targetContinuation,
+											uword_t continuationIndex
+											)
+	{
+	boost::mutex::scoped_lock lock(mWrapperCompilerMutex);
+	
+	return NativeRuntimeContinuationBase(
+				NativeFunctionPointer(mWrapperCompiler->dummyContinuationTarget()),
+				targetContinuation,
+				0
+				) + 
+			NativeRuntimeContinuationSlot(
+				continuationIndex,
+				targetData
+				);
+	}
+
+NativeRuntimeContinuationBase		
+				CompilerImpl::wrapCPPCallback(
+							TypedFora::NativeCppCallback	inCFunc,
+							void* inStackframe,
+							MemBlock** inMemBlock
+							)
+	{
+	boost::mutex::scoped_lock lock(mWrapperCompilerMutex);
+	
+	NativeCppCallbackStackframe* frameData = 
+		reinterpret_cast<TypedFora::NativeCppCallbackStackframe*>(
+			FORA_clib_allocMem(inMemBlock, sizeof(NativeCppCallbackStackframe))
+			);
+
+	frameData->cppFunctionPointerToCall() = (NativeCppCallback*)inCFunc;
+	frameData->actualStackPointer() = inStackframe;
+	
+	return NativeRuntimeContinuationBase(
+		NativeFunctionPointer(mWrapperCompiler->wrapCPPCallbackFunPtr()),
+		frameData,
+		0
+		);
+	}
+
+bool	CompilerImpl::isNativeFunctionPointer(NativeFunctionPointer jumpPtr) const
+	{
+	if (jumpPtr.isEmpty())
+		throwLogicErrorWithStacktrace(
+			"can't call TypedFora::Compiler::isNativeFunctionPointer with a "
+				"null pointer.");
+	lassert(!jumpPtr.isEmpty());
+	
+	boost::shared_lock<boost::shared_mutex> lock(mMetadataTableMutex);
+	
+	//Check to see if it has been stored in one of the metadata tables:
+	//(Choice of table is arbitrary.)
+	return mFunctionSlotsType.find(jumpPtr) != mFunctionSlotsType.end();
+	}
+
+void	CompilerImpl::callFunction(
+				NativeFunctionPointer fastcall,
+				MemBlock** mem,
+				uword_t block,
+				void* data
+				)
+	{
+	lassert_dump(!fastcall.isEmpty(), "tried to call an empty function.");
+	
+	void*	fastcallWrapper;
+
+		{
+		boost::mutex::scoped_lock lock(mWrapperCompilerMutex);
+	
+		fastcallWrapper = mWrapperCompiler->getFastcallWrapper();
+		}
+	
+	typedef void (*funtype)(void*, MemBlock**, uword_t, void*);
+	((funtype)fastcallWrapper)(
+		fastcall.extractRawJumpPointer(),
+		mem,
+		block,
+		data
+		);
+	}
+	
+
+const NativeType&		CompilerImpl::slotTypesForFuncPtr(
+								NativeFunctionPointer funcPtr) const
+	{
+	boost::shared_lock<boost::shared_mutex> lock(mMetadataTableMutex);
+		
+	auto it = mFunctionSlotsType.find(funcPtr);
+
+	lassert(it != mFunctionSlotsType.end());
+
+	return it->second;
+	}
+
+ImmutableTreeVector<NativeContinuationMetadataSerialized>
+		CompilerImpl::slotMetadataForFuncPtr(
+				NativeFunctionPointer funcPtr,
+				uword_t metadataEntryId
+				) const
+	{
+	boost::shared_lock<boost::shared_mutex> lock(mMetadataTableMutex);
+
+	lassert_dump(funcPtr == mFunctionContMetadata,
+				 "Couldn't find metadata for " << funcPtr.extractRawJumpPointer() <<
+				 ". I have " << mFunctionContMetadata.size() <<
+				 " metadata values.");
+	
+	auto it = mFunctionContMetadata.find(funcPtr);
+
+	lassert(it != mFunctionContMetadata.end());
+
+	auto it2 = it->second.find(metadataEntryId);
+
+	lassert(it2 != it->second.end());
+
+	return it2->second;
+	}
+
+NativeIndividualContinuationMetadata
+		CompilerImpl::continuationMetadataForFuncPtr(
+				NativeFunctionPointer funcPtr,
+				uword_t blockID
+				) const
+	{
+	boost::shared_lock<boost::shared_mutex> lock(mMetadataTableMutex);
+
+	auto it = mFunctionContMetadataIndividual.find(funcPtr);
+
+	lassert(it != mFunctionContMetadataIndividual.end());
+
+	auto it2 = it->second.find(blockID);
+
+	lassert(it2 != it->second.end());
+
+	return it2->second;
+	}
+
+
+bool		CompilerImpl::isDummyContinuationTarget(NativeFunctionPointer jumpPtr) const
+	{
+	boost::mutex::scoped_lock lock(mWrapperCompilerMutex);
+	
+	return jumpPtr == NativeFunctionPointer(
+							mWrapperCompiler->dummyContinuationTarget());
+
+	}
+
+bool		CompilerImpl::isWrappedCPPCallbackPtr(NativeFunctionPointer jumpPtr) const
+	{
+	boost::mutex::scoped_lock lock(mWrapperCompilerMutex);
+	
+	return jumpPtr == NativeFunctionPointer(
+							mWrapperCompiler->wrapCPPCallbackFunPtr());
+	
+	}
+
+void 	CompilerImpl::update(const std::string& name, const NativeCFG& code)
+	{
+	uint32_t newGenerationNumber = mCFGTable.update(name, code);
+
+	scheduleTask(CompilationTask::Compile(make_pair(name, newGenerationNumber)), 0, emptyTreeVec());
+	}
+
+std::string	CompilerImpl::nameForFunctionPointer(NativeFunctionPointer nfp)
+	{
+	return mCompiledNativeCodeReverse.get(nfp)->first;
+	}
+
+uword_t CompilerImpl::labelFor(TypedFora::BlockID label, const string& fun)
+	{
+	lassert_dump(!label.isInternal(), "can't ask for the jump point of an internal label");
+	
+	return label.index();
+	}
+
+bool CompilerImpl::anyCompilingOrPending(void) const
+	{
+	return mThreadPool.anyExecutingOrPending();
+	}
+
+}
+

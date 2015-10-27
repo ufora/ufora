@@ -1,0 +1,268 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "FuturesSplitResult.hppml"
+
+#include "../Core/PausedComputation.hppml"
+#include "../../core/Logging.hpp"
+
+using Fora::Interpreter::PausedComputation;
+using Fora::Interpreter::PausedComputationFrame;
+using Fora::Interpreter::ComputationResult;
+
+FuturesSplitResult::FuturesSplitResult(
+        const Fora::Interpreter::PausedComputation& inComputation,
+        uint64_t inSplitFrameIndex,
+        const Fora::Interpreter::PausedComputation& inSlotZeroComputation,
+        const PolymorphicSharedPtr<CFGWithFutures>& inSimulatorPtr
+        ):
+        mOriginalPausedComputation(inComputation), 
+        mSplitFrameIndex(inSplitFrameIndex),
+        mSlotZeroComputation(inSlotZeroComputation),
+        mSimulatorPtr(inSimulatorPtr)
+    {
+    }
+
+Nullable<PausedComputation> 
+FuturesSplitResult::pausedComputationForSlot(uint64_t slotIndex) const
+    {
+    if (slotIndex == 0)
+        return null() <<
+            mSlotZeroComputation;
+
+    Nullable<CFGWithFutures::SubmittableArgs> submittableArgs 
+        = asSubmittable(slotIndex);
+    
+    if (submittableArgs.isNull())
+        return null();
+
+    return null() << submittableArgs->toPausedComputation();
+    }
+
+const ControlFlowGraph& FuturesSplitResult::graph() const
+    {
+    return simulator()->graph();
+    }
+
+void FuturesSplitResult::disallowRepeatNodes()
+    {
+    mSimulatorPtr->disallowRepeatNodes();   
+    }
+
+std::string FuturesSplitResult::toString() const
+    {
+    const auto& frame = mOriginalPausedComputation.frames()[mSplitFrameIndex];
+
+    std::ostringstream oss;
+
+    oss << prettyPrintString(frame.label()) << ": " 
+        << prettyPrintString(frame.graph()[frame.label()])
+        << "\nwith values "
+        << prettyPrintString(frame.values())
+        ;
+
+        return oss.str();
+    }
+
+const Nullable<std::string>& FuturesSplitResult::currentLabel() const
+    {
+    return simulator()->currentLabel();
+    }
+    
+PolymorphicSharedPtr<FuturesSplitResult> FuturesSplitResult::split(
+        const PausedComputation& inComputation
+        )
+    {
+    for (uint64_t k = 0; k < inComputation.frames().size() - 1; k++)
+        {
+        auto frame = inComputation.frames()[k];
+        
+        if (frame.areAllValuesConst() and 
+                frame.graph()[frame.label()].body().isApply())
+            {
+            PolymorphicSharedPtr<FuturesSplitResult> result = 
+                splitAtFrame(inComputation, k);
+
+            if (result)
+                return result;
+            }
+        else {
+            return PolymorphicSharedPtr<FuturesSplitResult>();
+            }
+        }
+
+    return PolymorphicSharedPtr<FuturesSplitResult>();
+    }
+
+namespace {
+
+PausedComputation computeSlotZeroComputation(
+        const PausedComputation& inComputation, uint64_t frameIndex
+        )
+    {
+    const PausedComputationFrame& splitFrame = 
+        inComputation.frames()[frameIndex];
+
+    auto node = splitFrame.graph()[splitFrame.label()];
+
+    lassert(node.body().isApply());
+
+    return PausedComputation(
+        inComputation.frames().slice(frameIndex + 1),
+        inComputation.pendingResult()
+        );
+    }
+    
+}
+
+PolymorphicSharedPtr<FuturesSplitResult> FuturesSplitResult::splitAtFrame(
+        const PausedComputation& inComputation,
+        uint64_t frameIndex
+        )
+    {
+    const PausedComputationFrame& frame = inComputation.frames()[frameIndex];
+
+    lassert(frame.graph()[frame.label()].body().isApply());
+    
+    PolymorphicSharedPtr<CFGWithFutures> result = 
+        CFGWithFutures::createCfgWithFutures(
+            frame.graph(),
+            frame.label(),
+            frame.values()
+            );
+            
+    if (result)
+        {
+        for (uint64_t ix = 0; ix < 10; ++ix)
+            {
+            result->continueSimulation();
+
+            if (result->indicesOfSubmittableFutures().size() > 1)
+                {
+                PausedComputation slotZeroComputation = 
+                    computeSlotZeroComputation(
+                        inComputation,
+                        frameIndex
+                        );
+
+                return PolymorphicSharedPtr<FuturesSplitResult>(
+                    new FuturesSplitResult(
+                        inComputation,
+                        frameIndex,
+                        slotZeroComputation,
+                        result                        
+                        )
+                    );
+                }
+            }
+        }
+
+    return PolymorphicSharedPtr<FuturesSplitResult>();
+    }
+
+PolymorphicSharedPtr<CFGWithFutures> FuturesSplitResult::simulator() const
+    {
+    return mSimulatorPtr;
+    }
+
+PausedComputation FuturesSplitResult::getFinalResult() const
+    {
+    Nullable<CFGWithFutures::SimulationResult> finalResult = 
+        simulator()->getFinalResult();
+
+    if (finalResult.isNull())
+        {
+        return originalPausedComputation();
+        }
+
+    @match CFGWithFutures::SimulationResult(*finalResult)
+        -|  Result(result) ->> {
+            bool isException = false;
+            ImplValContainer valueToReturn;
+
+            @match Fora::Interpreter::ComputationResult(result)
+                -|  Exception(exception, computationLog) ->> {
+                    isException = true;
+                    valueToReturn = exception;
+                    }
+                -|  Result(result_, computationLog) ->> {
+                    valueToReturn = result_;
+                    }
+                -|  Failure(error) ->> {
+                    lassert_dump(false, 
+                        "don't know how to handle failures here ...");
+                    }
+                ;
+
+            return PausedComputation(
+                originalPausedComputation().frames().slice(0, splitFrameIndex()),
+                null() << std::make_pair(valueToReturn, isException)
+                );
+            }
+        -|  Paused(frame) ->> {
+            return PausedComputation(
+                originalPausedComputation().frames().slice(
+                    0, splitFrameIndex()
+                    ) + frame,
+                null()
+                );
+            }
+        ;
+    }
+
+const std::set<uint64_t>& FuturesSplitResult::indicesOfSubmittableFutures() const
+    {
+    return mSimulatorPtr->indicesOfSubmittableFutures();
+    }
+
+bool FuturesSplitResult::continueSimulation()
+    {
+    return mSimulatorPtr->continueSimulation();
+    }
+
+Nullable<CFGWithFutures::SubmittableArgs> FuturesSplitResult::asSubmittable(
+        uint64_t slotIndex
+        ) const
+    {
+    // not sure what to do here. the zeroth slot is special, and
+    // should be handled by slotZeroComputation
+    if (slotIndex == 0)
+        return null();
+
+    return mSimulatorPtr->asSubmittable(slotIndex);
+    }
+
+void FuturesSplitResult::slotCompleted(
+        uint64_t slotIndex, const Fora::Interpreter::ComputationResult& result
+        )
+    {
+    mSimulatorPtr->slotCompleted(slotIndex, result);
+    }
+
+bool FuturesSplitResult::hasResolvedToSimpleState() const
+    {
+    return mSimulatorPtr->hasResolvedToSimpleState();
+    }
+
+uint64_t FuturesSplitResult::splitFrameIndex() const
+    {
+    return mSplitFrameIndex;
+    }
+
+const PausedComputation& FuturesSplitResult::originalPausedComputation() const
+    {
+    return mOriginalPausedComputation;
+    }
+

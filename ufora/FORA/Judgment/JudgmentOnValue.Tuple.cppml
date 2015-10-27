@@ -1,0 +1,704 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "JudgmentOnValue.hppml"
+#include "../Core/Type.hppml"
+#include "../Core/ImplVal.hppml"
+#include "../Interpreter/EvalFrameArgList.hpp"
+#include "../Core/ApplyArgFrame.hppml"
+
+JudgmentOnValue		JudgmentOnValueTuple::VectorElementJOVFromLiveValue(
+                                                const ImplVal& inImplVal
+                                                )
+	{
+	@match Type(inImplVal.type())
+		-|	Tuple(t, names) ->> {
+				ImmutableTreeVector<JudgmentOnValue> jovs;
+				uword_t sz = 0;
+				
+				for (long k = 0; k < t.size(); k++)
+					{                    
+					jovs = jovs + JudgmentOnValue::VectorElementJOVFromLiveValue(
+                                                ImplVal(t[k], (char*)&inImplVal.cast<char>() + sz)
+                                                );;
+					
+					sz = sz + t[k].size();
+					}
+				
+				return JudgmentOnValue::Tuple(
+					JudgmentOnValueTuple(
+						jovs,
+						names,
+						JudgmentOnValueTupleExtras::NoExtras()
+						)
+					);
+			}
+	}
+
+JudgmentOnValue		JudgmentOnValueTuple::FromLiveValue(const ImplVal& inImplVal)
+	{
+	@match Type(inImplVal.type())
+		-|	Tuple(t, names) ->> {
+
+			ImmutableTreeVector<JudgmentOnValue> jovs;
+			uword_t sz = 0;
+			
+			for (long k = 0; k < t.size(); k++)
+				{
+				jovs = jovs +
+					JudgmentOnValue::FromLiveValue(
+						ImplVal(t[k], (char*)&inImplVal.cast<char>() + sz)
+						);
+				
+				sz = sz + t[k].size();
+				}
+			
+			return JudgmentOnValue::Tuple(
+				JudgmentOnValueTuple(
+					jovs,
+					names,
+					JudgmentOnValueTupleExtras::NoExtras()
+					)
+				);
+			}
+	}
+    
+JudgmentOnValue		JudgmentOnValueTuple::OfType(const Type& type)
+	{
+	lassert(type.isTuple());
+	
+	@match Type(type)
+		-|	Tuple(types, names) ->> {
+				ImmutableTreeVector<JudgmentOnValue> jovs;
+				for (long k = 0; k < types.size(); k++)
+					jovs = jovs + JOV::OfType(types[k]);
+				return JudgmentOnValue::Tuple(
+					JudgmentOnValueTuple(jovs, names)
+					);
+				}
+		;
+	}
+    
+Nullable<Type>				JudgmentOnValueTuple::computeType() const
+	{
+	@match JudgmentOnValueTuple(*this)
+		-|	(jovs, names, NoExtras()) ->> {
+				ImmutableTreeVector<Type> v;
+				for (long k = 0; k < jovs.size(); k++)
+					if (!jovs[k].type())
+						return null();
+						else
+						v = v + *jovs[k].type();
+				return null() << Type::Tuple(v, names);
+				}
+		-|	_ ->> {
+				return null();
+				}
+		;
+	}
+    
+Nullable<CSTValue>			JudgmentOnValueTuple::computeConstant() const
+	{
+	@match JudgmentOnValueTuple(*this)
+		-|	(jovs, names, NoExtras()) ->> {
+				ImmutableTreeVector<CSTValue> vals;
+				uword_t sz = 0;
+				for (long k = 0; k < jovs.size(); k++)
+					{
+					Nullable<CSTValue> v = jovs[k].constant();
+					if (!v)
+						return null();
+					vals = vals + *v;
+					sz = sz + v->type().size();
+					}
+				vector<char> dat;
+				ImmutableTreeVector<Type> types;
+				dat.resize(std::max<uword_t>(sz,1));
+				sz = 0;
+				for (long k = 0; k < vals.size(); k++)
+					{
+					vals[k].type().initialize(&dat[0] + sz, vals[k].getData());
+					sz = sz + vals[k].type().size();
+					types = types + vals[k].type();
+					}
+				CSTValue res(ImplVal(Type::Tuple(types, names), &dat[0]));
+				res.type().destroy(&dat[0]);
+				
+				return null() << res;
+				}
+		-|	_ ->> { return null(); }
+		;
+	}
+		
+bool JudgmentOnValueTuple::covers(const Fora::ApplyArgFrame& impl) const
+	{
+	if (impl.size() < jovs().size())
+		return false;
+	if (extras().isNoExtras() && impl.size() != jovs().size())
+		return false;
+
+	//check the names first, since that's fast
+	for (long k = 0; k < names().size(); k++)
+		if (impl[k].second != names()[k])
+			return false;
+	
+	//now check data values themselves
+	for (long k = 0; k < impl.size(); k++)
+		if (!(*this)[k].covers(impl[k].first))
+			return false;
+	
+	return true;
+	}
+    
+bool JudgmentOnValueTuple::covers(const Fora::Interpreter::EvalFrameArgList& impl) const
+	{
+	if (impl.size() < jovs().size())
+		return false;
+	if (extras().isNoExtras() && impl.size() != jovs().size())
+		return false;
+
+	//check the names first, since that's fast
+	for (long k = 0; k < names().size(); k++)
+		if (names()[k])
+			return false;
+	
+	//now check data values themselves
+	for (long k = 0; k < impl.size(); k++)
+		if (!(*this)[k].covers(impl[k]))
+			return false;
+	
+	return true;
+	}
+    
+bool JudgmentOnValueTuple::covers(const JudgmentOnValue& otherJOV) const
+	{
+	if (!otherJOV.isTuple())
+		return false;
+	
+	return covers(otherJOV.getTuple().jov());
+	}
+    
+bool JudgmentOnValueTuple::covers(const JudgmentOnValueTuple& other) const
+	{
+	if (jovs().size() > other.jovs().size())
+		return false;
+	Nullable<uword_t> maxElts = maxElements();
+	Nullable<uword_t> otherMaxElts = other.maxElements();
+
+	if (maxElts && !otherMaxElts)
+		return false;
+	if (maxElts && *maxElts < *otherMaxElts)
+		return false;
+	
+	//check that names match
+	for (long k = 0; k < jovs().size(); k++)
+		if (names()[k] != other.names()[k])
+			return false;
+		
+	for (long k = 0; k < jovs().size(); k++)
+		if (! (*this)[k].covers(other[k]))
+			return false;
+	if (extras().isExtras())
+		{
+		JudgmentOnValue myExtraJOV = extras().getExtras().jov();
+		//make sure that our extraJOT covers the other extra JOT
+
+		if (otherMaxElts && jovs().size() >= *otherMaxElts)
+			return true;
+
+		for (long k = jovs().size(); k < other.jovs().size(); k++)
+			if (!myExtraJOV.covers(other[k]))
+				return false;
+
+		if (other.extras().isExtras())
+			return myExtraJOV.covers(other.extras().getExtras().jov());
+		}
+
+	return true;
+	}
+    
+bool JudgmentOnValueTuple::disjoint(const JudgmentOnValue& otherJOV) const
+	{
+	if (!otherJOV.isTuple())
+		return true;
+	
+	return disjoint(otherJOV.getTuple().jov());
+	}
+    
+bool JudgmentOnValueTuple::disjoint(const JudgmentOnValueTuple& other) const
+	{
+	Nullable<uword_t> maxElts = maxElements();
+	Nullable<uword_t> otherMaxElts = other.maxElements();
+
+	if (maxElts && *maxElts < other.jovs().size())
+		return true;
+	if (otherMaxElts && *otherMaxElts < jovs().size())
+		return true;
+
+	for (long k = 0; k < jovs().size() || k < other.jovs().size(); k++)
+		if ((*this)[k].disjoint(other[k]) ||
+				(k < jovs().size() && k < other.jovs().size() &&
+					names()[k] != other.names()[k])
+				)
+			return true;
+
+	if (extras().isExtras() && other.extras().isExtras())
+		{
+		if (extras().getExtras().jov().disjoint(other.extras().getExtras().jov()))
+			return true;
+		}
+
+	return false;
+	}
+    
+Nullable<uword_t> JudgmentOnValueTuple::maxElements(void) const
+	{
+	@match JudgmentOnValueTupleExtras(extras())
+		-|	NoExtras() ->> {
+			return  (null() << (uword_t)jovs().size());
+			}
+		-|	Extras() ->> {
+			return  Nullable<uword_t>();
+			}
+		;
+	}
+    
+JudgmentOnValue JudgmentOnValueTuple::operator[](uword_t ix) const
+	{
+	if (ix < jovs().size())
+		return jovs()[ix];
+	lassert(extras().isExtras());
+	return extras().getExtras().jov();
+	}
+	JudgmentOnValueTuple JudgmentOnValueTuple::merge(
+							const JudgmentOnValueTuple& left,
+							const JudgmentOnValueTuple& right
+							)
+	{
+	if (left.extras().isNoExtras())
+		return JudgmentOnValueTuple(
+			left.jovs() + right.jovs(),
+			left.names() + right.names(),
+			right.extras()
+			);
+	
+	JudgmentOnValue jov = left.extras().getExtras().jov();
+
+	uword_t min = 0;
+	min = min + right.jovs().size();
+
+	for (long k = 0; k < right.jovs().size(); k++)
+		jov = ::smallestCovering(jov, right.jovs()[k]);
+
+	if (right.extras().isExtras())
+		jov = ::smallestCovering(jov, right.extras().getExtras().jov());
+
+	return JudgmentOnValueTuple(
+				left.jovs(),
+				left.names(),
+				JudgmentOnValueTupleExtras::Extras(jov)
+				);
+	}
+    
+Nullable<bool> JudgmentOnValueTuple::computeIsCST(void) const
+	{
+	//if any of them are not CST then the whole thing is not CST
+	for (long k = 0; k < jovs().size(); k++)
+		if (jovs()[k].isCST() && !*jovs()[k].isCST())
+			return null() << false;
+	
+	@match JudgmentOnValueTupleExtras(extras())
+		-|	NoExtras() ->> {;}
+		-|	Extras(jov) ->> {
+				if (jov.isCST() && !*jov.isCST())
+					return null() << false;
+				}
+		;
+	
+	//if even one of them is unknown, then we're unknown
+	for (long k =0; k < jovs().size(); k++)
+		if (!jovs()[k].isCST())
+			return null();
+	
+	@match JudgmentOnValueTupleExtras(extras())
+		-|	NoExtras() ->> {;}
+		-|	Extras(jov) ->> {
+				if (!jov.isCST())
+					return null();
+				}
+		;
+	
+	return null() << true;
+	}
+    
+JudgmentOnValueTuple JudgmentOnValueTuple::slice(uint32_t index) const
+	{
+	return JudgmentOnValueTuple(
+		jovs().slice(index),
+		names().slice(index),
+		extras()
+		);
+	}
+    
+JudgmentOnValueTuple::JudgmentOnValueTuple(
+			const ImmutableTreeVector<JudgmentOnValue>& inJOVs,
+			const ImmutableTreeVector<Nullable<Symbol> >& inNames
+			)
+	{
+	jovs() = inJOVs;
+	names() = inNames;
+	
+	lassert(inNames.size() == inJOVs.size());
+	}
+    
+hash_type JudgmentOnValueTuple::hash() const
+	{
+	return hashValue(jovs()) + hashValue(names()) + hashValue(extras());
+	}
+
+ImmutableTreeVector<JudgmentOnValue> 
+JudgmentOnValueTuple::toJOVListWithExtrasAsTrailingElement(void) const
+	{
+	@match JudgmentOnValueTupleExtras(extras())
+		-|	NoExtras() ->> {
+			return jovs();
+			}
+		-|	Extras() ->> {
+			return jovs() +
+				JudgmentOnValue::Tuple(
+					JudgmentOnValueTuple(
+						emptyTreeVec(),
+						emptyTreeVec(),
+						extras()
+						)
+					);
+			}
+		;
+	}
+    
+ApplySignature	JudgmentOnValueTuple::toApplySignature(void) const
+	{
+	ImmutableTreeVector<ApplyArgumentSignature> terms;
+	
+	for (long k = 0; k < jovs().size(); k++)
+		terms = terms + ApplyArgumentSignature::Normal(names()[k]);
+	if (extras().isExtras())
+		terms = terms + ApplyArgumentSignature::TupleCall();
+	
+	return ApplySignature(terms);
+	}
+				
+JudgmentOnValueTuple JudgmentOnValueTuple::Unnamed(
+						const ImmutableTreeVector<JOV>& types
+						)
+	{
+	return JudgmentOnValueTuple(types,
+			(emptyTreeVec() + Nullable<Symbol>()) * types.size()
+			);
+	}
+	
+void JudgmentOnValueTuple::toString(CPPMLPrettyPrintStream& str, bool isJOVAsValue) const
+	{
+	if (isJOVAsValue)
+		str << "jovof";
+	
+	str << "(";
+	for (long k = 0; k < jovs().size(); k++)
+		{
+		if (k > 0)
+			str << ", ";
+		
+		if (names()[k])
+			str << *names()[k] << ": ";
+		jovs()[k].toString(str, false);
+		}
+	
+	if (extras().isExtras())
+		{
+		if (jovs().size())
+			str << ", ";
+		
+		str << "... ";
+		
+		extras().getExtras().jov().toString(str, false);
+		}
+	str << ")";
+	}
+    
+bool JudgmentOnValueTuple::covers(const ImplVal& impl) const
+	{
+	if (!impl.type().isTuple())
+		return false;
+
+	const ImmutableTreeVector<Type>& implTypes =
+		impl.type().getTuple().types();
+	
+	const ImmutableTreeVector<Nullable<Symbol> >& implNames =
+		impl.type().getTuple().names();
+	
+	lassert(implTypes.size() == implNames.size());
+
+	if (implTypes.size() < jovs().size())
+		return false;
+	if (extras().isNoExtras() && implTypes.size() != jovs().size())
+		return false;
+
+	//check the names first, since that's fast
+	for (long k = 0; k < names().size(); k++)
+		if (implNames[k] != names()[k])
+			return false;
+	
+	//now check data values themselves
+	uword_t sz = 0;
+	for (long k = 0; k < implTypes.size(); k++)
+		{
+		if (!(*this)[k].covers(ImplVal(implTypes[k], ((char*)impl.data()) + sz)))
+			return false;
+
+		sz += implTypes[k].size();
+		}
+
+	return true;
+	}
+    
+JudgmentOnResult	JudgmentOnValueTuple::intersectWith(const JudgmentOnValue& rightJOV) const
+	{
+	if (!rightJOV.isTuple())
+		return JudgmentOnResult();
+		
+	const JudgmentOnValueTuple& right(rightJOV.getTuple().jov());
+	
+	Nullable<uword_t> lMax = this->maxElements();
+	Nullable<uword_t> rMax = right.maxElements();
+
+	if (lMax && *lMax < right.jovs().size())
+		return JudgmentOnResult();
+
+	if (rMax && *rMax < this->jovs().size())
+		return JudgmentOnResult();
+
+	ImmutableTreeVector<Nullable<Symbol> > names;
+	ImmutableTreeVector<JudgmentOnValue> subs;
+	for (long k = 0; k < this->jovs().size() || k < right.jovs().size(); k++)
+		{
+		if (k < this->names().size() && k < right.names().size())
+			{
+			if (this->names()[k] != right.names()[k])
+				return JudgmentOnResult();
+				else
+				names = names + this->names()[k];
+			}
+			else
+		if (k < this->names().size())
+			names = names + this->names()[k];
+			else
+			//this will be valid since names and types always have the same
+			//size, and k maxes at the max of left and right's sizes
+			names = names + right.names()[k];
+		
+		JudgmentOnResult t = (*this)[k] & right[k];
+		
+		if (t.size() != 1)
+			return JudgmentOnResult();
+
+		subs = subs + t[0];
+		}
+
+	JudgmentOnValue lExtra,rExtra;
+	if (!lMax || *lMax > subs.size())
+		lExtra = this->extras().getExtras().jov();
+	if (!rMax || *rMax > subs.size())
+		rExtra = right.extras().getExtras().jov();
+
+	JudgmentOnResult ex = lExtra & rExtra;
+	if (ex.size() != 1)
+		return JudgmentOnResult();
+
+	Nullable<uword_t> trueMax;
+	if (lMax && !rMax)
+		trueMax = *lMax - subs.size();
+		else
+	if (rMax && !lMax)
+		trueMax = *rMax - subs.size();
+		else
+	if (rMax && lMax)
+		trueMax = std::min(*rMax, *lMax) - subs.size();
+
+	return JudgmentOnResult(
+		JudgmentOnValue::Tuple(
+			JudgmentOnValueTuple(
+				subs,
+				names,
+				!trueMax || *trueMax ?
+					JudgmentOnValueTupleExtras::Extras(ex[0])
+				:	JudgmentOnValueTupleExtras::NoExtras()
+				)
+			)
+		);
+	}
+    
+JOV jovTuple(void)
+	{
+	return JudgmentOnValue::Tuple(JOVT() + JOVTE::Extras());
+	}
+    
+JOV jovTuple(const JOV& inJOV)
+	{
+	return JudgmentOnValue::Tuple(JOVT() + JOVTE::Extras(inJOV));
+	}
+    
+JOV jovTupleEmpty(void)
+	{
+	return JudgmentOnValue::Tuple(JOVT() + JOVTE::NoExtras());
+	}
+    
+JudgmentOnValueTupleExtras JudgmentOnValueTupleExtras::Extras(void)
+	{
+	return JudgmentOnValueTupleExtras::Extras(JOV::Unknown());
+	}
+
+namespace {
+
+//helper function to merge JOVS
+Nullable<JudgmentOnValue> 	accumlate(const Nullable<JudgmentOnValue>& jov, const JudgmentOnValue& jov2)
+	{
+	if (jov)
+		return null() << jov->smallestCovering(jov2);
+		else
+		return null() << jov2;
+	}
+    
+Nullable<Symbol> mergeNames(Nullable<Symbol> l, Nullable<Symbol> r)
+	{
+	if (l == r)
+		return l;
+	return null();
+	}
+}
+	
+JudgmentOnValue		JudgmentOnValueTuple::smallestCovering(const JudgmentOnValue& otherJOV) const
+	{
+	if (!otherJOV.isTuple())
+		return ::smallestCovering(JudgmentOnValue::Tuple(*this), otherJOV);
+	
+	const JudgmentOnValueTuple& other(otherJOV.getTuple().jov());
+	
+	//the elements we have in common we can just use the smallestCovering function recursively
+	uword_t pairwiseElementCount = std::min(jovs().size(), other.jovs().size());
+	
+	ImmutableTreeVector<JudgmentOnValue> subjovs;
+	ImmutableTreeVector<Nullable<Symbol> > subnames;
+	
+	for (long k = 0; k < pairwiseElementCount; k++)
+		{
+		subjovs = subjovs + jovs()[k].smallestCovering(other.jovs()[k]);
+		subnames = subnames + mergeNames(names()[k], other.names()[k]);
+		}
+	
+	Nullable<JudgmentOnValue> extraJOV;
+	
+	if (extras().isExtras())
+		extraJOV = accumlate(extraJOV, extras().getExtras().jov());
+	
+	if (other.extras().isExtras())
+		extraJOV = accumlate(extraJOV, other.extras().getExtras().jov());
+		
+	for (long k = pairwiseElementCount; k < other.jovs().size(); k++)
+		extraJOV = accumlate(extraJOV, other.jovs()[k]);
+		
+	for (long k = pairwiseElementCount; k < jovs().size(); k++)
+		extraJOV = accumlate(extraJOV, jovs()[k]);
+	
+	if (!extraJOV)
+		return JOV::Tuple(JOVT(subjovs, subnames, JOVTE::NoExtras()));
+		else
+		return JOV::Tuple(JOVT(subjovs, subnames, JOVTE::Extras(*extraJOV)));
+	}
+    
+JudgmentOnResult		JudgmentOnValueTuple::restrictedToCSTness(bool inCSTness) const
+	{
+	ImmutableTreeVector<JOV> newJOVs;
+	
+	for (long k = 0; k < jovs().size(); k++)
+		{
+		JudgmentOnResult sub = jovs()[k].restrictedToCSTness(inCSTness);
+		if (sub.size() != 1)
+			return JudgmentOnResult();
+			
+		newJOVs = newJOVs + sub[0];
+		}
+	
+	if (extras().isExtras())
+		{
+		JudgmentOnResult sub = extras().getExtras().jov().restrictedToCSTness(inCSTness);
+		if (sub.size() == 1)
+			return JudgmentOnResult(
+				JudgmentOnValue::Tuple(
+					JudgmentOnValueTuple(
+						newJOVs,
+						names(),
+						JudgmentOnValueTupleExtras::Extras(
+							sub[0]
+							)
+						)
+					)
+				);
+			else
+			return JudgmentOnResult();
+		}
+	
+	return JudgmentOnResult(
+		JudgmentOnValue::Tuple(
+			JudgmentOnValueTuple(
+				newJOVs,
+				names(),
+				JudgmentOnValueTupleExtras::NoExtras()
+				)
+			)
+		);
+	}
+	
+string JudgmentOnValueTuple::toString(void) const
+	{
+	return prettyPrintString(*this);
+	}
+
+bool JudgmentOnValueTuple::hasExtras(void) const
+	{
+	return extras().isExtras();
+	}
+
+Nullable<bool> JudgmentOnValueTuple::arityEqualTo(uword_t inCount) const
+	{
+	if (inCount < jovs().size())
+		return null() << false;
+	if (inCount > jovs().size() && !hasExtras())
+		return null() << false;
+	if (inCount == jovs().size() && !hasExtras())
+		return null() << true;
+	return null();
+	}
+
+Nullable<bool> JudgmentOnValueTuple::arityGreaterThanOrEqualTo(uword_t inCount) const
+	{
+	if (!hasExtras())
+		return null() << (jovs().size() >= inCount);
+
+	if (jovs().size() >= inCount)
+		return null() << true;
+
+	return null();
+	}
+

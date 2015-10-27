@@ -1,0 +1,377 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ModuleParser.hppml"
+#include "ModuleParseResult.hppml"
+#include "ModuleBindingResult.hppml"
+#include "ModuleParseError.hppml"
+#include "SourceCodeTree.hppml"
+#include "FreeVariableListFromPython.hpp"
+#include "ParserExpressions.hppml"
+#include <boost/python.hpp>
+#include "../../native/Registrar.hpp"
+#include "../python/FORAPythonUtil.hppml"
+#include "../../core/containers/ImmutableTreeVector.py.hpp"
+#include "../../core/containers/ImmutableTreeSet.py.hpp"
+#include "../../core/containers/ImmutableTreeMap.py.hpp"
+#include "../../core/PolymorphicSharedPtrFuncFromMemberFunc.hpp"
+#include "../python/PurePython/PythonAst.hppml"
+#include "../python/PurePython/PythonAstToFora.hppml"
+#include "../python/PurePython/DirectPythonConstantConverter.hppml"
+#include "../python/PurePython/DirectPythonListConverter.hpp"
+#include "../python/PurePython/DirectPythonTupleConverter.hppml"
+#include "../python/PurePython/DirectPythonDictConverter.hppml"
+#include "../python/PurePython/PythonParseError.hppml"
+
+
+using namespace Fora;
+
+class ModuleParserWrapper :
+	public native::module::Exporter<ModuleParserWrapper> {
+public:
+	std::string		 getModuleName(void)
+		{
+		return "FORA";
+		}
+
+	static PolymorphicSharedPtr<Fora::ModuleParser>* createModuleParser()
+		{
+		return new PolymorphicSharedPtr<Fora::ModuleParser>(new Fora::ModuleParser());
+		}
+
+	static PolymorphicSharedPtr<Fora::ModuleParser>* createModuleParserWithPythonParser(
+			boost::python::object pythonParser)
+		{
+		return new PolymorphicSharedPtr<Fora::ModuleParser>(new Fora::ModuleParser(
+			std::bind(parsePythonModule, pythonParser, std::placeholders::_1))
+			);
+		}
+
+	static ModuleParser::StatementTermsAndErrors parsePythonModule(
+			boost::python::object pythonParser,
+			const std::string& codeToParse)
+		{
+		boost::python::object moduleAsPyObject = pythonParser(codeToParse);
+		boost::python::extract<PythonParseError> extractError(moduleAsPyObject);
+		if (extractError.check())
+			return ModuleParser::StatementTermsAndErrors() +
+				Alternative<pair<StatementTerm, CodeLocation>, FunctionParseError>(
+					convertPythonParseError(extractError())
+					);
+
+		boost::python::extract<PythonAstModule> extract(moduleAsPyObject);
+		lassert(extract.check());
+		return convertPythonAst(extract());
+		}
+
+	static FunctionParseError convertPythonParseError(const PythonParseError & error)
+		{
+		@match PythonParseError(error)
+			-| SyntaxError(filename, lineno, offset, text) ->> {
+				return FunctionParseError(
+					error.message() + ": " + text,
+					SimpleParseRange(
+						SimpleParsePosition(0, lineno, offset),
+						SimpleParsePosition(0, lineno, offset+1)
+						)
+					);
+				}
+			-| TypeError() ->> {
+				return FunctionParseError(
+					error.message(),
+					SimpleParseRange(SimpleParseNode::Empty(), SimpleParseNode::Empty())
+					);
+				}
+		}
+
+	static ModuleParser::StatementTermsAndErrors convertPythonAst(PythonAstModule pyAstModule)
+		{
+		auto pythonAstConverter = PythonAstConverter(
+				PolymorphicSharedPtr<PythonConstantConverter>(new DirectPythonConstantConverter()),
+				PolymorphicSharedPtr<PythonListConverter>(new DirectPythonListConverter()),
+				PolymorphicSharedPtr<PythonTupleConverter>(new DirectPythonTupleConverter()),
+                PolymorphicSharedPtr<PythonDictConverter>(new DirectPythonDictConverter()),
+				ImplValContainer()
+				);
+		
+		@match PythonAstModule(pyAstModule)
+			-| Module(body) ->> {
+				ModuleParser::StatementTermsAndErrors terms;
+				ModuleParser::StatementTermsAndErrors letBindings = foraKeywordBindings();
+				for (auto pyStatement : body)
+					{
+					Expression expr = pythonAstConverter.convertPythonAstStatementToExpression(pyStatement);
+					if (expr.isAssign())
+						letBindings = letBindings + assignmentToLetStatementTerm(expr);
+
+					auto term = StatementTerm::Expr(expr);
+					terms = terms + decltype(terms)::element_type(
+						std::make_pair(
+							term,
+							CodeLocation(
+								CodeDefinitionPoint::External(ImmutableTreeVector<std::string>()),
+								pyStatement.extent()
+								)
+							)
+						);
+					}
+				return letBindings + terms;
+				}
+			-| _ ->> {
+				lassert_dump(false, "pyAstModule should ALWAYS be a Module");
+				}
+		}
+
+	static ModuleParser::StatementTermsAndErrors foraKeywordBindings()
+		{
+		static ModuleParser::StatementTermsAndErrors bindings = mapForaKeywordsToLetBindings();
+		return bindings;
+		}
+
+	static ModuleParser::StatementTermsAndErrors mapForaKeywordsToLetBindings()
+		{
+		ModuleParser::StatementTermsAndErrors bindings;
+		for (auto & constant : ParserExpressions::constants())
+			{
+			bindings = bindings + decltype(bindings)::element_type(
+				std::make_pair(
+					StatementTerm::Let(emptyTreeVec() + std::make_pair(
+						PatternWithName::Anything(null() << Symbol(constant.first)),
+						Expression::Constant(constant.second)
+						)),
+					CodeLocation(
+						CodeDefinitionPoint::External(ImmutableTreeVector<std::string>()),
+						SimpleParseRange(SimpleParseNode::Empty(), SimpleParseNode::Empty())
+						)
+					)
+				);
+			}
+		return bindings;
+		}
+
+	static ModuleParser::StatementTermsAndErrors::element_type assignmentToLetStatementTerm(
+			const Expression& expr
+			)
+		{
+		return ModuleParser::StatementTermsAndErrors::element_type(
+			std::make_pair(
+				StatementTerm::Let(emptyTreeVec() + std::make_pair(
+						expr.getAssign().toAssign(),
+						Expression::Constant(CSTValue())
+						)),
+				CodeLocation(
+					CodeDefinitionPoint::External(ImmutableTreeVector<std::string>()),
+					SimpleParseRange(SimpleParseNode::Empty(), SimpleParseNode::Empty())
+					)
+				)
+			);
+		}
+
+	static ImmutableTreeVector<Fora::ModuleParseError> getModuleParseResultErrors(ModuleParseResult& result)
+		{
+		return result.errors();
+		}
+
+	static ImmutableTreeVector<Fora::ModuleParseError> getModuleBindingResultParseErrors(ModuleBindingResult& result)
+		{
+		if (result.isModule())
+			return result.getModule().parseErrors();
+		if (result.isMember())
+			return result.getMember().parseErrors();
+
+		lassert(false);
+		}
+
+
+
+	static ImmutableTreeSet<std::string> getModuleParseResultFreeVariables(ModuleParseResult& result)
+		{
+		ImmutableTreeSet<std::string> res;
+
+		for (auto s: result.freeVariables())
+			res = res + s.toString();
+
+		return res;
+		}
+
+	static ModuleBindingResult moduleParserBind(
+						PolymorphicSharedPtr<Fora::ModuleParser>& parser, 
+						Fora::ModuleParseResult& result,
+						boost::python::dict freeVariables,
+						bool performDecompositionAndPartialBinding
+						)
+		{
+		return parser->bind(
+			result, 
+			Fora::freeVariableListFromPython(freeVariables), 
+			performDecompositionAndPartialBinding
+			);
+		}
+
+	static ImmutableTreeSet<CodeLocation> computeFreeVariableLocations(ModuleParseResult& result, std::string var)
+		{
+		return result.computeFreeVariableLocations(Symbol(var));
+		}
+
+	static boost::python::object getModuleBindingResultMembers(ModuleBindingResult& members)
+		{
+		boost::python::dict result;
+
+		if (!members.isModule())
+			return result;
+
+		for (auto nameAndChild: members.getModule().members())
+			result[nameAndChild.first.toString()] = nameAndChild.second;
+
+		return result;
+		}
+
+	static boost::python::object getModuleBindingResultMemberString(ModuleBindingResult& members, std::string s)
+		{
+		if (!members.isModule())
+			return boost::python::object();
+
+		auto res = members.getModule().members()[Symbol(s)];
+
+		if (!res)
+			return boost::python::object();
+
+		return boost::python::object(*res);
+		}
+
+	static boost::python::object getModuleBindingResultMemberSymbol(ModuleBindingResult& members, Symbol s)
+		{
+		if (!members.isModule())
+			return boost::python::object();
+
+		auto res = members.getModule().members()[Symbol(s)];
+
+		if (!res)
+			return boost::python::object();
+
+		return boost::python::object(*res);
+		}
+
+	static boost::python::object getModuleParseResultMembers(ModuleParseResult& members)
+		{
+		boost::python::dict result;
+
+		if (!members.isModule())
+			return result;
+
+		for (auto nameAndChild: members.getModule().submodules())
+			result[nameAndChild.first.toString()] = nameAndChild.second;
+
+		return result;
+		}
+		
+	static boost::python::object getModuleParseResultMemberString(ModuleParseResult& members, std::string s)
+		{
+		if (!members.isModule())
+			return boost::python::object();
+
+		auto res = members.getModule().submodules()[Symbol(s)];
+
+		if (!res)
+			return boost::python::object();
+
+		return boost::python::object(*res);
+		}
+		
+	static boost::python::object getModuleParseResultMemberSymbol(ModuleParseResult& members, Symbol s)
+		{
+		if (!members.isModule())
+			return boost::python::object();
+
+		auto res = members.getModule().submodules()[s];
+
+		if (!res)
+			return boost::python::object();
+
+		return boost::python::object(*res);
+		}
+
+	static boost::python::object getModuleBindingResultAndSymbol(ModuleBindingResult& m)
+		{
+		if (!m.isMember())
+			return boost::python::object();
+		auto resultOrNull = m.getMember().result();
+
+		if (resultOrNull.isNull())
+			return boost::python::object();
+
+		return boost::python::make_tuple(resultOrNull->first, resultOrNull->second);
+		}
+		
+	void exportPythonWrapper()
+		{
+		using namespace boost::python;
+
+		boost::python::object moduleParseErrorCls = 
+			FORAPythonUtil::exposeValueLikeCppmlType<Fora::ModuleParseError>().class_();
+
+		def("ModuleParseError", moduleParseErrorCls);
+
+		FORAPythonUtil::exposeValueLikeCppmlType<Fora::ModuleParseResult>()
+			.class_()
+			.add_property("errors", getModuleParseResultErrors)
+			.add_property("freeVariables", getModuleParseResultFreeVariables)
+			.def("computeFreeVariableLocations", computeFreeVariableLocations)
+			.def("getMembers", getModuleParseResultMembers)
+			.def("__getitem__", getModuleParseResultMemberString)
+			.def("__getitem__", getModuleParseResultMemberSymbol)
+			;
+
+		PythonWrapper<ImmutableTreeMap<Symbol, Fora::ModuleParseResult> >::exportPythonInterface("ModuleParseResult");
+		PythonWrapper<ImmutableTreeMap<Symbol, Fora::ModuleBindingResult> >::exportPythonInterface("ModuleBindingResult");
+
+		FORAPythonUtil::exposeValueLikeCppmlType<Fora::ModuleBindingResult>()
+			.class_()
+			.def("getMembers", getModuleBindingResultMembers)
+			.def("__getitem__", getModuleBindingResultMemberString)
+			.def("__getitem__", getModuleBindingResultMemberSymbol)
+			.def("getResultAndSymbol", getModuleBindingResultAndSymbol)
+			.add_property("errors", getModuleBindingResultParseErrors)
+			;
+
+		FORAPythonUtil::exposeValueLikeCppmlType<Fora::ModuleParseMetadata>();
+
+		PythonWrapper<ImmutableTreeVector<Fora::ModuleParseError> >::exportPythonInterface("ModuleParseError");
+		PythonWrapper<ImmutableTreeSet<std::string> >::exportPythonInterface("String");
+		PythonWrapper<ImmutableTreeSet<CodeLocation> >::exportPythonInterface("CodeLocation");
+
+		class_<PolymorphicSharedPtr<Fora::ModuleParser> >("ModuleParser", no_init)
+			.def("__init__", make_constructor(createModuleParser))
+			.def("__init__", make_constructor(createModuleParserWithPythonParser))
+			.def("parse", 
+					macro_polymorphicSharedPtrFuncFromMemberFunc(ModuleParser::parse)
+					)
+			.def("bind", moduleParserBind)
+			;
+		}
+};
+
+//explicitly instantiating the registration element causes the linker to need
+//this file
+template<>
+char native::module::Exporter<ModuleParserWrapper>::mEnforceRegistration =
+		native::module::ExportRegistrar<
+			ModuleParserWrapper>::registerWrapper();
+
+
+
+
+
+

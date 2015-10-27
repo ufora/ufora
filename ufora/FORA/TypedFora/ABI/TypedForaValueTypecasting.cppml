@@ -1,0 +1,468 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "TypedForaValueTypecasting.hppml"
+#include "../TypedFora.hppml"
+#include "NativeLayoutType.hppml"
+#include "../../Native/NativeCode.hppml"
+#include "../../Judgment/JudgmentOnValue.hppml"
+#include "TestTypedForaValueCoveredByJov.hppml"
+#include "DestructorsAndConstructors.hppml"
+#include "UnionUtil.hppml"
+#include "RefcountPoolHooks.hppml"
+
+namespace TypedFora {
+namespace Abi {
+
+
+bool layoutDirectlyCastable(const RefcountStyle& fromStyle, const RefcountStyle& toStyle)
+	{
+	if (fromStyle == toStyle)
+		return true;
+	
+	if (toStyle.isAsValueOwned() || toStyle.isPooled())
+		return true;
+
+	return false;
+	}
+
+bool typeDirectlyCastable(const Type& fromType, const Type& toType)
+	{
+	return toType.jov().covers(fromType.jov());
+	}
+
+RefcountStyle bestCommonRefcountStyle(const RefcountStyle& style1, const RefcountStyle& style2)
+	{
+	if (style1 == style2)
+		return style1;
+	
+	if (style1.isPooled() || style2.isPooled())
+		return RefcountStyle::Pooled();
+
+	return RefcountStyle::AsValueOwned();
+	}
+	
+NativeExpression 	upcastForaValue(
+						const NativeExpression&  e, 
+						const JudgmentOnValue& currentlyKnown, 
+						const JudgmentOnValue& toKnown, 
+						bool isOwned
+						)
+	{
+	lassert_dump(
+		currentlyKnown.covers(toKnown), 
+		"target of upcast is " << prettyPrintString(toKnown) 
+			<< " which is not less general than " << prettyPrintString(currentlyKnown)
+		);
+
+	BinaryLayoutStyle cur = getPassingStyle(currentlyKnown);
+	BinaryLayoutStyle target = getPassingStyle(toKnown);
+
+	if (cur == BinaryLayoutStyle::Union)
+		{
+		return TypedFora::Abi::foreachUnionAlternative(
+			currentlyKnown,
+			e,
+			[&](NativeExpression expr, JOV jov) {
+				if (!jov.disjoint(toKnown))
+					return typecastForaValue(expr, jov, toKnown, isOwned);
+				else
+					return NativeExpression::Halt("Did not expect " + prettyPrintString(jov) 
+								+ " as it is disjoint from " + prettyPrintString(toKnown));
+				}
+			);
+		}
+
+	if (target == BinaryLayoutStyle::Union)
+		{
+		NativeExpression result = NativeExpression::Halt("Invalid Union tag");
+
+		for (long k = (long(toKnown.unionAlternatives().size()) - 1); k >= 0; k--)
+			result = NativeExpression::If(
+				TypedFora::Abi::testTypedForaValueCoveredByJov(
+					e,
+					TypedFora::Type(currentlyKnown, TypedFora::RefcountStyle::AsValueUnowned()),
+					toKnown.unionAlternatives()[k]
+					),
+				TypedFora::Abi::createUnionExpression(
+					toKnown,
+					NativeExpression::ConstantULong(k),
+					[&](long index, JudgmentOnValue altJOV) {
+						if (index == k)
+							return typecastForaValue(e, currentlyKnown, altJOV, isOwned);
+						else
+							return NativeExpression::Zero(
+								nativeLayoutType(altJOV)
+								);
+						}
+					),
+				result,
+				1.0 / (toKnown.unionAlternatives().size() - k) * .99999999
+				);
+		
+		return result;
+		}
+
+	if (cur == target)
+		return e;
+
+	if (target == BinaryLayoutStyle::Constant)
+		//here we should call the destructor and bail
+		{
+		if (isOwned)
+			return TypedFora::Abi::destroy(currentlyKnown, e);
+		else
+			return NativeExpression::Nothing();
+		}
+		else
+	if (target == BinaryLayoutStyle::Typed)
+		{
+		if (isOwned)
+			{
+			NativeExpressionBuilder builder;
+			
+			NativeExpression contents = 
+				builder.add(
+					TypedFora::Abi::duplicate(
+						toKnown,
+						typecastForaValue(e, currentlyKnown, toKnown, false)
+						)
+					);
+
+			builder.add(TypedFora::Abi::destroy(currentlyKnown, e));
+
+			return builder(contents);
+			}
+		else
+			return TypedFora::Abi::implValExtract(nativeLayoutType(toKnown), e);
+		}
+
+	lassert_dump(false, "control shouldn't get here");
+	}
+
+NativeExpression downcastForaValue(
+						const NativeExpression& e, 
+						const JudgmentOnValue& currentlyKnown, 
+						const JudgmentOnValue& toKnown, 
+						bool isOwned
+						)
+	{
+	lassert_dump(
+		toKnown.covers(currentlyKnown), 
+		"target of downcast is " << prettyPrintString(toKnown) 
+			<< " which is not more general than " << prettyPrintString(currentlyKnown)
+		);
+
+	BinaryLayoutStyle cur = getPassingStyle(currentlyKnown);
+	BinaryLayoutStyle target = getPassingStyle(toKnown);
+
+	if (cur == BinaryLayoutStyle::Union)
+		{
+		return TypedFora::Abi::foreachUnionAlternative(
+			currentlyKnown,
+			e,
+			[&](NativeExpression e, JOV jov) {
+				return typecastForaValue(e, jov, toKnown, isOwned);
+				}
+			);
+		}
+
+	if (target == BinaryLayoutStyle::Union)
+		{
+		int index = *toKnown.getUnion().jov().alternatives().smallestCovering(currentlyKnown);
+
+		return TypedFora::Abi::createUnionExpression(
+			toKnown,
+			NativeExpression::ConstantULong(index),
+			[&](long inIndex, JudgmentOnValue inJOV) {
+				if (inIndex == index)
+					return typecastForaValue(e, currentlyKnown, inJOV, isOwned);
+				else
+					return NativeExpression::Zero(nativeLayoutType(inJOV));
+				}
+			);
+		}
+
+	if (cur == target)
+		return e;
+
+	//assuming that "e" is an owned value somewhere, we need to convert it to "toKnown" style
+	if (cur == BinaryLayoutStyle::Constant)
+		{
+		CSTValue c = *currentlyKnown.constant();
+
+		if (target == BinaryLayoutStyle::Implval)
+			{
+			NativeExpression expr = TypedFora::Abi::constantToImplVal(c);
+			
+			if (isOwned)
+				expr = TypedFora::Abi::duplicate(JOV(), expr);
+
+			return expr;
+			}
+		else
+			{
+			NativeExpression expr = nativeExpressionForConstantHeldAsType(c);
+
+			if (isOwned && !JudgmentOnValue::OfType(c.type()).constant())
+				expr = TypedFora::Abi::duplicate(JudgmentOnValue::OfType(c.type()), expr);
+
+			return expr;
+			}
+		}
+		else
+	if (target == BinaryLayoutStyle::Implval)
+		return TypedFora::Abi::outputToImplVal(*currentlyKnown.type(), isOwned, e);
+
+	lassert_dump(false, "control shouldn't get here");
+	}
+
+NativeExpression 	typecastForaValue(
+						const NativeExpression& e, 
+						const JudgmentOnValue& currentlyKnown, 
+						const JudgmentOnValue& toKnown, 
+						bool isOwned
+						)
+	{
+	if (nativeLayoutType(currentlyKnown) == nativeLayoutType(toKnown))
+		return e;
+	
+	if (currentlyKnown.covers(toKnown))
+		return upcastForaValue(e,currentlyKnown, toKnown, isOwned);
+	else
+		return downcastForaValue(e, currentlyKnown, toKnown, isOwned);
+	}
+
+NativeExpression castExpressionsWithSameLayout(
+							const NativeVariable& inVar,
+							const JudgmentOnValue& fromJov,
+							const JudgmentOnValue& toJov,
+							const RefcountStyle& inStyle
+							)
+	{
+	NativeExpression result;
+
+	if (inStyle.isAsValueOwned())
+		result = TypedFora::Abi::typecastForaValue(inVar.expr(), fromJov, toJov, true);
+		else
+	if (inStyle.isAsValueUnowned() || inStyle.isPooled())
+		result = TypedFora::Abi::typecastForaValue(inVar.expr(), fromJov, toJov, false);
+	else
+		{
+		lassert(false);
+		}
+
+	return result;
+	}
+
+
+
+NativeExpression transferCastExpression(
+							const NativeVariable& inVar,
+							const TypedFora::Type& fromType,
+							const TypedFora::Type& toType
+							)
+	{
+	if (fromType == toType)
+		return inVar.expr();
+	
+
+	RefcountStyle fromLS = fromType.refcountStyle();
+	RefcountStyle toLS = toType.refcountStyle();
+
+	//check if we don't need any change in refcount style
+	if (	fromLS.isAsValueOwned() && toLS.isAsValueOwned() || //owned->owned
+			fromLS.isAsValueUnowned() && toLS.isAsValueUnowned() || //unowned->unowned
+			fromLS.isPooled() && toLS.isPooled() //pooled->pooled
+				&& (getPassingStyle(fromType.jov()) == getPassingStyle(toType.jov()) //and not really changing style
+					|| fromType.jov().constant() //or it's a constant and we don't need to track it
+					) ||
+			fromLS.isAsValueUnowned() && toLS.isPooled() && fromType.jov().constant()
+			)
+		return castExpressionsWithSameLayout(
+			inVar, 
+			fromType.jov(), 
+			toType.jov(), 
+			fromLS
+			);
+
+
+
+	if (fromLS.isAsValueOwned() && toLS.isAsValueUnowned())
+		//destroy input and then cast output
+		{
+		NativeExpressionBuilder builder;
+		
+		NativeExpression tr = 
+			builder.add(
+				transferCastExpression(
+					inVar.expr(),
+					TypedFora::Type(fromType.jov(), RefcountStyle::AsValueUnowned()),
+					toType
+					)
+				);
+		
+		builder.add(TypedFora::Abi::destroy(fromType.jov(), inVar.expr()));
+
+		return builder(tr);
+		}
+		else
+	if (fromLS.isAsValueOwned() && toLS.isPooled())
+		//typecast first, then transfer input to the pool
+		{
+		NativeExpressionBuilder builder;
+		NativeExpression typecastExpr = 
+			builder.add(
+				transferCastExpression(
+					inVar.expr(),
+					TypedFora::Type(fromType.jov(), RefcountStyle::AsValueOwned()),
+					TypedFora::Type(toType.jov(), RefcountStyle::AsValueOwned())
+					)
+				);
+		
+		builder.add(
+			TypedFora::Abi::transferIntoRefcountPoolExpression(toType.jov(), typecastExpr)
+			);
+
+		return builder(typecastExpr);
+		}
+		else
+	if (fromLS.isAsValueUnowned() && toLS.isAsValueOwned())
+		//duplicate and return
+		return transferCastExpression(
+			TypedFora::Abi::duplicate(fromType.jov(), inVar.expr()),
+			TypedFora::Type(fromType.jov(), RefcountStyle::AsValueOwned()),
+			toType
+			);
+		else
+	if (fromLS.isAsValueUnowned() && toLS.isPooled())
+		{
+		NativeExpressionBuilder builder;
+		NativeExpression typecastExpr = 
+			builder.add(
+				transferCastExpression(
+					inVar.expr(),
+					TypedFora::Type(fromType.jov(), RefcountStyle::AsValueUnowned()),
+					TypedFora::Type(toType.jov(), RefcountStyle::AsValueUnowned())
+					)
+				);
+		
+		NativeExpression duplicatedExpr = 
+			builder.add(
+				TypedFora::Abi::duplicateIntoRefcountPoolExpression(toType.jov(), typecastExpr)
+				);
+
+		return builder(duplicatedExpr);
+		}
+		else
+	if (fromLS.isPooled())
+		//just pretend it's unowned
+		return transferCastExpression(
+			inVar.expr(),
+			TypedFora::Type(fromType.jov(), RefcountStyle::AsValueUnowned()),
+			toType
+			);
+
+	lassert(false);
+	}
+
+//produces a new value which we're expected to tear down later
+NativeExpression castExpression(
+							const NativeVariable& inVar,
+							const TypedFora::Type& fromType,
+							const TypedFora::Type& toType
+							)
+	{
+	RefcountStyle sourceRefcountStyle = fromType.refcountStyle();
+	
+	if (sourceRefcountStyle.isAsValueOwned())
+		sourceRefcountStyle = RefcountStyle::AsValueUnowned();
+
+	return transferCastExpression(
+		inVar.expr(),
+		Type(fromType.jov(), sourceRefcountStyle),
+		toType
+		);
+	}
+
+NativeExpression transferCastExpression(
+							const NativeExpression& inExpr,
+							const TypedFora::Type& fromType,
+							const TypedFora::Type& toType
+							)
+	{
+	if (!inExpr.type())
+		return inExpr;
+
+	lassert_dump(*inExpr.type() == nativeTypeForForaType(fromType),
+		"expected native type of " << prettyPrintString(nativeTypeForForaType(fromType))
+			<< " for fora type of " << prettyPrintString(fromType)
+			<< " but was handed expression of type " << prettyPrintString(*inExpr.type())
+		);
+
+	if (fromType == toType)
+		return inExpr;
+
+	lassert_dump(*inExpr.type() == nativeTypeForForaType(fromType),
+		"passed an argument of wrong native type. Expected " 
+			<< prettyPrintString(nativeTypeForForaType(fromType)) 
+			<< " for Type of " << prettyPrintString(fromType)
+			<< " but got "
+			<< prettyPrintString(*inExpr.type())
+			);
+
+	NativeExpression tr;
+
+	if (!inExpr.isVariable())
+		{
+		NativeVariable v = NativeVariable::Temp(*inExpr.type());
+		tr = NativeExpression::Let(v, inExpr, transferCastExpression(v, fromType, toType));
+		}
+	else
+		tr = transferCastExpression(inExpr.getVariable().var(), fromType, toType);
+
+	lassert_dump(tr.type() && *tr.type() == nativeTypeForForaType(toType),
+		"failed to convert " 
+			<< prettyPrintString(fromType) << " to " << prettyPrintString(toType)
+		 	<< ". target type was " << prettyPrintString(nativeTypeForForaType(toType)) 
+		 	<< " but ended up with " << prettyPrintString(tr.type())
+		 	<< ". Expression is " << prettyPrintString(tr)
+		);
+
+	return tr;
+	}
+
+NativeExpression castExpression(
+							const NativeExpression& inExpr,
+							const TypedFora::Type& fromType,
+							const TypedFora::Type& toType
+							)
+	{
+	if (!inExpr.type())
+		return inExpr;
+	if (!inExpr.isVariable())
+		{
+		NativeVariable v = NativeVariable::Temp(*inExpr.type());
+		return NativeExpression::Let(v, inExpr, castExpression(v, fromType, toType));
+		}
+	else
+		return castExpression(inExpr.getVariable().var(), fromType, toType);
+	}
+
+
+
+}
+}
+

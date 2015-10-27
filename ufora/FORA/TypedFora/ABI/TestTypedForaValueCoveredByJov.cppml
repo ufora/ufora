@@ -1,0 +1,161 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "TestTypedForaValueCoveredByJov.hppml"
+#include "../../Native/NativeCode.hppml"
+#include "../TypedFora.hppml"
+#include "NativeLayoutType.hppml"
+#include "UnionUtil.hppml"
+#include "../../Native/NativeExpressionBuilder.hppml"
+#include "../../Native/TypedNativeLibraryFunction.hpp"
+#include "TypedForaValueTypecasting.hppml"
+#include "TestTypedForaValuesIdentical.hppml"
+#include "DestructorsAndConstructors.hppml"
+
+namespace TypedFora {
+namespace Abi {
+
+uword_t FORA_clib_isImplValCoveredByJudgment(const ImplVal& implVal, const JOV& jov)
+	{
+	return jov.covers(implVal);
+	} 
+
+NativeExpression testTypedForaValueCoveredByJov(
+							const NativeExpression& inToCheck,
+							const Type& typeOfToCheck,
+							const JudgmentOnValue& inJudgment
+							)
+	{
+	if (inJudgment.disjoint(typeOfToCheck.jov()))
+		return NativeExpression::Constant(NativeConstant::Bool(false));
+
+	if (inJudgment.covers(typeOfToCheck.jov()))
+		return NativeExpression::Constant(NativeConstant::Bool(true));
+
+	if (typeOfToCheck.jov().isUnion())
+		{
+		return TypedFora::Abi::foreachUnionAlternative(
+			typeOfToCheck.jov(),
+			inToCheck,
+			[&](NativeExpression expr, JudgmentOnValue jov) {
+				return testTypedForaValueCoveredByJov(
+					expr,
+					TypedFora::Type(jov, typeOfToCheck.refcountStyle()),
+					inJudgment
+					);
+				}
+			);
+		}
+
+	if (inJudgment.isUnion())
+		{
+		NativeExpression result = NativeExpression::Constant(NativeConstant::Bool(false));
+
+		//we need to see if _any_ of these match
+		for (auto jov: inJudgment.unionAlternatives())
+			result = NativeExpression::If(
+				testTypedForaValueCoveredByJov(inToCheck, typeOfToCheck, jov),
+				NativeExpression::Constant(NativeConstant::Bool(true)),
+				result
+				);
+
+		return result;
+		}
+
+	if (inJudgment.constant() && 
+						isDirectlyComparableType(*inJudgment.type()) && typeOfToCheck.jov().type())
+		return inToCheck == typecastForaValue(
+			NativeExpression(), 
+			inJudgment,
+			JOV::OfType(*inJudgment.type()),
+			true
+			);
+
+	if (typeOfToCheck.jov().type() && typeOfToCheck.jov().type()->isTuple() && 
+				inJudgment.type() && inJudgment.type()->isTuple())
+		{
+		NativeExpressionBuilder builder;
+
+		NativeExpression isGood = NativeExpression::Constant(NativeConstant::Bool(true));
+
+		for (long k = 0; k < inJudgment.type()->getTuple().types().size(); k++)
+			isGood = isGood && builder.add(
+				testTypedForaValueCoveredByJov(
+					inToCheck[k],
+					//inToCheck is not a constant, (because otherwise we'd already know if it was
+					//covered), so this produces a native layout like the type
+					Type(
+						JOV::OfType(typeOfToCheck.jov().type()->getTuple().types()[k]),
+						typeOfToCheck.refcountStyle()
+						),
+					inJudgment.getTuple().jov().jovs()[k]
+					)
+				);
+
+		return builder(isGood);
+		}
+
+	NativeExpressionBuilder builder;
+
+	NativeVariable implValVar = 
+		builder.addAndGetVar(
+			castExpression(
+				inToCheck, 
+				typeOfToCheck, 
+				Type(JOV(), RefcountStyle::AsValueOwned())
+				)
+			);
+
+	NativeExpression implValPtr = 
+		builder.getPointerExprToCopyOnStack(
+			implValVar.expr()
+			);
+
+	NativeExpression jovPtrExpr = 
+		builder.getPointerExprToCopyOnStack(
+			jovAsNativeConstant(inJudgment)
+			);
+
+	NativeExpression value = 
+		builder.add(
+			(makeTypedNativeLibraryFunction(
+				&FORA_clib_isImplValCoveredByJudgment
+				)(	implValPtr, 
+					jovPtrExpr
+					) != (uint64_t)0)
+			.getExpression()
+			);
+
+	return builder(
+		wrapExpressionInTeardown(
+			Type(JOV(), RefcountStyle::AsValueOwned()),
+			implValVar,
+			value
+			)
+		);
+	}
+
+NativeExpression testTypedForaValueCoveredByJov(
+							const NativeVariable& inToCheck,
+							const Type& typeOfToCheck,
+							const JudgmentOnValue& inJudgment
+							)
+	{
+	return testTypedForaValueCoveredByJov(inToCheck.expr(), typeOfToCheck, inJudgment);
+	}
+
+}
+}
+

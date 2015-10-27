@@ -1,0 +1,264 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "PersistentCacheIndex.hppml"
+#include "../../core/math/GraphCycles.hppml"
+
+namespace Cumulus {
+namespace PersistentCache {
+
+/**************
+
+PersistentCacheCalculations
+
+Helper class to decide what we can keep and what we can drop given the state of the PCI.
+
+*****************/
+
+class PersistentCacheCalculations {
+public:
+	PersistentCacheCalculations(PolymorphicSharedPtr<PersistentCacheIndex> index) : 
+			mIndex(index),
+			mBytesMarkedCollectable(0)
+		{
+		for (auto o: index->getInvalidObjects())
+			markObjectInvalid(o);
+
+		auto all = index->getAllObjects();
+
+		for (auto o: all)
+			if (o.hasStoragePath())
+				for (auto child: index->objectsDependedOn(o))
+					{
+					mDependencies.addEdge(o, child);
+					if (!index->objectExists(child))
+						markObjectInvalid(o);
+					}
+
+		for (auto o: all)
+			if (mDependencies.nodesInCycle(o).size() > 1)
+				markObjectInvalid(o);
+		
+		for (auto o: all)
+			if (o.isCheckpointSummary() && !isInvalid(o))
+				markReachable(o);
+
+		for (auto o: all)
+			if (o.hasStoragePath() && mReachable.find(o) == mReachable.end())
+				markObjectInvalid(o);
+
+		for (auto o: all)
+			if (o.isCheckpointSummary() && 
+					index->computationIsReachableFromAnyScript(
+						o.getCheckpointSummary().checkpoint().rootComputation()
+						)
+					)
+				{
+				markComputationScriptReferenced(
+					*o.getCheckpointSummary().checkpoint().rootComputation().computationHash()
+					);
+				}
+
+		for (auto o: all)
+			if (o.isCheckpointSummary() && !isInvalid(o))
+				{
+				auto c = o.getCheckpointSummary().checkpoint();
+				mSummariesByComputation.insert(c.rootComputation(), c);
+				}
+		}
+
+	void performGc(const std::set<ComputationId>& inActiveComputations)
+		{
+		//every checkpoint can go into one of four buckets:
+		
+		//root-and-keep: computations referenced by a script and most-recent computation
+		//discard-under-pressure-1: second most recent checkpoint, but referenced by a root
+		//discard-under-pressure-2: any checkpoint with at least one other checkpoint ahead of it
+		//discard-immediately: checkpoints of unfinished computations with two or more checkpoints ahead
+		
+		for (auto& compAndSummaries: mSummariesByComputation.getKeysToValues())
+			{
+			if (mScriptReferencedComputations.find(*compAndSummaries.first.computationHash()) != mScriptReferencedComputations.end() || 
+					inActiveComputations.find(compAndSummaries.first) != inActiveComputations.end())
+				{
+				long seen = 0;
+				for (auto it = compAndSummaries.second.rbegin(); it != compAndSummaries.second.rend(); ++it)
+					{
+					if (seen == 0)
+						{
+						//this is the most recent computation and it's root-referenced. don't allow it to be GC'd at all
+						}
+						else
+					if (seen == 1)
+						mCollectableCheckpoints[2].insert(*it);
+					else
+						mCollectableCheckpoints[0].insert(*it);
+
+					seen++;
+					}
+				}
+			else
+				{
+				long seen = 0;
+				for (auto it = compAndSummaries.second.rbegin(); it != compAndSummaries.second.rend(); ++it)
+					{
+					if (seen == 0)
+						//this is the most recent computation, but it's unreferenced
+						mCollectableCheckpoints[3].insert(*it);
+						else
+					if (seen == 1)
+						mCollectableCheckpoints[1].insert(*it);
+					else
+						mCollectableCheckpoints[0].insert(*it);
+
+					seen++;
+					}
+				}
+			}
+
+		while (stillHasSomethingToGc())
+			{
+			CheckpointRequest checkpoint = *mCollectableCheckpoints.begin()->second.begin();
+			mCollectableCheckpoints.begin()->second.erase(checkpoint);
+			if (mCollectableCheckpoints.begin()->second.size() == 0)
+				mCollectableCheckpoints.erase(mCollectableCheckpoints.begin());
+
+			markObjectCollectable(PersistentCacheKey::CheckpointSummary(checkpoint));
+			}
+		}
+
+	bool stillHasSomethingToGc() const
+		{
+		if (!mCollectableCheckpoints.size())
+			return false;
+
+		//status "0" objecst are always collectible
+		if (mCollectableCheckpoints.find(0) != mCollectableCheckpoints.end())
+			return true;
+
+		if (!mIndex->maxBytesInCache())
+			return false;
+
+		int64_t bytesInCache = mIndex->totalBytesInCache();
+
+		return (bytesInCache - mBytesMarkedCollectable) > *mIndex->maxBytesInCache();
+		}
+
+	const std::set<PersistentCacheKey>& invalidObjects() const
+		{
+		return mInvalidObjects;
+		}
+
+	const std::set<PersistentCacheKey>& collectableObjects() const
+		{
+		return mCollectableObjects;
+		}
+
+	bool isInvalid(PersistentCacheKey o) const
+		{
+		return mInvalidObjects.find(o) != mInvalidObjects.end();
+		}
+
+private:
+	void markComputationScriptReferenced(hash_type compHash)
+		{
+		if (mScriptReferencedComputations.find(compHash) != mScriptReferencedComputations.end())
+			return;
+
+		mScriptReferencedComputations.insert(compHash);
+		}
+
+	void markObjectInvalid(PersistentCacheKey object)
+		{
+		if (object.isScript())
+			return;
+
+		if (mInvalidObjects.find(object) != mInvalidObjects.end())
+			return;
+
+		mInvalidObjects.insert(object);
+
+		//anybody depending on this is also invalid
+		for (auto parent: mIndex->objectsDependingOn(object))
+			markObjectInvalid(parent);
+		}
+
+	void markObjectCollectable(PersistentCacheKey object)
+		{
+		if (object.isScript())
+			return;
+
+		if (mCollectableObjects.find(object) != mCollectableObjects.end())
+			return;
+
+		mBytesMarkedCollectable += mIndex->objectBytecount(object);
+
+		mCollectableObjects.insert(object);
+
+		//anybody depending on this is also invalid
+		for (auto child: mIndex->objectsDependedOn(object))
+			if (!anyUncollectableParents(child))
+				markObjectCollectable(child);
+		} 
+
+	bool anyUncollectableParents(PersistentCacheKey child)
+		{
+		for (auto parent: mIndex->objectsDependingOn(child))
+			if (mCollectableObjects.find(parent) == mCollectableObjects.end())
+				return true;
+
+		return false;
+		}
+
+	void markReachable(PersistentCacheKey object)
+		{
+		if (object.isScript())
+			return;
+		
+		lassert(mInvalidObjects.find(object) == mInvalidObjects.end());
+
+		if (mReachable.find(object) != mReachable.end())
+			return;
+
+		mReachable.insert(object);
+
+		//anybody depending on this is also invalid
+		for (auto parent: mIndex->objectsDependedOn(object))
+			markReachable(parent);
+		} 
+
+	std::set<hash_type> mScriptReferencedComputations;
+
+	TwoWaySetMap<ComputationId, CheckpointRequest> mSummariesByComputation; 
+
+	PolymorphicSharedPtr<PersistentCacheIndex> mIndex;
+
+	std::set<PersistentCacheKey> mInvalidObjects;
+
+	std::set<PersistentCacheKey> mCollectableObjects;
+
+	std::set<PersistentCacheKey> mReachable;
+
+	Ufora::GraphCycles<PersistentCacheKey> mDependencies;
+
+	std::map<long, std::set<CheckpointRequest> > mCollectableCheckpoints;
+
+	int64_t mBytesMarkedCollectable;
+};
+
+}
+}

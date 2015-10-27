@@ -1,0 +1,137 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "CFGWithFuturesImpl.hppml"
+#include "../../core/containers/TwoWaySetMap.hpp"
+#include "../../core/PolymorphicSharedPtr.hpp"
+
+/*
+SimulationState
+
+Responsible for holding a vector of refcounted Slots as 
+well as a SimulationHead.
+
+The rules for refcounting are as follows:
+
+*) Each new slot is introduced with refct = 1
+*) Each direct dependency between slots adds a +1
+*) Each resolved direct dependency adds a -1
+*) Say the args of a CFGNode depend on a slot. If this slot is not depended on
+in the next node, we decref it when we advance there.
+*) Each time a completed slot is an exception or mutable, we incref+1 it
+(otherwise, in the "normal" path, it might be decrefed and GC'd)   
+*) When we initially reach an apply/cached node, we incref all the arguments
+to the node that are needed in continuations. When the corresponding slot is 
+completed, and if it's not a mutable or exception, we decref the arguments. The 
+reason for this is that if we got back a mutable or exception at this point, we 
+might have to bail early at this point, and then we'd need the (appropriate) 
+node args to form the resumption computation.
+ */
+
+class SimulationState: 
+    public PolymorphicSharedPtrBase<SimulationState> {
+public:
+    SimulationState(const SimulationHead&);
+
+    const SimulationHead& simulationHead() const;
+
+    uint64_t nSlots() const;
+
+    const std::vector<FutureSlot>& getSlots() const;
+
+    Nullable<CFGWithFutures::SubmittableArgs> 
+    asSubmittable(uint64_t slotIndex) const;
+
+    const std::set<uint64_t>& indicesOfSubmittableFutures() const;
+
+    const TwoWaySetMap<uint64_t, uint64_t>& getDependencies() const;
+
+    bool isSubmittable(uint64_t slotIndex) const;
+
+    void advanceSimulationHeadAndRegisterDependencies(
+        const SimulationHead& inSimulationHead
+        );
+
+    FutureSlot getSlot(uint64_t inSlotIx) const;
+
+    bool hasResolvedToSimpleState() const;
+
+    bool hasResolvedToSimpleStateAtIndex(uint64_t index) const;
+
+    void slotCompleted(
+        uint64_t inSlotIndex,
+        const ImplValContainer& inResult,
+        const ImplValContainer& inComputationLog,
+        bool isException
+        );
+
+    std::string toString() const;
+
+private:
+    void addDependenciesAndRefcounts(
+        const std::set<uint64_t>& inSlotIndicesOfDependencies, 
+        uint64_t inDependentSlotIndex
+        );
+
+    void updateSimulationHeadAndDependentSlotIndices(
+        const SimulationHead& inNewSimulationHead
+        );
+
+    void updateSubmittableFuturesSet(uint64_t inCompletedSlotIndex);
+
+    void decrefKeysForSlotIndex(uint64_t inCompletedSlotIndex);
+
+    void decrefSlotArgs(uint64_t slotIndex);
+
+    void incref(uint64_t inSlotIndex);
+
+    void decref(uint64_t inSlotIndex);
+
+    void addSlot(const FutureSlot&);
+
+    void addNewSlotIfNecessary();
+
+    bool canInsertIntoSubmittableSet(uint64_t inSlotIndex) const;
+
+    FutureValue nextFutureValue() const;
+
+    bool allSlotsAreCurrent(
+        const std::set<uint64_t>& inSlotIndices
+        ) const;
+
+    static SimulationHead zeroOutUnusedContinuationArgs(
+        const SimulationHead& inSimulationHead
+        );
+
+    // keeps all the FutureSlots we've ever seen, 
+    // in order of their productions. 
+    std::vector<FutureSlot> mSlots;
+
+    std::vector<uint64_t> mSlotRefcounts;
+    
+    std::set<uint64_t> mIndicesOfSubmittableFutures;
+
+    // an edge ix1 -> ix2 means that ix2 depends on ix1
+    TwoWaySetMap<uint64_t, uint64_t> mSlotDependencies;
+
+    SimulationHead mSimulationHead;
+
+    std::set<uint64_t> mSlotDependenciesAtSimulationHead;
+
+    std::map<uint64_t, std::set<uint64_t>> mSlotsToDecrefOnResult;
+};
+

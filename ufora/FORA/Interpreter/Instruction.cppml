@@ -1,0 +1,379 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include <boost/regex.hpp>
+#include "Instruction.hppml"
+#include "InstructionGraph.hppml"
+#include "Continuation.hppml"
+#include "CompilerEntrypointMap.hppml"
+#include "../Language/FunctionToCFG.hppml"
+#include "../ControlFlowGraph/ControlFlowGraphUtil.hppml"
+#include <boost/lexical_cast.hpp>
+#include <boost/thread.hpp>
+#include "../../core/STLOps.hpp"
+#include "../../core/Logging.hpp"
+#include "../../core/Clock.hpp"
+#include "../../core/StringUtil.hpp"
+#include "../Axioms/Axioms.hppml"
+
+namespace Fora {
+namespace Interpreter {
+
+Instruction::Instruction(
+	InstructionGraph* instructionGraphPtr,
+	const ControlFlowGraph* controlFlowGraphPtr,
+	Nullable<string> label
+	) :
+		mInstructionGraphPtr(instructionGraphPtr),
+		mControlFlowGraphPtr(controlFlowGraphPtr),
+		mLabel(label),
+		mInstructionBody(InstructionBody::Uninitialized(InstructionPtr(this))),
+		mExecutionCount(0),
+		mIsInitialized(false)
+	{
+	mHash = mControlFlowGraphPtr->hash() + hashValue(mLabel);
+
+	if (!mLabel)
+		mHash[0] = 0;
+
+	mArgCount = (*mControlFlowGraphPtr)[mLabel].argCount();
+	}
+
+Instruction::~Instruction()
+	{
+	LOG_CRITICAL << "Instructions should never be deleted! Backtrace: "
+		<< Ufora::debug::StackTrace::getStringTrace();
+	}
+
+void Instruction::init()
+	{
+	lassert(mInstructionBody.isUninitialized());
+
+	initializeInstructionBody(); 
+	
+	lassert(!mInstructionBody.isUninitialized());
+
+	ImmutableTreeSet<uint32_t> unused = 
+		ControlFlowGraphUtil::variableIndicesUnusedInContinuations(
+			getGraph()[getLabel()]
+			);
+
+	for (auto unusedIndex: unused)
+		mVariablesUnusedInContinuations.insert(unusedIndex);
+
+	mIsInitialized = true;
+	}
+
+bool Instruction::isApply(void) const
+	{
+	return mInstructionBody.isApply();
+	}
+
+bool Instruction::hasResult(void) const
+	{
+	return mInstructionBody.isApply() || mInstructionBody.isCached();
+	}
+		
+void Instruction::initializeInstructionBodyForBranch(
+					uint32_t ix,
+					ControlFlowContinuation trueContinuation,
+					ControlFlowContinuation falseContinuation
+					)
+	{
+	addContinuationDuringInit(trueContinuation, false, 0);
+	addContinuationDuringInit(falseContinuation, false, 1);
+	
+	mInstructionBody = InstructionBody::Branch(this, ix);
+	}
+	
+void Instruction::initializeInstructionBodyForSwitchOnConstant(
+					const CSTValue& cstValue,
+					const ImmutableTreeMap<CSTValue, ControlFlowContinuation>& branches,
+					ControlFlowContinuation otherwise
+					)
+	{
+	if (branches[cstValue])
+		{
+		addContinuationDuringInit(
+			*branches[cstValue], 
+			false, 
+			*branches.positionFor(cstValue)
+			);
+		}
+	else
+		{
+		addContinuationDuringInit(
+			otherwise,
+			false,
+			branches.size()
+			);
+		}	
+	mInstructionBody = InstructionBody::Jump(this);
+	}
+
+void Instruction::initializeJumpOrSwitchInstructionBody(
+		const vector<pair<CSTValue, uword_t> >& continuationIndices,
+		const ImmutableTreeVector<CSTValue>& cstValuesToCheck,
+		uint32_t ix
+		)
+	{
+	if (continuationIndices.size() == 0)
+		{
+		mInstructionBody = InstructionBody::Jump(this);
+		lassert(mContinuations.size() == 1);
+		}
+	else
+		{
+		//build the map in reverse order, since if there
+		//are duplicate items, we want the first one to dominate
+		//the expression
+		map<hash_type, map<hash_type, uword_t > > indexMap;
+		for (long k = ((long)continuationIndices.size() - 1); k >= 0; k--)
+			{
+			CSTValue cstValue = continuationIndices[k].first;
+			indexMap[cstValue.type().hash()][
+						cstValue.type().hashObject(&cstValue.cast<char>())
+					] = continuationIndices[k].second;
+			}
+
+		mInstructionBody = InstructionBody::Switch(
+												this,
+												ix,
+												cstValuesToCheck,
+												indexMap,
+												mContinuations.size() - 1
+												);
+		}
+	}
+
+void Instruction::initializeInstructionBodyForSwitchOnIndex(
+					uint32_t ix,
+					const ImmutableTreeMap<CSTValue, ControlFlowContinuation>& branches,
+					ControlFlowContinuation otherwise
+					)
+	{
+	ImmutableTreeVector<CSTValue> cstValuesToCheck;
+	vector<pair<CSTValue, uword_t> > continuationIndices;
+	
+	for (long k = 0; k <= branches.size(); k++)
+		{
+		addContinuationDuringInit(
+			k < branches.size() ?
+					branches.pairAtPosition(k).second
+				:	otherwise,
+			false,
+			k
+			);
+
+		if (k < branches.size())
+			{
+			CSTValue cstValue = branches.pairAtPosition(k).first;
+			cstValuesToCheck = cstValuesToCheck + cstValue;
+			continuationIndices.push_back(
+				make_pair(cstValue, mContinuations.size() - 1)
+				);
+			}
+		}
+
+	initializeJumpOrSwitchInstructionBody(continuationIndices, cstValuesToCheck, ix);
+	}
+
+void Instruction::initializeInstructionBodyForApply(
+		const ImmutableTreeVector<ControlFlowApplyArg>& args,
+		const ControlFlowContinuation& normalContinuation,
+		const ControlFlowContinuation& exceptionalContinuation
+		)
+	{
+	ApplyArgs applyArgs(args);
+
+	mInstructionBody = InstructionBody::UnknownApply(this, applyArgs);
+
+	addContinuationDuringInit(normalContinuation, true, 0);
+	addContinuationDuringInit(exceptionalContinuation, true, 1);
+	}
+
+void Instruction::addContinuationDuringInit(
+						const ControlFlowContinuation& inContinuation, 
+						bool hasResult,
+						uword_t indexInCFGNode
+						)
+	{
+	mContinuations.push_back(Continuation(this, inContinuation, hasResult, indexInCFGNode));
+	}
+
+void Instruction::initializeInstructionBodyTupleExpand(
+		uword_t inIndex, 
+		const ControlFlowTupleContinuation& ifMatch, 
+		const ControlFlowContinuation& ifNoMatch
+		)
+	{
+	//can we tell anything about the tuple expand?
+	uword_t arity = ifMatch.arity();
+	bool arityExact = ifMatch.arityIsExact();
+	
+	addContinuationDuringInit(ifMatch.continuation(), false, 0);
+	addContinuationDuringInit(ifNoMatch, false, 1);
+	mInstructionBody = InstructionBody::TupleExpand(this, inIndex, arity, arityExact);
+	}
+
+void Instruction::initializeInstructionBody()
+	{
+	@match ControlFlowNodeBody((*mControlFlowGraphPtr)[mLabel].body())
+		-|	Jump(cont) ->> {
+			mInstructionBody = InstructionBody::Jump(this);
+			addContinuationDuringInit(cont, false, 0);
+			}
+		-|	Branch(Constant(c), trueCont, falseCont) ->> {
+			bool which = c.getReference().convertToBoolean();
+			
+			addContinuationDuringInit(
+				which ? trueCont : falseCont, false, which ? 0 : 1
+				);
+			
+			mInstructionBody = InstructionBody::Jump(this);
+			}
+		-|	Branch(Arg(ix), trueCont, falseCont) ->> {
+			initializeInstructionBodyForBranch(ix, trueCont, falseCont);
+			}
+		-|	Switch(Constant(c), conts, otherwise) ->> {
+			initializeInstructionBodyForSwitchOnConstant(c, conts, otherwise);	
+			}
+		-|	Switch(Arg(ix), conts, otherwise) ->> {
+			initializeInstructionBodyForSwitchOnIndex(ix, conts, otherwise);
+			}
+		-|	TupleExpand(argIndex, conts, otherwise) ->> {
+			initializeInstructionBodyTupleExpand(argIndex, conts, otherwise);
+			}
+		-|	Cached(arg, normalContinuation, exceptionalContinuation) ->> {
+			mInstructionBody = InstructionBody::Cached(
+				this, 
+				ApplyArgs(emptyTreeVec() + arg),
+				boost::shared_ptr<JudgmentOnAction>(
+					new JudgmentOnAction(
+						JudgmentOnAction::Unknown()
+						)
+					)
+				);
+
+			addContinuationDuringInit(normalContinuation, true, 0);
+			addContinuationDuringInit(exceptionalContinuation, true, 1);
+			}
+		-|	Apply(args, normalContinuation, exceptionalContinuation) ->> {
+			initializeInstructionBodyForApply(args, normalContinuation, exceptionalContinuation);
+			}
+		;
+
+	lassert_dump(!mInstructionBody.isUninitialized(),
+		"failed to initialize: " << 
+			prettyPrintString((*mControlFlowGraphPtr)[mLabel].body())
+		);
+	}
+
+string Instruction::toString(bool headerOnly, bool deterministicTrace) const
+	{
+	ostringstream tr;
+	
+	tr 	<< prettyPrintString(hash())
+		<< " @graph" << prettyPrintString(mControlFlowGraphPtr->hash()).substr(0,8)
+		<< "=" << mControlFlowGraphPtr->graphName()
+		<< ":" << prettyPrintString(mLabel)
+		<< ". ec = " << mExecutionCount
+		;
+
+	return tr.str();
+	}
+
+uword_t Instruction::argCount(void) const
+	{
+	return mArgCount;
+	}
+	
+long Instruction::graphMaxArgCount(void) const
+	{
+	return mControlFlowGraphPtr->maxArgCount();
+	}	
+
+const InstructionBody& Instruction::getInstructionBody(void) const
+	{
+	return mInstructionBody;
+	}
+
+const ControlFlowGraph& Instruction::getGraph(void) const
+	{
+	return *mControlFlowGraphPtr;
+	}
+
+const Nullable<string>& Instruction::getLabel(void) const
+	{
+	return mLabel;
+	}
+
+bool Instruction::isInitialized() const
+	{
+	return mIsInitialized;
+	}
+
+hash_type Instruction::hash() const
+	{
+	return mHash;
+	}
+
+uint64_t& Instruction::executionCount(void)
+	{
+	return mExecutionCount;
+	}
+
+Continuation& Instruction::getContinuation(uword_t index)
+	{
+	lassert(isInitialized());
+	
+	lassert(index < mContinuations.size());
+	return mContinuations[index];
+	}
+
+const Continuation&	Instruction::getContinuation(uword_t index) const
+	{
+	lassert(isInitialized());
+	
+	lassert(index < mContinuations.size());
+	return mContinuations[index];
+	}
+
+size_t Instruction::getContinuationCount() const
+	{
+	lassert(isInitialized());
+	
+	return mContinuations.size();
+	}
+
+void Instruction::ensureInitialized(void)
+	{
+	if (!isInitialized())
+		init();
+	}
+
+InstructionGraph& Instruction::instructionGraph(void)
+	{
+	return *mInstructionGraphPtr;
+	}
+
+const std::set<uint32_t>& Instruction::getVariablesUnusedInContinuations() const
+	{
+	return mVariablesUnusedInContinuations;
+	}
+
+}
+}
+

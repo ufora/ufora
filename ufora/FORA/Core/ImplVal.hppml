@@ -1,0 +1,258 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#ifndef FORA_ImplVal_hppml
+#define FORA_ImplVal_hppml
+
+#include <vector>
+#include <string>
+#include <sstream>
+#include "../../core/Common.hppml"
+#include "../../core/cppml/CPPMLEquality.hppml"
+#include "../../core/cppml/CPPMLPrettyPrinter.hppml"
+#include "../../core/math/Nullable.hpp"
+#include "../../core/serialization/Serialization.fwd.hpp"
+#include "../../core/cppml/CPPMLPrettyPrinter.hppml"
+
+template<class T>
+class ImmutableTreeVector;
+
+class Hash;
+typedef Hash hash_type;
+
+using namespace std;
+
+/***
+ImplVal
+
+A data structure that holds a boxed FORA value.
+
+A FORA value is "pass-by-value" if it's less than two words and it's POD, in which case we store
+the value of the object directly in the ImplVal.
+
+Otherwise, it's stored in an ImplValRecord malloced on the heap. We hold a pointer to the
+ImplValRecord's data field in the first word of the ImplVal.
+
+We may also hold a reference to data that we don't own. Such a reference may not be destroyed, but
+it may be duplicated. This is useful for creating ImplVals out of data on the stack. We hold the
+raw data pointer directly in the first word of the ImplVal;
+******/
+
+class Type;
+class CSTValue;
+class Dictionary;
+class Symbol;
+
+class ImplVal {
+	//holds a type object 
+	class TypeHolder {
+	public:
+		void* dat;
+	};
+	
+		
+public:
+	class pass_by_value_type {
+	public:
+		uint64_t a;
+		uint64_t b;
+	};
+
+	enum {
+		flag_dataAsIVRPtr = 0,
+		flag_dataInline = 1,
+		flag_dataAsRawPtr = 2,	//data is a pointer to an object we don't own.
+								//decrefing this is illegal
+	};
+	
+	//structure to hold 
+	class ImplValRecord {
+	public:
+		AO_t refcount;
+		char data[0];
+		
+		void incrementRefcount();
+		bool decrementRefcount();
+
+		static uword_t totalImplValRecords();
+
+		static ImplValRecord* allocate(uword_t size);
+		static void free(ImplValRecord* record);
+
+	private:
+		static AO_t mTotalImplValRecords;
+	};
+
+	ImplVal()
+		{
+		static Type* t = 0;
+		if (!t)
+			t = allocNothingType();
+
+		mFlag = flag_dataInline;
+
+		mHolder = ((TypeHolder*)t)[0];
+		}
+	
+	//can this type be boxed in an ImplVal directly?
+	static bool typeIsPassByValue(const Type& inType);
+	
+	static const int pass_by_value_size = sizeof(pass_by_value_type);
+	
+	//create an unincremented ImplVal pointing at 'data'.  This doesn't hold a reference
+	//to 'data', so it's illegal to destroy it.
+	ImplVal(const Type& t, void* inData)
+		{
+		mHolder = ((TypeHolder*)&t)[0];
+
+		mFlag = flag_dataAsRawPtr;
+
+		((void**)(mData))[0] = inData;
+		}
+
+	//allocate a new implval containing an element of type 't'. 't' gets
+	//incremented, and data gets allocated if 't' is big, but the data itself
+	//is uninitialized. Clients are expected to initialize the data
+	//using 't' (e.g. t.initialize(implVal.data()) or some thing equivalent).
+	static ImplVal introduce(const Type& t);
+	
+	//create an implval that has type 't' but that doesn't increment
+	//t's type counter. don't initialize the data, and assume that
+	//the data will be populated inline.
+	static ImplVal unincrementedInline(const Type& t);
+	
+	//same as above, but copies in the data at 'inData' into the returned implval.
+	static ImplVal unincrementedInline(const Type& t, char* inData);
+	
+	//introduces a fresh copy of 't'. Calls 'duplicate', so the
+	//resulting implval will need to be destroyed.
+	ImplVal(const CSTValue& t);
+
+	bool isDataAsIVRPtr() const;
+	bool isDataInline() const;
+	bool isDataAsRawPtr() const;
+
+	const Type& type(void) const;
+	bool isCST(void) const;
+	
+	void* data(void) const
+		{
+		if (isDataInline())
+			return (void*)(mData);
+		else
+			return ((void**)mData)[0];
+		}
+
+	template<class T>
+	T& cast(void) const
+		{
+		return *(T*)data();
+		}
+	
+	void toString(CPPMLPrettyPrintStream&  str) const;
+	void toParsableString(CPPMLPrettyPrintStream& str) const;
+	void toParsableString(CPPMLPrettyPrintStream& str, const ImplVal& dict) const;
+	
+	string toString(void) const;
+
+	void destroy(void);
+	ImplVal duplicate(void) const;
+
+	//test whether the value is a canonical 'true'
+	//this only returns 'true' if its a nonzero integer
+	bool convertToBoolean() const;
+private:
+	TypeHolder mHolder;
+	uword_t mFlag;
+	char mData[pass_by_value_size];
+	
+	ImplValRecord&	record() const
+		{
+		void* rawDataPtr = ((void**)mData)[0];
+		
+		//rawDataPtr points at the actual data
+		//we need to back up to the beginning of the record
+		AO_t*	ptr = ((AO_t*)rawDataPtr);
+		return *(ImplValRecord*)(ptr - 1);
+		}
+	
+	static Type* allocNothingType();
+};
+;
+
+macro_defineCppmlComparisonOperators(ImplVal)
+
+template<>
+class CPPMLEquality<ImplVal, void> {
+public:
+	static char cmp(const ImplVal& lhs, const ImplVal& rhs);
+};
+
+/*
+
+Class and macros to help break apart and put together ImplVal objects
+when passed as function arguments to C++ from LLVM.
+unfortunately, in applying the the 64-bit ABI, LLVM splits tuples
+into their separate components, and so may pass portions of an ImplVal
+to C++ in registers.  So, instead of treating an ImplVal as a single
+object, we have to break it into its component pieces (the way LLVM views it)
+accept them as individual arguments, and rebuild the ImplVal from the
+pieces.
+
+Usage:
+
+in the signature of a function,
+	ImplVal_raw(name)
+then in the body of the function,
+	ImplVal_assemble(name)
+
+'name' then refers to an ImplVal.
+*/
+
+struct IV_Raw_Data {
+	void* t;
+	uword_t f;
+	uint64_t a;
+	uint64_t b;
+};
+
+#define ImplVal_raw(x) void* x##t,uword_t x##f,uword_t x##a, uword_t x##b
+#define ImplVal_assemble(x) IV_Raw_Data x##raw;x##raw.t=x##t;x##raw.f=x##f;x##raw.a=x##a;x##raw.b=x##b; ImplVal x(*(ImplVal*)&x##raw);
+
+
+template<class storage_type>
+class Serializer<ImplVal, storage_type> {
+public:
+		// static_assert(false, "ImplVal can only be serialized/"
+		// 	"deserialized using a SerializedObjectContextSerializer");
+};
+
+
+template<class storage_type>
+class Deserializer<ImplVal, storage_type> {
+public:
+		// static_assert(false, "ImplVal can only be serialized/"
+		// 	"deserialized using a SerializedObjectContextSerializer");
+};
+
+template<>
+class CPPMLPrettyPrint<ImplVal> {
+public:
+	static void prettyPrint(CPPMLPrettyPrintStream& s,
+							const ImplVal& t);
+};
+
+#endif //include guard
+

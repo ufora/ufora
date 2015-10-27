@@ -1,0 +1,221 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "FunctionPointerHandle.hpp"
+#include "NativeRuntimeCallTarget.hppml"
+#include "../../core/containers/ImmutableTreeVector.hppml"
+
+class NativeRuntimeCallTarget;
+
+class NativeRuntimeContinuationBase;
+
+class NativeRuntimeContinuationValueVector;
+
+template<int count>
+class NativeRuntimeContinuationValue;
+
+//for each return continuation, one slot
+@type NativeRuntimeContinuationSlot = 
+    uword_t blockID,				//block in the native code to resume with
+	void* target					//location into which callee should write its
+									//return value
+	;
+
+@type NativeRuntimeContinuationBase = 
+	NativeFunctionPointer jumpPtr,	//native code to jump to
+    void* stackframePtr,			//local stack frame for the call
+    uword_t metadataEntryId 		//entry for metadata
+    ;
+
+
+@type NativeRuntimeContinuationValueVector = 
+	NativeRuntimeContinuationBase base,
+	ImmutableTreeVector<NativeRuntimeContinuationSlot> slots
+{
+public:
+	NativeRuntimeContinuationValueVector(NativeRuntimeContinuationBase inBase)
+		{
+		base() = inBase;
+		}
+
+	template<int count>
+	NativeRuntimeContinuationValueVector(const NativeRuntimeContinuationValue<count>& value);
+
+	size_t size() const
+		{
+		return slots().size();
+		}
+
+	static NativeRuntimeContinuationValueVector extract(
+			const NativeRuntimeContinuationValue<0>* continuation, 
+			long count
+			);
+	
+	NativeRuntimeContinuationValueVector operator+(
+			const NativeRuntimeContinuationSlot& inSlot
+			) const;
+
+	NativeRuntimeContinuationValue<1> operator[](long index) const;
+
+	char* packIntoBytes(char* data) const;
+
+};
+
+NativeRuntimeContinuationValue<1> operator+(
+						const NativeRuntimeContinuationBase& base,
+						const NativeRuntimeContinuationSlot& slot
+						);
+
+
+//actual layout of a single return continuation
+template<int count>
+class NativeRuntimeContinuationValue {
+public:
+	NativeRuntimeContinuationValue()
+		{
+		}
+
+	NativeRuntimeContinuationValue(const NativeRuntimeContinuationValueVector& inVal)
+		{
+		setTo(inVal);
+		}
+
+	NativeFunctionPointer jumpPtr() const
+		{
+		return mBase.jumpPtr();
+		}
+
+	void setTo(const NativeRuntimeContinuationValueVector& in)
+		{
+		lassert(in.size() == size());
+		base() = in.base();
+		for (long k = 0; k < count; k++)
+			slots()[k] = in.slots()[k];
+		}
+
+	size_t size() const
+		{
+		return count;
+		}
+
+	NativeFunctionPointer& jumpPtr()
+		{
+		return mBase.jumpPtr();
+		}
+		
+	void* stackframePtr() const
+		{
+		return mBase.stackframePtr();
+		}
+
+	void*& stackframePtr()
+		{
+		return mBase.stackframePtr();
+		}
+		
+	uword_t metadataEntryId() const
+		{
+		return mBase.metadataEntryId();
+		}
+
+	uword_t& metadataEntryId()
+		{
+		return mBase.metadataEntryId();
+		}
+
+	NativeRuntimeContinuationBase& base()
+		{
+		return mBase;
+		}
+
+	const NativeRuntimeContinuationBase& base() const
+		{
+		return mBase;
+		}
+
+	NativeRuntimeContinuationSlot* slots()
+		{
+		return mSlots;
+		}
+
+	const NativeRuntimeContinuationSlot* slots() const
+		{
+		return mSlots;
+		}
+
+	NativeRuntimeContinuationValue<1> operator[](long index) const
+		{
+		NativeRuntimeContinuationValue<1> result;
+		
+		result.base() = base();
+		result.slots()[0] = slots()[index];
+
+		return result;
+		}
+
+
+
+	//return an NativeCallTarget which is essentially this class stripped of
+	//its 'target' field
+	NativeRuntimeCallTarget	getTypedForaCompilerCallTarget(long index) const
+		{
+		return NativeRuntimeCallTarget(
+			jumpPtr(),
+			mSlots[index].blockID(),
+			stackframePtr()
+			);
+		}
+
+private:
+	NativeRuntimeContinuationBase mBase;
+	NativeRuntimeContinuationSlot mSlots[count];
+};
+
+template<int count>
+NativeRuntimeContinuationValue<count+1> operator+(
+						const NativeRuntimeContinuationValue<count>& base,
+						const NativeRuntimeContinuationSlot& slot
+						)
+	{
+	NativeRuntimeContinuationValue<count+1> result;
+	
+	result.base() = base.base();
+
+	for (long k = 0; k < count;k++)
+		result.slots()[k] = base.slots()[k];
+
+	result.slots()[count] = slot;
+
+	return result;
+	}
+
+NativeRuntimeContinuationValue<1> nativeRuntimeContinuationFromCallTarget(
+												const NativeRuntimeCallTarget& target
+												);
+
+
+template<int count>
+NativeRuntimeContinuationValueVector::NativeRuntimeContinuationValueVector(
+					const NativeRuntimeContinuationValue<count>& value
+					)
+	{
+	base() = value.base();
+	for (long k = 0; k < value.size();k++)
+		slots() = slots() + value.slots()[k];
+	}
+
+

@@ -1,0 +1,922 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Trace.hppml"
+#include "Term.hppml"
+#include "Util.hppml"
+#include "../Judgment/JudgmentNode.hppml"
+#include "../Axioms/Axiom.hppml"
+#include "../../core/Logging.hpp"
+#include "../../core/StringUtil.hpp"
+#include "../../core/Clock.hpp"
+#include "../ControlFlowGraph/ControlFlowGraphToCodeLocation.hppml"
+
+namespace Fora {
+namespace JudgmentOnInterpreterTrace {
+
+Trace::Trace(
+			PolymorphicSharedPtr<Axioms> inAxioms,
+			PolymorphicSharedPtr<TypedFora::Compiler> inCompiler
+			) : 
+		mInitialTerm(0),
+		mEndTerm(0),
+		mAxioms(inAxioms),
+		mCompiler(inCompiler),
+		mFirstAndNextInStackframeIndex(mDependencyGraph),
+		mLoopEntrypointIndex(mDependencyGraph),
+		mTermsByUniqueIdIndex(mDependencyGraph),
+		mLastRecompute(0)
+	{
+	}
+
+void Trace::addTraceTerm(const InterpreterTraceTerm& inTraceTerm)
+	{
+	long initialTerms = mTerms.size();
+
+	mTermsAdded.push_back(inTraceTerm);
+
+	if (inTraceTerm.isArbitraryInterpreterLogging())
+		return;
+
+	try {
+		if (mInitialTerm == 0)
+			{
+			@match InterpreterTraceTerm(inTraceTerm)
+				-| Initialize(location, jovs, result, uniqueId, wasEverMachineCodeFrame) ->> {
+					mInitialTerm = mEndTerm = allocateTerm();
+
+					mInitialTerm->initializeAsInterpreterLocation(
+						location,
+						jovs,
+						uniqueId,
+						result ? null() << Result(result->second, result->first) : Nullable<Result>(),
+						wasEverMachineCodeFrame
+						);
+					}
+				-| _ ->> {
+					lassert_dump(false, "expected an Initialize term");
+					}
+			}
+		else
+			{
+			@match InterpreterTraceTerm(inTraceTerm)
+				-| AxiomResult() ->> {
+					addAxiomResultTerm(inTraceTerm);
+					}
+				-| Branch() ->> {
+					addBranchTerm(inTraceTerm);
+					}
+				-| NewStackFrame() ->> {
+					addNewStackFrameTerm(inTraceTerm);
+					}
+				-| ReturnToStackFrame() ->> {
+					addReturnToStackFrame(inTraceTerm);
+					}
+				-| ReturnToMachineCode() ->> {
+					addReturnToMachineCodeFrame(inTraceTerm);
+					}
+				-| TransferToMachineCode() ->> {
+					addTransferToMachineCodeFrame(inTraceTerm);
+					}
+				-| TransferToInterpreterFromMachineCode() ->> {
+					addTransferToInterpreterFromMachineCodeTerm(inTraceTerm);
+					}
+				-| Initialize() ->> {
+					addInitializeTerm(inTraceTerm);
+					}
+				-| ContinuationAdapterFollowed() ->> {
+					//nothing to do
+					}
+				-| _ ->> {
+					lassert_dump(false, "don't know what to do with " << prettyPrintString(inTraceTerm));
+					}
+			}
+
+		mDependencyGraph.recomputeBelow(1000000);
+
+		if (mTerms.size() > mLastRecompute + 100)
+			{
+			mDependencyGraph.recompute();
+			checkForLoops();
+
+			mLastRecompute = mTerms.size();
+			}
+		
+		if (long(initialTerms / 100) != long(mTerms.size() / 100))
+			LOG_INFO << "total terms: " << mTerms.size();
+		}
+	catch(std::logic_error& e)
+		{
+		std::ostringstream s;
+
+		s << "\n\nadding " << prettyPrintString(inTraceTerm) << ":\n";
+
+		long k = mTermsAdded.size();
+
+		if (k > 100)
+			k -= 100;
+		else
+			k = 0;
+
+		for (;k < mTermsAdded.size();k++)
+			s << "\n\nk = " << k << ": " << prettyPrintString(mTermsAdded[k]) << "\n";
+				
+		dumpToTextStream(s);
+
+		throw std::logic_error(e.what() + s.str());
+		}
+	}
+
+void Trace::addInitializeTerm(const InterpreterTraceTerm& inTraceTerm)
+	{
+	rollFrontTermForward();
+
+	@match InterpreterTraceTerm(inTraceTerm)
+		-| Initialize(location, jovs, result, uniqueId, wasEverMachineCodeFrame) ->> {
+			Term* newTerm = allocateTerm();
+
+			newTerm->initializeAsInterpreterLocation(
+				location,
+				jovs,
+				uniqueId,
+				result ? null() << Result(result->second, result->first) : Nullable<Result>(),
+				wasEverMachineCodeFrame
+				);
+
+			mEndTerm->setFlowsToInterpreterFromMachineCodeTerm(newTerm);
+			mEndTerm = newTerm;
+			}
+	}
+
+void Trace::insertContinuationStackframeRightBefore(
+		Term* firstTermInFrame, 
+		const ControlFlowGraphJumpPoint& location, 
+		const ImmutableTreeVector<JOV>& jovsInTargetFrame,
+		const JOV& resultJOV,
+		uint64_t frameUniqueId,
+		bool isException,
+		Nullable<pair<TypedFora::MetadataInstruction, long> > wasEverMachineCodeFrame
+		)
+	{
+	Term* newFrontTerm = allocateTerm();
+
+	newFrontTerm->initializeAsInterpreterLocation(
+		location,
+		jovsInTargetFrame,
+		frameUniqueId,
+		null() << Result(resultJOV, isException),
+		wasEverMachineCodeFrame
+		);
+
+	mEndTerm->setFlowsToAsReturn(
+		newFrontTerm, 
+		*mEndTerm->whichContinuation()
+		);
+
+	mEndTerm = newFrontTerm;
+	}
+
+void Trace::addReturnToStackFrame(const InterpreterTraceTerm& inTraceTerm)
+	{
+	rollFrontTermForward();
+	
+	@match InterpreterTraceTerm(inTraceTerm)
+		-| ReturnToStackFrame(location, isException, jovsInTargetFrame, resultJov, frameUniqueId, wasEverMachineCodeFrame) ->> {
+			if (!mEndTerm->isMachineCodeTerm())
+				{
+				if (mEndTerm->upApplyTermIn() == 0)
+					{
+					lassert(jovsInTargetFrame);
+
+					//we're pushing a new frame onto the front of the current chain
+					Term* first = mEndTerm->firstTermInCurrentFrame();
+
+					lassert(first->upApplyTermIn() == 0);
+
+					insertContinuationStackframeRightBefore(
+						first, 
+						location, 
+						*jovsInTargetFrame, 
+						*resultJov, 
+						frameUniqueId, 
+						isException,
+						wasEverMachineCodeFrame
+						);
+					}
+				else
+					{
+					JudgmentOnValue argJOV = calculateReturnJOV(mEndTerm);
+
+					popCurrentStackframe(
+						argJOV, 
+						isException, 
+						*mEndTerm->whichContinuation()
+						);
+					}
+				}
+			else
+				{
+				Term* newTerm = allocateTerm();
+				
+				if (mTermsAdded.size() > 1 && mTermsAdded[mTermsAdded.size()-2].isTransferToInterpreterFromMachineCode())
+					{
+					//this is giving us the interpreter-level view of the stackframe, which has the 
+					//actual JOVs.
+					newTerm->initializeAsInterpreterLocation(
+						location,
+						*jovsInTargetFrame,
+						frameUniqueId,
+						null() << Result(*resultJov, isException),
+						wasEverMachineCodeFrame
+						);
+
+					mEndTerm->setFlowsToInterpreterFromMachineCodeTerm(newTerm);
+					}
+				else
+					{
+					//we're returning to the interpreter from a machine-code term.
+					JOV machineCodeReturnJOV = searchForMachineCodeReturnJOV();
+
+					lassert_dump(
+						resultJov && machineCodeReturnJOV.covers(*resultJov),
+						prettyPrintString(machineCodeReturnJOV) << " doesn't cover " << prettyPrintString(resultJov)
+						);
+
+					newTerm->initializeAsInterpreterLocation(
+						location,
+						*jovsInTargetFrame,
+						frameUniqueId,
+						null() << Result(machineCodeReturnJOV, isException),
+						wasEverMachineCodeFrame
+						);
+
+					mEndTerm->setFlowsToInterpreterFromMachineCodeTermAsReturn(newTerm);
+					}
+
+				mEndTerm = newTerm;
+				}
+			}
+	}
+
+JOV Trace::searchForMachineCodeReturnJOV()
+	{
+	//search backward until we see a ContinuationAdapterFollowed. Because it's possible to 
+	//adapt continuations twice (once to return to a left-over interpreter frame and again to return
+	//to machine code) we have to search as far back as we can.
+	for (long k = ((long)mTermsAdded.size()) - 2; k >= 0; k--)
+		@match InterpreterTraceTerm(mTermsAdded[k])
+			-| ArbitraryInterpreterLogging() ->> {
+				}
+			-| ReturnToMachineCode() ->> {}
+			-| TransferToInterpreterFromMachineCode() ->> {}
+			-| ContinuationAdapterFollowed(isException, type, targetIsNative) ->> {
+				if (!targetIsNative)
+					return type.jov();
+				}
+			-| _ ->> {
+				lassert(false);
+				}
+	}
+
+void Trace::addTransferToInterpreterFromMachineCodeTerm(const InterpreterTraceTerm& inTraceTerm)
+	{
+	rollFrontTermForward();
+
+	lassert(mEndTerm && mEndTerm->isMachineCodeTerm());
+
+	@match InterpreterTraceTerm(inTraceTerm)
+		-| TransferToInterpreterFromMachineCode(location, jovsOfInstruction, jovsOfData, result) ->> {
+			Term* newTerm = allocateTerm();
+
+			newTerm->initializeAsMachineCodeTerm(
+				location,
+				jovsOfInstruction,
+				jovsOfData,
+				result ? null() << Result(result->second, result->first) : Nullable<Result>()
+				);
+
+			mEndTerm->setFlowsToMachineCodeTermFromMachineCodeTerm(newTerm);
+			mEndTerm = newTerm;
+			}
+	}
+
+void Trace::addReturnToMachineCodeFrame(const InterpreterTraceTerm& inTraceTerm)
+	{
+	rollFrontTermForward();
+	
+	@match InterpreterTraceTerm(inTraceTerm)
+		-| ReturnToMachineCode(location, jovsOfInstruction, jovsOfData, isException, resultJOV) ->> {
+			lassert(mEndTerm);
+
+			Term* newTerm = allocateTerm();
+
+			newTerm->initializeAsMachineCodeTerm(
+				location,
+				jovsOfInstruction,
+				jovsOfData,
+				null() << Result(resultJOV, isException)
+				);
+
+			if (mEndTerm->isMachineCodeTerm())
+				mEndTerm->setFlowsToMachineCodeTermFromMachineCodeTerm(newTerm);
+			else
+				mEndTerm->setFlowsToAsReturn(newTerm, *mEndTerm->whichContinuation());
+
+			mEndTerm = newTerm;
+			}
+	}
+
+void Trace::addTransferToMachineCodeFrame(const InterpreterTraceTerm& inTraceTerm)
+	{
+	@match InterpreterTraceTerm(inTraceTerm)
+		-| TransferToMachineCode(location, jovsOfInstruction) ->> {
+			lassert(mEndTerm);
+
+			while (mEndTerm->location() != location)
+				{
+				if (!rollFrontTermForwardOnce())
+					lassert_dump(false, "Couldn't find location " << prettyPrintString(location));
+				}
+
+			Term* newTerm = allocateTerm();
+
+			newTerm->initializeAsMachineCodeTerm(
+				location,
+				jovsOfInstruction,
+				jovsOfInstruction,
+				null()
+				);
+
+			mEndTerm->setFlowsToMachineCodeFromInterpreterTerm(newTerm);
+			mEndTerm = newTerm;
+			}
+	}
+
+void Trace::addNewStackFrameTerm(const InterpreterTraceTerm& inTraceTerm)
+	{
+	rollFrontTermForward();
+	
+	@match InterpreterTraceTerm(inTraceTerm)
+		-| NewStackFrame(location, uniqueId) ->> {
+			lassert_dump(mEndTerm->nodeBody().isApply(), prettyPrintString(mEndTerm->nodeBody()));
+
+			ImmutableTreeVector<JudgmentOnValue> newFrameJovs = 
+				getApplyJovJudgment(
+					mEndTerm->nodeBody().getApply().args(), 
+					mEndTerm->jovs(), 
+					null()
+					);
+
+
+			Term* newFrontTerm = allocateTerm();
+
+			newFrontTerm->initializeAsInterpreterLocation(
+				location,
+				newFrameJovs,
+				uniqueId,
+				null(),
+				null()
+				);
+
+			mEndTerm->setFlowsToAsApply(newFrontTerm);
+
+			mEndTerm = newFrontTerm;
+			}
+	}
+
+void Trace::addAxiomResultTerm(const InterpreterTraceTerm& inTraceTerm)
+	{
+	rollFrontTermForward();
+	
+	@match InterpreterTraceTerm(inTraceTerm)
+		-| AxiomResult(resultJOV, isException, label) ->> {
+			lassert(!mEndTerm->isMachineCodeTerm());
+
+			mEndTerm->setResult(Result(resultJOV, isException));
+			}
+	}
+
+void Trace::addBranchTerm(const InterpreterTraceTerm& inTraceTerm)
+	{
+	rollFrontTermForward();
+	
+	@match InterpreterTraceTerm(inTraceTerm)
+		-| Branch(whichBranch) ->> {
+			lassert(!mEndTerm->isMachineCodeTerm());
+
+			@match ControlFlowNodeBody(mEndTerm->nodeBody())
+				-| Branch(arg, ifTrue, ifFalse) ->> {
+					rollFrontTermForward(whichBranch == 0 ? ifTrue : ifFalse, whichBranch, null());
+					}
+				-| Switch(arg, branches, otherwise) ->> {
+					rollFrontTermForward(
+						whichBranch == branches.size() ? 
+							otherwise
+						:	branches.pairAtPosition(whichBranch).second,
+						whichBranch, 
+						null()
+						);
+					}
+				-| TupleExpand(argIndex, ifMatch, ifNoMatch) ->> {
+					lassert(whichBranch == 0 || whichBranch == 1);
+
+					rollFrontTermForward(
+						whichBranch == 0 ? ifMatch.continuation() : ifNoMatch,
+						whichBranch,
+						null()
+						);
+					}
+				-| _ ->> {
+					lassert_dump(false, "unexpected node type: " << prettyPrintString(mEndTerm->nodeBody()));
+					}
+			}
+	}
+
+void Trace::rollFrontTermForward()
+	{
+	lassert(mEndTerm);
+
+	while (true)
+		{
+		if (rollFrontTermForwardOnce())
+			mDependencyGraph.recomputeBelow(1000000);
+		else
+			return;
+		}
+	}
+
+bool Trace::rollFrontTermForwardOnce()
+	{
+	if (mEndTerm->isMachineCodeTerm())
+		return false;
+
+	Term* origTerm = mEndTerm;
+
+	@match ControlFlowNodeBody(mEndTerm->nodeBody())
+		-| Jump(continuation) ->> {
+			rollFrontTermForward(continuation, 0, null());
+			}
+		-| Branch(Constant(c), ifTrue, ifFalse) ->> {
+			if (c.getReference().convertToBoolean())
+				rollFrontTermForward(ifTrue, 0, null());
+			else
+				rollFrontTermForward(ifFalse, 1, null());
+			}
+		-| Apply(args, ifNormal, ifException) ->> {
+			if (mEndTerm->result())
+				{
+				auto continuation = mEndTerm->result()->isException() ? ifException : ifNormal;
+
+				long whichContinuation = mEndTerm->result()->isException() ? 1 : 0;
+
+				rollFrontTermForward(continuation, whichContinuation, null() << mEndTerm->result()->value());
+				}
+			}
+		-| _ ->> {
+			if (mEndTerm->whichContinuation())
+				{
+				rollFrontTermForward(
+					mEndTerm->nodeBody().getContinuationByIndex(*mEndTerm->whichContinuation()),
+					*mEndTerm->whichContinuation(),
+					null()
+					);
+				}
+			}
+
+	return mEndTerm != origTerm;
+	}
+
+JudgmentOnValue Trace::calculateReturnJOV(Term* term)
+	{
+	lassert(term->whichContinuation());
+	
+	const ControlFlowContinuation& cont = 
+		term->nodeBody().getContinuationByIndex(*term->whichContinuation());
+
+	@match ControlFlowContinuation(cont)
+		-| Return(arg, isException) ->> {
+			return getJudgment(
+				arg, 
+				term->jovs(), 
+				term->result() ? null() << term->result()->value() : null(),
+				null() << term->nodeBody()
+				);
+			}
+	}
+
+void Trace::rollFrontTermForward(
+					const ControlFlowContinuation& continuation, 
+					long continuationIndex,
+					Nullable<JOV> resultJOV
+					)
+	{
+	mEndTerm->setWhichContinuation(continuationIndex);
+
+	@match ControlFlowContinuation(continuation)
+		-| Node(newLabel, args) ->> {
+			ImmutableTreeVector<JOV> newJOVs = getJudgment(
+				args, 
+				mEndTerm->rawJovs(), 
+				resultJOV,
+				null() << mEndTerm->nodeBody()
+				);
+
+			rollFrontTermForward(newJOVs, null() << newLabel, continuationIndex);
+			}
+		-| Return(arg, isException) ->> {
+			}
+	}
+
+namespace {
+
+Nullable<pair<TypedFora::MetadataInstruction, long> > 
+			incrementWasEverMachineCodeFrame(
+				Nullable<pair<TypedFora::MetadataInstruction, long> > in
+				)
+	{
+	if (!in)
+		return null();
+
+	return null() << make_pair(in->first, in->second + 1);
+	}
+
+}
+
+void Trace::rollFrontTermForward(
+				const ImmutableTreeVector<JOV>& newJOVs, 
+				Nullable<std::string> newLabel, 
+				long continuationIndex
+				)
+	{
+	Term* newFrontTerm = allocateTerm();
+
+	newFrontTerm->initializeAsInterpreterLocation(
+		ControlFlowGraphJumpPoint(mEndTerm->location().graph(), newLabel),
+		newJOVs,
+		mEndTerm->getFrameUniqueId(),
+		null(),
+		incrementWasEverMachineCodeFrame(mEndTerm->wasEverMachineCodeFrame())
+		);
+
+	mEndTerm->setFlowsTo(newFrontTerm, continuationIndex);
+
+	mEndTerm = newFrontTerm;
+	} 
+
+void Trace::popCurrentStackframe(const JOV& inJOV, bool isException, long whichContinuation)
+	{
+	lassert(mEndTerm->upApplyTermIn());
+
+	Term* applyTerm = mEndTerm->upApplyTermIn();
+
+	Term* newFrontTerm = allocateTerm();
+
+	ImmutableTreeVector<JOV> jovs = applyTerm->jovs();
+
+	for (auto index: applyTerm->variableIndicesUnusedInContinuations())
+		jovs = jovs.withElementReplaced(index, JOV::Constant(CSTValue()));
+
+	newFrontTerm->initializeAsInterpreterLocation(
+		applyTerm->location(),
+		jovs,
+		applyTerm->getFrameUniqueId(),
+		null() << Result(inJOV, isException),
+		applyTerm->wasEverMachineCodeFrame()
+		);
+
+	mEndTerm->setFlowsToAsReturn(newFrontTerm, whichContinuation);
+
+	mEndTerm = newFrontTerm;
+	}
+
+void Trace::validateTerms()
+	{
+	if (mInitialTerm || mEndTerm)
+		{
+		mDependencyGraph.recompute();
+
+		LOG_INFO << "total terms in trace: " << mTerms.size() << ". Time spent recomputing: " 
+			<< mDependencyGraph.timeElapsed() << " over " << mDependencyGraph.valuesComputed()
+			<< " values."
+			;
+
+		lassert(mInitialTerm && mEndTerm);
+		lassert(mInitialTerm->flowsToReverse() == 0);
+		lassert(mEndTerm->flowsTo() == 0);
+		
+		validateTerms(mInitialTerm, mEndTerm);
+		}
+	}
+
+void Trace::validateTerms(Term* initialTerm, Term* endTerm)
+	{
+	//verify that they are wired up as a linked list correctly
+	long count = 0;
+
+	for (Term* curTerm = initialTerm; curTerm != endTerm; curTerm = curTerm->flowsTo())
+		{
+		Term* nextTerm = curTerm->flowsTo();
+
+		lassert(nextTerm);
+
+		lassert(nextTerm->flowsToReverse() == curTerm);
+
+		count ++;
+
+		lassert(count < mTerms.size());
+
+		try {
+			curTerm->validateInternalConsistency();
+			}
+		catch(std::logic_error& e)
+			{
+			std::ostringstream str;
+			str << e.what() << "\n";
+			str << "terms are:\n";
+			dumpToTextStream(str, curTerm, nextTerm);
+
+			str << "\n\norig terms were " << prettyPrintString(mTermsAdded) << "\n";
+
+			throw std::logic_error(str.str());
+			}
+		}
+
+	//verify that all terms with the same stack uniqueID can see each other
+	std::map<uint64_t, Term*> firstTerms;
+	for (Term* curTerm = initialTerm; curTerm != endTerm; curTerm = curTerm->flowsTo())
+		if (curTerm->evalFrameUniqueId())
+			{
+			Term* firstTerm = curTerm->firstTermInCurrentFrame();
+
+			uint64_t unique = *curTerm->evalFrameUniqueId();
+
+			if (firstTerms.find(unique) != firstTerms.end())
+				{
+				lassert_dump(
+					firstTerms[unique] == firstTerm,
+					"uniqueID " << unique << " was not fully wired!"
+					);
+				}
+			else
+				firstTerms[unique] = firstTerm;
+			}
+	}
+
+void Trace::dumpToTextStream(std::ostream& stream)
+	{
+	dumpToTextStream(stream, mInitialTerm, mEndTerm);
+	}
+
+void Trace::dumpToTextStream(std::ostream& stream, const Term* initialTerm, const Term* endTerm, bool outermostOnly)
+	{
+	long maxDepth = 0;
+
+	for (const Term* t = initialTerm; t && t->flowsToReverse() != endTerm; t = t->flowsTo())
+		maxDepth = std::max(maxDepth, t->depth());
+
+	long lastDepth = 0;
+	long firstDepth = initialTerm->depth();
+
+	for (const Term* curTerm = initialTerm; 
+				curTerm && curTerm->flowsToReverse() != endTerm; curTerm = curTerm->flowsTo())
+		if (!outermostOnly || curTerm->depth() == firstDepth)
+			{
+			long curTermDepth = curTerm->depth();
+
+			if (curTermDepth != lastDepth)
+				{
+				if (curTermDepth < lastDepth)
+					for (long k = 0; k <= maxDepth; k++)
+						{
+						if (k == curTermDepth)
+							stream << "|/";
+							else
+						if (k < curTermDepth)
+							stream << "| ";
+						else
+							stream << "  ";
+						}
+				else
+					{
+					for (long k = 0; k <= maxDepth; k++)
+						{
+						if (k == lastDepth)
+							stream << "|\\";
+							else
+						if (k < lastDepth)
+							stream << "| ";
+						else
+							stream << "  ";
+						}
+					}
+				
+				stream << "\n";
+
+				lastDepth = curTermDepth;
+				}
+
+			bool isUnknownFlow = curTerm->flowsToReverse() && 
+						curTerm->flowsToReverse()->flowBetweenMachineCodeTermsHasUnknownRelationship();
+
+			if (isUnknownFlow)
+				{
+				for (long k = 0; k <= maxDepth; k++)
+					stream << "??";
+				stream << "\n";
+				}
+
+			for (long k = 0; k <= maxDepth; k++)
+				{
+				if (k == curTermDepth)
+					stream << (
+						curTerm->isMachineCodeTerm() ? "M " : "* "
+						);
+					else
+				if (k < curTermDepth)
+					stream << "| ";
+				else
+					stream << "  ";
+				}
+
+			stream << " " << Ufora::pad(prettyPrintString((void*)curTerm), 10) << " ";
+
+			stream << " #" << Ufora::pad(prettyPrintString(curTerm->index()), 5) << " ";
+
+			if (!outermostOnly)
+				{
+				stream << (curTerm == curTerm->firstTermInCurrentFrame() ? "F ":"  ");
+
+				stream << (curTerm->wasEverMachineCodeFrame() ? "m ":"  ");
+				stream << (curTerm->shouldAddToInstructionGraph() ? "a ":"  ");
+
+				stream << " SMCTS=" << Ufora::pad(prettyPrintString((void*)curTerm->stableMachineCodeTermSource()), 10) << " ";
+				stream << " LE=" << Ufora::pad(prettyPrintString((void*)curTerm->loopEntrypoint()), 10) << " ";
+
+				stream << Ufora::pad(
+					prettyPrintString(curTerm->locationAndJudgmentHash()),
+					6) << " ";
+
+				stream << "u=";
+				if (curTerm->evalFrameUniqueId())
+					stream << Ufora::pad(prettyPrintString(*curTerm->evalFrameUniqueId()), 6);
+				else
+					stream << Ufora::pad("", 6);
+
+				if (curTerm->whichContinuation())
+					stream << "c=" << Ufora::pad(prettyPrintString(*curTerm->whichContinuation()), 3);
+				else
+					stream << "c=" << Ufora::pad("", 3);
+
+				stream << " ";
+				}
+
+			Nullable<std::string> cfgText = 
+				ControlFlowGraphToCodeLocation::graphAndLabelToDisplayString(
+					curTerm->location().graph(),
+					curTerm->location().label()
+					);
+
+			if (cfgText)
+				cfgText = Ufora::pad(*cfgText, 55, true);
+			else
+				cfgText = Ufora::pad(curTerm->location().graph().graphName(), 55, true);
+
+			stream
+				<< Ufora::pad(prettyPrintString(curTerm->location().label()), 18) << ":    "
+				<< *cfgText
+				<< "   | res=" << 
+					Ufora::pad(
+						Ufora::oneLineSanitization(
+							curTerm->result() ? 
+								"RAW: " + prettyPrintString(curTerm->result()->value()) 
+							: 
+								std::string(), 
+							80
+							),
+						60
+						) << " | "
+				<< Ufora::pad(
+					Ufora::oneLineSanitization(
+						prettyPrintString(curTerm->location().graph()[curTerm->location().label()]), 
+						180
+						),
+					180
+					)
+				<< ". jovs=" << (
+					Ufora::pad(
+						Ufora::oneLineSanitization(
+							prettyPrintStringWithoutWrapping(curTerm->jovs()),
+							400
+							),
+						400
+						)
+					)
+				;
+			stream << "\n";
+			}
+	}
+
+size_t Trace::size()
+	{
+	return mTerms.size();
+	}
+
+Term* Trace::allocateTerm()
+	{
+	mTerms.push_back(boost::shared_ptr<Term>(new Term(this)));
+
+	return mTerms.back().get();
+	}
+
+Nullable<pair<const Term*, const Term*> > Trace::searchForLoop()
+	{
+	if (mLoop)
+		return mLoop;
+
+	return null();
+	}
+
+namespace {
+
+bool isBiggerLoop(pair<const Term*,const Term*> lhs, pair<const Term*,const Term*> rhs)
+	{
+	long traceLength1 = lhs.second->index() - lhs.first->index();
+	long traceLength2 = rhs.second->index() - rhs.first->index();
+	
+	if (traceLength1 > traceLength2)
+		return true;
+
+	if (traceLength1 < traceLength2)
+		return false;
+
+	return lhs.first->index() < rhs.first->index();
+	}
+
+}
+
+void Trace::checkForLoops()
+	{
+	map<hash_type, std::vector<Term*> > termsInOrder;
+
+	Term* curTerm = mEndTerm;
+
+	while (curTerm)
+		{
+		if (curTerm->locationAndJudgmentHash() != hash_type() && !curTerm->isMachineCodeTerm())
+			{
+			auto& termVec = termsInOrder[curTerm->locationAndJudgmentHash()];
+
+			termVec.push_back(curTerm);
+
+			if (termsInOrder[curTerm->locationAndJudgmentHash()].size() > 3)
+				{
+				mLoop = make_pair(termVec.back(), termVec[0]);
+
+				return;
+				}
+			}
+
+		if (curTerm->flowsToReverseInCurrentFrame())
+			curTerm = curTerm->flowsToReverseInCurrentFrame();
+			else
+		if (curTerm->flowsToReverse() && curTerm->flowsToReverseIsParentStackframe())
+			curTerm = curTerm->flowsToReverse();
+		else
+			curTerm = 0;
+		}
+
+	if (!mLoop)	
+		if (mLoopEntrypointIndex.getResultMap().size() > 1)
+			{
+			for (auto it = mLoopEntrypointIndex.getResultMap().begin();
+						it != mLoopEntrypointIndex.getResultMap().end(); ++it)
+				if (it->first)
+					for (auto it2 = it->second->begin(); it2 != it->second->end(); ++it2)
+						if (it2->second)
+							{
+							pair<const Term*,const Term*> loopCandidate(it->first, it2->first);
+
+							if (loopCandidate.second->flowsTo() && loopCandidate.second->flowsTo()->isMachineCodeTerm())
+								loopCandidate.second = loopCandidate.second->flowsTo();
+
+							if (!mLoop || isBiggerLoop(loopCandidate, *mLoop))
+								mLoop = loopCandidate;
+							}
+			}
+
+	}
+
+}
+}

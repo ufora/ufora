@@ -1,0 +1,187 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "AddOnlyMemoryHeap.hppml"
+#include "../../core/Logging.hpp"
+
+#define MAP_FAILED ((void*)-1)
+
+namespace Fora {
+
+namespace {
+
+const static size_t kAlignment = 16;
+
+size_t roundUp(size_t toRound, size_t increment)
+	{
+	if (toRound % increment)
+		return toRound + increment - toRound % increment;
+	return toRound;
+	}
+
+}
+
+AddOnlyMemoryHeap::AddOnlyMemoryHeap(
+			PolymorphicSharedPtr<VectorDataMemoryManager> memoryManager,
+			MemoryPool* inOwningMemoryPool,
+			size_t inInitialGuess,
+			size_t inMaxBlockSize
+			) : 
+		mTotalBytesAllocated(0),
+		mTotalBytesAllocatedFromOS(0),
+		mAllocationPoint(0),
+		mOwningMemoryPool(inOwningMemoryPool),
+		mMemoryManager(memoryManager),
+		mBytesRemainingInTopBlock(0),
+		mMaxBlockSize(inMaxBlockSize),
+		mInitialGuess(inInitialGuess)
+	{
+	}
+
+AddOnlyMemoryHeap::~AddOnlyMemoryHeap()
+	{
+	for (auto blockAndSize: mBlocks)
+		lassert(
+			mMemoryManager->munmapForPool(
+				mOwningMemoryPool, 
+				blockAndSize.first, 
+				blockAndSize.second
+				) == 0
+			);
+	}
+
+uint8_t* AddOnlyMemoryHeap::alloc(size_t bytecount)
+	{
+	if (!bytecount)
+		return nullptr;
+
+	size_t inOrigBytes = bytecount;
+
+	bytecount = roundUp(bytecount + kAlignment, kAlignment);
+
+	if (mBytesRemainingInTopBlock < bytecount)
+		{
+		if (!addBlock_(bytecount))
+			{
+			lassert(false);
+			return nullptr;
+			}
+		}
+
+	lassert(mBytesRemainingInTopBlock >= bytecount);
+
+	uint8_t* result = mAllocationPoint + kAlignment;
+
+	((uint32_t*)result)[-1] = inOrigBytes;
+
+	mAllocationPoint += bytecount;
+	mBytesRemainingInTopBlock -= bytecount;
+
+	mTotalBytesAllocated += inOrigBytes + kAlignment;
+
+	return result;
+	}
+
+size_t AddOnlyMemoryHeap::totalBytesAllocated() const
+	{
+	return mTotalBytesAllocated;
+	}
+
+size_t AddOnlyMemoryHeap::totalBytesAllocatedFromOS() const
+	{
+	return mTotalBytesAllocatedFromOS;
+	}
+
+size_t AddOnlyMemoryHeap::allocSize(uint8_t* ptr)
+	{
+	if (!ptr)
+		return 0;
+
+	return ((uint32_t*)ptr)[-1];
+	}
+
+void AddOnlyMemoryHeap::trimTopBlock()
+	{
+	if (!mBlocks.size())
+		return;
+
+	size_t topBlockSize = mBlocks.back().second;
+
+	size_t bytesUsedInTopBlock = 
+		roundUp(
+			topBlockSize - mBytesRemainingInTopBlock, 
+			mMemoryManager->getOsPageSize()
+			);
+
+	if (bytesUsedInTopBlock < topBlockSize)
+		{
+		if (mMemoryManager->mremapForPoolWithoutMoving(
+				mOwningMemoryPool, 
+				mBlocks.back().first, 
+				topBlockSize, 
+				bytesUsedInTopBlock
+				))
+			{
+			mTotalBytesAllocatedFromOS -= topBlockSize - bytesUsedInTopBlock;
+			
+			mBytesRemainingInTopBlock -= topBlockSize - bytesUsedInTopBlock;
+
+			mBlocks.back().second = bytesUsedInTopBlock;
+			}
+		}
+	}
+
+bool AddOnlyMemoryHeap::addBlock_(size_t bytecount)
+	{
+	trimTopBlock();
+
+	if (mTotalBytesAllocatedFromOS == 0 && bytecount < mInitialGuess)
+		{
+		bytecount = mInitialGuess;
+		if (bytecount > mMemoryManager->getSlabSize() * 10)
+			bytecount += mMemoryManager->getSlabSize();
+			else
+		if (bytecount > mMemoryManager->getSlabSize())
+			bytecount += mMemoryManager->getSlabSize() / 4;
+		}
+
+	if (bytecount < mMemoryManager->getSmallAllocSize() && mTotalBytesAllocated == 0)
+		bytecount = mMemoryManager->getSmallAllocSize();
+		else
+	if (bytecount < mMemoryManager->getSlabSize())
+		bytecount = mMemoryManager->getSlabSize();
+
+	//round bytecount to nearest page size
+	bytecount = roundUp(bytecount, mMemoryManager->getOsPageSize());
+
+	uint8_t* block = (uint8_t*)mMemoryManager->mmapForPool(mOwningMemoryPool, bytecount);
+
+	if (block == MAP_FAILED)
+		{
+		LOG_ERROR << "MAP FAILED";
+		return false;
+		}
+
+	mTotalBytesAllocatedFromOS += bytecount;
+
+	mBlocks.push_back(make_pair(block, bytecount));
+
+	mBytesRemainingInTopBlock = bytecount;
+	mAllocationPoint = block;
+
+	return true;
+	}
+
+}

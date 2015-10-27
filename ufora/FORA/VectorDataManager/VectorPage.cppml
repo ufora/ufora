@@ -1,0 +1,567 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "VectorPage.hppml"
+#include "VectorDataManager.hppml"
+#include "VectorDataMemoryManager.hppml"
+#include "Pagelet.hppml"
+#include "../../core/Memory.hpp"
+#include "../../core/AtomicOps.hpp"
+#include "../../core/Logging.hpp"
+#include "../../core/StringUtil.hpp"
+#include "../../core/lassert.hpp"
+#include "../../core/math/RandomHashGenerator.hpp"
+#include "ExtractBigVectorReferencesVisitor.hppml"
+#include "ClearVectorHandleRawDataReferencesVisitor.hppml"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include "../Core/ValidateVectorRefcountsValueUpdater.hppml"
+#include "../TypedFora/ABI/ForaValueArraySpaceRequirements.hppml"
+#include "../TypedFora/ABI/ImplValVisitor.hppml"
+#include "../Serialization/SerializedObjectContext.hpp"
+#include "../Serialization/SerializedObjectFlattener.hpp"
+#include "../Serialization/SerializedObject.hpp"
+#include <sys/mman.h>
+
+using Fora::Pagelet;
+
+using Fora::PageletTree;
+
+using Fora::PageletTreePtr;
+
+VectorPage::VectorPage(
+				PolymorphicSharedPtr<VectorDataMemoryManager> inMemoryManager
+				) : 
+		MappableMemoryPool(
+			MemoryPool::MemoryPoolType::VectorPage, 
+			inMemoryManager->getCallbackSchedulerForMappableMemoryPools()
+			),
+		mMemoryManager(inMemoryManager),
+		mIsFrozen(0),
+		mBytesInHeldPagelets(0),
+		mBytesInHeldPageletsFromOS(0),
+		mIsTearingDown(false),
+		mHasHadSmallPageletsCollapsed(false)
+
+	{
+	}
+
+VectorPage::~VectorPage()
+	{
+	if (mMappedPageletTriggers.size())
+		LOG_CRITICAL << "Destroying a VectorPage while it has pages mapped in!\n"
+			<< Ufora::debug::StackTrace::getStringTrace();
+
+	mIsTearingDown = true;
+	destroyHeldValues();
+
+	if (totalBytesAllocated())
+		LOG_CRITICAL << "Bytes in VectorPage on end: " << totalBytesAllocated();
+
+	if (mHeldPagelets.size())
+		LOG_CRITICAL << "VectorPage still holding " << mHeldPagelets.size() << " pagelets at teardown.";
+	}
+
+void VectorPage::collapseSmallPagelets()
+	{
+	if (mHasHadSmallPageletsCollapsed)
+		return;
+
+	int64_t oldBytecount = getPageletTree()->bytecountFromOSIncludingHeldPagelets();
+
+	Fora::PageletTreePtr newTreePtr = 
+		getPageletTree()->withSmallPageletsCollapsed(
+			this,
+			16 * 1024 * 1024, 
+			mMemoryManager->getMaxBytesPerPool() / 2,
+			mMemoryManager,
+			1,
+			true
+			);
+
+	int64_t newBytecount = newTreePtr->bytecountFromOSIncludingHeldPagelets();
+
+	if (newBytecount <= oldBytecount)
+		setPageletTree(newTreePtr);
+
+	mHasHadSmallPageletsCollapsed = true;
+	}
+
+void VectorPage::considerSmallPageletsCollapsed()
+	{
+	mHasHadSmallPageletsCollapsed = true;
+	}
+
+void VectorPage::setPageletTree(Fora::PageletTreePtr pagelet)
+	{
+	boost::mutex::scoped_lock lock(mPageletTreeMutex);
+
+	mPageletTree = pagelet;
+	}
+
+bool VectorPage::hasHadSmallPageletsCollapsed() const
+	{
+	return mHasHadSmallPageletsCollapsed;
+	}
+
+std::string VectorPage::stringRepresentation()
+	{
+	if (mIsFrozen)
+		return "VectorPage(" + boost::lexical_cast<string>((void*)this) + "->" + prettyPrintString(mPageId) + ")";
+	else
+		return "VectorPage(" + boost::lexical_cast<string>((void*)this) + ")";
+	}
+	
+size_t VectorPage::getOsPageSize()
+	{
+	return getpagesize();
+	}
+
+bool VectorPage::isFrozen() const
+	{
+	return mIsFrozen;
+	}
+	
+void VectorPage::appendPageletTree(PageletTreePtr newPagelet)
+	{
+	lassert(newPagelet->size());
+
+	appendPageletTreeInternal(
+		newPagelet->entirelyWithinMemoryPool(this)
+		);
+	}
+
+void VectorPage::appendPageletTree(PageletTreePtr tree, IntegerSequence sequence)
+	{
+	if (sequence.size() == 0)
+		return;
+
+	if (sequence == IntegerSequence(tree->size()))
+		appendPageletTree(tree);
+		else
+	if (sequence.stride() != 1)
+		{
+		boost::shared_ptr<Pagelet> pagelet(
+			new Pagelet(mMemoryManager)
+			);
+
+		//TODO: this implementation is correct, but very slow. A better implementation
+		//would pass the stride information along to the ValueDeepcopier which could
+		//then implement a much more efficient copy operation
+		for (long k = 0; k < sequence.size(); k++)
+			pagelet->append(tree->extractValueIntoFreeStore(sequence.offsetForIndex(k)));
+
+		pagelet->freeze();
+
+		appendPagelet(pagelet);
+		}
+		else
+	if (sequence.offset() == 0)
+		//if the subset required is a left slice, we can just take that
+		appendPageletTree(tree->restrictTo(this, sequence.size()));
+	else
+		{
+		boost::shared_ptr<Pagelet> pagelet(
+			new Pagelet(mMemoryManager)
+			);
+
+		TypedFora::Abi::ForaValueArraySpaceRequirements requirements;
+
+		tree->visitTree(
+			[&](boost::shared_ptr<Pagelet> toCopy, IntegerRange subrange, long offsetInOrig) {
+				requirements = requirements + toCopy->getValues()->getSpaceRequirements(subrange.low(), subrange.high());
+				},
+			sequence.containingRange()
+			);
+
+		pagelet->getValues()->prepareForAppending(requirements);
+
+		tree->visitTree(
+			[&](boost::shared_ptr<Pagelet> toCopy, IntegerRange subrange, long offsetInOrig) {
+				pagelet->append(
+					toCopy->getValues(),
+					subrange.low(),
+					subrange.high()
+					);
+				},
+			sequence.containingRange()
+			);
+		
+		pagelet->freeze();
+
+		appendPagelet(pagelet);
+		}
+	}
+
+void VectorPage::appendPagelet(boost::shared_ptr<Pagelet> newPagelet)
+	{
+	appendPageletTreeInternal(
+		this->construct<PageletTree>(
+			this,
+			newPagelet,
+			newPagelet->getValues()->size()
+			)
+		);
+	}
+
+void VectorPage::appendPageletTreeInternal(Fora::PageletTreePtr newPagelet)
+	{
+	if (mPageletTree.isEmpty())
+		mPageletTree = newPagelet;
+	else
+		mPageletTree = PageletTree::concatenateAndBalance(this, mPageletTree, newPagelet);
+	}
+	
+PageletTreePtr VectorPage::getPageletTree() const
+	{
+	boost::mutex::scoped_lock lock(mPageletTreeMutex);
+	
+	return mPageletTree;
+	}
+
+void VectorPage::freeze()
+	{
+	lassert(!mIsFrozen);
+
+	hash_type guidHash = mMemoryManager->newVectorHash();
+
+	const static double kMinUsedByteRatioForPagelets = .9;
+
+	//check if we have a large number of small pagelets (which use up a lot of memory) and collapse
+	//them if so
+	if (mHeldPagelets.size() > 10 && totalBytesAllocatedFromOS() / mHeldPagelets.size() < 1024 * 128)
+		{
+		Ufora::threading::ScopedThreadLocalContext<Fora::Interpreter::ExecutionContext> setECContextToNull;
+
+		mPageletTree = getPageletTree()->collapseToSinglePageletTreeWithoutHeldPagelets(
+			this,
+			mMemoryManager
+			);
+		}
+
+
+	mPageId = Fora::PageId::Internal(
+		guidHash, 
+		totalBytesAllocatedFromOS(), 
+		totalBytesAllocated()
+		);
+
+	mIsFrozen = true;
+
+	lassert(!mPageletTree.isEmpty());
+
+	mPageletTree->visitTree([&](boost::shared_ptr<Pagelet> pagelet, IntegerRange values, long offset) {
+		for (auto bigvecId: pagelet->getReferencedBigVectorIds())
+			mReferencedBigvecs.insert(bigvecId);
+		});
+
+	if (mPageletTree->count() < 2)
+		mHasHadSmallPageletsCollapsed = true;
+
+	LOG_INFO << "Created a VectorPage with "
+		<< mPageletTree->size() << " x " << mPageletTree->currentJor()
+		<< " over "
+		<< mPageletTree->count() << " subtrees with "
+		<< totalBytesAllocatedFromOS() / 1024 / 1024.0 << " MB allocated from OS "
+		<< "and a pagelet efficiency of "
+		<< (float(totalBytesAllocated()) / totalBytesAllocatedFromOS())
+		;
+
+	mMemoryManager->checkBytecounts();
+	}
+
+void VectorPage::freeze(Fora::PageId pageId)
+	{
+	freeze();
+
+	mPageId = pageId;
+	}
+
+size_t VectorPage::totalBytesAllocatedFromOSExcludingPagelets() const
+	{
+	return 0;
+	}
+
+size_t VectorPage::totalBytesAllocatedFromOS() const
+	{
+	return mBytesInHeldPageletsFromOS;
+	}
+
+size_t VectorPage::totalBytesFromOSHeldInPagelets() const
+	{
+	return mBytesInHeldPagelets;
+	}
+
+size_t VectorPage::totalBytesAllocatedFromOSByNonPagelets() const
+	{
+	return 0;
+	}
+
+size_t VectorPage::totalBytesAllocated() const
+	{
+	return mBytesInHeldPagelets;
+	}
+
+uint8_t* VectorPage::allocate(size_t inBytes)
+	{
+	return (uint8_t*)::malloc(inBytes);
+	}
+
+void VectorPage::free(uint8_t* inBytes) 
+	{
+	::free(inBytes);
+	}
+
+uint8_t* VectorPage::realloc(uint8_t* inBytes, uword_t inNewBytes)
+	{
+	return (uint8_t*)::realloc(inBytes, inNewBytes);
+	}
+
+bool VectorPage::permitAllocation(size_t inBytes)
+	{
+	return true;
+	}
+
+Fora::PageId VectorPage::getPageId() const
+	{
+	lassert(mIsFrozen);
+
+	return mPageId;	
+	}
+
+void VectorPage::destroyHeldValues()
+	{
+	Ufora::threading::ScopedThreadLocalContext<Fora::Interpreter::ExecutionContext> setECContextToNull;
+
+	mPageletTree = PageletTreePtr();
+	}
+
+const std::set<Fora::BigVectorId>& VectorPage::getReferencedBigVectorIds()
+	{
+	return mReferencedBigvecs;
+	}
+
+PolymorphicSharedPtr<SerializedObject> VectorPage::serialize()
+	{
+	lassert(mIsFrozen);
+
+	ONoncontiguousByteBlockProtocol				protocol;
+
+	PolymorphicSharedPtr<SerializedObjectContext> context;
+	context.reset(new SerializedObjectContext(mMemoryManager));
+	
+		{
+		OBinaryStream stream(protocol);
+
+		SerializedObjectContextSerializer serializer(stream, *context);
+
+		Fora::VectorMemoizingForaValueSerializationStream valueStream(serializer);
+
+		valueStream.serialize(mPageId);
+
+		//we need to grab this and hold onto it so that we don't destroy this in the background
+		PageletTreePtr ptrToSerialize = getPageletTree();
+
+		valueStream.serialize(ptrToSerialize);
+
+		valueStream.serialize(mReferencedBigvecs);
+		}
+	
+	//now fully flatten the context
+	return PolymorphicSharedPtr<SerializedObject>(
+		new SerializedObject(
+			protocol.getData(),
+			context
+			)
+		);
+	}
+
+boost::shared_ptr<VectorPage> VectorPage::deserialize(
+						PolymorphicSharedPtr<VectorDataManager> inVDM,
+						PolymorphicSharedPtr<SerializedObject> data
+						)
+	{
+	INoncontiguousByteBlockProtocol	protocol(data->getSerializedData());
+
+	PolymorphicSharedPtr<SerializedObjectContext> context(
+		new SerializedObjectContext(inVDM->getMemoryManager(), data)
+		);
+	
+	IBinaryStream stream(protocol, 128 * 1024);
+
+	boost::shared_ptr<VectorPage> page(
+		new VectorPage(inVDM->getMemoryManager())
+		);
+
+	SerializedObjectContextDeserializer deserializer(stream, *context, &*page);
+
+	Fora::VectorMemoizingForaValueDeserializationStream valueStream(deserializer);
+
+	Fora::PageId pageId;
+	valueStream.deserialize(pageId);
+
+	valueStream.deserialize(page->mPageletTree);
+
+	valueStream.deserialize(page->mReferencedBigvecs);
+
+	page->freeze();
+
+	page->mPageId = pageId;
+
+	if (page->totalBytesAllocatedFromOS() > page->mPageId.bytecount())
+		LOG_WARN << "Vector page " << prettyPrintString(page->mPageId) << " deserialized to "
+			<< page->totalBytesAllocatedFromOS() / 1024 / 1024.0 << " MB > "
+			<< page->mPageId.bytecount() / 1024 / 1024.0
+			;
+
+
+	return page;
+	}
+
+Fora::ShareableMemoryBlockHandle 
+			VectorPage::convertPointerToShareableMemoryBlock(uint8_t* inBytes, int64_t bytes)
+	{
+	return Fora::ShareableMemoryBlockHandle();
+	}
+
+uint8_t* VectorPage::importShareableMemoryBlock(
+											const Fora::ShareableMemoryBlockHandle& inHandle
+											)
+	{
+	lassert_dump(false, "VectorPages don't support ShareableMemoryBlocks");
+	}
+
+void VectorPage::pageletIsHeld(boost::shared_ptr<Fora::Pagelet> inPagelet)	
+	{
+	lassert(inPagelet->isFrozen());
+
+	if (mHeldPagelets.find(inPagelet) == mHeldPagelets.end())
+		{
+		mHeldPagelets[inPagelet]++;
+
+		mMemoryManager->poolNowHoldingPagelet(this, &*inPagelet);
+		mBytesInHeldPagelets += inPagelet->totalBytesAllocated();
+		mBytesInHeldPageletsFromOS += inPagelet->totalBytesAllocatedFromOS();
+
+		for (auto subpage: inPagelet->getHeldPagelets())
+			if (mHeldPagelets.find(subpage.first) == mHeldPagelets.end())
+				{
+				mHeldPagelets[subpage.first]++;
+
+				mMemoryManager->poolNowHoldingPagelet(this, &*subpage.first);
+				mBytesInHeldPagelets += subpage.first->totalBytesAllocated();
+				mBytesInHeldPageletsFromOS += subpage.first->totalBytesAllocatedFromOS();
+				}
+			else
+				mHeldPagelets[subpage.first]++;
+		}
+	else
+		mHeldPagelets[inPagelet]++;
+	}
+
+void VectorPage::pageletIsNoLongerHeld(boost::shared_ptr<Fora::Pagelet> inPagelet)
+	{
+	mHeldPagelets[inPagelet]--;
+
+	if (mHeldPagelets[inPagelet] == 0)
+		{
+		mHeldPagelets.erase(inPagelet);
+
+		mMemoryManager->poolNoLongerHoldingPagelet(this, &*inPagelet);
+		mBytesInHeldPagelets -= inPagelet->totalBytesAllocated();
+		mBytesInHeldPageletsFromOS -= inPagelet->totalBytesAllocatedFromOS();
+
+		for (auto subpage: inPagelet->getHeldPagelets())
+			{
+			mHeldPagelets[subpage.first]--;
+			if (mHeldPagelets[subpage.first] == 0)
+				{
+				mMemoryManager->poolNoLongerHoldingPagelet(this, &*subpage.first);
+				mBytesInHeldPagelets -= subpage.first->totalBytesAllocated();
+				mBytesInHeldPageletsFromOS -= subpage.first->totalBytesAllocatedFromOS();
+				
+				mHeldPagelets.erase(subpage.first);
+				}
+			}
+		}
+	}
+
+void VectorPage::vectorPageMapped(
+						boost::shared_ptr<VectorPage> mappedPage,
+						boost::shared_ptr<Ufora::threading::Trigger> mappedPageWantsUnmapped
+						)
+	{
+	lassert_dump(false, "No VectorPage should ever be 'mapped-to' anything");
+	}
+
+bool VectorPage::isVectorPageMapped(
+						boost::shared_ptr<VectorPage> mappedPage
+						)
+	{
+	return false;
+	}
+
+void VectorPage::hasBecomeUnmapped_()
+	{
+	//drop our dependencies on all of our pagelets
+	for (auto triggerAndPagelet: mMappedPageletTriggers)
+		{
+		boost::shared_ptr<Pagelet> pagelet = triggerAndPagelet.second;
+		boost::shared_ptr<Ufora::threading::Trigger> trigger = triggerAndPagelet.first;
+
+		mScheduler->scheduleImmediately(
+			boost::function0<void>(
+				[=]() { pagelet->removeMapping(trigger); }
+				)
+			);
+		}
+
+	mMappedPageletTriggers.clear();
+	}
+
+bool VectorPage::tryToAcquireMapTo_()
+	{
+	lassert(mMappedPageletTriggers.size() == 0);
+
+	for (auto pageletAndRefcount: mHeldPagelets)
+		{
+		auto pagelet = pageletAndRefcount.first;
+
+		boost::shared_ptr<Ufora::threading::Trigger> pageletTrigger = pagelet->attemptToMapTo();
+
+		if (pageletTrigger)
+			mMappedPageletTriggers[pageletTrigger] = pagelet;
+		else
+			{
+			for (auto triggerAndPagelet: mMappedPageletTriggers)
+				triggerAndPagelet.second->removeMapping(
+					triggerAndPagelet.first
+					);
+
+			mMappedPageletTriggers.clear();
+
+			return false;
+			}
+		}
+
+	for (auto triggerAndPagelet: mMappedPageletTriggers)
+		{
+		boost::function0<void> triggerWantsUnmap = createMarkWantsToBeUnmappedTrigger();
+
+		if (!triggerAndPagelet.first->setTrigger(triggerWantsUnmap))
+			mScheduler->scheduleImmediately(triggerWantsUnmap);
+		}
+
+	return true;
+	}

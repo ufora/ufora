@@ -1,0 +1,1374 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "../../core/Clock.hpp"
+#include "../../core/Logging.hpp"
+#include "../../core/math/RandomHashGenerator.hpp"
+#include "../../core/Memory.hpp"
+#include "../../core/PolymorphicSharedPtrBinder.hpp"
+#include "../../core/threading/CallbackScheduler.hppml"
+#include "../../core/threading/TimedLock.hpp"
+#include "../Core/ImplValContainerUtilities.hppml"
+#include "../Core/ClassMediator.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../Core/ExecutionContextImpl.hppml"
+#include "../Core/ImplVal.hppml"
+#include "../Core/RefcountPool.hppml"
+#include "../Core/Type.hppml"
+#include "../Core/ValidateVectorRefcountsValueUpdater.hppml"
+#include "../Core/ValueDeepcopier.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
+#include "../Serialization/SerializedObject.hpp"
+#include "../TypedFora/ABI/ImplValVisitor.hppml"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include "../VectorDataManager/PageletTree.hppml"
+#include "../TypedFora/ABI/VectorLoadRequest.hppml"
+#include "../../cumulus/AddDropFinalState.hppml"
+#include "UnrealizedSyntheticPages.hppml"
+#include "PageRefcountTracker.hppml"
+#include "VectorDataManagerImpl.hppml"
+#include "VectorDataMemoryManager.hppml"
+#include "VectorPage.hppml"
+#include <boost/thread.hpp>
+#include <set>
+
+#include <gperftools/malloc_extension.h>
+#include <gperftools/heap-profiler.h>
+
+using namespace PolymorphicSharedPtrBinder;
+
+using Fora::Interpreter::ExecutionContext;
+
+using TypedFora::Abi::VectorHandle;
+
+using TypedFora::Abi::VectorHandlePtr;
+
+namespace {
+
+const static double kSerializationRatio = .15;
+
+const static uint64_t kDefaultMemoryLimit = 1024 * 1024 * 1024;
+
+const static uint64_t kDefaultExecutionContextLimit = 256 * 1024 * 1024;
+
+const static uint64_t kDefaultSuspendExecutionContextAllocationLimit = 768 * 1024 * 1024;
+
+const static double kBlockedExecutionContextCheckInterruptFlagTimeout = 0.01;
+
+}
+
+VectorDataManagerImpl::VectorDataManagerImpl(
+							PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+							uword_t inCumulusMaxVectorChunkSizeBytes,
+							VectorDataManager* inVDM,
+							RandomHashGenerator& inHashGenerator
+							) :
+		mVDMPtr(inVDM),
+		mCumulusMaxVectorChunkSizeBytes(inCumulusMaxVectorChunkSizeBytes),
+		mMemoryLimit(kDefaultMemoryLimit), //1GB
+		mLoadRatio(.75),
+		mBytesUnloaded(0),
+		mCallbackScheduler(inCallbackScheduler),
+		mVdmCheckCallbackScheduler(
+			inCallbackScheduler->getFactory()->createScheduler("VdmCheckCallbackScheduler")
+			),
+		mVectorPages(
+			new VectorPages(
+				inCallbackScheduler->getFactory()->createScheduler("VectorPageCollapser")
+				)
+			),
+		mIsTornDown(false),
+		mStatsd("ufora.cumulus.VectorDataManager" + boost::lexical_cast<std::string>(this)),
+		mMemoryManager(
+			new VectorDataMemoryManager(
+				inCallbackScheduler,
+				inCallbackScheduler->getFactory()->createScheduler("VdmMappableMemoryPoolScheduler"),
+				kDefaultExecutionContextLimit,
+				kDefaultSuspendExecutionContextAllocationLimit,
+				inHashGenerator
+				)
+			),
+		mBigVectorLayouts(new TypedFora::Abi::BigVectorLayouts()),
+		mPageRefcountTracker(
+			new PageRefcountTracker(
+				mBigVectorLayouts,
+				inCallbackScheduler
+				)
+			),
+		mGcStatus(
+			mPageRefcountTracker, 
+			mMemoryManager, 
+			mVectorPages,
+			mBigVectorLayouts,
+			kDefaultMemoryLimit,
+			inCumulusMaxVectorChunkSizeBytes,
+			boost::bind(
+				&VectorDataManagerImpl::tryToUnloadVectorPages_,
+				this
+				),
+			mStatsd
+			)
+	{
+	resetSyntheticPageState();
+	}
+
+VectorDataManagerImpl::~VectorDataManagerImpl()
+	{
+	}
+
+void VectorDataManagerImpl::teardown()
+	{
+	TimedLock lock(mMutex, "VDM");
+
+	mIsTornDown = true;
+
+	mGcStatus.teardown();
+	}
+
+bool VectorDataManagerImpl::isTornDown()
+	{
+	TimedLock lock(mMutex, "VDM");
+
+	return mIsTornDown;
+	}
+
+void VectorDataManagerImpl::polymorphicSharedPtrBaseInitialized()
+	{
+	mMemoryManager->onTotalBytesUsedByChanged().subscribe(
+		polymorphicSharedWeakPtrFromThis(),
+		&VectorDataManagerImpl::handleTotalBytesUsedChanged
+		);
+	mMemoryManager->onTotalBytesUsedByExecutionContextsChanged().subscribe(
+		polymorphicSharedWeakPtrFromThis(),
+		&VectorDataManagerImpl::handleTotalBytesUsedByExecutionContextsChanged
+		);
+
+	broadcastMemoryUsage();
+	}
+
+void VectorDataManagerImpl::broadcastMemoryUsage()
+	{
+	TimedLock lock(mMutex, "VDM");
+
+	mPageRefcountTracker->totalMemoryUsageChanged(
+		Fora::MemoryUsage(
+			mMemoryManager->totalBytesUsedSingleCountingPagelets(),
+			mMemoryManager->totalBytesUsedByExecutionContextsExcludingPagelets(),
+			mMemoryManager->totalBytesUsedByVectorsExcludingPagelets(),
+			mMemoryManager->totalBytesUsedByPagelets(),
+			mMemoryManager->totalBytesUsedByPageletsInVectors(),
+			mMemoryManager->totalBytesUsedByBigVectorHandles(),
+			mMemoryManager->totalBytesUsedByDataTasks(),
+			mMemoryLimit
+			)
+		);
+	}
+
+PolymorphicSharedPtr<CallbackScheduler> VectorDataManagerImpl::getVdmCheckCallbackScheduler()
+	{
+	return mVdmCheckCallbackScheduler;
+	}
+
+PolymorphicSharedPtr<CallbackScheduler> VectorDataManagerImpl::getCallbackScheduler()
+	{
+	return mCallbackScheduler;
+	}
+
+void VectorDataManagerImpl::allowAllExecutionContextsBlockedOnMemoryToCheckState()
+	{
+	mMemoryManager->allowAllExecutionContextsBlockedOnMemoryToCheckState();
+	}
+
+Ufora::threading::Gate& VectorDataManagerImpl::executionContextsCanRunGate()
+	{
+	return mGcStatus.executionContextsCanRunGate();
+	}
+
+
+void VectorDataManagerImpl::handleTotalBytesUsedChanged(uint64_t bytecount)
+	{
+	broadcastMemoryUsage();
+
+	checkGcStatus("totalBytesUsedChanged: " + boost::lexical_cast<std::string>(bytecount));
+	}
+
+void VectorDataManagerImpl::handleTotalBytesUsedByExecutionContextsChanged(uint64_t bytecount)
+	{
+	broadcastMemoryUsage();
+
+	checkGcStatus("totalBytesUsedByECChanged: " + boost::lexical_cast<std::string>(bytecount));
+	}
+
+const PolymorphicSharedPtr<VectorDataMemoryManager>& VectorDataManagerImpl::getMemoryManager()
+	{
+	return mMemoryManager;
+	}
+
+void VectorDataManagerImpl::dropPageUnreferencedAcrossSystem(Fora::PageId inPage)
+	{
+	//ensure that we actually drop vector pages outside the lock.
+	boost::shared_ptr<VectorPage> pageToDrop;
+
+		{
+		TimedLock lock(mMutex, "VDM");
+
+		if (!inPage.isInternal())
+			return;
+
+		mPageRefcountTracker->pageNoLongerExistsAcrossSystem(inPage);
+
+		LOG_DEBUG << "on " << prettyPrintString(mMachineId) 
+			<< ", dropping page " 
+			<< prettyPrintString(inPage) 
+			<< " as it is now unreferenced."
+			;
+
+		if (mVectorPages->hasPage(inPage))
+			{
+			LOG_DEBUG << "Dropping " << prettyPrintString(inPage) << " from RAM.";
+
+			pageToDrop = mVectorPages->dropVectorPage(inPage);
+			mUnrealizedSyntheticPages->dropPage(inPage);
+			mPageRefcountTracker->pageDroppedFromRam(inPage);
+			}
+		}
+	}
+
+const PolymorphicSharedPtr<PageRefcountTracker>& VectorDataManagerImpl::getPageRefcountTracker()
+	{
+	return mPageRefcountTracker;
+	}
+
+uword_t	VectorDataManagerImpl::maxPageSizeInBytes(void) const
+	{
+	return mCumulusMaxVectorChunkSizeBytes;
+	}
+
+void	VectorDataManagerImpl::registerExecutionContext(
+				execution_context_impl_ptr context
+				)
+	{
+	TimedLock lock(mMutex, "VDM");
+	
+	mGcStatus.registerExecutionContext(context);
+	}
+
+void	VectorDataManagerImpl::unregisterExecutionContext(
+				execution_context_impl_ptr context,
+				MemoryPool* memoryPool
+				)
+	{
+	TimedLock lock(mMutex, "VDM");
+	
+	mGcStatus.unregisterExecutionContext(context);
+	}
+
+uword_t VectorDataManagerImpl::getMemoryLimit() const
+	{
+	return mMemoryLimit;
+	}
+	
+void VectorDataManagerImpl::setMemoryLimit(uint64_t maxVectorBytes, uint64_t maxTotalBytes)
+	{
+	LOG_INFO << "VectorDataManagerImpl setting memory limit to " 
+		<< maxVectorBytes / 1024 / 1024.0 << " MB and "
+		<< maxTotalBytes / 1024 / 1024.0 << " MB.";
+
+	mMemoryLimit = maxVectorBytes;
+
+	mGcStatus.setMemoryLimit(maxVectorBytes, maxTotalBytes);
+
+	mMemoryManager->setMaxBytesPerPool(
+		std::min(
+			maxVectorBytes / 2, 
+			std::max<uint64_t>(kDefaultExecutionContextLimit, maxVectorBytes / 8)
+			)
+		);
+
+	mMemoryManager->setMaxTotalBytes(maxTotalBytes);
+	mMemoryManager->setMemoryCallbackGranularity(maxVectorBytes * .05);
+
+	broadcastMemoryUsage();
+	}
+	
+void	VectorDataManagerImpl::setOfflineCache(
+					PolymorphicSharedPtr<OfflineCache> inPlugin
+					)
+	{
+	lassert_dump(!mOfflineCache, "illegal to set the offline cache twice.");
+
+	mOfflineCache = inPlugin;
+
+	mOfflineCache->onPageDropped().subscribe(
+		polymorphicSharedWeakPtrFromThis(),
+		&VectorDataManagerImpl::handleItemDroppedFromOfflineCache
+		);
+	}
+
+void VectorDataManagerImpl::handleItemDroppedFromOfflineCache(Fora::PageId page)
+	{
+	mPageRefcountTracker->pageDroppedFromDisk(page);
+	}
+	
+double	VectorDataManagerImpl::getLoadRatio() const
+	{
+	return mLoadRatio;
+	}
+	
+void VectorDataManagerImpl::setLoadRatio(double inRatio)
+	{
+	lassert(inRatio > 0.0 && inRatio < 1.0);
+	
+	mLoadRatio = inRatio;
+	}
+
+size_t	VectorDataManagerImpl::curTotalUsedBytes()
+	{
+	return mMemoryManager->totalBytesUsedSingleCountingPagelets();
+	}
+
+uword_t	VectorDataManagerImpl::getVectorPageCount(void) const
+	{
+	TimedLock lock(mMutex, "VDM");
+	
+	return mVectorPages->getCountOfReferencedPagesExcludingUndroppedPages() + 
+				mVectorPages->getCountOfUnreferencedPages();
+	}
+	
+uword_t VectorDataManagerImpl::getTotalBytesLoaded(void) const
+	{
+	return mVectorPages->getBytesInReferencedPages() + 
+			mMemoryManager->totalBytesUsedByExecutionContextsIncludingPagelets();
+	}
+
+uword_t VectorDataManagerImpl::totalBytesUsedByReferencingPages() const
+	{
+	return getTotalBytesOfBigvecHandlePointerArrays() + mVectorPages->getBytesInReferencedPages();
+	}
+
+uword_t VectorDataManagerImpl::getTotalBytesOfBigvecHandlePointerArrays() const
+	{
+	return mMemoryManager->totalBytesUsedByBigVectorHandles();
+	}
+	
+uword_t VectorDataManagerImpl::getTotalBytesInUnloadCache(void) const
+	{
+	return mVectorPages->getBytecountOfUnreferencedPages();
+	}
+
+size_t VectorDataManagerImpl::vectorDataTotalBytesAllocated()
+	{
+	return mVectorPages->getTotalBytesUsed();
+	}
+
+void VectorDataManagerImpl::unloadAllPossible()
+	{
+	TimedLock lock(mMutex, "VDM");
+
+	std::set<Fora::PageId> pages = mVectorPages->copyOfAllPageIds();
+
+	for (auto page: pages)
+		dropPageImmediately_(page, true);
+	}
+
+bool VectorDataManagerImpl::tryToUnloadVectorPages_()
+	{
+	Nullable<Fora::PageId> page = mVectorPages->oldestUnmappedPage();
+
+	if (!page)
+		return false;
+
+	dropPageImmediately_(*page, true);
+
+	return true;
+	}
+
+bool VectorDataManagerImpl::dropPageWithoutWritingToDisk(Fora::PageId page)
+	{
+	TimedLock lock(mMutex, "VDM");
+
+	return dropPageImmediately_(page, false);
+	}
+
+bool VectorDataManagerImpl::dropPageImmediately_(Fora::PageId page, bool writeToOfflineStorageIfNecessary)
+	{
+	if (!mVectorPages->hasPage(page))
+		return false;
+
+	boost::shared_ptr<VectorPage> pageData = mVectorPages->dropVectorPage(page);
+
+	mUnrealizedSyntheticPages->dropPage(page);
+
+	if (!pageData)
+		{
+		LOG_INFO << "Delaying drop of page " << prettyPrintString(page) << " because it's "
+				<< " already in the drop list."
+				;
+
+		return false;
+		}
+
+	LOG_DEBUG << "dropping page: " << prettyPrintString(page) << ". it's "
+		<< (mPageRefcountTracker->pageIsInRamAndUnpinned(page)? "in ram and unpinned":"not in ram and unpinned")
+		<< ", "
+		<< (mPageRefcountTracker->pageIsOnDisk(page) ? "already on disk":"not already on disk")
+		;
+
+	if (writeToOfflineStorageIfNecessary)
+		{
+		bool shouldWrite = 
+			!mPageRefcountTracker->pageIsInRamAndUnpinned(page) &&
+			!mPageRefcountTracker->pageIsOnDisk(page)
+			;
+
+		if (shouldWrite)
+			{
+			mBytesUnloaded += page.bytecount();
+			
+			sendToOfflineStorageSynchronously_(pageData);
+			}
+		}
+
+	mPageRefcountTracker->pageDroppedFromRam(page);
+
+	checkGcStatus_("dropPageWithoutWritingToDisk");
+
+	return true;
+	}
+
+bool VectorDataManagerImpl::executionIsStarting(execution_context_impl_ptr context)
+	{
+	TimedLock lock(mMutex, "VDM");
+
+	mGcStatus.executionIsStarting(context);
+
+	return true;
+	}
+
+void VectorDataManagerImpl::executionIsStopping(execution_context_impl_ptr context)
+	{
+	TimedLock lock(mMutex, "VDM");
+	
+	mGcStatus.executionIsStopping(context);
+	}
+
+uint64_t VectorDataManagerImpl::getCurrentLargeVectorHandlePageSize(execution_context_impl_ptr context)
+	{
+	TimedLock lock(mMutex, "VDM");
+	
+	return mGcStatus.getCurrentLargeVectorHandlePageSize(context);
+	}
+
+void VectorDataManagerImpl::checkGcStatus(std::string reason)
+	{
+	TimedLock lock(mMutex, "VDM");
+	checkGcStatus_(reason);
+	}
+
+void VectorDataManagerImpl::triggerVdmCheckInAllExecutionContexts()
+	{
+	TimedLock lock(mMutex, "VDM");
+	
+	mGcStatus.triggerVdmCheckInAllExecutionContexts();
+	}
+
+void VectorDataManagerImpl::gcAllContextsAndBlockUntilCompleted()
+	{
+		{
+		TimedLock lock(mMutex, "VDM");
+		
+		mGcStatus.triggerVdmCheckInAllExecutionContexts();
+		}
+
+	while (true)
+		{
+		sleepSeconds(0.01);
+
+		TimedLock lock(mMutex, "VDM");
+		
+		if (!mGcStatus.anyContextsHaveGcScheduled())
+			return;
+		else
+			LOG_INFO << "VDM waiting for all GC events to propagate."
+				<< mVectorPages->getBytesInReferencedPages() << ". Sleeping...";
+		}
+	}
+
+void VectorDataManagerImpl::triggerUnmapOfAllVectorPagesAndBlock()
+	{
+	mVectorPages->triggerUnmapOfAllVectorPages();
+	mVectorPages->blockUntilAllVectorPagesAreUnmapped();
+	}
+
+void VectorDataManagerImpl::resumeMappingOfVectorPages()
+	{
+	mVectorPages->allowVectorPagesToBeMappedAgain();
+	}
+
+void VectorDataManagerImpl::checkGcStatus_(std::string reason)
+	{
+	mGcStatus.checkGcStatus_(reason);
+	}
+
+bool VectorDataManagerImpl::shouldEcCleanupRetry(execution_context_impl_ptr context)
+	{
+	TimedLock lock(mMutex, "VDM");
+
+	return mGcStatus.shouldEcCleanupRetry(context);
+	}
+
+void VectorDataManagerImpl::checkDesiredEcCleanupStatus(
+						execution_context_impl_ptr context,
+						bool& outWantGc,
+						bool& outWantPageLargeVectors,
+						bool& outWantUnloadAllVectorHandles,
+						bool& outWantMemoryPoolDefragment
+						)
+	{
+	TimedLock lock(mMutex, "VDM");
+
+	mGcStatus.checkDesiredEcCleanupStatus(
+		context, 
+		outWantGc, 
+		outWantPageLargeVectors, 
+		outWantUnloadAllVectorHandles, 
+		outWantMemoryPoolDefragment
+		);
+	}
+
+pair<PolymorphicSharedPtr<SerializedObject>, ImmutableTreeSet<Fora::BigVectorId> >
+VectorDataManagerImpl::extractVectorPageIfPossible(Fora::PageId pageId)
+	{
+	ImmutableTreeSet<Fora::BigVectorId> ids;
+
+	boost::shared_ptr<VectorPage> page;
+
+		{
+		TimedLock lock(mMutex, "VDM");
+	
+		page = mVectorPages->getVectorPage(pageId);
+	
+		if (!page)
+			return make_pair(
+				PolymorphicSharedPtr<SerializedObject>(),
+				ImmutableTreeSet<Fora::BigVectorId>()
+				);
+
+		ids = ImmutableTreeSet<Fora::BigVectorId>(page->getReferencedBigVectorIds());
+		}
+
+	return make_pair(page->serialize(), ids);
+	}
+
+void VectorDataManagerImpl::sendToOfflineStorageSynchronously_(boost::shared_ptr<VectorPage> vectorData)
+	{
+	if (!mOfflineCache)
+		{
+		LOG_WARN << "Dropping page " << prettyPrintString(vectorData->getPageId())
+			<< " because we don't have an offline storage model.";
+
+		return;
+		}
+
+	if (mOfflineCache->alreadyExists(vectorData->getPageId()))
+		return;
+
+	size_t dataSize = vectorData->totalBytesAllocated();
+	
+	PolymorphicSharedPtr<SerializedObject> data = vectorData->serialize();
+
+	mOfflineCache->store(vectorData->getPageId(), data);
+
+	mPageRefcountTracker->pageSentToDisk(
+		vectorData->getPageId(), 
+		vectorData->getReferencedBigVectorIds()
+		);
+	}
+
+VectorHandlePtr	VectorDataManagerImpl::pagedVectorHandle(
+										const Fora::BigVectorId& identity,
+										const Fora::PageletTreePtr& inPagelet,
+										MemoryPool* owningPool
+										)
+	{
+	lassert(!inPagelet.isEmpty());
+
+	double t0 = curClock();
+
+	VectorHandlePtr handle(
+		pagedVectorHandleWithVDID(identity, inPagelet, null(), owningPool)
+		);
+
+	LOG_INFO << "Took " << curClock() - t0 << " to page " << inPagelet->size() << " x " 
+		<< prettyPrintString(handle->jor())
+		<< " = " << inPagelet->bytecountFromOSIncludingHeldPagelets() / 1024 / 1024.0 << " MB"
+		<< " over " << inPagelet->count() << " pages = "
+		<< inPagelet->bytecountFromOSIncludingHeldPagelets() / 
+			1024 / 1024.0 / inPagelet->count() << " MB/pagelet"
+		;
+
+	lassert(!handle.isEmpty());
+
+	return handle;
+	}
+
+void VectorDataManagerImpl::produceSingleVectorPageFromPageletTreeWithGivenIdentity(
+							const Fora::PageletTreePtr& inPagelet,
+							VectorDataID identity,
+							std::vector<boost::shared_ptr<VectorPage> >& ioVectorPages
+							)
+	{
+	boost::shared_ptr<VectorPage> vectorPage;
+
+	vectorPage.reset(new VectorPage(mMemoryManager));
+
+	vectorPage->appendPageletTree(inPagelet);
+
+	vectorPage->freeze(identity.getPage());
+
+	ioVectorPages.push_back(vectorPage);
+	}
+
+void VectorDataManagerImpl::produceVectorPagesFromPageletTree(
+				const Fora::PageletTreePtr& inPagelet,
+				std::vector<boost::shared_ptr<VectorPage> >& ioVectorPages,
+				bool isRoot
+				)
+	{
+	if (inPagelet.isEmpty())
+		return;
+
+	if (!inPagelet->size())
+		return;
+
+	if (!ioVectorPages.size())
+		ioVectorPages.push_back(
+			boost::shared_ptr<VectorPage>(
+				new VectorPage(mMemoryManager)
+				)
+			);
+
+	if (inPagelet->bytecountFromOSIncludingHeldPagelets() + 
+			ioVectorPages.back()->totalBytesAllocatedFromOS() < 
+				mCumulusMaxVectorChunkSizeBytes)
+		ioVectorPages.back()->appendPageletTree(inPagelet);
+		else
+	if (!inPagelet->leaf())
+		{
+		//we can subdivide
+		produceVectorPagesFromPageletTree(inPagelet->left(), ioVectorPages, false);
+		produceVectorPagesFromPageletTree(inPagelet->right(), ioVectorPages, false);
+		}
+	else
+		{
+		if (!ioVectorPages.back()->getPageletTree().isEmpty())
+			{
+			ioVectorPages.back()->freeze();
+
+			ioVectorPages.push_back(
+				boost::shared_ptr<VectorPage>(
+					new VectorPage(mMemoryManager)
+					)
+				);
+			}
+
+		ioVectorPages.back()->appendPageletTree(inPagelet);
+		}
+
+	if (isRoot)
+		ioVectorPages.back()->freeze();
+	}
+
+VectorHandlePtr	VectorDataManagerImpl::pagedVectorHandleWithVDID(
+										const Fora::BigVectorId& pagedIdentities,
+										const Fora::PageletTreePtr& inPageletTree,
+										Nullable<VectorDataID> identity,
+										MemoryPool* owningPool
+										)
+	{
+	Fora::PageletTreePtr pageletTree = inPageletTree;
+	
+
+	uword_t elementCount = pageletTree->size();
+
+	std::vector<boost::shared_ptr<VectorPage> > vectorPages;
+
+	if (identity)
+		produceSingleVectorPageFromPageletTreeWithGivenIdentity(
+			pageletTree,
+			*identity,
+			vectorPages
+			);
+	else
+		produceVectorPagesFromPageletTree(
+			pageletTree,
+			vectorPages,
+			true
+			);
+
+	TypedFora::Abi::BigVectorPageLayout rhsLayout;
+
+	for (auto pagePtr: vectorPages)
+		{
+		JudgmentOnResult vectorJor = pagePtr->getPageletTree()->currentJor();
+
+		rhsLayout = TypedFora::Abi::BigVectorPageLayout::concatenate(
+			rhsLayout,
+			TypedFora::Abi::BigVectorPageLayout(
+				TypedFora::Abi::VectorDataIDSlice(
+					identity ? *identity : VectorDataID::Internal(pagePtr->getPageId(), 0), 
+					IntegerSequence(pagePtr->getPageletTree()->size())
+					),
+				vectorJor,
+				newVectorHash()
+				),
+			newVectorHash()
+			);
+		}
+
+	Fora::BigVectorId newIdentity;
+
+		{
+		TimedLock lock(mMutex, "VDM");
+
+		if (identity && mVectorPages->hasPage(identity->getPage()))
+			{
+			LOG_WARN << "VectorDataManager already has page for " << prettyPrintString(*identity);
+			return 0;
+			}
+
+		for (auto pagePtr: vectorPages)
+			addVectorPageToRam_(pagePtr);
+
+		newIdentity = mBigVectorLayouts->registerBigVectorConcat(
+			pagedIdentities, 
+			rhsLayout, 
+			newVectorHash(),
+			[&](TypedFora::Abi::BigVectorPageLayout inLayout) {
+				return createSyntheticPage(inLayout);
+				},
+			[&]() { return newVectorHash(); },
+			maxPageSizeInBytes()
+			);
+		}
+
+	VectorHandlePtr result = 
+		owningPool->construct<VectorHandle>(
+			newIdentity,
+			Fora::PageletTreePtr(),
+			(TypedFora::Abi::ForaValueArray*)0,
+			owningPool,
+			newVectorHash()
+			);
+
+	ExecutionContext* context = ExecutionContext::currentExecutionContext();
+
+	if (context)
+		for (auto pagePtr: vectorPages)
+			context->getImpl()->onPageCreated(pagePtr->getPageId());
+
+	return result;
+	}
+
+
+bool	VectorDataManagerImpl::loadSerializedVectorPage(
+								Fora::PageId identity,
+								const PolymorphicSharedPtr<SerializedObject>& data
+								)
+	{
+	LOG_DEBUG << "loading PageId=" << prettyPrintString(identity);
+
+	lassert(data);
+
+		{
+		TimedLock lock(mMutex, "VDM");
+
+		if (mVectorPages->hasPage(identity))
+			{
+			LOG_INFO << "PageId is already in VectorPages";
+			return true;
+			}
+		}
+
+	boost::shared_ptr<VectorPage> page = 
+		VectorPage::deserialize(mVDMPtr->polymorphicSharedPtrFromThis(), data);
+
+	TimedLock lock(mMutex, "VDM");
+
+	lassert(page->getPageId() == identity);
+	
+	addVectorPageToRam_(page);
+
+	return true;
+	}
+
+void VectorDataManagerImpl::markPageNewlyLoadedToRAM(boost::shared_ptr<VectorPage> page)
+	{
+	mPageRefcountTracker->pageAddedToRAM(
+		page->getPageId(), 
+		page->getReferencedBigVectorIds()
+		);
+	}
+
+namespace {
+
+	bool readBytesIntoMemoryFromFD(uint8_t* target, int fd, int64_t bytecount)
+		{
+		int bytesRemaining = bytecount;
+
+		while (bytesRemaining > 0)
+			{
+			int bytesRead = read(fd, target, bytesRemaining);
+
+			if (bytesRead == 0)
+				return false;
+
+			bytesRemaining -= bytesRead;
+			target += bytesRead;
+			}
+
+		return true;
+		}
+
+}
+
+TypedFora::Abi::VectorHandlePtr VectorDataManagerImpl::loadImplvalIntoUnloadedVectorHandle(
+						MemoryPool* owningPool,
+						const VectorDataID& vdid,
+						ImplValContainer inForaValue
+						)
+	{
+	boost::shared_ptr<Fora::Pagelet> pagelet(
+		new Fora::Pagelet(mMemoryManager)
+		);
+
+	pagelet->append(inForaValue);
+
+	pagelet->freeze();
+
+	Fora::PageletTreePtr pageletTree(
+		owningPool->construct<Fora::PageletTree>(
+			owningPool,
+			pagelet, 
+			pagelet->getValues()->size()
+			)
+		);
+
+	VectorHandlePtr vectorData = 
+		pagedVectorHandleWithVDID(
+			Fora::BigVectorId(),
+			pageletTree, 
+			null() << vdid,
+			owningPool
+			);
+
+	return vectorData;
+	}
+
+TypedFora::Abi::VectorHandlePtr VectorDataManagerImpl::loadByteArrayIntoNewVector(
+					MemoryPool* owningPool,
+					uint8_t* data,
+					uword_t inByteCount
+					)
+	{
+	return loadByteArrayIntoNewVector(
+		owningPool,
+		data,
+		inByteCount,
+		Type::Integer(8, false)
+		);
+	}
+
+TypedFora::Abi::VectorHandlePtr VectorDataManagerImpl::loadByteArrayIntoNewVector(
+					MemoryPool* owningPool,
+					uint8_t* data,
+					uword_t inByteCount,
+					const Type& type
+					)
+	{
+	lassert(inByteCount % type.size() == 0);
+
+	boost::shared_ptr<Fora::Pagelet> pagelet(new Fora::Pagelet(mMemoryManager));
+
+	pagelet->getValues()->append(
+		TypedFora::Abi::PackedForaValues(
+			JOV::OfType(type),
+			data,
+			inByteCount / type.size(),
+			type.size()
+			)
+		);
+
+	pagelet->freeze();
+
+	Fora::PageletTreePtr pageletTree(
+		owningPool->construct<Fora::PageletTree>(
+			owningPool,
+			pagelet, 
+			pagelet->getValues()->size()
+			)
+		);
+
+	return
+		pagedVectorHandleWithVDID(
+			Fora::BigVectorId(),
+			pageletTree, 
+			null(),
+			owningPool
+			);
+	}
+
+
+bool VectorDataManagerImpl::loadByteArrayIntoExternalDatasetPageFromFileDescriptor(
+						VectorDataID id,
+						int fd,
+						int64_t bytecount
+						)
+	{
+	boost::shared_ptr<VectorPage> vectorPage;
+
+	vectorPage.reset(new VectorPage(mMemoryManager));
+		
+	boost::shared_ptr<Fora::Pagelet> pagelet(new Fora::Pagelet(mMemoryManager));
+
+	TypedFora::Abi::ForaValueArray* array = pagelet->getValues();
+
+	array->appendUninitialized(JOV::OfType(Type::Integer(8, false)), bytecount);
+
+	if (!readBytesIntoMemoryFromFD(array->offsetFor(0), fd, bytecount))
+		return false;
+
+	pagelet->freeze();
+
+	vectorPage->appendPagelet(pagelet);
+
+	vectorPage->freeze(id.getPage());
+	
+	TimedLock lock(mMutex, "VDM");
+
+	if (mVectorPages->hasPage(id.getPage()))
+		{
+		LOG_WARN << "VectorDataManager already has page for " << prettyPrintString(id);
+		return false;
+		}
+
+	addVectorPageToRam_(vectorPage);
+		
+	ExecutionContext* context = ExecutionContext::currentExecutionContext();
+
+	if (context)
+		context->getImpl()->onPageCreated(vectorPage->getPageId());
+
+	return true;
+	}
+
+void VectorDataManagerImpl::addVectorPageToRam_(boost::shared_ptr<VectorPage> pagePtr)
+	{
+	mVectorPages->addVectorPage(pagePtr);
+	
+	markPageNewlyLoadedToRAM(pagePtr);
+
+	mUnrealizedSyntheticPages->addPage(pagePtr->getPageId());
+	}
+
+bool VectorDataManagerImpl::loadByteArrayIntoExternalDatasetPage(
+						VectorDataID id,
+						uint8_t* data,
+						uword_t inByteCount
+						)
+	{
+		{
+		TimedLock lock(mMutex, "VDM");
+
+		if (mVectorPages->hasPage(id.getPage()))
+			{
+			LOG_WARN << "VDM already has data for page " << prettyPrintString(id);
+			return true;
+			}
+		}
+
+	boost::shared_ptr<Fora::Pagelet> pagelet(new Fora::Pagelet(mMemoryManager));
+
+	pagelet->getValues()->append(
+		TypedFora::Abi::PackedForaValues(
+			JOV::OfType(Type::Integer(8,false)),
+			data,
+			inByteCount,
+			1
+			)
+		);
+
+	pagelet->freeze();
+	
+	Fora::PageletTreePtr pageletTree(
+		MemoryPool::getFreeStorePool()->construct<Fora::PageletTree>(
+			MemoryPool::getFreeStorePool(),
+			pagelet, 
+			pagelet->getValues()->size()
+			)
+		);
+
+	VectorHandlePtr vectorData = 
+		pagedVectorHandleWithVDID(
+			Fora::BigVectorId(),
+			pageletTree, 
+			null() << id, 
+			MemoryPool::getFreeStorePool()
+			);
+
+	return !vectorData.isEmpty();
+	}
+
+bool VectorDataManagerImpl::loadByteArrayIntoExternalDatasetPageAsVector(
+						VectorDataID id,
+						uint8_t* data,
+						uword_t inByteCount
+						)
+	{	
+		{
+		TimedLock lock(mMutex, "VDM");
+
+		if (mVectorPages->hasPage(id.getPage()))
+			{
+			LOG_WARN << "VDM already has data for page " << prettyPrintString(id);
+			return true;
+			}
+		}
+
+	
+	boost::shared_ptr<Fora::Pagelet> pagelet(new Fora::Pagelet(mMemoryManager));
+
+	pagelet->getValues()->append(
+		TypedFora::Abi::PackedForaValues(
+			JOV::OfType(Type::Integer(8,false)),
+			data,
+			inByteCount,
+			1
+			)
+		);
+
+	pagelet->freeze();
+
+	Fora::PageletTreePtr pageletTree(
+		MemoryPool::getFreeStorePool()->construct<Fora::PageletTree>(
+			MemoryPool::getFreeStorePool(),
+			pagelet, 
+			pagelet->getValues()->size()
+			)
+		);
+
+	TypedFora::Abi::VectorRecord vec(
+		MemoryPool::getFreeStorePool()->construct<VectorHandle>(
+			Fora::BigVectorId(),
+			pageletTree,
+			nullptr,
+			MemoryPool::getFreeStorePool(),
+			id.hash() + hash_type(10) //make a new random hash out of the target hash
+			)
+		);
+
+	boost::shared_ptr<Fora::Pagelet> pagelet2(new Fora::Pagelet(mMemoryManager));
+
+	pagelet2->append(ImplValContainerUtilities::createVector(vec));
+
+	pagelet2->freeze();
+
+	Fora::PageletTreePtr pageletTree2(
+		MemoryPool::getFreeStorePool()->construct<Fora::PageletTree>(
+			MemoryPool::getFreeStorePool(),
+			pagelet2, 
+			pagelet2->getValues()->size()
+			)
+		);
+
+	VectorHandlePtr vectorData = 
+		pagedVectorHandleWithVDID(
+			Fora::BigVectorId(),
+			pageletTree2,
+			null() << id, 
+			MemoryPool::getFreeStorePool()
+			);
+
+	LOG_INFO << "Loaded " << inByteCount << " bytes of raw data " << " into " << id;
+
+	return !vectorData.isEmpty();
+	}
+
+
+void VectorDataManagerImpl::executionContextBlockedOnMemoryAllocation(
+									execution_context_impl_ptr executionContext
+									)
+	{
+	TimedLock lock(mMutex, "VDM");
+
+	mGcStatus.executionContextBlockedOnMemoryAllocation(executionContext);
+	}
+
+void VectorDataManagerImpl::executionContextUnblockedOnMemoryAllocation(
+									execution_context_impl_ptr executionContext
+									)
+	{
+	TimedLock lock(mMutex, "VDM");
+	
+	mGcStatus.executionContextUnblockedOnMemoryAllocation(executionContext);
+	}
+
+bool VectorDataManagerImpl::visitAnyLoadedDataForVector(
+					const Fora::BigVectorId& identity,
+					IntegerSequence values,
+					boost::function2<void, TypedFora::Abi::ForaValueArray*, IntegerSequence> visitor
+					)
+	{
+	TimedLock lock(mMutex, "VDM");
+	
+	TypedFora::Abi::BigVectorPageLayout layout = mBigVectorLayouts->getLayoutForId(identity);
+
+	ImmutableTreeVector<TypedFora::Abi::VectorDataIDSlice> slices = 
+								layout.slicesCoveringRange(values);
+
+	for (long k = 0; k < slices.size(); k++)
+		if (!mVectorPages->getVectorPage(slices[k].vector().getPage()))
+			return false;
+	
+	auto visitSlice = [&](long k) {
+		boost::shared_ptr<VectorPage> page = mVectorPages->getVectorPage(slices[k].vector().getPage());
+
+		page->getPageletTree()->visitTree(
+			[&](boost::shared_ptr<Fora::Pagelet> pagelet, IntegerRange range, long offset) {
+				visitor(
+					pagelet->getValues(),
+					slices[k].slice().offset(-offset).intersect(
+						IntegerSequence(range)
+						)
+					);
+				},
+			slices[k].slice().containingRange()
+			);
+		};
+
+	if (values.stride() > 0)
+		{
+		for (long k = 0; k < slices.size();k++)
+			visitSlice(k);
+		}
+	else
+		{
+		for (long k = ((long)slices.size())-1; k >= 0; k--)
+			visitSlice(k);
+		}
+
+
+	return true;
+	}
+
+
+bool VectorDataManagerImpl::hasDataForVectorPage(const Fora::PageId& inPage)
+	{
+	TimedLock lock(mMutex, "VDM");
+	
+	return mVectorPages->hasPage(inPage);
+	}
+
+hash_type VectorDataManagerImpl::newVectorHash()
+	{
+	return mMemoryManager->newVectorHash();
+	}
+
+Nullable<Cumulus::MachineId> VectorDataManagerImpl::getMachineId()
+	{
+	return mMachineId;
+	}
+
+void VectorDataManagerImpl::setMachineId(Cumulus::MachineId inMachineId)
+	{
+	mMachineId = inMachineId;
+
+	mPageRefcountTracker->setMachineId(inMachineId);
+	mBigVectorLayouts->setMachineId(inMachineId);
+	mVectorPages->setMachineId(inMachineId);
+	}
+
+void VectorDataManagerImpl::setDropUnreferencedPagesWhenFull(bool inShouldDrop)
+	{
+	TimedLock lock(mMutex, "VDM");
+
+	mGcStatus.setDropUnreferencedPagesWhenFull(inShouldDrop);
+	}
+
+void VectorDataManagerImpl::restrictToAddDropState(const Cumulus::AddDropFinalState& state)
+	{
+	TimedLock lock(mMutex, "VDM");
+
+	mBigVectorLayouts->restrictToAddDropState(state);
+
+	ImmutableTreeSet<Fora::PageId> machineRamContents = *state.machineRamContents()[*mMachineId];
+	ImmutableTreeSet<Fora::PageId> machineDiskContents = *state.machineDiskContents()[*mMachineId];
+
+	std::set<Fora::PageId> pages = mVectorPages->copyOfAllPageIds();
+
+	for (auto page: pages)
+		if (!machineRamContents.contains(page))
+			{
+			mVectorPages->dropVectorPage(page);
+			mPageRefcountTracker->pageDroppedFromRam(page);
+			mUnrealizedSyntheticPages->dropPage(page);
+			mPageRefcountTracker->pageDroppedFromRam(page);
+			}
+		else
+			mPageRefcountTracker->pinPageIfInRAM(page);
+
+	for (auto page: mPageRefcountTracker->getPagesHeldOnDisk())
+		if (!machineDiskContents.contains(page))
+			{
+			mOfflineCache->drop(page);
+			mPageRefcountTracker->pageDroppedFromDisk(page);
+			}
+
+	for (auto pageAndBigvec: state.syntheticPages())
+		registerSyntheticPage(
+			pageAndBigvec.first, 
+			mBigVectorLayouts->getLayoutForId(pageAndBigvec.second)
+			);
+	}
+
+void VectorDataManagerImpl::setPersistentCacheIndex(
+					PolymorphicSharedPtr<Cumulus::PersistentCache::PersistentCacheIndex> inCache
+					)
+	{
+	mPersistentCacheIndex = inCache;
+	}
+
+PolymorphicSharedPtr<Cumulus::PersistentCache::PersistentCacheIndex> 
+								VectorDataManagerImpl::getPersistentCacheIndex()
+	{
+	return mPersistentCacheIndex;
+	}
+
+boost::shared_ptr<VectorPage> VectorDataManagerImpl::getPageFor(Fora::PageId inPage)
+	{
+	TimedLock lock(mMutex, "VDM");
+
+	return mVectorPages->getVectorPage(inPage);
+	}
+
+bool VectorDataManagerImpl::contextMayMapVectorHandles(
+								execution_context_impl_ptr context
+								)
+	{
+	TimedLock lock(mMutex, "VDM");
+
+	return mGcStatus.contextMayMapVectorHandles(context);
+	}
+
+PolymorphicSharedPtr<OfflineCache> VectorDataManagerImpl::getOfflineCache()
+	{
+	return mOfflineCache;
+	}
+
+void VectorDataManagerImpl::registerSyntheticPage(
+								Fora::PageId inPage, 
+								const TypedFora::Abi::BigVectorPageLayout& inLayout
+								)
+	{
+	TimedLock lock(mMutex, "VDM");
+
+	mBigVectorLayouts->registerSyntheticPage(inPage, inLayout);
+	mUnrealizedSyntheticPages->registerSyntheticPage(inPage, inLayout);
+	}
+
+void VectorDataManagerImpl::syntheticPageRealized(
+								Fora::PageId inPage
+								)
+	{
+	TimedLock lock(mMutex, "VDM");
+
+	mBigVectorLayouts->syntheticPageRealized(inPage);
+	mUnrealizedSyntheticPages->syntheticPageRealized(inPage);
+	}
+
+
+Fora::PageId VectorDataManagerImpl::createSyntheticPage(const TypedFora::Abi::BigVectorPageLayout& inLayout)
+	{
+	TimedLock lock(mMutex, "VDM");
+
+	uint32_t totalBytecount = std::numeric_limits<uint32_t>::max();
+	uint32_t totalMinBytecount = 0;
+
+	//our estimate of the total bytecount in the page is the sum of the bytes in the sublayout.
+	//We may conceivably do much better than this.
+	for (auto p: inLayout.getPagesReferenced())
+		{
+		totalMinBytecount += p.actualBytecount();
+		totalBytecount = std::min(totalBytecount, p.bytecount());
+		}
+
+	Fora::PageId newPageId = 
+		Fora::PageId::Internal(
+			mMemoryManager->newVectorHash(), 
+			std::max(totalMinBytecount, totalBytecount), 
+			totalMinBytecount
+			);
+
+	mPageRefcountTracker->createSyntheticPage(newPageId, inLayout);
+	mUnrealizedSyntheticPages->registerSyntheticPage(newPageId, inLayout);
+
+	return newPageId;
+	}
+
+void VectorDataManagerImpl::realizeSyntheticPage_(Fora::PageId inPage, const TypedFora::Abi::BigVectorPageLayout& inLayout)
+	{
+	boost::shared_ptr<VectorPage> vectorPage;
+
+	vectorPage.reset(new VectorPage(mMemoryManager));
+
+	for (auto slice: inLayout.vectorIdentities())
+		{
+		boost::shared_ptr<VectorPage> page = mVectorPages->getVectorPage(slice.vector().getPage());
+
+		if (!page)
+			{
+			LOG_CRITICAL << "We are supposed to have " << slice.vector().getPage() 
+				<< " in VectorPages, but it's not there";
+			lassert(false);
+			}
+
+		IntegerSequence sequence = slice.slice();
+
+		vectorPage->appendPageletTree(page->getPageletTree(), sequence);
+		}
+	
+	vectorPage->freeze(inPage);
+
+	addVectorPageToRam_(vectorPage);
+
+	mPageRefcountTracker->realizeSyntheticPage(inPage);
+	}
+
+void VectorDataManagerImpl::resetSyntheticPageState()
+	{
+	mUnrealizedSyntheticPages.reset(
+		new UnrealizedSyntheticPages(
+			boost::bind(&VectorPages::hasPage, &*mVectorPages, boost::arg<1>()),
+			boost::bind(&VectorDataManagerImpl::realizeSyntheticPage_, this, boost::arg<1>(), boost::arg<2>())
+			)
+		);
+
+	std::set<Fora::PageId> pages = mVectorPages->copyOfAllPageIds();
+	for (auto page: pages)
+		mUnrealizedSyntheticPages->addPage(page);
+	}
+
+

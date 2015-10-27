@@ -1,0 +1,188 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "PausedComputation.hppml"
+#include "../ControlFlowGraph/ControlFlowGraphToCodeLocation.hppml"
+#include "StackframeMetadata.hppml"
+#include "../TypedFora/ABI/LiveValue.hppml"
+
+namespace Fora {
+namespace Interpreter {
+
+class ExtractCodeLocationsStackFrameVisitor : public TypedFora::Abi::StackFrameVisitor {
+public:
+
+	ExtractCodeLocationsStackFrameVisitor(		ExecutionContext* inContext, 
+												ValueDeepcopierState& ioState,
+												bool requireExport,
+												bool inExportValues
+												) : 
+			mContext(inContext),
+			mDeepcopierState(ioState),
+			mRequireExport(requireExport),
+			mExportValues(inExportValues)
+		{
+		}
+
+	virtual bool visitFreeValue(ImplVal& value, bool isOwned)
+		{
+		return true;
+		}
+
+	virtual bool visitFreeValue(const ::Type& type, void* data, bool isOwned)
+		{
+		return true;
+		}
+
+	virtual bool visitFreeValue(ImplValContainer& ioContainer)
+		{
+		return true;
+		}
+
+	ImplValContainer getValue(
+			NativeContinuationVarMetadataSerialized varMetadata,
+			void* data
+			) const
+		{
+		std::vector<char> tempData;
+
+		TypedFora::Abi::LiveValue value = 
+			TypedFora::Abi::NativeStackFrameWrapper::readStackFrameLayoutToLiveValue(tempData, varMetadata, data);
+
+		return exportImplval(value.getImplval());
+		}
+
+	template<class implval_getter>
+	void observe(const ControlFlowGraph& cfg, Nullable<string> label, bool wasCompiled, const implval_getter& implvalFunc)
+		{
+		Nullable<pair<ForaStackTrace, ImmutableTreeMap<Symbol, long> > > id = 
+			ControlFlowGraphToCodeLocation::extractStackTraceFromGraphAndLabel(cfg, label);
+
+		if (id)
+			{
+			mTraces = make_pair(
+				id->first, 
+				StackframeMetadata(
+					wasCompiled, 
+					mExportValues ?
+						id->second.map(
+							[&](const pair<Symbol, long>& val) {
+								return make_pair(val.first, implvalFunc(val.second));
+								}
+							)
+					:
+						emptyTreeMap()
+					)
+				) + mTraces;
+			}
+		}
+	
+	ImmutableTreeVector<pair<ForaStackTrace, StackframeMetadata> > getTraces(void) const
+		{
+		return mTraces;
+		}
+
+	virtual bool visitNativeStackFrame(
+					TypedFora::Abi::NativeStackFrameWrapper& stackFrame
+					)
+		{
+		//get the metadata
+		ImmutableTreeVector<NativeContinuationMetadataSerialized> meta = stackFrame.getMetadata();
+		ImmutableTreeVector<NativeType> slotTypes = stackFrame.getSlotTypes();
+
+		for (long k = ((long)meta.size()-1); k >= 0; k--)
+			{
+			auto extractor = [&](long index) {
+				return getValue(meta[k].vars()[index], stackFrame.getSlotData());
+				};
+
+			@match NativeContinuationMetadataInstruction(meta[k].node())
+				-| TypedForaInstruction(tfMetadata) ->> {
+					@match TypedFora::MetadataInstruction(*tfMetadata)
+						-|	NodeWithResult((g,l)) ->> {
+								observe(g, l, true, extractor);
+								}
+						-|	Node((g,l)) ->> {
+								observe(g, l, true, extractor);
+								}
+					}
+				-|	_ ->> {
+					}
+				;
+			}
+
+		return true;
+		}
+
+	virtual bool visitInterpreterStackFrame(
+					Fora::Interpreter::EvalFrame* stackFrame
+					)
+		{
+		observe(
+			stackFrame->instructionPtr->getGraph(), 
+			stackFrame->instructionPtr->getLabel(), 
+			false,
+			[&](long index) { return exportImplval(stackFrame->evalFrameArgList()[index]); }
+			);
+		return true;
+		}
+
+	virtual bool visitResultSignatureAdapterStackFrame(
+					TypedFora::Abi::ResultSignatureAdapterFrame* stackFrame
+					)
+		{
+		return true;
+		}
+
+	virtual bool visitHeldImplvalTeardownFrame(
+					TypedFora::Abi::InterpreterUniqueIdHolderFrame* stackFrame
+					)
+		{
+		return true;
+		}
+
+	virtual bool visitCppCallbackFrame(
+					TypedFora::NativeCppCallbackStackframe* cppCallbackFrame
+					)
+		{
+		return true;
+		}
+
+	ImplValContainer exportImplval(ImplVal val) const
+		{
+		if (mRequireExport)
+			return mContext->getImpl()->exportImplval_(val, mDeepcopierState);
+		else
+			return ImplValContainer(val);
+		}
+
+private:
+	ImmutableTreeVector<pair<ForaStackTrace, StackframeMetadata> > mTraces;
+
+	ValueDeepcopierState& mDeepcopierState;
+
+	ExecutionContext* mContext;
+
+	bool mExportValues;
+
+	bool mRequireExport;
+};
+
+}
+}
+
+

@@ -1,0 +1,184 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../core/PolymorphicSharedPtr.hpp"
+#include "../FORA/Serialization/SerializedObject.hpp"
+#include "../FORA/VectorDataManager/VectorDataManager.hppml"
+#include "../core/threading/CallbackScheduler.hppml"
+#include "../core/InstanceCounter.hpp"
+#include "../FORA/Core/ExecutionContext.hppml"
+#include "ComputationDefinition.hppml"
+#include "ComputationStatus.hppml"
+#include "ComputationStatistics.hppml"
+#include "ComputationResult.hppml"
+#include "ComputationStackWalkOutcome.hppml"
+#include "CheckpointStatus.hppml"
+#include "CheckpointRequest.hppml"
+#include "CreatedComputations.hppml"
+
+#include "ExternalIoTask/ExternalIoTask.hppml"
+#include "ExternalIoTask/ExternalIoTaskId.hppml"
+#include "ExternalIoTask/ExternalIoTaskCompleted.hppml"
+
+namespace Cumulus {
+
+class ComputationEvent;
+
+/*********************
+
+ComputationState
+
+Represents the actual state of a single thread of execution in FORA,
+including a live stack and hooks into a VDM.
+
+**********************/
+
+class ComputationStateImpl;
+
+class ComputationState : 
+				public PolymorphicSharedPtrBase<ComputationState>,
+				public InstanceCounter<ComputationState> {
+public:
+	ComputationState(
+				const ComputationId& computationId,
+				PolymorphicSharedPtr<VectorDataManager> inVDM,
+				Fora::Interpreter::ExecutionContextConfiguration inConfig,
+				PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler
+				);
+
+	class DisablePaging {
+	public:
+		DisablePaging(PolymorphicSharedPtr<ComputationState> state) : mState(state)
+			{
+			mState->disableVectorPaging();
+			}
+
+		~DisablePaging()
+			{
+			mState->enableVectorPaging();
+			}
+
+	private:
+		PolymorphicSharedPtr<ComputationState> mState;
+	};
+
+	Nullable<pair<CheckpointStatus, CheckpointRequest> > 
+					setCheckpointStatusTimestamp(CheckpointRequest timestamp);
+
+	Nullable<pair<CheckpointStatus, CheckpointRequest> > 
+					addChildComputationCheckpointStatus(
+							ComputationId childComputation,
+							CheckpointStatus stats,
+							CheckpointRequest timestamp
+							);
+
+	const ComputationId& ownComputationId() const;
+
+	PolymorphicSharedPtr<SerializedObject> serialize();
+
+	void deserialize(PolymorphicSharedPtr<SerializedObject> inObject);
+
+	void initialize(ComputationDefinition definition);
+
+	void pageLargeVectorHandles();
+
+	bool canResubmitBlockingThreads();
+
+	void unloadAllVectorHandles();
+
+	Nullable<pair<CheckpointStatus, CheckpointRequest> > 
+												getCheckpointStatus();
+
+
+	CreatedComputations resubmitBlockingThreads(hash_type guid);
+
+	CreatedComputations compute(hash_type guid);
+
+	void interrupt();
+
+	void interruptAfterCycleCount(sword_t checks);
+
+	void resetInterruptState();
+
+	ImmutableTreeSet<Fora::BigVectorId> getReferencedBigVectors();
+
+	//put this Computation in a state where it will just copy the data out of 'ComputationId'
+	void becomePassthroughTo(ComputationId inId);
+
+	bool isPassthrough() const;
+
+	void disableVectorPaging();
+
+	void enableVectorPaging();
+	
+	ComputationStatus currentComputationStatus();
+
+	ComputationStatistics currentComputationStatistics();
+
+	ImmutableTreeVector<ComputationEvent> extractRecentEvents();
+
+	Nullable<Fora::Interpreter::ComputationResult> getResult();
+
+	PolymorphicSharedPtr<SerializedObject> getSerializedResult();
+
+	ImmutableTreeVector<ImmutableTreeSet<Fora::PageId> > continueToSearchForCliques(double maxTimeElapsed);
+
+	CreatedComputations tryToSplit(hash_type splitGuid);
+
+	bool isTemporary() const;
+
+	void addComputationResult(const Cumulus::ComputationResult& inResult);
+
+	void addComputationResult(
+			ComputationId computation, 
+			Fora::Interpreter::ComputationResult result,
+			ComputationStatistics statistics
+			);
+
+	void markSliceLoaded();
+
+	void markSliceLoadFailedPermanently();
+
+	void markComputationCircular();
+
+	void markExternalIoTaskCompleted(ExternalIoTaskCompleted completed);
+
+	//if our state is BlockedOnVector, BlockedOnIoTask, or a cachecall (not a split)
+	//then reset it.
+	void resetStateForAddDrop();
+
+	bool canExtractPausedComputation() const;
+
+	//this function may be called while another thread is computing
+	bool hasEnoughComputeTimeElapsedToSplit(double inThreshold);
+
+	//this function may be called while another thread is computing
+	void markSplitAttempt(void);
+
+	ImmutableTreeVector<ImplValContainer> extractCurrentLogs();
+
+	ImmutableTreeVector<pair<ForaStackTrace, Fora::Interpreter::StackframeMetadata> > 
+														extractStacktrace(bool extractValues);
+
+public:
+	PolymorphicSharedPtr<ComputationStateImpl> mImpl;
+};
+
+}
+
+
+

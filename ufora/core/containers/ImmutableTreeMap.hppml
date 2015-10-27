@@ -1,0 +1,868 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <vector>
+#include <set>
+#include "../serialization/Serialization.hpp"
+#include "../math/Nullable.hpp"
+#include "../math/Hash.hpp"
+#include "../lassert.hpp"
+#include "ImmutableTreeVector.hppml"
+#include "ImmutableTreeSet.hppml"
+
+using namespace std;
+
+class TreeMap {};
+
+template<class T, class toss, class whatever>
+class Identity {};
+
+template<class T, class toss>
+class Identity<T, toss, void> {
+public:
+		typedef T result_type;
+};
+
+template<class TKey, class TValue>
+@type ImmutableTreeMapElement =
+		Empty of ()
+	-|	Leaf of pair<TKey, TValue> value
+	-|	Node of ImmutableTreeMapElement<TKey,TValue> left, 
+				ImmutableTreeMapElement<TKey,TValue> right, 
+				uint32_t size, 
+				uint32_t height, 
+				TKey lowest, 
+				TKey highest
+with
+	Identity<hash_type, TKey, void>::result_type hash = (this->computeHash())
+{
+public:
+		hash_type computeHash(void) const;
+};
+
+template<class TKey, class TValue>
+class ImmutableTreeMap {
+		typedef std::less<TKey> comparison;
+
+		typedef ImmutableTreeMapElement<TKey,TValue> Element;
+
+public:
+		ImmutableTreeMap()
+			{
+			mElement = Element::Empty();
+			}
+		ImmutableTreeMap(const Element& inElt)
+			{
+			mElement = inElt;
+			}
+
+		ImmutableTreeMap(const TreeMap& c)
+			{
+			mElement = Element::Empty();
+			}
+		Hash hash(void) const
+			{
+			return mElement.hash();
+			}
+		Hash computeHash(void) const
+			{
+			Hash tr = Hash(size());
+			for (uword_t k = 0; k < size();k++)
+				tr = tr + hashValue( pairAtPosition(k) );
+			return tr;
+			}
+		explicit ImmutableTreeMap(const pair<TKey, TValue>& in)
+			{
+			mElement = Element::Leaf(in);
+			}
+		template<class iterator_type>
+		ImmutableTreeMap(iterator_type left, iterator_type right)
+			{
+			ImmutableTreeMap tr;
+			while (left != right)
+				{
+				tr = tr + *left;
+				left++;
+				}
+			mElement = tr.mElement;
+			}
+		class const_iterator;
+		ImmutableTreeMap(const_iterator left, const_iterator right)
+			{
+			mElement = left.tree()->slice(left.index(), right.index()).mElement;
+			}
+		ImmutableTreeMap(const std::vector<TKey>& in)
+			{
+			ImmutableTreeMap<TKey, TValue> tr;
+			for (uint32_t k = 0; k < in.size();k++)
+				tr = tr + in[k];
+			}
+		ImmutableTreeMap(const std::set<TKey>& in)
+			{
+			ImmutableTreeMap<TKey, TValue> tr;
+			for (typename std::set<TKey>::const_iterator it = in.begin(); it != in.end(); ++it)
+				tr = tr + *it;
+			}
+		ImmutableTreeMap(const ImmutableTreeMap& in) : mElement(in.mElement)
+			{
+			}
+		uint32_t size(void) const
+			{
+			return size(mElement);
+			}
+		uint32_t height(void) const
+			{
+			return height(mElement);
+			}
+		const pair<TKey, TValue>& pairAtPosition(uint32_t inIndex) const
+			{
+			lassert(inIndex < size());
+			return elt(mElement, inIndex);
+			}
+		ImmutableTreeVector<TKey> keys(void) const
+			{
+			ImmutableTreeVector<TKey> tr;
+			for (uword_t k = 0; k < size(); k++)
+				tr = tr + pairAtPosition(k).first;
+			return tr;
+			}
+		ImmutableTreeSet<TKey> keySet(void) const
+			{
+			ImmutableTreeSet<TKey> tr;
+			for (uword_t k = 0; k < size(); k++)
+				tr = tr + pairAtPosition(k).first;
+			return tr;
+			}
+		ImmutableTreeSet<TValue> valueSet(void) const
+			{
+			ImmutableTreeSet<TValue> tr;
+			for (uword_t k = 0; k < size(); k++)
+				tr = tr + pairAtPosition(k).second;
+			return tr;
+			}
+		ImmutableTreeVector<TValue> values(void) const
+			{
+			ImmutableTreeVector<TValue> tr;
+			for (uword_t k = 0; k < size(); k++)
+				tr = tr + pairAtPosition(k).second;
+			return tr;
+			}
+		ImmutableTreeMap operator+(const pair<TKey, TValue>& in) const
+			{
+			return node(mElement, Element::Leaf(in));
+			}
+		ImmutableTreeMap operator+(const ImmutableTreeMap<TKey, TValue>& in) const
+			{
+			return node(mElement, in.mElement);
+			}
+		friend ImmutableTreeMap operator+(const pair<TKey, TValue>& in, const ImmutableTreeMap& r)
+			{
+			return node(r.mElement, Element::Leaf(in));
+			}
+		ImmutableTreeMap& operator=(const ImmutableTreeMap& in)
+			{
+			mElement = in.mElement;
+			return *this;
+			}
+
+
+		template<class f_type>
+		auto mapValues(const f_type& f) const ->
+							ImmutableTreeMap< TKey, decltype(f(*((TValue*)nullptr))) >
+			{
+			ImmutableTreeMap< TKey, decltype(f(TValue())) > tr;
+
+			for (uword_t k = 0; k < this->size();k++)
+				{
+				const pair<TKey, TValue>& p(pairAtPosition(k));
+				
+				tr = tr + make_pair(p.first, f(p.second));
+				}
+
+			return tr;
+			}
+
+		template<class f_type>
+		auto map(const f_type& f) const ->
+							ImmutableTreeMap<
+								decltype(f(*((pair<TKey,TValue>*)nullptr)).first),
+								decltype(f(*((pair<TKey,TValue>*)nullptr)).second)
+								>
+			{
+			ImmutableTreeMap<
+					decltype(f(pair<TKey,TValue>()).first),
+					decltype(f(pair<TKey,TValue>()).second)
+					> tr;
+
+			for (uword_t k = 0; k < this->size();k++)
+				{
+				const pair<TKey, TValue>& p(pairAtPosition(k));
+				
+				tr = tr + f(p);
+				}
+
+			return tr;
+			}
+		
+		template<class f_type>
+		auto sum(const f_type& f) const ->
+						decltype(f(*((pair<TKey,TValue>*)nullptr)) + f(*((pair<TKey,TValue>*)nullptr)))
+			{
+			decltype(f(pair<TKey, TValue>()) + f(pair<TKey, TValue>())) tr;
+
+			for (uword_t k = 0; k < this->size();k++)
+				{
+				const pair<TKey, TValue>& p(pairAtPosition(k));
+				
+				tr = tr + f(p);
+				}
+
+			return tr;
+			}
+		template<class f_type>
+		auto sumValues(const f_type& f) const ->
+						decltype(f(*((TValue*)nullptr)) + f(*((TValue*)nullptr)))
+			{
+			decltype(f(TValue()) + f(TValue())) tr;
+
+			for (uword_t k = 0; k < this->size();k++)
+				{
+				const pair<TKey, TValue>& p(pairAtPosition(k));
+				
+				tr = tr + f(p.second);
+				}
+
+			return tr;
+			}
+
+		typedef const ImmutableTreeMap* immutable_tree_vector_ptr;
+
+		@type const_iterator = immutable_tree_vector_ptr tree, uint32_t index {
+		public:
+				bool operator==(const const_iterator& in) const
+					{
+					return tree() == in.tree() && index() == in.index();
+					}
+				bool operator!=(const const_iterator& in) const
+					{
+					return !(*this == in);
+					}
+				bool operator<(const const_iterator& in) const
+					{
+					if (tree() < in.tree())
+						return true;
+					if (tree() > in.tree())
+						return false;
+					return index() < in.index();
+					}
+				const pair<TKey,TValue>& operator*(void) const
+					{
+					return (*tree()).pairAtPosition(index());
+					}
+				const pair<TKey,TValue>* operator->(void) const
+					{
+					return &(*tree()).pairAtPosition(index());
+					}
+
+				int32_t operator-(const const_iterator& in) const
+					{
+					return (int32_t)index() - (int32_t)in.index();
+					}
+
+				const_iterator operator+(int32_t offset) const
+					{
+					return const_iterator(tree(), index() + offset);
+					}
+				const_iterator operator-(int32_t offset) const
+					{
+					return const_iterator(tree(), index() - offset);
+					}
+				const_iterator& operator+=(int32_t offset)
+					{
+					index() += offset;
+					return *this;
+					}
+				const_iterator& operator-=(int32_t offset)
+					{
+					index() += offset;
+					return *this;
+					}
+				const_iterator& operator++(void)
+					{
+					index() += 1;
+					return *this;
+					}
+				const_iterator operator++(int)
+					{
+					const_iterator tr(tree(), index());
+					index() += 1;
+					return tr;
+					}
+				const_iterator& operator--(void)
+					{
+					index() -= 1;
+					return *this;
+					}
+				const_iterator operator--(int)
+					{
+					const_iterator tr(tree(), index());
+					index() -= 1;
+					return tr;
+					}
+
+				typedef Element value_type;
+				typedef int32_t difference_type;
+				typedef Element* pointer;
+				typedef Element& reference;
+				typedef std::random_access_iterator_tag iterator_category;
+		};
+		const_iterator begin(void) const
+			{
+			return const_iterator(this, 0);
+			}
+		const_iterator end(void) const
+			{
+			return const_iterator(this, size(mElement));
+			}
+		typedef const_iterator iterator;
+
+		ImmutableTreeMap slice(uint32_t left, uint32_t right) const
+			{
+			return ImmutableTreeMap(slice(mElement, left, right));
+			}
+
+		const pair<TKey, TValue>& back(void) const
+			{
+			return pairAtPosition(size()-1);
+			}
+		uint32_t lowerBound(const TKey& in) const
+			{
+			if (size() == 0)
+				return 0;
+			return lowerBound(mElement, in);
+			}
+		Nullable<const TValue&> operator[](const TKey& inKey) const
+			{
+			uint32_t ix = lowerBound(inKey);
+			if (ix >= size())
+				return null();
+
+			const pair<TKey, TValue>& v = pairAtPosition(ix);
+			if (!comparison()(v.first, inKey) && !comparison()(inKey,v.first))
+				return Nullable<const TValue&>(v.second);
+			return null();
+			}
+		Nullable<uint32_t> positionFor(const TKey& inKey) const
+			{
+			uint32_t ix = lowerBound(inKey);
+			if (ix >= size())
+				return null();
+
+			const pair<TKey, TValue>& v = pairAtPosition(ix);
+			if (!comparison()(v.first, inKey) && !comparison()(inKey,v.first))
+				return Nullable<uint32_t>(ix);
+			return null();
+			}
+		bool contains(const TKey& t) const
+			{
+			uint32_t v = lowerBound(t);
+			if (v == size())
+				return false;
+			const TKey& t2 = pairAtPosition(v).first;
+
+			return !comparison()(t2, t) && !comparison()(t, t2); //one of these is probably unneeded
+			}
+private:
+
+		static Element slice(const Element& in, uint32_t left, uint32_t right)
+			{
+			@match Element(in)
+				-|	Empty() ->> { return in; }
+				-|	Leaf(t) ->> { return (left == 0 && right > 0 ? in : Element::Empty()); }
+				-|	Node(a,b) ->> {
+					return node(
+						left < size(a) && right > left ?
+							slice(a, left, right)
+						:	Element::Empty()
+							,
+						left < size(a) + size(b) && right > left ?
+							slice(b,
+								left > size(a) ? left - size(a) : 0,
+								right > size(a) ? right - size(a) : 0
+								)
+						:	Element::Empty()
+						);
+					};
+			}
+		static uint32_t lowerBound(const Element& element, const TKey& t)
+			{
+			@match Element(element)
+				-|	Leaf(l) ->> {
+					return comparison()(l.first,t) ? 1: 0;
+					}
+				-|	Node(l,r) ->> {
+					return comparison()(highest(l), t) ? lowerBound(r,t) + size(l) : lowerBound(l,t);
+					}
+				;
+			}
+		static const pair<TKey, TValue>& elt(const Element& element, uint32_t inIndex)
+			{
+			if (element.isLeaf())
+				return element.getLeaf().value();
+			if (element.isNode())
+				{
+				if (inIndex < size(element.getNode().left()))
+					return elt(element.getNode().left(), inIndex);
+					else
+					return elt(element.getNode().right(), inIndex - size(element.getNode().left()));
+				}
+			lassert(false);
+			}
+		static Element node(const Element& left, const Element& right)
+			{
+			typedef ImmutableTreeMap<TKey, TValue> self_type;
+			
+			if (size(left) == 0)
+				return right;
+			if (size(right) == 0)
+				return left;
+
+			//check if the nodes are in order already
+			if (comparison()(highest(left), lowest(right)))
+				return balancedNode(left, right);
+
+			if (comparison()(highest(right), lowest(left)))
+				return balancedNode(right, left);
+
+			//out of order, and overlapping!
+			@match Element(left)
+				-|	Leaf(x) ->> {
+					@match Element(right)
+						-|	Leaf(y) ->> {
+								return right; //they must be the same node!
+								}
+						-|	Node(y1, y2) ->> {
+							if (comparison()(x.first,lowest(y2)))
+								return self_type::balancedNode(self_type::node(left,y1), y2);
+								else
+								return self_type::balancedNode(y1, self_type::node(left,y2));
+							}
+						;
+					}
+				-|	Node(x1, x2) ->> {
+					@match Element(right)
+						-|	Leaf(y) ->> {
+							return comparison()(y.first, lowest(x2)) ?
+									balancedNode(node(x1, right), x2)
+								:	balancedNode(x1, node(x2, right))
+								;
+							}
+						-|	Node(y1, y2) ->> {
+							//pick a slice point
+							uint32_t ix = lowerBound(right, lowest(x2));
+
+							return self_type::balancedNode(node(x1, slice(right, 0, ix)), node(x2, slice(right, ix, size(right))));
+							}
+							;
+					}
+				;
+			}
+		static Element balancedNode(const Element& node)
+			{
+			typedef ImmutableTreeMap<TKey, TValue> self_type;
+			
+			@match Element(node)
+				-|	Node(l,r) ->> {
+					return (self_type::height(l) + 2 < self_type::height(r) || self_type::height(r) + 2 < self_type::height(l) ? self_type::balancedNode(l,r) : node);
+					}
+				-|	x ->> {
+					return x;
+					}
+				;
+			}
+		static Element balancedNode(const Element& left, const Element& right)
+			{
+			/**************************************
+			                   (x+4)
+						(x)			    (x+3)
+								(x+2)	     (x+2)
+							  (x+1)(x+1)
+
+			can always be reshuffled to
+
+
+								(x+4)
+						(x+2)			(x+3)
+					(x)		(x+1)     (x+1) (x+2)
+
+			which makes the depth asymmetry between the left and the right go away
+
+			************************************/
+
+			if (height(left) + 2 < height(right))
+				//the right is really tall - break it down
+				{
+				@match Element(right) -| Node(right1, right2) ->> {
+					if (height(right1) < height(left) + 2) //we can just move it over
+						return balancedNode(balancedNode(left, right1), right2);
+						else
+						//we need to split 'right 1' apart
+						@match Element(right1) -| Node(right11, right12) ->> {
+							return balancedNode(balancedNode(left, right11), balancedNode(right12, right2));
+							}
+						;
+					};
+				}
+
+			if (height(right) + 2 < height(left))
+				//the right is really tall - break it down
+				{
+				@match Element(left) -| Node(left1, left2) ->> {
+
+					if (height(left2) < height(right) + 2) //we can just move it over
+						return balancedNode(left1, balancedNode(left2, right));
+						else
+						//we need to split 'left2' apart
+						@match Element(left2) -| Node(left21, left22) ->> {
+
+							return balancedNode(balancedNode(left1, left21), balancedNode(left22, right));
+
+							}
+						;
+					};
+				}
+
+			return nodeDirect(left, right);
+			}
+		static TKey lowest(const Element& e)
+			{
+			@match Element(e)
+				-|	Leaf(x) ->> {
+					return x.first;
+					}
+				-|	Node(_,_,_,_,low,_) ->> {
+					return low;
+					}
+				;
+			}
+		static TKey highest(const Element& e)
+			{
+			@match Element(e)
+				-|	Leaf(x) ->> {
+					return x.first;
+					}
+				-|	Node(_,_,_,_,_,hi) ->> {
+					return hi;
+					}
+				;
+			}
+		static Element nodeDirect(const Element& left, const Element& right)
+			{
+			return Element::Node(left, right, size(left) + size(right), (height(left) < height(right) ? height(right) : height(left)) + 1, lowest(left), highest(right));
+			}
+
+		static uint32_t size(const Element& in)
+			{
+			@match Element(in)
+				-|	Empty() ->> {
+					return 0;
+					}
+				-|	Leaf() ->> {
+					return 1;
+					}
+				-|	Node(_,_, sz) ->> {
+					return sz;
+					}
+				;
+			}
+		static uint32_t height(const Element& in)
+			{
+			@match Element(in)
+				-|	Empty() ->> {
+					return 0;
+					}
+				-|	Leaf() ->> {
+					return 1;
+					}
+				-|	Node(_,_,_, ht) ->> {
+					return ht;
+					}
+				;
+			}
+
+		Element mElement;
+};
+
+template<class TKey, class TValue>
+class CPPMLEquality<ImmutableTreeMap<TKey, TValue>, void> {
+public:
+		static char cmp(const ImmutableTreeMap<TKey, TValue>& lhs, const ImmutableTreeMap<TKey, TValue>& rhs)
+			{
+			if (lhs.size() < rhs.size())
+				return -1;
+			if (lhs.size() > rhs.size())
+				return 1;
+			for (uint32_t k = 0; k < lhs.size();k++)
+				{
+				char c = cppmlCmp(lhs.pairAtPosition(k), rhs.pairAtPosition(k));
+				if (c != 0)
+					return c;
+				}
+			return 0;
+			}
+};
+template<class TKey, class TValue>
+bool operator<(const ImmutableTreeMap<TKey, TValue>& lhs, const ImmutableTreeMap<TKey, TValue>& rhs)
+	{
+	return CPPMLEquality<ImmutableTreeMap<TKey, TValue>, void>::cmp(lhs, rhs) < 0;
+	}
+template<class TKey, class TValue>
+bool operator==(const ImmutableTreeMap<TKey, TValue>& lhs, const ImmutableTreeMap<TKey, TValue>& rhs)
+	{
+	return CPPMLEquality<ImmutableTreeMap<TKey, TValue>, void>::cmp(lhs, rhs) == 0;
+	}
+template<class TKey, class TValue>
+bool operator!=(const ImmutableTreeMap<TKey, TValue>& lhs, const ImmutableTreeMap<TKey, TValue>& rhs)
+	{
+	return CPPMLEquality<ImmutableTreeMap<TKey, TValue>, void>::cmp(lhs, rhs) != 0;
+	}
+template<class TKey, class TValue>
+ImmutableTreeMap<TKey, TValue> operator-(const ImmutableTreeMap<TKey, TValue>& lhs, const TKey& rhs)
+	{
+	if (!lhs.contains(rhs))
+		return lhs;
+	uint32_t ix = lhs.lowerBound(rhs);
+	return lhs.slice(0, ix) + lhs.slice(ix+1, lhs.size());
+	}
+template<class TKey, class TValue>
+ImmutableTreeMap<TKey, TValue> operator-(const ImmutableTreeMap<TKey, TValue>& lhs, const ImmutableTreeSet<TKey>& rhs)
+	{
+	ImmutableTreeMap<TKey, TValue> tr = lhs;
+	for (uword_t k = 0; k < rhs.size();k++)
+		tr = tr - rhs[k];
+	return tr;
+	}
+
+
+
+template<class TKey, class TValue, class storage_type>
+class Serializer<ImmutableTreeMap<TKey, TValue>, storage_type> {
+public:
+		static void serialize(storage_type& s, const ImmutableTreeMap<TKey, TValue>& t)
+			{
+			s.serialize((uint32_t)t.size());
+			for (uint32_t k = 0; k < t.size();k++)
+				s.serialize(t.pairAtPosition(k));
+			}
+};
+
+template<class TKey, class TValue, class storage_type>
+class Deserializer<ImmutableTreeMap<TKey, TValue>, storage_type> {
+public:
+		static void deserialize(storage_type& s, ImmutableTreeMap<TKey, TValue>& t)
+			{
+			t = ImmutableTreeMap<TKey, TValue>();
+			uint32_t sz;
+			s.deserialize(sz);
+			while (sz > 0)
+				{
+				TKey t2;
+				TValue t3;
+				s.deserialize(t2);
+				s.deserialize(t3);
+				t = t + t2 + t3;
+				sz--;
+				}
+			}
+};
+
+template<class TKey, class TValue>
+class CPPMLPrettyPrint<ImmutableTreeMap<TKey, TValue> > {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream& s, const ImmutableTreeMap<TKey, TValue>& t)
+			{
+			s << "{";
+			
+				{
+				CPPMLPrettyPrintStream s2 = s.group();
+				
+				for (int32_t k = 0; k < t.size();k++)
+					{
+					s2 << t.pairAtPosition(k).first;
+					s2 << ": ";
+					s2 << t.pairAtPosition(k).second;
+					
+					if (k + 1 < t.size())
+						s2 << ", " << s2.sep;
+					}
+				}
+
+			s << "}";
+			}
+};
+
+
+
+template<class T>
+class TreeMapLHS {
+public:
+		TreeMapLHS(const T& in) : m(in)
+			{
+			}
+
+		template<class T2>
+		ImmutableTreeMap<T, T2> operator+(const T2& t2) const
+			{
+			return ImmutableTreeMap<T, T2>(make_pair(m,t2));
+			}
+private:
+		T m;
+};
+
+template<class T, class T2>
+class Serializer<ImmutableTreeMap<T, T2>, HashingStreamSerializer> {
+public:
+		static inline void serialize(HashingStreamSerializer& s, const ImmutableTreeMap<T, T2>& in)
+			{
+			s.serialize(in.hash());
+			}
+};
+
+template<class T, class T2>
+class Serializer<ImmutableTreeMapElement<T, T2>, HashingStreamSerializer> {
+public:
+		static inline void serialize(HashingStreamSerializer& s, const ImmutableTreeMapElement<T, T2>& in)
+			{
+			s.serialize(in.hash());
+			}
+};
+
+template<class T>
+TreeMapLHS<T> operator+(TreeMap v, const T& in)
+	{
+	return TreeMapLHS<T>(in);
+	}
+template<class T, class T2>
+pair<ImmutableTreeMap<T, T2>, T> operator+(const ImmutableTreeMap<T, T2>& tree, const T& in)
+	{
+	return make_pair(tree, in);
+	}
+template<class T, class T2>
+ImmutableTreeMap<T, T2> operator+(const pair<ImmutableTreeMap<T, T2>, T>& tree, const T2& in)
+	{
+	return tree.first + make_pair(tree.second, in);
+	}
+
+inline TreeMap emptyTreeMap(void)
+	{
+	return TreeMap();
+	}
+
+template<class T, class T2>
+class CPPMLTransformWithIndex;
+
+template<class T, class T2>
+class CPPMLTransform;
+
+template<class T, class T2>
+class CPPMLVisit;
+
+template<class T, class T2>
+class CPPMLVisitWithIndex;
+
+
+template<class TKey, class TValue>
+hash_type ImmutableTreeMapElement<TKey, TValue>::computeHash(void) const
+	{
+	return ImmutableTreeMap<TKey, TValue>(*this).computeHash();	
+	}
+
+template<class T, class T2>
+class CPPMLTransform<ImmutableTreeMap<T, T2>, void> {
+public:
+		template<class F>
+		static Nullable<ImmutableTreeMap<T, T2> > apply(const ImmutableTreeMap<T, T2>& in, F& f)
+			{
+			for (uword_t k = 0; k < in.size();k++)
+				{
+				Nullable<pair<T, T2> > t = transformNullable(in.pairAtPosition(k), f);
+				if (t)
+					{
+					ImmutableTreeMap<T, T2> tr;
+					for (uword_t j = 0; j < k; j++)
+						tr = tr + in.pairAtPosition(j);
+					tr = tr + *t;
+					for (uword_t j = k + 1; j < in.size();j++)
+						{
+						t = transformNullable(in.pairAtPosition(j), f);
+						tr = tr + (t ? *t : in.pairAtPosition(j));
+						}
+					return null () << tr;
+					}
+				}
+			return null();
+			}
+};
+
+template<class T, class T2>
+class CPPMLTransformWithIndex<ImmutableTreeMap<T, T2>, void> {
+public:
+		template<class F, class indices_type>
+		static Nullable<ImmutableTreeMap<T, T2> > apply(const ImmutableTreeMap<T, T2>& in, F& f, const indices_type& inIndices)
+			{
+			for (uword_t k = 0; k < in.size();k++)
+				{
+				Nullable<pair<T, T2> > t = transformNullable(in.pairAtPosition(k), f, inIndices + k);
+				if (t)
+					{
+					ImmutableTreeMap<T, T2> tr;
+					for (uword_t j = 0; j < k; j++)
+						tr = tr + in.pairAtPosition(j);
+					tr = tr + *t;
+					for (uword_t j = k + 1; j < in.size();j++)
+						{
+						t = transformNullable(in.pairAtPosition(j), f, inIndices + j);
+						tr = tr + (t ? *t : in.pairAtPosition(j));
+						}
+					return null () << tr;
+					}
+				}
+			return null();
+			}
+};
+
+template<class T, class T2>
+class CPPMLVisit<ImmutableTreeMap<T, T2>, void> {
+public:
+		template<class F>
+		static void apply(const ImmutableTreeMap<T, T2>& in, F& f)
+			{
+			for (uword_t k = 0; k < in.size();k++)
+				visit(in.pairAtPosition(k), f);
+			}
+};
+template<class T, class T2>
+class CPPMLVisitWithIndex<ImmutableTreeMap<T, T2>, void> {
+public:
+		template<class F, class indices_type>
+		static void apply(const ImmutableTreeMap<T, T2>& in, F& f, const indices_type& inIndices)
+			{
+			for (uword_t k = 0; k < in.size();k++)
+				visit(in.pairAtPosition(k), f, inIndices + k);
+			}
+};
+

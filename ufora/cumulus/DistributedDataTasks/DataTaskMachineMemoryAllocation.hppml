@@ -1,0 +1,333 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../MachineId.hppml"
+#include "DataTaskMemoryFootprint.hppml"
+#include <map>
+
+
+namespace Cumulus {
+
+/*********************************
+
+DataTaskMachineMemoryAllocation
+
+Tracks how much memory is being used for a given data task across machines,
+and maintains the state machine that the task server uses to split tasks
+or increase their quota.
+
+**********************************/
+
+class DataTaskMachineMemoryAllocation {
+public:
+	DataTaskMachineMemoryAllocation(hash_type taskId, int64_t totalExpectedMessages, int64_t totalExpectedBytes, MachineId initialMachine) : 
+			mTaskId(taskId),
+			mTotalExpectedMessages(totalExpectedMessages),
+			mTotalExpectedBytes(totalExpectedBytes),
+			mInitialMachine(initialMachine),
+			mHasRequestedMemory(false)
+		{
+		//initially, we're blocked
+		mBlockedMachines.insert(mInitialMachine);
+
+		LOG_INFO << "Initializing " << taskId << " with " << totalExpectedMessages << " expected messages over " 
+			<< totalExpectedBytes / 1024 / 1024.0 << " MB of data, for " 
+			<< (mTotalExpectedBytes / mTotalExpectedMessages) << " bytes/message. InitialMachine="
+			<< initialMachine
+			;
+		}
+
+	hash_type taskId() const
+		{
+		return mTaskId;
+		}
+
+	int64_t expectedMessageCount() const
+		{
+		return mTotalExpectedMessages;
+		}
+
+	MachineId initialMachine() const
+		{
+		return mInitialMachine;
+		}
+
+	void setAccumulatorState(
+				MachineId onMachine, 
+				DataTaskMemoryFootprint accumulator, 
+				DataTaskMemoryFootprint incoming
+				)
+		{
+		LOG_DEBUG << "Set state of " << onMachine << " to " << accumulator;
+
+		mCurrentAccumulators[onMachine] = accumulator;
+		mCurrentProcessingQueues[onMachine] = incoming;
+
+		checkMachineQuota(onMachine);
+		}
+
+	void checkMachineQuota(MachineId onMachine)
+		{
+		if (mCurrentAccumulators[onMachine].totalMessages() >= mMachineByteAndMessagecountQuotas[onMachine].second || 
+				mCurrentAccumulators[onMachine].totalBytesAllocatedFromOS() >= mMachineByteAndMessagecountQuotas[onMachine].first)
+			{
+			//it's blocked. If the machine is overweight then we need to split something on it and move it
+			if (machineIsOverweight(onMachine))
+				{
+				auto targetMachine = pickUnderweightMachine();
+
+				LOG_INFO << "Machine " << onMachine << " looks blocked to us and overweight. splitting to " << targetMachine;
+
+				mSplitQueue.push_back(make_pair(onMachine, targetMachine));
+				}
+			else
+				{
+				LOG_INFO << "Machine " << onMachine << " looks blocked to us and underweight ("
+					<< machineFullness(onMachine) << " vs. avgfullness of " << averageMachineFullness() << "). increasing quota.";
+
+				//make it bigger
+				increaseMachineQuota(onMachine);
+				}
+			}
+		}
+
+	bool machineIsOverweight(MachineId m)
+		{
+		double fullness = machineFullness(m);
+
+		double averageFullness = averageMachineFullness();
+
+		return fullness > averageFullness * 1.1;
+		}
+
+	bool machineIsUnderweight(MachineId m)
+		{
+		double fullness = machineFullness(m);
+
+		double averageFullness = averageMachineFullness();
+
+		return fullness <= averageFullness;
+		}
+
+	int64_t bytesReservedFromScheduler(MachineId m)
+		{
+		auto it = mBytesReservedFromScheduler.find(m);
+		if (it != mBytesReservedFromScheduler.end())
+			return it->second;
+		return 0;
+		}
+
+	double machineFullness(MachineId m)
+		{
+		if (bytesReservedFromScheduler(m) == 0)
+			return 0.0;
+
+		return (double)mCurrentAccumulators[m].totalBytesAllocatedFromOS() / (double)bytesReservedFromScheduler(m);
+		}
+
+	double averageMachineFullness()
+		{
+		if (mBytesReservedFromScheduler.size() == 0)
+			return 0;
+
+		double fullness = 0;
+		for (auto machineAndBytes: mBytesReservedFromScheduler)
+			fullness += machineFullness(machineAndBytes.first);
+		return fullness / mBytesReservedFromScheduler.size();
+		}
+
+	MachineId pickUnderweightMachine()
+		{
+		auto it = mBytesReservedFromScheduler.find(mLastUnderweightMachine);
+		if (it == mBytesReservedFromScheduler.end())
+			it = mBytesReservedFromScheduler.begin();
+
+		long tries = 0;
+		while (tries < mBytesReservedFromScheduler.size())
+			{
+			tries++;
+			it++;
+			
+			if (it == mBytesReservedFromScheduler.end())
+				it = mBytesReservedFromScheduler.begin();
+
+			if (machineIsUnderweight(it->first))
+				{
+				mLastUnderweightMachine = it->first;
+
+				lassert(bytesReservedFromScheduler(it->first) > 0);
+
+				return it->first;
+				}
+			}
+
+		lassert_dump(false, "Shouldn't be possible that _no_ machines are underweight");
+		}
+
+	void increaseMachineQuota(MachineId m)
+		{
+		//make the quota 20% larger
+		int64_t newBytecount = 
+			std::max<int64_t>(
+				mMachineByteAndMessagecountQuotas[m].second * 1.2,
+				bytesReservedFromScheduler(m) / 20.0
+				);
+
+		setQuota(
+			m, 
+			newBytecount / expectedBytesPerMessage(), 
+			newBytecount
+			);
+		}
+
+	bool looksFinished() const
+		{
+		DataTaskMemoryFootprint total = totalInAccumulators();
+
+		return total.totalMessages() == mTotalExpectedMessages;
+		}
+
+	DataTaskMemoryFootprint totalInAccumulators() const
+		{
+		DataTaskMemoryFootprint total;
+
+		for (auto machineAndFootprint: mCurrentAccumulators)
+			total = total + machineAndFootprint.second;
+
+		return total;
+		}
+
+	Nullable<pair<MachineId, int64_t> > getMemoryReservationRequest()
+		{
+		if (!mHasRequestedMemory)
+			{
+			mHasRequestedMemory = true;
+			return null() << make_pair(mInitialMachine, int64_t(mTotalExpectedBytes * 1.1));
+			}
+
+		return null();
+		}
+
+	void memoryReservationResponse(ImmutableTreeMap<MachineId, int64_t> byteAllocations)
+		{
+		LOG_INFO << "Task " << mTaskId << " received memory allocation of " << byteAllocations << " from server.";
+
+		for (auto machineAndBytes: byteAllocations)
+			mBytesReservedFromScheduler[machineAndBytes.first] = machineAndBytes.second;
+
+		MachineId startingMachine = mInitialMachine;
+
+		if (mBytesReservedFromScheduler.find(mInitialMachine) == mBytesReservedFromScheduler.end())
+			startingMachine = mBytesReservedFromScheduler.begin()->first;
+
+		int64_t initialBytecount = bytesReservedFromScheduler(startingMachine) / 20.0;
+
+		setQuota(startingMachine, initialBytecount, initialBytecount / expectedBytesPerMessage());
+
+		mLastUnderweightMachine = startingMachine;
+
+		for (auto machineAndBytes: byteAllocations)
+			checkMachineQuota(machineAndBytes.first);
+		}
+
+	void setQuota(MachineId machine, int64_t bytecount, int64_t messageCount)
+		{
+		auto newQuota = make_pair(bytecount, messageCount);
+
+		if (newQuota != mMachineByteAndMessagecountQuotas[machine])
+			{
+			LOG_INFO << "Setting bytecount quota of " << machine << " to " << bytecount;
+			mMachineByteAndMessagecountQuotas[machine] = newQuota;
+			mMachinesWithBytecountsToBroadcast.insert(machine);
+			}
+		}
+
+	Nullable<pair<MachineId, pair<int64_t, int64_t> > > getBytecountAndMessagecountQuotaChange()
+		{
+		if (mMachinesWithBytecountsToBroadcast.size())
+			{
+			MachineId m = *mMachinesWithBytecountsToBroadcast.begin();
+			mMachinesWithBytecountsToBroadcast.erase(m);
+
+			return null() << make_pair(m, mMachineByteAndMessagecountQuotas[m]);
+			}
+
+		return null();
+		}
+
+	Nullable<pair<MachineId, MachineId> > getSplitRequest()
+		{
+		if (mSplitQueue.size() == 0)
+			return null();
+
+		auto res = mSplitQueue.back();
+		mSplitQueue.pop_back();
+
+		return null() << res;
+		}
+
+	void splitResponse(
+				MachineId fromMachine, 
+				MachineId toMachine, 
+				DataTaskMemoryFootprint valuesInAccumulator, 
+				DataTaskMemoryFootprint valuesUnprocessed, 
+				bool splitSucceeded
+				)
+		{
+		setAccumulatorState(fromMachine, valuesInAccumulator, valuesUnprocessed);
+
+		//if we're blocked and couldn't split, then we need to increase the quota
+		if (!splitSucceeded && 
+				valuesInAccumulator.totalBytesAllocatedFromOS() >= mMachineByteAndMessagecountQuotas[fromMachine].first)
+			increaseMachineQuota(fromMachine);
+		}
+
+	int64_t expectedBytesPerMessage() const
+		{
+		return mTotalExpectedBytes / mTotalExpectedMessages;
+		}
+
+private:
+	hash_type mTaskId;
+
+	int64_t mTotalExpectedMessages;
+
+	int64_t mTotalExpectedBytes;
+
+	MachineId mLastUnderweightMachine;
+
+	MachineId mInitialMachine;
+
+	map<MachineId, DataTaskMemoryFootprint> mCurrentAccumulators;
+
+	map<MachineId, DataTaskMemoryFootprint> mCurrentProcessingQueues;
+
+	std::set<MachineId> mBlockedMachines;
+
+	std::map<MachineId, pair<int64_t, int64_t> > mMachineByteAndMessagecountQuotas;
+
+	std::set<MachineId> mMachinesWithBytecountsToBroadcast;
+
+	std::map<MachineId, int64_t> mBytesReservedFromScheduler;
+
+	std::vector<pair<MachineId, MachineId> > mSplitQueue;
+
+	bool mHasRequestedMemory;
+};
+
+}
+

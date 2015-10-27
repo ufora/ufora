@@ -1,0 +1,104 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#ifndef IndexedMutex_hppml_
+#define IndexedMutex_hppml_
+
+/***************
+IndexedMutex
+
+Uses boost thread to provide an 'indexed mutex', which allows users to maintain
+a set of mutexes indexed by values. The IndexedMutex class provides
+thread-safe access to the index pool and deletes mutexes if there are too
+many.
+****************/
+
+#include <boost/thread.hpp>
+#include <map>
+#include "../lassert.hpp"
+
+template<class T, class mutex_type = boost::recursive_mutex>
+class IndexedMutex {
+public:
+		typedef typename mutex_type::scoped_lock scoped_lock_base_type;
+
+		class scoped_lock : public scoped_lock_base_type {
+		public:
+				scoped_lock(IndexedMutex& mutex, const T& t) :
+						scoped_lock_base_type(*mutex.incrementRefcount(t)),
+						mT(t),
+						mMutex(mutex)
+					{
+					}
+
+				~scoped_lock()
+					{
+					if (this->owns_lock())
+						this->unlock();
+					mMutex.decrementRefcount(mT);
+					}
+
+		private:
+				IndexedMutex&	mMutex;
+				T				mT;
+		};
+		
+private:
+		mutex_type*		incrementRefcount(const T& inT)
+			{
+			boost::mutex::scoped_lock lock(mInnerMutex);
+			
+			auto it = mMutexesAndRefcounts.find(inT);
+
+			if (it == mMutexesAndRefcounts.end())
+				{
+				it = mMutexesAndRefcounts.insert(
+					std::make_pair(
+						inT,
+						std::make_pair(new mutex_type, 0)
+						)
+					).first;
+				}
+
+			it->second.second++;
+
+			return it->second.first;
+			}
+			
+		void			decrementRefcount(const T& inT)
+			{
+			boost::mutex::scoped_lock lock(mInnerMutex);
+			
+			auto it = mMutexesAndRefcounts.find(inT);
+			lassert(it != mMutexesAndRefcounts.end());
+			
+			it->second.second--;
+			
+			if (it->second.second == 0)
+				{
+				delete it->second.first;
+				mMutexesAndRefcounts.erase(it);
+				}
+			}
+			
+		boost::mutex mInnerMutex;
+		
+		//for each index, a mutex and the number of times the mutex
+		//is accessed right now
+		std::map<T, std::pair<mutex_type*, uint32_t> > mMutexesAndRefcounts;
+};
+
+#endif
+

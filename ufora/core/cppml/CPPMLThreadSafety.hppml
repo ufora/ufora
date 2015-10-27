@@ -1,0 +1,419 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../AtomicOps.hpp"
+#include "../debug/StackTrace.hpp"
+#include <boost/thread.hpp>
+
+//#define CPPML_TRACK_INSTANCE_COUNTS
+
+namespace CPPML {
+
+#ifdef CPPML_TRACK_INSTANCE_COUNTS
+
+#include "../debug/StackTrace.hpp"
+
+class InstanceCountBase {
+public:
+	virtual AO_t getCount() = 0;
+
+	virtual size_t getInstanceSize() = 0;
+};
+
+class AllInstanceCounts {
+public:
+	template<class T>
+	int registerCounter(T* inPtr, InstanceCountBase* base)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		mCounters[Ufora::debug::StackTrace::demangle(typeid(T).name())] = base;
+
+		return 0;
+		}
+
+	std::map<std::string, unsigned long> getCounts(void)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		std::map<std::string, unsigned long> tr;
+
+		for (auto it = mCounters.begin(); it != mCounters.end(); ++it)
+			tr[it->first] = it->second->getCount();
+
+		return tr;
+		}
+
+	std::map<std::string, unsigned long> getByteCounts(void)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		std::map<std::string, unsigned long> tr;
+
+		for (auto it = mCounters.begin(); it != mCounters.end(); ++it)
+			tr[it->first] = it->second->getCount() * it->second->getInstanceSize();
+
+		return tr;
+		}
+
+	static AllInstanceCounts& singleton()
+		{
+		static AllInstanceCounts counter;
+
+		return counter;
+		}
+private:
+	boost::recursive_mutex mMutex;
+	std::map<std::string, InstanceCountBase*> mCounters;
+};
+
+template<class tagged_union_type>
+class InstanceCount : public InstanceCountBase {
+public:
+	static AO_t count;
+
+	virtual AO_t getCount() 
+		{ 
+		return count; 
+		}
+
+	virtual size_t getInstanceSize() 
+		{ 
+		return sizeof(tagged_union_type); 
+		}
+};
+
+template<class tagged_union_type>
+AO_t InstanceCount<tagged_union_type>::count = 0;
+
+#endif
+
+
+template<class tagged_union_type, class common_type>
+class TaggedUnionBase<tagged_union_type, common_type, void> {
+public:
+		typedef typename tagged_union_type::tag_type tag_type;
+		typedef typename Refcount<tagged_union_type, void>::refcount_type refcount_type;
+		
+		TaggedUnionBase(tag_type inTag, const common_type& in) : tag(inTag), common(in), refcount()
+			{
+			incrementRefcount();
+			}
+		
+		~TaggedUnionBase()
+			{
+			}
+		
+		refcount_type refcount;
+		
+		refcount_type getRefcount(void) const
+			{
+			return refcount;
+			}
+
+		common_type common;
+		tag_type tag;
+
+		void incrementRefcount(void) { Refcount<tagged_union_type, void>::increment(refcount); }
+		bool decrementRefcount(void) { return Refcount<tagged_union_type, void>::decrement(refcount); }
+};
+
+//Layout type for a specific tagged union that holds 'data_type' as the specific data
+template<class tagged_union_type, class in_common_type, class in_data_type>
+class TaggedUnion<tagged_union_type, in_common_type, in_data_type, void> : 
+			public TaggedUnionBase<tagged_union_type, in_common_type, void> {
+public:
+		typedef typename tagged_union_type::tag_type tag_type;
+
+		typedef in_data_type data_type;
+
+		typedef in_common_type common_type;
+
+		typedef TaggedUnion<tagged_union_type, in_common_type, in_data_type, void> self_type;
+		
+		template<class arg_common_type, class arg_data_type>
+		TaggedUnion(tag_type tag, arg_common_type& inCommon, arg_data_type& inData) : 
+				TaggedUnionBase<tagged_union_type, common_type, void>(
+					tag,
+					inCommon
+					),
+				data(inData)
+			{
+			#ifdef CPPML_TRACK_INSTANCE_COUNTS
+
+			static int forceRegister = AllInstanceCounts::singleton().registerCounter(
+				(self_type*)0, 
+				new InstanceCount<self_type>()
+				);
+
+			AO_fetch_and_add_full(&InstanceCount<self_type>::count, 1);
+			
+			#endif
+			}
+
+		~TaggedUnion()
+			{
+			#ifdef CPPML_TRACK_INSTANCE_COUNTS
+			AO_fetch_and_add_full(&InstanceCount<self_type>::count, -1);
+			#endif
+			}
+
+		data_type	data;
+};
+
+
+template<class cppml_type>
+class TaggedUnionMemoizer {
+public:
+	class result_type {
+	public:
+		template<class tagged_union_subtype>
+		class memoizer_type {
+		public:
+			static tagged_union_subtype* memoize(
+						typename tagged_union_subtype::tag_type tag,
+						const typename tagged_union_subtype::common_type& common,
+						const typename tagged_union_subtype::data_type& data
+						)
+				{
+				return new tagged_union_subtype(
+					tag, 
+					common, 
+					data
+					);
+				}
+		};
+	};
+};
+
+
+//how we hold references to cppml base classes
+template<class cppml_type>
+class TaggedUnionReference<cppml_type, void> {
+public:
+		typedef typename cppml_type::common_data_type common_data_type;
+		
+		typedef ::CPPML::TaggedUnionBase<cppml_type, common_data_type>
+			tagged_union_base_type;
+		
+		typedef TaggedUnionReference<cppml_type, void> self_type;
+		
+		TaggedUnionReference(tagged_union_base_type* inPointedTo) : mPointedTo(inPointedTo)
+			{
+			}
+		TaggedUnionReference() : mPointedTo()
+			{
+			}
+		
+		bool	valid(void)
+			{
+			return mPointedTo;
+			}
+		
+		tagged_union_base_type*	mPointedTo;
+
+		typename cppml_type::tag_type	getTag() const
+			{
+			return mPointedTo->tag;
+			}
+		common_data_type& getCommonData() const
+			{
+			return mPointedTo->common;
+			}
+		
+		template<class subtype>
+		void destroyAs(subtype* deliberatelyNullPtr)
+			{
+			typedef ::CPPML::TaggedUnion<
+				cppml_type, 
+				common_data_type, 
+				typename remove_constness<subtype>::type, 
+				void
+				> union_type;
+
+			delete static_cast<union_type*>(mPointedTo);
+
+			mPointedTo = 0;
+			}
+		
+		template<class subtype>
+		subtype& getData(subtype* deliberatelyNullPtr)
+			{
+			typedef ::CPPML::TaggedUnion<
+				cppml_type, 
+				common_data_type, 
+				typename remove_constness<subtype>::type, 
+				void
+				> union_type;
+
+			return static_cast<union_type*>(mPointedTo)->data;
+			}
+		template<class subtype>
+		const subtype& getData(subtype* deliberatelyNullPtr) const
+			{
+			typedef ::CPPML::TaggedUnion<
+				cppml_type, 
+				common_data_type, 
+				typename remove_constness<subtype>::type, 
+				void
+				> union_type;
+
+			return static_cast<union_type*>(mPointedTo)->data;
+			}
+		
+		template<class in_subtype>
+		static self_type create(typename cppml_type::tag_type tag, const common_data_type& inData, const in_subtype& inSubtype)
+			{
+			typedef typename remove_reference<in_subtype>::type real_subtype;
+
+			typedef TaggedUnion<cppml_type, common_data_type, real_subtype, void> union_type;
+
+			typedef typename TaggedUnionMemoizer<cppml_type>::result_type::template memoizer_type<union_type> memoizer_type;
+
+			memoizer_type memoizer;
+
+			return self_type(
+				memoizer_type::memoize(
+					tag,
+					inData,
+					inSubtype
+					)
+				);
+			}
+		
+		void	incrementRefcount() const
+			{
+			mPointedTo->incrementRefcount();
+			}
+		bool	decrementRefcount() const
+			{
+			if (mPointedTo)
+				return mPointedTo->decrementRefcount();
+			return false;
+			}
+		
+		typename Refcount<cppml_type, void>::refcount_type getRefcount() const
+			{
+			if (mPointedTo)
+				return mPointedTo->getRefcount();
+
+			return typename Refcount<cppml_type, void>::refcount_type();
+			}
+
+		void	swap(self_type& other)
+			{
+			tagged_union_base_type* temp = other.mPointedTo;
+			other.mPointedTo = mPointedTo;
+			mPointedTo = temp;
+			}
+			
+};
+
+
+template<class self_type>
+class Refcount<self_type, void> {
+public:
+		typedef AO_t refcount_type;
+		static void increment(refcount_type& ioR)
+			{
+			AO_fetch_and_add_full(&ioR, 1);
+			};
+		static bool decrement(refcount_type& ioR)
+			{
+			return AO_fetch_and_add_full(&ioR, -1) == 1;
+			}
+};
+
+template<class tagged_union_type>
+class MatchErrorFactory<tagged_union_type, void> {
+public:
+		typedef std::logic_error result_type;
+		
+		static std::logic_error matchError(const tagged_union_type& in)
+			{
+			try {
+				throwLogicErrorWithStacktrace("Bad CPPML Match");
+				}
+			catch (std::logic_error e)
+				{
+				return e;
+				}
+			return std::logic_error("");
+			}
+};
+
+template<class tagged_union_type>
+class ThrowBadUnionAccess<tagged_union_type, void> {
+public:
+		static void throwBadUnionAccess(const tagged_union_type& in)
+			{
+			throwLogicErrorWithStacktrace("Bad CPPML access");	
+			}
+};
+
+template<class self_type>
+class Memovalid<self_type, void> {
+public:
+		typedef AO_t memovalid_type;
+		
+		static bool valid(memovalid_type& ioR)
+			{
+			return ioR == 1;
+			}
+		
+		class lock_type {
+		public:
+				lock_type(memovalid_type& in) : m(in)
+					{
+					mNeedsLock = true;
+					mValid = true;
+					//if the lock is held, throw an exception
+					while (!AO_compare_and_swap_full(&m,0,2))
+						{
+						if (AO_load(&m) == 1)
+							{
+							mNeedsLock = 0;
+							return;
+							}
+							else
+							boost::thread::yield();
+						}
+					}
+				~lock_type()
+					{
+					//we're done - mark the value and exit
+					if (mNeedsLock)
+						AO_store(&m, mValid ? 1 : 0);
+					}
+				bool needsCompute(void)
+					{
+					return mNeedsLock;
+					}
+				void invalidate(void)
+					{
+					mValid = false;
+					}
+					
+		private:
+				memovalid_type& m;
+				bool			mNeedsLock;
+				bool			mValid;
+		};
+};
+
+}
+

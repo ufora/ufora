@@ -1,0 +1,259 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ControlFlowGraphOptimizer.hppml"
+#include "ControlFlowGraphUtil.hppml"
+#include "../../core/containers/TwoWaySetMap.hpp"
+#include "../../core/cppml/CPPMLTransform.hppml"
+#include "../../core/cppml/CPPMLVisit.hppml"
+
+namespace {
+
+template<class T>
+T pickNameFromSet(const set<T>& names, const T& toExclude)
+	{
+	for (auto it = names.begin(), it_end = names.end(); it != it_end; ++it)
+		if (*it != toExclude)
+			return *it;
+
+	lassert_dump(false, "couldn't pick a name from " << prettyPrintString(names) 
+			<< " without " << prettyPrintString(toExclude));
+	}
+
+
+@type NodeRenamer = std::string toRename, std::string toRenameTo
+{
+public:
+	template<class T>
+	Nullable<T>	processDown(const T& in, bool& outContinue) const
+		{
+		return null();
+		}
+	template<class T>
+	Nullable<T>	processUp(const T& in) const
+		{
+		return null();
+		}
+	
+	Nullable<ControlFlowContinuation_NodeType> processDown(
+				const ControlFlowContinuation_NodeType& in,
+				bool& outContinue
+				) const
+		{
+		if (in.label() == toRename())
+			return null() << 
+				ControlFlowContinuation_NodeType(
+					toRenameTo(), 
+					in.args()
+					);
+		return null();
+		}
+};
+
+ControlFlowNode 
+renameNodeInNode(const ControlFlowNode& inNode, std::string toRename, std::string toRenameTo)
+	{
+	NodeRenamer renamer(toRename, toRenameTo);
+
+	return ::transform(inNode, renamer);
+	}
+
+
+@type ContinuationReplacer = std::string toNotJumpTo, ControlFlowContinuation continuation
+{
+public:
+	template<class T>
+	Nullable<T>	processDown(const T& in, bool& outContinue) const
+		{
+		return null();
+		}
+
+	template<class T>
+	Nullable<T>	processUp(const T& in) const
+		{
+		return null();
+		}
+	
+	Nullable<ControlFlowContinuation> processDown(
+				const ControlFlowContinuation& in,
+				bool& outContinue
+				) const
+		{
+		if (in.isNode() && in.getNode().label() == toNotJumpTo())
+			return null() << 
+				ControlFlowGraphUtil::composeContinuationArgsWithContinuation(
+					in.getNode().args(),
+					continuation()
+					);
+
+		return null();
+		}
+};
+
+ControlFlowNode 
+replaceContinuationInNode(
+			const ControlFlowNode& inNode, 
+			std::string toNotJumpTo, 
+			const ControlFlowContinuation& newContinuation
+			)
+	{
+	ContinuationReplacer replacer(toNotJumpTo, newContinuation);
+
+	return ::transform(inNode, replacer);
+	}
+
+
+
+}
+
+ImmutableTreeMap<std::string, ControlFlowNode>
+optimizeControlFlowGraphNodes(
+						const ImmutableTreeMap<std::string, ControlFlowNode>& inNodes, 
+						const ImmutableTreeSet<std::string>& inNodesToPreserve
+						)
+	{
+	ControlFlowGraphOptimizer optimizer(inNodes, inNodesToPreserve);
+
+	optimizer.optimize();
+
+	return optimizer.extractResult();
+	}
+
+void ControlFlowGraphOptimizer::optimize(void)
+	{
+	while (removeOneJumpNode())
+		;
+
+	while (removeOneRedundantNode())
+		;
+	}
+
+ControlFlowGraphOptimizer::ControlFlowGraphOptimizer(
+						const ImmutableTreeMap<std::string, ControlFlowNode>& inNodes, 
+						const ImmutableTreeSet<std::string>& inNodesToPreserve
+						) : 
+			mNodesToPreserve(inNodesToPreserve.begin(), inNodesToPreserve.end())
+	{
+	for (auto it = inNodes.begin(), it_end = inNodes.end(); it != it_end; ++it)
+		addNode(it->first, it->second);
+	}
+
+bool ControlFlowGraphOptimizer::removeOneJumpNode(void)
+	{
+	for (auto it = mNodeMap.getJumpNodes().begin(), it_end = mNodeMap.getJumpNodes().end();
+						it != it_end; ++it)
+		if (*it && nodeIsRemovable(**it))
+			{
+			removeJumpNode(**it);
+			return true;
+			}
+
+	return false;
+	}
+
+bool ControlFlowGraphOptimizer::removeOneRedundantNode(void)
+	{
+	for (auto it = mNodeMap.getDuplicateNodeBodies().begin(), 
+				it_end = mNodeMap.getDuplicateNodeBodies().end();
+				it != it_end; ++it)
+		{
+		const set<Nullable<string> >& redundantNodeNames = mNodeMap.getNodeBodiesByHash().find(*it)->second;
+
+		for (auto name_it = redundantNodeNames.begin(), name_it_end = redundantNodeNames.end();
+					name_it != name_it_end; ++name_it)
+			if (*name_it && nodeIsRemovable(**name_it))
+				{
+				Nullable<std::string> name = pickNameFromSet(redundantNodeNames, *name_it);
+				if (name)
+					{
+					removeDuplicateNode(**name_it, *name);
+					return true;
+					}
+				}
+		}
+
+	return false;
+	}
+
+void ControlFlowGraphOptimizer::removeDuplicateNode(
+					std::string inNodeName, 
+					std::string inToReplaceWith
+					)
+	{
+	//get a list of nodes that flow into this one. We have to rewrite these
+	set<Nullable<std::string> > flowingIntoThis = 
+		mNodeMap.getNodeFlowMap().getKeys(null() << inNodeName);
+
+	for (auto it = flowingIntoThis.begin(), it_end = flowingIntoThis.end(); it != it_end; ++it)
+		if (!*it || **it != inNodeName)
+			mNodeMap.add(
+				*it, 
+				renameNodeInNode(mNodeMap.getNodeFor(*it), inNodeName, inToReplaceWith)
+				);
+
+	mNodeMap.drop(null() << inNodeName);
+	}
+
+void ControlFlowGraphOptimizer::removeJumpNode(std::string inName)
+	{
+	ControlFlowNode node = mNodeMap.getNodeFor(null() << inName);
+
+	ControlFlowContinuation continuation = node.body().getJump().continuation();
+
+	set<Nullable<std::string> > flowingIntoThis = 
+		mNodeMap.getNodeFlowMap().getKeys(null() << inName);
+
+	for (auto it = flowingIntoThis.begin(), it_end = flowingIntoThis.end(); it != it_end; ++it)
+		if (!*it || **it != inName)
+			{
+			ControlFlowNode curNode = mNodeMap.getNodeFor(*it);
+
+			ControlFlowNode newNode =
+				replaceContinuationInNode(
+					curNode, 
+					inName,
+					continuation
+					);
+
+			mNodeMap.add(
+				*it, 
+				newNode
+				);
+			}
+
+	mNodeMap.drop(null() << inName);
+	}
+
+	
+bool ControlFlowGraphOptimizer::nodeIsRemovable(const std::string& inNode) const
+	{
+	return mNodesToPreserve.find(inNode) == mNodesToPreserve.end();
+	}
+
+void ControlFlowGraphOptimizer::addNode(const std::string& inName, const ControlFlowNode& inNode)
+	{
+	mNodeMap.add(null() << inName, inNode);
+	}
+
+ImmutableTreeMap<std::string, ControlFlowNode>
+ControlFlowGraphOptimizer::extractResult(void) const
+	{
+	ImmutableTreeMap<std::string, ControlFlowNode> tr;
+	for (auto it = mNodeMap.getNodeMap().begin(), it_end = mNodeMap.getNodeMap().end(); 
+				it != it_end; ++it)
+		tr = tr + *it->first + it->second;
+	return tr;
+	}
+

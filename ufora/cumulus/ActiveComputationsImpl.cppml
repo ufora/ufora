@@ -1,0 +1,1314 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ActiveComputationsImpl.hppml"
+#include "../FORA/TypedFora/ABI/BigVectorLayouts.hppml"
+#include "../FORA/Core/ExecutionContextConfiguration.hppml"
+#include "../FORA/Serialization/SerializedObjectFlattener.hpp"
+#include "../core/Logging.hpp"
+#include "../core/PolymorphicSharedPtrBinder.hpp"
+#include "../core/threading/CallbackSchedulerFactory.hppml"
+#include "../networking/statsd.hpp"
+#include "../core/threading/Queue.hpp"
+#include "SystemwidePageRefcountTracker.hppml"
+#include "VectorLoadedResponse.hppml"
+#include "AddDropFinalState.hppml"
+#include "RecordingActiveComputationsKernelInterface.hppml"
+
+namespace Cumulus {
+
+ActiveComputationsImpl::ActiveComputationsImpl(
+				PolymorphicSharedPtr<CallbackSchedulerFactory> inCallbackSchedulerFactory,
+				PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+				PolymorphicSharedPtr<DataTransfers> inLargeMessageThrottler,
+				PolymorphicSharedPtr<VectorDataManager> inVDM,
+				uword_t inWorkerThreadCount,
+				Fora::Interpreter::ExecutionContextConfiguration inConfig,
+				MachineId inOwnMachineId,
+				PolymorphicSharedPtr<SystemwidePageRefcountTracker> inSystemwidePageRefcountTracker,
+				RandomHashGenerator& guidGen,
+				boost::function1<void, ActiveComputationsEvent> inEventHandler,
+				MachineId inLeaderMachine
+				) : 
+		mLeaderMachineId(inLeaderMachine),
+		mEventHandler(inEventHandler),
+		mCallbackScheduler(
+				inCallbackSchedulerFactory->createScheduler(
+					"ActiveComputations::MainThread",
+					1
+					)
+				),
+		mIsTornDown(false),
+		mSplittingScheduler(inCallbackSchedulerFactory->createScheduler(
+				"ActiveComputations::Splitter", 
+				inWorkerThreadCount
+				)
+			),
+		mVDM(inVDM),
+		mExternalInterface(
+			new RecordingActiveComputationsKernelInterface(
+				inCallbackScheduler,
+				guidGen,
+				inVDM,
+				inConfig,
+				inSystemwidePageRefcountTracker,
+				inLargeMessageThrottler,
+				inOwnMachineId,
+				boost::bind(
+					&ActiveComputationsImpl::scheduleDataTransferAsInitiateComputationMove,
+					this,
+					boost::arg<1>()
+					),
+				boost::bind(
+					&ActiveComputationsImpl::scheduleDataTransferAsSendComputationResult,
+					this,
+					boost::arg<1>()
+					),
+				boost::bind(
+					&ActiveComputationsImpl::scheduleHandleComputationBackgroundAction,
+					this,
+					boost::arg<1>(),
+					boost::arg<2>()
+					),
+				boost::bind(
+					&ActiveComputationsImpl::scheduleSerializationAndSendOfComputation,
+					this,
+					boost::arg<1>(),
+					boost::arg<2>(),
+					boost::arg<3>(),
+					boost::arg<4>()
+					),
+				inEventHandler
+				)
+			),
+		mKernel(
+			mExternalInterface,
+			inOwnMachineId,
+			inLeaderMachine
+			)
+	{
+	if (inEventHandler)
+		inEventHandler(
+			ActiveComputationsEvent::Initialized(inOwnMachineId, inLargeMessageThrottler ? true : false, inLeaderMachine)
+			);
+	}
+
+ActiveComputationsImpl::~ActiveComputationsImpl()
+	{
+	}
+
+void ActiveComputationsImpl::polymorphicSharedPtrBaseInitialized()
+	{
+	}
+
+void ActiveComputationsImpl::dumpStateToLog()
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	mKernel.dumpStateToLog();
+	}
+
+void ActiveComputationsImpl::scheduleSerializationAndSendOfComputation(
+		ComputationId inId,
+		MachineId inOtherMachine,
+		DataTransferTokenId token,
+		hash_type moveGuid
+		)
+	{
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+		
+		mMoveGuidsBeingHandledInBackground.insert(moveGuid);
+		}
+
+	mSplittingScheduler->scheduleImmediately(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&ActiveComputationsImpl::handleSerializationAndSendOfComputationInBackgroundThread
+				),
+			this->polymorphicSharedWeakPtrFromThis(),
+			inId,
+			inOtherMachine,
+			token,
+			moveGuid
+			),
+		"ActiveComputationsImpl::handleSerializationAndSendOfComputationInBackgroundThread"
+		);
+	}
+
+void ActiveComputationsImpl::handleSerializationAndSendOfComputationInBackgroundThread(
+		ComputationId inId,
+		MachineId inOtherMachine,
+		DataTransferTokenId token,
+		hash_type moveGuid
+		)
+	{
+	try {
+		ComputationStatePtr computationState;
+
+		Nullable<MachineId> parentMachine;
+
+			{
+			boost::recursive_mutex::scoped_lock lock(mMutex);
+
+			lassert(mKernel.mComputationsCurrentlyHandlingBackgroundActions.find(inId) ==
+										mKernel.mComputationsCurrentlyHandlingBackgroundActions.end());
+
+			auto it = mExternalInterface->mComputationStatesById.find(inId);
+			lassert(it != mExternalInterface->mComputationStatesById.end());
+
+			parentMachine = mKernel.computationParentMachine(inId);
+
+			computationState = it->second;
+			}
+	
+		computationState->pageLargeVectorHandles();
+
+		//disable vector paging because we are extracting the bigvec references its holding
+		//and we want to ensure that such bigvecs don't change between the current point in time
+		//and when we actually serialize the computation
+		computationState->disableVectorPaging();
+
+		ImmutableTreeSet<Fora::BigVectorId> bigvecs = computationState->getReferencedBigVectors();
+
+		mVDM->getPageRefcountTracker()->broadcastBigvecsInFlight(
+			bigvecs,
+			1,
+			moveGuid
+			);
+
+
+		PolymorphicSharedPtr<SerializedObject> serialized = computationState->serialize();
+
+		//enable vector paging again, because the message we plan to send to the remote machine
+		//(which includes the given bigvecs) is now complete.
+		computationState->enableVectorPaging();
+
+		if (mExternalInterface->mDataTransfers)
+			mExternalInterface->mDataTransfers->updateBytecount(
+				token, 
+				serialized->getSerializedData() ? 
+					serialized->getSerializedData()->totalByteCount() : 0
+				);
+
+		mExternalInterface->mOnCumulusComponentMessageCreated.broadcast(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::CrossActiveComputations(
+					CrossActiveComputationsMessage::MoveRequest(
+						ComputationMoveRequest(
+							inId, 
+							mExternalInterface->mOwnMachineId,
+							CumulusComponentType::ActiveComputations(),
+							inOtherMachine, 
+							bigvecs,
+							serialized,
+							token,
+							moveGuid,
+							parentMachine
+							)
+						)
+					),
+				CumulusComponentEndpointSet::SpecificWorker(inOtherMachine),
+				CumulusComponentType::ActiveComputations()
+				)
+			);
+
+			{
+			boost::recursive_mutex::scoped_lock lock(mMutex);
+
+			mMoveGuidsBeingHandledInBackground.erase(moveGuid);
+
+			mExternalInterface->notifyThreadsWaitingForSplits();
+			}
+		}
+	catch(std::logic_error& e)
+		{
+		LOG_ERROR << "Exception in handleSerializationAndSendOfComputationInBackgroundThread:\n"
+			<< e.what();
+		}
+	catch(...)
+		{
+		LOG_ERROR << "Unknown exception in handleSerializationAndSendOfComputationInBackgroundThread";
+		}
+	}
+
+void ActiveComputationsImpl::scheduleHandleComputationBackgroundAction(
+											ComputationId computation, 
+											ComputationBackgroundAction action
+											)
+	{
+	mSplittingScheduler->scheduleImmediately(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&ActiveComputationsImpl::handleComputationBackgroundActionInBackgroundThread
+				),
+			this->polymorphicSharedWeakPtrFromThis(),
+			computation,
+			action
+			),
+		"ActiveComputationsImpl::handleComputationBackgroundActionInBackgroundThread"
+		);
+	}
+
+void ActiveComputationsImpl::enableVectorPaging()
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mEventHandler)
+		mEventHandler(
+			ActiveComputationsEvent::EnableAllVectorPaging()
+			);
+
+	mKernel.enableVectorPaging();
+	}
+
+void ActiveComputationsImpl::disableVectorPaging()
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mEventHandler)
+		mEventHandler(
+			ActiveComputationsEvent::DisableAllVectorPaging()
+			);
+
+	mKernel.disableVectorPaging();
+	}
+
+bool ActiveComputationsImpl::isTornDown() const
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return mIsTornDown;
+	}
+
+void ActiveComputationsImpl::teardownButDontBlock()
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mEventHandler)
+		mEventHandler(
+			ActiveComputationsEvent::Teardown()
+			);
+
+	mIsTornDown = true;
+	}
+
+void ActiveComputationsImpl::teardown()
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mEventHandler)
+		mEventHandler(
+			ActiveComputationsEvent::Teardown()
+			);
+
+	mIsTornDown = true;
+
+	double t0 = curClock();
+
+	//wait until we've collected all splits
+	while ( (mKernel.mComputationsCurrentlyHandlingBackgroundActions.size() - mComputationsWaitingOnCheckpoint.size()) || 
+				mMoveGuidsBeingHandledInBackground.size())
+		{
+		mExternalInterface->waitForComputationToHandleSchedulerMessages(lock);
+
+		if (curClock() - t0 > 60.0)
+			{
+			LOG_CRITICAL << "Failed to shut-down active computations in 60 seconds. Aborting.";
+			abort();
+			}
+		}
+
+	for (auto compAndPtr: mExternalInterface->mComputationStatesById)
+		compAndPtr.second->resetStateForAddDrop();
+	}
+
+void ActiveComputationsImpl::extractStates(
+			std::map<ComputationId, PolymorphicSharedPtr<ComputationState> > &outStates
+			)
+	{
+	lassert(mIsTornDown);
+
+	outStates = mExternalInterface->mComputationStatesById;
+	}
+
+void ActiveComputationsImpl::initializeFromAddDropState(
+			const std::map<ComputationId, PolymorphicSharedPtr<ComputationState> > &inStates,
+			const Cumulus::AddDropFinalState& state
+			)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	for (auto idAndState: inStates)
+		for (auto bv: idAndState.second->getReferencedBigVectors())
+			lassert(state.bigvecLayouts().contains(bv));
+
+	//first, add local states
+	lassert(mExternalInterface->mComputationStatesById.size() == 0);
+
+	mExternalInterface->mComputationStatesById = inStates;
+
+	for (auto idAndState: inStates)
+		{
+		mExternalInterface->mComputationIds.insert(idAndState.first);
+		lassert_dump(
+			state.computationLocations().contains(idAndState.first), 
+			prettyPrintString(idAndState.first)
+			);
+		lassert_dump(
+			*state.computationLocations()[idAndState.first] == mKernel.mOwnMachineId, 
+			prettyPrintString(idAndState.first)
+			);
+		}
+	
+	for (auto idAndState: inStates)
+		mKernel.mDependencyGraph.markComputationLocal(idAndState.first);
+
+	//wire the computation parent machine for any computations with remote parents
+	for (auto computation: mExternalInterface->mComputationIds)
+		{
+		if (computation.isSplit())
+			{
+			lassert(state.splitComputationParents().contains(computation));
+
+			ComputationId parentComputation = *state.splitComputationParents()[computation];
+			MachineId parentMachine = *state.computationLocations()[parentComputation];
+
+			if (parentMachine != mKernel.mOwnMachineId)
+				{
+				if (mEventHandler)
+					mEventHandler(
+						ActiveComputationsEvent::InitializeComputationParentMachine(
+							computation,
+							parentMachine
+							)
+						);
+
+				mKernel.setComputationParentMachine(computation, parentMachine);
+				}
+			}
+		}
+	
+	for (long pass = 0; pass < 2; pass++)
+		for (auto idAndState: inStates)
+			{
+			auto status = idAndState.second->currentComputationStatus();
+
+			bool isFinished = status.isFinished();
+
+			if (pass == 1 && isFinished || pass == 0 && !isFinished)
+				{
+				if (mEventHandler)
+					mEventHandler(
+						ActiveComputationsEvent::InitializeComputation(
+							idAndState.first,
+							idAndState.second->currentComputationStatus(),
+							idAndState.second->currentComputationStatistics()
+							)
+						);
+
+
+				mKernel.handleComputationStatusChange(idAndState.first);
+				}
+			}
+	//loop over all computations and add them to the system. First, add unfinished computations.
+	//then add finished ones
+
+	for (auto compAndStatus: state.rootComputationStatuses())
+		{
+		MachineId machine = *state.computationLocations()[compAndStatus.first];
+
+		ComputationId computation = compAndStatus.first;
+		ComputationStatusOnMachine status = compAndStatus.second;
+
+		if (machine != mKernel.mOwnMachineId && computation.isRoot())
+			handleCumulusComponentMessage(
+				CumulusComponentMessage::ComputationStatusOnMachine(
+					ComputationStatusOnMachineChanged(
+						machine,
+						computation,
+						status
+						)
+					),
+				CumulusClientOrMachine::Machine(machine),
+				CumulusComponentType::ActiveComputations()
+				);
+		}
+
+	state.recreateClientComputationPriorities(
+		[&](ClientComputationPriorityChange change) {
+			handleCumulusComponentMessage(
+				CumulusComponentMessage::CumulusClientToActiveComputations(
+					CumulusClientToActiveComputationsMessage::ClientComputationPriority(change)
+					),
+				CumulusClientOrMachine::Machine(mKernel.mOwnMachineId),
+				CumulusComponentType::ActiveComputations()
+				);
+			}
+		);
+	
+	state.recreateRootToRootDependencies(
+		[&](RootToRootDependencyCreated dep) {
+			handleCumulusComponentMessage(
+				CumulusComponentMessage::CrossActiveComputations(
+					CrossActiveComputationsMessage::RootToRootDependency(dep)
+					),
+				CumulusClientOrMachine::Machine(mKernel.mOwnMachineId),
+				CumulusComponentType::ActiveComputations()
+				);
+			}
+		);
+
+	std::set<ComputationId> toResubmit;
+
+	for (auto compId: mExternalInterface->mComputationIds)
+		{
+		bool missing = false;
+
+		for (auto dep: mKernel.mDependencyGraph.getDependencies().getValues(compId))
+			if (!state.computationLocations().contains(dep))
+				missing = true;
+
+		if (missing)
+			toResubmit.insert(compId);
+		}
+
+	for (auto comp: toResubmit)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::InResubmitBlockingThreads(comp)
+				);
+
+		mKernel.resubmitThreadsForComputation(comp);
+		}
+
+	if (mEventHandler)
+		mEventHandler(
+			ActiveComputationsEvent::InBroadcastFinishedMessagesForAllFinishedTemporaryComputations()
+			);
+	mKernel.broadcastFinishedMessagesForAllFinishedTemporaryComputations();
+	}
+	
+MachineId ActiveComputationsImpl::getMachineId() const
+	{
+	return mKernel.mOwnMachineId;
+	}
+	
+void ActiveComputationsImpl::addMachine(MachineId machine)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mEventHandler)
+		mEventHandler(
+			ActiveComputationsEvent::AddMachine(machine)
+			);
+
+	mKernel.addMachine(machine);
+	}
+
+void ActiveComputationsImpl::sendCurrentStateToClient(CumulusClientId client)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mIsTornDown)
+		return;
+
+	for (auto& compAndDeps: mKernel.mDependencyGraph.getRootToRootDependencies().getKeysToValues())
+		for (auto dep: compAndDeps.second)
+			mExternalInterface->mOnCumulusComponentMessageCreated.broadcast(
+				CumulusComponentMessageCreated(
+					CumulusComponentMessage::CrossActiveComputations(
+						CrossActiveComputationsMessage::RootToRootDependency(
+							RootToRootDependencyCreated(
+								compAndDeps.first,
+								dep
+								)
+							)
+						),
+					CumulusComponentEndpointSet::SpecificClient(client),
+					CumulusComponentType::CumulusClient()
+					)
+				);
+
+	for (auto idAndState: mExternalInterface->mComputationStatesById)
+		if (idAndState.first.isRoot())
+			{
+			mExternalInterface->mOnCumulusComponentMessageCreated.broadcast(
+				CumulusComponentMessageCreated(
+					CumulusComponentMessage::ComputationStatusOnMachine(
+						ComputationStatusOnMachineChanged(
+							mKernel.mOwnMachineId,
+							idAndState.first,
+							mKernel.mLocalComputationStatuses.computationStatus(idAndState.first)
+							)
+						),
+					CumulusComponentEndpointSet::SpecificClient(client),
+					CumulusComponentType::CumulusClient()
+					)
+				);
+			}
+
+	for (auto idAndMostRecent: mKernel.mMostRecentlyBroadcastCheckpointStatuses)
+		{
+		CheckpointStatusUpdateMessage msg = idAndMostRecent.second;
+		
+		mExternalInterface->mOnCumulusComponentMessageCreated.broadcast(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::ActiveComputationsToCumulusClient(
+					ActiveComputationsToCumulusClientMessage::CheckpointStatusUpdate(msg)
+					),
+				CumulusComponentEndpointSet::SpecificClient(client),
+				CumulusComponentType::CumulusClient()
+				)
+			);
+		}
+	}
+
+void ActiveComputationsImpl::addCumulusClient(CumulusClientId inId)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mEventHandler)
+		mEventHandler(
+			ActiveComputationsEvent::AddClient(inId)
+			);
+	}
+
+void ActiveComputationsImpl::dropCumulusClient(CumulusClientId inId)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mEventHandler)
+		mEventHandler(
+			ActiveComputationsEvent::DropClient(inId)
+			);
+
+	mKernel.dropCumulusClient(inId);
+	}
+
+void ActiveComputationsImpl::handleComputationResultFromMachine(
+				const ComputationResultFromMachine& inResult
+				)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mIsTornDown)
+		return;
+
+	if (mEventHandler)
+		mEventHandler(
+			ActiveComputationsEvent::InComputationResultFromMachine(inResult)
+			);
+
+	mKernel.handleComputationResultFromMachine(inResult);
+	}
+
+void ActiveComputationsImpl::handleRequestComputationResultFromMachine(
+									RequestComputationResultFromMachine inRequest
+									)
+	{
+	if (mExternalInterface->hasDataTransfers())
+		{
+		mExternalInterface->scheduleDataTransferAsSendComputationResult(inRequest);
+		}
+	else
+		handleRequestComputationResultFromMachineWithToken(
+			inRequest,
+			mExternalInterface->mDataTransfers,
+			DataTransferTokenId()
+			);
+	}
+
+void ActiveComputationsImpl::scheduleDataTransferAsSendComputationResult(
+									RequestComputationResultFromMachine inRequest
+									)
+	{
+	lassert(mExternalInterface->hasDataTransfers());
+
+	mExternalInterface->mDataTransfers->scheduleLargeMessage(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&ActiveComputationsImpl::handleRequestComputationResultFromMachineWithToken
+				),
+			polymorphicSharedWeakPtrFromThis(),
+			inRequest,
+			boost::arg<1>(),
+			boost::arg<2>()
+			),
+		boost::function0<void>([](){}),
+		inRequest.source(),
+		101 * 1024 * 1024,
+		1
+		);
+	}
+
+void ActiveComputationsImpl::handleRequestComputationResultFromMachineWithToken(
+									RequestComputationResultFromMachine inRequest,
+									PolymorphicSharedPtr<DataTransfers> throttler,
+									DataTransferTokenId inToken
+									)
+	{	
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mIsTornDown)
+		return;
+
+	if (mEventHandler)
+		mEventHandler(
+			ActiveComputationsEvent::InRequestComputationResultFromMachine(inRequest, inToken)
+			);
+
+	mKernel.handleRequestComputationResultFromMachineWithToken(inRequest, inToken);
+	}
+
+void ActiveComputationsImpl::handleComputationBackgroundActionInBackgroundThread(
+										const ComputationId& computation, 
+										ComputationBackgroundAction action
+										)
+	{
+	ComputationStatePtr computationState;
+
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		lassert(mKernel.mComputationsCurrentlyHandlingBackgroundActions.find(computation) != 
+												mKernel.mComputationsCurrentlyHandlingBackgroundActions.end());
+
+		auto it = mExternalInterface->mComputationStatesById.find(computation);
+		lassert(it != mExternalInterface->mComputationStatesById.end());
+
+		computationState = it->second;
+		}
+	
+	@match ComputationBackgroundAction(action)
+		-| WriteToCheckpoint(checkpointStatus, request) ->> {
+			boost::recursive_mutex::scoped_lock lock(mMutex);
+
+			if (request.writeToStorage())
+				{
+				if (mExternalInterface->mDataTransfers && false)
+					mExternalInterface->mDataTransfers->scheduleLargeMessage(
+						boost::bind(
+							PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+								&ActiveComputationsImpl::serializeAndCheckpointComputation
+								),
+							polymorphicSharedWeakPtrFromThis(),
+							computation,
+							checkpointStatus,
+							request,
+							boost::arg<1>(),
+							boost::arg<2>()
+							),
+						boost::function0<void>([](){}),
+						CumulusClientOrMachine::Machine(mKernel.mOwnMachineId),
+						102 * 1024 * 1024,
+						1
+						);
+				else
+					serializeAndCheckpointComputation(
+						computation, 
+						checkpointStatus, 
+						request, 
+						mExternalInterface->mDataTransfers,
+						DataTransferTokenId()
+						);
+				}
+			else
+				{
+				if (mEventHandler)
+					{
+					mEventHandler(
+						ActiveComputationsEvent::WriteToCheckpointCompleted(
+							computation,
+							checkpointStatus,
+							request
+							)
+						);
+					}
+					
+				mKernel.handleWriteCheckpointCompleted(computation, checkpointStatus, request);			
+				}
+			}
+		-| HandleSchedulerMessage(message) ->> {
+			MachineId schedulerMachine = message.schedulerMachine();
+			hash_type guid = message.guid();
+
+			@match SchedulerToComputationMessage(message)
+				-| Split() ->> {
+					CreatedComputations computationsCreated = 
+						computationState->tryToSplit(mExternalInterface->generateGuidWithoutRecording());
+
+					computationState->markSplitAttempt();
+
+					map<ComputationId, ComputationStatePtr> computationStatesCreated;
+
+					for (auto compAndDef: computationsCreated.computations())
+						{
+						computationStatesCreated[compAndDef.first] = ComputationStatePtr(
+							new ComputationState(
+								compAndDef.first,
+								mVDM,
+								Fora::Interpreter::ExecutionContextConfiguration::defaultConfig(),
+								mCallbackScheduler
+								)
+							);
+						computationStatesCreated[compAndDef.first]->initialize(compAndDef.second);
+						}
+
+					bool didSplit = computationsCreated.computations().size() > 0;
+
+						{
+						boost::recursive_mutex::scoped_lock lock(mMutex);
+
+						if (mEventHandler)
+							{
+							std::map<ComputationId, hash_type> computationsCreatedByHash;
+
+							for (auto compAndDef: computationsCreated.computations())
+								computationsCreatedByHash[compAndDef.first] = compAndDef.second.hash();
+
+							mEventHandler(
+								ActiveComputationsEvent::SplitCompleted(
+									computation, 
+									didSplit, 
+									guid, 
+									schedulerMachine, 
+									computationsCreatedByHash
+									)
+								);
+							}
+
+						mKernel.splitCompleted(computation, didSplit, guid, schedulerMachine, computationStatesCreated);
+						}
+					}
+				-| SearchForCliques(maxTimeToSpend) ->> {
+					ImmutableTreeVector<ImmutableTreeSet<Fora::PageId> > newCliques;
+
+					try {
+						newCliques = computationState->continueToSearchForCliques(maxTimeToSpend);
+						}
+					catch(std::logic_error& e)
+						{
+						LOG_ERROR << "Exception in continueToSearchForCliques:\n"
+							<< e.what();
+						}
+					catch(...)
+						{
+						LOG_ERROR << "Unknown exception in continueToSearchForCliques";
+						}
+					
+					boost::recursive_mutex::scoped_lock lock(mMutex);
+
+					if (mEventHandler)
+						{
+						mEventHandler(
+							ActiveComputationsEvent::BackgroundSearchForCliquesCompleted(
+								computation,
+								guid,
+								schedulerMachine,
+								newCliques
+								)
+							);
+						}
+
+					mKernel.searchForCliquesCompleted(computation, guid, schedulerMachine, newCliques);
+					}
+				-| ResetPageDataAndBroadcast() ->> {
+					computationState->unloadAllVectorHandles();
+
+					boost::recursive_mutex::scoped_lock lock(mMutex);
+
+					if (mEventHandler)
+						{
+						mEventHandler(
+							ActiveComputationsEvent::BackgroundResetPageDataAndBroadcastCompleted(
+								computation,
+								guid,
+								schedulerMachine
+								)
+							);
+						}
+
+					mKernel.resetPageDataAndBroadcastCompleted(computation, guid, schedulerMachine);
+					}
+			}
+	}
+
+void ActiveComputationsImpl::serializeAndCheckpointComputation(
+									ComputationId computation,
+									CheckpointStatus status,
+									CheckpointRequest request,
+									PolymorphicSharedPtr<DataTransfers> transfers,
+									DataTransferTokenId token
+									)
+	{
+	LOG_INFO << "Checkpointing " << computation
+		<< ". Total of " << mCheckpointIoTaskTokens.size() << " outstanding.";
+
+
+	PolymorphicSharedPtr<ComputationState> computationState;
+
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		auto it = mExternalInterface->mComputationStatesById.find(computation);
+		lassert(it != mExternalInterface->mComputationStatesById.end());
+
+		computationState = it->second;
+		}
+
+	computationState->pageLargeVectorHandles();
+
+	//disable vector paging because we are extracting the bigvec references its holding
+	//and we want to ensure that such bigvecs don't change between the current point in time
+	//and when we actually serialize the computation
+	computationState->disableVectorPaging();
+
+	ImmutableTreeSet<Fora::BigVectorId> bigvecs = computationState->getReferencedBigVectors();
+
+	ImmutableTreeSet<ComputationId> children;
+
+	@match ComputationStatus(computationState->currentComputationStatus())
+		-| BlockedOnComputations(c) ->> {
+			children = c;
+			}
+		-| _ ->> {}
+
+	PolymorphicSharedPtr<SerializedObject> serialized = computationState->serialize();
+
+	if (transfers)
+		transfers->updateBytecount(
+			token, 
+			serialized->getSerializedData() ? 
+				serialized->getSerializedData()->totalByteCount() : 0
+			);
+
+	hash_type taskGuid = mVDM->newVectorHash();
+
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		mCheckpointIoTasks[taskGuid] = make_pair(computation, make_pair(status, request));
+
+		lassert(computationState->getCheckpointStatus() && 
+				computationState->getCheckpointStatus()->second == request);
+
+		if (!token.isEmpty())
+			mCheckpointIoTaskTokens[taskGuid] = token;
+
+		mCheckpointIoTaskTimestamps[taskGuid] = curClock();
+
+		lassert(mComputationsWaitingOnCheckpoint.find(computation) ==  
+				mComputationsWaitingOnCheckpoint.end());
+		mComputationsWaitingOnCheckpoint.insert(computation);
+		}
+
+	mExternalInterface->mOnCumulusComponentMessageCreated.broadcast(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::ExternalIoTask(
+				ExternalIoTaskMessage::Create(
+					ExternalIoTaskCreated(
+						ExternalIoTaskId(taskGuid),
+						ExternalIoTask::Checkpoint(
+							CheckpointIoTask::PersistComputation(
+								computation,
+								children,
+								bigvecs,
+								request,
+								serialized,
+								computationState->currentComputationStatistics()
+									.totalBytesInMemoryFromOS(),
+								computationState->currentComputationStatistics().timeSpentInInterpreter() + 
+										computationState->currentComputationStatistics().timeSpentInCompiler(),
+								computationState->currentComputationStatus().isFinished()
+								)
+							)
+						)
+					)
+				),
+			CumulusComponentEndpointSet::SpecificWorker(mKernel.mOwnMachineId),
+			CumulusComponentType::ExternalIoTasks()
+			)
+		);
+	}
+
+pair<ComputationStatePtr, hash_type>  ActiveComputationsImpl::startComputation(const ComputationId& computation)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mIsTornDown)
+		return pair<ComputationStatePtr, hash_type>();
+
+	//wait until its not currently splitting
+	while (mKernel.isCurrentlyHandlingActionInBackgroundThread(computation))
+		{
+		boost::shared_ptr<Queue<bool> > isDone(new Queue<bool>());
+
+		mKernel.scheduleComputationPendingAction(
+			computation,
+			ComputationPendingAction::Trigger(isDone)
+			);
+
+		lock.unlock();
+
+		bool val = false;
+
+		double t0 = curClock();
+		double lastLogT0 = t0;
+
+		while (!isDone->getTimeout(val, 0.01))
+			{
+			lock.lock();
+			if (mIsTornDown)
+				return pair<ComputationStatePtr, hash_type>();
+			
+			if (curClock() - t0 > 5.0 && curClock() - lastLogT0 > 1.0)
+				{
+				LOG_WARN << "Still asleep after " << curClock() - t0 << ". " << (
+					mComputationsWaitingOnCheckpoint.find(computation)
+						!= mComputationsWaitingOnCheckpoint.end() ? "waiting on checkpoint.":""
+					);
+				lastLogT0 = curClock();
+				}
+			lock.unlock();
+			}
+
+		lock.lock();
+		}
+
+	hash_type guid = mExternalInterface->generateGuidWithoutRecording();
+
+	if (mEventHandler)
+		mEventHandler(
+			ActiveComputationsEvent::StartComputing(computation)
+			);
+
+	bool result = mKernel.startComputation(computation);
+
+	if (!result)
+		return make_pair(ComputationStatePtr(), hash_type());
+
+	return make_pair(mExternalInterface->mComputationStatesById[computation], guid);
+	}
+
+void ActiveComputationsImpl::stopComputation(ComputationId computation, CreatedComputations result)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mIsTornDown)
+		return;
+
+	if (mEventHandler)
+		mEventHandler(
+			ActiveComputationsEvent::StopComputing(computation, result)
+			);
+
+	mKernel.stopComputation(computation, result);
+	}
+
+void ActiveComputationsImpl::handleExternalIoTaskCompleted(ExternalIoTaskCompleted completed)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mIsTornDown)
+		return;
+
+	hash_type ioTaskGuid = completed.taskId().guid();
+
+	auto it = mCheckpointIoTasks.find(ioTaskGuid);
+
+	if (it == mCheckpointIoTasks.end())
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::InExternalIoTaskCompleted(completed)
+				);
+
+		mKernel.handleExternalIoTaskCompleted(completed);
+		}
+	else
+		{
+		bool success = completed.result().isSuccess();
+
+		LOG_INFO << "Checkpoint on " << mKernel.mOwnMachineId << " took " 
+			<< curClock() - mCheckpointIoTaskTimestamps[ioTaskGuid] << " seconds. " 
+			<< mComputationsWaitingOnCheckpoint.size() - 1 << " remaining."
+			;
+
+		mCheckpointIoTaskTimestamps.erase(ioTaskGuid);
+		
+		CheckpointStatus status = it->second.second.first;
+		CheckpointRequest req = it->second.second.second;
+		ComputationId id = it->second.first;
+
+		//resume vector paging
+		mExternalInterface->mComputationStatesById[id]->enableVectorPaging();
+
+		auto tokenIt = mCheckpointIoTaskTokens.find(ioTaskGuid);
+		if (tokenIt != mCheckpointIoTaskTokens.end())
+			{
+			mExternalInterface->mDataTransfers->tokenReceived(tokenIt->second);
+			mCheckpointIoTaskTokens.erase(tokenIt);
+			}
+
+		mCheckpointIoTasks.erase(it);
+
+		if (mEventHandler)
+			{
+			mEventHandler(
+				ActiveComputationsEvent::WriteToCheckpointCompleted(
+					id,
+					status,
+					req
+					)
+				);
+			}
+			
+		mComputationsWaitingOnCheckpoint.erase(id);
+
+		mKernel.handleWriteCheckpointCompleted(id, status, req);
+		}
+	}
+
+void ActiveComputationsImpl::handleLocalPageRefcountEvent(const Fora::PageRefcountEvent& event)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mIsTornDown)
+		return;
+
+	if (mEventHandler)
+		mEventHandler(
+			ActiveComputationsEvent::InLocalPageRefcountEvent(event)
+			);
+
+	mKernel.handleLocalPageRefcountEvent(event);
+	}
+
+void ActiveComputationsImpl::handleComputationMoveRequest(ComputationMoveRequest inRequest)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mIsTornDown)
+		{
+		mKernel.sendComputationMoveResponse(
+			ComputationMoveResponse(
+				inRequest.computation(),
+				inRequest.sourceMachine(),
+				inRequest.sourceComponent(),
+				inRequest.targetMachine(),
+				inRequest.referencedBigvecs(),
+				false,
+				inRequest.moveGuid()
+				)
+			);
+		
+		return;
+		}
+
+	lassert(mMoveGuidsBeingHandledInBackground.find(inRequest.moveGuid())
+				== mMoveGuidsBeingHandledInBackground.end());
+
+	mMoveGuidsBeingHandledInBackground.insert(inRequest.moveGuid());
+
+	mSplittingScheduler->scheduleImmediately(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&ActiveComputationsImpl::handleComputationMoveRequestInBackgroundThread
+				),
+			this->polymorphicSharedWeakPtrFromThis(),
+			inRequest
+			),
+		"ActiveComputationsImpl::handleComputationMoveRequestInBackgroundThread"
+		);
+	}
+
+void ActiveComputationsImpl::handleComputationMoveRequestInBackgroundThread(ComputationMoveRequest inRequest)
+	{
+	ComputationStatePtr computationState = ComputationStatePtr(
+		new ComputationState(
+			inRequest.computation(),
+			mVDM,
+			Fora::Interpreter::ExecutionContextConfiguration::defaultConfig(),
+			mCallbackScheduler
+			)
+		);
+
+	try {
+		computationState->deserialize(inRequest.serializedComputation());
+		}
+	catch(...)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		LOG_ERROR << "For some reason, we are throwing an exception during deserialization of "
+			<< inRequest.computation() << " with moveguid of " << inRequest.moveGuid()
+			;
+
+		mMoveGuidsBeingHandledInBackground.erase(inRequest.moveGuid());
+
+		mExternalInterface->notifyThreadsWaitingForSplits();
+		
+		throw;
+		}
+
+	//if we're loading a computation from persistent store, we need to 
+	//reset its running state.
+	if (inRequest.sourceComponent().isLiveCheckpointLoader())
+		computationState->resetStateForAddDrop();
+
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+	
+	if (mEventHandler)
+		mEventHandler(
+			ActiveComputationsEvent::InComputationMoveRequest(inRequest)
+			);
+
+	mKernel.handleComputationMoveRequest(inRequest, computationState);
+
+	mMoveGuidsBeingHandledInBackground.erase(inRequest.moveGuid());
+
+	mExternalInterface->notifyThreadsWaitingForSplits();
+	}
+
+void ActiveComputationsImpl::handleInitiateComputationMoveWithToken(
+										InitiateComputationMove move,
+										PolymorphicSharedPtr<DataTransfers> throttler,
+										DataTransferTokenId inToken
+										)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+		
+	if (mEventHandler)
+		mEventHandler(
+			ActiveComputationsEvent::InInitiateComputationMoveWithToken(move, inToken)
+			);
+
+	mKernel.moveComputationToMachine(
+			move.computation(), 
+			move.targetMachine(), 
+			inToken
+			);
+	}
+
+void ActiveComputationsImpl::handleInitiateComputationMove(InitiateComputationMove move)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mEventHandler)
+		mEventHandler(
+			ActiveComputationsEvent::InInitiateComputationMove(move)
+			);
+
+	mKernel.handleInitiateComputationMove(move);
+	}
+
+void ActiveComputationsImpl::scheduleDataTransferAsInitiateComputationMove(InitiateComputationMove move)
+	{
+	mExternalInterface->mDataTransfers->scheduleLargeMessage(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&ActiveComputationsImpl::handleInitiateComputationMoveWithToken
+				),
+			polymorphicSharedWeakPtrFromThis(),
+			move,
+			boost::arg<1>(),
+			boost::arg<2>()
+			),
+		boost::function0<void>([](){}),
+		CumulusClientOrMachine::Machine(move.targetMachine()),
+		102 * 1024 * 1024,
+		1
+		);
+	}
+
+void ActiveComputationsImpl::setCheckInternalStateAfterAllOperations(bool inCheck)
+	{
+	mKernel.mCheckInternalStateAfterAllOperations = inCheck;
+	}
+
+void ActiveComputationsImpl::sendAddDropState(boost::function1<void, Cumulus::CumulusWorkerAddDropEvent> eventConsumer)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	lassert(mIsTornDown);
+
+	for (auto idAndState: mExternalInterface->mComputationStatesById)
+		{
+		ImmutableTreeSet<hash_type> bigvecGuids;
+
+		for (auto bigvecId: idAndState.second->getReferencedBigVectors())
+			bigvecGuids = bigvecGuids + bigvecId.guid();
+
+		eventConsumer(
+			Cumulus::CumulusWorkerAddDropEvent::Computation(
+				idAndState.first,
+				mKernel.mOwnMachineId,
+				ComputationStatusOnMachine::Active(
+					idAndState.second->currentComputationStatus(),
+					idAndState.second->currentComputationStatistics()
+					),
+				bigvecGuids,
+				idAndState.second->canResubmitBlockingThreads()
+				)
+			);
+		}
+
+	for (auto prioritySourceAndPriority: mKernel.mDependencyGraph.getClientPriorities())
+		eventConsumer(
+			Cumulus::CumulusWorkerAddDropEvent::ClientComputationPriority(
+				prioritySourceAndPriority.first.first,
+				prioritySourceAndPriority.first.second,
+				prioritySourceAndPriority.second
+				)
+			);
+	}
+
+void ActiveComputationsImpl::handleCumulusComponentMessage(
+			const CumulusComponentMessage& message, 
+			const CumulusClientOrMachine& source, 
+			const CumulusComponentType& componentType
+			)
+	{
+	@match CumulusComponentMessage(message)
+		-| CrossActiveComputations(MoveRequest(req)) ->> {
+			//this is a special case, because we have to deserialize it on another thread
+			handleComputationMoveRequest(req);
+			return;
+			}
+		-| ExternalIoTask(Complete(completed)) ->> {
+			handleExternalIoTaskCompleted(completed);
+			return;
+			}
+		-| _ ->> {}
+		;
+
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	double curTime = curClock();
+
+	if (mEventHandler)
+		mEventHandler(
+			ActiveComputationsEvent::InCumulusComponentMessage(message, source, componentType, curTime)
+			);
+
+	mKernel.handleCumulusComponentMessage(message, source, componentType, curTime);
+	}
+
+
+};
+
+

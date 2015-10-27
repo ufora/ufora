@@ -1,0 +1,144 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../Core/ShareableMemoryBlocks.hppml"
+#include "../Core/MemoryPool.hpp"
+#include "../../core/InstanceCounter.hpp"
+#include "../../core/PolymorphicSharedPtr.hpp"
+#include "MappableMemoryPool.hppml"
+#include <boost/unordered_set.hpp>
+#include <boost/enable_shared_from_this.hpp>
+#include "AddOnlyMemoryHeap.hppml"
+
+class VectorDataMemoryManager;
+
+class ImplValContainer;
+
+namespace TypedFora {
+namespace Abi {
+
+class ForaValueArray;
+
+}
+}
+
+namespace Fora {
+
+class BigVectorId;
+
+class Pagelet : 
+		public MappableMemoryPool,
+		public InstanceCounter<Pagelet> {
+public:
+	Pagelet(
+		PolymorphicSharedPtr<VectorDataMemoryManager> inMemoryManager,
+		size_t inInitialGuess = 0
+		);
+
+	~Pagelet();
+
+	std::string stringRepresentation();
+	
+	bool isFrozen() const;
+
+	void freeze();
+
+	//only valid if we're frozen
+	const std::map<boost::shared_ptr<Pagelet>, long>& getHeldPagelets() const;
+
+	bool permitAllocation(size_t inBytes);
+
+	size_t totalBytesAllocatedFromOSExcludingPagelets() const;
+
+	size_t totalBytesAllocatedFromOS() const;
+
+	size_t totalBytesAllocatedIncludingHeldPagelets() const;
+
+	size_t totalBytesAllocatedFromOSIncludingHeldPagelets() const;
+
+	size_t totalBytesFromOSHeldInPagelets() const;
+
+	size_t totalBytesAllocated() const;
+
+	uint8_t* allocate(size_t inBytes);
+
+	void free(uint8_t* inBytes);
+	
+	uint8_t* realloc(uint8_t* inBytes, uword_t inNewBytes);
+
+	Fora::ShareableMemoryBlockHandle convertPointerToShareableMemoryBlock(uint8_t* inBytes, int64_t bytes);
+
+	uint8_t* importShareableMemoryBlock(const Fora::ShareableMemoryBlockHandle& inHandle);
+
+	TypedFora::Abi::ForaValueArray* getValues();
+
+	void append(const ImplValContainer& ivc);
+
+	void append(TypedFora::Abi::ForaValueArray* array, long lowIndex, long highIndex, bool deepcopyAwayHeldPagelets = false);
+
+	void pageletIsHeld(boost::shared_ptr<Fora::Pagelet> inPagelet);
+
+	void pageletIsNoLongerHeld(boost::shared_ptr<Fora::Pagelet> inPagelet);
+
+	void vectorPageMapped(
+						boost::shared_ptr<VectorPage> mappedPage,
+						boost::shared_ptr<Ufora::threading::Trigger> mappedPageWantsUnmapped
+						);
+
+	bool isVectorPageMapped(boost::shared_ptr<VectorPage> mappedPage);
+
+	const std::set<Fora::BigVectorId>& getReferencedBigVectorIds();
+
+	PolymorphicSharedPtr<VectorDataMemoryManager> getVDMM() const
+		{
+		return mMemoryManager;
+		}
+
+private:
+	bool tryToAcquireMapTo_();
+
+	void hasBecomeUnmapped_();
+
+	PolymorphicSharedPtr<VectorDataMemoryManager> mMemoryManager;
+
+	AddOnlyMemoryHeap mHeap;
+
+	Fora::ShareableMemoryBlocks mShareableMemoryBlocks;
+
+	bool mIsFrozen;
+
+	bool mIsTearingDown;
+
+	TypedFora::Abi::ForaValueArray* mValues;
+
+	std::map<boost::shared_ptr<Pagelet>, long> mHeldPagelets;
+
+	MapWithIndex<
+		boost::shared_ptr<Ufora::threading::Trigger>,
+		boost::shared_ptr<VectorPage>
+		> mMappedPages;
+
+	boost::mutex mMutex;
+
+	std::set<Fora::BigVectorId> mReferencedBigvecs;
+
+	int64_t mBytesInHeldPagelets;
+
+	int64_t mBytesFromOSInHeldPagelets;
+};
+
+}

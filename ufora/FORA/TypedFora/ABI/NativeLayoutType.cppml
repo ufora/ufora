@@ -1,0 +1,425 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "NativeLayoutType.hppml"
+#include "../../Axioms/StringAxioms.hppml"
+#include "../../../core/AtomicOps.hpp"
+#include "../../TypedFora/ABI/VectorHandle.hpp"
+#include "../../Core/Type.hppml"
+#include "../../Core/ImplValContainerUtilities.hppml"
+#include "../../Vector/MutableVectorRecord.hppml"
+#include "../../Judgment/JudgmentOnValue.hppml"
+#include "../../Judgment/JudgmentOnAction.hppml"
+#include "VectorRecord.hpp"
+#include "VectorRecordCodegen.hppml"
+#include "MutableVectorHandleCodegen.hpp"
+#include "ArbitraryNativeConstantForCSTValue.hpp"
+#include "../../Core/CSTValue.hppml"
+#include "../../Native/NativeCode.hppml"
+#include "../../Native/NativeExpressionBuilder.hppml"
+#include "../JitCompiler/Compiler.hppml"
+#include "../../Primitives/String.hppml"
+#include "../../Primitives/DateTime.hppml"
+#include "../../Primitives/TimeDuration.hppml"
+#include "../../../core/Logging.hpp"
+#include "../../../core/SymbolExport.hpp"
+#include "../TypedFora.hppml"
+#include "DestructorsAndConstructors.hppml"
+#include "TestTypedForaValueCoveredByJov.hppml"
+#include "UnionUtil.hppml"
+
+NativeType NativeTypeForImpl<Fora::BigVectorId>::get()
+	{
+	return NativeType::Array(NativeType::Integer(8,false), sizeof(Fora::BigVectorId));
+	}
+
+NativeType NativeTypeForImpl<TypedFora::Abi::BigVectorLayouts>::get()
+	{
+	return NativeType::Nothing().ptr();
+	}
+
+NativeType NativeTypeForImpl<VectorDataManager>::get()
+	{
+	return NativeType::Nothing();
+	}
+
+NativeType NativeTypeForImpl<Fora::Interpreter::ExecutionContextImpl>::get()
+	{
+	return NativeType::Nothing();
+	}
+
+NativeType NativeTypeForImpl<MemoryPool>::get()
+	{
+	return NativeType::Nothing();
+	}
+
+NativeType NativeTypeForImpl<JudgmentOnValue>::get()
+	{
+	return NativeType::Nothing().ptr();
+	}
+
+NativeType NativeTypeForImpl<JudgmentOnResult>::get()
+	{
+	return NativeType::Nothing().ptr();
+	}
+
+NativeType NativeTypeForImpl<Type>::get()
+	{
+	return NativeType::Nothing().ptr();
+	}
+
+NativeType NativeTypeForImpl<String>::get()
+	{
+	return TypedFora::Abi::nativeLayoutType(Type::String());
+	}
+
+NativeType NativeTypeForImpl<TimeDuration>::get()
+	{
+	return TypedFora::Abi::nativeLayoutType(Type::TimeDuration());
+	}
+
+NativeType NativeTypeForImpl<DateTime>::get()
+	{
+	return TypedFora::Abi::nativeLayoutType(Type::DateTime());
+	}
+
+NativeType NativeTypeForImpl<Dictionary>::get()
+	{
+	//isCST flag shouldn't matter for Native stuff
+	return TypedFora::Abi::nativeLayoutType(Type::Dictionary(true));
+	}
+
+NativeType NativeTypeForImpl<ExternalFunctionDescriptor>::get()
+	{
+	//isCST flag shouldn't matter for Native stuff
+	return TypedFora::Abi::nativeLayoutType(Type::ExternalFunction(true));
+	}
+
+NativeType NativeTypeForImpl<Symbol>::get()
+	{
+	return TypedFora::Abi::nativeLayoutType(Type::Symbol());
+	}
+
+NativeType NativeTypeForImpl<ForaStackTrace>::get()
+	{
+	return TypedFora::Abi::nativeLayoutType(Type::StackTrace());
+	}
+
+namespace TypedFora {
+namespace Abi {
+
+NativeType nativeLayoutType(const ::Type& t)
+	{
+	return nativeTypeForForaTypeObject(t);
+	}
+
+NativeType nativeLayoutType(const JudgmentOnValue& j)
+	{
+	if (j.constant())
+		return NativeType::Nothing();
+
+	if (j.isUnion())
+		{
+		ImmutableTreeVector<NativeType> possibilities;
+
+		ImmutableTreeSet<JudgmentOnValue> jovs = j.getUnion().jov().alternatives().vals();
+
+		for (auto jov: jovs)
+			possibilities = possibilities + nativeLayoutType(jov);
+
+		return NativeType::Composite(NativeType::uword() + possibilities);
+		}
+
+	Nullable< ::Type > t = j.type();
+	if (!t)
+		return TypedFora::Abi::nativeTypeForImplVal();
+
+	return nativeLayoutType(*t);
+	}
+
+bool allArePOD(const ImmutableTreeSet<JOV>& inJOVs)
+	{
+	for (auto jov: inJOVs)
+		if (!(jov.type() && jov.type()->isPOD()))
+			return false;
+	
+	return true;
+	}
+
+bool judgmentIsPOD(const JOV& inJOV)
+	{
+	if (inJOV.constant())
+		return true;
+	
+	if (inJOV.isUnion())
+		return allArePOD(inJOV.getUnion().jov().alternatives().vals());
+
+	if (!inJOV.type())
+		return false;
+
+	return inJOV.type()->isPOD();
+	}
+
+NativeType 			nativeLayoutType(const Nullable< ::Type >& t)
+	{
+	if (!t)
+		return TypedFora::Abi::nativeTypeForImplVal();
+	return nativeLayoutType(*t);
+	}
+
+NativeExpression jovAsNativeConstant(const JudgmentOnValue& jov)
+	{
+	return 
+		NativeExpression::Constant(
+			NativeConstant::VoidPtr( *(uword_t*)&jov )
+			)
+		.taggedWith(
+			NativeExpressionTag::Comment(
+				"jov: " + prettyPrintString(jov)
+				)
+			)
+		.cast(NativeTypeFor<JudgmentOnValue>::get(), false);
+	}
+
+BinaryLayoutStyle getPassingStyle(const JudgmentOnValue& j)
+	{
+	if (j.constant())
+		return BinaryLayoutStyle::Constant;
+	if (j.type())
+		return BinaryLayoutStyle::Typed;
+	if (j.isUnion())
+		return BinaryLayoutStyle::Union;
+
+	return BinaryLayoutStyle::Implval;
+	}
+
+NativeExpression nativeExpressionForConstantHeldAsType(const ImplValContainer& c)
+	{
+	typedef ::Type untyped_fora_type;
+
+	if (JOV::OfType(c.type()).constant())
+		return NativeExpression::Nothing();
+
+	@match untyped_fora_type(c.type())
+		-|	Nothing() ->> { return NativeExpression::Nothing(); }
+		-|	Integer(sz, isS) ->> {
+			if (isS)
+				{
+				if (sz == 64)
+					return NativeExpression::Constant(NativeConstant::Int64(c.cast<int64_t>()));
+				if (sz == 32)
+					return NativeExpression::Constant(NativeConstant::Int32(c.cast<int32_t>()));
+				}
+				else
+				{
+				if (sz == 64)
+					return NativeExpression::Constant(NativeConstant::UInt64(c.cast<uint64_t>()));
+				if (sz == 32)
+					return NativeExpression::Constant(NativeConstant::UInt32(c.cast<uint32_t>()));
+				if (sz == 1)
+					return NativeExpression::Constant(NativeConstant::Bool(c.cast<uint8_t>()));
+				}
+			}
+		-|	Float(sz) ->> {
+			if (sz == 64)
+				return NativeExpression::Constant(NativeConstant::Double(c.cast<double>()));
+			if (sz == 32)
+				return NativeExpression::Constant(NativeConstant::Float(c.cast<float>()));
+			}
+		-|  Tuple() ->> {
+			ImmutableTreeVector<NativeExpression> elts;
+
+			auto symbolsAndVals = ImplValContainerUtilities::extractTupleContents(c);
+
+			for (long k = 0; k < symbolsAndVals.size(); k++)
+				elts = elts + nativeExpressionForConstantHeldAsType(symbolsAndVals[k].second);
+
+			return NativeExpression::CreateComposite(elts);
+			}
+		-|  Class() ->> {
+			return nativeExpressionForConstantHeldAsType(ImplValContainerUtilities::classMemberUnbind(c));
+			}
+		-|	_ ->> { ; }
+		;
+
+	return TypedFora::Abi::ArbitraryNativeConstantForCSTValue::expressionForCSTValueTyped(c);
+	}
+
+NativeExpression nativeExpressionForConstantHeldAsType(const CSTValue& c)
+	{
+	return nativeExpressionForConstantHeldAsType(ImplValContainer(c));
+	}
+
+
+NativeType			continuationTypeFor(const JudgmentOnAction& joa)
+	{
+	ImmutableTreeVector<NativeType> ts;
+	for (long k = 0; k < joa.resultPart().size();k++)
+		ts = ts + nativeLayoutType(joa.resultPart()[k]);
+	for (long k = 0; k < joa.throwPart().size();k++)
+		ts = ts + nativeLayoutType(joa.throwPart()[k]);
+	return NativeType::Continuations(ts);
+	}
+
+ImmutableTreeVector<NativeType>		returnTypesFor(const JudgmentOnAction& joa)
+	{
+	ImmutableTreeVector<NativeType> ts;
+	for (long k = 0; k < joa.resultPart().size();k++)
+		ts = ts + nativeLayoutType(joa.resultPart()[k]);
+	for (long k = 0; k < joa.throwPart().size();k++)
+		ts = ts + nativeLayoutType(joa.throwPart()[k]);
+	return ts;
+	}
+
+
+NativeType nativeTypeForForaType(const Type& inType)
+	{
+	return nativeLayoutType(inType.jov());
+	}
+
+namespace {
+
+class HashFunc {
+public:
+	std::size_t operator()(const hash_type& t) const
+		{
+		return t[0];
+		}
+};
+
+}
+
+NativeType nativeTypeForForaTypeObjectUncached(const ::Type& untypedForaTypeObject);
+
+NativeType nativeTypeForForaTypeObject(const ::Type& untypedForaTypeObject)
+	{
+	static __thread boost::unordered_map<hash_type, NativeType, HashFunc>* coverings = 0;
+
+	if (!coverings)
+		coverings = new boost::unordered_map<hash_type, NativeType, HashFunc>();
+		
+	hash_type hash = untypedForaTypeObject.hash();
+
+	auto it = coverings->find(hash);
+	if (it != coverings->end())
+		return it->second;
+
+	NativeType t = nativeTypeForForaTypeObjectUncached(untypedForaTypeObject);
+
+	if (t.packedSize() == 0)
+		t = NativeType::Nothing();
+	
+	(*coverings)[hash] = t;
+
+	return t;
+	}
+
+NativeType nativeTypeForForaTypeObjectUncached(const ::Type& untypedForaTypeObject)
+	{
+	typedef ::Type fora_type_object_type;
+
+	@match fora_type_object_type(untypedForaTypeObject)
+		-|	Nothing() ->> {
+			return NativeType::Nothing();
+			}
+		-|	Symbol() ->> {
+			static_assert(sizeof(symbol_type) == sizeof(uint64_t), "Symbol has wrong size");
+			return  NativeType::uint64();
+			}
+		-|	Tag() ->> {
+			return  NativeType::uint64();
+			}
+		-|	Integer(bits, isSigned) ->> {
+			return  NativeType::Integer(bits, isSigned);
+			}
+		-|	Float(bits) ->> {
+			return  NativeType::Float(bits);
+			}
+		-|	ExternalFunction() ->> {
+			return  cppmlAlternative();
+			}
+		-|	JOVAsValue() ->> {
+			return  NativeTypeFor<JudgmentOnValue>::get();
+			}
+		-|	StackTrace() ->> {
+			return  cppmlAlternative();
+			}
+		-|	String() ->> {
+			return 
+				NativeType::Composite(
+					(emptyTreeVec() +
+						NativeType::uword()) * (sizeof(String) / sizeof(uword_t))
+					);
+			}
+		-|	Alternative(t) ->> {
+			return 
+				NativeType::Composite(
+					emptyTreeVec() +
+						NativeType::uword() +
+						nativeTypeForForaTypeObject(t)
+					);
+			}
+		-|	Class(types, mediator) ->> {
+			return  nativeTypeForForaTypeObject(::Type::UnnamedTuple(types));
+			}
+		-|	Tuple(types) ->> {
+			ImmutableTreeVector<NativeType> ts;
+			for (long k = 0; k < types.size();k++)
+				ts = ts + nativeTypeForForaTypeObject(types[k]);
+			return NativeType::Composite(ts);
+			}
+		-|	Dictionary(isCST) ->> {
+			static_assert(sizeof(::Dictionary) == sizeof(::Type), 
+				"dictionary is not the same size as a CPPML type!"
+				);
+			return  cppmlAlternative();
+			}
+		-|	Vector() ->> {
+			return  NativeTypeFor<TypedFora::Abi::VectorRecord>::get();
+			}
+		-|	MutableVector() ->> {
+			return  NativeTypeFor<MutableVectorRecord>::get();
+			}
+		-|	DateTime() ->> {
+			static_assert(
+				sizeof(date_time_impl_type) == sizeof(uint64_t),
+				"date_time_impl_type should have size of uint64_t but it doesn't"
+				);
+			
+			return NativeType::uint64();
+			}
+		-|	TimeDuration() ->> {
+			static_assert(
+				sizeof(time_duration_impl_type) == sizeof(uint64_t),
+				"time_duration_type should have size of uint64_t but it doesn't"
+				);
+			
+			return NativeType::uint64(); 
+			}
+		;
+	}
+
+NativeExpression nativeExpressionForConstant(const CSTValue& inVal)
+	{
+	if (JOV::Constant(inVal).constant())
+		return NativeExpression::Nothing();
+	else
+		return nativeExpressionForConstantHeldAsType(inVal);
+	}
+
+}
+}
+
+

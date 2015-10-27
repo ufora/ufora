@@ -1,0 +1,146 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include <stdint.h>
+#include <boost/python.hpp>
+#include "../Runtime.hppml"
+#include "RuntimeConfig.hppml"
+#include "../../core/python/ScopedPyThreads.hpp"
+#include "../../core/Clock.hpp"
+#include "../../core/threading/Queue.hpp"
+#include "../../core/python/CPPMLWrapper.hpp"
+#include "../../native/Registrar.hpp"
+#include "../Axioms/Axioms.hppml"
+#include "Instruction.hppml"
+
+#include <boost/thread.hpp>
+
+class RuntimeWrapper :
+		public native::module::Exporter<RuntimeWrapper> {
+public:
+		void	getDefinedTypes(std::vector<std::string>& outTypes)
+			{
+			outTypes.push_back(typeid(Runtime).name());
+			}
+
+
+		static void breakOnLongDelayThread(boost::shared_ptr<Queue<bool> > inQueue)
+			{
+			double t0 = curClock();
+			bool dummyVal;
+			while (true)
+				{
+				inQueue->getTimeout(dummyVal, .02);
+
+				if (curClock() - t0 > .02)
+					{
+					asm("int3");
+					}
+
+				t0 = curClock();
+				}
+			}
+
+		static void checkPythonGilLoop(bool startBackgroundBreakThread)
+			{
+			boost::shared_ptr<Queue<bool> > queue(new Queue<bool>());
+
+			ScopedPyThreads threads;
+
+			using namespace boost;
+			if (startBackgroundBreakThread)
+				new boost::thread(boost::bind(breakOnLongDelayThread, queue));
+
+			while (true)
+				{
+				sleepSeconds(.001);
+				double t0 = curClock();
+				ScopedPyThreadsReacquire reaquire;
+				if (curClock() - t0 > .005)
+					printf("Took %f to reacquire\n", curClock() - t0);
+				
+				if (startBackgroundBreakThread)
+					queue->write(true);
+				}
+			}
+
+		static Runtime* initializeRuntime(
+				boost::python::object axiomsString,
+				boost::python::object config
+				)
+
+			{
+			Runtime::initializeRuntime(
+				boost::python::extract<string>(axiomsString)(),
+				boost::python::extract<RuntimeConfig>(config)()
+				);
+		
+			return &Runtime::getRuntime();
+			}
+			
+		std::string		getModuleName(void)
+			{
+			return "FORA";
+			}
+
+		static ImmutableTreeVector<JudgmentOnValue> pythonListToJOVList(boost::python::object l)
+			{
+			uword_t length;
+			ImmutableTreeVector<JudgmentOnValue> tr;
+				{
+				length = boost::python::len(l);
+			
+
+				for (long k = 0; k < length;k++)
+					{
+					boost::python::extract<ImplValContainer&> extractor(l[k]);
+					if (extractor.check())
+						tr = tr + JudgmentOnValue::Constant(CSTValue(extractor().getReference()));
+					else
+						if (boost::python::extract<JudgmentOnValue&>(l[k]).check())
+							tr = tr + boost::python::extract<JudgmentOnValue&>(l[k])();
+						else
+							lassert(false);
+					}
+
+				}
+			return tr;
+			}
+			
+		void exportPythonWrapper()
+			{
+			using namespace boost::python;
+		
+			Ufora::python::CPPMLWrapper<RuntimeConfig>(false).class_()
+				;
+		
+			class_<Runtime, Runtime*, boost::noncopyable>("Runtime", no_init)
+				.def("getAxioms", &Runtime::getAxioms)
+				.def("getTypedForaCompiler", &Runtime::getTypedForaCompiler)
+				.def("getInstructionGraph", &Runtime::getInstructionGraph)
+				.def("getInterpreterTraceHandler", &Runtime::getInterpreterTraceHandler)
+				;
+			
+			def("initializeRuntime", initializeRuntime, return_internal_reference<>());
+			def("checkPythonGilLoop", checkPythonGilLoop);
+			}
+	};
+
+//explicitly instantiating the registration element causes the linker to need
+//this file
+template<>
+char native::module::Exporter<RuntimeWrapper>::mEnforceRegistration =
+		native::module::ExportRegistrar<RuntimeWrapper>::registerWrapper();
+

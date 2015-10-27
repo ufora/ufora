@@ -1,0 +1,119 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../MachineId.hppml"
+#include "../../core/math/Nullable.hpp"
+#include <map>
+#include <deque>
+
+namespace Cumulus {
+
+class MessagesToAccept {
+public:
+	MessagesToAccept() : 
+			mInFlightBytes(0),
+			mPendingBytes(0)
+		{
+		}
+
+	void allocate(MachineId machine, hash_type guid, int64_t bytecount)
+		{
+		mPending[machine].push_back(make_pair(guid, bytecount));
+		mPendingBytes += bytecount;
+		}
+
+	int64_t inFlightBytes() const
+		{
+		return mInFlightBytes;
+		}
+
+	int64_t pendingBytes() const
+		{
+		return mPendingBytes;
+		}
+
+	Nullable<pair<MachineId, hash_type> > getNext()
+		{
+		if (!mPending.size())
+			return null();
+
+		//walk "mCurMachineToPop" through the list of pending tasks
+		//we want to try to send data to each machine in a round-robin sort
+		//of way
+		if (!mCurMachineToPop)
+			mCurMachineToPop = mPending.begin()->first;
+		else
+			{
+			auto it = mPending.upper_bound(*mCurMachineToPop);
+			
+			if (it == mPending.end())
+				it = mPending.begin();
+			else
+				++it;
+			
+			if (it == mPending.end())
+				it = mPending.begin();
+
+			lassert(it != mPending.end());
+
+			mCurMachineToPop = it->first;
+			}
+
+		auto& queue = mPending[*mCurMachineToPop];
+
+		lassert(queue.size());
+
+		std::pair<hash_type, int64_t> toSend = queue.front();
+		queue.pop_front();
+
+		if (queue.size() == 0)
+			mPending.erase(*mCurMachineToPop);
+
+		mInFlightBytes += toSend.second;
+		mPendingBytes -= toSend.second;
+
+		lassert(mInFlightBytesPerGuid.find(toSend.first) == mInFlightBytesPerGuid.end());
+		mInFlightBytesPerGuid[toSend.first] = toSend.second;
+
+		return null() << make_pair(*mCurMachineToPop, toSend.first);
+		}
+
+	void accepted(hash_type guid)
+		{
+		auto it = mInFlightBytesPerGuid.find(guid);
+		lassert(it != mInFlightBytesPerGuid.end());
+
+		mInFlightBytes -= it->second;
+
+		mInFlightBytesPerGuid.erase(it);
+		}
+
+private:
+	std::map<MachineId, std::deque<std::pair<hash_type, int64_t> > > mPending;
+
+	std::map<hash_type, int64_t> mInFlightBytesPerGuid;
+
+	Nullable<MachineId> mCurMachineToPop;
+
+	int64_t mInFlightBytes;
+
+	int64_t mPendingBytes;
+};
+
+
+
+}

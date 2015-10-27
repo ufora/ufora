@@ -1,0 +1,772 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ControlFlowGraphSplitter.hppml"
+#include "ControlFlowGraphUtil.hppml"
+#include "../Core/ImplValContainer.hppml"
+#include "../Core/ImplValContainerUtilities.hppml"
+#include "../Core/Type.hppml"
+#include "../TypedFora/ABI/UpdateFreeStoreValues.hppml"
+#include <boost/thread.hpp>
+
+typedef ControlFlowGraphSplitter::Step Step;
+
+using Fora::Interpreter::PausedComputation;
+using Fora::Interpreter::PausedComputationFrame;
+
+namespace {
+
+class UsedInUntraceableWay {};
+
+ControlFlowContinuation
+encodeValuesAsResult(long inArgCount, uint64_t index, bool addApplyResultAsLastArg)
+	{
+	ImmutableTreeVector<ControlFlowContinuationTupleArg> tr;
+
+	for (long k = 0; k < inArgCount; k++)
+		tr = tr + ControlFlowContinuationTupleArg::Normal(
+			null(), 
+			ControlFlowContinuationArg::Arg(ControlFlowArg::Arg(k))
+			);
+
+	if (addApplyResultAsLastArg)
+		tr = tr + ControlFlowContinuationTupleArg::Normal(null(), ControlFlowContinuationArg::Result());
+
+	return ControlFlowContinuation::Return(
+		ControlFlowContinuationArg::MakeTuple(
+			emptyTreeVec() + 
+				ControlFlowContinuationTupleArg::Normal(
+					null(),
+					ControlFlowContinuationArg::Arg(ControlFlowArg::Constant(CSTValue(index)))
+					) + 
+				ControlFlowContinuationTupleArg::Normal(
+					null(),
+					ControlFlowContinuationArg::MakeTuple(tr)
+					)
+			),
+		false
+		);
+	}
+
+bool applyArgUsesSlot(const ControlFlowApplyArg& args, long slot)
+	{
+	@match ControlFlowApplyArg(args)
+		-| Normal(_, Arg(ix)) ->> {
+			return ix == slot;
+			}
+		-| TupleCall(Arg(ix)) ->> {
+			return ix == slot;
+			}
+		-| _ ->> {
+			return false;
+			}
+	}
+
+bool applyArgsUseSlot(const ImmutableTreeVector<ControlFlowApplyArg>& args, long slot)
+	{
+	for (long k = 0; k < args.size(); k++)
+		if (applyArgUsesSlot(args[k], slot))
+			return true;
+	return false;
+	}
+
+Nullable<long> singleResultSlot(const ImmutableTreeVector<ControlFlowContinuationArg>& args);
+
+Nullable<long> singleResultSlot(const ImmutableTreeVector<ControlFlowContinuationTupleArg>& args)
+	{
+	Nullable<long> tr;
+
+	for (long k = 0; k < args.size(); k++)
+		@match ControlFlowContinuationArg(args[k].arg())
+			-| Arg() ->> {}
+			-| Result() ->> { 
+				if (tr) 
+					throw UsedInUntraceableWay();
+				tr = k;
+				}
+			-| TupleElement() ->> {}
+			-| TupleRemainingElements() ->> {}
+			-| MakeTuple(args) ->> {
+				if (singleResultSlot(args))
+					throw UsedInUntraceableWay();
+				}
+
+	return tr;
+	}
+
+Nullable<long> singleResultSlot(const ImmutableTreeVector<ControlFlowContinuationArg>& args)
+	{
+	Nullable<long> tr;
+
+	for (long k = 0; k < args.size(); k++)
+		@match ControlFlowContinuationArg(args[k])
+			-| Arg() ->> {}
+			-| Result() ->> { 
+				if (tr) 
+					throw UsedInUntraceableWay();
+				tr = k;
+				}
+			-| TupleElement() ->> {}
+			-| TupleRemainingElements() ->> {}
+			-| MakeTuple(args) ->> {
+				if (singleResultSlot(args))
+					throw UsedInUntraceableWay();
+				}
+
+	return tr;
+	}
+
+Nullable<long> singleArgSlot(const ImmutableTreeVector<ControlFlowContinuationArg>& args, long arg);
+
+Nullable<long> singleArgSlot(const ImmutableTreeVector<ControlFlowContinuationTupleArg>& args, long arg)
+	{
+	Nullable<long> tr;
+
+	for (long k = 0; k < args.size(); k++)
+		@match ControlFlowContinuationArg(args[k].arg())
+			-| Arg(Arg(ix)) ->> {
+				if (arg == ix)
+					{
+					if (tr)
+						throw UsedInUntraceableWay();
+					else
+						tr = k;
+					}
+				}
+			-| Arg(Constant()) ->> {}
+			-| Result() ->> {}
+			-| TupleElement() ->> {}
+			-| TupleRemainingElements() ->> {}
+			-| MakeTuple(args) ->> {
+				if (singleArgSlot(args, arg))
+					throw UsedInUntraceableWay();
+				}
+
+	return tr;
+	}
+	
+Nullable<long> singleArgSlot(const ImmutableTreeVector<ControlFlowContinuationArg>& args, long arg)
+	{
+	Nullable<long> tr;
+
+	for (long k = 0; k < args.size(); k++)
+		@match ControlFlowContinuationArg(args[k])
+			-| Arg(Arg(ix)) ->> {
+				if (arg == ix)
+					{
+					if (tr)
+						throw UsedInUntraceableWay();
+					else
+						tr = k;
+					}
+				}
+			-| Arg(Constant()) ->> {}
+			-| Result() ->> {}
+			-| TupleElement() ->> {}
+			-| TupleRemainingElements() ->> {}
+			-| MakeTuple(args) ->> {
+				if (singleArgSlot(args, arg))
+					throw UsedInUntraceableWay();
+				}
+
+	return tr;
+	}
+
+@type ReplaceResultWith = ControlFlowContinuationArg replaceWith {
+public:
+	ControlFlowContinuationTupleArg operator()(
+						const ControlFlowContinuationTupleArg& arg
+						) const
+		{
+		@match ControlFlowContinuationTupleArg(arg)
+			-| Normal(field, a) ->> {
+				return ControlFlowContinuationTupleArg::Normal(field, (*this)(a));
+				}
+			-| TupleCall(a) ->> {
+				return ControlFlowContinuationTupleArg::TupleCall((*this)(a));
+				}
+		}
+
+	ControlFlowContinuationArg operator()(
+						const ControlFlowContinuationArg& arg
+						) const
+		{
+		@match ControlFlowContinuationArg(arg)
+			-| Result() ->> {
+				return replaceWith();
+				}
+			-| MakeTuple(subArgs) ->> {
+				return ControlFlowContinuationArg::MakeTuple(
+					mapITV(subArgs, *this)
+					);
+				}
+			-| _ ->> {
+				return arg;
+				}
+		}	
+
+	ControlFlowContinuation operator()(
+						const ControlFlowContinuation& arg
+						) const
+		{
+		@match ControlFlowContinuation(arg)
+			-| Return(arg, isException) ->> {
+				return ControlFlowContinuation::Return((*this)(arg), isException);
+				}
+			-| Node(label, args) ->> {
+				return ControlFlowContinuation::Node(label, mapITV(args, *this));
+				}
+		}				
+};
+
+ReplaceResultWith replaceResultWithNone = ReplaceResultWith(
+		ControlFlowContinuationArg::Arg(ControlFlowArg::Constant(CSTValue()))
+		);
+
+Step rejoinStep(	const ControlFlowGraph& inGraph, 
+					std::string inLabel,
+					long inArgIndex //null if the arg is the result, 
+					)
+	{
+	return 
+		Step::Rejoin(
+			inGraph[inLabel].argCount(), 
+			inArgIndex,
+			ControlFlowContinuation::Node(
+				inLabel, 
+				ControlFlowGraphUtil::contArglist(0, inGraph[inLabel].argCount())
+				)
+			);
+	}
+
+ImmutableTreeVector<Step> traceArg(
+					const ControlFlowGraph& inGraph, 
+					std::string inLabel,
+					long inArgIndex
+					)
+	{
+	@match ControlFlowNodeBody(inGraph[inLabel].body())
+		-| Apply(applyArgs, Node(label, args), exceptionCont) ->> {
+			if (applyArgsUseSlot(applyArgs, inArgIndex))
+				return emptyTreeVec() + rejoinStep(inGraph, inLabel, inArgIndex);
+
+			Nullable<long> argWithin;
+
+			try {
+				argWithin = singleArgSlot(args, inArgIndex);
+				}
+			catch(UsedInUntraceableWay& in)
+				{
+				}
+
+			if (!argWithin)
+				return emptyTreeVec() + rejoinStep(inGraph, inLabel, inArgIndex);
+
+			ImmutableTreeVector<Step> substeps = 
+				traceArg(inGraph, label, *argWithin);
+
+			return Step::Apply(
+				inGraph[inLabel].argCount(),
+				applyArgs,
+				args,
+				inArgIndex,
+				ReplaceResultWith(
+					ControlFlowContinuationArg::Arg(
+						ControlFlowArg::Arg(inGraph[inLabel].argCount())
+						)
+					)(exceptionCont)
+				) + substeps;
+			}
+		-| Apply(applyArgs, Return(arg, isException), exceptionCont) ->> {
+			if (applyArgsUseSlot(applyArgs, inArgIndex))
+				return emptyTreeVec() + rejoinStep(inGraph, inLabel, inArgIndex);
+
+			return emptyTreeVec() + 
+				Step::Apply(
+					inGraph[inLabel].argCount(),
+					applyArgs,
+					ControlFlowGraphUtil::contArglist(0,inGraph[inLabel].argCount()) + 
+						ControlFlowContinuationArg::Result(),
+					inArgIndex,
+					exceptionCont
+					) + 
+				Step::Rejoin(
+					inGraph[inLabel].argCount() + 1,
+					inArgIndex,
+					ControlFlowContinuation::Return(
+						ReplaceResultWith(
+							ControlFlowContinuationArg::Arg(
+								ControlFlowArg::Arg(inGraph[inLabel].argCount())
+								)
+							)(arg),
+						isException
+						)
+					);
+			}
+		-| Jump(Return(arg, isException)) ->> {
+			return emptyTreeVec() + 
+				Step::Rejoin(
+					inGraph[inLabel].argCount(),
+					inArgIndex,
+					ControlFlowContinuation::Return(arg, isException)
+					);
+			}
+		-| Jump(Node(label, args)) ->> {
+			Nullable<long> argWithin;
+
+			try {
+				argWithin = singleArgSlot(args, inArgIndex);
+				}
+			catch(UsedInUntraceableWay& in)
+				{
+				}
+
+			if (!argWithin)
+				return emptyTreeVec() + rejoinStep(inGraph, inLabel, inArgIndex);
+
+			ImmutableTreeVector<Step> substeps = 
+				traceArg(inGraph, label, *argWithin);
+
+			return Step::Jump(
+				inGraph[inLabel].argCount(),
+				args
+				) + substeps;
+			}
+		-| _ ->> { 
+			return emptyTreeVec() + rejoinStep(inGraph, inLabel, inArgIndex);
+			}
+	}
+
+
+pair<ControlFlowGraph, ImmutableTreeVector<pair<ControlFlowContinuation, uint32_t> > >
+computeContinuationGraph(
+					const ControlFlowGraph& inGraph, 
+					const Nullable<std::string>& inLabel,
+					const ImmutableTreeVector<Step>& steps
+					)
+	{
+	//the second one has one entry for every element of labelSequence. 
+	//at each apply, if it results in an exception, we encode the continuation args in a tuple
+	//and return as a pair of (index, continuationArgs)
+	//if we exit normally, we return (index, continuationArgs) where 'index' is the number of 
+	//applies we had
+	ImmutableTreeVector<pair<ControlFlowContinuation, uint32_t> > continuations;
+
+	//the intermediate nodes of the new graph
+	ImmutableTreeMap<std::string, ControlFlowNode> nodes;
+
+	for (long k = 0; k < steps.size(); k++)
+		{
+		std::string name = "step_" + boost::lexical_cast<string>(k);
+		std::string nextStepName = "step_" + boost::lexical_cast<string>(k+1);
+
+		@match Step(steps[k])
+			-| Jump(argCount, args) ->> {
+				nodes = nodes + name + 
+					ControlFlowNode(
+						argCount,
+						ControlFlowNodeBody::Jump(
+							ControlFlowContinuation::Node(
+								nextStepName,
+								args
+								)
+							)
+						);
+				}
+			-| Apply(argCount, applyArgs, success, indexForResIfFailure, exceptionCont) ->> {
+				continuations = continuations + make_pair(exceptionCont, indexForResIfFailure);
+
+				nodes = nodes + name + 
+					ControlFlowNode(
+						argCount,
+						ControlFlowNodeBody::Apply(
+							applyArgs,
+							ControlFlowContinuation::Node(
+								nextStepName,
+								success
+								),
+							encodeValuesAsResult(argCount, continuations.size() - 1, true)
+							)
+						);
+				}
+			-| Rejoin(argCount, indexToSwapIn, outputCont) ->> {
+				continuations = continuations + make_pair(outputCont, indexToSwapIn);
+
+				nodes = nodes + name + 
+					ControlFlowNode(
+						argCount,
+						ControlFlowNodeBody::Jump(
+							encodeValuesAsResult(argCount, continuations.size() - 1, false)
+							)
+						);
+				}
+		}
+
+	return make_pair(
+		ControlFlowGraph(
+			*nodes[std::string("step_0")],
+			nodes - std::string("step_0"),
+			""
+			),
+		continuations
+		);
+	}
+
+
+ControlFlowContinuationArg createTuple(const ControlFlowContinuationArg& arg, CSTValue index)
+	{
+	return ControlFlowContinuationArg::MakeTuple(
+		emptyTreeVec() + 
+			ControlFlowContinuationTupleArg::Normal(
+				null(),
+				ControlFlowContinuationArg::Arg(
+					ControlFlowArg::Constant(index)
+					)
+				) + 
+			ControlFlowContinuationTupleArg::Normal(
+				null(),
+				arg
+				)
+		);
+	}
+
+Nullable<ControlFlowGraphSplitter::SplitResult>
+computeSplitResultGivenSteps(
+					const ControlFlowGraph& inGraph, 
+					const Nullable<std::string>& inLabel,
+					const ImmutableTreeVector<Step>& steps
+					)
+	{
+	//we generate two graphs. The first one just returns the result of the apply, along with
+	//true/false.
+	ControlFlowGraph applyGraph(
+		ControlFlowNode(
+			inGraph[inLabel].argCount(),
+			ControlFlowNodeBody::Apply(
+				inGraph[inLabel].body().getApply().args(),
+				ControlFlowContinuation::Return(
+					createTuple(ControlFlowContinuationArg::Result(), CSTValue()),
+					false
+					),
+				encodeValuesAsResult(inGraph[inLabel].argCount(), 0, true)
+				)
+			),
+		""
+		);
+
+	pair<ControlFlowGraph, 
+		ImmutableTreeVector<pair<ControlFlowContinuation, uint32_t> > 
+		> continuationGraphAndContinuations;
+
+	continuationGraphAndContinuations = computeContinuationGraph(inGraph, inLabel, steps);
+
+	ControlFlowGraphSplitter::SplitResult tr;
+
+	ControlFlowContinuation applyExceptionContinuations = 
+		ReplaceResultWith(
+			ControlFlowContinuationArg::Arg(
+				ControlFlowArg::Arg(
+					inGraph[inLabel].argCount()
+					)
+				)
+			)(inGraph[inLabel].body().getApply().exception())
+		;
+
+	tr.initialLabel() = inLabel;
+	tr.applyGraph() = applyGraph;
+	tr.splitGraph() = continuationGraphAndContinuations.first;
+	tr.splitContinuations() = continuationGraphAndContinuations.second;
+	tr.applyExceptionContinuations() = 
+		emptyTreeVec() + applyExceptionContinuations; 
+
+	return null() << tr;
+	}
+
+}
+
+//return a list of indices and node names. At each node, this index value corresponds
+//to a place in which 'res' has been placed but has yet to be used.
+//the last such entry will be the first use of 'res'
+ImmutableTreeVector<Step> ControlFlowGraphSplitter::extractApplySteps(
+					const ControlFlowGraph& inGraph, 
+					const Nullable<std::string>& inLabel
+					)
+	{
+	@match ControlFlowNodeBody(inGraph[inLabel].body())
+		-| Apply(_, Node(label, args), exception) ->> {
+			Nullable<long> argWithin;
+
+			try {
+				argWithin = singleResultSlot(args);
+				}
+			catch(UsedInUntraceableWay& in)
+				{
+				}
+
+			if (!argWithin)
+				return emptyTreeVec();
+
+			ImmutableTreeVector<Step> substeps = traceArg(inGraph, label, *argWithin);
+			lassert_dump(
+				substeps.size() && substeps.back().isRejoin(),
+				prettyPrintString(substeps) << "\nfrom label " << prettyPrintString(label) << "\n" 
+					<< "in graph: \n" << prettyPrintString(inGraph)
+				);
+
+			return Step::Jump(
+				inGraph[inLabel].argCount(), 
+				mapITV(args, replaceResultWithNone)
+				) + substeps;
+			}
+		-| _ ->> { 
+			return emptyTreeVec(); 
+			}
+	}
+
+Nullable<ControlFlowGraphSplitter::SplitResult>
+ControlFlowGraphSplitter::computeSplitResult(
+					const ControlFlowGraph& inGraph, 
+					const Nullable<std::string>& inLabel
+					)
+	{
+	static map<pair<ControlFlowGraph, Nullable<std::string> >, Nullable<SplitResult> > cache;
+
+	static boost::recursive_mutex mutex;
+
+		{
+		boost::recursive_mutex::scoped_lock lock(mutex);
+		auto it = cache.find(make_pair(inGraph,inLabel));
+
+		if (it != cache.end())
+			return it->second;
+		}
+
+	ImmutableTreeVector<Step> steps = extractApplySteps(inGraph, inLabel);
+
+	long applies = 0;
+	for (long k = 0; k < steps.size(); k++)
+		if (steps[k].isApply())
+			applies++;
+
+
+	Nullable<SplitResult> result;
+
+	if (applies > 0)
+		result = computeSplitResultGivenSteps(inGraph, inLabel, steps);
+
+		{
+		boost::recursive_mutex::scoped_lock lock(mutex);
+		cache[make_pair(inGraph, inLabel)] = result;
+		}
+
+	return result;
+	}
+
+Nullable<ControlFlowGraphSplitter::SplitPausedComputation> ControlFlowGraphSplitter::splitAtFrame(
+		const Fora::Interpreter::PausedComputation& inComputation,
+		uint frameIndex
+		)
+	{
+	Nullable<SplitResult> splitResult =
+		computeSplitResult(
+			inComputation.frames()[frameIndex].graph(),
+			inComputation.frames()[frameIndex].label()
+			);
+
+	if (splitResult)
+		return null() <<
+			SplitPausedComputation(
+				*splitResult,
+				PausedComputation(inComputation.frames().slice(0,frameIndex), null()),
+				inComputation.frames()[frameIndex].graph(),
+				PausedComputation(
+					emptyTreeVec() +
+						PausedComputationFrame(
+							inComputation.frames()[frameIndex].values(),
+							splitResult->applyGraph(),
+							null()
+							) +
+						inComputation.frames().slice(frameIndex+1),
+					inComputation.pendingResult()
+					),
+				PausedComputation(
+					emptyTreeVec() +
+						PausedComputationFrame(
+							inComputation.frames()[frameIndex].values(),
+							splitResult->splitGraph(),
+							null()
+							),
+					null()
+					)
+				);
+	return null();
+	}
+
+Nullable<ControlFlowGraphSplitter::SplitPausedComputation>
+ControlFlowGraphSplitter::split(const PausedComputation& inComputation)
+	{
+	for (long k = 0; k < inComputation.frames().size() - 1; k++)
+		if (inComputation.frames()[k].areAllValuesConst())
+			{
+			Nullable<SplitPausedComputation> result = splitAtFrame(inComputation, k);
+			if (result.isValue())
+				return result;
+			}
+		else
+			return null();
+
+	return null();
+	}
+
+//TODO: this function should be a general-purpose utility function in ControlFlowGraphUtil
+//TODO: test this function rigorously
+ImplValContainer extractForContinuation(
+						ControlFlowContinuationArg arg, 
+						ImmutableTreeVector<ImplValContainer> values
+						)
+	{
+	@match ControlFlowContinuationArg(arg)
+		-| Arg(Arg(ix)) ->> {
+			return values[ix];
+			}
+		-| Arg(Constant(c)) ->> {
+			return ImplValContainer(c);
+			}
+		-| Result() ->> {
+			lassert_dump(false, "Shouldn't be trying to extract a Result from a Jump node.");
+			}
+		-| TupleElement() ->> {
+			lassert_dump(false, "Shouldn't be trying to extract a TupleElement from a Jump node.");
+			}
+		-| TupleRemainingElements() ->> {
+			lassert_dump(false, "Shouldn't be trying to extract a TupleRemainingElements from a Jump node.");
+			}
+		-| MakeTuple(tupleContinuationArgs) ->> {
+			ImmutableTreeVector<ImplValContainer> tupleArgs;
+			ImmutableTreeVector<Nullable<Symbol> > tupleNames;
+
+			for (long k = 0; k < tupleContinuationArgs.size();k++)
+				@match ControlFlowContinuationTupleArg(tupleContinuationArgs[k])
+					-| Normal(symbol, cfca) ->> {
+						ImplValContainer value = extractForContinuation(cfca, values);
+						tupleArgs = tupleArgs + value;
+						tupleNames = tupleNames + symbol;
+						}
+					-| TupleCall(cfca) ->> {
+						ImplValContainer value = extractForContinuation(cfca, values);
+						
+						Nullable<uword_t> count = value.tupleGetSize();
+
+						if (!count)
+							{
+							tupleArgs = tupleArgs + value;
+							tupleNames = tupleNames + Nullable<Symbol>();
+							}
+						else
+							{
+							for (long k = 0; k < *count; k++)
+								{
+								tupleArgs = tupleArgs + *value.tupleGetItem(k);
+								tupleNames = tupleNames + value.tupleGetName(k);
+								}
+							}
+						}
+			return ImplValContainerUtilities::createTuple(tupleArgs, tupleNames);
+			}
+	}
+
+PausedComputation 
+ControlFlowGraphSplitter::join(	const SplitPausedComputation& inComputation, 
+								const ImplValContainer& applyResult,
+								const ImplValContainer& splitResult
+								)
+	{
+	lassert(applyResult.tupleGetSize() && *applyResult.tupleGetSize() == 2);
+	lassert(splitResult.tupleGetSize() && *splitResult.tupleGetSize() == 2);
+
+	ImmutableTreeVector<ImplValContainer> finalValues;
+	ControlFlowContinuation resumeContinuation;
+
+	if (!applyResult.tupleGetItem(0)->type().isNothing())
+		{
+		Nullable<uint64_t> resumptionIndex = applyResult.tupleGetItem(0)->getUInt64();
+		lassert(resumptionIndex && *resumptionIndex < inComputation.split().applyExceptionContinuations().size());
+
+		//this is the continuation we'll have to follow with the split value
+		resumeContinuation = inComputation.split().applyExceptionContinuations()[*resumptionIndex];
+
+		ImplValContainer valueToExpand = *applyResult.tupleGetItem(1);
+
+		lassert(valueToExpand.tupleGetSize());
+
+		int valueCount = *valueToExpand.tupleGetSize();
+
+		for (long k = 0; k < valueCount; k++)
+			finalValues = finalValues + *valueToExpand.tupleGetItem(k);
+		}
+	else
+		{
+		Nullable<uint64_t> resumptionIndex = splitResult.tupleGetItem(0)->getUInt64();
+		lassert(resumptionIndex && 
+			*resumptionIndex < inComputation.split().splitContinuations().size());
+
+		resumeContinuation = 
+			inComputation.split().splitContinuations()[*resumptionIndex].first;
+
+		long valueToReplaceWithResult = 
+			inComputation.split().splitContinuations()[*resumptionIndex].second;
+
+		ImplValContainer valueToExpand = *splitResult.tupleGetItem(1);
+
+		lassert(valueToExpand.tupleGetSize());
+
+		int valueCount = *valueToExpand.tupleGetSize();
+
+		for (long k = 0; k < valueCount; k++)
+			if (k == valueToReplaceWithResult)
+				finalValues = finalValues + *applyResult.tupleGetItem(1);
+			else
+				finalValues = finalValues + *valueToExpand.tupleGetItem(k);
+		}
+
+	ControlFlowGraph graphToResumeWith = inComputation.toResumeGraph();
+
+	@match ControlFlowContinuation(resumeContinuation)
+		-| Return(continuation, isException) ->> {
+			ImplValContainer valueToReturn = extractForContinuation(continuation, finalValues);
+
+			return PausedComputation(
+				inComputation.toResumeCaller().frames(),
+				null() << make_pair(valueToReturn, isException)
+				);
+			}
+		-| Node(label, continuationArgs) ->> {
+			ImmutableTreeVector<ImplValContainer> newValues;
+
+			for (auto cont: continuationArgs)
+				newValues = newValues + extractForContinuation(cont, finalValues);
+
+			return PausedComputation(
+				inComputation.toResumeCaller().frames() + 
+					PausedComputationFrame(
+						newValues,
+						graphToResumeWith,
+						null() << label
+						),
+				null()
+				);
+			}
+	}
+

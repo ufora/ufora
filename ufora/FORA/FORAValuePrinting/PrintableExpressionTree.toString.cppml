@@ -1,0 +1,474 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "PrintableExpressionTree.hppml"
+
+namespace FORAValuePrinting{
+
+/*********Prints the Intermediate Representation of Expressions**********/
+/************************************************************************/
+/************************************************************************/
+void PrintableExpressionTree::printBinaryOperation(const ImmutableTreeVector<PrintableExpressionTree>& children,
+													CPPMLPrettyPrintStream& stream,
+													const string& operation)
+	{
+	//if left child is right op, then it needs parens to associate correctly
+	Expression expression = children[0].getThis();
+	stream <<
+		(expression.isRightOperator() || children[0].needsParensIfInOpExpr()
+			? children[0].withWraps(PARENS)
+			: children[0]);
+	stream << " " << operation;
+	if (children[1].getLineWrap() != BREAK_BEFORE)
+		stream << " ";
+	stream << children[1];
+	} 
+
+void PrintableExpressionTree::printBinaryOperation(const ImmutableTreeVector<PrintableExpressionTree>& children,
+													CPPMLPrettyPrintStream& stream,
+													Symbol operation)
+	{
+	Expression expression = children[0].getThis();
+	stream <<
+		(expression.isRightOperator() || children[0].needsParensIfInOpExpr()
+			? children[0].withWraps(PARENS)
+			: children[0]);
+	stream << " " << operation; 
+	if (children[1].getLineWrap() != BREAK_BEFORE)
+		stream << " ";
+	stream << children[1];
+	}
+
+PrintableExpressionTree PrintableExpressionTree::formatSimpleIfSeriesForPrinting(const PrintableExpressionTree& ifExpression,
+																				   int cumulativeLength)
+	{
+	if (ifExpression.isNode() && ifExpression.getThis().isBranch())
+		{
+		ImmutableTreeVector<PrintableExpressionTree> newChildren;
+		ImmutableTreeVector<PrintableExpressionTree> children;
+		children = ifExpression.getNode().children();
+		newChildren = newChildren + children[0] + children[1];
+		line_wrap wrap = NOWRAP;
+		cumulativeLength += ifExpression.getLength();
+		if (cumulativeLength > MAX_LEN)
+			{
+			cumulativeLength = children[0].getLength() 
+								+ children[1].getLength();
+			wrap = BREAK_BEFORE;
+			}
+		if (children.size()==3)
+			newChildren = newChildren
+						  + formatSimpleIfSeriesForPrinting(children[2], cumulativeLength);
+		return ifExpression.withChildren(newChildren)
+						   .withComplexity(FORMATTED_SIMPLE)
+						   .withLineWrap(wrap);
+		}
+
+	if (cumulativeLength + ifExpression.getLength() > MAX_LEN)
+		return ifExpression.withLineWrap(BREAK_BEFORE);
+
+	return ifExpression;
+	}
+
+PrintableExpressionTree PrintableExpressionTree::formatSimpleIfSeriesForPrinting(const PrintableExpressionTree& ifExpression)
+	{
+	return formatSimpleIfSeriesForPrinting(ifExpression, 0);
+	}
+
+void PrintableExpressionTree::printableExpressionTreeNodeToString(CPPMLPrettyPrintStream& stream,
+																	const PrintableExpressionTree& expressionTree)
+	{
+	PrintableExpressionTreeProperties properties = expressionTree.getProperties();
+	ImmutableTreeVector<PrintableExpressionTree> children = expressionTree.getChildren();
+	FORAValuePrintingParameters parameters = expressionTree.getParameters();
+	FORAValuePrinter printer = FORAValuePrinter(stream, parameters);
+
+	@match Expression(properties.expression)
+		-|	Sequence() ->> {
+				stream << children[0] << ";"
+					   << stream.sep
+					   << children[1];
+				}
+		-|	Let(elements) ->> {
+				bool isEmptyPattern;
+				@match PatternWithName(elements[0].first)
+					-|	(Anything(), name, Null()) ->> {
+							isEmptyPattern = (!name?true:false);
+							}
+					-|	_ ->> {
+							isEmptyPattern = false;
+							}
+					;
+				if (elements.size() == 1 && isEmptyPattern)
+					{
+					printer.toString(elements[0].second);
+					stream << "; "
+						   << stream.sep
+						   << children[0];
+					}
+				else
+					{
+					stream << "let ";
+						{
+						CPPMLPrettyPrintStream indentedStream = stream.group();
+						FORAValuePrinter indentedPrinter =
+							FORAValuePrinter(indentedStream, parameters);
+						for (long k = 0; k < elements.size(); k++)
+							{
+							if (k > 0)
+								indentedStream << ", ";
+
+							indentedPrinter.toString(elements[k].first);
+							indentedStream << " = "; 
+							indentedPrinter.toString(elements[k].second);
+							}
+						}
+					stream << "; " << stream.sep << children[0];
+					}
+				}
+		-|	Apply(_, args) ->> {
+				stream << children[0]
+					   << "`";
+				printer.toString(args);
+				}
+		-|	Call(_, args) ->> {
+				stream << children[0];
+				if (children[0].getParentheses() == OFFSET_CURLY)
+					stream << "\n";
+				printer.toString(args);
+				}
+		-|	And(lhs, rhs) ->> {
+				printBinaryOperation(children, stream, "and");
+				}
+		-|	Or(lhs, rhs) ->> {
+				printBinaryOperation(children, stream, "or");
+				}
+		-|	Is(lhs, rhs) ->> {
+				printBinaryOperation(children, stream, "is");
+				}
+		-|	IsNot(lhs, rhs) ->> {
+				printBinaryOperation(children, stream, "is not");
+				}
+		-|	In(lhs, rhs) ->> {
+				printBinaryOperation(children, stream, "in");
+				}
+		-|	NotIn(lhs, rhs) ->> {
+				printBinaryOperation(children, stream, "not in");
+				}
+		-|	Not(lhs) ->> {
+				stream << " not "
+					   << children[0];
+				}
+		-|	BinaryOperator(lhs, operation, rhs) ->> {
+				printBinaryOperation(children, stream, operation)
+				}
+		-|	LeftOperator(operation) ->> {
+				stream << " "
+					   << operation;
+				if (properties.needsParensIfInOpExpr)
+					stream << "("
+						   << children[0]
+						   << ")";
+				else
+					stream << children[0];
+				}
+		-|	RightOperator(_, operation) ->> {
+				if (properties.needsParensIfInOpExpr)
+					stream << "("
+						   << children[0]
+						   << ")";
+				else
+					stream << children[0];
+				stream << operation
+					   << " ";
+				}
+		-|	GetItem(agent, args) ->> {
+				stream << "("
+					   << children[0]
+					   << ")[";
+				for (long k = 0; k < args.size(); k++)
+					{
+					stream << (k == 0 ? "" : ", ");
+					printer.toString(args[k]);
+					}
+				stream << "]";
+				}
+		-|	SetItem(_, args) ->> {
+				stream << "("
+					   << children[0]
+					   << "[";
+				for (long k = 0; k < args.size(); k++)
+					{
+					stream << (k == 0 ? "" : ", ");
+					printer.toString(args[k]);
+					}
+				stream << "] = "
+					   << children[1]
+					   << " )";
+				}
+		-|	Member(_, memb, depth) ->> {
+				stream << children[0];
+				for (long k = 0; k < depth; k++)
+					stream << ".";
+				stream << memb;
+				}
+		-|	ComputedMember(_, _, depth) ->> {
+				stream << children[0];
+				for (long k = 0; k < depth; k++)
+					stream << ".";
+				stream << "(" << children[1] << ")";
+				}
+		-|	While() ->> {
+				stream << "while "
+					   << children[0];
+				stream.indented(INDENT) << children[1];
+				}
+		-|	Branch(_, _, elseStatement) ->> {
+				if (properties.complexity == SIMPLE)
+					stream << formatSimpleIfSeriesForPrinting(expressionTree.withWraps(NONE));
+				else
+					{
+					stream << "if "
+						   << children[0];
+					CPPMLPrettyPrintStream indentedStream = stream.indented(INDENT);
+					if (properties.complexity >= SIMPLE)
+						stream << " " << children[1];
+					else
+						indentedStream << children[1];
+					if (elseStatement)
+						{
+						if (properties.complexity >= SIMPLE)
+							{
+							if (children[2].getLineWrap() == BREAK_BEFORE)
+								stream << "\nelse " << children[2].withLineWrap(NOWRAP);
+							else
+								stream << " else " << children[2];
+							}
+						else
+							{
+							if (extractExpression((*elseStatement)).isBranch())
+								stream << "\n" << INDENT << "else " << children[2];
+							else
+								{
+								stream << "\nelse ";
+								indentedStream << children[2];
+								}
+							}
+						}
+					}
+				}
+		-|	Throw(_, stacktrace) ->> {
+				stream << "throw " ;
+				if (stacktrace)
+					{
+					stream << "from ";
+					printer.toString(*stacktrace);
+					stream << " ";
+					}
+				stream << children[0];
+				}
+		-|	Return() ->> {
+				stream << "return " << children[0];
+				}
+		-|	Yield() ->> {
+				stream << "yield " << children[0];
+				}
+		-|	Pull(var, expr) ->> {
+				stream << "pull " << var.toString() << " with " << children[0];
+				}
+		-|	Try(_, catchWith, stacktrace, isRaw) ->> {
+				stream << "try";
+				stream.indented(INDENT) << children[0];
+				stream << "\n" << "catch ";
+				if (isRaw)
+					stream << "`";
+				if (stacktrace)
+					stream << "from " << *stacktrace << " ";
+				printer.toString(catchWith, false);
+				}
+		-|	CreateList() ->> {
+				stream << "[";
+				for (long k = 0; k < children.size(); k++)
+					stream << (k == 0 ? "" : ", ") << children[k];
+				stream << "]"
+				}
+		-|	Assign(var, val) ->> {
+				printer.toString(var); 
+				stream << " = " << children[0];
+				}
+		-|	_ ->> { lassert(false); }
+		;
+	}
+
+void PrintableExpressionTree::printableExpressionTreeLeafToString(CPPMLPrettyPrintStream& stream,
+                                                   const PrintableExpressionTree expressionTree)
+	{
+	PrintableExpressionTreeProperties properties = expressionTree.getProperties();
+	FORAValuePrintingParameters parameters = expressionTree.getParameters();
+	FORAValuePrinter printer = FORAValuePrinter(stream, parameters);
+
+	@match Expression(properties.expression)
+		-|	Constant(constant) ->> {
+				//check for an inverse mapping of the CSTValue
+				//to string and that it is unique
+				map<CSTValue, std::set<string>>::const_iterator it =
+					ParserExpressions::constantsInverse().find(constant);
+				if (it != ParserExpressions::constantsInverse().end()
+					&& it->second.size() == 1)
+					{
+						stream << *((it->second).begin());
+					}
+				else
+					stream << constant;
+				}
+		-|	Variable(var) ->> {
+				//look in map to see if varName needs to be replaced
+				if (parameters.variableSwap()[var])
+					stream << parameters.variableSwap()[var];
+				else
+					stream << var;
+				}
+		-|	Break() ->> {
+				stream << "break";
+				}
+		-|	Cached(expression) ->> {
+				stream << "cached";
+				printer.toString(expression);
+				}
+		-|	RawCached(expression) ->> {
+				stream << "cached `";
+				printer.toString(expression);
+				}
+		-|	Continuation(withContinuation) ->> {
+				printer.toString(withContinuation, false);
+				}
+		-|	Foreach(comprehension) ->> {
+				ListComprehensionChain chain = comprehension;
+				while (!chain.isLeaf()){
+					@match ListComprehensionChain(chain)
+						-|	Term(pat, condition, process, inner) ->> {
+							stream 	<< "for ";
+							printer.toString(pat);
+							stream << " in ";
+							printer.toString(process);
+
+							if (condition)
+								{
+								stream << " if ";
+								printer.toString(*condition);
+								}
+
+							chain = inner;
+							}
+						;
+					}
+				stream.indented(INDENT) << buildExpressionTree(chain.getLeaf().expr(), parameters)
+						  				   		.withWraps(OFFSET_CURLY).withLineWrap(BREAK_BEFORE);
+				}
+		-|	Match(args, predicate) ->> {
+				stream << "match ";
+
+				printer.toString(args);
+				
+				stream << " with ";
+				
+				printer.toString(predicate, false);
+				}
+		-|	CreateLambda(name, predicate) ->> {
+				stream << "{";
+				printer.toString(predicate);
+				stream << "}";
+				}
+		-|	CreateFunction(name, predicate, meta) ->> {
+				meta.printMetadata(stream);
+				printer.toString(predicate);
+				}
+		-|	CreateObject(name, body, meta) ->> {
+				meta.printMetadata(stream);
+				printer.toString(body);
+				}
+		-|	CreateClass(name, body, meta) ->> {
+				meta.printMetadata(stream);
+				printer.toString(body);
+				}
+		-|	CreateTuple(tup) ->> {
+				stream << "(";
+					{
+					CPPMLPrettyPrintStream groupedStream = stream.group();
+					FORAValuePrinter groupedPrinter 
+						= FORAValuePrinter(groupedStream, parameters);
+					for (int32_t k = 0; k < tup.size(); k++)
+						{
+						groupedPrinter.toString(tup[k]);
+						//if size == 1, needs comma to be parsed correctly
+						if (k + 1 < tup.size() || tup.size() == 1)
+							groupedStream << ", " << groupedStream.sep;
+						}
+					}
+				stream << ")";
+				}
+		-|	ListComprehension(chain, isIterator) ->> {
+				printer.toString(chain);
+				}
+		-|	_ ->> { lassert(false); }	
+			;
+	}
+
+void PrintableExpressionTree::toString(CPPMLPrettyPrintStream& stream) const
+	{
+	if (getProperties().lineBreak == BREAK_BEFORE)
+		stream<<"\n";
+	string paren = "";
+	switch (getProperties().parentheses)
+		{
+		case NONE:                        break;
+		case PARENS:       paren = "(";   break;
+		case CURLY:        paren = "{";   break;
+		case SQUARE:       paren = "[";   break;
+		case OFFSET_CURLY: paren = "{\n"; break;
+		}
+	stream << paren;
+
+	@match PrintableExpressionTree(*this)
+		-|	Leaf() with (properties) ->> {
+				printableExpressionTreeLeafToString(stream, *this);
+				}
+		-|	Node(children) with (properties) ->>  {
+				printableExpressionTreeNodeToString(stream, *this)
+				}
+		-|	_ ->> { lassert(false); }
+		;
+
+	switch (getProperties().parentheses)
+		{
+		case NONE:                        break;
+		case PARENS:       paren = ")";   break;
+		case CURLY:        paren = "}";   break;
+		case SQUARE:       paren = "]";   break;
+		case OFFSET_CURLY: paren = "\n}"; break;
+		}
+	stream << paren;
+	}
+
+}
+
+typedef FORAValuePrinting::PrintableExpressionTree ptr;
+
+void CPPMLPrettyPrint<ptr>::prettyPrint(CPPMLPrettyPrintStream& stream,
+										const ptr& toPrint)
+	{
+	toPrint.toString(stream);
+	}
+

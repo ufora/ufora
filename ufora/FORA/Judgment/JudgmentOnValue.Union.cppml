@@ -1,0 +1,209 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "JudgmentOnValue.hppml"
+#include "../../core/Logging.hpp"
+#include "../Runtime.hppml"
+
+Nullable<Type>		JudgmentOnValueUnion::computeType() const
+	{
+	Nullable<Type> result;
+
+	for (auto jov: alternatives().vals())
+		if (jov.type())
+			{
+			if (result)
+				{
+				if (*result != *jov.type())
+					return null();
+				}
+			else
+				result = *jov.type();
+			}
+		else
+			return null();
+
+	return result;
+	}
+	
+Nullable<bool>		JudgmentOnValueUnion::computeIsCST() const
+	{
+	return alternatives().isCST();
+	}
+	
+Nullable<CSTValue>	JudgmentOnValueUnion::computeConstant() const
+	{
+	Nullable<CSTValue> result;
+
+	for (auto jov: alternatives().vals())
+		if (jov.constant())
+			{
+			if (result)
+				{
+				if (*result == *jov.constant())
+					{
+					}
+				else
+					return null();
+				}
+			else
+				result = *jov.constant();
+			}
+		else
+			return null();
+
+	return result;
+	}
+	
+void JudgmentOnValueUnion::toString(CPPMLPrettyPrintStream& stream, bool isJOVAsValue) const
+	{
+	if (!isJOVAsValue)
+		stream << "{";
+
+	stream << "Union([";
+	for (long k = 0; k < alternatives().size(); k++)
+		{
+		if (k != 0)
+			stream << ",";
+		alternatives()[k].toString(stream, false);
+		}
+	stream << "])";
+
+	if (!isJOVAsValue)
+		stream << "}";
+	}
+
+bool JudgmentOnValueUnion::covers(const ImplVal& impl) const
+	{
+	for (auto jov: alternatives().vals())
+		if (jov.covers(impl))
+			return true;
+
+	return false;
+	}
+	
+bool JudgmentOnValueUnion::covers(const JudgmentOnValue& other) const
+	{
+	@match JudgmentOnValue(other)
+		-|	Union((elts)) ->> {
+			return alternatives().covers(elts);
+			}
+		-|	_ ->> {
+			for (auto jov: alternatives().vals())
+				if (jov.covers(other))
+					return true;
+
+			return false;
+			}
+		;
+	}
+	
+bool JudgmentOnValueUnion::disjoint(const JudgmentOnValue& other) const
+	{
+	@match JudgmentOnValue(other)
+		-|	Union((elts)) ->> {
+			for (auto myJOV: alternatives().vals())
+				for (auto theirJOV: elts.vals())
+					if (!myJOV.disjoint(theirJOV))
+						return false;
+
+			return true;
+			}
+		-|	_ ->> {
+			for (auto jov: alternatives().vals())
+				if (!jov.disjoint(other))
+					return false;
+
+			return true;
+			}
+		;
+	}
+	
+JudgmentOnResult JudgmentOnValueUnion::intersectWith(const JudgmentOnValue& in) const
+	{
+	JudgmentOnResult intersection;
+
+	@match JudgmentOnValue(in)
+		-|	Union(((elts))) ->> {
+			intersection = elts & alternatives();
+			}
+		-|	_ ->> {
+			for (auto jov: alternatives().vals())
+				intersection = intersection | jov.intersectWith(in);
+			}
+		;
+
+	if (intersection.vals().size())
+		return JudgmentOnResult(
+			JudgmentOnValue::Union(
+				JudgmentOnValueUnion(
+					intersection
+					)
+				)
+			);
+	else
+		return JudgmentOnResult();
+	}
+	
+JudgmentOnResult 	JudgmentOnValueUnion::restrictedToCSTness(bool inCSTness) const
+	{
+	JudgmentOnResult restrictedJOR = alternatives().restrictedToCSTness(inCSTness);
+	
+	return JudgmentOnResult(
+		JudgmentOnValue::Union(
+			JudgmentOnValueUnion(
+				restrictedJOR
+				)
+			)
+		);
+	}
+	
+JudgmentOnValue	JudgmentOnValueUnion::smallestCovering(const JudgmentOnValue& otherJOV) const
+	{
+	ImmutableTreeSet<JOV> jovs;
+
+	@match JOV(otherJOV)
+		-| Union(((elts))) ->> {
+			jovs = elts + alternatives().vals();
+			}
+		-| _ ->> {
+			if (covers(otherJOV))
+				return JOV::Union(*this);
+
+			jovs = alternatives().vals() + otherJOV;
+			}
+
+	return JudgmentOnValue::Union(JudgmentOnResult(jovs).removeExtraneousJudgments());
+	}
+	
+string JudgmentOnValueUnion::toString(void) const
+	{
+	return prettyPrintString(*this);
+	}
+
+void CPPML::Validator<JudgmentOnValueUnion, void>::operator()(JudgmentOnValueUnion& jovv) const
+    {
+    lassert(jovv.alternatives().size() > 1);
+    }
+
+JudgmentOnValue JudgmentOnValue::Union(JudgmentOnResult result)
+	{
+	lassert(result.size() != 0);
+
+	if (result.size() == 1)
+		return result[0];
+
+	return JOV::Union(JudgmentOnValueUnion(result));
+	}

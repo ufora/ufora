@@ -1,0 +1,1739 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "../Core/ImplValContainerUtilities.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../Core/RefcountPool.hppml"
+#include "../TypedFora/ABI/DestructorsAndConstructors.hppml"
+#include "../Native/NativeExpressionBuilder.hppml"
+#include "../Native/TypedNativeLibraryFunction.hpp"
+#include "../TypedFora/TypedFora.hppml"
+#include "../TypedFora/ABI/TypedForaValueTypecasting.hppml"
+#include "TypedForaAxiomBuilder.hppml"
+#include "Tuple.MatchStructureAxiom.hppml"
+#include "Axioms.hppml"
+#include "Axiom.hppml"
+#include "LibcallAxiomGroup.hppml"
+#include <boost/lexical_cast.hpp>
+#include "../Runtime.hppml"
+#include "../Core/Integers.hppml"
+#include <algorithm>
+#include "AxiomGroup.hppml"
+#include "../Language/Parser.hppml"
+#include "../Core/ClassMediator.hppml"
+#include "../../core/Logging.hpp"
+#include "../../core/SymbolExport.hpp"
+
+using namespace Fora;
+
+string	tupleErrorString(int64_t ix, uint64_t max)
+	{
+	return 
+		"Tuple index " + boost::lexical_cast<string>(ix) +
+					" is out of range. Valid range is [-" +
+						boost::lexical_cast<string>(max) + ", " +
+						boost::lexical_cast<string>(max) + ")"
+		;
+	}
+
+string	tupleErrorString(
+			Symbol sym,
+			const ImmutableTreeVector<Nullable<Symbol> >& names
+			)
+	{
+	ostringstream tr;
+	
+	tr << "tuple member " << sym.toString() << " is invalid. ";
+	tr << "valid members are [";
+	
+	uint64_t written = 0;
+	for (long k = 0; k < names.size(); k++)
+		{
+		if (names[k])
+			{
+			if (written++ > 0)
+				tr << ", ";
+			tr << names[k]->toString();
+			}
+		}
+		
+	tr << "]";
+	
+	return tr.str();	
+	}
+
+namespace {
+
+std::string createTupleApplyAxiomString(
+		const ImmutableTreeVector<Nullable<Symbol>>& names,
+		uword_t nTupleElementArgs,
+		bool withIndex
+		)
+	{
+	ostringstream str;
+
+	str << "fun(_,`Call,f";
+	for (uword_t k = 0; k < nTupleElementArgs; k++)
+		str << ",x" << k;
+	str << ") { (";
+	for (uword_t k = 0; k < names.size(); k++)
+		{
+		str << (k == 0 ? "":",");
+			
+		if (names[k])
+			str << "(`" << names[k]->toString() << "): ";
+			
+		str << "f(";
+		for (uword_t j = 0; j < nTupleElementArgs; j++)
+			{
+			if (j > 0)
+				str << ",";
+			str << "x" << j << "[" << k << "]";
+			}
+		
+		if (withIndex)
+			str << "," << k;
+
+		str << ")";
+		}
+	if (names.size() == 1)
+		str << ",";
+	str << ") }";
+
+	return str.str();
+	}
+
+ReturnValue<ImplValContainer, String> createTupleApplyFun_(
+		const JudgmentOnValue& inJOV, 
+		const JudgmentOnValue& inJOVExtraArgs,
+		bool withIndex		
+		)
+	{
+	if (!inJOV.type())
+		{
+		return slot1(
+			String(
+				"argument had no type!",
+				Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+				)
+			);
+		}
+	if (!inJOVExtraArgs.type())
+		{
+		return slot1(
+			String(
+				"argument had no type!",
+				Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+				)
+			);
+		}
+	if (!inJOV.type()->isTuple())
+		{
+		return slot1(
+			String(
+				"argument had no type!",
+				Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+				)
+			);
+		}
+	if (!inJOVExtraArgs.type()->isTuple())
+		{
+		return slot1(
+			String(
+				"argument had no type!",
+				Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+				)
+			);
+		}
+	
+	Type tupleType = *inJOV.type();
+
+	uword_t nTupleElementArgs = inJOVExtraArgs.type()->getTuple().types().size() + 1;
+	
+	hash_type hash = tupleType.hash();
+	
+	static map<std::tuple<hash_type, uint64_t, bool>, ClassMediator> funs;
+	static boost::mutex mutex;
+	
+	boost::mutex::scoped_lock lock(mutex);
+	
+	if (funs.find(std::make_tuple(hash, nTupleElementArgs, withIndex)) == funs.end())
+		{
+		std::string tupleApplyAxiomString = 
+			createTupleApplyAxiomString(
+				tupleType.getTuple().names(), 
+				nTupleElementArgs,
+				withIndex
+				);
+
+		Expression e = 
+			parseToExpression(
+				parseStringToSimpleParse(tupleApplyAxiomString),
+				true,
+				CodeDefinitionPoint::Internal(tupleApplyAxiomString),
+				""
+				);
+		
+		Nullable<Function> predicate = e.extractRootLevelCreateFunctionPredicate();
+
+		lassert_dump(predicate, "expected CreateFunction here.");
+			
+		funs[make_tuple(hash, nTupleElementArgs, withIndex)] =  
+			ClassMediator::Axiom("", *predicate);
+		}
+
+	return slot0(
+		ImplValContainerUtilities::createClass(
+			funs[std::make_tuple(hash, nTupleElementArgs, withIndex)])
+		);
+	}
+
+ReturnValue<ImplValContainer, String> createTupleApplyFun(
+		const JudgmentOnValue& inJOV, 
+		const JudgmentOnValue& inJOVExtraArgs
+		)
+	{
+	return createTupleApplyFun_(inJOV, inJOVExtraArgs, false);
+	}
+
+ReturnValue<ImplValContainer, String> createTupleApplyWithIndexFun(
+		const JudgmentOnValue& inJOV, 
+		const JudgmentOnValue& inJOVExtraArgs
+		)
+	{
+	return createTupleApplyFun_(inJOV, inJOVExtraArgs, true);
+	}
+
+}
+
+extern "C" {
+
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer, String> FORA_clib_tupleNamify(
+		const ImplValContainer& tupleOfNames,
+		const ImplValContainer& tupleToApplyNamesTo
+		)
+	{
+	// ImplValContainerUtilities::tupleSize asserts arg is a tuple
+	if (ImplValContainerUtilities::tupleSize(tupleOfNames) !=
+		ImplValContainerUtilities::tupleSize(tupleToApplyNamesTo))
+		return slot1(
+			String(
+				std::string("args to namify must have the same length"),
+				Fora::Interpreter::ExecutionContext::currentExecutionContext()
+					->getMemoryPool()
+				)
+			);
+
+	ImmutableTreeVector<ImplValContainer> tupleElements;
+	ImmutableTreeVector<Nullable<Symbol>> tupleNames;
+
+	for (int64_t ix = 0; ix < ImplValContainerUtilities::tupleSize(tupleOfNames); ++ix)
+		{
+		tupleElements = tupleElements + 
+			ImplValContainerUtilities::tupleGetItem(
+				tupleToApplyNamesTo, ix
+				);
+
+		ImplValContainer shouldBeSymbolOrNothing = 
+			ImplValContainerUtilities::tupleGetItem(
+				tupleOfNames, ix
+				);
+
+		if (!shouldBeSymbolOrNothing.type().isSymbol() and 
+			!shouldBeSymbolOrNothing.type().isNothing())
+			return slot1(
+				String(
+					std::string(
+						"all elements in the first tuple must be symbols or nothing"
+						),
+					Fora::Interpreter::ExecutionContext::currentExecutionContext()
+						->getMemoryPool()
+					)
+				);
+
+		if (shouldBeSymbolOrNothing.type().isSymbol())
+			{
+			Symbol name(
+				shouldBeSymbolOrNothing.cast<Symbol>()
+				);
+
+			tupleNames = tupleNames + (null() << name);
+			}
+		else
+			{
+			tupleNames = tupleNames + null();
+			}
+		}
+
+	return slot0(
+		ImplValContainerUtilities::createTuple(
+			tupleElements, tupleNames
+			)
+		);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer> FORA_clib_createTupleRange(int64_t size)
+	{
+	ImmutableTreeVector<ImplValContainer> tupleElements;
+
+	if (size <= 0)
+		return slot0(ImplValContainerUtilities::createTuple(tupleElements));
+	
+	for (int64_t ix = 0; ix < size; ++ix)
+		 {
+		 tupleElements = tupleElements + 
+			 ImplValContainerUtilities::createSignedInteger(ix);
+		 }
+	
+	return slot0(ImplValContainerUtilities::createTuple(tupleElements));
+	}
+
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer, String> FORA_clib_createTupleApplyFun(
+		const JudgmentOnValue& inJOV, 
+		const JudgmentOnValue& inJOVExtraArgs
+		)
+	{
+	return createTupleApplyFun(inJOV, inJOVExtraArgs);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer, String> FORA_clib_createTupleApplyWithIndexFun(
+		const JudgmentOnValue& inJOV, 
+		const JudgmentOnValue& inJOVExtraArgs
+		)
+	{
+	return createTupleApplyWithIndexFun(inJOV, inJOVExtraArgs);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<int64_t, String> FORA_clib_tupleJOVSize(const JudgmentOnValue& t)
+	{
+	if (t.type().isNull()) {
+		ostringstream str;
+		str << "Can't call size on " << prettyPrintString(t);
+		return slot1(
+			String(
+				str.str(),
+				Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+				)
+			);
+		}
+
+	return slot0(t.type()->getTuple().types().size());
+	}
+
+BSA_DLLEXPORT
+ReturnValue<JudgmentOnValue, Nothing> FORA_clib_tupleJOVGetItem(
+		const JudgmentOnValue& t, int64_t ix
+		)
+	{
+	const ImmutableTreeVector<JOV>& jovs(t.getTuple().jov().jovs());
+
+	int64_t effective_ix = ix;
+
+	if (effective_ix < 0)
+		effective_ix += (long)jovs.size();
+	if (effective_ix < 0 || ix >= (long)jovs.size())
+		return slot1(Nothing());
+
+	return slot0(jovs[effective_ix]);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer> FORA_clib_tupleJOVNames(const JudgmentOnValue& inJov)
+	{
+	const ImmutableTreeVector<Nullable<Symbol> >& names((inJov.getTuple().jov().names()));
+
+	ImmutableTreeVector<ImplValContainer> tupleElements;
+	for (long k = 0; k < names.size(); k++)
+		if (!names[k].isNull())
+			tupleElements = tupleElements + ImplValContainer(CSTValue(*names[k]));
+		else
+			tupleElements = tupleElements + ImplValContainer(CSTValue());
+
+	return slot0(
+		ImplValContainerUtilities::createTuple(tupleElements)
+		);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<JudgmentOnValue, Nothing> FORA_clib_tupleJOVGetItemBySymbol(
+		const JudgmentOnValue& tupJov, 
+		const Symbol& symbol
+		)
+	{
+	const ImmutableTreeVector<JOV>& jovs(tupJov.getTuple().jov().jovs());
+	const ImmutableTreeVector<Nullable<Symbol> >& names(tupJov.getTuple().jov().names());
+	
+	for (long k = 0; k < names.size(); k++)
+		if (names[k] && *names[k] == symbol)
+			return slot0(jovs[k]);
+	
+	return slot1(Nothing());
+	}
+
+BSA_DLLEXPORT
+ReturnValue<int64_t, Nothing> FORA_clib_tupleJOVGetNameIndex(
+			const JudgmentOnValue& tupleJOV,
+			const Symbol& sym,
+			bool fromRight
+			)
+	{
+	const ImmutableTreeVector<Nullable<Symbol> >& names = 
+			tupleJOV.getTuple().jov().names();
+	
+	if (fromRight)
+		{
+		for (long k = ((long)names.size())-1; k >= 0; k--)
+			if (names[k] && *names[k] == sym)
+				return slot0(k);
+		}
+	else
+		{
+		for (long k = 0; k < names.size(); k++)
+			if (names[k] && *names[k] == sym)
+				return slot0(k);
+		}
+
+	return slot1(Nothing());
+	}
+
+BSA_DLLEXPORT
+ReturnValue<JudgmentOnValue> FORA_clib_createTupleJOV(const ImplValContainer& jovsTup)
+	{
+	uword_t inCount = jovsTup.type().getTuple().types().size();
+	JOV* jovs = &jovsTup.cast<JOV>();
+	const ImmutableTreeVector<Nullable<Symbol> >& names =
+		jovsTup.type().getTuple().names();
+
+	ImmutableTreeVector<JOV> jovsV;
+	for (long k = 0; k < inCount; k++)
+		jovsV = jovsV + jovs[k];
+
+	return slot0(JOV::Tuple(JOVT(jovsV, names)));
+	}
+
+//we've been given a tuple of ((name, val), (name2, val2), ...)
+//make it into a tuple (name: val, name2: val)
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer> FORA_clib_makeNamedTupleFromPair(
+		const Symbol& symbol, 
+		const ImplValContainer& res
+		)
+	{
+	return slot0( 
+		ImplValContainerUtilities::createTuple(
+			emptyTreeVec() + res,
+			emptyTreeVec() + (null() << symbol)
+			)
+		);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer, ImplValContainer> FORA_clib_tupleGetItem(
+		const ImplValContainer& val, 
+		int64_t ix
+		)
+	{
+	try {
+		return slot0(ImplValContainerUtilities::tupleGetItem(val, ix));
+		}
+	catch (ImplValContainerUtilities::IVCException& e) 
+		{
+		return slot1(
+			ImplValContainer(
+				CSTValue(e.what())
+				)
+			);
+		}
+	}
+
+BSA_DLLEXPORT
+ImplValContainer FORA_clib_tupleGetItemOutOfBoundsReturnsPooledImplval(
+		const ImplValContainer& val, 
+		int64_t ix
+		)
+	{
+	const ImmutableTreeVector<Type>& types = val.type().getTuple().types();
+	ImplVal result = CSTValue(tupleErrorString(ix, types.size())).getReference().duplicate();
+
+	Fora::Interpreter::ExecutionContext::currentExecutionContext()
+							->getRefcountPool()->addAlreadyRefcounted(result);
+
+	return ImplValContainer::assumeOwnershipOf(result);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer, ImplValContainer> FORA_clib_tupleMember(const ImplValContainer& val, const Symbol& sym)
+	{
+	try {
+		return slot0(ImplValContainerUtilities::tupleMember(val, sym));
+		}
+	catch (ImplValContainerUtilities::IVCException& e)
+		{
+		return slot1(
+			ImplValContainer(
+				CSTValue(e.what())
+				)
+			);
+		}
+	}
+
+BSA_DLLEXPORT
+int64_t FORA_clib_tupleGetSize(const ImplValContainer& val)
+	{
+	return val.type().getTuple().types().size();
+	}
+
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer> FORA_clib_tupleGetSlice(
+		const ImplValContainer& val, 
+		int64_t ixLow, 
+		int64_t ixHigh
+		)
+	{
+	return slot0(ImplValContainerUtilities::tupleGetSlice(val, ixLow, ixHigh));
+	}
+
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer> FORA_clib_tupleGetSliceRight(
+		const ImplValContainer& val, 
+		int64_t ixLow
+		)
+	{
+	return slot0(
+		ImplValContainerUtilities::tupleGetSlice(
+			val, 
+			ixLow, 
+			val.type().getTuple().types().size()
+			)
+		);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer> FORA_clib_tupleGetSliceLeft(
+		const ImplValContainer& val, 
+		int64_t ixHigh
+		)
+	{
+	return slot0(
+		ImplValContainerUtilities::tupleGetSlice(
+			val, 
+			0,
+			ixHigh
+			)
+		);
+	}
+
+} //extern "C"
+
+class TupleNamifyAxiom : public AxiomGroup {
+public:
+	TupleNamifyAxiom() :
+		AxiomGroup(
+			JOVT() +
+			"tupleNamify" +
+			"Call" +
+			jovTuple() + // should be a tuple of Sybols -- the names to apply
+			jovTuple() + // the tuple of values to which we want to apply names
+			JOVTE::NoExtras()
+			)
+		{
+		}
+
+	Nullable<Axiom> axiom(TypedFora::Compiler& c, const JudgmentOnValueTuple& s)
+		{
+		JOV outJov = outJovFor(s);
+
+		if (outJov.constant()) // we're not hard-coding the exception string here
+			return null() << AxiomGroup::returnsAxiom(s, *outJov.constant());
+
+		if (outJov.type() and outJov.type()->isTuple())
+			{
+			JudgmentOnValue namesTupleJmt = s.jovs()[2];
+			lassert(namesTupleJmt.constant().isValue());
+			Nullable<ImmutableTreeVector<Nullable<Symbol>>> namesVector = 
+				computeSymbolValues(*namesTupleJmt.constant());
+
+			lassert(outJov.type()->getTuple().types().size() == namesVector->size());
+
+			TypedFora::TypedForaAxiomBuilder 
+				builder(s, TypedFora::RefcountStyle::Pooled());
+
+			ImmutableTreeVector<TypedFora::MakeTupleArgument> tupleArgs;
+
+			for (uword_t ix = 0; ix < namesVector->size(); ++ix)
+				{
+				tupleArgs = tupleArgs +
+					TypedFora::MakeTupleArgument::Normal(
+						(*namesVector)[ix],
+						TypedFora::Expression::GetItem(builder.var(3).expr(), ix)
+						);
+				}
+
+			return null() <<
+				builder.axiomForExpression(
+					TypedFora::Expression::MakeTuple(tupleArgs),
+					TypedFora::RefcountStyle::Pooled(),
+					outJov,
+					false
+					);
+			}
+
+		return null() <<
+			LibcallAxiomGroup::createAxiom(
+				signature(),
+				ReturnSlots() + 
+					ReturnSlot::Normal(
+						jovTuple()
+						) +
+					ReturnSlot::Exception(
+						JOV::OfType(Type::String())
+						),
+				&FORA_clib_tupleNamify,
+				ImmutableTreeVector<uword_t>() + 2 + 3
+				);
+		}
+
+	Nullable<AxiomJOA> axiomJOA(const JudgmentOnValueTuple& s)
+		{
+		JOV outJov = outJovFor(s);
+
+		if (!outJov.isUnknown())
+			{
+			if (outJov.isTuple())
+				{
+				return null() << AxiomJOA::Native(
+					JudgmentOnAction::Value(
+						outJov
+						)
+					);
+				}
+
+			return null() << AxiomJOA::Native(
+				JudgmentOnAction::Throws(outJov)
+				);
+			}
+		
+		return null() << AxiomJOA::Native(
+			JudgmentOnAction::Value(jovTuple())
+			| JudgmentOnAction::Throws(JOV::OfType(Type::String()))
+			);
+		}
+
+private:
+
+	JOV outJovFor(const JudgmentOnValueTuple& s)
+		{
+		JudgmentOnValue namesTupleJmt = s.jovs()[2];
+		JudgmentOnValue tupleToNamifyJmt = s.jovs()[3];
+
+		if (namesTupleJmt.constant())
+			{
+			Nullable<ImmutableTreeVector<Nullable<Symbol>>> namesVector = 
+				computeSymbolValues(*namesTupleJmt.constant());
+
+			if (namesVector.isNull())
+				return JOV::OfType(Type::String());
+
+			uword_t namesSize = namesVector->size();			
+
+			if (tupleToNamifyJmt.constant())
+				return computeConstantOutJovFor(
+					*namesVector, *tupleToNamifyJmt.constant()
+					);
+
+			@match JudgmentOnValueTuple(tupleToNamifyJmt.getTuple().jov())
+				-| (jovs, _, NoExtras()) ->> {
+					if (jovs.size() == namesSize)
+						{
+						return JOV::Tuple(
+							JudgmentOnValueTuple(jovs, *namesVector)
+							);
+						}
+					else {
+						return JOV::OfType(Type::String());
+						}
+					}
+				-| (jovs, _, Extras()) ->> {
+					if (jovs.size() > namesSize)
+						{
+						return JOV::OfType(Type::String());
+						}
+					}
+				;							
+			}
+
+		return JOV::Unknown();
+		}
+			
+	JOV computeConstantOutJovFor(
+			const ImmutableTreeVector<Nullable<Symbol>>& toNameWith,
+			const CSTValue& tupleToName
+			)
+		{
+		Nullable<uword_t> size = tupleToName.tupleGetSize();
+		lassert(size.isValue());
+
+		if (toNameWith.size() != *size)
+			return JOV::OfType(Type::String());
+
+		ImmutableTreeVector<CSTValue> values;
+
+		for (uword_t ix = 0; ix < *size; ++ix)
+			{
+			values = values + (*tupleToName.tupleGetItem(ix));
+			}
+
+		return JOV::Constant(CSTValue::Tuple(values, toNameWith));
+		}
+
+	Nullable<ImmutableTreeVector<Nullable<Symbol>>> computeSymbolValues(
+			const CSTValue& shouldBeTuple
+			)
+		{
+		Nullable<uword_t> tupleSize = shouldBeTuple.tupleGetSize();
+		
+		lassert(tupleSize.isValue());
+
+		ImmutableTreeVector<Nullable<Symbol>> tr;
+
+		for (uword_t ix = 0; ix < *tupleSize; ++ix)
+			{
+			Nullable<CSTValue> tupleElt = shouldBeTuple.tupleGetItem(ix);
+			
+			if (!tupleElt->type().isNothing() and !tupleElt->type().isSymbol())
+				return null();
+
+			if (tupleElt->type().isNothing())
+				{
+				tr = tr + null();
+				}
+			else
+				{
+				tr = tr + (null() << tupleElt->cast<Symbol>());
+				}
+			}
+
+		return null() << tr;
+		}
+
+	};
+
+class MakeNamedTupleFromPairAxiom : public AxiomGroup {
+public:
+		MakeNamedTupleFromPairAxiom() :
+				AxiomGroup(
+					JOVT()
+					+ "MakeNamedTupleFromPair"
+					+ "Call"
+					+ JOV::OfType(Type::Symbol())
+					+ JOV()
+					)
+			{
+			}
+
+		Nullable<Axiom> axiom(TypedFora::Compiler& c, const JudgmentOnValueTuple& s)
+			{
+			return null() << LibcallAxiomGroup::createAxiom(
+				signature(),
+				ReturnSlots() + jovTuple(),
+				&FORA_clib_makeNamedTupleFromPair,
+				ImmutableTreeVector<uword_t>() + 2 + 3
+				);
+			}
+
+		Nullable<AxiomJOA>		axiomJOA(const JudgmentOnValueTuple& s)
+			{
+			return null() << AxiomJOA::Native(
+				JudgmentOnAction::Value(jovTuple())
+				);
+			}
+};
+
+class TupleSizeAxiom : public AxiomGroup {
+public:
+		TupleSizeAxiom() :
+				AxiomGroup(
+					JOVT() + "size" + "Call" + jovTuple()
+					)
+			{
+			}
+
+		Nullable<Axiom> axiom(TypedFora::Compiler& c, const JudgmentOnValueTuple& s)
+			{
+			JOV tJov = s.jovs()[2];
+			JudgmentOnValueTuple tJovt = tJov.getTuple().jov();
+
+			if (tJovt.extras().isNoExtras())
+				return null() << AxiomGroup::returnsAxiom(
+					s,
+					CSTValue((int64_t)tJovt.jovs().size())
+					);
+
+			return null() << LibcallAxiomGroup::createAxiom(
+				signature(),
+				ReturnSlots() + JOV::OfType(Type::Integer(64, true)),
+				&FORA_clib_tupleGetSize,
+				ImmutableTreeVector<uword_t>() + 2
+				);
+			}
+
+		Nullable<AxiomJOA>		axiomJOA(const JudgmentOnValueTuple& s)
+			{
+			if (s.jovs()[2].getTuple().jov().extras().isNoExtras())
+				return null() << AxiomJOA::Returns(
+					CSTValue(
+						(int64_t)s.jovs()[2].getTuple().jov().jovs().size()
+						)
+					);
+				else
+				return null() << AxiomJOA::Returns(JOV::OfType(Type::Integer(64, true)));
+			}
+};
+
+namespace {
+
+//return the possible results we could have
+JudgmentOnResult tupleGetitemResultJOR(const JudgmentOnValueTuple& signature)
+	{
+	JOVT jovt = signature.jovs()[0].getTuple().jov();
+
+	ImmutableTreeSet<JudgmentOnValue> jovs;
+
+	for (long k = 0; k < jovt.jovs().size(); k++)
+		jovs = jovs + jovt.jovs()[k];
+
+	@match JOVTE(jovt.extras())
+		-| Extras(extrasJOV) ->> {
+			jovs = jovs + extrasJOV;
+			}
+		-| _ ->> {}
+		;
+
+	return JudgmentOnResult(jovs);
+	}
+
+}
+
+class TupleGetItemAxiom : public AxiomGroup {
+public:
+		TupleGetItemAxiom() :
+				AxiomGroup(
+					JOVT() +
+						jovTuple() +
+						"GetItem" +
+						OfType(Type::Integer(64, true)) +
+						JOVTE::NoExtras()
+						)
+			{
+			}
+
+		Nullable<Axiom> axiom(TypedFora::Compiler& c, const JudgmentOnValueTuple& s)
+			{
+			JOV ixJov = s.jovs()[2];
+			JOV tJov = s.jovs()[0];
+			JudgmentOnValueTuple tJovt = tJov.getTuple().jov();
+
+			if (ixJov.constant())
+				{
+				int64_t ix = *ixJov.constant()->getInt64();
+				int64_t effective_ix = ix;					
+				
+				if (tJovt.extras().isNoExtras())
+					{
+					if (ix < 0)
+						effective_ix = (long)tJovt.jovs().size() + ix;
+
+					if (effective_ix < 0 ||
+							effective_ix >= tJovt.jovs().size()
+							)
+						return null() << AxiomGroup::throwsAxiom(s,
+							CSTValue(
+								tupleErrorString(
+									ix,
+									tJovt.jovs().size()
+									)
+								)
+							);
+					}
+					
+				if (!(ix < 0 && tJovt.extras().isExtras()) &&
+						effective_ix < tJovt.jovs().size()
+						)
+					{
+					JudgmentOnValue outJOV  = tJovt.jovs()[effective_ix];
+					if (outJOV.constant()) 
+						return null() <<
+							AxiomGroup::returnsAxiom(s, *outJOV.constant());
+
+					TypedFora::TypedForaAxiomBuilder axiomBuilder(
+						s,
+						TypedFora::RefcountStyle::Pooled()
+						);
+
+					return null() << 
+						axiomBuilder.axiomForExpression(
+							TypedFora::Expression::GetItem(
+								axiomBuilder.var(0).expr(),
+								effective_ix
+								),
+							TypedFora::RefcountStyle::Pooled(),
+							outJOV,
+							false
+							);
+					}
+				}
+
+			if (tJovt.extras().isNoExtras() && tJov.type())
+				return generateBranchingTupleLookupAxiom(c, s);
+
+			return null() << LibcallAxiomGroup::createAxiom(
+				signature(),
+				ReturnSlots() +
+					ReturnSlot::Normal(JOV()) +
+					ReturnSlot::Exception(JOV()), 
+				&FORA_clib_tupleGetItem,
+				ImmutableTreeVector<uword_t>() + 0 + 2
+				);
+			}
+
+		Nullable<Axiom> generateBranchingTupleLookupAxiom(
+										TypedFora::Compiler& c, 
+										const JudgmentOnValueTuple& s
+										)
+			{
+			ImmutableTreeVector<JudgmentOnValue> tupleJovs = s.jovs()[0].getTuple().jov().jovs();
+
+			TypedFora::TypedForaAxiomBuilder axiomBuilder(
+				s,
+				TypedFora::RefcountStyle::Pooled()
+				);
+
+			JudgmentOnResult normalResults = tupleGetitemResultJOR(s);
+
+			NativeExpressionBuilder builder;
+
+			NativeExpression index = axiomBuilder.nativeVar(2).expr();
+
+			NativeExpression tupleExpr = axiomBuilder.nativeVar(0).expr();
+
+			NativeExpression indexModified = builder.add(
+				NativeExpression::If(
+					index < NativeExpression::ConstantSLong(0),
+					index + NativeExpression::ConstantSLong(tupleJovs.size()),
+					index
+					)
+				);
+
+			for (long k = 0; k < tupleJovs.size(); k++)
+				{
+				int returnSlot = normalResults.vals().lowerBound(tupleJovs[k]);
+
+				lassert(tupleJovs[k] == normalResults.vals()[returnSlot]);
+
+				builder.add(
+					NativeExpression::If(
+						indexModified == NativeExpression::ConstantSLong(k),
+						NativeExpression::Return(
+							returnSlot,
+							tupleJovs[k].constant() ? 
+								//if the native type is 'nothing' then this is a constant
+								//and we don't need a lookup expression
+								NativeExpression() 
+							: 
+								tupleExpr[k]
+							),
+						NativeExpression()
+						)
+					);
+				}
+
+			NativeExpression ivcPtr =
+				builder.getPointerExprToCopyOnStack(
+					TypedFora::Abi::typecastForaValue(
+						tupleExpr,
+						s.jovs()[0],
+						JOV(),
+						false
+						)
+					);
+
+			NativeExpression finalExpr = 
+				NativeExpression::Return(
+					normalResults.vals().size(),
+					makeTypedNativeLibraryFunction(
+						&FORA_clib_tupleGetItemOutOfBoundsReturnsPooledImplval
+						)(ivcPtr, index)
+					.getExpression()
+					);
+
+			return null() << 
+				axiomBuilder.axiomForNativeExpression(
+					builder(finalExpr),
+					TypedFora::RefcountStyle::Pooled(),
+					normalResults,
+					JudgmentOnResult(JOV())
+					);
+			
+			}
+
+		Nullable<AxiomJOA>		axiomJOA(const JudgmentOnValueTuple& s)
+			{
+			if (s.jovs()[2].constant())
+				{
+				JOVT jovt = s.jovs()[0].getTuple().jov();
+
+				int64_t ix = *s.jovs()[2].constant()->getInt64();
+				int64_t effective_ix = ix;
+		
+				if (jovt.extras().isNoExtras())
+					{
+					if (ix < 0)
+						effective_ix = (long)jovt.jovs().size() + ix;
+
+					if (effective_ix < 0 || effective_ix >= jovt.jovs().size())
+						return null() << AxiomJOA::Native(
+							JudgmentOnAction::Throws(
+								JOV::Constant(
+									CSTValue(
+										tupleErrorString(ix, jovt.jovs().size())
+										)
+									)
+								)
+							);
+					}
+					
+				if (
+					!(ix < 0 && jovt.extras().isExtras()) &&
+					(effective_ix < jovt.jovs().size())
+					)
+					return null() << AxiomJOA::Native(
+						JudgmentOnAction::Value(jovt.jovs()[effective_ix])
+						);
+				if (ix >= jovt.jovs().size())
+					{
+					@match JOVTE(jovt.extras())
+						-| Extras(extrasJOV) ->> {
+							return null() << AxiomJOA::Native(
+											JudgmentOnAction::Value(extrasJOV)
+										|	JudgmentOnAction::Throws(JOV())
+										);
+							}
+						-| _ ->> {}
+						;
+					}
+				if (ix < 0 && jovt.extras().isExtras())
+					{
+					@match JOVTE(jovt.extras())
+						-| Extras(extrasJOV) ->> {
+							JOV outJOV = extrasJOV;
+							Nullable<JOV> jovtSmallestCovering
+								= smallestCovering(jovt.jovs());
+							if (jovtSmallestCovering)
+								outJOV = smallestCovering(
+											extrasJOV,
+											*jovtSmallestCovering
+											);
+							return null() << AxiomJOA::Native(
+												JudgmentOnAction::Value(outJOV)
+											|	JudgmentOnAction::Throws(JOV())
+											);
+							}
+						-|	_ ->> {}
+						;
+					}
+				}
+
+			return null() << AxiomJOA::Native(
+								JudgmentOnAction::Value(tupleGetitemResultJOR(s))
+							|	JudgmentOnAction::Throws(JOV())
+							);
+			}
+
+	Nullable<JudgmentOnValueTuple>	weakestArgumentsProducingResultCoveredBy(
+												TypedFora::Compiler& c,
+												const JudgmentOnValueTuple& args,
+												const JudgmentOnAction& result
+												)
+		{
+		if (!signature().covers(args))
+			return null();
+
+		if (result.resultPart().size() != 1)
+			return null();
+
+		@match JOV(args.jovs()[0])
+			-|	Tuple((jovs, names, extras)) ->> {
+				ImmutableTreeVector<JOV> newEltJOVs = 
+					(emptyTreeVec() + JOV::Unknown()) * jovs.size();
+
+				//newEltJOVs = newEltJOVs.withElementReplaced(index, result.resultPart()[0]);
+
+				JOV newTupleJOV = JOV::Tuple(
+					JOVT(
+						newEltJOVs,
+						names,
+						extras
+						)
+					);
+
+				return null() << JOVT(
+					args.jovs()
+						.withElementReplaced(0, newTupleJOV)
+						.withElementReplaced(2, OfType(Type::Integer(64, true))),
+					args.names(),
+					args.extras()
+					);
+				}
+			-| _ ->> {
+				return null();
+				}
+		}
+
+};
+//TODO CLEANUP brax: Merge TupleMemberAxiom with TupleGetItemAxiom, which is largely similar
+class TupleMemberAxiom : public AxiomGroup {
+public:
+		TupleMemberAxiom() :
+				AxiomGroup(
+					JOVT() +
+						jovTuple() +
+						"Member" +
+						OfType(Type::Symbol()) +
+						JOVTE::NoExtras()
+						)
+			{
+			}
+
+		Nullable<Axiom> axiom(TypedFora::Compiler& c, const JudgmentOnValueTuple& s)
+			{
+			JOV ixJov = s.jovs()[2];
+			JOV tJov = s.jovs()[0];
+			JudgmentOnValueTuple tJovt = tJov.getTuple().jov();
+
+			if (ixJov.constant())
+				{
+				Symbol memberSym = ixJov.constant()->cast<Symbol>();
+
+				//find the relevant symbol
+				Nullable<uint64_t> nullableIx;
+				for (long k = 0; k < tJovt.names().size() && !nullableIx; k++)
+					if (tJovt.names()[k] && *tJovt.names()[k] == memberSym)
+						nullableIx = k;
+				
+				if (!nullableIx && tJovt.extras().isNoExtras())
+					return null() << AxiomGroup::throwsAxiom(s, 
+						CSTValue(tupleErrorString(memberSym, tJovt.names()))
+						);
+				
+				if (nullableIx)
+					{
+					uint64_t ix = *nullableIx;
+					
+					JudgmentOnValue outJOV  = tJovt.jovs()[ix];
+					if (outJOV.constant())
+						return null() << AxiomGroup::returnsAxiom(s, *outJOV.constant());
+
+					
+					TypedFora::TypedForaAxiomBuilder axiomBuilder(
+						s,
+						TypedFora::RefcountStyle::Pooled()
+						);
+
+					return null() << 
+						axiomBuilder.axiomForExpression(
+							TypedFora::Expression::GetItem(
+								axiomBuilder.var(0).expr(),
+								ix
+								),
+							TypedFora::RefcountStyle::Pooled(),
+							outJOV,
+							false
+							);
+					}
+				}
+
+			return null() << LibcallAxiomGroup::createAxiom(
+				signature(),
+				ReturnSlots() + 
+					ReturnSlot::Normal(JOV()) +
+					ReturnSlot::Exception(JOV()),
+				&FORA_clib_tupleMember,
+				ImmutableTreeVector<uword_t>() + 0 + 2
+				);
+			}
+
+		Nullable<AxiomJOA>		axiomJOA(const JudgmentOnValueTuple& s)
+			{
+			if (s.jovs()[2].constant())
+				{
+				JOVT tJovt = s.jovs()[0].getTuple().jov();
+
+				Symbol memberSym = s.jovs()[2].constant()->cast<Symbol>();
+				
+				//find the relevant symbol
+				Nullable<uint64_t> nullableIx = symbolIndex(tJovt, memberSym);
+				
+				if (!nullableIx && tJovt.extras().isNoExtras())
+					return null() << AxiomJOA::Native(
+						JudgmentOnAction::Throws(
+							JOV::Constant(
+								CSTValue(
+									tupleErrorString(memberSym, tJovt.names())
+									)
+								)
+							)
+						);
+				if (nullableIx)
+					return null() << AxiomJOA::Native(
+						JudgmentOnAction::Value(tJovt.jovs()[*nullableIx])
+						);
+				}
+
+			return null() << AxiomJOA::Native(
+								JudgmentOnAction::Value(tupleGetitemResultJOR(s))
+							|	JudgmentOnAction::Throws(JOV())
+							);
+			}
+
+	Nullable<uint64_t> symbolIndex(const JudgmentOnValueTuple& jovt, Symbol membername)
+		{
+		for (long k = 0; k < jovt.names().size(); k++)
+			if (jovt.names()[k] && *jovt.names()[k] == membername)
+				return null() << (uint64_t)k;
+
+		return null();
+		}
+
+	Nullable<JudgmentOnValueTuple>	weakestArgumentsProducingResultCoveredBy(
+												TypedFora::Compiler& c,
+												const JudgmentOnValueTuple& args,
+												const JudgmentOnAction& result
+												)
+		{
+		if (!signature().covers(args))
+			return null();
+
+		if (!args.jovs()[2].constant())
+			return null();
+
+		if (result.resultPart().size() != 1)
+			return null();
+
+		Symbol name = args.jovs()[2].constant()->cast<Symbol>();
+
+		@match JOV(args.jovs()[0])
+			-|	Tuple((jovs, names, extras)) ->> {
+
+				Nullable<uint64_t> nullableIx = symbolIndex(args.jovs()[0].getTuple().jov(), name);
+
+				if (!nullableIx)
+					return null();
+
+				ImmutableTreeVector<JOV> newEltJOVs = 
+					(emptyTreeVec() + JOV::Unknown()) * jovs.size();
+
+				newEltJOVs = newEltJOVs.withElementReplaced(*nullableIx, result.resultPart()[0]);
+
+				JOV newTupleJOV = JOV::Tuple(
+					JOVT(
+						newEltJOVs,
+						names,
+						extras
+						)
+					);
+
+				return null() << JOVT(
+					args.jovs().withElementReplaced(0, newTupleJOV),
+					args.names(),
+					args.extras()
+					);
+				}
+			-| _ ->> {
+				return null();
+				}
+		}
+};
+
+class TupleGetSliceAxiom : public AxiomGroup {
+public:
+	TupleGetSliceAxiom(bool leftIsNone, bool rightIsNone) :
+			AxiomGroup(
+				JOVT()
+					+ jovTuple()
+					+ "GetItem"
+					+ OfType(leftIsNone ? Type::Nothing() : Type::Integer(64, true))
+					+ OfType(rightIsNone ? Type::Nothing() :  Type::Integer(64, true))
+					+ JOVTE::NoExtras()
+					),
+			mLeftIsNothing(leftIsNone),
+			mRightIsNothing(rightIsNone)
+		{
+		}
+
+	pair<int64_t, int64_t> extractIndices(const JudgmentOnValueTuple& s)
+		{
+		JudgmentOnValueTuple argJovt = s.jovs()[0].getTuple().jov();
+		
+		return make_pair(
+			s.jovs()[2].type()->isNothing() ? 0 : *s.jovs()[2].constant()->getInt64(),
+			s.jovs()[3].type()->isNothing() ? argJovt.jovs().size() : *s.jovs()[3].constant()->getInt64()
+			);
+		}
+
+	Nullable<Axiom> axiom(TypedFora::Compiler& c, const JudgmentOnValueTuple& s)
+		{
+		JudgmentOnValueTuple outJOVT = getOutJOVT(s);
+		JudgmentOnValue outJOV = JOV::Tuple(outJOVT);
+
+		if (mLeftIsNothing && mRightIsNothing)
+			{
+			NativeAxiomVars vars(s);
+
+			return null() << AxiomGroup::simpleAxiom(
+				vars, 
+				outJOV,
+				TypedFora::Abi::duplicate(
+					outJOV,
+					vars[0]
+					),
+				false
+				);
+			}
+
+
+		if (outJOV.constant())
+			return null() << AxiomGroup::returnsAxiom(s, *outJOV.constant());
+
+		if (outJOV.type())
+			{
+			//i must know both indices. i may or may
+			//not know the type of the incoming tuple
+			lassert(s.jovs()[2].constant());
+			lassert(s.jovs()[3].constant());
+
+			if (s.jovs()[0].type())
+				{
+				//fully typed
+				NativeAxiomVars vars(s);
+
+				ImmutableTreeVector<NativeExpression> exprs;
+
+				pair<int64_t, int64_t> indices = extractIndices(s);
+
+				int64_t ix1 = indices.first;
+				int64_t ix2 = indices.second;
+
+				JudgmentOnValueTuple argJovt = s.jovs()[0].getTuple().jov();
+
+				if (ix1 < 0)
+					ix1 += argJovt.jovs().size();
+				if (ix2 < 0)
+					ix2 += argJovt.jovs().size();
+				if (ix1 < 0)
+					ix1 = 0;
+				if (ix2 >=0 && ix2 >= argJovt.jovs().size())
+					ix2 = argJovt.jovs().size();
+
+				lassert(ix1 < ix2);
+
+				for (long k = ix1; k < ix2; k++)
+					exprs = exprs +
+						TypedFora::Abi::duplicate(
+							JOV::OfType(
+								*argJovt.jovs()[k].type()
+								),
+							vars[0][k]
+							);
+
+				return null() << AxiomGroup::simpleAxiom(vars, outJOV,
+					NativeExpression::CreateComposite(exprs),
+					false
+					);
+				}
+			}
+
+		if (mLeftIsNothing)
+			return null() << 
+				LibcallAxiomGroup::createAxiom(
+					signature(),
+					ReturnSlots() + outJOV,
+					&FORA_clib_tupleGetSliceLeft,
+					ImmutableTreeVector<uword_t>() + 0 + 3
+				);
+		
+		if (mRightIsNothing)
+			return null() << 
+				LibcallAxiomGroup::createAxiom(
+					signature(),
+					ReturnSlots() + outJOV,
+					&FORA_clib_tupleGetSliceRight,
+					ImmutableTreeVector<uword_t>() + 0 + 2
+				);
+
+		return null() << 
+			LibcallAxiomGroup::createAxiom(
+				signature(),
+				ReturnSlots() + outJOV,
+				&FORA_clib_tupleGetSlice,
+				ImmutableTreeVector<uword_t>() + 0 + 2 + 3
+			);
+		}
+
+	Nullable<AxiomJOA>		axiomJOA(const JudgmentOnValueTuple& s)
+		{
+		return null() << AxiomJOA::Returns(JOV::Tuple(getOutJOVT(s)));
+		}
+
+	JudgmentOnValueTuple	getOutJOVT(const JudgmentOnValueTuple& s)
+		{
+		JOV tJov = s.jovs()[0];
+		JudgmentOnValueTuple tJovt = tJov.getTuple().jov();
+
+		if (mLeftIsNothing && mRightIsNothing)
+			return tJovt;
+
+		if (tJovt.extras().isNoExtras() && tJovt.jovs().size() == 0)
+			//will always return itself
+			return JudgmentOnValueTuple(emptyTreeVec(), emptyTreeVec());
+
+		if (s.jovs()[2].constant() && s.jovs()[3].constant())
+			{
+			pair<int64_t, int64_t> indices = extractIndices(s);
+
+			int64_t ix1 = indices.first;
+			int64_t ix2 = indices.second;
+
+			if (ix1 >= 0 && ix2 >= 0 && ix1 >= ix2)
+				return JudgmentOnValueTuple();
+
+			if (tJovt.extras().isNoExtras())
+				{
+				//we can do this explicitly
+				if (ix1 < 0)
+					ix1 += tJovt.jovs().size();
+				if (ix2 < 0)
+					ix2 += tJovt.jovs().size();
+				if (ix1 < 0)
+					ix1 = 0;
+				
+				if (ix2 >= 0 && ix2 > tJovt.jovs().size())
+					ix2 = tJovt.jovs().size();
+				
+				if (ix1 >= ix2 || ix1 >= tJovt.jovs().size() || ix2 < 0)
+					return JudgmentOnValueTuple();
+				
+				return JudgmentOnValueTuple(
+					tJovt.jovs().slice(ix1, ix2),
+					tJovt.names().slice(ix1, ix2),
+					JOVTE()
+					);
+				}
+				else
+				{
+				if (ix1 >= 0 && ix2 >= 0 && ix2 <= tJovt.jovs().size())
+					{
+					if (ix1 > ix2)
+						return JudgmentOnValueTuple();
+					
+					return JudgmentOnValueTuple(
+						tJovt.jovs().slice(ix1, ix2),
+						tJovt.names().slice(ix1, ix2),
+						JOVTE()
+						);
+					}
+				}
+			}
+
+		Nullable<JudgmentOnValue> commonJOV;
+		
+		if (tJovt.extras().isExtras())
+			commonJOV = tJovt.extras().getExtras().jov();
+		
+		for (long k = 0; k < tJovt.jovs().size()
+								&& !(commonJOV && commonJOV->isUnknown()); k++)
+			{
+			if (commonJOV)
+				{
+				JudgmentOnResult res = *commonJOV | tJovt.jovs()[k];
+				if (res.size() == 1)
+					commonJOV = res[0];
+					else
+					commonJOV = JOV();
+				}
+				else
+				commonJOV = tJovt.jovs()[k];
+			}
+		
+		lassert(commonJOV);
+		
+		return JudgmentOnValueTuple(
+			emptyTreeVec(),
+			emptyTreeVec(),
+			JudgmentOnValueTupleExtras::Extras(*commonJOV)
+			);
+		}
+
+	Nullable<JudgmentOnValueTuple>	weakestArgumentsProducingResultCoveredBy(
+												TypedFora::Compiler& c,
+												const JudgmentOnValueTuple& args,
+												const JudgmentOnAction& result
+												)
+		{
+		if (!signature().covers(args))
+			return null();
+
+		if (!args.jovs()[2].constant())
+			return null();
+
+		if (!args.jovs()[3].constant())
+			return null();
+
+		if (result.resultPart().size() != 1)
+			return null();
+
+		JOV resultJOV = result.resultPart()[0];
+
+		if (!resultJOV.isTuple())
+			return null();
+
+		pair<int64_t, int64_t> indices = extractIndices(args);
+
+		int64_t ix1 = indices.first;
+		int64_t ix2 = indices.second;
+
+		JudgmentOnValueTuple argJovt = args.jovs()[0].getTuple().jov();
+
+		if (argJovt.extras().isExtras())
+			//we could do much better than this. For instance, if (1,2,...)[2,4] == (3,4), 
+			//then we know it's (1,2,3,4).
+			//for now we only deal with the simple case
+			return null();
+
+		if (resultJOV.getTuple().jov().extras().isExtras())
+			//same thing here - we're throwing a lot of information away that
+			//we could keep
+			return null();
+
+		if (ix1 < 0)
+			ix1 += argJovt.jovs().size();
+		if (ix2 < 0)
+			ix2 += argJovt.jovs().size();
+		if (ix1 < 0)
+			ix1 = 0;
+		if (ix2 >=0 && ix2 >= argJovt.jovs().size())
+			ix2 = argJovt.jovs().size();
+
+		if (resultJOV.getTuple().jov().jovs().size() != ix2 - ix1)
+			return null();
+
+		@match JOV(args.jovs()[0])
+			-|	Tuple((jovs, names, extras)) ->> {
+				ImmutableTreeVector<JOV> newEltJOVs = 
+					(emptyTreeVec() + JOV::Unknown()) * jovs.size();
+
+				newEltJOVs = 
+					newEltJOVs.slice(0, ix1) + 
+					resultJOV.getTuple().jov().jovs() + 
+					newEltJOVs.slice(ix2)
+					;
+
+				JOV newTupleJOV = JOV::Tuple(
+					JOVT(
+						newEltJOVs,
+						names,
+						extras
+						)
+					);
+
+				return null() << JOVT(
+					args.jovs().withElementReplaced(0, newTupleJOV),
+					args.names(),
+					args.extras()
+					);
+				}
+			-| _ ->> {
+				return null();
+				}
+		}
+private:
+	bool mLeftIsNothing;
+	bool mRightIsNothing;
+};
+
+class TupleAxioms {
+public:
+		TupleAxioms()
+			{
+			AxiomGroups("Tuple") += (new MakeNamedTupleFromPairAxiom());
+
+			AxiomGroups("Tuple") += (new TupleSizeAxiom());
+
+			AxiomGroups("Tuple") += (new TupleGetItemAxiom());
+			AxiomGroups("Tuple") += (new TupleGetSliceAxiom(false, false));
+			AxiomGroups("Tuple") += (new TupleGetSliceAxiom(true, false));
+			AxiomGroups("Tuple") += (new TupleGetSliceAxiom(false, true));
+			AxiomGroups("Tuple") += (new TupleGetSliceAxiom(true, true));
+			
+			AxiomGroups("Tuple") += (new TupleMemberAxiom());
+			AxiomGroups("Tuple") += (new TupleMatchStructureAxiom());
+
+			AxiomGroups("Tuple") += (new TupleNamifyAxiom());
+
+			AxiomGroups("Tuple") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						" TupleApplyFun" +
+						"Call" +
+						JOV::JOVAsValue(JOJOV::Unknown(jovTuple())) +
+						JOV::JOVAsValue(JOJOV::Unknown(jovTuple()))
+						,
+					ReturnSlots() + 
+						ReturnSlot::Normal(
+							JOV::Class(
+								JudgmentOnValueClass::Unknown()
+								)
+							) + 
+						ReturnSlot::Exception(
+							JOV::OfType(Type::String())
+							),
+					&FORA_clib_createTupleApplyFun,
+					emptyTreeVec() + (uword_t)2 + 3
+					);
+
+			AxiomGroups("Tuple") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						" TupleApplyWithIndexFun" +
+						"Call" +
+						JOV::JOVAsValue(JOJOV::Unknown(jovTuple())) +
+						JOV::JOVAsValue(JOJOV::Unknown(jovTuple()))
+						,
+					ReturnSlots() + 
+						ReturnSlot::Normal(
+							JOV::Class(
+								JudgmentOnValueClass::Unknown()
+								)
+							) + 
+						ReturnSlot::Exception(
+							JOV::OfType(Type::String())
+							),
+					&FORA_clib_createTupleApplyWithIndexFun,
+					emptyTreeVec() + (uword_t)2 + 3
+					);
+
+			AxiomGroups("Tuple") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::Constant(CSTValue(jovTuple())) +
+						"Call" +
+						JOVTE::Extras(JOV::JOVAsValue(JOJOV::Unknown())),
+					ReturnSlots() + JOV::JOVAsValue(JOJOV::Unknown(jovTuple())),
+					&FORA_clib_createTupleJOV,
+					emptyTreeVec() + (uword_t)2
+					);
+
+			AxiomGroups("Tuple") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::JOVAsValue(JOJOV::Unknown(jovTuple())) +
+						"GetItem" +
+						OfType(Type::Integer(64, true)),
+					ReturnSlots() + 
+						ReturnSlot::Normal(jovJOVAsValue()) + 
+						ReturnSlot::Exception(JOV::Constant(CSTValue("Tuple index out of range."))),
+					&FORA_clib_tupleJOVGetItem,
+					emptyTreeVec() + (uword_t)0 + 2
+					);
+			
+			AxiomGroups("Tuple") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::JOVAsValue(JOJOV::Unknown(jovTuple())) +
+						"Member" +
+					JOV::OfType(Type::Symbol()),
+					ReturnSlots() + 
+						ReturnSlot::Normal(jovJOVAsValue()) +
+						ReturnSlot::Exception(JOV::Constant(CSTValue("Invalid member."))),
+					&FORA_clib_tupleJOVGetItemBySymbol,
+					emptyTreeVec() + (uword_t)0 + 2
+					);
+				
+			AxiomGroups("Tuple") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::JOVAsValue(JOJOV::Unknown(jovTuple())) +
+						"IndexOfName" +
+						JOV::OfType(Type::Symbol()) + 
+						JOV::OfType(Type::Integer(1,false))
+						,
+					ReturnSlots() +
+						ReturnSlot::Normal(JOV::OfType(Type::Integer(64, true))) +
+						ReturnSlot::Exception(JOV::Constant(CSTValue("doesn't exist."))),
+					&FORA_clib_tupleJOVGetNameIndex,
+					emptyTreeVec() + (uword_t)0 + 2 + 3
+					);
+
+			AxiomGroups("Tuple") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::JOVAsValue(JOJOV::Unknown(jovTuple())) +
+						"Member2" +
+						"names",
+					ReturnSlots() + jovTuple(),
+					&FORA_clib_tupleJOVNames,
+					emptyTreeVec() + (uword_t)0
+					);
+
+			AxiomGroups("Tuple") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						"size" +
+						"Call" +
+						JOV::JOVAsValue(JOJOV::Unknown(jovTuple())) +
+						JOVTE::NoExtras(),
+					ReturnSlots() +
+						ReturnSlot::Normal(JOV::OfType(Type::Integer(64, true))) +
+						ReturnSlot::Exception(JOV::OfType(Type::String())),
+					&FORA_clib_tupleJOVSize,
+					emptyTreeVec() + (uword_t)2
+					);
+
+			AxiomGroups("Tuple") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						"createTupleRange" +
+						"Call" +
+						JOV::OfType(Type::Integer(64, true)) +
+						JOVTE::NoExtras(),
+					ReturnSlots() + 
+						JOV::Tuple(
+							JOVT() + JOVTE::Extras(
+								JOV::OfType(Type::Integer(64, true))
+								)
+							),
+					&FORA_clib_createTupleRange,
+					ImmutableTreeVector<uword_t>() + 2
+					);
+
+			}
+};
+
+TupleAxioms tupleAxioms;
+

@@ -1,0 +1,148 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <boost/shared_ptr.hpp>
+#include "../../core/PolymorphicSharedPtr.hpp"
+#include "../../core/EventBroadcaster.hpp"
+#include "../../core/math/Random.hpp"
+#include "../PageLayoutCalculator/LongTermPageLayoutCalculation.hppml"
+
+#include "../SystemwidePageRefcountTracker.hppml"
+#include "../ComputationId.hppml"
+#include "../VectorLoadRequest.hppml"
+#include "../VectorLoadedResponse.hppml"
+#include "ComputationBehaviorPredictor.hppml"
+#include "../MachineComputationMap.hppml"
+#include "../ComputationDependencyGraph.hpp"
+
+#include "../InitiateComputationMove.hppml"
+#include "../SchedulerToComputationMessage.hppml"
+#include "../../FORA/TypedFora/ABI/BigVectorPageLayout.hppml"
+#include "../../FORA/TypedFora/ABI/BigVectorLayouts.hppml"
+
+#include "../../core/containers/TwoWaySetMap.hpp"
+#include "../../core/containers/MapWithIndex.hpp"
+#include "../../core/PolymorphicSharedPtrBinder.hpp"
+#include "../../core/Logging.hpp"
+#include "ComputationPageDependencyTracker.hppml"
+#include "../CumulusCheckpointPolicy.hppml"
+
+#include "GlobalSchedulerImplKernel.hppml"
+#include "GlobalSchedulerEvent.hppml"
+#include "../DistributedDataTasks/DataTasksToGlobalSchedulerMessage.hppml"
+#include "GlobalSchedulerToDataTasksMessage.hppml"
+
+
+namespace Cumulus {
+
+class AddDropFinalState;
+
+namespace SystemwideComputationScheduler {
+
+class GlobalSchedulerImpl : 
+			public PolymorphicSharedPtrBase<GlobalSchedulerImpl> {
+public:
+	GlobalSchedulerImpl(
+				PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+				PolymorphicSharedPtr<VectorDataManager> inVDM,
+            	MachineId inOwnMachineId,
+				long inActiveThreadCount,
+				CumulusCheckpointPolicy inCheckpointCommitPolicy,
+				boost::function1<void, GlobalSchedulerEvent> inEventHandler
+				);
+
+	void teardown();
+
+	void setCheckpointStatusInterval(double inInterval);
+
+	ImmutableTreeMap<ComputationId, pair<CheckpointStatus, CheckpointRequest> > 
+			currentOutstandingCheckpointStatuses(bool onlyUnfinished, bool onlyCommitted);
+
+	void initializeFromAddDropState(const AddDropFinalState& state);
+
+	void addMachine(MachineId inMachine);
+
+    void handleDataTasksToGlobalSchedulerMessage(const DataTasksToGlobalSchedulerMessage& message);
+
+    void consumePageEvent(const Fora::PageRefcountEvent& inEvent, Cumulus::MachineId onMachineId);
+
+	void triggerRecomputePageLayoutIfNecessary_(double targetTime, bool rescheduleIfTooSoon);
+
+	void triggerFullCheckpointsOnOutstandingComputations();
+
+	void recomputePageNeighborhoods();
+
+	void recomputePageLayoutAndReschedule();
+
+	void recomputePageLayoutIfNecessary(bool rescheduleIfTooSoon);
+
+	bool shouldRecomputePageLayoutNow_(bool rescheduleIfTooEarly);
+
+	void pageNoLongerReferencedAcrossSystem(Fora::PageId page);
+
+	void onKernelTriggerComputationStatusUpdate(ComputationId computation, CheckpointRequest timestamp);
+
+	void onKernelTriggerRecomputePageLayoutIfNecessary();
+
+	void onKernelCumulusComponentMessageCreated(CumulusComponentMessageCreated msg);
+
+	bool anyOutstandingTriggeredCheckpoints();
+
+	void handleCumulusComponentMessage(
+                    const CumulusComponentMessage& message, 
+                    const CumulusClientOrMachine& source, 
+                    const CumulusComponentType& componentType
+                    );
+
+	void checkCheckpointsAndStatusesAndReschedule();
+
+	void setDiagnosticLogfilePath(std::string inLogfilePath);
+
+	Nullable<std::string> getDiagnosticLogfilePath();
+
+	void polymorphicSharedPtrBaseInitialized();
+
+	PolymorphicSharedPtr<VectorDataManager> mVDM;
+		
+	boost::recursive_mutex mMutex;
+
+	boost::function1<void, GlobalSchedulerEvent> mEventHandler;
+
+	bool mIsRecomputingPageLayout;
+
+	double mNextRecomputeTime;
+
+    EventBroadcaster<CumulusComponentMessageCreated> mOnCumulusComponentMessageCreated;
+
+	bool mCallbackIsScheduled;
+
+	PolymorphicSharedPtr<CallbackScheduler> mCallbackScheduler;
+
+	PolymorphicSharedPtr<CallbackScheduler> mRebalanceCallbackScheduler;
+
+	bool mIsTornDown;
+
+	GlobalSchedulerImplKernel mKernel;
+
+	Nullable<std::string> mLogfilePath;
+
+	double mCheckpointUpdateInterval;
+
+};
+}
+}
+

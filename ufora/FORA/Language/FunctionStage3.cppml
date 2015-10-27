@@ -1,0 +1,871 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "FunctionStage3.hppml"
+#include "FunctionStage2.hppml"
+#include "../Core/CSTValue.hppml"
+#include "../../core/StringUtil.hpp"
+#include "../Core/Type.hppml"
+#include "../Primitives/Symbol.hpp"
+#include "FunctionStage3Simplifier.hppml"
+
+namespace target = FunctionStage3;
+namespace source = FunctionStage2;
+
+using target::variable_index_type;
+
+namespace FunctionStage3 {
+
+int ApplyArgument::computeDepth() const
+	{
+	@match ApplyArgument(*this)
+		-|	Normal(_, expr) ->> { return 1 + expr.depth(); }
+		-|	TupleCall(expr) ->> { return 1 + expr.depth(); }
+		;
+	}
+	
+int Function::depth() const
+	{
+	return 1 + result().depth();
+	}
+
+int Expression::computeDepth() const
+	{
+	@match Expression(*this)
+		-|	Constant(_) ->> { return 0; }
+		-|	Variable(_) ->> { return 0; }
+		-|	Let(_, value, body) ->> { return 1 + max(value.depth(), body.depth()); }
+		-|	TupleExpand(_,_,_,ifSuccess, ifFail) ->> {
+			return 1 + max(ifSuccess.depth(), ifFail.depth());
+			}
+		-|	Assign(_, value) ->> { return 1 + value.depth(); }
+		-|	Apply(agent, args) ->> {
+			int tr = agent.depth();
+			for (auto it = args.begin(); it != args.end(); ++it)
+				tr = max(tr, it->depth());
+			return 1 + tr;
+			}
+		-|	While(cond, updater) ->> { return 1 + max(cond.depth(), updater.depth()); }
+		-|	RawCached(expr) ->> { return 1 + expr.depth(); }
+		-|	Branch(operand, ifTrue, ifFalse) ->> {
+			return 1 + max(operand.depth(), max(ifTrue.depth(), ifFalse.depth()));
+			}
+		-|	Throw(exception, _) ->> {
+			return 1 + exception.depth();
+			}
+		-|	Try(toTry, _, catchWith) ->> { return 1 + max(toTry.depth(), catchWith.depth()); }
+		-|	Return(expr) ->> { return 1 + expr.depth(); }
+		-|	Continuation(withCont) ->> { return 1 + withCont.depth(); }
+		-|	Switch(expr, branches, otherwise) ->> {
+			int tr = expr.depth();
+			for (uint32_t i = 0; i != branches.size(); ++i)
+				tr = max(tr, branches.pairAtPosition(i).second.depth());
+			return 1 + max(tr, otherwise.depth());
+			}
+		-|	CreateTuple(args) ->> {
+			int tr = 0;
+			for (auto it = args.begin(); it != args.end(); ++it)
+				tr = max(tr, it->depth());
+			return 1 + tr;
+			}
+	}
+
+ImmutableTreeSet<variable_index_type>
+				ApplyArgument::computeFreeVariables() const
+	{
+	@match ApplyArgument(*this)
+		-|	Normal(field, var) ->> {
+			return  var.freeVariables();
+			}
+		-|	TupleCall(var) ->> {
+			return  var.freeVariables();
+			}
+		;
+	}
+
+//note that this is substantially simpler than in the main FORA case
+//since we never have duplicate let-bindings
+ImmutableTreeSet<variable_index_type>
+				Expression::computeFreeVariables() const
+	{
+	@match Expression(*this)
+		-|	Constant() ->> {
+			return  emptyTreeSet();
+			}
+		-|	Variable(v) ->> {
+			return  emptyTreeSet() + v;
+			}
+		-|	Let(v, val, body) ->> {
+			return  val.freeVariables() +
+				(body.freeVariables() - v);
+			}
+		-|	TupleExpand(v, binders, _, ifMatch, ifNoMatch) ->> {
+			return 
+				(ifMatch.freeVariables() - ImmutableTreeSet<variable_index_type>(binders)) + 
+				ifNoMatch.freeVariables() + 
+				v;
+			}
+		-|	Assign(a,v) ->> {
+			return  v.freeVariables() + a;
+			}
+		-|	CreateTuple(arguments) ->> {
+			ImmutableTreeSet<variable_index_type> tr;
+			for (long k = 0; k < arguments.size();k++)
+				tr = tr + arguments[k].freeVariables();
+			return tr;
+			}
+		-|	Apply(agent, arguments) ->> {
+			ImmutableTreeSet<variable_index_type> tr = agent.freeVariables();
+			for (long k = 0; k < arguments.size();k++)
+				tr = tr + arguments[k].freeVariables();
+			return tr;
+			}
+		-|	While(cond, updater) ->> {
+			return 
+				cond.freeVariables() + updater.freeVariables();
+			}
+		-|	RawCached(argument) ->> {
+			return 
+				argument.freeVariables();
+			}
+		-|	Branch(o,t,f) ->> {
+			return  o.freeVariables() + t.freeVariables() +
+									f.freeVariables();
+			}
+		-|	Throw(e) ->> {
+			return  e.freeVariables();
+			}
+		-|	Try(t, _, c) ->> {
+			return  t.freeVariables() + c.freeVariables();
+			}
+		-|	Return(e) ->> {
+			return  e.freeVariables();
+			}
+		-|	Continuation(c) ->> {
+			return  c.freeVariables();
+			}
+		-|	Switch(c, branches, otherwise) ->> {
+			ImmutableTreeSet<variable_index_type> tr =
+				c.freeVariables() + otherwise.freeVariables()
+				;
+			for (long k = 0; k < branches.size();k++)
+				tr = tr + branches.pairAtPosition(k).second.freeVariables();
+			return tr;
+			}
+		;
+	}
+
+ImmutableTreeSet<variable_index_type>
+				Expression::computeFreeAccessedVariables() const
+	{
+	@match Expression(*this)
+		-|	Constant() ->> {
+			return  emptyTreeSet();
+			}
+		-|	Variable(v) ->> {
+			return  emptyTreeSet() + v;
+			}
+		-|	Let(v, val, body) ->> {
+			return  val.freeAccessedVariables() +
+				(body.freeAccessedVariables() - v);
+			}
+		-|	TupleExpand(v, binders, _, ifMatch, ifNoMatch) ->> {
+			return 
+				(ifMatch.freeAccessedVariables() - ImmutableTreeSet<variable_index_type>(binders)) + 
+				ifNoMatch.freeAccessedVariables() + 
+				v;
+			}
+		-|	Assign(a,v) ->> {
+			return  v.freeVariables();
+			}
+		-|	CreateTuple(arguments) ->> {
+			ImmutableTreeSet<variable_index_type> tr;
+			for (long k = 0; k < arguments.size();k++)
+				tr = tr + arguments[k].freeVariables();
+			return tr;
+			}
+		-|	Apply(agent, arguments) ->> {
+			ImmutableTreeSet<variable_index_type> tr = agent.freeVariables();
+			for (long k = 0; k < arguments.size();k++)
+				tr = tr + arguments[k].freeVariables();
+			return tr;
+			}
+		-|	While(cond, updater) ->> {
+			return 
+				cond.freeAccessedVariables() + updater.freeAccessedVariables();
+			}
+		-|	RawCached(argument) ->> {
+			return 
+				argument.freeVariables();
+			}
+		-|	Branch(o,t,f) ->> {
+			return  o.freeVariables() + t.freeAccessedVariables() +
+									f.freeAccessedVariables();
+			}
+		-|	Throw(e) ->> {
+			return  e.freeAccessedVariables();
+			}
+		-|	Try(t, _, c) ->> {
+			return  t.freeAccessedVariables() +
+									c.freeAccessedVariables();
+			}
+		-|	Return(e) ->> {
+			return  e.freeAccessedVariables();
+			}
+		-|	Continuation(c) ->> {
+			return  c.freeAccessedVariables();
+			}
+		-|	Switch(c, branches, otherwise) ->> {
+			ImmutableTreeSet<variable_index_type> tr =
+				c.freeVariables() + otherwise.freeAccessedVariables()
+				;
+			for (long k = 0; k < branches.size();k++)
+				tr = tr + branches.pairAtPosition(k).second.freeAccessedVariables();
+			return tr;
+			}
+		;
+	}
+ImmutableTreeSet<Nullable<variable_index_type> >
+				Expression::computeThrowTargets() const
+	{
+	@match Expression(*this)
+		-|	Constant() ->> {
+			return  emptyTreeSet();
+			}
+		-|	Variable(v) ->> {
+			return  emptyTreeSet();
+			}
+		-|	Let(v, val, body) ->> {
+			return  val.throwTargets() + body.throwTargets();
+			}
+		-|	TupleExpand(_, _, _, ifMatch, ifNoMatch) ->> {
+			return ifMatch.throwTargets() + ifNoMatch.throwTargets();
+			}
+		-|	Assign(a,v) ->> {
+			return  emptyTreeSet();
+			}
+		-|	CreateTuple(arguments) ->> {
+			return emptyTreeSet() + Nullable<variable_index_type>();
+			}
+		-|	Apply(agent, arguments) ->> {
+			return emptyTreeSet() + Nullable<variable_index_type>();
+			}
+		-|	While(cond, updater) ->> {
+			return  cond.throwTargets() + updater.throwTargets();
+			}
+		-|	RawCached(argument) ->> {
+			return  emptyTreeSet() + Nullable<variable_index_type>();
+			}
+		-|	Branch(o,t,f) ->> {
+			return  t.throwTargets() +
+									f.throwTargets();
+			}
+		-|	Throw(e, tgt) ->> {
+			return  emptyTreeSet() + tgt;
+			}
+		-|	Try(t, tgt, (_,c)) ->> {
+			return  (
+				t.throwTargets() - tgt + c.throwTargets()
+				);
+			}
+		-|	Return(e) ->> {
+			return  e.throwTargets();
+			}
+		-|	Continuation((_,c)) ->> {
+			return  c.throwTargets();
+			}
+		-|	Switch(c, branches, otherwise) ->> {
+			ImmutableTreeSet<Nullable<variable_index_type> > tr =
+				otherwise.throwTargets()
+				;
+			
+			for (long k = 0; k < branches.size();k++)
+				tr = tr + branches.pairAtPosition(k).second.throwTargets();
+			
+			return tr;
+			}
+		
+		;
+	}
+		
+ImmutableTreeSet<variable_index_type>
+				Expression::computeAssignedVariables() const
+	{
+	@match Expression(*this)
+		-|	Constant() ->> {
+			return  emptyTreeSet();
+			}
+		-|	Variable(v) ->> {
+			return  emptyTreeSet();
+			}
+		-|	Let(v, val, body) ->> {
+			return val.assignedVariables() + body.assignedVariables();
+			}
+		-|	TupleExpand(_, _, _, ifMatch, ifNoMatch) ->> {
+			return ifMatch.assignedVariables() + ifNoMatch.assignedVariables();
+			}
+		-|	Assign(a,v) ->> {
+			return  emptyTreeSet() + a;
+			}
+		-|	CreateTuple(arguments) ->> {
+			return  emptyTreeSet();
+			}
+		-|	Apply(agent, arguments) ->> {
+			return  emptyTreeSet();
+			}
+		-|	While(cond, updater) ->> {
+			return 
+				cond.assignedVariables() + updater.assignedVariables();
+			}
+		-|	RawCached(argument) ->> {
+			return  emptyTreeSet();
+			}
+		-|	Branch(o,t,f) ->> {
+			return  t.assignedVariables() + f.assignedVariables();
+			}
+		-|	Throw(e, tgt) ->> {
+			return  e.assignedVariables();
+			}
+		-|	Try(t, tgt, (_,c)) ->> {
+			return  t.assignedVariables() + c.assignedVariables();
+			}
+		-|	Return(e) ->> {
+			return  e.assignedVariables();
+			}
+		-|	Continuation((_,c)) ->> {
+			return  c.assignedVariables();
+			}
+		-|	Switch(c, branches, otherwise) ->> {
+			ImmutableTreeSet<variable_index_type> tr;
+			
+			for (long k = 0; k < branches.size();k++)
+				tr = tr + branches.pairAtPosition(k).second.assignedVariables();
+			
+			return tr;
+			}
+		;
+	}
+ImmutableTreeSet<variable_index_type> Input::computeFreeVariables() const
+	{
+	@match Input(*this)
+		-|	Variable(var) ->> {
+			return  emptyTreeSet() + var;
+			}
+		-|	Constant() ->> {
+			return  emptyTreeSet();
+			}
+		;
+	}
+		
+
+ImmutableTreeSet<variable_index_type> Function::freeVariables() const
+	{
+	return result().freeVariables() -
+		ImmutableTreeSet<variable_index_type>(vars().begin(), vars().end());
+	}
+ImmutableTreeSet<variable_index_type> Function::freeAccessedVariables() const
+	{
+	return result().freeAccessedVariables() -
+		ImmutableTreeSet<variable_index_type>(vars().begin(), vars().end());
+	}
+ImmutableTreeSet<variable_index_type> Function::assignedVariables() const
+	{
+	return result().assignedVariables();
+	}
+
+//convert from Stage2 to Stage3
+Function	convert(
+					const FunctionStage2::Function& inFunction,
+					VariableAllocator& inAllocator
+					)
+	{
+	return
+		//TODO BUG brax: why do I have to call this twice? some variable rewrites
+		//are not propagating up.
+		simplify(
+			simplify(
+				Function(
+					inFunction.vars(),
+					convert(inFunction.result(), inAllocator)
+					),
+				inAllocator
+				),
+			inAllocator
+			)
+			;
+	}
+
+bool	isSourceSymArg(const source::ApplyArgument& inArg, Symbol s)
+	{
+	@match source::ApplyArgument(inArg)
+		-|	Normal(name, Constant(c)) ->> {
+			return  (
+				!name && c.type().isSymbol() && c.cast<Symbol>() == s
+				);
+			}
+		-|	 _ ->> {
+			return  false;
+			}
+		;
+	}
+bool	isSourceSymExpr(const source::Expression& inArg, Symbol s)
+	{
+	@match source::Expression(inArg)
+		-|	Constant(c) ->> {
+			return  (
+				c.type().isSymbol() && c.cast<Symbol>() == s
+				);
+			}
+		-| _ ->> {
+			return  false;
+			}
+		;
+	}
+bool	isSourceConstantArg(const source::ApplyArgument& inArg)
+	{
+	@match source::ApplyArgument(inArg)
+		-|	Normal(name, Constant(c)) ->> {
+			return  (
+				!name
+				);
+			}
+		-|	 _ ->> {
+			return  false;
+			}
+		;
+	}
+	
+Expression convert(
+				const source::Expression& inExpr,
+				VariableAllocator& inAllocator
+				)
+	{
+	return CPPML::replaceCommonData(
+						convertInner(inExpr, inAllocator),
+						inExpr.definingExpressionLocationId()
+						);
+	}
+
+Expression	convertInner(
+					const source::Expression& inExpr,
+					VariableAllocator& inAllocator
+					)
+	{	
+	@match source::Expression(inExpr)
+		-|	Constant(c) ->> { return target::Expression::Constant(c); }
+		-|	Variable(v) ->> { return target::Expression::Variable(v); }
+		-|	Let(t,v,b) ->> {
+				return target::Expression::Let(t,
+							convert(v, inAllocator),
+							convert(b, inAllocator)
+							);
+				}
+		-|	TupleExpand(v, toBind, lastIsStar, ifMatch, ifNoMatch) ->> {
+			return target::Expression::TupleExpand(
+						v, 
+						toBind, 
+						lastIsStar, 
+						convert(ifMatch, inAllocator), 
+						convert(ifNoMatch, inAllocator)
+						);
+			}
+		-|	Assign(v, e) ->> {
+				target::Input newVar = target::Input::Variable(inAllocator.get());
+				return target::Expression::Let(
+							newVar.getVariable().var(),
+							convert(e, inAllocator),
+							target::Expression::Assign(inExpr.definingExpressionLocationId(), v, newVar)
+							);
+				}
+		-|	CreateTuple(args) ->> {
+				
+				//we have to evaluate each expression in 'agent' and 'args',
+				//push it into its own variable using 'let', and evaluate from
+				//there
+				
+				ImmutableTreeVector<target::Input> argVars;
+				ImmutableTreeVector<target::ApplyArgument> newArgs;
+				ImmutableTreeVector<target::Expression> newArgExprs;
+				
+				for (long k = 0; k < args.size();k++)
+					{
+					target::Input var =
+						target::Input::Variable(inAllocator.get());
+						
+					argVars = argVars + var;
+					
+					@match source::ApplyArgument(args[k])
+						-|	Normal(fieldname, e) ->> {
+							newArgExprs = newArgExprs +
+								convert(e, inAllocator);
+							newArgs = newArgs +target::ApplyArgument::Normal(fieldname, var);
+							}
+						-|	TupleCall(e) ->> {
+							newArgExprs = newArgExprs +
+								convert(e, inAllocator);
+							newArgs = newArgs +target::ApplyArgument::TupleCall(var);
+							}
+							;
+					}
+				
+				auto tr = target::Expression::CreateTuple(newArgs);
+				
+				for (long k = (((long)args.size()) - 1); k >= 0; k--)
+					tr = target::Expression::Let(
+						argVars[k].getVariable().var(),
+						newArgExprs[k],
+						tr
+						);
+					
+				return tr;
+				}
+		-|	Apply(agent, args) ->> {
+				
+				//we have to evaluate each expression in 'agent' and 'args',
+				//push it into its own variable using 'let', and evaluate from
+				//there
+				
+				variable_index_type agentVar = inAllocator.get();
+				
+				ImmutableTreeVector<target::Input> argVars;
+				ImmutableTreeVector<target::ApplyArgument> newArgs;
+				ImmutableTreeVector<target::Expression> newArgExprs;
+				
+				for (long k = 0; k < args.size();k++)
+					{
+					target::Input var =
+						target::Input::Variable(inAllocator.get());
+						
+					argVars = argVars + var;
+					
+					@match source::ApplyArgument(args[k])
+						-|	Normal(fieldname, e) ->> {
+							newArgExprs = newArgExprs +
+								convert(e, inAllocator);
+							newArgs = newArgs +target::ApplyArgument::Normal(fieldname, var);
+							}
+						-|	TupleCall(e) ->> {
+							newArgExprs = newArgExprs +
+								convert(e, inAllocator);
+							newArgs = newArgs +target::ApplyArgument::TupleCall(var);
+							}
+							;
+					}
+				
+				auto tr = target::Expression::Apply(
+							inExpr.definingExpressionLocationId(),
+							target::Input::Variable(agentVar),
+							newArgs
+							);
+				
+				for (long k = (((long)args.size()) - 1); k >= 0; k--)
+					tr = target::Expression::Let(
+						inExpr.definingExpressionLocationId(),
+						argVars[k].getVariable().var(),
+						newArgExprs[k],
+						tr
+						);
+				
+				return target::Expression::Let(
+							agentVar,
+							convert(agent, inAllocator),
+							tr
+							);
+				}
+		-|	While(condition, updater) ->> {
+				return target::Expression::While(
+							convert(condition, inAllocator),
+							convert(updater, inAllocator)
+							);
+				}				
+		-|	RawCached(e) ->> {
+				variable_index_type agentVar = inAllocator.get();
+				
+				return target::Expression::Let(
+							agentVar,
+							convert(e, inAllocator),
+							target::Expression::RawCached(
+								inExpr.definingExpressionLocationId(),
+								target::Input::Variable(agentVar)
+								)
+							);
+				}
+		-|	Is(left, right) ->> {
+				
+				variable_index_type leftVar = inAllocator.get();
+				variable_index_type rightVar = inAllocator.get();
+				
+				return target::Expression::Let(
+							leftVar,
+							convert(left, inAllocator),
+							target::Expression::Let(
+								inExpr.definingExpressionLocationId(),
+								rightVar,
+								convert(right, inAllocator),
+								target::Expression::Apply(
+									inExpr.definingExpressionLocationId(),
+									target::Input::Constant(CSTValue(Symbol("Identical"))),
+									emptyTreeVec() +
+										target::ApplyArgument::Normal(
+													null(),
+													target::Input::Constant(CSTValue(Symbol("Call")))
+													) +
+										target::ApplyArgument::Normal(
+													null(),
+													target::Input::Variable(leftVar)
+													) +
+										target::ApplyArgument::Normal(
+													null(),
+													target::Input::Variable(rightVar)
+													)
+									)
+								)
+							);
+				}
+		-|	Branch(c,t,f) ->> {
+				
+				@match source::Expression(c)
+					-|	Is(left, right) ->> {
+						if (left.isConstant() || right.isConstant())
+							{
+							CSTValue constant;
+							source::Expression expr;
+							
+							//both are constant - just short circuit
+							if (left.isConstant() && right.isConstant())
+								{
+								CSTValue val1 = left.getConstant().val();
+								CSTValue val2 = right.getConstant().val();
+								
+								if (val1 == val2)
+									return convert(t, inAllocator);
+									else
+									return convert(f, inAllocator);
+								}
+							
+							if (left.isConstant())
+								{
+								constant = left.getConstant().val();
+								expr = right;
+								}
+								else
+								{
+								constant = right.getConstant().val();
+								expr = left;
+								}
+							
+							variable_index_type agentVar = inAllocator.get();
+										
+							
+							return target::Expression::Let(
+								inExpr.definingExpressionLocationId(),
+								agentVar,
+								convert(expr, inAllocator),
+								target::Expression::Switch(
+									inExpr.definingExpressionLocationId(),
+									target::Input::Variable(agentVar),
+									emptyTreeMap() +
+										constant + 
+										convert(t, inAllocator),
+									convert(f, inAllocator)
+									)
+								);
+							}
+						}
+					-|	_ ->> {;}
+					;
+				
+				variable_index_type agentVar = inAllocator.get();
+				
+				return target::Expression::Let(
+							agentVar,
+							convert(c, inAllocator),
+							target::Expression::Branch(
+								inExpr.definingExpressionLocationId(),
+								target::Input::Variable(agentVar),
+								convert(t, inAllocator),
+								convert(f, inAllocator)
+								)
+							);
+				}
+		-|	Throw(e,target) ->> {
+				return target::Expression::Throw(convert(e, inAllocator), target);
+				}
+		-|	Try(toTry,catchName, (vars, expr)) ->> {
+				return target::Expression::Try(
+					convert(toTry, inAllocator),
+					catchName,
+					target::Function(vars, convert(expr, inAllocator))
+					);
+				}
+		-|	Return(e) ->> {
+				return target::Expression::Return(convert(e, inAllocator));
+				}
+		-|	Continuation((vars, expr)) ->> {
+				return target::Expression::Continuation(
+							target::Function(
+								vars,
+								convert(expr, inAllocator)
+								)
+							);
+				}
+		;
+	}
+string Input::toString(void) const
+	{
+	ostringstream s;
+		
+	@match Input(*this)
+		-|	Variable(v) ->> {
+			s << prettyPrintString(v);
+			}
+		-|	Constant(c) ->> {
+			s << prettyPrintString(c);
+			}
+		;
+		
+	return s.str();
+	}
+string ApplyArgument::toString(void) const
+	{
+	ostringstream s;
+	
+	@match ApplyArgument(*this)
+		-|	Normal(field, val) ->> {
+			if (field)
+				s << field->toString() << ": ";
+			s << prettyPrintString(val);
+			}
+		-|	TupleCall(e) ->> {
+			s << prettyPrintString(e);
+			}
+		;
+	
+	return s.str();
+	}
+string Function::toString(void) const
+	{
+	ostringstream s;
+	
+	s << "fun (";
+	
+	for (long k = 0; k < vars().size();k++)
+		{
+		if (k)
+			s << ", ";
+		s << prettyPrintString(vars()[k]);
+		}
+	s << ") {\n" << Ufora::indent(prettyPrintString(result())) << "\n}";
+	
+	return s.str();
+	}
+string Expression::toString(void) const
+	{
+	ostringstream s;
+	
+	@match Expression(*this)
+		-|	Constant(c) ->> {
+				s << prettyPrintString(c);
+				}
+		-|	Variable(v) ->> {
+				s << prettyPrintString(v);
+				}
+		-|	Let(var, v, r) ->> {
+				if (r.freeVariables().contains(var))
+					{
+					s << "let " << prettyPrintString(var)
+						<< " := \n"
+						<< Ufora::indent(prettyPrintString(v)) << ";\n";
+					s << prettyPrintString(r);
+					}
+					else
+					{
+					s << prettyPrintString(v) << ";\n";
+					s << prettyPrintString(r);
+					}
+				}
+		-|	TupleExpand(v, expandVars, lastIsStar, ifMatch, ifNoMatch) ->> {
+				s << "let " << prettyPrintString(expandVars) << " := " << prettyPrintString(v)
+					<< " in {\n"
+					<< prettyPrintString(ifMatch) 
+					<< "\n} else { " 
+					<< prettyPrintString(ifNoMatch)
+					<< "}";
+				}
+		-|	Assign(var, val) ->> {
+				s << prettyPrintString(var) << " = " << prettyPrintString(val) << "\n";
+				}
+		-|	CreateTuple(args) ->> {
+				s << "(" << prettyPrintString(args);
+				s << ")\n";
+				}
+		-|	Apply(agent, args) ->> {
+				s << prettyPrintString(agent)
+					<< "`" << prettyPrintString(args);
+				s << "\n";
+				}
+		-|	While(c,u) ->> {
+				s << "while (" << prettyPrintString(c) << ") {\n"
+					<< Ufora::indent(prettyPrintString(u))
+					<< "}"
+					;
+				}
+		-|	RawCached(e) ->> {
+				s << "cached(" << prettyPrintString(e) << ")";
+				}
+		-|	Branch(c,t,f) ->> {
+				s << "if (" << prettyPrintString(c)
+					<< ") {\n" << Ufora::indent(prettyPrintString(t))
+					<< "}";
+				s << " else {\n"
+					<< Ufora::indent(prettyPrintString(f))
+					<< "}";
+				}
+		-|	Switch(c,t,f) ->> {
+				s << "switch (" << prettyPrintString(c)
+					<< ") {\n" << Ufora::indent(prettyPrintString(t))
+					<< "}";
+				s << " else {\n"
+					<< Ufora::indent(prettyPrintString(f))
+					<< "}";
+				}
+		-|	Throw(expr, target) ->> {
+				s << "throw ";
+				
+				if (target)
+					s << "[" << prettyPrintString(*target) << "]";
+				
+				s << " (\n" << Ufora::indent(prettyPrintString(expr)) << "\t)\n";
+				}
+		-|	Return(x) ->> {
+				s << "return\n" << Ufora::indent(prettyPrintString(x));
+				}
+		-|	Continuation(withContinuation) ->> {
+				s << "continuation " << prettyPrintString(withContinuation);
+				}
+		-|	Try(expr, name, catchWith) ->> {
+				s << "try {\n" << Ufora::indent(prettyPrintString(expr)) << "}\n";
+				s << "catch ";
+				if (name)
+					s << "[ " << prettyPrintString(*name) << "]";
+				s << " " << prettyPrintString(catchWith) << "\n";
+				}
+		;
+	
+	return s.str();
+	}
+
+
+}

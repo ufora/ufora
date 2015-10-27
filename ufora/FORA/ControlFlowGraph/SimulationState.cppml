@@ -1,0 +1,493 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "SimulationState.hppml"
+
+#include "ControlFlowGraphUtil.hppml"
+#include "../../core/cppml/CPPMLVisit.hppml"
+#include "../../core/Logging.hpp"
+
+namespace {
+
+class DependentSlotIndicesVisitor {
+private:
+    std::set<uint64_t>& mDependentIndices;
+public:
+    DependentSlotIndicesVisitor(
+            std::set<uint64_t>& inSetToFillOut
+            ) : mDependentIndices(inSetToFillOut)
+        {
+        }
+    
+    template<class T>
+    void processDown(const T& e, bool& ioContinue) 
+        {            
+        }
+
+    template<class T>
+    void processUp(const T& e) 
+        {
+        }
+
+    void processDown(const ControlFlowNode& futureValue, bool& ioContinue)
+        {
+        ioContinue = false;
+        }
+
+    void processDown(const FutureValue& futureValue, bool& ioContinue)
+        {
+        @match FutureValue(futureValue)
+            -|  Current(_, _, indexOrNull) ->> { 
+                if (!indexOrNull.isNull())
+                    mDependentIndices.insert(*indexOrNull);
+
+                ioContinue = false; 
+                }
+            -|  Future(index) ->> {
+                mDependentIndices.insert(index);
+                }
+            -|  _ ->> { ; }
+            ;
+        }
+    };
+
+template<class T>
+void computeDependentSlotIndices(
+        const T& in,
+        std::set<uint64_t>& inSetToFillOut
+        )
+    {
+    DependentSlotIndicesVisitor visitor(inSetToFillOut);
+
+    visit(in, visitor);
+    }
+
+}
+
+const std::vector<FutureSlot>& SimulationState::getSlots() const
+    {
+    return mSlots;
+    }
+
+const TwoWaySetMap<uint64_t, uint64_t>& SimulationState::getDependencies() const
+    {
+    return mSlotDependencies;
+    }
+
+FutureValue SimulationState::nextFutureValue() const
+    {
+    return FutureValue::Future(getSlots().size());
+    }
+
+FutureSlot SimulationState::getSlot(uint64_t inSlotIx) const
+    {
+    return mSlots.at(inSlotIx);
+    }
+
+const SimulationHead& SimulationState::simulationHead() const
+    {
+    return mSimulationHead;
+    }
+
+void SimulationState::advanceSimulationHeadAndRegisterDependencies(
+        const SimulationHead& inNewSimulationHead
+        )
+    {
+    updateSimulationHeadAndDependentSlotIndices(
+        inNewSimulationHead
+        );
+
+    addNewSlotIfNecessary();
+    }
+
+void SimulationState::addNewSlotIfNecessary()
+    {
+    std::set<uint64_t> slotIndicesWeDependOn;
+    ImmutableTreeVector<FutureValue> futureApplyArgs;
+    FutureValue currentResult;
+
+    @match ControlFlowNodeBody(simulationHead().body())
+        -|  Apply(applyArgs, _, _) ->> {
+            for (auto applyArg: applyArgs)
+                {
+                @match ControlFlowApplyArg(applyArg)
+                    -|  Normal(fieldName, controlFlowArg) ->> {
+                        futureApplyArgs = futureApplyArgs + 
+                            CFGWithFuturesImpl::applyArgToFutureValue(
+                                controlFlowArg,
+                                simulationHead().values()
+                                );
+                        }
+                    -|  TupleCall(controlFlowArg) ->> {
+                        futureApplyArgs = futureApplyArgs +
+                            CFGWithFuturesImpl::applyArgToFutureValue(
+                                controlFlowArg,
+                                simulationHead().values()
+                                );
+                        }
+                    ;
+                }
+        
+            currentResult = nextFutureValue();
+
+            computeDependentSlotIndices(futureApplyArgs, slotIndicesWeDependOn);
+            }
+        -|  Cached(controlFlowArg, _, _) ->> {
+            FutureValue futureApplyArg = 
+                CFGWithFuturesImpl::applyArgToFutureValue(
+                    controlFlowArg, simulationHead().values()
+                    );
+        
+            currentResult = nextFutureValue();
+
+            computeDependentSlotIndices(futureApplyArg, slotIndicesWeDependOn);
+
+            futureApplyArgs = 
+                ImmutableTreeVector<FutureValue>() + futureApplyArg;
+            }
+        -|  _ ->> { return; }
+
+    lassert(currentResult.isFuture());
+    uint64_t currentSlotIndex = currentResult.getFuture().index();
+
+    if (allSlotsAreCurrent(slotIndicesWeDependOn))
+        {
+        mIndicesOfSubmittableFutures.insert(currentSlotIndex);
+        }
+    
+    addDependenciesAndRefcounts(slotIndicesWeDependOn, currentSlotIndex);
+    
+    mSlotDependencies.insert(slotIndicesWeDependOn, currentSlotIndex);
+
+    mSimulationHead = zeroOutUnusedContinuationArgs(mSimulationHead);
+
+    addSlot(
+        FutureSlot::Future(
+            simulationHead().label(), 
+            simulationHead().values(),
+            futureApplyArgs
+            )
+        );
+    }
+
+void SimulationState::addSlot(const FutureSlot& inSlot)
+    {
+    lassert(inSlot.isFuture());
+
+    mSlots.push_back(
+        inSlot
+        );
+    
+    mSlotRefcounts.push_back(1);
+    }
+
+void SimulationState::incref(uint64_t inSlotIndex)
+    {
+    mSlotRefcounts.at(inSlotIndex)++;
+    }
+
+void SimulationState::decref(uint64_t inSlotIndex)
+    {
+    uint64_t& refcount = mSlotRefcounts.at(inSlotIndex);
+
+    lassert(refcount > 0);
+
+    if (--refcount == 0)
+        {
+        FutureSlot& slot = mSlots.at(inSlotIndex);
+
+        lassert_dump(
+            slot.isCurrent(), 
+            "tried to decref non-current slot " 
+            << prettyPrintString(slot) << " at slotIndex " 
+            << inSlotIndex << "\n" << toString()
+            );
+
+        slot = FutureSlot::GarbageCollected(slot.label());
+        }
+    }
+
+bool SimulationState::allSlotsAreCurrent(
+        const std::set<uint64_t>& inSlotIndices
+        ) const
+    {
+    for (auto slotIndex: inSlotIndices)
+        {
+        @match FutureSlot(mSlots[slotIndex])
+            -|  Future(_, _, _) ->> { return false; }
+            -|  GarbageCollected() ->> { return false; }
+            -|  Current(_) ->> { ; }
+            ;
+        }
+
+    return true;
+    }
+
+SimulationHead SimulationState::zeroOutUnusedContinuationArgs(
+        const SimulationHead& inSimulationHead
+        )
+    {
+    ImmutableTreeSet<uint32_t> variableIndicesUnusedInContinuations =
+        ControlFlowGraphUtil::variableIndicesUnusedInContinuations(
+            inSimulationHead.graph()[inSimulationHead.label()]
+            );
+
+    ImmutableTreeVector<FutureValue> valuesWithUnusedValuesNulledOut;
+
+    FutureValue nothing = 
+        FutureValue::Current(ImplValContainer(), false, null());
+    for (auto ix = 0; ix < inSimulationHead.values().size(); ++ix)
+        {
+        if (variableIndicesUnusedInContinuations.contains(ix))
+            {
+            valuesWithUnusedValuesNulledOut = 
+                valuesWithUnusedValuesNulledOut + nothing;
+            }
+        else {
+            valuesWithUnusedValuesNulledOut = 
+                valuesWithUnusedValuesNulledOut + inSimulationHead.values()[ix];
+            }
+        }
+
+    return SimulationHead(
+        inSimulationHead.graph(),
+        inSimulationHead.label(),
+        inSimulationHead.values()
+        );
+    }
+
+uint64_t SimulationState::nSlots() const
+    {
+    return mSlots.size();
+    }
+
+bool SimulationState::hasResolvedToSimpleState() const
+    {
+    if (nSlots() > 0)
+        return hasResolvedToSimpleStateAtIndex(nSlots() - 1);
+
+    return true;
+    }
+
+bool SimulationState::hasResolvedToSimpleStateAtIndex(uint64_t index) const
+    {
+    if (index >= mSlots.size())
+        throw std::out_of_range("");
+    
+    for (uint64_t ix = 0; ix <= index; ix++)
+        {
+        @match FutureSlot(mSlots[ix])
+            -|  Future(_,_,_) ->> { return false; }
+            -|  _ ->> { ; }
+            ;
+        }
+    
+    return true;
+    }
+
+std::string SimulationState::toString() const
+    {
+    std::ostringstream oss;
+
+    oss << "SimulationState:\n"
+        << "simulationhead = " 
+        << prettyPrintString(mSimulationHead)
+        << "\nslots = " 
+        << prettyPrintString(mSlots)
+        << "\nrefcounts = " 
+        << prettyPrintString(mSlotRefcounts)
+        << "\nsubmittables = " 
+        << prettyPrintString(mIndicesOfSubmittableFutures)
+        << "\ndependencies k2v = " 
+        << prettyPrintString(mSlotDependencies.getKeysToValues())
+        << "\ndependencies v2k = " 
+        << prettyPrintString(mSlotDependencies.getValuesToKeys())
+        << "\ndependenciesAtHead = " 
+        << prettyPrintString(mSlotDependenciesAtSimulationHead)
+        << "\n"
+        ;
+
+    return oss.str();
+    }
+    
+
+const std::set<uint64_t>& SimulationState::indicesOfSubmittableFutures() const
+    {
+    return mIndicesOfSubmittableFutures;
+    }
+
+bool SimulationState::isSubmittable(uint64_t inSlotIndex) const
+    {
+    return mIndicesOfSubmittableFutures.find(inSlotIndex) != 
+        mIndicesOfSubmittableFutures.end();
+    }
+
+SimulationState::SimulationState(
+        const SimulationHead& inSimulationHead
+        )
+    {
+    advanceSimulationHeadAndRegisterDependencies(
+        inSimulationHead
+        );
+
+    auto body = simulationHead().body();
+    if (body.isApply() or body.isCached())
+        mIndicesOfSubmittableFutures = { 0 };
+    }
+
+void SimulationState::slotCompleted(
+        uint64_t inSlotIndex,
+        const ImplValContainer& inResult,
+        const ImplValContainer& inComputationLog,
+        bool isException
+        )
+    {
+    mSlots.at(inSlotIndex) = 
+        FutureSlot::Current(
+            mSlots.at(inSlotIndex).label(), inResult, isException
+            );
+
+    if (isException or !inResult.isCST())
+        incref(inSlotIndex);
+
+    lassert(mIndicesOfSubmittableFutures.find(inSlotIndex) != 
+        mIndicesOfSubmittableFutures.end());
+
+    // Completed slots are not considered Completable
+    mIndicesOfSubmittableFutures.erase(inSlotIndex); 
+            
+    updateSubmittableFuturesSet(inSlotIndex);
+
+    decrefKeysForSlotIndex(inSlotIndex);
+
+    if (inResult.isCST() and not isException)
+        decrefSlotArgs(inSlotIndex);
+    }
+
+void SimulationState::decrefSlotArgs(uint64_t slotIndex)
+    {
+    for (auto noLongerNeededIx: mSlotsToDecrefOnResult[slotIndex])
+        {
+        decref(noLongerNeededIx);
+        }
+    }
+
+void SimulationState::addDependenciesAndRefcounts(
+        const std::set<uint64_t>& inSlotIndicesOfDependencies, 
+        uint64_t inDependentSlotIndex
+        )
+    {
+    mSlotDependencies.insert(inSlotIndicesOfDependencies, inDependentSlotIndex);
+
+    for (auto slotIndex: inSlotIndicesOfDependencies)
+        {
+        incref(slotIndex);
+        }
+    }
+
+void SimulationState::updateSimulationHeadAndDependentSlotIndices(
+        const SimulationHead& inNewSimulationHead
+        )
+    {
+    std::set<uint64_t> dependenciesOfNewHead;
+    computeDependentSlotIndices(
+        inNewSimulationHead,
+        dependenciesOfNewHead
+        );
+
+    std::set<uint64_t> indicesWhichLeftCurrentHead;
+
+    std::set_difference(
+        mSlotDependenciesAtSimulationHead.begin(), 
+        mSlotDependenciesAtSimulationHead.end(),
+        dependenciesOfNewHead.begin(),
+        dependenciesOfNewHead.end(),
+        std::inserter(
+            indicesWhichLeftCurrentHead, 
+            indicesWhichLeftCurrentHead.begin())
+        );
+
+    auto body = inNewSimulationHead.body();
+
+    lassert(!body.isJump());
+
+    for (auto ix: dependenciesOfNewHead)
+        incref(ix);
+
+    if (body.isApply() or body.isCached())
+        {
+        mSlotsToDecrefOnResult[getSlots().size()] = dependenciesOfNewHead;
+        }
+
+    mSimulationHead = inNewSimulationHead;
+    mSlotDependenciesAtSimulationHead = dependenciesOfNewHead;
+    }
+
+void SimulationState::decrefKeysForSlotIndex(uint64_t inCompletedSlotIndex)
+    {
+    for (auto slotIx: mSlotDependencies.getKeys(inCompletedSlotIndex))
+        {
+        decref(slotIx);
+        }
+    }
+
+void SimulationState::updateSubmittableFuturesSet(uint64_t inCompletedSlotIndex)
+    {
+    for (auto slotIx: mSlotDependencies.getValues(inCompletedSlotIndex))
+        {
+        if (canInsertIntoSubmittableSet(slotIx))
+            {
+            mIndicesOfSubmittableFutures.insert(slotIx);
+            }
+        }    
+    }
+
+bool SimulationState::canInsertIntoSubmittableSet(uint64_t inSlotIndex) const
+    {
+    if (inSlotIndex >= mSlots.size())
+        return false;
+
+    FutureSlot slot = mSlots[inSlotIndex];
+
+    @match FutureSlot(slot)
+        -|  Current(_) ->> { return false; }
+        -|  GarbageCollected() ->> { return false; }
+        -|  Future(_, _, _) ->> { ; }
+        ;
+
+    std::set<uint64_t> indicesWeNeedToBeCurrent = 
+        mSlotDependencies.getKeys(inSlotIndex);
+
+    for (auto ix: indicesWeNeedToBeCurrent)
+        {
+        @match FutureSlot(mSlots.at(ix))
+            -|  GarbageCollected() ->> {
+                lassert_dump(
+                    false, 
+                    "we should never garbage collect a FutureSlot which is "
+                    "depended on by another slot"
+                    );
+                }
+            -|  Future(_, _, _) ->> {
+                return false;
+                }
+            -|  Current() ->> { ; }
+            ;
+        }
+
+    return true;
+    }
+
+

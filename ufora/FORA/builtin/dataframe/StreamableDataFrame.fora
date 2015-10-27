@@ -1,0 +1,143 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+`hidden
+class {
+    member df;
+
+    streamType: "dataframe.DataFrame";
+    chunkSizeInMB:  10 * 1024 * 1024;  // 10MB
+    chunkSizeInRowCounts: 10000;
+
+    getChunkCountFromMB: fun( ) {
+        // assume that each column is of 8 bytes
+        let byteCount = 8 * df.numColumns * df.numRows;
+        return  Int64(math.ceil(byteCount/chunkSizeInMB));
+        };
+
+    getChunkCountFromNRows: fun() {
+        // ignoring that different DF can have very 
+        // different memory footprint per row
+        let minChunks = if (df.numRows > 0) 1 else 0;
+        return Int64(
+            max(
+                minChunks, 
+                math.ceil(
+                    Float64(df.numRows)/Float64(chunkSizeInRowCounts)
+                    )
+                )
+            );
+        };
+
+    getChunkCount: fun() {
+        return getChunkCountFromNRows();
+        };
+
+    toString: fun(firstRow, lastRow, headersOnly:=false, 
+                  includeHeaders:=false) {
+        let summaryStr  = "";
+        let firstPass = true;
+
+        if (headersOnly or includeHeaders) {
+            for columnIndex in sequence(df.numColumns){
+                if (firstPass){
+                    summaryStr = df.columnNames[columnIndex]
+                    firstPass = false;
+                    } 
+                else {
+                    summaryStr = summaryStr + "," + 
+                        df.columnNames[columnIndex];
+                    }
+                }
+            summaryStr = summaryStr + "\n";
+            if (headersOnly)  
+                return summaryStr;
+            }
+        for rowIndex in sequence(firstRow, lastRow) {
+            firstPass = true;
+            for columnIndex in sequence(df.numColumns) {
+                if (firstPass){
+                    summaryStr = summaryStr + 
+                        String(df.columns[columnIndex][rowIndex]);
+                    firstPass = false;
+                    }
+                else {
+                    summaryStr = summaryStr + ","  + 
+                        String(df.columns[columnIndex][rowIndex]);
+                    }
+                }
+            summaryStr = summaryStr + "\n";
+            }
+        return summaryStr;
+        };
+
+    headersInChunkingForm: fun() {
+        let summaryStr  = toString(0,0, headersOnly:true);
+        return summaryStr.dataAsVector;
+        };
+
+    toChunkingForm: fun
+    ((firstRow, lastRow)) {
+        return toChunkingForm(firstRow, lastRow);
+        }
+    (firstRow, lastRow, applyDirectly:=true) {
+        if (applyDirectly){
+            return toString(firstRow, lastRow).dataAsVector;
+            } 
+        else {
+            let uint8vec = [];
+            for rowIndex in sequence(firstRow, lastRow){
+                let summaryStr  = toString(rowIndex, rowIndex+1);
+                summaryStr = summaryStr + "\n";
+                uint8vec = uint8vec + summaryStr.dataAsVector;
+                }
+            return uint8vec;
+            }
+        };
+
+    getChunk: fun(chunkInd, parallelMode:=true) {
+        let nChunks = getChunkCount();
+        let nRowsPerChunk = chunkSizeInRowCounts; 
+        // next line is used if chunks are counted by the byte-size
+        let uint8vec = if (chunkInd == 0) headersInChunkingForm() else [];
+        let firstRow = chunkInd * nRowsPerChunk;
+        let lastRow = min(firstRow + nRowsPerChunk, df.numRows);
+
+        if (parallelMode) {
+            let smallChunkSize = 10;
+            let batches = [];
+            let startingChunk = firstRow;
+            while (startingChunk < lastRow){
+                batches = batches :: 
+                    (startingChunk, min(lastRow, startingChunk + smallChunkSize));
+                startingChunk = startingChunk + smallChunkSize;
+                }
+            let vecOfuint8vec = batches ~~ { toChunkingForm(_) };
+            if (size(vecOfuint8vec) > 0) {
+                return uint8vec + vecOfuint8vec.sum();
+                }
+            else { 
+                return uint8vec;
+                }
+            } 
+        else {
+            uint8vec = uint8vec + toChunkingForm(firstRow, lastRow);
+            return uint8vec;
+            }
+        };
+        
+    mixin Stream();
+    };
+

@@ -1,0 +1,258 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../../../core/Common.hppml"
+#include "PackedForaValues.hppml"
+
+class JudgmentOnValue;
+class Type;
+class ImplValContainer;
+class MemoryPool;
+
+namespace Fora {
+
+class ShareableMemoryBlockHandle;
+
+}
+
+namespace TypedFora {
+namespace Abi {
+
+class ScatteredForaValues;
+class ForaValueArraySpaceRequirements;
+
+/************
+ForaValueArray
+
+Implementation class for an array of FORA values. The implementation is the basis for Vector
+objects in FORA.
+
+It attempts to pack values as efficiently as possible, while still making it possible for machine
+code to efficiently index into it.
+
+************/
+
+//this is the ONLY legal subclass of ForaValueArray, as assumed by all of our native codegen
+//routines
+class ForaValueArrayImpl;
+
+class ForaValueArray {
+	ForaValueArray& operator=(const ForaValueArray& in) = delete;
+
+	ForaValueArray(const ForaValueArray& inOtherArray) = delete;
+protected:
+	ForaValueArray();
+public:
+	const static int MAX_JUDGMENTS_TO_USE_JUDGMENT_TABLE = 128;
+
+	static ForaValueArray* Empty(MemoryPool* inOwningMemoryPool);
+
+	virtual ForaValueArrayImpl& getImpl() = 0;
+
+	virtual const ForaValueArrayImpl& getImpl() const = 0;
+
+	virtual ~ForaValueArray() {};
+
+	virtual bool allValuesArePOD() const = 0;
+
+	virtual ForaValueArraySpaceRequirements getSpaceRequirements() const = 0;
+
+	virtual ForaValueArraySpaceRequirements getSpaceRequirements(long lowIndex, long highIndex) const = 0;
+
+	virtual void prepareForAppending(const ForaValueArraySpaceRequirements& requirements) = 0;
+
+	virtual size_t size() const = 0;
+
+	virtual bool isWriteable() const = 0;
+
+	virtual void markUnwriteable(bool releaseUnusedMemory) = 0;
+
+	virtual void append(const ImplValContainer& inValue) = 0;
+
+	virtual void append(const ForaValueArray& inOtherArray, bool targetArrayWillBeWriteable = true) = 0;
+
+	virtual void append(const ForaValueArray& inOtherArray, long lowIndex, long highIndex, bool targetArrayWillBeWriteable = true) = 0;
+
+	virtual void append(
+				const ForaValueArray& inOtherArray, 
+				long lowIndex, 
+				long highIndex, 
+				boost::function<void (ScatteredForaValues, ScatteredForaValues)> memoryCopyOperation,
+				bool targetArrayWillBeWriteable = true
+				) = 0;
+
+	virtual void fillOutJovIndexTable(std::vector<uint8_t>& outJovIndices, JudgmentOnResult jorLayout) const = 0;
+
+	virtual void prepareForIncomingDataGivenJovs(const std::vector<uint8_t>& jovIndices, JudgmentOnResult jorLayout) = 0;
+
+	virtual void append(const JudgmentOnValue& inType, uint8_t* data, uint32_t inCount, uint32_t inStride) = 0;
+
+	virtual void append(PackedForaValues values) = 0;
+
+	virtual PackedForaValues appendUninitialized(JudgmentOnValue values, uint32_t inCount) = 0;
+
+	virtual ImplValContainer operator[](uint32_t index) const = 0;
+
+	virtual uint8_t* offsetFor(uint32_t index) const = 0;
+
+	virtual uint8_t* offsetPlusStrideFor(uint32_t index) const = 0;
+
+	virtual JudgmentOnValue jovFor(uint32_t index) const = 0;
+
+	virtual MemoryPool* getOwningMemoryPool() const = 0;
+
+	virtual void validateInternalState() const = 0;
+
+	virtual bool usingJudgmentTable() const = 0;
+
+	virtual uint8_t* getPerValueJudgmentIndices() const = 0;
+
+	virtual size_t judgmentCount() const = 0;
+
+	virtual JudgmentOnValue judgmentTableLookup(uint32_t index) const = 0;
+
+	virtual bool isHomogenous() const = 0;
+
+	virtual bool isHomogenousPodArray() const = 0;
+
+	virtual JudgmentOnValue getHomogenousJOV() const = 0;
+
+	//bytes of mDataPtr used by data.
+	virtual size_t bytesUsed() const = 0;
+
+	virtual size_t bytesReserved() const = 0;
+
+	virtual bool usingOffsetTable() const = 0;
+
+	virtual uint32_t offsetTableSize() const = 0;
+
+	virtual uint32_t homogenousStride() const = 0;
+
+	virtual JudgmentOnResult currentJor() const = 0;
+
+	template<class visitor_type>
+	void visitValuesSequentially(visitor_type& visitor) const
+		{
+		visitValuesSequentially(visitor, 0, size());
+		}
+
+	template<class visitor_type>
+	void visitValuesSequentially(visitor_type& visitor, long startIx, long stopIx) const
+		{
+		if (!size())
+			return;
+
+		if (startIx < 0)
+			startIx = 0;
+
+		if (stopIx > (long)size())
+			stopIx = size();
+
+		if (startIx >= stopIx)
+			return;
+
+		if (isHomogenous())
+			{
+			visitor(
+				PackedForaValues(
+					getHomogenousJOV(), 
+					offsetFor(startIx),
+					stopIx - startIx, 
+					homogenousStride()
+					)
+				);
+			
+			return;
+			}
+
+		long curOffset = startIx;
+		while (curOffset < stopIx)
+			{
+			JudgmentOnValue curJOV = jovFor(curOffset);
+
+			long nextOffset = curOffset;
+			long curStride = offsetFor(curOffset + 1) - offsetFor(curOffset);
+			uint8_t* baseOffset = offsetFor(curOffset);
+
+			while (nextOffset < stopIx && jovFor(nextOffset) == curJOV 
+						&& (offsetFor(nextOffset) == baseOffset + curStride * (nextOffset - curOffset)))
+				nextOffset++;
+
+			lassert(nextOffset > curOffset);
+
+			//we are guaranteed that the strides in here are contiguous
+			visitor(
+				PackedForaValues(
+					curJOV, 
+					offsetFor(curOffset), 
+					nextOffset - curOffset,
+					offsetFor(curOffset+1) - offsetFor(curOffset)
+					)
+				);
+
+			curOffset = nextOffset;
+			}
+		}
+
+
+	virtual void visitScatteredValues(
+					boost::function<void (ScatteredForaValues)> visitor
+					)
+		{
+		visitScatteredValues(0, size(), visitor);
+		}
+
+	virtual void visitScatteredValues(
+					long startIx, 
+					long stopIx,
+					boost::function<void (ScatteredForaValues)> visitor
+					) = 0;
+
+	virtual void reserveBytes(size_t newMinBytesReserved) = 0;
+};
+};
+
+
+}
+
+template<>
+class CPPMLPrettyPrint<const TypedFora::Abi::ForaValueArray*> {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream& s, const TypedFora::Abi::ForaValueArray* t);
+};
+
+template<>
+class CPPMLPrettyPrint<TypedFora::Abi::ForaValueArray*> {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream& s, TypedFora::Abi::ForaValueArray* t)
+			{
+			s << (const TypedFora::Abi::ForaValueArray*)t;
+			}
+};
+
+template<>
+class CPPMLEquality< TypedFora::Abi::ForaValueArray*, void> {
+public:
+		static char cmp(	const TypedFora::Abi::ForaValueArray* lhs,
+							const TypedFora::Abi::ForaValueArray* rhs
+							)
+			{
+			return cppmlCmp(uword_t(lhs), uword_t(rhs));
+			}
+};
+
+

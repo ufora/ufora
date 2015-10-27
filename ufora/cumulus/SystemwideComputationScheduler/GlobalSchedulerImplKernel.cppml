@@ -1,0 +1,657 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "GlobalSchedulerImplKernel.hppml"
+#include "../../FORA/VectorDataManager/VectorDataManager.hppml"
+#include "../../FORA/TypedFora/ABI/BigVectorLayouts.hppml"
+#include "../../core/threading/TimedLock.hpp"
+#include "../../core/threading/CallbackScheduler.hppml"
+#include "../../core/threading/CallbackSchedulerFactory.hppml"
+#include "../../core/StringUtil.hpp"
+#include "../../core/Memory.hpp"
+#include "../../core/threading/Queue.hpp"
+#include "../../core/threading/LimitToTime.hpp"
+#include "../AddDropFinalState.hppml"
+#include "../PageLayoutCalculator/NeighborhoodsOnMachines.hppml"
+#include "../../core/math/RandomHashGenerator.hpp"
+
+#include <iomanip>
+
+using namespace Cumulus::PageLayoutCalculator;
+
+namespace Cumulus {
+namespace SystemwideComputationScheduler {
+
+const double kFractionOfMachineRamToContainActiveSet = .925;
+
+GlobalSchedulerImplKernel::GlobalSchedulerImplKernel(
+			uint64_t vdmMaxPageSizeInBytes,
+			uint64_t vdmMemoryLimitInBytes,
+        	MachineId inOwnMachineId,
+			long inActiveThreadCount,
+			CumulusCheckpointPolicy inCheckpointCommitPolicy,
+			boost::function0<void> onTriggerRecomputePageLayoutIfNecessary,
+			boost::function2<void, ComputationId, CheckpointRequest> onTriggerComputationStatusUpdate,
+			boost::function1<void, CumulusComponentMessageCreated> onCumulusComponentMessageCreated
+			) : 
+		mOwnMachineId(inOwnMachineId),
+		mOnTriggerComputationStatusUpdate(onTriggerComputationStatusUpdate),
+		mOnCumulusComponentMessageCreated(onCumulusComponentMessageCreated),
+		mTriggerRecomputePageLayoutIfNecessary(onTriggerRecomputePageLayoutIfNecessary),
+		mActiveThreadCount(inActiveThreadCount),
+		mActiveNeighborhoods(
+			kFractionOfMachineRamToContainActiveSet
+			),
+		mSetDesireIndex(0),
+		mTimeOfLastProgress(0),
+		mInitializationParameters(
+			vdmMaxPageSizeInBytes,
+			vdmMemoryLimitInBytes,
+			inOwnMachineId,
+			inActiveThreadCount
+			),
+		mCheckpointStatuses(
+			inCheckpointCommitPolicy,
+			boost::bind(&GlobalSchedulerImplKernel::checkpointStatusesTriggeringStatusUpdate, this, boost::arg<1>(), boost::arg<2>()),
+			boost::bind(&GlobalSchedulerImplKernel::sendCommitCheckpointMessage, this, boost::arg<1>()),
+			onCumulusComponentMessageCreated
+			),
+		mLastTimeDumped(curClock()),
+		mReportedMyExistence(false)
+	{
+	mBigVectorLayouts.reset(new TypedFora::Abi::BigVectorLayouts());
+	mCurrentMachines.insert(mOwnMachineId);
+	mSystemwidePageRefcountTracker.reset(
+		new SystemwidePageRefcountTracker(
+			mBigVectorLayouts,
+			CallbackScheduler::singletonForTesting(),
+			boost::function1<void, SystemwidePageRefcountTrackerEvent>()
+			)
+		);
+	mSystemwidePageRefcountTracker->addMachine(mOwnMachineId);
+
+	mActiveNeighborhoods.addMachine(mOwnMachineId);
+	mActiveNeighborhoods.setMachineCoreCount(mOwnMachineId, mActiveThreadCount);
+
+	LOG_INFO << "Initializing GlobalScheduler on " << mOwnMachineId;
+	}
+
+void GlobalSchedulerImplKernel::handleComputationToGlobalSchedulerMessage(
+				const ComputationToGlobalSchedulerMessage& message,
+				double curTime
+				)
+	{
+	@match ComputationToGlobalSchedulerMessage(message)
+		-| CheckpointStatusUpdate((computation, stats, timestamp)) ->> {
+			mCheckpointStatuses.handleComputationStatusUpdate(computation, stats, timestamp, curTime);
+			}
+	}
+
+void GlobalSchedulerImplKernel::setCheckpointStatusInterval(double inInterval)
+	{
+	mCheckpointStatuses.setCheckpointStatusInterval(inInterval);
+	}
+
+bool GlobalSchedulerImplKernel::anyOutstandingTriggeredCheckpoints()
+	{
+	return mCheckpointStatuses.anyOutstandingTriggeredCheckpoints();
+	}
+
+void GlobalSchedulerImplKernel::triggerFullCheckpointsOnOutstandingComputations(double curTime)
+	{
+	mCheckpointStatuses.triggerFullCheckpointsOnOutstandingComputations(curTime);
+	}
+
+void GlobalSchedulerImplKernel::initializeFromAddDropState(const AddDropFinalState& state)
+	{
+	}
+
+void GlobalSchedulerImplKernel::handleCumulusClientToGlobalSchedulerMessage(const CumulusClientToGlobalSchedulerMessage& message)
+	{
+	@match CumulusClientToGlobalSchedulerMessage(message)
+		-| CurrentCheckpointStatus(clientId, requestGuid) ->> {
+			mOnCumulusComponentMessageCreated(
+				CumulusComponentMessageCreated(
+					CumulusComponentMessage::GlobalSchedulerToCumulusClient(
+						GlobalSchedulerToCumulusClientMessage::CurrentCheckpointStatus(
+							mCheckpointStatuses.currentOutstandingCheckpointStatuses(true, false),
+							requestGuid,
+							clientId
+							)
+						),
+					CumulusComponentEndpointSet::SpecificClient(clientId),
+					CumulusComponentType::CumulusClient()
+					)
+				);
+			}
+		-| TriggerCheckpoint(computation) ->> {
+			mCheckpointStatuses.triggerCheckpointIfPossible(computation);
+			}
+		-| TriggerCheckpointOnAllComputations() ->> {
+			double curTime = curClock();
+			triggerFullCheckpointsOnOutstandingComputations(curTime);
+		}
+	}
+
+void GlobalSchedulerImplKernel::sendCommitCheckpointMessage(CheckpointRequest checkpoint)
+	{
+	mOnCumulusComponentMessageCreated(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::GlobalSchedulerToIoTasks(
+				GlobalSchedulerToIoTasksMessage::CommitCheckpoint(checkpoint)
+				),
+			CumulusComponentEndpointSet::AllWorkers(),
+			CumulusComponentType::ExternalIoTasks()
+			)
+		);
+	}
+
+
+void GlobalSchedulerImplKernel::checkpointStatusesTriggeringStatusUpdate(const ComputationId& id, CheckpointRequest statusTimestamp)
+	{
+	mOnTriggerComputationStatusUpdate(id, statusTimestamp);
+	}
+
+void GlobalSchedulerImplKernel::handleDataTasksToGlobalSchedulerMessage(const DataTasksToGlobalSchedulerMessage& inMsg)
+	{
+	@match DataTasksToGlobalSchedulerMessage(inMsg)
+		-| AllocateTaskMemory(taskId, bytecount, preferredMachine) ->> {
+			//decide how many machines we can have
+			mAllocatedDataTasks[taskId];
+			mActiveNeighborhoods.allocateDataTask(taskId, bytecount, preferredMachine);
+			mTriggerRecomputePageLayoutIfNecessary();
+			}
+		-| ReleaseTaskMemory(taskId) ->> {
+			mActiveNeighborhoods.dropDataTask(taskId);
+			mAllocatedDataTasks.erase(taskId);
+			}
+		-| CreateTaskDependency(guid, page) ->> {
+			ComputationId fakeCoId = 
+				ComputationId::Root(
+					guid
+					);
+			mActiveNeighborhoods.setPageLoad(fakeCoId, mOwnMachineId, make_pair(Neighborhood(page), 0.01));
+			mTriggerRecomputePageLayoutIfNecessary();
+			}
+		-| DropTaskDependency(guid, page) ->> {
+			ComputationId fakeCoId = 
+				ComputationId::Root(
+					guid
+					);
+			mActiveNeighborhoods.erasePageLoad(fakeCoId, mOwnMachineId);
+			mTriggerRecomputePageLayoutIfNecessary();
+			}
+	}
+
+void GlobalSchedulerImplKernel::computationStatusOnMachineChanged(
+								const ComputationStatusOnMachineChanged& change, 
+								double curTime
+								)
+	{
+	if (change.computation().isRoot())
+		mCheckpointStatuses.handleComputationStatusOnMachineChanged(change, curTime);
+	}
+
+void GlobalSchedulerImplKernel::checkCheckpointsAndStatuses(double curTime)
+	{
+	mCheckpointStatuses.checkStatusUpdates(curTime);
+	}
+
+void GlobalSchedulerImplKernel::handleLocalToGlobalSchedulerMessage(const LocalToGlobalSchedulerMessage& msg)
+	{
+	@match LocalToGlobalSchedulerMessage(msg)
+		-| CliqueObserved(pages) ->> {
+			mActiveNeighborhoods.recordObservedLoad(Neighborhood(pages), 0.0001);
+			}
+		-| SetPageLoad(comp, machine, pages, load, lookUnrepresented) ->> {
+			mActiveNeighborhoods.setPageLoad(comp, machine, make_pair(Neighborhood(pages), load));
+			if (lookUnrepresented)
+				mTriggerRecomputePageLayoutIfNecessary();
+			}
+		-| ErasePageLoad(comp, machine) ->> {
+			mActiveNeighborhoods.erasePageLoad(comp, machine);
+			}
+		-| RecordObservedLoad(pages, load) ->> {
+			mActiveNeighborhoods.recordObservedLoad(Neighborhood(pages), load);
+			}
+		-| TriggerPageLayoutRecompute() ->> {
+			mTriggerRecomputePageLayoutIfNecessary();
+			}
+	}
+	
+void GlobalSchedulerImplKernel::consumePageEvent(
+								const Fora::PageRefcountEvent& inEvent, 
+								Cumulus::MachineId onMachineId
+								)
+	{
+	mSystemwidePageRefcountTracker->consumePageEvent(inEvent, onMachineId);
+
+	@match Fora::PageRefcountEvent(inEvent)
+		-| ExecutionIsBlockedChanged(blocked) ->> {
+			if (blocked)
+				mTriggerRecomputePageLayoutIfNecessary();
+			}
+		-| MemoryUsageChanged(usage) ->> {
+			if (!mActiveNeighborhoods.hasMachine(onMachineId))
+				{
+				mActiveNeighborhoods.addMachine(onMachineId);
+
+				mActiveNeighborhoods.setMachineCoreCount(onMachineId, mActiveThreadCount);
+
+				std::set<Fora::PageId> pages;
+				mSystemwidePageRefcountTracker->machineRamContents(onMachineId, pages);
+
+				for (auto page: pages)
+					mActiveNeighborhoods.addPageToMachine(page, onMachineId);
+				}
+
+			mActiveNeighborhoods.setMachineMemory(
+				onMachineId, 
+				usage.bytesAvailableForVectorsAndDataTasks()
+				);
+			}
+		-| BigVectorReferenced(newLayout) ->> {
+			mBigVectorLayouts->registerNewLayout(newLayout);
+
+			mBigVectorRefcounts[newLayout.identity()]++;
+
+			if (mBigVectorRefcounts[newLayout.identity()] == 1)
+				mActiveNeighborhoods.addLinearPageLayout(newLayout);
+			}
+		-| BigVectorNoLongerReferenced(identity) ->> {
+			mBigVectorRefcounts[identity]--;
+
+			if (mBigVectorRefcounts[identity] == 0)
+				{
+				mBigVectorRefcounts.erase(identity);
+				mActiveNeighborhoods.dropLinearPageLayout(identity);
+				}
+			}
+		-| PageAddedToRam(page) ->> {
+			mBytesAddedByMachine[onMachineId] += page.bytecount();
+
+			if (mActiveNeighborhoods.hasMachine(onMachineId))
+				mActiveNeighborhoods.addPageToMachine(page, onMachineId);
+			}
+		-| PageDroppedFromRam(page) ->> {
+			if (mActiveNeighborhoods.hasMachine(onMachineId))
+				mActiveNeighborhoods.dropPageFromMachine(page, onMachineId);
+			}
+		-| PageMarkedNotLoadable(page) ->> {
+			mActiveNeighborhoods.pageDroppedAcrossEntireSystem(page);
+			}
+		-| PageAddedToDisk(page) ->> {
+			mBytesSentToDiskByMachine[onMachineId] += page.bytecount();
+			}
+		-| _ ->> {
+			}
+	}
+
+void GlobalSchedulerImplKernel::pageNoLongerReferencedAcrossSystem(Fora::PageId page)
+	{
+	LOG_DEBUG << "On " << prettyPrintString(mOwnMachineId) 
+		<< ", page " << prettyPrintString(page) << " no longer referenced across system.";
+
+	mActiveNeighborhoods.pageDroppedAcrossEntireSystem(page);
+	}
+
+bool GlobalSchedulerImplKernel::hasPageBeenDroppedAcrossEntireSystem_(Fora::PageId page)
+	{
+	return mActiveNeighborhoods.hasPageBeenDroppedAcrossEntireSystem(page);
+	}
+
+void GlobalSchedulerImplKernel::addMachine(MachineId inMachine)
+	{
+	mCurrentMachines.insert(inMachine);
+
+	mSystemwidePageRefcountTracker->addMachine(inMachine);
+	}
+
+void GlobalSchedulerImplKernel::markProgressMade_()
+	{
+	mTimeOfLastProgress = curClock();
+	}
+
+PolymorphicSharedPtr<PageLayoutCalculator::LongTermPageLayoutCalculation>  GlobalSchedulerImplKernel::checkOutLongTermPageLayoutCalculation()
+	{
+	return mActiveNeighborhoods.checkOutLongTermPageLayoutCalculation();
+	}
+
+void GlobalSchedulerImplKernel::checkInUpdatedLongTermPageLayoutCalculation(
+						PolymorphicSharedPtr<PageLayoutCalculator::LongTermPageLayoutCalculation> problem
+						)
+	{
+	mActiveNeighborhoods.checkInUpdatedLongTermPageLayoutCalculation(problem);
+
+	logCurrentLayout();
+	}
+
+void GlobalSchedulerImplKernel::logCurrentLayout(bool forceCritical)
+	{
+	if (!(SHOULD_LOG_DEBUG() || forceCritical))
+		return;
+
+	LOGGER_INFO_T log = (forceCritical ? LOGGER_CRITICAL : LOGGER_DEBUG);
+
+	log << currentLayoutAsString();
+	}
+
+std::string GlobalSchedulerImplKernel::currentLayoutAsString()
+	{
+	std::ostringstream strStream;
+
+		{
+		CPPMLPrettyPrintStream stream(strStream);
+
+		auto& calc = mActiveNeighborhoods;
+
+		if (mCurrentMachines.size() < 8)
+			stream << "Desired layout after rebalancing on " << mOwnMachineId << "\n" 
+				<< Ufora::makeColumns(65, 5, 50, mSystemwidePageRefcountTracker->getViewOfSystem(
+						getSystemViewCallbackForPageLayoutCalculator_(calc),
+						boost::function1<std::string, Fora::PageId>(
+							[&](Fora::PageId page) {
+								return "";
+								})
+						));
+		else
+			stream << mSystemwidePageRefcountTracker->getViewOfSystem(
+						getSystemViewCallbackForPageLayoutCalculator_(calc),
+						boost::function1<std::string, Fora::PageId>(
+							[&](Fora::PageId page) {
+								return "";
+								})
+						);	
+		}
+
+	return strStream.str();
+	}
+
+std::string GlobalSchedulerImplKernel::recomputePageLayout()
+	{
+	static double totalTimeElapsed = 0;
+	static long totalRecalculations = 0;
+
+	double t0 = curClock();
+
+	//ensure that all currently loading pages are part of the active working set, if possible
+	std::ostringstream logStream;
+
+	CPPMLPrettyPrintStream log(logStream);
+
+	log << "on " << prettyPrintString(mOwnMachineId) << ", begin recompute layout.\n";
+	
+	std::set<Cumulus::MachineId> machines = mActiveNeighborhoods.machines();
+
+	for (auto machine: machines)
+		log << "machine: " << prettyPrintString(machine) << " has memory usage "
+			<< prettyPrintString(mSystemwidePageRefcountTracker->getMachineMemoryUsage(machine))
+			<< (mSystemwidePageRefcountTracker->isExecutionBlockedOnMachine(machine) 
+					? " and is blocked.":"")
+			<< "\n"
+			;
+
+		{
+		mActiveNeighborhoods.rebalance();
+		
+		logStream << "Rebalanced in " 
+			<< curClock() - t0 
+			<< "\n";
+
+		if (curClock() - mLastTimeDumped > 10.0)
+			{
+			mLastTimeDumped = curClock();
+
+			logStream << currentLayoutAsString() << "\n";
+			}
+		}
+
+	PageLayoutCalculator::ActiveNeighborhoods& calc(mActiveNeighborhoods);
+
+	static double total = 0.0;
+	total += curClock() - t0;
+
+	log << "rebalance took " << curClock() - t0 << ". total = " << total << "\n";
+
+	for (auto machine: machines)
+		{
+		log << "machine " << prettyPrintString(machine);
+
+		std::ostringstream row;
+		row << " is using "
+			<< std::setw(10) << std::setprecision(2) << std::fixed
+			<< calc.targetLayout().bytesOnMachine(machine) / 1024.0 / 1024
+			<< " MB total. "
+			<< "Current adds are "
+			<< std::setw(10)  << std::setprecision(2) << std::fixed 
+			<< calc.bytesAddedToMachine(machine) / 1024.0 / 1024 
+			<< " MB."
+			<< ". allocated =  " 
+			<< std::setw(10) << std::setprecision(2) << std::fixed
+			<< calc.getMachineUsableMemory(machine) / 1024.0 / 1024 << " MB"
+			<< ". total MB added = " 
+			<< std::setw(10) << std::setprecision(2) << std::fixed
+			<< mBytesAddedByMachine[machine] / 1024 / 1024.0
+			<< ". total MB sent to disk = " 
+			<< std::setw(10) << std::setprecision(2) << std::fixed
+			<< mBytesSentToDiskByMachine[machine] / 1024 / 1024.0
+			<< "\n"
+			;
+		log << row.str();
+		}	
+
+	auto activeSet = mActiveNeighborhoods.getPagesInDesiredLayout();
+
+	for (auto machine: machines)
+		{
+		ImmutableTreeSet<Fora::PageId> desiredContents = calc.getDesiredMachineContents(machine);
+
+		for (auto page: desiredContents)
+			if (hasPageBeenDroppedAcrossEntireSystem_(page))
+				{
+				log << page << " is desired on " << machine 
+					<< " but has been dropped across entire system. "
+					<< "\n"
+					;
+				}
+
+		std::set<Fora::PageId> pages;
+		mSystemwidePageRefcountTracker->machineRamContents(machine, pages);
+
+		ImmutableTreeSet<Fora::PageId> currentContents(pages);
+
+		mOnCumulusComponentMessageCreated(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::SchedulerToActivePageSynchronizer(
+					SchedulerToActivePageSynchronizerMessage(
+						mOwnMachineId,
+						machine,
+						SchedulerToActivePageSynchronizerMessageContents::SetDesiredContents(
+							desiredContents, 
+							currentContents,
+							activeSet,
+							mSetDesireIndex,
+							false
+							)
+						)
+					),
+				CumulusComponentEndpointSet::SpecificWorker(machine),
+				CumulusComponentType::ActivePageSynchronizer()
+				)
+			);
+		}
+
+	for (auto& activeTaskAndTarget: mAllocatedDataTasks)
+		{
+		ImmutableTreeMap<MachineId, int64_t> targetAllocations = 
+			mActiveNeighborhoods.allocationForTask(activeTaskAndTarget.first);
+
+		if (activeTaskAndTarget.second != targetAllocations)
+			{
+			activeTaskAndTarget.second = targetAllocations;
+			mOnCumulusComponentMessageCreated(
+				CumulusComponentMessageCreated(
+					CumulusComponentMessage::GlobalSchedulerToDataTasks(
+						GlobalSchedulerToDataTasksMessage::TaskMemoryAllocated(activeTaskAndTarget.first, targetAllocations)
+						),
+					CumulusComponentEndpointSet::LeaderMachine(),
+					CumulusComponentType::ExternalIoTasks()
+					)
+				);
+			}
+		}
+
+	mSetDesireIndex++;
+
+	totalRecalculations++;
+
+	totalTimeElapsed += curClock() - t0;
+
+	log << "GlobalSchedulerImplKernel on " 
+		<< prettyPrintStringWithoutWrapping(mOwnMachineId) 
+		<< " took " << curClock() - t0
+		<< " to recompute the current active page layout."
+		<< " Total elapsed time = " << totalTimeElapsed
+		<< "\n"
+		;
+
+	if (curClock() - t0 > 1.0)
+		LOG_WARN << "rebalance took a long time (" << curClock() - t0 << ")";
+		
+	log << "Sent out desires with index " << (mSetDesireIndex-1) << "\n";
+
+	LOG_INFO << logStream.str();
+
+	return logStream.str();
+	}
+
+boost::function2<std::string, Fora::PageId, Cumulus::MachineId>
+GlobalSchedulerImplKernel::getSystemViewCallbackForPageLayoutCalculator_(
+		PageLayoutCalculator::ActiveNeighborhoods& calculator
+		)
+	{
+	return [&](Fora::PageId page, MachineId machineId) {
+		std::string prefix;
+
+		if (!mActiveNeighborhoods.isInWorkingSet(page)) 
+			return prefix + "^";
+
+		if (calculator.targetLayout().pageIsOnMachine(page, machineId) &&
+						calculator.currentLayout().pageIsOnMachine(page, machineId))
+			return prefix + ".";
+
+		if (!calculator.targetLayout().pageIsOnMachine(page, machineId) &&
+						!calculator.currentLayout().pageIsOnMachine(page, machineId))
+			return prefix + " ";
+
+		if (calculator.targetLayout().pageIsOnMachine(page, machineId) &&
+						!calculator.currentLayout().pageIsOnMachine(page, machineId))
+			return prefix + "+";
+
+		if (!calculator.targetLayout().pageIsOnMachine(page, machineId) &&
+						calculator.currentLayout().pageIsOnMachine(page, machineId))
+			return prefix + "-";
+
+		return prefix + " ";
+		};
+	}
+
+ImmutableTreeMap<ComputationId, pair<CheckpointStatus, CheckpointRequest> > 
+							GlobalSchedulerImplKernel::currentOutstandingCheckpointStatuses(bool onlyUnfinished, bool onlyCommitted)
+	{
+	return mCheckpointStatuses.currentOutstandingCheckpointStatuses(onlyUnfinished, onlyCommitted);
+	}
+
+void GlobalSchedulerImplKernel::handleCumulusComponentMessage(
+                    const CumulusComponentMessage& message, 
+                    const CumulusClientOrMachine& source, 
+                    const CumulusComponentType& componentType,
+                    double curTime
+                    )
+	{
+	if (!mReportedMyExistence)
+		{
+		mOnCumulusComponentMessageCreated(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::ComponentToCumulusClient(
+					ComponentToCumulusClientMessage::GlobalUserFacingLog(
+						GlobalUserFacingLogMessage(
+							"Global scheduler created", 
+							true,
+							curTime
+							)
+						)
+					),
+				CumulusComponentEndpointSet::AllClients(),
+				CumulusComponentType::CumulusClient()
+				)
+			);
+		mReportedMyExistence = true;
+		}
+
+	@match CumulusComponentMessage(message)
+		-| ActiveComputationsToGlobalScheduler(ComputationToGlobalScheduler(msg)) ->> {
+			handleComputationToGlobalSchedulerMessage(msg, curTime);
+			}
+		-| ExternalIoTasksToGlobalScheduler(CheckpointCommitted(checkpoint, allDataPersistedSuccessfully)) ->> {
+			mCheckpointStatuses.handleCheckpointCommitted(checkpoint, allDataPersistedSuccessfully, curTime);
+			}
+		-| LocalToGlobalScheduler(msg) ->> {
+			handleLocalToGlobalSchedulerMessage(msg);
+			}
+		-| ComputationStatusOnMachine(msg) ->> {
+			computationStatusOnMachineChanged(msg, curTime);
+			}
+		-| CumulusClientToGlobalScheduler(msg) ->> {
+			handleCumulusClientToGlobalSchedulerMessage(msg);
+			}
+		-| ComponentToGlobalScheduler(CreateActiveNeighborhoodDependency(guid, pages)) ->> {
+			//this is a pretty nasty hack to communicate our need for a page to the
+			//PLC infrastructure. Ideally, the PLC doesn't actually care about computations - just
+			//about "tasks" and we should generalize. For now, we just use arbitrary computation ids.
+			lassert(source.isMachine());
+			mActiveNeighborhoods.setPageLoad(
+				ComputationId::CreateIdForTesting(Hash::SHA1("PageAsComputation") + guid),
+				source.getMachine().machine(), 
+				make_pair(Neighborhood(pages), 0.01)
+				);
+			mTriggerRecomputePageLayoutIfNecessary();
+			}
+		-| ComponentToGlobalScheduler(DropActiveNeighborhoodDependency(guid)) ->> {
+			lassert(source.isMachine());
+			mActiveNeighborhoods.erasePageLoad(
+				ComputationId::CreateIdForTesting(Hash::SHA1("PageAsComputation") + guid),
+				source.getMachine().machine()
+				);
+			mTriggerRecomputePageLayoutIfNecessary();
+			}
+		-| ComponentToGlobalScheduler(ResumeCheckpointingAfterGc()) ->> {
+			mCheckpointStatuses.resumeCheckpointingAfterGc();
+			}
+		-| ComponentToGlobalScheduler(PauseCheckpointingForGc()) ->> {
+			mCheckpointStatuses.pauseCheckpointingBeforeGc();
+			}
+		-| ComponentToGlobalScheduler(CheckpointLoaded(checkpoint, wasFinished)) ->> {
+			mCheckpointStatuses.checkpointLoaded(checkpoint, wasFinished);
+			}
+		-| DataTasksToGlobalScheduler(m) ->> {
+			handleDataTasksToGlobalSchedulerMessage(m);
+			}
+	}
+
+}
+}
+
+

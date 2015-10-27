@@ -1,0 +1,362 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Continuation.hppml"
+#include "../../Interpreter/Instruction.hppml"
+#include "../../Interpreter/Continuation.hppml"
+#include "Instruction.hppml"
+#include "InstructionGraph.hppml"
+#include "../../Language/FunctionToCFG.hppml"
+#include "../../../core/StringUtil.hpp"
+#include <boost/lexical_cast.hpp>
+
+namespace Fora {
+namespace Compiler {
+namespace CompilerInstructionGraph {
+
+Continuation::Continuation() 
+	{
+	lassert(false);
+	}
+
+Continuation::Continuation(InstructionPtr instructionPtr, uword_t indexInInstruction, uword_t indexInCFGNode)
+	{
+	mSourceInstructionPtr = instructionPtr;
+	mIndexInParent = indexInInstruction;
+	mIndexInCFGNode = indexInCFGNode;
+	mFirstContinuationElementPtr = 0;
+	mIsReturn = false;
+	mIfReturnIsException = false;
+	mIsNone = true;
+	}
+
+const JudgmentOnResult& Continuation::returnJOR(void) const
+	{
+	lassert(mIsReturn);
+	return mReturnJOR;
+	}
+
+InstructionJOA Continuation::joa(void) const
+	{
+	if (mIsNone)
+		return InstructionJOA::Nonterminal();
+
+	if (mIsReturn)
+		{
+		if (mIfReturnIsException)
+			return InstructionJOA(JudgmentOnAction::Throws(mReturnJOR), true);
+		else
+			return InstructionJOA(JudgmentOnAction::Value(mReturnJOR), true);
+		}
+	else
+		{
+		InstructionJOA joa = InstructionJOA(JudgmentOnAction::Nonterminal(), true);
+
+		ContinuationElement* continuationElementPtr = mFirstContinuationElementPtr;
+		while (continuationElementPtr)
+			{
+			joa = joa | continuationElementPtr->getTargetInstructionPtr()->joa();
+			continuationElementPtr = continuationElementPtr->mNextContinuationElementPtr;
+			}
+		return joa;
+		}
+	}
+
+const ContinuationArgs& Continuation::getContinuationArgs(void) const
+	{
+	return mContinuationArgs;
+	}
+	
+void Continuation::init(
+		const ControlFlowContinuation& controlFlowContinuation,
+		bool hasResult
+		)
+	{
+	mIsNone = false;
+	mControlFlowContinuation = controlFlowContinuation;
+	mRequiresResult = hasResult;
+
+	mContinuationArgs = 
+		ContinuationArgs(
+			mSourceInstructionPtr->getGraph(), 
+			mSourceInstructionPtr->getLabel(),
+			getIndexInCfgNode()
+			);
+		
+	@match ControlFlowContinuation(controlFlowContinuation)
+		-|	Node(label, args) ->> {
+			mLabel = label;
+
+			if (!mRequiresResult)
+				new ContinuationElement(
+						this,
+						JOV::Unknown(),
+						&mSourceInstructionPtr->getGraph(),
+						null() << label,
+						mContinuationArgs
+						);
+			}
+		-|	Return(arg, isException) ->> {
+
+			mIsReturn = true;
+			mIfReturnIsException = isException;
+
+			if (mSourceInstructionPtr->isRootInstruction())
+				mReturnJOR = JudgmentOnResult(JOV::Unknown());
+				else
+			if (mRequiresResult)
+				mReturnJOR = JudgmentOnResult();
+			else
+				mReturnJOR = JudgmentOnResult(
+					mContinuationArgs.jovForArg(mSourceInstructionPtr->jovs(), null(), 0)
+					);
+			}
+		;
+	}
+
+ContinuationElement* Continuation::find(JudgmentOnValue inJOV)
+	{
+	lassert(mRequiresResult);
+
+	ContinuationElement* continuationElementPtr = mFirstContinuationElementPtr;
+	while (continuationElementPtr && !continuationElementPtr->mFilter.covers(inJOV))
+		continuationElementPtr = continuationElementPtr->mNextContinuationElementPtr;
+
+	return continuationElementPtr;
+	}
+	
+uint64_t Continuation::executionCount(void)
+	{
+	return mSourceInstructionPtr->correspondingInterpreterInstruction()->getContinuation(mIndexInCFGNode).executionCount();
+	}
+	
+uword_t	Continuation::flowsToCount(void) const
+	{
+	if (mIsReturn || mIsNone)
+		return 0;
+
+	if (mRequiresResult)
+		return mResultJOR.size();
+		else
+		return 1;
+	}
+
+InstructionPtr Continuation::flowsTo(uword_t ix) const
+	{
+	ContinuationElement* continuationElementPtr = mFirstContinuationElementPtr;
+	lassert(continuationElementPtr);
+
+	while (ix > 0)
+		{
+		lassert(continuationElementPtr->mNextContinuationElementPtr);
+		continuationElementPtr = continuationElementPtr->mNextContinuationElementPtr;
+		ix--;
+		}
+
+	return continuationElementPtr->getTargetInstructionPtr();
+	}
+	
+void Continuation::updateContinuationElementPtrsOnFilter(const JudgmentOnResult& jor)
+	{
+	ImmutableTreeSet<JudgmentOnValue> toAdd = jor.vals();
+
+	ContinuationElement* continuationElementPtr = mFirstContinuationElementPtr;
+	ContinuationElement* prev = 0;
+	while (continuationElementPtr)
+		{
+		if (!toAdd.contains(continuationElementPtr->mFilter))
+			{
+			ContinuationElement* toDelete = continuationElementPtr;
+			continuationElementPtr = continuationElementPtr->mNextContinuationElementPtr;
+			toDelete->destroy(prev);
+			}
+		else
+			{
+			toAdd = toAdd - continuationElementPtr->mFilter;
+			prev = continuationElementPtr;
+			continuationElementPtr = continuationElementPtr->mNextContinuationElementPtr;
+			}
+		}
+	for (long k = 0; k < toAdd.size(); k++)
+		{
+		new ContinuationElement(
+				this,
+				toAdd[k],
+				&mSourceInstructionPtr->getGraph(),
+				mLabel,
+				mContinuationArgs
+				);
+		}
+	}
+
+void Continuation::updateReturnJOR(const JudgmentOnResult& jor)
+	{
+	mReturnJOR = mContinuationArgs.jorForArg(mSourceInstructionPtr->jovs(), jor, 0);
+	}
+
+bool Continuation::update(const JudgmentOnResult& jor)
+	{
+	lassert(mRequiresResult);
+
+	if (mResultJOR == jor)
+		return false;
+
+	mResultJOR = jor;
+
+	if (mIsReturn)
+		{
+		updateReturnJOR(jor);
+		}
+	else
+		{
+		updateContinuationElementPtrsOnFilter(jor);
+		}
+
+	return true;
+	}
+
+bool Continuation::isReturn(void) const
+	{
+	return mIsReturn;
+	}
+	
+uword_t Continuation::getIndexInInstruction(void) const
+	{
+	return mIndexInParent;
+	} 
+
+uword_t Continuation::getIndexInCfgNode(void) const
+	{
+	return mIndexInCFGNode;
+	} 
+
+bool Continuation::requiresResult(void) const
+	{
+	return mRequiresResult;
+	}
+		
+string Continuation::getName(void) const
+	{
+	return 	"[" + boost::lexical_cast<string>(getIndexInInstruction()) +
+				"]" + getSourceInstruction()->toString(true);
+	}
+
+bool Continuation::returnIsException(void) const
+	{
+	return mIfReturnIsException;
+	}
+
+bool Continuation::isNone(void) const 
+	{ 
+	return mIsNone; 
+	}
+	
+string Continuation::toString(void) const
+	{
+	if (mIsNone)
+		return "";
+
+	string tr = prettyPrintString(mControlFlowContinuation) +
+					(mRequiresResult ? " with " + prettyPrintString(mResultJOR) : string()) + "\n";
+	ContinuationElement* continuationElementPtr = mFirstContinuationElementPtr;
+	while (continuationElementPtr)
+		{
+		tr = tr + "\t" + continuationElementPtr->toString() + "\n";
+		continuationElementPtr = continuationElementPtr->nextContinuationElementPtr();
+		}
+	if (!mFirstContinuationElementPtr && !mIsReturn)
+		tr = tr + "\t<EMPTY>\n";
+		else
+	if (mIsReturn)
+		tr = tr + "\tReturnJOR = " + prettyPrintString(mReturnJOR) +
+			". joa = " + prettyPrintString(joa()) + "\n";
+
+	return tr;
+	}
+
+void Continuation::destroyContinuations(void)
+	{
+	mIsNone = true;
+
+	while (mFirstContinuationElementPtr)
+		mFirstContinuationElementPtr->destroy(0);
+	}
+	
+ContinuationElement* Continuation::firstContinuationElementPtr(void) const
+	{
+	return mFirstContinuationElementPtr;
+	}	
+
+InstructionPtr Continuation::getSourceInstruction(void) const
+	{
+	return mSourceInstructionPtr;
+	}
+
+bool Continuation::usesResult(void) const
+	{
+	return mContinuationArgs.usesResult();
+	}
+
+void Continuation::insertContinuationElement(
+        ContinuationElement* continuationElementPtrToInsert,
+        const JudgmentOnValue& filter
+        )
+    {
+	if (mFirstContinuationElementPtr == 0)
+		{
+		mFirstContinuationElementPtr = continuationElementPtrToInsert;
+		}
+	else
+		{
+		ContinuationElement* continuationElementPtr = mFirstContinuationElementPtr;
+		if (continuationElementPtr->mFilter.covers(filter))
+			{
+			lassert(continuationElementPtr->mFilter != filter);
+
+			continuationElementPtrToInsert->mNextContinuationElementPtr = continuationElementPtr;
+			continuationElementPtrToInsert->getContinuationPtr()->mFirstContinuationElementPtr =
+                                                            continuationElementPtrToInsert;
+			}
+		else
+			{
+			while (continuationElementPtr->nextContinuationElementPtr())
+				{
+				if (continuationElementPtr->nextContinuationElementPtr()->mFilter.covers(filter))
+					{
+					lassert(continuationElementPtr->nextContinuationElementPtr()->mFilter !=
+                                                                                        filter);
+					continuationElementPtrToInsert->mNextContinuationElementPtr =
+                        continuationElementPtr->nextContinuationElementPtr();
+					continuationElementPtr->mNextContinuationElementPtr = 
+                                                    continuationElementPtrToInsert;
+
+					return;
+					}
+				else
+					continuationElementPtr = continuationElementPtr->nextContinuationElementPtr();
+				}
+			continuationElementPtr->mNextContinuationElementPtr = continuationElementPtrToInsert;
+			}
+		}
+    }
+const ControlFlowContinuation& Continuation::getControlFlowContinuation(void) const 
+	{
+	return mControlFlowContinuation; 
+	}
+
+}
+}
+}
+

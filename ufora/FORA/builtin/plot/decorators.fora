@@ -1,0 +1,169 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#Markdown("""
+### Plot Decorators
+
+#### Description
+
+The decorators module describes the data structure needed to support the plot options decorator
+pattern, e.g. plot.options.title("Hello") * linePlot(data)
+""");
+
+`hidden
+mergeNamedTuples: fun(filters.IsTuple(tuple1), filters.IsTuple(tuple2)) {
+    let names1 = tuple1..names;
+    let names2 = tuple2..names;
+
+    let allNames = sorting.unique([val for val in names1 + names2 if val is not nothing]);
+    let tr = ();
+    for name in allNames {
+        if (name in names1 and name in names2) {
+            let value1 = tuple1[name];
+            let value2 = tuple2[name];
+            let value = mergeNamedTuples(value1, value2);
+            tr = tr + ((name): value)
+            }
+        else if (name in names1) {
+            // tuple1 gets precedence.
+            tr = tr + ((name): tuple1[name])
+            }
+        else if (name in names2) {
+            tr = tr + ((name): tuple2[name])
+            }
+        }
+
+    return tr
+    }
+(x, _) {
+    x
+    };
+
+#Markdown("""
+#### Description
+
+`decoratorFactory` produces Decorator instances based on the Member symbols given.
+
+`plot.options.title` produces a Decorator for the `title field. `plot.options.xaxis.show` produces
+a Decorator for the `show field, nested inside `xaxis.
+""")
+decoratorFactory:
+object {
+    ...(`Member, field) {
+        object {
+            operator () (value) {
+                Decorator(
+                    changes_: (), 
+                    value: value, 
+                    field: field, 
+                    parentField: nothing
+                    )
+                };
+
+            ...(`Member, subfield) {
+                fun(value) {
+                    Decorator(
+                        changes_: (), 
+                        value: value, 
+                        field: subfield, 
+                        parentField: field
+                        )
+                    }
+                };
+            }
+        };
+    };
+
+#Markdown("""
+#### Description
+
+The Decorator class provides a mechanism to alter options on Plot objects.
+
+This class is typically not used directly. Instead, use the `plot.options` member to create
+Decorators.
+""")
+Decorator:
+class {
+    // Hold a named tuple of all changes to plot options to make.
+    member changes_;
+
+    // The new value, if any.
+    member value;
+
+    // The field to alter, if any.
+    member field;
+
+    // The parent field, where this option will be located in the option hierarchy.
+    member parentField;
+
+    collapseChanges: fun() {
+        let newChanges = ();
+        if (self.value is not nothing and self.field is not nothing) {
+            if (self.parentField is not nothing) {
+                newChanges = 
+                    ((self.parentField): ((self.field): self.value)) + newChanges
+                }
+            else {
+                newChanges = ((self.field): self.value) + newChanges
+                }
+            }
+        if (size(self.changes_) > 0) {
+            newChanges = newChanges + self.changes_
+            }
+        newChanges
+        };
+
+    operator match (#Decorator _) {
+        (self,)
+        };
+
+    operator *
+    (#Single(plot)) {
+        match (plot) with
+            (#Plot(*inner)) {
+                let options =
+                if (inner.options is nothing or inner.options == ()) {
+                    self.collapseChanges()
+                    }
+                else {
+                    let changes = self.collapseChanges();
+                    mergeNamedTuples(changes, inner.options);
+                    };
+
+                return Plot(
+                    plotType: inner.function,
+                    options: options,
+                    vector: inner.vector
+                    )
+                }
+        }
+    (#Composite(otherPlots, otherOptions)) {
+        let newOptions = mergeNamedTuples(self.collapseChanges(), otherOptions)
+        PlotComposite(otherPlots, newOptions)
+        }
+    (#Decorator(other)) {
+        let newChanges = 
+            mergeNamedTuples(self.collapseChanges(), other.collapseChanges());
+        Decorator(
+            changes_: newChanges, 
+            field: nothing, 
+            value: nothing, 
+            parentField: nothing
+            )
+        };
+    };
+
+
+

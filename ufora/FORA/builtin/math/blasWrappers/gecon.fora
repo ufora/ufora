@@ -1,0 +1,168 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+"""
+DESCRIPTION:
+    DGECON estimates the reciprocal of the condition number of a general
+    real matrix A, in either the 1-norm or the infinity-norm, using
+    the LU factorization computed by DGETRF.
+    
+    An estimate is obtained for norm(inv(A)), and the reciprocal of the
+    condition number is computed as
+       RCOND = 1 / ( norm(A) * norm(inv(A)) ).
+   
+ARGUMENTS:
+    NORM    String, or UInt8.
+            Encodes the desired norm for the condition number. Write A = (A_{i,j}):
+            '1' -- maxJ ( sumI abs( A_{i,j} ) )
+            'I' -- maxI ( sumJ abs ( A_{i,j} ) )
+            
+    N       Integer type.
+            The number of rows (== number of columns) of A
+    
+    A       Vector of floats, size N * N.
+            The matrix A, stored in column-major format.
+            
+RETURNS:
+    An estimate of the reciprocal of the condition number of A in norm NORM.
+   
+"""
+fun(    
+        normIn,
+        n,
+        A
+        )
+    {    
+    let norm = match (normIn) with
+        ('1')   { '1'[0] }
+        ('I')   { 'I'[0] }
+        ;
+    n = Int32(n);
+
+    if (size(A) < n * n)
+        throw "size of matrix A too small"
+
+	let elementType = nothing;
+	(elementType, A) = blasWrappers.eltTypeAndFloatifyIfNecessary(A);
+	let vecType = `JovOfVectorHolding(elementType);
+	let intVecType = `JovOfVectorHolding(Int32);
+
+    let work = [] :: elementType();
+    let lwork = -1s32;
+    let info = [0s32];
+    
+    let blasname = addTypeSuffix(elementType, "gecon_");
+    
+    let wrapper =
+        `FORTRANFunctionWrapper(
+            blasname,
+            blasname,
+            (5,6,7,8),          //arguments that are modified by the function
+            UInt8,              //0  NORM    (input) CHARACTER*1
+            Int32,              //1  N       (input) INTEGER
+            vecType,           //2  A       (input) DOUBLE PRECISION array, dimension (LDA,N)
+            Int32,              //3  LDA     (input) INTEGER
+            elementType,       //4  ANORM   (input) DOUBLE PRECISION
+            vecType,           //5  RCOND   (output) DOUBLE PRECISION
+            vecType,           //6  WORK    (workspace) DOUBLE PRECISION array, dimension (4*N)
+            intVecType,       //7  IWORK   (workspace) INTEGER array, dimension (N)
+            intVecType    	//8  INFO    (output) INTEGER
+        );
+    
+    let anorm = math.blasWrappers.lange(normIn, n, n, A);
+        
+    let rcond = [] :: elementType();
+    let work = Vector.uniform(4 * n, elementType());
+    let iwork = Vector.uniform(n, 0s32);
+    let info = [0s32];
+    
+    (rcond, work, iwork, info) = wrapper(norm, n, A, n, anorm, rcond, work, iwork, info);
+    
+    if (info[0] != 0s32)
+        throw "illegal input to FORTRAN function xGECON: argument " + String(-info[0])
+        
+    return rcond[0];
+    }
+    ;
+
+/*
+SUBROUTINE DGECON( NORM, N, A, LDA, ANORM, RCOND, WORK, IWORK,
+     $                   INFO )
+*
+*  -- LAPACK routine (version 3.3.1) --
+*  -- LAPACK is a software package provided by Univ. of Tennessee,    --
+*  -- Univ. of California Berkeley, Univ. of Colorado Denver and NAG Ltd..--
+*  -- April 2011                                                      --
+*
+*     Modified to call DLACN2 in place of DLACON, 5 Feb 03, SJH.
+*
+*     .. Scalar Arguments ..
+      CHARACTER          NORM
+      INTEGER            INFO, LDA, N
+      DOUBLE PRECISION   ANORM, RCOND
+*     ..
+*     .. Array Arguments ..
+      INTEGER            IWORK( * )
+      DOUBLE PRECISION   A( LDA, * ), WORK( * )
+*     ..
+*
+*  Purpose
+*  =======
+*
+*  DGECON estimates the reciprocal of the condition number of a general
+*  real matrix A, in either the 1-norm or the infinity-norm, using
+*  the LU factorization computed by DGETRF.
+*
+*  An estimate is obtained for norm(inv(A)), and the reciprocal of the
+*  condition number is computed as
+*     RCOND = 1 / ( norm(A) * norm(inv(A)) ).
+*
+*  Arguments
+*  =========
+*
+*0  NORM    (input) CHARACTER*1
+*          Specifies whether the 1-norm condition number or the
+*          infinity-norm condition number is required:
+*          = '1' or 'O':  1-norm;
+*          = 'I':         Infinity-norm.
+*
+*1  N       (input) INTEGER
+*          The order of the matrix A.  N >= 0.
+*
+*2  A       (input) DOUBLE PRECISION array, dimension (LDA,N)
+*          The factors L and U from the factorization A = P*L*U
+*          as computed by DGETRF.
+*
+*3  LDA     (input) INTEGER
+*          The leading dimension of the array A.  LDA >= max(1,N).
+*
+*4  ANORM   (input) DOUBLE PRECISION
+*          If NORM = '1' or 'O', the 1-norm of the original matrix A.
+*          If NORM = 'I', the infinity-norm of the original matrix A.
+*
+*5  RCOND   (output) DOUBLE PRECISION
+*          The reciprocal of the condition number of the matrix A,
+*          computed as RCOND = 1/(norm(A) * norm(inv(A))).
+*
+*6  WORK    (workspace) DOUBLE PRECISION array, dimension (4*N)
+*
+*7  IWORK   (workspace) INTEGER array, dimension (N)
+*
+*8  INFO    (output) INTEGER
+*          = 0:  successful exit
+*          < 0:  if INFO = -i, the i-th argument had an illegal value
+*
+*  =====================================================================
+*/

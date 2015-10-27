@@ -1,0 +1,110 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "NativeCodeSimplification.hppml"
+#include "../Runtime.hppml"
+#include "../../core/containers/TwoWaySetMap.hpp"
+#include "../../core/containers/MapWithIndex.hpp"
+#include "../../core/cppml/CPPMLTransform.hppml"
+#include "../../core/cppml/CPPMLVisit.hppml"
+
+
+class RemoveEmptyVariables {
+public:
+		template<class T>
+		Nullable<T> processDown(const T& in, bool& out) const
+			{
+			return null();
+			}
+		template<class T>
+		Nullable<T> processUp(const T& in) const
+			{
+			return null();
+			}
+
+		Nullable<NativeConstant> processDown(const NativeConstant& t, bool& b) const 
+			{
+			b = false;
+			return null(); 
+			}
+	
+		
+		Nullable<NativeType> processDown(const NativeType& in, bool& out) const
+			{
+			out = false;
+			return null();
+			}
+
+		Nullable<ImmutableTreeVector<NativeVariable> > processDown(const ImmutableTreeVector<NativeVariable>& i, bool& out) const
+			{
+			for (long k = 0; k < i.size(); k++)
+				if (i[k].type().packedSize() == 0)
+					{
+					ImmutableTreeVector<NativeVariable> tr;
+					for (k = 0; k < i.size(); k++)
+						if (i[k].type().packedSize() > 0)
+							tr = tr + i[k];
+					return null() << tr;
+					}
+			
+			return null();
+			}
+		Nullable<NativeCodeFlattened::Input> processDown(const NativeCodeFlattened::Input& in)
+			{
+			@match NativeCodeFlattened::Input(in)
+				-|	Variable(v) ->> {
+					return  null() << (v.type().packedSize() ? in : NativeCodeFlattened::Input::Zero(v.type()));
+					}
+				-|	x ->> {
+					return  null();
+					}
+				;
+			}
+		NativeCodeFlattened::JumpPoint processDown(const NativeCodeFlattened::JumpPoint& i, bool& out) const
+			{
+			return NativeCodeFlattened::JumpPoint(i.block(), prune(i.args()), i.dumpToSlots());
+			}
+		ImmutableTreeVector<NativeCodeFlattened::Input> prune(const ImmutableTreeVector<NativeCodeFlattened::Input>& i) const
+			{
+			ImmutableTreeVector<NativeCodeFlattened::Input> args;
+			for (long k = 0; k < i.size();k++)
+				@match NativeCodeFlattened::Input(i[k])
+					-|	Variable(var) ->> {
+						if (var.type().packedSize())
+							args = args + i[k];
+						}
+					-|	Constant(c) ->>  {
+						if (NativeExpression::Constant(c).type()->packedSize())
+							args = args + i[k];
+						}
+					-|	Zero(t) ->> {
+						if (t.packedSize())
+							args = args + i[k];
+						}
+					-|	_ ->> {
+						args = args + i[k];
+						;}
+					;
+			return args;
+			}
+
+};
+
+
+void	removeEmptyVariables(map<NativeBlockID, NativeCodeFlattened::Block>& outBlocks)
+	{
+	outBlocks = transform(outBlocks, RemoveEmptyVariables());
+	}
+

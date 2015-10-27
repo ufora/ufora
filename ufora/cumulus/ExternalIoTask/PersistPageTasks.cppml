@@ -1,0 +1,379 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "PersistPageTasks.hppml"
+#include "../../FORA/Serialization/SerializedObjectFlattener.hpp"
+#include "../../FORA/VectorDataManager/VectorPage.hppml"
+
+using Cumulus::PersistentCache::PersistentCacheIndex;
+
+namespace Cumulus {
+
+PersistPageTasks::PersistPageTasks(	
+			PolymorphicSharedPtr<VectorDataManager> inVDM,
+			PolymorphicSharedPtr<SystemwidePageRefcountTracker> inSPRT,
+			PolymorphicSharedPtr<OfflineCache> inOfflineCache,
+			boost::function0<hash_type> inCreateNewHash,
+			boost::function1<void, PythonIoTaskRequest> inBroadcastPythonTask,
+			boost::function1<void, ExternalIoTaskCreated> inCreateNewIoTask,
+			boost::function1<void, ExternalIoTaskCompleted> inOnExternalIoTaskCompleted,
+			boost::function2<void, ExternalIoTaskCreated, Cumulus::MachineId> inCreateNewRemoteIoTask,
+			boost::function1<void, CumulusComponentMessageCreated> inCumulusComponentMessageCreated,
+			MachineId inOwnMachineId
+			) : 
+		mOwnMachineId(inOwnMachineId),
+		mVDM(inVDM),
+		mOfflineCache(inOfflineCache),
+		mSPRT(inSPRT),
+		mCreateNewHash(inCreateNewHash),
+		mBroadcastPythonTask(inBroadcastPythonTask),
+		mCreateNewIoTask(inCreateNewIoTask),
+		mOnExternalIoTaskCompleted(inOnExternalIoTaskCompleted),
+		mRandomGenerator(inCreateNewHash()[0]),
+		mCreateNewRemoteIoTask(inCreateNewRemoteIoTask),
+		mCumulusComponentMessageCreated(inCumulusComponentMessageCreated)
+	{
+	}
+
+void PersistPageTasks::handleExternalIoTaskCompleted(ExternalIoTaskCompleted completed)
+	{
+	if (mPagesBlockedOnBigvecPersistence.hasValue(completed.taskId()))
+		{
+		std::set<Fora::PageId> pages = mPagesBlockedOnBigvecPersistence.getKeys(completed.taskId());
+
+		mPagesBlockedOnBigvecPersistence.dropValue(completed.taskId());
+
+		if (completed.result().isSuccess())
+			{
+			for (auto page: pages)
+				if (!mPagesBlockedOnBigvecPersistence.hasKey(page))
+					persistPage(page);
+			}	
+		else
+			{
+			for (auto page: pages)
+				{
+				mPagesBlockedOnBigvecPersistence.dropKey(page);
+				handlePagePersistenceTaskComplete(page, completed.result());
+				}
+			}
+		}
+
+	if (mPageTasksPendingOnOtherMachines.hasValue(completed.taskId()))
+		{
+		std::set<Fora::PageId> pages = mPageTasksPendingOnOtherMachines.getKeys(completed.taskId());
+
+		mPageTasksPendingOnOtherMachines.dropValue(completed.taskId());
+
+		for (auto page: pages)
+			handlePagePersistenceTaskComplete(page, completed.result());
+		}
+	}
+
+void PersistPageTasks::handleRemoteTaskCompleted(ExternalIoTaskCompleted completed)
+	{
+	handleExternalIoTaskCompleted(completed);
+	}
+
+void PersistPageTasks::handleNewSavePageToPersistentCache(ExternalIoTaskId taskId, Fora::PageId pageId)
+	{
+	mCurrentPagePersistenceTasks.insert(taskId, pageId);
+
+	if (mCurrentPagePersistenceTasks.getKeys(pageId).size() > 1)
+		return;
+
+	schedulePageLoad_(pageId);
+	}
+
+void PersistPageTasks::checkDeferredPageLoads()
+	{
+	if (!mPageLoadsDeferred.size())
+		return;
+
+	std::set<Fora::PageId> awake;
+	for (auto p: mPageLoadsDeferred)
+		if (mSPRT->isPageAnywhereInRam(p.first))
+			awake.insert(p.first);
+
+	for (auto p: awake)
+		{
+		hash_type guid = mPageLoadsDeferred[p];
+		mPageLoadsDeferred.erase(p);
+
+		mCumulusComponentMessageCreated(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::ComponentToGlobalScheduler(
+					ComponentToGlobalSchedulerMessage::DropActiveNeighborhoodDependency(
+						guid
+						)
+					),
+				CumulusComponentEndpointSet::LeaderMachine(),
+				CumulusComponentType::GlobalScheduler()
+				)
+			);
+
+		schedulePageLoad_(p);
+		}
+	}
+
+void PersistPageTasks::handlePersistObjectResponse(PythonIoTaskResponse response)
+	{
+	hash_type requestGuid = response.guid();
+
+	if (mPythonIoTaskRequestToPageId.find(requestGuid) == mPythonIoTaskRequestToPageId.end())
+		return;
+
+	Fora::PageId pageId = mPythonIoTaskRequestToPageId[requestGuid].first;
+	
+	hash_type dataHash = mPythonIoTaskRequestToPageId[requestGuid].second;
+
+	mPythonIoTaskRequestToPageId.erase(requestGuid);
+
+	@match PythonIoTaskResponse(response)
+		-| DataSuccessfullyPersisted(_, bytecount) ->> {
+			PolymorphicSharedPtr<PersistentCacheIndex> index = mVDM->getPersistentCacheIndex();
+
+			ImmutableTreeSet<hash_type> hashes;
+
+			for (auto bv: mBigvecDeps[pageId])
+				hashes = hashes + bv.guid();
+
+			index->addPage(
+				pageId.guid(), 
+				hashes, 
+				bytecount,
+				dataHash
+				);
+
+			handlePagePersistenceTaskComplete(
+				pageId, 
+				ExternalIoTaskResult::Success()
+				);
+			}
+		-| Failure(_, reason) ->> {
+			handlePagePersistenceTaskComplete(
+				pageId, 
+				ExternalIoTaskResult::PythonIoFailure(reason)
+				);
+			}
+		-| UserCausedFailure(_, reason) ->> {
+			handlePagePersistenceTaskComplete(
+				pageId, 
+				ExternalIoTaskResult::PythonIoFailure(reason)
+				);
+			}
+		-| _ ->> {
+			lassert_dump(false, prettyPrintString(response));
+			}
+	}
+
+void PersistPageTasks::schedulePageLoad_(Fora::PageId pageId)
+	{
+	boost::shared_ptr<VectorPage> page = mVDM->getPageFor(pageId);
+
+	ImmutableTreeSet<Fora::BigVectorId> bigvecs;
+
+	if (page)
+		{
+		//make sure we hold onto the page data for the duration of the action
+		mLockedVectorPages[pageId] = page;
+
+		bigvecs = page->getReferencedBigVectorIds();
+		}
+	else
+		{
+		//see if its on disk. If so, we can still figure out what bigvecs it depends on
+		if (mVDM->getPageRefcountTracker()->pageIsOnDisk(pageId))
+			{
+			auto maybeBigvecs = 
+				mVDM->getPageRefcountTracker()->getBigvecsReferencedByPage(pageId);
+
+			lassert(maybeBigvecs);
+
+			bigvecs = *maybeBigvecs;
+			}
+		else
+			{
+			schedulePageDumpOnAppropriateMachine(pageId);
+			return;
+			}
+		}
+
+	mBigvecDeps[pageId] = bigvecs;
+
+	if (!allBigvecsArePersistedAlready(pageId, bigvecs))
+		return;
+
+	persistPage(pageId);
+	}
+
+void PersistPageTasks::schedulePageDumpOnAppropriateMachine(Fora::PageId page)
+	{
+	Nullable<Cumulus::MachineId> idealMachine = pickRemoteMachineForPage(page);
+
+	if (idealMachine)
+		{
+		ExternalIoTaskId newTaskId(mCreateNewHash());
+
+		mCreateNewRemoteIoTask(
+			ExternalIoTaskCreated(
+				newTaskId,
+				ExternalIoTask::SavePageToPersistentCache(page)
+				),
+			*idealMachine
+			);
+
+		mPageTasksPendingOnOtherMachines.insert(page, newTaskId);
+		}
+	else
+		{
+		if (!mSPRT->hasPageBeenDroppedAcrossEntireSystem(page))
+			{
+			LOG_INFO << "Deferring page load for " << page << " because "
+				<< "we can't find it in the VDM or on disk, but the SPRT thinks "
+				<< " that we're holding it. "
+				<< (mVDM->getBigVectorLayouts()->isPageSynthetic(page) ? 
+						"page is synthetic, so that makes sense." : "")
+				<< "held by " << mVDM->getBigVectorLayouts()->getBigvecsContaining(emptyTreeSet() + page)
+				;
+
+			deferPageLoad(page);
+			}
+		else
+			{
+			handlePagePersistenceTaskComplete(
+				page,
+				ExternalIoTaskResult::PageNoLongerExistsInSystem(page)
+				);
+			}
+		}
+	}
+
+Nullable<Cumulus::MachineId> PersistPageTasks::pickRemoteMachineForPage(Fora::PageId page)
+	{
+	std::set<Cumulus::MachineId> machines;
+
+	mSPRT->machinesWithPageInRam(page, machines);
+
+	machines.erase(mOwnMachineId);
+
+	if (machines.size())
+		return null() << Ufora::math::Random::pickRandomlyFromSet(machines, mRandomGenerator);
+		
+	mSPRT->machinesWithPageOnDisk(page, machines);
+
+	machines.erase(mOwnMachineId);
+
+	if (machines.size())
+		return null() << Ufora::math::Random::pickRandomlyFromSet(machines, mRandomGenerator);
+
+	return null();
+	}
+
+void PersistPageTasks::deferPageLoad(Fora::PageId page)
+	{
+	if (mPageLoadsDeferred.find(page) != mPageLoadsDeferred.end())
+		return;
+
+	hash_type guid = mCreateNewHash();
+
+	mPageLoadsDeferred[page] = guid;
+
+	mCumulusComponentMessageCreated(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::ComponentToGlobalScheduler(
+				ComponentToGlobalSchedulerMessage::CreateActiveNeighborhoodDependency(
+					guid,
+					emptyTreeSet() + page
+					)
+				),
+			CumulusComponentEndpointSet::LeaderMachine(),
+			CumulusComponentType::GlobalScheduler()
+			)
+		);
+	}
+
+void PersistPageTasks::persistPage(Fora::PageId pageId)
+	{
+	PolymorphicSharedPtr<SerializedObject> object = mVDM->extractVectorPageIfPossible(pageId).first;
+	
+	if (!object && mOfflineCache)
+		object = mOfflineCache->loadIfExists(pageId);
+
+	if (!object)
+		{
+		deferPageLoad(pageId);
+		return;
+		}
+	
+	hash_type requestGuid = mCreateNewHash();
+
+	auto dataToPersist = SerializedObjectFlattener::flattenOnce(object);
+
+	mPythonIoTaskRequestToPageId[requestGuid] = make_pair(pageId, dataToPersist->hash());
+
+	//fire off the python upload of the bigvec
+	mBroadcastPythonTask(
+		PythonIoTaskRequest::PersistObject(
+			requestGuid,
+			dataToPersist,
+			PersistentCacheKey::Page(pageId.guid()).storagePath()
+			)
+		);
+	}
+
+bool PersistPageTasks::allBigvecsArePersistedAlready(Fora::PageId pageId, ImmutableTreeSet<Fora::BigVectorId> ids)
+	{
+	auto cache = mVDM->getPersistentCacheIndex();
+
+	for (auto bv: ids)
+		if (!cache->bigvecExists(bv.guid()))
+			{
+			ExternalIoTaskId newTaskId(mCreateNewHash());
+
+			mPagesBlockedOnBigvecPersistence.insert(pageId, newTaskId);
+
+			mCreateNewIoTask(
+				ExternalIoTaskCreated(
+					newTaskId,
+					ExternalIoTask::SaveBigvecToPersistentCache(bv.guid())
+					)
+				);
+			}
+
+	if (mPagesBlockedOnBigvecPersistence.hasKey(pageId))
+		return false;
+
+	return true;
+	}
+
+void PersistPageTasks::handlePagePersistenceTaskComplete(Fora::PageId pageId, ExternalIoTaskResult result)
+	{
+	for (auto task: mCurrentPagePersistenceTasks.getKeys(pageId))
+		mOnExternalIoTaskCompleted(
+			ExternalIoTaskCompleted(task, result)
+			);
+
+	mCurrentPagePersistenceTasks.dropValue(pageId);
+
+	mBigvecDeps.erase(pageId);
+
+	mPagesBlockedOnBigvecPersistence.dropKey(pageId);
+
+	mLockedVectorPages.erase(pageId);
+	}
+
+}
+

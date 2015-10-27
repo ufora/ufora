@@ -1,0 +1,761 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma 
+
+#include "CallSite.hpp"
+#include "../ControlFlowGraph/ControlFlowGraph.hppml"
+
+#include "NativeConstant.hppml"
+#include "../../core/cppml/CPPMLEquality.hppml"
+#include "../../core/cppml/CPPMLOpaqueHandle.hppml"
+#include "../../core/containers/ImmutableTreeMap.hppml"
+#include "../../core/containers/ImmutableTreeSet.hppml"
+
+#include "NativeType.hppml"
+#include "NativeVariable.hppml"
+#include "NativeBinaryOpcode.hppml"
+#include "NativeUnaryOpcode.hppml"
+#include "NativeBlockID.hppml"
+#include "NativeLibraryFunctionTarget.hppml"
+
+#include "../../core/cppml/CPPMLTransform.hppml"
+#include "../TypedFora/TypedFora.fwd.hppml"
+
+@type
+	//NativeExpressionTag objects are used to mark particular pieces of
+	//NativeCode.  They carry no semantic meaning in the code, but should
+	//describe invariants that the compiler can use to optimize code.
+	NativeExpressionTag =
+	
+	
+		//just comments
+		Comment of string str
+	
+		//indicates that this expression checks whether to kick to the
+		//interpreter. The compiler replaces anything surrounded by
+		//this expression with an actual interpreter check
+	-|	KickToInterpreterCheck of ()
+	
+		//Interrupt indicates that this block of code checks whether to
+		//interrupt the current computation.  The optimizer will assume that
+		//it can remove an interrupt block if it can prove that another
+		//block marked interrupt is always executed in a finite number
+		//of instruction cycles
+	-|	Interrupt of ()
+	
+		//CallSiteTag and CallSiteInstrumentation are used to mark a particular
+		//call site and the instrumentation associated with it.
+		//In general, the optimizer doesn't do anything with this code.
+		//DynamicInliner uses these tags to track which sites it should inline
+		//and to remove instrumentation it doesn't need any more from running
+		//code.
+	-|	CallSiteTag of
+			std::string callerName,
+			uint64_t siteId,
+			std::string calleeName
+
+	-|	HomogenousVectorLookup of 
+			NativeExpression vectorRecord, 
+			NativeExpression index,
+			NativeType type
+
+	-|	HomogenousVectorStashCheck of 
+			NativeExpression vecExpr,
+			NativeExpression stash, 
+			NativeExpression index
+
+	-|	OnHomogenousVectorLookupBoundsCheckFailure of ()
+
+	-|	TransferToInterpreter of ()
+
+	-|	CallSiteInstrumentation of
+			std::string callerName,
+			uint64_t siteId
+	
+		//Refcount indicates that an operation increases or decreases a
+		//refcount (potentially destroying it).  Two sequential operations
+		//that leave a refcount unchanged can be removed, but only if we
+		//can prove that they're acting on exactly the same object.
+		//refcountUpdate should always be one of -1 or +1
+	-|	Refcount of
+			NativeExpression refcountedExpression,
+			int32_t refcountUpdate,
+			//expression that does the opposite refcount direction so that
+			//we can create 'pairs' of refcounts
+			NativeExpression opposite
+	{
+	public:
+		void toString(CPPMLPrettyPrintStream  st) const;
+	}
+and
+	NativeExpression =
+		Constant of NativeConstant c
+	-|	Variable of NativeVariable var
+	-|	Tagged of
+			NativeExpression,
+			NativeExpressionTag tag
+	-|	CreateComposite of ImmutableTreeVector<NativeExpression> subs
+	-|	DiscardFirst of
+			NativeExpression first,
+			NativeExpression second
+		//An empty value of the specified type.
+	-|	Zero of NativeType type
+		//Allocate (i.e. "alloca" in llvm) allocates 'count' empty
+		//instances of 'NativeType'. Allocation happens at entrance to the
+		//function, not when the Alloc is executed. One allocation exists for
+		//every distinct Alloc in a given function, so be careful making copies
+		//of the Alloc.
+	-|	Alloc of NativeType t, int32_t count, bool forceInitialize
+	// === Actual operations: ===
+	-|	Load of
+			NativeExpression var,
+			bool isVolatile
+	-|	Store of
+			NativeExpression address,
+			NativeExpression valueToStore
+	-|	Selector of 
+			NativeExpression condition,
+			NativeExpression ifTrue,
+			NativeExpression ifFalse
+	-|	BinaryOp of
+			NativeBinaryOpcode opcode,
+			NativeExpression lhs,
+			NativeExpression rhs
+	-|	UnaryOp of
+			NativeUnaryOpcode opcode,
+			NativeExpression elt
+	-|	Cast of
+			NativeType dest,
+			NativeExpression source,
+			bool forceBitcast
+	-|	ElementAddress of
+			ImmutableTreeVector<NativeExpression> element,
+			NativeExpression source,
+			bool toss
+	-|	ValueExtract of
+			ImmutableTreeVector<uword_t> args,
+			NativeExpression source
+	-|	CallLibraryFunction of
+			NativeLibraryFunctionTarget target,
+			NativeType retType,
+			ImmutableTreeVector<NativeExpression> args
+	// === Valued expressions with flow control: ===
+		//Creates a set of continuations as objects.  Those continuations return
+		//to this exact point. They must all result in 'null' type, or the actual type.
+	-|	Continuations of
+			ImmutableTreeVector<NativeContinuation> continuation,
+			ImmutableTreeVector<NativeContinuationMetadata> data
+		//Doesn't evaluate both of them.
+	-|	If of
+			NativeExpression condition,
+			NativeExpression ifTrue,
+			NativeExpression ifFalse,
+			double fractionTrue
+	-|	Let of
+			NativeVariable var,
+			NativeExpression expr,
+			NativeExpression within,
+			bool toss
+
+	// === Exiting expressions: ===
+		//Creates the implicit continuations and jumps to `f` with the relevant arguments.
+	-|	Call of
+			NativeCallTarget f,
+			ImmutableTreeVector<NativeContinuation> returnHandlers,
+			ImmutableTreeVector<NativeExpression> args,
+			ImmutableTreeVector<NativeContinuationMetadata> meta
+		//Jumps to the specified location.
+	-|	Jump of
+			NativeBlockID location,
+			ImmutableTreeVector<NativeExpression> expressions
+		//Follows the given continuation.
+	-|	FollowContinuation of
+			NativeExpression var,
+			NativeExpression continuation,
+			uint32_t index
+		//Returns from the current function (i.e. follows an implicit continuation).
+	-|	Return of
+			uint64_t exitNumber,
+			NativeExpression value
+		//Halts with an error (i.e. sets a global variable with the error and returns immediately)
+	-|	Halt of std::string reason
+	with
+		Nullable<NativeType>				type				= (this->computeNativeType()),
+		ImmutableTreeSet<NativeVariable>	freeVariables		= (this->computeFreeVariables()),
+		ImmutableTreeSet<std::string>		externalBranches	= (this->computeExternalBranches()),
+		ImmutableTreeSet<uword_t>			exits				= (this->computeExits()),
+		uint64_t							complexity			= (this->computeComplexity()),
+		uint64_t							height				= (this->computeHeight()),
+		ImmutableTreeSet<NativeBlockID>		jumpTargets			= (this->computeJumpTargets()),
+		bool								hasSideEffects 		= (this->computeHasSideEffects())
+	{
+	public:
+		//call 'printf' with string 's' and the relevant arguments.
+		static NativeExpression printf(std::string s, ImmutableTreeVector<NativeExpression> args, bool toStdErr = false);
+
+		static NativeExpression ElementAddress(
+						const ImmutableTreeVector<NativeExpression>& element,
+						const NativeExpression& source
+						);
+		
+		static NativeExpression If(const NativeExpression& condition,
+		                           const NativeExpression& ifTrue,
+		                           const NativeExpression& ifFalse);
+		static NativeExpression Let(const NativeVariable& var,
+		                           const NativeExpression& expr,
+		                           const NativeExpression& within
+								   );
+
+		static NativeExpression CallLibraryFunction(
+									std::string functionName, 
+									const NativeType& retType, 
+									const ImmutableTreeVector<NativeExpression>& expressions
+									);
+
+		static NativeExpression CallLibraryFunction(
+									void* functionPointer, 
+									const NativeType& retType, 
+									const ImmutableTreeVector<NativeExpression>& expressions
+									);
+		
+		//Creates a 'for loop'-like structure using an inline function
+		//with access to external variables.
+		static NativeExpression Loop(const NativeVariable& var,
+		                             const NativeExpression& initializer,
+		                             const NativeExpression& condition,
+		                             const NativeExpression& body,
+		                             const NativeExpression& update,
+		                             const NativeExpression& result,
+									 double conditionFrequency = .99
+									 );
+		
+		static NativeExpression Loop(const ImmutableTreeVector<NativeVariable>& var,
+		                             const ImmutableTreeVector<NativeExpression>& initializer,
+		                             const NativeExpression& condition,
+		                             const NativeExpression& body,
+		                             const ImmutableTreeVector<NativeExpression>& update,
+		                             const NativeExpression& result);
+		
+		static NativeExpression Alloc(NativeType t, uword_t ct);
+		
+		static NativeExpression ConstantUInt64(uint64_t u);
+		static NativeExpression ConstantUInt32(uint32_t u);
+		static NativeExpression ConstantInt64(int64_t u);
+		static NativeExpression ConstantInt32(int32_t u);
+		static NativeExpression ConstantULong(uword_t u);
+		static NativeExpression ConstantSLong(sword_t u);
+		static NativeExpression ConstantPointer(void* u);
+		static NativeExpression Nothing();
+		
+		friend NativeExpression operator>>(const NativeExpression& left,
+		                                   const NativeExpression& right)
+			{
+			return DiscardFirst(left, right);
+			}
+		
+		friend NativeExpression operator>>(const Nullable<NativeExpression>& left,
+		                                   const NativeExpression& right)
+			{
+			if (left)
+				return DiscardFirst(*left, right);
+			return right;
+			}
+		//these functions are shorthand for ElementAddress, and assume that
+		//the current expression is a pointer:
+		
+		//equivalent to &ptr[offset]
+		NativeExpression elemPtr(uword_t offset) const;
+		//equivalent to &ptr[offset1][offset2]
+		NativeExpression elemPtr(uword_t offset1, uword_t offset2) const;
+		//equivalent to &ptr[offset1][offset2][offset3]
+		NativeExpression elemPtr(uword_t offset1, uword_t offset2, uword_t offset3) const;
+		
+		//if we're a pointer, equivalent to elemPtr(offset). doesn't actually load the pointer
+		//otherwise, takes the 'offset'th element.
+		NativeExpression operator[](uword_t offset) const;
+
+		//given a pointer 'x' to a structure, equivalent to &x->name
+		//given a structure 'x', equivalent to x.name
+		NativeExpression operator[](const std::string& inFieldName) const;
+		
+		//Assumes we're a pointer. Equivelent to elemPtr(offset).
+		//doesn't actually load the pointer
+		NativeExpression operator[](NativeExpression offset) const;
+		
+		//equivalent to elemPtr(offset1, offset2, ...). assumes we're a pointer
+		NativeExpression operator[](ImmutableTreeVector<NativeExpression> offset) const;
+		
+		
+		NativeExpression extract(ImmutableTreeVector<uword_t> elts) const;
+		NativeExpression extract(uword_t elts) const;
+		NativeExpression store(NativeExpression val) const;
+		NativeExpression load(bool isVolatile = false) const;
+		NativeExpression offsetLoad(uword_t offset, NativeType elemType) const;
+		NativeExpression operator*(const NativeExpression& e) const;
+		NativeExpression operator%(const NativeExpression& e) const;
+		NativeExpression operator/(const NativeExpression& e) const;
+		NativeExpression operator+(const NativeExpression& e) const;
+		NativeExpression operator-(const NativeExpression& e) const;
+		NativeExpression cast(const NativeType& type, bool forceBitcast) const;
+
+		NativeExpression isNull() const;
+		NativeExpression isNotNull() const;
+		
+		NativeExpression taggedWith(const NativeExpressionTag& t) const;
+		NativeExpression taggedWith(const Nullable<NativeExpressionTag>& t) const;
+		
+		Nullable<uint64_t> integerConstant() const;
+		
+		Nullable<NativeType>				computeNativeType() const;
+		//A variable is "free" in an expression if the expression's behaviour will
+		//depend on that variable being present in the external calling context.
+		//NOTE: Using a variable in metadata causes it to be free in the
+		//surrounding context.
+		ImmutableTreeSet<NativeVariable>	computeFreeVariables() const;
+		ImmutableTreeSet<std::string>		computeExternalBranches() const;
+		ImmutableTreeSet<uword_t>			computeExits() const;
+		uint64_t							computeComplexity() const;
+		uint64_t							computeHeight() const;
+		ImmutableTreeSet<NativeBlockID>		computeJumpTargets() const;
+		bool								computeHasSideEffects() const;
+		
+		void toString(CPPMLPrettyPrintStream  st) const;
+	}
+and
+	//Describes the relationship of a set of continuations to the context
+	//in which they were created.
+	NativeContinuationMetadataInstruction =
+		-|	TypedForaInstruction of 
+				CPPMLOpaqueHandle<TypedFora::MetadataInstruction> typedForaInstructionMetadata
+		-|	LocalVariables of ()
+	{
+	public:
+		void toString(CPPMLPrettyPrintStream  st) const;
+	}
+and
+	NativeContinuationExpressionSerialized =
+		-|	Leaf of NativeType t, uint32_t offset
+		-|	Constant of NativeConstant c, NativeType subtype, uint32_t offset
+		-|	Tuple of ImmutableTreeVector<NativeContinuationExpressionSerialized> children
+	with
+		NativeType type = (this->computeNativeType())
+	{
+	public:
+		NativeType computeNativeType(void) const;
+
+		static NativeContinuationExpressionSerialized Constant(const NativeConstant& c);
+	}
+and
+	NativeContinuationVarMetadataSerialized =
+		NativeContinuationExpressionSerialized data,
+		Nullable<CPPMLOpaqueHandle<TypedFora::Type> > layout,
+		bool toss
+	{
+	public:
+		NativeContinuationVarMetadataSerialized(
+			const NativeContinuationExpressionSerialized& inData,
+			const Nullable<CPPMLOpaqueHandle<TypedFora::Type> >& inLayout
+			);
+	}
+and
+	//A description of a continuation's metadata that has been boiled down to
+	//stack frame information.  Essentially parallel to the
+	//regular metadata, except that NativeVariables are replaced with
+	//stack frame offsets in the actually generated code.
+	NativeContinuationMetadataSerialized =
+		NativeContinuationMetadataInstruction node,
+		ImmutableTreeVector<NativeContinuationVarMetadataSerialized> vars
+and
+	//A description of how to reproduce one of the values in the current
+	//CFG, both in terms of ownership, and also in terms of where its
+	//component data resides.
+	NativeContinuationVarMetadata =
+		NativeExpression dataVar,
+		Nullable<CPPMLOpaqueHandle<TypedFora::Type> > layout,
+		bool toss
+	{
+	public:
+		NativeContinuationVarMetadata(
+			const NativeExpression& inData
+			);
+		NativeContinuationVarMetadata(
+			const NativeExpression& inData,
+			const TypedFora::Type& inLayout
+			);
+		NativeContinuationVarMetadata(
+			const NativeExpression& inData,
+			const CPPMLOpaqueHandle<TypedFora::Type>& inLayout
+			);
+	}
+and
+	//At the moment we create a continuation that we're going to pass into
+	//some other piece of code, this object describes how the data
+	//for that continuation is laid out.
+	NativeContinuationMetadata =
+		NativeContinuationMetadataInstruction node,
+		ImmutableTreeVector<NativeContinuationVarMetadata> vars
+	{
+	public:
+		ImmutableTreeSet<NativeVariable> freeVariables() const;
+		void toString(CPPMLPrettyPrintStream  st) const;
+	}
+and
+	NativeCallTarget =
+	-|	Inline of NativeCFG fun, NativeBlockID block
+	-|	External of std::string target, NativeBlockID block
+		//In `Pointer`, isInternal = true means that it's generated by llvm,
+		//is 'fastcc' etc.  False says it returns NativeRuntimeContinuationValue
+		//and is in gcc.
+	-|	Pointer of NativeExpression ptr, bool isInternal
+	{
+	public:
+		bool							 	hasSideEffects() const;
+		ImmutableTreeSet<NativeVariable> 	freeVariables() const;
+		ImmutableTreeSet<std::string> 		externalBranches() const;
+		ImmutableTreeSet<NativeBlockID>		jumpTargets() const;
+		ImmutableTreeSet<uword_t> 			exits() const;
+		uint64_t 							complexity() const;
+		uint64_t 							height() const;
+		
+		void toString(CPPMLPrettyPrintStream  st) const;
+	}
+and
+	NativeIndividualContinuationMetadata = 
+		-|	None of ()
+		-| 	ResumeWithResult of bool isException, CPPMLOpaqueHandle<TypedFora::Type> type
+and
+	NativeContinuation =
+		NativeVariable var,
+		NativeExpression expression,
+		double relativeFrequency,
+		NativeIndividualContinuationMetadata continuationMetadata
+	{
+	public:
+		NativeContinuation(NativeType t);
+		NativeContinuation(const NativeVariable& v, const NativeExpression& e)
+			{
+			var() = v;
+			expression() = e;
+			relativeFrequency() = 1.0;
+			}
+		//Produces a simple 'return' continuation.
+		static NativeContinuation Return(NativeType t, uint64_t ix)
+			{
+			return NativeContinuation(
+				NativeVariable("res", t),
+				NativeExpression::Return(ix, NativeVariable("res", t).expr())
+				);
+			}
+		NativeContinuation 					addTeardown(NativeExpression e) const;
+		bool							 	hasSideEffects() const;
+		ImmutableTreeSet<NativeVariable> 	freeVariables() const;
+		ImmutableTreeSet<std::string>		externalBranches() const;
+		ImmutableTreeSet<NativeBlockID>		jumpTargets() const;
+		ImmutableTreeSet<uword_t>			exits() const;
+		uint64_t							complexity() const;
+		uint64_t							height() const;
+		
+		void toString(CPPMLPrettyPrintStream  st) const;
+	}
+and
+	NativeBlock =
+		ImmutableTreeVector<NativeVariable> args,
+		NativeExpression expression,
+	 	double relativeFrequency,
+		bool toss
+	{
+	public:
+		NativeBlock(const ImmutableTreeVector<NativeVariable>& inArgs,
+		            const NativeExpression& inExpression)
+			{
+			args() = inArgs;
+			expression() = inExpression;
+			relativeFrequency() = 1.0;
+			toss() = false;
+			lassert_dump(!inExpression.type(),
+			             "Can't create a block with a typed expression.")
+			}
+		NativeBlock(const ImmutableTreeVector<NativeVariable>& inArgs,
+		            const NativeExpression& inExpression,
+		            double inFreq)
+			{
+			args() = inArgs;
+			expression() = inExpression;
+			relativeFrequency() = inFreq;
+			toss() = false;
+			lassert_dump(!inExpression.type(),
+			             "Can't create a block with a typed expression.")
+			}
+		uword_t size() const { return args().size(); }
+		const NativeVariable& operator[](uword_t ix) const { return args()[ix]; }
+		
+		void toString(CPPMLPrettyPrintStream  st) const;
+	}
+and
+	NativeCFG =
+		ImmutableTreeVector<NativeType> returnTypes,
+		ImmutableTreeMap<NativeBlockID, NativeBlock> blocks,
+		std::string name,
+		bool toss
+	{
+	public:
+			NativeCFG(	const ImmutableTreeVector<NativeVariable>& inArgs, 
+						const NativeExpression& inExpr, 
+						string name = "");
+
+			NativeCFG(	const ImmutableTreeVector<NativeType>& inRet, 
+						const ImmutableTreeVector<NativeVariable>& inArgs, 
+						const NativeExpression& inExpr, 
+						string name = ""
+						);
+			
+			NativeCFG(	const ImmutableTreeVector<NativeType>& inRet, 
+						const ImmutableTreeMap<NativeBlockID, NativeBlock>& blocks, 
+						string name = ""
+						);
+
+			NativeExpression	operator()(
+									const ImmutableTreeVector<NativeExpression>& inExprs
+									) const;	//calls assuming all return values have the same type
+
+			NativeExpression	operator()(
+									const ImmutableTreeVector<NativeExpression>& inExprs, 
+									const ImmutableTreeVector<NativeContinuation>& conts
+									) const;
+			
+			NativeExpression	operator()() const;
+			
+			NativeExpression	operator()(	const NativeExpression& e1) const;
+			
+			NativeExpression	operator()(	const NativeExpression& e1, 
+											const NativeExpression& e2) const;
+			
+			NativeExpression	operator()(	const NativeExpression& e1, 
+											const NativeExpression& e2, 
+											const NativeExpression& e3) const;
+			
+			NativeExpression	operator()(	const NativeExpression& e1, 
+											const NativeExpression& e2, 
+											const NativeExpression& e3, 
+											const NativeExpression& e4) const;
+
+			NativeExpression	operator()(	const NativeExpression& e1, 
+											const NativeExpression& e2, 
+											const NativeExpression& e3, 
+											const NativeExpression& e4, 
+											const NativeExpression& e5) const;
+
+			NativeType		implicitContinuationArgType() const;
+
+			uword_t size() const { return blocks().size(); }
+
+			const NativeBlock& operator[](uword_t ix)  const
+				{
+				return blocks().pairAtPosition(ix).second;
+				}
+			const NativeBlockID& name(uword_t ix) const
+				{
+				return blocks().pairAtPosition(ix).first;
+				}
+
+			const ImmutableTreeVector<NativeVariable>& args(NativeBlockID block) const;
+
+			const NativeBlock& operator[](const NativeBlockID& n)  const;
+			
+			uint64_t								complexity() const;
+			uint64_t								height() const;
+			ImmutableTreeSet<string>				externalBranches() const;
+			ImmutableTreeSet<NativeVariable>		freeVariables() const;
+			bool									hasSideEffects() const;
+
+			void	validate() const; //validates the internal structure of the expression
+			
+			void toString(CPPMLPrettyPrintStream  st) const;
+	}
+	;
+
+inline ImmutableTreeVector<NativeType> varsToTypes(ImmutableTreeVector<NativeVariable> vars, bool excludeNothing = false)
+	{
+	ImmutableTreeVector<NativeType> tr;
+	for (long k = 0; k < vars.size(); k++)
+		if (!excludeNothing || !vars[k].type().isNothing())
+			tr = tr + vars[k].type();
+	return tr;
+	}
+inline ImmutableTreeVector<NativeType> contsToTypes(ImmutableTreeVector<NativeContinuation> vars, bool excludeNothing = false)
+	{
+	ImmutableTreeVector<NativeType> tr;
+	for (long k = 0; k < vars.size(); k++)
+		if (!excludeNothing || !vars[k].var().type().isNothing())
+			tr = tr + vars[k].var().type();
+	return tr;
+	}
+inline ImmutableTreeVector<NativeExpression> varsToExpressions(const ImmutableTreeVector<NativeVariable>& vars)
+	{
+	ImmutableTreeVector<NativeExpression> tr;
+	for (long k = 0; k < vars.size(); k++)
+		tr = tr + vars[k].expr();
+	return tr;
+	}
+
+macro_defineCppmlComparisonOperators(NativeCFG)
+
+inline ImmutableTreeVector<NativeExpression> nativeVarsToExpressions(ImmutableTreeVector<NativeVariable> in)
+	{
+	ImmutableTreeVector<NativeExpression> tr;
+	for (long k = 0; k < in.size(); k++)
+		tr = tr + in[k].expr();
+	return tr;
+	}
+
+NativeExpression operator*=(const NativeExpression& left, const NativeExpression& toStore);
+
+NativeExpression	wrapInLetStatements(
+		const ImmutableTreeVector<pair<NativeVariable, NativeExpression> >& lets,
+		const NativeExpression& expr
+		);
+
+template<>
+class CPPMLPrettyPrint<NativeExpression> {
+public:
+	static void prettyPrint(CPPMLPrettyPrintStream& s, const NativeExpression& t)
+		{
+		t.toString(s);
+		}
+};
+
+template<>
+class CPPMLPrettyPrint<NativeCallTarget> {
+public:
+	static void prettyPrint(CPPMLPrettyPrintStream& s, const NativeCallTarget& t)
+		{
+		t.toString(s);
+		}
+};
+
+template<>
+class CPPMLPrettyPrint<NativeContinuation> {
+public:
+	static void prettyPrint(CPPMLPrettyPrintStream& s, const NativeContinuation& t)
+		{
+		t.toString(s);
+		}
+};
+template<>
+class CPPMLPrettyPrint<NativeCFG> {
+public:
+	static void prettyPrint(CPPMLPrettyPrintStream& s, const NativeCFG& t)
+		{
+		t.toString(s);
+		}
+};
+
+template<>
+class CPPMLPrettyPrint<NativeBlock> {
+public:
+	static void prettyPrint(CPPMLPrettyPrintStream& s, const NativeBlock& t)
+		{
+		t.toString(s);
+		}
+};
+template<>
+class CPPMLPrettyPrint<NativeContinuationMetadata> {
+public:
+	static void prettyPrint(CPPMLPrettyPrintStream& s, const NativeContinuationMetadata& t)
+		{
+		t.toString(s);
+		}
+};
+template<>
+class CPPMLPrettyPrint<NativeContinuationMetadataInstruction> {
+public:
+	static void prettyPrint(CPPMLPrettyPrintStream& s, const NativeContinuationMetadataInstruction& t)
+		{
+		t.toString(s);
+		}
+};
+template<>
+class CPPMLPrettyPrint<NativeIndividualContinuationMetadata> {
+public:
+	static void prettyPrint(CPPMLPrettyPrintStream& s, const NativeIndividualContinuationMetadata& t);
+};
+
+inline bool isContinuationExpression(const NativeExpression& inExpression)
+	{
+	@match NativeExpression(inExpression)
+		-|	Continuations(c) ->> {
+			return  true;
+			}
+		-|	_ ->> {
+			return  false;
+			}
+		;
+	}
+
+
+inline ImmutableTreeVector<NativeExpression> operator+(const Nullable<NativeVariable>& contVar,
+                                                       const ImmutableTreeVector<NativeExpression>& args)
+	{
+	if (contVar)
+		return contVar->expr() + args;
+	return args;
+	}
+inline ImmutableTreeVector<NativeExpression> operator+(const Nullable<NativeExpression>& contVar,
+                                                       const ImmutableTreeVector<NativeExpression>& args)
+	{
+	if (contVar)
+		return *contVar + args;
+	return args;
+	}
+
+
+namespace CPPML {
+
+template<>
+class Validator<NativeExpression_CallType, void> {
+public:
+	void operator()(NativeExpression_CallType& in) const;
+};
+
+template<>
+class Validator<NativeExpression_ValueExtractType, void> {
+public:
+	void operator()(NativeExpression_ValueExtractType& in) const;
+};
+
+template<>
+class Validator<NativeExpression_StoreType, void> {
+public:
+	void operator()(NativeExpression_StoreType& in) const;
+};
+
+}
+
+Nullable<NativeType> nativeTypeForValueExtractExpression(
+											const ImmutableTreeVector<uword_t>& args,
+											const NativeType& sourceType
+											);
+
+NativeExpression operator!=(const NativeExpression& lhs, const NativeExpression& rhs);
+NativeExpression operator==(const NativeExpression& lhs, const NativeExpression& rhs);
+NativeExpression operator<(const NativeExpression& lhs, const NativeExpression& rhs);
+NativeExpression operator<=(const NativeExpression& lhs, const NativeExpression& rhs);
+NativeExpression operator>(const NativeExpression& lhs, const NativeExpression& rhs);
+NativeExpression operator>=(const NativeExpression& lhs, const NativeExpression& rhs);
+NativeExpression operator&&(const NativeExpression& lhs, const NativeExpression& rhs);
+NativeExpression operator||(const NativeExpression& lhs, const NativeExpression& rhs);
+	
+

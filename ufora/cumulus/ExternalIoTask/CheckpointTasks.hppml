@@ -1,0 +1,143 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../../FORA/VectorDataManager/VectorDataManager.hppml"
+#include "ExternalIoTaskCompleted.hppml"
+#include "ExternalIoTaskCreated.hppml"
+#include "CrossIoTasksMessage.hppml"
+#include "../PersistentCache/PersistentCacheIndex.hppml"
+#include "../SystemwidePageRefcountTracker.hppml"
+#include "../../FORA/TypedFora/ABI/BigVectorLayouts.hppml"
+#include "../PythonIoTaskRequest.hppml"
+#include "../PythonIoTaskResponse.hppml"
+#include "../../FORA/Serialization/SerializedObjectFlattener.hpp"
+#include "../CumulusComponentMessageCreated.hppml"
+#include "CheckpointFile.hppml"
+
+namespace Cumulus {
+
+class CheckpointFile;
+
+class CheckpointTasks {
+public:
+	CheckpointTasks(
+				PolymorphicSharedPtr<VectorDataManager> inVDM,
+				PolymorphicSharedPtr<SystemwidePageRefcountTracker> inSPRT,
+				MachineId ownMachineId,
+				boost::function0<hash_type> inCreateNewHash,
+				boost::function1<void, PythonIoTaskRequest> inBroadcastPythonTask,
+				boost::function1<void, ExternalIoTaskCompleted> inOnExternalIoTaskCompleted,
+				boost::function1<void, CumulusComponentMessageCreated> inOnComponentMessageCreated,
+				boost::function1<void, ExternalIoTaskCreated> inOnCreateIoTask
+				);
+
+	void addMachine(MachineId machine);
+
+	void handleExternalIoTaskCompleted(ExternalIoTaskCompleted completed);
+
+	void handleNewCheckpointTask(ExternalIoTaskId taskId, CheckpointIoTask task);
+
+	void handlePersistObjectResponse(
+						PythonIoTaskResponse loaded
+						);
+
+	void handleCommitCheckpointMessage(CheckpointRequest checkpoint);
+
+	void handleCheckpointFileCommittedMessage(
+					MachineId machine, 
+					CheckpointRequest checkpoint, 
+					CheckpointSummary summary,
+					ImmutableTreeMap<Fora::BigVectorId, hash_type> guids,
+					bool lastSliceFailed
+					);
+
+private:
+	CheckpointSummary completeSummaryBigvecClosure(CheckpointSummary summary);
+
+	@type CheckpointFileTaskData = 
+		Nullable<ExternalIoTaskId> taskId,
+		hash_type dataHash,
+		ImmutableTreeSet<hash_type> bigvecs,
+		CheckpointRequest checkpoint,
+		hash_type fileName
+		;
+
+	void handleAllSlicesCommitted(CheckpointRequest checkpoint);
+
+	void sendCheckpointFileCommittedMessageToLeader(CheckpointRequest checkpoint, bool finalSliceFailed);
+
+	void commitCheckpointSummaryToPersistentCache(CheckpointRequest checkpoint);
+
+	void requestBigvecsFor(CheckpointRequest checkpoint, ImmutableTreeSet<hash_type> bigvecs);
+
+	void reportCheckpointCommitted(CheckpointRequest checkpoint, bool allDataPersisted);
+
+	ImmutableTreeSet<hash_type> bigvecsReferencedByPage(Fora::PageId page);
+
+	MachineId mOwnMachineId;
+
+	PolymorphicSharedPtr<VectorDataManager> mVDM;
+
+	size_t mMaxFileSize;
+
+	std::set<MachineId> mAllMachines;
+
+	boost::function0<hash_type> mCreateNewHash;
+
+	boost::function1<void, PythonIoTaskRequest> mBroadcastPythonTask;
+
+	boost::function1<void, ExternalIoTaskCompleted> mOnExternalIoTaskCompleted;
+
+	boost::function1<void, ExternalIoTaskCreated> mOnExternalIoTaskCreated;
+
+	boost::function1<void, CumulusComponentMessageCreated> mOnComponentMessageCreated;
+
+	map<hash_type, CheckpointFileTaskData> mPythonTaskIdToWriteCheckpointFileTask;
+
+	map<hash_type, CheckpointFileTaskData> mPythonTaskIdToPendingCommit;
+
+	map<hash_type, CheckpointRequest> mPythonTaskIdToWriteSummaryTask;
+
+	map<CheckpointRequest, CheckpointSummary> mFinalSummaries;
+
+	map<CheckpointRequest, bool> mAnySliceWritesFailedOnAnyWorker;
+
+	map<CheckpointRequest, bool> mAnyCheckpointFileSlicesFailed;
+
+	map<CheckpointRequest, pair<uint64_t, hash_type> > mFinalSummaryBytecountsAndHashes;
+
+	map<CheckpointRequest, boost::shared_ptr<CheckpointFile> > mPerCheckpointFiles;
+
+	map<CheckpointRequest, std::map<MachineId, CheckpointSummary> > mSummariesReceived; 
+
+	map<CheckpointRequest, std::map<MachineId, ImmutableTreeMap<Fora::BigVectorId, hash_type> > > mBigvecsReceived; 
+
+	map<CheckpointRequest, std::vector<pair<Fora::BigVectorId, hash_type> > > mMoveGuidsToRelease; 
+
+	map<CheckpointRequest, ImmutableTreeMap<Fora::BigVectorId, hash_type> > mCheckpointBigvecsAndGuids;
+
+	map<CheckpointRequest, CheckpointSummary> mCheckpointSummaries;
+
+	set<CheckpointRequest> mCheckpointsCommittedOrFailed;
+
+	TwoWaySetMap<CheckpointRequest, ExternalIoTaskId> mPendingBigvecCommits;
+
+	PolymorphicSharedPtr<SystemwidePageRefcountTracker> mSPRT;
+};
+
+}
+

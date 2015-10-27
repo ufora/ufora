@@ -1,0 +1,881 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "LLVMUtil.hppml"
+#include "LLVMFunctionBuilder.hppml"
+#include "../Runtime.hppml"
+#include <boost/lexical_cast.hpp>
+#include "NativeCodeCompiler.hppml"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include "../../core/Logging.hpp"
+#include <stdint.h>
+#include "../../core/Memory.hpp"
+#include "../../core/StringUtil.hpp"
+#include "../../core/SymbolExport.hpp"
+#include "../Core/MemBlock.hpp"
+
+uword_t gTracerCount = 0;
+
+namespace {
+uword_t gTotalSlabsAllocated = 0;
+}
+ 
+extern "C" {
+
+BSA_DLLEXPORT
+void tracer(char* t)
+	{
+	string x = t;
+	
+	LOG_DEBUG << x;
+	}
+	
+BSA_DLLEXPORT
+void tracerCritical(char* t)
+	{
+	string x = t;
+	
+	LOG_CRITICAL << x;
+	}
+	
+BSA_DLLEXPORT
+void tracerImplvalPtr(char* t, ImplVal* data)
+	{
+	LOGGER_DEBUG_T logger = LOGGER_DEBUG;
+	
+	logger << t << " " << hex << (uword_t)data << dec << ":\t\t";
+	
+	string x;
+	try {
+		x = prettyPrintString(*data);
+		}
+	catch(...)
+		{
+		x = "threw some unknown exception";
+		}
+
+	if (x.size() > 100)
+		{
+		x.resize(100);
+		x = x + "...";
+		}
+	x = Ufora::substitute(x, "\\", "\\\\");
+	x = Ufora::substitute(x, "\n", "\\n");
+
+	logger << x;
+	}
+	
+BSA_DLLEXPORT
+void tracerFloat64Ptr(char* t, double* data)
+	{
+	LOGGER_DEBUG_T logger = LOGGER_DEBUG;
+	
+	logger << t << " " << hex << (uword_t)data << dec << ":\t";
+	
+	if ((uword_t)data < 0x100)
+		logger << "<ERR>";
+	else
+		logger << *data;
+	}
+	
+BSA_DLLEXPORT
+void tracerImplval(char* t, ImplVal_raw(val))
+	{
+	ImplVal_assemble(val);
+	
+	tracerImplvalPtr(t,(ImplVal*)&val);
+	}
+	
+BSA_DLLEXPORT
+void tracerImplvalList(char* t, pair<uword_t, ImplVal*>* data)
+	{
+	LOGGER_DEBUG_T logger = LOGGER_DEBUG;
+	
+	logger << t << " " << hex << (uword_t)data << dec << ":\t\t";
+	
+	ostringstream outputStream;
+	try{
+		ImplVal* ivPtr = data->second;
+		while (ivPtr < data->second + data->first)
+			{
+			if (ivPtr != data->second + data->first)
+				outputStream << ", ";
+			outputStream << ivPtr[0].toString();
+			ivPtr++;
+			}
+		}
+	catch(...)
+		{
+		outputStream << "threw some unknown exception";
+		}
+	
+	std::string outputString = outputStream.str();
+	
+	if (outputString.size() > 100)
+		{
+		outputString.resize(100);
+		outputString = outputString + "...";
+		}
+	outputString = Ufora::substitute(outputString, "\\", "\\\\");
+	outputString = Ufora::substitute(outputString, "\n", "\\n");
+
+	logger << outputString;
+	}
+	
+BSA_DLLEXPORT
+void tracerMem(char* t, void* data, uword_t bytes)
+	{
+	const char* hexD = "0123456789ABCDEF";
+	LOGGER_DEBUG_T logger = LOGGER_DEBUG;
+	
+	logger << t << " " << hex << (uword_t)data << dec;
+	
+	if (bytes >= 32)
+		logger << ":\n\t\t\t";
+		else
+		logger << ":\t\t";
+	for (long k = 0; k < bytes;)
+		{
+		unsigned char c = ((unsigned char*)data)[k];
+		logger << hexD[c/16] << hexD[c%16];
+
+		k++;
+		if (k%4 == 0)
+			logger << "  ";
+		if (k%32 == 0 && k + 1 < bytes)
+			logger << "\n\t\t\t";
+		}
+	}
+	
+BSA_DLLEXPORT
+void tracer2(char* t, uword_t data)
+	{
+	LOG_DEBUG << t << " " << data;
+	}
+	
+BSA_DLLEXPORT
+void tracer2_hex(char* t, uword_t data)
+	{
+	LOG_DEBUG << t << " 0x" << hex << data << dec;
+	}
+	
+BSA_DLLEXPORT
+void tracer3(char* t, uword_t data, uword_t data2)
+	{
+	LOG_DEBUG << t << " " << data << " " << data2;
+	}
+}
+
+void printVal(llvm::Value* t)
+	{
+	t->getType()->dump();
+	t->dump();
+	}
+	
+void printVars(ImmutableTreeMap<NativeVariable, LLVMValue> vars)
+	{
+	for (long k = 0; k < vars.size(); k++)
+		cout << prettyPrintString(vars.pairAtPosition(k).first) << "\n";
+	}
+	
+void printBlock(NativeBlock e)
+	{
+	cout << prettyPrintString(e) << "\n";
+	}
+	
+void printExpression(NativeExpression e)
+	{
+	cout << prettyPrintString(e) << "\n";
+	}
+	
+void printFunction(NativeCFG e)
+	{
+	cout << prettyPrintString(e) << "\n";
+	}
+	
+string LLVMFunctionBuilder::llvmTypeToString(llvm::Type* t)
+	{
+	string s;
+	llvm::raw_string_ostream stdoutS(s);
+	t->print(stdoutS);
+
+	return s;
+	}
+
+LLVMValue LLVMFunctionBuilder::makeComposite(
+			llvm::BasicBlock* block,
+			ImmutableTreeVector<LLVMValue> vals
+			)
+	{
+	NativeType comp = NativeType::Composite(typesFor(vals));
+
+	if (comp.isEmpty())
+		return LLVMValue(0, comp);
+
+	llvm::Value* v = getNullConstantFor(comp);
+
+	for (long k = 0; k < vals.size(); k++)
+		if (vals[k])
+			v = llvm::IRBuilder<>(block).CreateInsertValue(v, vals[k], k);
+
+	return LLVMValue(v, comp);
+	}
+
+void LLVMFunctionBuilder::genTracerCritical(llvm::BasicBlock* b, string msg)
+	{
+	llvm::IRBuilder<>(b).CreateCall(
+		getLibFunc(
+			NativeLibraryFunctionTarget::ByName("tracerCritical"),
+			NativeType::Nothing(),
+			emptyTreeVec() + NativeType::uint8().ptr(),
+			b->getParent()->getParent()
+			),
+		getStringPointer(b, mName + msg)
+		);
+	}
+
+void LLVMFunctionBuilder::genTracer(llvm::BasicBlock* b)
+	{
+	llvm::IRBuilder<>(b).CreateCall(
+		getLibFunc(
+			NativeLibraryFunctionTarget::ByName("tracer"),
+			NativeType::Nothing(),
+			emptyTreeVec() + NativeType::uint8().ptr(),
+			b->getParent()->getParent()
+			),
+		getStringPointer(
+			b,
+			boost::lexical_cast<string>(gTracerCount++))
+		);
+	}
+	
+void LLVMFunctionBuilder::genTracer(llvm::BasicBlock* b, string msg)
+	{
+	llvm::IRBuilder<>(b).CreateCall(
+		getLibFunc(
+			NativeLibraryFunctionTarget::ByName("tracer"),
+			NativeType::Nothing(),
+			emptyTreeVec() + NativeType::uint8().ptr(),
+			b->getParent()->getParent()
+			),
+		getStringPointer(b, mName + msg)
+		);
+	}
+	
+void LLVMFunctionBuilder::genTracerHex(llvm::BasicBlock* b, string msg, llvm::Value* v)
+	{
+	llvm::IRBuilder<>(b).CreateCall2(
+		getLibFunc(
+			NativeLibraryFunctionTarget::ByName("tracer2_hex"),
+			NativeType::Nothing(),
+			emptyTreeVec() + NativeType::uint8().ptr() + NativeType::uword(),
+			b->getParent()->getParent()
+			),
+		getStringPointer(b, msg),
+		toULong(b, v)
+		);
+	}
+	
+void LLVMFunctionBuilder::genTracer(llvm::BasicBlock* b, string msg, llvm::Value* v)
+	{
+	llvm::IRBuilder<>(b).CreateCall2(
+		getLibFunc(
+			NativeLibraryFunctionTarget::ByName("tracer2"),
+			NativeType::Nothing(),
+			emptyTreeVec() + NativeType::uint8().ptr() + NativeType::uword(),
+			b->getParent()->getParent()
+			),
+		getStringPointer(b, msg),
+		toULong(b, v)
+		);
+	}
+	
+void LLVMFunctionBuilder::genTracer(
+		llvm::BasicBlock* b,
+		string msg,
+		llvm::Value* v,
+		llvm::Value* v2
+		)
+	{
+	llvm::IRBuilder<>(b).CreateCall3(
+		getLibFunc(
+			NativeLibraryFunctionTarget::ByName("tracer3"),
+			NativeType::Nothing(),
+			emptyTreeVec() +
+				NativeType::uint8().ptr() +
+				NativeType::uword() +
+				NativeType::uword(),
+			b->getParent()->getParent()
+			),
+		getStringPointer(b, msg),
+		toULong(b, v),
+		toULong(b, v2)
+		);
+	}
+	
+void LLVMFunctionBuilder::genTracerMem(llvm::BasicBlock* b, string msg, llvm::Value* v, uword_t sz )
+	{
+	genTracerMem(b,msg,v,llvmULong(sz));
+	}
+	
+void LLVMFunctionBuilder::genTracerMem(
+		llvm::BasicBlock* b,
+		string msg,
+		llvm::Value* v,
+		llvm::Value* v2
+		)
+	{
+	llvm::IRBuilder<>(b).CreateCall3(
+		getLibFunc(
+			NativeLibraryFunctionTarget::ByName("tracerMem"),
+			NativeType::Nothing(),
+			emptyTreeVec() +
+				NativeType::uint8().ptr() +
+				NativeType::uword() +
+				NativeType::uword(),
+			b->getParent()->getParent()), getStringPointer(b, msg), toULong(b, v), toULong(b, v2));
+	}
+	
+void LLVMFunctionBuilder::genTracerImplValPtr(llvm::BasicBlock* b, string msg, llvm::Value* v)
+	{
+	llvm::IRBuilder<>(b).CreateCall2(
+		getLibFunc(
+			NativeLibraryFunctionTarget::ByName("tracerImplvalPtr"),
+			NativeType::Nothing(),
+			emptyTreeVec() +
+				NativeType::uint8().ptr() +
+				NativeType::uword(),
+			b->getParent()->getParent()
+			),
+		getStringPointer(b, msg),
+		toULong(b, v)
+		);
+	}
+	
+void LLVMFunctionBuilder::genTracerFloat64Ptr(llvm::BasicBlock* b, string msg, llvm::Value* v)
+	{
+	llvm::IRBuilder<>(b).CreateCall2(
+		getLibFunc(
+			NativeLibraryFunctionTarget::ByName("tracerFloat64Ptr"),
+			NativeType::Nothing(),
+			emptyTreeVec() +
+				NativeType::uint8().ptr() +
+				NativeType::uword(),
+			b->getParent()->getParent()
+			),
+		getStringPointer(b, msg),
+		toULong(b, v)
+		);
+	}
+	
+void LLVMFunctionBuilder::genTracerImplVal(llvm::BasicBlock* b, string msg, llvm::Value* v)
+	{
+	llvm::IRBuilder<>(b).CreateCall2(
+		getLibFunc(
+			NativeLibraryFunctionTarget::ByName("tracerImplval"),
+			NativeType::Nothing(),
+			emptyTreeVec() +
+				NativeType::uint8().ptr() +
+				TypedFora::Abi::nativeTypeForImplVal(),
+			b->getParent()->getParent()
+			),
+		getStringPointer(b, msg),
+		v
+		);
+	}
+	
+void LLVMFunctionBuilder::genTracerImplValList(llvm::BasicBlock* b, string msg, llvm::Value* v)
+	{
+	llvm::IRBuilder<>(b).CreateCall2(
+		getLibFunc(
+			NativeLibraryFunctionTarget::ByName("tracerImplvalList"),
+			NativeType::Nothing(),
+			emptyTreeVec() +
+				NativeType::uint8().ptr() +
+				NativeType::uword(),
+			b->getParent()->getParent()
+			),
+		getStringPointer(b, msg),
+		toULong(b, v)
+		);
+	}
+	
+void LLVMFunctionBuilder::genTracerTyped(
+		llvm::BasicBlock* b,
+		string msg,
+		NativeType t,
+		llvm::Value* v
+		)
+	{
+	if (t == TypedFora::Abi::nativeTypeForImplVal())
+		genTracerImplValPtr(b, mName + ": " + msg, v);
+		else
+	if (t.isFloat() && t.getFloat().bits() == 64)
+		genTracerFloat64Ptr(b, mName + ": " + msg, v);
+		else
+		genTracerMem(b, mName + ": " + msg, v, llvmULong(t.packedSize()));
+	}
+
+llvm::Value* LLVMFunctionBuilder::getStringPointer(llvm::BasicBlock* b, string s)
+	{
+	return llvm::IRBuilder<>(b).CreatePointerCast(
+				mCompiler.rawDataConstant(s,b),
+				toLLVM(NativeType::uint8().ptr())
+				);
+	}
+llvm::Value* LLVMFunctionBuilder::toULong(llvm::BasicBlock* b, llvm::Value* v)
+	{
+	if (v->getType()->isPointerTy())
+		return llvm::IRBuilder<>(b).CreatePtrToInt(v, toLLVM(NativeType::uword()));
+		else
+	if (v->getType()->isIntegerTy())
+		return llvm::IRBuilder<>(b).CreateZExtOrBitCast(v, toLLVM(NativeType::uword()));
+		else
+		lassert(false);
+	}
+	
+LLVMValue LLVMFunctionBuilder::toVoidPointer(llvm::BasicBlock* b, LLVMValue v)
+	{
+	return LLVMValue(
+				llvm::IRBuilder<>(b).CreatePointerCast(
+					v,
+					toLLVM(NativeType::uint8().ptr())
+					),
+				NativeType::uint8().ptr()
+				);
+	}
+	
+llvm::Value* LLVMFunctionBuilder::toVoidPointer(llvm::BasicBlock* b, llvm::Value* v)
+	{
+	return llvm::IRBuilder<>(b).CreatePointerCast(v, toLLVM(NativeType::uint8().ptr()));
+	}
+	
+void LLVMFunctionBuilder::longJump(
+		llvm::Value* jumpToFunPtrAndSlot,
+		llvm::Value* baseMemBlockPtr,
+		llvm::BasicBlock* &block,
+		const ImmutableTreeVector<LLVMValue>& args,
+		bool memIsInline,
+		bool isInternal
+		)
+	{
+	llvm_value_ptr funPtr = llvm::IRBuilder<>(block).CreateExtractValue(jumpToFunPtrAndSlot, 0);
+	llvm_value_ptr label = llvm::IRBuilder<>(block).CreateExtractValue(jumpToFunPtrAndSlot, 1);
+
+	//if isInternal, we are just a regular fastcall to the pointer.
+	//if not, it's a gcc function (like Fora::Interpreter::Fora::Interpreter::interpreter),
+	//returning a NativeRuntimeContinuationValue that we're to follow
+	
+	llvm::Value* argFrame = generateCallFrame(block, baseMemBlockPtr, args, memIsInline);
+	
+	llvm::IRBuilder<> builder(block);
+	
+	llvm::CallInst* c = builder.CreateCall3(
+		builder.CreatePointerCast(funPtr, llvm::PointerType::get(jumpFuncType(isInternal), 0)),
+		baseMemBlockPtr,
+		label,
+		toVoidPointer(block, argFrame)
+		);
+	
+	if (isInternal)
+		{	
+		c->setTailCall(true);
+		c->setCallingConv(llvm::CallingConv::Fast);
+	
+		builder.CreateRetVoid();
+		}
+	else
+		{
+		//we should follow the tail
+		llvm::Value* cppfunValue = c;
+		
+		//now follow the cppfunValue which is a NativeRuntimeContinuationValue<1>
+		llvm::Value* fastcallJumpPtr = builder.CreateExtractValue(cppfunValue, 0);
+		llvm::Value* targSlots = builder.CreateExtractValue(cppfunValue, 1);
+		llvm::Value* targBlockID = builder.CreateExtractValue(cppfunValue, 3);
+		
+		llvm::Value* fastcallJumpPtrCast =
+			builder.CreatePointerCast(
+				fastcallJumpPtr,
+				llvm::PointerType::get(jumpFuncType(true), 0)
+				);
+		llvm::CallInst* c2 = builder.CreateCall3(
+								fastcallJumpPtrCast,
+								baseMemBlockPtr,
+								targBlockID,
+								targSlots
+								);
+		c2->setCallingConv(llvm::CallingConv::Fast);
+		c2->setTailCall(true);
+		
+		builder.CreateRetVoid();
+		}
+	}
+
+LLVMValue LLVMFunctionBuilder::generateCallFrame(
+		llvm::BasicBlock* &block,
+		llvm::Value* baseMemBlockPtr,
+		const ImmutableTreeVector<LLVMValue>& args,
+		bool memIsInline
+		)
+	{
+	ImmutableTreeVector<NativeType> types;
+	for (long k = 0; k < args.size(); k++)
+		if (args[k])
+			types = types + args[k].t();
+
+	NativeType t = NativeType::Composite(types);
+
+	llvm::Value* argPtr = callMalloc(block, baseMemBlockPtr, t.packedSize(), memIsInline);
+	argPtr = llvm::IRBuilder<>(block).CreatePointerCast(argPtr, toLLVM(t.ptr()));
+
+	uword_t ix = 0;
+	for (long k = 0; k < args.size(); k++)
+		if (args[k])
+			{
+			llvm::Value* ptr = llvm::IRBuilder<>(block).CreateConstGEP2_32(argPtr, 0, ix);
+			llvm::IRBuilder<>(block).CreateStore(args[k], ptr);
+			ix++;
+			}
+
+	return LLVMValue(
+				llvm::IRBuilder<>(block).CreatePointerCast(
+					argPtr,
+					toLLVM(NativeType::uint8().ptr())
+					),
+				NativeType::uint8().ptr()
+				);
+	}
+	
+ImmutableTreeVector<NativeType> LLVMFunctionBuilder::typesFor(ImmutableTreeVector<LLVMValue> vals)
+	{
+	ImmutableTreeVector<NativeType> tr;
+	for (long k = 0;k < vals.size(); k++)
+		tr = tr + vals[k].t();
+	return tr;
+	}
+
+llvm::PHINode* LLVMFunctionBuilder::createPhi(
+		llvm::BasicBlock* block,
+		const NativeType& type,
+		const char* c
+		)
+	{
+	if (type.isEmpty())
+		return 0;
+	return llvm::IRBuilder<>(block).CreatePHI(toLLVM(type), 0, c);
+	}
+	
+void LLVMFunctionBuilder::addIncoming(llvm::PHINode* p, llvm::Value* v, llvm::BasicBlock* b)
+	{
+	if (p == 0)
+		{
+		lassert(v == 0);
+		return;
+		}
+	else
+		lassert(p);
+
+	lassert_dump(v->getType() == p->getType(), "trying to add nonmatching phinode types");
+	p->addIncoming(v,b);
+	}
+	
+void LLVMFunctionBuilder::addIncoming(llvm::PHINode* p, LLVMValue v, llvm::BasicBlock* b)
+	{
+	if (p == 0 && v.p() == 0)
+		return;
+	addIncoming(p, v.p(), b);
+	}
+
+void LLVMFunctionBuilder::callFree(
+		llvm::BasicBlock*& block,
+		llvm::Value* baseMemBlockPtr,
+		llvm::Value* v,
+		bool isInline
+		)
+	{
+	if (!isInline)
+		{
+		llvm::IRBuilder<>(block).CreateCall2(
+			getLibFunc(
+				NativeLibraryFunctionTarget::ByName("FORA_clib_freeMem"),
+				NativeType::Nothing(),
+				emptyTreeVec() +
+					NativeType::uint8().ptr().ptr() +
+					NativeType::uint8().ptr(),
+				block->getParent()->getParent()
+				),
+			baseMemBlockPtr,
+			v);
+		return;
+		}
+
+	llvm::BasicBlock* freeLoop =
+		llvm::BasicBlock::Create(
+			mCompiler.getLLVMContext(),
+			string(block->getName()) + "_free",
+			block->getParent()
+			);
+	llvm::BasicBlock* freeLoopHasPrior =
+		llvm::BasicBlock::Create(
+			mCompiler.getLLVMContext(),
+			string(block->getName()) + "_free2",
+			block->getParent()
+			);
+	llvm::BasicBlock* freeLoopCont =
+		llvm::BasicBlock::Create(
+			mCompiler.getLLVMContext(),
+			string(block->getName()) + "_after_free",
+			block->getParent()
+			);
+	llvm::Value* bpp =
+		llvm::IRBuilder<>(block).CreatePointerCast(
+			baseMemBlockPtr,
+			llvm::PointerType::get(blockPtrType(), 0)
+			);
+
+		{
+		llvm::IRBuilder<> builder(block);
+
+		llvm::Value* memPtr = builder.CreatePointerCast(v, toLLVM(NativeType::uint8().ptr()));
+		llvm::Value* blockPtr = builder.CreatePointerCast(
+			builder.CreateConstGEP1_32(v, (int32_t)-sizeof(MemBlock)),
+			blockPtrType()
+			);
+
+		llvm::Value* prevPtr = builder.CreateLoad(builder.CreateConstGEP2_32(blockPtr, 0, 1));
+		llvm::Value* nextPtr= builder.CreateLoad(builder.CreateConstGEP2_32(blockPtr, 0, 2));
+
+		builder.CreateStore(nextPtr, builder.CreateConstGEP2_32(prevPtr, 0, 2));
+		builder.CreateStore(prevPtr, builder.CreateConstGEP2_32(nextPtr, 0, 1));
+
+		//update the curent block ptr
+		llvm::Value* bppCurVal = builder.CreateLoad(bpp);
+		llvm::Value* bppEqCurVal = builder.CreateIsNull(builder.CreatePtrDiff(bppCurVal, blockPtr));
+		llvm::Value* newBPP = builder.CreateSelect(bppEqCurVal, prevPtr, bppCurVal);
+
+		builder.CreateStore(newBPP, bpp);
+
+		//now keep dropping left on slabs if possible
+		builder.CreateBr(freeLoop);
+		}
+
+		{
+		llvm::IRBuilder<> builder(freeLoop);
+
+		llvm::Value* bppCurVal = builder.CreateLoad(bpp);
+		llvm::Value* slabPtr = builder.CreateLoad(builder.CreateConstGEP2_32(bppCurVal, 0, 0));
+		llvm::Value* priorSlabPtr = builder.CreateLoad(builder.CreateConstGEP2_32(slabPtr, 0, 0));
+
+		llvm::Value* slabBaseBlockPtr = builder.CreateConstGEP2_32(slabPtr, 0, 4);
+		llvm::Value* isBasePtr =
+			builder.CreateIsNotNull(builder.CreatePtrDiff(slabBaseBlockPtr, bppCurVal));
+
+		builder.CreateCondBr(
+			builder.CreateNot(builder.CreateAnd(
+				builder.CreateIsNotNull(priorSlabPtr),
+				isBasePtr
+				)),
+			freeLoopCont,
+			freeLoopHasPrior
+			);
+		}
+
+		{
+		llvm::IRBuilder<> builder(freeLoopHasPrior);
+
+		//we want to back up by one
+		llvm::Value* bppCurVal = builder.CreateLoad(bpp);
+		llvm::Value* slabPtr = builder.CreateLoad(builder.CreateConstGEP2_32(bppCurVal, 0, 0));
+		llvm::Value* priorSlabPtr = builder.CreateLoad(builder.CreateConstGEP2_32(slabPtr, 0, 0));
+		llvm::Value* slabLastBlockPtr =
+			builder.CreateLoad(builder.CreateConstGEP2_32(priorSlabPtr, 0, 3));
+
+		llvm::Value* prevPtr =
+			builder.CreateLoad(builder.CreateConstGEP2_32(slabLastBlockPtr, 0, 1));
+		builder.CreateStore(prevPtr, bpp);
+		builder.CreateBr(freeLoop);
+		}
+
+	block = freeLoopCont;
+	}
+	
+llvm::Value* LLVMFunctionBuilder::callMalloc(
+		llvm::BasicBlock*& block,
+		llvm::Value* baseMemBlockPtr,
+		uword_t bytes,
+		bool isInline
+		)
+	{
+	return callMalloc(block, baseMemBlockPtr, llvmULong(bytes), isInline);
+	}
+	
+llvm::Value* LLVMFunctionBuilder::callMalloc(
+		llvm::BasicBlock*& block,
+		llvm::Value* baseMemBlockPtr,
+		llvm::Value* bytes,
+		bool isInline
+		)
+	{
+	if (!isInline)
+		return llvm::IRBuilder<>(block).CreateCall2(
+			getLibFunc(
+				NativeLibraryFunctionTarget::ByName("FORA_clib_allocMem"),
+				NativeType::uint8().ptr(),
+				emptyTreeVec() +
+					NativeType::uint8().ptr().ptr() +
+					NativeType::uword(),
+				block->getParent()->getParent()
+				),
+			baseMemBlockPtr,
+			bytes);
+
+	llvm::BasicBlock* callBlock =
+		llvm::BasicBlock::Create(
+			mCompiler.getLLVMContext(),
+			string(block->getName()) + "_alloc_call",
+			block->getParent()
+			);
+	llvm::BasicBlock* inlineBlock =
+		llvm::BasicBlock::Create(
+			mCompiler.getLLVMContext(),
+			string(block->getName()) + "_after_inline",
+			block->getParent()
+			);
+	llvm::BasicBlock* joinBlock =
+		llvm::BasicBlock::Create(
+			mCompiler.getLLVMContext(),
+			string(block->getName()) + "_alloc_join",
+			block->getParent()
+			);
+
+	llvm::PHINode* phi =
+		llvm::IRBuilder<>(joinBlock).CreatePHI(toLLVM(NativeType::uint8().ptr()), 0);
+
+	llvm::Value* bpp =
+		llvm::IRBuilder<>(block).CreatePointerCast(
+			baseMemBlockPtr,
+			llvm::PointerType::get(blockPtrType(), 0),
+			"bpp"
+			);
+	llvm::Value* bppCurVal =
+		llvm::IRBuilder<>(block).CreateLoad(bpp, "curBlock");
+
+	llvm::Value* curDataEnds;
+	llvm::Value* nextBlockPtr =
+		llvm::IRBuilder<>(block).CreateLoad(
+			llvm::IRBuilder<>(block).CreateConstGEP2_32(bppCurVal, 0, 2),
+			"nextBlockPtr"
+			);
+
+		{
+		llvm::IRBuilder<> builder(block);
+
+		//do we have space?
+
+		llvm::Value* curDataStarts =
+			builder.CreatePointerCast(
+				builder.CreateConstGEP2_32(bppCurVal, 0, 4),
+				toLLVM(NativeType::uint8().ptr()),
+				"curBlockData"
+				);
+		llvm::Value* curDataLen =
+			builder.CreateLoad(builder.CreateConstGEP2_32(bppCurVal, 0, 3), "curBlockLen");
+		
+		curDataEnds =
+			builder.CreatePointerCast(
+				builder.CreateGEP(curDataStarts, curDataLen),
+				toLLVM(NativeType::uint8().ptr()),
+				"curBlockDataEnd"
+				);
+
+		llvm::Value* nextBlockPtrAsIntP =
+			builder.CreatePointerCast(
+				nextBlockPtr,
+				toLLVM(NativeType::uint8().ptr()),
+				"nextBlockBase"
+				);
+
+		llvm::Value* maxDataNeeded = builder.CreateGEP(curDataEnds, bytes);
+		maxDataNeeded = builder.CreateGEP(maxDataNeeded, llvmULong(sizeof(MemBlock)));
+
+		llvm::Value* enoughData =
+			builder.CreateICmpSGT(
+				builder.CreatePtrDiff(
+					maxDataNeeded,
+					nextBlockPtrAsIntP
+					),
+				getNullConstantFor(NativeType::uint64())
+				); //if this is > 0, we jump to the function
+
+		builder.CreateCondBr(builder.CreateNot(enoughData), inlineBlock, callBlock);
+		}
+
+		{
+		llvm::IRBuilder<> builder(callBlock);
+
+		phi->addIncoming(
+			llvm::IRBuilder<>(callBlock).CreateCall2(
+				getLibFunc(
+					NativeLibraryFunctionTarget::ByName("FORA_clib_allocMem"),
+					NativeType::uint8().ptr(),
+					emptyTreeVec() +
+						NativeType::uint8().ptr().ptr() +
+						NativeType::uword(),
+					callBlock->getParent()->getParent()),
+				baseMemBlockPtr, bytes),
+			callBlock
+			);
+		builder.CreateBr(joinBlock);
+		}
+
+		{
+		llvm::IRBuilder<> builder(inlineBlock);
+
+		llvm::Value* newBlockPtr = builder.CreatePointerCast(curDataEnds, blockPtrType());
+		llvm::Value* prevBlockPtr = bppCurVal;
+
+		//first, update the linked list
+		builder.CreateStore(newBlockPtr, builder.CreateConstGEP2_32(prevBlockPtr, 0, 2));
+		builder.CreateStore(newBlockPtr, builder.CreateConstGEP2_32(nextBlockPtr, 0, 1));
+		builder.CreateStore(prevBlockPtr, builder.CreateConstGEP2_32(newBlockPtr, 0, 1));
+		builder.CreateStore(nextBlockPtr, builder.CreateConstGEP2_32(newBlockPtr, 0, 2));
+
+		//now, set the block size
+		builder.CreateStore(bytes, builder.CreateConstGEP2_32(newBlockPtr, 0, 3));
+
+		//set the slab ptr
+		builder.CreateStore(
+			builder.CreateLoad(
+				builder.CreateConstGEP2_32(bppCurVal, 0, 0)),
+			builder.CreateConstGEP2_32(newBlockPtr, 0, 0));
+
+		//set this as the new bpp
+		builder.CreateStore(newBlockPtr, bpp);
+
+		phi->addIncoming(
+			builder.CreatePointerCast(
+				builder.CreateConstGEP2_32(newBlockPtr, 0, 4),
+				toLLVM(NativeType::uint8().ptr())
+				),
+			inlineBlock);
+		builder.CreateBr(joinBlock);
+		}
+
+
+	block = joinBlock;
+	return phi;
+	}
+

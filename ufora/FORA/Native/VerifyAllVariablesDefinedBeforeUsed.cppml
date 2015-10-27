@@ -1,0 +1,142 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "VerifyAllVariablesDefinedBeforeUsed.hppml"
+#include "../../core/containers/TwoWaySetMap.hpp"
+#include "../../core/cppml/ExtractAllVariablesOfGivenTypeVisitor.hppml"
+
+	// boost::function2<void, NativeBlockID, NativeBlockID> add = 
+	// 	[&](NativeBlockID source, NativeBlockID sink) {
+	// 		if (blocksReachable.contains(source, sink))
+	// 			return;
+
+	// 		blocksReachable.insert(source, sink);
+
+	// 		std::set<NativeBlockID> keys = blocksReachable.getKeys(source);
+	// 		std::set<NativeBlockID> vals = blocksReachable.getValues(sink);
+
+	// 		for (auto k: keys)
+	// 			for (auto v: vals)
+	// 				add(k,v);
+	// 		};
+
+bool validateUseCoverage(
+			const std::set<NativeBlockID>& defPoints,
+			const std::set<NativeBlockID>& usePoints,
+			const TwoWaySetMap<NativeBlockID, NativeBlockID>& flow
+			)
+	{
+	std::set<NativeBlockID> allUsePoints;
+	std::set<NativeBlockID> dirty = usePoints;
+
+	while (dirty.size())
+		{
+		NativeBlockID block = *dirty.begin();
+		dirty.erase(block);
+
+		if (defPoints.find(block) == defPoints.end())
+			{
+			//this is not a def point
+			if (!block.isInternal())
+				return false;
+
+			if (allUsePoints.find(block) == allUsePoints.end())
+				{
+				//this is a new block
+				for (auto source: flow.getKeys(block))
+					dirty.insert(source);
+
+				allUsePoints.insert(block);
+				}
+			}
+		}
+
+	return true;
+	}
+
+void verifyAllVariablesDefinedBeforeUsed(map<NativeBlockID, NativeCodeFlattened::Block>& outBlocks)
+	{
+	TwoWaySetMap<NativeBlockID, NativeBlockID> blockFlow;
+
+	//make the block flow map
+	for (auto idAndBlock: outBlocks)
+		for (auto b: ExtractAllVariablesOfGivenTypeVisitor<NativeBlockID>::extract(idAndBlock.second))
+			blockFlow.insert(idAndBlock.first, b);
+
+	//def map - after flowing through one of these blocks, the value is
+	//defined
+	std::map<NativeVariable, std::set<NativeBlockID> > defPoints;
+
+	for (auto idAndBlock: outBlocks)
+		{
+		for (auto arg: idAndBlock.second.args())
+			defPoints[arg].insert(idAndBlock.first);
+		for (auto def: idAndBlock.second.defs())
+			defPoints[def.first].insert(idAndBlock.first);
+		}
+
+	//map of all uses that expect the variable to be defined
+	//by a block that calls them.
+	std::map<NativeVariable, std::set<NativeBlockID> > usePoints;
+
+	for (auto idAndBlock: outBlocks)
+		{
+		std::set<NativeVariable> definedInThisBlock;
+
+		for (auto arg: idAndBlock.second.args())
+			definedInThisBlock.insert(arg);
+
+		for (auto def: idAndBlock.second.defs())
+			{	
+			ImmutableTreeSet<NativeVariable> used = 
+				ExtractAllVariablesOfGivenTypeVisitor<NativeVariable>::extract(def.second);
+
+			for (auto v: used)
+				if (definedInThisBlock.find(v) == definedInThisBlock.end())
+					usePoints[v].insert(idAndBlock.first);
+
+			definedInThisBlock.insert(def.first);
+			}
+
+		ImmutableTreeSet<NativeVariable> usedInTerminator = 
+			ExtractAllVariablesOfGivenTypeVisitor<NativeVariable>::extract(idAndBlock.second.term());
+
+		for (auto v: usedInTerminator)
+			if (definedInThisBlock.find(v) == definedInThisBlock.end())
+				usePoints[v].insert(idAndBlock.first);
+		}
+
+	//for each variable, validate that use blocks can't reach external blocks
+	std::set<NativeVariable> allVars;
+	for (auto varAndDefs: defPoints)
+		allVars.insert(varAndDefs.first);
+	for (auto varAndUses: usePoints)
+		allVars.insert(varAndUses.first);
+
+	for (auto v: allVars)
+		if (v.type().packedSize())
+			if (!validateUseCoverage(
+					defPoints[v],
+					usePoints[v],
+					blockFlow
+					))
+				{
+				lassert_dump(
+					false,
+					"Variable " << prettyPrintString(v) << " used before definition in "
+						<< prettyPrintString(outBlocks)
+					);
+				}
+	}

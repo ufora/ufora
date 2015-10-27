@@ -1,0 +1,215 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ReadPersistedPageIntoRamTasks.hppml"
+#include "../../FORA/Serialization/SerializedObjectFlattener.hpp"
+
+namespace Cumulus {
+
+ReadPersistedPageIntoRamTasks::ReadPersistedPageIntoRamTasks(
+			PolymorphicSharedPtr<VectorDataManager> inVDM,
+			boost::function0<hash_type> inCreateNewHash,
+			boost::function1<void, PythonIoTaskRequest> inBroadcastPythonTask,
+			boost::function1<void, ExternalIoTaskCompleted> inOnExternalIoTaskCompleted
+			) :
+		mCreateNewHash(inCreateNewHash),
+		mBroadcastPythonTask(inBroadcastPythonTask),
+		mOnExternalIoTaskCompleted(inOnExternalIoTaskCompleted),
+		mVDM(inVDM)
+	{
+	}
+
+void ReadPersistedPageIntoRamTasks::handleExtractPersistObjectResponse(PythonIoTaskResponse response)
+	{
+	hash_type requestGuid = response.guid();
+
+	if (mPythonIoTaskRequestGuidToBigvecGuid.find(requestGuid) != mPythonIoTaskRequestGuidToBigvecGuid.end())
+		{
+		hash_type bigvecGuid = mPythonIoTaskRequestGuidToBigvecGuid[requestGuid];
+		mPythonIoTaskRequestGuidToBigvecGuid.erase(requestGuid);
+
+		handlePersistedBigvecDefinitionLoaded(bigvecGuid, response);		
+		}
+
+	if (mPythonIoTaskRequestGuidToPageId.find(requestGuid) != mPythonIoTaskRequestGuidToPageId.end())
+		{
+		Fora::PageId pageId = mPythonIoTaskRequestGuidToPageId[requestGuid];
+		mPythonIoTaskRequestGuidToPageId.erase(requestGuid);
+
+		handlePersistedPageLoaded(pageId, response);
+		}
+	}
+
+void ReadPersistedPageIntoRamTasks::handleNewReadPersistedPageIntoRamTask(ExternalIoTaskId taskId, Fora::PageId page)
+	{
+	mTasks.insert(taskId, page);
+
+	if (mTasks.getKeys(page).size() > 1)
+		return;
+
+	auto cache = mVDM->getPersistentCacheIndex();
+
+	ImmutableTreeSet<hash_type> bigvecs = cache->pageBigvecReferences(page.guid());
+
+	for (auto bigvecGuid: bigvecs)
+		{
+		Nullable<TypedFora::Abi::BigVectorPageLayout> layout = 
+			mVDM->getBigVectorLayouts()->tryGetLayoutForId(bigvecGuid);
+
+		if (layout)
+			mDependentLayouts[page][bigvecGuid] = *layout;
+		else
+			{
+			mPendingBigvecReads.insert(page, bigvecGuid);
+
+			hash_type requestGuid = mCreateNewHash();
+
+			mPythonIoTaskRequestGuidToBigvecGuid[requestGuid] = bigvecGuid;
+
+			mBroadcastPythonTask(
+				PythonIoTaskRequest::ExtractPersistedObject(
+					requestGuid,
+					PersistentCacheKey::BigvecDefinition(bigvecGuid).storagePath()
+					)
+				);
+			}
+		}
+
+	//if we don't have all the bigvecs, don't issue the main read command
+	if (mPendingBigvecReads.hasKey(page))
+		return;
+
+	triggerActualPageLoad(page);
+	}
+
+void ReadPersistedPageIntoRamTasks::handlePersistedBigvecDefinitionLoaded(hash_type bigvecGuid, PythonIoTaskResponse response)
+	{
+	std::set<Fora::PageId> pages = mPendingBigvecReads.getKeys(bigvecGuid);
+
+	mPendingBigvecReads.dropValue(bigvecGuid);
+
+	@match PythonIoTaskResponse(response)
+		-|	ObjectExtracted(_, serializedResult) ->> {
+			if (serializedResult->hash() != mVDM->getPersistentCacheIndex()->bigvecDataHash(bigvecGuid))
+				{
+				mVDM->getPersistentCacheIndex()->markBigvecInvalid(bigvecGuid);
+				return;
+				}
+			
+			TypedFora::Abi::BigVectorPageLayout layout;
+
+			SerializedObject::deserialize(
+				SerializedObjectInflater::inflateOnce(serializedResult),
+				mVDM->getMemoryManager(),
+				layout
+				);
+
+			auto cache = mVDM->getPersistentCacheIndex();
+
+			if (cache)
+				cache->touchBigvec(layout.identity().guid());
+			
+			for (auto page: pages)
+				{
+				mDependentLayouts[page][bigvecGuid] = layout;
+
+				mPendingBigvecReads.drop(page, bigvecGuid);
+
+				if (!mPendingBigvecReads.hasKey(page))
+					{
+					//everything is loaded - actually load the bigvec now
+					triggerActualPageLoad(page);
+					}
+				}
+			}
+		-| ObjectDoesNotExist() ->> {
+			mVDM->getPersistentCacheIndex()->markBigvecInvalid(bigvecGuid);
+			}
+		-| _ ->> {
+			lassert_dump(false, "Eventually we should go into a no-cache-available state here.");
+			}
+	}
+
+void ReadPersistedPageIntoRamTasks::handlePersistedPageLoaded(Fora::PageId pageId, PythonIoTaskResponse response)
+	{
+	std::set<ExternalIoTaskId> tasks = mTasks.getKeys(pageId);
+
+	mTasks.dropValue(pageId);
+
+	ExternalIoTaskResult result;
+
+	@match PythonIoTaskResponse(response)
+		-| ObjectExtracted(_, serializedPage) ->> {
+			if (serializedPage->hash() != mVDM->getPersistentCacheIndex()->pageDataHash(pageId.guid()))
+				{
+				mVDM->getPersistentCacheIndex()->markPageInvalid(pageId.guid());
+				return;
+				}
+			
+			auto cache = mVDM->getPersistentCacheIndex();
+
+			if (cache)
+				cache->touchPage(pageId.guid());
+
+			for (auto guidAndLayout: mDependentLayouts[pageId])
+				{
+				mVDM->getBigVectorLayouts()->registerNewLayout(guidAndLayout.second);
+
+				//mVDM->getPageRefcountTracker()->bigVectorHeldInPersistentCache(
+				//	guidAndLayout.second.identity()
+				//	);
+				}
+
+			mVDM->loadSerializedVectorPage(
+				pageId, 
+				SerializedObjectInflater::inflateOnce(serializedPage)
+				);
+
+			result = ExternalIoTaskResult::Success();
+			}
+		-| ObjectDoesNotExist() ->> {
+			mVDM->getPersistentCacheIndex()->markPageInvalid(pageId.guid());
+			return;
+			}
+		-| _ ->> {
+			lassert_dump(false, "Eventually we should go into a no-cache-available state here.");
+			}
+		;
+
+	for (auto taskId: tasks)
+		mOnExternalIoTaskCompleted(
+			ExternalIoTaskCompleted(
+				taskId,
+				result
+				)
+			);
+	}
+
+void ReadPersistedPageIntoRamTasks::triggerActualPageLoad(Fora::PageId page)
+	{
+	hash_type requestGuid = mCreateNewHash();
+
+	mPythonIoTaskRequestGuidToPageId[requestGuid] = page;
+
+	mBroadcastPythonTask(
+		PythonIoTaskRequest::ExtractPersistedObject(
+			requestGuid,
+			PersistentCacheKey::Page(page.guid()).storagePath()
+			)
+		);
+	}
+
+}
+

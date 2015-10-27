@@ -1,0 +1,1764 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../../core/threading/Queue.hpp"
+#include "../../core/math/Random.hpp"
+#include "../../core/math/Largest.hpp"
+#include "SortingSpine.hppml"
+#include "../../FORA/Core/DataTasksMemoryPool.hppml"
+#include "MessageQueues.hppml"
+#include "MachineHashTable.hppml"
+#include "../../core/PolymorphicSharedPtrBinder.hpp"
+#include "SlottedForaValueArrayAppend.hppml"
+#include "AccumulatorBinId.hppml"
+#include "CrossPipelineMessage.hppml"
+#include "../../FORA/VectorDataManager/VectorPage.hppml"
+#include "PipelineToSchedulerMessage.hppml"
+#include "SchedulerToPipelineMessage.hppml"
+#include "../../FORA/Core/ImplValContainerUtilities.hppml"
+#include "MessagesToSend.hppml"
+#include "MessagesToAccept.hppml"
+#include "SplitTree.hppml"
+
+namespace Cumulus {
+
+const static int kMinMessagesToSplit = 100;
+
+class MessagePipeline : public PolymorphicSharedPtrBase<MessagePipeline> {
+public:
+	MessagePipeline(
+				PolymorphicSharedPtr<VectorDataManager> inVDM,
+				PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+				PolymorphicSharedPtr<CallbackScheduler> inWorkerCallbackScheduler,
+				boost::function2<void, hash_type, Fora::PageId> inPageCouldNotBeMapped,
+				MachineId ownMachineId,
+				int64_t maxBytesInNonlocalIncomingTasks,
+				int64_t maxBytesInLocalIncomingTasks,
+				int64_t maxBytesInOutgoingTasks,
+				int64_t bytesToSendGranularity,
+				int64_t maxBytesPerAccumulatorTask
+				) : 
+			mVdm(inVDM),
+			mCallbackScheduler(inCallbackScheduler),
+			mOnCrossPipelineMessageCreated(inCallbackScheduler),
+			mOnPipelineToSchedulerMessage(inCallbackScheduler),
+			mWorkerCallbackScheduler(inWorkerCallbackScheduler),
+			mOwnMachineId(ownMachineId),
+			mIncomingNonlocalMessages(inVDM, inVDM->maxPageSizeInBytes()),
+			mIncomingLocalMessages(inVDM, inVDM->maxPageSizeInBytes()),
+			mOutgoingMessageQueues(inVDM, inVDM->maxPageSizeInBytes(), [](pair<MachineId, hash_type> bin) { return bin.first; }),
+			mLocalAccumulator(inVDM, inVDM->maxPageSizeInBytes(), [](AccumulatorBinId bin) { return bin.taskId(); }),
+			mMaxBytesInNonlocalIncomingTasks(maxBytesInNonlocalIncomingTasks),
+			mMaxBytesInLocalIncomingTasks(maxBytesInLocalIncomingTasks),
+			mMaxBytesInOutgoingTasks(maxBytesInOutgoingTasks),
+			mBytesToSendGranularity(bytesToSendGranularity),
+			mMaxBytesPerAccumulatorTask(maxBytesPerAccumulatorTask),
+			mIncomingNonlocalMessagesProcessing(0),
+			mPagesProcessing(0),
+			mIntermediateValuePool(inVDM),
+			mPageCouldNotBeMapped(inPageCouldNotBeMapped),
+			mSplitOperationsExecuting(0)
+		{
+		}
+
+	int64_t maxBytesInNonlocalIncomingTasks() 
+		{
+		return mMaxBytesInNonlocalIncomingTasks;
+		}
+
+	int64_t maxBytesInLocalIncomingTasks()
+		{
+		return mMaxBytesInLocalIncomingTasks;
+		}
+
+	int64_t maxBytesInOutgoingTasks()
+		{
+		return mMaxBytesInOutgoingTasks;
+		}
+
+	int64_t maxBytesPerAccumulatorTask()
+		{
+		return mMaxBytesPerAccumulatorTask;
+		}
+			
+	void addMachine(MachineId machine)
+		{
+
+		}
+
+	EventBroadcaster<CrossPipelineMessageCreated>& onCrossPipelineMessageCreated()
+		{
+		return mOnCrossPipelineMessageCreated;
+		}
+
+	EventBroadcaster<PipelineToSchedulerMessage>& onPipelineToSchedulerMessage()
+		{
+		return mOnPipelineToSchedulerMessage;
+		}
+
+	void handleSchedulerToPipelineMessage(SchedulerToPipelineMessage msg)
+		{
+		@match SchedulerToPipelineMessage(msg)
+			-| SetTaskMemory(guid, bytecount, messagecount) ->> {
+				setTaskAccumulatorMemory(guid, bytecount, messagecount);
+				}
+			-| InitializeTask(task, rootMachine) ->> {
+				createTask(task, rootMachine);
+				}
+			-| FinalizeTask(task) ->> {
+				//this should only happen if we're frozen
+					{
+					boost::mutex::scoped_lock lock(mMessageQueueMutex);
+					lassert(taskIsFrozen_(lock, task));
+					}
+
+				triggerFinalizeBin(AccumulatorBinId(task, hash_type(1)));
+				}
+			-| Unfreeze(taskId) ->> {
+				boost::mutex::scoped_lock lock(mMessageQueueMutex);
+				
+				unfreezeTask_(lock, taskId);
+				}
+			-| CheckMemoryUsage(taskId, handshakeId, freeze) ->> {
+				boost::mutex::scoped_lock lock(mMessageQueueMutex);
+				if (freeze)
+					tryToFreeze_(lock, taskId);
+				sendMemoryCheckResultToScheduler_(lock, taskId, handshakeId);
+				}
+			-| SplitAndMoveSomething(taskId, splitGuid, targetMachine) ->> {
+				boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+				splitAndMoveSomething_(lock, taskId, splitGuid, targetMachine);
+				}
+			-| _ ->> {
+				lassert_dump(false, "Can't handle " << msg.tagName());
+				}
+		}
+
+	void tryToFreeze_(boost::mutex::scoped_lock& lock, hash_type taskId)
+		{
+		if (!canFreeze_(lock, taskId))
+			unfreezeTask_(lock, taskId);
+		else
+			mFrozenTasks.insert(taskId);			
+		}
+
+	void unfreezeTask_(boost::mutex::scoped_lock& lock, hash_type taskId)
+		{
+		if (mFrozenTasks.find(taskId) == mFrozenTasks.end())
+			return;
+
+		LOG_INFO << "Unfreezing " << taskId;
+
+		mFrozenTasks.erase(taskId);
+
+		auto remotePending = mFrozenTaskSplitRemotePending[taskId];
+		mFrozenTaskSplitRemotePending[taskId].clear();
+
+		auto largestPending = mFrozenTaskSplitLargestPending[taskId];
+		mFrozenTaskSplitLargestPending[taskId].clear();
+
+		auto localPending = mFrozenTaskLocalSplitsPending[taskId];
+		mFrozenTaskLocalSplitsPending[taskId].clear();
+
+		for (auto split: remotePending)
+			scheduleApplyRemoteSplit_(lock, split.bin(), split.leftBin(), split.rightBin(), split.value());
+
+		for (auto split: largestPending)
+			splitAndMoveSomething_(lock, taskId, split.first, split.second);
+
+		for (auto bin: localPending)
+			scheduleLocalBinSplit_(lock, bin);
+
+		scheduleActions_(lock);
+		}
+
+	bool canFreeze_(boost::mutex::scoped_lock& lock, hash_type taskId)
+		{
+		//can't freeze if we have any messages not in the accumulator
+		if (mIncomingLocalMessages.taskMemory(taskId).totalMessages())
+			{
+			LOG_INFO << "Can't freeze " << taskId << " because we have incoming local.";
+			return false;
+			}
+		if (mIncomingNonlocalMessages.taskMemory(taskId).totalMessages())
+			{
+			LOG_INFO << "Can't freeze " << taskId << " because we have incoming non-local.";
+			return false;
+			}
+
+		//check if we're processing any messages
+		if (mIncomingLocalMessagesProcessingPerTask[taskId].totalMessages())
+			{
+			LOG_INFO << "Can't freeze " << taskId << " because we have processing local.";
+			return false;
+			}
+
+		if (mIncomingNonlocalMessagesProcessingPerTask[taskId].totalMessages())
+			{
+			LOG_INFO << "Can't freeze " << taskId << " because we have processing nonlocal.";
+			return false;
+			}
+
+		//now check if we have any splits or pages running
+		if (mSplitOperationsExecuting)
+			{
+			LOG_INFO << "Can't freeze " << taskId << " because we have split operations executing.";
+			return false;
+			}
+
+		if (mPagesProcessing > 0)
+			{
+			LOG_INFO << "Can't freeze " << taskId << " because we have pages processing.";
+			return false;
+			}
+
+		//nothing's going on. Freeze it!
+		return true;
+		}
+
+	void triggerFinalizeBin(AccumulatorBinId bin)
+		{
+		boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+		auto splitTree = mSplitTrees[bin.taskId()];
+
+		if (splitTree->isLeaf(bin))
+			{
+			mWorkerCallbackScheduler->scheduleImmediately(
+				boost::bind(
+					PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+						&MessagePipeline::sortAndPageBinData
+						),
+					polymorphicSharedWeakPtrFromThis(),
+					bin
+					),
+				"sortAndPageBinData"
+				);
+			}
+		else
+			{
+			pair<AccumulatorBinId, AccumulatorBinId> childBins = 
+								*splitTree->children(bin);
+
+			mOnCrossPipelineMessageCreated.broadcast(
+				CrossPipelineMessageCreated(
+					CrossPipelineMessage::FinalizeBin(childBins.first),
+					mOwnMachineId,
+					CrossPipelineMessageTarget::SpecificMachine(*splitTree->machineFor(childBins.first))
+					)
+				);
+			mOnCrossPipelineMessageCreated.broadcast(
+				CrossPipelineMessageCreated(
+					CrossPipelineMessage::FinalizeBin(childBins.second),
+					mOwnMachineId,
+					CrossPipelineMessageTarget::SpecificMachine(*splitTree->machineFor(childBins.second))
+					)
+				);
+			}
+		}
+
+	void sortAndPageBinData(AccumulatorBinId bin)
+		{
+		LOG_INFO << mOwnMachineId << ": " << "Finalizing bin " << bin;
+
+		std::vector<boost::shared_ptr<DistributedDataTaskMessages> > messages;
+
+			{
+			boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+			while (auto m = mLocalAccumulator.extract(bin))
+				messages.push_back(m);
+			}
+
+
+		if (!messages.size())
+			{
+			TypedFora::Abi::VectorRecord empty;
+
+			boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+			sendBinResult_(lock, bin, ImplValContainerUtilities::createVector(empty));
+
+			return;
+			}
+
+		while (messages.size() > 1)
+			{
+			messages[0]->writeMessages(messages.back()->getValues());
+			messages.pop_back();
+			}
+
+		messages[0]->sortLexically();
+
+		boost::shared_ptr<Fora::Pagelet> pagelet(
+			new Fora::Pagelet(
+				mVdm->getMemoryManager()
+				)
+			);
+
+		pagelet->append(messages[0]->getValues(), 0, messages[0]->getValues()->size());
+
+		pagelet->freeze();
+
+		MemoryPool* pool = MemoryPool::getFreeStorePool();
+
+		TypedFora::Abi::VectorRecord vec(
+			mVdm->pagedVectorHandle(
+				Fora::BigVectorId(),
+				Fora::PageletTreePtr(
+					pool->construct<Fora::PageletTree>(
+						pool,
+						pagelet,
+						messages[0]->getValues()->size()
+						)
+					),
+				pool
+				)
+			);
+
+		boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+		ImplValContainer sortedResult = ImplValContainerUtilities::createVector(vec);
+
+		sortedResult = mIntermediateValuePool.importImplValContainer(sortedResult);
+
+		sendBinResult_(lock, bin, mIntermediateValuePool.exportImplValContainer(sortedResult));
+		}
+
+	void sendBinResult_(boost::mutex::scoped_lock& lock, AccumulatorBinId bin, ImplValContainer sortedResult)
+		{
+		if (bin.binId() == hash_type(1))
+			{
+			pair<hash_type, ImmutableTreeSet<Fora::BigVectorId> > moveGuidAndBigvecs = 
+				ImplValContainerUtilities::initiateValueSend(sortedResult, &*mVdm);
+
+			//this is the root bin
+			mOnPipelineToSchedulerMessage.broadcast(
+				PipelineToSchedulerMessage::TaskResult(
+					bin.taskId(), 
+					sortedResult,
+					moveGuidAndBigvecs.first
+					)
+				);
+			}
+		else
+			{
+			auto parentBin = mSplitTrees[bin.taskId()]->parentBin(bin);
+			lassert(parentBin);
+
+			MachineId parentMachine = *mSplitTrees[bin.taskId()]->machineFor(*parentBin);
+
+			pair<hash_type, ImmutableTreeSet<Fora::BigVectorId> > moveGuidAndBigvecs = 
+				ImplValContainerUtilities::initiateValueSend(sortedResult, &*mVdm);
+
+			if (parentMachine != mOwnMachineId)
+				{
+				mOnCrossPipelineMessageCreated.broadcast(
+					CrossPipelineMessageCreated(
+						CrossPipelineMessage::BinResult(bin, sortedResult, moveGuidAndBigvecs.first),
+						mOwnMachineId,
+						CrossPipelineMessageTarget::SpecificMachine(parentMachine)
+						)
+					);
+				}
+			else
+				handleBinResult_(lock, bin, sortedResult, moveGuidAndBigvecs.first);
+			}
+		}
+
+	void handleBinResult_(boost::mutex::scoped_lock& lock, AccumulatorBinId bin, ImplValContainer result, hash_type moveGuid)
+		{
+		result = mIntermediateValuePool.importImplValContainer(result);
+
+		auto parentBin = mSplitTrees[bin.taskId()]->parentBin(bin);
+		lassert(parentBin);
+
+		auto& childBins = mInFlightBinResults[*parentBin];
+		lassert(childBins.find(bin) == childBins.end());
+
+		childBins[bin] = make_pair(result, moveGuid);
+
+		if (childBins.size() == 2)
+			{
+			//we can finish the bin
+			pair<AccumulatorBinId, AccumulatorBinId> children = *mSplitTrees[bin.taskId()]->children(*parentBin);
+
+			Nullable<ImplValContainer> result = ImplValContainerUtilities::concatenateVectors(
+				childBins[children.first].first,
+				childBins[children.second].first,
+				MemoryPool::getFreeStorePool(),
+				&*mVdm,
+				mVdm->newVectorHash()
+				);
+
+			lassert(result);
+
+			result = mIntermediateValuePool.importImplValContainer(*result);
+
+			sendBinResult_(lock, *parentBin, mIntermediateValuePool.exportImplValContainer(*result));
+
+			ImplValContainerUtilities::finalizeValueSend(childBins[children.first].first, &*mVdm, childBins[children.first].second);
+			ImplValContainerUtilities::finalizeValueSend(childBins[children.second].first, &*mVdm, childBins[children.second].second);
+
+			mInFlightBinResults.erase(*parentBin);
+			}
+		}
+
+	void writeMessageToMachine(MachineId target, CrossPipelineMessage msg)
+		{
+		mOnCrossPipelineMessageCreated.broadcast(
+			CrossPipelineMessageCreated(
+				msg,
+				mOwnMachineId,
+				CrossPipelineMessageTarget::SpecificMachine(target)
+				)
+			);
+		}
+
+	void writeMessageToAllMachines(CrossPipelineMessage msg)
+		{
+		mOnCrossPipelineMessageCreated.broadcast(
+			CrossPipelineMessageCreated(
+				msg,
+				mOwnMachineId,
+				CrossPipelineMessageTarget::AllMachines()
+				)
+			);
+		}
+
+	void handleCrossPipelineMessage(MachineId fromMachine, CrossPipelineMessage message)
+		{
+		@match CrossPipelineMessage(message)
+			-| RequestSpaceForIncoming(bytes, guid) ->> {
+				handleSpaceRequest(fromMachine, guid, bytes);
+				}
+			-| FinalizeBin(bin) ->> {
+				triggerFinalizeBin(bin);
+				}
+			-| BinResult(bin, sortedResult, moveGuid) ->> {
+				boost::mutex::scoped_lock lock(mMessageQueueMutex);
+				
+				handleBinResult_(lock, bin, sortedResult, moveGuid);
+				}
+			-| SpaceAllocated(guid) ->> {
+				boost::mutex::scoped_lock lock(mMessageQueueMutex);
+				
+				auto toSend = mMessagesToSend.get(guid);
+
+				mWorkerCallbackScheduler->scheduleImmediately(
+					boost::bind(
+						PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+							&MessagePipeline::sendMessagesToMachine
+							),
+						polymorphicSharedWeakPtrFromThis(),
+						toSend.messages(),
+						toSend.targetMachine(),
+						toSend.taskId(),
+						guid
+						),
+					"sendMessagesToMachine"
+					);
+
+				scheduleActions_(lock);
+				}
+			-| Messages(data, taskId, guid) ->> {
+				mWorkerCallbackScheduler->scheduleImmediately(
+					boost::bind(
+						PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+							&MessagePipeline::deserializeIncomingMessages
+							),
+						polymorphicSharedWeakPtrFromThis(),
+						taskId,
+						data,
+						guid
+						),
+					"deserializeIncomingMessages"
+					);
+				}
+			-| Split(bin, leftBin, rightBin, value) ->> {
+				boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+				scheduleApplyRemoteSplit_(lock, bin, leftBin, rightBin, value);
+				}
+		}
+
+	void scheduleApplyRemoteSplit_(
+			boost::mutex::scoped_lock& lock, 
+			AccumulatorBinId bin, 
+			pair<MachineId, AccumulatorBinId> leftBin, 
+			pair<MachineId, AccumulatorBinId> rightBin,
+			ImplValContainer value
+			)
+		{
+		if (taskIsFrozen_(lock, bin.taskId()))
+			mFrozenTaskSplitRemotePending[bin.taskId()].push_back(
+				RemoteSplit(bin, value, leftBin, rightBin)
+				);
+		else
+			{
+			mSplitOperationsExecuting++;
+
+			mWorkerCallbackScheduler->scheduleImmediately(
+				boost::bind(
+					PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+						&MessagePipeline::applyRemoteSplit
+						),
+					polymorphicSharedWeakPtrFromThis(),
+					bin,
+					leftBin,
+					rightBin,
+					value
+					),
+				"applyRemoteSplit"
+				);
+			}
+		}
+
+	//called periodically to flush all small buffers of task data that we could send
+	void scheduleAllOutgoingMessages()
+		{
+		boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+		Nullable<pair<boost::shared_ptr<DistributedDataTaskMessages>, pair<MachineId, hash_type> > > toSend;
+
+		while (toSend = mOutgoingMessageQueues.extractBiggest())
+			{
+			lassert(toSend->first);
+			scheduleOutgoingMessagesForSend(lock, toSend->second.first, toSend->second.second, toSend->first, false);
+			}
+
+		scheduleActions_(lock);
+		}
+
+	void sendMessagesToMachine(boost::shared_ptr<DistributedDataTaskMessages> msg, MachineId target, hash_type taskId, hash_type guid)
+		{
+		writeMessageToMachine(
+			target, 
+			CrossPipelineMessage::Messages(msg->extractSerializedStateAndBroadcastBigvecsInFlight(), taskId, guid)
+			);
+		}
+
+	template<class stream_type>
+	void logSortersToStream(stream_type& s)
+		{
+		boost::upgrade_lock<boost::shared_mutex> lock(mSorterMutex);
+
+		s << "MachineSorters:\n";
+		for (auto taskAndSorter: mMachineSorterByTask)
+			{
+			s << taskAndSorter.first << ":\n";
+			taskAndSorter.second->logStateToStream(s);
+			}
+
+		s << "LocalSorter:\n";
+		for (auto taskAndSorter: mLocalSorterByTask)
+			{
+			s << taskAndSorter.first << ":\n";
+			taskAndSorter.second->logStateToStream(s);
+			}
+		}
+
+	void createTask(hash_type taskId, MachineId initialAccumulatorMachine)
+		{
+			{
+			boost::upgrade_lock<boost::shared_mutex> lock(mSorterMutex);
+
+			boost::upgrade_to_unique_lock<boost::shared_mutex> uniqueLock(lock);
+
+			ensureTaskSorters(taskId, initialAccumulatorMachine);
+			}
+
+			{
+			boost::mutex::scoped_lock lock(mMessageQueueMutex);
+			mAllActiveTasks.insert(taskId);
+			}
+		}
+
+	void setTaskAccumulatorMemory(hash_type taskId, int64_t maxBytes, int64_t maxValues)
+		{
+		boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+		mMaxBytesInLocalAccumulator[taskId] = maxBytes;
+		mMaxValuesInLocalAccumulator[taskId] = maxValues;
+		mTasksMarkedBlocked.erase(taskId);
+
+		scheduleActions_(lock);
+		}
+
+	DataTaskMemoryFootprint totalAccumulatorSpace()
+		{
+		boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+		DataTaskMemoryFootprint footprint;
+
+		for (auto taskId: mAllActiveTasks)
+			footprint = footprint + 
+				DataTaskMemoryFootprint(
+					mMaxValuesInLocalAccumulator[taskId], 
+					mMaxBytesInLocalAccumulator[taskId],
+					mMaxBytesInLocalAccumulator[taskId]
+					);
+
+		return footprint;
+		}
+
+	void completeTask(hash_type taskId)
+		{
+		boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+		mMaxBytesInLocalAccumulator.erase(taskId);
+		mMaxValuesInLocalAccumulator.erase(taskId);
+		mAllActiveTasks.erase(taskId);
+		}
+
+	void splitLocalBin(
+			AccumulatorBinId bin
+			)
+		{
+		ImmutableTreeVector<ImplValContainer> splitValues = getBinSplit(bin);
+
+		if (splitValues.size() == 0)
+			{
+			boost::mutex::scoped_lock lock(mMessageQueueMutex);
+			mSplitLocalBins.erase(bin);
+			mSplitOperationsExecuting--;
+			return;
+			}
+
+		AccumulatorBinId leftBin(bin.taskId(), bin.binId() + hash_type(2));
+		AccumulatorBinId rightBin(bin.taskId(), bin.binId() + hash_type(3));
+
+		if (splitValues.size() == 1)
+			splitBin(bin, make_pair(mOwnMachineId, leftBin), make_pair(mOwnMachineId, rightBin), splitValues[0], true);
+		else
+			{
+			lassert_dump(splitValues.size() == 3, splitValues.size());
+
+			AccumulatorBinId llBin(bin.taskId(), bin.binId() + hash_type(4));
+			AccumulatorBinId lrBin(bin.taskId(), bin.binId() + hash_type(5));
+			AccumulatorBinId rlBin(bin.taskId(), bin.binId() + hash_type(6));
+			AccumulatorBinId rrBin(bin.taskId(), bin.binId() + hash_type(7));
+
+			splitBin(leftBin, make_pair(mOwnMachineId, llBin), make_pair(mOwnMachineId, lrBin), splitValues[0], true);
+			splitBin(rightBin, make_pair(mOwnMachineId, rlBin), make_pair(mOwnMachineId, rrBin), splitValues[2], true);
+			splitBin(bin, make_pair(mOwnMachineId, leftBin), make_pair(mOwnMachineId, rightBin), splitValues[1], true);
+			}
+
+		boost::mutex::scoped_lock lock(mMessageQueueMutex);
+		mSplitOperationsExecuting--;
+		}
+
+	void splitLargestBinToTargetMachine(
+			AccumulatorBinId bin,
+			MachineId targetMachine,
+			hash_type splitGuid
+			)
+		{
+		ImmutableTreeVector<ImplValContainer> splitValues = getBinSplit(bin);
+
+		if (!splitValues.size())
+			{
+			boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+			mSplitLocalBins.erase(bin);
+
+			auto mem = totalAccumulatorMemoryForTask_(lock, bin.taskId());
+			auto memUnprocessed = mIncomingLocalMessages.taskMemory(bin.taskId());
+			
+			mOnPipelineToSchedulerMessage.broadcast(
+				PipelineToSchedulerMessage::SplitResponse(
+					bin.taskId(),
+					splitGuid,
+					mOwnMachineId,
+					targetMachine,
+					mem,
+					memUnprocessed,
+					false
+					)
+				);
+
+			mSplitOperationsExecuting--;
+
+			return;
+			}
+
+		AccumulatorBinId leftBin(bin.taskId(), bin.binId() + hash_type(2));
+		AccumulatorBinId rightBin(bin.taskId(), bin.binId() + hash_type(3));
+
+		splitBin(bin, make_pair(targetMachine, leftBin), make_pair(targetMachine, rightBin), splitValues[splitValues.size()/2], true);
+
+		boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+		auto mem = totalAccumulatorMemoryForTask_(lock, bin.taskId());
+		auto memUnprocessed = mIncomingLocalMessages.taskMemory(bin.taskId());
+		
+		mOnPipelineToSchedulerMessage.broadcast(
+			PipelineToSchedulerMessage::SplitResponse(
+				bin.taskId(),
+				splitGuid,
+				mOwnMachineId,
+				targetMachine,
+				mem,
+				memUnprocessed,
+				true
+				)
+			);
+
+		mSplitOperationsExecuting--;
+		}
+
+	void splitAndMoveSomething_(
+				boost::mutex::scoped_lock& lock, 
+				hash_type taskId, 
+				hash_type splitGuid, 
+				MachineId targetMachine
+				)
+		{
+		if (taskIsFrozen_(lock, taskId))
+			{
+			mFrozenTaskSplitLargestPending[taskId].push_back(make_pair(splitGuid, targetMachine));
+			return;
+			}
+		
+		//get a MapWithIndex from AccumulatorBinId to DataTaskMemoryFootprint for all the bins in
+		//the given task
+		const auto& binSizes = mLocalAccumulator.getTaggedTaskMemoryFootprints(taskId);
+
+		//find a bin that's lower than maxBytecount and split it
+		Largest<AccumulatorBinId, int64_t> bestBin;
+
+		for (auto binAndSize: binSizes.getKeyToValue())
+			if (mSplitLocalBins.find(binAndSize.first) == mSplitLocalBins.end() && 
+					binAndSize.second.totalMessages() >= 8)
+				bestBin.observe(binAndSize.first, binAndSize.second.totalBytesAllocatedFromOS());
+
+		if (bestBin.largest())
+			{
+			AccumulatorBinId bin = *bestBin.largest();
+
+			mSplitLocalBins.insert(bin);
+
+			mSplitOperationsExecuting++;
+
+			mWorkerCallbackScheduler->scheduleImmediately(
+				boost::bind(
+					PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+						&MessagePipeline::splitLargestBinToTargetMachine
+						),
+					polymorphicSharedWeakPtrFromThis(),
+					bin,
+					targetMachine,
+					splitGuid
+					),
+				"splitLargestBinToTargetMachine"
+				);
+			}
+		else
+			{
+			//we failed to find anything to split
+			mOnPipelineToSchedulerMessage.broadcast(
+				PipelineToSchedulerMessage::SplitResponse(
+					taskId,
+					splitGuid,
+					mOwnMachineId,
+					targetMachine,
+					totalAccumulatorMemoryForTask_(lock, taskId),
+					mIncomingLocalMessages.taskMemory(taskId),
+					false
+					)
+				);
+			}
+		}
+
+	//sample from the values in the bin and pick a rough approximation of the median
+	ImmutableTreeVector<ImplValContainer> getBinSplit(AccumulatorBinId bin)
+		{
+		boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+		double t0 = curClock();
+
+		boost::shared_ptr<DistributedDataTaskMessages> newMessages(new DistributedDataTaskMessages(mVdm));
+		
+		std::vector<boost::shared_ptr<DistributedDataTaskMessages> > existingMessages;
+		long totalMessages = 0;
+
+		auto origFootprint = mLocalAccumulator.totalFootprint();
+
+		while (auto e = mLocalAccumulator.extract(bin))
+			{
+			existingMessages.push_back(e);
+			totalMessages += e->currentMemoryFootprint().totalMessages();
+			}
+
+		//pick some subset of values to sort
+		long valsToPick = kMinMessagesToSplit / 2;
+
+		if (valsToPick * 10 > totalMessages)
+			valsToPick = totalMessages / 10;
+
+		if (valsToPick < 8)
+			{
+			//if we have less than 8 values, we cannot guarantee that we will pick interior
+			//split points.
+			for (auto e: existingMessages)
+				mLocalAccumulator.add(bin, e);
+			
+			return emptyTreeVec();
+			}
+
+		Ufora::math::Random::Uniform<float> rand(mRandomHashGenerator.generateRandomHash()[0]);
+
+		std::set<long> vals;
+		while (vals.size() < valsToPick)
+			vals.insert(rand() * totalMessages);
+
+		auto pickVal = [&](int i) {
+			for (auto e: existingMessages)
+				if (i < e->currentMemoryFootprint().totalMessages())
+					{
+					newMessages->writeMessage(e->getValues(), i);
+					return;
+					}
+				else
+					i -= e->currentMemoryFootprint().totalMessages();
+			};
+
+		for (auto v: vals)
+			pickVal(v);
+
+		newMessages->sortLexically();
+
+		ImmutableTreeVector<ImplValContainer> res;
+
+		res = res + 
+			newMessages->extractValue(newMessages->getValues()->size() / 4) + 
+			newMessages->extractValue(newMessages->getValues()->size() / 4 * 2) +  
+			newMessages->extractValue(newMessages->getValues()->size() / 4 * 3)
+			;
+
+		for (auto e: existingMessages)
+			mLocalAccumulator.add(bin, e);
+		
+		lassert(origFootprint == mLocalAccumulator.totalFootprint());
+		
+		return res;
+		}
+
+
+	void applyRemoteSplit(
+			AccumulatorBinId bin,
+			pair<MachineId, AccumulatorBinId> leftBin, 
+			pair<MachineId, AccumulatorBinId> rightBin, 
+			ImplValContainer splitValue
+			)
+		{
+		splitBin(bin, leftBin, rightBin, splitValue, false);
+
+		boost::mutex::scoped_lock lock(mMessageQueueMutex);
+		mSplitOperationsExecuting--;
+		}
+	
+	void splitBin(
+			AccumulatorBinId bin,
+			pair<MachineId, AccumulatorBinId> leftBin, 
+			pair<MachineId, AccumulatorBinId> rightBin, 
+			ImplValContainer splitValue,
+			bool broadcast
+			)
+		{
+			{
+			boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+			lassert(!taskIsFrozen_(lock, bin.taskId()));
+
+			//add the split to the split tree. Note that we can't just accept the split - we might
+			//receive a child split before we receive a parent split (because of the order of message
+			//passing semantics). So we use the SplitTree abstraction to track it, which means that
+			//multiple splits could be activated at once.
+
+			mSplitTrees[bin.taskId()]->addSplit(bin, leftBin, rightBin, splitValue);
+
+			//we need to put the splits we're going to apply into a queue to make sure they're
+			//in order when we apply them to the sorting spine. This is an issue because
+			//we apply splits under a different lock (e.g. the mSorterMutex) than we accept the split tree 
+			//information (mMessageQueueMutex) and there is a race condition present when 
+			//we unlock one and lock the other that could cause splits to be applied out of order.
+
+			while (auto split = mSplitTrees[bin.taskId()]->popAvailableSplit())
+				mSplitsToApply.write(*split);
+			}
+
+		std::vector<AccumulatorBinId> invalidatedBins;
+
+			{
+			boost::upgrade_lock<boost::shared_mutex> lock(mSorterMutex);
+
+			boost::upgrade_to_unique_lock<boost::shared_mutex> uniqueLock(lock);
+
+			while (auto splitRecord = mSplitsToApply.getNonblock())
+				{
+				hash_type taskId = splitRecord->left().second.taskId();
+				lassert(taskId == splitRecord->right().second.taskId());
+
+				auto machineBin = machineSorter(taskId)->splitBin(
+					splitRecord->left().first,
+					splitRecord->right().first,
+					splitRecord->splitValue()
+					);
+
+				LOG_DEBUG << mOwnMachineId << " applying split " << splitRecord->splitValue() << " with " 
+					<< splitRecord->left() << " and " << splitRecord->right() << " split bin " << machineBin;
+
+				invalidatedBins.push_back(
+					localSorter(taskId)->splitBin(
+						localBinIndex(splitRecord->left()),
+						localBinIndex(splitRecord->right()),
+						splitRecord->splitValue()
+						)
+					);
+				}
+			}
+
+		//now migrate data out of any bins we invalidated
+			{
+			boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+			lassert(!taskIsFrozen_(lock, bin.taskId()));
+
+			for (auto bin: invalidatedBins)
+				{
+				mSplitBins.insert(bin);
+
+				DataTaskMemoryFootprint footprint;
+
+				while (auto invalidatedMessages = mLocalAccumulator.extract(bin))
+					{
+					mIncomingNonlocalMessages.add(bin.taskId(), invalidatedMessages);
+					footprint = footprint + invalidatedMessages->currentMemoryFootprint();
+					}
+
+				LOG_INFO << mOwnMachineId << ": splitting bin " << bin << " invalidated " << footprint;
+				}
+
+			scheduleActions_(lock);
+			}
+
+		if (broadcast)
+			writeMessageToAllMachines(CrossPipelineMessage::Split(bin, leftBin, rightBin, splitValue));
+		}
+
+	void queuePageForSorting(hash_type taskId, Fora::PageId page)
+		{
+		boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+		mQueuedPages[taskId].push_back(page);
+
+		scheduleActions_(lock);
+		}
+
+	void handleIncomingNonlocalMessages(hash_type taskId, boost::shared_ptr<DistributedDataTaskMessages> messages)
+		{
+		boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+		mIncomingNonlocalMessages.add(taskId, messages);
+
+		scheduleActions_(lock);
+		}
+
+	void handleIncomingLocalMessages(hash_type taskId, boost::shared_ptr<DistributedDataTaskMessages> messages, hash_type guid)
+		{
+		boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+		mIncomingLocalMessages.add(taskId, messages);
+
+		mMessagesToAccept.accepted(guid);
+
+		scheduleActions_(lock);
+		}
+
+	void deserializeIncomingMessages(hash_type taskId, PolymorphicSharedPtr<SerializedObject> data, hash_type guid)
+		{
+		boost::shared_ptr<DistributedDataTaskMessages> messages(new DistributedDataTaskMessages(mVdm));
+
+		messages->acceptSerializedState(data);
+
+		handleIncomingLocalMessages(taskId, messages, guid);
+		}
+
+	DataTaskMemoryFootprint totalLocalMessagesToProcess()
+		{
+		boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+		return mIncomingLocalMessages.totalFootprint();
+		}
+
+	DataTaskMemoryFootprint totalNonlocalMessagesToProcess()
+		{
+		boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+		return mIncomingNonlocalMessages.totalFootprint();
+		}
+
+	DataTaskMemoryFootprint totalOutgoingTasks()
+		{
+		boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+		return mOutgoingMessageQueues.totalFootprint() + mMessagesToSend.memoryFootprint();
+		}
+
+	map<MachineId, DataTaskMemoryFootprint> outgoingTasksByMachine()
+		{
+		boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+		map<MachineId, DataTaskMemoryFootprint> out = mMessagesToSend.footprintByMachine();
+
+		for (auto machineTaskAndFootprint: mOutgoingMessageQueues.getTaskMemoryFootprints().getKeyToValue())
+			out[machineTaskAndFootprint.first.first] += machineTaskAndFootprint.second;
+
+		return out;
+		}
+
+	DataTaskMemoryFootprint totalAccumulatedTasks()
+		{
+		boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+		return mLocalAccumulator.totalFootprint();
+		}
+
+	int64_t totalQueuedPages()
+		{
+		boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+		int64_t res = 0;
+
+		for (auto task: mAllActiveTasks)
+			res += mQueuedPages[task].size();
+
+		return res;
+		}
+
+	int64_t totalPageValuesCopied()
+		{
+		boost::mutex::scoped_lock lock(mMessageQueueMutex);
+		int64_t res = 0;
+
+		for (auto t: mAllActiveTasks)
+			res += mValuesCopiedFromPagesByTask[t];
+
+		return res;
+		}
+
+private:
+	boost::shared_ptr<SortingSpine<MachineId> > machineSorter(hash_type taskId)
+		{
+		auto it = mMachineSorterByTask.find(taskId);
+		lassert(it != mMachineSorterByTask.end());
+
+		return it->second;
+		}
+
+	boost::shared_ptr<SortingSpine<AccumulatorBinId> > localSorter(hash_type taskId)
+		{
+		auto it = mLocalSorterByTask.find(taskId);
+		lassert(it != mLocalSorterByTask.end());
+
+		return it->second;
+		}
+
+	AccumulatorBinId localBinIndex(pair<MachineId, AccumulatorBinId> bin) const
+		{
+		if (bin.first == mOwnMachineId)
+			return bin.second;
+		return AccumulatorBinId(bin.second.taskId(), hash_type(0));
+		}
+
+	void scheduleActions()
+		{
+		boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+		scheduleActions_(lock);
+		}
+
+	void scheduleActions_(boost::mutex::scoped_lock& lock)
+		{
+		while (tryToScheduleAnAction_(lock))
+			;
+		}
+
+	bool canProcessIncomingNonlocalMessages_(boost::mutex::scoped_lock& lock, hash_type taskId)
+		{
+		//we can process incoming if there is space both in outgoing tasks and our incoming local accumulator
+		return ((mOutgoingMessageQueues.totalFootprint().totalBytesAllocatedFromOS() + mMessagesToSend.totalBytes()) < mMaxBytesInOutgoingTasks) 
+			&& ((mIncomingLocalMessages.totalFootprint().totalBytesAllocatedFromOS() +  
+				mIncomingNonlocalMessagesProcessing) < mMaxBytesInLocalIncomingTasks);
+		}
+
+	bool canProcessLocalMessages_(boost::mutex::scoped_lock& lock, hash_type taskId)
+		{
+		auto cur = totalAccumulatorMemoryForTask_(lock, taskId);
+
+		//we can process local messages if the accumulator isn't out of space.
+		return 
+			(cur.totalBytesAllocatedFromOS() < 
+					mMaxBytesInLocalAccumulator[taskId]) && 
+				cur.totalMessages() < mMaxValuesInLocalAccumulator[taskId]
+			;
+		}
+
+	bool canQueueIncomingNonlocalPages_(boost::mutex::scoped_lock& lock, hash_type taskId)
+		{
+		//we can process local messages if the accumulator isn't out of space.
+		return (mIncomingNonlocalMessages.totalFootprint().totalBytesAllocatedFromOS() + 
+				mPagesProcessing) < mMaxBytesInNonlocalIncomingTasks
+			;
+		}
+
+	void processPage(Fora::PageId pageId, hash_type taskId)
+		{
+		if (!tryToProcessPage(pageId, taskId))
+			{
+			LOG_WARN << "On " << mOwnMachineId << ", couldn't send data for " << pageId;
+
+			mPageCouldNotBeMapped(taskId, pageId);
+			}
+
+			{
+			boost::mutex::scoped_lock lock(mMessageQueueMutex);
+			mPagesProcessing -= pageId.bytecount();
+
+			scheduleActions_(lock);
+			}
+		}
+
+	bool tryToProcessPage(Fora::PageId pageId, hash_type taskId)
+		{
+		auto page = mVdm->getPageFor(pageId);
+
+		if (!page)
+			return false;
+
+		lassert(!page->getPageletTree().isEmpty());
+
+		auto trigger = page->attemptToMapTo();
+		
+		const static double kTimeToWaitToAcquirePageLock = 0.01;
+
+		double t0 = curClock();
+		while (!trigger && curClock() - t0 < kTimeToWaitToAcquirePageLock)
+			{
+			sleepSeconds(kTimeToWaitToAcquirePageLock / 100.0);
+			trigger = page->attemptToMapTo();
+			}
+
+		if (!trigger)
+			return false;
+
+		LOG_INFO << mOwnMachineId << ": " << "Processing values for page " << page->getPageId();
+
+		page->getPageletTree()->visitTree(
+			[&](boost::shared_ptr<Fora::Pagelet> toCopy, IntegerRange subrange, long offsetInOrig) {
+				boost::shared_ptr<DistributedDataTaskMessages> messages;
+
+					{
+					boost::mutex::scoped_lock lock(mMessageQueueMutex);
+					messages = mIncomingNonlocalMessages.checkout(taskId);
+					}
+
+				messages->writeMessages(toCopy->getValues());
+
+					{
+					boost::mutex::scoped_lock lock(mMessageQueueMutex);
+					mValuesCopiedFromPagesByTask[taskId] += toCopy->getValues()->size();
+					mIncomingNonlocalMessages.checkin(taskId, messages);
+					}
+				}
+			);
+
+		page->removeMapping(trigger);
+
+		return true;	
+		}
+
+	bool tryToScheduleAnAction_(boost::mutex::scoped_lock& lock)
+		{
+		bool didAnything = false;
+
+		for (auto task: mAllActiveTasks)
+			if (!taskIsFrozen_(lock, task))
+				while (mQueuedPages[task].size() && canQueueIncomingNonlocalPages_(lock, task))
+					{
+					Fora::PageId toProcess = mQueuedPages[task].back();
+					mQueuedPages[task].pop_back();
+
+					LOG_DEBUG << mOwnMachineId << " queing " << toProcess 
+						<< " with " << mPagesProcessing / 1024 / 1024.0 << " MB of processing pages and "
+						<< mIncomingNonlocalMessages.totalFootprint().totalBytesAllocatedFromOS() / 1024 / 1024.0
+						<< " MB of nonlocal messages against a max of "
+						<< mMaxBytesInNonlocalIncomingTasks / 1024 / 1024.0
+						;
+
+					mPagesProcessing += toProcess.bytecount();
+
+					mWorkerCallbackScheduler->scheduleImmediately(
+						boost::bind(
+							PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+								&MessagePipeline::processPage
+								),
+							polymorphicSharedWeakPtrFromThis(),
+							toProcess,
+							task
+							),
+						"processPage"
+						);
+
+					didAnything = true;
+					}
+
+		for (auto task: mAllActiveTasks)
+			if (!taskIsFrozen_(lock, task))
+				if (canProcessIncomingNonlocalMessages_(lock, task))
+					{
+					boost::shared_ptr<DistributedDataTaskMessages> toProcess = 
+						mIncomingNonlocalMessages.extract(task);
+
+					if (toProcess)
+						{
+						mIncomingNonlocalMessagesProcessing += toProcess->currentMemoryFootprint().totalBytesAllocatedFromOS();
+						mIncomingNonlocalMessagesProcessingPerTask[task] += toProcess->currentMemoryFootprint();
+
+						LOG_DEBUG << mOwnMachineId << " queing " << toProcess->currentMemoryFootprint() << " of nonlocal messages with " 
+							<< mIncomingNonlocalMessagesProcessing / 1024 / 1024.0 << " MB of processing nonlocal messages and "
+							<< mIncomingLocalMessages.totalFootprint().totalBytesAllocatedFromOS() / 1024 / 1024.0
+							<< " MB of local messages against a max of "
+							<< mMaxBytesInLocalIncomingTasks / 1024 / 1024.0
+							;
+
+						mWorkerCallbackScheduler->scheduleImmediately(
+							boost::bind(
+								PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+									&MessagePipeline::processIncomingNonlocalMessages
+									),
+								polymorphicSharedWeakPtrFromThis(),
+								toProcess, 
+								task
+								),
+							"processIncomingNonlocalMessages"
+							);
+						
+						didAnything = true;
+						}
+					}
+
+		for (auto task: mAllActiveTasks)
+			if (!taskIsFrozen_(lock, task))
+				{
+				if (canProcessLocalMessages_(lock, task))
+					{
+					markTaskUnblocked_(lock, task);
+
+					boost::shared_ptr<DistributedDataTaskMessages> toProcess = 
+						mIncomingLocalMessages.extract(task);
+
+					if (toProcess)
+						{
+						mIncomingLocalMessagesProcessingPerTask[task] += toProcess->currentMemoryFootprint();
+
+						mWorkerCallbackScheduler->scheduleImmediately(
+							boost::bind(
+								PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+									&MessagePipeline::processIncomingLocalMessages
+									),
+								polymorphicSharedWeakPtrFromThis(),
+								toProcess,
+								task
+								),
+							"processIncomingLocalMessages"
+							);
+
+						didAnything = true;
+						}
+					}
+				else
+					markTaskBlocked_(lock, task);
+				}
+
+		//see if we can accept anything from incoming
+		while (mMessagesToAccept.pendingBytes() && 
+				(mIncomingLocalMessages.totalFootprint().totalBytesAllocatedFromOS() + 
+					mMessagesToAccept.inFlightBytes()) < 
+					mMaxBytesInLocalIncomingTasks)
+			{
+			Nullable<pair<MachineId, hash_type> > next = mMessagesToAccept.getNext();
+
+			lassert(next);
+
+			writeMessageToMachine(next->first, CrossPipelineMessage::SpaceAllocated(next->second));
+			}
+				
+		return didAnything;
+		}
+
+	void markTaskBlocked_(boost::mutex::scoped_lock& lock, hash_type taskId)
+		{
+		LOG_DEBUG << mOwnMachineId << " marking task " << taskId << " blocked. "
+			<< (mTasksMarkedBlocked.find(taskId) == mTasksMarkedBlocked.end() ? "first time." : "already blocked.")
+			;
+
+		if (mTasksMarkedBlocked.find(taskId) == mTasksMarkedBlocked.end())
+			{
+			mTasksMarkedBlocked.insert(taskId);
+			sendTaskStatusToScheduler_(lock, taskId);
+			}
+		}
+
+	void markTaskUnblocked_(boost::mutex::scoped_lock& lock, hash_type task)
+		{
+		mTasksMarkedBlocked.erase(task);
+		}
+
+	DataTaskMemoryFootprint totalAccumulatorMemoryForTask_(boost::mutex::scoped_lock& lock, hash_type taskId)
+		{
+		return mLocalAccumulator.getAggregateMemoryByTag(taskId) + mIncomingLocalMessagesProcessingPerTask[taskId];
+		}
+
+	void sendTaskStatusToSchedulerIfEmpty_(boost::mutex::scoped_lock& lock, hash_type taskId)
+		{
+		if (mIncomingLocalMessages.taskMemory(taskId).totalMessages() == 0 && 
+				mIncomingNonlocalMessages.taskMemory(taskId).totalMessages() == 0 && 
+				mIncomingLocalMessagesProcessingPerTask[taskId].totalMessages() == 0 && 
+				mIncomingNonlocalMessagesProcessingPerTask[taskId].totalMessages() == 0)
+			sendTaskStatusToScheduler_(lock, taskId);
+		}
+
+	void sendTaskStatusToScheduler_(boost::mutex::scoped_lock& lock, hash_type taskId)
+		{
+		auto mem = totalAccumulatorMemoryForTask_(lock, taskId);
+		auto memUnprocessed = mIncomingLocalMessages.taskMemory(taskId);
+
+		LOG_DEBUG << mOwnMachineId << " reporting " << mem << " and " << memUnprocessed << " to server.";
+
+		mOnPipelineToSchedulerMessage.broadcast(
+			PipelineToSchedulerMessage::AccumulatorState(
+				taskId, 
+				mOwnMachineId, 
+				mem, 
+				memUnprocessed,
+				mTasksMarkedBlocked.find(taskId) != mTasksMarkedBlocked.end()
+				)
+			);
+		}
+
+	void sendMemoryCheckResultToScheduler_(boost::mutex::scoped_lock& lock, hash_type taskId, int64_t handshakeId)
+		{
+		auto mem = mLocalAccumulator.getAggregateMemoryByTag(taskId);
+		auto memUnprocessed = mIncomingLocalMessages.taskMemory(taskId);
+
+		mOnPipelineToSchedulerMessage.broadcast(
+			PipelineToSchedulerMessage::CheckMemoryUsageResult(
+				taskId, 
+				mOwnMachineId, 
+				mem, 
+				memUnprocessed,
+				handshakeId,
+				mSplitTrees[taskId]->hash(),
+				taskIsFrozen_(lock, taskId)
+				)
+			);
+		}
+
+	bool taskIsFrozen_(boost::mutex::scoped_lock& lock, hash_type task)
+		{
+		return mFrozenTasks.find(task) != mFrozenTasks.end();
+		}
+
+	void processIncomingNonlocalMessages(boost::shared_ptr<DistributedDataTaskMessages> messages, hash_type taskId)
+		{
+		double t0 = curClock();
+
+		processMessages<MachineId>(
+			messages, 
+			taskId,
+			[&]() { return machineSorter(taskId); }, 
+			[&](MachineId machine) {
+				if (machine == mOwnMachineId)
+					return mIncomingLocalMessages.checkout(taskId);
+				else
+					return mOutgoingMessageQueues.checkout(make_pair(machine, taskId));
+				},
+			[&](boost::mutex::scoped_lock& lock, boost::shared_ptr<DistributedDataTaskMessages> toCheckin, MachineId machine) {
+				if (machine == mOwnMachineId)
+					mIncomingLocalMessages.checkin(taskId, toCheckin);
+				else
+					checkinOutgoingMessages(lock, machine, taskId, toCheckin);
+				},
+			"Machine"
+			);
+
+		LOG_INFO << mOwnMachineId << ": " 
+			<< "Processing incoming (" << messages->currentMemoryFootprint() << ") with "
+			<< "out=" << totalOutgoingTasks() << ", acc=" << totalAccumulatedTasks() << ", local="
+			<< totalLocalMessagesToProcess() 
+			<< " took " << curClock() - t0
+			;
+
+			{
+			boost::mutex::scoped_lock lock(mMessageQueueMutex);
+			mIncomingNonlocalMessagesProcessing -= messages->currentMemoryFootprint().totalBytesAllocatedFromOS();
+			mIncomingNonlocalMessagesProcessingPerTask[taskId] -= messages->currentMemoryFootprint();
+
+			sendTaskStatusToSchedulerIfEmpty_(lock, taskId);
+			}
+
+		scheduleActions();
+		}
+
+	void processIncomingLocalMessages(boost::shared_ptr<DistributedDataTaskMessages> messages, hash_type taskId)
+		{
+		double t0 = curClock();
+
+		processMessages<AccumulatorBinId>(
+			messages, 
+			taskId,
+			[&]() { return localSorter(taskId); }, 
+			[&](AccumulatorBinId bin) {
+				return mLocalAccumulator.checkout(bin);
+				},
+			[&](boost::mutex::scoped_lock& lock, boost::shared_ptr<DistributedDataTaskMessages> toCheckin, AccumulatorBinId bin) {
+				if (mSplitBins.find(bin) == mSplitBins.end() && mSplitLocalBins.find(bin) == mSplitLocalBins.end() && bin.binId() != hash_type(0))
+					{
+					mLocalAccumulator.checkin(bin, toCheckin);
+					if (mLocalAccumulator.taskMemory(bin).totalBytesAllocatedFromOS() > mMaxBytesPerAccumulatorTask && 
+							mLocalAccumulator.taskMemory(bin).totalMessages() > kMinMessagesToSplit)
+						scheduleLocalBinSplit_(lock, bin);
+					}
+				else
+					{
+					mLocalAccumulator.extractCheckedOut(bin, toCheckin);
+					
+					//we split this bin, but due to a race condition, routed tasks to it anyways.
+					//put them back in the message queue.
+					mIncomingNonlocalMessages.add(bin.taskId(), toCheckin);
+					}
+
+				if (!canProcessLocalMessages_(lock, taskId))
+					markTaskBlocked_(lock, taskId);
+				},
+			"Local"
+			);
+
+		LOG_INFO << mOwnMachineId << ": " << "Processing localIncoming (" << messages->currentMemoryFootprint() << ") with "
+			<< "out=" << totalOutgoingTasks() << ", acc=" << totalAccumulatedTasks() << ", local="
+			<< totalLocalMessagesToProcess() 
+			<< " took " << curClock() - t0
+			;
+
+			{
+			boost::mutex::scoped_lock lock(mMessageQueueMutex);
+			mIncomingLocalMessagesProcessingPerTask[taskId] -= messages->currentMemoryFootprint();
+
+			lassert(mIncomingLocalMessagesProcessingPerTask[taskId].totalBytesAllocatedFromOS() >= 0);
+
+			sendTaskStatusToSchedulerIfEmpty_(lock, taskId);
+			}
+		
+		scheduleActions();
+		}
+
+	template<class bin_type>
+	void processMessages(
+				boost::shared_ptr<DistributedDataTaskMessages> messages, 
+				hash_type taskId,
+				boost::function0<boost::shared_ptr<SortingSpine<bin_type> > > sorter,
+				boost::function1<boost::shared_ptr<DistributedDataTaskMessages>, bin_type> checkoutUnderLock, 
+				boost::function3<void, boost::mutex::scoped_lock&, boost::shared_ptr<DistributedDataTaskMessages>, bin_type> checkinUnderLock,
+				std::string kind
+				)
+		{
+		//acquire non-unique lock on the mutex. This allows us to use the sorters, but not
+		//the message queues.
+
+		//note that we should have unique access to 'messages' itself.
+
+		std::map<bin_type, std::vector<int64_t> > binsAndIndices;
+
+			{
+			boost::shared_lock<boost::shared_mutex> lock(mSorterMutex);
+			
+			sorter()->assignBinsToUnsortedArray(messages->getValues(), binsAndIndices);
+			}
+
+		if (SHOULD_LOG_DEBUG())
+			{
+			LOGGER_DEBUG_T log = LOGGER_DEBUG;
+
+			log << "On " << mOwnMachineId << " processed " << kind << " of " << messages->currentMemoryFootprint() << " into:\n";
+
+			for (auto& binAndIndices: binsAndIndices)
+				log << "\t" << binAndIndices.first << ": " << binAndIndices.second.size() << "\n";
+			}
+
+		double t0 = curClock();
+
+		Nullable<bin_type> binToAppendTo;
+
+		auto flushBins = [&](bin_type binToAppendTo, const std::vector<pair<uint8_t*, JOV> >& toAppend){
+			if (!toAppend.size())
+				return;
+
+			boost::shared_ptr<DistributedDataTaskMessages> toAppendTo;
+
+				{
+				boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+				toAppendTo = checkoutUnderLock(binToAppendTo);
+				}
+
+			toAppendTo->writeMessages([&](TypedFora::Abi::ForaValueArray* appendTo) {
+				slottedAppend(toAppend, appendTo);
+				});
+
+				{
+				boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+				checkinUnderLock(lock, toAppendTo, binToAppendTo);
+				}
+			};
+
+		auto array = messages->getValues();
+
+		std::vector<pair<uint8_t*, JOV> > toAppend;
+
+		//scan over values and append them
+		for (auto& binAndIndices: binsAndIndices)
+			{
+			toAppend.resize(0);
+
+			for (auto k: binAndIndices.second)
+				toAppend.push_back(
+					make_pair(array->offsetFor(k), array->jovFor(k))
+					);
+
+			flushBins(binAndIndices.first, toAppend);
+			}
+		}
+
+	void checkinOutgoingMessages(boost::mutex::scoped_lock& lock, MachineId machine, hash_type taskId, boost::shared_ptr<DistributedDataTaskMessages> messages)
+		{
+		int64_t bytes = messages->currentMemoryFootprint().totalBytesAllocatedFromOS();
+
+		if (bytes > mBytesToSendGranularity)
+			scheduleOutgoingMessagesForSend(lock, machine, taskId, messages, true);
+		else
+			mOutgoingMessageQueues.checkin(make_pair(machine, taskId), messages);
+		}
+
+	void scheduleOutgoingMessagesForSend(boost::mutex::scoped_lock& lock, MachineId machine, hash_type taskId, boost::shared_ptr<DistributedDataTaskMessages> messages, bool isCheckedOut)
+		{
+		int64_t bytes = messages->currentMemoryFootprint().totalBytesAllocatedFromOS();
+		
+		hash_type messageBundleId = mRandomHashGenerator.generateRandomHash();
+
+		mMessagesToSend.add(messages, machine, taskId, messageBundleId);
+
+		if (isCheckedOut)
+			mOutgoingMessageQueues.extractCheckedOut(make_pair(machine, taskId), messages);
+
+		writeMessageToMachine(machine, CrossPipelineMessage::RequestSpaceForIncoming(bytes, messageBundleId));
+		}
+
+	void handleSpaceRequest(MachineId machine, hash_type guid, int64_t bytes)
+		{
+		boost::mutex::scoped_lock lock(mMessageQueueMutex);
+
+		mMessagesToAccept.allocate(machine, guid, bytes);
+
+		scheduleActions_(lock);
+		}
+
+	void ensureTaskSorters(
+				hash_type taskId,
+				MachineId initialAccumulatorMachine
+				)
+		{
+		if (mMachineSorterByTask.find(taskId) != mMachineSorterByTask.end())
+			return;
+
+		mMachineSorterByTask[taskId].reset(
+			new SortingSpine<MachineId>(
+				mVdm, 
+				initialAccumulatorMachine
+				)
+			);
+
+		mLocalSorterByTask[taskId].reset(
+			new SortingSpine<AccumulatorBinId>(
+				mVdm, 
+				AccumulatorBinId(taskId, 
+					initialAccumulatorMachine == mOwnMachineId ? 
+						//the initial bin is hash_type(1)
+						hash_type(1) : 
+						//otherwise, we use the empty hash to indicate that the value that somehow got into
+						//this accumulator is misrouted
+						hash_type(0)
+					)
+				)
+			);
+
+		mSplitTrees[taskId].reset(
+			new SplitTree(
+				AccumulatorBinId(taskId, hash_type(1)),
+				initialAccumulatorMachine
+				)
+			);
+		}
+
+	void scheduleLocalBinSplit_(boost::mutex::scoped_lock& lock, AccumulatorBinId bin)
+		{
+		if (taskIsFrozen_(lock, bin.taskId()))
+			{
+			mFrozenTaskLocalSplitsPending[bin.taskId()].push_back(bin);
+			return;
+			}
+
+		if (mSplitLocalBins.find(bin) != mSplitLocalBins.end())
+			return;
+		
+		LOG_INFO << "Splitting bin " << bin << " because it's too big.";
+
+		mSplitLocalBins.insert(bin);
+		mSplitOperationsExecuting++;
+
+		mWorkerCallbackScheduler->scheduleImmediately(
+			boost::bind(
+				PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+					&MessagePipeline::splitLocalBin
+					),
+				polymorphicSharedWeakPtrFromThis(),
+				bin
+				),
+			"splitLocalBin"
+			);
+		}
+
+	Queue<SplitTree::SplitRecord> mSplitsToApply;
+
+	//if non-unique, then we can use the sorters.
+	boost::shared_mutex mSorterMutex;
+
+	//held when checking something in/out of the message queue
+	boost::mutex mMessageQueueMutex;
+
+
+
+	int64_t mMaxBytesInLocalIncomingTasks;
+
+	int64_t mMaxBytesInNonlocalIncomingTasks;
+
+	int64_t mMaxBytesInOutgoingTasks;
+
+	int64_t mMaxBytesPerAccumulatorTask;
+
+	int64_t mBytesToSendGranularity;
+
+	int64_t mIncomingNonlocalMessagesProcessing;
+
+	map<hash_type, DataTaskMemoryFootprint> mIncomingLocalMessagesProcessingPerTask;
+
+	map<hash_type, DataTaskMemoryFootprint> mIncomingNonlocalMessagesProcessingPerTask;
+
+	int64_t mPagesProcessing;
+
+	DistributedDataTaskMessages mIntermediateValuePool;
+
+	//a frozen task may not be modified in any way
+	std::set<hash_type> mFrozenTasks;
+
+	//keep track of split operations that may have occurred while the task was frozen.
+	//when we unfreeze we may need to apply them.
+	std::map<hash_type, std::vector<pair<hash_type, MachineId> > > mFrozenTaskSplitLargestPending;
+
+	std::map<hash_type, std::vector<AccumulatorBinId> > mFrozenTaskLocalSplitsPending;
+
+	@type RemoteSplit = 
+		AccumulatorBinId bin, 
+		ImplValContainer value,
+		pair<MachineId, AccumulatorBinId> leftBin,
+		pair<MachineId, AccumulatorBinId> rightBin
+		;
+
+	std::map<hash_type, std::vector<RemoteSplit> > mFrozenTaskSplitRemotePending;
+
+	std::set<hash_type> mAllActiveTasks;
+
+	int64_t mSplitOperationsExecuting;
+
+	map<hash_type, int64_t> mMaxBytesInLocalAccumulator;
+
+	map<hash_type, int64_t> mMaxValuesInLocalAccumulator;
+
+	map<hash_type, boost::shared_ptr<SplitTree> > mSplitTrees;
+
+	std::map<hash_type, std::vector<Fora::PageId> > mQueuedPages;
+
+	boost::function2<void, hash_type, Fora::PageId> mPageCouldNotBeMapped;
+
+	std::map<AccumulatorBinId, MachineId> mBinActivationLocation;
+
+	PolymorphicSharedPtr<CallbackScheduler> mWorkerCallbackScheduler;
+
+	PolymorphicSharedPtr<CallbackScheduler> mCallbackScheduler;
+
+	PolymorphicSharedPtr<VectorDataManager> mVdm;
+
+	MachineId mOwnMachineId;
+
+	std::set<AccumulatorBinId> mSplitBins;
+
+	std::set<AccumulatorBinId> mSplitLocalBins;
+
+	map<AccumulatorBinId, map<AccumulatorBinId, pair<ImplValContainer, hash_type> > > mInFlightBinResults; 
+
+	map<hash_type, boost::shared_ptr<SortingSpine<MachineId> > > mMachineSorterByTask;
+
+	map<hash_type, boost::shared_ptr<SortingSpine<AccumulatorBinId> > > mLocalSorterByTask;
+
+	map<hash_type, int64_t> mValuesCopiedFromPagesByTask;
+
+	MessageQueues<hash_type> mIncomingNonlocalMessages;
+
+	MessageQueues<hash_type> mIncomingLocalMessages; 
+
+	MessageQueues<pair<MachineId, hash_type>, MachineId> mOutgoingMessageQueues;
+
+	MessagesToSend mMessagesToSend;
+
+	MessagesToAccept mMessagesToAccept;
+
+	MessageQueues<AccumulatorBinId, hash_type> mLocalAccumulator;
+
+	EventBroadcaster<CrossPipelineMessageCreated> mOnCrossPipelineMessageCreated;
+
+	EventBroadcaster<PipelineToSchedulerMessage> mOnPipelineToSchedulerMessage;
+
+	RandomHashGenerator mRandomHashGenerator;
+
+	std::set<hash_type> mTasksMarkedBlocked;
+};
+
+}
+

@@ -1,0 +1,415 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "LibcallAxiomGroup.hppml"
+#include "../Judgment/JudgmentOnAction.hppml"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include "../TypedFora/ABI/VectorHandleCodegen.hppml"
+#include "../TypedFora/ABI/VectorLoadRequest.hppml"
+#include "../TypedFora/ABI/VectorLoadRequestCodegen.hppml"
+#include "../TypedFora/TypedFora.hppml"
+#include "TypedForaAxiomBuilder.hppml"
+
+#include "../Native/NativeExpressionBuilder.hppml"
+
+using TypedFora::Abi::VectorHandle;
+using TypedFora::Abi::nativeLayoutType;
+
+namespace Fora  {
+
+
+JudgmentOnValue ReturnSlot::jov() const
+	{
+	@match ReturnSlot(*this)
+		-| Normal(jov) ->> {
+			return jov;
+			}
+		-| Exception(jov) ->> {
+			return jov;
+			}
+	}
+
+JudgmentOnAction LibcallAxiomGroup::computeJOA() const
+	{
+	JudgmentOnAction joa;
+
+	for (long k = 0; k < mReturnSlots.size(); k++)
+		@match ReturnSlot(mReturnSlots[k])
+			-| Normal(jov) ->> {
+				joa = joa | JudgmentOnAction::Value(jov);
+				}
+			-| Exception(jov) ->> {
+				joa = joa | JudgmentOnAction::Throws(jov);
+				}
+
+	if (mHasSideEffects)
+		joa.hasSideEffects() = true;
+
+	return joa;
+	}
+
+
+namespace {
+
+bool isValidPassByValueJmt(const JudgmentOnValue& inJOV)
+	{
+	if (!inJOV.type())
+		return false;
+
+	return inJOV.type()->isPOD();
+	}
+
+}
+
+NativeExpression LibcallAxiomGroup::prepareArgumentToPass(
+						NativeExpressionBuilder& builder, 
+						long argumentIndex, 
+						const NativeExpression& expression
+						)
+	{
+	NativeType expectingType = mArgumentTypes[argumentIndex].type();
+
+	lassert(expression.type());
+
+	if (expectingType == *expression.type())
+		{
+		JudgmentOnValue argumentJov = mInputJudgments[mInputsToArguments[argumentIndex]];
+
+		lassert_dump(
+			isValidPassByValueJmt(argumentJov),
+
+			"Can't pass argument " << argumentIndex 
+				<< " of JOV " << prettyPrintString(argumentJov) << " by value "
+				<< " into axiom with signature " << prettyPrintString(mInputJudgments)
+				<< " returning " << prettyPrintString(mReturnSlots)
+				<< ". use a reference for non POD data like this"
+			);
+
+		return expression;
+		}
+
+	if (expectingType == expression.type()->ptr())
+		{
+		return builder.getPointerExprToCopyOnStack(expression);
+		}
+
+	lassert_dump(
+		false,
+		"Can't adapt argument of type " << prettyPrintString(*expression.type()) << " to slot "
+			<< argumentIndex << " = " << prettyPrintString(mArgumentTypes[argumentIndex]) 
+			<< " of axiom with signature " << prettyPrintString(mInputJudgments)
+			<< " accepting native arguments of type "
+			<< prettyPrintString(mArgumentTypes) << " and returning native types "
+			<< prettyPrintString(mFunctionReturnTypes)
+		);
+	}
+
+ImmutableTreeVector<uword_t> LibcallAxiomGroup::computeExitPoints() const
+	{
+	JudgmentOnAction joa = computeJOA();
+
+	ImmutableTreeVector<uword_t> outExitpoints;
+
+	for (long k = 0; k < mReturnSlots.size();k++)
+		{
+		Nullable<uword_t> covering;
+
+		covering = joa.smallestCovering(
+			make_pair(mReturnSlots[k].jov(), mReturnSlots[k].isException())
+			);
+
+		lassert(covering);
+
+		outExitpoints = outExitpoints + *covering;
+		}
+
+	return outExitpoints;
+	}
+
+void LibcallAxiomGroup::verifyInputs() const 
+	{
+	//TODO tom: add some verification for invalid ReturnValues ... like:
+	//ReturnValue<VectorHandle*, ImplValContainer, VectorHandle*, VectorHandle*>
+
+	lassert_dump(
+		mReturnSlots.size() == mFunctionReturnTypes.size(),
+
+		"Return type count mismatch in axiom with signature " 
+			<< prettyPrintString(mInputJudgments)
+			<< " returning " << prettyPrintString(mReturnSlots)
+			<< ", accepting native arguments of type "
+			<< prettyPrintString(mArgumentTypes) << " and returning native types "
+			<< prettyPrintString(mFunctionReturnTypes)
+		);
+	
+	lassert_dump(
+		mArgumentTypes.size() == mInputsToArguments.size(),
+
+		"Input count mismatch in axiom with signature " 
+			<< prettyPrintString(mInputJudgments)
+			<< " returning " << prettyPrintString(mReturnSlots)
+			<< ", accepting native arguments of type "
+			<< prettyPrintString(mArgumentTypes) << " and returning native types "
+			<< prettyPrintString(mFunctionReturnTypes)
+		);
+
+	lassert(mReturnSlots.size());
+	
+	if (needsVectorLoad())
+		lassert_dump(
+			*mVectorLoadSlot == mReturnSlots.size(),
+			
+			"VectorLoadRequests should only appear as the last template argument of a ReturnValue"
+			);
+	}
+
+ImmutableTreeVector<NativeType> LibcallAxiomGroup::computePossibleOutputTypes() const
+	{
+	ImmutableTreeVector<NativeType> possibleOutputTypes;
+
+	for (long k = 0; k < mReturnSlots.size();k++)
+		possibleOutputTypes = possibleOutputTypes + nativeLayoutType(mReturnSlots[k].jov());
+		
+	return possibleOutputTypes;
+	}
+	
+uword_t LibcallAxiomGroup::computeMaxOutputSize(
+		const ImmutableTreeVector<NativeType>& possibleOutputTypes
+		) const
+	{
+	uword_t maxOutputSize = 0;
+
+	for (long k = 0; k < mReturnSlots.size();k++)
+		{
+		maxOutputSize = std::max<uword_t>(
+			maxOutputSize, 
+			possibleOutputTypes[k].packedSize()
+			);
+		}
+
+	if (needsVectorLoad())
+		{
+		maxOutputSize = std::max<uword_t>(
+			maxOutputSize,
+			NativeTypeFor<TypedFora::Abi::VectorLoadRequest>::get().packedSize()
+			);
+		}
+
+	if (maxOutputSize % 8 != 0)
+		maxOutputSize = maxOutputSize + 8 - (maxOutputSize % 8);
+
+	return maxOutputSize;
+	}
+
+Axiom LibcallAxiomGroup::buildAxiom()
+	{
+	verifyInputs();
+
+	JudgmentOnAction joa = computeJOA();
+
+	ImmutableTreeVector<uword_t> outExitpoints = computeExitPoints();
+
+	ImmutableTreeVector<NativeType> possibleOutputTypes = 
+		computePossibleOutputTypes();
+
+	uword_t maxOutputSize = computeMaxOutputSize(possibleOutputTypes);
+
+	//now prepare each argument
+	NativeExpressionBuilder builder;
+
+	ImmutableTreeVector<TypedFora::Type> inputVariableTypes;
+
+	ImmutableTreeVector<JudgmentOnValue> inputJudgments = 
+		mInputJudgments.toJOVListWithExtrasAsTrailingElement();
+
+	std::vector<bool> isInputMarkedPooled;
+	std::vector<bool> isInputMarkedNotPooled;
+
+	isInputMarkedPooled.resize(inputJudgments.size());
+	isInputMarkedNotPooled.resize(inputJudgments.size());
+
+	for (long k = 0; k < mArgumentTypes.size(); k++)
+		if (mArgumentTypes[k].isPooled())
+			isInputMarkedPooled[mInputsToArguments[k]] = true;
+		else
+			isInputMarkedNotPooled[mInputsToArguments[k]] = true;
+
+	for (long k = 0; k < inputJudgments.size(); k++)
+		lassert_dump(
+			!(isInputMarkedPooled[k] && isInputMarkedNotPooled[k]),
+			"can't use the same axiom input for pooled and unpooled use"
+			);
+
+	for (long k = 0; k < inputJudgments.size(); k++)
+		inputVariableTypes = inputVariableTypes + 
+			TypedFora::Type(
+				inputJudgments[k],
+				isInputMarkedPooled[k] ? 
+					TypedFora::RefcountStyle::Pooled() : 
+					TypedFora::RefcountStyle::AsValueUnowned()
+				);
+
+	TypedFora::TypedForaAxiomBuilder axiomBuilder(mInputJudgments, inputVariableTypes);
+
+	ImmutableTreeVector<NativeExpression> libcallArgs;
+
+	for (long k = 0; k < mInputsToArguments.size(); k++)
+		libcallArgs = libcallArgs + 
+			prepareArgumentToPass(
+				builder, 
+				k, 
+				axiomBuilder.nativeVar(mInputsToArguments[k]).expr()
+				);
+
+	NativeExpression expr;
+		
+	if (mFunctionUsesReturnValue)
+		{
+		NativeType resultType = 
+			NativeType::Composite("index", NativeType::uword()) + 
+			NativeType::Composite("data", 
+				NativeType::Array(
+					NativeType::uint8(),
+					maxOutputSize
+					)
+				);
+
+		NativeVariable res("res", resultType);
+
+		expr = NativeExpression::Halt("Bad exit value");
+
+		for (long k = 0; k < mReturnSlots.size(); k++)
+			{
+			lassert_dump(
+				possibleOutputTypes[k] == mFunctionReturnTypes[k].type(),
+				"In axiom with signature "
+					<< prettyPrintString(mInputJudgments) << ", output type mismatch for return slot "
+					<< k << ": "
+					<< prettyPrintString(possibleOutputTypes[k]) << " != "
+					<< prettyPrintString(mFunctionReturnTypes[k])
+				);
+
+			expr = NativeExpression::If(
+				res.expr()["index"] == NativeExpression::ConstantULong(k),
+				NativeExpression::Return(
+					outExitpoints[k],
+					res.expr()["data"].cast(possibleOutputTypes[k], true)
+					),
+				expr
+				);
+			}
+
+		if (needsVectorLoad())
+			{
+			NativeBlockID block = NativeBlockID::entry();
+
+			expr = 
+				NativeExpression::If(
+					res.expr()["index"] == 
+					NativeExpression::ConstantULong(
+						*mVectorLoadSlot
+						),
+					TypedNativeExpression<TypedFora::Abi::VectorLoadRequest>(
+						res.expr()["data"].cast(
+							NativeTypeFor<TypedFora::Abi::VectorLoadRequest>::get(), 
+							true
+							)
+						).loadCheck().getExpression(),
+					expr
+					);
+			}
+
+		expr = 
+			NativeExpression::Let(
+				res, 
+				NativeExpression::CallLibraryFunction(
+					mFunctionPointer,
+					res.type(), 
+					libcallArgs
+					),
+				expr
+				);
+		}
+	else
+		{
+		lassert(mFunctionReturnTypes.size() == 1);
+
+		lassert_dump(
+			isValidPassByValueJmt(mReturnSlots[0].jov()),
+
+			"Can't return value of JOV " << prettyPrintString(mReturnSlots[0].jov()) 
+				<< " by value in axiom with signature " << prettyPrintString(mInputJudgments)
+				<< ". use a ReturnValue<> for non-POD data like this, so that both LLVM and "
+				<< " C++ know to pass the value on the stack."
+			);
+
+		expr = 
+			NativeExpression::Return(
+				outExitpoints[0],
+				NativeExpression::CallLibraryFunction(
+					mFunctionPointer,
+					mFunctionReturnTypes[0].type(),
+					libcallArgs
+					)
+				);
+		}
+	
+	expr = builder(expr);
+	
+	if (mPreloadExpression)
+		expr = *mPreloadExpression >> expr;
+
+	if (needsVectorLoad())
+		expr = NativeCFG(emptyTreeVec(), expr)();
+
+	bool anyPooled = false;
+	bool anyNotPooled = false;
+
+	for (long k = 0; k < mFunctionReturnTypes.size(); k++)
+		if (mFunctionReturnTypes[k].isPooled())
+			anyPooled = true;
+		else
+			anyNotPooled = false;
+
+	lassert_dump(
+		!anyPooled || !anyNotPooled, 
+		"either all the results need to be pooled, or none"
+		);
+
+	return axiomBuilder.axiomForNativeExpression(
+		expr.taggedWith(mTag),
+		anyPooled ? TypedFora::RefcountStyle::Pooled() : 
+			TypedFora::RefcountStyle::AsValueOwned(),
+		joa.resultPart(),
+		joa.throwPart()
+		);
+	}
+
+
+Nullable<Axiom> LibcallAxiomGroup::axiom(TypedFora::Compiler& c, const JudgmentOnValueTuple& s)
+	{
+	return null() << mAxiom;
+	}
+
+Nullable<AxiomJOA>	LibcallAxiomGroup::axiomJOA(const JudgmentOnValueTuple& s)
+	{
+	if (mSpecializer)
+		return (*mSpecializer)(s);
+	else
+		return null() << AxiomJOA::Native(mAxiom.getNative().resultSignature());
+	}
+
+}
+

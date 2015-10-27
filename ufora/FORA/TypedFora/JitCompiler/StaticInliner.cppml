@@ -1,0 +1,458 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "StaticInliner.hppml"
+
+#include <vector>
+#include <utility>
+#include <stdexcept>
+#include "../../Runtime.hppml"
+#include "../../Interpreter/RuntimeConfig.hppml"
+#include "../../../core/lassert.hpp"
+#include "../../../core/STLOps.hpp"
+#include "../../../core/cppml/CPPMLVisit.hppml"
+#include "../../../core/Clock.hpp"
+#include "../../Native/NativeCFGTransforms/Transforms.hppml"
+
+#include "../../../core/Logging.hpp"
+#include "../../../core/ScopedProfiler.hppml"
+
+using namespace std;
+using namespace boost;
+
+namespace TypedFora {
+
+StaticInliner::StaticInliner(	uword_t inComplexity,
+								const RuntimeConfig& inConfig
+								) :
+		mMaxInlineComplexity(inComplexity),
+		mRuntimeConfig(inConfig)
+	{
+	}
+
+void StaticInliner::setInlineComplexity(uword_t complexity)
+	{	
+	mMaxInlineComplexity = complexity;
+	}
+
+void StaticInliner::define(	const string& name,
+							const NativeCFG& def,
+							set<string>& outNewlyDefined)
+	{
+    boost::lock_guard<boost::recursive_mutex> lock(mMutex);
+	
+	//map::insert(...).second is false if insertion failed due to
+	//preexisting element.
+	if (!mCFGs.insert(pair<string, NativeCFG>(name, def)).second)
+		throw logic_error("StaticInliner: Called define with already-defined"
+		                  " name: " + name);
+	
+	//get a list of other functions this thing calls
+	ImmutableTreeSet<std::string> targetFunctions = def.externalBranches();
+	
+	//mark them in the call graph
+	mCallGraphStructure.insert(name, targetFunctions.begin(), targetFunctions.end());
+	
+	//now we need to determine whether this function is fully defined (e.g.
+	//whether all the nodes it points to are also defined). There may be cycles
+	//in the graph.  So, we keep track of a TwoWaySetMap of 'undefinition'
+	//dependencies.  A pair (n1,n2) is in mUndefinedChildren if n2 is undefined
+	//and there is a path from n1 to n2.
+	
+	set<string> undefinedBecauseOfMe = mUndefinedChildren.getKeys(name);
+			
+	for (long k = 0; k < targetFunctions.size();k++)
+		{
+		string targetName = targetFunctions[k];
+		
+		//this target is undefined, so mark an 'undefined' dependency
+		if (mCFGs.find(targetName) == mCFGs.end())
+			{
+			mUndefinedChildren.insert(name, targetName);
+			
+			//mark all the guys who are undefined because of me as being
+			//undefined because of this guy.
+			mUndefinedChildren.insert(undefinedBecauseOfMe,targetName);
+			}
+		else
+			{
+			//anything that make this function undefined make me undefined
+			set<string> makingTargetNameUndefined =
+					mUndefinedChildren.getValues(targetName);
+			
+			mUndefinedChildren.insert(undefinedBecauseOfMe,makingTargetNameUndefined);
+			mUndefinedChildren.insert(name,makingTargetNameUndefined);
+			}
+		}
+	
+	//nothing is being made undefined by me anymore
+	mUndefinedChildren.dropValue(name);
+	
+	//now lets check each of the strings - if they're defined now, go ahead
+	//and compute their levels and call groups
+	outNewlyDefined = set<string>();
+	
+	for (set<string>::iterator it = undefinedBecauseOfMe.begin(),
+							it_end = undefinedBecauseOfMe.end();
+					it != it_end;
+					++it)
+		{
+		if (mUndefinedChildren.getValues(*it).size() == 0)
+			outNewlyDefined.insert(*it);
+		}
+	
+	if (mUndefinedChildren.getValues(name).size() == 0)
+		outNewlyDefined.insert(name);
+	
+	
+	LOG_INFO << "StaticInliner: defining " << name << " with deps "
+		<< prettyPrintString(targetFunctions) << ". fully defined are "
+		<< prettyPrintString(outNewlyDefined)
+		;
+		
+	computeCycles(outNewlyDefined);
+	
+	for (set<string>::iterator it = outNewlyDefined.begin(),
+							it_end = outNewlyDefined.end();
+					it != it_end;
+					++it)
+		computeLevel(*it);
+
+	for (set<string>::iterator it = outNewlyDefined.begin(),
+							it_end = outNewlyDefined.end();
+					it != it_end;
+					++it)
+		validateFunctionCallSignaturesForName(*it);
+	}
+
+
+uword_t StaticInliner::computeLevel(const string& s)
+	{
+	if (mCallLevels.count(s))
+		return mCallLevels[s];
+	
+	if (mCallGroups.count(s))
+		{
+		//we're in a cycle - all elements of the cycle must have the same depth
+		uword_t level = 0;
+		ImmutableTreeSet<string> cycle = mCallGroups[s];
+		for (uword_t k = 0; k < cycle.size(); k++)
+			{
+			const set<string>& vals = mCallGraphStructure.getValues(cycle[k]);
+			for (set<string>::const_iterator it2 = vals.begin();
+						it2 != vals.end(); ++it2)
+				if (!cycle.contains(*it2))
+					level = std::max(level, computeLevel(*it2));
+			}
+		for (uword_t k = 0; k < cycle.size(); k++)
+			mCallLevels[cycle[k]] = level + 1;
+		}
+		else
+		{
+		uword_t level = 0;
+		set<string> vals = mCallGraphStructure.getValues(s);
+		for (set<string>::const_iterator it2 = vals.begin();
+					it2 != vals.end(); ++it2)
+			level = std::max(level, computeLevel(*it2));
+		mCallLevels[s] = level + 1;
+		}
+	
+	return mCallLevels[s];
+	}
+
+void StaticInliner::computeCycles(const set<string>& toAnalyze)
+	{
+	//find any cycles. do this by pruning...
+	TwoWaySetMap<string, string> graph;
+	set<string> empty;
+	for (set<string>::iterator it = toAnalyze.begin();
+				it != toAnalyze.end(); ++it)
+		{
+		set<string> vals = mCallGraphStructure.getValues(*it);
+		for (set<string>::const_iterator it2 = vals.begin();
+					it2 != vals.end(); ++it2)
+			if (toAnalyze.count(*it2))
+				graph.insert(*it, *it2);
+		if (graph.getValues(*it).size() == 0)
+			empty.insert(*it);
+		}
+
+	while (graph.keyCount() || empty.size())
+		{
+		//prune all leaves
+		while (empty.size())
+			{
+			//remove a node and prune
+			string e = pop(empty);
+			computeLevel(e);
+			set<string> vals = graph.getKeys(e);
+			for (set<string>::iterator it = vals.begin();
+						it != vals.end(); ++it)
+				{
+				graph.drop(*it, e);
+				if (graph.getValues(*it).size() == 0)
+					empty.insert(*it);
+				}
+			}
+		
+		if (graph.keyCount())
+			{
+			//now any node must be in a cycle
+			set<string> cycle;
+			set<string> cycleNew;
+			cycleNew.insert(graph.lowestKey());
+			
+			while (cycleNew.size())
+				{
+				string c = pop(cycleNew);
+				cycle.insert(c);
+
+				set<string> vals = graph.getValues(c);
+				for (set<string>::iterator it = vals.begin();
+							it != vals.end(); ++it)
+					if (*it != cycle && *it != cycleNew)
+						cycleNew.insert(*it);
+				}
+			
+			ImmutableTreeSet<string> cycleSet(cycle.begin(), cycle.end());
+			
+			for (set<string>::iterator it = cycle.begin();
+						it != cycle.end(); ++it)
+				mCallGroups[*it] = cycleSet;
+			
+			//drop everything in the cycle
+			empty = cycle;
+			}
+		}
+	}
+
+bool StaticInliner::hasDefined(const string& name) const
+	{
+    boost::lock_guard<boost::recursive_mutex> lock(mMutex);
+	return mCFGs.count(name) != 0;
+	}
+
+const NativeCFG& StaticInliner::getProcessed(const string& functionName)
+	{
+		{
+        boost::lock_guard<boost::recursive_mutex> lock(mMutex);
+	
+		lassert(mCFGs.count(functionName));
+	
+		if (mProcessed.find(functionName) != mProcessed.end())
+			return mCFGs[functionName];
+		}
+	
+	//if we're here, we weren't processed. lock a mutex indexed
+	//by this function
+	
+	IndexedMutex<string>::scoped_lock lock(mProcessingMutexes, functionName);
+	
+	NativeCFG cfg;
+	
+		//check again - maybe another thread did this while
+		//we were getting the lock
+		{
+        boost::lock_guard<boost::recursive_mutex> lock(mMutex);
+	
+		if (mProcessed.find(functionName) != mProcessed.end())
+			return mCFGs.at(functionName);
+		
+		cfg = mCFGs.at(functionName);
+		}
+	
+	
+	//Can we inline anything?
+	//Consider anything downstream from us that is not in our own cycle.
+	ImmutableTreeSet<string> cycle = getCallGroup(functionName);
+	
+	ImmutableTreeSet<string> targets = cfg.externalBranches();
+
+	bool inlinedAnything = false;
+
+	for (long k = 0; k < targets.size();k++)
+		{
+		string target = targets[k];
+		
+		if (target != functionName && !cycle.contains(target))
+			{
+			NativeCFG targetCFG = getProcessed(target);
+			
+			if (targetCFG.complexity() < mMaxInlineComplexity)
+				{
+				cfg = NativeCFGTransforms::inlineCFG(cfg, targetCFG, target);
+
+				inlinedAnything = true;
+				
+				LOG_INFO << "inlining " << target << " into " << functionName;
+
+				lassert_dump(
+					!cfg.externalBranches().contains(target)
+							|| targetCFG.externalBranches().contains(target),
+						"failed to inline " << target << " in\n"
+						<< prettyPrintString(cfg)
+						<< "\n\ninline cfg = " << prettyPrintString(targetCFG)
+					);
+				}
+				else
+				{
+				LOG_INFO << "not inlining " <<
+					target << " into " << functionName
+					<< " as complexity is "
+					<< targetCFG.complexity()
+					;
+				}
+			}
+		}	
+	//optimize the CFG now that we've successfully inlined
+	cfg = 
+		NativeCFGTransforms::optimize(
+			NativeCFGTransforms::renameVariables(cfg),
+			mRuntimeConfig
+			);
+	
+	//put it back in the set
+		{
+        boost::lock_guard<boost::recursive_mutex> lock(mMutex);
+		mProcessed.insert(functionName);
+		mCFGs[functionName] = cfg;
+		return mCFGs[functionName];
+		}
+	}
+
+ImmutableTreeSet<string>
+StaticInliner::getFunctionsCalledBy(const string& name)
+	{
+    boost::lock_guard<boost::recursive_mutex> lock(mMutex);
+	
+	if (mCallLevels.find(name) == mCallLevels.end())
+		throwLogicErrorWithStacktrace("can't get the callgroup of " + name +
+			" because it still has undefined dependencies");
+	
+	return ImmutableTreeSet<string>(mCallGraphStructure.getValues(name));
+	}
+
+ImmutableTreeSet<string>
+StaticInliner::getCallGroup(const string& name)
+	{
+    boost::lock_guard<boost::recursive_mutex> lock(mMutex);
+	
+	if (mCallLevels.find(name) == mCallLevels.end())
+		throwLogicErrorWithStacktrace("can't get the callgroup of " + name +
+			" because it still has undefined dependencies");
+	
+	if (mCallGroups.find(name) == mCallGroups.end())
+		return ImmutableTreeSet<string>();
+	
+	return mCallGroups.at(name);
+	}
+
+
+namespace {
+
+class FunctionCallSignatureVerificationVisitor {
+	const std::map<std::string, NativeCFG>& mCFGs;
+	std::string mName;
+public:
+	FunctionCallSignatureVerificationVisitor(
+					const std::map<std::string, NativeCFG>& inCFGs,
+					const std::string& inName
+					) : 
+			mCFGs(inCFGs),
+			mName(inName)
+		{
+		}
+	
+	template<class T>
+	void processDown(const T& in, bool& out) const { }
+
+	template<class T>
+	void processUp(const T& in) const { }
+
+	void processDown(const NativeType& in, bool& out) const { out = false; }
+
+	void processDown(const NativeConstant& in, bool& out) const { out = false; }
+	
+	void processDown(	const NativeExpression& ex,
+						bool& cont
+						) const
+		{
+		@match NativeExpression(ex)
+			-|	Call(External(name, id), rets, args, meta) ->> {
+				
+				try {
+					lassert(mCFGs.find(name) != mCFGs.end());
+
+					const NativeCFG& targetCFG = mCFGs.find(name)->second;
+
+					const NativeBlock& targetBlock(targetCFG[id]);
+
+					//check that call arguments are OK
+					if (args.size() != targetBlock.args().size())
+						throw std::logic_error("invalid argument count");
+
+					for (long k = 0; k < args.size();k++)
+						if (args[k].type() && *args[k].type() != targetBlock.args()[k].type())
+							throw std::logic_error(
+								"argument " + boost::lexical_cast<string>(k) + 
+								" has wrong type: " + 
+									prettyPrintString(*args[k].type()) + " != " +
+									prettyPrintString(targetBlock.args()[k].type())
+								);
+
+					//check that return types are OK
+					ImmutableTreeVector<NativeType> passedContinuationTypes;
+					for (long k = 0; k < rets.size();k++)
+						passedContinuationTypes = passedContinuationTypes + 
+							rets[k].var().type();
+
+					if (passedContinuationTypes != targetCFG.returnTypes())
+						throw std::logic_error("invalid return continuations: expected " +
+							prettyPrintString(targetCFG.returnTypes()) + 
+							" but provided " + 
+							prettyPrintString(passedContinuationTypes)
+							);
+					}
+				catch(std::logic_error& ex)
+					{
+					throw standardLogicErrorWithStacktrace(
+						"Error calling " + name + ":" + prettyPrintString(id) + " from " + 
+						mName + ": " + ex.what() + "\n" + 
+						"cfg = " + prettyPrintString(mCFGs.find(mName)->second)
+						);
+					}
+				}
+			-|	_ ->> {
+				}
+			;
+		}
+};
+
+};
+
+void StaticInliner::validateFunctionCallSignaturesForName(const std::string& inFuncName)
+	{
+	lassert(mCFGs.find(inFuncName) != mCFGs.end());
+
+	const NativeCFG& cfg = mCFGs.find(inFuncName)->second;
+
+	FunctionCallSignatureVerificationVisitor visitor(mCFGs, inFuncName);
+
+	visit(cfg, visitor);
+	}
+
+
+}
+

@@ -1,0 +1,1242 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "LibcallAxiomGroup.hppml"
+#include "Tuple.MatchStructureAxiom.hppml"
+#include "TypedForaAxiomBuilder.hppml"
+#include "../Core/TupleCategory.hppml"
+#include "../Core/ImplValContainerUtilities.hppml"
+#include "../Core/Type.hppml"
+#include "../Core/ImplVal.hppml"
+#include "../JudgmentOnInterpreterTrace/Util.hppml"
+#include "../TypedFora/ABI/DestructorsAndConstructors.hppml"
+#include "../TypedFora/TypedForaUtil.hppml"
+#include "../Primitives/Symbol.hpp"
+#include "../../core/SymbolExport.hpp"
+#include "Axioms.hppml"
+#include "Axiom.hppml"
+
+using namespace std;
+using namespace Fora;
+
+namespace {
+
+typedef vector<Nullable<Symbol> > symbol_vector;
+
+class NotAMatch {};
+
+}
+
+//represents the structure of a pattern. elements are in order from left to right
+@type MatchStructurePattern =
+	symbol_vector namesLeft,
+	symbol_vector optionalNamesLeft,
+	bool hasStarArgs,
+	symbol_vector optionalNamesRight,
+	symbol_vector namesRight
+{
+public:
+	//indicate whether its possible we can match a tuple with 'inEltCount' elements
+	bool possibleToMatch(int inEltCount);
+	
+	/*****
+	visitMatches:
+	
+	matches a pattern against a fixed set of symbols. inFun gets handed each match as
+	it occurs. If the pattern doesn't match, we throw NotAMatch().  Pattern matching occurs in
+	the following order:
+		namesLeft
+		namesRight
+		optionalNamesLeft
+		optionalNamesRight
+		starArgs
+	with exactly one call per pattern element
+	
+	inFun is expected to accept the following calls:
+		
+		//indicates that the symbol at 'elementIndex' was consumed during matching
+		//isFromLeft - were we searching from left or right?
+		//isOptional - was this symbol optional?
+		inFun.pushMatch(Nullable<Symbol> matchingAgainst, int elementIndex, bool isFromLeft, bool isOptional)
+		
+		
+		//indicate that an optional value was not matched.
+		inFun.noMatchForOptional(int elementIndex, bool isFromLeft)
+	
+		
+		//indicate that this non-optional value _couldn't_ be matched
+		inFun.pushUnknownMatch(int elementIndex, bool isFromLeft)
+		
+		
+		//indicate that the values with 'false' in hasBeenConsumed were not consumed during regular
+		//pattern matching and can therefore be part of the *args match
+		//unknownOnRight - indicates that there are an arbitrary of unknown, unmatched values
+			on the right side of the pattern
+		inFun.starArgsMatchRemaining(std::vector<bool>& hasBeenConsumed)
+	
+	visitMatches matches the pattern against the given symbols (basically ignoring unknownOnRight)
+		and hands the result to the visitor class.
+	*/
+	template<class funtype, class iterator_type>
+	void visitMatches(funtype& inFun, iterator_type start, iterator_type stop)
+		{
+		vector<bool>	hasBeenConsumed;
+		hasBeenConsumed.resize(stop - start);
+		
+		for (int isOptional = 0; isOptional < 2; isOptional++)
+			{
+			//search from left, then from right, but only from the right if the right-hand-side is
+			//known. if it's unknown, we never search from the right.
+			for (int direction = 1; direction >= -1; direction -= 2)
+				{
+				const auto& patternElts = (
+					direction == 1 && !isOptional ? this->namesLeft() : 
+					direction == -1 && !isOptional ? this->namesRight() : 
+					direction == 1 && isOptional ? this->optionalNamesLeft() : 
+													 this->optionalNamesRight()
+					);
+				
+				long kStart = (direction == 1 ? 0 : ((long)patternElts.size()) - 1);
+				long kStop = (direction == 1 ? ((long)patternElts.size()) : -1);
+				
+				for (long k = kStart; k != kStop; k += direction)
+					{
+					bool foundOne = false;
+					
+					long jStart = (direction == 1 ? 0 : ((long)hasBeenConsumed.size()) - 1);
+					long jStop = (direction == 1 ? ((long)hasBeenConsumed.size()) : -1);
+					
+					for (long j = jStart; j != jStop && !foundOne; j += direction)
+						{
+						if (!hasBeenConsumed[j])
+							{
+							Nullable<Symbol> s = *(start + j);
+							
+							if (patternElts[k] == s)
+								{
+								inFun.pushMatch(patternElts[k], j, direction == 1, isOptional);
+								hasBeenConsumed[j] = true;
+								foundOne = true;
+								}
+							}
+						}
+					
+					if (!foundOne)
+						{
+						if (isOptional)
+							inFun.noMatchForOptional(patternElts[k], direction == 1);
+						else
+							//not a match
+							inFun.pushUnknownMatch(patternElts[k], direction == 1);
+						}
+					}
+				}
+			}
+		if (hasStarArgs())
+			{
+			inFun.starArgsMatchRemaining(hasBeenConsumed);
+			}
+		else
+			{
+			for (auto it = hasBeenConsumed.begin(), 
+					 it_end = hasBeenConsumed.end(); it != it_end; ++it)
+				if (! (*it) )
+					throw NotAMatch();
+
+			inFun.assertNoUnmatchedTermsRemaining();
+			}
+		}	
+}; //class MatchStructurePattern
+
+bool MatchStructurePattern::possibleToMatch(int inEltCount)
+	{
+	if (inEltCount < namesLeft().size() + namesRight().size())
+		return false;
+	
+	if (!hasStarArgs() && inEltCount > (
+			namesLeft().size() + namesRight().size() +
+			optionalNamesLeft().size() + optionalNamesRight().size()
+			))
+		return false;
+
+	return true;
+	}
+
+
+class ConstructMatchStructurePatternFromTupleEncoding {
+public:
+	ConstructMatchStructurePatternFromTupleEncoding() : 
+			mSwapped(false), 		
+			mEverOptional(false),
+			mOptionalsTerminated(false),
+			mExtras(Symbol::Extras())
+		{
+		}
+
+	void visitTagPatternElement(const ImplValContainer& v)
+		{
+		if (v.cast<Symbol>() == mExtras)
+			{
+			if (mSwapped)
+				{
+				throw NotAMatch();
+				}
+			else
+				{
+				mPattern.hasStarArgs() = true;
+				mSwapped = true;
+				}
+			}
+		else
+			throw NotAMatch();
+		}
+
+	void visitNamedPairTupleElement(const ImplValContainer& v)
+		{
+		Nullable<Symbol> s;
+		bool opt = false;
+		
+		ImplValContainer firstElt;
+		ImplValContainer secondElt;
+
+			{
+			auto it = ImplValContainerUtilities::tuple_iterator::begin(v);
+			firstElt = *it;
+			++it;
+			secondElt = *it;
+			}
+
+		if (firstElt.type().isSymbol())
+			s = firstElt.cast<Symbol>();
+		else
+		if (firstElt.type().isNothing())
+			s = null();
+		else
+			throw NotAMatch();
+
+		@match Type(secondElt.type())
+			-|	Integer(bits, isSigned) ->> {
+
+				if (bits != 1 || isSigned)
+					throw NotAMatch();
+				
+				opt = secondElt.cast<bool>();
+				}
+			-|	_ ->> {
+				throw NotAMatch();
+				}
+			;
+
+		if (opt && !mSwapped)
+			mPattern.optionalNamesLeft().push_back(s);
+		else
+		if (opt && mSwapped)
+			{
+			if (mOptionalsTerminated)
+				throw NotAMatch();
+			
+			mPattern.optionalNamesRight().push_back(s);
+			}
+		else
+		if (!opt)
+			{
+			if (!mSwapped && mEverOptional)
+				{
+				//we went from optional -> not optional, so we're 'swapping'
+				mOptionalsTerminated = true;
+				mSwapped = true;
+				}
+			
+			if (mSwapped)
+				mPattern.namesRight().push_back(s);
+			else
+				mPattern.namesLeft().push_back(s);
+			}
+			
+		if (opt)
+			mEverOptional = true;
+		}
+
+	void visitPatternElement(const ImplValContainer& v)
+		{
+		if (v.type().isTag())
+			{
+			visitTagPatternElement(v);
+
+			return;
+			}
+		
+		if (v.type().isTuple() && 
+			ImplValContainerUtilities::tupleSize(v) == 2)
+			{
+			visitNamedPairTupleElement(v);
+
+			return;
+			}
+		
+		throw NotAMatch();
+		}
+
+	const MatchStructurePattern& getPattern(void) const
+		{
+		return mPattern;
+		}
+
+private:
+	MatchStructurePattern mPattern;
+
+	bool mSwapped;
+	bool mEverOptional;
+	bool mOptionalsTerminated;
+	Symbol mExtras;
+
+}; //ConstructMatchStructurePatternFromTupleEncoding
+
+//unpack the pattern encoded in the tuple 'pattern' into 'outPattern', or throw NotAMatch
+//if it's not a valid pattern encoding
+void constructMatchStructurePatternFromTupleEncoding(
+		const ImplValContainer& pattern, 
+		MatchStructurePattern& outPattern
+		)
+	{
+	ConstructMatchStructurePatternFromTupleEncoding encoder;
+
+	ImplValContainerUtilities::iterateTupleContents(
+		pattern, 
+		boost::bind(
+			&ConstructMatchStructurePatternFromTupleEncoding::visitPatternElement, 
+			&encoder, 
+			boost::arg<1>()
+			)
+		);
+
+	outPattern = encoder.getPattern();
+	}
+	
+namespace {
+
+//visitor for 'visitMatches' that assumes we have a fully specified tuple (e.g. valid elements)
+//and that builds a live output tuple.
+class OutputTupleBuilder {
+public:
+		OutputTupleBuilder(const std::vector<ImplValContainer>& elements,
+							const std::vector<Nullable<Symbol> >& names) :
+				mElements(elements),
+				mNames(names),
+				mOptionalNotMatched(CSTValue::Tuple())
+			{
+			}		
+		
+		ImplValContainer wrapInTuple(const ImplValContainer& v)
+			{
+			return ImplValContainerUtilities::createTuple(
+				emptyTreeVec() + v
+				);
+			}
+		
+		void pushMatch(
+				Nullable<Symbol> matchingAgainst, 
+				int elementIndex, 
+				bool isFromLeft, 
+				bool isOptional
+				)
+			{
+			ImplValContainer matchImplval;
+			
+			if (isOptional)
+				matchImplval = wrapInTuple(mElements[elementIndex]);
+			else
+				matchImplval = mElements[elementIndex];
+			
+			if (isFromLeft)
+				mPatResultLeft.push_back(
+					make_pair(mNames[elementIndex], matchImplval)
+					);
+			else
+				mPatResultRight.push_back(
+					make_pair(mNames[elementIndex], matchImplval)
+					);
+			}
+
+		void pushUnknownMatch(Nullable<Symbol> matchingAgainst, bool isFromLeft)
+			{
+			throw NotAMatch();
+			}
+
+		void noMatchForOptional(Nullable<Symbol> matchingAgainst, bool isFromLeft)
+			{
+			if (isFromLeft)
+				mPatResultLeft.push_back(
+					make_pair(matchingAgainst, mOptionalNotMatched.getReference())
+					);
+			else
+				mPatResultRight.push_back(
+					make_pair(matchingAgainst, mOptionalNotMatched.getReference())
+					);
+			}
+
+		void starArgsMatchRemaining(const std::vector<bool>& hasBeenConsumed)
+			{
+			std::vector<pair<Nullable<Symbol>, ImplValContainer> > starArgsElement;
+			
+			for (long k = 0; k < hasBeenConsumed.size(); k++)
+				if (!hasBeenConsumed[k])
+					starArgsElement.push_back(make_pair(mNames[k], mElements[k]));
+			
+			mStarArgsElt = 
+				ImplValContainerUtilities::createNewTuple(
+					starArgsElement.begin(), 
+					starArgsElement.end()
+					);
+			}
+		
+		void assertNoUnmatchedTermsRemaining(void)
+			{
+			}
+
+		ImplValContainer	extractFinalImplVal()
+			{
+			std::vector<pair<Nullable<Symbol>, ImplValContainer> > finalTupleVals;
+			
+			finalTupleVals = mPatResultLeft;
+			if (mStarArgsElt)
+				finalTupleVals.push_back(
+					make_pair(null(), mStarArgsElt->getReference())
+					);
+
+			finalTupleVals.insert(
+				finalTupleVals.end(), 
+				mPatResultRight.rbegin(), 
+				mPatResultRight.rend()
+				);
+			
+			return ImplValContainerUtilities::createNewTuple(
+				finalTupleVals.begin(),
+				finalTupleVals.end()
+				);
+			}
+private:
+		const std::vector<ImplValContainer>& 			mElements;
+		const std::vector<Nullable<Symbol> >& 			mNames;
+		
+		std::vector<pair<Nullable<Symbol>, ImplValContainer> > 	mPatResultLeft, mPatResultRight;
+		Nullable<ImplValContainer>						mStarArgsElt;
+		
+		CSTValue 										mOptionalNotMatched;
+
+}; //OutputTupleBuilder
+
+void populateEltsAndNamesToMatch(
+			const ImplValContainer& val, 
+			const Nullable<Symbol>& name,
+			std::vector<ImplValContainer>* eltsToMatch,
+			std::vector<Nullable<Symbol> >* namesToMatch
+			)
+	{
+	eltsToMatch->push_back(val);
+	namesToMatch->push_back(name);
+	}
+
+} // anonymous namespace
+
+/***
+match 'tuple' against pattern 'pattern'.
+pattern is a tuple containing match arguments. each match argument is one of 
+	(name, isOptional) where name is nothing or a symbol, or
+	#Extras
+we then either throw the null exception or unpack the tuple into a tuple matching the pattern.
+
+We encode the result as follows:
+	For nonoptional arguments, we return the value
+	For optional arguments we return a tuple with 0 elements (unmatched) or 1 element (matched)
+	For *args we return a tuple with the args.
+See the tests in TupleMatchStructureAxiom_test.py for details. This interface is assumed in the
+	main FORA language implementation.
+*/
+Nullable<ImplValContainer> tupleStructureMatch(
+		const ImplValContainer& tuple, 
+		const ImplValContainer& pattern
+		)
+	{
+	MatchStructurePattern pat;
+	
+	try {
+		constructMatchStructurePatternFromTupleEncoding(pattern, pat);
+		}
+	catch(NotAMatch& m)
+		{
+		return null();
+		}
+	
+	if (!pat.possibleToMatch(TupleCategory::tupleSize(tuple.getReference())))
+		return null();
+	
+	//unpack the tuple into a vector
+	std::vector<ImplValContainer> 	eltsToMatch;
+	std::vector<Nullable<Symbol> > 	namesToMatch;
+	
+	ImplValContainerUtilities::iterateTupleContentsWithNames(
+		tuple,
+		boost::bind(
+			&populateEltsAndNamesToMatch,
+			boost::arg<1>(),
+			boost::arg<2>(),
+			&eltsToMatch,
+			&namesToMatch
+			)
+		);
+	
+	OutputTupleBuilder	builder(eltsToMatch, namesToMatch);
+	
+	try {
+		pat.visitMatches(builder, namesToMatch.begin(), namesToMatch.end());
+		return null() << builder.extractFinalImplVal();
+		}
+	catch(NotAMatch& match)
+		{
+		return null();
+		}
+	}
+
+@type MatchStructureAxiomResultElement =
+		Field of int fieldIndex, bool asTuple
+	-|	NoMatch of Nullable<Symbol> name		//there's no match for this field. if there are
+												//unknowns to the right, this doesn't necessarily
+												//imply that the pattern can't match
+	-|	StarArgsElement of
+			ImmutableTreeVector<int> indices,	//which elements are in the *args?
+			bool plusAllTheExtras				//indicates that all the extras are spart of the match
+	-|	UnknownStarArgs of						//there are some star args, but we don't know much
+			ImmutableTreeVector<int>			//much about them
+	-|	PossibleUnmatchedTermsOnRight of ()		//represents the possibility that the match could
+												//just fail because of the presence of 
+												//unmatched terms
+	-|	Unknown of 								//we can't tell if it will match
+			Nullable<Symbol> symbolIfMatched	//the symbol it would have if it did match
+	;
+
+namespace {
+
+//accumulator class that can be handed to MatchStructurePattern::visitMatches to accumulate
+//stuff necessary to match JOVs. Our strategy is to match the pattern as agressively as possible
+//realizing that if there are unknowns on the right that we'll have to relax our judgments accordingly
+class OutputJOVBuilder {
+public:
+		OutputJOVBuilder(bool rightSideIsUnknown) 
+				: mRightSideIsUnknown(rightSideIsUnknown)
+			{
+			mAnyUnknownMatches = false;
+			mPossibleUnmatchedTermsOnRightSide = false;
+			}
+		
+		void pushMatch(
+				Nullable<Symbol> matchingAgainst, 
+				int elementIndex, 
+				bool isFromLeft, 
+				bool isOptional
+				)
+			{
+			MatchStructureAxiomResultElement match;
+			
+			if (isOptional && mRightSideIsUnknown)
+				//we have no idea what would happen with this match, since we have no data
+				//about the right side. we could potentially optimize if we knew that the pattern
+				//had no optional matches on the right hand side
+				match = 
+					MatchStructureAxiomResultElement::Unknown(matchingAgainst);
+			else
+				match = 
+					MatchStructureAxiomResultElement::Field(
+						elementIndex, 
+						isOptional
+						);
+				
+			if (isFromLeft)
+				mPatResultLeft = mPatResultLeft + match;
+			else
+				mPatResultRight = match + mPatResultRight;
+			}
+
+		void noMatchForOptional(Nullable<Symbol> matchingAgainst, bool isFromLeft)
+			{
+			MatchStructureAxiomResultElement match;
+			
+			if (mRightSideIsUnknown)
+				//because we're optional, if we don't know anything about the right side, we can't
+				//be certain that this match is meaningful.
+				match = MatchStructureAxiomResultElement::Unknown(matchingAgainst);
+			else
+				match = MatchStructureAxiomResultElement::NoMatch(matchingAgainst);
+			
+			if (isFromLeft)
+				mPatResultLeft = mPatResultLeft + match;
+			else
+				mPatResultRight = match + mPatResultRight;
+			}
+
+		void starArgsMatchRemaining(
+				const std::vector<bool>& hasBeenConsumed
+				)
+			{
+			ImmutableTreeVector<int> indices;
+			for (long j = 0; j < hasBeenConsumed.size();j++)
+				if (!hasBeenConsumed[j])
+					indices = indices + j;
+			
+			if (mRightSideIsUnknown)
+				{
+				if (!mPatResultRight.size())
+					{
+					//no patterns were matched on the right, so we can assume that everything
+					//to the right will go into the star args
+					mStarArgsElt = 
+						MatchStructureAxiomResultElement::StarArgsElement(
+							indices, 
+							true
+							);
+					}
+				else
+					//for the moment, we'll assume we know nothing about what's in the starArgs
+					mStarArgsElt = 
+						MatchStructureAxiomResultElement::UnknownStarArgs(
+							emptyTreeVec()
+							);
+				}
+			else
+				mStarArgsElt = MatchStructureAxiomResultElement::StarArgsElement(
+					indices,
+					false
+					);
+			}
+
+		void assertNoUnmatchedTermsRemaining(void)
+			{
+			if (mRightSideIsUnknown)
+				mPossibleUnmatchedTermsOnRightSide = true;
+			}
+
+		void pushUnknownMatch(Nullable<Symbol> matchingAgainst, bool isFromLeft)
+			{
+			MatchStructureAxiomResultElement match;
+			
+			mAnyUnknownMatches = true;
+			
+			match = MatchStructureAxiomResultElement::Unknown(matchingAgainst);
+			
+			if (isFromLeft)
+				mPatResultLeft = mPatResultLeft + match;
+				else
+				mPatResultRight = match + mPatResultRight;
+			}
+
+		ImmutableTreeVector<MatchStructureAxiomResultElement>	buildFinalMSAREList()
+			{
+			ImmutableTreeVector<MatchStructureAxiomResultElement> finalList;
+			
+			finalList = mPatResultLeft;
+			
+			if (mStarArgsElt)
+				finalList = finalList + *mStarArgsElt;
+			
+			finalList = finalList + mPatResultRight;
+			
+			if (mPossibleUnmatchedTermsOnRightSide)
+				finalList = finalList + 
+					MatchStructureAxiomResultElement::PossibleUnmatchedTermsOnRight();
+
+			return finalList;
+			}
+private:
+		//NOTE: unlike the other "builder" class, mPatResultRight is in the correct order since
+		//we can prepend to ImmutableTreeVector objects.
+		ImmutableTreeVector<MatchStructureAxiomResultElement> 	mPatResultLeft, mPatResultRight;
+		Nullable<MatchStructureAxiomResultElement>				mStarArgsElt;
+		bool 													mPossibleUnmatchedTermsOnRightSide;
+		bool													mRightSideIsUnknown;
+		bool													mAnyUnknownMatches;
+
+}; //OutputJOVBuilder
+
+//returns the JOVT corresponding to matching 'matches' against 'inSignature'
+pair<JOVT, bool>	msareListToJOVT(
+						const ImmutableTreeVector<MatchStructureAxiomResultElement>& matches,
+						const JOVT& inSignature
+						)
+	{
+	bool hasAnyUnknown = false;
+	ImmutableTreeVector<JudgmentOnValue> matchElements;
+	ImmutableTreeVector<Nullable<Symbol> > matchElementNames;
+	
+	for (long k = 0; k < matches.size(); k++)
+		{
+		@match MatchStructureAxiomResultElement(matches[k])
+			-|	Field(fieldIndex, asTuple) ->> {
+				JudgmentOnValue matchRes = inSignature.jovs()[fieldIndex];
+				Nullable<Symbol> matchResName = inSignature.names()[fieldIndex];
+				if (asTuple)
+					matchRes = JOV::Tuple(JOVT::Unnamed(emptyTreeVec() + matchRes));
+				
+				matchElements = matchElements + matchRes;
+				matchElementNames = matchElementNames + matchResName;
+				}
+			-|	NoMatch(matchingAgainstName) ->> {
+				JudgmentOnValue matchRes = JOV::Tuple(JOVT::Unnamed(emptyTreeVec()));
+				
+				matchElements = matchElements + matchRes;
+				matchElementNames = matchElementNames + matchingAgainstName;
+				}
+			-|	StarArgsElement(indices, plusAllTheExtras) ->> {
+
+				ImmutableTreeVector<JOV> tupleJOVs;
+				ImmutableTreeVector<Nullable<Symbol> > names;
+
+				for (long i = 0; i < indices.size();i++)
+					{
+					tupleJOVs = tupleJOVs + inSignature.jovs()[indices[i]];
+					names = names + inSignature.names()[indices[i]];
+					}
+
+				JudgmentOnValue matchRes = JOV::Tuple(
+					JOVT(
+						tupleJOVs,
+						names,
+						plusAllTheExtras ?
+							inSignature.extras()
+						:	JOVTE::NoExtras()
+						)
+					);
+
+				matchElements = matchElements + matchRes;
+				matchElementNames = matchElementNames + Nullable<Symbol>();
+				}
+			-|	PossibleUnmatchedTermsOnRight() ->> {
+				hasAnyUnknown = true;
+				}
+			-|	UnknownStarArgs(indices) ->> {
+				
+				hasAnyUnknown = true;
+				
+				Nullable<bool> matchIsCST = inSignature.computeIsCST();
+
+				ImmutableTreeVector<JOV> tupleJOVs;
+				ImmutableTreeVector<Nullable<Symbol> > names;
+
+				for (long i = 0; i < indices.size();i++)
+					{
+					tupleJOVs = tupleJOVs + inSignature.jovs()[indices[i]];
+					names = names + inSignature.names()[indices[i]];
+					}
+				
+				JudgmentOnValue matchRes = JOV::Tuple(
+					JOVT(
+						tupleJOVs,
+						names,
+						JOVTE::Extras(
+							matchIsCST ? JOV::UnknownCSTKnown(*matchIsCST) : JOV::Unknown()
+							)
+						)
+					);
+
+				matchElements = matchElements + matchRes;
+				matchElementNames = matchElementNames + Nullable<Symbol>();
+				}
+			-|	Unknown(symbolIfMatched) ->> {
+				
+				hasAnyUnknown = true;
+				
+				Nullable<bool> matchIsCST = inSignature.computeIsCST();
+
+				JudgmentOnValue matchRes;
+
+				if (!matchIsCST)
+					matchRes = JOV::Unknown();
+					else
+					matchRes = JOV::UnknownCSTKnown(*matchIsCST);
+				
+				matchElements = matchElements + matchRes;
+				matchElementNames = matchElementNames + symbolIfMatched;
+				}
+			;
+		
+		}
+		
+	return make_pair(JOVT(matchElements, matchElementNames), hasAnyUnknown);
+	}
+
+TypedFora::MakeTupleArgument msareElementToExpression(
+			const TypedFora::Variable& inTupleVar,
+			const JOVT& inJOVT,
+			const MatchStructureAxiomResultElement& match, 
+			int index,
+			const ImmutableTreeVector<Nullable<Symbol> >& names
+			)
+	{
+	@match MatchStructureAxiomResultElement(match)
+		-|	Field(fieldIndex, asTuple) ->> {
+
+			TypedFora::Expression expr = 
+				TypedFora::Expression::GetItem(inTupleVar.expr(), fieldIndex);
+
+			if (asTuple)
+				{
+				expr = TypedFora::Expression::MakeTuple(
+					emptyTreeVec() + 
+						TypedFora::MakeTupleArgument::Normal(
+							null(), 
+							expr
+							)
+					);
+				}
+			return TypedFora::MakeTupleArgument::Normal(names[fieldIndex], expr);
+			}
+		-|	NoMatch(matchAgainstName) ->> {
+			TypedFora::Expression expr = 
+				TypedFora::Expression::Constant(CSTValue::Tuple());
+
+			return TypedFora::MakeTupleArgument::Normal(matchAgainstName, expr);
+			}
+		-|	StarArgsElement(indices, plusAllTheExtras) ->> {
+		
+			if (plusAllTheExtras)
+				throw NotAMatch();
+			
+			ImmutableTreeVector<TypedFora::MakeTupleArgument> exprs;
+			for (long k = 0; k < indices.size(); k++)
+				exprs = exprs + 
+					TypedFora::MakeTupleArgument::Normal(names[indices[k]], 
+						TypedFora::Expression::GetItem(
+							inTupleVar.expr(), 
+							indices[k]
+							)
+						);
+			
+			TypedFora::Expression expr = TypedFora::Expression::MakeTuple(exprs);
+			
+			return TypedFora::MakeTupleArgument::Normal(null(), expr);
+			}
+		-|	_ ->> {
+			throw standardLogicErrorWithStacktrace(
+				"illegal MatchStructureAxiomResultElement: " + 
+					prettyPrintString(match)
+				);
+			}
+		;
+
+	}
+
+//given a MSARE list that has an exact match, build the appropriate native expression
+//to unpack it from a tuple. Throws NotAMatch if there's a problem.
+TypedFora::Expression	msareListBuildExpression(
+		const ImmutableTreeVector<MatchStructureAxiomResultElement>& matches,
+		const TypedFora::Variable& inTupleVar,
+		const JOVT& inJOVT,
+		const ImmutableTreeVector<Nullable<Symbol> >& names
+		)
+	{
+	ImmutableTreeVector<TypedFora::MakeTupleArgument> tupleElts;
+
+	for (long k = 0; k < matches.size(); k++)
+		tupleElts = tupleElts + 
+			msareElementToExpression(inTupleVar, inJOVT, matches[k], k, names);
+
+	return TypedFora::Expression::MakeTuple(tupleElts);
+	}
+
+
+Nullable<ImmutableTreeVector<MatchStructureAxiomResultElement> >
+				tupleStructureMatch(	
+					ImmutableTreeVector<Nullable<Symbol> > names,
+					bool hasExtras,
+					const CSTValue& pattern
+					)
+	{
+	MatchStructurePattern pat;
+	
+	try {
+		constructMatchStructurePatternFromTupleEncoding(
+			pattern, 
+			pat
+			);
+		}
+	catch(NotAMatch& m)
+		{
+		return null();
+		}
+	
+	OutputJOVBuilder builder(hasExtras);
+	
+	try {
+		pat.visitMatches(builder, names.begin(), names.end());
+		}
+	catch(NotAMatch& m)
+		{
+		return null();
+		}
+	return null() << builder.buildFinalMSAREList();
+	}
+
+} //anonymous namespace
+
+extern "C" {
+
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer, Nothing> FORA_clib_tupleStructureMatch(
+						const ImplValContainer& tuple,
+						const ImplValContainer& pattern
+						)
+	{
+	Nullable<ImplValContainer> matchResult = 
+		tupleStructureMatch(tuple, pattern);
+	
+	if (!matchResult.isNull())
+		return slot0(
+			*matchResult
+			);
+
+	return slot1(Nothing());
+	}
+
+}
+
+TupleMatchStructureAxiom::TupleMatchStructureAxiom() :
+		AxiomGroup(
+			JOVT() +
+				jovTuple() +
+				"StructureMatch" +
+				jovTuple() +
+				JOVTE::NoExtras()
+				)
+	{
+	}
+
+Nullable<Axiom> TupleMatchStructureAxiom::axiom(
+		TypedFora::Compiler& c, 
+		const JudgmentOnValueTuple& s
+		)
+	{
+	JOV	patternJOV = s.jovs()[2];
+	JOV tupleJOV = s.jovs()[0];
+	
+	if (patternJOV.constant())
+		{
+		const JOVT& jovt = tupleJOV.getTuple().jov();
+		
+		//get the symbols out
+		ImmutableTreeVector<Nullable<Symbol> > names = jovt.names();
+
+		Nullable<ImmutableTreeVector<MatchStructureAxiomResultElement> > result =
+			tupleStructureMatch(
+				names, 
+				jovt.extras().isExtras(), 
+				*patternJOV.constant()
+				);
+		
+		if (!result)
+			return null() << AxiomGroup::throwsAxiom(s, CSTValue());
+		
+		pair<JOVT, bool> resJOVTAndDefiniteMatch = msareListToJOVT(*result, jovt);
+		
+		//if we know the type of the input and the type of the output, then we can
+		//produce a pure native axiom in assembler.
+		if (tupleJOV.type()
+				&& !resJOVTAndDefiniteMatch.second
+				&& resJOVTAndDefiniteMatch.first.computeType()
+				)
+			{
+
+				{
+				Nullable<CSTValue> constantVal = 
+					resJOVTAndDefiniteMatch.first.computeConstant();
+				if (constantVal)
+					return null() << AxiomGroup::returnsAxiom(s, *constantVal);
+				}
+						
+			JOV outJOV = JOV::Tuple(resJOVTAndDefiniteMatch.first);
+
+			try {
+				TypedFora::TypedForaAxiomBuilder 
+					builder(s, TypedFora::RefcountStyle::Pooled());
+
+				TypedFora::Expression tupleExpr = 
+					msareListBuildExpression(
+						*result,
+						builder.var(0),
+						resJOVTAndDefiniteMatch.first,
+						names
+						);
+
+				return null() << 
+					builder.axiomForExpression(
+						tupleExpr, 
+						tupleExpr.type()->refcountStyle(), 
+						outJOV, 
+						false
+						);
+				}
+			catch(std::logic_error& e)
+				{
+				throw std::logic_error(e.what() +
+					std::string("\ns = ") + prettyPrintString(s) + 
+					std::string("\noutJOV = ") + prettyPrintString(outJOV)
+					);
+				}
+			}
+		}
+	
+	return null() << LibcallAxiomGroup::createAxiom(
+		signature(),
+		ReturnSlots() +
+			ReturnSlot::Normal(JOV()) +
+			ReturnSlot::Exception(JOV::Constant(CSTValue())),
+		&FORA_clib_tupleStructureMatch,
+		ImmutableTreeVector<uword_t>() + 0 + 2
+		);
+	}
+
+Nullable<AxiomJOA> TupleMatchStructureAxiom::axiomJOA(const JudgmentOnValueTuple& s)
+	{
+	JOV	patternJOV = s.jovs()[2];
+	JOV tupleJOV = s.jovs()[0];
+	
+	if (patternJOV.constant())
+		{
+		const JOVT& jovt = tupleJOV.getTuple().jov();
+		
+		//get the symbols out
+		ImmutableTreeVector<Nullable<Symbol> > names = jovt.names();
+		
+		Nullable<ImmutableTreeVector<MatchStructureAxiomResultElement> > result =
+			tupleStructureMatch(
+				names, 
+				jovt.extras().isExtras(), 
+				*patternJOV.constant()
+				);
+		
+		if (!result)
+			return null() << AxiomJOA::Native(
+				JudgmentOnAction::Throws(
+						JOV::Constant(CSTValue())
+						)
+				);
+		
+		//use the result to rebuild the
+		pair<JOVT, bool> resJOVTAndDefiniteMatch = msareListToJOVT(*result, jovt);
+		
+		JudgmentOnAction resultJOA =
+			JudgmentOnAction::Value(
+				JOV::Tuple(resJOVTAndDefiniteMatch.first)
+				);
+		
+		if (resJOVTAndDefiniteMatch.second)
+			return null() << AxiomJOA::Native(
+				resultJOA | 
+				JudgmentOnAction::Throws(
+						JOV::Constant(CSTValue())
+						)
+				);
+		else
+			return null() << AxiomJOA::Native(resultJOA);
+		}
+		
+	return null() << AxiomJOA::Native(
+			JudgmentOnAction::Value(JOV())
+		|	JudgmentOnAction::Throws(
+					JOV::Constant(CSTValue())
+					)
+		);
+	}
+
+namespace {
+
+JOVT weakestJOVTMatchingSameStructure(const JOVT& jov)
+	{
+	return JOVT(
+		(emptyTreeVec() + JOV::Unknown()) * jov.jovs().size(),
+		jov.names(),
+		jov.extras().isExtras() ? 
+			JOVTE::Extras(JOV::Unknown()) : 
+			JOVTE::NoExtras()
+		);
+	}
+
+JOV weakestJOVMatchingSameStructure(const JOV& jov)
+	{
+	@match JOV(jov)
+		-| Tuple(jovt) ->> {
+			return JOV::Tuple(
+				weakestJOVTMatchingSameStructure(
+					jovt
+					)
+				);
+			}
+		-| _ ->> {
+			lassert(false);
+			}
+	}
+
+}
+namespace {
+
+ImmutableTreeVector<JudgmentOnValue> extractTupleJovs(const JudgmentOnValue& jov, long count)
+	{
+	@match JOV(jov)
+		-| Tuple((jovs, names, NoExtras())) ->> {
+			for (long k = 0; k < names.size();k++)
+				if (names[k])
+					return emptyTreeVec();
+
+			if (jovs.size() == count)
+				return jovs;
+			}
+		-| _ ->> {
+			}
+
+	return emptyTreeVec();
+	}
+
+}
+
+//TODO brax TEST: test this function
+Nullable<JudgmentOnValueTuple>	TupleMatchStructureAxiom::weakestArgumentsProducingResultCoveredBy(
+												TypedFora::Compiler& c,
+												const JudgmentOnValueTuple& args,
+												const JudgmentOnAction& result
+												)
+	{
+	if (args.jovs().size() != 3)
+		return null();
+
+	JOV	patternJOV = args.jovs()[2];
+	JOV tupleJOV = args.jovs()[0];
+	
+	if (!patternJOV.constant())
+		return null();
+
+	const JOVT& jovt = tupleJOV.getTuple().jov();
+
+	//we don't try to reverse these yet
+	if (jovt.extras().isExtras())
+		return null();
+	
+	//get the symbols out
+	const ImmutableTreeVector<Nullable<Symbol> >& names = jovt.names();
+
+	Nullable<ImmutableTreeVector<MatchStructureAxiomResultElement> > matchResult =
+		tupleStructureMatch(
+			names, 
+			jovt.extras().isExtras(), 
+			*patternJOV.constant()
+			);
+	
+	if (!matchResult)
+		{
+		//we failed. if this is expected, return the empty tuple matching this structure
+		if (result.covers(JudgmentOnAction::Throws(JOV::Constant(CSTValue()))))
+			{
+			return null() << 
+				JOVT::Unnamed(
+					emptyTreeVec() + 
+						weakestJOVMatchingSameStructure(tupleJOV) + 
+						args.jovs().slice(1)
+					);
+			}
+		else
+			return null();
+		}
+
+	const ImmutableTreeVector<MatchStructureAxiomResultElement>& matches = *matchResult;
+
+	if (result.definitelyThrows() || result.resultPart().size() != 1)
+		return null();
+
+	JOV outputJov = result.resultPart()[0];
+
+	if (!outputJov.isTuple())
+		return null();
+
+	const JOVT& outputJovt = outputJov.getTuple().jov();
+
+	
+	//we didn't fail. Each term in the output maps to one of the outputs. If any are of
+	//unknown match style, we'll bail
+	ImmutableTreeVector<JOV> inputJovs = (emptyTreeVec() + JOV::Unknown()) * jovt.jovs().size();
+
+	if (outputJovt.jovs().size() != matches.size())
+		//we could do better than this, since there may be some information even when we don't
+		//know enough to do a full match, but for the moment we'll ignore it
+		return null();
+
+	for (long k = 0; k < matches.size(); k++)
+		{
+		@match MatchStructureAxiomResultElement(matches[k])
+			-|	Field(fieldIndex, asTuple) ->> {
+
+				JudgmentOnValue toUpdateWith = outputJovt.jovs()[k];
+
+				if (asTuple)
+					{
+					ImmutableTreeVector<JudgmentOnValue> elts = extractTupleJovs(toUpdateWith, 1);
+					if (elts.size() == 1)
+						Fora::JudgmentOnInterpreterTrace::updateJovList(
+							inputJovs,
+							fieldIndex,
+							elts[0]
+							);
+					}
+				else
+					Fora::JudgmentOnInterpreterTrace::updateJovList(
+						inputJovs,
+						fieldIndex,
+						toUpdateWith
+						);
+				}
+			-|	NoMatch(matchingAgainstName) ->> {
+				//nothing to do
+				}
+			-|	StarArgsElement(indices, plusAllTheExtras) ->> {
+				ImmutableTreeVector<JudgmentOnValue> elts = 
+					extractTupleJovs(outputJovt.jovs()[k], indices.size());
+
+				lassert(elts.size() == 0 || elts.size() == indices.size());
+
+				for (long k = 0; k < elts.size(); k++)
+					Fora::JudgmentOnInterpreterTrace::updateJovList(
+						inputJovs,
+						indices[k],
+						elts[k]
+						);
+				}
+			-| _ ->> {
+				//this is not a definite match. We could definitely do better than this
+				return null();
+				}
+		}
+	
+
+	return null() << 
+		JOVT::Unnamed(
+			emptyTreeVec() + 
+				JOV::Tuple(
+					JOVT(
+						inputJovs,
+						names
+						)
+					) + 
+				args.jovs().slice(1)
+			);
+	}
+
+
+

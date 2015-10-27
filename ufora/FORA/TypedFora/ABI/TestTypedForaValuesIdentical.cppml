@@ -1,0 +1,164 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "TestTypedForaValueCoveredByJov.hppml"
+#include "../../Native/NativeCode.hppml"
+#include "../TypedFora.hppml"
+#include "../TypedForaUtil.hppml"
+#include "NativeLayoutType.hppml"
+#include "UnionUtil.hppml"
+#include "../../Native/NativeExpressionBuilder.hppml"
+#include "../../Native/TypedNativeLibraryFunction.hpp"
+#include "../../Core/ImplValContainerUtilities.hppml"
+
+namespace TypedFora {
+namespace Abi {
+
+bool isDirectlyComparableType(const ::Type& t)
+	{
+	typedef ::Type type;
+
+	@match type(t)
+		-| Nothing() ->> { return true; }
+		-| Integer() ->> { return true; }
+		-| Symbol() ->> { return true; }
+		-| Tag() ->> { return true; }
+		-| Tuple(types) ->> {
+			for (auto t: types)
+				if (!isDirectlyComparableType(t))
+					return false;
+			return true;
+			}
+		-| Class(types) ->> {
+			for (auto t: types)
+				if (!isDirectlyComparableType(t))
+					return false;
+			return true;
+			}
+		-| _ ->> { return false; }
+	}
+
+NativeExpression comparisonExpression(const NativeExpression& left, const NativeExpression& right)
+	{
+	if (left.type()->isNothing())
+		return NativeExpression::Constant(NativeConstant::Bool(true));
+
+	if (left.type()->isComposite())
+		{
+		auto subtypes = left.type()->getComposite().elements();
+
+		if (subtypes.size() == 0)
+			return NativeExpression::Constant(NativeConstant::Bool(true));
+
+		NativeExpression e = comparisonExpression(left[0], right[0]);
+		for (long k = 1; k < subtypes.size(); k++)
+			e = e && comparisonExpression(left[k], right[k]);
+		return e;
+		}
+	else
+		return left == right;
+	}
+
+Expression exprTestDirectlyComparableArgsAreIdentical(const Expression& left, const Expression& right)
+	{
+	Type t = left.type()->jov().constant() ? *right.type() : *left.type();
+
+	Variable v1 = Variable::Temp(t);
+	Variable v2 = Variable::Temp(t);
+
+	Type outputType = Type(JOV::OfType(::Type::Bool()), RefcountStyle::AsValueOwned());
+
+	NativeExpressionBuilder builder;
+
+	NativeVariable var1 = nativeVariableFor(v1);
+	NativeVariable var2 = nativeVariableFor(v2);
+
+	NativeExpression toUpgrade = builder(comparisonExpression(var1.expr(), var2.expr()));
+	
+	return 
+		upgradeNativeExpression(
+			emptyTreeVec() + v1 + v2,
+			toUpgrade,
+			outputType,
+			false,
+			emptyTreeVec() + left + right
+			);
+	}
+
+Expression	exprTestArgsAreIdentical(const Expression& left, const Expression& right)
+	{
+	if (!left.type())
+		return left;
+	if (!right.type())
+		return Expression::DiscardFirst(left, right);
+	
+	if (left.type()->jov().constant() && right.type()->jov().constant())
+		return Expression::Constant(
+			CSTValue(left.type()->jov().constant() == right.type()->jov().constant())
+			);
+
+	if (left.type()->jov().disjoint(right.type()->jov()))
+		return Expression::Constant(CSTValue(false));
+
+	if (left.type()->jov().type() && right.type()->jov().type() && 
+				isDirectlyComparableType(*left.type()->jov().type()))
+		return exprTestDirectlyComparableArgsAreIdentical(left, right);
+
+	Variable v1 = Variable::Temp(Type(JOV::Unknown(), RefcountStyle::AsValueUnowned()));
+	Variable v2 = Variable::Temp(Type(JOV::Unknown(), RefcountStyle::AsValueUnowned()));
+
+	Type outputType = Type(JOV::OfType(::Type::Bool()), RefcountStyle::AsValueOwned());
+
+	NativeExpressionBuilder builder;
+
+	NativeVariable var1 = nativeVariableFor(v1);
+	NativeVariable var2 = nativeVariableFor(v2);
+
+	lassert(
+		*var1.expr().type() == TypedFora::Abi::nativeTypeForImplVal() && 
+		*var2.expr().type() == TypedFora::Abi::nativeTypeForImplVal()
+		);
+
+	NativeExpression val1Ptr = 
+		builder.getPointerExprToCopyOnStack(
+			var1.expr()
+			);
+
+	NativeExpression val2Ptr = 
+		builder.getPointerExprToCopyOnStack(
+			var2.expr()
+			);
+
+	NativeExpression toUpgrade =
+		builder(
+			makeTypedNativeLibraryFunction(
+				&FORA_clib_IVCsAreIdentical
+				)(val1Ptr, val2Ptr)
+			.getExpression()
+			);		
+		
+	return 
+		upgradeNativeExpression(
+			emptyTreeVec() + v1 + v2,
+			toUpgrade,
+			outputType,
+			false,
+			emptyTreeVec() + left + right
+			);
+	}
+
+}
+}
+

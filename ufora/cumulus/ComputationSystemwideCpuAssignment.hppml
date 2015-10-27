@@ -1,0 +1,119 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "ComputationId.hppml"
+#include "RootComputationComputeStatusChanged.hppml"
+#include "../core/containers/ImmutableTreeMap.hppml"
+#include "CheckpointStatus.hppml"
+#include "PersistentCache/PersistentCacheKey.hppml"
+
+namespace Cumulus {
+
+@type ComputationSystemwideCpuAssignment =
+	ComputationId computation,
+	ImmutableTreeMap<ComputationId, uint32_t> computingChildren,
+	ImmutableTreeMap<ComputationId, uint32_t> cacheLoadingChildren,
+	CheckpointStatus checkpointStatus,
+	double totalComputeSecondsAtLastCheckpoint,
+	bool isCheckpointing,
+	bool isLoadingFromCheckpoint,
+	ImmutableTreeSet<ComputationId> rootComputationDependencies,
+	ImmutableTreeMap<PersistentCacheKey, int64_t> cacheObjectsAndSizesReferencedAtLastCheckpoint
+{
+public:
+	static ComputationSystemwideCpuAssignment withNoChildren(ComputationId comp, long computing, long cacheLoading)
+		{
+		return ComputationSystemwideCpuAssignment(
+			comp,
+			computing ? 
+				emptyTreeMap() + comp + (uint32_t)computing 
+			:	ImmutableTreeMap<ComputationId, uint32_t>(),
+			cacheLoading?
+				emptyTreeMap() + comp + (uint32_t)cacheLoading
+			:	ImmutableTreeMap<ComputationId, uint32_t>(),
+			CheckpointStatus(),
+			0.0,
+			false,
+			false,
+			emptyTreeSet(),
+			emptyTreeMap()
+			);
+		}
+
+	int64_t totalBytesReferencedAtLastCheckpoint() const
+		{
+		int64_t res = 0;
+		for (auto oAndSize: cacheObjectsAndSizesReferencedAtLastCheckpoint())
+			res += oAndSize.second;
+		return res;
+		}
+
+	uint32_t cpusAssigned() const
+		{
+		return cpusAssignedDirectly() + cpusAssignedToChildren();
+		}
+
+	uint32_t cpusAssignedDirectly() const
+		{
+		if (computingChildren()[computation()])
+			return *computingChildren()[computation()];
+		return 0;
+		}
+
+	uint32_t cacheloadsAssignedDirectly() const
+		{
+		if (cacheLoadingChildren()[computation()])
+			return *cacheLoadingChildren()[computation()];
+		return 0;
+		}
+
+	uint32_t cpusAssignedToChildren() const
+		{
+		uint32_t res = 0;
+		for (auto idAndCount: computingChildren())
+			if (idAndCount.first != computation())
+				res = res + idAndCount.second;
+		return res;
+		}
+		
+	uint32_t cacheloadsAssignedToChildren() const
+		{
+		uint32_t res = 0;
+		for (auto idAndCount: cacheLoadingChildren())
+			if (idAndCount.first != computation())
+				res = res + idAndCount.second;
+		return res;
+		}
+
+	void absorbChild(ComputationId id, const ComputationSystemwideCpuAssignment& in)
+		{
+		computingChildren() = computingChildren() + in.computingChildren();
+		cacheLoadingChildren() = cacheLoadingChildren() + in.cacheLoadingChildren();
+		checkpointStatus() = CheckpointStatus::merge(checkpointStatus(), in.checkpointStatus());
+		totalComputeSecondsAtLastCheckpoint() += in.totalComputeSecondsAtLastCheckpoint();
+		isCheckpointing() |= in.isCheckpointing();
+		isLoadingFromCheckpoint() |= in.isLoadingFromCheckpoint();
+		rootComputationDependencies() = rootComputationDependencies() + in.rootComputationDependencies();
+		cacheObjectsAndSizesReferencedAtLastCheckpoint() =
+			cacheObjectsAndSizesReferencedAtLastCheckpoint() + in.cacheObjectsAndSizesReferencedAtLastCheckpoint();
+		}
+};
+
+macro_defineCppmlComparisonOperators(ComputationSystemwideCpuAssignment);
+
+}
+

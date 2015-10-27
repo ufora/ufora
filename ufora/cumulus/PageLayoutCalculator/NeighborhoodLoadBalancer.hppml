@@ -1,0 +1,293 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "NeighborhoodLoadAssignment.hppml"
+#include "GroupTrackingNeighborhoodSpectralTreeWatcher.hppml"
+
+namespace Cumulus {
+
+namespace PageLayoutCalculator {
+
+/*******************
+
+NeighborhoodLoadBalancer
+
+Given an existing neighborhood layout, a neighborhood packing, and a sequence of 
+computation loads, attempt to balance the load with the minimum amount of data 
+movement.
+
+We assume that copying data to a machine has a constant cost in time per byte. 
+
+We wish to minimize the total runtime (e.g. the max runtime of any machine). Moving
+computation from one machine to another when the neighborhood is present on both
+machines is free.
+
+********************/
+
+
+class NeighborhoodLoadBalancer {
+public:
+	typedef NeighborhoodLoadHistory::Load Load;
+
+	NeighborhoodLoadBalancer(
+					const std::map<MachineId, int64_t>& inMachineSizes,
+					const std::map<MachineId, int64_t>& inMachineCoreCounts,
+					const NeighborhoodsOnMachines& inExistingLayout,
+					const NeighborhoodLoadHistory& inHistory,
+					const GroupTrackingNeighborhoodSpectralTreeWatcher& inTreeWatcher,
+					double mbPerSecondAssumption,
+					double usableMemoryRatio
+					) :
+				mTreeWatcher(inTreeWatcher),
+				mMachineSizes(inMachineSizes),
+				mMachineCoreCounts(inMachineCoreCounts),
+				mLoadAssignment(
+					usableMemoryRatio,
+					inMachineSizes, 
+					inMachineCoreCounts, 
+					inExistingLayout,
+					mbPerSecondAssumption
+					),
+				mLoadHistory(inHistory),
+				mMbPerSecondAssumption(mbPerSecondAssumption),
+				mCurrentBytecount(0),
+				mCurrentLoadAbsorbed(0)
+		{		
+		initialize();
+		}
+
+	double averageReplication() const
+		{
+		return mLoadAssignment.totalBytesAcrossAllMachines() / double(mCurrentBytecount);
+		}
+
+	int64_t currentBytecount() const
+		{
+		return mCurrentBytecount;
+		}
+
+	int64_t totalCores() const
+		{
+		int64_t res = 0;
+		for (auto machineAndCores: mMachineCoreCounts)
+			res += machineAndCores.second;
+		return res;
+		}
+
+	double optimalTime() const
+		{
+		return mCurrentLoadAbsorbed / totalCores();
+		}
+
+	int64_t totalBytesLoaded() const
+		{
+		return mLoadAssignment.totalBytesLoaded();
+		}
+
+	double leastTime() const
+		{
+		Smallest<MachineId> smallest;
+
+		for (auto machineAndCores: mMachineCoreCounts)
+			smallest.observe(machineAndCores.first, mLoadAssignment.secondsElapsed(machineAndCores.first));
+
+		return *smallest.smallestWeight() / mLoadAssignment.coreCount(*smallest.smallest());
+		}
+	
+	double secondsElapsed(MachineId m) const
+		{
+		return mLoadAssignment.secondsElapsed(m);
+		}
+	
+	double mostTime() const
+		{
+		return mLoadAssignment.mostTime();
+		}
+
+	bool consumeSeconds(double seconds)
+		{
+		bool consumedAnything = false;
+
+		double t0 = curClock();
+
+		long consumed = 0;
+
+		while (mConsumedLoadHistories != mLoadHistory.getBlocks().rend() && seconds > 0)
+			{
+			consumedAnything = true;
+
+			observeBlock(**mConsumedLoadHistories);
+
+			seconds -= (*mConsumedLoadHistories)->totalSecondsElapsed();
+
+			mConsumedLoadHistories++;
+
+			consumed++;
+			}
+
+		double t1 = curClock();
+
+		while (tryToImprove())
+			;
+
+		LOG_DEBUG << "Spent " << t1 - t0 << " to consume " << consumed << " and " << curClock() - t1 << " to rebalance";
+
+		for (auto m: mMachineSizes)
+			LOG_DEBUG << m.first << " -- " << mLoadAssignment.bytesOnMachine(m.first) / 1024 / 1024.0 << " vs. " << 
+				mLoadAssignment.usableMemoryForMachine(m.first) / 1024 / 1024.0;
+
+		return consumedAnything;
+		}
+
+	const NeighborhoodsOnMachines& getTargetLayout() const
+		{
+		return mLoadAssignment.getTargetLayout();
+		}
+
+	double totalLoad() const
+		{
+		return mCurrentLoadAbsorbed;
+		}
+
+	std::string machineListFor(Neighborhood n)
+		{
+		std::ostringstream s;
+
+		for (auto m: getTargetLayout().neighborhoods().getKeys(n))
+			s << m.guid()[0];
+
+		return s.str();
+		}
+
+private:
+	void initialize()
+		{
+		mConsumedLoadHistories = mLoadHistory.getBlocks().rbegin();
+
+		for (auto compAndLoad: mLoadHistory.activeLoads())
+			if (!observeLoad(
+					mLoadHistory.loadedNeighborhoodForComputation(compAndLoad.first), 
+					compAndLoad.second
+					))
+				LOG_WARN << "Failed to add load";
+		}
+
+	bool tryToImprove(double threshold = 1.0, double improvementThreshold = 0.0001)
+		{
+		if (mLoadAssignment.spreadBetweenMostAndLeastLoaded() < threshold)
+			return false;
+
+		MachineId mostLoaded = mLoadAssignment.mostLoadedMachine();
+
+		double oldSpread = mostTime();
+
+		for (auto machineAndSize: mMachineSizes)
+			mLoadAssignment.rebalanceFrom(
+				machineAndSize.first
+				);
+
+		double newSpread = mostTime();
+
+		return newSpread + improvementThreshold < oldSpread;
+		}
+
+	bool observeLoad(Neighborhood n, NeighborhoodLoadHistory::Load load)
+		{
+		if (load.computeSeconds() < minimumLoadLevel)
+			load.computeSeconds() = minimumLoadLevel;
+
+		if (mLoadLevels.find(n) == mLoadLevels.end())
+			mCurrentBytecount += n.bytecount();
+		
+		mLoadLevels[n] += load.computeSeconds();
+		mCurrentLoadAbsorbed += load.computeSeconds();
+
+		return mLoadAssignment.addLoad(
+			n, 
+			load.computeSeconds()
+			);
+		}
+
+	bool observeBlock(NeighborhoodLoadHistory::Block& block)
+		{
+		if (block.neighborhoodsWithoutGroup().size())
+			{
+			std::map<Neighborhood, GroupId> update;
+			for (auto n: block.neighborhoodsWithoutGroup())
+				if (mTreeWatcher.hasNeighborhood(n))
+					update[n] = mTreeWatcher.groupContaining(n);
+
+			for (auto nAndG: update)
+				block.observeGroupChange(
+					nAndG.first, 
+					nAndG.second
+					);
+			}
+
+		double total = 0.0;
+
+		bool anyFailed = false;
+
+		for (auto groupAndLoad: block.loadPerFirstGroupLevel())
+			{
+			if (!observeFirstLevelGroupLoad(groupAndLoad.first, groupAndLoad.second))
+				anyFailed = true;
+
+			total += groupAndLoad.second;
+			}
+
+		return !anyFailed;
+		}
+
+	bool observeFirstLevelGroupLoad(GroupId group, double load)
+		{
+		Neighborhood n = mTreeWatcher.groupToImage(group);
+
+		if (mLoadLevels.find(n) == mLoadLevels.end())
+			mCurrentBytecount += n.bytecount();
+		
+		mLoadLevels[n] += load;
+		mCurrentLoadAbsorbed += load;
+
+		return mLoadAssignment.addLoad(n, load);
+		}
+
+	int64_t mCurrentBytecount;
+
+	double mCurrentLoadAbsorbed;
+
+	NeighborhoodLoadAssignment mLoadAssignment;
+
+	std::deque<boost::shared_ptr<NeighborhoodLoadHistory::Block> >
+		::const_reverse_iterator mConsumedLoadHistories;
+
+	boost::unordered_map<Neighborhood, double> mLoadLevels;
+
+	const std::map<MachineId, int64_t>& mMachineSizes;
+
+	const std::map<MachineId, int64_t>& mMachineCoreCounts;
+
+	const NeighborhoodLoadHistory& mLoadHistory;
+
+	const GroupTrackingNeighborhoodSpectralTreeWatcher& mTreeWatcher;
+
+	double mMbPerSecondAssumption;
+};
+
+}
+
+}

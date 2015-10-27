@@ -1,0 +1,870 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ExternalFunctionCodegen.hppml"
+#include "../Primitives/ExternalFunctionDescription.hppml"
+#include "../wrappers/FORTRAN.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
+#include "../TypedFora/TypedForaUtil.hppml"
+#include "../TypedFora/JitCompiler/Compiler.hppml"
+#include "../Native/NativeCFGTransforms/Transforms.hppml"
+#include "../Axioms/NativeAxiomVars.hppml"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include "../Native/TypedNativeLibraryFunction.hpp"
+#include "../Native/TypedNativeExpression.hppml"
+#include "../TypedFora/ABI/VectorRecordCodegen.hppml"
+#include "../TypedFora/ABI/MutableVectorHandleCodegen.hpp"
+#include "../TypedFora/ABI/ForaValueArrayCodegen.hpp"
+
+#include "../TypedFora/ABI/StringCodegen.hppml"
+
+using namespace TypedFora;
+
+using Fora::SharedObjectLibraryFromSource::LibraryType;
+
+
+//forward declaration of this function, which is used locally
+NativeExpression adaptArgumentForExternalFunction(
+					NativeExpressionBuilder& builder,
+					const NativeExpression& inSourceExpr, 
+					const JOV& inSourceJOV, 
+					const LibraryType& inTargetType,
+					ImmutableTreeVector<NativeExpression>& outReturnArgs,
+					bool isTopLevelArg
+					);
+
+NativeExpression adaptArgumentForExternalFunction(
+					NativeExpressionBuilder& builder,
+					const NativeExpression& inSourceExpr, 
+					const JOV& inSourceJOV, 
+					const LibraryType& inTargetType
+					)
+	{
+	ImmutableTreeVector<NativeExpression> dummy;
+
+	return adaptArgumentForExternalFunction(
+		builder, 
+		inSourceExpr, 
+		inSourceJOV, 
+		inTargetType, 
+		dummy, 
+		false
+		);
+	}
+
+namespace {
+
+Nullable<JOV> jovFromNativeType(const NativeType& inType)
+	{
+	@match NativeType(inType)
+		-| Nothing() ->> {
+			return null() << JOV::OfType(::Type::Nothing());
+			}
+		-| Float(bits) ->> {
+			return null() <<JOV::OfType(::Type::Float(bits));
+			}
+		-| Integer(bits, isSigned) ->> {
+			return null() <<JOV::OfType(::Type::Integer(bits, isSigned));
+			}
+		-| _ ->> {}
+
+	return null();
+	}
+
+Nullable<JudgmentOnAction> joaFromNativeType(
+					NativeType nativeType, 
+					ImmutableTreeVector<std::pair<std::string, JOV> > modifiedValues
+					)
+	{
+	Nullable<JOV> j = jovFromNativeType(nativeType);
+
+	if (!j)
+		return null();
+
+	if (modifiedValues.size())
+		{
+		ImmutableTreeVector<JOV> jovs;
+
+		ImmutableTreeVector<Nullable<Symbol> > names;
+
+		jovs = jovs + *j;
+		names = names + Nullable<Symbol>();
+
+		for (long k = 0; k < modifiedValues.size(); k++)
+			{
+			jovs = jovs + modifiedValues[k].second;
+			if (modifiedValues[k].first.size())
+				names = names + (null() << stringToSymbolSafe(modifiedValues[k].first));
+			else
+				names = names + Nullable<Symbol>();
+			}
+
+		return null() << JudgmentOnAction::Value(
+			JOV::Tuple(JOVT(jovs, names))
+			);
+		}
+	else
+		return null() << JudgmentOnAction::Value(*j);
+	}
+
+bool isPointerCompatible(const JOV& inJOV, const LibraryType& inLibType)
+	{
+	Nullable<JOV> j = jovFromNativeType(inLibType.toNativeType());
+
+	//for now, only consider basic non-tuple types compatible
+	return j && inJOV == *j;
+	}
+
+bool anyJORElementsArePointerCompatible(const JudgmentOnResult& jor, const LibraryType& inLT)
+	{
+	for (long k = 0; k < jor.size(); k++)
+		if (isPointerCompatible(jor[k], inLT))
+			return true;
+	return false;
+	}
+
+//given a JOV and a library type, return the largest JOV that can be mapped to it and a boolean
+//indicating whether the mapping is valid. if we are planning on returning any of the values
+//because they have been modified, append them to 'outModifiedValues', but only if they have a name
+Nullable<pair<JOV, bool> > mapArgumentJOVForLibraryType(
+									const JOV& callingJOV, 
+									const LibraryType& inLibType, 
+									bool& outNeedsRuntimeCheck,
+									ImmutableTreeVector<pair<std::string, JOV> >& outModifiedValues,
+									Nullable<std::string> curArgName
+									)
+	{
+	//TODO BUG brax: we should write a test to ensure that the JOV's coming out of this function
+	//are consistent.  In the pair, the JOV is the weakest judgment that produces the result,
+	//and the bool is whether it succeeds.  We shouldn't get overlapping results.
+
+	outNeedsRuntimeCheck = false;
+
+	if (!callingJOV.type())
+		return null();
+
+	@match LibraryType(inLibType)
+		-| Integer() ->> {
+			if (callingJOV.type()->isInteger() || callingJOV.type()->isFloat())
+				return null() << make_pair(JOV::OfType(*callingJOV.type()), true);
+			}
+		-| Float() ->> {
+			if (callingJOV.type()->isInteger() || callingJOV.type()->isFloat())
+				return null() << make_pair(JOV::OfType(*callingJOV.type()), true);
+			}
+		-| Pointer(pointedToType, ptrIsConst) ->> {
+			if (callingJOV.type()->isString())
+				{
+				@match LibraryType(pointedToType)
+					-| Integer(bitness, isSigned, isConst) ->> {
+						if (isConst && bitness == 8)
+							{
+							//we can pass a string pointer
+							return null() << make_pair(JOV::OfType(::Type::String()), true);
+							}
+						}
+					-| _ ->> {}
+
+				lassert(false);
+				}
+
+			if (callingJOV.isVector() && pointedToType.isConst())
+				{
+				JudgmentOnResult eltsJOR = callingJOV.getVector().jov().elementsJOR();
+
+				if (eltsJOR.size() == 0)
+					{
+					Nullable<JOV> targetJOV = jovFromNativeType(pointedToType.toNativeType());
+
+					if (!targetJOV)
+						//not possible to pass _anything_ but the empty vector to this function
+						return null() << make_pair(callingJOV, true);
+
+					//cast the empty vector to the natural JOV for this axiom
+					return null() << make_pair(
+						JOV::Vector(
+							JudgmentOnValueVector(
+								JudgmentOnResult(
+									*targetJOV
+									)
+								)
+							),
+						true
+						);
+					}
+
+				if (eltsJOR.size() == 1)
+					{
+					if (isPointerCompatible(eltsJOR[0], pointedToType))
+						return null() << make_pair(callingJOV, true);
+					else
+						return null() << make_pair(callingJOV, false);
+					}
+				else
+					{
+					//if none of the types is compatible, then we know it doesn't work
+					if (!anyJORElementsArePointerCompatible(eltsJOR, pointedToType))
+						return null() << make_pair(callingJOV, false);
+
+					//maybe it does, maybe it doesn't - we'll have to check at runtime
+					outNeedsRuntimeCheck = true;
+					return null() << make_pair(callingJOV, true);
+					}
+				}
+
+			if (callingJOV.isMutableVector())
+				{
+				JudgmentOnJOV eltJOVJmt = callingJOV.getMutableVector().jov().elementJudgment();
+
+				if (eltJOVJmt.isKnown())
+					{
+					JOV subJOV = eltJOVJmt.getKnown().jov();
+
+					if (isPointerCompatible(subJOV, pointedToType))
+						return null() << make_pair(callingJOV, true);
+					}
+				else
+					//not possible to know
+					return null();
+				}
+
+			if (callingJOV.isTuple())
+				{
+				if (!jovFromNativeType(pointedToType.toNativeType()))
+					return null() << make_pair(JOV::OfType(*callingJOV.type()), false);
+			
+				if (!callingJOV.type())
+					return null();
+
+				JOVT jovt = callingJOV.getTuple().jov();
+
+				//no names in the tuple are allowed
+				for (long k = 0; k < jovt.jovs().size();k++)
+					if (jovt.names()[k])
+						return null() << make_pair(JOV::OfType(*callingJOV.type()), false);
+
+				//all the tuple elements should be POD for this to make sense
+				for (long k = 0; k < jovt.jovs().size();k++)
+					if (!jovt.jovs()[k].type()->isPOD())
+						return null() << make_pair(JOV::OfType(*callingJOV.type()), false);
+
+				ImmutableTreeVector<JOV> coveringJOVs;
+
+				for (long k = 0; k < jovt.jovs().size();k++)
+					{
+					bool needsRuntimeCheck = false;
+					
+					ImmutableTreeVector<pair<std::string, JOV> > modValues;
+
+					Nullable<pair<JOV, bool> > j = mapArgumentJOVForLibraryType(
+						jovt.jovs()[k], 
+						pointedToType, 
+						needsRuntimeCheck, 
+						modValues, 
+						null()
+						);
+
+					lassert_dump(
+						!modValues.size(),
+						"we shouldn't be passing values back if we have no argument name"
+						);
+					
+					if (needsRuntimeCheck)
+						outNeedsRuntimeCheck = true;
+
+					if (!j)
+						return null();
+
+					if (!j->second)
+						//this element couldn't be mapped. make a fake tuple JOV with this element
+						return null() << make_pair(
+							JOV::Tuple(
+								JOVT::Unnamed(
+									(emptyTreeVec() + JOV()) * k + 
+									j->first + 
+									(emptyTreeVec() + JOV()) * (jovt.jovs().size() - k - 1)
+									)
+								),
+							false
+							);
+
+					coveringJOVs = coveringJOVs + j->first;
+					}
+
+				//if we pass a non-const pointer and we have an argument name, then we will return
+				//the resulting tuple
+				if (!pointedToType.isConst() && curArgName)
+					outModifiedValues = outModifiedValues + 
+						make_pair(
+							*curArgName,
+							JOV::Tuple(
+								JOVT::Unnamed(
+									(emptyTreeVec() + *jovFromNativeType(pointedToType.toNativeType())) * 
+										jovt.jovs().size()
+									)
+								)
+							);
+
+
+				return null() << make_pair(
+					JOV::Tuple(
+						JOVT::Unnamed(coveringJOVs)
+						),
+					true
+					);
+				}
+			}
+		-| _ ->> {
+			}
+
+	return null() << make_pair(JOV::OfType(*callingJOV.type()), false);
+	}
+
+Nullable<pair<JOV, bool> > mapArgumentJOVForLibraryType(const JOV& callingJOV, const LibraryType& inLibType)
+	{
+	bool dummy;
+
+	ImmutableTreeVector<pair<std::string, JOV> > dummy2;
+
+	return mapArgumentJOVForLibraryType(callingJOV, inLibType, dummy, dummy2, null());
+	}
+
+namespace {
+
+const char* extractStringPtr(String s)
+	{
+	return s.c_str();
+	}
+
+}
+
+void preloadVectorArgument(
+					NativeExpressionBuilder& builder,
+					const NativeExpression& inSourceExpr, 
+					const JOV& inSourceJOV, 
+					const LibraryType& inTargetType
+					)
+	{
+	if (inSourceJOV.constant())
+		return;
+
+	TypedNativeExpression<TypedFora::Abi::VectorRecord> vecExpr(inSourceExpr);
+
+	builder.add(vecExpr.loadCheckAll().getExpression());
+	}
+
+void preloadArgument(
+					NativeExpressionBuilder& builder,
+					const NativeExpression& inSourceExpr, 
+					const JOV& inSourceJOV, 
+					const LibraryType& inTargetType
+					)
+	{
+	if (inSourceJOV.type() && inSourceJOV.type()->isVector())
+		preloadVectorArgument(builder, inSourceExpr, inSourceJOV, inTargetType);
+	}
+
+NativeExpression adaptVectorArgument(
+					NativeExpressionBuilder& builder,
+					const NativeExpression& inSourceExpr, 
+					const JOV& inSourceJOV, 
+					const LibraryType& inTargetType
+					)
+	{
+	using namespace TypedNativeExpressionHelpers;
+
+	if (inSourceJOV.constant())
+		{
+		return NativeExpression::Zero(NativeType::uint8().ptr());
+		}
+	else
+		{
+		lassert(inSourceJOV.isVector());
+		JudgmentOnResult eltJOR = inSourceJOV.getVector().jov().elementsJOR();
+
+		TypedNativeExpression<TypedFora::Abi::VectorRecord> vecExpr(inSourceExpr);
+
+		if (eltJOR.size() > 1)
+			{
+			Nullable<JOV> jov;
+
+			@match LibraryType(inTargetType)
+				-| Pointer(p) ->> {
+					jov = jovFromNativeType(p.toNativeType());
+					}
+				-| _ ->> {
+					lassert_dump(
+						false,
+						"expected a pointer. got " << prettyPrintString(inTargetType)
+						);
+					}
+
+			lassert_dump(
+				jov,
+				"should have had a jov for " << prettyPrintString(inTargetType)
+				);
+
+			//we need a runtime check
+			builder.add(
+				if_(vecExpr.entirelyCoveredByJOV(*jov),
+					TypedNativeExpression<void>(),
+					TypedNativeExpression<void>(
+						NativeExpression::Return(
+							1,
+							NativeExpression::Nothing()
+							)
+						)
+					)
+				);
+			}
+
+		TypedNativeExpression<TypedFora::Abi::VectorRecord> pooledVec = 
+			builder.add(vecExpr.contiguousAndLoadedVectorRecordNonincremented());
+
+		NativeExpression offsetExpr = 
+			TypedFora::Abi::ForaValueArrayCodegen::offsetForExpression(
+				pooledVec.unpagedValues().getExpression(),
+				NativeExpression::ConstantULong(0)
+				);
+
+		//it's not a mutating call, so we can just pass the pointer
+		return NativeExpression::If(
+			((TypedNativeExpression<bool>)(pooledVec.dataPtr())).getExpression(),
+			offsetExpr,
+			NativeExpression::Zero(*offsetExpr.type())
+			);
+		}
+	}
+
+NativeExpression adaptMutableVectorArgument(
+					NativeExpressionBuilder& builder,
+					const NativeExpression& inSourceExpr, 
+					const JOV& inSourceJOV, 
+					const LibraryType& inTargetType
+					)
+	{
+	return TypedFora::Abi::MutableVectorHandleCodegen::basePointerExpressionAsRawPtr(
+			inSourceExpr["vectorHandle"]
+			)
+		.cast(inTargetType.toNativeType().ptr(), false);
+	}
+
+NativeExpression adaptTupleArgument(
+					NativeExpressionBuilder& builder,
+					const NativeExpression& inSourceExpr, 
+					const JOV& inSourceJOV, 
+					const LibraryType& inTargetType,
+					ImmutableTreeVector<NativeExpression>& outReturnArgs,
+					bool isTopLevelArg
+					)
+	{
+	@match LibraryType(inTargetType)
+		-| Pointer(pt) ->> {
+			lassert(inSourceJOV.isTuple());
+
+			JOVT jovt = inSourceJOV.getTuple().jov();
+
+			NativeExpression targetPtr = builder.add(
+				NativeExpression::Alloc(
+					pt.toNativeType(),
+					jovt.jovs().size(),
+					false
+					)
+				) ;
+
+			for (long k = 0; k < jovt.jovs().size(); k++)
+				{
+				builder.add(
+					targetPtr.elemPtr(k).store(
+						adaptArgumentForExternalFunction(
+							builder,
+							inSourceExpr[k],
+							jovt.jovs()[k],
+							pt
+							)
+						)
+					);
+				}
+
+			if (isTopLevelArg && !pt.isConst())
+				{
+				ImmutableTreeVector<NativeExpression> tupleArgs;
+				
+				for (long k = 0; k < jovt.jovs().size();k++)
+					tupleArgs = tupleArgs + targetPtr.elemPtr(k).load();
+
+				outReturnArgs = outReturnArgs + NativeExpression::CreateComposite(tupleArgs);
+				}
+
+			return targetPtr;
+			}
+		-| _ ->> {
+			lassert(false);
+			}
+	}
+
+}
+
+NativeExpression adaptArgumentForExternalFunction(
+					NativeExpressionBuilder& builder,
+					const NativeExpression& inSourceExpr, 
+					const JOV& inSourceJOV, 
+					const LibraryType& inTargetType,
+					ImmutableTreeVector<NativeExpression>& outReturnArgs,
+					bool isTopLevelArg
+					)
+	{
+	if (inSourceJOV.type() && inSourceJOV.type()->isVector())
+		return adaptVectorArgument(builder, inSourceExpr, inSourceJOV, inTargetType);
+
+	if (inSourceJOV.isMutableVector())
+		return adaptMutableVectorArgument(builder, inSourceExpr, inSourceJOV, inTargetType);
+
+	if (inSourceJOV.type() && inSourceJOV.type()->isString())
+		{
+		lassert(!inSourceJOV.constant());
+
+		//the only option right now if we're passing a string is that we want to extract 
+		//the c_str() and pass that in
+		return makeTypedNativeLibraryFunction(&extractStringPtr)(
+			TypedNativeExpression<String>(inSourceExpr)
+			).getExpression()
+			.cast(inTargetType.toNativeType(), false);
+		}
+
+	if (inSourceJOV.isTuple())
+		return adaptTupleArgument(
+			builder, 
+			inSourceExpr, 
+			inSourceJOV, 
+			inTargetType, 
+			outReturnArgs,
+			isTopLevelArg
+			);
+
+	return inSourceExpr.cast(inTargetType.toNativeType(), false);
+	}
+
+
+Callable getCallableForExternalFunction(
+				const ExternalFunctionDescriptor& desc, 
+				const JOVT& inArgumentSignature, 
+				Compiler& compiler
+				)
+	{
+	@match ExternalFunctionDescriptor(desc)
+		-| Empty() ->> {
+			lassert(false);
+			}
+		-| Fortran(visibleName, libcallName, returnType, argSignature) ->> {
+			return getFORTRANCallTarget(visibleName, libcallName, argSignature, returnType);
+			}
+		-| CompiledFunction(lib, name) ->> {
+			void* funcPtr = compiler.functionPointerForLibraryFunctionFromSource(lib, name);
+
+			Fora::SharedObjectLibraryFromSource::FunctionSignature funcSig = 
+				*lib.manifest().signatures()[name];
+
+			bool needsRuntimeCheck = false;
+
+			ImmutableTreeVector<pair<std::string, JOV> > returnedValues;
+
+			pair<JOVT, bool> callSignatureAndHasDefinition = 
+				*getCallSignatureAsJOVTForExternalFunction(
+					desc, 
+					inArgumentSignature, 
+					needsRuntimeCheck, 
+					returnedValues
+					);
+
+			lassert_dump(
+				callSignatureAndHasDefinition.second, 
+				prettyPrintString(callSignatureAndHasDefinition.first)
+				);
+
+			JOVT callSignature = callSignatureAndHasDefinition.first;
+
+			JudgmentOnAction resultSignature = 
+				getResultSignatureAsJOAForExternalFunction(desc, inArgumentSignature);
+
+			if (needsRuntimeCheck)
+				//make sure the Callable has a path for the invalid return case if we're going to 
+				//use it
+				resultSignature = resultSignature | invalidCallSignatureForExternalFunctionJOA(desc);
+
+			NativeAxiomVars axiomVars(callSignature);
+
+			NativeExpressionBuilder builder;
+
+			//the arguments to the function
+			ImmutableTreeVector<NativeExpression> args;
+
+			//expressions containing the values to be read back after we've executed the function
+			ImmutableTreeVector<NativeExpression> returnArgs;
+
+			for (long k = 0; k < axiomVars.size(); k++)
+				preloadArgument(builder, axiomVars[k], callSignature.jovs()[k], funcSig.argTypes()[k]);
+
+			for (long k = 0; k < axiomVars.size(); k++)
+				args = args + adaptArgumentForExternalFunction(
+					builder,
+					axiomVars[k], 
+					callSignature.jovs()[k], 
+					funcSig.argTypes()[k],
+					returnArgs,
+					true
+					);
+			
+			//call the function itself
+			NativeExpression libcallExpr = 
+				builder.add(
+					NativeExpression::CallLibraryFunction(
+						NativeLibraryFunctionTarget::ByPointer((uword_t)funcPtr),
+						funcSig.returnType().toNativeType(),
+						args
+						)
+					);
+
+			NativeExpression finalResult;
+			if (returnArgs.size() == 0)
+				finalResult = libcallExpr;
+			else
+				finalResult = NativeExpression::CreateComposite(libcallExpr + returnArgs);
+			
+			NativeCFG toInline(
+				NativeVariable::Temp(NativeTypeFor<NativeRuntimeCallbacks>::get().ptr()) + 
+					axiomVars.vars(), 
+				builder(NativeExpression::Return(0, finalResult))
+				);
+			
+			toInline = NativeCFGTransforms::renameVariables(toInline, 0);
+
+			return
+				TypedFora::graphFromNativeCfgPassingOwned(
+								callSignature,
+								resultSignature,
+								toInline
+								);
+			}
+	}
+
+
+JOVT largestRelaxationOfArgsJovtDisjointFromFortranCallSignature(JOVT fortranCallSignature, JOVT argsJovt)
+	{
+	ImmutableTreeVector<JOV> fortranCallSignatureJovs = fortranCallSignature.jovs();
+
+	for (long k = 0; k < fortranCallSignatureJovs.size();k++)
+		{
+		JOV argJOV = argsJovt[k];
+
+		if (!argJOV.covers(fortranCallSignatureJovs[k]))
+			{
+			//we need to produce a jov that is disjoint from this one
+			JOV fortranCallSignatureJov = fortranCallSignatureJovs[k];
+			
+			JOV jovToBeDisjointFromFortranCallSignatureJov;
+
+			if (argJOV.type() && JOV::OfType(*argJOV.type()).disjoint(fortranCallSignatureJov))
+				jovToBeDisjointFromFortranCallSignatureJov = JOV::OfType(*argJOV.type());
+
+			lassert(fortranCallSignatureJov.disjoint(jovToBeDisjointFromFortranCallSignatureJov));
+			
+			return JOVT::Unnamed(
+				ImmutableTreeVector<JOV>() + 
+					(emptyTreeVec() + JOV()) * k + jovToBeDisjointFromFortranCallSignatureJov +
+						(emptyTreeVec() + JOV()) * (fortranCallSignatureJovs.size() - k - 1)
+				);
+			}
+		}
+
+	lassert(false);
+	
+	return JOVT();
+	}
+
+Nullable<pair<JOVT, bool> > getCallSignatureAsJOVTForExternalFunction(
+						const ExternalFunctionDescriptor& desc, 
+						const JOVT& argsJovt,
+						bool& outNeedsRuntimeCheck,
+						ImmutableTreeVector<pair<string, JOV> >& outModifiedValues
+						)
+	{
+	@match ExternalFunctionDescriptor(desc)
+		-| Fortran(visibleName, libcallName, returnType, argSignature) ->> {
+			JOVT fortranCallSignature = getFORTRANCallTarget(visibleName, libcallName, argSignature, returnType)
+				.callSignatureAsJovt(BlockID::entry());
+
+			if (!fortranCallSignature.covers(argsJovt))
+				{
+				if (fortranCallSignature.disjoint(argsJovt))
+					return null() << 
+						make_pair(
+							largestRelaxationOfArgsJovtDisjointFromFortranCallSignature(
+								fortranCallSignature, 
+								argsJovt
+								), 
+							false
+							);
+
+				return null();
+				}
+
+			return null() << make_pair(fortranCallSignature, true);
+			}
+		-| CompiledFunction(lib, name) ->> {
+			Fora::SharedObjectLibraryFromSource::FunctionSignature funcSig;
+
+			funcSig = *lib.manifest().signatures()[name];
+
+			lassert(!argsJovt.hasExtras());
+			
+			bool isOK = true;
+
+			//verify the argument count
+			if (argsJovt.jovs().size() != funcSig.argTypes().size())
+				isOK = false;
+
+			//verify that we can handle the return type of this function
+			if (!jovFromNativeType(funcSig.returnType().toNativeType()))
+				isOK = false;
+
+			//calling with names is forbidden
+			for (long k = 0; k < argsJovt.names().size(); k++)
+				if (argsJovt.names()[k])
+					isOK = false;
+
+			if (!isOK)
+				return null() << make_pair(
+					JOVT(
+						(emptyTreeVec() + JOV()) * argsJovt.jovs().size(),
+						argsJovt.names()
+						),
+					false
+					);
+
+			ImmutableTreeVector<JOV> callJOVs;
+
+			for (long k = 0; k < argsJovt.jovs().size(); k++)
+				{
+				Nullable<pair<JOV, bool> > mappedJOV = 
+					mapArgumentJOVForLibraryType(argsJovt.jovs()[k], funcSig.argTypes()[k]);
+
+				if (mappedJOV && !mappedJOV->second)
+					//this value is enough to disqualify our call signature, so we can use JOV()
+					//for all other values
+					return null() << make_pair(
+						JOVT::Unnamed(
+							(emptyTreeVec() + JOV()) * k + 
+								mappedJOV->first + 
+								(emptyTreeVec() + JOV()) * (argsJovt.jovs().size() - k - 1)
+							),
+						false
+						);
+				}
+
+			for (long k = 0; k < argsJovt.jovs().size(); k++)
+				{
+				bool needsRuntimeCheck;
+
+				Nullable<pair<JOV, bool> > mappedJOV = 
+					mapArgumentJOVForLibraryType(
+						argsJovt.jovs()[k], 
+						funcSig.argTypes()[k], 
+						needsRuntimeCheck,
+						outModifiedValues,
+						null() << funcSig.argNames()[k]
+						);
+
+				if (needsRuntimeCheck)
+					outNeedsRuntimeCheck = true;
+
+				if (!mappedJOV)
+					return null();
+
+				callJOVs = callJOVs + mappedJOV->first;
+				}
+
+			return null() << make_pair(JOVT::Unnamed(callJOVs), true);
+			}
+		-| _ ->> {
+			lassert(false);
+			}
+	}
+
+JudgmentOnAction getResultSignatureAsJOAForExternalFunction(
+											const ExternalFunctionDescriptor& desc,
+											const JOVT& inSignature
+											)
+	{
+	@match ExternalFunctionDescriptor(desc)
+		-| Fortran(visibleName, libcallName, returnType, argSignature) ->> {
+			return getFORTRANCallTarget(visibleName, libcallName, argSignature, returnType)
+				.resultSignatureAsJoa();
+			}
+		-| CompiledFunction(lib, name) ->> {
+			Fora::SharedObjectLibraryFromSource::FunctionSignature funcSig;
+
+			bool needsRuntimeCheck;
+
+			ImmutableTreeVector<pair<std::string, JOV> > returnedValues;
+
+			Nullable<pair<JOVT, bool> > nCallSignatureAndHasDefinition = 
+				getCallSignatureAsJOVTForExternalFunction(
+					desc, 
+					inSignature, 
+					needsRuntimeCheck, 
+					returnedValues
+					);
+
+			lassert_dump(nCallSignatureAndHasDefinition, 
+				prettyPrintString(inSignature) << " didn't have call signature and definition for "
+					<< prettyPrintString(desc)
+				);
+
+
+
+			funcSig = *lib.manifest().signatures()[name];
+
+			return *joaFromNativeType(funcSig.returnType().toNativeType(), returnedValues);
+			}
+		-| _ ->> {
+			lassert(false);
+			}
+	}
+
+std::string visibleNameForExternalFunction(const ExternalFunctionDescriptor& desc)
+	{
+	@match ExternalFunctionDescriptor(desc)
+		-| Fortran(name) ->> {
+			return name;
+			}
+		-| CompiledFunction(_, name) ->> {
+			return name;
+			}
+		-| _ ->> {
+			lassert(false);
+			}
+	}
+
+JudgmentOnAction invalidCallSignatureForExternalFunctionJOA(const ExternalFunctionDescriptor& desc)
+	{
+	return JudgmentOnAction::Throws(
+		JOV::Constant(
+			CSTValue("Invalid call signature for " + prettyPrintString(desc))
+			)
+		);
+	}
+
+

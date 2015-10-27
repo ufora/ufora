@@ -1,0 +1,168 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <iostream>
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include "../TypedFora/ABI/VectorRecord.hpp"
+#include "../Judgment/JudgmentUtil.hppml"
+#include "ValueDeepcopier.hppml"
+
+namespace Fora {
+namespace Interpreter {
+
+/******************
+PageUnpagedVectorsValueUpdater
+
+scans over FORA values and pages any vectors over a given size into the VDM.
+******************/
+
+class PageUnpagedVectorsValueUpdater {
+public:
+	typedef TypedFora::Abi::VectorHandle VectorHandle;
+	
+	typedef TypedFora::Abi::VectorRecord VectorRecord;
+	
+	typedef TypedFora::Abi::ForaValueArray ForaValueArray;
+
+	class state_type {
+	public:
+		state_type(	MemoryPool* inTargetPool,
+					VectorDataManager* inManager,
+					size_t inBytecountThreshold, 
+					bool pageAllLargeValues = true
+					) : 
+				mMemoryPool(inTargetPool),
+				mVectorDataManager(inManager),
+				mBytecountThreshold(inBytecountThreshold),
+				mPagedVectorCount(0),
+				mPageAllLargeValues(pageAllLargeValues)
+			{
+			}
+
+		bool mPageAllLargeValues;
+
+		std::set<VectorHandle*> mVectorsExceedingThreshold;
+
+		//even if mPageAllLargeValues is false, handles in this set will get paged.
+		std::set<VectorHandle*> mVectorsToForcePaging;
+
+		MemoryPool* mMemoryPool;
+
+		VectorDataManager* mVectorDataManager;
+
+		size_t mBytecountThreshold;
+
+		long mPagedVectorCount;
+
+		void cleanup()
+			{
+			}
+
+		bool forcePage(VectorHandle* inHandle)
+			{
+			return mVectorsToForcePaging.find(inHandle) != mVectorsToForcePaging.end();
+			}
+	};
+
+	PageUnpagedVectorsValueUpdater(state_type& inState) : 
+			mState(inState)
+		{
+		}
+
+	bool wantsToVisitStrings()
+		{
+		return false;
+		}
+
+	bool wantsToVisitString(const String& s)
+		{
+		return false;
+		}
+	
+	Nullable<String> updateString(String& s)
+		{
+		return null();
+		}
+
+	
+	bool visit(TypedFora::Abi::HomogenousVectorStash& stash)
+		{
+		stash = TypedFora::Abi::HomogenousVectorStash();
+		return true;
+		}
+	
+	bool wantsToVisitVectorContents(TypedFora::Abi::VectorHandle* handle)
+		{
+		return handle->owningMemoryPool() == mState.mMemoryPool && 
+			jorMightHaveVectorsWithin(handle->jor());
+		}
+
+	Nullable<VectorRecord> updateVectorHandle(VectorHandle* handle)
+		{
+		if (handle->owningMemoryPool() != mState.mMemoryPool)
+			//this is not a vector owned by us, so we shouldn't try to page anything
+			//within it
+			return null();
+
+		if (handle->unpagedAndPageletTreeValueCount())
+			{
+			const static int kMinSizeOfPODToMakePagelet = 4096 * 8;
+			
+			//don't bother with obviously small pages
+			if (handle->isWriteable() && handle->unpagedValues() && (!handle->unpagedValues()->isHomogenousPodArray() ||
+						handle->unpagedValues()->bytesUsed() >= kMinSizeOfPODToMakePagelet))
+				handle->moveUnpagedValueArrayIntoPagelet(&*mState.mVectorDataManager);
+
+			size_t bytecount = (handle->pageletTree().isEmpty() ? 0 : handle->pageletTree()->bytecountIncludingHeldPagelets());
+
+			if (bytecount >= mState.mBytecountThreshold || mState.forcePage(handle))
+				{
+				mState.mVectorsExceedingThreshold.insert(handle);
+
+				if (!mState.mPageAllLargeValues && !mState.forcePage(handle))
+					return null();
+
+				mState.mPagedVectorCount++;
+
+				return null() << VectorRecord(
+					handle->paged(mState.mMemoryPool, &*mState.mVectorDataManager)
+					);
+				}
+
+			handle->collapsePageletIfVeryFragmented(&*mState.mVectorDataManager);
+
+			if (!handle->pageletTree().isEmpty() && handle->pageletTree()->bytecountIncludingHeldPagelets() < 512 * 1024 && 
+					handle->pageletTree()->bytecountFromOSIncludingHeldPagelets() > 1024 * 1024)
+				LOG_WARN << "handle " << handle << " in " << mState.mMemoryPool->stringRepresentation() << " using "
+					<< handle->pageletTree()->bytecountIncludingHeldPagelets() / 1024 / 1024.0 
+					<< " / "
+					<< handle->pageletTree()->bytecountFromOSIncludingHeldPagelets() / 1024 / 1024.0
+					<< " over " << handle->pageletTree()->count() << " child pagelets "
+					<< " and not being paged."
+					;
+			}
+
+		return null();
+		}
+
+private:
+	state_type& mState;
+};
+
+
+}
+}

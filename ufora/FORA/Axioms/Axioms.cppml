@@ -1,0 +1,777 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include <string>
+#include <boost/lexical_cast.hpp>
+
+#include "Axioms.hppml"
+#include "Axiom.hppml"
+#include "AxiomGroup.hppml"
+#include "AxiomSearch.hppml"
+#include "../Judgment/JudgmentOnValueTreeMatchImplvalCppCodegen.hppml"
+#include "../Judgment/JudgmentOnValueTreeMatchJovtCppCodegen.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
+#include "../VectorDataManager/VectorDataManager.hppml"
+#include "../ControlFlowGraph/ControlFlowGraph.hppml"
+#include "../Runtime.hppml"
+#include "../Core/Integers.hppml"
+#include "../Core/ClassMediator.hppml"
+#include "../Core/ImplValContainerUtilities.hppml"
+#include "../Language/Parser.hppml"
+#include "../Language/ParserExpressions.hppml"
+#include "../Language/FunctionToCFG.hppml"
+#include "../Native/NativeCFGTransforms/Transforms.hppml"
+#include "../../core/ScopedProfiler.hppml"
+#include "../Judgment/JudgmentParser.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../Core/ExecutionContextConfiguration.hppml"
+#include "../Serialization/SerializedObjectFlattener.hpp"
+#include "../../core/StringUtil.hpp"
+#include "../../core/Logging.hpp"
+#include "../../core/threading/SimpleCallbackSchedulerFactory.hppml"
+#include "../../core/Clock.hpp"
+
+using namespace std;
+
+class AxiomsStorage {
+public:
+	vector<PolymorphicSharedPtr<AxiomGroup> > axioms;
+};
+
+NativeCFG nativeWrapper(NativeType argType, NativeType retType, string name)
+	{
+	NativeVariable x("x", argType);
+
+	return NativeCFG(
+		emptyTreeVec() + x,
+		NativeExpression::CallLibraryFunction(
+			name,
+			retType,
+			emptyTreeVec() + x.expr()
+			)
+		)
+		;
+	}
+
+NativeCFG blankFunction(NativeType t)
+	{
+	return NativeCFG(
+		emptyTreeVec() + NativeVariable("x", t),
+		NativeExpression::Nothing()
+		)
+		;
+	}
+
+namespace {
+
+std::pair<Nullable<CSTValue>, JOVT> parseMetadataAndSignature(
+		const SimpleParseNode& node
+		)
+	{
+	Nullable<CSTValue> metadata;
+	JOVT jovt;
+
+	try {
+		@match SimpleParseNode(node)
+			-| Sequence(Concatenation(), nodes) ->> {
+				lassert_dump(
+					nodes.size() == 2, 
+					"nodes = " << prettyPrintString(nodes)
+					);
+
+				ParserExpressions parser;
+
+				metadata = null() << 
+					parser.expressionToConstant(
+						parser.parseToExpression(
+							nodes[0]
+							),
+						nodes[0]
+						);
+
+				JOV parsedJOV = JudgmentParser::parseJOV(nodes[1]);
+				@match JOV(parsedJOV)
+					-| Tuple(x) ->> {
+					jovt = x;
+					}
+			    -| _ ->> { 
+					lassert_dump(false, "JOVTs must be tuples");
+					}
+				;
+				}
+			-| Grouping(Parens(), subnode) ->> {
+				jovt = JudgmentParser::parseJOVT(subnode);
+				}
+			-| _ ->> {
+				lassert_dump(
+					false, 
+					"malformed axiom at " << 
+					prettyPrintString(node.extent())
+					);
+				}
+		;
+
+		return std::make_pair(metadata, jovt);
+		}
+	catch(JudgmentParseError& e)
+		{
+		lassert_dump(false, "JudgmentParse error: "
+			<< e.error() << " at "
+			<< prettyPrintString(e.range())
+			<< endl
+			<< prettyPrintString(node)
+			<< endl
+			);
+		}
+	}
+
+Nullable<Function> parseFunctionPredicate(const SimpleParseNode& node)
+	{
+	Expression funExpr = parseToExpression(
+		node,
+		true,
+		CodeDefinitionPoint::Axioms(),
+		"<axioms:line " + 
+			prettyPrintString(node.extent().start().line()) + "-" +
+			prettyPrintString(node.extent().stop().line()) + ">"
+		);
+						
+	lassert_dump(funExpr.freeVariables().size() == 0,
+		"axiom implementation of " << prettyPrintString(node)
+		<< " had free variables "
+		<< prettyPrintString(funExpr.freeVariables())
+		<< ":\n" << prettyPrintString(funExpr)
+		);
+
+	return funExpr.extractRootLevelCreateFunctionPredicate();
+	}
+
+Nullable<CSTValue> computeMetadataOverride(const CSTValue& innerMetadata)
+	{
+	auto ivc = ImplValContainer(innerMetadata);
+	if (ivc.type().isTuple())
+		{
+		auto userMetadata = CSTValue(
+			ImplValContainerUtilities::tupleMember(
+				ivc, Symbol("user")
+				)
+			);
+		if (!(userMetadata == CSTValue()))
+			return null() << userMetadata;
+		}
+	
+	return null();
+	}
+
+Nullable<CSTValue> computeMetadataOverride(const Expression& expr)
+	{
+	@match Expression(expr) 
+			-| CreateFunction(name, _, innerMetadata) ->> {
+				return computeMetadataOverride(innerMetadata);
+				}
+			-| Let(elements, Variable(returnVar)) ->> { 
+				/*
+				  this match clause covers the simple case of an axiom like:
+
+				  signature: fun(...) {
+					  let myFunName = "some metadata" fun() { ... };
+					  myFunName;
+					  }
+				  ;
+				*/		
+						
+				if (elements.size() == 1 and 
+					elements[0].second.isCreateFunction())
+					{
+					auto patternWithName = elements[0].first;
+					if (patternWithName.pattern().isAnything() and 
+						patternWithName.condition().isNull() and 
+						not patternWithName.name().isNull())
+						{
+						if (*patternWithName.name() == returnVar)
+							return computeMetadataOverride(elements[0].second);
+						}
+					}
+				}
+			-| Let(_, body) ->> {
+				/*
+				  This covers simple cases like:
+
+				  signature: fun( ... ) {
+                      let x = expr;
+					  let y = expr; 
+					  ... more lets ...
+					  fun(...) { ... }
+					  }
+					  ;
+				 */
+
+					return computeMetadataOverride(body);
+				}
+				-| _ ->> {}
+		;
+
+	return null();
+	}
+
+Nullable<CSTValue> computeMetadataOverride(const Function& predicate)
+	{
+	if (predicate.isTerm())
+		return computeMetadataOverride(predicate.getTerm().result());
+
+	return null();
+	}
+
+}
+
+namespace {
+
+ControlFlowGraph generateControlFlowGraphFromAxiom(
+					const ClassMediator& inMediator,
+					const ApplySignature& inApplySignature
+					)
+	{
+	Fora::Language::FunctionToCFG converter;
+
+	return
+		converter.functionToCFG(
+			inMediator,
+			ClassMediatorResumption::Entry(),
+			inApplySignature
+			);
+	}
+
+Nullable<CSTValue> extractSimpleConstantFromFunction(const Function& inFunction)
+	{
+	@match Function(inFunction)
+		-| Term(_, Constant(c), Empty()) ->> {
+			return null() << c;
+			}
+		-| _ ->> {
+			return null();
+			}
+	}
+
+}
+
+void Axioms::parseNodeToAxiom(const SimpleParseNode& node)
+	{
+	@match SimpleParseNode(node)
+		-|	Sequence(Colon(), subs) ->> {
+			lassert_dump(subs.size() == 2,
+				"badly formed axiom at "
+				<< prettyPrintString(node.extent())
+				);
+						
+			std::pair<Nullable<CSTValue>, JOVT> metadataAndSignature = 
+				parseMetadataAndSignature(subs[0]);
+			JOVT jovt = metadataAndSignature.second;
+			Nullable<CSTValue> metadata = metadataAndSignature.first;
+												
+			Nullable<Function> predicate = 
+				parseFunctionPredicate(subs[1]);
+
+			lassert_dump(predicate, "expected 'fun' at " <<
+				prettyPrintString(node.extent())
+				);
+
+			auto metadataOverride = computeMetadataOverride(*predicate);
+			if (metadataOverride)
+				metadata = *metadataOverride;
+
+			PolymorphicSharedPtr<AxiomGroup> parsedAxiom;
+
+			Nullable<CSTValue> constant = extractSimpleConstantFromFunction(*predicate);
+
+			if (constant)
+				parsedAxiom = AxiomGroup::returns(jovt, *constant);
+			else
+				parsedAxiom = AxiomGroup::simple(
+					Axiom::Expands(
+						jovt,
+						boost::bind(
+							&generateControlFlowGraphFromAxiom,
+							ClassMediator::Axiom(
+								"Axiom" + prettyPrintString(jovt),
+								*predicate
+								),
+							boost::arg<1>()
+							)
+						)
+					);
+
+			if (metadata)
+				parsedAxiom->setMetadata(*metadata);
+
+			mAxioms->axioms.push_back(parsedAxiom);
+			}
+		-|	Empty() ->> {;}
+		-|	_ ->> {
+			lassert_dump(false, prettyPrintString(node));
+			}
+		;
+	}
+
+Axioms::Axioms(const std::string& inAxiomsString)
+	{
+	mAxioms = new AxiomsStorage();
+
+	for (auto it = AxiomGroups::groups().begin(); it != AxiomGroups::groups().end(); ++it)
+		for (auto it2 = it->second.begin(); it2 != it->second.end(); ++it2)
+			mAxioms->axioms.push_back(*it2);
+
+	SimpleParseNode spn = parseStringToSimpleParse(inAxiomsString);
+	
+	@match SimpleParseNode(spn)
+		-|	Sequence(Semicolon(), nodes) ->> {
+
+			for (long k = 0; k < nodes.size(); k++)
+				parseNodeToAxiom(nodes[k]);
+			}
+		-|	_ ->> {
+			}
+			;
+
+	mAxioms->axioms.push_back(getBadApplyAxiom());
+	}
+
+PolymorphicSharedPtr<AxiomGroup> Axioms::getBadApplyAxiom()
+	{
+	JOVT signature = JOVT() + JOVTE::Extras();
+
+	ClassMediator classMediator = 
+		ClassMediator::Axiom(
+			"BadApplyAxiom",
+			Function::SingleTermFunction(
+				emptyTreeVec(),
+				null() << Symbol("args"),
+				Expression::Apply(
+					Expression::Constant(CSTValue(Symbol(" BadApply"))),
+					emptyTreeVec() +
+						ApplyArgument::TupleCall(
+							Expression::Variable(Symbol("args"))
+							)
+					)
+				)
+			);
+
+	return
+		AxiomGroup::simple(
+			Axiom::Expands(
+				signature,
+				boost::bind(
+					&generateControlFlowGraphFromAxiom,
+					classMediator,
+					boost::arg<1>()
+					)
+				)
+			);
+	}
+
+const Axioms::axiom_group_vector& 	Axioms::interpreterAxioms()
+	{
+	if (!mInterpreterAxioms)
+		{
+		axiom_group_vector tr;
+
+		for (long k = 0; k < mAxioms->axioms.size();k++)
+			tr = tr + make_pair(
+				mAxioms->axioms[k]->signature(),
+				mAxioms->axioms[k]
+				);
+
+		mInterpreterAxioms = tr;
+
+		for (uword_t k = 0; k < tr.size();k++)
+			mInterpreterAxiomIndexes = mInterpreterAxiomIndexes + make_pair(tr[k].first, k);
+		}
+
+	return *mInterpreterAxioms;
+	}
+
+Nullable<Axiom>		Axioms::weakestAxiom(	TypedFora::Compiler& c,
+											const JudgmentOnValueTuple& s)
+	{
+	for (long k = 0; k < mAxioms->axioms.size();k++)
+		if (mAxioms->axioms[k]->signature().covers(s))
+			return mAxioms->axioms[k]->bestAxiom(c, mAxioms->axioms[k]->signature());
+			else
+		if (!mAxioms->axioms[k]->signature().disjoint(s))
+			{
+			return null();
+			}
+
+	return null();
+	}
+
+Nullable<Axiom>		Axioms::axiom(	TypedFora::Compiler& c,
+									const JudgmentOnValueTuple& s
+									)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	auto it = mCache.find(s.hash());
+
+	if (it == mCache.end())
+		{
+		Nullable<Axiom> a = axiom_(c, s);
+		mCache[s.hash()] = a;
+
+		return a;
+		}
+	
+	return it->second;
+	}
+
+Nullable<Axiom>		Axioms::axiom(	TypedFora::Compiler& c,
+									const JudgmentOnValueTuple& s,
+									const JudgmentOnAction& joaWithSpecializations
+									)
+	{
+	hash_type requestHash = (s.hash() + hashValue(joaWithSpecializations));
+
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+	
+	auto it = mCache.find(requestHash);
+
+	if (it == mCache.end())
+		{
+		Nullable<Axiom> a = axiom_(c, s, joaWithSpecializations);
+
+		mCache[requestHash] = a;
+
+		return a;
+		}
+	
+	return it->second;
+	}
+
+Nullable<uword_t>		Axioms::axiomSearchLinear(const JudgmentOnValueTuple& s)
+	{
+	for (uword_t k = 0; k < mAxioms->axioms.size();k++)
+		if (mAxioms->axioms[k]->signature().covers(s))
+			return null() << k;
+			else
+		if (!mAxioms->axioms[k]->signature().disjoint(s))
+			return null();
+	
+	return null();
+	}
+
+Nullable<uword_t>		Axioms::axiomSearchTree(const JudgmentOnValueTuple& s)
+	{
+	return Fora::searchJOVTree(s);
+	}
+
+Nullable<uword_t>			Axioms::axiomIndex(const JudgmentOnValueTuple& s)
+	{
+	double t0 = curClock();
+	static double totalSpent = 0;
+	static int count = 0, actualLookups = 0;
+
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	auto it = mIndexCache.find(s.hash());
+
+	if (it == mIndexCache.end())
+		{
+		Nullable<uword_t> index = Fora::searchJOVTree(s);
+		mIndexCache[s.hash()] = index;
+
+		actualLookups++;
+
+		it = mIndexCache.find(s.hash());
+		}
+
+	count++;
+
+	double origTotalSpent = totalSpent;
+	totalSpent += curClock() - t0;
+
+	if (int(totalSpent*100) != int(origTotalSpent*100))
+		LOG_INFO << "Axiom lookups: total time = " << totalSpent << ". lookups = " 
+				<< actualLookups << ". cache accesses = " << (count - actualLookups);
+	
+	return it->second;
+	}
+
+Nullable<AxiomJOA>			Axioms::axiomJOA(const JudgmentOnValueTuple& s)
+	{
+	Nullable<uword_t> ix = axiomIndex(s);
+	
+	if (!ix)
+		return null();
+	
+	return mAxioms->axioms[*ix]->axiomJOA(s);
+	}
+	
+bool validAxiomSpecialization(const AxiomJOA& outer, const Axiom& spec)
+	{
+	@match AxiomJOA(outer)
+		-|	Expands() ->> {
+			return  spec.isExpands();
+			}
+		-|	Native(joa) ->> {
+			@match Axiom(spec)
+				-|	Native(callSignature, resultSignature) ->> {
+					if (!joa.covers(resultSignature))
+						{
+						LOG_CRITICAL << "joa " << joa << " doesn't cover " << resultSignature;
+						return false;
+						}
+					else
+						return  true;
+					}
+				-|	_ ->> {
+					return  false;
+					}
+				;
+			}
+		;
+	}
+
+Nullable<Axiom>		Axioms::axiom_(TypedFora::Compiler& c, const JudgmentOnValueTuple& s)
+	{
+	Nullable<uword_t> ix = axiomIndex(s);
+	if (!ix)
+		return null();
+	
+	Nullable<Axiom> tr = mAxioms->axioms[*ix]->bestAxiom(c, s);
+	if (!tr)
+		return null();
+
+	Nullable<AxiomJOA> joaN =
+			mAxioms->axioms[*ix]->axiomJOA(
+				mAxioms->axioms[*ix]->signature()
+				);
+	if (joaN)
+		{
+		lassert_dump(
+			validAxiomSpecialization(
+				*joaN,
+				*tr),
+			"Axiom for "
+				<< prettyPrintString(s)
+				<< " was not consistent with base axiom ("
+				<< prettyPrintString(mAxioms->axioms[*ix]->signature())
+				<< ")"
+			);
+		}
+
+	return tr;
+	}
+
+Nullable<Axiom>		Axioms::axiom_(
+						TypedFora::Compiler& c, 
+						const JudgmentOnValueTuple& s,
+						const JudgmentOnAction& joaWithSpecializations
+						)
+	{
+	Nullable<uword_t> ix = axiomIndex(s);
+	if (!ix)
+		return null();
+	
+	return mAxioms->axioms[*ix]->bestAxiomWithJoa(c, s, joaWithSpecializations);
+	}
+
+
+Nullable<JudgmentOnValueTuple> Axioms::weakestArgumentsProducingExpansion(
+												TypedFora::Compiler& c,
+												const JudgmentOnValueTuple& args,
+												const ControlFlowGraph& graph
+												)
+	{
+	Nullable<uword_t> ix = axiomIndex(args);
+	if (!ix)
+		return null();
+	
+	return mAxioms->axioms[*ix]->weakestArgumentsProducingExpansion(c, args, graph);
+	}
+
+Nullable<JudgmentOnValueTuple>	Axioms::weakestArgumentsProducingResultCoveredBy(
+												TypedFora::Compiler& c,
+												const JudgmentOnValueTuple& args,
+												const JudgmentOnAction& result
+												)
+	{
+	Nullable<uword_t> ix = axiomIndex(args);
+	if (!ix)
+		return null();
+	
+	auto axiomGroup = mAxioms->axioms[*ix];
+
+	Nullable<JudgmentOnValueTuple> weakest = 
+		axiomGroup->weakestArgumentsProducingResultCoveredBy(c, args, result);
+
+	if (weakest)
+		return weakest;
+
+	Nullable<AxiomJOA> signatureJOA = 
+		axiomGroup->axiomJOA(axiomGroup->signature());
+
+	if (signatureJOA)
+		{
+		if (!signatureJOA->isNative())
+			return null();
+		if (result.covers(signatureJOA->getNative().joa()))
+			return null() << axiomGroup->signature();
+		}
+
+	if (args.computeConstant())
+		{
+		//attempt to resolve directly
+		JudgmentOnAction constantJoa = resolveAxiomDirectly(c, args);
+		if (result.covers(constantJoa))
+			return null() << args;
+		}
+
+	return null();
+	}
+
+namespace {
+
+bool isArithmetic(Type t)
+	{
+	@match Type(t)
+		-|	Integer(b) ->> {
+			return  b > 1;
+			}
+		-|	Float() ->> {
+			return  true;
+			}
+		-|	StackTrace() ->> {
+			return  true;
+			}
+		-|	_ ->> {
+			return  false;
+			}
+		;
+	}
+
+bool shouldRelaxCstStringJudgment(const JudgmentOnValue& inJov)
+	{
+	if (inJov.constant() and inJov.constant()->type().isString())
+		{
+		if (inJov.constant()->cast<String>().size() < 64)
+			return false;
+		}
+	return true;
+	}
+
+}
+
+
+
+JudgmentOnAction Axioms::resolveAxiomDirectly(
+							TypedFora::Compiler& inCompiler, 
+							const JudgmentOnValueTuple& jovt
+							)
+	{
+	hash_type h = jovt.hash();
+
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		auto it = mResolvedJOACache.find(h);
+
+		if (it != mResolvedJOACache.end())
+			return it->second;
+		}
+
+	JOV tupJOV = JOV::Tuple(jovt);
+
+	static PolymorphicSharedPtr<CallbackSchedulerFactory> factory(
+		new SimpleCallbackSchedulerFactory()
+		);
+
+	static PolymorphicSharedPtr<CallbackScheduler> scheduler(
+		factory->createScheduler("Axioms::resolveAxiomDirectly", 1)
+		);
+
+	static PolymorphicSharedPtr<VectorDataManager> vdm(
+			new VectorDataManager(scheduler, 32 * 1024)
+			);
+	vdm->dontIncludeInCounts();
+
+	Fora::Interpreter::ExecutionContext interp(
+		vdm,
+		32 * 1024,
+		0x20000 /* 128 KB */
+		);
+
+	const static long maxInterpreterCycles = 100;
+
+	interp.interruptAfterCycleCount(maxInterpreterCycles);
+
+	interp.getConfiguration()->allowInterpreterTracing() = false;
+	interp.getConfiguration()->preventBranchIntoCompiledCode() = false;
+
+	interp.evaluate(*tupJOV.constant());
+
+	bool isException = false;
+	JudgmentOnValue resJOV;
+
+	JudgmentOnAction valueToStore;
+
+	if (interp.isFinished())
+		{
+		Fora::Interpreter::ComputationResult res = interp.getFinishedResult();
+
+		isException = res.isException();
+		
+		@match Fora::Interpreter::ComputationResult(res)
+			-| Exception(val) ->> {
+				valueToStore = JudgmentOnAction::Throws(
+					JudgmentOnValue::FromLiveValue(val.getReference())
+					);
+				}
+			-| Result(val) ->> {
+				valueToStore = JudgmentOnAction::Value(
+					JudgmentOnValue::FromLiveValue(val.getReference())
+					);
+				}
+			-| Failure(err) ->> {
+				valueToStore = JudgmentOnAction::Unknown();
+				}
+		}
+	else
+		{
+		valueToStore = JudgmentOnAction::Unknown();
+		}
+
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		mResolvedJOACache[h] = valueToStore;
+		}
+
+	return valueToStore;
+	}
+
+pair<std::string, std::string> Axioms::getCppWrapperCode()
+	{
+	interpreterAxioms();
+	
+	JudgmentOnValueTree tree = createJOVTreeRule(mInterpreterAxiomIndexes, EqualFrequency(), false);
+
+	return make_pair(
+		Fora::JudgmentOnValueTreeMatchImplvalCppCodegen::generateLookupCppCode(tree),
+		Fora::JudgmentOnValueTreeMatchJovtCppCodegen::generateLookupCppCode(tree)
+		);
+	}
+
+
+
+

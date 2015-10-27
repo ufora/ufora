@@ -1,0 +1,158 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "ControlFlowGraph.hppml"
+#include "../../core/PolymorphicSharedPtr.hpp"
+#include "../Core/ComputationResult.hppml"
+#include "../Core/PausedComputation.hppml"
+#include "../Language/ApplySignature.hppml"
+
+class CFGWithFuturesImpl;
+
+// Describes a single value in the simulation
+@type FutureValue = 
+        Current of ImplValContainer value, bool isException, Nullable<uint64_t> index
+    -|  Future of uint64_t index
+    -|  Tuple of ImmutableTreeVector<FutureValueTupleArg> args
+and 
+    FutureValueTupleArg = 
+        Normal of Nullable<Symbol> fieldName, FutureValue arg
+    -|  TupleCall of FutureValue arg
+and
+    // describes the state of a Future value in the simulation
+    FutureSlot = 
+        // this value has to still be computed
+        Future of
+        // the set of FutureValues present when the future was first produced,
+        // with values that would not be passed along during an exception nulled out
+        ImmutableTreeVector<FutureValue> valuesNeededIfWeGetAnException,
+        // the future values that define the apply operation we’re testing
+        ImmutableTreeVector<FutureValue> applyArgs 
+        // we’ve computed it, and here’s its value
+    -|  Current of 
+        ImplValContainer result, bool isException
+        // this slot is no longer used by anything in the simulation and has been
+        // garbage collected
+    -|  GarbageCollected of ()
+    with
+        // the CFG node at the time the future was produced
+        Nullable<std::string> label
+and
+    SimulationHead = 
+        ControlFlowGraph graph,
+        Nullable<std::string> label,
+        ImmutableTreeVector<FutureValue> values
+    {
+    public:
+    ControlFlowNodeBody body() const
+        {
+        return graph()[label()].body();
+        }
+    }
+    ;
+
+class CFGWithFutures: 
+    public PolymorphicSharedPtrBase<CFGWithFutures> {
+public:
+    @type ApplyArgs = 
+        ApplySignature signature, 
+        ImmutableTreeVector<ImplValContainer> values
+    and
+        SubmittableArgs = 
+            Cached of ()
+        -|  Apply of ()
+        with 
+            ApplyArgs args
+        {
+        public:
+        Fora::Interpreter::PausedComputation toPausedComputation() const;
+        }
+    and
+        SimulationResult = 
+            Result of Fora::Interpreter::ComputationResult result
+        -|  Paused of Fora::Interpreter::PausedComputationFrame frame
+    ;
+
+    static PolymorphicSharedPtr<CFGWithFutures> createCfgWithFutures(
+        const ControlFlowGraph& inGraph,
+        const Nullable<std::string>& inLabel,
+        const ImmutableTreeVector<ImplValContainer>& inCurrentValues
+        );
+
+    void disallowRepeatNodes();
+
+    void setMaxRepeatNodesAllowed(uint64_t count);
+
+    // get a list of the current future slots. This is an add-only list. Callers
+    // are responsible for examining it, submitting work to the system, and
+    // eventually calling ‘slotCompleted’
+    const std::vector<FutureSlot>& getSlots() const;
+
+    // gives indices in getSlots() of FutureSlots which can be submitted.
+    const std::set<uint64_t>& indicesOfSubmittableFutures() const;
+
+    // roll the simulation far enough forward to produce at most one new future
+    // returns true if we made progress, false if we didn't. note that 
+    // we may make progress without producing a new future.
+    bool continueSimulation();
+
+    Nullable<SubmittableArgs> asSubmittable(uint64_t slotIndex) const;
+
+    bool isSubmittable(uint64_t slotIndex) const;
+
+    // we have realized the value of one of the slots
+    void slotCompleted(
+        uint64_t slotIndex, const Fora::Interpreter::ComputationResult& result
+        );
+
+    // did we actually finish the simulation and return a value?
+    Nullable<SimulationResult> getFinalResult() const;
+
+    // did the simulation resolve to a simple state in which there are
+    // no outstanding futures remaining. True IFF ‘nodeValues’ only contains
+    // values with ‘isCurrent() == true’ or 'isGarbageCollected() == true'
+    bool hasResolvedToSimpleState() const;
+
+    bool hasResolvedToSimpleStateAtIndex(uint64_t slotIndex) const;
+
+    //if all futures were realized as normal values, 
+    //would the simulation exit immediately? This is
+    //true if no additional futures could ever be produced
+    bool couldExitIfAllValuesWereFinished() const;
+    
+    const ControlFlowGraph& graph() const;
+
+    const Nullable<std::string>& currentLabel() const;
+
+    const ImmutableTreeVector<FutureValue>& currentNodeValues() const;
+
+    std::string toString(bool showGraph = false) const;
+
+    bool mustBailEarly() const;
+
+    Nullable<uint64_t> lowestKnownBailEarlyIndex() const;
+
+private:
+    CFGWithFutures(const PolymorphicSharedPtr<CFGWithFuturesImpl>& in)
+        : mImpl(in)
+        {
+        }
+
+    PolymorphicSharedPtr<CFGWithFuturesImpl> mImpl;
+};
+
+

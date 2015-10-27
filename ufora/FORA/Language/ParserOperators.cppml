@@ -1,0 +1,320 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ParserOperators.hppml"
+#include "Parser.hppml"
+
+namespace {
+	bool operator==(const ParserOperators::OpOrExpression& op,
+					const std::string& s)
+		{
+		return op.isOp() && op.getOp().op() == s;
+		}
+};
+Expression ParserOperators::collapseOpExpressionSeq(
+			const ImmutableTreeVector<ParserOperators::OpOrExpression>& nodes,
+			uint32_t depth
+			)
+	{
+	Expression tr = collapseOpExpressionSeqInner(nodes, depth);
+	
+	if (tr.locationMetadata().isEmpty())
+		return CPPML::replaceCommonData(
+						tr,
+						ExpressionLocationMetadata::WithSimpleParseRange(
+							SimpleParseRange(
+								nodes[0].range().start(),
+								nodes.back().range().stop()
+								)
+							)
+						);
+	
+	return tr;
+	}
+Expression ParserOperators::collapseOpExpressionSeqInner(
+			const ImmutableTreeVector<ParserOperators::OpOrExpression>& nodes,
+			uint32_t depth
+			)
+	{
+	lassert(nodes.size());
+	
+	if (depth > maxDepth)
+		throw FunctionParseError(
+				"parse error: expression's depth exceeds maximum allowable depth",
+				nodes[0].range());
+	
+	//check for isnot
+	for (long k = 0; k + 1 < nodes.size(); k++)
+		if (nodes[k] == "is" && nodes[k + 1] == "not")
+			return collapseOpExpressionSeqInner(
+				nodes.slice(0, k) +
+					ParserOperators::OpOrExpression::Op(
+						SimpleParseRange(
+							nodes[k].range().start(),
+							nodes[k].range().stop()
+							),
+						Symbol("is not")
+						) +
+					nodes.slice(k+2),
+					depth + 1
+				);
+			else
+		if (nodes[k] == "not" && nodes[k + 1] == "in")
+			return collapseOpExpressionSeqInner(
+				nodes.slice(0, k) +
+					ParserOperators::OpOrExpression::Op(
+						SimpleParseRange(
+							nodes[k].range().start(),
+							nodes[k].range().stop()
+							),
+						Symbol("not in")
+						) +
+					nodes.slice(k+2),
+					depth + 1
+				);
+	
+	//you have a sequence of regular objects and operators concatenationd together
+	//in general:
+	//	op x		-> op x
+	//  x op y		-> x op y
+	//  op op x -> op (op x)
+	//  x op op y -> x op (op y)
+	//  x op -> 		x op
+	//  op x op op op y op op -> (op x) op (op (op (y (op) (op))))
+
+	//so, right operators have the highest precedence
+	//then left operators
+	//then binary operators
+
+	//operators: successive operators are applied directly from left to right
+	
+	uword_t upperBound = nodes.size();
+	
+	//first, glom together any binary operators
+	Nullable<uword_t> cur;
+	for (long k = ((long)upperBound - 2); k >= 0; k--)
+		if (nodes[k].isExpr() && nodes[k + 1].isOp())
+			//pick the lowest precedence operator 
+			if (!cur || opStringIsHigherPrecedence(nodes[*cur], nodes[k + 1]))
+				{
+				//check whether there is another expression to the right, which is required for
+				//binary operators
+				for (long j = k + 2; j < upperBound; j++)
+					if (nodes[j].isExpr())
+						{
+						cur = k + 1;
+						break;
+						}
+				}
+
+	if (cur)
+		{
+		if (nodes[*cur] == "is")
+			return Expression::Is(
+				collapseOpExpressionSeq(nodes.slice(0, *cur), depth + 1),
+				collapseOpExpressionSeq(nodes.slice(*cur + 1, nodes.size()), depth + 1)
+				)
+				;
+			else
+		if (nodes[*cur] == "in")
+			return Expression::In(
+				collapseOpExpressionSeq(nodes.slice(0, *cur), depth + 1),
+				collapseOpExpressionSeq(nodes.slice(*cur + 1, nodes.size()), depth + 1)
+				)
+				;
+			else
+		if (nodes[*cur] == "not in")
+			return
+				Expression::NotIn(
+					collapseOpExpressionSeq(nodes.slice(0, *cur), depth + 1),
+					collapseOpExpressionSeq(nodes.slice(*cur + 1, nodes.size()), depth + 1)
+					)
+				;
+			else
+		if (nodes[*cur] == "and")
+			return
+				Expression::And(
+					collapseOpExpressionSeq(nodes.slice(0, *cur), depth + 1),
+					collapseOpExpressionSeq(nodes.slice(*cur + 1, nodes.size()), depth + 1)
+					)
+				;
+			else
+		if (nodes[*cur] == "is not")
+			return
+				Expression::IsNot(
+					collapseOpExpressionSeq(nodes.slice(0, *cur), depth + 1),
+					collapseOpExpressionSeq(nodes.slice(*cur + 1, nodes.size()), depth + 1)
+					)
+				;
+			else
+		if (nodes[*cur] == "or")
+			return
+				Expression::Or(
+					collapseOpExpressionSeq(nodes.slice(0, *cur), depth + 1),
+					collapseOpExpressionSeq(nodes.slice(*cur + 1, nodes.size()), depth + 1)
+					)
+				;
+			else
+			{
+			@match OpOrExpression(nodes[*cur]) -| Op(s) ->> {
+				return Expression::BinaryOperator(
+					collapseOpExpressionSeq(nodes.slice(0, *cur), depth + 1),
+					s,
+					collapseOpExpressionSeq(nodes.slice(*cur + 1, nodes.size()), depth + 1)
+					);
+				}
+				;
+			}
+		}
+
+	//there should only be one non-operator here
+	if (nodes[0] == "not")
+		return Expression::Not(
+			collapseOpExpressionSeq(nodes.slice(1, nodes.size()), depth + 1)
+			);
+	
+	if (nodes[0].isOp())
+		{
+		@match OpOrExpression(nodes[0]) -| Op(s)->> {
+			return Expression::LeftOperator(s,
+					collapseOpExpressionSeq(nodes.slice(1, nodes.size()), depth + 1)
+					);
+			};
+		}
+		;
+	if (nodes[nodes.size()-1].isOp())
+		{
+		@match OpOrExpression(nodes.back()) -| Op(s)->> {
+			return Expression::RightOperator(
+				collapseOpExpressionSeq(nodes.slice(0, nodes.size() - 1), depth + 1),
+				s);
+			}
+			;
+		}
+		;
+	if (nodes.size() == 1 && nodes[0].isExpr())
+		return nodes[0].getExpr().expr();
+	
+	//shouldn't be possible to get here.
+	lassert_dump(false,
+		prettyPrintString(nodes));
+	}
+char ParserOperators::opStringTextOpLevel(const Symbol& l)
+	{
+	if (l.toString() == "not")
+		return 3;
+	if (l.toString() == "in")
+		return 2;
+	if (l.toString() == "is")
+		return 2;
+	if (l.toString() == "not in")
+		return 2;
+	if (l.toString() == "is not")
+		return 2;
+	if (l.toString() == "and")
+		return 1;
+	if (l.toString() == "or")
+		return 0;
+	return 4;
+	}
+bool ParserOperators::opStringIsHigherPrecedence(const OpOrExpression& l, const OpOrExpression& r)
+	{
+	@match OpOrExpression(l)
+		-|	Op(lo) ->> {
+			@match OpOrExpression(r)
+				-|	Op(ro) ->> {
+				return  opStringIsHigherPrecedence(lo,ro);
+				};
+			}
+		;
+	}
+bool ParserOperators::opStringIsHigherPrecedence(const Symbol& l, const Symbol& r)
+	{
+	if (l == r)
+		return false;
+	
+	char stringOpLevelL = opStringTextOpLevel(l);
+	char stringOpLevelR = opStringTextOpLevel(r);
+	if (stringOpLevelR != stringOpLevelL)
+		return stringOpLevelL > stringOpLevelR;
+		
+	if (stringOpLevelL != 4)
+		//they're both string ops, and they're equal, so we can bail
+		return false;
+	
+	std::string lS = l.toString();
+	std::string rS = r.toString();
+	
+	for (long k = 0; k < lS.size() && k < rS.size(); k++)
+		if (opLevel(lS[k]) != opLevel(rS[k]))
+			return opLevel(lS[k]) > opLevel(rS[k]);
+
+	return lS.size() > rS.size();
+	}
+
+char ParserOperators::opLevel(char c)
+	{
+	switch (c)
+		{
+		case '~':
+		case ':':
+		case '?':
+		case '@':
+		case '#':
+		case '$':
+			return 10;
+			
+		case '/':
+		case '*':
+		case '%':
+			return 9;
+
+
+		case '-':
+		case '+':
+			return 8;
+
+		case '<':
+		case '>':
+			return 7;
+
+		case '=':
+		case '!':
+			return 6;
+
+		case '^':
+		case '|':
+		case '&':
+			return 5;
+		}
+	return 4;
+	}
+bool ParserOperators::isOperator(const SimpleParseNode& node)
+	{
+	return (node.isOperator()
+				&& node.getOperator().val().size()
+				&& node.getOperator().val()[0] != '.'
+				&& node.getOperator().val()[0] != ','
+				&& node.getOperator().val()[0] != '?'
+				&& node.getOperator().val() != "="
+				) ||
+			node == "in" ||
+			node == "is" ||
+			node == "or" ||
+			node == "not" ||
+			node == "and"
+			;
+	}
+

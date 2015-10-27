@@ -1,0 +1,204 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "JudgmentOnValue.hppml"
+
+namespace {
+//assuming 'in' is an Alternative, gets the implval for the data itselt
+ImplVal	getDataImplval(const ImplVal& in)
+	{
+	return 
+		ImplVal(
+			in.type().getAlternative().eltType(),
+			in.cast<AlternativeData>().data
+			);
+	}
+}
+
+JudgmentOnValue JudgmentOnValueAlternative::VectorElementJOVFromLiveValue(const ImplVal& inImplVal)
+	{
+	return JOV::Alternative(
+		JudgmentOnValueAlternative(
+			null() << inImplVal.cast<AlternativeData>().symbol,
+			JOV::VectorElementJOVFromLiveValue(
+				getDataImplval(inImplVal)
+				)
+			)
+		);
+	}
+
+JudgmentOnValue JudgmentOnValueAlternative::FromLiveValue(const ImplVal& inImplVal)
+	{
+	return JOV::Alternative(
+		JudgmentOnValueAlternative(
+			null() << inImplVal.cast<AlternativeData>().symbol,
+			JOV::FromLiveValue(getDataImplval(inImplVal))
+			)
+		);
+	}
+
+JudgmentOnValue JudgmentOnValueAlternative::OfType(const Type& type)
+	{
+	lassert(type.isAlternative());
+	
+	@match Type(type)
+		-|	Alternative(eltType) ->> {
+			return 
+				JudgmentOnValue::Alternative(
+					JudgmentOnValueAlternative(null(), JOV::OfType(eltType))
+					);
+			}
+		;
+	}
+
+Nullable<Type> JudgmentOnValueAlternative::computeType() const
+	{
+	if (val().type())
+		return null() << Type::Alternative(*val().type());
+	return null();
+	}
+
+Nullable<bool> JudgmentOnValueAlternative::computeIsCST() const
+	{
+	return val().isCST();
+	}
+
+Nullable<CSTValue> JudgmentOnValueAlternative::computeConstant() const
+	{
+	if (sym() && val().constant())
+		{
+		ImplVal tr = ImplVal::introduce(Type::Alternative(*val().type()));
+		tr.cast<AlternativeData>().symbol = *sym();	//OK because Symbols have no constructors
+		
+		val().type()->initialize(
+			&tr.cast<AlternativeData>().data,
+			val().constant()->getData()
+			);
+		
+		return null() << CSTValue::assumeOwnershipOf(tr);
+		}
+	
+	return null();
+	}
+
+void JudgmentOnValueAlternative::toString(CPPMLPrettyPrintStream& s, bool isJOVAsValue) const
+	{
+	if (!isJOVAsValue)
+		s << "{";
+	
+	s << "Alternative(";
+	if (sym())
+		s << "#" << *sym();
+		else
+		s << "*";
+	
+	s << ",";
+	val().toString(s, false);
+	s << ")";
+	
+	if (!isJOVAsValue)
+		s << "}";
+	}
+
+bool JudgmentOnValueAlternative::covers(const ImplVal& impl) const
+	{
+	if (!impl.type().isAlternative())
+		return false;
+	
+	return (!sym() || *sym() == impl.cast<AlternativeData>().symbol) &&
+		val().covers(getDataImplval(impl));
+	}
+
+bool JudgmentOnValueAlternative::covers(const JudgmentOnValue& impl) const
+	{
+	const JudgmentOnValueAlternative& other(impl.getAlternative().jov());
+	
+	return ::covers(sym(), other.sym()) && val().covers(other.val());
+	}
+
+bool JudgmentOnValueAlternative::disjoint(const JudgmentOnValue& impl) const
+	{
+	const JudgmentOnValueAlternative& other(impl.getAlternative().jov());
+	
+	return ::disjoint(sym(), other.sym()) || val().disjoint(other.val());
+	}
+
+JudgmentOnResult JudgmentOnValueAlternative::intersectWith(const JudgmentOnValue& in) const
+	{
+	if (!in.isAlternative())
+		return JudgmentOnResult();
+		
+	const JudgmentOnValueAlternative& other(in.getAlternative().jov());
+	
+	if (sym() && other.sym() && *sym() != *other.sym())
+		return JudgmentOnResult();
+	
+	Nullable<Symbol> symToUse = sym();
+	if (other.sym())
+		symToUse = other.sym();
+	
+	JudgmentOnResult subjor = val().intersectWith(other.val());
+	if (subjor.size() == 1)
+		return JudgmentOnResult(
+			JudgmentOnValue::Alternative(
+				JudgmentOnValueAlternative(
+					symToUse,
+					subjor[0]
+					)
+				)
+			);
+	return JudgmentOnResult();
+	}
+
+JudgmentOnResult JudgmentOnValueAlternative::restrictedToCSTness(bool inCSTness) const
+	{
+	JudgmentOnResult subjor = val().restrictedToCSTness(inCSTness);
+	if (subjor.size() == 1)
+		return JudgmentOnResult(
+			JudgmentOnValue::Alternative(
+				JudgmentOnValueAlternative(
+					sym(),
+					subjor[0]
+					)
+				)
+			);
+	return JudgmentOnResult();
+	}
+
+JudgmentOnValue JudgmentOnValueAlternative::smallestCovering(const JudgmentOnValue& impl) const
+	{
+	if (!impl.isAlternative())
+		return ::smallestCovering(JudgmentOnValue::Alternative(*this), impl);
+	
+	const JudgmentOnValueAlternative& other(impl.getAlternative().jov());
+	
+	return JudgmentOnValue::Alternative(
+		JudgmentOnValueAlternative(
+			sym() == other.sym() ? sym() : Nullable<Symbol>(),
+			val().smallestCovering(other.val())
+			)
+		);
+	}
+
+JOV jovAlternative(void)
+	{
+	return JOV::Alternative(
+		JudgmentOnValueAlternative(null(), JOV())
+		);
+	}
+
+
+	
+

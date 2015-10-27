@@ -1,0 +1,443 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "MachineComputationMap.hppml"
+#include "../core/Logging.hpp"
+
+namespace Cumulus {
+
+MachineComputationMap::MachineComputationMap(
+			boost::function1<void, const std::set<ComputationId>&> inOnComputationsLost
+			) : 
+		mOnComputationsLost(inOnComputationsLost)
+	{
+	}
+
+void MachineComputationMap::addMachine(const MachineId& machine)
+	{
+	//currently a no-op - just here to check for any inconsistencies in the order of machine 
+	//add/drop behavior
+
+	lassert(mMachinesEverDropped.find(machine) == mMachinesEverDropped.end());
+	lassert(mMachinesActive.find(machine) == mMachinesActive.end());
+
+	mMachinesActive.insert(machine);
+	}
+
+void MachineComputationMap::dropMachine(const MachineId& machine)
+	{
+	lassert(mMachinesEverDropped.find(machine) == mMachinesEverDropped.end());
+	lassert(mMachinesActive.find(machine) != mMachinesActive.end());
+
+	mMachinesEverDropped.insert(machine);
+	mMachinesActive.erase(machine);
+
+	std::set<ComputationId> onTheDroppedMachine(
+					mComputationToMachineMap.getKeys(machine)
+					);
+
+	for (auto it = onTheDroppedMachine.begin(); it != onTheDroppedMachine.end(); ++it)
+		{
+		mStatuses.erase(make_pair(*it, machine));
+		}
+
+	//there is undoubtedly tighter logic for determining the set of drop candidates. In particular
+	//we probably don't need to look at both sides of both indices.
+
+	while (mComputationOutFlows.index(machine, IndexedSet::dim1).size())
+		{
+		ComputationFlow flow = *mComputationOutFlows.index(machine, IndexedSet::dim1).begin();
+
+		flowCompleted(flow);
+		onTheDroppedMachine.insert(flow.computation());
+		}
+
+	while (mComputationOutFlows.index(machine, IndexedSet::dim2).size())
+		{
+		ComputationFlow flow = *mComputationOutFlows.index(machine, IndexedSet::dim2).begin();
+
+		flowCompleted(flow);
+		onTheDroppedMachine.insert(flow.computation());
+		}
+
+	while (mComputationInFlows.index(machine, IndexedSet::dim1).size())
+		{
+		ComputationFlow flow = *mComputationInFlows.index(machine, IndexedSet::dim1).begin();
+
+		flowCompleted(flow);
+		onTheDroppedMachine.insert(flow.computation());
+		}
+
+	while (mComputationInFlows.index(machine, IndexedSet::dim2).size())
+		{
+		ComputationFlow flow = *mComputationInFlows.index(machine, IndexedSet::dim2).begin();
+
+		flowCompleted(flow);
+		onTheDroppedMachine.insert(flow.computation());
+		}
+
+	mComputationToMachineMap.dropValue(machine);
+
+	mComputationInFlows.eraseAll(machine, IndexedSet::dim2);
+	mComputationInFlows.eraseAll(machine, IndexedSet::dim1);
+
+	mComputationOutFlows.eraseAll(machine, IndexedSet::dim2);
+	mComputationOutFlows.eraseAll(machine, IndexedSet::dim1);
+
+	std::set<ComputationId> toDrop;
+
+	for (auto it = onTheDroppedMachine.begin(); it != onTheDroppedMachine.end(); ++it)
+		if (isDropped(*it))
+			{
+			toDrop.insert(*it);
+			mComputationHashToComputation.dropValue(*it);
+			}
+		
+	if (toDrop.size())
+		{
+		mOnComputationsLost(toDrop);
+		}
+	}
+
+const std::set<ComputationId>& MachineComputationMap::computationsOnMachine(
+																		const MachineId& inId
+																		) const
+	{
+	return mComputationToMachineMap.getKeys(inId);
+	}
+
+const std::set<MachineId>& MachineComputationMap::machinesHoldingComputation(
+																		const ComputationId& inId
+																		) const
+	{
+	return mComputationToMachineMap.getValues(inId);
+	}
+
+Nullable<ComputationStatus> MachineComputationMap::currentActiveStatus(
+													const ComputationId& inComputation
+													)
+	{
+	const std::set<MachineId>& machinesHolding(
+		mComputationToMachineMap.getValues(inComputation)
+		);
+
+	Nullable<ComputationStatusOnMachine> result;
+
+	for (auto it = machinesHolding.begin(); it != machinesHolding.end(); ++it)
+		{
+		const ComputationStatusOnMachine& status = 
+			computationStatusOnMachine(inComputation, *it);
+
+		if (!result || status.isFartherAheadThan(*result))
+			result = status;
+		}
+
+	if (result && result->isActive())
+		return null() << result->getActive().status();
+
+	return null();
+	}
+
+bool MachineComputationMap::exists(const ComputationId& inComputation) const
+	{
+	const std::set<MachineId>& machinesHolding(
+		mComputationToMachineMap.getValues(inComputation)
+		);
+
+	for (auto it = machinesHolding.begin(); it != machinesHolding.end(); ++it)
+		{
+		lassert(mMachinesActive.find(*it) != mMachinesActive.end());
+		lassert(mMachinesEverDropped.find(*it) == mMachinesEverDropped.end());
+
+		const ComputationStatusOnMachine& status = 
+			computationStatusOnMachine(inComputation, *it);
+
+		if (!status.isInactive())
+			return true;
+		}
+
+	if (mComputationOutFlows.contains(inComputation, IndexedSet::dim0))
+		return true;
+
+	if (mComputationInFlows.contains(inComputation, IndexedSet::dim0))
+		return true;
+
+	return false;
+	}
+
+void MachineComputationMap::considerMoveGuidsCompleted(
+			const std::set<hash_type>& guids
+			)
+	{
+	mMovesToConsiderCompleted.insert(guids.begin(), guids.end());
+
+	for (auto guid: guids)
+		{
+		std::vector<ComputationFlow> flowsToComplete;
+
+		for (auto flow: mComputationInFlows.index(guid, IndexedSet::dim3))
+			flowsToComplete.push_back(flow);
+
+		for (auto flow: mComputationOutFlows.index(guid, IndexedSet::dim3))
+			flowsToComplete.push_back(flow);
+		
+		for (auto flow: flowsToComplete)
+			flowCompleted(flow);
+		}
+	}
+
+void MachineComputationMap::setComputationStatus(
+									const MachineId& inMachine, 
+									const ComputationId& inComputation,
+									const ComputationStatusOnMachine& statusOnMachine
+									)
+	{
+	if (mMachinesEverDropped.find(inMachine) != mMachinesEverDropped.end())
+		{
+		return;
+		}
+
+	lassert_dump(
+		mMachinesActive.find(inMachine) != mMachinesActive.end(),
+		"can't find " << prettyPrintString(inMachine) << " in " << prettyPrintString(mMachinesActive)
+		);
+
+	ComputationStatusOnMachine oldStatus = mStatuses[make_pair(inComputation, inMachine)];
+
+	if (statusOnMachine.isInactive())
+		{
+		if (mComputationToMachineMap.contains(inComputation, inMachine))
+			mComputationToMachineMap.drop(inComputation, inMachine);
+
+		mStatuses.erase(make_pair(inComputation, inMachine));
+		}
+	else
+		{
+		mComputationToMachineMap.insert(inComputation, inMachine);
+
+		mStatuses[make_pair(inComputation, inMachine)] = statusOnMachine;
+
+		if (inComputation.isRoot())
+			mComputationHashToComputation.insert(inComputation.getRoot().computationHash(), inComputation);
+		}
+
+	if (oldStatus.isInactive() && statusOnMachine.isReceivedFrom())
+		{
+		//the machine just received a computation. this is an 'InFlow' since 'inMachine' is the
+		//target
+		ComputationFlow flow(
+			inComputation, 
+			statusOnMachine.getReceivedFrom().sourceMachine(), 
+			inMachine,
+			statusOnMachine.getReceivedFrom().moveGuid()
+			);
+
+		if (mComputationOutFlows.contains(flow))
+			flowCompleted(flow);
+		else
+			mComputationInFlows.insert(flow);
+		}
+	else
+	if (oldStatus.isMoving() && statusOnMachine.isActive())
+		{
+		//this is a rejected move
+		//this is an 'OutFlow' because inMachine is the source
+		ComputationFlow flow(
+			inComputation, 
+			inMachine, 
+			oldStatus.getMoving().targetMachine(),
+			oldStatus.getMoving().moveGuid()
+			);
+
+		// Typically, we need to clean this up here - but sometimes we've already dropped the machine
+		if (mComputationOutFlows.contains(flow))
+			flowCompleted(flow);
+		}
+	else
+	if (oldStatus.isActive() && statusOnMachine.isMoving())
+		{
+		//this is the initiation of a move. This is an OutFlow because inMachine is the source.
+		ComputationFlow flow(
+			inComputation, 
+			inMachine, 
+			statusOnMachine.getMoving().targetMachine(),
+			statusOnMachine.getMoving().moveGuid()
+			);
+
+		if (mComputationInFlows.contains(flow) || 
+				mMovesToConsiderCompleted.find(flow.moveGuid()) != mMovesToConsiderCompleted.end())
+			flowCompleted(flow);
+		else
+			{
+			lassert_dump(
+				!mComputationOutFlows.contains(flow),
+				this << " already has flow " << prettyPrintStringWithoutWrapping(flow) << " during "
+					<< "transition from "
+					<< prettyPrintStringWithoutWrapping(oldStatus) << " -> " << prettyPrintStringWithoutWrapping(statusOnMachine)
+				);
+
+			mComputationOutFlows.insert(flow);
+			flowStarted(flow);
+			}
+		}
+
+	if (isDropped(inComputation))
+		signalDropped(inComputation);
+	}
+
+void MachineComputationMap::flowCompleted(ComputationFlow flow)
+	{
+	mComputationOutFlows.erase(flow);
+	mComputationInFlows.erase(flow);
+	
+	if (isDropped(flow.computation()))
+		signalDropped(flow.computation());
+	}
+
+void MachineComputationMap::flowStarted(ComputationFlow flow)
+	{
+	lassert(mMovesCompleted.find(flow.moveGuid()) == mMovesCompleted.end());
+	mMovesCompleted.insert(flow.moveGuid());
+	}
+
+bool MachineComputationMap::isMoveInProgress(const hash_type& moveGuid)
+	{
+	if (mComputationInFlows.contains(moveGuid, IndexedSet::dim3))
+		return true;
+
+	if (mComputationOutFlows.contains(moveGuid, IndexedSet::dim3))
+		return true;
+
+	return false;
+	}
+
+bool MachineComputationMap::isDropped(const ComputationId& inId)
+	{
+	if (mComputationInFlows.index(inId).size())
+		return false;
+		
+	if (mComputationOutFlows.index(inId).size())
+		return false;
+		
+	if (mComputationToMachineMap.hasKey(inId))
+		return false;
+		
+	return true;
+	}
+
+void MachineComputationMap::signalDropped(const ComputationId& inId)
+	{
+	std::set<ComputationId> computations;
+	computations.insert(inId);
+	
+	mComputationHashToComputation.dropValue(inId);
+
+	mOnComputationsLost(computations);
+	}
+	
+Nullable<MachineId> MachineComputationMap::machineHoldingComputation(const ComputationId& inId) const
+	{
+	Nullable<MachineId> curBest;
+	ComputationStatusOnMachine curBestStatus;
+
+	for (auto machine: mComputationToMachineMap.getValues(inId))
+		{
+		if (!curBest || computationStatusOnMachine(inId, machine).isFartherAheadThan(curBestStatus))
+			{
+			curBest = machine;
+			curBestStatus = computationStatusOnMachine(inId, machine);
+			}
+		}
+
+	return curBest;
+	}
+
+Nullable<MachineId> MachineComputationMap::machineHoldingFinishedComputation(const ComputationId& inId) const
+	{
+	const std::set<MachineId>& machines = mComputationToMachineMap.getValues(inId);
+
+	for (auto it = machines.begin(); it != machines.end(); ++it)
+		@match ComputationStatusOnMachine(computationStatusOnMachine(inId, *it))
+			-| Active(Finished()) ->> {
+				return null() << *it;
+				}
+			-| _ ->> {}
+
+	return null();
+	}
+
+ComputationStatusOnMachine MachineComputationMap::computationStatusOnMachine(
+									const ComputationId& inComputation, 
+									const MachineId& inMachine
+									) const
+	{
+	auto it = mStatuses.find(make_pair(inComputation, inMachine));
+	
+	if (it == mStatuses.end())
+		{
+		static ComputationStatusOnMachine inactive = ComputationStatusOnMachine::Inactive();
+		
+		return inactive;
+		}
+
+	return it->second;
+	}
+
+const std::set<ComputationId>&
+MachineComputationMap::computationsWithSameHash(const ComputationId& inId) const
+	{
+	static std::set<ComputationId> ids;
+	if (!inId.isRoot())
+		return ids;
+	return computationsWithSameHash(inId.getRoot().computationHash());
+	}
+
+const std::set<ComputationId>&
+MachineComputationMap::computationsWithSameHash(const hash_type& inHash) const
+	{
+	return mComputationHashToComputation.getValues(inHash);
+	}
+
+bool MachineComputationMap::computationIsOnMachine(
+								const ComputationId& inComputation,
+								const MachineId& inMachine
+								) const
+	{
+	return mComputationToMachineMap.contains(inComputation, inMachine);
+	}
+
+void MachineComputationMap::validateInternalState()
+	{
+	// check that we've cleaned up records relating to dropped machines
+	for (auto it = mMachinesEverDropped.begin(); it != mMachinesEverDropped.end(); ++it)
+		{
+		lassert(!mComputationToMachineMap.hasValue(*it));
+		}
+
+	// check that all computations registered to a machine actually exist
+	for (auto it = mMachinesActive.begin(); it != mMachinesActive.end(); ++it)
+		{
+		auto computations = computationsOnMachine(*it);
+
+		for (auto cit = computations.begin(); cit != computations.end(); ++cit)
+			{
+			auto status = computationStatusOnMachine(*cit, *it);
+			lassert(!status.isInactive());
+			}
+		}
+	}
+	
+}
+

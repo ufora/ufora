@@ -1,0 +1,189 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../../core/containers/TwoWaySetMap.hpp"
+#include "../../core/containers/MapWithIndex.hpp"
+#include "../../core/Logging.hpp"
+#include "../MachineId.hppml"
+#include "../ComputationId.hppml"
+
+namespace Cumulus {
+
+namespace SystemwideComputationScheduler {
+
+const static int kMultipleToCountMovingComputations = 4;
+
+class MachineLoads {
+public:
+	MachineLoads(MachineId ownMachineId, long threadCount) : 
+			mOwnMachineId(ownMachineId),
+			mActiveThreadCount(threadCount),
+			mTotalLoadAcrossEntireSystem(0)
+		{
+		addMachine(ownMachineId);
+		}
+
+	void addMachine(MachineId m)
+		{
+		mMachineLoads.set(m, 0);
+		mMachineLoadsPlusMoving.set(m, 0);
+		}
+
+	void setLoad(MachineId machine, long tasks, long blockedComputations)
+		{
+		if (mMachineLoads.hasKey(machine))
+			mTotalLoadAcrossEntireSystem -= mMachineLoads.getValue(machine);
+
+		mMachineLoads.set(machine, tasks + blockedComputations);
+		mMachineLoadsPlusMoving.set(
+			machine, 
+			tasks + 
+				mMovingComputations.getKeys(machine).size() * kMultipleToCountMovingComputations + 
+				blockedComputations
+			);
+		
+		mTotalLoadAcrossEntireSystem += mMachineLoads.getValue(machine);
+		}
+
+	void taskIsMoving(ComputationId comp, MachineId machine)
+		{
+		lassert(!mMovingComputations.hasKey(comp));
+		
+		mMovingComputations.set(comp, machine);
+		mMovingComputationsStart.set(comp, curClock());
+		mMachineLoadsPlusMoving.set(
+			machine, 
+			mMachineLoads.getValue(machine) + 
+				mMovingComputations.getKeys(machine).size() * kMultipleToCountMovingComputations
+			);
+		}
+
+	void computationNotComputable(ComputationId comp)
+		{
+		}
+
+	double ageOfOldestMove() const
+		{
+		if (!mMovingComputationsStart.size())
+			return 0.0;
+
+		return curClock() - mMovingComputationsStart.lowestValue();
+		}
+
+	bool wantsDisableSplitDueToSystemCapacityOverload() const
+		{
+		return mTotalLoadAcrossEntireSystem > mActiveThreadCount * mMachineLoads.size() * 4;
+		}
+
+	void taskIsNotMoving(ComputationId comp)
+		{
+		if (!mMovingComputations.hasKey(comp))
+			return;
+
+		mMovingComputationsStart.discard(comp);
+
+		MachineId machine = mMovingComputations.getValue(comp);
+
+		mMovingComputations.discard(comp);
+
+		mMachineLoadsPlusMoving.set(
+			machine, 
+			mMachineLoads.getValue(machine) + 
+				mMovingComputations.getKeys(machine).size() * kMultipleToCountMovingComputations
+			);
+		}
+
+	const MapWithIndex<ComputationId, MachineId>& computationsMoving() const
+		{
+		return mMovingComputations;
+		}
+
+	bool shouldTryToMoveSomething() const
+		{
+		if (mMachineLoads.getValue(mOwnMachineId) <= mActiveThreadCount)
+			return false;
+
+		if (mMovingComputationsStart.size() > mActiveThreadCount)
+			return false;
+
+		long least = mMachineLoadsPlusMoving.lowestValue();
+
+		if (ownLoad() > least + 1)
+			return true;
+		return false;
+		}
+
+	bool shouldMoveToMachine(MachineId otherMachine) const
+		{
+		if (otherMachine == mOwnMachineId)
+			return false;
+
+		if (ownLoad() <= loadFor(otherMachine))
+			return false;
+
+		if (loadFor(otherMachine) > mActiveThreadCount * 2)
+			return false;
+
+		if (loadFor(otherMachine) > mActiveThreadCount && 
+				ownLoad() < loadFor(otherMachine) * 4)
+			return false;
+		
+		return true;
+		}
+
+	long loadFor(MachineId otherMachine) const
+		{
+		if (!mMachineLoadsPlusMoving.hasKey(otherMachine))
+			return 0;
+
+		return mMachineLoadsPlusMoving.getValue(otherMachine);
+		}
+
+	long ownLoad() const
+		{
+		return mMachineLoads.getValue(mOwnMachineId) - mMovingComputations.size();
+		}
+
+	long ownLoadRaw() const
+		{
+		return mMachineLoads.getValue(mOwnMachineId);
+		}
+
+	const MapWithIndex<MachineId, long>& getMachineLoads() const
+		{
+		return mMachineLoads;
+		}
+
+private:
+	MachineId mOwnMachineId;
+
+	long mActiveThreadCount;
+
+	MapWithIndex<MachineId, long> mMachineLoads;
+
+	long mTotalLoadAcrossEntireSystem;
+
+	MapWithIndex<ComputationId, double> mMovingComputationsStart;
+
+	MapWithIndex<ComputationId, MachineId> mMovingComputations;
+
+	MapWithIndex<MachineId, long> mMachineLoadsPlusMoving;
+};
+
+}
+}
+

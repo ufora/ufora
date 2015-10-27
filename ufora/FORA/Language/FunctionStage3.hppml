@@ -1,0 +1,248 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#ifndef FORA_Language_FunctionStage3_hppml_
+#define FORA_Language_FunctionStage3_hppml_
+
+
+#include "../Core/CSTValue.hppml"
+#include "../../core/math/Nullable.hpp"
+#include "../../core/containers/ImmutableTreeMap.hppml"
+#include "../../core/containers/ImmutableTreeSet.hppml"
+#include "../../core/containers/ImmutableTreeVector.hppml"
+#include "VariableAllocator.hppml"
+#include "../Primitives/Symbol.hpp"
+
+namespace FunctionStage2 {
+
+class Function;
+class Expression;
+
+}
+
+/******
+
+namespace FunctionStage3
+
+The next step of language reduction after "Stage2".
+
+In this model, all new values that can enter the system get names, so there
+are no 'unnamed values' hanging around in the system. This is a crucial step
+in the conversion to ControlFlowGraph objects.
+
+
+******/
+
+namespace FunctionStage3 {
+
+typedef VariableAllocator::Variable variable_index_type;
+
+@type
+	Expression =
+			//evaluates to a constant
+			Constant of CSTValue val
+			
+			//look up the value of a variable
+		-|	Variable of variable_index_type variable
+		
+			//non-recursive let
+		-|	Let of	variable_index_type,
+					Expression value,
+					Expression body
+			
+			//bind elements of 'toExpand' to 'toBindArgsTo'. If not successful,
+			//send to 'ifUnsuccessful' with no additional variables bound
+		-|	TupleExpand of 
+					variable_index_type toExpand,
+					ImmutableTreeVector<variable_index_type> toBindArgsTo,
+					bool lastIsStarArgs,
+					Expression ifSuccessful,
+					Expression ifUnsuccessful
+
+			//evaluate 'value' and update patterns listed in 'toAssign'
+		-|	Assign of
+				variable_index_type toAssign,
+				Input value
+			
+		-|	Apply of
+				Input agent,
+				ImmutableTreeVector<ApplyArgument> arguments
+			
+		-|	While of Expression condition, Expression updater
+		
+		-|	RawCached of Input expr
+		
+		-|	Branch of 	Input operand,
+						Expression ifTrue,
+						Expression ifFalse
+		
+		-|	Throw of 	Expression exception,
+						Nullable<variable_index_type> target
+		
+		-|	Try of 		Expression toTry,
+						Nullable<variable_index_type> name,
+						Function catchWith
+			
+		-|	Return of Expression toReturn
+			
+		-|	Continuation of Function withContinuation
+		
+		-|	Switch of	Input expr,
+						ImmutableTreeMap<CSTValue, Expression> branches,
+						Expression otherwise
+						
+		-|	CreateTuple of ImmutableTreeVector<ApplyArgument> args
+		
+	with
+		Nullable<hash_type> definingExpressionLocationId,
+		ImmutableTreeSet<variable_index_type> freeVariables =
+											(this->computeFreeVariables()),
+		//like 'freeVariables', except the LHS of an assignment is not
+		//considered a free variable
+		ImmutableTreeSet<variable_index_type> freeAccessedVariables =
+										(this->computeFreeAccessedVariables()),
+		ImmutableTreeSet<Nullable<variable_index_type> > throwTargets =
+										(this->computeThrowTargets()),
+		ImmutableTreeSet<variable_index_type> assignedVariables =
+										(this->computeAssignedVariables()),
+		int depth = (this->computeDepth())
+	{
+	public:
+			ImmutableTreeSet<variable_index_type>
+											computeAssignedVariables() const;
+			ImmutableTreeSet<variable_index_type>
+											computeFreeVariables() const;
+			ImmutableTreeSet<variable_index_type>
+											computeFreeAccessedVariables() const;
+			//computes viable throw targets, including "null" (e.g. the normal
+			//throw continuation) if there is an apply or a cache call below
+			ImmutableTreeSet<Nullable<variable_index_type> >
+											computeThrowTargets() const;
+			int computeDepth() const;
+			string	toString() const;
+	}
+and
+	//ApplyArgument - a term in a call operation.
+	ApplyArgument =
+			//a regular argument (which may be named in the target structure)
+		-|	Normal of Nullable<Symbol> name, Input expr
+		-|	TupleCall of Input expr
+	with
+		ImmutableTreeSet<variable_index_type> freeVariables =
+										(this->computeFreeVariables()),
+		int depth = (this->computeDepth())
+	{
+	public:
+			int computeDepth() const;
+			ImmutableTreeSet<variable_index_type>
+									computeFreeVariables() const;
+			string	toString() const;
+	}
+and
+	Input =
+			Variable of variable_index_type var
+		-|	Constant of CSTValue val
+	with
+		ImmutableTreeSet<variable_index_type> freeVariables =
+											(this->computeFreeVariables())
+	{
+	public:
+			int depth() const { return 0; }
+			ImmutableTreeSet<variable_index_type> computeFreeVariables() const;
+			string	toString() const;
+	}
+and
+	Function = ImmutableTreeVector<variable_index_type> vars, Expression result
+	{
+	public:
+			ImmutableTreeSet<variable_index_type> freeVariables() const;
+			ImmutableTreeSet<variable_index_type> freeAccessedVariables() const;
+			ImmutableTreeSet<variable_index_type> assignedVariables() const;
+			string	toString() const;
+			int depth() const;
+	}
+	;
+
+
+//convert from Stage2 to Stage3
+Function	convert(
+					const FunctionStage2::Function& inFunction,
+					VariableAllocator& inAllocator
+					);
+Expression	convert(
+					const FunctionStage2::Expression& inExpr,
+					VariableAllocator& inAllocator
+					);
+
+Expression	convertInner(
+					const FunctionStage2::Expression& inExpr,
+					VariableAllocator& inAllocator
+					);
+
+};
+
+macro_defineCppmlComparisonOperators(FunctionStage3::Input)
+
+template<>
+class CPPMLPrettyPrint<FunctionStage3::Input> {
+public:
+		static void prettyPrint(
+							CPPMLPrettyPrintStream& stream,
+							const FunctionStage3::Input& toPr
+							)
+			{
+			stream << toPr.toString();
+			}
+};
+
+
+template<>
+class CPPMLPrettyPrint<FunctionStage3::Expression> {
+public:
+		static void prettyPrint(
+							CPPMLPrettyPrintStream& stream,
+							const FunctionStage3::Expression& toPr
+							)
+			{
+			stream << toPr.toString();
+			}
+};
+
+template<>
+class CPPMLPrettyPrint<FunctionStage3::ApplyArgument> {
+public:
+		static void prettyPrint(
+							CPPMLPrettyPrintStream& stream,
+							const FunctionStage3::ApplyArgument& toPr
+							)
+			{
+			stream << toPr.toString();
+			}
+};
+template<>
+class CPPMLPrettyPrint<FunctionStage3::Function> {
+public:
+		static void prettyPrint(
+							CPPMLPrettyPrintStream& stream,
+							const FunctionStage3::Function& toPr
+							)
+			{
+			stream << toPr.toString();
+			}
+};
+
+
+#endif
+

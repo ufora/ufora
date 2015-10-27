@@ -1,0 +1,99 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#Markdown("""### categoricalTransformations
+
+#### Description
+
+Transformations which turn categorical data into numeric data.
+
+""");
+
+makeCategoricalMapping: fun
+(dataframe.DataFrame(inputs), dataframe.Series(outputs), 
+ classes:, whichColumnsAreCategorical:) {
+    let columnMappings = 
+        whichColumnsAreCategorical ~~ fun(columnIx) {
+            makeCategoricalMapping(
+                inputs.getColumn(columnIx), outputs, classes: classes
+                )
+            };
+    
+    fun
+    (dataframe.DataFrame(df)) {
+        dataframe.DataFrame(
+            df.columns.applyWithIndex(
+                fun(column, columnIx) {
+                    try {
+                        let index = whichColumnsAreCategorical.index(columnIx)
+                        column ~~ fun(elt) {
+                            columnMappings[index][elt]
+                            }
+                        }
+                    catch (...) {
+                        column
+                        }
+                    }
+                )
+            )
+        }
+    (row) {
+        Vector.range(
+            size(row),
+            fun(columnIx) {
+                try {
+                    let index = whichColumnsAreCategorical.index(columnIx);
+                    columnMappings[index][row[columnIx]]
+                    }
+                catch (...) {
+                    row[columnIx]
+                    }
+                }
+            );
+        }
+    }
+(inputs, outputs, classes:) {
+    assertions.assertEqual(size(inputs), size(outputs));
+    
+    let classOne = classes[1]
+    let classOneCountFun = fun(val) {
+        if (val == classOne)
+            return 1.0
+        return 0.0
+        };
+    let res = 
+        sorting.reduce(
+            `ProcessToVector(
+                iter.zip(inputs, outputs)
+                ),
+            { _[0] },
+            { (totalCount: 0.0, countInClassOne: 0.0) },
+            fun(a, b) { 
+                (totalCount: a.totalCount + 1.0, 
+                 countInClassOne: a.countInClassOne + classOneCountFun(b[1]))
+                },
+            fun(a, b) { 
+                (totalCount: a.totalCount + b.totalCount, 
+                 countInClassOne: a.countInClassOne + b.countInClassOne) 
+                }
+            ).apply(
+                fun((group: group, reduction: reduction)) {
+                    (group: group, 
+                     reduction: reduction.countInClassOne / reduction.totalCount)
+                    }
+                );
+    sorting.VectorDictionary(res)
+    };
+

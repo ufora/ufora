@@ -1,0 +1,669 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "ModuleGraphStructure.hppml"
+#include <set>
+#include "../../core/containers/TwoWaySetMap.hpp"
+#include "ModuleParseResult.hppml"
+#include "RebindFreeMemberAccesses.hppml"
+#include "ModuleBinding.hppml"
+#include "../../core/math/GraphUtil.hpp"
+#include "../../core/Logging.hpp"
+#include "ModuleBindingResult.hppml"
+#include "../Core/ImplValContainerUtilities.hppml"
+#include "FunctionStage1Simulation.hppml"
+
+namespace Fora {
+
+typedef ModuleGraphStructure::symbol_list_type symbol_list_type;
+
+namespace {
+
+std::string pathToDots(symbol_list_type res)
+	{
+	std::string path = res[0].toString();
+
+	for (long k = 1; k < res.size(); k++)
+		path = path + "." + res[k].toString();
+
+	return path;
+	}
+
+}
+
+ModuleGraphStructure::ModuleGraphStructure(
+				const ModuleParseResult& parseResult,
+				const ImmutableTreeMap<Symbol, pair<ImplValContainer, Nullable<Symbol> > >& freeVariableBindings
+				) :
+			mFreeVariableBindings(freeVariableBindings),
+			mMaxMemberDepth(0)
+	{
+	lassert(parseResult.isModule());
+
+	populateMembersByName(parseResult, symbol_list_type());
+
+	for (auto nameAndMember: mMembersByName)
+		resolveReferences(nameAndMember.first);
+
+	propagateDirtyness();
+
+	computeConnectedComponents();
+	}
+
+void ModuleGraphStructure::computeConnectedComponents()
+	{
+	//check for the special case where the module is empty. In this case, the 
+	//Call to GraphUtil won't work, because there are no edges in the graph, and
+	//GraphUtil assumes that there is at least one edge touching every node.
+	if (mMembersByName.size() == 1 && mInvalidMembers.size() == 0)
+		{
+		lassert(mMembersByName.size() == 1);
+		mConnectedModuleComponents.resize(1);
+		mConnectedModuleComponents[0].insert(mMembersByName.begin()->first);
+		return;
+		}
+
+	GraphUtil::computeStronglyConnectedComponents(
+		mModuleMemberReferences, 
+		mConnectedModuleComponents,
+		true, 
+		false
+		);
+
+	for (long componentIx = 0; componentIx < mConnectedModuleComponents.size(); componentIx++)
+		for (auto path: mConnectedModuleComponents[componentIx])
+			mMemberToConnectedComponent[path] = componentIx;
+
+	//ensure that all members that are not invalid have a component
+	for (auto nameAndMember: mMembersByName)
+		if (mInvalidMembers.find(nameAndMember.first) == mInvalidMembers.end())
+			lassert_dump(
+				mMemberToConnectedComponent.find(nameAndMember.first) != mMemberToConnectedComponent.end(),
+				"Can't find a connected component holding " << pathToDots(nameAndMember.first)
+				);
+	}
+
+void ModuleGraphStructure::populateMembersByName(
+			const ModuleParseResult& parseResult,
+			symbol_list_type curList
+			)
+	{
+	mMaxMemberDepth = std::max<long>(mMaxMemberDepth, curList.size() + 1);
+
+	@match ModuleParseResult(parseResult)
+		-| Member(name) ->> {
+			mMembersByName[curList + name] = parseResult;
+			mKnownChildNamesAndIsComplete[curList + name].second = true;
+			}
+		-| Module(name, _, _, submodules, allNamesAreKnown) ->> {
+			auto curName = curList + name;
+
+			mMembersByName[curName] = parseResult;
+
+			auto& namesAndIsComplete = mKnownChildNamesAndIsComplete[curName];
+
+			namesAndIsComplete.second = allNamesAreKnown;
+
+			for (auto nameAndChild: submodules)
+				{
+				populateMembersByName(nameAndChild.second, curList + name);
+				namesAndIsComplete.first.insert(nameAndChild.first);
+				}
+			}
+	}
+
+symbol_list_type ModuleGraphStructure::refinePathAsMuchAsPossible(symbol_list_type path, symbol_list_type dotAccesses)
+	{
+	while (dotAccesses.size() && 
+			mKnownChildNamesAndIsComplete[path].first.find(dotAccesses[0]) != 
+				mKnownChildNamesAndIsComplete[path].first.end())
+		{
+		path = path + dotAccesses[0];
+		dotAccesses = dotAccesses.slice(1);
+		}
+
+	return path;
+	}
+
+//given a dot-access-chain 'internalPath' originating within module member
+//'path', which member does this resolve to
+ModuleGraphStructure::PathResolution ModuleGraphStructure::resolvePath(symbol_list_type internalPath, symbol_list_type path)
+	{
+	lassert(internalPath.size());
+
+	while (path.size())
+		{
+		auto& childrenAndIsComplete = mKnownChildNamesAndIsComplete[path];
+
+		if (childrenAndIsComplete.first.find(internalPath[0]) != 
+				childrenAndIsComplete.first.end())
+			return PathResolution::ToMember(
+				refinePathAsMuchAsPossible(path + internalPath[0], internalPath.slice(1))
+				);
+
+		if (!childrenAndIsComplete.second)
+			{
+			//we are in a module whose members are not all known. As a result, we cannot
+			//know whether this path would reference a member of this module or not
+			return PathResolution::Unknown();
+			}
+
+		if (path.back() == internalPath[0])
+			return PathResolution::ToMember(path);
+
+		path = path.slice(0, path.size()-1);
+		}
+
+	return PathResolution::ToFreeVariable();
+	}
+
+void ModuleGraphStructure::resolveReferences(symbol_list_type path)
+	{
+	lassert(path.size());
+
+	@match ModuleParseResult(mMembersByName[path])
+		-| Member(_, _, Result(expr), location) ->> {
+			ImmutableTreeSet<symbol_list_type> accesses =
+					freeMemberAccessChains(expr);
+
+			std::set<symbol_list_type> referenced;
+
+			std::set<Symbol> freeVariablesMentioned;
+
+			for (symbol_list_type internalPath: accesses)
+				{
+				//see if we can see who this path resolves to
+				PathResolution resolution = resolvePath(internalPath, path);
+
+				@match PathResolution(resolution)
+					-| ToFreeVariable() ->> {
+						if (!mFreeVariableBindings.contains(internalPath[0]))
+							{
+							if (freeVariablesMentioned.find(internalPath[0]) == freeVariablesMentioned.end())
+								{
+								for (auto location: mMembersByName[path].computeFreeVariableLocations(internalPath[0]))
+									mExtraParseErrors[path] = mExtraParseErrors[path] + 
+										ModuleParseError(
+											"Variable " + internalPath[0].toString() + " undefined",
+											location
+											);
+								}
+
+							mInvalidMembers.insert(path);
+							}
+						}
+					-| ToMember(pathToMember) ->> {
+						referenced.insert(pathToMember);
+						}
+					-| Unknown() ->> {
+						mInvalidMembers.insert(path);
+						
+						mExtraParseErrors[path] = mExtraParseErrors[path] + 
+							ModuleParseError(
+								"Variable reference " + pathToDots(internalPath) + " couldn't " +
+									"be resolved because some containing modules do not parse correctly",
+								location
+								);
+						}
+				}
+
+			if (mInvalidMembers.find(path) != mInvalidMembers.end())
+				return;
+
+			for (auto r: referenced)
+				mModuleMemberReferences.insert(path, r);
+
+			//members implicitly reference themselves
+			if (!mModuleMemberReferences.contains(path,path))
+				mModuleMemberReferences.insert(path, path);
+			}
+		-| Member(_, _, ParseError(e)) ->> {
+			mInvalidMembers.insert(path);
+			}
+		-| Module(_,_,_,submodules,allNamesAreKnown) ->> {
+			if (!allNamesAreKnown)
+				mInvalidMembers.insert(path);
+			else
+				{
+				//modules implicitly reference all of their children
+				for (auto nameAndChild: submodules)
+					mModuleMemberReferences.insert(path, path + nameAndChild.first);
+				}
+			}
+	}
+
+ImmutableTreeVector<ModuleParseError> ModuleGraphStructure::firstParseErrorFor(symbol_list_type path)
+	{
+	@match ModuleParseResult(mMembersByName[path])
+		-| Member(_,_,ParseError(e)) ->> {
+			return emptyTreeVec() + e;
+			}
+		-| Member(_,_,_) ->> {
+			return mExtraParseErrors[path].slice(0,1);
+			}
+		-| Module(_,_,errors) ->> {
+			if (errors.size())
+				return errors.slice(0,1);
+			return mExtraParseErrors[path].slice(0,1);
+			}
+	}
+
+void ModuleGraphStructure::propagateDirtyness()
+	{
+	//we want all module members depending on an invalid member to themselves
+	//be marked as invalid
+	std::set<symbol_list_type> toCheck = mInvalidMembers;
+
+	while (toCheck.size())
+		{
+		symbol_list_type path = *toCheck.begin();
+		toCheck.erase(path);
+
+		std::set<symbol_list_type> dependingOnThis = mModuleMemberReferences.getKeys(path);
+
+		mModuleMemberReferences.dropKey(path);
+
+		for (auto child: dependingOnThis)
+			if (mInvalidMembers.find(child) == mInvalidMembers.end())
+				{
+				mExtraParseErrors[child] = mExtraParseErrors[child] + firstParseErrorFor(path);
+				mInvalidMembers.insert(child);
+				toCheck.insert(child);
+				}
+		}
+
+	validateDirtyness();
+	}
+
+void ModuleGraphStructure::validateDirtyness()
+	{
+	for (auto invalid: mInvalidMembers)
+		{
+		lassert(mModuleMemberReferences.getKeys(invalid).size() == 0);
+		lassert(mModuleMemberReferences.getValues(invalid).size() == 0);
+		}
+	}
+
+Nullable<pair<ImplValContainer, Symbol> > ModuleGraphStructure::boundValuePairForPath(symbol_list_type path)
+	{
+	if (!path.size())
+		return null();
+
+	auto it = mMemberToConnectedComponent.find(path);
+
+	if (it == mMemberToConnectedComponent.end())
+		return null();
+
+	long componentIx = it->second;
+
+	ImplValContainer copyOfModule = computeModuleCopyForComponent(componentIx);
+
+	for (long k = 1; k < path.size()-1;k++)
+		{
+		Nullable<ImplValContainer> child = 
+			getObjectMember(copyOfModule, path[k]);
+
+		if (!child)
+			return null();
+
+		copyOfModule = *child;
+		}
+
+	return null() << make_pair(copyOfModule, path.back());
+	}
+
+Nullable<ImplValContainer> ModuleGraphStructure::boundValueForPath(symbol_list_type path)
+	{
+	auto it = mMemberToConnectedComponent.find(path);
+
+	if (it == mMemberToConnectedComponent.end())
+		return null();
+
+	long componentIx = it->second;
+
+	ImplValContainer copyOfModule = computeModuleCopyForComponent(componentIx);
+
+	for (long k = 1; k < path.size();k++)
+		{
+		Nullable<ImplValContainer> child = 
+			getObjectMember(copyOfModule, path[k]);
+
+		if (!child)
+			return null();
+
+		copyOfModule = *child;
+		}
+
+	return null() << copyOfModule;
+	}
+
+Nullable<ImplValContainer> ModuleGraphStructure::getObjectMember(ImplValContainer object, Symbol member)
+	{
+	//we have to pick a maximum number of steps the simulation can take. It should be
+	//proportional to the maximum member depth
+	FunctionStage1::Simulation sim( (mMaxMemberDepth + 1) * 10 );
+
+	FunctionStage1::ExpressionEvaluationResult result = 
+		sim.evaluateApply(
+			emptyTreeVec() + 
+				object + 
+				ImplValContainerUtilities::createSymbol(Symbol::Member()) + 
+				ImplValContainerUtilities::createSymbol(member)
+			);
+
+	@match FunctionStage1::ExpressionEvaluationResult(result)
+		-| Result(val) ->> {
+			return null() << val;
+			}
+		-| _ ->> {
+			return null();
+			}
+	}
+
+ImplValContainer ModuleGraphStructure::computeModuleCopyForComponent(long component)
+	{
+	if (mModuleCopiesPerComponent.find(component) != mModuleCopiesPerComponent.end())
+		return mModuleCopiesPerComponent[component];
+
+	lassert(component < mConnectedModuleComponents.size() && component >= 0);
+	lassert_dump(
+		mConnectedModuleComponents[component].size(),
+		"Component " << component << " doesn't exist. I have " 
+			<< prettyPrintString(mConnectedModuleComponents)
+		);
+
+	std::set<long> downstreamComponents;
+
+	std::set<symbol_list_type> downstreamPaths;
+	for (auto path: mConnectedModuleComponents[component])
+		for (auto downstreamPath: mModuleMemberReferences.getValues(path))
+			if (component != mMemberToConnectedComponent[downstreamPath])
+				{
+				downstreamPaths.insert(downstreamPath);
+
+				downstreamComponents.insert(
+					mMemberToConnectedComponent[downstreamPath]
+					);
+				}
+
+	std::map<long, ImplValContainer> childComponents;
+
+	for (auto component: downstreamComponents)
+		childComponents[component] = computeModuleCopyForComponent(component);
+
+	const std::set<symbol_list_type>& symbolsInThisComponent = mConnectedModuleComponents[component];
+
+	std::map<long, Symbol> alternateBoundNames;
+
+	for (auto ixAndIVC: childComponents)
+		alternateBoundNames[ixAndIVC.first] = 
+			freshSymbolIn(
+				"module_" + hashToString(ixAndIVC.second.hash()),
+				symbolsInThisComponent
+				);
+
+	std::map<symbol_list_type, Symbol> lookupForDownstream;
+	for (auto path: downstreamPaths)
+		lookupForDownstream[path] = 
+			alternateBoundNames[mMemberToConnectedComponent[path]];
+
+	ModuleParseResult subResult = buildRestrictedParseResult(
+		symbolsInThisComponent,
+		downstreamPaths,
+		lookupForDownstream
+		);
+
+	ImmutableTreeMap<Symbol, pair<ImplValContainer, Nullable<Symbol> > > childBindings;
+	for (auto componentAndChild: childComponents)
+		childBindings = childBindings + 
+			alternateBoundNames[componentAndChild.first] + 
+			make_pair(componentAndChild.second, Nullable<Symbol>())
+			;
+
+	for (auto freeVar: subResult.freeVariables())
+		if (!childBindings.contains(freeVar))
+			{
+			lassert_dump(mFreeVariableBindings[freeVar], 
+				"Expression had free variable " << prettyPrintString(freeVar) 
+					<< " but mFreeVariableBindings didn't have it. "
+					<< prettyPrintString(subResult)
+					<< ". symbols looked up below us are "
+					<< prettyPrintString(lookupForDownstream)
+					<< ". symbols defined in this component are "
+					<< prettyPrintString(symbolsInThisComponent)
+				);
+
+			childBindings = childBindings + freeVar + *mFreeVariableBindings[freeVar];
+			}
+
+	mModuleCopiesPerComponent[component] = bindModuleParseResultDirectly(subResult, childBindings);
+
+	return mModuleCopiesPerComponent[component];
+	}
+
+bool anyParentIn(symbol_list_type s, const std::set<symbol_list_type>& toSearch)
+	{
+	for (long k = 0; k < s.size();k++)
+		if (toSearch.find(s.slice(0,k)) != toSearch.end())
+			return true;
+	return false;
+	}
+
+ModuleParseResult ModuleGraphStructure::buildRestrictedParseResult(
+						const set<symbol_list_type>& inMembers,
+						const set<symbol_list_type>& inDownstream,
+						const std::map<symbol_list_type, Symbol>& lookupForDownstream
+						)
+	{
+	set<symbol_list_type> members = inMembers;
+	set<symbol_list_type> downstream;
+
+	//if we have a downstream dependency on both 'm' and 'm.x', no reason to actually
+	//try and provide 'm.x' since it's provided implicitly by 'm'
+	for (auto d: inDownstream)
+		if (!anyParentIn(d, inDownstream))
+			downstream.insert(d);
+
+
+
+	lassert(members.size());
+	lassert(members.begin()->size() > 0);
+
+	Symbol root = (*members.begin())[0];
+
+	std::map<symbol_list_type, std::set<Symbol> > childMapping;
+
+	for (auto m: members)
+		{
+		lassert(m.size() && m[0] == root);
+		for (long k = 1; k < m.size(); k++)
+			childMapping[m.slice(0,k)].insert(m[k]);
+		}
+
+	for (auto m: downstream)
+		{
+		lassert(m.size() && m[0] == root);
+		for (long k = 1; k < m.size(); k++)
+			childMapping[m.slice(0,k)].insert(m[k]);
+		}
+
+	boost::function<ModuleParseResult (symbol_list_type)> builder = 
+		[&](symbol_list_type path) {
+			const std::set<Symbol>& children = childMapping[path];
+
+			if (children.size())
+				{
+				lassert_dump(
+					downstream.find(path) == downstream.end(),
+					"Found " << pathToDots(path) << " in downstream set. "
+					);
+
+				ImmutableTreeMap<Symbol, ModuleParseResult> subresults;
+
+				for (auto c: children)
+					subresults = subresults + c + builder((path + c));
+
+				@match ModuleParseResult(mMembersByName[path])
+					-| Module(name, moduleMeta, parseErrors, submodules, allKnown, location, parseMeta) ->> {
+						return ModuleParseResult::Module(
+							name,
+							moduleMeta,
+							emptyTreeVec(),
+							subresults,
+							true,
+							location,
+							parseMeta
+							);
+						}
+					-| _ ->> {
+						lassert_dump(false, "Expected a Module, got " << mMembersByName[path].tagName());
+						}
+				}
+			else
+				{
+				@match ModuleParseResult(mMembersByName[path])
+					-| Member(name, memberMeta, Result(expr), location, parseMeta) ->> {
+						Expression newExpr = expr;
+
+						if (members.find(path) == members.end())
+							{
+							auto it = lookupForDownstream.find(path);
+							lassert(it != lookupForDownstream.end());
+
+							//this is downstream
+							newExpr = accessChainExpression(it->second + path.slice(1));
+							}
+
+						return ModuleParseResult::Member(
+							name,
+							memberMeta,
+							ExpressionOrParseError::Result(newExpr),
+							location,
+							parseMeta
+							);
+						}
+					-| Module(name, moduleMeta, parseErrors, submodules, allKnown, location, parseMeta) ->> {
+						lassert(members.find(path) == members.end());
+
+						auto it = lookupForDownstream.find(path);
+						lassert(it != lookupForDownstream.end());
+
+						//this is downstream
+						Expression newExpr = accessChainExpression(it->second + path.slice(1));
+						
+						return ModuleParseResult::Member(
+							name,
+							moduleMeta,
+							ExpressionOrParseError::Result(newExpr),
+							location,
+							parseMeta
+							);
+						}
+					-| _ ->> {
+						lassert_dump(false, "Expected a Member, got " << mMembersByName[path].tagName()
+								<< ". path is " << prettyPrintString(path) << " with no children.\n"
+								<< "children map is\n"
+								<< prettyPrintString(childMapping)
+								<< "downstream are " << prettyPrintString(downstream) << "\n"
+								<< "members are " << prettyPrintString(members) << "\n"
+							);
+						}
+
+				}
+			};
+
+	return builder(symbol_list_type() + root);
+	}
+
+Expression ModuleGraphStructure::accessChainExpression(symbol_list_type path)
+	{
+	Expression e = Expression::Variable(path[0]);
+	for (long k = 1; k < path.size();k++)
+		e = Expression::Member(e, path[k], 1);
+	return e;
+	}
+
+Symbol ModuleGraphStructure::freshSymbolIn(std::string symbol, const std::set<symbol_list_type>& symbols)
+	{
+	while (true)
+		{
+		bool any = false;
+
+		for (auto chain: symbols)
+			for (auto s: chain)
+				if (symbol == s.toString())
+					any = true;
+
+		if (!any)
+			return Symbol(symbol);
+
+		symbol = symbol + "_";
+		}
+	}
+
+ModuleBindingResult ModuleGraphStructure::computeBindingResult()
+	{
+	boost::function<ModuleBindingResult (symbol_list_type)> builder = 
+		[&](symbol_list_type path) {
+
+			@match ModuleParseResult(mMembersByName[path])
+				-| Member(name, memberMeta, ParseError(err), location, parseMeta) ->> {
+					return ModuleBindingResult::Member(
+						name,
+						null(),
+						emptyTreeVec() + err + mExtraParseErrors[path],
+						parseMeta,
+						location
+						);
+					}
+				-| Member(name, memberMeta, _, location, parseMeta) ->> {
+					Nullable<pair<ImplValContainer, Symbol> > actualValue = boundValuePairForPath(path);
+
+					return ModuleBindingResult::Member(
+						name,
+						actualValue,
+						mExtraParseErrors[path],
+						parseMeta,
+						location
+						);
+					}
+				-| Module(name, moduleMetadata, parseErrors, submodules, allMembersKnown, location, parseMeta) ->> {
+					Nullable<ImplValContainer> actualValue = boundValueForPath(path);
+
+					ImmutableTreeMap<Symbol, ModuleBindingResult> children;
+
+					for (auto childAndParse: submodules)
+						children = children + childAndParse.first + builder(path + childAndParse.first);
+
+					return ModuleBindingResult::Module(
+						name,
+						actualValue,
+						children,
+						parseErrors + mExtraParseErrors[path],
+						allMembersKnown,
+						parseMeta
+						);
+					}
+			};
+
+	lassert(mMembersByName.size());
+	symbol_list_type root = mMembersByName.begin()->first.slice(0,1);
+
+	return builder(root);
+	}
+
+}

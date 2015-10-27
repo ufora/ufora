@@ -1,0 +1,238 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "IntegerSequence.hppml"
+#include "../Logging.hpp"
+#include <boost/math/common_factor_rt.hpp>
+
+namespace {
+
+int64_t roundUp(int64_t val, int64_t mul)
+	{
+	return ((val - 1) / mul + 1) * mul;
+	}
+int64_t roundDown(int64_t val, int64_t mul)
+	{
+	return (val / mul) * mul;
+	}
+
+}
+
+IntegerSequence IntegerSequence::slice(
+					Nullable<int64_t> nLow, 
+					Nullable<int64_t> nHigh, 
+					Nullable<int64_t> nStride
+					)  const
+	{
+	if (size() == 0)
+		return IntegerSequence(0,0,1);
+
+	int64_t strideVal = (nStride ? *nStride : 1);
+
+	lassert(strideVal != 0);
+
+	if (strideVal > 0)
+		{
+		int64_t lowVal = (nLow ? *nLow : 0);
+		int64_t highVal = (nHigh ? *nHigh : size());
+
+		if (lowVal < 0)
+			lowVal += size();
+		if (lowVal < 0)
+			lowVal += roundUp(-lowVal, strideVal);
+
+		if (highVal < 0)
+			highVal += size();
+
+		if (highVal > size())
+			highVal = size();
+
+		if (lowVal >= highVal)
+			return IntegerSequence(0,0,1);
+
+		int64_t newSize = (highVal - lowVal - 1) / strideVal + 1;
+
+		if (newSize == 0)
+			return IntegerSequence(0,0,1);
+
+		return IntegerSequence(newSize, offset() + lowVal * stride(), stride() * strideVal);
+		}
+	else
+		{
+		int64_t lowVal = (nLow ? *nLow : size() - 1);
+		int64_t highVal = (nHigh ? *nHigh : -1 - (int64_t)size());
+
+		if (highVal < 0)
+			highVal += size();
+
+		if (highVal < -1)
+			highVal = -1;
+
+		if (lowVal < 0)
+			lowVal += size();
+
+		if (lowVal >= size())
+			lowVal -= roundUp(lowVal - size() + 1, -strideVal);
+
+		if (lowVal <= highVal)
+			return IntegerSequence(0,0,1);
+
+		int64_t newSize = (lowVal - highVal - 1) / (-strideVal) + 1;
+
+		if (newSize == 0)
+			return IntegerSequence(0,0,1);
+
+		return IntegerSequence(newSize, offset() + lowVal * stride(), stride() * strideVal);
+		}
+	}
+
+IntegerRange IntegerSequence::containingRange() const
+	{
+	return IntegerRange(smallestValue(), largestValue() + 1);
+	}
+
+IntegerSequence IntegerSequence::slice(IntegerSequence inSequence) const
+	{
+	inSequence = inSequence.intersect(IntegerSequence(size()));
+	if (!inSequence.size())
+		return IntegerSequence();
+
+	if (inSequence.stride() > 0)
+		{
+		int64_t newCount = std::min(inSequence.size(), (size() - inSequence.offset() - 1) / inSequence.stride() + 1);
+
+		if (newCount < 0)
+			newCount = 0;
+
+		return IntegerSequence(
+			newCount,
+			offset() + stride() * inSequence.offset(),
+			stride() * inSequence.stride()
+			);
+		}
+	else
+		{
+		int64_t newCount = std::min(inSequence.size(), (inSequence.offset()) / -inSequence.stride() + 1);
+
+		if (newCount < 0)
+			newCount = 0;
+
+		return IntegerSequence(
+			newCount,
+			offset() + stride() * inSequence.offset(),
+			stride() * inSequence.stride()
+			);
+		}
+	}
+
+namespace {
+
+//find a power K of p such that Kp = 1 mod q
+int64_t modpower(int64_t p, int64_t q)
+	{
+	lassert(p < q || p == q && q == 1);
+	
+	if (p == 1 && q == 1)
+		return 1;
+
+	int64_t res = 1;
+
+	//we could do this faster using the binary decomposition of q-2
+	while ( (res * p) % q != 1 )
+		res = (res * p) % q;
+
+	return res;
+	}
+
+}
+
+
+Nullable<IntegerSequence> IntegerSequence::isSequentialWith(const IntegerSequence& otherSequence) const
+	{
+	if (stride() != otherSequence.stride())
+		return null();
+	
+	if (offset() + size() * stride() != otherSequence.offset())
+		return null();
+
+	return null() << IntegerSequence(size() + otherSequence.size(), offset(), stride());
+	}
+
+
+IntegerSequence IntegerSequence::intersect(IntegerSequence sequence) const
+	{
+	if (!size() || !sequence.size())
+		return IntegerSequence();
+	
+	lassert(stride() != 0 && sequence.stride() != 0);
+
+	if (stride() < 0)
+		return reversed().intersect(sequence).reversed();
+
+	if (sequence.stride() < 0)
+		return intersect(sequence.reversed());
+
+	if (stride() > sequence.stride())
+		return sequence.intersect(*this);
+
+	//both strides are positive now. first, pick the common stride
+	int64_t newStride = boost::math::lcm(sequence.stride(), stride());
+
+	//gcd gives us the smallest granularity we can produce using the relative offsets
+	int64_t gcd = boost::math::gcd(sequence.stride(), stride());
+
+	//if the two startpoints are different by an amount we can't produce, then we're the empty
+	//set. e.g. if both strides are 2 and the offset is odd
+	if ( (offset() - sequence.offset()) % gcd )
+		return IntegerSequence();
+
+	//find how many times we have to add 'stride()' to increase the offset by the gcd
+	int64_t multipleToShiftBy = modpower(stride() / gcd, sequence.stride() / gcd);
+
+	//this point should therefore be reachable by both of us
+	int64_t aCommonPoint = offset() - (offset() - sequence.offset()) / gcd * multipleToShiftBy * stride();
+
+	lassert( (aCommonPoint - sequence.offset()) % sequence.stride() == 0 );
+
+	//reduce it as long as it's not smaller than both of our offsets
+	int64_t farthestPointToReduceTo = std::max(offset(), sequence.offset());
+
+	if (aCommonPoint < farthestPointToReduceTo)
+		aCommonPoint += roundUp(farthestPointToReduceTo - aCommonPoint, newStride);
+	else
+		aCommonPoint -= roundDown(aCommonPoint - farthestPointToReduceTo, newStride);
+
+	//aCommonPoint is now as close to the two orginal points as we can get and can be reached
+	//by both sets
+	lassert( (aCommonPoint - sequence.offset()) % sequence.stride() == 0 );
+
+	//pick how many points there are
+	int64_t maxInclusivePoint = std::min(largestValue(), sequence.largestValue());
+
+	if (maxInclusivePoint < aCommonPoint)
+		return IntegerSequence();
+
+	int64_t finalSize = 
+		roundUp(maxInclusivePoint + 1 - aCommonPoint, newStride ) / newStride;
+
+	return IntegerSequence(finalSize, aCommonPoint, newStride);
+	}
+
+IntegerSequence IntegerSequence::reversed() const
+	{
+	return IntegerSequence(size(), offset() + (size() - 1) * stride(), -stride());
+	}
+
+

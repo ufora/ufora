@@ -1,0 +1,144 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <boost/thread.hpp>
+#include "../../core/Common.hppml"
+#include "../../core/PolymorphicSharedPtr.hpp"
+#include "../../core/threading/ScopedThreadLocalContext.hpp"
+#include "../../core/threading/Queue.hpp"
+#include "../../core/threading/CallbackScheduler.hppml"
+#include <map>
+#include <deque>
+
+namespace Fora {
+namespace Interpreter {
+
+class ExecutionContextMarkExecutingScope;
+class ExecutionContextInterruptAndLockScope;
+class ExecutionContextImpl;
+class ExecutionContext;
+
+class ExecutionContextExecutionState {
+public:
+	ExecutionContextExecutionState(
+				ExecutionContextImpl* inContext,
+				uword_t* interruptFlagPtr, 
+				sword_t* interruptCounterPtr
+				);
+
+	~ExecutionContextExecutionState();
+
+	bool isExecuting();
+
+	bool isInterrupted();
+
+	//request that the VDM check execute as soon as possible. The VDM check will be scheduled
+	//on another thread, and is guaranteed to be the next thread to get a lock on the 
+	//ExecutionContext
+	void scheduleVdmCheck();
+
+	//are we scheduled to be garbage collected when we can?
+	bool isGcScheduled();
+
+	//is a GC thread actually blocking on us?
+	bool isGcPending();
+
+	void interrupt();
+
+	void interruptAfterCycleCount(sword_t inCycles);
+
+	sword_t remainingCycleCount();
+
+	void resetInterruptState();
+
+	bool resetInterruptStateIfOnlyTriggeredInternally();
+
+	long totalLocksBlocking();
+
+	bool interruptWasExternallyTriggered();
+
+	void markDestroyed();
+
+private:
+	void interrupt_(bool isExternal);
+
+	void releaseCurrentLock();
+
+	void acquireLock(long lockLevel);
+
+	void lockAndExecuteVdmCheck(
+				PolymorphicSharedPtr<ExecutionContextImpl> keepalive,
+				boost::shared_ptr<Queue<bool> > lockAcquiredCondition
+				);
+
+	boost::mutex mMutex;
+
+	bool mIsDestroyed;
+
+	bool mIsGcPending;
+
+	bool mInterruptIsExternal;
+
+	uword_t* mInterruptFlagPtr;
+
+	sword_t* mInterruptCounterPtr;
+
+	boost::thread::id mCurrentlyLockingThreadId;
+				
+	bool mIsCurrentlyExecuting;
+
+	long mCurrentLockCount;
+
+	bool mLockIsBeingTransferred;
+
+	bool mGcScheduled;
+
+	long mTotalLocksBlocking;
+
+	double mTimestampOfGcScheduled;
+
+	std::map<long, std::deque<boost::shared_ptr<Queue<bool> > > > mPendingLockConditions;
+
+	ExecutionContextImpl* mContext;
+
+	friend class Fora::Interpreter::ExecutionContextMarkExecutingScope;
+	friend class Fora::Interpreter::ExecutionContextInterruptAndLockScope;
+};
+
+
+class ExecutionContextMarkExecutingScope {
+public:
+		ExecutionContextMarkExecutingScope(ExecutionContextExecutionState& inContext);
+		~ExecutionContextMarkExecutingScope();
+private:
+		ExecutionContextExecutionState& mContext;
+		Ufora::threading::ScopedThreadLocalContext<ExecutionContext> mSetECContext;
+};
+
+class ExecutionContextInterruptAndLockScope {
+public:
+		ExecutionContextInterruptAndLockScope(ExecutionContextExecutionState& inContext);
+		~ExecutionContextInterruptAndLockScope();
+private:
+		ExecutionContextExecutionState& mContext;
+		Ufora::threading::ScopedThreadLocalContext<ExecutionContext> mSetECContext;
+};
+
+
+}
+}
+

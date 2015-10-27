@@ -1,0 +1,394 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "FunctionStage3Simplifier.hppml"
+#include "../../core/cppml/CPPMLTransform.hppml"
+#include "../../core/Logging.hpp"
+
+namespace FunctionStage3 {
+
+
+
+Simplifier::Simplifier(VariableAllocator& inAlloc)
+	{
+	allocator() = &inAlloc;
+	}
+
+Simplifier Simplifier::mapped(variable_index_type var, variable_index_type to) const
+	{
+	if (varmap().contains(to))
+		return mapped(var, *varmap()[to]);
+	if (constantmap().contains(to))
+		return mapped(var, *constantmap()[to]);
+	return Simplifier(allocator(), varmap() + var + to, constantmap(), throwmap());
+	}
+
+Simplifier	Simplifier::mapped(variable_index_type var, CSTValue val) const
+	{
+	return Simplifier(allocator(), varmap(), constantmap() + var + val, throwmap());
+	}
+
+Simplifier	Simplifier::constantThrowMapped(
+				variable_index_type varInner,
+				variable_index_type varMappedTo,
+				CSTValue val
+				) const
+	{
+	if (throwmap().contains(varMappedTo))
+		return constantThrowMapped(
+			varInner,
+			throwmap()[varMappedTo]->first,
+			throwmap()[varMappedTo]->second
+			);
+	
+	return Simplifier(
+		allocator(),
+		varmap(),
+		constantmap(),
+		throwmap() + varInner + make_pair(varMappedTo, val)
+		);
+	}
+
+Nullable<Input> Simplifier::processDown(
+								const Input& in,
+								bool& ioContinue
+								) const
+	{
+	@match Input(in)
+		-|	Variable(v) ->> {
+			if (constantmap().contains(v))
+				return null() <<
+					Input::Constant(
+						*constantmap()[v]
+						)
+					;
+			if (varmap().contains(v))
+				return null() <<
+					Input::Variable(
+						*varmap()[v]
+						)
+					;
+			return null();
+			}
+		-|	_ ->> {
+			return null();
+			}
+		;
+	}
+
+namespace {
+
+bool anySwitchesThrowTo(const ImmutableTreeMap<CSTValue, Expression>& switches, 
+						variable_index_type throwTarget
+						)
+	{
+	for (long k = 0; k < switches.size();k++)
+		if (switches.pairAtPosition(k).second.throwTargets().contains(null() << throwTarget))
+			return true;
+	return false;
+	}
+
+}
+
+Nullable<Expression> Simplifier::processTryBlock(const Expression& inExpr, bool& ioContinue) const
+	{
+	@match Expression(inExpr)
+		-|	Try(e, Value(targetCatch), (vars, Throw(Constant(c), Value(tgtThrow)))) ->> {
+			//we can get rid of this try-catch. Throwing anything to 'targetCatch' is
+			//equivalent to throwing c to 'tgtThrow'.
+			ioContinue = false;
+			return null() << 
+				transform(
+					e,
+					constantThrowMapped(targetCatch, tgtThrow, c)
+					);
+			}
+		-|	Try(
+				Switch(Variable(var1), switches1, Throw(Constant(c), Value(tgtThrow))), 
+				Value(tgtCatch),
+				(catchVars, 
+					Try(
+						Switch(Variable(var2), switches2, otherwise2),
+						tgtCatch2,
+						catchFun2
+						)
+					)
+				) ->> {
+
+			if (!(tgtThrow == tgtCatch) || anySwitchesThrowTo(switches1, tgtThrow) || !(var1 == var2))
+				return null();
+
+			ioContinue = false;
+
+			Expression innerExpression = 
+				Expression::Let(
+					inExpr.definingExpressionLocationId(),
+					catchVars[0],
+					Expression::Constant(c),
+					Expression::Try(
+						inExpr.definingExpressionLocationId(),
+						Expression::Switch(
+							Input::Variable(var1),
+							switches2 + switches1,
+							otherwise2
+						),
+						tgtCatch2,
+						catchFun2
+					)
+				);
+			return null() << 
+				transform(
+					innerExpression,
+					*this
+					);
+			}
+		-|	Try(e, tgt, c) ->> {
+			if (!e.throwTargets().contains(tgt))
+				{
+				ioContinue = false;
+				return null() << transform(e, *this);
+				}
+			return null();
+			}
+	}
+
+//todo test this function
+Nullable<ImmutableTreeVector<CSTValue> >
+					expandTupleConstant(
+						const CSTValue& value,
+						long argCount,
+						bool lastIsStarArgs
+						)
+	{
+	if (!value.tupleGetSize())
+		return null();
+
+	long tupleSize = *value.tupleGetSize();
+
+	if (!lastIsStarArgs)
+		{
+		if (tupleSize != argCount)
+			return null();
+
+		ImmutableTreeVector<CSTValue> results;
+
+		for (long k = 0; k < argCount; k++)
+			results = results + *value.tupleGetItem(k);
+
+		return null() << results;
+		}
+	else
+		{
+		if (tupleSize + 1 < argCount)
+			return null();
+
+		if (argCount == 1)
+			return null() << (emptyTreeVec() + value);
+
+		ImmutableTreeVector<CSTValue> results;
+
+		for (long k = 0; k + 1 < argCount; k++)
+			results = results + *value.tupleGetItem(k);
+
+		ImmutableTreeVector<CSTValue> remaining;
+		ImmutableTreeVector<Nullable<Symbol> > remainingNames;
+
+		for (long k = argCount; k < tupleSize; k++)
+			{
+			remaining = remaining + *value.tupleGetItem(k);
+			remainingNames = remainingNames + value.tupleGetName(k);
+			}
+
+		results = results + CSTValue::Tuple(remaining, remainingNames);
+
+		return null() << results;
+		}
+	}
+
+Nullable<Expression> Simplifier::processDown(
+								const Expression& inExpr,
+								bool& ioContinue
+								) const
+	{
+	@match Expression(inExpr)
+		-|	Let(v1, Variable(v2), sub) ->> {
+			
+			if (sub.assignedVariables().contains(v1) ||
+				sub.assignedVariables().contains(v2))
+				return null();
+			
+			ioContinue = false;
+			
+			Expression s2 =
+				transform(
+					sub,
+					mapped(v1, v2)
+					);
+
+			lassert_dump(!s2.freeVariables().contains(v1),
+				"after mapping " << prettyPrintString(v1)
+					<< " to " << prettyPrintString(v2)
+					<< " in " << prettyPrintString(inExpr)
+					<< " I still have it in "
+					<< prettyPrintString(s2)
+					);
+			
+			return null() << s2;
+			}
+		-|	Throw(e, target) ->> {
+			if (target && throwmap().contains(*target))
+				{
+				ioContinue = false;
+				
+				//this is what an entry in throwmap means we should do
+				Expression throwExpr =
+					Expression::Throw(
+						Expression::Constant(throwmap()[*target]->second),
+						null() << throwmap()[*target]->first
+						);
+				
+				if (e.isConstant())
+					//we can ignore the constant
+					return null() << throwExpr;
+				else
+					//it might have sideeffects, so we have to evaluate it
+					return null() <<
+						Expression::Let(
+							inExpr.definingExpressionLocationId(),
+							allocator()->get(),
+							e,
+							throwExpr
+							);
+				}
+			}
+		-|	Try() ->> {
+			return processTryBlock(inExpr, ioContinue);
+			}
+		-|	TupleExpand(toExpand, toBindTo, lastIsStarArgs, onSuccess, onFail) ->> {
+			if (constantmap().contains(toExpand))
+				{
+				ioContinue = false;
+				
+				variable_index_type var = allocator()->get();
+
+				Nullable<ImmutableTreeVector<CSTValue> > expansion = 
+					expandTupleConstant(
+						*constantmap()[toExpand],
+						toBindTo.size(),
+						lastIsStarArgs
+						);
+
+				if (!expansion)
+					return null() << transform(onFail, *this);
+				
+				lassert(expansion->size() == toBindTo.size());
+
+				Expression result = transform(onSuccess, *this);
+
+				for (long k = 0; k < expansion->size(); k++)
+					result = Expression::Let(
+						toBindTo[k], 
+						Expression::Constant((*expansion)[k]), 
+						result
+						);
+
+				return null() << result;
+				}
+			
+			if (varmap().contains(toExpand))
+				{
+				ioContinue = false;
+
+				return null() << Expression::TupleExpand(
+					*varmap()[toExpand],
+					toBindTo,
+					lastIsStarArgs,
+					transform(onSuccess, *this),
+					transform(onFail, *this)
+					);
+				}
+
+			return null();
+			}
+		-|	Let(v1, Constant(c), sub) ->> {
+			
+			if (sub.assignedVariables().contains(v1))
+				return null();
+			
+			ioContinue = false;
+			
+			Expression s2 =
+				transform(
+					sub,
+					mapped(v1, c)
+					);
+			
+			lassert(!s2.freeVariables().contains(v1));
+			
+			return null() << s2;
+			}
+		-|	Assign(v, expr) ->> {
+			lassert(!constantmap().contains(v));
+			lassert(!varmap().contains(v));
+			return null();
+			}
+		-|	Variable(v) ->> {
+			if (constantmap().contains(v))
+				return null() <<
+					Expression::Constant(
+						*constantmap()[v]
+						)
+					;
+			if (varmap().contains(v))
+				return null() <<
+					Expression::Variable(
+						*varmap()[v]
+						)
+					;
+			return null();
+			}
+		-|	Let(v1, e1, sub) ->> {            
+			ioContinue = false;
+			Nullable<Expression> e1T = transformNullable(e1, *this);
+			if (e1T)
+				return null() << transform(
+					Expression::Let(inExpr.definingExpressionLocationId(), v1, *e1T, sub),
+					*this
+					);
+			Nullable<Expression> e2T = transformNullable(sub, *this);
+			if (!e2T)
+				return null();
+			return null() << Expression::Let(inExpr.definingExpressionLocationId(), v1, e1, *e2T);
+			}
+		-|	_ ->> {
+			}
+		;
+	return null();
+	}
+
+Function	simplify(const Function& inF, VariableAllocator& inAllocator)
+	{
+	Simplifier simpl(inAllocator);
+
+	Function tr = transform(
+		inF,
+		simpl
+		);
+
+	return tr;
+	}
+
+}
+

@@ -1,0 +1,106 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "LargeMemoryBlockTracker.hppml"
+#include "../../core/UnitTest.hpp"
+
+BOOST_AUTO_TEST_SUITE( test_LargeMemoryBlockTracker )
+
+int64_t GB = 1024 * 1024 * 1024;
+int64_t MB = 1024 * 1024;
+
+uint8_t* base = (uint8_t*)0x10000000;
+
+BOOST_AUTO_TEST_CASE( test_basic )
+    {
+    LargeMemoryBlockTracker alloc;
+
+    alloc.addUnusedBytes(base, GB);
+
+    BOOST_CHECK(alloc.bytesUsed() == 0);
+    BOOST_CHECK(alloc.bytesUnused() == GB);
+
+    alloc.validateState();
+
+    alloc.unusedBytesReleasedToOS(base, GB);
+
+    BOOST_CHECK(alloc.bytesUsed() == 0);
+    BOOST_CHECK(alloc.bytesUnused() == 0);    
+    }
+
+BOOST_AUTO_TEST_CASE( test_alloc_all )
+    {
+    LargeMemoryBlockTracker alloc;
+
+    alloc.addUnusedBytes(base, GB);
+
+    uint8_t* p = alloc.allocateBytes(GB);
+    BOOST_CHECK(p);
+
+    alloc.deallocateBytes(p, GB);
+    }
+
+BOOST_AUTO_TEST_CASE( test_alloc_some )
+    {
+    LargeMemoryBlockTracker alloc;
+
+    alloc.addUnusedBytes(base, GB);
+
+    uint8_t* p1 = alloc.allocateBytes(MB);
+    uint8_t* p2 = alloc.allocateBytes(MB);
+
+    BOOST_CHECK(p1);
+    BOOST_CHECK(p2);
+
+    alloc.deallocateBytes(p1, MB);
+
+    BOOST_CHECK(true);
+
+    alloc.validateState();
+
+    alloc.deallocateBytes(p2, MB);
+
+    alloc.validateState();
+    }
+
+BOOST_AUTO_TEST_CASE( test_allocation )
+    {
+    LargeMemoryBlockTracker alloc;
+
+    alloc.addUnusedBytes(base, GB);
+
+    std::vector<uint8_t*> allocations;
+
+    while (uint8_t* allocated = alloc.allocateBytes(MB))
+        allocations.push_back(allocated);
+
+    BOOST_REQUIRE_EQUAL(allocations.size(), 1024);
+
+    alloc.validateState();
+
+    BOOST_CHECK(alloc.smallestUnusedRange().first == 0);
+
+    //deallocate in a weird order
+    for (long k = 0; k < 512;k++)
+        alloc.deallocateBytes(allocations[(k * 7) % 512 ], MB);
+
+    BOOST_CHECK(alloc.smallestUnusedRange().first == base);
+    BOOST_CHECK(alloc.smallestUnusedRange().second == 512 * MB);
+
+    alloc.validateState();
+    }
+
+BOOST_AUTO_TEST_SUITE_END( )
+

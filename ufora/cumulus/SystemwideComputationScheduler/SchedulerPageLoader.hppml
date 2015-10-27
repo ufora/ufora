@@ -1,0 +1,173 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <boost/bind.hpp>
+#include "../../core/containers/ImmutableTreeSet.hppml"
+#include "../../FORA/VectorDataManager/PageId.hppml"
+
+namespace Cumulus {
+
+namespace SystemwideComputationScheduler {
+
+/**********
+
+A little state machine that compares the set of 'desired' pages against what we actually have in 
+RAM and loads them one at a time.
+
+***********/
+
+class SchedulerPageLoader {
+public:
+	SchedulerPageLoader(
+				boost::function1<bool, Fora::PageId> inTriggerPageLoad,
+				boost::function1<bool, Fora::PageId> inNeedsPageLoad,
+				long pagesToLoadAhead
+				) :
+			mTriggerPageLoad(inTriggerPageLoad),
+			mNeedsPageLoad(inNeedsPageLoad),
+			mIsPaused(false),
+			mPagesToLoadAhead(pagesToLoadAhead)
+		{
+		}
+
+	void setDesiredPages(ImmutableTreeSet<Fora::PageId> inPages)
+		{
+		for (auto page: inPages)
+			{
+			if (mPagesToLoad.find(page) == mPagesToLoad.end() && mNeedsPageLoad(page))
+				{
+				mPagesToLoad.insert(page);
+				mPagesToLoadQueue.push_back(page);
+				}
+			}
+
+		std::set<Fora::PageId> pagesToDrop;
+		for (auto page: mPagesToLoad)
+			if (!inPages.contains(page))
+				pagesToDrop.insert(page);
+
+		for (auto page: pagesToDrop)
+			if (mPageLoadInProgress.find(page) == mPageLoadInProgress.end())
+				mPagesToLoad.erase(page);
+
+		checkIfNeedAdditionalPageLoad();
+		}
+
+	long totalPagesToLoad() const
+		{
+		return mPagesToLoad.size();
+		}
+
+	long totalPagesToLoadOrRequested() const
+		{
+		return mPagesToLoad.size() + mPageLoadInProgress.size();
+		}
+
+	int64_t totalBytesToLoad() const
+		{
+		int64_t bytes = 0;
+		for (auto page: mPagesToLoad)
+			bytes += page.bytecount();
+
+		return bytes;
+		}
+
+	int64_t totalBytesToLoadOrRequested() const
+		{
+		int64_t bytes = 0;
+
+		for (auto page: mPagesToLoad)
+			bytes += page.bytecount();
+
+		for (auto page: mPageLoadInProgress)
+			bytes += page.bytecount();
+
+		return bytes;
+		}
+
+	void pageLoadCompleted(Fora::PageId inPage)
+		{
+		if (mPageLoadInProgress.find(inPage) != mPageLoadInProgress.end())
+			{
+			mPageLoadInProgress.erase(inPage);
+			checkIfNeedAdditionalPageLoad();
+			}
+		}
+
+	void checkIfNeedAdditionalPageLoad()
+		{
+		while (mPagesToLoad.size() && mPageLoadInProgress.size() < mPagesToLoadAhead && !mIsPaused)
+			{
+			Fora::PageId page = mPagesToLoadQueue.front();
+
+			if (mPagesToLoad.find(page) == mPagesToLoad.end())
+				mPagesToLoadQueue.pop_front();
+				else
+			if (!mNeedsPageLoad(mPagesToLoadQueue.front()))
+				{
+				mPagesToLoad.erase(mPagesToLoadQueue.front());
+				mPagesToLoadQueue.pop_front();
+				}
+			else
+				{
+				if (mTriggerPageLoad(mPagesToLoadQueue.front()))
+					mPageLoadInProgress.insert(mPagesToLoadQueue.front());
+				return;
+				}
+			}
+		}
+
+	void setIsPaused(bool isPaused)
+		{
+		mIsPaused = isPaused;
+		checkIfNeedAdditionalPageLoad();
+		}
+
+	void pageDroppedAcrossEntireSystem(Fora::PageId page)
+		{
+		mPagesToLoad.erase(page);
+		mPageLoadInProgress.erase(page);
+
+		checkIfNeedAdditionalPageLoad();
+		}
+
+	const std::set<Fora::PageId>& pageLoadsInProgress() const
+		{
+		return mPageLoadInProgress;
+		}
+
+private:
+	bool mIsPaused;
+
+	boost::function1<bool, Fora::PageId> mTriggerPageLoad;
+
+	boost::function1<bool, Fora::PageId> mNeedsPageLoad;
+	
+	set<Fora::PageId> mPagesToLoad;
+
+	std::deque<Fora::PageId> mPagesToLoadQueue;
+
+	std::set<Fora::PageId> mPageLoadInProgress;
+
+	long mPagesToLoadAhead;
+};
+
+}
+
+}
+
+

@@ -1,0 +1,218 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "JudgmentOnValue.hppml"
+
+@type JOJOVPair = JOJOV l, JOJOV r;
+
+JudgmentOnValue	JudgmentOnJOV::FromLiveValue(const ImplVal& inImplVal)
+	{
+	return JudgmentOnValue::JOVAsValue(
+		JudgmentOnJOV::Known(
+			inImplVal.cast<JOV>()
+			)
+		);
+	}
+JudgmentOnValue	JudgmentOnJOV::OfType(const Type& type)
+	{
+	lassert(type.isJOVAsValue());
+	
+	return JudgmentOnValue::JOVAsValue(JOJOV::Unknown());
+	}
+
+Nullable<Type>			JudgmentOnJOV::computeType() const
+	{
+	return null() << Type::JOVAsValue();
+	}
+	
+Nullable<bool>			JudgmentOnJOV::computeIsCST() const
+	{
+	return null() << true;
+	}
+	
+Nullable<CSTValue>		JudgmentOnJOV::computeConstant() const
+	{
+	if (isKnown())
+		return null() << CSTValue(getKnown().jov());
+	return null();
+	}
+	
+void		JudgmentOnJOV::toString(CPPMLPrettyPrintStream& s, bool isJOVAsValue) const
+	{
+	@match JudgmentOnJOV(*this)
+		-|	Known(jov) ->> {
+				if (isJOVAsValue)
+					jov.toString(s, true);
+					else
+					{
+					s << "jovof ";
+					jov.toString(s, false);
+					}
+				;}
+		-|	Unknown(Unknown()) ->> {
+				if (isJOVAsValue)
+					s << "JOV";
+					else
+					s << "{JOV}";
+				}
+		-|	Unknown(jov) ->> {
+				if (isJOVAsValue)
+					{
+					s << "jovsbelow ";
+					jov.toString(s, false);
+					}
+					else
+					{
+					s << "{ jovsbelow ";
+					jov.toString(s, false);
+					s << " } ";
+					}
+				;}
+		;
+	}
+bool 					JudgmentOnJOV::covers(const ImplVal& impl) const
+	{
+	if (!impl.type().isJOVAsValue())
+		return false;
+	
+	@match JudgmentOnJOV(*this)
+		-|	Known(jov) ->> {
+			return  impl.cast<JOV>() == jov;
+			}
+		-|	Unknown(jov) ->> {
+			return  jov.covers(impl.cast<JOV>());
+			}
+		;
+	}
+bool 					JudgmentOnJOV::covers(const JudgmentOnValue& impl) const
+	{
+	JOJOVPair p(*this, impl.getJOVAsValue().jov());
+	
+	@match JOJOVPair(p)
+		-|	(Known(jov), Known(jov2)) ->> {
+			return  jov == jov2;
+			}
+		-|	(Unknown(jov), Unknown(jov2)) ->> {
+			return  jov.covers(jov2);
+			}
+		-|	(Unknown(jov), Known(jov2)) ->> {
+			return  jov.covers(jov2);
+			}
+		-|	(Known(jov), Unknown(jov2)) ->> {
+			return  false;
+			}
+		;
+	}
+bool 					JudgmentOnJOV::disjoint(const JudgmentOnValue& impl) const
+	{
+	JOJOVPair p(*this, impl.getJOVAsValue().jov());
+	
+	@match JOJOVPair(p)
+		-|	(Known(jov), Known(jov2)) ->> {
+			return  jov != jov2;
+			}
+		-|	(Unknown(jov), Unknown(jov2)) ->> {
+			return  jov.disjoint(jov2);
+			}
+		-|	(Unknown(jov), Known(jov2)) ->> {
+			return  !jov.covers(jov2);
+			}
+		-|	(Known(jov), Unknown(jov2)) ->> {
+			return  !jov2.covers(jov);
+			}
+		;
+	}
+
+JudgmentOnResult 		JudgmentOnJOV::intersectWith(const JudgmentOnValue& in) const
+	{
+	if (!in.isJOVAsValue())
+		return JudgmentOnResult();
+		
+	JOJOVPair p(*this, in.getJOVAsValue().jov());
+	
+	@match JOJOVPair(p)
+		-|	(Known(jov), Known(jov2)) ->> {
+			return  (jov == jov2 ? JudgmentOnResult(in) : JudgmentOnResult());
+			}
+		-|	(Unknown(jov), Unknown(jov2)) ->> {
+			JudgmentOnResult subs = jov.intersectWith(jov2);
+			
+			return (subs.size() == 1) ? 
+				JudgmentOnResult(
+					JudgmentOnValue::JOVAsValue(
+						JOJOV::Unknown(
+							subs[0]
+							)
+						)
+					)
+			:	JudgmentOnResult()
+				;
+			}
+		-|	(Unknown(jov), Known(jov2)) ->> {
+			return  (
+				jov.covers(jov2) ? JudgmentOnResult(in) : JudgmentOnResult()
+				);
+			}
+		-|	(Known(jov), Unknown(jov2)) ->> {
+			return  (
+				jov2.covers(jov) ? JudgmentOnResult(JOV::JOVAsValue(*this)) : JudgmentOnResult()
+				);
+			}
+		;
+	}
+JudgmentOnResult 		JudgmentOnJOV::restrictedToCSTness(bool inCSTness) const
+	{
+	//this kind of judgment can only be CST
+	if (inCSTness)
+		return JudgmentOnResult(JOV::JOVAsValue(*this));
+	
+	return JudgmentOnResult();
+	}
+JudgmentOnValue			JudgmentOnJOV::smallestCovering(const JudgmentOnValue& in) const
+	{
+	if (!in.isJOVAsValue())
+		return ::smallestCovering(JudgmentOnValue::JOVAsValue(*this), in);
+	
+	JOJOVPair p(*this, in.getJOVAsValue().jov());
+	
+	@match JOJOVPair(p)
+		-|	(Known(jov), Known(jov2)) ->> {
+			return  (
+				jov == jov2 ?
+					JOV::JOVAsValue(*this)
+				: 	JOV::JOVAsValue(JudgmentOnJOV::Unknown(jov.smallestCovering(jov2)))
+				);
+			}
+		-|	(Unknown(jov), Unknown(jov2)) ->> {
+			return JOV::JOVAsValue(JudgmentOnJOV::Unknown(jov.smallestCovering(jov2)));
+			}
+		-|	(Unknown(jov), Known(jov2)) ->> {
+			return  JOV::JOVAsValue(JudgmentOnJOV::Unknown(jov.smallestCovering(jov2)));
+			}
+		-|	(Known(jov), Unknown(jov2)) ->> {
+			return  JOV::JOVAsValue(JudgmentOnJOV::Unknown(jov.smallestCovering(jov2)));
+			}
+		;
+	}
+
+
+JudgmentOnJOV JudgmentOnJOV::Unknown()
+	{
+	return JudgmentOnJOV::Unknown(JOV());
+	}
+JudgmentOnValue jovJOVAsValue()
+	{
+	return JOV::JOVAsValue(JOJOV::Unknown());
+	}

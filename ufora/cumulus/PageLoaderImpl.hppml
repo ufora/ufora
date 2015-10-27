@@ -1,0 +1,210 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "PageLoader.hppml"
+#include "../FORA/VectorDataManager/VectorDataManager.hppml"
+#include "SystemwidePageRefcountTracker.hppml"
+#include "../core/threading/CallbackSchedulerFactory.hppml"
+#include "../core/PolymorphicSharedPtrBinder.hpp"
+#include "../core/math/Random.hpp"
+#include "../core/threading/TimedLock.hpp"
+#include "../core/Logging.hpp"
+#include "../core/containers/MapWithIndex.hpp"
+
+#include "CumulusComponentMessage.hppml"
+#include "CumulusClientOrMachine.hppml"
+#include "CumulusComponentType.hppml"
+
+namespace Cumulus {
+
+class PageLoaderImpl : public PolymorphicSharedPtrBase<PageLoaderImpl> {
+public:
+	PageLoaderImpl(
+				PolymorphicSharedPtr<VectorDataManager> inVDM,
+				PolymorphicSharedPtr<DataTransfers> inLargeMessageThrottler,
+				PolymorphicSharedPtr<SystemwidePageRefcountTracker> inSystemwidePageRefcountTracker,
+				PolymorphicSharedPtr<OfflineCache> inOfflineCache,
+				CumulusClientOrMachine inOwnEndpointId,
+				PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler
+				);
+
+	~PageLoaderImpl();
+
+	void teardown();
+
+	void addCumulusClient(CumulusClientId inClient);
+	
+	void dropCumulusClient(CumulusClientId inClient);
+
+	void addMachine(MachineId inMachine);
+
+	void dropMachine(MachineId inMachine);
+
+	CumulusClientOrMachine getOwnEndpointId() const;
+
+	EventBroadcaster<VectorLoadedResponse>& onVectorLoadedResponse();
+
+	EventBroadcaster<CumulusComponentMessageCreated>& onCumulusComponentMessageCreated();
+
+	void handleRemotePageLoadResponse(const RemotePageLoadResponse& inResponse);
+
+	void handleRemotePageLoadRequest(const RemotePageLoadRequest& inRequest);
+
+	void handleRemotePageLoadRequestAccepted(const RemotePageLoadRequest& inRequest);
+
+	void requestVectorLoad(const VectorLoadRequest& inPageRequest);
+
+	void handleExternalIoTaskCompleted(const ExternalIoTaskCompleted& result);
+
+	void blockUntilCurrentBackgroundProcessesHaveCleared();
+
+	void handleExternalIoTaskCompletedOnBackgroundThread(const ExternalIoTaskCompleted& result);
+
+	void handleCumulusComponentMessage(
+					const CumulusComponentMessage& message, 
+					const CumulusClientOrMachine& source, 
+					const CumulusComponentType& componentType
+					);
+
+	void failedToLoadDataset(
+				VectorDataID vdid, 
+				bool wasRequestedLocally, 
+				const std::set<CumulusClientId>& clients, 
+				std::string reason
+				);
+
+	Cumulus::MachineId pickRandomlyFromSet(const std::set<Cumulus::MachineId>& hashes);
+
+	void handleVectorLoadRequestOnBackgroundThread(const VectorLoadRequest& inPageRequest);
+
+	Nullable<MachineId> pickMachineForPage(Fora::PageId page);
+
+	void requestExternalDatasetFromWorker_(const VectorLoadRequest& request);
+
+	ExternalIoTaskId requestExternalDatasetFromEnvironment_(const VectorLoadRequest& request);
+
+	void restrictToActiveMachines(std::set<Cumulus::MachineId>& ioMachines);
+
+	void handleRemotePageLoadResponseOnBackgroundThread(const RemotePageLoadResponse& inResponse);
+
+	static void handleRemotePageLoadRequestOnBackgroundThreadStatic(
+							PolymorphicSharedWeakPtr<PageLoaderImpl> inSelf,
+							const RemotePageLoadRequest& inRequest,
+							PolymorphicSharedPtr<DataTransfers> inThrottler,
+							DataTransferTokenId inToken
+							);
+
+	void sendCumulusComponentMessage_(CumulusComponentMessageCreated msg);
+
+	void handleRemoteExternalDatasetLoadRequest(RemoteExternalDatasetLoadRequest request);
+
+	void handleRemotePageLoadRequestOnBackgroundThread(
+							const RemotePageLoadRequest& inRequest,
+							DataTransferTokenId inToken
+							);
+
+	static void handleRemotePageLoadRequestNotInVdmOnBackgroundThreadStatic(
+							PolymorphicSharedWeakPtr<PageLoaderImpl> inSelf,
+							const RemotePageLoadRequest& inRequest,
+							PolymorphicSharedPtr<DataTransfers> inThrottler,
+							DataTransferTokenId inToken
+							);
+
+
+	void handleRemotePageLoadRequestNotInVdmOnBackgroundThread(
+							const RemotePageLoadRequest& inRequest,
+							DataTransferTokenId inToken
+							);
+
+	static void handleRemoteExternalDatasetLoadRequestStatic(
+							PolymorphicSharedWeakPtr<PageLoaderImpl> selfWeak,
+							RemoteExternalDatasetLoadRequest request,
+							PolymorphicSharedPtr<DataTransfers> throttler,
+							DataTransferTokenId inToken
+							);
+
+	void handleRemoteExternalDatasetLoadRequestWithToken(
+							RemoteExternalDatasetLoadRequest request,
+							DataTransferTokenId inToken
+							);
+
+	void broadcastRemotePageLoadResponse(RemotePageLoadResponse msg);
+
+	void broadcastRemotePageLoadRequest(RemotePageLoadRequest msg);
+
+	void broadcastPageLoadFailed(VectorDataID vdid);
+
+	void handleRemoteExternalDatasetLoadResponse(RemoteExternalDatasetLoadResponse response);
+
+	Cumulus::MachineId pickRandomlyFromSet_(const std::set<Cumulus::MachineId>& hashes);
+
+	mutable boost::recursive_mutex mMutex;
+
+	PolymorphicSharedPtr<DataTransfers> mDataTransfers;
+
+	std::set<MachineId> mMachines;
+
+	std::set<MachineId> mMachinesEverDropped;
+
+	std::set<CumulusClientId> mClients;
+
+	std::set<CumulusClientId> mClientsEverDropped;
+
+	std::set<RemotePageLoadRequest> mRequestsEverMade;
+
+	CumulusClientOrMachine mOwnEndpointId;
+
+	PolymorphicSharedPtr<VectorDataManager> mVDM;
+
+	PolymorphicSharedPtr<OfflineCache> mOfflineCache;
+
+	TwoWaySetMap<Fora::PageId, MachineId> mInFlightPages;
+
+	map<Fora::PageId, set<RemotePageLoadRequest> > mRequestsToDenyAfterPageLoadCompletes;
+
+	EventBroadcaster<VectorLoadedResponse> mOnVectorLoadedResponse;
+
+	EventBroadcaster<CumulusComponentMessageCreated> mOnCumulusComponentMessageCreated;
+
+	MapWithIndex<VectorDataID, MachineId> mOutstandingRemoteVectorLoads;
+
+	std::map<Fora::PageId, VectorDataID> mOutstandingRemoteVectorLoadsToPages;
+
+	Ufora::math::Random::Uniform<double> mRandomGenerator;
+
+	std::set<VectorLoadRequest> mUnsentExternalVectorLoads;
+
+	MapWithIndex<VectorLoadRequest, MachineId> mExternalVectorLoadsPendingOnOtherMachines;
+
+	TwoWaySetMap<ExternalIoTaskId, VectorDataID> mCurrentExternalIoTasks;
+
+	std::set<ExternalIoTaskId> mExternalDatasetsRequestedLocally;
+
+	TwoWaySetMap<ExternalIoTaskId, CumulusClientId> mExternalDatasetsRequestedByRemoteClients;
+
+	PolymorphicSharedPtr<SystemwidePageRefcountTracker> mSystemwidePageRefcountTracker;
+
+	PolymorphicSharedPtr<CallbackScheduler> mScheduler;
+
+	PolymorphicSharedPtr<CallbackScheduler> mDiskScheduler;
+
+	bool mIsTornDown;
+
+	RandomHashGenerator mRandomHashGenerator;
+};
+
+
+}
+

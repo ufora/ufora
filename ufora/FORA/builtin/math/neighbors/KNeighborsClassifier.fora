@@ -1,0 +1,323 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#Markdown("""
+### KNeighborsClassifier
+
+A class for constructing nearest neighbors classifiers based on a 
+set of points and a distance function.
+
+#### Examples
+
+    // a training set of 4 points in 1-dimensional space.
+    let X = dataframe.DataFrame(x: [0,1,2,3]);
+
+    // the class labels
+    let y = dataframe.DataFrame(y: [0,0,1,1]);
+
+    // constructing the classifier
+    let classifier = math.neighbors.KNeighborsClassifier(X, y, 3);
+
+    // using the classifier to predict on the training set itself
+    classifier.predict(X)
+
+    // compute the training error
+    classifier.score(X, y)
+
+    // construct a new classifier based on 2 neighbors
+    let newClassifier = classifier.withNumNeighbors(2)
+
+    // compute training error based on 2 neighbors
+    newClassifier.score(X, y)
+    
+""")
+class {
+    member mNearestNeighbors;
+    member mY;
+    member mNumNeighbors;
+    member mClasses;
+
+    #Markdown("""#### Usage
+
+        math.neighbors.KNeighborsClassifier(trainingPoints, trainingLabels, numNeighbors = 5, distanceFun:= math.distances.l2)
+
+    #### Description
+
+    Construct a `KNeighborsClassifier` based on the training points 
+    `trainingPoints` having corresponding labels `trainingLabels`, using 
+    `numNeighbors` neighbors (for classification), and using 
+    distance function `distanceFun` (which defaults to 
+    `math.distances.l2`).
+
+    """)
+    operator new(predictors, responses, numNeighbors = 5, 
+                 distanceFun:= math.distances.l2) {
+        cls.factory(predictors, responses, numNeighbors, distanceFun)
+        };
+
+    `hidden
+    static factory: fun
+    (dataframe.DataFrame(predictors), dataframe.Series(responses), 
+     numNeighbors, distanceFun) {
+        createInstance(
+            cls,
+            mNearestNeighbors: NearestNeighbors(predictors, distanceFun),
+            mY: responses,
+            mNumNeighbors: numNeighbors,
+            mClasses: sorting.unique(responses)
+            );
+        }
+    (dataframe.DataFrame(predictors), dataframe.DataFrame(responses), 
+     numNeighbors, distanceFun) {
+        assertions.assertEqual(responses.numColumns, 1);
+
+        factory(predictors, responses.getColumn(0), numNeighbors, distanceFun)
+        }
+    ;
+
+    withDistanceFun: 
+    #Markdown("""#### Usage
+
+        kNeighborsClassifier.withDistanceFun(newDistanceFun)
+
+    #### Description
+
+    Return a new `KNeighborsClassifier` instance with the same parameters 
+    as `kNeighborsClassifier` except using a new distance function, `newDistanceFun`.
+
+    #### Examples
+
+        kNeighborsClassifier.withDistanceFun(math.distances.l_infinity)
+
+    """)
+    fun(newDistanceFun) {
+        createInstance(
+            cls,
+            mNearestNeighbors: mNearestNeighbors.withDistanceFun(newDistanceFun),
+            mY: mY,
+            mNumNeighbors: mNumNeighbors,
+            mClasses: mClasses
+            );
+        };
+
+    withNumNeighbors: 
+    #Markdown("""#### Usage
+
+        kNeighborsClassifier.withNumNeighbors(newNumNeighbors)
+
+    #### Description
+
+    Return a new `KNeighborsClassifier` instance with the same parameters 
+    as `kNeighborsClassifier` except using a `newNumNeighbors` points for 
+    its classification.
+
+    #### Examples
+
+        kNeighborsClassifier.withNumNeighbors(100)
+
+    """)
+    fun(numNeighbors) {
+        createInstance(
+            cls,
+            mNearestNeighbors: mNearestNeighbors,
+            mY: mY,
+            mNumNeighbors: numNeighbors,
+            mClasses: mClasses
+            );
+        };
+    
+    nearestNeighbors: 
+    #Markdown("""#### Usage
+
+        kNeighborsClassifier.nearestNeighbors()
+
+    #### Description
+
+    Return (a copy of) the underlying `NearestNeighbors` instance held in 
+    `kNeighborsClassifier`.
+
+    """)
+    fun() {
+        mNearestNeighbors
+        };
+
+    classes: 
+    #Markdown("""#### Usage
+
+        kNeighborsClassifier.classes()
+
+    #### Description
+
+    Return a vector containing the unique classes obvserved in 
+    the training data held by `kNeighborsClassifier`.
+
+    """)
+    fun() {
+        mClasses
+        };
+
+    predict: 
+    #Markdown("""#### Usage
+    
+        kNeighborsClassifier.predict(testSet)
+
+    #### Description
+
+    Use the classifier `kNeighborsClassifier` to predict 
+    the class labels in `testSet` using the k-nearest neighbors 
+    algorithm.
+
+    Returns a vector of length `size(testSet)` whose i-th 
+    entry is the predicted class label for the i-th entry 
+    in `testSet`.
+
+    #### Examples
+
+        // a training set of 4 points in 1-dimensional space.
+        let X = dataframe.DataFrame(x: [0,1,2,3]);
+
+        // the class-labels
+        let y = dataframe.DataFrame(y: [0,0,1,1]);
+
+        // constructing the classifier
+        let classifier = math.neighbors.KNeighborsClassifier(X, y, 3);
+
+        // using the classifier to predict on the training set itself
+        classifier.predict(X)
+
+    """)        
+    fun(samples) {
+        let nearestNeighborIndices = 
+            mNearestNeighbors.kNeighbors(samples, mNumNeighbors);
+
+        nearestNeighborIndices.apply(
+            fun(rowOfIndices) {
+                math.stats.mode(
+                    lazy.LazyVector(
+                        fun(ix) {
+                            mY[rowOfIndices[ix]]
+                            },
+                        size(rowOfIndices)
+                        )
+                    ).mode
+                }
+            )
+        };
+
+    predictProbability: 
+    #Markdown("""#### Usage
+    
+        kNeighborsClassifier.predictProbability(testSet)
+
+    #### Description
+
+    Use the classifier `kNeighborsClassifier` to predict 
+    the class probabilities in `testSet` using the k-nearest 
+    neighbors algorithm.
+
+    Returns a vector of length `size(testSet)` whose i-th 
+    entry is a vector of length `size(kNeighborsClassifier.classes())` 
+    whose j-th entry is the estimated class probability of class `j` of 
+    `kNeighborsClassifier.classes()` for `testSet[i]`.
+
+    #### Examples
+
+        // a training set of 4 points in 1-dimensional space.
+        let X = dataframe.DataFrame(x: [0,1,2,3]);
+
+        // the class-labels
+        let y = dataframe.DataFrame(y: [0,0,1,1]);
+
+        // constructing the classifier
+        let classifier = math.neighbors.KNeighborsClassifier(X, y, 3);
+
+        // using the classifier to predict class probabilities on the training set itself
+        classifier.predictProbability(X)
+
+    """)   
+    fun(samples) {
+        let nearestNeighborIndices = 
+            mNearestNeighbors.kNeighbors(
+                samples, mNumNeighbors, sortPoints: false
+                );
+
+        nearestNeighborIndices.apply(
+            fun(rowOfIndices) {
+                let histogram = 
+                    math.stats.histogram(
+                        lazy.LazyVector(
+                            fun(ix) {
+                                mY[rowOfIndices[ix]]
+                                },
+                            size(rowOfIndices)
+                            )
+                        );
+
+                let countMapping = sorting.VectorDictionary(histogram);
+
+                mClasses ~~ fun(classLabel) {
+                    if (classLabel in countMapping)
+                        return countMapping[classLabel] / Float64(mNumNeighbors)
+
+                    return 0.0
+                    }
+                }
+            )
+        };
+
+    score: 
+    #Markdown("""#### Usage
+
+        kNeighborsClassifier.predictProbability(testX, testY)
+
+    #### Description
+
+    Return the mean accuracy of the classifier on a test set 
+    `(testX, testY)`. 
+
+    #### Examples
+
+        // a training set of 4 points in 1-dimensional space.
+        let X = dataframe.DataFrame(x: [0,1,2,3]);
+
+        // the class-labels
+        let y = dataframe.DataFrame(y: [0,0,1,1]);
+
+        // constructing the classifier
+        let classifier = math.neighbors.KNeighborsClassifier(X, y, 3);
+
+        // using the classifier to compute its training error.
+        classifier.score(X, y)
+
+    """)
+    fun
+    (dataframe.DataFrame(X), dataframe.DataFrame(yTrue)) {
+        assertions.assertEqual(yTrue.numColumns, 1)
+        score(X, yTrue.getColumn(0));
+        }
+    (dataframe.DataFrame(X), dataframe.Series(yTrue)) {
+        assertions.assertEqual(size(X), size(yTrue));
+
+        let yPredicted = dataframe.Series(predict(X));
+
+        return (yTrue == yPredicted).sum(
+            { if (_ == true) 1.0 else 0.0 }) / size(yTrue)
+        }
+    (dataframe.DataFrame(X), yTrue) {
+        score(X, dataframe.Series(yTrue))
+        };
+
+    };
+

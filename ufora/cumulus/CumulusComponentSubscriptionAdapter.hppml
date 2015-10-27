@@ -1,0 +1,88 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "CumulusComponentType.hppml"
+#include "CumulusComponentMessageCreated.hppml"
+#include "../core/threading/CallbackScheduler.hppml"
+
+namespace Cumulus {
+
+/***************
+
+CumulusComponentSubscriptionAdapter
+
+Allows clients who need to get calls to 
+
+	handleLocallyProducedCumulusComponentMessage
+
+to receive them with a specified set of arguments in a way that
+is compatible with EventBroadcasters on regular components.
+
+****************/
+
+template<class subscriber_type>
+@type CumulusComponentSubscriptionAdapter = 
+		PolymorphicSharedPtr<CallbackScheduler> scheduler,
+		PolymorphicSharedWeakPtr<subscriber_type> weakPtr,
+		CumulusComponentType sourceType,
+		hash_type regime
+{
+public:
+	static void dispatch(
+					PolymorphicSharedWeakPtr<subscriber_type> weakPtr,
+					CumulusComponentType sourceType,
+					hash_type regime,
+					CumulusComponentMessageCreated msg
+					)
+		{
+		PolymorphicSharedPtr<subscriber_type> ptr = weakPtr.lock();
+
+		if (!ptr)
+			return;
+
+		ptr->handleLocallyProducedCumulusComponentMessage(msg, sourceType, regime);
+		}
+
+	bool operator()(CumulusComponentMessageCreated message) const
+		{
+		PolymorphicSharedPtr<subscriber_type> ptr = weakPtr().lock();
+
+		if (!ptr)
+			return false;
+
+		scheduler()->scheduleImmediately(
+			boost::bind(
+				&CumulusComponentSubscriptionAdapter::dispatch,
+				weakPtr(),
+				sourceType(),
+				regime(),
+				message
+				)
+			);
+
+		return true;
+		}
+
+	boost::function1<bool, CumulusComponentMessageCreated> handler() const
+		{
+		CumulusComponentSubscriptionAdapter callback = *this;
+
+		return [=](CumulusComponentMessageCreated msg) { return callback(msg); };
+		}
+};
+
+}

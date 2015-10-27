@@ -1,0 +1,641 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+`hidden;
+
+// TODO cleanup Tom: we've got a LOT of repeated code in the 
+// various `computeLeftAndRightSelectors`. can we DRY this up a little?
+
+_defaultChunkSize: 100000;
+
+joinBase: object {
+    // joinBase is a "base mixin" which implements skeletons
+    // of joining algorithms. subclasses give specifics.
+
+    // here are the members implementers should define
+    // member mSortedLeftDf
+    // member mSortedRightDf
+    // member mOn -- the key column
+    // member mChunkSize
+    // member mLeftSuffix
+    // member mRightSuffix
+
+    join: fun()
+        {
+        let partitions = self.computePartitions();
+        let joinsOnPartitions = computeJoinsOnPartitions(partitions);
+
+        mergeJoinsOnPartitions(joinsOnPartitions)
+        };
+
+    // by default, we partition on the left 
+    // (only RightJoiner and OuterJoiner need to override)
+    computePartitions: fun()
+        {
+        partitionColumn(self.mSortedLeftDf[self.mOn])
+        };
+
+    partitionColumn: fun(sortedColumn)
+        {
+        let nChunks = 
+            Int64(math.ceil(size(sortedColumn) / Float64(self.mChunkSize)));
+        let samples = Vector.range(nChunks, { sortedColumn[_ * self.mChunkSize] });
+
+        // filter the samples to unique values. might want to make this a builtin
+        samples = samples.filterWithIndex(
+            fun(val, ix) {
+                ix < 1 or samples[ix - 1] < samples[ix]
+                }
+            )
+
+        let leftEndpoints = samples ~~ { sorting.lowerBound(sortedColumn, _) };
+
+        let nEndpoints = size(leftEndpoints);
+        let intervalPartitions = 
+            leftEndpoints.applyWithIndex(
+                fun(val, ix)
+                    {
+                    if (ix + 1 < nEndpoints)
+                        return (low: val, high: leftEndpoints[ix + 1])
+                    else
+                        return (low: val, high: size(sortedColumn))
+                    }
+                )
+
+        intervalPartitions
+        };
+
+    mergeJoinsOnPartitions: fun(joinsOnPartitions)
+        {
+        sum(0, size(joinsOnPartitions),
+            fun(ix) { joinsOnPartitions[ix] },
+            fun (nothing, b) { b }
+                (a, nothing) { a }
+                (a, b) { a.append(b) }
+            )
+        };
+
+    // this _will_ have the repeated key columns. we drop them later
+    computeColumnNames:
+    fun()
+        {
+        let dropValue = fun(vec, valueToDrop)
+            {
+            vec.filter({ _ != valueToDrop })
+            }
+
+        let leftNames = dropValue(self.mSortedLeftDf.columnNames, self.mOn);
+        let rightNames = dropValue(self.mSortedRightDf.columnNames, self.mOn);
+
+        if (size(self.mLeftSuffix) > 0)
+            {
+            leftNames = leftNames.apply(
+                fun(name) { 
+                    name + self.mLeftSuffix
+                    }
+                )
+            }
+
+        if (size(self.mRightSuffix) > 0)
+            {
+            rightNames = rightNames.apply(
+                fun(name) { 
+                    name + self.mRightSuffix
+                    }
+                )
+            }        
+
+        return (leftNames + rightNames) :: self.mOn
+        };
+
+    computeJoinsOnPartitions:
+    fun(partitions)
+        {
+        let columnNames = computeColumnNames();
+        partitions ~~  { self.joinPartition(_, columnNames) }
+        };
+
+    joinPartition: fun(partition, columnNames)
+        {
+        let (leftSlice, rightSlice) = 
+            self.computeLeftAndRightSlices(partition);
+
+        let (leftSelector, rightSelector) = 
+            self.computeLeftAndRightSelectors(
+                leftSlice[self.mOn], 
+                rightSlice[self.mOn]
+                );
+
+        let leftChunk = computeChunkBySelector(leftSlice, leftSelector);
+        leftChunk = leftChunk.dropColumn(self.mOn)
+        let rightChunk = computeChunkBySelector(rightSlice, rightSelector);
+        rightChunk = rightChunk.dropColumn(self.mOn)
+
+        let keyColumn = computeKeyColumn(
+            leftSlice, leftSelector, 
+            rightSlice, rightSelector
+            );
+
+        self.horizontalStackChunks(
+            leftChunk, rightChunk, keyColumn: keyColumn, columnNames: columnNames
+            );
+        };
+
+    computeKeyColumn: fun(leftSlice, leftSelector, rightSlice, rightSelector)
+        {
+        let tr = [];
+
+        let ix = 0;
+            
+        let leftKeyColumn = leftSlice[self.mOn];
+        let rightKeyColumn = rightSlice[self.mOn];
+
+        while (ix < size(leftSelector))
+            {
+            if (leftSelector[ix] < 0)
+                {
+                assertions.assertGreaterEqual(rightSelector[ix], 0);
+                tr = tr :: rightKeyColumn[rightSelector[ix]]
+                }
+            else {
+                tr = tr :: leftKeyColumn[leftSelector[ix]];
+                }
+
+            ix = ix + 1;
+            }
+
+        tr
+        };
+
+    horizontalStackChunks: fun(leftChunk, rightChunk, keyColumn:, columnNames:)
+        {
+        let newColumns = leftChunk.columns + rightChunk.columns;
+        newColumns = newColumns :: keyColumn;
+
+        dataframe.DataFrame(
+            newColumns,
+            columnNames: columnNames
+            )
+        };
+
+    computeChunkBySelector: fun(df, selectorVec)
+        {
+        let newColumns = df.columns ~~ { buildColumn(_, selectorVec) };
+        let newNumRows = size(newColumns[0]) // these should all be the same size ... =O
+        
+        dataframe.DataFrame(
+            columns: newColumns,
+            columnNames: df.columnNames,
+            numRows: newNumRows,
+            numColumns: df.numColumns
+            )
+        };
+
+    buildColumn: fun(column, selectorVec) {
+        selectorVec ~~ fun(s) {
+            if (s < 0)
+                return nothing
+            else
+                return column[s]
+            }
+        };
+
+    // by default, the partition was computed on the left, 
+    // so RightJoin and OuterJoin will need to override. 
+    computeLeftAndRightSlices: fun(partition)
+        {
+        let leftSlice = self.mSortedLeftDf[partition.low, partition.high];
+
+        let rightKeyColumn = self.mSortedRightDf[self.mOn];
+
+        let lowIx = sorting.lowerBound(rightKeyColumn, leftSlice[self.mOn][0]);
+        let highIx = size(rightKeyColumn);
+
+        if (partition.high < size(self.mSortedLeftDf))
+            highIx = sorting.lowerBound(
+                rightKeyColumn, 
+                self.mSortedLeftDf[self.mOn][partition.high]
+                )
+            ;
+
+        let rightSlice = self.mSortedRightDf[lowIx, highIx];
+            
+        return (leftSlice, rightSlice);
+        };
+
+    };
+
+RightJoiner: class {
+    member mSortedLeftDf;
+    member mSortedRightDf;
+    member mOn;
+    member mChunkSize;
+    member mLeftJoiner;
+    member mLeftSuffix;
+    member mRightSuffix;
+
+    operator new(leftDf, rightDf, on:, leftSuffix:= "", rightSuffix:= "", 
+                 chunkSize:= nothing, areSorted:= false)
+        {
+        if (chunkSize is nothing)
+            chunkSize = _defaultChunkSize;
+
+        let sortedLeftDf = if (areSorted) leftDf else leftDf.sort(on);
+        let sortedRightDf = if (areSorted) rightDf else rightDf.sort(on)
+        createInstance(
+            cls, 
+            mSortedLeftDf: sortedLeftDf,
+            mSortedRightDf: sortedRightDf,
+            mOn: on,
+            mChunkSize: chunkSize,
+            mLeftJoiner: LeftJoiner(
+                mSortedLeftDf: sortedRightDf, // yup. we're reversing here
+                mSortedRightDf: sortedLeftDf, // yup. we're reversing here
+                mOn: on,
+                mChunkSize: chunkSize,
+                mLeftSuffix: leftSuffix,
+                mRightSuffix: rightSuffix
+                ),
+            mLeftSuffix: leftSuffix,
+            mRightSuffix: rightSuffix
+            )
+        };
+
+    // the 1st (of 3) main step of join()
+    computePartitions: fun()
+        {
+        self.partitionColumn(self.mSortedRightDf[self.mOn]);
+        };
+
+    // implements computeJoinsOnPartitions, the 2nd (of 3) main step of join()
+    joinPartition: fun(partition, columnNames)
+        {
+        let (leftSlice, rightSlice) = 
+            self.computeLeftAndRightSlices(partition);
+
+        let (rightSelector, leftSelector) = 
+            mLeftJoiner.computeLeftAndRightSelectors(
+                rightSlice[mOn],
+                leftSlice[mOn]
+                )
+
+        let leftChunk = self.computeChunkBySelector(leftSlice, leftSelector);
+        leftChunk = leftChunk.dropColumn(self.mOn)
+        let rightChunk = self.computeChunkBySelector(rightSlice, rightSelector)
+        rightChunk = rightChunk.dropColumn(self.mOn)
+
+        let keyColumn = self.computeKeyColumn(
+            leftSlice, leftSelector, 
+            rightSlice, rightSelector
+            );
+
+        self.horizontalStackChunks(
+            leftChunk, rightChunk, keyColumn: keyColumn, columnNames: columnNames
+            )
+        };
+
+    computeLeftAndRightSlices: fun(partition)
+        {
+        let (rightSlice, leftSlice) = 
+            mLeftJoiner.computeLeftAndRightSlices(partition);
+
+        return (leftSlice, rightSlice);
+        };
+
+    mixin joinBase;
+    };
+
+LeftJoiner: class {
+    member mSortedLeftDf;
+    member mSortedRightDf;
+    member mOn;
+    member mChunkSize;
+    member mLeftSuffix;
+    member mRightSuffix;
+
+    mixin joinBase;
+
+    operator new(leftDf, rightDf, on:, leftSuffix:= "", rightSuffix:= "", 
+                 chunkSize:= nothing, areSorted:= false)
+        {
+        if (chunkSize is nothing)
+            chunkSize = _defaultChunkSize;
+
+        createInstance(
+            cls, 
+            mSortedLeftDf: if (areSorted) leftDf else leftDf.sort(on),
+            mSortedRightDf: if (areSorted) rightDf else rightDf.sort(on),
+            mOn: on,
+            mLeftSuffix: leftSuffix,
+            mRightSuffix: rightSuffix,
+            mChunkSize: chunkSize
+            )
+        }
+    (mSortedLeftDf:, mSortedRightDf:, mOn:, mChunkSize:, 
+     mLeftSuffix:, mRightSuffix:)
+        {
+        createInstance(
+            cls,
+            mSortedLeftDf: mSortedLeftDf,
+            mSortedRightDf: mSortedRightDf,
+            mOn: mOn,
+            mChunkSize: mChunkSize,
+            mLeftSuffix: mLeftSuffix,
+            mRightSuffix: mRightSuffix
+            );
+        }
+    ;
+
+    computeLeftAndRightSelectors:
+    fun(leftColumnSlice, rightColumnSlice)
+        {
+        let leftSelector = [];
+        let rightSelector = [];
+
+        let leftIx = 0;
+        let rightIx = 0;
+
+        while (leftIx < size(leftColumnSlice) and 
+               rightIx < size(rightColumnSlice))
+            {
+            let rightVal = rightColumnSlice[rightIx] 
+            let leftVal = leftColumnSlice[leftIx]
+            if (leftVal < rightVal) // no match. put in a nothing and advance leftIx
+                {
+                leftSelector = leftSelector :: leftIx;
+                rightSelector = rightSelector :: -1;  // meaning put in a `nothing`
+
+                leftIx = leftIx + 1;
+                }
+            else if (leftVal == rightVal)
+                {
+                let rightCycleStart = rightIx
+                while (rightVal == leftVal)
+                    {
+                    // we could try some compression here. 
+                    // we don't need a whole sequence of repeated values. 
+                    // could just tag with a multiplicity
+                    leftSelector = leftSelector :: leftIx; 
+                    rightSelector = rightSelector :: rightIx;
+
+                    rightIx = rightIx + 1;
+
+                    if (rightIx == size(rightColumnSlice))
+                        break;
+
+                    rightVal = rightColumnSlice[rightIx];
+                    }
+                    
+                rightIx = rightCycleStart;
+                leftIx = leftIx + 1;
+                }
+            else // leftVal > rightVal. ignore these for now, they get picked up later.
+                {
+                rightIx = rightIx + 1;
+                }
+            }
+
+        // take care of any leftovers
+        while (leftIx < size(leftColumnSlice))
+            {
+            leftSelector = leftSelector :: leftIx;
+            rightSelector = rightSelector :: -1;
+
+            leftIx = leftIx + 1
+            }
+            
+        assertions.assertEqual(size(leftSelector), size(rightSelector));
+
+        return (leftSelector, rightSelector)
+        };
+    };
+
+InnerJoiner: class {
+    member mSortedLeftDf;
+    member mSortedRightDf;
+    member mOn;
+    member mChunkSize;
+    member mLeftSuffix;
+    member mRightSuffix;
+    
+    operator new(leftDf, rightDf, on:, leftSuffix:= "", rightSuffix:= "", 
+                 chunkSize:= nothing, areSorted:= false)
+        {
+        if (chunkSize is nothing)
+            chunkSize = _defaultChunkSize;
+
+        createInstance(
+            cls, 
+            mSortedLeftDf: if (areSorted) leftDf else leftDf.sort(on),
+            mSortedRightDf: if (rightDf) rightDf else rightDf.sort(on),
+            mOn: on,
+            mLeftSuffix: leftSuffix,
+            mRightSuffix: rightSuffix,
+            mChunkSize: chunkSize
+            )
+        };
+
+    computeLeftAndRightSelectors:
+    fun(leftColumnSlice, rightColumnSlice)
+        {
+        let leftSelector = [];
+        let rightSelector = [];
+
+        let leftIx = 0;
+        let rightIx = 0;
+
+        while (leftIx < size(leftColumnSlice) and 
+               rightIx < size(rightColumnSlice))
+            {
+            let rightVal = rightColumnSlice[rightIx] 
+            let leftVal = leftColumnSlice[leftIx]
+            if (leftVal < rightVal)
+                {
+                leftIx = leftIx + 1;
+                }
+            else if (leftVal == rightVal)
+                {
+                let rightCycleStart = rightIx
+                while (rightVal == leftVal)
+                    {
+                    // we could try some compression here. 
+                    // we don't need a whole sequence of repeated values. 
+                    // could just tag with a multiplicity
+                    leftSelector = leftSelector :: leftIx; 
+                    rightSelector = rightSelector :: rightIx;
+
+                    rightIx = rightIx + 1;
+
+                    if (rightIx == size(rightColumnSlice))
+                        break;
+
+                    rightVal = rightColumnSlice[rightIx];
+                    }
+                    
+                rightIx = rightCycleStart;
+                leftIx = leftIx + 1;
+                }
+            else // leftVal > rightVal. on Left joins, we ignore these values
+                {
+                rightIx = rightIx + 1;
+                }
+            }
+
+        assertions.assertEqual(size(leftSelector), size(rightSelector));
+
+        return (leftSelector, rightSelector)
+        };
+
+    mixin joinBase;
+    };
+
+OuterJoiner:
+ class {
+    member mSortedLeftDf;
+    member mSortedRightDf;
+    member mOn;
+    member mChunkSize;
+    member mLeftSuffix;
+    member mRightSuffix;
+
+    operator new(leftDf, rightDf, on:, leftSuffix:= "", rightSuffix:= "", 
+                 chunkSize:= nothing, areSorted:= false)
+        {
+        if (chunkSize is nothing)
+            chunkSize = _defaultChunkSize;
+
+        createInstance(
+            cls, 
+            mSortedLeftDf: if (areSorted) leftDf else leftDf.sort(on),
+            mSortedRightDf: if (areSorted) rightDf else rightDf.sort(on),
+            mOn: on,
+            mLeftSuffix: leftSuffix,
+            mRightSuffix: rightSuffix,
+            mChunkSize: chunkSize
+            )
+        };
+
+    computeLeftAndRightSlices: fun(partition)
+        {
+        // this is the same as the base computeLeftAndRightSlices 
+        // (which is for LeftJoins),
+        // except that when partition.low == 0, we set lowIx = 0
+
+        let leftSlice = mSortedLeftDf[partition.low, partition.high];
+
+        let rightKeyColumn = mSortedRightDf[mOn];
+
+        let lowIx = 0;
+
+        if (partition.low > 0)
+            lowIx = sorting.lowerBound(rightKeyColumn, leftSlice[mOn][0])
+
+        let highIx = size(rightKeyColumn);
+
+        if (partition.high < size(mSortedLeftDf))
+            highIx = sorting.lowerBound(
+                rightKeyColumn, 
+                mSortedLeftDf[mOn][partition.high]
+                )
+
+        let rightSlice = mSortedRightDf[lowIx, highIx];
+
+        return (leftSlice, rightSlice)
+        };
+    
+    computeLeftAndRightSelectors:
+    fun(leftColumnSlice, rightColumnSlice)
+        {
+        let leftSelector = [];
+        let rightSelector = [];
+
+        let leftIx = 0;
+        let rightIx = 0;
+
+        while (leftIx < size(leftColumnSlice) and 
+               rightIx < size(rightColumnSlice))
+            {
+            let rightVal = rightColumnSlice[rightIx] 
+            let leftVal = leftColumnSlice[leftIx]
+            if (leftVal < rightVal)
+                {
+                leftSelector = leftSelector :: leftIx;
+                rightSelector = rightSelector :: -1;  // meaning put in a `nothing`
+
+                leftIx = leftIx + 1;
+                }
+            else if (rightVal == leftVal)
+                {
+                let rightCycleStart = rightIx
+                while (rightVal == leftVal)
+                    {
+                    // we could try some compression here. 
+                    // we don't need a whole sequence of repeated values. 
+                    // could just tag with a multiplicity
+                    leftSelector = leftSelector :: leftIx; 
+                    rightSelector = rightSelector :: rightIx;
+
+                    rightIx = rightIx + 1;
+
+                    if (rightIx == size(rightColumnSlice))
+                        break;
+
+                    rightVal = rightColumnSlice[rightIx];
+                    }
+                    
+                leftIx = leftIx + 1;
+                
+                if (leftIx < size(leftColumnSlice))
+                    {
+                    let nextLeftVal = leftColumnSlice[leftIx];
+                    if (nextLeftVal == leftVal)
+                        rightIx = rightCycleStart
+                    }
+                        
+                }
+            else // leftVal > rightVal. 
+                {
+                leftSelector = leftSelector :: -1; // meaning put in a `nothing`
+                rightSelector = rightSelector :: rightIx;
+
+                rightIx = rightIx + 1
+                }
+            }
+
+        while (leftIx < size(leftColumnSlice))
+            {
+            leftSelector = leftSelector :: leftIx;
+            rightSelector = rightSelector :: -1;
+
+            leftIx = leftIx + 1
+            }
+
+        // in general this won't happen, except in the last partition
+        while (rightIx < size(rightColumnSlice))
+            {
+            leftSelector = leftSelector :: -1;
+            rightSelector = rightSelector :: rightIx;
+
+            rightIx = rightIx + 1
+            }
+
+        assertions.assertEqual(size(leftSelector), size(rightSelector));
+
+        return (leftSelector, rightSelector)
+        };
+
+    mixin joinBase;
+    };
+

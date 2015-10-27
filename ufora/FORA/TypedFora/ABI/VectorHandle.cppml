@@ -1,0 +1,1323 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "VectorHandle.hpp"
+#include "ForaValueArraySlice.hppml"
+#include "VectorRecord.hpp"
+#include "BigVectorHandle.hppml"
+#include "BigVectorLayouts.hppml"
+#include <stdlib.h>
+#include "../../Core/Type.hppml"
+#include "../../../core/StringUtil.hpp"
+#include "../../../core/lassert.hpp"
+#include "../../../core/Logging.hpp"
+#include "../../../core/SymbolExport.hpp"
+#include "../../../core/Memory.hpp"
+#include "../../Core/ValueDeepcopier.hppml"
+#include "../../Core/ExecutionContext.hppml"
+#include "../../Core/ExecutionContextImpl.hppml"
+#include "../../Core/ExecutionContextMemoryPool.hppml"
+#include "../../Runtime.hppml"
+#include "../../VectorDataManager/VectorDataManager.hppml"
+#include "../../VectorDataManager/VectorDataManagerImpl.hppml"
+#include "../../VectorDataManager/VectorPage.hppml"
+#include "ImplValVisitor.hppml"
+#include "../../../core/math/RandomHashGenerator.hpp"
+
+
+using Fora::Interpreter::ExecutionContext;
+
+using Fora::Pagelet;
+using Fora::PageletTree;
+using Fora::PageletTreePtr;
+
+namespace TypedFora {
+namespace Abi {
+
+static const uword_t kValidityFlagValue = 0xDEADBEEF;
+
+static const uword_t kMaxValidRefcountCheckVal = 100000000;	//over 100mm is probably a binary error
+
+//a constant we can mix in with 'newVectorHash' to produce correlated but essentially random hashes
+static const uword_t kGenerateRandomButRelatedHashMixinValue = 1013125;
+   
+namespace {
+
+const static int kMinPageletCountToCollapse = 8;
+
+static JOV nothingJOV = JOV::Constant(CSTValue());
+
+}
+
+VectorHandle::VectorHandle(
+				Fora::BigVectorId identity,
+				Fora::PageletTreePtr pageletTreePtr,
+				ForaValueArray* unpagedValues,
+				MemoryPool* owningMemoryPool,
+				hash_type vectorHash
+				) : 
+		mRefcount(0),
+		mBigVectorId(identity),
+		mPageletTreePtr(pageletTreePtr),
+		mUnpagedValues(unpagedValues),
+		mOwningMemoryPool(owningMemoryPool),
+		mIsWriteable(owningMemoryPool->isExecutionContextPool()),
+		mValidityFlag(kValidityFlagValue),
+		mVectorHash(vectorHash),
+		mSize(0),
+		mPagedAndPageletTreeValueCount(identity.size() + (!pageletTreePtr.isEmpty() ? pageletTreePtr->size() : 0))
+	{
+	for (long k = 0; k < kMaxBigVectorHandles; k++)
+		mBigVectorHandleSlots[k] = BigVectorHandle::empty();
+
+	mSize = 
+		mBigVectorId.size() + 
+		(mUnpagedValues ? mUnpagedValues->size() : 0) + 
+		(!pageletTreePtr.isEmpty() ? pageletTreePtr->size() : 0)
+		;
+
+	if (!mPageletTreePtr.isEmpty())
+		mPageletTreePtr = mPageletTreePtr->entirelyWithinMemoryPool(mOwningMemoryPool);
+
+	if (mBigVectorId.size())
+		mOwningMemoryPool->incrementBigVectorRefcount(identity);
+	
+	lassert(owningMemoryPool);
+	lassert(!owningMemoryPool->isVectorPage());
+
+	if (!mIsWriteable && mUnpagedValues && mUnpagedValues->isHomogenous())
+		mHomogenousVectorStash = 
+			HomogenousVectorStash::forArray(mUnpagedValues, mPagedAndPageletTreeValueCount);
+	}
+
+VectorHandle::VectorHandle(
+				Fora::BigVectorId identity,
+				Fora::PageletTreePtr pageletTreePtr,
+				boost::shared_ptr<Fora::Pagelet> unpagedValues,
+				MemoryPool* owningMemoryPool,
+				hash_type vectorHash
+				) : 
+		mRefcount(0),
+		mBigVectorId(identity),
+		mPageletTreePtr(pageletTreePtr),
+		mUnpagedValues(unpagedValues->getValues()),
+		mOwningMemoryPool(owningMemoryPool),
+		mIsWriteable(false),
+		mValidityFlag(kValidityFlagValue),
+		mVectorHash(vectorHash),
+		mSize(0),
+		mPagedAndPageletTreeValueCount(
+			identity.size() + (!pageletTreePtr.isEmpty() ? pageletTreePtr->size() : 0)
+			),
+		mUnpagedValuesPagelet(unpagedValues)
+	{
+	for (long k = 0; k < kMaxBigVectorHandles; k++)
+		mBigVectorHandleSlots[k] = BigVectorHandle::empty();
+
+	mSize = 
+		mBigVectorId.size() + 
+		(mUnpagedValues ? mUnpagedValues->size() : 0) + 
+		(!pageletTreePtr.isEmpty() ? pageletTreePtr->size() : 0)
+		;
+
+	if (!mPageletTreePtr.isEmpty())
+		mPageletTreePtr = mPageletTreePtr->entirelyWithinMemoryPool(mOwningMemoryPool);
+
+	if (mBigVectorId.size())
+		mOwningMemoryPool->incrementBigVectorRefcount(identity);
+
+	lassert(owningMemoryPool);
+	lassert(!owningMemoryPool->isVectorPage());
+
+	mOwningMemoryPool->pageletIsHeld(mUnpagedValuesPagelet);
+
+	if (!mIsWriteable && mUnpagedValues && mUnpagedValues->isHomogenous())
+		mHomogenousVectorStash = 
+			HomogenousVectorStash::forArray(mUnpagedValues, mPagedAndPageletTreeValueCount);
+	}
+
+bool VectorHandle::hasReferencesToPagedData() const
+	{
+	auto empty = BigVectorHandle::empty();
+
+	for (long k = 0; k < kMaxBigVectorHandles; k++)
+		if (mBigVectorHandleSlots[k] != empty)
+			return true;
+	return false;
+	}
+
+int64_t VectorHandle::unpagedAndPageletTreeValueCount() const
+	{
+	uint64_t count = mSize - mBigVectorId.size();
+
+	return count;
+	}
+
+int64_t VectorHandle::pagedValueCount() const
+	{
+	return mPagedAndPageletTreeValueCount - pageletTreeValueCount();
+	}
+
+int64_t VectorHandle::pageletTreeValueCount() const
+	{
+	if (mPageletTreePtr.isEmpty())
+		return 0;
+	return mPageletTreePtr->size();
+	}
+
+int64_t VectorHandle::unpagedValueCount() const
+	{
+	uint64_t count = mSize - mPagedAndPageletTreeValueCount;
+
+	return count;
+	}
+
+VectorHandle::~VectorHandle()
+	{
+	mValidityFlag = 0;
+
+	if (mUnpagedValues && !mUnpagedValuesPagelet)
+		mOwningMemoryPool->destroy(mUnpagedValues);
+
+	if (mUnpagedValuesPagelet)
+		mOwningMemoryPool->pageletIsNoLongerHeld(mUnpagedValuesPagelet);
+		
+	if (mBigVectorId.size())
+		mOwningMemoryPool->decrementBigVectorRefcount(mBigVectorId);
+
+	if (mOwningMemoryPool->isExecutionContextPool())
+		{
+		ExecutionContextMemoryPool* ecMemPool = 
+			dynamic_cast<ExecutionContextMemoryPool*>(mOwningMemoryPool);
+
+		auto context = ecMemPool->getContext();
+
+		if (context)
+			context->getImpl()->onDestroyVectorHandle(this);
+		}
+	}
+
+void VectorHandle::assertHasNoReferencesToPages()
+	{
+	auto empty = BigVectorHandle::empty();
+
+	for (long k = 0; k < kMaxBigVectorHandles; k++)
+		lassert(mBigVectorHandleSlots[k] != empty);
+	}
+
+void VectorHandle::setSlotToStatusUnreported(long slotIndex)
+	{
+	mBigVectorHandleSlots[slotIndex]->setSlicestoStatusUnreported();
+	}
+
+void VectorHandle::unmapBigVectorSlot(long slot)
+	{
+	auto empty = BigVectorHandle::empty();
+
+	lassert_dump(
+		mBigVectorHandleSlots[slot] != empty, 
+		"no mapped values in slot " << slot << " of " << this
+		);
+	mBigVectorHandleSlots[slot]->memoryPool()->destroy(mBigVectorHandleSlots[slot]);
+	mBigVectorHandleSlots[slot] = BigVectorHandle::empty();
+	}
+	
+//atomically increment the mRefcount. threadsafe
+void VectorHandle::incrementRefcount(void)
+	{
+	assertValid(RefcountExpectation::NoExpectation);
+
+	if (mOwningMemoryPool->isPagelet() && mBigVectorId.size())
+		{
+		//the only legal references to vector page handles are within execution contexts or other
+		//vector pages
+		ExecutionContext* context = ExecutionContext::currentExecutionContext();
+
+		if (context)
+			context->incrementBigVectorRefcount(mBigVectorId);
+		}
+
+	AO_fetch_and_add_full(&mRefcount, 1);
+	}
+    
+void	VectorHandle::assertValid(VectorHandle::RefcountExpectation expectation)
+	{
+	if (((uword_t)this) < 256 ||
+			mValidityFlag != kValidityFlagValue ||
+			mRefcount > kMaxValidRefcountCheckVal ||
+			expectation == RefcountExpectation::NonzeroRefcount && mRefcount == 0 ||
+			expectation == RefcountExpectation::ZeroRefcount && mRefcount != 0
+			)
+		{
+		fflush(stdout);
+		fflush(stderr);
+
+		if (mRefcount > kMaxValidRefcountCheckVal)
+			LOG_TEST << (long)mRefcount;
+
+		lassert_dump(false,
+			"Invalid vector: ptr = " << ((void*)this) << ". " <<
+			std::string(
+				this == 0 ? "assertValid failed: null vector" : 
+				((uword_t)this) < 256 ? "assertValid failed: corrupt VD* < 256" : 
+				mValidityFlag != kValidityFlagValue ? "Vector was already destroyed." : 
+				mRefcount > kMaxValidRefcountCheckVal ? "assertValid failed: mRefcount too large" : 
+				expectation == RefcountExpectation::NonzeroRefcount && mRefcount == 0 ? "assertValid failed: mRefcount was zero" : 
+				expectation == RefcountExpectation::ZeroRefcount && mRefcount != 0 ? "assertValid failed: mRefcount expected to be zero" : 
+				"shouldn't have failed"
+				)
+			);
+		}
+	}
+
+//atomically decrement the mRefcount. return whether
+//the mRefcount is now guaranteed to be zero
+void	VectorHandle::decrementRefcount()
+	{
+	assertValid();
+
+	if (mOwningMemoryPool->isPagelet() && mBigVectorId.size())
+		{
+		//the only legal references to vector page handles are within execution contexts or other
+		//vector pages
+		ExecutionContext* context = ExecutionContext::currentExecutionContext();
+
+		if (context)
+			context->decrementBigVectorRefcount(mBigVectorId);
+		}
+
+	AO_t prev = AO_fetch_and_add_full(&mRefcount, -1);
+	lassert(prev != 0);
+	
+	if (prev == 1)
+		mOwningMemoryPool->destroy(this);				
+	}
+    
+
+ostream&	operator<<(ostream& s, VectorHandlePtr vd)
+	{
+	s << vd.ptr();
+
+	return s;
+	}
+
+ostream& operator<<(ostream& s, VectorHandle* handle)
+	{
+	if (handle == 0)
+		{
+		s << "<null>";
+		return s;
+		}
+
+	handle->assertValid(VectorHandle::RefcountExpectation::NoExpectation);
+		
+	s << "handle(ptr=" << (void*)handle
+		<< ". unpagedValues = " << (void*)handle->mUnpagedValues
+		;
+	if (handle->mUnpagedValuesPagelet)
+		s << " in pagelet";
+
+	s	<< ". pageletTree = " << (void*)(!handle->mPageletTreePtr.isEmpty() ? &*handle->mPageletTreePtr : 0)
+		<< ". pagedAndPageletTreeValueCount = " << handle->mPagedAndPageletTreeValueCount
+		<< ". rc=" << handle->mRefcount
+		<< ". omp=" << handle->mOwningMemoryPool
+		<< ". " << handle->size() << " x " << prettyPrintString(handle->jor()) 
+		;
+
+	if (handle->isWriteable())
+		s << ". writeable";
+		
+	s << ")";
+	return s;
+	}
+
+uint64_t VectorHandle::size() const
+	{
+	return mSize;
+	}
+
+Fora::PageletTreePtr moveUnpagedValuesIntoPageletTree(
+													VectorDataManager* inVDM,
+													MemoryPool* owningMemoryPool,
+													ForaValueArray* array,
+													long low,
+													long high
+													)
+	{
+	if (low >= high)
+		return Fora::PageletTreePtr();
+
+	boost::shared_ptr<Fora::Pagelet> pagelet(new Pagelet(inVDM->getMemoryManager()));
+
+	pagelet->append(array, low, high);
+
+	pagelet->freeze();
+
+	//if the pagelet is too large and we're able to split the range in half,
+	//do so and return a more finely-grained pagelet tree
+	if (pagelet->totalBytesAllocatedFromOSIncludingHeldPagelets() > 
+			inVDM->maxPageSizeInBytes() / 2 && low + 1 < high)
+		{
+		//it's too big - subdivide it
+		pagelet.reset();
+
+		Fora::PageletTreePtr p1 = 
+			moveUnpagedValuesIntoPageletTree(inVDM, owningMemoryPool, array, low, (high+low)/2);
+
+		Fora::PageletTreePtr p2 = 
+			moveUnpagedValuesIntoPageletTree(inVDM, owningMemoryPool, array, (high+low)/2, high);
+
+		return Fora::PageletTree::concatenateAndBalance(
+			owningMemoryPool,
+			p1,
+			p2
+			);
+		}
+
+	//if the pagelet is fragmented, pull it together
+	if (pagelet->totalBytesAllocated() < pagelet->totalBytesAllocatedFromOS() * .95 && 
+			pagelet->totalBytesAllocated() > inVDM->getMemoryManager()->getSlabSize())
+		{	
+		boost::shared_ptr<Fora::Pagelet> pagelet2(
+			new Pagelet(
+				inVDM->getMemoryManager(),
+				pagelet->totalBytesAllocated() + 1024 * 16
+				)
+			);
+
+		pagelet2->append(pagelet->getValues(), 0, pagelet->getValues()->size());
+
+		pagelet2->freeze();
+
+		pagelet = pagelet2;
+		}
+
+	return owningMemoryPool->construct<Fora::PageletTree>(owningMemoryPool, pagelet, high - low);
+	}
+
+void VectorHandle::moveUnpagedValueArrayIntoPagelet(VectorDataManager* inVDM) const
+	{
+	lassert(isWriteable());
+	lassert(!unpagedValuesPagelet());
+
+	if (!unpagedValues())
+		return;
+
+	mUnpagedValues->markUnwriteable(true);
+
+	//create a new pagelet tree out of these values
+	Fora::PageletTreePtr newPagelets = 
+		moveUnpagedValuesIntoPageletTree(
+			inVDM, 
+			mOwningMemoryPool, 
+			mUnpagedValues, 
+			0, 
+			mUnpagedValues->size()
+			);
+
+	mPageletTreePtr = Fora::PageletTree::concatenateAndBalance(
+		mOwningMemoryPool,
+		mPageletTreePtr,
+		newPagelets
+		);
+
+	mPageletTreePtr = 
+		mPageletTreePtr->withSmallPageletsCollapsed(
+			mOwningMemoryPool, 
+			inVDM->getMemoryManager()->getSlabSize(), 
+			inVDM->maxPageSizeInBytes() / 2,
+			inVDM->getMemoryManager(),
+			kMinPageletCountToCollapse,
+			true
+			);
+
+	mOwningMemoryPool->destroy(mUnpagedValues);
+	mUnpagedValues = 0;
+
+	mPagedAndPageletTreeValueCount = mPageletTreePtr->size() + mBigVectorId.size();
+
+	//we don't need a lock because this must actually live in an execution context in
+	//order to be writeable, and is therefore not shared across threads
+	ExecutionContext* context = ExecutionContext::currentExecutionContext();
+
+	if (context)
+		{
+		Nullable<long> index;
+		if (context) 
+			index = context->getCurrentBigvecSlotIndex();
+		else
+			index = 0;
+
+		if (index && !bigvecHandleForSlot(*index)->isTheEmptySlot())
+			bigvecHandleForSlot(*index)->unmapAllValuesBetween(pagedValueCount(), mPagedAndPageletTreeValueCount);
+		}
+	}
+
+void VectorHandle::makeSpaceForNewUnpagedValues(VectorDataManager* inVDM) const
+	{
+	lassert(mIsWriteable);
+
+	if (!mUnpagedValues)
+		{
+		mUnpagedValues = ForaValueArray::Empty(mOwningMemoryPool);
+
+		if (!mPageletTreePtr.isEmpty())
+			{
+			long oldBytesUsed = mPageletTreePtr->rightmostPagelet()->getValues()->bytesUsed();
+
+			long multiple = 1;
+			if (oldBytesUsed < 1024 * 1024 * 4)
+				multiple = 2;
+
+			mUnpagedValues->reserveBytes(oldBytesUsed * multiple);
+			}
+		}
+	else
+		{
+		if (mUnpagedValues->size() < 64 * 1024)
+			return;
+
+		long oldBytesUsed = mUnpagedValues->bytesUsed();
+
+		moveUnpagedValueArrayIntoPagelet(inVDM);
+
+		mUnpagedValues = ForaValueArray::Empty(mOwningMemoryPool);
+
+		long multiple = 1;
+		if (oldBytesUsed < 1024 * 1024 * 4)
+			multiple = 2;
+
+		mUnpagedValues->reserveBytes(oldBytesUsed * multiple);
+		}
+	}
+
+JudgmentOnResult VectorHandle::jor() const
+	{
+	JudgmentOnResult result = mBigVectorId.jor();
+
+	if (mUnpagedValues)
+		result = result + mUnpagedValues->currentJor();
+
+	if (!mPageletTreePtr.isEmpty())
+		result = result + mPageletTreePtr->currentJor();
+
+	return result;
+	}
+
+bool VectorHandle::isEmptyOrVectorOfUint8() const
+	{
+	JudgmentOnResult j = jor();
+	if (j.size() == 0)
+		return true;
+	if (j.size() > 1)
+		return false;
+
+	static JOV jovUInt8 = JOV::OfType(::Type::Integer(8, false));
+
+	return j[0] == jovUInt8;
+	}
+
+VectorHandlePtr VectorHandle::slice(
+				IntegerSequence sequenceToUse,
+				MemoryPool* inPool,
+				VectorDataManager* inVDM,
+				hash_type newVectorHash
+				)
+	{
+	sequenceToUse = sequenceToUse.intersect(IntegerSequence(size()));
+
+	if (sequenceToUse.size() == 0)
+		return 0;
+
+	Fora::BigVectorId newSliceId;
+
+	IntegerSequence pagedPortion = 
+		sequenceToUse.intersect(IntegerSequence(pagedValueCount()));
+
+	IntegerSequence pageletPortion = 
+		sequenceToUse.intersect(IntegerSequence(pageletTreeValueCount(), pagedValueCount()));
+
+	IntegerSequence unpagedPortion = 
+		sequenceToUse.intersect(IntegerSequence(unpagedValueCount(), pagedAndPageletTreeValueCount()));
+
+	lassert(
+		sequenceToUse.size() == 
+			pagedPortion.size() + pageletPortion.size() + unpagedPortion.size()
+		);
+
+
+	//find our paged values
+	if (pagedPortion.size())
+		{
+		newSliceId = 
+			inVDM->getBigVectorLayouts()->registerBigVectorSlice(
+				mBigVectorId, 
+				pagedPortion,
+				newVectorHash + hash_type(kGenerateRandomButRelatedHashMixinValue, 0)
+				);
+
+		lassert_dump(newSliceId.size() == pagedPortion.size(),
+			"Slicing " << prettyPrintString(mBigVectorId) 
+				<< " with " << prettyPrintString(pagedPortion)
+				<< " should have produced " << pagedPortion.size() << " but produced "
+				<< newSliceId.size() << " instead."
+				);
+		}
+
+	ForaValueArray* newArray = 0;
+
+	if (pageletPortion.size() || unpagedPortion.size())
+		newArray = ForaValueArray::Empty(inPool);
+
+	if (pageletPortion.size())
+		{
+		long oldSize = newArray->size();
+
+		IntegerSequence pageletPortionInOwnCoords = pageletPortion.offset(-pagedValueCount());
+		
+		ValueDeepcopierState state;
+
+		ValueDeepcopier deepcopier(state, false, inPool, true, false);
+
+		mPageletTreePtr->visitTree(
+			[&](boost::shared_ptr<Fora::Pagelet> pagelet, IntegerRange range, long offsetInTree) {
+				//set of values in the pageletTree() that 'range' represents
+				IntegerSequence sequenceInPageletTree(range.size(), offsetInTree);
+
+				//the subset of values in the pageletTree we actually plan on using from this slice
+				IntegerSequence sequenceInPageletTreeToKeep = 
+					sequenceInPageletTree.intersect(pageletPortionInOwnCoords);
+
+				//subset of values in this Fora::Pagelet we want to keep
+				IntegerSequence sequenceInPageletToKeep = 
+					sequenceInPageletTreeToKeep.offset(-offsetInTree);
+
+				if (sequenceInPageletToKeep.size())
+					{
+					lassert_dump(sequenceInPageletToKeep.smallestValue() >= 0 && 
+							sequenceInPageletToKeep.largestValue() < pagelet->getValues()->size(),
+						"Sequence in pagelet portion was " << prettyPrintString(sequenceInPageletToKeep)
+							<< " which is not contained in [0," << pagelet->getValues()->size() << ")"
+							<< "\n"
+							<< "\n"
+							<< "whole pageTree has size " << pageletTree()->size()
+							<< "pageletPortionInOwnCoords = " 
+							<< prettyPrintString(pageletPortionInOwnCoords)
+							<< "\n"
+							<< "\n"
+							<< "range = " 
+							<< prettyPrintString(range)
+							<< "\n"
+							<< "offsetInTree = " 
+							<< prettyPrintString(offsetInTree)
+							<< "\n"
+							<< "sequenceInPageletTree = " 
+							<< prettyPrintString(sequenceInPageletTree)
+							<< "\n"
+							<< "sequenceInPageletTreeToKeep = " 
+							<< prettyPrintString(sequenceInPageletTreeToKeep)
+							<< "\n"
+							<< "sequenceInPageletToKeep = " 
+							<< prettyPrintString(sequenceInPageletToKeep)
+							<< "\n"
+						);
+
+					if (sequenceInPageletToKeep.stride() == 1)
+						{
+						deepcopier.duplicate(newArray, pagelet->getValues(), 
+							sequenceInPageletToKeep.smallestValue(),
+							sequenceInPageletToKeep.smallestValue() + 
+								sequenceInPageletToKeep.size()
+							);
+						}
+					else
+						{
+						auto sourceArray = pagelet->getValues();
+
+						for (int64_t k = 0; k < sequenceInPageletToKeep.size(); k++)
+							deepcopier.duplicate(
+								newArray,
+								sourceArray,
+								sequenceInPageletToKeep.offsetForIndex(k),
+								sequenceInPageletToKeep.offsetForIndex(k)+1
+								);
+						}
+					}
+			});
+
+		lassert_dump(
+			newArray->size() == oldSize + pageletPortion.size(),
+			"Tried to append " << prettyPrintString(pageletPortionInOwnCoords) 
+				<< " of a pageletTree of size " << pageletTree()->size()
+				<< " and got a total of " << newArray->size() - oldSize << " values."
+				);
+		}
+
+	if (unpagedPortion.size())
+		{
+		long oldSize = newArray->size();
+
+		IntegerSequence unpagedPortionInOwnCoords = 
+			unpagedPortion.offset(-pagedAndPageletTreeValueCount());
+
+		if (unpagedPortion.stride() == 1)
+			{
+			newArray->append(
+				*mUnpagedValues, 
+				unpagedPortionInOwnCoords.offset(),
+				unpagedPortionInOwnCoords.offset() + unpagedPortionInOwnCoords.size()
+				);
+			}
+		else
+			{
+			for (long k = 0; k < unpagedPortionInOwnCoords.size(); k++)
+				newArray->append( (*mUnpagedValues)[unpagedPortionInOwnCoords.offsetForIndex(k)] );
+			}
+
+		lassert_dump(
+			newArray->size() == oldSize + unpagedPortion.size(),
+			"Tried to append " << prettyPrintString(unpagedPortionInOwnCoords) 
+				<< " of a pageletTree of size " << pageletTree()->size()
+				<< " and got a total of " << newArray->size() - oldSize << " values."
+				);
+		}
+
+	return inPool->construct<VectorHandle>(
+		newSliceId,
+		PageletTreePtr(),
+		newArray,
+		inPool,
+		newVectorHash + hash_type(kGenerateRandomButRelatedHashMixinValue,3)
+		);
+	}
+
+pair<TypedFora::Abi::ForaValueArray*, int64_t> VectorHandle::arrayAndOffsetFor(int64_t index) const
+	{
+	TypedFora::Abi::ForaValueArraySlice slice = sliceForOffset(index);
+
+	return make_pair(slice.array(), slice.mapping().offsetForIndex(index));
+	}
+
+TypedFora::Abi::ForaValueArraySlice VectorHandle::sliceForOffset(int64_t index) const
+	{
+	lassert_dump(index < size(), "asked for " << index << " in vec " << this);
+
+	if (index >= mPagedAndPageletTreeValueCount)
+		return TypedFora::Abi::ForaValueArraySlice(
+			mUnpagedValues, 
+			RangeToIntegerSequence(0,mUnpagedValues->size(),0,1).offsetInputs(mPagedAndPageletTreeValueCount)
+			);
+
+	Nullable<long> slotIndex;
+	ExecutionContext* context = ExecutionContext::currentExecutionContext();
+
+	if (context)
+		slotIndex = context->getCurrentBigvecSlotIndex();
+	else
+		slotIndex = 0;
+
+	lassert(slotIndex);
+
+	return bigvecHandleForSlot(*slotIndex)->sliceForOffset(index);
+	}
+
+VectorHandlePtr VectorHandle::paged(MemoryPool* inPool, VectorDataManager* inVDM)
+	{
+	if (!mUnpagedValues && mPageletTreePtr.isEmpty())
+		return VectorHandlePtr(this);
+
+	PageletTreePtr pageletTree;
+
+	if (isWriteable())
+		{
+		moveUnpagedValueArrayIntoPagelet(inVDM);
+		pageletTree = mPageletTreePtr;
+		}
+	else
+		pageletTree = collapsePageletTreeAndUnpagedValuesTree(
+			unpagedAndPageletTreeValueCount(),
+			inVDM,
+			inPool,
+			false
+			).first;
+
+	return inVDM->pagedVectorHandle(
+		mBigVectorId,
+		pageletTree,
+		inPool
+		);
+	}
+
+namespace {
+
+bool wantsToCreatePagelet(ForaValueArray* lhs, ForaValueArray* rhs)
+	{
+	if (lhs->allValuesArePOD() && lhs->isHomogenous() 
+			&& rhs->isHomogenous() && rhs->allValuesArePOD())
+		return lhs->bytesUsed() + rhs->bytesUsed() > 4096 * 8;
+		
+	return lhs->size() + rhs->size() > 256 * 8;
+	}
+
+bool wantsToCreatePagelet(ForaValueArray* array, long count)
+	{
+	if (array->allValuesArePOD() && array->isHomogenous())
+		return array->bytesUsed() > 4096 * 8;
+		
+	return array->size() > 256 * 8;
+	}
+
+}
+
+bool VectorHandle::needsDeepcopyBeforeConcatenation(
+					VectorDataManager* inVDM,
+					IntegerSequence sequenceInHandle
+					)
+	{
+	int64_t lowVal = sequenceInHandle.smallestValue();
+	int64_t highVal = sequenceInHandle.largestValue();
+	if (lowVal > pagedValueCount())
+		lowVal = pagedValueCount();
+	if (highVal > pagedValueCount())
+		highVal = pagedValueCount();
+
+	//lhs has no unpaged values at all
+	auto layout = inVDM->getBigVectorLayouts()->getLayoutForId(mBigVectorId);
+
+	long lowSlice = layout.sliceAtIndex(lowVal);
+	long highSlice = layout.sliceAtIndex(highVal) + 1;
+
+	if (highSlice - lowSlice > 2)
+		return false;
+
+	auto vdids = layout.vectorIdentities().slice(lowSlice, highSlice);
+
+	long totalValuesInSlices = 0;
+	for (auto slice: vdids)
+		totalValuesInSlices += slice.size();
+
+	if (totalValuesInSlices > sequenceInHandle.size() * 2)
+		return true;
+
+	return false;
+	}
+	
+
+VectorHandlePtr VectorHandle::concatenate(
+				VectorHandle* lhs,
+				int64_t lhsValuesUsed,
+				VectorHandle* rhs,
+				int64_t rhsValuesUsed,
+				MemoryPool* inPool,
+				VectorDataManager* inVDM,
+				hash_type newVectorHash
+				)
+	{
+	if (lhs->unpagedValues() || !lhs->pageletTree().isEmpty())
+		{
+		if (rhs->pagedValueCount())
+			{
+			VectorRecord pagedLhs(lhs->paged(inPool, inVDM));
+
+			return concatenate(
+					pagedLhs.dataPtr(), 
+					lhsValuesUsed, 
+					rhs, 
+					rhsValuesUsed, 
+					inPool, 
+					inVDM, 
+					newVectorHash + hash_type(kGenerateRandomButRelatedHashMixinValue, 4)
+					);
+			}
+		else
+			{
+			if (lhs->unpagedValues() && lhs->isWriteable() && lhs->unpagedValues()->isWriteable() && 
+					rhs->unpagedValues() && rhs->pageletTree().isEmpty() && 
+					!wantsToCreatePagelet(lhs->unpagedValues(), rhs->unpagedValues())
+					)
+				{
+				//we can do this entirely using ForaValueArray objects if we want
+				if (lhs->size() == lhsValuesUsed && rhs->unpagedValues()->allValuesArePOD())
+					{
+					//we can directly append 
+					lhs->unpagedValues()->append(*rhs->unpagedValues(), 0, rhsValuesUsed);
+					lhs->valueAppendedToUnpagedData(rhsValuesUsed);
+
+					return VectorHandlePtr(lhs);
+					}
+				else
+					{
+					ForaValueArray* array = ForaValueArray::Empty(inPool);
+
+					int64_t lhsValsToUse = std::max<int64_t>(0, lhsValuesUsed - lhs->pagedAndPageletTreeValueCount());
+
+					if (lhsValsToUse > 0)
+						array->append(*lhs->unpagedValues(), 0, lhsValsToUse);
+
+					array->append(*rhs->unpagedValues(), 0, rhsValuesUsed);
+
+					return VectorHandlePtr(
+						inPool->construct<VectorHandle>(
+							lhs->mBigVectorId,
+							lhs->pageletTree(),
+							array,
+							inPool,
+							newVectorHash
+							)
+						);
+					}
+				}
+
+			pair<PageletTreePtr, ForaValueArray*> lhsTree = 
+				lhs->collapsePageletTreeAndUnpagedValuesTree(
+					std::max<int64_t>(0, lhsValuesUsed - lhs->pagedValueCount()),
+					inVDM,
+					inPool,
+					false
+					);
+
+			pair<PageletTreePtr, ForaValueArray*> rhsTree = 
+				rhs->collapsePageletTreeAndUnpagedValuesTree(
+					std::max<int64_t>(0, rhsValuesUsed - rhs->pagedValueCount()),
+					inVDM,
+					inPool,
+					true
+					);
+
+			PageletTreePtr finalTree = lhsTree.first;
+
+			if (!rhsTree.first.isEmpty())
+				finalTree = 
+					PageletTree::concatenateAndBalance(
+						inPool,
+						finalTree,
+						rhsTree.first
+						);
+
+			finalTree = finalTree->withSmallPageletsCollapsed(
+				inPool, 
+				inVDM->getMemoryManager()->getSlabSize(), 
+				inVDM->maxPageSizeInBytes() / 2,
+				inVDM->getMemoryManager(),
+				kMinPageletCountToCollapse,
+				true
+				);
+
+			VectorHandlePtr result = inPool->construct<VectorHandle>(
+				lhs->mBigVectorId,
+				finalTree,
+				rhsTree.second,
+				inPool,
+				newVectorHash + hash_type(kGenerateRandomButRelatedHashMixinValue, 5)
+				);
+
+			return result;
+			}
+		}
+	else
+		{
+		//lhs has no unpaged values at all
+		Fora::BigVectorId leftIdentity = lhs->mBigVectorId;
+
+		if (lhsValuesUsed != leftIdentity.size())
+			{
+			lassert(lhsValuesUsed < leftIdentity.size());
+
+			leftIdentity = inVDM->getBigVectorLayouts()->registerBigVectorSlice(
+				leftIdentity,
+				null(), 
+				null() << lhsValuesUsed, 
+				null(), 
+				newVectorHash + hash_type(kGenerateRandomButRelatedHashMixinValue, 6)
+				);
+			}
+
+		Fora::BigVectorId rightIdentity = rhs->mBigVectorId;
+			
+		if (rhsValuesUsed < rightIdentity.size())
+			{
+			rightIdentity = inVDM->getBigVectorLayouts()->registerBigVectorSlice(
+				rightIdentity,
+				null(), 
+				null() << rhsValuesUsed, 
+				null(), 
+				newVectorHash + hash_type(kGenerateRandomButRelatedHashMixinValue, 7)
+				);
+			}
+
+		//incref these identities so that when we drop them later they get counted
+		inPool->incrementBigVectorRefcount(leftIdentity);
+		inPool->incrementBigVectorRefcount(rightIdentity);
+	
+		Fora::BigVectorId newID = inVDM->getBigVectorLayouts()->registerBigVectorConcat(
+				leftIdentity, 
+				rightIdentity,
+				newVectorHash + hash_type(kGenerateRandomButRelatedHashMixinValue, 8),
+				[&](TypedFora::Abi::BigVectorPageLayout inLayout) {
+					return inVDM->createSyntheticPage(inLayout);
+					},
+				[&]() { return inVDM->newVectorHash(); },
+				inVDM->maxPageSizeInBytes()
+				);
+
+		VectorHandlePtr result;
+
+		pair<PageletTreePtr, ForaValueArray*> newPageletTree = 
+			rhs->collapsePageletTreeAndUnpagedValuesTree(
+				std::max<int64_t>(rhsValuesUsed - rhs->pagedValueCount(), 0),
+				inVDM,
+				inPool,
+				true
+				);
+
+		if (!newPageletTree.first.isEmpty())
+			newPageletTree.first = newPageletTree.first->withSmallPageletsCollapsed(
+				inPool, 
+				inVDM->getMemoryManager()->getSlabSize(), 
+				inVDM->maxPageSizeInBytes() / 2,
+				inVDM->getMemoryManager(),
+				kMinPageletCountToCollapse,
+				true
+				);
+
+		result = inPool->construct<VectorHandle>(
+			newID,
+			newPageletTree.first,
+			newPageletTree.second,
+			inPool,
+			newVectorHash + hash_type(kGenerateRandomButRelatedHashMixinValue, 9)
+			);
+
+		//decref these temporary identities so that they don't keep pages alive forever.
+		inPool->decrementBigVectorRefcount(leftIdentity);
+		inPool->decrementBigVectorRefcount(rightIdentity);
+
+		lassert(result->size() == lhsValuesUsed + rhsValuesUsed);
+
+		return result;
+		}
+	}
+
+pair<PageletTreePtr, ForaValueArray*> VectorHandle::collapsePageletTreeAndUnpagedValuesTree(
+														int64_t valuesUsed,
+														VectorDataManager* inVDM,
+														MemoryPool* inPool,
+														bool allowUnpagedValuesInResult
+														)
+	{
+	int64_t unpagedValsToUse = std::max<int64_t>(valuesUsed - pageletTreeValueCount(), 0);
+
+	if (!valuesUsed)
+		return pair<PageletTreePtr, ForaValueArray*>();
+
+	if (unpagedValsToUse == 0)
+		return pair<PageletTreePtr, ForaValueArray*>(
+			mPageletTreePtr->restrictTo(inPool, valuesUsed), 
+			nullptr
+			);
+
+	if (allowUnpagedValuesInResult && !wantsToCreatePagelet(unpagedValues(), unpagedValsToUse))
+		{
+		//we'd like to return a copy of the unpaged values
+		ValueDeepcopierState state;
+
+		ValueDeepcopier deepcopier(state, false, inPool, true, false);
+
+		ForaValueArray* newArray = ForaValueArray::Empty(inPool);
+
+		deepcopier.duplicate(
+			newArray,
+			unpagedValues(),
+			0,
+			unpagedValsToUse
+			);
+
+		return pair<PageletTreePtr, ForaValueArray*>(mPageletTreePtr, newArray);
+		}
+
+	if (isWriteable())
+		{
+		moveUnpagedValueArrayIntoPagelet(inVDM);
+
+		return pair<PageletTreePtr, ForaValueArray*>(
+			mPageletTreePtr->restrictTo(inPool, valuesUsed),
+			0
+			);
+		}
+	else
+		{
+		//we need to create a new pagelet just consisting of the values we can see
+		boost::shared_ptr<Fora::Pagelet> pagelet(
+			new Pagelet(
+				inVDM->getMemoryManager()
+				)
+			);
+
+		pagelet->append(unpagedValues(), 0, unpagedValsToUse);
+
+		pagelet->freeze();
+
+		return pair<PageletTreePtr, ForaValueArray*>(
+			Fora::PageletTree::concatenateAndBalance(
+				inPool,
+				mPageletTreePtr,
+				inPool->construct<Fora::PageletTree>(
+					inPool,
+					pagelet,
+					unpagedValsToUse
+					)
+				),
+			nullptr
+			);
+		}
+	}
+
+bool VectorHandle::visitAnyLoadedValues(
+		VectorDataManager* inVDM,
+		boost::function2<void, ForaValueArray*, IntegerSequence> visitor,
+		IntegerSequence subsequence
+		)
+	{
+	if (!size())
+		return false;
+	
+	IntegerSequence pagedValueSequence(pagedValueCount());
+	IntegerSequence pageletTreeValueSequence(pageletTreeValueCount(), pagedValueCount());
+	IntegerSequence unpagedValueSequence(unpagedValueCount(), pagedAndPageletTreeValueCount());
+
+	bool visited = false;
+
+	auto visitPaged = [&]() {
+		if (subsequence.intersect(pagedValueSequence).size())
+			{
+			visited |= inVDM->visitAnyLoadedDataForVector(
+				pagedValuesIdentity(),
+				subsequence.intersect(pagedValueSequence),
+				visitor
+				);
+			}
+		};
+
+
+	auto visitPagelet = [&]() {
+		if (subsequence.intersect(pageletTreeValueSequence).size())
+			{
+			IntegerSequence treeSeq = 
+				subsequence.intersect(pageletTreeValueSequence).offset(-pagedValueCount());
+
+			mPageletTreePtr->visitTree(
+				[&](boost::shared_ptr<Pagelet> pagelet, IntegerRange range, long offset) {
+					if (range.isEmpty())
+						return;
+
+					visited = true;
+					
+					IntegerSequence seq = subsequence.offset(-offset - pagedValueCount()).intersect(IntegerSequence(range));
+
+					if (seq.size())
+						visitor(pagelet->getValues(), seq);
+					}
+				);
+			}
+		};
+
+	auto visitUnpaged = [&]() {
+		if (subsequence.intersect(unpagedValueSequence).size())
+			{
+			visitor(
+				unpagedValues(),
+				subsequence.intersect(unpagedValueSequence).offset(-pagedAndPageletTreeValueCount())
+				);
+
+			visited = true;
+			}
+		};
+
+	if (subsequence.size() > 0)
+		{
+		visitPaged();
+		visitPagelet();
+		visitUnpaged();
+		}
+	else
+		{
+		visitUnpaged();
+		visitPagelet();
+		visitPaged();
+		}
+
+	return visited;
+	}
+
+VectorHandle::LoadCheckResult VectorHandle::attemptToLoadValues(
+					VectorDataManager* inVDM, 
+					int64_t lowIndex, 
+					int64_t highIndex
+					)
+	{
+	IntegerRange desiredRange(lowIndex, highIndex);
+	IntegerRange pagedRange(0, pagedValueCount());
+	IntegerRange pageletRange(pagedValueCount(), pagedAndPageletTreeValueCount());
+	
+	TypedFora::Abi::BigVectorPageLayout layout;
+	IntegerRange rangeWithinPagedValues;
+
+	Fora::Interpreter::ExecutionContext* curContext = ExecutionContext::currentExecutionContext();
+
+	lassert(curContext);
+
+	if (!desiredRange.intersect(pagedRange).isEmpty())
+		{
+		layout = inVDM->getBigVectorLayouts()->getLayoutForId(pagedValuesIdentity());
+		rangeWithinPagedValues = desiredRange.intersect(pagedRange);
+
+		if (curContext)
+			curContext->getImpl()->observeLoadOfVectorPages(
+				layout.getPagesReferenced(rangeWithinPagedValues.low(), rangeWithinPagedValues.high())
+				);
+		}
+	
+	Nullable<long> slotIndex = curContext->getCurrentBigvecSlotIndex();
+
+	lassert(slotIndex);
+
+	bool mappedAnything = false;
+
+	if (mBigVectorHandleSlots[*slotIndex]->isTheEmptySlot())
+		{
+		mBigVectorHandleSlots[*slotIndex] = 
+			BigVectorHandle::create(
+				curContext->getExecutionContextMemoryPool()->getBigvecMappingPool(), 
+				curContext->getImpl().get()
+				);
+
+		mappedAnything = true;
+		curContext->getImpl()->bigVectorArrayHandleMapped(this);
+		}
+
+	if (!desiredRange.intersect(pagedRange).isEmpty())
+		{
+		while (true)
+			{
+			Nullable<int64_t> indexToLoad = 
+				bigvecHandleForSlot(*slotIndex)->firstValueNotLoadedInRange(
+					rangeWithinPagedValues.low(), 
+					rangeWithinPagedValues.high()
+					);
+
+			if (!indexToLoad)
+				break;
+
+			int64_t index = *indexToLoad;
+
+			//figure out which handle this is
+			pair<TypedFora::Abi::VectorDataIDSlice, int64_t> sliceAndOffset = 
+				layout.sliceAndOffsetContainingIndex(index);
+
+			VectorDataID vdid = sliceAndOffset.first.vector();
+
+			//do we have data for this vector? if not, nothing we can do
+			boost::shared_ptr<VectorPage> page = inVDM->getPageFor(vdid.getPage());
+
+			lassert(vdid.getIndexWithinPage() == 0);
+			
+			if (!page)
+				return VectorHandle::LoadCheckResult::Failed;
+			
+			if (!mOwningMemoryPool->isVectorPageMapped(page))
+				{
+				boost::shared_ptr<Ufora::threading::Trigger> mappingWantsToUnmapTrigger;
+
+				mappingWantsToUnmapTrigger = page->attemptToMapTo();
+
+				if (!mappingWantsToUnmapTrigger)
+					return VectorHandle::LoadCheckResult::UnmapAllAndTryAgain;
+				
+				mOwningMemoryPool->vectorPageMapped(
+					page,
+					mappingWantsToUnmapTrigger
+					);
+				}
+
+			if (!mappedAnything)
+				{
+				curContext->getImpl()->bigVectorArrayHandleMapped(this);
+				mappedAnything = true;
+				}
+	
+			page->getPageletTree()->associateValues(
+				this->bigvecHandleForSlot(*slotIndex),
+				sliceAndOffset.second,
+				sliceAndOffset.first.slice(),
+				null() << page->getPageId()
+				);
+
+			rangeWithinPagedValues.low() = 
+				sliceAndOffset.second + sliceAndOffset.first.slice().size();
+			}
+		}
+
+	if (!desiredRange.intersect(pageletRange).isEmpty())
+		{
+		//we have some pagelet tree values to map in.
+		lassert(!mPageletTreePtr.isEmpty());
+
+		IntegerSequence rangeWithinPageletTree;
+
+		rangeWithinPageletTree = IntegerSequence(IntegerRange(pageletTreeValueCount()));
+		
+		mPageletTreePtr->associateValues(
+			this->bigvecHandleForSlot(*slotIndex),
+			pagedValueCount() + rangeWithinPageletTree.smallestValue(),
+			rangeWithinPageletTree,
+			null()
+			);
+
+		if (!mappedAnything)
+			{
+			curContext->getImpl()->bigVectorArrayHandleMapped(this);
+			mappedAnything = true;
+			}
+		}
+
+	return VectorHandle::LoadCheckResult::Success;
+	}
+
+void VectorHandle::validateInternalInvariants()
+	{
+	lassert(mPagedAndPageletTreeValueCount == 
+			mBigVectorId.size() + (!mPageletTreePtr.isEmpty() ? mPageletTreePtr->size() : 0));
+
+	if (!mPageletTreePtr.isEmpty())
+		lassert(mPageletTreePtr->getMemoryPoolForEntireTree() == mOwningMemoryPool);
+	}
+
+void VectorHandle::collapsePageletIfVeryFragmented(VectorDataManager* inVDM)
+	{
+	if (!mPageletTreePtr.isEmpty() 
+			&& mPageletTreePtr->bytecountFromOSIncludingHeldPagelets() - 
+				mPageletTreePtr->bytecountIncludingHeldPagelets() > 
+					inVDM->getMemoryManager()->getSlabSize())
+		mPageletTreePtr = 
+			mPageletTreePtr->collapseToSinglePageletTreeWithoutHeldPagelets(
+				mOwningMemoryPool, 
+				inVDM->getMemoryManager()
+				);
+	}
+
+}
+}
+
+

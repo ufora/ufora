@@ -1,0 +1,242 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "TypedFora.hppml"
+#include "TypedForaUtil.hppml"
+
+namespace TypedFora {
+
+
+ImmutableTreeSet<Variable>  computeFreeVariables(
+		const ImmutableTreeVector<Expression>& in
+		)
+	{
+	ImmutableTreeSet<Variable> tr;
+	for (long k = 0; k < in.size();k++)
+		tr = tr + in[k].freeVariables();
+	return tr;
+	}
+
+
+ImmutableTreeSet<Variable>  computeFreeVariables(
+		const ImmutableTreeVector<MakeTupleArgument>& in
+		)
+	{
+	ImmutableTreeSet<Variable> tr;
+	for (long k = 0; k < in.size();k++)
+		tr = tr + in[k].arg().freeVariables();
+	return tr;
+	}
+
+
+ImmutableTreeSet<Variable>  computeFreeVariables(
+		const ImmutableTreeVector<Continuation>& in
+		)
+	{
+	ImmutableTreeSet<Variable> tr;
+	for (long k = 0; k < in.size();k++)
+		tr = tr + computeFreeVariables(in[k]);
+	return tr;
+	}
+
+
+ImmutableTreeSet<Variable>  computeFreeVariables(
+		const ImmutableTreeVector<MetadataStackFrame>& in
+		)
+	{
+	ImmutableTreeSet<Variable> tr;
+	for (long k = 0; k < in.size();k++)
+		tr = tr + computeFreeVariables(in[k]);
+	return tr;
+	}
+
+ImmutableTreeSet<Variable>  computeFreeVariables(
+		const ImmutableTreeVector<MetadataVariable>& in
+		)
+	{
+	ImmutableTreeSet<Variable> tr;
+	for (long k = 0; k < in.size();k++)
+		tr = tr + computeFreeVariables(in[k]);
+	return tr;
+	}
+
+ImmutableTreeSet<Variable>  computeFreeVariables(
+		const ImmutableTreeVector<MetadataVariableLayout>& in
+		)
+	{
+	ImmutableTreeSet<Variable> tr;
+	for (long k = 0; k < in.size();k++)
+		tr = tr + computeFreeVariables(in[k]);
+	return tr;
+	}
+
+
+ImmutableTreeSet<Variable> computeFreeVariables(const MakeTupleArgument& in)
+	{
+	return in.arg().freeVariables();
+	}
+
+
+ImmutableTreeSet<Variable> computeFreeVariables(const Continuation& in)
+	{
+	return in.resumption().freeVariables() - in.var();
+	}
+
+
+ImmutableTreeSet<Variable> 
+computeFreeVariables(const MetadataStackFrame& in)
+	{
+	return computeFreeVariables(in.vars());
+	}
+
+
+ImmutableTreeSet<Variable> 
+computeFreeVariables(const MetadataVariableLayout& in)
+	{
+	@match MetadataVariableLayout(in)
+		-|	Var(var) ->> {
+			return emptyTreeSet() + var;
+			}
+		-|	Constant() ->> {
+			return emptyTreeSet();
+			}
+		/*-|	Tuple(vars, extras) ->> {
+			ImmutableTreeSet<Variable> tr = computeFreeVariables(vars);
+			if (extras)
+				tr = tr + extras->freeVariables();
+			return tr;
+			}*/
+	}
+
+
+ImmutableTreeSet<Variable> 
+computeFreeVariables(const MetadataVariable& in)
+	{
+	return in.layout().freeVariables();
+	}
+
+ImmutableTreeSet<Variable> computeFreeVariables(const CallTarget& inTarget)
+	{
+	@match CallTarget(inTarget)
+		-|	Subgraph(subgraph) ->> {
+			return subgraph.freeVariables();
+			}
+		-|	_ ->> {
+			return emptyTreeSet();
+			}
+	}
+
+ImmutableTreeSet<Variable> computeFreeVariables(const Block& inTarget)
+	{
+	return inTarget.expression().freeVariables() - 
+		variableSetFromCallVariables(inTarget.args());
+	}
+
+ImmutableTreeSet<Variable> computeFreeVariables(const Callable& inTarget)
+	{
+	@match Callable(inTarget)
+		-|	Graph(_, blocks) ->> {
+			ImmutableTreeSet<Variable> tr;
+			for (long k = 0; k < blocks.size();k++)
+				tr = tr + computeFreeVariables(
+					blocks.pairAtPosition(k).second
+					);
+			return tr;
+			}
+		-|	_ ->> {
+			return emptyTreeSet();
+			}
+	}
+
+ImmutableTreeSet<Variable> computeFreeVariables(const Expression& in)
+	{
+	@match Expression(in)
+		-|	Var(var) ->> {
+			return emptyTreeSet() + var;
+			}
+		-|	Constant() ->> {
+			return emptyTreeSet();
+			}
+		-|	Let(var, toBind, toEvaluate) ->> {
+			return toBind.freeVariables() + (toEvaluate.freeVariables() - var);
+			}
+		-|	DiscardFirst(first, second) ->> {
+			return first.freeVariables() + second.freeVariables();
+			}
+		-|	If(cond, ifTrue, ifFalse) ->> {
+			return cond.freeVariables() + ifTrue.freeVariables() + ifFalse.freeVariables();
+			}
+		-|	InterruptCheck(stackMetadata) ->> {
+			return computeFreeVariables(stackMetadata);
+			}
+		-|	Halt() ->> {
+			return emptyTreeSet();
+			}
+		-|  TransferToInterpreter(stackMetadata) ->> {
+			return computeFreeVariables(stackMetadata);
+			}
+		-|	KickCheck(transferExpression) ->> {
+			return transferExpression.freeVariables();
+			}
+		-|	InlineNativeOperation(varmap, expr, outputType, _, meta) ->> {
+			ImmutableTreeSet<Variable> tr;
+			for (long k = 0; k < varmap.size();k++)
+				tr = tr + varmap[k].externalArgSource().freeVariables();
+			return tr + computeFreeVariables(meta);
+			}
+		-|	ChangeClassBody(expr) ->> {
+			return expr.freeVariables();
+			}
+		-|	CastWithoutCheck(expr) ->> {
+			return expr.freeVariables();
+			}
+		-|	TypeCheck(expr, continuations) ->> {
+			return expr.freeVariables() + computeFreeVariables(continuations);
+			}
+		-|	Call(target, arguments, continuations, stackMetadata) ->> {
+			return target.freeVariables() + 
+				computeFreeVariables(arguments) +
+				computeFreeVariables(continuations.normalContinuations()) +
+				computeFreeVariables(continuations.exceptionContinuations()) +
+				computeFreeVariables(stackMetadata);
+			}
+		-|	TransferTo(target, expressions, stackMetadata) ->> {
+			return 
+				computeFreeVariables(expressions) +
+				computeFreeVariables(stackMetadata);
+			}
+		-|	Jump(target, arguments) ->> {
+			return computeFreeVariables(arguments);
+			}
+		-|	Return(_, result) ->> {
+			return result.freeVariables();
+			}
+		-|	IsTuple(expr, _, _) ->> {
+			return expr.freeVariables();
+			}
+		-|	GetItem(expr) ->> {
+			return expr.freeVariables();
+			}
+		-|	GetSlice(expr) ->> {
+			return expr.freeVariables();
+			}
+		-|	MakeTuple(arguments) ->> {
+			return computeFreeVariables(arguments);
+			}
+		;
+	}
+
+}
+

@@ -1,0 +1,136 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "CompilerThreadCount.hppml"
+#include <boost/thread.hpp>
+#include "../../../core/Logging.hpp"
+
+namespace Fora {
+
+namespace {
+
+class CompilerThreadCountImpl {
+public:
+	CompilerThreadCountImpl() : mCount(0)
+		{
+		}
+
+	void subscribe(boost::function1<void, long> onChanged)
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		mOnChanged.push_back(onChanged);
+		}
+
+	void increment()
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		mCount++;
+
+		fireEvents();
+		}
+
+	void fireEvents()
+		{
+		for (long ix = 0; ix < mOnChanged.size(); ix++)
+			try {
+				mOnChanged[ix](mCount);
+				}
+			catch(std::logic_error& e)
+				{
+				LOG_ERROR << "CompilerThreadCount callback had an exception: " << e.what();
+				mOnChanged.erase(mOnChanged.begin() + ix);
+				ix--;
+				}
+			catch(...)
+				{
+				LOG_ERROR << "CompilerThreadCount callback had an unknown exception.";
+				mOnChanged.erase(mOnChanged.begin() + ix);
+				ix--;
+				}
+		}
+	void decrement()
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+		
+		mCount--;
+
+		fireEvents();
+		}
+
+	static CompilerThreadCountImpl& singleton()
+		{
+		static CompilerThreadCountImpl s;
+		return s;
+		}
+
+	long count()
+		{
+		return mCount;
+		}
+
+private:
+	boost::mutex mMutex;
+
+	long mCount;
+
+	std::vector<boost::function1<void, long> > mOnChanged;
+};
+
+}
+
+
+void CompilerThreadCount::subscribe(boost::function1<void, long> onChanged)
+	{
+	CompilerThreadCountImpl::singleton().subscribe(onChanged);
+	}
+
+long CompilerThreadCount::count()
+	{
+	return CompilerThreadCountImpl::singleton().count();
+	}
+
+CompilerThreadCount::Scope::Scope() : mIsLocked(true)
+	{
+	CompilerThreadCountImpl::singleton().increment();
+	}
+
+CompilerThreadCount::Scope::~Scope()
+	{
+	if (mIsLocked)
+		CompilerThreadCountImpl::singleton().decrement();
+	}
+
+void CompilerThreadCount::Scope::unlock()
+	{
+	if (mIsLocked)
+		{
+		CompilerThreadCountImpl::singleton().decrement();
+		mIsLocked = false;
+		}
+	}
+
+void CompilerThreadCount::Scope::lock()
+	{
+	if (!mIsLocked)
+		{
+		CompilerThreadCountImpl::singleton().increment();
+		mIsLocked = true;
+		}
+	}
+
+}
+

@@ -1,0 +1,119 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "VectorHandle.test.hpp"
+
+using namespace TypedFora::Abi;
+
+BOOST_FIXTURE_TEST_SUITE( test_TypedFora_Abi_VectorHandle, VectorHandleTestFixture )
+
+
+BOOST_AUTO_TEST_CASE( test_leaves_dont_get_too_big_during_sequential_append )
+	{
+	VectorHandlePtr ptr = newUnpagedHandle(0, 15);
+
+	long totalAppends = 0;
+
+	while (ptr->size() < 20000000)
+		{
+		BOOST_CHECK(totalAppends < 1000);
+
+		long valuesToAppend = 
+			(ptr->unpagedValues()->bytesReserved() - ptr->unpagedValues()->bytesUsed()) / 
+				sizeof(int64_t);
+
+		if (valuesToAppend == 0)
+			valuesToAppend = ptr->unpagedValues()->bytesUsed() / sizeof(int64_t);
+
+		ptr->unpagedValues()->appendUninitialized(
+			JudgmentOnValue::OfType(Type::Integer(64, false)), 
+			valuesToAppend
+			);
+
+		ptr->valueAppendedToUnpagedData(valuesToAppend);
+
+		ptr->makeSpaceForNewUnpagedValues(&*vdm);
+
+		totalAppends += 1;
+		}
+
+	int64_t maxBytecount = 0;
+
+	Fora::PageletTreePtr pageletPtr = ptr->pageletTree();
+
+	pageletPtr->visitTree(
+		[&](boost::shared_ptr<Fora::Pagelet> pagelet, IntegerRange range, long offset) {
+			maxBytecount = std::max<int64_t>(maxBytecount, pagelet->totalBytesAllocatedFromOS());
+			}
+		);
+
+	BOOST_CHECK(maxBytecount < vdm->maxPageSizeInBytes());
+	}
+
+BOOST_AUTO_TEST_CASE( concatenation_of_small_pagelets_produces_single_pagelets )
+	{
+	VectorHandlePtr ptr1 = newUnpagedHandle(0, 15);
+	VectorHandlePtr ptr2 = newUnpagedHandle(1, 15);
+	
+	ptr1->moveUnpagedValueArrayIntoPagelet(&*vdm);
+	ptr2->moveUnpagedValueArrayIntoPagelet(&*vdm);
+
+	VectorHandlePtr ptrConcat = 
+		VectorHandle::concatenate(ptr1.ptr(), 15, ptr2.ptr(), 15, &memoryPool, &*vdm, hash_type(3));
+
+	BOOST_CHECK(!ptrConcat->unpagedValues());
+	BOOST_CHECK(!ptrConcat->pageletTree().isEmpty());
+	}
+
+BOOST_AUTO_TEST_CASE( concatenation_of_small_pagelet_and_arrays )
+	{
+	VectorHandlePtr ptr1 = newUnpagedHandle(0, 15);
+	VectorHandlePtr ptr2 = newUnpagedHandle(1, 15);
+	
+	ptr1->moveUnpagedValueArrayIntoPagelet(&*vdm);
+
+	VectorHandlePtr ptrConcat = 
+		VectorHandle::concatenate(ptr1.ptr(), 15, ptr2.ptr(), 15, &memoryPool, &*vdm, hash_type(3));
+
+	BOOST_CHECK(ptrConcat->unpagedValues());
+	BOOST_CHECK(!ptrConcat->pageletTree().isEmpty());
+	}
+
+BOOST_AUTO_TEST_CASE( concatenation_of_small_unpaged_arrays_produces_unpaged_array )
+	{
+	VectorHandlePtr ptr1 = newUnpagedHandle(0, 15);
+	VectorHandlePtr ptr2 = newUnpagedHandle(1, 15);
+	
+	VectorHandlePtr ptrConcat = 
+		VectorHandle::concatenate(ptr1.ptr(), 15, ptr2.ptr(), 15, &memoryPool, &*vdm, hash_type(3));
+
+	BOOST_CHECK(ptrConcat->unpagedValues());
+	BOOST_CHECK(ptrConcat->pageletTree().isEmpty());
+	}
+
+BOOST_AUTO_TEST_CASE( concatenation_of_small_unpaged_vectors_doesnt_produce_pagelets )
+	{
+	VectorHandlePtr ptr1 = newUnpagedHandle(0, 15);
+	VectorHandlePtr ptr2 = newUnpagedHandle(1, 15);
+	
+	VectorHandlePtr ptrConcat = 
+		VectorHandle::concatenate(ptr1.ptr(), 15, ptr2.ptr(), 15, &memoryPool, &*vdm, hash_type(3));
+
+	BOOST_CHECK(ptrConcat->pageletTree().isEmpty());
+	BOOST_CHECK(ptrConcat->unpagedValues());
+	}
+
+BOOST_AUTO_TEST_SUITE_END()
+

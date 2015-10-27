@@ -1,0 +1,3050 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "FunctionStage1Converter.hppml"
+#include <boost/lexical_cast.hpp>
+#include "../Core/Type.hppml"
+#include "../../core/Logging.hpp"
+#include "LexicalBindingSelector.hppml"
+#include "ClassDefinitionExpansion.hppml"
+
+namespace FunctionStage1 {
+
+Symbol freshVarnameNonmodifying(string base, const ImmutableTreeSet<Symbol>& ioSymbols)
+	{
+	uword_t ix = 0;
+	Symbol candidate = Symbol(base);
+	
+	while (ioSymbols.contains(candidate))
+		candidate = Symbol(base + boost::lexical_cast<string>(ix++));
+	
+	return candidate;
+	}
+
+Expression extractBoundClassMemberExpr(const Expression& inSelfExpr, uint32_t index)
+	{
+	return 
+		target::Expression::Apply(
+			symExpr("ClassGetItem"),
+			emptyTreeVec() + 
+				symArg("Call") + 
+				applyArg(inSelfExpr) + 
+				applyArg(target::Expression::Constant(CSTValue(static_cast<uint64_t>(index))))
+			);
+	}
+
+Expression extractBoundClassMemberExpr(	const Expression& inSelfExpr, 
+										const ImmutableTreeVector<uint32_t>& inIndices
+										)
+	{
+	Expression e = inSelfExpr;
+
+	for (long k = 0; k < inIndices.size(); k++)
+		e = extractBoundClassMemberExpr(e, inIndices[k]);
+
+	return e;
+	}
+
+Symbol memberDepthSymbol(int depth)
+	{
+	lassert(depth > 0);
+	
+	if (depth == 1)
+		return Symbol("Member");
+	return Symbol("Member" + boost::lexical_cast<string>(depth));
+	}
+	
+bool needsMoveOutOfApply(const Expression& inExpr)
+	{
+	return !inExpr.isConstant();
+	}
+
+ApplyArgument	applyArg(const Expression& expr)
+	{
+	return ApplyArgument::Normal(null(), expr);
+	}
+
+ApplyArgument	applyArg(const CSTValue& c)
+	{
+	return ApplyArgument::Normal(null(), Expression::Constant(c));
+	}
+
+ApplyArgument	applyArg(const variable_index_type& expr)
+	{
+	return applyArg(Expression::Variable(expr));
+	}
+
+Expression symExpr(Symbol s)
+	{
+	return Expression::Constant(CSTValue(s));
+	}
+
+Expression symExpr(string s)
+	{
+	return Expression::Constant(CSTValue(Symbol(s)));
+	}
+
+Expression varExpr(variable_index_type s)
+	{
+	return Expression::Variable(s);
+	}
+
+ApplyArgument symArg(Symbol s)
+	{
+	return applyArg(symExpr(s));
+	}
+
+ApplyArgument symArg(string s)
+	{
+	return applyArg(symExpr(s));
+	}
+
+Pattern varPat(variable_index_type s)
+	{
+	return Pattern::Anything(s);
+	}
+
+Pattern symPat(Symbol s)
+	{
+	return Pattern::Constant(symExpr(s));
+	}
+
+Pattern symPat(string s)
+	{
+	return Pattern::Constant(symExpr(s));
+	}
+
+template<class T>
+TuplePatternElement symTPE(const T& in)
+	{
+	return TuplePatternElement::Normal(null(), symPat(in), null());
+	}
+
+Function badPatternMatchFunction(const VariableAllocator& allocator)
+	{
+	variable_index_type var = allocator.get();
+
+	return 
+		target::Function::Empty(
+			var,
+			target::Expression::Apply(
+				symExpr("BadPatternMatch"),
+				emptyTreeVec() + 
+					applyArg(target::Expression::Variable(var))
+				)
+			);
+	}
+
+//return a copy of 'inExpr' with 'inFun' applied _only_ to the actual apply operation
+//contained within by binding any arguments to the apply in let statements.
+//inExpr must be an apply operation.
+template<class func_type>
+Expression modifyApplyOperationOnly(
+				const Expression& inExpr,
+				const func_type& inFun,
+				const VariableAllocator& allocator,
+				const Nullable<hash_type>& curCodeHash
+				)
+	{
+	target::Expression agent = inExpr.getApply().agent();
+	ImmutableTreeVector<target::ApplyArgument> arguments = inExpr.getApply().arguments();
+
+	variable_index_type agentVar = allocator.get();
+
+	ImmutableTreeVector<variable_index_type> vars;
+	ImmutableTreeVector<target::ApplyArgument> newArgs;
+
+	for (long k = 0 ; k < arguments.size(); k++)
+		{
+		vars = vars + allocator.get();
+		if (needsMoveOutOfApply(arguments[k].expr()))
+			newArgs = newArgs + arguments[k].withDifferentExpression(
+				target::Expression::Variable(vars[k])
+				);
+		else
+			newArgs = newArgs + arguments[k];
+		}
+
+	target::Expression newAgent;
+	if (needsMoveOutOfApply(agent))
+		newAgent = target::Expression::Variable(agentVar);
+	else
+		newAgent = agent;
+
+	target::Expression inner = 
+		target::Expression::Apply(
+			newAgent,
+			newArgs
+			);
+			
+	inner = inFun(inner, curCodeHash);
+
+	for (long k = ((long)arguments.size())-1; k>=0; k--)
+		if (needsMoveOutOfApply(arguments[k].expr()))
+			inner = target::Expression::Let(
+				vars[k], 
+				arguments[k].expr(), 
+				inner
+				);
+
+	if (needsMoveOutOfApply(agent))
+		inner = target::Expression::Let(
+			agentVar, 
+			agent, 
+			inner
+			);
+
+	return inner;
+	}
+
+source::TuplePatternElement	constSourcePat(const CSTValue& val)
+	{
+	return source::TuplePatternElement::Normal(
+		null(),
+		source::PatternWithName::Constant(val),
+		null()
+		);
+	}
+
+source::TuplePatternElement	symSourcePat(const Symbol& val)
+	{
+	return source::TuplePatternElement::Normal(
+		null(),
+		source::PatternWithName::Constant(CSTValue(val)),
+		null()
+		);
+	}
+
+source::TuplePatternElement	symSourcePat(const string& val)
+	{
+	return source::TuplePatternElement::Normal(
+		null(),
+		source::PatternWithName::Constant(CSTValue(Symbol(val))),
+		null()
+		);
+	}
+
+source::TuplePatternElement	varSourcePat(Symbol  val)
+	{
+	return source::TuplePatternElement::Normal(
+		null(),
+		source::PatternWithName::Anything(null() << val),
+		null()
+		);
+	}
+
+source::TuplePatternElement	anySourcePat()
+	{
+	return source::TuplePatternElement::Normal(
+		null(),
+		source::PatternWithName::Anything(null()),
+		null()
+		);
+	}
+
+Converter	Converter::withMapping(
+							Nullable<Symbol> symbol,
+							variable_index_type var
+							) const
+	{
+	if (!symbol)
+		return *this;
+	return withMapping(*symbol, var);
+	}
+
+Converter	Converter::withExposedLexicalBindings(
+							const symbol_map_type& inMap
+							) const
+	{
+	Converter tr = *this;
+	tr.exposedLexicalBindings() = inMap;
+	tr.varmap() = tr.varmap() + inMap;
+	return tr;
+	}
+
+Converter	Converter::withMapping(
+							Symbol symbol,
+							variable_index_type var
+							) const
+	{
+	return Converter(
+			varmap() + symbol + var,
+			variablesUsedOutside(),
+			allocator(),
+			lexicalBindings(),
+			exposedLexicalBindings(),
+			lexicalBindingsVar(),
+			curBreakThrow(),
+			curNextThrow(),
+			disallowStackTraceAugmentation()
+			);
+	}
+
+Converter	Converter::withMapping(symbol_map_type inMap) const
+	{
+	return Converter(
+			varmap() + inMap,
+			variablesUsedOutside(),
+			allocator(),
+			lexicalBindings(),
+			exposedLexicalBindings(),
+			lexicalBindingsVar(),
+			curBreakThrow(),
+			curNextThrow(),
+			disallowStackTraceAugmentation()
+			);
+	}
+
+Converter Converter::withoutStackTraceAugmentation() const
+	{
+	return Converter(
+			varmap(),
+			variablesUsedOutside(),
+			allocator(),
+			lexicalBindings(),
+			exposedLexicalBindings(),
+			lexicalBindingsVar(),
+			curBreakThrow(),
+			curNextThrow(),
+			true
+			);
+	}
+
+Converter Converter::withBreakTarget(variable_index_type breakTarget) const
+	{
+	return Converter(
+			varmap(),
+			variablesUsedOutside(),
+			allocator(),
+			lexicalBindings(),
+			exposedLexicalBindings(),
+			lexicalBindingsVar(),
+			null() << breakTarget,
+			curNextThrow(),
+			disallowStackTraceAugmentation()
+			);
+	}
+
+Converter Converter::withVariablesUsedOutside(const ImmutableTreeSet<Symbol>& inUsages) const
+	{
+	ImmutableTreeSet<variable_index_type> newVariablesUsedOutside = variablesUsedOutside();
+
+	for (auto var: inUsages)
+		{
+		if (!varmap().contains(var))
+			{
+			lassert_dump(
+				lexicalBindings().bindings().contains(var),
+				"Can't find " << prettyPrintString(var) << " within "
+					<< prettyPrintString(varmap())
+				);
+			}
+		else
+			newVariablesUsedOutside = newVariablesUsedOutside + *varmap()[var];
+		}
+
+	return Converter(
+		varmap(), 
+		newVariablesUsedOutside,
+		allocator(),
+		lexicalBindings(),
+		exposedLexicalBindings(),
+		lexicalBindingsVar(),
+		curBreakThrow(),
+		curNextThrow(),
+		disallowStackTraceAugmentation()
+		);
+	}
+
+target::Expression	Converter::convert(
+						const source::Expression& inExpr,
+						const ImmutableTreeSet<Symbol>& inVariablesUsedOutside
+						) const
+	{
+	return withVariablesUsedOutside(inVariablesUsedOutside).convert(inExpr);
+	}
+
+target::Expression 	
+Converter::makeTuple(const ImmutableTreeVector<target::Expression>& inExprs)
+	{
+	ImmutableTreeVector<target::ApplyArgument> args;
+	for (long k = 0; k < inExprs.size(); k++)
+		args = args + applyArg(inExprs[k]);
+	return makeTuple(args);
+	}
+
+target::Expression Converter::makeTuple(
+						const ImmutableTreeVector<target::ApplyArgument>& inApplyArgs
+					)
+	{
+	return target::Expression::CreateTuple(inApplyArgs);
+	}
+
+target::Expression Converter::throwConstantExpressionWithoutStacktrace(
+			const CSTValue& val
+			) const
+	{
+	return target::Expression::Throw(
+		target::Expression::Constant(val),
+		null()
+		);
+	}
+
+target::Expression Converter::throwConstantWithStacktrace(
+											const CSTValue& val,
+											const Nullable<hash_type>& curCodeHash
+											) const
+	{		
+	return target::Expression::Throw(
+		makeTuple(
+            emptyTreeVec() + 
+			target::Expression::Constant(val) + 
+			target::Expression::Constant(
+				CSTValue(
+					curCodeHash ?
+						ForaStackTrace(
+							emptyTreeVec() + *curCodeHash
+							)
+					:	ForaStackTrace()
+					)
+				)
+			),
+		null()
+		);
+	}
+	
+target::Function	Converter::getRethrowFunction() const
+	{
+	variable_index_type v = allocator().get();
+	
+	return target::Function::Term(
+		TuplePattern(emptyTreeVec() +
+			target::Pattern::Anything(v)
+			),
+		target::Expression::Throw(
+			target::Expression::Variable(v),
+			null()
+			),
+		target::Function::Empty(
+			allocator().get(),
+			target::Expression::Throw(
+				target::Expression::Constant(CSTValue(
+					"Caught multiple values. This shouldn't be possible.")),
+				null()
+				)
+			)
+		);
+	}
+
+target::Function	Converter::addRethrowFunction(const target::Function& fun) const
+	{
+	@match target::Function(fun)
+		-|	Term(pat, res, otherwise) ->> {
+			return target::Function::Term(
+					pat,
+					res,
+					addRethrowFunction(otherwise)
+					);
+			}
+		-|	Empty() ->> {
+			variable_index_type v = allocator().get();
+
+			return target::Function::Term(
+				TuplePattern(emptyTreeVec() +
+					target::Pattern::Anything(v)
+					),
+				target::Expression::Throw(
+					target::Expression::Variable(v),
+					null()
+					),
+				fun
+				);
+			}
+		;
+	}
+
+target::Function	
+Converter::addRethrowFunction(const target::Function& fun, variable_index_type stacktraceVar) const
+	{
+	@match target::Function(fun)
+		-|	Term(pat, res, otherwise) ->> {
+				return 
+					target::Function::Term(
+						pat,
+						res,
+						addRethrowFunction(otherwise, stacktraceVar)
+						);
+				}
+		-|	Empty() ->> {
+				variable_index_type v = allocator().get();
+				return target::Function::Term(
+					TuplePattern(emptyTreeVec() +
+						target::Pattern::Anything(v)
+						),
+					target::Expression::Throw(
+						target::Expression::CreateTuple(
+							emptyTreeVec() +
+								applyArg(target::Expression::Variable(v)) +
+								applyArg(target::Expression::Variable(stacktraceVar))
+							),
+						null()
+						),
+					fun
+					);
+				}
+		;
+	}
+
+target::Expression Converter::createAugmentExceptionCall(
+							const target::Expression& inExpr,
+							const Nullable<hash_type>& curCodeHash,
+							bool isRawExceptionValue
+							) const
+	{
+	ImmutableTreeVector<target::ApplyArgument> inScopeVariables;
+
+	for (auto nameAndIndex: varmap())
+		if (variablesUsedOutside().contains(nameAndIndex.second))
+			inScopeVariables = inScopeVariables + 
+				target::ApplyArgument::Normal(
+					null() << nameAndIndex.first,
+					target::Expression::Variable(nameAndIndex.second)
+					);
+
+	return 
+		target::Expression::Apply(
+			symExpr("AugmentException"),
+			emptyTreeVec() +
+				symArg("Call") +
+				applyArg(inExpr) +
+				applyArg(
+					target::Expression::Constant(
+						CSTValue(
+							ForaStackTrace::StackTrace(
+								emptyTreeVec() + (curCodeHash ? *curCodeHash : CodeLocationId())
+								)
+							)
+						)
+					) +
+				inScopeVariables
+			);
+	}
+
+target::Expression	Converter::wrapExpressionInStackTraceAugment(
+			const target::Expression& inExpr,
+			const Nullable<hash_type>& curHash
+			) const
+	{	
+	variable_index_type var = allocator().get();
+	
+	return target::Expression::Try(
+		inExpr.definingExpressionLocationId(),
+		inExpr,
+		null(),
+		target::Function::Term(
+			TuplePattern(emptyTreeVec() +
+				target::Pattern::Anything(var)
+				),
+			target::Expression::Throw(
+				createAugmentExceptionCall(
+					target::Expression::Variable(var), 
+					curHash,
+					false
+					),
+				null()
+				),
+			target::Function::Empty(
+				allocator().get(),
+				target::Expression::Throw(
+					target::Expression::Constant(CSTValue()),
+					null()
+					)
+				)
+			)
+		);	
+	}
+
+target::Expression Converter::lookupVariable(const Symbol& var) const
+	{
+	if (varmap().contains(var))
+		return target::Expression::Variable(*varmap()[var]);
+	
+	if (lexicalBindings().bindings().contains(var))
+		return convertLexicalBinding(
+			*lexicalBindings().bindings()[var]
+			);
+	
+	throw target::InvalidConversion("variable " +
+						var.toString() + " is unbound.");
+	}
+
+target::Expression Converter::convertLexicalBinding(const LexicalBinding& binding) const
+	{
+	const ImmutableTreeVector<uint32_t>& bindingIndices = binding.unbindIndexSequence();
+	
+	target::Expression e = 
+		extractBoundClassMemberExpr(
+			target::Expression::Variable(*lexicalBindingsVar()), 
+			bindingIndices
+			);
+
+	if (binding.member())
+		e = target::Expression::Apply(
+			e,
+			emptyTreeVec() + 
+				target::ApplyArgument::Constant(
+					CSTValue(Symbol("Member"))
+					) +
+				target::ApplyArgument::Constant(CSTValue(*binding.member()))
+			);
+
+	return e;
+	}
+
+target::ApplyArgument 
+Converter::convertCacheCallArgument(const source::CacheCallArgument& inArg) const
+	{
+	target::Expression agent = convert(inArg.agent());
+
+	ImmutableTreeVector<target::ApplyArgument> arguments;
+	for (long k = 0; k < inArg.arguments().size(); k++)
+		arguments = arguments + convert(inArg.arguments()[k]);
+
+	ImmutableTreeVector<Expression> tupleArgs;
+	tupleArgs = tupleArgs + agent;
+	tupleArgs = tupleArgs + makeTuple(arguments);
+
+	if (inArg.nearExpression())
+		tupleArgs = tupleArgs + 
+			convert(*inArg.nearExpression());
+
+	return applyArg(makeTuple(tupleArgs));
+	}
+
+target::Expression  Converter::convert(
+								const source::Expression& inExpr
+								) const
+	{
+	try {
+		return CPPML::replaceCommonData(
+			convertInner(inExpr), 
+			inExpr.codeLocationIdOrNull()
+			);
+		}
+	catch(...)
+		{
+		LOG_ERROR << "Failed converting " << prettyPrintString(inExpr);
+
+		throw;
+		}
+	}
+
+namespace {
+
+ListComprehensionChain addVectorAppendToListComprensionChainLeaf(
+							const ListComprehensionChain& in,
+							Symbol var
+							)
+	{
+	@match ListComprehensionChain(in)
+		-| Leaf(e) ->> {
+			return source::ListComprehensionChain::Leaf(
+				source::Expression::Assign(
+					source::PatternWithName::Anything(null() << var),
+					source::Expression::BinaryOperator(
+						source::Expression::Variable(var),
+						Symbol("::"),
+						e
+						)
+					)
+				);
+			}
+		-| Term(pat, filter, process, inner) ->> {
+			return source::ListComprehensionChain::Term(
+				pat,
+				filter,
+				process,
+				addVectorAppendToListComprensionChainLeaf(inner, var)
+				);
+			}
+	}
+
+}
+
+target::Expression	Converter::convertInner(
+								const source::Expression& inExpr
+								) const
+	{
+	if (exposedLexicalBindings().size() == 0 && lexicalBindings().bindings().size())
+		{
+		//grab any variables we might need and expose them here
+		ImmutableTreeSet<Symbol> allFreeVars = inExpr.freeVariables();
+
+		ImmutableTreeMap<Symbol, variable_index_type> exposedAsVars;
+
+		for (long k = 0; k < allFreeVars.size(); k++)
+			if (lexicalBindings().bindings()[allFreeVars[k]] && 
+					!lexicalBindings().bindings()[allFreeVars[k]]->member() && 
+					//check if this variable is already bound above, in which case we don't need to expose it
+					!varmap().contains(allFreeVars[k]))
+				exposedAsVars = exposedAsVars + allFreeVars[k] + allocator().get();
+
+		if (exposedAsVars.size())
+			{
+			Converter subconverter = withExposedLexicalBindings(exposedAsVars);
+			
+			target::Expression subexpr = subconverter.convert(inExpr);
+
+			for (long k = 0; k < exposedAsVars.size(); k++)
+				subexpr = 
+					target::Expression::Let(
+						*exposedAsVars[exposedAsVars.pairAtPosition(k).first],
+						convertLexicalBinding(
+							*lexicalBindings().bindings()[exposedAsVars.pairAtPosition(k).first]
+							),
+						subexpr
+						);
+
+			return subexpr;
+			}
+		}
+
+	try {
+		target::Expression tr;
+				
+		@match source::Expression(inExpr)
+			-|	Constant(v) ->> {
+				tr = target::Expression::Constant(v);
+				}
+			-|	Sequence(first,second) ->> {
+				tr = target::Expression::Let(
+					target::Pattern::AnythingDiscard(),
+					convert(first, second.freeVariables()),
+					convert(second)
+					);
+				}
+			-|	Variable(var) ->> {
+				tr =  lookupVariable(var);
+				}
+			-|	Let(elements, body) ->> {
+				tr = expandRecursiveLet(elements, body);
+				}
+			-|	Assign(pattern, value) ->> {
+				pair<target::Pattern, symbol_map_type> p =
+					withVariablesUsedOutside(value.freeVariables() + pattern.freeVariables())
+						.convert(pattern);
+				
+				//the symbol map in p.second contains all new values
+				//but actually, since this is an assign, we want these to
+				//refer to the original values. So, we have to map them back
+				ImmutableTreeMap<variable_index_type, variable_index_type>
+					variableMap;
+				for (long k = 0; k < p.second.size(); k++)
+					{
+					variable_index_type variableInPat =
+						p.second.pairAtPosition(k).second;
+					Symbol symBeingAssigned =
+						p.second.pairAtPosition(k).first;
+					
+					lassert_dump(varmap().contains(symBeingAssigned),
+						"variable assigned to isn't mapped!" << 
+							prettyPrintString(inExpr)
+						);
+					
+					variable_index_type variableBindingNow =
+						*varmap()[symBeingAssigned];
+					
+					variableMap = variableMap +
+						variableInPat +
+						variableBindingNow
+						;
+					}
+				
+				variable_index_type toMatchVar = allocator().get();
+
+				tr = target::Expression::Let(
+					toMatchVar,
+					convert(value),
+					target::Expression::Assign(
+						remapVariables(p.first, variableMap),
+						target::Expression::Variable(toMatchVar),
+						modifyApplyOperationOnly(
+							target::Expression::Apply(
+								symExpr("BadPatternMatch"),
+								emptyTreeVec() + 
+								applyArg(varExpr(toMatchVar))
+								),
+							bind(
+								&Converter::wrapExpressionInStackTraceAugment,
+								this, _1, _2
+								),
+							allocator(),
+							pattern.codeLocationIdOrNull()
+							)
+						)
+					)
+					;
+				}
+			-|	Pull(iterId, expr) ->> {
+					lassert_dump(varmap().contains(iterId),
+						"iterator variable isn't mapped!" <<
+							prettyPrintString(inExpr)
+						);
+					
+					target::Expression exprToResumeWith = convert(expr);
+					
+					variable_index_type iterVar = *varmap()[iterId];
+					variable_index_type elemVar = allocator().get();
+					variable_index_type nextIterVar = allocator().get();
+					
+					tr = target::Expression::Match(
+						emptyTreeVec() + target::ApplyArgument::Normal(
+							modifyApplyOperationOnly(
+								target::Expression::Apply(
+									inExpr.codeLocationIdOrNull(),
+									target::Expression::Variable(iterVar),
+									emptyTreeVec()
+										+ target::ApplyArgument::Constant(CSTValue(Symbol("Next")))
+										+ target::ApplyArgument::Normal(exprToResumeWith)
+									),
+								bind(
+									&Converter::wrapExpressionInStackTraceAugment,
+									this, _1, _2
+									),
+								allocator(),
+								inExpr.codeLocationIdOrNull()
+								)
+							),
+						target::Function::Term(
+							target::TuplePattern(emptyTreeVec()
+								+ target::Pattern::Constant(target::Expression::Constant(CSTValue()))
+								),
+                            modifyApplyOperationOnly(
+                                target::Expression::Apply(
+                                    symExpr(" EmptyIterator"),
+                                    emptyTreeVec()
+                                    ),
+                                bind(
+                                    &Converter::wrapExpressionInStackTraceAugment,
+                                    this, _1, _2
+                                    ),
+                                allocator(),
+                                inExpr.codeLocationIdOrNull()
+                                ),
+							target::Function::Term(
+								target::TuplePattern(emptyTreeVec()
+									+ target::Pattern::Tuple(
+										target::TuplePattern(emptyTreeVec()
+											+ target::Pattern::Anything(elemVar)
+											+ target::Pattern::Anything(nextIterVar)
+											)
+										)
+									),
+								target::Expression::Let(
+									target::Pattern::AnythingDiscard(),
+									target::Expression::Assign(
+										target::Pattern::Anything(iterVar),
+										target::Expression::Variable(nextIterVar),
+										throwConstantWithStacktrace(
+											CSTValue("internal error: pull codegen messed up"),
+											inExpr.codeLocationIdOrNull()
+											)
+										),
+									target::Expression::Variable(elemVar)
+									),
+								target::Function::Empty(
+									allocator().get(),
+									throwConstantWithStacktrace(
+										CSTValue("internal error: malformed `Next output"),
+										inExpr.codeLocationIdOrNull()
+										)
+									)
+								)
+                            )
+						);
+					}
+			-|	Apply(agent, arguments) ->> {
+				tr = target::Expression::Apply(
+					convert(agent, ::freeVariables(arguments)),
+					convert(arguments)
+					);
+				}
+			-|	Call(agent, arguments) ->> {
+				tr = target::Expression::Apply(
+					convert(agent, ::freeVariables(arguments)),
+					target::ApplyArgument::Constant(CSTValue(Symbol::Call())) +
+					convert(arguments)
+					);
+				}
+			-|	And(lhs, rhs) ->> {
+				tr = target::Expression::Branch(
+					convert(lhs, rhs.freeVariables()),
+					target::Expression::Branch(
+						inExpr.codeLocationIdOrNull(),
+						convert(rhs),
+						target::Expression::Constant(CSTValue(true)),
+						target::Expression::Constant(CSTValue(false))
+						),
+					target::Expression::Constant(CSTValue(false))
+					);
+				}
+			-|	Not(lhs) ->> {
+				tr = 
+				target::Expression::Branch(
+					convert(lhs),
+					target::Expression::Constant(CSTValue(false)),
+					target::Expression::Constant(CSTValue(true))
+					);
+				}
+			-|	Or(lhs, rhs) ->> {
+				tr =  
+				target::Expression::Branch(
+					convert(lhs, rhs.freeVariables()),
+					target::Expression::Constant(CSTValue(true)),
+					target::Expression::Branch(
+						inExpr.codeLocationIdOrNull(),
+						convert(rhs),
+						target::Expression::Constant(CSTValue(true)),
+						target::Expression::Constant(CSTValue(false))
+						)
+					);
+				}
+			-|	In(lhs, rhs) ->> {
+				tr = 
+				target::Expression::Apply(
+					convert(rhs, lhs.freeVariables()),
+					emptyTreeVec() + 
+						target::ApplyArgument::Constant(
+							CSTValue(Symbol::Operator())
+							) + 
+						target::ApplyArgument::Constant(
+							CSTValue(Symbol("in"))
+							) +
+						applyArg(convert(lhs))
+					);
+				}
+			-|	NotIn(lhs, rhs) ->> {
+				tr = 
+				target::Expression::Branch(
+					target::Expression::Apply(
+						inExpr.codeLocationIdOrNull(),
+						convert(rhs, lhs.freeVariables()),
+						emptyTreeVec() + 
+							target::ApplyArgument::Constant(
+								CSTValue(Symbol::Operator())
+								) + 
+							target::ApplyArgument::Constant(
+								CSTValue(Symbol("in"))
+								) +
+							applyArg(convert(lhs))
+						),
+					target::Expression::Constant(CSTValue(false)),
+					target::Expression::Constant(CSTValue(true))
+					);
+				}
+			-|	Is(lhs, rhs) ->> {
+				tr = target::Expression::Is(
+					convert(lhs, rhs.freeVariables()), 
+					convert(rhs)
+					);
+				}
+			-|	IsNot(lhs, rhs) ->> {
+				tr = 
+				target::Expression::Branch(
+					target::Expression::Is(
+						inExpr.codeLocationIdOrNull(),
+						convert(lhs, rhs.freeVariables()),
+						convert(rhs)
+						),
+					target::Expression::Constant(CSTValue(false)),
+					target::Expression::Constant(CSTValue(true))
+					);
+				}
+			-|	BinaryOperator(lhs, op, rhs) ->> {
+				tr = 
+				target::Expression::Apply(
+					convert(lhs, rhs.freeVariables()),
+					emptyTreeVec() + 
+						target::ApplyArgument::Constant(
+							CSTValue(Symbol::Operator())
+							) +
+						target::ApplyArgument::Constant(CSTValue(op)) +
+						applyArg(convert(rhs))
+					);
+				}
+			-|	LeftOperator(op, expr) ->> {
+				tr = 
+				target::Expression::Apply(
+					convert(expr),
+					emptyTreeVec() + 
+						target::ApplyArgument::Constant(
+							CSTValue(Symbol::LeftOperator())
+							) +
+						target::ApplyArgument::Constant(CSTValue(op))
+					);
+				}
+			-|	RightOperator(expr, op) ->> {
+				tr = 
+				target::Expression::Apply(
+					convert(expr),
+					emptyTreeVec() + 
+						target::ApplyArgument::Constant(
+							CSTValue(Symbol::RightOperator())
+							) +
+						target::ApplyArgument::Constant(CSTValue(op))
+					);
+				}
+			-|	GetItem(agent, arguments) ->> {
+				tr =  
+				target::Expression::Apply(
+					convert(agent, ::freeVariables(arguments)),
+					target::ApplyArgument::Constant(
+						CSTValue(Symbol::GetItem())
+						) +
+					convert(arguments)
+					);
+				}
+			-|	SetItem(agent, arguments, toSet) ->> {
+				tr =  
+				target::Expression::Apply(
+					convert(agent, ::freeVariables(arguments) + toSet.freeVariables()),
+					target::ApplyArgument::Constant(
+						CSTValue(Symbol::SetItem())
+						) +
+					withVariablesUsedOutside(toSet.freeVariables()).convert(arguments) +
+					applyArg(convert(toSet))
+					);
+				}
+			-|	Member(agent, member, depth) ->> {
+				tr =  
+				target::Expression::Apply(
+					convert(agent),
+					emptyTreeVec() + 
+						target::ApplyArgument::Constant(
+							CSTValue(memberDepthSymbol(depth))
+							) +
+						target::ApplyArgument::Constant(CSTValue(member))
+					);
+				}
+			-|	ComputedMember(agent, memberExpr, depth) ->> {
+				tr =  
+				target::Expression::Apply(
+					convert(agent, memberExpr.freeVariables()),
+					emptyTreeVec() + 
+						target::ApplyArgument::Constant(
+							CSTValue(memberDepthSymbol(depth))
+							) +
+						applyArg(convert(memberExpr))
+					);
+				}
+			-|	While(condition, updater) ->> {
+				variable_index_type breakTarget = allocator().get();
+				
+				tr = target::Expression::Try(
+					target::Expression::While(
+						inExpr.codeLocationIdOrNull(),
+						withBreakTarget(breakTarget)
+							.convert(condition, condition.freeVariables() + updater.freeVariables()),
+						withBreakTarget(breakTarget)
+							.convert(updater, condition.freeVariables() + updater.freeVariables())
+						),
+					null() << breakTarget,
+					target::Function::Empty(
+						allocator().get(),
+						target::Expression::Constant(CSTValue())
+						)
+					);
+				
+				}
+			-|	Break() ->> {
+				if (!curBreakThrow())
+					throw InvalidConversion("break without while or for");
+				tr = target::Expression::Throw(
+					target::Expression::Constant(CSTValue()),
+					curBreakThrow()
+					);
+				}
+			-|	Cached(exprs) ->> {
+				ImmutableTreeVector<target::ApplyArgument> args;
+				for (long k = 0; k < exprs.size(); k++)
+					args = args + convertCacheCallArgument(exprs[k]);
+				
+				tr = target::Expression::RawCached(
+					target::Expression::CreateTuple(args)
+					);
+				}
+			-|	RawCached(exprs) ->> {
+				tr = 
+				target::Expression::RawCached(
+					target::Expression::CreateTuple(convert(exprs))
+					)
+					;
+				}
+			-|	Branch(op, ifTrue, ifFalse) ->> {
+				tr = 
+				target::Expression::Branch(
+					convert(op, 
+						ifTrue.freeVariables() + 
+							(ifFalse? ifFalse->freeVariables() : emptyTreeSet())
+						),
+					convert(ifTrue),
+					ifFalse ?
+						convert(*ifFalse)
+					:	target::Expression::Constant(CSTValue())
+					);
+				}
+			-|	Throw(exception, stacktrace) ->> {
+				if (stacktrace)
+					tr = target::Expression::Throw(
+						target::Expression::CreateTuple(
+							inExpr.codeLocationIdOrNull(),
+							emptyTreeVec() + 
+								applyArg(convert(exception, stacktrace->freeVariables())) +
+								applyArg(
+									convert(*stacktrace)
+									)
+							),
+						null()
+						);
+				else
+					tr = target::Expression::Throw(
+						createAugmentExceptionCall(
+							convert(exception),
+							inExpr.codeLocationIdOrNull(),
+							true
+							),
+						null()
+						);
+				}
+			-|	Try(toTry, catchWith, stacktrace, isRawCatch) ->> {
+				if (isRawCatch)
+					{
+					lassert(!stacktrace);
+					
+					target::Expression toTryE = convert(toTry, catchWith.freeVariables());
+				
+					variable_index_type exception_var = allocator().get();
+					variable_index_type rethrow_var = allocator().get();
+					
+					target::Function catchWithF = convert(catchWith);
+					
+					tr = target::Expression::Try(
+						toTryE,
+						null(),
+						target::Function::Term(
+							TuplePattern(emptyTreeVec() +
+								target::Pattern::Anything(exception_var)
+								),
+							target::Expression::Match(
+								inExpr.codeLocationIdOrNull(),
+								emptyTreeVec() +
+									applyArg(
+										target::Expression::Variable(
+											exception_var
+											)
+										),
+								addRethrowFunction(catchWithF)
+								),
+							getRethrowFunction()	
+							)
+						);
+					}
+				else
+					{
+					ImmutableTreeSet<Symbol> freeInCatchWith = catchWith.freeVariables();
+
+					if (stacktrace)
+						freeInCatchWith = freeInCatchWith - *stacktrace;
+
+					target::Expression toTryE = convert(toTry, freeInCatchWith);
+
+					variable_index_type exception_var = allocator().get();
+					variable_index_type stacktrace_var = allocator().get();
+					variable_index_type rethrow_var = allocator().get();
+					
+					//map the catchWith function in the presence of the variable
+					target::Function catchWithF =
+						withMapping(stacktrace, stacktrace_var)
+							.convert(catchWith)
+							;
+					
+					tr = target::Expression::Try(
+						toTryE,
+						null(),
+						target::Function::Term(
+							TuplePattern(emptyTreeVec() +
+								target::Pattern::Tuple(
+									TuplePattern(
+										emptyTreeVec() + 
+										target::Pattern::Anything(exception_var) +
+										target::Pattern::Anything(stacktrace_var)
+										)
+									)
+								),
+							target::Expression::Match(
+								inExpr.codeLocationIdOrNull(),
+								emptyTreeVec() +
+								applyArg(
+									target::Expression::Variable(
+										exception_var
+										)
+									),
+								addRethrowFunction(catchWithF, stacktrace_var)
+								),
+							getRethrowFunction()	
+							)
+						);
+					}
+				}
+			-|	Return(expr) ->> {
+				tr = target::Expression::Return(convert(expr));
+				}
+			-|	Yield(expr) ->> {
+				variable_index_type cont_var = allocator().get();
+				
+				target::Expression tupleHole =
+					target::Expression::Continuation(
+						target::Function::Term(
+							TuplePattern(emptyTreeVec() +
+								target::Pattern::Anything(cont_var)
+								),
+								target::Expression::Return(
+									target::Expression::Apply(
+										inExpr.codeLocationIdOrNull(),
+										target::Expression::Constant(
+											CSTValue(Symbol("ConvertYieldToIter"))
+											),
+										emptyTreeVec() + 
+											applyArg(convert(expr)) +
+											applyArg(target::Expression::Variable(cont_var))
+										)
+									),
+							target::Function::Empty(
+								allocator().get(),
+								throwConstantExpressionWithoutStacktrace(CSTValue())
+								)
+							)
+						);
+				
+				variable_index_type firstElemOfTuple = allocator().get();
+				variable_index_type restOfTuple = allocator().get();
+				
+				tr = target::Expression::Let(
+					target::Pattern::Tuple(
+						target::TuplePattern(emptyTreeVec()+
+							target::TuplePatternElement::Normal(
+								null(),
+								target::Pattern::Anything(firstElemOfTuple),
+								null()) +
+							target::TuplePatternElement::VarArgs(restOfTuple)
+							)
+						),
+					tupleHole,
+					target::Expression::Variable(firstElemOfTuple)
+					);
+				}
+			-|	Continuation(fun) ->> {
+				tr = target::Expression::Continuation(convert(fun));
+				}
+			-|	Foreach(chain) ->> {
+				variable_index_type breakTarget = allocator().get();
+				
+				tr = target::Expression::Try(
+					withBreakTarget(breakTarget)
+						.evaluateChainDirectly(chain, inExpr.codeLocationIdOrNull()),
+					null() << breakTarget,
+					target::Function::Empty(
+						allocator().get(),
+						target::Expression::Constant(CSTValue())
+						)
+					);
+				}
+			-|	Match(toMatch, predicate) ->> {
+				variable_index_type var = allocator().get();
+			
+				tr = target::Expression::Match(
+					withVariablesUsedOutside(::freeVariables(toMatch) + predicate.freeVariables())
+						.convert(toMatch),
+					convert(predicate) + 
+					target::Function::Empty(
+						var,
+						modifyApplyOperationOnly(
+							target::Expression::Apply(
+								symExpr("BadPatternMatch"),
+								emptyTreeVec() + 
+								applyArg(target::Expression::Variable(var))
+								),
+							bind(
+								&Converter::wrapExpressionInStackTraceAugment,
+								this, _1, _2
+								),
+							allocator(),
+							inExpr.codeLocationIdOrNull()
+							)
+						)
+					);
+				}
+			-|	CreateFunction(name, predicate, meta) ->> {
+				tr = 
+				bindFunction(
+					ClassMediator::Function(
+						name,
+						predicate,
+						LexicalBindingMap(),
+						CSTValue()
+						),
+					predicate.freeVariables(),
+					meta
+					);
+				}
+			-|	CreateLambda(name, predicate) ->> {
+				tr = 
+				bindFunction(
+					ClassMediator::Lambda(
+						name,
+						predicate,
+						LexicalBindingMap()
+						),
+					predicate.freeVariables() - Symbol("_"),
+					CSTValue()
+					);
+				}
+			-|	CreateObject(name, predicate, meta) ->> {
+				tr = bindCreateObjectExpression(name, predicate, meta);
+				}
+			-|	CreateClass(name, predicate, meta) ->> {
+				tr = bindCreateClassExpression(name, predicate, meta);
+				}
+			-|	CreateTuple(args) ->> {
+				tr = target::Expression::CreateTuple(convert(args));
+				}
+			-|	CreateList(exprs) ->> {
+				
+				target::Expression e =
+					target::Expression::Constant(CSTValue::blankOf(Type::Vector()));
+				
+				for (long k = 0; k < exprs.size(); k++)
+					e = target::Expression::Apply(
+						inExpr.codeLocationIdOrNull(),
+						e,
+						emptyTreeVec() +
+							symArg("Operator") + 
+							symArg("::") + 
+							applyArg(convert(exprs[k], ::freeVariables(exprs.slice(k))))
+						);
+				
+				tr = e;
+				}
+			-|	ListComprehension(chain, isIterator) ->> {
+				if (isIterator)
+					tr = target::Expression::Apply(
+						evaluateChainToProcess(chain),
+						emptyTreeVec() +
+							symArg("Call")
+						);
+				else
+					{
+					if (chain.assignedVariables().size())
+						{
+						//we need to expand this directly to a foreach loop, and then convert that
+						Symbol tempVar = freshVarnameNonmodifying("accumulator", chain.freeVariables());
+
+						auto forEachExpr = 
+							source::Expression::Foreach(
+								inExpr.locationMetadata(),
+								addVectorAppendToListComprensionChainLeaf(
+									chain, 
+									tempVar
+									)
+								);
+
+						tr = convert(
+							source::Expression::Let(
+								tempVar,
+								source::Expression::CreateList(emptyTreeVec()),
+								source::Expression::Sequence(
+									forEachExpr,
+									source::Expression::Variable(tempVar)
+									)
+								)
+							);
+						}
+					else {
+						tr = target::Expression::Apply(
+							target::Expression::Constant(CSTValue(Symbol("ProcessToVector"))),
+							emptyTreeVec() +
+								symArg("Call") +
+								applyArg(
+									target::Expression::Apply(
+										inExpr.codeLocationIdOrNull(),
+										evaluateChainToProcess(
+											chain, 
+											inExpr.locationMetadata()
+											),
+										emptyTreeVec() +
+											symArg("Call")
+										)
+									)
+							);
+						}
+					}
+				}
+			-|	NoStackTraceAugmentations(e) ->> {
+				tr = withoutStackTraceAugmentation().convert(e);
+				}
+			;
+		
+		//if this is an Apply, we should catch any subexceptions that 
+		//might get thrown, and augment their stacktrace with the current
+		//function location
+		if (tr.isApply())
+			{
+			//apply a rethrow wrapper to the inner part of the apply. e.g.
+			//if we have a(f(),g(),...), we want the rethrow wrapper to cover the
+			//apply to 'a', but not the f() and g() calls. So, we need to 
+			//rebind all the arguments in let statements, so that we have
+			//let f1 = f(), let f2 = g(), rethrow(a(f1,f2))
+			//etc.
+			using namespace boost;
+			if (!disallowStackTraceAugmentation())
+				tr = modifyApplyOperationOnly(
+					tr, 
+					bind(&Converter::wrapExpressionInStackTraceAugment, this, _1, _2),
+					allocator(),
+					inExpr.codeLocationIdOrNull()
+					);
+			}
+						
+		return tr;
+		}
+	catch(target::InvalidConversion& conv)
+		{
+		throw target::InvalidConversion(conv.what());
+		}
+	}
+
+ImmutableTreeVector<target::ApplyArgument>
+Converter::convert(const ImmutableTreeVector<source::ApplyArgument>& in) const
+	{
+	ImmutableTreeVector<target::ApplyArgument> tr;
+	for (long k = 0; k < in.size(); k++)
+		tr = tr + withVariablesUsedOutside(::freeVariables(in.slice(k))).convert(in[k]);
+	return tr;
+	}
+
+pair<target::Pattern, symbol_map_type>
+Converter::convert(const source::PatternWithName& in) const
+	{
+	if (in.name() && in.pattern().isAnything() && !in.condition())
+		{
+		variable_index_type boundVar = allocator().get();
+	
+		symbol_map_type toMap;
+		toMap = toMap + *in.name() + boundVar;
+	
+		return make_pair(
+				target::Pattern::Anything(
+					in.codeLocationIdOrNull(),
+					boundVar
+					),
+				toMap
+				);
+		}
+	
+	pair<target::Pattern, symbol_map_type> tr =
+		convert(in.pattern());
+	
+	tr.first = CPPML::replaceCommonData(
+		tr.first,
+		in.codeLocationIdOrNull()
+		);
+
+	if (in.name())
+		{
+		variable_index_type boundVar = allocator().get();
+	
+		tr.second = tr.second + *in.name() + boundVar;
+	
+		tr = make_pair(
+			target::Pattern::MatchBoth(
+				target::Pattern::Anything(boundVar),
+				tr.first
+				),
+			tr.second
+			);
+		}
+		
+	if (in.condition())
+		tr.first =
+			target::Pattern::MatchIf(
+				tr.first,
+				withMapping(tr.second)
+					.convert(*in.condition())
+				);
+		
+	return tr;
+	}
+
+pair<target::Pattern, symbol_map_type >
+Converter::convert(const source::Pattern& inExpr) const
+	{
+	@match source::Pattern(inExpr)
+		-|	Anything() ->> {
+				return make_pair(
+					target::Pattern::AnythingDiscard(),
+					symbol_map_type()
+					);
+				}
+		-|	TypeMatch(typeMatch) ->> {
+				pair<target::Pattern,
+					symbol_map_type >
+					
+					p = convert(typeMatch);
+				
+				return make_pair(
+					target::Pattern::TypeMatch(p.first),
+					p.second
+					);
+				}
+		-|	ExpressionMatch(matcherExpr,pat) ->> {
+				pair<target::TuplePattern,
+					symbol_map_type > p = 
+							convert(pat);
+				
+				variable_index_type subvar = allocator().get();
+				
+
+				target::Expression matchApply = 
+					target::Expression::Apply(
+						symExpr("Match"),
+						emptyTreeVec() +
+							applyArg(target::Expression::Variable(subvar)) + 
+							applyArg(convert(matcherExpr))
+						);
+
+				if (!disallowStackTraceAugmentation())
+					{
+					using namespace boost;
+					matchApply = modifyApplyOperationOnly(
+						matchApply, 
+						bind(&Converter::wrapExpressionInStackTraceAugment, this, _1, _2),
+						allocator(),
+						matcherExpr.codeLocationIdOrNull()
+						);
+					}
+
+				return make_pair(
+					target::Pattern::Guarded(
+						subvar,
+						matchApply,
+						target::Pattern::Tuple(p.first)
+						),
+					p.second
+					);
+				}
+		-|	Tuple(pat) ->> {
+				pair<target::TuplePattern,
+					symbol_map_type > p =
+							convert(pat);
+
+				variable_index_type subvar = allocator().get();
+					
+				return make_pair(
+					target::Pattern::Tuple(p.first),
+					p.second
+					);
+				}
+		-|	Constant(val) ->> {
+				return make_pair(
+					target::Pattern::Constant(convert(val)),
+					//no variables get rebound in this type of pattern
+					symbol_map_type()
+					);
+				}
+		-|	MatchEither(left, right) ->> {
+				//take the intersection of the variables that these
+				//bind
+				pair<target::Pattern, symbol_map_type > pLeft, pRight;
+				
+				pLeft = convert(left);
+				pRight = convert(right);
+				
+				//transform pRight to have the same variables as pLeft
+				ImmutableTreeMap<variable_index_type, variable_index_type> varMap;
+				
+				symbol_map_type finalSymbolMap;
+
+				//they have the same keys, so they should have the same
+				//order
+				for (long k = 0; k < pLeft.second.size(); k++)
+					{
+					Symbol boundSymbol = pLeft.second.pairAtPosition(k).first;
+
+					if (pRight.second.contains(boundSymbol))
+						{
+						variable_index_type varIndexInRight = *pRight.second[boundSymbol];
+						variable_index_type varIndexInLeft = *pLeft.second[boundSymbol];
+
+						varMap = varMap + varIndexInRight + varIndexInLeft;
+
+						finalSymbolMap = finalSymbolMap + boundSymbol + varIndexInLeft;
+						}
+					}
+				
+				return make_pair(
+					target::Pattern::MatchEither(
+						pLeft.first,
+						remapVariables(pRight.first, varMap)
+						),
+					finalSymbolMap
+					);
+				}
+		-|	MatchBoth(left, right) ->> {
+				
+				pair<target::Pattern,
+					symbol_map_type >
+						pLeft, pRight;
+				
+				pLeft = convert(left);
+				
+				//'right' needs to be evaluated within the context of
+				//'left''s bindings
+				pRight = withMapping(pLeft.second)
+						.convert(right);
+				
+				return make_pair(
+					target::Pattern::MatchBoth(
+						pLeft.first,
+						pRight.first
+						),
+					pLeft.second + pRight.second
+					);
+				}
+		;
+	}
+
+pair<ImmutableTreeVector<target::TuplePatternElement>, symbol_map_type >
+Converter::convert(const ImmutableTreeVector<source::TuplePatternElement>& in) const
+	{
+	symbol_map_type rebound;
+	
+	ImmutableTreeVector<target::TuplePatternElement> tr;
+	
+	for (long k = 0; k < in.size(); k++)
+		{
+		pair<target::TuplePatternElement,
+			symbol_map_type > p =
+					withMapping(rebound)
+						.convert(in[k])
+						;
+		
+		rebound = rebound + p.second;
+		tr = tr + p.first;
+		}
+	
+	return make_pair(tr, rebound);
+	}
+
+pair<target::TuplePattern, symbol_map_type >
+Converter::convert(const source::TuplePattern& in) const
+	{
+	pair<ImmutableTreeVector<target::TuplePatternElement>,
+		symbol_map_type> p =
+			convert(in.matchers());
+			
+	return make_pair(
+			target::TuplePattern(p.first),
+			p.second
+			);
+	}
+
+pair<target::TuplePatternElement,symbol_map_type >
+Converter::convert(const source::TuplePatternElement& in) const
+	{
+	@match source::TuplePatternElement(in)
+		-|	Normal(name, match, defaultVal) ->> {
+				pair<target::Pattern, symbol_map_type> p =
+						convert(match);
+				
+				return make_pair(
+					target::TuplePatternElement::Normal(
+						name,
+						p.first,
+						defaultVal ?
+							null() << convert(*defaultVal)
+						:	null()
+						),
+					p.second
+					);
+				}
+		-|	VarArgs(varname) ->> {
+				symbol_map_type m;
+				variable_index_type varIx = allocator().get();
+				
+				if (varname)
+					m = m + *varname + varIx;
+				
+				return make_pair(
+					target::TuplePatternElement::VarArgs(varIx),
+					m
+					);
+				}
+		;
+	}
+
+target::ApplyArgument Converter::convert(const source::ApplyArgument& in) const
+	{
+	@match source::ApplyArgument(in)
+		-|	Normal(name, expr) ->> {
+			return
+				target::ApplyArgument::Normal(name,
+					convert(expr)
+					);
+			}
+		-|	NamedArgument(nameExpr, expr) ->> {
+			return
+				target::ApplyArgument::TupleCall(
+					target::Expression::Apply(
+						symExpr("MakeNamedTupleFromPair"),
+						emptyTreeVec() +
+							symArg("Call") + 
+							applyArg(convert(nameExpr)) +
+							applyArg(convert(expr))
+						)
+					);
+			}
+		-|	TupleCall(expr) ->> {
+			return
+				target::ApplyArgument::TupleCall(
+					convert(expr)
+					);
+			}
+		;
+	}
+
+target::Function Converter::convert(
+					const source::Function& in
+					) const
+	{
+	@match source::Function(in)
+		-|	Empty() ->> {
+
+			variable_index_type nm = allocator().get();
+			
+			return target::Function::Empty(
+				nm,
+				target::Expression::Apply(
+					symExpr(" BadApply"),
+					emptyTreeVec() + 
+						target::ApplyArgument::TupleCall(
+							target::Expression::Variable(nm)
+							)
+					)
+				);
+			}
+		-|	Term(pats, res, remainder) ->> {
+			
+			target::Function remainderF = 
+				convert(remainder);
+			
+			pair<target::TuplePattern,
+				symbol_map_type > p =
+						convert(pats);
+			
+			target::Expression resE =
+				withMapping(p.second).convert(res);
+			
+			return target::Function::Term(
+				p.first,
+				resE,
+				remainderF
+				);
+			}
+		;
+	}
+
+target::Expression Converter::sequence(	const target::Expression& lhs,
+								const target::Expression& rhs
+								) const
+	{
+	return target::Expression::Let(
+		allocator().get(),
+		lhs,
+		rhs
+		);
+	}
+
+target::Expression Converter::sequence(	const target::Expression& lhs,
+								const target::Expression& lhs2,
+								const target::Expression& lhs3
+								) const
+	{
+	return sequence(lhs, sequence(lhs2, lhs3));
+	}
+
+target::Expression Converter::sequence(
+					const ImmutableTreeVector<target::Expression>& elts
+					) const
+	{
+	if (elts.size() == 0)
+		return target::Expression::Constant(CSTValue());
+		
+	if (elts.size() == 1)
+		return elts[0];
+	return sequence(elts[0], sequence(elts.slice(1)));
+	}
+
+source::ListComprehensionChain 
+Converter::wrapInnerChainElementInYield(
+				const source::ListComprehensionChain& inChain
+				) const
+	{
+	@match source::ListComprehensionChain(inChain)
+		-|	Leaf(e) ->> {
+			return
+				source::ListComprehensionChain::Leaf(
+					source::Expression::Yield(e)
+					);
+			}
+		-|	Term(pat, condition, proc, inner) ->> {
+			return
+				source::ListComprehensionChain::Term(
+					pat,
+					condition,
+					proc,
+					wrapInnerChainElementInYield(inner)
+					);
+			}
+		;
+	}
+
+target::Expression Converter::evaluateChainToProcess(
+				const source::ListComprehensionChain& inChain
+				) const
+	{
+	source::Function fun =
+		source::Function::SingleTermFunction(
+			emptyTreeVec(),
+			null(),
+			source::Expression::Foreach(
+				wrapInnerChainElementInYield(inChain)
+				)
+			)
+		;
+	return bindFunction(
+		ClassMediator::Function(
+			"<list comprehension>",
+			fun,
+			LexicalBindingMap(),
+			CSTValue()
+			),
+		fun.freeVariables(),
+		CSTValue()
+		);
+	}
+
+target::Expression Converter::evaluateChainToProcess(
+				const source::ListComprehensionChain& inChain,
+				const ExpressionLocationMetadata& locationMetadata
+				) const
+	{
+	source::Function fun =
+		source::Function::SingleTermFunction(
+			emptyTreeVec(),
+			null(),
+			source::Expression::Foreach(
+				locationMetadata,
+				wrapInnerChainElementInYield(inChain)
+				)
+			)
+		;
+	return bindFunction(
+		ClassMediator::Function(
+			"<list comprehension>",
+			fun,
+			LexicalBindingMap(),
+			CSTValue()
+			),
+		fun.freeVariables(),
+		CSTValue()
+		);
+	}
+
+
+target::Expression Converter::evaluateChainDirectly(
+				const source::ListComprehensionChain& inChain,
+				const Nullable<hash_type>& curCodeHash
+				) const
+	{
+	@match source::ListComprehensionChain(inChain)
+		-|	Leaf(expr) ->> {
+				return convert(expr); 
+				}
+		-|	Term(pat, condition, proc, inner) ->> {
+				
+				variable_index_type procVar = allocator().get();
+				
+				pair<target::Pattern, symbol_map_type> patProc =
+					convert(pat);
+				
+				target::Expression innerE =
+					withMapping(patProc.second)
+							.evaluateChainDirectly(inner, curCodeHash);
+				
+				if (condition)
+					innerE = target::Expression::Branch(
+						withMapping(patProc.second)
+							.convert(*condition),
+						innerE,
+						target::Expression::Constant(CSTValue())
+						);
+				
+				variable_index_type var = allocator().get();
+
+				target::Function innerFun =
+					target::Function::Term(
+						TuplePattern(emptyTreeVec() + patProc.first),
+						innerE,
+						target::Function::Empty(
+							var,
+							modifyApplyOperationOnly(
+								target::Expression::Apply(
+									symExpr("BadPatternMatch"),
+									emptyTreeVec() + 
+									applyArg(target::Expression::Variable(var))
+									),
+								bind(
+									&Converter::wrapExpressionInStackTraceAugment,
+									this, _1, _2
+									),
+								allocator(),
+								curCodeHash
+								)
+							)
+						);
+
+				return target::Expression::Let(
+					procVar,
+					convert(proc),
+					evaluateForLoop(procVar, innerFun, proc.codeLocationIdOrNull())
+					);
+				}
+		;			
+	}
+
+target::Expression	Converter::evaluateForLoop(
+						variable_index_type iterableVar,
+						const target::Function& innerFun,
+						const Nullable<hash_type>& curCodeHash
+						) const
+	{
+	/*************************
+	this code is equivalent to
+	
+	let iterator = iterableVar`(`Iter)
+
+	try { 
+		while (true)
+			{ 
+			match (iterator`(`Next, ())) with
+				((nextElem, nextIterator)) {
+					innerFun(nextElem);
+					iterator = nextIterator
+					}
+				(nothing) { throw nothing to break_point }
+				(arg) { ``BadIteratorArgument`(arg) } //this clause throws
+			}
+		}
+	catch [break_point] (x) { nothing }
+
+	**************************/
+	variable_index_type iteratorVar = allocator().get();
+	variable_index_type nextElemVar = allocator().get();
+	variable_index_type nextIteratorVar = allocator().get();
+	variable_index_type tupleVar = allocator().get();
+	variable_index_type badIteratorVariable = allocator().get();
+	variable_index_type breakTarget = allocator().get();
+
+	auto finishExpression = target::Expression::Throw(
+		target::Expression::Constant(CSTValue()),
+		null() << breakTarget
+		);
+
+	return target::Expression::Let(
+		//Bind "iteratorVar"...
+		varPat(iteratorVar),
+		//...to "iterableVar`(`Iter)"
+		modifyApplyOperationOnly(
+			target::Expression::Apply(
+				varExpr(iterableVar),
+				emptyTreeVec() +
+				symArg("Iter")
+				),
+			bind(
+				&Converter::wrapExpressionInStackTraceAugment,
+				this, _1, _2
+				),
+			allocator(),
+			curCodeHash
+			),
+		//Then do the loop:
+		target::Expression::Try(
+			target::Expression::While(
+				//Condition of the while statement:
+				target::Expression::Constant(CSTValue(true)),
+
+				//body of the while:
+				target::Expression::Match(
+					//The scrutinee of our match, "(iteratorVar`(`Next, ()))".
+					emptyTreeVec() +
+						applyArg(
+							target::Expression::Apply(
+									varExpr(iteratorVar),
+									emptyTreeVec() +
+										symArg("Next") +
+										applyArg(CSTValue())
+									)
+							),
+					//The cases of our match.
+					target::Function::Term(
+						//The first pattern, "((nextElemVar, nextIteratorVar))".
+						target::TuplePattern(
+							emptyTreeVec() +
+								target::Pattern::Tuple(
+									target::TuplePattern(
+										emptyTreeVec() + 
+										varPat(nextElemVar) +
+										varPat(nextIteratorVar)
+										)
+									)
+							),
+						//The result corresponding to the first pattern.
+						//sequence: do these three expressions in order.
+						sequence(emptyTreeVec() +
+							//first evaluate the inner expression
+							target::Expression::Match(
+								emptyTreeVec() +
+									applyArg(nextElemVar),
+								innerFun
+								) +
+							//then assign iterator = result
+							target::Expression::Assign(
+								varPat(iteratorVar),
+								varExpr(nextIteratorVar),
+								//The third argument of Expr::Assign is the
+								//result in case the lpattern fails.
+								target::Expression::Constant(CSTValue())
+								)
+							),
+						//The remaining cases of the match.
+						target::Function::Term(
+							//The second pattern, "(nothing)".
+							target::TuplePattern(
+								emptyTreeVec() +
+									target::Pattern::Constant(
+										target::Expression::Constant(
+											CSTValue()
+											)
+										)
+								),
+							//The result corresponding to the second pattern,
+							//"false", meaning the loop should halt, since
+							//we've hit the end of our iterator.
+							finishExpression,
+							//The remaining cases.
+							target::Function::Term(
+								//The third pattern.
+								target::TuplePattern(
+									emptyTreeVec() +
+										target::Pattern::Anything(
+											badIteratorVariable
+											)
+									),
+								//The third result.
+								target::Expression::Apply(
+									symExpr(" BadIteratorArgument"),
+									emptyTreeVec() +
+										applyArg(varExpr(badIteratorVariable))
+									),
+								//The final case, which is never reached.
+								target::Function::Empty(
+									allocator().get(),
+									finishExpression
+									)
+								)
+							)
+						)
+					)
+				),
+			//target of the try
+			null() << breakTarget,
+			//catch handler for the try
+			target::Function::Empty(
+				allocator().get(),
+				target::Expression::Constant(CSTValue())
+				)
+			)
+		);
+	}
+
+Symbol Converter::freshVarname(string base, ImmutableTreeSet<Symbol>& ioSymbols)
+	{
+	uword_t ix = 0;
+	Symbol candidate = Symbol(base);
+	
+	while (ioSymbols.contains(candidate))
+		candidate = Symbol(base + boost::lexical_cast<string>(ix++));
+	
+	ioSymbols = ioSymbols + candidate;
+	
+	return candidate;
+	}
+
+target::Expression Converter::expandRecursiveLet(
+		const ImmutableTreeVector<
+				pair<source::PatternWithName, source::Expression> >& inElts,
+		const source::Expression& inBody
+		) const
+	{
+	//first, see if they aren't recursive
+	ImmutableTreeSet<Symbol> boundVars, freeVars;
+	for (long k = 0; k < inElts.size(); k++)
+		{
+		boundVars = boundVars + inElts[k].first.boundVariables();
+		freeVars = freeVars + inElts[k].second.freeVariables() +
+			inElts[k].first.freeVariables();
+		}
+
+	if (boundVars.intersects(freeVars))
+		//it's recursive
+		{
+		//in a recursive let, we build an object in which each value
+		//is bound to a member of the object.  If the patterns are
+		//complex pattern matches, we have to make one member that
+		//results in the tuple of matched values, and then
+		//make stub members that grab the relevant items
+		
+		//list of symbols we can't use
+		ImmutableTreeSet<Symbol>	symbolsUsed =
+			boundVars + freeVars;
+		
+		ImmutableTreeMap<Symbol, variable_index_type> varMap;
+		
+		ObjectDefinitionBody o = ObjectDefinitionBody::Empty();
+		
+		for (long k = 0; k < inElts.size(); k++)
+			{
+			@match source::PatternWithName(inElts[k].first)
+				-|	(Anything(), Value(varname), Null()) ->> {
+					o = ObjectDefinitionBody::Term(
+						ObjectDefinitionTermWithMetadata(
+							ObjectDefinitionTerm::Member(
+								varname,
+								inElts[k].second,
+								1
+								),
+							CSTValue()
+							),
+						o
+						);
+					
+					varMap = varMap +
+						varname +
+						allocator().get()
+						;
+					}
+				-|	pat ->> {
+					ImmutableTreeSet<Symbol> varsBound =
+						pat.boundVariables();
+					
+					if (varsBound.size() == 1)
+						{
+						o = ObjectDefinitionBody::Term(
+							ObjectDefinitionTermWithMetadata(
+								ObjectDefinitionTerm::Member(
+									varsBound[0],
+									CPPML::replaceCommonData(
+										source::Expression::Match(
+											emptyTreeVec() +
+											source::ApplyArgument::Normal(inElts[k].second),
+											source::Function::Term(
+												source::TuplePattern(emptyTreeVec() +
+													source::TuplePatternElement::Normal(pat)
+													),
+												source::Expression::Variable(
+													varsBound[0]
+													),
+												source::Function::Empty()
+												)
+											),
+										pat.locationMetadata()
+										),
+									1
+									),
+								CSTValue()
+								),
+							o
+							);
+						
+						varMap = varMap +
+							varsBound[0] +
+							allocator().get()
+							;
+						}
+					else
+						{
+						//pick a variable for the members
+						ostringstream toPick;
+						for (long j = 0; j < varsBound.size(); j++)
+							{
+							if (j > 0)
+								toPick << "_";
+							toPick << varsBound[j].toString();
+							}
+						
+						//pick a var to hold the resulting tuple
+						Symbol comboVar = freshVarname(toPick.str(), symbolsUsed);
+						
+						//arguments for CreateTuple
+						ImmutableTreeVector<source::ApplyArgument> tupleArgs;
+						for (long j = 0; j < varsBound.size(); j++)
+							tupleArgs = tupleArgs +
+								source::ApplyArgument::Normal(
+									source::Expression::Variable(varsBound[j])
+									);
+						
+						//add a member for comboVar that evaluates the pattern
+						//and puts the terms into a tuple
+						o = ObjectDefinitionBody::Term(
+							ObjectDefinitionTermWithMetadata(
+								ObjectDefinitionTerm::Member(
+									comboVar,
+									CPPML::replaceCommonData(
+										source::Expression::Match(
+											emptyTreeVec() +
+											source::ApplyArgument::Normal(inElts[k].second),
+											source::Function::Term(
+												source::TuplePattern(emptyTreeVec() +
+													source::TuplePatternElement::Normal(pat)
+													),
+												source::Expression::CreateTuple(
+													tupleArgs
+													),
+												source::Function::Empty()
+												)
+											),
+										pat.locationMetadata()
+										),
+									1
+									),
+								CSTValue() 
+								),
+							o
+							);
+						
+						//now add members that access the tuple elements
+						for (long j = 0; j < varsBound.size(); j++)
+							{
+							o = ObjectDefinitionBody::Term(
+								ObjectDefinitionTermWithMetadata(
+									ObjectDefinitionTerm::Member(
+										varsBound[j],
+										source::Expression::GetItem(
+											source::Expression::Variable(comboVar),
+											emptyTreeVec() +
+											source::ApplyArgument::Normal(
+												source::Expression::Constant(
+													CSTValue((int64_t)j)
+													)
+												)
+											),
+										1
+										),
+									CSTValue() 
+									),
+								o
+								);
+							
+							varMap = varMap +
+								varsBound[j] +
+								allocator().get()
+								;
+							}
+						}
+					
+					}
+				;
+			}
+		
+		ObjectDefinition obj(o, null(), ExpressionLocationMetadata::Empty());
+		
+		target::Expression expr =
+			bindFunction(
+				ClassMediator::Object(
+					"<recursive let binding>",
+					obj,
+					LexicalBindingMap(),
+					CSTValue()
+					),
+				obj.freeVariables(),
+				CSTValue()
+				);
+		
+		variable_index_type objectVariable =
+			allocator().get();
+		
+		target::Expression inner =
+			withMapping(varMap)
+				.convert(inBody);
+		
+		//pull all the values out of the object
+		for (long k = 0; k < varMap.size(); k++)
+			inner =
+				target::Expression::Let(
+					target::Pattern::Anything(
+						varMap.pairAtPosition(k).second
+						),
+					target::Expression::Apply(
+						target::Expression::Variable(objectVariable),
+						emptyTreeVec() +
+							symArg("Member") +
+							symArg(varMap.pairAtPosition(k).first)
+						),
+					inner
+					);
+		
+		return target::Expression::Let(
+			target::Pattern::Anything(
+				objectVariable
+				),
+			expr,
+			inner
+			);
+		}
+	else
+		{
+		symbol_map_type allsyms;
+		
+		ImmutableTreeVector<pair<target::Pattern, target::Expression> > lets;
+		
+		//we can just do this straight up
+		for (long k = ((long)inElts.size())-1; k>=0;k--)
+			{
+			pair<target::Pattern, symbol_map_type> p =
+				withVariablesUsedOutside(inBody.freeVariables() - boundVars)
+					.convert(inElts[k].first);
+			
+			allsyms = allsyms + p.second;
+			
+			lets = lets +
+				make_pair(p.first,
+					withMapping(p.second)
+						.convert(inElts[k].second, inBody.freeVariables() - boundVars)
+					);
+			}
+		
+		target::Expression tr =
+			withMapping(allsyms)
+				.convert(inBody);
+		
+		for (long k = 0; k < lets.size(); k++)
+			{
+			variable_index_type toMatchVar = allocator().get();
+
+			tr = target::Expression::Let(
+				toMatchVar,
+				lets[k].second,
+				target::Expression::Let(
+					lets[k].first,
+					target::Expression::Variable(toMatchVar),
+					tr,
+					modifyApplyOperationOnly(
+						target::Expression::Apply(
+							symExpr("BadPatternMatch"),
+							emptyTreeVec() + 
+							applyArg(varExpr(toMatchVar))
+							),
+						bind(
+							&Converter::wrapExpressionInStackTraceAugment,
+							this, _1, _2
+							),
+						allocator(),
+						lets[k].first.definingExpressionLocationId()
+						)
+					)
+				);
+			}
+
+		return tr;
+		}
+	
+	return target::Expression();
+	}
+
+pair<ObjectDefinitionBody, ImmutableTreeVector<source::Expression> >
+extractMixinExpressions(const ObjectDefinitionBody& body)
+	{
+	@match ObjectDefinitionBody(body)
+		-| Empty() ->> {
+			return make_pair(body, ImmutableTreeVector<source::Expression>());
+			}
+		-| Term((Mixin(expr),meta), tail) ->> {
+			pair<ObjectDefinitionBody, ImmutableTreeVector<source::Expression> > res;
+
+			res = extractMixinExpressions(tail);
+
+			return make_pair(
+				ObjectDefinitionBody::Term(
+					ObjectDefinitionTermWithMetadata(
+						ObjectDefinitionTerm::Mixin(
+							source::Expression::Constant(CSTValue())
+							),
+						meta
+						),
+					res.first
+					),
+				expr + res.second
+				);
+			}
+		-| Term(term, tail) ->> {
+			pair<ObjectDefinitionBody, ImmutableTreeVector<source::Expression> > res;
+
+			res = extractMixinExpressions(tail);
+
+			return make_pair(
+				ObjectDefinitionBody::Term(
+					term,
+					res.first
+					),
+				res.second
+				);
+			}
+	}
+
+pair<ClassDefinitionBody, ImmutableTreeVector<source::Expression> >
+extractMixinExpressions(const ClassDefinitionBody& body)
+	{
+	@match ClassDefinitionBody(body)
+		-| Empty() ->> {
+			return make_pair(body, ImmutableTreeVector<source::Expression>());
+			}
+		-| Term((Static(Mixin(expr)), meta), tail) ->> {
+			pair<ClassDefinitionBody, ImmutableTreeVector<source::Expression> > res;
+
+			res = extractMixinExpressions(tail);
+
+			return make_pair(
+				ClassDefinitionBody::Term(
+					ClassDefinitionTermWithMetadata(
+						ClassDefinitionTerm::Static(
+							ObjectDefinitionTerm::Mixin(
+								source::Expression::Constant(CSTValue())
+								)
+							),
+						meta
+						),
+					res.first
+					),
+				expr + res.second
+				);
+			}
+		-| Term((term, meta), tail) ->> {
+			pair<ClassDefinitionBody, ImmutableTreeVector<source::Expression> > res;
+
+			res = extractMixinExpressions(tail);
+
+			return make_pair(
+				ClassDefinitionBody::Term(
+					ClassDefinitionTermWithMetadata(
+						term,
+						meta
+						),
+					res.first
+					),
+				res.second
+				);
+			}
+	}
+
+pair<ObjectDefinition, ImmutableTreeVector<source::Expression> >
+extractMixinExpressions(const ObjectDefinition& body)
+	{
+	pair<ObjectDefinitionBody, ImmutableTreeVector<source::Expression> >  tr;
+
+	tr = extractMixinExpressions(body.body());
+
+	return make_pair(
+		ObjectDefinition(
+			tr.first,
+			body.selfName(),
+			body.locationMetadata()
+			),
+		tr.second
+		);
+	}
+
+pair<ClassDefinition, ImmutableTreeVector<source::Expression> >
+extractMixinExpressions(const ClassDefinition& body)
+	{
+	pair<ClassDefinitionBody, ImmutableTreeVector<source::Expression> >  tr;
+
+	tr = extractMixinExpressions(body.body());
+
+	return make_pair(
+		ClassDefinition(
+			tr.first,
+			body.className(),
+			body.selfName(),
+			body.locationMetadata()
+			),
+		tr.second
+		);
+	}
+
+target::Expression Converter::bindCreateObjectExpression(
+										const std::string& name,
+										const ObjectDefinition& body,
+										const CSTValue& objectMetadata
+										) const
+	{
+	//some of the members in 'body' might be 'mixin' objects which need to be pulled out
+	pair<ObjectDefinition, ImmutableTreeVector<source::Expression> > mixins = 
+		extractMixinExpressions(body);
+
+	target::Expression binderExpr = 
+		bindFunction(
+			ClassMediator::Object(
+				name,
+				mixins.first,
+				LexicalBindingMap(),
+				CSTValue()
+				),
+			mixins.first.freeVariables(),
+			objectMetadata
+			);
+
+	for (long k = (long)mixins.second.size() - 1; k >= 0; k--)
+		binderExpr = target::Expression::Apply(
+			symExpr("BindMixin"),
+			emptyTreeVec() + 
+				symArg("Call") + 
+				applyArg(binderExpr) + 
+				applyArg(
+					convert(mixins.second[k])
+					)
+			);
+
+	return binderExpr;
+	}
+
+
+target::Expression Converter::bindCreateClassExpression(
+										const std::string& name,
+										const ClassDefinition& body,
+										const CSTValue& objectMetadata
+										) const
+	{
+	//some of the members in 'body' might be 'mixin' objects which need to be pulled out
+	pair<ClassDefinition, ImmutableTreeVector<source::Expression> > mixins = 
+		extractMixinExpressions(body);
+
+	target::Expression binderExpr = 
+		bindFunction(
+			ClassMediator::Class(
+				name,
+				mixins.first,
+				LexicalBindingMap(),
+				CSTValue()
+				),
+			mixins.first.freeVariables(),
+			objectMetadata
+			);
+
+	for (long k = (long)mixins.second.size() - 1; k >= 0; k--)
+		binderExpr = target::Expression::Apply(
+			symExpr("BindMixin"),
+			emptyTreeVec() + 
+				symArg("Call") + 
+				applyArg(binderExpr) + 
+				applyArg(
+					convert(
+						mixins.second[k]
+						)
+					)
+			);
+
+	return binderExpr;
+	}
+
+target::Expression Converter::bindFunction(
+				const ClassMediator& inPredicate,
+				const ImmutableTreeSet<Symbol>& freeVariableSet,
+				const CSTValue& metadata
+				) const
+	{
+	//compute the lexical bindings of the new object
+	ImmutableTreeVector<target::Expression> expressionsToBind;
+	ImmutableTreeMap<Symbol, LexicalBinding> newLexicalBindings;
+
+	Fora::Language::LexicalBindingSelector selector(
+			freeVariableSet, 
+			varmap(), 
+			lexicalBindings(), 
+			lexicalBindingsVar()
+			);
+
+	expressionsToBind = selector.expressionsToBind();
+	newLexicalBindings = selector.newLexicalBindings();
+
+	ClassMediator predicate;
+
+	predicate = Fora::Language::bindLexicalBindingsToPredicate(inPredicate, selector, metadata);
+
+	target::Expression tr =
+			target::Expression::Constant(
+				CSTValue::blankOf(
+					Type::Class(
+						predicate
+						)
+					)
+				);
+	
+	
+	//bind the local variables to it as well
+	tr = bindFreeTo(tr, expressionsToBind);
+	
+	return tr;
+	}
+
+target::Expression	Converter::bindFreeTo(
+				const target::Expression& inExpr,
+				const ImmutableTreeVector<target::Expression>& expressionsToBind
+				) const
+	{
+	if (!expressionsToBind.size())
+		return inExpr;
+	
+	//now bind the local variables				
+	ImmutableTreeVector<target::ApplyArgument> args;
+
+	args = args + symArg("Call");
+	args = args + applyArg(inExpr);
+
+	for (long k = 0; k < expressionsToBind.size(); k++)
+		args = args + applyArg(expressionsToBind[k]);
+	
+	return target::Expression::Apply(
+			inExpr.definingExpressionLocationId(),
+			symExpr("Bind"),
+			args
+			);
+	}
+
+target::Function	Converter::prependTerm(
+						const target::Function& inFun,
+						Symbol inPat) const
+	{
+	return prependTerm(inFun, target::Pattern::Constant(CSTValue(inPat)));
+	}
+
+target::Function	Converter::prependTerm(
+						const target::Function& inFun,
+						const target::Pattern& inPat) const
+	{
+	return prependTerm(
+		inFun,
+		target::TuplePatternElement::Normal(
+			null(),
+			inPat,
+			null()
+			)
+		);
+	}
+
+target::Function	Converter::prependTerm(
+						const target::Function& inFun,
+						const target::TuplePatternElement& inPat) const
+	{
+	@match target::Function(inFun)
+		-|	Empty(e) ->> {
+			return  inFun;
+			}
+		-|	Term(pats, e,r) ->> {
+			return target::Function::Term(
+				target::TuplePattern(inPat + pats.matchers()),
+				e,
+				prependTerm(r, inPat)
+				);
+			}
+			;
+	}
+
+target::Function	Converter::prependTerm(
+						const target::Function& inFun,
+						const ImmutableTreeVector<
+								target::TuplePatternElement>& inPat) const
+	{
+	@match target::Function(inFun)
+		-|	Empty(e) ->> {
+			return  inFun;
+			}
+		-|	Term(pats, e,r) ->> {
+			return target::Function::Term(
+				target::TuplePattern(inPat + pats.matchers()),
+				e,
+				prependTerm(r, inPat)
+				);
+			}
+			;
+	}
+
+target::Expression Converter::convertMultipleMembers(
+									const vector<pair<Symbol, source::Expression> >& inMembers,
+									variable_index_type inToMatch
+									) const
+	{
+	target::Function matchFun = 
+		target::Function::Empty(
+			allocator().get(), 
+			target::Expression::Skip()
+			);
+
+	for (long j = ((long)inMembers.size())-1; j >= 0; j--)
+		matchFun = target::Function::Term(
+			target::TuplePattern(emptyTreeVec() + symPat(inMembers[j].first)),
+			convert(inMembers[j].second),
+			matchFun
+			);
+
+	return target::Expression::Match(
+		emptyTreeVec() + 
+			applyArg(inToMatch),
+		matchFun
+		);
+	}
+
+target::Function 	Converter::convertMemberObjectDefinitionTerm(
+						const source::ObjectDefinitionBody& inDef
+						) const
+	{
+	vector<pair<Symbol, source::Expression> > membersInARow;
+
+	ObjectDefinitionBody def = inDef;
+	uword_t targetDepth;
+
+
+	@match ObjectDefinitionBody(def)
+		-|	Term((Member(membername, expr, depth),_), tail) ->> {
+				targetDepth = depth;
+			};
+			
+
+	bool done = false;
+	while (!done)
+		@match ObjectDefinitionBody(def)
+			-|	Term((Member(membername, expr, depth),_), tail) ->> {
+				if (depth == targetDepth)
+					{
+					membersInARow.push_back(make_pair(membername, expr));
+					def = tail;
+					}
+				else
+					done = true;
+				}
+			-| _ ->> { done = true; }
+			;
+
+	lassert(membersInARow.size());
+
+	variable_index_type membernameVar = allocator().get();
+
+	return 
+		target::Function::Term(
+			target::TuplePattern(emptyTreeVec() +
+				symPat(memberDepthSymbol(targetDepth)) +
+				target::Pattern::Anything(membernameVar)
+				),
+			convertMultipleMembers(membersInARow, membernameVar),
+			convert(def)
+			);
+
+	}
+
+target::Function	Converter::convert(
+						const source::ObjectDefinitionBody& inDef
+						) const
+	{
+	@match ObjectDefinitionBody(inDef)
+		-|	Empty() ->> {
+			variable_index_type nm = allocator().get();
+			
+			return target::Function::Empty(nm,
+				target::Expression::Apply(
+					symExpr(" BadApply"),
+					emptyTreeVec() + 
+						target::ApplyArgument::TupleCall(
+							target::Expression::Variable(nm)
+							)
+					)
+				);
+			}
+		-|	Term((MatchFilter(fun), meta), tail) ->> {
+			return 
+				prependTerm(
+					convert(fun),
+					Symbol("MatchFilter")
+					) +
+				convert(tail);
+			}
+		-|	Term((Filter(fun), meta), tail) ->> {
+			return 
+				prependTerm(
+					convert(fun),
+					Symbol("Filter")
+					) +
+				convert(tail);
+			}
+		-|	Term((Member(membername, expr, depth), meta), tail) ->> {
+			return convertMemberObjectDefinitionTerm(inDef);
+			}
+		-|	Term((Operator(op, fun), meta), tail) ->> {
+			//TODO BUG brax: LeftOperator and RightOperator should show warnings if 'fun' has args
+			return 
+				prependTerm(
+					prependTerm(
+						convert(fun),
+						op
+						),
+					Symbol("Operator")
+					) +
+				convert(tail);
+			}
+		-|	Term((Mixin(), meta), tail) ->> {
+			return convert(tail);
+			}
+		-|	Term((LeftOperator(op, fun), meta), tail) ->> {
+			return 
+				prependTerm(
+					prependTerm(
+						convert(fun),
+						op
+						),
+					Symbol("LeftOperator")
+					) +
+				convert(tail);
+			}
+		-|	Term((RightOperator(op, fun), meta), tail) ->> {
+			return 
+				prependTerm(
+					prependTerm(
+						convert(fun),
+						op
+						),
+					Symbol::RightOperator()
+					) +
+				convert(tail);
+			}
+		-|	Term((ReverseOperator(op, fun), meta), tail) ->> {
+			return 
+				prependTerm(
+					prependTerm(
+						convert(fun),
+						op
+						),
+					Symbol::ReverseOperator()
+					) +
+				convert(tail);
+			}
+		-|	Term((Convert(fun), meta), tail) ->> {
+			return 
+				prependTerm(
+					convert(fun),
+					Symbol::Convert()
+					) +
+				convert(tail);
+			}
+		-|	Term((Call(fun), meta), tail) ->> {
+			return 
+				prependTerm(
+					convert(fun),
+					Symbol("Call")
+					) +
+				convert(tail);
+			}
+		-|	Term((GetItem(fun), meta), tail) ->> {
+			return 
+				prependTerm(
+					convert(fun),
+					Symbol("GetItem")
+					) +
+				convert(tail);
+			}
+		-|	Term((SetItem(fun), meta), tail) ->> {
+			return 
+				prependTerm(
+					convert(fun),
+					Symbol("SetItem")
+					) +
+				convert(tail);
+			}
+		-|	Term((Iter(fun), meta), tail) ->> {
+			return
+				prependTerm(
+					convert(fun),
+					Symbol("Iter")
+					) +
+				convert(tail);
+			}
+		-|	Term((Next(fun), meta), tail) ->> {
+			return 
+				prependTerm(
+					convert(fun),
+					Symbol("Next")
+					) +
+				convert(tail);
+			}
+		-|	Term((Anything(fun), meta), tail) ->> {
+			return 
+				convert(fun) +
+				convert(tail);
+			}
+		;
+	}
+
+namespace {
+
+pair<ImmutableTreeVector<ObjectDefinitionTermWithMetadata>, ObjectDefinitionBody>
+extractObjectDefinitionTermMembers(const ObjectDefinitionBody& in);
+
+ObjectDefinitionBody
+pullMembersToTopOfObjectDefinition(const ObjectDefinitionBody& in);
+
+ObjectDefinitionBody
+pullMembersToTopOfObjectDefinition(const ObjectDefinitionBody& in)
+	{
+	pair<ImmutableTreeVector<ObjectDefinitionTermWithMetadata>, ObjectDefinitionBody>
+		remainder = extractObjectDefinitionTermMembers(in);
+
+	while (remainder.first.size())
+		{
+		remainder.second = ObjectDefinitionBody::Term(remainder.first.back(), remainder.second);
+
+		remainder.first = remainder.first.slice(0, remainder.first.size() - 1);
+		}
+
+	return remainder.second;
+	}
+
+pair<ImmutableTreeVector<ObjectDefinitionTermWithMetadata>, ObjectDefinitionBody>
+extractObjectDefinitionTermMembers(const ObjectDefinitionBody& in)
+	{
+	@match ObjectDefinitionBody(in)
+		-| Term(t, tail) ->> {
+			if (t.objectDefinitionTerm().isAnything() || t.objectDefinitionTerm().isMixin())
+				return make_pair(
+					emptyTreeVec(), 
+					ObjectDefinitionBody::Term(
+						t, 
+						pullMembersToTopOfObjectDefinition(tail)
+						)
+					);
+
+			pair<ImmutableTreeVector<ObjectDefinitionTermWithMetadata>, ObjectDefinitionBody>
+				remainder = extractObjectDefinitionTermMembers(tail);
+
+			if (t.objectDefinitionTerm().isMember())
+				return make_pair(t + remainder.first, remainder.second);
+			else
+				return make_pair(remainder.first, ObjectDefinitionBody::Term(t, remainder.second));
+			}
+		-| Empty() ->> {
+			return make_pair(emptyTreeVec(), in);
+			}
+	}
+
+
+
+}
+
+target::Function	
+Converter::convertObjectBodyEntry(const source::ObjectDefinitionBody& inDef) const
+	{
+	ImmutableTreeVector<target::TuplePatternElement> toPrepend;
+	
+	toPrepend = toPrepend +
+			target::TuplePatternElement::Normal(
+				null(),
+				target::Pattern::Anything(*lexicalBindingsVar()),
+				null()
+				);
+	
+	ImmutableTreeSet<Symbol> allFreeVarsInObjectScope = inDef.freeVariablesInObjectScope();
+	ImmutableTreeSet<Symbol> allFreeVarsNotInObjectScope = inDef.freeVariablesNotInObjectScope();
+	ImmutableTreeSet<Symbol> lexicallyBoundVars = lexicalBindings().boundVariables();
+
+	ImmutableTreeSet<Symbol> escapingVariables = 
+		(allFreeVarsInObjectScope - lexicallyBoundVars) + allFreeVarsNotInObjectScope;
+
+	lassert_dump(
+		escapingVariables.size() == 0,
+		"can't convert " << prettyPrintString(inDef)
+			<< " which has free variables " << prettyPrintString(escapingVariables)
+			<< " not bound in its lexical bindings, which were "
+			<< prettyPrintString(lexicalBindings().boundVariables())
+		);
+	
+	return prependTerm(
+		convert(pullMembersToTopOfObjectDefinition(inDef)),
+		toPrepend
+		);
+	}
+
+target::Function	Converter::convertFunctionBodyEntry(
+						const source::Function& inDef
+						) const
+	{
+	ImmutableTreeVector<target::TuplePatternElement> toPrepend;
+	
+	toPrepend = toPrepend +
+			target::TuplePatternElement::Normal(
+				null(),
+				target::Pattern::Anything(*lexicalBindingsVar()),
+				null()
+				);
+	
+	toPrepend = toPrepend +
+		target::TuplePatternElement::Normal(
+			null(),
+			target::Pattern::Constant(CSTValue(Symbol::Call())),
+			null()
+			);
+
+	ImmutableTreeSet<Symbol> freeInFun = inDef.freeVariables() - lexicalBindings().boundVariables();
+	
+	lassert_dump(
+		freeInFun.size() == 0,
+		"can't convert " << prettyPrintString(inDef) << " which has free variables " 
+			<< prettyPrintString(freeInFun) << " not bound in its lexical bindings"
+		);
+
+	target::Function tr = prependTerm(
+		convert(inDef),
+		toPrepend
+		);
+	return tr;
+	}
+
+}
+

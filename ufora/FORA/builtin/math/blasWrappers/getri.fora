@@ -1,0 +1,155 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+"""
+DESCRIPTION:
+Invert a general matrix
+
+essentially a wrapper around blas routines sgetri, dgetri, cgetri, and zgetri.
+
+ARGUMENTS:
+
+    N       Integer type.
+            The number of rows (== number of columns) of the matrix A.
+            
+    A       Vector of float, size N * N.
+            The matrix to invert, stored in column-major format.
+
+RETURNS:
+    A float vector of size N * N which gives the inverse of A.    
+"""
+fun(	
+		n,
+		A
+		)
+	{
+	let eltType = nothing;
+	(eltType, A) = blasWrappers.eltTypeAndFloatifyIfNecessary(A);
+
+	let vecType = `JovOfVectorHolding(eltType);
+	let intVecType = `JovOfVectorHolding(Int32); 
+
+	n = Int32(n);
+	if (n < 1)
+		throw "illegal dimension for A"
+	
+	let (LU, ipiv) = getrf(n, n, A);
+
+	//compute the size of the workspace
+	let work = [] :: eltType();
+	
+	let blasname = addTypeSuffix(eltType, "getri_");
+	
+	let wrapper =
+		`FORTRANFunctionWrapper(
+			blasname,
+			blasname,
+			(1,4,6),					//arguments that are modified by the function
+			Int32,						//n
+			vecType,					//LU
+			Int32, 						//lda
+			intVecType,				//ipiv
+			vecType,					//work
+			Int32,						//lworks
+			intVecType		 		//info
+			);
+	
+	let info = [1s32];
+	
+	(LU, work, info) = wrapper(n, LU, n, ipiv, work, -1s32, info);
+	
+	if (info[0] != 0)
+		throw "illegal input to FORTRAN function GETRI"
+	
+	if (work[0] < 1 or work[0] < n)
+		throw "illegal WORK output: " + String(work[0])
+	
+	work = Vector.uniform(match (work[0]) with ((re,im)) { re } (x) { x }, eltType());
+	
+	(LU, work, info) = wrapper(n, LU, n, ipiv, work, Int32(size(work)), info)
+	
+	if (info[0] < 0)
+		throw "illegal input to FORTRAN function GETRI: argument " + String(-info[0]);
+	
+	if (info[0] > 0)
+		throw "matrix A was singular";
+
+	return LU
+	}
+	;
+
+/************
+      SUBROUTINE SGETRI( N, A, LDA, IPIV, WORK, LWORK, INFO )
+*
+*  -- LAPACK routine (version 3.2) --
+*  -- LAPACK is a software package provided by Univ. of Tennessee,    --
+*  -- Univ. of California Berkeley, Univ. of Colorado Denver and NAG Ltd..--
+*     November 2006
+*
+*     .. Scalar Arguments ..
+      INTEGER            INFO, LDA, LWORK, N
+*     ..
+*     .. Array Arguments ..
+      INTEGER            IPIV( * )
+      REAL               A( LDA, * ), WORK( * )
+*     ..
+*
+*  Purpose
+*  =======
+*
+*  SGETRI computes the inverse of a matrix using the LU factorization
+*  computed by SGETRF.
+*
+*  This method inverts U and then computes inv(A) by solving the system
+*  inv(A)*L = inv(U) for inv(A).
+*
+*  Arguments
+*  =========
+*
+*  N       (input) INTEGER
+*          The order of the matrix A.  N >= 0.
+*
+*  A       (input/output) REAL array, dimension (LDA,N)
+*          On entry, the factors L and U from the factorization
+*          A = P*L*U as computed by SGETRF.
+*          On exit, if INFO = 0, the inverse of the original matrix A.
+*
+*  LDA     (input) INTEGER
+*          The leading dimension of the array A.  LDA >= max(1,N).
+*
+*  IPIV    (input) INTEGER array, dimension (N)
+*          The pivot indices from SGETRF; for 1<=i<=N, row i of the
+*          matrix was interchanged with row IPIV(i).
+*
+*  WORK    (workspace/output) REAL array, dimension (MAX(1,LWORK))
+*          On exit, if INFO=0, then WORK(1) returns the optimal LWORK.
+*
+*  LWORK   (input) INTEGER
+*          The dimension of the array WORK.  LWORK >= max(1,N).
+*          For optimal performance LWORK >= N*NB, where NB is
+*          the optimal blocksize returned by ILAENV.
+*
+*          If LWORK = -1, then a workspace query is assumed; the routine
+*          only calculates the optimal size of the WORK array, returns
+*          this value as the first entry of the WORK array, and no error
+*          message related to LWORK is issued by XERBLA.
+*
+*  INFO    (output) INTEGER
+*          = 0:  successful exit
+*          < 0:  if INFO = -i, the i-th argument had an illegal value
+*          > 0:  if INFO = i, U(i,i) is exactly zero; the matrix is
+*                singular and its inverse could not be computed.
+
+*************/

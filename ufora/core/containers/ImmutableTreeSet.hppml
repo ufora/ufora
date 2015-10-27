@@ -1,0 +1,759 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+/**************
+ *
+ * vector of T implemented as a balanced tree.  guarantee that the heights of all left/right pairs are within a factor of two of each other
+ *
+ **************/
+#include <vector>
+#include <set>
+#include "../lassert.hpp"
+#include "../serialization/Serialization.hpp"
+#include "../math/Hash.hpp"
+#include "../math/Nullable.hpp"
+#include "ImmutableTreeVector.hppml"
+
+using namespace std;
+
+class TreeSet {};
+
+template<class T>
+@type ImmutableTreeSetElement =
+		Empty of ()
+	-|	Leaf of T value
+	-|	Node of ImmutableTreeSetElement<T> left, ImmutableTreeSetElement<T> right, uint32_t size, uint32_t height, T lowest, T highest
+	;
+
+template<class T>
+class ImmutableTreeSet {
+		typedef std::less<T> comparison;
+		typedef ImmutableTreeSetElement<T> Element;
+		mutable Nullable<hash_type> mHashVal;
+
+public:
+		ImmutableTreeSet() : mElement()
+			{
+			}
+		ImmutableTreeSet(const TreeSet& in) : mElement()
+			{
+			}
+
+		Hash hash(void) const
+			{
+			if (!mHashVal)
+				{
+				hash_type tr(size());
+				for (uword_t k = 0; k < size();k++)
+					tr = tr + hashValue( (*this)[k] );
+				mHashVal = tr;
+				}
+
+			return *mHashVal;
+			}
+		explicit ImmutableTreeSet(const T& in) : mElement(Element::Leaf(in))
+			{
+			}
+		template<class iterator_type>
+		ImmutableTreeSet(iterator_type left, iterator_type right)
+			{
+			ImmutableTreeSet tr;
+			while (left != right)
+				{
+				tr = tr + *left;
+				left++;
+				}
+			mElement = tr.mElement;
+			}
+		class const_iterator;
+		ImmutableTreeSet(const_iterator left, const_iterator right)
+			{
+			mElement = left.tree()->slice(left.index(), right.index()).mElement;
+			}
+		ImmutableTreeSet(const ImmutableTreeSet& in) : mElement(in.mElement)
+			{
+			}
+		template<class T2>
+		ImmutableTreeSet(const T2& in)
+			{
+			for (typename T2::const_iterator it = in.begin(), it_end = in.end(); it != it_end; ++it)
+				*this = *this + *it;
+			}
+		uint32_t size(void) const
+			{
+			return size(mElement);
+			}
+		uint32_t height(void) const
+			{
+			return height(mElement);
+			}
+		const T& operator[](uint32_t inIndex) const
+			{
+			lassert_dump(inIndex < size(), inIndex << " out of bounds. size is " << size());
+
+			return elt(mElement, inIndex);
+			}
+		operator bool(void) const
+			{
+			return size() != 0;
+			}
+
+		ImmutableTreeSet operator+(const T& in) const
+			{
+			return node(mElement, Element::Leaf(in));
+			}
+		ImmutableTreeSet operator+(const ImmutableTreeSet<T>& in) const
+			{
+			return node(mElement, in.mElement);
+			}
+		friend ImmutableTreeSet operator+(const T& in, const ImmutableTreeSet& r)
+			{
+			return node(r.mElement, Element::Leaf(in));
+			}
+		ImmutableTreeSet& operator=(const ImmutableTreeSet& in)
+			{
+			mElement = in.mElement;
+			mHashVal = in.mHashVal;
+			return *this;
+			}
+
+
+		template<class f_type>
+		auto map(const f_type& f) const -> ImmutableTreeSet< decltype(f(T())) >
+			{
+			ImmutableTreeSet< decltype(f(T())) > tr;
+
+			for (uword_t k = 0; k < this->size();k++)
+				tr = tr + f((*this)[k]);
+
+			return tr;
+			}
+		template<class f_type>
+		auto sum(const f_type& f) const -> decltype(f(T()) + f(T()))
+			{
+			decltype(f(T()) + f(T())) tr;
+
+			for (uword_t k = 0; k < this->size();k++)
+				tr = tr + f((*this)[k]);
+
+			return tr;
+			}
+
+
+		typedef const ImmutableTreeSet* immutable_tree_vector_ptr;
+
+		@type const_iterator = immutable_tree_vector_ptr tree, uint32_t index {
+		public:
+				bool operator==(const const_iterator& in) const
+					{
+					return tree() == in.tree() && index() == in.index();
+					}
+				bool operator!=(const const_iterator& in) const
+					{
+					return !(*this == in);
+					}
+				bool operator<(const const_iterator& in) const
+					{
+					if (tree() < in.tree())
+						return true;
+					if (tree() > in.tree())
+						return false;
+					return index() < in.index();
+					}
+				const T& operator*(void) const
+					{
+					return (*tree())[index()];
+					}
+				const T* operator->(void) const
+					{
+					return &(*tree())[index()];
+					}
+				const_iterator operator+(int32_t offset) const
+					{
+					return const_iterator(tree(), index() + offset);
+					}
+				int32_t operator-(const const_iterator& in) const
+					{
+					return (int32_t)index() - (int32_t)in.index();
+					}
+				const_iterator operator-(int32_t offset) const
+					{
+					return const_iterator(tree(), index() - offset);
+					}
+				const_iterator& operator+=(int32_t offset)
+					{
+					index() += offset;
+					return *this;
+					}
+				const_iterator& operator-=(int32_t offset)
+					{
+					index() += offset;
+					return *this;
+					}
+				const_iterator& operator++(void)
+					{
+					index() += 1;
+					return *this;
+					}
+				const_iterator operator++(int)
+					{
+					const_iterator tr(tree(), index());
+					index() += 1;
+					return tr;
+					}
+				const_iterator& operator--(void)
+					{
+					index() -= 1;
+					return *this;
+					}
+				const_iterator operator--(int)
+					{
+					const_iterator tr(tree(), index());
+					index() -= 1;
+					return tr;
+					}
+
+				typedef T value_type;
+				typedef int32_t difference_type;
+				typedef T* pointer;
+				typedef T& reference;
+				typedef std::random_access_iterator_tag iterator_category;
+		};
+		const_iterator begin(void) const
+			{
+			return const_iterator(this, 0);
+			}
+		const_iterator end(void) const
+			{
+			return const_iterator(this, size(mElement));
+			}
+		typedef const_iterator iterator;
+
+		ImmutableTreeSet slice(uint32_t left, uint32_t right) const
+			{
+			return ImmutableTreeSet(slice(mElement, left, right));
+			}
+
+		const T& back(void) const
+			{
+			return (*this)[size()-1];
+			}
+		uint32_t lowerBound(const T& in) const
+			{
+			if (size() == 0)
+				return 0;
+			return lowerBound(mElement, in);
+			}
+		bool contains(const T& t) const
+			{
+			uint32_t v = lowerBound(t);
+			if (v == size())
+				return false;
+			const T& t2 = (*this)[v];
+
+			return !comparison()(t2, t) && !comparison()(t, t2); //one of these is probably unneeded
+			}
+		ImmutableTreeSet intersection(const ImmutableTreeSet& other) const
+			{
+			ImmutableTreeSet tr;
+			for (uword_t k = 0; k < size();k++)
+				if (other.contains( (*this)[k] ))
+					tr = tr + (*this)[k];
+			for (uword_t k = 0; k < other.size();k++)
+				if (contains( other[k] ))
+					tr = tr + other[k];
+			return tr;
+			}
+		bool intersects(const ImmutableTreeSet& other) const
+			{
+			//start with the smaller set
+			if (size() > other.size())
+				return other.intersects(*this);
+			
+			//if any of our elements are in 'other', we intersect
+			for (uword_t k = 0; k < size();k++)
+				if (other.contains( (*this)[k] ))
+					return true;
+			
+			//we're disjoint
+			return false;
+			}
+		ImmutableTreeSet symmetricDifference(const ImmutableTreeSet& other)
+			{
+			return (*this - other) + (other - *this);
+			}
+private:
+		static Element slice(const Element& in, uint32_t left, uint32_t right)
+			{
+			if (left == 0 && right >= size(in))
+				return in;
+
+			@match Element(in)
+				-|	Empty() ->> { return in; }
+				-|	Leaf(t) ->> { return (left == 0 && right > 0 ? in : Element::Empty()); }
+				-|	Node(a,b) ->> {
+					return node(
+						left < size(a) && right > left ?
+							slice(a, left, right)
+						:	Element::Empty()
+							,
+						left < size(a) + size(b) && right > left ?
+							slice(b,
+								left > size(a) ? left - size(a) : 0,
+								right > size(a) ? right - size(a) : 0
+								)
+						:	Element::Empty()
+						);
+					};
+			}
+
+		static uint32_t lowerBound(const Element& element, const T& t)
+			{
+			@match Element(element)
+				-|	Leaf(l) ->> {
+					return (comparison()(l,t) ? 1: 0);
+					}
+				-|	Node(l,r) ->> {
+					return (comparison()(highest(l), t) ? lowerBound(r,t) + size(l) : lowerBound(l,t));
+					}
+				;
+			}
+		static const T& elt(const Element& element, uint32_t inIndex)
+			{
+			if (element.isLeaf())
+				return element.getLeaf().value();
+			if (element.isNode())
+				{
+				if (inIndex < size(element.getNode().left()))
+					return elt(element.getNode().left(), inIndex);
+					else
+					return elt(element.getNode().right(), inIndex - size(element.getNode().left()));
+				}
+			lassert(false);
+			}
+		static Element node(const Element& left, const Element& right)
+			{
+			if (size(left) == 0)
+				return right;
+			if (size(right) == 0)
+				return left;
+
+			//check if the nodes are in order already
+			if (comparison()(highest(left), lowest(right)))
+				return balancedNode(left, right);
+
+			if (comparison()(highest(right), lowest(left)))
+				return balancedNode(right, left);
+
+			//out of order, and overlapping!
+			@match Element(left)
+				-|	Leaf(x) ->> {
+					@match Element(right)
+						-|	Leaf(y) ->> {
+							//they must be the same node!
+							return right;
+							} 
+						-|	Node(y1, y2) ->> {
+							if (comparison()(x,lowest(y2)))
+								return balancedNode(node(left,y1), y2);
+								else
+								return balancedNode(y1, node(left,y2));
+							}
+						;
+					}
+				-|	Node(x1, x2) ->> {
+					@match Element(right)
+						-|	Leaf(y) ->> {
+							if (comparison()(y, lowest(x2)))
+								return balancedNode(node(x1, right), x2);
+								else
+								return balancedNode(x1, node(x2, right));
+							}
+						-|	Node(y1, y2) ->> {
+							//pick a slice point
+							uint32_t ix = lowerBound(right, lowest(x2));
+
+							return balancedNode(node(x1, slice(right, 0, ix)), node(x2, slice(right, ix, size(right))));
+							}
+						;
+					}
+				;
+			}
+		static Element balancedNode(const Element& node)
+			{
+			@match Element(node)
+				-|	Node(l,r) ->> { return (height(l) + 2 < height(r) || height(r) + 2 < height(l) ? balancedNode(l,r) : node); }
+				-|	x ->> { return x; }
+				;
+			}
+		static Element balancedNode(const Element& left, const Element& right)
+			{
+			/**************************************
+			                   (x+4)
+						(x)			    (x+3)
+								(x+2)	     (x+2)
+							  (x+1)(x+1)
+
+			can always be reshuffled to
+
+
+								(x+4)
+						(x+2)			(x+3)
+					(x)		(x+1)     (x+1) (x+2)
+
+			which makes the depth asymmetry between the left and the right go away
+
+			************************************/
+
+			if (height(left) + 2 < height(right))
+				//the right is really tall - break it down
+				{
+				@match Element(right) -| Node(right1, right2) ->> {
+					if (height(right1) < height(left) + 2) //we can just move it over
+						return balancedNode(balancedNode(left, right1), right2);
+						else
+						//we need to split 'right 1' apart
+						@match Element(right1) -| Node(right11, right12) ->> {
+							return balancedNode(balancedNode(left, right11), balancedNode(right12, right2));
+							}
+						;
+					};
+				}
+
+			if (height(right) + 2 < height(left))
+				//the right is really tall - break it down
+				{
+				@match Element(left) -| Node(left1, left2) ->> {
+					if (height(left2) < height(right) + 2) //we can just move it over
+						return balancedNode(left1, balancedNode(left2, right));
+						else
+						//we need to split 'left2' apart
+						@match Element(left2) -| Node(left21, left22) ->> {
+							return balancedNode(balancedNode(left1, left21), balancedNode(left22, right));
+							}
+						;
+					};
+				}
+
+			return nodeDirect(left, right);
+			}
+		static T lowest(Element e)
+			{
+			@match Element(e)
+				-|	Leaf(x) ->> { return x; }
+				-|	Node(_,_,_,_,low,_) ->> { return low; }
+				;
+			}
+		static T highest(Element e)
+			{
+			@match Element(e)
+				-|	Leaf(x) ->> { return x; }
+				-|	Node(_,_,_,_,_,hi) ->> { return hi; }
+				;
+			}
+		static Element nodeDirect(const Element& left, const Element& right)
+			{
+			if (size(left) == 0)
+				return right;
+			if (size(right) == 0)
+				return left;
+			return Element::Node(left, right, size(left) + size(right), (height(left) < height(right) ? height(right) : height(left)) + 1, lowest(left), highest(right));
+			}
+
+		static uint32_t size(const Element& in)
+			{
+			@match Element(in)
+					-|	Empty() ->> { return 0; }
+					-|	Leaf() ->> { return 1; }
+					-|	Node(_,_, sz) ->> { return sz; }
+					;
+			}
+		static uint32_t height(const Element& in)
+			{
+			@match Element(in)
+				-|	Empty() ->> {return 0;}
+				-|	Leaf() ->> {return 1;}
+				-|	Node(_,_,_, ht) ->> {return ht;}
+				;
+			}
+
+		ImmutableTreeSet(const Element& inElt) : mElement(inElt)
+			{
+			}
+
+		Element mElement;
+};
+
+template<class T>
+class CPPMLEquality<ImmutableTreeSet<T>, void> {
+public:
+		static char cmp(const ImmutableTreeSet<T>& lhs, const ImmutableTreeSet<T>& rhs)
+			{
+			if (lhs.size() < rhs.size())
+				return -1;
+			if (lhs.size() > rhs.size())
+				return 1;
+			for (uint32_t k = 0; k < lhs.size();k++)
+				{
+				char c = cppmlCmp(lhs[k], rhs[k]);
+				if (c != 0)
+					return c;
+				}
+			return 0;
+			}
+};
+template<class T>
+bool operator<(const ImmutableTreeSet<T>& lhs, const ImmutableTreeSet<T>& rhs)
+	{
+	return CPPMLEquality<ImmutableTreeSet<T>, void>::cmp(lhs, rhs) < 0;
+	}
+template<class T>
+bool operator==(const ImmutableTreeSet<T>& lhs, const ImmutableTreeSet<T>& rhs)
+	{
+	return CPPMLEquality<ImmutableTreeSet<T>, void>::cmp(lhs, rhs) == 0;
+	}
+template<class T>
+bool operator!=(const ImmutableTreeSet<T>& lhs, const ImmutableTreeSet<T>& rhs)
+	{
+	return CPPMLEquality<ImmutableTreeSet<T>, void>::cmp(lhs, rhs) != 0;
+	}
+
+template<class T>
+ImmutableTreeSet<T> operator-(const ImmutableTreeSet<T>& lhs, const T& rhs)
+	{
+	if (!lhs.contains(rhs))
+		return lhs;
+	uint32_t ix = lhs.lowerBound(rhs);
+	ImmutableTreeSet<T> tr = lhs.slice(0, ix) + lhs.slice(ix+1, lhs.size());
+	lassert(tr.size() == lhs.size()-1);
+	return tr;
+	}
+template<class T>
+ImmutableTreeSet<T> operator-(const ImmutableTreeSet<T>& lhs, const ImmutableTreeSet<T>& rhs)
+	{
+	ImmutableTreeSet<T> tr = lhs;
+	for (uword_t k = 0 ; k < rhs.size();k++)
+		tr = tr - rhs[k];
+	return tr;
+	}
+
+
+
+template<class T, class storage_type>
+class Serializer<ImmutableTreeSet<T>, storage_type> {
+public:
+		static void serialize(storage_type& s, const ImmutableTreeSet<T>& t)
+			{
+			s.serialize((uint32_t)t.size());
+			for (uint32_t k = 0; k < t.size();k++)
+				s.serialize(t[k]);
+			}
+};
+
+template<class T, class storage_type>
+class Deserializer<ImmutableTreeSet<T>, storage_type> {
+public:
+		static void deserialize(storage_type& s, ImmutableTreeSet<T>& t)
+			{
+			t = ImmutableTreeSet<T>();
+			uint32_t sz;
+			s.deserialize(sz);
+			while (sz > 0)
+				{
+				T t2;
+				s.deserialize(t2);
+				t = t + t2;
+				sz--;
+				}
+			}
+};
+
+
+template<class T>
+class CPPMLPrettyPrint<ImmutableTreeSet<T> > {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream& s, const ImmutableTreeSet<T>& t)
+			{
+			s << "[";
+			
+				{
+				CPPMLPrettyPrintStream s2 = s.group();
+				
+				for (int32_t k = 0; k < t.size();k++)
+					{
+					s2 << t[k];
+					if (k + 1 < t.size())
+						s2 << ", " << s2.sep;
+					}
+				}
+
+			s << "]";
+			}
+};
+
+
+template<class T>
+ImmutableTreeSet<T> operator+(TreeSet v, const T& in)
+	{
+	return ImmutableTreeSet<T>(in);
+	}
+
+inline TreeSet emptyTreeSet(void)
+	{
+	return TreeSet();
+	}
+
+template<class T>
+bool operator==(const T& in, const ImmutableTreeSet<T>& inSet)
+	{
+	return inSet.contains(in);
+	}
+template<class T>
+bool operator==(const ImmutableTreeSet<T>& inSet, const T& in)
+	{
+	return inSet.contains(in);
+	}
+template<class T>
+bool operator!=(const T& in, const ImmutableTreeSet<T>& inSet)
+	{
+	return !inSet.contains(in);
+	}
+template<class T>
+bool operator!=(const ImmutableTreeSet<T>& inSet, const T& in)
+	{
+	return !inSet.contains(in);
+	}
+
+template<class T, class T2>
+class CPPMLTransformWithIndex;
+
+template<class T, class T2>
+class CPPMLTransform;
+
+template<class T, class T2>
+class CPPMLVisit;
+
+template<class T, class T2>
+class CPPMLVisitWithIndex;
+
+template<class T>
+class CPPMLTransform<ImmutableTreeSet<T>, void> {
+public:
+		template<class F>
+		static Nullable<ImmutableTreeSet<T> > apply(const ImmutableTreeSet<T>& in, F& f)
+			{
+			for (uword_t k = 0; k < in.size();k++)
+				{
+				Nullable<T> t = transformNullable(in[k], f);
+				if (t)
+					{
+					ImmutableTreeSet<T> tr;
+					for (uword_t j = 0; j < k; j++)
+						tr = tr + in[j];
+					tr = tr + *t;
+					for (uword_t j = k + 1; j < in.size();j++)
+						{
+						t = transformNullable(in[j], f);
+						tr = tr + (t ? *t : in[j]);
+						}
+					return null () << tr;
+					}
+				}
+			return null();
+			}
+};
+template<class T>
+class CPPMLTransformWithIndex<ImmutableTreeSet<T>, void> {
+public:
+		template<class F, class indices_type>
+		static Nullable<ImmutableTreeSet<T> > apply(const ImmutableTreeSet<T>& in, F& f, const indices_type& inIndices)
+			{
+			for (uword_t k = 0; k < in.size();k++)
+				{
+				Nullable<T> t = transformNullable(in[k], f, inIndices + k);
+				if (t)
+					{
+					ImmutableTreeSet<T> tr;
+					for (uword_t j = 0; j < k; j++)
+						tr = tr + in[j];
+					tr = tr + *t;
+					for (uword_t j = k + 1; j < in.size();j++)
+						{
+						t = transformNullable(in[j], f, inIndices + j);
+						tr = tr + (t ? *t : in[j]);
+						}
+					return null () << tr;
+					}
+				}
+			return null();
+			}
+};
+
+template<class T>
+class CPPMLVisit<ImmutableTreeSet<T>, void> {
+public:
+		template<class F>
+		static void apply(const ImmutableTreeSet<T>& in, F& f)
+			{
+			for (uword_t k = 0; k < in.size();k++)
+				visit(in[k], f);
+			}
+};
+template<class T>
+class CPPMLVisitWithIndex<ImmutableTreeSet<T>, void> {
+public:
+		template<class F, class indices_type>
+		static void apply(const ImmutableTreeSet<T>& in, F& f, const indices_type& inIndices)
+			{
+			for (uword_t k = 0; k < in.size();k++)
+				visit(in[k], f, inIndices + k);
+			}
+};
+
+
+template<class T>
+class Serializer<ImmutableTreeSet<T>, HashingStreamSerializer> {
+public:
+		static inline void serialize(HashingStreamSerializer& s, const ImmutableTreeSet<T>& in)
+			{
+			s.serialize(in.hash());
+			}
+};
+
+
+template<class T>
+class Serializer<ImmutableTreeSetElement<T>, HashingStreamSerializer> {
+public:
+		static inline void serialize(HashingStreamSerializer& s, const ImmutableTreeSetElement<T>& in)
+			{
+			s.serialize(in.hash());
+			}
+};
+
+
+template<class T>
+ImmutableTreeSet<T> treeSet(const ImmutableTreeVector<T>& in)
+	{
+	return ImmutableTreeSet<T>(in.begin(), in.end());
+	}
+
+template<class T>
+ImmutableTreeVector<T> treeVector(const ImmutableTreeSet<T>& in)
+	{
+	return ImmutableTreeVector<T>(in.begin(), in.end());
+	}
+

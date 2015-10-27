@@ -1,0 +1,1593 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "StringAxioms.hppml"
+#include "String.GetItem.hppml"
+
+#include "Axioms.hppml"
+#include "Axiom.hppml"
+#include "AxiomGroup.hppml"
+#include "AxiomMetadataUtil.hppml"
+#include <boost/lexical_cast.hpp>
+#include "../Native/NativeCode.hppml"
+#include "../Native/TypedNativeLibraryFunction.hpp"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include "../TypedFora/ABI/ForaValueArray.hppml"
+#include "../TypedFora/ABI/VectorRecordCodegen.hppml"
+#include "../TypedFora/ABI/StringCodegen.hppml"
+#include "../Runtime.hppml"
+#include "../VectorDataManager/VectorDataManager.hppml"
+#include "../TypedFora/ABI/VectorRecord.hpp"
+#include "../Primitives/String.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../../core/SymbolExport.hpp"
+#include "../../core/SimpleParse/SimpleParse.hppml"
+#include "../../core/math/Hash.hpp"
+#include <openssl/sha.h>
+#include <boost/format.hpp>
+#include <sstream>
+#include "../Core/ImplValContainerUtilities.hppml"
+#include "../../core/threading/ThreadSafeMap.hpp"
+#include "LibcallAxiomGroup.hppml"
+
+#include "../../core/Platform.hpp"
+// HACK On a Mac, somewhere, 'tolower' is being overridden which breaks compilation. This fixes that
+// compiler error. william 2013-07-07
+#ifdef BSA_PLATFORM_APPLE
+#undef tolower
+#undef toupper
+#endif
+
+#include <boost/algorithm/string.hpp>
+#include <boost/regex.hpp>
+#include "RegexHelpers.hpp"
+#include "../Core/MemoryPool.hpp"
+
+using namespace Fora;
+
+using TypedFora::Abi::VectorRecord;
+
+extern "C" {
+
+void FORA_clib_incrementStringRefcount(const string_type& in);
+
+}
+
+namespace {
+
+std::string getFormattedErrorString(const boost::io::format_error& err)
+	{
+	try {
+		throw err;
+		}
+	//for whatever reason, at the time of writing,
+	//e.what() for a boost::io::bad_format_string
+	//says "boost::bad_format_string: format-string is ill-formed"
+	//but none of the other errors mention boost.
+	catch (boost::io::bad_format_string&)
+		{
+		return "format-string is ill-formed";
+		}		
+	catch (boost::io::format_error& e)
+		{
+		return e.what();
+		}
+	}
+
+void transformSliceIndices(int64_t* low, int64_t* high, int64_t strSize)
+	{
+	if (*low < 0)
+		*low = *low + strSize;
+	if (*high < 0)
+		*high = *high + strSize;
+	if (*low < 0)
+		*low = 0;
+	if (*high < 0)
+		*high = 0;
+	if (*low >= strSize)
+		*low = strSize;
+	if (*high >= strSize)
+		*high = strSize;
+	if (*high < *low)
+		*high = *low;
+	}
+
+}
+
+NativeExpression StringCategory::refcountIncrementer(const NativeExpression& e, bool tagged)
+	{
+	NativeExpressionBuilder builder;
+
+	NativeExpression stringPtr = 
+		builder.getPointerExprToCopyOnStack(
+			e
+		);
+
+	NativeExpression tr = 
+		builder(
+			makeTypedNativeLibraryFunction(
+				&FORA_clib_incrementStringRefcount
+				)(stringPtr)
+			.getExpression()
+			);
+	
+	if (tagged)
+		tr = tr.taggedWith(
+			NativeExpressionTag::Refcount(
+				e,
+				1,
+				refcountDecrementer(e, false)
+				)
+			);
+	
+	return tr;
+	}
+
+BSA_DLLEXPORT
+void FORA_clib_destroyString(string_type str)
+	{
+	str.~string_type();
+	}
+
+NativeExpression StringCategory::refcountDecrementer(const NativeExpression& e, bool tagged)
+	{
+	NativeExpression tr = 
+		makeTypedNativeLibraryFunction(
+			&FORA_clib_destroyString
+			)(e)
+		.getExpression()
+		;
+
+	if (tagged)
+		tr = tr.taggedWith(
+			NativeExpressionTag::Refcount(
+				e,
+				-1,
+				refcountIncrementer(e, false)
+				)
+			);
+	return tr;
+	}
+
+
+String joinStrings(	String joinWith,
+					Nullable<ImmutableTreeVector<Nullable<Symbol> > > symbols,
+					string_type* stringPtrs,
+					long argCount
+					)
+	{
+	MemoryPool* pool = Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool();
+
+	if (argCount == 0)
+		{
+		return String();
+		}
+	if (argCount == 1)
+		{
+		string_type s = stringPtrs[0];
+		if (symbols && (*symbols)[0])
+			s = string_type(
+				(*symbols)[0]->toString() + ": " + s.stdString(),
+				pool
+				);
+		
+		return s;
+		}
+	
+	uint64_t totalBytes = (argCount - 1) * joinWith.size();
+	for (long k = 0; k < argCount; k++)
+		totalBytes += stringPtrs[k].size();
+	
+	if (symbols)
+		{
+		for (long k = 0; k < argCount; k++)
+			if ((*symbols)[k])
+				totalBytes += (*symbols)[k]->toString().size() + 2;
+		}
+	
+	string_type	tr = string_type::empty(totalBytes, pool);
+	
+	char* targetData = (char*)tr.c_str();
+	
+	for (long k = 0; k < argCount; k++)
+		{
+		if (symbols && (*symbols)[k])
+			{
+			std::string symStr = (*symbols)[k]->toString();
+			
+			memcpy(targetData, symStr.c_str(), symStr.size());
+			targetData += symStr.size();
+			
+			targetData[0] = ':';
+			targetData[1] = ' ';
+			targetData += 2;
+			}
+		
+		memcpy(targetData, stringPtrs[k].c_str(), stringPtrs[k].size());
+		targetData += stringPtrs[k].size();
+		
+		if (k + 1 < argCount)
+			{
+			memcpy(targetData, joinWith.c_str(), joinWith.size());
+			targetData += joinWith.size();
+			}
+		}
+	
+	return tr;
+	}
+
+extern "C" {
+
+BSA_DLLEXPORT
+ReturnValue<String, String> FORA_clib_sprintfInt64(const String& fmtSpec, int64_t i)
+	{
+	MemoryPool* pool = Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool();
+
+	try{
+		std::ostringstream s;
+		s << boost::format(fmtSpec.c_str()) % i;
+
+		return slot0(String(s.str(), pool));
+		}
+	catch (boost::io::format_error& err)
+		{
+		return slot1(String(getFormattedErrorString(err), pool));
+		}
+}
+
+BSA_DLLEXPORT
+ReturnValue<String, String> FORA_clib_sprintfUInt64(const String& fmtSpec, uint64_t u)
+	{
+	MemoryPool* pool = Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool();
+
+	try {
+		std::ostringstream s;
+		s << boost::format(fmtSpec.c_str()) % u;
+		
+		return slot0(String(s.str(), pool));
+		}
+	catch (boost::io::format_error& err)
+		{
+		return slot1(String(getFormattedErrorString(err), pool));
+		}
+	}
+
+BSA_DLLEXPORT
+ReturnValue<String, String> FORA_clib_sprintfDouble(const String& fmtSpec, double d)
+	{
+	MemoryPool* pool = Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool();
+
+	try {
+		std::ostringstream s;
+		s << boost::format(fmtSpec.c_str()) % d;
+
+		return slot0(String(s.str(), pool));
+		}
+	catch (boost::io::format_error& err)
+		{
+		return slot1(String(getFormattedErrorString(err), pool));
+		}
+	}
+
+BSA_DLLEXPORT
+ReturnValue<String, String> FORA_clib_sprintfChar(const String& fmtSpec, char c)
+	{
+	MemoryPool* pool = Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool();
+
+	try {
+		std::ostringstream s;
+		s << boost::format(fmtSpec.c_str()) % c;
+
+		return slot0(String(s.str(), pool));
+		}
+	catch (boost::io::format_error& err)
+		{
+		return slot1(String(getFormattedErrorString(err), pool));
+		}
+	}
+
+BSA_DLLEXPORT
+ReturnValue<String, String> FORA_clib_sprintfString(
+		const String& fmtSpec, 
+		const String& str
+		)
+	{
+	MemoryPool* pool = 
+		Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool();
+
+	try {
+		std::ostringstream s;
+		s << boost::format(fmtSpec.c_str()) % str.c_str();
+
+		return slot0(String(s.str(), pool));
+		}
+	catch (boost::io::format_error& err)
+		{
+		return slot1(String(getFormattedErrorString(err), pool));
+		}
+	}
+
+BSA_DLLEXPORT
+ReturnValue<String, String> FORA_clib_stringRegexReplace(
+		const String& toMatch, 
+		const String& pattern, 
+		const String& replacement
+		)
+	{
+	MemoryPool* pool = 
+		Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool();
+
+	try {
+		boost::regex compiledRegex = getRegexFromCache(pattern);
+
+		return slot0(
+			String(
+				boost::regex_replace(
+					toMatch.stdString(),
+					compiledRegex,
+					replacement.stdString()
+					),
+				pool
+				)
+			);
+		}
+	catch(std::logic_error& err)
+		{
+		return slot1(String(err.what(), pool));
+		}
+
+	}
+
+BSA_DLLEXPORT
+ReturnValue<bool, String> FORA_clib_stringMatchesRegex(
+		const String& toMatch, const String& pattern
+		)
+	{
+	MemoryPool* pool = Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool();
+
+	try {
+		boost::regex compiledRegex = getRegexFromCache(pattern);
+
+		return slot0(
+			boost::regex_match(
+				toMatch.c_str(), 
+				toMatch.c_str() + toMatch.size(),
+				compiledRegex
+				)
+			);
+		}
+	catch(std::logic_error& err)
+		{
+		return slot1(String(err.what(), pool));
+		}
+	}
+
+BSA_DLLEXPORT
+ReturnValue<VectorRecord, String> FORA_clib_stringSplitOnRegex(
+		const String& inString,
+		const String& pattern
+		)
+	{
+	MemoryPool* pool = Fora::Interpreter::ExecutionContext
+		::currentExecutionContext()->getMemoryPool();
+
+	try {
+		boost::regex compiledRegex = getRegexFromCache(pattern);
+		const char* cString = inString.c_str();
+
+        // -1 means iterate over the *non* matches
+		boost::cregex_token_iterator it(
+			cString, cString + inString.size(), compiledRegex, -1
+			);
+		boost::cregex_token_iterator end;
+
+		static JOV stringJov = JOV::OfType(Type::String());
+		TypedFora::Abi::ForaValueArray* array = 
+			TypedFora::Abi::ForaValueArray::Empty(pool);
+
+		for ( ; it != end; ++it) 
+			{
+			auto tokenSize = it->str().size();
+			string_type s = string_type::empty(tokenSize, pool);
+			memcpy((void*)s.c_str(), (void*)it->str().c_str(), tokenSize);
+
+			array->append(stringJov, (uint8_t*)&s, 1, 0);
+			}
+
+		return slot0(
+			VectorRecord::createWithinExecutionContext(array)
+			);
+		}
+	catch(std::logic_error& err)
+		{
+		return slot1(String(err.what(), pool));
+		}
+	}
+
+namespace {
+
+ImplValContainer matchResultExtractImplval(String* matchResults, int index)
+	{
+	static Type stringType = Type::String();
+
+	return ImplValContainer(stringType, matchResults + index);
+	}
+
+Nullable<Symbol> matchResultsUnnamed(int index)
+	{
+	return null();
+	}
+
+}
+
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer, Nothing, String>
+FORA_clib_stringExtractRegexMatches(
+			const String& toMatch, 
+			const String& pattern
+			)
+	{
+	MemoryPool* pool = Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool();
+
+	try {
+		boost::regex compiledRegex = getRegexFromCache(pattern);
+
+		boost::match_results<const char*> matchResults;
+
+		if (!boost::regex_match(
+					toMatch.c_str(), 
+					toMatch.c_str() + toMatch.size(),
+					matchResults,
+					compiledRegex
+					)
+				)
+			{
+			return slot1(Nothing());
+			}
+		
+		using namespace boost;
+
+		std::vector<String> strings;
+		for (long k = 0; k < matchResults.size() - 1; k++)
+			strings.push_back(String(matchResults[k + 1].str(), pool));
+
+		return slot0(
+			ImplValContainerUtilities::createTuple(
+				matchResults.size() - 1,
+				boost::bind(matchResultExtractImplval, &strings[0], _1),
+				matchResultsUnnamed
+				)
+			);
+		}
+	catch(std::logic_error& err)
+		{
+		return slot2(String(err.what(), pool));
+		}
+	}
+
+
+
+BSA_DLLEXPORT
+ReturnValue<String> FORA_clib_addStrings(const String& left, const String& right)
+	{
+	if (left.size() == 0)
+		return slot0(right);
+	
+	if (right.size() == 0)
+		return slot0(left);
+	
+	lassert(right.size() > 0 && left.size() > 0);
+
+	String	tr = String::empty(
+		left.size() + right.size(),
+		Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool(),
+		false
+		);
+
+	// If we return an empty string here, the allocation must have failed!
+	if (tr.size() == 0)
+		return slot0(tr);
+	
+	if (left.size())
+		memcpy((void*)tr.c_str(), left.c_str(), left.size());
+	
+	if (right.size())
+		memcpy((void*)(tr.c_str() + left.size()), right.c_str(), right.size());
+	
+	return slot0(tr);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<VectorRecord> FORA_clib_stringToVector(const String& inString)
+	{
+	MemoryPool* pool = Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool();
+
+	if (!pool->permitAllocation(inString.size()))
+		return slot0(VectorRecord());
+
+	if (!inString.size())
+		return slot0(VectorRecord());
+
+	TypedFora::Abi::ForaValueArray* array = 
+		TypedFora::Abi::ForaValueArray::Empty(pool);
+
+	array->append(
+		JOV::OfType(Type::Integer(8,false)), 
+		(uint8_t*)inString.c_str(), 
+		inString.size(), 
+		1
+		);
+
+	return slot0(
+		VectorRecord::createWithinExecutionContext(array)
+		);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<VectorRecord, ImplValContainer> FORA_clib_stringSplitOnString(
+					const String& inString,
+					const String& inSearch,
+					int64_t maxCount
+					)
+	{
+	if (inSearch.size() == 0)
+		{
+		return slot1(
+			CSTValue("ValueError: empty separator")
+			);
+		}
+	
+	uword_t reserved = 5;
+	
+	if (maxCount > 0)
+		reserved = maxCount + 1;
+	
+	MemoryPool* pool = Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool();
+
+	static JOV stringJov = JOV::OfType(Type::String());
+
+	TypedFora::Abi::ForaValueArray* array = 
+		TypedFora::Abi::ForaValueArray::Empty(pool);
+
+	uword_t used = 0;
+	uword_t orig = 0;
+	const char* data = inString.c_str();
+	
+	const char* searchdata = inSearch.c_str();
+	uword_t searchsize = inSearch.size();
+	for (long k = 0, k_max = inString.size(); k <= k_max; k++)
+		{
+		if (k == k_max || (maxCount < 0 || used < maxCount)
+								&& k + searchsize <= k_max
+								&& strncmp(searchdata, data + k, searchsize) == 0
+					)
+			{
+			string_type s = string_type::empty(k - orig, pool);
+			memcpy((void*)s.c_str(), (void*)(data + orig), k - orig);
+			orig = k + searchsize;
+		
+			k = k + (searchsize - 1);
+			
+			array->append(stringJov, (uint8_t*)&s, 1, 0);
+			used++;
+			}
+			
+		}
+			
+	return slot0(
+		VectorRecord::createWithinExecutionContext(array)
+		);
+	
+	}
+
+// Splits a string like split defined above, but returns a tuple instead of a Vector.
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer, ImplValContainer> FORA_clib_stringSplitToTuple(
+			const String& inString,
+			const String& inSearch,
+			int64_t maxCount
+			)
+	{
+	if (inSearch.size() == 0)
+		{
+		return slot1(
+			CSTValue("ValueError: empty separator")
+			);
+		}
+	
+	const char* data = inString.c_str();
+	const char* searchdata = inSearch.c_str();
+	
+	uword_t orig = 0;
+	uword_t searchsize = inSearch.size();
+	uword_t used = 0;
+	
+	MemoryPool* currentPool = 
+		Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool();
+
+	ImmutableTreeVector<ImplValContainer> tupleElts;
+	
+	for (long k = 0, k_max = inString.size(); k <= k_max; k++)
+		{
+		if (k == k_max || (maxCount < 0 || used < maxCount) &&
+							(k + searchsize <= k_max) &&
+							strncmp(searchdata, data + k, searchsize) == 0
+					)
+			{
+			// Allocate a string.
+			string_type s = string_type::empty( k - orig, currentPool );
+			
+			memcpy((void*)s.c_str(), (void*)(data + orig), k - orig);
+			orig = k + searchsize;
+			
+			// Advance the search index...
+			k = k + (searchsize - 1);
+			
+			tupleElts = tupleElts + ImplValContainer(CSTValue(s));
+			used++;
+			}
+		}
+	return slot0(ImplValContainerUtilities::createTuple(tupleElts));
+	}
+
+BSA_DLLEXPORT
+ReturnValue<String, String>
+FORA_clib_hexDigest(const ImplValContainer& hashTuple)
+	{
+	Type expectedType = Type::Tuple(
+			(emptyTreeVec() + Type::Integer(32, false)) * 5,
+			(emptyTreeVec() + Nullable<Symbol>()) * 5
+		);
+
+	if (hashTuple.type() != expectedType)
+		return slot1(
+			String(
+				"can only ask for the hexDigest of a"
+				"(UInt32, UInt32, UInt32, UInt32, UInt32) tuple",
+				Fora::Interpreter::ExecutionContext::currentExecutionContext()
+					->getMemoryPool()
+				)
+			);
+						
+	return slot0(
+		String(
+			bytesToHexString(
+				(unsigned char*)hashTuple.data(), 20
+				),
+			Fora::Interpreter::ExecutionContext::currentExecutionContext()
+				->getMemoryPool()			
+			)
+		);
+	}
+
+BSA_DLLEXPORT
+Hash FORA_clib_stringSHA1(const String& toHash) 
+	{
+	Hash tr;
+
+	::SHA1((const unsigned char*)toHash.c_str(), toHash.size(), (unsigned char*)&tr);
+
+	return tr;
+	}
+
+BSA_DLLEXPORT
+ReturnValue<String> FORA_clib_stringSlice(const String& toSlice, int64_t ix, int64_t ix2)
+	{
+	transformSliceIndices(&ix, &ix2, toSlice.size());
+	
+	return slot0(
+		String(
+			toSlice.c_str() + ix, 
+			ix2 - ix,
+			Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+			)
+		);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<String> FORA_clib_joinStringsInTuplearg(const String& joinWith, const ImplValContainer& strings)
+	{
+	lassert_dump(strings.type().isTuple(),
+				 prettyPrintString(strings.type()) << " is not a tuple."
+				 );
+	
+	uint64_t argCount = strings.type().getTuple().types().size();
+	
+	string_type* stringPtrs = &strings.cast<String>();
+	
+	return slot0(
+		joinStrings(joinWith, null() << strings.type().getTuple().names(), stringPtrs, argCount)
+		);
+	}
+
+namespace {
+	
+	bool isNotWhitespace(char c) {
+		return c != ' ' and c != '\t' 
+			and c != '\n' and c != '\r';
+		}
+
+	int64_t leastNonWhitespaceIx(const char* str, size_t sz)
+		{
+		int64_t i = 0;
+		for ( ; i < sz; ++i)
+			if (isNotWhitespace(str[i]))
+				return i;
+
+		return -1;
+		}
+
+	int64_t greatestNonWhitespaceIx(const char* str, size_t sz)
+		{
+		int64_t i = (int64_t)sz - 1;
+		for ( ; i >= 0; --i)
+			if (isNotWhitespace(str[i]))
+				return i;
+				
+		return -1;
+		}
+
+	}
+
+BSA_DLLEXPORT
+ReturnValue<String> FORA_clib_stripStringWhitespace(const String& toStrip)
+	{
+	if (toStrip.size() == 0)
+		return slot0(String());
+		
+	int64_t startIndex = leastNonWhitespaceIx(toStrip.c_str(), toStrip.size());
+	
+	if (startIndex == -1)
+		return slot0(String());
+
+	int64_t endIndex = greatestNonWhitespaceIx(toStrip.c_str(), toStrip.size());
+	
+	return slot0(
+		String(
+			toStrip.c_str() + startIndex, 
+			endIndex - startIndex + 1,
+			Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+			)
+		);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<String> FORA_clib_stripStringWhitespaceRight(const String& toStrip)
+	{
+	if (toStrip.size() == 0)
+		return slot0(String());
+	
+	int64_t endIndex = greatestNonWhitespaceIx(toStrip.c_str(), toStrip.size());
+
+	if (endIndex == -1)
+		{
+		// Only contained whitespace.
+		return slot0(String());
+		}
+	else
+		{
+		return slot0(
+			String(
+				toStrip.c_str(), 
+				endIndex + 1,
+				Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+				)
+			);
+		}
+	}
+
+BSA_DLLEXPORT
+ReturnValue<String> FORA_clib_stripStringWhitespaceLeft(const String& toStrip)
+	{
+	if (toStrip.size() == 0)
+		return slot0(String());
+	
+	int64_t startIndex = leastNonWhitespaceIx(toStrip.c_str(), toStrip.size());
+
+	if (startIndex == -1)
+		{
+		// Only contained whitespace.
+		return slot0(String());
+		}
+	else
+		{
+		return slot0(
+			String(
+				toStrip.c_str() + startIndex, 
+				toStrip.size() - startIndex,
+				Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+				)
+			);
+		}
+	}
+
+BSA_DLLEXPORT
+ReturnValue<String> FORA_clib_findAndReplaceString(
+		const String& valueStr, const String& searchStr, const String& replaceStr
+		)
+	{
+	std::string value = valueStr.stdString();
+	const char* search = searchStr.c_str();
+	const char* replace = replaceStr.c_str();
+	size_t searchSize = searchStr.size();
+	size_t replaceSize = replaceStr.size();
+
+	std::string::size_type	next;
+	
+	// Continue to search as long as we have a match.
+	// next == string::npos is no match.
+	for(next = value.find(search); next != std::string::npos; next = value.find(search, next))
+		{
+		value.replace(next, searchSize, replace);
+		// Move to the end of the replacement to start the search again.
+		next += replaceSize;
+		}
+	
+	return slot0(
+		String(
+			value,
+			Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+			)
+		);
+	}
+
+BSA_DLLEXPORT
+uint64_t FORA_clib_countSubstringOccurrences(
+		const String& valueStr, const String& searchStr
+		)
+	{
+	const char* value = valueStr.c_str();
+	const char* search = searchStr.c_str();
+
+	size_t searchSize = searchStr.size();
+
+	if (searchSize == 0) 
+		return valueStr.size() + 1;
+
+	uint64_t count = 0;
+	
+	const char* next = NULL;
+	
+	for (next = strstr(value, search); next != NULL; next = strstr(value, search))
+		{
+		count++;
+		// by the setup above, this can never overrun the end of valueStr.c_str()
+		value = next + searchSize;
+		}
+	
+	return count;
+	}
+
+BSA_DLLEXPORT
+bool FORA_clib_endsWith(
+		const String& toSearch,
+		const String& suffixToSearchFor
+		)
+	{
+	size_t suffixSize = suffixToSearchFor.size();
+	size_t toSearchSize = toSearch.size();
+
+	return toSearchSize < suffixSize ? false : 
+		strncmp(
+			suffixToSearchFor.c_str(), 
+			toSearch.c_str() + toSearchSize - suffixSize, 
+			suffixSize
+			) == 0
+		;
+	}
+
+BSA_DLLEXPORT
+bool FORA_clib_startsWith(
+		const String& toSearch,
+		const String& prefixToSearchFor
+		)
+	{
+	size_t prefixSize = prefixToSearchFor.size();
+	size_t toSearchSize = toSearch.size();
+
+	return toSearchSize < prefixSize ? false : 
+		strncmp(prefixToSearchFor.c_str(), toSearch.c_str(), prefixSize) == 0
+		;
+	}
+
+BSA_DLLEXPORT
+int64_t FORA_clib_findSubstring_sliced(
+			const String& haystack, 
+			const String& needle,
+			int64_t low,
+			int64_t high
+			)
+	{
+	transformSliceIndices(&low, &high, haystack.size());
+	
+	const char* haystack_c_str = haystack.c_str();
+	const char* start = haystack_c_str + low;
+	const char* res = strstr(start, needle.c_str());
+
+	if (!res)
+		return -1;
+
+	int64_t index = res - haystack_c_str;
+	
+	if (index + needle.size() > high)
+		return -1;
+
+	return index;
+	}
+
+BSA_DLLEXPORT
+int64_t FORA_clib_findSubstringRight_sliced(
+			const String& haystack, 
+			const String& needle,
+			int64_t low,
+			int64_t high
+			)
+	{
+	transformSliceIndices(&low, &high, haystack.size());
+	
+	// we could avoid the unnecessary call to stdString here, but there's no 
+	// strstr from the right, and it's not worth implementing ourselves.
+	size_t res = haystack.stdString().rfind(needle.c_str(), high, needle.size());
+
+	if (res == string::npos or res < low or res + needle.size() > high)
+		return -1;
+
+	return res;
+	}
+
+BSA_DLLEXPORT
+bool FORA_clib_StringInString(const String& needle, const String& haystack)
+	{
+	return FORA_clib_findSubstring_sliced(haystack, needle, 0, haystack.size()) != -1;
+	}
+
+BSA_DLLEXPORT
+ReturnValue<String> FORA_clib_reverseString(const String& toReverse)
+	{
+	std::string strToReverse(toReverse.stdString());
+	std::reverse(strToReverse.begin(), strToReverse.end());
+
+	return slot0(
+		String(
+			strToReverse,
+			Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+			)
+		);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<String> FORA_clib_convertToUpperCase(const String& toUpper)
+	{
+	std::string toUpperStd = toUpper.stdString();
+	std::transform(toUpperStd.begin(), toUpperStd.end(), toUpperStd.begin(), ::toupper);
+
+	return slot0(
+		String(
+			toUpperStd,
+			Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+			)
+		);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<String> FORA_clib_convertToLowerCase(const String& toLower)
+	{
+	std::string toLowerStd = toLower.stdString();
+	std::transform(toLowerStd.begin(), toLowerStd.end(), toLowerStd.begin(), ::tolower);
+
+	return slot0(
+		String(
+			toLowerStd, 
+			Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+			)
+		);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<String> FORA_clib_capitalizeString(const String& toCapitalize)
+	{
+	if (toCapitalize.size() == 0)
+		return slot0(String());
+
+	std::string lowerCase = toCapitalize.stdString();
+	std::transform(lowerCase.begin(), lowerCase.end(), lowerCase.begin(), ::tolower);
+
+	lowerCase[0] = std::toupper(lowerCase[0]);
+
+	return slot0(
+		String(
+			lowerCase,
+			Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+			)
+		);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<String> FORA_clib_swapStringCase(const String& toSwap)
+	{
+	std::string strToSwap(toSwap.stdString());
+	
+	for(auto it = strToSwap.begin(); it != strToSwap.end(); ++it )
+		{
+		if (std::islower(*it))
+			{
+			*it = std::toupper(*it);
+			}
+		else if (std::isupper(*it))
+			{
+			*it = std::tolower(*it);
+			}
+		else
+			{
+			// Don't do anything.
+			}
+		}
+	
+	return slot0(
+		String(
+			strToSwap,
+			Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+			)
+		);
+	}
+
+BSA_DLLEXPORT
+int32_t  FORA_clib_stringLexicalCompare(const String& a, const String& b)
+	{
+	return std::strcmp(a.c_str(), b.c_str());
+	}
+
+BSA_DLLEXPORT
+ReturnValue<String> FORA_clib_stringEscaped(const String& toEscape)
+	{
+	std::string tr = escapeStringConstant(toEscape.stdString(), true);
+
+	return slot0(
+		String(
+			tr,
+			Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+			)
+		);
+	}
+
+}
+
+class StringAxioms {
+public:
+		
+		StringAxioms()
+			{
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::OfType(Type::String()) +
+						"Member" +
+						"escaped" +
+						JOVTE::NoExtras(),
+					ReturnSlots() + JOV::OfType(Type::String()),
+					&FORA_clib_stringEscaped,
+					ImmutableTreeVector<uword_t>() + 0
+					)
+				;
+
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						"StringLexicalCompare" +
+						"Call" +
+						JOV::OfType(Type::String()) +
+						JOV::OfType(Type::String()) +
+						JOVTE::NoExtras(),
+					ReturnSlots() + JOV::OfType(Type::Integer(32, true)),
+					&FORA_clib_stringLexicalCompare,
+					ImmutableTreeVector<uword_t>() + 2 + 3
+					)
+				;
+			
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						"SprintfInt64" +
+						"Call" +
+						JOV::OfType(Type::String()) +
+						JOV::OfType(Type::Integer(64, true)) +
+						JOVTE::NoExtras(),
+					ReturnSlots() + 
+						ReturnSlot::Normal(JOV::OfType(Type::String())) + 
+						ReturnSlot::Exception(JOV::OfType(Type::String()))
+						,
+					&FORA_clib_sprintfInt64,
+					ImmutableTreeVector<uword_t>() + 2 + 3
+					);
+			
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						"SprintfUInt64" +
+						"Call" +
+						JOV::OfType(Type::String()) +
+						JOV::OfType(Type::Integer(64, false)) +
+						JOVTE::NoExtras(),
+					ReturnSlots() +
+						ReturnSlot::Normal(JOV::OfType(Type::String())) +
+						ReturnSlot::Exception(JOV::OfType(Type::String()))
+					,
+					&FORA_clib_sprintfUInt64,
+					ImmutableTreeVector<uword_t>() + 2 + 3
+					)
+				;
+			
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						"SprintfDouble" +
+						"Call" +
+						JOV::OfType(Type::String()) +
+						JOV::OfType(Type::Float(64)) +
+						JOVTE::NoExtras(),
+					ReturnSlots() + 
+						ReturnSlot::Normal(JOV::OfType(Type::String())) +
+						ReturnSlot::Exception(JOV::OfType(Type::String()))
+					,
+					&FORA_clib_sprintfDouble,
+					ImmutableTreeVector<uword_t>() + 2 + 3
+					)
+				;
+			
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						"SprintfChar" +
+						"Call" +
+						JOV::OfType(Type::String()) +
+						JOV::OfType(Type::Integer(8, false)) +
+						JOVTE::NoExtras(),
+					ReturnSlots() +
+						ReturnSlot::Normal(JOV::OfType(Type::String())) +
+						ReturnSlot::Exception(JOV::OfType(Type::String()))
+					,
+					&FORA_clib_sprintfChar,
+					ImmutableTreeVector<uword_t>() + 2 + 3
+					)
+				;
+			
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						"SprintfString" +
+						"Call" +
+						JOV::OfType(Type::String()) +
+						JOV::OfType(Type::String()) +
+						JOVTE::NoExtras(),
+					ReturnSlots() + 
+						ReturnSlot::Normal(JOV::OfType(Type::String())) +
+						ReturnSlot::Exception(JOV::OfType(Type::String()))
+					,
+					&FORA_clib_sprintfString,
+					ImmutableTreeVector<uword_t>() + 2 + 3
+					)
+				;
+
+				{
+				NativeAxiomVars vars(
+					JOVT() + "size" + "Call" + JOV::OfType(Type::String())
+					);
+
+				AxiomGroups("String") +=
+					AxiomGroup::simple(
+						vars,
+						JOV::OfType(Type::Integer(64, true)),
+						static_cast<TypedNativeExpression<int64_t>>(
+							TypedNativeExpression<String>(vars[2]).size()
+							).getExpression(),
+						false
+						);
+				}
+
+                {
+                auto axiomPtr = 
+                    LibcallAxiomGroup::create(
+                        JOVT() +
+						JOV::OfType(Type::String()) +
+    						"Member" +
+	    					"dataAsVector" +
+						JOVTE::NoExtras(),
+                        ReturnSlots() + jovVector(JOV::OfType(Type::Integer(8,false))),
+                        &FORA_clib_stringToVector,
+                        ImmutableTreeVector<uword_t>() + 0
+                        )
+                    ;
+
+                axiomPtr->setMetadata(
+                    AxiomMetadataUtil::createMarkdownAlternative(
+                        "#### Usage\n\n"
+                        "    string.dataAsVector\n\n"
+                        "#### Description\n\n"
+                        "Return the bytes of a string in a Vector of UInt8\n\n"
+                        "#### Examples\n\n"
+                        "\"asdf\".dataAsVector\n\n"
+                        )
+                    );
+              
+                AxiomGroups("String") += axiomPtr;
+                }
+			
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::OfType(Type::String()) + 
+						"MatchesRegex" + 
+						JOV::OfType(Type::String()),
+					ReturnSlots() + 
+						ReturnSlot::Normal(JOV::OfType(Type::Bool())) +
+						ReturnSlot::Exception(JOV::OfType(Type::String()))
+					,
+					&FORA_clib_stringMatchesRegex,
+					ImmutableTreeVector<uword_t>() + 0 + 2
+					)
+				;
+
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::OfType(Type::String()) + 
+						"clib_regexReplace" + 
+						JOV::OfType(Type::String()) +
+						JOV::OfType(Type::String()),
+					ReturnSlots() + 
+						ReturnSlot::Normal(JOV::OfType(Type::String())) +
+						ReturnSlot::Exception(JOV::OfType(Type::String()))
+					,
+					&FORA_clib_stringRegexReplace,
+					ImmutableTreeVector<uword_t>() + 0 + 2 + 3
+					)
+				;
+			
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::OfType(Type::String()) + 
+						"ExtractRegexMatches" + 
+						OfType(Type::String()),
+					ReturnSlots() +
+						ReturnSlot::Normal(
+							JOV::Tuple(JOVT() + JOVTE::Extras(JOV::OfType(Type::String())))
+							) +
+						ReturnSlot::Normal(
+							JOV::OfType(Type::Nothing())
+							) +
+						ReturnSlot::Exception(
+							JOV::OfType(Type::String())
+							),
+					&FORA_clib_stringExtractRegexMatches,
+					ImmutableTreeVector<uword_t>() + 0 + 2
+					);
+			
+			AxiomGroups("String") += new StringGetItemAxiom();
+			
+			AxiomGroups("String") += 
+				LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::OfType(Type::String()) +
+						"split" +
+						JOV::OfType(Type::String()) +
+						JOV::OfType(Type::Integer(64, true)),
+					ReturnSlots() +
+						ReturnSlot::Normal(jovVector(JOV::OfType(Type::String()))) +
+						ReturnSlot::Exception(JOV()),
+					&FORA_clib_stringSplitOnString,
+					ImmutableTreeVector<uword_t>() + 0 + 2 + 3
+					)
+				;
+
+			AxiomGroups("String") += 
+				LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::OfType(Type::String()) +
+						"splitRegex" +
+						JOV::OfType(Type::String()),
+					ReturnSlots() +
+						ReturnSlot::Normal(jovVector(JOV::OfType(Type::String()))) +
+					ReturnSlot::Exception(JOV::OfType(Type::String())),
+					&FORA_clib_stringSplitOnRegex,
+					ImmutableTreeVector<uword_t>() + 0 + 2
+					)
+				;
+			
+			AxiomGroups("String") += 
+				LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::OfType(Type::String()) +
+						"splitToTuple" +
+						JOV::OfType(Type::String()) +
+						JOV::OfType(Type::Integer(64, true)),
+					ReturnSlots() + 
+						ReturnSlot::Normal(
+							JOV::Tuple(JOVT() + JOVTE::Extras(JOV::OfType(Type::String())))
+							) +
+						ReturnSlot::Exception(JOV()),
+					&FORA_clib_stringSplitToTuple,
+					ImmutableTreeVector<uword_t>() + 0 + 2 + 3
+					)
+				;
+			
+			AxiomGroups("string") +=
+				LibcallAxiomGroup::create(
+					JOVT() + 
+					"hexDigest" +
+					"Call" +
+					JOV::Tuple(
+						JOVT() + 
+						JOVTE::Extras(JOV())
+						//can't do the following! upsets rebuildAxiomSignatures!
+						//JOVTE::Extras(JOV::OfType(Type::Integer(32, false)))
+						),
+					ReturnSlots() +
+					ReturnSlot::Normal(
+						JOV::OfType(Type::String())
+						) +
+					ReturnSlot::Exception(
+						JOV::OfType(Type::String())
+						),
+					&FORA_clib_hexDigest,
+					ImmutableTreeVector<uword_t>() + 2
+					);
+
+			AxiomGroups("string") +=
+				LibcallAxiomGroup::create(
+					JOVT() + 
+					"SHA1" +
+					"Call" +
+					JOV::OfType(Type::String()) +
+					JOVTE::NoExtras(),
+					ReturnSlots() +
+					ReturnSlot::Normal(
+						JOV::Tuple(
+							JOVT() + 
+								JOV::OfType(Type::Integer(32, false)) +
+								JOV::OfType(Type::Integer(32, false)) +
+								JOV::OfType(Type::Integer(32, false)) +
+								JOV::OfType(Type::Integer(32, false)) +
+								JOV::OfType(Type::Integer(32, false))
+							)
+						),
+					&FORA_clib_stringSHA1,
+					ImmutableTreeVector<uword_t>() + 2
+				);
+
+			AxiomGroups("String") += 
+				LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::OfType(Type::String()) +
+						"GetItem" +
+						JOV::OfType(Type::Integer(64, true)) +
+						JOV::OfType(Type::Integer(64, true)) +
+						JOVTE::NoExtras(),
+					ReturnSlots() + JOV::OfType(Type::String()),
+					&FORA_clib_stringSlice,
+					ImmutableTreeVector<uword_t>() + 0 + 2 + 3
+					)
+				;
+
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::OfType(Type::String()) +
+						"Operator" +
+						"+" +
+						JOV::OfType(Type::String()) +
+						JOVTE::NoExtras(),
+					ReturnSlots() + ReturnSlot::Normal(JOV::OfType(Type::String())),
+					&FORA_clib_addStrings,
+					ImmutableTreeVector<uword_t>() + 0 + 3,
+					null(), null(), 0, false,
+					CSTValue("String plus String!")
+					)
+				;
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::OfType(Type::String()) +
+						"Join" +
+						JOVTE::Extras(OfType(Type::String())),
+					ReturnSlots() + JOV::OfType(Type::String()),
+					&FORA_clib_joinStringsInTuplearg,
+					ImmutableTreeVector<uword_t>() + 0 + 2
+					)
+				;
+			
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() + JOV::OfType(Type::String()) + "StripWhitespace" + JOVTE::NoExtras(),
+					ReturnSlots() + JOV::OfType(Type::String()),
+					&FORA_clib_stripStringWhitespace,
+					ImmutableTreeVector<uword_t>() + 0
+					)
+				;
+			
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::OfType(Type::String()) +
+						"StripWhitespaceRight" +
+						JOVTE::NoExtras(),
+					ReturnSlots() + JOV::OfType(Type::String()),
+					&FORA_clib_stripStringWhitespaceRight,
+					ImmutableTreeVector<uword_t>() + 0
+					)
+				;
+			
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::OfType(Type::String()) +
+						"StripWhitespaceLeft" +
+						JOVTE::NoExtras(),
+					ReturnSlots() + JOV::OfType(Type::String()),
+					&FORA_clib_stripStringWhitespaceLeft,
+					ImmutableTreeVector<uword_t>() + 0
+					)
+				;
+			
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::OfType(Type::String()) +
+						"SearchAndReplace" + 
+						JOV::OfType(Type::String()) +
+						JOV::OfType(Type::String()) +
+						JOVTE::NoExtras(),
+					ReturnSlots() + JOV::OfType(Type::String()),
+					&FORA_clib_findAndReplaceString,
+					ImmutableTreeVector<uword_t>() + 0 + 2 + 3
+					)
+				;
+			
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::OfType(Type::String()) +
+						"CountSubstringOccurrences" + 
+						JOV::OfType(Type::String()) +
+						JOVTE::NoExtras(),
+					ReturnSlots() + JOV::OfType(Type::Integer(64, false)),
+					&FORA_clib_countSubstringOccurrences,
+					ImmutableTreeVector<uword_t>() + 0 + 2
+					)
+				;
+
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() + 
+						JOV::OfType(Type::String()) +
+						"clib_startsWith" +
+						JOV::OfType(Type::String()) +
+						JOVTE::NoExtras(),
+					ReturnSlots() + JOV::OfType(Type::Bool()),
+					&FORA_clib_startsWith,
+					ImmutableTreeVector<uword_t>() + 0 + 2
+					)
+				;
+
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() + 
+						JOV::OfType(Type::String()) +
+						"clib_endsWith" +
+						JOV::OfType(Type::String()) +
+						JOVTE::NoExtras(),
+					ReturnSlots() + JOV::OfType(Type::Bool()),
+					&FORA_clib_endsWith,
+					ImmutableTreeVector<uword_t>() + 0 + 2
+					)
+				;
+
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() + 
+						JOV::OfType(Type::String()) + 
+						"FindSubstring" + 
+						JOV::OfType(Type::String()) +
+						JOV::OfType(Type::Integer(64, true)) +
+						JOV::OfType(Type::Integer(64, true))
+						+ JOVTE::NoExtras(),
+					ReturnSlots() + 
+						JOV::OfType(Type::Integer(64, true)),
+					&FORA_clib_findSubstring_sliced,
+					ImmutableTreeVector<uword_t>() + 0 + 2 + 3 + 4
+					)
+				;
+
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() + 
+						JOV::OfType(Type::String()) + 
+						"FindSubstringRight" + 
+						JOV::OfType(Type::String()) +
+						JOV::OfType(Type::Integer(64, true)) +
+						JOV::OfType(Type::Integer(64, true))
+						+ JOVTE::NoExtras(),
+					ReturnSlots() + 
+						JOV::OfType(Type::Integer(64, true)),
+					&FORA_clib_findSubstringRight_sliced,
+					ImmutableTreeVector<uword_t>() + 0 + 2 + 3 + 4
+					)
+				;
+			
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() + 
+						JOV::OfType(Type::String()) + 
+						"in" + 
+						JOV::OfType(Type::String())
+						+ JOVTE::NoExtras(),
+					ReturnSlots() + 
+						JOV::OfType(Type::Integer(1, false)),
+					&FORA_clib_StringInString,
+					ImmutableTreeVector<uword_t>() + 0 + 2
+					)
+				;
+			
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() + JOV::OfType(Type::String()) + "ReverseString" + JOVTE::NoExtras(),
+					ReturnSlots() + JOV::OfType(Type::String()),
+					&FORA_clib_reverseString,
+					ImmutableTreeVector<uword_t>() + 0
+					)
+				;
+			
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() + JOV::OfType(Type::String()) + "ConvertToUpperCase" + JOVTE::NoExtras(),
+					ReturnSlots() + JOV::OfType(Type::String()),
+					&FORA_clib_convertToUpperCase,
+					ImmutableTreeVector<uword_t>() + 0
+					)
+				;
+			
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() + JOV::OfType(Type::String()) + "ConvertToLowerCase" + JOVTE::NoExtras(),
+					ReturnSlots() + JOV::OfType(Type::String()),
+					&FORA_clib_convertToLowerCase,
+					ImmutableTreeVector<uword_t>() + 0
+					)
+				;
+			
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() + JOV::OfType(Type::String()) + "CapitalizeString" + JOVTE::NoExtras(),
+					ReturnSlots() + JOV::OfType(Type::String()),
+					&FORA_clib_capitalizeString,
+					ImmutableTreeVector<uword_t>() + 0
+					)
+				;
+			
+			AxiomGroups("String") +=
+				LibcallAxiomGroup::create(
+					JOVT() + JOV::OfType(Type::String()) + "SwapStringCase" + JOVTE::NoExtras(),
+					ReturnSlots() + JOV::OfType(Type::String()),
+					&FORA_clib_swapStringCase,
+					ImmutableTreeVector<uword_t>() + 0
+					)
+				;
+			}
+			
+};
+
+StringAxioms stringAxioms;
+
+

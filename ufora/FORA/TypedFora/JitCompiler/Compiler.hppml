@@ -1,0 +1,297 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../../../core/PolymorphicSharedPtr.hpp"
+#include "../../../core/threading/CallbackScheduler.hppml"
+#include "../../../core/containers/ImmutableTreeSet.hppml"
+#include "../../Core/ImplVal.hppml"
+#include "../../Native/NativeRuntimeContinuationValue.hppml"
+#include "../../Native/NativeRuntimeUntypedContinuation.hppml"
+#include "NativeCppCallbackStackframe.hppml"
+
+#include <boost/thread.hpp>
+#include <map>
+#include <set>
+
+namespace Fora {
+
+class ApplyArgFrame;
+
+}
+
+namespace Fora {
+namespace Interpreter {
+class RefcountPool;
+}
+}
+
+//MemBlock type holds our implementation of the native stack.
+class MemBlock;
+
+class RuntimeConfig;
+
+class NativeFunctionPointer;
+
+class NativeContinuationMetadataSerialized;
+
+class NativeIndividualContinuationMetadata;
+
+namespace Fora {
+
+namespace SharedObjectLibraryFromSource {
+
+class Library;
+class LibrarySource;
+class BuildResult;
+
+};
+
+}
+
+class NativeCFG;
+class NativeBlockID;
+
+namespace TypedFora {
+
+class BlockID;
+
+class Callable;
+								
+//internals of the TypedFora::Compiler
+class CompilerImpl;
+
+//needed so that TypedFora::Compiler can be friends with DynamicInliner
+class DynamicInliner;
+
+class TypedJumpTarget;
+
+class TypedContinuation;
+                                
+/*************
+TypedFora::Compiler is the single entrypoint to the system that builds assembler
+out of code defined in the NativeCode model.  It maintains several threads
+in the background to dynamically optimize code based on usage.
+
+Clients use the "define" function to add code to the table and "getJumpTarget" to
+get a FunctionPointerHandle.  The function pointer slot may be null until the
+compiler has built native implementations of all of the code.
+
+Clients may also query the compiler to discover metadata associated with
+particular function implementations.
+
+*************/
+
+class Compiler : public PolymorphicSharedPtrBase<Compiler> {
+public:
+		explicit Compiler(const RuntimeConfig& inConfiguration);
+		
+		//reference to the current configuration held by this runtime. lifetime
+		//is tied to the runtime object.
+		const RuntimeConfig&	getConfig(void) const;
+		
+		/*****
+		define a TypedFora::Callable with a particular jump target name.
+		throws an std::logic_error if 'name' has already been defined,
+		if the callable is internally invalid, or if
+		defining 'name' with the given callable would create a type-safety
+		error, which could happen either if 'code' calls another function
+		that has already been defined with the wrong types, or if another
+		function that has already been defined calls 'code' with a type
+		signature that differs from the one currently being defined.
+		*****/
+		void 	define(const std::string& name, const TypedFora::Callable& code);
+
+		void 	define(const std::string& name, const NativeCFG& code);
+		
+		//force all versions of a function to immediately exit to the interpreter
+		void kickAllVersionsBackIntoInterpreter(const std::string& name);
+		
+		//increase the priority of the first build of a jump target
+		//throws an exception if it's not defined. does nothing if it's built.
+		void	increasePriority(const std::string& name);
+		
+		//get the jump target associated with 'name'. if block = true, then
+		//don't return until the function is fully built. if block = false,
+		//then the FunctionPointerHandle may be null until the compiler finishes
+		//building the code.
+		TypedJumpTarget	getJumpTarget(	const std::string& name,
+										const BlockID& inLabel,
+										bool block = false
+										);
+
+		//Compile a block of external source code
+		Fora::SharedObjectLibraryFromSource::BuildResult buildLibraryFromSource(
+				const Fora::SharedObjectLibraryFromSource::LibrarySource& inSource
+				);
+
+		//Get a compiled function pointer for a relevant library
+		void* functionPointerForLibraryFunctionFromSource(
+				const Fora::SharedObjectLibraryFromSource::Library& inLibrary,
+				std::string inName
+				);
+
+		FunctionPointerHandle getJumpTarget(
+									const std::string& name, 
+									const NativeBlockID& blockID,
+									bool block = false
+									);
+
+		//returns whether a NativeCFG has been defined with the given name
+		bool			isDefined(const std::string& name);
+		
+		//gets a definition for 'name'. may not be the original one
+		//that was passed in, since inlining may have occurred
+		TypedFora::Callable 		getDefinition(const std::string& name);
+		
+		//returns a set of functions in this functions 'call group'
+		//(e.g. ones that are in any cycles in the call Callable that pass
+		//through the function 'inName'.
+		//throws a standard logic error if 'name' is not defined or any of the
+		//functions it calls are not fully defined.
+		ImmutableTreeSet<string>	getMutuallyRecursiveFunctions(
+													const std::string& name);
+		
+		//generate a continuation that calls 'jumpTarget' and resumes the untyped continuation
+		//returnContinuation with an owned ImplVal.  If 'assumeOwnershipOfArguments' is true,
+		//then the resulting stack frame takes responsibility for decrefing the ImplVal objects
+		//that have been handed to it.  In all cases, it copies the memory out of 'arguments',
+		//so arguments may then be modified or freed without affecting the reuslting stackframe
+		NativeRuntimeCallTarget 
+		generateStackframeAndCallTargetFromArgTuple(
+					const TypedJumpTarget& jumpTarget, 
+					const TypedContinuation& returnContinuation,
+					MemBlock** memBlock,
+					ImplVal argumentTuple,
+					Fora::Interpreter::RefcountPool* inRefcountPool
+					);
+
+		NativeRuntimeCallTarget 
+		generateStackframeAndCallTargetTransferImplvalsWithOwnership(
+					const TypedJumpTarget& jumpTarget, 
+					const TypedContinuation& returnContinuation,
+					MemBlock** memBlock,
+					ImplVal* inImplVals,
+					uint64_t uniqueId,
+					Fora::Interpreter::RefcountPool* inRefcountPool
+					);
+
+		//Generates a "dummy" NativeContinuation "D" with the following semantics:
+		//If any native code follows "D", "D" will copy the returned data into
+		//'targetData', and will copy 'continuationIndex' into
+		//'targetContinuation' so that the original client
+		//can know which dummy continuation was called. It then exits the entire
+		//native call stack, returning control back to the original C function that
+		//invoked the native runtime.
+		//Used by InterpreterFrame and by ExecutionContext
+		NativeRuntimeContinuationValueVector generateDummyContinuation(
+												void* targetData,
+												uword_t* targetContinuation,
+												uword_t continuationIndexLow,
+												uword_t continuationIndexHigh
+												);
+		
+		NativeRuntimeContinuationValue<1> generateDummyContinuation(
+												void* targetData,
+												uword_t* targetContinuation,
+												uword_t continuationIndex
+												);
+		
+		
+		//Takes continuations with empty function pointers and points them at
+		//a normal C++ function in the current binary
+		//(with signature NativeRuntimeContinuationValue f(MemBlock**, uword_t, void*))
+		//and turns them into fastcall compatible LLVM continuations.
+		//They must all point to the same target function, with the same
+		//stackframe.  The slot and frame data are placed in the `frameData`
+		//argument, which must be allocated on the LLVM stack.
+		//Used by InterpreterFrame and ContinuationSerializer
+		NativeRuntimeContinuationBase		
+					wrapCPPCallback(NativeCppCallback inCFunction,
+									void* inStackframe,
+									MemBlock** memblock
+									);
+		
+		//if 'jumpPtr' is a NativeFunctionPointer pointing to a live piece of
+		//code produced in the TypedFora::Compiler, then return true, otherwise
+		//return false. if it's called with a null pointer it will throw
+		//a standard logic error.
+		bool	isNativeFunctionPointer(NativeFunctionPointer jumpPtr) const;
+		
+		//calls a function defined in the LLVM model with return continuations
+		//and arguments packed into 'data'
+		void	callFunction(const NativeRuntimeCallTarget& callTarget, MemBlock** mem);
+		
+		//if 'funcPtr' returns true with isFunctionPointer, then this returns
+		//the actual stack layout of the function in question
+		const NativeType&		slotTypesForFuncPtr(NativeFunctionPointer funcPtr) const;
+		
+		//if 'funcPtr' returns true with isFunctionPointer, then this returns
+		//the serialized metadatas associated with resuming computation at
+		//'blockID'
+		ImmutableTreeVector<NativeContinuationMetadataSerialized>
+				slotMetadataForFuncPtr(
+						NativeFunctionPointer funcPtr,
+						uword_t metadataEntryId
+						) const;
+	
+		NativeIndividualContinuationMetadata
+				continuationMetadataForFuncPtr(
+						NativeFunctionPointer funcPtr,
+						uword_t blockID
+						) const;
+
+		//returns whether jumpPtr is the 'dummy' continuation target, in which
+		//case calling it just writes some data and exits to the original
+		//C-stack
+		bool			isDummyContinuationTarget(NativeFunctionPointer jumpPtr) const;
+		
+		//determines whether this is the cpp-callback springboard, which expects to get
+		//an object of type TypedFora::NativeCppCallbackStackframe
+		bool			isWrappedCPPCallbackPtr(NativeFunctionPointer jumpPtr) const;
+		
+		
+		//given a NativeFunctionPointer, return the name that originally defined it
+		//throws if its not there
+		std::string		nameForFunctionPointer(NativeFunctionPointer nfp);
+
+        //Returns a TNFP which can called by an ExecutionContext 
+        TypedJumpTarget compile(    const TypedFora::Callable& targ,
+                                    const std::string& axiomName
+                                    );
+
+		bool anyCompilingOrPending(void) const;
+		
+private:
+		/*****
+		provide a new definition for 'name'. invalid if it's not already
+		created.  no additional optimization or tagging will be called
+		on the function, and only DynamicInliner should use it.
+		*****/
+		void 	update(const std::string& name, const NativeCFG& code);
+
+		friend class DynamicInliner;
+		
+		//the actual implementation class, which we keep hidden to reduce
+		//compilation time.  This class is intentionally LEAKED when we destroy
+		//this object, which in our current implementation never happens (e.g.
+		//these objects are global and permanent)
+		CompilerImpl*	mImpl;
+};
+
+}
+
+

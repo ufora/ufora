@@ -1,0 +1,311 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "DataTransfersQueuedCallback.hppml"
+#include "../core/Logging.hpp"
+#include "../core/Clock.hpp"
+
+namespace Cumulus {
+
+class DataTransfersKernel {
+public:
+	DataTransfersKernel(
+					CumulusClientOrMachine inOwnEndpointId,
+					int64_t maxBytecountOutstanding,
+					boost::function1<void, DataTransfersQueuedCallback> inOnCallbackNotGoingToBeSent,
+					boost::function1<void, DataTransfersQueuedCallback> inOnSendCallback,
+					boost::function1<void, boost::function0<void> > inOnTriggerTokenReceivedCallback
+					) : 
+			mMaxOutstandingBytecount(maxBytecountOutstanding),
+			mTotalOutstandingBytecounts(0),
+			mOwnEndpointId(inOwnEndpointId),
+			mOnCallbackNotGoingToBeSent(inOnCallbackNotGoingToBeSent),
+			mOnTriggerTokenReceivedCallback(inOnTriggerTokenReceivedCallback),
+			mOnSendCallback(inOnSendCallback),
+			mLastLogTime(0)
+		{
+		}
+
+	void scheduleLargeMessage(
+				DataTransfersQueuedCallback callback
+				)
+		{
+		lassert_dump(
+			mEndpointsEverDropped.find(callback.target()) == mEndpointsEverDropped.end(),
+			"can't send message to " << prettyPrintString(callback.target())
+			);
+
+		mUntriggeredCallbacksByPriority[callback.priority()].push_back(make_pair(curClock(), callback));
+
+		sendIfAppropriate();
+		}
+
+	void addEndpoint(CumulusClientOrMachine endpoint)
+		{
+		lassert(mEndpoints.find(endpoint) == mEndpoints.end());
+
+		mEndpoints.insert(endpoint);
+		}
+
+	void dropEndpoint(CumulusClientOrMachine endpoint)
+		{
+		lassert(mEndpoints.find(endpoint) != mEndpoints.end());
+
+		mEndpoints.erase(endpoint);
+
+		mEndpointsEverDropped.insert(endpoint);
+
+		std::map<int64_t, std::deque<pair<double, DataTransfersQueuedCallback> > > newCallbacks;
+
+		for (auto token: mTransferIdsSent.getKeys(endpoint))
+			removeTransferId(token);
+
+		for (auto& priorityAndCallbacks: mUntriggeredCallbacksByPriority)
+			for (auto callbackRecordAndTime: priorityAndCallbacks.second)
+				{
+				auto callbackRecord = callbackRecordAndTime.second;
+
+				if (callbackRecord.target() != endpoint)
+					newCallbacks[priorityAndCallbacks.first].push_back(callbackRecordAndTime);
+				else
+					mOnCallbackNotGoingToBeSent(callbackRecord);
+				}
+
+		std::swap(newCallbacks, mUntriggeredCallbacksByPriority);
+
+		sendIfAppropriate();
+		}
+
+	void tokenReceived(DataTransferTokenId inTransferId)
+		{
+		auto it = mOnReceiveTransferredToken.find(inTransferId);
+
+		if (it != mOnReceiveTransferredToken.end())
+			mOnTriggerTokenReceivedCallback(it->second);
+
+		removeTransferId(inTransferId);
+
+		sendIfAppropriate();
+		}
+
+	void allocateTransferId(DataTransferTokenId inTransferId, int64_t expectedByteSize)
+		{
+		mTransferIdBytesizes[inTransferId] = expectedByteSize;
+		}
+
+	void updateBytecount(DataTransferTokenId token, int64_t newBytecount)
+		{
+		auto it = mTransferIdBytesizes.find(token);
+
+		if (it == mTransferIdBytesizes.end())
+			return;
+
+		if (mTransferIdsSent.hasKey(token))
+			{
+			mTotalOutstandingBytecounts -= it->second;
+			mTotalOutstandingBytecounts += newBytecount;
+			}
+
+		it->second = newBytecount;
+
+		sendIfAppropriate();
+		}
+
+	int64_t totalBytesOutstanding() const
+		{
+		return mTotalOutstandingBytecounts;
+		}
+
+	void setThreshold(int64_t newByteThreshold)
+		{
+		mMaxOutstandingBytecount = newByteThreshold;
+
+		sendIfAppropriate();
+		}
+
+	CumulusClientOrMachine getOwnEndpointId() const
+		{
+		return mOwnEndpointId;
+		}
+
+private:
+	void removeTransferId(DataTransferTokenId token)
+		{
+		auto it = mTransferIdBytesizes.find(token);
+
+		lassert(it != mTransferIdBytesizes.end());
+
+		if (mTransferIdsSent.hasKey(token))
+			mTotalOutstandingBytecounts -= it->second;
+
+		mTransferIdsSent.drop(token);
+
+		mTransferIdBytesizes.erase(token);
+		mTransferIdTimes.discard(token);
+
+
+		mOnReceiveTransferredToken.erase(token);
+		}
+
+	void sendIfAppropriate()
+		{
+		long sent = 0;
+
+		while (true)
+			{
+			logIfNecessary();
+
+			if (!mUntriggeredCallbacksByPriority.size())
+				{
+				if (sent)
+					LOG_DEBUG << "Sent " << sent << " callbacks. Total outstanding = "
+						<< mTotalOutstandingBytecounts / 1024 / 1024.0
+						<< " MB of " << mMaxOutstandingBytecount / 1024 / 1024.0
+						<< ". No unsent callbacks remain."
+						;
+
+				return;
+				}
+
+			if (mUntriggeredCallbacksByPriority.size() == 1)
+				mPriorityChannelBytesSent.clear();
+
+			int64_t priorityLevel = chooseBestPriority();
+
+			DataTransferTokenId frontTransferId = mUntriggeredCallbacksByPriority[priorityLevel].front().second.token();
+
+			if (mTotalOutstandingBytecounts > mMaxOutstandingBytecount)
+				{
+				if (sent)
+					LOG_DEBUG << "Sent " << sent << " callbacks. Total outstanding = "
+						<< mTotalOutstandingBytecounts / 1024 / 1024.0
+						<< " MB of " << mMaxOutstandingBytecount / 1024 / 1024.0
+						<< ". " 
+						;
+				
+				return;
+				}
+		
+			sent++;
+
+			//we can send
+			mOnSendCallback(mUntriggeredCallbacksByPriority[priorityLevel].front().second);
+
+			mTransferIdsSent.set(
+				frontTransferId, 
+				mUntriggeredCallbacksByPriority[priorityLevel].front().second.target()
+				);
+
+			mOnReceiveTransferredToken[frontTransferId] = 
+				mUntriggeredCallbacksByPriority[priorityLevel].front().second.onMessageCompleted();
+
+			mUntriggeredCallbacksByPriority[priorityLevel].pop_front();
+
+			if (mUntriggeredCallbacksByPriority[priorityLevel].size() == 0)
+				mUntriggeredCallbacksByPriority.erase(priorityLevel);
+
+			mPriorityChannelBytesSent[priorityLevel] += mTransferIdBytesizes[frontTransferId];
+
+			mTotalOutstandingBytecounts += mTransferIdBytesizes[frontTransferId];
+
+			mTransferIdTimes.set(frontTransferId, curClock());
+			}
+		}
+
+	int64_t chooseBestPriority()
+		{
+		lassert(mUntriggeredCallbacksByPriority.size());
+
+		if (mUntriggeredCallbacksByPriority.size() == 1)
+			return mUntriggeredCallbacksByPriority.begin()->first;
+
+		//choose the highest priority, but don't allow the lowest priority
+		//to get completely throttled (e.g. by more than 1/N)
+		int64_t totalBytesSent = 0;
+
+		for (auto& priorityAndQueue: mUntriggeredCallbacksByPriority)
+			totalBytesSent += mPriorityChannelBytesSent[priorityAndQueue.first];
+
+		for (auto& priorityAndQueue: mUntriggeredCallbacksByPriority)
+			if (mPriorityChannelBytesSent[priorityAndQueue.first] * 
+						mUntriggeredCallbacksByPriority.size() < totalBytesSent)
+				return priorityAndQueue.first;
+
+		return mUntriggeredCallbacksByPriority.rbegin()->first;
+		}
+
+	void logIfNecessary()
+		{
+		if (mLastLogTime == 0)
+			mLastLogTime = curClock();
+
+		if (curClock() - mLastLogTime > 1.0)
+			{
+			mLastLogTime = curClock();
+
+			LOGGER_INFO_T log = LOGGER_INFO;
+
+			for (auto& priorityAndUCBs: mUntriggeredCallbacksByPriority)
+				{
+				if (priorityAndUCBs.second.size())
+					log << priorityAndUCBs.first << ": " << 
+						priorityAndUCBs.second.size() << " callbacks with a lag of "
+						<< curClock() - priorityAndUCBs.second.front().first
+						<< " and bytecounts of " << mPriorityChannelBytesSent[priorityAndUCBs.first] / 1024 / 1024.0 << " MB"
+						<< "\n"
+						;
+				}
+
+			log << "Total outstanding transfers: " << mTransferIdBytesizes.size() << "\n";
+			if (mTransferIdTimes.size())
+				log << "Total transfer age: " << curClock() - mTransferIdTimes.lowestValue() << "\n";
+			}
+		}
+
+	CumulusClientOrMachine mOwnEndpointId;
+
+	std::set<CumulusClientOrMachine> mEndpoints;
+
+	std::set<CumulusClientOrMachine> mEndpointsEverDropped;
+
+	int64_t mMaxOutstandingBytecount;
+
+	std::map<DataTransferTokenId, int64_t> mTransferIdBytesizes;
+
+	MapWithIndex<DataTransferTokenId, double> mTransferIdTimes;
+
+	std::map<int64_t, int64_t> mPriorityChannelBytesSent;
+
+	std::map<int64_t, std::deque<pair<double, DataTransfersQueuedCallback> > > mUntriggeredCallbacksByPriority;
+
+	int64_t mTotalOutstandingBytecounts;
+
+	double mLastLogTime;
+
+	MapWithIndex<DataTransferTokenId, CumulusClientOrMachine> mTransferIdsSent;
+
+	map<DataTransferTokenId, boost::function0<void> > mOnReceiveTransferredToken;
+
+	boost::function1<void, boost::function0<void> > mOnTriggerTokenReceivedCallback;
+
+	boost::function1<void, DataTransfersQueuedCallback> mOnCallbackNotGoingToBeSent;
+
+	boost::function1<void, DataTransfersQueuedCallback> mOnSendCallback;
+
+};
+
+};

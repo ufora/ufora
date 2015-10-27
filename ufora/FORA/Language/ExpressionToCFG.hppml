@@ -1,0 +1,341 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "FunctionStage3.hppml"
+#include "../ControlFlowGraph/ControlFlowGraph.hppml"
+
+class ClassMediator;
+class ApplySignature;
+
+namespace Fora {
+namespace Language {
+
+typedef VariableAllocator::Variable variable_index_type;
+
+@type
+	//a list of variables and an index for each one
+	//a place where a value could come from in a CFG position
+	ExpressionContinuationArg =
+		-|	Input of FunctionStage3::Input input
+		-|	Result of ()
+		-|	None of ()
+		-|	TupleElement of int index
+		-|	TupleRemainingElements of ()
+		-|	MakeTuple of ImmutableTreeVector<ControlFlowContinuationTupleArg> args
+and
+	//a description of how to continue a computation with a value from a
+	//variable frame.
+	ExpressionContinuation =
+		//jump to 'targetNode', but override variables using 'remaps'
+		-|	Node of 	ExpressionEntry targetNode,
+						ImmutableTreeMap<variable_index_type,
+											ExpressionContinuationArg> remaps
+		-|	Return of 	ExpressionContinuationArg arg,
+						bool isException
+and
+	VariableFrame =
+			ImmutableTreeVector<variable_index_type> args,
+			ImmutableTreeMap<variable_index_type, uint32_t> positions
+	{
+	public:
+			VariableFrame(const ImmutableTreeVector<variable_index_type>& v)
+				{
+				args() = v;
+				for (long k = 0; k < v.size(); k++)
+					positions() = positions() + make_pair(v[k], (uint32_t)k);
+				}
+			uint32_t operator[](const variable_index_type& inVar) const
+				{
+				lassert_dump(positions()[inVar],
+					"can't find " << prettyPrintString(inVar) << " in " <<
+						prettyPrintString(args())
+					);
+				
+				return *positions()[inVar];
+				}
+			//returns a VariableFrame with an extra input slot for any variable
+			//referenced in 'cont'
+			VariableFrame withVarsFrom(
+								const ExpressionContinuationArg& cont
+								) const;
+			VariableFrame withVarsFrom(const ExpressionContinuation& cont) const;
+			VariableFrame withVarsFrom(
+								const FunctionStage3::Input& input
+								) const;
+			VariableFrame withVarsFrom(variable_index_type var) const;
+			VariableFrame withVarsFrom(
+					const ImmutableTreeVector<variable_index_type>& var) const;
+		
+			VariableFrame withVarsFrom(const VariableFrame& entry) const;
+			VariableFrame withVarsFrom(const ExpressionEntry& entry) const;
+			
+			VariableFrame without(variable_index_type var) const
+				{
+				if (positions().contains(var))
+					{
+					uint32_t pos = *positions()[var];
+				
+					return VariableFrame(args().slice(0,pos)
+													+ args().slice(pos+1));	
+					}
+				return *this;
+				}
+	}
+and
+	ExpressionEntry =
+			string name,
+			VariableFrame variables
+	;
+
+
+//utility functions for getting the actual ControlFlowContinuationArg
+//and ControlFlowArg values in a given continuation context
+ControlFlowContinuationArg getResultArg(
+							const ExpressionContinuationArg& inArg,
+							const VariableFrame& 	inVariables
+							);
+
+ControlFlowArg getApplyArg(	const VariableFrame& 	inVariables,
+							const FunctionStage3::Input&  	inInput
+							);
+
+ControlFlowApplyArg getApplyArg(
+							const VariableFrame& 	inVariables,
+							const FunctionStage3::ApplyArgument&  inApplyArg
+							);
+
+
+ControlFlowContinuationArg getContinuationArg(
+							variable_index_type 	inArg,
+							const VariableFrame& 	inVariables,
+							const ImmutableTreeMap<variable_index_type,
+											ExpressionContinuationArg>& remaps,
+							const ExpressionContinuationArg& inResult
+							);
+
+ControlFlowContinuationArg getContinuationArg(
+							const ExpressionContinuationArg& inArg,
+							const VariableFrame& 	inVariables,
+							const ImmutableTreeMap<variable_index_type,
+											ExpressionContinuationArg>& remaps,
+							const ExpressionContinuationArg& inResult
+							);
+
+ControlFlowContinuation getContinuation(
+			const VariableFrame& inVariables,
+			const ExpressionContinuation& cont,
+			const ImmutableTreeMap<variable_index_type,
+								ExpressionContinuationArg>& remaps,
+			const ExpressionContinuationArg& inResultFrom
+			);
+
+//class to handle the intermediate list of nodes while we build a CFG
+//from a Function object
+class ExpressionToCFG {
+public:
+	ExpressionToCFG(
+				uint32_t& inCounter,
+				ImmutableTreeMap<string, ControlFlowNode>& inNodes,
+				ImmutableTreeMap<uint32_t, string>&	inContinuations,
+				const ClassMediator& inMediator,
+				const ApplySignature& inSignature,
+				VariableAllocator& inAlloc
+				);
+
+	string 	allocBlock();
+
+	ExpressionEntry makeEntry(
+			const VariableFrame& variables,
+			const string& inBlockName,
+			const ControlFlowNodeBody& node
+			);
+
+	
+	//build an entry in which the varibables are ordered as 'inVariables'
+	ExpressionEntry convert(
+			const FunctionStage3::Expression& code,
+			const ExpressionContinuation& normCont,
+			const ExpressionContinuation& exceptionCont,
+			const ImmutableTreeMap<variable_index_type,
+								ExpressionContinuation>& namedExceptionConts,
+			const ImmutableTreeVector<variable_index_type>& inVariables
+			);
+
+	ExpressionEntry convert(
+			const FunctionStage3::Expression& code,
+			const ExpressionContinuation& normCont,
+			const ExpressionContinuation& exceptionCont,
+			const ImmutableTreeMap<variable_index_type,
+								ExpressionContinuation>& namedExceptionConts
+			);
+
+	ExpressionEntry convert(
+			const FunctionStage3::Expression& code,
+			const ExpressionContinuation& normCont,
+			const ExpressionContinuation& exceptionCont,
+			const ImmutableTreeMap<variable_index_type,
+								ExpressionContinuation>& namedExceptionConts,
+			const string& inBlockName,
+			const Nullable<VariableFrame>& inFrame					
+			);
+
+private:
+	uint32_t& 										ioCounter;
+	ImmutableTreeMap<string, ControlFlowNode>& 		ioNodes;
+	ImmutableTreeMap<uint32_t, string>&				ioContinuations;
+	const ClassMediator& 							mMediator;
+	const ApplySignature& 							mSignature;
+	VariableAllocator&								mAlloc;
+	
+	ExpressionEntry convertConstant(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		);
+	
+	ExpressionEntry convertVariable(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		);
+
+	ExpressionEntry convertAssign(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		);
+	
+	ExpressionEntry convertLet(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const ImmutableTreeMap<variable_index_type,
+							ExpressionContinuation>& namedExceptionConts,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		);
+
+	ExpressionEntry convertTupleExpand(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const ImmutableTreeMap<variable_index_type,
+							ExpressionContinuation>& namedExceptionConts,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		);
+
+	ExpressionEntry convertApply(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		);
+
+	ExpressionEntry convertCreateTuple(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		);
+
+	ExpressionEntry convertWhile(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const ImmutableTreeMap<variable_index_type,
+							ExpressionContinuation>& namedExceptionConts,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		);
+	
+	ExpressionEntry convertRawCached(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		);
+	
+	ExpressionEntry convertBranch(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const ImmutableTreeMap<variable_index_type,
+							ExpressionContinuation>& namedExceptionConts,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		);
+	
+	ExpressionEntry convertSwitch(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const ImmutableTreeMap<variable_index_type,
+							ExpressionContinuation>& namedExceptionConts,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		);
+	
+	ExpressionEntry convertThrow(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const ImmutableTreeMap<variable_index_type,
+							ExpressionContinuation>& namedExceptionConts,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		);
+	
+	ExpressionEntry convertReturn(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const ImmutableTreeMap<variable_index_type,
+							ExpressionContinuation>& namedExceptionConts,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		);
+
+	ExpressionEntry convertTry(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const ImmutableTreeMap<variable_index_type,
+							ExpressionContinuation>& namedExceptionConts,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		);
+
+	ExpressionEntry convertContinuation(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const ImmutableTreeMap<variable_index_type,
+							ExpressionContinuation>& namedExceptionConts,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		);
+		
+};
+
+}
+}

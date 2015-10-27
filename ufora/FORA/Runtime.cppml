@@ -1,0 +1,160 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "../core/Platform.hpp"
+
+#ifdef BSA_PLATFORM_WINDOWS
+//we need to prevent windows from seeing <boost/python.hpp> which is included
+//by ValueDeepcopier.
+
+//TODO BUG brax: move <boost/python.hpp> dependency out of serialization code so that we don't have a dependency on it throughout the code.
+
+#define FORA_ValueDeepcopier_hppml_
+#endif
+
+
+#include "Runtime.hppml"
+#include "Core/ImplVal.hppml"
+#include "Core/Type.hppml"
+#include "Core/CSTValue.hppml"
+#include "Core/MemBlock.hpp"
+#include "TypedFora/JitCompiler/Compiler.hppml"
+#include "../core/StringUtil.hpp"
+#include <boost/lexical_cast.hpp>
+#include "../core/Clock.hpp"
+#include "../core/STLOps.hpp"
+#include <iomanip>
+#include "Axioms/AxiomGroup.hppml"
+#include "Axioms/Axiom.hppml"
+#include "Interpreter/AxiomCache.hppml"
+#include "Interpreter/RuntimeConfig.hppml"
+#include "Interpreter/InstructionGraph.hppml"
+#include "../core/math/Hash.hpp"
+#include "Compiler/InterpreterTraceHandler.hppml"
+#include "Compiler/CompilerInstructionGraph/InstructionGraph.hppml"
+
+
+namespace {		
+Runtime* sRuntime = 0;
+}
+
+Runtime::Runtime(string inAxiomsString, const RuntimeConfig& inConfig) :
+				mConfig(new RuntimeConfig(inConfig))
+	{
+	mAxiomCache = 0;
+	mTracing = 0;
+
+	mTypedForaCompiler.reset(new TypedFora::Compiler(*mConfig));
+	mAxioms.reset(new Axioms(inAxiomsString));
+	}
+
+Runtime&	Runtime::getRuntime(void)
+	{
+	lassert_dump(sRuntime, "Runtime isn't initialized yet!");
+	return *sRuntime;
+	}
+	
+void Runtime::initializeRuntime(
+			string inAxiomsString,
+			const RuntimeConfig& inConfig
+			)
+	{
+	lassert(!sRuntime);
+	//DELIBERATELY leak a shared ptr to prevent the runtime from being destroyed
+	//since we can't tear it down properly.
+	sRuntime = new Runtime(inAxiomsString, inConfig);
+	}
+
+RuntimeConfig& Runtime::getConfig()
+	{
+	return *mConfig;
+	}
+
+PolymorphicSharedPtr<TypedFora::Compiler> Runtime::getTypedForaCompiler(void) const
+	{
+	return mTypedForaCompiler;
+	}
+
+PolymorphicSharedPtr<Fora::Interpreter::InstructionGraph> Runtime::getInstructionGraph(void)
+	{
+	if (!mInstructionGraph)
+		ensureMembersInitialized_();
+
+	return mInstructionGraph;
+	}
+
+PolymorphicSharedPtr<Fora::Compiler::CompilerInstructionGraph::InstructionGraph> Runtime::getCompilerInstructionGraph(void)
+	{
+	if (!mCompilerInstructionGraph)
+		ensureMembersInitialized_();
+
+	return mCompilerInstructionGraph;
+	}
+
+void Runtime::ensureMembersInitialized_()
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+	
+	if (!mAxiomCache)
+		{
+		mAxiomCache = new Fora::Interpreter::AxiomCache(&*mTypedForaCompiler, mAxioms);
+
+		mInstructionGraph.reset(
+			new Fora::Interpreter::InstructionGraph(
+				mAxioms,
+				mTypedForaCompiler
+				)
+			);
+
+		mCompilerInstructionGraph.reset(
+			new Fora::Compiler::CompilerInstructionGraph::InstructionGraph(
+				mAxioms,
+				mTypedForaCompiler,
+				mInstructionGraph
+				)
+			);
+
+		mInterpreterTraceHandler.reset(
+			new Fora::Compiler::InterpreterTraceHandler(
+				mInstructionGraph,
+				mCompilerInstructionGraph,
+				mAxioms
+				)
+			);
+		}
+	}
+
+Fora::Interpreter::AxiomCache* Runtime::getAxiomCache(void)
+	{
+	if (!mAxiomCache)
+		ensureMembersInitialized_();
+
+	return mAxiomCache;
+	}
+
+PolymorphicSharedPtr<Fora::Compiler::InterpreterTraceHandler> Runtime::getInterpreterTraceHandler(void)
+	{
+	if (!mInterpreterTraceHandler)
+		ensureMembersInitialized_();
+
+	return mInterpreterTraceHandler;
+	}
+
+PolymorphicSharedPtr<Axioms> Runtime::getAxioms(void)
+	{
+	return mAxioms;
+	}
+
+

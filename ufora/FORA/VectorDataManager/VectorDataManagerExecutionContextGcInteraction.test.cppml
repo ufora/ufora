@@ -1,0 +1,75 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "../../core/UnitTest.hpp"
+#include "../../core/threading/SimpleCallbackSchedulerFactory.hppml"
+
+#include "VectorDataManager.hppml"
+#include "VectorDataManagerImpl.hppml"
+#include "../Core/ExecutionContext.hppml"
+
+BOOST_AUTO_TEST_CASE( test_VectorDataManager_ExecutionContextGc )
+	{
+	PolymorphicSharedPtr<CallbackSchedulerFactory> factory(
+		new SimpleCallbackSchedulerFactory()
+		);
+
+	PolymorphicSharedPtr<CallbackScheduler> scheduler(
+		factory->createScheduler("VDM", 1)
+		);
+
+	PolymorphicSharedPtr<VectorDataManager> vdm(new VectorDataManager(scheduler, 32 * 1024));
+			
+	Queue<bool> killQueue;
+
+	Queue<long> totals;
+
+	boost::thread vdmLoop(boost::function0<void>([&]() {
+		while (!killQueue.size())
+			{
+			vdm->getImpl()->triggerVdmCheckInAllExecutionContexts();
+			}
+		}));
+
+	std::vector<boost::shared_ptr<boost::thread> > creatorThreads;
+
+	for (long k = 0; k < 4; k++)
+		creatorThreads.push_back(
+			boost::shared_ptr<boost::thread>(
+				new boost::thread(
+					boost::function0<void>(
+						[&]() {
+							PolymorphicSharedPtr<Fora::Interpreter::ExecutionContext> context;
+
+							while (!killQueue.size())
+								{
+								totals.write(1);
+								context.reset(new Fora::Interpreter::ExecutionContext(vdm));
+								}
+							}
+						)
+					)
+				)
+			);
+
+	sleepSeconds(5);
+
+	killQueue.write(true);
+
+	vdmLoop.join();
+	for (auto threadPtr: creatorThreads)
+		threadPtr->join();
+	}
+

@@ -1,0 +1,89 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+"""Produce an exponentially moving average of a timeseries.
+
+We assume that the argument timseries is step-like (e.g. constant between its samples)
+"""
+exponentialMovingAverage:
+    fun(decayParameter) 
+        {
+        let cons = 
+            fun(timeseries, firstDecayedValue = nothing)
+                {
+                if (firstDecayedValue is nothing)
+                    {
+                    let t0 = timeseries.firstSampleTime;
+                    firstDecayedValue = (x: timeseries.sample(t0), t: t0)
+                    }
+
+                object 
+                    {
+                    firstSampleTime: firstDecayedValue.t;
+                    secondSampleTime: timeseries.secondSampleTime;
+
+                    sample: fun(t) {
+                        if (t is nothing)
+                            throw "Can't sample with t=nothing";
+
+                        let sst = self.secondSampleTime;
+
+                        if (t >= firstDecayedValue.t and (sst is nothing or t <= sst))
+                            {
+                            let ratio = math.exp( (firstDecayedValue.t - t) * decayParameter );
+                            let newX = (1.0 - ratio) * timeseries.sample(firstDecayedValue.t)
+                                            + ratio * firstDecayedValue.x;
+                            return newX
+                            }
+
+                        throw ("Time out of bounds",
+                               validRange: (firstDecayedValue.t, sst), badTime: t)
+                        };
+                    nextSample: (
+                        let sst = self.secondSampleTime;
+
+                        if (sst is nothing)
+                            return nothing;
+
+                        let nextDecayedXValue = self.sample(sst);
+
+                        return cons(timeseries.nextSample, (x: nextDecayedXValue, t: sst))
+                        );
+                    convert(String) 
+                        {
+                        "EMA(decay=" + String(decayParameter) + ",ts=" + String(timeseries) + ")"
+                        };
+                        
+                    sampleForTime: fun(t) {
+                        let timeseries = self;
+                        while (timeseries.secondSampleTime is not nothing
+                                and t >= timeseries.secondSampleTime)
+                            timeseries = timeseries.nextSample;
+                        return timeseries;
+                        };
+                    operator ()(t)
+                        {
+                        if (t < self.firstSampleTime)
+                            return nothing;
+                        if (self.secondSampleTime is nothing or t < self.secondSampleTime)
+                            return self.sample(t);
+                        return self.nextSample(t)
+                        };
+                    };
+                }
+            ;
+        cons
+        };
+

@@ -1,0 +1,1686 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Function.hppml"
+#include "../../core/math/Hash.hpp"
+#include "../Core/Type.hppml"
+#include <boost/lexical_cast.hpp>
+#include "../../core/STLOps.hpp"
+#include "Parser.hppml"
+#include "FunctionUtil.hppml"
+#include "../../core/Logging.hpp"
+#include "../../core/cppml/CPPMLTransform.hppml"
+#include "../../core/cppml/CPPMLTransformWithIndex.hppml"
+#include "../../core/cppml/CPPMLVisit.hppml"
+#include "../../core/cppml/CPPMLVisitWithIndex.hppml"
+#include "../FORAValuePrinting/FORAValuePrinter.hppml"
+
+
+macro_defineMemberHashFunctionBody(Function);
+macro_defineMemberHashFunctionBody(Expression);
+macro_defineMemberHashFunctionBody(ApplyArgument);
+macro_defineMemberHashFunctionBody(Pattern);
+macro_defineMemberHashFunctionBody(TuplePatternElement);
+macro_defineMemberHashFunctionBody(ObjectDefinitionBody);
+macro_defineMemberHashFunctionBody(ListComprehensionChain);
+
+//compare Expression by hash
+char CPPMLEquality<Expression, void>::cmp(const Expression& lhs,
+											const Expression& rhs)
+	{
+	return lhs.hash().cmp(rhs.hash());
+	}
+char CPPMLEquality<Function, void>::cmp(const Function& lhs, 
+										const Function& rhs)
+	{
+	return lhs.hash().cmp(rhs.hash());
+	}
+
+ApplySignature	getSignature(
+				const ImmutableTreeVector<ApplyArgument>& inArgs
+				)
+	{
+	ImmutableTreeVector<ApplyArgumentSignature> tr;
+	for (long k = 0; k < inArgs.size();k++)
+		tr = tr + getSignature(inArgs[k]);
+	return ApplySignature(tr);
+	}
+
+ApplyArgumentSignature	getSignature(const ApplyArgument& inArgs)
+	{
+	@match ApplyArgument(inArgs)
+		-|	Normal(name) ->> {
+			return  ApplyArgumentSignature::Normal(name);
+			}
+		-|	NamedArgument() ->> {
+			return  ApplyArgumentSignature::TupleCall();
+			}
+		-|	TupleCall() ->> {
+			return  ApplyArgumentSignature::TupleCall();
+			}
+		;
+	}
+	
+@type FreeVariableVisitor = ImmutableTreeSet<Symbol> freeVariables {
+public:
+
+		template<class T>
+		static ImmutableTreeSet<Symbol> getFreeIn(const T& in)
+			{
+			FreeVariableVisitor vis;
+			visit(in, vis, IsFirstTransform(true));
+			return vis.freeVariables();
+			}
+		
+		template<class T>
+		void processDown(const T& in,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			}
+		template<class T>
+		void processUp(const T& in)
+			{
+			}
+		
+		//assumes that 'in' has the value cached as
+		//in.freeVariables(). if this is not the first time,
+		//just grab that, otherwise unpack it fully
+		template<class T>
+		void visitCached(const T& in,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			if (!isFirst)
+				{
+				freeVariables() = freeVariables() + in.freeVariables();
+				outKeepProcessing = false;
+				}
+			}
+		
+		//add extractors for things that cache this
+		void processDown(const ApplyArgument& in,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			visitCached(in, outKeepProcessing, isFirst);
+			}
+		void processDown(const TuplePatternElement& in,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			visitCached(in, outKeepProcessing, isFirst);
+			}
+		void processDown(const Function& in,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			visitCached(in, outKeepProcessing, isFirst);
+			}
+		void processDown(const ObjectDefinition& in,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			visitCached(in, outKeepProcessing, isFirst);
+			}
+		void processDown(const ClassDefinition& in,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			visitCached(in, outKeepProcessing, isFirst);
+			}
+		void processDown(const Expression& in,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			visitCached(in, outKeepProcessing, isFirst);
+			}
+		void processDown(const Pattern& in,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			visitCached(in, outKeepProcessing, isFirst);
+			}
+		
+		void processDown(const PatternWithName& in,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			freeVariables() = freeVariables() + in.freeVariables();
+			outKeepProcessing = false;
+			}
+		
+		void processDown(const ListComprehensionChain& in,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			visitCached(in, outKeepProcessing, isFirst);
+			}
+		
+		void processDown(const Expression_VariableType& e,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			freeVariables() = freeVariables() + e.variable();
+			}
+		
+		void processDown(const Expression_AssignType& e,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			freeVariables() = freeVariables() + e.toAssign().boundVariables();
+			}
+
+		void processDown(const Expression_PullType& e,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			freeVariables() = freeVariables() + e.iterVar();
+			}
+
+		void processDown(const Expression_LetType& e,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			outKeepProcessing = false;
+			
+			//compute a list of all symbols bound by this 'let'
+			ImmutableTreeSet<Symbol> boundSyms;
+			for (long k = 0; k < e.elements().size(); k++)
+				boundSyms = boundSyms + e.elements()[k].first.boundVariables();
+			
+			ImmutableTreeSet<Symbol> f;
+			for (long k = 0; k < e.elements().size(); k++)
+				{
+				f = f +  e.elements()[k].first.freeVariables();
+				f = f +  e.elements()[k].second.freeVariables();
+				}
+			
+			f = f + e.body().freeVariables();
+			f = f - boundSyms;
+			
+			freeVariables() = freeVariables() + f;
+			}
+		void processDown(const Expression_TryType& e,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			outKeepProcessing = false;
+			
+			ImmutableTreeSet<Symbol> freeVars = e.catchWith().freeVariables();
+			if (e.stacktrace())
+				freeVars = freeVars - *e.stacktrace();
+			
+			freeVariables() = freeVariables() +
+				e.toTry().freeVariables() + freeVars;
+			}
+		
+		void processDown(const ListComprehensionChain_TermType& e,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			outKeepProcessing = false;
+			
+			freeVariables() = freeVariables()
+				+ e.pat().freeVariables()
+				+ e.process().freeVariables()
+				+ (
+					(e.inner().freeVariables() +
+						(e.filter() ? e.filter()->freeVariables() :
+							emptyTreeSet())
+						) -
+					e.pat().boundVariables()
+					)
+				;
+			}
+		
+		void processDown(const Function_TermType& e,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			outKeepProcessing = false;
+			
+			ImmutableTreeSet<Symbol> f = e.pattern().freeVariables() +
+				(e.result().freeVariables() - e.pattern().boundVariables());
+			
+			f = f + e.otherwise().freeVariables();
+			
+			freeVariables() = freeVariables() + f;
+			}
+		
+		void processDown(const Expression_CreateLambdaType& e,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			outKeepProcessing = false;
+			
+			ImmutableTreeSet<Symbol> f = e.predicate().freeVariables() - Symbol("_");
+			
+			freeVariables() = freeVariables() + f;
+			}
+
+		void processDown(const TuplePattern& e,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			outKeepProcessing = false;
+			
+			ImmutableTreeSet<Symbol> boundVariables;
+			
+			//each successive TuplePatternElement binds variables in th
+			//pattern before it
+			for (long k = 0; k < e.matchers().size();k++)
+				{
+				freeVariables() = freeVariables() +
+						(e.matchers()[k].freeVariables() - boundVariables);
+						
+				boundVariables = boundVariables +
+					e.matchers()[k].boundVariables();
+				}
+			}
+
+		void processDown(const Pattern_MatchBothType& e,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst
+						 )
+			{
+			outKeepProcessing = false;
+			freeVariables() = freeVariables() +
+				e.left().freeVariables() +
+				(e.right().freeVariables() - e.left().boundVariables())
+				;
+			}
+};
+
+
+@type BoundVariableVisitor = ImmutableTreeSet<Symbol> boundVariables {
+public:
+
+		template<class T>
+		static ImmutableTreeSet<Symbol> getBoundIn(const T& in)
+			{
+			BoundVariableVisitor vis;
+			visit(in, vis, IsFirstTransform(true));
+			return vis.boundVariables();
+			}
+		
+		template<class T>
+		void processDown(const T& in,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			}
+		template<class T>
+		void processUp(const T& in)
+			{
+			}
+		
+		//assumes that 'in' has the value cached as
+		//in.boundVariables(). if this is not the first time,
+		//just grab that, otherwise unpack it fully
+		template<class T>
+		void visitCached(const T& in,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			if (!isFirst)
+				{
+				boundVariables() = boundVariables() + in.boundVariables();
+				outKeepProcessing = false;
+				}
+			}
+		
+		//add extractors for things that cache this
+		void processDown(const TuplePatternElement& in,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			visitCached(in, outKeepProcessing, isFirst);
+			}
+		void processDown(const Pattern& in,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			visitCached(in, outKeepProcessing, isFirst);
+			}
+		void processDown(const PatternWithName& e,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			if (e.name())
+				boundVariables() = boundVariables() + *e.name();
+			}
+		void processDown(const TuplePatternElement_VarArgsType& e,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			if (e.varname())
+				boundVariables() = boundVariables() + *e.varname();
+			}
+		
+		//for Expression, etc. just stop - don't look inside the pattern
+		void processDown(const Expression& in,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst)
+			{
+			outKeepProcessing = false;
+			}
+
+		void processDown(const Pattern_MatchEitherType& e,
+						 bool& outKeepProcessing,
+						 const IsFirstTransform& isFirst
+						 )
+			{
+			outKeepProcessing = false;
+			boundVariables() = boundVariables() + 
+				e.left().boundVariables().intersection(
+					e.right().boundVariables()
+					);
+			}
+};
+
+bool Expression::operator<(const Expression& in) const
+	{
+	return hash() < in.hash();
+	}
+
+bool Expression::operator==(const Expression& in) const
+	{
+	return hash() == in.hash();
+	}
+
+Expression Expression::symbol(string s)
+	{
+	return Expression::Constant(CSTValue(Symbol(s)));
+	}
+
+Expression Expression::str(string s)
+	{
+	return Expression::Constant(CSTValue(s));
+	}
+
+Expression Expression::uint64(uint64_t x)
+	{
+	return Expression::Constant(CSTValue(x));
+	}
+
+Nullable<CodeLocationId> Expression::codeLocationIdOrNull(void) const
+	{
+	@match ExpressionLocationMetadata(this->locationMetadata())
+		-|	WithId(id) ->> { return null() << id; }
+		-|	_ ->> { return null(); }
+	}
+
+Nullable<CodeLocationId> PatternWithName::codeLocationIdOrNull(void) const
+	{
+	@match ExpressionLocationMetadata(locationMetadata())
+		-|	WithId(id) ->> { return null() << id; }
+		-|	_ ->> { return null(); }
+	}
+
+ImmutableTreeSet<Symbol> Expression::computeFreeVariables(void) const
+	{
+	FreeVariableVisitor vis;
+	::visit(*this, vis, IsFirstTransform(true));
+	return vis.freeVariables();
+	}
+
+ImmutableTreeSet<Symbol> Expression::computeAssignedVariables() const
+	{
+	return ::computeAssignedVariables(*this);
+	}
+	
+int PatternWithName::depth() const
+	{
+	int tr = pattern().depth();
+	if (condition())
+		tr = max(tr, condition()->depth());
+	return 1 + tr;
+	}
+	
+Pattern Pattern::Constant(const CSTValue& inValue)
+	{
+	return Pattern::Constant(Expression::Constant(inValue));
+	}
+
+int Pattern::computeDepth() const
+	{
+	@match Pattern(*this)
+		-|	Anything() ->> { return 0; }
+		-|	TypeMatch(typeMatch) ->> { return 1 + typeMatch.depth(); }
+		-|	ExpressionMatch(s, pattern) ->> { return 1 + max(s.depth(), pattern.depth()); }
+		-|	Tuple(pattern) ->> { return 1 + pattern.depth(); }
+		-|	Constant(val) ->> { return 0; }
+		-|	MatchEither(left, right) ->> { return 1 + max(left.depth(), right.depth()); }
+		-|	MatchBoth(left, right) ->> { return 1 + max(left.depth(), right.depth()); }
+		;
+	}
+	
+int TuplePattern::depth() const
+	{
+	int tr = 0;
+	for (auto it = matchers().begin(); it != matchers().end(); ++it)
+		tr = max(tr, it->depth());
+	return 1 + tr;
+	}
+	
+int TuplePatternElement::computeDepth() const
+	{
+	@match TuplePatternElement(*this)
+		-|	Normal(_, match, defaultValue) ->> {
+			int tr = match.depth();
+			if (defaultValue)
+				tr = max(tr, defaultValue->depth());
+			return 1 + tr;
+			}
+		-|	VarArgs(_) ->> { return 0; }
+	}
+	
+int CacheCallArgument::depth() const
+	{
+	int tr = agent().depth();
+	for (auto it = arguments().begin(); it != arguments().end(); ++it)
+		tr = max(tr, it->depth());
+	if (nearExpression())
+		tr = max(tr, nearExpression()->depth());
+	return 1 + tr;
+	}
+	
+int Expression::computeDepth() const
+	{
+	@match Expression(*this)
+		-|	Sequence(first, second) ->> { return 1 + max(first.depth(), second.depth()); }
+		-|	Let(elts, body) ->> { 
+			int tr = 0;
+			for (auto it = elts.begin(); it != elts.end(); ++it)
+				{
+				tr = max(tr, it->second.depth());
+				tr = max(tr, it->first.depth());
+				}
+			return 1 + max(tr, body.depth());
+			}
+		-|	Assign(toAssign, val) ->> { return 1 + val.depth(); } 
+		-|	Apply(agent, args) ->> { 
+			int tr = agent.depth();
+			for (auto it = args.begin(); it != args.end(); ++it)
+				tr = max(tr, it->depth());
+			return 1 + tr;
+			}
+		-|	Call(agent, args) ->> { 
+			int tr = agent.depth();
+			for (auto it = args.begin(); it != args.end(); ++it)
+				tr = max(tr, it->depth());
+			return 1 + tr;
+			}
+		-|	And(lhs, rhs) ->> { return 1 + max(lhs.depth(), rhs.depth()); }
+		-|	Or(lhs, rhs) ->> { return 1 + max(lhs.depth(), rhs.depth()); }
+		-|	Is(lhs, rhs) ->> { return 1 + max(lhs.depth(), rhs.depth()); }
+		-|	IsNot(lhs, rhs) ->> { return 1 + max(lhs.depth(), rhs.depth()); }
+		-|	Not(expr) ->> { return 1 + expr.depth(); }
+		-|	In(lhs, rhs) ->> { return 1 + max(lhs.depth(), rhs.depth()); }
+		-|	NotIn(lhs, rhs) ->> { return 1 + max(lhs.depth(), rhs.depth()); }
+		-|	BinaryOperator(lhs, _, rhs) ->> { return 1 + max(lhs.depth(), rhs.depth()); }
+		-|	LeftOperator(_, expr) ->> { return 1 + expr.depth(); }
+		-|	RightOperator(expr, _) ->> { return 1 + expr.depth(); }
+		-|	GetItem(agent, args) ->> { 
+			int tr = agent.depth();
+			for (auto it = args.begin(); it != args.end(); ++it)
+				tr = max(tr, it->depth());
+			return 1 + tr;
+			}
+		-|	SetItem(agent, args, toSet) ->> { 
+			int tr = max(agent.depth(), toSet.depth());
+			for (auto it = args.begin(); it != args.end(); ++it)
+				tr = max(tr, it->depth());
+			return 1 + tr;
+			}
+		-|	Member(agent, _, _) ->> { return 1 + agent.depth(); }
+		-|	ComputedMember(agent, memb, _) ->> { return 1 + max(agent.depth(), memb.depth()); }
+		-|	While(cond, updater) ->> { return 1 + max(cond.depth(), updater.depth()); }
+		-|	Pull(_, resumeWith) ->> { return 1 + resumeWith.depth(); }
+		-|	Cached(expr) ->> {
+			int tr = 0;
+			for (auto it = expr.begin(); it != expr.end(); ++it)
+				tr = max(tr, it->depth());
+			return 1 + tr;
+			} 
+		-|	RawCached(exprs) ->> {
+			int tr = 0;
+			for (auto it = exprs.begin(); it != exprs.end(); ++it)
+				tr = max(tr, it->depth());
+			return tr;
+			} 
+		-|	Branch(operand, ifTrue, ifFalse) ->> {
+			int tr = max(operand.depth(), ifTrue.depth());
+			if (ifFalse)
+				tr = max(tr, ifFalse->depth());
+			return 1 + tr;
+			}
+		-|	Throw(except, stacktrace) ->> {
+			int tr = except.depth();
+			if (stacktrace)
+				tr = max(tr, stacktrace->depth());
+			return 1 + tr;
+			}
+		-|	Try(toTry, catchWith, _, _) ->> {
+			int tr = toTry.depth();
+			tr = max(tr, catchWith.depth()); 
+			return 1 + tr;
+			}
+		-|	Return(expr) ->> { return 1 + expr.depth(); }
+		-|	Yield(expr) ->> { return 1 + expr.depth(); }
+		-|	Continuation(withContinuation) ->> { 
+			return 1 + withContinuation.depth(); 
+			}
+		-|	Foreach(listCompChain) ->> { 
+			return 1 + listCompChain.depth();
+			}
+		-|	Match(toMatch, predicate) ->> { 
+			int tr = predicate.depth();
+			for (auto it = toMatch.begin(); it != toMatch.end(); ++it)
+				tr = max(tr, it->depth());
+			return 1 + tr;
+			}
+		-|	CreateFunction(_, predicate, _) ->> { 
+			return 1 + predicate.depth();
+			}
+		-|	CreateLambda(_, predicate) ->> { 
+			return 1 + predicate.depth();
+			}
+		-|	CreateObject(_, body, _) ->> { 
+			return 1 + body.depth();
+			}
+		-|  CreateClass(_, body, _) ->> {
+			return 1 + body.depth();
+			}
+		-|	CreateTuple(args) ->> { 
+			int tr = 0;
+			for (auto it = args.begin(); it != args.end(); ++it)
+				tr = max(tr, it->depth());
+			return 1 + tr;
+			}
+		-|	CreateList(exprs) ->> {
+			int tr = 0;
+			for (auto it = exprs.begin(); it != exprs.end(); ++it)
+				tr = max(tr, it->depth());
+			return 1 + tr;
+			}
+		-|	ListComprehension(chain, _) ->> { 
+			return 1 + chain.depth();
+			}
+		-|	NoStackTraceAugmentations(expr) ->> { return 1 + expr.depth(); }
+		-|	_ ->> { return 0; }
+		;		
+	}
+
+int ObjectDefinition::depth() const
+	{
+	return 1 + body().depth();
+	}
+
+int ObjectDefinitionBody::computeDepth() const
+	{
+	@match ObjectDefinitionBody(*this)
+		-|	Empty() ->> { return 0; }
+		-|	Term(term, otherwise) ->> {
+			return 1 + max(term.depth(), otherwise.depth());
+			}
+		;
+	}
+
+int ObjectDefinitionTerm::computeDepth() const
+	{
+	@match ObjectDefinitionTerm(*this)
+		-|	Member(_, expr, _) ->> { return 1 + expr.depth(); }
+		-|  MatchFilter(fun) ->> { return 1 + fun.depth(); }
+		-|  Filter(fun) ->> { return 1 + fun.depth(); }
+		-|	Call(f) ->> { return 1 + f.depth(); }
+		-|	Convert(f) ->> { return 1 + f.depth(); }
+		-|	Operator(_, f) ->> { return 1 + f.depth(); }
+		-|	ReverseOperator(_, f) ->> { return 1 + f.depth(); }
+		-|	LeftOperator(_, f) ->> { return 1 + f.depth(); }
+		-|	RightOperator(_, f) ->> { return 1 + f.depth(); }
+		-|	GetItem(f) ->> { return 1 + f.depth(); }
+		-|	SetItem(f) ->> { return 1 + f.depth(); }
+		-|	Iter(f) ->> { return 1 + f.depth(); }
+		-|	Next(f) ->> { return 1 + f.depth(); }
+		-|	Anything(f) ->> { return 1 + f.depth(); }
+		;	
+	}
+
+int ListComprehensionChain::computeDepth() const
+	{
+	@match ListComprehensionChain(*this)
+		-|	Leaf(expr) ->> { return 1 + expr.depth(); }
+		-|	Term(pat, filter, process, inner) ->> {
+			int tr = pat.depth();
+			if (filter)
+				tr = max(tr, filter->depth());
+			tr = max(tr, process.depth());
+			tr = max(tr, inner.depth());
+			return 1 + tr;
+			}
+		;		
+	}
+
+int Function::computeDepth() const
+	{
+	@match Function(*this)
+		-|	Empty() ->> { return 0; }
+		-|	Term(pattern, result, otherwise) ->> {
+			return 1 + max(max(result.depth(), otherwise.depth()), pattern.depth());
+			}
+		;
+	}
+
+ImmutableTreeSet<Symbol> ListComprehensionChain::computeFreeVariables(void) const
+	{
+	FreeVariableVisitor vis;
+	::visit(*this, vis, IsFirstTransform(true));
+	return vis.freeVariables();
+	}
+
+ImmutableTreeSet<Symbol> ListComprehensionChain::computeAssignedVariables() const
+	{
+	return ::computeAssignedVariables(*this);
+	}
+
+ImmutableTreeSet<Symbol> ApplyArgument::computeFreeVariables(void) const
+	{
+	FreeVariableVisitor vis;
+	::visit(*this, vis, IsFirstTransform(true));
+	return vis.freeVariables();
+	}
+
+int ApplyArgument::computeDepth() const
+	{
+	@match ApplyArgument(*this)
+		-|	Normal(_, expr) ->> { return 1 + expr.depth(); }
+		-|	NamedArgument(name, expr) ->> { return 1 + max(name.depth(), expr.depth()); }
+		-|	TupleCall(expr) ->> { return 1 + expr.depth(); }
+		;
+	}
+
+ImmutableTreeSet<Symbol> ObjectDefinition::freeVariables(void) const
+	{
+	FreeVariableVisitor vis;
+	::visit(*this, vis, IsFirstTransform(true));
+	return
+		(vis.freeVariables()
+			- body().members()
+			- (selfName() ? *selfName() : Symbol("self")))
+		+ body().freeVariablesNotInObjectScope();
+	}
+
+ImmutableTreeSet<Symbol> ObjectDefinitionTerm::computeFreeVariables(bool inObjectScope) const
+	{
+	@match ObjectDefinitionTerm(*this)
+		-|	Mixin(expr) ->> {
+			if (inObjectScope)
+				return emptyTreeSet();
+			else
+				return expr.freeVariables();
+			}
+		-|	x ->> {
+			if (inObjectScope)
+				{
+				FreeVariableVisitor vis;
+				::visit(*this, vis, IsFirstTransform(true));
+				return vis.freeVariables();
+				}
+			else
+				{
+				return emptyTreeSet();
+				}
+			}
+		;
+	}
+
+ImmutableTreeSet<Symbol> ObjectDefinitionTerm::freeVariables(bool inObjectScope) const
+	{
+	if (inObjectScope)
+		return freeVariablesInObjectScope();
+	else
+		return freeVariablesNotInObjectScope();
+	}
+
+ImmutableTreeSet<Symbol> ObjectDefinitionBody::computeFreeVariables(bool inObjectScope) const
+	{
+	@match ObjectDefinitionBody(*this)
+		-|	Empty() ->> {
+			return emptyTreeSet();
+			}
+		-|	Term((t,_), otherwise) ->> {
+			return otherwise.freeVariables(inObjectScope) + t.freeVariables(inObjectScope);
+			}
+		;
+	}
+
+bool ObjectDefinitionTerm::isInObjectScope(void) const
+	{
+	@match ObjectDefinitionTerm(*this)
+		-| Mixin() ->> { 
+			return false; 
+			}
+		-| _ ->> { 
+			return true; 
+			}
+
+	}
+
+ImmutableTreeSet<Symbol> ObjectDefinitionBody::freeVariables(bool inObjectScope) const
+	{
+	if (inObjectScope)
+		return freeVariablesInObjectScope();
+	else
+		return freeVariablesNotInObjectScope();
+	}
+
+ImmutableTreeSet<Symbol> ObjectDefinitionBody::computeMembers(void) const
+	{
+	@match ObjectDefinitionBody(*this)
+		-|	Empty() ->> {
+			return emptyTreeSet();
+			}
+		-|	Term((Member(membername),_), otherwise) ->> {
+			return emptyTreeSet() + membername + otherwise.members();
+			}
+		-|	Term(_, otherwise) ->> {
+			return otherwise.members();
+			}
+		;
+	}
+
+ImmutableTreeSet<Symbol> ClassDefinitionBody::computeFreeVariables(
+						bool inObjectScope,
+						bool inStaticLayer
+						) const
+	{
+	@match ClassDefinitionBody(*this)
+		-| Term((term,_), next) ->> {
+			return 
+				next.computeFreeVariables(inObjectScope, inStaticLayer) + 
+				term.freeVariables(inObjectScope, inStaticLayer);
+			}
+		-| Empty() ->> {
+			return emptyTreeSet();
+			}
+	}
+
+ImmutableTreeSet<Symbol> ClassDefinitionTerm::freeVariables(
+						bool inObjectScope, 
+						bool inStaticLayer
+						) const
+	{
+	@match ClassDefinitionTerm(*this)
+		-| DataMember() ->> {
+			return emptyTreeSet();
+			}
+		-| Constructor(term) ->> {
+			if (inStaticLayer && inObjectScope)
+				return term.freeVariables();
+			return emptyTreeSet();
+			}
+		-| Static(term) ->> {
+			if (inStaticLayer)
+				return term.freeVariables(inObjectScope);
+			return emptyTreeSet();
+			}
+		-| ObjectTerm(term) ->> {
+			if (!inStaticLayer)
+				return term.freeVariables(inObjectScope);
+			return emptyTreeSet();
+			}
+	}
+
+ImmutableTreeSet<Symbol> ClassDefinition::freeVariables(void) const
+	{
+	ImmutableTreeSet<Symbol> freeInClassLevelObjectScope = 
+		body().computeFreeVariables(true, true);
+
+	ImmutableTreeSet<Symbol> freeInInstanceLevelObjectScope = 	
+		body().computeFreeVariables(true, false);
+
+	ImmutableTreeSet<Symbol> freeInClassLevelNotInObjectScope = 
+		body().computeFreeVariables(false, true);
+
+	ImmutableTreeSet<Symbol> freeInInstanceLevelNotInObjectScope = 
+		body().computeFreeVariables(false, false);
+
+	return
+		(	(freeInClassLevelObjectScope - body().staticMembers())
+		+	((freeInInstanceLevelObjectScope - body().allMembers())
+		-	(selfName() ? *selfName() : Symbol("self")))
+		-	(className() ? *className() : Symbol("cls"))
+		) + (freeInInstanceLevelNotInObjectScope - body().staticMembers() - 
+		(className() ? *className() : Symbol("cls")))
+		  + freeInClassLevelNotInObjectScope
+		;
+	}
+	
+int ClassDefinition::depth() const
+	{
+	return 1 + body().depth();
+	}
+
+bool ClassDefinitionTerm::isStaticLevel(void) const
+	{
+	@match ClassDefinitionTerm(*this)
+		-| DataMember() ->> { 
+			return true; 
+			}
+		-| Constructor() ->> { 
+			return true; 
+			}
+		-| Static() ->> { 
+			return true; 
+			}
+		-| ObjectTerm() ->> { 
+			return false; 
+			}
+		;
+	}
+
+bool ClassDefinitionTerm::isInObjectScope(void) const
+	{
+	@match ClassDefinitionTerm(*this)
+		-| DataMember() ->> { 
+			return true; 
+			}
+		-| Constructor() ->> { 
+			return true; 
+			}
+		-| Static(term) ->> { 
+			return term.isInObjectScope(); 
+			}
+		-| ObjectTerm(term) ->> { 
+			return term.isInObjectScope(); 
+			}
+		;
+	}
+
+int ClassDefinitionTerm::computeDepth() const
+	{
+	@match ClassDefinitionTerm(*this)
+		-| DataMember() ->> { 
+			return 0; 
+			}
+		-| Constructor(fun) ->> { 
+			return 1 + fun.depth(); 
+			}
+		-| Static(term) ->> { 
+			return 1 + term.depth(); 
+			}
+		-| ObjectTerm(term) ->> { 
+			return 1 + term.depth(); 
+			}
+		;
+	}
+
+ImmutableTreeSet<Symbol> ClassDefinitionBody::computeAllMembers(void) const
+	{
+	@match ClassDefinitionBody(*this)
+		-|	Empty() ->> {
+			return emptyTreeSet();
+			}
+		-|	Term((ObjectTerm(Member(membername)),_), otherwise) ->> {
+			return emptyTreeSet() + membername + otherwise.allMembers();
+			}
+		-|	Term((Static(Member(membername)),_), otherwise) ->> {
+			return emptyTreeSet() + membername + otherwise.allMembers();
+			}
+		-|	Term((DataMember(membername),_), otherwise) ->> {
+			return emptyTreeSet() + membername + otherwise.allMembers();
+			}
+		-|	Term(_, otherwise) ->> {
+			return otherwise.allMembers();
+			}
+		;
+	}
+
+ImmutableTreeVector<Symbol> 
+ClassDefinitionBody::computeAllDataMembersInDeclarationOrder(void) const
+	{
+	@match ClassDefinitionBody(*this)
+		-|	Empty() ->> {
+			return emptyTreeVec();
+			}
+		-|	Term((DataMember(membername),_), otherwise) ->> {
+			return emptyTreeVec() + membername + otherwise.allDataMembersInDeclarationOrder();
+			}
+		-|	Term(_, otherwise) ->> {
+			return otherwise.allDataMembersInDeclarationOrder();
+			}
+		;
+	}
+
+ImmutableTreeSet<Symbol> ClassDefinitionBody::computeStaticMembers(void) const
+	{
+	@match ClassDefinitionBody(*this)
+		-|	Empty() ->> {
+			return emptyTreeSet();
+			}
+		-|	Term((ObjectTerm(Member(membername)),_), otherwise) ->> {
+			return emptyTreeSet() + otherwise.staticMembers();
+			}
+		-|	Term((Static(Member(membername)),_), otherwise) ->> {
+			return emptyTreeSet() + membername + otherwise.staticMembers();
+			}
+		-|	Term((DataMember(membername),_), otherwise) ->> {
+			return emptyTreeSet() + otherwise.staticMembers();
+			}
+		-|	Term(_, otherwise) ->> {
+			return otherwise.staticMembers();
+			}
+		;
+	}
+
+int ClassDefinitionBody::computeDepth() const
+	{
+	@match ClassDefinitionBody(*this)
+		-|  Empty() ->> { return 0 }
+		-|  Term(term, otherwise) ->> { return 1 + max(term.depth(), otherwise.depth()); }
+		;
+	}
+
+Function Function::SingleTermFunction(
+			ImmutableTreeVector<Symbol> vars,
+			Nullable<Symbol> varArgs,
+			Expression body
+			)
+	{
+	ImmutableTreeVector<TuplePatternElement> elts;
+	for (long k = 0; k < vars.size();k++)
+		elts = elts + TuplePatternElement::Normal(PatternWithName::Anything(null()<<vars[k]));
+	if (varArgs)
+		elts = elts + TuplePatternElement::VarArgs(varArgs);
+
+	return Function::Term(TuplePattern(elts), body, Function::Empty());
+	}
+Function Function::withFreeAsArgs(void) const
+	{
+	ImmutableTreeSet<Symbol> free = this->freeVariables();
+	
+	ImmutableTreeVector<TuplePatternElement> elts;
+	
+	for (long k = 0; k < free.size();k++)
+		elts = elts + TuplePatternElement::Normal(
+			PatternWithName::Anything(null() << free[k])
+			);
+	
+	return this->prependArgs(elts);
+	}
+PatternWithName PatternWithName::Anything(Nullable<Symbol> name)
+	{
+	return PatternWithName(
+		Pattern::Anything(), 
+		name, 
+		null(), 
+		ExpressionLocationMetadata::Empty()
+		);
+	}
+PatternWithName PatternWithName::Constant(const CSTValue& val)
+	{
+	return PatternWithName(
+		Pattern::Constant(val), 
+		null(), 
+		null(), 
+		ExpressionLocationMetadata::Empty()
+		);
+	}
+
+ImmutableTreeSet<Symbol> Function::computeFreeVariables(void) const
+	{
+	FreeVariableVisitor vis;
+	::visit(*this, vis, IsFirstTransform(true));
+	return vis.freeVariables();
+	}
+
+ImmutableTreeSet<Symbol> Pattern::computeFreeVariables(void) const
+	{
+	FreeVariableVisitor vis;
+	::visit(*this, vis, IsFirstTransform(true));
+	return vis.freeVariables();
+	}
+
+	
+ImmutableTreeSet<Symbol> Pattern::computeBoundVariables(void) const
+	{
+	BoundVariableVisitor vis;
+	::visit(*this, vis, IsFirstTransform(true));
+	return vis.boundVariables();
+	}
+
+ImmutableTreeSet<Symbol> PatternWithName::freeVariables(void) const
+	{
+	ImmutableTreeSet<Symbol> tr = pattern().freeVariables();
+	if (condition())
+		tr = tr + (condition()->freeVariables() - boundVariables());
+	return tr;
+	}
+
+	
+ImmutableTreeSet<Symbol> PatternWithName::boundVariables(void) const
+	{
+	ImmutableTreeSet<Symbol> tr = pattern().boundVariables();
+	if (name())
+		return tr + *name();
+	return tr;
+	}
+ImmutableTreeSet<Symbol> TuplePatternElement::computeFreeVariables(void) const
+	{
+	FreeVariableVisitor vis;
+	::visit(*this, vis, IsFirstTransform(true));
+	return vis.freeVariables();
+	}
+TuplePatternElement	TuplePatternElement::Normal(const PatternWithName& match)
+	{
+	return TuplePatternElement::Normal(null(), match, null());
+	}
+	
+ImmutableTreeSet<Symbol> TuplePatternElement::computeBoundVariables(void) const
+	{
+	BoundVariableVisitor vis;
+	::visit(*this, vis, IsFirstTransform(true));
+	return vis.boundVariables();
+	}
+
+ImmutableTreeVector<Symbol> extractFunctionNames(const Function& inFun)
+	{
+	if (inFun.isEmpty())
+		return emptyTreeVec();
+	ImmutableTreeVector<Symbol> elts;
+
+	@match Function(inFun)
+		-|	Term(args,_,_) ->> {
+
+			for (long k = 1; k < args.size();k++)
+				@match TuplePatternElement(args[k])
+					-|	Normal(Null(), (Anything(), Value(v))) ->> { elts = elts + v;; }
+					-|	_ ->> { k = args.size();; }
+					;
+			}
+		;
+	@match Function(inFun)
+		-|	Term(_,_,Empty()) ->> {
+			return elts;
+			}
+		-|	Term(_,_,tail) ->> {
+
+			ImmutableTreeVector<Symbol> subElts = extractFunctionNames(tail);
+
+			for (long k = 0; k < subElts.size() && k < elts.size();k++)
+				if (subElts[k] != elts[k])
+					return elts.slice(0,k);
+			if (elts.size() < subElts.size())
+				return elts;
+			return subElts;
+			}
+		;
+	lassert(false);
+	}
+
+ApplyArgument	ApplyArgument::Normal(const Expression& expr)
+	{
+	return ApplyArgument::Normal(null(), expr);
+	}
+
+Expression Expression::Let(Symbol s, Expression value, Expression remainder)
+	{
+	return Expression::Let(emptyTreeVec() +
+			make_pair(PatternWithName::Anything(null() << s), value), remainder);
+	}
+Expression Expression::Let(	Nullable<Symbol> s,
+							Expression value,
+							Expression remainder
+							)
+	{
+	return Expression::Let(emptyTreeVec() +
+			make_pair(PatternWithName::Anything(s), value), remainder);
+	}
+Expression Expression::operator()() const
+	{
+	return Expression::Call(*this,
+		emptyTreeVec()
+		);
+	}
+Expression Expression::operator()(const Expression& e1) const
+	{
+	return Expression::Call(*this,
+		emptyTreeVec() + *e1
+		);
+	}
+Expression Expression::operator()(const Expression& e1,
+								const Expression& e2) const
+	{
+	return Expression::Call(*this,
+		emptyTreeVec() + *e1 + *e2
+		);
+	}
+Expression Expression::operator()(const Expression& e1,
+								const Expression& e2,
+								const Expression& e3) const
+	{
+	return Expression::Call(*this,
+		emptyTreeVec() + *e1 + *e2 + *e3
+		);
+	}
+Expression Expression::operator()(const Expression& e1,
+								const Expression& e2,
+								const Expression& e3,
+								const Expression& e4) const
+	{
+	return Expression::Call(*this,
+		emptyTreeVec() + *e1 + *e2 + *e3 + *e4
+		);
+	}
+Expression Expression::operator()(const Expression& e1,
+								const Expression& e2,
+								const Expression& e3,
+								const Expression& e4,
+								const Expression& e5) const
+	{
+	return Expression::Call(*this,
+		emptyTreeVec() + *e1 + *e2 + *e3 + *e4 + *e5
+		);
+	}
+Expression Expression::operator()(
+						const ImmutableTreeVector<Expression>& e1) const
+	{
+	ImmutableTreeVector<ApplyArgument> a;
+	for (long k = 0; k < e1.size();k++)
+		a = a + *e1[k];
+		
+	return Expression::Call(*this, a);
+	}
+Expression Expression::add(const Expression& e) const
+	{
+	return Expression::BinaryOperator(*this, Symbol("+"), e);
+	}
+Expression Expression::sub(const Expression& e) const
+	{
+	return Expression::BinaryOperator(*this, Symbol("-"), e);
+	}
+Expression Expression::lt(const Expression& e) const
+	{
+	return Expression::BinaryOperator(*this, Symbol("<"), e);
+	}
+Expression Expression::gt(const Expression& e) const
+	{
+	return Expression::BinaryOperator(*this, Symbol(">"), e);
+	}
+Expression Expression::eq(const Expression& e) const
+	{
+	return Expression::BinaryOperator(*this, Symbol("=="), e);
+	}
+Expression Expression::lte(const Expression& e) const
+	{
+	return Expression::BinaryOperator(*this, Symbol("<="), e);
+	}
+Expression Expression::gte(const Expression& e) const
+	{
+	return Expression::BinaryOperator(*this, Symbol(">="), e);
+	}
+Expression Expression::operator[](const Expression& e) const
+	{
+	return Expression::GetItem(*this, emptyTreeVec() + *e);
+	}
+Expression Expression::member(const Symbol& e) const
+	{
+	return Expression::Member(*this, e, 1);
+	}
+Expression Expression::operator[](uint64_t x) const
+	{
+	return Expression::GetItem(*this, emptyTreeVec() + *Expression::uint64(x));
+	}
+
+
+ObjectDefinitionBody operator+(	const ObjectDefinitionBody& lhs,
+								const ObjectDefinitionBody& rhs)
+	{
+	if (rhs.isEmpty())
+		return lhs;
+	if (lhs.isEmpty())
+		return rhs;
+	@match ObjectDefinitionBody(lhs)
+		-|	Term(a,tail) ->> {
+			return ObjectDefinitionBody::Term(a, tail + rhs);
+			}
+		;
+	}
+
+ClassDefinitionBody operator+(	const ClassDefinitionBody& lhs,
+								const ClassDefinitionBody& rhs)
+	{
+	if (rhs.isEmpty())
+		return lhs;
+	if (lhs.isEmpty())
+		return rhs;
+	@match ClassDefinitionBody(lhs)
+		-|	Term(a,tail) ->> {
+			return ClassDefinitionBody::Term(a, tail + rhs);
+			}
+		;
+	}
+
+Function operator+(const Function& lhs, const Function& rhs)
+	{
+	if (rhs.isEmpty())
+		return lhs;
+	if (lhs.isEmpty())
+		return rhs;
+	@match Function(lhs)
+		-|	Term(a,c,tail) ->> {
+			return Function::Term(a,c, tail + rhs);
+			};
+	}
+
+Function Function::prependArgs(
+			const ImmutableTreeVector<TuplePatternElement>& terms,
+			uint32_t offset) const
+	{
+	@match Function(*this)
+		-|	Term(a,b,tail) ->> {
+			return 
+				Function::Term(
+					TuplePattern(a.matchers().slice(0,offset)
+						+ terms
+						+ a.matchers().slice(offset)
+						),
+					b,
+					tail.prependArgs(terms, offset)
+					);
+			}
+		-|	Empty() ->> {
+			return  *this;
+			}
+		;
+	}
+	
+bool Expression::isSymbol(const char* c) const
+	{
+	return isConstant() && getConstant().val().type().isSymbol()
+					&& getConstant().val().cast<Symbol>() == Symbol(c);
+	}
+bool ApplyArgument::isSymbol(const char* c) const
+	{
+	@match ApplyArgument(*this)
+		-| Normal(_, e) ->> {
+			return  e.isSymbol(c);
+			}
+		-| NamedArgument(_, e) ->> {
+			return  e.isSymbol(c);
+			}
+		-| _ ->> {
+			return  false;
+			}
+		;
+	}
+	
+@type MentionedVariablesVisitor = ImmutableTreeSet<Symbol> vars {
+public:
+		template<class T>
+		void	processDown(const T& inVal, bool& ioContinue)
+			{
+			}
+		template<class T>
+		void	processUp(const T& inVal)
+			{
+			}
+		void	processDown(const Expression& inVal, bool& ioContinue)
+			{
+			@match Expression(inVal)
+				-|	Variable(v) ->> {
+					vars() = vars() + v;
+					}
+				-|	Pull(v, _) ->> {
+					vars() = vars() + v;
+					}
+				-|	_ ->> { }
+				;
+			}
+		void	processDown(const PatternWithName& inVal, bool& ioContinue)
+			{
+			if (inVal.name())
+				vars() = vars() + *inVal.name();
+			}
+};
+
+ImmutableTreeSet<Symbol>			mentionedVariables(const Function& f)
+	{
+	MentionedVariablesVisitor visitor;
+	::visit(f, visitor);
+	return visitor.vars();
+	}
+ImmutableTreeSet<Symbol>			mentionedVariables(const Expression& e)
+	{
+	MentionedVariablesVisitor visitor;
+	::visit(e, visitor);
+	return visitor.vars();
+	}
+
+Expression ApplyArgument::expr(void) const
+	{
+	@match ApplyArgument(*this)
+		-|	Normal(_, x) ->> {
+			return  x;
+			}
+		-|	NamedArgument(_, x) ->> {
+			return  x;
+			}
+		-|	TupleCall(x) ->> {
+			return  x;
+			}
+		;
+	}
+ApplyArgument	Expression::operator*(void) const
+	{
+	return ApplyArgument::TupleCall(*this);
+	}
+
+Expression Expression::Apply(Expression agent,
+									ImmutableTreeVector<Expression> arguments)
+	{
+	ImmutableTreeVector<ApplyArgument> args;
+	for (long k = 0; k < arguments.size();k++)
+		args = args + ApplyArgument::Normal(arguments[k]);
+
+	return Expression::Apply(agent, args);
+	}
+ImmutableTreeVector<ApplyArgument> operator+(
+					const ImmutableTreeVector<Expression>& args,
+					const ApplyArgument& arg)
+	{
+	ImmutableTreeVector<ApplyArgument> tr;
+	for (long k = 0; k < args.size();k++)
+		tr = tr + ApplyArgument::Normal(args[k]);
+	return tr + arg;
+	}
+ImmutableTreeVector<ApplyArgument> operator+(
+					const ImmutableTreeVector<Expression>& args, 
+					const ImmutableTreeVector<ApplyArgument>& args2)
+	{
+	ImmutableTreeVector<ApplyArgument> tr;
+	for (long k = 0; k < args.size();k++)
+		tr = tr + ApplyArgument::Normal(args[k]);
+	return tr + args2;
+	}
+ImmutableTreeVector<ApplyArgument> operator+(
+					const ImmutableTreeVector<ApplyArgument>& args, 
+					const ImmutableTreeVector<Expression>& args2)
+	{
+	ImmutableTreeVector<ApplyArgument> tr = args;
+	for (long k = 0; k < args2.size();k++)
+		tr = tr + ApplyArgument::Normal(args2[k]);
+	return tr;
+	}
+ImmutableTreeVector<ApplyArgument> operator+(
+					const ImmutableTreeVector<ApplyArgument>& args, 
+					const Expression& arg)
+	{
+	return args + ApplyArgument::Normal(arg);
+	}
+ImmutableTreeVector<TuplePatternElement> operator+(
+					const ImmutableTreeVector<TuplePatternElement>& args, 
+					const Symbol& arg)
+	{
+	return args + TuplePatternElement::Normal(PatternWithName::Anything(null() << arg));
+	}
+ImmutableTreeVector<TuplePatternElement> operator+(
+					const Symbol& arg, 
+					const ImmutableTreeVector<TuplePatternElement>& args)
+	{
+	return TuplePatternElement::Normal(PatternWithName::Anything(null() << arg)) + args;
+	}
+ImmutableTreeSet<Symbol> TuplePattern::freeVariables(void) const
+	{
+	return FreeVariableVisitor::getFreeIn(*this);
+	}
+ImmutableTreeSet<Symbol> TuplePattern::boundVariables(void) const
+	{
+	return BoundVariableVisitor::getBoundIn(*this);
+	}
+ApplyArgument createNormalApplyArgument(const Expression& e)
+	{
+	return ApplyArgument::Normal(null(), e);
+	}
+Expression Expression::CreateTuple(const ImmutableTreeVector<Expression>& args)
+	{
+	return CreateTuple(mapITV(args, createNormalApplyArgument));
+	}
+Nullable<Function> Expression::extractRootLevelCreateFunctionPredicate(void) const
+	{
+	Expression e = *this;
+
+	while (!e.isCreateFunction())
+		{
+		@match Expression(e)
+			-|	NoStackTraceAugmentations(x) ->> { e = x; }
+			-|	x ->> {
+				return null();
+				}
+			;
+		}
+	
+	@match Expression(e)
+		-|	CreateFunction(name, predicate) ->> {
+			return null() << predicate;
+			}
+		;
+	}
+			
+Nullable<ObjectDefinition> Expression::extractRootLevelCreateObjectPredicate(void) const
+	{
+	Expression e = *this;
+
+	while (!e.isCreateObject())
+		{
+		@match Expression(e)
+			-|	NoStackTraceAugmentations(x) ->> { e = x; }
+			-|	x ->> {
+				return null();
+				}
+			;
+		}
+	
+	@match Expression(e)
+		-|	CreateObject(name, predicate) ->> {
+			return null() << predicate;
+			}
+		;
+	}
+			
+Expression Expression::unwrapCodeLocationTags(void) const
+	{
+	Expression e = *this;
+
+	while (true)
+		{
+		@match Expression(e)
+			-|	NoStackTraceAugmentations(x) ->> { e = x; }
+			-|	x ->> {
+				return x;
+				}
+			;
+		}
+	}
+			
+Symbol freshVarname(string base, const ImmutableTreeSet<Symbol>& inSymbols)
+	{
+	uword_t ix = 0;
+	Symbol candidate = Symbol(base);
+	
+	while (inSymbols.contains(candidate))
+		candidate = Symbol(base + boost::lexical_cast<string>(ix++));
+	
+	return candidate;
+	}
+
+Symbol freshVarname(Symbol base, const ImmutableTreeSet<Symbol>& inSymbols)
+	{
+	return freshVarname(base.toString(), inSymbols);
+	}
+
+Expression Expression::Variable(std::string s)
+	{
+	return Expression::Variable(Symbol(s));
+	}
+
+Nullable<CSTValue> Expression::extractConstantIfPossible(void) const
+	{
+	@match Expression(*this)
+		-| Constant(c) ->> { 
+			return null() << c; 
+			}
+		-| Call(agent, args) ->> {
+			Nullable<CSTValue> nAgentVal = agent.extractConstantIfPossible();
+			
+			if (!nAgentVal)
+				return null();
+			
+			CSTValue agentVal = *nAgentVal;
+
+			if (agentVal.type().isTag())
+				{
+				Nullable<CSTValue> nArgsTag = Expression::CreateTuple(args).extractConstantIfPossible();
+
+				if (!nArgsTag)
+					return null();
+
+				return null() << CSTValue::Alternative(agentVal.cast<Symbol>(), *nArgsTag);
+				}
+			}
+		-| CreateTuple(args) ->> {
+
+			CSTValue tr = CSTValue::Tuple();
+
+			for (long k = 0; k < args.size();k++)
+				@match ApplyArgument(args[k])
+					-| Normal(sym, e) ->> {
+						Nullable<CSTValue> subConst = e.extractConstantIfPossible();
+
+						if (!subConst)
+							return null();
+
+						tr = tr.tupleAppend(sym, *subConst);
+						}
+					-| TupleCall(e) ->> {
+						Nullable<CSTValue> subConst = e.extractConstantIfPossible();
+
+						if (!subConst)
+							return null();
+
+						if (subConst->type().isTuple())
+							tr = tr.tupleConcatenate(*subConst);
+						else
+							tr = tr.tupleAppend(null(), *subConst);
+						}
+			return null() << tr;
+			}
+		-| BinaryOperator(e1, symbol, e2) ->> {
+
+			static Symbol plusSymbol = Symbol("+");
+
+			if (symbol != plusSymbol)
+				return null();
+			
+			Nullable<CSTValue> nE1Constant = e1.extractConstantIfPossible();
+
+			if (!nE1Constant)
+				return null();
+
+			Nullable<CSTValue> nE2Constant = e2.extractConstantIfPossible();
+
+			if (!nE2Constant)
+				return null();
+
+			if (nE1Constant->type().isString() && nE2Constant->type().isString())
+				return null() << CSTValue(
+					nE1Constant->cast<string_type>().stdString() + 
+					nE2Constant->cast<string_type>().stdString()
+					);
+
+			return null();
+			}
+		-| LeftOperator(symbol, expr) ->> {
+			static Symbol minusSymbol = Symbol("-");
+
+			Nullable<CSTValue> nConstant = expr.extractConstantIfPossible();
+
+			if (!nConstant)
+				return null();
+
+			CSTValue c = *nConstant;
+			
+			if ((c.type().isInteger() || c.type().isFloat()) && symbol == minusSymbol) 
+				{
+				@match Type(c.type())
+					-| Integer(bits,isSigned) ->> {
+						if (bits == 64 and isSigned)
+							return null() << CSTValue(- c.cast<int64_t>());
+						if (bits == 32 and isSigned)
+							return null() << CSTValue(- c.cast<int32_t>());
+						if (bits == 16 and isSigned)
+							return null() << CSTValue(- c.cast<int16_t>());
+						if (bits == 8 and isSigned)
+							return null() << CSTValue(- c.cast<int8_t>());
+
+						if (bits == 64 and !isSigned)
+							return null() << CSTValue(- c.cast<uint64_t>());
+						if (bits == 32 and !isSigned)
+							return null() << CSTValue(- c.cast<uint32_t>());
+						if (bits == 16 and !isSigned)
+							return null() << CSTValue(- c.cast<uint16_t>());
+						if (bits == 8 and !isSigned)
+							return null() << CSTValue(- c.cast<uint8_t>());
+						}
+					-| Float(bits) ->> {
+						if (bits == 64)
+							return null() << CSTValue(- c.cast<double>());
+						if (bits == 32)
+							return null() << CSTValue(- c.cast<float>());
+						}
+				}
+			}
+		-| _ ->> {
+			}
+
+	return null();
+	}
+
+void CPPMLPrettyPrint<Expression>::prettyPrint(
+										CPPMLPrettyPrintStream& stream,
+										const Expression& expression
+										)
+	{
+	FORAValuePrinting::FORAValuePrinter(stream).toString(expression);
+	}
+
+void CPPMLPrettyPrint<Function>::prettyPrint(
+										CPPMLPrettyPrintStream& stream,
+										const Function& function
+										)
+	{
+	FORAValuePrinting::FORAValuePrinter(stream).toString(function);
+	}
+
+void CPPMLPrettyPrint<TuplePattern>::prettyPrint(
+										CPPMLPrettyPrintStream& stream,
+										const TuplePattern& pattern
+										)
+	{
+	FORAValuePrinting::FORAValuePrinter(stream).toString(pattern);
+	}
+

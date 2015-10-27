@@ -1,0 +1,380 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "FunctionStage1.hppml"
+#include "FunctionStage2.hppml"
+#include "Function.hppml"
+#include "../Core/Type.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
+#include "../Core/ClassMediator.hppml"
+#include "../../core/cppml/CPPMLTransform.hppml"
+#include "../../core/cppml/CPPMLVisit.hppml"
+#include "../../core/Logging.hpp"
+
+namespace FunctionStage2 {
+
+int ApplyArgument::computeDepth() const
+    {
+    @match ApplyArgument(*this)
+        -|  Normal(_, expr) ->> { return 1 + expr.depth(); }
+        -|  TupleCall(expr) ->> { return 1 + expr.depth(); }
+        ;
+    }
+    
+int Function::depth() const
+    {
+    return result().depth();
+    }
+
+int Expression::computeDepth() const
+    {
+    @match Expression(*this)
+        -|  Constant(_) ->> { return 0; }
+        -|  Variable(_) ->> { return 0; }
+        -|  Let(_, value, body) ->> {
+            return 1 + max(value.depth(), body.depth());
+            }
+        -|  TupleExpand(_,_,_, ifSuccess, ifFail) ->> {
+            return 1 + max(ifSuccess.depth(), ifFail.depth());
+            }
+        -|  Assign(_, value) ->> { return 1 + value.depth(); }
+        -|  Apply(agent, args) ->> {
+            int tr = agent.depth();
+            for (auto it = args.begin(); it != args.end(); ++it)
+                tr = max(tr, it->depth());
+            return 1 + tr;
+            }
+        -|  While(cond, updater) ->> {
+            return 1 + max(cond.depth(), updater.depth());
+            }
+        -|  RawCached(expr) ->> { return 1 + expr.depth(); }
+        -|  Is(left, right) ->> { return 1 + max(left.depth(), right.depth()); }
+        -|  Branch(operand, ifTrue, ifFalse) ->> {
+            return 1 + max(operand.depth(), max(ifTrue.depth(), ifFalse.depth()));
+            }
+        -|  Throw(exception, _) ->> { return 1 + exception.depth(); }
+        -|  Try(toTry, _, catchWith) ->> { return 1 + max(toTry.depth(), catchWith.depth()); }
+        -|  Return(expr) ->> { return 1 + expr.depth(); }
+        -|  Continuation(withCont) ->> { return 1 + withCont.depth(); }
+        -|  CreateTuple(args) ->> {
+            int tr = 0;
+            for (auto it = args.begin(); it != args.end(); ++it)
+                tr = max(tr, it->depth());
+            return 1 + tr;
+            }
+        ;  
+    }
+
+Expression ApplyArgument::expr() const
+	{
+	@match ApplyArgument(*this)
+		-|	Normal(_, e) ->> {
+			return  e;
+			}
+		-|	TupleCall(e) ->> {
+			return  e;
+			}
+		;
+	}
+
+ImmutableTreeSet<variable_index_type>
+				ApplyArgument::computeFreeVariables() const
+	{
+	@match ApplyArgument(*this)
+		-|	Normal(field, expr) ->> {
+			return  expr.freeVariables();
+			}
+		-|	TupleCall(expr) ->> {
+			return  expr.freeVariables();
+			}
+		;
+	}
+//note that this is substantially simpler than in the main FORA case
+//since we never have duplicate let-bindings
+ImmutableTreeSet<variable_index_type>
+				Expression::computeFreeVariables() const
+	{
+	@match Expression(*this)
+		-|	Constant() ->> {
+			return  emptyTreeSet();
+			}
+		-|	Variable(v) ->> {
+			return  emptyTreeSet() + v;
+			}
+		-|	Let(v, val, body) ->> {
+			return  val.freeVariables() +
+				(body.freeVariables() - v);
+			}
+		-|	TupleExpand(v, binders, _, ifMatch, ifNoMatch) ->> {
+			return 
+				(ifMatch.freeVariables() - ImmutableTreeSet<variable_index_type>(binders)) + 
+				ifNoMatch.freeVariables() + 
+				v;
+			}
+		-|	Assign(a,v) ->> {
+			return  v.freeVariables() + a;
+			}
+		-|	CreateTuple(arguments) ->> {
+			ImmutableTreeSet<variable_index_type> tr;
+			for (long k = 0; k < arguments.size();k++)
+				tr = tr + arguments[k].freeVariables();
+			return tr;
+			}
+		-|	Apply(agent, arguments) ->> {
+			ImmutableTreeSet<variable_index_type> tr = agent.freeVariables();
+			for (long k = 0; k < arguments.size();k++)
+				tr = tr + arguments[k].freeVariables();
+			return tr;
+			}
+		-|	While(cond, upd) ->> {
+			return  cond.freeVariables() + upd.freeVariables();
+			}
+		-|	RawCached(argument) ->> {
+			return 
+				argument.freeVariables();
+			}
+		-|	Branch(o,t,f) ->> {
+			return  o.freeVariables() + t.freeVariables() +
+									f.freeVariables();
+			}
+		-|	Is(t,f) ->> {
+			return  t.freeVariables() +
+									f.freeVariables();
+			}
+		-|	Throw(e) ->> {
+			return  e.freeVariables();
+			}
+		-|	Try(t, _, c) ->> {
+			return  t.freeVariables() + c.freeVariables();
+			}
+		-|	Return(e) ->> {
+			return  e.freeVariables();
+			}
+		-|	Continuation(c) ->> {
+			return  c.freeVariables();
+			}
+		;
+	}
+ImmutableTreeSet<variable_index_type>
+				Expression::computeThrowTargets() const
+	{
+	@match Expression(*this)
+		-|	Constant() ->> {
+			return  emptyTreeSet();
+			}
+		-|	Variable(v) ->> {
+			return  emptyTreeSet();
+			}
+		-|	Let(v, val, body) ->> {
+			return  val.throwTargets() + body.throwTargets();
+			}
+		-|	TupleExpand(v, binders, _, ifMatch, ifNoMatch) ->> {
+			return ifMatch.throwTargets() + ifNoMatch.throwTargets();
+			}
+		-|	Assign(a,v) ->> {
+			return  v.throwTargets();
+			}
+		-|	CreateTuple(arguments) ->> {
+			ImmutableTreeSet<variable_index_type> tr;
+			for (long k = 0; k < arguments.size();k++)
+				tr = tr + arguments[k].expr().throwTargets();
+			return tr;
+			}
+		-|	Apply(agent, arguments) ->> {
+			ImmutableTreeSet<variable_index_type> tr = agent.throwTargets();
+			for (long k = 0; k < arguments.size();k++)
+				tr = tr + arguments[k].expr().throwTargets();
+			return tr;
+			}
+		-|	While(cond, upd) ->> {
+			return  cond.throwTargets() + upd.throwTargets();
+			}
+		-|	RawCached(argument) ->> {
+			return 
+				argument.throwTargets();
+			}
+		-|	Branch(o,t,f) ->> {
+			return  o.throwTargets() + t.throwTargets() +
+									f.throwTargets();
+			}
+		-|	Is(t,f) ->> {
+			return  t.throwTargets() + f.throwTargets();
+			}
+		-|	Throw(e, tgt) ->> {
+			return  (tgt ? emptyTreeSet() +
+							*tgt : ImmutableTreeSet<variable_index_type>());
+			}
+		-|	Try(t, tgt, (_,c)) ->> {
+				ImmutableTreeSet<variable_index_type> tr =
+						t.throwTargets();
+				if (tgt)
+					tr = tr - *tgt;
+				return tr + c.throwTargets();
+				}
+		-|	Return(e) ->> {
+			return  e.throwTargets();
+			}
+		-|	Continuation((_,c)) ->> {
+			return  c.throwTargets();
+			}
+		;
+	}
+		
+
+ImmutableTreeSet<variable_index_type> Function::freeVariables() const
+	{
+	return result().freeVariables() -
+		ImmutableTreeSet<variable_index_type>(vars().begin(), vars().end());
+	}
+
+ApplyArgument	applyArg(const Expression& expr)
+	{
+	return ApplyArgument::Normal(null(), expr);
+	}
+
+Expression symExpr(Symbol s)
+	{
+	return Expression::Constant(CSTValue(s));
+	}
+Expression symExpr(string s)
+	{
+	return Expression::Constant(CSTValue(Symbol(s)));
+	}
+ApplyArgument symArg(Symbol s)
+	{
+	return applyArg(symExpr(s));
+	}
+ApplyArgument symArg(string s)
+	{
+	return applyArg(symExpr(s));
+	}
+
+string ApplyArgument::toString(void) const
+	{
+	ostringstream s;
+	
+	@match ApplyArgument(*this)
+		-|	Normal(field, val) ->> {
+			if (field)
+				s << field->toString() << ": ";
+			s << prettyPrintString(val);
+			;}
+		-|	TupleCall(e) ->> {
+			s << "*(" << prettyPrintString(e) << ")";
+			;}
+		;
+	
+	return s.str();
+	}
+string Function::toString(void) const
+	{
+	ostringstream s;
+	
+	s << "fun (";
+	
+	for (long k = 0; k < vars().size();k++)
+		{
+		if (k)
+			s << ", ";
+		s << prettyPrintString(vars()[k]);
+		}
+	s << ") {" << prettyPrintString(result()) << " } ";
+	
+	return s.str();
+	}
+string Expression::toString(void) const
+	{
+	ostringstream s;
+	
+	@match Expression(*this)
+		-|	Constant(c) ->> {
+				s << prettyPrintString(c);
+				}
+		-|	Variable(v) ->> {
+				s << prettyPrintString(v);
+				}
+		-|	Let(var, v,r) ->> {
+				s 	<< "let " << prettyPrintString(var)
+					<< " = " << prettyPrintString(v) << "; ";
+				s << prettyPrintString(r);
+				}
+		-|	TupleExpand(v, expandVars, lastIsStar, ifMatch, ifNoMatch) ->> {
+				s << "let " << prettyPrintString(expandVars) << " := " << prettyPrintString(v)
+					<< " in {\n"
+					<< prettyPrintString(ifMatch) 
+					<< "\n} else { " 
+					<< prettyPrintString(ifNoMatch)
+					<< "}";
+				}
+		-|	Assign(var, val) ->> {
+				s << prettyPrintString(var) << " = " << prettyPrintString(val);
+				}
+		-|	Apply(agent, args) ->> {
+				s << "(" << prettyPrintString(agent) << ")"
+					<< "`" << prettyPrintString(args);
+				}
+		-|	CreateTuple(args) ->> {
+				s << "`" << prettyPrintString(args);
+				}
+		-|	While(c,u) ->> {
+				s << "while " << prettyPrintString(c) << " { "
+					<< prettyPrintString(u)
+					<< " } "
+					;
+				}
+		-|	RawCached(e) ->> {
+				s << "cached(" << prettyPrintString(e) << ")";
+				}
+		-|	Branch(c,t,f) ->> {
+				s << "if (" << prettyPrintString(c)
+					<< ") {" << prettyPrintString(t)
+					<< "}";
+				s << " else {"
+					<< prettyPrintString(f)
+					<< "}";
+				}
+		-|	Is(t,f) ->> {
+				s << "(" << prettyPrintString(t)
+					<< ") is (" << prettyPrintString(f)
+					<< ")";
+				}
+		-|	Throw(expr, target) ->> {
+				s << "throw ";
+				
+				if (target)
+					s << "[" << prettyPrintString(*target) << "]";
+				
+				s << "(" << prettyPrintString(expr) << ")";
+				}
+		-|	Return(x) ->> {
+				s << "return " << prettyPrintString(x);
+				}
+		-|	Continuation(withContinuation) ->> {
+				s << "continuation " << prettyPrintString(withContinuation);
+				}
+		-|	Try(expr, name, catchWith) ->> {
+				s << "try { " << prettyPrintString(expr) << " } ";
+				s << "catch ";
+				if (name)
+					s << "[ " << prettyPrintString(*name) << "]";
+				s << " " << prettyPrintString(catchWith);
+				}
+		;
+	
+	return s.str();
+	}
+
+}
+

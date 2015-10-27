@@ -1,0 +1,199 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ComputationStateSummarizerImpl.hppml"
+#include "../../core/threading/CallbackScheduler.hppml"
+#include "../../core/threading/CallbackSchedulerFactory.hppml"
+#include "../../core/PolymorphicSharedPtrBinder.hpp"
+
+namespace Cumulus {
+
+namespace SystemwideComputationScheduler {
+
+const static double kUpdateFrequency = .25;
+
+ComputationStateSummarizerImpl::ComputationStateSummarizerImpl(
+			PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+			MachineId inOwnMachineId
+			) :
+		mCallbackScheduler(inCallbackScheduler),
+		mOnCumulusComponentMessageCreated(inCallbackScheduler),
+		mPrivateCallbackScheduler(
+			inCallbackScheduler->getFactory()->createScheduler(
+				"ComputationStateSummarizerImpl::BackgroundThread"
+				)
+			),
+		mIsTornDown(false),
+		mOwnMachineId(inOwnMachineId)
+	{
+	}
+
+
+void ComputationStateSummarizerImpl::polymorphicSharedPtrBaseInitialized()
+	{
+	mPrivateCallbackScheduler->schedule(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&ComputationStateSummarizerImpl::updateAndBroadcast
+				),
+			this->polymorphicSharedWeakPtrFromThis()
+			),
+		curClock() + kUpdateFrequency,
+		"ComputationStateSummarizerImpl::updateAndBroadcast"
+		);
+	}
+
+void ComputationStateSummarizerImpl::teardown()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	mIsTornDown = true;
+	}
+
+void ComputationStateSummarizerImpl::updateComputeStatuses_()
+	{
+	Nullable<ComputationComputeStatusChanged> change;
+	while (change = mPendingComputeChanges.getNonblock())
+		{
+		if (change->isComputingNow() && 
+				mComputationsComputing.find(change->computation()) == mComputationsComputing.end())
+			{
+			mComputationsComputing.insert(change->computation());
+			mRootComputationsComputing[change->computation().rootComputation()]++;
+			mNeedingBroadcast.insert(change->computation().rootComputation());			
+			}
+			else
+		if (!change->isComputingNow() && 
+				mComputationsComputing.find(change->computation()) != mComputationsComputing.end())
+			{
+			mComputationsComputing.erase(change->computation());
+			mRootComputationsComputing[change->computation().rootComputation()]--;
+			if (mRootComputationsComputing[change->computation().rootComputation()] == 0)
+				mRootComputationsComputing.erase(change->computation().rootComputation());
+			
+			mNeedingBroadcast.insert(change->computation().rootComputation());
+			}
+		}
+	}
+
+void ComputationStateSummarizerImpl::updateLoadStatuses_()
+	{
+	Nullable<LocalComputationPriorityAndStatusChanged> change;
+	while (change = mPendingStatusChanges.getNonblock())
+		{
+		bool isLoading = change->isActive() && change->getActive().newStatus().isBlockedOnVectorLoad();
+
+		if (isLoading && 
+				mComputationsLoading.find(change->computation()) == mComputationsLoading.end())
+			{
+			mComputationsLoading.insert(change->computation());
+			mRootComputationsLoading[change->computation().rootComputation()]++;
+			}
+			else
+		if (!isLoading && 
+				mComputationsLoading.find(change->computation()) != mComputationsLoading.end())
+			{
+			mComputationsLoading.erase(change->computation());
+			mRootComputationsLoading[change->computation().rootComputation()]--;
+			if (mRootComputationsLoading[change->computation().rootComputation()] == 0)
+				mRootComputationsLoading.erase(change->computation().rootComputation());
+
+			mNeedingBroadcast.insert(change->computation().rootComputation());
+			}
+		}
+	}
+
+void ComputationStateSummarizerImpl::broadcastAll_()
+	{
+	for (auto c: mNeedingBroadcast)
+		{
+		auto computeIt = mRootComputationsComputing.find(c);
+		auto loadIt = mRootComputationsLoading.find(c);
+
+		mOnCumulusComponentMessageCreated.broadcast(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::RootComputationComputeStatus(
+					RootComputationComputeStatusChanged(
+						mOwnMachineId,
+						c,
+						computeIt == mRootComputationsComputing.end() ? 0 : computeIt->second,
+						loadIt == mRootComputationsLoading.end() ? 0 : loadIt->second
+						)
+					),
+				CumulusComponentEndpointSet::AllClients(),
+				CumulusComponentType::CumulusClient()
+				)
+			);
+		}
+
+	mNeedingBroadcast.clear();
+	}
+
+void ComputationStateSummarizerImpl::updateAndBroadcast()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (mIsTornDown)
+		return;
+
+	updateComputeStatuses_();
+	updateLoadStatuses_();
+
+	broadcastAll_();
+	
+	mPrivateCallbackScheduler->schedule(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&ComputationStateSummarizerImpl::updateAndBroadcast
+				),
+			this->polymorphicSharedWeakPtrFromThis()
+			),
+		curClock() + kUpdateFrequency,
+		"ComputationStateSummarizerImpl::updateAndBroadcast"
+		);
+	}
+
+void ComputationStateSummarizerImpl::handleComputationComputeStatusChanged(
+					ComputationComputeStatusChanged change
+					)
+	{
+	mPendingComputeChanges.write(change);
+	}
+
+void ComputationStateSummarizerImpl::handleLocalComputationPriorityAndStatusChanged(
+					LocalComputationPriorityAndStatusChanged change
+					)
+	{
+	mPendingStatusChanges.write(change);
+	}
+
+void ComputationStateSummarizerImpl::handleCumulusComponentMessage(
+                    const CumulusComponentMessage& message, 
+                    const CumulusClientOrMachine& source, 
+                    const CumulusComponentType& componentType
+                    )
+	{
+	@match CumulusComponentMessage(message)
+		-| LocalComputationPriorityAndStatus(msg) ->> {
+			mPendingStatusChanges.write(msg);
+			}
+		-| ComputationComputeStatus(msg) ->> {
+			mPendingComputeChanges.write(msg);
+			}
+	}
+
+}
+}
+

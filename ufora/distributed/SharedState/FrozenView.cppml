@@ -1,0 +1,241 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "FrozenView.hppml"
+#include "AssembledEvent.hppml"
+#include "KeyType.hppml"
+
+namespace SharedState {
+
+FrozenView::FrozenView(const KeyRangeSet& mRanges, bool debugPrint) : mSubscribedRanges(mRanges), mDebugPrint(debugPrint)
+	{
+	}
+
+FrozenView::~FrozenView()
+	{
+	}
+	
+void FrozenView::compact(uint64_t id)
+	{			
+	double t0 = curClock();
+
+	uword_t eventsCompactedCount = 0;
+	uword_t keyCount = 0;
+	uword_t allEventCount = 0;
+	
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+	double t1 = curClock();
+
+	//set of keys where the KeyState becomes the empty KeyState, in which case we don't
+	//need to keep them around in the map
+	std::set<Key> keysToRemove;
+
+	for(map<Key, KeyState>::iterator it = mKeyStates.begin(); it != mKeyStates.end(); ++it)
+		{
+		KeyState& keyState(it->second);
+		const Key& key(it->first);
+		const KeyType& keyType = KeyTypeFactory::getTypeFor(key.keyspace().type());
+
+		allEventCount += keyState.events().size();
+		keyCount++;
+
+		uword_t origEventCount = keyState.events().size();
+		
+		keyType.compactKeyState(keyState, UniqueId(id,0));
+
+		eventsCompactedCount += origEventCount - keyState.events().size();
+
+		if (keyState.wasDeleted())
+			keysToRemove.insert(key);
+		}
+
+	for (auto it = keysToRemove.begin(); it != keysToRemove.end(); ++it)
+		{
+		mKeyStates.erase(*it);
+
+		//this doesn't seem to be necessary, but I will not remove it in this change since
+		//it is a refactoring change, and the behaviour of the program should be identical.
+		mChanged.insert(*it);
+		}
+
+
+	mAssembledEvents.erase(
+		mAssembledEvents.begin(), 
+		mAssembledEvents.lower_bound(EventSignature(set<Key>(), UniqueId(id, 0)))
+		);
+	
+	if (SHOULD_LOG_DEBUG())
+		{
+		LOG_DEBUG << "Compacted " << eventsCompactedCount << " events "
+				<< " to ID = " << id << " "
+				<< " over " << keyCount << " keys."
+				<< " " << allEventCount << " partial events visited."
+				<< " assembled = " << mAssembledEvents.size()
+				<< " total datasize = "
+				<< (
+					serializeCount(mKeyStates) +
+					serializeCount(mEventCount) + 
+					serializeCount(mChanged) + 
+					serializeCount(mAssembledEvents)
+					) / 1024.0 / 1024.0 << " MB"
+				<< ". took " << (curClock() - t1)
+				;
+		}
+	}
+
+Nullable<Key> FrozenView::nextKey(const Key& inKey)
+	{
+	boost::recursive_mutex::scoped_lock 	lock(mMutex);
+
+	auto it = mExistingKeys.upper_bound(inKey);
+	
+	if (it == mExistingKeys.end())
+		return null();
+	
+	return null() << *it;
+	}
+
+Nullable<Key> FrozenView::prevKey(const Key& inKey)
+	{
+	boost::recursive_mutex::scoped_lock 	lock(mMutex);
+
+	if (mExistingKeys.size() == 0)
+		return null();
+
+	auto it = mExistingKeys.lower_bound(inKey);
+
+	if (it == mExistingKeys.begin())
+		return null();
+	it--;
+
+	return null() << *it;
+	}
+
+Nullable<ValueType> FrozenView::getValue(const Key& inKey)
+	{
+	double t0 = curClock();
+
+	boost::recursive_mutex::scoped_lock 	lock(mMutex);
+
+	if (inKey != mValueCache)
+		{
+		if (inKey != mKeyStates)
+			//this key is empty so we can return null immediately
+			return null();
+
+		const KeyType& keyType = KeyTypeFactory::getTypeFor(inKey.keyspace().type());
+
+		Nullable<ValueType> tr = keyType.computeValueForKeyState(mKeyStates[inKey]);
+
+		mValueCache[inKey] = tr;
+
+		return tr;
+		}
+
+	return mValueCache[inKey];
+	}
+
+void FrozenView::updateBaseValue(const Key& key, const ValueType& value, UniqueId inBaseValueId)
+	{
+	const KeyType& keyType = KeyTypeFactory::getTypeFor(key.keyspace().type());
+	
+	keyType.updateBaseValueForKeyState(mKeyStates[key], value, inBaseValueId);
+	
+	mExistingKeys.insert(key);
+	mChanged.insert(key);
+	mValueCache.erase(key);
+	}
+
+void FrozenView::onSubscribe(PolymorphicSharedPtr<Subscription> inSub)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	for (map<EventSignature, AssembledEvent>::iterator it = mAssembledEvents.begin(); it != mAssembledEvents.end(); ++it)
+		if (it->second.onSubscribe(inSub))
+			{
+			for(set<Key>::iterator 	it2 = it->second.signature().updated().begin(); 
+									it2 != it->second.signature().updated().end(); 
+									++it2)
+				{
+				mChanged.insert(*it2);
+
+				const KeyType& keyType = KeyTypeFactory::getTypeFor(it2->keyspace().type());
+
+				keyType.dropEventFromKeyState(mKeyStates[*it2], it->first.id());
+
+				mValueCache.erase(*it2);
+				}
+			}
+	}
+
+void FrozenView::collectEventStats(const PartialEvent& inEvent, bool local)
+	{
+	// HACKISH EVENT COUNTING CODE HERE -- THIS NEEDS TO BE REMOVED OR IMPROVED LATER!
+	map<Keyspace, pair<uint32_t, uint32_t> >::iterator it =  mEventCount.find(inEvent.key().keyspace());
+	if(it == mEventCount.end())
+		it = mEventCount.insert(make_pair(inEvent.key().keyspace(), make_pair(0,0))).first;
+
+	it->second.first++;
+	if (local)
+		it->second.second++;
+	// END OF EVENT COUNTING HACK			
+	}
+
+void FrozenView::applyEvent(const PartialEvent& inEvent, bool triggerChange)
+	{
+	boost::recursive_mutex::scoped_lock 		lock(mMutex);
+	if (mDebugPrint)
+		collectEventStats(inEvent, !triggerChange);
+
+	if (inEvent.signature() != mAssembledEvents)
+		mAssembledEvents[inEvent.signature()] = AssembledEvent(inEvent.signature(), mSubscribedRanges);
+
+	AssembledEvent& event = mAssembledEvents[inEvent.signature()];
+	if (event.addPartial(inEvent))
+		{
+		for (map<Key, PartialEvent>::iterator it = event.partials().begin(); it != event.partials().end(); ++it)
+			{
+			const KeyType& keyType = KeyTypeFactory::getTypeFor(it->first.keyspace().type());
+
+			bool keyCouldHaveChanged = 
+				keyType.insertEventIntoKeyState(
+					mKeyStates[it->first],
+					it->second,
+					true //eventMightBeDuplicate
+					);
+
+			if (keyCouldHaveChanged)
+				{
+				mValueCache.erase(it->first);
+				mChanged.insert(it->first);
+				mExistingKeys.insert(it->first);
+				}
+			}
+		}
+	}
+
+set<Key> FrozenView::getChanged(void)
+	{
+	boost::recursive_mutex::scoped_lock 		lock(mMutex);
+	set<Key> tr;
+	std::swap(tr, mChanged);
+	return tr;
+	}
+
+
+
+
+}
+

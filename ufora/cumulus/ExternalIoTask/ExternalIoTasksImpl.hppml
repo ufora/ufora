@@ -1,0 +1,175 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ExternalIoTasksImpl.hppml"
+#include "PersistBigvecTasks.hppml"
+#include "WriteCharBigvecToS3Tasks.hppml"
+#include "WriteCharPageToS3Tasks.hppml"
+#include "PersistPageTasks.hppml"
+#include "ExternalDatasetLoadTasks.hppml"
+#include "ReadPersistedPageIntoRamTasks.hppml"
+#include "../SystemwidePageRefcountTracker.hppml"
+#include "../PythonIoTaskResponse.hppml"
+#include "../PythonIoTaskRequest.hppml"
+
+#include "ExternalIoTasksEvent.hppml"
+#include "ExternalIoTaskCreated.hppml"
+#include "ExternalIoTaskCompleted.hppml"
+#include "CrossIoTasksMessage.hppml"
+#include "CheckpointTasks.hppml"
+#include "../DistributedDataTasks/DistributedDataTasks.hppml"
+#include "../DistributedDataTasks/CrossDistributedDataTasksMessageCreated.hppml"
+
+#include "../../FORA/VectorDataManager/VectorDataManager.hppml"
+#include "../../core/threading/CallbackSchedulerFactory.hppml"
+#include "../../core/PolymorphicSharedPtrBinder.hpp"
+#include "../../core/math/RandomHashGenerator.hpp"
+#include "../../core/threading/TimedLock.hpp"
+#include "../../core/Logging.hpp"
+#include "../../core/containers/MapWithIndex.hpp"
+#include "../PersistentCache/PersistentCacheIndex.hppml"
+#include "../../FORA/VectorDataManager/VectorPage.hppml"
+#include "../../FORA/TypedFora/ABI/BigVectorLayouts.hppml"
+#include "../../FORA/TypedFora/ABI/ForaValueArray.hppml"
+#include "../../core/math/Random.hpp"
+#include "../CumulusComponentMessageCreated.hppml"
+#include "../CumulusClientOrMachine.hppml"
+
+namespace Cumulus {
+
+class ExternalIoTasksImpl : public PolymorphicSharedPtrBase<ExternalIoTasksImpl> {
+public:
+	ExternalIoTasksImpl(
+				PolymorphicSharedPtr<VectorDataManager> inVDM,
+				PolymorphicSharedPtr<OfflineCache> inOfflineCache,
+				PolymorphicSharedPtr<SystemwidePageRefcountTracker> inSPRT,
+				MachineId inOwnMachineId,
+				PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+				boost::function1<void, ExternalIoTasksEvent> inEventHandler
+				);
+
+	~ExternalIoTasksImpl();
+
+	void teardown();
+
+	void polymorphicSharedPtrBaseInitialized();
+
+	void scheduleNextCheckDeferredPageLoads();
+
+	void checkDeferredPageLoads();
+
+	void addMachine(MachineId inMachine);
+
+	MachineId getOwnMachineId() const;
+
+	void handleExternalIoTaskCreated(
+			ExternalIoTaskCreated task,
+            CumulusClientOrMachine source, 
+            CumulusComponentType componentType
+            );
+
+	void handleExternalIoTaskCreatedLocally(
+			ExternalIoTaskCreated task
+            );
+
+	void scheduleHandleExternalIoTaskCreated_(ExternalIoTaskCreated task);
+
+	void handleCrossIoTasksMessage(CrossIoTasksMessage message);
+
+	void createNewRemoteIoTask_(ExternalIoTaskCreated task, Cumulus::MachineId targetMachine);
+
+	void handleExternalIoTaskCreated_(ExternalIoTaskCreated task);
+
+	void handleDataTasksToGlobalSchedulerMessage(DataTasksToGlobalSchedulerMessage msg);
+
+	void sendExternalIoTaskCompleted(ExternalIoTaskCompleted msg);
+
+	void sendCumulusComponentMessage(CumulusComponentMessageCreated msg);
+
+	void handleDoNothing_(ExternalIoTaskId taskId);
+
+	void registerAndBroadcastPythonIoTask_(PythonIoTaskRequest request);
+
+	void handlePythonIoTaskResponse(PythonIoTaskResponse loaded);
+
+	hash_type createNewIoTaskGuid_();
+
+	void broadcastExternalIoTaskComplete_(ExternalIoTaskCompleted completed);
+
+	void handleCumulusComponentMessage(
+	                    const CumulusComponentMessage& message, 
+	                    const CumulusClientOrMachine& source, 
+	                    const CumulusComponentType& componentType
+	                    );
+
+	void broadcastDistributedDataTasksMessage(CrossDistributedDataTasksMessageCreated created);
+
+	void broadcastDistributedDataTasksMessage_(CrossDistributedDataTasksMessageCreated created);
+
+	void broadcastExternalIoTaskComplete(ExternalIoTaskCompleted completed);
+
+	void handleGlobalSchedulerToDataTasksMessage(GlobalSchedulerToDataTasksMessage message);
+
+	EventBroadcaster<DataTasksToGlobalSchedulerMessage>& onDataTasksToGlobalSchedulerMessage();
+
+	boost::function1<void, ExternalIoTasksEvent> mEventHandler;
+
+	mutable boost::recursive_mutex mMutex;
+
+	std::set<MachineId> mMachines;
+
+	MachineId mOwnMachineId;
+
+	PolymorphicSharedPtr<CallbackScheduler> mCallbackScheduler;
+
+	PolymorphicSharedPtr<VectorDataManager> mVDM;
+
+	PolymorphicSharedPtr<OfflineCache> mOfflineCache;
+
+	TwoWaySetMap<Cumulus::MachineId, ExternalIoTaskId> mRemotelyRequestedTasks;
+
+	EventBroadcaster<ExternalIoTaskCompleted> mOnExternalIoTaskCompleted;
+
+	EventBroadcaster<CumulusComponentMessageCreated> mOnCumulusComponentMessageCreated;
+
+	std::map<hash_type, PythonIoTaskRequest> mIdToOutstandingPythonIoTask;
+
+	RandomHashGenerator mGuidGen;
+
+	bool mIsTornDown;
+
+	PolymorphicSharedPtr<SystemwidePageRefcountTracker> mSPRT;
+
+	WriteCharBigvecToS3Tasks mWriteCharBigvecToS3Tasks;
+
+	PersistBigvecTasks mPersistBigvecTasks;
+
+	PersistPageTasks mPersistPageTasks;
+
+	WriteCharPageToS3Tasks mWriteCharPageToS3Tasks;
+
+	ExternalDatasetLoadTasks mExternalDatasetLoadTasks;
+
+	ReadPersistedPageIntoRamTasks mReadPersistedPageIntoRamTasks;
+
+	CheckpointTasks mCheckpointTasks;
+
+	PolymorphicSharedPtr<DistributedDataTasks> mDistributedDataTasks;
+
+	std::map<ExternalIoTaskId, pair<CumulusClientOrMachine, CumulusComponentType> > mAllOutstandingTaskSources;
+};
+
+}
+

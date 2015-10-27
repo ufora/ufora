@@ -1,0 +1,579 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <iostream>
+#include "../TypedFora/ABI/StackFrameWalker.hppml"
+#include "../TypedFora/ABI/MutableVectorHandle.hpp"
+#include "../TypedFora/ABI/ForaValueArray.hppml"
+#include "../TypedFora/ABI/ScatteredForaValues.hppml"
+#include "RefcountPool.hppml"
+#include "ValueDeepcopier.hppml"
+#include "../VectorDataManager/VectorPage.hppml"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include "../TypedFora/ABI/BigVectorHandle.hppml"
+
+#include <sstream>
+
+class VectorDataMemoryManager;
+
+namespace TypedFora {
+namespace Abi {
+class HomogenousVectorStash;
+}
+}
+
+namespace Fora {
+namespace Interpreter {
+
+/******************
+ValidateVectorRefcountsValueUpdater
+
+scans over FORA values and pages any vectors over a given size into the VDM.
+
+This class is primarily plugged into a StackValueModifyingStackFrameVisitor.
+
+******************/
+
+class ValidateVectorRefcountsValueUpdaterState {
+public:
+	typedef TypedFora::Abi::VectorRecord VectorRecord;
+
+	typedef TypedFora::Abi::VectorHandle VectorHandle;
+
+	ValidateVectorRefcountsValueUpdaterState(
+				PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM,
+				MemoryPool* inMemPool,
+				std::string inCallingContext,
+				Nullable<long> inBigVectorHandleSlot,
+				bool isVerbose = false,
+				bool assertNoOutsideMemoryPoolsOrLoadedVectors = false,
+				bool findAllReachableMemoryPools = false
+				) : 
+			mVectorDataMemoryManager(inVDMM),
+			mMemoryPool(inMemPool),
+			mCallingContext(inCallingContext),
+			mVerbose(isVerbose),
+			mAssertNoOutsideMemoryPoolsOrLoadedVectors(assertNoOutsideMemoryPoolsOrLoadedVectors),
+			mFindAllReachableMemoryPools(findAllReachableMemoryPools),
+			mDepth(0),
+			mBigVectorHandleSlot(inBigVectorHandleSlot)
+		{
+		}
+	
+	long mDepth;
+
+	PolymorphicSharedPtr<VectorDataMemoryManager> mVectorDataMemoryManager;
+
+	bool mAssertNoOutsideMemoryPoolsOrLoadedVectors;
+
+	bool mFindAllReachableMemoryPools;
+
+	bool mVerbose;
+
+	Nullable<long> mBigVectorHandleSlot;
+
+	set<void*> mImplValRecordsVisited;
+
+	map<void*, long> mImplValRecordRefcounts;
+
+	map<void*, Type> mImplValRecordTypes;
+
+	set<VectorHandle*> mVisitedVectorHandles;
+
+	set<hash_type> mMutableVectorRecordsVisitedByHash;
+
+	MemoryPool* mMemoryPool;
+
+	map<VectorHandle*, long> mVectorHandleRefcounts;
+
+	set<VectorPage*> mVectorPagesReachable;
+
+	set<MemoryPool*> mMemoryPoolsReachable;
+
+	std::string mCallingContext;
+
+	void observeMemoryPool(MemoryPool* pool)
+		{
+		if (pool->isVectorPage())
+			{
+			VectorPage* page = dynamic_cast<VectorPage*>(pool);
+
+			if (page)
+				mVectorPagesReachable.insert(page);
+			}
+
+		mMemoryPoolsReachable.insert(pool);
+		}
+
+	void observeIVRPtr(ImplVal ivr, bool isExternalRefcount)
+		{
+		lassert(ivr.data());
+
+		mImplValRecordRefcounts[ivr.data()]++;
+		mImplValRecordTypes[ivr.data()] = ivr.type();
+		}
+
+	void observeVectorHandle(VectorHandle* handle, bool isExternalRefcount)
+		{
+		lassert(handle);
+		handle->assertValid();
+
+		mVectorHandleRefcounts[handle]++;
+		}
+
+	void observeMutableVector(
+			const MutableVectorRecord& vec,
+			bool isExternalRefcount
+			)
+		{
+		}
+
+	void validate()
+		{
+		bool OK = true;
+		std::ostringstream s;
+
+		for (auto it = mImplValRecordRefcounts.begin(); it != mImplValRecordRefcounts.end();++it)
+			{
+			AO_t* refcount = (AO_t*)(it->first);
+			if (refcount[-1] != it->second)
+				{
+				OK = false;
+				s << "observed refcount of implval " 
+					<< prettyPrintString(ImplVal(mImplValRecordTypes[it->first], it->first)) << " is "
+					<< it->second << " != " << refcount[-1];
+				}
+			}
+
+		for (auto it = mVectorHandleRefcounts.begin(); it != mVectorHandleRefcounts.end();++it)
+			{
+			if (it->first->owningMemoryPool() == mMemoryPool)
+				{
+				if (it->first->refcount() != it->second)
+					{
+					s << "observed refcount of local vector handle " 
+						<< it->second << " != " << it->first->refcount()
+						<< " for " << it->first << "\n";
+					OK = false;
+					}
+				}
+			else
+				{
+				if (it->first->refcount() <= it->second)
+					{
+					s << "observed refcount of non-local vector handle " 
+						<< it->second << " <= " << it->first->refcount ()
+						<< " for " << it->first
+						<< "\n";
+					}
+				}
+			}
+
+		lassert_dump(OK, mCallingContext << "\n" << s.str());
+		}
+};
+
+class ValidateVectorRefcountsValueUpdater {
+public:
+	typedef ValidateVectorRefcountsValueUpdaterState state_type;
+
+	typedef TypedFora::Abi::VectorHandle VectorHandle;
+
+	typedef TypedFora::Abi::VectorRecord VectorRecord;
+
+	ValidateVectorRefcountsValueUpdater(
+						state_type& inState
+						) : 
+			mState(inState)
+		{	
+		}
+
+	class VerboseScope {
+	public:
+		VerboseScope(state_type& state, std::string msg) : mState(state)
+			{
+			if (state.mVerbose)
+				{
+				LOGGER_WARN_T log = LOGGER_WARN;
+				for (long k = 0; k < state.mDepth;k++)
+					log << " ";
+				log << msg;
+				}
+
+			state.mDepth++;
+			}
+		~VerboseScope()
+			{
+			mState.mDepth--;
+			}
+
+		state_type& mState;
+	};
+
+	#define macro_ValidateVectorRefcountsValueUpdater_VerboseScope(msg) \
+		VerboseScope scope(mState, mState.mVerbose ? ({ \
+			std::ostringstream s; s << __LINE__ << ": " << msg; s.str(); }) : std::string() );
+
+	void visitRefcountPool(RefcountPool& inRefcountPool)
+		{
+		macro_ValidateVectorRefcountsValueUpdater_VerboseScope("Visiting RefcountPool");
+
+		inRefcountPool.visitAllVectorRecords(
+			boost::bind(
+				&ValidateVectorRefcountsValueUpdater::visitVectorRecordInRefcountPool,
+				this,
+				boost::arg<1>()
+				)
+			);
+		inRefcountPool.visitAllMutableVectorRecords(
+			boost::bind(
+				&ValidateVectorRefcountsValueUpdater::visitMutableVectorRecordInRefcountPool,
+				this,
+				boost::arg<1>()
+				)
+			);
+		inRefcountPool.visitAllImplVals(
+			boost::bind(
+				&ValidateVectorRefcountsValueUpdater::visitMutableImplValInRefcountPool,
+				this,
+				boost::arg<1>()
+				)
+			);
+		}
+
+	void visitVectorRecordInRefcountPool(VectorRecord& record)
+		{
+		macro_ValidateVectorRefcountsValueUpdater_VerboseScope("VectorRecord in Refcount pool");
+
+		visitVector(record, true, true, "VectorRecord in refcount pool");
+		}
+
+	void visitMutableVectorRecordInRefcountPool(MutableVectorRecord& record)
+		{
+		macro_ValidateVectorRefcountsValueUpdater_VerboseScope(
+			"MutableVectorRecord in Refcount pool"
+			);
+
+		visitMutableVectorRecord(record, true, true);
+		}
+
+	void visitMutableImplValInRefcountPool(ImplVal& val)
+		{
+		macro_ValidateVectorRefcountsValueUpdater_VerboseScope("ImplVal in Refcount pool");
+
+		visit(val, true, "Implval from refcount pool");
+		}
+
+	bool visit(ImplVal& ioValue, bool valuesAreOwned, std::string source = "external call")
+		{
+		macro_ValidateVectorRefcountsValueUpdater_VerboseScope("visit implval " << prettyPrintString(ioValue) << (valuesAreOwned ? "owned":"unowned"));
+
+		visitInternal(ioValue, valuesAreOwned, true, source);
+		return false;
+		}
+
+	bool visit(TypedFora::Abi::HomogenousVectorStash& stash)
+		{
+		return false;
+		}
+
+	void visitString(String& ioString, bool isOwned)
+		{
+		visit(Type::String(), (uint8_t*)&ioString, 1, sizeof(String), isOwned);
+		}
+
+	//visit some values and upate them. returns true if the data pointed to by 'source' was modified
+	bool visit(
+			const Type& inType,
+			uint8_t* source,
+			uword_t count,
+			uword_t stride,
+			bool valuesAreOwned
+			)
+		{
+		macro_ValidateVectorRefcountsValueUpdater_VerboseScope(
+			"visit " << prettyPrintString(inType) << " x " << count << " at " << (void*)source << ": " << (valuesAreOwned ? "owned":"unowned")
+			);
+
+		visitInternal(inType, source, count, stride, valuesAreOwned, true, valuesAreOwned ? "visit external owned" : "visit external unowned");
+		return false;
+		}
+
+	void visitInternal(ImplVal& ioValue, bool valuesAreOwned, bool isExternalRefcount, std::string source)
+		{
+		macro_ValidateVectorRefcountsValueUpdater_VerboseScope(
+			"visitInternal Implval " << (valuesAreOwned ? "owned":"unowned") << ": " << prettyPrintString(ioValue)
+			);
+
+		if (ioValue.isDataAsIVRPtr())
+			{
+			if (valuesAreOwned)
+				mState.observeIVRPtr(ioValue, isExternalRefcount);
+
+			if (mState.mImplValRecordsVisited.find(ioValue.data()) == mState.mImplValRecordsVisited.end())
+				{
+				visitInternal(ioValue.type(), (uint8_t*)ioValue.data(), 1, 0, true, false, source + ": implval IVRPtr");
+				mState.mImplValRecordsVisited.insert(ioValue.data());
+				}
+			}
+		else
+			visitInternal(ioValue.type(), (uint8_t*)ioValue.data(), 1, 0, valuesAreOwned, isExternalRefcount, source + ": implval");
+		}
+
+	//visit some values and upate them. returns true if the data pointed to by 'source' was modified
+	void visitInternal(
+			const Type& inType,
+			uint8_t* source,
+			uword_t count,
+			uword_t stride,
+			bool valuesAreOwned,
+			bool isExternalRefcount,
+			std::string sourceStr
+			)
+		{
+		uword_t sz = inType.size();
+
+		if (stride == 0)
+			stride = sz;
+        
+		if (inType.isPOD())
+			return;
+
+		macro_ValidateVectorRefcountsValueUpdater_VerboseScope(
+			"visitInternal " << (valuesAreOwned ? "owned":"unowned") << ": " 
+				<< prettyPrintString(inType) << " x " << count << " at " << (void*)source
+			);
+
+		@match Type(inType)
+			-|	Nothing() ->> {}
+			-|	String() ->> {
+				if (mState.mFindAllReachableMemoryPools)
+					{
+					for (long k = 0; k < count; k++)
+						{
+						MemoryPool* pool = ((String*)(source + stride * k))->getOwningMemoryPool();
+
+						if (pool)
+							mState.observeMemoryPool(pool);
+						}
+					}
+				}
+			-|	ExternalFunction() ->> {;}
+			-|	Symbol() ->> {;}
+			-|	Tag() ->> {;}
+			-|	JOVAsValue() ->> {;}
+			-|	StackTrace() ->> {;}
+			-|	DateTime() ->> {;}
+			-|	TimeDuration() ->> {;}
+			-|	Integer(_) ->> {;}
+			-|	Float(_) ->> {;}
+			-|	Vector() ->> {
+					for (long k = 0; k < count;k++)
+						{
+						VectorRecord* sourceVD = (VectorRecord*)(source + k * stride);
+						visitVector(*sourceVD, valuesAreOwned, isExternalRefcount, 
+								sourceStr + ": vector held in visitInternal data at " + 
+									boost::lexical_cast<std::string>((void*)source) + " of type " +
+									prettyPrintString(inType) + " x " + boost::lexical_cast<std::string>(count));
+						}
+					}
+			-|	MutableVector() ->> {
+					for (long k = 0; k < count;k++)
+						{
+						const MutableVectorRecord& sourceVH = 
+							*(MutableVectorRecord*)(source + k * stride);
+
+						visitMutableVectorRecord(
+							sourceVH,
+							valuesAreOwned,
+							isExternalRefcount
+							);
+						}
+					}
+			-|	Alternative(t) ->> {
+					visitInternal(t, source + sizeof(symbol_type), count, stride, valuesAreOwned, isExternalRefcount, sourceStr);
+					}
+			-|	Class(types) ->> {
+					uword_t offset = 0;
+
+					for (long k = 0; k < types.size(); k++)
+						{
+						visitInternal(types[k], source + offset, count, stride, valuesAreOwned, isExternalRefcount, sourceStr);
+						offset += types[k].size();
+						}
+					}
+			-|	Tuple(types) ->> {
+					uword_t offset = 0;
+
+					for (long k = 0; k < types.size(); k++)
+						{
+						visitInternal(types[k], source + offset, count, stride, valuesAreOwned, isExternalRefcount, sourceStr);
+
+						offset += types[k].size();
+						}
+					}
+			-|	Dictionary(isCST) ->> {
+					for (long k = 0; k < count; k++)
+						{
+						Dictionary* sourceDictPtr = (Dictionary*)(source + k * stride);
+
+						for (long k = 0; k < sourceDictPtr->size(); k++)
+							{
+							ImplValContainer sourceDictValue = sourceDictPtr->pairAtPosition(k).second;
+
+							ImplVal ref = sourceDictValue.getReference();
+							visitInternal(ref, true, false, sourceStr);
+							}
+						}
+					}
+		}
+
+	void visitVector(VectorRecord& in, bool inValuesAreOwned, bool isExternalRefcount, std::string source)
+		{
+		if (!in.size())
+			return;
+
+		macro_ValidateVectorRefcountsValueUpdater_VerboseScope(
+			"visitVector(VectorRecord&) " << (inValuesAreOwned ? "owned":"unowned") << ": " << in.dataPtr()
+			);
+		
+		checkValidMemoryPool(in.dataPtr()->owningMemoryPool());
+
+		mState.observeMemoryPool(in.dataPtr()->owningMemoryPool());
+			
+		auto visitor = 
+			[&](TypedFora::Abi::ForaValueArraySlice slice) { 
+				mState.observeMemoryPool(slice.array()->getOwningMemoryPool());
+				};
+				
+		if (mState.mBigVectorHandleSlot && !in.dataPtr()->bigvecHandleForSlot(*mState.mBigVectorHandleSlot)->isTheEmptySlot())
+			in.dataPtr()->bigvecHandleForSlot(*mState.mBigVectorHandleSlot)->visitAllLoadedArrays(visitor);
+
+		if (inValuesAreOwned)
+			mState.observeVectorHandle(in.dataPtr(), isExternalRefcount);
+
+		if (mState.mAssertNoOutsideMemoryPoolsOrLoadedVectors)
+			lassert_dump(!in.dataPtr()->hasReferencesToPagedData(), in.dataPtr());
+
+		auto it = mState.mVisitedVectorHandles.find(in.dataPtr());
+
+		if (it == mState.mVisitedVectorHandles.end())
+			{
+			mState.mVisitedVectorHandles.insert(in.dataPtr());
+
+			if (in.unpagedValues() && !in.dataPtr()->unpagedValuesPagelet())
+				visitForaValueArray(in.unpagedValues());
+			}
+		}
+
+	void checkValidMemoryPool(MemoryPool* pool)
+		{
+		lassert(pool);
+		lassert(pool != MemoryPool::getFreeStorePool());
+		lassert(!pool->isExecutionContextPool() || pool == mState.mMemoryPool);
+
+		if (mState.mAssertNoOutsideMemoryPoolsOrLoadedVectors)
+			lassert(pool == mState.mMemoryPool);
+		}
+
+	void visitForaValueArray(TypedFora::Abi::ForaValueArray* array)
+		{
+		if (array->isHomogenous())
+			array->visitValuesSequentially(*this);
+		else
+			array->visitScatteredValues(0, array->size(), 
+				[&](TypedFora::Abi::ScatteredForaValues values) { this->visitScatteredValues(values); }
+				);
+		}
+
+	void visitScatteredValues(const TypedFora::Abi::ScatteredForaValues& inValues)
+		{
+		for (long k = 0; k < inValues.count();k++)
+			visitValues(inValues.singlePackedValue(k), true);
+		}
+
+	void visitMutableVectorRecord(
+			const MutableVectorRecord& vec, 
+			bool inValuesAreOwned, 
+			bool isExternalRefcount
+			)
+		{
+		macro_ValidateVectorRefcountsValueUpdater_VerboseScope(
+			"visitMutableVector " << (inValuesAreOwned ? "owned":"unowned") << ": "
+			);
+
+		if (inValuesAreOwned)
+			mState.observeMutableVector(vec, isExternalRefcount);
+
+		if (mState.mMutableVectorRecordsVisitedByHash.find(vec.hash()) 
+					== mState.mMutableVectorRecordsVisitedByHash.end())
+			{
+			mState.mMutableVectorRecordsVisitedByHash.insert(vec.hash());
+
+			this->visitValues(vec.packedValues(), true);
+
+			mState.mMutableVectorRecordsVisitedByHash.insert(vec.hash());
+			}
+		}
+
+	void operator()(TypedFora::Abi::PackedForaValues values)
+		{
+		visitValues(values, true);
+		}
+
+	void visitValues(
+				TypedFora::Abi::PackedForaValues values,
+				bool inValuesAreOwned
+				)
+		{
+		if (values.elementJOV().constant())
+			{
+			//do nothing since there is no data
+			}
+			else
+		if (values.elementJOV().type())
+			{
+			visitInternal(
+				*values.elementJOV().type(),
+				values.data(),
+				values.count(),
+				values.stride(),
+				inValuesAreOwned,
+				false,
+				"PackedForaValues"
+				);
+			}
+		else
+			{
+			for (long k = 0; k < values.count();k++)
+				visitInternal(
+					*values.pointerToElement<ImplVal>(k), 
+					inValuesAreOwned, 
+					false, 
+					"PackedForaValues"
+					);
+			}
+		}
+private:
+	state_type& mState;
+
+	long mTotalValuesCopied;
+};
+
+}
+}
+

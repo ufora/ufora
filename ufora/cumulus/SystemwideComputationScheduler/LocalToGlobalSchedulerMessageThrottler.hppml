@@ -1,0 +1,174 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <boost/shared_ptr.hpp>
+#include "../LocalToGlobalSchedulerMessage.hppml"
+#include "../../core/Logging.hpp"
+
+namespace Cumulus {
+
+namespace SystemwideComputationScheduler {
+
+/************
+
+LocalToGlobalSchedulerMessageThrottler
+
+************/
+
+class LocalToGlobalSchedulerMessageThrottler {
+public:
+	LocalToGlobalSchedulerMessageThrottler(
+				boost::function1<void, LocalToGlobalSchedulerMessage> onLocalToGlobalSchedulerMessage
+				) : 
+			mLocalToGlobalSchedulerMessage(onLocalToGlobalSchedulerMessage),
+			mTotalMessagesInLastSecond(0),
+			mMessagesDroppedSinceLastLog(0),
+			mTotalMessagesProcessedSinceLastLog(0),
+			mLastLogTime(0)
+		{
+		}
+
+	void send(LocalToGlobalSchedulerMessage msg, double curTime)
+		{
+		mTotalMessagesProcessedSinceLastLog++;
+
+		@match LocalToGlobalSchedulerMessage(msg) 
+			-| CliqueObserved(pages) ->> {
+				for (auto page: pages)
+					if (canSendForPage(page, curTime))
+						{
+						mLocalToGlobalSchedulerMessage(msg);
+						return;
+						}
+				}
+			-| SetPageLoad(computation,_,pages,_,isUnrepresented) ->> {
+				if (isUnrepresented)
+					{
+					mComputationsWithLoads.insert(computation);
+					mLocalToGlobalSchedulerMessage(msg);
+					return;
+					}
+				for (auto page: pages)
+					if (canSendForPage(page, curTime))
+						{
+						mComputationsWithLoads.insert(computation);
+						mLocalToGlobalSchedulerMessage(msg);
+						return;
+						}
+				}
+			-| ErasePageLoad(computation) ->> {
+				if (mComputationsWithLoads.find(computation) != mComputationsWithLoads.end())
+					{
+					mLocalToGlobalSchedulerMessage(msg);
+					mComputationsWithLoads.erase(computation);
+					return;
+					}
+				}
+			-| RecordObservedLoad(pages, load) ->> {
+				for (auto page: pages)
+					if (canSendForPage(page, curTime))
+						{
+						mLocalToGlobalSchedulerMessage(msg);
+						return;
+						}
+				}
+			-| TriggerPageLayoutRecompute() ->> {
+				mLocalToGlobalSchedulerMessage(msg);
+				return;
+				}
+
+		mMessagesDroppedSinceLastLog++;
+
+		logIfNecessary(curTime);
+		}
+
+	void sendIfNecessary(double curTime)
+		{
+		}
+
+private:
+	void logIfNecessary(double curTime)
+		{
+		if (mLastLogTime == 0.0)
+			mLastLogTime = curTime;
+			else
+		if (curTime > mLastLogTime + 5.0)
+			{
+			LOG_INFO << "LocalToGlobalSchedulerMessageThrottler dropped "
+				<< mMessagesDroppedSinceLastLog << " of " 
+				<< mTotalMessagesProcessedSinceLastLog 
+				<< " in the last "
+				<< curTime - mLastLogTime
+				<< " seconds."
+				;
+
+			mMessagesDroppedSinceLastLog = 0;
+			mTotalMessagesProcessedSinceLastLog = 0;
+			mLastLogTime = curTime;
+			}
+		}
+	boost::function1<void, LocalToGlobalSchedulerMessage> mLocalToGlobalSchedulerMessage;
+
+	bool canSendForPage(Fora::PageId page, double curTime)
+		{
+		std::deque<double>& timings(mPageMessage[page]);
+
+		while (timings.size() && timings.front() < curTime - 1.0)
+			{
+			timings.pop_front();
+			mTotalMessagesInLastSecond--;
+			}
+
+		long maxPerPage = maxMessagesPerPagePerSecond();
+
+		if (timings.size() < maxPerPage)
+			{
+			timings.push_back(curTime);
+			mTotalMessagesInLastSecond++;
+			return true;
+			}
+		else
+			return false;
+		}
+
+	long maxMessagesPerPagePerSecond()
+		{
+		if (mTotalMessagesInLastSecond < 100)
+			return 100;
+
+		if (mTotalMessagesInLastSecond < 200)
+			return 10;
+		
+		return 2;
+		}
+
+	std::set<ComputationId> mComputationsWithLoads;
+
+	std::map<Fora::PageId, std::deque<double> > mPageMessage;
+
+	long mTotalMessagesInLastSecond;
+
+	long mMessagesDroppedSinceLastLog;
+
+	long mTotalMessagesProcessedSinceLastLog;
+
+	double mLastLogTime;
+};
+
+}
+
+}

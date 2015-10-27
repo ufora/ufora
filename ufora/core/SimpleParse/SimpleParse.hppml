@@ -1,0 +1,176 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#ifndef SimpleParseNode_hppml_
+#define SimpleParseNode_hppml_
+
+#include <string>
+#include <sstream>
+
+#include "../../core/containers/ImmutableTreeVector.hppml"
+#include "../../core/math/Hash.hpp"
+
+/************
+
+SimpleParse
+
+implements a very simple 'first pass' parser that we use as the basis for all of our languages.
+All it really does is capture '()' '[]' and '{}' pairs, with ',' separating the first two
+and ';' separating '{}'.
+
+() -> Parens()
+( ,) -> Parens(Empty())
+a ` ~ _ etc -> identifier
+"quote", ""quote"", """quote""" ->  quote
+123.125 -> number
+.+=-!@#$%^&*;:<>/? -> operator
+[ ,] -> Brackets(Empty())
+{} -> CurlyBraces()
+{;} ->  CurlyBraces(Empty())
+
+***********/
+
+class SimpleParseNode;
+
+@type
+	//rawOffset is zero based, and can be used as an offset into a string. line and column are 1 
+	//based, for display to users.
+	SimpleParsePosition = uint32_t rawOffset, uint32_t line, uint32_t col
+and
+	//start is inclusive, and stop is exclusive, so indices can be used in python-style slicing
+	SimpleParseRange = SimpleParsePosition start, SimpleParsePosition stop	
+	{
+	public:
+		//initialize an SimpleParseRange from a pair of nodes, taking their full extent
+		//as a pair
+		SimpleParseRange(const SimpleParseNode& left, const SimpleParseNode& right);
+
+		//initialize an SimpleParseRange from a set of contiguous nodes, taking the first
+		//and last elements. throws if there are no elements.
+		SimpleParseRange(const ImmutableTreeVector<SimpleParseNode>& nodes);
+
+		SimpleParseRange left(void) const
+			{
+			return SimpleParseRange(start(), start());
+			}
+		SimpleParseRange right(void) const
+			{
+			return SimpleParseRange(stop(), stop());
+			}
+
+		static SimpleParseRange ForText(const std::string& text);
+	}
+and
+	SimpleParseNode =
+		Empty of ()
+	-|	Identifier of std::string val
+	-|	Quote of std::string val
+	-|	Operator of std::string val
+	-|	Number of std::string val
+	-|	Sequence of SimpleParseSeparator sep, ImmutableTreeVector<SimpleParseNode> nodes
+	-|	Grouping of SimpleParseGroup g, SimpleParseNode node
+	with
+		SimpleParseRange 		extent,
+		hash_type				hash = (hashCPPMLDirect(*this))
+	{
+	public:
+			std::string				toString(void) const
+				{
+				return prettyPrintString(*this);
+				}
+
+			void				toString(CPPMLPrettyPrintStream  str) const;
+
+	}
+and
+	SimpleParseSeparator =
+		Concatenation of ()
+	-|	Comma of ()
+	-|	Semicolon of ()
+	-|	Colon of ()
+and
+	SimpleParseGroup =
+		Parens of ()
+	-|	Braces of ()
+	-|	Brackets of ()
+	{
+	public:
+		//string representation as a plural word (e.g. 'braces')
+		std::string toString(void) const;
+
+		//string representation as a singular word (e.g. 'brace')
+		std::string toStringSingular(void) const;
+	}
+and
+	SimpleParseError =
+		UnknownToken of ()
+	-|	UnterminatedComment of ()
+	-|	UnterminatedStringConstant of ()
+	-|	BadNumericConstant of string msg
+	-|	InvalidEscapeSequence of ()
+	-|	GroupMismatch of SimpleParseGroup left, SimpleParseGroup right
+	-|	GroupUnterminated of SimpleParseGroup left
+	-|	ExcessTerminator of SimpleParseGroup right
+	with
+		SimpleParseRange extent
+{
+public:
+		//return a string representation of the error that doesn't
+		//include information about the extent of the error, just the
+		//error category.
+		string errorString(void) const;
+}
+	;
+
+macro_defineCppmlComparisonOperators(SimpleParsePosition)
+macro_defineCppmlComparisonOperators(SimpleParseRange)
+macro_defineCppmlComparisonOperators(SimpleParseSeparator)
+macro_defineCppmlComparisonOperators(SimpleParseGroup)
+macro_defineCppmlComparisonOperators(SimpleParseNode)
+
+macro_defineMemberHashFunction(SimpleParseNode)
+
+SimpleParseNode parseStringToSimpleParse(std::string s);
+
+template<>
+class CPPMLPrettyPrint<SimpleParseNode> {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream& s,
+								const SimpleParseNode& t)
+			{
+			t.toString(s);
+			}
+};
+bool 	isOpCharacter(char c);
+
+//produce a valid string constant wrapping 'inString'
+string stringToStringConstant(const string& inString, bool allowTripleQuotedString = true);
+
+std::string escapeStringConstant(const string& inString, bool tripleQuoted);
+
+
+inline bool operator==(const SimpleParseNode& node, const std::string& s)
+	{
+	return 	(node.isIdentifier() && node.getIdentifier().val() == s)
+		||	(node.isOperator() && node.getOperator().val() == s)
+		;
+	}
+inline bool operator!=(const SimpleParseNode& node, const std::string& s)
+	{
+	return !(node == s);
+	}
+
+#endif
+

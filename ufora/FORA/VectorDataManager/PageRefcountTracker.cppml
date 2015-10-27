@@ -1,0 +1,665 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "PageRefcountTracker.hppml"
+#include "../TypedFora/ABI/BigVectorLayouts.hppml"
+#include "../../core/Logging.hpp"
+#include "../../core/cppml/CPPMLPrettyPrinterUnorderedContainers.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../Core/ExecutionContextImpl.hppml"
+#include "../../cumulus/CumulusWorkerAddDropEvent.hppml"
+#include "../../cumulus/AddDropFinalState.hppml"
+
+using Fora::PageRefcountEvent;
+
+PageRefcountTracker::PageRefcountTracker(
+				PolymorphicSharedPtr<TypedFora::Abi::BigVectorLayouts> inHandles,
+				PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler 
+				) : 
+			mBigVectorLayouts(inHandles),
+			mOnPageRefcountEvent(inCallbackScheduler),
+			mBytesInRamUnpinned(0),
+			mBytesInRamPinned(0),
+			mEventCount(1),
+			mIsExecutionCurrentlyBlocked(false),
+			mCallbackScheduler(inCallbackScheduler),
+			mWarnIfChangesAreMade(false)
+	{
+	}
+
+
+void PageRefcountTracker::setWarnIfChangesAreMade(bool inShouldWarn)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	mWarnIfChangesAreMade = inShouldWarn;
+	}
+
+bool PageRefcountTracker::validateStateAgainstAddDropState(
+								const Cumulus::AddDropFinalState& finalState, 
+								Cumulus::MachineId ownMachineId
+								)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	lassert(finalState.machineRamContents().contains(ownMachineId));
+
+	ImmutableTreeSet<Fora::PageId> pagesInAddDropRam = *finalState.machineRamContents()[ownMachineId];
+	ImmutableTreeSet<Fora::PageId> pagesInRam(mPagesInRam);
+
+	if (pagesInAddDropRam != pagesInRam)
+		{
+		LOG_WARN << "RAM Missing pages " << (pagesInAddDropRam - pagesInRam)
+				<< " and have excess pages " << (pagesInRam - pagesInAddDropRam)
+				;
+		return false;
+		}
+
+	ImmutableTreeSet<Fora::PageId> pagesInAddDropDisk = *finalState.machineDiskContents()[ownMachineId];
+	ImmutableTreeSet<Fora::PageId> pagesInDisk(mPagesOnDisk);
+
+	if (pagesInAddDropDisk != pagesInDisk)
+		{
+		LOG_WARN << "DISK Missing pages " << (pagesInAddDropDisk - pagesInDisk)
+				<< " and have excess pages " << (pagesInDisk - pagesInAddDropDisk)
+				;
+		return false;
+		}
+
+	ImmutableTreeSet<Fora::BigVectorId> bigvecsInAddDrop = *finalState.bigvecsReferencedOnMachines()[ownMachineId];
+	ImmutableTreeSet<Fora::BigVectorId> bigvecs;
+
+	for (auto bigvecAndRefcount: mTotalBigvecRefcounts)
+		{
+		bigvecs = bigvecs + bigvecAndRefcount.first;
+		lassert(bigvecAndRefcount.second > 0);
+		}
+
+	if (bigvecsInAddDrop != bigvecs)
+		{
+		LOG_WARN << "Missing bigvecs " << (bigvecsInAddDrop - bigvecs)
+				<< " and have excess bigvecs " << (bigvecs - bigvecsInAddDrop)
+				;
+		return false;
+		}
+
+	return true;
+	}
+
+long PageRefcountTracker::sendCurrentState(boost::function1<void, pair<PageRefcountEvent, long> > eventConsumer)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	eventConsumer(
+		make_pair(
+			PageRefcountEvent::MemoryUsageChanged(mLastMemoryUsageBroadcast),
+			mEventCount
+			)
+		);
+
+	for (auto it = mPagesInRam.begin(); it != mPagesInRam.end(); ++it)
+		{
+		eventConsumer(make_pair(PageRefcountEvent::PageAddedToRam(*it, mPageBigvecRefcounts[*it]), mEventCount));
+		if (mPagesUnpinned.find(*it) != mPagesUnpinned.end())
+			eventConsumer(make_pair(PageRefcountEvent::PagePinnedStatusChanged(*it, false), mEventCount));
+		}
+	
+	for (auto it = mPagesOnDisk.begin(); it != mPagesOnDisk.end(); ++it)
+		eventConsumer(make_pair(PageRefcountEvent::PageAddedToDisk(*it), mEventCount));
+
+	for (auto it = mTotalBigvecRefcounts.begin(); it != mTotalBigvecRefcounts.end(); ++it)
+		{
+		if (it->second <= 0)
+			LOG_ERROR << "encountered a nonpositive refcount on " << prettyPrintString(mMachineId);
+		
+		auto layout = mBigVectorLayouts->tryGetLayoutForId(it->first);
+
+		if (layout)
+			eventConsumer(
+				make_pair(
+					PageRefcountEvent::BigVectorReferenced(*layout),
+					mEventCount
+					)
+				);
+		else
+			LOG_WARN << "PLC on " << mMachineId << " missing layout for " << it->first;
+		}
+
+	return mEventCount++;
+	}
+
+void PageRefcountTracker::bigVectorHeldInPersistentCache(Fora::BigVectorId inBigvec)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mBigvecsHeldInPersistentCache.find(inBigvec) != mBigvecsHeldInPersistentCache.end())
+		return;
+
+	mBigvecsHeldInPersistentCache.insert(inBigvec);
+
+	incref_(inBigvec);
+	}
+
+boost::unordered_map<Fora::BigVectorId, uword_t> PageRefcountTracker::getTotalBigvecRefcounts()
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return mTotalBigvecRefcounts;
+	}
+
+void PageRefcountTracker::sendAddDropState(boost::function1<void, Cumulus::CumulusWorkerAddDropEvent> eventConsumer)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	eventConsumer(
+		Cumulus::CumulusWorkerAddDropEvent::MemoryUsage(mMachineId, mLastMemoryUsageBroadcast)
+		);
+
+	for (auto page: mPagesInRam)
+		{
+		ImmutableTreeSet<hash_type> deps;
+
+		for (auto bigvecId: mPageBigvecRefcounts[page])
+			deps = deps + bigvecId.guid();
+
+		eventConsumer(
+			Cumulus::CumulusWorkerAddDropEvent::PageOnMachine(
+				mMachineId,
+				page, 
+				true,
+				mPagesOnDisk.find(page) != mPagesOnDisk.end(),
+				mPagesUnpinned.find(page) == mPagesUnpinned.end(),
+				deps
+				)
+			);
+		}
+
+	for (auto page: mPagesOnDisk)
+		{
+		if (mPagesInRam.find(page) == mPagesInRam.end())
+			{
+			ImmutableTreeSet<hash_type> deps;
+
+			for (auto bigvecId: mPageBigvecRefcounts[page])
+				deps = deps + bigvecId.guid();
+
+			eventConsumer(
+				Cumulus::CumulusWorkerAddDropEvent::PageOnMachine(
+					mMachineId,
+					page, 
+					false,
+					true,
+					false,
+					deps
+					)
+				);
+			}
+		}
+
+	mBigVectorLayouts->sendAddDropState(eventConsumer);
+	}
+
+uword_t PageRefcountTracker::totalBytesInRam()
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return mBytesInRamPinned + mBytesInRamUnpinned;
+	}
+
+EventBroadcaster<pair<PageRefcountEvent, long> >& PageRefcountTracker::onPageRefcountEvent()
+	{
+	return mOnPageRefcountEvent;
+	}
+
+void PageRefcountTracker::markPageAsNotLoadable(const Fora::PageId& inPage)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	broadcastEvent_(PageRefcountEvent::PageMarkedNotLoadable(inPage));
+	}
+
+bool PageRefcountTracker::pageIsOnDisk(const Fora::PageId& inPage)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+	
+	return mPagesOnDisk.find(inPage) != mPagesOnDisk.end();
+	}
+
+bool PageRefcountTracker::pageIsInRam(const Fora::PageId& inPage)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+	
+	return mPagesInRam.find(inPage) != mPagesInRam.end();	
+	}
+
+bool PageRefcountTracker::pageIsInRamAndPinned(const Fora::PageId& inPage)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return mPagesInRam.find(inPage) != mPagesInRam.end() && 
+		mPagesUnpinned.find(inPage) == mPagesUnpinned.end()
+		;
+	}
+
+bool PageRefcountTracker::pageIsInRamAndUnpinned(const Fora::PageId& inPage)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return mPagesInRam.find(inPage) != mPagesInRam.end() && 
+		mPagesUnpinned.find(inPage) != mPagesUnpinned.end()
+		;
+	}
+
+void PageRefcountTracker::broadcastEvent_(const PageRefcountEvent& event)
+	{
+	mOnPageRefcountEvent.broadcast(make_pair(event, mEventCount++));
+	}
+
+void PageRefcountTracker::pageMarkedUnpinned(Fora::PageId inPage)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (!pageIsInRamAndPinned(inPage))
+		return;
+
+	if (mWarnIfChangesAreMade)
+		LOG_WARN << "change during silent period.";
+
+	mPagesUnpinned.insert(inPage);
+
+	broadcastEvent_(PageRefcountEvent::PagePinnedStatusChanged(inPage, false));
+
+	mBytesInRamPinned -= inPage.bytecount();
+	mBytesInRamUnpinned += inPage.bytecount();
+	}
+
+void PageRefcountTracker::pageMarkedPinned(Fora::PageId inPage)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (!pageIsInRamAndUnpinned(inPage))
+		return;
+
+	if (mWarnIfChangesAreMade)
+		LOG_WARN << "change during silent period.";
+
+	mBytesInRamPinned += inPage.bytecount();
+	mBytesInRamUnpinned -= inPage.bytecount();
+
+	mPagesUnpinned.erase(inPage);
+
+	broadcastEvent_(PageRefcountEvent::PagePinnedStatusChanged(inPage, true));
+	}
+
+void PageRefcountTracker::pageReferencedInByBigvecLoadedFromPersistentCache(
+			const Fora::PageId& inPage, 
+			const ImmutableTreeSet<Fora::BigVectorId>& referencedBigvecs
+			)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	broadcastEvent_(PageRefcountEvent::PageReferencedBigvecs(inPage, referencedBigvecs));
+	}
+
+void PageRefcountTracker::pageAddedToRAM(
+			Fora::PageId inPage, 
+			const std::set<Fora::BigVectorId>& referencedBigvecs
+			)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+	
+	if (pageIsInRam(inPage))
+		return;
+
+	if (mWarnIfChangesAreMade)
+		LOG_WARN << "change during silent period.";
+
+	LOG_DEBUG << "on " << prettyPrintString(mMachineId) << ", PRT adding page " 
+		<< prettyPrintString(inPage) << " to RAM.";
+
+	mPagesUnmapped.insert(inPage);
+
+	mBytesInRamPinned += inPage.bytecount();
+
+	broadcastEvent_(PageRefcountEvent::PageAddedToRam(inPage, referencedBigvecs));
+
+	mPageBigvecRefcounts[inPage] = referencedBigvecs;
+
+	mPagesInRam.insert(inPage);
+
+	mPagesUnpinned.erase(inPage);
+
+	for (auto it = referencedBigvecs.begin(); it != referencedBigvecs.end(); ++it)
+		{
+		LOG_DEBUG << "Page " << prettyPrintString(inPage) << " referencing " << prettyPrintString(*it);
+
+		incref_(*it);
+		}
+	}
+
+Nullable<ImmutableTreeSet<Fora::BigVectorId> >
+					PageRefcountTracker::getBigvecsReferencedByPage(Fora::PageId inPage)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mPageBigvecRefcounts.find(inPage) == mPageBigvecRefcounts.end())
+		return null();
+
+	return null() << ImmutableTreeSet<Fora::BigVectorId>(mPageBigvecRefcounts[inPage]);
+	}
+
+//a page was moved from RAM to disk
+void PageRefcountTracker::pageSentToDisk(
+			Fora::PageId inPage,
+			const std::set<Fora::BigVectorId>& referencedBigvecs
+			)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (pageIsOnDisk(inPage))
+		return;
+
+	if (mWarnIfChangesAreMade)
+		LOG_WARN << "change during silent period.";
+
+	LOG_DEBUG << "on " << prettyPrintString(mMachineId) << ", PRT marking page " 
+		<< prettyPrintString(inPage) << " on disk.";
+
+	broadcastEvent_(PageRefcountEvent::PageAddedToDisk(inPage));
+
+	mPagesOnDisk.insert(inPage);
+
+	if (mPageBigvecRefcounts.find(inPage) != mPageBigvecRefcounts.end())
+		{
+		lassert(mPageBigvecRefcounts[inPage] == referencedBigvecs);
+		}
+	else
+		mPageBigvecRefcounts[inPage] = referencedBigvecs;
+	}
+
+
+//a page was dropped from RAM
+void PageRefcountTracker::pageDroppedFromRam(Fora::PageId inPage)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (!pageIsInRam(inPage))
+		return;
+
+	if (mWarnIfChangesAreMade)
+		LOG_WARN << "change during silent period.";
+
+	LOG_DEBUG << "on " << prettyPrintString(mMachineId) << ", PRT dropping page " 
+		<< prettyPrintString(inPage) << " from RAM.";
+
+	if (mPagesUnpinned.find(inPage) == mPagesUnpinned.end())
+		mBytesInRamPinned -= inPage.bytecount();
+	else
+		mBytesInRamUnpinned -= inPage.bytecount();
+	
+	mPagesUnpinned.erase(inPage);
+
+	mPagesUnmapped.erase(inPage);
+	
+	mPagesInRam.erase(inPage);
+
+	broadcastEvent_(PageRefcountEvent::PageDroppedFromRam(inPage));
+
+	if (!pageIsOnDisk(inPage))
+		pageNotInRamOrOnDisk_(inPage);
+	}
+
+//a page was dropped from disk
+void PageRefcountTracker::pageDroppedFromDisk(Fora::PageId inPage)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (!pageIsOnDisk(inPage))
+		return;	
+
+	if (mWarnIfChangesAreMade)
+		LOG_WARN << "change during silent period.";
+
+	LOG_DEBUG << "on " << prettyPrintString(mMachineId) << ", PRT dropping page " 
+		<< prettyPrintString(inPage) << " from disk.";
+
+	mPagesOnDisk.erase(inPage);
+	broadcastEvent_(PageRefcountEvent::PageDroppedFromDisk(inPage));
+
+	if (!pageIsInRam(inPage))
+		pageNotInRamOrOnDisk_(inPage);
+	}
+
+void PageRefcountTracker::bigVectorIncreffed(TypedFora::Abi::BigVectorPageLayout layout)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	mTotalBigvecRefcounts[layout.identity()]++;
+
+	if (mTotalBigvecRefcounts[layout.identity()] == 1)
+		{
+		mBigVectorLayouts->registerNewLayout(layout);
+
+		broadcastEvent_(
+			PageRefcountEvent::BigVectorReferenced(layout)
+			);
+		}
+	}
+
+void PageRefcountTracker::bigVectorIncreffed(
+									Fora::BigVectorId inVec
+									)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mWarnIfChangesAreMade)
+		LOG_WARN << "change during silent period.";
+
+	incref_(inVec);
+	}
+
+void PageRefcountTracker::incref_(Fora::BigVectorId inVec)
+	{
+	mTotalBigvecRefcounts[inVec]++;
+
+	LOG_DEBUG << "on " << prettyPrintString(mMachineId) << ", refcount for bigvec "
+		<< prettyPrintString(inVec) << " is now " << prettyPrintString(mTotalBigvecRefcounts[inVec]);
+
+	if (mTotalBigvecRefcounts[inVec] == 1)
+		broadcastEvent_(
+			PageRefcountEvent::BigVectorReferenced(mBigVectorLayouts->getLayoutForId(inVec))
+			);
+	}
+
+void PageRefcountTracker::bigVectorDecreffed(
+										Fora::BigVectorId inVec
+										)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mWarnIfChangesAreMade)
+		LOG_WARN << "change during silent period.";
+
+	decref_(inVec);
+	}
+
+void PageRefcountTracker::decref_(Fora::BigVectorId inVec)
+	{
+	lassert_dump(
+		mTotalBigvecRefcounts[inVec] > 0,
+		"on " << prettyPrintString(mMachineId) << ", bigvec " 
+			<< prettyPrintString(inVec) << " decrefed without a positive refcount."
+		);
+
+	mTotalBigvecRefcounts[inVec]--;
+
+	LOG_DEBUG << "on " << prettyPrintString(mMachineId) << ", refcount for bigvec "
+		<< prettyPrintString(inVec) << " is now " << prettyPrintString(mTotalBigvecRefcounts[inVec]);
+
+	if (mTotalBigvecRefcounts[inVec] == 0)
+		{
+		broadcastEvent_(PageRefcountEvent::BigVectorNoLongerReferenced(inVec));
+		mTotalBigvecRefcounts.erase(inVec);
+		}
+	}
+
+void PageRefcountTracker::pageNotInRamOrOnDisk_(const Fora::PageId& inPage)
+	{
+	const auto& referencedPages(mPageBigvecRefcounts[inPage]);
+
+	for (auto it = referencedPages.begin(); it != referencedPages.end(); ++it)
+		{
+		LOG_DEBUG << "Page " << prettyPrintString(inPage) << " no longer referencing " << prettyPrintString(*it);
+
+		decref_(*it);
+		}
+
+	mPageBigvecRefcounts.erase(inPage);
+	}
+
+std::set<Fora::PageId> PageRefcountTracker::getCopyOfPinnedPages()
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	std::set<Fora::PageId> pinned(mPagesInRam.begin(), mPagesInRam.end());
+
+	for (auto page: mPagesUnpinned)
+		pinned.erase(page);
+
+	return pinned;
+	}
+
+bool PageRefcountTracker::pinPageIfInRAM(Fora::PageId inPage)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mWarnIfChangesAreMade)
+		LOG_WARN << "change during silent period.";
+
+	if (mPagesInRam.find(inPage) == mPagesInRam.end())
+		return false;
+
+	pageMarkedPinned(inPage);
+
+	return true;
+	}
+
+void PageRefcountTracker::pageNoLongerExistsAcrossSystem(Fora::PageId inPage)
+	{
+	if (mWarnIfChangesAreMade)
+		LOG_WARN << "change during silent period.";
+
+	LOG_DEBUG << "on " << prettyPrintString(mMachineId) << ", PRT is told page " 
+		<< prettyPrintString(inPage) << " no longer exists in the system.";
+	}
+
+void PageRefcountTracker::broadcastBigvecsInFlight(
+		ImmutableTreeSet<Fora::BigVectorId> ids,
+		int32_t refcount,
+		hash_type inMoveGuid
+		)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mWarnIfChangesAreMade)
+		LOG_WARN << "change during silent period.";
+	
+	if (ids.size())
+		broadcastEvent_(
+			PageRefcountEvent::BigVectorsInFlight(
+				ids,
+				refcount,
+				inMoveGuid
+				)
+			);
+	}
+
+bool PageRefcountTracker::isExecutionCurrentlyBlocked(void)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return mIsExecutionCurrentlyBlocked;
+	}
+
+void PageRefcountTracker::executionIsBlockedChanged(bool inIsBlocked)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	mIsExecutionCurrentlyBlocked = inIsBlocked;
+
+	broadcastEvent_(
+		PageRefcountEvent::ExecutionIsBlockedChanged(inIsBlocked)
+		);
+	}
+
+void PageRefcountTracker::totalMemoryUsageChanged(const Fora::MemoryUsage& inUsage)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	mLastMemoryUsageBroadcast = inUsage;
+
+	broadcastEvent_(
+		PageRefcountEvent::MemoryUsageChanged(inUsage)
+		);
+	}
+
+std::set<Fora::PageId> PageRefcountTracker::getPagesHeldInRAM()
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	std::set<Fora::PageId> result;
+
+	for (auto page: mPagesInRam)
+		result.insert(page);
+
+	return result;
+	}
+
+std::set<Fora::PageId> PageRefcountTracker::getPagesHeldOnDisk()
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	std::set<Fora::PageId> result;
+
+	for (auto page: mPagesOnDisk)
+		result.insert(page);
+
+	return result;
+	}
+
+void PageRefcountTracker::createSyntheticPage(
+								const Fora::PageId& page, 
+								const TypedFora::Abi::BigVectorPageLayout& layout
+								)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	broadcastEvent_(PageRefcountEvent::SyntheticPageCreated(page, layout));
+	}
+
+void PageRefcountTracker::realizeSyntheticPage(const Fora::PageId& inPageId)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	broadcastEvent_(PageRefcountEvent::SyntheticPageRealized(inPageId));
+	}
+
+Fora::MemoryUsage PageRefcountTracker::curMemoryUsage()
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return mLastMemoryUsageBroadcast;
+	}
+

@@ -1,0 +1,164 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "NativeCodeSimplification.hppml"
+#include "../Runtime.hppml"
+#include "../../core/containers/TwoWaySetMap.hpp"
+#include "../../core/containers/MapWithIndex.hpp"
+#include "../../core/cppml/CPPMLVisit.hppml"
+#include "../../core/cppml/CPPMLTransform.hppml"
+#include "../../core/ScopedProfiler.hppml"
+
+
+@type FindRewritesVisitor = map<NativeVariable, NativeCodeFlattened::Input> rewrites {
+public:
+		template<class T>
+		void processDown(const T& in, bool& out)
+			{
+			}
+
+		void processDown(const NativeConstant& t, bool& b)
+			{
+			b = false;
+			}
+	
+		
+		void processDown(const NativeType& in, bool& out)
+			{
+			out = false;
+			}
+		
+		template<class T>
+		void processUp(const T& in)
+			{
+			}
+
+		void processDown(const pair<NativeVariable, NativeCodeFlattened::Expression>& in, bool& out)
+			{
+			@match NativeCodeFlattened::Expression(in.second)
+				-|	Var(Variable(t)) ->> {
+
+						NativeVariable s = in.first;
+
+						//make s->t.  if t->something already, s->it. if ->s already, that stuff goes to t also
+						lassert_dump(s != rewrites(), "tried to apply FindRewritesVisitor to a graph in which " << prettyPrintString(s) << " was defined in two places!");
+
+						rewrites()[s] = NativeCodeFlattened::Input::Variable(t);
+						;}
+				-|	Var(c) ->> {
+						rewrites()[in.first] = c;
+						;}
+
+				-|	_ ->> {;}
+				;
+			}
+		void complete(void)
+			{
+			//first complete the rewrites map
+			for (map<NativeVariable, NativeCodeFlattened::Input>::iterator it = rewrites().begin(), it_end = rewrites().end(); it != it_end; ++it)
+				if (it->second.isVariable() && it->second.getVariable().var() == rewrites())
+					{
+					map<NativeVariable, NativeCodeFlattened::Input>::iterator final_it = it, next_it, orig_it = it;
+					while (final_it->second.isVariable() && (next_it = rewrites().find(final_it->second.getVariable().var())) != rewrites().end())
+						{
+						final_it = next_it;
+						
+						lassert_dump(!(final_it == it), "found a loop");
+						}
+
+					//this is the last one. now point everything to this
+					while (orig_it != rewrites().end() && orig_it->second.isVariable())
+						{
+						orig_it->second = final_it->second;
+						orig_it = rewrites().find(orig_it->second.getVariable().var());
+						}
+					}
+			}
+};
+
+@type FindRewritesTransformer = map<NativeVariable, NativeCodeFlattened::Input>* rewrites {
+public:
+		template<class T>
+		Nullable<T> processDown(const T& in, bool& out) const
+			{
+			return null();
+			}
+		template<class T>
+		Nullable<T> processUp(const T& in) const
+			{
+			return null();
+			}
+
+		NativeVariable processDown(const NativeVariable& in, bool& out) const
+			{
+			out = false;
+			return in;
+			}
+		NativeCodeFlattened::Input processDown(const NativeCodeFlattened::Input& i, bool& out) const
+			{
+			if (i.isVariable() && i.getVariable().var() == *rewrites())
+				return rewrites()->find(i.getVariable().var())->second;
+			return i;
+			}
+		NativeCodeFlattened::VariablesToDump processDown(const NativeCodeFlattened::VariablesToDump& in, bool& out) const
+			{
+			ImmutableTreeSet<NativeVariable> toDump;
+			for (long k = 0; k < in.dumpToSlots().size();k++)
+				if (in.dumpToSlots()[k] != *rewrites())
+					toDump = toDump + in.dumpToSlots()[k];
+
+			out = false;
+			return NativeCodeFlattened::VariablesToDump(toDump);
+			}
+		ImmutableTreeVector<pair<NativeVariable, NativeCodeFlattened::Expression> > processDown(const ImmutableTreeVector<pair<NativeVariable, NativeCodeFlattened::Expression> >& in, bool& cond) const
+			{
+			ImmutableTreeVector<pair<NativeVariable, NativeCodeFlattened::Expression> > out;
+			for (long k = 0; k < in.size();k++)
+				if (in[k].first != *rewrites())
+					out = out + in[k];
+			return out;
+			}
+		ImmutableTreeMap<NativeVariable, string> processDown(const ImmutableTreeMap<NativeVariable, string>& in, bool& out) const
+			{
+			//rewrite the map. if there is metadata already from the target, don't take it
+			ImmutableTreeMap<NativeVariable, string> tr = in;
+
+			for (long k = 0; k < in.size();k++)
+				if (in.pairAtPosition(k).first == (*rewrites()))
+					{
+					NativeCodeFlattened::Input i = (*rewrites())[in.pairAtPosition(k).first];
+					if (i.isVariable() && !in.contains(i.getVariable().var()))
+						{
+						tr = tr + i.getVariable().var() + in.pairAtPosition(k).second;
+						}
+						else
+						tr = tr - in.pairAtPosition(k).first;
+					}
+			
+			return tr;
+			}
+};
+
+
+
+//gets rid of simple variable definitions. Requires that lets are defined in exactly one place
+void	removeVariableRewrites(map<NativeBlockID, NativeCodeFlattened::Block>& outBlocks)
+	{
+	FindRewritesVisitor vis;
+	visit(outBlocks, vis);
+	vis.complete();
+	outBlocks = transform(outBlocks, FindRewritesTransformer(&vis.rewrites()));
+	}
+

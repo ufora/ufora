@@ -1,0 +1,275 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "JudgmentOnValueTreeMatchImplvalCppCodegen.hppml"
+#include "../../core/Logging.hpp"
+
+namespace Fora {
+
+JudgmentOnValueTreeMatchImplvalCppCodegen::JudgmentOnValueTreeMatchImplvalCppCodegen(
+										const JudgmentOnValueTree& inTree
+										)
+	{
+	mLookupCode << "\ngoto hash_" << hashToString(inTree.hash()) << ";\n";
+
+	dump(inTree);
+
+	mLookupCode << "lassert(false);\n";
+	}
+
+std::string JudgmentOnValueTreeMatchImplvalCppCodegen::str() const
+	{
+	return std::string() + 
+		"#include \"AxiomSearch.hppml\"\n" +
+		"#include \"../Core/ApplyArgFrame.hppml\"\n" + 
+		"#include \"../Judgment/JudgmentOnValue.hppml\"\n" + 
+		"#include \"../Primitives/Symbol.hpp\"\n" +
+		"#include \"../Core/Type.hppml\"\n" + 
+		"#include \"../TypedFora/ABI/VectorRecord.hpp\"\n" + 
+		"using TypedFora::Abi::VectorRecord;\n" + 
+		"namespace Fora {\n" + 
+		"namespace {\n" + 
+		mVariableDeclarations.str() + 
+		"}\n" + 
+		"uword_t searchJOVTree(const Fora::ApplyArgFrame& vals)\n\t{\n" +
+		mLookupCode.str() + 
+		"\t}\n" + 
+		"}\n"
+		;
+	}
+
+void JudgmentOnValueTreeMatchImplvalCppCodegen::dumpJovMatchesImplvalCheck(const JOV& inJOV, std::string text)
+	{
+	if (inJOV.type() && inJOV == JOV::OfType(*inJOV.type()))
+		{
+		mLookupCode << "if (" << text << ".type() == " 
+				<< mVariableDeclarations.typeVariable(*inJOV.type()) << ")";
+		return;
+		}
+
+	if (inJOV.constant())
+		{
+		CSTValue val = *inJOV.constant();
+
+		if (val.type().isSymbol())
+			{
+			mLookupCode << "if (" << text << ".type().isSymbol() && " << text << ".cast<Symbol>() == "
+				<< mVariableDeclarations.symbolVariable(val.cast<Symbol>()) << ")";
+			return;
+			}
+
+		if (val.type().isJOVAsValue())
+			{
+			mLookupCode << "if (" << text << ".type().isJOVAsValue() && " << text << ".cast<JOV>() == "
+				<< mVariableDeclarations.jovVariable(val.cast<JOV>()) << ")";
+			return;
+			}
+		}
+
+	@match JOV(inJOV)
+		-| Unknown() ->> {
+			mLookupCode << "if (true) ";
+			return;
+			}
+		-| UnknownCSTKnown(cst) ->> {
+			if (cst)
+				mLookupCode << "if (" << text << ".isCST())";
+			else
+				mLookupCode << "if (!" << text << ".isCST())";
+
+			return;
+			}
+		-| JOVAsValue(Unknown(j)) ->> {
+			if (j == JOV::Class(JudgmentOnValueClass::Unknown()))
+				{
+				mLookupCode << "if (" << text << ".type().isJOVAsValue() && " 
+					<< text << ".cast<JOV>().isClass())";
+				return;
+				}
+			if (j == jovTuple())
+				{
+				mLookupCode << "if (" << text << ".type().isJOVAsValue() && " 
+					<< text << ".cast<JOV>().isTuple())";
+				return;
+				}
+			if (j == jovAnyMutableVector())
+				{
+				mLookupCode << "if (" << text << ".type().isJOVAsValue() && " 
+					<< text << ".cast<JOV>().isMutableVector())";
+				return;
+				}
+			}
+		-| _ ->> {
+			};
+
+	if (inJOV == JOV::Atom(JudgmentOnValueAtom::Integer(null())))
+		{
+		mLookupCode << "if (" << text << ".type().isInteger())";
+		return;
+		}
+
+	if (inJOV == JOV::Atom(JudgmentOnValueAtom::Float()))
+		{
+		mLookupCode << "if (" << text << ".type().isFloat())";
+		return;
+		}
+
+	if (inJOV == JOV::Class(JudgmentOnValueClass::Unknown()))
+		{
+		mLookupCode << "if (" << text << ".type().isClass())";
+		return;
+		}
+
+	if (inJOV == jovAnyVector())
+		{
+		mLookupCode << "if (" << text << ".type().isVector())";
+		return;
+		}
+
+	if (inJOV == jovTuple())
+		{
+		mLookupCode << "if (" << text << ".type().isTuple())";
+		return;
+		}
+
+	if (inJOV == jovAnyDictionary())
+		{
+		mLookupCode << "if (" << text << ".type().isDictionary())";
+		return;
+		}
+
+	if (inJOV == jovAlternative())
+		{
+		mLookupCode << "if (" << text << ".type().isAlternative())";
+		return;
+		}
+
+	if (inJOV == jovVector(JOV::OfType(Type::Integer(8, false))))
+		{
+		mLookupCode << "if (" << text << ".type().isVector() && "
+				<< text << ".cast<VectorRecord>().isEmptyOrVectorOfUint8() )";
+		return;
+		}
+
+	if (inJOV == JOV::OfType(Type::StackTrace()))
+		{
+		mLookupCode << "if (" << text << ".type().isStackTrace())";
+		return;
+		}
+
+	//if it's an unnamed tuple of * elements
+	if (inJOV.isTuple() && inJOV == 
+			JOV::Tuple(JOVT::Unnamed((emptyTreeVec() + JOV::Unknown()) * inJOV.getTuple().jov().jovs().size())
+				)
+			)
+		{
+		mLookupCode << "if (" << text << ".type().isTuple() && " << text 
+				<< ".type().getTuple().types().size() == " 
+				<< inJOV.getTuple().jov().jovs().size() 
+				<< ")";
+		return;
+		}
+
+	lassert_dump(false, prettyPrintString(inJOV));
+	}
+
+void JudgmentOnValueTreeMatchImplvalCppCodegen::dumpRuleMatchText(const JudgmentOnValueTreeBinaryRule& inRule)
+	{
+	@match JudgmentOnValueTreeBinaryRule(inRule)
+		-| ExactCount(size) ->> {
+			mLookupCode << "\tif (vals.size() == " << size << ")\n";
+			}
+		-| MatchesAllAbove(dim, jov) ->> {
+			mLookupCode << "\tbool matches = true;\n";
+			mLookupCode << "\tfor (long k = " << dim << "; k < vals.size() && matches; k++)\n";
+			mLookupCode << "\t\t{\n";
+			mLookupCode << "\t\tauto value = vals[k].first;\n";
+			mLookupCode << "\t\t/*jov = " << prettyPrintString(jov) << "*/\n";
+			mLookupCode << "\t\t";
+			dumpJovMatchesImplvalCheck(jov, "value");
+			mLookupCode << "{} else matches = false;\n";
+			mLookupCode << "\t\t}\n";
+			mLookupCode << "\tif (matches)\n";
+			}
+		-| Matches(dim, jov, fieldname) ->> {
+			mLookupCode << "\tbool matches = true;\n";
+			mLookupCode << "\t\t/*jov = " << prettyPrintString(jov) << "*/\n";
+			mLookupCode << "\tif (vals.size() < " << dim+1 << ") matches = false; else\n";
+			mLookupCode << "\t\t{\n";
+			mLookupCode << "\t\tauto value = vals[" << dim << "];\n";
+			mLookupCode << "\t\t";
+			dumpJovMatchesImplvalCheck(jov, "value.first");
+			mLookupCode << " {} else matches = false;\n";
+			if (!fieldname)
+				mLookupCode << "\t\tif (value.second) matches = false;\n";
+			else
+				mLookupCode << "\t\tif (!value.second || *value.second != " 
+						<< mVariableDeclarations.symbolVariable(*fieldname) << ") matches = false;\n";
+
+			mLookupCode << "\t\t}\n";
+			mLookupCode << "\tif (matches)\n";
+			}
+	}
+
+void JudgmentOnValueTreeMatchImplvalCppCodegen::dump(const JudgmentOnValueTree& subtree)
+	{
+	if (mTreeHashesDumped.find(subtree.hash()) != mTreeHashesDumped.end())
+		return;
+
+	mTreeHashesDumped.insert(subtree.hash());
+
+	mLookupCode << "hash_" << hashToString(subtree.hash()) << ": {\n";
+
+	std::vector<JudgmentOnValueTree> subtreesToDump;
+
+	@match JudgmentOnValueTree(subtree)
+		-| Leaf(value) ->> {
+			mLookupCode << "\treturn " << value << ";\n";
+			}
+		-| Rule(rule, ifTrue, ifFalse) ->> {
+			dumpRuleMatchText(rule);
+
+			mLookupCode << "\t\tgoto hash_" << hashToString(ifTrue.hash()) << ";\n";
+			mLookupCode << "\telse\n";
+			mLookupCode << "\t\tgoto hash_" << hashToString(ifFalse.hash()) << ";\n";
+
+			subtreesToDump.push_back(ifTrue);
+			subtreesToDump.push_back(ifFalse);
+			}
+		-| TypeMap(dim, matches, ifFalse) ->> {
+			lassert(false);
+			}
+		-| ConstantMap(dim, matches, ifFalse) ->> {
+			lassert(false);
+			}
+		-| _ ->> {
+			lassert(false);
+			}
+
+	mLookupCode << "\t}\n";
+
+	for (auto subtree: subtreesToDump)
+		dump(subtree);
+	}
+
+std::string JudgmentOnValueTreeMatchImplvalCppCodegen::generateLookupCppCode(const JudgmentOnValueTree& inTree)
+	{
+	JudgmentOnValueTreeMatchImplvalCppCodegen codegenerator(inTree);
+
+	return codegenerator.str();
+	}
+
+}
+

@@ -1,0 +1,189 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "ActiveComputationsEvent.hppml"
+
+#include <boost/shared_ptr.hpp>
+#include "../core/PolymorphicSharedPtr.hpp"
+#include "../core/EventBroadcaster.hpp"
+#include "../FORA/VectorDataManager/VectorDataManager.hppml"
+#include "../FORA/VectorDataManager/PageRefcountEvent.hppml"
+#include "../FORA/Core/ExecutionContext.hppml"
+
+#include "MachineId.hppml"
+#include "CreatedComputations.hppml"
+
+#include "ComputationId.hppml"
+#include "VectorLoadRequest.hppml"
+#include "VectorLoadedResponse.hppml"
+#include "CumulusClientId.hppml"
+
+#include "RequestComputationResultFromMachine.hppml"
+#include "ComputationResultFromMachine.hppml"
+#include "ComputationResult.hppml"
+
+#include "InitiateComputationMove.hppml"
+#include "VectorLoadedResponse.hppml"
+
+#include "ExternalIoTask/ExternalIoTask.hppml"
+#include "ExternalIoTask/ExternalIoTaskId.hppml"
+#include "CumulusComponentMessage.hppml"
+#include "CumulusComponentType.hppml"
+
+class SystemwidePageRefcountTracker;
+
+namespace Cumulus {
+
+class DataTransfers;
+
+class ComputationState;
+
+class CumulusWorkerAddDropEvent;
+
+class AddDropFinalState;
+
+/*****************
+
+ActiveComputations
+
+Responsible for maintaining the state of a group of threads owned
+on a single CumulusWorker. The state of each thread includes
+
+	* ExecutionContexts
+	* Whether a thread is moving to another machine
+	* What other threads a thread is blocked on
+	* What other threads a thread is blocking on, and the state of the
+		negotiation over this
+	* What threads could be executed immediately.
+	* What threads are checked out for execution right now.
+	* The current priority placed on a computation because of other threads
+	* The current priority placed on a computation because of external priorities
+
+The ActiveComputations object maintains a model of its own threads. The environment
+is responsible for broadcasting all of these changes to the other systems
+involved.
+
+****************/
+
+class ActiveComputationsImpl;
+
+class ActiveComputations : 
+			public PolymorphicSharedPtrBase<ActiveComputations>,
+			public InstanceCounter<ActiveComputations>
+{
+public:
+	ActiveComputations(
+			PolymorphicSharedPtr<CallbackSchedulerFactory> inCallbackSchedulerFactory,
+			PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+			PolymorphicSharedPtr<DataTransfers> inLargeMessageThrottler,
+			PolymorphicSharedPtr<VectorDataManager> inVDM,
+			uword_t inWorkerThreadCount,
+			Fora::Interpreter::ExecutionContextConfiguration inConfig,
+			MachineId inOwnMachineId,
+			PolymorphicSharedPtr<SystemwidePageRefcountTracker> inPageTracker,
+			RandomHashGenerator& guidGen,
+			boost::function1<void, ActiveComputationsEvent> inEventHandler,
+			MachineId inLeaderMachineId
+			);
+
+	void teardown();
+
+	void teardownButDontBlock();
+
+	bool isTornDown() const;
+
+	void extractStates(
+			std::map<ComputationId, PolymorphicSharedPtr<ComputationState> > &outStates
+			);
+
+	void sendAddDropState(boost::function1<void, Cumulus::CumulusWorkerAddDropEvent> eventConsumer);
+
+	void initializeFromAddDropState(
+			const std::map<ComputationId, PolymorphicSharedPtr<ComputationState> > &inStates,
+			const Cumulus::AddDropFinalState& state
+			);
+
+	MachineId getMachineId() const;
+
+	void sendCurrentStateToClient(CumulusClientId client);
+
+	void setCheckInternalStateAfterAllOperations(bool inCheck);
+
+	void dumpStateToLog();
+
+	//******************* Connection Management *******************************/
+
+	//called for 'machine' before we will ever talk about is in any client message. 
+	//This function is not called for 'inOwnMachineId'
+	void addMachine(MachineId machine);
+
+	//called for 'inId' before we will ever talk about is in any client message. 
+	//This function is not called for 'inOwnMachineId'
+	void addCumulusClient(CumulusClientId inId);
+
+	//this client has disconnected, and no messages pertaining to this client will ever occur
+	//again.
+	void dropCumulusClient(CumulusClientId inId);
+
+	void disableVectorPaging();
+
+	void enableVectorPaging();
+
+	//******************* Computation Management *******************************/
+
+	//check a specific computation out, returning the ExecutionContext. If the
+	//checkout fails (perhaps due to a race condition) then we return a null pointer.
+	pair<PolymorphicSharedPtr<ComputationState>, hash_type> startComputation(ComputationId computation);
+
+	void stopComputation(ComputationId computation, CreatedComputations result);
+
+	//******************* Message Handlers *******************************/
+	void handleCumulusComponentMessage(
+				const CumulusComponentMessage& message, 
+				const CumulusClientOrMachine& source, 
+				const CumulusComponentType& componentType
+				);
+
+	void handleInitiateComputationMove(InitiateComputationMove move);
+
+	void handleComputationResultFromMachine(
+					ComputationResultFromMachine inResult
+					);
+
+	void handleRequestComputationResultFromMachine(
+										RequestComputationResultFromMachine inRequest
+										);
+
+	void handleLocalPageRefcountEvent(const Fora::PageRefcountEvent& event);
+
+	//******************* Events *******************************/
+	EventBroadcaster<ComputationResultFromMachine>& onComputationResultFromMachine();
+
+	EventBroadcaster<RequestComputationResultFromMachine>& onRequestComputationResultFromMachine();
+	
+	EventBroadcaster<CumulusComponentMessageCreated>& onCumulusComponentMessageCreated();
+
+	void suspendAllBroadcasters();
+
+	void resumeAllBroadcasters();
+
+protected:
+	PolymorphicSharedPtr<ActiveComputationsImpl> mImpl;
+};
+
+};
+

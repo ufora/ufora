@@ -1,0 +1,859 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ActivePageSynchronizerImpl.hppml"
+#include "../../core/threading/TimedLock.hpp"
+#include "../../core/threading/CallbackScheduler.hppml"
+#include "../../core/threading/CallbackSchedulerFactory.hppml"
+#include "../../core/Memory.hpp"
+#include "../../core/PolymorphicSharedPtrBinder.hpp"
+#include "../../FORA/TypedFora/ABI/BigVectorPageLayout.hppml"
+#include "../../FORA/TypedFora/ABI/BigVectorLayouts.hppml"
+#include "../../FORA/VectorDataManager/VectorDataManager.hppml"
+#include "../../FORA/VectorDataManager/VectorDataMemoryManager.hppml"
+#include "../../FORA/VectorDataManager/VectorPage.hppml"
+#include "../AddDropFinalState.hppml"
+#include <iomanip>
+
+namespace Cumulus {
+namespace SystemwideComputationScheduler {
+
+const double kFractionOfMachineRamToContainActiveSet = .925;
+const double kFractionOfTotalRamToMakeUpActiveSet = .85;
+const double kTimeBetweenDependenciesLog = 1.0;
+const double kMaxPagesToLoadAtOnce = 5;
+const double kPagesPerNaturalNeighborhood = 3;
+const double kMaxPagesPerClique = 10;
+const double kTimeBetweenPageResets = 0.5;
+const double kMaxLoadToFillACpu = .5;
+
+ActivePageSynchronizerImpl::ActivePageSynchronizerImpl(
+			PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+			PolymorphicSharedPtr<SystemwidePageRefcountTracker> inSystemwidePageRefcountTracker,
+			PolymorphicSharedPtr<VectorDataManager> inVDM,
+			PolymorphicSharedPtr<OfflineCache> inOfflineCache,
+			MachineId inOwnMachineId
+			) : 
+		mOwnMachineId(inOwnMachineId),
+		mOfflineCache(inOfflineCache),
+		mOnCumulusComponentMessageCreated(inCallbackScheduler),
+		mCallbackScheduler(inCallbackScheduler),
+		mPageLoader(
+			boost::bind(&ActivePageSynchronizerImpl::triggerPageLoad_, this, boost::arg<1>()),
+			boost::bind(&ActivePageSynchronizerImpl::pageNeedsLoading_, this, boost::arg<1>()),
+			16
+			),
+		mVDM(inVDM),
+		mSystemwidePageRefcountTracker(inSystemwidePageRefcountTracker),
+		mRandomGenerator( (inOwnMachineId.guid() + hash_type::SHA1("ActivePageSynchronizerImpl"))[0] ),
+		mIsTornDown(false),
+		mPrivateCallbackScheduler(
+			inCallbackScheduler->getFactory()->createScheduler("ActivePageSynchronizerImpl::BackgroundThread")
+			),
+		mSendPagesToDiskCallbackScheduler(
+			inCallbackScheduler->getFactory()->createScheduler("VDM Serializers", 2)
+			),
+		mAgressivelyPushPagesToDisk(false),
+		mVdmmIsFull(false)
+	{
+	mPageRefcountTracker = mVDM->getPageRefcountTracker();
+	}
+
+void ActivePageSynchronizerImpl::polymorphicSharedPtrBaseInitialized()
+	{
+	mVDM->getMemoryManager()->onIsFullChanged().subscribe(
+		polymorphicSharedWeakPtrFromThis(),
+		&ActivePageSynchronizerImpl::vectorDataMemoryManagerIsFullChanged
+		);
+	}
+
+void ActivePageSynchronizerImpl::teardown()
+	{
+	TimedLock lock(mMutex, "ActivePageSynchronizerImpl");
+
+	mIsTornDown = true;
+	}
+
+void ActivePageSynchronizerImpl::initializeFromAddDropState(const AddDropFinalState& state)
+	{
+	TimedLock lock(mMutex, "ActivePageSynchronizerImpl");
+
+	state.recreatePageRefcountEventSequence(
+		boost::bind(
+			&ActivePageSynchronizerImpl::consumePageEvent,
+			this,
+			boost::arg<1>(),
+			boost::arg<2>()
+			)
+		);
+	}
+
+void ActivePageSynchronizerImpl::handleSchedulerToSynchronizerMessage(
+						const SchedulerToActivePageSynchronizerMessage& message
+						)
+	{
+	TimedLock lock(mMutex, "LocalSchedulerImpl");
+
+	if (mIsTornDown)
+		return;
+
+	@match SchedulerToActivePageSynchronizerMessageContents(message.contents())
+		-| SetDesiredContents(targetPages, currentPages, activePages, index, isStalled) ->> {
+			handleSetDesiredContents_(
+				expandSyntheticPages(targetPages),
+				expandSyntheticPages(currentPages),
+				expandSyntheticPages(activePages),
+				index, 
+				isStalled
+				);
+			}
+	}
+
+void ActivePageSynchronizerImpl::handleSynchronizerToSynchronizerMessage(
+						const ActivePageSynchronizerToSynchronizerMessage& message
+						)
+	{
+	TimedLock lock(mMutex, "LocalSchedulerImpl");
+
+	if (mIsTornDown)
+		return;
+
+	@match ActivePageSynchronizerToSynchronizerMessageContents(message.contents())
+		-| UnpinResponse(pageId, mayUnpin) ->> {
+			if (!mPendingUnpinRequests.hasKey(pageId))
+				{
+				LOG_WARN << mOwnMachineId << " got an unpin response for an unexpected page";
+
+				return;
+				}
+
+			if (mPendingUnpinRequests.getValue(pageId) != message.sourceMachine())
+				{
+				LOG_WARN << mOwnMachineId << " got an unpin response from an unexpected machine";
+
+				return;
+				}
+
+			mPendingUnpinRequests.drop(pageId);
+
+			LOG_DEBUG_SCOPED("Pinning")
+				<< prettyPrintString(mOwnMachineId)
+				<< " discovered that it " 
+				<< (mayUnpin ? "may":"may not")
+				<< " unpin "
+				<< prettyPrintString(pageId) << " from machine "
+				<< prettyPrintString(message.sourceMachine())
+				;
+
+			if (mayUnpin)
+				{
+				mPageRefcountTracker->pageMarkedUnpinned(pageId);
+				if (!mDesiredPages.contains(pageId))
+					{
+					if (mPageRefcountTracker->pageIsInRamAndUnpinned(pageId))
+						{
+						mVDM->dropPageWithoutWritingToDisk(pageId);
+
+						if (mPagesScheduledForDiskWrite.find(pageId) != mPagesScheduledForDiskWrite.end())
+							mPagesScheduledForDiskWrite.erase(pageId);
+						
+						LOG_INFO << mOwnMachineId << " dropping page " << prettyPrintString(pageId)
+							<< " now that it's not pinned";
+						}
+					}
+				}
+			else
+				{
+				mPageRefcountTracker->pageMarkedPinned(pageId);
+
+				if (!mDesiredPages.contains(pageId))
+					{
+					LOG_INFO << mOwnMachineId << " reattempting to unpin " << prettyPrintString(pageId)
+						<< " as our first attempt failed.";
+					tryToUnpinPage_(pageId);
+					}
+				}
+			}
+		-| UnpinRequest(pageId) ->> {
+			bool mayUnpin = true;
+
+			if (mPendingUnpinRequests.hasKey(pageId))
+				{
+				LOG_DEBUG_SCOPED("Pinning")
+					<< prettyPrintString(mOwnMachineId)
+					<< " not allowing " 
+					<< prettyPrintString(message.sourceMachine())
+					<< " to unpin "
+					<< prettyPrintString(pageId)
+					<< " because we're trying to unpin it ourselves."
+					;
+
+				mayUnpin = false;
+				}
+
+			if (mayUnpin && !mPageRefcountTracker->pinPageIfInRAM(pageId))
+				{
+				LOG_DEBUG_SCOPED("Pinning")
+					<< prettyPrintString(mOwnMachineId)
+					<< " not allowing " 
+					<< prettyPrintString(message.sourceMachine())
+					<< " to unpin "
+					<< prettyPrintString(pageId)
+					<< " because the page is not pinned and in RAM here."
+					;
+
+				mayUnpin = false;
+				}
+
+			if (mayUnpin)
+				LOG_DEBUG_SCOPED("Pinning")
+					<< prettyPrintString(mOwnMachineId)
+					<< " allowing " 
+					<< prettyPrintString(message.sourceMachine())
+					<< " to unpin "
+					<< prettyPrintString(pageId)
+					;
+
+			sendSynchronizerToSynchronizerMessage(
+				ActivePageSynchronizerToSynchronizerMessage(
+					mOwnMachineId,
+					message.sourceMachine(),
+					ActivePageSynchronizerToSynchronizerMessageContents::UnpinResponse(
+						pageId,
+						mayUnpin
+						)
+					)
+				);
+			}
+	}
+
+void ActivePageSynchronizerImpl::consumePageEvent(
+								const Fora::PageRefcountEvent& inEvent, 
+								Cumulus::MachineId onMachineId
+								)
+	{
+	TimedLock lock(mMutex, "ActivePageSynchronizerImpl");
+
+	if (mIsTornDown)
+		return;
+	
+	@match Fora::PageRefcountEvent(inEvent)
+		-| PageAddedToRam(page) ->> {
+			if (!hasPageBeenDroppedAcrossEntireSystem_(page))
+				checkIfPageWantsToBeUnpinnedLocally_(page);
+			}
+		-| PageDroppedFromRam(page) ->> {
+			if (onMachineId == mOwnMachineId)
+				{
+				//because we might not load pages if we're under memory pressure, when we
+				//drop pages, we must check whether we could load something else now
+
+				mPageLoader.checkIfNeedAdditionalPageLoad();
+				}
+			}
+		-| BigVectorReferenced(newLayout) ->> {
+			for (auto vecSlice: newLayout.vectorIdentities())
+				if (vecSlice.vector().isExternal())
+					mPageToVectorDataIdMap[vecSlice.vector().getPage()] = vecSlice.vector();
+			}
+		-| BigVectorReferenced(newLayout) ->> {
+			for (auto vecSlice: newLayout.vectorIdentities())
+				if (vecSlice.vector().isExternal())
+					mPageToVectorDataIdMap[vecSlice.vector().getPage()] = vecSlice.vector();
+			}
+		-| _ ->> {
+			}
+	}
+
+void ActivePageSynchronizerImpl::pageNoLongerReferencedAcrossSystem(Fora::PageId page)
+	{
+	TimedLock lock(mMutex, "ActivePageSynchronizerImpl");
+
+	if (mIsTornDown)
+		return;
+
+	if (mPagesDroppedAcrossEntireSystem.find(page) != mPagesDroppedAcrossEntireSystem.end())
+		return;
+
+	mPagesDroppedAcrossEntireSystem.insert(page);
+	
+	Nullable<VectorDataID> vec = pageToVectorDataId_(page);
+
+	if (vec)
+		mVectorLoads.erase(*vec);
+
+	mDesiredPages = mDesiredPages - page;
+
+	mPageLoader.pageDroppedAcrossEntireSystem(page);
+
+	if (mOfflineCache->alreadyExists(page))
+		{
+		mOfflineCache->drop(page);
+		mPageRefcountTracker->pageDroppedFromDisk(page);
+		}
+
+	//TODO: write test to ensure that no pages get left on disk that are dropped
+	//across the entire system
+	if (mPagesBeingWrittenToDisk.find(page) != mPagesBeingWrittenToDisk.end())
+		mPagesToDropAfterFinishingDiskRead.insert(page);
+
+	mPagesScheduledForDiskWrite.erase(page);
+	}
+
+bool ActivePageSynchronizerImpl::hasPageBeenDroppedAcrossEntireSystem_(Fora::PageId page)
+	{
+	return mPagesDroppedAcrossEntireSystem.find(page) != mPagesDroppedAcrossEntireSystem.end();
+	}
+
+bool ActivePageSynchronizerImpl::pageNeedsLoading_(Fora::PageId inPage)
+	{
+	if (hasPageBeenDroppedAcrossEntireSystem_(inPage))
+		return false;
+
+	Nullable<VectorDataID> id = pageToVectorDataId_(inPage);
+
+	if (!id)
+		//the definition of the page hasn't reached us yet
+		return false;
+
+	return !mPageRefcountTracker->pageIsInRam(inPage) && !isAlreadyLoading_(*id);
+	}
+
+bool ActivePageSynchronizerImpl::triggerPageLoad_(Fora::PageId inPage)
+	{
+	Nullable<VectorDataID> id = pageToVectorDataId_(inPage);
+	
+	if (id)
+		{
+		initiateVectorLoad_(*id);
+		return true;
+		}
+	else
+		{
+		LOG_DEBUG << "not triggering load of " << prettyPrintString(inPage);
+		return false;
+		}
+	}
+
+Nullable<VectorDataID> ActivePageSynchronizerImpl::pageToVectorDataId_(Fora::PageId inPage)
+	{
+	if (inPage.isInternal())
+		return null() << VectorDataID::canonical(inPage);
+
+	auto it = mPageToVectorDataIdMap.find(inPage);
+
+	if (it != mPageToVectorDataIdMap.end())
+		return null() << it->second;
+
+	return null();
+	}
+
+
+void ActivePageSynchronizerImpl::checkIfPageWantsToBeUnpinnedLocally_(Fora::PageId page)
+	{
+	if (!mDesiredPages.contains(page) && mPageRefcountTracker->pageIsInRamAndPinned(page))
+		tryToUnpinPage_(page);
+	}
+
+ImmutableTreeSet<Fora::PageId> ActivePageSynchronizerImpl::expandSyntheticPages(ImmutableTreeSet<Fora::PageId> pages)
+	{
+	ImmutableTreeSet<Fora::PageId> result;
+
+	PolymorphicSharedPtr<TypedFora::Abi::BigVectorLayouts> layouts = mVDM->getBigVectorLayouts();
+
+	for (auto p: pages)
+		{
+		Nullable<TypedFora::Abi::BigVectorPageLayout> nullOrLayout = 
+			layouts->isPageSynthetic(p);
+
+		if (nullOrLayout)
+			result = result + expandSyntheticPages(nullOrLayout->getPagesReferenced());
+		else
+			result = result + p;
+		}
+
+	return result;
+	}
+
+void ActivePageSynchronizerImpl::handleSetDesiredContents_(	
+											const ImmutableTreeSet<Fora::PageId>& targetPages,
+											const ImmutableTreeSet<Fora::PageId>& currentPages,
+											const ImmutableTreeSet<Fora::PageId>& activePages,
+											long index,
+											bool isStalled
+											)
+	{
+	mSchedulerTargetPages = targetPages;
+
+	mSchedulerCurrentPages = currentPages;
+
+	mSchedulerActivePages = activePages;
+
+	double t0 = curClock();
+	static double timeElapsed = 0;
+
+	mDesiredPages = targetPages;
+
+	LOGGER_INFO_T log = (isStalled ? LOGGER_CRITICAL : LOGGER_INFO);
+
+	uword_t totalBytes = 0;
+	for (auto page: targetPages)
+		totalBytes += page.bytecount();
+
+	log << "handling SetDesiredContents on " << prettyPrintString(mOwnMachineId) 
+		<< " with index " << index << "\n";
+
+	log << "total RAM usage is " << Ufora::Memory::getTotalBytesAllocated() / 1024 / 1024.0 << " MB\n";
+
+	log << "target pages are " << totalBytes / 1024 / 1024.0 << " MB\n";
+
+	for (auto page: targetPages)
+		if (!mPageRefcountTracker->pageIsInRam(page) && page.isInternal())
+			log << "adding: " << prettyPrintString(page) 
+				<< (mVDM->getBigVectorLayouts()->isPageSynthetic(page) ? "[synthetic]":"")
+				<< (hasPageBeenDroppedAcrossEntireSystem_(page) ? 
+						"[dropped across entire system]" : 
+						mSystemwidePageRefcountTracker->doesPageAppearDroppedAcrossSystem(page) ?
+						"[page appears dropped]" : ""
+						) << "\n";
+
+	uword_t totalBytesInRAM = 0;
+
+	//pin every page
+	mPageLoader.setDesiredPages(targetPages);
+
+	uword_t totalPinnedBytes = 0;
+	uword_t totalBytesToUnpin = 0;
+
+	for (auto page: mPageRefcountTracker->getCopyOfPinnedPages())
+		{
+		totalPinnedBytes += page.bytecount();
+
+		if (!targetPages.contains(page))
+			{
+			totalBytesToUnpin += page.bytecount();
+			tryToUnpinPage_(page);
+			}
+		}
+
+	for (auto page: targetPages)
+		mPageRefcountTracker->pinPageIfInRAM(page);
+	
+	for (auto page: mPageRefcountTracker->getPagesHeldInRAM())
+		totalBytesInRAM += page.bytecount();
+
+	log << "Total pages pinned: " << totalPinnedBytes / 1024 / 1024.0 << "\n";
+	log << "Total pages to unpin: " << totalBytesToUnpin / 1024 / 1024.0 << "\n";
+	log << "Total bytes in RAM: " << totalBytesInRAM / 1024 / 1024.0 << "\n";
+	log << "Total bytes used by vectors: " 
+			<< mVDM->getMemoryManager()->totalBytesUsedByVectorsIncludingPagelets() / 1024 / 1024.0 << "\n";
+	log << "Total bytes used by other pools: "
+			<< mVDM->getMemoryManager()->totalBytesUsedByOtherPools() / 1024 / 1024.0 << "\n";
+
+	bool full = mSystemwidePageRefcountTracker->isMachineMemoryFull(mOwnMachineId);
+	log << "Machine is full according to SPRT: " << (full ? "true":"false") << "\n";
+	log << "Machine is full according to VDMM: " << (mVdmmIsFull ? "true":"false") << "\n";
+	log << "Total vectors we've sent for load: " << mVectorLoads.size() << "\n";
+	log << "Total pages we want to load: " << mPageLoader.totalPagesToLoadOrRequested() << " = "
+		<< mPageLoader.totalBytesToLoadOrRequested() / 1024 / 1024.0 << " MB\n";
+
+	log << "Total pages pending drop: " << mPagesScheduledForDiskWrite.size() << "\n";
+	log << "Total pages currently being written: " << mPagesBeingWrittenToDisk.size() << "\n";
+
+	log << "Total pages we're trying to unpin: " << mPendingUnpinRequests.size() << "\n";
+
+	for (auto page: mPageRefcountTracker->getPagesHeldInRAM())
+		{
+		//be careful to cross-check the pages we're told to hold with what the scheduler thinks
+		//we're holding. We may have some pages that the scheduler hasn't found out about
+		//that we don't want to drop immediately.
+		if (!targetPages.contains(page) && currentPages.contains(page))
+			{
+			if (mPageRefcountTracker->pageIsInRamAndUnpinned(page) ||
+					hasPageBeenDroppedAcrossEntireSystem_(page))
+				{
+				bool success = mVDM->dropPageWithoutWritingToDisk(page);
+
+				if (success)
+					log << "Dropped page " << prettyPrintString(page) << "\n";
+				else
+					log << "Failed to drop page " << prettyPrintString(page) << "\n";
+				}
+				else
+			if (!activePages.contains(page) && 
+						mSystemwidePageRefcountTracker->pageIsInRam(page, mOwnMachineId) &&
+						!mSystemwidePageRefcountTracker->isPageAnywhereOnDisk(page) && 
+						!hasPageBeenDroppedAcrossEntireSystem_(page) &&
+						!isPageScheduledToGoToDisk_(page)
+						)
+				{
+				log << "writing " << prettyPrintString(page) << " to disk.\n";
+				schedulePageWriteToDisk_(page);
+				}
+			else
+				{
+				if (!isPageScheduledToGoToDisk_(page))
+					log << "page " << prettyPrintString(page) << " should be scheduled for disk write (and drop) on " 
+						<< mOwnMachineId << " but is "
+						<< (mPageRefcountTracker->pageIsInRamAndPinned(page) ? " <pinned in RAM> " : "")
+						<< (activePages.contains(page) ? "":"<inactive on SCS> ")
+						<< (mSystemwidePageRefcountTracker->pageIsInRam(page, mOwnMachineId) ? "<sprt RAM> ":"")
+						<< (mSystemwidePageRefcountTracker->isPageAnywhereOnDisk(page) ? "<disk somewhere> ":"")
+						<< (hasPageBeenDroppedAcrossEntireSystem_(page) ? "<dropped across entire system> ":"")
+						<< "\n"
+						;
+				}
+			}
+			else
+		if (targetPages.contains(page) && currentPages.contains(page))
+			{
+			if (mAgressivelyPushPagesToDisk && 
+					mSystemwidePageRefcountTracker->pageIsInRamAndPinned(page, mOwnMachineId) && 
+					!mSystemwidePageRefcountTracker->isPageAnywhereOnDisk(page) && 
+					!isPageScheduledToGoToDisk_(page) && 
+					!mPageRefcountTracker->pageIsOnDisk(page))
+				schedulePageWriteToDisk_(page);
+			}
+		}
+
+	for (auto vp: mVectorLoads)
+		{
+		if (curClock() - vp.second > 30)
+			log << "!!";
+		log << "\t" << (curClock() - vp.second) << " elapsed for " << prettyPrintString(vp.first);
+		log << "\n";
+		}
+
+	log << "PageLoadsInProgress: " << prettyPrintString(mPageLoader.pageLoadsInProgress()) << "\n";
+
+	timeElapsed += curClock() - t0;
+
+	log << "took " << curClock() - t0 << " (total=" << timeElapsed << ")\n";
+
+	mVDM->checkGcStatus("handleSetDesiredContents_");
+	}
+
+bool ActivePageSynchronizerImpl::isPageScheduledToGoToDisk_(Fora::PageId pageId)
+	{
+	if (mPagesBeingWrittenToDisk.find(pageId) != mPagesBeingWrittenToDisk.end())
+		return true;
+
+	if (mPagesScheduledForDiskWrite.find(pageId) != mPagesScheduledForDiskWrite.end())
+		return true;
+
+	return false;
+	}
+
+void ActivePageSynchronizerImpl::schedulePageWriteToDisk_(Fora::PageId pageId)
+	{
+	if (isPageScheduledToGoToDisk_(pageId))
+		return;
+
+	mPagesScheduledForDiskWrite.insert(pageId);
+
+	mSendPagesToDiskCallbackScheduler->scheduleImmediately(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&ActivePageSynchronizerImpl::writeToOfflineStorage
+				),
+			this->polymorphicSharedWeakPtrFromThis(),
+			pageId
+			),
+		"ActivePageSynchronizerImpl::writeToOfflineStorage"
+		);
+	}
+
+void ActivePageSynchronizerImpl::blockUntilAllDiskWritesAreCompleted()
+	{
+	mSendPagesToDiskCallbackScheduler->blockUntilPendingHaveExecutedAndQueueIsEmpty();
+	}
+
+void ActivePageSynchronizerImpl::writeToOfflineStorage(Fora::PageId page)
+	{
+	if (mIsTornDown)
+		return;
+
+	if (mOfflineCache->alreadyExists(page))
+		{
+		TimedLock lock(mMutex, "VDM");
+
+		mPagesScheduledForDiskWrite.erase(page);
+		
+		return;
+		}
+
+	boost::shared_ptr<VectorPage> vectorData;
+
+		{
+		TimedLock lock(mMutex, "VDM");
+
+		vectorData = mVDM->getPageFor(page);
+
+		//somehow the data is no longer available.
+		if (!vectorData)
+			{
+			LOG_INFO << "ActivePageSynchronizer intended to write " << page
+				<< " but it was not available in the VDM.";
+
+			mPagesScheduledForDiskWrite.erase(page);
+			return;
+			}
+
+		if (mSystemwidePageRefcountTracker->isPageAnywhereOnDisk(page))
+			{
+			LOG_INFO << "ActivePageSynchronizer intended to write " << page
+				<< " but it is now available on another machine.";
+
+			mPagesScheduledForDiskWrite.erase(page);
+			return;
+			}
+	
+		mPagesBeingWrittenToDisk.insert(page);
+		}
+
+	double t0 = curClock();
+
+	PolymorphicSharedPtr<SerializedObject> data = vectorData->serialize();
+
+	size_t dataSize = vectorData->totalBytesAllocated();
+
+	double t1 = curClock();
+	
+	mOfflineCache->store(page, data);
+
+	double t2 = curClock();
+
+	LOG_INFO << "Took " << t2 - t1 << " to write to disk and " << t1 - t0 
+		<< " to serialize " << page << " of size " << dataSize / 1024 / 1024.0 << " MB";
+
+	bool shouldRetain = true;
+
+		{
+		TimedLock lock(mMutex, "VDM");
+
+		mPagesBeingWrittenToDisk.erase(page);
+
+		if (mPagesToDropAfterFinishingDiskRead.find(page) != 
+				mPagesToDropAfterFinishingDiskRead.end())
+			{
+			mPagesToDropAfterFinishingDiskRead.erase(page);
+			shouldRetain = false; 
+			}
+		}
+
+	if (shouldRetain)
+		mPageRefcountTracker->pageSentToDisk(page, vectorData->getReferencedBigVectorIds());
+	else
+		mOfflineCache->drop(page);
+	}
+
+void ActivePageSynchronizerImpl::initiateVectorSetLoad_(ImmutableTreeSet<VectorDataID> vector)
+	{
+	for (auto vdid: vector)
+		initiateVectorLoad_(vdid);
+	}
+
+void ActivePageSynchronizerImpl::initiateVectorLoad_(const VectorDataID& vector)
+	{
+	if (isAlreadyLoading_(vector))
+		return;
+		
+	mVectorLoads[vector] = curClock();
+
+	mOnCumulusComponentMessageCreated.broadcast(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::ActivePageSynchronizerToPageLoader(VectorLoadRequest(vector)),
+			CumulusComponentEndpointSet::SpecificWorker(mOwnMachineId),
+			CumulusComponentType::PageLoader()
+			)
+		);
+	}
+
+void ActivePageSynchronizerImpl::handleVectorLoadResponse(VectorLoadedResponse response)
+	{
+	TimedLock lock(mMutex, "ActivePageSynchronizerImpl");
+
+	if (mIsTornDown)
+		return;
+
+	if (!response.loadSuccessful())
+		{
+		mTimesPageLoadedUnsuccessfully[response.vdid().getPage()]++;
+		if (mTimesPageLoadedUnsuccessfully[response.vdid().getPage()] % 100 == 0)
+			LOG_WARN << "on " << prettyPrintString(mOwnMachineId) << ", tried to load "
+				<< prettyPrintString(response.vdid()) << " "
+				<< mTimesPageLoadedUnsuccessfully[response.vdid().getPage()]
+				<< " times unsuccessfully."
+				;
+		}
+
+	if (mVectorLoads.find(response.vdid()) == mVectorLoads.end())
+		mVectorLoads[response.vdid()] = curClock() + 1.0;
+
+	if (mTimesPageLoadedUnsuccessfully[response.vdid().getPage()] < 100 || 
+			mTimesPageLoadedUnsuccessfully[response.vdid().getPage()] % 100 == 0)
+		LOG_INFO << "VectorLoad response on " << prettyPrintString(mOwnMachineId)
+			<< " for " 
+			<< prettyPrintString(response.vdid()) << " in "
+			<< curClock() - mVectorLoads[response.vdid()]
+			<< " was " << (response.loadSuccessful() ? "true":"false")
+			<< ". " << (curClock() - mVectorLoads[response.vdid()] > 5.0 ? "load took a long time.":"")
+			<< ". total unsuccessful tries = " << mTimesPageLoadedUnsuccessfully[response.vdid().getPage()]
+			;
+
+	mVectorLoads.erase(response.vdid());
+
+	mPageLoader.pageLoadCompleted(response.vdid().getPage());
+
+	if (response.failureIsTerminal() || 
+				mTimesPageLoadedUnsuccessfully[response.vdid().getPage()] > 1000)
+		{
+		//we are never going to be able to load this page
+		if (response.failureIsTerminal())
+			LOG_ERROR << "Vector " << response.vdid() << " cannot be loaded. Marking it as failed.";
+		else
+			LOG_ERROR << "Vector " << response.vdid() << " cannot be loaded after "
+				<< mTimesPageLoadedUnsuccessfully[response.vdid().getPage()] 
+				<< " tries. Marking it as failed."
+				;
+
+		mPageRefcountTracker->markPageAsNotLoadable(response.vdid().getPage());
+
+		mDesiredPages = mDesiredPages - response.vdid().getPage();
+		}
+	}
+
+bool ActivePageSynchronizerImpl::tryToUnpinPage_(Fora::PageId page)
+	{
+	if (mPendingUnpinRequests.hasKey(page))
+		{		
+		LOG_DEBUG_SCOPED("Pinning")
+			<< prettyPrintString(mOwnMachineId)
+			<< " not requesting unpin for " 
+			<< prettyPrintString(page)
+			<< " because it's already pending"
+			;
+
+		return false;
+		}
+
+	//if the page exists on disk anywhere, and the scheduler knows it's on us and
+	//the scheduler doesn't claim it's active, we can immediately unpin it, since it'll
+	//be killed across the system. We don't want to drop the page from the disk 
+	if (mSystemwidePageRefcountTracker->isPageAnywhereOnDisk(page) && 
+				mSchedulerCurrentPages.contains(page) && !mSchedulerActivePages.contains(page))
+		{
+		LOG_INFO << mOwnMachineId << " marking page " << prettyPrintString(page) << " unpinned, as it's on disk";
+		mPageRefcountTracker->pageMarkedUnpinned(page);
+		return true;
+		}
+
+	//pick a machine that has this in RAM
+	std::set<MachineId> machines;
+
+	mSystemwidePageRefcountTracker->machinesWithPageInRamAndPinned(page, machines);
+
+	//can't unpin on ourselves
+	machines.erase(mOwnMachineId);
+
+	Nullable<MachineId> machine;
+
+	if (machines.size())
+		machine = Ufora::math::Random::pickRandomlyFromSet(machines, mRandomGenerator);
+
+	if (!machine)
+		{
+		LOG_DEBUG_SCOPED("Pinning")
+			<< prettyPrintString(mOwnMachineId)
+			<< " not requesting unpin for " 
+			<< prettyPrintString(page)
+			<< " because we cannot pick a machine to unpin it on"
+			;
+
+
+		return false;
+		}
+
+	mPendingUnpinRequests.set(page, *machine);
+
+	LOG_DEBUG_SCOPED("Pinning")
+		<< prettyPrintString(mOwnMachineId)
+		<< " sending unpin request for page " 
+		<< prettyPrintString(page) << " to "
+		<< prettyPrintString(*machine)
+		;
+
+	sendSynchronizerToSynchronizerMessage(
+		ActivePageSynchronizerToSynchronizerMessage(
+			mOwnMachineId,
+			*machine,
+			ActivePageSynchronizerToSynchronizerMessageContents::UnpinRequest(page)
+			)
+		);
+
+	return true;
+	}
+
+void ActivePageSynchronizerImpl::sendSynchronizerToSynchronizerMessage(const ActivePageSynchronizerToSynchronizerMessage& msg)
+	{
+	mOnCumulusComponentMessageCreated.broadcast(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::ActivePageSynchronizerToSynchronizer(msg),
+			CumulusComponentEndpointSet::SpecificWorker(msg.destMachine()),
+			CumulusComponentType::ActivePageSynchronizer()
+			)
+		);
+	}
+
+bool ActivePageSynchronizerImpl::isAlreadyLoading_(const VectorDataID& inVector)
+	{
+	return mVectorLoads.find(inVector) != mVectorLoads.end();
+	}
+
+void ActivePageSynchronizerImpl::setAgressivelyPushPagesToDiskInBackground(bool pushPages)
+	{
+	mAgressivelyPushPagesToDisk = pushPages;
+	}
+
+void ActivePageSynchronizerImpl::vectorDataMemoryManagerIsFullChanged(bool isFull)
+	{
+	TimedLock lock(mMutex, "ActivePageSynchronizerImpl");
+
+	if (mIsTornDown)
+		return;
+
+	mVdmmIsFull = isFull;
+
+	mPageLoader.setIsPaused(isFull);
+	}
+	
+void ActivePageSynchronizerImpl::handleCumulusComponentMessage(
+                const CumulusComponentMessage& message, 
+                const CumulusClientOrMachine& source, 
+                const CumulusComponentType& componentType
+                )
+	{
+	@match CumulusComponentMessage(message)
+		-| ActivePageSynchronizerToSynchronizer(msg) ->> {
+			handleSynchronizerToSynchronizerMessage(msg);
+			}
+		-| SchedulerToActivePageSynchronizer(msg) ->> {
+			handleSchedulerToSynchronizerMessage(msg);
+			}
+	}
+}
+}
+
+

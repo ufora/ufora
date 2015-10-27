@@ -1,0 +1,507 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "BigVectorLayouts.hppml"
+#include "BigVectorHandle.hppml"
+#include "ForaValueArray.hppml"
+#include "BigVectorPageLayout.hppml"
+#include "../../../cumulus/AddDropFinalState.hppml"
+
+#include "../../../core/Logging.hpp"
+#include "../../../core/threading/CallbackScheduler.hppml"
+
+using TypedFora::Abi::BigVectorPageLayout;
+
+namespace TypedFora {
+namespace Abi {
+
+BigVectorLayouts::BigVectorLayouts()
+	{
+	}
+
+void BigVectorLayouts::sendAddDropState(
+						boost::function1<void, Cumulus::CumulusWorkerAddDropEvent> eventConsumer
+						)
+	{
+	for (auto idAndLayout: mLayouts)
+		eventConsumer(
+			Cumulus::CumulusWorkerAddDropEvent::BigvecDefinition(
+				idAndLayout.second
+				)
+			);
+
+	for (auto syntheticPageAndId: mSyntheticPages.getKeyToValue())
+		if (mSyntheticPagesRealized.find(syntheticPageAndId.first) == mSyntheticPagesRealized.end())
+			{
+			lassert(mLayouts.find(syntheticPageAndId.second) != mLayouts.end());
+			eventConsumer(
+				Cumulus::CumulusWorkerAddDropEvent::SyntheticPage(
+					syntheticPageAndId.first,
+					syntheticPageAndId.second
+					)
+				);
+			}
+	}
+
+uint64_t BigVectorLayouts::computeBytecountForHashes(ImmutableTreeSet<hash_type> hashes)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mBytecountsForHashes.find(hashes) == mBytecountsForHashes.end())
+		{
+		lock.unlock();
+
+		uint64_t bytecount = 0;
+
+		std::set<Fora::PageId> pages;
+
+		for (auto h: hashes)
+			{
+			Nullable<TypedFora::Abi::BigVectorPageLayout> layout = 
+				tryGetLayoutForId(h);
+
+			if (layout)
+				for (auto p: layout->getPagesReferenced())
+					if (pages.find(p) == pages.end())
+						{
+						pages.insert(p);
+						bytecount += p.bytecount();	
+						}
+			}
+
+		lock.lock();
+		mBytecountsForHashes[hashes] = bytecount;
+		}
+
+	return mBytecountsForHashes[hashes];
+	}
+bool BigVectorLayouts::hasSeenIdGuid(hash_type guid)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return mGuidsToLayouts.find(guid) != mGuidsToLayouts.end();
+	}
+
+Nullable<BigVectorPageLayout> BigVectorLayouts::tryGetLayoutForId(const hash_type& identityGuid)
+	{
+	Fora::BigVectorId id;
+
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		auto it = mGuidsToLayouts.find(identityGuid);
+
+		if (it == mGuidsToLayouts.end())
+			return null();
+
+		id = it->second;
+		}
+
+	return tryGetLayoutForId(id);
+	}
+
+Nullable<BigVectorPageLayout> BigVectorLayouts::tryGetLayoutForId(const Fora::BigVectorId& identity)
+	{
+	if (identity.size() == 0)
+		return null() << BigVectorPageLayout();
+
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	auto it = mLayouts.find(identity);
+
+	if (it == mLayouts.end())
+		it = mOldLayouts.find(identity);
+
+	if (it == mOldLayouts.end())
+		return null();
+
+	return null() << it->second;
+	}
+
+BigVectorPageLayout BigVectorLayouts::getLayoutForId(const hash_type& identity)
+	{
+	Fora::BigVectorId id;
+
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		auto it = mGuidsToLayouts.find(identity);
+
+		lassert_dump(
+			it != mGuidsToLayouts.end(), 
+			"couldn't find an identity for guid " << prettyPrintString(identity) << " on " 
+				<< prettyPrintString(mMachineId)
+			);
+
+		id = it->second;
+		}
+
+	return getLayoutForId(id);
+	}
+
+BigVectorPageLayout BigVectorLayouts::getLayoutForId(const Fora::BigVectorId& identity)
+	{
+	if (identity.size() == 0)
+		return BigVectorPageLayout();
+
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	auto it = mLayouts.find(identity);
+
+	if (it == mLayouts.end())
+		it = mOldLayouts.find(identity);
+
+	lassert_dump(it != mOldLayouts.end(), 
+		"on " << prettyPrintString(mMachineId)
+			<< (void*)this << ": no data for " 
+			<< prettyPrintString(identity) << ". count = " << mLayouts.size()
+		);
+
+	return it->second;
+	}
+
+ImmutableTreeSet<Fora::PageId> 
+		BigVectorLayouts::dropLayoutForIdAndReturnOrphanedPages(const Fora::BigVectorId& identity)
+	{
+	if (identity.size() == 0)
+		return emptyTreeSet();
+
+	LOG_DEBUG << "dropping handle " << prettyPrintString(identity);
+
+	BigVectorPageLayout layout = getLayoutForId(identity);
+
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	for (auto page: mPagesToVectors.getKeys(identity))
+		mOldPagesToVectors.insert(page, identity);
+
+	mPagesToVectors.dropValue(identity);
+
+	ImmutableTreeSet<Fora::PageId> pagesOrphaned;
+
+	for (long k = 0; k < layout.vectorIdentities().size(); k++)
+		{
+		Fora::PageId page = layout.vectorIdentities()[k].vector().getPage();
+
+		if (!mPagesToVectors.hasKey(page))
+			pagesOrphaned = pagesOrphaned + page;
+		}
+
+	mLayouts.erase(identity);
+	mOldLayouts[identity] = layout;
+
+	if (mSyntheticPages.hasValue(identity))
+		{
+		lassert(mSyntheticPages.getKeys(identity).size() == 1);
+		for (auto page: mSyntheticPages.getKeys(identity))
+			mSyntheticPagesRealized.erase(page);
+		mSyntheticPages.dropValue(identity);
+		}
+
+	return pagesOrphaned;
+	}
+
+void BigVectorLayouts::registerNewLayout(const BigVectorPageLayout& pageLayout)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	LOG_DEBUG << "registering handle " << prettyPrintString(pageLayout.identity());
+
+	auto it = mLayouts.find(pageLayout.identity());
+	if (it != mLayouts.end())
+		return;
+
+	BigVectorPageLayout newLayout = pageLayout;
+
+	mLayouts[pageLayout.identity()] = newLayout;
+
+	mGuidsToLayouts[pageLayout.identity().guid()] = pageLayout.identity();
+
+	for (long k = 0; k < newLayout.vectorIdentities().size(); k++)
+		{
+		mPagesToVectors.insert(
+			newLayout.vectorIdentities()[k].vector().getPage(), 
+			newLayout.identity()
+			);
+		}
+	}
+
+
+ImmutableTreeSet<Fora::BigVectorId> BigVectorLayouts::getAllBigvecIdentities()
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+	
+	ImmutableTreeSet<Fora::BigVectorId> ids;
+
+	for (auto idAndHandle: mLayouts)
+		ids = ids + idAndHandle.first;
+
+	return ids;
+	}
+
+
+ImmutableTreeVector<Fora::PageId> BigVectorLayouts::convertSliceToPages(
+																Fora::BigVectorSlice slice
+																)
+	{
+	ImmutableTreeVector<Fora::PageId> pages;
+
+	ImmutableTreeVector<TypedFora::Abi::VectorDataIDSlice> slices = 
+		getLayoutForId(slice.identity())
+			.slicesCoveringRange(slice.indexLow(), slice.indexHigh());
+
+	for (auto s: slices)
+		pages = pages + s.vector().getPage();
+
+	return pages;
+	}
+
+ImmutableTreeVector<TypedFora::Abi::VectorDataIDSlice> 
+		BigVectorLayouts::bigVectorSliceToVectorIDSlices(
+			const Fora::BigVectorSlice& slice
+			)
+	{
+	BigVectorPageLayout layout = getLayoutForId(slice.identity());
+
+	Nullable<std::pair<int64_t, int64_t> > sliceRange = layout.mapIndicesToExactSliceRange(slice);
+
+	if (!sliceRange)
+		return emptyTreeVec();
+
+	//now get the exact set of VectorDataIDSlices that this maps to
+	return layout.vectorIdentities().slice(sliceRange->first, sliceRange->second);
+	}
+
+ImmutableTreeSet<Fora::BigVectorId> BigVectorLayouts::getBigvecsContaining(ImmutableTreeSet<Fora::PageId> pages)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	ImmutableTreeSet<Fora::BigVectorId> result;
+
+	for (auto page: pages)
+		for (auto bv: mPagesToVectors.getValues(page))
+			result = result + bv;
+
+	return result; 
+	}
+
+Fora::BigVectorId BigVectorLayouts::registerBigVectorSlice(Fora::BigVectorId id, IntegerSequence seq, hash_type vecHash)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	BigVectorPageLayout layout = getLayoutForId(id);
+
+	BigVectorPageLayout slicedLayout = layout.slice(
+		seq,
+		vecHash
+		);
+
+	registerNewLayout(slicedLayout);
+
+	return slicedLayout.identity();
+	}
+
+Fora::BigVectorId BigVectorLayouts::registerBigVectorSlice(
+						Fora::BigVectorId id, 
+						Nullable<int64_t> low, 
+						Nullable<int64_t> high, 
+						Nullable<int64_t> stride, 
+						hash_type vecHash
+						)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	BigVectorPageLayout layout = getLayoutForId(id);
+
+	BigVectorPageLayout slicedLayout = layout.slice(
+		low,
+		high,
+		stride,
+		vecHash
+		);
+
+	registerNewLayout(slicedLayout);
+
+	return slicedLayout.identity();
+	}
+
+BigVectorPageLayout collapseLayout(
+							BigVectorPageLayout layout,
+							boost::function<Fora::PageId (BigVectorPageLayout)> onSyntheticPageCreated,
+							boost::function<hash_type ()> createNewVectorHash,
+							uint32_t maxBytecount
+							)
+	{
+	while (true)
+		{
+		bool didOne = false;
+
+		for (long k = 0; k < layout.vectorIdentities().size() && !didOne; k++)
+			{
+			uint32_t totals = layout.vectorIdentities()[k].vector().getPage().bytecount();
+
+			long topEnd = k;
+
+			bool isOK = true;
+
+			for (long j = k + 1; j < layout.vectorIdentities().size() && totals < maxBytecount && isOK; j++)
+				{
+				totals += layout.vectorIdentities()[j].vector().getPage().bytecount();
+
+				//only glom internal pages
+				if (!layout.vectorIdentities()[j].vector().getPage().isInternal())
+					{
+					isOK = false;
+					topEnd = j;
+					}
+
+				if (totals < maxBytecount)
+					topEnd = j;
+				}
+
+			if (topEnd != k && isOK)
+				{
+				didOne = true;
+
+				ImmutableTreeVector<VectorDataIDSlice> slices = layout.vectorIdentities().slice(k, topEnd + 1);
+
+				BigVectorPageLayout subLayout(slices, layout.identity().jor(), createNewVectorHash());
+
+				Fora::PageId newId = onSyntheticPageCreated(subLayout);
+
+				BigVectorPageLayout finalLayout(
+					layout.vectorIdentities().slice(0, k) + 
+						VectorDataIDSlice(
+							VectorDataID::canonical(newId),
+							IntegerSequence(subLayout.size())
+							) + 
+						layout.vectorIdentities().slice(topEnd + 1),
+					layout.identity().jor(),
+					layout.identity().guid()
+					);
+				
+				layout = finalLayout;
+				}
+				else
+			if (!isOK)
+				k = topEnd;
+			}
+
+		if (!didOne)
+			return layout;
+		}
+	}
+
+
+Fora::BigVectorId BigVectorLayouts::registerBigVectorConcat(
+										Fora::BigVectorId idLhs, 
+										Fora::BigVectorId idRhs, 
+										hash_type vecHash,
+										boost::function<Fora::PageId (BigVectorPageLayout)> onSyntheticPageCreated,
+										boost::function<hash_type ()> createNewVectorHash,
+										uint32_t maxPageSizeInBytes
+										)
+	{
+	BigVectorPageLayout layout1 = getLayoutForId(idLhs);
+	BigVectorPageLayout layout2 = getLayoutForId(idRhs);
+
+	BigVectorPageLayout newLayout = BigVectorPageLayout::concatenate(
+		layout1,
+		layout2,
+		vecHash
+		);
+
+	newLayout = collapseLayout(newLayout, onSyntheticPageCreated, createNewVectorHash, maxPageSizeInBytes);
+
+	registerNewLayout(newLayout);
+
+	return newLayout.identity();
+	}
+
+Fora::BigVectorId BigVectorLayouts::registerBigVectorConcat(
+										Fora::BigVectorId idLhs, 
+										BigVectorPageLayout inRhs, 
+										hash_type vecHash,
+										boost::function<Fora::PageId (BigVectorPageLayout)> onSyntheticPageCreated,
+										boost::function<hash_type ()> createNewVectorHash,
+										uint32_t maxPageSizeInBytes
+										)
+	{
+	BigVectorPageLayout layout1 = getLayoutForId(idLhs);
+
+	BigVectorPageLayout newLayout = BigVectorPageLayout::concatenate(
+		layout1,
+		inRhs,
+		vecHash
+		);
+
+	newLayout = collapseLayout(newLayout, onSyntheticPageCreated, createNewVectorHash, maxPageSizeInBytes);
+	
+	registerNewLayout(newLayout);
+
+	return newLayout.identity();
+	}
+
+void BigVectorLayouts::restrictToAddDropState(const Cumulus::AddDropFinalState& state)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	mOldLayouts.clear();
+	mLayouts.clear();
+	mSyntheticPagesRealized.clear();
+	mSyntheticPages = MapWithIndex<Fora::PageId, Fora::BigVectorId>();
+
+	mPagesToVectors = TwoWaySetMap<Fora::PageId, Fora::BigVectorId>();
+	mOldPagesToVectors = TwoWaySetMap<Fora::PageId, Fora::BigVectorId>();
+
+	for (auto hashAndLayout: state.bigvecLayouts())
+		registerNewLayout(hashAndLayout.second);
+	}
+
+void BigVectorLayouts::registerSyntheticPage(const Fora::PageId& inPage, const BigVectorPageLayout& inLayout)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mSyntheticPagesRealized.find(inPage) != mSyntheticPagesRealized.end())
+		return;
+
+	registerNewLayout(inLayout);
+
+	mSyntheticPages.set(inPage, inLayout.identity());
+	}
+
+void BigVectorLayouts::syntheticPageRealized(const Fora::PageId& inPage)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mSyntheticPagesRealized.find(inPage) != mSyntheticPagesRealized.end())
+		return;
+	mSyntheticPagesRealized.insert(inPage);
+	mSyntheticPages.discard(inPage);
+	}
+
+Nullable<BigVectorPageLayout> BigVectorLayouts::isPageSynthetic(const Fora::PageId& inPageId)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mSyntheticPages.hasKey(inPageId) && mSyntheticPagesRealized.find(inPageId) == mSyntheticPagesRealized.end())
+		return null() << getLayoutForId(mSyntheticPages.getValue(inPageId));
+
+	return null();
+	}
+
+}
+}
+

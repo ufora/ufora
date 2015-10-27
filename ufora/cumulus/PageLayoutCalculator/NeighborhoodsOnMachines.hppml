@@ -1,0 +1,251 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <map>
+#include "../MachineId.hppml"
+#include "NeighborhoodSet.hppml"
+#include "../../core/containers/TwoWaySetMap.hpp"
+
+namespace Cumulus {
+
+namespace PageLayoutCalculator {
+
+/****************************
+
+NeighborhoodsOnMachines
+
+Holds the page contents of a number of machines.
+
+*****************************/
+
+class NeighborhoodsOnMachines {
+public:
+	NeighborhoodsOnMachines()
+		{
+		}
+
+	void addMachine(MachineId m)
+		{
+		mMachineContents[m];
+		}
+
+	void dropPage(Fora::PageId page)
+		{
+		for (auto& mAndC: mMachineContents)
+			{
+			boost::unordered_set<Neighborhood> neighborhoods = 
+				mAndC.second.neighborhoods(page);
+
+			for (auto n: neighborhoods)
+				dropNeighborhood(mAndC.first, n);
+			}
+		}
+
+	bool hasNeighborhood(MachineId m, Neighborhood n) const
+		{
+		return mNeighborhoods.contains(m,n);
+		}
+
+	void addNeighborhood(MachineId m, Neighborhood n)
+		{
+		lassert(!mNeighborhoods.contains(m,n));
+
+		auto& contents = mMachineContents[m];
+
+		for (auto p: n.pages())
+			if (!contents.containsPage(p))
+				pageAdded(m, p);
+
+		contents.addNeighborhood(n);
+		mNeighborhoods.insert(m,n);
+		}
+
+	void dropNeighborhood(MachineId m, Neighborhood n)
+		{
+		lassert_dump(mNeighborhoods.contains(m,n), prettyPrintString(n));
+
+		auto& contents = mMachineContents[m];
+
+		contents.dropNeighborhood(n);
+		mNeighborhoods.drop(m,n);
+
+		for (auto p: n.pages())
+			if (!contents.containsPage(p))
+				pageDropped(m, p);
+		}
+
+	void dropNeighborhood(Neighborhood n)
+		{
+		std::set<MachineId> machines = mNeighborhoods.getKeys(n);
+
+		for (auto m: machines)
+			dropNeighborhood(m, n);
+		}
+
+	int64_t bytesOnMachine(MachineId m) const
+		{
+		return neighborhoodsForMachine(m).bytesInPages();
+		}
+
+	const std::set<MachineId>& machinesContaining(Neighborhood n) const
+		{
+		return mNeighborhoods.getKeys(n);
+		}
+
+	Nullable<MachineId> firstMachineContaining(Neighborhood n) const
+		{
+		if (!mNeighborhoods.hasValue(n))
+			return null();
+
+		return null() << *mNeighborhoods.getKeys(n).begin();
+		}
+
+	ImmutableTreeSet<MachineId> machinesContainingOrCovering(Neighborhood n) const
+		{
+		ImmutableTreeSet<MachineId> result;
+
+		for (auto& machineAndContents: mMachineContents)
+			if (machineAndContents.second.coversNeighborhood(n))
+				result = result + machineAndContents.first;
+
+		return result;
+		}
+
+	bool someMachineHoldingExcept(Fora::PageId page, MachineId excepting) const
+		{
+		for (auto& machineAndContents: mMachineContents)
+			if (machineAndContents.first != excepting && 
+						machineAndContents.second.pageVec().contains(page))
+				return true;
+		return false;
+		}
+
+	int64_t complementNeighborhoodBytecount(MachineId m, Neighborhood n) const
+		{
+		int64_t res = 0;
+
+		const NeighborhoodSet& contents(neighborhoodsForMachine(m));
+
+		for (auto p: n.pages())
+			if (!contents.containsPage(p))
+				res = res + p.bytecount();
+
+		return res;
+		}
+
+	Neighborhood complementNeighborhood(MachineId m, Neighborhood n) const
+		{
+		ImmutableTreeSet<Fora::PageId> pages;
+
+		const NeighborhoodSet& contents(neighborhoodsForMachine(m));
+
+		for (auto p: n.pages())
+			if (!contents.containsPage(p))
+				pages = pages + p;
+
+		return Neighborhood(pages);
+		}
+
+	const NeighborhoodSet& neighborhoodsForMachine(MachineId m) const
+		{
+		static NeighborhoodSet empty;
+
+		auto it = mMachineContents.find(m);
+
+		if (it == mMachineContents.end())
+			return empty;
+		else
+			return it->second;
+		}
+
+	const TwoWaySetMap<MachineId, Neighborhood>& neighborhoods() const
+		{
+		return mNeighborhoods;
+		}
+
+	bool pageIsOnMachine(Fora::PageId page, MachineId m) const
+		{
+		return neighborhoodsForMachine(m).pageVec().contains(page);
+		}
+
+	bool pageIsOnAnyMachine(Fora::PageId page) const
+		{
+		for (auto& idAndContents: mMachineContents)
+			if (idAndContents.second.pageVec().contains(page))
+				return true;
+
+		return false;
+		}
+
+	double averageReplication() const
+		{
+		double XW = 0;
+		double W = 0;
+
+		for (auto& neighborhoodAndMachines: mNeighborhoods.getValuesToKeys())
+			{
+			W += neighborhoodAndMachines.first.bytecount();
+			XW += neighborhoodAndMachines.first.bytecount() * neighborhoodAndMachines.second.size();
+			}
+
+		return XW / W;
+		}
+
+	const std::map<long, Fora::PageId>& pageAddOrder(MachineId machine) const
+		{
+		static std::map<long, Fora::PageId> empty;
+		auto it = mPageAddOrder.find(machine);
+
+		if (it == mPageAddOrder.end())
+			return empty;
+
+		return it->second.getKeyToValue();
+		}
+
+	ImmutableTreeSet<Fora::PageId> getSetOfAllPages() const
+		{
+		ImmutableTreeSet<Fora::PageId> pages;
+
+		for (auto machineAndMap: mPageAddOrder)
+			for (auto ixAndPage: machineAndMap.second.getKeyToValue())
+				pages = pages + ixAndPage.second;
+
+		return pages;
+		}
+
+private:
+	void pageAdded(MachineId m, Fora::PageId page)
+		{
+		mPageAddOrder[m].set(mMachinePageAddIndex[m]++, page);
+		}
+
+	void pageDropped(MachineId m, Fora::PageId page)
+		{
+		mPageAddOrder[m].dropValue(page);
+		}
+
+	std::map<MachineId, NeighborhoodSet> mMachineContents;
+
+	std::map<MachineId, MapWithIndex<long, Fora::PageId> > mPageAddOrder;
+
+	std::map<MachineId, long> mMachinePageAddIndex;
+
+	TwoWaySetMap<MachineId, Neighborhood> mNeighborhoods;
+};
+
+}
+}

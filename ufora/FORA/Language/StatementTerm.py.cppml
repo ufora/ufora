@@ -1,0 +1,233 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Function.hppml"
+#include "FunctionValidation.hppml"
+#include "Parser.hppml"
+#include "ParserExpressions.hppml"
+
+#include <stdint.h>
+#include <boost/python.hpp>
+#include "../../native/Registrar.hpp"
+#include "../../core/python/utilities.hpp"
+#include "../../core/python/CPPMLWrapper.hpp"
+#include "../../core/python/ScopedPyThreads.hpp"
+#include "../python/FORAPythonUtil.hppml"
+
+class StatementTermWrapper :
+		public native::module::Exporter<StatementTermWrapper> {
+public:
+		std::string	     getModuleName(void)
+			{
+			return "FORA";
+			}
+
+		static std::string symbolToString(const Symbol& inSymbol)
+			{
+			return inSymbol.toString();
+			}
+		
+		//parse a string into a sequence of StatementTerm objects
+		static boost::python::object parseStringToStatementTermsWithLocationInfoToPythonList(
+					const std::string& s, 
+					const CodeDefinitionPoint& inCodeDefinitionPoint,
+					const std::string& nameScope
+					)
+			{
+			try {
+				auto terms = parseStringToStatementTermsWithLocationInfo(
+                                s,
+                                inCodeDefinitionPoint,
+                                nameScope
+                                );
+
+				FunctionValidation::checkStatementTermsForOrphanBreaks(terms);
+
+				return Ufora::python::containerWithBeginEndToList(terms);
+				}
+			catch(SimpleParseError& e)
+				{
+				return boost::python::object(
+					FunctionParseError(
+						e.errorString(),
+						e.extent()
+						)
+					);
+				}
+			catch(FunctionParseError& e)
+				{
+				return boost::python::object(e);
+				}
+			}
+
+		static Expression createSymbolLookupExpression(const Symbol& inSym)
+			{
+			return Expression::Variable(inSym);
+			}
+		
+		static boost::python::object extractExpressionAndBoundVariables(
+										const StatementTerm& inStatementTerm
+										)
+			{
+			if (inStatementTerm.isExpr())
+				{
+				return boost::python::make_tuple(
+						boost::python::list(), 
+						Expression::CreateTuple(
+							emptyTreeVec() +
+								inStatementTerm.getExpr().e() +
+								Expression::CreateTuple(ImmutableTreeVector<Expression>())
+							)
+						);
+				}
+			else
+				{
+				auto patternsAndExpressions = inStatementTerm.getLet().l();
+
+				ImmutableTreeSet<Symbol> boundSymbols = inStatementTerm.boundVariables();
+
+				boost::python::object symbolNamesList = 
+					Ufora::python::containerWithBeginEndToList(boundSymbols, symbolToString);
+
+				ImmutableTreeVector<Expression> tupleArgs = 
+					mapITV(
+						boundSymbols,
+						createSymbolLookupExpression
+						);
+
+				return boost::python::make_tuple(
+					symbolNamesList,
+					Expression::Let(patternsAndExpressions, 
+						Expression::CreateTuple(
+							emptyTreeVec() + 
+								Expression::Constant(CSTValue()) +
+								Expression::CreateTuple(tupleArgs)
+							)
+						)
+					);
+				}
+			}
+
+		static boost::python::object extractCodeLocation(const StatementTerm& inStatementTerm)
+			{
+			@match StatementTerm(inStatementTerm)
+				-| Expr(e) ->> {
+					Nullable<CodeLocationId> loc = e.codeLocationIdOrNull();
+					Nullable<CodeLocation> locId;
+					if (loc)
+						locId = GlobalCodeLocationRegistry::getCodeLocation(*loc);
+
+					if (locId)
+						return boost::python::object(*locId);
+					return boost::python::object();
+					}
+				-| Let(exprs) ->> {
+					boost::python::list result;
+					for (long k = 0; k < exprs.size();k++)
+						{
+						Nullable<CodeLocationId> loc = exprs[k].second.codeLocationIdOrNull();
+						Nullable<CodeLocation> locId;
+						if (loc)
+							locId = GlobalCodeLocationRegistry::getCodeLocation(*loc);
+
+						if (locId)
+							result.append(
+								boost::python::make_tuple(
+									prettyPrintString(exprs[k].first),
+									boost::python::object(*locId)
+									)
+								);
+						else
+							result.append(
+								boost::python::make_tuple(
+									prettyPrintString(exprs[k].first),
+									boost::python::object()
+									)
+								);
+						}
+					return result;
+					}
+			}
+
+		static hash_type statementTermHash(const StatementTerm& s)
+			{
+			return s.hash();
+			}
+
+		static boost::python::object extractCodeLocationId(const StatementTerm& inStatementTerm)
+			{
+			@match StatementTerm(inStatementTerm)
+				-| Expr(e) ->> {
+					Nullable<CodeLocationId> loc = e.codeLocationIdOrNull();
+					if (loc)
+						return boost::python::object(*loc);
+					return boost::python::object();
+					}
+				-| Let(exprs) ->> {
+					boost::python::list result;
+					for (long k = 0; k < exprs.size();k++)
+						{
+						Nullable<CodeLocationId> loc = exprs[k].second.codeLocationIdOrNull();
+
+						if (loc)
+							result.append(
+								boost::python::make_tuple(
+									prettyPrintString(exprs[k].first),
+									boost::python::object(*loc)
+									)
+								);
+						else
+							result.append(
+								boost::python::make_tuple(
+									prettyPrintString(exprs[k].first),
+									boost::python::object()
+									)
+								);
+						}
+					return result;
+					}
+			}
+
+		void exportPythonWrapper()
+			{
+			using namespace boost::python;
+			
+			FORAPythonUtil::exposeValueLikeCppmlType<StatementTerm>().class_()
+				.def("extractExpressionAndBoundVariables", extractExpressionAndBoundVariables, 
+					"Given a StatementTerm, returns (varnames, e), where e is an expression that can "
+					"be evaluated to return a pair of ((v1, v2, ...), res) where "
+					"res is the actual result of the expression (or None), and "
+					"v1 ... vn are the variables assigned by the let statement. "
+					"Varnames is a list of the v1 ... vn"
+					)
+				.def("hash", &statementTermHash)
+				.def("extractCodeLocation", extractCodeLocation)
+				.def("extractCodeLocationId", extractCodeLocationId)
+				;
+
+			def("parseStringToStatementTermsWithLocationInfo",
+                    &parseStringToStatementTermsWithLocationInfoToPythonList);
+			}
+};
+
+//explicitly instantiating the registration element causes the linker to need
+//this file
+template<>
+char native::module::Exporter<StatementTermWrapper>::mEnforceRegistration =
+		native::module::ExportRegistrar<
+			StatementTermWrapper>::registerWrapper();
+
+
+

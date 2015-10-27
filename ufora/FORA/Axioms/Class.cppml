@@ -1,0 +1,1149 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include <boost/lexical_cast.hpp>
+#include <algorithm>
+#include "Axioms.hppml"
+#include "AxiomGroupInterpreterCache.hppml"
+#include "AxiomGroup.hppml"
+#include "Axiom.hppml"
+#include "LibcallAxiomGroup.hppml"
+#include "../Runtime.hppml"
+#include "../Primitives/String.hppml"
+#include "../Language/Parser.hppml"
+#include "../Language/Function.hppml"
+#include "../Language/ClassDefinitionExpansion.hppml"
+#include "../Language/FunctionToCFG.hppml"
+#include "../Core/Integers.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../Core/ClassMediator.hppml"
+#include "../Core/ImplValContainerUtilities.hppml"
+#include "../TypedFora/ABI/DestructorsAndConstructors.hppml"
+#include "../TypedFora/TypedForaUtil.hppml"
+#include "TypedForaAxiomBuilder.hppml"
+#include "../../core/SymbolExport.hpp"
+#include "../../core/STLOps.hpp"
+
+using Fora::Interpreter::ExecutionContext;
+
+using namespace Fora;
+
+extern "C" {
+
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer, Nothing> FORA_clib_extractClassTypeMemberNames(
+		const JudgmentOnValue& inJOV
+		)
+	{
+	if (!inJOV.type())
+		return slot1(Nothing());
+	
+	Type type = *inJOV.type();
+	
+	lassert(type.isClass());
+	
+	ClassMediator mediator = *type.getClass().classBody().mediator();
+
+	if (!mediator.isObject() && !mediator.isClass())
+		return slot1(Nothing());
+	
+	ImmutableTreeVector<CSTValue> vals;
+	
+	@match ClassMediator(mediator)
+		-| Object(definition) ->> {
+			ObjectDefinitionBody body = definition.body();
+				
+			while (!body.isEmpty())
+				{
+				if (body.getTerm().termWithMetadata().objectDefinitionTerm().isMember())
+					vals = vals + CSTValue(
+						body.getTerm().termWithMetadata().objectDefinitionTerm()
+							.getMember().membername()
+						);
+					else
+					vals = vals + CSTValue();
+				
+				body = body.getTerm().otherwise();
+				}
+			}
+		-| Class(definition) ->> {
+			ClassDefinitionBody body = definition.body();
+
+			while (!body.isEmpty())
+				{
+				@match ClassDefinitionTerm(body.getTerm().termWithMetadata().classDefinitionTerm())
+					-| DataMember(m) ->> {
+						vals = vals + CSTValue(m);
+						}
+					-| Constructor() ->> {
+						vals = vals + CSTValue();
+						}
+					-| Static(Member(m)) ->> {
+						vals = vals + CSTValue(m);
+						}
+					-| ObjectTerm(Member(m)) ->> {
+						vals = vals + CSTValue(m);
+						}
+					-| _ ->> {
+						vals = vals + CSTValue();
+						}
+			
+				body = body.getTerm().otherwise();
+				}
+			}
+		-| _ ->> {}
+	
+	return slot0(ImplValContainer(CSTValue::Tuple(vals)));
+	}
+
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer, ImplValContainer> FORA_clib_bindMixin(
+		const ImplValContainer& toUpdateImplVal, 
+		const ImplValContainer& toMixInImplVal
+		)
+	{
+	try {
+		return slot0(
+			ImplValContainerUtilities::bindMixin(
+				toUpdateImplVal,
+				toMixInImplVal
+				)
+			);
+		}
+	catch (ImplValContainerUtilities::IVCException& e)
+		{
+		return slot1(
+			CSTValue(e.what())
+			);
+		}
+	}
+
+
+namespace {
+			
+	std::string extractFunctionCallSignaturesString(Function fun)
+		{
+		std::string tr;
+
+		while (!fun.isEmpty())
+			{
+			tr = tr + prettyPrintString(fun.getTerm().pattern()) + "\n";
+
+			fun = fun.getTerm().otherwise();
+			}
+
+		return tr;
+		}
+			
+	}
+
+BSA_DLLEXPORT
+ReturnValue<String> FORA_clib_extractCallSignatures(const JudgmentOnValue& inJOV)
+	{
+	lassert(inJOV.type()); 
+
+	Type type = *inJOV.type();
+
+	lassert(type.isClass());
+
+	ClassMediator mediator = *type.getClass().classBody().mediator();
+
+	std::string tr;
+
+	@match ClassMediator(mediator)
+		-| Function(fun, _, _) ->> { tr = extractFunctionCallSignaturesString(fun); }
+		-| Lambda(_, _) ->> { tr = "(_)"; }
+		-| Object(obj, _, _) ->> {
+			ObjectDefinitionBody body = obj.body();
+
+			while (!body.isEmpty())
+				{
+				if (body.getTerm().termWithMetadata().objectDefinitionTerm().isCall())
+					{
+					tr = extractFunctionCallSignaturesString(
+						body.getTerm().termWithMetadata().objectDefinitionTerm().getCall().fun()
+						);
+					}
+
+				body = body.getTerm().otherwise();
+				}
+			}
+		-| Axiom(fun) ->> { tr = extractFunctionCallSignaturesString(fun); }
+		-| Class(obj, _, _) ->> {
+			ClassDefinitionBody body = obj.body();
+
+			while (!body.isEmpty())
+				{
+				if (body.getTerm().termWithMetadata().classDefinitionTerm().isConstructor())
+					tr = extractFunctionCallSignaturesString(
+						body.getTerm().termWithMetadata().classDefinitionTerm().getConstructor().fun()
+						);
+
+				body = body.getTerm().otherwise();
+				}
+			}
+		;
+
+	return slot0(
+		String(tr,
+			Fora::Interpreter::ExecutionContext::currentExecutionContext()
+			->getMemoryPool()
+			)
+		);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer, Nothing> FORA_clib_extractClassTypeMetadata(const JudgmentOnValue& inJOV)
+	{
+	if (inJOV.type())
+		@match Type(*inJOV.type())
+			-|	Class(_,(mediator,_)) ->> {
+				@match ClassMediator(*mediator)
+					-|	Function(_,_,m) ->> {
+						return slot0(ImplValContainer(m));
+						}
+					-|	Object(_,_,m) ->> {
+						return slot0(ImplValContainer(m));
+						}
+					-|	Class(_,_,m) ->> {
+						return slot0(ImplValContainer(m));
+						}
+					-|	Lambda() ->> {
+						return slot0(ImplValContainer(
+							CSTValue::Tuple(
+								emptyTreeVec() + 
+									make_pair(
+										null() << Symbol("kind"),
+										CSTValue(Symbol("function"))
+										) + 
+									make_pair(
+										null() << Symbol("user"),
+										CSTValue()
+										)
+									)
+							));
+						}
+					-|	_ ->> {;}
+					;
+				}
+			;
+
+	return slot1(Nothing());
+	}
+
+BSA_DLLEXPORT
+ReturnValue<String> FORA_clib_extractClassTypeName(const JudgmentOnValue& inJOV)
+	{
+	@match Type(*inJOV.type())
+		-|	Class(_,(mediator,_)) ->> {
+			return slot0(
+				String(
+					mediator->name(),
+					ExecutionContext::currentExecutionContext()->getMemoryPool()
+					)
+				);
+			}
+	-| _ ->> { lassert(false); }
+		;
+	}
+
+//take a JOV (classJOVIn) and an arbitrary piece of metadata and return
+//the JOV with the metadata replaced.
+BSA_DLLEXPORT
+ReturnValue<JudgmentOnValue, String> FORA_clib_bindClassMetadata(
+		const JudgmentOnValue& classJOV, const ImplValContainer& newMetadataImpl
+		)
+	{
+	lassert(classJOV.isClass());
+	
+	if (!newMetadataImpl.isCST())
+		{
+		return slot1(
+			String(
+				"can't bind non-constant metadata to a class", 
+				ExecutionContext::currentExecutionContext()->getMemoryPool()
+				)
+			);
+		}
+	
+ 	@match JOV(classJOV)
+		-|	Class(Class(heldTypes, (mediator, resumption))) ->> {
+			return slot0(
+				JOV(
+					JOV::Class(
+						JudgmentOnValueClass::Class(
+							heldTypes,
+							ImplValContainerUtilities::bindClassMediatorMeta(
+								*mediator, 
+								CSTValue(newMetadataImpl)
+								),
+							resumption
+							)
+						)
+					)
+				);
+			}
+		-|	_ ->> {
+			return slot1(
+				String(
+					"illegal class JOV passed to bindClassMediator",
+					ExecutionContext::currentExecutionContext()->getMemoryPool()
+					)
+				);
+			}
+		;
+
+	lassert(false);
+	}
+
+//take a type (classTyIn) and an arbitrary piece of metadata and return
+//the type with the metadata replaced.
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer, String> FORA_clib_bindObjectMetadata(
+		const ImplValContainer& objectValue, 
+		const ImplValContainer& newMetadataImpl
+		)
+	{
+	const Type& classTy = objectValue.type();
+	
+	if (!newMetadataImpl.isCST())
+		{
+		return slot1(
+			String(
+				"can't bind non-constant metadata to a class", 
+				ExecutionContext::currentExecutionContext()->getMemoryPool()
+				)
+			);
+		}
+	
+	@match Type(classTy)
+		-|	Class(heldTypes, (mediatorFunction, resumption)) ->> {			
+			return slot0(
+				ImplValContainer(		
+					Type::Class(
+						heldTypes,
+						ImplValContainerUtilities::bindClassMediatorMeta(
+							*mediatorFunction,
+							CSTValue(newMetadataImpl)
+							),
+						resumption
+						),
+					objectValue.data()		
+					)
+				);
+			}
+		;
+	lassert(false);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer> FORA_clib_classMemberBind(
+		const ImplValContainer& cls, 
+		const ImplValContainer& args
+		)
+	{
+	return slot0(ImplValContainerUtilities::classMemberBind(cls, args));
+	}
+
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer, Nothing> FORA_clib_classMemberGetItem(
+					const ImplValContainer& cls, 
+					uint64_t index
+					)
+	{
+	@match Type(cls.type())
+		-|	Class(types, (f, resump)) ->> {
+
+			if (index >= types.size())
+				return slot1(Nothing());
+
+			return slot0(
+				ImplValContainerUtilities::classGetItem(cls, index)
+				);
+			}
+		;
+	}
+
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer> FORA_clib_classMemberUnbind(
+		const ImplValContainer& cls
+		)
+	{
+	return slot0(ImplValContainerUtilities::classMemberUnbind(cls));
+	}
+
+}
+
+inline JOV jovClass(void)
+	{
+	return JOV::Class(JudgmentOnValueClass::Unknown());
+	}
+
+class ClassApplyAxiom : public AxiomGroup {
+public:
+	ClassApplyAxiom() : AxiomGroup(
+			JOVT() +
+				JOV::Class(JudgmentOnValueClass::Unknown()) +
+				JOVTE::Extras()
+			)
+		{
+		}
+
+	Nullable<Axiom> axiom(TypedFora::Compiler& c, const JudgmentOnValueTuple& s)
+		{
+		Nullable<AxiomJOA> joa = axiomJOA(s);
+		
+		if (!joa)
+			return null();
+
+		@match JOV(s.jovs()[0])
+			-| Class(Unknown()) ->> {
+				return null();
+				}
+			-| Class(Class(_, (mediator, resumption))) ->> {
+				return null() << 
+					Axiom::Expands(
+						s, 
+						boost::bind(
+							&ClassApplyAxiom::functionToCFG,
+							this,
+							*mediator,
+							resumption,
+							boost::arg<1>()
+							)
+						);
+				}
+		}
+
+	static ControlFlowGraph functionToCFG(
+						ClassApplyAxiom* axiom,
+						ClassMediator mediator, 
+						ClassMediatorResumption resumption, 
+						ApplySignature signature
+						)
+		{
+		return axiom->mConverter.functionToCFG(mediator, resumption, signature);
+		}
+
+	Nullable<AxiomJOA>	axiomJOA(const JudgmentOnValueTuple& s)
+		{
+		@match JOV(s.jovs()[0])
+			-| Class(Unknown()) ->> {
+				return null();
+				}
+			-| Class(Class(_, (mediator, resumption))) ->> {
+				return null() << AxiomJOA::Expands();
+				}
+		}
+
+	JudgmentOnValueTuple weakestAxiomFor(
+					const Fora::ApplyArgFrame& inValues
+					)
+		{
+		return 
+			JOVT() +
+				JOV::OfType(inValues[0].first.type()) + 
+				JOVTE::Extras()
+				;
+		}
+
+	boost::shared_ptr<AxiomGroupInterpreterCache> createInterpreterCache()
+		{
+		return AxiomGroupInterpreterCache::typeOfFirstEltCache();
+		}
+private:
+	Fora::Language::FunctionToCFG mConverter;
+};
+
+class ClassBindAxiom : public AxiomGroup {
+public:
+	ClassBindAxiom() : AxiomGroup(
+			JOVT() +
+				"Bind" +
+				"Call" +
+				JOV::Class(JudgmentOnValueClass::Unknown()) +
+				JOVTE::Extras()
+				)
+		{
+		}
+
+	Nullable<Axiom> axiom(TypedFora::Compiler& c, const JudgmentOnValueTuple& s)
+		{
+		JOV outJOV = jovFor(s);
+
+		if (outJOV.constant())
+			return null() << AxiomGroup::returnsAxiom(s, *outJOV.constant());
+
+		if (outJOV.type())
+			{
+			//incoming class might be a constant or just a type
+			//incoming args must all at least be typed.
+			//the axiom we generate is just based on typing
+			//and we rely on AxiomJOA to contribute all the detail and conversions etc.
+
+			JOV inClassJOV = s.jovs()[2];
+			ImmutableTreeVector<JudgmentOnValue> sub = s.jovs().slice(3);
+
+			@match JOV(inClassJOV)
+				-|	Class(Class(curTypes, classBody)) ->> {
+
+					TypedFora::TypedForaAxiomBuilder builder(s, TypedFora::RefcountStyle::Pooled());
+
+					ImmutableTreeVector<TypedFora::MakeTupleArgument> tupleArgs;
+
+					if (curTypes.size())
+						tupleArgs = tupleArgs + 
+							TypedFora::MakeTupleArgument::TupleCall(
+								TypedFora::Expression::ChangeClassBody(
+									builder.var(2).expr(),
+									null()
+									)
+								);
+
+					for (long k = 0; k < sub.size();k++)
+						tupleArgs = tupleArgs + 
+							TypedFora::MakeTupleArgument::Normal(null(),
+								builder.var(3+k).expr()
+								);
+
+					return null() << 
+						builder.axiomForExpression(
+							TypedFora::Expression::ChangeClassBody(
+								TypedFora::Expression::MakeTuple(tupleArgs),
+								null() << classBody
+								),
+							TypedFora::RefcountStyle::Pooled(),
+							outJOV,
+							false
+							);
+					}
+				;
+			}
+			else
+			{
+			//we're returning an implVal and we need to do this through a libcall
+			return null() << LibcallAxiomGroup::createAxiom(
+				signature(), 
+				ReturnSlots() +
+					ReturnSlot::Normal(
+						JOV::Class(JudgmentOnValueClass::Unknown())
+						),
+				&FORA_clib_classMemberBind, 
+				ImmutableTreeVector<uword_t>() + 2 + 3
+				);
+			}
+		lassert(false);
+		}
+
+	Nullable<AxiomJOA>		axiomJOA(const JudgmentOnValueTuple& s)
+		{
+		return null() << AxiomJOA::Native(JudgmentOnAction::Value(jovFor(s)));
+		}
+
+	JOV	jovFor(const JudgmentOnValueTuple& s)
+		{
+		@match JOV(s.jovs()[2])
+			-|	Class(Unknown()) ->> {
+				return  JOV::Class(JudgmentOnValueClass::Unknown());
+				}
+			-|	Class(Class(ts, classBody)) ->> {
+					return  (
+						s.extras().isExtras() ?
+							JOV::Class(JudgmentOnValueClass::Unknown())
+						:	JOV::Class(JudgmentOnValueClass::Class(ts + s.jovs().slice(3), classBody))
+						);
+					}
+				;
+		}
+
+	Nullable<JudgmentOnValueTuple>	weakestArgumentsProducingResultCoveredBy(
+												TypedFora::Compiler& c,
+												const JudgmentOnValueTuple& args,
+												const JudgmentOnAction& result
+												)
+		{
+		if (!signature().covers(args))
+			return null();
+
+		if (result.resultPart().size() != 1)
+			return null();
+
+		if (args.extras().isExtras())
+			return null();
+
+		@match JOV(args.jovs()[2])
+			-|	Class(Class(classEltJovs, classBody)) ->> {
+
+				@match JOV(result.resultPart()[0])
+					-| Class(Class(finalClassJovs, classBody2)) ->> {
+						if (classBody != classBody2)
+							return null();
+						
+						if (finalClassJovs.size() != classEltJovs.size() + args.jovs().size() - 3)
+							return null();
+
+						ImmutableTreeVector<JOV> finalJovs = args.jovs().slice(0,2);
+
+						finalJovs = finalJovs + 
+							JOV::Class(
+								JudgmentOnValueClass::Class(
+									finalClassJovs.slice(0, classEltJovs.size()),
+									classBody
+									)
+								);
+
+						finalJovs = finalJovs + finalClassJovs.slice(classEltJovs.size());
+
+						lassert(finalJovs.size() == args.jovs().size());
+
+						return null() << JOVT::Unnamed(finalJovs);
+						}
+					-| _ ->> {
+						}
+				}
+			-| _ ->> {
+				}
+
+		return null();
+		}
+};
+
+class ClassBindMixinAxiom : public AxiomGroup {
+public:
+	ClassBindMixinAxiom() : AxiomGroup(
+			JOVT() +
+				"BindMixin" +
+				"Call" +
+				JOV::Class(JudgmentOnValueClass::Unknown()) +
+				JOV::Class(JudgmentOnValueClass::Unknown())
+				)
+		{
+		}
+	Nullable<Axiom> axiom(TypedFora::Compiler& c, const JudgmentOnValueTuple& s)
+		{
+		JudgmentOnAction joa = getJOA(s);
+
+		if (joa.resultPart().size() == 1 && joa.throwPart().size() == 0 && 
+				joa.resultPart()[0].type())
+			{
+			JOV outJOV = joa.resultPart()[0];
+
+			if (outJOV.constant())
+				return null() << AxiomGroup::returnsAxiom(s, *outJOV.constant());
+
+			if (outJOV.type())
+				{
+				//incoming class might be a constant or just a type
+				//incoming args must all at least be typed.
+				//the axiom we generate is just based on typing
+				//and we rely on AxiomJOA to contribute all the detail and conversions etc.
+
+				JOV inBaseJOV = s.jovs()[2];
+				JOV inMixinJOV = s.jovs()[3];
+
+
+				@match JOV(s.jovs()[2])
+					-| Class(Class(jovsBase)) ->> {
+						@match JOV(s.jovs()[3])
+							-| Class(Class(jovsMixin)) ->> {
+
+								TypedFora::TypedForaAxiomBuilder builder(s, TypedFora::RefcountStyle::Pooled());
+
+								ImmutableTreeVector<TypedFora::MakeTupleArgument> tupleArgs;
+
+								if (jovsBase.size())
+									tupleArgs = tupleArgs + 
+										TypedFora::MakeTupleArgument::TupleCall(
+											TypedFora::Expression::ChangeClassBody(
+												builder.var(2).expr(),
+												null()
+												)
+											);
+								if (jovsMixin.size())
+									tupleArgs = tupleArgs + 
+										TypedFora::MakeTupleArgument::TupleCall(
+											TypedFora::Expression::ChangeClassBody(
+												builder.var(3).expr(),
+												null()
+												)
+											);
+
+								return null() << 
+									builder.axiomForExpression(
+										TypedFora::Expression::ChangeClassBody(
+											TypedFora::Expression::MakeTuple(tupleArgs),
+											null() << outJOV.type()->getClass().classBody()
+											),
+										TypedFora::RefcountStyle::Pooled(),
+										outJOV,
+										false
+										);
+								}
+						}
+					;
+				}
+			}
+		else
+			{
+			return null() << LibcallAxiomGroup::createAxiom(
+				JOVT() +
+					"BindMixin" +
+					"Call" +
+					JOV::Class(JudgmentOnValueClass::Unknown()) + 
+					JOV::Class(JudgmentOnValueClass::Unknown())
+					,
+				ReturnSlots() +
+					ReturnSlot::Normal(JOV()) +
+					ReturnSlot::Exception(JOV()),
+				&FORA_clib_bindMixin,
+				ImmutableTreeVector<uword_t>() + 2 + 3
+				);
+			}
+
+		lassert(false);
+		}
+	Nullable<AxiomJOA>		axiomJOA(const JudgmentOnValueTuple& s)
+		{
+		return null() << AxiomJOA::Native(getJOA(s));
+		}
+
+	JudgmentOnAction	getJOA(const JudgmentOnValueTuple& s)
+		{
+		@match JOV(s.jovs()[2])
+			-| Class(Class(jovsBase, (mediatorBase, Entry()))) ->> {
+				@match JOV(s.jovs()[3])
+					-| Class(Class(jovsMixin, (mediatorMixin, Entry()))) ->> {
+						Nullable<ClassMediator> newMediator = 
+							processClassMediatorMixin(*mediatorBase, *mediatorMixin, jovsBase.size());
+
+						if (newMediator)
+							return JudgmentOnAction::Value(
+								JOV::Class(
+									JudgmentOnValueClass::Class(
+										jovsBase + jovsMixin,
+										ClassBody(
+											CPPMLOpaqueHandle<ClassMediator>(*newMediator),
+											ClassMediatorResumption::Entry()
+											)
+										)
+									)
+								);
+
+						return JudgmentOnAction::Throws(JOV());
+						}
+					-| _ ->> {
+						return JudgmentOnAction::Value(
+							JOV::Class(JudgmentOnValueClass::Unknown())
+							) | JudgmentOnAction::Throws(JOV())
+							;
+						}
+				}
+			-| _ ->> {
+				return JudgmentOnAction::Value(
+					JOV::Class(JudgmentOnValueClass::Unknown())
+					) | JudgmentOnAction::Throws(JOV())
+					;
+			}
+		}
+};
+
+class ClassUnbindAxiom : public AxiomGroup {
+public:
+	ClassUnbindAxiom() : AxiomGroup(
+			JOVT() + "Unbind" + "Call" + JOV::Class(JudgmentOnValueClass::Unknown())
+			)
+		{
+		}
+
+	Nullable<Axiom> axiom(TypedFora::Compiler& c, const JudgmentOnValueTuple& s)
+		{
+		JOV outJOV = jovFor(s);
+
+		if (outJOV.constant())
+			return null() << AxiomGroup::returnsAxiom(s, *outJOV.constant());
+
+		if (outJOV.type())
+			{
+			TypedFora::TypedForaAxiomBuilder builder(s, TypedFora::RefcountStyle::Pooled());
+
+			return null() << 
+				builder.axiomForExpression(
+					TypedFora::Expression::ChangeClassBody(
+						builder.var(2).expr(),
+						null()
+						),
+					TypedFora::RefcountStyle::Pooled(),
+					outJOV,
+					false
+					);
+			}
+		else
+			{
+			//we're returning an implVal and we need to do this through a libcall
+			return null() << LibcallAxiomGroup::createAxiom(
+				signature(),
+				ReturnSlots() + 
+				JOV::Tuple(
+					JudgmentOnValueTuple(
+						emptyTreeVec(), 
+						emptyTreeVec(), 
+						JOVTE::Extras(JOV())
+						)
+					),
+				&FORA_clib_classMemberUnbind,
+				ImmutableTreeVector<uword_t>() + 2
+				);
+			}
+		lassert(false);
+		}
+
+	Nullable<AxiomJOA>		axiomJOA(const JudgmentOnValueTuple& s)
+		{
+		return null() << AxiomJOA::Native(JudgmentOnAction::Value(jovFor(s)));
+		}
+
+	JOV	jovFor(const JudgmentOnValueTuple& s)
+		{
+		@match JOV(s.jovs()[2])
+			-|	Class(Unknown()) ->> {
+				return 
+					JOV::Tuple(JudgmentOnValueTuple(emptyTreeVec(), emptyTreeVec(), JOVTE::Extras(JOV())));
+				}
+			-|	Class(Class(ts, _)) ->> {
+				return 
+					JOV::Tuple(JudgmentOnValueTuple(ts, (emptyTreeVec() + Nullable<Symbol>()) * ts.size(), JOVTE::NoExtras()))
+					;
+				}
+				;
+		}
+
+	Nullable<JudgmentOnValueTuple>	weakestArgumentsProducingResultCoveredBy(
+												TypedFora::Compiler& c,
+												const JudgmentOnValueTuple& args,
+												const JudgmentOnAction& result
+												)
+		{
+		if (!signature().covers(args))
+			return null();
+
+		if (result.resultPart().size() != 1)
+			return null();
+
+		@match JOV(args.jovs()[2])
+			-|	Class(Class(classEltJovs, classBody)) ->> {
+				@match JOV(result.resultPart()[0])
+					-| Tuple((jovs, symbols, NoExtras())) ->> {
+						if (jovs.size() != classEltJovs.size())
+							return null();
+
+						return null() << JOVT::Unnamed(
+							args.jovs().slice(0,2) + 
+								JOV::Class(
+									JudgmentOnValueClass::Class(
+										jovs,
+										classBody
+										)
+									)
+							);
+						}
+					-| _ ->> {}
+				}
+			-| _ ->> {}
+		
+		return null();
+		}
+};
+
+
+class ClassGetItemAxiom : public AxiomGroup {
+public:
+	ClassGetItemAxiom() : 
+			AxiomGroup(
+				JOVT() + 
+					"ClassGetItem" + 
+					"Call" + 
+					JOV::Class(JudgmentOnValueClass::Unknown()) + 
+					JOV::OfType(Type::Integer(64, false))
+				)
+		{
+		}
+
+	Nullable<Axiom> axiom(TypedFora::Compiler& c, const JudgmentOnValueTuple& s)
+		{
+		if (s.jovs()[2].type() && s.jovs()[3].constant())
+			{
+			uint64_t index = s.jovs()[3].constant()->cast<int64_t>();
+
+			@match JOV(s.jovs()[2])
+				-|	Class(Class(classEltJovs)) ->> {
+
+					if (index >= classEltJovs.size())
+						return null() << AxiomGroup::throwsAxiom(s, errConstant());
+
+					JudgmentOnValue outJOV = classEltJovs[index];
+
+					if (outJOV.constant())
+						return null() << AxiomGroup::returnsAxiom(s, *outJOV.constant());
+
+					TypedFora::Type outType = 
+						TypedFora::Type(
+							outJOV, 
+							TypedFora::RefcountStyle::Pooled()
+							);
+
+					TypedFora::TypedForaAxiomBuilder builder(s, TypedFora::RefcountStyle::Pooled());
+
+					return null() << 
+						builder.axiomForExpression(
+							TypedFora::Expression::GetItem(
+								TypedFora::Expression::ChangeClassBody(
+									builder.var(2).expr(),
+									null()
+									),
+								index
+								),
+							TypedFora::RefcountStyle::Pooled(),
+							outJOV,
+							false
+							);
+				}
+			}
+
+		//we're returning an implVal and we need to do this through a libcall
+		return null() << LibcallAxiomGroup::createAxiom(
+			signature(),
+			ReturnSlots() +
+				ReturnSlot::Normal(JOV::Unknown()) +
+				ReturnSlot::Exception(errJov()),
+			&FORA_clib_classMemberGetItem,
+			ImmutableTreeVector<uword_t>() + 2 + 3
+			);
+		}
+
+	Nullable<AxiomJOA>		axiomJOA(const JudgmentOnValueTuple& s)
+		{
+		return null() << AxiomJOA::Native(joaFor(s));
+		}
+
+	JudgmentOnAction	joaFor(const JudgmentOnValueTuple& s)
+		{
+		uint64_t index;
+
+		if (!s.jovs()[3].constant())
+			return unknownJoa();
+		else
+			index = s.jovs()[3].constant()->cast<uint64_t>();
+
+		@match JOV(s.jovs()[2])
+			-|	Class(Unknown()) ->> {
+				return unknownJoa();
+				}
+			-|	Class(Class(ts, _)) ->> {
+				if (index < ts.size())
+					return JudgmentOnAction::Value(ts[index]);
+				else
+					return unknownJoa();
+				}
+		}
+
+	JudgmentOnAction unknownJoa(void)
+		{
+		return 
+			JudgmentOnAction::Value(JOV()) 
+		| 
+			JudgmentOnAction::Throws(errJov())
+			;
+		}
+
+	JudgmentOnValue errJov(void) const
+		{
+		return JOV::Constant(errConstant());
+		}
+
+	CSTValue errConstant(void) const
+		{
+		return CSTValue("ClassGetItem index out of range");
+		}
+
+	Nullable<JudgmentOnValueTuple>	weakestArgumentsProducingResultCoveredBy(
+												TypedFora::Compiler& c,
+												const JudgmentOnValueTuple& args,
+												const JudgmentOnAction& result
+												)
+		{
+		if (!signature().covers(args))
+			return null();
+
+		if (!args.jovs()[3].constant())
+			return null();
+
+		if (result.resultPart().size() != 1)
+			return null();
+
+		uint64_t index = args.jovs()[3].constant()->cast<int64_t>();
+
+		@match JOV(args.jovs()[2])
+			-|	Class(Class(classEltJovs, classBody)) ->> {
+				if (index < 0 || index >= classEltJovs.size())
+					return null();
+
+				ImmutableTreeVector<JOV> newEltJOVs = 
+					(emptyTreeVec() + JOV::Unknown()) * classEltJovs.size();
+
+				newEltJOVs = newEltJOVs.withElementReplaced(index, result.resultPart()[0]);
+
+				JOV newClassJOV = JOV::Class(
+					JudgmentOnValueClass::Class(newEltJOVs, classBody)
+					);
+
+				return null() << JOVT(
+					args.jovs().withElementReplaced(2, newClassJOV),
+					args.names(),
+					args.extras()
+					);
+				}
+			-| _ ->> {
+				return null();
+				}
+		}
+
+
+};
+
+extern "C" {
+
+ReturnValue<ImplValContainer, String> FORA_clib_parseStringToMemberlessClass(
+	const String& data, const ImplValContainer& sourceArguments
+	);
+
+}
+
+class ClassAxioms {
+public:
+	ClassAxioms()
+		{
+		AxiomGroups("Class") += new ClassApplyAxiom();
+		AxiomGroups("Class") += new ClassBindAxiom();
+		AxiomGroups("Class") += new ClassUnbindAxiom();
+		AxiomGroups("Class") += new ClassGetItemAxiom();
+		AxiomGroups("Class") += new ClassBindMixinAxiom();
+
+		AxiomGroups("Class") += 
+			LibcallAxiomGroup::create(
+				JOVT() + 
+					"Function" + 
+					"Call" + 
+					JOV::OfType(Type::String()) + 
+					JOVTE::Extras(JOV::OfType(Type::String())), 
+				ReturnSlots() + 
+					ReturnSlot::Normal(
+						JOV::Class(JudgmentOnValueClass::Unknown())
+						) +
+					ReturnSlot::Exception(JOV::OfType(Type::String())),
+				&FORA_clib_parseStringToMemberlessClass, 
+				emptyTreeVec() + (uword_t)2 + (uword_t)3
+			);
+		
+		AxiomGroups("Class") += LibcallAxiomGroup::create(
+			JOVT() +
+				"BindClassMetadata" +
+				"Call" +
+				JOV::JOVAsValue(
+					JOJOV::Unknown(
+						JOV::Class(JudgmentOnValueClass::Unknown())
+						)
+					) +
+				JOV()
+				,
+			ReturnSlots() +
+				ReturnSlot::Normal(OfType(Type::JOVAsValue())) +
+				ReturnSlot::Exception(OfType(Type::String())),
+			&FORA_clib_bindClassMetadata,
+			emptyTreeVec() + (uword_t)2 + 3
+		);
+
+		AxiomGroups("Class") += LibcallAxiomGroup::create(
+			JOVT() +
+				"ExtractCallSignatures" +
+				"Call" +
+				JOV::JOVAsValue(
+					JOJOV::Unknown(
+						JOV::Class(JudgmentOnValueClass::Unknown())
+						)
+					),
+			ReturnSlots() +
+				ReturnSlot::Normal(OfType(Type::String())),
+			&FORA_clib_extractCallSignatures,
+			emptyTreeVec() + (uword_t)2
+		);
+		
+		AxiomGroups("Class") += LibcallAxiomGroup::create(
+			JOVT() +
+				"BindClassMetadata" +
+				"Call" +
+				JOV::Class(JudgmentOnValueClass::Unknown()) +
+				JOV(),
+			ReturnSlots() + 
+				ReturnSlot::Normal(JOV::Class(JudgmentOnValueClass::Unknown())) +
+				ReturnSlot::Exception(OfType(Type::String())),
+			&FORA_clib_bindObjectMetadata,
+			emptyTreeVec() + (uword_t)2 + 3
+			);
+		
+		AxiomGroups("Class") += LibcallAxiomGroup::create(
+			JOVT() +
+				"ExtractClassTypeMetadata" +
+				"Call" +
+				JOV::JOVAsValue(
+					JOJOV::Unknown(JOV::Class(JudgmentOnValueClass::Unknown()))
+					)
+				,
+			ReturnSlots() + JOV() + JOV::OfType(Type::Nothing()),
+			&FORA_clib_extractClassTypeMetadata,
+			ImmutableTreeVector<uword_t>() + 2
+			);
+		AxiomGroups("Class") += LibcallAxiomGroup::create(
+			JOVT() +
+				"ExtractClassTypeName" +
+				"Call" +
+				JOV::JOVAsValue(
+					JOJOV::Unknown(JOV::Class(JudgmentOnValueClass::Unknown()))
+					)
+				,
+			ReturnSlots() + JOV::OfType(Type::String()),
+			&FORA_clib_extractClassTypeName,
+			ImmutableTreeVector<uword_t>() + 2
+			);
+		
+
+		AxiomGroups("Class") += LibcallAxiomGroup::create(
+			JOVT() +
+				"ExtractMemberNames" +
+				"Call" +
+				JOV::JOVAsValue(JOJOV::Unknown(JOV::Class(JudgmentOnValueClass::Unknown())))
+				,
+			ReturnSlots() + 
+				jovTuple() + 
+				JOV::OfType(Type::Nothing()),
+			&FORA_clib_extractClassTypeMemberNames,
+			ImmutableTreeVector<uword_t>() + 2
+			);
+		
+
+		
+		}
+};
+ClassAxioms ClassAxioms;
+

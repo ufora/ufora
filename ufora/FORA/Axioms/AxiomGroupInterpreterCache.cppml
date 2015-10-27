@@ -1,0 +1,165 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "AxiomGroupInterpreterCache.hppml"
+#include "../Judgment/JudgmentOnValueTree.hppml"
+#include "AxiomGroup.hppml"
+#include "Axiom.hppml"
+#include "../Core/ApplyArgFrame.hppml"
+#include <boost/unordered_map.hpp>
+
+namespace {
+
+class TypeOfFirstEltCache : public AxiomGroupInterpreterCache {
+public:
+	TypeOfFirstEltCache()
+		{
+		}
+
+	void*	lookup(const Fora::ApplyArgFrame& values)
+		{
+		if (!values.size())
+			return 0;
+		
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+		
+		auto it = mHashData.find(values[0].first.type().hash());
+
+		if (it != mHashData.end())
+			return it->second;
+
+		return 0;
+		}
+	
+	void	addToCache(	const JudgmentOnValueTuple& jovt,
+						void* payload
+						)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+		
+		lassert(
+			   jovt.jovs().size() >= 1
+			&& jovt.jovs()[0].type()
+			&& JOV::OfType(*jovt.jovs()[0].type()) == jovt.jovs()[0]
+			);
+
+		hash_type lookup(jovt.jovs()[0].type()->hash());
+
+		lassert_dump(
+			mHashData.find(lookup) == mHashData.end(),
+			"duplicate entry in TypeAndArityCache: "
+				<< prettyPrintString(jovt)
+			);
+
+		mHashData[lookup] = payload;	
+		}
+private:
+	boost::recursive_mutex mMutex;
+
+	boost::unordered_map<hash_type, void*> mHashData;
+};
+
+class GenericAxiomGroupInterpreterCache : public AxiomGroupInterpreterCache {
+public:
+	GenericAxiomGroupInterpreterCache()
+		{
+		mJOVTree = JudgmentOnValueTree::Leaf(bad_tree_value);
+		}
+	
+
+	void*	lookup(const Fora::ApplyArgFrame& values)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+		
+		uword_t treeIx = searchJOVTree(mJOVTree, values);
+		
+		if (treeIx != bad_tree_value)
+			return mOtherCaches[treeIx];
+		
+		return 0;
+		}
+	
+	void	addToCache(	const JudgmentOnValueTuple& jovt,
+								void* payload
+								)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+		
+		mOtherCaches.push_back(payload);
+		mJOVTree = addRuleToJOVTree(jovt, mJOVTree, mOtherCaches.size()-1);
+		}
+private:
+	enum { bad_tree_value = 0xFFFFFF };
+	
+	boost::recursive_mutex								mMutex;
+	vector<void*>										mOtherCaches;
+	JudgmentOnValueTree									mJOVTree;
+	
+};
+
+class ChoicelessAxiomGroupInterpreterCache : public AxiomGroupInterpreterCache {
+public:
+	ChoicelessAxiomGroupInterpreterCache()
+		{
+		mValue = 0;
+		}
+	
+
+	void*	lookup(const Fora::ApplyArgFrame& data)
+		{
+		return mValue;
+		}
+	
+	void	addToCache(	const JudgmentOnValueTuple& jovt,
+								void* payload
+								)
+		{
+		lassert(!mValue);
+		mValue = payload;
+		}
+private:
+	void*	mValue;
+};
+
+}
+
+boost::shared_ptr<AxiomGroupInterpreterCache> 
+AxiomGroupInterpreterCache::simpleCache(void)
+	{
+	return 
+		boost::shared_ptr<AxiomGroupInterpreterCache>(
+			new ChoicelessAxiomGroupInterpreterCache()
+			);
+	}
+
+
+boost::shared_ptr<AxiomGroupInterpreterCache> 
+AxiomGroupInterpreterCache::genericCache(void)
+	{
+	return 
+		boost::shared_ptr<AxiomGroupInterpreterCache>(
+			new GenericAxiomGroupInterpreterCache()
+			);
+	}
+
+boost::shared_ptr<AxiomGroupInterpreterCache> 
+AxiomGroupInterpreterCache::typeOfFirstEltCache(void)
+	{
+	return 
+		boost::shared_ptr<AxiomGroupInterpreterCache>(
+			new TypeOfFirstEltCache()
+			);
+	}
+

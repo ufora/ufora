@@ -1,0 +1,298 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#Markdown("""### GradientBoostedRegressorBuilder
+
+#### Usage
+
+    math.ensemble.gradientBoosting.GradientBoostedRegressorBuilder(
+        loss:= `l2, nBoosts:= 100, maxDepth:= 3, 
+        minSamplesSplit:= 2, splitMethod:= `sample, 
+        numBuckets:= 10000, learningRate:= 1.0)
+
+#### Description 
+
+`GradientBoostedRegressorBuilder` is a class capable of building 
+(or "fitting") gradient-boosted regression trees to data with specified 
+parameters. These parameters are
+
+* `loss`: The loss used when forming gradients. Can either be `` `l2`` for  
+least-squares loss, or `` `lad`` for "least absolute deviation" (aka l1-loss)
+* `nBoosts`: The number of "boosting iterations" used. 
+* `maxDepth`: The max depth allowed of each consituent regression tree.
+* `minSamplesSplit`: The minimum number of samples required to split a node.
+* `splitMethod`: The method used to split nodes. There are two possible values:
+`` `sample`` or `` `exhaustive``. `` `sample`` statistically estimates the optimal 
+split on an `X`-column, while `` `exhaustive`` considers all possible splits.
+* `numBuckets`: If `splitMethod` is `` `exhaustive``, this parameter is ignored.
+Otherwise, when `splitMethod` is `` `sample``, this gives the number of buckets
+used in the estimation of optimal column splits for building regression trees.
+* `learningRate`: The learning rate of the model, used for regularization. 
+Each successive tree from boosting stages are added with multiplier `learningRate`.
+
+Builders essentially just hold parameters which are later useful to perform fitting. 
+Builders are mainly only useful for their `fit` and `iterativeFitter` methods, 
+which uses the builder's parameters to fit models to data. See those methods for examples.
+
+
+""")
+class {
+    member loss;
+    member nBoostingIterations;
+    member learningRate;
+    member treeBuilderArgs;
+
+    fit: 
+    #Markdown("""#### Usage
+
+        builder.fit(X, y)
+
+    #### Description
+
+    Use `GradientBoostedRegressorBuilder` `builder` to fit the predictors `X` to the responses `y`.
+
+    #### Arguments
+
+    * `X` -- a `dataframe.DataFrame` which defines the predictors to be fit.
+    * `y` -- a `dataframe.DataFrame` which defines the responses to be fit.
+
+    #### Examples
+
+        /* Create some sample data */
+        let it = iterator(math.random.Normal(0, 1, 5551884))
+        let rands = [pull it for _ in sequence(40)]
+        let inputs = dataframe.DataFrame([
+            rands[,10],
+            rands[10,20],
+            rands[20,30]
+            ])
+        inputs
+        let outputs = rands[30,]
+
+        /* Create a builder */
+        let builder = math.ensemble.gradientBoosting
+            .GradientBoostedRegressorBuilder(nBoosts: 2, maxDepth: 2);
+
+        /* Perform the model fitting */
+        let fit = builder.fit(inputs, outputs)
+
+        /* a few sample methods on the fit */
+        /* prediction */
+        fit.predict(inputs)
+
+        /* Computing R^2 */
+        fit.score(inputs, outputs)
+
+    """)
+    fun
+    (dataframe.DataFrame(X), dataframe.DataFrame(y)) { 
+        let iterativeFitter = self.iterativeFitter(X, y);            
+        let boostingIx = 0;
+        while (boostingIx < self.nBoostingIterations) {
+            iterativeFitter = iterativeFitter.next();
+            boostingIx = boostingIx + 1
+            }
+
+        return iterativeFitter.model
+        }
+    (dataframe.DataFrame(X), y) {
+        fit(X, dataframe.DataFrame([y]))
+        }
+    ;
+
+    iterativeFitter: 
+    #Markdown(
+"""#### Usage
+
+    builder.iterativeFitter(X, y)
+
+#### Description
+
+Create an `IterativeFitter`, which is a sort of iterator which produces models 
+by boosting.
+
+#### Examples
+
+    let it = iterator(math.random.Normal(0, 1, 5551884))
+    let rands = [pull it for _ in sequence(40)]
+
+    let X = dataframe.DataFrame([
+        rands[,10],
+        rands[10,20],
+        rands[20,30]
+        ])
+    let y = rands[30,]
+
+    let builder = math.ensemble.gradientBoosting
+        .GradientBoostedRegressorBuilder(nBoosts: 2, maxDepth: 2);
+    let fitter = builder.iterativeFitter(X, y)
+
+    let numBoosts = 5;
+    let trainErrors = []; // for example, stash training errors to see progress
+    for ix in sequence(numBoosts) {
+        trainErrors = fitter.model.score(X, y)
+        fitter = fitter.next()
+        }
+
+    // get the relevant model and predictions from the fitter
+    fitter.model
+    fitter.predictions
+
+    // see how the training error changed with number of boosts
+    linePlot(trainErrors)
+
+    /* `fitter.model` is a `math.ensemble.gradientBoosting.RegressionModel` instance. 
+       `fitter.model.predict(X)` is the same thing as `fitter.predictions` */           
+
+    """)
+    fun
+    (dataframe.DataFrame(X), dataframe.DataFrame(y)) { 
+        let yAsSeries = y.getColumn(0);
+        let model = 
+            self.getInitialModel(
+                X, yAsSeries, self.loss, self.learningRate, self.treeBuilderArgs
+                );
+
+        return IterativeFitter(model, nothing);
+        }
+    (dataframe.DataFrame(X), y) {
+        iterativeFitter(X, dataframe.DataFrame([y]))
+        }
+    ;
+
+    `hidden
+    IterativeFitter: class {
+        member model;
+        member predictions;
+
+        next: fun() {
+            let (pseudoResiduals, newPredictions) =
+                model.pseudoResidualsAndPredictions(
+                    previousPredictions: predictions
+                    );
+
+            let newModel = model.boost(newPredictions, pseudoResiduals)
+
+            return IterativeFitter(newModel, newPredictions)
+            };
+
+        predictionsAndPseudoresiduals: fun() {
+            model.pseudoResidualsAndPredictions(
+                previousPredictions: predictions
+                );
+            };
+
+        nextGivenPredictions: fun((pseudoResiduals, newPredictions)) {
+            let newModel = model.boost(newPredictions, pseudoResiduals)
+
+            return IterativeFitter(newModel, newPredictions)
+            };
+        };
+
+    `hidden
+    getInitialModel: fun(X, yAsSeries, loss, learningRate, treeBuilderArgs)
+        {
+        RegressionModel.getInitialModel(
+            X, yAsSeries, loss, learningRate, treeBuilderArgs
+            );
+        };
+
+    operator new(loss:= `l2, nBoosts:= 100, maxDepth:= 3, 
+                 minSamplesSplit:= 2, splitMethod:= `sample, 
+                 numBuckets:= 10000, learningRate:= 1.0)
+        {
+        loss = match (loss) with 
+            (`l2)  { losses.l2_loss }
+            (`lad) { losses.absoluteLoss }
+            ;
+        
+        let treeBuilderArgs = 
+            (
+                minSamplesSplit: minSamplesSplit,
+                maxDepth: maxDepth,
+                impurityMeasure: math.tree.Base.SampleSummary, // each base model is
+                                                               // fit to gradient by
+                                                               // least squares
+                splitMethod: splitMethod,
+                numBuckets: numBuckets
+                );
+
+        createInstance(
+            cls,
+            loss: loss, nBoostingIterations: nBoosts,
+            learningRate: learningRate,
+            treeBuilderArgs: treeBuilderArgs
+            );
+        };
+
+    withDepth: 
+#Markdown(
+"""#### Usage 
+
+    builder.withDepth(newDepth)
+
+#### Description
+
+Return a new builder with a the same parameters as `builder` except that 
+it has `newDepth` for depth. 
+
+#### Examples
+
+    let builder = math.ensemble.gradientBoosting.GradientBoostedRegressorBuilder();
+    let newBuilder = builder.withDepth(1)
+
+""")
+    fun(newDepth) {
+        createInstance(
+            cls,
+            nBoostingIterations: nBoostingIterations,
+            learningRate: learningRate,
+            treeBuilderArgs: (
+                minSamplesSplit: treeBuilderArgs.minSamplesSplit,
+                maxDepth: treeBuilderArgs.newDepth,
+                impurityMeasure: treeBuilderArgs.impurityMeasure,
+                splitMethod: treeBuilderArgs.splitMethod)
+            );
+        };
+
+    withLearningRate: 
+#Markdown(
+"""#### Usage 
+
+    builder.withLearningRate(newLearningRate)
+
+#### Description
+
+Return a new builder with a the same parameters as `builder` except that 
+it has `newLearningRate` for learning rate. 
+
+#### Examples
+
+    let builder = math.ensemble.gradientBoosting.GradientBoostedRegressorBuilder();
+    let newBuilder = builder.learningRate(0.01)
+
+""")
+    fun(newLearningRate) {
+        createInstance(
+            cls,
+            nBoostingIterations: nBoostingIterations,
+            learningRate: newLearningRate,
+            treeBuilderArgs: treeBuilderArgs
+            );
+        };
+
+    };
+
+

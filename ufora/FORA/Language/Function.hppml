@@ -1,0 +1,802 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#ifndef FORA_Language_Function_hppml_
+#define FORA_Language_Function_hppml_
+
+#include "Function.fwd.hppml"
+#include "../Primitives/CodeLocation.hppml"
+#include "../Core/CSTValue.hppml"
+#include "ApplySignature.hppml"
+#include "../../core/math/Nullable.hpp"
+#include "../../core/containers/ImmutableTreeMap.hppml"
+#include "../../core/containers/ImmutableTreeSet.hppml"
+#include "../../core/containers/ImmutableTreeVector.hppml"
+#include "../../core/SimpleParse/SimpleParse.hppml"
+#include "ExpressionLocationMetadata.hppml"
+#include <string>
+
+/******
+
+Primary model for FORA functions and expressions.
+
+******/
+
+@type
+	//Expressions represent a sequence of operations to perform in a context
+	//in which a set of variables have already been bound.  "freeVariables"
+	//are variables in the surrounding context that the expression depends on
+	//and for execution to be meaningful, the variables have to be bound
+	Expression =
+			//evaluates to a constant
+			Constant of CSTValue val
+			
+			//evaluate first, then second. take value of second
+		-|	Sequence of Expression first, Expression second
+			
+			//look up the value of a variable
+		-|	Variable of Symbol variable
+		
+			//a recursive "let" - each pattern/expression pair is evaluated
+			//within the context of the others. The semantics are essentially
+			//that we create an object with a member bound to each expression
+			//each variable that's bound in a pattern then resolves to an
+			//access of the object.  In the calling scope, we evaluate each
+			//bound expression sequentially.
+		-|	Let of 	ImmutableTreeVector<pair<PatternWithName, Expression> > elements,
+					Expression body
+			
+			//evaluate 'value' and update patterns listed in 'toAssign'
+		-|	Assign of
+				PatternWithName toAssign,
+				Expression value
+			
+			//call 'agent' with 'arguments'. invoked as
+			//agent `( *args )
+		-|	Apply of
+				Expression agent,
+				ImmutableTreeVector<ApplyArgument> arguments
+			
+			//equivalent to agent `( `Call, *args)
+		-|	Call of
+				Expression agent,
+				ImmutableTreeVector<ApplyArgument> arguments
+			
+			//short-circuiting operators. "lhs and rhs". Expands to
+			//if (lhs) rhs else False
+		-|	And of Expression lhs, Expression rhs
+		
+			//short-circuiting operators. "lhs and rhs". Expands to
+			//if (lhs) True else rhs
+		-|	Or of Expression lhs, Expression rhs
+		
+			//checks whether lhs and rhs are the same exact value
+		-|	Is of Expression lhs, Expression rhs
+		
+		-|	IsNot of Expression lhs, Expression rhs
+		
+		-|	Not of Expression rhs
+		
+			//calls rhs `( `Operator, `In, lhs )
+		-|	In of Expression lhs, Expression rhs
+			//not (lhs in rhs)
+		-|	NotIn of Expression lhs, Expression rhs
+		
+			//operators
+		-|	BinaryOperator of
+				Expression lhs,
+				Symbol op,
+				Expression rhs
+		
+		-|	LeftOperator of
+				Symbol op,
+				Expression e
+		
+		-|	RightOperator of
+				Expression e,
+				Symbol op
+			
+			//getitem. e.g. agent[arguments]
+		-|	GetItem of
+				Expression agent,
+				ImmutableTreeVector<ApplyArgument> arguments
+		
+			//setitem. e.g. agent[arguments] = toSet
+		-|	SetItem of
+				Expression agent,
+				ImmutableTreeVector<ApplyArgument> arguments,
+				Expression toSet
+			
+			//agent.member. 'depth' is how many .'s there are
+		-|	Member of Expression agent, Symbol member, uint32_t depth
+		
+			//agent.(member). 'depth' is how many .'s there are
+		-|	ComputedMember of Expression agent, Expression member, uint32_t depth
+		
+			//evaluate 'updater' as long as 'condition' is true. when false,
+			//exit and return 'nothing'
+		-|	While of
+				Expression condition,
+				Expression updater
+		
+			//exit the current for/while loop 
+		-|	Break of ()
+			
+			//advances the iterator held by 'iterVar', passing 'resumeWith'
+			//into the continuation. the result of a 'pull' expression is
+			//the next element of the iterator; if the iterator is empty,
+			//an exception is thrown.
+		-|	Pull of Symbol iterVar, Expression resumeWith
+		
+			//cache call. each CacheCallArgument is evaluated separately (in a different
+			//thread, not allowing updates or mutability to propagate backwards).
+			//If any of them throw an exception, the first one is thrown
+			//otherwise, it evaluates to a tuple.
+		-|	Cached of ImmutableTreeVector<CacheCallArgument> expr
+			
+			//a 'raw' cache call, in which the arguments are just packed as
+			//a tuple and passed to the environment directly
+			//invoked as `cached(a1, a2, ...)
+		-|	RawCached of ImmutableTreeVector<ApplyArgument> exprs
+			
+			//if (operand) {ifTrue} [else {ifFalse}]
+		-|	Branch of 	Expression operand,
+						Expression ifTrue,
+						Nullable<Expression> ifFalse
+		
+			//throw an exception with value 'exception'.
+			//use the current stacktrace if 'stacktrace' is None, otherwise
+			//use the one given (and augment it with the current location)
+		-|	Throw of Expression exception, Nullable<Expression> stacktrace
+			
+			//evaluate 'toTry'. if it throws an exception, try to catch it with
+			//catchWith. If 'catchWith' doesn't match the exception, rethrow it
+			//if we do catch, bind the stacktrace to the variable 'stacktrace'
+		-|	Try of 	Expression toTry,
+					Function catchWith,
+					Nullable<Symbol> stacktrace,
+					bool isRawCatch
+		
+			//exit the current function with the value contained in 'toReturn'
+		-|	Return of Expression toReturn
+			
+			//equivalent to
+			//	continuation (c) { return (toYield, c) }
+		-|	Yield of Expression toYield
+		
+			//when executed, it calls 'withContinuation' with a continuation
+			//object. that object, when called, resumes at the site of the
+			//Continuation call with the result passed in. If the
+			//'withContinuation' expression returns to the main context
+			//control flow picks up there. that is, if we write
+			//	let x = continuation (c) { c } in ...
+			//then 'x' will take 'c' when we first execute, but
+			//if we later call c(y), will take 'y'
+		-|	Continuation of Function withContinuation
+			
+			//evaluates the ListComprehensionChain in the current environment
+			//throws away the actual contents, but sideeffects (e.g.
+			//assignments) perpetuate
+		-|	Foreach of ListComprehensionChain chain
+		
+			//matches 'predicate' against 'toMatch'. Calls 'predicate'
+			//with 'toMatch', but evaluation happens in the current environment
+		-|	Match of 	ImmutableTreeVector<ApplyArgument> toMatch,
+						Function predicate
+		
+			//bind 'predicate' as a function. Invoked as '[metadata] fun ()..'
+		-|	CreateFunction of
+				std::string name,
+				Function predicate,
+				CSTValue objectMetadata
+			
+			//bind 'predicate' as a lambda function. Invoked as  { expr }
+		-|	CreateLambda of
+				std::string name,
+				Expression predicate
+			
+			//bind 'body' as a function. Invoked as '[metadata] object'
+		-|	CreateObject of
+				std::string name,
+				ObjectDefinition body,
+				CSTValue objectMetadata
+		
+		-|	CreateClass of
+				std::string name,
+				ClassDefinition body,
+				CSTValue classMetadata
+		
+			//create a tuple
+		-|	CreateTuple of ImmutableTreeVector<ApplyArgument> args
+		
+			//create a Vector of specified items. Will be 'Vector(Anything)' if
+			//they're heterogeneous
+			//invoked with []
+		-|	CreateList of ImmutableTreeVector<Expression> exprs
+		
+			//create a ListComprehension.
+			//if 'isIterator' is true, then the result is a process
+			//if 'isIterator' is false, then the result is a Vector
+			//which will be Vector(Anything) if the items have heterogeneous
+			//type.
+		-|	ListComprehension of
+					ListComprehensionChain chain,
+					bool isIterator
+		
+			//prevent us from generating stacktraces by essentially removing the code location
+		-|	NoStackTraceAugmentations of Expression e
+		
+	with
+        ExpressionLocationMetadata  locationMetadata,
+		hash_type	hash = (hashCPPMLDirect(*this)),
+		ImmutableTreeSet<Symbol> freeVariables = (this->computeFreeVariables()),
+		ImmutableTreeSet<Symbol> assignedVariables = (this->computeAssignedVariables()),
+		int depth = (this->computeDepth())
+	{
+	public:
+			Nullable<CodeLocationId> codeLocationIdOrNull(void) const;
+			ImmutableTreeSet<Symbol> computeFreeVariables() const;
+			ImmutableTreeSet<Symbol> computeAssignedVariables() const;
+
+			Nullable<CSTValue> extractConstantIfPossible() const;
+			int computeDepth() const;
+			
+			//generate a single-expression let.
+			static Expression Let(	Symbol s,
+									Expression value,
+									Expression remainder);
+			
+			static Expression Let(	Nullable<Symbol> s,
+									Expression value,
+									Expression remainder);
+
+			static Expression Apply(Expression agent,
+									ImmutableTreeVector<Expression> arguments);
+			
+			static Expression Variable(std::string s);
+
+			Nullable<Function> extractRootLevelCreateFunctionPredicate(void) const;
+			
+			Nullable<ObjectDefinition> extractRootLevelCreateObjectPredicate(void) const;
+			
+			Expression unwrapCodeLocationTags(void) const;
+
+			//generate 'call' expressions
+			Expression operator()() const;
+			Expression operator()(	const Expression& e1) const;
+			Expression operator()(	const Expression& e1,
+									const Expression& e2) const;
+			Expression operator()(	const Expression& e1,
+									const Expression& e2,
+									const Expression& e3) const;
+			Expression operator()(	const Expression& e1,
+									const Expression& e2,
+									const Expression& e3,
+									const Expression& e4) const;
+			Expression operator()(	const Expression& e1,
+									const Expression& e2,
+									const Expression& e3,
+									const Expression& e4,
+									const Expression& e5) const;
+			
+			Expression operator()(
+						const ImmutableTreeVector<Expression>& e1) const;
+			
+			//generates operator expressions
+			Expression add(const Expression& e) const;
+			Expression sub(const Expression& e) const;
+			Expression lt(const Expression& e) const;
+			Expression gt(const Expression& e) const;
+			Expression eq(const Expression& e) const;
+			Expression lte(const Expression& e) const;
+			Expression gte(const Expression& e) const;
+			
+			//generate a getitem
+			Expression operator[](const Expression& e) const;
+			
+			//generate a getitem
+			Expression operator[](uint64_t x) const;
+			
+			//generate a member
+			Expression member(const Symbol& e) const;
+
+			//expands to Expression::Constant(CSTValue(Symbol(s)))
+			static Expression symbol(string s);
+			
+			//expands to Expression::Constant(CSTValue(String(s)))
+			static Expression str(string s);
+			
+			//expands to Expression::Constant(CSTValue(uint64_t(s)))
+			static Expression uint64(uint64_t x);
+
+			static Expression CreateTuple(const ImmutableTreeVector<Expression>& args);
+			
+			//checks whether this expression is a constant containing
+			//the symbol with text 'c'.
+			bool isSymbol(const char* c) const;
+
+			//equivalent to ApplyArgument::TupleCall(*this)
+			ApplyArgument	operator*(void) const;
+			
+			bool operator<(const Expression& in) const;
+			bool operator==(const Expression& in) const;
+
+	}
+and
+	//A single lookup item in a cachecall. The agent and arguments are evaluated first and then
+	//both are passed to the cache-system.  The nearExpression, if present, is evaluated and passed
+	//to the cache system as a third argument.
+	CacheCallArgument = 
+			Expression agent,
+			ImmutableTreeVector<ApplyArgument> arguments,
+			Nullable<Expression> nearExpression
+	{
+	public:
+			int depth() const;
+	}
+and
+	//represents a nested set of interators in some form
+	ListComprehensionChain =
+			//a final leaf in the interator
+			Leaf of Expression expr
+			//iterates 'inner' with 'pat' bound over variables in 'process'
+		-|	Term of PatternWithName pat,
+					Nullable<Expression> filter,
+					Expression process,
+					ListComprehensionChain inner
+	with
+		hash_type	hash = (hashCPPMLDirect(*this)),
+		ImmutableTreeSet<Symbol> freeVariables = (this->computeFreeVariables()),
+		ImmutableTreeSet<Symbol> assignedVariables = (this->computeAssignedVariables()),
+		int depth = (this->computeDepth())
+	{
+	public:
+			int computeDepth() const;
+			ImmutableTreeSet<Symbol> computeFreeVariables() const;
+			
+			ImmutableTreeSet<Symbol> computeAssignedVariables() const;
+	}
+and
+	//ApplyArgument - a term in a call operation.
+	ApplyArgument =
+			//a regular argument (which may be named)
+		-|	Normal of Nullable<Symbol> name, Expression expr
+			//an argument named by an expression (rather than a constant)
+		-|	NamedArgument of Expression name, Expression expr
+			//a 'TupleCall' argument. If the result is a tuple, it gets
+			//"unpacked" - that is, each of its elements get applied
+			//as individual arguments.
+			//We normally note this as "*expr". So,
+			//f(1,2,3) is the same as f(1,*(2,3)), for instance
+		-|	TupleCall of Expression expr
+	with
+		hash_type	hash = (hashCPPMLDirect(*this)),
+		ImmutableTreeSet<Symbol> freeVariables = (this->computeFreeVariables()),
+		int depth = (this->computeDepth())
+	{
+	public:
+			ImmutableTreeSet<Symbol> computeFreeVariables(void) const;
+			int computeDepth() const;
+			
+			static	ApplyArgument	Normal(const Expression& expr);
+			
+			Expression expr(void) const;
+			bool isSymbol(const char* c) const;
+	}
+and
+	//a Pattern is an expression that matches some subset of FORA values.
+	//if it matches, it binds variables to pieces of the expression
+	Pattern =
+			//matches anything, and bind to varname (if not null)
+		-|	Anything of ()
+		
+			//applies the match to the type of the argument
+		-|	TypeMatch of PatternWithName typeMatch
+			
+			//calls s`(`Match, arg) and matches the result against 'pattern'
+		-|	ExpressionMatch of Expression s, TuplePattern pattern
+			
+			//matches if this is a tuple matching 'pattern'
+		-|	Tuple of TuplePattern pattern
+			
+			//matches if the argument is identical to the evaluation of
+			//value
+		-|	Constant of Expression value
+			
+			//checks 'left' and then 'right'. the two patterns must match
+			//exactly the same variables
+		-|	MatchEither of Pattern left, Pattern right
+			
+			//checks both 'left' and 'right'.  Variables bound in
+			//'right' and 'left' must be disjoint
+		-|	MatchBoth of Pattern left, Pattern right
+	with
+		hash_type hash = (hashCPPMLDirect(*this)),
+		ImmutableTreeSet<Symbol> freeVariables=(this->computeFreeVariables()),
+		ImmutableTreeSet<Symbol> boundVariables=(this->computeBoundVariables()),
+		int depth = (this->computeDepth())
+	{
+	public:
+			int computeDepth() const;
+			ImmutableTreeSet<Symbol> computeFreeVariables(void) const;
+			ImmutableTreeSet<Symbol> computeBoundVariables(void) const;
+
+			static Pattern Constant(const CSTValue& inValue);
+	}
+and
+	//a tuple pattern only matches Tuple objects (and can only be applied when
+	//we can guarantee that it's in a Tuple context). Each TuplePatternElement
+	//may match one value, no values, or all the remaining values if it's a
+	//VarArgs. There can only be one VarArgs in the tuple pattern
+	TuplePattern = ImmutableTreeVector<TuplePatternElement> matchers
+	{
+	public:
+			ImmutableTreeSet<Symbol> freeVariables(void) const;
+			ImmutableTreeSet<Symbol> boundVariables(void) const;
+			int depth() const;
+			
+			size_t size(void) const
+				{
+				return matchers().size();
+				}
+			const TuplePatternElement& operator[](size_t ix) const
+				{
+				return matchers()[ix];
+				}
+	}
+and
+	PatternWithName = Pattern pattern, Nullable<Symbol> name, 
+			Nullable<Expression> condition, 
+			ExpressionLocationMetadata locationMetadata
+	{
+	public:
+			Nullable<CodeLocationId> codeLocationIdOrNull(void) const;
+			int depth() const;
+			ImmutableTreeSet<Symbol> freeVariables(void) const;
+			ImmutableTreeSet<Symbol> boundVariables(void) const;
+			hash_type	hash() const 
+				{
+				return hashCPPMLDirect(*this);
+				}
+
+			static PatternWithName Anything(Nullable<Symbol> name);
+			static PatternWithName Constant(const CSTValue& val);
+	}
+and
+	//matches zero, one, or all of the remaining terms in a tuple pattern
+	TuplePatternElement =
+			//matches 'match'. If no value can be found, evaluates to
+			//'defaultValue' which has all patterns to the left in scope
+			//if 'name' is not Null, this binds to a named struct value
+			//and pops it off the structure from 
+		-|	Normal of 	Nullable<Symbol> fieldName,
+						PatternWithName match,
+						Nullable<Expression> defaultValue
+			//matches all remaining unmatched terms. there can be only
+			//one of these per match expression
+		-|	VarArgs of Nullable<Symbol> varname
+	with
+		hash_type	hash = (hashCPPMLDirect(*this)),
+		ImmutableTreeSet<Symbol> freeVariables = (this->computeFreeVariables()),
+		ImmutableTreeSet<Symbol> boundVariables = (this->computeBoundVariables()),
+		int depth = (this->computeDepth())
+	{
+	public:
+			int computeDepth() const;
+			static TuplePatternElement	Normal(const PatternWithName& match);
+			ImmutableTreeSet<Symbol> computeFreeVariables(void) const;
+			ImmutableTreeSet<Symbol> computeBoundVariables(void) const;
+	}
+and
+	//a sequence of TuplePattern matches, along with predicate expressions
+	//Empty doesn't match anything, and behaviour is dependent on context.
+	//If Term doesn't match, it passes control to 'otherwise'
+	Function =
+			Empty of ()
+		-|	Term of TuplePattern pattern, Expression result, Function otherwise
+	with
+		ExpressionLocationMetadata locationMetadata,
+		hash_type	hash = (hashCPPMLDirect(*this)),
+		ImmutableTreeSet<Symbol> freeVariables = (this->computeFreeVariables()),
+		int depth = (this->computeDepth())
+	{
+	public:
+			//produces a simple function with only one term
+			static Function SingleTermFunction(ImmutableTreeVector<Symbol> vars,
+												Nullable<Symbol> varArgs,
+												Expression body
+												);			
+			//return a copy of the function in which each free variable
+			//(across all terms in the function) has been bound as a variable
+			//in each term
+			Function	withFreeAsArgs(void) const;
+			
+			ImmutableTreeSet<Symbol> computeFreeVariables(void) const;
+			
+			int computeDepth() const;
+			
+			Function 	prependArgs(
+						const ImmutableTreeVector<TuplePatternElement>& terms,
+						uint32_t offset = 0) const;
+	}
+and
+	//represents the 'body' of an object
+	ObjectDefinitionTerm =
+			//matches a "member" access of depth 'depth' as an expression
+			//invoked as .membername or ..membername depending on depth
+		-|	Member of 	Symbol membername,
+						Expression expr,
+						uint32_t depth
+		
+		-|	MatchFilter of Function fun
+		
+		-|	Filter of Function fun
+		
+			//matches a "Call" operation
+			//invoked as operator()(pat){expr}
+		-|	Call of Function fun
+		
+			//matches a conversion request. invoked as convert(pat) {}
+		-|	Convert of Function fun
+		
+			//matches a binary operator. invoked as operator op(pat) {}
+		-|	Operator of Symbol op, Function fun
+		
+			//matches a binary operator applied in reverse.
+			//invoked as reverse operator op(pat) {}
+			//this happens when we do a op b and 'a' decides that 'b' has
+			//to handle it for some reason
+		-|	ReverseOperator of Symbol op, Function fun
+		
+			//matches a left unary operator. "left operator op(pat) {}"
+		-|	LeftOperator of Symbol op, Function fun
+		
+			//matches a right unary operator. "right operator op(pat) {}"
+		-|	RightOperator of Symbol op, Function fun
+		
+			//matches a "GetItem" operation
+			//invoked as operator[](pat){expr}
+		-|	GetItem of Function fun
+			
+			//matches a "SetItem" operation. Last argument is the assigned value
+			//invoked as operator[]=(pat){expr}
+		-|	SetItem of Function fun
+
+			//matches an "Iter" operation, which returns the object's iterator
+		-|	Iter of Function fun
+
+			//matches a "Next" operation, which, applied to an iterator-object,
+			//returns a pair containing the next element and an advanced iterator
+			//(for the given arguments)
+		-|	Next of Function fun
+
+			//mixin the methods of the class given by 'classExpr'. 
+			//if 'classExpr' is not a class, an exception will be thrown when the object
+			//is bound
+		-|	Mixin of Expression e
+		
+			//matches anything - the whole argstack is passed to it
+		-|	Anything of Function fun
+	with
+		ImmutableTreeSet<Symbol> freeVariablesInObjectScope = (this->computeFreeVariables(true)),
+		ImmutableTreeSet<Symbol> freeVariablesNotInObjectScope = (this->computeFreeVariables(false)),
+		int depth = (this->computeDepth())
+	{
+	public:
+		ImmutableTreeSet<Symbol> freeVariables(bool inObjectScope) const;
+		ImmutableTreeSet<Symbol> computeFreeVariables(bool inObjectScope) const;
+
+		//does this term evaluate within the object scope?
+		bool isInObjectScope(void) const;
+		int computeDepth() const;
+	}
+and
+    ObjectDefinitionTermWithMetadata = 
+	    ObjectDefinitionTerm objectDefinitionTerm, CSTValue meta
+	{
+	public:
+			int depth() const { return objectDefinitionTerm().depth(); }
+	}
+and
+	ObjectDefinitionBody =
+			Empty of ()
+		-|	Term of
+				ObjectDefinitionTermWithMetadata termWithMetadata,
+				ObjectDefinitionBody otherwise
+	with
+		hash_type	hash = (hashCPPMLDirect(*this)),
+		ImmutableTreeSet<Symbol> freeVariablesInObjectScope = (this->computeFreeVariables(true)),
+		ImmutableTreeSet<Symbol> freeVariablesNotInObjectScope = (this->computeFreeVariables(false)),
+		ImmutableTreeSet<Symbol> members = (this->computeMembers()),
+		int depth = (this->computeDepth())
+	{
+	public:
+			ImmutableTreeSet<Symbol> freeVariables(bool inObjectScope) const;
+			ImmutableTreeSet<Symbol> computeFreeVariables(bool inObjectScope) const;
+			int computeDepth() const;
+			ImmutableTreeSet<Symbol> computeMembers() const;
+	}
+and
+	ObjectDefinition =
+			ObjectDefinitionBody			body,
+			Nullable<Symbol> 				selfName,
+			ExpressionLocationMetadata		locationMetadata
+	{
+	public:
+			ImmutableTreeSet<Symbol> freeVariables() const;
+			int depth() const;
+	}
+and
+	ClassDefinitionTerm = 
+			//defines a variable that all instances of the class share
+		-|	DataMember of Symbol membername
+
+			//create a constructor - If no constructor is present
+			//in the class object, then we generate a default constructor that
+			//takes either named arguments or a list of arguments in the order
+			//that the data members are presented
+		-|	Constructor of Function fun
+
+			//creates a method that's defined on the class object only
+		-|	Static of ObjectDefinitionTerm term
+
+			//this is a method in the object itself
+		-|	ObjectTerm of ObjectDefinitionTerm term
+    with
+        int depth = (this->computeDepth())
+	{
+	public:
+		//does this produce code at the static level? false
+		//if this is an instance-level function
+		bool isStaticLevel(void) const;
+
+		//does this term evaluate within the object scope?
+		bool isInObjectScope(void) const;
+
+		ImmutableTreeSet<Symbol> freeVariables(bool inObjectScope, bool inStaticLayer) const;
+        int computeDepth() const;
+	}
+and
+    ClassDefinitionTermWithMetadata = 
+	    ClassDefinitionTerm classDefinitionTerm, 
+	    CSTValue meta
+	{
+	public:
+			int depth() const { return classDefinitionTerm().depth(); }
+	}
+and
+	ClassDefinitionBody =
+			Empty of ()
+		-|	Term of
+				ClassDefinitionTermWithMetadata termWithMetadata,
+				ClassDefinitionBody otherwise
+	with
+		hash_type	hash = (hashCPPMLDirect(*this)),
+		ImmutableTreeSet<Symbol> allMembers = (this->computeAllMembers()),
+		ImmutableTreeVector<Symbol> allDataMembersInDeclarationOrder = 
+			(this->computeAllDataMembersInDeclarationOrder()),
+		ImmutableTreeSet<Symbol> staticMembers = (this->computeStaticMembers()),
+		int depth = (this->computeDepth())
+	{
+	public:
+			ImmutableTreeSet<Symbol> computeFreeVariables(
+								bool inObjectScope,
+								bool inStaticLayer
+								) const;
+
+			ImmutableTreeSet<Symbol> computeAllMembers() const;
+			ImmutableTreeVector<Symbol> computeAllDataMembersInDeclarationOrder() const;
+			ImmutableTreeSet<Symbol> computeStaticMembers() const;
+			int computeDepth() const;
+	}
+and
+	ClassDefinition =
+			ClassDefinitionBody				body,
+			Nullable<Symbol> 				className,
+			Nullable<Symbol> 				selfName,
+			ExpressionLocationMetadata		locationMetadata
+	{
+	public:
+			ImmutableTreeSet<Symbol> freeVariables() const;
+			int depth() const;
+	}
+	;
+
+ApplySignature	getSignature(
+				const ImmutableTreeVector<ApplyArgument>& inArgs
+				);
+
+ApplyArgumentSignature	getSignature(const ApplyArgument& inArgs);
+	
+
+//return a set of all variables used in any place within the Function or Expression
+//used to find unique names
+ImmutableTreeSet<Symbol>					mentionedVariables(const Function& f);
+ImmutableTreeSet<Symbol>					mentionedVariables(const Expression& e);
+
+macro_defineCppmlComparisonOperators(Function)
+
+//defined in Parser.tab.cppml
+bool isOperatorCharacter(char c);
+
+ImmutableTreeVector<ApplyArgument> operator+(
+					const ImmutableTreeVector<Expression>& args,
+					const ApplyArgument& arg
+					);
+ImmutableTreeVector<ApplyArgument> operator+(
+					const ImmutableTreeVector<Expression>& args, 
+					const ImmutableTreeVector<ApplyArgument>& args2
+					);
+ImmutableTreeVector<ApplyArgument> operator+(
+					const ImmutableTreeVector<ApplyArgument>& args, 
+					const ImmutableTreeVector<Expression>& args2
+					);
+ImmutableTreeVector<ApplyArgument> operator+(
+					const ImmutableTreeVector<ApplyArgument>& args, 
+					const Expression& arg
+					);
+ImmutableTreeVector<TuplePatternElement> operator+(
+					const ImmutableTreeVector<TuplePatternElement>& args, 
+					const Symbol& arg
+					);
+ImmutableTreeVector<TuplePatternElement> operator+(
+					const Symbol& arg, 
+					const ImmutableTreeVector<TuplePatternElement>& args
+					);
+
+Symbol	freshVarname(string base, const ImmutableTreeSet<Symbol>& inSymbols);
+
+Symbol	freshVarname(Symbol base, const ImmutableTreeSet<Symbol>& inSymbols);
+
+//append Function as "List" objects
+Function operator+(const Function& lhs, const Function& rhs);
+
+//append ObjectDefinition as "List" objects
+ObjectDefinitionBody operator+(	const ObjectDefinitionBody& lhs,
+								const ObjectDefinitionBody& rhs
+								);
+
+//append ClassDefinition as "List" objects
+ClassDefinitionBody operator+(	const ClassDefinitionBody& lhs,
+								const ClassDefinitionBody& rhs
+								);
+
+template<class T>
+ImmutableTreeSet<Symbol> freeVariables(const T& in)
+	{
+	ImmutableTreeSet<Symbol> result;
+
+	for (auto val: in)
+		result = result + val.freeVariables();
+
+	return result;
+	}
+
+template<>
+class CPPMLPrettyPrint<Expression> {
+public:
+	static void prettyPrint(CPPMLPrettyPrintStream& s,
+							const Expression& t);
+};
+
+template<>
+class CPPMLPrettyPrint<TuplePattern> {
+public:
+	static void prettyPrint(CPPMLPrettyPrintStream& s,
+							const TuplePattern& t);
+};
+
+#endif
+

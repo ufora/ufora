@@ -1,0 +1,110 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "PageId.hppml"
+#include "../TypedFora/ABI/BigVectorPageLayout.hppml"
+#include "../../core/containers/TwoWaySetMap.hpp"
+#include <map>
+#include <boost/bind.hpp>
+
+/*******************
+
+UnrealizedSyntheticPages
+
+A small state-machine to determine when we have enough information to realize
+a synthetic page.
+
+*******************/
+
+class UnrealizedSyntheticPages {
+public:
+	UnrealizedSyntheticPages(
+				boost::function<bool (Fora::PageId)> inHasPage,
+				boost::function<void (Fora::PageId, TypedFora::Abi::BigVectorPageLayout)> inTriggerPage
+				) : 
+			mHasPage(inHasPage),
+			mTriggerPage(inTriggerPage)
+		{
+		}
+
+	void addPage(Fora::PageId inPage)
+		{
+		std::set<Fora::PageId> toTrigger;
+
+		for (auto sourcePage: mSyntheticPageDefinitions.getKeys(inPage))
+			{
+			mSyntheticPageDefinitionsWaiting.drop(sourcePage, inPage);
+			if (!mSyntheticPageDefinitionsWaiting.hasKey(sourcePage))
+				toTrigger.insert(sourcePage);
+			}
+		
+		for (auto p: toTrigger)
+			{
+			mTriggerPage(p, mSyntheticPageLayouts[p]);
+			syntheticPageRealized(inPage);
+			}
+		}
+
+	void dropPage(Fora::PageId inPage)
+		{
+		for (auto sourcePage: mSyntheticPageDefinitions.getKeys(inPage))
+			mSyntheticPageDefinitionsWaiting.insert(sourcePage, inPage);
+		}
+
+	void registerSyntheticPage(Fora::PageId inPage, const TypedFora::Abi::BigVectorPageLayout& inLayout)
+		{
+		if (mSyntheticPagesRealized.find(inPage) != mSyntheticPagesRealized.end() || mHasPage(inPage))
+			return;
+
+		mSyntheticPageLayouts[inPage] = inLayout;
+
+		for (auto page: inLayout.getPagesReferenced())
+			{
+			mSyntheticPageDefinitions.insert(inPage, page);
+			if (!mHasPage(page))
+				mSyntheticPageDefinitionsWaiting.insert(inPage, page);
+			}
+
+		if (!mSyntheticPageDefinitionsWaiting.hasKey(inPage))
+			{
+			mTriggerPage(inPage, inLayout);
+			syntheticPageRealized(inPage);
+			}
+		}
+
+	void syntheticPageRealized(Fora::PageId inPage)
+		{
+		mSyntheticPagesRealized.insert(inPage);
+
+		mSyntheticPageDefinitionsWaiting.dropKey(inPage);
+		mSyntheticPageDefinitions.dropKey(inPage);
+		mSyntheticPageLayouts.erase(inPage);
+		}
+
+private:
+	boost::function<bool (Fora::PageId)> mHasPage;
+
+	boost::function<void (Fora::PageId, TypedFora::Abi::BigVectorPageLayout)> mTriggerPage;
+
+	TwoWaySetMap<Fora::PageId, Fora::PageId> mSyntheticPageDefinitions;
+
+	TwoWaySetMap<Fora::PageId, Fora::PageId> mSyntheticPageDefinitionsWaiting;
+
+	std::set<Fora::PageId> mSyntheticPagesRealized;
+
+	std::map<Fora::PageId, TypedFora::Abi::BigVectorPageLayout> mSyntheticPageLayouts;
+};

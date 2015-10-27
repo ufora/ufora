@@ -1,0 +1,355 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Axioms.hppml"
+#include "Axiom.hppml"
+#include "AxiomGroup.hppml"
+#include "LibcallAxiomGroup.hppml"
+#include <boost/lexical_cast.hpp>
+#include "../Runtime.hppml"
+#include "../../core/SymbolExport.hpp"
+
+using namespace Fora;
+
+extern "C" {
+
+// Returns an empty dictionary as an ImplVal.
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer> FORA_clib_makeEmptyDictionary()
+	{
+	return slot0(ImplValContainer(Dictionary(), false));
+	}
+
+// Returns a dictionary value given a key.
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer, ImplValContainer> FORA_clib_getDictionaryItem(
+						const ImplValContainer& dict,
+						const ImplValContainer& key
+						)
+	{
+	if (!key.isCST())
+		{
+		return slot1(
+			ImplValContainer(
+				CSTValue("key wasn't cst, that's not allowed")
+				)
+			);
+		}
+	
+	// The preferred way to produce the CSTValue from the key ImplVal given.
+	CSTValue keyVal(key);
+	
+	// dict.cast<Dictionary> gets the Dictionary as a Nullable<const ref>.
+	// This extracts the value, which is an ImplValContainer.
+	Nullable<const ImplValContainer&> ivc = dict.cast<Dictionary>()[keyVal];
+	
+	// If it's null(), the Dictionary (actually, the ImmutableTreeMap),
+	// couldn't find the key.
+	if (ivc.isNull())
+		{
+		return slot1(
+			ImplValContainer(
+				CSTValue("key not found")
+				)
+			);
+		}
+
+	return slot0(*ivc);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer, ImplValContainer> FORA_clib_addPairToDictionary(
+						const ImplValContainer& dict,
+						const ImplValContainer& key,
+						const ImplValContainer& value
+						)
+	{
+	if (!key.isCST())
+		{
+		return slot1(
+			ImplValContainer( 
+				CSTValue("key wasn't cst, that's not allowed")
+				)
+			);
+		}
+	
+	bool newDictIsCST = 
+		dict.isCST() && value.isCST();
+	
+	return slot0(
+		ImplValContainer(
+			dict.cast<Dictionary>().addKeyValue(
+				CSTValue(key), 
+				ImplValContainer(value)
+				),
+			newDictIsCST
+			)
+		);
+	}
+
+// Adds two dictionaries together to produce a new dictionary. The dictionary
+// implementation automatically takes care of duplicate keys.
+// Should always succeed
+//
+// e.g. {`a:1} + {`b:2} => {`a:1, `b:2}
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer> FORA_clib_addDictionaryToDictionary(
+		const ImplValContainer& dict, 
+		const ImplValContainer& dict2
+		)
+	{
+	bool newDictIsCST = 
+		dict.isCST() && dict2.isCST();
+	
+	// placement new into the ImplVal.
+	return slot0(
+		ImplValContainer(
+			dict.cast<Dictionary>().addDictionary(dict2.cast<Dictionary>()),
+			newDictIsCST
+			)
+		);
+	}
+
+BSA_DLLEXPORT
+int64_t FORA_clib_dictionarySize(const ImplValContainer& dict)
+	{
+	return dict.cast<Dictionary>().size();
+	}
+
+// Return a Tuple of the pair at the given index, since our Dictionaries
+// are indexed. Essentially the inverse of addPairToDictionary.
+// 
+// e.g. {a`:1}.pair_at(0) -> (`a, 1)
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer, ImplValContainer> FORA_clib_getPairAtIndex(
+		const ImplValContainer& dict, 
+		int64_t ix
+		)
+	{
+	int64_t index = ix;
+	
+	// Acceptable range is [-size, size)
+	if (index >= dict.cast<Dictionary>().size())
+		{
+		return slot1(
+			ImplValContainer(
+				CSTValue("index out of range").getReference().duplicate()
+				)
+			);
+		}
+	
+	// Allow negative indices, but only to [-size, -1], like Python lists.
+	if (ix < 0)
+		{
+		index += dict.cast<Dictionary>().size();
+		}
+	if (index < 0)
+		{
+		return slot1(
+			ImplValContainer(
+				CSTValue("index out of range").getReference().duplicate()
+				)
+			);
+		}
+	
+	// Just get the pair<CSTValue, ImplValContainer> from the Dictionary object.
+	dict_pair_type pair = dict.cast<Dictionary>().pairAtPosition(index);
+	
+	return slot0(
+		ImplValContainer(
+			emptyTreeVec()
+			+ ImplValContainer(pair.first)
+			+ pair.second // which is already an ImplValContainer
+			)
+		);
+	}
+
+// Return a new Dictionary after removing the pair indexed by the given key.
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer, ImplValContainer> FORA_clib_removePairByKey(
+		const ImplValContainer& dict, 
+		const ImplValContainer& key
+		)
+	{
+	if (!key.isCST())
+		{
+		return slot1(
+			ImplValContainer(
+				CSTValue("key wasn't cst, that's not allowed")
+				)
+			);
+		}
+	
+	CSTValue keyVal(key);
+	
+	if (!dict.cast<Dictionary>().hasKey(keyVal))
+		{
+		return slot1(
+			ImplValContainer(
+				CSTValue("key not found")
+				)
+			);
+		}
+	
+	bool newDictIsCST = dict.isCST();
+	
+	return slot0(
+		ImplValContainer(
+			dict.cast<Dictionary>().removePairByKey(keyVal),
+			newDictIsCST
+			)
+		);
+	}
+
+BSA_DLLEXPORT
+bool FORA_clib_hasKey(const ImplValContainer& dict, const ImplValContainer& key)
+	{
+	if (!key.isCST())
+		{
+		return false;
+		}
+	
+	return dict.cast<Dictionary>().hasKey(CSTValue(key));
+	}
+
+} // end extern "C"
+
+class DictionaryAxioms {
+public:
+		DictionaryAxioms()
+			{
+			AxiomGroups("Dictionary") +=
+				LibcallAxiomGroup::create(
+					JOVT() + 
+						"MakeDictionary" + 
+						"Call" + 
+						JOVTE::NoExtras(),
+					ReturnSlots() + 
+					JudgmentOnValue::Dictionary(
+						JudgmentOnValueDictionary::Unknown()
+						), // JOA of the result
+					&FORA_clib_makeEmptyDictionary, 
+					emptyTreeVec()
+					)
+				;
+			
+			AxiomGroups("Dictionary") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						jovAnyDictionary() +
+						"GetItem" +
+						JOV() +
+						JOVTE::NoExtras(),
+					ReturnSlots() +
+						ReturnSlot::Normal(JOV()) +
+						ReturnSlot::Exception(JOV()),
+					&FORA_clib_getDictionaryItem,
+					ImmutableTreeVector<uword_t>() + 0 + 2
+					)
+				;
+			
+			AxiomGroups("Dictionary") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						jovAnyDictionary() +
+						"AddPair" +
+						JOV() +
+						JOV(),
+					ReturnSlots() +
+						ReturnSlot::Normal(jovAnyDictionary()) +
+						ReturnSlot::Exception(JOV()),
+					&FORA_clib_addPairToDictionary,
+					ImmutableTreeVector<uword_t>() + 0 + 2 + 3
+					)
+				;
+			
+			AxiomGroups("Dictionary") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						jovAnyDictionary() +
+						"Operator" +
+						"+" +
+						JudgmentOnValue::Dictionary(
+							JudgmentOnValueDictionary::Unknown()
+							)
+						,
+					ReturnSlots() + jovAnyDictionary(),
+					&FORA_clib_addDictionaryToDictionary,
+					ImmutableTreeVector<uword_t>() + 0 + 3
+					)
+				;
+			
+			AxiomGroups("Dictionary") +=
+				LibcallAxiomGroup::create(
+					JOVT() + 
+					 	"size" + 
+					 	"Call" + 
+						jovAnyDictionary() +
+						JOVTE::NoExtras(),
+					ReturnSlots() + JOV::OfType(Type::Integer(64, true)),
+					&FORA_clib_dictionarySize,
+					ImmutableTreeVector<uword_t>() + 2
+					)
+				;
+			
+			AxiomGroups("Dictionary") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						jovAnyDictionary() +
+						"GetPairAtIndex" +
+						OfType(Type::Integer(64, true)) +
+						JOVTE::NoExtras(),
+					ReturnSlots() + 
+						ReturnSlot::Normal(JOV()) +
+						ReturnSlot::Exception(JOV()),
+					&FORA_clib_getPairAtIndex,
+					ImmutableTreeVector<uword_t>() + 0 + 2
+					)	
+				;
+			
+			AxiomGroups("Dictionary") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						jovAnyDictionary() +
+						"RemovePairByKey" +
+						JOV() + 
+						JOVTE::NoExtras(),
+					ReturnSlots() + 
+						ReturnSlot::Normal(jovAnyDictionary()) +
+						ReturnSlot::Exception(JOV()),
+					&FORA_clib_removePairByKey,
+					ImmutableTreeVector<uword_t>() + 0 + 2
+					)
+				;
+			
+			AxiomGroups("Dictionary") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						jovAnyDictionary() + 
+						"HasKey" +
+						JOV() +
+						JOVTE::NoExtras(),
+					ReturnSlots() + JOV::OfType(Type::Integer(1, false)), 
+					&FORA_clib_hasKey,
+					ImmutableTreeVector<uword_t>() + 0 + 2
+					)
+				;
+			}
+			
+			
+};
+
+DictionaryAxioms dictionaryAxioms;
+

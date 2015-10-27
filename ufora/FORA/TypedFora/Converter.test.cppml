@@ -1,0 +1,702 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Converter.hppml"
+#include "../../core/UnitTest.hpp"
+#include "../Native/NativeCFGTransforms/Transforms.hppml"
+#include "ExpressionConversionContext.hppml"
+#include "TypedForaUtil.hppml"
+#include "ABI/NativeLayoutType.hppml"
+
+#include "../Native/NativeCFGTransforms/Transforms.hppml"
+#include "../Native/NativeCFGTransforms/EliminateOverlappingRefcounts.hppml"
+
+using namespace TypedFora::Abi;
+
+namespace {
+
+TypedFora::Type stringTypeOwned()
+	{
+	JOV jov = JOV::OfType(::Type::String());
+	TypedFora::Type stringType(jov, TypedFora::RefcountStyle::AsValueOwned());
+	
+	return stringType;
+	}
+
+TypedFora::Type stringTypeUnowned()
+	{
+	JOV jov = JOV::OfType(::Type::String());
+	TypedFora::Type stringType(jov, TypedFora::RefcountStyle::AsValueUnowned());
+
+	return stringType;
+	}
+
+TypedFora::ResultSignature simpleResultSignature(const TypedFora::Type& inType)
+	{
+	return TypedFora::ResultSignature(
+				emptyTreeVec() + inType,
+				emptyTreeVec(),
+				false
+				);
+	}
+
+NativeExpression convertToNativeExpression(
+							const TypedFora::Expression& inTypedExpr,
+							const TypedFora::Type& inTargetType
+							)
+	{
+	ImmutableTreeSet<TypedFora::Variable> vars = inTypedExpr.freeVariables();
+
+	TypedFora::ExpressionConversionContext context;
+
+
+	for (long k = 0; k < vars.size();k++)
+		context = context.withNewStackVariable(
+			vars[k],
+			NativeVariable::Temp(
+				nativeTypeForForaType(vars[k].type())
+				)
+			);
+
+	context = context
+		.withNewBlockContext(simpleResultSignature(stringTypeOwned()), emptyTreeMap());
+
+	TypedFora::Converter converter;
+	
+	ImmutableTreeSet<TypedFora::Variable> emptyVarSet;
+
+	NativeExpression expr = 
+		converter.convertExpression(
+			inTypedExpr,
+			context,
+			null() << inTargetType,
+			emptyVarSet
+			);
+
+	return expr;
+	}
+
+void verifyNativeExpressionsAreEqual(
+				const NativeExpression& inExpr,
+				const NativeExpression& inExpr2,
+				std::string message
+				)
+	{
+	NativeExpression expr = inExpr;
+	NativeExpression expr2 = inExpr2;
+	
+	for (long k = 0; k < 10;k++)
+		{
+		expr = NativeCFGTransforms::cleanupAndSimplify(expr);
+		expr = NativeCFGTransforms::eliminateOverlappingRefcounts(expr);
+		expr = NativeCFGTransforms::renameVariables(expr, 0);
+
+		expr2 = NativeCFGTransforms::cleanupAndSimplify(expr2);
+		expr2 = NativeCFGTransforms::eliminateOverlappingRefcounts(expr2);
+		expr2 = NativeCFGTransforms::renameVariables(expr2, 0);
+		}
+	
+	BOOST_CHECK_MESSAGE(cppmlCmp(expr, expr2) == 0, 
+		message << ": " << prettyPrintString(expr) << " != " << prettyPrintString(expr2)
+		);
+	}
+
+void verifyExpressionsAreEqual(
+				const TypedFora::Expression& inTypedExpr,
+				const TypedFora::Expression& inTypedExpr2,
+				const TypedFora::Type& targetType
+				)
+	{
+	NativeExpression expr = convertToNativeExpression(inTypedExpr, targetType);
+	NativeExpression expr2 = convertToNativeExpression(inTypedExpr2, targetType);
+	
+	for (long k = 0; k < 10;k++)
+		{
+		expr = NativeCFGTransforms::cleanupAndSimplify(expr);
+		expr = NativeCFGTransforms::eliminateOverlappingRefcounts(expr);
+		expr = NativeCFGTransforms::renameVariables(expr, 0);
+
+		expr2 = NativeCFGTransforms::cleanupAndSimplify(expr2);
+		expr2 = NativeCFGTransforms::eliminateOverlappingRefcounts(expr2);
+		expr2 = NativeCFGTransforms::renameVariables(expr2, 0);
+		}
+	
+	BOOST_CHECK_MESSAGE(cppmlCmp(expr, expr2) == 0,
+		prettyPrintString(inTypedExpr) << "\n\t==\n" << prettyPrintString(expr) << "\n\nwhile\n\n" <<
+		prettyPrintString(inTypedExpr2) << "\n\t==\n" << prettyPrintString(expr2) << "\n\n"
+		);
+	}
+
+void verifyExpressionIsANoOp(const TypedFora::Expression& inTypedExpr)
+	{
+	return verifyExpressionsAreEqual(
+		TypedFora::Expression::DiscardFirst(
+			inTypedExpr,
+			TypedFora::Expression::Constant(CSTValue())
+			),
+		TypedFora::Expression::Constant(CSTValue()),
+		*TypedFora::Expression::Constant(CSTValue()).type()
+		);
+	}
+
+TypedFora::Callable wrapExpressionAsCallable(
+										const TypedFora::Variable& var, 
+										const TypedFora::Expression& body
+										)
+	{
+	using namespace TypedFora;
+
+	return 
+		Callable::Graph(
+			ResultSignature(
+				emptyTreeVec() + TypedFora::Type(body.type()->jov(), RefcountStyle::AsValueOwned()),
+				emptyTreeVec(),
+				false
+				),
+			ImmutableTreeMap<BlockID, Block>() + 
+				BlockID::entry() + 
+				Block(
+					emptyTreeVec() + var,
+					Expression::Return(false, body),
+					1.0
+					)
+			);
+	}
+
+TypedFora::Callable createCallableTakingAndReturningUnowned(const JOV& inJov)
+	{
+	using namespace TypedFora;
+
+	Variable var = Variable::Temp(TypedFora::Type(inJov, RefcountStyle::AsValueUnowned()));
+
+	return 
+		Callable::Graph(
+			ResultSignature(
+				emptyTreeVec() + var.type(),
+				emptyTreeVec(),
+				false
+				),
+			ImmutableTreeMap<BlockID, Block>() + 
+				BlockID::entry() + 
+				Block(
+					emptyTreeVec() + var,
+					Expression::Return(false, var.expr()),
+					1.0
+					)
+			);
+	}
+
+
+TypedFora::Callable createCallableTakingAndReturningOwned(const JOV& inJov)
+	{
+	using namespace TypedFora;
+
+	Variable var = Variable::Temp(TypedFora::Type(inJov, RefcountStyle::AsValueOwned()));
+
+	return 
+		Callable::Graph(
+			ResultSignature(
+				emptyTreeVec() + var.type(),
+				emptyTreeVec(),
+				false
+				),
+			ImmutableTreeMap<BlockID, Block>() + 
+				BlockID::entry() + 
+				Block(
+					emptyTreeVec() + var,
+					Expression::Return(false, var.expr()),
+					1.0
+					)
+			);
+	}
+
+TypedFora::Callable createAnOwnedStringNativeFun()
+	{
+	using namespace TypedFora;
+
+	return TypedFora::Callable::NativeOperation(
+		ResultSignature(
+			emptyTreeVec() + stringTypeOwned(),
+			emptyTreeVec(),
+			false
+			),
+		emptyTreeMap() + 
+			BlockID::entry() + 
+			ImmutableTreeVector<TypedFora::Type>(),
+		CPPMLOpaqueHandle<NativeCFG>(
+			NativeCFG(
+				emptyTreeVec() + NativeVariable::Temp(NativeTypeFor<NativeRuntimeCallbacks>::get().ptr()),
+				NativeExpression::CallLibraryFunction(
+					"dummyCreatesAStringLibfun", 
+					nativeTypeForForaType(stringTypeOwned()),
+					emptyTreeVec()
+					)
+				)
+			)
+		);
+	}
+
+TypedFora::Callable duplicateAnUnownedStringNativeFun()
+	{
+	using namespace TypedFora;
+
+	NativeVariable var = NativeVariable::Temp(nativeTypeForForaType(stringTypeOwned()));
+
+	return TypedFora::Callable::NativeOperation(
+		ResultSignature(
+			emptyTreeVec() + stringTypeOwned(),
+			emptyTreeVec(),
+			false
+			),
+		emptyTreeMap() + 
+			BlockID::entry() + 
+			(ImmutableTreeVector<TypedFora::Type>() + stringTypeUnowned()),
+		CPPMLOpaqueHandle<NativeCFG>(
+			NativeCFG(
+				emptyTreeVec() + 
+					NativeVariable::Temp(NativeTypeFor<NativeRuntimeCallbacks>::get().ptr()) + 
+					var,
+				NativeExpression::CallLibraryFunction(
+					"dummyDuplicatesAStringLibfun", 
+					nativeTypeForForaType(stringTypeOwned()),
+					emptyTreeVec() + var.expr()
+					)
+				)
+			)
+		);
+	}
+
+TypedFora::Expression callCallableWithExpressionsAndOwnedContinuation(
+									const TypedFora::Callable& inCallable,
+									const ImmutableTreeVector<TypedFora::Expression>& inExprs
+									)
+	{
+	using namespace TypedFora;
+	
+	Variable var3 = 
+		Variable::Temp(
+			TypedFora::Type(
+				inCallable.resultSignature()[0].first.jov(), 
+				RefcountStyle::AsValueOwned()
+				)
+			);
+	
+	return Expression::Call(
+		CallTarget::Subgraph(
+			inCallable,
+			BlockID::entry()
+			),
+		inExprs,
+		ContinuationFrame(
+			emptyTreeVec() + 
+				Continuation(
+					var3, 
+					var3.expr(),
+					null() << var3.type(),
+					1.0
+					)
+				,
+			emptyTreeVec()
+			),
+		emptyTreeVec()
+		);
+	}
+
+
+TypedFora::Expression callCallableWithExpressions(
+									const TypedFora::Callable& inCallable,
+									const ImmutableTreeVector<TypedFora::Expression>& inExprs
+									)
+	{
+	using namespace TypedFora;
+	
+	Variable var3 = Variable::Temp(inCallable.resultSignature()[0].first);
+	
+	return Expression::Call(
+		CallTarget::Subgraph(
+			inCallable,
+			BlockID::entry()
+			),
+		inExprs,
+		ContinuationFrame(
+			emptyTreeVec() + 
+				Continuation(
+					var3, 
+					var3.expr(),
+					null() << var3.type(),
+					1.0
+					)
+				,
+			emptyTreeVec()
+			),
+		emptyTreeVec()
+		);
+	}
+
+TypedFora::Expression callCallableWithExpression(
+									const TypedFora::Callable& inCallable,
+									const TypedFora::Expression& inExpr
+									)
+	{
+	return callCallableWithExpressions(inCallable, emptyTreeVec() + inExpr);
+	}
+
+
+TypedFora::Callable simpleCallGraph()
+	{
+	using namespace TypedFora;
+
+	Variable var = Variable::Temp(stringTypeOwned());
+
+	return wrapExpressionAsCallable(var, var.expr());
+	}
+
+TypedFora::Callable simpleCallGraphReturnsConstant()
+	{
+	using namespace TypedFora;
+
+	Variable var = Variable::Temp(stringTypeOwned());
+
+	return wrapExpressionAsCallable(var, Expression::Constant(CSTValue("HARO")));
+	}
+
+TypedFora::Callable simpleCallGraphWithJump()
+	{
+	using namespace TypedFora;
+
+	Variable var = Variable::Temp(stringTypeOwned());
+	Variable var2 = Variable::Temp(stringTypeOwned());
+	BlockID block = BlockID::internal();
+
+	return 
+		Callable::Graph(
+			simpleResultSignature(stringTypeOwned()),
+			ImmutableTreeMap<BlockID, Block>() + 
+				BlockID::entry() + 
+				Block(
+					emptyTreeVec() + var,
+					Expression::Jump(block, emptyTreeVec() + var.expr()),
+					1.0
+					) + 
+				block + 
+				Block(
+					emptyTreeVec() + var2,
+					Expression::Return(false, var2.expr()),
+					1.0
+					)
+			);
+	}
+
+void verifyConvertible(const TypedFora::Callable& inCallable)
+	{
+	TypedFora::Converter converter;
+
+	converter.convertCallable(inCallable);
+	}
+
+void verifyCallableIsANoOp(const TypedFora::Callable& inCallable)
+	{
+	verifyExpressionIsANoOp(
+		callCallableWithExpression(
+			inCallable,
+			TypedFora::Variable::Temp(
+				inCallable.callSignature(
+					TypedFora::BlockID::entry()
+					)[0]
+				).expr()
+			)
+		);
+	}
+
+}
+
+BOOST_AUTO_TEST_CASE( test_TypedFora_Converter_Let_Ordering )
+{
+	using namespace TypedFora;
+
+	Variable v1 = Variable::Temp(stringTypeOwned());
+	Variable v2 = Variable::Temp(stringTypeOwned());
+
+	Expression createAnOwnedStringExpr = 
+		callCallableWithExpressions(createAnOwnedStringNativeFun(), emptyTreeVec());
+
+	verifyExpressionsAreEqual(
+		createAnOwnedStringExpr,
+		Expression::Let(
+			v1, 
+			createAnOwnedStringExpr,
+			v1.expr()
+			),
+		stringTypeOwned()
+		);
+
+	verifyExpressionsAreEqual(
+		createAnOwnedStringExpr,
+		Expression::Let(
+			v1, 
+			Expression::Let(
+				v2, 
+				createAnOwnedStringExpr,
+				v2.expr()
+				),
+			v1.expr()
+			),
+		stringTypeOwned()
+		);
+}
+
+BOOST_AUTO_TEST_CASE( test_TypedFora_Converter_ReturnAndLet )
+{
+	using namespace TypedFora;
+
+	Variable v1 = Variable::Temp(stringTypeOwned());
+	Variable v2 = Variable::Temp(stringTypeOwned());
+
+	Expression createAnOwnedStringExpr = 
+		callCallableWithExpressions(createAnOwnedStringNativeFun(), emptyTreeVec());
+
+	verifyExpressionsAreEqual(
+		Expression::Return(false, createAnOwnedStringExpr),
+		Expression::Let(
+			v1, 
+			createAnOwnedStringExpr,
+			Expression::Return(false, v1.expr())
+			),
+		stringTypeOwned()
+		);
+}
+
+
+BOOST_AUTO_TEST_CASE( test_TypedFora_Converter_ContinuationAdaptationWorks )
+{
+	//call a function that returns its argument as a reference but pass a continuation
+	//that takes a value and verify it works correctly.
+
+	using namespace TypedFora;
+
+	Variable v1 = Variable::Temp(stringTypeOwned());
+	Variable v2 = Variable::Temp(stringTypeOwned());
+
+	Callable passthroughCallable = 
+		createCallableTakingAndReturningUnowned(stringTypeUnowned().jov());
+
+	Expression createAnOwnedStringExpr = 
+		callCallableWithExpressionsAndOwnedContinuation(
+			passthroughCallable, 
+			emptyTreeVec() + Expression::Constant(CSTValue("ASDF"))
+			);
+
+	verifyExpressionIsANoOp(createAnOwnedStringExpr);
+}
+/*
+BOOST_AUTO_TEST_CASE( test_TypedFora_Converter_CallInterpreterWithTuple )
+{
+	using namespace TypedFora;
+
+	Variable vTuple = Variable::Temp(TypedFora::Type(JOV(), RefcountStyle::AsValueOwned()));
+	Variable vUnowned = Variable::Temp(TypedFora::Type(JOV(), RefcountStyle::AsValueUnowned()));
+	Variable vTuple2 = Variable::Temp(TypedFora::Type(JOV(), RefcountStyle::AsValueOwned()));
+
+	Expression expr = 
+		Expression::Let(
+			vTuple,
+			Expression::MakeTuple(emptyTreeVec() + MakeTupleArgument::Normal(null(), vUnowned.expr())),
+			Expression::Call(
+				CallTarget::Subgraph(createCallableTakingAndReturningOwned(JOV()), BlockID::entry()),
+				emptyTreeVec() + vTuple.expr(),
+				ContinuationFrame(
+					emptyTreeVec() + 
+						simplePassthroughContinuation(vTuple.type()),
+					emptyTreeVec() + 
+						simplePassthroughContinuation(vTuple.type())
+					),
+				emptyTreeVec()
+				)
+			);
+
+	verifyExpressionIsANoOp(expr);
+}
+
+BOOST_AUTO_TEST_CASE( test_TypedFora_Converter_LetWithOwned )
+{
+	using namespace TypedFora;
+
+	Variable vInput = Variable::Temp(stringTypeUnowned());
+	Variable vOwned1 = Variable::Temp(stringTypeOwned());
+	Variable vOwned2 = Variable::Temp(stringTypeOwned());
+
+	Expression expr = 
+		Expression::Let(
+			vOwned1,
+			callCallableWithExpressionsAndOwnedContinuation(
+				duplicateAnUnownedStringNativeFun(),
+				emptyTreeVec() + vInput.expr()
+				),
+			Expression::Let(
+				vOwned2,
+				callCallableWithExpressionsAndOwnedContinuation(
+					duplicateAnUnownedStringNativeFun(),
+					emptyTreeVec() + vOwned1.expr()
+					),
+				vOwned2.expr()
+				)
+			);
+
+	verifyExpressionIsANoOp(expr);
+}
+
+BOOST_AUTO_TEST_CASE( test_TypedFora_Converter_CallKeepsArgumentsAlive )
+{
+	//call a function that returns its argument as a reference but pass a continuation
+	//that takes a value and verify it works correctly.
+
+	using namespace TypedFora;
+
+	Callable passthroughCallable = 
+		createCallableTakingAndReturningUnowned(stringTypeUnowned().jov());
+
+	Expression createAnOwnedStringExpr = 
+		callCallableWithExpressions(createAnOwnedStringNativeFun(), emptyTreeVec());
+
+
+	Variable v = Variable::Temp(stringTypeOwned());
+
+	Expression shouldBeSimple = 
+		Expression::Let(
+			v,
+			callCallableWithExpressionsAndOwnedContinuation(
+				passthroughCallable, 
+				emptyTreeVec() + 
+					createAnOwnedStringExpr
+				),
+			v.expr()
+			);
+
+	verifyExpressionsAreEqual(shouldBeSimple, createAnOwnedStringExpr, stringTypeOwned());
+}
+*/
+BOOST_AUTO_TEST_CASE( test_TypedFora_Converter_SimpleContinuations )
+{	
+	//check that a simple return continuation of an owned value doesn't have a refcount op.
+	using namespace TypedFora;
+
+	Variable v1 = Variable::Temp(stringTypeOwned());
+	
+	Continuation continuation(
+		v1, 
+		Expression::Return(false, v1.expr()),
+		null(),
+		1.0
+		);
+
+	ImmutableTreeSet<TypedFora::Variable> emptyVarSet;
+
+	TypedFora::Converter converter;
+
+	NativeContinuation cont =
+		converter.convertContinuation(
+			continuation,
+			false,
+			ExpressionConversionContext()
+				.withNewBlockContext(simpleResultSignature(stringTypeOwned()), emptyTreeMap()),
+			null(),
+			emptyVarSet
+			);
+
+	verifyNativeExpressionsAreEqual(
+		cont.expression(), 
+		NativeExpression::Return(0, NativeVariable::Temp(nativeTypeForForaType(v1.type())).expr()),
+		"Returning a simple continuation produced "
+		);
+}
+
+BOOST_AUTO_TEST_CASE( test_TypedFora_Converter )
+{
+	using namespace TypedFora;
+
+	Variable v = Variable::Temp(stringTypeUnowned());
+	Variable v2 = Variable::Temp(stringTypeOwned());
+	Variable v3 = Variable::Temp(stringTypeOwned());
+	Variable v4 = Variable::Temp(stringTypeOwned());
+
+	verifyExpressionIsANoOp(Expression::Var(v));
+	verifyExpressionIsANoOp(Expression::Let(v, v2.expr(), v.expr()));
+	verifyExpressionIsANoOp(Expression::Let(v, Expression::Constant(CSTValue("HARO")), v.expr()));
+	verifyExpressionIsANoOp(
+		Expression::MakeTuple(
+			emptyTreeVec() + 
+				MakeTupleArgument::Normal(null(), Expression::Var(v))
+			)
+		);
+
+	verifyExpressionIsANoOp(Expression::DiscardFirst(v2.expr(), v2.expr()));
+
+	verifyCallableIsANoOp(simpleCallGraph());
+	verifyCallableIsANoOp(simpleCallGraphReturnsConstant());
+	verifyCallableIsANoOp(simpleCallGraphWithJump());
+	verifyCallableIsANoOp(simpleCallGraph());
+
+	verifyCallableIsANoOp(
+		wrapExpressionAsCallable(v2, 
+			Expression::MakeTuple(
+				emptyTreeVec() + MakeTupleArgument::Normal(null(), Expression::Var(v2))
+				)
+			)
+		);
+
+	verifyCallableIsANoOp(
+		wrapExpressionAsCallable(v2, 
+			Expression::GetItem(
+				Expression::MakeTuple(
+					emptyTreeVec() + MakeTupleArgument::Normal(null(), Expression::Var(v2))
+					),
+				0
+				)
+			)
+		);
+
+	verifyCallableIsANoOp(
+		wrapExpressionAsCallable(v2, 
+			Expression::GetSlice(
+				Expression::MakeTuple(
+					emptyTreeVec() + MakeTupleArgument::Normal(null(), Expression::Var(v2))
+					),
+				0
+				)
+			)
+		);
+
+	verifyCallableIsANoOp(
+		wrapExpressionAsCallable(v2, 
+			Expression::GetSlice(
+				Expression::MakeTuple(
+					emptyTreeVec() + MakeTupleArgument::Normal(null(), Expression::Var(v2))
+					),
+				1
+				)
+			)
+		);
+	
+	verifyExpressionIsANoOp(
+		callCallableWithExpression(
+			wrapExpressionAsCallable(
+				v,
+				callCallableWithExpression(simpleCallGraph(), v.expr())
+				),
+			Variable::Temp(stringTypeUnowned()).expr()
+			)
+		);
+}
+

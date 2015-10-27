@@ -1,0 +1,208 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+`hidden;
+
+//miscellaneous matrix functions
+
+singularValues:
+#Markdown(
+"""#### Usage
+
+    math.matrix.functions.singularValues(A)
+
+#### Description
+
+Compute the singular values of a matrix.
+
+Given some `m`-by-`n` matrix `A` as input, returns a vector `S` containing the `min(m,n)`
+singular values of `A`. `S` stores the singular values of `A`, sorted so that
+`S[i] >= S[i + 1]` for each `0 <= i < min(m,n) - 1`.
+""")
+	fun(A)
+		{
+		let m = A.dim[0];
+		let n = A.dim[1];
+
+		blasWrappers.gesvd('N', 'N', m, n, A.columnMajorData())
+		};
+norm:
+#Markdown(
+"""#### Usage
+
+    math.matrix.functions.norm(m,p = `two)
+
+#### Description
+
+Compute the norm of a matrix.
+
+Compute the 1-norm, 2-norm, inf-norm or frobenius-norm of a matrix `m` over R. 
+Callers can designate the norm by passing one of the symbols ```infinite``,
+```frobenius``, ```one``, or ```two`` as the argument `p`; by default ``p == `two``.
+	
+The various norms compute:
+
+	`one -- maxJ ( sumI abs( m_{i,j} ) )
+    `two -- sigmaMax(m), where sigmaMax(m) is the largest singular value of m 
+    `infinite -- maxI ( sumJ abs ( m_{i,j} ) )
+    `frobenius -- sqrt( trace(m**t * m) ) 
+
+""")
+	fun	(m, p = `two)
+		{
+		let singularValueCmp = fun(x,y) { x - y }
+
+		match(p) with 
+		(`two)
+			{ return singularValueFinder(m, singularValueCmp) }
+		(`frobenius)
+			{ return blasWrappers.lange('F', m.dim[0], m.dim[1], m.columnMajorData()) }
+		(`infinite)
+		   	{
+			if (m.implIsColumnMajor_)
+			    return blasWrappers.lange('I', m.dim[0], m.dim[1], m.columnMajorData());
+			return computeMaxAbsoluteRowSum(m); 
+			}
+		(`one)
+			{
+			if (m.implIsColumnMajor_)
+			    return blasWrappers.lange('1', m.dim[0], m.dim[1], m.columnMajorData());
+			return computeMaxAbsoluteRowSum(m.transpose());
+			}
+		};
+
+computeMaxAbsoluteRowSum:
+#Markdown(
+"""#### Usage
+
+    math.matrix.functions.computeMaxAbsoluteRowSum(A)
+
+#### Description
+
+Computes the largest of the sum of absolute values of the rows of a matrix `A`.
+
+""")
+	fun (m)
+		{
+		let max = 0;
+		for i in sequence(m.dim[0])
+			{
+			let absRowSum = 0;
+			let rowSlice = m[i];
+			for j in sequence(m.dim[1])
+				{
+				absRowSum = absRowSum + abs(rowSlice[j])
+				}
+			if (absRowSum > max)
+				{
+				max = absRowSum
+				}
+			}
+		max
+		};
+
+`hidden
+singularValueFinder:
+	fun(m, cmp)
+		{
+		let singularValues = m.singularValues();
+		let max = singularValues[0];
+		for i in sequence(1, size(singularValues))
+			{
+			if(cmp(singularValues[i], max) > 0)
+				max = singularValues[i];
+			}
+		max
+		};
+
+cond:
+#Markdown(
+"""#### Usage
+
+    cond(m,p = `two)
+
+#### Description
+
+Compute the condition number of a real matrix `m` with respect to the 1-norm, 
+2-norm, inf-norm or Frobenius-norm. 
+
+Callers can designate the norm with respect to which the condition number is to 
+be calculated by passing one of the symbols `infinite,`frobenius,`one, and `two 
+as the argument p; by default p == `two.
+
+The various norms compute:
+
+	`one -- maxJ ( sumI abs( m_{i,j} ) )
+    `two -- sigmaMax(m), where sigmaMax(m) is the largest singular value of m 
+    `infinite -- maxI ( sumJ abs ( m_{i,j} ) )
+    `frobenius -- sqrt( trace(m**t * m) ) 
+
+""")
+	fun (m, p = `two)
+		{
+		if (p == `two)
+			{
+			let singularValueCmpMax = fun(x,y) { x - y }
+			let singularValueCmpMin = fun(x,y) { y - x }
+			return singularValueFinder(m, singularValueCmpMax)
+					/ singularValueFinder(m, singularValueCmpMin);
+			}
+		norm(m, p) * norm(m.inverse(),p)
+		};
+
+linsolv:
+#Markdown(
+"""#### Usage 
+   
+    linsolv(A, B)
+
+#### Description
+
+Solve a (square) system of linear equations, `A x = B`, or multiple systems
+simultaneously.
+
+Here `B` may either be a `Vector` of length `A.dim[0]` (`== A.dim[1]`), or a 
+Matrix satisfying `B.dim[0] == A.dim[1]`. In the former case, we attempt to 
+solve a single linear equation. In the latter case, we attempt to solve each 
+equation given by the columns of `B`. If `A` is non-singular,  we get back a 
+matrix `x` (approximately) satisfying `A * x == B`. If `A` is singular, 
+then there does not exist a unique solution, and we throw an exception.
+""")
+	fun (A, filters.IsVector(B))
+		{
+		if (size(B) == 0)
+			throw #InvalidInput("B cannot be the empty vector")
+		
+		linsolv(A,math.Matrix(B,(size(B),1)))
+		}
+
+		(A,B)
+		{
+		if(!A.isSquare())
+			throw #InvalidInput("argument `A` must be an square matrix");
+
+		let N = A.dim[0]
+
+		if(B.dim[0] != N)
+			throw #InvalidInput("argument `B` must satisfy `B.dim[0] == A.dim[1]`");
+
+		let NRHS = B.dim[1]
+		
+		let resultData = 
+			blasWrappers.gesv(N, NRHS, A.columnMajorData(), B.columnMajorData());
+
+		math.Matrix(resultData, (N, NRHS))
+		};
+

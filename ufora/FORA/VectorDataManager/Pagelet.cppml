@@ -1,0 +1,371 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Pagelet.hppml"
+#include "VectorDataMemoryManager.hppml"
+#include "../Core/ValueDeepcopier.hppml"
+#include "ClearVectorHandleRawDataReferencesVisitor.hppml"
+#include "../TypedFora/ABI/ImplValVisitor.hppml"
+#include "VectorPage.hppml"
+#include "../TypedFora/ABI/ForaValueArray.hppml"
+#include "../Core/ValidateVectorRefcountsValueUpdater.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../../core/threading/ScopedThreadLocalContext.hpp"
+#include "ExtractBigVectorReferencesVisitor.hppml"
+
+using TypedFora::Abi::ForaValueArray;
+
+using Fora::Interpreter::ExecutionContext;
+
+using Fora::Pagelet;
+
+Pagelet::Pagelet(
+				PolymorphicSharedPtr<VectorDataMemoryManager> inMemoryManager,
+				size_t inInitialGuess
+				) : 
+		MappableMemoryPool(
+			MemoryPool::MemoryPoolType::Pagelet, 
+			inMemoryManager->getCallbackSchedulerForMappableMemoryPools()
+			),
+		mMemoryManager(inMemoryManager),
+		mIsFrozen(false),
+		mHeap(inMemoryManager, this, inInitialGuess),
+		mValues(nullptr),
+		mIsTearingDown(false),
+		mBytesFromOSInHeldPagelets(0),
+		mBytesInHeldPagelets(0)
+	{
+	}
+
+Pagelet::~Pagelet()
+	{
+	mIsTearingDown = true;
+
+	mMemoryManager->pageletDropped(totalBytesAllocated(), totalBytesAllocatedFromOS());
+	
+	if (mValues)
+		{
+		Ufora::threading::ScopedThreadLocalContext<ExecutionContext> setECContextToNull;
+
+		this->destroy(mValues);
+		}
+	}
+
+bool Pagelet::tryToAcquireMapTo_()
+	{
+	return true;
+	}
+
+void Pagelet::vectorPageMapped(
+						boost::shared_ptr<VectorPage> mappedPage,
+						boost::shared_ptr<Ufora::threading::Trigger> mappedPageWantsUnmapped
+						)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	//this should only happen if we're mapped
+	lassert(mUnmapState == MappableMemoryPool::UnmapState::Mapped || 
+			mUnmapState == MappableMemoryPool::UnmapState::MappedAndWantsToBeUnmapped);
+
+	//one of our internal VectorHandle objects has mapped to a page. The trigger will indicate when
+	//the page has decided it needs to be unmapped.
+
+	boost::function0<void> triggerWantsUnmap = createMarkWantsToBeUnmappedTrigger();
+
+	if (!mappedPageWantsUnmapped->setTrigger(triggerWantsUnmap))
+		mScheduler->scheduleImmediately(triggerWantsUnmap);
+
+	mMappedPages.set(mappedPageWantsUnmapped, mappedPage);
+	}
+
+bool Pagelet::isVectorPageMapped(
+						boost::shared_ptr<VectorPage> mappedPage
+						)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	return mMappedPages.hasValue(mappedPage);
+	}
+
+std::string Pagelet::stringRepresentation()
+	{
+	std::string res = "Pagelet(" + boost::lexical_cast<string>((void*)this);
+
+	if (mValues)
+		res = res + ": " + boost::lexical_cast<string>(mValues->size()) + "x" + prettyPrintString(mValues->currentJor()) + ";";
+
+	res = res + prettyPrintString(mUnmapState);
+	res = res + ")";
+
+	return res;
+	}
+	
+bool Pagelet::isFrozen() const
+	{
+	return mIsFrozen;
+	}
+
+void Pagelet::freeze()
+	{
+	mValues->markUnwriteable(false);
+
+	lassert(!mIsFrozen);
+
+	mIsFrozen = true;
+
+	mHeap.trimTopBlock();
+
+	ExtractBigVectorReferencesVisitor extractor(mReferencedBigvecs);
+
+	ImplValVisitor<ExtractBigVectorReferencesVisitor> visitor(extractor);
+
+	if (jorMightHaveVectorsWithin(mValues->currentJor()))
+		visitor.visitForaValueArray(mValues);
+
+	if (mValues->isHomogenousPodArray() && 
+				mValues->size() * mValues->homogenousStride() + 128 * 1024 < totalBytesAllocated())
+		LOG_WARN << "Freezing a pagelet with " << mValues->size() << " x " << mValues->currentJor() << " and " 
+			<< totalBytesAllocated() / 1024 / 1024.0 << " MB"
+			<< " = " << totalBytesAllocated() / mValues->size() << " bytes per value."
+			;
+
+	mMemoryManager->pageletFrozen(totalBytesAllocated(), totalBytesAllocatedFromOS());
+
+	if (totalBytesAllocated() < .9 * totalBytesAllocatedFromOS() && 
+				totalBytesAllocated() > 2 * 1024 * 1024)
+		LOG_WARN << "Freezing a pagelet" 
+			<< " with " << totalBytesAllocated() << " bytes of " << totalBytesAllocatedFromOS() 
+			<< " which is a pagelet efficiency of " << ((float)totalBytesAllocated()) / (float(totalBytesAllocatedFromOS()))
+			;
+	}
+
+size_t Pagelet::totalBytesAllocatedFromOSIncludingHeldPagelets() const
+	{
+	return totalBytesAllocatedFromOS() + mBytesFromOSInHeldPagelets;
+	}
+
+size_t Pagelet::totalBytesAllocatedIncludingHeldPagelets() const
+	{
+	return totalBytesAllocated() + mBytesInHeldPagelets;
+	}
+
+size_t Pagelet::totalBytesAllocatedFromOSExcludingPagelets() const
+	{
+	return totalBytesAllocatedFromOS();
+	}
+
+size_t Pagelet::totalBytesAllocatedFromOS() const
+	{
+	return mHeap.totalBytesAllocatedFromOS() + mShareableMemoryBlocks.getBytesHeldInSharedMemory();
+	}
+
+size_t Pagelet::totalBytesAllocated() const
+	{
+	return mHeap.totalBytesAllocated() + mShareableMemoryBlocks.getBytesHeldInSharedMemory();
+	}
+
+size_t Pagelet::totalBytesFromOSHeldInPagelets() const
+	{
+	return mBytesFromOSInHeldPagelets;
+	}
+
+uint8_t* Pagelet::allocate(size_t inBytes)
+	{
+	lassert(!mIsFrozen);
+	return (uint8_t*)mHeap.alloc(inBytes);
+	}
+
+void Pagelet::free(uint8_t* inBytes) 
+	{
+	if (mShareableMemoryBlocks.hasShareableMemoryBlockHandle(inBytes))
+		{
+		Fora::ShareableMemoryBlockHandle handle = 
+			mShareableMemoryBlocks.getShareableMemoryBlockHandle(inBytes);
+
+		lassert(mMemoryManager->detachFromPool(this, inBytes, handle.getSize()));
+
+		mShareableMemoryBlocks.decrefSharedMemoryBlock(inBytes);
+		}
+	}
+
+uint8_t* Pagelet::realloc(uint8_t* inBytes, uword_t inNewBytes)
+	{
+	lassert(!mIsFrozen);
+	if (!inBytes && !inNewBytes)
+		return 0;
+
+	if (inBytes && !inNewBytes)
+		{
+		free(inBytes);
+		return 0;
+		}
+
+	if (!inBytes)
+		return allocate(inNewBytes);
+
+	size_t oldArraySize = mHeap.allocSize(inBytes);
+
+	if (oldArraySize == inNewBytes)
+		return inBytes;
+
+	uint8_t* newBytes = mHeap.alloc(inNewBytes);
+
+	memcpy(newBytes, inBytes, std::min<size_t>(oldArraySize, inNewBytes));
+
+	return newBytes;
+	}
+
+bool Pagelet::permitAllocation(size_t inBytes)
+	{
+	return !mIsFrozen;
+	}
+
+uint8_t* Pagelet::importShareableMemoryBlock(
+											const Fora::ShareableMemoryBlockHandle& inHandle
+											)
+	{
+	lassert(!mIsFrozen);
+
+	if (inHandle.isEmpty())
+		return nullptr;
+
+	if (mShareableMemoryBlocks.increfShareableMemoryBlockAndReturnIsNew(inHandle))
+		mMemoryManager->attachToPool(this, inHandle.getBaseAddress(), inHandle.getSize());
+
+	return inHandle.getBaseAddress();
+	}
+
+Fora::ShareableMemoryBlockHandle 
+			Pagelet::convertPointerToShareableMemoryBlock(uint8_t* inBytes, int64_t bytes)
+	{
+	return mShareableMemoryBlocks.getShareableMemoryBlockHandle(inBytes);
+	}
+
+ForaValueArray* Pagelet::getValues()
+	{
+	if (!mValues)
+		mValues = ForaValueArray::Empty(this);
+	
+	return mValues;
+	}
+
+void Pagelet::append(ForaValueArray* array, long lowIndex, long highIndex, bool deepcopyAwayHeldPagelets)
+	{
+	Ufora::threading::ScopedThreadLocalContext<ExecutionContext> setECContextToNull;
+
+	lassert(!isFrozen());
+
+	ValueDeepcopierState deepcopierState;
+
+	ValueDeepcopier deepcopier(deepcopierState, false, this, false, true, deepcopyAwayHeldPagelets);
+	
+	if (!mValues)
+		mValues = ForaValueArray::Empty(this);
+
+	deepcopier.duplicate(
+		mValues,
+		array,
+		lowIndex, 
+		highIndex
+		);
+	}
+
+void Pagelet::append(const ImplValContainer& ivc)
+	{
+	Ufora::threading::ScopedThreadLocalContext<ExecutionContext> setECContextToNull;
+
+	lassert(!isFrozen());
+
+	ValueDeepcopierState deepcopierState;
+
+	ValueDeepcopier deepcopier(deepcopierState, false, this, false, true);
+		
+	if (!mValues)
+		mValues = ForaValueArray::Empty(this);
+
+	ImplValContainer imported = deepcopier.duplicate(ivc);
+
+	mValues->append(imported);
+	}
+
+const std::map<boost::shared_ptr<Pagelet>, long>& Pagelet::getHeldPagelets() const
+	{
+	lassert(isFrozen());
+	return mHeldPagelets;
+	}
+
+const std::set<Fora::BigVectorId>& Pagelet::getReferencedBigVectorIds()
+	{
+	return mReferencedBigvecs;
+	}
+
+void Pagelet::pageletIsHeld(boost::shared_ptr<Fora::Pagelet> inPagelet)
+	{
+	lassert(!isFrozen());
+	lassert(inPagelet->isFrozen());
+
+	for (auto bigvec: inPagelet->getReferencedBigVectorIds())
+		mReferencedBigvecs.insert(bigvec);
+
+	if (mHeldPagelets.find(inPagelet) == mHeldPagelets.end())
+		{
+		mBytesFromOSInHeldPagelets += inPagelet->totalBytesAllocatedFromOS();
+		mBytesInHeldPagelets += inPagelet->totalBytesAllocated();
+
+		mHeldPagelets[inPagelet]++;
+
+		for (auto subpage: inPagelet->getHeldPagelets())
+			pageletIsHeld(subpage.first);
+		}
+	else
+		mHeldPagelets[inPagelet]++;
+	}
+
+void Pagelet::pageletIsNoLongerHeld(boost::shared_ptr<Fora::Pagelet> inPagelet)
+	{
+	lassert(mIsTearingDown || !mIsFrozen);
+
+	mHeldPagelets[inPagelet]--;
+
+	if (mHeldPagelets[inPagelet] == 0)
+		{
+		mHeldPagelets.erase(inPagelet);
+
+		for (auto subpage: inPagelet->getHeldPagelets())
+			pageletIsNoLongerHeld(subpage.first);
+		}
+	}
+
+void Pagelet::hasBecomeUnmapped_()
+	{
+	//drop our dependencies on all of our target pools
+	for (auto triggerAndPage: mMappedPages.getKeyToValue())
+		{
+		boost::shared_ptr<VectorPage> page = triggerAndPage.second;
+		boost::shared_ptr<Ufora::threading::Trigger> trigger = triggerAndPage.first;
+
+		mScheduler->scheduleImmediately(
+			boost::function0<void>(
+				[=]() { page->removeMapping(trigger); }
+				)
+			);
+		}
+
+	mMappedPages.clear();
+
+	//we immediately become mappable again
+	setState_(UnmapState::UnmappedAndMappable);
+	}
+

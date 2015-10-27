@@ -1,0 +1,312 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+//a basic class definition
+Simple: class {
+	member x;
+	member y;
+
+	f: fun(z) { x+y+z };
+	usesG: fun(z) { x + y + g(z) };
+	static g: fun(z) { z*z };
+
+	operator+(z) { ('instance', x,y,z) };
+	static operator+(z) { ('static', z) };
+
+	operator match(tag if tag is Simple) { (x,y) };
+
+	classWithin: cls;
+	selfWithin: self;
+	};
+
+ThingThatMatchesSimple: object {
+	operator filter(Simple(x,y)) { (x,y) }
+	};
+
+//verify that we can construct classes correctly
+`test testConstruction_1: Simple(10,20).x is 10;
+`test testConstruction_2: Simple(10,20).y is 20;
+`test testConstruction_3: Simple(x:10,y:20).x is 10;
+`test testConstruction_4: Simple(y:20,x:10).y is 20;
+
+`test testMemberFunctions_1: Simple(10, 20).f(100) is 130;
+`test testMemberFunctions_2: Simple.g(100) is 10000;
+`test testMemberFunctions_3: Simple(10,20).usesG(100) is 10030;
+
+`test testOperators_1: Simple(10,20) + 30 is ('instance', 10,20,30);
+`test testOperators_2: Simple + 30 is ('static', 30);
+
+`test testMatching_1: match(Simple(10,20)) with (Simple(x,y)) { x is 10 and y is 20 };
+`test testMatching_2: match(Simple(10,20)) with (Simple _) { false } (_) { true };
+
+`test testReverseMatching_1: 
+	ThingThatMatchesSimple`(`Filter, Simple(10,20)) is (10,20);
+
+`test testReverseMatching_2: match(Simple(10,20)) 
+	with (ThingThatMatchesSimple(x,y)) { x is 10 and y is 20 } (_) { true };
+
+`test testClassOf: classOf(Simple(10,20)) is Simple;
+
+`test testClassWithin: Simple(10,20).classWithin is Simple;
+`test testSelfWithin: Simple(10,20).selfWithin is Simple(10,20);
+
+
+//classes can override both the standard 'cls' and also 'self'
+Overrider: class as newClass self as newSelf {	
+	classWithin: newClass;
+	selfWithin: newSelf;
+	};
+
+`test testOverrider_1: Overrider().classWithin is Overrider;
+`test testOverrider_2: Overrider().selfWithin is Overrider();
+
+//classOf(x) is really just x`(`Class), so we can intercept if it we want
+PretendToHaveOtherType: class {
+	...(`Class) { Simple }
+	};
+
+`test pretendToHaveOtherType: classOf(PretendToHaveOtherType()) is Simple;
+
+
+//test 'operator new'
+SimpleWithConstructor: class {
+	member x;
+	member y;
+
+	operator new (`tagged) { createInstance(cls, x: 100, y: 100) };
+	
+	operator new (x = 10, y = 20) { createInstance(SimpleWithConstructor, x:x, y:y) };
+	};
+
+`test simpleConstructor_1: SimpleWithConstructor(1,2).x is 1;
+`test simpleConstructor_2: SimpleWithConstructor(1,2).y is 2;
+`test simpleConstructor_3: SimpleWithConstructor(1).x is 1;
+`test simpleConstructor_4: SimpleWithConstructor(1).y is 20;
+`test simpleConstructor_5: SimpleWithConstructor().x is 10;
+`test simpleConstructor_6: SimpleWithConstructor().y is 20;
+`test simpleConstructor_7: SimpleWithConstructor(`tagged) is SimpleWithConstructor(100,100);
+
+
+//test mixins. 
+
+//object-to-object mixins
+objectMixin: 
+object {
+	hasMixin: true;
+	mixinSelf: self;
+	grabX: self.x;
+	aProp: 'mixin';
+	operator+ (other) {
+		self.handle('Add', other)
+		};
+	operator- (other) {
+		self.handle('Subtract', other)
+		}
+	};
+
+objectBase: 
+object {
+	mixin objectMixin;
+	baseSelf: self;
+	x: 'baseX';
+	handle: fun(name, other) { ('base', name, other) };
+	};
+
+//verify that the mixin methods are accessible
+`test mixin_1: 	objectBase.hasMixin;
+`test mixin_2: 	objectBase.x is 'baseX';
+
+//verify that the mixin methods can call the base methods
+`test mixin_3: 	objectBase.grabX is objectBase.x;
+
+//verify that the mixin 'self' is the same as the base 'self'
+`test mixin_4: 	objectBase.mixinSelf is objectBase.baseSelf;
+`test mixin_5: 	objectBase.mixinSelf is objectBase;
+
+//verify that method calls work
+`test mixin_6: 	objectBase.handle(1,2) is ('base',1,2);
+`test mixin_7: 	objectBase + 10 is ('base', 'Add', 10);
+`test mixin_8: 	objectBase - 10 is ('base', 'Subtract', 10);
+
+//check that override order makes sense
+`test mixinOrder_1: 	object { aProp: 'base'; mixin objectMixin; }.aProp is 'base';
+`test mixinOrder_2: 	object { mixin objectMixin; aProp: 'base'; }.aProp is 'mixin';
+
+//class instance mixins
+classWithMixin:
+class {
+	member x;
+	handle: fun(name, other) { ('classWithMixin', name, other) };
+	mixin objectMixin;
+	};
+
+`test class_mixin_1: classWithMixin(10).grabX is 10;
+
+//class mixins
+toMixIntoInstance:
+fun(y) {
+	object {
+		f: fun() { self.something + y }
+		}
+	};
+
+classWithInstanceMixin:
+class {
+	member x;
+
+	something: x;
+
+	static myStaticY: 100;
+
+	mixin toMixIntoInstance(myStaticY);
+	};
+
+`test class_instance_mixin_1: classWithInstanceMixin(10).f() is 110;
+
+
+//static class mixins of objects
+toMixInStatically:
+object {
+	aStaticFunction: fun() { "hello" }
+	};
+
+classWithStaticMixin:
+class {
+	member x;
+
+	static mixin toMixInStatically;
+	};
+
+`test staticClassMixinObject_1: classWithStaticMixin.aStaticFunction() is 'hello';
+
+//static class mixins of classes
+	classToMixInStatically:
+	class {
+		static aStaticFunction: fun() { 'static' };
+		anInstanceFun: fun() { ('instance', self.x) };
+		};
+
+	classWithStaticClassMixin:
+	class {
+		member x;
+
+		static mixin classToMixInStatically;
+		};
+
+	`test staticClassMixinClass_1: classWithStaticClassMixin.aStaticFunction() is 'static';
+	`test staticClassMixinClass_2: classWithStaticClassMixin(x:10).anInstanceFun() is ('instance', 10);
+
+//static class mixins of classes don't work if the mixin class has members
+`test mixinClassWithMembersFails: (
+
+		let c = class { member x; }
+
+		try {
+			class { static mixin c; };
+			false
+			}
+		catch(...)
+			{
+			true
+			}
+	   );
+
+//static class methods
+a_class: 
+class { 
+	f: fun(x) { self + x };
+	g: 100
+	};
+
+`test class_static_methods_1: a_class.f(10)(20) is 30;
+`test class_static_methods_2: a_class.g(10) is 100;
+
+
+classWithMetadata:
+class { 
+	member q; 
+	"metadataForF" f: 10;
+	g: "metadataForG" fun() {};
+	"metadataForY" static y: 30; 
+	static z: "metadataForZ" fun(){}; 
+	operator match () {}
+	};
+
+//test class metadata
+`test class_metadata_1: 
+	`ExtractMemberNames(classWithMetadata) is (`q, `f, `g, `y, `z, nothing)
+	;
+`test class_metadata_2: 
+	`ExtractMetadata(classWithMetadata).members is 
+		(nothing, 
+			(outer:"metadataForF",inner:nothing), 
+			(outer:nothing,inner:"metadataForG"), 
+			(outer:"metadataForY",inner:nothing), 
+			(outer:nothing,inner:"metadataForZ"),
+			(outer:nothing,inner:nothing)
+			)
+	;
+`test class_instance_metadata_1:
+	`ExtractMetadata(classWithMetadata(10)) is (kind: `instance, classMetadata: `ExtractMetadata(classWithMetadata))
+	;
+
+`test classMemberUnbind:
+(
+	let c = class { member m_; };
+	let instance = c(42);
+
+	let tup = `Unbind(instance);
+	
+	if (size(tup) != 2) throw tup;
+
+	if (tup[1] != 42) throw tup[0];
+
+	if (tup[0](42) != instance) throw tup[1](42);
+
+	true
+);
+
+`test classMemberBind:
+(
+	let f = fun(){};
+
+	`Unbind(`Bind(f, 4)) == (4,);
+);
+
+`test blowup: (
+    // we had a bug here, Ontime Defect 567
+    // self wasn't computed as free and then subsequent
+    // AST transformations blew up
+    let self = nothing;
+    
+    class { operator new () { self }; }();
+    true
+    );
+
+`test bindFreeVariablesInClass_1: (
+	let y = "free";
+
+	let C = class {
+		operator new(y) { createInstance(C, y) };
+		operator+(y) { y };
+		member x;
+		f: y;
+		};
+
+	((C(10) + "not free") is "not free") and 
+		(C("not free").x is "not free")
+	);
+
+

@@ -1,0 +1,251 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "MappableMemoryPool.hppml"
+#include "../../core/threading/CallbackScheduler.hppml"
+#include "../../core/Logging.hpp"
+
+typedef MappableMemoryPool::UnmapState UnmapState;
+
+MappableMemoryPool::MappableMemoryPool(
+						MemoryPool::MemoryPoolType type,
+						PolymorphicSharedPtr<CallbackScheduler> inScheduler
+						) : 
+		MemoryPool(type),
+		mUnmapState(MappableMemoryPool::UnmapState::UnmappedAndMappable),
+		mScheduler(inScheduler)
+	{
+	}
+
+MappableMemoryPool::~MappableMemoryPool()
+	{
+	if (mMemoryPoolTriggers.size())
+		LOG_CRITICAL << "Destroying a MappableMemoryPool when someone has it mapped!\n"
+			<< Ufora::debug::StackTrace::getStringTrace();
+	}
+
+MappableMemoryPool::UnmapState MappableMemoryPool::subscribeToStateChanges(
+				boost::function2<void, UnmapState, UnmapState> callbackWhenMapped
+				)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	mStateChangeCallbacks.push_back(callbackWhenMapped);
+
+	return mUnmapState;
+	}
+
+bool MappableMemoryPool::acquireGarbageCollectionLock()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (mUnmapState == UnmapState::UnmappedAndMappable)
+		{
+		setState_(UnmapState::GarbageCollecting);
+		return true;
+		}
+
+	return false;
+	}
+
+void MappableMemoryPool::releaseGarbageCollectionLock()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	lassert(mUnmapState == UnmapState::GarbageCollecting);
+
+	setState_(UnmapState::UnmappedAndUnmappable);
+
+	hasBecomeUnmapped_();
+	}
+
+boost::shared_ptr<Ufora::threading::Trigger> 
+			MappableMemoryPool::attemptToMapTo(bool lockIsAlreadyImplicitlyAcquired)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (mUnmapState == UnmapState::UnmappedAndMappable
+			 || mUnmapState == UnmapState::Mapped 
+			 || lockIsAlreadyImplicitlyAcquired 
+			 		&& mUnmapState == UnmapState::MappedAndWantsToBeUnmapped)
+		{
+		if (mUnmapState == UnmapState::UnmappedAndMappable)
+			{
+			if (!tryToAcquireMapTo_())
+				return boost::shared_ptr<Ufora::threading::Trigger>();
+
+			setState_(UnmapState::Mapped);
+			}
+
+		boost::shared_ptr<Ufora::threading::Trigger> trigger(new Ufora::threading::Trigger());
+
+		mMemoryPoolTriggers.insert(trigger);
+
+		return trigger;
+		}
+
+	lassert_dump(
+		!lockIsAlreadyImplicitlyAcquired,
+		"if the lock is implicitly acquired, then this MemoryPool should already have been mapped."
+		);
+
+	return boost::shared_ptr<Ufora::threading::Trigger>();
+	}
+
+MappableMemoryPool::UnmapState MappableMemoryPool::markWantsToBeUnmapped()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	//nothing to do - we will naturally become unmapped
+	if (mUnmapState == UnmapState::GarbageCollecting)
+		return mUnmapState;
+
+	if (mUnmapState == UnmapState::UnmappedAndMappable)
+		{
+		setState_(UnmapState::UnmappedAndUnmappable);
+
+		hasBecomeUnmapped_();
+
+		return mUnmapState;
+		}
+
+	if (mUnmapState == UnmapState::UnmappedAndUnmappable)
+		return mUnmapState;
+
+	if (mUnmapState == UnmapState::MappedAndWantsToBeUnmapped)
+		//already done
+		return mUnmapState;
+
+	for (auto trigger: mMemoryPoolTriggers)
+		mScheduler->scheduleImmediately(
+			boost::bind(
+				&Ufora::threading::Trigger::trigger,
+				trigger
+				)
+			);
+
+	setState_(UnmapState::MappedAndWantsToBeUnmapped);
+
+	return mUnmapState;
+	}
+
+MappableMemoryPool::UnmapState MappableMemoryPool::markMappable()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	lassert_dump(
+		mUnmapState != UnmapState::GarbageCollecting,
+		"Doesn't make sense to try to markWantsToBeUnmapped on a GCing pool."
+		);
+
+	if (mUnmapState == UnmapState::UnmappedAndUnmappable)
+		setState_(UnmapState::UnmappedAndMappable);
+
+	return mUnmapState;
+	}
+
+void MappableMemoryPool::removeMapping(
+				boost::shared_ptr<Ufora::threading::Trigger> inTrigger
+				)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	lassert(mMemoryPoolTriggers.find(inTrigger) != mMemoryPoolTriggers.end());
+
+	mMemoryPoolTriggers.erase(inTrigger);
+
+	if (mMemoryPoolTriggers.size() == 0 && (
+			mUnmapState == UnmapState::MappedAndWantsToBeUnmapped ||
+			mUnmapState == UnmapState::Mapped
+			))
+		{
+		setState_(UnmapState::UnmappedAndUnmappable);
+
+		hasBecomeUnmapped_();
+		}
+	}
+
+void MappableMemoryPool::setState_(MappableMemoryPool::UnmapState state)
+	{
+	if (state == mUnmapState)
+		return;
+
+	for (auto callback: mStateChangeCallbacks)
+		mScheduler->scheduleImmediately(
+			boost::bind(
+				callback,
+				mUnmapState,
+				state
+				)
+			);
+
+	mUnmapState = state;
+	}
+
+
+namespace {
+
+void triggerWantsUnmap(
+				boost::weak_ptr<MappableMemoryPool> weakPtr
+				)
+	{
+	boost::shared_ptr<MappableMemoryPool> ptr = weakPtr.lock();
+
+	if (ptr)
+		ptr->markWantsToBeUnmapped();
+	}
+
+}
+
+boost::function0<void> MappableMemoryPool::createMarkWantsToBeUnmappedTrigger()
+	{
+	return boost::bind(
+		&triggerWantsUnmap,
+		boost::weak_ptr<MappableMemoryPool>(this->shared_from_this())
+		);
+	}
+
+void CPPMLPrettyPrint<MappableMemoryPool::UnmapState>::prettyPrint(
+							CPPMLPrettyPrintStream& s, 
+							const MappableMemoryPool::UnmapState& t
+							)
+	{
+	if (t == MappableMemoryPool::UnmapState::UnmappedAndMappable)
+		s << "UnmappedAndMappable";
+		else
+	if (t == MappableMemoryPool::UnmapState::Mapped)
+		s << "Mapped";
+		else
+	if (t == MappableMemoryPool::UnmapState::MappedAndWantsToBeUnmapped)
+		s << "MappedAndWantsToBeUnmapped";
+		else
+	if (t == MappableMemoryPool::UnmapState::UnmappedAndUnmappable)
+		s << "UnmappedAndUnmappable";
+		else
+	if (t == MappableMemoryPool::UnmapState::GarbageCollecting)
+		s << "GarbageCollecting";
+	else
+		{
+		lassert(false);
+		}
+	}
+
+UnmapState MappableMemoryPool::currentUnmapState()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	return mUnmapState;
+	}
+

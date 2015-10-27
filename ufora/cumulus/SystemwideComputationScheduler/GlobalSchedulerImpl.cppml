@@ -1,0 +1,480 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "GlobalSchedulerImpl.hppml"
+#include "../../FORA/VectorDataManager/VectorDataManager.hppml"
+#include "../../FORA/TypedFora/ABI/BigVectorLayouts.hppml"
+#include "../../core/threading/TimedLock.hpp"
+#include "../../core/threading/CallbackScheduler.hppml"
+#include "../../core/threading/CallbackSchedulerFactory.hppml"
+#include "../../core/StringUtil.hpp"
+#include "../../core/Memory.hpp"
+#include "../../core/threading/Queue.hpp"
+#include "../../core/threading/LimitToTime.hpp"
+#include "../PersistentCache/PersistentCacheIndex.hppml"
+#include "../AddDropFinalState.hppml"
+#include <iomanip>
+#include <fstream>
+
+namespace Cumulus {
+namespace SystemwideComputationScheduler {
+
+const double kMaxSplitFrequency = 400;
+const double kRecomputePageLayoutInterval = 1.0;
+const double kRecomputeLongTermLayoutInterval = 1.0;
+const double kDefaultCheckpointUpdateInterval = 1.0;
+
+GlobalSchedulerImpl::GlobalSchedulerImpl(
+			PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+			PolymorphicSharedPtr<VectorDataManager> inVDM,
+        	MachineId inOwnMachineId,
+			long inActiveThreadCount,
+			CumulusCheckpointPolicy inCheckpointCommitPolicy,
+			boost::function1<void, GlobalSchedulerEvent> inEventHandler
+			) : 
+		mCheckpointUpdateInterval(kDefaultCheckpointUpdateInterval),
+		mOnCumulusComponentMessageCreated(inCallbackScheduler),
+		mEventHandler(inEventHandler),
+		mKernel(
+			inVDM->maxPageSizeInBytes(),
+			inVDM->getMemoryLimit(),
+			inOwnMachineId,
+			inActiveThreadCount,
+			inCheckpointCommitPolicy,
+			boost::bind(
+				&GlobalSchedulerImpl::onKernelTriggerRecomputePageLayoutIfNecessary,
+				this
+				),
+			boost::bind(
+				&GlobalSchedulerImpl::onKernelTriggerComputationStatusUpdate,
+				this,
+				boost::arg<1>(),
+				boost::arg<2>()
+				),
+			boost::bind(
+				&GlobalSchedulerImpl::onKernelCumulusComponentMessageCreated,
+				this,
+				boost::arg<1>()
+				)
+			),
+		mCallbackScheduler(inCallbackScheduler->getFactory()->createScheduler("GlobalSchedulerImpl")),
+		mRebalanceCallbackScheduler(inCallbackScheduler->getFactory()->createScheduler("GlobalSchedulerImpl::Rebalance")),
+		mIsRecomputingPageLayout(false),
+		mNextRecomputeTime(false),
+		mIsTornDown(false),
+		mVDM(inVDM)
+	{
+	if (mEventHandler)
+		mEventHandler(
+			GlobalSchedulerEvent::Initialized(
+				SchedulerInitializationParameters(
+					inVDM->maxPageSizeInBytes(),
+					inVDM->getMemoryLimit(),
+					inOwnMachineId,
+					inActiveThreadCount
+					)
+				)
+			);
+
+	mKernel.setCheckpointStatusInterval(kDefaultCheckpointUpdateInterval);
+	}
+
+void GlobalSchedulerImpl::polymorphicSharedPtrBaseInitialized()
+	{
+	TimedLock lock(mMutex, "GlobalSchedulerImpl");
+
+	mCallbackScheduler->scheduleImmediately(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&GlobalSchedulerImpl::recomputePageLayoutAndReschedule
+				),
+			polymorphicSharedWeakPtrFromThis()
+			),
+		"recomputePageLayoutAndReschedule"
+		);
+
+	mCallbackScheduler->scheduleImmediately(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&GlobalSchedulerImpl::checkCheckpointsAndStatusesAndReschedule
+				),
+			polymorphicSharedWeakPtrFromThis()
+			),
+		"checkCheckpointsAndStatusesAndReschedule"
+		);
+
+	mRebalanceCallbackScheduler->scheduleImmediately(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&GlobalSchedulerImpl::recomputePageNeighborhoods
+				),
+			polymorphicSharedWeakPtrFromThis()
+			),
+		"recomputePageNeighborhoods"
+		);
+	}
+
+void GlobalSchedulerImpl::setCheckpointStatusInterval(double inInterval)
+	{
+	TimedLock lock(mMutex, "GlobalSchedulerImpl");
+
+	mCheckpointUpdateInterval = inInterval;
+
+	mKernel.setCheckpointStatusInterval(inInterval);
+	}
+
+void GlobalSchedulerImpl::triggerFullCheckpointsOnOutstandingComputations()
+	{
+	TimedLock lock(mMutex, "GlobalSchedulerImpl");
+
+	double curTime = curClock();
+
+	if (mEventHandler)
+		mEventHandler(GlobalSchedulerEvent::InTriggerFullCheckpointsOnOutstandingComputations(curTime));
+
+	mKernel.triggerFullCheckpointsOnOutstandingComputations(curTime);
+	}
+
+
+void GlobalSchedulerImpl::checkCheckpointsAndStatusesAndReschedule()
+	{
+	TimedLock lock(mMutex, "GlobalSchedulerImpl");
+
+	double curTime = curClock();
+
+	if (mEventHandler)
+		mEventHandler(GlobalSchedulerEvent::InCheckCheckpointsAndStatuses(curTime));
+
+	mKernel.checkCheckpointsAndStatuses(curTime);
+
+	mCallbackScheduler->schedule(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&GlobalSchedulerImpl::checkCheckpointsAndStatusesAndReschedule
+				),
+			polymorphicSharedWeakPtrFromThis()
+			),
+		curClock() + mCheckpointUpdateInterval,
+		"checkCheckpointsAndStatusesAndReschedule"
+		);
+	}
+
+void GlobalSchedulerImpl::onKernelCumulusComponentMessageCreated(CumulusComponentMessageCreated msg)
+	{
+	if (mEventHandler)
+		mEventHandler(GlobalSchedulerEvent::OutCumulusComponentMessageCreated(msg));
+
+	mOnCumulusComponentMessageCreated.broadcast(msg);
+	}
+
+void GlobalSchedulerImpl::onKernelTriggerComputationStatusUpdate(ComputationId computation, CheckpointRequest timestamp)
+	{
+	if (mEventHandler)
+		mEventHandler(GlobalSchedulerEvent::OutTriggerComputationStatusUpdate(computation, timestamp));
+
+	mOnCumulusComponentMessageCreated.broadcast(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::GlobalSchedulerToActiveComputations(
+				GlobalSchedulerToActiveComputationsMessage::TriggerCheckpoint(computation, timestamp)
+				),
+			CumulusComponentEndpointSet::AllWorkers(),
+			CumulusComponentType::ActiveComputations()
+			)
+		);
+	}
+
+void GlobalSchedulerImpl::onKernelTriggerRecomputePageLayoutIfNecessary()
+	{
+	triggerRecomputePageLayoutIfNecessary_(curClock(), true);
+	}
+
+void GlobalSchedulerImpl::teardown()
+	{
+	TimedLock lock(mMutex, "GlobalSchedulerImpl");
+
+	mIsTornDown = true;
+	}
+
+void GlobalSchedulerImpl::initializeFromAddDropState(const AddDropFinalState& state)
+	{
+	TimedLock lock(mMutex, "GlobalSchedulerImpl");
+
+	mKernel.initializeFromAddDropState(state);
+
+	state.recreatePageRefcountEventSequence(
+		boost::bind(
+			&GlobalSchedulerImpl::consumePageEvent,
+			this,
+			boost::arg<1>(),
+			boost::arg<2>()
+			)
+		);
+
+	auto& calc = mKernel.mActiveNeighborhoods;
+
+	LOG_DEBUG << "Layout after initializing Scheduler on " << mKernel.mOwnMachineId << "\n" 
+			<< Ufora::makeColumns(65, 5, 50, mKernel.mSystemwidePageRefcountTracker->getViewOfSystem(
+					mKernel.getSystemViewCallbackForPageLayoutCalculator_(calc),
+					boost::function1<std::string, Fora::PageId>(
+						[&](Fora::PageId page) {
+							return std::string();
+							})
+					))
+			<< "\n";
+	}
+
+void GlobalSchedulerImpl::consumePageEvent(
+								const Fora::PageRefcountEvent& inEvent, 
+								Cumulus::MachineId onMachineId
+								)
+	{
+	TimedLock lock(mMutex, "GlobalSchedulerImpl");
+
+	if (mIsTornDown)
+		return;
+
+	if (mEventHandler)
+		mEventHandler(GlobalSchedulerEvent::InPageEvent(inEvent, onMachineId));
+
+	mKernel.consumePageEvent(inEvent, onMachineId);
+	}
+
+void GlobalSchedulerImpl::pageNoLongerReferencedAcrossSystem(Fora::PageId page)
+	{
+	TimedLock lock(mMutex, "GlobalSchedulerImpl");
+
+	if (mIsTornDown)
+		return;
+	
+	if (mEventHandler)
+		mEventHandler(GlobalSchedulerEvent::InPageNoLongerReferencedAcrossEntireSystem(page));
+
+	mKernel.pageNoLongerReferencedAcrossSystem(page);
+	}
+
+void GlobalSchedulerImpl::addMachine(MachineId inMachine)
+	{
+	TimedLock lock(mMutex, "GlobalSchedulerImpl");
+
+	if (mIsTornDown)
+		return;
+
+	if (mEventHandler)
+		mEventHandler(GlobalSchedulerEvent::InAddMachine(inMachine));
+
+	mKernel.addMachine(inMachine);
+	}
+
+void GlobalSchedulerImpl::triggerRecomputePageLayoutIfNecessary_(
+													double targetTime, 
+													bool rescheduleIfTooEarly
+													)
+	{
+	mCallbackScheduler->schedule(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&GlobalSchedulerImpl::recomputePageLayoutIfNecessary
+				),
+			polymorphicSharedWeakPtrFromThis(),
+			rescheduleIfTooEarly
+			),
+		targetTime,
+		"GlobalSchedulerImpl::triggerRecomputePageLayoutIfNecessary"
+		);
+	}
+
+void GlobalSchedulerImpl::recomputePageLayoutAndReschedule()
+	{
+		{
+		TimedLock lock(mMutex, "GlobalSchedulerImpl");
+
+		if (mIsTornDown)
+			return;
+		}
+
+	recomputePageLayoutIfNecessary(true);
+
+	mCallbackScheduler->schedule(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&GlobalSchedulerImpl::recomputePageLayoutAndReschedule
+				),
+			polymorphicSharedWeakPtrFromThis()
+			),
+		curClock() + kRecomputePageLayoutInterval,
+		"GlobalSchedulerImpl::recomputePageLayoutAndReschedule"
+		);
+	}
+
+bool GlobalSchedulerImpl::shouldRecomputePageLayoutNow_(bool rescheduleIfTooEarly)
+	{
+	if (mNextRecomputeTime > curClock())
+		{
+		if (rescheduleIfTooEarly)
+			triggerRecomputePageLayoutIfNecessary_(mNextRecomputeTime, false);
+		return false;
+		}
+	return true;
+	}
+
+void GlobalSchedulerImpl::recomputePageNeighborhoods()
+	{
+	TimedLock lock(mMutex, "GlobalSchedulerImpl");
+
+	if (mIsTornDown)
+		return;
+
+	double t0 = curClock();
+
+	PolymorphicSharedPtr<PageLayoutCalculator::LongTermPageLayoutCalculation> problem = 
+		mKernel.checkOutLongTermPageLayoutCalculation();
+
+	if (problem)
+		{
+		if (mEventHandler)
+			mEventHandler(GlobalSchedulerEvent::OptimizeBegin());
+
+		lock.unlock();
+
+		problem->updateLayout();
+
+		lock.lock();
+
+		if (mEventHandler)
+			mEventHandler(GlobalSchedulerEvent::OptimizeEnd());
+		
+		mKernel.checkInUpdatedLongTermPageLayoutCalculation(problem);
+
+		if (mLogfilePath)
+			{
+			std::ofstream outfile;
+			
+			outfile.open(mLogfilePath->c_str(), std::ofstream::out | std::ofstream::app);
+			
+			outfile << mKernel.currentLayoutAsString() << "\n\n";
+
+			outfile.close();			
+			}
+		else
+			{
+			LOG_INFO
+				<< mKernel.currentLayoutAsString() << "\n\n"
+				;
+			}
+		}
+
+	double timeElapsed = curClock() - t0;
+
+	mRebalanceCallbackScheduler->schedule(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&GlobalSchedulerImpl::recomputePageNeighborhoods
+				),
+			polymorphicSharedWeakPtrFromThis()
+			),
+		curClock() + kRecomputeLongTermLayoutInterval + timeElapsed,
+		"recomputePageNeighborhoods"
+		);
+	}
+
+void GlobalSchedulerImpl::recomputePageLayoutIfNecessary(
+		bool rescheduleIfTooEarly
+		)
+	{
+	TimedLock lock(mMutex, "GlobalSchedulerImpl");
+
+	if (mIsTornDown)
+		return;
+
+	if (!shouldRecomputePageLayoutNow_(rescheduleIfTooEarly) || mIsRecomputingPageLayout)
+		return;
+
+	if (mEventHandler)
+		mEventHandler(GlobalSchedulerEvent::RecomputePageLayout());
+
+	double t0 = curClock();
+
+	mIsRecomputingPageLayout = true;
+
+	std::string response = mKernel.recomputePageLayout();
+
+	if (response.size() && mLogfilePath)
+		{
+		std::ofstream outfile;
+		
+		outfile.open(mLogfilePath->c_str(), std::ofstream::out | std::ofstream::app);
+		
+		outfile << response << "\n\n";
+		
+		outfile.close();			
+		}
+
+
+	mIsRecomputingPageLayout = false;
+
+	mNextRecomputeTime = curClock() + std::min<double>(5.0, (curClock() - t0) * 2);
+	}
+
+void GlobalSchedulerImpl::setDiagnosticLogfilePath(std::string inLogfilePath)
+	{
+	TimedLock lock(mMutex, "GlobalSchedulerImpl");
+	
+	mLogfilePath = inLogfilePath;
+	}
+
+Nullable<std::string> GlobalSchedulerImpl::getDiagnosticLogfilePath()
+	{
+	TimedLock lock(mMutex, "GlobalSchedulerImpl");
+
+	return mLogfilePath;
+	}
+
+ImmutableTreeMap<ComputationId, pair<CheckpointStatus, CheckpointRequest> > 
+			GlobalSchedulerImpl::currentOutstandingCheckpointStatuses(bool onlyUnfinished, bool onlyCommitted)
+	{
+	TimedLock lock(mMutex, "GlobalSchedulerImpl");
+
+	return mKernel.currentOutstandingCheckpointStatuses(onlyUnfinished, onlyCommitted);
+	}
+
+void GlobalSchedulerImpl::handleCumulusComponentMessage(
+                    const CumulusComponentMessage& message, 
+                    const CumulusClientOrMachine& source, 
+                    const CumulusComponentType& componentType
+                    )
+	{
+	TimedLock lock(mMutex, "GlobalSchedulerImpl");
+
+	double curTime = curClock();
+
+	if (mEventHandler)
+		mEventHandler(
+			GlobalSchedulerEvent::InCumulusComponentMessage(message, source, componentType, curTime)
+			);
+
+	mKernel.handleCumulusComponentMessage(message, source, componentType, curTime);
+	}
+
+bool GlobalSchedulerImpl::anyOutstandingTriggeredCheckpoints()
+	{
+	TimedLock lock(mMutex, "GlobalSchedulerImpl");
+
+	return mKernel.anyOutstandingTriggeredCheckpoints();
+	}
+
+}
+}
+
+

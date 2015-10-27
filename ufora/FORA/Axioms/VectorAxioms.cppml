@@ -1,0 +1,762 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "../Core/TupleCategory.hppml"
+#include "Vector_AppendAxiom.hppml"
+#include "Vector_SliceAxiom.hppml"
+#include "Vector.GetItem.hppml"
+#include "Axioms.hppml"
+#include "Axiom.hppml"
+#include "AxiomGroup.hppml"
+#include "AxiomMetadataUtil.hppml"
+#include "LibcallAxiomGroup.hppml"
+#include "TypedForaAxiomBuilder.hppml"
+#include "../Runtime.hppml"
+#include "../Core/Integers.hppml"
+#include "../Native/NativeExpressionBuilder.hppml"
+#include "../Native/TypedNativeExpression.hppml"
+#include "../TypedFora/ABI/DestructorsAndConstructors.hppml"
+#include "../TypedFora/ABI/ForaValueArray.hppml"
+#include "../TypedFora/ABI/VectorLoadRequest.hppml"
+#include "../TypedFora/ABI/VectorLoadRequestCodegen.hppml"
+#include "../TypedFora/ABI/ForaValueArrayCodegen.hpp"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include "../TypedFora/ABI/VectorRecord.hpp"
+#include "../TypedFora/ABI/VectorRecordCodegen.hppml"
+#include "../Primitives/String.hppml"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include "../VectorDataManager/VectorDataManager.hppml"
+#include "../Vector/VectorUtilities.hpp"
+#include "../Core/ImplValContainerUtilities.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../Core/MemoryPool.hpp"
+#include "../Core/RefcountPool.hppml"
+#include "../../core/Logging.hpp"
+#include "../../core/SymbolExport.hpp"
+#include "../../core/StringUtil.hpp"
+#include "../../core/math/Overflow.hpp"
+
+using namespace Fora;
+using TypedFora::Abi::ForaValueArray;
+using TypedFora::Abi::VectorRecord;
+using TypedFora::Abi::PooledVectorRecord;
+using TypedFora::Abi::VectorLoadRequest;
+using Fora::Interpreter::ExecutionContext;
+
+namespace {
+
+int64_t unpagedValueCount(const VectorRecord& vec)
+	{	
+	if (!vec.dataPtr())
+		return 0;
+	
+	return vec.dataPtr()->unpagedValueCount();
+	}
+
+}
+
+
+ReturnValue<VectorRecord, VectorLoadRequest> appropriateVectorForConcatenation(
+			const VectorRecord& vec
+			)
+	{
+	ExecutionContext* context = ExecutionContext::currentExecutionContext();
+
+	MemoryPool* pool = context->getMemoryPool();
+
+	return vec.appropriateForConcatenation(pool, &context->getVDM());
+	}
+	
+ReturnValue<VectorRecord, String, VectorLoadRequest> concatenateVectors(
+			const VectorRecord& vec,
+			const VectorRecord& vec2
+			)
+	{
+	ExecutionContext* context = ExecutionContext::currentExecutionContext();
+
+	MemoryPool* pool = context->getMemoryPool();
+
+	if (!Overflow<int64_t>::checkAdd(vec.size(), vec2.size()))
+		{
+		return slot1(
+			string_type(
+				"Concatenation of vectors of lengths "
+				+ boost::lexical_cast<string>(vec.size())
+				+ " and "
+				+ boost::lexical_cast<string>(vec2.size())
+				+ " would exceed the maximum allowed vector length.",
+				pool
+				)
+			);
+		}
+
+	VectorRecord result = 
+		VectorRecord::concatenate(vec, vec2, pool, &context->getVDM(), context->newVectorHash());
+
+	//we must have paged something. just return the vector record.
+	return slot0(result);
+	}
+	
+namespace {
+
+const char emptyVectorHomogeneousElementTypeErrorString [] = "The empty vector holds no type.";
+
+const char nonTypeHomogeneousErrorString [] = "Non type-homogeneous vector.";
+
+
+JudgmentOnResult jorStringOrBytevec()
+	{
+	return JudgmentOnResult(
+		emptyTreeSet() + 
+			jovVector(
+				JOV::OfType(Type::Integer(8, false))
+				) + 
+			JOV::OfType(Type::String())
+		);
+	}
+
+JOV jovVecOfStringOrBytevec()
+	{
+	return JOV::Vector(JudgmentOnValueVector(jorStringOrBytevec()));
+	}
+
+}
+
+extern "C" {
+
+	BSA_DLLEXPORT
+	ReturnValue<PooledVectorRecord> FORA_clib_vectorSliceWithStride(	
+			const PooledVectorRecord& vec, 
+			int64_t sliceLow, 
+			int64_t sliceHigh,
+			int64_t sliceStride
+			)
+		{
+		return slot0(
+				vec.slice(
+					null() << sliceLow,
+					null() << sliceHigh,
+					null() << sliceStride
+					)
+				);
+		}
+
+	BSA_DLLEXPORT
+	ReturnValue<VectorRecord> FORA_clib_makeExternalS3Dataset(
+			const String& bucketName, 
+			const String& keyName, 
+			const String& accessKey, 
+			const String& secretKey
+			)
+		{
+		ImplValContainer vector = 
+			createFORAVector(
+				jorStringOrBytevec(),
+				VectorDataID::External(
+					ExternalDatasetDescriptor::EntireS3Dataset(
+						S3Dataset::External(
+							bucketName.stdString(), 
+							keyName.stdString(),
+							accessKey.stdString(),
+							secretKey.stdString(),
+							""
+							)
+						)
+					),
+                1,
+                sizeof(VectorRecord),
+                ExecutionContext::currentExecutionContext()->getMemoryPool(),
+				&ExecutionContext::currentVDM()
+                );
+
+		return slot0(VectorRecord(vector.cast<VectorRecord>()));
+		}
+
+	BSA_DLLEXPORT
+	ReturnValue<VectorRecord> FORA_clib_makeOdbcDataset(
+			const String& connectionString,
+			const String& query,
+			const String& uniqueID
+			)
+		{
+        ImmutableTreeVector<std::string> queries;
+        queries = queries + query.stdString();
+
+		ImplValContainer vector = 
+			createFORAVector(
+				jovAnyVector(),
+				VectorDataID::External(
+					ExternalDatasetDescriptor::OdbcRequestDataset(
+						OdbcRequest(
+							connectionString.stdString(),
+                            queries,
+							uniqueID.stdString()
+							)
+						)
+					),
+                1,
+                sizeof(VectorRecord),
+                ExecutionContext::currentExecutionContext()->getMemoryPool(),
+				&ExecutionContext::currentVDM()
+                );
+
+		return slot0(VectorRecord(vector.cast<VectorRecord>()));
+		}
+
+	BSA_DLLEXPORT
+	ReturnValue<VectorRecord> FORA_clib_makeWebS3Dataset(
+			const String& url, 
+			const String& uniqueID
+			)
+		{
+		ImplValContainer vector = 
+			createFORAVector(
+				jorStringOrBytevec(),
+				VectorDataID::External(
+					ExternalDatasetDescriptor::HttpRequestDataset(
+						HttpRequest(
+							url.stdString(),
+							uniqueID.stdString()
+							)
+						)
+					),
+                1,
+                sizeof(VectorRecord),
+                ExecutionContext::currentExecutionContext()->getMemoryPool(),
+				&ExecutionContext::currentVDM()
+                );
+
+		return slot0(VectorRecord(vector.cast<VectorRecord>()));
+		}
+
+	BSA_DLLEXPORT
+	ReturnValue<VectorRecord> FORA_clib_makeInternalS3Dataset(
+			const String& keyName
+			)
+		{
+		ImplValContainer vector = 
+			createFORAVector(
+				jorStringOrBytevec(),
+				VectorDataID::External(
+					ExternalDatasetDescriptor::EntireS3Dataset(
+						S3Dataset::Internal(
+							keyName.stdString()
+							)
+						)
+					),
+                1,
+                sizeof(VectorRecord),
+                ExecutionContext::currentExecutionContext()->getMemoryPool(),
+				&ExecutionContext::currentVDM()
+                );
+
+		return slot0(VectorRecord(vector.cast<VectorRecord>()));
+		}
+
+	BSA_DLLEXPORT
+	ReturnValue<VectorRecord> FORA_clib_pagedVectorHandle(const VectorRecord& vec)
+		{
+		return slot0(
+			vec.paged(
+				ExecutionContext::currentExecutionContext()->getMemoryPool(),
+				&ExecutionContext::currentVDM()
+				)
+			);
+		}
+
+	BSA_DLLEXPORT
+	ReturnValue<JudgmentOnValue, String> FORA_clib_homogeneousElementType(
+				const VectorRecord& vec
+				)
+		{
+		JudgmentOnResult eltsJor = vec.jor();
+		
+		if (!eltsJor.size())
+			return slot1(
+				string_type(
+					emptyVectorHomogeneousElementTypeErrorString,
+					ExecutionContext::currentExecutionContext()->getMemoryPool()
+					)
+				);
+		
+		lassert(eltsJor[0].type());
+		
+		Type type_0 = *eltsJor[0].type();
+		
+		for (uword_t i = 1; i < eltsJor.vals().size(); i++)
+			{
+			lassert(eltsJor.vals()[i].type())
+			
+			if (type_0 != *eltsJor.vals()[i].type())
+				{
+				return slot1(
+					string_type(
+						nonTypeHomogeneousErrorString,
+						ExecutionContext::currentExecutionContext()->getMemoryPool()
+						)
+					);
+				}
+			}
+			
+		return slot0(JOV::OfType(type_0));
+		}
+
+	BSA_DLLEXPORT
+	ReturnValue<String, String, VectorLoadRequest> FORA_clib_vectorDataToString(
+				const VectorRecord& vec
+				)
+		{
+		const static int kMaxStringSizeForVector = 1024 * 1024 * 10;
+
+		int64_t stringSize = vec.size();
+
+		if (stringSize == 0)
+			return slot0(String());
+		
+		if (stringSize > kMaxStringSizeForVector)
+			{
+			std::string msg;
+
+			MemoryPool* pool = ExecutionContext::currentExecutionContext()->getMemoryPool();
+
+			msg = "Can't allocate a string from a vector larger than 10 MB. This vector has " + 
+					boost::lexical_cast<std::string>(vec.size()) + " values";
+
+			return slot1(
+				String(
+					msg, 
+					pool
+					)
+				);
+			}
+
+		String tr = String::empty(
+			stringSize,
+			stringSize <= String::maxBytesPackedIntoStringPtr ? 
+				nullptr :
+				ExecutionContext::currentExecutionContext()->getMemoryPool(),
+			false
+			);
+
+		uint8_t* stringBase = (uint8_t*)tr.base();
+
+		int64_t curOffset = 0;
+		int64_t stride = vec.stride();
+
+		TypedFora::Abi::ForaValueArraySlice slice = vec.sliceForOffset(curOffset);
+
+		while (curOffset < stringSize)
+			{
+			if (!slice.mapping().indexIsValid(curOffset) || !slice.offsetFor(curOffset))
+				slice = vec.sliceForOffset(curOffset);
+			
+			uint8_t* index = slice.offsetFor(curOffset);
+
+			if (!index)
+				return slot2(VectorLoadRequest(vec, 0, vec.size()));
+
+			stringBase[curOffset] = *index;
+			
+			curOffset++;			
+			}
+
+		return slot0(String(tr));
+		}
+
+	BSA_DLLEXPORT
+	ReturnValue<VectorRecord, String, VectorLoadRequest> FORA_clib_concatenateVector(
+				const VectorRecord& vec,
+				const VectorRecord& vec2
+				)
+		{
+		return concatenateVectors(vec, vec2);
+		}
+
+	BSA_DLLEXPORT
+	ReturnValue<VectorRecord, VectorLoadRequest> FORA_clib_appropriateForConcatenation(
+				const VectorRecord& vec
+				)
+		{
+		return appropriateVectorForConcatenation(vec);
+		}
+};
+
+
+class VectorHomogeneousElementTypeAxiom : public AxiomGroup {
+public:
+	VectorHomogeneousElementTypeAxiom() :
+		AxiomGroup(
+			JOVT() +
+				jovAnyVector() +
+				"Member" +
+				"homogeneousElementType" +
+				JOVTE::NoExtras()
+			)
+		{
+        setMetadata(
+            AxiomMetadataUtil::createMarkdownAlternative(
+                "#### Usage\n\n"
+                "    vec.homogeneousElementType\n\n"
+                "#### Description\n\n"
+                "For a vector constructed out of purely type-homogeneous values, "
+                "return their homogeneous element type.\n\n"
+                "Note this member is not needed for most users.\n\n"
+                "#### Examples\n\n"
+                "    [1,2,3,4].homogeneousElementType // Int64\n"
+                "    [1, 1.0].homogeneousElementType // throws an exception\n\n"                
+                )
+            );
+		}
+	
+	Nullable<Axiom> axiom(TypedFora::Compiler& runtime, const JudgmentOnValueTuple& s)
+		{
+		JudgmentOnValue vectorJudgment = s.jovs()[0];
+			
+		Nullable<AxiomJOA> axiomJoa = axiomJOA(s);
+
+		lassert(axiomJoa);
+
+		@match AxiomJOA(*axiomJoa)
+			-|  Native(joa) ->> {
+			
+			if (joa.definitelyThrows())
+				{
+				lassert(joa.throwPart().size() == 1 and joa.throwPart()[0].constant());
+				return null() <<
+					AxiomGroup::throwsAxiom(
+						s,
+						*joa.throwPart()[0].constant()
+					);
+				}
+			else if (joa.throwPart().size() == 1 and joa.throwPart()[0].constant())
+				{
+				lassert(joa.resultPart().size() == 1 and joa.resultPart()[0].constant());
+				
+				NativeAxiomVars axiomVariables(
+					JOVT() +  
+						vectorJudgment +
+						JOV::Constant(CSTValue(Symbol("Member"))) +
+						JOV::Constant(CSTValue(Symbol("homogeneousElementType")))
+					);
+				
+				NativeExpression isNonEmptyE = 
+					(TypedNativeExpression<VectorRecord>(axiomVariables[0]).size() > (uint64_t)0).getExpression();
+
+				return null() <<
+					AxiomGroup::simpleAxiom(
+						axiomVariables,
+						JOV::Constant(*joa.resultPart()[0].constant()),
+						JOV::Constant(CSTValue(emptyVectorHomogeneousElementTypeErrorString)),
+						NativeExpression::If(
+							isNonEmptyE,
+							NativeExpression::Return(
+								0,
+								NativeExpression::Nothing()
+								),
+							NativeExpression::Return(
+								1,
+								NativeExpression::Nothing()
+								)
+							)
+					);		
+				}
+			}		
+			
+		return null() << 
+			LibcallAxiomGroup::createAxiom(
+				signature(),
+				ReturnSlots() +
+				ReturnSlot::Normal(jovJOVAsValue()) +
+				ReturnSlot::Exception(JOV::OfType(Type::String())),
+				&FORA_clib_homogeneousElementType,
+				ImmutableTreeVector<uword_t>() + 0 
+			);
+		}
+		
+	Nullable<AxiomJOA> axiomJOA(const JudgmentOnValueTuple& s)
+		{
+		JudgmentOnValue vectorJudgment = s.jovs()[0];
+		
+        @match JudgmentOnValue(vectorJudgment)
+			-|	Vector((jor)) ->> {
+				
+				if (!jor.size())
+					return null() <<
+						AxiomJOA::Throws(
+							CSTValue(emptyVectorHomogeneousElementTypeErrorString)
+						);
+				else
+				if (jor.vals()[0].type())
+					{			
+					bool allTypesAreKnownOrPossiblyEmpty = true;
+					std::set<Type> possibleTypes; // won't have size more than 3
+					
+					for (uword_t i = 0; i < jor.vals().size(); i++)
+						{
+						Nullable<Type> type_i = jor.vals()[i].type();
+						if (!type_i)
+							{
+							allTypesAreKnownOrPossiblyEmpty = false;
+							break;
+							}
+						else
+							{
+							possibleTypes.insert(*type_i);
+							}
+						}
+					
+					if (allTypesAreKnownOrPossiblyEmpty)
+						{
+						JudgmentOnAction joaTr;
+						
+						for (auto it = possibleTypes.begin(); it != possibleTypes.end(); ++it)
+							joaTr = joaTr | JudgmentOnAction::Value(
+												JudgmentOnValue::Constant(
+													CSTValue(JOV::OfType(*it))
+												)
+											);
+						
+						if (possibleTypes.size() <= 1) //vector is either empty or type-homogeneous
+							joaTr = joaTr |
+										JudgmentOnAction::Throws(
+											JudgmentOnValue::Constant(
+												CSTValue(
+													emptyVectorHomogeneousElementTypeErrorString
+													)
+												)
+											);
+						else //vec is either empty, type-homogeneous, or non-type-homogeneous
+							joaTr = joaTr | JudgmentOnAction::Throws(
+												JOV::OfType(Type::String())
+												);
+							
+						return null() << AxiomJOA::Native(joaTr);
+						}
+					}
+				}
+			-|	_ ->> { lassert(false); }
+			;
+		
+		return null() <<
+			AxiomJOA::Native(
+				JudgmentOnAction::Value(JOV::JOVAsValue(JudgmentOnJOV::Unknown(JOV()))) |
+				JudgmentOnAction::Throws(JOV::OfType(Type::String()))
+				);
+		}
+};
+
+Nullable<AxiomJOA> concatenateVectorSignatureFunction(const JOVT& inSignature)
+	{
+	return null() << AxiomJOA::Native(
+			JudgmentOnAction::Value(inSignature[0].smallestCovering(inSignature[2])) |
+			JudgmentOnAction::Throws(JOV::OfType(Type::String()))
+			);
+	}
+
+Nullable<AxiomJOA> returnsFirstArgumentSignatureFunction(const JOVT& inSignature)
+	{
+	return null() << AxiomJOA::Native(
+			JudgmentOnAction::Value(inSignature[0])
+			);
+	}
+
+
+
+class VectorAxioms {
+public:
+		VectorAxioms()
+			{
+			AxiomGroups("Vector") +=
+				AxiomGroup::returns(
+					JOVT() + "EmptyVector" + "Call",
+					CSTValue::blankOf(Type::Vector())
+					);
+
+			AxiomGroups("Vector") += new VectorAppendAxiom();
+			AxiomGroups("Vector") += new VectorGetItem();
+			AxiomGroups("Vector") += new VectorHomogeneousElementTypeAxiom();
+
+			AxiomGroups("Vector") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						jovAnyVector() +
+						"concatenate" +
+						jovAnyVector(),
+					ReturnSlots() + 
+						ReturnSlot::Normal(jovAnyVector()) +
+						ReturnSlot::Exception(JOV::OfType(Type::String())),
+					//returns the smallest vector possible
+					&FORA_clib_concatenateVector,
+					ImmutableTreeVector<uword_t>() + 0 + 2,
+					null(),
+					null(),
+					concatenateVectorSignatureFunction
+					)
+				;
+
+			AxiomGroups("Vector") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						jovAnyVector() +
+						"appropriateForConcatenation",
+					ReturnSlots() + 
+						ReturnSlot::Normal(jovAnyVector()),
+					//returns the smallest vector possible
+					&FORA_clib_appropriateForConcatenation,
+					ImmutableTreeVector<uword_t>() + 0,
+					null(),
+					null(),
+					returnsFirstArgumentSignatureFunction
+					)
+				;
+
+			AxiomGroups("Vector") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						"ExternalS3Dataset" +
+						"Call" +
+						JOV::OfType(Type::String()) +
+						JOV::OfType(Type::String()) +
+						JOV::OfType(Type::String()) +
+						JOV::OfType(Type::String()),
+					ReturnSlots() + jovVecOfStringOrBytevec(),
+					&FORA_clib_makeExternalS3Dataset,
+					ImmutableTreeVector<uword_t>() + 2 + 3 + 4 + 5
+					)
+				;
+
+			AxiomGroups("Vector") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						"ExternalHttpRequestDataset" +
+						"Call" +
+						JOV::OfType(Type::String()) +
+						JOV::OfType(Type::String()),
+					ReturnSlots() + jovVecOfStringOrBytevec(),
+					&FORA_clib_makeWebS3Dataset,
+					ImmutableTreeVector<uword_t>() + 2 + 3
+					)
+				;
+
+			AxiomGroups("Vector") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						"ExternalOdbcRequestDataset" +
+						"Call" +
+						JOV::OfType(Type::String()) +
+						JOV::OfType(Type::String()) +
+						JOV::OfType(Type::String()),
+					ReturnSlots() + jovAnyVector(),
+					&FORA_clib_makeOdbcDataset,
+					ImmutableTreeVector<uword_t>() + 2 + 3 + 4
+					)
+				;
+
+			AxiomGroups("Vector") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						" InternalS3Dataset" +
+						"Call" +
+						JOV::OfType(Type::String()),
+					ReturnSlots() + 
+						jovVector(
+							jovVector(
+								JOV::OfType(Type::Integer(8, false))
+								)
+							),
+					&FORA_clib_makeInternalS3Dataset,
+					ImmutableTreeVector<uword_t>() + 2
+					)
+				;
+
+			AxiomGroups("Vector") += new VectorSliceAxiom();
+
+			AxiomGroups("Vector") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						jovAnyVector() +
+						"GetItem" + 
+						JOV::OfType(Type::Integer(64, true)) + 
+						JOV::OfType(Type::Integer(64, true)) + 
+						JOV::OfType(Type::Integer(64, true)),
+					ReturnSlots() + jovAnyVector(),
+					&FORA_clib_vectorSliceWithStride,
+					ImmutableTreeVector<uword_t>() + 0 + 2 + 3 + 4,
+					null(),
+					null(),
+					returnsFirstArgumentSignatureFunction
+					);
+
+                {
+				auto axiomPtr = LibcallAxiomGroup::create(
+					JOVT() + 
+						jovAnyVector() + 
+						"Member" + 
+						"paged",
+					ReturnSlots() + jovAnyVector(),
+					&FORA_clib_pagedVectorHandle,
+					ImmutableTreeVector<uword_t>() + 0,
+					null(),
+					null(),
+					returnsFirstArgumentSignatureFunction
+					);
+
+                axiomPtr->setMetadata(
+                    AxiomMetadataUtil::createMarkdownAlternative(
+                        "#### Usage\n\n"
+                        "    vec.paged\n\n"
+                        "#### Description\n\n"
+                        "Return a \"paged\" copy of a vector. Not really a user-facing feature."
+                        )
+                    );
+
+                AxiomGroups("Vector") += axiomPtr;
+                }
+				
+				{
+				JOVT signature = JOVT() +
+					jovVector(JOV::OfType(Type::Integer(8,false))) +
+					"Member" +
+					"dataAsString"
+					;
+
+				AxiomGroups("Vector") +=
+					LibcallAxiomGroup::create(
+						signature,
+						ReturnSlots() +
+							ReturnSlot::Normal(JOV::OfType(Type::String())) + 
+							ReturnSlot::Exception(JOV::OfType(Type::String())),
+						&FORA_clib_vectorDataToString,
+						ImmutableTreeVector<uword_t>() + 0
+						);
+				}
+
+				{
+				NativeAxiomVars vars(JOVT() + "size" + "Call" + jovAnyVector());
+
+				AxiomGroups("Vector") +=
+					AxiomGroup::simple(
+						vars,
+						JOV::OfType(Type::Integer(64, true)),
+						static_cast<TypedNativeExpression<int64_t> >(
+							TypedNativeExpression<VectorRecord>(vars[2]).size()
+							).getExpression(),
+						false
+						);
+				}
+			}
+};
+VectorAxioms vectorAxioms;
+

@@ -1,0 +1,580 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "AddDropRecoveryCoordinatorImpl.hppml"
+#include "../FORA/Serialization/SerializedObjectFlattener.hpp"
+#include "ExternalIoTask/CheckpointFile.hppml"
+#include "../FORA/TypedFora/ABI/BigVectorLayouts.hppml"
+
+namespace Cumulus {
+
+AddDropRecoveryCoordinatorImpl::AddDropRecoveryCoordinatorImpl(
+			PolymorphicSharedPtr<VectorDataManager> inVDM,
+			boost::function1<void, CumulusComponentMessageCreated> inOnCumulusComponentMessageCreated,
+			boost::function0<void> inOnAddDropExchangeComplete,
+			boost::function0<void> inOnAllWorkersReadyToCompute,
+			MachineId ownMachineId,
+			hash_type regime,
+			bool inIsTheLeader,
+			Fora::Interpreter::ExecutionContextConfiguration inEcConfig,
+			PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler
+			) : 
+		mVDM(inVDM),
+		mOnCumulusComponentMessageCreated(inOnCumulusComponentMessageCreated),
+		mOnAddDropExchangeComplete(inOnAddDropExchangeComplete),
+		mOnAllWorkersReadyToCompute(inOnAllWorkersReadyToCompute),
+		mOwnMachineId(ownMachineId),
+		mIsTheLeader(inIsTheLeader),
+		mEcConfig(inEcConfig),
+		mCallbackScheduler(inCallbackScheduler)
+	{
+	LOG_DEBUG << "Construct AddDropRecoveryCoordinatorImpl on " << mOwnMachineId << " for regime " << regime;
+
+	mMachines.insert(ownMachineId);
+	}
+
+void AddDropRecoveryCoordinatorImpl::addMachine(MachineId inMachine)
+	{
+	mMachines.insert(inMachine);
+	}
+
+void AddDropRecoveryCoordinatorImpl::handleCumulusComponentMessage(
+					CumulusComponentMessage message, 
+					CumulusClientOrMachine source, 
+					CumulusComponentType component
+					)
+	{
+	@match CumulusComponentMessage(message)
+		-| AddDropRecovery(m) ->> {
+			LOG_DEBUG << mOwnMachineId << " handling " << m;
+			}
+		-| _ ->> {}
+		;
+
+
+	@match CumulusComponentMessage(message)
+		-| AddDropRecovery(CurrentState(event)) ->> {
+			lassert(mIsTheLeader);
+			mAddDropSystemState.handleEvent(event);
+			}
+		-| AddDropRecovery(AllLocalStateSent()) ->> {
+			@match CumulusClientOrMachine(source)
+				-| Machine(machine) ->> {
+					mMachinesWithAllLocalStateSent.insert(machine);
+					if (haveAllMachinesHaveSentLocalState())
+						allLocalStateSentByAllMachines();
+					} 
+			}
+		-| AddDropRecovery(ReadyToCompute()) ->> {
+			@match CumulusClientOrMachine(source)
+				-| Machine(machine) ->> {
+					mMachinesReadyToCompute.insert(machine);
+					if (areAllMachinesAreReadyToCompute())
+						triggerAllWorkersReadyToCompute();
+					} 
+			}
+		-| AddDropRecovery(ProceedWithLocalRecovery(finalCheckpointState)) ->> {
+			performLocalRecovery(finalCheckpointState);
+			}
+		-| AddDropRecovery(ApplyAddDropChanges(changes)) ->> {
+			applyAddDropChanges(changes);
+			}
+		-| AddDropRecovery(AllAddDropChangesApplied(changes)) ->> {
+			@match CumulusClientOrMachine(source)
+				-| Machine(machine) ->> {
+					mMachinesWithAllAddDropChangesApplied.insert(machine);
+					mAddDropPersistedState.persistedComputationStatuses() =
+						mAddDropPersistedState.persistedComputationStatuses() + changes;
+					checkIfCanProceedToLocalRecovery();
+					} 
+			}
+		-| PythonIoTaskService(Response(resp)) ->> {
+			auto it = mPendingCheckpointSummaries.find(resp.guid());
+			if (it != mPendingCheckpointSummaries.end())
+				{
+				CheckpointRequest checkpoint = it->second;
+				mPendingCheckpointSummaries.erase(it);
+
+				@match PythonIoTaskResponse(resp)
+					-| ObjectExtracted(_, data) ->> {
+						if (data->hash() != mVDM->getPersistentCacheIndex()->checkpointDataHash(checkpoint))
+							{
+							//this will trigger recovery
+							mVDM->getPersistentCacheIndex()->markCheckpointInvalid(checkpoint);
+							return;
+							}
+
+						CheckpointSummary summary;
+							
+						try {
+							summary = ::deserialize<CheckpointSummary>(data->toString());
+							}
+						catch(...)
+							{
+							LOG_CRITICAL << "Invalid CheckpointSummary serialization encountered.";
+							lassert(false);
+							}
+
+						handleCheckpointSummary(checkpoint, summary);
+						}
+					-| ObjectDoesNotExist() ->> {
+						mVDM->getPersistentCacheIndex()->markCheckpointInvalid(checkpoint);
+						return;
+						}
+					-| _ ->> {
+						lassert_dump(false, "Eventually we should go into a no-cache-available state here.");
+						}
+				}
+
+			auto it2 = mPendingBigvecDefinitions.find(resp.guid());
+			if (it2 != mPendingBigvecDefinitions.end())
+				{
+				hash_type bigvecGuid = it2->second;
+				mPendingBigvecDefinitions.erase(it2);
+
+				@match PythonIoTaskResponse(resp)
+					-| ObjectExtracted(_, data) ->> {
+						if (data->hash() != mVDM->getPersistentCacheIndex()->bigvecDataHash(bigvecGuid))
+							{
+							mVDM->getPersistentCacheIndex()->markBigvecInvalid(bigvecGuid);
+							return;
+							}
+
+						TypedFora::Abi::BigVectorPageLayout layout;
+
+						try {
+							SerializedObject::deserialize(
+								SerializedObjectInflater::inflateOnce(data),
+								mVDM->getMemoryManager(),
+								layout
+								);
+							}
+						catch(...)
+							{
+							LOG_CRITICAL << "Invalid CheckpointSummary serialization encountered.";
+							lassert(false);
+							}
+
+						handleBigvecLayout(bigvecGuid, layout);
+						}
+					-| ObjectDoesNotExist() ->> {
+						mVDM->getPersistentCacheIndex()->markBigvecInvalid(bigvecGuid);
+						return;
+						}
+					-| _ ->> {
+						lassert_dump(false, "Eventually we should go into a no-cache-available state here.");
+						}
+				}
+
+			auto it3 = mPendingCheckpointFiles.find(resp.guid());
+			if (it3 != mPendingCheckpointFiles.end())
+				{
+				pair<CheckpointRequest, hash_type> req = it3->second;
+				mPendingCheckpointFiles.erase(it3);
+
+				@match PythonIoTaskResponse(resp)
+					-| ObjectExtracted(_, data) ->> {
+						if (data->hash() != mVDM->getPersistentCacheIndex()->checkpointFileDataHash(req.first, req.second))
+							{
+							mVDM->getPersistentCacheIndex()->markCheckpointFileInvalid(req.first, req.second);
+							return;
+							}
+
+						handleCheckpointFile(req, data);
+						}
+					-| ObjectDoesNotExist() ->> {
+						mVDM->getPersistentCacheIndex()->markCheckpointFileInvalid(req.first, req.second);
+						return;
+						}
+					-| _ ->> {
+						lassert_dump(false, "Eventually we should go into a no-cache-available state here.");
+						}
+				}
+			}
+	}
+
+bool AddDropRecoveryCoordinatorImpl::areAllMachinesAreReadyToCompute()
+	{
+	return mMachinesReadyToCompute.size() == mMachines.size();
+	}
+
+bool AddDropRecoveryCoordinatorImpl::haveAllMachinesHaveSentLocalState()
+	{
+	return mMachinesWithAllLocalStateSent.size() == mMachines.size();
+	}
+
+//stage 2: local workers call this repeatedly to upload all of their local state into the coordinator
+void AddDropRecoveryCoordinatorImpl::handleLocalStateEvent(const CumulusWorkerAddDropEvent& inEvent)
+	{
+	LOG_DEBUG << mOwnMachineId << ": recovery coordinator received " << inEvent;
+	mOnCumulusComponentMessageCreated(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::AddDropRecovery(
+				AddDropRecoveryMessage::CurrentState(inEvent)
+				),
+			CumulusComponentEndpointSet::LeaderMachine(),
+			CumulusComponentType::AddDropRecoveryCoordinator()
+			)
+		);
+	}
+
+//stage 3: local workers call this method to indicate that they've sent all their state
+void AddDropRecoveryCoordinatorImpl::allLocalStateIsProvided()
+	{
+	mOnCumulusComponentMessageCreated(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::AddDropRecovery(
+				AddDropRecoveryMessage::AllLocalStateSent()
+				),
+			CumulusComponentEndpointSet::LeaderMachine(),
+			CumulusComponentType::AddDropRecoveryCoordinator()
+			)
+		);
+	}
+
+//stage 4: all workers have indicated to us that they have sent their state
+void AddDropRecoveryCoordinatorImpl::allLocalStateSentByAllMachines()
+	{
+	lassert(mIsTheLeader);
+
+	performCheckpointCalculation();
+	}
+
+void AddDropRecoveryCoordinatorImpl::performCheckpointCalculation()
+	{
+	lassert(mIsTheLeader);
+
+	mAddDropSystemState.pruneRealizedSyntheticPages();
+	
+	mAddDropSystemCalculations.computeMissingDependencies(mAddDropSystemState);
+
+	auto cache = mVDM->getPersistentCacheIndex();
+	if (cache)
+		{
+		for (auto root: mAddDropSystemCalculations.rootComputationsMissingDependencies())
+			{
+			auto checkpoints = cache->checkpointsForComputation(root);
+
+			if (checkpoints.size())
+				requestCheckpointSummary(checkpoints.back());
+			}
+
+		for (auto bigvec: mAddDropSystemCalculations.bigvecsMissingDependencies())
+			if (cache->bigvecExists(bigvec))
+				mAddDropPersistedState.bigvecsHeldInPersistentCache().insert(bigvec);
+		}
+
+	checkIfCanSendCheckpointLoadRequests();
+	}
+
+void AddDropRecoveryCoordinatorImpl::handleCheckpointSummary(CheckpointRequest req, CheckpointSummary summary)
+	{
+	lassert(mIsTheLeader);
+
+	mAddDropPersistedState.addCheckpointSummary(req, summary);
+
+	//see if there are any bigvecs we need to load		
+	auto bigvecs = summary.bigvecsReferenced();
+
+	for (auto b: bigvecs)
+		if (mAddDropSystemState.bigvecLayouts().find(b) == mAddDropSystemState.bigvecLayouts().end() &&
+					mPendingBigvecDefinitions.find(b) == mPendingBigvecDefinitions.end())
+			requestBigvecDefinition(b);
+
+	auto cache = mVDM->getPersistentCacheIndex();
+
+	if (cache)
+		cache->touchCheckpoint(req);
+
+	checkIfCanSendCheckpointLoadRequests();
+	}
+
+void AddDropRecoveryCoordinatorImpl::handleBigvecLayout(
+				hash_type guid, 
+				TypedFora::Abi::BigVectorPageLayout pageLayout
+				)
+	{
+	mAddDropPersistedState.bigvecsLoadedFromCache()[guid] = pageLayout;
+
+	checkIfCanSendCheckpointLoadRequests();
+	}
+
+void AddDropRecoveryCoordinatorImpl::checkIfCanSendCheckpointLoadRequests()
+	{
+	lassert(mIsTheLeader);
+
+	if (mPendingCheckpointSummaries.size() == 0 && mPendingBigvecDefinitions.size() == 0)
+		{
+		mAddDropSystemCalculations.computeRecoverableAndValidComputations(
+			mAddDropSystemState, 
+			mAddDropPersistedState
+			);
+
+		for (auto machine: mMachines)
+			mOnCumulusComponentMessageCreated(
+				CumulusComponentMessageCreated(
+					CumulusComponentMessage::AddDropRecovery(
+						AddDropRecoveryMessage::ApplyAddDropChanges(
+							mAddDropSystemCalculations.addDropChangesFor(
+								machine,
+								mAddDropSystemState,
+								mAddDropPersistedState
+								)
+							)
+						),
+					CumulusComponentEndpointSet::SpecificWorker(machine),
+					CumulusComponentType::AddDropRecoveryCoordinator()
+					)
+				);
+		}
+	}
+
+void AddDropRecoveryCoordinatorImpl::applyAddDropChanges(const AddDropChanges& changes)
+	{
+	for (auto comp: mComputationStates)
+		if (!changes.computationsToKeep().contains(comp.first))
+			mComputationsLostOnLocalMachine.insert(comp.first);
+
+	for (auto comp: changes.computationsToKeep())
+		lassert(mComputationStates.find(comp) != mComputationStates.end());
+
+	for (auto comp: mComputationsLostOnLocalMachine)
+		mComputationStates.erase(comp);
+	
+	for (auto computationAndRequest: changes.checkpointedComputationsToLoad())
+		{
+		mCheckpointComputationsToLoad.insert(computationAndRequest.first);
+		mCheckpointFilesToProcess.insert(computationAndRequest.second);
+		}
+
+	for (auto bigvecAndDefinition: changes.bigvecsLoadedFromCache())
+		{
+		mVDM->getBigVectorLayouts()->registerNewLayout(bigvecAndDefinition.second);
+		}
+
+	checkIfAllAddDropChangesAreAppliedOrRequestNextFile();
+	}
+
+void AddDropRecoveryCoordinatorImpl::handleCheckpointFile(
+					pair<CheckpointRequest, hash_type> request, 
+					PolymorphicSharedPtr<NoncontiguousByteBlock> data
+					)
+	{
+	LOG_INFO << "Reading from checkpoint file " << request << ". " 
+		<< mPendingCheckpointFiles.size() << " in flight and "
+		<< mCheckpointFilesToProcess.size() << " unrequested."
+		;
+
+	map<ComputationId, PolymorphicSharedPtr<SerializedObject> > states;
+	CheckpointFile::deserializeFile(data, states, mVDM->getMemoryManager());
+
+	for (auto compAndState: states)
+		if (mCheckpointComputationsToLoad.find(compAndState.first) != mCheckpointComputationsToLoad.end())
+			{
+			mComputationStates[compAndState.first].reset(
+				new ComputationState(
+					compAndState.first,
+					mVDM,
+					mEcConfig,
+					mCallbackScheduler
+					)
+				);
+			
+			auto state = mComputationStates[compAndState.first];
+
+			state->deserialize(compAndState.second);
+
+			mLoadedComputationStatuses = mLoadedComputationStatuses + 
+				compAndState.first + 
+				ComputationStatusOnMachine::Active(
+					state->currentComputationStatus(),
+					state->currentComputationStatistics()
+					);
+
+			mCheckpointComputationsToLoad.erase(compAndState.first);
+			}
+
+	checkIfAllAddDropChangesAreAppliedOrRequestNextFile();
+	}
+
+void AddDropRecoveryCoordinatorImpl::checkIfAllAddDropChangesAreAppliedOrRequestNextFile()
+	{
+	if (mCheckpointFilesToProcess.size() == 0 && mPendingCheckpointFiles.size() == 0 && mCheckpointFilesToProcess.size() == 0)
+		{
+		//assert that we're not missing anything
+		lassert(mCheckpointComputationsToLoad.size() == 0);
+
+		mOnCumulusComponentMessageCreated(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::AddDropRecovery(
+					AddDropRecoveryMessage::AllAddDropChangesApplied(mLoadedComputationStatuses)
+					),
+				CumulusComponentEndpointSet::LeaderMachine(),
+				CumulusComponentType::AddDropRecoveryCoordinator()
+				)
+			);
+		}
+
+	if (mCheckpointFilesToProcess.size())
+		{
+		hash_type guid = mVDM->newVectorHash();
+
+		pair<CheckpointRequest, hash_type> file = *mCheckpointFilesToProcess.begin();
+		mCheckpointFilesToProcess.erase(file);
+
+		mPendingCheckpointFiles[guid] = file;
+
+		mOnCumulusComponentMessageCreated(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::PythonIoTaskService(
+					PythonIoTaskServiceMessage::Request(
+						PythonIoTaskRequest::ExtractPersistedObject(
+							guid,
+							PersistentCacheKey::CheckpointFile(file.first, file.second).storagePath()
+							)
+						)
+					),
+				CumulusComponentEndpointSet::SpecificWorker(mOwnMachineId),
+				CumulusComponentType::PythonIoTaskService()
+				)
+			);
+		}
+	}
+
+void AddDropRecoveryCoordinatorImpl::checkIfCanProceedToLocalRecovery()
+	{
+	lassert(mIsTheLeader);
+
+	if (mMachinesWithAllAddDropChangesApplied.size() == mMachines.size())
+		{
+		LOG_DEBUG << mOwnMachineId << ": ADRCI proceeding to final checkpoint.";
+
+		mOnCumulusComponentMessageCreated(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::AddDropRecovery(
+					AddDropRecoveryMessage::ProceedWithLocalRecovery(
+						mAddDropSystemCalculations.finalCheckpointState(
+							mAddDropSystemState,
+							mAddDropPersistedState
+							)
+						)
+					),
+				CumulusComponentEndpointSet::AllWorkers(),
+				CumulusComponentType::AddDropRecoveryCoordinator()
+				)
+			);
+		}
+	}
+
+//stage 5: the global leader has sent us everything we need to know to perform
+//recovery, and we should proceed directly
+void AddDropRecoveryCoordinatorImpl::performLocalRecovery(const AddDropFinalState& finalState)
+	{
+	mFinalAddDropState = finalState;
+
+	//allow CumulusWorker to continue booting the process
+	mOnAddDropExchangeComplete();
+
+	//indicate to everyone we're ready to go
+	mOnCumulusComponentMessageCreated(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::AddDropRecovery(
+				AddDropRecoveryMessage::ReadyToCompute()
+				),
+			CumulusComponentEndpointSet::AllWorkers(),
+			CumulusComponentType::AddDropRecoveryCoordinator()
+			)
+		);
+	}
+
+//stage 7: all workers have indicated to us that they are ready to compute,
+//so begin computing
+void AddDropRecoveryCoordinatorImpl::triggerAllWorkersReadyToCompute()
+	{
+	mOnAllWorkersReadyToCompute();
+	}
+
+const AddDropFinalState& AddDropRecoveryCoordinatorImpl::getAddDropState() const
+	{
+	return mFinalAddDropState;
+	}
+
+void AddDropRecoveryCoordinatorImpl::setComputationStates(std::map<ComputationId, PolymorphicSharedPtr<ComputationState> >& states)
+	{
+	std::swap(states, mComputationStates);
+	}
+
+const std::map<ComputationId, PolymorphicSharedPtr<ComputationState> >& AddDropRecoveryCoordinatorImpl::getComputationStates()
+	{
+	return mComputationStates;
+	}
+
+void AddDropRecoveryCoordinatorImpl::clearComputationStates()
+	{
+	mComputationStates.clear();
+	}
+
+void AddDropRecoveryCoordinatorImpl::requestCheckpointSummary(CheckpointRequest checkpoint)
+	{
+	hash_type guid = mVDM->newVectorHash();
+
+	mPendingCheckpointSummaries[guid] = checkpoint;
+
+	mOnCumulusComponentMessageCreated(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::PythonIoTaskService(
+				PythonIoTaskServiceMessage::Request(
+					PythonIoTaskRequest::ExtractPersistedObject(
+						guid,
+						PersistentCacheKey::CheckpointSummary(checkpoint).storagePath()
+						)
+					)
+				),
+			CumulusComponentEndpointSet::SpecificWorker(mOwnMachineId),
+			CumulusComponentType::PythonIoTaskService()
+			)
+		);
+	}
+
+void AddDropRecoveryCoordinatorImpl::requestBigvecDefinition(hash_type bigvec)
+	{
+	hash_type guid = mVDM->newVectorHash();
+
+	mPendingBigvecDefinitions[guid] = bigvec;
+
+	mOnCumulusComponentMessageCreated(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::PythonIoTaskService(
+				PythonIoTaskServiceMessage::Request(
+					PythonIoTaskRequest::ExtractPersistedObject(
+						guid,
+						PersistentCacheKey::BigvecDefinition(bigvec).storagePath()
+						)
+					)
+				),
+			CumulusComponentEndpointSet::SpecificWorker(mOwnMachineId),
+			CumulusComponentType::PythonIoTaskService()
+			)
+		);
+	}
+
+const std::set<ComputationId>& AddDropRecoveryCoordinatorImpl::computationsLostOnLocalMachine() const
+	{
+	return mComputationsLostOnLocalMachine;
+	}
+}
+

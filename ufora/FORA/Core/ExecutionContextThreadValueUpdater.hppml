@@ -1,0 +1,544 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <iostream>
+#include "../TypedFora/ABI/StackFrameWalker.hppml"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include "../TypedFora/ABI/ScatteredForaValues.hppml"
+#include "../TypedFora/ABI/VectorRecord.hpp"
+#include "../VectorDataManager/PageletTree.hppml"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+
+#include "ValueDeepcopier.hppml"
+
+namespace TypedFora {
+namespace Abi {
+class HomogenousVectorStash;
+}
+}
+
+namespace Fora {
+namespace Interpreter {
+
+/******************
+ExecutionContextThreadValueUpdater
+
+scans over FORA values and pages any vectors over a given size into the VDM.
+
+This class is primarily plugged into a StackValueModifyingStackFrameVisitor.
+
+******************/
+
+template<class value_visitor_state_type>
+class ExecutionContextThreadValueUpdaterState {
+public:
+	ExecutionContextThreadValueUpdaterState(
+				PolymorphicSharedPtr<VectorDataManager> inVDM,
+				RefcountPool& inRefcountPool, 
+				MemoryPool* inTargetPool,
+				value_visitor_state_type& inValueVisitorState
+				) : 
+			mVDM(inVDM),
+			mRefcountPool(inRefcountPool),
+			mMemoryPool(inTargetPool),
+			mValueVisitorState(inValueVisitorState)
+		{
+		}
+
+	typedef TypedFora::Abi::VectorHandle VectorHandle;
+
+	typedef TypedFora::Abi::VectorRecord VectorRecord;
+
+	value_visitor_state_type& mValueVisitorState;
+
+	PolymorphicSharedPtr<VectorDataManager> mVDM;
+
+	set<hash_type> mMutableVectorRecordsVisitedByHash;
+
+	set<VectorHandle*> mVectorHandleContentsVisited;
+
+	boost::unordered_map<char*, Nullable<String> > mStringsVisited;
+
+	boost::unordered_map<VectorHandle*, Nullable<VectorRecord> > mVectorHandlesVisited;
+
+	boost::unordered_map<VectorRecord, Nullable<VectorRecord> > mWalkedVectorRecords;
+
+	std::vector<VectorRecord> mVectorsToDestroyAtCleanup;
+
+	std::set<void*> mImplValRecordTargetsVisited;
+
+	uword_t mBytecountThreshold;
+
+	RefcountPool& mRefcountPool;
+
+	MemoryPool* mMemoryPool;
+
+	void cleanup()
+		{
+		mVectorsToDestroyAtCleanup.clear();
+		mVectorHandlesVisited.clear();
+		
+		mValueVisitorState.cleanup();
+		}
+};
+
+template<class value_visitor_type>
+class ExecutionContextThreadValueUpdater {
+public:
+	typedef ExecutionContextThreadValueUpdaterState<typename value_visitor_type::state_type> state_type;
+	
+	typedef TypedFora::Abi::VectorHandle VectorHandle;
+	
+	typedef TypedFora::Abi::VectorRecord VectorRecord;
+	
+	ExecutionContextThreadValueUpdater(
+						state_type& inState
+						) : 
+			mState(inState)
+		{
+		}
+
+	bool visit(ImplVal& ioValue, bool valuesAreOwned)
+		{
+		if (ioValue.isDataAsRawPtr())
+			{
+			//this value is held by someone else, and so we shouldn't touch it. If it's owned
+			//by our context, then we will find it through another route. if not, we should
+			//never have updated it.
+			return false;
+			}
+
+		if (ioValue.isDataAsIVRPtr())
+			{
+			//regardless of whether we own the value in this context, the value pointed to
+			//by the ImplVal owns it
+			if (mState.mImplValRecordTargetsVisited.find(ioValue.data()) == 
+					mState.mImplValRecordTargetsVisited.end())
+				{
+				mState.mImplValRecordTargetsVisited.insert(ioValue.data());
+
+				visit(ioValue.type(), (uint8_t*)ioValue.data(), 1, 0, true);
+				}
+			return false;
+			}
+		else
+			{
+			return visit(ioValue.type(), (uint8_t*)ioValue.data(), 1, 0, valuesAreOwned);
+			}
+		}
+
+	bool visit(TypedFora::Abi::HomogenousVectorStash& stash)
+		{
+		value_visitor_type visitor(mState.mValueVisitorState);
+
+		return visitor.visit(stash);
+		}
+
+	bool visitString(String& ioString, bool stringOwned)
+		{
+		return this->visit(Type::String(), (uint8_t*)&ioString, 1, 0, stringOwned);
+		}
+
+	//visit some values and upate them. returns true if the data pointed to by 'source' was modified
+	bool visit(
+			const Type& inType,
+			uint8_t* source,
+			uword_t count,
+			uword_t stride,
+			bool valuesAreOwned
+			)
+		{
+		uword_t sz = inType.size();
+		if (stride == 0)
+			stride = sz;
+        
+		if (inType.isPOD())
+			return false;
+
+		bool result = false;
+
+		@match Type(inType)
+			-|	Nothing() ->> {}
+			-|	String() ->> {
+					value_visitor_type visitor(mState.mValueVisitorState);
+						
+					if (visitor.wantsToVisitStrings())
+						{
+						for (long k = 0; k < count;k++)
+							{
+							String* sourceString = (String*)(source + k * stride);
+							if (!sourceString->isEmptyOrPackedIntoPointer() && visitor.wantsToVisitString(*sourceString))
+								{
+								if (mState.mStringsVisited.find(sourceString->base()) == mState.mStringsVisited.end())
+									mState.mStringsVisited[sourceString->base()] = visitor.updateString(*sourceString);
+
+								//make a copy outside of this arena
+								Nullable<String> newString = mState.mStringsVisited[sourceString->base()];
+
+								if (newString)
+									{
+									if (valuesAreOwned)
+										*sourceString = *newString;
+									else
+										{
+										//bitcopy the value over. Because this location doesn't own it, we have to
+										//add the value to the refcount pool and then bitcopy the value over
+										new (sourceString) String(*newString);
+										
+										mState.mRefcountPool.addAlreadyRefcounted(*newString);
+										}
+
+									result = true;
+									}
+								}
+							}
+						}
+					}
+			-|	ExternalFunction() ->> {}
+			-|	Symbol() ->> {}
+			-|	Tag() ->> {}
+			-|	JOVAsValue() ->> {}
+			-|	StackTrace() ->> {}
+			-|	DateTime() ->> {}
+			-|	TimeDuration() ->> {}
+			-|	Integer(_) ->> {}
+			-|	Float(_) ->> {}
+			-|	Vector() ->> {
+					for (int64_t k = 0; k < count;k++)
+						{
+						VectorRecord* sourceVD = (VectorRecord*)(source + k * stride);
+						
+						if (visitVector(*sourceVD, valuesAreOwned))
+							result = true;
+						}
+					}
+			-|	MutableVector() ->> {
+					for (int64_t k = 0; k < count;k++)
+						{
+						const MutableVectorRecord& vec = 
+							*(MutableVectorRecord*)(source + k * stride);
+
+						if (visitMutableVectorRecord(vec, valuesAreOwned))
+							result = true;
+						}
+					}
+			-|	Alternative(t) ->> {
+					if (visit(t, source + sizeof(symbol_type), count, stride, valuesAreOwned))
+						result = true;
+					}
+			-|	Class(types) ->> {
+					uword_t offset = 0;
+
+					for (int64_t k = 0; k < types.size(); k++)
+						{
+						if (visit(types[k], source + offset, count, stride, valuesAreOwned))
+							result = true;
+						offset += types[k].size();
+						}
+					}
+			-|	Tuple(types) ->> {
+					uword_t offset = 0;
+
+					for (int64_t k = 0; k < types.size(); k++)
+						{
+						if (visit(types[k], source + offset, count, stride, valuesAreOwned))
+							result = true;
+
+						offset += types[k].size();
+						}
+					}
+			-|	Dictionary(isCST) ->> {
+					for (int64_t k = 0; k < count; k++)
+						{
+						Dictionary* sourceDictPtr = (Dictionary*)(source + k * stride);
+
+						for (int64_t k = 0; k < sourceDictPtr->size(); k++)
+							{
+							ImplValContainer sourceDictValue = sourceDictPtr->pairAtPosition(k).second;
+
+							//TODO: figure out how to merge modified values back into the dictionary
+							ImplVal ref = sourceDictValue.getReference();
+							lassert_dump(!visit(ref, true), "not implemented!");
+							}
+						}
+					}
+
+		return result;
+		}
+
+	bool visitScattered(
+			const Type& inType,
+			uint8_t** source,
+			uword_t count,
+			uword_t nudge,
+			bool valuesAreOwned
+			)
+		{
+		if (inType.isPOD())
+			return false;
+
+		bool result = false;
+
+		@match Type(inType)
+			-|	Nothing() ->> {}
+			-|	String() ->> {
+					value_visitor_type visitor(mState.mValueVisitorState);
+						
+					if (visitor.wantsToVisitStrings())
+						{
+						for (long k = 0; k < count;k++)
+							{
+							String* sourceString = (String*)(source[k] + nudge);
+							if (!sourceString->isEmptyOrPackedIntoPointer() && visitor.wantsToVisitString(*sourceString))
+								{
+								if (mState.mStringsVisited.find(sourceString->base()) == mState.mStringsVisited.end())
+									mState.mStringsVisited[sourceString->base()] = visitor.updateString(*sourceString);
+
+								//make a copy outside of this arena
+								Nullable<String> newString = mState.mStringsVisited[sourceString->base()];
+
+								if (newString)
+									{
+									if (valuesAreOwned)
+										*sourceString = *newString;
+									else
+										{
+										//bitcopy the value over. Because this location doesn't own it, we have to
+										//add the value to the refcount pool and then bitcopy the value over
+										new (sourceString) String(*newString);
+										
+										mState.mRefcountPool.addAlreadyRefcounted(*newString);
+										}
+
+									result = true;
+									}
+								}
+							}
+						}
+					}
+			-|	ExternalFunction() ->> {}
+			-|	Symbol() ->> {}
+			-|	Tag() ->> {}
+			-|	JOVAsValue() ->> {}
+			-|	StackTrace() ->> {}
+			-|	DateTime() ->> {}
+			-|	TimeDuration() ->> {}
+			-|	Integer(_) ->> {}
+			-|	Float(_) ->> {}
+			-|	Vector() ->> {
+					for (int64_t k = 0; k < count;k++)
+						{
+						VectorRecord* sourceVD = (VectorRecord*)(source[k] + nudge);
+						
+						if (visitVector(*sourceVD, valuesAreOwned))
+							result = true;
+						}
+					}
+			-|	MutableVector() ->> {
+					for (int64_t k = 0; k < count;k++)
+						{
+						const MutableVectorRecord& vec = 
+							*(MutableVectorRecord*)(source[k] + nudge);
+
+						if (visitMutableVectorRecord(vec, valuesAreOwned))
+							result = true;
+						}
+					}
+			-|	Alternative(t) ->> {
+					if (visitScattered(t, source, count, nudge + sizeof(symbol_type), valuesAreOwned))
+						result = true;
+					}
+			-|	Class(types) ->> {
+					uword_t offset = 0;
+
+					for (int64_t k = 0; k < types.size(); k++)
+						{
+						if (visitScattered(types[k], source, count, nudge + offset, valuesAreOwned))
+							result = true;
+						offset += types[k].size();
+						}
+					}
+			-|	Tuple(types) ->> {
+					uword_t offset = 0;
+
+					for (int64_t k = 0; k < types.size(); k++)
+						{
+						if (visitScattered(types[k], source, count, nudge + offset, valuesAreOwned))
+							result = true;
+
+						offset += types[k].size();
+						}
+					}
+			-|	Dictionary(isCST) ->> {
+					for (int64_t k = 0; k < count; k++)
+						{
+						Dictionary* sourceDictPtr = (Dictionary*)(source[k] + nudge);
+
+						for (int64_t k = 0; k < sourceDictPtr->size(); k++)
+							{
+							ImplValContainer sourceDictValue = sourceDictPtr->pairAtPosition(k).second;
+
+							//TODO: figure out how to merge modified values back into the dictionary
+							ImplVal ref = sourceDictValue.getReference();
+							lassert_dump(!visit(ref, true), "not implemented!");
+							}
+						}
+					}
+
+		return result;
+		}
+
+	bool visitVector(VectorRecord& in, bool inValuesAreOwned)
+		{
+		Nullable<VectorRecord> modifiedVersion;
+
+		modifiedVersion = walkVector(VectorRecord(in));
+
+		if (modifiedVersion)
+			{
+			mState.mRefcountPool.add(*modifiedVersion);
+			
+			if (inValuesAreOwned)
+				in = *modifiedVersion;
+			else
+				memcpy(&in, &*modifiedVersion, sizeof(VectorRecord));
+
+			return true;
+			}
+
+		return false;
+		}
+
+	Nullable<VectorRecord> walkVector(const VectorRecord& vec)
+		{
+		if (!vec.size())
+			return null();
+
+		if (!vec.isCanonicallySliced())
+			{
+			VectorRecord subvec = VectorRecord(vec.dataPtr());
+			Nullable<VectorRecord> walked = walkVector(subvec);
+
+			if (!walked)
+				return null();
+
+			return null() << VectorRecord(walked->dataPtr(), vec.size(), vec.offset(), vec.stride());
+			}
+
+		auto it = mState.mWalkedVectorRecords.find(vec);
+
+		if (it != mState.mWalkedVectorRecords.end())
+			return it->second;
+
+		Nullable<VectorRecord> modifiedVersion = walkVectorHandle(vec.dataPtr());;
+
+		mState.mWalkedVectorRecords[vec] = modifiedVersion;
+
+		return modifiedVersion;
+		}
+
+	void operator()(TypedFora::Abi::PackedForaValues values)
+		{
+		visitOwnedPackedValues(values);
+		}
+
+	void visitOwnedPackedValues(TypedFora::Abi::PackedForaValues values)
+		{
+		if (values.elementJOV().constant())
+			{
+			//do nothing since there is no data
+			}
+			else
+		if (values.elementJOV().type())
+			{
+			visit(
+				*values.elementJOV().type(),
+				values.data(),
+				values.count(),
+				values.stride(),
+				true
+				);
+			}
+		else
+			{
+			for (int64_t k = 0; k < values.count();k++)
+				visit(*values.pointerToElement<ImplVal>(k), true);
+			}	
+		}
+
+	Nullable<VectorRecord> walkVectorHandle(VectorHandle* handle)
+		{
+		if (mState.mVectorHandlesVisited.find(handle) == mState.mVectorHandlesVisited.end())
+			{
+			value_visitor_type visitor(mState.mValueVisitorState);
+
+			if (handle->unpagedValueCount() && 
+						visitor.wantsToVisitVectorContents(handle) && 
+						mState.mVectorHandleContentsVisited.find(handle) == 
+								mState.mVectorHandleContentsVisited.end())
+				{
+				mState.mVectorHandleContentsVisited.insert(handle);
+
+				if (handle->unpagedValues() && !handle->unpagedValuesPagelet())
+					handle->unpagedValues()->visitScatteredValues(
+						[&](TypedFora::Abi::ScatteredForaValues values) { 
+							this->visitScatteredValues(values); 
+							}
+						);
+				}
+
+			mState.mVectorHandlesVisited[handle] = visitor.updateVectorHandle(handle);
+			}
+
+		return mState.mVectorHandlesVisited[handle];
+		}
+
+	void visitScatteredValues(TypedFora::Abi::ScatteredForaValues values)
+		{
+		visitScattered(
+			*values.elementJOV().type(), 
+			(uint8_t**)values.data(), 
+			values.count(), 
+			values.nudge(), 
+			true
+			);
+		}
+
+	bool visitMutableVectorRecord(
+			const MutableVectorRecord& vec, 
+			bool inValuesAreOwned
+			)
+		{
+		hash_type hash = vec.hash();
+
+		if (mState.mMutableVectorRecordsVisitedByHash.find(hash) 
+					== mState.mMutableVectorRecordsVisitedByHash.end())
+			{
+			visitOwnedPackedValues(vec.packedValues());
+			
+			mState.mMutableVectorRecordsVisitedByHash.insert(hash);
+			}
+
+		return false;
+		}
+
+private:
+	state_type& mState;
+};
+
+}
+}

@@ -1,0 +1,155 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+
+`hidden
+selectLabels_:
+fun(classZeroLabel, classOneLabel, nClasses, classes, strict)
+	{
+	if (not strict)
+		return (classZeroLabel, classOneLabel)
+
+	if (classZeroLabel is not nothing and classOneLabel is not nothing)
+		{
+		if (classZeroLabel == classOneLabel)
+			throw Exception("can't have `classOneLabel == classZeroLabel`");
+
+		return (classZeroLabel, classOneLabel)
+		}
+
+	if (nClasses == 2) 
+		{
+		if (classZeroLabel is nothing and classOneLabel is nothing)
+			{
+			return (classes[0], classes[1])
+			}
+		else if (classZeroLabel is not nothing and classOneLabel is nothing)
+			{
+			return (classZeroLabel, 
+					if (classZeroLabel == classes[0]) { classes[1] }
+					else { classes[0] })
+			}
+		else if (classZeroLabel is nothing and classOneLabel is not nothing)
+			{
+			return (if (classOneLabel == classes[0]) { classes[1] }
+					else { classes[0] }, classOneLabel)
+			}
+		}
+	
+	throw "ambiguous choice for class labels: if `size(classes) > 2`, in non-strict mode, " +
+		"both `classOneLabel` and `classOneLabel` must be passed in (and be non-nothing)";
+	};
+
+`hidden logit_complement: fun(x) { 1.0 / (1.0 + math.exp(x)) };
+
+`hidden
+_checkParam:
+fun(X, Y, tol, maxIter, lambda)
+	{
+	if (X.numRows != Y.numRows)
+		throw Exception("X and Y must have the same number of rows: got " +
+			String(X.numRows) + " and " + String(Y.numRows) + ", respectfully.")
+
+	if (Y.numColumns != 1)
+		throw Exception("Y must have exactly one column, got " + String(Y.numColumns))
+
+	if (tol <= 0.0)
+		throw Exception("tol must be positive, got " + String(tol))
+
+	if (maxIter < 0.0)
+		throw Exception("maxIter must be non-negative, got " + String(maxIter))
+
+	if (lambda <= 0.0)
+		throw Exception("lambda must be positive, got " + String(lambda))
+	};
+
+`hidden
+addInitialScaleColumn:
+fun(dataframe.DataFrame(df), scale)
+	{
+	df.addColumn(Vector.uniform(df.numRows, scale))
+	}
+(math.Matrix(...) m, scale)
+	{
+	math.Matrix(
+		m.columnMajorData() + Vector.uniform(m.dim[0], Float64(scale)),
+		(m.dim[0], m.dim[1] + 1)
+		)
+	}
+(X, scale)
+    {
+    let XData = [];
+    for ix in sequence(size(X)) 
+        XData = XData :: X[ix];
+
+    XData :: scale
+    }
+    ;
+
+dot: fun(dataframe.DataFrame(df), math.Matrix((_, 1)) theta, chunkSize=50000)
+	{
+	let nChunks = math.ceil(df.numRows / Float64(chunkSize));
+
+	let dfChunks = Vector.range(
+		Int64(nChunks), 
+		fun(ix) {
+			df[ix * chunkSize, (ix + 1) * chunkSize]
+			}
+		)
+	
+	let tr = sum(0, nChunks, fun(chunkIx) {
+		let low = chunkSize * chunkIx;
+		let high = (chunkSize * (chunkIx + 1)) <<< df.numRows
+
+		computeThetaDotDfOnChunk(theta, df, low, high)
+		})
+
+    dataframe.Series(tr);
+	};
+
+
+`hidden
+computeThetaDotDfOnChunk:
+    fun(theta, df, low, high)
+        {
+        if (high > df.numRows)
+            high = df.numRows
+        if (high <= low)
+            return []
+        
+        assertions.assertEqual(df.numColumns, size(theta));
+
+        let mv = MutableVector(Float64).create(high - low, 0.0);
+
+        for featureIx in sequence(df.numColumns)
+            {
+            let theta_at_feature_ix = theta[featureIx][0];
+            let dfColumn = df.getColumn(featureIx);
+
+            let rowInDF = low;
+            let rowInMV = 0;
+            while (rowInDF < high)
+                {
+                let toAdd = (dfColumn[rowInDF] * theta_at_feature_ix);
+                mv[rowInMV] = mv[rowInMV] + toAdd
+
+                rowInMV = rowInMV + 1
+                rowInDF = rowInDF + 1
+                }
+            }
+
+        [x for x in mv]
+        };
+

@@ -1,0 +1,378 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "LiveValue.hppml"
+#include "UnionUtil.hppml"
+#include "../TypedFora.hppml"
+#include "../../Core/RefcountPool.hppml"
+#include "../../../core/Logging.hpp"
+
+namespace TypedFora {
+namespace Abi {
+
+::Type LiveValue::untypedForaType()
+	{
+	return *type().jov().type();
+	}
+
+bool LiveValue::isOwned()
+	{
+	return type().refcountStyle().isAsValueOwned();
+	}
+
+bool LiveValue::isUnion()
+	{
+	return type().jov().isUnion();
+	}
+
+bool LiveValue::isConstant()
+	{
+	return type().jov().constant();
+	}
+
+bool LiveValue::isTypedData()
+	{
+	return type().jov().type() && !type().jov().constant();
+	}
+
+bool LiveValue::isImplval()
+	{
+	return !type().jov().type() && !type().jov().isUnion();
+	}
+
+bool LiveValue::canTransferCast(TypedFora::Type targetType)
+	{
+	if (type().jov().constant())
+		return targetType.jov().covers(type().jov());
+		else
+	if (type().jov().type())
+		{
+		return targetType.jov().covers(
+			ImplVal(
+				*type().jov().type(),
+				data()
+				)
+			);
+		}
+		else
+	if (type().jov().isUnion())
+		{
+		uword_t index = extractUnionIndexFromLiveValue(type().jov(), data());
+
+		pair<JOV, void*> res = getPointerToUnionValue(type().jov(), data(), index);
+
+		return canTransferCastValue(
+			res.second, 
+			TypedFora::Type(res.first, type().refcountStyle()), 
+			targetType
+			);
+		}
+	else
+		{
+		return targetType.jov().covers(*(ImplVal*)data());
+		}
+	}
+
+void LiveValue::transferCast(
+		LiveValue& dest,
+		Fora::Interpreter::RefcountPool* inRefcountPool
+		) const
+	{
+	bool destOwned = dest.type().refcountStyle().isAsValueOwned();
+	bool srcOwned = type().refcountStyle().isAsValueOwned();
+
+	bool srcPooled = type().refcountStyle().isPooled();
+	bool destPooled = dest.type().refcountStyle().isPooled();
+	
+	bool destConst = dest.type().jov().constant();
+	bool srcConst = type().jov().constant();
+	
+	bool destIsTyped = dest.type().jov().type();
+	bool srcIsTyped = type().jov().type();
+
+	bool destIsUnion = dest.type().jov().isUnion();
+	bool srcIsUnion = type().jov().isUnion();
+
+	if (srcIsUnion)
+		{
+		uword_t index = extractUnionIndexFromLiveValue(type().jov(), data());
+
+		pair<JOV, void*> res = getPointerToUnionValue(type().jov(), data(), index);
+
+		transferCastLiveValue(
+			dest.data(), 
+			dest.type(), 
+			res.second, 
+			TypedFora::Type(res.first, type().refcountStyle()), 
+			inRefcountPool
+			);
+
+		return;
+		}
+
+	if (destIsUnion)
+		{
+		long targetIndex;
+
+		if (srcIsTyped || srcConst)
+			//we are casting from a union to a value, so we can do this based purely on judgments
+			targetIndex = pickBestUnionIndex(dest.type().jov(), type().jov());
+		else
+			{
+			//we are casting from an ImplVal down to a union, so we actually have to use the 
+			//coverage rules
+			targetIndex = pickBestUnionIndex(dest.type().jov(), *reinterpret_cast<ImplVal*>(data()));
+			}
+
+		pair<JOV, void*> targetSlot = getPointerToUnionValue(dest.type().jov(), dest.data(), targetIndex);
+
+		transferCastLiveValue(
+			targetSlot.second, 
+			TypedFora::Type(targetSlot.first, dest.type().refcountStyle()),
+			data(),
+			type(),
+			inRefcountPool
+			);
+
+		setUnionIndexInLiveValue(dest.type().jov(), dest.data(), targetIndex);
+
+		return;
+		}
+
+	if (destConst)
+		{
+		if (srcConst)
+			;
+			else
+		if (srcIsTyped)
+			{
+			if (srcOwned)
+				type().jov().type()->destroy(data());
+			}
+		else
+			{
+			if (srcOwned)
+				reinterpret_cast<ImplVal*>(data())->destroy();
+			}
+		}
+		else
+	if (destIsTyped)
+		{
+		const ::Type& destT(*dest.type().jov().type());
+
+		if (srcConst)
+			{
+			if (destOwned)
+				destT.initialize(dest.data(), type().jov().constant()->getReference().data());
+			else
+				{
+				memcpy(dest.data(), type().jov().constant()->getReference().data(), destT.size());
+
+				if (destPooled)
+					inRefcountPool->addPieces(dest.data(), destT);
+				}
+			}
+			else
+		if (srcIsTyped)
+			{
+			lassert(destT == *type().jov().type());
+			bool needsDestruction = srcOwned && !destOwned;
+			bool needsIncrement = destOwned && !srcOwned;
+			bool needsPooling = destPooled && !srcPooled;
+
+			if (needsIncrement)
+				destT.initialize(dest.data(), data());
+			else
+				memcpy(dest.data(), data(), destT.size());
+			
+			if (needsPooling)
+				inRefcountPool->addPieces(dest.data(), destT);
+
+			if (needsDestruction)
+				destT.destroy(data());
+			}
+		else
+			{
+			//data() is an implval
+			ImplVal srcImplval = reinterpret_cast<ImplVal*>(data())[0];
+
+			if (destOwned)
+				destT.initialize(dest.data(), srcImplval.data());
+			else
+				{
+				memcpy(dest.data(), srcImplval.data(), destT.size());
+
+				if (destPooled && !srcPooled)
+					inRefcountPool->addPieces(dest.data(), destT);
+				}
+
+			if (srcOwned)
+				srcImplval.destroy();
+			}
+		}
+	else
+		{
+		//dest.data() is an implval
+		ImplVal& destImplval = *reinterpret_cast<ImplVal*>(dest.data());
+
+		ImplVal srcAsImplVal;
+
+		if (srcConst)
+			srcAsImplVal = type().jov().constant()->getReference();
+			else
+		if (srcIsTyped)
+			srcAsImplVal = ImplVal(*type().jov().type(), data());
+		else
+			srcAsImplVal = reinterpret_cast<ImplVal*>(data())[0];
+
+		if (destOwned)
+			destImplval = srcAsImplVal.duplicate();
+			else
+		if (destPooled)
+			{
+			//if source is not typed, we'll be adding a type object to it. We need to retain
+			//a refcount to that type, so we'll put it in the pool.
+			if (!srcPooled || srcIsTyped)
+				srcAsImplVal = inRefcountPool->add(srcAsImplVal);
+			destImplval = srcAsImplVal;
+			}
+		else
+			destImplval = srcAsImplVal;
+
+		if (srcOwned)
+			{
+			if (srcConst)
+				;
+				else
+			if (srcIsTyped)
+				type().jov().type()->destroy(data());
+			else
+				reinterpret_cast<ImplVal*>(data())->destroy();
+			}
+		}
+	}
+
+void transferCastLiveValue(
+		void* dest,
+		const TypedFora::Type& destType,
+		void* src,
+		const TypedFora::Type& srcType,
+		Fora::Interpreter::RefcountPool* inRefcountPool
+		)
+	{
+	LiveValue destLV(destType, dest);
+	LiveValue srcLV(srcType, src);
+
+	return srcLV.transferCast(destLV, inRefcountPool);
+	}
+
+bool canTransferCastValue(void* data, TypedFora::Type valueType, TypedFora::Type targetType)
+	{
+	LiveValue srcLV(valueType, data);
+
+	return srcLV.canTransferCast(targetType);
+	}
+
+void LiveValue::destroy()
+	{
+	if (type().jov().constant())
+		;
+		else
+	if (type().jov().type())
+		{
+		type().jov().type()->destroy(data());
+		}
+		else
+	if (type().jov().isUnion())
+		{
+		LiveValue unionVal = extractUnionValue();
+
+		unionVal.destroy();
+		}
+	else
+		((ImplVal*)data())->destroy();
+	}
+
+LiveValue LiveValue::extractUnionValue()
+	{
+	lassert(isUnion());
+	
+	long index = extractUnionIndexFromLiveValue(type().jov(), data());
+
+	std::pair<JudgmentOnValue, void*> jovAndPointer = 
+		getPointerToUnionValue(type().jov(), data(), index);
+
+	return LiveValue(
+		TypedFora::Type(
+			jovAndPointer.first,
+			type().refcountStyle()
+			),
+		data()
+		);
+	}
+
+bool LiveValue::isCST()
+	{
+	return getImplval().isCST();
+	}
+
+ImplVal LiveValue::getImplval()
+	{
+	if (type().jov().constant())
+		return ImplVal(type().jov().constant()->type(), type().jov().constant()->getData());
+		else
+	if (type().jov().type())
+		return ImplVal( *type().jov().type(), data() );
+		else
+	if (type().jov().isUnion())
+		{
+		LiveValue value = extractUnionValue();
+		return value.getImplval();
+		}
+	else
+		return *(ImplVal*)data();
+	}
+
+void LiveValue::addSelfToRefcountPool(Fora::Interpreter::RefcountPool* pool)
+	{
+	if (type().jov().constant())
+		;
+		else
+	if (type().jov().type())
+		pool->addPieces(data(), *type().jov().type());
+		else
+	if (type().jov().isUnion())
+		{
+		LiveValue value = extractUnionValue();
+		return value.addSelfToRefcountPool(pool);
+		}
+	else
+		pool->add(getImplval());
+	}
+
+//only legal is 'isImplval' is true
+ImplVal& LiveValue::getReferenceToImplval()
+	{
+	lassert(isImplval());
+	return *(ImplVal*)data();
+	}
+
+
+}
+}
+
+
+
+

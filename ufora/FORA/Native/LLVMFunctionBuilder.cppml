@@ -1,0 +1,2497 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "LLVMFunctionBuilder.hppml"
+#include "../Runtime.hppml"
+#include <boost/lexical_cast.hpp>
+#include "LLVMUtil.hppml"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include "NativeCodeCompiler.hppml"
+#include "../Interpreter/RuntimeConfig.hppml"
+#include "NativeCodeFlattened.hppml"
+#include "NativeCodeSimplification.hppml"
+#include "FunctionPointerHandle.hpp"
+#include "../../core/ScopedProfiler.hppml"
+#include "../../core/Logging.hpp"
+#include "../../core/Clock.hpp"
+#include "../../core/StringUtil.hpp"
+#include <fstream>
+#include <boost/filesystem.hpp>
+#include <ctype.h>
+
+using namespace std;
+
+typedef llvm::IRBuilder<> bb;
+@type BOpAndType = NativeBinaryOpcode opcode, NativeType t;
+
+
+
+NativeType continuationTypeForReturns(const ImmutableTreeVector<NativeType>& rets)
+	{
+	ImmutableTreeVector<NativeType> ts;
+
+	for (long k = 0; k < rets.size(); k++)
+		ts = ts + rets[k];
+
+	return NativeType::Continuations(ts);
+	}
+	
+void LLVMFunctionBuilder::setSpillWeight(llvm_block_ptr block, double spillWeight)
+	{
+	#ifdef LLVM_BASIC_BLOCK_HAS_SPILL_WEIGHT_MODIFIER
+	if (mCompiler.mApplyWeights)
+		block->spillWeightModifier = spillWeight;
+	#endif
+	}
+
+void LLVMFunctionBuilder::initializeFunction(
+		llvm::Function*& ioFunPtr,
+		llvm::Module* inModule
+		)
+	{
+	mFunction =
+		llvm::Function::Create(
+			jumpFuncType(true),
+			llvm::Function::ExternalLinkage,
+			mName,
+			inModule
+			);
+
+	ioFunPtr = mFunction;
+			
+		{
+		uword_t argIx = 0;
+		for (auto it = mFunction->arg_begin(); it != mFunction->arg_end(); ++it)
+			it->setName("arg_" + boost::lexical_cast<string>(argIx++));
+		}
+
+	mFunction->setVisibility(llvm::GlobalValue::HiddenVisibility);
+	mFunction->setCallingConv(llvm::CallingConv::Fast);
+	
+		{
+		llvm::Function::arg_iterator it = mFunction->arg_begin();
+	
+		mBaseMemBlockPtr = LLVMValue(it++, NativeType::uint8().ptr().ptr());
+		mBranchIDVal = LLVMValue(it++, NativeType::uword());
+		mArgPtrVal = LLVMValue(it++, NativeType::uint8().ptr());
+		}
+	
+	mFunctionEntryBlock =
+		llvm::BasicBlock::Create(mCompiler.getLLVMContext(), "function_entrypoint", mFunction);
+	mFunctionBranchPoint =
+		llvm::BasicBlock::Create(mCompiler.getLLVMContext(), "function_branch_point", mFunction);
+	mNewSlotsBlock =
+		llvm::BasicBlock::Create(mCompiler.getLLVMContext(), "function_new_slots", mFunction);
+	mExistingSlotsBlock =
+		llvm::BasicBlock::Create(mCompiler.getLLVMContext(), "function_existing_slots", mFunction);
+
+	setSpillWeight(mFunctionEntryBlock, 0.001);
+	setSpillWeight(mFunctionBranchPoint, 0.001);
+	setSpillWeight(mNewSlotsBlock, 0.001);
+	setSpillWeight(mExistingSlotsBlock, 0.001);
+
+	if (wantsArgumentTrace())
+		genTracer(
+			mFunctionEntryBlock,
+			"entered " +
+				string(mFunction->getName()) +
+				" with slot ",
+				mBranchIDVal
+			);
+	}
+	
+
+void LLVMFunctionBuilder::createTempVarForBitcasting()
+	{
+	mTempVarForBitcasting = createPhi(mFunctionEntryBlock, NativeType::uint8().ptr());
+	}
+	
+void LLVMFunctionBuilder::flattenAndSimplifyNativeFun()
+	{
+	flattenNativeFun();
+	simplifyFlattenedNativeFun();
+	}
+	
+void LLVMFunctionBuilder::flattenNativeFun()
+	{
+	Ufora::ScopedProfiler<std::string> profiler("LLVMFunctionBuilder::Flatten");
+
+	//set up the exit blocks
+	ImmutableTreeVector<NativeBlockID> exits;
+	ImmutableTreeVector<Nullable<uword_t> > simpleExits;
+	for (uword_t k = 0; k < mNativeFun.returnTypes().size(); k++)
+		{
+		exits = exits + NativeBlockID::internal();
+		simpleExits = simpleExits + (null() << k);
+
+		//create an empty block with the right 'arg' as a phi
+		mFlatBlockMap[exits[k]].addArg(mNativeFun.returnTypes()[k]);
+		mFlatBlockMap[exits[k]].liveOnInput() =
+			mFlatBlockMap[exits[k]].liveOnInput() + mFlatBlockMap[exits[k]].args()[0];
+		mFlatBlockMap[exits[k]].term() =
+			NativeCodeFlattened::Term::Exit(
+				k,
+				NativeCodeFlattened::Input::Variable(mFlatBlockMap[exits[k]].args()[0])
+				);
+		}
+
+	NativeCodeFlattened::flatten(
+		mNativeFun,
+		exits,
+		simpleExits,
+		mFlatBlockMap,
+		emptyTreeMap(),
+		emptyTreeVec(),
+		false,
+		NativeBlockID::entry(),
+		1.0
+		);
+		
+	if (mConfig.traceDefinitions())
+		logFlattenedBlocks("BEFORE SIMPLIFY:\n", true);
+	}
+	
+void LLVMFunctionBuilder::dumpFlattenedBlocksToFile(const string& inFilename) const
+	{
+	using boost::filesystem::path;
+	
+	ofstream outfile;
+	
+	//sanitize the name so that it doesn't contain
+	//any non alphanumeric characters by sticking _'s in.
+	path fname =
+		  path(mConfig.compilerDefinitionDumpDir())
+		/ path(Ufora::sanitizeFilename(inFilename + ".flat.txt"));
+	
+	outfile.open(fname.string().c_str(), ios_base::trunc);
+	outfile << "NAME: " << inFilename << "\n";
+	outfile << prettyPrintString(mFlatBlockMap) << "\n";
+	}
+	
+void LLVMFunctionBuilder::logFlattenedBlocks(const string& message, bool withNativeCFG) const
+	{
+	LOG_INFO << string(mFunction->getName()) << ":\n";
+	
+	if (withNativeCFG)
+		LOG_INFO << Ufora::indent(prettyPrintString(mNativeFun)) << "\n";
+	
+	LOG_INFO << message << Ufora::indent(prettyPrintString(mFlatBlockMap)) << "\n";
+	}
+	
+void LLVMFunctionBuilder::simplifyFlattenedNativeFun()
+	{
+	double t0 = curClock();
+	
+	Ufora::ScopedProfiler<std::string> profiler("LLVMFunctionBuilder::Simplify");
+
+	simplifyFlattenedCode(mFlatBlockMap, mConfig, mFunction->getName());
+	
+	if (curClock() - t0 > .1)
+		LOG_INFO << "SIMPLIFY CFG of complexity " << mNativeFun.complexity()
+			<< ", " << string(mFunction->getName()) << " TOOK " << curClock() - t0;
+			
+	if (mConfig.compilerDefinitionDumpDir() != "")
+		dumpFlattenedBlocksToFile(mName);
+		
+	if (mConfig.traceDefinitions())
+		logFlattenedBlocks("AFTER SIMPLIFY:\n", false);
+	}
+	
+void LLVMFunctionBuilder::addPhiNodesToBlocks()
+	{
+	ImmutableTreeVector<NativeBlockID> blockList = orderBlocks(mFlatBlockMap);
+
+	for (long j = 0; j < blockList.size(); j++)
+		{
+		NativeBlockID id = blockList[j];
+		const NativeCodeFlattened::Block& flattenedNativeBlock(mFlatBlockMap[id]);
+
+		mBlockMap[id] =
+			llvm::BasicBlock::Create(
+				mCompiler.getLLVMContext(),
+				prettyPrintString(id),
+				mFunction
+				);
+
+		if (flattenedNativeBlock.term().isBranch())
+			{
+			mBranchBlockMap[id].first =
+				llvm::BasicBlock::Create(
+					mCompiler.getLLVMContext(),
+					prettyPrintString(id) + "_branch_true",
+					mFunction
+					);
+			mBranchBlockMap[id].second =
+				llvm::BasicBlock::Create(
+					mCompiler.getLLVMContext(),
+					prettyPrintString(id) + "_branch_false",
+					mFunction
+					);
+			}
+
+		setSpillWeight(mBlockMap[id], flattenedNativeBlock.relativeFrequency());
+
+		map<NativeVariable, llvm_phinode_ptr>& livePhis(mBlockLiveVarPHIs[id]);
+
+		for (long k = 0; k < flattenedNativeBlock.liveOnInput().size(); k++)
+			livePhis[flattenedNativeBlock.liveOnInput()[k]] =
+				createPhi(mBlockMap[id], flattenedNativeBlock.liveOnInput()[k].type());
+		}
+	}
+
+void LLVMFunctionBuilder::createExitBlock()
+	{
+	mJumpBlock =
+		llvm::BasicBlock::Create(mCompiler.getLLVMContext(), "final_exit_block", mFunction);
+	setSpillWeight(mJumpBlock, .001);
+
+	mFinalFunPtr = createPhi(mJumpBlock, NativeType::uint8().ptr());
+	mFinalCont = createPhi(mJumpBlock, NativeType::uword());
+	mFinalStackPtr = createPhi(mJumpBlock, NativeType::uint8().ptr());
+
+		{
+		llvm_block_ptr block = mJumpBlock;
+
+		callFree(
+			block,
+			mBaseMemBlockPtr,
+			toVoidPointer(block,mSlotsPtr),
+			mConfig.useInlineMemoryManagement()
+			);
+
+		llvm_value_ptr functionPointer =
+			bb(block).CreatePointerCast(
+				mFinalFunPtr,
+				llvm::PointerType::get(jumpFuncType(true), 0)
+				);
+
+		llvm::CallInst* callInst =
+			bb(block).CreateCall3(
+				functionPointer,
+				mBaseMemBlockPtr,
+				mFinalCont,
+				toVoidPointer(block, mFinalStackPtr)
+				);
+
+		callInst->setTailCall(true);
+		callInst->setCallingConv(llvm::CallingConv::Fast);
+		bb(block).CreateRetVoid();
+		}
+	}
+	
+void LLVMFunctionBuilder::computeEntryBlockIDs()
+	{
+	mNextBlockID = 0;
+	for (auto it = mFlatBlockMap.begin(), it_end = mFlatBlockMap.end(); it != it_end; ++it)
+		if (!it->first.isInternal())
+			{
+			mEntryBlockIDs[it->first] = it->first.index();
+			if (it->first.index() >= mNextBlockID)
+				mNextBlockID = it->first.index() + 1;
+			}
+	}
+	
+void LLVMFunctionBuilder::computeSlots()
+	{
+	//make a list of slots
+	mContVar = NativeVariable::Temp(continuationTypeForReturns(mNativeFun.returnTypes()));
+	mVarsToSlots[mContVar] = 0;
+	mSlots = mSlots + mContVar;
+
+	//first get the slots just for the inputs to continuations. because they might be
+	//tuples and split apart, we have to make sure they're contiguous
+	//since callbacks write to them as single objects
+	for (auto it = mFlatBlockMap.begin(), it_end = mFlatBlockMap.end(); it != it_end; ++it)
+		extractContinuationSlots(it->second);
+
+	//then get the rest of the slots allocated.
+	for (auto it = mFlatBlockMap.begin(), it_end = mFlatBlockMap.end(); it != it_end; ++it)
+		extractWriteBackSlots(it->second);
+	
+	uword_t ix = 0;
+	for (long k = 0; k < mSlots.size(); k++)
+		{
+		mSlotOffsets = mSlotOffsets + ix;
+		ix += mSlots[k].type().packedSize();
+		}
+	}
+	
+void LLVMFunctionBuilder::createSlotsPtr(NativeType& outSlotsType)
+	{
+	mSlotsType = NativeType::Composite(varsToTypes(mSlots));
+	mSlotsPhi = createPhi(mFunctionBranchPoint, mSlotsType.ptr());
+	
+	outSlotsType = mSlotsType;
+
+	mSlotsPtr = LLVMValue(mSlotsPhi, mSlotsType.ptr());
+	}
+	
+void LLVMFunctionBuilder::translateNativeBlocks()
+	{
+	for (auto it = mFlatBlockMap.begin(), it_end = mFlatBlockMap.end(); it != it_end; ++it)
+		addBlockWithTerminator(mBlockMap[it->first], it->first, it->second);
+	}
+	
+void LLVMFunctionBuilder::finishSlotsPtr()
+	{
+	llvm::SwitchInst* createSlotsSwitchInst =
+		llvm::IRBuilder<>(mFunctionEntryBlock).CreateSwitch(
+			mBranchIDVal,
+			mExistingSlotsBlock,
+			mEntryBlockIDs.size()
+			);
+
+	//If the ID corresponds to an 'entry' block, create new slots
+	for (auto it = mEntryBlockIDs.begin(); it != mEntryBlockIDs.end(); ++it)
+		if (!it->first.isInternal())
+			createSlotsSwitchInst->addCase(
+				llvm::ConstantInt::get(
+					static_cast<llvm::IntegerType*>(toLLVM(NativeType::uword())),
+					it->second
+					),
+				mNewSlotsBlock
+				);
+
+	llvm_value_ptr slotsPointer =
+		callMalloc(
+			mNewSlotsBlock,
+			mBaseMemBlockPtr,
+			mSlotsType.packedSize(),
+			mConfig.useInlineMemoryManagement()
+			);
+	slotsPointer = bb(mNewSlotsBlock).CreatePointerCast(slotsPointer, toLLVM(mSlotsPtr.t()));
+
+	addIncoming(mSlotsPhi, slotsPointer, mNewSlotsBlock);
+	addIncoming(
+		mSlotsPhi,
+		bb(mExistingSlotsBlock).CreatePointerCast(
+			mArgPtrVal,
+			toLLVM(mSlotsPtr.t())
+			),
+		mExistingSlotsBlock
+		);
+
+	bb(mNewSlotsBlock).CreateBr(mFunctionBranchPoint);
+	bb(mExistingSlotsBlock).CreateBr(mFunctionBranchPoint);
+	}
+	
+void LLVMFunctionBuilder::createInitialSwitchBlock()
+	{
+	llvm_block_ptr failedBranchBlock =
+		llvm::BasicBlock::Create(mCompiler.getLLVMContext(), "bad_branch_block", mFunction);
+	setSpillWeight(failedBranchBlock, .001);
+
+	genTracer(failedBranchBlock, "bad branch", mBranchIDVal);
+	bb(failedBranchBlock).CreateRetVoid();
+
+	mInitialSwitchInst = 
+		llvm::IRBuilder<>(mFunctionBranchPoint).CreateSwitch(
+			mBranchIDVal,
+			failedBranchBlock,
+			mEntryBlockIDs.size()
+			);
+	}
+	
+llvm_block_ptr LLVMFunctionBuilder::createStagingBlock(
+		const NativeBlockID& nativeBlockId,
+		uword_t index
+		)
+	{
+	llvm_block_ptr stagingBlock =
+		llvm::BasicBlock::Create(
+			mCompiler.getLLVMContext(),
+			("block_staging_" +
+				boost::lexical_cast<string>(index)).c_str(),
+			mFunction
+			);
+	setSpillWeight(
+		stagingBlock,
+		mFlatBlockMap[nativeBlockId].relativeFrequency()
+		);
+
+	mInitialSwitchInst->addCase(
+		llvm::ConstantInt::get(
+			static_cast<llvm::IntegerType*>(toLLVM(NativeType::uword())),
+			index
+			),
+		stagingBlock
+		);
+	
+	return stagingBlock;
+	}
+	
+void LLVMFunctionBuilder::completeStagingBlocks(
+		llvm_block_ptr& ioBlockPtr,
+		const NativeCodeFlattened::Block& inFlattenedNativeBlock,
+		ImmutableTreeVector<LLVMValue>& ioValues,
+		llvm_value_ptr inArgsPtrCast,
+		llvm_value_ptr& ioContValue
+		)
+	{
+	ImmutableTreeVector<NativeType> types = varsToTypes(inFlattenedNativeBlock.args());
+
+	//add back the implicit continuation type
+	types = mContVar.type() + types;
+
+	inArgsPtrCast =
+		bb(ioBlockPtr).CreatePointerCast(
+			mArgPtrVal,
+			toLLVM(NativeType::Composite(types).ptr())
+			);
+
+	for (long k = 0; k < inFlattenedNativeBlock.args().size(); k++)
+		if (types[k + 1].isEmpty())
+			ioValues = ioValues + LLVMValue(0, types[k + 1]);
+		else
+			ioValues = ioValues +
+				LLVMValue(
+					bb(ioBlockPtr).CreateLoad(
+						bb(ioBlockPtr).CreateConstGEP2_32(inArgsPtrCast, 0 , k + 1)
+						),
+					types[k+1]
+					);
+
+	ioContValue =
+		LLVMValue(
+			bb(ioBlockPtr).CreateLoad(bb(ioBlockPtr).CreateConstGEP2_32(inArgsPtrCast,0,0)),
+			types[0]
+			);
+
+	//now free the block
+	callFree(ioBlockPtr, mBaseMemBlockPtr, mArgPtrVal, mConfig.useInlineMemoryManagement());
+	}
+	
+void LLVMFunctionBuilder::createJumpFromStagingBlockToBlockById(
+		llvm_block_ptr inFromStagingBlock,
+		const NativeBlockID& inToBlockId,
+		const NativeCodeFlattened::Block& inFlattenedNativeBlock,
+		const ImmutableTreeVector<LLVMValue>& inLLVMValues,
+		llvm_value_ptr inArgsPtrCast,
+		llvm_value_ptr inContValue
+		)
+	{
+	//We can assume that all "live" variables are arguments to the block,
+	//supplied in the incoming arguments to the function
+	for (long k = 0; k < inFlattenedNativeBlock.args().size(); k++)
+		if (!inFlattenedNativeBlock.args()[k].type().isEmpty())
+			{
+			if (!inFlattenedNativeBlock.liveOnInput().contains(
+					inFlattenedNativeBlock.args()[k])
+					)
+				{
+				lassert(inFlattenedNativeBlock.args()[k] == mVarsToSlots);
+
+				llvm_value_ptr slotPtr =
+					bb(inFromStagingBlock).CreateConstGEP2_32(
+						mSlotsPtr,
+						0,
+						mVarsToSlots[inFlattenedNativeBlock.args()[k]]
+						);
+
+				bb(inFromStagingBlock).CreateStore(inLLVMValues[k], slotPtr);
+				}
+			else
+				{
+				addIncoming(
+					mBlockLiveVarPHIs[inToBlockId][inFlattenedNativeBlock.args()[k]],
+					inLLVMValues[k],
+					inFromStagingBlock
+					);
+				}
+			}
+
+	//slot zero is always the continuation
+	bb(inFromStagingBlock).CreateStore(
+		inContValue,
+		bb(inFromStagingBlock).CreateConstGEP2_32(mSlotsPtr,0,0)
+		);
+	bb(inFromStagingBlock).CreateBr(mBlockMap[inToBlockId]);
+	}
+	
+void LLVMFunctionBuilder::completeStagingBlocksAndJumpToBlockById(
+		llvm_block_ptr inFromStagingBlock,
+		const NativeBlockID inToId
+		)
+	{
+	//this is a resumption block
+	ImmutableTreeVector<LLVMValue> values;
+	const NativeCodeFlattened::Block& flattenedNativeBlock(mFlatBlockMap[inToId]);
+	llvm_value_ptr argsPtrCast;
+	llvm_value_ptr contValue;
+
+	completeStagingBlocks(
+		inFromStagingBlock,
+		flattenedNativeBlock,
+		values,
+		argsPtrCast,
+		contValue);
+	createJumpFromStagingBlockToBlockById(
+		inFromStagingBlock,
+		inToId,
+		flattenedNativeBlock,
+		values,
+		argsPtrCast,
+		contValue
+		);
+	}
+	
+void LLVMFunctionBuilder::createJumpFromStagingToBlockByIDForContinuationResumption(
+		llvm_block_ptr inFromStagingBlock,
+		const NativeBlockID& inToId
+		)
+	{
+	const NativeCodeFlattened::Block& flattenedNativeBlock(mFlatBlockMap[inToId]);
+
+	//this is a continuation resumption.
+	//we assume that each "argument" is a value written to in the continuation,
+	//which we may have to load, along with any other "live" values
+	for (long k = 0; k < flattenedNativeBlock.liveOnInput().size(); k++)
+		{
+		if (!flattenedNativeBlock.liveOnInput()[k].type().isEmpty())
+			{
+			lassert_dump(
+				flattenedNativeBlock.liveOnInput()[k] == mVarsToSlots,
+				"no slot variable for "
+					<< prettyPrintString(flattenedNativeBlock.liveOnInput()[k])
+					<< " in " << prettyPrintString(inToId)
+				);
+
+			addIncoming(
+				mBlockLiveVarPHIs[inToId][flattenedNativeBlock.liveOnInput()[k]],
+				bb(inFromStagingBlock).CreateLoad(
+					bb(inFromStagingBlock).CreateConstGEP2_32(
+						mSlotsPtr,
+						0,
+						mVarsToSlots[flattenedNativeBlock.liveOnInput()[k]]
+						)
+					),
+				inFromStagingBlock
+				);
+			}
+		}
+
+	bb(inFromStagingBlock).CreateBr(mBlockMap[inToId]);		
+	}
+
+void LLVMFunctionBuilder::createStagingBlocksAndTheirJumps()
+	{	
+	for (auto it = mEntryBlockIDs.begin(); it != mEntryBlockIDs.end(); ++it)
+		{
+		llvm_block_ptr block = createStagingBlock(it->first, it->second);
+
+		if (!it->first.isInternal())
+			completeStagingBlocksAndJumpToBlockById(block, it->first);
+		else
+			createJumpFromStagingToBlockByIDForContinuationResumption(block, it->first);
+		}
+	}
+
+void LLVMFunctionBuilder::replaceTempVarForBitcastingWithAlloc()
+	{
+	//turn ForBitcasting into an actual alloc
+	llvm_phinode_ptr tempVarPHI = mTempVarForBitcasting;
+	llvm_value_ptr bitCastingVar =
+		bb(
+			mFunctionEntryBlock,
+			mFunctionEntryBlock->begin()
+			).CreateAlloca(
+				toLLVM(NativeType::uint8()),
+				llvmUInt32(mTempVarSize + 32)
+				);
+	mTempVarForBitcasting->replaceAllUsesWith(bitCastingVar);
+	mTempVarForBitcasting->eraseFromParent();
+	mTempVarForBitcasting = 0;
+	}
+	
+LLVMFunctionBuilder::LLVMFunctionBuilder(
+		NativeCodeCompiler& inCompiler,
+		llvm::Function*& outFun,
+		NativeType& outSlotsType,
+		map<uword_t, ImmutableTreeVector<NativeContinuationMetadataSerialized> >& outMetadataMap,
+		map<uword_t, NativeIndividualContinuationMetadata>& outIndividualMetadataMap,
+		const string& inName,
+		const NativeCFG& inFun,
+		llvm::Module* inModule
+		)	:
+			mCompiler(inCompiler),
+			mOutMetadataMap(outMetadataMap),
+			mOutIndividualMetadataMap(outIndividualMetadataMap),
+			mConfig(inCompiler.getTypedForaCompiler().getConfig()),
+			mNativeFun(inFun),
+			mName(inName),
+			mTempVarSize(0)
+	{
+	initializeFunction(outFun, inModule);
+	createTempVarForBitcasting();
+	flattenAndSimplifyNativeFun();		
+	computeEntryBlockIDs();	
+	addPhiNodesToBlocks();
+	computeSlots();	
+	createSlotsPtr(outSlotsType);	
+	createExitBlock();
+	translateNativeBlocks();
+	//first, we need to create the slots pointer.
+	finishSlotsPtr();
+	//for each block, we have to load relevant args. for block zero,
+	//we load from the argument and delete it. for the others, we only load the ones that are 'live'
+	//and jump in
+	createInitialSwitchBlock();
+	createStagingBlocksAndTheirJumps();
+	replaceTempVarForBitcastingWithAlloc();
+	
+    if (mConfig.traceDefinitions())
+        mFunction->print(llvm::outs());
+	}
+
+bool LLVMFunctionBuilder::wantsSlotStorageTracers(void) const
+	{
+	return false;
+	}
+
+bool LLVMFunctionBuilder::wantsPathTrace(void) const
+	{
+	return mConfig.tracePaths() && !Ufora::beginsWith(mName, "Axiom");
+	}
+
+bool LLVMFunctionBuilder::wantsArgumentTrace(void) const
+	{
+	return (mConfig.tracePaths() || mConfig.traceArguments()) && !Ufora::beginsWith(mName, "Axiom");
+	}
+
+uword_t LLVMFunctionBuilder::entryBlockIDFor(NativeBlockID id)
+	{
+	if (id != mEntryBlockIDs)
+		mEntryBlockIDs[id] = mNextBlockID++;
+
+	return mEntryBlockIDs[id];
+	}
+	
+void LLVMFunctionBuilder::extractContinuationSlots(const NativeCodeFlattened::Cont& cont)
+	{
+	NativeBlockID b = cont.block();
+
+	for (long i = 0; i < mFlatBlockMap[b].args().size(); i++)
+		if (mFlatBlockMap[b].args()[i] != mVarsToSlots)
+			{
+			uword_t ix = mSlots.size();
+			mVarsToSlots[mFlatBlockMap[b].args()[i]] = ix;
+			mSlots = mSlots + mFlatBlockMap[b].args()[i];
+			}
+
+	for (long i = 0; i < mFlatBlockMap[b].args().size(); i++)
+		{
+		if (mVarsToSlots[mFlatBlockMap[b].args()[i]] !=
+				mVarsToSlots[mFlatBlockMap[b].args()[0]] + i)
+			lassert_dump(
+				mVarsToSlots[mFlatBlockMap[b].args()[i]] ==
+					mVarsToSlots[mFlatBlockMap[b].args()[0]] + i,
+				"slots need to be in order!"
+				);
+		}	
+	}
+	
+void LLVMFunctionBuilder::extractContinuationSlots(const NativeCodeFlattened::Block& block)
+	{
+	for (long k = 0; k < block.defs().size(); k++)
+		if (block.defs()[k].second.isContinuations())
+			{
+			ImmutableTreeVector<NativeCodeFlattened::Cont> c
+				= block.defs()[k].second.getContinuations().continuation();
+			for (long j = 0; j < c.size(); j++)
+				extractContinuationSlots(c[j]);
+			}
+	if (block.term().isCall())
+		for (long k = 0; k < block.term().getCall().continuation().size(); k++)
+			extractContinuationSlots(block.term().getCall().continuation()[k]);
+	}
+	
+void LLVMFunctionBuilder::extractWriteBackSlots(const NativeCodeFlattened::Block& block)
+	{
+	ImmutableTreeSet<NativeVariable> toWriteBack;
+
+	@match NativeCodeFlattened::Term(block.term())
+		-|	Jump((_,_,(j))) ->> {
+			toWriteBack = j;
+			}
+		-|	Branch(_,(_,_,(j1)),(_,_,(j2))) ->> {
+			toWriteBack =  j1 + j2;
+			}
+		-|	Halt() ->> {
+			toWriteBack =  emptyTreeSet();
+			}
+		-|	Call(_,_,_,_,_,_,(j))->> {
+			toWriteBack = j;
+			}
+		-|	Transfer() ->> {
+			toWriteBack =  emptyTreeSet();
+			}
+		-|	CallGeneric(_,_,(j))->> {
+			toWriteBack = j;
+			}
+		-|	Follow(_,_,(j)) ->> {
+			toWriteBack =  j;
+			}
+		-|	Exit() ->> {
+			toWriteBack =  emptyTreeSet();
+			}
+		;
+
+	//automatically include any block arguments that are not phi nodes
+	ImmutableTreeSet<NativeVariable> args(block.args().begin(), block.args().end());
+	toWriteBack = toWriteBack + (args - block.liveOnInput());
+
+	//these variables need slots
+	for (long k = 0; k < toWriteBack.size(); k++)
+		if (toWriteBack[k] != mVarsToSlots)
+			{
+			uword_t ix = mSlots.size();
+			mVarsToSlots[toWriteBack[k]] = ix;
+			mSlots = mSlots + toWriteBack[k];
+			}
+	}
+	
+void LLVMFunctionBuilder::addBlockWithTerminator(
+		llvm_block_ptr blockPtr,
+		NativeBlockID id,
+		const NativeCodeFlattened::Block& nativeBlock
+		)
+	{
+	if (wantsPathTrace())
+		genTracer(blockPtr, "entering " + prettyPrintString(id));
+
+	map<NativeVariable, LLVMValue> 	liveValues;
+
+	//create PHI nodes for all live values
+	for (long k = 0; k < nativeBlock.liveOnInput().size(); k++)
+		liveValues[nativeBlock.liveOnInput()[k]] =
+			LLVMValue(
+				mBlockLiveVarPHIs[id][nativeBlock.liveOnInput()[k]],
+				nativeBlock.liveOnInput()[k].type()
+				);
+
+	//evaluate each instruction in turn
+	for (long k = 0; k < nativeBlock.defs().size(); k++)
+		liveValues[nativeBlock.defs()[k].first] =
+			evaluate(
+				blockPtr,
+				nativeBlock.defs()[k].second,
+				liveValues
+				);
+		
+	createTerminalBranch(blockPtr, id, nativeBlock, liveValues);	   
+	}
+	
+void LLVMFunctionBuilder::createTerminalBranch(
+		llvm_block_ptr blockPtr,
+		NativeBlockID id,
+		const NativeCodeFlattened::Block& nativeBlock,
+		map<NativeVariable, LLVMValue>& ioLiveValues
+		)
+	{
+	//finally, create each terminal branch
+	@match NativeCodeFlattened::Term(nativeBlock.term())
+		-|	Branch(cond, t, f, trueFreq) ->> {
+			LLVMValue condV = evaluate(blockPtr, cond, ioLiveValues);
+			//create some new blocks
+			llvm_block_ptr blockT = mBranchBlockMap[id].first;
+			llvm_block_ptr blockF = mBranchBlockMap[id].second;
+
+			setSpillWeight(blockT, nativeBlock.relativeFrequency() * trueFreq);
+			setSpillWeight(blockF, nativeBlock.relativeFrequency() * (1.0 - trueFreq));
+
+			lassert_dump(condV.t().isInteger() || condV.t().isPointer(),
+				prettyPrintString(condV.t()) << " isn't a valid type to branch on");
+			bb(blockPtr).CreateCondBr(bb(blockPtr).CreateIsNotNull(condV), blockT, blockF);
+
+			terminate(blockT, NativeCodeFlattened::Term::Jump(t), ioLiveValues);
+			terminate(blockF, NativeCodeFlattened::Term::Jump(f), ioLiveValues);
+			}
+		-|	_ ->> { terminate(blockPtr, nativeBlock.term(), ioLiveValues); }
+		;
+	}
+	
+LLVMValue LLVMFunctionBuilder::evaluate(
+		llvm_block_ptr blockPtr,
+		const NativeConstant& in,
+		map<NativeVariable, LLVMValue>& ioVals
+		)
+	{
+	@match NativeConstant(in)
+		-| VoidPtr(d) ->> {
+			return LLVMValue(
+				mCompiler.inlinePointer(blockPtr, (void*)d, NativeType::Nothing().ptr()), 
+				NativeType::Nothing().ptr()
+				);
+			}
+		-| NullPointer(pointedToType) ->> {
+			NativeType pointerType = pointedToType.ptr();
+
+			return  LLVMValue(getNullConstantFor((pointerType)), pointerType);
+			}
+		-| Composite(constants) ->> {
+			ImmutableTreeVector<LLVMValue> values;
+
+			for (auto c: constants)
+				values = values + evaluate(blockPtr, c, ioVals);
+			
+			return makeComposite(blockPtr, values);
+			}
+		-| ArbitraryConstant(arbitraryConstantPtr) ->> {
+			return 
+				LLVMValue(
+					bb(blockPtr).CreateLoad(
+						mCompiler.inlinePointer(
+							blockPtr, 
+							arbitraryConstantPtr->pointerToData(), 
+							arbitraryConstantPtr->nativeType().ptr()
+							)
+						),
+					arbitraryConstantPtr->nativeType()
+					);
+			}
+		-|	UInt64(x) ->> {
+			return LLVMValue(
+						llvm::ConstantInt::get(
+							toLLVM(NativeType::uint64()),
+							x),
+						NativeType::uint64()
+						);
+			}
+		-|	UInt32(x) ->> {
+			return LLVMValue(
+						llvm::ConstantInt::get(
+							toLLVM(NativeType::uint32()),
+							x),
+						NativeType::uint32()
+						);
+			}
+		-|	UInt16(x) ->> {
+			return LLVMValue(
+						llvm::ConstantInt::get(
+							toLLVM(NativeType::uint16()),
+							x),
+						NativeType::uint16()
+						);
+			}
+		-|	UInt8(x) ->> {
+			return LLVMValue(
+						llvm::ConstantInt::get(
+							toLLVM(NativeType::uint8()),
+							x),
+						NativeType::uint8()
+						);
+			}
+		-|	Int64(x) ->> {
+			return LLVMValue(
+						llvm::ConstantInt::get(
+							toLLVM(NativeType::int64()),
+							x),
+						NativeType::int64()
+						);
+			}
+		-|	Int32(x) ->> {
+			return LLVMValue(
+						llvm::ConstantInt::get(
+							toLLVM(NativeType::int32()), x), NativeType::int32());
+			}
+		-|	Int16(x) ->> {
+			return LLVMValue(
+						llvm::ConstantInt::get(
+							toLLVM(NativeType::int16()),
+							x),
+						NativeType::int16()
+						);
+			}
+		-|	Int8(x) ->> {
+			return LLVMValue(
+						llvm::ConstantInt::get(
+							toLLVM(NativeType::int8()),
+							x),
+						NativeType::int8()
+						);
+			}
+		-|	Bool(x) ->> {
+			return  LLVMValue(
+						llvm::ConstantInt::get(
+							toLLVM(NativeType::uint1()),
+							x),
+						NativeType::uint1()
+						);
+			}
+		-|	Float(x) ->> {
+			return  LLVMValue(
+						llvm::ConstantFP::get(
+							toLLVM(NativeType::Float(32)),
+							x),
+						NativeType::Float(32)
+						);
+			}
+		-|	Double(x) ->> {
+			return  LLVMValue(
+						llvm::ConstantFP::get(
+							toLLVM(NativeType::Float(64)),
+							x),
+						NativeType::Float(64)
+						);
+			}
+		-|	Nothing() ->> {
+			return  LLVMValue(0, NativeType::Nothing());
+			}
+	}
+
+LLVMValue LLVMFunctionBuilder::evaluate(
+		llvm_block_ptr blockPtr,
+		const NativeCodeFlattened::Input& in,
+		map<NativeVariable, LLVMValue>& ioVals
+		)
+	{
+	@match NativeCodeFlattened::Input(in)
+		-|	Zero(type)  ->> {
+			return  (type.isEmpty() ? LLVMValue(0, type) :
+										LLVMValue(getNullConstantFor((type)), type));
+			}
+		-|	Constant(c) ->> {
+			return evaluate(blockPtr, c, ioVals);
+			}
+		-|	ReturnContinuation(indexAndTypes) ->> {
+
+			llvm::Value* incomingContinuationsPtr = bb(blockPtr).CreateConstGEP2_32(mSlotsPtr,0,0);
+
+			LLVMValue incomingFunctionPtr(
+				bb(blockPtr).CreatePointerCast(
+					bb(blockPtr).CreateLoad(
+						bb(blockPtr).CreateConstGEP2_32(incomingContinuationsPtr, 0, 0)
+						),
+					toLLVM(NativeType::uint8().ptr())
+					),
+				NativeType::uint8().ptr()
+				);
+
+			LLVMValue incomingStackframePtr(
+				toVoidPointer(
+					blockPtr,
+					bb(blockPtr).CreateLoad(
+						bb(blockPtr).CreateConstGEP2_32(incomingContinuationsPtr, 0, 1)
+						)
+					),
+				NativeType::Nothing().ptr()
+				);
+
+			LLVMValue incomingMetadata(
+				bb(blockPtr).CreateLoad(
+					bb(blockPtr).CreateConstGEP2_32(incomingContinuationsPtr, 0, 2)
+					),
+				NativeType::uword()
+				);
+
+			ImmutableTreeVector<LLVMValue> continuationSlots;
+
+			for (long k = 0; k < indexAndTypes.size(); k++)
+				{
+				long origSlot = indexAndTypes[k].first;
+
+				continuationSlots = continuationSlots + 
+					LLVMValue(
+						bb(blockPtr).CreateLoad(
+							bb(blockPtr).CreateConstGEP2_32(
+								bb(blockPtr).CreateConstGEP2_32(incomingContinuationsPtr, 0, 3),
+								0, k
+								)
+							),
+						NativeType::Composite(
+							emptyTreeVec() + 
+								NativeType::uword() + 
+								NativeType::Nothing().ptr()
+							)
+						);
+				}
+
+			return makeComposite(
+				blockPtr,
+				emptyTreeVec() + 
+					incomingFunctionPtr + 
+					incomingStackframePtr + 
+					incomingMetadata + 
+					makeComposite(blockPtr, continuationSlots)
+				);
+			}
+		-|	Variable(var) ->> {
+			//check to see if this is "Nothing" (or an equivalent),
+			//which we don't actually need to pass to LLVM
+			if (var.type().isEmpty())
+				return LLVMValue(0, var.type());
+
+			//check to see whether this variable is already loaded into a value
+			if (var == ioVals)
+				return ioVals[var];
+
+			//it's not - load it from a slot
+			lassert_dump(var == mVarsToSlots,
+				"don't have slot for variable " << prettyPrintString(var) << ".\n\n"
+				<< prettyPrintString(mFlatBlockMap) << "\n");
+
+			llvm_value_ptr slotPtr =
+				bb(blockPtr).CreateConstGEP2_32(
+					mSlotsPtr,
+					0,
+					mVarsToSlots[var]
+					);
+
+			LLVMValue res(bb(blockPtr).CreateLoad(slotPtr), var.type());
+			ioVals[var] = res;
+			return res;
+			}
+		-| _ ->> {
+			throw standardLogicErrorWithStacktrace("invalid input: " + prettyPrintString(in));
+			}
+		;
+	}
+ImmutableTreeVector<LLVMValue> LLVMFunctionBuilder::evaluate(
+		llvm_block_ptr blockPtr,
+		const ImmutableTreeVector<NativeCodeFlattened::Input>& in,
+		map<NativeVariable,
+		LLVMValue>& ioVals
+		)
+	{
+	ImmutableTreeVector<LLVMValue> tr;
+	for (long k = 0; k < in.size(); k++)
+		tr = tr + evaluate(blockPtr, in[k], ioVals);
+	return tr;
+	}
+
+uword_t LLVMFunctionBuilder::mapMetadata(const NativeCodeFlattened::Input& meta)
+	{
+	@match NativeCodeFlattened::Input(meta)
+		-|	Constant(Nothing()) ->> { return 0; }
+		-|	Variable(v) ->> {
+				lassert_dump(v == mVarsToSlots, 
+						"tried to produce metadata for a variable without a slot: " 
+					<< 	prettyPrintString(v) 
+					<< ". map = \n" 
+					<< Ufora::indent(prettyPrintString(mFlatBlockMap))
+					);
+
+				return mSlotOffsets[mVarsToSlots.find(v)->second];
+				}
+		-|	_ ->> { 
+				lassert_dump(false, "invalid metadata: " << prettyPrintString(meta)); 
+				return 0; 
+				}
+		;
+	}
+
+namespace {
+
+void calcOffsetsIntoNativeType(
+				NativeType& ioSubtype, 
+				uword_t& ioSubOffset, 
+				const ImmutableTreeVector<uword_t>& indices
+				)
+	{	
+	for (long k = 0; k < indices.size(); k++)
+		{
+		lassert(ioSubtype.isComposite());
+
+		const ImmutableTreeVector<NativeType>& compTypes = 
+			ioSubtype.getComposite().elements();
+
+		uword_t index = indices[k];
+
+		for (long j = 0; j < index; j++)
+			ioSubOffset += compTypes[j].packedSize();
+
+		ioSubtype = compTypes[index];
+		}
+	}
+
+NativeContinuationExpressionSerialized 
+sliceIntoNativeContinuationExpressionSerialized(
+		NativeContinuationExpressionSerialized subSerialized, 
+		const ImmutableTreeVector<uword_t>& indices
+		)
+	{
+	for (long k = 0; k < indices.size(); k++)
+		{
+		@match NativeContinuationExpressionSerialized(subSerialized)
+			-| Tuple(children) ->> {
+				subSerialized = children[indices[k]];
+				}
+			-| Leaf(t, offset) ->> {
+				NativeType subtype = t;
+				uword_t subOffset = offset;
+
+				calcOffsetsIntoNativeType(subtype, subOffset, indices.slice(k));
+
+				return NativeContinuationExpressionSerialized::Leaf(subtype, subOffset);
+				}
+			-| Constant(c, t, offset) ->> {
+				NativeType subtype = t;
+				uword_t subOffset = offset;
+
+				calcOffsetsIntoNativeType(subtype, subOffset, indices.slice(k));
+
+				return NativeContinuationExpressionSerialized::Constant(c, subtype, subOffset);
+				}
+		}
+
+	return subSerialized;
+	}
+
+}
+
+NativeContinuationExpressionSerialized
+		LLVMFunctionBuilder::mapMetadata(
+			const NativeCodeFlattened::CompositeInput& meta
+			)
+	{
+	@match NativeCodeFlattened::CompositeInput(meta)
+		-|	Leaf(Constant(c)) ->> {
+				return NativeContinuationExpressionSerialized::Constant(c);
+				}
+		-|	Leaf(Variable(v)) ->> {
+				lassert_dump(v == mVarsToSlots, 
+					"tried to produce metadata for a variable without a slot: " 
+						<< prettyPrintString(v) 
+						<< ". map = \n"
+						<< Ufora::indent(prettyPrintString(mFlatBlockMap))
+					);
+				return NativeContinuationExpressionSerialized::Leaf(
+					v.type(), 
+					mSlotOffsets[mVarsToSlots.find(v)->second]
+					);
+				}
+		-|	Leaf(Zero(t)) ->> {
+				NativeConstant c = NativeConstant::Zero(t);
+
+				return NativeContinuationExpressionSerialized::Constant(c);
+				}
+		-|	Leaf(x) ->> {
+				lassert_dump(false, "don't know what to do with metadata of "
+					<< prettyPrintString(x)
+					);
+				
+				return NativeContinuationExpressionSerialized();
+				}
+		-|	ValueExtract(indices, sub) ->> {
+				NativeContinuationExpressionSerialized subSerialized = mapMetadata(sub);
+				return sliceIntoNativeContinuationExpressionSerialized(subSerialized, indices);
+				}
+		-|	Node(n) ->> {
+				ImmutableTreeVector<NativeContinuationExpressionSerialized> subs;
+				for (long k = 0; k < n.size(); k++)
+					subs = subs + mapMetadata(n[k]);
+				return NativeContinuationExpressionSerialized::Tuple(subs);
+				}
+		-|	_ ->> {
+				lassert_dump(false, "can't handle " << prettyPrintString(meta));
+				}
+		;
+	}
+
+NativeContinuationVarMetadataSerialized 
+LLVMFunctionBuilder::mapMetadata(const NativeCodeFlattened::VarMetadata& meta)
+	{
+	return NativeContinuationVarMetadataSerialized(
+			mapMetadata(meta.dataVar()),
+			meta.layout()
+			);
+	}
+
+NativeContinuationMetadataSerialized 
+LLVMFunctionBuilder::mapMetadata(const NativeCodeFlattened::Metadata& meta)
+	{
+	ImmutableTreeVector<NativeContinuationVarMetadataSerialized> v;
+	for (long k = 0; k < meta.vars().size(); k++)
+		v = v + mapMetadata(meta.vars()[k]);
+
+	return NativeContinuationMetadataSerialized(meta.instruction(), v);
+	}
+
+ImmutableTreeVector<NativeContinuationMetadataSerialized>	
+LLVMFunctionBuilder::mapMetadata(const ImmutableTreeVector<NativeCodeFlattened::Metadata>& meta)
+	{
+	ImmutableTreeVector<NativeContinuationMetadataSerialized> tr;
+	for (long k = 0; k < meta.size(); k++)
+		tr = tr + mapMetadata(meta[k]);
+	return tr;
+	}
+
+LLVMValue LLVMFunctionBuilder::getTempVarPtr(uword_t sz)
+	{
+	if (sz > mTempVarSize)
+		mTempVarSize = sz;
+	return LLVMValue(mTempVarForBitcasting, NativeType::uint8().ptr());
+	}
+
+uword_t LLVMFunctionBuilder_funCallCt = 0;
+
+LLVMValue LLVMFunctionBuilder::evaluate(
+		llvm_block_ptr blockPtr,
+		const NativeCodeFlattened::Expression& nativeFlatExpression,
+		map<NativeVariable, LLVMValue>& ioVals
+		)
+	{
+	if (wantsPathTrace())
+		genTracer(blockPtr, prettyPrintString(nativeFlatExpression));
+
+	@match NativeCodeFlattened::Expression(nativeFlatExpression)
+		-|	Var(i) ->> {
+				return evaluate(blockPtr, i, ioVals);
+				}
+		-|	CreateComposite(i) ->> {
+				return makeComposite(blockPtr, evaluate(blockPtr, i, ioVals));
+				}
+		-|	Load(v, isVolatile) ->> {
+				LLVMValue val = evaluate(blockPtr, v, ioVals);
+				if (val.t().getPointer().element().isEmpty())
+					return LLVMValue(0, val.t().getPointer().element());
+				LLVMValue res(
+							bb(blockPtr).CreateLoad(
+								val,
+								isVolatile),
+							val.t().getPointer().element()
+							);
+				return res;
+				}
+		-|	Alloc(t,count,forceInitialize) ->> {
+				LLVMValue ptr(
+					bb(mFunctionEntryBlock).CreatePointerCast(
+						bb(mFunctionEntryBlock).CreateAlloca(
+							toLLVM(t),
+							llvm::ConstantInt::get(
+								toLLVM(NativeType::uint32()),
+								count
+								)
+							),
+						toLLVM(t.ptr())
+						),
+					t.ptr()
+					);
+
+				if (forceInitialize)
+					for (long k = 0; k < count; k++)
+						{
+						bb(mFunctionEntryBlock).CreateStore(
+							llvm::Constant::getNullValue(toLLVM(t)),
+							bb(mFunctionEntryBlock).CreateConstGEP1_32(ptr.p(), k)
+							);
+						}
+
+				return ptr;
+				}
+		-|	Store(addr, val) ->> {
+				LLVMValue v = evaluate(blockPtr, val, ioVals);
+				LLVMValue a = evaluate(blockPtr, addr, ioVals);
+				if (!v.t().isEmpty())
+					bb(blockPtr).CreateStore(v, a);
+				LLVMValue res(0, NativeType::Nothing());
+				return res;
+				}
+		-|	Selector(cond, t,f) ->> {
+				LLVMValue condV = evaluate(blockPtr, cond, ioVals);
+				LLVMValue tV = evaluate(blockPtr, t, ioVals);
+				LLVMValue fV = evaluate(blockPtr, f, ioVals);
+				if (tV.t().isEmpty())
+					return tV;
+				LLVMValue res(bb(blockPtr).CreateSelect(condV, tV, fV), tV.t());
+				return res;
+				}
+		-|	UnaryOp(opcode, elt)  ->> {
+
+				LLVMValue e = evaluate(blockPtr, elt, ioVals);
+
+				llvm::Type* t = toLLVM(e.t());
+
+
+				@match NativeUnaryOpcode(opcode)
+					-|	Negate() ->> {
+						return (LLVMValue(bb(blockPtr).CreateNeg(e), e.t()));
+						}
+					-|	NOT() ->> {
+						return (LLVMValue(bb(blockPtr).CreateNot(e), e.t()));
+						}
+					-|	Log() ->> {
+						return LLVMValue(
+									bb(blockPtr).CreateCall(
+										llvm::Intrinsic::getDeclaration(
+											mFunction->getParent(),
+											llvm::Intrinsic::log,
+											llvm::ArrayRef<llvm::Type*>(t)
+											),
+										e),
+									e.t()
+									);
+						}
+					-|	Exp() ->> {
+						return LLVMValue(
+									bb(blockPtr).CreateCall(
+										llvm::Intrinsic::getDeclaration(
+											mFunction->getParent(),
+											llvm::Intrinsic::exp,
+											llvm::ArrayRef<llvm::Type*>(t)
+											),
+										e),
+									e.t()
+									);
+						}
+					-|	Sin() ->> {
+						return LLVMValue(
+									bb(blockPtr).CreateCall(
+										llvm::Intrinsic::getDeclaration(
+											mFunction->getParent(),
+											llvm::Intrinsic::sin,
+											llvm::ArrayRef<llvm::Type*>(t)
+											),
+										e),
+									e.t()
+									);
+						}
+					-|	Cos() ->> {
+						return LLVMValue(
+									bb(blockPtr).CreateCall(
+										llvm::Intrinsic::getDeclaration(
+											mFunction->getParent(),
+											llvm::Intrinsic::cos,
+											llvm::ArrayRef<llvm::Type*>(t)
+											),
+										e),
+									e.t()
+									);
+						}
+					;
+				}
+		-|	BinaryOp(opcode, lhs, rhs)  ->> {
+				LLVMValue lhsE = evaluate(blockPtr, lhs, ioVals);
+				LLVMValue rhsE = evaluate(blockPtr, rhs, ioVals);
+
+				LLVMValue tr;
+
+				@match BOpAndType(BOpAndType(opcode, lhsE.t()))
+					-|	(Add(),Float()) ->> {
+						tr = LLVMValue(bb(blockPtr).CreateFAdd(lhsE, rhsE), lhsE.t());
+						}
+					-|	(Sub(),Float()) ->> {
+						tr = LLVMValue(bb(blockPtr).CreateFSub(lhsE, rhsE), lhsE.t());
+						}
+					-|	(Mul(),Float()) ->> {
+						tr = LLVMValue(bb(blockPtr).CreateFMul(lhsE, rhsE), lhsE.t());
+						}
+					-|	(Div(),Float()) ->> {
+						tr = LLVMValue(bb(blockPtr).CreateFDiv(lhsE, rhsE), lhsE.t());
+						}
+					-|	(Mod(),Float()) ->> {
+						tr = LLVMValue(bb(blockPtr).CreateFRem(lhsE, rhsE), lhsE.t());
+						}
+					-|	(Power(),Float()) ->> {
+						llvm::Type*	t = toLLVM(lhsE.t());
+						tr = (rhsE.t().isInteger() ?
+							LLVMValue(
+								bb(blockPtr).CreateCall2(
+									llvm::Intrinsic::getDeclaration(
+										mFunction->getParent(),
+										llvm::Intrinsic::powi,
+										llvm::ArrayRef<llvm::Type*>(t)
+										),
+									lhsE,
+									rhsE
+									),
+								lhsE.t()
+								)
+						:	LLVMValue(
+								bb(blockPtr).CreateCall2(
+									llvm::Intrinsic::getDeclaration(
+										mFunction->getParent(),
+										llvm::Intrinsic::pow,
+										llvm::ArrayRef<llvm::Type*>(t)
+										),
+									lhsE,
+									rhsE
+									),
+								lhsE.t()
+								)
+							);
+						}
+					-|	(Add(),Integer()) ->> {
+						tr = LLVMValue(bb(blockPtr).CreateAdd(lhsE, rhsE), lhsE.t());
+						}
+					-|	(Sub(),Integer()) ->> {
+						tr = LLVMValue(bb(blockPtr).CreateSub(lhsE, rhsE), lhsE.t());
+						}
+					-|	(Mul(),Integer()) ->> {
+						tr = LLVMValue(bb(blockPtr).CreateMul(lhsE, rhsE), lhsE.t());
+						}
+					-|	(Div(),Integer(bits, sg)) ->> {
+						tr = LLVMValue(
+									sg ? bb(blockPtr).CreateSDiv(lhsE, rhsE) :
+										bb(blockPtr).CreateUDiv(lhsE, rhsE), lhsE.t()
+									);
+						}
+					-|	(Mod(),Integer(bits, sg)) ->> {
+						tr = LLVMValue(
+								sg ? bb(blockPtr).CreateSRem(lhsE, rhsE) :
+									bb(blockPtr).CreateURem(lhsE, rhsE), lhsE.t());
+						}
+					-|	(And(),Integer()) ->> {
+						tr = LLVMValue(
+								bb(blockPtr).CreateAnd(
+									(llvm_value_ptr)lhsE,
+									(llvm_value_ptr)rhsE
+									),
+								lhsE.t()
+								);
+						}
+					-|	(Or(),Integer()) ->> {
+						tr = LLVMValue(
+								bb(blockPtr).CreateOr(
+									(llvm_value_ptr)lhsE,
+									(llvm_value_ptr)rhsE
+									),
+								lhsE.t()
+								);
+						}
+					-|	(Xor(),Integer()) ->> {
+						tr = LLVMValue(
+								bb(blockPtr).CreateXor(
+									(llvm_value_ptr)lhsE,
+									(llvm_value_ptr)rhsE
+									),
+								lhsE.t()
+								);
+						}
+					-|	(ShiftLeft(), Integer(bits, sg)) ->> {
+						tr = LLVMValue(
+								bb(blockPtr).CreateShl(
+									lhsE,
+									(llvm_value_ptr)rhsE
+									),
+								lhsE.t()
+								);
+						}
+					-|	(ShiftRight(), Integer(bits, sg)) ->> {
+						tr = LLVMValue(
+								bb(blockPtr).CreateLShr(
+									lhsE,
+									(llvm_value_ptr)rhsE
+									),
+								lhsE.t()
+								);
+						}
+					-|	(EQ(),Float()) ->> {
+						tr = LLVMValue(
+								bb(blockPtr).CreateFCmpOEQ(lhsE, rhsE),
+								NativeType::uint1()
+								);
+						}
+					-|	(NEQ(),Float()) ->> {
+						tr = LLVMValue(
+								bb(blockPtr).CreateFCmpONE(lhsE, rhsE),
+								NativeType::uint1()
+								);
+						}
+					-|	(LT(),Float()) ->> {
+						tr = LLVMValue(
+								bb(blockPtr).CreateFCmpOLT(lhsE, rhsE),
+								NativeType::uint1()
+								);
+						}
+					-|	(GT(),Float()) ->> {
+						tr = LLVMValue(
+								bb(blockPtr).CreateFCmpOGT(lhsE, rhsE),
+								NativeType::uint1()
+								);
+						}
+					-|	(LTE(),Float()) ->> {
+						tr = LLVMValue(
+								bb(blockPtr).CreateFCmpOLE(lhsE, rhsE),
+								NativeType::uint1()
+								);
+						}
+					-|	(GTE(),Float()) ->> {
+						tr = LLVMValue(
+								bb(blockPtr).CreateFCmpOGE(lhsE, rhsE),
+								NativeType::uint1()
+								);
+						}
+					-|	(EQ(),Integer()) ->> {
+						tr = LLVMValue(
+								bb(blockPtr).CreateICmpEQ(lhsE, rhsE),
+								NativeType::uint1()
+								);
+						}
+					-|	(NEQ(),Integer()) ->> {
+						tr = LLVMValue(
+								bb(blockPtr).CreateICmpNE(lhsE, rhsE),
+								NativeType::uint1()
+								);
+						}
+					-|	(LT(),Integer(bits, sg)) ->> {
+						tr = LLVMValue(
+								sg ? bb(blockPtr).CreateICmpSLT(lhsE, rhsE) :
+								bb(blockPtr).CreateICmpULT(lhsE, rhsE),
+								NativeType::uint1()
+								);
+						}
+					-|	(GT(),Integer(bits, sg)) ->> {
+						tr = LLVMValue(
+								sg ? bb(blockPtr).CreateICmpSGT(lhsE, rhsE) :
+								bb(blockPtr).CreateICmpUGT(lhsE, rhsE),
+								NativeType::uint1()
+								);
+						}
+					-|	(LTE(),Integer(bits, sg)) ->> {
+						tr = LLVMValue(
+								sg ? bb(blockPtr).CreateICmpSLE(lhsE, rhsE) :
+								bb(blockPtr).CreateICmpULE(lhsE, rhsE),
+								NativeType::uint1()
+								);
+						}
+					-|	(GTE(),Integer(bits, sg)) ->> {
+						tr = LLVMValue(
+								sg ? bb(blockPtr).CreateICmpSGE(lhsE, rhsE) :
+								bb(blockPtr).CreateICmpUGE(lhsE, rhsE),
+								NativeType::uint1()
+								);
+						}
+
+
+					-|	(EQ(),Pointer()) ->> {
+						tr = LLVMValue(
+								bb(blockPtr).CreateICmpEQ(lhsE, rhsE),
+								NativeType::uint1()
+								);
+						}
+					-|	(NEQ(),Pointer()) ->> {
+						tr = LLVMValue(
+								bb(blockPtr).CreateICmpNE(lhsE, rhsE),
+								NativeType::uint1()
+								);
+						}
+					-|	(LT(),Pointer()) ->> {
+						tr = LLVMValue(
+								bb(blockPtr).CreateICmpULT(lhsE, rhsE),
+								NativeType::uint1()
+								);
+						}
+					-|	(GT(),Pointer()) ->> {
+						tr = LLVMValue(
+								bb(blockPtr).CreateICmpUGT(lhsE, rhsE),
+								NativeType::uint1()
+								);
+						}
+					-|	(LTE(),Pointer()) ->> {
+						tr = LLVMValue(
+								bb(blockPtr).CreateICmpULE(lhsE, rhsE),
+								NativeType::uint1()
+								);
+						}
+					-|	(GTE(),Pointer()) ->> {
+						tr = LLVMValue(
+								bb(blockPtr).CreateICmpUGE(lhsE, rhsE),
+								NativeType::uint1()
+								);
+						}
+
+					-| _ ->> {
+						throw standardLogicErrorWithStacktrace(
+							"invalid binary operation: " + 
+								prettyPrintString(lhsE.t()) + " " + 
+								prettyPrintString(opcode) + " " + 
+								prettyPrintString(rhsE.t())
+							);
+						}
+					;
+				return tr;
+				}
+		-|	Cast(destType, sourceExpr, forceBitcast)  ->> {
+				LLVMValue tr;
+
+				LLVMValue sourceVal = evaluate(blockPtr, sourceExpr, ioVals);
+
+				//can just cast continuations
+				if (destType.isContinuations() && sourceVal.t().isContinuations() && 
+						destType.getContinuations().inputTypes().size() == 
+						sourceVal.t().getContinuations().inputTypes().size())
+					return sourceVal;
+
+				if (destType.isEmpty())
+					return evaluate(blockPtr, NativeCodeFlattened::Input::Zero(destType), ioVals);
+
+				if (sourceVal.t().isEmpty())
+					return evaluate(blockPtr, NativeCodeFlattened::Input::Zero(destType), ioVals);
+
+				if (destType.isComposite() ||
+						sourceVal.t().isComposite() ||
+						forceBitcast && !(sourceVal.t().isPointer() && destType.isPointer()))
+					{
+					LLVMValue tempP = getTempVarPtr(
+										std::max(destType.packedSize(), sourceVal.t().packedSize())
+										);
+
+					llvm::Type* targT = toLLVM(destType);
+					llvm::Type* srcT = toLLVM(sourceVal.t());
+
+					if (targT == srcT)
+						//nothing to do
+						return sourceVal;
+
+					llvm::Type* targTPtr = llvm::PointerType::get(targT, 0);
+					llvm::Type* srcTPtr = llvm::PointerType::get(srcT, 0);
+
+					
+					bb(blockPtr).CreateStore(
+									llvm::Constant::getNullValue(targT),
+									bb(blockPtr).CreatePointerCast(tempP, targTPtr),
+									true
+									);
+					
+					bb(blockPtr).CreateStore(
+									sourceVal,
+									bb(blockPtr).CreatePointerCast(tempP, srcTPtr),
+									true
+									);
+					
+					llvm::LoadInst* tr =
+						bb(blockPtr).CreateLoad(
+										bb(blockPtr).CreatePointerCast(tempP, targTPtr),
+										true
+										);
+					
+					return LLVMValue(tr, destType);
+					}
+				else
+					{
+					llvm_value_ptr val;
+					
+					@match NativeType(destType)
+						-|	Pointer() ->> {
+								@match NativeType(sourceVal.t())
+									-|	Pointer() ->> {
+										val = bb(blockPtr).CreatePointerCast(
+																sourceVal,
+																toLLVM(destType)
+																);
+										}
+									-|	Integer(bits, isSigned) ->> {
+										lassert_dump(
+											bits >= 8 * sizeof(void*) && !isSigned,
+											"can't cast " << prettyPrintString(sourceVal.t())
+												<< " to a pointer"
+											);
+
+										if (bits > 8 * sizeof(void*))
+											val =
+												bb(blockPtr).CreateIntToPtr(
+													bb(blockPtr).CreateTrunc(
+														sourceVal,
+														toLLVM(
+															NativeType::Integer(8 * sizeof(void*))
+															)
+														),
+													toLLVM(destType)
+													);
+										else
+											val = bb(blockPtr).CreateIntToPtr(
+																	sourceVal,
+																	toLLVM(destType)
+																	);
+										}
+									;
+								}
+						-|	Integer(bits,isSigned) ->> {
+							@match NativeType(sourceVal.t())
+								-|	Pointer() ->> {
+									val = bb(blockPtr).CreatePtrToInt(sourceVal, toLLVM(destType));
+									}
+								-|	Integer(srcBits, srcIsSigned) ->> {
+												
+									//convert from one integer type to another.
+									//we need to be careful - converting from bool to a signed
+									//integer ends up as "-1" if you do it naively since it casts
+									//the sign first so we cast bitness first and then sign-ness
+									NativeType intermediateType =
+										NativeType::Integer(bits, srcIsSigned);
+									
+									llvm_value_ptr intermediateValue =
+										bb(blockPtr).CreateIntCast(
+											sourceVal,
+											toLLVM(intermediateType),
+											srcIsSigned
+											);
+									
+									val = bb(blockPtr).CreateIntCast(
+												intermediateValue,
+												toLLVM(destType),
+												isSigned
+												);
+									}
+								-|	Float(floatBits) ->> {
+									if (isSigned)
+										val = bb(blockPtr).CreateFPToSI(
+													sourceVal,
+													toLLVM(destType)
+													);
+									else
+									if (bits < 64)
+										val =
+											bb(blockPtr).CreateIntCast(
+												bb(blockPtr).CreateFPToSI(
+													sourceVal,
+													toLLVM(NativeType::Integer(64, true))
+													),
+												toLLVM(destType),
+												false
+												);
+									else
+										val = bb(blockPtr).CreateFPToUI(
+													sourceVal,
+													toLLVM(destType)
+													);
+									}
+								;
+							}
+						-|	Float(bits) ->> {
+							@match NativeType(sourceVal.t())
+								-|	Integer(ibits, isSigned) ->> {
+									if (isSigned)
+										val = bb(blockPtr).CreateSIToFP(
+												sourceVal,
+												toLLVM(destType)
+												);
+									else
+									if (ibits < 64)
+										val = bb(blockPtr).CreateSIToFP(
+												//convert to a 64 bit signed integer before we
+												//convert to the float
+												bb(blockPtr).CreateIntCast(
+													sourceVal,
+													toLLVM(NativeType::Integer(64, true)),
+													false
+													),
+												toLLVM(destType)
+												);
+									else
+										val = bb(blockPtr).CreateUIToFP(
+																sourceVal,
+																toLLVM(destType)
+																);
+									}
+								-|	Float(ibits) ->> {
+									val = bb(blockPtr).CreateFPCast(sourceVal, toLLVM(destType));
+									}
+								;
+							}
+						;
+					
+					tr = LLVMValue(val, destType);
+					}
+				return tr;
+				}
+		-|	CallLibraryFunction(name, retType, args)  ->> {
+
+				std::vector<LLVMValue> 	vals;
+				std::vector<llvm::Type*>  types;
+
+				for (long k = 0; k < args.size(); k++)
+					vals.push_back(evaluate(blockPtr, args[k], ioVals));
+
+				std::vector<llvm_value_ptr> vals2;
+				for (long k = 0; k < vals.size(); k++)
+					{
+					vals2.push_back(vals[k]);
+					types.push_back(vals2.back()->getType());
+					}
+
+				if (wantsPathTrace())
+					genTracer(blockPtr, "calling " + prettyPrintString(name)); 
+
+				llvm_value_ptr v =
+					bb(blockPtr).CreateCall(
+						mCompiler.getLibFunc(
+							name,
+							toLLVM(retType),
+							types,
+							mFunction->getParent()
+							),
+						llvm::ArrayRef<llvm_value_ptr>(vals2)
+						);
+				if (wantsPathTrace())
+					genTracer(blockPtr, "finished calling " + prettyPrintString(name));
+
+				LLVMValue tr;
+				if (retType.isEmpty())
+					tr = LLVMValue(0, retType);
+					else
+					tr = LLVMValue(v, retType);
+
+				return tr;
+				}
+		-|	ElementAddress(elements, source) ->> {
+
+				LLVMValue v = evaluate(blockPtr, source, ioVals);
+
+				vector<LLVMValue> vals;
+
+				NativeType t = v.t();
+
+				lassert_dump(
+					t.isPointer(),
+					"have to start with a pointer type. instead, got " << prettyPrintString(t)
+					);
+
+				LLVMValue tr;
+
+				try {
+					for (long k = 0; k < elements.size(); k++)
+						{
+						vals.push_back(evaluate(blockPtr, elements[k], ioVals));
+						NativeType eltType = vals.back().t();
+
+						@match NativeType(t)
+							-|	Pointer(x) ->> {
+									lassert_dump(
+										eltType.isInteger(), 
+										"Invalid types in " << prettyPrintString(nativeFlatExpression) 
+											<< ": pointer type is " << prettyPrintString(t) 
+											<< " but index type is " << prettyPrintString(eltType)
+										);
+									t = x;
+									}
+							-|	Array(x) ->> {
+									lassert(eltType.isInteger());
+									t = x;
+									}
+							-|	_ ->> {
+								@match NativeCodeFlattened::Input(elements[k])
+									-|	Constant(UInt8(val)) ->> {
+										@match NativeType(t)
+											-|	Composite(elts) ->> {
+												t = elts[val];
+												}
+											;
+										}
+									-|	Constant(UInt16(val)) ->> {
+										@match NativeType(t)
+											-|	Composite(elts) ->> {
+												t = (elts[val]);
+												}
+											;
+										}
+									-|	Constant(UInt32(val)) ->> {
+										@match NativeType(t)
+											-|	Composite(elts) ->> {
+												t = elts[val];
+												}
+											;
+										}
+									-|	Constant(UInt64(val)) ->> {
+										@match NativeType(t)
+											-|	Composite(elts) ->> {
+												t = elts[val];
+												}
+											;
+										}
+									;
+								}
+							;
+						}
+
+					std::vector<llvm_value_ptr> vals2;
+					for (long k = 0; k < vals.size(); k++)
+						vals2.push_back(vals[k]);
+						
+					//this is failing because the elements in the GEP are not constants.
+					//we need a notion of 'constant' slots (which are valid everywhere)
+					tr = LLVMValue(
+							bb(blockPtr).CreateGEP(
+								v,
+								llvm::ArrayRef<llvm_value_ptr>(vals2)
+								),
+							t.ptr()
+							);
+					}
+				catch (LLVMValue n)
+					{
+					tr = n;
+					}
+				return tr;
+				}
+		-|	ValueExtract(elements, source) ->> {
+
+				LLVMValue v = evaluate(blockPtr, source, ioVals);
+
+				NativeType t = v.t();
+
+				vector<uint32_t> e;
+				for (long k = 0; k < elements.size(); k++)
+					{
+					e.push_back(elements[k]);
+					@match NativeType(t)
+						-|	Composite(elts) ->> {
+							t =  elts[e[k]];
+							}
+						-|	Array(eltType) ->> {
+							t =  eltType;
+							}
+						-|	_ ->> {
+							lassert_dump(false, "can't value extract from "
+											<< prettyPrintString(v.t())
+											<< " with "
+											<< prettyPrintString(elements)
+											<< " because "
+											<< prettyPrintString(t)
+											<< " is not divisible");
+							}
+						;
+					}
+
+				return LLVMValue(
+							t.isEmpty() ? 0 :
+							bb(blockPtr).CreateExtractValue(
+											v,
+											llvm::ArrayRef<unsigned int>(e)
+											),
+							t
+							);
+				}
+		-|	Continuations(conts, data, contMetas) ->> {
+				ImmutableTreeVector<LLVMValue> tupVals;
+
+				//store some block-independent metadata for the continuation
+				long metadataMapId = mOutMetadataMap.size();
+				mOutMetadataMap[metadataMapId] = mapMetadata(data);
+
+				for (long k = 0; k < conts.size(); k++)
+					{
+					LLVMValue slotPtr;
+					if (conts[k].result().isEmpty())
+						slotPtr = toVoidPointer(blockPtr, mSlotsPtr);
+					else
+						{
+						lassert_dump(
+							mFlatBlockMap[conts[k].block()].args()[0] == mVarsToSlots,
+							"vars-to-slots doesn't contain an entry for "
+								<< prettyPrintString(mFlatBlockMap[conts[k].block()].args()[0])
+								<< "\nfor continuation " << prettyPrintString(conts) << "\n"
+							);
+						uword_t whichSlot = mVarsToSlots[mFlatBlockMap[conts[k].block()].args()[0]];
+
+						slotPtr = LLVMValue(
+									bb(blockPtr).CreateConstGEP2_32(
+										mSlotsPtr,
+										0,
+										whichSlot
+										),
+									mSlots[whichSlot].type().ptr()
+									);
+						}
+
+					uword_t blockID = entryBlockIDFor(conts[k].block());
+
+					tupVals = tupVals +
+						makeComposite(
+							blockPtr,
+							emptyTreeVec() +
+								LLVMValue(llvmULong(blockID), NativeType::uword()) +
+								toVoidPointer(blockPtr, slotPtr)
+							);
+
+					//go through each piece of metadata and put it into the continuation slot into
+					mOutIndividualMetadataMap[blockID] = contMetas[k];
+					}
+
+				return makeComposite(
+					blockPtr,
+					emptyTreeVec() + 
+						LLVMValue(
+							bb(blockPtr).CreatePointerCast(
+								mFunction,
+								toLLVM(NativeType::uint8().ptr())
+								),
+							NativeType::uint8().ptr()
+							) +
+						toVoidPointer(blockPtr, mSlotsPtr) +
+						LLVMValue(llvmULong(metadataMapId), NativeType::uword()) +
+						makeComposite(blockPtr, tupVals)
+					);
+				}
+		-| _ ->> {
+			throw standardLogicErrorWithStacktrace("invalid expression: " + 
+					prettyPrintString(nativeFlatExpression));
+			}
+		;
+	}
+
+void LLVMFunctionBuilder::terminate(
+		llvm_block_ptr blockPtr,
+		const NativeCodeFlattened::Term& term,
+		map<NativeVariable, LLVMValue>& ioVals
+		)
+	{
+	if (term.isExit()) //if this is an exit / "return" terminator instruction
+		{
+		//write the return value into the right slot and branch to the jump block
+		llvm_value_ptr contPtr = 
+			bb(blockPtr).CreateConstGEP2_32(mSlotsPtr,0,0);
+
+		llvm_value_ptr cont = bb(blockPtr).CreateLoad(contPtr);
+		llvm_value_ptr continuationSlot = 
+			bb(blockPtr).CreateExtractValue(
+				bb(blockPtr).CreateExtractValue(cont, 3),
+				term.getExit().index()
+				);
+
+		llvm_value_ptr memTgt = bb(blockPtr).CreateExtractValue(continuationSlot, 1);
+
+		LLVMValue toWrite = evaluate(blockPtr, term.getExit().value(), ioVals);
+
+		if (!toWrite.t().isEmpty())
+			{
+            bb(blockPtr).CreateStore(
+                toWrite,
+                bb(blockPtr).CreatePointerCast(memTgt, toLLVM(toWrite.t().ptr()))
+                );
+			if (wantsArgumentTrace())
+				genTracerTyped(
+					blockPtr, 
+					"wrote to continuation " + prettyPrintString(toWrite.t()), 
+					toWrite.t(), 
+					bb(blockPtr).CreatePointerCast(memTgt, toLLVM(toWrite.t().ptr()))
+					);
+
+			}
+
+		addIncoming(mFinalFunPtr, bb(blockPtr).CreateExtractValue(cont, 0), blockPtr);
+		addIncoming(mFinalStackPtr, bb(blockPtr).CreateExtractValue(cont, 1), blockPtr);
+		addIncoming(mFinalCont, bb(blockPtr).CreateExtractValue(continuationSlot, 0), blockPtr);
+		bb(blockPtr).CreateBr(mJumpBlock);
+
+		return;
+		}
+
+	if (term.isHalt())
+		{
+		genTracerCritical(blockPtr, "HALT: " + term.getHalt().reason());
+		bb(blockPtr).CreateRetVoid();
+		return;
+		}
+
+	//already taken care of by callers
+	lassert_dump(!term.isBranch(), "caller should have broken this 'branch' apart already"); 
+
+	//are we going to keep the local frame?
+	//first, we need to decide which variables we need to write back to their slots
+	ImmutableTreeSet<NativeVariable> toWrite;
+	
+	@match NativeCodeFlattened::Term(term)
+			-|	Jump((_,_,(j))) ->> {
+				toWrite = j;
+				}
+			-|	Call(_,_,_,_,_,_,(j)) ->> {
+				toWrite =   j;
+				}
+			-|	Transfer() ->> {
+				toWrite =   emptyTreeSet();
+				}
+			-|	CallGeneric(_,_,(j)) ->> {
+				toWrite =   j;
+				}
+			-|	Follow(_,_,(j)) ->> {
+				toWrite =   j;
+				}
+			;
+
+	ImmutableTreeVector<NativeCodeFlattened::Input> args;
+	
+	@match NativeCodeFlattened::Term(term)
+		-|	Jump((_,a)) ->> {
+			args = a;
+			}
+		-|	Call(_,_,_,_,_,a) ->> {
+			args = a;
+			}
+		-|	Transfer(_,_,_,a) ->> {
+			args = a;
+			}
+		-|	CallGeneric(x,a) ->> {
+			args = x+a;
+			}
+		-|	Follow(a,b) ->> {
+			args = emptyTreeVec() + a + b;
+			}
+			;
+	ImmutableTreeVector<LLVMValue> vals;
+	for (long k = 0; k < args.size(); k++)
+		vals = vals + evaluate(blockPtr, args[k], ioVals);
+
+	//compute and prepend the 'continuation' arguments
+	@match NativeCodeFlattened::Term(term)
+		-|	Call(_,_,continuations,contMetas,meta) ->> {
+			vals = evaluate(
+						blockPtr,
+						NativeCodeFlattened::Expression::Continuations(
+							continuations,
+							meta,
+							contMetas
+							),
+						ioVals
+						) + vals;
+			}
+		-|	Transfer(_,_,continuations) ->> {
+			vals = evaluate(
+						blockPtr,
+						NativeCodeFlattened::Input::ReturnContinuation(continuations),
+						ioVals
+						) + vals;
+			}
+		-|	_ ->> { ; }
+		;
+	
+	for (long k = 0; k < toWrite.size(); k++)
+		if (!toWrite[k].type().isEmpty())
+			{
+			lassert_dump(
+				toWrite[k] == ioVals,
+				"can't write variable " << prettyPrintString(toWrite[k])
+					<< "because it's not loaded!"
+					);
+			lassert_dump(
+				toWrite[k] == mVarsToSlots,
+				"can't write variable " << prettyPrintString(toWrite[k])
+					<< "because no slot exists for it!"
+					);
+
+			bb(blockPtr).CreateStore(ioVals[toWrite[k]],
+				bb(blockPtr).CreateConstGEP2_32(mSlotsPtr, 0, mVarsToSlots[toWrite[k]])
+				);
+
+			if (wantsSlotStorageTracers())
+				genTracerTyped(
+					blockPtr,
+					"stored " + prettyPrintString(toWrite[k]),
+					toWrite[k].type(),
+					bb(blockPtr).CreateConstGEP2_32(
+						mSlotsPtr,
+						0,
+						mVarsToSlots[toWrite[k]]
+						)
+					);
+			}
+
+	@match NativeCodeFlattened::Term(term)
+		-|	Jump((b,a)) ->> {
+
+				lassert_dump(
+					mFlatBlockMap[b].args().size() == vals.size(),
+					"tried to jump to " << prettyPrintString(b) << ": "
+						<< prettyPrintString(mFlatBlockMap[b])
+						<< " with arguments " << prettyPrintString(a)
+					);
+
+				//then link active variables, some of which we may need to load
+				ImmutableTreeSet<NativeVariable> live = mFlatBlockMap[b].liveOnInput();
+
+				//first, route in 'args'
+				for (long k = 0; k < mFlatBlockMap[b].args().size(); k++)
+					{
+					NativeVariable v = mFlatBlockMap[b].args()[k];
+					if (live.contains(mFlatBlockMap[b].args()[k]))
+						{
+						addIncoming(mBlockLiveVarPHIs[b][v], vals[k], blockPtr);
+						live = live - v;
+						}
+						else
+						{
+						//write the value to a slot
+						if (!v.type().isEmpty())
+							{
+							lassert(v == mVarsToSlots);
+
+							bb(blockPtr).CreateStore(vals[k],
+								bb(blockPtr).CreateConstGEP2_32(mSlotsPtr, 0, mVarsToSlots[v])
+								);
+							
+							if (wantsSlotStorageTracers())
+								genTracerTyped(
+									blockPtr,
+									"stored " + prettyPrintString(v),
+									v .type(),
+									bb(blockPtr).CreateConstGEP2_32(
+										mSlotsPtr,
+										0,
+										mVarsToSlots[v]
+										)
+									);
+							}
+						}
+					}
+
+				//connect all additional "live" values to the target
+				//be careful not to contaminate 'ioVals' for the other terminator
+				map<NativeVariable, LLVMValue> ioValsSnapshot(ioVals);
+				for (long k = 0; k < live.size(); k++)
+					addIncoming(
+						mBlockLiveVarPHIs[b][live[k]],
+						evaluate(
+							blockPtr,
+							NativeCodeFlattened::Input::Variable(live[k]),
+							ioValsSnapshot
+							),
+						blockPtr
+						);
+
+				//then jump
+				lassert_dump(b == mBlockMap, "don't have target " << prettyPrintString(b));
+				bb(blockPtr).CreateBr(mBlockMap[b]);
+				}
+		-|	Call(target, blockID, _, _) ->> {
+				//jump without destroying local call frame
+				//These next two statements instrument the generated code with a simple
+				//mechanism for counting calls.
+				llvm_value_ptr p = bb(blockPtr).CreateIntToPtr(
+									llvmULong((uword_t)&LLVMFunctionBuilder_funCallCt),
+									toLLVM(NativeType::uword().ptr())
+									);
+				
+				bb(blockPtr).CreateStore(
+					bb(blockPtr).CreateAdd(bb(blockPtr).CreateLoad(p), llvmULong(1)),
+					p
+					);
+				
+				FunctionPointerHandle slot = 
+					mCompiler.getTypedForaCompiler().getJumpTarget(target, NativeBlockID::external(blockID));
+				
+				longJump(
+					getLlvmFuncPtrFromSlot(
+						blockPtr,
+						slot
+						),
+					mBaseMemBlockPtr,
+					blockPtr,
+					vals,
+					mConfig.useInlineMemoryManagement(),
+					true
+					);
+				}
+		-|	Transfer(target, blockID, _, _) ->> {
+				//destroy the local call frame
+				callFree(
+					blockPtr,
+					mBaseMemBlockPtr,
+					toVoidPointer(blockPtr,mSlotsPtr),
+					mConfig.useInlineMemoryManagement()
+					);
+				
+				FunctionPointerHandle slot = 
+					mCompiler.getTypedForaCompiler().getJumpTarget(target, NativeBlockID::external(blockID));
+				
+				//then jump
+				longJump(
+					getLlvmFuncPtrFromSlot(
+						blockPtr,
+						slot
+						),
+					mBaseMemBlockPtr,
+					blockPtr,
+					vals,
+					mConfig.useInlineMemoryManagement(),
+					true
+					);
+				}
+		-|	CallGeneric(_, _, _, destroyLocalCallFrame, isInternal) ->> {
+
+				LLVMValue pVal = vals[0];
+
+				if (destroyLocalCallFrame)
+					callFree(
+						blockPtr,
+						mBaseMemBlockPtr,
+						toVoidPointer(blockPtr, mSlotsPtr),
+						mConfig.useInlineMemoryManagement()
+						);
+
+				longJump(
+					pVal,
+					mBaseMemBlockPtr,
+					blockPtr,
+					vals.slice(1),
+					mConfig.useInlineMemoryManagement(),
+					isInternal
+					);
+				}
+		-|	Follow(_,_,_, index, destroyLocalCallFrame) ->> {
+
+				LLVMValue cont = vals[0];
+
+				lassert_dump(
+					cont.t().isContinuations(),
+					"can't follow " << prettyPrintString(cont.t())
+						<< " since it's not a continuation..."
+						);
+
+				LLVMValue toReturn = vals[1];
+
+				llvm::IRBuilder<> builder(blockPtr);
+
+				llvm_value_ptr functionPointer =
+					builder.CreatePointerCast(
+						builder.CreateExtractValue(cont, 0),
+						llvm::PointerType::get(jumpFuncType(true), 0)
+						);
+				llvm_value_ptr stackFramePtr = builder.CreateExtractValue(cont, 1);
+
+				llvm_value_ptr blockAndTarget = 
+					builder.CreateExtractValue(
+						builder.CreateExtractValue(cont, 3),
+						index
+						);
+
+				llvm_value_ptr blockID = builder.CreateExtractValue(blockAndTarget, 0);
+				llvm_value_ptr memTgt = builder.CreateExtractValue(blockAndTarget, 1);
+
+				if (wantsArgumentTrace())
+					genTracer(blockPtr, "following continuation...");
+				if (toReturn)
+					{
+					if (wantsArgumentTrace())
+						genTracer(blockPtr, "writing at address", memTgt);
+					builder.CreateStore(
+						toReturn,
+						builder.CreatePointerCast(
+							memTgt,
+							toLLVM(toReturn.t().ptr())
+							)
+						);
+
+					//turn on to see each argument as it's liveOnInput
+					if (wantsArgumentTrace())
+						genTracerTyped(
+							blockPtr,
+							"continuation write: " + prettyPrintString(toReturn.t()),
+							toReturn.t(),
+							memTgt
+							);
+					}
+
+				if (destroyLocalCallFrame)
+					callFree(
+						blockPtr,
+						mBaseMemBlockPtr,
+						toVoidPointer(blockPtr, mSlotsPtr),
+						mConfig.useInlineMemoryManagement()
+						);
+
+				llvm::CallInst* callInst =
+					llvm::IRBuilder<>(blockPtr).CreateCall3(
+						functionPointer,
+						mBaseMemBlockPtr,
+						blockID,
+						toVoidPointer(blockPtr, stackFramePtr)
+						);
+				callInst->setTailCall(true);
+				callInst->setCallingConv(llvm::CallingConv::Fast);
+				llvm::IRBuilder<>(blockPtr).CreateRetVoid();
+				}
+		;
+	}
+
+llvm_value_ptr LLVMFunctionBuilder::getLlvmFuncPtrFromSlot(
+					llvm_block_ptr blockPtr, FunctionPointerHandle slot)
+	{
+	bb builder(blockPtr);
+	
+	std::pair<NativeFunctionPointerAndEntrypointId**, uint32_t> addrAndOffset = slot.getAddrAndOffset();
+	
+	llvm_value_ptr arrayPtr =
+		builder.CreateIntToPtr(
+			llvmULong(reinterpret_cast<uword_t>(addrAndOffset.first)),
+			toLLVM(
+				NativeType::Composite(
+					emptyTreeVec() + 
+						NativeType::Nothing().ptr() + 
+						NativeType::uword()
+					).ptr().ptr()
+				)
+			);
+	
+	//this is a NativeFunctionPointer*
+	llvm_value_ptr arrayBase = builder.CreateLoad(arrayPtr);
+	
+	//take the addrAndOffset.second'th element of the array
+	llvm_value_ptr arrayOffset = builder.CreateConstGEP1_32(arrayBase, addrAndOffset.second);
+	
+	//load that again to get the actual array element
+	return builder.CreateLoad(arrayOffset);
+	}
+
+llvm::Type* LLVMFunctionBuilder::blockPtrType(void)
+	{
+	return mCompiler.blockPtrType();
+	}
+	
+vector<llvm::Type*> LLVMFunctionBuilder::toLLVM(const ImmutableTreeVector<NativeType>& types)
+	{
+	return mCompiler.toLLVM(types);
+	}
+	
+vector<llvm::Type*> LLVMFunctionBuilder::toLLVM(const ImmutableTreeVector<NativeVariable>& vars)
+	{
+	return mCompiler.toLLVM(vars);
+	}
+	
+llvm::Type* LLVMFunctionBuilder::toLLVM(const NativeType& type)
+	{
+	return mCompiler.toLLVM(type);
+	}
+	
+llvm_value_ptr LLVMFunctionBuilder::llvmUInt32(uint32_t x)
+	{
+	return mCompiler.llvmUInt32(x);
+	}
+	
+llvm_value_ptr LLVMFunctionBuilder::llvmULong(uword_t x)
+	{
+	return mCompiler.llvmULong(x);
+	}
+	
+llvm::FunctionType* LLVMFunctionBuilder::jumpFuncType(bool isInternal)
+	{
+	return mCompiler.jumpFuncType(isInternal);
+	}
+	
+llvm::Function* LLVMFunctionBuilder::getLibFunc(
+		NativeLibraryFunctionTarget target,
+		NativeType t,
+		const ImmutableTreeVector<NativeType>& args,
+		llvm::Module* inModule
+		)
+	{
+	return mCompiler.getLibFunc(target,t,args,inModule);
+	}
+	
+llvm::Function* LLVMFunctionBuilder::getLibFunc(
+					NativeLibraryFunctionTarget name,
+					llvm::Type* t,
+					vector<llvm::Type*> args,
+					llvm::Module* inModule
+					)
+	{
+	return mCompiler.getLibFunc(name,t,args,inModule);
+	}
+	
+llvm::Constant* LLVMFunctionBuilder::getNullConstantFor(NativeType t)
+	{
+	return mCompiler.getNullConstantFor(t);
+	}
+

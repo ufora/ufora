@@ -1,0 +1,233 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "LeaderQuorum.hppml"
+#include "../core/Logging.hpp"
+#include "../core/PolymorphicSharedPtrBinder.hpp"
+
+namespace Cumulus {
+
+LeaderQuorum::LeaderQuorum(const MachineId& inOwnMachine, PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler) : 
+			mOwnMachineId(inOwnMachine),
+			mOnLeaderQuorumMessage(inCallbackScheduler),
+			mOnRegimeChanged(inCallbackScheduler),
+			mEventIndex(0),
+			mCallbackScheduler(inCallbackScheduler)
+	{
+	mMachines.insert(mOwnMachineId);
+	mMachineEventIds[mOwnMachineId] = mEventIndex;
+
+	mMachineSetHashes.set(mOwnMachineId, curHash_());
+	}
+
+hash_type LeaderQuorum::curHash_() const
+	{
+	return hashValue(mMachineEventIds);
+	}
+
+void LeaderQuorum::forceRegimeChange()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	mEventIndex++;
+	mMachineEventIds[mOwnMachineId] = mEventIndex;
+	mMachineSetHashes.set(mOwnMachineId, curHash_());
+
+	LOG_INFO << "LeaderQuorum on " << mOwnMachineId << " bumping event ID to trigger a regime.";
+
+	broadcastCurrentState_();
+
+	checkForNewConsensus();
+	}
+
+void LeaderQuorum::addMachine(const MachineId& inMachine)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	lassert(mMachinesEverSeen.find(inMachine) == mMachinesEverSeen.end());
+	mMachinesEverSeen.insert(inMachine);
+
+	mEventIndex++;
+	mMachineEventIds[mOwnMachineId] = mEventIndex;
+	mMachineEventIds[inMachine] = 0;
+
+	mMachines.insert(inMachine);
+	
+	mMachineSetHashes.set(mOwnMachineId, curHash_());
+	mMachineSetHashes.set(inMachine, hash_type());
+
+	LOG_INFO << "LeaderQuorum on " << prettyPrintString(mOwnMachineId) << " adding "
+		<< prettyPrintString(inMachine)
+		<< ". regime=" << prettyPrintString(curHash_())
+		;
+
+	broadcastCurrentState_();
+
+	checkForNewConsensus();
+	}
+
+void LeaderQuorum::dropMachine(const MachineId& inMachine)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	lassert(mMachines.find(inMachine) != mMachines.end());
+
+	mMachines.erase(inMachine);
+	mMachineEventIds.erase(inMachine);
+
+	mEventIndex++;
+	mMachineEventIds[mOwnMachineId] = mEventIndex;
+	
+	mMachineSetHashes.drop(inMachine);
+	mMachineSetHashes.set(mOwnMachineId, curHash_());
+
+	LOG_INFO << "LeaderQuorum on " << prettyPrintString(mOwnMachineId) << " dropping "
+		<< prettyPrintString(inMachine)
+		<< ". regime=" << prettyPrintString(curHash_())
+		;
+
+	checkForNewConsensus();
+
+	broadcastCurrentState_();
+	}
+
+void LeaderQuorum::handleLeaderQuorumMessage(LeaderQuorumMessage message)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	LOG_INFO << "LeaderQuorum on " << prettyPrintString(mOwnMachineId)
+		<< " handling " << prettyPrintString(message)
+		;
+
+	@match LeaderQuorumMessage(message)
+		-| MachineSetChanged(machine, index, hash) ->> {
+			if (mMachines.find(machine) == mMachines.end())
+				{
+				LOG_CRITICAL << "LeaderQuorum received a message from an unknown machine!";
+				return;
+				}
+
+			mMachineSetHashes.set(machine, hash);
+
+			if (mMachineEventIds.find(machine) == mMachineEventIds.end() || 
+					mMachineEventIds[machine] < index)
+				{
+				mMachineEventIds[machine] = index;
+				mMachineSetHashes.set(mOwnMachineId, curHash_());
+				broadcastCurrentState_();
+				}
+
+			checkForNewConsensus();
+			}
+	}
+
+void LeaderQuorum::broadcastCurrentState_()
+	{
+	LOG_INFO << "LeaderQuorum on " << prettyPrintString(mOwnMachineId)
+		<< " broadcasting EI of " << mEventIndex << " and " << prettyPrintString(curHash_())
+		;
+
+	const static double kSmallDelay = 0.1;
+
+	mNextBroadcastTimestamp = curClock() + kSmallDelay;
+
+	mCallbackScheduler->schedule(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&LeaderQuorum::checkTimestampAndBroadcast
+				),
+			this->polymorphicSharedWeakPtrFromThis(),
+			mNextBroadcastTimestamp
+			),
+		mNextBroadcastTimestamp,
+		"ActivePageSynchronizerImpl::writeToOfflineStorage"
+		);
+	}
+
+void LeaderQuorum::checkTimestampAndBroadcast(double timestamp)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (timestamp == mNextBroadcastTimestamp)
+		mOnLeaderQuorumMessage.broadcast(
+			LeaderQuorumMessage::MachineSetChanged(
+				mOwnMachineId,
+				mEventIndex,
+				curHash_()
+				)
+			);
+	}
+
+EventBroadcaster<LeaderQuorumMessage>& LeaderQuorum::onLeaderQuorumMessage()
+	{
+	return mOnLeaderQuorumMessage;
+	}
+
+EventBroadcaster<Nullable<Regime> >& LeaderQuorum::onRegimeChanged()
+	{
+	return mOnRegimeChanged;
+	}
+
+bool LeaderQuorum::consensusExists_() const
+	{
+	hash_type curHash = mMachineSetHashes.getValue(mOwnMachineId);
+
+	return mMachineSetHashes.getKeys(curHash).size() == mMachines.size();
+	}
+
+void LeaderQuorum::checkForNewConsensus()
+	{
+	LOG_INFO << "LeaderQuorum on " << prettyPrintString(mOwnMachineId)
+		<< " has "
+		<< mMachineSetHashes.getKeys(mMachineSetHashes.getValue(mOwnMachineId)).size()
+		<< " of " << mMachines.size() << " agreeing with it that "
+		<< prettyPrintString(mMachineSetHashes.getValue(mOwnMachineId)) << " is the current regime. "
+		;
+
+	Nullable<Regime> regime = currentRegime_();
+
+	if (regime != mLastBroadcastRegime)
+		{
+		//if we change between two regimes without going through a "null" regime,
+		//which can happen when we have exactly one worker, we need to broadcast
+		if (regime && mLastBroadcastRegime)
+			mOnRegimeChanged.broadcast(null());
+
+		mLastBroadcastRegime = regime;
+
+		if (regime)
+			mOnRegimeChanged.broadcast(regime);
+		else
+			mOnRegimeChanged.broadcast(null());
+		}
+	}
+
+Nullable<Regime> LeaderQuorum::currentRegime() const
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	return currentRegime_();
+	}
+
+Nullable<Regime> LeaderQuorum::currentRegime_() const
+	{
+	if (!consensusExists_())
+		return null();
+
+	return null() << Regime(mMachineSetHashes.getValue(mOwnMachineId), *mMachines.begin(), mMachines.size());
+	}
+
+}
+

@@ -1,0 +1,222 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ApplyArg.hppml"
+#include "TupleCategory.hppml"
+
+namespace Fora {
+
+/************
+
+ApplyArgFrame
+
+Models a set of 'apply args'. We keep track of each source ImplVal, its symbol, 
+and whether it was tuple called.
+
+We present a simple interface that allows clients to query the tuple that the apply operation
+represents without actually reshuffling the memory.
+
+The internal representation just keeps track of the original set of values, since that's
+what we actually pass into both the Interpreter and into compiled code.
+
+************/
+
+class ApplyArgFrame {
+public:
+	ApplyArgFrame() : 
+			mSize(0), 
+			mLastLookupArgIndex(0),
+			mNoneTuplecall(true)
+		{
+		}
+
+	const std::vector<ApplyArg>& getApplyArgs() const
+		{
+		return mApplyArgs;
+		}
+
+	std::vector<ApplyArg>& getApplyArgs()
+		{
+		return mApplyArgs;
+		}
+
+	size_t size() const
+		{
+		return mSize;
+		}
+
+	bool noneTuplecall() const
+		{
+		return mNoneTuplecall;
+		}
+
+	void clear()
+		{
+		mSize = 0;
+		mIsAnExpandedTuple.clear();
+		mApplyArgs.clear();
+		mActualValueOffsets.clear();
+		mNoneTuplecall = true;
+		}
+
+	void push_back(const ApplyArg& arg)
+		{
+		mActualValueOffsets.push_back(mSize);
+		mApplyArgs.push_back(arg);
+
+		if (!TupleCategory::isTuple(arg.value()) || !arg.isTupleCall())
+			{
+			mSize += 1;
+			mIsAnExpandedTuple.push_back(0);
+			}
+		else
+			{
+			mSize += TupleCategory::tupleSize(arg.value());
+			mIsAnExpandedTuple.push_back(1);
+			mNoneTuplecall = false;
+			}
+		}
+
+	pair<ImplVal, Nullable<Symbol> > operator[](int index) const
+		{
+		lassert(index >= 0 && index < mSize);
+
+		pair<long, long> offsetAndIndex = convertIndexToVecIndexAndOffset(index);
+
+		if (!mIsAnExpandedTuple[offsetAndIndex.first])
+			return make_pair(
+				mApplyArgs[offsetAndIndex.first].value(),
+				mApplyArgs[offsetAndIndex.first].symbol()
+				);
+
+		return make_pair(
+			TupleCategory::tupleExtractElementNoIncref(
+				mApplyArgs[offsetAndIndex.first].value(),
+				offsetAndIndex.second
+				),
+			TupleCategory::tupleNames(
+				mApplyArgs[offsetAndIndex.first].value()
+				)[offsetAndIndex.second]
+			);
+		}
+
+	class const_iterator_type {
+	public:
+		const_iterator_type(const ApplyArgFrame* inFrame, long inIndex) : 
+				mFrame(inFrame),
+				mIndex(inIndex)
+			{
+			}
+
+		bool operator<(const const_iterator_type& inOther) const
+			{
+			if (mFrame < inOther.mFrame)
+				return true;
+			if (mFrame > inOther.mFrame)
+				return false;
+			if (mIndex < inOther.mIndex)
+				return true;
+			return false;
+			}
+
+		bool operator==(const const_iterator_type& inOther) const
+			{
+			return mFrame == inOther.mFrame && mIndex == inOther.mIndex;
+			}
+
+		bool operator!=(const const_iterator_type& inOther) const
+			{
+			return !(*this == inOther);
+			}
+
+		pair<ImplVal, Nullable<Symbol> > operator*() const
+			{
+			return (*mFrame)[mIndex];
+			}
+
+		const_iterator_type& operator++(void)
+			{
+			mIndex++;
+
+			return *this;
+			}
+
+		const_iterator_type operator++(int)
+			{
+			mIndex++;
+			return const_iterator_type(mFrame, mIndex-1);
+			}
+
+		const_iterator_type operator+(int i) const
+			{
+			return const_iterator_type(mFrame, mIndex + i);
+			}
+
+		sword_t operator-(const const_iterator_type& inIterator) const
+			{
+			return mIndex - inIterator.mIndex;
+			}
+
+	private:
+		const ApplyArgFrame* mFrame;
+
+		long mIndex;
+	};
+
+	const_iterator_type begin() const
+		{
+		return const_iterator_type(this, 0);
+		}
+
+	const_iterator_type end() const
+		{
+		return const_iterator_type(this, size());
+		}
+
+private:
+	size_t offsetForArg(long argIx) const
+		{
+		if (argIx < mApplyArgs.size())
+			return mActualValueOffsets[argIx];
+		return mSize;
+		}
+
+	//optimized for small changes in 'index'. not threadsafe
+	pair<long, long> convertIndexToVecIndexAndOffset(int index) const
+		{
+		while (offsetForArg(mLastLookupArgIndex + 1) <= index)
+			mLastLookupArgIndex++;
+		while (offsetForArg(mLastLookupArgIndex) > index)
+			mLastLookupArgIndex--;
+
+		return make_pair(mLastLookupArgIndex, index - offsetForArg(mLastLookupArgIndex));
+		}
+
+	std::vector<ApplyArg> mApplyArgs;
+
+	//for arg of index 'ix', the cumulative number of arguments that are before it in the 
+	//expanded argument list
+	std::vector<size_t> mActualValueOffsets;
+
+	std::vector<char> mIsAnExpandedTuple;
+
+	size_t mSize;
+
+	mutable size_t mLastLookupArgIndex;
+
+	bool mNoneTuplecall;
+};
+
+}

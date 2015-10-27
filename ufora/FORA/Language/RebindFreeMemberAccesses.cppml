@@ -1,0 +1,327 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "RebindFreeMemberAccesses.hppml"
+#include "Function.hppml"
+#include "FunctionBoundAboveVisitor.hppml"
+#include "FunctionBoundAboveTransformer.hppml"
+#include "../../core/cppml/CPPMLTransform.hppml"
+#include "../../core/cppml/CPPMLVisit.hppml"
+#include "../../core/Logging.hpp"
+
+using namespace std;
+
+namespace Fora {
+
+namespace {
+
+Nullable<ImmutableTreeVector<Symbol> > extractChain(Expression e)
+	{
+	@match Expression(e)
+		-| Variable(v) ->> {
+			return null() << (ImmutableTreeVector<Symbol>() + v);
+			}
+		-| Member(mightBeFreeChain, sym, depth) ->> {
+			if (depth != 1)
+				return null();
+
+			Nullable<ImmutableTreeVector<Symbol> > subchain = extractChain(mightBeFreeChain);
+
+			if (!subchain)
+				return null();
+
+			return null() << (*subchain + sym);
+			}
+		-| _ ->> {
+			return null();
+			}
+	}
+
+}
+
+@type FreeMemberAccessesVisitor =
+				ImmutableTreeSet<pair<Symbol, Symbol> > accesses {
+public:
+		template<class T>
+		void	processDown(T e, bool& outContinue,
+							const ImmutableTreeSet<Symbol>& boundAbove) 
+			{
+			}
+		template<class T>
+		void	processUp(T e,
+							const ImmutableTreeSet<Symbol>& boundAbove) 
+			{
+			}
+
+		void processDown(Expression e, bool& outContinue,
+							const ImmutableTreeSet<Symbol>& boundAbove)
+			{
+			@match Expression(e)
+				-|	Member(Variable(mightBeFree), sym, depth) ->> {
+						if (!boundAbove.contains(mightBeFree) && depth == 1)
+							accesses() = accesses() +
+								make_pair(mightBeFree, sym);
+						}
+				-|	_ ->> {;}
+				;
+			}
+};
+
+@type FreeMemberAccessChainsVisitor =
+				ImmutableTreeSet<ImmutableTreeVector<Symbol> > accesses {
+public:
+		template<class T>
+		void	processDown(T e, bool& outContinue,
+							const ImmutableTreeSet<Symbol>& boundAbove) 
+			{
+			}
+		template<class T>
+		void	processUp(T e,
+							const ImmutableTreeSet<Symbol>& boundAbove) 
+			{
+			}
+
+		void processDown(Expression e, bool& outContinue,
+							const ImmutableTreeSet<Symbol>& boundAbove)
+			{
+			@match Expression(e)
+				-| 	Variable(mightBeFree) ->> {
+						if (!boundAbove.contains(mightBeFree))
+							accesses() = accesses() + (
+								emptyTreeVec() + mightBeFree
+								);
+						}
+				-|	Member(mightBeFreeChain, sym, depth) ->> {
+						Nullable<ImmutableTreeVector<Symbol> > chain = extractChain(mightBeFreeChain);
+
+						if (chain && chain->size() && !boundAbove.contains((*chain)[0]))
+							{
+							accesses() = accesses() + (*chain + sym);
+							outContinue = false;
+							}
+						}
+				-|	_ ->> {}
+				;
+			}
+};
+
+@type FreeMemberAccessChainsTransformer = 
+	ImmutableTreeMap<ImmutableTreeVector<Symbol>, Expression> transforms {
+public:
+	template<class T>
+	Nullable<T> processDown(T e, bool& outContinue, const ImmutableTreeSet<Symbol>& boundAbove) const
+		{
+		return null();
+		}
+	template<class T>
+	Nullable<T> processUp(T e, const ImmutableTreeSet<Symbol>& boundAbove) const
+		{
+		return null();
+		}
+	 Nullable<Expression> processDown(
+			const Expression& e,
+			bool& outContinue,
+			const ImmutableTreeSet<Symbol>& boundAbove
+			) const
+		{
+		@match Expression(e)
+			 -| Variable(mightBeFree) ->> {
+				auto transformedValue = transforms()[emptyTreeVec() + mightBeFree];
+
+				if (!boundAbove.contains(mightBeFree) and 
+					transformedValue.isValue())
+					{
+					outContinue = false;
+					 
+					return null() << CPPML::replaceCommonData(
+						*transformedValue,
+						e.locationMetadata()
+						);
+					}
+				 }
+			 -| Member(mightBeFreeChain, sym, depth) ->> {
+				Nullable<ImmutableTreeVector<Symbol>> chain = extractChain(mightBeFreeChain);
+
+				  // why is this last condition the thing to check??
+				if (chain.isValue() and chain->size() and !boundAbove.contains((*chain)[0]))
+					{
+					outContinue = false;
+					 
+					auto transformedValue = transforms()[*chain + sym];
+
+					if (transformedValue.isValue())
+						return null() << 
+							CPPML::replaceCommonData(
+								*transformedValue,
+								e.locationMetadata()
+								);
+					}
+				}
+			 -| _ ->> {;}
+			 ;
+		
+		return null();
+		}
+};
+
+ImmutableTreeSet<pair<Symbol, Symbol> >	freeMemberAccesses(const Function& e)
+	{
+	FreeMemberAccessesVisitor vis;
+	FunctionBoundAboveVisitor<FreeMemberAccessesVisitor> vis2(
+		emptyTreeSet(),
+		&vis
+		);
+	
+	visit(e, vis2);
+	
+	return vis.accesses();
+	}
+	
+ImmutableTreeSet<pair<Symbol, Symbol> >	freeMemberAccesses(const Expression& f)
+	{
+	FreeMemberAccessesVisitor vis;
+	FunctionBoundAboveVisitor<FreeMemberAccessesVisitor> vis2(
+		emptyTreeSet(),
+		&vis
+		);
+	
+	visit(f, vis2);
+	
+	return vis.accesses();
+	}
+
+ImmutableTreeSet<ImmutableTreeVector<Symbol> >	freeMemberAccessChains(const Function& e)
+	{
+	FreeMemberAccessChainsVisitor vis;
+	FunctionBoundAboveVisitor<FreeMemberAccessChainsVisitor> vis2(
+		emptyTreeSet(),
+		&vis
+		);
+	
+	visit(e, vis2);
+	
+	return vis.accesses();
+	}
+	
+ImmutableTreeSet<ImmutableTreeVector<Symbol> >	freeMemberAccessChains(const Expression& f)
+	{
+	FreeMemberAccessChainsVisitor vis;
+	FunctionBoundAboveVisitor<FreeMemberAccessChainsVisitor> vis2(
+		emptyTreeSet(),
+		&vis
+		);
+	
+	visit(f, vis2);
+	
+	return vis.accesses();
+	}
+
+
+@type FreeMemberAccessesTransformer =
+				ImmutableTreeMap<pair<Symbol, Symbol>, Expression> transforms {
+public:
+		template<class T>
+		Nullable<T>	processDown(const T& e, bool& outContinue,
+								const ImmutableTreeSet<Symbol>& boundAbove) const
+			{
+			return null();
+			}
+		template<class T>
+		Nullable<T> processUp(	const T& e,
+								const ImmutableTreeSet<Symbol>& boundAbove) const
+			{
+			return null();
+			}
+
+		Nullable<Expression> processDown(
+							const Expression& e,
+							bool& outContinue,
+							const ImmutableTreeSet<Symbol>& boundAbove
+							) const
+			{
+			@match Expression(e)
+				-|	Member(Variable(mightBeFree), sym, depth) ->> {
+						pair<Symbol,Symbol> p(mightBeFree, sym);
+						
+						if (!boundAbove.contains(mightBeFree) &&
+								transforms().contains(p) && depth == 1)
+							{
+							outContinue = false;
+							
+							return null() << 
+								CPPML::replaceCommonData(
+									*transforms()[p],
+									e.locationMetadata()
+									);
+							}
+						}
+			-|	_ ->> {;}
+				;
+			return null();
+			}
+};
+
+
+
+//rebind various free member accesses to given subexpressions
+Expression rebindFreeMemberAccesses(
+			const Expression& e,
+			const ImmutableTreeMap<pair<Symbol, Symbol>, Expression>& remap
+			)
+	{
+	FreeMemberAccessesTransformer vis(remap);
+	
+	FunctionBoundAboveTransformer<FreeMemberAccessesTransformer> vis2(
+		emptyTreeSet(),
+		&vis
+		);
+	
+	return transform(e, vis2);
+	}
+
+//rebind various free member accesses to given subexpressions
+Expression rebindFreeMemberAccessChains(
+			const Expression& e,
+			const ImmutableTreeMap<ImmutableTreeVector<Symbol>, Expression>& remap
+			)
+	{
+	FreeMemberAccessChainsTransformer vis(remap);
+	
+	FunctionBoundAboveTransformer<FreeMemberAccessChainsTransformer> vis2(
+		emptyTreeSet(),
+		&vis
+		);
+	
+	return transform(e, vis2);
+	}
+
+Function rebindFreeMemberAccesses(
+			const Function& f,
+			const ImmutableTreeMap<pair<Symbol, Symbol>, Expression>& remap
+			)
+	{
+	FreeMemberAccessesTransformer vis(remap);
+	
+	FunctionBoundAboveTransformer<FreeMemberAccessesTransformer> vis2(
+		emptyTreeSet(),
+		&vis
+		);
+	
+	return transform(f, vis2);
+	}
+
+
+}
+

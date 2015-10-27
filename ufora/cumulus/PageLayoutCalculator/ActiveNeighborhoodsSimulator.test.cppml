@@ -1,0 +1,468 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ActiveNeighborhoods.hppml"
+#include "ActiveNeighborhoodsSimulator.hppml"
+#include "NeighborhoodTestUtil.hppml"
+#include "../../core/Clock.hpp"
+#include "../../core/Logging.hpp"
+#include "../../core/UnitTest.hpp"
+
+
+
+using namespace Cumulus;
+
+using namespace Cumulus::PageLayoutCalculator;
+
+using namespace Cumulus::PageLayoutCalculator::NeighborhoodTestUtil;
+
+using namespace Cumulus::PageLayoutCalculator::ActiveNeighborhoodsSimulator;
+
+namespace {
+
+SimulationParameters defaultParams(
+			80,
+			500,
+			.001,
+			1.0,
+			1.0,
+			1000.0,
+			10000000
+			);
+
+Computation simple(long index, double timeElapsed)
+	{
+	return Computation(
+		comp(index), 
+		emptyTreeVec() + ComputationEvent(timeElapsed, Neighborhood(), emptyTreeSet()), 
+		emptyTreeSet()
+		);
+	}
+
+}
+
+BOOST_AUTO_TEST_CASE( test_ActiveNeighborhoodsSimulation_basic )
+	{
+	auto params = defaultParams;
+	params.timeToMoveComputation() = 0.0;
+
+	Simulation sim(params);
+
+	sim.addMachine(machine(0), 50 * gb, 30);
+	sim.addMachine(machine(1), 50 * gb, 30);
+	sim.addMachine(machine(2), 50 * gb, 30);
+	sim.addMachine(machine(3), 50 * gb, 30);
+
+	sim.addComputation(simple(0, 1.0));
+
+	sim.runSimulation();
+
+	BOOST_CHECK_EQUAL(sim.currentTimestamp(), 1.0);
+	BOOST_CHECK_EQUAL(sim.totalSecondsOfComputeElapsed(), 1.0);
+	}
+
+BOOST_AUTO_TEST_CASE( test_ActiveNeighborhoodsSimulation_fullSaturation_of_1_box )
+	{
+	Simulation sim(defaultParams);
+
+	sim.addMachine(machine(0), 50 * gb, 30);
+
+	for (long k = 0; k < 240; k++)
+		sim.addComputation(simple(k, 1.0));
+
+	sim.runSimulation();
+
+	BOOST_CHECK_EQUAL(sim.currentTimestamp(), 8.0);
+	BOOST_CHECK_EQUAL(sim.totalSecondsOfComputeElapsed(), 240.0);
+	}
+
+BOOST_AUTO_TEST_CASE( test_ActiveNeighborhoodsSimulation_fullSaturation_of_multiple_boxes )
+	{
+	Simulation sim(defaultParams);
+
+	for (long k = 0; k < 4; k++)
+		sim.addMachine(machine(k), 50 * gb, 30);
+
+	for (long k = 0; k < 120; k++)
+		sim.addComputation(simple(k, 1.0));
+		
+	sim.runSimulation();
+
+	BOOST_CHECK_EQUAL(sim.currentTimestamp(), 1.001);
+	BOOST_CHECK_EQUAL(sim.totalSecondsOfComputeElapsed(), 120.0);
+	}
+
+BOOST_AUTO_TEST_CASE( test_ActiveNeighborhoodsSimulation_prerequisites )
+	{
+	Simulation sim(defaultParams);
+
+	sim.addMachine(machine(0), 50 * gb, 30);
+
+	//make a little triangle and verify that it takes 3 seconds
+	sim.addComputation(simple(0, 1.0));
+	sim.addComputation(simple(1, 1.0).withPrerequisite(0));
+	sim.addComputation(simple(2, 1.0).withPrerequisite(0));
+	sim.addComputation(simple(3, 1.0).withPrerequisite(1).withPrerequisite(2));
+	
+	sim.runSimulation();
+
+	BOOST_CHECK_EQUAL(sim.currentTimestamp(), 3);	
+	BOOST_CHECK_EQUAL(sim.totalSecondsOfComputeElapsed(), 4);
+	}
+
+BOOST_AUTO_TEST_CASE( test_ActiveNeighborhoodsSimulation_page_dependencies )
+	{
+	Simulation sim(defaultParams);
+
+	sim.addMachine(machine(0), 50 * gb, 30);
+
+	sim.addComputation(simple(0, 1.0).creating(page(0,0)));
+	sim.addComputation(simple(1, 1.0).reading(page(0,0)));
+	
+	sim.runSimulation();
+
+	BOOST_CHECK_EQUAL(sim.currentTimestamp(), 2);	
+	BOOST_CHECK_EQUAL(sim.totalSecondsOfComputeElapsed(), 2);
+	}
+
+BOOST_AUTO_TEST_CASE( test_ActiveNeighborhoodsSimulation_page_dependencies_unmet )
+	{
+	SimulationParameters params = defaultParams;
+	params.maxTimestamp() = 10;
+
+	Simulation sim(params);
+
+	sim.addMachine(machine(0), 50 * gb, 30);
+
+	sim.addComputation(simple(0, 1.0));
+	sim.addComputation(simple(1, 1.0).reading(page(0,0)));
+	
+	sim.runSimulation();
+
+	BOOST_CHECK(sim.currentTimestamp() > params.maxTimestamp());	
+	BOOST_CHECK_EQUAL(sim.totalSecondsOfComputeElapsed(), 1);
+	}
+
+BOOST_AUTO_TEST_CASE( test_ActiveNeighborhoodsSimulation_pages_go_to_disk )
+	{
+	Simulation sim(defaultParams);
+
+	sim.addMachine(machine(0), 500 * mb, 30);
+
+	sim.addComputation(simple(0, 1.0).creating(page(0,0)));
+
+	//we can hold 10 pages per machine
+	for (long k = 1; k < 35; k++)
+		sim.addComputation(
+			simple(k, 1.0)
+				.creating(page(k,0))
+				.withPrerequisite(k-1)
+			);
+	
+	sim.runSimulation();
+
+	BOOST_CHECK_EQUAL((sim.allPagesOnDisk() + sim.allPagesInRam()).size(), 35);
+	BOOST_CHECK(sim.allPagesInRam().size() <= 10);
+	}
+
+BOOST_AUTO_TEST_CASE( test_ActiveNeighborhoodsSimulation_pages_get_spread_around )
+	{
+	Simulation sim(defaultParams);
+
+	for (long k = 0; k < 4; k++)
+		sim.addMachine(machine(k), 550 * mb, 30);
+
+	sim.addComputation(simple(0, 1.0).creating(page(0,0)));
+	//we can hold 11 pages per machine
+	for (long k = 1; k < 30; k++)
+		sim.addComputation(
+			simple(k, 1.0)
+				.reading(page(0,0))
+				.creating(page(k,0))
+				.withPrerequisite(k-1)
+			);
+	
+	sim.runSimulation();
+
+	//pages should get moved around but not written to disk
+	BOOST_CHECK_EQUAL(sim.totalBytesWrittenToDisk(), 0);
+	BOOST_CHECK_EQUAL(sim.allPagesInRam().size(), 30);
+	BOOST_CHECK(sim.totalBytesInRamAcrossCluster() > 30L * 50L * 1024L * 1024L);
+	}
+
+class ComputationCreator {
+public:
+	ComputationCreator() : 
+			mRand(1)
+		{
+		}
+
+	ImmutableTreeVector<Computation> computationsCreatingPageGrid(long cols, long rows)
+		{
+		ImmutableTreeVector<Computation> result;
+
+		for (long c = 0; c < cols; c++)
+			for (long r = 0; r < rows; r++)
+				result = result + simple(allocateNewId(), 0.0).creating(page(c,r));
+
+		return result;
+		}
+
+	ImmutableTreeVector<Computation> computationsUsingPageGrid(long cols, long rows, double timePer)
+		{
+		ImmutableTreeVector<Computation> result;
+
+		for (long c = 0; c < cols; c++)
+			for (long r = 0; r < rows; r++)
+				result = result + simple(allocateNewId(), timePer).reading(Neighborhood() + page(c,r));
+
+		return result;
+		}
+
+	ImmutableTreeVector<Computation> computationsUsingPageGridInAllRows(long cols, long rows, double timePerCalc)
+		{
+		ImmutableTreeVector<Computation> result;
+
+		for (long c2 = 0; c2 < cols; c2++)
+			for (long c1 = 0; c1 < cols; c1++)
+				for (long r = 0; r + 1 < rows; r++)
+					{
+					result = result + 
+						simple(allocateNewId(), timePerCalc).reading(
+							Neighborhood() + page(c1,r) + page(c2,r)
+								 + page(c1,r+1) + page(c2,r+1)
+							);
+					}
+		
+		return result;
+		}
+
+	ImmutableTreeVector<Computation> linearChain(double timePer, int64_t count)
+		{
+		ImmutableTreeVector<Computation> result;
+
+		for (long k = 0; k < count;k++)
+			result = result + simple(allocateNewId(), timePer)
+				.withPrerequisite(result.size() ? null() << result.back().id() : null())
+				;
+
+		return result;
+		}
+
+	ImmutableTreeVector<Computation> linearChain(Fora::PageId dependingOn, double timePer, int64_t count)
+		{
+		ImmutableTreeVector<Computation> result;
+
+		for (long k = 0; k < count;k++)
+			result = result + simple(allocateNewId(), timePer)
+				.reading(Neighborhood(dependingOn))
+				.withPrerequisite(result.size() ? null() << result.back().id() : null())
+				;
+
+		return result;
+		}
+
+	ImmutableTreeVector<Computation> fanoutChain(Fora::PageId dependingOn, double timePer, int64_t count)
+		{
+		ImmutableTreeVector<Computation> result;
+
+		for (long k = 0; k < count;k++)
+			result = result + simple(allocateNewId(), timePer)
+				.reading(Neighborhood(dependingOn))
+				.withPrerequisite(result.size() ? null() << result[k/2].id() : null())
+				;
+
+		return result;
+		}
+
+private:
+	long allocateNewId()
+		{
+		while (true)
+			{
+			long id = mRand() * 1024 * 1024 * 1024;
+			if (mCompIdsUsed.find(id) == mCompIdsUsed.end())
+				{
+				mCompIdsUsed.insert(id);
+				return id;
+				}
+			}
+		}
+
+	std::set<long> mCompIdsUsed;
+
+	Ufora::math::Random::Uniform<double> mRand;
+};
+
+BOOST_AUTO_TEST_CASE( test_ActiveNeighborhoodsSimulation_data_settles )
+	{
+	Simulation sim(defaultParams);
+
+	defaultParams.delayBetweenSchedulerUpdates() = 10.0;
+	defaultParams.timeToMoveComputation() = 0.0;
+
+	for (long k = 0; k < 4; k++)
+		sim.addMachine(machine(k), 100 * gb, 30);
+
+	ComputationCreator creator;
+
+	//each row is 5 gb
+	long rows = 30;
+	long cols = 100;
+
+	sim.addComputations(creator.computationsCreatingPageGrid(cols, rows));
+	sim.runSimulation();
+
+	sim.addComputations(creator.computationsUsingPageGrid(cols, rows, .0001));
+	sim.addComputations(creator.linearChain(1.0, 100));
+	//sim.addComputations(creator.computationsUsingPageGrid(cols, rows, 1.0));
+	sim.runSimulation();
+
+	LOG_INFO << "Settling wrote " << sim.totalNetworkBytesMoved() / 1024 / 1024.0 << " to network and "
+			<< sim.totalBytesReadOrWrittenToDisk() / 1024 / 1024.0 
+			<< " to disk."
+			;
+	}
+
+BOOST_AUTO_TEST_CASE( test_ActiveNeighborhoodsSimulation_linear_regression_staged )
+	{
+	for (long rows = 10; rows <= 30; rows += 5)
+		{
+		Simulation sim(defaultParams);
+
+		defaultParams.delayBetweenSchedulerUpdates() = 10.0;
+		defaultParams.timeToMoveComputation() = 0.0;
+
+		for (long k = 0; k < 4; k++)
+			sim.addMachine(machine(k), 50 * gb, 30);
+
+		ComputationCreator creator;
+
+		//each row is 5 gb
+		long cols = 50;
+		long calculationsAtOnce = 3000;
+		long totalTries = 3;
+
+		sim.addComputations(creator.computationsCreatingPageGrid(cols, rows));
+		
+		for (long k = 0; k < totalTries; k++)
+			{
+			double computeTimeElapsed0 = sim.totalSecondsOfComputeElapsed();
+			double timestamp0 = sim.currentTimestamp();
+			double bytesMoved0 = sim.totalNetworkBytesMoved();
+			double disk0 = sim.totalBytesReadOrWrittenToDisk();
+
+			ImmutableTreeSet<Computation> computations = 
+				creator.computationsUsingPageGridInAllRows(cols, rows, 0.01);
+
+			//add computations in batches. because they have random computation IDs
+			//and are sorted as such, we are adding the computations essentially at random
+			while (computations.size())
+				{
+				sim.addComputations(computations.slice(0, calculationsAtOnce));
+				sim.runSimulation();
+				
+				computations = computations.slice(calculationsAtOnce, computations.size());
+				}
+
+			double computeTimeElapsed1 = sim.totalSecondsOfComputeElapsed() - computeTimeElapsed0;
+			double timestamp1 = sim.currentTimestamp() - timestamp0;
+			double bytesMoved1 = sim.totalNetworkBytesMoved() - bytesMoved0;
+			double disk1 = sim.totalBytesReadOrWrittenToDisk() - disk0;
+
+			LOG_INFO << "With rows " << rows << ", regression " << k+1 << " took " << computeTimeElapsed1 << " over " << timestamp1 
+				<< " for an effective parallelism of " 
+				<< computeTimeElapsed1 / timestamp1 << ". "
+				<< bytesMoved1 / 1024 / 1024.0 / timestamp1 << " MB/sec network. "
+				<< disk1 / 1024 / 1024.0 / timestamp1 << " MB/sec disk. "
+				<< "avg replication = " << sim.currentLayout().averageReplication()
+				;
+
+			//check effective parallelism
+			if (k + 1 == totalTries && rows > 25)
+				BOOST_CHECK(computeTimeElapsed1 / timestamp1 > 80.0);
+			}
+		}
+	}
+
+
+BOOST_AUTO_TEST_CASE( test_ActiveNeighborhoodsSimulation_single_page_fans_out )
+	{
+	auto p = defaultParams;
+
+	Simulation sim(p);
+
+	//each machine can hold ~ 1000 pages
+	for (long k = 0; k < 4; k++)
+		sim.addMachine(machine(k), 50 * gb, 30);
+
+	ComputationCreator creator;
+
+	long computations = 120;
+
+	sim.addComputations(creator.computationsCreatingPageGrid(1,1));
+
+	sim.runSimulation();
+	
+	for (long k = 0; k < computations; k++)
+		sim.addComputations(creator.fanoutChain(page(0,0), .5, 100));
+
+	sim.runSimulation();
+
+	double computeTimeElapsed0 = sim.totalSecondsOfComputeElapsed();
+	double timestamp0 = sim.currentTimestamp();
+
+	BOOST_CHECK(computeTimeElapsed0 / timestamp0 > 100);
+	}
+
+
+BOOST_AUTO_TEST_CASE( test_ActiveNeighborhoodsSimulation_fanout )
+	{
+	for (long seconds = 5; seconds <= 50; seconds += 5)
+		{
+		auto p = defaultParams;
+
+		Simulation sim(p);
+
+		//each machine can hold ~ 1000 pages
+		for (long k = 0; k < 4; k++)
+			sim.addMachine(machine(k), 50 * gb, 30);
+
+		ComputationCreator creator;
+
+		long pages = 600;
+
+		sim.addComputations(creator.computationsCreatingPageGrid(pages,1));
+
+		sim.runSimulation();
+		
+		for (long k = 0; k < pages; k++)
+			sim.addComputations(creator.fanoutChain(page(k,0), .5, seconds * 2));
+
+		sim.runSimulation();
+
+		double computeTimeElapsed0 = sim.totalSecondsOfComputeElapsed();
+		double timestamp0 = sim.currentTimestamp();
+		double bytesMoved0 = sim.totalNetworkBytesMoved();
+		double disk0 = sim.totalBytesReadOrWrittenToDisk();
+
+		LOG_INFO << "Seconds per: " << seconds << ". effective parallelism of " 
+			<< computeTimeElapsed0 / timestamp0 << " and "
+			<< bytesMoved0 / 1024 / 1024.0 / timestamp0 << " MB/sec network. "
+			<< disk0 / 1024 / 1024.0 / timestamp0 << " MB/sec disk. "
+			;
+		}
+	}
+

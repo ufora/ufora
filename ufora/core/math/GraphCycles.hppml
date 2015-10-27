@@ -1,0 +1,408 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../containers/TwoWaySetMap.hpp"
+#include "../containers/MapWithIndex.hpp"
+#include "../Logging.hpp"
+
+namespace Ufora {
+
+/******************
+
+GraphCycles
+
+A utility class that holds a graph and keeps a list of 
+which nodes are in cycles.
+
+******************/
+
+template<class node_type>
+class GraphCycles {
+public:
+	GraphCycles() :
+			mCycleIndex(0)
+		{	
+		}
+
+	GraphCycles(boost::function1<void, int64_t> onCycleCreate, 
+				boost::function1<void, int64_t> onCycleDestroy) :
+			mCycleIndex(0),
+			mOnCycleCreate(onCycleCreate),
+			mOnCycleDestroy(onCycleDestroy)
+		{	
+		}
+
+	void addEdge(const node_type& source, const node_type& dest)
+		{
+		lassert(source != dest);
+
+		ensureNode(source);
+		ensureNode(dest);
+
+		if (!mEdges.contains(source,dest))
+			{
+			mEdges.insert(source, dest);
+			
+			if (mNodeToCycle.getValue(source) != mNodeToCycle.getValue(dest))
+				mCycleEdges.insert(mNodeToCycle.getValue(source), mNodeToCycle.getValue(dest));
+
+			updateCycleDepth(mNodeToCycle.getValue(source));
+			}
+		}
+
+	int64_t cycleFor(const node_type& node) const
+		{
+		return mNodeToCycle.getValue(node);
+		}
+
+	const std::set<node_type>& cycleContents(int64_t cycle) const
+		{
+		return mNodeToCycle.getKeys(cycle);
+		}
+
+	const TwoWaySetMap<int64_t, int64_t>& cycleEdges() const
+		{
+		return mCycleEdges;
+		}
+
+	const std::set<int64_t>& allCycles() const
+		{
+		return mAllCycles;
+		}
+
+	void dropEdge(const node_type& source, const node_type& dest)
+		{
+		if (!mEdges.contains(source, dest))
+			return;
+
+		mEdges.drop(source, dest);
+
+		if (mNodeToCycle.getValue(source) == mNodeToCycle.getValue(dest))
+			{
+			//same cycle
+			int cycleIx = mNodeToCycle.getValue(dest);
+			std::set<node_type> cycle = mNodeToCycle.getKeys(cycleIx);
+
+
+			//now see if dest is still reachable from source. if so, the cycle didn't change.
+			std::set<node_type> reachableFromSource;
+
+			boost::function1<void, node_type> visit = [&](node_type n) {
+				if (reachableFromSource.find(n) != reachableFromSource.end())
+					return;
+
+				reachableFromSource.insert(n);
+
+				for (auto subnode: mEdges.getValues(n))
+					if (cycle.find(subnode) != cycle.end())
+						visit(subnode);
+				};
+
+			if (reachableFromSource.find(dest) != reachableFromSource.end())
+				//the cycle is still complete. we don't need to do anything
+				return;
+
+			//put each node in its own cycle again
+			mNodeToCycle.dropValue(cycleIx);
+			mCycleEdges.dropKey(cycleIx);
+			mCycleEdges.dropValue(cycleIx);
+			mCycleDepth.erase(cycleIx);
+
+			if (mOnCycleDestroy)
+				mOnCycleDestroy(cycleIx);
+			mAllCycles.erase(cycleIx);
+
+
+			for (auto n: cycle)
+				{
+				int64_t newCycleIndex = mCycleIndex++;
+				if (mOnCycleCreate)
+					mOnCycleCreate(newCycleIndex);
+				mAllCycles.insert(newCycleIndex);
+
+				mNodeToCycle.set(n, newCycleIndex);
+				mCycleDepth[newCycleIndex] = 0;
+				}
+
+			std::vector<std::pair<node_type, node_type> > relevantEdges;
+
+			for (auto n: cycle)
+				{
+				for (auto child: mEdges.getValues(n))
+					relevantEdges.push_back(std::make_pair(n, child));
+				for (auto parent: mEdges.getKeys(n))
+					relevantEdges.push_back(std::make_pair(parent, n));
+
+				mEdges.dropValue(n);
+				mEdges.dropKey(n);
+				}
+
+			for (auto e: relevantEdges)
+				addEdge(e.first, e.second);
+			}
+		else
+			{
+			//nodes are in a different cycle. we can simply update the cycle depth of the parent
+			int parentCycle = mNodeToCycle.getValue(source);
+			int childCycle = mNodeToCycle.getValue(dest);
+
+			lassert(mCycleEdges.contains(parentCycle, childCycle));
+			lassert(!mCycleEdges.contains(childCycle, parentCycle));
+
+			//did we break the cycle dependency?
+			bool cycleDependencyExists = false;
+
+			for (auto parentNode: mNodeToCycle.getKeys(parentCycle))
+				for (auto childNode: mEdges.getValues(parentNode))
+					if (mNodeToCycle.getValue(childNode) == childCycle)
+						cycleDependencyExists = true;
+
+			if (!cycleDependencyExists)
+				{
+				long childDepth = mCycleDepth[childCycle];
+				mCycleEdges.drop(parentCycle, childCycle);
+				updateCycleDepth(parentCycle);
+				}
+			}
+		}
+
+	int32_t cycleDepthForNode(const node_type& node) const
+		{
+		if (!nodeExists(node))
+			return 0;
+
+		int32_t cycle = mNodeToCycle.getValue(node);
+
+		auto it = mCycleDepth.find(cycle);
+		lassert(it != mCycleDepth.end());
+
+		return it->second;
+		}
+
+	const TwoWaySetMap<node_type, node_type>& edges() const
+		{
+		return mEdges;
+		}
+
+	bool nodeExists(const node_type& node) const
+		{
+		return mNodes.find(node) != mNodes.end();
+		}
+
+	const std::set<node_type>& nodesInCycle(const node_type& node) const
+		{
+		static std::set<node_type> empty;
+
+		if (!nodeExists(node))
+			return empty;
+		
+		int64_t cycle = mNodeToCycle.getValue(node);
+
+		return mNodeToCycle.getKeys(cycle);
+		}
+
+	void validateState()
+		{
+		//validate mNodes is populated correctly
+		for (auto& keyAndValue: mEdges.getKeysToValues())
+			lassert(mNodes.find(keyAndValue.first) != mNodes.end());
+		for (auto& keyAndValue: mEdges.getValuesToKeys())
+			lassert(mNodes.find(keyAndValue.first) != mNodes.end());
+
+		//validate that each node is in a cycle
+		for (auto n: mNodes)
+			lassert(mNodeToCycle.hasKey(n));
+
+
+		//validate the cycle edges
+		TwoWaySetMap<int64_t, int64_t> actualCycleEdges;
+
+		for (auto n: mNodes)
+			for (auto n2: mEdges.getValues(n))
+				if (mNodeToCycle.getValue(n) != mNodeToCycle.getValue(n2))
+					{
+					lassert(mCycleEdges.contains(mNodeToCycle.getValue(n), mNodeToCycle.getValue(n2)));
+					actualCycleEdges.insert(mNodeToCycle.getValue(n), mNodeToCycle.getValue(n2));
+					}
+
+		lassert_dump(
+			actualCycleEdges.getKeysToValues() == mCycleEdges.getKeysToValues(),
+			"We have an extra cycle edge we didn't clear."
+			);
+
+		//validate the cycle depths exist
+		for (auto& cAndNodes: mNodeToCycle.getValueToKeys())
+			lassert(mCycleDepth.find(cAndNodes.first) != mCycleDepth.end());
+
+		//validate the cycle depths are correct
+		for (auto& cAndChildren: mCycleEdges.getKeysToValues())
+			for (auto childCycle: cAndChildren.second)
+				lassert_dump(
+					mCycleDepth[cAndChildren.first] > mCycleDepth[childCycle],
+					"depth for " << cAndChildren.first << " was " << mCycleDepth[cAndChildren.first] 
+						<< " <= " << " depth for " << childCycle << " which is " << mCycleDepth[childCycle]
+						<< ". nodes in " << cAndChildren.first << " are " << prettyPrintString(mNodeToCycle.getKeys(cAndChildren.first))
+						<< ". nodes in " << childCycle << " are " << prettyPrintString(mNodeToCycle.getKeys(childCycle))
+						<< ". CycleMap is " << prettyPrintString(mCycleEdges.getKeysToValues())
+					);
+		}
+
+private:
+	void updateCycleDepth(int64_t cycle)
+		{
+		while (true)
+			{
+			std::vector<int64_t> stack;
+			stack.push_back(cycle);
+
+			if (!updateCycleDepth(cycle, stack))
+				return;
+
+			//we can collapse all the cycles in the stack into this cycle
+			std::set<node_type> nodes;
+
+			for (auto otherCycle: stack)
+				for (auto node: mNodeToCycle.getKeys(otherCycle))
+					nodes.insert(node);
+
+			for (auto otherCycle: stack)
+				if (mAllCycles.find(otherCycle) != mAllCycles.end())
+					{	
+					mCycleDepth.erase(otherCycle);
+
+					if (mOnCycleDestroy)
+						mOnCycleDestroy(otherCycle);
+					mAllCycles.erase(otherCycle);
+
+					mCycleEdges.dropKey(otherCycle);
+					mCycleEdges.dropValue(otherCycle);
+					}
+
+			//force the cycle index to increment
+			cycle = mCycleIndex++;
+			if (mOnCycleCreate)
+				mOnCycleCreate(cycle);
+			mAllCycles.insert(cycle);
+
+			for (auto node: nodes)
+				mNodeToCycle.set(node, cycle);
+
+			//now recompute the cycle edges
+			for (auto node: nodes)
+				for (auto childNode: mEdges.getValues(node))
+					{
+					int64_t subcycle = mNodeToCycle.getValue(childNode);
+					
+					if (subcycle != cycle)
+						mCycleEdges.insert(cycle, subcycle);
+					}
+			for (auto node: nodes)
+				for (auto parentNode: mEdges.getKeys(node))
+					{
+					int64_t parentcycle = mNodeToCycle.getValue(parentNode);
+					
+					if (parentcycle != cycle)
+						mCycleEdges.insert(parentcycle, cycle);
+					}
+
+			//force this cycle to be dirty, so that we check our parents
+			mCycleDepth[cycle] = -1;
+			}
+		}
+
+	//returns false if 'cycle' was updated and 'ioStack' is unmodified.
+	//true if ioStack is a cycle
+	bool updateCycleDepth(int64_t cycle, std::vector<int64_t>& ioStack)
+		{
+		if (ioStack.size() > 1 && ioStack[0] == ioStack.back())
+			return true;
+
+		int64_t newDepth = depthForCycle(cycle);
+
+		if (newDepth == mCycleDepth[cycle])
+			return false;
+
+		//the cycle depth changed.
+		mCycleDepth[cycle] = newDepth;
+
+		for (auto parentCycle: mCycleEdges.getKeys(cycle))
+			{
+			ioStack.push_back(parentCycle);
+			if (updateCycleDepth(parentCycle, ioStack))
+				return true;
+			}
+			
+		ioStack.pop_back();
+
+		return false;
+		}
+
+	int64_t depthForCycle(int64_t cycle)
+		{
+		int64_t curDepth = 0;
+
+		for (auto subcycle: mCycleEdges.getValues(cycle))
+			{
+			auto it = mCycleDepth.find(subcycle);
+			lassert(it != mCycleDepth.end());
+
+			curDepth = std::max<int64_t>(curDepth, it->second+1);
+			}
+
+		return curDepth;
+		}
+
+	void ensureNode(const node_type& node)
+		{
+		if (mNodes.find(node) == mNodes.end())
+			{
+			mNodes.insert(node);
+			
+			int64_t cycle = mCycleIndex++;
+
+			mAllCycles.insert(cycle);
+
+			if (mOnCycleCreate)
+				mOnCycleCreate(cycle);
+
+			mNodeToCycle.set(node, cycle);
+			
+			//because it's new, this is a root-level cycle
+			mCycleDepth[cycle] = 0;
+			}
+		}
+
+	std::set<node_type> mNodes;
+
+	std::set<int64_t> mAllCycles;
+
+	TwoWaySetMap<node_type, node_type> mEdges;
+
+	MapWithIndex<node_type, int64_t> mNodeToCycle;
+
+	TwoWaySetMap<int64_t, int64_t> mCycleEdges;
+
+	int64_t mCycleIndex;
+
+	std::map<int64_t, int64_t> mCycleDepth;
+
+	boost::function1<void, int64_t> mOnCycleCreate;
+
+	boost::function1<void, int64_t> mOnCycleDestroy;
+};
+
+}

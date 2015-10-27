@@ -1,0 +1,205 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#Markdown(
+"""### LogisticRegressionBuilder
+
+#### Usage 
+
+    math.regression.logistic.LogisticRegressionBuilder
+		(lambda:=1, tol:=1e-4, maxIter:=1e5, chunkSize:=5000000,
+	 	hasIntercept:=true, interceptScale:=1.0)
+
+#### Description
+
+A class capable of building (or "fitting") l2-regularized logistic regression models with 
+specified parameters.
+
+If the number of classes is greater than 2, for fitting we use an 
+"one-vs-all" (also known as "one-vs-many") scheme instead of a true multinomial logistic regression.
+The fitting algorithm used (for the binary classifiers) comes from T. Jebara and A. Choromanska, 
+"Majorization for CRFs and Latent Likelihoods", Neural Information Processing Systems (NIPS), December 2012. 
+
+This method may converge slowly for very small values of `lambda`, but can require surprisingly few iterations 
+for larger `lambda` values (for instance `lambda > 0.01` or so is probably "large").
+
+#### Arguments
+
+* `lambda`: the regularization strength.
+* `tol`: tolerance for stopping criteria. Currently, we stop when updates to coefficients change by less than `tol`.
+* `maxIter`: a hard limit on the number of iterations to be used.
+* `chunkSize`: An internal detail which casual users should ignore used in parallization routines.
+* `hasIntercept`: Should we include an intercept, or bias, term in the model?
+* `interceptScale`: When `hasIntercept` is true, feature vectors become `[x, interceptScale]`, i.e. we add a 
+"synthetic" feature with constant value `interceptScale` to all of the feature vectors. This synthetic feature 
+is subject to regularization as all other features. To lessen the effect of regularization, users should 
+increase this value.
+
+#### Examples
+
+    let builder = math.regression.logistic.LogisticRegressionBuilder(lambda: 0.01);
+
+	let X = dataframe.DataFrame([[-1,0,1], [0,1,1]]);
+	let Y = dataframe.DataFrame([[0,1,1]])
+
+	builder.fit(X, Y)
+
+""")
+class {
+    member lambda; 
+    member tol;
+    member maxIter;
+    member chunkSize;
+    member hasIntercept;
+    member interceptScale;
+
+    withInterceptScale: fun(interceptScale) {
+        createInstance(
+            cls,
+            lambda: self.lambda,
+            tol: self.tol,
+            maxIter: self.maxIter,
+            chunkSize: self.chunkSize,
+            hasIntercept: self.hasIntercept,
+            interceptScale: interceptScale
+            );            
+        };
+
+    withIntercept: fun() {
+        createInstance(
+            cls,
+            lambda: self.lambda,
+            tol: self.tol,
+            maxIter: self.maxIter,
+            chunkSize: self.chunkSize,
+            hasIntercept: true,
+            interceptScale: self.interceptScale
+            );            
+        };
+
+    withoutIntercept: fun() {
+        createInstance(
+            cls,
+            lambda: self.lambda,
+            tol: self.tol,
+            maxIter: self.maxIter,
+            chunkSize: self.chunkSize,
+            hasIntercept: false,
+            interceptScale: self.interceptScale
+            );            
+        };
+
+    withLambda: fun(lambda) {
+        createInstance(
+            cls,
+            lambda: lambda,
+            tol: self.tol,
+            maxIter: self.maxIter,
+            chunkSize: self.chunkSize,
+            hasIntercept: self.hasIntercept,
+            interceptScale: self.interceptScale
+            );                    
+        };
+
+    withMaxIter: fun(maxIter) {
+        createInstance(
+            cls,
+            lambda: self.lambda,
+            tol: self.tol,
+            maxIter: maxIter,
+            chunkSize: self.chunkSize,
+            hasIntercept: self.hasIntercept,
+            interceptScale: self.interceptScale
+            );                    
+        };
+
+    withChunkSize: fun(chunkSize) {
+        createInstance(
+            cls,
+            lambda: self.lambda,
+            tol: self.tol,
+            maxIter: self.maxIter,
+            chunkSize: chunkSize,
+            hasIntercept: self.hasIntercept,
+            interceptScale: self.interceptScale
+            );                    
+        };
+
+    operator new(lambda:=1.0, tol:=1e-4, maxIter:=1e5, chunkSize:=5000000,
+                hasIntercept:=true, interceptScale:=1.0) {
+        createInstance(
+            cls,
+            lambda: lambda,
+            tol: tol,
+            maxIter: maxIter,
+            chunkSize: chunkSize,
+            hasIntercept: hasIntercept,
+            interceptScale: interceptScale
+            );
+        };
+
+    fit: fun
+    (dataframe.DataFrame(X), dataframe.DataFrame(Y)) 
+        {
+		_checkParam(X, Y, tol, maxIter, lambda);
+
+        assertions.assertEqual(Y.numColumns, 1);
+
+		let classes = sorting.unique(Y.getColumn(0));
+		let nClasses = size(classes);
+
+		if (nClasses < 2)
+			throw "The number of classes must be greater than one: got " 
+				+ String(size(classes))
+
+		// the "one-vs-many" classifiers
+		// in the two class case, we don't need to train two classifiers: one determines the other
+		let binaryClassifiers = 
+			if (nClasses == 2) 
+				[
+					BinaryLogisticRegressionBuilder(
+						lambda: lambda, 
+                        hasIntercept: hasIntercept, 
+						interceptScale: interceptScale,
+						tol: tol, 
+                        maxIter: maxIter, 
+                        chunkSize: chunkSize
+						).fit(X, Y, classes: classes)
+					]
+			else
+				classes ~~ { 
+					BinaryLogisticRegressionBuilder(
+						lambda: lambda, 
+                        strict: false,
+						hasIntercept: hasIntercept, 
+                        interceptScale: interceptScale,
+                        tol: tol, 
+                        maxIter: maxIter, 
+                        chunkSize: chunkSize						
+						).fit(X, Y, classZeroLabel: _, classes: classes)
+					}
+			;
+
+        return LogisticRegressionModel(
+            mBinaryClassifiers: binaryClassifiers,
+            classes: classes
+            );
+        }
+    (dataframe.DataFrame(X), y) {
+        fit(X, dataframe.DataFrame([y]));
+        }
+        ;
+    }
+

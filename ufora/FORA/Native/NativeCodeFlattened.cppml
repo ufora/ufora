@@ -1,0 +1,1453 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "NativeCodeFlattened.hppml"
+#include "../../core/containers/TwoWaySetMap.hpp"
+#include "../Runtime.hppml"
+#include "../../core/Logging.hpp"
+
+NativeCodeFlattened::CompositeInput mapMetadata(
+		const NativeExpression& meta,
+		const ImmutableTreeMap<NativeVariable, NativeCodeFlattened::Input>& map
+		)
+	{
+	@match NativeExpression(meta)
+		-|	Variable(v) ->> {
+			lassert_dump(
+					map[v],
+					"map " << prettyPrintString(map)
+						<< " doesn't contain "
+						<< prettyPrintString(v)
+					);
+			return NativeCodeFlattened::CompositeInput::Leaf(*map[v]);
+			}
+		-|	Constant(c) ->> {
+			return NativeCodeFlattened::CompositeInput::Leaf(
+							NativeCodeFlattened::Input::Constant(c)
+							);
+				}
+		-|	CreateComposite(elts) ->> {
+			ImmutableTreeVector<NativeCodeFlattened::CompositeInput> subs;
+			for (long k = 0; k < elts.size(); k++)
+				subs = subs + mapMetadata(elts[k], map);
+			return NativeCodeFlattened::CompositeInput::Node(subs);
+			}
+		-|	ValueExtract(indices, expr) ->> {
+			NativeCodeFlattened::CompositeInput sub = mapMetadata(expr, map);
+
+			for (long k = 0; k < indices.size(); k++)
+				{
+				if (sub.isNode())
+					sub = sub.getNode().subs()[indices[k]];
+				else
+					return NativeCodeFlattened::CompositeInput::ValueExtract(
+						indices.slice(k),
+						sub
+						);
+				}
+
+			return sub;
+			}
+		-| _ ->> {
+			lassert_dump(false, "illegal expression for metadata: " + prettyPrintString(meta));
+			}
+		;
+	}
+
+NativeCodeFlattened::VarMetadata mapMetadata(
+		const NativeContinuationVarMetadata& meta,
+		const ImmutableTreeMap<NativeVariable,
+			NativeCodeFlattened::Input>& map
+		)
+	{
+	return NativeCodeFlattened::VarMetadata(
+		mapMetadata(meta.dataVar(), map),
+		meta.layout()
+		);
+	}
+
+NativeCodeFlattened::Metadata mapMetadata(
+		const NativeContinuationMetadata& meta,
+		const ImmutableTreeMap<NativeVariable,
+			NativeCodeFlattened::Input>& map
+		)
+	{
+	ImmutableTreeVector<NativeCodeFlattened::VarMetadata> vm;
+
+	for (long k = 0; k < meta.vars().size(); k++)
+		vm = vm + mapMetadata(meta.vars()[k], map);
+
+	return NativeCodeFlattened::Metadata(meta.node(), vm);
+	}
+	
+ImmutableTreeVector<NativeCodeFlattened::Metadata> mapMetadata(
+		const ImmutableTreeVector<NativeContinuationMetadata>& meta,
+		const ImmutableTreeMap<NativeVariable, NativeCodeFlattened::Input>& map
+		)
+	{
+	ImmutableTreeVector<NativeCodeFlattened::Metadata> tr;
+	for (long k = 0; k < meta.size(); k++)
+		tr = tr + mapMetadata(meta[k], map);
+	return tr;
+	}
+
+NativeCodeFlattened::Input NativeCodeFlattened::Block::add(
+								NativeCodeFlattened::Expression e,
+								NativeType type
+								)
+	{
+	NativeVariable v = NativeVariable::Temp(type);
+	defs() = defs() + make_pair(v, e);
+
+	return Input::Variable(v);
+	}
+	
+NativeCodeFlattened::Input NativeCodeFlattened::Block::addArg(NativeType argType)
+	{
+	NativeVariable v = NativeVariable::Temp(argType);
+	args() = args() + v;
+	return Input::Variable(v);
+	}
+	
+void NativeCodeFlattened::Block::branch(
+		Input i,
+		NativeBlockID ifTrue,
+		NativeBlockID ifFalse,
+		double fractionTrue
+		)
+	{
+	term() = Term::Branch(
+				i,
+				JumpPoint(
+					ifTrue,
+					emptyTreeVec(),
+					VariablesToDump()
+					),
+				JumpPoint(
+					ifFalse,
+					emptyTreeVec(),
+					VariablesToDump()
+					),
+				fractionTrue
+				);
+	}
+	
+void NativeCodeFlattened::Block::jump(NativeBlockID block, ImmutableTreeVector<Input> args)
+	{
+	term() = Term::Jump(JumpPoint(block, args, VariablesToDump()));
+	}
+	
+void NativeCodeFlattened::Block::externalJump(
+		const string& block,
+		uword_t blockID,
+		const ImmutableTreeVector<Cont>& continuation,
+		const ImmutableTreeVector<NativeIndividualContinuationMetadata>& contMetas,
+		const ImmutableTreeVector<Metadata>& metaData,
+		const ImmutableTreeVector<Input>& args
+		)
+	{
+	term() = Term::Call(block, blockID, continuation, contMetas, metaData, args, VariablesToDump());
+	}
+	
+void NativeCodeFlattened::Block::externalTransfer(
+		const string& block,
+		uword_t blockID,
+		const ImmutableTreeVector<pair<uword_t, NativeType> >& continuations,
+		const ImmutableTreeVector<Input>& args
+		)
+	{
+	term() = Term::Transfer(block, blockID, continuations, args);
+	}
+
+void NativeCodeFlattened::Block::externalPointerJump(
+		Input block,
+		const ImmutableTreeVector<Input>& args,
+		bool destroyLocalFrame,
+		bool isInternal
+		)
+	{
+	term() = Term::CallGeneric(block, args, VariablesToDump(), destroyLocalFrame, isInternal);
+	}
+	
+void NativeCodeFlattened::Block::halt(const string& reason)
+	{
+	term() = Term::Halt(reason);
+	}
+
+void NativeCodeFlattened::Block::follow(Input res, Input cont,  long inIndex, bool destroyLocalFrame)
+	{
+	term() = Term::Follow(cont, res, VariablesToDump(), inIndex, destroyLocalFrame);
+	}
+
+void 	NativeCodeFlattened::Block::dontWriteAnyVariables(void)
+	{
+	if (term().isBranch())
+		{
+		term().getBranch().ifTrue().dumpToSlots().dumpToSlots() = emptyTreeSet();
+		term().getBranch().ifFalse().dumpToSlots().dumpToSlots() = emptyTreeSet();
+		}
+	else
+	if (term().isJump())
+		term().getJump().target().dumpToSlots().dumpToSlots() = emptyTreeSet();
+	else
+	if (term().isCall())
+		term().getCall().dumpToSlots().dumpToSlots() = emptyTreeSet();
+	else
+	if (term().isCallGeneric())
+		term().getCallGeneric().dumpToSlots().dumpToSlots() = emptyTreeSet();
+	else
+	if (term().isFollow())
+		term().getFollow().dumpToSlots().dumpToSlots() = emptyTreeSet();
+	}
+
+void	NativeCodeFlattened::Block::dontWriteVariable(const NativeVariable& var)
+	{
+	if (term().isBranch())
+		{
+		term().getBranch().ifTrue().dumpToSlots().dumpToSlots() =
+			term().getBranch().ifTrue().dumpToSlots().dumpToSlots() - var;
+		term().getBranch().ifFalse().dumpToSlots().dumpToSlots() =
+			term().getBranch().ifFalse().dumpToSlots().dumpToSlots() - var;
+		}
+	else
+	if (term().isJump())
+		term().getJump().target().dumpToSlots().dumpToSlots() =
+			term().getJump().target().dumpToSlots().dumpToSlots() - var;
+	else
+	if (term().isCall())
+		term().getCall().dumpToSlots().dumpToSlots() =
+			term().getCall().dumpToSlots().dumpToSlots() - var;
+	else
+	if (term().isCallGeneric())
+		term().getCallGeneric().dumpToSlots().dumpToSlots() =
+			term().getCallGeneric().dumpToSlots().dumpToSlots() - var;
+	else
+	if (term().isFollow())
+		term().getFollow().dumpToSlots().dumpToSlots() =
+			term().getFollow().dumpToSlots().dumpToSlots() - var;
+	}
+
+void NativeCodeFlattened::Block::enlivenVariable(const NativeVariable& var)
+	{
+	liveOnInput() = liveOnInput() + var;
+	writeVariable(var);
+	}
+
+void	NativeCodeFlattened::Block::writeVariable(const NativeVariable& var)
+	{
+	if (term().isBranch())
+		{
+		term().getBranch().ifTrue().dumpToSlots().dumpToSlots() =
+			term().getBranch().ifTrue().dumpToSlots().dumpToSlots() + var;
+		term().getBranch().ifFalse().dumpToSlots().dumpToSlots() =
+			term().getBranch().ifFalse().dumpToSlots().dumpToSlots() + var;
+		}
+	else
+	if (term().isJump())
+		term().getJump().target().dumpToSlots().dumpToSlots() =
+			term().getJump().target().dumpToSlots().dumpToSlots() + var;
+	else
+	if (term().isCall())
+		term().getCall().dumpToSlots().dumpToSlots() =
+			term().getCall().dumpToSlots().dumpToSlots() + var;
+	else
+	if (term().isCallGeneric())
+		term().getCallGeneric().dumpToSlots().dumpToSlots() =
+			term().getCallGeneric().dumpToSlots().dumpToSlots() + var;
+	else
+	if (term().isFollow())
+		term().getFollow().dumpToSlots().dumpToSlots() =
+			term().getFollow().dumpToSlots().dumpToSlots() + var;
+	}
+
+NativeBlockID NativeCodeFlattened::flatten(
+				const NativeCFG& f,
+				const ImmutableTreeVector<NativeBlockID>& exitBlocks,
+				const ImmutableTreeVector<Nullable<uword_t> >& inSimpleExits,
+				map<NativeBlockID, Block>& outBlocks,
+				const ImmutableTreeMap<NativeVariable, Input>& varMap,
+				const ImmutableTreeVector<NativeCodeFlattened::Metadata>& exteriorMetadata,
+				bool renameAllBlocks,
+				NativeBlockID primaryBlock,
+				double relativeFrequency
+				)
+	{
+	map<NativeBlockID, NativeBlockID> blockMap;
+
+	for (long k = 0; k < f.blocks().size(); k++)
+		blockMap[f.blocks().pairAtPosition(k).first] =
+			renameAllBlocks ? NativeBlockID::internal() :
+			f.blocks().pairAtPosition(k).first;
+
+	//first, loop through every block and make sure that its arguments are populated
+	for (long k = 0; k < f.blocks().size(); k++)
+		{
+		NativeBlockID internalName = f.blocks().pairAtPosition(k).first;
+		NativeBlockID extName = blockMap[internalName];
+
+		outBlocks[extName].relativeFrequency() =
+			relativeFrequency * f.blocks()[internalName]->relativeFrequency();
+		setupBlockArgs(outBlocks[extName], *f.blocks()[internalName]);
+		}
+	
+	//then actually fill it out with expressions
+	for (long k = 0; k < f.blocks().size(); k++)
+		{
+		NativeBlockID internalName = f.blocks().pairAtPosition(k).first;
+		NativeBlockID extName = blockMap[internalName];
+
+		flatten(
+			outBlocks[extName],
+			*f.blocks()[internalName],
+			exitBlocks,
+			inSimpleExits,
+			blockMap,
+			outBlocks,
+			varMap,
+			exteriorMetadata
+			);
+		}
+
+	for (auto it = outBlocks.begin(), it_end = outBlocks.end(); it != it_end; ++it)
+		{
+		//anybody we create needs to go into a slot
+		ImmutableTreeVector<NativeVariable> toWriteV = extractFirst(it->second.defs());
+		ImmutableTreeSet<NativeVariable> toWrite(toWriteV.begin(), toWriteV.end());
+
+		if (it->second.term().isBranch())
+			{
+			it->second.term().getBranch().ifTrue().dumpToSlots() = toWrite;
+			it->second.term().getBranch().ifFalse().dumpToSlots() = toWrite;
+			}
+			else
+		if (it->second.term().isJump())
+			it->second.term().getJump().target().dumpToSlots() = toWrite;
+			else
+		if (it->second.term().isCall())
+			it->second.term().getCall().dumpToSlots() = toWrite;
+			else
+		if (it->second.term().isCallGeneric())
+			it->second.term().getCallGeneric().dumpToSlots() = toWrite;
+			else
+		if (it->second.term().isFollow())
+			it->second.term().getFollow().dumpToSlots() = toWrite;
+		}
+		
+	return blockMap[primaryBlock];
+	}
+
+void	NativeCodeFlattened::setupBlockArgs(Block& outBlock, const NativeBlock& block)
+	{
+	//each argument needs to get a new name, and replace the existing ones in the var map
+	ImmutableTreeVector<NativeVariable> curArgs = block.args();
+	for (long k = 0;k < curArgs.size(); k++)
+		{
+		NativeVariable v = NativeVariable::Temp(curArgs[k].type());
+		outBlock.args() = outBlock.args() + v;
+		}
+	}
+
+void	NativeCodeFlattened::flatten(
+			Block& outBlock,
+			const NativeBlock& block,
+			const ImmutableTreeVector<NativeBlockID>& exitBlocks,
+			const ImmutableTreeVector<Nullable<uword_t> >& inSimpleExits, //for each exit,
+																			//is it simple?
+			const map<NativeBlockID, NativeBlockID>& blockNameMap,
+			map<NativeBlockID, Block>& outBlocks,
+			const ImmutableTreeMap<NativeVariable, Input>& varMap,
+			const ImmutableTreeVector<NativeCodeFlattened::Metadata>& exteriorMetadata
+			)
+	{
+	ImmutableTreeMap<NativeVariable, Input> newVarMap = varMap;
+	
+	ImmutableTreeVector<NativeVariable> curArgs = block.args();
+	for (long k = 0;k < curArgs.size(); k++)
+		{
+		NativeVariable v = outBlock.args()[k];
+		newVarMap = newVarMap + curArgs[k] + Input::Variable(v);
+		}
+		
+	//each argument needs to get a new name, and replace the existing ones in the var map
+	Block* blockPtr = &outBlock;
+
+	lassert_dump(
+		!block.expression().type(),
+		prettyPrintString(block.expression()) << " shouldn't produce a value"
+		);
+	Nullable<Input> i =
+		flatten(
+			blockPtr,
+			block.expression(),
+			exitBlocks,
+			inSimpleExits,
+			blockNameMap,
+			outBlocks,
+			newVarMap,
+			exteriorMetadata
+			);
+	
+	lassert_dump(
+		!i,
+		prettyPrintString(block.expression()) << " shouldn't have produced a value"
+		);
+	}
+
+Nullable<uword_t> simpleContIx(const NativeContinuation& cont)
+	{
+	@match NativeExpression(cont.expression())
+		-|	Return(ix, Variable(v)) ->> {
+			return  v == cont.var() ? Nullable<uword_t>(ix) : Nullable<uword_t>();
+			}
+		-|	_ ->> {
+			return  Nullable<uword_t>();
+			}
+		;
+	}
+	
+namespace {
+
+NativeCodeFlattened::Block duplicateBlock(
+				const NativeCodeFlattened::Block& targetBlock,
+				NativeBlockID targetBlockID
+				)
+	{
+	//our block will have one input for each input in targetBlock
+	ImmutableTreeVector<NativeVariable> newVars;
+	
+	//an input for each input in our block to pass to the targetBlock
+	ImmutableTreeVector<NativeCodeFlattened::Input>	targetInputs;
+	
+	for (long k = 0; k < targetBlock.args().size(); k++)
+		{
+		newVars = newVars + NativeVariable::Temp(targetBlock.args()[k].type());
+		targetInputs = targetInputs +
+			NativeCodeFlattened::Input::Variable(newVars.back());
+		}
+	
+	NativeCodeFlattened::Block tr;
+	tr.args() = newVars;
+	tr.relativeFrequency() = targetBlock.relativeFrequency();
+	
+	tr.jump(targetBlockID, targetInputs);
+	
+	return tr;
+	}
+}	
+
+Nullable<NativeCodeFlattened::Input> NativeCodeFlattened::flatten(
+		Block* & outBlock,
+		const NativeExpression& expr,
+		const ImmutableTreeVector<NativeBlockID>& exitBlocks,
+		const ImmutableTreeVector<Nullable<uword_t> >& inSimpleExits, //for each exit, is it simple?
+		const map<NativeBlockID, NativeBlockID>& blockNameMap,
+		map<NativeBlockID, Block>& outBlocks,
+		const ImmutableTreeMap<NativeVariable, NativeCodeFlattened::Input>& varMap,
+		const ImmutableTreeVector<NativeCodeFlattened::Metadata>& exteriorMetadata
+		)
+	{
+	@match NativeExpression(expr)
+		-|	Variable(v) ->> { return null() << *varMap[v]; }
+		-|	Constant(c) ->> { return null() << Input::Constant(c); }
+		-|	Zero(t) ->> { return null() << Input::Zero(t); }
+		-|	Tagged(t, tag) ->> {
+				if (tag.isInterrupt() || tag.isKickToInterpreterCheck())
+					{
+					lassert_dump(
+						t.type() && t.type()->isNothing(),
+						"Got type " << prettyPrintString(t.type()) << " but expected 'Nothing' in " 
+							<< "expression " << prettyPrintString(t) << " tagged as "
+							<< prettyPrintString(tag)
+						);
+
+					//first, create a new empty block and branch to it
+					NativeBlockID interruptCheckHead = NativeBlockID::internal();
+					outBlock->jump(interruptCheckHead, emptyTreeVec());
+
+					NativeBlockID ifSkip = NativeBlockID::internal();
+					NativeBlockID ifCheck = NativeBlockID::internal();
+					outBlocks[interruptCheckHead].term() =
+						Term::InterruptOrKickCheck(
+							JumpPoint(
+								ifCheck,
+								emptyTreeVec(),
+								VariablesToDump()
+								),
+							JumpPoint(
+								ifSkip,
+								emptyTreeVec(),
+								VariablesToDump()
+								)
+							);
+					outBlocks[interruptCheckHead].relativeFrequency() = outBlock->relativeFrequency();
+
+					//evaluate the "interrupt" into "ifCheck"
+						{
+						Block* ifCheckBlock = &outBlocks[ifCheck];
+						outBlocks[ifCheck].relativeFrequency() = outBlock->relativeFrequency();
+						flatten(
+							ifCheckBlock,
+							t,
+							exitBlocks,
+							inSimpleExits,
+							blockNameMap,
+							outBlocks,
+							varMap,
+							exteriorMetadata
+							);
+
+						//cause 'ifCheck' to rejoin with 'ifSkip'
+						ifCheckBlock->jump(ifSkip, emptyTreeVec());
+						}
+
+					//point at ifSkip on exit
+					outBlocks[ifSkip].relativeFrequency() = outBlock->relativeFrequency();
+					outBlock = &outBlocks[ifSkip];
+
+					return null() << Input::Constant(NativeConstant::Nothing());
+					}
+				else
+					{
+					return
+						flatten(
+							outBlock,
+							t,
+							exitBlocks,
+							inSimpleExits,
+							blockNameMap,
+							outBlocks,
+							varMap,
+							exteriorMetadata
+							);
+					}
+				}
+		-|	CreateComposite(elts) ->> {
+				ImmutableTreeVector<Input> i;
+				for (long k = 0; k < elts.size(); k++)
+					{
+					Nullable<Input> res =
+										flatten(
+											outBlock,
+											elts[k],
+											exitBlocks,
+											inSimpleExits,
+											blockNameMap,
+											outBlocks,
+											varMap,
+											exteriorMetadata
+											);
+
+					if (!res)
+						return null();
+
+					i = i + *res;
+					}
+
+				return null() << outBlock->add(Expression::CreateComposite(i), *expr.type());
+				}
+		-|	DiscardFirst(f,s) ->> {
+				Nullable<Input> i =
+									flatten(
+										outBlock,
+										f,
+										exitBlocks,
+										inSimpleExits,
+										blockNameMap,
+										outBlocks,
+										varMap,
+										exteriorMetadata
+										);
+				if (!i)
+					return i;
+
+				return flatten(
+							outBlock,
+							s,
+							exitBlocks,
+							inSimpleExits,
+							blockNameMap,
+							outBlocks,
+							varMap,
+							exteriorMetadata
+							);
+				}
+		-|	Load(var, isVol) ->> {
+				Nullable<Input> i = flatten(
+										outBlock,
+										var,
+										exitBlocks,
+										inSimpleExits,
+										blockNameMap,
+										outBlocks,
+										varMap,
+										exteriorMetadata
+										);
+				if (!i)
+					return i;
+				return null() << outBlock->add(Expression::Load(*i, isVol), *expr.type());
+				}
+		-|	Alloc(t,count, forceInitialize) ->> {
+				return null() << outBlock->add(Expression::Alloc(t,count, forceInitialize), *expr.type());
+				}
+		-|	Store(a,v) ->> {
+				Nullable<Input> aVal = flatten(
+											outBlock,
+											a,
+											exitBlocks,
+											inSimpleExits,
+											blockNameMap,
+											outBlocks,
+											varMap,
+											exteriorMetadata
+											);
+
+				if (!aVal)
+					return aVal;
+
+				Nullable<Input> vVal = flatten(
+											outBlock,
+											v,
+											exitBlocks,
+											inSimpleExits,
+											blockNameMap,
+											outBlocks,
+											varMap,
+											exteriorMetadata
+											);
+				if (!vVal)
+					return vVal;
+
+				return null() << outBlock->add(Expression::Store(*aVal, *vVal), *expr.type());
+				}
+		-|	Selector(s,t,f) ->> {
+				Nullable<Input> sVal = flatten(
+											outBlock,
+											s,
+											exitBlocks,
+											inSimpleExits,
+											blockNameMap,
+											outBlocks,
+											varMap,
+											exteriorMetadata
+											);
+				if (!sVal)
+					return sVal;
+
+				Nullable<Input> tVal = flatten(
+											outBlock,
+											t,
+											exitBlocks,
+											inSimpleExits,
+											blockNameMap,
+											outBlocks,
+											varMap,
+											exteriorMetadata
+											);
+
+				if (!tVal)
+					return tVal;
+
+				Nullable<Input> fVal = flatten(
+											outBlock,
+											f,
+											exitBlocks,
+											inSimpleExits,
+											blockNameMap,
+											outBlocks,
+											varMap,
+											exteriorMetadata
+											);
+
+				if (!fVal)
+					return fVal;
+
+				return null() << outBlock->add(
+									Expression::Selector(*sVal, *tVal, *fVal),
+									*expr.type()
+									);
+				}
+		-|	BinaryOp(o,l,r) ->> {
+				Nullable<Input> lVal = flatten(
+											outBlock,
+											l,
+											exitBlocks,
+											inSimpleExits,
+											blockNameMap,
+											outBlocks,
+											varMap,
+											exteriorMetadata
+											);
+				if (!lVal)
+					return lVal;
+
+				Nullable<Input> rVal = flatten(
+											outBlock,
+											r,
+											exitBlocks,
+											inSimpleExits,
+											blockNameMap,
+											outBlocks,
+											varMap,
+											exteriorMetadata
+											);
+				if (!rVal)
+					return rVal;
+				return null() << outBlock->add(Expression::BinaryOp(o, *lVal, *rVal), *expr.type());
+				}
+		-|	UnaryOp(o,r) ->> {
+				Nullable<Input> rVal = flatten(
+											outBlock,
+											r,
+											exitBlocks,
+											inSimpleExits,
+											blockNameMap,
+											outBlocks,
+											varMap,
+											exteriorMetadata
+											);
+				if (!rVal)
+					return rVal;
+				return null() << outBlock->add(Expression::UnaryOp(o, *rVal), *expr.type());
+				}
+		-|	Cast(d, s, force) ->> {
+				Nullable<Input> sVal = flatten(
+											outBlock,
+											s,
+											exitBlocks,
+											inSimpleExits,
+											blockNameMap,
+											outBlocks,
+											varMap,
+											exteriorMetadata
+											);
+				if (!sVal)
+					return sVal;
+				return null() << outBlock->add(Expression::Cast(d,*sVal,force), *expr.type());
+				}
+		-|	ElementAddress(elts, s) ->> {
+				ImmutableTreeVector<Input> i;
+				for (long k = 0; k < elts.size(); k++)
+					{
+					Nullable<Input> res = flatten(
+											outBlock,
+											elts[k],
+											exitBlocks,
+											inSimpleExits,
+											blockNameMap,
+											outBlocks,
+											varMap,
+											exteriorMetadata
+											);
+
+					if (!res)
+						return null();
+
+					i = i + *res;
+					}
+				Nullable<Input> sVal = flatten(
+											outBlock,
+											s,
+											exitBlocks,
+											inSimpleExits,
+											blockNameMap,
+											outBlocks,
+											varMap,
+											exteriorMetadata
+											);
+				if (!sVal)
+					return sVal;
+				return null() << outBlock->add(Expression::ElementAddress(i, *sVal), *expr.type());
+				}
+		-|	ValueExtract(elts, s) ->> {
+				Nullable<Input> sVal = flatten(
+											outBlock,
+											s,
+											exitBlocks,
+											inSimpleExits,
+											blockNameMap,
+											outBlocks,
+											varMap,
+											exteriorMetadata
+											);
+				if (!sVal)
+					return sVal;
+				return null() << outBlock->add(Expression::ValueExtract(elts, *sVal), *expr.type());
+				}
+		-|	CallLibraryFunction(name, ret, elts) ->> {
+				ImmutableTreeVector<Input> i;
+				for (long k = 0; k < elts.size(); k++)
+					{
+					Nullable<Input> res = flatten(
+												outBlock,
+												elts[k],
+												exitBlocks,
+												inSimpleExits,
+												blockNameMap,
+												outBlocks,
+												varMap,
+												exteriorMetadata
+												);
+
+					if (!res)
+						return null();
+
+					i = i + *res;
+					}
+				return null() << outBlock->add(
+									Expression::CallLibraryFunction(name, ret, i),
+									*expr.type()
+									);
+				}
+		-|	Let(var, Variable(v), within) ->> {
+				//just a renaming.
+				return flatten(
+							outBlock,
+							within,
+							exitBlocks,
+							inSimpleExits,
+							blockNameMap,
+							outBlocks,
+							varMap + var + *varMap[v],
+							exteriorMetadata
+							);
+				}
+		-|	Let(var, e, within) ->> {
+				Nullable<Input> i = flatten(
+										outBlock,
+										e,
+										exitBlocks,
+										inSimpleExits,
+										blockNameMap,
+										outBlocks,
+										varMap,
+										exteriorMetadata
+										);
+				if (!i)
+					return i;
+
+				Nullable<Input> res = flatten(
+											outBlock,
+											within,
+											exitBlocks,
+											inSimpleExits,
+											blockNameMap,
+											outBlocks,
+											varMap + var + *i,
+											exteriorMetadata
+											);
+
+				return res;
+				}
+		-|	If(cond, t, f, fracTrue) ->> {
+
+				if (cond.isConstant())
+					{
+					bool which = cond.getConstant().c().booleanValue();
+
+					return flatten(
+								outBlock,
+								which ? t : f,
+								exitBlocks,
+								inSimpleExits,
+								blockNameMap,
+								outBlocks,
+								varMap,
+								exteriorMetadata
+								);
+					}
+
+				Nullable<Input> i = flatten(
+										outBlock,
+										cond,
+										exitBlocks,
+										inSimpleExits,
+										blockNameMap,
+										outBlocks,
+										varMap,
+										exteriorMetadata
+										);
+				if (!i)
+					return i;
+
+				pair<NativeBlockID, NativeBlockID> blocks(
+														NativeBlockID::internal(),
+														NativeBlockID::internal()
+														);
+				pair<Block*, Block*> blockPtrs(&outBlocks[blocks.first], &outBlocks[blocks.second]);
+
+				outBlock->branch(*i, blocks.first, blocks.second, fracTrue);
+				outBlocks[blocks.first].relativeFrequency() =
+					outBlock->relativeFrequency() * fracTrue;
+				outBlocks[blocks.second].relativeFrequency() =
+					outBlock->relativeFrequency() * (1.0 - fracTrue);
+
+				Nullable<Input> tVal =
+									flatten(
+										blockPtrs.first,
+										t,
+										exitBlocks,
+										inSimpleExits,
+										blockNameMap,
+										outBlocks,
+										varMap,
+										exteriorMetadata
+										);
+				Nullable<Input> fVal =
+									flatten(
+										blockPtrs.second,
+										f,
+										exitBlocks,
+										inSimpleExits,
+										blockNameMap,
+										outBlocks,
+										varMap,
+										exteriorMetadata
+										);
+
+				if (!tVal && !fVal)
+					return null();
+				if (tVal && !fVal)
+					{
+					outBlock = blockPtrs.first;
+					return tVal;
+					}
+				if (!tVal && fVal)
+					{
+					outBlock = blockPtrs.second;
+					return fVal;
+					}
+
+				//we need to merge them
+				NativeBlockID termBlockID = NativeBlockID::internal();
+				Block* finalOut = &outBlocks[termBlockID];
+				finalOut->relativeFrequency() =
+					blockPtrs.first->relativeFrequency() + blockPtrs.second->relativeFrequency();
+
+				blockPtrs.first->jump(termBlockID, emptyTreeVec() + *tVal);
+
+				blockPtrs.second->jump(termBlockID, emptyTreeVec() + *fVal);
+
+				Input res = finalOut->addArg(*expr.type());
+				outBlock = finalOut;
+				return null() << res;
+				}
+
+		-|	Continuations(conts, meta) ->> {
+				//first, create the relevant blocks
+				ImmutableTreeVector<Cont> o;
+
+				ImmutableTreeVector<NativeIndividualContinuationMetadata> contMetas;
+
+				double sumFreq = 0.0;
+				for (long k = 0; k < conts.size(); k++)
+					sumFreq += conts[k].relativeFrequency();
+
+				for (long k = 0; k < conts.size(); k++)
+					{
+					contMetas = contMetas + conts[k].continuationMetadata();
+
+					NativeBlockID newEntryBlock = NativeBlockID::internal();
+
+					Block* b = &outBlocks[newEntryBlock];
+					b->relativeFrequency() =
+						outBlock->relativeFrequency() * conts[k].relativeFrequency() / sumFreq;
+
+					Input contArg = b->addArg(conts[k].var().type());
+
+					Nullable<Input> shouldBeEmpty =
+						flatten(b,
+							conts[k].expression(),
+							exitBlocks,
+							inSimpleExits,
+							blockNameMap,
+							outBlocks,
+							varMap + conts[k].var() + contArg,
+							exteriorMetadata
+							);
+
+					lassert_dump(!shouldBeEmpty, prettyPrintString(shouldBeEmpty));
+					
+					o = o + Cont(conts[k].var().type(), newEntryBlock);
+					}
+
+				return null() << outBlock->add(
+									Expression::Continuations(
+										o,
+										exteriorMetadata + mapMetadata(meta, varMap),
+										contMetas
+										),
+									*expr.type()
+									);
+				}
+		-|	Jump(loc, elts) ->> {
+
+				ImmutableTreeVector<Input> i;
+				for (long k = 0; k < elts.size(); k++)
+					{
+					Nullable<Input> res =
+										flatten(
+											outBlock,
+											elts[k],
+											exitBlocks,
+											inSimpleExits,
+											blockNameMap,
+											outBlocks,
+											varMap,
+											exteriorMetadata
+											);
+
+					if (!res)
+						return null();
+
+					i = i + *res;
+					}
+
+				lassert_dump(
+					blockNameMap.find(loc) != blockNameMap.end(), 
+					"Can't find " << prettyPrintString(loc) << " within " << prettyPrintString(blockNameMap)
+					);
+				outBlock->jump(blockNameMap.find(loc)->second, i);
+
+				return null();
+				}
+		-|	FollowContinuation(var, cont, index) ->> {
+				Nullable<Input> vVal =
+									flatten(
+										outBlock,
+										var,
+										exitBlocks,
+										inSimpleExits,
+										blockNameMap,
+										outBlocks,
+										varMap,
+										exteriorMetadata
+										);
+
+				if (!vVal)
+					return vVal;
+
+				Nullable<Input> contVal =
+										flatten(
+											outBlock,
+											cont,
+											exitBlocks,
+											inSimpleExits,
+											blockNameMap,
+											outBlocks,
+											varMap,
+											exteriorMetadata
+											);
+				if (!contVal)
+					return contVal;
+
+				outBlock->follow(*vVal, *contVal, index, false);
+				return null();
+				}
+		-|	Return(exit, val) ->> {
+
+				Nullable<Input> vVal =
+									flatten(
+										outBlock,
+										val,
+										exitBlocks,
+										inSimpleExits,
+										blockNameMap,
+										outBlocks,
+										varMap,
+										exteriorMetadata
+										);
+
+				if (!vVal)
+					return vVal;
+
+				outBlock->jump(exitBlocks[exit], emptyTreeVec() + *vVal);
+				outBlocks[exitBlocks[exit]].relativeFrequency() += outBlock->relativeFrequency();
+
+				return null();
+				}
+		-|	Halt(reason) ->> {
+
+				outBlock->halt(reason);
+
+				return null();
+				}
+		-|	Call(target, conts, args, meta) ->> {
+				//now compute 'args'
+				ImmutableTreeVector<Input> argsI;
+				for (long k = 0; k < args.size(); k++)
+					{
+					Nullable<Input> res =
+						flatten(
+							outBlock,
+							args[k],
+							exitBlocks,
+							inSimpleExits,
+							blockNameMap,
+							outBlocks,
+							varMap,
+							exteriorMetadata
+							);
+
+					if (!res)
+						return null();
+
+					argsI = argsI + *res;
+					}
+
+				//check whether all conts are 'simple' (e.g. direct returns) in which case we can
+				//destroy the local call frame first
+
+				ImmutableTreeVector<Nullable<uword_t> > newContsAreSimple;
+
+				ImmutableTreeVector<NativeIndividualContinuationMetadata> contMetas;
+
+				bool allSimple = true;
+				for (long k = 0; k < conts.size(); k++)
+					{
+					contMetas = contMetas + conts[k].continuationMetadata();
+
+					Nullable<uword_t> isSimp = simpleContIx(conts[k]);
+					if (isSimp)
+						newContsAreSimple = newContsAreSimple + inSimpleExits[*isSimp];
+					else
+						newContsAreSimple = newContsAreSimple + Nullable<uword_t>();
+					if (!newContsAreSimple[k])
+						allSimple = false;
+					}
+
+				ImmutableTreeVector<pair<Input, Block*> > joiners;
+
+				//set up return handlers
+				ImmutableTreeVector<Cont> o;
+				ImmutableTreeVector<NativeType> contTypes;
+
+				double sumFreq = 0.0;
+				for (long k = 0; k < conts.size(); k++)
+					sumFreq += conts[k].relativeFrequency();
+
+				for (long k = 0; k < conts.size(); k++)
+					{
+					NativeBlockID newEntryBlock = NativeBlockID::internal();
+
+					Block* b = &outBlocks[newEntryBlock];
+					b->relativeFrequency() =
+							outBlock->relativeFrequency() * conts[k].relativeFrequency() / sumFreq;
+					Input contArg = b->addArg(conts[k].var().type());
+
+					Nullable<Input> result =
+						flatten(
+							b,
+							conts[k].expression(),
+							exitBlocks,
+							inSimpleExits,
+							blockNameMap,
+							outBlocks,
+							varMap + conts[k].var() + contArg,
+							exteriorMetadata
+							);
+
+					o = o + Cont(conts[k].var().type(), newEntryBlock);
+					contTypes = contTypes + conts[k].var().type();
+
+					if (result)
+						joiners = joiners + make_pair(*result, b);
+					}
+
+				//now create the function
+				@match NativeCallTarget(target)
+					-|	Inline(f, block) ->> {
+
+						ImmutableTreeVector<NativeBlockID> ids;
+						for (long k = 0; k < o.size(); k++)
+							ids = ids + o[k].block();
+
+						NativeBlockID toJumpTo = flatten(
+													f,
+													ids,
+													newContsAreSimple,
+													outBlocks,
+													varMap,
+													exteriorMetadata + mapMetadata(meta, varMap),
+													true,
+													block,
+													outBlock->relativeFrequency()
+													);
+
+						outBlock->jump(toJumpTo, argsI);
+						}
+					-|	External(e,(isInternal, blockID)) ->> {
+
+						lassert(!isInternal);
+
+						outBlock->externalJump(
+									e,
+									blockID,
+									o,
+									contMetas,
+									exteriorMetadata + mapMetadata(meta, varMap),
+									argsI
+									);
+						}
+					-|	Pointer(p, isInternal) ->> {
+
+						Nullable<Input> pRes =
+											flatten(
+												outBlock,
+												p,
+												exitBlocks,
+												inSimpleExits,
+												blockNameMap,
+												outBlocks,
+												varMap,
+												exteriorMetadata
+												);
+
+						if (!pRes)
+							return null();
+
+						Input contsI = outBlock->add(
+											Expression::Continuations(
+												o,
+												exteriorMetadata + mapMetadata(meta, varMap),
+												contMetas
+												),
+											NativeType::Continuations(contTypes)
+											);
+
+						outBlock->externalPointerJump(
+									*pRes,
+									emptyTreeVec() + contsI + argsI,
+									false,
+									isInternal
+									);
+						}
+					;
+
+				if (!joiners.size())
+					return null();
+
+				if (joiners.size() == 1)
+					//just use this one
+					{
+					outBlock = joiners[0].second;
+					return null() << joiners[0].first;
+					}
+
+				//we need to create a new block and join that
+				NativeBlockID joinBlock = NativeBlockID::internal();
+				outBlock = &outBlocks[joinBlock];
+				Input res = outBlock->addArg(*expr.type());
+
+				for (long k = 0; k < joiners.size(); k++)
+					{
+					joiners[k].second->jump(joinBlock, emptyTreeVec() + joiners[k].first);
+					outBlock->relativeFrequency() += joiners[k].second->relativeFrequency();
+					}
+
+				return null() << res;
+				}
+		;
+	lassert(false);
+	return null();
+	}
+
+ImmutableTreeVector<NativeBlockID> orderBlocks(
+										const map<NativeBlockID,
+										NativeCodeFlattened::Block>& t
+										)
+	{
+	//put the blocks in a good order
+	ImmutableTreeSet<NativeBlockID> blocksNotUsed;
+
+	for (auto it = t.begin(), it_end = t.end(); it != it_end; ++it)
+		blocksNotUsed = blocksNotUsed + it->first;
+
+	ImmutableTreeVector<NativeBlockID> tr;
+
+	if  (!t.size())
+		return tr;
+
+	NativeBlockID block = t.begin()->first;
+
+	tr = tr + block;
+	blocksNotUsed = blocksNotUsed - block;
+
+	while (blocksNotUsed.size())
+		{
+		//now pick a new block
+		NativeBlockID next = blocksNotUsed[0];
+
+		@match NativeCodeFlattened::Term(t.find(block)->second.term())
+			-|	Jump((b)) ->> { if (blocksNotUsed.contains(b)) next = b; }
+			-|	Branch(_,(b1), (b2), f) ->> {
+				NativeBlockID b = f > .5 ? b1 : b2;
+				if (blocksNotUsed.contains(b))
+					next = b;
+				}
+			-|	InterruptOrKickCheck((b)) ->> { if (blocksNotUsed.contains(b)) next = b; }
+			-|	_ ->> {;}
+			;
+
+		block = next;
+
+		tr = tr + block;
+		blocksNotUsed = blocksNotUsed - block;
+		}
+
+	return tr;
+	}
+
+ImmutableTreeSet<NativeVariable> NativeCodeFlattened::Block::getDefinedVariables() const
+	{
+	ImmutableTreeSet<NativeVariable> vars;
+	
+	for (long k = 0; k < defs().size(); k++)
+		vars = vars + defs()[k].first;
+	
+	return vars;
+	}
+
+namespace {
+
+std::string sanitizedTypeString(const NativeType& type)
+	{
+	std::string typeString = prettyPrintStringWithoutWrapping(type);
+	if (typeString.size() > 20)
+		typeString.resize(20);
+
+	return typeString;
+	}
+
+}
+
+void CPPMLPrettyPrint<NativeCodeFlattened::Block>:: prettyPrint(
+														CPPMLPrettyPrintStream& s,
+														const NativeCodeFlattened::Block& t
+														)
+	{
+	s << "(";
+		{
+		CPPMLPrettyPrintStream s2 = s.group();
+		for (long k = 0; k < t.args().size(); k++)
+			{
+			s2 << s2.sep;
+
+			s2 << t.args()[k] << ": " << sanitizedTypeString(t.args()[k].type());
+			
+			if (k + 1 < t.args().size())
+				s2 << ",";
+			}
+		}
+	s << ")";
+		
+	s << ", live = "
+		<< t.liveOnInput() << ". freq = "
+		<< t.relativeFrequency() << "\n"
+		;
+	
+	for (long k = 0; k < t.defs().size(); k++)
+		s << "\t\t" << t.defs()[k].first << ": " << sanitizedTypeString(t.defs()[k].first.type())
+			<< " = " << t.defs()[k].second << "\n"
+			;
+	s << t.term() << "\n\n";
+	}
+
+void CPPMLPrettyPrint<map<NativeBlockID, NativeCodeFlattened::Block> >::prettyPrint(
+											CPPMLPrettyPrintStream& s,
+											const map<NativeBlockID, NativeCodeFlattened::Block>& t
+											)
+	{
+	ImmutableTreeVector<NativeBlockID> blocks = orderBlocks(t);
+	for (long k = 0; k < blocks.size(); k++)
+		s << blocks[k] << " " << t.find(blocks[k])->second;
+	}
+
+void CPPMLPrettyPrint<NativeCodeFlattened::Term>::prettyPrint(
+													CPPMLPrettyPrintStream s,
+													const NativeCodeFlattened::Term& t
+													)
+	{
+	@match NativeCodeFlattened::Term(t)
+		-|	Jump((block, args, toDump)) ->> {
+			s << "\tjump to " << block << " with " << args << ". \n\t\t\tdump " << toDump;
+			}
+		-|	Branch(cond, (block, args, toDump), (block2, args2, toDump2), fracTrue) ->> {
+			s << "\tif " << cond << ":\n" << "\t     with "
+				<< fracTrue << ", jump to " << block << " with "
+				<< args << ". \n\t\t\tdump " << toDump << "\n"
+				;
+			s << "\telse with " << (1.0 - fracTrue) << ", jump to " << block2 << " with "
+				<< args2 << ". \n\t\t\tdump " << toDump2
+				;
+			}
+		-|	Halt() ->> { s << "\tHALT\n"; ;}
+		-|	Call(target, block, conts, _, meta, args, toDump) ->> {
+			s << "\tcall " << target << "@" << block << " returning " << conts << " with "
+				<< args << ".\n\tmeta = " << meta << ". \n\t\t\tdump " << toDump
+				;
+			}
+		-|	Transfer(target, block, conts, args) ->> {
+			s << "\ttransfer to " << target << "@" << block << " conts= " << conts
+				<< " with " << args;
+			}
+		-|	CallGeneric(target, args, toDump, isInternal) ->> {
+			s << "\tcall " << (isInternal ?"internal ":"") << "*" << target << " with "
+				<< args << ". \n\t\t\tdump " << toDump
+				;
+			}
+		-|	Follow(c,r,toDump) ->> {
+			s << "\tfollow " << c << " with " << r << ". \n\t\t\tdump " << toDump;
+			}
+		-|	Exit(ix, val) ->> { s << "\texit " << ix << " with " << val; }
+		-|	InterruptOrKickCheck(ifInterrupt, ifSkip) ->> {
+			s << "\tInterruptOrKickCheck(check=" << (ifInterrupt.block()) << ". skip = "
+				<< (ifSkip.block())
+				<< ")"
+				;
+			}
+		;
+	}
+
+void CPPMLPrettyPrint<NativeCodeFlattened::Metadata>:: prettyPrint(
+															CPPMLPrettyPrintStream s,
+															const NativeCodeFlattened::Metadata& t
+															)
+	{
+	s << "[" << t.instruction() << "]";
+	}
+
+NativeType NativeCodeFlattened::Input::computeType(void) const
+	{
+	@match NativeCodeFlattened::Input(*this)
+		-|	Constant(c) ->> {
+			return  *NativeExpression::Constant(c).type();
+			}
+		-|	Zero(t) ->> {
+			return  t;
+			}
+		-|	Variable(v) ->> {
+			return  v.type();
+			}
+		-|	ReturnContinuation(indexAndTypePairs) ->> {
+			ImmutableTreeVector<NativeType> types;
+			for (long k = 0; k < indexAndTypePairs.size(); k++)
+				types = types + indexAndTypePairs[k].second;
+
+			return  NativeType::Continuations(types);
+			}
+		;
+	}
+
+

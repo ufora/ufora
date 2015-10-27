@@ -1,0 +1,426 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "CumulusWorker.hppml"
+#include "CumulusClient.hppml"
+#include "core/SimpleOfflineCache.hpp"
+#include "../networking/InMemoryChannel.hpp"
+#include "../core/UnitTest.hpp"
+#include "../core/UnitTestCppml.hpp"
+#include "QueueTestUtilities.hpp"
+#include "ComputationStateTestHarness.hpp"
+#include "SystemwidePageRefcountTracker.hppml"
+using namespace Cumulus;
+
+BOOST_AUTO_TEST_SUITE( test_Cumulus_CumulusWorkerClientIntegration )
+
+MachineId machine1(hash_type(1));
+
+MachineId machine2(hash_type(2));
+
+CumulusClientId clientId1(hash_type(1));
+
+CumulusClientId clientId2(hash_type(2));
+
+PolymorphicSharedPtr<CallbackScheduler> scheduler(CallbackScheduler::singletonForTesting());
+
+
+std::string brownianText = 
+	"( let brownian = fun(x, t) {"
+	"  if (t <= 0) { return x >>> 0.0 }; "
+	"  let (l,r) = cached(brownian(x-1,t-1), brownian(x+1,t-1));"
+	"  (l+r)/2 "
+	"  }; brownian )";
+
+std::string sumText = 
+	"(let sum = fun(a, b) {"
+	"  if (a >= b) return 0; "
+	"  if (a+1 >= b) return a;"
+	"  if (a+29 >= b) { let res = 0; while (a< b) { res = res + a; a = a + 1 }; return res } "
+	"  let mid = (a+b)/2; sum(a,mid) + sum(mid,b) "
+	"  }; sum)";
+
+
+PolymorphicSharedPtr<CumulusWorker> createWorker(
+										MachineId machine, 
+										int threadCount, 
+										bool withOfflineCache = true
+										)
+	{
+	PolymorphicSharedPtr<VectorDataManager> vdm(new VectorDataManager(scheduler, 1024 * 1024));
+	vdm->setMemoryLimit(400 * 1024 * 1024, 400 * 1024 * 1024);
+	
+	PolymorphicSharedPtr<OfflineCache> offlineCache;
+
+	if (withOfflineCache)
+		offlineCache.reset(
+			new SimpleOfflineCache(scheduler, 1024 * 1024 * 100)
+			);
+
+	return PolymorphicSharedPtr<CumulusWorker>(
+		new CumulusWorker(
+			scheduler->getFactory(),
+			scheduler,
+			CumulusWorkerConfiguration(
+				machine,
+				threadCount,
+				CumulusCheckpointPolicy::None(),
+				boost::shared_ptr<Fora::Interpreter::ExecutionContextConfiguration>(
+					new Fora::Interpreter::ExecutionContextConfiguration(
+						Fora::Interpreter::ExecutionContextConfiguration::defaultConfig()
+						)
+					),
+				""
+				),
+			vdm,
+			offlineCache,
+			boost::function1<void, CumulusWorkerEvent>()
+			)
+		);
+	}
+
+PolymorphicSharedPtr<CumulusClient> createClient(
+										CumulusClientId client
+										)
+	{
+	PolymorphicSharedPtr<VectorDataManager> vdm(new VectorDataManager(scheduler, 1024 * 1024));
+	vdm->setMemoryLimit(400 * 1024 * 1024, 400 * 1024 * 1024);
+	
+	return PolymorphicSharedPtr<CumulusClient>(
+		new CumulusClient(
+			vdm, 
+			client,
+			scheduler
+			)
+		);
+	}
+
+void connect(
+		PolymorphicSharedPtr<CumulusWorker> worker1, 
+		MachineId machine1,
+		PolymorphicSharedPtr<CumulusWorker> worker2, 
+		MachineId machine2
+		)
+	{
+	auto channels = InMemoryChannel<CumulusWorkerToWorkerMessage, 
+								CumulusWorkerToWorkerMessage>::createChannelPair(scheduler);
+
+	worker1->addMachine(machine2, channels.first);
+	worker2->addMachine(machine1, channels.second);
+	}
+
+void connect(
+		PolymorphicSharedPtr<CumulusWorker> worker, 
+		MachineId machine,
+		PolymorphicSharedPtr<CumulusClient> client, 
+		CumulusClientId clientId
+		)
+	{
+	auto channels = InMemoryChannel<CumulusWorkerToClientMessage, 
+								CumulusClientToWorkerMessage>::createChannelPair(scheduler);
+
+	worker->addCumulusClient(clientId, channels.first);
+	client->addMachine(machine, channels.second);
+	}
+
+	
+
+BOOST_AUTO_TEST_CASE( test_instantiate )
+	{
+	PolymorphicSharedPtr<CumulusWorker> worker1 = createWorker(machine1, 2);
+	PolymorphicSharedPtr<CumulusWorker> worker2 = createWorker(machine2, 2);
+
+	PolymorphicSharedPtr<CumulusClient> client1 = createClient(clientId1);
+	PolymorphicSharedPtr<CumulusClient> client2 = createClient(clientId2);
+
+	worker1->startComputations();
+	worker2->startComputations();
+
+	connect(worker1, machine1, worker2, machine2);
+	connect(worker1, machine1, client1, clientId1);
+	connect(worker1, machine1, client2, clientId2);
+	connect(worker2, machine2, client1, clientId1);
+	connect(worker2, machine2, client2, clientId2);
+	}
+	
+
+BOOST_AUTO_TEST_CASE( test_instantiate_and_calculate )
+	{
+	PolymorphicSharedPtr<CumulusWorker> worker1 = createWorker(machine1, 2);
+	PolymorphicSharedPtr<CumulusWorker> worker2 = createWorker(machine2, 2);
+
+	PolymorphicSharedPtr<CumulusClient> client1 = createClient(clientId1);
+	PolymorphicSharedPtr<CumulusClient> client2 = createClient(clientId2);
+
+	worker1->startComputations();
+	worker2->startComputations();
+
+	connect(worker1, machine1, worker2, machine2);
+	connect(worker1, machine1, client1, clientId1);
+	connect(worker1, machine1, client2, clientId2);
+	connect(worker2, machine2, client1, clientId1);
+	connect(worker2, machine2, client2, clientId2);
+
+	ComputationStateTestHarness harness;
+
+	boost::shared_ptr<Queue<ComputationResult> > results = 
+		subscribeQueueToBroadcaster(client1->onComputationResultReceived());
+	lassert(results);
+
+	ComputationId id = client1->createComputation(
+		ComputationDefinition::ApplyFromTuple(
+			harness.evaluate("(" + brownianText + ", `Call, 0, 2)")
+			)
+		);
+
+	client1->setComputationPriority(id, ComputationPriority(1));
+
+	ComputationResult res;
+	lassert(results->getTimeout(res, 10.0));
+
+	Fora::Interpreter::ComputationResult interpResult;
+
+	SerializedObject::deserialize(
+		res.serializedInterpreterComputationResult(),
+		client1->getVDM()->getMemoryManager(),
+		interpResult
+		);
+
+	@match Fora::Interpreter::ComputationResult(interpResult)
+		-| Result(r) ->> {
+			BOOST_CHECK(r == harness.evaluate(".5"));
+			}
+	}
+
+
+BOOST_AUTO_TEST_CASE( test_worker_computation_deprioritizing_works )
+	{
+	PolymorphicSharedPtr<CumulusWorker> worker1 = createWorker(machine1, 2);
+	
+	PolymorphicSharedPtr<CumulusClient> client1 = createClient(clientId1);
+	
+	worker1->startComputations();
+	
+	ComputationStateTestHarness harness;
+
+	connect(worker1, machine1, client1, clientId1);
+	
+	ComputationId computationId = 
+		client1->createComputation(
+			ComputationDefinition::ApplyFromTuple(
+				harness.evaluate(
+					"( (let loop = fun(ct) { let res = 0; while (ct > 0) "
+					"{ ct = ct - 1; res = res + ct }; res }; loop), `Call, 10**12)"
+					)
+				)
+			);
+
+	auto computeEventsQueue = subscribeQueueToBroadcaster(
+		client1->onRootComputationComputeStatusChanged()
+		);
+
+	client1->setComputationPriority(computationId, ComputationPriority(1));
+
+	RootComputationComputeStatusChanged statusEvent;
+
+	double t0 = curClock();
+	bool finished = false;
+	while (!finished && curClock() - t0 < 5.0)
+		{
+		if (computeEventsQueue->getTimeout(statusEvent, 1.0))
+			{
+			if (statusEvent.coresAssigned())
+				finished = true;
+			}
+		}
+	BOOST_CHECK(finished);
+
+	client1->setComputationPriority(computationId, ComputationPriority());
+
+	finished = false;
+	t0 = curClock();
+
+	while (!finished && curClock() - t0 < 5.0)
+		{
+		if (computeEventsQueue->getTimeout(statusEvent, 1.0))
+			{
+			if (!statusEvent.coresAssigned())
+				finished = true;
+			}
+		}
+	
+	BOOST_CHECK(finished);
+	}
+
+BOOST_AUTO_TEST_CASE( test_client_allows_multiple_requests )
+	{
+	PolymorphicSharedPtr<CumulusWorker> worker1 = createWorker(machine1, 2);
+	
+	PolymorphicSharedPtr<CumulusClient> client1 = createClient(clientId1);
+	
+	worker1->startComputations();
+	
+	ComputationStateTestHarness harness;
+
+	connect(worker1, machine1, client1, clientId1);
+	
+	ComputationId computationId = 
+		client1->createComputation(
+			ComputationDefinition::ApplyFromTuple(
+				harness.evaluate(
+					"(1, `Operator, `+, 2)"
+					)
+				)
+			);
+
+	auto resultsReceived = subscribeQueueToBroadcaster(
+		client1->onComputationResultReceived()
+		);
+
+	client1->setComputationPriority(computationId, ComputationPriority(1));
+
+	ComputationResult result;
+	lassert(resultsReceived->getTimeout(result, 2.0));
+
+	computationId = 
+		client1->createComputation(
+			ComputationDefinition::ApplyFromTuple(
+				harness.evaluate(
+					"(1, `Operator, `+, 2)"
+					)
+				)
+			);
+		
+	client1->setComputationPriority(computationId, ComputationPriority(1));
+
+	lassert(resultsReceived->getTimeout(result, 2.0));
+	}
+
+BOOST_AUTO_TEST_CASE( test_client_can_load_external_dataset_using_worker )
+	{
+	//verify that a CumulusClient can use a CumulusWorker to load external datasets since
+	//it can't do so itself
+
+	//TODO: write this test
+	}
+	
+
+BOOST_AUTO_TEST_CASE( test_client_learns_about_other_client_pages )
+	{
+	ComputationStateTestHarness harness;
+
+	PolymorphicSharedPtr<CumulusWorker> worker1 = createWorker(machine1, 2);
+
+	PolymorphicSharedPtr<CumulusClient> client1 = createClient(clientId1);
+	
+	worker1->startComputations();
+
+	connect(worker1, machine1, client1, clientId1);
+
+	auto resultsReceived = subscribeQueueToBroadcaster(
+		client1->onComputationResultReceived()
+		);
+
+	ComputationId id = client1->createComputation(
+		ComputationDefinition::ApplyFromTuple(harness.evaluate("(fun() { [1,2,3,4].paged }, `Call)"))
+		);
+
+	client1->setComputationPriority(id, ComputationPriority(1));
+
+	ComputationResult result;
+
+	lassert(resultsReceived->getTimeout(result, 2.0));
+
+	PolymorphicSharedPtr<CumulusClient> client2 = createClient(clientId2);
+	connect(worker1, machine1, client2, clientId2);
+
+	scheduler->blockUntilPendingHaveExecutedAndImmediateQueueIsEmpty();
+
+	//verify that client2 has heard of the pages we checked into the first one
+	std::set<Fora::PageId> pages1;
+	std::set<Fora::PageId> pages2;
+
+	auto tracker1 = client1->getSystemwidePageRefcountTracker();
+	auto tracker2 = client2->getSystemwidePageRefcountTracker();
+
+	tracker1->getAllPages(pages1);
+	tracker2->getAllPages(pages2);
+
+	BOOST_CHECK(pages1.size() == 1);
+	BOOST_CHECK_EQUAL_CPPML(pages1, pages2);
+
+	BOOST_CHECK(tracker1->pageIsInRam(*pages1.begin(), machine1));
+	BOOST_CHECK(tracker2->pageIsInRam(*pages1.begin(), machine1));
+	}
+
+
+BOOST_AUTO_TEST_CASE( test_worker_drop_after_computation_completes )
+	{
+	PolymorphicSharedPtr<CumulusWorker> worker1 = createWorker(machine1, 2);
+	PolymorphicSharedPtr<CumulusWorker> worker2 = createWorker(machine2, 2);
+	PolymorphicSharedPtr<CumulusClient> client1 = createClient(clientId1);
+
+	connect(worker1, machine1, worker2, machine2);
+	connect(worker1, machine1, client1, clientId1);
+	connect(worker2, machine2, client1, clientId1);
+
+	worker1->startComputations();
+	worker2->startComputations();
+
+	auto resultsReceived = subscribeQueueToBroadcaster(
+		client1->onComputationResultReceived()
+		);
+
+	ComputationStateTestHarness harness;
+	
+	ComputationId id = client1->createComputation(
+		ComputationDefinition::ApplyFromTuple(
+			harness.evaluate("(" + sumText + ", `Call, 0, 10**9)")
+			)
+		);
+
+	client1->setComputationPriority(id, ComputationPriority(1));
+
+	double t0 = curClock();
+
+	//wait until they connect
+	while (worker1->hasEstablishedHandshakeWithExistingMachines() && worker2->hasEstablishedHandshakeWithExistingMachines())
+		{
+		sleepSeconds(0.0001);
+		lassert_dump(curClock() - t0 < 5.0, "never achieved connection");
+		}
+
+	//wait until all four workers are primed
+	while (worker1->currentlyActiveWorkerThreads() + worker2->currentlyActiveWorkerThreads() < 4)
+		{
+		sleepSeconds(0.0001);
+		lassert_dump(curClock() - t0 < 5.0, "never achieved saturation of cores");
+		}
+
+	//kill the connection
+	worker1->dropMachine(machine2);
+	worker2->dropMachine(machine1);
+	client1->dropMachine(machine2);
+
+	worker2 = PolymorphicSharedPtr<CumulusWorker>();
+
+	ComputationResult result;
+	BOOST_REQUIRE(resultsReceived->getTimeout(result, 20.0));
+	}
+
+
+BOOST_AUTO_TEST_SUITE_END()
+
+

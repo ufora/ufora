@@ -1,0 +1,179 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "LocalScheduler.hppml"
+#include "LocalSchedulerEvent.hppml"
+#include "LocalSchedulerImplKernel.hppml"
+
+namespace Cumulus {
+namespace SystemwideComputationScheduler {
+
+class LocalSchedulerSimulator : public PolymorphicSharedPtrBase<LocalSchedulerSimulator> {
+public:
+	LocalSchedulerSimulator(bool validateResponses = true) :
+			mEventsProcessed(0),
+			mHasLoggedStalled(false),
+			mTerminatedBadly(false),
+			mValidateResponses(validateResponses)
+		{
+		}
+
+	static bool eventsAreTheSame(LocalSchedulerEvent event1, LocalSchedulerEvent event2)
+		{
+		if (event1.tagName() != event2.tagName())
+			return false;
+
+		return event1 == event2;
+		}
+
+	void popEvent(LocalSchedulerEvent inEvent)
+		{
+		if (!mValidateResponses)
+			{
+			mWrittenEvents.clear();
+			return;
+			}
+
+		if (!mWrittenEvents.size())
+			{
+			LOG_ERROR 
+				<< "at event " << mEventsProcessed
+				<< " which is " << inEvent
+				<< ", expected a written event but didn't find one.";
+			}
+			else
+		if (!eventsAreTheSame(mWrittenEvents[0], inEvent))
+			{
+			LOG_ERROR 
+				<< " at " << mEventsProcessed << ", expected "
+				<< inEvent << " but found " 
+				<< mWrittenEvents[0]
+				<< " in the buffer."
+				;
+			}
+		else
+			{
+			mWrittenEvents.erase(mWrittenEvents.begin());
+			}
+		}
+			
+	void handleEvent(LocalSchedulerEvent inEvent)
+		{
+		if (mTerminatedBadly)
+			return;
+
+		try {
+			handleEvent_(inEvent);
+			}
+		catch(std::logic_error& e)
+			{
+			LOG_ERROR << "Simulation terminated: " << e.what();
+			mTerminatedBadly = true;
+			}
+		catch(...)
+			{
+			LOG_ERROR << "Simulation terminated due to unknown error.";
+			mTerminatedBadly = true;
+			}
+		}
+
+
+	bool finishedSuccessfully()
+		{
+		return !mTerminatedBadly;
+		}
+
+private:
+	void handleEvent_(LocalSchedulerEvent inEvent)
+		{
+		mEventsProcessed++;
+
+		if (!mKernel)
+			{
+			lassert(inEvent.isInitialized());
+
+			SchedulerInitializationParameters params = inEvent.getInitialized().params();
+
+			mKernel.reset(
+				new LocalSchedulerImplKernel(
+					params.vdmMaxPageSizeInBytes(),
+					params.vdmMemoryLimitInBytes(),
+					params.ownMachineId(),
+					params.activeThreadCount(),
+					boost::function1<void, InitiateComputationMove>(
+						[&](InitiateComputationMove move) { 
+							mWrittenEvents.push_back(
+								LocalSchedulerEvent::OutInitiateComputationMove(move)
+								);
+							}
+						),
+					boost::function1<void, CumulusComponentMessageCreated>(
+						[&](CumulusComponentMessageCreated msg) { 
+							mWrittenEvents.push_back(
+								LocalSchedulerEvent::OutCumulusComponentMessageCreated(msg)
+								);
+							}
+						)
+					)
+				);
+			}
+		else
+			{
+			@match LocalSchedulerEvent(inEvent)
+				-|	OutInitiateComputationMove(_) ->> {
+						popEvent(inEvent);
+						}
+				-|	OutCumulusComponentMessageCreated(_) ->> {
+						popEvent(inEvent);
+						}
+				-|	InPageEvent(event, machine) ->> {
+						mKernel->consumePageEvent(event, machine);
+						}
+				-| 	InPageNoLongerReferencedAcrossEntireSystem(page) ->> {
+						mKernel->pageNoLongerReferencedAcrossSystem(page);
+						}
+				-|	InAddMachine(machine) ->> {
+						mKernel->addMachine(machine);
+						}
+				-|	InCumulusComponentMessage(msg, source, type, curTime) ->> {
+						mKernel->handleCumulusComponentMessage(msg, source, type, curTime);
+						}
+				-|	SplitOrMoveIfNeeded(curTime) ->> {
+						mKernel->splitOrMoveIfNeeded(curTime);
+						}
+			}
+		}
+
+	boost::shared_ptr<LocalSchedulerImplKernel> mKernel;
+
+	bool mTerminatedBadly;
+	
+	std::vector<LocalSchedulerEvent> mWrittenEvents;
+
+	long mEventsProcessed;
+
+	bool mHasLoggedStalled;
+
+	PolymorphicSharedPtr<PageLayoutCalculator::LongTermPageLayoutCalculation> 
+					mCurrentOptimizationProblem;
+
+	bool mValidateResponses;
+};
+
+
+}
+}

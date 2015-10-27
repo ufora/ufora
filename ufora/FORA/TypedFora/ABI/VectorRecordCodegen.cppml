@@ -1,0 +1,402 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "VectorRecordCodegen.hppml"
+#include "NativeLayoutType.hppml"
+#include "ForaValueArrayCodegen.hpp"
+#include "ReturnValueCodegen.hpp"
+#include "VectorLoadRequest.hppml"
+#include "VectorLoadRequestCodegen.hppml"
+#include "../../Core/ExecutionContext.hppml"
+#include "../../Core/RefcountPool.hppml"
+
+using TypedFora::Abi::VectorHandle;
+using TypedFora::Abi::VectorRecord;
+using TypedFora::Abi::VectorLoadRequest;
+using TypedFora::Abi::ForaValueArray;
+using Fora::Interpreter::ExecutionContext;
+
+
+typedef TypedNativeExpressionBehaviors<TypedFora::Abi::VectorRecord> behaviors_type;
+
+TypedNativeExpression<VectorRecord> behaviors_type::empty()
+	{
+	return TypedNativeExpression<VectorRecord>(
+		NativeExpression::CreateComposite(
+			emptyTreeVec() + 
+				TypedNativeExpression<TypedFora::Abi::VectorHandle*>().getExpression() + 
+				TypedNativeExpression<uint64_t>(0).getExpression() + 
+				TypedNativeExpression<uint64_t>(0).getExpression() + 
+				TypedNativeExpression<int64_t>(1).getExpression()
+			)
+		);
+	}
+
+
+TypedNativeExpression<TypedFora::Abi::VectorRecord> behaviors_type::create(
+			TypedNativeExpression<TypedFora::Abi::VectorHandle*> handle,
+			TypedNativeExpression<uint64_t> size,
+			TypedNativeExpression<uint64_t> offset,
+			TypedNativeExpression<int64_t> stride
+			)
+	{
+	return TypedNativeExpression<VectorRecord>(
+		NativeExpression::CreateComposite(
+			emptyTreeVec() + 
+				handle.getExpression() + 
+				size.getExpression() + 
+				offset.getExpression() + 
+				stride.getExpression()
+			)
+		);
+	}
+
+TypedNativeExpression<void> behaviors_type::decrementRefcount(bool tagged) const
+	{
+	using namespace TypedNativeExpressionHelpers;
+
+	if (!tagged)
+		return if_(
+			self().dataPtr(), 
+			self().dataPtr().decrementRefcount(), 
+			TypedNativeExpression<void>()
+			);
+
+	return decrementRefcount(false)
+		.taggedWith(
+			NativeExpressionTag::Refcount(
+				self().getExpression(), 
+				1, 
+				incrementRefcount(false).getExpression()
+				)
+			);
+	}
+
+TypedNativeExpression<VectorRecord> 
+						behaviors_type::incrementRefcount(bool tagged) const
+	{
+	using namespace TypedNativeExpressionHelpers;
+
+	if (!tagged)
+		return if_(
+			self().dataPtr(), 
+			self().dataPtr().incrementRefcount(),
+			TypedNativeExpression<void>()
+			) >> self();
+
+	return incrementRefcount(false)
+		.taggedWith(
+			NativeExpressionTag::Refcount(
+				self().getExpression(), 
+				-1, 
+				decrementRefcount(false).getExpression()
+				)
+			);
+	}
+
+TypedNativeExpression<TypedFora::Abi::VectorHandle*> behaviors_type::dataPtr() const
+	{
+	return TypedNativeExpression<TypedFora::Abi::VectorHandle*>(mThis[0]);
+	}
+
+TypedNativeExpression<TypedFora::Abi::ForaValueArray*> behaviors_type::unpagedValues() const
+	{
+	return dataPtr().unpagedValues();
+	}
+
+namespace {
+
+Fora::ReturnValue<VectorRecord, VectorLoadRequest> deepcopiedAndContiguousStatic(VectorRecord record)
+	{
+	Fora::Interpreter::ExecutionContext* context = 
+		Fora::Interpreter::ExecutionContext::currentExecutionContext();
+
+	lassert(context);
+
+	return record.deepcopiedAndContiguous(context->getMemoryPool(), &context->getVDM());
+	}
+
+Fora::ReturnValue<VectorRecord, VectorLoadRequest> deepcopiedAndContiguousNonincrementedStatic(VectorRecord record)
+	{
+	Fora::Interpreter::ExecutionContext* context = Fora::Interpreter::ExecutionContext::currentExecutionContext();
+	lassert(context);
+
+	Fora::ReturnValue<VectorRecord, VectorLoadRequest> tr = 
+		record.deepcopiedAndContiguous(context->getMemoryPool(), &context->getVDM());
+
+	if (tr.getIndex() == 1)
+		return tr;
+
+	VectorRecord outRecord = tr.get0();
+
+	context->getRefcountPool()->addAlreadyRefcounted(outRecord);
+	
+	return Fora::slot0(outRecord);
+	}
+
+}
+
+TypedNativeExpression<VectorRecord> behaviors_type::deepcopiedAndContiguous() const
+	{
+	using namespace TypedNativeExpressionHelpers;
+
+	TypedNativeVariable<Fora::ReturnValue<VectorRecord, VectorLoadRequest> > deepcopied;
+
+	return
+		let(deepcopied, makeTypedNativeLibraryFunction(&deepcopiedAndContiguousStatic)(self()),
+			if_(deepcopied.getIndex() == (uint64_t)0,
+				deepcopied.get0(),
+				TypedNativeExpression<VectorRecord>(
+					deepcopied.get1().loadCheck().getExpression()
+					)
+				)
+			)
+		//because we have a loadCheck, which will try to jump to 'extern0', we need to wrap
+		//this expression in its own CFG
+		.wrapInEmptyCFGLayer()
+		;
+	}
+
+
+TypedNativeExpression<uint64_t> behaviors_type::pagedAndPageletTreeValueCount() const
+	{
+	using namespace TypedNativeExpressionHelpers;
+
+	return if_(
+		dataPtr(),
+		dataPtr().pagedAndPageletTreeValueCount(),
+		TypedNativeExpression<uint64_t>(0)
+		);
+	}
+
+TypedNativeExpression<VectorRecord> behaviors_type::contiguousAndLoadedVectorRecordNonincremented() const
+	{
+	using namespace TypedNativeExpressionHelpers;
+
+	TypedNativeVariable<Fora::ReturnValue<VectorRecord, VectorLoadRequest> > deepcopied;
+
+	return 
+		if_(dataPtr(),
+			if_(
+				self().pagedAndPageletTreeValueCount() > (uint64_t)0 || 
+					self().stride() != (int64_t)1 ||
+					self().offset() != (uint64_t)0,
+				let(deepcopied, makeTypedNativeLibraryFunction(&deepcopiedAndContiguousNonincrementedStatic)(self()),
+					if_(deepcopied.getIndex() == (uint64_t)0,
+						deepcopied.get0(),
+						TypedNativeExpression<VectorRecord>(
+							deepcopied.get1().loadCheck().getExpression()
+							)
+						)
+					),
+				self()
+				)
+				//because we have a loadCheck, which will try to jump to 'extern0', we need to wrap
+				//this expression in its own CFG
+				.wrapInEmptyCFGLayer()
+				,
+			self()
+			);
+	}
+
+TypedNativeExpression<uint64_t> behaviors_type::size() const
+	{
+	return TypedNativeExpression<uint64_t>(mThis[1]);
+	}
+
+TypedNativeExpression<uint64_t> behaviors_type::offset() const
+	{
+	return TypedNativeExpression<uint64_t>(mThis[2]);
+	}
+
+
+TypedNativeExpression<int64_t> behaviors_type::stride() const
+	{
+	return TypedNativeExpression<int64_t>(mThis[3]);
+	}
+
+
+TypedNativeExpression<VectorRecord> behaviors_type::self() const
+	{
+	return TypedNativeExpression<VectorRecord>(mThis);
+	}
+
+TypedNativeExpression<pair<TypedFora::Abi::ForaValueArray*, int64_t> >
+			behaviors_type::arrayAndOffsetFor(TypedNativeExpression<int64_t> index) const
+	{
+	using namespace TypedNativeExpressionHelpers;
+
+	TypedNativeVariable<int64_t> mappedIndex;
+
+	TypedNativeVariable<TypedFora::Abi::BigVectorHandle*> bigvecHandle;
+
+	return 
+		let(mappedIndex, 
+			index * stride() + static_cast<TypedNativeExpression<int64_t> >(offset()),
+			if_( (TypedNativeExpression<uint64_t>)mappedIndex >= dataPtr().pagedAndPageletTreeValueCount(),
+				TypedNativeExpression<pair<TypedFora::Abi::ForaValueArray*, int64_t> >::create(
+					dataPtr().unpagedValues(),
+					mappedIndex - (TypedNativeExpression<int64_t>)dataPtr().pagedAndPageletTreeValueCount()
+					),
+				let(bigvecHandle, 
+					dataPtr().pagedValues(),
+					bigvecHandle.arrayAndOffsetFor(mappedIndex)
+					)
+				)
+			);
+	}
+
+
+
+TypedNativeExpression<pair<TypedFora::Abi::ForaValueArray*, int64_t> >
+			behaviors_type::arrayAndOffsetForWithFakeCallbacks(TypedNativeExpression<int64_t> index) const
+	{
+	//this is a dummy form of 'arrayAndOffsetFor' that places a fake callbacksVar on
+	//the stack. This is used exclusively for testing.
+	TypedNativeExpression<pair<TypedFora::Abi::ForaValueArray*, int64_t> > res;
+
+	res = arrayAndOffsetFor(index);
+
+	static NativeRuntimeCallbacks emptyCallbacks;
+	emptyCallbacks.resetNativeRuntimeState();
+
+	return TypedNativeExpression<pair<TypedFora::Abi::ForaValueArray*, int64_t> >(
+		NativeExpression::Let(
+			NativeRuntimeCallbacks::callbackVar(),
+			NativeExpression::ConstantULong((uword_t)&emptyCallbacks).cast(
+				NativeTypeFor<NativeRuntimeCallbacks*>::get(), 
+				false
+				),
+			res.getExpression()
+			)
+		);
+	}
+
+
+TypedNativeExpression<void> behaviors_type::loadCheck(TypedNativeExpression<int64_t> index) const
+	{
+	TypedNativeVariable<int64_t> mappedIndex;
+	
+	using namespace TypedNativeExpressionHelpers;
+
+	return 
+		let(mappedIndex, 
+			index * stride() + static_cast<TypedNativeExpression<int64_t> >(offset()),
+			TypedNativeExpression<VectorLoadRequest>::Create(self(), mappedIndex).loadCheck()
+			);
+	}
+
+namespace {
+
+Fora::ReturnValue<long, VectorLoadRequest> loadCheckAllStatic(VectorRecord record)
+	{
+	if (record.allValuesAreLoaded())
+		return Fora::slot0(0);
+
+	return Fora::slot1(VectorLoadRequest(record));
+	}
+
+}
+
+TypedNativeExpression<void> behaviors_type::loadCheckAll() const
+	{
+	using namespace TypedNativeExpressionHelpers;
+
+	TypedNativeVariable<Fora::ReturnValue<long, VectorLoadRequest> > retval;
+
+	return 
+		if_(pagedAndPageletTreeValueCount() > (uint64_t)0, 
+			let(retval, 
+				makeTypedNativeLibraryFunction(&loadCheckAllStatic)(self()),
+				if_(retval.getIndex() == (uint64_t)0,
+					TypedNativeExpression<void>(),
+					retval.get1().loadCheck()
+					)
+				),
+			TypedNativeExpression<void>()
+			);
+	}
+
+TypedNativeExpression<bool> behaviors_type::isAppendable() const
+	{
+	using namespace TypedNativeExpressionHelpers;
+
+	return 
+		if_(TypedNativeExpression<bool>(dataPtr()),
+			dataPtr().size() == size() + offset() 
+				&& stride() == (int64_t)1
+				&& TypedNativeExpression<bool>(dataPtr().unpagedValues()),
+			TypedNativeExpression<bool>(false)
+			);
+	}
+
+TypedNativeExpression<bool>
+			behaviors_type::appendAssumingAppendableAndPooled(NativeExpression expr, JOV argJOV) const
+	{
+	using namespace TypedNativeExpressionHelpers;
+
+	return 
+		if_(TypedFora::Abi::ForaValueArrayCodegen::appendExpression(
+				dataPtr().unpagedValues().getExpression(),
+				expr,
+				argJOV
+				),
+			TypedNativeExpression<void>(
+					dataPtr().sizePtr().store(dataPtr().size() + (uint64_t)1)
+					) >>
+				TypedNativeExpression<bool>(true)
+				,
+			TypedNativeExpression<bool>(false)
+			);
+	}
+
+TypedNativeExpression<VectorRecord>
+			behaviors_type::selfWithIncrementedSize() const
+	{
+	return 
+		TypedNativeExpression<VectorRecord>(
+			NativeExpression::CreateComposite(
+				emptyTreeVec() + 
+					dataPtr().getExpression() + 
+					(size() + (uint64_t)1).getExpression() + 
+					offset().getExpression() + 
+					stride().getExpression()
+				)
+			);
+	}
+
+
+namespace {
+
+bool entirelyCoveredByJOVStatic(VectorRecord vec, uword_t jovAsUword)
+	{
+	JOV jov = *(JOV*)&jovAsUword;
+
+	return vec.entirelyCoveredByJOV(jov);
+	}
+
+}
+
+TypedNativeExpression<bool> behaviors_type::entirelyCoveredByJOV(const JOV& inJOV) const
+	{
+	uword_t jovAsUword = ((uword_t*)&inJOV)[0];
+
+	return makeTypedNativeLibraryFunction(&entirelyCoveredByJOVStatic)(
+		self(), 
+		TypedNativeExpression<uword_t>(jovAsUword)
+		);
+	}
+
+	

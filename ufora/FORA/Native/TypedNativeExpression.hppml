@@ -1,0 +1,395 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "NativeExpressionBuilder.hppml"
+#include "NativeCode.hppml"
+#include "NativeTypeFor.hpp"
+#include "TypedNativeExpression.fwd.hpp"
+#include "TypedNativeExpressionBehaviorCategories.hpp"
+#include "TypedNativeExpressionConstantConversion.hpp"
+#include "../../core/threading/ScopedThreadLocalContext.hpp"
+#include "TypedNativeExpressionPointerBehaviors.hpp"
+#include "TypedNativeExpressionIntegerBehaviors.hpp"
+
+
+class TypedNativeExpressionScope {
+public:
+	NativeExpressionBuilder& getBuilder()
+		{
+		return mBuilder;
+		}
+private:
+	NativeExpressionBuilder mBuilder;
+};
+
+template<class T>
+class TypedNativeExpression : 
+			public TypedNativeExpressionBuiltinBehaviors<T>,
+			public TypedNativeExpressionBehaviors<T>
+{
+public:
+	typedef T result_type;
+
+	typedef TypedNativeExpression<T> scoped_callable_type();
+
+	explicit TypedNativeExpression() : 
+			mExpr(NativeExpression::Zero(NativeTypeFor<T>::get())),
+			TypedNativeExpressionBuiltinBehaviors<T>(NativeExpression::Zero(NativeTypeFor<T>::get())),
+			TypedNativeExpressionBehaviors<T>(NativeExpression::Zero(NativeTypeFor<T>::get()))
+		{
+		}
+
+	TypedNativeExpression(const scoped_callable_type& scopeExpression) : 
+			mExpr(NativeExpression::Zero(NativeTypeFor<T>::get())),
+			TypedNativeExpressionBuiltinBehaviors<T>(NativeExpression::Zero(NativeTypeFor<T>::get())),
+			TypedNativeExpressionBehaviors<T>(NativeExpression::Zero(NativeTypeFor<T>::get()))
+		{
+		TypedNativeExpressionScope scope;
+		TypedNativeExpression<T> innerExpression;
+
+			{
+			Ufora::threading::ScopedThreadLocalContext<TypedNativeExpressionScope> setContext(&scope);
+
+			innerExpression = TypedNativeExpression<T>(scopeExpression());
+			}
+
+		*this = TypedNativeExpression<T>(
+			scope.getBuilder()(innerExpression.getExpression())
+			);
+		}
+
+	TypedNativeExpression(const NativeExpression& inExpr) : 
+			mExpr(inExpr),
+			TypedNativeExpressionBuiltinBehaviors<T>(inExpr),
+			TypedNativeExpressionBehaviors<T>(inExpr)
+		{
+		lassert_dump(
+			!inExpr.type() || *inExpr.type() == NativeTypeFor<T>::get(),
+			"expected type of " << prettyPrintString(NativeTypeFor<T>::get())
+				<< " but got " << prettyPrintString(*inExpr.type())
+			);
+		}
+
+	TypedNativeExpression(const TypedNativeExpression& inExpr) :
+			mExpr(inExpr.getExpression()),
+			TypedNativeExpressionBuiltinBehaviors<T>(inExpr.getExpression()),
+			TypedNativeExpressionBehaviors<T>(inExpr.getExpression())
+		{
+		lassert_dump(
+			!mExpr.type() || *mExpr.type() == NativeTypeFor<T>::get(),
+			"expected type of " << prettyPrintString(NativeTypeFor<T>::get())
+				<< " but got " << prettyPrintString(*mExpr.type())
+			);
+		}
+
+	explicit TypedNativeExpression(T in) : 
+			mExpr(TypedNativeExpressionConstantConversion<T>::get(in)),
+			TypedNativeExpressionBuiltinBehaviors<T>(TypedNativeExpressionConstantConversion<T>::get(in)),
+			TypedNativeExpressionBehaviors<T>(TypedNativeExpressionConstantConversion<T>::get(in))
+		{
+		}
+
+	NativeExpression getExpression() const
+		{
+		return mExpr;
+		}
+
+	template<class target_type>
+	TypedNativeExpression<target_type> forceCast(bool bitcast) const
+		{
+		return TypedNativeExpression<target_type>(mExpr.cast(NativeTypeFor<target_type>::get(), bitcast));
+		}
+
+	TypedNativeExpression<bool> operator!() const
+		{
+		TypedNativeExpression<bool> conversion = (TypedNativeExpression<bool>)(*this);
+
+		return TypedNativeExpression<bool>(
+			NativeExpression::UnaryOp(
+				NativeUnaryOpcode::NOT(),
+				conversion.getExpression()
+				)
+			);
+		}
+
+	TypedNativeExpression<T> taggedWith(NativeExpressionTag tag) const
+		{
+		return TypedNativeExpression<T>(mExpr.taggedWith(tag));
+		}
+
+	TypedNativeExpression<T> wrapInEmptyCFGLayer() const
+		{
+		return TypedNativeExpression<T>(
+			NativeCFG(emptyTreeVec(), mExpr)()
+			);
+		}
+
+private:
+	NativeExpression mExpr;
+};
+
+template<>
+class TypedNativeExpression<void> {
+public:
+	typedef void result_type;
+
+	TypedNativeExpression()
+		{
+		}
+
+	TypedNativeExpression(NativeExpression expr) : mExpr(expr)
+		{
+		}
+
+	NativeExpression getExpression() const
+		{
+		return mExpr;
+		}
+
+	TypedNativeExpression<void> taggedWith(NativeExpressionTag tag) const
+		{
+		return TypedNativeExpression<void>(mExpr.taggedWith(tag));
+		}
+
+	TypedNativeExpression<void> wrapInEmptyCFGLayer() const
+		{
+		return TypedNativeExpression<void>(
+			NativeCFG(emptyTreeVec(), mExpr)()
+			);
+		}
+
+private:
+	NativeExpression mExpr;
+};
+
+
+template<class T>
+class TypedNativeVariable : public TypedNativeExpression<T> {
+public:
+	TypedNativeVariable() : 
+			TypedNativeExpression<T>(
+				NativeVariable::Temp(NativeTypeFor<T>::get()).expr()
+				)
+		{
+		}
+
+	static NativeVariable getNativeVarFor(const TypedNativeExpression<T>& inExpr)
+		{
+		lassert_dump(
+			Ufora::threading::ScopedThreadLocalContext<TypedNativeExpressionScope>::has(),
+			"It's illegal to use the TypedNativeVariable(TypedNativeExpression) construct "
+				"outside of a scoped TypedNativeExpression constructor.  The proper form is\n\t"
+				"TypedNativeExpression<T>([](){ TypedNativeVariable<T2> v = expr; ... })\n"
+			);
+
+		TypedNativeExpressionScope* scope = 
+			Ufora::threading::ScopedThreadLocalContext<TypedNativeExpressionScope>::getPtr();
+
+		return scope->getBuilder().addAndGetVar(inExpr.getExpression());
+		}
+
+	TypedNativeVariable(const TypedNativeExpression<T>& inExpr) : 
+			TypedNativeExpression<T>(getNativeVarFor(inExpr).expr())
+		{
+		}
+
+	NativeVariable getVariable() const
+		{
+		return this->getExpression().getVariable().var();
+		}
+};
+
+template<class T>
+TypedNativeExpression<T> createTypedNativeExpression(const NativeExpression& inExpr)
+	{
+	return TypedNativeExpression<T>(inExpr);
+	}
+
+template<class T>
+TypedNativeExpression<T> createTypedNativeExpression(const T& inExpr)
+	{
+	return TypedNativeExpression<T>(inExpr);
+	}
+
+namespace TypedNativeExpressionHelpers {
+
+template<class T>
+auto scope(T in) -> decltype(in())
+	{
+	return T(in);
+	}
+
+template<class T>
+TypedNativeExpression<void> return_(int32_t slot, TypedNativeExpression<T> e)
+	{
+	return TypedNativeExpression<void>(
+		NativeExpression::Return(slot, e.getExpression())
+		);
+	}
+
+template<class T1, class T2>
+TypedNativeExpression<T2> let(
+				const TypedNativeVariable<T1>& var, 
+				const TypedNativeExpression<T1>& expr,
+				const TypedNativeExpression<T2>& within
+				)
+	{
+	return TypedNativeExpression<T2>(
+		NativeExpression::Let(
+			var.getVariable(),
+			expr.getExpression(),
+			within.getExpression()
+			)
+		);
+	}
+
+template<class T1, class T2>
+TypedNativeExpression<T2> if_(
+				const TypedNativeExpression<T1>& cond, 
+				const TypedNativeExpression<T2>& ifTrue,
+				const TypedNativeExpression<T2>& ifFalse,
+				double frequencyTrue = .5
+				)
+	{
+	return TypedNativeExpression<T2>(
+		NativeExpression::If(
+			((TypedNativeExpression<bool>)cond).getExpression(),
+			ifTrue.getExpression(),
+			ifFalse.getExpression(),
+			frequencyTrue
+			)
+		);
+	}
+
+template<class T1, class T2>
+TypedNativeExpression<T2> select_(
+				const TypedNativeExpression<T1>& cond, 
+				const TypedNativeExpression<T2>& ifTrue,
+				const TypedNativeExpression<T2>& ifFalse
+				)
+	{
+	return TypedNativeExpression<T2>(
+		NativeExpression::Selector(
+			((TypedNativeExpression<bool>)cond).getExpression(),
+			ifTrue.getExpression(),
+			ifFalse.getExpression()
+			)
+		);
+	}
+
+template<class T2>
+TypedNativeExpression<T2> if_(
+				const TypedNativeExpression<bool>& cond, 
+				const TypedNativeExpression<T2>& ifTrue,
+				const TypedNativeExpression<T2>& ifFalse,
+				double frequencyTrue = .5
+				)
+	{
+	return TypedNativeExpression<T2>(
+		NativeExpression::If(
+			cond.getExpression(),
+			ifTrue.getExpression(),
+			ifFalse.getExpression(),
+			frequencyTrue
+			)
+		);
+	}
+
+const static TypedNativeExpression<void> nothing;
+
+}
+
+template<class T1, class T2>
+inline TypedNativeExpression<T2> operator>>(TypedNativeExpression<T1> e1, TypedNativeExpression<T2> e2)
+	{
+	return TypedNativeExpression<T2>(
+		e1.getExpression() >> e2.getExpression()
+		);
+	}
+
+template<class T1, class T2>
+class TypedNativeExpressionBehaviors<std::pair<T1, T2> > {
+public:
+	TypedNativeExpressionBehaviors(NativeExpression expr) : mExpr(expr)
+		{
+
+		}
+
+	TypedNativeExpression<T1> first()
+		{
+		return TypedNativeExpression<T1>(mExpr[0]);
+		}
+
+	TypedNativeExpression<T2> second()
+		{
+		return TypedNativeExpression<T2>(mExpr[1]);
+		}
+
+	template<class A, class B>
+	static TypedNativeExpression<std::pair<T1, T2> > create(A a, B b)
+		{
+		return TypedNativeExpression<std::pair<T1, T2> >(
+			NativeExpression::CreateComposite(emptyTreeVec() + 
+				TypedNativeExpression<T1>(a).getExpression() + 
+				TypedNativeExpression<T2>(b).getExpression()
+				)
+			);
+		}
+	
+private:
+	NativeExpression mExpr;
+};
+
+template<class T1, class T2>
+class TypedNativeExpressionBehaviors<std::pair<T1, T2>* > {
+public:
+	TypedNativeExpressionBehaviors(NativeExpression expr) : mExpr(expr)
+		{
+
+		}
+
+	TypedNativeExpression<T1*> first()
+		{
+		return TypedNativeExpression<T1*>(mExpr[0]);
+		}
+
+	TypedNativeExpression<T2*> second()
+		{
+		return TypedNativeExpression<T2*>(mExpr[0]);
+		}
+
+private:
+	NativeExpression mExpr;
+};
+
+template<class T>
+TypedNativeExpression<T> NativeExpressionBuilder::add(const TypedNativeExpression<T>& in)
+	{
+	return TypedNativeExpression<T>(add(in.getExpression()));
+	}
+
+
+template<class T>
+TypedNativeExpression<T> NativeExpressionBuilder::operator()(const TypedNativeExpression<T>& in)
+	{
+	return TypedNativeExpression<T>( (*this)(in.getExpression()) );
+	}
+
+#include "TypedNativeExpressionPointerBehaviorsImpl.hpp"
+#include "TypedNativeExpressionIntegerBehaviorsImpl.hpp"
+
+

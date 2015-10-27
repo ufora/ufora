@@ -1,0 +1,243 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#Markdown("""
+### DataFrameRow
+
+#### Description
+
+Represents a single row access into a DataFrame.
+
+This class is typically not instantiated directly. As a performance optimization, instances of
+this class will lazily evaluate individual elements on demand.
+""")
+class {
+    #Markdown("""
+    The parent dataframe this row comes from.
+    """)
+    member mDataFrame;
+
+    #Markdown("""
+    Holds the Integer index of the row in the parent dataframe this instance represents.
+    """)
+    member mRowIndex;
+    member mStartColumnIndex;
+    member mSize;
+    member mStride;
+
+    ...(`size) { mSize };
+
+    operator new
+    (DataFrame(df), rowIndex) {
+        createInstance(
+            cls,
+            mDataFrame: df,
+            mRowIndex: rowIndex,
+            mStartColumnIndex: 0,
+            mSize: df.numColumns,
+            mStride: 1
+            )
+        }
+    ;
+
+    operator in (x) {
+        for i in sequence(0, mDataFrame.numColumns) {
+            let series = mDataFrame.getColumn(i);
+            if (x == series[mRowIndex])
+                return true;
+            }
+        return false;
+        };
+
+    operator iterator() { 
+        for ix in sequence(size(self))
+            yield self[ix]
+        };
+
+    `hidden
+    _getColumn: fun
+    (filters.IsString(columnName)) {
+        for ix in sequence(mSize) {
+            let columnIndex = mStartColumnIndex + ix * mStride
+            if (mDataFrame.columnNames[columnIndex] 
+                    == columnName)
+                return mDataFrame.getColumn(columnIndex)
+            }
+
+        throw Exception("column name %s not found".format(columnName))
+        }
+    (ix) {
+        let columnIx = 
+            if (ix >= 0) {
+                assertions.assertLess(ix, mSize)
+                mStartColumnIndex + ix * mStride
+                }
+            else {
+                assertions.assertGreaterEqual(ix, -mSize)
+                mStartColumnIndex + (mSize + ix) * mStride
+                }
+
+        mDataFrame.getColumn(columnIx);
+        }
+    ;
+
+    operator [](column) { 
+        let series = _getColumn(column)
+        return series[mRowIndex];
+        }
+    (nothing, highIx) {
+        if (highIx >= 0) {
+            if (highIx >= mSize)
+                return self
+            
+            return withSize(highIx)
+            }
+        else {
+            if (highIx < -mSize)
+                return withSize(0);
+
+            return withSize(mSize + highIx)
+            }
+        }
+    (lowIx, nothing) {
+        if (lowIx >= 0) {
+            if (lowIx >= mSize)
+                return withSize(0)
+            
+            return withLowIndexAndSize(
+                lowIndex: lowIx,
+                size: mSize - lowIx
+                )
+            }
+        else {
+            if (lowIx <= -mSize) 
+                return self
+
+            return withLowIndexAndSize(
+                lowIndex: lowIx + mSize,
+                size: -lowIx
+                )
+            }
+        }
+    (lowIx, highIx) {
+        lowIx = _normalizeIndex(lowIx);
+        highIx = _normalizeIndex(highIx)
+
+        return withLowIndexAndSize(
+            lowIndex: lowIx,
+            size: highIx - lowIx
+            );
+        }
+    ;
+
+    `hidden
+    _normalizeIndex: fun(ix) {
+        if (ix >= 0) {
+            if (ix >= mSize) {
+                return mSize
+                }
+            return ix
+            }
+        else {
+            if (ix <= -mSize) {
+                return 0
+                }
+            return ix + mSize
+            }
+        };
+
+    `hidden
+    withLowIndexAndSize: fun(lowIndex:, size: newSize) {
+        createInstance(
+            cls,
+            mDataFrame: mDataFrame,
+            mRowIndex: mRowIndex,
+            mStartColumnIndex: lowIndex,
+            mSize: newSize,
+            mStride: mStride
+            )
+        };
+
+    `hidden
+    withSize: fun(newSize) {
+        createInstance(
+            cls,
+            mDataFrame: mDataFrame,
+            mRowIndex: mRowIndex,
+            mStartColumnIndex: mStartColumnIndex,
+            mSize: newSize,
+            mStride: mStride
+            )
+        };
+
+    columnNames: fun() { 
+        [mDataFrame.columnNames[mStartColumnIndex + ix * mStride] for
+            ix in sequence(mSize)]
+        };
+
+    convert (String) {
+        "DataFrameRow(" + String(self.toVector()) + ")"
+        };
+
+    `hidden
+    toVector:
+    fun () {
+        Vector.range(
+            mSize, 
+            { self[_] }
+            )
+        };
+
+    apply:
+    #Markdown("""
+    #### Usage
+
+        row.apply(function)
+
+    #### Description
+
+    Applies a function to each element in the row. Returns a Vector.
+    """)
+    fun (function) {
+        self.toVector() ~~ function;
+        };
+
+    rowIndex: fun() {
+        return mRowIndex;
+        };
+
+    sum:
+    fun(*args) {
+        self.toVector().sum(*args)
+        };
+
+    operator ~~(function) {
+        self.apply(function);
+        };
+
+    operator match (Visualizable _) {
+        (#Markdown("    " + String(self)),)
+        };
+
+    operator match (VectorContainer _) {
+        (self.toVector(),)
+        };
+
+    operator match(DataFrameRow _) { (self,) };
+
+    };
+
+
+

@@ -1,0 +1,601 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "CheckpointTasks.hppml"
+#include "CheckpointFile.hppml"
+#include "../../FORA/Serialization/SerializedObjectFlattener.hpp"
+
+namespace Cumulus {
+
+namespace {
+
+size_t kMinFileSize = 1024 * 1024 * 10;
+
+}
+
+CheckpointTasks::CheckpointTasks(
+			PolymorphicSharedPtr<VectorDataManager> inVdm,
+			PolymorphicSharedPtr<SystemwidePageRefcountTracker> inSPRT,
+			MachineId inOwnMachineId,
+			boost::function0<hash_type> inCreateNewHash,
+			boost::function1<void, PythonIoTaskRequest> inBroadcastPythonTask,
+			boost::function1<void, ExternalIoTaskCompleted> inOnExternalIoTaskCompleted,
+			boost::function1<void, CumulusComponentMessageCreated> inOnComponentMessageCreated,
+			boost::function1<void, ExternalIoTaskCreated> inOnExternalIoTaskCreated
+			) :
+		mVDM(inVdm),
+		mSPRT(inSPRT),
+		mOwnMachineId(inOwnMachineId),
+		mCreateNewHash(inCreateNewHash),
+		mBroadcastPythonTask(inBroadcastPythonTask),
+		mOnExternalIoTaskCompleted(inOnExternalIoTaskCompleted),
+		mOnComponentMessageCreated(inOnComponentMessageCreated),
+		mOnExternalIoTaskCreated(inOnExternalIoTaskCreated)
+	{
+	mMaxFileSize = std::max<size_t>(kMinFileSize, inVdm->maxPageSizeInBytes());
+
+	mAllMachines.insert(mOwnMachineId);
+	}
+
+void CheckpointTasks::addMachine(MachineId machine)
+	{
+	mAllMachines.insert(machine);
+	}
+
+void CheckpointTasks::handleNewCheckpointTask(ExternalIoTaskId taskId, CheckpointIoTask task)
+	{
+	@match CheckpointIoTask(task)
+		-| PersistComputation(
+					computation, 
+					children, 
+					bigvecs, 
+					checkpointRequest, 
+					serializedComputation, 
+					bytesUsedByDeserializedComputation, 
+					totalSecondsOfCompute,
+					isFinished
+					) ->> {
+			if (!mPerCheckpointFiles[checkpointRequest])
+				mPerCheckpointFiles[checkpointRequest].reset(new CheckpointFile(mCreateNewHash()));
+
+			auto file = mPerCheckpointFiles[checkpointRequest];
+
+			auto& bigvecsAndMoveGuids = mCheckpointBigvecsAndGuids[checkpointRequest];
+
+			for (auto bigvec: bigvecs)
+				if (!bigvecsAndMoveGuids.contains(bigvec))
+					{
+					hash_type moveGuid = mCreateNewHash();
+
+					bigvecsAndMoveGuids = bigvecsAndMoveGuids + bigvec + moveGuid;
+
+					mVDM->getPageRefcountTracker()->broadcastBigvecsInFlight(
+						emptyTreeSet() + bigvec,
+						1,
+						moveGuid
+						);
+					}
+
+			file->addComputation(computation, children, bigvecs, serializedComputation, bytesUsedByDeserializedComputation, totalSecondsOfCompute, isFinished);
+
+			if (file->size() > mMaxFileSize)
+				{
+				hash_type pythonTaskGuid = mCreateNewHash();
+
+				auto dataToPersist = file->toByteBlock();
+
+				mBroadcastPythonTask(
+					PythonIoTaskRequest::PersistObject(
+						pythonTaskGuid,
+						dataToPersist,
+						PersistentCacheKey::CheckpointFile(checkpointRequest, file->guid())
+							.storagePath()
+						)
+					);
+
+				mCheckpointSummaries[checkpointRequest] = 
+					CheckpointSummary::merge(mCheckpointSummaries[checkpointRequest], file->checkpointSummary());
+
+				mPerCheckpointFiles.erase(checkpointRequest);
+
+				mPythonTaskIdToWriteCheckpointFileTask[pythonTaskGuid] = 
+					CheckpointFileTaskData(
+						null() << taskId, 
+						dataToPersist->hash(), 
+						file->bigvecsReferenced(), 
+						checkpointRequest, 
+						file->guid()
+						);
+				}
+			else
+				mOnExternalIoTaskCompleted(
+					ExternalIoTaskCompleted(taskId, ExternalIoTaskResult::Success())
+					);
+			}
+	}
+
+void CheckpointTasks::handlePersistObjectResponse(
+					PythonIoTaskResponse loaded
+					)
+	{
+	auto it = mPythonTaskIdToWriteCheckpointFileTask.find(loaded.guid());
+
+	if (it != mPythonTaskIdToWriteCheckpointFileTask.end())
+		{
+		ExternalIoTaskId id = *it->second.taskId();
+		hash_type dataHash = it->second.dataHash();
+		ImmutableTreeSet<hash_type> bigvecs = it->second.bigvecs();
+		CheckpointRequest checkpoint = it->second.checkpoint();
+		hash_type checkpointFile = it->second.fileName();
+
+		mPythonTaskIdToWriteCheckpointFileTask.erase(it);
+
+		if (loaded.isDataSuccessfullyPersisted())
+			{
+			mVDM->getPersistentCacheIndex()->addCheckpointFile(
+				checkpoint, 
+				checkpointFile,
+				bigvecs,
+				loaded.getDataSuccessfullyPersisted().bytecount(),
+				dataHash
+				);
+
+			mOnExternalIoTaskCompleted(
+				ExternalIoTaskCompleted(id, ExternalIoTaskResult::Success())
+				);
+			}
+		else
+			{
+			LOG_ERROR << "A checkpoint file for " << checkpoint << " on " << mOwnMachineId << " couldn't be written because "
+				<< loaded;
+
+			mAnyCheckpointFileSlicesFailed[checkpoint] = true;
+
+			mOnExternalIoTaskCompleted(
+				ExternalIoTaskCompleted(id, ExternalIoTaskResult::PythonIoFailure(
+					"failed to write to persistent cache."
+					))
+				);
+			}
+		}
+
+	auto it2 = mPythonTaskIdToPendingCommit.find(loaded.guid());
+	if (it2 != mPythonTaskIdToPendingCommit.end())
+		{
+		CheckpointFileTaskData data = it2->second;
+		mPythonTaskIdToPendingCommit.erase(it2);
+
+		if (loaded.isDataSuccessfullyPersisted())
+			mVDM->getPersistentCacheIndex()->addCheckpointFile(
+				data.checkpoint(), 
+				data.fileName(),
+				data.bigvecs(),
+				loaded.getDataSuccessfullyPersisted().bytecount(),
+				data.dataHash()
+				);
+
+		sendCheckpointFileCommittedMessageToLeader(data.checkpoint(), !loaded.isDataSuccessfullyPersisted());
+		}
+
+	auto it3 = mPythonTaskIdToWriteSummaryTask.find(loaded.guid());
+	if (it3 != mPythonTaskIdToWriteSummaryTask.end())		
+		{
+		reportCheckpointCommitted(it3->second, loaded.isDataSuccessfullyPersisted());
+
+		mPythonTaskIdToWriteSummaryTask.erase(it3);
+		}
+	}
+
+void CheckpointTasks::reportCheckpointCommitted(CheckpointRequest checkpoint, bool allDataPersisted)
+	{
+	if (mCheckpointsCommittedOrFailed.find(checkpoint) != mCheckpointsCommittedOrFailed.end())
+		{
+		LOG_ERROR << "Tried to commit checkpoint " << checkpoint << " twice.";
+		return;
+		}
+
+	if (allDataPersisted)
+		{
+		int64_t totalComps = 0;
+		for (auto hashAndFile: mFinalSummaries[checkpoint].perFileSummaries())
+			totalComps += hashAndFile.second.computationDependencies().size();
+
+		//write this into the persistent cache
+		mVDM->getPersistentCacheIndex()->addCheckpoint(
+			checkpoint, 
+			mFinalSummaries[checkpoint].filesReferenced(), 
+			mFinalSummaryBytecountsAndHashes[checkpoint].first,
+			mFinalSummaryBytecountsAndHashes[checkpoint].second,
+			mFinalSummaries[checkpoint].isRootComputationFinished(),
+			mFinalSummaries[checkpoint].totalSecondsOfCompute(),
+			mFinalSummaries[checkpoint].rootComputationsReferenced()
+			);
+	
+		LOG_INFO << "Committing " << prettyPrintStringWithoutWrapping(checkpoint) << " to checkpoint-store with "
+			<< mFinalSummaries[checkpoint].totalSecondsOfCompute() << " seconds of compute and total byecount of "
+			<< mFinalSummaries[checkpoint].totalBytes() / 1024 / 1024.0 << " MB (in live-calc data only)"
+			<< " over "
+			<< mFinalSummaries[checkpoint].filesReferenced().size() << " total checkpoint files and "
+			<< totalComps <<  " total computations. Avg MB/comp = "
+			<< mFinalSummaries[checkpoint].totalBytes() / 1024 / 1024.0 / totalComps
+			;
+		}
+	else
+		LOG_ERROR << "All data not persisted. Not committing checkpoint "
+			<< prettyPrintStringWithoutWrapping(checkpoint);
+
+	mOnComponentMessageCreated(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::ExternalIoTasksToGlobalScheduler(
+				ExternalIoTasksToGlobalSchedulerMessage::CheckpointCommitted(
+					checkpoint,
+					allDataPersisted
+					)
+				),
+			CumulusComponentEndpointSet::LeaderMachine(),
+			CumulusComponentType::GlobalScheduler()
+			)
+		);
+
+	mPerCheckpointFiles.erase(checkpoint);
+	mSummariesReceived.erase(checkpoint);
+	mAnySliceWritesFailedOnAnyWorker.erase(checkpoint);
+	mAnyCheckpointFileSlicesFailed.erase(checkpoint);
+	mFinalSummaries.erase(checkpoint);
+	mFinalSummaryBytecountsAndHashes.erase(checkpoint);
+	mBigvecsReceived.erase(checkpoint);
+	mMoveGuidsToRelease.erase(checkpoint);
+	mCheckpointBigvecsAndGuids.erase(checkpoint);
+	mCheckpointSummaries.erase(checkpoint);
+	mPendingBigvecCommits.dropKey(checkpoint);
+
+	mCheckpointsCommittedOrFailed.insert(checkpoint);
+	}
+
+void CheckpointTasks::handleCommitCheckpointMessage(CheckpointRequest checkpoint)
+	{
+	//ActiveComputations has indicated that we no longer are going to receive any additional
+	//computations. We can commit the partial file and begin the commit process.
+
+	auto it = mPerCheckpointFiles.find(checkpoint);
+	if (it != mPerCheckpointFiles.end())
+		{
+		auto file = it->second;
+
+		//we have data we need to commit
+		hash_type pythonTaskGuid = mCreateNewHash();
+
+		mCheckpointSummaries[checkpoint] = 
+			CheckpointSummary::merge(mCheckpointSummaries[checkpoint], file->checkpointSummary());
+
+		auto dataToPersist = file->toByteBlock();
+
+		mBroadcastPythonTask(
+			PythonIoTaskRequest::PersistObject(
+				pythonTaskGuid,
+				dataToPersist,
+				PersistentCacheKey::CheckpointFile(checkpoint, file->guid())
+					.storagePath()
+				)
+			);
+
+		mPerCheckpointFiles.erase(it);
+
+		mPythonTaskIdToPendingCommit[pythonTaskGuid] = 
+			CheckpointFileTaskData(null(), dataToPersist->hash(), file->bigvecsReferenced(), checkpoint, file->guid());
+		}
+	else
+		//nothing else to commit - we can proceed directly
+		sendCheckpointFileCommittedMessageToLeader(checkpoint, false);
+	}
+
+void CheckpointTasks::sendCheckpointFileCommittedMessageToLeader(CheckpointRequest checkpoint, bool finalSliceFailed)
+	{
+	if (finalSliceFailed)
+		LOG_ERROR << "The final slice for checkpoint " << checkpoint << " on machine " << mOwnMachineId
+			<< " failed.";
+
+	mOnComponentMessageCreated(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::CrossIoTasks(
+				CrossIoTasksMessage::CheckpointFileCommitted(
+					mOwnMachineId,
+					checkpoint,
+					mCheckpointSummaries[checkpoint],
+					mCheckpointBigvecsAndGuids[checkpoint],
+					finalSliceFailed || mAnyCheckpointFileSlicesFailed[checkpoint]
+					)
+				),
+			CumulusComponentEndpointSet::LeaderMachine(),
+			CumulusComponentType::ExternalIoTasks()
+			)
+		);
+
+	mCheckpointSummaries.erase(checkpoint);
+	mCheckpointBigvecsAndGuids.erase(checkpoint);
+	}
+
+void CheckpointTasks::handleCheckpointFileCommittedMessage(
+								MachineId machine, 
+								CheckpointRequest checkpoint, 
+								CheckpointSummary summary,
+								ImmutableTreeMap<Fora::BigVectorId, hash_type> guids,
+								bool anyFilesFailed
+								)
+	{
+	mSummariesReceived[checkpoint][machine] = summary;
+	mBigvecsReceived[checkpoint][machine] = guids;
+
+	if (anyFilesFailed)
+		LOG_ERROR << "Writing slice " << checkpoint << " on machine " << machine << " had a failed slice.";
+
+	mAnySliceWritesFailedOnAnyWorker[checkpoint] |= anyFilesFailed;
+
+	if (mSummariesReceived[checkpoint].size() == mAllMachines.size())
+		handleAllSlicesCommitted(checkpoint);
+	}
+
+ImmutableTreeSet<hash_type> CheckpointTasks::bigvecsReferencedByPage(Fora::PageId page)
+	{
+	ImmutableTreeSet<hash_type> result;
+
+	Nullable<TypedFora::Abi::BigVectorPageLayout> layout = 
+		mVDM->getBigVectorLayouts()->isPageSynthetic(page);
+
+	if (layout)
+		{
+		for (auto p: layout->getPagesReferenced())
+			result = result + bigvecsReferencedByPage(p);
+		}
+	else
+		{
+		Nullable<ImmutableTreeSet<Fora::BigVectorId> > bigvecs;
+		bigvecs = mSPRT->bigvecsReferencedByPage(page);
+
+		if (!bigvecs && !page.isInternal())
+			bigvecs = ImmutableTreeSet<Fora::BigVectorId>();
+
+		if (!bigvecs)
+			{
+			if (mSPRT->hasPageBeenDroppedAcrossEntireSystem(page))
+				LOG_WARN << "SPRT thinks that page " << page << " is dropped!";
+
+			LOG_WARN << "Somehow the SPRT didn't have bigvec data for page " 
+				<< page << ". sleeping and retrying.";
+
+			sleepSeconds(1.0);
+			bigvecs = mSPRT->bigvecsReferencedByPage(page);
+
+			if (!bigvecs)
+				{
+				lassert_dump(false, "checkpoint should fail here because we can't get page bigvec data");
+				}
+			}
+
+		for (auto b: *bigvecs)
+			result = result + b.guid();
+		}
+
+	return result;
+	}
+
+CheckpointSummary CheckpointTasks::completeSummaryBigvecClosure(CheckpointSummary summary)
+	{
+	//ensure that the complete closure of bigvecs and their children is represented in
+	//the checkpoint
+
+	std::set<hash_type> bigvecHashes;
+	std::set<Fora::PageId> pages;
+	
+	TwoWaySetMap<hash_type, Fora::PageId> bigvecToPage;
+	TwoWaySetMap<Fora::PageId, hash_type> pageToBigvec;
+
+	boost::function1<void, hash_type> addBigvec;
+	boost::function1<void, Fora::PageId> addPage;
+
+	addBigvec = [&](hash_type bigvec) {
+		if (bigvecHashes.find(bigvec) != bigvecHashes.end())
+			return;
+
+		bigvecHashes.insert(bigvec);
+
+		for (auto p: mVDM->getBigVectorLayouts()->getLayoutForId(bigvec).getPagesReferenced())
+			{
+			bigvecToPage.insert(bigvec, p);
+			addPage(p);
+			}
+		};
+
+	addPage = [&](Fora::PageId page) {
+		if (pages.find(page) != pages.end())
+			return;
+		pages.insert(page);
+
+		ImmutableTreeSet<hash_type> bigvecs = bigvecsReferencedByPage(page);
+
+		for (auto b: bigvecs)
+			{
+			addBigvec(b);
+			pageToBigvec.insert(page, b);
+			}
+		};
+
+	for (auto b: summary.bigvecsReferenced())
+		addBigvec(b);
+		
+	for (auto b: bigvecHashes)
+		{
+		summary.bigvecsReferenced() = summary.bigvecsReferenced() + b;
+		summary.bigvecsReferencedToPages() = 
+			summary.bigvecsReferencedToPages() + b + 
+				ImmutableTreeSet<Fora::PageId>(bigvecToPage.getValues(b));
+		}
+
+	for (auto p: pages)
+		{
+		summary.pagesReferencedToBigvecs() = 
+			summary.pagesReferencedToBigvecs() + p + 
+				ImmutableTreeSet<hash_type>(pageToBigvec.getValues(p));
+		}
+
+	return summary;
+	}
+
+void CheckpointTasks::handleAllSlicesCommitted(CheckpointRequest checkpoint)
+	{
+	if (mAnySliceWritesFailedOnAnyWorker[checkpoint])
+		{
+		LOG_ERROR << "Reporting checkpoint " << checkpoint << " a failure because "
+			<< "a worker slice failed to write."
+			;
+
+		reportCheckpointCommitted(checkpoint, false);
+		return;
+		}
+
+	CheckpointSummary finalSummary;
+
+	for (auto machineAndSummary: mSummariesReceived[checkpoint])
+		finalSummary = CheckpointSummary::merge(finalSummary, machineAndSummary.second);
+
+	for (auto machineAndBigvecs: mBigvecsReceived[checkpoint])
+		for (auto bigvecAndGuid: machineAndBigvecs.second)
+			{
+			if (!finalSummary.bigvecsReferenced().contains(bigvecAndGuid.first.guid()))
+				finalSummary.bigvecsReferenced() = 
+						finalSummary.bigvecsReferenced() + bigvecAndGuid.first.guid();
+			mMoveGuidsToRelease[checkpoint].push_back(bigvecAndGuid);
+			}
+
+	for (auto bigvec: finalSummary.bigvecsReferenced())
+		{
+		if (mSPRT->isBigVectorDroppedAcrossEntireSystem(bigvec))
+			{
+			LOG_ERROR << "Checkpoint " << checkpoint << " contains a vector that's been dropped: "
+				<< bigvec;
+			reportCheckpointCommitted(checkpoint, false);
+			return;
+			}
+		}
+
+	mSummariesReceived.erase(checkpoint);
+	mBigvecsReceived.erase(checkpoint);
+
+	try {
+		finalSummary = completeSummaryBigvecClosure(finalSummary);
+		}
+	catch(...)
+		{
+		LOG_ERROR << finalSummary;
+		throw;
+		}
+
+	if (!finalSummary.isValid())
+		{
+		LOG_ERROR << "Checkpoint " << checkpoint << " was internally inconsistent.";
+		reportCheckpointCommitted(checkpoint, false);
+		return;
+		}
+
+	mFinalSummaries[checkpoint] = finalSummary;
+
+	requestBigvecsFor(checkpoint, finalSummary.bigvecsReferenced());
+
+	if (!mPendingBigvecCommits.hasKey(checkpoint))
+		commitCheckpointSummaryToPersistentCache(checkpoint);
+	}
+
+void CheckpointTasks::handleExternalIoTaskCompleted(ExternalIoTaskCompleted completed)
+	{
+	if (!mPendingBigvecCommits.hasValue(completed.taskId()))
+		return;
+
+	std::set<CheckpointRequest> checkpoints = mPendingBigvecCommits.getKeys(completed.taskId());
+
+	if (!completed.result().isSuccess())
+		{
+		LOG_ERROR << "Failed to write bigvec to persistent store: " 
+			<< completed << ". Checkpoints invalidated: " << checkpoints
+			;
+
+		for (auto c: checkpoints)
+			{
+			reportCheckpointCommitted(c, false);
+			mPendingBigvecCommits.dropKey(c);
+			}
+		}
+	else
+		{
+		mPendingBigvecCommits.dropValue(completed.taskId());
+
+		for (auto checkpoint: checkpoints)
+			if (!mPendingBigvecCommits.hasKey(checkpoint))
+				commitCheckpointSummaryToPersistentCache(checkpoint);
+		}
+	}
+	
+void CheckpointTasks::requestBigvecsFor(CheckpointRequest checkpoint, ImmutableTreeSet<hash_type> bigvecs)
+	{
+	auto index = mVDM->getPersistentCacheIndex();
+
+	for (auto bigvec: bigvecs)
+		if (!index->bigvecExists(bigvec))
+			{
+			ExternalIoTaskId taskId(mCreateNewHash());
+
+			mPendingBigvecCommits.insert(checkpoint, taskId);
+
+			mOnExternalIoTaskCreated(
+				ExternalIoTaskCreated(
+					taskId, 
+					ExternalIoTask::SaveBigvecToPersistentCache(bigvec)
+					)
+				);
+			}
+	}
+
+void CheckpointTasks::commitCheckpointSummaryToPersistentCache(CheckpointRequest checkpoint)
+	{
+	hash_type pythonTaskGuid = mCreateNewHash();
+
+	mPythonTaskIdToWriteSummaryTask[pythonTaskGuid] = checkpoint;
+
+	std::string toPersist = serialize(mFinalSummaries[checkpoint]);
+
+	PolymorphicSharedPtr<NoncontiguousByteBlock> dataToPersist(new NoncontiguousByteBlock(toPersist));
+
+	mFinalSummaryBytecountsAndHashes[checkpoint] = make_pair(toPersist.size(), dataToPersist->hash());
+
+	mBroadcastPythonTask(
+		PythonIoTaskRequest::PersistObject(
+			pythonTaskGuid,
+			dataToPersist,
+			PersistentCacheKey::CheckpointSummary(checkpoint)
+				.storagePath()
+			)
+		);
+
+	for (auto bigvecAndGuid: mMoveGuidsToRelease[checkpoint])
+		{
+		mVDM->getPageRefcountTracker()->broadcastBigvecsInFlight(
+			emptyTreeSet() + bigvecAndGuid.first, 
+			-1, 
+			bigvecAndGuid.second
+			);
+		}
+	}
+
+
+}

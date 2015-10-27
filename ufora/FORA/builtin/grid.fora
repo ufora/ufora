@@ -1,0 +1,344 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#Markdown("""
+### grid
+
+#### Description
+
+A module to hold the `[Grid](builtin.grid.Grid)` class
+""");
+
+Grid: 
+#Markdown("""
+# class `Grid`
+
+`Grid` is an easy way to hold sets of FORA values and operate on them in parallel. 
+
+We can introduce grids in several different ways. The simplest way is to give the grid a 
+function of (row,column) and a dimension tuple (height,width).  E.g.
+
+	Grid(fun(row,col) { row ** col }, (10,10))
+
+makes a 10x10 grid populated with the result x**y. The convenience functions `Grid.Horizontal`
+and `Grid.Vertical` create new grids from vectors, and `Grid.Constant` creates a new 1x1 grid
+consisting of a single value.
+
+Grids may be combined in various ways. For instance, operators on grids operate pairwise.
+That is, if `x` and `y` are grids
+
+	x+y
+
+will produce a new grid consisting of the sum of each of the pairs of elements in the two grids.
+Operators are always pairwise in this way.
+
+You may also add non-grids to grids:
+	
+	x+1
+
+will add 1 to every element of the grid.
+
+If two grids have different sizes, we take the maximum of each of their dimensions and repeat
+the underlying elements of each grid as a 'tile'. This allows us to produce 2d grids from
+1d grids:
+
+	: let x = Grid.FromVector([1,2,3,4]).transposed;
+	let y = Grid.FromVector([10,20,30,40])
+
+	> x ** y
+
+will produce a 4x4 grid consisting of `x**y` for all the pairs in x and y.
+
+Grids may be sliced to get an item out:
+
+	> Grid.FromVector([1,2,3,4])[0,0]
+	> Grid.FromVector([1,2,3,4])[3,0]
+
+They may also be sliced to take a subset of the grid. If `g` is a grid, then
+
+	g[row,]
+
+takes a single row from 'grid', and 
+
+	g[,col]
+
+takes a column.
+
+You may get the transpose of a grid using the `transposed` member.
+
+You may sum the elements of a grid using the `sum`, `sumRows`, and `sumColumns` methods.
+
+To apply a function to a grid (or a set of grids), promote that function to a grid itself. For
+instance,
+	
+	: let x = Grid.FromVector([1,2,3,4]).transposed;
+	let y = Grid.FromVector([1,2,3,4]);
+
+	let f = fun(x,y) { (x,y) }
+
+	> Grid(f)(x, y)
+
+Will apply `f` to every pair of elements in `x`, and `y`.
+
+
+Note that Grids are rather resource intensive - every operation becomes a separate lookup in the distributed hashtable underlying FORA.  If you create grids with large numbers of 
+elements (e.g. more than thousands) you may experience a substantial performance degradation. If
+one is interested in doing linear algebra, we recommend using the [matrix](builtin.math.matrix.Matrix) class
+instead.
+""")
+class {
+	"A function of (row,col) producing the values of the grid"
+	member cellFunction;
+
+	"An (height,width) tuple with the dimensions of the grid"
+	member dimensions;
+
+	"The width of the grid"
+	width: dimensions[1];
+
+	"The height of the grid"
+	height: dimensions[0];
+
+	"inBounds(row,col) - are coordinates (row,col) inside the grid?"
+	inBounds: fun(row,col) { 
+		row >= 0 and row < height and col >= 0 and col < width
+		};
+
+	"""Construct a 1x1 grid from a single value."""
+	static operator ()(x) { Constant(x) };
+
+	operator [](nothing,nothing) { 
+		self
+		};
+
+	"Take a column from the grid"
+	operator [](nothing,col) { 
+		if (col < 0 or col >= width)
+			throw "Column %s is out of bounds".format(col)
+
+		Grid(
+			fun(row,_) { cellFunction(row,col) },
+			(height,1)
+			)
+		};
+
+	"Take a row from the grid"
+	operator [](row,nothing) { 
+		if (row < 0 or row >= height)
+			throw "Row %s is out of bounds".format(row)
+
+		Grid(
+			fun(_,col) { cellFunction(row,col) },
+			(1,width)
+			)
+		};
+
+	"Lookup a value in the grid"
+	operator [](row,col) { 
+		if (not inBounds(row,col))
+			throw "Position (row:%s,col:%s) is out of bounds".format(row,col);
+
+		self[row,col,`tiled]
+		};
+
+	"Lookup a value in the grid, tiling the grid infinitely over the plane"
+	operator [](row,col,`tiled) { 
+		return cached(cellFunction(row % height, col % width))[0]
+		};
+
+	"Produce a column vector from a range."
+	static Range: 
+	fun(*args) { FromVector(Vector.range(*args)) };
+
+	"Produce a column vector from an indexable object."
+	static FromVector: 
+	fun(vec) {
+		return Grid(
+			fun(row,col) { vec[row] },
+			(size(vec), 1)
+			)
+		};
+
+	"Produce a column vector from an iterator."
+	static FromIterator: 
+	fun(it) { FromVector(iter.toVector(it)) };
+
+	"Create a 1x1 grid consisting of a single value"
+	static Constant: fun(value) {
+		return Grid(
+			fun(row,col) { value },
+			(1,1)
+			)
+		};
+
+	"Compute the maximum of a set of dimensions"
+	static maxDimensions:
+		fun(*args) { 
+			if (size(args) == 0)
+				return (0,0)
+			if (size(args) == 1)
+				return (args[0])
+			maxDimensions((args[0][0] >>> args[1][0], args[0][1] >>> args[1][1]), *args[2,])
+			}
+		;
+
+	convert(String) { 
+		"Grid(f=%s, dim=%s)".format(cellFunction, dimensions)
+		};
+
+	operator match (builtin.Grid) {
+		(self,)
+		};
+
+	transposed:
+		Grid(
+			fun(row,col) { cellFunction(col,row) },
+			(dimensions[1], dimensions[0])
+			);
+
+	operator ()(*others) {
+		Grid.apply(fun(row,*args) { row(*args) }, self, *others)
+		};
+
+	sum: fun(f=fun(x){x}, add=fun(x,y){x+y}) {
+		builtin.sum(
+			0,
+			width*height,
+			fun(ix) {
+				cellFunction(ix % width, ix / width)
+				},
+			add
+			)
+		};
+
+	sumColumns: fun(f=fun(x){x}, add=fun(x,y){x+y}) {
+		Grid(
+			fun(_, col) { builtin.sum(0, height, fun(row) { cellFunction(row,col) }, add) },
+			(1,dimensions[1])
+			)
+		};
+
+	sumRows: fun(f=fun(x){x}, add=fun(x,y){x+y}) {
+		Grid(
+			fun(row, col) { builtin.sum(0, width, fun(col) { cellFunction(row,col) }, add) },
+			(dimensions[0], 1)
+			)
+		};
+
+	...(`Member2, memberName) { 
+		Grid(
+			fun(row,col) { cellFunction(row,col).(memberName) },
+			dimensions
+			)
+		};
+
+	...(`Operator, op, Grid(other)) { 
+		Grid(
+			fun(row,col) { self[row,col,`tiled]`(`Operator, op, other[row,col,`tiled]) },
+			maxDimensions(dimensions, other.dimensions)
+			)
+		};
+
+	...(`Operator, op, other) { 
+		Grid(
+			fun(row,col) { self[row,col,`tiled]`(`Operator, op, other) },
+			dimensions
+			)
+		};
+
+	...(`ReverseOperator, op, Grid(other)) { 
+		Grid(
+			fun(row,col) { other[row,col,`tiled]`(`Operator, op, self[row,col,`tiled]) },
+			maxDimensions(dimensions, other.dimensions)
+			)
+		};
+
+	...(`ReverseOperator, op, other) { 
+		Grid(
+			fun(row,col) { other`(`Operator, op, self[row,col,`tiled]) },
+			dimensions
+			)
+		};
+
+	...(`LeftOperator, op) { 
+		Grid(
+			fun(row,col) { self[row,col,`tiled]`(`LeftOperator, op) },
+			dimensions
+			)
+		};
+
+	...(`RightOperator, op) { 
+		Grid(
+			fun(row,col) { self[row,col,`tiled]`(`RightOperator, op) },
+			dimensions
+			)
+		};
+
+	"Apply a function to the individual items of a set of grids or regular values."
+	static apply: fun(f, *maybeGrids) {
+		let grids = maybeGrids..apply(promote);
+
+		Grid(
+			fun(row,col) { 
+				f(*(grids..apply(fun(grid){grid[row,col,`tiled]}))) 
+				},
+			maxDimensions(*grids..apply(fun(grid){grid.dimensions}))
+			)
+		};
+
+	"Promote a value to a grid if it's not already one"
+	static promote: 
+		fun (Grid(g)) { g } 
+			(row) { Constant(row) };
+
+    "horizontally stack two grids"
+    static hstack: 
+    fun(Grid(grid1), Grid(grid2)) 
+        {
+        if (grid1.height != grid2.height)
+            throw "invalid input: hstack may only be called on grids with the same height"
+        
+        let newDimensions = (grid1.height, grid1.width + grid2.width);
+        let newCellFunction = fun(row, col) {
+            if (col < grid1.width)
+                grid1.cellFunction(row, col)
+            else
+                grid2.cellFunction(row, col - grid1.width)
+            };
+        
+        Grid(cellFunction: newCellFunction, dimensions: newDimensions)
+        };
+    
+    "vertically stack two grids"
+    static vstack:
+    fun(Grid(grid1), Grid(grid2))    
+        {
+        if (grid1.width != grid2.width)
+            throw "invalid input: vstack may only be called on grids with the same width"
+        
+        let newDimensions = (grid1.height + grid2.height, grid1.width);
+        let newCellFunction = fun(row, col) {
+            if (row < grid1.height)
+                grid1.cellFunction(row, col)
+            else
+                grid2.cellFunction(row - grid1.height, col)
+            };
+        
+        Grid(cellFunction: newCellFunction, dimensions: newDimensions)
+        };
+    
+	};
+
+

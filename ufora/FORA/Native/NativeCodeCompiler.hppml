@@ -1,0 +1,179 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "NativeCode.hppml"
+#include "../../core/cppml/CPPMLOpaqueHandle.hppml"
+
+
+class Type;
+
+namespace Fora {
+namespace SharedObjectLibraryFromSource {
+
+class Library;
+class BuildResult;
+class LibrarySource;
+
+}
+}
+
+namespace llvm {
+
+class Function;
+class FunctionType;
+class Module;
+class ExecutionEngine;
+class LLVMContext;
+class GlobalVariable;
+class Type;
+class Value;
+class Constant;
+class BasicBlock;
+
+namespace legacy {
+	class FunctionPassManager;
+};
+
+};
+
+//forward declaration for TypedFora::Compiler, which NativeCodeCompiler holds
+//to be able to access linker information
+namespace TypedFora {
+class Compiler;
+};
+
+/*************
+NativeCodeCompiler wraps a single LLVMContext and allows clients to native
+assembler code out of NativeCode.
+
+NativeCodeCompiler is fully threadsafe, and provides serial access to the
+underlying LLVMContext.
+
+*************/
+
+class NativeCodeCompiler {
+public:
+		NativeCodeCompiler(TypedFora::Compiler& inRuntime);
+		
+		TypedFora::Compiler&	getTypedForaCompiler() { return mTypedForaCompiler; }
+		
+		//compiles 'code' and returns a NativeFunctionPointer
+		void* compile(
+				const string& name,
+				uint64_t gen,
+				const NativeCFG& code,
+				NativeType& outSlotsType,
+				map<uword_t,
+					ImmutableTreeVector<
+						NativeContinuationMetadataSerialized
+						>
+					>&	 outMetadataMap,
+				map<uword_t, NativeIndividualContinuationMetadata>& outIndividualMetadataMap
+			   );
+				
+		//Compile a block of external source code
+		Fora::SharedObjectLibraryFromSource::BuildResult buildLibraryFromSource(
+				const Fora::SharedObjectLibraryFromSource::LibrarySource& inSource
+				);
+
+		//Get a callable for a relevant library
+		void* functionPointerForLibraryFunctionFromSource(
+				const Fora::SharedObjectLibraryFromSource::Library& inLibrary,
+				std::string inName
+				);
+
+		llvm::Value* rawDataConstant(string d, llvm::BasicBlock* block);
+
+		llvm::Value* inlinePointer(llvm::BasicBlock* block, void* ptr, NativeType targetType);
+		
+		vector<llvm::Type*> toLLVM(const ImmutableTreeVector<NativeType>& types);
+
+		vector<llvm::Type*> toLLVM(const ImmutableTreeVector<NativeVariable>& vars);
+		
+		llvm::Type*	toLLVM(const NativeType& type);
+
+		llvm::Value* llvmUInt32(uint32_t x);
+		
+		llvm::Value* llvmULong(uword_t x);
+		
+		llvm::FunctionType* jumpFuncType(bool isInternal);
+
+		llvm::Function* getLibFunc(
+					NativeLibraryFunctionTarget name,
+					NativeType t,
+					const ImmutableTreeVector<NativeType>& args,
+					llvm::Module* inModule
+					);
+		
+		llvm::Function* getLibFunc(
+					NativeLibraryFunctionTarget name,
+					llvm::Type* t,
+					std::vector<llvm::Type*> args,
+					llvm::Module* inModule
+					);
+		
+		llvm::Constant*	getNullConstantFor(NativeType t);
+		
+		llvm::Type*	blockPtrType();
+		
+		void*				wrapCPPCallbackFunPtr();
+
+		void*				dummyContinuationTarget();
+		
+		void* 				getFastcallWrapper(void);
+		
+		llvm::LLVMContext&	getLLVMContext(void) { return mLLVMContext; }
+		
+		llvm::Module*		getModule(void) { return mModule; }
+		
+private:
+		llvm::Type* 		llvmFloatTypeFromBitCount(uword_t bits);
+
+		//primary mutex guarding the llvm context
+		boost::recursive_mutex						mMutex;
+		
+		map<hash_type, Fora::SharedObjectLibraryFromSource::BuildResult> mBuildSharedObjects;
+
+		map<hash_type, llvm::Module*> mBuildSharedObjectModules;
+
+		llvm::Function*								mDummyContinuationTarget;
+		void*										mDummyContinuationTargetPtr;
+
+		//reference back to the main native runtime
+		TypedFora::Compiler&						mTypedForaCompiler;
+		
+		llvm::FunctionType*							mJumpFuncType[2];
+		llvm::Type*									mBlockPtrType;
+		llvm::Module* 								mModule;
+		llvm::ExecutionEngine* 						mExecutionEngine;
+
+		llvm::legacy::FunctionPassManager* 			mFunctionPassManager;
+		llvm::legacy::FunctionPassManager* 			mFunctionPassManagerSimple;
+		llvm::LLVMContext&							mLLVMContext;
+		
+		void*										mFastcallWrapper;
+		void*										mRegularToFastcallWrapper;
+		
+		boost::mutex								mMetadataTableMutex;
+		std::map<void*, NativeType>					mFunctionSlotsType;
+
+		std::set<CSTValue> 							mCSTConstants;
+		std::set<CPPMLOpaqueHandle<Type> > 			mTypeConstants;
+		std::set<std::string> 						mRawDataConstants;
+};
+
+

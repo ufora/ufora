@@ -1,0 +1,215 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include <string>
+#include "ReturnValue.hpp"
+#include "../Primitives/String.hppml"
+#include "../Core/Type.hppml"
+#include "../Core/ImplVal.hppml"
+#include "../Core/Integers.hppml"
+#include "../Runtime.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../Core/ImplValContainerUtilities.hppml"
+#include <boost/lexical_cast.hpp>
+#include "../Core/ClassMediator.hppml"
+#include "../Language/Parser.hppml"
+#include "../../core/SimpleParse/SimpleParse.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
+#include "../../core/STLOps.hpp"
+#include "../../core/Clock.hpp"
+#include "../../core/SymbolExport.hpp"
+
+#include <cmath>
+#include "../Primitives/ExternalFunctionDescription.hppml"
+using namespace std;
+using namespace Fora;
+
+typedef uword_t FunctionData;
+
+using Fora::Interpreter::ExecutionContext;
+
+extern "C" {
+
+map<hash_type, CSTValue> *vals = 0;
+
+
+
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer, String> FORA_clib_parseStringToMemberlessClass(
+		const String& data, const ImplValContainer& sourceArguments
+		)
+	{
+	lassert(sourceArguments.type().isTuple());
+	ImmutableTreeVector<Type> argumentTypes = sourceArguments.type().getTuple().types();
+	
+	ImmutableTreeVector<string> strs;
+	
+	uword_t offset = 0;
+	for (long k = 0; k < argumentTypes.size(); k++)
+		{
+		if (argumentTypes[k].isString())
+			strs = strs + (*(String*)(&sourceArguments.cast<char>() + offset)).stdString();
+		offset += argumentTypes[k].size();
+		}
+	
+	string functionText = data.stdString();
+	
+	Function f;
+	
+	try 
+		{
+		f = parseStringToFunction(
+				functionText,
+				false,
+				CodeDefinitionPoint::External(strs),
+				"<eval>"
+				);
+		}
+	catch (const FunctionParseError& e)
+		{
+		return slot1(
+			String(
+				e.error(),
+				ExecutionContext::currentExecutionContext()->getMemoryPool()
+				)
+			);
+		}
+	catch (const SimpleParseError& e)
+		{
+		return slot1(
+			String(
+				e.errorString(),
+				ExecutionContext::currentExecutionContext()->getMemoryPool()
+				)
+			);
+		}
+	catch (const std::logic_error& e)
+		{
+		return slot1(
+			String(
+				std::string(e.what()),
+				ExecutionContext::currentExecutionContext()->getMemoryPool()
+				)
+			);
+		}
+	
+	return slot0(
+		ImplValContainerUtilities::createClass(
+			ClassMediator::Function(
+				"",
+				f.withFreeAsArgs(), 
+				LexicalBindingMap(),
+				CSTValue()
+				)
+			)
+		);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<ForaStackTrace> FORA_clib_addStackTraces(
+		const ForaStackTrace& left, const ForaStackTrace& right
+		)
+	{
+	return slot0(ForaStackTrace(left + right));
+	}
+
+BSA_DLLEXPORT
+void FORA_clib_incrementStringRefcount(const string_type& in)
+	{
+	char dat2[sizeof(string_type)];
+	new ((string_type*)dat2) string_type(in);
+
+	return;
+	}
+
+BSA_DLLEXPORT
+void destroyFunction(uword_t data)
+	{
+	((Function*)&data)->~Function();
+	}
+
+BSA_DLLEXPORT
+FunctionData duplicateFunction(uword_t data)
+	{
+	FunctionData tr;
+	new ((Function*)&tr) Function(*(Function*)&data);
+
+	return tr;
+	}
+
+BSA_DLLEXPORT
+void destroyType(uword_t data)
+	{
+	((Type*)&data)->~Type();
+	}
+
+BSA_DLLEXPORT
+void destroyJOV(uword_t data)
+	{
+	((JOV*)&data)->~JOV();
+	}
+
+BSA_DLLEXPORT
+ReturnValue<string_type> FORA_clib_implValToString(const ImplValContainer& v)
+	{
+	std::ostringstream s;
+		{
+		CPPMLPrettyPrintStream st(s);
+		v.getReference().toParsableString(st);
+		}
+	
+	return slot0(
+		string_type(
+			s.str(), 
+			ExecutionContext::currentExecutionContext()->getMemoryPool()
+			)
+		);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<string_type> FORA_clib_implValBlockedToString(
+		const ImplValContainer& val, const ImplValContainer& dict
+		)
+	{
+	std::ostringstream s;
+		{
+		CPPMLPrettyPrintStream st(s);
+		ImplValContainerUtilities::toParsableString(
+			st, val, dict
+			);
+		}
+
+	return slot0(
+		string_type(
+			s.str(), 
+			ExecutionContext::currentExecutionContext()->getMemoryPool()
+			)
+		);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<string_type> FORA_clib_implValToPrintableString(const ImplValContainer& v)
+	{
+	return slot0(
+		string_type(
+			prettyPrintString(v), 
+			ExecutionContext::currentExecutionContext()->getMemoryPool()
+			)
+		);
+	}
+
+};
+
+

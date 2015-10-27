@@ -1,0 +1,150 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "LexicalBindingSelector.hppml"
+
+#include "FunctionStage1Converter.hppml"
+
+#include "../../core/Common.hppml"
+
+namespace Fora {
+namespace Language {
+
+LexicalBindingSelector::LexicalBindingSelector(
+				const ImmutableTreeSet<Symbol>& freeVariables,
+				const ImmutableTreeMap<Symbol, variable_index_type>& varMap,
+				const LexicalBindingMap& curBindingMap,
+				const Nullable<variable_index_type>& currentBoundVar
+				) :
+		mFreeVariables(freeVariables),
+		mVarMap(varMap),
+		mCurBindingMap(curBindingMap),
+		mCurBoundVar(currentBoundVar),
+		mTotalExpressionsBound(0)
+
+	{
+	buildBindingTree();
+
+	bindBindingTreeElements();
+
+	bindFreeVarsNotInLexicalTable();
+	}
+
+const ImmutableTreeVector<FunctionStage1::Expression>& LexicalBindingSelector::expressionsToBind() const 
+	{
+	return mExpressionsToBind;
+	}
+
+const ImmutableTreeMap<Symbol, LexicalBinding>& LexicalBindingSelector::newLexicalBindings() const 
+	{
+	return mNewLexicalBindings;
+	}
+
+void LexicalBindingSelector::buildBindingTree()
+	{
+	for (long k = 0; k < mFreeVariables.size();k++)
+		{
+		Symbol var = mFreeVariables[k];
+		if (!mVarMap.contains(var))
+			{
+			lassert_dump(
+				mCurBindingMap.bindings().contains(var), 
+				"Can't find a definition for " << prettyPrintString(var)
+				);
+
+			LexicalBinding thisVarBinding = *mCurBindingMap.bindings()[var];
+
+			if (!mBindingTree)
+				mBindingTree = 
+					LexicalUsageBindingTree::treeForSequence(thisVarBinding.unbindIndexSequence());
+			else
+				mBindingTree = mBindingTree->merge(thisVarBinding.unbindIndexSequence());
+			}
+		}	
+	}
+
+void LexicalBindingSelector::bindBindingTreeElements()
+	{
+	if (!mBindingTree)
+		return;
+
+	for (long k = 0; k < mFreeVariables.size();k++)
+		{
+		Symbol var = mFreeVariables[k];
+		if (!mVarMap.contains(var))
+			{
+			LexicalBinding thisVarBinding = *mCurBindingMap.bindings()[var];
+
+			pair<ImmutableTreeVector<uint32_t>, uint32_t> remainingIndicesAndOffset = 
+				mBindingTree->remainingIndicesAndChildIndex(thisVarBinding.unbindIndexSequence());
+
+			//the new binding is relative to the new tuple frame we're going to make, so we have
+			//to add the index into the flattened list to the new lexical binding
+			LexicalBinding newBinding(
+				remainingIndicesAndOffset.second + remainingIndicesAndOffset.first, 
+				thisVarBinding.member()
+				);
+
+			mNewLexicalBindings = mNewLexicalBindings + var + newBinding;
+			}
+		}
+
+	ImmutableTreeVector<ImmutableTreeVector<uint32_t> > flattenedList;
+
+	flattenedList = mBindingTree->flatten();
+
+	for (long k = 0; k < flattenedList.size();k++)
+		{
+		mExpressionsToBind = mExpressionsToBind + expressionForIndices(flattenedList[k]);
+
+		mTotalExpressionsBound++;
+		}
+	}
+
+FunctionStage1::Expression LexicalBindingSelector::expressionForIndices(const ImmutableTreeVector<uint32_t>& inIndices)
+	{
+	return extractBoundClassMemberExpr(
+		FunctionStage1::Expression::Variable(*mCurBoundVar),
+		inIndices
+		);
+	}
+
+
+void LexicalBindingSelector::bindFreeVarsNotInLexicalTable()
+	{
+	//then, extract the variables that are actually free in our own expression
+	for (long k = 0; k < mFreeVariables.size();k++)
+		{
+		Symbol var = mFreeVariables[k];
+		if (mVarMap.contains(var))
+			{
+			mExpressionsToBind = 
+				mExpressionsToBind + FunctionStage1::Expression::Variable(*mVarMap[var]);
+
+			mTotalExpressionsBound++;
+
+			mNewLexicalBindings = 
+				mNewLexicalBindings + var + 
+					LexicalBinding(
+						ImmutableTreeVector<uint32_t>() + (mTotalExpressionsBound-1),
+						null()
+						);
+			}
+		}
+	}
+
+}
+}
+

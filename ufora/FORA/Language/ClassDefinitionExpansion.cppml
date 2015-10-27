@@ -1,0 +1,688 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ClassDefinitionExpansion.hppml"
+#include "../Core/ClassMediator.hppml"
+#include "../Core/Type.hppml"
+#include "Function.hppml"
+#include "RebindFree.hppml"
+
+namespace {
+
+ObjectDefinitionBody extractInnerObjectBody(const ClassDefinitionBody& body)
+	{
+	@match ClassDefinitionBody(body)
+		-|	Empty() ->> { 
+				return ObjectDefinitionBody::Empty(); 
+				}
+		-|	Term((ObjectTerm(term), meta), tail) ->> {
+				return ObjectDefinitionBody::Term(
+					ObjectDefinitionTermWithMetadata(term, meta), 
+					extractInnerObjectBody(tail)
+					);
+				}
+		-|	Term(_, tail) ->> {
+				return extractInnerObjectBody(tail);
+				}
+	}
+
+ObjectDefinitionBody extractOuterObjectBody(
+							const ClassDefinitionBody& body, 
+							const ClassDefinition& classDef
+							)
+	{
+	@match ClassDefinitionBody(body)
+		-|	Empty() ->> { 
+				return ObjectDefinitionBody::Empty(); 
+				}
+		-|	Term((Constructor(fun),meta), tail) ->> {
+				return ObjectDefinitionBody::Term(
+					ObjectDefinitionTermWithMetadata(
+						ObjectDefinitionTerm::Call(fun), 
+						meta
+						),
+					extractOuterObjectBody(tail, classDef)
+					);
+				}
+	-|	Term((Static(term),meta), tail) ->> {
+				return ObjectDefinitionBody::Term(
+					ObjectDefinitionTermWithMetadata(term, meta), 
+					extractOuterObjectBody(tail, classDef)
+					);
+				}
+	-|	Term((ObjectTerm(Member(membername, expr, depth)),meta), tail) ->> {
+				//in things like 'class { f: self.y }' we create entries in the class
+				//like 'f: fun(self) { self.y }'
+				//which are equivalent to unbound instance methods in python
+
+				ImmutableTreeSet<Symbol> allMembers = classDef.body().allMembers();
+				ImmutableTreeSet<Symbol> allStaticMembers = classDef.body().staticMembers();
+
+				Symbol selfName = classDef.selfName() ? *classDef.selfName() : Symbol("self");
+
+				ImmutableTreeMap<Symbol, Expression> rebindings;
+
+				ImmutableTreeSet<Symbol> freeVars = expr.freeVariables();
+
+				for (long k = 0; k < freeVars.size(); k++)
+					{
+					Symbol s = freeVars[k];
+
+					if (!allStaticMembers.contains(s) && allMembers.contains(s))
+						rebindings = rebindings + s + Expression::Member(Expression::Variable(selfName), s, 1);
+					}
+
+				return ObjectDefinitionBody::Term(
+					ObjectDefinitionTermWithMetadata(
+						ObjectDefinitionTerm::Member(
+							membername,
+							Expression::CreateFunction(
+								membername.toString(),
+								Function::SingleTermFunction(
+									emptyTreeVec() + selfName,
+									null(),
+									rebindFreeAs(expr, rebindings)
+									),
+								CSTValue()
+								),
+							depth
+							),
+						meta
+						),
+					extractOuterObjectBody(tail, classDef)
+					);
+				}
+		-|	Term(_, tail) ->> {
+				return extractOuterObjectBody(tail, classDef);
+				}
+	}
+
+ImmutableTreeVector<Symbol> extractClassMemberNames(const ClassDefinitionBody& body)
+	{
+	@match ClassDefinitionBody(body)
+		-|	Empty() ->> { 
+				return emptyTreeVec();
+				}
+		-|	Term((DataMember(memberName),_), tail) ->> {
+				return memberName + extractClassMemberNames(tail);
+				}
+		-|	Term(_, tail) ->> {
+				return extractClassMemberNames(tail);
+				}
+	}
+
+bool classDefinitionBodyHasConstructor(const ClassDefinitionBody& body)
+	{
+	@match ClassDefinitionBody(body)
+		-|	Empty() ->> { 
+				return false;
+				}
+		-|	Term((Constructor(_),_), _) ->> {
+				return true;
+				}
+		-|	Term(_, tail) ->> {
+				return classDefinitionBodyHasConstructor(tail);
+				}
+	}
+
+TuplePatternElement symbolTuplePatElt(Symbol s)
+	{
+	return TuplePatternElement::Normal(
+			null(),
+			PatternWithName(
+				Pattern::Constant(CSTValue(s)),
+				null(),
+				null(),
+				ExpressionLocationMetadata::Empty()
+				),
+			null()
+			);
+	}
+
+ObjectDefinitionBody appendToObjectDefBody(
+				const ObjectDefinitionBody& body,
+				const ObjectDefinitionTerm& term
+				)
+	{
+	@match ObjectDefinitionBody(body)
+		-| Term(t, next) ->> {
+			return ObjectDefinitionBody::Term(t, appendToObjectDefBody(next, term));
+			}
+		-| Empty() ->> {
+			return ObjectDefinitionBody::Term(
+				ObjectDefinitionTermWithMetadata(
+					term,
+					CSTValue()
+					),
+				ObjectDefinitionBody::Empty()
+				);
+			}
+	}
+
+ObjectDefinition createInnerObjectDefinition(
+				const ObjectDefinitionBody& objectBody,
+				Nullable<Symbol> selfName,
+				Symbol classVariableName,
+				ImmutableTreeVector<Symbol> memberNames,
+				ExpressionLocationMetadata locationMetadata
+				)
+	{
+	Function fun = Function::Term(
+		TuplePattern(emptyTreeVec() + symbolTuplePatElt(Symbol("Class"))),
+		Expression::Variable(classVariableName),
+		Function::Empty()
+		);
+
+	for (long k = 0; k < memberNames.size(); k++)
+		fun = Function::Term(
+			TuplePattern(
+				emptyTreeVec() + 
+					symbolTuplePatElt(Symbol("Member")) + 
+					symbolTuplePatElt(memberNames[k])
+				),
+			Expression::Variable(memberNames[k]),
+			fun
+			);
+
+	return ObjectDefinition(
+		appendToObjectDefBody(
+			objectBody,
+			ObjectDefinitionTerm::Anything(fun)
+			),
+		selfName,
+		locationMetadata
+		);
+	}
+
+ImmutableTreeVector<TuplePatternElement> membersNamesToTuplePatternElts(
+				const ImmutableTreeVector<Symbol>& memberNames,
+				bool namedArguments
+				)
+	{
+	ImmutableTreeVector<TuplePatternElement> patterns;
+
+	for (long k = 0; k < memberNames.size(); k++)
+		patterns = patterns + 
+			TuplePatternElement::Normal(
+				namedArguments ? 
+					null() << memberNames[k]
+				:	null(),
+				PatternWithName(
+					Pattern::Anything(),
+					null() << memberNames[k],
+					null(),
+					ExpressionLocationMetadata::Empty()
+					),
+				null()
+				);
+
+	return patterns;
+	}
+ImmutableTreeVector<ApplyArgument> memberNamesToNamedApplyArguments(
+				const ImmutableTreeVector<Symbol>& memberNames
+				)
+	{
+	ImmutableTreeVector<ApplyArgument> args;
+
+	for (long k = 0; k < memberNames.size(); k++)
+		args = args + 
+			ApplyArgument::Normal(
+				null() << memberNames[k],
+				Expression::Variable(memberNames[k])
+				);
+
+	return args;
+	}
+
+ObjectDefinitionTerm createClassInstanceTerm(
+				const ImmutableTreeVector<Symbol>& memberNames,
+				const ObjectDefinition& innerObjectDef,
+				bool hasConstructor,
+				CSTValue metadata,
+				Symbol classVariableName,
+				std::string surroundingClassName
+				)
+	{
+	Function fun = 
+		Function::Term(
+			TuplePattern(
+				emptyTreeVec() + 
+					symbolTuplePatElt(Symbol("CreateInstance")) + 
+					membersNamesToTuplePatternElts(memberNames, true)
+				),
+			Expression::CreateObject(
+				surroundingClassName.size() ? 
+						surroundingClassName + ".<instance>" 
+					: 	"<instance>"
+					,
+				innerObjectDef, 
+				CSTValue::Tuple(
+					ImmutableTreeVector<pair<Nullable<Symbol>, CSTValue> >() + 
+						make_pair(null() << Symbol("kind"), CSTValue(Symbol("instance"))) + 
+						make_pair(null() << Symbol("classMetadata"), metadata)
+					)
+				),
+			Function::Empty()
+			);
+
+	fun = 
+		Function::Term(
+			TuplePattern(
+				emptyTreeVec() + 
+					symbolTuplePatElt(Symbol("CreateInstance")) + 
+					membersNamesToTuplePatternElts(memberNames, false)
+				),
+			Expression::CreateObject(
+				surroundingClassName.size() ? 
+						surroundingClassName + ".<instance>" 
+					: 	"<instance>"
+					,
+				innerObjectDef, 
+				CSTValue::Tuple(
+					ImmutableTreeVector<pair<Nullable<Symbol>, CSTValue> >() + 
+						make_pair(null() << Symbol("kind"), CSTValue(Symbol("instance"))) + 
+						make_pair(null() << Symbol("classMetadata"), metadata)
+					)
+				),
+			fun
+			);
+
+	if (!hasConstructor)
+		{
+		fun = Function::Term(
+			TuplePattern(
+				emptyTreeVec() + 
+					symbolTuplePatElt(Symbol("Call")) + 
+					membersNamesToTuplePatternElts(memberNames, false)
+				),
+			Expression::Apply(
+				Expression::Variable(classVariableName),
+				ApplyArgument::Normal(
+						null(),
+						Expression::Constant(CSTValue(Symbol("CreateInstance")))
+						) + 
+					memberNamesToNamedApplyArguments(memberNames)
+				), 
+			fun
+			);
+		fun = Function::Term(
+			TuplePattern(
+				emptyTreeVec() + 
+					symbolTuplePatElt(Symbol("Call")) + 
+					membersNamesToTuplePatternElts(memberNames, true)
+				),
+			Expression::Apply(
+				Expression::Variable(classVariableName),
+				ApplyArgument::Normal(
+						null(),
+						Expression::Constant(CSTValue(Symbol("CreateInstance")))
+						) + 
+					memberNamesToNamedApplyArguments(memberNames)
+				),
+			fun
+			);
+		}
+
+
+	return ObjectDefinitionTerm::Anything(fun);
+	}
+}
+
+
+ObjectDefinition expandClassDefinition(
+						const ClassDefinition& classDef,
+						CSTValue metadata,
+						std::string surroundingClassName
+						)
+	{
+	ObjectDefinitionBody innerDefinition = 
+		extractInnerObjectBody(classDef.body());
+
+	ObjectDefinitionBody outerDefinition = 
+		extractOuterObjectBody(
+			classDef.body(), 
+			classDef
+			);
+
+	ImmutableTreeVector<Symbol> members = extractClassMemberNames(classDef.body());
+
+	bool hasConstructor = classDefinitionBodyHasConstructor(classDef.body());
+
+	Symbol classVariableName = classDef.className() ? *classDef.className() : Symbol("cls");
+
+	outerDefinition = 
+		ObjectDefinitionBody::Term(
+			ObjectDefinitionTermWithMetadata(
+				createClassInstanceTerm(
+					members,
+					createInnerObjectDefinition(
+						innerDefinition, 
+						classDef.selfName(),
+						classVariableName,
+						members,
+						classDef.locationMetadata()
+						),
+					hasConstructor,
+					metadata,
+					classVariableName,
+					surroundingClassName
+					),
+				CSTValue() 
+				),
+			outerDefinition
+			);
+
+	return ObjectDefinition(
+		outerDefinition,
+		null() << classVariableName,
+		classDef.locationMetadata()
+		);
+	}
+
+Nullable<Type> processClassMediatorMixin(	
+						const Type& inBase,
+						const Type& inMixin
+						)
+	{
+	if (!inBase.isClass() || !inMixin.isClass())
+		return null();
+
+	if (!inBase.getClass().classBody().resumption().isEntry() || 
+			!inMixin.getClass().classBody().resumption().isEntry())
+		return null();
+
+	Nullable<ClassMediator> newMediator = 
+		processClassMediatorMixin(
+			*inBase.getClass().classBody().mediator(),
+			*inMixin.getClass().classBody().mediator(),
+			inBase.getClass().elements().size()
+			);
+
+	if (!newMediator)
+		return null();
+
+	return null() << Type::Class(
+		inBase.getClass().elements() + inMixin.getClass().elements(),
+		ClassBody(
+			CPPMLOpaqueHandle<ClassMediator>(*newMediator),
+			ClassMediatorResumption::Entry()
+			)
+		);
+	}
+
+namespace {
+
+//find the first instance of 'mixin' and replace with terms from 'toMixIn'
+ObjectDefinitionBody mergeInMixin(const ObjectDefinitionBody& inMediator, const ObjectDefinitionBody& toMixIn)
+	{
+	@match ObjectDefinitionBody(inMediator)
+		-| Empty() ->> {
+			return inMediator;
+			}
+		-| Term((Mixin(),_), tail) ->> {
+			return toMixIn + tail;
+			}
+		-| Term(t, tail) ->> {
+			return ObjectDefinitionBody::Term(t, mergeInMixin(tail, toMixIn));
+			}
+	}
+
+//find the first instance of 'static mixin' and replace with terms from 'toMixIn'
+ClassDefinitionBody mergeInMixin(const ClassDefinitionBody& inMediator, const ClassDefinitionBody& toMixIn)
+	{
+	@match ClassDefinitionBody(inMediator)
+		-| Empty() ->> {
+			return inMediator;
+			}
+		-| Term((Static(Mixin()),_), tail) ->> {
+			return toMixIn + tail;
+			}
+		-| Term(t, tail) ->> {
+			return ClassDefinitionBody::Term(t, mergeInMixin(tail, toMixIn));
+			}
+	}
+
+LexicalBinding offsetLexicalBinding(const LexicalBinding& inBinding, long inOffset)
+	{
+	if (inBinding.unbindIndexSequence().size() == 0)
+		return inBinding;
+
+	return LexicalBinding(
+		(ImmutableTreeVector<uint32_t>() + 
+			(inBinding.unbindIndexSequence()[0] + inOffset)) + 
+			inBinding.unbindIndexSequence().slice(1),
+		inBinding.member()
+		);
+	}
+
+bool isSelfBinding(const LexicalBinding& inBinding)
+	{
+	return !inBinding.member() && inBinding.unbindIndexSequence().size() == 0;
+	}
+
+pair<LexicalBindingMap, ObjectDefinitionBody> mergeLexicalBindings(
+						const LexicalBindingMap& inBindings,
+						const LexicalBindingMap& inMixinBindings,
+						ObjectDefinitionBody curObjectDefBody,
+						long inBaseBoundItemCount
+						)
+	{
+	ImmutableTreeMap<Symbol, LexicalBinding> newBindings = inBindings.bindings();
+
+	for (long k = 0; k < inMixinBindings.bindings().size(); k++)
+		{
+		pair<Symbol, LexicalBinding> p = inMixinBindings.bindings().pairAtPosition(k);
+
+		if (newBindings.contains(p.first) && 
+				!(isSelfBinding(*inBindings.bindings()[p.first]) && 
+					isSelfBinding(*inMixinBindings.bindings()[p.first]))
+				)
+			{
+			Symbol newName = freshVarname(p.first, curObjectDefBody.freeVariablesInObjectScope());
+			
+			curObjectDefBody = rebindFreeAs(
+				curObjectDefBody,
+				emptyTreeMap() + p.first + newName
+				);
+
+			p.first = newName;
+			}
+
+		newBindings = newBindings + p.first + offsetLexicalBinding(p.second, inBaseBoundItemCount);
+		}
+
+	return make_pair(
+		LexicalBindingMap(newBindings),
+		curObjectDefBody
+		);
+	}
+
+pair<LexicalBindingMap, ClassDefinitionBody> mergeLexicalBindings(
+						const LexicalBindingMap& inBindings,
+						const LexicalBindingMap& inMixinBindings,
+						ClassDefinitionBody curClassDefBody,
+						long inBaseBoundItemCount
+						)
+	{
+	ImmutableTreeMap<Symbol, LexicalBinding> newBindings = inBindings.bindings();
+
+	for (long k = 0; k < inMixinBindings.bindings().size(); k++)
+		{
+		pair<Symbol, LexicalBinding> p = inMixinBindings.bindings().pairAtPosition(k);
+
+		if (newBindings.contains(p.first) && 
+				!(isSelfBinding(*inBindings.bindings()[p.first]) && 
+					isSelfBinding(*inMixinBindings.bindings()[p.first]))
+				)
+			{
+			Symbol newName = freshVarname(p.first, 
+				curClassDefBody.computeFreeVariables(true, true)
+				);
+			
+			curClassDefBody = rebindFreeAs(
+				curClassDefBody,
+				emptyTreeMap() + p.first + newName
+				);
+
+			p.first = newName;
+			}
+
+		newBindings = newBindings + p.first + offsetLexicalBinding(p.second, inBaseBoundItemCount);
+		}
+
+	return make_pair(
+		LexicalBindingMap(newBindings),
+		curClassDefBody
+		);
+	}
+
+ClassDefinitionBody 
+upgradeObjectDefinitionBodyToClassDefinitionBody(const ObjectDefinitionBody& in)
+	{
+	@match ObjectDefinitionBody(in)
+		-| Empty() ->> {
+			return ClassDefinitionBody::Empty();
+			}
+		-| Term((term,meta), next) ->> {
+			return ClassDefinitionBody::Term(
+				ClassDefinitionTermWithMetadata(
+					ClassDefinitionTerm::Static(
+						term
+						),
+					meta
+					),
+				upgradeObjectDefinitionBodyToClassDefinitionBody(next)
+				);
+			}
+	}
+
+bool hasMembersOrConstructors(const ClassDefinitionBody& body)
+	{
+	@match ClassDefinitionBody(body)
+		-| Term((DataMember(),_), tail) ->> {
+			return true;
+			}
+		-| Term((Constructor(),_), tail) ->> {
+			return true;
+			}
+		-| Term(_, tail) ->> {
+			return hasMembersOrConstructors(tail);
+			}
+		-| Empty() ->> {
+			}
+
+	return false;
+	}
+
+ClassMediator upgradeObjectToClass(const ClassMediator& inMediator)
+	{
+	@match ClassMediator(inMediator)
+		-| Object(objDef, lexicalBinding, objMeta) with (objName) ->> {
+			
+			Symbol clsName = freshVarname("class", objDef.freeVariables());
+
+			return ClassMediator::Class(
+				objName,
+				ClassDefinition(
+					upgradeObjectDefinitionBodyToClassDefinitionBody(
+						objDef.body()
+						),
+					null() << clsName,
+					objDef.selfName(),
+					objDef.locationMetadata()
+					),
+				lexicalBinding,
+				objMeta
+				);
+			}
+
+	lassert(false);
+	}
+
+}
+
+Nullable<ClassMediator> processClassMediatorMixin(	
+						const ClassMediator& inBase,
+						const ClassMediator& inMixin,
+						long inBaseBoundItemCount
+						)
+	{
+	@match ClassMediator(inBase)
+		-| Object(objDef, bindings, objMeta) with (objName) ->> {
+
+			@match ClassMediator(inMixin)
+				-| Object(mixinDef, mixinBindings, mixinMeta) ->> {
+
+					pair<LexicalBindingMap, ObjectDefinitionBody> updatedBindingsAndMediator = 
+						mergeLexicalBindings(bindings, mixinBindings, mixinDef.body(), inBaseBoundItemCount);
+
+					return null() << ClassMediator::Object(
+						objName,
+						ObjectDefinition(
+							mergeInMixin(objDef.body(), updatedBindingsAndMediator.second),
+							objDef.selfName(),
+							objDef.locationMetadata()
+							),
+						updatedBindingsAndMediator.first,
+						objMeta
+						);
+					}
+				-| _ ->> {
+					}
+			}
+		-| Class(classDef, bindings, classMeta) with (className) ->> {
+
+			@match ClassMediator(inMixin)
+				-| Object(mixinDef, mixinBindings, mixinMeta) ->> {
+
+					return processClassMediatorMixin(
+						inBase,
+						upgradeObjectToClass(inMixin),
+						inBaseBoundItemCount
+						);
+
+					}
+				-| Class(mixinDef, mixinBindings, mixinMeta) ->> {
+
+					if (hasMembersOrConstructors(mixinDef.body()))
+						return null();
+
+					pair<LexicalBindingMap, ClassDefinitionBody> updatedBindingsAndMediator = 
+						mergeLexicalBindings(bindings, mixinBindings, mixinDef.body(), inBaseBoundItemCount);
+
+					return null() << ClassMediator::Class(
+						className,
+						ClassDefinition(
+							mergeInMixin(classDef.body(), updatedBindingsAndMediator.second),
+							classDef.className(),
+							classDef.selfName(),
+							classDef.locationMetadata()
+							),
+						updatedBindingsAndMediator.first,
+						classMeta
+						);
+					}
+				-| _ ->> {
+					}
+
+
+			}
+		-| _ ->> {
+			}
+
+	return null();
+	}
+
+

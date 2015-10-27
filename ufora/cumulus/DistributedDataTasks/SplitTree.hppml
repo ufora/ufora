@@ -1,0 +1,151 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "AccumulatorBinId.hppml"
+#include "../MachineId.hppml"
+
+#include "../../core/containers/TwoWaySetMap.hpp"
+
+#include <set>
+#include <map>
+
+namespace Cumulus {
+
+class SplitTree {
+public:
+	SplitTree(AccumulatorBinId rootBin, MachineId initialMachine) : 
+			mRootBin(rootBin)
+		{
+		mLeafBins.insert(mRootBin);
+		mMachineMap[mRootBin] = initialMachine;
+		mLeafBins.insert(mRootBin);
+		}
+
+	bool isLeaf(AccumulatorBinId bin) const
+		{
+		return mLeafBins.find(bin) != mLeafBins.end();
+		}
+
+	Nullable<pair<AccumulatorBinId, AccumulatorBinId> > children(AccumulatorBinId bin) const
+		{
+		if (!mSplits.hasKey(bin))
+			return null();
+
+		auto it = mRealizedSplits.find(bin);
+		if (it == mRealizedSplits.end())
+			return null();
+
+		return null() << make_pair(it->second.left().second, it->second.right().second);
+		}
+
+	Nullable<MachineId> machineFor(AccumulatorBinId bin) const
+		{
+		auto it = mMachineMap.find(bin);
+		if (it == mMachineMap.end())
+			return null();
+		return null() << it->second;
+		}
+
+	Nullable<AccumulatorBinId> parentBin(AccumulatorBinId bin) const
+		{
+		if (mSplits.hasValue(bin))
+			{
+			lassert(mSplits.getKeys(bin).size() == 1);
+			return null() << *mSplits.getKeys(bin).begin();
+			}
+
+		return null();
+		}
+
+	@type SplitRecord = 
+		AccumulatorBinId bin, 
+		pair<MachineId, AccumulatorBinId> left, 
+		pair<MachineId, AccumulatorBinId> right,
+		ImplValContainer splitValue
+		;
+
+	void addSplit(AccumulatorBinId bin, pair<MachineId, AccumulatorBinId> left, pair<MachineId, AccumulatorBinId> right, ImplValContainer splitValue)
+		{
+		mMachineMap[left.second] = left.first;
+		mMachineMap[right.second] = right.first;
+		mOrphanedSplits[bin] = SplitRecord(bin, left, right, splitValue);
+
+		if (isLeaf(bin))
+			mSplittable.insert(bin);
+		}
+
+	Nullable<SplitRecord> popAvailableSplit()
+		{
+		if (!mSplittable.size())
+			return null();
+
+		AccumulatorBinId toSplit = *mSplittable.begin();
+		mSplittable.erase(toSplit);
+
+		auto it = mOrphanedSplits.find(toSplit);
+		lassert(it != mOrphanedSplits.end());
+
+		SplitRecord record = it->second;
+		mRealizedSplits[it->first] = it->second;
+
+		mOrphanedSplits.erase(it);
+
+		mLeafBins.erase(toSplit);
+
+		mSplits.insert(toSplit, record.left().second);
+		mSplits.insert(toSplit, record.right().second);
+		
+		mLeafBins.insert(record.left().second);
+		mLeafBins.insert(record.right().second);
+
+		if (mOrphanedSplits.find(record.left().second) != mOrphanedSplits.end())
+			mSplittable.insert(record.left().second);
+
+		if (mOrphanedSplits.find(record.right().second) != mOrphanedSplits.end())
+			mSplittable.insert(record.right().second);
+
+		return null() << record;
+		}
+
+	const std::set<AccumulatorBinId>& leafBins() const
+		{
+		return mLeafBins;
+		}
+
+	hash_type hash() const
+		{
+		return hashValue(mLeafBins);
+		}
+
+private:
+	map<AccumulatorBinId, MachineId> mMachineMap;
+
+	std::set<AccumulatorBinId> mLeafBins;
+
+	TwoWaySetMap<AccumulatorBinId, AccumulatorBinId> mSplits;
+
+	map<AccumulatorBinId, SplitRecord> mOrphanedSplits;
+
+	map<AccumulatorBinId, SplitRecord> mRealizedSplits;
+
+	std::set<AccumulatorBinId> mSplittable;
+
+	AccumulatorBinId mRootBin;
+};
+
+}
+

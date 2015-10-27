@@ -1,0 +1,299 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ExecutionContextMemoryPool.hppml"
+#include "ExecutionContext.hppml"
+#include "../VectorDataManager/VectorDataManager.hppml"
+#include "../VectorDataManager/VectorDataMemoryManager.hppml"
+#include "../../core/UnitTest.hpp"
+#include "ShareableMemoryBlock.hppml"
+
+namespace {
+
+void incrementer(int* toIncrement)
+	{
+	(*toIncrement)++;
+	}
+
+const static int kSmallMemAmount = 8;
+const static int kLargerMemAmount = 128;
+
+int add_padding(int inSize)
+	{
+	if (inSize >= MemoryHeap::DEFAULT_PAGE_SIZE)
+		return inSize;
+
+	if (inSize % 16 != 0)
+		inSize = ((inSize / 16) + 1) * 16; /* round up to the smallest allocation */
+
+	return inSize + 8; /* small allocations have a small header overhead */
+	}
+}	
+
+BOOST_AUTO_TEST_SUITE( test_ExecutionContextMemoryPool )
+
+
+BOOST_AUTO_TEST_CASE( test_basic )
+	{
+	boost::shared_ptr<ExecutionContextMemoryPool> pool(
+		new ExecutionContextMemoryPool(0, 
+			PolymorphicSharedPtr<VectorDataMemoryManager>(
+				new VectorDataMemoryManager(
+					CallbackScheduler::singletonForTesting(),
+					CallbackScheduler::singletonForTesting()
+					)
+				)
+			)
+		);
+
+	uint8_t* data = pool->allocate(kSmallMemAmount);
+
+	BOOST_CHECK_EQUAL(pool->totalBytesAllocated(), add_padding(kSmallMemAmount));
+
+	data = pool->realloc(data, kLargerMemAmount);
+
+	BOOST_CHECK_EQUAL(pool->totalBytesAllocated(), add_padding(kLargerMemAmount));
+
+	pool->free(data);
+
+	data = pool->realloc(0, kLargerMemAmount);
+
+	BOOST_CHECK_EQUAL(pool->totalBytesAllocated(), add_padding(kLargerMemAmount));
+
+	pool->realloc(data, 0);
+
+	BOOST_CHECK_EQUAL(pool->totalBytesAllocated(), 0);
+	}
+
+BOOST_AUTO_TEST_CASE( test_small_alloc_not_a_SharedMemoryBlock )
+	{
+	boost::shared_ptr<ExecutionContextMemoryPool> pool(
+		new ExecutionContextMemoryPool(0, 
+			PolymorphicSharedPtr<VectorDataMemoryManager>(
+				new VectorDataMemoryManager(
+					CallbackScheduler::singletonForTesting(),
+					CallbackScheduler::singletonForTesting()
+					)
+				)
+			)
+		);
+
+	uint8_t* data = pool->allocate(10);
+
+	Fora::ShareableMemoryBlockHandle handle = pool->convertPointerToShareableMemoryBlock(data, 10);
+
+	BOOST_CHECK(handle.isEmpty());
+
+	pool->free(data);
+	}
+
+BOOST_AUTO_TEST_CASE( test_ShareableMemoryBlocks_account_correctly )
+	{
+	boost::shared_ptr<ExecutionContextMemoryPool> pool(
+		new ExecutionContextMemoryPool(0, 
+			PolymorphicSharedPtr<VectorDataMemoryManager>(
+				new VectorDataMemoryManager(
+					CallbackScheduler::singletonForTesting(),
+					CallbackScheduler::singletonForTesting()
+					)
+				)
+			)
+		);
+
+	const static long kTenMegabytes = 10 * 1024 * 1024;
+
+	uint8_t* data = pool->allocate(kTenMegabytes);
+
+	Fora::ShareableMemoryBlockHandle handle = pool->convertPointerToShareableMemoryBlock(data, kTenMegabytes);
+
+	BOOST_CHECK(!handle.isEmpty());
+
+	BOOST_CHECK(pool->totalBytesAllocated() == kTenMegabytes);
+
+	pool->free(data);
+
+	BOOST_CHECK(pool->totalBytesAllocated() == 0);
+	}
+
+BOOST_AUTO_TEST_CASE( test_ShareableMemoryBlocks_transfer_to_free_store )
+	{
+	PolymorphicSharedPtr<VectorDataMemoryManager> vdmm(
+				new VectorDataMemoryManager(
+					CallbackScheduler::singletonForTesting(),
+					CallbackScheduler::singletonForTesting()
+					)
+				);
+			
+
+	boost::shared_ptr<ExecutionContextMemoryPool> pool1(new ExecutionContextMemoryPool(0, vdmm));
+	boost::shared_ptr<ExecutionContextMemoryPool> pool2(new ExecutionContextMemoryPool(0, vdmm));
+
+	const static long kTenMegabytes = 10 * 1024 * 1024;
+
+	uint8_t* data = pool1->allocate(kTenMegabytes);
+
+	Fora::ShareableMemoryBlockHandle handle = pool1->convertPointerToShareableMemoryBlock(data, kTenMegabytes);
+	BOOST_CHECK(!handle.isEmpty());
+	BOOST_CHECK_EQUAL(pool1->totalBytesAllocated(), kTenMegabytes);
+
+	BOOST_CHECK(MemoryPool::getFreeStorePool()->importShareableMemoryBlock(handle) == data);
+
+	pool1->free(data);
+	BOOST_CHECK_EQUAL(pool1->totalBytesAllocated(), 0);
+
+	handle = MemoryPool::getFreeStorePool()->convertPointerToShareableMemoryBlock(data, kTenMegabytes);
+	BOOST_CHECK(!handle.isEmpty());
+
+	BOOST_CHECK(pool2->importShareableMemoryBlock(handle) == data);
+	MemoryPool::getFreeStorePool()->free(data);
+
+	BOOST_CHECK_EQUAL(pool1->totalBytesAllocated(), 0);
+	pool1.reset();
+
+	BOOST_CHECK_EQUAL(pool2->totalBytesAllocated(), kTenMegabytes);
+	BOOST_CHECK_EQUAL(vdmm->totalBytesAllocatedByClients(), kTenMegabytes);
+
+	pool2->free(data);
+	BOOST_CHECK_EQUAL(pool2->totalBytesAllocated(), 0);
+
+	BOOST_CHECK_EQUAL(vdmm->totalBytesUsedByOtherPools(), 0);
+	
+	handle = Fora::ShareableMemoryBlockHandle();
+
+	BOOST_CHECK_EQUAL(vdmm->totalBytesAllocatedByClients(), 0);
+	BOOST_CHECK_EQUAL(vdmm->totalBytesUsedByOtherPools(), 0);
+	}
+
+BOOST_AUTO_TEST_CASE( test_ShareableMemoryBlocks_transfer )
+	{
+	PolymorphicSharedPtr<VectorDataMemoryManager> vdmm(
+		new VectorDataMemoryManager(
+			CallbackScheduler::singletonForTesting(),
+			CallbackScheduler::singletonForTesting()
+			)
+		);
+			
+	boost::shared_ptr<ExecutionContextMemoryPool> pool1(
+		new ExecutionContextMemoryPool(0, vdmm)
+		);
+			
+	boost::shared_ptr<ExecutionContextMemoryPool> pool2(
+		new ExecutionContextMemoryPool(0, vdmm)
+		);
+
+	const static long kTenMegabytes = 10 * 1024 * 1024;
+
+	uint8_t* data = pool1->allocate(kTenMegabytes);
+
+	Fora::ShareableMemoryBlockHandle handle1 = pool1->convertPointerToShareableMemoryBlock(data, kTenMegabytes);
+	BOOST_CHECK(!handle1.isEmpty());
+
+	BOOST_CHECK(pool2->importShareableMemoryBlock(handle1) == data);
+
+	BOOST_CHECK_EQUAL(pool1->totalBytesAllocated(), kTenMegabytes);
+	BOOST_CHECK_EQUAL(pool2->totalBytesAllocated(), kTenMegabytes);
+
+	Fora::ShareableMemoryBlockHandle handle2 = pool2->convertPointerToShareableMemoryBlock(data, kTenMegabytes);
+	BOOST_CHECK(!handle2.isEmpty());
+
+	//might not be equal, since the VDM also tracks bytes used by the memory heap
+	BOOST_CHECK(vdmm->totalBytesUsedByExecutionContextsExcludingPagelets() > kTenMegabytes * 2);
+	
+	BOOST_CHECK(pool1->importShareableMemoryBlock(handle2) == data);
+
+	BOOST_CHECK_EQUAL(pool1->totalBytesAllocated(), kTenMegabytes);
+	BOOST_CHECK_EQUAL(pool2->totalBytesAllocated(), kTenMegabytes);
+
+	pool1->free(data);
+
+	BOOST_CHECK_EQUAL(pool1->totalBytesAllocated(), kTenMegabytes);
+	BOOST_CHECK_EQUAL(pool2->totalBytesAllocated(), kTenMegabytes);
+
+	pool1->free(data);
+
+	BOOST_CHECK_EQUAL(pool1->totalBytesAllocated(), 0);
+	BOOST_CHECK_EQUAL(pool2->totalBytesAllocated(), kTenMegabytes);
+
+	pool2->free(data);
+
+	BOOST_CHECK_EQUAL(pool1->totalBytesAllocated(), 0);
+	BOOST_CHECK_EQUAL(pool2->totalBytesAllocated(), 0);
+	}
+
+
+BOOST_AUTO_TEST_CASE( test_computing_state_transition_happy_path )
+	{
+	//an ECMP can be in one of five states, each of which can transfer to some subset of other
+	//states.
+
+	//CLEAN (->HAS_LOCKS)
+	//HAS LOCKS (->EXECUTING)
+	//EXECUTING (->HAS_LOCKS, ->NEEDS_CLEAN)
+	//NEEDS_CLEAN (->CLEAN)
+	//
+	boost::shared_ptr<ExecutionContextMemoryPool> pool(
+		new ExecutionContextMemoryPool(0, 
+			PolymorphicSharedPtr<VectorDataMemoryManager>(
+				new VectorDataMemoryManager(
+					CallbackScheduler::singletonForTesting(),
+					CallbackScheduler::singletonForTesting()
+					)
+				)
+			)
+		);
+
+	//state CLEAN
+	BOOST_CHECK(!pool->isDirty());
+	BOOST_CHECK(!pool->needsCleanBeforeExecuting());
+	BOOST_CHECK(!pool->hasAcquiredPageLocks());
+
+	BOOST_CHECK_THROW(pool->beginExecution(), std::logic_error); //illegal
+
+	//HAS_LOCKS - we can always call this
+	BOOST_CHECK(pool->acquireLocksOnPagelets());
+	BOOST_CHECK(pool->hasAcquiredPageLocks());
+	BOOST_CHECK(pool->acquireLocksOnPagelets());
+
+
+	//EXECUTING
+	BOOST_CHECK(pool->beginExecution());
+	BOOST_CHECK(pool->isExecuting());
+
+	BOOST_CHECK_THROW(pool->acquireLocksOnPagelets(), std::logic_error); 
+	BOOST_CHECK_THROW(pool->memoryPoolIsClean(), std::logic_error); 
+
+	pool->endExecution();
+	
+	//HAS LOCKS
+	BOOST_CHECK(!pool->isExecuting());
+	BOOST_CHECK(!pool->needsCleanBeforeExecuting());
+	BOOST_CHECK(pool->hasAcquiredPageLocks());
+
+	//EXECUTING
+	BOOST_CHECK(pool->beginExecution());
+	pool->triggerCleaningCycleIfDirty();
+	pool->endExecution();
+
+	//NEEDS_CLEAN
+	BOOST_CHECK(pool->needsCleanBeforeExecuting());
+	BOOST_CHECK(!pool->beginExecution());	//not allowed to execute
+	pool->memoryPoolIsClean();
+	BOOST_CHECK(!pool->needsCleanBeforeExecuting());
+	BOOST_CHECK(!pool->hasAcquiredPageLocks());
+	}
+
+
+BOOST_AUTO_TEST_SUITE_END()
+

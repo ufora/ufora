@@ -1,0 +1,248 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#ifndef FORA_Type_hppml
+#define FORA_Type_hppml
+
+#include <boost/shared_ptr.hpp>
+
+#include "Type.fwd.hppml"
+
+#include "../../core/Common.hppml"
+#include <vector>
+#include <string>
+#include "CSTValue.hppml"
+#include "../../core/cppml/CPPMLEquality.hppml"
+#include "../../core/cppml/CPPMLOpaqueHandle.hppml"
+#include "../../core/cppml/MemoizeByTagAndHash.hppml"
+#include "../../core/containers/ImmutableTreeVector.hppml"
+#include "../../core/containers/ImmutableTreeMap.hppml"
+#include "../../core/math/Nullable.hpp"
+#include "../../core/math/Hash.hpp"
+#include "../../core/cppml/CPPMLPrettyPrinter.hppml"
+#include "../Primitives/Symbol.hpp"
+#include "Integers.hppml"
+#include "../Primitives/Dictionary.hppml"
+#include "../Primitives/DateTime.hppml"
+#include "../Primitives/TimeDuration.hppml"
+#include "ClassBody.hppml"
+using namespace std;
+
+class JudgmentOnValue;
+
+class ExternalFunctionDescriptor;
+
+class String;
+
+typedef Symbol symbol_type;
+typedef void* void_ptr;
+typedef String string_type;
+typedef Dictionary dict_type;
+typedef DateTime date_time_type;
+typedef TimeDuration time_duration_type;
+
+class Type;
+
+macro_memoizeCppmlClassByTagAndHash(Type);
+
+class AlternativeData {
+public:
+		Symbol 	symbol;
+		char	data[0];
+};
+
+@type
+	Type =
+			Nothing of ()
+		-|	String of ()
+		-|	DateTime of ()
+		-|	TimeDuration of ()
+		-|	Symbol of ()
+		-|	Tag of ()
+		-|	JOVAsValue of ()
+		-|	StackTrace of ()
+		-|	Integer of uint32_t bits, bool isSigned
+		-|	Float of uint32_t bits
+		-|	Alternative of Type eltType	//laid out as (Symbol, t)
+		-|	Tuple of 	ImmutableTreeVector<Type> types,
+						ImmutableTreeVector<Nullable<symbol_type> > names
+		-|	Class of 	ImmutableTreeVector<Type> elements,
+						ClassBody classBody
+		-|	ExternalFunction of bool isCST
+		-|	Vector of ()
+		-|	MutableVector of ()
+		-|	Dictionary of bool isCST
+	with
+		hash_type hash = (hashCPPMLDirect(*this)),
+		bool isPOD = (this->computeIsPOD()),
+		bool isDirectlySerializable = (this->computeIsDirectlySerializable()),
+		bool hasDictionaryWithin = (this->computeHasDictionaryWithin()),
+		uword_t size = (this->computeSize()),
+		ImmutableTreeVector<uint64_t> byteOffsets = (this->computeByteOffsets()),
+		void* typeAsJovAsVoid = (this->computeTypeAsJov())
+	{
+	public:
+			const JudgmentOnValue& typeAsJov() const
+				{
+				return *(const JudgmentOnValue*)&typeAsJovAsVoid();
+				}
+
+			bool computeHasDictionaryWithin(void) const;
+			bool computeIsPOD(void) const;
+			bool computeIsDirectlySerializable(void) const;
+			uword_t computeSize(void) const;
+			ImmutableTreeVector<uint64_t> computeByteOffsets(void) const;
+
+			void* computeTypeAsJov(void) const;
+
+			static Type	Class(const ClassMediator& inMediator);
+			static Type	Class(
+						const ImmutableTreeVector<Type>& elements,
+						const ClassMediator& mediator,
+						const ClassMediatorResumption& resumption
+						);
+			
+			static Type Bool(void);
+
+			string toString(void) const;
+			void toString(CPPMLPrettyPrintStream  str) const;
+
+			//hash a set of values of this type. If 'inStride' is then we take it to mean
+			//the default stride of the object (e.g. this->size()). Stride may not be less than
+			//sz unless it's zero.
+			hash_type hashObject(void* data, size_t inCount = 1, size_t inStride = 0) const;
+
+			void toString(CPPMLPrettyPrintStream  st, void* data) const;
+
+			//initialize 'inCount' elements of this type packed at 'dest' from 
+			//elements packed at 'source'
+			void initialize(
+					void* dest, 
+					const void* source, 
+					uword_t inCount
+					) const;
+
+			//initialize 'inCount' elements of this type packed at 'dest' from 
+			//elements packed at 'source', stepping by 'inStride' bytes
+			void initialize(
+					void* dest, 
+					const void* source, 
+					uword_t inCount, 
+					uword_t inStrideDest, 
+					uword_t inStrideSource
+					) const;
+
+			//initialize 'inCount' elements at pointer array 'dest' from 
+			//elements at pointer array 'source'. Offset each pointer by
+			//dest and source nudges, respectively
+			void initializeScattered(
+					void** dest,
+					const void** source,
+					uword_t inCount,
+					uword_t inDestNudge,
+					uword_t inSourceNudge
+					) const;
+
+			//initialize one element of this type at dest from data at source
+			void initialize(void* dest, const void* source) const;
+
+			//initialize one element of this type at dest to its canonical value
+			void initialize(void* dest, MemoryPool* inPool) const;
+
+			//initialize several elements of this type at dest to the canonical value for the type
+			void initialize(void* dest, uword_t inStride, MemoryPool* inPool) const;
+
+			//initialize several elements of this type at dest to the canonical value for the type
+			//step by 'inStride' bytes per
+			void initialize(void* dest, uword_t inCount, uword_t inStride, MemoryPool* inPool) const;
+
+			//initialize several elements of this type at dest to the canonical value for the type
+			void initializeScattered(void** dest, uword_t inCount, uword_t inNudge, MemoryPool* inPool) const;
+
+			//destroy one element of this type at dest
+			void destroy(void* dest) const;
+			
+			//destroy 'inCount' elements of this type at dest
+			void destroy(void* dest, uword_t inCount) const;
+			
+			//destroy 'inCount' elements of this type at dest, skipping by 'inStride' bytes each time
+			void destroy(void* dest, uword_t inCount, uword_t inStride) const;
+
+			//destroy 'inCount' elements the pointer array at 'dest', with each
+			//pointer offset by 'nudge'
+			void destroyScattered(void** dest, uword_t inCount, uword_t inNudge) const;
+			
+			//compare two values and return -1, 0, or 1 based on a cryptographic hash of their data
+			char cmp(void* l, void* r) const;
+
+			bool isCST(void* data) const;
+
+			static Type Tuple();
+			static Type UnnamedTuple(const ImmutableTreeVector<Type>& inElements);
+	}
+	;
+
+template<class T, class T2>
+class CPPMLTransform;
+
+template<class T, class T2>
+class CPPMLTransformWithIndex;
+
+template<class T, class T2>
+class CPPMLVisit;
+
+template<class T, class T2>
+class CPPMLVisitWithIndex;
+
+
+/***
+macros to reassemble objects passed in from LLVM which decomposes
+them into their component registers and passes each individually.
+
+Usage:
+
+extern "C" {
+BSA_DLLEXPORT
+Y_returnType myfun(X_raw(val))
+	{
+	X_assemble(val);
+	...
+	//val is now of type X
+
+	Y_return(an expr with Y)
+	}
+}	
+****/
+
+
+//Macros to help assemble some basic types
+#define Symbol_raw(x) uint64_t x##_arg
+#define Symbol_assemble(x) const Symbol& x(*(Symbol*)& x##_arg );
+#define Symbol_returnType uint64_t
+#define Symbol_return(x) { uint64_t toReturn; new ((Symbol*)&toReturn) Symbol(x); return toReturn; }
+
+static_assert(sizeof(TimeDuration) == sizeof(uint64_t), "sizeof(TimeDuration) == sizeof(uword_t)!");
+static_assert(sizeof(DateTime) == sizeof(uint64_t), "sizeof(DateTime) == sizeof(uword_t)!");
+
+namespace CPPML {
+template<>
+class Validator<Type_TupleType, void> {
+public:
+	void operator()(Type_TupleType& in) const;
+};
+}
+
+#endif
+

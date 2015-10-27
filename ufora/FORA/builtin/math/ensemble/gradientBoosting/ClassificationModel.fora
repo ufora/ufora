@@ -1,0 +1,268 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#Markdown("""### ClassificationModel
+
+#### Description
+
+A class representing gradient-boosted classification tree 
+model fit to data.
+
+This class works for 2 or more classes. For binary classification, 
+we have a class BinaryClassificationModel which has special logic to
+allow fitting exactly _one_ tree at each boosting stage (this class 
+produces k trees at each stage, where k is the number of classes).
+""")
+class {
+    // mAdditiveRegressionTrees is a vector of length nClasses
+    // containing AdditiveRegressionTree instances which give, essentially, the 
+    // probabilities of lying in the appropriate class.
+    member mAdditiveRegressionTrees;
+    member mX;
+    member classes;
+    member nClasses;
+    member mXDimensions;
+    member m_yAsSeries;
+    member mLoss;
+    member mRegressionTreeBuilder;
+    member mLearningRate;
+
+    mixin classifierMixin;
+
+    `hidden
+    predictionFunction_: fun(row) {
+        classes[argmax(predictProbaFun_(row))];
+        };
+
+    predictProbability: 
+#Markdown("""#### Usage
+
+    classificationModel.predictProbability(dataframe.DataFrame(df))
+    classificationModel.predictProbability(row)
+
+#### Description
+
+Return probability estimates of the rows of a dataframe `df`, or 
+of a single row `row`. Each such estimate is a vector of length 
+`classificationModel.nClasses`, with order corresponding to 
+`classificationModel.classes`.
+""")
+    fun
+    (dataframe.DataFrame(df)) {
+        df.rowApply(self.predictProbaFun_)
+        }
+    (row) {
+        self.predictProbaFun_(row)
+        };
+
+    `hidden
+    predictProbaFun_: fun(row) {
+        let unnormalizedProbabilities = 
+            mAdditiveRegressionTrees ~~ { math.exp(_.predict(row)) }; 
+        let normalizer = unnormalizedProbabilities.sum();
+        return unnormalizedProbabilities ~~ 
+            { _ / normalizer };
+        };
+
+    `hidden
+    computeRegressionValues: fun(df, previousRegressionValues:) {
+        if (previousRegressionValues is nothing)
+            {
+            return dataframe.DataFrame(
+                mAdditiveRegressionTrees.apply(
+                    fun(additiveRegressionTree) {
+                        df.rowApply(fun(row) { additiveRegressionTree.predict(row) })
+                        }
+                    )
+                );
+            }
+
+        let finalTreeRegressionValues = 
+            dataframe.DataFrame(
+                mAdditiveRegressionTrees.apply(
+                    fun(additiveRegressionTree) {
+                        df.rowApply(
+                            fun(row){
+                                additiveRegressionTree.getTree(-1).predict(row)
+                                }
+                            )
+                        }
+                    )
+                );
+
+        previousRegressionValues + finalTreeRegressionValues
+        };
+
+    `hidden
+    computeProbabilities: fun(regressionValues) {
+        let unnormalizedProbabilities = 
+            dataframe.DataFrame(
+                regressionValues.columnApply(
+                    fun(column) {
+                        column ~~ { math.exp(_) }
+                        }
+                    )
+                )
+
+        let normalizers = unnormalizedProbabilities.rowApply({ _.sum() });
+        
+        unnormalizedProbabilities.columnApply(
+            fun(column) {
+                column / normalizers
+                }
+             )
+        };   
+
+    `hidden
+    pseudoResidualsAndRegressionValues: fun(previousRegressionValues) {
+        let regressionValues = 
+            computeRegressionValues(
+                mX, previousRegressionValues: previousRegressionValues
+                );
+
+        let probabilities = computeProbabilities(regressionValues)
+
+        return (mLoss.negativeGradient(m_yAsSeries, probabilities, classes),
+                regressionValues);
+        };
+
+    `hidden
+    static getInitialModel: 
+    fun(X, yAsSeries, classes, learningRate, treeBuilderArgs) {
+        let loss = losses.multinomialLoss;
+        let nClasses = size(classes);
+        let additiveRegressionTrees = 
+            loss.initialModel(nClasses, classes, yAsSeries);
+
+        let XDimensions = Vector.range(X.numColumns);
+
+        let baseModelBuilder = math.tree.RegressionTreeBuilder(*treeBuilderArgs);
+
+        createInstance(
+            cls, mAdditiveRegressionTrees: additiveRegressionTrees,
+            mX: X, classes: classes, nClasses: nClasses, 
+            mXDimensions: XDimensions,
+            m_yAsSeries: yAsSeries, 
+            mLoss: loss,
+            mRegressionTreeBuilder: baseModelBuilder,
+            mLearningRate: learningRate
+            );
+        };
+
+    `hidden
+    boost: fun(pseudoResiduals) {
+        // pseudoResiduals are vectors of length nClasses 
+        // holding vectors of length size(mX)
+        let localX = mX;
+        let yDim = localX.numColumns;
+
+        let nextRegressionTrees = 
+            Vector.range(
+                nClasses, 
+                fun (ix) {
+                    mRegressionTreeBuilder.fit_(
+                        localX.addColumn(pseudoResiduals[ix]),
+                        yDim: yDim, xDimensions: mXDimensions,
+                        leafValueFun: mLoss.leafValueFun(nClasses, mLearningRate)
+                        )
+                    }
+                );                     
+
+        let nextAdditiveRegressionTrees = 
+            zipWith(fun(x, y) { x + y }, 
+                    mAdditiveRegressionTrees,
+                    nextRegressionTrees);
+
+        return ClassificationModel(
+            mAdditiveRegressionTrees: nextAdditiveRegressionTrees,
+            mX: mX, classes: classes, nClasses: nClasses,
+            mXDimensions: mXDimensions,
+            m_yAsSeries: m_yAsSeries, mLoss: mLoss,
+            mRegressionTreeBuilder: mRegressionTreeBuilder,
+            mLearningRate: mLearningRate
+            );
+        };
+
+    featureImportances:
+    #Markdown(
+        """#### Usage
+
+            classificationModel.featureImportances()
+
+        #### Description
+
+        Return a `math.tree.FeatureImportances` object, which summarizes a measure of 
+        feature importance for the regression tree proposed by Breiman et al.
+
+        Element-wise, this measure gives the average feature importance for each of 
+        the tree-wise importances of the feature for each of the trees making up 
+        the GBM ensemble, averaged over all classes.
+
+        The tree-wise importance of feature `i` is a sort of weighted sum of 
+        impurity improvements of any internal nodes in the tree for which feature 
+        `i` is the split dimension.
+
+        Feature importances are normalized to sum to 1 with larger values being more
+        "important".
+
+        """)
+    fun()
+        {
+        let importances = rawFeatureImportances();
+
+        math.tree.FeatureImportances(importances, mX.columnNames)
+        };
+
+    rawFeatureImportances: 
+    #Markdown(
+        """#### Usage
+
+            classificationModel.rawFeatureImportances()
+
+        #### Description
+
+        Return Vector of feature importance for the regression tree proposed by 
+        Breiman et al.
+
+        Element-wise, this measure gives the average feature importance for each of 
+        the tree-wise importances of the feature for each of the trees making up 
+        the GBM ensemble, averaged over all classes.
+
+        The tree-wise importance of feature `i` is a sort of weighted sum of 
+        impurity improvements of any internal nodes in the tree for which feature 
+        `i` is the split dimension.
+
+        Feature importances are normalized to sum to 1 with larger values being more
+        "important".
+
+        """)
+    fun()
+        {
+        let featureImportancesByClass = 
+            mAdditiveRegressionTrees.apply(
+                fun(additiveRegressionTree) {
+                    additiveRegressionTree.trees()[1,].apply(
+                        fun(tree) { math.Matrix(tree.rawFeatureImportances()) }
+                        ).sum() / (additiveRegressionTree.numTrees() - 1.0)
+                    }
+                );
+
+        let tr = featureImportancesByClass.sum();
+
+        return (tr / size(mAdditiveRegressionTrees)).columnMajorData();
+        };
+    };
+
+

@@ -1,0 +1,123 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "LiveValue.hppml"
+#include "../TypedFora.hppml"
+#include "../../../core/UnitTest.hpp"
+#include "../../Core/CSTValue.hppml"
+#include "../../Core/RefcountPool.hppml"
+#include "../../Core/MemoryPool.hpp"
+
+using TypedFora::RefcountStyle;
+
+using TypedFora::Abi::LiveValue;
+
+using Fora::Interpreter::RefcountPool;
+
+namespace {
+
+RefcountStyle styleByIndex(uword_t inIndex)
+	{
+	if (inIndex == 0)
+		return RefcountStyle::AsValueUnowned();
+	if (inIndex == 1)
+		return RefcountStyle::AsValueOwned();
+	if (inIndex == 2)
+		return RefcountStyle::Pooled();
+	lassert(false);
+	}
+
+void runTransferTrial(const CSTValue& stringVal, const TypedFora::Type& t2, const TypedFora::Type& t3)
+	{
+	uword_t valueRefcount = stringVal.cast<String>().refcount();
+
+	std::string msg;
+
+	RefcountPool pool(MemoryPool::getFreeStorePool());
+
+	ImplVal stringAsOwnedImplval = stringVal.getReference().duplicate();
+	ImplVal stringAsOwnedImplvalExtraRefcount = stringAsOwnedImplval.duplicate();
+	ImplVal finalImplval;
+
+	TypedFora::Type t1(JOV(), RefcountStyle::AsValueOwned());
+	TypedFora::Type t4(JOV(), RefcountStyle::AsValueOwned());
+	
+	//some memory to use as scratch space
+	char data1[sizeof(ImplVal) < sizeof(String) ? sizeof(String):sizeof(ImplVal)];
+	char data2[sizeof(ImplVal) < sizeof(String) ? sizeof(String):sizeof(ImplVal)];
+	
+	TypedFora::Abi::transferCastLiveValue(data1, t2, &stringAsOwnedImplval, t1, &pool);
+	TypedFora::Abi::transferCastLiveValue(data2, t3, data1, t2, &pool);
+	TypedFora::Abi::transferCastLiveValue(&finalImplval, t4, data2, t3, &pool);
+
+	msg = prettyPrintString(t1) + " -> " 
+				+ prettyPrintString(t2) + " -> " 
+				+ prettyPrintString(t3) + " -> " 
+				+ prettyPrintString(t4) + ".";
+
+		{
+		CSTValue finalCSTVal(finalImplval);
+		BOOST_CHECK_MESSAGE(finalCSTVal == stringVal, "failed converting " + msg);
+		}
+
+	finalImplval.destroy();
+	stringAsOwnedImplvalExtraRefcount.destroy();
+	pool.clear();
+
+	BOOST_CHECK_MESSAGE(valueRefcount == stringVal.cast<String>().refcount(),
+			("value refcount changed. " + msg) << ". was " << valueRefcount
+				<< ". now its " << stringVal.cast<String>().refcount()
+			);
+	}
+
+}
+
+BOOST_AUTO_TEST_CASE( test_TypedFora_Abi_LiveValueManipulation )
+	{
+	//build a string object, cast it around, and verify that it's refcounted correctly
+	CSTValue stringVal("a string that's large enough to create a refcount");
+
+	//check the refcount is what we think it is;
+	BOOST_CHECK_EQUAL(stringVal.cast<String>().refcount(), 1);
+
+		{
+		//the JOVs we'll test
+		ImmutableTreeVector<JOV> jovs;
+		jovs = jovs + JOV::Constant(stringVal);
+		jovs = jovs + JOV::OfType(stringVal.type());
+		jovs = jovs + JOV();
+
+		//force them to cache their types and constants ahead of time
+		for (long k = 0; k < jovs.size();k++)
+			{
+			jovs[k].constant();
+			jovs[k].type();
+			}
+
+		for (int sourceStyleIndex = 0; sourceStyleIndex < 3; sourceStyleIndex++)
+			for (int destStyleIndex = 0; destStyleIndex < 3; destStyleIndex++)
+				for (int jovSrc = 0; jovSrc < jovs.size();jovSrc++)
+					for (int jovDest = 0; jovDest < jovs.size();jovDest++)
+						{
+						TypedFora::Type t2(jovs[jovSrc], styleByIndex(sourceStyleIndex));
+						TypedFora::Type t3(jovs[jovDest], styleByIndex(destStyleIndex));
+
+						runTransferTrial(stringVal, t2, t3);
+						}
+		}
+	
+	//verify the refcount is two (it's being held in the JOV which is memoized)
+	BOOST_CHECK_EQUAL(stringVal.cast<String>().refcount(), 2);
+	}

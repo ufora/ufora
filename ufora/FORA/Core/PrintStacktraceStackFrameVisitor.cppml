@@ -1,0 +1,238 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "PrintStacktraceStackFrameVisitor.hppml"
+#include "../TypedFora/ABI/Stackframes.hppml"
+#include "../TypedFora/ABI/LiveValue.hppml"
+#include "../ControlFlowGraph/ControlFlowGraphToCodeLocation.hppml"
+#include "../TypedFora/ABI/HomogenousVectorStashCodegen.hppml"
+
+PrintStacktraceStackFrameVisitor::PrintStacktraceStackFrameVisitor(
+			std::ostream& outStream,
+			bool printStackValues,
+			uword_t maxStacktraceBytecount
+			) : 
+		mStream(outStream),
+		mPrintStackValues(printStackValues),
+		mMaxStacktraceBytecount(maxStacktraceBytecount)
+	{
+	}
+
+bool PrintStacktraceStackFrameVisitor::visitFreeValue(ImplVal& value, bool isOwned)
+	{
+	return true;
+	}
+
+bool PrintStacktraceStackFrameVisitor::visitFreeValue(const ::Type& type, void* data, bool isOwned)
+	{
+	return true;
+	}
+
+bool PrintStacktraceStackFrameVisitor::visitFreeValue(ImplValContainer& ioContainer)
+	{
+	return true;
+	}
+
+void PrintStacktraceStackFrameVisitor::dumpValueToStream(const NativeContinuationVarMetadataSerialized& varMetadata, void* data)
+	{
+	std::vector<char> tempData;
+	
+	if (!varMetadata.layout())
+		{
+		mStream << "[... no data ...]";
+		return;
+		}
+
+	TypedFora::Abi::LiveValue value = 
+		TypedFora::Abi::NativeStackFrameWrapper::readStackFrameLayoutToLiveValue(tempData, varMetadata, data);
+
+	ImplVal iv = value.getImplval();
+
+	if ((*varMetadata.layout())->jov().constant())
+		{
+		mStream << "[const" << prettyPrintString((*varMetadata.layout())->refcountStyle()) << "] " 
+			<< prettyPrintString(iv);
+		}
+		else
+	if ((*varMetadata.layout())->jov().type())
+		{
+		mStream << "[typed" << prettyPrintString((*varMetadata.layout())->refcountStyle()) << "] "
+			<< prettyPrintString(iv);
+		}
+	else
+		{
+		mStream << "[implv" << prettyPrintString((*varMetadata.layout())->refcountStyle()) << "] " 
+			<< prettyPrintString(iv);
+		}
+	}
+
+bool PrintStacktraceStackFrameVisitor::visitNativeStackFrame(
+				TypedFora::Abi::NativeStackFrameWrapper& stackFrame
+				)
+	{
+	if (checkDone())
+		return false;
+	
+	ImmutableTreeVector<NativeContinuationMetadataSerialized> meta = stackFrame.getMetadata();
+	ImmutableTreeVector<NativeType> slotTypes = stackFrame.getSlotTypes();
+
+	mStream << Runtime::getRuntime().getTypedForaCompiler()->nameForFunctionPointer(
+			stackFrame.getContinuation().jumpPtr()
+			) << " @ " << (void*)stackFrame.getSlotData() << "\n";
+
+	long offset = 0;
+
+	for (long k = 0; k < slotTypes.size();k++)
+		{
+		if (slotTypes[k] == NativeTypeFor<HomogenousVectorStashSpecialType*>::get())
+			{
+			char* stashPointer = *(char**)((char*)stackFrame.getSlotData() + offset);
+
+			if (stashPointer)
+				mStream << "\tstash pointer at slot " << k << ": " << (void*)stashPointer << "\n";
+			}
+
+		offset += slotTypes[k].packedSize();
+		}
+
+	if (mPrintStackValues)
+		{
+		for (long k = ((long)meta.size()-1); k >= 0; k--)
+			{
+			@match NativeContinuationMetadataInstruction(meta[k].node())
+				-| TypedForaInstruction(tfMetadata) ->> {
+					@match TypedFora::MetadataInstruction(*tfMetadata)
+						-| Node((graph, label)) ->> {
+							mStream << "\tNode(" << graph.graphName() 
+									<< prettyPrintString(graph.hash()) << ", " << ", " 
+									<< (label?*label:std::string("<null>")) << ")\n";
+							}
+						-| NodeWithResult((graph, label), index) ->> {
+							mStream << "\tNodeWithResult(" << graph.graphName() 
+									<< prettyPrintString(graph.hash()) << ", " 
+									<< ", " << (label?*label:std::string("<null>")) << ")\n"
+									;
+							}
+					}
+				-| LocalVariables() ->> {
+					mStream << "\tLocalVariables\n";
+					}
+				;
+
+			for (long j = 0; j < meta[k].vars().size();j++)
+				{
+				mStream << "\t\t";
+				dumpValueToStream(meta[k].vars()[j], stackFrame.getSlotData());
+				mStream << "\n";
+				}
+			}
+
+		/* uncomment to print out stack slots when debugging
+		long offset = 0;
+
+		for (long j = 0; j < slotTypes.size();j++)
+			{
+			mStream << "\t\tslot " << j << ": " << prettyPrintString(slotTypes[j]);
+
+			if (slotTypes[j] == NativeTypeFor<VectorRecord>::get())
+				mStream << " -> " << (void*)((VectorRecord*) ((char*)val.stackframePtr() + offset))->leaf.dataPtr << "\n";
+
+			mStream << "\n";
+
+			offset += slotTypes[j].packedSize();
+			}*/
+		}
+
+	return true;
+	}
+
+bool PrintStacktraceStackFrameVisitor::visitInterpreterStackFrame(
+				Fora::Interpreter::EvalFrame* stackFrame
+				)
+	{
+	if (checkDone())
+		return false;
+
+	auto location = ControlFlowGraphToCodeLocation::graphAndLabelToDisplayString(
+					stackFrame->instructionPtr->getGraph(),
+					stackFrame->instructionPtr->getLabel()
+					);
+
+	mStream << "interpreter["
+			<< (location ? *location : std::string("<unknown location>"))
+			<< " = "
+			<< prettyPrintString(stackFrame->instructionPtr->getGraph().graphName()) << ":"
+			<< prettyPrintString(stackFrame->instructionPtr->getLabel()) << "] @ " << (void*)stackFrame << ". uniqueId="
+			<< stackFrame->uniqueId
+			<< "\n"
+			;
+
+	if (mPrintStackValues)
+		for (long k = 0; k < stackFrame->evalFrameArgList().size();k++)
+			mStream << "\t" << prettyPrintString(stackFrame->evalFrameArgList()[k]) << "\n";
+
+	return true;
+	}
+
+bool PrintStacktraceStackFrameVisitor::visitResultSignatureAdapterStackFrame(
+				TypedFora::Abi::ResultSignatureAdapterFrame* stackFrame
+				)
+	{
+	if (checkDone())
+		return false;
+	
+	mStream << "adaptDataAndFollowContinuation @ " << (void*)stackFrame << "\n";
+
+	return true;
+	}
+
+bool PrintStacktraceStackFrameVisitor::visitHeldImplvalTeardownFrame(
+				TypedFora::Abi::InterpreterUniqueIdHolderFrame* stackFrame
+				)
+	{
+	if (checkDone())
+		return false;
+	
+	mStream << "teardownAndFollowContinuation @ " << (void*)stackFrame << ",uniqueId=" << stackFrame->originalStackFrameUniqueId << "\n";
+
+	return true;
+	}
+
+bool PrintStacktraceStackFrameVisitor::visitCppCallbackFrame(
+				TypedFora::NativeCppCallbackStackframe* cppCallbackFrame
+				)
+	{
+	if (checkDone())
+		return false;
+	
+	mStream << "cppCallbackFrame @ " << (void*)cppCallbackFrame << "\n";
+	
+	return true;
+	}
+
+bool PrintStacktraceStackFrameVisitor::checkDone() const
+	{
+	if (mStream.tellp() > mMaxStacktraceBytecount)
+		{
+		mStream << "\nAdditional frames remain, but are not being dumped because we "
+			 << "exceeded the bytecount limit of " << mMaxStacktraceBytecount << "\n";
+		
+		return true;
+		}
+
+	return false;
+	}
+
+

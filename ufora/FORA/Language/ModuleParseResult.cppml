@@ -1,0 +1,114 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ModuleParseResult.hppml"
+#include "FunctionUtil.hppml"
+
+namespace Fora {
+
+ImmutableTreeSet<Symbol> ModuleParseResult::computeFreeVariables() const
+	{
+	@match ModuleParseResult(*this)
+		-| Member(name, meta, ParseError()) ->>  {
+			return ImmutableTreeSet<Symbol>();
+			}
+		-| Member(name, meta, Result(e)) ->>  {
+			return e.freeVariables();
+			}
+		-| Module(name, meta, parseErrors, submodules, allSubnamesAreKnown) ->> {
+			if (!allSubnamesAreKnown)
+				return ImmutableTreeSet<Symbol>();
+
+			ImmutableTreeSet<Symbol> freeVariables;
+			ImmutableTreeSet<Symbol> boundVariables;
+
+			//all modules implicitly bind their own name in place of 'self'
+			boundVariables = boundVariables + name + name;
+			
+			for (auto nameAndChild: submodules)
+				{
+				freeVariables = freeVariables + nameAndChild.second.freeVariables();
+				boundVariables = boundVariables + nameAndChild.first;
+				}
+
+			return freeVariables - boundVariables;
+			}
+	}
+ImmutableTreeVector<ModuleParseError> ModuleParseResult::computeAllErrors() const
+	{
+	@match ModuleParseResult(*this)
+		-| Member(name, meta, ParseError(e)) ->>  {
+			return emptyTreeVec() + e;
+			}
+		-| Member(name, meta, Result(e)) ->>  {
+			return emptyTreeVec();
+			}
+		-| Module(name, meta, parseErrors, submodules, allSubnamesAreKnown) ->> {
+			ImmutableTreeVector<ModuleParseError> res = parseErrors;
+
+			for (auto nameAndChild: submodules)
+				res = res + nameAndChild.second.errors();
+
+			return res;
+			}
+	}
+
+ImmutableTreeSet<CodeLocation> ModuleParseResult::computeFreeVariableLocations(
+										const Symbol& inVariable
+										) const
+	{
+	if (!freeVariables().contains(inVariable))
+		return emptyTreeSet();
+
+	@match ModuleParseResult(*this)
+		-| Member(name, meta, ParseError()) ->>  {
+			return ImmutableTreeSet<CodeLocation>();
+			}
+		-| Member(name, meta, Result(e)) ->>  {
+			return ::computeFreeVariableLocations(e, inVariable);
+			}
+		-| Module(name, meta, parseErrors, submodules, allSubnamesAreKnown) ->> {
+			ImmutableTreeSet<CodeLocation> res;
+
+			for (auto nameAndChild: submodules)
+				res = res + nameAndChild.second.computeFreeVariableLocations(inVariable);
+
+			return res;
+			}
+	}
+
+Symbol ModuleParseResult::name() const
+	{
+	@match ModuleParseResult(*this)
+		-| Member(name) ->> {
+			return name;
+			}
+		-| Module(name) ->> {
+			return name;
+			}
+	}
+
+CodeLocation ModuleParseResult::location() const
+	{
+	@match ModuleParseResult(*this)
+		-| Member(_,_,_,cl) ->> {
+			return cl;
+			}
+		-| Module(_,_,_,_,_,cl) ->> {
+			return cl;
+			}
+	}
+
+}

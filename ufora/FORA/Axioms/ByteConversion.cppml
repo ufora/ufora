@@ -1,0 +1,183 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "AxiomGroup.hppml"
+#include "ReturnValue.hpp"
+#include "LibcallAxiomGroup.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../Core/MemoryPool.hpp"
+#include "../TypedFora/ABI/VectorRecordCodegen.hppml"
+#include "../TypedFora/ABI/VectorLoadRequest.hppml"
+#include "../TypedFora/ABI/VectorLoadRequestCodegen.hppml"
+
+using namespace Fora;
+
+using TypedFora::Abi::VectorRecord;
+using TypedFora::Abi::ForaValueArray;
+using TypedFora::Abi::ForaValueArraySlice;
+using TypedFora::Abi::VectorLoadRequest;
+using Fora::Interpreter::ExecutionContext;
+
+extern "C" {
+	
+	#define def_FORA_clib_dataToType_(c_type, fora_type_string)			\
+	BSA_DLLEXPORT														\
+	ReturnValue<c_type, String, VectorLoadRequest> FORA_clib_dataToType_## \
+	c_type(const VectorRecord& vec)										\
+		{																\
+		MemoryPool* pool =												\
+			ExecutionContext::currentExecutionContext()					\
+			->getMemoryPool();											\
+																		\
+		if (vec.size() != sizeof(c_type))								\
+			{															\
+			std::ostringstream oss;										\
+			oss << "Can't convert this UInt8 vector to a "				\
+				<< fora_type_string << ": needed " << sizeof(c_type)	\
+				<< " bytes, got " << vec.size()							\
+				;														\
+																		\
+			return slot1(												\
+				String(													\
+					oss.str(),											\
+					pool												\
+					)													\
+				);														\
+			}															\
+																		\
+		c_type tr;														\
+		uint8_t* ptr = (uint8_t*)&tr;									\
+																		\
+		for (int16_t ix = 0;  ix < sizeof(c_type); ++ix)				\
+			{															\
+			ForaValueArraySlice slice =						\
+				vec.sliceForOffset(ix);									\
+																		\
+			uint8_t* index = 0;											\
+																		\
+			index = slice.offsetFor(ix);						\
+																		\
+			if (!index)													\
+				return slot2(VectorLoadRequest(vec, 0, vec.size()));	\
+																		\
+			ptr[ix] = *index;											\
+			}															\
+																		\
+		return slot0(tr);												\
+		}																\
+
+	def_FORA_clib_dataToType_(double, "Float64")
+	def_FORA_clib_dataToType_(float, "Float32")
+
+	def_FORA_clib_dataToType_(uint16_t, "UInt16")
+	def_FORA_clib_dataToType_(uint32_t, "UInt32")
+	def_FORA_clib_dataToType_(uint64_t, "UInt64")
+	def_FORA_clib_dataToType_(int16_t, "Int16")
+	def_FORA_clib_dataToType_(int32_t, "Int32")
+	def_FORA_clib_dataToType_(int64_t, "Int64")
+
+	
+	#define def_FORA_clib_dataAsVector_(c_type)							\
+	BSA_DLLEXPORT														\
+	ReturnValue<VectorRecord> FORA_clib_dataAsVector_ ##				\
+	c_type(c_type arg)													\
+		{																\
+		MemoryPool* pool =												\
+			ExecutionContext::currentExecutionContext()					\
+			->getMemoryPool();											\
+																		\
+		if (!pool->permitAllocation(sizeof(c_type)))					\
+			return slot0(VectorRecord());								\
+																		\
+		ForaValueArray* array =											\
+			ForaValueArray::Empty(pool);						\
+																		\
+		array->append(													\
+			JOV::OfType(Type::Integer(8, false)),						\
+			(uint8_t*)&arg, sizeof(c_type), 1							\
+			);															\
+																		\
+		return slot0(VectorRecord::createWithinExecutionContext(array)); \
+		}																\
+	
+	def_FORA_clib_dataAsVector_(double)
+	def_FORA_clib_dataAsVector_(float)
+
+	def_FORA_clib_dataAsVector_(uint16_t)
+	def_FORA_clib_dataAsVector_(uint32_t)
+	def_FORA_clib_dataAsVector_(uint64_t)
+	def_FORA_clib_dataAsVector_(int16_t)
+	def_FORA_clib_dataAsVector_(int32_t)
+	def_FORA_clib_dataAsVector_(int64_t)
+	
+	}
+
+class ByteConversionAxioms {
+public:
+	
+	ByteConversionAxioms()
+		{
+		#define dataToType(c_type, fora_type, fora_type_string)				\
+		AxiomGroups("ByteConversion") +=									\
+			LibcallAxiomGroup::create(										\
+				JOVT() +													\
+					jovVector(JOV::OfType(Type::Integer(8, false))) +		\
+					"Member" +												\
+					(std::string("dataAs") + fora_type_string) +			\
+					JOVTE::NoExtras(),										\
+				ReturnSlots() +												\
+					ReturnSlot::Normal(JOV::OfType(fora_type)) +			\
+					ReturnSlot::Exception(JOV::OfType(Type::String())),		\
+				&FORA_clib_dataToType_##c_type,								\
+				ImmutableTreeVector<uword_t>() + 0							\
+			);																\
+
+		dataToType(double, Type::Float(64), "Float64")
+		dataToType(float, Type::Float(32), "Float32")
+
+		dataToType(uint16_t, Type::Integer(16, false), "UInt16")
+		dataToType(uint32_t, Type::Integer(32, false), "UInt32")
+		dataToType(uint64_t, Type::Integer(64, false), "UInt64")
+		dataToType(int16_t, Type::Integer(16, true), "Int16")
+		dataToType(int32_t, Type::Integer(32, true), "Int32")
+		dataToType(int64_t, Type::Integer(64, true), "Int64")
+
+		#define typeToBytesAxiomGroup(c_type, fora_type)					\
+		AxiomGroups("ByteConversion") +=									\
+			LibcallAxiomGroup::create(										\
+				JOVT() +													\
+					JOV::OfType(fora_type) +								\
+					"Member" +												\
+					"dataAsVector" +										\
+					JOVTE::NoExtras(),										\
+				ReturnSlots() + jovVector(JOV::OfType(Type::Integer(8, false))), \
+				&FORA_clib_dataAsVector_##c_type,							\
+				ImmutableTreeVector<uword_t>() + 0							\
+			);																\
+		
+		typeToBytesAxiomGroup(double, Type::Float(64))
+		typeToBytesAxiomGroup(float, Type::Float(32))
+			
+		typeToBytesAxiomGroup(uint16_t, Type::Integer(16, false))
+		typeToBytesAxiomGroup(uint32_t, Type::Integer(32, false))
+		typeToBytesAxiomGroup(uint64_t, Type::Integer(64, false))
+		typeToBytesAxiomGroup(int16_t, Type::Integer(16, true))
+		typeToBytesAxiomGroup(int32_t, Type::Integer(32, true))
+		typeToBytesAxiomGroup(int64_t, Type::Integer(64, true))
+		}
+	};
+
+ByteConversionAxioms byteConversionAxioms;
+

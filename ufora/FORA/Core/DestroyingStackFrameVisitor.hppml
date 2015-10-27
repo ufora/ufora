@@ -1,0 +1,121 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+#include <iostream>
+
+#include "../TypedFora/ABI/StackFrameWalker.hppml"
+#include "../TypedFora/ABI/Stackframes.hppml"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+
+namespace Fora {
+namespace Interpreter {
+
+
+class DestroyingStackFrameVisitor : public TypedFora::Abi::StackFrameVisitor {
+public:
+	DestroyingStackFrameVisitor(
+							MemBlockAllocator& inStackAllocator,
+							bool inOnlyDestroyOneFrame = false
+							) : 
+			mStackAllocator(inStackAllocator),
+			mOnlyDestroyOneFrame(inOnlyDestroyOneFrame)
+		{
+		}
+
+	virtual bool visitFreeValue(ImplVal& value, bool isOwned)
+		{
+		return true;
+		}
+
+	virtual bool visitFreeValue(const ::Type& type, void* data, bool isOwned)
+		{
+		return true;
+		}
+
+	virtual bool visitFreeValue(ImplValContainer& ioContainer)
+		{
+		return true;
+		}
+
+	virtual bool visitNativeStackFrame(
+					TypedFora::Abi::NativeStackFrameWrapper& stackFrame
+					)
+		{
+		//get the metadata
+		ImmutableTreeVector<NativeContinuationMetadataSerialized> meta = stackFrame.getMetadata();
+		ImmutableTreeVector<NativeType> slotTypes = stackFrame.getSlotTypes();
+
+		for (long k = ((long)meta.size()-1); k >= 0; k--)
+			{
+			if (meta[k].node().isLocalVariables())
+				for (long j = 0; j < meta[k].vars().size();j++)
+					TypedFora::Abi::NativeStackFrameWrapper::destroyValue(meta[k].vars()[j], stackFrame.getSlotData());
+			}
+
+		mStackAllocator.free(stackFrame.getSlotData());
+
+		return !mOnlyDestroyOneFrame;
+		}
+
+	virtual bool visitInterpreterStackFrame(
+					Fora::Interpreter::EvalFrame* stackFrame
+					)
+		{
+		Fora::Interpreter::EvalFrame::free(stackFrame, mStackAllocator);
+
+		return !mOnlyDestroyOneFrame;
+		}
+
+	virtual bool visitResultSignatureAdapterStackFrame(
+					TypedFora::Abi::ResultSignatureAdapterFrame* stackFrame
+					)
+		{
+		stackFrame->~ResultSignatureAdapterFrame();
+
+		mStackAllocator.free(stackFrame);
+
+		return !mOnlyDestroyOneFrame;
+		}
+
+	virtual bool visitHeldImplvalTeardownFrame(
+					TypedFora::Abi::InterpreterUniqueIdHolderFrame* stackFrame
+					)
+		{
+		stackFrame->~InterpreterUniqueIdHolderFrame();
+
+		mStackAllocator.free(stackFrame);
+
+		return !mOnlyDestroyOneFrame;
+		}
+
+	virtual bool visitCppCallbackFrame(
+					TypedFora::NativeCppCallbackStackframe* cppCallbackFrame
+					)
+		{
+		mStackAllocator.free(cppCallbackFrame);
+
+		return true;
+		}
+private:
+	MemBlockAllocator& mStackAllocator;
+
+	bool mOnlyDestroyOneFrame;
+};
+
+
+}
+}
+

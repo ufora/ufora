@@ -1,0 +1,654 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+/*
+a Fora translation of scipy.optimize.fmin_slsqp:
+
+https://github.com/scipy/scipy/blob/v0.12.0/scipy/optimize/slsqp.py
+*/
+
+fmin_slsqp:
+#Markdown(
+"""
+#### Usage
+
+    math.optimize.fmin_slsqp(
+        func,
+        x0,
+        eqcons:= [], 
+        f_eqcons:= nothing, 
+        ieqcons:= [], 
+        f_ieqcons:= nothing,
+        bounds:= [], 
+        fprime:= nothing, 
+        fprime_eqcons:= nothing, 
+        fprime_ieqcons:= nothing, 
+        args:= (), 
+        maxiter:= 100, 
+        acc:= 1.0e-6,
+        epsilon:= 1e-6,
+        papply_gradients:= false
+        )
+#### Description
+
+Minimize a function using Sequential Least SQuares Programming. A translation of the scipy routine of the same name.
+
+#### Arguments
+
+* `func`: callable `fun(x, *args)`. The objective function to be minimized. `x` should be a vector.
+
+* `x0`: Vector of `Float64`. The initial guess for the minimizing point.
+
+* `eqcons`: A vector of fuctions such that for each (acceptable index) `i`, `eqcons[i](x, *args) == 0.0` in a successfully optimized problem. `x` should be a vector.
+
+* `ieqcons` : Vector
+A vector of functions of such that `ieqcons_elt(x,*args) >= 0.0` for each `ieqcons_elt in ieqcons` in a successfully optimized problem. `x` should be a vector.
+
+* `f_ieqcons`: callable `fun(x, *args)`
+Returns a Vector (of Float64) in which each element must be greater or equal to `0.0` in a successfully optimized problem. If `f_ieqcons` is specified, `ieqcons` is ignored. `x` should be a vector.
+
+* `bounds`: Vector
+A Vector of tuples specifying the lower and upper bound for each independent variable `[(xl0, xu0),(xl1, xu1), ... ]`
+
+* `fprime`: callable `fun(x, *args)`
+A function that evaluates the partial derivatives of `func`. `x` should be a vector.
+
+* `fprime_eqcons`: callable `fun(x, *args)`
+A function of the form `fun(x, *args)` that returns the m by n array of equality constraint normals. If not provided, the normals will be approximated. The array returned by `fprime_eqcons` should be sized as `(size(eqcons), size(x0))`. `x` should be a vector.
+
+* `fprime_ieqcons` : callable `fun(x, *args)`
+A function of the form `fun(x, *args) that returns the `m` by `n` array of inequality constraint normals. If not provided, the normals will be approximated. The array returned by `fprime_ieqcons` should be sized as `(size(ieqcons), size(x0))`. `x` should be a vector.
+
+* `args` : Tuple
+Additional arguments passed to `func` and `fprime`.
+
+* `maxiter` : Integer
+The maximum number of iterations.
+
+* `acc` : Float64
+Requested accuracy.
+
+* `epsilon` : Float64
+The step size for finite-difference derivative estimates.
+
+* `papply_gradients` : Bool
+If true, individual gradient evaluations are able to split (componentwise). This may be a good idea if function evaluations are very expensive.
+
+#### Returns
+
+A tuple with named members:
+
+* `x`: Vector of Float64
+Gives the best guess of the location of the (a) minimum.
+
+* `fx`: Float64
+Gives the value of the objective function at `x`
+
+* `mode`: Int32
+Gives the "exit mode" of the optimizer. Meanings:
+-1 : Gradient evaluation required (g & a)
+ 0 : Optimization terminated successfully.
+ 1 : Function evaluation required (f & c)
+ 2 : More equality constraints than independent variables
+ 3 : More than 3*n iterations in LSQ subproblem
+ 4 : Inequality constraints incompatible
+ 5 : Singular matrix E in LSQ subproblem
+ 6 : Singular matrix C in LSQ subproblem
+ 7 : Rank-deficient equality constraint subproblem HFTI
+ 8 : Positive directional derivative for linesearch
+ 9 : Iteration limit exceeded
+
+* `iter`: Integer
+The number of iterations used in the optimization routine.
+
+* `message`: String
+Gives the meaning of `mode`.
+
+* `success`: Bool
+Returns true if the optimization problem was a success, false otherwise.
+
+* `geval`: Integer
+The total number of gradient evaluations performed.
+
+* `feval`: Integer
+The total number of function evaluations perfomed.
+
+#### Examples
+
+    let func_1 = fun(x) {
+        math.exp(x[0]) * (4.0 * x[0] ** 2.0 + 2 * x[1] ** 2.0 + 
+                           4.0 * x[0] * x[1] + 2.0 * x[1] + 1)
+        };
+    let f_eqcon_1 = fun(x) {
+        [x[0] ** 2.0 + x[1] - 1.0]
+        };
+    let jeqcon_1 = fun(x) {
+            [2.0 * x[0], 1.0]
+            };
+    let fieqcon_1 = fun(x) {
+        [x[0] * x[1] + 10.0]
+        };
+    let jieqcon_1 = fun(x) {
+        [1.0, 1.0]
+        };
+
+    //using bounds constraints
+    let res = math.optimize.fmin_slsqp(
+        func_1,
+        [-1.0, 1.0], 
+        bounds: [(0.1, 1e12), (0.2, 1e12)]
+        );
+
+    res
+
+    //using equality and inequality constraints
+    let res = math.optimize.fmin_slsqp(
+        func_1,
+        [-1.0, 1.0], 
+        f_eqcons:f_eqcon_1, 
+        fprime_eqcons:jeqcon_1,
+        f_ieqcons:fieqcon_1, 
+        fprime_ieqcons:jieqcon_1
+        )
+
+    res
+
+"""
+)
+fun (
+        func,
+        x0,
+        eqcons:= [], 
+        f_eqcons:= nothing, 
+        ieqcons:= [], 
+        f_ieqcons:= nothing,
+        bounds:= [],                     
+        fprime:= nothing, 
+        fprime_eqcons:= nothing, 
+        fprime_ieqcons:= nothing, 
+        args:= (), 
+        maxiter:= 100, 
+        acc:= 1.0e-6,
+        epsilon:= 1e-6,
+        papply_gradients:= true
+        )
+    {
+    let problem = OptimizationProblem(
+        func,
+        x0,
+        eqcons: eqcons, 
+        f_eqcons: f_eqcons, 
+        ieqcons: ieqcons, 
+        f_ieqcons: f_ieqcons,
+        bounds: bounds,                     
+        fprime: fprime, 
+        fprime_eqcons: fprime_eqcons, 
+        fprime_ieqcons: fprime_ieqcons, 
+        args: args, 
+        epsilon: epsilon,
+        papply_gradients: papply_gradients
+        );
+
+    return problem.optimize(acc, maxiter);
+    };
+
+`hidden
+OptimizationProblem: class {
+    member mObjectiveFunction;
+    member mObjectiveFunctionGradient;
+    member mEqualityConstraintNormals; 
+    member mInequalityConstraintNormals;
+    member mEqualityConstraints; 
+    member mInequalityConstraints;
+    member mNumEqualityConstraints;
+    member mNumInequalityConstraints;
+    member mNumConstraints;
+    member mNumConstraintsOrOne;
+    member mNumVariables;
+    member mLowerBounds;
+    member mUpperBounds;
+    member mFortranWrapper;
+    member mArgs;
+    member mInitialGuess;
+
+    operator new (objectiveFunction, initialGuess, eqcons:, f_eqcons:, ieqcons:, 
+                  f_ieqcons:, bounds:, fprime:, fprime_eqcons:, fprime_ieqcons:,
+                  args:, epsilon:, papply_gradients:)
+        {
+        (fprime, fprime_eqcons, fprime_ieqcons, f_eqcons, f_ieqcons) = 
+            _getDerivatives(objectiveFunction, fprime, f_eqcons, fprime_eqcons, 
+                            f_ieqcons, fprime_ieqcons, epsilon, papply_gradients,
+                            ieqcons, eqcons);
+
+        let nEqualityConstraints = 
+            if (f_eqcons is nothing)
+                0s32
+            else 
+                Int32(size(f_eqcons(initialGuess)))
+             ;
+        let nInequalityConstraints = 
+            if (f_ieqcons is nothing)
+                0s32
+            else
+                Int32(size(f_ieqcons(initialGuess)))
+            ;
+        let nConstraints = nEqualityConstraints + nInequalityConstraints;
+        let numConstraintsOrOne = Int32(max(1, nConstraints));
+        let nVariables = Int32(size(initialGuess));
+
+        let lowerBounds = [], upperBounds = [];
+        if (bounds is nothing or size(bounds) == 0)
+            {
+            lowerBounds = Vector.uniform(nVariables, -1e12);
+            upperBounds = Vector.uniform(nVariables, 1e12)
+            }
+        else {
+            lowerBounds = Vector.range(size(bounds), { bounds[_][0] });
+            upperBounds = Vector.range(size(bounds), { bounds[_][1] });
+            lowerBounds = blasWrappers.castToTypeIfNecessary(Float64, lowerBounds);
+            upperBounds = blasWrappers.castToTypeIfNecessary(Float64, upperBounds);
+            }
+
+        let mFortranWrapper = _getSlsqpWrapper();
+
+        createInstance(cls, 
+                       mObjectiveFunction: objectiveFunction, 
+                       mObjectiveFunctionGradient: fprime, 
+                       mEqualityConstraintNormals: fprime_eqcons, 
+                       mInequalityConstraintNormals: fprime_ieqcons,
+                       mEqualityConstraints: f_eqcons, 
+                       mInequalityConstraints: f_ieqcons, 
+                       mNumEqualityConstraints: nEqualityConstraints,
+                       mNumInequalityConstraints: nInequalityConstraints, 
+                       mNumConstraints: nConstraints, 
+                       mNumConstraintsOrOne: numConstraintsOrOne,
+                       mNumVariables: nVariables, 
+                       mLowerBounds: lowerBounds, 
+                       mUpperBounds: upperBounds, 
+                       mFortranWrapper: mFortranWrapper,
+                       mArgs: args, 
+                       mInitialGuess: initialGuess
+                      )
+        };
+
+    optimize: fun(acc, maxiter)
+        {
+        let objectiveFunctionAt_x = mObjectiveFunction(mInitialGuess, *mArgs);
+
+        let (floatWorkspaceLength, integralWorkspaceLength) = 
+            _computeWorkspaceLengths(mNumVariables, mNumConstraints, 
+                                     mNumEqualityConstraints);
+
+        let floatWorkspace = Vector.uniform(floatWorkspaceLength, 0.0);
+        let integralWorkspace = Vector.uniform(integralWorkspaceLength, 0s32);
+
+        let mode = [0s32];
+        let accuracy = [Float64(acc)];
+        maxiter = [Int32(maxiter)];
+
+        let x = blasWrappers.castToTypeIfNecessary(Float64, mInitialGuess);
+        let constraintsAt_x = [];
+        let gradientAt_x = [];
+        let constraintNormalsAt_x = [];
+        if (mNumConstraints == 0)
+            // not sure why + 1 in the next line.  o_O
+            constraintNormalsAt_x = 
+                Vector.uniform(mNumConstraintsOrOne * (mNumVariables + 1), 0.0); 
+
+        // see slsqp_optimz.f for details -- 
+        // the next two variables are used to maintain state between subsequent 
+        // calls to fortran. it was a modification of our own
+        let xargs = Vector.uniform(10, 0.0); 
+        let iargs = Vector.uniform(8, 0s32); 
+
+        _checkArgs(x: x, objectiveFunctionAt_x: objectiveFunctionAt_x);
+
+        let nGradientEvaluations = 0;
+        let nFunctionEvaluations = 0; 
+
+        let ix = 0
+        while (ix < MAX_FORTRAN_CALLS) 
+            {
+            if (needsObjectiveAndConstraintEvaluation_(mode))
+                {                             
+                (objectiveFunctionAt_x, constraintsAt_x) = 
+                    evaluateObjectiveAndConstraints_(x);
+                nFunctionEvaluations = nFunctionEvaluations + 1;
+                }
+            if (needsGradientEvaluation_(mode))
+                {
+                (gradientAt_x, constraintNormalsAt_x) = 
+                    evaluateGradients_(x, constraintNormalsAt_x);
+                nGradientEvaluations = nGradientEvaluations + 1;
+                }
+
+            // TODO: is this too paranoid??
+            _checkArgs(constraintsAt_x: constraintsAt_x, gradientAt_x: gradientAt_x, 
+                       constraintNormalsAt_x: constraintNormalsAt_x);
+
+            (x, accuracy, maxiter, mode, floatWorkspace, 
+             integralWorkspace, xargs, iargs) = 
+                mFortranWrapper(
+                    mNumConstraints, 
+                    mNumEqualityConstraints, 
+                    mNumConstraintsOrOne,
+                    mNumVariables, 
+                    x, 
+                    mLowerBounds, 
+                    mUpperBounds, 
+                    Float64(objectiveFunctionAt_x), 
+                    constraintsAt_x, 
+                    gradientAt_x, 
+                    constraintNormalsAt_x,
+                    accuracy, 
+                    maxiter, 
+                    mode, 
+                    floatWorkspace :: 0.0 :: 0.0 :: 0.0 :: 0.0, // HACK due to bug in slsqp?? see ontime 631
+                    floatWorkspaceLength, 
+                    integralWorkspace, 
+                    integralWorkspaceLength, 
+                    xargs, 
+                    iargs
+                );
+                
+            if (optimizerIsFinished_(mode)) 
+                break;
+
+            ix = ix + 1;
+            }
+        
+        if (ix == MAX_FORTRAN_CALLS)
+            throw Exception("max fortran calls exceeded")
+
+        return (x: x, fx: objectiveFunctionAt_x, mode: mode, iter: maxiter[0], 
+                message: _messageFun(mode[0]), success: (mode[0]==0), 
+                feval: nFunctionEvaluations, geval: nGradientEvaluations)
+        };
+
+    static MAX_FORTRAN_CALLS: 100000000;
+
+    static needsObjectiveAndConstraintEvaluation_:
+    fun(mode) { mode[0] == 0 or mode[0] == 1 };
+
+    static needsGradientEvaluation_:
+    fun(mode) { mode[0] == 0 or mode[0] == -1 };
+
+    static optimizerIsFinished_:
+    fun(mode) { math.abs(mode[0]) != 1 };
+
+    static _getSlsqpWrapper: fun()
+        {
+        let fortranName = "slsqp_";
+        let vecType = `JovOfVectorHolding(Float64);    
+        let intVecType = `JovOfVectorHolding(Int32);
+
+        ``FORTRANFunctionWrapper(
+              fortranName,
+              fortranName,
+              (4, 11, 12, 13, 14, 16, 18, 19),
+              Int32,                // m - 0;
+              Int32,                // meq - 1;
+              Int32,                // la - 2;
+              Int32,                // n - 3;
+              vecType,              // x - 4;     (MODIFIED)
+              vecType,              // xl - 5;
+              vecType,              // xu - 6;
+              Float64,              // f - 7;
+              vecType,              // c - 8;
+              vecType,              // g - 9;
+              vecType,              // a - 10;
+              vecType,              // acc - 11;  (MODIFIED)
+              intVecType,           // iter - 12; (MODIFIED)
+              intVecType,           // mode - 13; (MODIFIED)
+              vecType,              // w - 14;    (MODIFIED)
+              Int32,                // l_w - 15;
+              intVecType,           // jw - 16;   (MODIFIED)
+              Int32,                // l_jw - 17;
+              vecType,              // xargs - 18
+              intVecType            // iargs - 19
+              );
+        };
+
+    static _computeWorkspaceLengths:
+    fun(nVariables, nConstraints, nEqualityConstraints) 
+        {
+        let n1 = nVariables + 1;
+        let mineq = nConstraints - nEqualityConstraints + n1 + n1;
+        let floatWorkspaceLength = 
+            (3 * n1 + nConstraints) * (n1 + 1) + 
+            (n1 - nEqualityConstraints + 1) * (mineq + 2) + 2 * mineq + 
+            (n1 + mineq) * (n1 - nEqualityConstraints) + 2 * nEqualityConstraints + 
+            n1 + (n1 * nVariables) / 2 + 2 * nConstraints + 3 * nVariables + 
+            3 * n1 + 1;
+        let integralWorkspaceLength = mineq;
+
+        (Int32(floatWorkspaceLength), Int32(integralWorkspaceLength))
+        };
+
+    evaluateObjectiveAndConstraints_:
+    fun(x)
+        {
+        let objectiveFunctionAt_x = mObjectiveFunction(x, *mArgs);
+
+        let equalityConstraintsAt_x = [];
+        if (mEqualityConstraints is not nothing) 
+            equalityConstraintsAt_x = mEqualityConstraints(x);
+
+        let inequalityConstraintsAt_x = [];
+        if (mInequalityConstraints is not nothing) 
+            inequalityConstraintsAt_x = mInequalityConstraints(x);
+
+        let constraintsAt_x = equalityConstraintsAt_x + inequalityConstraintsAt_x;
+        constraintsAt_x = 
+            blasWrappers.castToTypeIfNecessary(Float64, constraintsAt_x);
+
+        (objectiveFunctionAt_x, constraintsAt_x)
+        };
+
+    evaluateGradients_:
+    fun(x, constraintNormalsAt_x)
+        {
+        // for some reason, the source to SLSQP wants size(gradientAt_x) = n + 1.
+        let gradientAt_x = mObjectiveFunctionGradient(x, *mArgs) :: 0.0; 
+        gradientAt_x = 
+            blasWrappers.castToTypeIfNecessary(Float64, gradientAt_x);
+
+        if (mNumConstraints > 0) {
+            let equalityConstraintNormalsAt_x = 
+                if (mEqualityConstraints is not nothing)
+                    mEqualityConstraintNormals(x)
+                else
+                    Vector.uniform(mNumEqualityConstraints * mNumVariables, 0.0);
+                ;
+            
+            let inequalityConstraintNormalsAt_x =
+                if (mInequalityConstraints is not nothing)
+                    mInequalityConstraintNormals(x)
+                else 
+                    Vector.uniform(mNumInequalityConstraints * mNumVariables, 0.0);
+                ;
+
+            constraintNormalsAt_x = 
+                equalityConstraintNormalsAt_x + 
+                inequalityConstraintNormalsAt_x;
+            constraintNormalsAt_x = 
+                math.Matrix(constraintNormalsAt_x, 
+                            (mNumConstraints, mNumVariables), `row)
+                .columnMajorData();
+            constraintNormalsAt_x = 
+                constraintNormalsAt_x + Vector.uniform(mNumConstraintsOrOne, 0.0);        
+
+            constraintNormalsAt_x = 
+                blasWrappers.castToTypeIfNecessary(Float64, constraintNormalsAt_x);
+            }
+
+        return (gradientAt_x, constraintNormalsAt_x);
+        };
+
+    _checkArgs:
+    fun 
+    (constraintsAt_x:, gradientAt_x:, constraintNormalsAt_x:)
+        {
+        assertions.assertGreaterEqual(
+            size(constraintNormalsAt_x), 
+            max(1, mNumConstraints) * (mNumVariables + 1)
+            );
+        assertions.assertEqual(size(constraintsAt_x), mNumConstraints)
+        assertions.assertGreaterEqual(size(gradientAt_x), mNumVariables + 1);
+        }
+    (x:, objectiveFunctionAt_x:) 
+        {
+        let mNumVariables = size(x);
+
+        assertions.assertEqual(size(mLowerBounds), mNumVariables);
+        assertions.assertEqual(size(mUpperBounds), mNumVariables);
+
+        assertions.assertLessEqual(mNumEqualityConstraints, mNumConstraints);
+        };
+
+    static _messageFun:    fun
+        (0s32)  { "Optimization terminated successfully." }
+        (1s32)  { "Function evaluation required (f & c)" }
+        (2s32)  { "More equality constraints than independent variables" }
+        (3s32)  { "More than 3*n iterations in LSQ subproblem" }
+        (4s32)  { "Inequality constraints incompatible" }
+        (5s32)  { "Singular matrix E in LSQ subproblem" }
+        (6s32)  { "Singular matrix C in LSQ subproblem" }
+        (7s32)  { "Rank-deficient equality constraint subproblem HFTI" }
+        (8s32)  { "Positive directional derivative for linesearch" }
+        (9s32)  { "Iteration limit exceeded" }
+        (x)     { 
+                if (x == -1s32) "Gradient evaluation required (g & a)" 
+                else throw "unexpected arg:" + String(x) 
+                }
+        ;
+
+    static _getDerivatives:
+    fun(objectiveFunction, objectiveFunctionGradient, equalityConstraints, 
+        equalityConstraintNormals, inequalityConstraints, 
+        inequalityConstraintNormals, epsilon, papply_gradients, ieqcons, eqcons)
+        {
+        if (equalityConstraints is not nothing) 
+            {
+            if (equalityConstraintNormals is nothing)  
+                equalityConstraintNormals = 
+                    approximateJacobian(equalityConstraints, epsilon, 
+                                        papply: papply_gradients);
+            }
+        else if (size(eqcons) > 0) 
+            {
+            equalityConstraints = { [f(_) for f in eqcons] };
+            equalityConstraintNormals = 
+                approximateJacobian(equalityConstraints, epsilon, 
+                                    papply: papply_gradients)
+            }
+        
+        if (inequalityConstraints is not nothing) 
+            {
+            if (inequalityConstraintNormals is nothing) 
+                inequalityConstraintNormals = 
+                    approximateJacobian(inequalityConstraints, epsilon, 
+                                        papply: papply_gradients);
+            }
+        else if (size(ieqcons) > 0)
+            {
+            inequalityConstraints = { [f(_) for f in ieqcons] };
+            inequalityConstraintNormals = 
+                approximateJacobian(inequalityConstraints, epsilon, 
+                                    papply: papply_gradients)
+            }
+
+        if (objectiveFunctionGradient is nothing)
+            objectiveFunctionGradient = 
+                approximateJacobian(objectiveFunction, epsilon, 
+                                    papply: papply_gradients);
+
+        return (objectiveFunctionGradient, equalityConstraintNormals, 
+                inequalityConstraintNormals, equalityConstraints, 
+                inequalityConstraints)
+        };
+    };
+
+`hidden
+approximateJacobian:
+"""
+returns a vector which represents a row-major form of the jacobian matrix of func
+"""
+fun(func, epsilon, papply:=true)
+    {
+    let jacFun = 
+        match (papply) with 
+        (false)
+            {
+            fun(func, x, f0, *args) {
+                let jac = [];
+                for i in sequence(size(x))
+                    {
+                    let x_plus_dx_i = 
+                        Vector.range(size(x), 
+                                     { if (_ == i) x[_] + epsilon else x[_] })
+                    
+                    let f_at_x_plus_dx_i = func(x_plus_dx_i, *args);
+                    let jac_column_i = [];
+                    for j in sequence(size(f_at_x_plus_dx_i))
+                        jac_column_i = jac_column_i :: 
+                                   ((f_at_x_plus_dx_i[j] - f0[j]) / epsilon)
+                    jac = jac + jac_column_i;
+                    }
+
+                math.Matrix(jac, (size(f0), size(x))).rowMajorData()
+                }                
+            }
+        (true)
+            {
+            fun(func, x, f0, *args) {
+                let columnMajorJacobianData = 
+                Vector.range(
+                    size(x),
+                    fun(i) {
+                        let x_plus_dx_i = 
+                            Vector.range(
+                                size(x), 
+                                { if (_ == i) x[_] + epsilon else x[_] }
+                                )
+
+                        let f_at_x_plus_dx_i = func(x_plus_dx_i, *args);
+                        Vector.range(
+                            size(f_at_x_plus_dx_i),
+                            fun(j) {
+                                (f_at_x_plus_dx_i[j] - f0[j]) / epsilon
+                                }
+                            );                    
+                         }
+                    ).sum();
+
+                math.Matrix(columnMajorJacobianData, 
+                            (size(f0), size(x))).rowMajorData();
+                }
+            };
+
+    fun(x, *args) {
+        let f0 = func(x, *args);
+        let funcToUse = nothing;
+        (funcToUse, f0) =
+            match (f0) with 
+                (filters.IsVector(...)) { (func, f0) }
+                (...) { (fun(x, *args) { [func(x, *args)] }, [f0]) }
+            ;
+                    
+        jacFun(funcToUse, x, f0, *args)
+        }
+    };
+

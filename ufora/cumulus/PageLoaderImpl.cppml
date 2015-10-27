@@ -1,0 +1,1287 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "PageLoaderImpl.hppml"
+#include "PersistentCache/PersistentCacheIndex.hppml"
+
+using namespace PolymorphicSharedPtrBinder;
+
+namespace Cumulus {
+
+PageLoaderImpl::PageLoaderImpl(
+			PolymorphicSharedPtr<VectorDataManager> inVDM,
+			PolymorphicSharedPtr<DataTransfers> inLargeMessageThrottler,
+			PolymorphicSharedPtr<SystemwidePageRefcountTracker> inSystemwidePageRefcountTracker,
+			PolymorphicSharedPtr<OfflineCache> inOfflineCache,
+			CumulusClientOrMachine inOwnEndpointId,
+			PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler
+			) : 
+		mVDM(inVDM),
+		mDataTransfers(inLargeMessageThrottler),
+		mOfflineCache(inOfflineCache),
+		mOwnEndpointId(inOwnEndpointId),
+		//seed our random generator with something dependent on our hash
+		mRandomGenerator(boost::hash<CumulusClientOrMachine>()(inOwnEndpointId)),
+		mSystemwidePageRefcountTracker(inSystemwidePageRefcountTracker),
+		mScheduler(inCallbackScheduler->getFactory()->createScheduler("PageLoaderBackgroundThread")),
+		mDiskScheduler(inCallbackScheduler->getFactory()->createScheduler("PageLoaderDiskBackgroundThread")),
+		mOnVectorLoadedResponse(inCallbackScheduler),
+		mOnCumulusComponentMessageCreated(inCallbackScheduler),
+		mIsTornDown(false),
+		mRandomHashGenerator(hashValue(inOwnEndpointId) + Hash::SHA1("PageLoaderImpl::TaskGuidGen"))
+	{
+	}
+
+PageLoaderImpl::~PageLoaderImpl()
+	{
+	}
+
+void PageLoaderImpl::teardown()
+	{
+	TimedLock lock(mMutex, "PageLoader");
+
+	mIsTornDown = true;
+	}
+
+void PageLoaderImpl::addCumulusClient(CumulusClientId inClient)
+	{
+	TimedLock lock(mMutex, "PageLoader");
+	
+	if (mIsTornDown)
+		return;
+
+	lassert(mClients.find(inClient) == mClients.end());
+	lassert(mClientsEverDropped.find(inClient) == mClientsEverDropped.end());
+
+	mClients.insert(inClient);
+	}
+
+void PageLoaderImpl::dropCumulusClient(CumulusClientId inClient)
+	{
+	TimedLock lock(mMutex, "PageLoader");
+
+	if (mIsTornDown)
+		return;
+
+	if (mClientsEverDropped.find(inClient) != mClientsEverDropped.end())
+		return;
+
+	lassert(mClients.find(inClient) != mClients.end());
+
+	mClients.erase(inClient);
+	mClientsEverDropped.insert(inClient);
+
+	mExternalDatasetsRequestedByRemoteClients.dropValue(inClient);
+	}
+
+void PageLoaderImpl::addMachine(MachineId inMachine)
+	{
+	TimedLock lock(mMutex, "PageLoader");
+
+	if (mIsTornDown)
+		return;
+
+	lassert(mMachines.find(inMachine) == mMachines.end());
+	lassert(mMachinesEverDropped.find(inMachine) == mMachinesEverDropped.end());
+
+	mMachines.insert(inMachine);
+
+	if (mUnsentExternalVectorLoads.size())
+		{
+		for (auto it = mUnsentExternalVectorLoads.begin(); 
+					it != mUnsentExternalVectorLoads.end(); ++it)
+			requestExternalDatasetFromWorker_(*it);
+
+		mUnsentExternalVectorLoads.clear();
+		}
+	}
+
+void PageLoaderImpl::dropMachine(MachineId inMachine)
+	{
+	TimedLock lock(mMutex, "PageLoader");
+
+	if (mIsTornDown)
+		return;
+
+	if (mMachinesEverDropped.find(inMachine) != mMachinesEverDropped.end())
+		return;
+
+	lassert(mMachines.find(inMachine) != mMachines.end());
+	
+	mMachines.erase(inMachine);
+	mMachinesEverDropped.insert(inMachine);
+
+	std::set<VectorDataID> vectorsToReload = 
+		mOutstandingRemoteVectorLoads.getKeys(inMachine);
+
+	LOG_INFO << "PageLoader on " << prettyPrintString(mOwnEndpointId) 
+		<< " dropping " << prettyPrintString(inMachine);
+
+	//mark the pending pages as failed
+	for (auto it = vectorsToReload.begin(); it != vectorsToReload.end(); ++it)
+		{
+		LOG_INFO << "PageLoader on " << prettyPrintString(mOwnEndpointId) 
+			<< " marking load of " << prettyPrintString(*it) << " dead.";
+		
+		mOnVectorLoadedResponse.broadcast(VectorLoadedResponse(*it, false, false));
+		}
+
+	mOutstandingRemoteVectorLoads.dropValue(inMachine);
+
+	set<VectorLoadRequest> loadsToReSend = mExternalVectorLoadsPendingOnOtherMachines.getKeys(inMachine);
+	mExternalVectorLoadsPendingOnOtherMachines.dropValue(inMachine);
+
+	for (auto it = loadsToReSend.begin(); it != loadsToReSend.end(); ++it)
+		requestExternalDatasetFromWorker_(*it);
+	}
+
+CumulusClientOrMachine PageLoaderImpl::getOwnEndpointId() const
+	{
+	return mOwnEndpointId;
+	}
+
+EventBroadcaster<VectorLoadedResponse>& PageLoaderImpl::onVectorLoadedResponse()
+	{
+	return mOnVectorLoadedResponse;
+	}
+
+void PageLoaderImpl::handleRemotePageLoadResponse(const RemotePageLoadResponse& inResponse)
+	{
+	//schedule the load request in the background so we don't block any callback threads
+	mScheduler->scheduleImmediately(
+		boost::bind(
+			memberFunctionToWeakPtrFunction(
+				&PageLoaderImpl::handleRemotePageLoadResponseOnBackgroundThread
+				),
+			polymorphicSharedWeakPtrFromThis(),
+			inResponse
+			),
+		"PageLoader::handleRemotePageLoadRequest"
+		);
+	}
+
+void PageLoaderImpl::handleRemotePageLoadRequest(const RemotePageLoadRequest& inRequest)
+	{
+	TimedLock lock(mMutex, "PageLoader");
+
+	const static int kMaxPagesInFlightAtOnce = 1;
+
+	long totalInFlightPages = 0;
+	long totalRetryableRequests = 0;
+
+	for (auto& pageAndMachines: mInFlightPages.getKeysToValues())
+		totalInFlightPages += pageAndMachines.second.size();
+
+	for (auto& pageAndMachines: mRequestsToDenyAfterPageLoadCompletes)
+		totalRetryableRequests += pageAndMachines.second.size();
+
+	if (mInFlightPages.getValues(inRequest.vdid().getPage()).size() >= kMaxPagesInFlightAtOnce)
+		{
+		//if more than kMaxPagesInFlightAtOnce other boxes are reading this page, then we 
+		//don't want to commit to sending that page to that client. Instead, we want to cause this
+		//reader to retry the read after some of our writes have finished. This will allow the remote 
+		//reader to retry, and hopefully spread the load amongst the other machines that now hold
+		//this page.
+		LOG_DEBUG << "PageLoader on " << prettyPrintString(mOwnEndpointId) 
+			<< " delaying Retry message for " << prettyPrintString(inRequest.vdid()) 
+			<< " (" << prettyPrintString(inRequest.vdid().getPage()) << ")"
+			<< " from " << prettyPrintString(inRequest.source())
+			;
+		mRequestsToDenyAfterPageLoadCompletes[inRequest.vdid().getPage()].insert(inRequest);
+		return;
+		}
+
+	LOG_DEBUG << "PageLoader on " << prettyPrintString(mOwnEndpointId) 
+		<< " handling RemotePageLoadRequest " << prettyPrintStringWithoutWrapping(inRequest)
+		<< ". Total bytes outstanding in mDataTransfers is " 
+		<< (mDataTransfers ? mDataTransfers->totalBytesOutstanding() : 0)
+		;
+
+	if (inRequest.source().isMachine())
+		mInFlightPages.insert(inRequest.vdid().getPage(), inRequest.source().getMachine().machine());
+
+	//schedule the load request in the background so we don't block any callback threads
+	if (mDataTransfers)
+		mDataTransfers->scheduleLargeMessage(
+			boost::bind(
+				&PageLoaderImpl::handleRemotePageLoadRequestOnBackgroundThreadStatic,
+				polymorphicSharedWeakPtrFromThis(),
+				inRequest,
+				boost::arg<1>(),
+				boost::arg<2>()
+				),
+			boost::bind(
+				memberFunctionToWeakPtrFunction(
+					&PageLoaderImpl::handleRemotePageLoadRequestAccepted
+					),
+				polymorphicSharedWeakPtrFromThis(),
+				inRequest
+				),
+			boost::function0<void>([](){}),
+			inRequest.source(),
+			inRequest.vdid().getPage().bytecount(),
+			0
+			);
+	else
+		mScheduler->scheduleImmediately(
+			boost::bind(
+				memberFunctionToWeakPtrFunction(
+					&PageLoaderImpl::handleRemotePageLoadRequestOnBackgroundThread
+					),
+				polymorphicSharedWeakPtrFromThis(),
+				inRequest,
+				DataTransferTokenId()
+				),
+			"handleRemotePageLoadRequestOnBackgroundThread"
+			);
+	}
+
+void PageLoaderImpl::requestVectorLoad(const VectorLoadRequest& inPageRequest)
+	{
+	LOG_DEBUG << "PageLoader on " << prettyPrintString(mOwnEndpointId) 
+		<< " scheduling VectorLoadRequest " << prettyPrintStringWithoutWrapping(inPageRequest);
+
+	//schedule the load request in the background so we don't block any callback threads.
+	//this may require hitting the disk and we don't want to block
+	mScheduler->scheduleImmediately(
+		boost::bind(
+			memberFunctionToWeakPtrFunction(
+				&PageLoaderImpl::handleVectorLoadRequestOnBackgroundThread
+				),
+			polymorphicSharedWeakPtrFromThis(),
+			inPageRequest
+			),
+		"PageLoader::requestVectorLoad"
+		);
+	}
+
+void PageLoaderImpl::handleExternalIoTaskCompleted(const ExternalIoTaskCompleted& result)
+	{
+	LOG_DEBUG << "PageLoader on " << prettyPrintString(mOwnEndpointId) 
+		<< " scheduling PythonIoTaskResponse " << prettyPrintStringWithoutWrapping(result);
+
+	//schedule the load request in the background so we don't block any callback threads
+	mScheduler->scheduleImmediately(
+		boost::bind(
+			memberFunctionToWeakPtrFunction(
+				&PageLoaderImpl::handleExternalIoTaskCompletedOnBackgroundThread
+				),
+			polymorphicSharedWeakPtrFromThis(),
+			result
+			),
+		"PageLoader::handleExternalIoTaskCompleted"
+		);
+	}
+
+
+void PageLoaderImpl::blockUntilCurrentBackgroundProcessesHaveCleared()
+	{
+	mScheduler->blockUntilPendingHaveExecuted();
+	}
+
+void PageLoaderImpl::handleExternalIoTaskCompletedOnBackgroundThread(const ExternalIoTaskCompleted& result)
+	{
+	LOG_DEBUG << "PageLoader on " << prettyPrintString(mOwnEndpointId) 
+		<< " handling PythonIoTaskResponse " << prettyPrintStringWithoutWrapping(result);
+
+	lassert_dump(
+		mOwnEndpointId.isMachine(),
+		"Doesn't make sense that a client would be receiving a PythonIoTaskResponse"
+		);
+
+	TimedLock lock(mMutex, "PageLoader");
+
+	if (mIsTornDown)
+		return;
+
+	ExternalIoTaskId taskId = result.taskId();
+
+	//we can get a wide range of task updates from throughout the system sent to us
+	if (!mCurrentExternalIoTasks.hasKey(taskId))
+		return;
+
+	VectorDataID vdid = *mCurrentExternalIoTasks.getValues(taskId).begin();
+
+	mCurrentExternalIoTasks.dropKey(taskId);
+
+	bool wasRequestedLocally = 
+		mExternalDatasetsRequestedLocally.find(taskId) != mExternalDatasetsRequestedLocally.end();
+
+	mExternalDatasetsRequestedLocally.erase(taskId);
+
+	std::set<CumulusClientId> clients = 
+			mExternalDatasetsRequestedByRemoteClients.getValues(taskId);
+
+	mExternalDatasetsRequestedByRemoteClients.dropKey(taskId);
+
+	@match ExternalIoTaskResult(result.result())
+		-| Success() ->> {
+
+			if (clients.size())
+				{
+				//the loader put this directly into our VDM. pull it out and send it to 
+				//any remote clients that had requested it
+
+				pair<PolymorphicSharedPtr<SerializedObject>, ImmutableTreeSet<Fora::BigVectorId> > 
+					serializedObjectAndBigvecs;
+
+				serializedObjectAndBigvecs = 
+					mVDM->extractVectorPageIfPossible(vdid.getPage());
+
+				if (!serializedObjectAndBigvecs.first)
+					{
+					//this was already dropped between the time the external system loaded the
+					//data and this callback fired. try it again.
+					ExternalIoTaskId newTask = requestExternalDatasetFromEnvironment_(vdid);
+
+					for (auto client: clients)
+						mExternalDatasetsRequestedByRemoteClients.insert(taskId, client);
+
+					//exit immediately - this function will get called again with the same
+					//state
+					return;
+					}
+
+				LOG_INFO << "We are not throttling externalDataset responses properly.";
+
+				for (auto it = clients.begin(); it != clients.end(); ++it)
+					mOnCumulusComponentMessageCreated.broadcast(
+						CumulusComponentMessageCreated(
+							CumulusComponentMessage::CrossPageLoader(
+								CrossPageLoaderMessage::ExternalDatasetLoadResponse(
+									RemoteExternalDatasetLoadResponse::Data(
+										mOwnEndpointId.getMachine().machine(),
+										*it,
+										vdid,
+										serializedObjectAndBigvecs.first,
+										DataTransferTokenId()
+										)
+									)
+								),
+							CumulusComponentEndpointSet::SpecificClient(*it),
+							CumulusComponentType::PageLoader()
+							)
+						);
+				}
+
+			if (wasRequestedLocally)
+				mOnVectorLoadedResponse.broadcast(
+					VectorLoadedResponse(vdid, true, false)
+					);
+			}
+		-| PythonIoFailure(reason) ->> {
+			failedToLoadDataset(vdid, wasRequestedLocally, clients, reason);
+			}
+		-| S3KeyDoesNotExist() ->> {
+			failedToLoadDataset(vdid, wasRequestedLocally, clients, "Data is missing from S3");
+			}
+		-| S3PermissionError() ->> {
+			failedToLoadDataset(vdid, wasRequestedLocally, clients, "Invalid S3 permissions");
+			}
+	}
+
+void PageLoaderImpl::failedToLoadDataset(
+			VectorDataID vdid, 
+			bool wasRequestedLocally, 
+			const std::set<CumulusClientId>& clients, 
+			std::string reason
+			)
+	{
+	if (wasRequestedLocally)
+		mOnVectorLoadedResponse.broadcast(
+			VectorLoadedResponse(vdid, false, true)
+			);
+
+	for (auto it = clients.begin(); it != clients.end(); ++it)
+		mOnCumulusComponentMessageCreated.broadcast(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::CrossPageLoader(
+					CrossPageLoaderMessage::ExternalDatasetLoadResponse(
+						RemoteExternalDatasetLoadResponse::Failed(
+							mOwnEndpointId.getMachine().machine(),
+							*it,
+							vdid,
+							reason
+							)
+						)
+					),
+				CumulusComponentEndpointSet::SpecificClient(*it),
+				CumulusComponentType::PageLoader()
+				)
+			);
+	}
+
+Cumulus::MachineId PageLoaderImpl::pickRandomlyFromSet(const std::set<Cumulus::MachineId>& hashes)
+	{
+	TimedLock lock(mMutex, "PageLoader");
+
+	return pickRandomlyFromSet_(hashes);
+	}
+
+void PageLoaderImpl::handleVectorLoadRequestOnBackgroundThread(const VectorLoadRequest& inPageRequest)
+	{
+	LOG_DEBUG << "PageLoader on " << prettyPrintString(mOwnEndpointId) 
+		<< " handling VectorLoadRequest " << prettyPrintStringWithoutWrapping(inPageRequest);
+
+	VectorDataID vdid = inPageRequest.vdid();
+
+		{
+		TimedLock lock(mMutex, "PageLoader");
+
+		if (mIsTornDown)
+			return;
+
+		if (mOutstandingRemoteVectorLoads.hasKey(vdid))
+			return;
+		}
+
+	//check if it's already in RAM
+	if (mVDM->hasDataForVectorPage(vdid.getPage()))
+		{
+		LOG_DEBUG << "PageLoader on " << prettyPrintString(mOwnEndpointId) 
+			<< ": VDM already has data for " << prettyPrintStringWithoutWrapping(vdid) << " in RAM";
+
+		mOnVectorLoadedResponse.broadcast(VectorLoadedResponse(vdid, true, false));
+		
+		return;
+		}
+
+	if (mOfflineCache && mOfflineCache->alreadyExists(vdid.getPage()))
+		{
+		double offlineCacheT0 = curClock();
+
+		PolymorphicSharedPtr<SerializedObject> pageData;
+
+		double t0 = curClock();
+
+		pageData = mOfflineCache->loadIfExists(vdid.getPage());
+
+		LOG_INFO << "Took " << curClock() - t0 << " to load " 
+			<< vdid.getPage().bytecount() / 1024 / 1024.0 
+			<< " MB of page data from the offline cache."
+			;
+
+		if (pageData)
+			{
+			TimedLock lock(mMutex, "PageLoader");
+
+			if (mIsTornDown)
+				return;
+
+			bool success = mVDM->loadSerializedVectorPage(
+				vdid.getPage(),
+				pageData
+				);
+
+			mOnVectorLoadedResponse.broadcast(VectorLoadedResponse(vdid, success, false));
+
+			LOG_DEBUG << "PageLoader on " << prettyPrintString(mOwnEndpointId) 
+				<< " took " << curClock() - offlineCacheT0 << " to load " 
+				<< prettyPrintStringWithoutWrapping(vdid) << " from Disk."
+				<< (success ? "":"However, the VDM didn't have space for it")
+				;
+
+			return;
+			}
+		}
+
+	Nullable<MachineId> machine = pickMachineForPage(vdid.getPage());
+
+	TimedLock lock(mMutex, "PageLoader");
+
+	if (mIsTornDown)
+		return;
+
+	if (machine)
+		{
+		if (mOutstandingRemoteVectorLoads.hasKey(vdid))
+			return;
+
+		mOutstandingRemoteVectorLoads.set(vdid, *machine);
+
+		RemotePageLoadRequest request(
+			mOwnEndpointId,
+			*machine,
+			vdid
+			);
+
+		LOG_INFO << "PageLoader on " << prettyPrintString(mOwnEndpointId) 
+			<< " requesting " << prettyPrintStringWithoutWrapping(vdid) << " from " 
+			<< prettyPrintString(*machine)
+			<< ". outstanding = "
+			<< mOutstandingRemoteVectorLoads.size()
+			;
+
+		mRequestsEverMade.insert(request);
+
+		broadcastRemotePageLoadRequest(request);
+		}
+	else
+		{
+		if (vdid.isExternal())
+			{
+			if (mOwnEndpointId.isClient())
+				requestExternalDatasetFromWorker_(inPageRequest);
+			else
+				{
+				LOG_INFO << "Can't find " << prettyPrintString(vdid) << " which is page " << 
+					prettyPrintString(vdid.getPage()) << " anywhere. Loading it from outside.";
+				
+				mExternalDatasetsRequestedLocally.insert(
+					requestExternalDatasetFromEnvironment_(inPageRequest)
+					);
+				}
+			}
+		else
+			{
+			auto cache = mVDM->getPersistentCacheIndex();
+
+			if (cache && mSystemwidePageRefcountTracker->doesPageAppearDroppedAcrossSystem(vdid.getPage()) 
+					&& cache->pageExists(vdid.getPage().guid()))
+				{
+				if (mOwnEndpointId.isClient())
+					requestExternalDatasetFromWorker_(inPageRequest);
+				else
+					{
+					mExternalDatasetsRequestedLocally.insert(
+						requestExternalDatasetFromEnvironment_(inPageRequest)
+						);						
+					}
+				}
+			else
+				{
+				if (mSystemwidePageRefcountTracker->hasPageBeenDroppedAcrossEntireSystem(vdid.getPage()))
+					{
+					LOG_ERROR << "Page " << prettyPrintString(vdid.getPage()) 
+						<< " was already dropped across the entire system, so it can't be loaded.";
+					mOnVectorLoadedResponse.broadcast(
+						VectorLoadedResponse(vdid, false, false)
+						);
+					}
+				else
+					{
+					LOG_INFO << "Page " << prettyPrintString(vdid.getPage()) 
+							<< " doesn't exist in the system, but is not dropped. Delaying our response."
+							;
+					mScheduler->schedule(
+						boost::bind(
+							memberFunctionToWeakPtrFunction(
+								&PageLoaderImpl::broadcastPageLoadFailed
+								),
+							polymorphicSharedWeakPtrFromThis(),
+							vdid
+							),
+						curClock() + .1,
+						"PageLoader::handleRemotePageLoadRequest"
+						);
+					}
+				}
+			}
+		}
+	}
+
+void PageLoaderImpl::broadcastPageLoadFailed(VectorDataID vdid)
+	{
+	mOnVectorLoadedResponse.broadcast(
+		VectorLoadedResponse(vdid, false, false)
+		);
+	}
+
+Nullable<MachineId> PageLoaderImpl::pickMachineForPage(Fora::PageId page)
+	{
+	std::set<Cumulus::MachineId> machineIds;
+
+	//see if there are any machines with this page loaded. If so, fire off a request
+	mSystemwidePageRefcountTracker->machinesWithPageInRam(
+			page, 
+			machineIds
+			);
+
+	restrictToActiveMachines(machineIds);
+
+	//try again if nobody had it in ram
+	if (!machineIds.size())
+		{
+		mSystemwidePageRefcountTracker->machinesWithPageOnDisk(
+				page, 
+				machineIds
+				);
+
+		restrictToActiveMachines(machineIds);
+		}
+
+	if (!machineIds.size())
+		return null();
+
+	return null() << pickRandomlyFromSet(machineIds);
+	}
+
+void PageLoaderImpl::requestExternalDatasetFromWorker_(const VectorLoadRequest& request)
+	{
+	lassert(mOwnEndpointId.isClient());
+
+	if (mMachines.size() == 0)
+		mUnsentExternalVectorLoads.insert(request);
+	else
+		{
+		Cumulus::MachineId machine = 
+			Ufora::math::Random::pickRandomlyFromSet(mMachines, mRandomGenerator);
+
+		if (!mExternalVectorLoadsPendingOnOtherMachines.hasKey(request))
+			{
+			mExternalVectorLoadsPendingOnOtherMachines.set(request, machine);
+
+			mOnCumulusComponentMessageCreated.broadcast(
+				CumulusComponentMessageCreated(
+					CumulusComponentMessage::CrossPageLoader(
+						CrossPageLoaderMessage::ExternalDatasetLoadRequest(
+							RemoteExternalDatasetLoadRequest(
+								mOwnEndpointId.getClient().client(),
+								machine,
+								request.vdid()
+								)
+							)
+						),
+					CumulusComponentEndpointSet::SpecificWorker(machine),
+					CumulusComponentType::PageLoader()
+					)
+				);
+			}
+		}
+	}
+
+void PageLoaderImpl::sendCumulusComponentMessage_(CumulusComponentMessageCreated msg)
+	{
+	mOnCumulusComponentMessageCreated.broadcast(msg);
+	}
+
+ExternalIoTaskId PageLoaderImpl::requestExternalDatasetFromEnvironment_(const VectorLoadRequest& request)
+	{
+	if (mCurrentExternalIoTasks.hasValue(request.vdid()))
+		return *mCurrentExternalIoTasks.getKeys(request.vdid()).begin();
+
+	ExternalIoTaskId taskId(mRandomHashGenerator.generateRandomHash());
+
+	mCurrentExternalIoTasks.insert(taskId, request.vdid());
+
+	ExternalIoTask task;
+
+	if (request.vdid().isExternal())
+		task = ExternalIoTask::LoadExternalDatasetIntoRelevantVDID(
+			request.vdid().getExternal().dataset()
+			);
+	else
+		task = ExternalIoTask::LoadPersistedPageIntoRam(
+			request.vdid().getPage()
+			);
+
+	sendCumulusComponentMessage_(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::ExternalIoTask(
+				ExternalIoTaskMessage::Create(
+					ExternalIoTaskCreated(
+						taskId,
+						task
+						)
+					)
+				),
+			CumulusComponentEndpointSet::fromEndpoint(mOwnEndpointId),
+			CumulusComponentType::ExternalIoTasks()
+			)
+		);
+
+	return taskId;
+	}
+
+void PageLoaderImpl::restrictToActiveMachines(std::set<Cumulus::MachineId>& ioMachines)
+	{
+	TimedLock lock(mMutex, "PageLoader");
+
+	if (mIsTornDown)
+		return;
+
+	std::set<Cumulus::MachineId> toRemove;
+
+	for (auto it = ioMachines.begin(); it != ioMachines.end(); ++it)
+		if (mMachines.find(*it) == mMachines.end())
+			toRemove.insert(*it);
+
+	for (auto it = toRemove.begin(); it != toRemove.end(); ++it)
+		ioMachines.erase(*it);
+	}
+
+void PageLoaderImpl::handleRemotePageLoadResponseOnBackgroundThread(const RemotePageLoadResponse& inResponse)
+	{
+	VectorDataID vdid = inResponse.vdid();
+
+		{
+		TimedLock lock(mMutex, "PageLoader");
+
+		if (mIsTornDown)
+			return;
+
+		if (mMachines.find(inResponse.sourceMachine()) == mMachines.end())
+			{
+			LOG_DEBUG << "got a RemotePageLoadResponse from a machine we've never seen: "
+				<< prettyPrintString(inResponse.sourceMachine());
+
+			lassert(mMachinesEverDropped.find(inResponse.sourceMachine()) != mMachines.end());
+			return;
+			}
+
+		lassert_dump(
+			mRequestsEverMade.find(
+				RemotePageLoadRequest(
+					mOwnEndpointId,
+					inResponse.sourceMachine(),
+					vdid
+					)
+				) != mRequestsEverMade.end(), 
+			prettyPrintStringWithoutWrapping(vdid)
+			);
+
+		lassert_dump(
+			mOutstandingRemoteVectorLoads.hasKey(vdid), 
+			prettyPrintStringWithoutWrapping(vdid) << " with message " << inResponse.tagName()
+				<< " on " << prettyPrintString(mOwnEndpointId)
+			);
+
+		mOutstandingRemoteVectorLoads.drop(vdid);
+		}
+
+	@match RemotePageLoadResponse(inResponse)
+		-| Data(pageData, bigvecs, moveGuid) with (source,dest, vdid) ->> {
+			
+			lassert(pageData);
+
+			bool success;
+
+			if (mSystemwidePageRefcountTracker->hasPageBeenDroppedAcrossEntireSystem(vdid.getPage()))
+				{
+				LOG_DEBUG << "received a RemotePageLoadResponse for a vector ("
+					<< prettyPrintStringWithoutWrapping(vdid) << ") that was already dropped.";
+				success = false;
+				}
+			else
+				success = mVDM->loadSerializedVectorPage(
+					vdid.getPage(),
+					pageData
+					);
+
+
+			if (dest.isMachine() && bigvecs.size())
+				mVDM->getPageRefcountTracker()->broadcastBigvecsInFlight(
+					bigvecs,
+					-1,
+					moveGuid
+					);
+					
+			LOG_DEBUG << "PageLoader on " << prettyPrintString(mOwnEndpointId) 
+				<< " received a data page for " << prettyPrintString(vdid) 
+				<< " (" << prettyPrintString(vdid.getPage()) << ")"
+				<< " from " << prettyPrintString(inResponse.sourceMachine())
+				<< (success?"": " but it couldn't be loaded into the VDM.")
+				;
+
+			mOnVectorLoadedResponse.broadcast(VectorLoadedResponse(vdid, success, false));
+			}
+		-| NoData() ->> {
+			LOG_DEBUG << "PageLoader on " << prettyPrintString(mOwnEndpointId) 
+				<< " received no data for " << prettyPrintString(vdid) 
+				<< " (" << prettyPrintString(vdid.getPage()) << ")"
+				<< " from " << prettyPrintString(inResponse.sourceMachine())
+				;
+
+			mOnVectorLoadedResponse.broadcast(VectorLoadedResponse(vdid, false, false));
+			}
+		-| Retry() ->> {
+			LOG_DEBUG << "PageLoader on " << prettyPrintString(mOwnEndpointId) 
+				<< " received retry message for " << prettyPrintString(vdid) 
+				<< " (" << prettyPrintString(vdid.getPage()) << ")"
+				<< " from " << prettyPrintString(inResponse.sourceMachine())
+				;
+			
+			handleVectorLoadRequestOnBackgroundThread(
+				VectorLoadRequest(vdid)
+				);
+			}
+	}
+
+void PageLoaderImpl::handleRemotePageLoadRequestOnBackgroundThreadStatic(
+							PolymorphicSharedWeakPtr<PageLoaderImpl> inSelf,
+							const RemotePageLoadRequest& inRequest,
+							PolymorphicSharedPtr<DataTransfers> inThrottler,
+							DataTransferTokenId inToken
+							)
+	{
+	PolymorphicSharedPtr<PageLoaderImpl> self = inSelf.lock();
+
+	if (!self)
+		{
+		inThrottler->tokenReceived(inToken);
+		return;
+		}
+
+	self->handleRemotePageLoadRequestOnBackgroundThread(inRequest, inToken);
+	}
+
+void PageLoaderImpl::handleRemotePageLoadRequestAccepted(const RemotePageLoadRequest& inRequest)
+	{
+	if (inRequest.source().isClient())
+		return;
+
+	TimedLock lock(mMutex, "PageLoader");
+
+	mInFlightPages.drop(inRequest.vdid().getPage(), inRequest.source().getMachine().machine());
+
+	LOG_INFO << "Transfer of " << inRequest.vdid().getPage() << " to " << 
+		inRequest.source().getMachine().machine() << " completed."
+		;
+
+	for (auto request: mRequestsToDenyAfterPageLoadCompletes[inRequest.vdid().getPage()])
+		{
+		LOG_DEBUG << "PageLoader on " << mOwnEndpointId << " sending retry message to " 
+			<< inRequest.source() << " for " << inRequest.vdid();
+
+		broadcastRemotePageLoadResponse(
+			RemotePageLoadResponse::Retry(
+				request.targetMachine(),
+				request.source(),
+				request.vdid()
+				)
+			);
+		}
+
+	mRequestsToDenyAfterPageLoadCompletes.erase(inRequest.vdid().getPage());
+	}
+
+void PageLoaderImpl::handleRemotePageLoadRequestOnBackgroundThread(
+							const RemotePageLoadRequest& inRequest,
+							DataTransferTokenId inToken
+							)
+	{
+	LOG_DEBUG << "PageLoader on " << prettyPrintString(mOwnEndpointId) 
+		<< " handling request " << prettyPrintStringWithoutWrapping(inRequest);
+		
+	pair<PolymorphicSharedPtr<SerializedObject>, ImmutableTreeSet<Fora::BigVectorId> > 
+		serializedObjectAndBigvecs = 
+			mVDM->extractVectorPageIfPossible(inRequest.vdid().getPage());
+
+	if (mDataTransfers)
+		mDataTransfers->updateBytecount(
+			inToken, 
+			inRequest.vdid().getPage().bytecount()
+			);
+
+	//try the load directly from the VDM
+	if (serializedObjectAndBigvecs.first)
+		{
+		LOG_DEBUG << "PageLoader on " << prettyPrintString(mOwnEndpointId) 
+			<< " sending data from VDM for " << prettyPrintStringWithoutWrapping(inRequest);
+
+		hash_type moveGuid = mRandomHashGenerator.generateRandomHash();
+
+		if (serializedObjectAndBigvecs.second.size() && inRequest.source().isMachine())
+			mVDM->getPageRefcountTracker()->broadcastBigvecsInFlight(
+				serializedObjectAndBigvecs.second,
+				1,
+				moveGuid
+				);
+
+		broadcastRemotePageLoadResponse(
+			RemotePageLoadResponse::Data(
+				inRequest.targetMachine(),
+				inRequest.source(),
+				inRequest.vdid(),
+				serializedObjectAndBigvecs.first,
+				serializedObjectAndBigvecs.second,
+				moveGuid,
+				inToken
+				)
+			);
+
+		if (inRequest.source().isMachine())
+			{
+			TimedLock lock(mMutex, "PageLoader");
+
+			mInFlightPages.insert(inRequest.vdid().getPage(), inRequest.source().getMachine().machine());
+			}
+
+		if (mDataTransfers)
+			mDataTransfers->updateBytecount(
+				inToken, 
+				serializedObjectAndBigvecs.first->getSerializedData()->totalByteCount()
+				);
+
+		return;
+		}
+
+
+	if (mOwnEndpointId.isMachine() && 
+			mSystemwidePageRefcountTracker->pageIsInRam(
+				inRequest.vdid().getPage(), 
+				mOwnEndpointId.getMachine().machine()
+				)
+			)
+		LOG_DEBUG << "on " << prettyPrintString(mOwnEndpointId) 
+			<< ", SystemwidePageRefcountTracker " << &*mSystemwidePageRefcountTracker 
+			<< " thinks that " 
+			<< prettyPrintString(inRequest.vdid().getPage())
+			<< " is in RAM, but we didn't find it."
+			<< ". the PRT thinks it is "
+			<< (mVDM->getPageRefcountTracker()
+						->pageIsInRam(inRequest.vdid().getPage()) ? "":"not ")
+			<< " in RAM."
+			;
+
+	handleRemotePageLoadRequestNotInVdmOnBackgroundThread(inRequest, inToken);
+	}
+
+void PageLoaderImpl::handleRemotePageLoadRequestNotInVdmOnBackgroundThreadStatic(
+							PolymorphicSharedWeakPtr<PageLoaderImpl> inSelf,
+							const RemotePageLoadRequest& inRequest,
+							PolymorphicSharedPtr<DataTransfers> inThrottler,
+							DataTransferTokenId inToken
+							)
+	{
+	PolymorphicSharedPtr<PageLoaderImpl> self = inSelf.lock();
+
+	if (!self)
+		{
+		if (inThrottler)
+			inThrottler->tokenReceived(inToken);
+		return;
+		}
+
+	self->handleRemotePageLoadRequestNotInVdmOnBackgroundThread(inRequest, inToken);
+	}
+
+
+void PageLoaderImpl::handleRemotePageLoadRequestNotInVdmOnBackgroundThread(
+							const RemotePageLoadRequest& inRequest,
+							DataTransferTokenId inToken
+							)
+	{
+	//nope - try the disk
+	if (mOfflineCache && mOfflineCache->alreadyExists(inRequest.vdid().getPage()))
+		{
+		LOG_DEBUG << "PageLoader on " << prettyPrintString(mOwnEndpointId) 
+			<< " checking disk for " << prettyPrintStringWithoutWrapping(inRequest)
+			;
+
+		PolymorphicSharedPtr<SerializedObject> data;
+
+		double t0 = curClock();
+
+		data = mOfflineCache->loadIfExists(inRequest.vdid().getPage());
+
+		Nullable<ImmutableTreeSet<Fora::BigVectorId> > bigvecs = 
+			mVDM->getPageRefcountTracker()->getBigvecsReferencedByPage(inRequest.vdid().getPage());
+
+		LOG_INFO << "Took " << curClock() - t0 << " to load " 
+			<< inRequest.vdid().getPage().bytecount() / 1024 / 1024.0 
+			<< " MB of page data from the offline cache."
+			;
+
+		if (data && !bigvecs)
+			LOG_WARN << "Loaded " << inRequest.vdid().getPage() 
+				<< " from disk, but didn't have bigvecs for it.";
+
+		if (data && bigvecs)
+			{
+			hash_type moveGuid = mRandomHashGenerator.generateRandomHash();
+
+			if (bigvecs->size() && inRequest.source().isMachine())
+				mVDM->getPageRefcountTracker()->broadcastBigvecsInFlight(
+					*bigvecs,
+					1,
+					moveGuid
+					);
+
+			broadcastRemotePageLoadResponse(
+				RemotePageLoadResponse::Data(
+					inRequest.targetMachine(),
+					inRequest.source(),
+					inRequest.vdid(),
+					data,
+					*bigvecs,
+					moveGuid,
+					inToken
+					)
+				);
+
+			LOG_DEBUG << "PageLoader on " << prettyPrintString(mOwnEndpointId) 
+				<< " sending data from VDM for " << prettyPrintStringWithoutWrapping(inRequest)
+				<< " from disk.";
+
+			if (mDataTransfers)
+				mDataTransfers->updateBytecount(
+					inToken, 
+					data->getSerializedData()->totalByteCount()
+					);
+
+			if (inRequest.source().isMachine())
+				{
+				TimedLock lock(mMutex, "PageLoader");
+				
+				mInFlightPages.insert(
+					inRequest.vdid().getPage(), 
+					inRequest.source().getMachine().machine()
+					);
+				}
+
+			return;
+			}
+		}
+
+	if (mDataTransfers)
+		mDataTransfers->tokenReceived(inToken);
+
+	if (mOwnEndpointId.isMachine() && 
+			mSystemwidePageRefcountTracker->pageIsOnDisk(
+				inRequest.vdid().getPage(), 
+				mOwnEndpointId.getMachine().machine()
+				)
+			)
+		LOG_DEBUG << "on " << prettyPrintString(mOwnEndpointId) 
+			<< ", SystemwidePageRefcountTracker thinks that " 
+			<< prettyPrintString(inRequest.vdid().getPage())
+			<< " is on disk, but we didn't find it."
+			;
+
+
+	LOG_DEBUG << "PageLoader on " << prettyPrintString(mOwnEndpointId) 
+		<< " broadcasting NoData for " << prettyPrintStringWithoutWrapping(inRequest)
+		;
+
+	broadcastRemotePageLoadResponse(
+		RemotePageLoadResponse::NoData(
+			inRequest.targetMachine(),
+			inRequest.source(),
+			inRequest.vdid()
+			)
+		);
+	}
+
+void PageLoaderImpl::handleRemoteExternalDatasetLoadRequest(RemoteExternalDatasetLoadRequest request)
+	{
+	//schedule the load request in the background so we don't block any callback threads
+	if (mDataTransfers)
+		mDataTransfers->scheduleLargeMessage(
+			boost::bind(
+				&PageLoaderImpl::handleRemoteExternalDatasetLoadRequestStatic,
+				polymorphicSharedWeakPtrFromThis(),
+				request,
+				boost::arg<1>(),
+				boost::arg<2>()
+				),
+			boost::function0<void>([](){}),
+			CumulusClientOrMachine::Client(request.source()),
+			request.datasetToLoad().getPage().bytecount(),
+			0
+			);
+	else
+		mScheduler->scheduleImmediately(
+			boost::bind(
+				memberFunctionToWeakPtrFunction(
+					&PageLoaderImpl::handleRemoteExternalDatasetLoadRequestWithToken
+					),
+				polymorphicSharedWeakPtrFromThis(),
+				request,
+				DataTransferTokenId()
+				),
+			"handleRemoteExternalDatasetLoadRequestWithToken"
+			);
+	}
+
+void PageLoaderImpl::handleRemoteExternalDatasetLoadRequestStatic(
+						PolymorphicSharedWeakPtr<PageLoaderImpl> selfWeak,
+						RemoteExternalDatasetLoadRequest request,
+						PolymorphicSharedPtr<DataTransfers> throttler,
+						DataTransferTokenId inToken
+						)
+	{
+	PolymorphicSharedPtr<PageLoaderImpl> self = selfWeak.lock();
+
+	if (!self)
+		{
+		throttler->tokenReceived(inToken);
+		return;
+		}
+
+	self->handleRemoteExternalDatasetLoadRequestWithToken(request, inToken);
+	}
+
+void PageLoaderImpl::handleRemoteExternalDatasetLoadRequestWithToken(
+						RemoteExternalDatasetLoadRequest request,
+						DataTransferTokenId inToken
+						)
+	{
+	lassert_dump(
+		mOwnEndpointId.isMachine(), 
+		"doesn't make sense to request a client to load an external dataset"
+		);
+
+	//a remote dataset has come in - if we have it, we should just send it back immediately
+
+	pair<PolymorphicSharedPtr<SerializedObject>, ImmutableTreeSet<Fora::BigVectorId> > 
+		serializedObjectAndBigvecs = 
+			mVDM->extractVectorPageIfPossible(
+				request.datasetToLoad().getPage()
+				);
+
+	//try the load directly from the VDM
+	if (serializedObjectAndBigvecs.first)
+		{
+		mOnCumulusComponentMessageCreated.broadcast(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::CrossPageLoader(
+					CrossPageLoaderMessage::ExternalDatasetLoadResponse(
+						RemoteExternalDatasetLoadResponse::Data(
+							request.targetMachine(),
+							request.source(),
+							request.datasetToLoad(),
+							serializedObjectAndBigvecs.first,
+							inToken
+							)
+						)
+					),
+				CumulusComponentEndpointSet::SpecificClient(request.source()),
+				CumulusComponentType::PageLoader()
+				)
+			);
+
+		if (mDataTransfers)
+			mDataTransfers->updateBytecount(
+				inToken, 
+				serializedObjectAndBigvecs.first->getSerializedData()->totalByteCount()
+				);
+
+		return;
+		}
+
+	if (mDataTransfers)
+		mDataTransfers->tokenReceived(inToken);
+
+	//nope - issue a local request for this
+	TimedLock lock(mMutex, "PageLoader");
+
+	if (mIsTornDown)
+		return;
+
+	mExternalDatasetsRequestedByRemoteClients.insert(
+		requestExternalDatasetFromEnvironment_(request.datasetToLoad()), 
+		request.source()
+		);
+	}
+
+void PageLoaderImpl::handleRemoteExternalDatasetLoadResponse(RemoteExternalDatasetLoadResponse response)
+	{
+	TimedLock lock(mMutex, "PageLoader");
+
+	if (mIsTornDown)
+		return;
+
+	@match RemoteExternalDatasetLoadResponse(response)
+		-| Failed(reason) ->> {
+			mOnVectorLoadedResponse.broadcast(
+				VectorLoadedResponse(response.datasetToLoad(), false, false)
+				);
+			}
+		-| Data(data) ->> {
+			lassert(data);
+
+			bool success = mVDM->loadSerializedVectorPage(
+				response.datasetToLoad().getPage(),
+				data
+				);
+
+			mOnVectorLoadedResponse.broadcast(
+				VectorLoadedResponse(
+					response.datasetToLoad(), 
+					success,
+					false
+					)
+				);
+			}
+
+	mExternalVectorLoadsPendingOnOtherMachines.drop(VectorLoadRequest(response.datasetToLoad()));
+	}
+
+Cumulus::MachineId PageLoaderImpl::pickRandomlyFromSet_(const std::set<Cumulus::MachineId>& hashes)
+	{
+	return Ufora::math::Random::pickRandomlyFromSet(hashes, mRandomGenerator);
+	}
+
+void PageLoaderImpl::broadcastRemotePageLoadResponse(RemotePageLoadResponse msg)
+	{
+	mOnCumulusComponentMessageCreated.broadcast(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::CrossPageLoader(
+				CrossPageLoaderMessage::PageLoadResponse(msg)
+				),
+			CumulusComponentEndpointSet::fromEndpoint(msg.target()),
+			CumulusComponentType::PageLoader()
+			)
+		);
+	}
+
+void PageLoaderImpl::broadcastRemotePageLoadRequest(RemotePageLoadRequest msg)
+	{
+	mOnCumulusComponentMessageCreated.broadcast(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::CrossPageLoader(
+				CrossPageLoaderMessage::PageLoadRequest(msg)
+				),
+			CumulusComponentEndpointSet::SpecificWorker(msg.targetMachine()),
+			CumulusComponentType::PageLoader()
+			)
+		);
+	}
+
+void PageLoaderImpl::handleCumulusComponentMessage(
+				const CumulusComponentMessage& message, 
+				const CumulusClientOrMachine& source, 
+				const CumulusComponentType& componentType
+				)
+	{
+	@match CumulusComponentMessage(message)
+		-| ExternalIoTask(Complete(task)) ->> {
+			handleExternalIoTaskCompleted(task);
+			}
+		-| ActivePageSynchronizerToPageLoader(vlr) ->> {
+			requestVectorLoad(vlr);
+			}
+		-| CrossPageLoader(ExternalDatasetLoadRequest(r)) ->> {
+			handleRemoteExternalDatasetLoadRequest(r);
+			}
+		-| CrossPageLoader(ExternalDatasetLoadResponse(r)) ->> {
+			handleRemoteExternalDatasetLoadResponse(r);
+			}
+		-| CrossPageLoader(PageLoadResponse(r)) ->> {
+			handleRemotePageLoadResponse(r);
+			}
+		-| CrossPageLoader(PageLoadRequest(r)) ->> {
+			handleRemotePageLoadRequest(r);
+			}
+	}
+
+EventBroadcaster<CumulusComponentMessageCreated>& PageLoaderImpl::onCumulusComponentMessageCreated()
+	{
+	return mOnCumulusComponentMessageCreated;
+	}
+
+}
+

@@ -1,0 +1,202 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <boost/unordered_map.hpp>
+#include <boost/thread.hpp>
+#include "../math/Hash.hpp"
+
+template<class union_type_metadata>
+class IsAlternativeTypeEmpty {
+public:
+	const static bool result = false;
+};
+
+template<>
+class IsAlternativeTypeEmpty< ::CPPML::Null > {
+public:
+	const static bool result = true;
+};
+
+template<class cppml_type, class union_type, bool union_type_is_empty >
+class MemoizeAlternativeByHash;
+
+template<class cppml_type, class union_type>
+class MemoizeAlternativeByHash<cppml_type, union_type, false> {
+public:
+	const static int slice_count = 32;
+
+	typedef typename union_type::tag_type tag_type;
+	typedef typename union_type::common_type common_type;
+	typedef typename union_type::data_type data_type;
+
+	static boost::unordered_map<hash_type, union_type*>* getHashTables()
+		{
+		static boost::unordered_map<hash_type, union_type*> hashTables[slice_count];
+		return hashTables;
+		}
+
+	static boost::recursive_mutex* getMutexes()
+		{
+		static boost::recursive_mutex mutexes[slice_count];
+		return mutexes;
+		}
+
+	static boost::recursive_mutex mMutexes[slice_count];
+	
+	static union_type* memoize(
+				tag_type tag,
+				const common_type& common,
+				const data_type& data
+				)
+		{
+		hash_type hash = hashValue(data);
+
+		int sliceIndex = hash[0] % slice_count;
+
+		boost::recursive_mutex::scoped_lock lock(getMutexes()[sliceIndex]);
+
+		auto& hashtable = getHashTables()[sliceIndex];
+
+		auto it = hashtable.find(hash);
+
+		if (it != hashtable.end())
+			{
+			union_type* result = it->second;
+			result->incrementRefcount();
+			return result;
+			}
+		
+		union_type* result = new union_type(
+			tag, 
+			common, 
+			data
+			);
+
+		hashtable[hash] = result;
+
+		return result;
+		}
+};
+
+template<class cppml_type, class union_type>
+class MemoizeAlternativeByHash<cppml_type, union_type, true> {
+public:
+	const static int slice_count = 1;
+
+	typedef typename union_type::tag_type tag_type;
+	typedef typename union_type::common_type common_type;
+	typedef typename union_type::data_type data_type;
+
+	static boost::unordered_map<hash_type, union_type*>* getHashTables()
+		{
+		static boost::unordered_map<hash_type, union_type*> hashTables[slice_count];
+		return hashTables;
+		}
+
+	static boost::recursive_mutex* getMutexes()
+		{
+		static boost::recursive_mutex mutexes[slice_count];
+		return mutexes;
+		}
+
+	static boost::recursive_mutex mMutexes[slice_count];
+	
+	static union_type* memoize(
+				tag_type tag,
+				const common_type& common,
+				const data_type& data
+				)
+		{
+		static union_type* result = 0;
+
+		//there is a race condition here, but we'll accept it to avoid locking
+		if (result == 0)
+			result = new union_type(tag, common, data);
+
+		return result;
+		}
+};
+
+
+template<class cppml_type>
+class MemoizeByTagAndHash {
+public:
+	template<class union_type>
+	class memoizer_type {
+	public:
+		typedef typename union_type::tag_type tag_type;
+		typedef typename union_type::common_type common_type;
+		typedef typename union_type::data_type data_type;
+
+		static union_type* memoize(
+					tag_type tag,
+					const common_type& common,
+					const data_type& data
+					)
+			{
+			return MemoizeAlternativeByHash<cppml_type, union_type, 
+				IsAlternativeTypeEmpty<typename union_type::data_type::metadata>::result >::memoize(tag, common, data);
+			}
+
+	};
+
+	template<class subtype>
+	static int countInstances(void)
+		{
+		typedef CPPML::TaggedUnion<
+					cppml_type, 
+					typename cppml_type::common_data_type, 
+					subtype, 
+					void
+					> 
+				union_type;
+
+		auto* hashTables = MemoizeAlternativeByHash<cppml_type, union_type, 
+			IsAlternativeTypeEmpty<typename union_type::data_type::metadata>::result >::getHashTables();
+
+		long tr = 0;
+
+		for (long k = 0; k < MemoizeAlternativeByHash<cppml_type, union_type, 
+				IsAlternativeTypeEmpty<typename union_type::data_type::metadata>::result >::slice_count; k++)
+			tr += hashTables[k].size();
+
+		return tr;
+		}
+};
+
+#define macro_memoizeCppmlClassByTagAndHash(T) 			\
+namespace CPPML {										\
+template<>												\
+class TaggedUnionMemoizer<T> {							\
+public:													\
+	typedef MemoizeByTagAndHash<T> result_type;			\
+};														\
+														\
+template<>												\
+class Refcount<T, void> {								\
+public:													\
+		class refcount_type {};							\
+		static void increment(refcount_type& ioR) {}	\
+		static bool decrement(refcount_type& ioR)		\
+			{											\
+			return false;								\
+			}											\
+};														\
+}														\
+
+
+

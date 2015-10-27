@@ -1,0 +1,252 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "KeyRangeSet.hppml"
+
+namespace SharedState {
+
+
+// this is needed because the notion of a keybound is poorly defined.
+// when a keybound is null it is considered to be infinity. However this will be either negative
+// or positive infinity depending on whether it is a left or right bound! 
+bool boundLT(
+		Nullable<KeyBound> first, 
+		bool firstIsNegativeInfinityIfNull, 
+		Nullable<KeyBound> second, 
+		bool secondIsNegativeInfinityIfNull)
+	{
+	if (first && second)
+		return *first < *second;
+	if (!first && !second)
+		return (firstIsNegativeInfinityIfNull && !secondIsNegativeInfinityIfNull);
+	if (first) // and second is Null
+		return !secondIsNegativeInfinityIfNull;
+	else // first is null and second is not
+		return firstIsNegativeInfinityIfNull;
+	}
+
+bool boundEQ(
+		Nullable<KeyBound> first, 
+		bool firstIsNegativeInfinityIfNull, 
+		Nullable<KeyBound> second, 
+		bool secondIsNegativeInfinityIfNull)
+	{
+
+	if (first && second)
+		return *first == *second;
+	if (!first && !second)
+		return firstIsNegativeInfinityIfNull == secondIsNegativeInfinityIfNull;
+	return false;
+	}
+
+
+void KeyRangeSet::insert(const set<KeyRange>& ranges)
+	{
+	for(set<KeyRange>::iterator it = ranges.begin(), it_end = ranges.end(); it != it_end; ++it)
+		insert(*it);
+	}
+	
+pair<KeyRangeSet::iterator, bool> KeyRangeSet::insert(const KeyRange& range)
+	{
+	pair<Nullable<KeyRange>, Nullable<KeyRange> > adj = findAdjacent(range);
+
+	Nullable<KeyBound> left = range.left();
+	Nullable<KeyBound> right = range.right();
+
+	if (adj.first)
+		{
+		mRanges.erase(*adj.first);
+		left = (*(adj.first)).left();
+		}
+	if (adj.second)
+		{
+		mRanges.erase(*adj.second);
+		right = (*(adj.second)).right();
+		}
+
+	return mRanges.insert(KeyRange(range.keyspace(), range.index(), left, right));
+	}
+
+
+
+set<KeyRange> KeyRangeSet::difference(const KeyRange& range) const
+	{
+
+	set<KeyRange> tr;
+
+	Nullable<KeyBound> left = range.left();
+	Nullable<pair<const_iterator, const_iterator> > p = overlaps(range);
+	if(p)
+		{
+		for(const_iterator it = (*p).first; it != (*p).second; ++it)
+			{
+			if (it->left() && (boundLT(left, true, it->left(), true)))
+				{
+				tr.insert(KeyRange(range.keyspace(), range.index(), left, it->left()));
+				}
+			left = it->right();
+			}
+
+		// now check last element for right-side overlap
+		iterator last = (*p).second;
+		last--;
+		if (last->right() && boundLT(last->right(), false, range.right(), false))
+			tr.insert(KeyRange(range.keyspace(), range.index(), last->right(), range.right()));
+		}
+	else
+		{
+		tr.insert(range);
+		}
+	return tr;
+
+	}
+
+set<KeyRange> KeyRangeSet::intersection(const KeyRange& in) const
+	{
+	Nullable<pair<const_iterator, const_iterator> > p = overlaps(in);
+	if(p)
+		{
+		vector<KeyRange> tr((*p).first, (*p).second);
+		if (boundLT(tr.front().left(), true, in.left(), true))
+			tr.front().left() = in.left();
+		if (boundLT(in.right(), false, tr.back().right(), false))
+			tr.back().right() = in.right();
+		return set<KeyRange>(tr.begin(), tr.end());
+		}
+	return set<KeyRange>();
+	}
+
+bool KeyRangeSet::containsKey(const Key& inKey)
+    {
+    for (auto it = mRanges.begin(); it != mRanges.end(); ++it)
+        if (it->contains(inKey))
+            return true;
+    return false;
+    
+    }
+
+void KeyRangeSet::erase(const KeyRange& in)
+	{
+	Nullable<pair<const_iterator, const_iterator> > p = overlaps(in);
+
+
+	vector<KeyRange> toAddBack;
+	if(p)
+		{
+		KeyRange first(KeyRange(*(*p).first));
+		KeyRange last(KeyRange(*(*p).first));
+
+		if (((*p).second) != (*p).first)
+			{
+			const_iterator it2 = (*p).second;
+			last = *(--it2);
+			}
+
+		if (boundLT(first.left(), true, in.left(), true))
+			{
+			first.right() = in.left();
+			toAddBack.push_back(first);
+			}
+		if (boundLT(in.right(), false, last.right(), false))
+			{
+			last.left() = in.right();
+			toAddBack.push_back(last);
+			}
+			mRanges.erase((*p).first, (*p).second);
+			mRanges.insert(toAddBack.begin(), toAddBack.end());
+		}
+	}
+void KeyRangeSet::printRanges(void) const
+	{
+	cout << "Current Ranges" << endl;
+	for (set<KeyRange>::iterator it = mRanges.begin(); it != mRanges.end(); ++it)
+		{
+		cout << "\t" << *it << endl;
+		}
+	}
+void KeyRangeSet::printFuncs(const KeyRange& in) const
+	{
+	cout << "differences" << endl;
+	set<KeyRange> diffs = difference(in);
+	for(set<KeyRange>::iterator it = diffs.begin(); it != diffs.end(); ++it)
+		cout << "\t" << *it << endl;
+	cout << "intersection" << endl;
+	set<KeyRange> inter = intersection(in);
+	for(set<KeyRange>::iterator it2 = inter.begin(); it2 != inter.end(); ++it2)
+		cout << "\t" << *it2 << endl;
+	}
+Nullable<pair<KeyRangeSet::const_iterator, KeyRangeSet::const_iterator> > KeyRangeSet::overlaps(const KeyRange& in) const
+	{
+	const_iterator begin;
+	const_iterator end;
+
+	bool foundFirst = false;
+	for(const_iterator it = mRanges.begin(); it != mRanges.end(); ++it)
+		{
+		if (it->overlaps(in))
+			{
+			if(!foundFirst)
+				{
+				foundFirst = true;
+				begin = it;
+				end = it;
+				}
+			else
+				{
+				end = it;
+				}
+			}
+		}
+	if(!foundFirst)
+		return null();
+	else
+		return Nullable<pair<const_iterator, const_iterator> >(make_pair(begin, ++end));
+	}
+
+pair<Nullable<KeyRange>, Nullable<KeyRange> > KeyRangeSet::findAdjacent(const KeyRange& range) const
+	{
+	Nullable<KeyRange> left = null();
+	Nullable<KeyRange> right = null();
+
+	for(set<KeyRange>::iterator it = mRanges.begin(); it != mRanges.end(); ++it)
+		{
+		if (it->index() == range.index() && it->keyspace() == range.keyspace())
+			{
+			lassert(!it->overlaps(range)); // we can't allow overlapping ranges...
+			if (it->left() && range.right() && *range.right() == *it->left())
+				right = Nullable<KeyRange>(*it);
+			if (it->right() && range.left() && *range.left() == *it->right())
+				left = Nullable<KeyRange>(*it);
+			}
+		}
+	return make_pair(left, right);
+	}
+
+bool KeyRangeSet::containsKeyspace(const Keyspace& inKeyspace) const
+	{
+	for (auto it = mRanges.begin(); it != mRanges.end(); ++it)
+		if (it->keyspace() == inKeyspace)
+			return true;
+	return false;
+	}
+
+bool KeyRangeSet::intersects(const KeyRange& inRange) const 
+	{
+	return intersection(inRange).size() > 0;
+	}
+
+}
+
+

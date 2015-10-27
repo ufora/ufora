@@ -1,0 +1,916 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#Markdown("""
+### plot
+
+#### Description
+
+The Fora Plotting Library.
+
+Contains functions for drawing line charts, 3d plots, images, and other visualizations.
+
+The most commonly used functions are:
+
+    linePlot(vector)
+    scatterPlot(vector)
+    barPlot(vector)
+
+Also, try using [surfacePlot](plot.surfacePlot), which takes a function of two variables (x and y)
+that returns a float (z), samples it, and draws the resulting interpolated surface in 3D.
+
+### Composite plots
+
+The result of a plotting function is an instance of a Plot object, which provides some conveniences
+when building up more complex plots. One is producing composite plots, or plots overlaid into the 
+same axis space. Here is a way of producing a plot built from two line plots:
+
+    linePlot(vector1) + linePlot(vector2)
+
+These two line plots will share axes and maintain their respective options, except for those options
+which apply to the entire result, like the title.
+
+### Options
+
+Plots can accept a number of parameters to control their display characteristics, like color, 
+axes, line thickness, labels, etc.
+
+Plot options are set in two ways, either through the `options:` argument, or with the `plot.options`
+decorator. Each pattern is shown here:
+
+    linePlot(data, options:(title:"My Plot Title"))
+
+You can build up plot options into named tuple like this:
+
+    let options = (
+        title: "My Plot Title",
+        label: "Red line",
+        color: "#ff0000",
+        xaxis: (
+            label: "My X-Axis"
+            ),
+        yaxis: (
+            label: "My Y-Axis"
+            )
+        )
+    linePlot(data, options:options)
+
+Decorators enable you to build up those options using a operations on the Plot instances like this:
+
+    plot.options.title("My Plot Title") * linePlot(data)
+
+With decorators, you can take existing plot objects and override their current options:
+
+    let p = linePlot(data, options:(title:"Original title"));
+    plot.options.title("New title") * p
+
+Set multiple options using `*` with multiple decorators:
+
+    plot.options.title("Plot title") *
+    plot.options.label("Legend label") *
+    linePlot(data)
+
+You can also set the global options on a composite plot using the decorator pattern:
+
+    plot.options.title("My Composite Plot") * (linePlot(vector1) + linePlot(vector2))
+
+The most common options available for single plots are:
+
+* `title` - The title of the given plot, either single or composite.
+* `label` - The legend label placed on a single plot. Appears as an entry in the legend.
+* `strokeColor` - For line and scatter plots, controls the color of the outline. Can be a hex color
+    or an RGB color string: e.g. `"#ff0000"` or `"rgba(255, 0, 0, 1.0)"`
+* `strokeWeight` - For line and scatter plots, controls the thickness of the outline. An integer 
+    holding the number of pixels.
+* `fillColor` - For scatter and bar plots, controls the color of the fill.
+* `includeZero` - For line and bar plots, whether to include the value y=0 in the plot, ensuring
+    the x-axis is always shown, regardless of the min and max y-values in the plot data. Boolean 
+    value: `true` or `false`.
+* `height` - Give a number of pixels for the physical height of the plot on the screen. Defaults to
+    300 pixels.
+
+Under plot composition, aka addition, plot options are _merged_, with conflicts being resolved
+by the left-most option. For example,
+
+    plot.options.title("title1") * linePlot(...) + plot.options.title("title2") * linePlot(...)
+
+will have title "title 1". As another example, 
+
+    plot.options.title("title 0") * (
+        plot.options.title("title1") * linePlot(...) + plot.options.title("title2") * linePlot(...)
+        )
+
+has title "title 0".
+      
+
+Special options for bar plots:
+
+* `horizontal`: Whether to display the bars horizontally. Defaults to `false`.
+* `barWidth`: The width of each bar in the value-space of the x-axis (or y-axis if horizontal).
+* `mode` : When set to "categories", this enables you to set labels on each bar in the bar plot.
+    The data structure you need however, must be a vector of tuples, e.g.
+    `[("Category A", 10.0), ("Category B", 20.0)]`
+
+### Axis Options
+
+By default, Fora plots have two axes, a single x- axis and single y- axis. You can set their options
+by using the `xaxis` and `yaxis` fields of the `options` object:
+
+    plot.options.xaxis.label("X-Axis Label") *
+    plot.options.yaxis.label("Y-Axis Label") *
+    linePlot(vector)
+
+Available options for a single axis are:
+
+* `show` - Whether to show the specified axis. Boolean, `true` or `false`. Defaults to `true`.
+* `min` - The minimum value to include in the axis. Float.
+* `max` - The maximum value to include in the axis. Float.
+* `color` - The color of the axis line.
+* `tickColor` - The color of the value ticks along the axis.
+* `tickLength` - The size of a given tick in pixels. Integer.
+* `tickInterval` - The space between ticks in the value-space of the axis. That is, if the range of
+    the axis is from -1.0 to 1.0, you can set a tick interval of 0.1 to show 21 ticks, including 0.
+
+### Legend Options
+
+The legend has a few options that can control its appearance. Legends are shown by default when a
+`label` field is present.
+
+* `show` - Whether to show the legend at all. Defaults to `true`.
+* `position` - Which corner to put the legend into. One of `"nw"`, `"sw"`, `"ne"`, `"nw"`.
+""");
+
+`hidden
+_plotLimit: 10000;
+
+`hidden
+_enforcePlotLimit:
+fun (filters.IsVector(...) vector, *args) {
+    if (size(vector) > _plotLimit) {
+        throw "Plotting functions can only handle fewer than %s elements. Please subsample your data.".format(_plotLimit);
+        }
+    }
+(filters.IsFunction(...) f, *args) {
+    if (args.numSamples > _plotLimit) {
+        throw "Plotting functions can only handle fewer than %s elements. Please use fewer samples.".format(_plotLimit);
+        }
+    }
+(filters.IsTuple(...) tup, *args) {
+    if (size(tup) > _plotLimit) {
+        throw "Plotting functions can only handle fewer than %s elements. Please subsample your data.".foramt(_plotLimit);
+        }
+    };
+
+
+
+linePlot:
+#Markdown("""
+#### Usage
+
+    linePlot(vector, options:=())
+    linePlot(function, options:=(), xRange:=(-10, 10), numSamples:=100)
+    linePlot(*vectors, options:=())
+
+#### Description
+
+Build a line chart visualization of a vector, or vectors
+
+Draws a continuous line chart for a single vector of data.
+
+In the third form, all vectors in `vectors` should have same lenght. 
+`vectors[0]` is interpreted as the common x-values of the y-values in the 
+remaining vectors, which are then overlayed.
+
+#### Arguments
+
+* `vector` -- The Vector to plot.
+* `options` -- Tuple (optional). A nested named tuple of options for this plot.
+
+* `function` -- Function. A function of one variable to sample and plot.
+* `xRange` -- Tuple of Floats. e.g. (-10.0, 10.0). The range to sample.
+* `numSamples` -- Integer. The number of points to sample along the given `xRange`.
+
+#### Examples
+
+    linePlot([1, 4, 2, 3])
+
+    linePlot([(1, 2), (2, 3), (5, 4)])
+
+    let v = [(x: 0.0, y: 1.0), (x: 1.0, y: 2.0), (x: 2.0, y: 3.0), (x: 3.0, y: 4.0)];
+    linePlot(v)
+
+    linePlot([1,2,3,4], [2,3,1,4], [4,4,2,1]) /* equivalent to 
+        linePlot([(1,2),(2,3),(3,1),(4,4)]) + linePlot([(1,4),(2,4),(3,2),(4,1)]) */
+
+By default, if `vector` contains datetimes, these are plotted as such. For example, 
+
+    linePlot([DateTime("2015/1/1"), DateTime("2015/3/2"), DateTime("2015/2/2")])
+
+is equivalent to 
+
+    linePlot(
+        [DateTime("2015/1/1"), DateTime("2015/3/2"), DateTime("2015/2/2")], 
+        options: (yaxis: (mode: "time"))
+        )
+
+DateTimes themselves are ("clearly") not plotted by JavaScript: we transform them
+first into the number of milliseconds since the epoch as a float. 
+These floats can be visualized differently by passing an explicit options argument 
+defining a different mode on yaxis. For example, to see the raw milliseconds, we can do
+
+    linePlot(
+        [DateTime("2015/1/1"), DateTime("2015/3/2"), DateTime("2015/2/2")], 
+        options: (yaxis: (mode: nothing))
+        )
+
+Similarly, if dates appear in the implicit x-axis of a vector a tuples, we plot them as 
+dates as well. That is, for example
+
+    linePlot(
+        [(DateTime("2015/1/1"), 1), 
+         (DateTime("2015/2/2"), 3), 
+         (DateTime("2015/3/2"), 2)]
+        )
+
+is equivalent to 
+
+    linePlot(
+        [(DateTime("2015/1/1"), 1), 
+         (DateTime("2015/2/2"), 3), 
+         (DateTime("2015/3/2"), 2)],
+         options: (xaxis: (mode: nothing))
+        )
+
+
+""")
+fun (filters.IsVector(vector) or VectorContainer(vector), options:=()) {
+    _enforcePlotLimit(vector);
+
+    plotBase(vector, 'linePlot', options:options)
+    }
+(filters.IsFunction(f), options:=(), xRange:=nothing, numSamples:=100) {
+    _enforcePlotLimit(f, numSamples:numSamples);
+
+    let callback = fun(sampledVector) {
+        linePlot(sampledVector, options:options)
+        };
+    sampleFunction(f, xRange, numSamples, callback)
+    }
+(filters.IsTuple(tup), options:=()) {
+    _enforcePlotLimit(tup);
+
+    let vector = iter.toVector(tup);
+    linePlot(vector, options:options)
+    }
+(*vectors, options:=()) {
+    linePlot(toVectorOfTuples_(*vectors), options: options)
+    }
+(Plottable(arguments)) {
+    linePlot(*arguments)
+    };
+
+`hidden
+toVectorOfTuples_: fun(*vectors) {
+    let firstLength = size(vectors[0]);
+    vectors..apply(
+        { assertions.assertEqual(size(_), firstLength) }
+        )
+
+    Vector.range(
+        firstLength,
+        fun(rowIx) {
+            sum(0, size(vectors), 
+                fun(colIx) { 
+                    (vectors[colIx][rowIx],)
+                    }
+                )
+            }
+        )
+    };
+
+`hidden
+sparklineVectorLimit: 200;
+
+sparkline:
+fun (filters.IsVector(...) inVector, options:=()) {
+    let firstRow = inVector[0];
+
+    // For sparklines, we're only interested in vectors of ints, floats, and the
+    // first plottable y-value column of vectors of tuples.
+    let vector = 
+    match (firstRow) with
+        (filters.IsFloat(...)) {
+            inVector.applyWithIndex(fun(el, i){ (i, el) })
+            }
+        (filters.IsInteger(...)) {
+            inVector.applyWithIndex(fun(el, i){ (i, el) })
+            }
+        (filters.IsTuple(...)) {
+            inVector
+            }
+        (...) {
+            inVector
+            };
+
+    if (size(vector) < sparklineVectorLimit) {
+        let thePlot = linePlot(vector, options:options).asHashPlot();
+        return #MultiSize(small: thePlot, full: thePlot);
+        }
+
+    // Subsample the vector
+    let numRanges = sparklineVectorLimit / 2;
+    let numElements = size(vector);
+    let step = numElements / numRanges;
+
+    let data = Vector.range(
+        numRanges,
+        fun(ix) {
+            let i = 2 * (ix / 2);
+            let start = step * i;
+            let end = min(start + step, numElements - 1);
+
+            let rows = vector[start, end];
+            let values = rows.apply({_[1]});
+
+            let startValue = values[0];
+            let endValue = values[-1];
+            let isIncreasing = endValue > startValue;
+
+            let startRow = rows[0];
+            let endRow = rows[-1];
+            let mn = min(values);
+            let mx = max(values);
+
+            if (isIncreasing)
+                if (ix % 2 == 0) (startRow[0], mn) else (startRow[0], mx)
+            else
+                if (ix % 2 == 0) (startRow[0], mx) else (startRow[0], mn)
+            }
+        );
+
+    #MultiSize(
+        small: linePlot(data, options: options).asHashPlot(),
+        full: linePlot(inVector, options: options).asHashPlot()
+        )
+    };
+
+`hidden
+sampleFunction:
+"""Samples the given function over a range on the x-axis with the granularity specified by numSamples"""
+fun(f, xRange, numSamples, callback) {
+    if (xRange is nothing) {
+        throw "Function form of linePlot requires an xRange:(start, stop) for sampling."
+        }
+    let toPoint = fun(x){
+        (x, f(x))
+        };
+    let low = xRange[0]
+    let high = xRange[1]
+    let step = Float64(high - low) / numSamples;
+    let sampledVector = Vector.range(
+        numSamples, 
+        fun(sampleIx) {
+            let x = low + step * sampleIx;
+            (x, f(x))
+            }
+        );
+    callback(sampledVector)
+    };
+
+
+barPlot:
+#Markdown("""
+#### Usage
+
+    plot.barPlot(vector, options:())
+
+#### Description
+
+Draw a bar plot of the given vector of data.
+
+Behaves similarly to linePlot.
+""")
+fun (filters.IsVector(...) vector, options:=()) {
+    _enforcePlotLimit(vector);
+
+    plotBase(vector, 'barPlot', options:options)
+    }
+(filters.IsFunction(...) f, options:=(), xRange:=nothing, numSamples:=100) {
+    _enforcePlotLimit(f, numSamples:numSamples);
+
+    let callback = fun(sampledVector) {
+        barPlot(sampledVector, options:options)
+        };
+    sampleFunction(f, xRange, numSamples, callback)
+    }
+(filters.IsTuple(...) tup, options:=()) {
+    _enforcePlotLimit(tup);
+
+    let vector = iter.toVector(tup);
+    barPlot(vector, options:options)
+    };
+
+scatterPlot:
+#Markdown("""
+#### Usage
+
+    scatterPlot(vector, options:())
+
+#### Description
+
+Produces an overlayed visualization of vector as a scatter plot.
+
+By default, this function expects to receive a vector of tuple with two floats, which are
+interpreted as x and y values, respectively.
+""")
+fun (filters.IsVector(...) vector, options:=()) {
+    _enforcePlotLimit(vector);
+
+    plotBase(vector, 'scatterPlot', options: options)
+    }
+(filters.IsTuple(...) tup, options:=()) {
+    _enforcePlotLimit(tup);
+
+    let vector = iter.toVector(tup);
+    scatterPlot(vector, options: options)
+    };
+
+
+`hidden
+plotBase:
+#Markdown("""
+#### Usage
+
+    plotBase(vector, plotType, options:())
+
+#### Description
+
+Builds a Plot object instance for a given plot function.
+
+#### Arguments
+
+* `vector` -- Vector. The data being plotted.
+* `plotType` -- String. One of `'linePlot'`, `'scatterPlot'`, or `'barPlot'`.
+* `options` -- Tuple. A nested named tuple of options for the plot.
+
+""")
+fun (filters.IsVector(vector), plotType, options:=())
+    {
+    if (size(vector) == 0)
+        return nothing;
+    _enforcePlotLimit(vector);
+
+    // TODO Check to see if the size of the vector is too large and subsample or aggregate.
+
+    let firstRow = vector[0];
+
+    vector = 
+    match (firstRow) with
+        (filters.IsFloat(...)) {
+            vector.applyWithIndex(fun(el, i){ (i, el) })
+            }
+        (filters.IsInteger(...)) {
+            vector.applyWithIndex(fun(el, i){ (i, el) })
+            }
+        (filters.IsTuple(...)) {
+            let (newVector, newOptions) = transformVectorOfTuples_(vector, firstRow, options)
+            options = newOptions;
+            newVector
+            }
+        (filters.IsDateTime(...)) {
+            if (not hasYAxisMode_(options))
+                options = options + (yaxis: (mode: "time"));
+
+            vector.applyWithIndex(
+                fun(el, i) { 
+                    (i, transformDateTime_(el))
+                    }
+                )
+            }
+        (...) {
+            throw Exception(
+                plotType + 
+                " got an invalid data type for its vector argment that it couldn't process. " +
+                plotType + " can't handle the element: " + String(firstRow)
+                )
+            };
+
+    Plot(vector, plotType, options)
+    };
+
+`hidden
+transformDateTime_: fun(datetime) {
+    // Because Javascript likes milliseconds.
+    datetime.floatSecondsSinceEpoch() * 1000.0
+    };
+
+`hidden
+transformVectorOfTuples_: fun(vector, firstElement, options) {
+    if (filters.IsDateTime(firstElement[0])) {
+        if (not hasXAxisMode_(options))
+            options = options + (xaxis: (mode: "time"))
+        vector = vector ~~ fun((elt0, *args)) { (transformDateTime_(elt0), *args) };
+        return (vector, options)
+        }
+        
+    if (size(firstElement) == 1) {
+        vector = vector.applyWithIndex(fun(elt, ix) { (ix, elt[0]) });
+        }
+
+    return (vector, options)
+    };
+
+`hidden
+hasYAxisMode_: fun(options) {
+    try {
+        options.yaxis.mode
+        return true
+        }
+    catch (...) {
+        return false
+        }
+    };
+
+
+`hidden
+hasXAxisMode_: fun(options) {
+    try {
+        options.xaxis.mode
+        return true
+        }
+    catch (...) {
+        return false
+        }
+    };
+
+Plot:
+#Markdown("""
+#### Usage
+
+    Plot(vector, plotType, options)
+
+#### Description
+
+An object description of a plot.
+
+Used to provide composition and other conveniences for plots. For example, one can overlay two line
+plots by adding them together:
+
+    linePlot(data1) + linePlot(data2)
+""")
+class {
+    member vector;
+    member plotType;
+    member options;
+
+    asHashPlot: fun() {
+        #Plot(
+            function: self.plotType,
+            options: self.options,
+            vector: self.vector
+            )
+        };
+
+    operator match (x if x is #Single) {
+        (self.asHashPlot(),)
+        };
+
+    operator match (x if x is Visualizable) {
+        (self.asHashPlot(),)
+        };
+
+    operator +(other) {
+        match (other) with
+            (#Composite(otherPlots, otherOptions)) {
+                PlotComposite(
+                    (self.asHashPlot(),) + otherPlots, 
+                    decorators.mergeNamedTuples(self.options, otherOptions)
+                    )
+                }
+            (#Single(otherPlot)) {
+                PlotComposite(
+                    (self.asHashPlot(), otherPlot), 
+                    decorators.mergeNamedTuples(self.options, other.options)
+                    )
+                }
+        };
+    };
+
+PlotComposite:
+#Markdown("""
+#### Usage
+
+    let composite = linePlot(data1) + barPlot(data2);
+    composite
+
+#### Description
+
+A class that represents the composition of two plots. Typically not instantiated directly.
+""")
+class {
+    member plots;
+    member options;
+
+    operator match (x if x is #Composite) {
+        (plots, options)
+        };
+
+    operator match (x if x is Visualizable) {
+        (#PlotComposite(self.plots, self.options),)
+        };
+
+    operator +(other) {
+        match (other) with
+            (#Composite(otherPlots, otherOptions)) {
+                PlotComposite(self.plots + otherPlots, self.options)
+                }
+            (#Single(otherPlot)) {
+                PlotComposite(self.plots + (otherPlot,), self.options)
+                }
+        };
+    };
+
+
+histogram:
+#Markdown("""
+#### Usage
+
+    histogram(vector, breaks:=20, field:=nothing, options:=())
+
+#### Description
+
+Draws a histogram of the given vector (or indexable object), 
+aggregating over the given breaking strategy and field.
+
+If `vector` is a Vector of Floats, the histogram function aggregates the elements with the strategy
+specified by `breaks`, which defaults to a number of evenly spaced regions across the range of data.
+
+If `vector` is a Vector of tuples, either the first "column" is drawn or the field specified by
+the argument `field`, which should be a Symbol or Integer index of the column to draw.
+
+#### Arguments
+
+* `vector` -- The data to draw.
+* `breaks` -- Integer. The number of aggregation ranges, or bars, to draw in the histogram.
+* `field` -- Symbol, Integer (options). The column to draw a histogram of if `vector` is a Vector of
+    tuples.
+* `options` -- Tuple. A nested named tuple of plot options.
+""")
+fun (vector, breaks:=20, field:=nothing, options:=()) {
+
+    let extractColumnFromVectorOfTuples = fun() {
+        if (field is nothing) {
+            vector ~~ {_[0]}
+            }
+        else {
+            vector ~~ {_[field]}
+            }
+        };
+
+    let samples =
+        if (size(vector) == 0){
+            []
+        } else {
+            let firstElement = vector[0];
+            match (firstElement) with
+                (filters.IsTuple(...)) {
+                    // We (may) have a vector of tuples.
+                    extractColumnFromVectorOfTuples()
+                    }
+                (...) {
+                    vector
+                }
+            }
+        ;
+
+    let (maxX, minX) = (max(samples), min(samples));
+    let spanX = maxX - minX;
+
+    let sampler =
+    fun (groupIndex)
+        {
+        let minVal = groupIndex * spanX / breaks + minX;
+        let maxVal = (groupIndex + 1) * spanX / breaks + minX;
+        let count = 0;
+
+        let isLast = groupIndex == breaks;
+
+        for pt in samples {
+            if (pt >= minVal and pt < maxVal and not isLast) {
+                count = count + 1;
+                }
+            else if (pt >= minVal and pt <= maxVal and isLast) {
+                // Attempt to count the max value of the entire range at the last group.
+                count = count + 1;
+                }
+            }
+
+        (x: minVal, y: count)
+        };
+
+    let sampledBreaks = Vector.range(breaks + 1, sampler);
+    barPlot(sampledBreaks, options: options)
+    }
+(Plottable(arguments)){
+    histogram(arguments)
+    };
+
+
+// -----------------------------------------------------------------------------------------------
+
+surfacePlot:
+#Markdown("""
+#### Usage 
+
+    surfacePlot(f, xRange: xRange, yRange: yRange, nX: nX, nY: nY, options={:})
+    surfacePlot(grid.Grid(grid))
+
+#### Description
+
+Produces a surface plot of the (bivariate) function `f` at points 
+`(x, y)`, with `x` taken from `nX` (equally-spaced) samples of the interval `xRange`, 
+and `y` taken from `nY` (equally-spaced) samples of the interval `yRange`. 
+Each of the ranges `xRange` and `yRange` should be length-two tuples (or vectors) giving
+the bounds on the interval.
+
+#### Examples
+
+Consider the bivariate normal distribution density
+
+    let f = fun(x, y) { (1.0 / (math.twoPi)) * math.exp(-0.5 * (x ** 2.0 + y ** 2.0)) }
+
+We could plot this by executing
+
+    surfacePlot(f, xRange: (-2, 2), yRange: (-2, 2), nX: 50, nY: 50)
+
+Now consider the grid
+
+    let g = Grid(fun(x, y) { x ** 2.0 + y ** 2.0 })(Grid.Range(10), Grid.Range(10).transposed)
+
+We could plot the values of g by
+
+    surfacePlot(g)
+
+""")
+fun
+(grid.Grid(g), *args)
+    {
+    if (g.dimensions[0] * g.dimensions[1] > 10000)
+        throw "Surface plots can only use about 10000 points. Please make your Grid smaller."
+
+    surfacePlot(
+        fun(y, x) { g[Int64(x), Int64(y)] },
+        xRange: (0.0, g.dimensions[1] - 1),
+        yRange: (0.0, g.dimensions[0] - 1),
+        nX: g.dimensions[1],
+        nY: g.dimensions[0],
+        *args
+        )
+    }
+(f, xRange: xRange, yRange: yRange, nX: nX, nY: nY, options:=(), viewBoxRange:=nothing) {
+    if (nX * nY > 10000)
+        throw "Surface plots can only use about 10000 points. Please decrease the values of nX and nY."
+
+    let samples = [];
+
+    let deltaX = (xRange[1] - xRange[0]) / Float64(nX - 1);
+    let deltaY = (yRange[1] - yRange[0]) / Float64(nY - 1);
+
+    if (deltaX < 0 or deltaY < 0) {
+        throw "invalid range passed to surfacePlot"
+        }
+
+    let xStart = xRange[0];
+    let yStart = yRange[0];
+
+    let samples = 
+        Vector.range(
+            nX * nY,
+            fun(ix) {
+                let i = ix % nX;
+                let j = ix / nX;
+                let x = xStart + i * deltaX;
+                let y = yStart + j * deltaY;
+                f(x, y)
+                }
+            )
+	
+    if (viewBoxRange is nothing) 
+        viewBoxRange = (xRange, yRange, (min(samples), max(samples)));
+
+    #Plot(
+        type: "plot",
+        function: "surfacePlot",
+        options:(),
+        nX: nX,
+        nY: nY,
+        domain: (xRange, yRange),
+        viewBoxRange: viewBoxRange,
+        vector: samples
+    )
+	
+};
+
+
+
+
+// -----------------------------------------------------------------------------------------------
+
+
+
+`hidden
+rainbow:
+fun(u, v, uRange, vRange, uGranularity, vGranularity, x, y, z)
+    {
+    let du = uRange[1] - uRange[0]
+    let color = hsbaToRgba(u / du, 1.0, 1.0, 1.0)
+    return (r:color[0], g:color[1], b:color[2], a:color[3])
+    }
+    ;
+
+`hidden
+hsbaToRgba:
+#Markdown("""
+#### Usage
+
+    hsbaToRgba(h, s, b, a, returnUInt8:true)
+
+#### Description
+
+Converts a color value expressed as hue, saturation, brightness, and alpha, to one in RGBA space.
+
+#### Arguments
+
+All values are between 0.0 and 1.0:
+
+    h - hue
+    s - saturation
+    b - brightness
+    a - alpha
+    returnUInt8 - Boolean. Whether the return value should be in UInt8 values from 0 to 255.
+
+#### Return Value
+
+    Tuple of Float64: (r: Float64, g: Float64, b: Float64, a: Float64)
+
+If the returnUInt8 flag is true, then the return value is
+
+    Tuple of UInt8: (r: UInt8, g: UInt8, b: UInt8, a: UInt8)
+
+""")
+fun (h, s, v, a, returnUInt8:returnUInt8=false)
+    {
+    let hp = (h * 6.0) % 6.0;
+    let c = v * s;
+    let x = c * (1.0 - math.abs((hp % 2.0) - 1.0));
+    let convert = fun(x) { Float64( ((x + (v-c)) >>> 0.0) <<< 1.0 ) };
+    let res =
+        if (hp < 1.0) {(c, x, 0.0, a)} else 
+        if (hp < 2.0) {(x, c, 0.0, a)} else 
+        if (hp < 3.0) {(0.0, c, x, a)} else 
+        if (hp < 4.0) {(0.0, x, c, a)} else 
+        if (hp < 5.0) {(x, 0.0, c, a)} else 
+            {(c, 0.0, x, a)}
+        ;
+    let tr = res..apply(convert);
+    if (returnUInt8)
+        return (r: UInt8(tr[0] * 255), g: UInt8(tr[1] * 255), b: UInt8(tr[2] * 255), a: UInt8(tr[3] * 255))
+    else
+        return (r: tr[0], g: tr[1], b: tr[2], a: tr[3])
+    }
+((h:{UInt8} h, s:{UInt8} s, b:{UInt8} b, a:{UInt8} a))
+    {
+    let c = hsbaToRgba(h / 255.0, s / 255.0, b / 255.0, a / 255.0);
+    return (r: UInt8(c[0] * 255), g: UInt8(c[1] * 255), b: UInt8(c[2] * 255), a: UInt8(c[3] * 255))
+    };
+
+#Markdown("""
+### Usage
+
+    plot.options.title("Plot title") * linePlot(data)
+    plot.options.xaxis.show(true) * linePlot(data)
+
+#### Description
+
+Apply styling options directly to a plot.
+
+#### Example
+
+    plot.options.title("Plot Title") *
+    linePlot(data)
+""")
+options: decorators.decoratorFactory;
+
+

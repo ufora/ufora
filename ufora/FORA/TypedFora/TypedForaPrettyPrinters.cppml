@@ -1,0 +1,361 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "TypedForaPrettyPrinters.hppml"
+#include "TypedForaFreeVariables.hppml"
+#include "TypedFora.hppml"
+#include "TypedForaUtil.hppml"
+#include "../Core/ClassMediator.hppml"
+#include "../Native/NativeCode.hppml"
+#include "../../core/StringUtil.hpp"
+
+void CPPMLPrettyPrint<TypedFora::RefcountStyle>::prettyPrint(
+									CPPMLPrettyPrintStream& s, 
+									const TypedFora::RefcountStyle& t
+									)
+	{
+	@match TypedFora::RefcountStyle(t)
+		-|	AsValueOwned() ->> {
+			}
+		-|	AsValueUnowned() ->> {
+			s << "&";
+			}
+		-|	Pooled() ->> {
+			s << "^";
+			}
+	}
+
+void CPPMLPrettyPrint<TypedFora::CallTarget>::prettyPrint(
+									CPPMLPrettyPrintStream& s, 
+									const TypedFora::CallTarget& t
+									)
+	{
+	@match TypedFora::CallTarget(t)
+		-|	Subgraph(graph, block) ->> {
+			s << "typed_fun:" << block << " in " << graph << " ";
+			}
+		-|	ExternalSubgraph(output, input, name, targetBlock) ->> {
+			s << "typed_fun:" << targetBlock << " in external[" << name << "] ";
+			}
+	}
+
+
+void CPPMLPrettyPrint<TypedFora::TransferTarget>::prettyPrint(
+									CPPMLPrettyPrintStream& s, 
+									const TypedFora::TransferTarget& t
+									)
+	{
+	@match TypedFora::CallTarget(t)
+		-|	ExternalSubgraph(output, input, name, targetBlock) ->> {
+			s << "typed_fun:" << targetBlock << " in external[" << name << "] ";
+			}
+	}
+
+void CPPMLPrettyPrint<TypedFora::Callable>::prettyPrint(
+									CPPMLPrettyPrintStream& s, 
+									const TypedFora::Callable& t
+									)
+	{
+	@match TypedFora::Callable(t)
+		-|	NativeOperation(resultSignature, inputTypes, implementation) ->> {
+			s << "native_fun" << inputTypes << resultSignature << endl;
+			}
+		-|	SingleExpression(vars, expression, resultType, isException, hasSideEffects) ->> {
+			s << "expression [t=" << resultType;
+			
+			if (hasSideEffects)
+				s << ", hasSideEffects";
+
+			s << "]" << vars << "{" << endl;
+			if (isException)
+				s << "throw ";
+			else
+				s << "return ";
+
+			s.indented() << expression;
+
+			s << endl << "}";
+			}
+		-|	Graph(resultSignature, blocks) ->> {
+			s << "graph {";
+			s.indented() << "\n" << blocks << "\n}";
+			s << "\n";
+			}
+	}
+
+void CPPMLPrettyPrint<TypedFora::Type>::prettyPrint(
+									CPPMLPrettyPrintStream& s, 
+									const TypedFora::Type& t
+									)
+	{
+	std::string shortJov = prettyPrintString(t.jov());
+
+	if (shortJov.size() > 100)
+		shortJov = Ufora::oneLineSanitization(shortJov, 100) + "... ";
+
+	s << shortJov << t.refcountStyle();
+	}
+
+void CPPMLPrettyPrint<TypedFora::Variable>::prettyPrint(
+									CPPMLPrettyPrintStream& s, 
+									const TypedFora::Variable& t
+									)
+	{
+	s << "var_" << t.varID() << ": " << t.type();
+	}
+
+void CPPMLPrettyPrint<TypedFora::ResultSignature>::prettyPrint(
+									CPPMLPrettyPrintStream& s, 
+									const TypedFora::ResultSignature& t
+									)
+	{
+	bool isFirst = true;
+	for (long k = 0; k < t.normalTypes().size(); k++)
+		{
+		if (isFirst)
+			isFirst = false;
+		else
+			s << ", ";
+		s << t.normalTypes()[k];
+		}
+	for (long k = 0; k < t.exceptionTypes().size(); k++)
+		{
+		if (isFirst)
+			isFirst = false;
+		else
+			s << ", ";
+		s << "throws " << t.exceptionTypes()[k];
+		}
+	}
+
+void CPPMLPrettyPrint<TypedFora::BlockID>::prettyPrint(
+									CPPMLPrettyPrintStream& s, 
+									const TypedFora::BlockID& t
+									)
+	{
+	if (t.isInternal())
+		s << "<Internal: " << t.index() << ">";
+	else
+		s << "<External: " << t.index() << ">";
+	}
+void CPPMLPrettyPrint<TypedFora::Block>::prettyPrint(
+									CPPMLPrettyPrintStream& s, 
+									const TypedFora::Block& t
+									)
+	{
+	s << t.args() << " with frequency " 
+		<< t.relativeFrequency() 
+		<< " {";
+	s.indented() << "\n" << t.expression() << "\n}";
+	s << "\n";
+	}
+
+void CPPMLPrettyPrint<TypedFora::Continuation>::prettyPrint(
+									CPPMLPrettyPrintStream& s, 
+									const TypedFora::Continuation& t
+									)
+	{
+	s << "lambda(" << t.var() << ") {" << endl;
+	s.indented() << t.resumption();
+	s << endl << "}";
+	}
+void CPPMLPrettyPrint<TypedFora::Expression>::prettyPrint(
+									CPPMLPrettyPrintStream& s, 
+									const TypedFora::Expression& t
+									)
+	{
+	@match TypedFora::Expression(t)
+		-|	Var(v) ->> { 
+			s << "var_" << v.varID(); 
+			}
+		-|	Constant(c) ->> { 
+			s << "Constant[" << c << "]"; 
+			}
+		-|	Let(v,toBind,toEval) ->> { 
+			s << "let " << v << " = " << toBind << ";" << endl;
+			s << toEval;
+			}
+		-|	DiscardFirst(first, second) ->> {
+			s << first << ";";
+			s << endl;
+			s << second;
+			}
+		-|	If(e, ifTrue, ifFalse, frequency) ->> {
+			s << "if (" << e << ") {" << endl;
+			s.indented() << ifTrue;
+			s << endl << "} else {" << endl;
+			s.indented() << ifFalse;
+			s << endl << "}";
+			}
+		-|	InterruptCheck(stackMetadata) ->> {
+			s << "interrupt_check" << stackMetadata;
+			}
+		-|	InlineNativeOperation(varmap, expr, outputType, hasSideEffects, stackMetadata) ->> {
+			s << "native [t=" << outputType << ",";
+			
+			for (long k = 0; k < varmap.size();k++)
+				{
+				if (k)
+					s << ", ";
+
+				s << *varmap[k].internalArg() << ": " << 
+					varmap[k].internalBindType() << "(" << varmap[k].externalArgSource() << ")";
+				}
+
+			s << "] ";
+			if (hasSideEffects)
+				s << "<side effects> ";
+			
+			s << stackMetadata;
+			
+			//s.indented() << "\n" << *expr << "\n}";
+
+			s << "\n";
+			}
+		-|	CastWithoutCheck(expr, toType) ->> {
+			s << "cast_without_check<" << toType << ">(" << expr << ")";
+			}
+		-|	ChangeClassBody(expr, newClassBody) ->> {
+			s << "change_class_body<";
+
+			if (newClassBody)
+				s << JOV::Class(JudgmentOnValueClass::Class(emptyTreeVec(),  *newClassBody));
+			else
+				s << "_";
+
+			s << ">(" << expr << ")";
+			}
+		-|	TypeCheck(expr, continuations) ->> {
+			s << "type_check(" << expr << ") {" << endl;
+			CPPMLPrettyPrintStream s2 = s.indented();
+			for (long k = 0; k < continuations.size();k++)
+				s2 << continuations[k] << endl;
+			s << "}";
+			}
+		-|	KickCheck() ->> {
+			s << "kick_check";
+			}
+		-|	TransferToInterpreter(stackMetadata) ->> {
+			s << "transfer_interpreter(meta=" << stackMetadata << ")";
+			}
+		-|	Halt(message) ->> {
+			s << "halt(" << message << ")";
+			}
+		-|	Call(target, args, conts, stackMetadata) ->> {
+			s << "call" << args << " with meta " << stackMetadata << "\n";
+			s.indented() << target << "\n";
+			s << "with conts\n";
+			s.indented() << conts << "\n";;
+			}
+		-|	TransferTo(target, expressions, stackMetadata) ->> {
+			s << "transfer" << expressions  << " with meta " << stackMetadata << " to " << target;
+			}
+		-|	Jump(target, arguments) ->> {
+			s << "jump" << arguments << " " << target;
+			}
+		-|	Return(isException, e) ->> {
+			if (isException)
+				s << "throw ";
+			else
+				s << "return ";
+			s << e;
+			}
+		-|	IsTuple(expr, arity, arityIsExact) ->> {
+			s << "isTuple(" << s.sep << expr << s.sep << ", arity";
+			if (arityIsExact)
+				s << "==";
+			else
+				s << ">=";
+			s << arity;
+			s << ")";
+			}
+		-|	GetItem(expr,index) ->> {
+			s << "(" << expr << ")[" << index << "]" << "[outType=" << t.type() << "]";
+			}
+		-|	GetSlice(expr,index) ->> {
+			s << "(" << expr << ")[" << index << ":]" << "[outType=" << t.type() << "]";
+			}
+		-|	MakeTuple(exprs,outType) ->> {
+			s << "MakeTuple" << exprs << "[outType=" << outType << "]";
+			}
+
+	}
+
+void CPPMLPrettyPrint<TypedFora::MakeTupleArgument>::prettyPrint(
+									CPPMLPrettyPrintStream& s, 
+									const TypedFora::MakeTupleArgument& t
+									)
+	{
+	@match TypedFora::MakeTupleArgument(t)
+		-|	Normal(fieldName, expr) ->> {
+			if (fieldName)
+				s << *fieldName << ": ";
+			s << expr;
+			}
+		-|	TupleCall(expr) ->> {
+			s << "* (" << expr << ")";
+			}
+	}
+
+void CPPMLPrettyPrint<TypedFora::MetadataVariableLayout>::prettyPrint(
+									CPPMLPrettyPrintStream& s, 
+									const TypedFora::MetadataVariableLayout& t
+									)
+	{
+	@match TypedFora::MetadataVariableLayout(t)
+		-| Var(v) ->> { s << "Var(" << v << ")"; }
+		-| Constant(c) ->> { s << "Constant(" << c << ")"; }
+		-| Tuple(vars) ->> { s << "Tuple" << vars; }
+		;
+	}
+
+void CPPMLPrettyPrint<TypedFora::MetadataVariable>::prettyPrint(
+									CPPMLPrettyPrintStream& s, 
+									const TypedFora::MetadataVariable& t
+									)
+	{
+	s << "[" << t.jov() << ", " << t.layout() << "]";
+	}
+
+void CPPMLPrettyPrint<TypedFora::MetadataStackFrame>::prettyPrint(
+									CPPMLPrettyPrintStream& s, 
+									const TypedFora::MetadataStackFrame& t
+									)
+	{
+	s << t.instruction();
+
+	if (t.instruction().isNodeWithResult())
+		s << ". finalvar = " << t.vars().back();
+	}
+
+void CPPMLPrettyPrint<TypedFora::MetadataInstruction>::prettyPrint(
+									CPPMLPrettyPrintStream& s, 
+									const TypedFora::MetadataInstruction& t
+									)
+	{
+	@match TypedFora::MetadataInstruction(t)
+		-| NodeWithResult(jumpPoint, index) ->> {
+			s << "NodeWithResult(" 
+				<< jumpPoint.graph().graphName() << ": " << jumpPoint.label()
+				<< ", index=" << index
+				<< ")";
+			}
+		-|	Node(jumpPoint) ->> {
+			s << "Node(" 
+				<< jumpPoint.graph().graphName() << ": " << jumpPoint.label()
+				<< ")";
+			}
+	}
+

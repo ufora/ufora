@@ -1,0 +1,304 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "FORTRAN.hppml"
+#include "../Axioms/NativeAxiomVars.hppml"
+#include "../Primitives/ExternalFunctionDescription.hppml"
+#include "../Core/ImplVal.hppml"
+#include "../Core/Type.hppml"
+#include "../Serialization/SerializedObjectContext.hpp"
+#include "../Serialization/SerializedObjectFlattener.hpp"
+#include "../Core/ClassMediator.hppml"
+#include "../TypedFora/TypedFora.hppml"
+#include "../TypedFora/TypedForaUtil.hppml"
+#include "../TypedFora/ABI/VectorRecordCodegen.hppml"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include "../TypedFora/ABI/ForaValueArrayCodegen.hpp"
+#include "../Serialization/SerializedObject.hpp"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include "../Native/NativeCFGTransforms/Transforms.hppml"
+#include "../Native/NativeExpressionBuilder.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
+
+using TypedFora::Abi::VectorRecord;
+
+using TypedFora::Abi::nativeLayoutType;
+
+namespace {
+
+/***** 
+prepare an argument to be passed into fortran.
+
+If we're passed an integer or a float, we'll place it on the stack
+and pass a pointer to it to fortran. If its a vector, we'll pass fortran a pointer
+to the start of the data.  
+
+If the vector is marked as a 'mutating' vector, (e.g. fortran is going to change it 
+in place) then we have to make a copy of the data, pass a pointer to the copy, and 
+wrap the copy up in a VectorRecord that we pass to outputMutatedExpressions.
+
+inArgumentExpr -  the data as it was passed to us from FORA
+inType - the argument type. 
+ioBuilder - a builder we can use to stage temporaries.
+isMutatingVector - if this is a vector, is it going to be modified?
+outputMutatedExpressions - if it's a mutating vector, the incremented VectorRecord
+	we want to return.
+
+All arguments to this function must already be loaded in memory.
+*****/
+
+NativeExpression prepareFortranArgument(
+			const NativeExpression& inArgumentExpr,
+			const Type& inType,
+			NativeExpressionBuilder& ioBuilder,
+			bool isMutatingVector,
+			ImmutableTreeVector<NativeExpression>& outputMutatedExpressions
+			)
+	{
+	if (inType.isVector())
+		{
+		TypedNativeExpression<VectorRecord> vecExpr(inArgumentExpr);
+
+		TypedNativeExpression<VectorRecord> pooledOrDuplicatedVec;
+
+		if (isMutatingVector)
+			{
+			pooledOrDuplicatedVec = 
+				ioBuilder.add(vecExpr.deepcopiedAndContiguous());
+
+			outputMutatedExpressions = 
+				outputMutatedExpressions + pooledOrDuplicatedVec.getExpression();
+			}
+		else
+			{
+			pooledOrDuplicatedVec = 
+				ioBuilder.add(
+					vecExpr.contiguousAndLoadedVectorRecordNonincremented()
+					);
+			}
+
+		NativeExpression tr = 					
+			TypedFora::Abi::ForaValueArrayCodegen::offsetForExpression(
+				pooledOrDuplicatedVec.unpagedValues().getExpression(),
+				NativeExpression::ConstantULong(0)
+				);
+
+		lassert(tr.type());
+
+		return 
+			NativeExpression::If(
+				vecExpr.dataPtr().getExpression(),
+				tr,
+				NativeExpression::Zero(*tr.type())
+				);
+		}
+	else
+		{
+		NativeType layoutType = nativeLayoutType(inType);
+		lassert(layoutType.packedSize());
+		
+		NativeExpression ePtr = 
+			ioBuilder.getPointerExprToCopyOnStack(
+				inArgumentExpr
+				);
+		
+		if (isMutatingVector)
+			outputMutatedExpressions = outputMutatedExpressions + ePtr.load();
+
+		return ePtr;
+		}
+	}
+
+NativeExpression loadcheckFortranArgument(
+			const NativeExpression& inArgumentExpr,
+			const Type& inType
+			)
+	{
+	if (inType.isVector())
+		{
+		TypedNativeExpression<VectorRecord> vecExpr(inArgumentExpr);
+
+		return vecExpr.loadCheckAll().getExpression();
+		}
+	else
+		{
+		return NativeExpression::Nothing();
+		}
+	}
+
+ImmutableTreeSet<uword_t> extractIndicesOfMutatingArguments(const FortranReturnType& returnType)
+	{
+	@match FortranReturnType(returnType)
+		-|	Normal(retType) ->> {
+				return emptyTreeSet();
+				}
+		-|	ModifiesArgumentsInPlace(argumentIndices) ->> {
+				return
+					ImmutableTreeSet<uword_t>(
+						argumentIndices.begin(),
+						argumentIndices.end()
+						);
+				}
+		;
+	}
+//determine the JOA of this Fortran call. Pass the actual expected
+//return type of the libcall in outLibcallReturnType
+JudgmentOnAction computeFortranJOA(
+			const ImmutableTreeVector<JOV>& argJovs,
+			const FortranReturnType& returnType,
+			NativeType& outLibcallReturnType
+			)
+	{
+	//figure out what return type we'll actually have
+
+	@match FortranReturnType(returnType)
+		-|	Normal(retType) ->> {
+				outLibcallReturnType = nativeLayoutType(retType);
+				return JudgmentOnAction::Value(JOV::OfType(retType));
+				}
+		-|	ModifiesArgumentsInPlace(argumentIndices) ->> {
+				ImmutableTreeSet<uword_t> indicesOfMutatingArguments = 
+					extractIndicesOfMutatingArguments(returnType);
+
+				outLibcallReturnType = NativeType::Nothing();
+				ImmutableTreeVector<JOV> returnJovs;
+
+				for (long k = 0; k < argJovs.size(); k++)
+					if (indicesOfMutatingArguments.contains(k))
+						returnJovs = returnJovs + argJovs[k];
+
+				return JudgmentOnAction::Value(
+							JOV::Tuple(
+								JudgmentOnValueTuple::Unnamed(
+									returnJovs
+									)
+								)
+							);
+				}
+		;
+	}
+} // anonymous namespace
+
+ExternalFunctionDescriptor    
+		getFORTRANFunctionWrapper(
+			const std::string& visibleName,
+			const std::string& libcallName,
+			const ImmutableTreeVector<JOV>& jovs,
+			const FortranReturnType& returnType
+			)
+	{
+	return ExternalFunctionDescriptor::Fortran(visibleName, libcallName, returnType, jovs);
+	}
+
+TypedFora::Callable getFORTRANCallTarget(
+			const std::string& visibleName,
+			const std::string& libcallName,
+			const ImmutableTreeVector<JOV>& jovs,
+			const FortranReturnType& returnType
+			)
+	{
+	//to call a fortran function, we'll have to put each variable into an
+	//allocated slot and pass pointers
+
+	ImmutableTreeSet<uword_t> indicesOfMutatingArguments = 
+		extractIndicesOfMutatingArguments(returnType);
+
+
+	NativeType libcallReturnType;
+
+	JudgmentOnAction resultSignature = 
+		computeFortranJOA(jovs, returnType, libcallReturnType);
+
+	JOVT callSignature = JOVT::Unnamed(jovs);
+	
+	NativeExpressionBuilder builder;
+	ImmutableTreeVector<NativeExpression> args;	
+	ImmutableTreeVector<NativeExpression> outputMutatedExpressions;
+	
+	NativeAxiomVars axiomVars(callSignature);
+
+	//get an expression that verifies all values are loaded
+	NativeExpression loadcheckExpression;
+	for (long k = 0; k < axiomVars.size(); k++)
+		loadcheckExpression = loadcheckExpression >>
+			loadcheckFortranArgument(
+				axiomVars.var(k).expr(), 
+				*jovs[k].type()
+				);
+
+	loadcheckExpression = 
+		TypedNativeExpression<void>(loadcheckExpression).wrapInEmptyCFGLayer().getExpression();
+
+	builder.add(loadcheckExpression);
+
+	//prepare a list of arguments to pass to the fortran function
+	for (long k = 0; k < axiomVars.size(); k++)
+		{
+		Nullable<Type> typeOfJov_k = jovs[k].type();
+		lassert(typeOfJov_k);
+			
+		args = args + 
+			prepareFortranArgument(
+				axiomVars.var(k).expr(), 
+				*typeOfJov_k, 
+				builder,
+				indicesOfMutatingArguments.contains(k),
+				outputMutatedExpressions
+				);
+		}
+	
+	//call the function itself
+	NativeExpression libcallExpr = 
+		NativeExpression::CallLibraryFunction(
+			libcallName,
+			libcallReturnType,
+			args
+			)
+			;
+
+
+	@match FortranReturnType(returnType)
+		-|	Normal(retType) ->> {
+			}
+		-|	ModifiesArgumentsInPlace(argumentIndices) ->> {
+			//the function didn't return anything. The expression needs to return
+			//copies of the vectors that we duplicated before we created the arguments.
+			libcallExpr = libcallExpr >> NativeExpression::CreateComposite(outputMutatedExpressions);
+			}
+			;
+	
+	NativeExpression finalExpression = builder(libcallExpr);
+
+	//need to put this into a native cfg
+	NativeCFG toInline(
+		NativeVariable::Temp(NativeTypeFor<NativeRuntimeCallbacks>::get().ptr()) + 
+			axiomVars.vars(), 
+		finalExpression
+		);
+	
+	//rename the variables in here so that when we use the target signature
+	//again a second time, we don't get variable conflicts.
+	toInline = NativeCFGTransforms::renameVariables(toInline, 0);
+	
+	return
+		TypedFora::graphFromNativeCfgPassingOwned(
+						callSignature,
+						resultSignature,
+						toInline
+						);
+	}
+
+
+

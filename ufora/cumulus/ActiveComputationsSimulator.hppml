@@ -1,0 +1,978 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "ActiveComputationsEvent.hppml"
+#include "ActiveComputationsKernel.hppml"
+#include "ActiveComputationsKernelInterface.hppml"
+
+namespace Cumulus {
+
+class ActiveComputationsEventStreamTerminated {};
+
+class ActiveComputationsSimulatorKernelInterface : public ActiveComputationsKernelInterface {
+public:
+	ActiveComputationsSimulatorKernelInterface(
+				boost::shared_ptr<Queue<Nullable<ActiveComputationsEvent> > > inEventQueue,
+				bool inHasDataTransfers
+				) :
+			mEventQueue(inEventQueue),
+			mHasDataTransfers(inHasDataTransfers)
+		{
+		}
+
+	virtual void scheduleComputationToHandleBackgroundAction(
+						ComputationId computation, 
+						ComputationBackgroundAction action
+						)
+		{
+		assertReadsEvent(
+			ActiveComputationsEvent::Internal_HandleComputationBackgroundAction(
+				computation, 
+				action
+				)
+			);
+		}
+
+
+	void scheduleSerializationAndSendOfComputation(
+			ComputationId inId,
+			MachineId inOtherMachine,
+			DataTransferTokenId token,
+			hash_type moveGuid
+			)
+		{
+		assertReadsEvent(
+			ActiveComputationsEvent::Internal_ScheduleSerializationAndSendOfComputation(
+				inId,
+				inOtherMachine,
+				token,
+				moveGuid
+				)
+			);
+		}
+
+	virtual void registerNewComputationState(const ComputationId& computationId)
+		{
+		assertReadsEvent(
+			ActiveComputationsEvent::Internal_ComputationCreatedEmpty(computationId)
+			);
+		
+		mComputationIds.insert(computationId);
+		}
+
+	virtual void registerNewComputationState(const ComputationId& computationId, ComputationStatePtr def)
+		{
+		assertReadsEvent(
+			ActiveComputationsEvent::Internal_ComputationCreatedEmpty(computationId)
+			);
+		
+		mComputationIds.insert(computationId);
+		}
+
+	virtual void registerNewComputationState(const ComputationId& computationId, ComputationDefinition def)
+		{
+		assertReadsEvent(
+			ActiveComputationsEvent::Internal_ComputationCreatedWithDefinition(computationId)
+			);
+		
+		mComputationIds.insert(computationId);
+		}
+
+	virtual void registerNewComputationState(
+								const ComputationId& computationId,
+								PolymorphicSharedPtr<SerializedObject> object
+								)
+		{
+		ActiveComputationsEvent event(readEvent());
+
+		@match ActiveComputationsEvent(event)
+			-| Internal_ComputationCreatedFromSerializedData(newCoId) ->> {
+				lassert_dump(newCoId == newCoId, 
+					"Expected Internal_ComputationCreatedFromSerializedData(" 
+						<< prettyPrintString(computationId) << ")"
+						<< "\nbut got\n" << prettyPrintString(event)
+						);
+				}
+			-| _ ->> {
+				lassert_dump(false,
+					"Expected Internal_ComputationCreatedFromSerializedData(" 
+						<< prettyPrintString(computationId) << ")"
+						<< "\nbut got\n" << prettyPrintString(event)
+						);
+				}
+		
+		mComputationIds.insert(computationId);
+		}
+		
+	virtual void dropComputationImmediately(const ComputationId& computationId)
+		{
+		assertReadsEvent(ActiveComputationsEvent::Internal_ComputationDropped(computationId));
+
+		mComputationIds.erase(computationId);
+		}
+		
+	virtual PolymorphicSharedPtr<SerializedObject> getSerializedResult(ComputationId needed)
+		{
+		assertReadsEvent(ActiveComputationsEvent::Internal_GetSerializedResult());
+				
+		return PolymorphicSharedPtr<SerializedObject>(new SerializedObject());
+		}
+
+	virtual void onRequestComputationResultFromMachine(const RequestComputationResultFromMachine& in)
+		{
+		assertReadsEvent(
+			ActiveComputationsEvent::Internal_SendRequestComputationResultFromMachine(in)
+			);
+		}
+		
+	virtual void onComputationResultFromMachine(const ComputationResultFromMachine& in)
+		{
+		ActiveComputationsEvent event(readEvent());
+
+		@match ActiveComputationsEvent(event)
+			-| Internal_SendComputationResultFromMachine(mr) ->> {
+				lassert_dump(
+					mr.computation() == in.computation() && 
+						mr.sourceMachine() == in.sourceMachine() && 
+						mr.target() == in.target() && 
+						mr.referencedBigvecs() == in.referencedBigvecs() && 
+						mr.token() == in.token(),
+					"Expected " << prettyPrintString(in) << " but got " << prettyPrintString(mr)
+					);
+				}
+			-| _ ->> {
+				lassert_dump(false,
+					"Expected Internal_SendComputationResultFromMachine(...)" 
+						<< "\nbut got\n" << prettyPrintString(event)
+						);
+				}
+		}
+		
+	virtual hash_type generateGuid()
+		{
+		ActiveComputationsEvent event(readEvent());
+
+		@match ActiveComputationsEvent(event)
+			-| Internal_GenerateGuid(guid) ->> {
+				return guid;
+				}
+			-| _ ->> {
+				lassert_dump(false,
+					"Expected Internal_GenerateGuid(...)" 
+						<< "\nbut got\n" << prettyPrintString(event)
+						);
+				}
+		}
+	
+	virtual void broadcastBigvecsInFlight(
+			ImmutableTreeSet<Fora::BigVectorId> id, 
+			int32_t refcount,
+			hash_type inMoveGuid
+			)
+		{
+		assertReadsEvent(
+			ActiveComputationsEvent::Internal_BroadcastBigvecsInFlight(
+				id, 
+				refcount, 
+				inMoveGuid
+				)
+			);
+		}
+		
+	virtual ImmutableTreeVector<Fora::PageId> convertSliceToPages(Fora::BigVectorSlice slice)
+		{
+		ActiveComputationsEvent event(readEvent());
+
+		@match ActiveComputationsEvent(event)
+			-| Internal_ConvertSliceToPages(msgSlice, result) ->> {
+				lassert(slice == msgSlice);
+				return result;
+				}
+			-| _ ->> {
+				lassert_dump(false,
+					"Expected Internal_ConvertSliceToPages(" << prettyPrintString(slice) << ")" 
+						<< "\nbut got\n" << prettyPrintString(event)
+						);
+				}
+		}
+		
+	virtual bool pageIsInRam(Fora::PageId page)
+		{
+		ActiveComputationsEvent event(readEvent());
+
+		@match ActiveComputationsEvent(event)
+			-| Internal_PageIsInRam(msgPage, result) ->> {
+				lassert(page == msgPage);
+				return result;
+				}
+			-| _ ->> {
+				lassert_dump(false,
+					"Expected Internal_PageIsInRam(" << prettyPrintString(page) << ")" 
+						<< "\nbut got\n" << prettyPrintString(event)
+						);
+				}
+		}
+		
+	virtual const std::set<ComputationId>& allComputationIds() const
+		{
+		return mComputationIds;
+		}
+		
+	virtual bool hasComputation(ComputationId computation) const
+		{
+		bool result = mComputationIds.find(computation) != mComputationIds.end();
+
+		ActiveComputationsEvent event(readEvent());
+
+		@match ActiveComputationsEvent(event)
+			-| Internal_HasComputation(msgComputation, msgResult) ->> {
+				lassert_dump(
+					computation == msgComputation && 
+					result == msgResult,
+					"Expected Internal_HasComputation(" << prettyPrintString(computation) << ")" 
+						<< "\nbut got\n" << prettyPrintString(event)
+						);
+				}
+			-| _ ->> {
+				lassert_dump(false,
+					"Expected Internal_HasComputation(" << prettyPrintString(computation) << ")" 
+						<< "\nbut got\n" << prettyPrintString(event)
+						);
+				}
+
+		return result;
+		}
+		
+	virtual void enableVectorPagingForId(ComputationId id)
+		{
+		assertReadsEvent(
+			ActiveComputationsEvent::Internal_EnableVectorPaging(id)
+			);
+		}
+		
+	virtual void pageLargeVectorHandles(ComputationId id)
+		{
+		assertReadsEvent(
+			ActiveComputationsEvent::Internal_PageLargeVectorHandles(id)
+			);
+		}
+		
+	virtual void unloadAllVectorHandles(ComputationId id)
+		{
+		assertReadsEvent(
+			ActiveComputationsEvent::Internal_UnloadAllVectorHandles(id)
+			);
+		}
+		
+	virtual void disableVectorPagingForId(ComputationId id)
+		{
+		assertReadsEvent(
+			ActiveComputationsEvent::Internal_DisableVectorPaging(id)
+			);
+		}
+		
+	virtual void interruptComputation(ComputationId id)
+		{
+		assertReadsEvent(
+			ActiveComputationsEvent::Internal_InterruptComputation(id)
+			);
+		}
+		
+	virtual ImmutableTreeVector<pair<ForaStackTrace, Fora::Interpreter::StackframeMetadata> >  
+					extractStacktraceForId(ComputationId id, bool extractValues)
+		{
+		lassert(false);
+		}
+		
+	virtual ImmutableTreeVector<ImplValContainer> extractCurrentLogsForId(ComputationId id)
+		{
+		lassert(false);
+		}
+		
+	virtual void addComputationResultToId(ComputationId id, Cumulus::ComputationResult result)
+		{
+		assertReadsEvent(
+			ActiveComputationsEvent::Internal_AddComputationResultToComputation(id, result.computation())
+			);
+		}
+		
+	virtual void addComputationResultToId(ComputationId id, 
+									ComputationId computation, 
+									Fora::Interpreter::ComputationResult result,
+									ComputationStatistics statistics
+									)
+		{
+		assertReadsEvent(
+			ActiveComputationsEvent::Internal_AddComputationResultToComputation(id, computation)
+			);
+		}
+
+	virtual void onCumulusComponentMessageCreated(CumulusComponentMessageCreated message)
+		{
+		assertReadsEvent(
+			ActiveComputationsEvent::Internal_CumulusComponentMessageCreated(message)
+			);
+		}
+
+	virtual Nullable<pair<CheckpointStatus, CheckpointRequest> > 
+			setCheckpointStatusTimestamp(ComputationId inComputation, CheckpointRequest inTimestamp)
+		{
+		ActiveComputationsEvent event(readEvent());
+
+		@match ActiveComputationsEvent(event)
+			-| Internal_SetCheckpointStatusTimestamp(computation, timestamp, result) ->> {
+				lassert(computation == inComputation);
+				lassert(timestamp == inTimestamp);
+				return result;
+				}
+			-| _ ->> {
+				lassert_dump(false,
+					"Expected Internal_SetCheckpointStatusTimestamp(" 
+						<< prettyPrintString(inComputation) 
+						<< ", " 
+						<< prettyPrintStringWithoutWrapping(inTimestamp)
+						<< ", ..."
+						<< ")" 
+						<< "\nbut got\n" << prettyPrintString(event)
+						);
+				}
+		}
+
+	virtual Nullable<pair<CheckpointStatus, CheckpointRequest> > 
+			getCheckpointStatus(
+						ComputationId inComputation
+						)
+		{
+		ActiveComputationsEvent event(readEvent());
+
+		@match ActiveComputationsEvent(event)
+			-| Internal_GetCheckpointStatus(computation, result) ->> {
+				lassert(computation == inComputation);
+				return result;
+				}
+			-| _ ->> {
+				lassert_dump(false,
+					"Expected Internal_GetCheckpointStatus(" 
+						<< prettyPrintString(inComputation) 
+						<< ")" 
+						<< "\nbut got\n" << prettyPrintString(event)
+						);
+				}
+		}
+		
+
+	virtual Nullable<pair<CheckpointStatus, CheckpointRequest> > 
+			addChildComputationCheckpointStatus(
+						ComputationId inComputation,
+						ComputationId inChildComputation,
+						CheckpointStatus inStats,
+						CheckpointRequest inTimestamp
+						)
+		{
+		ActiveComputationsEvent event(readEvent());
+
+		@match ActiveComputationsEvent(event)
+			-| Internal_AddChildComputationCheckpointStatus(computation, child, stats, timestamp, result) ->> {
+				lassert(computation == inComputation);
+				lassert(child == inChildComputation);
+				lassert(timestamp == inTimestamp);
+				return result;
+				}
+			-| _ ->> {
+				lassert_dump(false,
+					"Expected Internal_AddChildComputationCheckpointStatus(" 
+						<< prettyPrintString(inComputation) 
+						<< ", " 
+						<< prettyPrintStringWithoutWrapping(inChildComputation)
+						<< ", "
+						<< prettyPrintStringWithoutWrapping(inStats)
+						<< ", "
+						<< prettyPrintStringWithoutWrapping(inTimestamp)
+						<< ", ..."
+						<< ")" 
+						<< "\nbut got\n" << prettyPrintString(event)
+						);
+				}
+		}
+		
+
+	virtual ImmutableTreeVector<ComputationEvent> extractRecentComputationEventsForId(ComputationId id)
+		{
+		ActiveComputationsEvent event(readEvent());
+
+		@match ActiveComputationsEvent(event)
+			-| Internal_ExtractRecentComputationEvents(msgId, result) ->> {
+				lassert(id == msgId);
+				return result;
+				}
+			-| _ ->> {
+				lassert_dump(false,
+					"Expected Internal_ExtractRecentEvents(" << prettyPrintString(id) << ")" 
+						<< "\nbut got\n" << prettyPrintString(event)
+						);
+				}
+		}
+		
+	virtual ComputationStatus currentComputationStatusForId(ComputationId id)
+		{
+		ActiveComputationsEvent event(readEvent());
+
+		@match ActiveComputationsEvent(event)
+			-| Internal_GetComputationStatus(msgId, result) ->> {
+				lassert(id == msgId);
+				return result;
+				}
+			-| _ ->> {
+				lassert_dump(false,
+					"Expected Internal_GetComputationStatus(" << prettyPrintString(id) << ")" 
+						<< "\nbut got\n" << prettyPrintString(event)
+						);
+				}
+		}
+		
+	virtual bool hasEnoughComputeTimeElapsedToSplit(ComputationId computation, double threshold)
+		{
+		ActiveComputationsEvent event(readEvent());
+
+		@match ActiveComputationsEvent(event)
+			-| Internal_HasEnoughTimeElapsedToSplit(msgComp, msgThresh, result) ->> {
+				lassert(computation == msgComp);
+				lassert(msgThresh == threshold);
+				return result;
+				}
+			-| _ ->> {
+				lassert_dump(false,
+					"Expected Internal_HasEnoughTimeElapsedToSplit(" 
+						<< prettyPrintString(computation) << ", " << threshold << ")" 
+						<< "\nbut got\n" << prettyPrintString(event)
+						);
+				}
+		}
+		
+	virtual void resetInterruptStateForId(ComputationId computation)
+		{
+		assertReadsEvent(
+			ActiveComputationsEvent::Internal_ResetInterruptState(computation)
+			);
+		}
+		
+	virtual void markSliceLoaded(ComputationId computation)
+		{
+		assertReadsEvent(
+			ActiveComputationsEvent::Internal_MarkSliceLoaded(computation)
+			);
+		}
+		
+	virtual void markComputationCircular(ComputationId id)
+		{
+		assertReadsEvent(
+			ActiveComputationsEvent::Internal_MarkComputationCircular(id)
+			);
+		}
+
+	virtual void markSliceLoadFailedPermanently(ComputationId comp)
+		{
+		assertReadsEvent(
+			ActiveComputationsEvent::Internal_MarkSliceLoadFailedPermanently(comp)
+			);
+		}
+		
+	virtual void resetPagesHeld(ComputationId comp)
+		{
+		assertReadsEvent(
+			ActiveComputationsEvent::Internal_ResetPagesHeld(comp)
+			);
+		}
+		
+	virtual void markExternalIoTaskCompleted(ComputationId computation, ExternalIoTaskCompleted comp)
+		{
+		assertReadsEvent(
+			ActiveComputationsEvent::Internal_MarkExternalIoTaskCompleted(computation, comp)
+			);
+		}
+		
+	virtual bool isPassthrough(const ComputationId& computation) const
+		{
+		ActiveComputationsEvent event(readEvent());
+
+		@match ActiveComputationsEvent(event)
+			-| Internal_IsPassthrough(msgComp, result) ->> {
+				lassert(computation == msgComp);
+				return result;
+				}
+			-| _ ->> {
+				lassert_dump(false,
+					"Expected Internal_IsPassthrough(" 
+						<< prettyPrintString(computation) << ")" 
+						<< "\nbut got\n" << prettyPrintString(event)
+						);
+				}
+		}
+		
+	virtual Nullable<Fora::Interpreter::ComputationResult> getResultForId(ComputationId comp)
+		{
+		ActiveComputationsEvent event(readEvent());
+
+		@match ActiveComputationsEvent(event)
+			-| Internal_GetResult(msgComp, result) ->> {
+				lassert(comp == msgComp);
+				if (result)
+					return null() << Fora::Interpreter::ComputationResult();
+				return null();
+				}
+			-| _ ->> {
+				lassert_dump(false,
+					"Expected Internal_GetResult(" 
+						<< prettyPrintString(comp) << ")" 
+						<< "\nbut got\n" << prettyPrintString(event)
+						);
+				}
+		}
+		
+	virtual ComputationStatistics currentComputationStatisticsForId(ComputationId comp)
+		{
+		ActiveComputationsEvent event(readEvent());
+
+		@match ActiveComputationsEvent(event)
+			-| Internal_GetComputationStatistics(msgComp, result) ->> {
+				lassert(comp == msgComp);
+				return result;
+				}
+			-| _ ->> {
+				lassert_dump(false,
+					"Expected Internal_GetComputationStatistics(" 
+						<< prettyPrintString(comp) << ")" 
+						<< "\nbut got\n" << prettyPrintString(event)
+						);
+				}
+		}
+		
+	virtual ImmutableTreeSet<Fora::BigVectorId> getReferencedBigVectors(ComputationId computation)
+		{
+		ActiveComputationsEvent event(readEvent());
+
+		@match ActiveComputationsEvent(event)
+			-| Internal_GetReferencedBigvectors(msgComp, result) ->> {
+				lassert(computation == msgComp);
+				return result;
+				}
+			-| _ ->> {
+				lassert_dump(false,
+					"Expected Internal_GetReferencedBigvectors(" 
+						<< prettyPrintString(computation) << ")" 
+						<< "\nbut got\n" << prettyPrintString(event)
+						);
+				}
+		}
+		
+	virtual void becomePassthroughTo(ComputationId source, ComputationId dest)
+		{
+		assertReadsEvent(
+			ActiveComputationsEvent::Internal_BecomePassthroughTo(source, dest)
+			);
+		}
+		
+	virtual void tokenReceived(DataTransferTokenId inToken)
+		{
+		assertReadsEvent(
+			ActiveComputationsEvent::Internal_TokenReceived(inToken)
+			);
+		}
+		
+	virtual void updateBytecountForDataTransfers(DataTransferTokenId inToken, int64_t bytecount)
+		{
+		ActiveComputationsEvent event(readEvent());
+
+		@match ActiveComputationsEvent(event)
+			-| Internal_TokenBytecountUpdated(token, bytecount) ->> {
+				lassert(token == inToken);
+				}
+			-| _ ->> {
+				lassert_dump(false,
+					"Expected Internal_TokenBytecountUpdated(" 
+						<< prettyPrintString(inToken) << ")" 
+						<< "\nbut got\n" << prettyPrintString(event)
+						);
+				}
+		}
+		
+	virtual bool hasDataTransfers()
+		{
+		return mHasDataTransfers;
+		}
+		
+	virtual void scheduleDataTransferAsInitiateComputationMove(InitiateComputationMove move)
+		{
+		}
+		
+	virtual void scheduleDataTransferAsSendComputationResult(
+									RequestComputationResultFromMachine inRequest
+									)
+		{
+		}
+
+	virtual bool canResubmitBlockingThreads(ComputationId computation)
+		{
+		ActiveComputationsEvent event(readEvent());
+
+		@match ActiveComputationsEvent(event)
+			-| Internal_CanResubmitBlockingThreads(comp, result) ->> {
+				lassert_dump(computation == comp,
+					"Expected Internal_CanResubmitBlockingThreads(" 
+						<< prettyPrintString(comp) << ", ...)" 
+						<< "\nbut got\n" << prettyPrintString(event)
+					);
+
+				return result;
+				}
+			-| _ ->> {
+				lassert_dump(false,
+					"Expected Internal_CanResubmitBlockingThreads(...)" 
+						<< "\nbut got\n" << prettyPrintString(event)
+					);
+				}
+
+		}
+			
+	virtual CreatedComputations resubmitBlockingThreads(
+				ComputationId computation,
+				hash_type guid
+				)
+		{
+		ActiveComputationsEvent event(readEvent());
+
+		@match ActiveComputationsEvent(event)
+			-| Internal_ResubmitBlockingThreads(msgComputation, msgGuid, msgResult) ->> {
+				lassert(computation == msgComputation);
+				lassert(msgGuid == guid);
+
+				return msgResult;
+				}
+			-| _ ->> {
+				lassert_dump(false,
+					"Expected Internal_ResubmitBlockingThreads(...)"
+					);
+				}
+		}
+			
+	virtual void notifyThreadsWaitingForSplits()
+		{
+		}
+
+	virtual void waitForComputationToHandleSchedulerMessages(boost::recursive_mutex::scoped_lock& lock)
+		{
+		}
+
+	void addComputationId(ComputationId id)
+		{
+		mComputationIds.insert(id);
+		}
+
+private:
+	void assertReadsEvent(ActiveComputationsEvent eventToRead) const
+		{
+		Nullable<ActiveComputationsEvent> newEvent = mEventQueue->get();
+
+		if (!newEvent)
+			throw ActiveComputationsEventStreamTerminated();
+
+		lassert_dump(cppmlCmp(eventToRead, *newEvent) == 0,
+			"Expected event\n\n" << prettyPrintString(eventToRead) 
+				<< "\n\nbut got\n\n" << prettyPrintString(*newEvent)
+			)
+		}
+
+	ActiveComputationsEvent readEvent(void) const
+		{
+		Nullable<ActiveComputationsEvent> newEvent = mEventQueue->get();
+
+		if (!newEvent)
+			throw ActiveComputationsEventStreamTerminated();
+
+		return *newEvent;
+		}
+
+	std::set<ComputationId> mComputationIds;
+
+	boost::shared_ptr<Queue<Nullable<ActiveComputationsEvent> > > mEventQueue;
+
+	bool mHasDataTransfers;
+};
+
+class ActiveComputationsSimulator : public PolymorphicSharedPtrBase<ActiveComputationsSimulator> {
+public:
+	ActiveComputationsSimulator(hash_type guid) :
+			mEventsProcessed(0),
+			mTerminatedBadly(false),
+			mGuid(guid),
+			mIsTornDown(false)
+		{
+		}
+			
+	~ActiveComputationsSimulator()
+		{
+		if (mSimulationThread)
+			{
+			mEventQueue->write(null());
+			mSimulationThread->join();
+			}
+		}
+
+	void handleEvent(ActiveComputationsEvent inEvent)
+		{
+		if (mIsTornDown)
+			return;
+
+			{
+			boost::mutex::scoped_lock lock(mProcessedEventsMutex);
+			mProcessedEvents.push_back(inEvent);
+			}
+
+		if (!mKernel)
+			{
+			lassert_dump(
+				inEvent.isInitialized(),
+				"Expected initialization event, but got " << prettyPrintString(inEvent)
+				);
+
+			mEventQueue.reset(new Queue<Nullable<ActiveComputationsEvent> >());
+
+			mInterface.reset(
+				new ActiveComputationsSimulatorKernelInterface(
+					mEventQueue, 
+					inEvent.getInitialized().hasDataTransfers()
+					)
+				);
+
+			mKernel.reset(
+				new ActiveComputationsKernel(
+					mInterface,
+					inEvent.getInitialized().ownMachineId(),
+					inEvent.getInitialized().leaderMachineId()
+					)
+				);
+
+			mSimulationThread.reset(
+				new boost::thread(
+					boost::bind(
+						&ActiveComputationsSimulator::simulationLoop,
+						this
+						)
+					)
+				);
+
+			return;
+			}
+		else
+			mEventQueue->write(null() << inEvent);
+		}
+
+	bool finishedSuccessfully()
+		{
+		if (mSimulationThread)
+			{
+			mEventQueue->write(null());
+			mSimulationThread->join();
+			mSimulationThread.reset();
+			}
+
+		return !mTerminatedBadly;
+		}
+
+
+private:
+	void simulationLoop()
+		{
+		try {
+			while (true)
+				{
+				Nullable<ActiveComputationsEvent> event = mEventQueue->get();
+
+				if (!event)
+					return;
+
+				handleEventInSimulationLoop(*event);
+				}
+			}
+		catch(ActiveComputationsEventStreamTerminated terminated)
+			{
+			}
+		catch(std::logic_error& e)
+			{
+			LOG_ERROR << mGuid << " -- Simulation loop terminating after " << mEventsProcessed	
+				 << " events due to error " << e.what()
+				 << "\nprocessed: " << mProcessedEvents.size() << ". total left in queue: " 
+				 << mEventQueue->size();
+
+			mTerminatedBadly = true;
+
+			boost::mutex::scoped_lock lock(mProcessedEventsMutex);
+
+			long windowSize = 250;
+
+			for (long k = ((long)mProcessedEvents.size()) - windowSize - mEventQueue->size(); 
+							k < (long)mProcessedEvents.size() - (long)mEventQueue->size(); k++)
+				if (k >= 0)
+					LOG_ERROR << "Processed event: " << prettyPrintStringWithoutWrapping(mProcessedEvents[k]);
+
+			for (long k = 0; k < windowSize; k++)
+				{
+				Nullable<ActiveComputationsEvent> event;
+				if (mEventQueue->getTimeout(event, 1.0))
+					{
+					if (!event)
+						return;
+					LOG_ERROR << "Pending event: " << prettyPrintStringWithoutWrapping(*event);
+					}
+				else
+					return;
+				}
+			}
+		catch(...)
+			{
+			LOG_ERROR << mGuid << " -- Simulation loop terminating after " << mEventsProcessed	
+				 << " events due to unknown error.";
+
+			mTerminatedBadly = true;
+			}
+		}
+
+	void handleEventInSimulationLoop(ActiveComputationsEvent event)
+		{
+		if (mIsTornDown)
+			return;
+
+		mEventsProcessed++;
+
+		@match ActiveComputationsEvent(event)
+			-|	EnableAllVectorPaging() ->> {
+					mKernel->enableVectorPaging();
+					}
+			-|	DisableAllVectorPaging() ->> {
+					mKernel->disableVectorPaging();
+					}
+			-|	Teardown() ->> {
+					mKernel->dumpStateToLog();
+					mIsTornDown = true;
+					}
+			-| 	InitializeComputation(computation, status, stats) ->> {
+					mInterface->addComputationId(computation);
+					mKernel->mDependencyGraph.markComputationLocal(computation);
+					mKernel->handleComputationStatusChange(computation);
+					}
+			-|	InitializeComputationParentMachine(comp, machine) ->> {
+					mKernel->setComputationParentMachine(comp, machine);
+					}
+			-|	InBroadcastFinishedMessagesForAllFinishedTemporaryComputations() ->> {
+					mKernel->broadcastFinishedMessagesForAllFinishedTemporaryComputations();
+					}
+			-|	InResubmitBlockingThreads(computation) ->> {
+					mKernel->resubmitThreadsForComputation(computation);
+					}
+			-|	AddMachine(machine) ->> {
+					mKernel->addMachine(machine);
+					}
+			-|	AddClient(client) ->> {
+					}
+			-|	DropClient(client) ->> {
+					mKernel->dropCumulusClient(client);
+					}
+			-|	InComputationStatusOnMachineChanged(changed) ->> {
+					mKernel->handleComputationStatusOnMachineChanged(changed);
+					}
+			-|	InComputationResultFromMachine(result) ->> {
+					mKernel->handleComputationResultFromMachine(result);
+					}
+			-|	InRequestComputationResultFromMachine(request, token) ->> {
+					mKernel->handleRequestComputationResultFromMachineWithToken(request, token);
+					}
+			-|	SplitCompleted(computation, didSplit, guid, machine, compsCreated) ->> {
+					std::map<ComputationId, ComputationStatePtr> defs;
+
+					for (auto compAndId: compsCreated)
+						defs[compAndId.first] = ComputationStatePtr();
+
+					mKernel->splitCompleted(computation, didSplit, guid, machine, defs);
+					}
+			-| 	BackgroundResetPageDataAndBroadcastCompleted(computation, guid, machine) ->> {
+					mKernel->resetPageDataAndBroadcastCompleted(computation, guid, machine);
+					}
+			-|	WriteToCheckpointCompleted(computation, status, request) ->> {
+					mKernel->handleWriteCheckpointCompleted(computation, status, request);
+					}
+			-| 	BackgroundSearchForCliquesCompleted(computation, guid, machine, cliques) ->> {
+					mKernel->searchForCliquesCompleted(computation, guid, machine, cliques);
+					}
+			-|	StartComputing(computation) ->> {
+					mKernel->startComputation(computation);
+					}
+			-|	StopComputing(computation, result) ->> {
+					mKernel->stopComputation(computation, result);
+					}
+			-|	InExternalIoTaskCompleted(completed) ->> {
+					mKernel->handleExternalIoTaskCompleted(completed);
+					}
+			-|	InLocalPageRefcountEvent(event) ->> {
+					mKernel->handleLocalPageRefcountEvent(event);
+					}
+			-|	InComputationMoveRequest(req) ->> {
+					mKernel->handleComputationMoveRequest(req, ComputationStatePtr());
+					}
+			-|	InInitiateComputationMoveWithToken(move, token) ->> {
+					mKernel->moveComputationToMachine(
+						move.computation(), 
+						move.targetMachine(), 
+						token
+						);
+					}
+			-|	InInitiateComputationMove(move) ->> {
+					mKernel->handleInitiateComputationMove(move);
+					}
+			-| 	InCumulusComponentMessage(msg, src, componentType, curTime) ->> {
+					mKernel->handleCumulusComponentMessage(msg, src, componentType, curTime);
+					}
+			-|	Dummy(created) ->> {
+					}
+			-| _ ->> {
+				lassert_dump(false, "don't know what to do with " << prettyPrintString(event));
+				}
+
+		}
+
+	boost::shared_ptr<Queue<Nullable<ActiveComputationsEvent> > > mEventQueue;
+
+	boost::shared_ptr<ActiveComputationsKernel> mKernel;
+
+	boost::shared_ptr<ActiveComputationsSimulatorKernelInterface> mInterface;
+
+	boost::shared_ptr<boost::thread> mSimulationThread;
+
+	std::vector<ActiveComputationsEvent> mProcessedEvents;
+
+	bool mTerminatedBadly;
+
+	long mEventsProcessed;
+
+	bool mIsTornDown;
+
+	hash_type mGuid;
+
+	boost::mutex mProcessedEventsMutex;
+};
+
+
+}

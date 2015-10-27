@@ -1,0 +1,113 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "StackFrameWalker.hppml"
+#include "../TypedFora.hppml"
+#include "Stackframes.hppml"
+#include "../../Interpreter/InterpreterFrame.hppml"
+#include "../../../core/Logging.hpp"
+
+namespace TypedFora {
+namespace Abi {
+
+NativeRuntimeContinuationBase StackFrameWalker::visitStackFrame(
+			NativeRuntimeContinuationBase stackFramePtr,
+			StackFrameVisitor& ioVisitor
+			)
+	{
+	while (true)
+		{
+		NativeFunctionPointer fp = stackFramePtr.jumpPtr();
+
+		if (Runtime::getRuntime().getTypedForaCompiler()->isNativeFunctionPointer(fp))
+			{
+			NativeRuntimeContinuationBase parentStackFramePtr = 
+				*(NativeRuntimeContinuationBase*)stackFramePtr.stackframePtr();
+
+			NativeStackFrameWrapper wrapper(stackFramePtr);
+
+			if (!ioVisitor.visitNativeStackFrame(wrapper))
+				return parentStackFramePtr;
+
+			stackFramePtr = parentStackFramePtr;
+			}
+			else
+		if (Runtime::getRuntime().getTypedForaCompiler()->isWrappedCPPCallbackPtr(fp))
+			{
+			//pull out the next frame etc
+			TypedFora::NativeCppCallbackStackframe* tempFrame = 
+				(TypedFora::NativeCppCallbackStackframe*)stackFramePtr.stackframePtr();
+			
+			void* wrappedCPPPointer = tempFrame->cppFunctionPointerToCall();
+			void* slots = tempFrame->actualStackPointer();
+			
+			if (!ioVisitor.visitCppCallbackFrame(tempFrame))
+				return stackFramePtr;
+			
+			if (wrappedCPPPointer == (void*)&Fora::Interpreter::InterpreterFrame::interpreter)
+				{
+				Fora::Interpreter::EvalFrame* evalFramePtr = (Fora::Interpreter::EvalFrame*)slots;
+
+				NativeRuntimeContinuationBase parentStackFramePtr = evalFramePtr->callFrame.conts.base();
+
+				if (!ioVisitor.visitInterpreterStackFrame(evalFramePtr))
+					return parentStackFramePtr;
+		
+				stackFramePtr = parentStackFramePtr;
+				}
+				else
+			if (wrappedCPPPointer == (void*)&ResultSignatureAdapterFrame::adaptDataAndFollowContinuation)
+				{
+				ResultSignatureAdapterFrame* f = (ResultSignatureAdapterFrame*)slots;
+				
+				NativeRuntimeContinuationBase parentStackFramePtr = f->continuation.continuations().base();
+		
+				if (!ioVisitor.visitResultSignatureAdapterStackFrame(f))
+					return parentStackFramePtr;
+
+				stackFramePtr = parentStackFramePtr;
+				}
+				else
+			if (wrappedCPPPointer == (void*)&InterpreterUniqueIdHolderFrame::teardownAndFollowContinuation)
+				{
+				InterpreterUniqueIdHolderFrame* f = (InterpreterUniqueIdHolderFrame*)slots;
+		
+				NativeRuntimeContinuationBase parentStackFramePtr = f->continuation.continuations().base();
+
+				if (!ioVisitor.visitHeldImplvalTeardownFrame(f))
+					return parentStackFramePtr;
+
+				stackFramePtr = parentStackFramePtr;
+				}
+			else
+				{
+				lassert_dump(false, "Unknown wrapped CPP function");
+				}
+			}
+			else
+		if (Runtime::getRuntime().getTypedForaCompiler()->isDummyContinuationTarget(fp))
+			{
+			return stackFramePtr;
+			}
+		else
+			{
+			return stackFramePtr;
+			}
+		}
+	}
+
+}
+}
+

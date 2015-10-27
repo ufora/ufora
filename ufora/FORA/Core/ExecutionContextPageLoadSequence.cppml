@@ -1,0 +1,126 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ExecutionContextPageLoadSequence.hppml"
+#include <boost/range/adaptor/reversed.hpp>
+#include "../../core/Logging.hpp"
+
+namespace Fora {
+namespace Interpreter {
+
+namespace {
+
+const static double kSmallTimeWindow = 0.001;
+const static double kPruneWindow = 0.01;
+
+}
+
+bool ExecutionContextPageLoadSequence::observeAndReturnWantsReset(
+							ImmutableTreeSet<Fora::PageId> pages, 
+							double timeElapsed
+							)
+	{
+	//check each page - if it's been accessed recently, it's part of the current 
+	//group and we can add and not reset
+	Nullable<double> minTimestamp = minTimestampFor(pages);
+
+	for (auto p: pages)
+		mPageAccessTimes.insert(p, timeElapsed);
+
+	if (!mCurrentCliqueAccessTime)
+		mCurrentCliqueAccessTime = timeElapsed;
+
+	if (minTimestamp && *minTimestamp + kSmallTimeWindow >= *mCurrentCliqueAccessTime)
+		{
+		if (*minTimestamp < *mCurrentCliqueAccessTime)
+			{
+			//all the pages accessed between minTimestamp and mCurrentCliqueAccessTime are now
+			//part of the clique
+
+			auto it = mPageAccessTimes.getValuesToKeys().lower_bound(*minTimestamp);
+			auto it2 = mPageAccessTimes.getValuesToKeys().upper_bound(*mCurrentCliqueAccessTime);
+
+			while (it != it2)
+				{
+				for (auto page: it->second)
+					mCurrentActivePages = mCurrentActivePages + page;
+
+				it++;
+				}
+
+			mCurrentCliqueAccessTime = minTimestamp;
+			}
+
+		return false;
+		}
+
+	//reset the clique
+	mCurrentCliqueAccessTime = timeElapsed;
+	mCurrentActivePages = pages;
+
+	pruneOldPageTimes();
+
+	return true;
+	}
+
+void ExecutionContextPageLoadSequence::pruneOldPageTimes()
+	{
+	if (!mCurrentCliqueAccessTime)
+		return;
+
+	//prune anything before the current clique start time
+	while (mPageAccessTimes.keyCount() && 
+			mPageAccessTimes.getValuesToKeys().begin()->first 
+				< *mCurrentCliqueAccessTime - kPruneWindow)
+		mPageAccessTimes.dropValue(
+			mPageAccessTimes.getValuesToKeys().begin()->first
+			);
+	}	
+
+Nullable<double> ExecutionContextPageLoadSequence::minTimestampFor(ImmutableTreeSet<Fora::PageId> pages)
+	{
+	Nullable<double> smallest;
+
+	for (auto p: pages)
+		if (mPageAccessTimes.getValues(p).size() == 0)
+			return null();
+		else
+			{
+			double t = *mPageAccessTimes.getValues(p).rbegin();
+
+			if (!smallest || t < *smallest)
+				smallest = t;
+			}
+
+	return smallest;
+	}
+	
+ImmutableTreeSet<Fora::PageId> ExecutionContextPageLoadSequence::currentActivePages() const
+	{
+	return mCurrentActivePages;
+	}
+
+double ExecutionContextPageLoadSequence::mostRecentTimestamp() const
+	{
+	if (!mPageAccessTimes.keyCount())
+		return 0.0;
+
+	return mPageAccessTimes.getValuesToKeys().rbegin()->first;
+	}
+
+
+}
+
+}

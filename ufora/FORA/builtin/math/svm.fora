@@ -1,0 +1,579 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#Markdown(
+"""### svm
+
+#### Description
+
+Fora wrapper for libsvm.
+
+""");
+
+`hidden
+_getKernelIndex:
+	fun 
+		("linear") { 0 }
+		("poly") { 1 }
+		("rbf") { 2 }
+		("sigmoid") { 3 }
+	;
+
+`hidden
+_getSvmTypeIndex:
+	fun
+		("C_SVC") { 0 }
+		("EPSILON_SVR") { 3 }
+	;
+
+`hidden
+_check_param:
+	fun (gamma, degree, cacheSize, tol, shrinking, X, Y, nSamples, nFeatures, epsilon)
+	    {
+		if (epsilon < 0)
+			throw "epsilon must be non-negative, got " + String(epsilon);
+
+	    if (size(X) != nSamples * nFeatures)
+		    throw "size(X) and nSamples * nFeatures must agree, got: " +
+		        String(size(X)) + " and " + String(nSamples * nFeatures)
+	    ;
+
+		assertions.assertGreater(nFeatures, 0);
+
+	    if (size(Y) != nSamples)
+		    throw "size(Y) and nSamples must agree, got: " + 
+			    String(size(Y)) + " and " + String(nSamples);
+
+		X = blasWrappers.castToTypeIfNecessary(Float64, X)
+		Y = blasWrappers.castToTypeIfNecessary(Float64, Y)
+
+	    if (gamma < 0)
+		    throw "can't have negative gamma, got " + String(gamma);
+
+	    if (degree < 0)
+		    throw "can't have negative degree, got " + String(degree);
+
+	    if (cacheSize <= 0)
+		    throw "cacheSize must be positive, got " + String(cacheSize)
+		
+	    if (tol <= 0)
+		    throw "tol must be positive, got " + String(tol)
+
+	    match (shrinking) with 
+		    (true or false) { }
+		    (...) { throw "shrinking must be 0 or 1, got " + String(shrinking) }
+		    ;
+
+		return (X, Y);
+	    };
+
+`hidden
+_libsvm: 
+		fun(
+		    X, Y, 
+		    nSamples:, nFeatures:,
+		    kernel:='rbf', degree:=3, gamma:=0.0, coef0:=0.0,
+		    cacheSize:=100, C:=1.0, tol:=1e-3, shrinking:=true,
+		    maxIter:= -1, svmType:="C_SVC", epsilon:=0.2
+		    ) 
+	    {
+	    let kernelIndex = _getKernelIndex(kernel); 
+		let svmTypeIndex = _getSvmTypeIndex(svmType);
+
+		(X, Y) = _check_param(gamma, degree, cacheSize, tol, shrinking, X, Y, nSamples, nFeatures, epsilon);
+	
+	    let nClasses = size(sorting.unique(Y));
+
+		if (nClasses < 2)
+			throw "the number of classes has to be greater than one";
+
+	    let classWeights = Vector.uniform(nClasses, 1.0);
+	    let classWeightLabels = Vector.range(nClasses);
+
+	    let floatVecType = `JovOfVectorHolding(Float64);
+	    let intVecType = `JovOfVectorHolding(Int64);
+
+	    let extern_c_name = "svm_train_fora_wrapper";
+	    let wrapper = `FORTRANFunctionWrapper(
+		    extern_c_name,
+		    extern_c_name,
+		    (15,16,17,18,19,20), // modified indices
+		    floatVecType, floatVecType, Int64, Int64,
+		    Int64, Int64, Float64, Float64,
+		    Float64, Float64, Float64, Int64,
+		    Int64, Int64, Float64,
+		    /* ix = 15 */ intVecType,
+		    /* ix = 16 */ floatVecType,
+		    /* ix = 17 */ floatVecType,
+		    /* ix = 18 */ intVecType,
+		    /* ix = 19 */ intVecType,
+		    /* ix = 20 */ intVecType
+		    );
+
+	    // need to be sure about this number!!!!!!!
+		let nClasses = 
+			match (svmType) with 
+				("C_SVC") { size(sorting.unique(Y)) }
+				("EPSILON_SVR") { 2 }
+			;
+						
+	    let outSupportVectorLabels = Vector.uniform(nClasses, 0);
+	    let nSupportVectors = [0];
+
+	    // ugly!!!! but I don't know how to handle this since we don't know a priori the 
+	    // number of support vectors!
+	    let outSupportVectorCoefficients = Vector.uniform((nClasses - 1) * nSamples, 0.0);
+	    let outSupportVectorIndices = Vector.uniform(nSamples, 0);
+
+	    let outNSupportVectorsByClass = Vector.uniform(nClasses, 0);
+	    let outIntercept = Vector.uniform(nClasses * (nClasses - 1) / 2, 0.0);
+
+	    let res = 
+			    wrapper(X, Y, nSamples, nFeatures,
+					    kernelIndex, Int64(degree), Float64(gamma), Float64(coef0),
+					    Float64(cacheSize), Float64(C), Float64(tol), Int64(shrinking),
+					    Int64(maxIter), Int64(svmTypeIndex), Float64(epsilon),
+					    nSupportVectors, 						
+					    outSupportVectorCoefficients,
+					    outIntercept,
+					    outSupportVectorIndices,
+					    outNSupportVectorsByClass, 
+					    outSupportVectorLabels
+		       );
+
+	    let (nSupportVectors, outSupportVectorCoefficients, outIntercept, 
+		     outSupportVectorIndices, outNSupportVectorsByClass, outSupportVectorLabels) = res;
+
+		if (svmType == "EPSILON_SVR")
+			outSupportVectorLabels = [];
+
+	    nSupportVectors = nSupportVectors[0];
+	    outSupportVectorCoefficients = 
+		    outSupportVectorCoefficients[, nSupportVectors * (nClasses - 1)];
+	    outSupportVectorIndices = 
+		    outSupportVectorIndices[, nSupportVectors] ~~ { _ - 1 };
+
+	    let supportVectorsData_ = 
+		    outSupportVectorIndices.sum(
+			    fun(ix) {
+				    X[nFeatures * ix, nFeatures * (ix + 1)]
+				    }
+	       	);
+
+	    return (dualCoefficients: outSupportVectorCoefficients, intercept: outIntercept, 
+			    supportVectorIndices: outSupportVectorIndices, 
+			    nSupportVectorsByClass: outNSupportVectorsByClass, nClasses:nClasses, 
+			    supportVectorsData_:supportVectorsData_, supportVectorsLabels:outSupportVectorLabels,
+				nSupportVectors: nSupportVectors);
+	    };
+
+SvmBaseMixin: 
+#Markdown(
+"""
+#### Description
+
+A base mixin for support vector machines. Provides two methods `supportVectors` and `predict`.
+""")
+object {
+	supportVectors: 
+#Markdown(
+"""
+#### Usage
+
+    svmModel.supportVectors()
+
+#### Description
+
+Returns the support vectors of an SVM model `svmModel` (either an SVC or SVR) as a matrix.
+
+#### Examples
+
+For SVC:
+
+	let X = [-1.0, -1.0, 
+			 -2.0, -1.0, 
+			 1.0, 1.0,
+			 2.0, 1.0];
+	let Y = [1.0, 1.0, -1.0, -1.0]
+
+	X = math.Matrix(X, (4, 2), `row);
+	Y = math.Matrix(Y, (4,1));
+	
+	let svmModel = math.svm.SVC(X, Y);
+
+	svmModel.supportVectors()
+
+For SVM:
+
+	let X = math.Matrix([0., 0., 2., 2.], (2,2), `row);
+	let y = math.Matrix([0.5, 2.5], (2,1));
+
+	let svmModel = math.svm.SVR(X, y);
+
+	svmModel.supportVectors()
+
+"""
+)
+	fun() {
+		math.Matrix(
+			self.supportVectorsData_,
+			(self.nSupportVectors, self.params.nFeatures),
+			`row
+			)
+		}
+		;
+
+	predict: 
+#Markdown(
+"""#### Usage
+
+	svmModel.predict(math.Matrix(...) X)
+
+#### Description
+
+Predict the values of an `svmModel` on a `math.Matrix` `X`. `svmModel` is either an SVC or an SVR.
+
+#### Examples
+
+For SVC:
+
+	let X = [-1.0, -1.0, 
+			 -2.0, -1.0, 
+			 1.0, 1.0,
+			 2.0, 1.0];
+	let Y = [1.0, 1.0, -1.0, -1.0]
+
+	X = math.Matrix(X, (4, 2), `row);
+	Y = math.Matrix(Y, (4,1));
+	
+	let svmModel = math.svm.SVC(X, Y);
+
+	svmModel.predict(X)
+
+For SVM:
+
+	let X = math.Matrix([0., 0., 2., 2.], (2,2), `row);
+	let y = math.Matrix([0.5, 2.5], (2,1));
+
+	let svmModel = math.svm.SVR(X, y);
+
+	svmModel.predict(X)
+
+""")
+	fun(math.Matrix(...) X)
+		{
+		if (X.dim[1] != self.params.nFeatures)
+			throw "invalid dimension on X; need " + String(self.params.nFeatures) +
+			" columns, got " + String(X.dim[1])
+		
+		let res = _predict(
+			X.rowMajorData(), nSamples: X.dim[0]
+			);
+			
+		math.Matrix(res, (X.dim[0], 1));
+		};
+
+    `hidden
+    _predict: fun(
+		    X, nSamples:
+    	    ) 
+        {
+		// TODO add a test to catch this
+		if (self.nSupportVectors == 0)
+			throw "can't call _predict when nSupportVectors == 0"
+
+		X = blasWrappers.castToTypeIfNecessary(Float64, X)
+
+	    let kernelIndex = _getKernelIndex(self.params.kernel);
+		let svmTypeIndex = _getSvmTypeIndex(self.params.svmType);
+
+	    let floatVecType = `JovOfVectorHolding(Float64);
+	    let intVecType = `JovOfVectorHolding(Int64);
+
+	    let extern_c_name = "svm_predict_fora_wrapper";
+	    let wrapper = `FORTRANFunctionWrapper(
+		    extern_c_name,
+		    extern_c_name,
+		    (21,), // modified indices
+		    Int64, Int64, floatVecType,
+		    floatVecType, floatVecType, intVecType,
+		    intVecType, 
+		    floatVecType, Int64, Int64,
+		    Int64, Int64, Float64, Float64,
+		    Float64, Float64, Float64, Int64, 
+		    Int64, Int64, Float64,
+		    /* ix = 21 */ floatVecType
+		    );
+
+	    let outPredictedValues = Vector.uniform(nSamples, 0.0)
+
+		// can't pass in null vectors to fortran wrappers =\
+		let labels_ = if (size(self.supportVectorsLabels) > 0)
+				self.supportVectorsLabels
+			else 
+				[0]
+			;
+
+        let res = wrapper(
+		        self.nClasses, self.nSupportVectors, self.supportVectorsData_,
+		        self.dualCoefficients, self.intercept, self.nSupportVectorsByClass,
+		        labels_,
+		        X, nSamples, self.params.nFeatures,
+		        kernelIndex, Int64(self.params.degree), Float64(self.params.gamma), Float64(self.params.coef0),
+		        Float64(self.params.cacheSize), Float64(self.params.C), Float64(self.params.tol), Int64(self.params.shrinking),
+			    Int64(self.params.maxIter), Int64(svmTypeIndex), Float64(self.params.epsilon),
+		        outPredictedValues 
+    	        );
+	
+	    res[0];			
+	    };
+
+};
+
+SVR:
+#Markdown(
+"""#### Usage
+
+    math.svm.SVR(
+			math.Matrix(...) X, math.Matrix(...) Y,
+			kernel:='rbf', degree:=3, gamma:=0.0, coef0:=0.0,
+			cacheSize:=100, C:=1.0, tol:=1e-3, shrinking:=true,
+			maxIter:= -1, epsilon:=0.1
+			)
+
+#### Description
+
+Support Vector Regression
+
+A Fora wrapper to libsvm. The fit time complexity is more than quadratic with the number of samples which makes it hard to scale to dataset with more than a couple of 10000 samples.
+
+#### Arguments
+
+* `X`: matrix of feature vectors, part of the training data.
+* `Y`: matrix of class values, the remaining part of the training data.
+* `kernel`: (named, optional, default = 'rbf'). Specifies the kernel type used. Allowed values: 'linear', 'poly', 'rbf', or 'sigmoid.'
+* `degree`: (named, optional, default = 3). Only used if `kernel == 'poly'`, specifying the degree of the polynomial kernel.
+* `gamma`: (named, optional, default = 0.0). Kernel coefficient for 'rbf', 'poly' and 'sigmoid'. If gamma is 0.09, it is reset to `1.0 / nFeatures`, where `nFeatures` is defined to be `X.dim[1]`.
+* `coef0`: (named, optional, default = 0.0). Independent term in kernel function, only used in 'poly' and 'sigmoid'
+* `cacheSize`: (named, optional). Specifies the size of the kernel cache in MB.
+* `C`: (named, optional, default = 1.0). Penalty parameter in the objective function.
+* `tol`: (named, optional, default = 1e-3). Gives stopping criterion for convergence.
+* `shrinking`: (named, optional, default = `true`). Whether to use the shrinking heuristic.
+* `maxIter`: (named, optional). Not currently used. Eventually should give a hard limit on the number of iterations used within the solver.
+* `epsilon`: (named, optional, default = 0.1). Gives the width of the no-penalty range in the loss function. 
+
+#### Example
+
+	let X = [-1.0, -1.0, 
+			 -2.0, -1.0, 
+			 1.0, 1.0,
+			 2.0, 1.0];
+	let Y = [1.0, 1.0, -1.0, -1.0]
+
+	X = math.Matrix(X, (4, 2), `row);
+	Y = math.Matrix(Y, (4,1));
+	
+	let svmModel = math.svm.SVC(X, Y);
+
+#### Members
+
+* `dualCoefficients`: coefficients of the support vector in the decision function. 
+* `intercept`: constants in the decision function
+* `supportVectorIndices`: indices of the support vectors.
+* `nSupportVectorsByClass`: number of support vectors in each class.
+* `nClasses`: the number of classes in the model.
+* `nSupportVectors`: the total number of support vectors
+* `supportVectorsData_`: a vector which contains the support vectors
+* `supportVectorsLabels`: the labels of the support vectors
+* `params`: a tuple containing menbers
+	* `XData`: a vector containing the row major data of the input matrix `X`
+	* `YData`: a vector containing the column data of input matrix `Y`
+	* `nSamples`: the number of samples, `X.dim[0]`
+	* `nFeatures`: the number of features, `X.dim[1]`
+	* `kernel`: same as the input parameter with the same name
+	* `degree`: same as the input parameter with the same name
+	* `gamma`: same as the input parameter with the same name
+	* `coef0`: same as the input parameter with the same name
+	* `cacheSize`: same as the input parameter with the same name
+	* `C`: same as the input parameter with the same name
+	* `tol`: same as the input parameter with the same name
+	* `shrinking: same as the input parameter with the same name
+	* `maxIter`: same as the input parameter with the same name
+	* `epsilon`: same as the input parameter with the same name
+
+""")
+class {
+	mixin SvmBaseMixin;
+
+	member dualCoefficients;
+	member intercept;
+	member supportVectorIndices;
+	member nSupportVectorsByClass;
+	member nClasses;
+	member nSupportVectors;
+	member supportVectorsData_;
+	member supportVectorsLabels;
+	member params;
+
+	operator new(
+			math.Matrix(...) X, math.Matrix(...) Y,
+			kernel:='rbf', degree:=3, gamma:=0.0, coef0:=0.0,
+			cacheSize:=100, C:=1.0, tol:=1e-3, shrinking:=true,
+			maxIter:= -1, epsilon:=0.1
+			)
+		{
+		let XData = X.rowMajorData();
+		let YData = Y.columnMajorData();
+
+		let nFeatures = X.dim[1];
+
+		let svmType = "EPSILON_SVR";
+
+		if ((kernel == 'poly' or kernel == 'rbf') and gamma == 0.0)
+			gamma = 1.0 / nFeatures;
+
+		createInstance(
+			cls, 
+			*_libsvm(
+				XData, YData,
+				nSamples: Y.dim[0], nFeatures: nFeatures,
+				kernel:kernel, degree:degree, gamma:gamma, coef0:coef0,
+				cacheSize:cacheSize, C:C, tol:tol, shrinking:shrinking,
+				maxIter:maxIter, svmType:svmType, epsilon:epsilon
+				),
+			params: (XData: XData, YData: YData, nSamples: Y.dim[0], nFeatures: X.dim[1],
+					 kernel:kernel, degree:degree, gamma:gamma, coef0:coef0,
+					 cacheSize:cacheSize, C:C, tol:tol, shrinking:shrinking,
+					 maxIter:maxIter, svmType:svmType, epsilon:epsilon)
+			);		
+		};
+
+};
+
+SVC: 
+#Markdown(
+"""#### Usage
+
+    math.svm.SVC(
+			math.Matrix(...) X, math.Matrix(...) Y,
+			kernel:='rbf', degree:=3, gamma:=0.0, coef0:=0.0,
+			cacheSize:=100, C:=1.0, tol:=1e-3, shrinking:=true,
+			maxIter:= -1
+			)
+
+#### Description
+
+Support Vector Classification
+
+A Fora wrapper to libsvm. The fit time complexity is more than quadratic with the number of samples which makes it hard to scale to dataset with more than a couple of 10000 samples.
+
+#### Arguments
+
+* `X`: matrix of feature vectors, part of the training data.
+* `Y`: matrix of class values, the remaining part of the training data.
+* `kernel`: (named, optional, default = 'rbf'). Specifies the kernel type used. Allowed values: 'linear', 'poly', 'rbf', or 'sigmoid.'
+* `degree`: (named, optional, default = 3). Only used if `kernel == 'poly'`, specifying the degree of the polynomial kernel.
+* `gamma`: (named, optional, default = 0.0). Kernel coefficient for 'rbf', 'poly' and 'sigmoid'. If gamma is 0.09, it is reset to `1.0 / nFeatures`, where `nFeatures` is defined to be `X.dim[1]`.
+* `coef0`: (named, optional, default = 0.0). Independent term in kernel function, only used in 'poly' and 'sigmoid'
+* `cacheSize`: (named, optional). Specifies the size of the kernel cache in MB.
+* `C`: (named, optional, default = 1.0). Penalty parameter in the objective function.
+* `tol`: (named, optional, default = 1e-3). Gives stopping criterion for convergence.
+* `shrinking`: (named, optional, default = `true`). Whether to use the shrinking heuristic.
+* `maxIter`: (named, optional). Not currently used. Eventually should give a hard limit on the number of iterations used within the solver.
+
+#### Example
+
+	let X = math.Matrix([0., 0., 2., 2.], (2,2), `row);
+	let y = math.Matrix([0.5, 2.5], (2,1));
+
+	let svmModel = math.svm.SVR(X, y);
+
+#### Members
+
+* `dualCoefficients`: coefficients of the support vector in the decision function. 
+* `intercept`: constants in the decision function
+* `supportVectorIndices`: indices of the support vectors.
+* `nSupportVectorsByClass`: number of support vectors in each class.
+* `nClasses`: the number of classes in the model.
+* `nSupportVectors`: the total number of support vectors
+* `supportVectorsData_`: a vector which contains the support vectors
+* `supportVectorsLabels`: the labels of the support vectors
+* `params`: a tuple containing menbers
+	* `XData`: a vector containing the row major data of the input matrix `X`
+	* `YData`: a vector containing the column data of input matrix `Y`
+	* `nSamples`: the number of samples, `X.dim[0]`
+	* `nFeatures`: the number of features, `X.dim[1]`
+	* `kernel`: same as the input parameter with the same name
+	* `degree`: same as the input parameter with the same name
+	* `gamma`: same as the input parameter with the same name
+	* `coef0`: same as the input parameter with the same name
+	* `cacheSize`: same as the input parameter with the same name
+	* `C`: same as the input parameter with the same name
+	* `tol`: same as the input parameter with the same name
+	* `shrinking: same as the input parameter with the same name
+	* `maxIter`: same as the input parameter with the same name
+	* `epsilon`: always 0.0 for SVC
+
+""")
+class {
+	mixin SvmBaseMixin;
+
+	member dualCoefficients;
+	member intercept;
+	member supportVectorIndices;
+	member nSupportVectorsByClass;
+	member nClasses;
+	member nSupportVectors;
+	member supportVectorsData_;
+	member supportVectorsLabels;
+	member params;
+
+	operator new(
+			math.Matrix(...) X, math.Matrix(...) Y,
+			kernel:='rbf', degree:=3, gamma:=0.0, coef0:=0.0,
+			cacheSize:=100, C:=1.0, tol:=1e-3, shrinking:=true,
+			maxIter:= -1
+			)
+		{
+		let XData = X.rowMajorData();
+		let YData = Y.columnMajorData();
+
+		let nFeatures = X.dim[1];
+
+		let svmType = "C_SVC";
+
+		if ((kernel == 'poly' or kernel == 'rbf') and gamma == 0.0)
+			gamma = 1.0 / nFeatures;
+
+		createInstance(
+			cls, 
+			*_libsvm(
+				XData, YData,
+				nSamples: Y.dim[0], nFeatures: nFeatures,
+				kernel:kernel, degree:degree, gamma:gamma, coef0:coef0,
+				cacheSize:cacheSize, C:C, tol:tol, shrinking:shrinking,
+				maxIter:maxIter, svmType:svmType
+				),
+			params: (XData: XData, YData: YData, nSamples: Y.dim[0], nFeatures: X.dim[1],
+					 kernel:kernel, degree:degree, gamma:gamma, coef0:coef0,
+					 cacheSize:cacheSize, C:C, tol:tol, shrinking:shrinking,
+					 maxIter:maxIter, svmType:svmType, /*not used*/ epsilon:0.0)
+			);		
+		};
+	
+};
+
+
+

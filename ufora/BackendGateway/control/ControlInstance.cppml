@@ -1,0 +1,470 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ControlInstance.hppml"
+
+namespace {
+
+string pyLambdaToString(boost::python::object o)
+	{
+	Ufora::python::Holder h("lambdaFunctionToString", "ufora.BackendGateway.control.Control");
+
+	return boost::python::extract<string>(h.get()(o))();
+	}
+
+bool isLambdaWithOneArgument(boost::python::object o)
+	{
+	Ufora::python::Holder h("isLambdaWithOneArgument", "ufora.BackendGateway.control.Control");
+
+	return boost::python::extract<bool>(h.get()(o))();
+	}
+
+class MarkDirtyRoot : public ComputedGraph::Root {
+public:
+		MarkDirtyRoot(
+					ControlInstancePtr inCache, 
+					PolymorphicSharedPtr<ComputedGraph::Graph> inGraph
+					) : 
+				ComputedGraph::Root(inGraph), 
+				mCache(inCache)
+			{
+			}
+
+		virtual void addDependency(const ComputedGraph::LocationProperty& inProp)
+			{
+			ComputedGraph::Root::addDependency(inProp);
+			}
+
+		virtual void changed()
+			{
+			ControlInstancePtr cache = mCache.lock();
+
+			if (cache)
+				cache->markChildrenDirty();
+			}
+private:
+		WeakControlInstancePtr mCache;
+};
+
+}		
+
+ControlInstance::ControlInstance(Control inControl, PolymorphicSharedPtr<ControlInstanceRoot> inRoot) :
+		mRoot(inRoot),
+		mControl(inControl),
+		mIsInitialized(false),
+		mIsDestroyed(false),
+		mHasBeenGenerated(false)
+	{
+	mLevel = 0;
+	mGeneratedLevel = 0;
+	}
+
+ControlInstance::ControlInstance(Control inControl, ControlInstancePtr	inParent) :
+		mParent(inParent),
+		mControl(inControl),
+		mIsInitialized(false),
+		mIsDestroyed(false),
+		mHasBeenGenerated(false)
+	{
+	ControlInstancePtr parent = mParent.lock();
+	mLevel = parent->mLevel + 1;
+	mGeneratedLevel = parent->mGeneratedLevel + (mControl.isGenerated() ? 1 : 0);
+	mRoot = parent->mRoot;
+	}
+
+ControlInstance::~ControlInstance()
+	{
+	if (!mIsDestroyed)
+		destroy(false);
+	}
+
+Control ControlInstance::getControl(void) const
+	{
+	return mControl;
+	}
+
+void ControlInstance::destroy(bool isStillValid)
+	{
+	if (!mIsDestroyed)
+		{
+		mIsDestroyed = true;
+
+		for (int32_t k = 0; k < mChildren.size();k++)
+			mChildren[k]->destroy(true);
+		
+		mChildren.resize(0);
+
+		mParent = WeakControlInstancePtr();
+		}
+	}
+
+string ControlInstance::toString(void)
+	{
+	return "<ControlInstance>";
+	}
+
+void ControlInstance::initialize(void)
+	{
+	if (!mIsInitialized)
+		{
+		mWeakSelfPtr = polymorphicSharedPtrFromThis();
+
+		mIsInitialized = true;
+
+		ControlInstancePtr parent = mParent.lock();
+
+		markChildrenDirty();
+		}
+	}
+
+bool ControlInstance::getIsInvalid(void)
+	{
+	ControlInstancePtr parent = mParent.lock();
+	if (!parent)
+		return false;
+	bool in = false;
+	for (int32_t k = 0; k < parent->mChildren.size() && !in; k++)
+		if (parent->mChildren[k] == this->polymorphicSharedPtrFromThis())
+			in = true;
+	if (!in)
+		return true;
+	return parent->getIsInvalid();
+	}
+
+PolymorphicSharedPtr<ControlInstanceRoot> ControlInstance::getRoot(void) const
+	{
+	return mRoot;
+	}
+
+int32_t ControlInstance::getLevel(void) const
+	{
+	return mLevel;
+	}
+
+void ControlInstance::markChildrenDirty(void)
+	{
+	if (mIsDestroyed)
+		return;
+	
+	mRoot->markChildrenDirty(this);
+	}
+
+ControlInstancePtr ControlInstance::getParent(void)
+	{
+	return mParent.lock();
+	}
+
+Control ControlInstance::unwrap(boost::python::object o)
+	{
+	return boost::python::extract<Control>(o);
+	}
+
+void ControlInstance::preResetChildren(void)
+	{
+	if (mIsDestroyed)
+		return;
+
+	@match Control(mControl)
+		-| Generated(rule, forceCache, identifier) ->> { 
+			mChildren.resize(0);
+			}
+		-| Layout(rule, Fixed(subs)) ->> { 
+			mChildren.resize(0); 
+			}
+		-| Layout(rule, Variable(keygen, controlgen)) ->> {
+			//do nothing - will need to actually rebuild this
+			}
+		-| _ ->> {
+			}
+		;
+	}
+
+void ControlInstance::resetChildren(void)
+	{
+	if (mIsDestroyed)
+		return;
+
+	mChildrenWatcher.reset();
+
+	@match Control(mControl)
+		-| Generated(rule, forceCache, identifier) ->> {
+				mChildren.resize(0);
+				mChildrenWatcher.reset(
+					new MarkDirtyRoot(
+						this->polymorphicSharedPtrFromThis(), 
+						mRoot->mGraph
+						)
+					);
+
+				ComputedGraph::ScopedComputedGraphRoot cr(mChildrenWatcher, mRoot->mGraph);
+
+				double t0 = curClock();
+
+				boost::python::object o;
+
+				try {
+					
+					if (isLambdaWithOneArgument(rule))
+						o = rule(this->polymorphicSharedPtrFromThis());
+					else
+						o = rule();
+
+					lassert_dump(boost::python::extract<Control>(o).check(),
+						pyLambdaToString(rule) << " generated " 
+							<< pyToString(o) 
+							<< " which is not a Control object"
+						);
+
+					if (mGeneratedLevel > 1000)
+						{
+						lassert_dump(false, "reached control recursion limit of 1000 with "
+							<< pyLambdaToString(rule)
+							<< " would have generated " << pyToString(o)
+							);
+						}
+					}
+				catch (std::exception& e)
+					{
+					o = mRoot->mExceptionChildGenerator.get()(e.what());
+					}
+				catch (...)
+					{
+					if (PyErr_Occurred())
+						{
+						PyObject* type, *val, *traceback;
+
+						PyErr_Fetch(&type, &val, &traceback);
+						o = mRoot->mExceptionChildGenerator.get()(boost::python::object(boost::python::handle<>(type)),
+														   boost::python::object(boost::python::handle<>(val)),
+														   boost::python::object(boost::python::handle<>(traceback))
+														  );
+						}
+						else
+						o = mRoot->mExceptionChildGenerator.get()("Control::generate caught unknown exception");
+					}
+
+				try {
+					mChildren.push_back(ControlInstancePtr(new ControlInstance(unwrap(o), this->polymorphicSharedPtrFromThis())));
+					}
+				catch(...)
+					{
+					LOG_DEBUG << "Error generating control...\n";
+					mChildren.push_back(ControlInstancePtr(new ControlInstance(Control::Empty(), this->polymorphicSharedPtrFromThis())));
+					}
+
+				mHasBeenGenerated = true;
+				}
+		-| Layout(rule, Fixed(subs)) ->> {
+				mChildren.resize(0);
+				boost::python::list keyNames;
+				for (int32_t k = 0; k < subs.size();k++)
+					{
+					mChildren.push_back(ControlInstancePtr(new ControlInstance(subs[k], this->polymorphicSharedPtrFromThis())));
+					keyNames.append(k);
+					}
+				mVariableLayoutKeys = keyNames;
+				}
+		-| Layout(rule, Variable(keygen, controlgen)) ->> {
+				rebuildVariableLayoutChildren();
+				}
+		-| _ ->> { ; }
+		;
+
+	for (int32_t k = 0; k < mChildren.size();k++)
+		if (!mChildren[k]->mIsInitialized)
+			mChildren[k]->initialize();
+	}
+
+void ControlInstance::rebuildVariableLayoutChildren(void)
+	{
+	@match Control(mControl)
+		-| Layout(rule, Variable(keygen, controlgen, keysToCache)) ->> {
+			try {
+				boost::python::object o;
+				bool isErr = false;
+				try {
+					mChildrenWatcher.reset(new MarkDirtyRoot(this->polymorphicSharedPtrFromThis(), mRoot->mGraph));
+
+					ComputedGraph::ScopedComputedGraphRoot cr(mChildrenWatcher, mRoot->mGraph);
+
+					
+					if (keygen.attr("func_code").attr("co_argcount") == 1)
+						o = keygen(this->polymorphicSharedPtrFromThis());
+						else
+						o = keygen();
+
+					lassert_dump(boost::python::extract<boost::python::list>(o).check(),
+						pyLambdaToString(keygen) << " generated " 
+						<< pyToString(o) << " which is not a list"
+						);
+					}
+				catch (std::exception& e)
+					{
+					isErr = true;
+					o = mRoot->mExceptionChildGenerator.get()(e.what());
+					LOG_DEBUG << "ERROR while generating keys...\n" << e.what() << "\n";
+					}
+				catch (...)
+					{
+					LOG_DEBUG << "ERROR while generating keys: ARBITRARY\n";
+					isErr = true;
+					if (PyErr_Occurred())
+						{
+						PyObject* type, *val, *traceback;
+
+						PyErr_Fetch(&type, &val, &traceback);
+						o = mRoot->mExceptionChildGenerator.get()(boost::python::object(boost::python::handle<>(type)),
+														   boost::python::object(boost::python::handle<>(val)),
+														   boost::python::object(boost::python::handle<>(traceback))
+														  );
+						}
+						else
+						o = mRoot->mExceptionChildGenerator.get()("Control::generate caught unknown exception");
+					}
+
+				if (isErr)
+					{
+					mVariableLayoutKeys = boost::python::object();
+					
+					try {
+						mChildren.resize(0);
+						mChildren.push_back(ControlInstancePtr(new ControlInstance(unwrap(o), this->polymorphicSharedPtrFromThis())));
+						}
+					catch(...)
+						{
+						mChildren.resize(0);
+						mChildren.push_back(ControlInstancePtr(new ControlInstance(Control::Empty(), this->polymorphicSharedPtrFromThis())));
+						}
+					}
+				else
+					{
+					mVariableLayoutKeys = o;
+					
+					boost::python::list l = boost::python::extract<boost::python::list>(o)();
+					
+					vector<boost::python::object> keys;
+
+					set<boost::python::object> keySet;
+
+					for (long k = 0; k < boost::python::len(l);k++)
+						{
+						keys.push_back(l[k]);
+						keySet.insert(l[k]);
+						}
+
+					//now update the current child list
+					std::vector<ControlInstancePtr> newChildren;
+
+					for (long k = 0; k < keys.size();k++)
+						{
+						if (mLayoutKeysToChildren.find(keys[k]) != mLayoutKeysToChildren.end())
+							newChildren.push_back(mLayoutKeysToChildren[keys[k]]);
+						else
+							{
+							Control generatedControl = childForKey(keys[k], controlgen);
+							
+							ControlInstancePtr instance(
+									new ControlInstance(
+										generatedControl, this->polymorphicSharedPtrFromThis()
+										)
+									);
+
+							newChildren.push_back(instance);
+
+							mLayoutKeysToChildren[keys[k]] = instance;
+							}
+						}
+
+					if (mLayoutKeysToChildren.size() - keySet.size() > keysToCache)
+						{
+						set<boost::python::object> droppable;
+						for (auto it = mLayoutKeysToChildren.begin(); it != mLayoutKeysToChildren.end(); ++it)
+							if (keySet.find(it->first) == keySet.end())
+								droppable.insert(it->first);
+
+						while (mLayoutKeysToChildren.size() - keySet.size() > keysToCache)
+							{
+							mLayoutKeysToChildren.erase(*droppable.begin());
+							droppable.erase(droppable.begin());
+							}
+						}
+
+					mChildren = newChildren;
+					}
+				}
+			catch(const std::logic_error& e)
+				{
+				boost::python::object errorRepresentation = mRoot->mExceptionChildGenerator.get()("Error generating Variable layout in control framework:\n" + string(e.what()));
+				
+				mChildren.resize(0);
+				mChildren.push_back(ControlInstancePtr(new ControlInstance(unwrap(errorRepresentation), this->polymorphicSharedPtrFromThis())));
+				}
+			catch(...)
+				{
+				boost::python::object errorRepresentation = mRoot->mExceptionChildGenerator.get()("Error generating Variable layout in control framework: unknown error");
+				
+				mChildren.resize(0);
+				mChildren.push_back(ControlInstancePtr(new ControlInstance(unwrap(errorRepresentation), this->polymorphicSharedPtrFromThis())));
+				}
+			}
+	}
+
+
+boost::python::list ControlInstance::getChildren(void)
+	{
+	boost::python::list tr;
+	for (int32_t k = 0; k < mChildren.size(); k++)
+		tr.append(mChildren[k]);
+	return tr;
+	}
+
+
+Control ControlInstance::childForKey(boost::python::object key, boost::python::object generatorFunction)
+	{
+	boost::python::object tr;
+
+	try {
+		tr = generatorFunction(key);
+
+		lassert_dump(boost::python::extract<Control>(tr).check(),
+			pyLambdaToString(generatorFunction)
+				<< "(" << pyToString(key) << ")"
+				<< " generated " << pyToString(tr) << " which is not a Control object"
+			);
+
+		}
+	catch (std::exception& e)
+		{
+		tr = mRoot->mExceptionChildGenerator.get()(e.what());
+		}
+	catch (...)
+		{
+		if (PyErr_Occurred())
+			{
+			PyObject* type, *val, *traceback;
+
+			PyErr_Fetch(&type, &val, &traceback);
+			tr = mRoot->mExceptionChildGenerator.get()(boost::python::object(boost::python::handle<>(type)),
+											   boost::python::object(boost::python::handle<>(val)),
+											   boost::python::object(boost::python::handle<>(traceback))
+											  );
+			}
+		else
+			tr = mRoot->mExceptionChildGenerator.get()("Control::generate caught unknown exception");
+		}
+
+	return boost::python::extract<Control>(tr);
+	}
+

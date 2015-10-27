@@ -1,0 +1,250 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "TestingCallbackSchedulerFactory.hppml"
+#include "../Clock.hpp"
+
+namespace {
+
+class TestingCallbackScheduler : public CallbackScheduler {
+public:
+	TestingCallbackScheduler(
+				PolymorphicSharedPtr<CallbackSchedulerFactory> inFactory,
+				std::string inMetadata,
+				long threadCount
+				) :
+			mFactory(inFactory),
+			mMetadata(inMetadata),
+			mCount(0)
+		{
+		}
+
+	~TestingCallbackScheduler()
+		{
+		}
+
+	PolymorphicSharedPtr<CallbackSchedulerFactory> getFactory()
+		{
+		return mFactory;
+		}
+
+	std::string getMetadata()
+		{
+		return mMetadata;
+		}
+
+	CallbackSchedulerStack currentStack()
+		{
+		return CallbackSchedulerStack();
+		}
+
+	void schedule(
+			boost::function0<void> inCallback, 
+			double inTime,
+			std::string descriptor
+			)
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		mCallbacks[inTime].push_back(inCallback);
+
+		mCount++;
+		}
+
+	void scheduleImmediately(
+			boost::function0<void> inCallback, 
+			std::string descriptor
+			)
+		{
+		schedule(inCallback, curClock(), descriptor);
+		}
+
+	bool blockUntilPendingHaveExecuted()
+		{
+		lassert(false);
+		}
+
+	void setCallbackWrapper(boost::function1<void, boost::function0<void> > wrapper)
+		{
+		}
+
+	void blockOnAllPossibleCallbacks()
+		{
+
+		}
+
+	bool blockUntilPendingHaveExecutedAndImmediateQueueIsEmpty()
+		{
+		lassert(false);
+		}
+
+	bool blockUntilPendingHaveExecutedAndQueueIsEmpty(bool logDelays)
+		{
+		lassert(false);
+		}
+
+	long currentlyExecuting()
+		{
+		lassert(false);
+		}
+
+	long unhandledExceptionsSinceLastCheck()
+		{
+		return 0;
+		}
+
+	long currentlyScheduled()
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		return mCallbacks.size();
+		}
+
+	double frontTime()
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		if (mCallbacks.size() == 0)
+			return 0;
+
+		return mCallbacks.begin()->first;
+		}
+
+	void executeOne()
+		{
+		boost::function0<void> toCall = popFront();
+
+		toCall();
+		}
+
+	boost::function0<void> popFront()
+		{
+		lassert(mCallbacks.size());
+
+		boost::function0<void> tr = mCallbacks.begin()->second.front();
+
+		mCallbacks.begin()->second.pop_front();
+
+		if (mCallbacks.begin()->second.size() == 0)
+			mCallbacks.erase(mCallbacks.begin());
+
+		mCount--;
+
+		return tr;
+		}
+
+	size_t count() const
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		return mCount;
+		}
+
+private:
+	mutable boost::mutex mMutex;
+
+	PolymorphicSharedPtr<CallbackSchedulerFactory> mFactory;
+
+	std::string mMetadata;
+
+	std::map<double, std::deque<boost::function0<void> > > mCallbacks;
+
+	size_t mCount;
+};
+
+}
+
+TestingCallbackSchedulerFactory::TestingCallbackSchedulerFactory()
+	{
+	}
+
+PolymorphicSharedPtr<CallbackScheduler> 
+			TestingCallbackSchedulerFactory::createScheduler(
+												std::string metadata,
+												uint32_t numThreads
+												)
+	{
+	PolymorphicSharedPtr<CallbackScheduler> scheduler(
+		new TestingCallbackScheduler(
+			polymorphicSharedPtrFromThis(),
+			metadata, 
+			numThreads
+			)
+		);
+
+	mSchedulers.push_back(scheduler);
+
+	return scheduler;
+	}
+
+const std::vector<PolymorphicSharedWeakPtr<CallbackScheduler> >& 
+		TestingCallbackSchedulerFactory::getSchedulers()
+	{
+	return mSchedulers;
+	}
+
+bool TestingCallbackSchedulerFactory::executeOne()
+	{
+	if (!mSchedulers.size())
+		return false;
+
+	double curTime = 0;
+	TestingCallbackScheduler* schedulerToUse = 0;
+
+	for (auto weakPtr: mSchedulers)
+		{
+		auto ptr = weakPtr.lock();
+
+		if (ptr)
+			{
+			TestingCallbackScheduler* scheduler = dynamic_cast<TestingCallbackScheduler*>(ptr.get());
+			lassert(scheduler);
+
+			if (scheduler->currentlyScheduled() && (!schedulerToUse || scheduler->frontTime() < curTime))
+				schedulerToUse = scheduler;
+			}
+		}
+
+	if (schedulerToUse)
+		{
+		schedulerToUse->executeOne();
+		return true;
+		}
+
+	return false;
+	}
+
+size_t TestingCallbackSchedulerFactory::count() const
+	{
+	if (!mSchedulers.size())
+		return 0;
+
+	long count = 0;
+	
+	for (auto weakPtr: mSchedulers)
+		{
+		auto ptr = weakPtr.lock();
+
+		if (ptr)
+			{
+			TestingCallbackScheduler* scheduler = dynamic_cast<TestingCallbackScheduler*>(ptr.get());
+			lassert(scheduler);
+
+			count += scheduler->count();
+			}
+		}
+
+	return count;
+	}

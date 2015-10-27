@@ -1,0 +1,110 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <boost/unordered_map.hpp>
+#include "ShareableMemoryBlock.hppml"
+#include "../../core/lassert.hpp"
+
+namespace Fora {
+
+class ShareableMemoryBlocks {
+public:
+	ShareableMemoryBlocks() : 
+			mBytesHeldInSharedMemory(0)
+		{
+		}
+
+	//returns 'false' if it has never seen 'inBytes'
+	bool decrefSharedMemoryBlock(uint8_t* inBytes)
+		{
+		auto it = mSharedMemoryPointers.find(inBytes);
+
+		if (it == mSharedMemoryPointers.end())
+			return false;
+
+		Fora::ShareableMemoryBlockHandle handle = it->second;
+
+		long& refcount = mSharedMemoryRefcounts[it->second];
+
+		refcount--;
+
+		if (refcount == 0)
+			{
+			mBytesHeldInSharedMemory -= handle.getSize();
+			mSharedMemoryRefcounts.erase(it->second);
+			mSharedMemoryPointers.erase(inBytes);
+			}
+
+		return true;
+		}
+
+	bool hasShareableMemoryBlockHandle(uint8_t* inBytes) const
+		{
+		if (!Fora::ShareableMemoryBlock::isValidBaseAddress(inBytes))
+			return false;
+
+		auto it = mSharedMemoryPointers.find(inBytes);
+
+		return it != mSharedMemoryPointers.end();
+		}
+
+	//get a handle from a pointer if we have one, or null
+	Fora::ShareableMemoryBlockHandle getShareableMemoryBlockHandle(uint8_t* inBytes) const
+		{
+		if (!Fora::ShareableMemoryBlock::isValidBaseAddress(inBytes))
+			return Fora::ShareableMemoryBlockHandle();
+
+		auto it = mSharedMemoryPointers.find(inBytes);
+
+		if (it != mSharedMemoryPointers.end())
+			return it->second;
+
+		return Fora::ShareableMemoryBlockHandle();
+		}
+
+	bool increfShareableMemoryBlockAndReturnIsNew(const Fora::ShareableMemoryBlockHandle& inHandle)
+		{
+		lassert(!inHandle.isEmpty());
+
+		long& refcount = mSharedMemoryRefcounts[inHandle];
+
+		if (refcount == 0)
+			{
+			mSharedMemoryPointers[inHandle.getBaseAddress()] = inHandle;
+			mBytesHeldInSharedMemory += inHandle.getSize();
+			}
+
+		refcount++;
+
+		return refcount == 1;
+		}
+
+	size_t getBytesHeldInSharedMemory() const
+		{
+		return mBytesHeldInSharedMemory;
+		}
+
+private:
+	size_t mBytesHeldInSharedMemory;
+
+	std::map<Fora::ShareableMemoryBlockHandle, long> mSharedMemoryRefcounts;
+
+	boost::unordered_map<uint8_t*, Fora::ShareableMemoryBlockHandle> mSharedMemoryPointers;
+};
+
+}
+

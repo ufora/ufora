@@ -1,0 +1,337 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "JudgmentOnValueTupleSet.hppml"
+#include "../Interpreter/EvalFrameArgList.hpp"
+
+
+namespace Fora {
+
+class JudgmentOnValueTupleSetImpl {
+public:
+	JudgmentOnValueTupleSetImpl() : 
+			mCount(0)
+		{
+		}
+
+	void insert(const JOVT& inJOV)	
+		{
+		Nullable<hash_type> hash = typeHash(inJOV);
+
+		if (hash)
+			{
+			auto& typed(mTypedJudgments[*hash]);
+
+			if (typed.find(inJOV) != typed.end())
+				return;
+
+			typed.insert(inJOV);
+			mCount++;
+			}
+		else
+			{
+			if (mUntypedJudgments.find(inJOV) != mUntypedJudgments.end())
+				return;
+
+			mUntypedJudgments.insert(inJOV);
+			mCount++;
+			}
+		}
+
+	bool contains(const JOVT& inJOV) const
+		{
+		Nullable<hash_type> hash = typeHash(inJOV);
+
+		if (hash)
+			{
+			auto it = mTypedJudgments.find(*hash);
+
+			if (it == mTypedJudgments.end())
+				return false;
+
+			auto it2 = it->second.find(inJOV);
+
+			return it2 != it->second.end();
+			}
+		else
+			return mUntypedJudgments.find(inJOV) != mUntypedJudgments.end();
+		}
+
+	void erase(const JOVT& inJOV)
+		{
+		Nullable<hash_type> hash = typeHash(inJOV);
+
+		if (hash)
+			{
+			auto it = mTypedJudgments.find(*hash);
+
+			if (it == mTypedJudgments.end())
+				return;
+
+			auto it2 = it->second.find(inJOV);
+
+			if (it2 == it->second.end())
+				return;
+
+			it->second.erase(it2);
+			mCount--;
+
+			if (it->second.size() == 0)
+				mTypedJudgments.erase(it);
+			}
+		else
+			{
+			auto it = mUntypedJudgments.find(inJOV);
+
+			if (it == mUntypedJudgments.end())
+				return;
+
+			mUntypedJudgments.erase(it);
+
+			mCount--;
+			}
+		}
+
+	size_t size() const
+		{
+		return mCount;
+		}
+
+	void judgmentsCovering(
+			const Fora::Interpreter::EvalFrameArgList& implVals, 
+			std::vector<JOVT>& outJudgments
+			) const
+		{
+		hash_type typeHash;
+
+		for (long k = 0; k < implVals.size(); k++)
+			typeHash = typeHash + implVals[k].type().hash();
+
+		outJudgments.clear();
+
+		for (auto it = mUntypedJudgments.begin(); it != mUntypedJudgments.end(); ++it)
+			if (it->covers(implVals))
+				outJudgments.push_back(*it);
+
+		auto typedIt = mTypedJudgments.find(typeHash);
+
+		if (typedIt != mTypedJudgments.end())
+			for (auto it = typedIt->second.begin(); it != typedIt->second.end(); ++it)
+				if (it->covers(implVals))
+					outJudgments.push_back(*it);
+		}
+
+	void judgmentsCovering(
+			const ImplValContainer& implVal,
+			std::vector<JOVT>& outJudgments
+			) const
+		{
+		outJudgments.clear();
+
+		if (!implVal.type().isTuple())
+			return;
+
+		hash_type typeHash;
+
+		auto types = implVal.type().getTuple().types();
+
+		for (auto t: types)
+			typeHash = typeHash + t.hash();
+
+		for (auto it = mUntypedJudgments.begin(); it != mUntypedJudgments.end(); ++it)
+			if (it->covers(implVal.getReference()))
+				outJudgments.push_back(*it);
+
+		auto typedIt = mTypedJudgments.find(typeHash);
+
+		if (typedIt != mTypedJudgments.end())
+			for (auto it = typedIt->second.begin(); it != typedIt->second.end(); ++it)
+				if (it->covers(implVal.getReference()))
+					outJudgments.push_back(*it);
+		}
+
+	void judgmentsCovering(
+			const JOVT& inJOVT,
+			std::vector<JOVT>& outJudgments
+			) const
+		{
+		outJudgments.clear();
+
+		for (auto it = mUntypedJudgments.begin(); it != mUntypedJudgments.end(); ++it)
+			if (it->covers(inJOVT))
+				outJudgments.push_back(*it);
+
+		Nullable<hash_type> th = this->typeHash(inJOVT);
+
+		if (th)
+			{
+			auto typedIt = mTypedJudgments.find(*th);
+
+			if (typedIt != mTypedJudgments.end())
+				for (auto it = typedIt->second.begin(); it != typedIt->second.end(); ++it)
+					if (it->covers(inJOVT))
+						outJudgments.push_back(*it);
+			}
+		}
+
+	void judgmentsCoveredBy(
+			const JOVT& inJOVT,
+			std::vector<JOVT>& outJudgments
+			) const
+		{
+		outJudgments.clear();
+
+		Nullable<hash_type> th = this->typeHash(inJOVT);
+
+		if (!th)
+			{
+			//if he's untyped, check everything
+			for (auto it = mUntypedJudgments.begin(); it != mUntypedJudgments.end(); ++it)
+				if (inJOVT.covers(*it))
+					outJudgments.push_back(*it);
+
+			for (auto it = mTypedJudgments.begin(); it != mTypedJudgments.end(); ++it)
+				for (auto it2 = it->second.begin(); it2 != it->second.end(); ++it2)
+					if (inJOVT.covers(*it2))
+						outJudgments.push_back(*it2);
+			}
+		else
+			{
+			//otherwise we can just check the ones that have the same typehash
+			auto typedIt = mTypedJudgments.find(*th);
+
+			if (typedIt != mTypedJudgments.end())
+				for (auto it = typedIt->second.begin(); it != typedIt->second.end(); ++it)
+					if (inJOVT.covers(*it))
+						outJudgments.push_back(*it);
+			}
+		}
+
+	template<class T>
+	Nullable<JOVT> smallestJovtCovering(const T& in) const
+		{
+		std::vector<JOVT> jmts;
+
+		judgmentsCovering(in, jmts);
+
+		if (!jmts.size())
+			return null();
+
+		JOVT result = jmts[0];
+
+		for (long k = 1; k < jmts.size();k++)
+			if (result.covers(jmts[k]))
+				result = jmts[k];
+
+		return null() << result;
+		}
+
+	static Nullable<hash_type> typeHash(const JOVT& jovt)
+		{
+		if (jovt.hasExtras())
+			return null();
+
+		return typeHash(jovt.jovs());
+		}
+
+	static Nullable<hash_type> typeHash(const ImmutableTreeVector<JOV>& jovs)
+		{
+		hash_type result;
+
+		for (auto jov: jovs)
+			if (jov.type())
+				result = result + jov.type()->hash();
+			else
+				return null();
+
+		return null() << result;
+		}
+
+private:
+	std::set<JOVT> mUntypedJudgments;
+
+	std::map<hash_type, std::set<JOVT> > mTypedJudgments;
+
+	long mCount;
+};
+
+JudgmentOnValueTupleSet::JudgmentOnValueTupleSet()
+	{
+	mImpl.reset(new JudgmentOnValueTupleSetImpl());
+	}
+
+void JudgmentOnValueTupleSet::insert(const JOVT& inJOV)
+	{
+	mImpl->insert(inJOV);
+	}
+
+bool JudgmentOnValueTupleSet::contains(const JOVT& inJOV) const
+	{
+	return mImpl->contains(inJOV);
+	}
+
+void JudgmentOnValueTupleSet::erase(const JOVT& inJOV)
+	{
+	mImpl->erase(inJOV);
+	}
+	
+void JudgmentOnValueTupleSet::judgmentsCovering(
+			const Fora::Interpreter::EvalFrameArgList& implVals, 
+			std::vector<JOVT>& outJudgments
+			) const
+	{
+	mImpl->judgmentsCovering(implVals, outJudgments);
+	}
+
+void JudgmentOnValueTupleSet::judgmentsCovering(
+			const ImplValContainer& implVal,
+			std::vector<JOVT>& outJudgments
+			) const
+	{
+	mImpl->judgmentsCovering(implVal, outJudgments);
+	}
+
+void JudgmentOnValueTupleSet::judgmentsCovering(
+			const JOVT& inJOVT,
+			std::vector<JOVT>& outJudgments
+			) const
+	{
+	mImpl->judgmentsCovering(inJOVT, outJudgments);
+	}
+
+void JudgmentOnValueTupleSet::judgmentsCoveredBy(
+			const JOVT& inJOVT,
+			std::vector<JOVT>& outJudgments
+			) const
+	{
+	mImpl->judgmentsCoveredBy(inJOVT, outJudgments);
+	}
+
+Nullable<JOVT> JudgmentOnValueTupleSet::smallestJovtCovering(const JOVT& in)
+	{
+	return mImpl->smallestJovtCovering(in);
+	}
+
+Nullable<JOVT> JudgmentOnValueTupleSet::smallestJovtCovering(const Fora::Interpreter::EvalFrameArgList& in)
+	{
+	return mImpl->smallestJovtCovering(in);
+	}
+
+size_t JudgmentOnValueTupleSet::size() const
+	{
+	return mImpl->size();
+	}
+
+}

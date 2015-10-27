@@ -1,0 +1,793 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "../../core/Platform.hpp"
+
+#ifdef BSA_PLATFORM_WINDOWS
+//we need to prevent windows from seeing <boost/python.hpp> which is included
+//by ValueDeepcopier.
+
+//TODO BUG brax: move <boost/python.hpp> dependency out of serialization code so that
+//we don't have a dependency on it throughout the code.
+
+#define FORA_ValueDeepcopier_hppml_
+#endif
+
+#include "InterpreterFrame.hppml"
+#include "InterpreterHistory.hppml"
+#include "InstructionGraph.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../Core/ExecutionContextImpl.hppml"
+#include "../Core/RefcountPool.hppml"
+#include "Instruction.hppml"
+#include "Continuation.hppml"
+#include "AxiomCache.hppml"
+#include "../Core/ExecutionContextConfiguration.hppml"
+#include "../Core/ExecutionContextScope.hppml"
+#include "EvalFrame.hpp"
+#include "CallFrame.hpp"
+#include "../Core/MemBlock.hpp"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include "../TypedFora/ABI/VectorLoadRequest.hppml"
+#include "../TypedFora/JitCompiler/CompilerThreadCount.hppml"
+#include "../TypedFora/JitCompiler/TypedJumpTarget.hppml"
+#include "../TypedFora/JitCompiler/TypedContinuation.hppml"
+#include "../Core/TupleCategory.hppml"
+#include "../Judgment/JudgmentOnValueTree.hppml"
+#include "CompilerEntrypointMap.hppml"
+#include "../Native/FunctionPointerHandle.hpp"
+#include "../Native/NativeRuntimeCallTarget.hppml"
+#include "../../core/threading/ScopedThreadLocalContext.hpp"
+#include "../../core/Logging.hpp"
+#include "../../core/Clock.hpp"
+#include "../../core/StringUtil.hpp"
+#include "TransferNativeStackframeIntoInterpreter.hppml"
+
+extern uword_t LLVMFunctionBuilder_funCallCt;
+
+using std::vector;
+using namespace Fora::Interpreter;
+
+InterpreterFrame::InterpreterFrame(
+		ExecutionContext& executionContext,
+		MemBlock** memBlock,
+		uword_t continuation,
+		EvalFrame* evalFramePtr
+		) : 
+			mExecutionContext(executionContext),
+			mExecutionContextConfig(*mExecutionContext.getConfiguration()),
+			mMemBlock(memBlock),
+			mContinuation(continuation),
+			mEvalFramePtr(evalFramePtr),
+			mValid(true),
+			mCurrentStep(0),
+			mTypedForaCompiler(&*Runtime::getRuntime().getTypedForaCompiler()),
+			mInterpreterHistory(mExecutionContext.getInterpreterHistory())
+	{
+	if (mContinuation != 0)
+		{
+		mInterpreterHistory.onInterpreterResumedWithValue(
+			mEvalFramePtr, 
+			mContinuation == cont_cont_right
+			);
+		}
+	else
+		mInterpreterHistory.onInterpreterResumedWithoutValue(
+			mEvalFramePtr
+			);
+	}
+
+InterpreterFrame::~InterpreterFrame()
+	{
+	}
+
+void InterpreterFrame::resumeContinuation(
+		NativeRuntimeContinuationValue<1> value,
+		void* data,
+		uword_t nBytes
+		)
+	{
+	memcpy(value.slots()[0].target(), data, nBytes);
+
+	//if we're just going to followContinuation back to ourselves, don't bother
+	if (mTypedForaCompiler->isWrappedCPPCallbackPtr(value.jumpPtr()))
+		{
+		TypedFora::NativeCppCallbackStackframe* frame = 
+			(TypedFora::NativeCppCallbackStackframe*)value.stackframePtr();
+
+		if (frame->cppFunctionPointerToCall() == &InterpreterFrame::interpreter)
+			{
+			mEvalFramePtr = (EvalFrame*)frame->actualStackPointer();
+			
+			mContinuation = value.slots()[0].blockID();
+
+			mExecutionContext.getStackAllocator().free(frame);
+
+			if (mExecutionContextConfig.allowInterpreterTracing())
+				mInterpreterHistory.onReturnedToInterpreter(
+					mEvalFramePtr, 
+					mContinuation == cont_cont_right
+					);
+			
+			return;
+			}
+		}
+
+	mValid = false;
+	mExitPoint = value;
+	lassert(!value.jumpPtr().isEmpty());
+	}
+
+void InterpreterFrame::followContinuation(bool resultIsActive, Continuation& continuation)
+	{
+	if (resultIsActive)
+		lassert(continuation.requiresResult());
+
+	continuation.executionCount()++;
+		
+	if (continuation.isReturn())
+		{
+		ImplVal res;
+		continuation.returnArgs(
+			mEvalFramePtr->evalFrameArgList(),
+			mEvalFramePtr->resultValue,
+			&res,
+			mExecutionContext.getRefcountPool()
+			);
+		NativeRuntimeContinuationValue<1> ncv =
+			mEvalFramePtr->callFrame.conts[continuation.returnIsException() ? 1 : 0];
+
+		EvalFrame::free(mEvalFramePtr, mExecutionContext.getStackAllocator());
+
+		resumeContinuation(ncv, &res, sizeof(ImplVal));
+		}
+	else
+		{
+		InstructionPtr nextInstructionPtr = continuation.getTargetInstruction();
+
+		continuation.rewriteArgs(
+			mEvalFramePtr->evalFrameArgList(),
+			mEvalFramePtr->resultValue,
+			mExecutionContext.getInterpreterScratchSpace(),
+			mExecutionContext.getRefcountPool()
+			);
+
+		mEvalFramePtr->setInstructionPtr(nextInstructionPtr);
+
+		mContinuation = cont_internal;
+		}
+	}
+
+bool InterpreterFrame::checkInterruptFlag()
+	{
+	//check the interrupt flag
+	if (mContinuation == cont_internal && 
+			mEvalFramePtr->callFrame.callbacks->checkInterruptFlag())
+		{
+		NativeRuntimeContinuationValue<1> cont = 
+			mTypedForaCompiler->wrapCPPCallback(
+				&InterpreterFrame::interpreter,
+				mEvalFramePtr,
+				mExecutionContext.getStackAllocator().getMemBlockPtr()
+				) +
+			NativeRuntimeContinuationSlot(
+				mContinuation,
+				&mEvalFramePtr->resultValue
+				);
+
+		mInterpreterHistory.onInterpreterInterrupted(mEvalFramePtr);
+
+		resumeContinuation(
+			mEvalFramePtr->callFrame.callbacks->interruptContinuation,
+			&cont,
+			sizeof(cont)
+			);
+		
+		return true;
+		}
+
+	return false;
+	}
+
+void InterpreterFrame::logCurrentStep()
+	{
+	LOGGER_DEBUG_T log = LOGGER_DEBUG;
+
+	log << mEvalFramePtr->instructionPtr->toString()
+		<< "\n\t(";
+	uword_t argCount = mEvalFramePtr->instructionPtr->argCount();
+	for (long k = 0; k < argCount; k++)
+		{
+		log << Ufora::oneLineSanitization(
+					prettyPrintString(mEvalFramePtr->evalFrameArgList()[k]),
+					200
+				);
+		if (k + 1 < argCount)
+			log << ",";
+		}
+
+	log << ")";
+
+	if (mContinuation == cont_cont_left || mContinuation == cont_cont_right)
+		{
+		log << "\n\tReturned value = "
+			<< Ufora::oneLineSanitization(prettyPrintString(mEvalFramePtr->resultValue), 200);
+		}
+	}
+
+void InterpreterFrame::step()
+	{
+	++mCurrentStep;
+
+	if (mCurrentStep % 20 == 2)
+		{
+		//if we're compiling something right now, it's most likely useless to be running an interpreter
+		//thread as well. We slow down the threads in an attempt to maximize output of the compiler
+		//threads.
+		if (Fora::CompilerThreadCount::count() > 2)
+			sleepSeconds(0.001);
+			else
+		if (Fora::CompilerThreadCount::count() > 1)
+			sleepSeconds(0.0001);
+			else
+		if (Fora::CompilerThreadCount::count() > 0)
+			sleepSeconds(0.00001);
+		}
+	
+	try {
+		if (checkInterruptFlag())
+			return;
+
+		uword_t argCount = mEvalFramePtr->instructionPtr->argCount();
+
+		if (SHOULD_LOG_DEBUG())
+			logCurrentStep();
+			
+		if (mContinuation == cont_internal)
+			{
+			//branch into native code, but not if we have not executed any steps
+			if (mCurrentStep > 1 && attemptToBranchToNativeCode())
+				return;
+
+			if (mExecutionContextConfig.allowInterpreterTracing())
+				mInterpreterHistory.onInterpreterStep(mEvalFramePtr);
+			
+			mEvalFramePtr->instructionPtr->executionCount()++;
+
+			@match InstructionBody(mEvalFramePtr->instructionPtr->getInstructionBody())
+				-|	Jump() ->> {
+						followContinuation(false, mEvalFramePtr->instructionPtr->getContinuation(false));
+						}
+				-|	Branch(ix) ->> {
+						long whichBranch = 
+							mEvalFramePtr->evalFrameArgList()[ix].convertToBoolean() ? 0 : 1;
+
+						if (mExecutionContextConfig.allowInterpreterTracing())
+							mInterpreterHistory.onBranch(mEvalFramePtr, whichBranch);
+
+						followContinuation(
+							false,
+							mEvalFramePtr->instructionPtr->getContinuation(whichBranch)
+							);
+						}
+				-|	TupleExpand(arg, arity, arityIsExact) ->> {
+						bool isValidTuple = false;
+
+						if (TupleCategory::isTuple(mEvalFramePtr->evalFrameArgList()[arg]))
+							{
+							uword_t size = TupleCategory::tupleSize(
+											mEvalFramePtr->evalFrameArgList()[arg]
+											);
+
+							if (size < arity || size > arity && arityIsExact)
+								isValidTuple = false;
+							else
+								isValidTuple = true;
+							}
+						else
+							isValidTuple = false;
+
+						if (mExecutionContextConfig.allowInterpreterTracing())
+							mInterpreterHistory.onBranch(mEvalFramePtr, isValidTuple ? 0 : 1);
+						
+						if (isValidTuple)
+							followContinuation(false, mEvalFramePtr->instructionPtr->getContinuation(0));
+						else
+							followContinuation(false, mEvalFramePtr->instructionPtr->getContinuation(1));
+						}
+				-|	Switch(ix, valuesToMatch, branchMap, otherwiseIx) ->> {
+						ImplVal branchVal = mEvalFramePtr->evalFrameArgList()[ix];
+						
+						hash_type typeHash = branchVal.type().hash();
+						
+						uword_t indexToFollow = otherwiseIx;
+						
+						auto it = branchMap.find(typeHash);
+						
+						if (it != branchMap.end())
+							{
+							auto it2 = it->second.find(
+											branchVal.type().hashObject(branchVal.data())
+											);
+								
+							if (it2 != it->second.end())
+								indexToFollow = it2->second;
+							}
+						
+						if (mExecutionContextConfig.allowInterpreterTracing())
+							mInterpreterHistory.onBranch(mEvalFramePtr, indexToFollow);
+						
+						followContinuation(
+							false,
+							mEvalFramePtr->instructionPtr->getContinuation(indexToFollow)
+							);
+						}
+				-|	Cached(args) ->> {
+						if (mExecutionContextConfig.allowInterpreterTracing())
+							mInterpreterHistory.onCachecall();
+
+						args.packApplyArguments(
+								mEvalFramePtr->evalFrameArgList(),
+								mExecutionContext.getInterpreterScratchSpace().argumentPackingTempStorage
+								);
+
+						lassert(mExecutionContext.getInterpreterScratchSpace().argumentPackingTempStorage.size() == 1);
+						//Follow the defer mContinuation with a resumption here.
+						pair<ImplVal, NativeRuntimeContinuationValue<2> >
+							cVal(
+								//When following continuations, objects must be 'owned'.
+								//But packApplyArguments returns an unowned tuple.
+								mExecutionContext.getRefcountPool()->add(
+									mExecutionContext.getInterpreterScratchSpace().argumentPackingTempStorage[0].first
+									),
+								mTypedForaCompiler->wrapCPPCallback(
+									&InterpreterFrame::interpreter,
+									mEvalFramePtr,
+									mExecutionContext.getStackAllocator().getMemBlockPtr()
+									) + 
+								NativeRuntimeContinuationSlot(cont_cont_left, &mEvalFramePtr->resultValue) + 
+								NativeRuntimeContinuationSlot(cont_cont_right, &mEvalFramePtr->resultValue)
+								)
+							;
+
+
+						resumeContinuation(
+							mEvalFramePtr->callFrame.callbacks->cacheCallContinuation,
+							&cVal,
+							sizeof(cVal)
+							);
+						}
+				-|	UnknownApply(args) ->> {
+						args.packApplyArguments(
+								mEvalFramePtr->evalFrameArgList(),
+								mExecutionContext.getInterpreterScratchSpace().argumentPackingTempStorage
+								);
+
+						if (attemptExplicitAxiomCalculation())
+							return;
+
+						applyAxiom(
+							args,
+							calculateAxiom()
+							);
+						}
+				-| _ ->> {
+					lassert_dump(false, prettyPrintString(mEvalFramePtr->instructionPtr->getInstructionBody()));
+					}
+				;
+			}
+		else
+			{
+			lassert_dump(
+				mContinuation == cont_cont_left || mContinuation == cont_cont_right,
+				"Expected " << cont_cont_left << " or " << cont_cont_right
+					<< ", not " << mContinuation
+				);
+
+			lassert(mEvalFramePtr->instructionPtr->isApply() || 
+					mEvalFramePtr->instructionPtr->getInstructionBody().isCached());
+
+			//We had jumped back in here with a result from some continuation.
+			//We consider the instruction to be the actual thing.
+			if (mContinuation == cont_cont_left)
+				followContinuation(true, mEvalFramePtr->instructionPtr->getContinuation(0));
+				else
+			if (mContinuation == cont_cont_right)
+				followContinuation(true, mEvalFramePtr->instructionPtr->getContinuation(1));
+			}
+		}
+	catch(std::logic_error& e)
+		{
+		ostringstream s;
+		s << "FAILED in Fora::Interpreter::step.\ninstruction =\n"
+			<< Ufora::indent(prettyPrintString(mEvalFramePtr->instructionPtr->toString(false)))
+			<< "\n\t" << prettyPrintString(mEvalFramePtr->instructionPtr->getInstructionBody())
+			<< "\ncontinuation = " << mContinuation << "\n"
+			<< "exception:\n" << Ufora::indent(e.what()) << "\n";
+		
+		LOG_CRITICAL << "exception in interpreter:\n" << s.str();
+
+		throw std::logic_error(s.str());
+		}
+	}
+
+bool InterpreterFrame::attemptExplicitAxiomCalculation()
+	{
+	const auto& packedArgs = 
+		mExecutionContext.getInterpreterScratchSpace().argumentPackingTempStorage;
+
+	if (packedArgs.size() == 4 && packedArgs.noneTuplecall())
+		{
+		static Type int64 = Type::Integer(64, true);
+		static Symbol symOperator = Symbol("Operator");
+		static Symbol symPlus = Symbol("+");
+		static Symbol symLt = Symbol("<");
+
+		const auto* appArgs = &packedArgs.getApplyArgs()[0];
+		if (!appArgs[0].symbol() && 
+				!appArgs[1].symbol() && 
+				!appArgs[2].symbol() && 
+				!appArgs[3].symbol() &&
+				appArgs[0].value().type() == int64 && 
+				appArgs[1].value().type().isSymbol() && 
+				appArgs[1].value().cast<Symbol>() == symOperator && 
+				appArgs[3].value().type() == int64
+				)
+			{
+			if (appArgs[2].value().type().isSymbol() && 
+					appArgs[2].value().cast<Symbol>() == symPlus)
+				{
+				static ImplVal result = ImplVal::introduce(int64);
+				mEvalFramePtr->resultValue = result;
+				mEvalFramePtr->resultValue.cast<int64_t>() = 
+					appArgs[0].value().cast<int64_t>() + 
+					appArgs[3].value().cast<int64_t>();
+				
+				if (mExecutionContextConfig.allowInterpreterTracing())
+					mInterpreterHistory.onAxiomResult(mEvalFramePtr, false);
+
+				followContinuation(true, mEvalFramePtr->instructionPtr->getContinuation(0));
+				
+				return true;
+				}
+			if (appArgs[2].value().type().isSymbol() && 
+					appArgs[2].value().cast<Symbol>() == symLt)
+				{
+				static ImplVal result = ImplVal::introduce(Type::Integer(1,false));
+				mEvalFramePtr->resultValue = result;
+				mEvalFramePtr->resultValue.cast<bool>() = 
+					appArgs[0].value().cast<int64_t>() <
+					appArgs[3].value().cast<int64_t>();
+				
+				if (mExecutionContextConfig.allowInterpreterTracing())
+					mInterpreterHistory.onAxiomResult(mEvalFramePtr, false);
+
+				followContinuation(true, mEvalFramePtr->instructionPtr->getContinuation(0));
+
+				return true;
+				}
+			}
+		}
+
+	return false;
+	}
+
+SingleAxiomCache* InterpreterFrame::calculateAxiom()
+	{
+	const auto& packedArgs = 
+		mExecutionContext.getInterpreterScratchSpace().argumentPackingTempStorage;
+
+	SingleAxiomCache* result = 
+		Runtime::getRuntime().getAxiomCache()->whichAxiom(packedArgs);
+		
+	return result;
+	}
+
+void InterpreterFrame::applyAxiom(const ApplyArgs& args, SingleAxiomCache* axiomCache)
+	{
+	if (axiomCache->isExpansion())
+		{
+		//get the graph according to the calling instruction's signature
+		ControlFlowGraph graph = 
+			axiomCache->getControlFlowGraph(
+				args.applySignature()
+				);
+		
+		InstructionPtr inst = Runtime::getRuntime().getInstructionGraph()->getInstruction(graph, null());
+
+		applyJump(inst, args.applySignature());
+		return;
+		}
+
+	NativeFunctionPointerAndEntrypointId jumpPtr = axiomCache->getPtr();
+
+	//Call the axiom directly.
+	CallFrame* newCallFramePtr =
+		(CallFrame*)mExecutionContext.getStackAllocator().allocate(
+			sizeof(CallFrame) + axiomCache->entryDataSize()
+			);
+
+	axiomCache->packEntryArguments(
+		(char*)(newCallFramePtr + 1),
+		mExecutionContext.getInterpreterScratchSpace().argumentPackingTempStorage,
+		mExecutionContext.getInterpreterScratchSpace()
+		);
+	
+	//Inside the axiom, these should never get called.
+	uword_t which = 0xFFFFFFFF;
+
+	newCallFramePtr->conts.setTo(
+		Runtime::getRuntime().getAxiomCache()->typedForaCompiler()->
+			generateDummyContinuation(&mEvalFramePtr->resultValue, &which, 0, 2)
+		);
+
+	pair<NativeRuntimeContinuationValue<1>, TypedFora::Abi::VectorLoadRequest> interruptData;
+	
+	//generate new interrupts
+	NativeRuntimeCallbacks newCallbacks;
+	newCallbacks.resetNativeRuntimeState();
+	newCallbacks.bigVectorSlotIndex = mEvalFramePtr->callFrame.callbacks->bigVectorSlotIndex;
+
+	newCallbacks.interruptContinuation = 
+		Runtime::getRuntime().getAxiomCache()->typedForaCompiler()->
+			generateDummyContinuation(&interruptData, &which, 2);
+
+	newCallbacks.cacheCallContinuation = 
+		Runtime::getRuntime().getAxiomCache()->typedForaCompiler()->
+			generateDummyContinuation(&interruptData, &which, 3);
+
+	newCallFramePtr->callbacks = &newCallbacks;
+	
+	Runtime::getRuntime().getAxiomCache()->typedForaCompiler()->callFunction(
+		NativeRuntimeCallTarget(jumpPtr.ptr(), jumpPtr.entrypoint(), newCallFramePtr),
+		mMemBlock
+		);
+
+	if (mExecutionContextConfig.allowInterpreterTracing() && (which == 0 || which == 1))
+		mInterpreterHistory.onAxiomResult(mEvalFramePtr, which == 1);
+
+	//It should have filled out mEvalFramePtr->resultValue.
+	//We just need to go to the next step.
+	if (which == 0)
+		{
+		followContinuation(true, mEvalFramePtr->instructionPtr->getContinuation(0));
+		}
+		else
+	if (which == 1)
+		followContinuation(true, mEvalFramePtr->instructionPtr->getContinuation(1));
+		else
+	if (which == 2)
+		{
+		LOG_DEBUG << "Interpreter hit an uncached vector.";
+
+		//the axiom triggered a vector load. In our current implementation,
+		//we are allowed to just destroy the axiom implementation (it doesn't
+		//have anything complex on its stack) and pretend as if this whole instruction
+		//was interrupted
+		
+		//first free the original 'slots'
+		mExecutionContext.getStackAllocator().free(interruptData.first.stackframePtr());
+		
+		//then allocate a resumption
+		NativeRuntimeContinuationValue<1> cont = 
+			mTypedForaCompiler->wrapCPPCallback(
+				&InterpreterFrame::interpreter,
+				mEvalFramePtr,
+				mExecutionContext.getStackAllocator().getMemBlockPtr()
+				) + 
+			NativeRuntimeContinuationSlot(
+				mContinuation,
+				&mEvalFramePtr->resultValue
+				);
+
+		//copy it into the interrupt
+		interruptData.first = cont;
+		
+		//and followContinuation back to the original context
+		resumeContinuation(
+			mEvalFramePtr->callFrame.callbacks->interruptContinuation,
+			&interruptData,
+			sizeof(interruptData)
+			);
+
+		mInterpreterHistory.onInterpreterInterruptedForVectorLoad(mEvalFramePtr);
+		}
+		else
+		{
+		lassert_dump(false, which);
+		}
+
+	}
+
+NativeRuntimeUntypedContinuation InterpreterFrame::createUntypedContinuation()
+	{
+	NativeRuntimeContinuationValue<2> conts = 
+		mTypedForaCompiler->wrapCPPCallback(
+			InterpreterFrame::interpreter,
+			mEvalFramePtr,
+			mExecutionContext.getStackAllocator().getMemBlockPtr()
+			) + 
+		NativeRuntimeContinuationSlot(
+			cont_cont_left,
+			&mEvalFramePtr->resultValue
+			) + 
+		NativeRuntimeContinuationSlot(
+			cont_cont_right,
+			&mEvalFramePtr->resultValue
+			);
+
+	return NativeRuntimeUntypedContinuation(conts, mEvalFramePtr->callFrame.callbacks);
+	}
+
+void InterpreterFrame::applyJump(InstructionPtr targetInstruction, const ApplySignature& applySig)
+	{	
+	uword_t totalVals = targetInstruction->graphMaxArgCount();
+
+	EvalFrame* newEvalFramePtr = 
+		EvalFrame::allocate(
+			targetInstruction->getGraph(),
+			targetInstruction->getLabel(),
+			mExecutionContext.getStackAllocator(),
+			mExecutionContext.getImpl()->allocateNewUniqueEvalFrameID(),
+			null()
+			);
+
+	newEvalFramePtr->callFrame = mEvalFramePtr->callFrame;
+
+	newEvalFramePtr->callFrame.conts = 
+		mTypedForaCompiler->wrapCPPCallback(
+			&InterpreterFrame::interpreter,
+			mEvalFramePtr,
+			mExecutionContext.getStackAllocator().getMemBlockPtr()
+			) + 
+		NativeRuntimeContinuationSlot(
+			cont_cont_left,
+			&mEvalFramePtr->resultValue
+			) + 
+		NativeRuntimeContinuationSlot(
+			cont_cont_right,
+			&mEvalFramePtr->resultValue
+			);
+
+
+	lassert(mExecutionContext.getInterpreterScratchSpace().argumentPackingTempStorage.getApplyArgs().size() == 
+				targetInstruction->getGraph()[targetInstruction->getLabel()].argCount());
+
+	newEvalFramePtr->copyApplyArgsIntoArgSlots(
+		mExecutionContext.getInterpreterScratchSpace().argumentPackingTempStorage,
+		mExecutionContext.getRefcountPool()
+		);
+
+	//zero out the arguments in the current Eval frame that are not going to be used
+	mEvalFramePtr->zeroOutUnusedContinuationArgs();
+
+	//Jump to this new continuation.
+	mEvalFramePtr = newEvalFramePtr;
+	mContinuation = cont_internal;
+
+	if (mExecutionContextConfig.allowInterpreterTracing())
+		mInterpreterHistory.onNewStackframe(mEvalFramePtr);
+	}
+
+bool InterpreterFrame::attemptToBranchToNativeCode()
+	{
+	if (mExecutionContextConfig.preventBranchIntoCompiledCode())
+		return false;
+	
+	InstructionPtr instruction = currentInstruction();
+
+	CompilerEntrypointMap& entrypointMap(instruction->getCompilerEntrypointMap());
+
+	Nullable<TypedFora::TypedJumpTarget> targetJumpPtr = 
+		entrypointMap.getJumpTarget(mEvalFramePtr->evalFrameArgList());
+
+	if (!targetJumpPtr || targetJumpPtr->functionPointer().isEmpty())
+		return false;
+
+	LOG_DEBUG << "transferring to machine code: "
+		<< mTypedForaCompiler->nameForFunctionPointer(targetJumpPtr->functionPointer().get().ptr()) << " at "
+		<< instruction->getGraph().graphName() << ": " << prettyPrintString(instruction->getLabel())
+		;
+
+	//copy our arguments out of the current stackframe
+	mExecutionContext.getInterpreterScratchSpace().loadAxiomSpilloverData(mEvalFramePtr->evalFrameArgList());
+
+	ImplVal* evalFrameArgPtr = (ImplVal*)mExecutionContext.getInterpreterScratchSpace().getAxiomSpilloverData();
+	
+	if (mExecutionContextConfig.allowInterpreterTracing())
+		mInterpreterHistory.onTransferToNativeCode(mEvalFramePtr, *targetJumpPtr);
+
+	uint64_t frameUniqueId = mEvalFramePtr->uniqueId;
+
+	NativeRuntimeUntypedContinuation untypedContinuation(
+		mEvalFramePtr->callFrame.conts,
+		mEvalFramePtr->callFrame.callbacks
+		);
+
+	EvalFrame::free(mEvalFramePtr, mExecutionContext.getStackAllocator());
+
+	NativeRuntimeCallTarget callTarget = 
+		mTypedForaCompiler->
+			generateStackframeAndCallTargetTransferImplvalsWithOwnership(
+				*targetJumpPtr,
+				TypedFora::TypedContinuation(untypedContinuation),
+				mExecutionContext.getStackAllocator().getMemBlockPtr(),
+				evalFrameArgPtr,
+				frameUniqueId,
+				mExecutionContext.getRefcountPool()
+				);
+				
+	mValid = false;
+	mExitPoint = nativeRuntimeContinuationFromCallTarget(callTarget);
+
+	return true;
+	}
+
+bool InterpreterFrame::valid(void) const
+	{
+	return mValid;
+	}
+
+NativeRuntimeContinuationValue<1> InterpreterFrame::terminal(void) const
+	{
+	lassert(!mValid);
+	lassert(mExitPoint);
+	lassert(!mExitPoint->jumpPtr().isEmpty());
+	return *mExitPoint;
+	}
+
+InstructionPtr InterpreterFrame::currentInstruction(void) const
+	{
+	return mEvalFramePtr->instructionPtr;
+	}
+
+NativeRuntimeContinuationValue<1> InterpreterFrame::interpreter(
+									MemBlock** memory,
+									uword_t continuation,
+									void* data
+									)
+	{
+	ExecutionContext* executionContextPtr = ExecutionContext::currentExecutionContext();
+	lassert(executionContextPtr);
+
+	//track the fact that we're in the interpreter
+	ExecutionContextScope ecScope(*executionContextPtr, ExecutionContextScope::interpreter);
+
+	lassert(memory == executionContextPtr->getStackAllocator().getMemBlockPtr());
+
+	if (continuation == cont_internal ||
+		continuation == cont_cont_left ||
+		continuation == cont_cont_right)
+		{
+		//this is a continuation of a running interpreter frame
+		EvalFrame* evalFramePtr = (EvalFrame*)data;
+		
+		lassert(evalFramePtr);
+
+		InterpreterFrame interpreterFrame(*executionContextPtr, memory, continuation, evalFramePtr);
+
+		while (interpreterFrame.valid())
+			interpreterFrame.step();
+
+		return interpreterFrame.terminal();
+		}
+	else
+		{
+		lassert_dump(false, "somehow, got into a bad slot "
+			"in the interpreter! continuationid = " << continuation);
+		}
+	}
+
+

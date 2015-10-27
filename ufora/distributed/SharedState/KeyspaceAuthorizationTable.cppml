@@ -1,0 +1,345 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include <boost/algorithm/string.hpp>
+#include <boost/archive/iterators/binary_from_base64.hpp>
+#include <boost/archive/iterators/insert_linebreaks.hpp>
+#include <boost/archive/iterators/transform_width.hpp>
+#include <boost/archive/iterators/ostream_iterator.hpp>
+#include <boost/property_tree/ptree.hpp>
+#include <boost/property_tree/json_parser.hpp>
+#include "../../core/math/HMAC.hppml"
+#include "../../core/Logging.hpp"
+#include "../../core/StringUtil.hpp"
+#include "KeyspaceAuthorizationTable.hppml"
+
+using namespace Ufora::math::crypto;
+
+namespace SharedState {
+
+std::string decodeBase64(std::string s)
+	{
+	std::string processed = s;
+
+	for (long k = 0; k < processed.size();k++)
+		if (processed[k] == '-')
+			processed[k] = '+';
+			else
+		if (processed[k] == '_')
+			processed[k] = '/';
+
+	int charsToChop = 0;
+
+	if (processed.size() % 4 == 2)
+		{
+		processed = processed + "AA"; //normally this would be two equals signs
+		charsToChop = 2;
+		}
+		else
+	if (processed.size() % 4 == 3)
+		{
+		processed = processed + "A"; //noirmally this would be one equal sign
+		charsToChop = 1;
+		}
+	
+	using namespace boost::archive::iterators;
+
+    std::stringstream os;
+	
+    typedef transform_width<
+                    binary_from_base64<const char *>, 
+                    8, 
+                    6
+                    > it_binary_t;
+
+    std::copy(
+        it_binary_t(processed.c_str()),
+        it_binary_t(processed.c_str() + processed.size()),
+        std::ostream_iterator<char>(os)
+    	);
+
+    std::string tr = os.str();
+    tr.resize(tr.size() - charsToChop);
+
+    return tr;
+	}
+
+boost::property_tree::ptree parseJsonToTree(std::string s)
+	{
+	//for some reason, this code appears to crash when we call it from
+	//multiple threads. Probably there is some global state in the json_parser
+	//that this implementation of boost is not locking correctly.
+	static boost::mutex mutex;
+	boost::mutex::scoped_lock lock(mutex);
+
+	boost::property_tree::ptree pt;
+
+	std::istringstream stream(s);
+
+	boost::property_tree::json_parser::read_json(
+		stream, 
+		pt
+		);
+
+	return pt;
+	}
+
+KeyspaceAuthorizationTable::KeyspaceAuthorizationTable(std::string inHmacKey) : 
+		mKeyspaceAuthorizationEnabled(true),
+		mHmacKey(inHmacKey)
+	{
+	}
+
+bool KeyspaceAuthorizationTable::channelHasReadAccessToKeyspace(
+				manager_channel_type::weak_ptr_type inChannel, 
+				Keyspace space
+				)
+	{
+	auto it = mReadablePrefixesByChannel[inChannel].begin();
+	
+	auto it_end = mReadablePrefixesByChannel[inChannel].end();
+	
+	std::string spaceAsString = prettyPrintStringWithoutWrapping(space.name());
+
+	for(;it != it_end;++it)
+		if (Ufora::beginsWith(spaceAsString, *it))
+			{
+			LOG_DEBUG << "Authorizing access to " << spaceAsString << " because it has prefix " << *it;
+			return true;
+			}
+
+	return false;
+	}
+
+bool KeyspaceAuthorizationTable::channelHasWriteAccessToKeyspace(
+				manager_channel_type::weak_ptr_type inChannel, 
+				Keyspace space
+				)
+	{
+	auto it = mWriteablePrefixesByChannel[inChannel].begin();
+	auto it_end = mWriteablePrefixesByChannel[inChannel].end();
+	
+	std::string spaceAsString = prettyPrintStringWithoutWrapping(space.name());
+
+	for(;it != it_end;++it)
+		if (Ufora::beginsWith(spaceAsString, *it))
+			return true;
+
+	return false;
+	}
+
+bool extractAuthRecord(
+					std::vector<pair<pair<bool, bool>, std::string> >& ioRecords,
+					const boost::property_tree::ptree& tree
+					)
+	{
+	std::string keyspacePrefix;
+	std::string authType;
+	
+	try {
+		keyspacePrefix = tree.get<std::string>("prefix");
+		}
+	catch(...)
+		{
+		LOG_WARN << "Invalid token. Field 'prefix' is not properly populated.";
+		return false;
+		}
+
+	try {
+		authType = tree.get<std::string>("access");
+		}
+	catch(...)
+		{
+		LOG_DEBUG << "Invalid token. Field 'access' is not properly populated.";
+		return false;
+		}
+
+	bool readable = false, writeable = false;
+
+	if (authType == "rw")
+		readable = writeable = true;
+		else
+	if (authType == "w")
+		writeable = true;
+		else
+	if (authType == "r")
+		readable = true;
+	else
+		{
+		LOG_WARN << "Invalid token: Field 'access' is not one of 'r', 'w', 'rw'.";
+
+		return false;
+		}
+
+	ioRecords.push_back(
+		make_pair(
+			make_pair(readable, writeable), 
+			keyspacePrefix
+			)
+		);
+
+	LOG_INFO << "authorizing " << keyspacePrefix << " for " << authType;
+
+	return true;
+	}
+
+bool extractAuthRecords(
+					std::vector<pair<pair<bool, bool>, std::string> >& ioRecords,
+					const boost::property_tree::ptree& tree
+					)
+	{
+	LOG_DEBUG << "Searching over " << tree.size() << " authorizations.";
+
+	for (auto it = tree.begin(); it != tree.end();++it)
+		if (!extractAuthRecord(ioRecords, it->second))
+			return false;
+
+	return true;
+	}
+
+bool KeyspaceAuthorizationTable::processJavaWebToken(
+						manager_channel_type::weak_ptr_type inChannel, 
+						std::string javaWebToken
+						)
+	{
+	LOG_DEBUG << "Processing raw token " << javaWebToken;
+
+	//split the token by '.'
+	vector<string> strs;
+	
+	boost::split(strs,javaWebToken,boost::is_any_of("."));
+
+	if (strs.size() != 3)
+		{
+		LOG_WARN << "Invalid token: token has " << strs.size() << " != 3 pieces.";
+		return false;
+		}
+
+
+	std::string hmacDigest;
+	std::string token;
+
+	try {
+		hmacDigest = decodeBase64(strs[2]);
+		token = decodeBase64(strs[1]);
+		}
+	catch(std::exception &e)
+		{
+		LOG_WARN << "Invalid token: Can't base64 decode the token pieces: " << e.what();
+		return false;
+		}
+	catch(...)
+		{
+		LOG_WARN << "Invalid token: Can't base64 decode the token pieces.";
+		return false;
+		}
+
+	LOG_INFO << "Processing token " << token;
+
+	HashSha256 digest = Ufora::math::crypto::hmacDigest(strs[0] + "." + strs[1], mHmacKey);
+
+	std::string digestStr((char*)&digest, (char*)(&digest+1));
+
+	if (digestStr != hmacDigest)
+		{
+		LOG_WARN << "Invalid token: hmac digest invalid. Got\n\t[" << digestStr 
+				<< "] of size " << digestStr.size() 
+				<< "\nexpected\n\t" << "[" << hmacDigest << "] of size " << hmacDigest.size()
+				;
+		return false;
+		}
+	
+	boost::property_tree::ptree tokenAsTree;
+
+	try {
+		tokenAsTree = parseJsonToTree(token);
+		}
+	catch(std::exception& e)
+		{
+		LOG_WARN << "Invalid token: [" << token << "]. Token is not valid json because " << e.what();
+		return false;
+		}
+	catch(...)
+		{
+		LOG_WARN << "Invalid token: [" << token << "]. Token is not valid json";
+		return false;
+		}
+
+	//get the auth
+	std::string iss;
+	std::string aud;
+
+	try {
+		iss = tokenAsTree.get<std::string>("iss");
+		}
+	catch(...)
+		{
+		LOG_WARN << "Invalid token: [" << token << "]. Field 'iss' is not properly populated.";
+		return false;
+		}
+
+	try {
+		aud = tokenAsTree.get<std::string>("aud");
+		}
+	catch(...)
+		{
+		LOG_WARN << "Invalid token: [" << token << "]. Field 'aud' is not properly populated.";
+		return false;
+		}
+
+	if (aud != "urn:ufora:services:sharedstate")
+		{
+		LOG_WARN << "Invalid token: [" << token << "]. Field 'aud' is wrong.";
+
+		return false;
+		}
+
+	//[((read,write),prefix)]
+	std::vector<pair<pair<bool, bool>, std::string> > records;
+
+	auto it = tokenAsTree.find("authorizations");
+	if (it == tokenAsTree.not_found())
+		{	
+		LOG_WARN << "Invalid token: [" << token << "]. No field for 'authorizations'";
+		return false;
+		}
+
+	if (!extractAuthRecords(records, it->second))
+		return false;
+
+	for (long k = 0; k < records.size();k++)
+		{
+		if (records[k].first.first)
+			mReadablePrefixesByChannel[inChannel].insert(records[k].second);
+		
+		if (records[k].first.second)
+			mWriteablePrefixesByChannel[inChannel].insert(records[k].second);
+		}
+
+	return true;
+	}
+
+void KeyspaceAuthorizationTable::setKeyspaceAuthorizationEnabled(bool inIsEnabled)
+	{
+	mKeyspaceAuthorizationEnabled = inIsEnabled;
+	}
+
+bool KeyspaceAuthorizationTable::getKeyspaceAuthorizationEnabled(void) const
+	{
+	return mKeyspaceAuthorizationEnabled;
+	}
+
+}
+

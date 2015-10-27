@@ -1,0 +1,250 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "JudgmentOnValueCppCodegen.hppml"
+
+namespace Fora {
+
+void JudgmentOnValueCppCodegen::typeToString(std::ostringstream& s, const Type& inType)
+	{
+	@match Type(inType)
+		-| Nothing() ->> { s << "Type::Nothing()"; }
+		-| String() ->> { s << "Type::String()"; }
+		-| DateTime() ->> { s << "Type::DateTime()"; }
+		-| TimeDuration() ->> { s << "Type::TimeDuration()"; }
+		-| Symbol() ->> { s << "Type::Symbol()"; }
+		-| Tag() ->> { s << "Type::Tag()"; }
+		-| JOVAsValue() ->> { s << "Type::JOVAsValue()"; }
+		-| StackTrace() ->> { s << "Type::StackTrace()"; }
+		-| Integer(bits, isSigned) ->> {
+				s << "Type::Integer(" << bits << ", ";
+				s << (isSigned ? "true":"false");
+				s << ")";
+				}
+		-| Float(bits) ->> {
+				s << "Type::Float(" << bits << ")";
+				}
+		-| Alternative(eltType) ->> {
+				s << "Type::Alternative(";
+				typeToString(s, eltType);
+				s << ")";
+				}
+		-| Tuple(types, names) ->> {
+				s << "Type::Tuple(emptyTreeVec()";
+				for (long k = 0; k < types.size(); k++)
+					{
+					s << " + ";
+					typeToString(s, types[k]);
+					}
+				s << ", emptyTreeVec()";
+
+				for (long k = 0; k < names.size(); k++)
+					{
+					s << " + ";
+
+					if (names[k])
+						{
+						s << "Nullable<Symbol>(Symbol(\"";
+						s << names[k]->toString() << "\"))";
+						}
+					else
+						s << "Nullable<Symbol>()";
+					}
+				s << ")";
+				}
+		-| Class(types, body) ->> {
+				lassert(false);
+				}
+		-| ExternalFunction(isCST) ->> {
+				s << "Type::ExternalFunction(" << (isCST ? "true":"false") << ")";
+				}
+		-| Vector() ->> {
+				s << "Type::Vector()";
+				}
+		-| MutableVector() ->> {
+				s << "Type::MutableVector()";
+				}
+		-| Dictionary(isCST) ->> {
+				s << "Type::Dictionary(" << (isCST ? "true":"false") << ")";
+				}
+	}
+
+void JudgmentOnValueCppCodegen::jovToString(ostringstream& s, const JOV& inJOV)
+	{
+	@match JOV(inJOV)
+		-| Atom(Integer(Null())) ->> {
+			s << "JOV::Atom(JudgmentOnValueAtom::Integer(null()))";
+			}
+		-| Atom(Float()) ->> {
+			s << "JOV::Atom(JudgmentOnValueAtom::Float())";
+			}
+		-| Unknown() ->> {
+			s << "JOV::Unknown()";
+			}
+		-| UnknownCSTKnown(isCST) ->> {
+			s << "JOV::UnknownCSTKnown(" << (isCST ? "true":"false") << ")";
+			}
+		-| Class(Unknown()) ->> {
+			s << "JOV::Class(JudgmentOnValueClass::Unknown())";
+			}
+		-| JOVAsValue(Known(jov)) ->> {
+			s << "JOV::JOVAsValue(JudgmentOnJOV::Known(";
+			jovToString(s, jov);
+			s << "))";
+			}
+		-| JOVAsValue(Unknown(jov)) ->> {
+			s << "JOV::JOVAsValue(JudgmentOnJOV::Unknown(";
+			jovToString(s, jov);
+			s << "))";
+			}
+		-| Vector((jor)) ->> {
+			s << "JOV::Vector(JudgmentOnValueVector(JudgmentOnResult(emptyTreeSet()";
+			for (long k = 0; k < jor.size(); k++)
+				{
+				s << " + (";
+				jovToString(s, jor[k]);
+				s << ")";
+				}
+			s << ")))";
+			}
+		-| Tuple((jovs, names, extras)) ->> {
+			s << "JOV::Tuple(JOVT(";
+
+			s << "emptyTreeVec()";
+			for (long k = 0; k < jovs.size(); k++)
+				{
+				s << " + ";
+				jovToString(s, jovs[k]);
+				}
+			s << ", ";
+			s << "ImmutableTreeVector<Nullable<Symbol> >()";
+			for (long k = 0; k < names.size();k++)
+				{
+				s << " + ";
+				if (!names[k])
+					s << "Nullable<Symbol>()";
+				else
+					s << "Nullable<Symbol>(Symbol(\"" 
+						<< names[k]->toString() << "\"))";
+				}
+			s << ",";
+			if (extras.isNoExtras())
+				s << "JOVTE::NoExtras()";
+			else
+				{
+				s << "JOVTE::Extras(";
+				jovToString(s, extras.getExtras().jov());
+				s << ")";
+				}
+			s << "))"; 
+			}
+		-| _ ->> {
+			if (inJOV == jovTuple())
+				{
+				s << "jovTuple()";
+				return;
+				}
+
+			if (inJOV == jovAnyDictionary())
+				{
+				s << "jovAnyDictionary()";
+				return;
+				}
+
+			if (inJOV == jovAnyMutableVector())
+				{
+				s << "jovAnyMutableVector()";
+				return;
+				}
+
+			if (inJOV == jovAlternative())
+				{
+				s << "jovAlternative()";
+				return;
+				}
+
+			if (inJOV.type() && inJOV == JOV::OfType(*inJOV.type()))
+				{
+				s << "JOV::OfType(";
+				typeToString(s, *inJOV.type());
+				s << ")";
+
+				return;
+				}
+
+			if (inJOV.constant() && inJOV.type()->isSymbol())
+				{
+				s << "JOV::Constant(CSTValue(";
+				s << "Symbol(\"" << inJOV.constant()->cast<Symbol>().toString() << "\")";
+				s << "))";
+
+				return;
+				}
+
+			lassert_dump(false, prettyPrintString(inJOV));
+			}
+	}
+	
+std::string JudgmentOnValueCppCodegen::typeVariable(const Type& inType)
+	{
+	auto it = mTypeToVariableMap.find(inType.hash());
+	if (it != mTypeToVariableMap.end())
+		return it->second;
+
+	mTypeToVariableMap[inType.hash()] = "type_" + hashToString(inType.hash());
+
+	mVariableDeclarations << "static Type type_" << hashToString(inType.hash()) << " = ";
+
+	typeToString(mVariableDeclarations, inType);
+
+	mVariableDeclarations << ";\n";
+
+	return mTypeToVariableMap[inType.hash()];
+	}
+
+std::string JudgmentOnValueCppCodegen::symbolVariable(const Symbol& inSymbol)
+	{
+	auto it = mSymbolToVariableMap.find(inSymbol.hash());
+	if (it != mSymbolToVariableMap.end())
+		return it->second;
+
+	mSymbolToVariableMap[inSymbol.hash()] = "symbol_" + hashToString(inSymbol.hash());
+
+	mVariableDeclarations << "static Symbol symbol_" << hashToString(inSymbol.hash()) << " = ";
+
+	mVariableDeclarations << "Symbol(\"" << inSymbol.toString() << "\");\n";
+
+	return mSymbolToVariableMap[inSymbol.hash()];
+	}
+
+std::string JudgmentOnValueCppCodegen::jovVariable(const JOV& inJOV)
+	{
+	auto it = mJudgmentToVariableMap.find(inJOV.hash());
+	if (it != mJudgmentToVariableMap.end())
+		return it->second;
+
+	mJudgmentToVariableMap[inJOV.hash()] = "JOV_" + hashToString(inJOV.hash());
+
+	mVariableDeclarations << "static JOV JOV_" << hashToString(inJOV.hash()) << " = ";
+
+	jovToString(mVariableDeclarations, inJOV);
+
+	mVariableDeclarations << ";\n";
+
+	return mJudgmentToVariableMap[inJOV.hash()];
+	}
+
+}
+

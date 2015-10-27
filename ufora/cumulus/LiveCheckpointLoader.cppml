@@ -1,0 +1,727 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "LiveCheckpointLoader.hppml"
+#include "PersistentCache/PersistentCacheKey.hppml"
+#include "ExternalIoTask/CheckpointFile.hppml"
+#include "../FORA/VectorDataManager/VectorDataManager.hppml"
+#include "../FORA/VectorDataManager/PageRefcountTracker.hppml"
+#include "../FORA/TypedFora/ABI/BigVectorLayouts.hppml"
+#include "PersistentCache/PersistentCacheIndex.hppml"
+
+
+namespace Cumulus {
+
+
+void LiveCheckpointLoader::handleCumulusComponentMessage(
+					const CumulusComponentMessage& message, 
+					const CumulusClientOrMachine& source, 
+					const CumulusComponentType& componentType
+					)
+		{
+		@match CumulusComponentMessage(message)
+			-| ComponentToLiveCheckpointLoader(LoadCheckpoint(checkpoint)) ->> {
+				LOG_INFO << "Starting checkpoint load of " << prettyPrintStringWithoutWrapping(checkpoint);
+
+				sendCumulusComponentMessage(
+					CumulusComponentMessageCreated(
+						CumulusComponentMessage::GlobalSchedulerToCumulusClient(
+							GlobalSchedulerToCumulusClientMessage::CheckpointStatusChanged(
+								ComputationIsCurrentlyCheckpointing::LoadingFromCheckpoint(checkpoint.rootComputation())
+								)
+							),
+						CumulusComponentEndpointSet::AllClients(),
+						CumulusComponentType::CumulusClient()
+						)
+					);
+
+				hash_type requestGuid = generateRandomHash();
+
+				mGuidToCheckpoint[requestGuid] = checkpoint;
+
+				sendCumulusComponentMessage(
+					CumulusComponentMessageCreated(
+						CumulusComponentMessage::PythonIoTaskService(
+							PythonIoTaskServiceMessage::Request(
+								PythonIoTaskRequest::ExtractPersistedObject(
+									requestGuid,
+									PersistentCacheKey::CheckpointSummary(checkpoint).storagePath()
+									)
+								)
+							),
+						CumulusComponentEndpointSet::fromEndpoint(mOwnEndpointId),
+						CumulusComponentType::PythonIoTaskService()
+						)
+					);
+				}
+			-| PythonIoTaskService(Response(msg)) ->> {
+				@match PythonIoTaskResponse(msg)
+					-| ObjectExtracted(guid, data) ->> {
+						if (mGuidToCheckpoint.find(guid) != mGuidToCheckpoint.end())
+							{
+							CheckpointRequest checkpoint = mGuidToCheckpoint[guid];
+
+							if (data->hash() != mVDM->getPersistentCacheIndex()->checkpointDataHash(checkpoint))
+								{
+								mVDM->getPersistentCacheIndex()->markCheckpointInvalid(checkpoint);
+								return;
+								}
+
+							CheckpointSummary summary = ::deserialize<CheckpointSummary>(data->toString());
+
+							loadFromSummary(checkpoint, summary);
+							mGuidToCheckpoint.erase(guid);
+							}
+
+						if (mGuidToCheckpointFile.find(guid) != mGuidToCheckpointFile.end())
+							{
+							pair<CheckpointRequest, hash_type> file = mGuidToCheckpointFile.find(guid)->second;
+							mGuidToCheckpointFile.erase(guid);
+
+							if (data->hash() != mVDM->getPersistentCacheIndex()->checkpointFileDataHash(file.first, file.second))
+								{
+								mVDM->getPersistentCacheIndex()->markCheckpointFileInvalid(file.first, file.second);
+								return;
+								}
+
+							map<ComputationId, PolymorphicSharedPtr<SerializedObject> > states;
+
+							CheckpointFile::deserializeFile(data, states, mVDM->getMemoryManager());
+
+							handleCheckpointFileContents(file.first, file.second, states);
+							}
+
+						if (mPendingBigvecDefinitionGuids.hasKey(guid))
+							{
+							hash_type bigvecGuid = mPendingBigvecDefinitionGuids.getValue(guid);
+							CheckpointRequest checkpoint = mPendingBigvecDefinitionsForCheckpoint.getValue(guid);
+
+							mPendingBigvecDefinitionGuids.drop(guid);
+							mPendingBigvecDefinitionsForCheckpoint.drop(guid);
+
+							if (data->hash() != mVDM->getPersistentCacheIndex()->bigvecDataHash(bigvecGuid))
+								{
+								mVDM->getPersistentCacheIndex()->markBigvecInvalid(bigvecGuid);
+								return;
+								}
+
+							TypedFora::Abi::BigVectorPageLayout layout;
+
+							try {
+								SerializedObject::deserialize(
+									SerializedObjectInflater::inflateOnce(data),
+									mVDM->getMemoryManager(),
+									layout
+									);
+								}
+							catch(...)
+								{
+								LOG_CRITICAL << "Invalid CheckpointSummary serialization encountered.";
+								lassert(false);
+								}
+
+							handleBigvecDefinition(checkpoint, layout);
+							}
+						}
+					-| ObjectDoesNotExist(guid) ->> {
+						if (mGuidToCheckpoint.find(guid) != mGuidToCheckpoint.end())
+							{
+							CheckpointRequest checkpoint = mGuidToCheckpoint[guid];
+							mVDM->getPersistentCacheIndex()->markCheckpointInvalid(checkpoint);
+							}
+
+						if (mGuidToCheckpointFile.find(guid) != mGuidToCheckpointFile.end())
+							{
+							pair<CheckpointRequest, hash_type> file = mGuidToCheckpointFile.find(guid)->second;
+							mVDM->getPersistentCacheIndex()->markCheckpointFileInvalid(file.first, file.second);
+							}
+							
+						if (mPendingBigvecDefinitionGuids.hasKey(guid))
+							{
+							hash_type bigvecGuid = mPendingBigvecDefinitionGuids.getValue(guid);
+							mVDM->getPersistentCacheIndex()->markBigvecInvalid(bigvecGuid);
+							}
+
+						return;
+						}
+					-| _ ->> {
+						lassert_dump(false, "Eventually we should go into a no-cache-available state here.");
+						}
+				}
+			-| ComponentToLiveCheckpointLoader(LoadCheckpointFileIntoMemory(checkpoint, hash)) ->> {
+				handleLoadCheckpointFileIntoMemory(checkpoint, hash);
+				}
+			-| ComponentToLiveCheckpointLoader(CheckpointFileLoadedIntoMemory(checkpoint, hash)) ->> {
+				handleCheckpointFileLoaded(checkpoint, hash);
+				}
+			-| ComponentToLiveCheckpointLoader(CheckpointLocationsCalculated(checkpoint, locations)) ->> {
+				handleCheckpointLocationsCalculated(checkpoint, locations);
+				}
+			-| ComponentToLiveCheckpointLoader(SendComputationsToActiveComputations(checkpoint, computations, areTheseTheLeafComputations)) ->> {
+				handleSendComputationsToActiveComputations(checkpoint, computations, areTheseTheLeafComputations);
+				}
+			-| ComponentToLiveCheckpointLoader(ComputationsSentToActiveComputations(checkpoint, wereTheseTheLeafComputations)) ->> {
+				lassert(source.isMachine());
+				handleComputationsSentToActiveMachines(checkpoint, source.getMachine().machine(), wereTheseTheLeafComputations);
+				}
+			-| ComponentToLiveCheckpointLoader(SetBigvecsForCheckpoint(checkpoint, bigvecs, guid)) ->> {
+				handleBigvecsForCheckpoint(checkpoint, bigvecs, guid);
+				}
+			-| CrossActiveComputations(MoveResponse(response)) ->> {
+				handleComputationMoveResponse(response);
+				}
+		}	
+
+void LiveCheckpointLoader::consumePageEvent(const Fora::PageRefcountEvent& inEvent, Cumulus::MachineId onMachineId)
+	{
+	@match Fora::PageRefcountEvent(inEvent)
+		-| MemoryUsageChanged(mem) ->> {
+			mMachineMemoryUsage[onMachineId] = mem;
+			}
+		-| _ ->> {}
+		;
+	}
+
+void LiveCheckpointLoader::loadFromSummary(const CheckpointRequest& request, const CheckpointSummary& summary)
+	{
+	LOG_INFO << "Loading checkpoint " << prettyPrintStringWithoutWrapping(request) << " from checkpoint-store with "
+			<< summary.totalSecondsOfCompute() << " seconds of compute";
+
+	//check that the summary is valid
+	if (!summary.isValid())
+		{
+		LOG_ERROR << "Tried to load an invalid summary. Marking invalid and bailing.";
+		mVDM->getPersistentCacheIndex()->markCheckpointInvalid(request);
+		return;
+		}
+
+
+	
+	//load any missing bigvec definitions
+	for (auto bigvec: summary.bigvecsReferenced())
+		{
+		hash_type requestGuid = generateRandomHash();
+		mPendingBigvecDefinitionGuids.set(requestGuid, bigvec);
+		mPendingBigvecDefinitionsForCheckpoint.set(requestGuid, request);
+
+		sendCumulusComponentMessage(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::PythonIoTaskService(
+					PythonIoTaskServiceMessage::Request(
+						PythonIoTaskRequest::ExtractPersistedObject(
+							requestGuid,
+							PersistentCacheKey::BigvecDefinition(bigvec).storagePath()
+							)
+						)
+					),
+				CumulusComponentEndpointSet::fromEndpoint(mOwnEndpointId),
+				CumulusComponentType::PythonIoTaskService()
+				)
+			);
+		}
+
+	mInProgressCheckpointSummaries[request] = summary;
+
+	//assign task files to machines
+	ImmutableTreeMap<hash_type, CheckpointFileSummary> perFileSummaries = summary.perFileSummaries();
+
+	std::vector<MachineId> machines(mMachines.begin(), mMachines.end());
+
+	long whichMachine = generateRandomHash()[0] % machines.size();
+
+	for (auto filenameAndSummary: perFileSummaries)
+		{
+		MachineId machine = machines[whichMachine];
+		whichMachine = (whichMachine + 1) % machines.size();
+
+		sendCumulusComponentMessage(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::ComponentToLiveCheckpointLoader(
+					ComponentToLiveCheckpointLoaderMessage::LoadCheckpointFileIntoMemory(
+						request,
+						filenameAndSummary.first
+						)
+					),
+				CumulusComponentEndpointSet::SpecificWorker(machine),
+				CumulusComponentType::LiveCheckpointLoader()
+				)
+			);
+
+		mInProgressCheckpointFiles[request][filenameAndSummary.first] = machine;
+		}
+	}
+
+void LiveCheckpointLoader::initializeFromAddDropState(const AddDropFinalState& state)
+	{
+	for (auto machineAndMem: state.memoryUsage())
+		mMachineMemoryUsage[machineAndMem.first] = machineAndMem.second;
+	}
+
+void LiveCheckpointLoader::handleLoadCheckpointFileIntoMemory(CheckpointRequest checkpoint, hash_type filename)
+	{
+	LOG_INFO << "Requesting " << filename << " for " << prettyPrintStringWithoutWrapping(checkpoint);
+
+	hash_type requestGuid = generateRandomHash();
+
+	mGuidToCheckpointFile[requestGuid] = make_pair(checkpoint, filename);
+
+	sendCumulusComponentMessage(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::PythonIoTaskService(
+				PythonIoTaskServiceMessage::Request(
+					PythonIoTaskRequest::ExtractPersistedObject(
+						requestGuid,
+						PersistentCacheKey::CheckpointFile(checkpoint, filename).storagePath()
+						)
+					)
+				),
+			CumulusComponentEndpointSet::fromEndpoint(mOwnEndpointId),
+			CumulusComponentType::PythonIoTaskService()
+			)
+		);
+	}
+
+void LiveCheckpointLoader::handleCheckpointFileContents(
+						CheckpointRequest checkpoint, 
+						hash_type filename, 
+						const std::map<ComputationId, PolymorphicSharedPtr<SerializedObject> >& states
+						)
+	{
+	for (auto idAndState: states)
+		mPendingComputationStates[checkpoint][idAndState.first] = idAndState.second;
+
+	sendCumulusComponentMessage(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::ComponentToLiveCheckpointLoader(
+				ComponentToLiveCheckpointLoaderMessage::CheckpointFileLoadedIntoMemory(
+					checkpoint,
+					filename
+					)
+				),
+			CumulusComponentEndpointSet::LeaderMachine(),
+			CumulusComponentType::LiveCheckpointLoader()
+			)
+		);
+	}
+
+void LiveCheckpointLoader::handleBigvecDefinition(CheckpointRequest checkpoint, TypedFora::Abi::BigVectorPageLayout layout)
+	{
+	mCheckpointBigvecIds[checkpoint][layout.identity().guid()] = layout.identity();
+
+	mVDM->getPageRefcountTracker()->bigVectorIncreffed(layout);
+
+	triggerCheckpointLoadingIfPossible(checkpoint);
+	}
+
+void LiveCheckpointLoader::handleCheckpointFileLoaded(CheckpointRequest checkpoint, hash_type filename)
+	{
+	LOG_INFO << "Received " << filename << " for " << prettyPrintStringWithoutWrapping(checkpoint);
+
+	lassert_dump(
+		mInProgressCheckpointFiles[checkpoint].find(filename) != mInProgressCheckpointFiles[checkpoint].end(),
+		"Got " << prettyPrintString(filename) << " for checkpoint " << prettyPrintString(hashValue(checkpoint))
+		);
+
+	mLoadedCheckpointFiles[checkpoint][filename] = mInProgressCheckpointFiles[checkpoint][filename];
+
+	mInProgressCheckpointFiles[checkpoint].erase(filename);
+	
+	triggerCheckpointLoadingIfPossible(checkpoint);
+	}
+
+ImmutableTreeSet<Fora::BigVectorId> LiveCheckpointLoader::bigvecHashesToIds(ImmutableTreeSet<hash_type> hashes)
+	{
+	ImmutableTreeSet<Fora::BigVectorId> ids;
+
+	for (auto bigvecHash: hashes)
+		ids = ids + mVDM->getBigVectorLayouts()->getLayoutForId(bigvecHash).identity();
+
+	return ids;
+	}
+
+void LiveCheckpointLoader::sendBigvecsForCheckpoint(CheckpointRequest checkpoint, MachineId machine)
+	{
+	hash_type moveGuid = generateRandomHash();
+
+	mVDM->getPageRefcountTracker()->broadcastBigvecsInFlight(
+		bigvecHashesToIds(mInProgressCheckpointSummaries[checkpoint].bigvecsReferenced()),
+		1,
+		moveGuid
+		);
+
+	sendCumulusComponentMessage(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::ComponentToLiveCheckpointLoader(
+				ComponentToLiveCheckpointLoaderMessage::SetBigvecsForCheckpoint(
+					checkpoint,
+					mInProgressCheckpointSummaries[checkpoint].bigvecsReferenced(),
+					moveGuid
+					)
+				),
+			CumulusComponentEndpointSet::SpecificWorker(machine),
+			CumulusComponentType::LiveCheckpointLoader()
+			)
+		);
+	}
+
+void LiveCheckpointLoader::handleBigvecsForCheckpoint(CheckpointRequest checkpoint, ImmutableTreeSet<hash_type> bigvecs, hash_type moveGuid)
+	{
+	mBigvecHashesToDecrefOnCompletion[checkpoint] = bigvecs;
+
+	ImmutableTreeSet<Fora::BigVectorId> ids = bigvecHashesToIds(bigvecs);
+
+	for (auto id: ids)
+		mVDM->getPageRefcountTracker()->bigVectorIncreffed(id);
+
+	mVDM->getPageRefcountTracker()->broadcastBigvecsInFlight(
+		ids,
+		-1,
+		moveGuid
+		);
+	}
+
+void LiveCheckpointLoader::triggerCheckpointLoadingIfPossible(CheckpointRequest checkpoint)
+	{
+	if (mInProgressCheckpointFiles[checkpoint].size() || mPendingBigvecDefinitionsForCheckpoint.hasValue(checkpoint))
+		return;
+
+	mInProgressCheckpointFiles.erase(checkpoint);
+
+	lassert_dump(
+		mInProgressCheckpointSummaries.find(checkpoint) != mInProgressCheckpointSummaries.end(),
+		prettyPrintString(hashValue(checkpoint))
+		);
+
+	CheckpointSummary summary = mInProgressCheckpointSummaries[checkpoint];
+
+
+	//at this point, all bigvecs are loaded, and all machines have loaded the relevant data. First,
+	//ask all the loaders to incref the relevant bigvecs.
+	std::set<MachineId> participatingMachines;
+	for (auto filenameAndMachine: mLoadedCheckpointFiles[checkpoint])
+		participatingMachines.insert(filenameAndMachine.second);
+
+	for (auto machine: participatingMachines)
+		sendBigvecsForCheckpoint(checkpoint, machine);
+
+	for (auto pageAndBigvecs: summary.pagesReferencedToBigvecs())
+		mVDM->getPageRefcountTracker()->pageReferencedInByBigvecLoadedFromPersistentCache(
+			pageAndBigvecs.first,
+			bigvecHashesToIds(pageAndBigvecs.second)
+			);
+
+
+
+	//we're ready to trigger loading. For each machine, we need to send a message
+	//telling it where each computation's parent is
+	map<ComputationId, MachineId> computationLocation;
+	map<ComputationId, ComputationId> computationParents;
+
+	for (auto filenameAndMachine: mLoadedCheckpointFiles[checkpoint])
+		{
+		lassert(summary.perFileSummaries().contains(filenameAndMachine.first));
+
+		CheckpointFileSummary fileSummary = *summary.perFileSummaries()[filenameAndMachine.first];
+
+		for (auto compAndStatus: fileSummary.computationDependencies())
+			{
+			computationLocation[compAndStatus.first] = filenameAndMachine.second;
+			for (auto child: compAndStatus.second.childComputations())
+				computationParents[child] = compAndStatus.first;
+			}
+		}
+
+	for (auto filenameAndMachine: mLoadedCheckpointFiles[checkpoint])
+		{
+		CheckpointFileSummary fileSummary = *summary.perFileSummaries()[filenameAndMachine.first];
+
+		ImmutableTreeMap<ComputationId, MachineId> parentLocations;
+
+		for (auto compAndStatus: fileSummary.computationDependencies())
+			{
+			ComputationId c = compAndStatus.first;
+
+			if (computationParents.find(c) != computationParents.end())
+				{
+				ComputationId parent = computationParents[c];
+				lassert(computationLocation.find(parent) != computationLocation.end());
+
+				parentLocations = parentLocations + c + computationLocation[parent];
+				}
+
+			sendCumulusComponentMessage(
+				CumulusComponentMessageCreated(
+					CumulusComponentMessage::ComponentToLiveCheckpointLoader(
+						ComponentToLiveCheckpointLoaderMessage::CheckpointLocationsCalculated(
+							checkpoint,
+							parentLocations
+							)
+						),
+					CumulusComponentEndpointSet::SpecificWorker(filenameAndMachine.second),
+					CumulusComponentType::LiveCheckpointLoader()
+					)
+				);
+			}
+		}
+
+	for (auto filenameAndMachine: mLoadedCheckpointFiles[checkpoint])
+		{
+		CheckpointFileSummary fileSummary = *summary.perFileSummaries()[filenameAndMachine.first];
+
+		for (auto compAndStatus: fileSummary.computationDependencies())
+			if (compAndStatus.second.childComputations().size())
+				mCheckpointMachineNonleafComputations[checkpoint][filenameAndMachine.second].insert(compAndStatus.first);
+			else
+				mCheckpointMachineLeafComputations[checkpoint][filenameAndMachine.second].insert(compAndStatus.first);
+		}
+
+	for (auto& machineAndLeafComputations: mCheckpointMachineNonleafComputations[checkpoint])
+		{
+		MachineId machine = machineAndLeafComputations.first;
+
+		sendCumulusComponentMessage(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::ComponentToLiveCheckpointLoader(
+					ComponentToLiveCheckpointLoaderMessage::SendComputationsToActiveComputations(
+						checkpoint,
+						ImmutableTreeSet<ComputationId>(
+							mCheckpointMachineNonleafComputations[checkpoint][machine]
+							),
+						false
+						)
+					),
+				CumulusComponentEndpointSet::SpecificWorker(machine),
+				CumulusComponentType::LiveCheckpointLoader()
+				)
+			);
+		}
+
+	sendLeafComputationsToMachinesIfNecessary(checkpoint);
+	completeCheckpointIfPossible(checkpoint);
+	}
+
+void LiveCheckpointLoader::handleCheckpointLocationsCalculated(
+									CheckpointRequest checkpoint, 
+									ImmutableTreeMap<ComputationId, MachineId> locations
+									)
+	{
+	for (auto idAndMachine: locations)
+		{
+		lassert(mPendingComputationStates[checkpoint].find(idAndMachine.first) != 
+				mPendingComputationStates[checkpoint].end());
+
+		mPendingComputationParentMachineIds[checkpoint][idAndMachine.first] = idAndMachine.second;
+		}
+	}
+
+void LiveCheckpointLoader::handleSendComputationsToActiveComputations(CheckpointRequest checkpoint, ImmutableTreeSet<ComputationId> computations, bool areTheseTheLeafComputations)
+	{
+	for (auto c: computations)
+		lassert_dump(
+			mPendingComputationStates[checkpoint].find(c) != mPendingComputationStates[checkpoint].end(),
+			"can't find a comp in " << prettyPrintString(hashValue(checkpoint)) 
+				<< "'s " << mPendingComputationStates[checkpoint].size() << " computations on " << prettyPrintString(mOwnEndpointId)
+			);
+		
+	lassert(mOwnEndpointId.isMachine());
+
+	for (auto c: computations)
+		{
+		hash_type moveGuid = generateRandomHash();
+
+		auto bigvecs = bigvecHashesToIds(mBigvecHashesToDecrefOnCompletion[checkpoint]);
+
+		mVDM->getPageRefcountTracker()->broadcastBigvecsInFlight(
+			bigvecs,
+			1,
+			moveGuid
+			);
+
+		sendCumulusComponentMessage(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::CrossActiveComputations(
+					CrossActiveComputationsMessage::MoveRequest(
+						ComputationMoveRequest(
+							c,
+							mOwnEndpointId.getMachine().machine(),
+							CumulusComponentType::LiveCheckpointLoader(),
+							mOwnEndpointId.getMachine().machine(),
+							bigvecs,
+							mPendingComputationStates[checkpoint][c],
+							DataTransferTokenId(),
+							moveGuid,
+							null() << mPendingComputationParentMachineIds[checkpoint][c]
+							)
+						)
+					),
+				CumulusComponentEndpointSet::SpecificWorker(mOwnEndpointId.getMachine().machine()),
+				CumulusComponentType::ActiveComputations()
+				)
+			);
+
+		mPendingComputationStates[checkpoint].erase(c);
+		mPendingComputationParentMachineIds[checkpoint].erase(c);
+
+		lassert(!mComputationsSentToActiveMachines.hasKey(c));
+		mComputationsSentToActiveMachines.set(c, make_pair(checkpoint, areTheseTheLeafComputations));
+		}
+	}
+
+void LiveCheckpointLoader::handleComputationMoveResponse(ComputationMoveResponse moveResponse)
+	{
+	lassert(mComputationsSentToActiveMachines.hasKey(moveResponse.computation()));
+	lassert(moveResponse.moveWasSuccessful());
+
+	pair<CheckpointRequest, bool> checkpointAndAreLeaves = mComputationsSentToActiveMachines.getValue(moveResponse.computation());
+	mComputationsSentToActiveMachines.drop(moveResponse.computation());
+
+	if (!mComputationsSentToActiveMachines.hasValue(checkpointAndAreLeaves))
+		{
+		sendCumulusComponentMessage(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::ComponentToLiveCheckpointLoader(
+					ComponentToLiveCheckpointLoaderMessage::ComputationsSentToActiveComputations(
+						checkpointAndAreLeaves.first,
+						checkpointAndAreLeaves.second
+						)
+					),
+				CumulusComponentEndpointSet::LeaderMachine(),
+				CumulusComponentType::LiveCheckpointLoader()
+				)
+			);
+
+		if (checkpointAndAreLeaves.second)
+			{
+			CheckpointRequest checkpoint = checkpointAndAreLeaves.first;
+
+			for (auto id: bigvecHashesToIds(mBigvecHashesToDecrefOnCompletion[checkpoint]))
+				mVDM->getPageRefcountTracker()->bigVectorDecreffed(id);
+
+			mBigvecHashesToDecrefOnCompletion.erase(checkpoint);
+			}
+		}
+	}
+
+void LiveCheckpointLoader::handleComputationsSentToActiveMachines(CheckpointRequest checkpoint, MachineId machine, bool areTheseTheLeafComputations)
+	{
+	if (!areTheseTheLeafComputations)
+		mCheckpointMachineNonleafComputations[checkpoint].erase(machine);
+	else
+		mCheckpointMachineLeafComputations[checkpoint].erase(machine);
+	
+	sendLeafComputationsToMachinesIfNecessary(checkpoint);
+	completeCheckpointIfPossible(checkpoint);
+	}
+
+void LiveCheckpointLoader::completeCheckpointIfPossible(CheckpointRequest checkpoint)
+	{
+	if (mCheckpointMachineLeafComputations[checkpoint].size() == 0 && 
+			mCheckpointMachineNonleafComputations[checkpoint].size() == 0)
+		{
+		mCheckpointMachineLeafComputations.erase(checkpoint);
+		mCheckpointMachineNonleafComputations.erase(checkpoint);
+		handleCheckpointLoadCompleted(checkpoint);
+		}
+	}
+
+void LiveCheckpointLoader::sendLeafComputationsToMachinesIfNecessary(CheckpointRequest checkpoint)
+	{
+	if (mCheckpointMachineNonleafComputations[checkpoint].size() == 0)
+		{
+		mCheckpointMachineNonleafComputations.erase(checkpoint);
+
+		if (mCheckpointMachineLeafComputationsSent.find(checkpoint)
+				!= mCheckpointMachineLeafComputationsSent.end())
+			return;
+
+		mCheckpointMachineLeafComputationsSent.insert(checkpoint);
+
+		for (auto& machineAndLeafComputations: mCheckpointMachineLeafComputations[checkpoint])
+			{
+			MachineId machine = machineAndLeafComputations.first;
+
+			sendCumulusComponentMessage(
+				CumulusComponentMessageCreated(
+					CumulusComponentMessage::ComponentToLiveCheckpointLoader(
+						ComponentToLiveCheckpointLoaderMessage::SendComputationsToActiveComputations(
+							checkpoint,
+							ImmutableTreeSet<ComputationId>(
+								mCheckpointMachineLeafComputations[checkpoint][machine]
+								),
+							true
+							)
+						),
+					CumulusComponentEndpointSet::SpecificWorker(machine),
+					CumulusComponentType::LiveCheckpointLoader()
+					)
+				);
+			}
+		}
+	}
+
+void LiveCheckpointLoader::handleCheckpointLoadCompleted(CheckpointRequest checkpoint)
+	{
+	lassert(mInProgressCheckpointSummaries[checkpoint].bigvecsReferenced().size() == 
+				mCheckpointBigvecIds[checkpoint].size());
+	
+	for (auto bigvec: mInProgressCheckpointSummaries[checkpoint].bigvecsReferenced())
+		mVDM->getPageRefcountTracker()->bigVectorDecreffed(mCheckpointBigvecIds[checkpoint][bigvec]);
+	
+	mInProgressCheckpointSummaries.erase(checkpoint);
+	mInProgressCheckpointFiles.erase(checkpoint);
+	mLoadedCheckpointFiles.erase(checkpoint);
+	mCheckpointMachineNonleafComputations.erase(checkpoint);
+	mCheckpointMachineLeafComputations.erase(checkpoint);
+	mPendingComputationStates.erase(checkpoint);
+	mPendingComputationParentMachineIds.erase(checkpoint);
+	mCheckpointBigvecIds.erase(checkpoint);
+	mCheckpointMachineLeafComputationsSent.erase(checkpoint);
+
+	sendCumulusComponentMessage(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::GlobalSchedulerToCumulusClient(
+				GlobalSchedulerToCumulusClientMessage::CheckpointStatusChanged(
+					ComputationIsCurrentlyCheckpointing::NotCheckpointing(checkpoint.rootComputation())
+					)
+				),
+			CumulusComponentEndpointSet::AllClients(),
+			CumulusComponentType::CumulusClient()
+			)
+		);
+
+	LOG_INFO << "LiveCheckpointLoader successfully loaded " 
+		<< prettyPrintStringWithoutWrapping(checkpoint) << " into active computations.";
+
+	auto cache = mVDM->getPersistentCacheIndex();
+
+	if (cache)
+		cache->touchCheckpoint(checkpoint);
+
+	sendCumulusComponentMessage(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::ComponentToPersistentCacheManager(
+				ComponentToPersistentCacheManagerMessage::LiveCheckpointFinishedLoading(
+					checkpoint,
+					true
+					)
+				),
+			CumulusComponentEndpointSet::LeaderMachine(),
+			CumulusComponentType::PersistentCacheManager()
+			)
+		);
+	}
+
+}
+

@@ -1,0 +1,1100 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "FunctionStage2Converter.hppml"
+#include "../Primitives/String.hppml"
+#include "../Core/Type.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
+#include "../Core/ClassMediator.hppml"
+#include "../../core/cppml/CPPMLTransform.hppml"
+#include "../../core/cppml/CPPMLVisit.hppml"
+#include "../../core/Logging.hpp"
+
+namespace target = FunctionStage2;
+namespace source = FunctionStage1;
+
+using target::variable_index_type;
+
+namespace FunctionStage2 {
+
+//represents one variable in a call frame
+@type CallVar =
+		Normal of 		Nullable<Symbol> fieldName, variable_index_type var
+	-|	TupleCall of 	variable_index_type var
+	;
+
+target::ApplyArgument callVarToApplyArg(const CallVar& inCallVar)
+	{
+	@match CallVar(inCallVar)
+		-|	Normal(fieldName, var) ->> {
+			return target::ApplyArgument::Normal(fieldName, target::Expression::Variable(var));
+			}
+		-|	TupleCall(var) ->> {
+			return target::ApplyArgument::TupleCall(target::Expression::Variable(var));
+			}
+		;
+	}
+					
+	
+@type CallVarFrame = ImmutableTreeVector<CallVar> vars {
+public:
+		uint32_t minTerms(void)
+			{
+			uint32_t tr = 0;
+			for (long k = 0; k < vars().size(); k++)
+				if (!vars()[k].isTupleCall())
+					tr += 1;
+			return tr;
+			}
+		Nullable<uint32_t> maxTerms(void)
+			{
+			for (long k = 0; k < vars().size(); k++)
+				if (vars()[k].isTupleCall())
+					return null();
+			
+			return null() << vars().size();
+			}
+
+		bool couldProduceZeroElements(void) const
+			{
+			for (long k = 0; k < vars().size(); k++)
+				if (vars()[k].isNormal())
+					return false;
+			return true;
+			}
+
+		bool allAreNormal(void) const 
+			{
+			for (long k = 0; k < vars().size(); k++)
+				if (!vars()[k].isNormal())
+					return false;
+			return true;
+			}
+};
+
+
+namespace {
+
+//returns whether the pattern in pat matches the variable passed in 'var'
+//exactly. 
+bool	matches(const CallVar& var,
+				const source::TuplePatternElement& pat)
+	{
+	if (pat.isVarArgs())
+		return false;
+	if (var.isTupleCall())
+		return false;
+	
+	return var.getNormal().fieldName() == pat.getNormal().fieldName();
+	}
+
+target::Expression throwNoneToTarget(variable_index_type target)
+	{
+	return
+		target::Expression::Throw(
+			target::Expression::Constant(CSTValue()),
+			null() << target
+			);
+	}
+
+//TODO PERFORMANCE BRAX: move tuplePatternMatchesCallVars into the same place as StructureMatch
+//and expand its functionality.
+
+//a simple direct pattern match function. If it returns null()<<true, then the contents
+//of outVariables should be matched against 'outPatterns'
+Nullable<bool> tuplePatternMatchesCallVars(
+					const source::TuplePattern& inPattern, 
+					const CallVarFrame& inFrame,
+					ImmutableTreeVector<variable_index_type>& outVariables
+					)
+	{
+	if (inPattern.matchers().size() == 1 && inPattern.matchers()[0].isVarArgs() && 
+				inFrame.vars().size() == 1)
+		{
+		@match CallVar(inFrame.vars()[0])
+			-|	TupleCall(var) ->> {
+				outVariables = outVariables + var;
+				return null() << true;
+				}
+			-|	_ ->> {}
+		}
+
+	if (!inFrame.allAreNormal())
+		return null();
+
+	if (!inPattern.allElementsMatchExactlyOneElement())
+		return null();
+
+	if (inFrame.vars().size() != inPattern.matchers().size())
+		return null() << false;
+
+	//verify the symbols are all the same
+	ImmutableTreeVector<Nullable<Symbol> > callSymbols;
+	for (long k = 0; k < inFrame.vars().size(); k++)
+		callSymbols = callSymbols + inFrame.vars()[k].getNormal().fieldName();
+
+	//verify the symbols are all the same
+	ImmutableTreeVector<Nullable<Symbol> > patternSymbols;
+	for (long k = 0; k < inPattern.matchers().size(); k++)
+		patternSymbols = patternSymbols + inPattern.matchers()[k].getNormal().fieldName();
+
+	if (callSymbols != patternSymbols)
+		return null();
+
+	for (long k = 0; k < inPattern.matchers().size(); k++)
+		outVariables = outVariables + inFrame.vars()[k].getNormal().var();
+
+	return null() << true;
+	}
+
+}
+
+/******
+Converter
+
+Converts Stage1 code to Stage2 code
+******/
+
+Converter	Converter::withSkipTarget(variable_index_type index) const
+	{
+	return Converter(allocator(), null() << index);
+	}
+
+target::Expression	Converter::convert(const source::Expression& inExpr) const
+	{
+	return CPPML::replaceCommonData(convertInner(inExpr), inExpr.definingExpressionLocationId());
+	}
+	
+target::Expression	Converter::convertInner(const source::Expression& inExpr) const
+	{
+	target::Expression tr;
+		
+	@match source::Expression(inExpr)
+		-|	Constant(v) ->> {
+			return  target::Expression::Constant(v);
+			}
+		-|	Variable(v) ->> {
+			return  target::Expression::Variable(v);
+			}
+		-|	Skip() ->> {
+				if (!skipTarget())
+					throw InvalidConversion(
+						"'skip' with no enclosing pattern match"
+						);
+				return throwNoneToTarget(*skipTarget());
+				}
+		-|	Let(p, v, body, ifMatchFails) ->> {
+				variable_index_type throwTarget = allocator().get();
+
+				return target::Expression::Try(
+					expandPatternMatch(
+						p,
+						convert(v),
+						withSkipTarget(throwTarget)
+							.convert(body),
+						throwTarget
+						),
+					null() << throwTarget,
+					target::Function(
+						emptyTreeVec() + allocator().get(),
+							convert(ifMatchFails)
+						)
+					);
+				}
+		-|	Assign(toAssign, value, ifMatchFails) ->> {
+				variable_index_type throwTarget = allocator().get();
+				
+				//remap toAssign to new variable names and generate an inner
+				//e.g. if we have (x,y) = expr
+				//we turn it into
+				//	match (expr) with ((x_,y_)) { x = x_; y = y_ }
+				ImmutableTreeMap<variable_index_type, variable_index_type>
+					remappedNames;
+				
+				ImmutableTreeSet<variable_index_type> bound =
+					FunctionStage1::boundVariables(toAssign);
+				
+				for (long k = 0; k < bound.size(); k++)
+					remappedNames = remappedNames + bound[k] +
+						allocator().get();
+				
+				source::Pattern mappedPat =
+					FunctionStage1::remapVariables(toAssign, remappedNames);
+				
+				target::Expression innerExpr =
+					target::Expression::Constant(CSTValue());
+				
+				for (long k = 0; k < remappedNames.size(); k++)
+					{
+					innerExpr =
+						target::Expression::Let(
+							inExpr.definingExpressionLocationId(),
+							allocator().get(),
+							target::Expression::Assign(
+							inExpr.definingExpressionLocationId(),
+							remappedNames.pairAtPosition(k).first,
+								target::Expression::Variable(
+									inExpr.definingExpressionLocationId(),
+									remappedNames.pairAtPosition(k).second
+									)
+								),
+							innerExpr
+							);
+					}
+				
+				
+				return target::Expression::Try(
+					expandPatternMatch(
+						mappedPat,
+						convert(value),
+						innerExpr,
+						throwTarget
+						),
+					null() << throwTarget,
+					target::Function(
+						emptyTreeVec() + allocator().get(),
+						convert(ifMatchFails)
+						)
+					);
+				}
+		-|	Apply(agent, arguments) ->> {
+			return 
+			target::Expression::Apply(convert(agent), convert(arguments));
+			}
+		-|	While(condition, updater) ->> {
+			return 
+			target::Expression::While(convert(condition), convert(updater));
+			}
+		-|	RawCached(arguments) ->> {
+			return 
+			target::Expression::RawCached(convert(arguments));
+			}
+		-|	Branch(operand, ifTrue, ifFalse) ->> {
+			return 
+				target::Expression::Branch(
+					convert(operand),
+					convert(ifTrue),
+					convert(ifFalse)
+					);
+			}
+		-|	Is(left, right) ->> {
+			return 
+				target::Expression::Is(
+					convert(left),
+					convert(right)
+					);
+			}
+		-|	Throw(exception, target) ->> {
+			return target::Expression::Throw(convert(exception), target);
+			}
+		-|	Try(toTry, target, catchWith) ->> {
+			
+			variable_index_type var = allocator().get();
+			
+			return target::Expression::Try(
+				convert(toTry),
+				target,
+				Function(
+					emptyTreeVec() + var,
+					convertFunMatch(catchWith,
+						CallVarFrame(
+							emptyTreeVec() +
+								CallVar::Normal(null(), var)
+							)
+						)
+					)
+				);
+			}
+		-|	Return(expr) ->> {
+			return 
+			target::Expression::Return(convert(expr));
+			}
+		-|	Continuation(inner) ->> {
+			variable_index_type var = allocator().get();
+			
+			return target::Expression::Continuation(
+				Function(
+					emptyTreeVec() + var,
+					convertFunMatch(
+						inner,
+						CallVarFrame(
+							emptyTreeVec() +
+								CallVar::Normal(null(), var)
+							)
+						)
+					)
+				);
+			}
+		-|	Match(toMatch, predicate) ->> {
+			
+			ImmutableTreeVector<
+				pair<variable_index_type,
+					target::Expression> >	args;
+			
+			
+			ImmutableTreeVector<CallVar> callVars;
+			
+			for (long k = 0; k < toMatch.size(); k++)
+				{
+				variable_index_type var = allocator().get();
+				
+				source::Expression appExpr;
+				@match source::ApplyArgument(toMatch[k])
+					-|	Normal(_,e) ->> {
+						appExpr = e;
+						}
+					-|	TupleCall(e) ->> {
+						appExpr = e;
+						}
+					;
+
+				args = args +
+					make_pair(
+						var,
+						convert(appExpr)
+						);
+				
+				@match source::ApplyArgument(toMatch[k])
+					-|	Normal(fieldName, expr) ->> {
+						callVars = callVars + CallVar::Normal(fieldName, var);
+						}
+					-|	TupleCall(expr) ->> {
+						callVars = callVars + CallVar::TupleCall(var);
+						}
+					;
+				}
+			
+			target::Expression expr =
+				convertFunMatch(predicate, CallVarFrame(callVars));
+			
+			//build up the surrounding let context for the match
+			for (long k = ((long)toMatch.size())-1; k>=0; k--)
+				expr = target::Expression::Let(
+					args[k].first,
+					args[k].second,
+					expr
+					);
+			
+			return expr;
+			}
+		-|	CreateTuple(tupArgs) ->> {
+			
+			bool allAreConstants = true;
+			
+			
+			for (long k = 0; k < tupArgs.size() && allAreConstants; k++)
+				{
+				@match source::ApplyArgument(tupArgs[k])
+					-|	Normal(fieldname, Constant(c)) ->> {;}
+					-|	_ ->> { allAreConstants = false; ;}
+					;
+				}
+			target::Expression tr;
+			
+			if (allAreConstants)
+				{
+				ImmutableTreeVector<Nullable<Symbol> > names;
+				ImmutableTreeVector<CSTValue> vals;
+				
+				for (long k = 0; k < tupArgs.size() && allAreConstants; k++)
+					@match source::ApplyArgument(tupArgs[k])
+						-|	Normal(fieldname, Constant(c)) ->> {
+							names = names + fieldname;
+							vals = vals + c;
+							;}
+						;
+						
+				tr = target::Expression::Constant(CSTValue::Tuple(vals, names));
+				}
+			else
+				{
+				ImmutableTreeVector<target::ApplyArgument> args = convert(tupArgs);
+				
+				tr = target::Expression::CreateTuple(args);
+				}
+			return tr;
+			}
+		
+		;
+	}
+target::ApplyArgument	Converter::convert(const source::ApplyArgument& arg) const
+	{
+	@match source::ApplyArgument(arg)
+		-|	Normal(field, expr) ->> {
+			return target::ApplyArgument::Normal(field, convert(expr));
+			}
+		-|	TupleCall(expr) ->> {
+			return target::ApplyArgument::TupleCall(convert(expr));
+			}
+		;
+	}
+
+ImmutableTreeVector<target::ApplyArgument>	
+Converter::convert(
+		const ImmutableTreeVector<source::ApplyArgument>& arg
+		) const
+	{
+	ImmutableTreeVector<target::ApplyArgument> tr;
+	for (long k = 0; k < arg.size(); k++)
+		tr = tr + convert(arg[k]);
+	return tr;
+	}
+
+target::Expression	Converter::convertFunMatch(
+						const source::Function& inFun,
+						const CallVarFrame& inFrame
+						) const
+	{
+	@match source::Function(inFun)
+		-|	Term(pat, expr, tail) ->> {
+			
+			variable_index_type catchVar = allocator().get();
+			
+			Nullable<target::Expression>  matchAttempt = 
+				expandMultiPatternMatch(
+					pat,
+					inFrame,
+					withSkipTarget(catchVar)
+						.convert(expr),
+					catchVar
+					);
+
+			if (matchAttempt)
+				return target::Expression::Try(
+					*matchAttempt,
+					null() << catchVar,
+					target::Function(emptyTreeVec() + allocator().get(),
+						convertFunMatch(tail, inFrame)
+						)
+					);
+			else
+				return convertFunMatch(tail, inFrame);
+			}
+		-|	Empty(argsBoundToVar, e) ->> {
+			
+			target::Expression makeTupleExpr = 
+				target::Expression::CreateTuple(
+					mapITV(inFrame.vars(), callVarToApplyArg)
+					);
+			return target::Expression::Let(argsBoundToVar, makeTupleExpr, convert(e));
+			}
+		;
+	}
+
+
+target::Expression	Converter::catchAllAndThrowTo(const target::Expression& expr,
+								variable_index_type throwTarget) const
+	{
+	return 
+		target::Expression::Try(
+			expr,
+			null(),
+			target::Function(
+				emptyTreeVec() + allocator().get(),
+				throwNoneToTarget(throwTarget)
+				)
+			);
+	}
+target::Expression	Converter::catchTheNoneConstantAndThrowTo(
+								variable_index_type throwTarget,
+								const target::Expression& expr
+								) const
+	{
+	variable_index_type var = allocator().get();
+	
+	return 
+		target::Expression::Try(
+			expr,
+			null(),
+			target::Function(
+				emptyTreeVec() + var,
+				target::Expression::Branch(
+					target::Expression::Is(
+						target::Expression::Variable(var),
+						target::Expression::Constant(CSTValue())
+						),
+					throwNoneToTarget(throwTarget),
+					target::Expression::Throw(
+						target::Expression::Variable(var),
+						null()
+						)
+					)
+				)
+			);
+	}
+
+CSTValue Converter::tuplePatternEltToPatMatchConstant(const source::TuplePatternElement& elt)
+	{
+	@match source::TuplePatternElement(elt)
+		-|	Normal(fieldname, _, defaultValue) ->> {
+			return CSTValue::Tuple(
+				emptyTreeVec() +
+					(fieldname ? CSTValue(*fieldname) : CSTValue()) +
+					CSTValue(defaultValue ? true : false)
+				);
+			}
+		-|	VarArgs() ->> {
+			return CSTValue::Tag(Symbol::Extras());
+			}
+		;
+	}
+
+
+
+Nullable<target::Expression>	
+Converter::expandMultiPatternMatch(
+						const source::TuplePattern& pattern,
+						const CallVarFrame& callArgs,
+						const target::Expression& ifSuccess,
+						variable_index_type throwTarget
+						) const
+	{
+	if (!pattern.matchers().size() && !callArgs.vars().size())
+		return null() << ifSuccess;
+
+
+	ImmutableTreeVector<variable_index_type> patternVars;
+	Nullable<bool> simpleMatch = tuplePatternMatchesCallVars(pattern, callArgs, patternVars);
+
+	if (simpleMatch)
+		{
+		if (*simpleMatch)
+			return null() << 
+				expandMultiPatternMatchFromVariables(
+					pattern,
+					patternVars,
+					ifSuccess,
+					throwTarget
+					);
+		else
+			return null();
+		}
+
+	return null() << 
+		expandMultiPatternMatchUsingPackedTuple(pattern, callArgs, ifSuccess, throwTarget);
+	}
+
+
+target::Expression	
+Converter::expandMultiPatternMatchUsingPackedTuple(
+						const source::TuplePattern& pattern,
+						const CallVarFrame& callArgs,
+						const target::Expression& ifSuccess,
+						variable_index_type throwTarget
+						) const
+	{
+	ImmutableTreeVector<target::ApplyArgument> callApplyArgs =
+		mapITV(callArgs.vars(), callVarToApplyArg);
+	
+	return expandMultiPatternMatch(
+		pattern,
+		target::Expression::CreateTuple(callApplyArgs),
+		ifSuccess,
+		throwTarget
+		);
+	}
+
+target::Expression	Converter::expandMultiPatternMatch(
+						const source::TuplePattern& pattern,
+						const target::Expression& tupleExpression,
+						const target::Expression& ifSuccess,
+						variable_index_type throwTarget
+						) const
+	{
+	const ImmutableTreeVector<source::TuplePatternElement>& pats = pattern.matchers();
+	
+	CSTValue patternTuple =
+		CSTValue::Tuple(
+			mapITV(pats, tuplePatternEltToPatMatchConstant)
+			);
+	
+	//put the pattern into a tuple and match it against the pattern tuple
+	target::Expression matchExpr = 
+		catchTheNoneConstantAndThrowTo(
+			throwTarget,
+			target::Expression::Apply(
+				tupleExpression,
+				emptyTreeVec() +
+					symArg("StructureMatch") +
+					applyArg(target::Expression::Constant(patternTuple))
+				)
+			);
+	
+
+	variable_index_type tuplePatmatchResultVar =
+		allocator().get();
+		
+	target::Expression tuplePatmatchResultExpr =
+		target::Expression::Variable(tuplePatmatchResultVar);
+	
+	//bind each pattern to a variable
+	ImmutableTreeVector<variable_index_type> patVars;
+
+	for (long k = 0; k < pats.size(); k++)
+		patVars = patVars + allocator().get();
+
+	Expression innerMatchBody = 
+		expandMultiPatternMatchFromVariables(pattern, patVars, ifSuccess, throwTarget);
+
+	return target::Expression::Let(
+		tuplePatmatchResultVar,
+		matchExpr,
+		target::Expression::TupleExpand(
+			tuplePatmatchResultVar,
+			patVars,
+			false,
+			innerMatchBody,
+			throwNoneToTarget(throwTarget)
+			)
+		);
+	}
+
+target::Expression Converter::expandMultiPatternMatchFromVariables(
+						const source::TuplePattern& pattern,
+						const ImmutableTreeVector<variable_index_type>& patVars,
+						const target::Expression& ifSuccess,
+						variable_index_type throwTarget
+						) const
+	{
+	const ImmutableTreeVector<source::TuplePatternElement>& pats = pattern.matchers();
+
+	//if it came back, we should have a tuple with exactly one element per pattern match
+	target::Expression targetExpression = ifSuccess;
+	
+	for (long k = ((long)pats.size())-1; k >= 0; k--)
+		targetExpression =
+			expandTPEAgainstSingleValue(
+				pats[k],
+				patVars[k],
+				throwTarget,
+				targetExpression
+				);
+	
+	return targetExpression;
+	}
+
+target::Expression Converter::expandTPEAgainstSingleValue(
+						const source::TuplePatternElement& inPat,
+						variable_index_type inVarToMatch,
+						variable_index_type throwTarget,
+						const target::Expression& ifSuccess
+						) const
+	{
+	@match source::TuplePatternElement(inPat)
+		-|	Normal(fieldname, pattern, defaultValue) ->> {
+			
+			variable_index_type variableToMatchAgainst = allocator().get();
+
+			target::Expression patmatchExpr =
+				expandPatternMatch(
+					pattern,
+					target::Expression::Variable(variableToMatchAgainst),
+					ifSuccess,
+					throwTarget
+					);
+			
+			if (defaultValue)
+				{
+				variable_index_type subvar = allocator().get();
+
+				//then we are expecting to get back a tuple of 0 or 1 element
+				//and we need to decide which
+				return
+					target::Expression::Let(
+						variableToMatchAgainst,
+						target::Expression::TupleExpand(
+							inVarToMatch,
+							emptyTreeVec() + subvar,
+							false,
+							target::Expression::Variable(subvar),
+							convert(*defaultValue)
+							),
+						patmatchExpr
+						);
+				}
+				else
+				return target::Expression::Let(
+					variableToMatchAgainst, 
+					target::Expression::Variable(inVarToMatch), 
+					patmatchExpr
+					);
+			}
+		-|	VarArgs(tupleMatchVar) ->> {
+			return
+				target::Expression::Let(
+					tupleMatchVar,
+					target::Expression::Variable(inVarToMatch),
+					ifSuccess
+					);
+			}
+		;
+	}
+		
+//expand 'pattern' being applied to 'expression'. should evaluate to
+//'ifSuccess' in the successful case, and
+//if the pattern doesn't match, should jump to 'throwTarget'
+target::Expression	Converter::expandPatternMatch(
+						const source::Pattern& pattern,
+						const target::Expression& expression,
+						const target::Expression& ifSuccess,
+						variable_index_type throwTarget
+						) const
+	{
+	//if we're not matching a variable directly, push it onto the stack
+	//and match against that. That way, we can assume that every match
+	//expression is just a variable lookup (so it's cheap)
+	if (!expression.isVariable())
+		{
+		variable_index_type var = allocator().get();
+		
+		return target::Expression::Let(
+			var,
+			expression,
+			expandPatternMatch(
+				pattern,
+				target::Expression::Variable(var),
+				ifSuccess,
+				throwTarget
+				)
+			);
+		}
+	
+	@match source::Pattern(pattern)
+			-|	AnythingDiscard() ->> {
+				return 
+					target::Expression::Let(
+						allocator().get(),
+						expression,
+						ifSuccess
+						);
+				}
+			-|	Anything(var) ->> {
+				return 
+					target::Expression::Let(
+						var,
+						expression,
+						ifSuccess
+						);
+				}
+			-|	TypeMatch(pat) ->> {
+				return 
+					expandPatternMatch(pat,
+						target::Expression::Apply(
+							target::Expression::Constant(
+								CSTValue(Symbol("TypeJOV"))
+								),
+							emptyTreeVec() +
+								symArg("Call") +
+								applyArg(expression)
+							),
+						ifSuccess,
+						throwTarget
+						);
+				}
+			-|	Guarded(var, expr, right) ->> {
+				return  (
+					
+					target::Expression::Let(
+						var,
+						expression,
+						expandPatternMatch(
+							right,
+							convert(expr),
+							ifSuccess,
+							throwTarget
+							)
+						)
+					);
+				}
+			-|	Tuple(matchers) ->> {
+					
+					variable_index_type tupleVar = allocator().get();
+					
+					Nullable<target::Expression> matchAttempt = 
+						expandMultiPatternMatch(
+							matchers,
+							CallVarFrame(
+								emptyTreeVec() +
+									CallVar::TupleCall(tupleVar)
+								),
+							ifSuccess,
+							throwTarget
+							);
+
+					if (!matchAttempt)
+						matchAttempt = throwNoneToTarget(throwTarget);
+
+					lassert(expression.isVariable());
+
+					return 
+						target::Expression::TupleExpand(
+							expression.getVariable().variable(),
+							emptyTreeVec() + tupleVar,
+							true,
+							*matchAttempt,
+							throwNoneToTarget(throwTarget)
+							);
+					}
+			-|	Constant(val) ->> {
+				return 
+					target::Expression::Branch(
+						target::Expression::Is(expression, convert(val)),
+						ifSuccess,
+						throwNoneToTarget(throwTarget)
+						);
+				}
+			-|	MatchEither(mleft, mright) ->> {
+					
+					//first get a list of bound variables
+					ImmutableTreeSet<variable_index_type> boundLeft =
+											boundVariables(mleft);
+					
+					ImmutableTreeSet<variable_index_type> boundRight =
+											boundVariables(mright);
+					
+					ImmutableTreeSet<variable_index_type> boundIntersection = 
+						boundLeft.intersection(boundRight);
+
+					//modify each one to just return a tuple
+					ImmutableTreeVector<target::ApplyArgument> args;
+					for (long k = 0; k < boundIntersection.size(); k++)
+						args = args +
+							applyArg(
+								target::Expression::Variable(boundIntersection[k])
+								);
+					
+					target::Expression makeTupleExpr = target::Expression::CreateTuple(args);
+					
+					variable_index_type catcherName1 = allocator().get();
+					
+					//try to match the left expression, and evaluate
+					//to a tuple if we're successful
+					target::Expression	matchLeftExpression =
+						expandPatternMatch(
+							mleft,
+							expression,
+							makeTupleExpr,
+							catcherName1
+							);
+					
+					//try to match the right expression, and evaluate
+					//to the tuple. if we throw, throw to the main throw
+					//target since the match must have failed.
+					target::Expression	matchRightExpression =
+						expandPatternMatch(
+							mright,
+							expression,
+							makeTupleExpr,
+							throwTarget
+							);
+					
+					
+					//make the two expressions have new, unique variable
+					//names
+					ImmutableTreeMap<	variable_index_type,
+										variable_index_type	>
+						leftVarMapping, rightVarMapping;
+					
+					for (long k = 0; k < boundIntersection.size(); k++)
+						{
+						leftVarMapping = leftVarMapping
+							+ boundIntersection[k] + allocator().get();
+						rightVarMapping = rightVarMapping
+							+ boundIntersection[k] + allocator().get();
+						}
+					
+					matchLeftExpression =
+						remapVariables(
+							matchLeftExpression,
+							leftVarMapping
+							);
+					matchRightExpression =
+						remapVariables(
+							matchRightExpression,
+							rightVarMapping
+							);
+					
+					//generate the tuple itself, which we'll pop onto a
+					//variable
+					variable_index_type tupleResVar = allocator().get();
+					target::Expression tupleResE =
+							target::Expression::Variable(tupleResVar);
+							
+					target::Expression innerTupleMatchResult = 
+						target::Expression::Try(
+							matchLeftExpression,
+							null() << catcherName1,
+							target::Function(
+								emptyTreeVec() + allocator().get(),
+								matchRightExpression
+								)
+							);
+					
+					//bind all the original variables to tuple elements
+					target::Expression expr = ifSuccess;
+					
+					for (long k = 0; k < boundIntersection.size(); k++)
+						expr = target::Expression::Let(
+							boundIntersection[k],
+							target::Expression::Apply(
+								tupleResE,
+								emptyTreeVec() +
+									symArg("GetItem") +
+									applyArg(
+										target::Expression::Constant(
+											CSTValue((uint64_t)k)
+											)
+										)
+								),
+							expr
+							);
+					
+					return target::Expression::Let(
+						tupleResVar,
+						innerTupleMatchResult,
+						expr
+						);
+					}
+			-|	MatchBoth(mleft, mright) ->> {
+					
+					variable_index_type var = allocator().get();
+					
+					Nullable<target::Expression> matchAttempt =
+						expandMultiPatternMatch(
+							source::TuplePattern(emptyTreeVec() +
+								source::TuplePatternElement::Normal(
+									null(),
+									mleft,
+									null()
+									) + 
+								source::TuplePatternElement::Normal(
+									null(),
+									mright,
+									null()
+									)
+								),
+							CallVarFrame(emptyTreeVec() +
+								CallVar::Normal(null(), var) + 
+								CallVar::Normal(null(), var)
+								),
+							ifSuccess,
+							throwTarget
+							);
+					if (!matchAttempt)
+						matchAttempt = throwNoneToTarget(throwTarget);
+
+					return target::Expression::Let(
+						var,
+						expression,
+						*matchAttempt
+						);
+					}
+			-|	MatchIf(pat, expr) ->> {
+				return  (
+					expandPatternMatch(
+						pat,
+						expression,
+						target::Expression::Branch(
+							convert(expr),
+							ifSuccess,
+							throwNoneToTarget(throwTarget)
+							),
+						throwTarget
+						)
+					);
+				}
+			;
+	}
+
+@type VariableRemapper =
+		ImmutableTreeMap<variable_index_type, variable_index_type> m
+{
+public:
+		template<class T>
+		Nullable<T>	processDown(const T& in, bool& outContinue) const
+			{
+			return null();
+			}
+		template<class T>
+		Nullable<T>	processUp(const T& in) const
+			{
+			return null();
+			}
+		
+		Nullable<target::Expression_VariableType> processDown(
+					const target::Expression_VariableType& in,
+					bool& outContinue
+					)
+			{
+			if (m().contains(in.variable()))
+				return null() << target::Expression_VariableType(
+					*m()[in.variable()]
+					);
+			return null();
+			}
+};
+	
+target::Expression
+	remapVariables(
+		const target::Expression& in,
+		const ImmutableTreeMap<variable_index_type, variable_index_type>& inMap
+		)
+	{
+	return transform(in, VariableRemapper(inMap));
+	}
+
+
+//convert from FORA to Stage2 form. Throws FunctionStage2::InvalidConversion.
+target::Function	convert(	const source::Function& inFunction,
+								const ApplySignature& inSig,
+								const VariableAllocator& allocator
+								)
+	{
+	//allocate some variables
+	ImmutableTreeVector<CallVar> vars;
+	ImmutableTreeVector<variable_index_type> argVars;
+	
+	for (long k = 0; k < inSig.terms().size(); k++)
+		{
+		variable_index_type v = allocator.get();
+		
+		@match ApplyArgumentSignature(inSig.terms()[k])
+			-|	Normal(name) ->> {
+				vars = vars + CallVar::Normal(name, v);
+				}
+			-|	TupleCall() ->> {
+				vars = vars + CallVar::TupleCall(v);
+				}
+				;
+		argVars = argVars + v;
+		}
+	
+	target::Function fs2 =
+		FunctionStage2::Function(
+			argVars,
+			Converter(allocator, null())
+				.convertFunMatch(
+					inFunction,
+					CallVarFrame(vars)
+					)
+			);
+	
+	return fs2;
+	}
+
+}
+
+
+

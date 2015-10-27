@@ -1,0 +1,392 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "VectorPages.hppml"
+#include "VectorDataManager.hppml"
+#include "PageRefcountTracker.hppml"
+#include "../../core/InstanceCountChecker.hpp"
+#include "../../core/UnitTest.hpp"
+#include "../../core/math/Random.hpp"
+#include "../../core/threading/CallbackScheduler.hppml"
+#include "../Serialization/SerializedObject.hpp"
+#include "../Core/MemoryPool.hpp"
+#include "../TypedFora/ABI/BigVectorPageLayout.test.hpp"
+#include "../TypedFora/ABI/BigVectorLayouts.hppml"
+#include "VectorPage.hppml"
+#include "VectorDataManager.hppml"
+#include "VectorDataMemoryManager.hppml"
+#include "../Core/ExecutionContextMemoryPool.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../../core/threading/TestingCallbackSchedulerFactory.hppml"
+
+using namespace Fora::Interpreter;
+
+using namespace TypedFora::Abi;
+
+using Fora::Pagelet;
+using Fora::PageletTree;
+using Fora::PageletTreePtr;
+
+typedef MappableMemoryPool::UnmapState UnmapState;
+
+namespace {
+	PolymorphicSharedPtr<CallbackSchedulerFactory> factory(
+		CallbackScheduler::singletonForTesting()->getFactory()
+		);
+}
+
+class VectorPagesTestFixture {
+public:
+	typedef boost::shared_ptr<VectorPage> page_ptr;
+
+	typedef boost::shared_ptr<Fora::Pagelet> pagelet_ptr;
+
+	VectorPagesTestFixture()
+		{
+		mCallbackSchedulerFactory.reset(new TestingCallbackSchedulerFactory());
+
+		mCallbackScheduler = mCallbackSchedulerFactory->createScheduler();
+
+		mVDM.reset(new VectorDataManager(mCallbackScheduler, 1024 * 1024));
+
+		mBigVectorLayouts = mVDM->getBigVectorLayouts();
+		
+		mMemoryManager = mVDM->getMemoryManager();
+
+		mVectorPages.reset(new VectorPages(mCallbackScheduler));
+
+		mVectorHandleIndex = 0;
+		}
+
+	@type PageletAndHandles = 
+			pagelet_ptr pagelet,
+			ImmutableTreeVector<VectorHandle*> handles;
+
+	PageletAndHandles allocatePagelet()
+		{
+		return allocatePagelet(emptyTreeVec());
+		}
+
+	PageletAndHandles allocatePagelet(TreeVec empty)
+		{
+		return allocatePagelet(ImmutableTreeVector<page_ptr>());
+		}
+
+	PageletAndHandles allocatePagelet(ImmutableTreeVector<pagelet_ptr> pages)
+		{
+		pagelet_ptr pagelet(new Fora::Pagelet(mMemoryManager));
+
+		ImmutableTreeVector<VectorHandle*> handles;
+
+		if (pages.size())
+			{
+			for (long k = 0; k < pages.size(); k++)
+				{
+				VectorHandle* handle = 
+					pagelet->construct<TypedFora::Abi::VectorHandle>(
+						Fora::BigVectorId(),
+						pagelet->construct<PageletTree>(
+							&*pagelet, 
+							pages[k], 
+							pages[k]->getValues()->size()
+							),
+						nullptr,
+						&*pagelet,
+						hash_type(mVectorHandleIndex++)
+						);
+
+				VectorRecord vr(handle);
+
+				pagelet->getValues()->append(
+					JOV::OfType(Type::Vector()),
+					(uint8_t*)&vr,
+					1,
+					0
+					);
+
+				handles = handles + handle;
+				}
+			}
+		else
+			{
+			pagelet->getValues()->append(ImplValContainer());
+			}
+
+		pagelet->freeze();
+
+		return PageletAndHandles(pagelet, handles);
+		}
+
+	PageletAndHandles allocatePagelet(ImmutableTreeVector<page_ptr> pages)
+		{
+		pagelet_ptr pagelet(new Fora::Pagelet(mMemoryManager));
+
+		ImmutableTreeVector<VectorHandle*> handles;
+
+		if (pages.size())
+			{
+			for (long k = 0; k < pages.size(); k++)
+				{
+				VectorHandle* handle = 
+					pagelet->construct<TypedFora::Abi::VectorHandle>(
+						bigvecIdForPage(pages[k]),
+						Fora::PageletTreePtr(),
+						nullptr,
+						&*pagelet,
+						hash_type(mVectorHandleIndex++)
+						);
+
+				VectorRecord vr(handle);
+
+				pagelet->getValues()->append(
+					JOV::OfType(Type::Vector()),
+					(uint8_t*)&vr,
+					1,
+					0
+					);
+
+				handles = handles + handle;
+				}
+			}
+		else
+			{
+			pagelet->getValues()->append(ImplValContainer());
+			}
+
+		pagelet->freeze();
+
+		return PageletAndHandles(pagelet, handles);
+		}
+
+	Fora::BigVectorId bigvecIdForPage(boost::shared_ptr<VectorPage> page)
+		{
+		BigVectorPageLayout layout(
+			VectorDataID::Internal(page->getPageId(), 0),
+			page->getPageletTree()->size(),
+			page->getPageletTree()->currentJor(),
+			page->getPageId().guid() + hash_type(1)
+			);
+
+		mBigVectorLayouts->registerNewLayout(layout);
+
+		return layout.identity();
+		}
+
+	page_ptr allocatePage(ImmutableTreeVector<pagelet_ptr> pagelets)
+		{
+		page_ptr tr(new VectorPage(mMemoryManager));
+
+		for (auto pagelet: pagelets)
+			tr->appendPagelet(pagelet);
+
+		tr->freeze();
+
+		//for purposes of testing, we don't want any pagelet collapsing to happen in the background
+		tr->considerSmallPageletsCollapsed();
+
+		mVectorPages->addVectorPage(tr);
+
+		return tr;
+		}
+
+	void processAllCallbacks()
+		{
+		while (mCallbackSchedulerFactory->executeOne())
+			;
+		}
+
+	InstanceCountChecker<VectorPage> mVectorPageCountChecker;
+
+	InstanceCountChecker<Fora::Pagelet> mPageletCountChecker;
+
+	InstanceCountChecker<Fora::PageletTree> mPageletTreeCountChecker;
+
+	PolymorphicSharedPtr<VectorPages> mVectorPages;
+
+	PolymorphicSharedPtr<VectorDataManager> mVDM;
+
+	PolymorphicSharedPtr<VectorDataMemoryManager> mMemoryManager;
+
+	PolymorphicSharedPtr<TypedFora::Abi::BigVectorLayouts> mBigVectorLayouts;
+
+	PolymorphicSharedPtr<CallbackScheduler> mCallbackScheduler;
+
+	PolymorphicSharedPtr<TestingCallbackSchedulerFactory, 
+				PolymorphicSharedPtr<CallbackSchedulerFactory> > mCallbackSchedulerFactory;
+
+	long mVectorHandleIndex;
+};
+
+BOOST_FIXTURE_TEST_SUITE( test_VectorPages, VectorPagesTestFixture )
+
+BOOST_AUTO_TEST_CASE( test_create_a_page )
+	{
+	page_ptr aPage = allocatePage(emptyTreeVec() + allocatePagelet().pagelet());
+
+	BOOST_CHECK(mVectorPages->hasPage(aPage->getPageId()));
+	BOOST_CHECK(mVectorPages->getVectorPage(aPage->getPageId()) == aPage);
+	BOOST_CHECK(mVectorPages->hasUnreferencedPages());
+	BOOST_CHECK(mVectorPages->getBytecountOfUnreferencedPages() == aPage->totalBytesAllocatedFromOS());
+	BOOST_CHECK(mVectorPages->getCountOfUnreferencedPages() == 1);
+	BOOST_CHECK(mVectorPages->getCountOfReferencedPages() == 0);
+	BOOST_CHECK(mVectorPages->getTotalBytesUsed() == aPage->totalBytesAllocatedFromOS());
+	BOOST_CHECK(!mVectorPages->hasPagesToDropWhenFullyUnreferenced());
+	BOOST_CHECK(mVectorPages->oldestUnmappedPage() == null() << aPage->getPageId());
+
+	BOOST_CHECK(mVectorPages->dropVectorPage(aPage->getPageId()) == aPage);
+
+	//at this point, we should still hold the page since we need for it to acknowledge the drop
+	BOOST_CHECK(mVectorPages->hasPagesToDropWhenFullyUnreferenced());
+	processAllCallbacks();
+	BOOST_CHECK(!mVectorPages->hasPagesToDropWhenFullyUnreferenced());
+	
+	BOOST_CHECK(!mVectorPages->hasPage(aPage->getPageId()));
+	BOOST_CHECK(!mVectorPages->hasUnreferencedPages());
+	BOOST_CHECK(mVectorPages->getBytecountOfUnreferencedPages() == 0);
+	BOOST_CHECK(mVectorPages->getCountOfUnreferencedPages() == 0);
+	BOOST_CHECK(mVectorPages->getCountOfReferencedPages() == 0);
+	BOOST_CHECK(mVectorPages->getTotalBytesUsed() == 0);
+	BOOST_CHECK(!mVectorPages->hasPagesToDropWhenFullyUnreferenced());
+	BOOST_CHECK(!mVectorPages->oldestUnmappedPage());
+
+	BOOST_CHECK(aPage.unique());
+	}
+
+BOOST_AUTO_TEST_CASE( test_map_and_unmap_a_page )
+	{
+	PageletAndHandles pageletAndHandles = allocatePagelet();
+	page_ptr aPage = allocatePage(emptyTreeVec() + pageletAndHandles.pagelet());
+
+	auto trigger = aPage->attemptToMapTo();
+	BOOST_CHECK(trigger);
+
+	processAllCallbacks();
+
+	//both pages should be marked as 'mapped' now
+	BOOST_CHECK(pageletAndHandles.pagelet()->currentUnmapState() == UnmapState::Mapped);
+	BOOST_CHECK(aPage->currentUnmapState() == UnmapState::Mapped);
+
+	pageletAndHandles.pagelet()->markWantsToBeUnmapped();
+
+	processAllCallbacks();
+
+	BOOST_CHECK(trigger->isTriggered());
+
+	//unmap them
+	aPage->removeMapping(trigger);
+
+	processAllCallbacks();
+
+	BOOST_CHECK(pageletAndHandles.pagelet()->currentUnmapState() == UnmapState::UnmappedAndMappable);
+	BOOST_CHECK(aPage->currentUnmapState() == UnmapState::UnmappedAndMappable);
+	}
+
+
+BOOST_AUTO_TEST_CASE( test_map_an_interior_vector_page )
+	{
+	PageletAndHandles pageletAndHandles = allocatePagelet();
+	page_ptr aPage = allocatePage(emptyTreeVec() + pageletAndHandles.pagelet());
+
+	auto trigger = aPage->attemptToMapTo();
+	BOOST_CHECK(trigger);
+
+	processAllCallbacks();
+
+	//both pages should be marked as 'mapped' now
+	BOOST_CHECK(pageletAndHandles.pagelet()->currentUnmapState() == UnmapState::Mapped);
+	BOOST_CHECK(aPage->currentUnmapState() == UnmapState::Mapped);
+
+	pageletAndHandles.pagelet()->markWantsToBeUnmapped();
+
+	processAllCallbacks();
+
+	BOOST_CHECK(trigger->isTriggered());
+
+	//unmap them
+	aPage->removeMapping(trigger);
+
+	processAllCallbacks();
+
+	BOOST_CHECK(pageletAndHandles.pagelet()->currentUnmapState() == UnmapState::UnmappedAndMappable);
+	BOOST_CHECK(aPage->currentUnmapState() == UnmapState::UnmappedAndMappable);
+	}
+
+BOOST_AUTO_TEST_CASE( test_nested_pagelets )
+	{
+	pagelet_ptr pagelet11 = allocatePagelet().pagelet();
+	pagelet_ptr pagelet12 = allocatePagelet().pagelet();
+	pagelet_ptr pagelet13 = allocatePagelet().pagelet();
+
+	page_ptr page11 = allocatePage(emptyTreeVec() + pagelet11 + pagelet12);
+	page_ptr page12 = allocatePage(emptyTreeVec() + pagelet12 + pagelet13);
+
+	pagelet_ptr pagelet21 = allocatePagelet(emptyTreeVec() + page11).pagelet();
+	pagelet_ptr pagelet22 = allocatePagelet(emptyTreeVec() + page12).pagelet();
+
+	page_ptr page2 = allocatePage(emptyTreeVec() + pagelet21 + pagelet22);
+
+	auto root_trigger = page2->attemptToMapTo();
+	BOOST_CHECK(root_trigger);
+
+	processAllCallbacks();
+
+	auto trigger_1 = page11->attemptToMapTo();
+	auto trigger_2 = page12->attemptToMapTo();
+	BOOST_CHECK(trigger_1);
+	BOOST_CHECK(trigger_2);
+
+	processAllCallbacks();
+	
+	//unmap them
+	pagelet13->markWantsToBeUnmapped();
+	pagelet12->markWantsToBeUnmapped();
+	pagelet11->markWantsToBeUnmapped();
+
+	pagelet22->markWantsToBeUnmapped();
+	pagelet21->markWantsToBeUnmapped();
+
+	processAllCallbacks();
+	processAllCallbacks();
+	processAllCallbacks();
+
+	BOOST_CHECK(root_trigger->isTriggered());
+	BOOST_CHECK(trigger_1->isTriggered());
+	BOOST_CHECK(trigger_2->isTriggered());
+
+	processAllCallbacks();
+
+	page11->removeMapping(trigger_1);
+	page12->removeMapping(trigger_2);
+	page2->removeMapping(root_trigger);
+
+	processAllCallbacks();
+	}
+
+
+BOOST_AUTO_TEST_CASE( test_references_to_pagelets )
+	{
+	pagelet_ptr pageletInner = allocatePagelet().pagelet();
+	
+	pagelet_ptr pageletOuter = allocatePagelet(emptyTreeVec() + pageletInner).pagelet();
+
+	page_ptr page = allocatePage(emptyTreeVec() + pageletOuter);
+
+	ImplValContainer container = page->getPageletTree()->extractValueIntoFreeStore(0);
+
+	BOOST_CHECK(container.type().isVector());
+	BOOST_CHECK(container.cast<VectorRecord>().size() == 1);
+	}
+
+BOOST_AUTO_TEST_SUITE_END()

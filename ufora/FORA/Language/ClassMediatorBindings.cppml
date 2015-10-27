@@ -1,0 +1,244 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ClassMediatorBindings.hppml"
+#include "LexicalBindingSelector.hppml"
+#include "FunctionStage1Converter.hppml"
+#include "../Core/Type.hppml"
+#include "../../core/Logging.hpp"
+
+namespace Fora {
+namespace Language {
+
+ClassMediator bindLexicalBindingsToPredicate(
+							const ClassMediator& inPredicate, 
+							ImmutableTreeMap<Symbol, LexicalBinding> newLexicalBindings,
+							const CSTValue& metadata
+							)
+	{
+	@match ClassMediator(inPredicate)
+		-|	Function(fun, lex, met) ->> {
+
+			lassert_dump(lex.bindings().size() == 0,
+				prettyPrintString(lex)
+				);
+
+			lassert_dump(
+				(fun.freeVariables() - LexicalBindingMap(newLexicalBindings).boundVariables()).size() == 0,
+				prettyPrintString((fun.freeVariables() - LexicalBindingMap(newLexicalBindings).boundVariables()))
+				);
+			
+			return ClassMediator::Function(
+				inPredicate.name(), 
+				fun, 
+				LexicalBindingMap(newLexicalBindings), 
+				metadata
+				);
+			}
+		-|	Lambda(fun, lex) ->> {
+
+			lassert_dump(lex.bindings().size() == 0,
+				prettyPrintString(lex)
+				);
+
+			lassert(
+				(fun.freeVariables()
+					- LexicalBindingMap(newLexicalBindings).boundVariables()
+					- Symbol("_")
+					).size() == 0
+				);
+			
+			return ClassMediator::Lambda(
+				inPredicate.name(), 
+				fun, 
+				LexicalBindingMap(newLexicalBindings)
+				);
+			}
+		-|	Object(obj, lex, met) ->> {
+
+			lassert_dump(lex.bindings().size() == 0,
+				prettyPrintString(lex)
+				);
+			
+			Symbol newSelfName;
+			if (obj.selfName())
+				newSelfName = *obj.selfName();
+			else
+				newSelfName = Symbol("self");
+
+			//LexicalBinding() is the null lexical binding that just accesses the current object
+			newLexicalBindings = newLexicalBindings + newSelfName + LexicalBinding();
+
+			//bind each class member
+			const ImmutableTreeSet<Symbol>& members = obj.body().members();
+
+			for (long k = 0; k < members.size();k++)
+				newLexicalBindings = newLexicalBindings + members[k] + 
+					LexicalBinding(emptyTreeVec(), null() << members[k]);
+
+			lassert_dump(
+				(obj.freeVariables() - LexicalBindingMap(newLexicalBindings).boundVariables()).size() == 0,
+				prettyPrintString(obj.freeVariables()) << " not covered by " 
+					<< prettyPrintString(LexicalBindingMap(newLexicalBindings).boundVariables())
+				);
+
+			return ClassMediator::Object(
+				inPredicate.name(), 
+				obj, 
+				LexicalBindingMap(newLexicalBindings), 
+				metadata
+				);
+			}
+		-|	Class(obj, lex, met) ->> {
+
+			lassert_dump(lex.bindings().size() == 0,
+				prettyPrintString(lex)
+				);
+			
+			Symbol newClsName;
+			if (obj.className())
+				newClsName = *obj.className();
+			else
+				newClsName = Symbol("cls");
+
+			//LexicalBinding() is the null lexical binding that just accesses the current object
+			newLexicalBindings = newLexicalBindings + newClsName + LexicalBinding();
+
+			//bind each class member
+			const ImmutableTreeSet<Symbol>& members = obj.body().staticMembers();
+
+			for (long k = 0; k < members.size();k++)
+				newLexicalBindings = newLexicalBindings + members[k] + 
+					LexicalBinding(emptyTreeVec(), null() << members[k]);
+
+			lassert_dump(
+				(obj.freeVariables() - LexicalBindingMap(newLexicalBindings).boundVariables()).size() == 0,
+				prettyPrintString(obj.freeVariables()) << " not covered by " 
+					<< prettyPrintString(LexicalBindingMap(newLexicalBindings).boundVariables())
+				);
+
+			return ClassMediator::Class(
+				inPredicate.name(), 
+				obj, 
+				LexicalBindingMap(newLexicalBindings), 
+				metadata
+				);
+			}
+		;
+	}
+
+ClassMediator bindLexicalBindingsToPredicate(
+							const ClassMediator& inPredicate, 
+							const LexicalBindingSelector& selector,
+							const CSTValue& metadata
+							)
+	{
+	return bindLexicalBindingsToPredicate(inPredicate, selector.newLexicalBindings(), metadata);
+	}
+
+ImplValContainer bindFunctionWithValues(
+				const ClassMediator& inPredicate,
+				const ImmutableTreeMap<Symbol, ImplValContainer>& freeVariableMap,
+				const CSTValue& metadata
+				)
+	{
+	symbol_map_type fakeSymbolMap;
+
+	for (long k = 0; k < freeVariableMap.size();k++)
+		fakeSymbolMap = fakeSymbolMap + 
+			make_pair(freeVariableMap.pairAtPosition(k).first, variable_index_type(k));
+
+	LexicalBindingMap emptyLexicalBindingMap;
+
+	LexicalBindingSelector selector(
+			freeVariableMap.keys(), 
+			fakeSymbolMap,
+			emptyLexicalBindingMap, 
+			null()
+			);
+	
+	ClassMediator predicate = bindLexicalBindingsToPredicate(inPredicate, selector, metadata);
+	
+	//bind the free variable one after another, since this binding has no lexical closure
+	ImmutableTreeVector<ImplValContainer> constantsToBind;
+
+	ImmutableTreeSet<Symbol> freeVars;
+
+	@match ClassMediator(predicate)
+		-| Lambda(f) ->> { freeVars = f.freeVariables(); }
+		-| Function(f) ->> { freeVars = f.freeVariables(); }
+		-| Object(o) ->> { freeVars = o.freeVariables(); }
+		-| Class(o) ->> { freeVars = o.freeVariables(); }
+		;
+	
+	ImmutableTreeVector<Type> types;
+	for (long k = 0; k < freeVars.size();k++)
+		{
+		constantsToBind = constantsToBind + *freeVariableMap[freeVars[k]];
+		types = types + constantsToBind.back().type();
+		}
+
+	ImplValContainer tupleIVC = ImplValContainer(constantsToBind);
+
+	ImplValContainer tr(ImplVal(Type::Class(types, predicate, ClassMediatorResumption::Entry()), tupleIVC.data()));
+
+	return tr;
+	}
+
+ImplValContainer bindFunctionWithValues(
+				const ClassMediator& inPredicate,
+				const ImmutableTreeMap<Symbol, pair<ImplValContainer, Nullable<Symbol> > >& freeVariableMap,
+				const CSTValue& metadata
+				)
+	{
+	std::vector<ImplValContainer> constantsToBind;
+	std::map<ImplValContainer, long> constantsToBindIndices;
+
+	ImmutableTreeMap<Symbol, LexicalBinding> newBindings;
+	
+	for (auto symbolAndLookup: freeVariableMap)
+		{
+		ImplValContainer module = symbolAndLookup.second.first;
+		Nullable<Symbol> nameWithinModule = symbolAndLookup.second.second;
+		Symbol nameToBind = symbolAndLookup.first;
+
+		if (constantsToBindIndices.find(module) == constantsToBindIndices.end())
+			{
+			constantsToBindIndices[module] = constantsToBind.size();
+			constantsToBind.push_back(module);
+			}
+
+		long index = constantsToBindIndices[module];
+
+		newBindings = newBindings + 
+			nameToBind + 
+			LexicalBinding(emptyTreeVec() + (uint32_t)index, nameWithinModule)
+			;
+		}
+
+	ClassMediator predicate = bindLexicalBindingsToPredicate(inPredicate, newBindings, metadata);
+	
+	ImmutableTreeVector<Type> types;
+	for (long k = 0; k < constantsToBind.size();k++)
+		types = types + constantsToBind[k].type();
+		
+	ImplValContainer tupleIVC = ImplValContainer(constantsToBind);
+
+	ImplValContainer tr(ImplVal(Type::Class(types, predicate, ClassMediatorResumption::Entry()), tupleIVC.data()));
+
+	return tr;
+	}
+}
+}

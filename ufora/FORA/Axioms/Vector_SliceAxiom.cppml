@@ -1,0 +1,131 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Vector_SliceAxiom.hppml"
+#include "AxiomGroup.hppml"
+#include "Axiom.hppml"
+#include "LibcallAxiomGroup.hppml"
+#include "TypedForaAxiomBuilder.hppml"
+#include "../Interpreter/RuntimeConfig.hppml"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include "../TypedFora/ABI/VectorRecord.hpp"
+#include "../TypedFora/ABI/VectorLoadRequest.hppml"
+#include "../TypedFora/ABI/VectorLoadRequestCodegen.hppml"
+#include "../TypedFora/ABI/ReturnValueCodegen.hpp"
+#include "../TypedFora/ABI/VectorRecordCodegen.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../Core/RefcountPool.hppml"
+#include "../VectorDataManager/VectorDataManager.hppml"
+#include "../Native/TypedNativeExpression.hppml"
+#include "../Native/TypedNativeLibraryFunction.hpp"
+#include "../../core/Logging.hpp"
+#include "../../core/SymbolExport.hpp"
+#include "../Core/TupleCategory.hppml"
+#include "../TypedFora/ABI/DestructorsAndConstructors.hppml"
+#include "../TypedFora/ABI/ForaValueArrayCodegen.hpp"
+#include "../TypedFora/ABI/ForaValueArray.hppml"
+#include "../Core/MemoryPool.hpp"
+#include "../../core/math/Overflow.hpp"
+
+using namespace Fora;
+
+using Fora::Interpreter::ExecutionContext;
+
+using TypedFora::Abi::ForaValueArray;
+using TypedFora::Abi::VectorRecord;
+using TypedFora::Abi::PooledVectorRecord;
+
+PooledVectorRecord FORA_clib_vectorSlice(	
+		PooledVectorRecord vec, 
+		int64_t sliceLow, 
+		int64_t sliceHigh
+		)
+	{
+	return vec.slice(
+		null() << sliceLow,
+		null() << sliceHigh,
+		null()
+		);
+	}
+
+VectorSliceAxiom::VectorSliceAxiom() : AxiomGroup(
+		JOVT() +
+			jovAnyVector() +
+			"GetItem" +
+			JOV::OfType(Type::Integer(64, true)) + 
+			JOV::OfType(Type::Integer(64, true))
+		)
+	{
+	}
+
+Nullable<Axiom> VectorSliceAxiom::axiom(
+					TypedFora::Compiler& inRuntime,
+					const JudgmentOnValueTuple& s
+					)
+	{
+	using namespace TypedNativeExpressionHelpers;
+
+	JOVT judgmentToGenerate = JOVT() + s.jovs()[0] + 
+		"GetItem" +
+		JOV::OfType(Type::Integer(64, true)) + 
+		JOV::OfType(Type::Integer(64, true))
+		;
+
+	if (s.jovs()[0].constant())
+		return null() << AxiomGroup::returnsAxiom(judgmentToGenerate, *s.jovs()[0].constant());
+
+	TypedFora::TypedForaAxiomBuilder axiomBuilder(
+		judgmentToGenerate,
+		TypedFora::RefcountStyle::Pooled()
+		);
+
+	TypedNativeExpression<int64_t> lowSlice(axiomBuilder.nativeVar(2).expr());
+	TypedNativeExpression<int64_t> highSlice(axiomBuilder.nativeVar(3).expr());
+	TypedNativeExpression<PooledVectorRecord> vec(axiomBuilder.nativeVar(0).expr());
+	
+	NativeExpression finalExpression = 
+			if_(lowSlice >= TypedNativeExpression<int64_t>(0) && 
+				lowSlice < highSlice && highSlice < 
+							static_cast<TypedNativeExpression<int64_t> >(vec.size()),
+				TypedNativeExpression<PooledVectorRecord>(
+					TypedNativeExpression<VectorRecord>::create(
+						vec.dataPtr(),
+						TypedNativeExpression<uint64_t>(highSlice - lowSlice),
+						TypedNativeExpression<uint64_t>(
+							TypedNativeExpression<int64_t>(vec.offset()) + vec.stride() * lowSlice
+							),
+						vec.stride()
+						).getExpression()
+					)
+					,
+				makeTypedNativeLibraryFunction(&FORA_clib_vectorSlice)(vec, lowSlice, highSlice)
+				).getExpression();
+
+	return null() << axiomBuilder.axiomForNativeExpression(
+		finalExpression,
+		TypedFora::RefcountStyle::Pooled(),
+		s.jovs()[0],
+		false
+		);
+	}
+
+Nullable<AxiomJOA>		VectorSliceAxiom::axiomJOA(const JudgmentOnValueTuple& s)
+	{
+	return null () << AxiomJOA::Native(JudgmentOnAction::Value(s.jovs()[0]));
+	}
+
+
+
+

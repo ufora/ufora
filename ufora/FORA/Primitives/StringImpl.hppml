@@ -1,0 +1,124 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "../../core/threading/IndexedMutex.hppml"
+#include "../Core/MemoryPool.hpp"
+#include "../../core/math/Hash.hpp"
+
+//#define STRING_IMPL_TRACK_TOTAL_STRINGS
+
+//size a string has to be before we're willing to keep a 20-byte hash value around for it.
+#define KEEP_HASH_THRESHOLD 256
+
+class StringImpl {
+public:
+    StringImpl(size_t inSize, MemoryPool* inMemoryPool) : 
+            mMemoryPool(inMemoryPool),
+            mRefcount(1),
+            mSize(inSize),
+            mHash(0),
+            mValidStringCheck(0xDEADBEEF)
+        {
+        lassert(mMemoryPool);
+        }
+        
+    AO_t        mRefcount;
+    uword_t     mValidStringCheck;
+    size_t      mSize;
+    hash_type*  mHash;
+    MemoryPool* mMemoryPool;
+    char        mData[]; // trailing array idiom, aka, "struct hack"
+    
+    void incrementRefcount()
+        {
+        lassert(validStringRecord());
+        
+        AO_fetch_and_add_full(&mRefcount, 1);
+        }
+
+    void decrementRefcount()
+        {
+        lassert(validStringRecord());
+
+        AO_t prev = AO_fetch_and_add_full(&mRefcount, -1);
+        lassert(prev != 0);
+        
+        if (prev == 1)
+            {
+            if (mHash)
+                delete mHash;
+            
+            mValidStringCheck = 0;
+            
+            mMemoryPool->destroy(this);
+
+            #ifdef STRING_IMPL_TRACK_TOTAL_STRINGS
+            AO_fetch_and_add_full(&String::mTotalStringCount, -1);
+            #endif
+            }
+        }
+
+    bool validStringRecord() const
+        {
+        return mValidStringCheck == 0xDEADBEEF;
+        }
+
+    hash_type hash()
+        {
+        if (mSize > KEEP_HASH_THRESHOLD)
+            {
+            if (mHash)
+                return *mHash;
+                
+            static IndexedMutex<StringImpl*> mutex;
+            IndexedMutex<StringImpl*>::scoped_lock lock(mutex, this);
+        
+            mHash = new hash_type(Hash::CityHash(mData, mSize));
+        
+            return *mHash;
+            }
+        else
+            return Hash::CityHash(mData, mSize);
+        }
+
+    static StringImpl* allocateUninitializedStringRecord(size_t sz, MemoryPool* memoryPool)
+        {
+        lassert(memoryPool);
+        
+        if (sz == 0)
+            return 0;
+
+        StringImpl* result;
+
+        size_t allocSize = sizeof(StringImpl) + sz + 1;
+
+        result = (StringImpl*)memoryPool->allocate(allocSize);
+
+        if (!result)
+            return 0;
+        
+        new (result) StringImpl(sz, memoryPool);
+
+        #ifdef STRING_IMPL_TRACK_TOTAL_STRINGS
+        AO_fetch_and_add_full(&mTotalStringCount, 1);
+        #endif
+        
+        result->mData[sz] = 0;
+
+        return result;
+        }
+};
+
+

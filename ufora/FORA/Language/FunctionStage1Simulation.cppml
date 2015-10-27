@@ -1,0 +1,529 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "FunctionStage1Simulation.hppml"
+#include "../Core/ClassMediator.hppml"
+#include "../Core/ImplValContainerUtilities.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
+#include "../../core/Logging.hpp"
+
+namespace FunctionStage1 {
+
+Nullable<ImplValContainer> Simulation::simulateFunctionCall(
+			Function f, 
+			ImmutableTreeVector<ImplValContainer> arguments
+			)
+	{
+	LOG_DEBUG << "Calling " << f << " with " << arguments;
+	
+	ImmutableTreeMap<VariableAllocator::Variable, ImplValContainer> bindings;
+
+	ExpressionEvaluationResult result = simulateFunctionCall(
+		f, 
+		arguments, 
+		bindings
+		);
+
+	if (result.isResult())
+		return null() << result.getResult().val();
+
+	return null();
+	}
+
+
+ExpressionEvaluationResult Simulation::simulateFunctionCall(
+			Function f, 
+			ImmutableTreeVector<ImplValContainer> arguments,
+			ImmutableTreeMap<VariableAllocator::Variable,
+								ImplValContainer>& ioBindings
+			)
+	{
+	while (true)
+		@match Function(f) 
+			-| Term(pattern, expression, otherwise) ->> {
+				TrueFalseOrUnknown res = 
+					simulatePatternMatch(pattern, arguments, ioBindings);
+
+				@match TrueFalseOrUnknown(res)
+					-| Unknown() ->> {
+						return ExpressionEvaluationResult::Unknown();
+						}
+					-| False() ->> {
+						//assign to 'f' and then go around the loop again.
+						//we could do this recursively, but then risk running out
+						//of stack space for very complex functions
+						f = otherwise;
+						}
+					-| True() ->> {
+						ExpressionEvaluationResult res = 
+							simulateExpressionEvaluation(expression, ioBindings);
+
+						@match ExpressionEvaluationResult(res)
+							-| Result(r) ->> {
+								return res;
+								}
+							-| Exception() ->> {
+								return res;
+								}
+							-| Unknown() ->> {
+								return res;
+								}
+							-| NoMatch() ->> {
+								lassert_dump(
+									false,
+									"Expression " << prettyPrintString(expression) << " produced 'noMatch' on "
+										<< prettyPrintString(ioBindings)
+									);
+								}
+							-| Skip() ->> {
+								f = otherwise;
+								}
+						}
+				}
+			-| Empty() ->> {
+				return ExpressionEvaluationResult::NoMatch();
+				}
+	}
+
+
+TrueFalseOrUnknown Simulation::simulatePatternMatch(
+							TuplePattern pattern, 
+							ImmutableTreeVector<ImplValContainer> args,
+							ImmutableTreeMap<VariableAllocator::Variable,
+												ImplValContainer>& ioBindings
+							)
+	{
+	for (auto pat: pattern.matchers())
+		{
+		TrueFalseOrUnknown res = simulatePatternMatch(pat, args, ioBindings);
+
+		@match TrueFalseOrUnknown(res)
+			-| Unknown() ->> {
+				return res;
+				}
+			-| False() ->> {
+				return res;
+				}
+			-| True() ->> {
+				}
+		}
+
+	return TrueFalseOrUnknown::True();
+	}
+
+TrueFalseOrUnknown Simulation::simulatePatternMatch(
+							TuplePatternElement pat, 
+							ImmutableTreeVector<ImplValContainer>& ioArgs,
+							ImmutableTreeMap<VariableAllocator::Variable, 
+									ImplValContainer>& ioBindings
+							)
+	{
+	@match TuplePatternElement(pat)
+		-| Normal(field, pattern, defaultVal) ->> {
+			//we could do better here. This is conservative			
+			if (field)
+				{
+				if (!defaultVal)
+					return TrueFalseOrUnknown::False();
+
+				LOG_DEBUG << "Ignoring non-null named match with default value.";
+				return TrueFalseOrUnknown::Unknown();
+				}
+
+			if (ioArgs.size() == 0 && !defaultVal)
+				return TrueFalseOrUnknown::False();
+
+			//we could do better here. This is conservative
+			if (ioArgs.size() == 0)
+				{
+				LOG_DEBUG << "Ignoring match with default value";
+				return TrueFalseOrUnknown::Unknown();
+				}
+
+			TrueFalseOrUnknown res = simulatePatternMatch(pattern, ioArgs[0], ioBindings);
+
+			@match TrueFalseOrUnknown(res)
+				-| False() ->> {
+					return res;
+					}
+				-| Unknown() ->> {
+					return res;
+					}
+				-| True() ->> {
+					ioArgs = ioArgs.slice(1);
+
+					return res;
+					}
+			}
+		-| VarArgs(varname) ->> {
+			ioBindings = ioBindings + varname + ImplValContainer(ioArgs);
+			ioArgs = ImmutableTreeVector<ImplValContainer>();
+			return TrueFalseOrUnknown::True();
+			}
+	}
+
+TrueFalseOrUnknown Simulation::simulatePatternMatch(
+							Pattern pat, 
+							ImplValContainer val,
+							ImmutableTreeMap<VariableAllocator::Variable, 
+									ImplValContainer>& ioBindings
+							)
+	{
+	@match Pattern(pat)
+		-| Anything(varname) ->> {
+			ioBindings = ioBindings + varname + val;
+			return TrueFalseOrUnknown::True();
+			}
+		-| AnythingDiscard() ->> {
+			return TrueFalseOrUnknown::True();
+			}
+		-| Constant(e) ->> {
+			ExpressionEvaluationResult res = simulateExpressionEvaluation(e, ioBindings);
+
+			//lots of complex semantics here, but we don't need to handle them
+			if (!res.isResult())
+				{
+				LOG_DEBUG << "Evaluating " << e << " resulted in " << res;
+				return TrueFalseOrUnknown::Unknown();
+				}
+
+			ImplValContainer result = res.getResult().val();
+
+			LOG_DEBUG << "Comparing " << result << " against " << val;
+
+			if (result == val)
+				return TrueFalseOrUnknown::True();
+			else
+				return TrueFalseOrUnknown::False();
+			}
+		-| _ ->> {
+			LOG_DEBUG << "Ignoring pattern " << pat;
+
+			//we ignore most possible patterns since we are just
+			//trying to simulate very simple operations
+			return TrueFalseOrUnknown::Unknown();
+			}
+	}
+ExpressionEvaluationResult Simulation::simulateExpressionEvaluation(
+							Expression e, 
+							ImmutableTreeMap<VariableAllocator::Variable, 
+									ImplValContainer>& variableBindings
+							)
+	{
+	@match Expression(e)
+		-| Constant(c) ->> {
+			return ExpressionEvaluationResult::Result(c.getReference());
+			}
+		-| Variable(v) ->> {
+			lassert_dump(
+				variableBindings[v],
+				"Expected variable " 
+					<< prettyPrintString(v) 
+					<< " to be populated. Bindings are " 
+					<< prettyPrintString(variableBindings)
+				);
+
+			return ExpressionEvaluationResult::Result(*variableBindings[v]);
+			}
+		-| Match(applyArgs, predicate) ->> {
+			ImmutableTreeVector<ImplValContainer> tuple;
+
+			for (auto applyArg: applyArgs)
+				@match ApplyArgument(applyArg) 
+					-| Normal(name, e) ->> {
+						if (name)
+							return ExpressionEvaluationResult::Unknown();
+
+						ExpressionEvaluationResult res = simulateExpressionEvaluation(e, variableBindings);
+
+						if (res.isResult())
+							tuple = tuple + res.getResult().val();
+						else
+							//lots of semantics we are ignoring for simplicity's sake
+							return ExpressionEvaluationResult::Unknown();
+						}
+					-| _ ->> {
+						//lots of semantics we are ignoring for simplicity's sake
+						return ExpressionEvaluationResult::Unknown();
+						}
+					;
+
+
+			auto finalRes = simulateFunctionCall(predicate, tuple, variableBindings);
+
+			if (finalRes.isNoMatch())
+				//normally this would flow into an exception path
+				return ExpressionEvaluationResult::Unknown();
+
+			return finalRes;
+			}
+		-| Let(pat, value, body, ifMatchFails) ->> {
+			ExpressionEvaluationResult result = simulateExpressionEvaluation(value, variableBindings);
+
+			if (!result.isResult())
+				return ExpressionEvaluationResult::Unknown();
+
+			TrueFalseOrUnknown patMatch = 
+				simulatePatternMatch(pat, result.getResult().val(), variableBindings);
+
+			if (!patMatch.isTrue())
+				return ExpressionEvaluationResult::Unknown();
+
+			return simulateExpressionEvaluation(body, variableBindings);
+			}
+		-| Try(toTry, catchTarget, catchWith) ->> {
+			ExpressionEvaluationResult result = simulateExpressionEvaluation(toTry, variableBindings);
+
+			if (!result.isResult())
+				return ExpressionEvaluationResult::Unknown();
+
+			return result;
+			}
+		-| Apply(agent, applyArgs) ->> {
+			ImmutableTreeVector<ImplValContainer> args;
+
+			ExpressionEvaluationResult result = simulateExpressionEvaluation(agent, variableBindings);
+
+			if (!result.isResult())
+				return ExpressionEvaluationResult::Unknown();
+
+			args = args + result.getResult().val();
+
+			for (auto applyArg: applyArgs)
+				@match ApplyArgument(applyArg) 
+					-| Normal(name, e) ->> {
+						if (name)
+							return ExpressionEvaluationResult::Unknown();
+
+						ExpressionEvaluationResult res = simulateExpressionEvaluation(e, variableBindings);
+
+						if (res.isResult())
+							args = args + res.getResult().val();
+						else
+							//lots of semantics we are ignoring for simplicity's sake
+							return ExpressionEvaluationResult::Unknown();
+						}
+					-| _ ->> {
+						//lots of semantics we are ignoring for simplicity's sake
+						return ExpressionEvaluationResult::Unknown();
+						}
+					;
+
+			return evaluateApply(args);
+			}
+		-| _ ->> {
+			}
+	
+	LOG_DEBUG << "Ignoring expression " << e;
+	return ExpressionEvaluationResult::Unknown();
+	}
+
+ExpressionEvaluationResult Simulation::evaluateApply(ImmutableTreeVector<ImplValContainer> vals)
+	{
+	if (mTotalApplyCount >= mMaxApplyCount)
+		return ExpressionEvaluationResult::Unknown();
+	
+	mTotalApplyCount++;
+
+	if (vals.size() == 0)
+		return ExpressionEvaluationResult::Unknown();
+
+	//this is the "ClassApply" axiom
+	@match Type(vals[0].type()) 
+		-| Class(_, (mediator, Entry())) ->> {
+			auto f = FunctionStage1::convert(*mediator);
+
+			ImmutableTreeMap<VariableAllocator::Variable, 
+									ImplValContainer> bindings;
+
+			return simulateFunctionCall(
+				f, 
+				vals,
+				bindings
+				);
+			}
+		-| _ ->> {
+			}
+
+	static Symbol bind("Bind");
+	static Symbol classGetItem("ClassGetItem");
+	static Symbol bindMixin("BindMixin");
+	static Symbol unbind("Unbind");
+	static Symbol bindClassMetadata("BindClassMetadata");
+
+	//this is the ClassBind axiom
+	if (vals.size() > 2 && 
+			vals[0].type().isSymbol() && vals[0].cast<Symbol>() == bind && 
+			vals[1].type().isSymbol() && vals[1].cast<Symbol>() == Symbol::Call()
+			)
+		{
+		ImplValContainer cls = vals[2];
+		ImmutableTreeVector<ImplValContainer> args = vals.slice(3);
+
+		if (!cls.type().isClass())
+			return ExpressionEvaluationResult::Unknown();
+
+		return ExpressionEvaluationResult::Result(
+			ImplValContainerUtilities::classMemberBind(cls, ImplValContainer(args))
+			);
+		}
+
+	//this is the ClassGetItem axiom
+	if (vals.size() == 4 && 
+			vals[0].type().isSymbol() && vals[0].cast<Symbol>() == classGetItem && 
+			vals[1].type().isSymbol() && vals[1].cast<Symbol>() == Symbol::Call()
+			)
+		{
+		ImplValContainer cls = vals[2];
+		ImplValContainer arg = vals[3];
+
+		Nullable<uint64_t> index = arg.getUInt64();
+
+		if (!index)
+			return ExpressionEvaluationResult::Unknown();
+
+		if (!cls.type().isClass())
+			return ExpressionEvaluationResult::Unknown();
+
+		return ExpressionEvaluationResult::Result(
+			ImplValContainerUtilities::classGetItem(cls, *index)
+			);
+		}
+
+	//this is the ClassBindMixin axiom
+	if (vals.size() == 4 && 
+			vals[0].type().isSymbol() && vals[0].cast<Symbol>() == bindMixin && 
+			vals[1].type().isSymbol() && vals[1].cast<Symbol>() == Symbol::Call()
+			)
+		{
+		ImplValContainer cls = vals[2];
+		ImplValContainer arg = vals[3];
+
+		try {
+			return ExpressionEvaluationResult::Result(
+				ImplValContainerUtilities::bindMixin(
+					cls,
+					arg
+					)
+				);
+			}
+		catch (ImplValContainerUtilities::IVCException& e)
+			{
+			return ExpressionEvaluationResult::Unknown();
+			}
+		}
+
+	//this is the ClassUnbind axiom
+	if (vals.size() == 3 && 
+			vals[0].type().isSymbol() && vals[0].cast<Symbol>() == unbind && 
+			vals[1].type().isSymbol() && vals[1].cast<Symbol>() == Symbol::Call() &&
+			vals[2].type().isClass()
+			)
+		{
+		ImplValContainer cls = vals[2];
+
+		return ExpressionEvaluationResult::Result(
+			ImplValContainerUtilities::classMemberUnbind(cls)
+			);
+		}
+
+	//BindClassMetadata on JOV axiom
+	if (vals.size() == 4 && 
+			vals[0].type().isSymbol() && vals[0].cast<Symbol>() == bindClassMetadata && 
+			vals[1].type().isSymbol() && vals[1].cast<Symbol>() == Symbol::Call() &&
+			vals[2].type().isJOVAsValue()
+			)
+		{
+		JudgmentOnValue classJOV = vals[2].cast<JudgmentOnValue>();
+		ImplValContainer newMetadata = vals[3];
+
+		if (!newMetadata.isCST())
+			return ExpressionEvaluationResult::Unknown();
+
+	 	@match JudgmentOnValue(classJOV)
+			-|	Class(Class(heldTypes, (mediator, resumption))) ->> {
+				return ExpressionEvaluationResult::Result(
+					ImplValContainer(
+						CSTValue(
+							JudgmentOnValue::Class(
+								JudgmentOnValueClass::Class(
+									heldTypes,
+									ImplValContainerUtilities::bindClassMediatorMeta(
+										*mediator, 
+										CSTValue(newMetadata)
+										),
+									resumption
+									)
+								)
+							)
+						)
+					);
+				}
+			-|	_ ->> {
+				return ExpressionEvaluationResult::Unknown();
+				}
+		}
+
+	//BindClassMetadata on object axiom
+	if (vals.size() == 4 && 
+			vals[0].type().isSymbol() && vals[0].cast<Symbol>() == bindClassMetadata && 
+			vals[1].type().isSymbol() && vals[1].cast<Symbol>() == Symbol::Call() &&
+			vals[2].type().isClass()
+			)
+		{
+		ImplValContainer objectValue = vals[2];
+		ImplValContainer newMetadata = vals[3];
+
+		if (!newMetadata.isCST())
+			return ExpressionEvaluationResult::Unknown();
+
+		@match Type(objectValue.type())
+			-|	Class(heldTypes, (mediatorFunction, resumption)) ->> {			
+				return ExpressionEvaluationResult::Result(
+					ImplValContainer(		
+						Type::Class(
+							heldTypes,
+							ImplValContainerUtilities::bindClassMediatorMeta(
+								*mediatorFunction,
+								CSTValue(newMetadata)
+								),
+							resumption
+							),
+						objectValue.data()		
+						)
+					);
+				}
+			-| _ ->> {
+				return ExpressionEvaluationResult::Unknown();
+				}
+			;
+		}
+
+	if (vals.size() >= 2 && vals[0].type().isTag() && 
+			vals[1].type().isSymbol() && vals[1].cast<Symbol>() == Symbol::Call())
+		{
+		return ExpressionEvaluationResult::Result(
+			ImplValContainerUtilities::createAlternative(
+				vals[0].cast<Symbol>(),
+				ImplValContainer(vals.slice(2))
+				)
+			);
+		}
+
+	return ExpressionEvaluationResult::Unknown();
+	}
+
+}
+

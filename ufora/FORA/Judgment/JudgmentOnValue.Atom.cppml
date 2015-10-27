@@ -1,0 +1,387 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "JudgmentOnValue.hppml"
+#include "../Primitives/String.hppml"
+
+JudgmentOnValue		JudgmentOnValueAtom::FromLiveValue(const ImplVal& val)
+	{
+	@match Type(val.type())
+		-|	String() ->> {
+			return 
+				val.cast<String>().size() < 1024 ?
+					JudgmentOnValue::Atom(JudgmentOnValueAtom::Valued(val))
+				: 	JudgmentOnValue::OfType(val.type())
+				;
+			}
+		-|	TimeDuration() ->> {
+			return  JOV::OfType(val.type());
+			}
+		-|	DateTime() ->> {
+			return  JOV::OfType(val.type());
+			}
+		-|	StackTrace() ->> {
+			return JudgmentOnValue::OfType(val.type());
+			}
+		-|	ExternalFunction(isCST) ->> {
+			return 
+				isCST ?
+					JudgmentOnValue::Atom(JudgmentOnValueAtom::Valued(val))
+				:	JOV::OfType(val.type())
+				;
+			}
+		-|	_ ->> {
+			return  JudgmentOnValue::Atom(JudgmentOnValueAtom::Valued(val));
+			}
+		;
+	}
+
+JudgmentOnValue		JudgmentOnValueAtom::OfType(const Type& type)
+	{
+	//TODO BUG brax: assert that 'type' is an atomic type.
+	
+	if (type.isNothing())
+		return JOV::Atom(JudgmentOnValueAtom::Valued(CSTValue()));
+	
+	return JOV::Atom(JudgmentOnValueAtom::Typed(type));
+	}
+    
+Nullable<Type>		JudgmentOnValueAtom::computeType() const
+	{
+	@match JudgmentOnValueAtom(*this)
+		-|	Typed(t) ->> {
+			return  null() << t;
+			}
+		-|	Valued(v) ->> {
+			return  null() << v.type();
+			}
+		-|	_ ->> {
+			return  null();
+			}
+		;
+	}
+    
+Nullable<bool>		JudgmentOnValueAtom::computeIsCST() const
+	{
+	@match JudgmentOnValueAtom(*this)
+		-|	Unknown() ->> {
+			return  null();
+			}
+		-|	Float() ->> {
+			return  null() << true;
+			}
+		-|	Integer() ->> {
+			return  null() << true;
+			}
+		-|	Typed(ExternalFunction(isCST)) ->> {
+			return  null() << isCST;
+			}
+		-|	_ ->> {
+			return  null() << true;
+			}
+		;
+	}
+    
+Nullable<CSTValue>	JudgmentOnValueAtom::computeConstant() const
+	{
+	@match JudgmentOnValueAtom(*this)
+		-|	Valued(v) ->> {
+			return  null() << v;
+			}
+		-|	_ ->> {
+			return  null();
+			}
+		;
+	}
+    
+void    JudgmentOnValueAtom::toString(CPPMLPrettyPrintStream& s, bool isJOVAsValue) const
+	{
+	if (isValued())
+		{
+		@match JudgmentOnValueAtom(*this)
+			-|	Valued(v) ->> {
+				if (isJOVAsValue)
+					s << "jovof ";
+				s << v;
+				}
+			;
+		}
+		else
+		{
+		if (!isJOVAsValue)
+			s << "{";
+		
+		@match JudgmentOnValueAtom(*this)
+			-|	Unknown() ->> {
+					s << "Atom";
+					}
+			-|	Integer(nIsSigned) ->> {
+					if (nIsSigned)
+						s << (*nIsSigned ? "S" : "U");
+					s << "Integer";
+					}
+			-|	Float() ->> {
+					s << "Float";
+					}
+			-|	Typed(t) ->> {
+					s << t;
+					}
+			-|	Valued(v) ->> {
+					s << v;
+					}
+			;
+		
+		if (!isJOVAsValue)
+			s << "}";
+		}
+	}
+		
+bool JudgmentOnValueAtom::covers(const ImplVal& impl) const
+	{
+	@match JudgmentOnValueAtom(*this)
+		-|	Unknown() ->> {
+			return  isAtomType(impl.type());
+			}
+		-|	Float() ->> {
+			return  impl.type().isFloat();
+			}
+		-|	Integer(isSigned) ->> {
+			return impl.type().isInteger()
+					&& (!isSigned || *isSigned == impl.type().getInteger().isSigned());
+			}
+		-|	Typed(t) ->> {
+			return  t == impl.type();
+			}
+		-|	Valued(v) ->> {
+			if (impl.type() != v.type())
+				return false;
+
+			const Type& t = v.type();
+
+			if (t.isNothing())
+				return true;
+
+			if (t.isSymbol() || t.isTag())
+				return impl.cast<symbol_type>() == v.cast<symbol_type>();
+
+			if (t.isInteger() || t.isFloat())
+				return memcmp(impl.data(), v.getData(), t.size()) == 0;
+
+			return  (v.cmp(impl) == 0);
+			}
+		;
+	}
+    
+bool JudgmentOnValueAtom::covers(const JudgmentOnValue& otherJOV) const
+	{
+	const JudgmentOnValueAtom& other(otherJOV.getAtom().jov());
+	
+	@match JudgmentOnValueAtom(*this)
+		-|	Unknown() ->> {
+			return  true;
+			}
+		-|	Integer(isSigned) ->> {
+			@match JudgmentOnValueAtom(other)
+				-|	Valued(v2) ->> {
+					return  v2.type().isInteger();
+					}
+				-|	Typed(Integer(bits, isSigned2)) ->> {
+					return  ::covers(isSigned, isSigned2);
+					}
+				-|	Integer(isSigned2) ->> {
+					return !isSigned2 || !isSigned || isSigned == isSigned2;
+					}
+				-|	_ ->> {
+					return false;
+					}
+				;
+			}
+		-|	Float() ->> {
+			@match JudgmentOnValueAtom(other)
+				-|	Valued(v2) ->> {
+					return  v2.type().isFloat();
+					}
+				-|	Typed(t) ->> {
+					return  t.isFloat();
+					}
+				-|	Float() ->> {
+					return  true;
+					}
+				-|	_ ->> {
+					return  false;
+					}
+				;
+			}
+		-|	Typed(t) ->> {
+			@match JudgmentOnValueAtom(other)
+				-|	Typed(t2) ->> {
+					return  t == t2;
+					}
+				-|	Valued(v) ->> {
+					return  t == v.type();
+					}
+				-|	_ ->> {
+					return  false;
+					}
+				;
+			}
+		-|	Valued(v) ->> {
+			@match JudgmentOnValueAtom(other)
+				-|	Valued(v2) ->> {
+					return  v == v2;
+					}
+				-|	_ ->> {
+					return  false;
+					}
+				;
+			}
+		;
+	}
+    
+bool JudgmentOnValueAtom::disjoint(const JudgmentOnValue& other) const
+	{
+	JudgmentOnValue selfJOV = JudgmentOnValue::Atom(*this);
+	
+	return !(selfJOV.covers(other) || other.covers(selfJOV));
+	}
+    
+JudgmentOnResult JudgmentOnValueAtom::intersectWith(const JudgmentOnValue& rightJOV) const
+	{
+	if (!rightJOV.isAtom())
+		return JudgmentOnResult();
+		
+	const JudgmentOnValueAtom& right(rightJOV.getAtom().jov());
+	
+	@match JudgmentOnValueAtom(*this)
+		-|	Unknown() ->> {
+			return  JudgmentOnResult(JudgmentOnValue::Atom(right));
+			}
+		-|	Integer(isSigned) ->> {
+			@match JudgmentOnValueAtom(right)
+				-|	Unknown() ->> {
+					return  JudgmentOnResult(JudgmentOnValue::Atom((*this)));
+					}
+				-|	Integer(isSigned2) ->> {
+					return (!isSigned || !isSigned2 || isSigned2 == isSigned) ?
+						JudgmentOnResult(
+							JudgmentOnValue::Atom(
+								JudgmentOnValueAtom::Integer(mergeNulls(isSigned, isSigned2))
+								)
+							) :
+						JudgmentOnResult();
+					}
+				-|	Typed(t2) ->> {
+					return  t2.isInteger() && ::covers(isSigned, t2.getInteger().isSigned()) ? JudgmentOnResult(JudgmentOnValue::Atom(right)) : JudgmentOnResult();
+					}
+				-|	Valued(v2) ->> {
+					return  v2.type().isInteger() && ::covers(isSigned, v2.type().getInteger().isSigned()) ? JudgmentOnResult(JudgmentOnValue::Atom(right)) : JudgmentOnResult();
+					}
+				-|	_ ->> {
+					return  JudgmentOnResult();
+					}
+				;
+			}
+		-|	Float() ->> {
+			@match JudgmentOnValueAtom(right)
+				-|	Unknown() ->> {
+					return  JudgmentOnResult(JudgmentOnValue::Atom((*this)));
+					}
+				-|	Float() ->> {
+					return  JudgmentOnResult(JudgmentOnValue::Atom((*this)));
+					}
+				-|	Typed(t2) ->> {
+					return  t2.isFloat() ? JudgmentOnResult(JudgmentOnValue::Atom(right)) : JudgmentOnResult();
+					}
+				-|	Valued(v2) ->> {
+					return  v2.type().isFloat() ? JudgmentOnResult(JudgmentOnValue::Atom(right)) : JudgmentOnResult();
+					}
+				-|	_ ->> {
+					return  JudgmentOnResult();
+					}
+				;
+			}
+		-|	Typed(t) ->> {
+			@match JudgmentOnValueAtom(right)
+				-|	Unknown() ->> {
+					return  JudgmentOnResult(JudgmentOnValue::Atom((*this)));
+					}
+				-|	Float() ->> {
+					return  t.isFloat() ? JudgmentOnResult(JudgmentOnValue::Atom((*this))) : JudgmentOnResult();
+					}
+				-|	Integer(isSigned) ->> {
+					return  t.isInteger() && ::covers(isSigned, t.getInteger().isSigned()) ? JudgmentOnResult(JudgmentOnValue::Atom((*this))) : JudgmentOnResult();
+					}
+				-|	Typed(t2) ->> {
+					return  t == t2 ? JudgmentOnResult(JudgmentOnValue::Atom((*this))) : JudgmentOnResult();
+					}
+				-|	Valued(v2) ->> {
+					return  t == v2.type() ? JudgmentOnResult(JudgmentOnValue::Atom(right)) : JudgmentOnResult();
+					}
+				;
+			}
+		-|	Valued(v) ->> {
+				@match JudgmentOnValueAtom(right)
+					-|	Unknown() ->> {
+						return  JudgmentOnResult(JudgmentOnValue::Atom((*this)));
+						}
+					-|	Float() ->> {
+						return  v.type().isFloat() ? JudgmentOnResult(JudgmentOnValue::Atom((*this))) : JudgmentOnResult();
+						}
+					-|	Integer(isSigned) ->> {
+						return  v.type().isInteger() && ::covers(isSigned, v.type().getInteger().isSigned()) ? JudgmentOnResult(JudgmentOnValue::Atom((*this))) : JudgmentOnResult();
+						}
+					-|	Typed(t2) ->> {
+						return  v.type() == t2 ? JudgmentOnResult(JudgmentOnValue::Atom((*this))) : JudgmentOnResult();
+						}
+					-|	Valued(v2) ->> {
+						return  v == v2 ? JudgmentOnResult(JudgmentOnValue::Atom(right)) : JudgmentOnResult();
+						}
+					;
+				}
+		;
+	}
+	
+namespace {
+@type JOVAPair = JudgmentOnValueAtom l, JudgmentOnValueAtom r;
+}
+
+JudgmentOnValue		JudgmentOnValueAtom::smallestCovering(const JudgmentOnValue& otherJOV) const
+	{
+	if (!otherJOV.isAtom())
+		return ::smallestCovering(JudgmentOnValue::Atom(*this), otherJOV);
+	
+	if (this->covers(otherJOV))
+		return JOV::Atom(*this);
+	if (otherJOV.covers(JOV::Atom(*this)))
+		return otherJOV;
+	
+	//TODO BUG brax: implement a finer-grained smallestCovering
+	return JOV::Atom(JudgmentOnValueAtom::Unknown());
+	}
+
+JudgmentOnResult	JudgmentOnValueAtom::restrictedToCSTness(bool inCSTness) const
+	{
+	//if we're a non-cst ExternalFunction then we aren't CST. otherwise we are
+	@match JudgmentOnValueAtom(*this)
+		-|	Typed(ExternalFunction(isCST)) ->> {
+			return (isCST ? JudgmentOnResult(JOV::Atom(*this)) : JudgmentOnResult());
+			}
+		-|	_ ->> {
+			return  JudgmentOnResult(JOV::Atom(*this));
+			}
+		;
+	}
+
+

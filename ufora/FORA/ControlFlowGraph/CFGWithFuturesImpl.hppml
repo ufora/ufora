@@ -1,0 +1,210 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "CFGWithFutures.hppml"
+#include "../../core/containers/TwoWaySetMap.hpp"
+#include "../../core/PolymorphicSharedPtr.hpp"
+
+class SimulationState;
+
+class CFGWithFuturesImpl:
+    public PolymorphicSharedPtrBase<CFGWithFuturesImpl> {
+public:
+    static PolymorphicSharedPtr<CFGWithFuturesImpl> createCfgWithFutures(
+        const ControlFlowGraph& inGraph,
+        const Nullable<std::string>& inLabel,
+        const ImmutableTreeVector<ImplValContainer>& inCurrentValues
+        );
+
+    // get a list of the current future slots. This is an add-only list. Callers
+    // are responsible for examining it, submitting work to the system, and
+    // eventually calling ‘slotCompleted’
+    const std::vector<FutureSlot>& getSlots() const;
+
+    // gives indices in getSlots() of FutureSlots which can be submitted.
+    const std::set<uint64_t>& indicesOfSubmittableFutures() const;
+
+    // roll the simulation far enough forward to produce at most one new future
+    // returns true if we made progress, false if we didn't. note that 
+    // we may make progress without producing a new future.
+    bool continueSimulation();
+
+    Nullable<CFGWithFutures::SubmittableArgs> 
+    asSubmittable(uint64_t slotIndex) const;
+
+    bool isSubmittable(uint64_t slotIndex) const;
+
+    // we have realized the value of one of the slots
+    void slotCompleted(
+        uint64_t slotIndex, const Fora::Interpreter::ComputationResult& result
+        );
+
+    // did we actually finish the simulation and return a value?
+    Nullable<CFGWithFutures::SimulationResult> getFinalResult() const;
+
+    // did the simulation resolve to a simple state in which there are
+    // no outstanding futures remaining. True IFF ‘nodeValues’ only contains
+    // values with ‘isCurrent() == true’ or 'isGarbageCollected() == true'
+    bool hasResolvedToSimpleState() const;
+
+    bool hasResolvedToSimpleStateAtIndex(uint64_t slotIndex) const;
+    
+    const ControlFlowGraph& graph() const;
+
+    const Nullable<std::string>& currentLabel() const;
+
+    const ImmutableTreeVector<FutureValue>& currentNodeValues() const;
+
+    std::string toString(bool showGraph = false) const;
+
+    bool mustBailEarly() const;
+
+    Nullable<uint64_t> lowestKnownBailEarlyIndex() const;    
+
+    void disallowRepeatNodes();
+
+    void setMaxRepeatNodesAllowed(uint64_t count);
+
+    bool couldExitIfAllValuesWereFinished() const;
+
+private:
+    @type BailEarlyType = 
+            Exception of () 
+        -|  Mutable of ()
+        -|  RepeatIndex of ()
+and 
+        // one of these signifies that we have a mutable or Exception at a 
+        // given slot index. we have to wait for all lower-index results,
+        // to see if they are mutables or exceptions, and then return at
+        // the lowest one (which is an exception or mutable)
+        BailEarlyState = 
+            uint64_t slotIndex, 
+            ImmutableTreeVector<FutureValue> args,
+            BailEarlyType type        
+and
+    TupleExpandInfo = ImplValContainer valueToExpand, uint32_t arity
+    ;
+
+    // construct a CFGWithFuturesImpl at a given point in a graph. 
+    // node must be an apply. Immediately create one future slot.
+    CFGWithFuturesImpl(const SimulationHead&);
+
+    SimulationHead mSimulationHead;
+
+    PolymorphicSharedPtr<SimulationState> mSimulationStatePtr;
+
+    Nullable<BailEarlyState> mBailEarlyState;
+
+    Nullable<uint64_t> mMaxRepeatNodesAllowed;
+
+    std::map<Nullable<std::string>, uint64_t> mVisitedApplyAndCacheNodesCounts;
+
+    Nullable<uint64_t> maxRepeatNodesAllowed() const;
+
+    bool repeatNodesAreAllowed() const;
+
+    const SimulationHead& simulationHead() const;
+
+    bool allSlotsAreCurrent(const std::set<uint64_t>& slotIndices) const;
+
+    Nullable<ImplValContainer> futureToImplVal(const FutureValue&) const;
+
+    Nullable<ImmutableTreeVector<ImplValContainer>> futureValuesToImplVals(
+        const ImmutableTreeVector<FutureValue>&
+        ) const;
+
+    void registerNewSlotDependencies();
+
+    void handleResult(
+        uint64_t slotIndex,
+        const ImplValContainer& result,
+        const ImplValContainer& computationLog,
+        bool isException
+        );
+
+    void registerExceptionOrMutable(
+        uint64_t slotIndex,
+        const ImmutableTreeVector<FutureValue>& slotArgs,
+        bool isException
+        );
+
+    Nullable<CFGWithFutures::SimulationResult> getFinalResultAtSlot(
+        const FutureSlot& inSlot, 
+        const ImmutableTreeVector<FutureValue>& inNodeArgs
+        ) const;
+
+    Nullable<CFGWithFutures::SimulationResult> getFinalResultAtNode(
+        const ControlFlowNodeBody& body,
+        const ImmutableTreeVector<FutureValue>& inNodeArgs,
+        const Nullable<FutureSlot_CurrentType>& result
+        ) const;
+
+    
+    FutureValue currentResultAtLastSlot() const;
+
+    void advanceSimulationHead(const SimulationHead&);
+
+    static Nullable<SimulationHead> nextSimulationHead(
+        const ControlFlowGraph& inGraph,
+        const Nullable<std::string>& inLabel,
+        const ImmutableTreeVector<FutureValue>& inCurrentValues
+        );
+
+    static SimulationHead zeroOutUnusedContinuationArgs(const SimulationHead&);
+
+public:
+    static ImmutableTreeVector<FutureValue> implValsToFutureValues(
+        const ImmutableTreeVector<ImplValContainer>& inValues
+        );
+
+    static FutureValue controlFlowContinuationArgToFutureValue(
+        const ControlFlowContinuationArg& inArg,
+        const ImmutableTreeVector<FutureValue>& inCurrentValues,
+        const Nullable<FutureValue>& inCurrentResult,
+        const Nullable<CFGWithFuturesImpl::TupleExpandInfo>& inTupleExpandInfo
+        );
+
+    static ImmutableTreeVector<FutureValue> 
+    controlFlowContinuationArgsToFutureValues(
+        const ImmutableTreeVector<ControlFlowContinuationArg>& inArgs,
+        const ImmutableTreeVector<FutureValue>& inCurrentValues,
+        const Nullable<FutureValue>& inCurrentResult,
+        const Nullable<CFGWithFuturesImpl::TupleExpandInfo>& inTupleExpandInfo
+        );
+
+    static ImmutableTreeVector<ImplValContainer> 
+    controlFlowContinuationArgsAndValuesToImplvals(
+        const ImmutableTreeVector<ControlFlowContinuationArg>& inArgs,
+        const ImmutableTreeVector<ImplValContainer>& inCurrentNodeValues,
+        const Nullable<ImplValContainer>& inApplyResult,
+        const Nullable<CFGWithFuturesImpl::TupleExpandInfo>& inTupleExpandInfo
+        );
+
+    static ImplValContainer controlFlowContinuationArgAndValuesToImplVal(
+        const ControlFlowContinuationArg& inArg,
+        const ImmutableTreeVector<ImplValContainer>& inCurrentNodeValues,
+        const Nullable<ImplValContainer>& inApplyResult,
+        const Nullable<CFGWithFuturesImpl::TupleExpandInfo>& inTupleExpandInfo
+        );
+
+    static FutureValue applyArgToFutureValue(
+        const ControlFlowArg& inControlFlowArg, 
+        const ImmutableTreeVector<FutureValue>& inCurrentValues
+        );
+
+};
+

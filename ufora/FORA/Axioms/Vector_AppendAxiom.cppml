@@ -1,0 +1,479 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Vector_AppendAxiom.hppml"
+#include "AxiomGroup.hppml"
+#include "Axiom.hppml"
+#include "LibcallAxiomGroup.hppml"
+#include "TypedForaAxiomBuilder.hppml"
+#include "../Interpreter/RuntimeConfig.hppml"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include "../TypedFora/ABI/VectorRecord.hpp"
+#include "../TypedFora/ABI/VectorLoadRequest.hppml"
+#include "../TypedFora/ABI/VectorLoadRequestCodegen.hppml"
+#include "../TypedFora/ABI/ReturnValueCodegen.hpp"
+#include "../TypedFora/ABI/VectorRecordCodegen.hppml"
+#include "../TypedFora/ABI/TypedForaValueTypecasting.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../Core/RefcountPool.hppml"
+#include "../VectorDataManager/VectorDataManager.hppml"
+#include "../Native/NativeExpressionBuilder.hppml"
+#include "../Native/TypedNativeExpression.hppml"
+#include "../Native/TypedNativeLibraryFunction.hpp"
+#include "../../core/Logging.hpp"
+#include "../../core/SymbolExport.hpp"
+#include "../Core/TupleCategory.hppml"
+#include "../TypedFora/ABI/DestructorsAndConstructors.hppml"
+#include "../TypedFora/ABI/ForaValueArrayCodegen.hpp"
+#include "../TypedFora/ABI/ForaValueArray.hppml"
+#include "../Core/MemoryPool.hpp"
+#include "../../core/math/Overflow.hpp"
+
+using namespace Fora;
+
+using Fora::Interpreter::ExecutionContext;
+
+using TypedFora::Abi::ForaValueArray;
+using TypedFora::Abi::VectorRecord;
+
+//intended to be called on non-CST `toAppendTup`
+String errorForNonCSTAppendAttempt(ImplValContainer toAppend)
+	{
+	ostringstream err;
+	err << "Can't append " << toAppend.toString()
+		<< " to a vector as it is not CST.";
+
+	return String(
+			err.str(),
+			Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+			);
+	}
+
+Fora::ReturnValue<VectorRecord, TypedFora::Abi::VectorLoadRequest>	appendToPooledVector(
+								VectorRecord vec,
+								ImplValContainer toAppend
+								)
+	{
+	Fora::Interpreter::ExecutionContext* context = 
+		Fora::Interpreter::ExecutionContext::currentExecutionContext();
+
+	VectorRecord vecDataTR = vec.append(
+		context->getMemoryPool(),
+		toAppend,
+		&context->getVDM(),
+		boost::bind(&Fora::Interpreter::ExecutionContext::newVectorHash, context)
+		);
+
+	if (vec.dataPtr() != vecDataTR.dataPtr())
+		context->getRefcountPool()->add(vecDataTR);
+
+	//we're supposed to be returning a 'pooled' VectorRecord. We should really make a separate
+	//class to represent this idea.
+	vecDataTR.~VectorRecord();
+	return slot0(vecDataTR);
+	}
+
+Fora::ReturnValue<VectorRecord, TypedFora::Abi::VectorLoadRequest>	appendToPooledVectorTyped(
+								VectorRecord vec,
+								void* data,
+								uword_t judgmentAsUword
+								)
+	{
+	JudgmentOnValue judgment = *(JudgmentOnValue*)&judgmentAsUword;
+
+	Fora::Interpreter::ExecutionContext* context = 
+		Fora::Interpreter::ExecutionContext::currentExecutionContext();
+
+	VectorRecord vecDataTR = vec.append(
+		context->getMemoryPool(),
+		judgment.constant() ? judgment.constant()->getReference().data() : data,
+		judgment,
+		&context->getVDM(),
+		boost::bind(&Fora::Interpreter::ExecutionContext::newVectorHash, context)
+		);
+
+	if (vec.dataPtr() != vecDataTR.dataPtr())
+		context->getRefcountPool()->add(vecDataTR);
+
+	//we're supposed to be returning a 'pooled' VectorRecord. We should really make a separate
+	//class to represent this idea.
+	vecDataTR.~VectorRecord();
+	return slot0(vecDataTR);
+	}
+
+NativeExpression loadcheckOrExtractVectorRecord(NativeExpression vectorOrLoadcheckExpr)
+	{
+	using namespace TypedNativeExpressionHelpers;
+
+	using namespace Fora;
+	using TypedFora::Abi::VectorLoadRequest;
+
+	TypedNativeVariable<ReturnValue<VectorRecord, VectorLoadRequest> > vectorOrLoad;
+
+	return
+		let(vectorOrLoad,
+			TypedNativeExpression<ReturnValue<VectorRecord, VectorLoadRequest> >(
+				vectorOrLoadcheckExpr
+				),
+			if_(vectorOrLoad.getIndex() == TypedNativeExpression<uint64_t>(0),
+				vectorOrLoad.get0(),
+				TypedNativeExpression<VectorRecord>(
+					vectorOrLoad.get1().loadCheck().getExpression()
+					)
+				)
+			).wrapInEmptyCFGLayer().getExpression();
+	}
+
+NativeExpression callAppendFunction(
+							NativeExpression vecExpr, 
+							NativeExpression implValToAppendExpr
+							)
+	{
+	return loadcheckOrExtractVectorRecord(
+		makeTypedNativeLibraryFunction(&appendToPooledVector)(
+			TypedNativeExpression<VectorRecord>(vecExpr),
+			TypedNativeExpression<ImplValContainer>(implValToAppendExpr)
+			).getExpression()
+		);
+	}
+
+NativeExpression callAppendFunctionTyped(
+							NativeExpression vecExpr, 
+							NativeExpression valueData,
+							JudgmentOnValue valueJOV
+							)
+	{
+	if (!valueData.type())
+		return vecExpr >> valueData;
+
+	NativeVariable var = NativeVariable::Temp(valueData.type()->ptr());
+
+	static_assert(
+		sizeof(JudgmentOnValue) == sizeof(uword_t), 
+		"JudgmentOnValue should just be a pointer"
+		);
+	uword_t valueJOVAsUword = *((uword_t*)&valueJOV);
+
+	return loadcheckOrExtractVectorRecord(
+		NativeExpression::Let(
+			var,
+			NativeExpression::Alloc(*valueData.type(), 1, false),
+			var.expr().store(valueData) >>
+			makeTypedNativeLibraryFunction(&appendToPooledVectorTyped)(
+				TypedNativeExpression<VectorRecord>(vecExpr),
+				TypedNativeExpression<void*>(var.expr().cast(NativeType::Nothing().ptr(), false)),
+				TypedNativeExpression<uword_t>(valueJOVAsUword)
+				).getExpression()
+			)
+		);
+	}
+
+//this function does not do any checking on the toAppend element -- we're assuming it's
+//binary compatible and CST
+Axiom	generateHomogenousPushAppendAxiom(
+						TypedFora::Compiler& inRuntime,
+						const JOV& curVecJOV,
+						const JOV& argumentJOV,
+						const JOV& newVecJOV
+						)
+	{
+	lassert(argumentJOV.type());
+
+	JOVT signature = JOVT::Unnamed(
+			emptyTreeVec() +
+				curVecJOV +
+				JOV::Constant(CSTValue(Symbol("append"))) +
+				argumentJOV
+			);
+			
+	TypedFora::TypedForaAxiomBuilder builder(
+										signature,
+										TypedFora::RefcountStyle::Pooled()
+										);
+
+	TypedNativeExpression<VectorRecord> vecExpr;
+
+	if (curVecJOV.constant())
+		//if it's constant, we need to upgrade it to the correct native type.
+		vecExpr = TypedNativeExpression<VectorRecord>();
+	else
+		vecExpr = builder.nativeVar(0).expr();
+
+	using namespace TypedNativeExpressionHelpers;
+
+	TypedNativeExpression<VectorRecord> appendExpr = 
+		if_(
+			if_(vecExpr.isAppendable(),
+				if_(vecExpr.appendAssumingAppendableAndPooled(
+						builder.nativeVar(2).expr(),
+						argumentJOV
+						),
+					TypedNativeExpression<bool>(true),
+					TypedNativeExpression<bool>(false)
+					),
+				TypedNativeExpression<bool>(false)
+				),
+			vecExpr.selfWithIncrementedSize(),
+			TypedNativeExpression<VectorRecord>(
+				argumentJOV.isValidVectorElementJOV() ? 
+					callAppendFunctionTyped(
+						vecExpr.getExpression(),
+						builder.nativeVar(2).expr(),
+						argumentJOV
+						)
+				:
+					callAppendFunction(
+						vecExpr.getExpression(),
+						TypedFora::Abi::typecastForaValue(
+							builder.nativeVar(2).expr(),
+							argumentJOV,
+							JOV(),
+							false
+							)
+						)
+				),
+			.999999
+			);
+
+	return builder.axiomForNativeExpression(
+		appendExpr.getExpression(),
+		TypedFora::RefcountStyle::Pooled(),
+		newVecJOV,
+		false
+		);
+	}
+
+JudgmentOnValueVector	vectorJOVAfterAppending(
+									const JudgmentOnValueVector& existingVecJmt,
+									const JudgmentOnValue& inJOV
+									)
+	{
+	JudgmentOnResult existingElementsJOR = existingVecJmt.elementsJOR();
+
+	if (existingElementsJOR.smallestCovering(inJOV))
+		return existingVecJmt;
+	
+	if (inJOV.vectorElementJOV())
+		return
+			JudgmentOnValueVector(
+				existingElementsJOR +
+					JudgmentOnResult(
+						*inJOV.vectorElementJOV()
+						)
+				);
+		else
+		return JudgmentOnValueVector(
+			JudgmentOnResult(JOV())
+			);
+	}
+
+VectorAppendAxiom::VectorAppendAxiom() : AxiomGroup(
+		JOVT() +
+			jovAnyVector() +
+			"append" +
+			JOV::UnknownCSTKnown(true)
+		)
+	{
+	}
+
+Nullable<Axiom> VectorAppendAxiom::axiom(
+					TypedFora::Compiler& inRuntime,
+					const JudgmentOnValueTuple& s
+					)
+	{
+	bool axiomPossiblyThrows = false;
+	
+	Nullable<AxiomJOA> axiomJoa = axiomJOA(s);
+	
+	lassert(axiomJoa);
+	
+	@match AxiomJOA(*axiomJoa)
+		-|	Native(joa) ->>
+				{
+				if (joa.definitelyThrows())
+					{
+					//there's a little repetition of work here ... could this
+					//be generated in axiomJOA?
+					return null() <<
+						LibcallAxiomGroup::createAxiom(
+							JOVT() +
+								jovAnyVector() +
+								"append" +
+								JOV()
+								,
+							ReturnSlots() + 
+							ReturnSlot::Exception(
+								JOV::OfType(Type::String())
+								),
+							&errorForNonCSTAppendAttempt,
+							ImmutableTreeVector<uword_t>() + 2,
+							null()
+							);
+					}
+					
+				if (joa.throwPart())
+					axiomPossiblyThrows = true;
+				}
+		-|	_ ->> { lassert(false); }
+		;
+		
+	JudgmentOnValueVector	existingVecJmt;
+	@match JOV(s.jovs()[0])
+		-| Vector(x) ->> {
+				existingVecJmt = x;
+				};
+	
+	JudgmentOnResult existingElementsJOR = existingVecJmt.elementsJOR();
+	JOV curVecJOV = s.jovs()[0];
+	
+	if (s.extras().isNoExtras()
+				&& inRuntime.getConfig().generateMachineCodeVectorAxioms()
+				&& !axiomPossiblyThrows
+				)
+		{
+		Nullable<JOV> argumentJOV = s.jovs()[2].vectorElementJOV();
+		lassert(argumentJOV);
+		
+		return null() <<
+			generateHomogenousPushAppendAxiom(
+				inRuntime, 
+				curVecJOV, 
+				*argumentJOV,
+				JudgmentOnValue::Vector(
+					vectorJOVAfterAppending(existingVecJmt, *argumentJOV)
+					)
+				);
+		}
+	else
+		{
+		JOVT signature = JOVT::Unnamed(
+				emptyTreeVec() +
+					jovAnyVector() +
+					JOV::Constant(CSTValue(Symbol("append"))) +
+					JOV()
+				);
+				
+		TypedFora::TypedForaAxiomBuilder builder(
+						signature,
+						TypedFora::RefcountStyle::Pooled()
+						);
+
+		NativeExpression expr = 
+			callAppendFunction(
+				builder.nativeVar(0).expr(),
+				builder.nativeVar(2).expr()
+				);
+
+		return null() << builder.axiomForNativeExpression(
+			expr,
+			TypedFora::RefcountStyle::Pooled(),
+			jovAnyVector(),
+			false
+			);
+		}
+	}
+
+Nullable<AxiomJOA>		VectorAppendAxiom::axiomJOA(const JudgmentOnValueTuple& s)
+	{
+	JudgmentOnValueVector	vecJmt;
+
+	@match JOV(s.jovs()[0])
+		-| Vector(x) ->> { vecJmt = x; }
+		;
+
+	bool anyMightHaveDictionaries = false;
+	bool allToAppendAndAllExtrasAreDefintelyCST = true;
+
+	if (s.hasExtras())
+		anyMightHaveDictionaries = true;
+
+	for (long k = 2; k < s.jovs().size(); k++)
+		{
+		const JOV& jov = s.jovs()[k];
+
+		vecJmt = vectorJOVAfterAppending(vecJmt, jov);
+
+		if (!jov.type() || jov.type()->hasDictionaryWithin())
+			anyMightHaveDictionaries = true;
+
+		Nullable<bool> kthToAppendIsCST = jov.computeCST();
+
+		if (!kthToAppendIsCST)
+			allToAppendAndAllExtrasAreDefintelyCST = false;
+		else if (!*kthToAppendIsCST)
+			return null() <<
+				AxiomJOA::Throws(
+					JOV::OfType(Type::String())
+					);
+		}
+
+	@match JOVTE(s.extras())
+		-|	Extras(jov) ->> {
+				vecJmt = vectorJOVAfterAppending(vecJmt, jov);
+				
+				if (!jov.computeCST() || !*jov.computeCST())
+					allToAppendAndAllExtrasAreDefintelyCST = false;
+					//even if we have non-cst extras, they might not exist on the value,
+					//so the append could still be possible
+				}
+		-|	NoExtras() ->> {;}
+		;
+
+	JudgmentOnAction joa = 
+		JudgmentOnAction::Value(
+				JudgmentOnValue::Vector(
+					vecJmt
+					)
+				);
+
+	if (anyMightHaveDictionaries or !allToAppendAndAllExtrasAreDefintelyCST)
+		joa = joa | JudgmentOnAction::Throws(
+				JOV::OfType(Type::String())
+				);
+	
+
+	return null() << AxiomJOA::Native(joa);
+	}
+
+Nullable<JudgmentOnValueTuple>	VectorAppendAxiom::weakestArgumentsProducingResultCoveredBy(
+											TypedFora::Compiler& c,
+											const JudgmentOnValueTuple& args,
+											const JudgmentOnAction& result
+											)
+	{
+	if (result.size() == 1 && result.resultPart().size() == 1)
+		{
+		JOV vecJOV = result.resultPart()[0];
+		lassert(vecJOV.isVector());
+
+		JudgmentOnValueVector jovv = vecJOV.getVector().jov();
+
+		JudgmentOnResult eltsJOR = jovv.elementsJOR();
+
+		JOV argJOV = args.jovs()[3];
+
+		for (long k = 0; k < eltsJOR.size(); k++)
+			if (eltsJOR[k].covers(argJOV))
+				{
+				return null() << (JOVT() + vecJOV + "Operator" + "::" + eltsJOR[k]);
+				}
+		}
+
+	return AxiomGroup::weakestArgumentsProducingResultCoveredBy(c, args, result);
+	}
+
+
+
+

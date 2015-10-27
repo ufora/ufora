@@ -1,0 +1,177 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "NeighborhoodSpectrumCalculator.hppml"
+#include "NeighborhoodSet.hppml"
+#include "GroupId.hpp"
+#include <algorithm>
+#include <boost/enable_shared_from_this.hpp>
+
+namespace Cumulus {
+
+namespace PageLayoutCalculator {
+
+class NeighborhoodSpectralTree;
+
+class NeighborhoodSpectralTreeWatcher {
+public:
+	virtual void groupCreated(GroupId tree) = 0;
+
+	virtual void groupDestroyed(GroupId tree) = 0;
+
+	virtual void neighborhoodPlacedInLeafGroup(Neighborhood n, GroupId group) = 0;
+
+	virtual void neighborhoodRemovedFromLeafGroup(Neighborhood n, GroupId group) = 0;
+};
+
+@type NeighborhoodSpectralTreeParams = 
+	int64_t largestBlockSize,
+	int64_t smallestBlockSize,
+	boost::shared_ptr<Ufora::math::Random::Uniform<double> > randomGenerator,
+	boost::shared_ptr<GroupId> groupId,
+	NeighborhoodSpectralTreeWatcher* neighborhoodChanges
+{
+public:
+	NeighborhoodSpectralTreeParams(long seed)
+		{
+		neighborhoodChanges() = 0;
+		largestBlockSize() = 1024L * 1024L * 1024L * 10L;
+		smallestBlockSize() = 256 * 1024L * 1024L;
+		randomGenerator().reset(new Ufora::math::Random::Uniform<double>(seed));
+		groupId().reset(new GroupId());
+		}
+
+	GroupId newGroupId() const
+		{
+		GroupId result = *groupId();
+		*groupId() = groupId()->next();
+		return result;
+		}
+};
+
+class NeighborhoodSpectralTree : public boost::enable_shared_from_this<NeighborhoodSpectralTree> {
+protected:
+	NeighborhoodSpectralTree(const NeighborhoodSpectralTreeParams& params) : 
+			mParams(params),
+			mGroupId(params.newGroupId())
+		{
+		}
+
+public:
+	virtual ~NeighborhoodSpectralTree()
+		{
+		}
+
+	static boost::shared_ptr<NeighborhoodSpectralTree> construct(NeighborhoodSpectralTreeParams params);
+
+	static boost::shared_ptr<NeighborhoodSpectralTree> constructSparse(NeighborhoodSpectralTreeParams params);
+
+	static boost::shared_ptr<NeighborhoodSpectralTree> constructDense(NeighborhoodSpectralTreeParams params);
+
+	virtual void addNeighborhood(const Neighborhood& inNeighborhood) = 0;
+
+	virtual void dropNeighborhood(const Neighborhood& inNeighborhood) = 0;
+
+	virtual void dropNeighborhoods(const std::set<Neighborhood>& inNeighborhoods) = 0;
+
+	virtual bool hasNeighborhood(const Neighborhood& inNeighborhood) = 0;
+
+	virtual void update(bool forceFullUpdate = false) = 0;
+
+	virtual int64_t bytesInPages() const = 0;
+
+	virtual int64_t bytesInNeighborhoods() const = 0;
+
+	virtual int64_t neighborhoodCount() const = 0;
+
+	virtual int64_t pageCount() const = 0;
+
+	virtual bool hasPage(Fora::PageId p) const = 0;
+
+	const std::vector<boost::shared_ptr<NeighborhoodSpectralTree> >& subtrees() const
+		{
+		return mSubtrees;
+		}
+
+	double outputReplicationFactor() const
+		{
+		return groupBytecount() / double(bytesInPages());
+		}
+
+	template<class stream_type>
+	void dump(stream_type& s, long depth = 0)
+		{
+		for (long k = 0; k < depth; k++)
+			s << " ";
+	
+		s << "Tree " << mGroupId.getInteger() 
+			<< " has "
+			<< mSubtrees.size() << " subtrees and "
+			<< neighborhoodCount() << " neighborhoods comprising " 
+			<< bytesInPages() / 1024 / 1024.0 << " MB"
+			;
+
+		if (mSubtrees.size())
+			s << " with proximateRF=" << proximateReplicationFactor()
+			<< "(excess of " << (proximateReplicationFactor() - 1) * (bytesInPages() / 1024 / 1024.0) << ")"
+			<< " and rf=" << outputReplicationFactor()
+			;
+			
+		s << "\n";
+
+		for (auto& tree: mSubtrees)
+			tree->dump(s, depth+1);
+		}
+
+	int64_t allNeighborhoodCount() const;
+
+	double proximateReplicationFactor() const;
+
+	int64_t groupBytecount() const
+		{
+		if (!mSubtrees.size())
+			return bytesInPages();
+
+		int64_t total = 0;
+
+		for (auto t: mSubtrees)
+			total += t->groupBytecount();
+
+		return total;
+		}
+
+	GroupId groupId() const
+		{
+		return mGroupId;
+		}
+
+	const NeighborhoodSpectralTreeParams& getParams() const
+		{
+		return mParams;
+		}
+	
+protected:
+	GroupId mGroupId;
+
+	std::vector<boost::shared_ptr<NeighborhoodSpectralTree> > mSubtrees;
+
+	NeighborhoodSpectralTreeParams mParams;
+};
+
+}
+
+}

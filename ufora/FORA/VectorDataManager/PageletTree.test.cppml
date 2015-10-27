@@ -1,0 +1,208 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "PageletTree.hppml"
+#include "../TypedFora/ABI/PackedForaValues.hppml"
+#include "../TypedFora/ABI/ForaValueArray.hppml"
+#include "../../core/UnitTest.hpp"
+#include "../../core/math/Random.hpp"
+#include "VectorDataMemoryManager.hppml"
+#include "VectorPage.hppml"
+#include "../Core/ExecutionContextMemoryPool.hppml"
+
+using Fora::Pagelet;
+using Fora::PageletTree;
+using Fora::PageletTreePtr;
+
+using TypedFora::Abi::ForaValueArray;
+using TypedFora::Abi::PackedForaValues;
+
+class PageletTreeTestFixture  {
+public:
+	PageletTreeTestFixture() : 
+			mMemoryManager(
+				new VectorDataMemoryManager(
+					CallbackScheduler::singletonForTesting(),
+					CallbackScheduler::singletonForTesting()
+					)
+				),
+			mMemoryPool(nullptr, mMemoryManager)
+		{
+		}
+
+	PageletTreePtr createPagelet(long valueCount)
+		{
+		boost::shared_ptr<Pagelet> pagelet(new Pagelet(mMemoryManager));
+
+		for (long k = 0; k < valueCount; k++)
+			pagelet->getValues()->append(ImplValContainer(CSTValue(k)));
+
+		pagelet->freeze();
+
+		return PageletTreePtr(
+			mMemoryPool.construct<PageletTree>(
+				&mMemoryPool,
+				pagelet,
+				valueCount
+				)
+			);
+		}
+
+	ImmutableTreeVector<long> values(long valueCount)
+		{
+		ImmutableTreeVector<long> res;
+		for (long k = 0; k < valueCount; k++)
+			res = res + k;
+		return res;
+		}
+
+	void assertSame(PageletTreePtr pagelet, ImmutableTreeVector<long> values)
+		{
+		BOOST_CHECK_EQUAL(pagelet->size(), values.size());
+
+		for (long k = 0; k < values.size(); k++)
+			BOOST_CHECK(
+				pagelet->extractValueIntoFreeStore(k) == ImplValContainer(CSTValue(values[k]))
+				);
+		
+		for (long k = 0; k < values.size(); k++)
+			pagelet->visitTree(
+				[&](boost::shared_ptr<Pagelet> pagelet, IntegerRange range, long offset) {
+					BOOST_CHECK(
+						(*pagelet->getValues())[range.low()] == 
+							ImplValContainer(CSTValue(values[range.low() + offset]))
+						);
+					},
+				IntegerRange(k, k+1)
+				);
+		}
+
+	PageletTreePtr concat(PageletTreePtr lhs, PageletTreePtr rhs)
+		{
+		return PageletTree::concatenateAndBalance(&mMemoryPool, lhs, rhs);
+		}
+
+	PolymorphicSharedPtr<VectorDataMemoryManager> mMemoryManager;
+
+	ExecutionContextMemoryPool mMemoryPool;
+};
+
+BOOST_FIXTURE_TEST_SUITE( test_FORA_PageletTree, PageletTreeTestFixture )
+
+BOOST_AUTO_TEST_CASE( test_instantiate_empty )
+	{
+	assertSame(createPagelet(10), values(10));
+	}
+
+BOOST_AUTO_TEST_CASE( test_tree_balancing )
+	{
+	assertSame(
+		concat(createPagelet(10), createPagelet(5)), 
+		values(10) + values(5)
+		);
+
+
+	PageletTreePtr pagelet = createPagelet(1);
+	ImmutableTreeVector<long> v = values(1);
+
+	for (long k = 0; k < 100; k++)
+		{
+		assertSame(pagelet, v);
+
+		pagelet = concat(pagelet, createPagelet(k + 1));
+		v = v + values(k + 1);
+		}
+
+	BOOST_CHECK(pagelet->count() == 101);
+	BOOST_CHECK(pagelet->height() < 20);
+	}
+
+BOOST_AUTO_TEST_CASE( test_tree_ops )
+	{
+	Ufora::math::Random::Uniform<float> random(2);
+
+	for (long passIx = 0; passIx < 100; passIx++)
+		{
+		std::vector<PageletTreePtr> pagelets;
+		std::vector<ImmutableTreeVector<long> > model;
+
+		for (long k = 0; k < 100; k++)
+			{
+			if (random() < .2 || model.size() < 4)
+				{
+				//randomly create a new pagelet
+				long ct = random() * 10 + 1;
+
+				model.push_back(values(ct));
+				pagelets.push_back(createPagelet(ct));
+				}
+
+			if (random() < .2 && pagelets.size())
+				{
+				//randomly concatenate two pagelets
+				long ix1 = random() * pagelets.size();
+				long ix2 = random() * pagelets.size();
+
+				//don't let it get too big...
+				if (pagelets[ix1]->size() + pagelets[ix2]->size() < 100)
+					{
+					pagelets[ix1] =
+						concat(
+							pagelets[ix1],
+							pagelets[ix2]
+							);
+					model[ix1] = model[ix1] + model[ix2];
+					}
+				}
+
+			if (random() < .5 && pagelets.size())
+				{
+				//randomly slice a pagelet
+				long ix1 = random() * pagelets.size();
+				if (pagelets[ix1]->size() > 1)
+					{
+					long ct = 1 + (pagelets[ix1]->size() - 1) * random();
+
+					pagelets[ix1] = pagelets[ix1]->restrictTo(&mMemoryPool, ct);
+					model[ix1] = model[ix1].slice(0, ct);
+					}
+				}
+
+			if (random() < .5 && pagelets.size())
+				{
+				//randomly collapse a pagelet
+				long ix1 = random() * pagelets.size();
+				if (pagelets[ix1]->size() > 1)
+					{
+					pagelets[ix1] = 
+						pagelets[ix1]->withSmallPageletsCollapsed(
+							&mMemoryPool, 
+							32, 
+							128, 
+							mMemoryManager,
+							1
+							);
+					}
+				}
+			}
+
+		for (long k = 0; k < pagelets.size(); k++)
+			assertSame(pagelets[k], model[k]);
+		}
+	}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+

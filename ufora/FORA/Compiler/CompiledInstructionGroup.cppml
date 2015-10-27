@@ -1,0 +1,955 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "CompiledInstructionGroup.hppml"
+#include "../Interpreter/Instruction.hppml"
+#include "../Interpreter/InstructionPtr.hpp"
+#include "InstructionCycle.hppml"
+#include "../Interpreter/InterpreterFrame.hppml"
+#include <boost/lexical_cast.hpp>
+#include "../TypedFora/JitCompiler/Compiler.hppml"
+#include "../Native/FunctionPointerHandle.hpp"
+#include "../TypedFora/Transforms/CleanupAndSimplify.hppml"
+#include "../Core/TupleCategory.hppml"
+#include "../../core/ScopedProfiler.hppml"
+#include "../../core/Clock.hpp"
+#include "../../core/Logging.hpp"
+#include "../Axioms/Axioms.hppml"
+#include "../Axioms/Axiom.hppml"
+#include "../Interpreter/RuntimeConfig.hppml"
+#include <boost/filesystem.hpp>
+#include <fstream>
+#include "../../core/StringUtil.hpp"
+#include "../../core/SymbolExport.hpp"
+#include "../Native/NativeCFGTransforms/Transforms.hppml"
+#include "../Native/NativeCFGTransforms/EliminateOverlappingRefcounts.hppml"
+#include "../TypedFora/TypedForaUtil.hppml"
+#include "../TypedFora/JitCompiler/TypedJumpTarget.hppml"
+#include "TypedCFGInstructionBuilder.hppml"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include "../Interpreter/CompilerEntrypointMap.hppml"
+#include "CompilerInstructionGraph/InstructionGraph.hppml"
+
+using namespace Fora::Compiler::CompilerInstructionGraph;
+
+namespace Fora {
+namespace Compiler {
+
+namespace {
+
+std::string freshGlobalLinkerName(void)
+	{
+	static uword_t linkerNameIx = 0;
+	static boost::recursive_mutex mutex;
+
+	boost::recursive_mutex::scoped_lock lock(mutex);
+
+	linkerNameIx++;
+	
+	string nm = prettyPrintString((uword_t)linkerNameIx);
+	nm = string("00000000").substr(nm.size()) + nm;
+	
+	LOG_INFO << "Creating compiled group: " << ("CIG_" + nm);
+
+	return "CIG_" + nm;
+	}
+
+}
+
+
+CompiledInstructionGroup::CompiledInstructionGroup(boost::shared_ptr<InstructionCycle> inCycle) :
+		mRootCycle(&*inCycle),
+		mTypedJitCompiler(
+			(*inCycle->getInstructions().begin())->instructionGraph().getTypedForaCompiler()
+			),
+		mAxioms(
+			(*inCycle->getInstructions().begin())->instructionGraph().getAxioms()
+			),
+		mDefined(false),
+		mInitialized(false),
+		mCompileRequested(false),
+		mCurrentlyBeingDefined(false),
+		mAlwaysWantsToBeInlined(false)
+	{
+	}
+
+std::string CompiledInstructionGroup::getLinkerName(void) const
+	{
+	if (mInitialized)
+		return mLinkerName;
+	return "<uninitialized CIG @" + prettyPrintString((void*)this) + ">";
+	}
+
+bool CompiledInstructionGroup::isInitialized(void) const
+	{
+	return mInitialized;
+	}
+
+bool CompiledInstructionGroup::isDefined(void) const
+	{
+	return mDefined;
+	}
+
+bool CompiledInstructionGroup::compileHasBeenRequested(void) const
+	{
+	return mCompileRequested;
+	}
+
+
+void CompiledInstructionGroup::initialize(void)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	lassert(!mInitialized);
+
+	//add all other nodes in this group that are in this CFG
+	for (ordered_instruction_set::const_iterator
+				it = mRootCycle->getCompilerEntrypointNodes().begin(),
+				it_end = mRootCycle->getCompilerEntrypointNodes().end();
+				it != it_end;
+				++it
+				)
+		addEntrypointInstruction( *it );
+
+	//now, choose a linker name for each CFG we're planning on jumping into.
+	mLinkerName = freshGlobalLinkerName() + "_" + 
+			Ufora::sanitizeFilename(
+				mRootCycle->getGraphName()
+				);
+	
+	mInitialized = true;
+	}
+
+void CompiledInstructionGroup::addEntrypointInstruction(InstructionPtr instructionPtr)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+	
+	lassert_dump(!instructionPtr->getInstructionBody().isCached() &&
+											!instructionPtr->isRootInstruction(),
+		"can't use a 'cached' node as an entrypoint instruction"
+		);
+
+	//check if already added
+	if (mEntrypointInstructionBlockMapping.find(instructionPtr) != mEntrypointInstructionBlockMapping.end())
+		return;
+
+	TypedFora::BlockID blockID = 
+		TypedFora::BlockID::external(mEntrypointBlockIDs.size());
+
+	mEntrypointBlockIDs.insert(blockID);
+
+	mEntrypointInstructionBlockMapping[instructionPtr] = blockID;
+	mBlockMapping[instructionPtr] = blockID;
+
+	addInstruction(instructionPtr);
+	}
+
+void CompiledInstructionGroup::addInstruction(InstructionPtr instructionPtr)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+	
+	if (instructionPtr->getInstructionBody().isCached() || instructionPtr->isRootInstruction())
+		return;
+
+	if (mInstructions.find(instructionPtr) != mInstructions.end())
+		return;
+
+	//if we are getting to this instruction via relaxation, and the instruction were going to be
+	//externally defined, and it might be marked 'alwaysInlined', we'll get a blow up when we
+	//try to transfer into it.
+
+	boost::shared_ptr<InstructionCycle> cycle = InstructionCycle::get(instructionPtr).shared_from_this();
+
+	if (	&*cycle != mRootCycle && 
+			!cycle->wantsToBePartOfCallersGroup() && 
+			cycle->isCompilerEntrypoint(instructionPtr)
+			)
+		{
+		//we're not going to include this node - we're going to link against it directly.
+		//note that we insist that we're not 'relaxing' into an 'always inline' group. 
+		//this would cause us to try to transfer into an externally defined node, and
+		//these nodes don't actually define external code.
+		boost::shared_ptr<CompiledInstructionGroup> cig = 
+					CompiledInstructionGroup::get(instructionPtr);
+
+		if (cig)
+			mDownstreamCompiledGroups.insert(cig);
+
+		return;
+		}
+	
+	mInstructions.insert(instructionPtr);
+	
+	for (long k = 0; k < instructionPtr->flowsToCount(); k++)
+		addInstruction(instructionPtr->flowsTo(k));
+	}
+
+TypedFora::CallTarget CompiledInstructionGroup::getCallTarget(InstructionPtr instructionPtr) const
+	{
+	if (mAlwaysWantsToBeInlined)
+		{
+		return TypedFora::CallTarget::Subgraph(
+			getCallable(),
+			TypedFora::BlockID::entry()
+			);
+		}
+	else
+		{
+		auto it = mEntrypointInstructionBlockMapping.find(instructionPtr);
+		
+		lassert_dump(mDefined || mCurrentlyBeingDefined, "CompiledInstructionGroup " << (uword_t)this << 
+			" not defined yet. instruction = " << instructionPtr->toString(false));
+
+		lassert_dump(
+			it != mEntrypointInstructionBlockMapping.end(),
+			"CompiledInstructionGroup " << mLinkerName << " can't find:\n" << instructionPtr->toString()
+			);
+		lassert(mBlockMapping.find(instructionPtr) != mBlockMapping.end());
+		lassert(mCallSignatures.find(instructionPtr) != mCallSignatures.end());
+		
+		return TypedFora::CallTarget::ExternalSubgraph(
+			mResultSignature,
+			mCallSignatures.find(instructionPtr)->second,
+			mLinkerName,
+			it->second
+			);
+		}
+	}
+
+TypedFora::TransferTarget CompiledInstructionGroup::getTransferTarget(InstructionPtr instructionPtr) const
+	{
+	lassert_dump(!mAlwaysWantsToBeInlined,
+		"group " << (void*)this << " can't be transferred to:\n" 
+		<< instructionPtr->toString(false)
+		);
+
+	auto it = mEntrypointInstructionBlockMapping.find(instructionPtr);
+	
+	lassert_dump(mDefined || mCurrentlyBeingDefined, "CompiledInstructionGroup " << (uword_t)this << 
+		" not defined yet. instruction = " << instructionPtr->toString());
+	
+	lassert_dump(
+		it != mEntrypointInstructionBlockMapping.end(),
+		"CompiledInstructionGroup " << mLinkerName << " can't find:\n" << instructionPtr->toString()
+			 << "\nwithin\n" << toString()
+		);
+
+	lassert(mBlockMapping.find(instructionPtr) != mBlockMapping.end());
+	lassert(mCallSignatures.find(instructionPtr) != mCallSignatures.end());
+	
+	return TypedFora::TransferTarget::ExternalSubgraph(
+		mResultSignature,
+		mCallSignatures.find(instructionPtr)->second,
+		mLinkerName,
+		it->second
+		);
+	}
+
+bool	CompiledInstructionGroup::containsNode(InstructionPtr instructionPtr)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+	
+	return mInstructions.find(instructionPtr) != mInstructions.end();
+	}
+
+boost::shared_ptr<InstructionCycle> CompiledInstructionGroup::getRootInstructionCycle(void) const
+	{
+	return mRootCycle->shared_from_this();
+	}
+
+bool CompiledInstructionGroup::alwaysWantsToBeInlined(void) const
+	{
+	lassert(isDefined());
+
+	return mAlwaysWantsToBeInlined;
+	}
+
+const TypedFora::Callable& CompiledInstructionGroup::getCallable() const
+	{
+	lassert(isDefined());
+	
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return mCallable;
+	}
+
+void	CompiledInstructionGroup::define(void)
+	{
+	try {
+		lassert(!mDefined);
+		lassert(mInitialized);
+
+		mCurrentlyBeingDefined = true;
+
+		for (auto it = mDownstreamCompiledGroups.begin(); it != mDownstreamCompiledGroups.end(); ++it)
+			if (!(*it)->isDefined())
+				(*it)->define();
+
+		computeInlineableInstructions();
+
+		assignSignatures();
+
+		//build and optimize our subgraphs
+		mCallable = buildTypedCfg();
+
+		//check whether we're inlineable
+		if (isSimpleCallable(mCallable) && 
+				mEntrypointInstructionBlockMapping.size() == 1 && 
+				!mEntrypointInstructionBlockMapping.begin()->first->getLabel()
+				)
+			mAlwaysWantsToBeInlined = true;
+		
+		dumpTypedCfgToFile(mLinkerName, mCallable);
+
+		dumpInstructionsToFile();
+
+		try {
+			mTypedJitCompiler->define(mLinkerName, mCallable);
+			}
+		catch(std::logic_error& e)
+			{
+			throw std::logic_error(string(e.what()) + 
+				"\n\ndefining instruction group: " + prettyPrintString(mLinkerName) + "\n" + toString()
+				);
+			}
+
+		//mark ourself defined _before_ we begin producing code since we might be 
+		mCurrentlyBeingDefined = false;
+		mDefined = true;
+		}
+	catch(std::logic_error& e)
+		{
+		throw std::logic_error(e.what() + string("\n") + 
+			"During definition of group:\n" + 
+			mRootCycle->toString()
+			);
+		}
+	}
+
+ImmutableTreeVector<TypedFora::Type>
+CompiledInstructionGroup::computeCallSignatureForInstruction(InstructionPtr instructionPtr) const
+	{
+	ImmutableTreeVector<TypedFora::Type> types;
+
+	for (long k = 0; k < instructionPtr->jovsWithConstantPropagationOrRootJovs().size(); k++)
+		types = types + 
+			TypedFora::Type(
+				instructionPtr->jovsWithConstantPropagationOrRootJovs()[k], 
+				TypedFora::RefcountStyle::Pooled()
+				);
+
+	return types;
+	}
+
+
+void CompiledInstructionGroup::assignSignatures(void)
+	{
+	//for each CFG, we need to pick a single instruction
+	JudgmentOnAction coveringJOA;
+
+	for (auto it = mBlockMapping.begin(), 
+			it_end = mBlockMapping.end();
+			it != it_end;
+			++it)
+		{
+		InstructionPtr instructionPtr = it->first;
+
+		if (instructionPtr->getLabel())
+			{
+			mCallSignatures[instructionPtr] = computeCallSignatureForInstruction(instructionPtr);
+			}
+		else
+			mCallSignatures[instructionPtr] = 
+				TypedFora::callSignatureFromJovt(
+					JOVT::Unnamed(instructionPtr->jovsWithConstantPropagationOrRootJovs()), 
+					TypedFora::RefcountStyle::Pooled()
+					);
+
+		coveringJOA = coveringJOA | instructionPtr->joa().joa();
+		}
+	
+	mResultSignature = 
+		TypedFora::resultSignatureFromJoa(
+			coveringJOA,
+			TypedFora::RefcountStyle::Pooled(),
+			TypedFora::RefcountStyle::Pooled()
+			);
+	}
+
+void CompiledInstructionGroup::dumpInstructionsToFile()
+	{
+	using boost::filesystem::path;
+
+	if (mTypedJitCompiler->getConfig().compilerDefinitionDumpDir() != "")
+		{
+		ofstream outfile;
+		ostringstream namestr;
+		namestr << mLinkerName;
+		namestr << ".instruction.txt";
+		
+		path fname =
+			  path(mTypedJitCompiler->getConfig().compilerDefinitionDumpDir())
+			/ path(namestr.str());
+		
+		outfile.open(fname.string().c_str(), ios_base::trunc);
+		
+		outfile << toString();
+		
+		outfile.close();
+		}
+
+	if (mTypedJitCompiler->getConfig().compilerDefinitionDumpDir() != "")
+		{
+		ofstream outfile;
+		ostringstream namestr;
+		namestr << mLinkerName;
+		namestr << ".instruction.dot";
+		
+		path fname =
+			  path(mTypedJitCompiler->getConfig().compilerDefinitionDumpDir())
+			/ path(namestr.str());
+		
+		outfile.open(fname.string().c_str(), ios_base::trunc);
+		
+		outfile << toGraphVisString();
+		
+		outfile.close();
+		}
+	}
+
+
+void CompiledInstructionGroup::dumpTypedCfgToFile(	std::string inLinkerName, 
+													const TypedFora::Callable& inCallable
+													) const
+	{
+	using boost::filesystem::path;
+
+	if (mTypedJitCompiler->getConfig().compilerDefinitionDumpDir() != "")
+		{
+		ofstream outfile;
+		ostringstream namestr;
+		namestr << inLinkerName;
+		namestr << ".tcfg.txt";
+		
+		path fname =
+			  path(mTypedJitCompiler->getConfig().compilerDefinitionDumpDir())
+			/ path(namestr.str());
+		
+		outfile.open(fname.string().c_str(), ios_base::trunc);
+		
+		outfile
+			<< "ResultSignature: " << prettyPrintString(inCallable.resultSignature()) << "\n\n"
+			<< prettyPrintString(inCallable)
+			<< "\n\n\n";
+
+		outfile.close();
+		}
+
+	LOG_DEBUG_SCOPED("CompilerDefinitions")
+		<< "Defining "
+		<< inLinkerName << "\n\n"
+		<< "ResultSignature: " << prettyPrintString(inCallable.resultSignature()) << "\n\n"
+		<< prettyPrintString(inCallable)
+		<< "\n\n\n";
+	}
+
+
+//compute a string version of the group
+string			CompiledInstructionGroup::toString() const
+	{
+	ostringstream str;
+	
+	str << "CIG: " << prettyPrintString(mLinkerName) << "\n";
+
+	if (mDefined)
+		{
+		str << "\tdefined\n";
+		if (alwaysWantsToBeInlined())
+			str << "\talways inlined. ";
+		str << prettyPrintString(mCallable) << "\n";
+		}
+		else
+	if (mCurrentlyBeingDefined)
+		str << "\tcurrently being defined\n";
+	else
+		str << "\tundefined\n";
+
+	//try to dump the instructions in a useful order
+	ImmutableTreeSet<InstructionPtr> instructionsWritten;
+	ImmutableTreeSet<InstructionPtr> allInstructions;
+	ImmutableTreeVector<InstructionPtr> instructionStack;
+	
+	for (ordered_instruction_set::const_iterator
+				it = mInstructions.begin(),
+				it_end = mInstructions.end();
+			it != it_end;
+			++it
+			)
+		{
+		instructionStack = instructionStack + *it;
+		allInstructions = allInstructions + *it;
+		}
+	
+	while (instructionStack.size())
+		{
+		InstructionPtr inst = instructionStack[0];
+		instructionStack = instructionStack.slice(1);
+		
+		if (!instructionsWritten.contains(inst) &&
+			allInstructions.contains(inst))
+			{
+			str << inst->toString(false) << "\n\n";
+			instructionsWritten = instructionsWritten + inst;
+			
+			for (long j = ((long)inst->flowsToCount()) - 1; j >= 0;j--)
+				instructionStack = inst->flowsTo(j) + instructionStack;
+			}
+		}
+	
+	return str.str();
+	}
+
+void	CompiledInstructionGroup::writeGraphString(ostringstream& str, InstructionPtr inst)
+	{
+	for (long k = 0; k < inst->flowsToCount();k++)
+		str << "N" << hashToString(inst->hash()).substr(0,4) << " -> "
+			<< "N" << hashToString(inst->flowsTo(k)->hash()).substr(0,4) << ";\n";
+	
+	str << "N" << hashToString(inst->hash()).substr(0,4) << "[";
+	
+	string label;
+	@match ControlFlowNodeBody((inst->getGraph())[inst->getLabel()].body())
+		-| Apply(args) ->> {
+			label =  prettyPrintString(args);
+			}
+		-| Cached() ->> {
+			label =  "cache";
+			}
+		-| Switch() ->> {
+			label =  "switch";
+			}
+		-| TupleExpand() ->> {
+			label =  "tuple_expand";
+			}
+		-| Branch() ->> {
+			label =  "?";
+			}
+		-| Jump() ->> {
+			label =  "-";
+			};
+	
+	str << "label = \"" <<
+			Ufora::substitute(
+				Ufora::substitute(
+					Ufora::substitute(
+						label,
+						"\n",
+						"\\n"
+						),
+					"\t", " "),
+				"\"", "\\\"").substr(0,30)
+			<< "\", fontsize=6";
+	
+	if (InstructionCycle::get(inst).isCompilerEntrypoint(inst))
+		str << ", color=blue, style=filled";
+	
+	str << "];\n";
+	}
+
+string CompiledInstructionGroup::toGraphVisString()
+	{
+	ostringstream str;
+	
+	str << "digraph CIG {\n";
+	
+	for (ordered_instruction_set::const_iterator
+				it = mInstructions.begin(),
+				it_end = mInstructions.end();
+			it != it_end;
+			++it
+			)
+		writeGraphString(str, *it);
+	
+	str << "}\n";
+	
+	
+	return str.str();
+	}
+
+bool CompiledInstructionGroup::generatesAnEntrypoint() const
+	{
+	return mEntrypointInstructionBlockMapping.size() > 0;
+	}
+
+void CompiledInstructionGroup::unlinkFromInstruction()
+	{
+	if (mCompileRequested)
+		for (auto it = mEntrypointInstructionBlockMapping.begin(); 
+					it != mEntrypointInstructionBlockMapping.end();
+					++it)
+			{
+			InstructionPtr instructionPtr = it->first;
+
+			LOG_INFO << "removing " << mLinkerName << " from CEM for "
+				<< prettyPrintString(instructionPtr->hash());
+
+			instructionPtr->getCompilerEntrypointMap()
+				.removeJumpTarget(
+					JOVT::Unnamed(*instructionPtr->getCompilerEntrypointJOVs())
+					);
+
+			instructionPtr->clearCompilerEntrypointJOVs();
+
+			mTypedJitCompiler->kickAllVersionsBackIntoInterpreter(mLinkerName);
+			}
+	}
+
+void CompiledInstructionGroup::compileAndLinkToInstructions(bool blockUntilCompiled)
+	{
+	lassert(mInitialized);
+	lassert(mDefined);
+	
+	LOG_INFO << "compiling " << mLinkerName;
+				
+	if (!mCompileRequested)
+		{
+		for (auto it = mDownstreamCompiledGroups.begin(); it != mDownstreamCompiledGroups.end(); ++it)
+			if (!(*it)->compileHasBeenRequested())
+				(*it)->compileAndLinkToInstructions(blockUntilCompiled);
+
+		for (auto it = mEntrypointInstructionBlockMapping.begin(); 
+					it != mEntrypointInstructionBlockMapping.end();
+					++it)
+			{
+			InstructionPtr instructionPtr = it->first;
+			TypedFora::BlockID blockId = it->second;
+
+			std::string linkerName = mLinkerName;
+
+			LOG_INFO << "installing " << mLinkerName << " into CEM for "
+				<< prettyPrintString(instructionPtr->hash());
+
+			instructionPtr->getCompilerEntrypointMap()
+				.setJumpTarget(
+					JOVT::Unnamed(instructionPtr->jovsWithConstantPropagationOrRootJovs()),
+					mTypedJitCompiler->getJumpTarget(linkerName, blockId, blockUntilCompiled)
+					);
+
+			instructionPtr->setCompilerEntrypointJOVs(instructionPtr->jovsWithConstantPropagationOrRootJovs());
+			}
+
+		mCompileRequested = true;
+		}
+	else
+		{
+		//just block
+		if (blockUntilCompiled)
+			for (auto it = mEntrypointInstructionBlockMapping.begin(); 
+						it != mEntrypointInstructionBlockMapping.end();
+						++it)
+				{
+				TypedFora::BlockID blockId = it->second;
+				InstructionPtr instructionPtr = it->first;
+				std::string linkerName = mLinkerName;
+
+				mTypedJitCompiler->increasePriority(linkerName);
+				mTypedJitCompiler->getJumpTarget(linkerName, blockId, blockUntilCompiled);
+				}
+		}
+
+	}
+
+TypedFora::Callable 	CompiledInstructionGroup::buildTypedCfg()
+	{
+	TypedFora::ResultSignature thisResultSignature = mResultSignature;
+	
+	//verify that all the signatures match
+	for (auto 	it = mEntrypointInstructionBlockMapping.begin(), 
+				it_end = mEntrypointInstructionBlockMapping.end(); 
+				it != it_end; 
+				++it
+				)
+		{
+		TypedFora::ResultSignature entrypointSignature = 
+			TypedFora::resultSignatureFromJoa(
+				it->first->joa().joa(),
+				TypedFora::RefcountStyle::Pooled(),
+				TypedFora::RefcountStyle::Pooled()
+				);
+			
+		lassert_dump(thisResultSignature.covers(entrypointSignature),
+			"inconsistent result signatures within a CIG: a largest covering instruction was "
+				<< prettyPrintString(thisResultSignature)
+				<< " but we got "
+				<< prettyPrintString(entrypointSignature)
+				<< " which it doesn't cover. "
+			);
+		
+		}
+	
+	ImmutableTreeMap<TypedFora::BlockID, TypedFora::Block> blockMap;
+
+	for (auto 	it = mBlockMapping.begin(), 
+				it_end = mBlockMapping.end(); 
+				it != it_end; 
+				++it
+				)
+		blockMap = blockMap + make_pair(it->second, getBlock(it->first));
+	
+	TypedFora::Callable tr =
+		TypedFora::Callable::Graph(
+			thisResultSignature,
+			blockMap
+			);
+
+	tr = TypedFora::Transforms::cleanupAndSimplify(tr);
+
+	return tr;
+	}
+
+TypedFora::Block	CompiledInstructionGroup::getCallBlock(
+								InstructionPtr instructionPtr,
+								ImmutableTreeMap<TypedFora::BlockID, TypedFora::Block>& ioBlocks
+								)
+	{
+	ImmutableTreeVector<TypedFora::Variable> vars = 
+		TypedFora::variablesFromJOVs(
+			instructionPtr->jovsWithConstantPropagationOrRootJovs(), 
+			TypedFora::RefcountStyle::Pooled()
+			);
+
+	ImmutableTreeVector<TypedFora::Expression> exprs;
+
+	for (long k = 0; k < vars.size(); k++)
+		exprs = exprs + vars[k].expr();
+	
+	TypedFora::BlockID intBlock = TypedFora::BlockID::internal();
+	ioBlocks = ioBlocks + intBlock + getBlock(instructionPtr);
+	
+	return TypedFora::Block(
+		vars,
+		TypedFora::Expression::Jump(intBlock, exprs),
+		instructionPtr->executionCount()
+		);
+	}
+
+//class to hook this graph up to the builder, which needs to know which instructions to inline
+//and how to link to remote instructions
+class CompiledInstructionGroup_BuilderGenerator : 
+			public TypedCFGInstructionBuilder::CallTargetGenerator {
+public:
+	CompiledInstructionGroup_BuilderGenerator(boost::shared_ptr<CompiledInstructionGroup> inCig) : mCig(inCig)
+		{
+		}
+
+	Nullable<TypedFora::BlockID> getTargetBlockID(InstructionPtr inInstruction)
+		{
+		auto it = mCig->mBlockMapping.find(inInstruction);
+		
+		if (it == mCig->mBlockMapping.end())
+			return null();
+		else
+			return null() << it->second;
+		}
+
+
+	Nullable<TypedFora::BlockID> getTransferTargetBlockID(InstructionPtr inInstruction)
+		{
+		if (CompiledInstructionGroup::get(inInstruction) != mCig)
+			return null();
+
+		return getTargetBlockID(inInstruction);
+		}
+
+	bool hasInlinedTarget(InstructionPtr inInstruction)
+		{
+		if (mCig->mInlineableInstructions.find(inInstruction) != 
+						mCig->mInlineableInstructions.end())
+			return true;
+
+		boost::shared_ptr<CompiledInstructionGroup> targetCig = 
+				CompiledInstructionGroup::get(inInstruction);
+
+		if (targetCig && targetCig->isDefined() && targetCig->alwaysWantsToBeInlined())
+			return true;
+
+		return false;
+		}
+	
+	ImmutableTreeVector<TypedFora::Type>
+	getTargetSignature(InstructionPtr inInstruction)
+		{
+		return mCig->computeCallSignatureForInstruction(inInstruction);
+		}
+
+
+	Nullable<TypedFora::Expression> getInlinedTarget(
+							const ImmutableTreeVector<TypedFora::Variable>& inVariables,
+							InstructionPtr inInstruction
+							)
+		{
+		if (hasInlinedTarget(inInstruction))
+			{
+			boost::shared_ptr<CompiledInstructionGroup> targetCig;
+
+			if (mCig->mInlineableInstructions.find(inInstruction) != 
+						mCig->mInlineableInstructions.end()) 
+				targetCig = mCig;
+			else
+				targetCig = CompiledInstructionGroup::get(inInstruction);
+
+			CompiledInstructionGroup_BuilderGenerator generator(targetCig);
+
+			//build a subinstruction in which the variables are tranferred directly to the
+			//base instruction
+			TypedCFGInstructionBuilder::Builder builder(
+						inInstruction, 
+						generator,
+						mCig->mAxioms, 
+						mCig->mTypedJitCompiler, 
+						inVariables
+						);
+
+			return null() << builder.getBlock().expression();
+			}
+
+		return null();
+		}
+
+	Nullable<TypedFora::CallTarget> getTarget(InstructionPtr inInstruction)
+		{
+		boost::shared_ptr<CompiledInstructionGroup> targetCig = 
+			CompiledInstructionGroup::get(inInstruction);
+
+		if (targetCig)
+			return null() << targetCig->getCallTarget(inInstruction);
+		
+		return null();
+		}
+
+	Nullable<TypedFora::TransferTarget> getTransferTarget(InstructionPtr inInstruction)
+		{
+		boost::shared_ptr<CompiledInstructionGroup> targetCig = 
+			CompiledInstructionGroup::get(inInstruction);
+
+		if (inInstruction->getInstructionBody().isCached() || inInstruction->isRootInstruction())
+			//we deliberately don't include 'cached' instructions in the CIG as we don't know
+			//how to generate code for it. We also don't jump into root instructions since they're
+			//just interpreter instructions
+			return null();
+
+		if (targetCig)
+			return null() << targetCig->getTransferTarget(inInstruction);
+
+		return null();
+		}
+
+private:
+	boost::shared_ptr<CompiledInstructionGroup> mCig;
+};
+
+TypedFora::Block	CompiledInstructionGroup::getBlock(InstructionPtr instructionPtr)
+	{
+	CompiledInstructionGroup_BuilderGenerator generator(this->shared_from_this());
+
+	TypedCFGInstructionBuilder::Builder builder(
+			instructionPtr, 
+			generator, 
+			mAxioms,
+			mTypedJitCompiler, 
+			variablesFromTypes(mCallSignatures[instructionPtr])
+			);
+
+	return builder.getBlock();
+	}
+
+InstructionPtr CompiledInstructionGroup::getSingleIncomingInstruction(InstructionPtr inst)
+	{
+	InstructionPtr lastIncoming;
+
+	for (auto	it2 = inst->incomingContinuationElementsPtrs().begin(),
+				it2_end = inst->incomingContinuationElementsPtrs().end();
+				it2 != it2_end;
+				++it2)
+		{
+		InstructionPtr incoming = (*it2)->getSourceInstructionPtr();
+		if (mInstructions.find(incoming) != mInstructions.end())
+			{
+			if (lastIncoming)
+				return InstructionPtr();
+
+			lastIncoming = incoming;
+			}
+		}
+
+	return lastIncoming;
+	}
+
+void CompiledInstructionGroup::computeInlineableInstructions(void)
+	{
+	map<InstructionPtr, InstructionPtr> incomingSources;
+	for (auto   it = mInstructions.begin(),
+				it_end = mInstructions.end();
+				it != it_end;
+				++it)
+		{
+		//look at all incoming continuations in this group. if there's only one, it's inlineable
+		InstructionPtr inst = *it;
+
+		if (mEntrypointInstructionBlockMapping.find(inst) == mEntrypointInstructionBlockMapping.end())
+			{
+			InstructionPtr lastIncoming = getSingleIncomingInstruction(*it);
+			
+			if (lastIncoming)
+				{
+				//we need to be careful - it's possible that we could create a loop of
+				//inlineable instructions.  To make sure this doesn't happen, we walk
+				//up the tree and check each one against "inst".
+				InstructionPtr searchInst = lastIncoming;
+				while (searchInst && lastIncoming)
+					{
+					if (searchInst == inst)
+						//we found ourself up the chain. Don't inline!
+						lastIncoming = InstructionPtr();
+					else
+						searchInst = incomingSources[searchInst];
+					}
+				}
+			
+			if (lastIncoming)
+				{
+				mInlineableInstructions.insert(inst);
+				incomingSources[inst] = lastIncoming;
+				
+				InstructionPtr testInst = inst;
+				while (testInst)
+					{
+					testInst = incomingSources[testInst];
+					lassert(testInst != inst);
+					}
+				}
+			else
+				mBlockMapping[inst] = TypedFora::BlockID::internal();
+			}
+		}
+	}
+
+boost::shared_ptr<CompiledInstructionGroup> CompiledInstructionGroup::get(InstructionPtr ptr)
+	{
+	return InstructionCycle::get(ptr).getCIG();
+	}
+}
+}
+

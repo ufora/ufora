@@ -1,0 +1,296 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "../../core/Logging.hpp"
+#include "../../core/Memory.hpp"
+#include "../../core/StringUtil.hpp"
+#include "../Core/ExecutionContext.hppml"
+#include "../Core/Type.hppml"
+#include "../Core/MemoryPool.hpp"
+#include "../Runtime.hppml"
+
+#include "String.hppml"
+#include "StringImpl.hppml"
+#include <boost/thread.hpp>
+
+using Fora::Interpreter::ExecutionContext;
+
+//size a string has to be before we're willing to keep a 20-byte hash value around for it.
+//const static uword_t KEEP_HASH_THRESHOLD = 256;
+
+//#define STRING_IMPL_TRACK_TOTAL_STRINGS
+
+void String::decrementRefcount(StringImpl* implPtr)
+	{
+	if (implPtr && !String::isPackedStringImpl(implPtr))
+		implPtr->decrementRefcount();
+	}
+
+void String::incrementRefcount(StringImpl* implPtr)
+	{
+	if (implPtr && !String::isPackedStringImpl(implPtr))
+		implPtr->incrementRefcount();
+	}
+
+namespace {
+
+//if a string is smaller than 31 bytes, we can pack it directly into a pointer, avoiding
+//the heap entirely.  We use the lowest byte to store an alignment flag (+1 if it's packed)
+//and the size of the string. The remaining bytes are used for data, and the top byte is
+//null so we can have a c_str().
+
+StringImpl* emptyPackedStringImpl()
+	{
+	return (StringImpl*)1;
+	}
+
+char* packedStringData(StringImpl*& io)
+	{
+	return ((char*)&io) + 1;
+	}
+
+const char* packedStringData(StringImpl* const& io)
+	{
+	return ((const char*)&io) + 1;
+	}
+
+unsigned char packedStringSize(StringImpl* in)
+	{
+	return ((unsigned char*)&in)[0] / 2;
+	}
+
+void setPackedStringSize(StringImpl*& io, unsigned char sz)
+	{
+	lassert(sz <= String::maxBytesPackedIntoStringPtr);
+
+	((unsigned char*)&io)[0] = sz * 2 + 1;
+	}
+
+}
+
+String::String(const std::string& in, MemoryPool* inMemoryPool)
+	{
+	if (!in.size())
+		{
+		mStringRecord = 0;
+		return;	
+		}
+	
+	if (in.size() <= maxBytesPackedIntoStringPtr)
+		{
+		mStringRecord = emptyPackedStringImpl();
+		mEmptyData[0] = 0;
+		mEmptyData[1] = 0;
+		mEmptyData[2] = 0;
+		setPackedStringSize(mStringRecord, in.size());
+		memcpy(packedStringData(mStringRecord), in.data(), in.size() );
+		}
+	else
+		{
+		mStringRecord = StringImpl::allocateUninitializedStringRecord(in.size(), inMemoryPool);
+
+		if (mStringRecord)
+			memcpy(mStringRecord->mData, in.data(), in.size());
+		}
+	}
+
+String::String(const char* dataPtr, size_t sz, MemoryPool* inMemoryPool)
+	{
+	if (!sz)
+		{
+		mStringRecord = 0;
+		return;	
+		}
+
+	if (sz <= maxBytesPackedIntoStringPtr)
+		{
+		mStringRecord = emptyPackedStringImpl();
+		mEmptyData[0] = 0;
+		mEmptyData[1] = 0;
+		mEmptyData[2] = 0;
+		setPackedStringSize(mStringRecord, sz);
+		memcpy(packedStringData(mStringRecord), dataPtr, sz);
+		}
+	else
+		{
+		mStringRecord = StringImpl::allocateUninitializedStringRecord(sz, inMemoryPool);
+		
+		if (mStringRecord)
+			memcpy(mStringRecord->mData, dataPtr, sz);
+		}
+	}
+
+void String::initializeFromOtherString(const String& inOtherString, MemoryPool* inMemoryPool)
+	{
+	if (inOtherString.mStringRecord->mMemoryPool == inMemoryPool)
+		{
+		mStringRecord = inOtherString.mStringRecord;
+		mStringRecord->incrementRefcount();
+		return;	
+		}
+
+	mStringRecord = StringImpl::allocateUninitializedStringRecord(
+		inOtherString.mStringRecord->mSize, 
+		inMemoryPool
+		);
+	
+	if (mStringRecord)
+		memcpy(
+			mStringRecord->mData, 
+			inOtherString.mStringRecord->mData, 
+			inOtherString.mStringRecord->mSize+1
+			);
+	}
+
+
+MemoryPool* String::getOwningMemoryPool()
+	{
+	if (!isPackedStringImpl(mStringRecord) && mStringRecord)
+		return mStringRecord->mMemoryPool;
+
+	return 0;
+	}
+
+String String::empty(uint32_t sz, MemoryPool* inMemoryPage, bool initializeToZero)
+	{
+	String tr;
+
+	if (sz <= maxBytesPackedIntoStringPtr)
+		{
+		tr.mStringRecord = emptyPackedStringImpl();
+		tr.mEmptyData[0] = 0;
+		tr.mEmptyData[1] = 0;
+		tr.mEmptyData[2] = 0;
+		setPackedStringSize(tr.mStringRecord, sz);
+		}
+	else
+		{
+		tr.mStringRecord = StringImpl::allocateUninitializedStringRecord(sz, inMemoryPage);
+		
+		if (tr.mStringRecord)
+			{
+			if (initializeToZero)
+				memset(tr.mStringRecord->mData, 0, sz+1);		
+			else
+				tr.mStringRecord->mData[sz] = 0;
+			}
+		}
+	
+	return tr;
+	}
+
+std::string String::stdString() const
+	{
+	if (!mStringRecord)
+		return "";
+	
+	if (isPackedStringImpl(mStringRecord))
+		return std::string(
+			packedStringData(mStringRecord), 
+			packedStringData(mStringRecord) + packedStringSize(mStringRecord)
+			);
+
+	return std::string(mStringRecord->mData, mStringRecord->mData + size());
+	}
+
+const char* String::c_str() const
+	{
+	if (!mStringRecord)
+		return "";
+
+	if (isPackedStringImpl(mStringRecord))
+		return (const char*)packedStringData(mStringRecord);
+	
+	lassert(mStringRecord->validStringRecord());
+
+	return mStringRecord->mData;
+	}
+
+char* String::base()
+	{
+	static char c = 0;
+	if (!mStringRecord)
+		return &c;
+	
+	if (isPackedStringImpl(mStringRecord))
+		return packedStringData(mStringRecord);
+	else
+		{
+		lassert(mStringRecord->validStringRecord());
+
+		return mStringRecord->mData;
+		}
+	}
+
+size_t String::size() const
+	{
+	if (!mStringRecord)
+		return 0;
+
+	if (isPackedStringImpl(mStringRecord))
+		return packedStringSize(mStringRecord);
+	
+	lassert(mStringRecord->validStringRecord());
+
+	return mStringRecord->mSize;
+	}
+
+size_t String::rawSize() const
+	{
+	if (!mStringRecord)
+		return 0;
+	
+	if (isPackedStringImpl(mStringRecord))
+		return sizeof(String);
+
+	lassert(mStringRecord->validStringRecord());
+
+	return sizeof(StringImpl) + mStringRecord->mSize + 1 + 
+		(mStringRecord->mSize > KEEP_HASH_THRESHOLD ? sizeof(hash_type) : 0);
+	}
+
+hash_type String::hash() const
+	{
+	if (!mStringRecord)
+		return hash_type();
+	
+	if (isPackedStringImpl(mStringRecord))
+		return Hash::CityHash(packedStringData(mStringRecord), packedStringSize(mStringRecord));
+
+	lassert(mStringRecord->validStringRecord());
+
+	return mStringRecord->hash();
+	}
+
+uword_t String::refcount() const
+	{
+	if (!mStringRecord || isPackedStringImpl(mStringRecord))
+		return 0;
+
+	lassert(mStringRecord->validStringRecord());
+
+	return mStringRecord->mRefcount;
+	}
+
+AO_t String::mTotalStringCount = 0;
+
+uword_t String::totalStringCount()
+	{
+	return mTotalStringCount;
+	}
+
+
+
+

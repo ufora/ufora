@@ -1,0 +1,714 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include <boost/lexical_cast.hpp>
+
+#include "../../core/AtomicOps.hpp"
+#include "../../core/Memory.hpp"
+
+#include "../Primitives/CodeLocation.hppml"
+#include "ClassMediator.hppml"
+#include "CSTValue.hppml"
+#include "ImplVal.hppml"
+#include "Integers.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
+#include "../Primitives/String.hppml"
+#include "Type.hppml"
+#include "TupleCategory.hppml"
+#include "../FORAValuePrinting/FORAValuePrinter.hppml"
+#include "../../core/threading/ScopedThreadLocalContext.hpp"
+#include "MemoryPool.hpp"
+#include "ValueDeepcopier.hppml"
+
+class CSTValueRecord {
+public:
+		CSTValueRecord()
+			{
+			hashPtr = 0;
+			refcount = 1;
+			validityFlag = 0xDEADBEEF;
+			}
+		CSTValueRecord(Type t) : type(t)
+			{
+			hashPtr = 0;
+			refcount = 1;
+			validityFlag = 0xDEADBEEF;
+			}
+		~CSTValueRecord()
+			{
+			if (hashPtr)
+				delete hashPtr;
+			validityFlag = 0;
+			}
+
+		Type 			type;
+		uword_t			validityFlag;
+		AO_t		 	refcount;
+		hash_type*		hashPtr;
+		char 			data[0];
+};
+
+
+template<class T>
+CSTValueRecord* CSTValue::cstAlloc(const T& in, Type const& type)
+	{
+	CSTValueRecord* tr = (CSTValueRecord*)Ufora::Memory::bsa_malloc(sizeof(CSTValueRecord) + sizeof(T));
+
+	new (tr) CSTValueRecord(type);
+
+	new (tr->data) T(in);
+
+	return tr;
+	}
+
+CSTValue::CSTValue()
+	{
+	mData = 0;
+	}
+
+CSTValue::CSTValue(Type const& t, string data)
+	{
+	CSTValue b = blankOf(t);
+	mData = b.mData;
+	b.mData = 0;
+
+	@match Type(t)
+		-|	String() ->> { 
+				cast<string_type>() = string_type(data, MemoryPool::getFreeStorePool()); 
+				}
+		-|	Float(sz) ->> {
+				if (sz == 32)
+					cast<float>() = boost::lexical_cast<float>(data);
+					else
+				if (sz == 64)
+					cast<double>() = boost::lexical_cast<double>(data);
+					else
+					lassert(false);
+				}
+		-|	Integer(sz, isSigned) ->> {
+				if (sz == 32 && !isSigned)
+					cast<int32_t>() = boost::lexical_cast<int32_t>(data);
+					else
+				if (sz == 64 && !isSigned)
+					cast<int64_t>() = boost::lexical_cast<int64_t>(data);
+					else
+				if (sz == 32 && isSigned)
+					cast<uint32_t>() = boost::lexical_cast<uint32_t>(data);
+					else
+				if (sz == 64 && isSigned)
+					cast<uint64_t>() = boost::lexical_cast<uint64_t>(data);
+					else
+					lassert(false);
+			}
+		-|	_ ->> { lassert(false); }
+		;
+	}
+CSTValue::CSTValue(ImplVal ref)
+	{
+	lassert(ref.isCST());
+
+	if (!ref.type().isNothing())
+		{
+		MemoryPool* pool = MemoryPool::getFreeStorePool();
+
+		mData = (CSTValueRecord*)pool->allocate(sizeof(CSTValueRecord) + ref.type().size());
+
+		new (mData) CSTValueRecord(ref.type());
+
+		//we need to deepcopy this value
+		ValueDeepcopierState state;
+
+		ValueDeepcopier deepcopier(
+							state, 
+							false,
+							pool,
+							false,
+							false
+							);
+
+		
+		deepcopier.duplicate(ref.type(), (uint8_t*)this->getData(), (uint8_t*)ref.data(), 1);
+		}
+	else
+		mData = 0;
+	}
+CSTValue::CSTValue(const ImplValContainer& ref)
+	{
+	lassert(ref.isCST());
+
+	if (!ref.type().isNothing())
+		{
+		MemoryPool* pool = MemoryPool::getFreeStorePool();
+
+		mData = (CSTValueRecord*)pool->allocate(sizeof(CSTValueRecord) + ref.type().size());
+		new (mData) CSTValueRecord(ref.type());
+
+		//we need to deepcopy this value
+		ValueDeepcopierState state;
+
+		ValueDeepcopier deepcopier(
+							state, 
+							false,
+							pool,
+							false,
+							false
+							);
+
+		
+		deepcopier.duplicate(ref.type(), (uint8_t*)this->getData(), (uint8_t*)ref.data(), 1);
+		}
+		else
+		mData = 0;
+	}
+
+CSTValue CSTValue::assumeOwnershipOf(ImplVal ref)
+	{
+	CSTValue tr(ref);
+
+	ref.destroy();
+
+	return tr;
+	}
+		
+CSTValueRecord* CSTValue::allocValueRecord(const Type& type)
+	{
+	CSTValueRecord* tr = (CSTValueRecord*) Ufora::Memory::bsa_malloc(sizeof(CSTValueRecord) + type.size());
+
+	new (tr) CSTValueRecord(type);
+
+	return tr;
+	}
+
+void CSTValue::destroyCSTValueRecord(CSTValueRecord* tr)
+	{
+	tr->~CSTValueRecord();
+	}
+
+CSTValue::CSTValue(bool in)
+	{
+	mData = cstAlloc((unsigned char)in, Type::Integer(1, false));
+	}
+CSTValue::CSTValue(int8_t in)
+	{
+	mData = cstAlloc(in, Type::Integer(8, true));
+	}
+
+CSTValue::CSTValue(unsigned char in)
+	{
+	mData = cstAlloc(in, Type::Integer(8, false));
+	}
+
+CSTValue::CSTValue(int16_t in)
+	{
+	mData = cstAlloc(in, Type::Integer(16, true));
+	}
+
+CSTValue::CSTValue(uint16_t in)
+	{
+	mData = cstAlloc(in, Type::Integer(16, false));
+	}
+
+CSTValue::CSTValue(int32_t in)
+	{
+	mData = cstAlloc(in, Type::Integer(32, true));
+	}
+
+CSTValue::CSTValue(uint32_t in)
+	{
+	mData = cstAlloc(in, Type::Integer(32, false));
+	}
+
+CSTValue::CSTValue(int64_t in)
+	{
+	mData = cstAlloc(in, Type::Integer(64, true));
+	}
+
+CSTValue::CSTValue(uint64_t in)
+	{
+	mData = cstAlloc(in, Type::Integer(64, false));
+	}
+
+CSTValue::CSTValue(float in)
+	{
+	mData = cstAlloc(in, Type::Float(32));
+	}
+
+CSTValue::CSTValue(double in)
+	{
+	mData = cstAlloc(in, Type::Float(64));
+	}
+
+CSTValue::CSTValue(const JudgmentOnValue& in)
+	{
+	mData = cstAlloc(in, Type::JOVAsValue());
+	}
+
+CSTValue::CSTValue(std::string const& in)
+	{
+	mData = cstAlloc(string_type(in, MemoryPool::getFreeStorePool()), Type::String());
+	}
+CSTValue::CSTValue(const string_type& in)
+	{
+	string_type innerString(in, MemoryPool::getFreeStorePool());
+
+	mData = cstAlloc(innerString, Type::String());
+	}
+CSTValue::CSTValue(const DateTime& in)
+	{
+	mData = cstAlloc(in, Type::DateTime());
+	}
+CSTValue::CSTValue(const TimeDuration& in)
+	{
+	mData = cstAlloc(in, Type::TimeDuration());
+	}
+CSTValue::CSTValue(const Symbol& in)
+	{
+	mData = cstAlloc(in, Type::Symbol());
+	}
+CSTValue::CSTValue(const ForaStackTrace& in)
+	{
+	mData = cstAlloc(in, Type::StackTrace());
+	}
+CSTValue::CSTValue(const char* c)
+	{
+	string_type in(c, MemoryPool::getFreeStorePool());
+	
+	mData = cstAlloc(in, Type::String());
+	}
+
+CSTValue::CSTValue(const CSTValue& in)
+	{
+	mData = in.mData;
+	if (mData)
+		AO_fetch_and_add_full((AO_t*)&mData->refcount, 1);
+	}
+CSTValue	CSTValue::Tag(const Symbol& in)
+	{
+	CSTValue tr = CSTValue::blankOf(Type::Tag());
+	tr.cast<Symbol>() = in;
+	return tr;
+	}
+
+CSTValue	CSTValue::Alternative(Symbol in, const CSTValue& inAlternativePayload)
+	{
+	CSTValue tr = CSTValue::blankOf(Type::Alternative(inAlternativePayload.type()));
+	tr.cast<Symbol>() = in;
+	
+	//it's OK to just use 'initialize' here, rather than the deepcopier, because we're
+	//copying from another CSTValue which is already in the FreeStore
+	inAlternativePayload.type().initialize(
+		&tr.cast<Symbol>() + 1, 
+		inAlternativePayload.getReference().data()
+		);
+
+	return tr;
+	}
+
+CSTValue	CSTValue::Tuple()
+	{
+	return CSTValue::blankOf(Type::UnnamedTuple(emptyTreeVec()));
+	}
+
+CSTValue	CSTValue::Tuple(const ImmutableTreeVector<CSTValue>& inValues)
+	{
+	ImmutableTreeVector<Type> types;
+	for (long k = 0; k < inValues.size();k++)
+		types = types + inValues[k].type();
+	
+	//TODO PERFORMANCE anybody: don't create the objects first and then have to destroy them
+	//see below as well.
+	CSTValue tr = CSTValue::blankOf(Type::UnnamedTuple(types));
+
+	char* base = &tr.cast<char>();
+	
+	for (long k = 0; k < inValues.size();k++)
+		{
+		types[k].destroy(base);
+
+		//it's OK to just use 'initialize' here, rather than the deepcopier, because we're
+		//copying from another CSTValue which is already in the FreeStore
+		types[k].initialize((void*)base, (void*)&inValues[k].cast<char>());
+		base = base + types[k].size();
+		}
+	
+	return tr;
+	}
+
+CSTValue	CSTValue::Tuple(const ImmutableTreeVector<pair<Nullable<Symbol>, CSTValue> >& inValues)
+	{
+	ImmutableTreeVector<Nullable<Symbol> > symbols;
+	ImmutableTreeVector<CSTValue> values;
+
+	for (long k = 0; k < inValues.size(); k++)
+		{
+		symbols = symbols + inValues[k].first;
+		values = values + inValues[k].second;
+		}
+
+	return CSTValue::Tuple(values, symbols);
+	}
+
+CSTValue	CSTValue::Tuple(const ImmutableTreeVector<CSTValue>& inValues,
+						  const ImmutableTreeVector<Nullable<Symbol> > &inNames)
+	{
+	ImmutableTreeVector<Type> types;
+	for (long k = 0; k < inValues.size();k++)
+		types = types + inValues[k].type();
+	
+	CSTValue tr = CSTValue::blankOf(Type::Tuple(types, inNames));
+	char* base = &tr.cast<char>();
+	
+	for (long k = 0; k < inValues.size();k++)
+		{
+		types[k].destroy(base);
+		
+		//it's OK to just use 'initialize' here, rather than the deepcopier, because we're
+		//copying from another CSTValue which is already in the FreeStore
+		types[k].initialize((void*)base, (void*)&inValues[k].cast<char>());
+		base = base + types[k].size();
+		}
+	
+	return tr;
+	}
+
+CSTValue::~CSTValue()
+	{
+	free();
+	}
+void CSTValue::free(void)
+	{
+	if (mData)
+		{
+		if (AO_fetch_and_add_full(&mData->refcount, -1) == 1)
+			{
+			type().destroy(getData());
+			
+			mData -> ~CSTValueRecord();
+
+			Ufora::Memory::bsa_free(mData);
+			}
+		mData = 0;
+		}
+	}
+
+ImplVal CSTValue::getReference(void) const
+	{
+	if (!mData)
+		return ImplVal();
+	return ImplVal(type(), getData());
+	}
+
+const Type&		CSTValue::type(void) const
+	{
+	static Type nothingType = Type::Nothing();
+	
+	if (!mData)
+		return nothingType;
+
+	return mData->type;
+	}
+
+void* 				CSTValue::getData(void) const
+	{
+	if (!mData)
+		return 0;
+	return mData->data;
+	}
+
+CSTValue& CSTValue::operator=(const CSTValue& in)
+	{
+	free();
+	
+	mData = in.mData;
+	
+	if (mData)
+		AO_fetch_and_add_full((AO_t*)&mData->refcount, 1);
+
+	return *this;
+	}
+const hash_type& 			CSTValue::hash(void) const
+	{
+	static hash_type* nullHash = 0;
+
+	if (!mData)
+		{
+		if (!nullHash)
+			{
+			Type n = (Type::Nothing());
+			nullHash = new hash_type(n.hashObject(&nullHash) + n.hash());
+			}
+		return *nullHash;
+		}
+
+	lassert(mData->validityFlag = 0xDEADBEEF);
+
+	if (!mData->hashPtr)
+		mData->hashPtr = new hash_type(mData->type.hashObject(getData()) + mData->type.hash());
+
+	return *mData->hashPtr;
+	}
+
+int32_t CSTValue::cmp(const CSTValue& other) const
+	{
+	if (type() < other.type())
+		return -1;
+	if (type() > other.type())
+		return 1;
+	return hash().cmp(other.hash());
+	}
+int32_t CSTValue::cmp(const ImplVal& other) const
+	{
+	if (type() < other.type())
+		return -1;
+	if (type() > other.type())
+		return 1;
+	if (type().isNothing())
+		return 0;
+	
+	return hash().cmp(
+		other.type().hashObject(other.data()) + other.type().hash()
+		);
+	}
+
+CSTValue  CSTValue::blankOf(Type t)
+	{
+	if (t.isNothing())
+		return CSTValue();
+		
+	CSTValue v;
+
+	CSTValueRecord* tr = (CSTValueRecord*)Ufora::Memory::bsa_malloc(sizeof(CSTValueRecord) + t.size());
+
+	new (tr) CSTValueRecord(t);
+
+	v.mData = tr;
+
+	v.getReference().type().initialize(v.getData(), MemoryPool::getFreeStorePool());
+
+	return v;
+	}
+void* CSTValue::basePtr(void) const
+	{
+	if (!mData)
+		return (void*)this;
+	return (void*)mData->data;
+	}
+
+Nullable<uint64_t> CSTValue::getUInt64(void) const
+	{
+	if (!type().isInteger())
+		return null();
+	return castToUInt64((void*)&(this->cast<char>()), type().getInteger().bits());
+	}
+Nullable<int64_t> CSTValue::getInt64(void) const
+	{
+	if (!type().isInteger())
+		return null();
+	return castToInt64((void*)&(this->cast<char>()), type().getInteger().bits());
+	}
+std::ostream& operator<<(std::ostream& in, const CSTValue& v)
+	{
+	return in << v.toString();
+	}
+
+Nullable<uword_t> 	CSTValue::tupleGetSize(void) const
+	{
+	if (!type().isTuple())
+		return null();
+	return null() << TupleCategory::tupleSize(getReference());
+	}
+
+Nullable<CSTValue>	CSTValue::tupleGetItem(uword_t inIndex) const
+	{
+	if (!type().isTuple())
+		return null();
+
+	if (inIndex > *tupleGetSize())
+		return null();
+
+	return null() << CSTValue(TupleCategory::getItem(getReference(), inIndex));
+	}
+
+Nullable<Symbol>	CSTValue::tupleGetName(uword_t inIndex) const
+	{
+	lassert(type().isTuple());
+
+	if (type().getTuple().names().size() > inIndex)
+		return type().getTuple().names()[inIndex];
+
+	lassert_dump(false, inIndex << " is out of range");
+	}
+
+CSTValue CSTValue::bindClassMembers( const ImmutableTreeVector<CSTValue>& classMembers) const
+	{
+	ImmutableTreeVector<Type> newTypes;
+	for (long k = 0; k < classMembers.size();k++)
+		newTypes = newTypes + classMembers[k].type();
+
+	//compute the new type object
+	Type newClassType;
+
+	@match Type(type())
+		-| Class(elts, classBody) ->> {
+			newClassType = Type::Class(elts + newTypes, classBody);
+			}
+		;
+
+	ImplVal val = ImplVal::introduce(newClassType);
+
+	//it's OK to just use 'initialize' here, rather than the deepcopier, because we're
+	//copying from another CSTValue which is already in the FreeStore
+	this->type().initialize(val.data(), this->getReference().data());
+
+	char* dataPtr = reinterpret_cast<char*>(val.data()) + this->type().size();
+
+	for (long k = 0; k < classMembers.size();k++)
+		{
+		classMembers[k].type().initialize(dataPtr, classMembers[k].getReference().data());
+		dataPtr += classMembers[k].type().size();
+		}
+
+	return CSTValue::assumeOwnershipOf(val);
+	}
+
+CSTValue CSTValue::tupleAppend(const Nullable<Symbol>& inSym, const CSTValue& inValue) const
+	{
+	ImmutableTreeVector<CSTValue> vals;
+	ImmutableTreeVector<Nullable<Symbol> > symbols;
+
+	for (long k = 0; k < *tupleGetSize();k++)
+		{
+		vals = vals + *tupleGetItem(k);
+		symbols = symbols + tupleGetName(k);
+		}
+
+	symbols = symbols + inSym;
+	vals = vals + inValue;
+
+	return CSTValue::Tuple(vals, symbols);
+	}
+
+CSTValue CSTValue::tupleConcatenate(const CSTValue& inTuple) const
+	{
+	ImmutableTreeVector<CSTValue> vals;
+	ImmutableTreeVector<Nullable<Symbol> > symbols;
+
+	for (long k = 0; k < *tupleGetSize();k++)
+		{
+		vals = vals + *tupleGetItem(k);
+		symbols = symbols + tupleGetName(k);
+		}
+
+	for (long k = 0; k < *inTuple.tupleGetSize();k++)
+		{
+		vals = vals + *inTuple.tupleGetItem(k);
+		symbols = symbols + inTuple.tupleGetName(k);
+		}
+
+	return CSTValue::Tuple(vals, symbols);
+	}
+
+CSTValue CSTValue::tupleInsert(	const Nullable<Symbol>& inSym, 
+								const CSTValue& inValue, 
+								uword_t index
+								) const
+	{
+	lassert(index <= *tupleGetSize());
+
+	ImmutableTreeVector<CSTValue> vals;
+	ImmutableTreeVector<Nullable<Symbol> > symbols;
+
+	for (long k = 0; k < *tupleGetSize();k++)
+		{
+		if (k == index)
+			{
+			vals = vals + inValue;
+			symbols = symbols + inSym;	
+			}
+
+		vals = vals + *tupleGetItem(k);
+		symbols = symbols + tupleGetName(k);
+		}
+
+	if (index == *tupleGetSize())
+		{
+		vals = vals + inValue;
+		symbols = symbols + inSym;	
+		}
+
+
+	return CSTValue::Tuple(vals, symbols);
+	}
+
+CSTValue CSTValue::tupleReplaceItem(	const Nullable<Symbol>& inSym, 
+										const CSTValue& inValue, 
+										uword_t index
+										) const
+	{
+	lassert(index < *tupleGetSize());
+
+	ImmutableTreeVector<CSTValue> vals;
+	ImmutableTreeVector<Nullable<Symbol> > symbols;
+
+	for (long k = 0; k < *tupleGetSize();k++)
+		{
+		if (k == index)
+			{
+			vals = vals + inValue;
+			symbols = symbols + inSym;	
+			}
+		else
+			{
+			vals = vals + *tupleGetItem(k);
+			symbols = symbols + tupleGetName(k);
+			}
+		}
+
+	return CSTValue::Tuple(vals, symbols);
+	}
+
+void CPPMLPrettyPrint<CSTValue>::prettyPrint(CPPMLPrettyPrintStream& stream,
+											const CSTValue& toPrint)
+	{
+	toPrint.toString(stream);
+	}
+
+//can be called on any CSTValue - useful if CSTVal is metadata
+void CSTValue::printMetadata(CPPMLPrettyPrintStream& stream) const
+	{
+	if(this->tupleGetSize() != null())
+		{
+		for(int i = 0; i < *(this->tupleGetSize()); i++)
+			{
+			if(*(this->tupleGetName(i)) == Symbol("user")
+			   && (*(this->tupleGetItem(i))).toString() != "nothing")
+				{
+				stream << this->tupleGetItem(i) << "\n";
+				}
+			}	
+		}
+	}
+
+std::string CSTValue::toString(void) const
+	{
+	return prettyPrintString(getReference());
+	}
+
+void CSTValue::toString(CPPMLPrettyPrintStream& stream) const
+	{
+	FORAValuePrinting::FORAValuePrinter printer(stream);
+	printer.toString(*this);
+	}
+

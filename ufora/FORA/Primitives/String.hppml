@@ -1,0 +1,237 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#ifndef String_hpp
+#define String_hpp
+
+#include "../../core/Common.hppml"
+#include "../../core/AtomicOps.hpp"
+#include <string>
+#include <stdint.h>
+#include "../../core/math/Hash.hpp"
+#include "../../core/cppml/CPPMLEquality.hppml"
+#include "../../core/cppml/CPPMLPrettyPrinter.hppml"
+#include "../../core/serialization/Serialization.hpp"
+
+class StringImpl;
+class MemoryPool;
+
+class String {
+public:
+	const static int maxBytesPackedIntoStringPtr = sizeof(void*) * 4 - 2;
+
+	String()
+		{
+		mStringRecord = 0;
+		mEmptyData[0] = 0;
+		mEmptyData[1] = 0;
+		mEmptyData[2] = 0;
+		}
+
+	~String()
+		{
+		if (!isEmptyOrPackedIntoPointer())
+			decrementRefcount(mStringRecord);
+		}
+
+	String&	operator=(const String& in)
+		{
+		if (!in.isEmptyOrPackedIntoPointer())
+			incrementRefcount(in.mStringRecord);
+
+		if (isEmptyOrPackedIntoPointer())
+			decrementRefcount(mStringRecord);
+		
+		mStringRecord = in.mStringRecord;
+		mEmptyData[0] = in.mEmptyData[0];
+		mEmptyData[1] = in.mEmptyData[1];
+		mEmptyData[2] = in.mEmptyData[2];
+		
+		return *this;
+		}
+
+	String(const String& in)
+		{
+		if (!in.mStringRecord)
+			{
+			mStringRecord = 0;
+			mEmptyData[0] = 0;
+			mEmptyData[1] = 0;
+			mEmptyData[2] = 0;
+			return;	
+			}
+
+		if (!in.isEmptyOrPackedIntoPointer())
+			incrementRefcount(in.mStringRecord);
+
+		mStringRecord = in.mStringRecord;
+		mEmptyData[0] = in.mEmptyData[0];
+		mEmptyData[1] = in.mEmptyData[1];
+		mEmptyData[2] = in.mEmptyData[2];
+		}
+
+	String(const String& inOtherString, MemoryPool* inMemoryPool)
+		{
+		if (!inOtherString.mStringRecord)
+			{
+			mStringRecord = 0;
+			return;
+			}
+
+		if (isPackedStringImpl(inOtherString.mStringRecord))
+			{
+			mStringRecord = inOtherString.mStringRecord;
+			mEmptyData[0] = inOtherString.mEmptyData[0];
+			mEmptyData[1] = inOtherString.mEmptyData[1];
+			mEmptyData[2] = inOtherString.mEmptyData[2];
+			
+			return;
+			}
+
+		initializeFromOtherString(inOtherString, inMemoryPool);
+		}
+
+	//initialize the string from a stl string. copies all the data out
+	explicit String(const std::string& in, MemoryPool* vectorPage);
+
+	explicit String(const char* dataPtr, size_t bytes, MemoryPool* vectorPage);
+	
+	MemoryPool* getOwningMemoryPool();
+
+	//return an empty string (all zeros)
+	static String	empty(uint32_t sz, MemoryPool* vectorPage, bool initializeToZero = true);
+	
+	std::string	stdString() const;
+
+	const char* c_str() const;
+	
+	char*	base();
+	
+	//get the hash of the string out.  Stores the hash in the MemoryHandle
+	//hash location and always uses it as a pure byte hash there
+	hash_type hash() const;
+	
+	size_t size() const;
+	size_t rawSize() const;
+
+	uword_t refcount() const;
+
+	static uword_t totalStringCount();
+
+	bool isEmptyOrPackedIntoPointer() const
+		{
+		return !mStringRecord || String::isPackedStringImpl(mStringRecord);
+		}
+
+private:
+	void initializeFromOtherString(const String& inOtherString, MemoryPool* inMemoryPool);
+
+	static bool isPackedStringImpl(const StringImpl* implPtr)
+		{
+		return ((unsigned char*)&implPtr)[0] & 0x1;
+		}
+
+	static void decrementRefcount(StringImpl* implPtr);
+	
+	static void incrementRefcount(StringImpl* implPtr);
+
+	StringImpl*	mStringRecord;
+
+    // This next field is used to pack "small strings" directly into the 
+    // String objects, instead of allocating a StringRecord object.
+    // I don't think we're guaranteed by the C++ standard that this 
+    // is a necessarily after the mStringRecord in the ABI, but we 
+    // could guarantee that by deleting this field and modifying 
+    // mStringRecord's declaration to StringImpl* mStringRecord[4] instead.
+	void* mEmptyData[3];
+
+	friend class StringImpl;
+
+	static AO_t mTotalStringCount;
+};
+
+template<>
+class CPPMLEquality<String, void> {
+public:
+		static char cmp(const String& lhs, const String& rhs)
+			{
+			return lhs.hash().cmp(rhs.hash());
+			}
+};
+
+template<>
+class CPPMLPrettyPrint<String> {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream& stream, const String& toPr)
+			{
+			stream << "FORAString(" + hashToString(toPr.hash()) + ")";
+			}
+};
+
+template<class T, class T2>
+class CPPMLTransform;
+
+template<>
+class CPPMLTransform<String, void> {
+public:
+		template<class F>
+		static Nullable<String> apply(const String& in, const F& f)
+			{
+			return null();
+			}
+};
+
+template<class T, class T2>
+class CPPMLTransformWithIndex;
+
+template<>
+class CPPMLTransformWithIndex<String, void> {
+public:
+		template<class F, class F2>
+		static Nullable<String> apply(const String& in, const F& f, const F2& f2)
+			{
+			return null();
+			}
+};
+
+template<class T, class T2>
+class CPPMLVisit;
+
+template<>
+class CPPMLVisit<String, void> {
+public:
+		template<class F>
+		static void apply(const String& in, F& f)
+			{
+			}
+};
+
+template<class T, class T2>
+class CPPMLVisitWithIndex;
+
+template<>
+class CPPMLVisitWithIndex<String, void> {
+public:
+		template<class F, class indices_type>
+		static void apply(const String& in, const F& f, const indices_type& inIndices)
+			{
+			}
+};
+
+macro_defineCppmlComparisonOperators(String)
+macro_defineMemberHashFunction(String)
+
+#endif
+

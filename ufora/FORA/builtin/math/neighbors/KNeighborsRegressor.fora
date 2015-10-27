@@ -1,0 +1,253 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#Markdown("""
+### KNeighborsRegressor
+
+A class for constructing nearest neighbors regressor based on a 
+set of points and a distance function.
+
+#### Examples
+
+    // a training set of 4 points in 1-dimensional space
+    let X = dataframe.DataFrame(
+        x: [0, 1, 2, 3]
+        );
+
+    // the class labels
+    let y = dataframe.DataFrame(y: [0, 0, 1, 1]);
+
+    // constructing the regression model
+    let regressor = math.neighbors.KNeighborsRegressor(X, y, 2);
+ 
+    // using the regressor to predict the training data
+    regressor.predict(X)
+
+    // compute the R^2 on the training data
+    regressor.score(X, y)
+
+    // construct a new regression model based on 2 neighbors
+    let newRegressor = regressor.withNumNeighbors(2)
+
+    // compute the R^2 based on 2-neighbors
+    newRegressor.score(X, y)
+
+""")
+class {
+    member mNearestNeighbors;
+    member mY;
+    member mNumNeighbors;
+
+    #Markdown("""#### Usage
+
+        math.neighbors.KNeighborsRegressor(trainingPredictors, trainingOutputs, numNeighbors = 5, distanceFun:= math.distances.l2)
+
+    #### Description
+
+    Construct a `KNeighborsClassifier` based on the training points 
+    `trainingPredictors` having corresponding outputs `trainingOutputs`, using 
+    `numNeighbors` neighbors (for regression), and using 
+    distance function `distanceFun` (which defaults to 
+    `math.distances.l2`).
+
+    """)
+    operator new(predictors, responses, numNeighbors = 5, 
+                 distanceFun:= math.distances.l2) {
+        cls.factory(predictors, responses, numNeighbors, distanceFun)
+        };
+
+    `hidden
+    static factory: fun
+    (dataframe.DataFrame(predictors), dataframe.Series(responses), 
+     numNeighbors, distanceFun) {
+        createInstance(
+            cls,
+            mNearestNeighbors: NearestNeighbors(predictors, distanceFun),
+            mY: responses,
+            mNumNeighbors: numNeighbors
+            );
+        }
+    (dataframe.DataFrame(predictors), dataframe.DataFrame(responses),
+     numNeighbors, distanceFun) {
+        assertions.assertEqual(responses.numColumns, 1);
+
+        factory(predictors, responses.getColumn(0), numNeighbors, distanceFun)
+        }
+    ;
+
+    withDistanceFun: 
+    #Markdown("""#### Usage
+
+        kNeighborsRegressor.withDistanceFun(newDistanceFun)
+
+    #### Description
+
+    Return a new `KNeighborsRegressor` instance with the same parameters 
+    as `kNeighborsRegressor` except using a new distance function, `newDistanceFun`.
+
+    #### Examples
+
+        kNeighborsRegressor.withDistanceFun(math.distances.l_infinity)
+
+    """)
+    fun(newDistanceFun) {
+        createInstance(
+            cls,
+            mNearestNeighbors: mNearestNeighbors.withDistanceFun(newDistanceFun),
+            mY: mY,
+            mNumNeighbors: mNumNeighbors
+            );
+        };
+
+    withNumNeighbors: 
+    #Markdown("""#### Usage
+
+        kNeighborsRegressor.withNumNeighbors(newNumNeighbors)
+
+    #### Description
+
+    Return a new `KNeighborsRegressor` instance with the same parameters 
+    as `kNeighborsRegressor` except using a `newNumNeighbors` points for 
+    its regression.
+
+    #### Examples
+
+        kNeighborsRegressor.withNumNeighbors(100)
+
+    """)
+    fun(numNeighbors) {
+        createInstance(
+            cls,
+            mNearestNeighbors: mNearestNeighbors,
+            mY: mY,
+            mNumNeighbors: numNeighbors
+            );
+        };
+    
+    nearestNeighbors: 
+    #Markdown("""#### Usage
+
+        kNeighborsRegressor.nearestNeighbors()
+
+    #### Description
+
+    Return (a copy of) the underlying `NearestNeighbors` instance held in 
+    `kNeighborsRegressor`.
+
+    """)
+    fun() {
+        mNearestNeighbors
+        };
+
+    predict: 
+    #Markdown("""#### Usage
+    
+        kNeighborsRegressor.predict(testSet)
+
+    #### Description
+
+    Use the regressor `kNeighborsRegressor` to predict 
+    the outputs for `testSet` using the k-nearest neighbors 
+    algorithm.
+
+    Returns a vector of length `size(testSet)` whose i-th 
+    entry is the predicted output for the i-th entry 
+    in `testSet`.
+
+    #### Examples
+
+        // a training set of 4 points in 1-dimensional space.
+        let X = dataframe.DataFrame(x: [0,1,2,3]);
+
+        // the class-labels
+        let y = dataframe.DataFrame(y: [0,0,1,1]);
+
+        // constructing the regression model
+        let regressor = math.neighbors.KNeighborsRegressor(X, y, 3);
+
+        // using the regressor to predict on the training set itself
+        regressor.predict(X)
+
+    """)        
+    fun(samples) {
+        let nearestNeighborIndices = 
+            mNearestNeighbors.kNeighbors(
+                samples, mNumNeighbors, sortPoints: false
+                );
+        
+        nearestNeighborIndices.apply(
+            fun(rowOfIndices) {
+                math.stats.mean(
+                    lazy.LazyVector(
+                        fun(ix) {
+                            mY[rowOfIndices[ix]]
+                            },
+                        size(rowOfIndices)
+                        )
+                    )
+                }
+            )
+        };
+
+    score: 
+    #Markdown("""
+    #### Usage
+
+        regressor.score(X, yTrue)
+
+    #### Description
+
+    Returns the coefficient of determination R^2 of the prediction.
+
+    The coefficient R^2 is defined as (1 - u / v), where u is the regression sum of 
+    squares ((yTrue - yPredicted) \\*\\* 2).sum() and v is the residual sum of squares 
+    ((yTrue - yTrue.mean()) \\*\\* 2).sum(). Best possible score is 1.0, lower 
+    values are worse.
+
+    #### Examples
+
+        // a training set of 4 points in 1-dimensional space.
+        let X = dataframe.DataFrame(x: [0,1,2,3]);
+
+        // the class-labels
+        let y = dataframe.DataFrame(y: [0,0,1,1]);
+
+        // constructing the regression model
+        let regressor = math.neighbors.KNeighborsRegressor(X, y, 3);
+
+        // using the regressor to compute the R^2 on the training data.
+        regressor.score(X, y)
+
+    """)
+    fun
+    (dataframe.DataFrame(X), dataframe.DataFrame(yTrue)) {
+        assertions.assertEqual(yTrue.numColumns, 1)
+        score(X, yTrue.getColumn(0))
+        }
+    (dataframe.DataFrame(X), dataframe.Series(yTrue)) {
+        assertions.assertEqual(size(X), size(yTrue));
+
+        let yPredicted = dataframe.Series(predict(X));
+        let u = ((yTrue - yPredicted) ** 2.0).sum()
+        let v = ((yTrue - math.stats.mean(yTrue)) ** 2.0).sum();
+
+        return 1.0 - u / v;
+        }
+    (dataframe.DataFrame(X), yTrue) {
+        score(X, dataframe.Series(yTrue))
+        };
+
+    };
+

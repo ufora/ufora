@@ -1,0 +1,391 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Stackframes.hppml"
+#include "../../Interpreter/TransferNativeStackframeIntoInterpreter.hppml"
+#include "../../Interpreter/InterpreterHistory.hppml"
+#include "LiveValue.hppml"
+#include "NativeLayoutType.hppml"
+#include "../../Native/NativeCode.hppml"
+#include "../../Runtime.hppml"
+#include "../JitCompiler/Compiler.hppml"
+#include "../../Core/TupleCategory.hppml"
+#include "../../Core/ExecutionContext.hppml"
+#include "../../Core/ExecutionContextConfiguration.hppml"
+#include "../../../core/Logging.hpp"
+#include "../../Core/RefcountPool.hppml"
+#include "../../Core/ApplyArgFrame.hppml"
+
+namespace TypedFora {
+namespace Abi {
+
+NativeRuntimeContinuationValue<1>
+ResultSignatureAdapterFrame::adaptDataAndFollowContinuation(
+						MemBlock** memBlock, 
+						uword_t resumption, 
+						ResultSignatureAdapterFrame* stackframe
+						)
+	{
+	Fora::Interpreter::ExecutionContext* context = 
+		Fora::Interpreter::ExecutionContext::currentExecutionContext();
+
+	Fora::Interpreter::RefcountPool* refcountPool = context->getRefcountPool();
+
+	//figure out what 'resumption' means
+	pair<TypedFora::Type, bool> typeAndIsException(stackframe->desiredSignature[resumption]);
+
+	const ImmutableTreeVector<TypedFora::TypedContinuationJudgment>& judgments = 
+		stackframe->continuation.continuationJudgments();
+
+	if (context->getConfiguration()->allowInterpreterTracing())
+		{
+		auto compiler = Runtime::getRuntime().getTypedForaCompiler();
+
+		bool isPassingToNative = compiler->isNativeFunctionPointer(
+			stackframe->continuation.continuations().base().jumpPtr()
+			);
+		
+		context->getInterpreterHistory().continuationAdapterFollowed(
+			typeAndIsException.second,
+			typeAndIsException.first,
+			isPassingToNative
+			);
+		}
+
+
+	//search for a continuation we can follow
+	for (long k = 0; k < judgments.size(); k++)
+		if (judgments[k].isException() == typeAndIsException.second &&
+				canTransferCastValue(
+					stackframe->data,
+					typeAndIsException.first,
+					judgments[k].resultType()
+					)
+				)
+			{
+			NativeRuntimeContinuationValue<1> cont = stackframe->continuation.continuations()[k];
+
+			//we're returning to a native stackframe
+			if (context->getConfiguration()->allowInterpreterTracing())
+				{
+				context->getInterpreterHistory().onFollowingTypedNativeContinuation(
+							cont, 
+							judgments[k].resultType().jov(), 
+							typeAndIsException.second
+							);
+				}
+
+			LOG_DEBUG << "transferring a value of type " << prettyPrintString(typeAndIsException.first)
+				<< " to " << prettyPrintString(judgments[k].resultType());
+			
+			transferCastLiveValue(
+				cont.slots()[0].target(),
+				judgments[k].resultType(), 
+				stackframe->data, 
+				typeAndIsException.first,
+				refcountPool
+				);
+
+			stackframe->~ResultSignatureAdapterFrame();
+
+			FORA_clib_freeMem(memBlock, stackframe);
+
+			return cont;
+			}
+
+	//if we got here, then we need to convert our continuations into interpreter continuations
+	ImplVal finalResult;
+
+	static TypedFora::Type pooledImplvalType(JOV::Unknown(), RefcountStyle::Pooled());
+
+	transferCastLiveValue(
+		&finalResult, 
+		pooledImplvalType,
+		stackframe->data, 
+		typeAndIsException.first,
+		refcountPool
+		);
+
+	TypedFora::TypedContinuation continuation = stackframe->continuation;
+
+	stackframe->~ResultSignatureAdapterFrame();
+
+	FORA_clib_freeMem(memBlock, stackframe);
+
+	NativeRuntimeContinuationValue<2> newContinuation = 
+		Fora::Interpreter::adaptContinuationsToInterpreterContinuations(
+			continuation.continuations()
+			);
+
+
+	if (context->getConfiguration()->allowInterpreterTracing())
+		context->getInterpreterHistory()
+			.onReturnToNativeCodeButImmediatelyTransferToInterpreter();
+
+	NativeRuntimeContinuationValue<1> cont = newContinuation[typeAndIsException.second ? 1 : 0];
+
+	*(ImplVal*)cont.slots()[0].target() = finalResult;
+
+	return cont;
+	}
+
+NativeRuntimeContinuationValue<1>
+InterpreterUniqueIdHolderFrame::teardownAndFollowContinuation(
+						MemBlock** memBlock, 
+						uword_t resumption, 
+						InterpreterUniqueIdHolderFrame* stackframe
+						)
+	{
+	NativeRuntimeContinuationValue<1> cont = stackframe->continuation.continuations()[resumption];
+
+	stackframe->~InterpreterUniqueIdHolderFrame();
+
+	FORA_clib_freeMem(memBlock, stackframe);
+
+	Fora::Interpreter::ExecutionContext* context = 
+		Fora::Interpreter::ExecutionContext::currentExecutionContext();
+
+	if (context->getConfiguration()->allowInterpreterTracing())
+		context->getInterpreterHistory().onArbitraryInterpreterLogging("teardownAndFollowContinuation");
+
+	return cont;
+	}
+
+uword_t computeArgumentFrameBytecount(const TypedFora::TypedJumpTarget& target)
+	{
+	uword_t bytes = 0;
+
+	bytes += 
+		target.resultSignature().size() * sizeof(NativeRuntimeContinuationSlot) + 
+		sizeof(NativeRuntimeContinuationBase)
+		;
+
+	bytes += sizeof(NativeRuntimeCallbacks*);
+
+	const ImmutableTreeVector<TypedFora::Type>& types(target.callSignature());
+
+	for (long k = 0; k < types.size(); k++)
+		bytes += TypedFora::Abi::nativeTypeForForaType(types[k]).packedSize();
+	
+	return bytes;
+	}
+
+void* packArgumentsIntoStackframeFromTuple(	
+						void* inDataPtr,
+						const ImmutableTreeVector<TypedFora::Type>& inTypes,
+						ImplVal inTuple,
+						Fora::Interpreter::RefcountPool* inRefcountPool
+						)
+	{
+	TupleCategory::iterator it = TupleCategory::iterator::begin(inTuple);
+	TupleCategory::iterator it_end = TupleCategory::iterator::end(inTuple);
+
+	static TypedFora::Type unownedImplvalType(JOV::Unknown(), RefcountStyle::AsValueUnowned());
+
+	uword_t index = 0;
+
+	while (it < it_end)
+		{
+		ImplVal val = *it;
+
+		transferCastLiveValue(inDataPtr, inTypes[index], &val, unownedImplvalType, inRefcountPool);
+
+		inDataPtr = reinterpret_cast<char*>(inDataPtr) + 
+			nativeTypeForForaType(inTypes[index]).packedSize();
+
+		index++;
+		++it;
+		}
+
+	lassert(index == inTypes.size());
+
+	return inDataPtr;
+	}
+
+TypedContinuation createTeardownContinuationForUntransferrableArgs(
+				const TypedContinuation& inCurrentContinuation,
+				ImplVal* inValues,
+				uint64_t uniqueId,
+				const ImmutableTreeVector<TypedFora::Type>& targetTypes,
+				MemBlock** memBlock,
+				Compiler& compiler
+				)
+	{
+	InterpreterUniqueIdHolderFrame* wrapFrame = 
+		reinterpret_cast<InterpreterUniqueIdHolderFrame*>(
+			FORA_clib_allocMem(memBlock, sizeof(InterpreterUniqueIdHolderFrame))
+			);
+
+	wrapFrame->originalStackFrameUniqueId = uniqueId;
+
+	new (&wrapFrame->continuation) TypedContinuation(inCurrentContinuation);
+
+	//now build the relevant continuations
+	NativeRuntimeContinuationValueVector continuations(
+		compiler.wrapCPPCallback(
+			(NativeCppCallback)&InterpreterUniqueIdHolderFrame::teardownAndFollowContinuation,
+			wrapFrame,
+			memBlock
+			)
+		);
+
+	//we don't allocate storage for a return value. We just use the return value in the continuations
+	//given to us.
+	for (long k = 0; k < inCurrentContinuation.continuations().size(); k++)
+		continuations = continuations +
+			NativeRuntimeContinuationSlot(
+				k,
+				inCurrentContinuation.continuations().slots()[k].target()
+				);
+
+	return TypedContinuation(
+		inCurrentContinuation.continuationJudgments(), 
+		continuations, 
+		inCurrentContinuation.runtimeCallbacks()
+		);
+	}
+
+void* packArgumentsIntoStackframeAndAddToRefcountPool(	
+						void* inDataPtr,
+						const ImmutableTreeVector<TypedFora::Type>& inTypes,
+						const ImplVal* inImplVals,
+						Fora::Interpreter::RefcountPool* inRefcountPool
+						)
+	{
+	static TypedFora::Type unownedImplvalType(JOV::Unknown(), RefcountStyle::AsValueUnowned());
+
+	for (uword_t index = 0; index < inTypes.size();index++)
+		{
+		ImplVal val = inImplVals[index];
+
+		transferCastLiveValue(
+			inDataPtr, 
+			inTypes[index], 
+			&val, 
+			unownedImplvalType,
+			inRefcountPool
+			);
+
+		inDataPtr = reinterpret_cast<char*>(inDataPtr) + 
+			nativeTypeForForaType(inTypes[index]).packedSize();
+		}
+
+	return inDataPtr;
+	}
+
+namespace {
+
+bool matches(
+		const ImmutableTreeVector<TypedFora::TypedContinuationJudgment>& judgments,
+		const ResultSignature& inDesiredSignature
+		)
+	{
+	if (judgments.size() != inDesiredSignature.size())
+		return false;
+
+	for (long k = 0; k < inDesiredSignature.size(); k++)
+		{
+		auto s = inDesiredSignature[k];
+		if (judgments[k].isException() != s.second || 
+				judgments[k].resultType() != s.first)
+			return false;
+		}
+
+	return true;
+	}
+
+}
+
+TypedContinuation adaptReturnContinuation(
+						const TypedContinuation& inCurrentContinuation,
+						const ResultSignature& inDesiredSignature, 
+						MemBlock** memBlock,
+						Compiler& compiler
+						)
+	{
+	if (matches(inCurrentContinuation.continuationJudgments(), inDesiredSignature))
+		return inCurrentContinuation;
+
+	uword_t sz = 0;
+	for (uword_t k = 0; k < inDesiredSignature.size(); k++)
+		if (sz < nativeTypeForForaType(inDesiredSignature[k].first).packedSize())
+			sz = nativeTypeForForaType(inDesiredSignature[k].first).packedSize();
+
+	ResultSignatureAdapterFrame* wrapFrame = 
+		reinterpret_cast<ResultSignatureAdapterFrame*>(
+			FORA_clib_allocMem(memBlock, sizeof(ResultSignatureAdapterFrame) + sz)
+			);
+
+	new (&wrapFrame->continuation) TypedContinuation(inCurrentContinuation);
+
+	new (&wrapFrame->desiredSignature) ResultSignature(inDesiredSignature);
+
+	//now create a new continuation object
+	NativeRuntimeContinuationValueVector continuations(
+		compiler.wrapCPPCallback(
+			(NativeCppCallback)&ResultSignatureAdapterFrame::adaptDataAndFollowContinuation,
+			wrapFrame,
+			memBlock
+			)
+		);
+
+	ImmutableTreeVector<TypedFora::TypedContinuationJudgment> jmts;
+
+	for (long k = 0; k < inDesiredSignature.size(); k++)
+		{
+		jmts = jmts + 
+			TypedFora::TypedContinuationJudgment(
+				inDesiredSignature[k].second, 
+				inDesiredSignature[k].first
+				);
+
+		continuations = continuations + NativeRuntimeContinuationSlot(k, wrapFrame->data);
+		}
+
+	return TypedContinuation(jmts, continuations, inCurrentContinuation.runtimeCallbacks());
+	}
+
+void* packContinuationIntoStackframe(	
+						void* inDataPtr,
+						const TypedContinuation& inContinuation
+						)
+	{
+	char* data = reinterpret_cast<char*>(inDataPtr);
+
+	data = inContinuation.continuations().packIntoBytes(data);
+
+	((NativeRuntimeCallbacks**)data)[0] = inContinuation.runtimeCallbacks();
+
+	data += sizeof(NativeRuntimeCallbacks*);
+
+	return data;
+	}
+
+bool isUnknownJOA(const JudgmentOnAction& joa)
+	{
+	if (joa.resultPart().size() != 1)
+		return false;
+	if (joa.throwPart().size() != 1)
+		return false;
+	if (!joa.resultPart()[0].isUnknown())
+		return false;
+	if (!joa.throwPart()[0].isUnknown())
+		return false;
+	return true;
+	}
+
+}
+}
+

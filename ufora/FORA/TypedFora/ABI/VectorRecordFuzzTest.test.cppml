@@ -1,0 +1,850 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "VectorRecord.hpp"
+#include "VectorLoadRequest.hppml"
+#include "../../Core/ValidateVectorRefcountsValueUpdater.hppml"
+#include "../../Core/RefcountPool.hppml"
+#include "../../Core/CopyDataOutOfVectorPages.hppml"
+#include "../../Core/ExecutionContextThreadValueUpdater.hppml"
+#include "../../Core/ExecutionContextMemoryPool.hppml"
+#include "../../Core/ValueDeepcopier.hppml"
+#include "../../Core/ExecutionContext.hppml"
+#include "../../Core/ExecutionContextImpl.hppml"
+#include "../../Core/ImplValContainerUtilities.hppml"
+#include "../../VectorDataManager/VectorDataManager.hppml"
+#include "../../../core/UnitTest.hpp"
+#include "../../../core/math/Random.hpp"
+#include "../../../core/StringUtil.hpp"
+#include "../../../core/threading/TestingCallbackSchedulerFactory.hppml"
+
+using namespace TypedFora::Abi;
+
+using namespace Ufora::threading;
+
+using Fora::Interpreter::ExecutionContext;
+using Fora::Interpreter::CopyDataOutOfVectorPages;
+using Fora::Interpreter::ExecutionContextThreadValueUpdater;
+
+BOOST_AUTO_TEST_SUITE( test_TypedFora_ABI_VectorRecordFuzzTest )
+
+class VectorRecordFuzzTester {
+public:
+	VectorRecordFuzzTester(long seed = 1) : 
+			mRandom(seed),
+			mHashIndex(1),
+			mIsTornDown(false)
+		{
+		mCallbackSchedulerFactory.reset(new TestingCallbackSchedulerFactory());
+
+		mCallbackScheduler = mCallbackSchedulerFactory->createScheduler();
+
+		mVDM.reset(new VectorDataManager(mCallbackScheduler, 100*1024));
+		mVDM->setMemoryLimit(1024 * 1024 * 100, 1024 * 1024 * 200);
+
+		mExecutionContextPtr.reset(new ExecutionContext(mVDM));
+
+		mExecutionContextPtr->getImpl()->setBigvectorSlotForTesting();
+
+		createAVector();
+		createAVector();
+		createAString();
+		appendToAVector();
+		appendSomeIntsToAVector();
+		}
+
+	~VectorRecordFuzzTester()
+		{
+		teardown();
+		}
+
+	void teardown()
+		{
+		if (mIsTornDown)
+			return;
+
+		ScopedThreadLocalContext<ExecutionContext> setContext(&*mExecutionContextPtr);
+
+		mIsTornDown = true;
+
+		LOG_DEBUG << "TEARING DOWN";
+		LOG_DEBUG << "copy data out of VP...";
+
+		copyDataOutOfAllVectorPages();
+
+		LOG_DEBUG << "done copying data out of all VectorPages";
+
+		processAllCallbacks();
+
+		mVectorRecords.resize(0);
+		mStrings.resize(0);
+
+		LOG_DEBUG << "Cleared all values...";
+
+		mExecutionContextPtr->getExecutionContextMemoryPool()->memoryPoolIsClean();
+
+		lassert(mExecutionContextPtr->getExecutionContextMemoryPool()->totalBytesAllocated() == 0);
+
+		mExecutionContextPtr.reset();
+
+		LOG_DEBUG << "Cleared EC";
+
+		mVDM.reset();
+
+		LOG_DEBUG << "Cleared VDM";
+		}
+
+	void dumpState()
+		{
+		for (long k = 0; k < mVectorRecords.size(); k++)
+			{
+			LOG_DEBUG << "Vector in slot " << k << ". hash = " << mVectorRecords[k].hash() 
+				<< ": " << mVectorRecords[k].size() 
+				<< " with data ptr " << mVectorRecords[k].dataPtr();
+			if (mVectorRecords[k].dataPtr() && !mVectorRecords[k].dataPtr()->pageletTree().isEmpty())
+				dump(mVectorRecords[k].dataPtr()->pageletTree(), 1);
+			}
+		}
+
+	void dump(Fora::PageletTreePtr pagelet, long level)
+		{
+		if (pagelet->leaf())
+			{
+			LOG_DEBUG << Ufora::pad("", level * 4) << "pagelet leaf of size " 
+				<< pagelet->leaf()->getValues()->size() 
+				<< " x " 
+				<< pagelet->leaf()->getValues()->currentJor()
+				;
+			}
+		if (!pagelet->left().isEmpty())
+			{
+			LOG_DEBUG << Ufora::pad("", level * 4) << "lvc left";
+			dump(pagelet->left(), level + 1);
+			}
+		if (!pagelet->right().isEmpty())
+			{
+			LOG_DEBUG << Ufora::pad("", level * 4) << "lvc right";
+			dump(pagelet->right(), level + 1);
+			}
+		}
+
+	void dump(VectorHandle* handle, long level)
+		{
+		LOG_DEBUG << Ufora::pad("", level * 4) << handle;
+		if (!handle->pageletTree().isEmpty())
+			dump(handle->pageletTree(), level + 1);
+		}
+
+	void test(long actionCount = 1000)
+		{
+		ScopedThreadLocalContext<ExecutionContext> setContext(&*mExecutionContextPtr);
+		
+		for (long actionIx = 0; actionIx < actionCount; actionIx++)
+			{
+			lassert(mExecutionContextPtr->getExecutionContextMemoryPool()->acquireLocksOnPagelets());
+			lassert(mExecutionContextPtr->getExecutionContextMemoryPool()->beginExecution());
+
+			LOG_DEBUG << "performing action " << actionIx;
+
+			performAnAction();
+			validateState();
+			dumpState();
+
+			LOG_DEBUG << "processing callbacks for " << actionIx;
+
+			processAllCallbacks();
+
+			LOG_DEBUG << "done performing action " << actionIx;
+
+			mExecutionContextPtr->getExecutionContextMemoryPool()->endExecution();
+			}
+
+		teardown();
+		}
+
+	void performAnAction()
+		{
+		int sample = mRandom() * 14;
+
+		if (sample == 0)
+			createAVector();
+			else
+		if (sample == 1)
+			createAString();
+			else
+		if (sample == 2)
+			dropAVector();
+			else
+		if (sample == 3)
+			concatenateAVector();
+			else
+		if (sample == 4)
+			pageAVector();
+			else
+		if (sample == 5)
+			appendToAVector();
+			else
+		if (sample == 6)
+			pullAnElementOutOfAVector();
+			else
+		if (sample == 7)
+			copyDataOutOfAllVectorPages();
+			else
+		if (sample == 8)
+			deepcopyAVector();
+			else
+		if (sample == 9)
+			dropAString();
+			else
+		if (sample == 10)
+			copyUnpagedVectorContentsIntoPagelets();
+			else
+		if (sample == 11)
+			callDeepcopyAndContigousOnAVector();
+			else
+		if (sample == 12)
+			appendSomeIntsToAVector();
+			else
+		if (sample == 13)
+			sliceAVector();
+		else
+			{
+			lassert(false);
+			}
+		}
+
+	void createAVector()
+		{
+		LOG_DEBUG << "Create an empty vector and place in slot " << mVectorRecords.size();
+
+		mVectorRecords.push_back(VectorRecord());
+		}
+
+	void createAString()
+		{
+		String s = String::empty(1 + mRandom() * 10, mExecutionContextPtr->getMemoryPool());
+
+		LOG_DEBUG << "Create a string of size " << s.size() << " and place in slot " 
+			<< mStrings.size();
+		
+		mStrings.push_back(s);
+		}
+
+	void validateState()
+		{
+		for (auto vec: mVectorRecords)
+			if (vec.dataPtr())
+				vec.dataPtr()->validateInternalInvariants();
+		}
+
+	void dropAVector()
+		{
+		if (!mVectorRecords.size())
+			return;
+
+		long ix = mRandom() * (mVectorRecords.size());
+
+		LOG_DEBUG << "Drop the vector in slot " << ix << " (" 
+			<< mVectorRecords[ix].hash() << " with handle " 
+			<< mVectorRecords[ix].vectorHandleHash()
+			<< ")";
+		
+		mVectorRecords[ix] = VectorRecord();
+		}
+
+	void dropAString()
+		{
+		if (!mStrings.size())
+			return;
+
+		long ix = mRandom() * (mStrings.size());
+
+		LOG_DEBUG << "Drop the string in slot " << ix << " of size " << mStrings[ix].size()
+			<< ".";
+		
+		mStrings[ix] = String();
+		}
+
+	VectorRecord pickARandomVector()
+		{
+		lassert(mVectorRecords.size());
+		
+		long ix = mRandom() * mVectorRecords.size();
+
+		LOG_DEBUG << "(picked vec in slot " << ix << ")";
+		
+		return mVectorRecords[ix];
+		}
+
+	ImplValContainer pickARandomValue()
+		{
+		long ix = (mStrings.size() + mVectorRecords.size()) * mRandom();
+
+		if (ix < mStrings.size())
+			{
+			LOG_DEBUG << "(picked string in slot " << ix << ")";
+
+			return ImplValContainerUtilities::createString(mStrings[ix]);
+			}
+		
+		ix -= mStrings.size();
+
+		if (ix < mVectorRecords.size())
+			{
+			LOG_DEBUG << "(picked Vector in slot " << ix << ")";
+			
+			return ImplValContainerUtilities::createVector(mVectorRecords[ix]);
+			}
+
+		return ImplValContainer();
+		}
+
+	void concatenateAVector()
+		{
+		if (!mVectorRecords.size())
+			return;
+
+		VectorRecord vec1 = pickARandomVector();
+		VectorRecord vec2 = pickARandomVector();
+
+		mVectorRecords.push_back(
+			VectorRecord::concatenate(
+				vec1, 
+				vec2, 
+				mExecutionContextPtr->getMemoryPool(), 
+				&*mVDM, 
+				getNewHash()
+				)
+			);
+
+		LOG_DEBUG << "Concatenate " << vec1.hash() << " and " << vec2.hash() 
+			<< " into slot " << mVectorRecords.size() - 1;
+		}
+
+	void pageAVector()
+		{
+		if (!mVectorRecords.size())
+			return;
+
+		long ix = mRandom() * mVectorRecords.size();
+
+		mVectorRecords[ix] = 
+			mVectorRecords[ix].paged(
+				mExecutionContextPtr->getMemoryPool(),
+				&*mVDM
+				);
+
+		LOG_DEBUG << "Page vector in index " << ix << ", " << mVectorRecords[ix].hash();
+		}
+
+	//for the moment, don't put vectors that are reachable together
+	bool isOkToAppend(ImplValContainer toAppend, VectorRecord vec)
+		{
+		if (!vec.dataPtr() || !toAppend.type().isVector() || !toAppend.cast<VectorRecord>().dataPtr())
+			return true;
+
+		return isOkToAppend(
+			toAppend.cast<VectorRecord>().dataPtr(), 
+			vec.dataPtr()
+			);
+		}
+
+	bool isOkToAppend(VectorHandle* toAppend, VectorHandle* vec)
+		{
+		//return false if 'toAppend' can reach 'vec'
+		std::set<VectorHandle*> handles;
+
+		allHandlesReachable(handles, toAppend);
+
+		return handles.find(vec) == handles.end();
+		}
+
+	void allHandlesReachable(std::set<VectorHandle*>& outHandles, VectorHandle* handle)
+		{
+		if (outHandles.find(handle) != outHandles.end())
+			return;
+
+		outHandles.insert(handle);
+
+		if (!handle->pageletTree().isEmpty())
+			allHandlesReachable(outHandles, handle->pageletTree());
+
+		if (handle->unpagedValues())
+			allHandlesReachable(outHandles, handle->unpagedValues());
+		}
+
+	void allHandlesReachable(std::set<VectorHandle*>& outHandles, ForaValueArray* array)
+		{
+		for (long k = 0; k < array->size();k++)
+			{
+			ImplValContainer value = (*array)[k];
+
+			if (value.type().isVector())
+				{
+				VectorRecord vec = value.cast<VectorRecord>();
+
+				if (vec.dataPtr())
+					allHandlesReachable(outHandles, vec.dataPtr());
+				}
+			}
+		}
+
+	void allHandlesReachable(std::set<VectorHandle*>& outHandles, Fora::PageletTreePtr concat)
+		{
+		if (concat.isEmpty())
+			return;
+
+		if (concat->leaf())
+			allHandlesReachable(outHandles, concat->leaf()->getValues());
+		if (!concat->left().isEmpty())
+			allHandlesReachable(outHandles, concat->left());
+		if (!concat->right().isEmpty())
+			allHandlesReachable(outHandles, concat->right());
+		}
+
+	void appendSomeIntsToAVector()
+		{
+		if (!mVectorRecords.size())
+			return;
+
+		int64_t ix = mVectorRecords.size() * mRandom();
+
+		ImplValContainer anInt = ImplValContainer(CSTValue(0));
+
+		int64_t count = mRandom() * 10000 + 1;
+
+		for (long k = 0; k < count; k++)
+			mVectorRecords[ix] = mVectorRecords[ix].append(
+				mExecutionContextPtr->getMemoryPool(),
+				anInt, 
+				&*mVDM, 
+				boost::bind(&VectorRecordFuzzTester::getNewHash, this)
+				);
+
+		LOG_DEBUG << "New hash is " << mVectorRecords[ix].hash();
+		}
+
+	void appendToAVector()
+		{
+		if (!mVectorRecords.size())
+			return;
+
+		int64_t ix = mVectorRecords.size() * mRandom();
+
+		ImplValContainer toAppend = pickARandomValue();
+
+		if (vectorLevelOf(toAppend) < 3 && isOkToAppend(toAppend, mVectorRecords[ix]))
+			{
+			if (toAppend.type().isString())
+				LOG_DEBUG << "Append a string of size " << toAppend.cast<String>().size()
+					<< " to index " << ix << ": " << mVectorRecords[ix].hash();
+				else
+			if (toAppend.type().isVector())
+				LOG_DEBUG << "Append vector " << toAppend.cast<VectorRecord>().hash()
+					<< " to index " << ix << ": " << mVectorRecords[ix].hash();
+			else
+				{
+				lassert(toAppend.type().isNothing())
+				LOG_DEBUG << "Append 'nothing' to " << mVectorRecords[ix].hash();
+				}
+
+			mVectorRecords[ix] = mVectorRecords[ix].append(
+				mExecutionContextPtr->getMemoryPool(),
+				toAppend, 
+				&*mVDM, 
+				boost::bind(&VectorRecordFuzzTester::getNewHash, this)
+				);
+
+			LOG_DEBUG << "New hash is " << mVectorRecords[ix].hash();
+			}
+		}
+
+	long vectorLevelOf(ImplValContainer value)
+		{
+		if (!value.type().isVector())
+			return 0;
+
+		VectorRecord vec = value.cast<VectorRecord>();
+
+		if (vec.size() == 0)
+			return 1;
+
+		return vectorLevelOf(vec.jor()) + 1;
+		}
+
+	long vectorLevelOf(JudgmentOnResult jor)
+		{
+		long maxLevel = 0;
+
+		for (auto jov: jor.vals())
+			{
+			long level = vectorLevelOf(jov);
+			if (level > maxLevel)
+				maxLevel = level;
+			}
+
+		return maxLevel;
+		}
+
+	long vectorLevelOf(JOV jov)
+		{
+		@match JOV(jov)
+			-| Vector((jor)) ->> {
+				return vectorLevelOf(jor) + 1;
+				}
+			-| _ ->> {
+				return 0;
+				}
+		}
+
+	hash_type getNewHash()
+		{
+		return hash_type(mHashIndex++);
+		}	
+
+	void pullAnElementOutOfAVector()
+		{
+		if (!mVectorRecords.size())
+			return;
+
+		VectorRecord vec = pickARandomVector();
+
+		if (vec.size())
+			{
+			int64_t index = mRandom() * vec.size();
+
+			TypedFora::Abi::ForaValueArraySlice slice = vec.sliceForOffset(index);
+
+			if (!slice.offsetFor(index))
+				{
+				LOG_DEBUG << "Need to pageload " << vec.hash() << " for value " 
+					<< index << " / " << vec.size()
+					;
+
+				VectorHandle::LoadCheckResult result = 
+					vec.dataPtr()->attemptToLoadValues(
+						&*mVDM,
+						vec.indexWithinHandle(index),
+						vec.indexWithinHandle(index) + 1
+						);
+
+				lassert(result == VectorHandle::LoadCheckResult::Success);
+
+				slice = vec.sliceForOffset(index);
+
+				lassert_dump(
+					slice.offsetFor(index),
+					prettyPrintString(slice) << " doesn't have data for " << index
+					);
+				}
+
+			ImplValContainer ivc = slice[index];
+
+			if (ivc.type().isString())
+				LOG_DEBUG << "Got string of size " << ivc.cast<String>().size() << " from " 
+					<< index << " of vector " << vec.hash();
+				else
+			if (ivc.type().isVector())
+				LOG_DEBUG << "Got vector " << ivc.cast<VectorRecord>().hash() << " from " 
+					<< index << " of vector " << vec.hash();
+			else
+				{
+				lassert(ivc.type().isNothing() || ivc.type().isInteger());
+				}
+
+			if (ivc.type().isString())
+				{
+				mStrings.push_back(ivc.cast<String>());
+				LOG_DEBUG << "\tNow we have " << mStrings.size() << " strings.";
+				}
+				else
+			if (ivc.type().isVector())
+				{
+				VectorRecord vec = ivc.cast<VectorRecord>();
+
+				mVectorRecords.push_back(vec);
+
+				LOG_DEBUG << "Placing vec " << vec.hash() << " into slot " << mVectorRecords.size()-1;
+				}
+			}
+		}
+
+	void copyDataOutOfAllVectorPages()
+		{
+		bool wasExecuting = mExecutionContextPtr->getExecutionContextMemoryPool()->isExecuting();
+
+		if (wasExecuting)
+			mExecutionContextPtr->getExecutionContextMemoryPool()->endExecution();
+
+		LOG_DEBUG << "Copying data out of all vector pages.";
+
+			{
+			CopyDataOutOfVectorPages::state_type copierState(
+				mExecutionContextPtr->getMemoryPool(), 
+				&*mVDM
+				);
+
+			ExecutionContextThreadValueUpdater<CopyDataOutOfVectorPages>::state_type
+				state(
+					mVDM, 
+					*mExecutionContextPtr->getRefcountPool(),
+					mExecutionContextPtr->getMemoryPool(),
+					copierState
+					);
+
+			ExecutionContextThreadValueUpdater<CopyDataOutOfVectorPages> visitor(state);
+
+			for (long ix = 0; ix < mVectorRecords.size(); ix++)
+				{
+				LOG_DEBUG << "\t" << ix << ": " << mVectorRecords[ix].dataPtr();
+				if (visitor.visitVector(mVectorRecords[ix], true))
+					LOG_DEBUG << "\t\t modified to -> " << mVectorRecords[ix].dataPtr();
+				}
+
+			for (long ix = 0; ix < mStrings.size(); ix++)
+				if (visitor.visitString(mStrings[ix], true))
+					LOG_DEBUG << "\tModified string " << ix << " of size " << mStrings[ix].size();
+
+			state.cleanup();
+			}
+
+		mExecutionContextPtr->getImpl()->unmapAllBigVectorArrayHandles();
+		
+		mExecutionContextPtr->getRefcountPool()->clear();
+
+		assertNoOutsidePoolsReachable();
+
+		mExecutionContextPtr->getExecutionContextMemoryPool()->memoryPoolIsClean();
+
+		if (wasExecuting)
+			{
+			lassert(mExecutionContextPtr->getExecutionContextMemoryPool()->acquireLocksOnPagelets());
+			mExecutionContextPtr->getExecutionContextMemoryPool()->beginExecution();
+			}
+		}
+
+	void assertNoOutsidePoolsReachable()
+		{
+		using namespace Fora::Interpreter;
+
+		ValidateVectorRefcountsValueUpdaterState state(
+					mVDM->getMemoryManager(), 
+					mExecutionContextPtr->getMemoryPool(), 
+					"VectorRecordFuzzTester",
+					Nullable<long>(0),
+					false,
+					true,
+					true
+					);
+
+		ValidateVectorRefcountsValueUpdater updater(state);
+
+		for (long ix = 0; ix < mVectorRecords.size(); ix++)
+			updater.visitVector(mVectorRecords[ix], true, true, "VectorRecordFuzzTesterRoot");
+			
+		for (long ix = 0; ix < mStrings.size(); ix++)
+			updater.visitString(mStrings[ix], true);
+
+		lassert(state.mMemoryPoolsReachable.size() <= 1);
+
+		if (state.mMemoryPoolsReachable.size())
+			lassert(*state.mMemoryPoolsReachable.begin() == mExecutionContextPtr->getMemoryPool());
+		}
+
+
+	void copyUnpagedVectorContentsIntoPagelets()
+		{
+		if (!mVectorRecords.size())
+			{
+			LOG_DEBUG << "ignoring copyUnpagedVectorContentsIntoPagelets because we have no pagelets";
+			return;
+			}
+
+		int64_t ix = mRandom() * mVectorRecords.size();
+
+		LOG_DEBUG << "Copy unpaged vectors contents into pagelets in slot " 
+			<< ix << ": " << mVectorRecords[ix].hash();
+
+		if (mVectorRecords[ix].dataPtr() && mVectorRecords[ix].dataPtr()->isWriteable())
+			mVectorRecords[ix].dataPtr()->moveUnpagedValueArrayIntoPagelet(&*mVDM);
+
+		LOG_DEBUG << "done with copy unpaged vectors contents into pagelets in slot " 
+			<< ix << ": " << mVectorRecords[ix].hash();
+		}
+
+	void callDeepcopyAndContigousOnAVector()
+		{
+		if (!mVectorRecords.size())
+			return;
+
+		int64_t ix = mRandom() * mVectorRecords.size();
+
+		if (mVectorRecords[ix].jor().size() == 1 && mVectorRecords[ix].jor()[0].type() && 
+				mVectorRecords[ix].jor()[0].type()->isPOD() && 
+				mVectorRecords[ix].jor()[0].type()->size() * mVectorRecords[ix].size() < 
+					mVDM->maxPageSizeInBytes())
+			{
+			mVectorRecords.push_back(deepcopiedAndContiguousVector(mVectorRecords[ix]));
+
+			LOG_DEBUG << "deepcopiedAndContiguous on a vector in slot " 
+				<< ix << ": " << mVectorRecords[ix].hash();
+			}
+		}
+
+	VectorRecord deepcopiedAndContiguousVector(VectorRecord vec)
+		{
+		while (true)
+			{
+			Fora::ReturnValue<VectorRecord, VectorLoadRequest> res = 
+				vec.deepcopiedAndContiguous(mExecutionContextPtr->getMemoryPool(), &*mVDM);
+
+			if (res.getIndex() == 0)
+				return res.get0();
+
+			VectorLoadRequest req = res.get1();
+
+			VectorHandle::LoadCheckResult result = 
+				req.getHandle()->attemptToLoadValues(
+					&*mVDM,
+					req.getIndexLow(),
+					req.getIndexHigh()
+					);
+
+			lassert(result == VectorHandle::LoadCheckResult::Success);
+			}
+		}
+
+	void deepcopyAVector()
+		{
+		if (!mVectorRecords.size())
+			return;
+
+		int64_t ix = mRandom() * mVectorRecords.size();
+
+		mVectorRecords.push_back(deepcopyVector(mVectorRecords[ix]));
+
+		LOG_DEBUG << "Deepcopied vector in slot " << ix << ": " << mVectorRecords[ix].hash();
+		}
+
+	void sliceAVector()
+		{
+		if (!mVectorRecords.size())
+			return;
+
+		int64_t ix = mRandom() * mVectorRecords.size();
+
+		Nullable<int64_t> low, high, stride;
+
+		low = mRandom() < .5 ? Nullable<int64_t>() : Nullable<int64_t>(mRandom() * 7 - 3);
+		high = mRandom() < .5 ? Nullable<int64_t>() : Nullable<int64_t>(mRandom() * 7 - 3);
+		stride = mRandom() < .5 ? Nullable<int64_t>() : Nullable<int64_t>(mRandom() * 7 - 3);
+
+		if (stride && *stride == 0)
+			stride = null();
+				
+		mVectorRecords.push_back(mVectorRecords[ix].slice(low, high, stride));
+
+		LOG_DEBUG << "Sliced vector in slot " << ix << " as " << low << ", " << high << ", " << stride;
+		}
+
+	VectorRecord deepcopyVector(VectorRecord vec)
+		{
+		ValueDeepcopierState state;
+
+		ValueDeepcopier deepcopier(
+							state, 
+							false,
+							mExecutionContextPtr->getMemoryPool(),
+							false,
+							false
+							);
+
+		return deepcopier.duplicate(vec);
+		}
+
+	void processAllCallbacks()
+		{
+		while (mCallbackSchedulerFactory->executeOne())
+			;
+		}
+
+private:
+	PolymorphicSharedPtr<VectorDataManager> mVDM;
+
+	PolymorphicSharedPtr<ExecutionContext> mExecutionContextPtr;
+
+	PolymorphicSharedPtr<CallbackScheduler> mCallbackScheduler;
+
+	PolymorphicSharedPtr<TestingCallbackSchedulerFactory, 
+				PolymorphicSharedPtr<CallbackSchedulerFactory> > mCallbackSchedulerFactory;
+
+	Ufora::math::Random::Uniform<float> mRandom;
+
+	long mHashIndex;
+
+	std::vector<VectorRecord> mVectorRecords;
+
+	std::vector<String> mStrings;
+
+	bool mIsTornDown;
+};
+
+BOOST_AUTO_TEST_CASE( test_vector_record_contract )
+	{
+	long depth = 100;
+
+	long depthMin = 100;
+	long depthMax = 101;
+	long indexMin = 1;
+	long indexMax = 1000;
+
+	//enable command line clients to control boundaries without having to recompile. 
+	//only used during exploratory testing and bugfixes...
+	if (getenv("FORA_VR_FUZZER_EXHAUSTIVE"))
+		{
+		depthMin = 100;
+		depthMax = 100;
+		indexMin = 1;
+		indexMax = 100000;
+		}
+
+	if (getenv("FORA_VR_FUZZER_INDEX"))
+		{
+		indexMin = boost::lexical_cast<long>(getenv("FORA_VR_FUZZER_INDEX"));
+		indexMax = indexMin + 1;
+		}
+
+	if (getenv("FORA_VR_FUZZER_DEPTH"))
+		{
+		depthMin = boost::lexical_cast<long>(getenv("FORA_VR_FUZZER_DEPTH"));
+		depthMax = depthMin + 1;
+		}
+	
+
+
+	for (long depth = depthMin; depth < depthMax; depth++)
+		for (long index = indexMin; index < indexMax;index++)
+			{
+			LOG_INFO << "index = " << index << ". depth = " << depth;
+
+			VectorRecordFuzzTester tester(index);
+
+			tester.test(depth);
+			}
+	}
+
+
+BOOST_AUTO_TEST_SUITE_END( )
+

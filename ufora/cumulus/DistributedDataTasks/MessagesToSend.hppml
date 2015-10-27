@@ -1,0 +1,93 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "DistributedDataTaskMessages.hppml"
+#include "DataTaskMemoryFootprint.hppml"
+#include "../MachineId.hppml"
+
+#include <map>
+
+namespace Cumulus {
+
+/*****************
+
+MessagesToSend
+
+State machine used to track sets of messages queued to be sent to machines.
+
+*****************/
+
+class MessagesToSend {
+public:
+	MessagesToSend()
+		{
+		}
+
+	@type Entry = 
+			boost::shared_ptr<DistributedDataTaskMessages> messages,
+			MachineId targetMachine,
+			hash_type taskId
+			;
+	
+	void add(boost::shared_ptr<DistributedDataTaskMessages> messages, MachineId target, hash_type taskId, hash_type messageBundleId)
+		{
+		mFootprint = mFootprint + messages->currentMemoryFootprint();
+		lassert(mMessageMap.find(messageBundleId) == mMessageMap.end());
+		mMessageMap[messageBundleId] = Entry(messages, target, taskId);
+		}
+
+	Entry get(hash_type id)
+		{
+		auto it = mMessageMap.find(id);
+
+		lassert_dump(it != mMessageMap.end(), prettyPrintString(id));
+
+		Entry res = it->second;
+		mMessageMap.erase(id);
+
+		mFootprint = mFootprint - res.messages()->currentMemoryFootprint();
+
+		return res;
+		}
+
+	int64_t totalBytes() const
+		{
+		return mFootprint.totalBytesAllocatedFromOS();
+		}
+
+	DataTaskMemoryFootprint memoryFootprint() const
+		{
+		return mFootprint;
+		}
+
+	map<MachineId, DataTaskMemoryFootprint> footprintByMachine()
+		{
+		map<MachineId, DataTaskMemoryFootprint> res;
+
+		for (auto hashAndEntry: mMessageMap)
+			res[hashAndEntry.second.targetMachine()] += hashAndEntry.second.messages()->currentMemoryFootprint();
+
+		return res;
+		}
+
+private:
+	std::map<hash_type, Entry> mMessageMap;
+
+	DataTaskMemoryFootprint mFootprint;
+};
+
+}

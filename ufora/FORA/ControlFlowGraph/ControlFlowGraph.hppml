@@ -1,0 +1,227 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <string>
+#include "../Core/CSTValue.hppml"
+#include "../Primitives/Symbol.hpp"
+#include "../../core/containers/ImmutableTreeVector.hppml"
+#include "../../core/containers/ImmutableTreeMap.hppml"
+
+/**********
+
+ControlFlowGraph
+
+represents a sequence of operations - each node has a finite
+number of values in place and describes a single operation.  the results
+of each operation either exit the CFG as a 'return' or a 'throw', or they jump
+to another valid node in the graph.
+
+*********/
+
+using namespace std;
+
+
+@type
+	ControlFlowArg =
+		Arg of uint32_t index
+	-|	Constant of CSTValue value
+and
+	ControlFlowContinuationArg =
+		Arg of ControlFlowArg arg
+	-|	Result of ()
+	-|	TupleElement of uint64_t index
+	-|	TupleRemainingElements of ()
+	-|	MakeTuple of ImmutableTreeVector<ControlFlowContinuationTupleArg> arg
+and
+	ControlFlowContinuationTupleArg = 
+		Normal of Nullable<Symbol> fieldName, ControlFlowContinuationArg arg
+	-|	TupleCall of ControlFlowContinuationArg arg
+	{
+	public:
+		const ControlFlowContinuationArg& arg() const;
+	}
+and
+	ControlFlowApplyArg =
+		Normal of Nullable<Symbol> fieldName, ControlFlowArg arg
+	-|	TupleCall of ControlFlowArg arg
+and
+	ControlFlowNodeBody =
+		Apply of 	ImmutableTreeVector<ControlFlowApplyArg> args,
+					ControlFlowContinuation normal,
+					ControlFlowContinuation exception
+	-|	Cached of 	ControlFlowArg args,
+					ControlFlowContinuation normal,
+					ControlFlowContinuation exception
+	-|	Branch of 	ControlFlowArg arg,
+					ControlFlowContinuation normal,
+					ControlFlowContinuation exception
+	-|  TupleExpand of 
+					uint32_t argIndex,
+					ControlFlowTupleContinuation ifMatch,
+					ControlFlowContinuation ifNoMatch
+	-|	Switch of 	ControlFlowArg arg,
+					ImmutableTreeMap<CSTValue, ControlFlowContinuation> branches,
+					ControlFlowContinuation otherwise
+	-|	Jump of 	ControlFlowContinuation continuation
+	with
+        Nullable<hash_type> definingExpressionLocationId,
+		hash_type hash = (hashCPPMLDirect(*this))
+	{
+	public:
+		const ControlFlowContinuation& getContinuationByIndex(uword_t inIndex) const;
+
+		size_t getContinuationCount(void) const;
+	}
+and
+	ControlFlowContinuation =
+		Return of 	ControlFlowContinuationArg arg,
+					bool isException
+	-|	Node of 	string label,
+					ImmutableTreeVector<ControlFlowContinuationArg> args
+and
+	ControlFlowTupleContinuation = 
+		uint32_t arity,	//minimum tuple arity to allow
+		bool arityIsExact, //if false, then match tuple of any size GTE 'arity'
+		ControlFlowContinuation continuation//continuation to use if we match. 'Result' is not
+											//valid - tuple elements must be accessed using
+											//TupleElement and TupleRemainingElements.
+											//This is the only context in which those are valid.
+and
+	ControlFlowNode = uint32_t argCount, ControlFlowNodeBody body
+and
+	ControlFlowGraph = 	ControlFlowNode entryNode,
+						ImmutableTreeMap<string, ControlFlowNode> subnodes,
+						std::string graphName,
+						hash_type hash,
+						uint32_t maxArgCount
+	{
+	public:
+		explicit ControlFlowGraph(const ControlFlowNode& node);
+
+		ControlFlowGraph(
+					const ControlFlowNode& node,
+					const std::string& inCFGName
+					);
+		
+		ControlFlowGraph(
+					const ControlFlowNode& inNode,
+					const ImmutableTreeMap<string,ControlFlowNode>& inSubnodes,
+					const std::string& inCFGName
+					);
+
+		void setHash(void);
+		
+		const ControlFlowNode& operator[](const Nullable<string>& s) const;
+		
+		const ControlFlowNode& operator[](const string& s) const;
+
+		bool hasBlock(const Nullable<string>& s) const;
+		
+		bool hasBlock(const string& s) const;
+
+		bool valid(void) const;
+
+		string newBlockName(string inSuggestion) const;
+
+	}
+and
+	ControlFlowGraphJumpPoint = ControlFlowGraph graph, Nullable<string> label
+	;
+
+@type ControlFlowGraphTupleExpandInfo = long argIndex, long arity, bool arityExact;
+
+ControlFlowGraphTupleExpandInfo getTupleExpandInfo(const ControlFlowGraphJumpPoint& term);
+
+ControlFlowGraphTupleExpandInfo getTupleExpandInfo(const ControlFlowNodeBody& term);
+
+
+template<>
+class CPPMLEquality<ControlFlowGraph, void> {
+public:
+		static char cmp(	const ControlFlowGraph& lhs,
+							const ControlFlowGraph& rhs
+							)
+			{
+			return lhs.hash().cmp(rhs.hash());
+			}
+};
+
+template<>
+class CPPMLEquality<ControlFlowNodeBody, void> {
+public:
+		static char cmp(	const ControlFlowNodeBody& lhs,
+							const ControlFlowNodeBody& rhs
+							)
+			{
+			return lhs.hash().cmp(rhs.hash());
+			}
+};
+
+
+macro_defineMemberHashFunction(ControlFlowNodeBody)
+
+macro_defineCppmlComparisonOperators(ControlFlowNode)
+macro_defineCppmlComparisonOperators(ControlFlowGraph)
+macro_defineCppmlComparisonOperators(ControlFlowArg)
+macro_defineCppmlComparisonOperators(ControlFlowContinuationArg)
+macro_defineCppmlComparisonOperators(ControlFlowGraphJumpPoint)
+
+
+template<>
+class CPPMLPrettyPrint<ControlFlowArg> {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream& s, const ControlFlowArg& t);
+};
+template<>
+class CPPMLPrettyPrint<ControlFlowContinuation> {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream& s, const ControlFlowContinuation& t);
+};
+template<>
+class CPPMLPrettyPrint<ControlFlowContinuationArg> {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream& s, const ControlFlowContinuationArg& t);
+};
+template<>
+class CPPMLPrettyPrint<ControlFlowGraph> {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream& s, const ControlFlowGraph& t);
+};
+template<>
+class CPPMLPrettyPrint<ControlFlowNode> {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream& s, const ControlFlowNode& t);
+};
+template<>
+class CPPMLPrettyPrint<ControlFlowApplyArg> {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream& s, const ControlFlowApplyArg& t);
+};
+
+template<>
+class CPPMLPrettyPrint<ControlFlowNodeBody> {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream& s, const ControlFlowNodeBody& t);
+};
+
+template<>
+class CPPMLPrettyPrint<ControlFlowContinuationTupleArg> {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream& s, const ControlFlowContinuationTupleArg& t);
+};
+
+

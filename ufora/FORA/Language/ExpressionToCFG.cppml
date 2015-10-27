@@ -1,0 +1,1463 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ExpressionToCFG.hppml"
+#include "../Core/Type.hppml"
+#include "../Core/ClassMediator.hppml"
+
+#include "../ControlFlowGraph/ControlFlowGraphOptimizer.hppml"
+#include "../ControlFlowGraph/ControlFlowGraphUtil.hppml"
+#include <boost/lexical_cast.hpp>
+
+
+namespace Fora {
+namespace Language {
+
+
+//returns a VariableFrame with an extra input slot for any variable
+//referenced in 'cont'
+VariableFrame VariableFrame::withVarsFrom(
+					const ExpressionContinuationArg& cont
+					) const
+	{
+	if (cont.isResult())
+		return *this;
+	return withVarsFrom(cont.getInput().input());
+	}
+	
+VariableFrame VariableFrame::withVarsFrom(const ExpressionContinuation& cont) const
+	{
+	@match ExpressionContinuation(cont)
+		-|	Node(name, args) ->> {
+			VariableFrame tr = *this;
+			tr = tr.withVarsFrom(name);
+			for (long k = 0; k < args.size(); k++)
+				tr = tr
+					.withVarsFrom(args.pairAtPosition(k).second)
+					.without(args.pairAtPosition(k).first)
+					;
+			return tr;
+			}
+		-| Return(arg, isE) ->> {
+			return withVarsFrom(arg);
+			}
+		;
+	}
+	
+VariableFrame VariableFrame::withVarsFrom(
+					const FunctionStage3::Input& input
+					) const
+	{
+	if (input.isConstant())
+		return *this;
+		
+	return withVarsFrom(input.getVariable().var());
+	}
+	
+VariableFrame VariableFrame::withVarsFrom(variable_index_type var) const
+	{
+	if (positions().contains(var))
+		return *this;
+	
+	return VariableFrame(
+		args() + var,
+		positions() + var + args().size()
+		);
+	}
+	
+VariableFrame VariableFrame::withVarsFrom(
+		const ImmutableTreeVector<variable_index_type>& var) const
+	{
+	VariableFrame tr = *this;
+	for (long k = 0;k < var.size(); k++)
+		tr = tr.withVarsFrom(var[k]);
+	return tr;
+	}
+	
+VariableFrame VariableFrame::withVarsFrom(const VariableFrame& var) const
+	{
+	return withVarsFrom(var.args());
+	}
+	
+VariableFrame VariableFrame::withVarsFrom(const ExpressionEntry& var) const
+	{
+	return withVarsFrom(var.variables());
+	}
+	
+//utility functions for getting the actual ControlFlowContinuationArg
+//and ControlFlowArg values in a given continuation context
+ControlFlowContinuationArg getResultArg(
+							const ExpressionContinuationArg& inArg,
+							const VariableFrame& 	inVariables
+							)
+	{
+	lassert(!inArg.isNone());
+	
+	@match ExpressionContinuationArg(inArg)
+		-|	Result() ->> {
+			return ControlFlowContinuationArg::Result();
+			}
+		-|	Input(Variable(name)) ->> {
+			return  
+				ControlFlowContinuationArg::Arg(
+					ControlFlowArg::Arg(inVariables[name])
+					);
+			}
+		-|	Input(Constant(val)) ->> {
+			return  
+					ControlFlowContinuationArg::Arg(
+						ControlFlowArg::Constant(val)
+						);
+			}
+		-|	TupleElement(index) ->> {
+			return ControlFlowContinuationArg::TupleElement(index);
+			}
+		-|	TupleRemainingElements() ->> {
+			return ControlFlowContinuationArg::TupleRemainingElements();
+			}
+		-|	MakeTuple(elts) ->> {
+			return ControlFlowContinuationArg::MakeTuple(elts);
+			}
+		;
+	}
+	
+ControlFlowArg getApplyArg(
+							const VariableFrame& 	inVariables,
+							const FunctionStage3::Input&  	inInput
+							)
+	{
+	@match FunctionStage3::Input(inInput)
+		-|	Constant(c) ->> {
+			return 
+				ControlFlowArg::Constant(c);
+			}
+		-|	Variable(v) ->> {
+			return 
+				ControlFlowArg::Arg(inVariables[v]);
+			}
+		;
+	}
+	
+ControlFlowApplyArg getApplyArg(
+							const VariableFrame& 	inVariables,
+							const FunctionStage3::ApplyArgument&  inApplyArg
+							)
+	{
+	@match FunctionStage3::ApplyArgument(inApplyArg)
+		-|	Normal(field, i) ->> {
+			return 
+				ControlFlowApplyArg::Normal(
+					field,
+					getApplyArg(inVariables, i)
+					);
+			}
+		-|	TupleCall(i) ->> {
+			return 
+				ControlFlowApplyArg::TupleCall(
+					getApplyArg(inVariables, i)
+					);
+			}
+		;
+	}
+	
+ControlFlowContinuationArg getContinuationArg(
+							variable_index_type 	inArg,
+							const VariableFrame& 	inVariables,
+							const ImmutableTreeMap<variable_index_type,
+											ExpressionContinuationArg>& remaps,
+							const ExpressionContinuationArg& inResult
+							)
+	{
+	if (remaps.contains(inArg))
+		return getContinuationArg(*remaps[inArg], inVariables, remaps, inResult);
+	
+	return ControlFlowContinuationArg::Arg(
+		ControlFlowArg::Arg(inVariables[inArg])
+		);
+	}
+	
+ControlFlowContinuationArg getContinuationArg(
+							const ExpressionContinuationArg& inArg,
+							const VariableFrame& 	inVariables,
+							const ImmutableTreeMap<variable_index_type,
+											ExpressionContinuationArg>& remaps,
+							const ExpressionContinuationArg& inResult
+							)
+	{
+	lassert(!inArg.isNone());
+	
+	@match ExpressionContinuationArg(inArg)
+		-|	Input(Constant(val)) ->> {
+			return 
+				ControlFlowContinuationArg::Arg(
+					ControlFlowArg::Constant(val)
+					);
+			}
+		-|	Input(Variable(name)) ->> {
+			return  (
+				remaps.contains(name) ?
+					getContinuationArg(*remaps[name], inVariables, remaps, inResult)
+				:	ControlFlowContinuationArg::Arg(
+					ControlFlowArg::Arg(inVariables[name])
+					)
+				);
+			}
+		-|	Result() ->> {
+			return getResultArg(inResult, inVariables);
+			}
+		-|	TupleElement(index) ->> {
+			return ControlFlowContinuationArg::TupleElement(index);
+			}
+		-|	TupleRemainingElements() ->> {
+			return ControlFlowContinuationArg::TupleRemainingElements();
+			}
+		;
+	}
+	
+ControlFlowContinuation getContinuation(
+			const VariableFrame& inVariables,
+			const ExpressionContinuation& cont,
+			const ImmutableTreeMap<variable_index_type,
+								ExpressionContinuationArg>& remaps,
+			const ExpressionContinuationArg& inResultFrom
+			)
+	{
+	try {
+		@match ExpressionContinuation(cont)
+			-|	Node((name, args), nodeRemaps) ->> {
+					ImmutableTreeVector<ControlFlowContinuationArg> outArgs;
+					for (long k = 0; k < args.args().size(); k++)
+						{
+						outArgs = outArgs +
+							getContinuationArg(
+								args.args()[k],
+								inVariables,
+								nodeRemaps + remaps,
+								inResultFrom
+								);
+						}
+					return ControlFlowContinuation::Node(name, outArgs);
+					}
+			-|	Return(arg, isException) ->> {
+					return ControlFlowContinuation::Return(
+						getContinuationArg(
+							arg,
+							inVariables,
+							remaps,
+							inResultFrom
+							),
+						isException
+						);
+					}
+			;
+		}
+	catch(std::logic_error& e)
+		{
+		lassert_dump(false, "illegal continuation: " 
+			<< e.what() << ".\n"
+			<< prettyPrintString(inVariables) << "\n"
+			<< prettyPrintString(cont) << "\n"
+			<< prettyPrintString(remaps) << "\n"
+			<< prettyPrintString(inResultFrom) << "\n"
+			);
+		}
+	catch(...)
+		{
+		lassert_dump(false, "illegal continuation:\n"
+			<< prettyPrintString(inVariables) << "\n"
+			<< prettyPrintString(cont) << "\n"
+			<< prettyPrintString(remaps) << "\n"
+			<< prettyPrintString(inResultFrom) << "\n"
+			);
+		}
+	}
+
+
+
+ExpressionToCFG::ExpressionToCFG(
+			uint32_t& inCounter,
+			ImmutableTreeMap<string, ControlFlowNode>& inNodes,
+			ImmutableTreeMap<uint32_t, string>&	inContinuations,
+			const ClassMediator& inMediator,
+			const ApplySignature& inSignature,
+			VariableAllocator& inAlloc
+			) :
+		ioCounter(inCounter),
+		ioNodes(inNodes),
+		ioContinuations(inContinuations),
+		mMediator(inMediator),
+		mSignature(inSignature),
+		mAlloc(inAlloc)
+	{
+	
+	}
+	
+string 	ExpressionToCFG::allocBlock()
+	{
+	return "block_" + boost::lexical_cast<string>(ioCounter++);
+	}
+	
+ExpressionEntry ExpressionToCFG::makeEntry(
+		const VariableFrame& variables,
+		const string& inBlockName,
+		const ControlFlowNodeBody& node
+		)
+	{
+	ioNodes = ioNodes + inBlockName +
+		ControlFlowNode(variables.args().size(), node);
+		
+	return ExpressionEntry(inBlockName, variables);
+	}
+
+//build an entry in which the varibables are ordered as 'inVariables'
+ExpressionEntry ExpressionToCFG::convert(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const ImmutableTreeMap<variable_index_type,
+							ExpressionContinuation>& namedExceptionConts,
+		const ImmutableTreeVector<variable_index_type>& inVariables
+		)
+	{	
+	VariableFrame frame;
+	frame = frame.withVarsFrom(inVariables);
+	
+	ExpressionEntry subEntry =
+		convert(code, normCont, exceptionCont, namedExceptionConts);
+	
+	return makeEntry(
+		frame,
+		allocBlock() + code.tagName(),
+		ControlFlowNodeBody::Jump(
+			code.definingExpressionLocationId(),
+			getContinuation(
+				frame,
+				ExpressionContinuation::Node(
+					subEntry,
+					emptyTreeMap()
+					),
+				emptyTreeMap(),
+				ExpressionContinuationArg::None()
+				)
+			)
+		);
+	}
+	
+ExpressionEntry ExpressionToCFG::convert(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const ImmutableTreeMap<variable_index_type,
+							ExpressionContinuation>& namedExceptionConts
+		)
+	{
+	return convert(
+		code,
+		normCont,
+		exceptionCont,
+		namedExceptionConts,
+		allocBlock() + code.tagName(),
+		null()
+		);
+	}
+	
+ExpressionEntry ExpressionToCFG::convertConstant(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		)
+	{
+	@match FunctionStage3::Expression(code)
+		-|  Constant(c) ->> {	
+			VariableFrame frame;
+			if (inFrame)
+				frame = *inFrame;
+			else
+				frame = VariableFrame().withVarsFrom(normCont);
+			
+			return makeEntry(
+				frame,
+				inBlockName,
+				ControlFlowNodeBody::Jump(
+					code.definingExpressionLocationId(),
+					getContinuation(
+						frame,
+						normCont,
+						emptyTreeMap(),
+						ExpressionContinuationArg::Input(
+							FunctionStage3::Input::Constant(c)
+							)
+						)
+					)
+				);
+			}
+		-|  _ ->> { lassert(false); }
+		;
+	}
+	
+ExpressionEntry ExpressionToCFG::convertVariable(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		)
+	{
+	@match FunctionStage3::Expression(code)
+		-|  Variable(v) ->> {
+			VariableFrame frame;
+			if (inFrame)
+				frame = *inFrame;
+			else
+				frame = VariableFrame()
+						.withVarsFrom(normCont)
+						.withVarsFrom(v)
+						;
+			
+			return makeEntry(
+				frame,
+				inBlockName,
+				ControlFlowNodeBody::Jump(
+					code.definingExpressionLocationId(),
+					getContinuation(
+						frame,
+						normCont,
+						emptyTreeMap(),
+						ExpressionContinuationArg::Input(FunctionStage3::Input::Variable(v))
+						)
+					)
+				);
+			}
+		-|  _ ->> { lassert(false); }
+		;
+	}
+	
+ExpressionEntry ExpressionToCFG::convertAssign(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		)
+	{
+	@match FunctionStage3::Expression(code)
+		-|  Assign(var, inputVal) ->> {
+			VariableFrame frame;
+		
+			if (inFrame)
+				frame = *inFrame;
+			else
+				frame =
+					VariableFrame()
+						.withVarsFrom(normCont)
+						.withVarsFrom(inputVal)
+						.without(var)
+						;
+			
+			return makeEntry(
+				frame,
+				inBlockName,
+				ControlFlowNodeBody::Jump(
+					code.definingExpressionLocationId(),
+					getContinuation(
+						frame,
+						normCont,
+						emptyTreeMap() + var +
+							ExpressionContinuationArg::Input(inputVal),
+						ExpressionContinuationArg::Input(
+							FunctionStage3::Input::Constant(CSTValue())
+							)
+						)
+					)
+				);
+			}
+		-|  _ ->> { lassert(false); }
+		;
+	}
+	
+ExpressionEntry ExpressionToCFG::convertLet(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const ImmutableTreeMap<variable_index_type,
+							ExpressionContinuation>& namedExceptionConts,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		)
+	{
+	@match FunctionStage3::Expression(code)
+		-|  Let(name, first, second) ->> {		
+			ExpressionEntry secondEntry =
+				convert(
+					second,
+					normCont,
+					exceptionCont,
+					namedExceptionConts
+					);
+			
+			return convert(
+					first,
+					//continue by jumping to 'second' with 'name'
+					//mapped to the result of 'first'
+					ExpressionContinuation::Node(
+						secondEntry,
+						emptyTreeMap() +
+							name +
+							ExpressionContinuationArg::Result()
+						),
+					exceptionCont,
+					namedExceptionConts,
+					inBlockName,
+					inFrame
+					);
+			}
+		-|  _ ->> { lassert(false); }
+		;
+	}
+
+ExpressionEntry ExpressionToCFG::convertTupleExpand(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const ImmutableTreeMap<variable_index_type,
+							ExpressionContinuation>& namedExceptionConts,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		)
+	{
+	@match FunctionStage3::Expression(code)
+		-|	TupleExpand(varToExpand, varsToBind, lastIsStarArgs, ifMatch, ifNoMatch) ->> {
+			ExpressionEntry ifNoMatchEntry =
+				convert(
+					ifNoMatch,
+					normCont,
+					exceptionCont,
+					namedExceptionConts
+					);
+
+			ExpressionEntry ifMatchEntry =
+				convert(
+					ifMatch,
+					normCont,
+					exceptionCont,
+					namedExceptionConts
+					);
+
+			VariableFrame frame;
+			
+			if (inFrame)
+				frame = *inFrame;
+			else
+				frame = VariableFrame()
+					.withVarsFrom(normCont)
+					.withVarsFrom(exceptionCont)
+					;
+			frame = frame
+					.withVarsFrom(ifMatchEntry)
+					.withVarsFrom(ifNoMatchEntry)
+					.withVarsFrom(varToExpand)
+					;
+
+			for (long k = 0; k < varsToBind.size(); k++)
+				frame = frame.without(varsToBind[k]);
+
+			ImmutableTreeMap<variable_index_type, ExpressionContinuationArg> resultBindings;
+
+			for (long k = 0; k < varsToBind.size(); k++)
+				if (lastIsStarArgs && k+1 == varsToBind.size())
+					resultBindings = resultBindings + varsToBind[k] + 
+						ExpressionContinuationArg::TupleRemainingElements();
+				else
+					resultBindings = resultBindings + varsToBind[k] + 
+						ExpressionContinuationArg::TupleElement(k);
+			
+			return makeEntry(
+				frame,
+				inBlockName,
+				ControlFlowNodeBody::TupleExpand(
+					code.definingExpressionLocationId(),
+					frame[varToExpand],
+					ControlFlowTupleContinuation(
+						varsToBind.size() - (lastIsStarArgs ? 1 : 0),
+						!lastIsStarArgs,
+						getContinuation(
+							frame,
+							ExpressionContinuation::Node(
+								ifMatchEntry,
+								emptyTreeMap()
+								),
+							resultBindings,
+							ExpressionContinuationArg::Result()
+							)
+						),
+					getContinuation(
+						frame,
+						ExpressionContinuation::Node(
+							ifNoMatchEntry,
+							emptyTreeMap()
+							),
+						resultBindings,
+						ExpressionContinuationArg::Result()
+						)
+					)
+				);
+			}
+		-|  _ ->> { lassert(false); }
+		;
+	}
+	
+ExpressionEntry ExpressionToCFG::convertApply(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		)
+	{
+	@match FunctionStage3::Expression(code)
+		-|	Apply(agent, arguments) ->> {
+			
+			VariableFrame frame;
+			
+			if (inFrame)
+				frame = *inFrame;
+			else
+				{
+				frame = frame.withVarsFrom(normCont)
+						.withVarsFrom(exceptionCont)
+						.withVarsFrom(agent)
+						;
+			
+				for (long k = 0; k < arguments.size(); k++)
+					@match FunctionStage3::ApplyArgument(arguments[k])
+						-|	Normal(_,e) ->> {
+							frame = frame.withVarsFrom(e);
+							}
+						-|	TupleCall(e) ->> {
+							frame = frame.withVarsFrom(e);
+							}
+						;
+				}
+			
+			ImmutableTreeVector<ControlFlowApplyArg> argsToPass;
+			
+			for (long k = 0; k < arguments.size(); k++)
+				argsToPass = argsToPass +
+					getApplyArg(frame, arguments[k]);
+			
+			return makeEntry(
+				frame,
+				inBlockName,
+				ControlFlowNodeBody::Apply(
+					code.definingExpressionLocationId(),
+					ControlFlowApplyArg::Normal(null(),
+						getApplyArg(
+							frame,
+							agent
+							)
+						) + 
+						argsToPass,
+					getContinuation(
+						frame,
+						normCont,
+						emptyTreeMap(),
+						ExpressionContinuationArg::Result()
+						),
+					getContinuation(
+						frame,
+						exceptionCont,
+						emptyTreeMap(),
+						ExpressionContinuationArg::Result()
+						)
+					)
+				);
+			}
+		-|  _ ->> { lassert(false); }
+		;
+	}
+	
+ExpressionEntry ExpressionToCFG::convertCreateTuple(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		)
+	{
+	@match FunctionStage3::Expression(code)
+		-|	CreateTuple(arguments) ->> {
+			
+			VariableFrame frame;
+			
+			if (inFrame)
+				frame = *inFrame;
+			else
+				{
+				frame = frame.withVarsFrom(normCont);
+			
+				for (long k = 0; k < arguments.size(); k++)
+					@match FunctionStage3::ApplyArgument(arguments[k])
+						-|	Normal(_,e) ->> {
+							frame = frame.withVarsFrom(e);
+							}
+						-|	TupleCall(e) ->> {
+							frame = frame.withVarsFrom(e);
+							}
+						;
+				}
+			
+			ImmutableTreeVector<ControlFlowContinuationTupleArg> argsToPass;
+			
+			for (long k = 0; k < arguments.size(); k++)
+				argsToPass = argsToPass +
+					ControlFlowGraphUtil::applyArgToTupleArg(
+						getApplyArg(frame, arguments[k])
+						);
+
+			return makeEntry(
+				frame,
+				inBlockName,
+				ControlFlowNodeBody::Jump(
+					code.definingExpressionLocationId(),
+					getContinuation(
+						frame,
+						normCont,
+						emptyTreeMap(),
+						ExpressionContinuationArg::MakeTuple(argsToPass)
+						)
+					)
+				);
+			}
+		-|  _ ->> { lassert(false); }
+		;
+	}
+
+ExpressionEntry ExpressionToCFG::convertWhile(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const ImmutableTreeMap<variable_index_type,
+							ExpressionContinuation>& namedExceptionConts,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		)
+	{
+	@match FunctionStage3::Expression(code)
+		-|	While(cond, update) ->> {
+
+			//get all the variables we need
+			VariableFrame frame;
+			
+			if (inFrame)
+				frame = *inFrame;
+			else
+				{
+				frame = frame.withVarsFrom(normCont);
+				
+				ImmutableTreeSet<Nullable<variable_index_type> >
+						throwTargets =
+							cond.throwTargets() + update.throwTargets();
+				
+			
+				for (long k = 0;k < throwTargets.size(); k++)
+					frame = frame.withVarsFrom(
+						throwTargets[k] ?
+							*namedExceptionConts[*throwTargets[k]]
+						:	exceptionCont
+						);
+				
+				for (long k = 0;
+							k < update.freeAccessedVariables().size();
+							k++)
+					frame = frame.withVarsFrom(
+						update.freeAccessedVariables()[k]
+						);
+				for (long k = 0;
+							k < cond.freeAccessedVariables().size();
+							k++)
+					frame = frame.withVarsFrom(
+							cond.freeAccessedVariables()[k]
+							);
+				}
+			
+			//allocate three frame - one for the condition check, one for
+			//the branch, and one for the update
+			variable_index_type conditionVariable = mAlloc.get();
+			
+			string whileBlockName = inBlockName;
+			string updateBlockName = allocBlock() + "_while_update";
+			string branchBlockName = allocBlock() + "_while_branch";
+			
+			ExpressionContinuation whileCont =
+				ExpressionContinuation::Node(
+					ExpressionEntry(whileBlockName, frame),
+					emptyTreeMap()
+					);
+			ExpressionContinuation updateCont =
+				ExpressionContinuation::Node(
+					ExpressionEntry(updateBlockName, frame),
+					emptyTreeMap()
+					);
+			
+			VariableFrame branchBlockFrame =
+				frame.withVarsFrom(conditionVariable);
+			
+			convert(
+				cond,
+				ExpressionContinuation::Node(
+					ExpressionEntry(
+						branchBlockName,
+						branchBlockFrame
+						),
+					emptyTreeMap() + conditionVariable +
+						ExpressionContinuationArg::Result()
+					),
+				exceptionCont,
+				namedExceptionConts,
+				whileBlockName,
+				null() << frame
+				);
+			
+			convert(
+				update,
+				ExpressionContinuation::Node(
+					ExpressionEntry(
+						whileBlockName,
+						frame
+						),
+					emptyTreeMap()
+					),
+				exceptionCont,
+				namedExceptionConts,
+				updateBlockName,
+				null() << frame
+				);
+			
+			makeEntry(
+				branchBlockFrame,
+				branchBlockName,
+				ControlFlowNodeBody::Branch(
+					code.definingExpressionLocationId(),
+					ControlFlowArg::Arg(
+						branchBlockFrame[conditionVariable]
+						),
+					getContinuation(
+						branchBlockFrame,
+						updateCont,
+						emptyTreeMap(),
+						ExpressionContinuationArg::None()
+						),
+					getContinuation(
+						branchBlockFrame,
+						normCont,
+						emptyTreeMap(),
+						ExpressionContinuationArg::Input(
+							FunctionStage3::Input::Constant(CSTValue())
+							)
+						)
+					)
+				);
+			
+			return ExpressionEntry(whileBlockName, frame);
+			}
+		-|  _ ->> { lassert(false); }
+		;
+	}
+		
+ExpressionEntry ExpressionToCFG::convertRawCached(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		)
+	{
+	@match FunctionStage3::Expression(code)
+		-|	RawCached(arg) ->> {
+			VariableFrame frame;
+			
+			if (inFrame)
+				frame = *inFrame;
+			else
+				{
+				frame = frame.withVarsFrom(normCont);
+				frame = frame.withVarsFrom(exceptionCont);
+				frame = frame.withVarsFrom(arg);
+				}
+			
+			return makeEntry(
+				frame,
+				inBlockName,
+				ControlFlowNodeBody::Cached(
+					code.definingExpressionLocationId(),
+					getApplyArg(
+						frame,
+						arg
+						),
+					getContinuation(
+						frame,
+						normCont,
+						emptyTreeMap(),
+						ExpressionContinuationArg::Result()
+						),
+					getContinuation(
+						frame,
+						exceptionCont,
+						emptyTreeMap(),
+						ExpressionContinuationArg::Result()
+						)
+					)
+				);
+			}
+		-|  _ ->> { lassert(false); }
+		;
+	}
+
+ExpressionEntry ExpressionToCFG::convertBranch(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const ImmutableTreeMap<variable_index_type,
+							ExpressionContinuation>& namedExceptionConts,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		)
+	{
+	@match FunctionStage3::Expression(code)
+		-|	Branch(op, left, right) ->> {
+
+			ExpressionEntry leftE =
+				convert(
+					left,
+					normCont,
+					exceptionCont,
+					namedExceptionConts
+					);
+			ExpressionEntry rightE =
+				convert(
+					right,
+					normCont,
+					exceptionCont,
+					namedExceptionConts
+					);
+				
+			VariableFrame frame;
+			
+			if (inFrame)
+				frame = *inFrame;
+			else
+				{
+				frame = frame.withVarsFrom(op);
+				frame = frame.withVarsFrom(leftE);
+				frame = frame.withVarsFrom(rightE);
+				}
+			
+			ControlFlowContinuation leftCont = 
+					getContinuation(
+						frame,
+						ExpressionContinuation::Node(
+							leftE,
+							emptyTreeMap()
+							),
+						emptyTreeMap(),
+						ExpressionContinuationArg::Result()
+						);
+			ControlFlowContinuation rightCont =
+					getContinuation(
+						frame,
+						ExpressionContinuation::Node(
+							rightE,
+							emptyTreeMap()
+							),
+						emptyTreeMap(),
+						ExpressionContinuationArg::Result()
+						);	   
+			
+			return makeEntry(
+				frame,
+				inBlockName,
+				ControlFlowNodeBody::Branch(
+					code.definingExpressionLocationId(),
+					getApplyArg(
+						frame,
+						op
+						),
+					leftCont,
+					rightCont
+					)
+				);
+			}
+		-|  _ ->> { lassert(false); }
+		;
+	}
+
+ExpressionEntry ExpressionToCFG::convertSwitch(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const ImmutableTreeMap<variable_index_type,
+							ExpressionContinuation>& namedExceptionConts,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		)
+	{
+	@match FunctionStage3::Expression(code)
+		-|	Switch(op, vars, right) ->> {
+
+			ImmutableTreeVector<ExpressionEntry> entries;
+			for (long k = 0; k <= vars.size(); k++)
+				entries = entries + 
+					convert(
+						k < vars.size() ? 
+							vars.pairAtPosition(k).second
+						:	right
+							,
+						normCont,
+						exceptionCont,
+						namedExceptionConts
+						);
+				
+			VariableFrame frame;
+			
+			if (inFrame)
+				frame = *inFrame;
+			else
+				{
+				frame = frame.withVarsFrom(op);
+				for (long k = 0; k < entries.size(); k++)
+					frame = frame.withVarsFrom(entries[k]);
+				}
+			
+			ImmutableTreeVector<ControlFlowContinuation> conts;
+			for (long k = 0; k < entries.size(); k++)
+				conts = conts + 
+					getContinuation(
+						frame,
+						ExpressionContinuation::Node(
+							entries[k],
+							emptyTreeMap()
+							),
+						emptyTreeMap(),
+						ExpressionContinuationArg::Result()
+						);
+			
+			ImmutableTreeMap<CSTValue, ControlFlowContinuation> contMap;
+			for (long k = 0; k < vars.size(); k++)
+				contMap = contMap + vars.pairAtPosition(k).first + conts[k];
+			
+			return makeEntry(
+				frame,
+				inBlockName,
+				ControlFlowNodeBody::Switch(
+					code.definingExpressionLocationId(),
+					getApplyArg(
+						frame,
+						op
+						),
+					contMap,
+					conts.back()
+					)
+				);
+			}
+		-|  _ ->> { lassert(false); }
+		;
+	}	
+		
+
+ExpressionEntry ExpressionToCFG::convertThrow(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const ImmutableTreeMap<variable_index_type,
+							ExpressionContinuation>& namedExceptionConts,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		)
+	{
+	@match FunctionStage3::Expression(code)
+		-|	Throw(exceptionCode, throwTargetName) ->> {
+			return convert(
+				exceptionCode,
+				throwTargetName ?
+					*namedExceptionConts[*throwTargetName]
+				:	exceptionCont,
+				exceptionCont,
+				namedExceptionConts,
+				inBlockName,
+				inFrame
+				);
+			}
+		-|  _ ->> { lassert(false); }
+		;
+	}
+	
+ExpressionEntry ExpressionToCFG::convertReturn(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const ImmutableTreeMap<variable_index_type,
+							ExpressionContinuation>& namedExceptionConts,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		)
+	{
+	@match FunctionStage3::Expression(code)
+		-|	Return(arg) ->> {
+			return convert(
+				arg,
+				ExpressionContinuation::Return(
+					ExpressionContinuationArg::Result(),
+					false
+					),
+				exceptionCont,
+				namedExceptionConts,
+				inBlockName,
+				inFrame
+				);
+			}
+		-|  _ ->> { lassert(false); }
+		;
+	}
+	
+ExpressionEntry ExpressionToCFG::convertTry(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const ImmutableTreeMap<variable_index_type,
+							ExpressionContinuation>& namedExceptionConts,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		)
+	{
+	@match FunctionStage3::Expression(code)
+		-|	Try(toTry, throwTargetName, (variables, catchBody)) ->> {
+			
+			lassert(variables.size() == 1);
+			
+			ExpressionEntry catchBlock =
+				convert(
+					catchBody,
+					normCont,
+					exceptionCont,
+					namedExceptionConts
+					);
+			
+			ExpressionContinuation cont =
+				ExpressionContinuation::Node(
+					catchBlock,
+					emptyTreeMap() +
+						variables[0] +
+						ExpressionContinuationArg::Result()
+					);
+			
+			return convert(
+				toTry,
+				normCont,
+				throwTargetName ?
+					exceptionCont
+				:	cont,
+				throwTargetName ?
+					namedExceptionConts +
+						*throwTargetName + cont
+				:	namedExceptionConts,
+				inBlockName,
+				inFrame
+				);
+			}
+		-|  _ ->> { lassert(false); }
+		;
+	}
+
+ExpressionEntry ExpressionToCFG::convertContinuation(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const ImmutableTreeMap<variable_index_type,
+							ExpressionContinuation>& namedExceptionConts,
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		)
+	{
+	@match FunctionStage3::Expression(code)
+		-|	Continuation((continuationArg, continuationBody)) ->> {
+		
+			//we are supposed to call 'continuationBody' with
+			//continuationArg[0] bound to a callable object that
+			//resumes at the current location
+			lassert(continuationArg.size() == 1);
+			
+			//this is the block that we're going to jump to with
+			//the bound continuation in continuationArg[0]
+			ExpressionEntry contBlock =
+				convert(
+					continuationBody,
+					normCont,
+					exceptionCont,
+					namedExceptionConts
+					);
+			
+			//allocate a block that continues from here. It will
+			//get called with an extra argument at the back.
+			//we have to resume 'normCont' with the relevant values
+			
+			//first, make a list of each variable we're storing
+			//this is the list of 'normCont''s variables, excluding
+			//the argument, which comes first
+			
+			VariableFrame resumeVarFrame;
+			
+			//toss one on at the front
+			//resumeVarFrame = resumeVarFrame.withVarsFrom(mAlloc.get());
+			//grab vars from the normCont - these are what's required
+			//to continue
+			resumeVarFrame = resumeVarFrame.withVarsFrom(normCont);
+			//get one that holds the resume value
+			variable_index_type resumeValueVar = mAlloc.get();
+			resumeVarFrame = resumeVarFrame.withVarsFrom(resumeValueVar);
+			
+			
+			string resumeBlockName = "resume_" + allocBlock();
+			ioNodes =
+				ioNodes + resumeBlockName +
+					ControlFlowNode(
+						resumeVarFrame.args().size(),
+						ControlFlowNodeBody::Jump(
+							code.definingExpressionLocationId(),
+							getContinuation(
+								resumeVarFrame,
+								normCont,
+								emptyTreeMap(),
+								ExpressionContinuationArg::Input(
+									FunctionStage3::Input::Variable(
+										resumeValueVar
+										)
+									)
+								)
+							)
+						);
+			
+			uint32_t curContinuationIndex = ioContinuations.size();
+			ioContinuations = ioContinuations
+					+ curContinuationIndex
+					+ resumeBlockName
+					;
+			
+			ImmutableTreeVector<FunctionStage3::ApplyArgument> bindableArgs;
+			for (long k = 0; k + 1 < resumeVarFrame.args().size(); k++)
+				bindableArgs = bindableArgs +
+					FunctionStage3::ApplyArgument::Normal(
+						null(),
+						FunctionStage3::Input::Variable(
+							resumeVarFrame.args()[k]
+							)
+						);
+			
+			return
+				convert(
+					FunctionStage3::Expression::Apply(
+						FunctionStage3::Input::Constant(CSTValue(Symbol("Bind"))),
+						emptyTreeVec() +
+							FunctionStage3::ApplyArgument::Normal(
+								null(),
+								FunctionStage3::Input::Constant(
+									CSTValue(Symbol("Call")))
+								) +
+							FunctionStage3::ApplyArgument::Normal(
+								null(),
+								FunctionStage3::Input::Constant(
+									CSTValue::blankOf(
+										Type::Class(
+											emptyTreeVec(),
+											mMediator,
+											ClassMediatorResumption::Resumption(
+												curContinuationIndex,
+												mSignature
+												)
+											)
+										)
+									)
+								) + 
+							bindableArgs
+						),
+					ExpressionContinuation::Node(
+						contBlock,
+						emptyTreeMap() +
+							continuationArg[0] +
+							ExpressionContinuationArg::Result()
+						),
+					exceptionCont,
+					namedExceptionConts,
+					inBlockName,
+					inFrame
+					);
+				}
+		-|  _ ->> { lassert(false); }
+		;
+	}
+	
+ExpressionEntry ExpressionToCFG::convert(
+		const FunctionStage3::Expression& code,
+		const ExpressionContinuation& normCont,
+		const ExpressionContinuation& exceptionCont,
+		const ImmutableTreeMap<variable_index_type,
+							ExpressionContinuation>& namedExceptionConts, 
+		const string& inBlockName,
+		const Nullable<VariableFrame>& inFrame					
+		)
+	{
+	try { 
+		//make some unknown variables
+		if (code.isConstant())
+			{
+			return convertConstant(code, normCont, inBlockName, inFrame);
+			}
+		else if (code.isVariable())
+			{
+			return convertVariable(code, normCont, inBlockName, inFrame);
+			}
+		else if (code.isAssign())
+			{
+			return convertAssign(code, normCont, inBlockName, inFrame);
+			}
+		else if (code.isLet())
+			{
+			return convertLet(
+						code,
+						normCont,
+						exceptionCont,
+						namedExceptionConts,
+						inBlockName,
+						inFrame
+						);
+			}
+		else if (code.isTupleExpand())
+			{
+			return convertTupleExpand(
+						code,
+						normCont,
+						exceptionCont,
+						namedExceptionConts,
+						inBlockName,
+						inFrame
+						);
+			}
+		else if (code.isApply())
+			{
+			return convertApply(code, normCont, exceptionCont, inBlockName, inFrame);
+			}
+		else if (code.isCreateTuple())
+			{
+			return convertCreateTuple(code, normCont, inBlockName, inFrame);
+			}
+		else if (code.isWhile())
+			{
+			return convertWhile(
+						code,
+						normCont,
+						exceptionCont,
+						namedExceptionConts,
+						inBlockName,
+						inFrame
+						);
+			}
+		else if (code.isRawCached())
+			{
+			return convertRawCached(code, normCont, exceptionCont, inBlockName, inFrame);
+			}
+		else if (code.isBranch())
+			{
+			return convertBranch(
+						code,
+						normCont,
+						exceptionCont,
+						namedExceptionConts,
+						inBlockName,
+						inFrame
+						);
+			}
+		else if (code.isSwitch())
+			{
+			return convertSwitch(
+						code,
+						normCont,
+						exceptionCont,
+						namedExceptionConts,
+						inBlockName,
+						inFrame
+						);
+			}
+		else if (code.isThrow())
+			{
+			return convertThrow(
+						code,
+						normCont,
+						exceptionCont,
+						namedExceptionConts,
+						inBlockName,
+						inFrame
+						);
+			}
+		else if (code.isReturn())
+			{
+			return convertReturn(
+						code,
+						normCont,
+						exceptionCont,
+						namedExceptionConts,
+						inBlockName,
+						inFrame
+						);
+			}
+		else if (code.isTry())
+			{
+			return convertTry(
+						code,
+						normCont,
+						exceptionCont,
+						namedExceptionConts,
+						inBlockName,
+						inFrame
+						);
+			}
+		else if (code.isContinuation())
+			{
+			return convertContinuation(
+						code,
+						normCont,
+						exceptionCont,
+						namedExceptionConts,
+						inBlockName,
+						inFrame
+						);
+			}
+		else 
+			lassert(false);
+		}
+	catch(std::logic_error& e)
+		{
+		throwLogicErrorWithStacktrace(
+			e.what()
+			+ string("\n\nerror in FunctionToCFG conversion: \n")
+				+ "\ncode = " + prettyPrintString(code)
+				+ "\nnormalCont = " + prettyPrintString(normCont)
+				+ "\nexceptionCont = " + prettyPrintString(exceptionCont)
+				+ "\nframe = " + prettyPrintString(inFrame)
+				
+			);
+		throw std::logic_error("can't happen");
+		}
+	}
+
+}
+}
+

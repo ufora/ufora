@@ -1,0 +1,98 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "NativeExpressionBuilder.hppml"
+
+NativeExpression NativeExpressionBuilder::add(const NativeExpression& expr)
+	{
+	if (expr.isConstant() && expr.isVariable())
+		return expr;
+	
+	return addAndGetVar(expr).expr();
+	}
+
+NativeVariable NativeExpressionBuilder::addAndGetVar(const NativeExpression& expr)
+	{
+	if (expr.isVariable())
+		return expr.getVariable().var();
+
+	lassert_dump(expr.type(),
+		"can't push " + prettyPrintString(expr) + " which doesn't return"
+		);
+
+	NativeVariable tr = NativeVariable::Temp(*expr.type());
+	mLets = mLets + make_pair(tr, expr);
+	
+	return tr;
+	}
+
+NativeVariable NativeExpressionBuilder::getPointerVarToCopyOnStack(
+		const NativeExpression& inExpr
+		)
+	{
+	lassert_dump(
+		inExpr.type(),
+		"can't alloc a copy of " + prettyPrintString(inExpr) + 
+		" on the stack since it has no type"
+		);
+
+	NativeExpression ptrExpr = 
+		NativeExpression::Alloc(
+			*inExpr.type(),
+			1,
+			false
+			);
+
+	NativeVariable ptrVar = NativeVariable::Temp(*ptrExpr.type());
+	mLets = mLets + make_pair(ptrVar, ptrExpr);
+	
+	NativeExpression storeExpr = ptrVar.expr().store(inExpr);
+	NativeVariable storeVar = NativeVariable::Temp(*storeExpr.type());
+	mLets = mLets + make_pair(storeVar, storeExpr);
+		
+	return ptrVar;
+	}
+
+NativeExpression NativeExpressionBuilder::getPointerExprToCopyOnStack(
+		const NativeExpression& inExpr
+		)
+	{
+	return getPointerVarToCopyOnStack(inExpr).expr();
+	}
+
+NativeExpression NativeExpressionBuilder::operator()(
+			const NativeExpression& expr
+			) const
+	{
+	if (expr.isVariable() && mLets.size() && expr.getVariable().var() == mLets.back().first)
+		return wrapInLetStatements(mLets.slice(0, mLets.size() - 1), mLets.back().second);
+	
+	return wrapInLetStatements(mLets, expr);
+	}
+
+NativeExpression NativeExpressionBuilder::expressionFor(const NativeVariable& var) const
+	{
+	for (long k = 0; k < mLets.size(); k++)
+		if (mLets[k].first == var)
+			return mLets[k].second;
+	
+	throw standardLogicErrorWithStacktrace("variable doesn't exist");
+	}
+
+void NativeExpressionBuilder::add(const NativeExpressionBuilder& in)
+	{
+	mLets = mLets + in.mLets;
+	}
+

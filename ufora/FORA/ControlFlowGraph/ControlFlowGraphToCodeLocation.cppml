@@ -1,0 +1,188 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ControlFlowGraphToCodeLocation.hppml"
+#include "../Core/Type.hppml"
+
+namespace ControlFlowGraphToCodeLocation {
+
+Nullable<pair<CodeLocationId, ImmutableTreeMap<Symbol, long> > >
+extractCodeLocationIdFromGraphAndLabel(
+										const ControlFlowGraph& cfg, 
+										Nullable<string> label
+										)
+	{
+	Nullable<pair<ForaStackTrace, ImmutableTreeMap<Symbol, long> > > trace = 
+			extractStackTraceFromGraphAndLabel(cfg, label);
+
+	if (trace && trace->first.getStackTrace().elements().size())
+		return null() << make_pair(trace->first.getStackTrace().elements().back(), trace->second);
+
+	return null();
+	}
+
+Nullable<pair<CodeLocation, ImmutableTreeMap<Symbol, long> > >
+extractCodeLocationFromGraphAndLabel(
+										const ControlFlowGraph& cfg, 
+										Nullable<string> label
+										)
+	{
+	Nullable<pair<CodeLocationId, ImmutableTreeMap<Symbol, long> > > id;
+
+	id = extractCodeLocationIdFromGraphAndLabel(cfg, label);
+
+	if (!id)
+		return null();
+
+	Nullable<CodeLocation> loc = GlobalCodeLocationRegistry::getCodeLocation(id->first);
+
+	if (!loc)
+		return null();
+
+	return null() << make_pair(*loc, id->second);
+	}
+
+Nullable<std::string> graphAndLabelToDisplayString(
+										const ControlFlowGraph& cfg, 
+										Nullable<string> label
+										)
+	{
+	Nullable<pair<CodeLocation, ImmutableTreeMap<Symbol, long> > > location = 
+						extractCodeLocationFromGraphAndLabel(cfg, label);
+
+	if (location)
+		return null() << prettyPrintString(location->first);
+
+	return null();
+	}
+
+ImmutableTreeVector<Nullable<long> > applyArgsToPermutations(
+						const ImmutableTreeVector<ControlFlowContinuationArg>& args,
+						ImmutableTreeVector<Nullable<long> > permutations
+						)
+	{
+	ImmutableTreeVector<Nullable<long> > newPermutations;
+
+	for (long k = 0; k < args.size(); k++)
+		@match ControlFlowContinuationArg(args[k])
+			-| Arg(Arg(index)) ->> {
+				newPermutations = newPermutations + permutations[index];
+				}
+			-| _ ->> {
+				newPermutations = newPermutations + Nullable<long>();
+				}
+
+	return newPermutations;
+	}
+
+
+Nullable<pair<ForaStackTrace, ImmutableTreeMap<Symbol, long> > >
+extractStackTraceFromGraphAndLabel(	const ControlFlowGraph& cfg, 
+									Nullable<string> label
+									)
+	{
+	ImmutableTreeMap<Symbol, long> variableAssignments;
+
+	ImmutableTreeVector<Nullable<long> > permutations;
+
+	for (long k = 0; k < cfg[label].argCount(); k++)
+		permutations = permutations + (null() << k);
+
+	//follow along the cfg until we have an exception or run out of depth
+	long steps = 0;
+
+	while (steps < 10)
+		{
+		const ControlFlowNode& node = cfg[label];
+
+		Nullable<pair<ForaStackTrace, ImmutableTreeMap<Symbol, long> > > id = 
+			isStackframeAugment(node, permutations);
+
+		if (id)
+			return id;
+
+		if (node.body().getContinuationCount() == 0)
+			return null();
+
+		const ControlFlowContinuation& cont = 
+			node.body().getContinuationByIndex(node.body().isApply() ? 1 : 0);
+
+		@match ControlFlowContinuation(cont)
+			-| Return() ->> { 
+				return null(); 
+				}
+			-| Node(l, args) ->> { 
+				label = l; 
+				permutations = applyArgsToPermutations(args, permutations);
+				}
+			;
+
+		steps++;
+		}
+
+	return null();
+	}
+	
+Nullable<pair<ForaStackTrace, ImmutableTreeMap<Symbol, long> > > 
+isStackframeAugment(
+			const ControlFlowNode& node,
+			const ImmutableTreeVector<Nullable<long> >& permutations
+			)
+	{
+	@match ControlFlowNodeBody(node.body())
+		-| Apply(args) ->> {
+			if (args.size() < 4)
+				return null();
+
+			@match ControlFlowApplyArg(args[0])
+				-| Normal(_, Constant(c)) ->> {
+					static CSTValue val = CSTValue(Symbol("AugmentException"));
+
+					if (c.cmp(val))
+						return null();
+					}
+				-| _ ->> { 
+					return null(); 
+					}
+
+			ImmutableTreeMap<Symbol, long> values;
+
+			for (long k = 4; k < args.size();k++)
+				@match ControlFlowApplyArg(args[k])
+					-| Normal(symbol, Arg(index)) ->> {
+						if (symbol && permutations[index])
+							values = values + *symbol + *permutations[index];
+						}
+					-| _ ->> {}
+
+			@match ControlFlowApplyArg(args[3])
+				-| Normal(_, Constant(c)) ->> {
+					if (!c.type().isStackTrace())
+						return null();
+					return null() << make_pair(c.cast<ForaStackTrace>(), values);
+					}
+				-| _ ->> { 
+					return null(); 
+					}
+
+			
+			}
+		-| _ ->> {
+			return null();
+			}
+	}
+}
+
+

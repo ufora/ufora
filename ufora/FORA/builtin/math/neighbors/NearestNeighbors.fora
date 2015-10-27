@@ -1,0 +1,204 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#Markdown("""
+### NearestNeighbors
+
+A class for finding nearest neighbors. A `NearestNeighbors` instance is 
+constructed from a set of points, usually a dataframe and a distance function 
+to use. Clients can use instances to find the nearest points in a query set 
+of points to the points bound in the `NearestNeighbors` instance.
+
+#### Examples
+
+    let df = dataframe.DataFrame(
+        a: [0, 1, 0],
+        b: [0, 0, 0],
+        c: [2, 0, 1]
+        );
+    
+    // construct a `NearestNeighbors` instance out of `df`, and 
+    // using the default distance, `math.distances.l2`
+    let neighbors = math.neighbors.NearestNeighbors(df);
+
+    // two query points in 3-dimensional space
+    let queryPoints = dataframe.DataFrame(
+        a: [0,   5.5],
+        b: [0,   2.0],
+        c: [1.3, 3.3]
+        );
+
+    // for each point in `queryPoints`, find the closest two 
+    // points in `df`
+    neighbors.kNeighbors(queryPoint, 2)
+
+    // for each point in `queryPoints`, find the closest two 
+    // points in `df` and include their distances.
+    neighbors.kNeighbors(queryPoint, 2, includeDistances: true)
+
+""")
+class {
+    member mRowMajorSamples;
+    member mDistanceFun;
+
+    #Markdown("""#### Usage
+
+        math.neighbors.NearestNeighbors(trainingPoints, distanceFun = math.distances.l2)
+
+    #### Description
+
+    Construct a `NearestNeighbors` instance based on the training points 
+    `trainingPoints` and distance function `distanceFun` (which defaults 
+    to `math.distances.l2`. 
+
+    """)
+    operator new(inSamples, distanceFun = math.distances.l2) {
+        let rowMajorSamples = dataframe.RowMajorDataFrame(inSamples);
+
+        createInstance(
+            cls, 
+            mRowMajorSamples: rowMajorSamples,
+            mDistanceFun: distanceFun
+            );
+        };
+
+    withDistanceFun: 
+    #Markdown("""#### Usage
+
+        nearestNeighbors.withDistanceFun(newDistanceFun)
+
+    #### Description
+
+    Return a new `NearestNeighbors` instance with the same parameters 
+    as `nearestNeighbors` except using a new distance function, `newDistanceFun`.
+
+    #### Examples
+
+        nearestNeighbors.withDistanceFun(math.distances.l_infinity)
+
+    """)
+    fun(newDistanceFun) {
+        createInstance(
+            cls,
+            mRowMajorSamples: mRowMajorSamples,
+            mDistanceFun: newDistanceFun
+            );
+        };
+
+    kNeighbors: 
+    #Markdown("""#### Usage
+
+        nearestNeighbors.kNeighbors(samples, k, includeDistances:= false, sortPoints:= true)
+
+    #### Description
+
+    Returns a vector of vectors containing the indices of the `k` closest 
+    points held in `nearestNeighbors` to the points `samples`. If 
+    `includeDistances` is true, then each inner vector contains also the 
+    distances computed. By default, the points are sorted in order of increasing 
+    distance. If `sortPoints` is false, then these `k` closest points are 
+    returned in an undefined order.
+
+    #### Examples
+
+        let df = dataframe.DataFrame(
+            a: [0, 1, 0],
+            b: [0, 0, 0],
+            c: [2, 0, 1]
+            );
+    
+        let neighbors = math.neighbors.NearestNeighbors(df);
+
+        // one query point in 3-dimensional space
+        let queryPoint = dataframe.DataFrame(
+            a: [0],
+            b: [0],
+            c: [1.3]
+            );
+
+        neighbors.kNeighbors(queryPoint, 2)
+        // Returns [[2, 0]]. This means that for the query point, `queryPoint`
+        // the first closest point in `df` to `queryPoint` is at index 2,
+        // ie `df[2]`. The second closest point is at index 0, ie `df[0]`
+
+        neighbors.kNeighbors(queryPoint, 2, includeDistances: true)
+        // Returns [[(ix: 2, distance: 0.3), (ix: 0, distance: 0.7)]].
+        // This means that for the query point, `queryPoint`, the first
+        // closest point in `df` is again at index 2, and has distance 0.3.
+        // The second closest point to `queryPoint` is again at index 0, 
+        // and has distance 0.7.
+
+    """)
+    fun(samples, k, includeDistances:= false, sortPoints:= true) {
+        assertions.assertLessEqual(k, size(mRowMajorSamples));
+
+        let rowMajorSamples = dataframe.RowMajorDataFrame(samples);
+
+        let lazyMatrixOfDistances = 
+            self.computeLazyMatrixOfDistances_(rowMajorSamples);
+
+        self.selectClosestFromMatrixOfDistances_(
+            lazyMatrixOfDistances, k, includeDistances: includeDistances, 
+            sortPoints: sortPoints
+            );
+        };
+
+    `hidden
+    computeLazyMatrixOfDistances_: fun(dataframe.RowMajorDataFrame(samples)) {
+        lazy.LazyMatrix(
+            fun(rowIndex, columnIndex) {
+                mDistanceFun(
+                    samples[rowIndex],
+                    mRowMajorSamples[columnIndex]
+                    )
+                },
+            (size(samples), size(mRowMajorSamples))
+            );
+        };
+
+    `hidden
+    selectClosestFromMatrixOfDistances_: 
+    fun(lazyMatrixOfDistances, numToSelect, 
+        includeDistances: includeDistances, sortPoints:) {
+        Vector.range(
+            lazyMatrixOfDistances.dim[0],
+            fun(rowIx) {
+                let lazyRowOfDistances = lazyMatrixOfDistances[rowIx]
+
+                let res = 
+                    sorting.nSmallest(
+                        lazy.LazyVector(identity, size(lazyRowOfDistances)),
+                        numToSelect,
+                        fun(ix1, ix2) { 
+                            lazyRowOfDistances[ix1] < lazyRowOfDistances[ix2]
+                            },
+                        sorted: sortPoints
+                        )
+
+                if (includeDistances) {
+                    res = Vector.range(
+                        size(res),
+                        { let ix = res[_];
+                          (ix: ix, distance: lazyRowOfDistances[ix]) }
+                        );
+                    }
+                
+                return res;
+                }
+            );
+        };
+
+    };
+

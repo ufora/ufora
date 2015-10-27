@@ -1,0 +1,274 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "DataTasksMemoryPool.hppml"
+#include "../../cumulus/DistributedDataTasks/DistributedDataTaskMessages.hppml"
+#include "../../core/Logging.hpp"
+#include "../VectorDataManager/PageRefcountTracker.hppml"
+#include "../VectorDataManager/VectorDataMemoryManager.hppml"
+#include "../VectorDataManager/VectorDataMemoryManagerShareableMemoryBlock.hppml"
+#include "../VectorDataManager/Pagelet.hppml"
+
+DataTasksMemoryPool::DataTasksMemoryPool(
+									PolymorphicSharedPtr<VectorDataManager> inVDM
+									) :
+		MemoryPool(MemoryPool::MemoryPoolType::DataTask),
+		mVDM(inVDM),
+		mMemoryManager(inVDM->getMemoryManager()),
+		mBytesFromOSInHeldPagelets(0),
+		mBytesInHeldPagelets(0)
+	{
+	setPageSize(mMemoryManager->getSmallAllocSize());
+	}
+
+DataTasksMemoryPool::~DataTasksMemoryPool()
+	{
+	long bytesDumped = totalBytesAllocated();
+
+	if (bytesDumped)
+		{
+		LOG_CRITICAL << "Bytes in shared mem: " << mShareableMemoryBlocks.getBytesHeldInSharedMemory();
+		LOG_CRITICAL << "Bytes in Heap: " << mHeap->getBytesUsed();
+
+		LOG_CRITICAL << "freeing pointers to " << bytesDumped << " bytes at:\n"
+			<< Ufora::debug::StackTrace::getStringTrace();
+
+		if (std::uncaught_exception())
+			LOG_CRITICAL << "This is happening during a stack unwind due to an uncaught exception";
+
+		fflush(stdout);
+		fflush(stderr);
+
+		//abort();
+		}
+	}
+
+void DataTasksMemoryPool::setPageSize(size_t newPageSize)
+	{
+	lassert(!mHeap || totalBytesAllocated() == 0);
+
+	mHeap.reset(
+		new VectorDataMemoryManagerHeap(mMemoryManager, this, newPageSize)
+		);
+	}
+
+void DataTasksMemoryPool::vectorPageMapped(
+					boost::shared_ptr<VectorPage> mappedPage,
+					boost::shared_ptr<Ufora::threading::Trigger> mappedPageWantsUnmapped
+					)
+	{
+	}
+
+bool DataTasksMemoryPool::isVectorPageMapped(
+						boost::shared_ptr<VectorPage> mappedPage
+						)
+	{
+	return false;
+	}
+
+
+bool DataTasksMemoryPool::permitAllocation(size_t inBytes)
+	{
+	return true;
+	}
+
+std::string DataTasksMemoryPool::stringRepresentation()
+	{
+	return "DataTasksMemoryPool(" + boost::lexical_cast<string>((void*)this) + ")";
+	}
+
+uint8_t* DataTasksMemoryPool::allocate(size_t inBytes)
+	{
+	return (uint8_t*)mHeap->malloc(inBytes);
+	}
+
+void DataTasksMemoryPool::free(uint8_t* inBytes) 
+	{
+	if (mShareableMemoryBlocks.hasShareableMemoryBlockHandle(inBytes))
+		{
+		Fora::ShareableMemoryBlockHandle handle = 
+			mShareableMemoryBlocks.getShareableMemoryBlockHandle(inBytes);
+
+		mMemoryManager->detachFromPool(this, inBytes, handle.getSize());
+
+		mShareableMemoryBlocks.decrefSharedMemoryBlock(inBytes);
+		}
+	else
+		mHeap->free(inBytes);
+	}
+
+uint8_t* DataTasksMemoryPool::realloc(uint8_t* inBytes, uword_t inNewBytes)
+	{
+	lassert(!mShareableMemoryBlocks.hasShareableMemoryBlockHandle(inBytes));
+	
+	if (!inBytes && !inNewBytes)
+		return 0;
+
+	if (inBytes && !inNewBytes)
+		{
+		free(inBytes);
+		return 0;
+		}
+
+	if (!inBytes)
+		return allocate(inNewBytes);
+
+	uint8_t* newData = (uint8_t*)mHeap->realloc(inBytes, inNewBytes);
+
+	return newData;
+	}
+
+size_t DataTasksMemoryPool::totalBytesAllocated() const
+	{
+	return mHeap->getBytesUsed() + 
+		mShareableMemoryBlocks.getBytesHeldInSharedMemory() + 
+		mBytesInHeldPagelets
+		;
+	}
+
+size_t DataTasksMemoryPool::totalBytesFromOSHeldInPagelets() const
+	{
+	return mBytesFromOSInHeldPagelets;
+	}
+
+size_t DataTasksMemoryPool::totalBytesAllocatedFromOS() const
+	{
+	return mHeap->getTotalBytesAllocatedFromOS() + 
+		mShareableMemoryBlocks.getBytesHeldInSharedMemory() + 
+		mBytesFromOSInHeldPagelets
+		;
+	}
+
+size_t DataTasksMemoryPool::totalBytesAllocatedFromOSExcludingPagelets() const
+	{
+	return mHeap->getTotalBytesAllocatedFromOS() + mShareableMemoryBlocks.getBytesHeldInSharedMemory();
+	}
+
+Fora::ShareableMemoryBlockHandle 
+			DataTasksMemoryPool::convertPointerToShareableMemoryBlock(uint8_t* inBytes, int64_t byteCount)
+	{
+	Fora::ShareableMemoryBlockHandle handle = 
+		mShareableMemoryBlocks.getShareableMemoryBlockHandle(inBytes);
+
+	if (!handle.isEmpty())
+		return handle;
+
+	if (!mHeap->detachLargeAlloc(inBytes, byteCount))
+		return Fora::ShareableMemoryBlockHandle();
+
+	Fora::ShareableMemoryBlockHandle vdmmHandle(
+		new VectorDataMemoryManagerShareableMemoryBlock(
+			mMemoryManager,
+			inBytes,
+			byteCount
+			)
+		);
+
+	importShareableMemoryBlock(vdmmHandle);
+
+	return vdmmHandle;
+	}
+
+uint8_t* DataTasksMemoryPool::importShareableMemoryBlock(
+											const Fora::ShareableMemoryBlockHandle& inHandle
+											)
+	{
+	if (inHandle.isEmpty())
+		return nullptr;
+
+	if (mShareableMemoryBlocks.increfShareableMemoryBlockAndReturnIsNew(inHandle))
+		mMemoryManager->attachToPool(this, inHandle.getBaseAddress(), inHandle.getSize());
+
+	return inHandle.getBaseAddress();
+	}
+
+void DataTasksMemoryPool::pageletIsHeld(boost::shared_ptr<Fora::Pagelet> inPagelet)	
+	{
+	lassert(inPagelet->isFrozen());
+
+	if (mHeldPagelets.find(inPagelet) == mHeldPagelets.end())
+		{
+		mHeldPagelets[inPagelet]++;
+
+		mMemoryManager->poolNowHoldingPagelet(this, &*inPagelet);
+		mBytesInHeldPagelets += inPagelet->totalBytesAllocated();
+		mBytesFromOSInHeldPagelets += inPagelet->totalBytesAllocatedFromOS();
+
+		for (auto subpage: inPagelet->getHeldPagelets())
+			if (mHeldPagelets.find(subpage.first) == mHeldPagelets.end())
+				{
+				mHeldPagelets[subpage.first]++;
+
+				mMemoryManager->poolNowHoldingPagelet(this, &*subpage.first);
+				mBytesInHeldPagelets += subpage.first->totalBytesAllocated();
+				mBytesFromOSInHeldPagelets += subpage.first->totalBytesAllocatedFromOS();
+				}
+			else
+				mHeldPagelets[subpage.first]++;
+		}
+	else
+		mHeldPagelets[inPagelet]++;
+	}
+
+void DataTasksMemoryPool::pageletIsNoLongerHeld(boost::shared_ptr<Fora::Pagelet> inPagelet)
+	{
+	mHeldPagelets[inPagelet]--;
+
+	if (mHeldPagelets[inPagelet] == 0)
+		{
+		mHeldPagelets.erase(inPagelet);
+
+		mMemoryManager->poolNoLongerHoldingPagelet(this, &*inPagelet);
+		mBytesInHeldPagelets -= inPagelet->totalBytesAllocated();
+		mBytesFromOSInHeldPagelets -= inPagelet->totalBytesAllocatedFromOS();
+
+		for (auto subpage: inPagelet->getHeldPagelets())
+			{
+			mHeldPagelets[subpage.first]--;
+			if (mHeldPagelets[subpage.first] == 0)
+				{
+				mMemoryManager->poolNoLongerHoldingPagelet(this, &*subpage.first);
+				mBytesInHeldPagelets -= subpage.first->totalBytesAllocated();
+				mBytesFromOSInHeldPagelets -= subpage.first->totalBytesAllocatedFromOS();
+				
+				mHeldPagelets.erase(subpage.first);
+				}
+			}
+		}
+	}
+
+void DataTasksMemoryPool::incrementBigVectorRefcount(const Fora::BigVectorId& identity)
+	{
+	auto& refcount = mBigvecRefcounts[identity];
+	refcount++;
+
+	if (refcount == 1)
+		mVDM->getPageRefcountTracker()->bigVectorIncreffed(identity);
+	}
+
+void DataTasksMemoryPool::decrementBigVectorRefcount(const Fora::BigVectorId& identity)
+	{
+	auto& refcount = mBigvecRefcounts[identity];
+	refcount--;
+
+	if (refcount == 0)
+		{
+		mVDM->getPageRefcountTracker()->bigVectorDecreffed(identity);
+		mBigvecRefcounts.erase(identity);
+		}
+	}
+
+
+

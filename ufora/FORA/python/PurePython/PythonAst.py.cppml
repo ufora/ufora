@@ -1,0 +1,246 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "PythonAst.hppml"
+
+#include <boost/python.hpp>
+#include <boost/random.hpp>
+
+#include "../../../core/cppml/ExtractAllObjectsMatchingPredicate.hppml"
+#include "../../../native/Registrar.hpp"
+#include "../../../core/python/CPPMLWrapper.hpp"
+#include "../../../core/python/CPPMLToSimple.hpp"
+#include "../../../core/python/ScopedPyThreads.hpp"
+#include "../FORAPythonUtil.hppml"
+#include "../../../core/containers/ImmutableTreeVector.py.hpp"
+#include "PythonAstToFora.hppml"
+#include "PythonToForaConversionError.hppml"
+#include "PythonListConverter.hpp"
+#include "PythonTupleConverter.hpp"
+#include "PythonParseError.hppml"
+#include "../../Language/ExpressionLocationTagging.hppml"
+
+class PythonAstWrapper :
+        public native::module::Exporter<PythonAstWrapper> {
+public:
+        std::string        getModuleName(void)
+            {
+            return "FORA";
+            }
+
+        static Fora::PythonAstStatement statementWithParseInfo(
+                                            Fora::PythonAstStatement& statement,
+                                            int64_t offset,
+                                            int64_t lineNumber,
+                                            int64_t columnNumber
+                                            )
+            {
+            return CPPML::replaceCommonData<Fora::PythonAstStatement>(
+                statement, 
+                SimpleParseRange(
+                    SimpleParsePosition(offset, lineNumber, columnNumber),
+                    SimpleParsePosition(offset+1, lineNumber, columnNumber+1)
+                    )
+                );
+            }
+
+        static Fora::PythonAstExpr expressionWithParseInfo(
+                                            Fora::PythonAstExpr& expr,
+                                            int64_t offset,
+                                            int64_t lineNumber,
+                                            int64_t columnNumber
+                                            )
+            {
+            return CPPML::replaceCommonData<Fora::PythonAstExpr>(
+                expr, 
+                SimpleParseRange(
+                    SimpleParsePosition(offset, lineNumber, columnNumber),
+                    SimpleParsePosition(offset+1, lineNumber, columnNumber+1)
+                    )
+                );
+            }
+
+        static boost::python::object functionOrClassdefAtLine(Fora::PythonAstModule module, int64_t line)
+            {
+            auto matches = extractAllObjectsMatchingPredicate(
+                module, 
+                boost::function1<bool, Fora::PythonAstStatement>(
+                    [&](Fora::PythonAstStatement e) { 
+                        return (e.isFunctionDef() || e.isClassDef()) && e.extent().start().line() == line;
+                        }
+                    )
+                );
+            if (matches.size())
+                return boost::python::object(matches[0]);
+            return boost::python::object();
+            }
+
+       static boost::python::object withBlockAtLine(Fora::PythonAstModule module, int64_t line)
+           {
+           auto matches = extractAllObjectsMatchingPredicate(
+               module, 
+               boost::function1<bool, Fora::PythonAstStatement>(
+                   [&](Fora::PythonAstStatement e) { 
+                       return (e.isWith() || e.isClassDef()) && e.extent().start().line() == line;
+                       }
+                   )
+               );
+           if (matches.size())
+               return boost::python::object(matches[0]);
+           return boost::python::object();
+           }
+
+        static boost::python::object convertPythonAstFunctionDefToForaOrParseError(
+                Fora::PythonAstStatement_FunctionDefType& functionDef,
+                SimpleParseRange& extent,
+                CodeDefinitionPoint defPoint,
+                PolymorphicSharedPtr<Fora::PythonConstantConverter> constantConverter,
+                PolymorphicSharedPtr<Fora::PythonListConverter> listConverter,
+                PolymorphicSharedPtr<Fora::PythonTupleConverter> tupleConverter,
+                PolymorphicSharedPtr<Fora::PythonDictConverter> dictConverter,
+                ImplValContainer pyObjectBaseMixin
+                )
+            {
+            try {
+                return boost::python::object(
+                    ExpressionLocationTagging::setCodeLocation(
+                        Fora::PythonAstConverter(
+                                constantConverter,
+                                listConverter,
+                                tupleConverter,
+                                dictConverter,
+                                pyObjectBaseMixin
+                                )
+                            .convertPythonAstFunctionDefToFora(functionDef, extent),
+                        CodeLocation(defPoint, extent)
+                        )
+                    );
+                }
+            catch (Fora::PythonToForaConversionError& e)
+                {
+                return boost::python::object(e);
+                }                
+            }
+
+        static boost::python::object convertPythonAstClassDefToForaOrParseError(
+                Fora::PythonAstStatement_ClassDefType& classDef,
+                SimpleParseRange& extent,
+                CodeDefinitionPoint defPoint,
+                PolymorphicSharedPtr<Fora::PythonConstantConverter> constantConverter,
+                PolymorphicSharedPtr<Fora::PythonListConverter> listConverter,
+                PolymorphicSharedPtr<Fora::PythonTupleConverter> tupleConverter,
+                PolymorphicSharedPtr<Fora::PythonDictConverter> dictConverter,
+                ImplValContainer pyObjectBaseMixin
+                )
+            {
+            try {
+                return boost::python::object(
+                    ExpressionLocationTagging::setCodeLocation(
+                        Fora::PythonAstConverter(
+                            constantConverter,
+                            listConverter,
+                            tupleConverter,
+                            dictConverter,
+                            pyObjectBaseMixin
+                            )
+                            .convertPythonAstClassDefToFora(classDef, extent),
+                        CodeLocation(defPoint, extent)
+                        )
+                    );
+                }
+            catch (Fora::PythonToForaConversionError& e)
+                {
+                return boost::python::object(e);
+                }
+            }
+
+        static Fora::PythonParseError* createSyntaxError(
+                const std::string& message,
+                const std::string& filename,
+                std::size_t lineno,
+                std::size_t offset,
+                const std::string& text)
+            {
+            return new Fora::PythonParseError(
+                Fora::PythonParseError::SyntaxError(message, filename, lineno, offset, text)
+                );
+            }
+
+        static Fora::PythonParseError* createTypeError(const std::string& message)
+            {
+            return new Fora::PythonParseError(Fora::PythonParseError::TypeError(message));
+            }
+
+
+
+        void exportPythonWrapper()
+            {
+            using namespace boost::python;
+
+            Ufora::python::CPPMLWrapper<Fora::PythonAstModule>("PythonAstModule", true).class_()
+                .def("__str__", &FORAPythonUtil::scopedPrettyPrinter<Fora::PythonAstModule>)
+                .def("functionOrClassdefAtLine", &functionOrClassdefAtLine)
+                .def("withBlockAtLine", &withBlockAtLine)
+                ;
+
+            Ufora::python::CPPMLWrapper<Fora::PythonAstStatement>("PythonAstStatement", true).class_()
+                .def("__str__", &FORAPythonUtil::scopedPrettyPrinter<Fora::PythonAstStatement>)
+                .def("withParseInfo", &statementWithParseInfo)
+                ;
+            Ufora::python::CPPMLWrapper<Fora::PythonAstExpr>("PythonAstExpr", true).class_()
+                .def("__str__", &FORAPythonUtil::scopedPrettyPrinter<Fora::PythonAstExpr>)
+                .def("withParseInfo", &expressionWithParseInfo)
+                ;
+
+            Ufora::python::CPPMLWrapper<Fora::PythonToForaConversionError>(
+                "PythonToForaConversionError", true).class_()
+                .def("__str__", FORAPythonUtil::scopedPrettyPrinter<Fora::PythonToForaConversionError>)
+                .enable_pickling()
+                ;
+            def("convertPythonAstFunctionDefToForaOrParseError", &convertPythonAstFunctionDefToForaOrParseError);
+            def("convertPythonAstClassDefToForaOrParseError", &convertPythonAstClassDefToForaOrParseError);
+
+            Ufora::python::CPPMLWrapper<Fora::PythonAstNumericConstant>("PythonAstNumericConstant", true).class_();
+            Ufora::python::CPPMLWrapper<Fora::PythonAstExprContext>("PythonAstExprContext", true).class_();
+            Ufora::python::CPPMLWrapper<Fora::PythonAstSlice>("PythonAstSlice", true).class_();
+            Ufora::python::CPPMLWrapper<Fora::PythonAstBooleanOp>("PythonAstBooleanOp", true).class_();
+            Ufora::python::CPPMLWrapper<Fora::PythonAstBinaryOp>("PythonAstBinaryOp", true).class_();
+            Ufora::python::CPPMLWrapper<Fora::PythonAstUnaryOp>("PythonAstUnaryOp", true).class_();
+            Ufora::python::CPPMLWrapper<Fora::PythonAstComparisonOp>("PythonAstComparisonOp", true).class_();
+            Ufora::python::CPPMLWrapper<Fora::PythonAstComprehension>("PythonAstComprehension", true).class_();
+            Ufora::python::CPPMLWrapper<Fora::PythonAstExceptionHandler>("PythonAstExceptionHandler", true).class_();
+            Ufora::python::CPPMLWrapper<Fora::PythonAstArguments>("PythonAstArguments", true).class_();
+            Ufora::python::CPPMLWrapper<Fora::PythonAstKeyword>("PythonAstKeyword", true).class_();
+            Ufora::python::CPPMLWrapper<Fora::PythonAstAlias>("PythonAstAlias", true).class_();
+
+            Ufora::python::CPPMLWrapper<Fora::PythonParseError>("PythonParseError", true).class_()
+                .def("__init__", make_constructor(createSyntaxError))
+                .def("__init__", make_constructor(createTypeError))
+                ;
+            }
+};
+
+
+//explicitly instantiating the registration element causes the linker to need
+//this file
+template<>
+char native::module::Exporter<PythonAstWrapper>::mEnforceRegistration =
+        native::module::ExportRegistrar<
+            PythonAstWrapper>::registerWrapper();
+
+
+
+
+

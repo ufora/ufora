@@ -1,0 +1,103 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <boost/lexical_cast.hpp>
+
+#include <map>
+#include <string>
+#include <boost/thread.hpp>
+#include "../../Native/NativeCode.hppml"
+#include "../../../core/threading/IndexedMutex.hppml"
+#include "../../../core/containers/ImmutableTreeSet.hppml"
+#include "../../../core/containers/TwoWaySetMap.hpp"
+#include "../../../core/Common.hppml" //for uword_t
+
+/*******
+
+StaticInliner holds the original definitions of the CFG graph, maintains
+a control-flow-graph (checking for cycles), and does a first pass of inlining.
+
+Clients may access this object from any number of threads.  The inliner does
+a first pass of optimization, so if 'N' threads call 'getProcessed' on the
+inliner, 'N' threads will optimize at once.
+*******/
+
+class RuntimeConfig;
+
+namespace TypedFora {
+
+class StaticInliner {
+public:
+	StaticInliner(
+		uword_t inComplexity,
+		const RuntimeConfig& inConfig
+		);
+
+	void setInlineComplexity(uword_t complexity);
+	
+	//define a function named 'name' with body 'def'
+	//Calling define twice with the same name results in a std::logic_error.
+	//returns the complete set of functions that are now fully defined because
+	//of this particular call
+	void define(const std::string& name,
+				const NativeCFG& def,
+				set<string>& outNewlyDefined
+				);
+
+	bool hasDefined(const std::string& name) const;
+	
+	//determine which functions are in a mutually-recursive call group
+	//it is illegal to call this function on a function that can reach
+	//an undefined function. This will be empty if the function doesn't recurse.
+	ImmutableTreeSet<string> getCallGroup(const std::string& name);
+	
+	//return the functions that this function calls
+	ImmutableTreeSet<string> getFunctionsCalledBy(const std::string& name);
+
+	//Returns the fully preprocessed version of the CFG with the specified name.
+	//If no CFG with that name has been defined, throws a std::logic_error.
+	const NativeCFG& getProcessed(const std::string& name);
+private:
+	void validateFunctionCallSignaturesForName(const std::string& inFuncName);
+
+	const RuntimeConfig& mRuntimeConfig;
+	
+	uword_t computeLevel(const std::string& name);
+
+	void computeCycles(const std::set<std::string>& toAnalyze);
+	
+	mutable boost::recursive_mutex mMutex;
+
+	mutable IndexedMutex<string> mProcessingMutexes;
+	
+	uword_t mMaxInlineComplexity;
+	
+	std::map<std::string, NativeCFG> mCFGs;
+	
+	std::set<std::string> mProcessed;
+	
+	TwoWaySetMap<std::string, std::string> mCallGraphStructure;
+	
+	TwoWaySetMap<std::string, std::string> mUndefinedChildren;
+	
+	std::map<std::string, uword_t> mCallLevels;
+
+	std::map<std::string, ImmutableTreeSet<std::string> > mCallGroups;
+};
+
+}
+

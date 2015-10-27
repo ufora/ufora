@@ -1,0 +1,89 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "DataTransfers.hppml"
+#include "../core/threading/TestingCallbackSchedulerFactory.hppml"
+#include "../core/UnitTest.hpp"
+
+using namespace Cumulus;
+
+class DataTransfersTestFixture {
+public:
+	DataTransfersTestFixture() : 
+			factory(new TestingCallbackSchedulerFactory()),
+			throttler(
+				new DataTransfers(
+					factory->createScheduler(),
+					CumulusClientOrMachine::Machine(MachineId(hash_type(1))),
+					boost::function1<void, DataTransferEvent>(),
+					1000
+					)
+				),
+			machine1(CumulusClientOrMachine::Machine(MachineId(hash_type(1)))),
+			machine2(CumulusClientOrMachine::Machine(MachineId(hash_type(2))))
+		{
+		throttler->addEndpoint(machine1);
+		throttler->addEndpoint(machine2);
+		}
+
+	void executeAll()
+		{
+		dynamic_cast<TestingCallbackSchedulerFactory*>(factory.get())->executeAll();
+		}
+
+protected:
+	PolymorphicSharedPtr<CallbackSchedulerFactory> factory;
+
+	PolymorphicSharedPtr<DataTransfers> throttler;
+
+	CumulusClientOrMachine machine1;
+	CumulusClientOrMachine machine2;
+};
+
+BOOST_FIXTURE_TEST_SUITE( test_DataTransfers, DataTransfersTestFixture )
+
+BOOST_AUTO_TEST_CASE( test_basic )
+	{
+	BOOST_CHECK(throttler->totalBytesOutstanding() == 0);
+
+	DataTransferTokenId sentTransferId;
+
+	throttler->scheduleLargeMessage(
+		[&](PolymorphicSharedPtr<DataTransfers> throttler, DataTransferTokenId token) {
+			sentTransferId = token;
+			throttler->updateBytecount(token, 1000);
+			},
+		[&]() { },
+		machine1,
+		500,
+		0
+		);
+
+	BOOST_CHECK(throttler->totalBytesOutstanding() == 500);
+
+	executeAll();
+
+	BOOST_CHECK(throttler->totalBytesOutstanding() == 1000);
+
+	throttler->tokenReceived(sentTransferId);
+	
+	executeAll();
+
+	BOOST_CHECK(throttler->totalBytesOutstanding() == 0000);
+	}
+	
+BOOST_AUTO_TEST_SUITE_END()
+
+

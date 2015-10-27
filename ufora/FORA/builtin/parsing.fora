@@ -1,0 +1,825 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#Markdown("""
+### parsing
+
+#### Description
+
+Functions for parsing files into Fora data structures.
+
+""");
+
+`hidden
+newline: 10u8;
+
+`hidden
+carriageReturn: 13u8;
+
+`hidden
+comma: 44u8;
+
+`hidden
+tab: 9u8;
+
+`hidden
+quote: 34u8;
+
+`hidden
+chunkSize: 1024*1024*100;
+
+`hidden
+space: 32u8;
+
+csv:
+"""
+#### Usage
+
+    parsing.csv(
+        data,
+        headers:=nothing,
+        columnTypes:=nothing,
+        defaultColumnType:=String,
+        hasHeaders:=true
+        )
+
+#### Description
+
+Parses the given csv data (Vector of UInt8 or String) into a `DataFrame`.
+
+To coerce the data in the raw CSV into the proper types, you must specify a value for the
+`columnTypes` argument, which determines what types to make each column. It takes a Dictionary,
+Tuple, or Vector of types or functions. If you use a Dictionary or Tuple, you can specify precisely
+which columns you want to coerce to which types, and all other columns will default to
+`defaultColumnType`. If you use a Vector, you must specify as many types (or functions) as there are
+columns.
+
+For example, if a CSV file has columns x, y, and z, you can coerce values in column x to `Float64`, 
+values in y to `String`, and values in z to `Nothing` (making all the values `nothing`), thusly:
+
+    parsing.csv(data, columnTypes:{"x": Float64, "y": String}, defaultColumnType: Nothing)
+
+or
+
+    parsing.csv(data, columnTypes:(x: Float64, y: String), defaultColumnType: Nothing)
+
+Note that Tuples are treated in a _dict-like_ fashion, not positionally, as in vectors. 
+That is, consider
+
+    let csvString = '''a,b
+                       1,2
+                       3,4'''
+
+Suppose we wish to parse all columns of this example to floats. We could use
+
+    parsing.csv(csvString, columnTypes:{"a": Float64, "b": Float64})
+
+or
+
+    parsing.csv(csvString, columnTypes:(a: Float64, b: Float64))
+
+or
+ 
+    parsing.csv(csvString, columnTypes:[Float64, Float64])
+
+but _not_
+
+    parsing.csv(csvString, columnTypes:(Float64, Float64)).
+
+The reason is, as previously stated, Tuples values for `columnTypes` are treated 
+in a _dict-like_ manner. This last line parses all columns to the default column 
+type, String.
+
+#### Arguments
+
+* `data` -- Vector(UInt8) or String. The CSV file contents to parse.
+* `headers` -- Vector of String for all the headers, in order, to be used for the CSV.
+* `columnTypes` -- Dictionary, Tuple, Vector. A mapping that describes the types to be applied
+to each column in the CSV. See above for more information.
+defaultColumnType -- Type (e.g. `Float64`, `Nothing`, `String`) to be given to columns when no
+type is specified in `columnTypes`.
+* `hasHeaders` -- Boolean. Whether the given CSV file contains a row of headers. Defaults to `true`.
+
+#### Return Value
+
+`dataframe.DataFrame` instance.
+
+"""
+fun (
+    data,
+    headers:= nothing,
+    columnTypes:= nothing,
+    defaultColumnType:= String,
+    hasHeaders:= true
+    ) {
+    parseSeparatedValues(
+        data,
+        headers:headers,
+        columnTypes:columnTypes,
+        defaultColumnType:defaultColumnType,
+        hasHeaders:hasHeaders,
+        separator:comma
+        )
+    };
+
+tsv:
+#Markdown("""#### Usage
+
+    parsing.tsv(
+        data,
+        headers:= nothing,
+        columnTypes:= nothing,
+        defaultColumnType:= String,
+        hasHeaders:= true
+        )
+
+#### Description
+
+Parses the given tsv (tab separated values) data (Vector of UInt8 or String) into a `DataFrame`.
+
+See parsing.csv for more information on the arguments to this function (they share the same interface).
+
+""")
+fun (
+    data,
+    headers:= nothing,
+    columnTypes:= nothing,
+    defaultColumnType:= String,
+    hasHeaders:= true
+    ) {
+    parseSeparatedValues(
+        data,
+        headers:headers,
+        columnTypes:columnTypes,
+        defaultColumnType:defaultColumnType,
+        hasHeaders:hasHeaders,
+        separator:tab
+        )
+    };
+
+`hidden
+processInputs_: fun(data, headers, hasHeaders, separator) {
+    separator = processSeparator_(separator);
+    data = processData_(data);    
+    headers = computeHeaders_(data, headers, hasHeaders, separator);
+    
+    return (separator, data, headers);
+    };
+
+`hidden 
+processData_: fun(data) {
+    assertDataIsVectorOrString_(data);
+
+    if (filters.IsString(data))
+        data = data.dataAsVector;
+
+    return data;
+    };
+
+`hidden
+assertDataIsVectorOrString_: fun(data) {
+        match (data) with
+        (filters.IsVector(...)) { 
+            if ("UInt8" not in String(`TypeJOV(data)))
+                throw Exception("data must be a String or Vector of UInt8")
+            }
+        (filters.IsString(...)) { nothing }
+        (...) { throw Exception("data must be a String or Vector of UInt8"); };
+    };
+
+`hidden
+processSeparator_: fun
+(filters.IsString(separator)) { separator[0] }
+(filters.IsInteger(separator)) { separator }
+(...) { 
+    throw Exception("Separator must be a single character string " + 
+                    "or a UInt8 value corresponding to the character.")
+    };
+
+`hidden
+computeHeaders_: fun (data, headers, hasHeaders, separator) {
+    if (headers is nothing and hasHeaders) {
+        getHeaders(data, separator);
+        }
+    else if (headers is nothing and not hasHeaders) {
+        let firstRow = getHeaders(data, separator);
+        let numColumns = size(firstRow);
+        Vector.range(numColumns, {"C" + String(_)})
+        }
+    else {
+        let tr =
+        match (headers) with
+            (filters.IsVector(...)) { headers }
+            (filters.IsTuple(...)) { iter.toVector(headers) }
+            (...) { throw Exception("Given headers must be a Vector or Tuple of Strings.") };
+
+        let assertElementIsString = fun(el) {
+            match (el) with 
+                (filters.IsString(...)) { el }
+                (...) { throw Exception("Given headers must be a Vector or Tuple of Strings.") }
+            };
+
+        tr ~~ assertElementIsString
+        }
+    };
+
+`hidden
+produceVectorOfColumnTypes_:
+fun(columnTypes, headers, defaultColumnType) {
+    match (columnTypes) with
+        (nothing) {
+            Vector.range(size(headers), {defaultColumnType})
+            }
+        (filters.IsVector(...)) {
+            if (size(headers) != size(columnTypes)) {
+                throw Exception("headers: and columnTypes: " + 
+                    "(here given as a Vector) must have the same length: " + 
+                    String(size(headers)) + " != " + String(size(columnTypes)))
+                }
+            columnTypes
+            }
+        (filters.IsDictionary(...)) {
+            headers.apply(fun(header) {
+                if (header in columnTypes) { columnTypes[header] } else { defaultColumnType };
+                });
+            }
+        (filters.IsTuple(...)) {
+            let names = columnTypes..names;
+            headers.apply(fun(header){
+                if (Symbol(header) in names) {
+                    columnTypes[Symbol(header)]
+                    }
+                else {
+                    defaultColumnType
+                    }
+                });
+            }
+        (...) {
+            if (size(headers) != size(columnTypes)) {
+                throw Exception("headers: and columnTypes: (here given as a Vector) " + 
+                    "must have the same length: " + String(size(headers)) + 
+                    " != " + String(size(columnTypes)))
+                }
+            columnTypes
+            };
+    };
+
+parseSeparatedValues:
+#Markdown("""
+#### Usage
+
+    parseSeparatedValues(
+        data,
+        headers:= nothing,
+        columnTypes:= nothing,
+        defaultColumnType:= String,
+        hasHeaders:= true,
+        separator:= ','
+        )
+
+#### Description
+
+Parses the given data (String or Vector of UInt8) as a value-separated file, ala csv or tsv.
+
+With `parseSeparatedValues`, you can parse different value-separated formats, those similar to 
+comma-separated values (CSV) or tab-separated values (TSV). For example, if you had data separated
+by pipes (`|`), you could use this function to parse that data with:
+
+    parseSeparatedValues(data, separator:'|')
+
+The `separator` field (which is set to commas in `csv` and tabs in `tsv`) enables you to specify a
+single-character string as the value separator. You can also give it an equivalent ASCII character
+value as a UInt8.
+""")
+fun (
+    data,
+    headers:= nothing,
+    columnTypes:= nothing,
+    defaultColumnType:= String,
+    hasHeaders:= true,
+    separator:= comma
+    ) {
+    (separator, data, headers) = 
+        processInputs_(data, headers, hasHeaders, separator);
+
+    let columnTypesVector = 
+        produceVectorOfColumnTypes_(columnTypes, headers, defaultColumnType);
+
+    let firstRowOffset = getFirstDataRowOffset(hasHeaders, data);
+    
+    let numRanges = Int64(size(data) / chunkSize) + 1;
+    let indexRanges = Vector.range(
+        numRanges, 
+        { 
+            IndexRange(
+                startIx: max(_ * chunkSize, firstRowOffset),
+                endIx: min((_ + 1) * chunkSize, size(data))
+                ) 
+            }
+        );    
+    let columnChunks = Vector.range(
+        (0, size(indexRanges)), 
+        fun(rangeIx) {
+            scanOverRange(
+                indexRanges[rangeIx],
+                data,
+                columnTypesVector,
+                separator: separator
+                )
+            }
+        );
+    let columns = Vector.range(
+        size(columnTypesVector), 
+        fun (columnIx) { 
+            sum(0, size(columnChunks), 
+                fun(blockIx) { columnChunks[blockIx][columnIx] }
+               ) 
+            }
+        );
+
+    return dataframe.DataFrame(columns, columnNames: headers)
+    };
+
+`hidden
+IndexRange: class {
+    member startIx;
+    member endIx;
+
+    operator match(IndexRange _) { (self,) };
+    };
+
+`hidden
+scanOverRange:
+fun (IndexRange(indexRange), data, columnTypesVector, makeColumns:= true, 
+     separator:= comma) {
+    let numColumns = 
+        if (makeColumns) size(columnTypesVector) else 0;
+    
+    let startIx = findNextNewline(data, indexRange.startIx, useAsUpperRange: false);
+    let endIx = findNextNewline(data, indexRange.endIx, useAsUpperRange: true);
+
+    let itemRangesInRowMajorOrder = [];
+    // let badRows = [];
+    let isBadRowLUT = [];
+    
+    let potentialLowIx = startIx;
+    let potentialHighIx = startIx;
+    
+    let insideQuotes = false;
+    let isWindowsLineEnding = false;
+    
+    let isBadRow = false;
+    let elementIndex = 0;
+    let previousChar = 0u8;    
+    
+    // Scan over the dataset and build an index of character offset pairs.
+    while (potentialHighIx < endIx) {
+        let char = data[potentialHighIx];
+        
+        if (char == carriageReturn or 
+            (char == newline and not isWindowsLineEnding) or 
+            potentialHighIx == endIx - 1 or // is at the end of the range
+            (char == separator and 
+                elementIndex + 1 == numColumns and // we're on the last element
+                not insideQuotes)
+            ) {
+            // This is either the first character of a Windows-style line 
+            // ending or the \n in *nix-style,
+            // or this is a trailing separator, or this is the end of the given range.
+            
+            let isEnd = potentialHighIx == endIx - 1;
+            let nextChar = if (isEnd) 0u8 else data[potentialHighIx + 1];
+            let isSeparatorButIsNotTrailing = 
+                char == separator and 
+                nextChar != carriageReturn and 
+                nextChar != newline and 
+                not isEnd;
+            
+            if (isEnd and insideQuotes and char == quote)
+                {
+                insideQuotes = false;
+                }
+            
+            // Adjust for the isEnd case here, before you do any 
+            // checking of potentialLowIx against potentialHighIx.
+            // This is so the one-character last element, 
+            // non-newline case works.
+            if (isEnd and char != carriageReturn and char != newline) {
+                // If we're at the end, and that's not a newline 
+                // character of some sort, then
+                // increment potentialHighIx so we can get the right slice interval 
+                // for the last character
+                potentialHighIx = potentialHighIx + 1;
+                }
+            
+            let wrongNumberOfColumns = 
+                if (makeColumns) (elementIndex + 1 != numColumns) else false;
+            
+            if (
+                wrongNumberOfColumns or
+                insideQuotes or
+                isSeparatorButIsNotTrailing
+                ) {
+                isBadRow = true;
+                }
+            isBadRowLUT = isBadRowLUT :: isBadRow;
+            
+            /*
+            //Bad row debugger. `potentialHighIx` used to be called `j`          
+            if (isBadRow and makeColumns)
+                throw "Bad row! Why?\nwrongNumberOfColumns: " + String(wrongNumberOfColumns) + ", " +
+                    "insideQuotes: " + String(insideQuotes) + ", " +
+                    "isSeparatorButIsNotTrailing: " + String(isSeparatorButIsNotTrailing) + " | " +
+                    "isBadRow: " + String(isBadRow) + " | " +
+                    "at: " + String(i) + "," + String(j) + " | " +
+                    "startIx =" + String(startIx) + " end =" + String(endIx);
+            */
+
+            // if (isBadRow) {
+            //     badRows = badRows :: (
+            //         startIx: startRowIndex,
+            //         end: j,
+            //         wrongNumberOfColumns: wrongNumberOfColumns or isSeparatorButIsNotTrailing,
+            //         insideQuotes: insideQuotes
+            //         );
+            //     }
+            
+            
+            let itemRange = IndexRange(startIx: potentialLowIx, endIx: potentialHighIx);
+
+            itemRangesInRowMajorOrder = itemRangesInRowMajorOrder :: itemRange;
+            
+            potentialHighIx = potentialHighIx + 1;
+            potentialLowIx = potentialHighIx;
+            
+            // Reset the state machine for the next row...
+            if (char == carriageReturn) {
+                // Also accounts for Mac line endings.
+                isWindowsLineEnding = true;
+
+                if (nextChar == newline) {
+                    // This is the "real" Windows line-ending case. 
+                    // We should skip over the newline
+                    // so the next element doesn't contain it.
+                    potentialHighIx = potentialHighIx + 1;
+                    potentialLowIx = potentialLowIx + 1;
+                    }
+                }
+            else if (char == separator and not isEnd) {
+                // advance to the next newline, skipping over all other trailing data.
+                potentialHighIx = findNextNewline(data, potentialHighIx);
+
+                if (potentialHighIx is nothing)
+                    potentialHighIx = endIx;
+                
+                potentialLowIx = potentialHighIx;
+                previousChar = newline;
+                }
+            
+            isBadRow = false;
+            insideQuotes = false;
+            elementIndex = 0;
+            }
+        else if (
+            char == separator and 
+            not insideQuotes and 
+            (not makeColumns or (makeColumns and elementIndex < numColumns))
+            ) {
+            // Found a single element.
+
+            let itemRange = IndexRange(startIx: potentialLowIx, endIx: potentialHighIx);
+            itemRangesInRowMajorOrder = itemRangesInRowMajorOrder :: itemRange;
+            
+            elementIndex = elementIndex + 1;
+            potentialHighIx = potentialHighIx + 1;
+            potentialLowIx = potentialHighIx;
+            }
+        else if (char == quote) 
+            {
+            potentialHighIx = potentialHighIx + 1;
+            insideQuotes = not insideQuotes;
+            }
+        else {
+            potentialHighIx = potentialHighIx + 1;
+            }
+        
+        previousChar = char;
+        } // end loop      
+        
+        if (makeColumns) 
+            {
+            let columns = Vector.range(
+                numColumns, 
+                fun(index){
+                    makeColumn(data, index, itemRangesInRowMajorOrder, isBadRowLUT, 
+                               columnTypesVector)
+                    }
+                );
+            
+            if (not columnsAreEqualLength(columns))
+                throw Exception("Columns were not equal length!");
+            
+            return columns;
+            } 
+        else 
+            {
+            itemRangesInRowMajorOrder.apply({
+                let element = data[_.startIx, _.endIx];
+                let str = 
+                    match (element) with
+                        (filters.IsString(...)) { element }
+                        (filters.IsVector(...)) { element.dataAsString }
+                        (...) { 
+                            throw Exception("Got an unrecognized type when unpacking indices.")
+                            }
+                        ;
+
+                stripEnclosingQuotesAndWhitespace(str)
+                });
+
+        }
+    }
+(singleRow, separator:= comma) {
+    // This case is used to parse raw data as a single row. 
+    // It will ignore linebreaks.
+    // Can be used to grab the first row of a dataset, 
+    // for instance, given the single row
+    // is presliced at the first newline.
+    scanOverRange(IndexRange(startIx: 0, endIx: size(singleRow)), singleRow, 
+                  nothing, makeColumns: false, separator: separator)
+    };
+
+`hidden
+stripEnclosingQuotesAndWhitespace: fun(str) { 
+    str = str.strip();
+    while (str.startsWith('"') and str.endsWith('"')) 
+        str = str[1,-1]
+    str
+    };
+
+`hidden
+columnsAreEqualLength:
+fun(columns) {
+    if (size(columns) == 1)
+        return true;
+    
+    let columnSizes = columns.apply(size);
+    for i in sequence(1, size(columns)) {
+        if (columnSizes[0] != columnSizes[i])
+            return false;
+        }
+    
+    return true;
+    };
+
+`hidden
+makeColumn:
+fun(data, columnIndex, itemRangesInRowMajorOrder, isBadRowLUT, columnTypesVector) 
+    {
+    let type = columnTypesVector[columnIndex];
+    
+    let numColumns = size(columnTypesVector);
+    let numRows = size(itemRangesInRowMajorOrder) / numColumns;
+    
+    let column = [];
+    for row in sequence(0, numRows) {
+        let isBadRow = isBadRowLUT[row];
+        
+        if (not isBadRow) {
+            // Grab the characters out of the given range, then stringify.
+            let itemRange = itemRangesInRowMajorOrder[row * numColumns + columnIndex];
+            let str = data[itemRange.startIx, itemRange.endIx].dataAsString;
+            
+            str = stripEnclosingQuotesAndWhitespace(str)
+            
+            try {
+                match (type) with
+                    (String) {
+                        column = column :: str
+                        }
+                    (Float64) {
+                        if (isNaStr(str))
+                            column = column :: math.nan
+                        else
+                            column = column :: Float64(str)
+                        }
+                    (Float32) {
+                        if (isNaStr(str))
+                            column = column :: Float32(math.nan)
+                        else
+                            column = column :: Float32(str)
+                        }
+                    (Nothing) {
+                        column = column :: nothing;
+                        }
+                    (...) {
+                        column = column :: type(str)
+                        }
+                    ;
+                }
+            catch (e) {
+                throw Exception(
+                    ("Csv parser failed while processing the string s := \"%s\" \n" +
+                     "(shown here enclosed in quotes).\n" +
+                     "Column number %s converter, %s, threw an exception\n" +  
+                     "when called on `s`. `s` is given by `data[%s, %s]`,\n" +
+                     "where `data` refers to your data to be parsed.\n\n" +
+                     "Original exception (stringified):\n%s")
+                        .format(str, columnIndex, type, itemRange.startIx, itemRange.endIx, e)
+                    )
+                }
+            }
+        }
+    
+    return column
+    };
+
+`hidden
+isNaStr: fun(str) {
+    str = str.strip();
+    return size(str) == 0 or str == "na" or str == "NA";
+    };
+
+`hidden
+// Look forward to find newlines to give a clean split.
+// if no newline exists, return nothing
+findNextNewline:
+fun(data, index, useAsUpperRange:= false) {
+    let atStart = index == 0;
+    if (not useAsUpperRange and atStart)
+        return index;
+
+    // If we get a spot-on hit for the lower range, just return.
+    let characterBeforeIsANewline = 
+        data[index - 1] == newline or data[index - 1] == carriageReturn;
+    if (not useAsUpperRange and characterBeforeIsANewline) {
+        let isWindowsLineEnding = 
+            data[index - 1] == carriageReturn and data[index] == newline;
+        if (isWindowsLineEnding) {
+            return index + 1;
+            }
+        else {
+            return index;
+            }
+        }
+
+    while (index < size(data)) {
+        if (data[index] == carriageReturn) {
+            // Got an \r character.
+            //   hello\rworld for Mac
+            //   hello\r\nworld for Windows
+
+            if (useAsUpperRange) {
+                // Want the \r, so just break here.
+                break;
+                }
+            else {
+                // Want the 'w'.
+                // Is this a Windows or Mac line ending?
+                let isWindowsLineEnding = 
+                    index < size(data) and data[index + 1] == newline;
+                //let isMac = not isWindows;
+
+                if (isWindowsLineEnding) {
+                    index = index + 2
+                    }
+                else {
+                    index = index + 1
+                    }
+
+                break;
+                }
+            }
+
+        if (data[index] == newline) {
+            // Got the \n in 
+            //   hello\nworld for *nix
+            //   hello\r\nworld for Windows.
+            let isWindowsLineEnding = 
+                index > 0 and data[index - 1] == carriageReturn;
+
+            if (useAsUpperRange) {
+                if (isWindowsLineEnding) {
+                    index = index - 1   // want the \r
+                    }
+                // else, want the '\n'
+
+                break;
+                }
+            else {
+                index = index + 1;
+                break;
+                }
+            }
+
+        index = index + 1
+        }
+
+    if (index < 0)
+        return 0;
+
+    if (index >= size(data)) {
+        if (useAsUpperRange)
+            return size(data)
+        return nothing;
+        }
+
+    return index;
+    };
+
+getHeaders:
+#Markdown("""#### Usage
+
+    parsing.getHeaders(csv, separator = ',')
+
+#### Description
+
+Just attempt to get the headers out of a csv -- don't parse the 
+entire csv into a `DataFrame`.
+
+The `separator` field enables you to specify a single-character 
+string as the value separator. You can also give it an equivalent 
+ASCII character value as a UInt8.
+""")
+fun (dataset, separator = comma) {
+    let firstNonwhitespaceCharacterIx = 
+        getFirstNonwhitespaceCharacterOffset(dataset);
+
+    if (firstNonwhitespaceCharacterIx is nothing)
+        return nothing; // Dataset was empty;
+    
+    let ix = firstNonwhitespaceCharacterIx;
+    while (ix < size(dataset)) {
+        let byte = dataset[ix];
+        ix = ix + 1;
+        if (byte == newline or byte == carriageReturn) break;
+        }
+    
+    let firstRowBytes = dataset[firstNonwhitespaceCharacterIx, ix - 1];
+    
+    scanOverRange(firstRowBytes, separator: separator)
+    };
+
+`hidden
+// Get the index of the character that represents the beginning of 
+// the first row of data.
+// This will exclude the headers if there is a header row.
+getFirstDataRowOffset: fun(hasHeaders, data) {
+    if (hasHeaders)
+        getFirstDataRowOffsetWithHeaders(data)
+    else
+        getFirstNonwhitespaceCharacterOffset(data)
+    };
+
+`hidden
+getFirstDataRowOffsetWithHeaders:
+fun (dataset) {
+    let firstNonwhitespaceCharacter = 
+        getFirstNonwhitespaceCharacterOffset(dataset);
+    if (firstNonwhitespaceCharacter is nothing)
+        return nothing; // Dataset was empty;
+    
+    let ix = firstNonwhitespaceCharacter;
+    while (ix < size(dataset)) {
+        let byte = dataset[ix];
+        ix = ix + 1;
+        if (byte == newline) break;
+        if (byte == carriageReturn) {
+            if (ix < size(dataset) and dataset[ix] == newline) {
+                ix = ix + 1;
+                }
+            break;
+            }
+        }
+    return getFirstNonwhitespaceCharacterOffset(dataset, initialOffset: ix);
+    };
+
+`hidden
+getFirstNonwhitespaceCharacterOffset:
+fun (dataset, initialOffset := 0) { 
+    for ix in sequence(initialOffset, size(dataset)) {
+        let byte = dataset[ix]
+        if (byte not in (space, carriageReturn, newline))
+            return ix
+        }
+
+    return nothing;
+    };
+
+
+
+
+
+

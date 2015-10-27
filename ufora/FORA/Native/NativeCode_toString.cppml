@@ -1,0 +1,565 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "NativeCode.hppml"
+
+#include <vector>
+#include <sstream>
+#include <stdexcept>
+#include <algorithm>
+#include <boost/format.hpp>
+#include <boost/type_traits.hpp>
+#include "../../core/StringUtil.hpp"
+#include "../../core/debug/StackTrace.hpp"
+#include "../TypedFora/TypedFora.hppml"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include "../TypedFora/ABI/VectorRecord.hpp"
+#include "../TypedFora/ABI/VectorHandleCodegen.hppml"
+#include "../TypedFora/ABI/VectorRecordCodegen.hppml"
+#include "../Vector/MutableVectorRecord.hppml"
+
+using std::string;
+using std::ostringstream;
+using std::endl;
+using boost::format;
+using boost::str;
+
+using TypedFora::Abi::VectorRecord;
+using TypedFora::Abi::VectorHandle;
+
+namespace {
+	
+	std::string hardWrapString(const std::string& ugly, const unsigned int maxWidth) {
+		if (maxWidth == 0)
+			throw logic_error("hardWrapString: maxWidth must be nonzero.");
+		ostringstream s;
+		unsigned currentWidth = 0;
+		for (int i = 0; i < ugly.length(); ++i) {
+			if (ugly[i] == '\n') {
+				currentWidth = 0;
+			} else {
+				if (currentWidth >= maxWidth) {
+					s << endl;
+					currentWidth = 0;
+				}
+				++currentWidth;
+			}
+			s << ugly[i];
+		}
+		return s.str();
+	}
+	
+	//T must be a collection of prettyprintable things. F must take
+	//a stream and an element of s.
+	template<class T, class F>
+	void vectorDelimListToStream(	const T& ts,
+									CPPMLPrettyPrintStream s,
+									const string& delim,
+									const F& f
+									)
+		{
+		uint32_t ix = 0;
+		for (typename T::const_iterator i = ts.begin(); i != ts.end(); ++i)
+			if (i == ts.begin())
+				f(s,*i, ix++);
+				else
+				{
+				s << delim << " " << s.sep;
+				f(s,*i, ix++);
+				}
+		}
+
+	template<class T>
+	void vectorDelimListToStream(	const T& ts,
+									CPPMLPrettyPrintStream s,
+									const string& delim
+									)
+		{
+		for (typename T::const_iterator i = ts.begin(); i != ts.end(); ++i)
+			if (i == ts.begin())
+				s << *i;
+				else
+				s << delim << " " << s.sep << *i;
+		}
+	
+	template<class T>
+	void vectorDelimListToStreamWithNames(	
+									const T& ts,
+									const ImmutableTreeVector<Nullable<std::string> >& optNames,
+									CPPMLPrettyPrintStream s,
+									const string& delim
+									)
+		{
+		long nameIndex = 0;
+
+		for (typename T::const_iterator i = ts.begin(); i != ts.end(); ++i)
+			{
+			if (i != ts.begin())
+				s << delim << " ";
+
+			if (nameIndex < optNames.size() && optNames[nameIndex])
+				s << *optNames[nameIndex] << ": ";
+
+			s << *i;
+			
+			nameIndex++;
+			}
+		}
+	
+	void varToCDeclString(CPPMLPrettyPrintStream s,
+						  const NativeVariable& v,
+						  uint32_t ix)
+		{
+		s << v.type() << " " << v;
+		}
+	
+	void varToStringWithType(CPPMLPrettyPrintStream s,
+							const NativeVariable& v,
+							uint32_t ix)
+		{
+		s << v << ": " << v.type();
+		}
+	
+	void argVectorToStream(const ImmutableTreeVector<NativeExpression>& args,
+	                       CPPMLPrettyPrintStream& s)
+		{
+		s << "(";
+		vectorDelimListToStream(args, s.group(), ",");
+		s << ")";
+		}
+	
+	void streamContinuation(CPPMLPrettyPrintStream s, const NativeContinuation& c, uint32_t ix)
+		{
+		s << "for return[" << ix << "]: " << c;
+		}
+	
+	void returnHandlersToStream(const ImmutableTreeVector<NativeContinuation>& hs,
+	                            CPPMLPrettyPrintStream s)
+		{
+		s << "[[";
+			{
+			CPPMLPrettyPrintStream s2 = s.group();
+			s2 << "\n";
+			vectorDelimListToStream(hs, s2, "\n", streamContinuation);
+			s2 << "\n";
+			}
+		s << "]]";
+		}
+	
+	void blockComponentToStream(const NativeExpression& e,
+	                            CPPMLPrettyPrintStream s,
+	                            bool isStart);
+	
+	void processLetGroup(const NativeExpression& e,
+	                     CPPMLPrettyPrintStream st,
+	                     bool isStart)
+		{
+		CPPMLPrettyPrintStream s = st;
+		
+		NativeExpression current = e; 
+		while (true)
+			{
+			@match NativeExpression(current)
+				-|	Let(var, val, in) ->> {
+						s << s.sep << "let " << var.type() << " ";
+						s << var << " := " << " ";
+						s << val << "\n";
+						
+						current = in;
+					}
+				-|	_ ->> { break; }
+			}
+		blockComponentToStream(current, s, isStart);
+		}
+	
+	void blockComponentToStream(const NativeExpression& e,
+	                            CPPMLPrettyPrintStream s,
+	                            bool isStart)
+		{
+		@match NativeExpression(e)
+			-|	DiscardFirst(e1, e2) ->> {
+					s << "{";
+					blockComponentToStream(e1, s, isStart);
+					blockComponentToStream(e2, s, false);
+					s << "}";
+				}
+			-|	Let(var, val, in) ->> {
+					processLetGroup(e, s, isStart);
+				}
+			-|	_ ->> { s << endl << e << "";; }
+			;
+	}
+	void exprToStreamAsBlock(const NativeExpression& e, CPPMLPrettyPrintStream& s)
+		{
+		s << "{";
+		
+			{
+			CPPMLPrettyPrintStream s2 = s.indented();
+			s2 << "\n";
+			blockComponentToStream(e, s2, true);
+			s << "\n";
+			}
+		
+		s << "}";
+		s << "\n";
+		}
+	void exprToStreamAsBlockOrIndented(const NativeExpression& e,
+	                                   CPPMLPrettyPrintStream& s)
+		{
+		@match NativeExpression(e)
+			-|	DiscardFirst()	->> { exprToStreamAsBlock(e, s); }
+			-|	Let()			->> { exprToStreamAsBlock(e, s); }
+			-|	_				->> { s.indented() << "\n" << e; }
+			;
+		}
+	void exprToStreamOnNewLineIfLong(const NativeExpression& e,
+	                                 CPPMLPrettyPrintStream& s) {
+		@match NativeExpression(e)
+			-|	DiscardFirst()	->> { s << " "; exprToStreamAsBlock(e, s); }
+			-|	Let()			->> { s << " "; exprToStreamAsBlock(e, s); }
+			-|	_ ->> {
+					s << " ";
+					s.group() << s.sep << e;
+				}
+			;
+	}
+	void exprToStreamInBlockIfMultilineOnNewLineIfLong(const NativeExpression& e,
+	                                                   CPPMLPrettyPrintStream& s,
+	                                                   size_t lenThresh = 40) {
+		@match NativeExpression(e)
+			-|	DiscardFirst()	->> { s << " "; exprToStreamAsBlock(e, s); }
+			-|	Let()			->> { s << " "; exprToStreamAsBlock(e, s); }
+			-|	_ ->> {
+					s.group() << "{" << s.sep << e << s.sep << "}";
+				}
+			;
+	}
+} //end anonymous namespace
+
+
+void NativeExpressionTag::toString(CPPMLPrettyPrintStream s) const
+	{
+	@match NativeExpressionTag(*this)
+		-|	HomogenousVectorLookup(v, ix, t) ->> { 
+				s << "HomogenousVectorLookup(" << prettyPrintString(v) 
+						<< ", " << prettyPrintString(ix) << ", " 
+						<< prettyPrintString(t) 
+						<< ")"; 
+			}
+		-|	HomogenousVectorStashCheck(vec, stash, index) ->> {
+				s << "HomogenousVectorStashCheck(vec=" 
+						<< prettyPrintString(vec)
+						<< ",stash="
+						<< prettyPrintString(stash) 
+						<< ",ix=" << prettyPrintString(index)
+						<< ")"; 
+			}
+		-|	TransferToInterpreter() ->> {
+				s << "TransferToInterpreter()";
+			}
+		-|	OnHomogenousVectorLookupBoundsCheckFailure() ->> { 
+				s << "<OnHomogenousVectorLookupBoundsCheckFailure>"; 
+			}
+		-|	KickToInterpreterCheck() ->> { s << "<KickCheck> "; }
+		-|	Comment(c)        ->> { s << s.sep << "/*" << c << "*/" << s.sep; }
+		-|	Interrupt()        ->> { s << "<InterruptHandler>"; }
+		-|	CallSiteTag(_, id) ->> { s << str(format("<CallSite #%d>") % id); }
+		-|	CallSiteInstrumentation(_, id) ->> {
+				s << str(format("<Instrumentation for #%d>") % id);
+			}
+		-|	Refcount(expr, incr) ->> {
+				s << str(format("<Refcount(%s) %s %d>")
+					% prettyPrintString(expr)
+					% (incr >= 0 ? "+=" : "-=")
+					% (incr >= 0 ? incr : -incr)
+					);
+			}
+		;
+	}
+
+void NativeType::toString(CPPMLPrettyPrintStream s) const
+	{
+	static NativeType implValType = TypedFora::Abi::nativeTypeForImplVal();
+	static NativeType alternativeType = cppmlAlternative();
+	static NativeType vectorDataType = NativeTypeFor<TypedFora::Abi::VectorRecord>::get();
+	static NativeType mutableVectorDataType = NativeTypeFor<MutableVectorRecord>::get();
+	static NativeType vectorV2Type = NativeTypeFor<TypedFora::Abi::VectorHandle>::get();
+	
+	if (*this == implValType)
+		s << "ImplVal";
+		else
+	if (*this == vectorDataType)
+		s << "Vector";
+		else
+	if (*this == mutableVectorDataType)
+		s << "MutableVector";
+		else
+	if (*this == vectorV2Type)
+		s << "VectorHandle";
+		else
+	if (*this == alternativeType)
+		s << "Alt";
+		else
+	if (isRuntimeCallbackType(*this))
+		s << "Callbacks";
+	else
+		@match NativeType(*this)
+		-|	Nothing() ->> { s << "_"; }
+		-|	Integer(bits, isSigned) ->> {
+				if (isSigned)
+					{
+					s << "Int" << bits;
+					}
+				else
+					{
+					if (bits == 1)
+						s << "Bool";
+						else
+						s << "UInt" << bits;
+					}
+				}
+		-|	Float(bits) ->> { s << "Float" << bits; }
+		-|	Pointer(elemT) ->> { s << "*" << elemT; }
+		-|	Array(elemT, len) ->> {
+				s << "Array[" << len << " x " << elemT << "]";
+			}
+		-|	Continuations(inT) ->> {
+				s << "Continuations[" << inT << "]";
+			}
+		-|	Composite(elemTs, optionalNames) ->> {
+				s << "(";
+				vectorDelimListToStreamWithNames(elemTs, optionalNames, s.group(), ",");
+				s << ")";
+			}
+		;
+	}
+
+
+void NativeExpression::toString(CPPMLPrettyPrintStream s) const
+	{
+	@match NativeExpression(*this)
+		-|	Tagged(e, tag) ->> {
+				tag.toString(s);
+				@match NativeExpressionTag(tag)
+					-|	Interrupt() ->> {}
+					-|	HomogenousVectorLookup() ->> {}
+					-|  HomogenousVectorStashCheck() ->> {}
+					-|	KickToInterpreterCheck() ->> {}
+					-|	TransferToInterpreter() ->> {}
+					-|	Refcount() ->> {}
+					-|	CallSiteInstrumentation() ->> {}
+					-|	_ ->> {
+						//If on the same line, adds a space.
+						exprToStreamInBlockIfMultilineOnNewLineIfLong(e, s);
+						}
+					;
+			}
+		-|	Constant(c)			->> { s << c; }
+		-|	Variable(v)			->> { s << v; }
+		-|	CreateComposite(es) ->> {
+				s << "(";
+				vectorDelimListToStream(es, s.group(), ",");
+				s << ")";
+				}
+		-|	Zero(t)				->> { s << "zero[" << t << "]"; }
+		-|	Alloc(t, count, forceInitialize) ->> {
+				s << "allocate[" << t << "]("
+				  << count;
+				 if (forceInitialize)
+				 	s << ", intialized to zero";
+				 s << ")";
+				}
+		-|	DiscardFirst()	->> { exprToStreamAsBlock(*this, s); }
+		-|	Let()			->> { exprToStreamAsBlock(*this, s); }
+		-|	Load(v, isVol)	->> { s << (isVol ? "*!" : "*") << v; }
+		-|	Store(ptr, val)	->> { s << "*" << ptr << " = " << val; }
+		-|	BinaryOp(op, l, r) ->>
+				{
+				s << op << "(";
+					{
+					CPPMLPrettyPrintStream s2 = s.group();
+					s2 << l << ", " << s2.sep << r;
+					}
+				s << ")";
+				}
+		-|	UnaryOp(op, e) ->> { s << op << "(" << e << ")"; }
+		-|	Cast(t, e, isBit) ->> {
+				s << (isBit ? "bitcast[" : "cast[") << t << "]("
+				  << e << ")";
+			}
+		-|	ElementAddress(selectors, source) ->> {
+				s << "get-elem-addr [";
+				vectorDelimListToStream(selectors, s.group(), ",");
+				s << "]" << source;
+			}
+		-|	ValueExtract(selectors, source) ->> {
+				s << "val-extract [";
+				vectorDelimListToStream(selectors, s.group(), ",");
+				s << "]" << source;
+			}
+		-|	If(c, t, f, frac) ->> {
+				s << "if"; //exprToStreamOnNewlineIfLong adds a space if needed.
+				exprToStreamOnNewLineIfLong(c, s);
+				s << endl;
+				s << str(format("then <%g%%> ") % (frac * 100));
+				exprToStreamAsBlockOrIndented(t, s);
+				s << endl << "else ";
+				exprToStreamAsBlockOrIndented(f, s);
+			}
+		-|	Selector(c, t, f) ->> {
+				s << "if-select "; 
+				exprToStreamOnNewLineIfLong(c, s);
+				s << endl;
+				s << "then ";
+				exprToStreamAsBlockOrIndented(t, s);
+				s << endl << "else ";
+				exprToStreamAsBlockOrIndented(f, s);
+			}
+		-|	Continuations(conts, metas) ->> {
+				s << "continuations (meta=" << metas << ")";
+				//parenVectorToStream(conts, s);
+				returnHandlersToStream(conts, s);
+			}
+		-|	CallLibraryFunction(ByPointer(funPtr), retT, args) ->> {
+				s << "lib-call ";
+				s << Ufora::debug::StackTrace::functionAddressToString((void*)funPtr) << " ";
+				argVectorToStream(args, s);
+				s << ": " << retT;
+			}
+		-|	CallLibraryFunction(name, retT, args) ->> {
+				s << "lib-call ";
+				s << prettyPrintString(name) << " ";
+				argVectorToStream(args, s);
+				s << ": " << retT;
+			}
+		-|	Call(target, retHandlers, args, metas) ->> {
+				s << "call (metas=" << metas << ")";
+				argVectorToStream(args, s);
+				s << " " << target << endl;
+				s << "with-return-continuations ";
+				returnHandlersToStream(retHandlers, s);
+			}
+		-|	Jump(loc, args) ->> {
+				s << "jump " << loc;
+				argVectorToStream(args, s);
+			}
+		-|	FollowContinuation(arg, cont, index) ->> {
+				s << "follow-continuation (" << cont
+				  << "[" << index << "]) with " << arg;
+			}
+		-|	Return(n, v)	->> { s << "return[" << n << "] " << v; }
+		-|	Halt(reason)	->> { s << "halt " << reason; }
+		;
+	}
+
+void NativeCallTarget::toString(CPPMLPrettyPrintStream s) const
+	{
+	@match NativeCallTarget(*this)
+		-|	Inline(cfg, blockId) ->> {
+				s << "inline-target: " << blockId << " of" << endl;
+				s.indented() << cfg;
+			}
+		-|	External(name, blockId) ->> {
+				s << "external-target: " << blockId << " of" << endl;
+				s.indented() << hardWrapString(name, 80);
+			}
+		-|	Pointer(ptr, isInternal) ->> {
+				if (isInternal)
+					s << "internal-";
+				else
+					s << "external-";
+				s << "pointer-target: " << ptr;
+			}
+		;
+	}
+
+void NativeContinuation::toString(CPPMLPrettyPrintStream s) const
+	{
+	s << str(format("<%g> ") % relativeFrequency());
+	s << "(";
+	varToStringWithType(s, var(), 0);
+	s << ") =>";
+	//Adds a space before the expr if on the same line.
+	exprToStreamInBlockIfMultilineOnNewLineIfLong(expression(), s);
+	}
+
+void NativeBlock::toString(CPPMLPrettyPrintStream s) const
+	{
+	s << str(format("<%g> ") % relativeFrequency());
+	s << "(";
+	vectorDelimListToStream(args(), s.group(), ",");
+	s << ")";
+	s << " =>";
+	//Adds a space before the expr if on the same line.
+	exprToStreamInBlockIfMultilineOnNewLineIfLong(expression(), s);
+	}
+
+void NativeCFG::toString(CPPMLPrettyPrintStream s) const
+	{
+	s << "NativeCFG: => ";
+		vectorDelimListToStream(returnTypes(), s.group(), " /");
+	s << " {" << endl;
+	
+		{
+		CPPMLPrettyPrintStream s2 = s.indented();
+		typedef ImmutableTreeMap<NativeBlockID, NativeBlock>::const_iterator Iter;
+		for (Iter i = blocks().begin(); i != blocks().end(); ++i)
+			{
+			if (i != blocks().begin())
+				s2 << endl;
+			s2 << i->first << " ";
+			s2 << str(format("<%g> ") % i->second.relativeFrequency());
+			s2 << "(";
+			vectorDelimListToStream(
+				i->second.args(),
+				s2.group(),
+				",",
+				varToStringWithType
+				);
+			s2 << ")";
+			s2 << " :=";
+			//Adds a space before the expr if on the same line.
+			exprToStreamInBlockIfMultilineOnNewLineIfLong(
+				i->second.expression(), s2);
+			}
+		}
+	
+	s << "\n}";
+	}
+
+void NativeContinuationMetadata::toString(CPPMLPrettyPrintStream s) const
+	{
+	s << "(" << node() << " with " << vars().size() << " vars)";
+	}
+
+void NativeContinuationMetadataInstruction::toString(CPPMLPrettyPrintStream s) const
+	{
+	@match NativeContinuationMetadataInstruction(*this)
+		-| TypedForaInstruction(tfMetadata) ->> {
+			@match TypedFora::MetadataInstruction(*tfMetadata)
+				-| Node((graph, label)) ->> { 
+					s << "Node(" << graph.graphName() << ": " << label << ")";
+					}
+				-| NodeWithResult((graph, label), index) ->> { 
+					s << "NodeWithResult(" << graph.graphName() << ": " << label << ". index=" 
+							<< index << ")";
+					}
+			}
+		-|	LocalVariables() ->> {
+			s << "LocalVariables()";
+			}
+	}
+

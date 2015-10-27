@@ -1,0 +1,407 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "MutableVectorAxioms.hppml"
+#include "Axioms.hppml"
+#include "Axiom.hppml"
+#include "AxiomGroup.hppml"
+#include "LibcallAxiomGroup.hppml"
+#include "AxiomMetadataUtil.hppml"
+#include "../Runtime.hppml"
+#include "../Core/Integers.hppml"
+#include "../Vector/MutableVectorRecord.hppml"
+#include "../VectorDataManager/VectorDataManager.hppml"
+#include "../Native/NativeCode.hppml"
+#include "../Native/NativeExpressionBuilder.hppml"
+#include "../TypedFora/ABI/DestructorsAndConstructors.hppml"
+#include "../TypedFora/ABI/MutableVectorHandleCodegen.hpp"
+#include "../Primitives/String.hppml"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include "../Core/ExecutionContext.hppml"
+#include "../../core/Logging.hpp"
+#include "../../core/SymbolExport.hpp"
+#include "../../core/StringUtil.hpp"
+#include "MutableVector.GetItem.hppml"
+#include "MutableVector.SetItem.hppml"
+
+using Fora::Interpreter::ExecutionContext;
+using namespace Fora;
+using TypedFora::Abi::MutableVectorHandle;
+
+
+NativeType	NativeTypeForImpl<MutableVectorRecord>::get()
+	{
+	return
+		NativeType::Composite("vectorHandle", NativeTypeFor<MutableVectorHandle>::get().ptr()) 
+		;
+	}
+
+NativeExpression	nativeDestructorExprForMutableVector(const NativeVariable& x)
+	{
+	return TypedFora::Abi::MutableVectorHandleCodegen::decrementRefcountExpr(x.expr()["vectorHandle"]);
+	}
+
+NativeExpression nativeIncrementerExprForMutableVectorWithTag(const NativeVariable& x)
+	{
+	return
+		nativeIncrementerExprForMutableVector(x)
+			.taggedWith(
+				NativeExpressionTag::Refcount(
+					x.expr(),
+					1,
+					nativeDestructorExprForMutableVector(x)
+					)
+				) >>
+		x.expr();
+	}
+
+NativeExpression	nativeIncrementerExprForMutableVector(const NativeVariable& x)
+	{
+	return TypedFora::Abi::MutableVectorHandleCodegen::incrementRefcountExpr(x.expr()["vectorHandle"]);
+	}
+
+NativeExpression	destroyMutableVectorExpression(const NativeExpression& inExpr)
+	{
+	NativeExpressionBuilder builder;
+
+	NativeVariable vectorVar = builder.addAndGetVar(inExpr);
+
+	return builder(
+		nativeDestructorExprForMutableVector(vectorVar).taggedWith(
+			NativeExpressionTag::Refcount(
+				vectorVar.expr(),
+				-1,
+				nativeIncrementerExprForMutableVector(vectorVar)
+				)
+			)
+		);
+	}
+
+NativeExpression	nativeDestructorExprForMutableVectorWithTag(const NativeVariable& vectorVar)
+	{
+	return
+		nativeDestructorExprForMutableVector(vectorVar).taggedWith(
+			NativeExpressionTag::Refcount(
+				vectorVar.expr(),
+				-1,
+				nativeIncrementerExprForMutableVector(vectorVar)
+				)
+			);
+	}
+
+
+
+extern "C" {
+
+	BSA_DLLEXPORT
+	ReturnValue<JudgmentOnValue> FORA_clib_MutableVectorElementType(
+			const MutableVectorRecord& vec
+			)
+		{
+		return slot0(vec->elementJOV());
+		}
+
+	BSA_DLLEXPORT
+	ReturnValue<JudgmentOnValue> FORA_clib_createMutableVectorJOV(
+			const JudgmentOnValue& jovOfElements
+			)
+		{
+		return slot0(jovMutableVector(jovOfElements));
+		}
+
+	BSA_DLLEXPORT
+	ReturnValue<MutableVectorRecord, String> FORA_clib_createEmptyMutableVector(
+											const JudgmentOnValue& jovOfNewMutableVector
+											)
+		{
+		JOV jovOfElements;
+
+		@match JOV(jovOfNewMutableVector)
+			-| MutableVector((Known(k))) ->> { 
+				jovOfElements = k; 
+				}
+			-| MutableVector((Unknown(k))) ->> { 
+				jovOfElements = k; 
+				}
+			-| _ ->> { 
+				lassert_dump(false, "Invalid JOV: " << prettyPrintString(jovOfNewMutableVector)); 
+				}
+				
+		Nullable<bool> jovOfElementsIsCst = jovOfElements.isCST();
+		
+		if (jovOfElementsIsCst and !*jovOfElementsIsCst)
+			{
+			return slot1(
+				String(
+					"Cannot create a MutableVector with element judgment " +
+					prettyPrintString(jovOfElements) + " since it is not CST.",
+					ExecutionContext::currentExecutionContext()->getMemoryPool()
+					)
+				);
+			}
+
+		return slot0(
+			MutableVectorRecord::allocateNewMutableVectorRecord(
+				jovOfElements,
+				Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+				)
+			);
+		}
+
+	BSA_DLLEXPORT
+	ReturnValue<Nothing, String> FORA_clib_resizeMutableVector(
+											const MutableVectorRecord &vec,
+											uint64_t inNewSize,
+											const ImplValContainer& inDefaultValue
+											)
+		{
+		JOV jovOfElements = vec->elementJOV();
+
+		if (!jovOfElements.covers(inDefaultValue))
+			{
+			return slot1(
+				String(
+					"Invalid default value: " + prettyPrintString(inDefaultValue) +
+					" is not covered by " + prettyPrintString(jovOfElements), 				
+					ExecutionContext::currentExecutionContext()->getMemoryPool()
+					)
+				);
+			}
+
+		if (!inDefaultValue.isCST())
+			{
+			return slot1(
+				String(
+					"Invalid default value: " + inDefaultValue.toString() + " is not CST",
+					ExecutionContext::currentExecutionContext()->getMemoryPool()
+					)
+				);
+			}
+			
+		vec->resize(
+		 	inNewSize,
+		 	inDefaultValue
+		 	);
+
+		return slot0(Nothing());
+		}
+
+	BSA_DLLEXPORT
+	ReturnValue<MutableVectorRecord, String> FORA_clib_createMutableVector(
+											const JudgmentOnValue& jovOfNewMutableVector,
+											uint64_t elementCount,
+											const ImplValContainer& defaultValue
+											)
+		{
+		JOV jovOfElements;
+
+		@match JOV(jovOfNewMutableVector)
+			-| MutableVector((Known(k))) ->> { 
+				jovOfElements = k; 
+				}
+			-| MutableVector((Unknown(k))) ->> { 
+				jovOfElements = k; 
+				}
+			-| _ ->> { 
+				lassert_dump(false, "Invalid JOV: " << prettyPrintString(jovOfNewMutableVector)); 
+				}
+
+		Nullable<bool> jovOfElementsIsCst = jovOfElements.isCST();
+		
+		if (jovOfElementsIsCst and !*jovOfElementsIsCst)
+			{
+			return slot1(
+				String(
+					"Cannot create a MutableVector with element judgment " +
+					prettyPrintString(jovOfElements) + " since it is not CST.",
+					ExecutionContext::currentExecutionContext()->getMemoryPool()
+					)
+				);
+			}
+				
+		if (!jovOfElements.covers(defaultValue))
+			{
+			return slot1(
+				String(
+					"Invalid default value: " + prettyPrintString(defaultValue) +
+					" is not covered by " + prettyPrintString(jovOfElements),
+					ExecutionContext::currentExecutionContext()->getMemoryPool()
+					)
+				);
+			}
+
+		if (!defaultValue.isCST())
+			{
+			return slot1(
+				String(
+					"Invalid default value: " + defaultValue.toString() + " is not CST",
+					ExecutionContext::currentExecutionContext()->getMemoryPool()
+					)
+				);
+			}
+			
+		MutableVectorRecord vec;
+
+		vec = MutableVectorRecord::allocateNewMutableVectorRecord(
+			jovOfElements,
+			ExecutionContext::currentExecutionContext()->getMemoryPool()
+			);
+
+		vec->resize(
+			elementCount,
+			defaultValue
+			);
+
+		return slot0(vec);
+		}
+};
+
+
+Nullable<AxiomJOA> createMutableVectorSignatureFunction(const JOVT& inSignature)
+	{
+	@match JOV(inSignature[2])
+		-| JOVAsValue(Known(jov)) ->> {
+			return null() << AxiomJOA::Native(
+				JudgmentOnAction::Value(jov) | JudgmentOnAction::Throws(JOV::OfType(Type::String()))
+				);
+			}
+		-| JOVAsValue(Unknown(jov)) ->> {
+			return null() << AxiomJOA::Native(
+				JudgmentOnAction::Value(jov) | JudgmentOnAction::Throws(JOV::OfType(Type::String()))
+				);
+			}
+		-| _ ->> {
+			lassert_dump(false, "Unknown JOV: " << prettyPrintString(inSignature[2]));
+			}
+	}
+
+class MutableVectorAxioms {
+public:
+	MutableVectorAxioms()
+		{
+		AxiomGroups("MutableVector") += new MutableVectorGetItem();
+		AxiomGroups("MutableVector") += new MutableVectorSetItem();
+
+            {
+			auto axiomPtr = LibcallAxiomGroup::create(
+				JOVT() +
+                jovAnyMutableVector() +
+                    "Member" +
+                    "elementType",
+				ReturnSlots() + jovJOVAsValue(),
+				&FORA_clib_MutableVectorElementType,
+				ImmutableTreeVector<uword_t>() + 0
+                );				
+
+            axiomPtr->setMetadata(
+                AxiomMetadataUtil::createMarkdownAlternative(
+                        "#### Usage\n\n"
+                        "    mutableVector.elementType\n\n"
+                        "#### Description\n\n"
+                        "Return the elementType of a MutableVector\n\n"
+                        "#### Examples\n\n"
+                        "    MutableVector(Int64).create(10, 0).elementType\n"
+                        "    MutableVector.create(10, 0).elementType\n\n"
+                        )
+                    );                    
+
+            AxiomGroups("MutableVector") += axiomPtr;
+            }
+
+		AxiomGroups("MutableVector") +=
+			LibcallAxiomGroup::create(
+				JOVT() + 
+					"CreateMutableVector" + 
+					"Call" + 
+					JudgmentOnValue::JOVAsValue(
+						JOJOV::Unknown(jovAnyMutableVector())
+						) + 
+					JOV::OfType(Type::Integer(64, false)) + 
+					JOV()
+					,
+				ReturnSlots() +
+					ReturnSlot::Normal(jovAnyMutableVector()) +
+					ReturnSlot::Exception(JOV::OfType(Type::String())),
+				&FORA_clib_createMutableVector,
+				ImmutableTreeVector<uword_t>() + 2 + 3 + 4,
+				null(),
+				null(),
+				createMutableVectorSignatureFunction
+				);
+
+		AxiomGroups("MutableVector") +=
+			LibcallAxiomGroup::create(
+				JOVT() + 
+					"CreateMutableVector" + 
+					"Call" + 
+					JudgmentOnValue::JOVAsValue(
+						JOJOV::Unknown(jovAnyMutableVector())
+						)
+					,
+				ReturnSlots() + 
+					ReturnSlot::Normal(jovAnyMutableVector()) +
+					ReturnSlot::Exception(JOV::OfType(Type::String())),
+				&FORA_clib_createEmptyMutableVector,
+				ImmutableTreeVector<uword_t>() + 2,
+				null(),
+				null(),
+				createMutableVectorSignatureFunction
+				);
+
+		AxiomGroups("MutableVector") +=
+			LibcallAxiomGroup::create(
+				JOVT() + 
+					JOV::Constant(CSTValue(jovAnyMutableVector())) + 
+					"Call" + 
+					jovJOVAsValue()
+					,
+				ReturnSlots() + jovJOVAsValue(),
+				&FORA_clib_createMutableVectorJOV,
+				ImmutableTreeVector<uword_t>() + 2
+				);
+
+		AxiomGroups("MutableVector") +=
+			LibcallAxiomGroup::create(
+				JOVT() + 
+					jovAnyMutableVector() + 
+					"Resize" + 
+					JOV::OfType(Type::Integer(64, false)) + 
+					JOV()
+					,
+				ReturnSlots() + 
+					ReturnSlot::Normal(JOV::Constant(CSTValue())) +
+					ReturnSlot::Exception(JOV::OfType(Type::String())),
+				&FORA_clib_resizeMutableVector,
+				ImmutableTreeVector<uword_t>() + 0 + 2 + 3
+				);
+
+			{
+			NativeAxiomVars vars(JOVT() + "size" + "Call" + jovAnyMutableVector());
+
+			AxiomGroups("MutableVector") +=
+				AxiomGroup::simple(
+					vars,
+					JOV::OfType(Type::Integer(64, true)),
+					TypedFora::Abi::MutableVectorHandleCodegen::sizeExpression(
+						vars[2]["vectorHandle"]
+						).cast(NativeType::int64(),false),
+					false
+					);
+			}
+		}
+};
+
+MutableVectorAxioms mutableVectorAxioms;
+

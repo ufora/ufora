@@ -1,0 +1,603 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "FunctionUtil.hppml"
+#include "Function.hppml"
+#include "StatementTerm.hppml"
+#include "FunctionBoundAboveVisitor.hppml"
+#include "../../core/cppml/CPPMLVisit.hppml"
+#include <boost/lexical_cast.hpp>
+#include "../../core/cppml/CPPMLTransform.hppml"
+
+namespace {
+
+@type AssignedVariableVisitor = ImmutableTreeSet<Symbol> assigned {
+public:
+		template<class T>
+		void	processDown(const T& e, bool& outContinue,
+							const ImmutableTreeSet<Symbol>& boundAbove) 
+			{
+			}
+		template<class T>
+		void	processUp(const T& e,
+							const ImmutableTreeSet<Symbol>& boundAbove) 
+			{
+			}
+
+		template<class T>
+		void visitRecursively(const T& in)
+			{
+			AssignedVariableVisitor subVis;
+			
+			FunctionBoundAboveVisitor<AssignedVariableVisitor> vis(
+				emptyTreeSet(),
+				&subVis
+				);
+			
+			visit(in, vis);
+			
+			assigned() = assigned() + subVis.assigned();
+			}
+
+		void processDown(Expression e, bool& outContinue,
+							const ImmutableTreeSet<Symbol>& boundAbove)
+			{
+			@match Expression(e)
+				-|	Assign(pat, expr) ->> {
+						assigned() = assigned() + (
+							pat.boundVariables() - boundAbove
+							);
+						}
+				-|	Pull(symb, _) ->> {
+						if (!boundAbove.contains(symb))
+							assigned() = assigned() + symb;
+						}
+				-|	CreateFunction(name, predicate, metadata) ->> {
+						//we don't want to visit the function predicate, since assignments
+						//can't occur from there.
+						//we do want to visit the metadata, since that's evaluated
+						//in this scope.
+						outContinue = false;
+						visitRecursively(metadata);
+						}
+
+				-|	CreateLambda(name, definition) ->> {
+						//we don't want to visit the object definition
+						outContinue = false;
+						}
+
+				-|	CreateObject(name, definition, metadata) ->> {
+						//we don't want to visit the object definition, but
+						//we do want to visit the metadata, since that's evaluated
+						//in this scope.
+						outContinue = false;
+						visitRecursively(metadata);
+						}
+
+				-|	CreateClass(name, definition, metadata) ->> {
+						//we don't want to visit the object definition, but
+						//we do want to visit the metadata, since that's evaluated
+						//in this scope.
+						outContinue = false;
+						visitRecursively(metadata);
+						}
+				-|	_ ->> { }
+				;
+			}
+};
+
+}
+
+ImmutableTreeSet<Symbol>	computeAssignedVariables(const Expression& inExpr)
+	{
+	AssignedVariableVisitor assigned;
+	
+	FunctionBoundAboveVisitor<AssignedVariableVisitor> vis(
+		emptyTreeSet(),
+		&assigned
+		);
+	
+	visit(inExpr, vis);
+	
+	return assigned.assigned();
+	}
+
+ImmutableTreeSet<Symbol>	computeAssignedVariables(const ListComprehensionChain& inChain)
+	{
+	AssignedVariableVisitor assigned;
+	
+	FunctionBoundAboveVisitor<AssignedVariableVisitor> vis(
+		emptyTreeSet(),
+		&assigned
+		);
+	
+	visit(inChain, vis);
+	
+	return assigned.assigned();
+	}
+
+namespace {
+
+@type VariablesReadDirectlyVisitor = ImmutableTreeSet<Symbol> read {
+public:
+		template<class T>
+		void	processDown(const T& e, bool& outContinue,
+							const ImmutableTreeSet<Symbol>& boundAbove) 
+			{
+			}
+		template<class T>
+		void	processUp(const T& e,
+							const ImmutableTreeSet<Symbol>& boundAbove) 
+			{
+			}
+
+		template<class T>
+		void visitRecursively(const T& in)
+			{
+			VariablesReadDirectlyVisitor subVis;
+			
+			FunctionBoundAboveVisitor<VariablesReadDirectlyVisitor> vis(
+				emptyTreeSet(),
+				&subVis
+				);
+			
+			visit(in, vis);
+			
+			read() = read() + subVis.read();
+			}
+
+		void processDown(Expression e, bool& outContinue,
+							const ImmutableTreeSet<Symbol>& boundAbove)
+			{
+			@match Expression(e)
+				-|	Variable(v) ->> {
+						if (!boundAbove.contains(v))
+							read() = read() + v;
+						}
+				-|	CreateFunction(name, predicate, metadata) ->> {
+						//we don't want to visit the function predicate, since assignments
+						//can't occur from there.
+						//we do want to visit the metadata, since that's evaluated
+						//in this scope.
+						outContinue = false;
+						visitRecursively(metadata);
+						}
+
+				-|	CreateLambda(name, predicate) ->> {
+						//we don't want to visit the function predicate, since assignments
+						//can't occur from there.
+						//we do want to visit the metadata, since that's evaluated
+						//in this scope.
+						outContinue = false;
+						}
+
+				-|	CreateObject(name, definition, metadata) ->> {
+						//we don't want to visit the object definition, but
+						//we do want to visit the metadata, since that's evaluated
+						//in this scope.
+						outContinue = false;
+						visitRecursively(metadata); //Were we going to get rid of this?
+						}
+
+				-|	CreateClass(name, definition, metadata) ->> {
+						//we don't want to visit the object definition, but
+						//we do want to visit the metadata, since that's evaluated
+						//in this scope.
+						outContinue = false;
+						visitRecursively(metadata); //Were we going to get rid of this?
+						}
+				-|	_ ->> { }
+				;
+			}
+};
+
+}
+
+ImmutableTreeSet<Symbol>	computeVariablesReadDirectly(const Expression& inExpr)
+	{
+	VariablesReadDirectlyVisitor readVars;
+	
+	FunctionBoundAboveVisitor<VariablesReadDirectlyVisitor> vis(
+		emptyTreeSet(),
+		&readVars
+		);
+	
+	visit(inExpr, vis);
+	
+	return readVars.read();
+	}
+
+namespace {
+
+@type FreeVariableLocationVisitor =
+			Symbol sym,
+			ImmutableTreeSet<CodeLocation> ranges,
+			Nullable<CodeLocation> curRange {
+public:
+		template<class T>
+		void	processDown(const T& e, bool& outContinue,
+							const ImmutableTreeSet<Symbol>& boundAbove) 
+			{
+			}
+		template<class T>
+		void	processUp(const T& e,
+							const ImmutableTreeSet<Symbol>& boundAbove) 
+			{
+			}
+
+		void processDown(const Expression& e, bool& outContinue,
+							const ImmutableTreeSet<Symbol>& boundAbove)
+			{
+			if (!e.freeVariables().contains(sym()) || boundAbove.contains(sym()))
+				{
+				outContinue = false;
+				return;
+				}
+				
+			if (e.codeLocationIdOrNull() and GlobalCodeLocationRegistry::getCodeLocation(*e.codeLocationIdOrNull()))
+				curRange() = GlobalCodeLocationRegistry::getCodeLocation(*e.codeLocationIdOrNull());
+			
+			@match Expression(e)
+				-|	Variable(v) ->> {
+						if (v == sym() && curRange())
+							ranges() = ranges() + *curRange();
+						}
+				-|	Assign(pat, val) ->> {
+						if (pat.boundVariables().contains(sym()) && curRange())
+							ranges() = ranges() + *curRange();	
+						}
+				-|	Pull(symb, _) ->> {
+						if (sym() == symb && curRange())
+							ranges() = ranges() + *curRange();
+						}
+				-|	_ ->> { }
+				;
+			}
+};
+}
+
+
+
+ImmutableTreeSet<CodeLocation> computeFreeVariableLocations(
+										const Expression& inExpr,
+										const Symbol& inVariable
+										)
+	{
+	FreeVariableLocationVisitor ranges;
+	ranges.sym() = inVariable;
+	
+	FunctionBoundAboveVisitor<FreeVariableLocationVisitor> vis(
+		emptyTreeSet(),
+		&ranges
+		);
+	
+	visit(inExpr, vis);
+	
+	return ranges.ranges();
+	}
+
+namespace {
+
+@type AssignedVariableLocationVisitor =
+			Symbol sym,
+			ImmutableTreeSet<CodeLocation> ranges,
+			Nullable<CodeLocation> curRange {
+public:
+		template<class T>
+		void	processDown(const T& e, bool& outContinue,
+							const ImmutableTreeSet<Symbol>& boundAbove) 
+			{
+			}
+		template<class T>
+		void	processUp(const T& e,
+							const ImmutableTreeSet<Symbol>& boundAbove) 
+			{
+			}
+
+		template<class T>
+		void visitRecursively(const T& in)
+			{
+			AssignedVariableLocationVisitor rangeVis;
+			rangeVis.sym() = sym();
+			
+			FunctionBoundAboveVisitor<AssignedVariableLocationVisitor> vis(
+				emptyTreeSet(),
+				&rangeVis
+				);
+			
+			visit(in, vis);
+			
+			ranges() = ranges() + rangeVis.ranges();
+			}
+
+		void processDown(const Expression& e, bool& outContinue,
+							const ImmutableTreeSet<Symbol>& boundAbove)
+			{
+			if (boundAbove.contains(sym()))
+				{
+				outContinue = false;
+				return;
+				}
+			
+			if (e.codeLocationIdOrNull() and GlobalCodeLocationRegistry::getCodeLocation(*e.codeLocationIdOrNull()))
+				curRange() = GlobalCodeLocationRegistry::getCodeLocation(*e.codeLocationIdOrNull());
+			
+			@match Expression(e)
+
+				-|	CreateFunction(name, predicate, metadata) ->> {
+						//we don't want to visit the function predicate, since assignments
+						//can't occur from there.
+						//we do want to visit the metadata, since that's evaluated
+						//in this scope.
+						outContinue = false;
+						visitRecursively(metadata);
+						}
+
+				-|	CreateLambda(name, predicate) ->> {
+						//we don't want to visit the predicate, since assignments
+						//can't occur from there.
+						outContinue = false;
+						}
+
+				-|	CreateObject(name, definition, metadata) ->> {
+						//we don't want to visit the object definition, but
+						//we do want to visit the metadata, since that's evaluated
+						//in this scope.
+						outContinue = false;
+						visitRecursively(metadata);
+						}
+
+				-|	CreateClass(name, definition, metadata) ->> {
+						//we don't want to visit the object definition, but
+						//we do want to visit the metadata, since that's evaluated
+						//in this scope.
+						outContinue = false;
+						visitRecursively(metadata);
+						}
+
+				-|	Assign(pat, expr) ->> {
+						if (pat.boundVariables().contains(sym()) && curRange())
+							ranges() = ranges() + *curRange();
+						}
+				-|	Pull(symb, _) ->> {
+						if (sym() == symb && curRange())
+							ranges() = ranges() + *curRange();
+						}
+				-|	_ ->> { }
+				;
+			}
+};
+
+}
+
+ImmutableTreeSet<CodeLocation> computeAssignedVariableLocations(
+										const Expression& inExpr,
+										const Symbol& inVariable
+										)
+	{
+	AssignedVariableLocationVisitor ranges;
+	ranges.sym() = inVariable;
+	
+	FunctionBoundAboveVisitor<AssignedVariableLocationVisitor> vis(
+		emptyTreeSet(),
+		&ranges
+		);
+	
+	visit(inExpr, vis);
+	
+	return ranges.ranges();
+	}
+
+namespace {
+
+@type ReturnStatementLocationVisitor =
+			ImmutableTreeSet<CodeLocation> ranges,
+			Nullable<CodeLocation> curRange {
+public:
+		template<class T>
+		void	processDown(const T& e, bool& outContinue) 
+			{
+			}
+		template<class T>
+		void	processUp(const T& e) 
+			{
+			}
+
+		void processDown(const Expression& e, bool& outContinue)
+			{				
+			if (e.codeLocationIdOrNull() and GlobalCodeLocationRegistry::getCodeLocation(*e.codeLocationIdOrNull()))
+				curRange() = GlobalCodeLocationRegistry::getCodeLocation(*e.codeLocationIdOrNull());
+				
+			@match Expression(e)
+
+				-|	CreateFunction(name, predicate, metadata) ->> {
+						//we don't want to visit the function predicate, but
+						//we do want to visit the metadata, since that's evaluated
+						//in this scope.
+						outContinue = false;
+						visit(metadata, *this);
+						}
+
+				-|	CreateLambda(name, predicate) ->> {
+						//we don't want to visit the function predicate, but
+						//we do want to visit the metadata, since that's evaluated
+						//in this scope.
+						outContinue = false;
+						}
+
+				-|	CreateObject(name, definition, metadata) ->> {
+						//we don't want to visit the object definition, but
+						//we do want to visit the metadata, since that's evaluated
+						//in this scope.
+						outContinue = false;
+						visit(metadata, *this);
+						}
+
+				-|	CreateClass(name, definition, metadata) ->> {
+						//we don't want to visit the object definition, but
+						//we do want to visit the metadata, since that's evaluated
+						//in this scope.
+						outContinue = false;
+						visit(metadata, *this);
+						}
+
+				-| Return(expr) ->> {
+						if (curRange())
+							ranges() = ranges() + *curRange();
+						}
+				-|	_ ->> { }
+				;
+			}
+};
+
+}
+
+ImmutableTreeSet<CodeLocation> computeReturnStatementLocations(
+										const Expression& inExpr
+										)
+	{
+	ReturnStatementLocationVisitor ranges;
+	
+	visit(inExpr, ranges);
+	
+	return ranges.ranges();
+	}
+
+
+Symbol pickSymbolDistinctFrom(string base, const ImmutableTreeSet<Symbol>& ioSymbols)
+	{
+	uword_t ix = 0;
+	Symbol candidate = Symbol(base);
+
+	while (ioSymbols.contains(candidate))
+		candidate = Symbol(base + boost::lexical_cast<string>(ix++));
+
+	return candidate;
+	}
+	
+
+
+Expression	packAssignedVarsIntoTuple(const Expression& in)
+	{
+	if (computeReturnStatementLocations(in).size())
+		throw standardLogicErrorWithStacktrace(
+			"Can't call packAssignedVarsIntoTuple on an expression with a return statement"
+			);
+
+	ImmutableTreeSet<Symbol> syms = computeAssignedVariables(in);
+	
+	ImmutableTreeVector<ApplyArgument> symArgs;
+
+	for (long k = 0; k < syms.size();k++)
+		symArgs = symArgs +
+			ApplyArgument::Normal(
+				null(),
+				Expression::Variable(syms[k])
+				);
+
+	Expression createTupleExpr = Expression::CreateTuple(symArgs);
+
+	ImmutableTreeSet<Symbol> mentioned = mentionedVariables(in);
+
+	Symbol exceptionSymbol = pickSymbolDistinctFrom("exception", mentioned);
+	Symbol stacktraceSymbol = pickSymbolDistinctFrom("stacktrace", mentioned);
+
+	return Expression::Try(
+		in.add(
+			Expression::CreateTuple(
+				emptyTreeVec() +
+					ApplyArgument::Normal(null(), createTupleExpr)
+				)
+			),
+		Function::SingleTermFunction(
+			emptyTreeVec() + exceptionSymbol, 
+			null(),
+			Expression::Throw(
+				Expression::CreateTuple(
+					emptyTreeVec() + 
+						ApplyArgument::Normal(null(), Expression::Variable(exceptionSymbol)) + 
+						ApplyArgument::Normal(null(), createTupleExpr)
+					),
+				null() << Expression::Variable(stacktraceSymbol)
+				)
+			),
+		null() << stacktraceSymbol,
+		false
+		);
+	}
+
+Expression wrapExpressionInCacheCall(const Expression& in)
+	{
+	return Expression::Cached(
+		emptyTreeVec() + 
+			CacheCallArgument(
+				Expression::CreateFunction(
+					"<cachecall expression>",
+					Function::SingleTermFunction(emptyTreeVec(), null(), 
+						in
+						),
+					CSTValue()
+					),
+				emptyTreeVec(),
+				null()
+				)
+		)[0];
+	}
+
+pair<ImmutableTreeSet<Symbol>, Expression> 
+					extractExpressionAndBoundVariables(
+								const StatementTerm& inStatementTerm
+								)
+	{
+	@match StatementTerm(inStatementTerm)
+		-| Expr(e) ->> {
+			ImmutableTreeSet<Symbol> boundSymbols = e.assignedVariables();
+
+			ImmutableTreeVector<Expression> tupleArgs = 
+				mapITV(boundSymbols, [](Symbol s) { return Expression::Variable(s); });
+
+			return make_pair(
+				boundSymbols,
+				Expression::CreateTuple(
+					emptyTreeVec() + 
+						e +
+						Expression::CreateTuple(tupleArgs)
+					)
+				);
+			}
+		-| Let(patternsAndExpressions) ->> {
+			ImmutableTreeSet<Symbol> boundSymbols = inStatementTerm.boundVariables();
+
+			boundSymbols = boundSymbols + 
+				Expression::Let(patternsAndExpressions, Expression()).assignedVariables();
+
+			ImmutableTreeVector<Expression> tupleArgs = 
+				mapITV(
+					boundSymbols,
+					[](Symbol s) { return Expression::Variable(s); }
+					);
+
+			return make_pair(
+				boundSymbols,
+				Expression::Let(patternsAndExpressions, 
+					Expression::CreateTuple(
+						emptyTreeVec() + 
+							Expression::Constant(CSTValue()) +
+							Expression::CreateTuple(tupleArgs)
+						)
+					)
+				);
+			}
+	}

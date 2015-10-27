@@ -1,0 +1,540 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include <stdint.h>
+#include <boost/python.hpp>
+#include "ExecutionContext.hppml"
+#include "ExecutionContextImpl.hppml"
+#include "ExecutionContextConfiguration.hppml"
+#include "../Compiler/InterpreterTraceTerm.hppml"
+#include "PausedComputation.hppml"
+#include "../Compiler/CompiledInstructionGroup.hppml"
+#include "../Interpreter/Instruction.hppml"
+#include "../Serialization/SerializedObject.hpp"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include "../TypedFora/ABI/BigVectorLayouts.hppml"
+#include "../TypedFora/ABI/VectorLoadRequest.hppml"
+#include "../VectorDataManager/VectorDataManager.hppml"
+#include "../VectorDataManager/VectorDataManager.hppml"
+#include "../TypedFora/JitCompiler/TypedJumpTarget.hppml"
+#include "../python/FORAPythonUtil.hppml"
+#include "../Primitives/CodeLocation.hppml"
+#include "../../native/Registrar.hpp"
+#include "../../core/python/ScopedPyThreads.hpp"
+#include "../../core/python/CPPMLWrapper.hpp"
+#include "../../core/threading/CallbackScheduler.hppml"
+#include "../../core/containers/ImmutableTreeVector.py.hpp"
+#include "../../core/threading/ScopedThreadLocalContext.hpp"
+#include "../../core/PolymorphicSharedPtrFuncFromMemberFunc.hpp"
+#include "../../core/containers/ImmutableTreeMap.py.hpp"
+#include "../../core/containers/ImmutableTreeVector.py.hpp"
+
+namespace Ufora {
+namespace python {
+
+template<>
+class CPPMLWrapperPolicy< ::Fora::Interpreter::ExecutionContextConfiguration > {
+public:
+		typedef CPPMLHeldAsSharedPtrPolicy< ::Fora::Interpreter::ExecutionContextConfiguration> result_type;
+};
+
+}
+}
+
+using namespace Fora::Interpreter;
+using namespace Fora::Compiler;
+
+class ExecutionContextWrapper :
+		public native::module::Exporter<ExecutionContextWrapper> {
+public:
+		std::string		getModuleName(void)
+			{
+			return "FORA";
+			}
+		
+		static boost::shared_ptr< ::Fora::Interpreter::ExecutionContextConfiguration> 
+										ExecutionContextConfigurationDefault()
+			{
+			boost::shared_ptr< ::Fora::Interpreter::ExecutionContextConfiguration> tr;
+			tr.reset(
+				new ::Fora::Interpreter::ExecutionContextConfiguration(
+					ExecutionContextConfiguration::defaultConfig()
+					)
+				);
+			return tr;
+			}
+
+		static ImmutableTreeVector<ImplValContainer> pythonListToIVCList(boost::python::object l)
+			{
+			uword_t length;
+			
+			ImmutableTreeVector<ImplValContainer*> ptrs;
+			
+				{
+				ScopedPyThreadsReacquire threads;
+				length = boost::python::len(l);
+				
+				for (long k = 0; k < length;k++)
+					{
+					boost::python::extract<ImplValContainer&> extractor(l[k]);
+					lassert(extractor.check());
+					
+					ptrs = ptrs + &extractor();
+					}
+				}
+			
+			ImmutableTreeVector<ImplValContainer>	tr;
+			for (long k = 0; k < ptrs.size();k++)
+				tr = tr + *ptrs[k];
+			
+			return tr;
+			}
+
+		static ImmutableTreeVector<JudgmentOnValue> pythonListToJOVList(boost::python::object l)
+			{
+			uword_t length;
+			
+			ImmutableTreeVector<JudgmentOnValue>	tr;
+			
+				{
+				length = boost::python::len(l);
+				
+				for (long k = 0; k < length;k++)
+					{
+					boost::python::extract<ImplValContainer&> extractor(l[k]);
+					if (extractor.check())
+						tr = tr + JudgmentOnValue::Constant(CSTValue(extractor().getReference()));
+						else
+					if (boost::python::extract<JudgmentOnValue&>(l[k]).check())
+						tr = tr + boost::python::extract<JudgmentOnValue&>(l[k])();
+					else
+						lassert(false);
+					}
+				}
+			
+			return tr;
+			}
+
+		static boost::python::object evaluate(
+                                        boost::python::tuple inArgs,
+                                        boost::python::dict inKW
+                                        )
+			{
+			using namespace boost::python;
+
+			PolymorphicSharedPtr<ExecutionContext>& context
+                = extract<PolymorphicSharedPtr<ExecutionContext> &>(inArgs[0]);
+
+			for (long k = 1; k < boost::python::len(inArgs); k++)
+				lassert(extract<ImplValContainer&>(inArgs[k]).check());
+
+			boost::python::object subs = inArgs.slice(1,_);
+			
+				{
+				ScopedPyThreads threads;
+			
+				ImmutableTreeVector<ImplValContainer> vals
+                    = pythonListToIVCList(subs);
+				
+				ImplValContainer ivc(vals);
+				context->evaluate(ivc);
+				}
+			
+			return boost::python::object();
+			}
+
+		static void pusher(std::vector<Fora::InterpreterTraceTerm>* vec, const Fora::InterpreterTraceTerm& toPush)
+			{
+			vec->push_back(toPush);
+			}
+
+		static boost::python::object evaluateAndTrace(
+                                        boost::python::tuple inArgs,
+                                        boost::python::dict inKW
+                                        )
+			{
+			using namespace boost::python;
+
+			std::vector<Fora::InterpreterTraceTerm> terms;
+
+			PolymorphicSharedPtr<ExecutionContext>& context
+                = extract<PolymorphicSharedPtr<ExecutionContext> &>(inArgs[0]);
+
+            auto oldHandler = context->getInterpreterTraceHandler();
+
+            context->setInterpreterTraceHandler(
+            	boost::bind(
+            		&pusher,
+            		&terms,
+            		boost::arg<1>()
+            		)
+            	);
+
+            evaluate(inArgs, inKW);
+
+            context->setInterpreterTraceHandler(oldHandler);
+
+            boost::python::list result;
+
+            for (long k = 0; k < terms.size();k++)
+            	result.append(terms[k]);
+
+            return result;
+			}
+
+		static boost::python::object placeInEvaluationStateWithoutRenamingMutableVectors(
+                                        boost::python::tuple inArgs,
+                                        boost::python::dict inKW
+                                        )
+			{
+			using namespace boost::python;
+
+			PolymorphicSharedPtr<ExecutionContext>& context
+                = extract<PolymorphicSharedPtr<ExecutionContext> &>(inArgs[0]);
+
+			for (long k = 1; k < boost::python::len(inArgs); k++)
+				lassert(extract<ImplValContainer&>(inArgs[k]).check());
+
+			boost::python::object subs = inArgs.slice(1,_);
+			
+				{
+				ScopedPyThreads threads;
+			
+				ImmutableTreeVector<ImplValContainer> vals
+                    = pythonListToIVCList(subs);
+				
+				ImplValContainer ivc(vals);
+				context->placeInEvaluationStateWithoutRenamingMutableVectors(ivc);
+				}
+			
+			return boost::python::object();
+			}
+
+		static boost::python::object evaluateFunctionPointer(
+                                        boost::python::tuple inArgs,
+                                        boost::python::dict inKW
+                                        )
+			{
+			using namespace boost::python;
+
+			PolymorphicSharedPtr<ExecutionContext>& context
+                = extract<PolymorphicSharedPtr<ExecutionContext> &>(inArgs[0]);
+
+            TypedFora::TypedJumpTarget funPtr
+                = extract<TypedFora::TypedJumpTarget&>(inArgs[1]);
+            
+			for (long k = 0; k < boost::python::len(inArgs) - 2; k++)
+				lassert(extract<ImplValContainer&>(inArgs[k + 2]).check());
+            
+			boost::python::object subs = inArgs.slice(2,_);
+			
+            return evaluateFunctionPointerOnTupleAsList(context, funPtr, subs);
+			}
+
+        static boost::python::object evaluateFunctionPointerOnTupleAsList(
+                                        PolymorphicSharedPtr<ExecutionContext>& context,
+                                        TypedFora::TypedJumpTarget tnfp,
+                                        boost::python::object IVCTupleAsList
+                                        )
+            {
+                {
+                ScopedPyThreads threads;
+
+                ImmutableTreeVector<ImplValContainer> vals
+                    = pythonListToIVCList(IVCTupleAsList);
+                ImplValContainer ivc(vals);
+                context->evaluateFunctionPointer(tnfp, ivc);
+                }
+
+            return boost::python::object();
+            }
+
+		static void resumeDeferred(	PolymorphicSharedPtr<ExecutionContext>& context,
+									ComputationResult& val
+									)
+			{
+			ScopedPyThreads unlocker;
+			context->resumeComputation(val);
+			}
+
+		static void resumeInterrupted(PolymorphicSharedPtr<ExecutionContext>& context)
+			{
+			ScopedPyThreads unlocker;
+			context->resumeComputation();
+			}
+
+		static void teardown(PolymorphicSharedPtr<ExecutionContext>& context)
+			{
+			ScopedPyThreads threads;
+			context->teardown();
+			}
+
+		static void teardown2(PolymorphicSharedPtr<ExecutionContext>& context, bool inAssertEmpty)
+			{
+			ScopedPyThreads threads;
+			context->teardown(inAssertEmpty);
+			}
+
+		static PolymorphicSharedPtr<VectorDataManager>
+					ExecutionContextGetVDM(
+						PolymorphicSharedPtr<ExecutionContext>& context
+						)
+			{
+			return context->getVDM().polymorphicSharedPtrFromThis();
+			}
+
+		static PolymorphicSharedPtr<ExecutionContext>*
+						constructExecutionContext(
+							const PolymorphicSharedPtr<VectorDataManager>& manager,
+							uword_t stackSize
+							)
+			{
+			ScopedPyThreads threads;
+
+			auto result = new PolymorphicSharedPtr<ExecutionContext>(
+				new ExecutionContext(
+					manager,
+					stackSize
+					)
+				);
+
+			return result;
+			}
+
+		static boost::python::list extractStacktrace(
+					PolymorphicSharedPtr<ExecutionContext>& context,
+					bool exportValues
+					)
+			{
+			ImmutableTreeVector<pair<ForaStackTrace, Fora::Interpreter::StackframeMetadata> > elts;
+			elts = context->extractStacktrace(exportValues);
+
+			boost::python::list tr;
+
+			for (long k = 0; k < elts.size();k++)
+				tr.append(
+					boost::python::make_tuple(
+						elts[k].first, 
+						elts[k].second
+						)
+					);
+
+			return tr;
+			}
+
+		static boost::python::object ExecutionContextSerialize(PolymorphicSharedPtr<ExecutionContext>& context)
+			{
+			PolymorphicSharedPtr<SerializedObjectContext> serializationContext(
+				new SerializedObjectContext(context->getVDM().getMemoryManager())
+				);
+
+			ONoncontiguousByteBlockProtocol				protocol;
+			
+				{
+				OBinaryStream stream(protocol);
+
+				SerializedObjectContextSerializer serializer(stream, *serializationContext);
+
+				Fora::VectorMemoizingForaValueSerializationStream valueStream(serializer);
+
+				context->serialize(valueStream);
+				}
+			
+			return boost::python::object(
+				PolymorphicSharedPtr<SerializedObject>(
+					new SerializedObject(
+						protocol.getData(),
+						serializationContext
+						)
+					)
+				);
+			}
+
+		static void ExecutionContextDeserialize(
+							PolymorphicSharedPtr<ExecutionContext>& context, 
+							PolymorphicSharedPtr<SerializedObject>& inSO
+							)
+			{
+			PolymorphicSharedPtr<SerializedObjectContext> serializationContext(
+				new SerializedObjectContext(context->getVDM().getMemoryManager(), inSO)
+				);
+			
+			INoncontiguousByteBlockProtocol	protocol(inSO->getSerializedData());
+			IBinaryStream stream(protocol);
+			
+			SerializedObjectContextDeserializer deserializer(
+				stream, 
+				*serializationContext, 
+				MemoryPool::getFreeStorePool()
+				);
+
+			Fora::VectorMemoizingForaValueDeserializationStream valueStream(deserializer);
+
+			context->deserialize(valueStream);
+			}
+
+		static bool ExecutionContextIsTracing(PolymorphicSharedPtr<ExecutionContext>& context)
+			{
+			return context->getInterpreterHistory().isTracing();
+			}
+
+		static ForaStackTrace firstGetter(pair<ForaStackTrace, Fora::Interpreter::StackframeMetadata>& in)
+			{
+			return in.first;
+			}
+
+		static Fora::Interpreter::StackframeMetadata secondGetter(pair<ForaStackTrace, Fora::Interpreter::StackframeMetadata>& in)
+			{
+			return in.second;
+			}
+		
+		static boost::python::object splitComputation(PolymorphicSharedPtr<ExecutionContext>& context)
+			{
+			auto nSplit = context->splitComputation();
+
+			if (!nSplit)
+				return boost::python::object();
+
+			return boost::python::object(*nSplit);
+			}
+
+        static boost::python::object splitWithFutures(
+                PolymorphicSharedPtr<ExecutionContext>& context
+                )
+            {
+            auto futureSplitResult = context->splitWithFutures();
+
+            if (!futureSplitResult)
+                return boost::python::object();
+
+            return boost::python::object(futureSplitResult);
+            }
+
+		static int64_t ExecutionContextTotalBytesUsed(PolymorphicSharedPtr<ExecutionContext>& context)
+			{
+			return context->getCurrentMemoryUsage().first;
+			}
+
+		static int64_t ExecutionContextTotalBytesUsedByOS(PolymorphicSharedPtr<ExecutionContext>& context)
+			{
+			return context->getCurrentMemoryUsage().second;
+			}
+
+		static ImmutableTreeSet<VectorDataID> getVectorLoadAsVDIDs(PolymorphicSharedPtr<ExecutionContext>& context)
+			{
+			ImmutableTreeSet<VectorDataID> vectors;
+
+			auto slice = context->getVectorLoad();
+
+			ImmutableTreeVector<TypedFora::Abi::VectorDataIDSlice> slices = 
+				context->getVDM().getBigVectorLayouts()->getLayoutForId(slice.identity())
+					.slicesCoveringRange(slice.indexLow(), slice.indexHigh());
+
+			for (auto s: slices)
+				vectors = vectors + s.vector();
+
+			return vectors;
+			}
+
+		void exportPythonWrapper()
+			{
+			using namespace boost::python;
+			
+			class_<PolymorphicSharedPtr<ExecutionContext> >("ExecutionContext", no_init)
+				.def("__init__", make_constructor(constructExecutionContext))
+				.def("evaluate", boost::python::raw_function(evaluate, 2))
+				.def("evaluateAndTrace", boost::python::raw_function(evaluateAndTrace, 2))
+				.def("placeInEvaluationStateWithoutRenamingMutableVectors", boost::python::raw_function(placeInEvaluationStateWithoutRenamingMutableVectors, 2))
+				.def("evaluateFunctionPointer", boost::python::raw_function(evaluateFunctionPointer, 3))
+                .def("evaluateFunctionPointerOnTupleAsList", &evaluateFunctionPointerOnTupleAsList)
+				.def("resume", resumeDeferred)
+				.def("resume", resumeInterrupted)
+				.def("teardown", teardown)
+				.def("teardown", teardown2)
+				.def("isTracing", &ExecutionContextIsTracing)
+				.def("serialize", &ExecutionContextSerialize)
+				.def("deserialize", &ExecutionContextDeserialize)
+				.add_property("totalBytesUsed", &ExecutionContextTotalBytesUsed)
+				.add_property("totalBytesUsedByOS", &ExecutionContextTotalBytesUsedByOS)
+				.def("__getstate__", &FORAPythonUtil::serializer<ExecutionContext>)
+				.def("__setstate__", &FORAPythonUtil::deserializer<ExecutionContext>)
+				.macro_psp_py_def("extractPausedComputation", ExecutionContext::extractPausedComputation)
+				.macro_psp_py_def("placeInEvaluationState", ExecutionContext::placeInEvaluationState)
+				.macro_psp_py_def("resumePausedComputation", ExecutionContext::resumePausedComputation)
+				.def("extractStacktrace", &extractStacktrace)
+				.macro_psp_py_def("copyValuesOutOfVectorPages", ExecutionContext::copyValuesOutOfVectorPages)
+				.macro_psp_py_def("pageLargeVectorHandles", ExecutionContext::pageLargeVectorHandles)
+				.add_property("vectorDataManager", &ExecutionContextGetVDM)
+				.macro_psp_py_def("isEmpty", ExecutionContext::isEmpty)
+				.macro_psp_py_def("isInterrupted", ExecutionContext::isInterrupted)
+				.macro_psp_py_def("isVectorLoad", ExecutionContext::isVectorLoad)
+				.macro_psp_py_def("getCacheRequest", ExecutionContext::getCacheRequest)
+				.macro_psp_py_def("getVectorLoad", ExecutionContext::getVectorLoad)
+				.def("getVectorLoadAsVDIDs", getVectorLoadAsVDIDs)
+				.macro_psp_py_def("isFinished", ExecutionContext::isFinished)
+				.macro_psp_py_def("isError", ExecutionContext::isError)
+				.macro_psp_py_def("logSomeMessages", ExecutionContext::logSomeMessages)
+				.def("splitComputation", splitComputation)
+				.macro_psp_py_def("getComputationLog", ExecutionContext::getComputationLog)
+				.macro_psp_py_def("isCacheRequest", ExecutionContext::isCacheRequest)
+				.macro_psp_py_def("getFinishedResult", ExecutionContext::getFinishedResult)
+				.macro_psp_py_def("setFinishedResultTo", ExecutionContext::setFinishedResult)
+				.macro_psp_py_def("totalStackMemoryUsed", ExecutionContext::totalStackMemoryUsed)
+				.macro_psp_py_def("interrupt", ExecutionContext::interrupt)
+				.macro_psp_py_def("interruptAfterCycleCount", 
+										ExecutionContext::interruptAfterCycleCount)
+				.macro_psp_py_def("extractCurrentTextStacktrace", 
+										ExecutionContext::extractCurrentTextStacktrace)
+				.macro_psp_py_def("resetInterruptState", ExecutionContext::resetInterruptState)
+				.macro_psp_py_def("getTimeSpentInInterpreter", ExecutionContext::getTimeSpentInInterpreter)
+				.macro_psp_py_def("getTimeSpentInCompiledCode", ExecutionContext::getTimeSpentInCompiledCode)
+				.macro_psp_py_def("getTimeSpentGarbageCollecting", ExecutionContext::getTimeSpentGarbageCollecting)
+				.macro_psp_py_add_property("configuration", ExecutionContext::getConfiguration)
+                .def("splitWithFutures", splitWithFutures)
+				;
+			
+			PythonWrapper<ImmutableTreeMap<Symbol, ImplValContainer> >
+											::exportPythonInterface("VariableMap");
+
+			PythonWrapper<ImmutableTreeVector<Symbol> >::exportPythonInterface("SymbolList");
+
+			Ufora::python::CPPMLWrapper<Fora::Interpreter::StackframeMetadata>
+					("StackframeMetadata", false).class_()
+					;
+
+			PythonWrapper<ImmutableTreeVector<std::pair<ForaStackTrace, 
+												Fora::Interpreter::StackframeMetadata> > >
+				::exportPythonInterface("TraceAndStackframeMetadata");
+
+			class_<std::pair<ForaStackTrace, Fora::Interpreter::StackframeMetadata> >("ForaStacktraceAndStackframeMetadataPair")
+				.add_property("first", &firstGetter)
+				.add_property("second", &secondGetter)
+				;
+
+			Ufora::python::CPPMLWrapper<ExecutionContextConfiguration>
+					("ExecutionContextConfiguration", false).class_()
+				.def("defaultConfiguration", ExecutionContextConfigurationDefault)
+				.staticmethod("defaultConfiguration")
+				;
+			
+			}
+};
+
+//explicitly instantiating the registration element causes the linker to need
+//this file
+template<>
+char native::module::Exporter<ExecutionContextWrapper>::mEnforceRegistration =
+		native::module::ExportRegistrar<ExecutionContextWrapper>::registerWrapper();
+

@@ -1,0 +1,123 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "NativeLayoutType.hppml"
+#include "../JitCompiler/TypedJumpTarget.hppml"
+#include "../JitCompiler/TypedContinuation.hppml"
+#include "../../Core/MemBlock.hpp"
+
+namespace Fora {
+
+class ApplyArgFrame;
+
+}
+
+namespace Fora {
+namespace Interpreter {
+class RefcountPool;
+}
+}
+
+namespace TypedFora {
+namespace Abi {
+
+class ResultSignatureAdapterFrame {
+public:
+	//the continuation we're adapting to
+	TypedFora::TypedContinuation continuation;
+	
+	//the signature that we present
+	ResultSignature desiredSignature;
+
+	//enough data for the output
+	char data[1];
+
+	static NativeRuntimeContinuationValue<1>
+						adaptDataAndFollowContinuation(
+							MemBlock** memBlock, 
+							uword_t resumption, 
+							ResultSignatureAdapterFrame* stackframe
+							);
+};
+
+
+class InterpreterUniqueIdHolderFrame {
+public:
+	//the continuation we're going to follow
+	TypedFora::TypedContinuation continuation;
+	
+	uint64_t originalStackFrameUniqueId;
+
+	static NativeRuntimeContinuationValue<1>
+						teardownAndFollowContinuation(
+							MemBlock** memBlock, 
+							uword_t resumption, 
+							InterpreterUniqueIdHolderFrame* stackframe
+							);
+};
+
+
+//return a continuation with signature inDesiredSignature that defers to inCurrentContinuation
+//may allocate memory on the stack (e.g. memBlock). If the incoming value doesn't match, this 
+//function will drop back into the interpreter in the underlying continuation
+TypedContinuation adaptReturnContinuation(
+						const TypedContinuation& inCurrentContinuation,
+						const ResultSignature& inDesiredSignature, 
+						MemBlock** memBlock,
+						Compiler& compiler
+						);
+
+//any arguments that are owned here but not owned in the target need to be pushed onto a 
+//special stack that can handle them.
+TypedContinuation createTeardownContinuationForUntransferrableArgs(
+				const TypedContinuation& inCurrentContinuation,
+				ImplVal* inValues,
+				uint64_t uniqueId,
+				const ImmutableTreeVector<TypedFora::Type>& targetTypes,
+				MemBlock** memBlock,
+				Compiler& compiler
+				);
+
+void* packContinuationIntoStackframe(	
+						void* inDataPtr,
+						const TypedContinuation& inContinuation
+						);
+
+void* packArgumentsIntoStackframeFromTuple(	
+						void* inDataPtr,
+						const ImmutableTreeVector<TypedFora::Type>& inTypes,
+						ImplVal inTuple,
+						Fora::Interpreter::RefcountPool* inRefcountPool
+						);
+
+void* packArgumentsIntoStackframeAndAddToRefcountPool(	
+						void* inDataPtr,
+						const ImmutableTreeVector<TypedFora::Type>& inTypes,
+						const ImplVal* inTuple,
+						Fora::Interpreter::RefcountPool* inRefcountPool
+						);
+
+
+
+//how many bytes are there in the argument frame? Computes space for 1 continuation per return
+//path, a callbacks function, and memory layout for each argument
+uword_t computeArgumentFrameBytecount(
+						const TypedFora::TypedJumpTarget& target
+						);
+
+}
+}

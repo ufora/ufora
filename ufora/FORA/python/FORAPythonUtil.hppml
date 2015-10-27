@@ -1,0 +1,202 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../Core/Type.hppml"
+#include <boost/python.hpp>
+#include "../Serialization/SerializedObject.hpp"
+#include "../Serialization/SerializedObjectContext.hpp"
+#include "../Serialization/SerializedObjectFlattener.hpp"
+#include "../Serialization/ForaValueSerializationStream.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../Core/MemoryPool.hpp"
+#include "../Runtime.hppml"
+#include "../../core/python/ScopedPyThreads.hpp"
+#include "../../core/python/CPPMLWrapper.hpp"
+#include "../../core/serialization/INoncontiguousByteBlockProtocol.hpp"
+#include "../../core/serialization/ONoncontiguousByteBlockProtocol.hpp"
+
+class FORAPythonUtil {
+public:
+		template<class T>
+		static std::string	scopedPrettyPrinter(const T& in)
+			{
+			ScopedPyThreads threads;
+			return prettyPrintString(in);
+			}
+		
+		template<class T>
+		static std::string	scopedPrettyPrinterWithoutWrapping(const T& in)
+			{
+			ScopedPyThreads threads;
+			return prettyPrintStringWithoutWrapping(in);
+			}
+
+		template<class T>
+		static hash_type	scopedHashValue(const T& in)
+			{
+			ScopedPyThreads threads;
+			return hashValue(in);
+			}
+			
+		template<class T>
+		static int32_t hasher(const T& in)
+			{
+			ScopedPyThreads threads;
+			
+			return hashValue(in)[0];
+			}
+		template<class T>
+		static int32_t comparer(const T& in, boost::python::object& b)
+			{
+			boost::python::extract<T> extractor(b);
+			
+			if (!extractor.check())
+				return -1;
+			
+			T t2 = extractor();
+			
+			ScopedPyThreads threads;
+			
+			return hashValue(in).cmp(hashValue(t2));
+			}
+		
+		
+		template<class T>
+		static std::string serializer(const T& in)
+			{
+			ScopedPyThreads threads;
+			
+			ONoncontiguousByteBlockProtocol				protocol;
+			
+				{
+				OBinaryStream stream(protocol);
+			
+				SerializedObjectContextSerializer serializer(
+					stream, 
+					SerializedObjectContext::currentContext()
+					);
+
+				Fora::VectorMemoizingForaValueSerializationStream valueStream(serializer);
+				
+				valueStream.serialize(in);
+				}
+			
+			return protocol.getData()->toString();
+			}
+			
+		template<class T>
+		static void deserializer(T& out, std::string inByteBlock)
+			{
+			ScopedPyThreads threads;
+			
+			IMemProtocol	protocol(inByteBlock);
+			
+				{
+				IBinaryStream stream(protocol);
+			
+				SerializedObjectContextDeserializer deserializer(
+					stream, 
+					SerializedObjectContext::currentContext(),
+					MemoryPool::getFreeStorePool()
+					);
+
+				Fora::VectorMemoizingForaValueDeserializationStream valueStream(deserializer);
+
+				valueStream.deserialize(out);
+				}
+			}
+		
+		
+		template<class T>
+		static std::string serializeEntireObjectGraph(const T& in)
+			{
+			ScopedPyThreads threads;
+			
+			return SerializedObjectFlattener::serializeEntireObjectGraph(in)->toString();
+			}
+			
+		template<class T>
+		static void deserializeEntireObjectGraph(T& out, std::string inByteBlock)
+			{
+			ScopedPyThreads threads;
+			
+			SerializedObjectInflater::deserializeEntireObjectGraph(
+				PolymorphicSharedPtr<NoncontiguousByteBlock>(
+					new NoncontiguousByteBlock(inByteBlock)
+					),
+				out
+				);
+			}
+
+		template<class T>
+		static std::string simpleSerializer(const T& in)
+			{
+			ScopedPyThreads threads;
+			
+			return ::serialize<T>(in);
+			}
+			
+		template<class T>
+		static void simpleDeserializer(T& out, std::string inByteBlock)
+			{
+			ScopedPyThreads threads;
+			
+			out = ::deserialize<T>(inByteBlock);
+			}
+
+		template<class T>
+		static Ufora::python::CPPMLWrapper<T> exposeValueLikeCppmlType(bool inExposeSerializers = true)
+			{
+			Ufora::python::CPPMLWrapper<T> result(true);
+
+			result.class_()
+				.def("__str__", &scopedPrettyPrinter<T>)
+				.add_property("hash", &scopedHashValue<T>)
+				.def("__hash__", &hasher<T>)
+				.def("__cmp__", &comparer<T>)
+				;
+
+			if (inExposeSerializers)
+				result.class_()
+					.def("__getstate__", &FORAPythonUtil::serializer<T>)
+					.def("__setstate__", &FORAPythonUtil::deserializer<T>)
+					.enable_pickling()
+					;
+
+			return result;
+			}
+
+		template<class T>
+		static Ufora::python::CPPMLWrapper<T> exposeValueLikeCppmlTypeSimpleSerializers()
+			{
+			Ufora::python::CPPMLWrapper<T> result(true);
+
+			result.class_()
+				.def("__str__", &scopedPrettyPrinter<T>)
+				.add_property("hash", &scopedHashValue<T>)
+				.def("__hash__", &hasher<T>)
+				.def("__cmp__", &comparer<T>)
+				.def("__getstate__", &FORAPythonUtil::simpleSerializer<T>)
+				.def("__setstate__", &FORAPythonUtil::simpleDeserializer<T>)
+				.enable_pickling()
+				;
+
+			return result;
+			}
+};	
+			
+

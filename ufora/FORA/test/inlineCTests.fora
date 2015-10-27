@@ -1,0 +1,245 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+compiles: 
+    fun(code) {
+        try {
+            `GetSharedObjectLibraryFunction(#Code.C(code), 'f');
+            true
+            }
+        catch(x) 
+            {
+            false
+            };
+        };
+
+compile: 
+    fun(code) {
+        object {
+            ...(`Member, functionName) {
+                `GetSharedObjectLibraryFunction(#Code.C(code), String(functionName)[1,]);
+                }
+            }
+        };
+
+doesNotCompile: fun(x) { not compiles(x) };
+
+assertThrows: fun(e) { try { e(); false } catch (...) { true } };
+
+assertInvalidLibrary: fun(lib) {
+    try {
+        `GetSharedObjectLibraryFunction(lib, 'f')
+        false
+        }
+    catch(s) {
+        s.startsWith("Badly formed library definition:")
+        }
+    };
+
+`test inlineC_construction_1: assertInvalidLibrary(10);
+`test inlineC_construction_2: assertInvalidLibrary(#Code.ASDF("10"));
+`test inlineC_construction_3: not assertInvalidLibrary(#Code.C("//this is C code"));
+`test inlineC_construction_4: not assertInvalidLibrary(#Code.CPP("//this is CPP code"));
+`test inlineC_construction_5: not assertInvalidLibrary(#Code.H("//this is C header code"));
+`test inlineC_construction_6: not assertInvalidLibrary(#Code.HPP("//this is CPP header code"));
+`test inlineC_construction_7: not assertInvalidLibrary(#Directory({:}));
+`test inlineC_construction_8: assertInvalidLibrary(#Directory(#Code.C()));
+`test inlineC_construction_9: not assertInvalidLibrary(#Directory({"file.h": #Code.H("//")}));
+`test inlineC_construction_10: not assertInvalidLibrary(#Directory({"file.h": #Code.H("//"), "file.c": #Code.C("")}));
+`test inlineC_construction_11: assertInvalidLibrary(#Directory({10: #Code.H("//")}));
+
+`test inlineC_1: compiles("int f(int i) { return i * i; }");
+`test inlineC_2: doesNotCompile("int f(int i) { return i * i; } this is a syntax error");
+`test inlineC_3: doesNotCompile("int g(); int f(int i) { return g(); } //link error");
+
+f: compile("int f(int i) { return i*i; }").f;
+fUnsigned: compile("unsigned int f(unsigned int i) { return i*i; }").f;
+
+`test inlineC_4: f(10s32) == 100s32;
+`test inlineC_5: fUnsigned(10u32) == 100u32;
+
+//verify that we can't call with weird types
+`test inlineC_6: try { f("10"); false } catch (...) { true };
+
+//check we can't call with wrong arity
+`test inlineC_7: try { f(); false } catch (...) { true };
+`test inlineC_8: try { f(10, 11); false } catch (...) { true };
+
+//check that basic conversion works
+`test inlineC_9: f(10u16) == 100u32;
+`test inlineC_10: f(10.1) == 100u32;
+
+aLargeLibrary: (
+    let L = libraryBuilder.Library; 
+
+    L.C("f.c", 
+        """
+        int f() { return 10; }
+        int add(int x) { return x + 1; }
+        """) + 
+    L.H("f.h",
+        """
+        int f();
+        """)
+        +
+    L.C("g.c",
+        """
+        #include "f.h"
+
+        int g(int x)
+            {
+            return f() + x;
+            }
+        """
+        ) + 
+    L.CPP("cplusplus.cpp",
+        """
+        namespace Q {
+
+        int r(int x)
+            {
+            return x + 1;
+            }
+
+        }
+
+        int h(int x)
+            {
+            return Q::r(x)+1;
+            }
+        """
+        )
+    );
+
+`test aLargeLib_1: aLargeLibrary.f() is 10s32;
+`test aLargeLib_2: aLargeLibrary.g(20s32) is 30s32;
+`test aLargeLib_3: aLargeLibrary.h(20s32) is 22s32;
+`test aLargeLib_4: aLargeLibrary.("Q::r")(20s32) is 21s32;
+
+
+`test aLargeLib_under_compilation: 
+    sum(0,10**6, aLargeLibrary.add) is sum(0,10**6, { Int32(_) + 1s32 })
+    ;
+`test aLargeLib_under_compilation2: 
+    sum(0,10**6, aLargeLibrary.add) is sum(0,10**6, { Int32(_) + 1s32 })
+    ;
+
+//verify that we can pass strings to functions taking const char*
+`test passing_strings: libraryBuilder.Library.C("""
+    int len(const char* c) { 
+        int i = 0;
+        while (c[i])
+            i++;
+        return i;
+        }
+    """).len("asdf") is 4s32;
+
+//but NOT char*
+`test passing_strings_2: assertThrows(
+    libraryBuilder.Library.C("""int len(char* c) { return 0; }""")
+    );
+
+sumInt64Vec: libraryBuilder.Library.C("""
+        long sum(const long* data, long sz)
+            { 
+            long res = 0; 
+            while (sz) 
+                {
+                res += *data; 
+                data++; 
+                sz--;
+                } 
+            return res;
+            }
+        """).sum;
+
+//verify passing a vector
+`test passing_vector_1: sumInt64Vec([1,2,3,4,5],5) is 15;
+
+//verify passing a wrongly-typed vector fails
+`test passing_vector_2: assertThrows({sumInt64Vec([1.0,2.0,3.0,4.0,5.0])});
+
+isEmpty: libraryBuilder.Library.C("""
+    char isEmpty(const long* data)
+        { 
+        return data ? 0 : 1;
+        }
+    """).isEmpty;
+
+//verify passing the empty vector works
+`test passing_empty_vector: not isEmpty([1,2,3,4,5]);
+`test passing_empty_vector_2b: isEmpty([]) != 0;
+`test passing_empty_vector_2a: not isEmpty([1,2,3,4,5]);
+`test passing_empty_vector_3: isEmpty([1,2,3][2,2]) != 0;
+
+//verify passing a heterogeneous vector throws
+`test passing_heterogeneous_vector_throws: (
+    assertThrows({isEmpty([1,1.0])}) and
+    not isEmpty([1]) and
+    assertThrows({isEmpty([1.0])}) and 
+    assertThrows({isEmpty([1, 1.0])})
+    );
+
+//verify passing a newly-homogenous vector succeeds
+`test passing_newly_homogeneous_vector_throws: not isEmpty([1, 1.0][,1]);
+`test passing_newly_homogeneous_vector_throws_2: assertThrows({isEmpty([1, 1.0][1,])});
+
+incrementInt64Vec: libraryBuilder.Library.C("""
+    void increment(long* data, long sz, long count) 
+        {
+        for (long k = 0; k < sz; k++)
+            data[k] += count;
+        }
+    """).increment;
+
+`test passing_mutable_vector: (
+    let v = MutableVector(Int64).create(10,10);
+
+    incrementInt64Vec(v, size(v), 30);
+
+    v == MutableVector(Int64).create(10,40)
+    );
+
+addThreeLongs: 
+    libraryBuilder.Library.CPP("""
+        long f(const long* x) 
+            {
+            return x[0] + x[1] + x[2];
+            }
+        """).f
+        ;
+
+`test passing_tuples_as_arrays_1: addThreeLongs((1,2,3)) is 6;
+`test passing_tuples_as_arrays_2: addThreeLongs((1,2,3.5)) is 6;
+`test passing_tuples_as_arrays_3: addThreeLongs((1,2s32,3.5)) is 6;
+`test passing_tuples_as_arrays_4: assertThrows({addThreeLongs(("1",2s32,3.5))});
+
+incrementThreeLongs: 
+    libraryBuilder.Library.CPP("""
+        long f(long* x) 
+            {
+            x[0] += 1;
+            x[1] += 2;
+            x[2] += 3;
+
+            return x[0] + x[1] + x[2];
+            }
+        """).f
+        ;
+
+`test passing_tuples_as_arrays_5: incrementThreeLongs((1,2,3)) is (12, x: (2,4,6));
+
+
+

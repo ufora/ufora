@@ -1,0 +1,146 @@
+
+* The FORA page layout system
+
+The page layout system is responsible for deciding how to migrate data and
+computations across machine boundaries in the FORA system.
+
+As inputs, the layout system accepts
+	* Computation creation, dependency, and completion events
+	* A stream of historical neighborhoods and loads associated with computations
+	* Adds and deletes of pages from individual machines
+	* Current and future page-cliques as computations execute
+
+The output of the algorithm is a continually updated layout of pages for 
+each machine.
+
+There are a number of constraints this algorithm needs to meet.
+	* computations must always be able to proceed. E.g. eventually, the algorithm
+	should always converge.
+	* it should cure outstanding page-cliques as quickly as possible so that blocked
+		computations can move forward
+	* it should distinguish between lightweight data (small vectors) and heavyweight
+			data (big datasets that need to be carefully striped)
+		- lightweight data needs to be moved almost immediately, and should ideally follow
+			the computation tree
+		- heavyweight data needs to be laid out to maximize packing and minimize flow across
+			machine boundaries
+	* it should be careful not to dump to disk unnecessarily
+	* it should replicate commonly used data (or data under load), so that it can split agressively
+
+Our model of computation makes the following basic assumptions:
+	1) For the most part, computations divide in time in a way that aligns with resources.  That is, we assume that there
+		is a layout of pages such that computations don't need to cross machine boundaries too many times, and most pages
+		don't need to be replicated too many times.
+	2) Data access patterns are stable: we can infer information about the
+		future uses of data past uses of that data.
+
+Because machines have a fixed amount of memory and network capacity, we can't hold everything at once.
+As a result, there are a number of inherent tradeoffs we have to balance:
+	* replicating pages to create neighborhoods reduces the total number of pages we can hold in memory.
+	* moving pages on the network is expensive, and comes at the cost of moving threads on the network
+
+
+These tradeoffs come down to some concrete questions we have to answer.
+
+First, when should we spill pages to disk in order to replicate pages?
+
+Data in memory on a given machine ban be accessed with lower latency, higher
+bandwidth, and can be computed on immediately. Data on disk cannot. As a
+result, placing pages on disk if we are going to use them again soon is a bad
+idea.
+
+At the same time, it's hard to estimate how much value we'll get from
+replicating pages, or realizing neighborhoods in the short term. Also, we
+don't know whether a given page is likely to be used in the near future, both
+because computations can behave in complex ways, and because the outside user
+can request unknown data at any time.
+
+To solve this problem, we introduce the notion of the "ActiveComputationSet".
+The ACS contains the list of computations we're actively trying to serve -
+data associated with those computations is kept live. If we determine that
+that dataset has become too large, we drop computations from the ACS. We drop
+completed computations from the ACS first, then we drop  the newest root
+computation, and finally we drop the newest-in-time half of the current
+remaining computation. When we have capacity again, we add back other portions of
+the computation tree.
+
+
+
+
+Second, how much data should we move to achieve a superior packing? The
+optimal packing may be a very different         from a semi-optimal packing.
+For instance, imagine pages in a line, with neighborhoods as overlapping
+pairs. The layout
+
+	M1	******************					  *************
+	M2					 **********************
+
+has only one discontinuity (e.g. replicated page) more than
+
+	M1	****************************
+	M2							   ************************
+
+but achieving that layout requires a great deal of page movement.
+
+
+
+
+
+
+Our design consists of two major components:
+	ShortTermPageLayoutCalculator: a quick, short-term update that tries to satisfy as many needed cliques as possible without
+		moving too much memory around. It then tries to move us towards the long-term ideal as quickly
+		as possible. This calculator runs quite frequently, and doesn't need to know about the full set of
+		neighborhoods
+
+	LongTermPageLayoutCalculation that tries to lay out (with optimal packing) pages as well as possible, while
+		being careful to not move more data than is required. This runs in a separate thread, and may be
+		somewhat slow.
+
+
+
+ShortTermOptimizer
+	* needs to be very fast
+	* ActiveComputationSet: long-term ACS + all new root-level computations
+	* ActiveWorkingSet: long-term AWS + all pages touched or mentioned since last long-term update
+		in active computations
+	* Makes sure that all pages in the AWS are maintained in RAM
+	* Attempts to activate as many current cliques as possible.
+	* Limits amount of bandwidth used at once
+	* Prevents machines from being overloaded.
+	* Prefers to activate existing cliques vs. achieving long-term target
+
+
+
+* Memory Limits
+
+Every machine has a fixed amount of RAM. We allocate this memory to different kinds of pools as follows:
+
+	* Each machine has a maximum memory limit MaxMem. Something like 59GB on the bigboxes.
+	* Each machine has general malloc usage "GenMem" - order of 2-3 gb usually. This is the compiler,
+		temporary storage, etc.
+	* Each machine has a general malloc buffer GenMemBuf ~ 2GB.  This is overrun space that we maintain
+		in case we allocate a great deal of memory all at once.
+	* Total available memory for FORA objects (ExecutionContexts, Vectors, and Pagelets) is
+
+			ForaMem = MaxMem - GenMem - GenMemBuf ~~ 54 GB
+
+		this is the actual limit we place on mmap calls into the OS. This can change as GenMem changes.
+
+	* On each machine, we have some execution contexts and BigVectorHandles. Call this ExecMem. Space reservable for vectors is 
+
+			MaxVecMem = ForaMem - ExecMem ~~ 52 GB
+
+	* On each machine we need some scratch space to hold temporary vectors. Call this ScratchVecMem = 3 GB. 
+		Then the target level of vector data to be assigned by the scheduler to each machine
+
+			VecMem = MaxVecMem - ScratchVecMem ~ 49 GB.
+
+To do:
+	* how to decide what is active working set?
+	* actually run calculations directly, not 
+	* how to make sure that small pages that are really part of the calculation tree,
+		and not part of the long-term dataset end up moving around rapidly so we don't wait on them
+	* more agressively split and move computations so that we get good fanout
+	* how to make sure we don't move too much stuff in the long-term layout if we don't really need to
+

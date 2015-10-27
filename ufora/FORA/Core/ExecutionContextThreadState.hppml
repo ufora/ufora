@@ -1,0 +1,225 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "ExecutionContext.hppml"
+#include "../Core/MemoryPool.hpp"
+#include "../VectorDataManager/BigVectorSlice.hppml"
+#include "../TypedFora/ABI/VectorLoadRequest.hppml"
+#include "../TypedFora/ABI/VectorRecord.hpp"
+#include "../../core/Logging.hpp"
+
+
+class MemBlockAllocator;
+
+namespace Fora {
+namespace Interpreter {
+
+class ExecutionContextThreadState {
+public:
+	typedef TypedFora::Abi::VectorLoadRequest VectorLoadRequest;
+
+	typedef TypedFora::Abi::VectorRecord VectorRecord;
+
+	ExecutionContextThreadState(
+			ExecutionContext* inActualExecutionContextPtr,
+			MemBlockAllocator& inAllocator,
+			PolymorphicSharedPtr<VectorDataManager> inVectorDataManager
+			);
+
+	~ExecutionContextThreadState();
+
+	void initialize();
+
+	void teardown();
+
+	void placeInEvaluationState(
+						const ImplValContainer& inArgs, 
+						boost::function1<ImplValContainer, ImplValContainer> valueImportFunction
+						);
+
+	void resumeComputation(
+						const ImplValContainer& inValue,
+						bool isException
+						);
+
+	void evaluateFunctionPointer(
+						const TypedFora::TypedJumpTarget& toCall, 
+						const ImplValContainer& inArgs,
+						RefcountPool* inRefcountPool
+						);
+
+	void evaluate(const ImplValContainer& inArgs);
+
+	void resumeComputation();
+
+	NativeRuntimeContinuationValue<1> callInterpreter(uword_t inBlockID, void* inCallFrame);
+
+	void callNativeRuntimeCallTarget(const NativeRuntimeCallTarget& inCallTarget);
+
+	void resume(NativeRuntimeContinuationValue<1> value,
+				void* data,
+				uword_t bytes
+				);
+
+	bool isEmpty(void) const;
+	
+	bool isError(void) const;
+	
+	bool isInterrupted(void) const;
+	
+	bool isVectorLoad(void) const;
+	
+	Fora::BigVectorSlice getVectorLoad(void) const;
+	
+	VectorLoadRequest getVectorLoadRequest(void) const 
+		{ 
+		return mInterruptionResult.second; 
+		}
+	
+	bool isCacheRequest(void) const;
+	
+	bool isFinished(void) const;
+
+	const ImplVal& getCacheRequestTuple() const;
+
+	ErrorState getErrorState() const;
+
+	void setErrorState(const ErrorState& inErrorState);
+
+	void setResult(const ImplValContainer& inValue, bool isException);
+	
+	void visitStackFramesAndValues(TypedFora::Abi::StackFrameVisitor& visitor);
+
+	NativeRuntimeCallbacks& getRuntimeCallbacks()
+		{
+		return mRuntimeCallbacks;
+		}
+
+	ImplVal getResult()
+		{
+		return mResult;
+		}
+
+	bool isExceptionResult();
+
+	void resumePausedComputation(
+							const PausedComputation& computation,
+							boost::function1<ImplValContainer, ImplValContainer> valueImportFunction
+							);
+
+	void resumePausedComputationAsCacheRequest(
+							const PausedComputation& computation,
+							const ImplValContainer& cacheRequestTuple,
+							boost::function1<ImplValContainer, ImplValContainer> valueImportFunction
+							);
+
+	//note that this value must be placed into the refcount pool and does _not_ have an incref on it
+	void setVectorLoadRequest(VectorLoadRequest inLoadReqest)
+		{
+		mInterruptionResult.second = inLoadReqest;
+		}
+
+	ImplValContainer getComputationLog() const
+		{
+		return mComputationLog;
+		}
+
+	void setComputationLog(ImplValContainer log)
+		{
+		mComputationLog = log;
+		}
+
+	void logAMessage(const ImplValContainer& message, MemoryPool* pool);
+
+	void logSomeMessages(const ImplValContainer& messagesOrNone, MemoryPool* pool);
+
+	InterpreterScratchSpace& getScratchSpace()
+		{
+		return mScratchSpace;
+		}
+
+	ImplValContainer getKeepAlive() const
+		{
+		return mKeepAlive;
+		}
+
+private:
+	void prepareStateToEnterNativeCode();
+	
+	NativeRuntimeContinuationValueVector instantiatePausedComputation(
+							const PausedComputation& computation,
+							boost::function1<ImplValContainer, ImplValContainer> valueImportFunction
+							);
+
+	void destroyFrame(
+			NativeRuntimeContinuationValue<1> val
+			);
+	
+	void visitStackFrames(
+			TypedFora::Abi::StackFrameVisitor& visitor,
+			NativeRuntimeContinuationValue<1> stackFramePtr
+			);
+	
+	void checkForNaturalResumption();
+
+	void resumeInterruptedComputationInternally();
+
+	bool isRunningInInterpreter() const;
+
+	enum {
+		cont_state_error = 5,
+		cont_state_empty = 4,
+		cont_state_cache_request = 3,
+		cont_state_interrupt = 2,
+		cont_state_exception = 1,
+		cont_state_normal = 0
+		};
+	
+	InterpreterScratchSpace mScratchSpace;
+	
+	MemBlockAllocator& mStackAllocator;
+	
+	ImplValContainer mKeepAlive;
+
+	ImplValContainer mComputationLog;
+
+	uword_t mWhichContinuationIx;
+
+	ImplVal mResult;
+
+	NativeRuntimeContinuationValue<2> mNormalContinuations;
+
+	NativeRuntimeCallbacks mRuntimeCallbacks;
+
+	//every value should be 8-byte aligned
+	pair<NativeRuntimeContinuationValue<1>, VectorLoadRequest> mInterruptionResult;
+
+	ErrorState mErrorState;
+
+	pair<ImplVal, NativeRuntimeContinuationValue<2> > mCacheRequest;
+	
+	bool mInitialized;
+
+	ExecutionContext* mActualContextPtr;
+
+	PolymorphicSharedPtr<VectorDataManager> mVectorDataManager;
+
+	Nullable<ImmutableTreeSet<VectorDataID> > mVectorDataIDToLoad;
+};
+
+}
+}

@@ -1,0 +1,328 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+"""
+DESCRIPTION:
+    DGESVD computes the singular value decomposition (SVD) of a real
+    M-by-N matrix A, optionally computing the left and/or right singular
+    vectors. The SVD is written
+    
+         A = U * SIGMA * transpose(V)
+    
+    where SIGMA is an M-by-N matrix which is zero except for its
+    min(m,n) diagonal elements, U is an M-by-M orthogonal matrix, and
+    V is an N-by-N orthogonal matrix.  The diagonal elements of SIGMA
+    are the singular values of A; they are real and non-negative, and
+    are returned in descending order.  The first min(m,n) columns of
+    U and V are the left and right singular vectors of A.
+    
+    Note that the routine returns V**T, not V.
+    
+ARGUMENTS:
+    JOBU        String or UInt8.
+                A flag with values and meaning:
+                'A' -- function will compute the matrix U.
+                'N' -- function will not compute the matrix U.
+                
+    JOBVT       String or UInt8.
+                A flag, like JOBU, but for the matrix V**T.
+                
+    M           Integer type.
+                The number of rows of A.
+    
+    N           Integer type.
+                The number of columns of A.
+                
+    A           Vector of float, length M * N.
+                The input matrix A, stored in column-major format.
+                
+RETURNS:
+    If JOBU and JOBVT are both 'A', the we return a tuple: (s, UOut, VTOut). Here, s is a vector
+    of float of length min(M,N) which stores the singular values of A, sorted so that
+    S[i] >= S[i + 1].
+    UOut is a float vector of size M * M containing the orthogonal matrix U (as in DESCRIPTION).
+    VTOut is a float vector of size N * N containing the orthogonal matrix V**T (as in DESCRIPTION).
+    
+    If JOBU is 'N' and JOBVT is 'A', then we just return (s, VTOut).
+    
+    If JOBU is 'A' and JOBVT is 'N', then we just return (s, U).
+    
+    If both JOBU and JOBVT are 'N', then we just return s.
+"""
+object {
+operator ()(   
+        jobuIn,
+        jobvtIn,
+        m,
+        n,
+        A
+        )
+    {
+    let jobu = translateOptions(jobuIn); 
+    let jobvt = translateOptions(jobvtIn);
+    
+	let elementType = nothing;
+	(elementType, A) = blasWrappers.eltTypeAndFloatifyIfNecessary(A);
+	let vecType = `JovOfVectorHolding(elementType);
+	let intVecType = `JovOfVectorHolding(Int32);	
+
+    m = Int32(m);
+    n = Int32(n);
+    
+    if (size(A) < m * n)
+        throw "size of A too small"
+
+    let s = Vector.uniform(m <<< n, elementType()); 
+    
+    let U = Vector.uniform(m * m, elementType());
+    let VT = Vector.uniform(n * n, elementType()); 
+	
+    let work = [] :: elementType();
+    let lwork = -1s32;
+    let info = [0s32];
+    
+    let blasname = addTypeSuffix(elementType, "gesvd_");
+    
+    let wrapper =
+        `FORTRANFunctionWrapper(
+            blasname,
+            blasname,
+            (4,6,7,9,11,13),    //arguments that are modified by the function
+            UInt8,              //0  JOBU    (input) CHARACTER*1
+            UInt8,              //1  JOBVT   (input) CHARACTER*1
+            Int32,              //2  M       (input) INTEGER
+            Int32,              //3  N       (input) INTEGER
+            vecType,           //4  A       (input/output) DOUBLE PRECISION array, dimension (LDA,N)
+            Int32,              //5  LDA     (input) INTEGER
+            vecType,           //6  S       (output) DOUBLE PRECISION array, dimension (min(M,N))
+            vecType,           //7  U       (output) DOUBLE PRECISION array, dimension (LDU,UCOL)
+            Int32,              //8  LDU     (input) INTEGER
+            vecType,           //9  VT      (output) DOUBLE PRECISION array, dimension (LDVT,N)
+            Int32,              //10  LDVT    (input) INTEGER
+            vecType,           //11  WORK    (workspace/output) DOUBLE PRECISION array, dimension (MAX(1,LWORK))
+            Int32,              //12  LWORK   (input) INTEGER
+            intVecType    	//13  INFO    (output) INTEGER
+        );        
+        
+    (A, s, U, VT, work, info) = wrapper(
+                                    jobu,
+                                    jobvt,
+                                    m,
+                                    n,
+                                    A,
+                                    m,
+                                    s,
+                                    U,
+                                    m,
+                                    VT,
+                                    n,
+                                    work,
+                                    lwork,
+                                    info
+                                );
+            
+    if (info[0] != 0s32)
+        throw "error calling FORTRAN function xGESVD";
+                                
+    lwork = Int32(
+                match (work[0]) with
+                ((re,im)) { re }
+                (x) { x }
+            );
+            
+    work = Vector.uniform(lwork >>> 1, elementType());
+            
+    (A, s, U, VT, work, info) = wrapper(
+                                    jobu,
+                                    jobvt,
+                                    m,
+                                    n,
+                                    A,
+                                    m,
+                                    s,
+                                    U,
+                                    m,
+                                    VT,
+                                    n,
+                                    work,
+                                    lwork,
+                                    info
+                                );
+        
+    if (info[0] < 0s32)
+        throw "the " + String(-info[0]) + "-th argument to FORTRAN function xGESVD had an " +
+            "illegal value.";
+            
+    if (info[0] > 0s32)
+        throw "the algorithm computing the SVD did not converge."
+    
+    if (jobuIn == 'A' and jobvtIn == 'A')
+        return (s, U, VT)
+    if (jobuIn == 'N' and jobvtIn == 'A')
+        return (s, VT)
+    if (jobuIn == 'A' and jobvtIn == 'N')
+        return (s, U)
+    if (jobuIn == 'N' and jobvtIn == 'N')
+        return s;
+    }
+    ;
+    
+`hidden
+translateOptions:
+    fun
+    ("A")   { 'A'[0] }
+    ("N")   { 'N'[0] }
+    ;
+}
+
+/*
+SUBROUTINE DGESVD( JOBU, JOBVT, M, N, A, LDA, S, U, LDU, VT, LDVT,
+     $                   WORK, LWORK, INFO )
+*
+*  -- LAPACK driver routine (version 3.3.1) --
+*  -- LAPACK is a software package provided by Univ. of Tennessee,    --
+*  -- Univ. of California Berkeley, Univ. of Colorado Denver and NAG Ltd..--
+*  -- April 2011                                                      --
+*
+*     .. Scalar Arguments ..
+      CHARACTER          JOBU, JOBVT
+      INTEGER            INFO, LDA, LDU, LDVT, LWORK, M, N
+*     ..
+*     .. Array Arguments ..
+      DOUBLE PRECISION   A( LDA, * ), S( * ), U( LDU, * ),
+     $                   VT( LDVT, * ), WORK( * )
+*     ..
+*
+*  Purpose
+*  =======
+*
+*  DGESVD computes the singular value decomposition (SVD) of a real
+*  M-by-N matrix A, optionally computing the left and/or right singular
+*  vectors. The SVD is written
+*
+*       A = U * SIGMA * transpose(V)
+*
+*  where SIGMA is an M-by-N matrix which is zero except for its
+*  min(m,n) diagonal elements, U is an M-by-M orthogonal matrix, and
+*  V is an N-by-N orthogonal matrix.  The diagonal elements of SIGMA
+*  are the singular values of A; they are real and non-negative, and
+*  are returned in descending order.  The first min(m,n) columns of
+*  U and V are the left and right singular vectors of A.
+*
+*  Note that the routine returns V**T, not V.
+*
+*  Arguments
+*  =========
+*
+*0  JOBU    (input) CHARACTER*1
+*          Specifies options for computing all or part of the matrix U:
+*          = 'A':  all M columns of U are returned in array U:
+*          = 'S':  the first min(m,n) columns of U (the left singular
+*                  vectors) are returned in the array U;
+*          = 'O':  the first min(m,n) columns of U (the left singular
+*                  vectors) are overwritten on the array A;
+*          = 'N':  no columns of U (no left singular vectors) are
+*                  computed.
+*
+*1  JOBVT   (input) CHARACTER*1
+*          Specifies options for computing all or part of the matrix
+*          V**T:
+*          = 'A':  all N rows of V**T are returned in the array VT;
+*          = 'S':  the first min(m,n) rows of V**T (the right singular
+*                  vectors) are returned in the array VT;
+*          = 'O':  the first min(m,n) rows of V**T (the right singular
+*                  vectors) are overwritten on the array A;
+*          = 'N':  no rows of V**T (no right singular vectors) are
+*                  computed.
+*
+*          JOBVT and JOBU cannot both be 'O'.
+*
+*2  M       (input) INTEGER
+*          The number of rows of the input matrix A.  M >= 0.
+*
+*3  N       (input) INTEGER
+*          The number of columns of the input matrix A.  N >= 0.
+*
+*4  A       (input/output) DOUBLE PRECISION array, dimension (LDA,N)
+*          On entry, the M-by-N matrix A.
+*          On exit,
+*          if JOBU = 'O',  A is overwritten with the first min(m,n)
+*                          columns of U (the left singular vectors,
+*                          stored columnwise);
+*          if JOBVT = 'O', A is overwritten with the first min(m,n)
+*                          rows of V**T (the right singular vectors,
+*                          stored rowwise);
+*          if JOBU .ne. 'O' and JOBVT .ne. 'O', the contents of A
+*                          are destroyed.
+*
+*5  LDA     (input) INTEGER
+*          The leading dimension of the array A.  LDA >= max(1,M).
+*
+*6  S       (output) DOUBLE PRECISION array, dimension (min(M,N))
+*          The singular values of A, sorted so that S(i) >= S(i+1).
+*
+*7  U       (output) DOUBLE PRECISION array, dimension (LDU,UCOL)
+*          (LDU,M) if JOBU = 'A' or (LDU,min(M,N)) if JOBU = 'S'.
+*          If JOBU = 'A', U contains the M-by-M orthogonal matrix U;
+*          if JOBU = 'S', U contains the first min(m,n) columns of U
+*          (the left singular vectors, stored columnwise);
+*          if JOBU = 'N' or 'O', U is not referenced.
+*
+*8  LDU     (input) INTEGER
+*          The leading dimension of the array U.  LDU >= 1; if
+*          JOBU = 'S' or 'A', LDU >= M.
+*
+*9  VT      (output) DOUBLE PRECISION array, dimension (LDVT,N)
+*          If JOBVT = 'A', VT contains the N-by-N orthogonal matrix
+*          V**T;
+*          if JOBVT = 'S', VT contains the first min(m,n) rows of
+*          V**T (the right singular vectors, stored rowwise);
+*          if JOBVT = 'N' or 'O', VT is not referenced.
+*
+*10  LDVT    (input) INTEGER
+*          The leading dimension of the array VT.  LDVT >= 1; if
+*          JOBVT = 'A', LDVT >= N; if JOBVT = 'S', LDVT >= min(M,N).
+*
+*11  WORK    (workspace/output) DOUBLE PRECISION array, dimension (MAX(1,LWORK))
+*          On exit, if INFO = 0, WORK(1) returns the optimal LWORK;
+*          if INFO > 0, WORK(2:MIN(M,N)) contains the unconverged
+*          superdiagonal elements of an upper bidiagonal matrix B
+*          whose diagonal is in S (not necessarily sorted). B
+*          satisfies A = U * B * VT, so it has the same singular values
+*          as A, and singular vectors related by U and VT.
+*
+*12  LWORK   (input) INTEGER
+*          The dimension of the array WORK.
+*          LWORK >= MAX(1,5*MIN(M,N)) for the paths (see comments inside code):
+*             - PATH 1  (M much larger than N, JOBU='N') 
+*             - PATH 1t (N much larger than M, JOBVT='N')
+*          LWORK >= MAX(1,3*MIN(M,N)+MAX(M,N),5*MIN(M,N)) for the other paths
+*          For good performance, LWORK should generally be larger.
+*
+*          If LWORK = -1, then a workspace query is assumed; the routine
+*          only calculates the optimal size of the WORK array, returns
+*          this value as the first entry of the WORK array, and no error
+*          message related to LWORK is issued by XERBLA.
+*
+*13  INFO    (output) INTEGER
+*          = 0:  successful exit.
+*          < 0:  if INFO = -i, the i-th argument had an illegal value.
+*          > 0:  if DBDSQR did not converge, INFO specifies how many
+*                superdiagonals of an intermediate bidiagonal form B
+*                did not converge to zero. See the description of WORK
+*                above for details.
+*
+*  =====================================================================
+*/

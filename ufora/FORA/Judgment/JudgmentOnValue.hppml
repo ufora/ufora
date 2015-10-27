@@ -1,0 +1,696 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "JudgmentOnValue.fwd.hppml"
+#include "../../core/cppml/MemoizeByTagAndHash.hppml"
+#include "../Core/Type.hppml"
+#include "../Primitives/Symbol.hpp"
+#include "../Core/ImplVal.hppml"
+#include "../Core/CSTValue.hppml"
+
+
+namespace Fora {
+
+class ApplyArgFrame;
+
+}
+
+#include <map>
+#include <sstream>
+
+using namespace std;
+
+class JudgmentOnValue;
+
+namespace Fora {
+namespace Interpreter {
+
+class EvalFrameArgList;
+
+}
+}
+
+macro_memoizeCppmlClassByTagAndHash(JudgmentOnValue);
+
+class ImplVal;
+
+template<class T>
+bool covers(const Nullable<T>& s1, const T& s2)
+	{
+	return (!s1 || *s1 == s2);
+	}
+template<class T>
+bool covers(const Nullable<T>& b1, const Nullable<T>& b2)
+	{
+	if (!b1)
+		return true;
+	if (!b2)
+		return false;
+	return *b1 == *b2;
+	}
+template<class T>
+bool disjoint(const Nullable<T>& s1, const T& s2)
+	{
+	return (s1 && *s1 != s2);
+	}
+template<class T>
+bool disjoint(const Nullable<T>& b1, const Nullable<T>& b2)
+	{
+	return b1 && b2 && *b1 != *b2;
+	}
+
+template<class T>
+Nullable<T> mergeNulls(const Nullable<T>& left, const Nullable<T>& right)
+	{
+	if (!left)
+		return right;
+	if (!right)
+		return left;
+	lassert(*left == *right);
+	return left;
+	}
+@type
+	//describes sets of values
+	JudgmentOnValue =
+			Unknown of ()					//nothing is known
+		-|	UnknownCSTKnown of bool isCST	//CSTness is known
+		-|	Union of JudgmentOnValueUnion jov //value could be covered by any one of these
+		-|	JOVAsValue of JudgmentOnJOV jov
+		-|	Atom of JudgmentOnValueAtom jov
+		-|	Alternative of JudgmentOnValueAlternative jov
+		-|	Tuple of JudgmentOnValueTuple jov
+		-|	Class of JudgmentOnValueClass jov
+		-|	Dictionary of JudgmentOnValueDictionary jov
+		-|	Vector of JudgmentOnValueVector jov
+		-|	MutableVector of JudgmentOnValueMutableVector jov
+	with
+		hash_type					hash = (hashCPPMLDirect(*this)),
+		Nullable<CSTValue>			constant = (this->computeConstant()),
+		Nullable<Type>				type = (this->computeType()),
+		Nullable<bool>				isCST = (this->computeCST()),
+		Nullable<JudgmentOnValue>   vectorElementJOV = (this->computeVectorElementJOV()),
+		bool 						isSmallestPossibleVectorJudgment = (this->computeIsSmallestPossibleVectorJudgment()),
+		bool 						isValidVectorElementJOV = (this->computeIsValidVectorElementJOV()),
+		JudgmentOnValue				relaxedJOV = (this->computeRelaxedJOV()),
+		bool 						isRelaxedJOV = (this->computeIsRelaxedJOV())
+	{
+	public:
+		Nullable<bool> convertToBoolean() const;
+
+		bool isNotTuple() const;
+
+		bool covers(const JudgmentOnValue& other) const;
+		bool disjoint(const JudgmentOnValue& other) const;
+		bool disjoint(const CSTValue& other) const;
+		bool covers(const ImplVal& impl) const;
+		bool covers(const ImplValContainer& impl) const;
+		bool covers(const CSTValue& impl) const;
+		
+		void toString(CPPMLPrettyPrintStream& s, bool isJOVAsValue) const;
+
+		const ImmutableTreeSet<JudgmentOnValue>& unionAlternatives() const;
+		
+		string toString(void) const;
+
+		static JudgmentOnValue 		OfType(const Type& t)
+			{
+			return t.typeAsJov();
+			}
+
+		static JudgmentOnValue 		Union(JudgmentOnResult result);
+
+		static JudgmentOnValue 		OfTypeNoMemo(const Type& t);
+		static JudgmentOnValue 		Constant(const CSTValue& t);
+		static JudgmentOnValue 		FromLiveValue(ImplVal t);
+        static JudgmentOnValue      VectorElementJOVFromLiveValue(const ImplVal& inImplVal);
+		
+		JudgmentOnResult 			intersectWith(const JudgmentOnValue& in) const;
+		JudgmentOnResult 			restrictedToCSTness(bool inCSTness) const;
+
+		JudgmentOnValue  			computeRelaxedJOV() const;
+
+		bool 			 			computeIsRelaxedJOV() const;
+		
+		Nullable<CSTValue> 			computeConstant(void) const;
+		Nullable<Type> 				computeType(void) const;
+		Nullable<bool>				computeCST(void) const;
+		
+		//returns the type 't' such that *this == JOV::OfType(t), or null
+		Nullable<Type>				exactlyEquivalentType(void) const;
+		
+		JudgmentOnValue				smallestCovering(const JudgmentOnValue& other) const;
+		
+		/*
+		Returns the weakest JOV which covers a given JOV which is ``just as fast''
+		for vector operations.
+		*/
+		Nullable<JudgmentOnValue>   computeVectorElementJOV(void) const;
+        bool                        computeIsValidVectorElementJOV(void) const;
+
+        //is this a valid vector element JOV, and is it impossible for a smaller one to 
+        //be covered by this one?
+        bool 						computeIsSmallestPossibleVectorJudgment(void) const;
+
+		//if we were to *args this argument, what resulting tuple would we get?
+		JudgmentOnValueTuple 		asTupleCallJovt(void) const;
+	}
+and
+	JudgmentOnResult = ImmutableTreeSet<JudgmentOnValue> vals
+	{
+	public:
+		explicit JudgmentOnResult(const JudgmentOnValue& in);
+		
+		JudgmentOnValue 	operator[](uword_t ix) const;
+		uword_t 			size(void) const;
+		operator 			bool (void) const;
+		
+		JudgmentOnResult	restrictedToCSTness(bool inCSTness) const;
+		
+		Nullable<uword_t> 	smallestCovering(const JudgmentOnValue& in) const;
+		
+		Nullable<uword_t> 	smallestCovering(const ImplVal& in) const;
+		
+		Nullable<uword_t> 	smallestCovering(const ImplValContainer& in) const;
+		
+		Nullable<JudgmentOnValue> 	smallestCoveringJOV(const JudgmentOnValue& in) const;
+		
+		//return the smallest JOV that covers every element of the result, or null if
+		//the JOR has no terms.
+		Nullable<JudgmentOnValue>	smallestJOVCoveringAll() const;
+
+		//remove any judgments that are covered by other judgments in the JOR
+		JudgmentOnResult  	removeExtraneousJudgments() const;
+		
+		bool 				covers(const JudgmentOnResult& other) const;
+		bool 				covers(const JudgmentOnValue& other) const;
+		bool 				disjoint(const JudgmentOnResult& other) const;
+		bool 				covers(const ImplVal& impl) const;
+		bool 				covers(const ImplValContainer& impl) const;
+		bool 				covers(const CSTValue& impl) const;
+		bool 				isUnknown(void) const;
+		
+		JudgmentOnResult	operator+(const JudgmentOnResult& in) const;
+		
+		Nullable<bool>		isCST() const;
+		
+		//limit the number of JOVs allowed int he JOR: if vals.size() > limit, return JOR(Unknown())  
+		JudgmentOnResult	limitNumberOfJOVs(uword_t limit) const;
+			
+		void toString(CPPMLPrettyPrintStream& s) const;
+	}
+and
+	//TODO BUG brax: Unknown could be passed something that has no lower level judgments
+	//we need to ensure that that gets turned into 'Known', in which case we need a scaffolding
+	//for JOVs to indicate when they are 'as small as they can get', so to speak.
+	JudgmentOnJOV = 
+			Unknown of JudgmentOnValue jov		//all the JOVs covered by this JOV
+		-|	Known of JudgmentOnValue jov		//a constant JOV
+	{
+	public:
+		static JudgmentOnValue		FromLiveValue(const ImplVal& inImplVal);
+		static JudgmentOnValue		OfType(const Type& type);
+		
+		Nullable<Type>				computeType() const;
+		Nullable<bool>				computeIsCST() const;
+		Nullable<CSTValue>			computeConstant() const;
+		void						toString(CPPMLPrettyPrintStream& s, bool isJOVAsValue) const;
+		
+		bool 						covers(const ImplVal& impl) const;
+		bool 						covers(const JudgmentOnValue& impl) const;
+		bool 						disjoint(const JudgmentOnValue& impl) const;
+		
+		JudgmentOnResult 			intersectWith(const JudgmentOnValue& in) const;
+		JudgmentOnResult 			restrictedToCSTness(bool inCSTness) const;
+		JudgmentOnValue				smallestCovering(const JudgmentOnValue& other) const;
+		
+		static JudgmentOnJOV Unknown();
+		
+		string toString(void) const
+			{
+			return prettyPrintString(*this);
+			}
+	}
+and
+	JudgmentOnValueAtom =
+			Unknown of ()
+		-|	Float of ()
+		-|	Integer of Nullable<bool> isSigned
+		-|	Typed of Type t		//be careful not to put 'nothing' in the Typed field,
+								//since it would also be equivalent to Valued(CSTValue())
+		-|	Valued of CSTValue v
+	{
+	public:
+			static JudgmentOnValue		FromLiveValue(const ImplVal& inImplVal);
+			static JudgmentOnValue		OfType(const Type& type);
+			
+			Nullable<Type>				computeType() const;
+			Nullable<bool>				computeIsCST() const;
+			Nullable<CSTValue>			computeConstant() const;
+			void						toString(CPPMLPrettyPrintStream& s, bool isJOVAsValue) const;
+			
+			bool 						covers(const ImplVal& impl) const;
+			bool 						covers(const JudgmentOnValue& impl) const;
+			bool 						disjoint(const JudgmentOnValue& impl) const;
+			
+			JudgmentOnResult 			intersectWith(const JudgmentOnValue& in) const;
+			JudgmentOnResult 			restrictedToCSTness(bool inCSTness) const;
+			JudgmentOnValue				smallestCovering(const JudgmentOnValue& other) const;
+
+	}
+and
+	JudgmentOnValueMutableVector = JudgmentOnJOV elementJudgment
+	{
+	public:
+			static JudgmentOnValue		FromLiveValue(const ImplVal& inImplVal);
+			static JudgmentOnValue		OfType(const Type& type);
+			
+			Nullable<Type>				computeType() const;
+			Nullable<bool>				computeIsCST() const;
+			Nullable<CSTValue>			computeConstant() const;
+			void						toString(CPPMLPrettyPrintStream& s, bool isJOVAsValue) const;
+			
+			bool 						covers(const ImplVal& impl) const;
+			bool 						covers(const JudgmentOnValue& impl) const;
+			bool 						disjoint(const JudgmentOnValue& impl) const;
+			
+			JudgmentOnResult 			intersectWith(const JudgmentOnValue& in) const;
+			JudgmentOnResult 			restrictedToCSTness(bool inCSTness) const;
+			JudgmentOnValue				smallestCovering(const JudgmentOnValue& other) const;
+	}
+and
+	JudgmentOnValueUnion = JudgmentOnResult alternatives
+	{
+	public:
+		Nullable<Type>				computeType() const;
+		Nullable<bool>				computeIsCST() const;
+		Nullable<CSTValue>			computeConstant() const;
+
+		void						toString(CPPMLPrettyPrintStream& s, bool isJOVAsValue) const;
+		
+		bool 						covers(const ImplVal& impl) const;
+		bool 						covers(const JudgmentOnValue& impl) const;
+		bool 						disjoint(const JudgmentOnValue& impl) const;
+		
+		JudgmentOnResult 			intersectWith(const JudgmentOnValue& in) const;
+		JudgmentOnResult 			restrictedToCSTness(bool inCSTness) const;
+		JudgmentOnValue				smallestCovering(const JudgmentOnValue& other) const;
+		
+		string toString(void) const;
+	}
+and
+	JudgmentOnValueVector = JudgmentOnResult elementsJOR		//judgments of everything in the vector
+	{
+	public:
+		static JudgmentOnValue		FromLiveValue(const ImplVal& inImplVal);
+		static JudgmentOnValue		OfType(const Type& type);
+		static JudgmentOnResult		vectorJOR(const JudgmentOnResult& jor);
+		
+		Nullable<Type>				computeType() const;
+		Nullable<bool>				computeIsCST() const;
+		Nullable<CSTValue>			computeConstant() const;
+		void						toString(CPPMLPrettyPrintStream& s, bool isJOVAsValue) const;
+		
+		bool 						covers(const ImplVal& impl) const;
+		bool 						covers(const JudgmentOnValue& impl) const;
+		bool 						disjoint(const JudgmentOnValue& impl) const;
+		
+		JudgmentOnResult 			intersectWith(const JudgmentOnValue& in) const;
+		JudgmentOnResult 			restrictedToCSTness(bool inCSTness) const;
+		JudgmentOnValue				smallestCovering(const JudgmentOnValue& other) const;
+		
+		string toString(void) const;
+	}
+and
+	JudgmentOnValueTupleExtras =
+			NoExtras of ()
+		-|	Extras of JudgmentOnValue jov
+	{
+	public:
+			static JudgmentOnValueTupleExtras Extras(void);
+	}
+and
+	JudgmentOnValueTuple = 	ImmutableTreeVector<JudgmentOnValue> jovs, 
+							ImmutableTreeVector<Nullable<Symbol> > names,
+							JudgmentOnValueTupleExtras extras
+	{
+	public:
+		static JudgmentOnValue		FromLiveValue(const ImplVal& inImplVal);
+        static JudgmentOnValue      VectorElementJOVFromLiveValue(const ImplVal& inImplVal);
+		static JudgmentOnValue		OfType(const Type& type);
+		
+		Nullable<Type>				computeType() const;
+		Nullable<bool>				computeIsCST() const;
+		Nullable<CSTValue>			computeConstant() const;
+		void						toString(CPPMLPrettyPrintStream& s, bool isJOVAsValue) const;
+		
+		bool 						covers(const ImplVal& impl) const;
+		bool 						covers(const JudgmentOnValue& impl) const;
+		bool 						disjoint(const JudgmentOnValue& impl) const;
+		
+		JudgmentOnResult 			intersectWith(const JudgmentOnValue& in) const;
+		JudgmentOnResult 			restrictedToCSTness(bool inCSTness) const;
+		JudgmentOnValue				smallestCovering(const JudgmentOnValue& other) const;
+
+		
+		JudgmentOnValueTuple(const ImmutableTreeVector<JudgmentOnValue>& inJOVs,
+							 const ImmutableTreeVector<Nullable<Symbol> >& inNames);
+		
+		bool 						covers(const JudgmentOnValueTuple& impl) const;
+		bool 						disjoint(const JudgmentOnValueTuple& impl) const;
+		
+		//special form used by interpreter
+		bool covers(const Fora::ApplyArgFrame& impl) const;
+
+		bool covers(const Fora::Interpreter::EvalFrameArgList& impl) const;
+
+		hash_type hash() const;
+		static JudgmentOnValueTuple Unnamed(const ImmutableTreeVector<JudgmentOnValue>& inJOVs);
+
+		//computes the best JudgmentOnValueTuple you can get if you were
+		//to place the elements of the two tuples side-by-side.
+		//e.g. (1,2) and (3,4) becomes (1,2,3,4).
+		//But (1,2,...) and anything is still (1,2,...).
+		static JudgmentOnValueTuple merge(
+									const JudgmentOnValueTuple& left, 
+									const JudgmentOnValueTuple& right
+									);
+		
+		//chop off the first 'n' arguments from the tuple
+		//doesn't fail if there are not enough arguments, so that
+		//().slice(n) always returns ()
+		JudgmentOnValueTuple slice(uint32_t index) const;
+
+		//find a judgment consisting entirely of 'Extras' that covers this tuple
+		JudgmentOnValueTuple collapseEntirelyIntoExtras() const;
+		
+		//return the JOVs of each term in the JOVT, packing the 'extras'
+		//into a single term
+		ImmutableTreeVector<JudgmentOnValue> toJOVListWithExtrasAsTrailingElement(void) const;
+
+		//return the corresponding apply signature if each term in
+		//the JOVT was an argument to an Apply operation
+		ApplySignature	toApplySignature(void) const;
+		
+		Nullable<uword_t> maxElements(void) const;
+		JudgmentOnValue operator[](uword_t ix) const;
+		
+		string toString(void) const;
+
+		bool hasExtras(void) const;
+
+		Nullable<bool> arityEqualTo(uword_t inCount) const;
+
+		Nullable<bool> arityGreaterThanOrEqualTo(uword_t inCount) const;
+	}
+and
+	JudgmentOnValueAlternative = Nullable<Symbol> sym, JudgmentOnValue val
+	{
+	public:
+		static JudgmentOnValue		FromLiveValue(const ImplVal& inImplVal);
+		static JudgmentOnValue		OfType(const Type& type);
+        static JudgmentOnValue      VectorElementJOVFromLiveValue(const ImplVal& inImplVal);		
+
+		Nullable<Type>				computeType() const;
+		Nullable<bool>				computeIsCST() const;
+		Nullable<CSTValue>			computeConstant() const;
+		void						toString(CPPMLPrettyPrintStream& s, bool isJOVAsValue) const;
+		
+		bool 						covers(const ImplVal& impl) const;
+		bool 						covers(const JudgmentOnValue& impl) const;
+		bool 						disjoint(const JudgmentOnValue& impl) const;
+		
+		JudgmentOnResult 			intersectWith(const JudgmentOnValue& in) const;
+		JudgmentOnResult 			restrictedToCSTness(bool inCSTness) const;
+		JudgmentOnValue				smallestCovering(const JudgmentOnValue& other) const;
+	}
+and
+	JudgmentOnValueClass =
+			Unknown of ()
+		-|	Class of 
+				ImmutableTreeVector<JudgmentOnValue> elements,
+				ClassBody classBody
+	{
+	public:
+		static JudgmentOnValueClass Class(
+			const ImmutableTreeVector<JudgmentOnValue>&	elements,
+			const ClassMediator& mediator,
+			const ClassMediatorResumption& resumption
+			);
+		
+		static JudgmentOnValue		VectorElementJOVFromLiveValue(const ImplVal& inImplVal);
+		static JudgmentOnValue		FromLiveValue(const ImplVal& inImplVal);
+		static JudgmentOnValue		OfType(const Type& type);
+		
+		Nullable<Type>				computeType() const;
+		Nullable<bool>				computeIsCST() const;
+		Nullable<CSTValue>			computeConstant() const;
+		void						toString(CPPMLPrettyPrintStream& s, bool isJOVAsValue) const;
+		
+		bool 						covers(const ImplVal& impl) const;
+		bool 						covers(const JudgmentOnValue& impl) const;
+		bool 						disjoint(const JudgmentOnValue& impl) const;
+		
+		JudgmentOnResult 			intersectWith(const JudgmentOnValue& in) const;
+		JudgmentOnResult 			restrictedToCSTness(bool inCSTness) const;
+		JudgmentOnValue				smallestCovering(const JudgmentOnValue& other) const;
+	}
+and
+	JudgmentOnValueDictionary = 
+	-|	Unknown of ()
+	-|	Typed of bool isCST
+	{
+	public:
+		static JudgmentOnValue		FromLiveValue(const ImplVal& inImplVal);
+		static JudgmentOnValue		OfType(const Type& type);
+		
+		Nullable<Type>				computeType() const;
+		Nullable<bool>				computeIsCST() const;
+		Nullable<CSTValue>			computeConstant() const;
+		void						toString(CPPMLPrettyPrintStream& s, bool isJOVAsValue) const;
+		
+		bool 						covers(const ImplVal& impl) const;
+		bool 						covers(const JudgmentOnValue& impl) const;
+		bool 						disjoint(const JudgmentOnValue& impl) const;
+		
+		JudgmentOnResult 			intersectWith(const JudgmentOnValue& in) const;
+		JudgmentOnResult 			restrictedToCSTness(bool inCSTness) const;
+		JudgmentOnValue				smallestCovering(const JudgmentOnValue& other) const;
+	}
+	;
+
+macro_defineCppmlComparisonOperators(JudgmentOnValueTuple)
+macro_defineCppmlComparisonOperators(JudgmentOnResult)
+
+
+macro_defineMemberHashFunction(JudgmentOnValueTuple)
+
+template<>
+class CPPMLPrettyPrint<JudgmentOnValue> {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream& s, const JudgmentOnValue& t)
+			{
+			t.toString(s, false);
+			}
+};
+
+template<>
+class CPPMLPrettyPrint<JudgmentOnValueTuple> {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream& s, const JudgmentOnValueTuple& t)
+			{
+			t.toString(s, false);
+			}
+};
+
+template<>
+class CPPMLPrettyPrint<JudgmentOnResult> {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream& s, const JudgmentOnResult& t)
+			{
+			t.toString(s);
+			}
+};
+
+
+//compute the intersection of the two JOVs
+JudgmentOnResult 		operator&(	const JudgmentOnValue& left, 
+									const JudgmentOnValue& right);
+
+JudgmentOnResult operator&(	const JudgmentOnResult& left, 
+							const JudgmentOnValue& right);
+JudgmentOnResult operator&(	const JudgmentOnValue& left, 
+							const JudgmentOnResult& right);
+JudgmentOnResult operator|(	const JudgmentOnResult& left, 
+							const JudgmentOnValue& right);
+JudgmentOnResult operator|(	const JudgmentOnValue& left, 
+							const JudgmentOnResult& right);
+JudgmentOnResult operator|(	const JudgmentOnValue& left, 
+							const JudgmentOnValue& right);
+JudgmentOnResult operator|(	const JudgmentOnResult& lhs, 
+							const JudgmentOnResult& rhs);
+JudgmentOnResult operator&(	const JudgmentOnResult& lhs, 
+							const JudgmentOnResult& rhs);
+
+
+bool judgmentIsCST(const JudgmentOnValue& val);
+bool judgmentIsOfType(const JudgmentOnValue& val, const Type& toCheck);
+bool isAtomType(const Type& t);
+
+// return the smallest Covering of all elements in `jovs`. If jovs is empty, returns null()
+Nullable<JudgmentOnValue> smallestCovering(const ImmutableTreeVector<JudgmentOnValue>& jovs);
+JudgmentOnValue smallestCovering(	const JudgmentOnValue& left,
+									const JudgmentOnValue& right);
+
+
+typedef JudgmentOnValueTupleExtras 	JOVTE;
+typedef JudgmentOnValueTuple 		JOVT;
+typedef JudgmentOnValue 			JOV;
+typedef JudgmentOnJOV 				JOJOV;
+
+JudgmentOnValue OfType(const Type& ty);
+
+//helper functions to produce new JOVTs in axiom code.
+JOVT 					operator+(const JOVT& in, const char* s);
+JOVT 					operator+(const JOVT& in, const string& s);
+JOVT 					operator+(const JOVT& in, const CSTValue& v);
+JOVT 					operator+(const JOVT& in, const JudgmentOnValue& v);
+JOVT					operator+(const JOVT& in, const JOVTE& e);
+
+//jov of a tuple with completely unknown elements
+JOV jovTuple(void);
+
+//jov of a tuple with elements of a given JOV
+JOV jovTuple(const JOV& elementJOV);
+
+//JOV of the empty tuple
+JOV jovTupleEmpty(void);
+
+//JOV for an empty vector
+JudgmentOnValue	jovEmptyVector();
+
+//JOV for a vector holding one kind of thing
+JudgmentOnValue	jovVector(JOV held);
+
+//JOV for a vector holding unknown objects
+JudgmentOnValue	jovAnyVector();
+
+//the JOV of all JOVs as value
+JudgmentOnValue	jovJOVAsValue();
+
+//jov of a MutableVector holding values of type Nothing
+JudgmentOnValue	jovMutableVectorOfNothing();
+
+//jov of all mutable vectors
+JudgmentOnValue	jovAnyMutableVector();
+	
+//jov of a mutable vector that knows its holding elements lke 'held'
+JudgmentOnValue	jovMutableVector(JOV held);
+
+//the jov of arbitrary alternatives
+JOV jovAlternative(void);
+
+//the jov of arbitrary dictionaries
+JOV jovAnyDictionary(void);
+
+template<class T1, class T2>
+class CPPMLTransform;
+
+template<class T1, class T2>
+class CPPMLTransformWithIndex;
+
+//we need a special transform to force the hash to recompute if it changes
+template<>
+class CPPMLTransform<JudgmentOnValueTuple, void> {
+public:
+		template<class F>
+		static Nullable<JudgmentOnValueTuple> apply(
+											const JudgmentOnValueTuple& in, 
+											const F& f)
+			{
+			Nullable<ImmutableTreeVector<JudgmentOnValue> > jovs = 
+											transformNullable(in.jovs(), f);
+			Nullable<ImmutableTreeVector<Nullable<Symbol> > > names = 
+							transformNullable(in.names(), f);
+			Nullable<JudgmentOnValueTupleExtras> jovte = 
+											transformNullable(in.extras(), f);
+			
+			if (jovs || jovte)
+				return null() << JudgmentOnValueTuple(
+											jovs ? *jovs : in.jovs(), 
+											names ? *names : in.names(),
+											jovte ? *jovte : in.extras()
+											);
+			return null();
+			}
+};
+
+//we need a special transform to force the hash to recompute if it changes
+template<>
+class CPPMLTransformWithIndex<JudgmentOnValueTuple, void> {
+public:
+		template<class F, class index_type>
+		static Nullable<JudgmentOnValueTuple> apply(
+							const JudgmentOnValueTuple& in, 
+							const F& f, 
+							const ImmutableTreeVector<index_type>& inIndices)
+			{
+			Nullable<ImmutableTreeVector<JudgmentOnValue> > jovs = 
+							transformNullable(in.jovs(), f, inIndices + 0);
+			Nullable<ImmutableTreeVector<Nullable<Symbol> > > names = 
+							transformNullable(in.names(), f, inIndices + 1);
+			Nullable<JudgmentOnValueTupleExtras> jovte = 
+							transformNullable(in.extras(), f, inIndices + 2);
+			
+			if (jovs || jovte)
+				return null() << JudgmentOnValueTuple(
+								jovs ? *jovs : in.jovs(),
+								names ? *names : in.names(),
+								jovte ? *jovte : in.extras()
+								);
+			return null();
+			}
+};
+
+//a type useful in pattern matching on pairs of jovs.
+@type JOVPair = JOV l, JOV r;
+
+bool covers(	const ImmutableTreeVector<JudgmentOnValue>& l, 
+				const ImmutableTreeVector<JudgmentOnValue>& r);
+
+JudgmentOnValue relaxedJOV(const JudgmentOnValue& in);
+
+namespace CPPML {
+
+template<>
+class Validator<JudgmentOnValueVector, void> {
+public:
+	void operator()(JudgmentOnValueVector& jovv) const;
+};
+
+template<>
+class Validator<JudgmentOnValueUnion, void> {
+public:
+	void operator()(JudgmentOnValueUnion& jovv) const;
+};
+
+}
+
+bool tupleGetItemDefinitelyWillFail(const JudgmentOnValue& inJOV, uword_t inIndex);
+
+Nullable<bool> jovIsTupleOfArity(const JOV& inJOV, uword_t arity, bool arityIsExact);
+
+

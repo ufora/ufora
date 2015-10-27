@@ -1,0 +1,363 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "TypedFora.fwd.hppml"
+#include "TypedForaFreeVariables.hppml"
+#include "TypedForaPrettyPrinters.hppml"
+#include "RefcountStyle.hppml"
+
+#include "../ControlFlowGraph/ControlFlowGraph.hppml"
+#include "../../core/containers/ImmutableTreeVector.hppml"
+#include "../../core/containers/ImmutableTreeSet.hppml"
+#include "../../core/containers/ImmutableTreeMap.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
+#include "../Judgment/JudgmentOnAction.hppml"
+
+class NativeCFG;
+class NativeBlockID;
+class NativeExpression;
+class NativeVariable;
+
+namespace TypedFora {
+
+@type
+	CallTarget = 
+		//calls the interpreter. by default, this can't commute with anything. the interpreter
+		//implicitly returns things by value. The converter is responsible for translating the 
+		//interpreter signature into whatever continuations we hand to the call target.
+		//clients are responsible for ensuring that the target clients are valid
+	-|	Subgraph of 
+			Callable subgraph,
+			BlockID block
+	-|	ExternalSubgraph of 
+			ResultSignature output,
+			ImmutableTreeVector<Type> input,
+			string name,
+			BlockID block
+	with
+		ImmutableTreeSet<Variable> freeVariables = (computeFreeVariables(*this))
+	{
+	public:
+		ResultSignature resultSignature(void) const;
+		ImmutableTreeVector<Type> callSignature(void) const;
+
+		JudgmentOnValueTuple callSignatureAsJovt(void) const;
+		JudgmentOnAction resultSignatureAsJoa(void) const;
+	}
+and
+	TransferTarget = 
+	-|	ExternalSubgraph of 
+			ResultSignature output,
+			ImmutableTreeVector<Type> input,
+			string name,
+			BlockID block
+	{
+	public:
+		ResultSignature resultSignature(void) const;
+		ImmutableTreeVector<Type> callSignature(void) const;
+
+		JudgmentOnValueTuple callSignatureAsJovt(void) const;
+		JudgmentOnAction resultSignatureAsJoa(void) const;
+	}
+and
+	Callable = 
+	-|	Graph of 
+			ResultSignature resultSignature,
+			ImmutableTreeMap<BlockID, Block> blocks
+	-|	SingleExpression of 
+			ImmutableTreeVector<Variable> vars,
+			Expression expression,
+			Type resultType,
+			bool isException,
+			bool hasSideEffects
+	-| 	NativeOperation of 
+			ResultSignature resultSignature,
+			ImmutableTreeMap<BlockID, ImmutableTreeVector<Type> > entrypointTypes,
+			CPPMLOpaqueHandle<NativeCFG> implementation
+	with
+		ImmutableTreeSet<Variable> freeVariables = (computeFreeVariables(*this))
+	{
+	public:
+		ResultSignature resultSignature(void) const;
+		ImmutableTreeVector<Type> callSignature(const BlockID& blockID) const;
+
+		JudgmentOnValueTuple callSignatureAsJovt(const BlockID& blockID) const;
+		JudgmentOnAction resultSignatureAsJoa(void) const;
+	}
+and
+	Expression = 
+	-|	Var of Variable var
+	-|	Constant of CSTValue
+	-|	Let of Variable var, Expression toBind, Expression toEvaluate
+	-|	DiscardFirst of Expression first, Expression second
+	-|	If of Expression expr, Expression ifTrue, Expression ifFalse, double frequencyTrue
+	-|	InterruptCheck of ImmutableTreeVector<MetadataStackFrame> stackMetadata
+	-|	KickCheck of Expression transferExpression
+	-|	Halt of std::string errorMessage
+	-|	TransferToInterpreter of ImmutableTreeVector<MetadataStackFrame> stackMetadata
+	-|	Call of 
+			CallTarget target,
+			ImmutableTreeVector<Expression> arguments,
+			ContinuationFrame continuations,
+			ImmutableTreeVector<MetadataStackFrame> stackMetadata
+		//transfer control flow, so no continuations are needed
+	-|	TransferTo of 
+			TransferTarget target,
+			ImmutableTreeVector<Expression> expressions,
+			ImmutableTreeVector<MetadataStackFrame> stackMetadata
+	-|	Jump of 
+			BlockID target,
+			ImmutableTreeVector<Expression> arguments
+	-|	Return of 
+			bool isException,
+			Expression result
+		//check whether something's a tuple or not
+	-|	IsTuple of Expression expr, uword_t arity, bool arityIsExact
+		//extract an element of a tuple or a class. You must have verified that the operation
+		//will succeed
+	-|	GetItem of Expression expr, uword_t index
+	-|	GetSlice of Expression expr, uword_t indexLow
+	-|	MakeTuple of ImmutableTreeVector<MakeTupleArgument> arguments, Type outType
+		//apply a more specific Judgment to 'expr', making the assumption that the result of 
+		//expr evaluates to something that matches 'toType'.
+	-|	CastWithoutCheck of Expression expr, Type toType
+		//evaluate 'expr', but return an expression whose classBody is 'newClassBody'.
+		//'expr' must evaluate either to a Class or a Tuple judgment. If newClassBody is None,
+		//then a Tuple judgment is returned.
+	-|	ChangeClassBody of Expression expr, Nullable<ClassBody> newClassBody
+		//check whether 'toCheck' matches each element of 'continuations' linearly. Halts
+		//if nothing matches
+	-|	TypeCheck of Expression toCheck, 
+			ImmutableTreeVector<Continuation> continuations
+	-|	InlineNativeOperation of 
+			ImmutableTreeVector<InlineNativeOperationArg> variableMap,
+			CPPMLOpaqueHandle<NativeExpression> expr, 
+			Type outputType,
+			bool hasSideEffects,
+			ImmutableTreeVector<MetadataStackFrame> stackMetadata
+	with
+		ImmutableTreeSet<Variable> freeVariables = (computeFreeVariables(*this)),
+		Nullable<Type> type = (this->computeType()),
+		bool hasSideEffects = (this->computeHasSideEffects())
+	{
+	public:
+		Nullable<Type> computeType(void) const;
+
+		bool computeHasSideEffects(void) const;
+	
+		static Expression MakeTuple(const ImmutableTreeVector<MakeTupleArgument>& arguments);
+	}
+and
+	ContinuationFrame = 
+		ImmutableTreeVector<Continuation> normalContinuations,
+		ImmutableTreeVector<Continuation> exceptionContinuations
+	{
+	public:
+		uword_t size(void) const;
+		pair<Continuation, bool> operator[](uword_t inIndex) const;
+		Nullable<uword_t> typedResumptionIndex(void) const;
+	}
+and
+	Type = JudgmentOnValue jov, RefcountStyle refcountStyle
+	{
+	public:
+		hash_type hash(void) const;
+	}
+and
+	//represents a FORA value. Translates directly to a NativeVariable.
+	Variable = uint64_t varID, Type type
+	{
+	public:
+		static Variable Temp(const Type& inType);
+
+		Expression expr(void) const;
+	}
+and
+	InlineNativeOperationArg = 
+		//how the arg looks to the outside
+		CPPMLOpaqueHandle<NativeVariable> internalArg,
+		//how the arg is held during the life of the operation. If this is AsValueOwned
+		//then the argument is destroyed by the native operation
+		Type internalBindType,
+		//expression that populates the argument
+		Expression externalArgSource
+and
+	ResultSignature = 
+		ImmutableTreeVector<Type> normalTypes,
+		ImmutableTreeVector<Type> exceptionTypes,
+		bool hasSideEffects
+	{
+	public:
+		JudgmentOnAction asJoa(void) const;
+
+		bool covers(const ResultSignature& inResultSignature) const;
+
+		pair<Type, bool> operator[](uword_t index) const;
+		uword_t size(void) const;
+	}
+and
+	//unique identifier for a Block in a graph. 'isInternal' - if internal, then outside clients
+	//don't expect to be able to enter code at the given block. if not internal, then we must
+	//maintain an entrypoint at this block
+	BlockID = uint32_t isInternal, uint32_t index
+	{
+	public:
+		static BlockID internal();
+		static BlockID external(uint32_t index);
+		static BlockID entry();
+	}
+and
+	Block = 
+		ImmutableTreeVector<Variable> args,
+		Expression expression,
+		double relativeFrequency
+and
+	Continuation = 
+		Variable var, 
+		Expression resumption,
+		Nullable<Type> type,
+		double relativeFrequency
+and
+	MakeTupleArgument = 
+	-|	Normal of Nullable<Symbol> fieldName, Expression arg
+	-|	TupleCall of Expression arg
+	{
+	public:
+		const Expression& arg(void) const;
+	}
+and
+	MetadataInstruction = 
+		//indicates that we are at 'NodeWithResult' with a result value (which is listed as an
+		//extra variable in the MetadataVariableLayout)
+		NodeWithResult of ControlFlowGraphJumpPoint jumpPoint, int32_t index, ImmutableTreeVector<JOV> jovs, JOV jovOfResult
+		//indicates that we resume at the entrypoint to 'jumpPoint'
+	-|	Node of ControlFlowGraphJumpPoint jumpPoint, ImmutableTreeVector<JOV> jovs
+	with
+		hash_type hash = (hashCPPMLDirect(*this))
+	{
+	public:
+	}
+and
+	MetadataVariableLayout = 
+		-|	Var of Variable var
+		-|	Constant of CSTValue val
+		-|	Tuple of ImmutableTreeVector<MetadataVariableLayout> vars
+	with
+		ImmutableTreeSet<Variable> freeVariables = (computeFreeVariables(*this))
+	{
+	}
+and
+	MetadataVariable = JudgmentOnValue jov, MetadataVariableLayout layout
+and
+	MetadataStackFrame = 
+		MetadataInstruction instruction,
+		ImmutableTreeVector<MetadataVariable> vars
+	;
+
+macro_defineCppmlComparisonOperators(Type);
+macro_defineCppmlComparisonOperators(RefcountStyle);
+macro_defineCppmlComparisonOperators(Variable);
+macro_defineCppmlComparisonOperators(ResultSignature);
+macro_defineCppmlComparisonOperators(BlockID);
+
+}
+
+namespace CPPML {
+
+template<>
+class Validator<TypedFora::Block, void> {
+public:
+	void operator()(TypedFora::Block& in) const;
+};
+
+template<>
+class Validator<TypedFora::ContinuationFrame, void> {
+public:
+	void operator()(TypedFora::ContinuationFrame& in) const;
+};
+
+template<>
+class Validator<TypedFora::Expression_LetType, void> {
+public:
+	void operator()(TypedFora::Expression_LetType& in) const;
+};
+
+template<>
+class Validator<TypedFora::Expression_IfType, void> {
+public:
+	void operator()(TypedFora::Expression_IfType& in) const;
+};
+
+template<>
+class Validator<TypedFora::Expression_MakeTupleType, void> {
+public:
+	void operator()(TypedFora::Expression_MakeTupleType& in) const;
+};
+
+template<>
+class Validator<TypedFora::Expression_GetSliceType, void> {
+public:
+	void operator()(TypedFora::Expression_GetSliceType& in) const;
+};
+
+template<>
+class Validator<TypedFora::Expression_GetItemType, void> {
+public:
+	void operator()(TypedFora::Expression_GetItemType& in) const;
+};
+
+template<>
+class Validator<TypedFora::Expression_TransferToType, void> {
+public:
+	void operator()(TypedFora::Expression_TransferToType& in) const;
+};
+
+template<>
+class Validator<TypedFora::Expression_CallType, void> {
+public:
+	void operator()(TypedFora::Expression_CallType& in) const;
+};
+
+template<>
+class Validator<TypedFora::Callable_NativeOperationType, void> {
+public:
+	void operator()(TypedFora::Callable_NativeOperationType& in) const;
+};
+
+template<>
+class Validator<TypedFora::Expression_InlineNativeOperationType, void> {
+public:
+	void operator()(TypedFora::Expression_InlineNativeOperationType& in) const;
+};
+
+template<>
+class Validator<TypedFora::Expression_CastWithoutCheckType, void> {
+public:
+	void operator()(TypedFora::Expression_CastWithoutCheckType& in) const;
+};
+
+template<>
+class Validator<TypedFora::Expression_ChangeClassBodyType, void> {
+public:
+	void operator()(TypedFora::Expression_ChangeClassBodyType& in) const;
+};
+
+}
+
+
+
+

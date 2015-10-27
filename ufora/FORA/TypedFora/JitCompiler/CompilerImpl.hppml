@@ -1,0 +1,253 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <set>
+#include <map>
+#include <string>
+
+#include "../../Native/LLVMUtil.hppml"
+#include "../../Native/NativeCodeCompiler.hppml"
+
+#include "TypedJumpTarget.hppml"
+#include "StaticInliner.hppml"
+#include "DynamicInliner.hppml"
+#include "Compiler.hppml"
+#include "../../Interpreter/RuntimeConfig.hppml"
+#include "../../Native/NativeRuntimeContinuationValue.hppml"
+#include "../../Native/NativeCFGTransforms/Transforms.hppml"
+#include "../../Native/NativeCFGTable.hppml"
+#include "../../Native/NativeCallSiteStatistics.hppml"
+#include "../../Native/FunctionPointerTable.hpp"
+#include "../../../core/threading/PriorityQueue.hpp"
+#include "../../../core/threading/ThreadSafeMap.hpp"
+#include "../../../core/StringUtil.hpp"
+#include "../../../core/STLOps.hpp"
+#include "../../../core/Logging.hpp"
+#include "../../../core/Clock.hpp"
+
+#include "../../../core/ObjectPool.hpp"
+#include "../../../core/threading/ThreadPoolWithDependencies.hpp"
+
+namespace Fora {
+namespace SharedObjectLibraryFromSource {
+
+class BuildResult;
+class Library;
+class LibrarySource;
+
+}
+}
+
+
+class RuntimeConfig;
+
+namespace TypedFora {
+
+class CompilerImpl;
+class Compiler;
+
+@type CompilationTask = 
+		TranslateTypedForaToNativeCode of std::string name
+	-|	Compile of pair<std::string, long> name
+	-|	Link of ImmutableTreeSet<std::string> names
+	;
+
+macro_defineCppmlComparisonOperators(CompilationTask);
+
+class CompilerImpl {
+	//noncopyable
+	CompilerImpl& operator=(const CompilerImpl& in);
+	CompilerImpl(const CompilerImpl&);
+public:
+	CompilerImpl(
+			const RuntimeConfig& inConfiguration, 
+			TypedFora::Compiler& inRuntime
+			);
+
+	void initialize();
+
+	//function 'name' has finished with value 'ptr'. We need to push it
+	//into the correct slots, but we need to make sure that we
+	//initialize everything in its call group simultaneously.
+	//mMutex must be held during this call
+	void markCompletedBuild(const std::string& name, NativeFunctionPointer ptr);
+	
+	void kickAllVersionsBackIntoInterpreter(const std::string& name);
+
+	const RuntimeConfig&	getConfig(void) const;
+	
+	void increasePriority(const std::string& name);
+
+	void define(const std::string& name, const TypedFora::Callable& code);
+
+	void define(const std::string& name, const NativeCFG& code);
+
+	TypedFora::TypedJumpTarget getJumpTarget(	const std::string& name,
+												TypedFora::BlockID inLabel,
+												bool blockUntilCompleted
+												);
+	
+	FunctionPointerHandle getJumpTarget(	const std::string& name,
+											NativeBlockID blockId,
+											bool blockUntilCompleted
+											);
+			
+	//Compile a block of external source code
+	Fora::SharedObjectLibraryFromSource::BuildResult buildLibraryFromSource(
+			const Fora::SharedObjectLibraryFromSource::LibrarySource& inSource
+			);
+
+	//Get a callable for a relevant library
+	void* functionPointerForLibraryFunctionFromSource(
+			const Fora::SharedObjectLibraryFromSource::Library& inLibrary,
+			std::string inName
+			);
+
+	bool isDefined(const std::string& name);
+	
+	Callable getDefinition(const std::string& name);
+	
+	ImmutableTreeSet<std::string> getMutuallyRecursiveFunctions(const std::string& name);
+	
+	NativeRuntimeContinuationValue<1> generateDummyContinuation(
+											void* targetData,
+											uword_t* targetContinuation,
+											uword_t continuationIndex
+											);
+
+	NativeRuntimeContinuationValueVector generateDummyContinuation(
+											void* targetData,
+											uword_t* targetContinuation,
+											uword_t continuationIndexLow,
+											uword_t continuationIndexHigh
+											);
+
+	NativeRuntimeContinuationBase wrapCPPCallback(
+					TypedFora::NativeCppCallback inCFunc,
+					void* inStackframe,
+					MemBlock** inMemBlock
+					);
+
+	bool isNativeFunctionPointer(NativeFunctionPointer jumpPtr) const;
+	
+	void callFunction(
+					NativeFunctionPointer fastcall,
+					MemBlock** mem,
+					uword_t block,
+					void* data
+					);
+		
+	
+	const NativeType& slotTypesForFuncPtr(NativeFunctionPointer funcPtr) const;
+	
+	ImmutableTreeVector<NativeContinuationMetadataSerialized>
+			slotMetadataForFuncPtr(
+					NativeFunctionPointer funcPtr,
+					uword_t metadataEntryId
+					) const;
+
+	NativeIndividualContinuationMetadata
+		continuationMetadataForFuncPtr(
+				NativeFunctionPointer funcPtr,
+				uword_t blockID
+				) const;
+
+	bool isDummyContinuationTarget(NativeFunctionPointer jumpPtr) const;
+	
+	bool isWrappedCPPCallbackPtr(NativeFunctionPointer jumpPtr) const;
+
+	void update(const std::string& name, const NativeCFG& code);
+	
+	std::string	nameForFunctionPointer(NativeFunctionPointer nfp);
+       
+    uword_t labelFor(TypedFora::BlockID label, const string& fun);
+
+    void writeCodeToCompilerDefinitionDir(
+								const NativeCFG& code, 
+								const std::string& toBuildName,
+								uint32_t toBuildGeneration
+								);
+
+    bool anyCompilingOrPending(void) const;
+
+private:
+	void scheduleTask(
+			CompilationTask task, 
+			long priority, 
+			ImmutableTreeVector<CompilationTask> subtasks
+			);
+
+	void scheduleCompilationForNewFunctions(const std::set<std::string>& inNewlyDefined);
+
+	Ufora::ThreadPoolWithDependencies<CompilationTask> mThreadPool;
+
+	void executeTask(CompilationTask task);
+
+	void translateTypedForaToNativeCode_(std::string name);
+
+	void compileFunction_(pair<std::string, long> name);
+
+	void linkFunctions_(ImmutableTreeSet<std::string> names);
+
+	RuntimeConfig mConfig;
+	
+	Ufora::ObjectPool<NativeCodeCompiler> mNativeCodeCompilers;
+
+	//compiler we use just for generating wrappers and compiling libraries
+	mutable boost::mutex mWrapperCompilerMutex;
+
+	boost::shared_ptr<NativeCodeCompiler> mWrapperCompiler;
+
+	ThreadSafeMap<std::string, TypedFora::Callable> mTypedForaDefinitions;
+
+	ThreadSafeMap<pair<std::string, long>, NativeFunctionPointer> mCompiledNativeCode;
+
+	ThreadSafeMap<NativeFunctionPointer, pair<std::string, long> > mCompiledNativeCodeReverse;
+	
+	NativeCFGTable mCFGTable;
+
+	FunctionPointerTable mFuncPtrTable;
+	
+	NativeCallSiteStatistics mStats;
+	
+	StaticInliner mStaticInliner;
+	
+	boost::shared_ptr<DynamicInliner> mDynamicInliner;
+	
+	std::map<NativeFunctionPointer, NativeType> mFunctionSlotsType;
+	
+	std::map<NativeFunctionPointer, map<uword_t, ImmutableTreeVector<
+						NativeContinuationMetadataSerialized> > >
+											mFunctionContMetadata;
+
+	std::map<NativeFunctionPointer, map<uword_t, NativeIndividualContinuationMetadata> >
+											mFunctionContMetadataIndividual;
+
+	boost::shared_ptr<boost::thread> mDynamicInliningThread;
+
+	boost::mutex mLinkTaskNotificationMutex;
+
+	boost::condition_variable mLinkTaskCompleted;
+	
+	mutable boost::shared_mutex mMetadataTableMutex;
+	
+	TypedFora::Compiler& mRuntime;
+};
+
+}
+
+

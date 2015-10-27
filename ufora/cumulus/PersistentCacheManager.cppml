@@ -1,0 +1,527 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "PersistentCacheManager.hppml"
+#include "PersistentCache/PersistentCacheKey.hppml"
+#include "PersistentCache/PersistentCacheIndex.hppml"
+#include "PersistentCache/PersistentCacheCalculations.hppml"
+#include "../FORA/VectorDataManager/VectorDataManager.hppml"
+#include <boost/format.hpp>
+
+using namespace Cumulus::PersistentCache;
+
+namespace Cumulus {
+
+const static double kGcIntervalSeconds = 60.0;
+
+PersistentCacheManager::PersistentCacheManager(
+					PolymorphicSharedPtr<VectorDataManager> vdm
+					) : 
+		GenericCumulusComponentKernel(
+			CumulusComponentType::PersistentCacheManager()
+			),
+		mVDM(vdm),
+		mIsGcRunning(false),
+		mIsCheckpointingPaused(false),
+		mHasSentCheckpointingPauseMessage(false),
+		mIsGcScheduled(false),
+		mHasStartedToDrop(false),
+		mHasRequestedFileList(false),
+		mNextGcIsCompletePurge(false)
+	{
+	}
+
+void PersistentCacheManager::handleCumulusComponentMessage(
+				const CumulusComponentMessage& message, 
+				const CumulusClientOrMachine& source, 
+				const CumulusComponentType& componentType
+				)
+	{
+	@match CumulusComponentMessage(message)
+		-| ComponentToPersistentCacheManager(CheckIfGcNeeded()) ->> {
+			mIsGcScheduled = false;
+			if (!mIsGcRunning)
+				startGcCycle();
+			}
+		-| ComponentToPersistentCacheManager(TriggerGcFromClient(completePurge)) ->> {
+			if (completePurge)
+				mNextGcIsCompletePurge = true;
+
+			if (!mIsGcRunning)
+				startGcCycle();
+			}
+		-| ComponentToPersistentCacheManager(LiveCheckpointFinishedLoading(checkpoint, success)) ->> {
+			handleLiveCheckpointFinishedLoading(checkpoint, success)
+			}
+		-| ComponentToPersistentCacheManager(ShouldCreateRootComputationQuery(computationId)) ->> {
+			lassert(source.isMachine());
+			handleShouldCreateRootComputationQuery(computationId, source.getMachine().machine());
+			}
+		-| ComponentToPersistentCacheManager(CheckpointingIsPausedForGc()) ->> {
+			mIsCheckpointingPaused = true;
+			LOG_INFO << "PersistentCacheManager notified that checkpointing is paused";
+			pushStateForward();
+			}
+		-| ComputationStatusOnMachine(status) ->> {
+			}
+		-| PythonIoTaskService(Response(resp)) ->> {
+			auto it = mOutstandingKeyDeletions.find(resp.guid());
+			if (it != mOutstandingKeyDeletions.end())
+				{
+				PersistentCacheKey key = it->second;
+				mOutstandingKeyDeletions.erase(it);
+
+				if (resp.isSuccess())
+					{
+					if (mVDM->getPersistentCacheIndex()->objectExists(key))
+						mVDM->getPersistentCacheIndex()->dropObject(key);
+					pushStateForward();
+					}
+				else
+					{
+					lassert_dump(false, "Eventually we should go into a no-cache-available state here.");
+					}
+				}
+
+			auto it2 = mOutstandingPathDeletions.find(resp.guid());
+			if (it2 != mOutstandingPathDeletions.end())
+				{
+				std::string path = it2->second;
+				mOutstandingPathDeletions.erase(it2);
+
+				if (resp.isSuccess())
+					pushStateForward();
+				else
+					{
+					lassert_dump(false, "Eventually we should go into a no-cache-available state here.");
+					}
+				}
+
+			if (mOutstandingFileListRequestGuid && resp.guid() == *mOutstandingFileListRequestGuid)
+				{
+				mOutstandingFileListRequestGuid = null();
+
+				if (resp.isObjectPaths())
+					{
+					mOutstandingObjectPaths = resp.getObjectPaths().paths();
+					mHasRequestedFileList = true;
+					pushStateForward();
+					}
+				else
+					{
+					lassert_dump(false, "Eventually we should go into a no-cache-available state here.");
+					}
+				}
+			}
+	}
+
+void PersistentCacheManager::sendSchedulerToComputationMessage(SchedulerToComputationMessage msg)
+	{
+	sendCumulusComponentMessage(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::SchedulerToComputation(msg),
+			CumulusComponentEndpointSet::SpecificWorker(msg.computationMachine()),
+			CumulusComponentType::ActiveComputations()
+			)
+		);
+	}
+
+void PersistentCacheManager::consumePageEvent(const Fora::PageRefcountEvent& inEvent, Cumulus::MachineId onMachineId)
+	{
+	}
+
+void PersistentCacheManager::startGcCycle()
+	{
+	lassert(!mIsGcRunning);
+	mIsGcRunning = true;
+
+	pushStateForward();
+	}
+
+void PersistentCacheManager::pushStateForward()
+	{
+	lassert(mIsGcRunning);
+
+	if (!mIsCheckpointingPaused)
+		{
+		if (mHasSentCheckpointingPauseMessage)
+			return;
+
+		mHasSentCheckpointingPauseMessage = true;
+
+		LOG_INFO << "PersistentCacheManager pausing checkpointing for GC";
+
+		sendCumulusComponentMessage(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::ComponentToGlobalScheduler(
+					ComponentToGlobalSchedulerMessage::PauseCheckpointingForGc()
+					),
+				CumulusComponentEndpointSet::LeaderMachine(),
+				CumulusComponentType::GlobalScheduler()
+				)
+			);
+
+		return;
+		}
+
+	if (!mHasRequestedFileList)
+		{
+		//check if we've already requested this
+		if (mOutstandingFileListRequestGuid)
+			return;
+
+		hash_type guid = mVDM->newVectorHash();
+
+		mOutstandingFileListRequestGuid = guid;
+
+		sendCumulusComponentMessage(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::PythonIoTaskService(
+					PythonIoTaskServiceMessage::Request(
+						PythonIoTaskRequest::ListPersistedObjects(
+							guid,
+							""
+							)
+						)
+					),
+				CumulusComponentEndpointSet::fromEndpoint(mOwnEndpointId),
+				CumulusComponentType::PythonIoTaskService()
+				)
+			);
+
+		return;
+		}
+
+	if (!mHasStartedToDrop)
+		{
+		mHasStartedToDrop = true;
+
+		double t0 = curClock();
+
+		auto cache = mVDM->getPersistentCacheIndex();
+
+		if (mNextGcIsCompletePurge)
+			{
+			for (auto k: cache->getAllObjects())
+				if (k.hasStoragePath())
+					mKeysToDelete.insert(k);
+
+			mNextGcIsCompletePurge = false;
+			}
+		else
+			{
+			PersistentCacheCalculations calculations(cache);
+
+			calculations.performGc(mUniqueRootComputationsSeen);
+
+			for (auto toDrop: calculations.collectableObjects())
+				mKeysToDelete.insert(toDrop);
+
+			for (auto toDrop: calculations.invalidObjects())
+				mKeysToDelete.insert(toDrop);
+			}
+
+		mPathsToDelete.clear();
+
+		for (auto p: mOutstandingObjectPaths)
+			mPathsToDelete.insert(p);
+
+		for (auto file: cache->getAllObjects())
+			if (file.hasStoragePath())
+				mPathsToDelete.erase(file.storagePath());
+
+		if (mPathsToDelete.size())
+			LOG_INFO << "GC preparing to delete " << mPathsToDelete.size() << " of " 
+				<< mOutstandingObjectPaths.size() << " total paths. These weren't referenced by any file: "
+				<< mPathsToDelete;
+
+		if (mKeysToDelete.size())
+			LOG_INFO << "GC preparing to delete " << mKeysToDelete.size() << " objects.";
+
+		int64_t totalBytes = 0;
+		for (auto k: mKeysToDelete)
+			totalBytes += cache->objectBytecount(k);
+
+		if (mKeysToDelete.size())
+			{
+			std::string message;
+
+			message = "Garbage collecting ";
+
+			if (totalBytes > 1024 * 1024 * 1024)
+				message += str(boost::format("%.2f GB") % (totalBytes / 1024 / 1024.0 / 1024.0));
+			else
+				message += str(boost::format("%.2f MB") % (totalBytes / 1024 / 1024.0));
+
+			message += " from the persistent cache.";
+
+			sendCumulusComponentMessage(
+				CumulusComponentMessageCreated(
+					CumulusComponentMessage::ComponentToCumulusClient(
+						ComponentToCumulusClientMessage::GlobalUserFacingLog(
+							GlobalUserFacingLogMessage(
+								message,
+								false,
+								curClock()
+								)
+							)
+						),
+					CumulusComponentEndpointSet::AllClients(),
+					CumulusComponentType::CumulusClient()
+					)
+				);
+			}
+		}
+
+	while (mKeysToDelete.size() && mOutstandingKeyDeletions.size() < 10)
+		{
+		PersistentCacheKey toDelete = *mKeysToDelete.begin();
+
+		mKeysToDelete.erase(toDelete);
+
+		if (toDelete.hasStoragePath())
+			{
+			hash_type guid = mVDM->newVectorHash();
+
+			mOutstandingKeyDeletions[guid] = toDelete;
+
+			sendCumulusComponentMessage(
+				CumulusComponentMessageCreated(
+					CumulusComponentMessage::PythonIoTaskService(
+						PythonIoTaskServiceMessage::Request(
+							PythonIoTaskRequest::DeletePersistedObject(
+								guid,
+								toDelete.storagePath()
+								)
+							)
+						),
+					CumulusComponentEndpointSet::fromEndpoint(mOwnEndpointId),
+					CumulusComponentType::PythonIoTaskService()
+					)
+				);
+			}
+		else
+			{
+			if (mVDM->getPersistentCacheIndex()->objectExists(toDelete))
+				mVDM->getPersistentCacheIndex()->dropObject(toDelete);					
+			}
+		}
+
+	while (mPathsToDelete.size() && mOutstandingPathDeletions.size() < 10)
+		{
+		std::string toDelete = *mPathsToDelete.begin();
+
+		mPathsToDelete.erase(toDelete);
+
+		hash_type guid = mVDM->newVectorHash();
+
+		mOutstandingPathDeletions[guid] = toDelete;
+
+		sendCumulusComponentMessage(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::PythonIoTaskService(
+					PythonIoTaskServiceMessage::Request(
+						PythonIoTaskRequest::DeletePersistedObject(
+							guid,
+							toDelete
+							)
+						)
+					),
+				CumulusComponentEndpointSet::fromEndpoint(mOwnEndpointId),
+				CumulusComponentType::PythonIoTaskService()
+				)
+			);
+		}
+
+	if (mKeysToDelete.size() == 0 && mOutstandingKeyDeletions.size() == 0 && mPathsToDelete.size() == 0 && mOutstandingPathDeletions.size() == 0)
+		{
+		mIsGcRunning = false;
+		mIsCheckpointingPaused = false;
+		mHasStartedToDrop = false;
+		mHasSentCheckpointingPauseMessage = false;
+		mHasRequestedFileList = false;
+		mOutstandingObjectPaths = emptyTreeVec();
+
+		sendCumulusComponentMessage(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::ComponentToGlobalScheduler(
+					ComponentToGlobalSchedulerMessage::ResumeCheckpointingAfterGc()
+					),
+				CumulusComponentEndpointSet::LeaderMachine(),
+				CumulusComponentType::GlobalScheduler()
+				)
+			);
+
+		if (!mIsGcScheduled)
+			sendTriggerGcMessage();
+		}
+	}
+
+void PersistentCacheManager::initializeFromAddDropState(const AddDropFinalState& state)
+	{
+	if (mIsTheLeader)
+		sendTriggerGcMessage();
+
+	for (auto compAndStatus: state.rootComputationStatuses())
+		mUniqueRootComputationsSeen.insert(compAndStatus.first);
+	}
+
+void PersistentCacheManager::sendTriggerGcMessage()
+	{
+	if (!mIsTheLeader)
+		return;
+
+	mIsGcScheduled = true;
+
+	sendCumulusComponentMessageWithDelay(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::ComponentToPersistentCacheManager(
+				ComponentToPersistentCacheManagerMessage::CheckIfGcNeeded()
+				),
+			CumulusComponentEndpointSet::LeaderMachine(),
+			CumulusComponentType::PersistentCacheManager()
+			),
+		mNextGcIsCompletePurge ? 0 : kGcIntervalSeconds
+		);
+	}
+
+void PersistentCacheManager::broadcastShouldCreateComputation(ComputationId comp, MachineId machine, bool shouldCreate)
+	{
+	if (shouldCreate)
+		LOG_INFO << "Authorizing " << machine << " to create " << prettyPrintStringWithoutWrapping(comp);
+
+	sendCumulusComponentMessage(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::GlobalSchedulerToActiveComputations(
+				GlobalSchedulerToActiveComputationsMessage::ShouldCreateRootComputationResponse(
+					comp,
+					shouldCreate
+					)
+				),
+			CumulusComponentEndpointSet::SpecificWorker(machine),
+			CumulusComponentType::ActiveComputations()
+			)
+		);
+	}
+
+Nullable<pair<CheckpointRequest, bool> > PersistentCacheManager::getMostRecentCheckpointForComputation(ComputationId comp)
+	{
+	Nullable<pair<CheckpointRequest, bool> > result;
+
+	auto index = mVDM->getPersistentCacheIndex();
+
+	if (index)
+		{
+		ImmutableTreeSet<CheckpointRequest> checkpoints = index->checkpointsForComputation(comp);
+
+		//loop through the checkpoints taking the most recent checkpoint of the most recently checkpointed computation.
+		for (auto c: checkpoints)
+			if (!result || result->first.timestamp() < c.timestamp())
+				result = make_pair(c, index->isCheckpointForFinishedComputation(c));
+		}
+
+	return result;
+	}
+
+
+void PersistentCacheManager::handleShouldCreateRootComputationQuery(ComputationId computation, MachineId machine)
+	{
+	lassert(computation.isRoot());
+
+	//if we've seen this computation before, don't create it
+	if (mUniqueRootComputationsSeen.find(computation) != mUniqueRootComputationsSeen.end())
+		{
+		broadcastShouldCreateComputation(computation, machine, false);
+		return;
+		}
+
+	mUniqueRootComputationsSeen.insert(computation);
+
+	Nullable<pair<CheckpointRequest, bool> > checkpoint = getMostRecentCheckpointForComputation(computation);
+
+	if (checkpoint)
+		{
+		//first see if this computation is already present in the cluster
+		if (mUniqueRootComputationsSeen.find(checkpoint->first.rootComputation()) != 
+						mUniqueRootComputationsSeen.end() 
+				//be careful: we just added 'computation' to mUniqueRootComputationsSeen
+				&& checkpoint->first.rootComputation() != computation)
+			{
+			//a previously checkpointed value for this computation already exists in the cluster. we can just use that
+			broadcastShouldCreateComputation(computation, machine, true);
+			return;
+			}
+
+		//if we've already loaded this, then we can just wait - it's a race condition
+		if (mCompletedCheckpointLoads.find(checkpoint->first) != mCompletedCheckpointLoads.end())
+			return;
+
+		//broadcast that we don't need this to be created and trigger the load
+		broadcastShouldCreateComputation(computation, machine, false);
+
+		triggerCheckpointLoad(checkpoint->first, checkpoint->second);
+		}
+	else
+		//we need to create this as it's new
+		broadcastShouldCreateComputation(computation, machine, true);
+	}
+
+void PersistentCacheManager::handleLiveCheckpointFinishedLoading(CheckpointRequest checkpoint, bool successfully)
+	{
+	lassert(successfully);
+
+	mCompletedCheckpointLoads.insert(checkpoint);
+
+	for (auto compAndMachine: mComputationsToCreateOnCheckpoint[checkpoint])
+		broadcastShouldCreateComputation(compAndMachine.first, compAndMachine.second, true);
+
+	mComputationsToCreateOnCheckpoint.erase(checkpoint);
+	}
+
+void PersistentCacheManager::triggerCheckpointLoad(CheckpointRequest checkpoint, bool wasFinished)
+	{
+	if (mTriggeredCheckpointLoads.find(checkpoint) != mTriggeredCheckpointLoads.end())
+		return;
+
+	LOG_INFO << "Triggering checkpoint load of " << checkpoint << " which is " 
+			<< (wasFinished ?"":"not") << " finished.";
+
+	sendCumulusComponentMessage(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::ComponentToGlobalScheduler(
+				ComponentToGlobalSchedulerMessage::CheckpointLoaded(checkpoint, wasFinished)
+				),
+			CumulusComponentEndpointSet::LeaderMachine(),
+			CumulusComponentType::GlobalScheduler()
+			)
+		);
+
+	mTriggeredCheckpointLoads.insert(checkpoint);
+
+	sendCumulusComponentMessage(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::ComponentToLiveCheckpointLoader(
+				ComponentToLiveCheckpointLoaderMessage::LoadCheckpoint(
+					checkpoint
+					)
+				),
+			CumulusComponentEndpointSet::LeaderMachine(),
+			CumulusComponentType::LiveCheckpointLoader()
+			)
+		);
+	}
+
+}
+

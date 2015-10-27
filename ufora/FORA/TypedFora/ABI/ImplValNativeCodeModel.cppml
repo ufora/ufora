@@ -1,0 +1,247 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ImplValNativeCodeModel.hppml"
+#include "NativeLayoutType.hppml"
+#include "DestructorsAndConstructors.hppml"
+
+#include "../../Axioms/StringAxioms.hppml"
+#include "../../TypedFora/ABI/VectorHandle.hpp"
+#include "../../Core/Type.hppml"
+#include "../../Core/CSTValue.hppml"
+#include "../../Core/ExecutionContext.hppml"
+#include "../../Core/RefcountPool.hppml"
+#include "../../Judgment/JudgmentOnValue.hppml"
+#include "../../Judgment/JudgmentOnAction.hppml"
+#include "../../Native/NativeCode.hppml"
+#include "../../Native/NativeExpressionBuilder.hppml"
+#include "../../Native/TypedNativeLibraryFunction.hpp"
+#include "ArbitraryNativeConstantForCSTValue.hpp"
+#include "ArbitraryNativeConstantForValue.hpp"
+#include "RefcountPoolHooks.hppml"
+#include "../JitCompiler/Compiler.hppml"
+#include "../../Primitives/String.hppml"
+#include "../../../core/Logging.hpp"
+#include "../../../core/Memory.hpp"
+#include "../../../core/SymbolExport.hpp"
+
+extern "C" {
+
+void* FORA_clib_freshImplValRecord(uword_t sz);
+
+ImplVal FORA_clib_addToRefcountPoolAndReturn_Implval(const ImplVal& val);
+
+}
+
+namespace TypedFora {
+namespace Abi {
+
+int implValBodyWords(void)
+	{
+	return sizeof(ImplVal::pass_by_value_type) / sizeof(uword_t);
+	}
+
+NativeType			implValPointerBodyType(void)
+	{
+	return
+		NativeType::Composite(
+			emptyTreeVec() + 
+				NativeType::Integer(8,false).ptr() + 
+				(emptyTreeVec() + NativeType::uword()) * (implValBodyWords() - 1)
+			);
+	}
+
+NativeExpression embedPointerExpressionInImplValBody(const NativeExpression& expr)
+	{
+	NativeExpressionBuilder builder;
+	NativeExpression sub = builder.add(expr);
+
+	return builder(
+		NativeExpression::CreateComposite(
+			emptyTreeVec() + 
+				sub.cast(NativeType::Integer(8,false).ptr(), false) + 
+				(emptyTreeVec() + 
+					NativeExpression::ConstantULong(0)) * (implValBodyWords() - 1)
+				)
+		);
+	}
+
+NativeType			nativeTypeForImplVal(void)
+	{
+	static NativeType* tr = 0;
+	if (!tr)
+		{
+		static_assert(
+			sizeof(ImplVal) == sizeof(uword_t) * 2 + sizeof(ImplVal::pass_by_value_type),
+			"ImplVal's layout should be four words"
+			);
+		
+		tr = new NativeType(
+				NativeType::Composite(
+					emptyTreeVec() +
+						NativeTypeFor< ::Type >::get() + 		//type
+						NativeType::uword() + 		//flag
+						implValPointerBodyType()
+					)
+				)
+			;
+		}
+	return *tr;
+	}
+
+NativeExpression allocateImplValMem(const ::Type& t, bool isOwned)
+	{
+	if (isOwned)
+		{
+		return
+			makeTypedNativeLibraryFunction(
+				&FORA_clib_freshImplValRecord
+			)(NativeExpression::ConstantULong(t.size()))
+			.getExpression()
+			.cast(nativeLayoutType(t).ptr(), false)
+			;
+		}
+	else
+		{
+		//it's not owned, so nobody will ever destroy it. as a result, we'll
+		//have to use 'alloc'
+		return NativeExpression::Alloc(
+			nativeLayoutType(t),
+			1,
+			false
+			);
+		}
+	}
+
+NativeExpression constantToImplVal(const ::CSTValue& c)
+	{
+	return TypedFora::Abi::ArbitraryNativeConstantForCSTValue::expressionForCSTValueAsImplval(c);
+	}
+
+NativeExpression outputToImplVal(const ::Type& inType, bool increment, const NativeExpression& inExpr)
+	{
+	NativeExpressionBuilder builder;
+
+	NativeExpression typeConstant = 
+		builder.add(
+			TypedFora::Abi::ArbitraryNativeConstantForValue< ::Type >::expressionFor(inType)
+			);
+
+	NativeExpression implValFlagExpr =
+		NativeExpression::ConstantULong(
+			ImplVal::typeIsPassByValue(inType) ?
+				ImplVal::flag_dataInline :
+			increment ? 
+				ImplVal::flag_dataAsIVRPtr
+			:	ImplVal::flag_dataAsRawPtr
+			);
+	NativeExpression implValDataExpr;
+	
+	if (ImplVal::typeIsPassByValue(inType))
+		implValDataExpr =
+			NativeExpression::Cast(
+				implValPointerBodyType(),
+				inExpr,
+				true
+				);
+	else
+		{
+		NativeVariable data("data", nativeLayoutType(inType).ptr());
+
+		implValDataExpr =
+			embedPointerExpressionInImplValBody(
+				NativeExpression::Let(
+					data,
+					allocateImplValMem(inType, increment),
+					data.expr().store(inExpr) >> data.expr()
+					)
+				);
+		}
+
+	NativeExpression outputImplValExpr =
+		builder.add(
+			NativeExpression::CreateComposite(
+				emptyTreeVec() +
+					NativeExpression(typeConstant) +
+					implValFlagExpr +
+					implValDataExpr
+				)
+			);
+
+	if (!increment)
+		{
+		NativeExpression implValPtr = 
+			builder.getPointerExprToCopyOnStack(
+				outputImplValExpr
+				);
+
+		outputImplValExpr =
+			makeTypedNativeLibraryFunction(
+				&FORA_clib_addToRefcountPoolAndReturn_Implval
+				)(implValPtr)
+			.getExpression()
+			;
+		}
+	
+	return builder(outputImplValExpr);
+	}
+	
+NativeExpression implValGetAddress(const NativeExpression& inImplValExpr)
+	{
+	NativeExpressionBuilder builder;
+
+	NativeExpression ivExpr = builder.add(inImplValExpr);
+
+	return
+		builder(
+			NativeExpression::If(
+				NativeExpression::ConstantULong(ImplVal::flag_dataInline) == ivExpr.extract(1),
+				NativeExpression::Zero(NativeType::uint8().ptr()),
+				//regardless of which flag it is, the implval holds the pointer to the data itself
+				ivExpr.extract(2).extract(0)
+				)
+			);
+	}
+
+NativeExpression implValGetType(const NativeExpression& inImplValExpr)
+	{
+	return inImplValExpr[0];
+	}
+
+NativeExpression implValExtract(const NativeType& inType, const NativeExpression& inImplValExpr)
+	{
+	NativeExpressionBuilder builder;
+
+	NativeExpression ivExpr = builder.add(inImplValExpr);
+
+	if (inType.packedSize() <= ImplVal::pass_by_value_size)
+		return 
+			builder(
+				NativeExpression::If(
+					NativeExpression::ConstantULong(ImplVal::flag_dataInline) == ivExpr.extract(1),
+					NativeExpression::Cast(inType, ivExpr.extract(2), true),
+					NativeExpression::Cast(inType.ptr(), ivExpr[2][0], false).load()
+					)
+				);
+	else
+		return
+			builder(
+				NativeExpression::Cast(inType.ptr(), ivExpr.extract(2), true).load()
+				);
+	}
+
+}
+}
+

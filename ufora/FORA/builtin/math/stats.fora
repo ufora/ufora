@@ -1,0 +1,609 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#Markdown("""
+### stats
+
+#### Description
+
+The Fora ibrary for basic statistics.
+
+""");
+
+median:
+#Markdown("""
+#### Usage
+
+    math.stats.median(x)
+
+#### Description
+
+Returns the median value of a vector.
+
+#### Arguments
+
+* `x` -- Vector of Integers or Floats.
+
+#### Return Value
+
+Float
+""")
+fun(x)
+    {
+    quantile(x, 0.5)
+    };
+
+quantile:
+#Markdown("""
+#### Usage
+
+    math.stats.quantile(x, q)
+
+#### Description
+
+Calculates the `q`-th quantile of numeric vector `x`.
+
+When the index corresponding 
+to the quantile `q` would be fractional, we compute the quantile as a weighted average of 
+the floor and ceiling indices.
+
+#### Examples
+
+If `q` corresponded to an index of `7.4`, and `x[7] = 10`, `x[8] = 11`,
+`quantile(x, q)` would return `(1 - 0.4) * 10 + 0.4 * 11`.
+""")
+fun(x, q)
+    {
+    quantiles(x, q)[0][1];
+    };
+
+quantiles:
+#Markdown("""
+#### Usage
+
+    math.stats.quantiles(x, *qArgs)
+
+#### Description
+
+Returns a vector of quantiles specified by `qArgs`.
+
+#### Examples
+
+    math.stats.quantiles([3, 1, 8, 5, 10], 0.25, 0.75) == [(0.25, 3), (0.75, 8)]
+""")
+fun(x, *qArgs)
+    {
+    let res = [];
+
+    let xSorted = sorting.sort(x);
+
+    for q in qArgs
+        {
+        if (q < 0 or q > 1) throw Exception("Quantiles must be between 0 and 1.");
+
+        let ixToFind = q * (size(x) - 1)
+
+        if (size(x) == 1) { return [(q, x[0])] }
+
+        // If the quantile corresponds to an actual index, just find it
+        if (ixToFind == Int64(ixToFind))
+            {
+            res = res :: (q, xSorted[ixToFind]);
+            }
+        else
+            {
+            // Else weight the surrounding indices
+            let rightIx = ceil(ixToFind);
+            let right = xSorted[rightIx];
+            let leftIx = floor(ixToFind);
+            let left = xSorted[leftIx];
+
+            res = res :: (q, left * (rightIx - ixToFind) +
+                                    right * (ixToFind - leftIx)
+                            );
+            }
+        }
+    res;
+    };
+
+fivePointQuantiles:
+fun(vec, estimate:=true, cutoffSize:=nothing)
+    {
+    if (cutoffSize is nothing)
+        cutoffSize = 10000
+    
+    if (not estimate or size(vec) < cutoffSize)
+        {
+        let qs = math.stats.quantiles(vec, 0.0, 0.25, 0.5, 0.75, 1.0);
+        
+        return (qs[0][1], qs[1][1], qs[2][1],
+                qs[3][1], qs[4][1])
+        }
+
+    estimateFivePointQuantiles(vec, estimate:estimate, cutoffSize:cutoffSize);
+    };
+
+estimateFivePointQuantiles:
+fun(vec, estimate:=true, cutoffSize:=nothing)
+    {
+    if (cutoffSize is nothing)
+        cutoffSize = 10000
+    
+    // note we could adaptively split this calculation, 
+    // as is done in biglm.fora
+    let minOfVec = min(vec);
+    let maxOfVec = max(vec);
+    let sizeOfVec = size(vec)
+    
+    let inverseStepSize = Float64(cutoffSize) / (maxOfVec - minOfVec)
+    let buckets = MutableVector(Int64).create(cutoffSize, 0);    
+    
+    let ix = 0;
+    while (ix < sizeOfVec)
+        {
+        let whichBucket = (vec[ix] - minOfVec) * inverseStepSize;
+        whichBucket = whichBucket <<< (cutoffSize - 1)
+        buckets[whichBucket] = buckets[whichBucket] + 1;
+
+        ix = ix + 1
+        }
+
+    computeQuantilesFromHistogram(buckets, 1.0 / inverseStepSize, 
+                                  sizeOfVec, minOfVec, maxOfVec)
+    };
+
+computeQuantilesFromHistogram:
+fun(buckets, stepSize, sizeOfVec, minOfVec, maxOfVec)
+    {
+    let firstQuantile = nothing;
+    let median = nothing;
+    let thirdQuantile = nothing;    
+    let runningTotals = 0;
+
+    let ix = 0;
+    while (ix < size(buckets))
+        {
+        runningTotals = runningTotals + buckets[ix];
+        if (firstQuantile is nothing and runningTotals >= sizeOfVec / 4)
+            {
+            firstQuantile = minOfVec + ix * stepSize
+            }
+        if (median is nothing and runningTotals >= sizeOfVec / 2)
+            {
+            median = minOfVec + ix * stepSize
+            }
+        if (thirdQuantile is nothing and runningTotals > sizeOfVec * 3 / 4 )
+            {
+            thirdQuantile = minOfVec + ix * stepSize
+            }        
+        ix = ix + 1;
+        };
+        
+    (minOfVec, firstQuantile, median, thirdQuantile, maxOfVec)
+    };
+
+mean:
+#Markdown("""
+#### Usage
+
+    math.stats.mean(vector)
+
+#### Description
+
+Computes arithmetic mean.
+
+#### Notes
+
+This is _not_ a numerically stable calculation, but it does use parallel resources (if available).
+""")
+fun(x)
+    {
+    chunkedLoopSum_(x) / Float64(size(x));
+    };
+
+chunkedLoopSum_:
+fun (x, start=0, end=nothing, splitSize:=1000000)
+    {
+    if (end is nothing)
+        end = size(x);
+
+    if ((end - start) < splitSize)
+        {
+        let s = nothing;
+        let ix = start;
+        while (ix < end) {
+            s = s + x[ix];
+            ix = ix + 1
+            }
+
+        return s
+        }
+        
+    let mid = Int64((start + end) / 2);
+
+    chunkedLoopSum_(x, start, mid) + chunkedLoopSum_(x, mid, end); 
+    };
+
+harmonicMean:
+#Markdown("""
+#### Usage
+
+    math.stats.harmonicMean(vector)
+
+#### Description
+
+Computes harmonic mean.
+
+i.e. `n / (1/v_0 + ... + 1/v_(n-1))` where `n = size(v)`
+
+#### Notes
+
+This is _not_ a numerically stable calculation, but it does use parallel resources (if available).
+""")
+fun(x)
+    {
+    let sz = size(x);
+    sz / sum(0, sz, fun(ix) { 1.0 / x[ix] });
+    };
+
+variance:
+#Markdown("""
+#### Description
+
+Alias for var.
+""")
+var;
+
+var:
+#Markdown("""
+#### Usage
+
+    math.stats.var(vector)
+
+#### Description
+
+Computes variance.
+
+Variance of `vector` using the "naive" algorithm
+
+#### Notes
+
+This is _not_ a numerically stable calculation, but it does use parallel resources (if available).
+""")
+fun(x)
+    {
+    let xbar = mean(x);
+    sum(0, size(x), fun(ix) { (x[ix] - xbar) ** 2 }) / Float64(size(x) - 1);
+    };
+
+varNs:
+#Markdown("""
+#### Usage
+
+    math.stats.varNs(x)
+
+#### Description
+
+A more numerically stable variance algorithm due to Knuth.
+
+It may be more accurate on datasets with very large or very small numbers.
+However, it may be slower and does not parallelize.  
+""")
+fun (x)
+    {
+    let mean = 0
+    let M2 = 0
+    for i in sequence(size(x))
+        {
+        let delta = x[i] - mean
+        mean = mean + delta / Float64(i+1)
+        M2 = M2 + delta * (x[i] - mean)
+        }
+    return Float64(M2) / (size(x) - 1)
+    };
+
+sd:
+#Markdown("""
+#### Usage
+
+    math.stats.sd(vector, method = `naive)
+
+#### Description
+
+Computes standard deviation.
+
+#### Arguments
+
+* `method` -- Symbol (optional). One of two values:
+
+* `naive - uses the naive algorithm for computing the variance
+* `knuth - uses varNs
+""")
+fun (x, method=`naive)
+    {
+    match (method) with
+    (`naive)
+        { math.sqrt(var(x)) }
+    (`knuth)
+        { math.sqrt(varNs(x)) }
+    };
+
+summary:
+#Markdown("""
+#### Usage
+
+    math.stats.summary(vector)
+
+#### Description
+
+Returns a basic 7-point summary statistics for numeric vectors, and frequency counts
+for categorical, ie non-numeric, data.
+
+#### Return Value
+
+A named tuple. For numeric vectors, the names are `mean`, `sd` (for standard deviation), `min` (for minimum), 
+`max` (for maximum), and `quantiles`, for the 25th, 50th and 75th quantiles. 
+For categorical data, by which we mean non-numeric data, we return a vector of pairs of the form 
+`(category: category, count: count)`.
+
+#### Examples:
+
+    math.stats.summary([1,2,3,4]); // numeric data
+
+	math.stats.summary(["cat", "dog", "cat", "cat", "dog", "fish"]) // categorical data 
+
+""")
+fun (x, estimateQuantiles:=true, *quantilesArgs)
+    {
+    try {
+        let quantiles = fivePointQuantiles(x, *quantilesArgs);
+        (mean: mean(x), 
+         sd: sd(x), 
+         min: quantiles[0], 
+         firstQuantile: quantiles[1],
+         median: quantiles[2],
+         thirdQuantile: quantiles[3],
+         max: quantiles[-1])
+        }
+    catch(e) { 
+        return summaryCategorical_(x)
+        }
+    };
+
+summaryCategorical_:
+fun(categoricalVec)
+	{
+	let reduced = histogram(categoricalVec)
+
+    reduced.apply(
+        fun((group:, reduction:))  {
+            (category: group, count: reduction)
+            }
+        );
+	}
+	;
+
+cov:
+#Markdown("""
+#### Usage
+
+    math.stats.cov(x, y)
+
+#### Description
+
+Computes the covariance of two vectors.
+
+`x` and `y` above are thought of as samples from univariate distributions.
+""")
+fun(x, y)
+    {
+    if (size(x) != size(y)) { throw("Lengths of x and y not equal") }
+    let xbar = mean(x);
+    let ybar = mean(y);
+    sum(0, size(x), fun(ix) { (x[ix] - xbar) * (y[ix] - ybar) }) / Float64(size(x) - 1);
+    };
+
+cor: 
+#Markdown("""
+#### Usage
+
+    math.stats.cor(x, y)
+
+#### Description
+
+Computes Pearson's correlation coefficient of two vectors.
+
+`x` and `y` above are thought of as samples from univariate distributions.
+""")
+fun(x, y)
+    {
+    cov(x, y) / (sd(x) * sd(y))
+    };
+
+corSpearman:
+#Markdown("""
+#### Usage
+
+    math.stats.corSpearman(x, y)
+
+#### Description
+
+Computes Spearman's rho of two vectors.
+
+`x` and `y` above are thought of as samples from univariate distributions.
+""")
+fun(x, y)
+    {
+    let rankX = rank(x, reverse:true)
+    let rankY = rank(y, reverse:true)
+    return cor(rankX, rankY)
+    };
+
+//TODO this algorithm sucks (n^2) and is not ready for primetime
+`hidden
+corKendall:
+#Markdown(
+"""`corKendall(x, y)`
+
+Computes Kendall's tau-a of `x` and `y`.
+""")
+fun(x, y)
+    {
+    if (size(x) != size(y)) { throw "Sizes of x and y must be the same." }
+    let pairSum = 0;
+    let n = size(x);
+    for i in sequence(n)
+        {
+        let prodDiff = [(x[i] - xJ) * (y[i] - yJ) for (xJ, yJ) in iter.zip(x[i + 1,],y[i + 1,])];
+        pairSum = pairSum + prodDiff.apply(math.sign).sum();
+        }
+    return pairSum / Float64(n * (n - 1) / 2);
+    };
+
+rank:
+#Markdown("""
+#### Usage
+
+    math.stats.rank(vec, reverse: reverse = false, ties: ties = `average)
+
+#### Description
+
+Compute rank of each element in a vector.
+
+Ranks start at `1`. If ``ties == `average`` Ties are handled by taking the average of what the ranks
+would be if they were unique. If ``ties == `min`` or ``ties == `max``, the 
+minimum or maximum of the unique ranks is used, respectfully. 
+
+If reverse is `true`, ranking is reversed.
+""")
+    fun(x, reverse:reverse=false, ties:ties=`average)
+        {
+        let less = match (reverse) with 
+            (false) { fun(x, y) { x < y } }
+            (true) { fun(x, y) { x > y } }
+            ;
+
+        let xWithIndices = Vector.range(size(x), fun(ix) { (x[ix], ix) });
+        let xSortedWithIndices = sorting.sort(xWithIndices, less);
+
+        let r = []
+        let i = 0
+        for j in sequence(size(x))
+            {
+            if (xSortedWithIndices[i][0] != xSortedWithIndices[j][0])
+                {
+                let indices = [s[1] for s in xSortedWithIndices[i,j]]
+                r = r + appendRanks(indices, i, j, ties)
+                i = j
+                }
+            }
+        let indices = [s[1] for s in xSortedWithIndices[i, size(x)]]
+        r = r + appendRanks(indices, i, size(x), ties)
+        return [s[1] for s in sorting.sort(r)]
+        };
+        
+`hidden
+appendRanks:
+#Markdown(
+"""Helper function for rank to deal with how ties are handled.
+""")
+    fun(indices, i, j, ties)
+        {
+        match (ties) with
+        (`average)
+            {
+            let val =  (j + i - 1) / 2.0 + 1.0
+            Vector.range(size(indices), fun(ix) { (indices[ix], val) }); 
+            }       
+        (`max)
+            {
+            Vector.range(size(indices), fun(ix) { (indices[ix], j) });
+            }
+        (`min)
+            {
+            Vector.range(size(indices), fun(ix) { (indices[ix], i + 1) });
+            }        
+        };
+
+AdditiveHistogram:
+class {
+    member count;
+    member x0;
+    member x1;
+    member samples;
+    member inverseStepSize;
+
+    operator new 
+        (inX0, inX1, inCount) {
+            let samples = MutableVector(Int64).create(inCount, 0)
+
+            let inverseStepSize = Float64(inCount) / (inX1 - inX0)
+            return createInstance(
+                cls, count: inCount, x0: inX0, x1: inX1, samples: samples,
+                inverseStepSize:inverseStepSize)
+            }
+        (x0: inX0, x1: inX1, samples: samples) {
+            let inverseStepSize = Float64(size(samples)) / (inX1 - inX0)
+            return createInstance(
+                cls, count: size(samples), x0: inX0, x1: inX1, samples: samples,
+                inverseStepSize:inverseStepSize)
+            };
+
+    observe: fun(valueToBucket)
+        {
+        let whichBucket = (valueToBucket - x0) * inverseStepSize;
+        whichBucket = whichBucket >>> 0;
+        whichBucket = whichBucket <<< (count - 1)
+        
+        samples[whichBucket] = samples[whichBucket] + 1
+        };
+
+    freeze: fun() {
+        return AdditiveHistogram(x0: x0, x1: x1, samples: [s for s in samples])    
+        };
+    
+    operator+(otherHistogram) {
+        let ns = []
+        
+        for ix in sequence(size(samples))
+            ns = ns :: (samples[ix] + otherHistogram.samples[ix])
+        
+        return AdditiveHistogram(x0: x0, x1: x1, samples: ns)
+        };
+    };
+    
+mode: 
+"""returns tuple (modal_value, count_of_mode)"""
+fun(vec) {
+    let counts = histogram(vec);
+
+    let res = sorting.nLargest(
+        counts, 1, fun(elt1, elt2) { elt1.reduction < elt2.reduction }
+        )[0];
+
+    return (mode: res.group, count: res.reduction)
+    };
+
+histogram: 
+fun(vec) { 
+    sorting.reduce(
+        vec,
+        identity,
+        fun(x) { 0 },
+        fun(x, y) { x + 1 },
+        fun(x, y) { x + y }
+        )
+    };
+

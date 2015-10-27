@@ -1,0 +1,221 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "WrappingPythonConstantConverter.hppml"
+#include "DirectPythonConstantConverter.hppml"
+
+#include "PythonConstantType.hppml"
+#include "../../Core/ImplValContainer.hppml"
+#include "../../../native/Registrar.hpp"
+#include "../../../core/python/CPPMLWrapper.hpp"
+#include "../../../core/python/CPPMLToSimple.hpp"
+#include "../../../core/python/ScopedPyThreads.hpp"
+#include "../../python/FORAPythonUtil.hppml"
+
+class PythonConstantConverterWrapper:
+    public native::module::Exporter<PythonConstantConverterWrapper> {
+public:
+    std::string getModuleName() {
+        return "FORA";
+        }
+
+    static PolymorphicSharedPtr<Fora::PythonConstantConverter>*
+    makeWrappingPythonConstantConverter(
+            boost::python::dict primitiveTypesDict
+            )
+        {
+        ImmutableTreeMap<Fora::PythonConstantType, ImplValContainer> 
+            primitiveTypesTreeMap;
+
+        boost::python::list keyValuePairs = primitiveTypesDict.items();
+        for (long ix = 0; ix < boost::python::len(keyValuePairs); ++ix)
+            {
+            std::string keyClassName = 
+                boost::python::extract<std::string>(
+                    keyValuePairs[ix][0]
+                    .attr("__name__")
+                    );
+            
+            Fora::PythonConstantType pythonConstantType = 
+                Fora::PythonConstantType::pythonTypeNameToPythonConstantType(
+                    keyClassName
+                    );
+
+            boost::python::extract<ImplValContainer> 
+                classExtractor(keyValuePairs[ix][1]);
+
+            lassert(classExtractor.check());
+
+            ImplValContainer prototype = classExtractor();
+
+            primitiveTypesTreeMap = primitiveTypesTreeMap 
+                + std::make_pair(
+                    pythonConstantType,
+                    prototype
+                    );
+            }
+
+        return new PolymorphicSharedPtr<Fora::PythonConstantConverter>(
+            new Fora::WrappingPythonConstantConverter(
+                primitiveTypesTreeMap
+                )
+            );
+        }
+
+    static PolymorphicSharedPtr<Fora::PythonConstantConverter>*
+    makeDirectPythonConstantConverter()
+        {
+        return new PolymorphicSharedPtr<Fora::PythonConstantConverter>(
+            new Fora::DirectPythonConstantConverter()
+            );
+        }
+
+    static ImplValContainer convertInt(
+            PolymorphicSharedPtr<Fora::PythonConstantConverter>& converter,
+            int64_t value
+            )
+        {
+        return converter->convertInt(value);
+        }
+
+    static ImplValContainer convertLong(
+            PolymorphicSharedPtr<Fora::PythonConstantConverter>& converter,
+            const std::string& value
+            )
+        {
+        return converter->convertLong(value);
+        }
+
+    static ImplValContainer convertBoolean(
+            PolymorphicSharedPtr<Fora::PythonConstantConverter>& converter,
+            bool value
+            )
+        {
+        return converter->convertBoolean(value);
+        }
+
+    static ImplValContainer noneValue(
+            PolymorphicSharedPtr<Fora::PythonConstantConverter>& converter
+            )
+        {
+        return converter->noneValue();
+        }
+
+    static ImplValContainer convertFloat(
+            PolymorphicSharedPtr<Fora::PythonConstantConverter>& converter,
+            double value
+            )
+        {
+        return converter->convertFloat(value);
+        }
+
+    static ImplValContainer convertString(
+            PolymorphicSharedPtr<Fora::PythonConstantConverter>& converter,
+            const std::string& value
+            )
+        {
+        return converter->convertString(value);
+        }
+
+    static boost::python::object invertForaConstant(
+            PolymorphicSharedPtr<Fora::PythonConstantConverter>& converter,
+            const ImplValContainer& value
+            )
+        {
+        Nullable<ImplValContainer> primitive = 
+            converter->unwrapToPrimitive(value);
+
+        if (!primitive)
+            return boost::python::object();
+
+        @match Type(primitive->type())
+            -| String() ->> {
+                return boost::python::make_tuple(
+                    boost::python::object(
+                        primitive->cast<String>().stdString()
+                        )
+                    );
+                }
+            -| Integer(bits, isSigned) ->> {
+                if (bits == 64)
+                    return boost::python::make_tuple(
+                        boost::python::object(
+                            primitive->cast<int64_t>()
+                            )
+                        );
+
+                if (bits == 1)
+                    return boost::python::make_tuple(
+                        boost::python::object(
+                            primitive->cast<bool>()
+                            )
+                        );
+                }
+            -| Nothing() ->> {
+                return boost::python::make_tuple(
+                    boost::python::object()
+                    );
+                }
+            -| Float(bits) ->> {
+                if (bits == 64)
+                    return boost::python::make_tuple(
+                        boost::python::object(
+                            value.cast<double>()
+                            )
+                        );
+                }
+            -| Vector() ->> {
+                return boost::python::object(*primitive);
+                }
+            ;    
+        return boost::python::object();
+        }
+
+    void exportPythonWrapper()
+        {
+        using namespace boost::python;
+
+        class_<PolymorphicSharedPtr<Fora::WrappingPythonConstantConverter>>(
+            "WrappingPythonConstantConverter", no_init)
+            .def("__init__", make_constructor(makeWrappingPythonConstantConverter))
+            .def("convertInt", convertInt)
+            .def("convertLong", convertLong)
+            .def("convertBool", convertBoolean)
+            .def("noneValue", noneValue)
+            .def("convertFloat", convertFloat)
+            .def("convertString", convertString)
+            .def("invertForaConstant", invertForaConstant)
+            ;
+
+        class_<PolymorphicSharedPtr<Fora::DirectPythonConstantConverter>>(
+            "DirectPythonConstantConverter", no_init)
+            .def("__init__", make_constructor(makeDirectPythonConstantConverter))
+            .def("convertInt", convertInt)
+            .def("convertLong", convertLong)
+            .def("convertBool", convertBoolean)
+            .def("noneValue", noneValue)
+            .def("convertFloat", convertFloat)
+            .def("convertString", convertString)
+            .def("invertForaConstant", invertForaConstant)
+            ;
+        }
+
+};
+
+template<>
+char native::module::Exporter<PythonConstantConverterWrapper>::mEnforceRegistration = 
+    native::module::ExportRegistrar<PythonConstantConverterWrapper>::registerWrapper();
+
+

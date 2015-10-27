@@ -1,0 +1,136 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "BigVectorHandle.hppml"
+#include "BigVectorLayouts.hppml"
+#include "BigVectorPageLayout.hppml"
+#include "ForaValueArray.hppml"
+#include "../../Vector/VectorDataID.hppml"
+#include "../../../core/UnitTest.hpp"
+#include "../../../core/Logging.hpp"
+#include "../../Core/ExecutionContextMemoryPool.hppml"
+#include "../../VectorDataManager/VectorPage.hppml"
+#include "../../VectorDataManager/VectorDataMemoryManager.hppml"
+
+using namespace TypedFora::Abi;
+
+class BigVectorHandleTestFixture {
+public:
+	BigVectorHandleTestFixture() : 
+			memoryManager(
+				PolymorphicSharedPtr<VectorDataMemoryManager>(
+					new VectorDataMemoryManager(
+						CallbackScheduler::singletonForTesting(),
+						CallbackScheduler::singletonForTesting()
+						)
+					)
+				),
+			memoryPool(new ExecutionContextMemoryPool(0, memoryManager))
+		{
+		}
+
+	PolymorphicSharedPtr<VectorDataMemoryManager> memoryManager;
+
+	boost::shared_ptr<ExecutionContextMemoryPool> memoryPool;
+
+	BigVectorLayouts handles;
+};
+
+
+
+BOOST_FIXTURE_TEST_SUITE( test_TypedFora_Abi_BigVectorHandle, BigVectorHandleTestFixture )
+
+BOOST_AUTO_TEST_CASE( test_basic )
+	{
+	BigVectorHandle* handle = BigVectorHandle::create(&*memoryPool, nullptr);
+
+	ForaValueArray* array = ForaValueArray::Empty(&*memoryPool);
+
+	array->append(ImplValContainer(CSTValue(10)));
+
+	long offset = 100;
+
+	handle->associateArray(array, offset, IntegerSequence(array->size()), null());
+
+	BOOST_CHECK(handle->offsetFor(offset) == array->offsetFor(0));
+	BOOST_CHECK(handle->offsetFor(offset + 1) == nullptr);
+
+	memoryPool->destroy(array);
+
+	memoryPool->destroy(handle);
+	}
+
+BOOST_AUTO_TEST_CASE( test_loaded_values )
+	{
+	const static long aMediumOffset = 1000;
+	
+	BigVectorHandle* handle = BigVectorHandle::create(&*memoryPool, nullptr);
+
+	ForaValueArray* array = ForaValueArray::Empty(&*memoryPool);
+
+	array->append(ImplValContainer(CSTValue(10)));
+	array->append(ImplValContainer(CSTValue(11)));
+	array->append(ImplValContainer(CSTValue(12)));
+	array->append(ImplValContainer(CSTValue(13)));
+
+	handle->associateArray(array, 0, IntegerSequence(array->size()), null());
+	handle->associateArray(array, aMediumOffset, IntegerSequence(array->size()), null());
+
+	BOOST_CHECK(handle->allValuesAreLoadedBetween(0, array->size() - 1));
+	BOOST_CHECK(handle->allValuesAreLoadedBetween(0, array->size()));
+	BOOST_CHECK(!handle->allValuesAreLoadedBetween(0, array->size() + 1));
+	BOOST_CHECK(!handle->allValuesAreLoadedBetween(0, array->size() + 2));
+
+	BOOST_CHECK(!handle->allValuesAreLoadedBetween(
+		array->size(), 
+		aMediumOffset
+		));
+	BOOST_CHECK(!handle->allValuesAreLoadedBetween(
+		aMediumOffset + array->size(),
+		aMediumOffset * 10
+		));
+
+	BOOST_CHECK(handle->allValuesAreLoadedBetween(aMediumOffset, aMediumOffset + array->size()));
+	BOOST_CHECK(handle->allValuesAreLoadedBetween(aMediumOffset + 1, aMediumOffset + array->size() - 1));
+	BOOST_CHECK(!handle->allValuesAreLoadedBetween(aMediumOffset, aMediumOffset + array->size() + 1));
+	BOOST_CHECK(!handle->allValuesAreLoadedBetween(aMediumOffset - 1, aMediumOffset + array->size()));
+
+	memoryPool->destroy(array);
+	memoryPool->destroy(handle);
+	}
+
+
+BOOST_AUTO_TEST_CASE( test_associate_and_disassociate )
+	{
+	const static long aMediumOffset = 1000;
+	
+	BigVectorHandle* handle = BigVectorHandle::create(&*memoryPool, nullptr);
+
+	ForaValueArray* array = ForaValueArray::Empty(&*memoryPool);
+
+	handle->associateArray(array, 0, IntegerSequence(10), null());
+	handle->associateArray(array, 20, IntegerSequence(10), null());
+	
+	BOOST_CHECK(handle->allValuesAreLoadedBetween(0, 10));
+	BOOST_CHECK(handle->allValuesAreLoadedBetween(20, 30));
+	BOOST_CHECK(!handle->allValuesAreLoadedBetween(10, 20));
+	
+
+	memoryPool->destroy(array);
+	memoryPool->destroy(handle);
+	}
+
+BOOST_AUTO_TEST_SUITE_END()
+

@@ -1,0 +1,170 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "../../FORA/TypedFora/ABI/ForaValueArray.hppml"
+#include "../../FORA/TypedFora/ABI/ForaValueArrayImpl.hppml"
+#include "../../FORA/TypedFora/ABI/ForaValueArrayTestFixture.hppml"
+#include "../../FORA/TypedFora/ABI/ForaValueArraySpaceRequirements.hppml"
+#include "../../core/UnitTest.hpp"
+#include "../../core/math/Random.hpp"
+#include "../../core/threading/CallbackScheduler.hppml"
+#include "SortingSpine.hppml"
+
+using TypedFora::Abi::ForaValueArray;
+using TypedFora::Abi::ForaValueArrayImpl;
+using TypedFora::Abi::PackedForaValues;
+using Cumulus::SortingSpine;
+
+BOOST_FIXTURE_TEST_SUITE( test_cumulus_SortingSpine, ForaValueArrayTestFixture )
+
+BOOST_AUTO_TEST_CASE ( test_instantiate_spine )
+	{
+	SortingSpine<int64_t> spine(vdm);
+	}
+
+BOOST_AUTO_TEST_CASE ( test_empty_spine )
+	{
+	SortingSpine<int64_t> spine(vdm);
+
+	ForaValueArray* array = ForaValueArray::Empty(&memoryPool);
+
+	for (long k = 0; k < 10; k++)
+		array->append(ImplValContainer(CSTValue(k)));
+
+	std::vector<int64_t> bins;
+
+	spine.assignBinsToSortedArray(array, bins);
+
+	BOOST_CHECK_EQUAL(bins.size(), 10);
+	for (long k = 0; k < bins.size();k++)
+		BOOST_CHECK_EQUAL(bins[k], 0);
+
+	memoryPool.destroy(array);
+	}
+
+BOOST_AUTO_TEST_CASE ( test_simple_splitting )
+	{
+	SortingSpine<int64_t> spine(vdm);
+	BOOST_CHECK_EQUAL(spine.splitBin(1, 2, ImplValContainer(CSTValue((long)5))), 0);
+	
+	ForaValueArray* array = ForaValueArray::Empty(&memoryPool);
+
+	for (long k = 0; k < 10; k++)
+		array->append(ImplValContainer(CSTValue(k)));
+
+	std::vector<int64_t> bins;
+
+	spine.assignBinsToSortedArray(array, bins);
+
+	BOOST_CHECK_EQUAL(bins.size(), 10);
+	for (long k = 0; k < bins.size();k++)
+		BOOST_CHECK_EQUAL(bins[k], k < 5 ? 1 : 2);
+
+	spine.splitBin(3, 4, ImplValContainer(CSTValue((long)2)));
+
+	spine.assignBinsToSortedArray(array, bins);
+
+	BOOST_CHECK_EQUAL(bins.size(), 10);
+	for (long k = 0; k < bins.size();k++)
+		BOOST_CHECK_EQUAL(bins[k], k < 2 ? 3 : k < 5 ? 4 : 2);
+
+	memoryPool.destroy(array);
+	}
+
+
+BOOST_AUTO_TEST_CASE ( test_splitting_perf )
+	{
+	SortingSpine<int64_t> spine(vdm);
+
+	long curBin = 0;
+
+	for (long k = 0; k <= 1000000; k += 20)
+		{
+		spine.splitBin(curBin + 1, curBin + 2, ImplValContainer(CSTValue((long)k)));
+		curBin += 2;
+		}
+
+	BOOST_CHECK(curBin == spine.topBin());
+
+	ForaValueArray* array = ForaValueArray::Empty(&memoryPool);
+
+	for (long k = 0; k < 1000000; k++)
+		array->append(ImplValContainer(CSTValue(k)));
+
+	std::vector<int64_t> bins;
+
+	double t0 = curClock();
+	spine.assignBinsToSortedArray(array, bins);
+	LOG_TEST << curClock() - t0;
+
+	BOOST_CHECK_EQUAL(bins.size(), 1000000);
+	for (long k = 0; k < bins.size();k++)
+		lassert_dump(bins[k] == 3 + (k / 20) * 2, "for " << k << ", " << bins[k] << " != " << 3 + (k / 20) * 2);
+
+	memoryPool.destroy(array);
+	}
+
+BOOST_AUTO_TEST_CASE ( test_splitting_perf_tuples )
+	{
+	SortingSpine<int64_t> spine(vdm);
+
+	long curBin = 0;
+
+	long step = 200;
+
+	for (long k = 0; k <= 1000000; k += step)
+		{
+		spine.splitBin(
+			curBin + 1, 
+			curBin + 2, 
+			ImplValContainer(CSTValue::Tuple(emptyTreeVec() + CSTValue((long)k) + CSTValue((long)k)))
+			);
+
+		curBin += 2;
+		}
+
+	BOOST_CHECK(curBin == spine.topBin());
+
+	ForaValueArray* array = ForaValueArray::Empty(&memoryPool);
+
+	auto values = array->appendUninitialized(JOV::Tuple(JOVT() + JOV::OfType(Type::Integer(64, true)) + JOV::OfType(Type::Integer(64, true))), 1000000);
+
+	for (long k = 0; k < 1000000; k++)
+		*values.pointerToElement<pair<int64_t, int64_t> >(k) = pair<int64_t, int64_t>(k,k);
+
+	std::vector<int64_t> bins;
+
+	double t0 = curClock();
+	spine.assignBinsToSortedArray(array, bins);
+	LOG_INFO << "sorted: " << curClock() - t0;
+
+	BOOST_CHECK_EQUAL(bins.size(), 1000000);
+	for (long k = 0; k < bins.size();k++)
+		lassert_dump(bins[k] == 3 + (k / step) * 2, "for " << k << ", " << bins[k] << " != " << 3 + (k / step) * 2);
+
+	t0 = curClock();
+	spine.assignBinsToUnsortedArray(array, bins);
+	LOG_INFO << "unsorted: " << curClock() - t0;
+	
+	BOOST_CHECK_EQUAL(bins.size(), 1000000);
+	for (long k = 0; k < bins.size();k++)
+		lassert_dump(bins[k] == 3 + (k / step) * 2, "for " << k << ", " << bins[k] << " != " << 3 + (k / step) * 2);
+
+	memoryPool.destroy(array);
+	}
+
+
+BOOST_AUTO_TEST_SUITE_END( )
+

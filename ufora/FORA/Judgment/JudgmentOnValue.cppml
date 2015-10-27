@@ -1,0 +1,1227 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "JudgmentOnValue.hppml"
+#include "../Core/Type.hppml"
+#include "../Core/ImplVal.hppml"
+#include "../../core/cppml/CPPMLTransform.hppml"
+#include <boost/unordered_map.hpp>
+#include "../../core/cppml/CPPMLVisit.hppml"
+#include "../../core/cppml/MemoizedAlternativePointer.hppml"
+#include "../../core/Logging.hpp"
+
+macro_defineMemberHashFunctionBody(JudgmentOnValue)
+
+bool JudgmentOnValue::isNotTuple() const
+	{
+	return !isTuple() && !isUnknown() && !isUnknownCSTKnown();
+	}
+
+char CPPMLEquality<JudgmentOnValue, void>::cmp(	const JudgmentOnValue& lhs,
+												const JudgmentOnValue& rhs
+												)
+	{
+	if (MemoizedAlternativePointer<JOV>(lhs) == MemoizedAlternativePointer<JOV>(rhs))
+		return 0;
+
+	return lhs.hash().cmp(rhs.hash());
+	}
+
+bool JudgmentOnValue::computeIsValidVectorElementJOV(void) const
+	{
+	return vectorElementJOV() && *vectorElementJOV() == *this;
+	}
+		
+Nullable<Type>	JudgmentOnValue::exactlyEquivalentType(void) const
+	{
+	if (type() && *this == JOV::OfType(*type()))
+		return null() << *type();
+	return null();
+	}
+
+string JudgmentOnValue::toString(void) const
+	{
+	return prettyPrintString(*this);
+	}
+
+bool JudgmentOnValue::computeIsSmallestPossibleVectorJudgment(void) const
+	{
+	if (!isValidVectorElementJOV())
+		return false;
+
+	if (constant())
+		return true;
+
+	if (isVector())
+		return false;
+
+	if (!type())
+		return false;
+
+	@match JOV(*this)
+		-|	Atom (jov) ->> {
+			return true;
+			}
+		-|	Tuple(jov) ->> {
+			if (jov.extras().isExtras())
+				return false;
+
+			for (long k = 0; k < jov.jovs().size(); k++)
+				{
+				if (!jov.jovs()[k].isSmallestPossibleVectorJudgment())
+					return false;
+				}
+			
+			return true;
+			}
+		-|	Alternative((_, jov)) ->> {
+			return jov.isSmallestPossibleVectorJudgment();
+			}
+		-|	Vector(jov) ->> {
+			return false;
+			}
+		-|	MutableVector(jov) ->> {
+			return false;
+			}
+		-|	Class(jov) ->> {
+			lassert(jov.isClass()); // since we checked for Type above.
+			
+			auto jovAsClass = jov.getClass();
+			ImmutableTreeVector<JudgmentOnValue> vectorElementJovs;
+			
+			for (long k = 0; k < jovAsClass.elements().size(); k++)
+				if (!jovAsClass.elements()[k].isSmallestPossibleVectorJudgment())
+					return false;
+
+			return true;
+			}
+		-|	_ ->> {
+			return false;
+			}
+		;	
+	}
+
+
+Nullable<JudgmentOnValue> JudgmentOnValue::computeVectorElementJOV(void) const
+	{
+	Nullable<Type> type = this->computeType();
+	
+	if (!type) 
+		return null();
+
+	@match JOV(*this)
+		-|	Atom (jov) ->> {
+			return null() << JOV::OfType(*type);
+			}
+		-|	Tuple(jov) ->> {
+			ImmutableTreeVector<JudgmentOnValue> vectorElementJovs;
+			for (long k = 0; k < jov.jovs().size(); k++)
+				{
+				Nullable<JOV> elementJOV = jov.jovs()[k].vectorElementJOV();
+				if (!elementJOV) return null();
+				vectorElementJovs = vectorElementJovs
+					+ *elementJOV;
+				}
+			
+			lassert(jov.extras().isNoExtras());
+			
+			JOV j = JOV::Tuple(JudgmentOnValueTuple(vectorElementJovs, jov.names(), jov.extras()));
+			lassert(j.type());
+			return null() << j;
+			}
+		-|	Alternative(jov) ->> {
+			Nullable<JOV> outJOV = jov.val().vectorElementJOV();
+			
+			if (!outJOV) return null();
+			
+			JOV j = JOV::Alternative(JudgmentOnValueAlternative(jov.sym(), *outJOV));
+			lassert(j.type());
+			
+			return null() << j;
+			}
+		-|	Vector(jov) ->> {
+			JudgmentOnResult vectorElementJOR;
+			
+			for (long k = 0; k < jov.elementsJOR().vals().size(); k++)
+				{
+				Nullable<JOV> kth_vectorElementJOV = jov.elementsJOR()[k].vectorElementJOV();
+				
+				if (kth_vectorElementJOV) 
+					vectorElementJOR =
+						vectorElementJOR + JudgmentOnResult(*kth_vectorElementJOV);
+				else
+					vectorElementJOR =
+						vectorElementJOR + JudgmentOnResult(JudgmentOnValue::Unknown());
+				}
+								
+			return null() << JOV::Vector(
+								JudgmentOnValueVector(
+									vectorElementJOR
+									)
+								);
+			}
+		-|	MutableVector(jov) ->> {
+			return null() << *this;
+			}
+		-|	Class(jov) ->> {
+			lassert(jov.isClass()); // since we checked for Type above.
+			
+			auto jovAsClass = jov.getClass();
+			ImmutableTreeVector<JudgmentOnValue> vectorElementJovs;
+			
+			for (long k = 0; k < jovAsClass.elements().size(); k++)
+				{
+				Nullable<JOV> elementJOV = jovAsClass.elements()[k].vectorElementJOV();
+				if (!elementJOV) return null();
+				vectorElementJovs = vectorElementJovs + *elementJOV;
+				}
+				
+			JOV j = JOV::Class(
+						JudgmentOnValueClass::Class(
+							vectorElementJovs,
+							jovAsClass.classBody()
+							)
+						);
+			return null() << j;
+			}
+		-|	_ ->> {
+			return null() << *this;
+			}
+		;	
+	}
+	
+JudgmentOnValue JudgmentOnValue::VectorElementJOVFromLiveValue(const ImplVal& val)
+	{
+	JOV outJOV;
+
+	@match Type(val.type())
+		-|	JOVAsValue() ->> {
+			outJOV = JOJOV::FromLiveValue(val);
+			}
+		-|	Vector() ->> {
+			outJOV = JudgmentOnValueVector::FromLiveValue(val);
+			}
+		-|	MutableVector() ->> {
+			outJOV = JudgmentOnValueMutableVector::FromLiveValue(val);
+			}
+		-|	Alternative() ->> {
+			outJOV = JudgmentOnValueAlternative::VectorElementJOVFromLiveValue(val);
+			}
+		-|	Tuple() ->> {
+			outJOV = JudgmentOnValueTuple::VectorElementJOVFromLiveValue(val);
+			}
+		-|	Class() ->> {
+			outJOV = JudgmentOnValueClass::VectorElementJOVFromLiveValue(val);
+			}
+		-|	Dictionary() ->> {
+			outJOV = JudgmentOnValueDictionary::FromLiveValue(val);
+			}
+		-|	_ ->> {
+			outJOV = JudgmentOnValue::OfType(val.type());
+			}
+		;
+
+	Nullable<JOV> vecElementJOV = outJOV.vectorElementJOV();
+
+	lassert_dump(vecElementJOV, "unexpected null value returned after calling vectorElementJOV()");
+	lassert_dump(vecElementJOV->type(),
+					"returned a vectorElementJOV from a live value which has no type!");
+	return *vecElementJOV;
+	}
+	
+JudgmentOnValue JudgmentOnValue::FromLiveValue(ImplVal val)
+	{
+	@match Type(val.type())
+		-|	JOVAsValue() ->> {
+			return 
+				JOJOV::FromLiveValue(val);
+			}
+		-|	Vector() ->> {
+			return 
+				JudgmentOnValueVector::FromLiveValue(val);
+			}
+		-|	MutableVector() ->> {
+			return 
+				JudgmentOnValueMutableVector::FromLiveValue(val);
+			}
+		-|	Alternative() ->> {
+			return 
+				JudgmentOnValueAlternative::FromLiveValue(val);
+			}
+		-|	Tuple() ->> {
+			return 
+				JudgmentOnValueTuple::FromLiveValue(val);
+			}
+		-|	Class() ->> {
+			return 
+				JudgmentOnValueClass::FromLiveValue(val);
+			}
+		-|	Dictionary() ->> {
+			return 
+				JudgmentOnValueDictionary::FromLiveValue(val);
+			}
+		-|	_ ->> {
+			return 
+				JudgmentOnValueAtom::FromLiveValue(val);
+			}
+		;
+	}
+
+JudgmentOnValue JudgmentOnValue::Constant(const CSTValue& val)
+	{
+	return JudgmentOnValue::FromLiveValue(val.getReference());
+	}
+
+
+
+Nullable<Type> 		JudgmentOnValue::computeType(void) const
+	{
+	@match JudgmentOnValue(*this)
+		-|	Unknown() ->> {
+			return  null();
+			}
+		-|	UnknownCSTKnown() ->> {
+			return  null();
+			}
+		-|	JOVAsValue(jov) ->> {
+			return  jov.computeType();
+			}
+		-|	Atom(jov) ->> {
+			return  jov.computeType();
+			}
+		-|	Alternative(jov) ->> {
+			return  jov.computeType();
+			}
+		-|	Tuple(jov) ->> {
+			return  jov.computeType();
+			}
+		-|	Class(jov) ->> {
+			return  jov.computeType();
+			}
+		-|	Vector(jov) ->> {
+			return  jov.computeType();
+			}
+		-|	Union(jov) ->> {
+			return jov.computeType();
+			}
+		-|	MutableVector(jov) ->> {
+			return  jov.computeType();
+			}
+		-|	Dictionary(jov) ->> {
+			return  jov.computeType();
+			}
+		;
+	}
+
+Nullable<bool> 		JudgmentOnValue::computeCST(void) const
+	{
+	@match JudgmentOnValue(*this)
+		-|	Unknown() ->> {
+			return null();
+			}
+		-|	UnknownCSTKnown(isCST) ->> {
+			return null() << isCST;
+			}
+		-|	JOVAsValue(jov) ->> {
+			return  jov.computeIsCST();
+			}
+		-|	Atom(jov) ->> {
+			return  jov.computeIsCST();
+			}
+		-|	Alternative(jov) ->> {
+			return  jov.computeIsCST();
+			}
+		-|	Tuple(jov) ->> {
+			return  jov.computeIsCST();
+			}
+		-|	Class(jov) ->> {
+			return  jov.computeIsCST();
+			}
+		-|	Vector(jov) ->> {
+			return  jov.computeIsCST();
+			}
+		-|	Union(jov) ->> {
+			return  jov.computeIsCST();
+			}
+		-|	MutableVector(jov) ->> {
+			return  jov.computeIsCST();
+			}
+		-|	Dictionary(jov) ->> {
+			return  jov.computeIsCST();
+			}
+		;
+	}
+
+bool JudgmentOnValue::covers(const CSTValue& impl) const
+	{
+	return covers(impl.getReference());
+	}
+
+bool JudgmentOnValue::disjoint(const CSTValue& impl) const
+	{
+	return !covers(impl.getReference());
+	}
+
+Nullable<CSTValue> 	JudgmentOnValue::computeConstant(void) const
+	{ 
+	@match JudgmentOnValue(*this)
+		-|	Unknown() ->> {
+			return null();
+			}
+		-|	UnknownCSTKnown(isCST) ->> {
+			return null();
+			}
+		-|	JOVAsValue(jov) ->> {
+			return jov.computeConstant();
+			}
+		-|	Atom(jov) ->> {
+			return jov.computeConstant();
+			}
+		-|	Alternative(jov) ->> {
+			return jov.computeConstant();
+			}
+		-|	Tuple(jov) ->> {
+			return jov.computeConstant();
+			}
+		-|	Class(jov) ->> {
+			return jov.computeConstant();
+			}
+		-|	Vector(jov) ->> {
+			return jov.computeConstant();
+			}
+		-|	Union(jov) ->> {
+			return jov.computeConstant();
+			}
+		-|	MutableVector(jov) ->> {
+			return jov.computeConstant();
+			}
+		-|	Dictionary(jov) ->> {
+			return jov.computeConstant();
+			}
+		;
+	}
+
+JudgmentOnValue JudgmentOnValue::OfTypeNoMemo(const Type& t)
+	{
+	@match Type(t)
+		-|	ExternalFunction() ->> {
+			return  JudgmentOnValueAtom::OfType(t);
+			}
+		-|	Nothing() ->> {
+			return  JudgmentOnValueAtom::OfType(t);
+			}
+		-|	String() ->> {
+			return  JudgmentOnValueAtom::OfType(t);
+			}
+		-|	Symbol() ->> {
+			return  JudgmentOnValueAtom::OfType(t);
+			}
+		-|	Tag() ->> {
+			return  JudgmentOnValueAtom::OfType(t);
+			}
+		-|	JOVAsValue() ->> {
+			return  JudgmentOnJOV::OfType(t);
+			}
+		-|	StackTrace() ->> {
+			return  JudgmentOnValueAtom::OfType(t);
+			}
+		-|	Integer() ->> {
+			return  JudgmentOnValueAtom::OfType(t);
+			}
+		-|	Float() ->> {
+			return  JudgmentOnValueAtom::OfType(t);
+			}
+		-|	Alternative() ->> {
+			return  JudgmentOnValueAlternative::OfType(t);
+			}
+		-|	Vector() ->> {
+			return  JudgmentOnValueVector::OfType(t);
+			}
+		-|	MutableVector() ->> {
+			return  JudgmentOnValueMutableVector::OfType(t);
+			}
+		-|	Tuple() ->> {
+			return  JudgmentOnValueTuple::OfType(t);
+			}
+		-|	Class() ->> {
+			return  JudgmentOnValueClass::OfType(t);
+			}
+		-|	Dictionary() ->> {
+			return  JudgmentOnValueDictionary::OfType(t);
+			}
+		-|	DateTime() ->> {
+			return JudgmentOnValueAtom::OfType(t);
+			}
+		-|	TimeDuration() ->> {
+			return JudgmentOnValueAtom::OfType(t);
+			}
+		;
+	}
+
+void JudgmentOnValue::toString(CPPMLPrettyPrintStream& s, bool isJOVAsValue) const
+	{
+	@match JudgmentOnValue(*this)
+		-|	Unknown() ->> {
+			if (isJOVAsValue)
+				s << "Anything";
+				else
+				s << "*";
+			}
+		-|	UnknownCSTKnown(isCST) ->> {
+			if (isJOVAsValue)
+				{
+				if (isCST)
+					s << "AnyConstant";
+					else
+					s << "AnyMutable";
+				}
+				else
+				{
+				if (isCST)
+					s << "{AnyConstant}";
+					else
+					s << "{AnyMutable}";
+				}
+			}
+		-|	JOVAsValue(jov) ->> {
+			return  jov.toString(s, isJOVAsValue);
+			}
+		-|	Atom(jov) ->> {
+			return  jov.toString(s, isJOVAsValue);
+			}
+		-|	Alternative(jov) ->> {
+			return  jov.toString(s, isJOVAsValue);
+			}
+		-|	Tuple(jov) ->> {
+			return  jov.toString(s, isJOVAsValue);
+			}
+		-|	Class(jov) ->> {
+			return  jov.toString(s, isJOVAsValue);
+			}
+		-|	Vector(jov) ->> {
+			return  jov.toString(s, isJOVAsValue);
+			}
+		-|	Union(jov) ->> {
+			return  jov.toString(s, isJOVAsValue);
+			}
+		-|	MutableVector(jov) ->> {
+			return  jov.toString(s, isJOVAsValue);
+			}
+		-|	Dictionary(jov) ->> {
+			return  jov.toString(s, isJOVAsValue);
+			}
+		;
+	}
+
+Nullable<bool> JudgmentOnValue::convertToBoolean() const
+	{
+	@match JudgmentOnValue(*this)
+		-|	Atom(Typed(Integer())) ->> {
+			return  null();
+			}
+		-|	Atom(Typed(_)) ->> {
+			return  Nullable<bool>(false);
+			}
+		-|	Atom(Valued(v)) ->> {
+			return  (null() << v.getReference().convertToBoolean());
+			}
+		-|	_ ->> {
+			return  null();
+			}
+		;
+	}
+
+bool JudgmentOnValue::covers(const ImplValContainer& impl) const
+	{
+	return JudgmentOnValue::covers(impl.getReference());
+	}
+
+bool JudgmentOnValue::covers(const ImplVal& inImplVal) const
+	{
+	@match JudgmentOnValue(*this)
+		-|	Unknown() ->> {
+			return  true;
+			}
+		-|	UnknownCSTKnown(isCST) ->> {
+			return  (isCST ? inImplVal.isCST() : !inImplVal.isCST());
+			}
+		-|	JOVAsValue(j) ->> {
+			return  j.covers(inImplVal);
+			}
+		-|	Atom(j) ->> {
+			return  j.covers(inImplVal);
+			}
+		-|	Vector(j) ->> {
+			return  j.covers(inImplVal);
+			}
+		-|	Union(j) ->> {
+			return  j.covers(inImplVal);
+			}
+		-|	MutableVector(j) ->> {
+			return  j.covers(inImplVal);
+			}
+		-|	Alternative(j) ->> {
+			return  j.covers(inImplVal);
+			}
+		-|	Tuple(j) ->> {
+			return  j.covers(inImplVal);
+			}
+		-|	Class(j) ->> {
+			return  j.covers(inImplVal);
+			}
+		-|	Dictionary(j) ->> {
+			return  j.covers(inImplVal);
+			}
+		;
+	}
+
+JudgmentOnResult JudgmentOnValue::restrictedToCSTness(bool inCSTness) const
+	{
+	@match JudgmentOnValue(*this)
+		-|	Unknown() ->> {
+			return 
+				JudgmentOnResult(JudgmentOnValue::UnknownCSTKnown(inCSTness));
+			}
+		-|	UnknownCSTKnown(isCST) ->> {
+			return 
+				(isCST == inCSTness ? JudgmentOnResult(*this) : JudgmentOnResult());
+			}
+		-|	JOVAsValue(j) ->> {
+			return  j.restrictedToCSTness(inCSTness);
+			}
+		-|	Atom(j) ->> {
+			return  j.restrictedToCSTness(inCSTness);
+			}
+		-|	Vector(j) ->> {
+			return  j.restrictedToCSTness(inCSTness);
+			}
+		-|	Union(j) ->> {
+			return  j.restrictedToCSTness(inCSTness);
+			}
+		-|	MutableVector(j) ->> {
+			return  j.restrictedToCSTness(inCSTness);
+			}
+		-|	Alternative(j) ->> {
+			return  j.restrictedToCSTness(inCSTness);
+			}
+		-|	Tuple(j) ->> {
+			return  j.restrictedToCSTness(inCSTness);
+			}
+		-|	Class(j) ->> {
+			return  j.restrictedToCSTness(inCSTness);
+			}
+		-|	Dictionary(j) ->> {
+			return  j.restrictedToCSTness(inCSTness);
+			}
+		;
+	}
+
+bool JudgmentOnValue::covers(const JudgmentOnValue& right) const
+	{
+	if (hash() == right.hash())
+		return true;
+	if (type() && right.type() && type() != right.type())
+		return false;
+
+	typedef boost::unordered_map<pair<hash_type, hash_type>, bool> judgment_cache_map_type;
+
+    static __thread judgment_cache_map_type* coveringsPtr = 0;
+    if (!coveringsPtr)
+        coveringsPtr = new judgment_cache_map_type();
+	
+	judgment_cache_map_type& coverings(*coveringsPtr);
+
+	pair<hash_type, hash_type> hashPair(hash(), right.hash());
+
+	auto it = coverings.find(hashPair);
+	if (it != coverings.end())
+		return it->second;
+
+	JOVPair p(*this, right);
+	bool coveringResult;
+
+	@match JOVPair(p)
+		-|	(Unknown(),_) ->> {
+			coveringResult = true;
+			}
+		-|	(UnknownCSTKnown(isCST),o) ->> {
+			coveringResult = o.isCST() && (isCST == *o.isCST());
+			}
+		-|	(Union(unionJov), jov) ->> {
+			coveringResult = unionJov.covers(jov);
+			}
+		-|	(JOVAsValue(j1), JOVAsValue(j2)) ->> {
+			coveringResult = j1.covers(right);
+			}
+		-|	(Atom(j1), Atom(j2)) ->> {
+			coveringResult = j1.covers(right);
+			}
+		-|	(Vector(j1), Vector(j2)) ->> {
+			coveringResult = j1.covers(right);
+			}
+		-|	(MutableVector(j1), MutableVector(j2)) ->> {
+			coveringResult = j1.covers(right);
+			}
+		-|	(Alternative(j1), Alternative(j2)) ->> {
+			coveringResult = j1.covers(right);
+			}
+		-|	(Tuple(j1), Tuple(j2)) ->> {
+			coveringResult = 	j1.covers(right);
+			}
+		-|	(Class(j1), Class(j2)) ->> {
+			coveringResult = j1.covers(right);
+			}
+		-|	(Dictionary(j1), Dictionary(j2)) ->> {
+			coveringResult = j1.covers(right);
+			}
+		-|	_ ->> {
+			coveringResult = false;
+			}
+		;
+
+	coverings[hashPair] = coveringResult;
+
+	return coveringResult;
+	}
+
+bool JudgmentOnValue::disjoint(const JudgmentOnValue& right) const
+	{
+	JOVPair p(*this, right);
+	
+	@match JOVPair(p)
+		-|	(Unknown(),_) ->> {
+			return  false;
+			}
+		-|	(_,Unknown()) ->> {
+			return  false;
+			}
+		-|	(UnknownCSTKnown(isCST),o) ->> {
+			return  o.isCST() && (isCST != *o.isCST());
+			}
+		-|	(o,UnknownCSTKnown(isCST)) ->> {
+			return  o.isCST() && (isCST != *o.isCST());
+			}
+		-|	(Union(unionJOV), jov) ->> {
+			return unionJOV.disjoint(jov);
+			}
+		-|	(jov, Union(unionJOV)) ->> {
+			return unionJOV.disjoint(jov);
+			}
+		-|	(JOVAsValue(j1), JOVAsValue(j2)) ->> {
+			return  j1.disjoint(right);
+			}
+		-|	(Atom(j1), Atom(j2)) ->> {
+			return  j1.disjoint(right);
+			}
+		-|	(Vector(j1), Vector(j2)) ->> {
+			return  j1.disjoint(right);
+			}
+		-|	(MutableVector(j1), MutableVector(j2)) ->> {
+			return  j1.disjoint(right);
+			}
+		-|	(Alternative(j1), Alternative(j2)) ->> {
+			return  j1.disjoint(right);
+			}
+		-|	(Tuple(j1), Tuple(j2)) ->> {
+			return 	j1.disjoint(right);
+			}
+		-|	(Class(j1), Class(j2)) ->> {
+			return  j1.disjoint(right);
+			}
+		-|	(Dictionary(j1), Dictionary(j2)) ->> {
+			return  j1.disjoint(right);
+			}
+		-|	_ ->> {
+			return  true;
+			}
+		;
+	}
+
+JudgmentOnResult operator&(const JudgmentOnValue& left, const JudgmentOnValue& right)
+	{
+	return left.intersectWith(right);
+	}
+	
+JudgmentOnResult JudgmentOnValue::intersectWith(const JudgmentOnValue& right) const
+	{
+	JOVPair p(*this, right);
+	
+	JudgmentOnResult tr;
+	
+	@match JOVPair(p)
+		-|	(Unknown(),o) ->> {
+			tr = (JudgmentOnResult(o));
+			}
+		-|	(o,Unknown()) ->> {
+			tr = (JudgmentOnResult(o));
+			}
+		-|	(UnknownCSTKnown(isCST),UnknownCSTKnown(isCST2)) ->> {
+			tr = (isCST == isCST2 ? JudgmentOnResult(right) : JudgmentOnResult());
+			}
+		-|	(UnknownCSTKnown(isCST),o) ->> {
+			tr = o.restrictedToCSTness(isCST);
+			}
+		-|	(o, UnknownCSTKnown(isCST)) ->> {
+			tr = o.restrictedToCSTness(isCST);
+			}
+		-|	(Union(unionJOV), jov) ->> {
+			tr = unionJOV.intersectWith(jov);
+			}
+		-|	(jov, Union(unionJOV)) ->> {
+			tr = unionJOV.intersectWith(jov);
+			}
+		-|	(JOVAsValue(j1), JOVAsValue(j2)) ->> {
+			tr = j1.intersectWith(right);
+			}
+		-|	(Atom(j1), Atom(j2)) ->> {
+			tr = j1.intersectWith(right);
+			}
+		-|	(Vector(j1), Vector(j2)) ->> {
+			tr = j1.intersectWith(right);
+			}
+		-|	(MutableVector(j1), MutableVector(j2)) ->> {
+			tr = j1.intersectWith(right);
+			}
+		-|	(Alternative(j1), Alternative(j2)) ->> {
+			tr = j1.intersectWith(right);
+			}
+		-|	(Tuple(j1), Tuple(j2)) ->> {
+			tr = j1.intersectWith(right);
+			}
+		-|	(Class(j1), Class(j2)) ->> {
+			tr = j1.intersectWith(right);
+			}
+		-|	(Dictionary(j1), Dictionary(j2)) ->> {
+			tr = j1.intersectWith(right);
+			}
+		-|	_ ->> {
+			tr = JudgmentOnResult();
+			}
+		;
+	
+	if (tr.size())
+		lassert_dump(
+			this->covers(tr[0]) && right.covers(tr[0]),
+			prettyPrintString(*this)
+				<< " & " << prettyPrintString(right) << " produced " << prettyPrintString(tr)
+				<< " which isn't covered by both of them\n"
+		);
+
+	return tr;
+	}
+
+bool covers(const JudgmentOnValue& left, const CSTValue& right)
+	{
+	return covers(left, right.getReference());
+	}
+
+Nullable<JudgmentOnValue> smallestCovering(const ImmutableTreeVector<JudgmentOnValue>& jovs)
+	{
+	if (jovs.size() == 0)
+		return null();
+	JOV ret = jovs[0];
+	for (long k = 1; k < jovs.size(); k++)
+		ret = smallestCovering(ret, jovs[k]);
+	return null() << ret;
+	}
+
+JudgmentOnValue smallestCovering(	const JudgmentOnValue& left,
+									const JudgmentOnValue& right)
+	{
+	JOVPair p(left, right);
+	
+	@match JOVPair(p)
+		-|	(Unknown(),_) ->> {
+			return  JOV();
+			}
+		-|	(_,Unknown()) ->> {
+			return  JOV();
+			}
+		-|	(UnknownCSTKnown(isCST),o) ->> {
+			if (o.isCST() && *o.isCST() == isCST)
+				return  left;
+			return JOV();
+			}
+		-|	(o,UnknownCSTKnown(isCST)) ->> {
+			if (o.isCST() && *o.isCST() == isCST)
+				return  right;
+			return JOV();
+			}
+		-|  (Union(unionJOV), jov) ->> {
+			return unionJOV.smallestCovering(jov);
+			}
+		-|	(JOVAsValue(j1), JOVAsValue(j2)) ->> {
+			return  j1.smallestCovering(right);
+			}
+		-|	(Atom(j1), Atom(j2)) ->> {
+			return  j1.smallestCovering(right);
+			}
+		-|	(Vector(j1), Vector(j2)) ->> {
+			return  j1.smallestCovering(right);
+			}
+		-|	(MutableVector(j1), MutableVector(j2)) ->> {
+			return  j1.smallestCovering(right);
+			}
+		-|	(Alternative(j1), Alternative(j2)) ->> {
+			return  j1.smallestCovering(right);
+			}
+		-|	(Tuple(j1), Tuple(j2)) ->> {
+			return 	j1.smallestCovering(right);
+			}
+		-|	(Class(j1), Class(j2)) ->> {
+			return  j1.smallestCovering(right);
+			}
+		-|	(Dictionary(j1), Dictionary(j2)) ->> {
+			return  j1.smallestCovering(right);
+			}
+		-|	_ ->> {
+			return  JOV();
+			}
+		;
+	}
+
+JudgmentOnValue	JudgmentOnValue::smallestCovering(const JudgmentOnValue& other) const
+	{
+	return ::smallestCovering(*this, other);
+	}
+
+class RelaxedJOVTransformer {
+public:
+		template<class T>
+		T	processDown(const T& in, bool& outCont) const
+			{
+			return in;
+			}
+		template<class T>
+		T	processUp(const T& in) const
+			{
+			return in;
+			}
+
+		Type processDown(const Type& t, bool& outCont) const
+			{
+			outCont = false;
+			return t;
+			}
+		JudgmentOnValue processDown(const JudgmentOnValue& in, bool& outCont) const
+			{
+			if (in.type() &&
+					(in.type()->isString() ||
+						in.type()->isFloat() ||
+						in.type()->isInteger() ||
+						in.type()->isDateTime() ||
+						in.type()->isTimeDuration()
+						)
+					)
+				return JudgmentOnValue::OfType(*in.type());
+
+			return in;
+			}
+};
+
+JudgmentOnValue relaxedJOV(const JudgmentOnValue& in)
+	{
+	return in.relaxedJOV();
+	}
+
+JudgmentOnValue JudgmentOnValue::computeRelaxedJOV() const
+	{
+	return transform(*this, RelaxedJOVTransformer());
+	}
+
+class RelaxedJOVVisitor {
+public:
+	RelaxedJOVVisitor() : 
+			mIsOK(true)
+		{
+
+		}
+
+	template<class T>
+	void processDown(const T& in, bool& outCont)
+		{
+		}
+
+	template<class T>
+	void processUp(const T& in)
+		{
+		}
+
+	void processDown(const Type& t, bool& outCont)
+		{
+		outCont = false;
+		}
+
+	void processDown(const JudgmentOnValue& in, bool& outCont)
+		{
+		if (in.type())
+			{
+			if (in.type()->isString() ||
+					in.type()->isFloat() ||
+					in.type()->isInteger() ||
+					in.type()->isDateTime() ||
+					in.type()->isTimeDuration()
+					)
+				{
+				if (in.constant())
+					mIsOK = false;
+
+				outCont = false;
+				}
+				else
+			if (in.type()->isSymbol() || 
+					in.type()->isTag() || 
+					in.type()->isJOVAsValue() || 
+					in.type()->isStackTrace()
+					)
+				{
+				if (!in.constant())
+					mIsOK = false;
+
+				outCont = false;
+				}
+			}
+		else
+			mIsOK = false;
+
+		if (!mIsOK)
+			outCont = false;
+		}
+
+	bool isOK() const
+		{
+		return mIsOK;
+		}
+
+private:
+	mutable bool mIsOK;
+};
+
+
+bool isRelaxedJOV(const JudgmentOnValue& in)
+	{
+	return in.isRelaxedJOV();
+	}
+
+bool JudgmentOnValue::computeIsRelaxedJOV() const
+	{
+	RelaxedJOVVisitor vis;
+
+	::visit(*this, vis);
+
+	return vis.isOK();
+	}
+
+JudgmentOnValue OfType(const Type& ty)
+	{
+	return JudgmentOnValue::OfType(ty);
+	}
+
+bool judgmentIsCST(const JudgmentOnValue& val)
+	{
+	return val.isCST() && *val.isCST();
+	}
+
+bool judgmentIsOfType(const JudgmentOnValue& val, const Type& toCheck)
+	{
+	Nullable<Type> t = val.type();
+	if (!t)
+		return false;
+	return *t == toCheck;
+	}
+
+bool isAtomType(const Type& t)
+	{
+	@match Type(t)
+		-|	Nothing() ->> {
+			return  true;
+			}
+		-|	String() ->> {
+			return  true;
+			}
+		-|	Symbol() ->> {
+			return  true;
+			}
+		-|	Integer() ->> {
+			return  true;
+			}
+		-|	Float() ->> {
+			return  true;
+			}
+		-|	DateTime() ->> {
+			return  true;
+			}
+		-|	TimeDuration() ->> {
+			return  true;
+			}
+		-|	_ ->> {
+			return  false;
+			}
+		;
+	}
+
+JOVT 					operator+(const JOVT& in, const char* s)
+	{
+	lassert(in.extras().isNoExtras());
+	
+	return JOVT(
+		in.jovs() + JudgmentOnValue::Constant(CSTValue(Symbol(s))),
+		in.names() + Nullable<Symbol>(),
+		in.extras()
+		);
+	}
+
+JOVT 					operator+(const JOVT& in, const string& s)
+	{
+	lassert(in.extras().isNoExtras());
+	
+	return JOVT(
+		in.jovs() + JudgmentOnValue::Constant(CSTValue(Symbol(s))),
+		in.names() + Nullable<Symbol>(),
+		in.extras()
+		);
+	}
+
+JOVT 					operator+(const JOVT& in, const CSTValue& v)
+	{
+	lassert(in.extras().isNoExtras());
+	
+	return JOVT(
+		in.jovs() + JudgmentOnValue::Constant(v),
+		in.names() + Nullable<Symbol>(),
+		in.extras()
+		);
+	}
+
+JOVT 					operator+(const JOVT& in,
+										const JudgmentOnValue& v)
+	{
+	lassert(in.extras().isNoExtras());
+	
+	return JOVT(
+		in.jovs() + v,
+		in.names() + Nullable<Symbol>(),
+		in.extras()
+		);
+	}
+
+JOVT					operator+(const JOVT& in, const JOVTE& e)
+	{
+	lassert(in.extras().isNoExtras());
+	
+	return JudgmentOnValueTuple(in.jovs(), in.names(), e);
+	}
+
+bool covers(	const ImmutableTreeVector<JudgmentOnValue>& l, 
+				const ImmutableTreeVector<JudgmentOnValue>& r)
+	{
+	if (l.size() != r.size())
+		return false;
+	for (long k = 0; k < l.size(); k++)
+		if (!l[k].covers(r[k]))
+			return false;
+	return true;
+	}
+
+bool JudgmentOnResult::covers(const ImplVal& impl) const
+	{
+	for (long k = 0; k < size(); k++)
+		if ((*this)[k].covers(impl))
+			return true;
+	return false;
+	}
+
+bool JudgmentOnResult::covers(const ImplValContainer& impl) const
+	{
+	return this->covers(impl.getReference());
+	}
+	
+bool JudgmentOnResult::covers(const CSTValue& impl) const
+	{
+	return this->covers(impl.getReference());
+	}
+
+//TODO TEST anybody: test asTupleCallJovt
+JudgmentOnValueTuple 	JudgmentOnValue::asTupleCallJovt(void) const
+	{
+	if (this->isTuple())
+		return this->getTuple().jov();
+	if (this->isUnknown() || this->isUnknownCSTKnown())
+		return JudgmentOnValueTuple(emptyTreeVec(), emptyTreeVec(), JOVTE::Extras(*this));
+	return JudgmentOnValueTuple::Unnamed(emptyTreeVec() + *this);
+	}
+
+bool tupleGetItemDefinitelyWillFail(const JudgmentOnValue& inJOV, uword_t inIndex)
+	{
+	if (inJOV.isUnknown() || inJOV.isUnknownCSTKnown())
+		return false;
+	if (!inJOV.isTuple())
+		return true;
+
+	const JOVT& jovt = inJOV.getTuple().jov();
+
+	if (jovt.hasExtras())
+		return false;
+	if (jovt.jovs().size() <= inIndex)
+		return true;
+
+	return false;
+	}
+
+Nullable<bool> jovIsTupleOfArity(const JOV& inJOV, uword_t arity, bool arityIsExact)
+	{
+	if (inJOV.isUnknown() || inJOV.isUnknownCSTKnown())
+		return null();
+	if (!inJOV.isTuple())
+		return null() << false;
+	
+	const JOVT& jovt = inJOV.getTuple().jov();
+
+	if (arityIsExact)
+		return jovt.arityEqualTo(arity);
+	else
+		return jovt.arityGreaterThanOrEqualTo(arity);
+	}
+
+JudgmentOnValueTuple JudgmentOnValueTuple::collapseEntirelyIntoExtras() const
+	{
+	if (!jovs().size() && !extras().isExtras())
+		return JudgmentOnValueTuple(emptyTreeVec(), emptyTreeVec(), JOVTE::Extras(JOV::Constant(CSTValue())));
+
+	if (!jovs().size())
+		return *this;
+
+	JOV coverage = jovs()[0];
+
+	for (long k = 1; k < jovs().size(); k++)
+		coverage = coverage.smallestCovering(jovs()[k]);
+
+	if (extras().isExtras())
+		coverage = coverage.smallestCovering(extras().getExtras().jov());
+
+	return JudgmentOnValueTuple(emptyTreeVec(), emptyTreeVec(), JOVTE::Extras(coverage));
+	}
+
+const ImmutableTreeSet<JudgmentOnValue>& JudgmentOnValue::unionAlternatives() const
+	{
+	@match JOV(*this)
+		-| Union(((elts))) ->> {
+			return elts;
+			}
+		-| _ ->> {
+			lassert(false);
+			}
+	}
+

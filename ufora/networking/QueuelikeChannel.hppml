@@ -1,0 +1,394 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "Channel.hpp"
+#include "../core/threading/CallbackScheduler.hppml"
+#include "../core/threading/Queue.hpp"
+#include "../core/Logging.hpp"
+
+/********
+Queuelike Channel
+
+Interface to allow callback-based channels to be pulled from like Queue objects.
+
+They are also channel objects themselves - once their handlers are set, they no
+longer put anything on the Queue.
+
+********/
+
+template<class TOut, class TIn>
+class QueuelikeChannel : public Channel<TOut, TIn> {
+public:
+	typedef PolymorphicSharedPtr<QueuelikeChannel<TOut, TIn>, PolymorphicSharedPtr<Channel<TOut, TIn> > > pointer_type;
+
+	typedef typename pointer_type::weak_ptr_type weak_ptr_type;
+
+	typedef QueuelikeChannel<TOut, TIn> self_type;
+
+	typedef QueuelikeChannel<TIn, TOut> reverse_channel_type;
+
+	virtual void write(const TOut& in) = 0;
+
+	virtual void disconnect() = 0;
+
+	virtual TIn get() = 0;
+
+	virtual bool get(TIn& ioVal) = 0;
+
+	virtual bool getTimeout(TIn& ioVal, double timeout) = 0;
+
+	virtual std::string channelType()
+		{
+		return "QueuelikeChannel";
+		}
+
+	TIn getOrTimeoutAndAssert(double timeout)
+		{
+		TIn val;
+		if (getTimeout(val, timeout))
+			return val;
+
+		lassert_dump(false, "Timed out");
+		}
+
+	virtual bool hasPendingValues() = 0;
+
+	virtual void setHandlers(
+		boost::function1<void, TIn> inOnMessage, 
+		boost::function0<void> inOnDisconnected
+		) = 0;
+};
+
+/********
+QueuelikeChannelFromChannel
+
+Adapt a callback-based channel as a Queuelike channel.
+
+If the underlying channel disconnects, we'll throw a ChannelDisconnected exception.
+
+Clients must call 'bind' to bind the QueuelikeChannel to the underlying Channel.
+
+********/
+
+template<class TOut, class TIn>
+class QueuelikeChannelFromChannel : public QueuelikeChannel<TOut, TIn> {
+public:
+	typedef PolymorphicSharedPtr<
+				QueuelikeChannelFromChannel<TOut, TIn>,
+				typename QueuelikeChannel<TOut, TIn>::pointer_type
+				> pointer_type;
+
+	typedef typename pointer_type::weak_ptr_type weak_ptr_type;
+
+	typedef QueuelikeChannelFromChannel<TOut, TIn> self_type;
+
+	typedef QueuelikeChannelFromChannel<TIn, TOut> reverse_channel_type;
+
+	QueuelikeChannelFromChannel(
+				PolymorphicSharedPtr<Channel<TOut, TIn> > inChannel,
+				PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler
+				) : 
+
+			mCallbackScheduler(inCallbackScheduler),
+			mChannel(inChannel),
+			mIsDisconnected(false),
+			mHandlersSet(false)
+		{
+		}
+
+	~QueuelikeChannelFromChannel()
+		{
+		}
+
+	void polymorphicSharedPtrBaseInitialized(void)
+		{
+		using namespace boost;
+
+		mChannel->setHandlers(
+			boost::bind(
+				onReceive,
+				weak_ptr_type(
+					this->polymorphicSharedPtrFromThis().template dynamic_pointer_cast<pointer_type>()
+					),
+				mCallbackScheduler,
+				_1
+				),
+			boost::bind(
+				onDisconnected,
+				weak_ptr_type(
+					this->polymorphicSharedPtrFromThis().template dynamic_pointer_cast<pointer_type>()
+					),
+				mCallbackScheduler
+				)
+			);
+		}
+
+	void write(const TOut& in)
+		{
+			{
+			boost::mutex::scoped_lock lock(mMutex);
+			
+			if (mIsDisconnected)
+				throw ChannelDisconnected();
+			}
+
+		mChannel->write(in);
+		}
+
+	void disconnect()
+		{
+			{
+			boost::mutex::scoped_lock lock(mMutex);
+			
+			mIsDisconnected = true;
+			mQueue.write(null());
+			}
+		
+		mChannel->disconnect();
+		}
+
+	TIn get()
+		{
+		Nullable<TIn> value = mQueue.get();
+
+		if (!value)
+			{
+			boost::mutex::scoped_lock lock(mMutex);
+			
+			mQueue.write(null());
+			mIsDisconnected = true;
+			throw ChannelDisconnected();
+			}
+		
+		return *value;
+		}
+
+	virtual bool get(TIn& ioVal)
+		{
+		Nullable<TIn> value;
+
+		if (mQueue.get(value))
+			{
+			if (!value)
+				{
+				boost::mutex::scoped_lock lock(mMutex);
+				
+				mQueue.write(null());
+				mIsDisconnected = true;
+				throw ChannelDisconnected();
+				}
+
+			ioVal = *value;
+
+			return true;
+			}
+
+		return false;
+		}
+
+	bool getTimeout(TIn& ioVal, double timeout)
+		{
+		Nullable<TIn> value;
+
+		if (mQueue.getTimeout(value, timeout))
+			{
+			if (!value)
+				{
+				boost::mutex::scoped_lock lock(mMutex);
+
+				mIsDisconnected = true;
+				mQueue.write(null());
+				throw ChannelDisconnected();
+				}
+
+			ioVal = *value;
+
+			return true;
+			}
+
+		return false;
+		}
+
+
+	bool hasPendingValues()
+		{
+		return mQueue.size();
+		}
+
+	void setHandlers(
+				boost::function1<void, TIn> inOnMessage, 
+				boost::function0<void> inOnDisconnected
+				)
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		if (!mHandlersSet)
+			{
+			Nullable<Nullable<TIn> > msg;
+
+			while (msg = mQueue.getNonblock())
+				{
+				if (*msg)
+					mCallbackScheduler->scheduleImmediately(
+						boost::bind(
+							inOnMessage,
+							**msg
+							),
+						"QueuelikeChannel::setHandlers"
+						);
+				else
+					{
+					mIsDisconnected = true;
+					break;
+					}
+				}
+			}
+
+		mHandlersSet = true;
+
+		mOnMessage = inOnMessage;
+		mOnDisconnected = inOnDisconnected;
+
+		if (mIsDisconnected)
+			mCallbackScheduler->scheduleImmediately(mOnDisconnected, "QueuelikeChannel::setHandlers disconnect");
+		}
+
+	void setCallbackScheduler(PolymorphicSharedPtr<CallbackScheduler> inScheduler)
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		mCallbackScheduler = inScheduler;
+		
+		mChannel->setCallbackScheduler(inScheduler);
+
+		mChannel->setHandlers(
+			boost::bind(
+				onReceive,
+				weak_ptr_type(
+					this->polymorphicSharedPtrFromThis().template dynamic_pointer_cast<pointer_type>()
+					),
+				mCallbackScheduler,
+				_1
+				),
+			boost::bind(
+				onDisconnected,
+				weak_ptr_type(
+					this->polymorphicSharedPtrFromThis().template dynamic_pointer_cast<pointer_type>()
+					),
+				mCallbackScheduler
+				)
+			);
+		}
+
+	PolymorphicSharedPtr<CallbackScheduler> getScheduler()
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		return mCallbackScheduler;
+		}
+
+private:
+	static void onReceive(weak_ptr_type inSelfWeak, PolymorphicSharedPtr<CallbackScheduler> scheduler, const TIn& inValue)
+		{
+		pointer_type ptr = inSelfWeak.lock();
+
+		if (!ptr)
+			return;
+
+		boost::mutex::scoped_lock lock(ptr->mMutex);
+
+		if (ptr->mIsDisconnected)
+			return;
+
+		if (ptr->mHandlersSet)
+			scheduler->scheduleImmediately(
+				boost::bind(
+					ptr->mOnMessage,
+					inValue
+					),
+				"QueuelikeChannel::onReceive"
+				);
+		else
+			ptr->mQueue.write(null() << inValue);
+		}
+
+	static void onDisconnected(weak_ptr_type inSelfWeak, PolymorphicSharedPtr<CallbackScheduler> scheduler)
+		{
+		pointer_type ptr = inSelfWeak.lock();
+
+		if (!ptr)
+			return;
+
+			{
+			boost::mutex::scoped_lock lock(ptr->mMutex);
+			
+			ptr->mQueue.write(null());
+			ptr->mIsDisconnected = true;
+
+			if (ptr->mHandlersSet)
+				scheduler->scheduleImmediately(ptr->mOnDisconnected, "QueuelikeChannel::onDisconnected");
+			}
+		}
+	
+	PolymorphicSharedPtr<CallbackScheduler> mCallbackScheduler;
+
+	boost::function1<void, TIn> mOnMessage; 
+
+	boost::function0<void> mOnDisconnected;
+
+	bool mHandlersSet;
+	
+	PolymorphicSharedPtr<Channel<TOut, TIn> > mChannel;
+
+	Queue<Nullable<TIn> > mQueue;
+
+	bool mIsDisconnected;
+
+	boost::mutex mMutex;
+};
+
+template<class TOut, class TIn>
+typename QueuelikeChannel<TOut, TIn>::pointer_type makeQueuelikeChannel(
+		PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+		Channel<TOut, TIn>* inPtr
+		)
+	{
+	return typename QueuelikeChannel<TOut, TIn>::pointer_type(
+		new QueuelikeChannelFromChannel<TOut, TIn>(
+			PolymorphicSharedPtr<Channel<TOut, TIn> >(
+				inPtr
+				),
+			inCallbackScheduler
+			)
+		);
+	}
+
+template<class TOut, class TIn>
+typename QueuelikeChannel<TOut, TIn>::pointer_type makeQueuelikeChannel(
+		PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+		PolymorphicSharedPtr<Channel<TOut, TIn> > inPtr
+		)
+	{
+	return typename QueuelikeChannel<TOut, TIn>::pointer_type(
+		new QueuelikeChannelFromChannel<TOut, TIn>(
+			inPtr, 
+			inCallbackScheduler
+			)
+		);
+	}
+
+

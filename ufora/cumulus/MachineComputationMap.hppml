@@ -1,0 +1,125 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "ComputationId.hppml"
+#include "ComputationStatusOnMachine.hppml"
+#include "MachineId.hppml"
+#include "../core/containers/TwoWaySetMap.hpp"
+#include "../core/containers/MapWithIndex.hpp"
+#include "../core/cppml/IndexedSet.hppml"
+
+namespace Cumulus {
+
+/************
+
+MachineComputationMap
+
+Track which machines own which computations, and figure out which computations have been lost
+when we lose a machine.
+
+This class is not threadsafe, and calls its callbacks synchronously.
+
+************/
+
+class MachineComputationMap {
+public:
+	MachineComputationMap(
+			boost::function1<void, const std::set<ComputationId>&> inOnComputationsLost
+			);
+
+	void addMachine(const MachineId& inId);
+
+	//this is the 'complete drop' - we have communicated with all other machines who are still
+	//alive and they all agree that it has dropped too
+	void dropMachine(const MachineId& inId);
+
+	void setComputationStatus(
+				const MachineId& inMachine, 
+				const ComputationId& inComputation, 
+				const ComputationStatusOnMachine& status
+				);
+
+	void considerMoveGuidsCompleted(
+				const std::set<hash_type>& guids
+				);
+
+	Nullable<MachineId> machineHoldingComputation(const ComputationId& inId) const;
+
+	Nullable<MachineId> machineHoldingFinishedComputation(const ComputationId& inId) const;
+
+	//get a list of other computations in the system with the same computationHash (but different
+	//guids).  This function will return a set that includes the argument if the argument is
+	//present in the system already
+	const std::set<ComputationId>& computationsWithSameHash(const ComputationId& inId) const;
+	const std::set<ComputationId>& computationsWithSameHash(const hash_type& inHash) const;
+
+	const std::set<ComputationId>& computationsOnMachine(const MachineId& inId) const;
+
+	//does the computation exist on this machine in an active state?
+	bool computationIsOnMachine(const ComputationId& inComputation, const MachineId& inMachine) const;
+
+	ComputationStatusOnMachine computationStatusOnMachine(
+										const ComputationId& inComputation, 
+										const MachineId& inMachine
+										) const;
+
+	Nullable<ComputationStatus> currentActiveStatus(const ComputationId& inComputation);
+
+	bool exists(const ComputationId& inComputation) const;
+
+	bool isMoveInProgress(const hash_type& moveGuid);
+
+	void validateInternalState();
+
+	bool isDropped(const ComputationId& inId);
+
+	const std::set<MachineId>& machinesHoldingComputation(const ComputationId& inId) const;
+
+private:
+	@type ComputationFlow = ComputationId computation, MachineId source, MachineId dest, hash_type moveGuid;
+
+	void flowCompleted(ComputationFlow flow);
+
+	void flowStarted(ComputationFlow flow);
+	
+	void signalDropped(const ComputationId& inId);
+
+	IndexedSet::Set<ComputationFlow> mComputationOutFlows;
+
+	IndexedSet::Set<ComputationFlow> mComputationInFlows;
+
+	boost::function1<void, const std::set<ComputationId>&> mOnComputationsLost;
+
+	std::map<pair<ComputationId, MachineId>, ComputationStatusOnMachine> mStatuses;
+
+	TwoWaySetMap<ComputationId, MachineId> mComputationToMachineMap;
+
+	TwoWaySetMap<hash_type, ComputationId> mComputationHashToComputation;
+
+	std::set<ComputationId> mComputationsAlive;
+
+	std::set<MachineId> mMachinesEverDropped;
+
+	std::set<MachineId> mMachinesActive;
+
+	std::set<hash_type> mMovesCompleted;
+
+	std::set<hash_type> mMovesToConsiderCompleted;
+};
+
+}
+

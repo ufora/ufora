@@ -1,0 +1,140 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "Serialization.hpp"
+#include "../math/Hash.hpp"
+#include <boost/unordered_map.hpp>
+#include "../Json.hppml"
+#include "../Logging.hpp"
+
+#define MEMO_BYTECOUNT_LIMIT (1024 * 1024)
+
+template<class inner_serializer_type>
+class JsonMemoSerializer : public inner_serializer_type {
+public:
+	JsonMemoSerializer(OBinaryStream& s) : 
+		inner_serializer_type(s), mBytesInMemo(0), mObinaryStreamRef(s)
+			{
+			}
+
+		template<class T>
+		void serialize(const T& in)
+			{
+			Serializer<T, JsonMemoSerializer<inner_serializer_type> >::serialize(*this, in);
+			}
+
+		void serializeJson(const Ufora::Json& in)
+			{
+			hash_type h = in.hash();
+
+			if (mBytesInMemo > MEMO_BYTECOUNT_LIMIT) 
+				{
+				mJsonHashToIndices.clear();
+				mBytesInMemo = 0;
+				}
+
+			auto it = mJsonHashToIndices.find(h);
+
+			if (it == mJsonHashToIndices.end())
+				{
+				uint32_t index = mJsonHashToIndices.size();
+				mJsonHashToIndices.insert(make_pair(h, index));
+
+				((inner_serializer_type*)this)->serialize(index);
+
+				uint32_t prevBytesInOBinaryStream = mObinaryStreamRef.bytesWritten();
+				((inner_serializer_type*)this)->serialize(in);
+				mBytesInMemo += (mObinaryStreamRef.bytesWritten() - prevBytesInOBinaryStream);
+				}
+			else
+				{
+				uint32_t index = it->second;
+
+				((inner_serializer_type*)this)->serialize(index);
+				}
+			}
+private:
+		uint32_t mBytesInMemo;
+		boost::unordered_map<hash_type, uint32_t> mJsonHashToIndices;
+		const OBinaryStream& mObinaryStreamRef;
+};
+
+
+template<class inner_deserializer_type>
+class JsonMemoDeserializer : public inner_deserializer_type {
+public:
+	JsonMemoDeserializer(IBinaryStream& s) : 
+		inner_deserializer_type(s), mBytesInMemo(0), mIBinaryStreamRef(s)
+			{
+			}
+
+		template<class T>
+		void deserialize(T& in)
+			{
+			Deserializer<T, JsonMemoDeserializer<inner_deserializer_type> >::deserialize(*this, in);
+			}
+
+		void deserializeJson(Ufora::Json& out)
+			{
+			if (mBytesInMemo > MEMO_BYTECOUNT_LIMIT) 
+				{
+				mIndicesToJsons.clear();
+				mBytesInMemo = 0;
+				}
+
+			uint32_t index;
+
+			((inner_deserializer_type*)this)->deserialize(index);
+
+			auto it = mIndicesToJsons.find(index);
+
+			if (it != mIndicesToJsons.end())
+				{
+				out = it->second;
+				return;
+				}
+
+			uword_t prevBytesInIBinaryStream = mIBinaryStreamRef.bytesRead();
+			((inner_deserializer_type*)this)->deserialize(out);
+			mBytesInMemo += (mIBinaryStreamRef.bytesRead() - prevBytesInIBinaryStream);
+
+			mIndicesToJsons[index] = out;
+			}
+private:
+		boost::unordered_map<uint32_t, Ufora::Json> mIndicesToJsons;
+		uword_t 									mBytesInMemo;
+		const IBinaryStream& 						mIBinaryStreamRef;
+};
+
+template<class inner_storage_type>
+class Serializer<Ufora::Json, JsonMemoSerializer<inner_storage_type> > {
+public:
+		static void serialize(JsonMemoSerializer<inner_storage_type>& s, const Ufora::Json& o)
+			{
+			s.serializeJson(o);
+			}
+};
+template<class inner_storage_type>
+class Deserializer<Ufora::Json, JsonMemoDeserializer<inner_storage_type> > {
+public:
+		static void deserialize(JsonMemoDeserializer<inner_storage_type>& s, Ufora::Json& t)
+			{
+			s.deserializeJson(t);
+			}
+};
+
+

@@ -1,0 +1,525 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include <boost/lexical_cast.hpp>
+#include "AxiomGroup.hppml"
+#include "Axioms.hppml"
+#include "Axiom.hppml"
+#include "LibcallAxiomGroup.hppml"
+#include "../Runtime.hppml"
+#include "../Core/Integers.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
+#include "../Core/ClassMediator.hppml"
+#include "../Core/ImplValContainerUtilities.hppml"
+#include "../Primitives/String.hppml"
+#include "../../core/Logging.hpp"
+#include "../../core/SymbolExport.hpp"
+
+using namespace Fora;
+
+extern "C" {
+
+ReturnValue<Symbol> FORA_clib_stringToSymbolSafe(const String& inString);
+
+BSA_DLLEXPORT
+bool FORA_clib_jovsEQ(const JudgmentOnValue& j1, const JudgmentOnValue& j2)
+	{
+	return j1 == j2;
+	}
+
+BSA_DLLEXPORT
+bool FORA_clib_jovsNEQ(const JudgmentOnValue& j1, const JudgmentOnValue& j2)
+	{
+	return j1 != j2;
+	}
+
+BSA_DLLEXPORT
+bool FORA_clib_jovsLT(const JudgmentOnValue& j1, const JudgmentOnValue& j2)
+	{
+	return j1 < j2;
+	}
+
+BSA_DLLEXPORT
+bool FORA_clib_jovsGT(const JudgmentOnValue& j1, const JudgmentOnValue& j2)
+	{
+	return j1 > j2;
+	}
+
+BSA_DLLEXPORT
+bool FORA_clib_jovsLTE(const JudgmentOnValue& j1, const JudgmentOnValue& j2)
+	{
+	return j1 <= j2;
+	}
+
+BSA_DLLEXPORT
+bool	FORA_clib_jovsGTE(const JudgmentOnValue& j1, const JudgmentOnValue& j2)
+	{
+	return j1 >= j2;
+	}
+
+BSA_DLLEXPORT
+ReturnValue<JudgmentOnValue> FORA_clib_implValGetJOV(const ImplValContainer& val)
+	{
+	volatile uword_t tr;
+	lassert(sizeof(tr) == sizeof(JOV));
+	
+	JOV jovTr;
+	
+	@match Type(val.type())
+		-|	Vector() ->> {
+			jovTr = JOV::FromLiveValue(val.getReference());
+			}
+		-|	_ ->> {
+			jovTr = JOV::OfType(val.type());
+			}
+		;
+
+	return slot0(jovTr);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<JudgmentOnValue> FORA_clib_jovOfVectorHolding(const JudgmentOnValue& val)
+	{
+	return slot0(
+		JOV::Vector(
+			JudgmentOnValueVector(
+				JudgmentOnResult(
+					val
+					)
+				)
+			)
+		);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<JudgmentOnValue> FORA_clib_generateIntegerJOV(int64_t bits, bool isSigned)
+	{
+	return slot0(JOV::OfType(Type::Integer(bits, isSigned)));
+	}
+	
+BSA_DLLEXPORT
+ReturnValue<JudgmentOnValue> FORA_clib_generateFloatJOV(int64_t bits)
+	{
+	if (bits == 32 || bits == 64)
+		return slot0(JOV::OfType(Type::Float(bits)));
+	else
+		return slot0(JOV::OfType(Type::Nothing()));
+	}
+	
+//TODO BUG brax: fully implement JOV matching. for now, we just do vectors
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer, Nothing> FORA_clib_jovMatchJOV(
+			const JudgmentOnValue& inToMatch,
+			const JudgmentOnValue& inPatternJOV
+			)
+	{
+	ImmutableTreeVector<CSTValue> tr;
+	
+	JOVPair p(inPatternJOV, inToMatch);
+	
+	@match JOVPair(p)
+		-|	(Unknown(), other) ->> {}
+		-|	(Atom(), Atom()) ->> {
+			if (inPatternJOV.covers(inToMatch))
+				tr = tr + CSTValue(inToMatch);
+			else
+				return slot1(Nothing());
+			}
+		-|	(Vector(), Vector((otherElts))) ->> {
+			
+			if (otherElts.size() == 1)
+				{
+				tr = tr + CSTValue(otherElts[0]);
+				}
+			else
+				return slot1(Nothing());
+			}
+        -|  (Alternative(), Alternative()) ->> {
+            }
+		-|  (Dictionary(), Dictionary()) ->> {
+			if (inPatternJOV.covers(inToMatch))
+				tr = tr + CSTValue(inToMatch);
+			else
+				return slot1(Nothing());
+			}
+		-|	_ ->> {
+			return slot1(Nothing());
+			}
+		;
+	
+	return slot0(CSTValue::Tuple(tr));
+	}
+	
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer, Nothing> FORA_clib_jovMatchAlternative(
+			const JudgmentOnValue& inJOV,
+			const Symbol& inSymbol
+			)
+	{
+	if (!inJOV.type())
+		return slot1(Nothing());
+	
+	//TODO BUG brax: this is really a typematch when it should be a JOV match.
+	@match Type(*inJOV.type())
+		-|	Nothing() ->> {
+			if (inSymbol == Symbol::Nothing())
+				{
+				return slot0(
+					ImplValContainerUtilities::createEmptyTuple()
+					);
+				}
+			}
+		-|	Symbol() ->> {
+				if (inSymbol == Symbol::Symbol_())
+					{
+					return slot0(
+						ImplValContainerUtilities::createEmptyTuple()
+						);
+					}
+				}
+		-|	String() ->> {
+				if (inSymbol == Symbol::String())
+					{
+					return slot0(
+						ImplValContainerUtilities::createEmptyTuple()
+						);
+					}
+				}
+		-|	Integer(bits, isSigned) ->> {
+				if (inSymbol == Symbol::Integer())
+					{
+					return slot0(
+						ImplValContainerUtilities::createTuple(
+							emptyTreeVec() + 
+							ImplValContainerUtilities::createUnsignedInteger(bits) +
+							ImplValContainerUtilities::createBool(isSigned)
+							)
+						);
+					}
+				}
+		-|	Float(bits) ->> {
+				if (inSymbol == Symbol::Float())
+					{
+					return slot0(
+						ImplValContainerUtilities::createUnsignedInteger(bits)
+						);
+					}
+				}
+		-|	_ ->> {
+			}
+		;
+	
+	//by default, fails
+	return slot1(Nothing());
+	}
+}
+
+class JovOfVectorHoldingAxiom : public AxiomGroup {
+public:
+	JovOfVectorHoldingAxiom() : AxiomGroup(
+		JOVT() + "JovOfVectorHolding" + "Call" + jovJOVAsValue() + JOVTE::NoExtras()
+		)
+		{
+		}
+	
+	Nullable<Axiom> axiom(TypedFora::Compiler& c, const JudgmentOnValueTuple& s)
+		{
+		const JudgmentOnJOV& argJov = s[2].getJOVAsValue().jov();
+
+		if (argJov.computeConstant())
+			{
+			lassert(argJov.isKnown());
+
+			return null() <<
+				AxiomGroup::simpleAxiom(
+					s,
+					JOV::JOVAsValue(
+						JudgmentOnJOV::Known(
+							JudgmentOnValue::Vector(
+								JudgmentOnValueVector(
+									JudgmentOnResult(
+										argJov.getKnown().jov()
+										)
+									)
+								)
+							)
+						),
+					NativeExpression::Nothing(),
+					false
+					);
+			}
+
+		return null() << 
+			LibcallAxiomGroup::createAxiom(
+				signature(),
+				ReturnSlots() + jovJOVAsValue(),
+				&FORA_clib_jovOfVectorHolding,
+				ImmutableTreeVector<uword_t>() + 2
+			);
+		}
+		
+	Nullable<AxiomJOA> axiomJOA(const JudgmentOnValueTuple& s)
+		{
+		const JudgmentOnJOV& argJov = s[2].getJOVAsValue().jov();
+
+		if (argJov.computeConstant())
+			{
+			lassert(argJov.isKnown());
+
+			return null() <<
+				AxiomJOA::Native(
+					JudgmentOnAction::Value(
+						JOV::JOVAsValue(
+							JudgmentOnJOV::Known(
+								JudgmentOnValue::Vector(
+									JudgmentOnValueVector(
+										JudgmentOnResult(
+											argJov.getKnown().jov()
+											)
+										)
+									)
+								)
+							)
+						)
+					);
+			}
+				
+		return null() <<
+			AxiomJOA::Native(
+				JudgmentOnAction::Value(
+					JOV::JOVAsValue(
+						JudgmentOnJOV::Unknown(
+							JudgmentOnValue::Vector(
+								JudgmentOnValueVector(
+									JudgmentOnResult(
+										JOV()
+										)
+									)
+								)
+							)
+						)
+					)
+				);
+		}
+};
+
+class JOVCallAxiom : public AxiomGroup {
+public:
+		JOVCallAxiom() : AxiomGroup(JOVT() +
+				"TypeJOV" + "Call" + JOV() + JOVTE::NoExtras())
+			{
+			}
+		Nullable<Axiom> axiom(TypedFora::Compiler& c, const JudgmentOnValueTuple& s)
+			{
+			JOV j = outJOV(s);
+			
+			if (j.constant())
+				return null() << AxiomGroup::simpleAxiom(
+					s,
+					j,
+					NativeExpression::Nothing(),
+					false
+					);
+			
+			return null() << LibcallAxiomGroup::createAxiom(
+				signature(),
+				ReturnSlots() + jovJOVAsValue(),
+				&FORA_clib_implValGetJOV,
+				ImmutableTreeVector<uword_t>() + 2
+				);
+			}
+		Nullable<AxiomJOA>		axiomJOA(const JudgmentOnValueTuple& s)
+			{
+			return null() << AxiomJOA::Native(
+				JudgmentOnAction::Value(
+					outJOV(s)
+					)
+				);
+			}
+		JudgmentOnValue	outJOV(const JudgmentOnValueTuple& s)
+			{
+			return	JudgmentOnValue::JOVAsValue(
+						//TODO BUG brax: judgments on vectors are not carefully computed.
+						//we could actually figure out what judgments these ought to be
+						//so we wouldn't have to use 'unknown'
+						s.jovs()[2].isVector() ?
+							JOJOV::Unknown(s.jovs()[2]) : 
+						s.jovs()[2].type() ?
+							JOJOV::Known(JOV::OfType(*s.jovs()[2].type())) :
+							JOJOV::Unknown() 
+						);
+			}
+};
+
+
+class TypeAxioms {
+public:
+		TypeAxioms()
+			{
+			AxiomGroups("Types") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						CSTValue(JOV::Atom(JudgmentOnValueAtom::Integer(null()))) +
+						"Call" +
+						OfType(Type::Integer(64, true)) +
+						OfType(Type::Integer(1, false)) +
+						JOVTE::NoExtras(),
+					ReturnSlots() + jovJOVAsValue(),
+					&FORA_clib_generateIntegerJOV,
+					ImmutableTreeVector<uword_t>() + 2 + 3
+					)
+				;
+			AxiomGroups("Types") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						CSTValue(JOV::Atom(JudgmentOnValueAtom::Float())) +
+						"Call" +
+						OfType(Type::Integer(64, true)) +
+						JOVTE::NoExtras(),
+					ReturnSlots() + jovJOVAsValue(),
+					&FORA_clib_generateFloatJOV,
+					ImmutableTreeVector<uword_t>() + 2
+					)
+				;
+			
+			AxiomGroups("Types") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						CSTValue(JOV::OfType(Type::Symbol()))  +
+						"Call" +
+						JOV::OfType(Type::String()),
+					ReturnSlots() + JOV::OfType(Type::Symbol()),
+					&FORA_clib_stringToSymbolSafe,
+					ImmutableTreeVector<uword_t>() + 2
+					);
+
+			AxiomGroups("Types") +=
+				 LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::JOVAsValue(JOJOV()) +
+						"Operator" +
+						"==" +
+						JOV::JOVAsValue(JOJOV()),
+					ReturnSlots() + JOV::OfType(Type::Integer(1,false)),
+					&FORA_clib_jovsEQ,
+					ImmutableTreeVector<uword_t>() + 0 + 3
+					);
+
+			AxiomGroups("Types") +=
+				 LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::JOVAsValue(JOJOV()) +
+						"Operator" +
+						"!=" +
+						JOV::JOVAsValue(JOJOV()),
+					ReturnSlots() + JOV::OfType(Type::Integer(1,false)),
+					&FORA_clib_jovsNEQ,
+					ImmutableTreeVector<uword_t>() + 0 + 3
+					);
+
+			AxiomGroups("Types") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::JOVAsValue(JOJOV()) +
+						"Operator" +
+						"<" +
+						JOV::JOVAsValue(JOJOV()),
+					ReturnSlots() + JOV::OfType(Type::Integer(1,false)),
+					&FORA_clib_jovsLT,
+					ImmutableTreeVector<uword_t>() + 0 + 3
+					);
+
+			AxiomGroups("Types") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::JOVAsValue(JOJOV()) +
+						"Operator" +
+						">" +
+						JOV::JOVAsValue(JOJOV()),
+					ReturnSlots() + JOV::OfType(Type::Integer(1,false)),
+					&FORA_clib_jovsGT,
+					ImmutableTreeVector<uword_t>() + 0 + 3
+					);
+
+			AxiomGroups("Types") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::JOVAsValue(JOJOV()) +
+						"Operator" +
+						">=" +
+						JOV::JOVAsValue(JOJOV()),
+					ReturnSlots() + JOV::OfType(Type::Integer(1,false)),
+					&FORA_clib_jovsGTE,
+					ImmutableTreeVector<uword_t>() + 0 + 3
+					);
+
+			AxiomGroups("Types") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::JOVAsValue(JOJOV()) +
+						"Operator" +
+						"<=" +
+						JOV::JOVAsValue(JOJOV()),
+					ReturnSlots() + JOV::OfType(Type::Integer(1,false)),
+					&FORA_clib_jovsLTE,
+					ImmutableTreeVector<uword_t>() + 0 + 3
+					);
+
+			//TODO BUG brax: type matching is duplicated for symbols and types.
+			//We need to clean this up.
+			AxiomGroups("Types") += LibcallAxiomGroup::create(
+				JOVT() +
+					JOV::JOVAsValue(JOJOV()) +
+					"MatchFilter" +
+					JOV::JOVAsValue(JOJOV()),
+				ReturnSlots() + 
+					jovTuple(JOV::JOVAsValue(JOJOV())) +
+					JOV::Constant(CSTValue()),
+				&FORA_clib_jovMatchJOV,
+				ImmutableTreeVector<uword_t>() + 0 + 2
+				);
+			
+			AxiomGroups("Types") += LibcallAxiomGroup::create(
+				JOVT() +
+					JOV::JOVAsValue(JOJOV()) +
+					"MatchFilter" +
+					JOV::OfType(Type::Symbol()),
+				ReturnSlots() + 
+					jovTuple() +
+					JOV::Constant(CSTValue()),
+				FORA_clib_jovMatchAlternative,
+				ImmutableTreeVector<uword_t>() + 0 + 2
+				);
+			
+			AxiomGroups("Types") += LibcallAxiomGroup::create(
+				JOVT() +
+					JOV::JOVAsValue(JOJOV()) +
+					"MatchFilter" +
+					JOV::OfType(Type::Tag()),
+				ReturnSlots() + 
+					jovTuple() +
+					JOV::Constant(CSTValue()),
+				&FORA_clib_jovMatchAlternative,
+				ImmutableTreeVector<uword_t>() + 0 + 2
+				);
+				
+			AxiomGroups("Types") += new JovOfVectorHoldingAxiom();
+				
+			AxiomGroups("Types") += new JOVCallAxiom();
+			}
+};
+
+TypeAxioms typeAxioms;
+

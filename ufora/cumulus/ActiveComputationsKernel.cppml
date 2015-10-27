@@ -1,0 +1,3028 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ActiveComputationsKernel.hppml"
+#include "CumulusWorkerAddDropEvent.hppml"
+
+namespace Cumulus {
+
+void ActiveComputationsKernel::enableVectorPaging()
+	{
+	for (auto id: mExternalInterface->allComputationIds())
+		mExternalInterface->enableVectorPagingForId(id);
+
+	cleanupAfterStateChange();
+	}
+
+void ActiveComputationsKernel::disableVectorPaging()
+	{
+	for (auto id: mExternalInterface->allComputationIds())
+		mExternalInterface->disableVectorPagingForId(id);
+
+	cleanupAfterStateChange();
+	}
+
+void ActiveComputationsKernel::handleGlobalSchedulerToActiveComputationsMessage(
+												const GlobalSchedulerToActiveComputationsMessage& msg
+												)
+	{
+	@match GlobalSchedulerToActiveComputationsMessage(msg)
+		-| TriggerCheckpoint(computationRoot, timestamp) ->> {
+			mComputationCheckpointStatusTimestamps[computationRoot] = timestamp;
+
+			LOG_DEBUG << mOwnMachineId << " setting TS for " << computationRoot << " to " << timestamp 
+				<< " which covers " << mLocalComputationStatuses.localComputationsForRoot(computationRoot).size();
+
+			for (auto computation: mLocalComputationStatuses.localComputationsForRoot(computationRoot))
+				{
+				LOG_DEBUG << "\tchecking " << computation;
+
+				if (mLocalComputationStatuses.computationStatus(computation).isActive())
+					handleSetCheckpointStatusTimestamp(computation);
+				}
+			}
+		-| ShouldCreateRootComputationResponse(computation, shouldCreate) ->> {
+			handleShouldCreateRootComputationResponse(computation, shouldCreate);
+			}
+	}
+
+void ActiveComputationsKernel::createExternalIoTaskGivenId(ComputationId parent, ExternalIoTask task, ExternalIoTaskId newTaskId)
+	{
+	ExternalIoTaskCreated created(newTaskId, task);
+
+	mUnbroadcastExternalIoTasks[newTaskId] = created;
+
+	cleanupAfterStateChange();
+	}
+
+void ActiveComputationsKernel::sendComputationToComputationMessage(const ComputationToComputationMessage& msg)
+	{
+	mExternalInterface->onCumulusComponentMessageCreated(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::ComputationToComputation(msg),
+			CumulusComponentEndpointSet::SpecificWorker(msg.targetMachine()),
+			CumulusComponentType::ActiveComputations()
+			)
+		);
+	}
+
+void ActiveComputationsKernel::handleComputationToComputationMessage(const ComputationToComputationMessage& in)
+	{
+	@match ComputationToComputationMessage(in)
+		-| ResultAccepted(computation, shouldBeSelf) ->> {
+			lassert(shouldBeSelf == mOwnMachineId);
+			lassert(computationIsLocal(computation));
+			lassert(mExternalInterface->currentComputationStatusForId(computation).isFinished());
+			dropComputation(computation);
+			}
+		-| TemporarySubcomputationCheckpointStatusUpdated(shouldBeSelf, childComputation, statistics, timestamp) ->> {
+			lassert(shouldBeSelf == mOwnMachineId);
+
+			handleIncomingComputationCheckpointStatus(childComputation, statistics, timestamp);
+			}
+		-| TemporarySubcomputationFinished(subcomp, onMachine, shouldBeSelf) ->> {
+			lassert(shouldBeSelf == mOwnMachineId);
+			
+			std::set<ComputationId> computations;
+
+			mDependencyGraph.getLocalComputationsDependingOn(
+				subcomp,
+				computations
+				);
+
+			if (!computations.size())
+				{
+				LOG_WARN << "Machine " << mOwnMachineId << " received a finished-result message for "
+					<< subcomp 
+					<< " which doesn't appear to be wanted here."
+					;
+				
+				//just drop the other computation so it doesn't hang around
+				sendComputationToComputationMessage(
+					ComputationToComputationMessage::ResultAccepted(
+						subcomp,
+						onMachine
+						)
+					);
+
+				return;
+				}
+
+			lassert(computations.size() == 1);
+
+			for (auto computation: computations)
+				mComputationResultsRequested.insert(computation, subcomp);
+			
+			LOG_DEBUG << mOwnMachineId << " requesting " 
+					<< subcomp
+					<< " from "
+					<< prettyPrintString(onMachine)
+					<< " for " 
+					<< computations
+					;
+
+			mExternalInterface->onRequestComputationResultFromMachine(
+				RequestComputationResultFromMachine(
+					CumulusClientOrMachine::Machine(mOwnMachineId),
+					onMachine,
+					subcomp
+					)
+				);
+			}
+	}
+
+ComputationStatusOnMachine ActiveComputationsKernel::extractLocalComputationStatusOnMachine(
+														const ComputationId& computation
+														) const
+	{
+	if (mMovingComputations.contains(computation, IndexedSet::dim0))
+		{
+		lassert_dump(
+			mExternalInterface->hasComputation(computation),
+			"Worker " << prettyPrintString(mOwnMachineId) << " couldn't drop computation "
+				<< prettyPrintString(computation) << " because we don't actually have it."
+			);
+
+		auto move = mMovingComputations.index(computation, IndexedSet::dim0);
+		lassert(move.size() == 1);
+
+		//note that because we are recording calls to 'mExternalInterface', we must bind these values
+		//outside of the function call
+		auto stats = mExternalInterface->currentComputationStatisticsForId(computation);
+
+		return ComputationStatusOnMachine::Moving(
+			move.begin()->target(),
+			move.begin()->moveGuid(),
+			stats
+			);
+		}
+
+	if (!mExternalInterface->hasComputation(computation))
+		return ComputationStatusOnMachine::Inactive();
+
+	//note that because we are recording calls to 'mExternalInterface', we must bind these values
+	//outside of the function call since the c++ standard doesn't guarantee execution order.
+	auto status = mExternalInterface->currentComputationStatusForId(computation);
+	auto statistics = mExternalInterface->currentComputationStatisticsForId(computation);
+
+	return ComputationStatusOnMachine::Active(status, statistics);
+	}
+
+ComputationStatusOnMachine ActiveComputationsKernel::lookupRootComputationStatusOnMachine(
+							const ComputationId& computation, 
+							const MachineId& machine
+							) const
+	{
+	lassert(computation.isRoot());
+	return mMachineRootComputationMap.computationStatusOnMachine(computation, machine);
+	}
+
+bool ActiveComputationsKernel::isCurrentlyComputing(const ComputationId& computation)
+	{
+	return mCurrentlyComputing.find(computation) != mCurrentlyComputing.end();
+	}
+
+bool ActiveComputationsKernel::isCurrentlyHandlingActionInBackgroundThread(const ComputationId& inId)
+	{
+	return mComputationsCurrentlyHandlingBackgroundActions.find(inId) 
+		!= mComputationsCurrentlyHandlingBackgroundActions.end();
+	}
+
+void ActiveComputationsKernel::handleClientComputationPriorityChange(const ClientComputationPriorityChange& priorityChange)
+	{
+	mDependencyGraph.setCumulusClientPriority(
+						priorityChange.computation(), 
+						priorityChange.clientId(),
+						priorityChange.newPriority()
+						);
+
+	updateDependencyGraph();
+	
+	checkAndAssertInternalStateIfNecessary();
+	
+	cleanupAfterStateChange();
+	}
+
+void ActiveComputationsKernel::removePendingAddResultPendingActions(
+							const ComputationId& dest,
+							const ComputationId& source
+							)
+	{
+	auto it = mComputationPendingActions.find(dest);
+	if (it == mComputationPendingActions.end())
+		return;
+
+	auto& actions = it->second;
+
+	while (true)
+		{
+		bool removedOne = false;
+
+		for (auto it2 = actions.begin(); it2 != actions.end() && !removedOne; it2++)
+			@match ComputationPendingAction(*it2)
+				-| AddInterpreterResultToComputation(sourceCandidate) ->> {
+					if (source == sourceCandidate)
+						{
+						removedOne = true;
+						actions.erase(it2);
+						}
+					}
+				-| _ ->> {
+					}
+
+		if (!removedOne)
+			return;
+		}
+	}
+
+void ActiveComputationsKernel::removeAllPendingAddResultPendingActions(
+							const ComputationId& dest
+							)
+	{
+	auto it = mComputationPendingActions.find(dest);
+	if (it == mComputationPendingActions.end())
+		return;
+
+	auto& actions = it->second;
+
+	for (auto it2 = actions.begin(); it2 != actions.end();)
+		@match ComputationPendingAction(*it2)
+			-| AddInterpreterResultToComputation() ->> {
+				actions.erase(it2);
+				it2 = actions.begin();
+				}
+			-| _ ->> {
+				it2++;
+				}
+	}
+
+void ActiveComputationsKernel::scheduleComputationPendingAction(
+							const ComputationId& inId,
+							const ComputationPendingAction& inAction
+							)
+	{
+	lassert(!mMovingComputations.contains(inId, IndexedSet::dim0));
+
+	mComputationPendingActions[inId].push_back(inAction);
+	}
+
+void ActiveComputationsKernel::handleSetCheckpointStatusTimestamp(const ComputationId& computation)
+	{
+	bool isComputing = isCurrentlyComputing(computation);
+
+	if (isCurrentlyHandlingActionInBackgroundThread(computation) || isComputing)
+		{
+		LOG_DEBUG << "Deferring checkpoint status for " << computation;
+
+		scheduleComputationPendingAction(
+			computation,
+			ComputationPendingAction::SetCheckpointStatus()
+			);
+		
+		if (isComputing)
+			mExternalInterface->interruptComputation(computation);
+
+		return;
+		}
+
+	updateComputationCheckpointStatusTimestamp(computation);
+	}
+
+void ActiveComputationsKernel::updateComputationCheckpointStatusTimestamp(const ComputationId& computation)
+	{
+	if (mComputationCheckpointStatusTimestamps.find(computation.rootComputation()) == 
+				mComputationCheckpointStatusTimestamps.end())
+		return;
+
+	if (!mLocalComputationStatuses.exists(computation))
+		return;
+
+	Nullable<pair<CheckpointStatus, CheckpointRequest> > finalStatusAndTimestamp = 
+		mExternalInterface->setCheckpointStatusTimestamp(
+			computation,
+			mComputationCheckpointStatusTimestamps[computation.rootComputation()]
+			);
+
+	if (finalStatusAndTimestamp)
+		handleOutgoingComputationCheckpointStatus(
+				computation, 
+				finalStatusAndTimestamp->first, 
+				finalStatusAndTimestamp->second
+				);
+	}
+
+void ActiveComputationsKernel::handleOutgoingComputationCheckpointStatus(
+											ComputationId computation, 
+											CheckpointStatus statistics,
+											CheckpointRequest timestamp
+											)
+	{
+	lassert(!mMovingComputations.contains(computation, IndexedSet::dim0));
+
+	lassert(!isCurrentlyHandlingActionInBackgroundThread(computation));
+
+	mComputationsCurrentlyHandlingBackgroundActions.insert(computation);
+
+	mExternalInterface->notifyThreadsWaitingForSplits();
+
+	mExternalInterface->scheduleComputationToHandleBackgroundAction(
+		computation,
+		ComputationBackgroundAction::WriteToCheckpoint(statistics, timestamp)
+		);
+	}
+
+void ActiveComputationsKernel::handleWriteCheckpointCompleted(
+				ComputationId computation, 
+				CheckpointStatus status,
+				CheckpointRequest timestamp
+				)
+	{
+	mComputationsCurrentlyHandlingBackgroundActions.erase(computation);
+
+	if (computation.isRoot())
+		{
+		if (timestamp.writeToStorage())
+			LOG_INFO << "Root computation " << computation << " successfully checkpointed " << timestamp;
+
+		CheckpointStatusUpdateMessage msg(computation, status, timestamp);
+
+		//need to broadcast this back to the global scheduler
+		mExternalInterface->onCumulusComponentMessageCreated(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::ActiveComputationsToGlobalScheduler(
+					ActiveComputationsToGlobalSchedulerMessage::ComputationToGlobalScheduler(
+						ComputationToGlobalSchedulerMessage::CheckpointStatusUpdate(msg)
+						)
+					),
+				CumulusComponentEndpointSet::LeaderMachine(),
+				CumulusComponentType::GlobalScheduler()
+				)
+			);
+
+		mMostRecentlyBroadcastCheckpointStatuses[computation] = msg;
+		
+		mExternalInterface->onCumulusComponentMessageCreated(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::ActiveComputationsToCumulusClient(
+					ActiveComputationsToCumulusClientMessage::CheckpointStatusUpdate(msg)
+					),
+				CumulusComponentEndpointSet::AllClients(),
+				CumulusComponentType::CumulusClient()
+				)
+			);
+		}
+	else
+		{
+		MachineId machine = *computationParentMachine(computation);
+
+		if (machine == mOwnMachineId)
+			{
+			handleIncomingComputationCheckpointStatus(
+				computation,
+				status,
+				timestamp
+				);
+			}
+		else
+			{
+			sendComputationToComputationMessage(
+				ComputationToComputationMessage::TemporarySubcomputationCheckpointStatusUpdated(
+					machine,
+					computation,
+					status,
+					timestamp
+					)
+				);
+			}
+		}
+	
+	mExternalInterface->notifyThreadsWaitingForSplits();
+
+	fireOffPendingActions(computation);
+	}
+
+void ActiveComputationsKernel::handleIncomingComputationCheckpointStatus(
+									ComputationId childComputation, 
+									CheckpointStatus statistics, 
+									CheckpointRequest timestamp
+									)
+	{
+	std::set<ComputationId> computations;
+
+	mDependencyGraph.getLocalComputationsDependingOn(
+		childComputation,
+		computations
+		);
+
+	for (auto parent: computations)
+		handleIncomingComputationCheckpointStatus(parent, childComputation, statistics, timestamp);
+	}
+
+void ActiveComputationsKernel::handleIncomingComputationCheckpointStatus(
+									ComputationId parent,
+									ComputationId child,
+									CheckpointStatus stats,
+									CheckpointRequest timestamp
+									)
+	{
+	lassert(mLocalComputationStatuses.exists(parent));
+
+	bool isComputing = isCurrentlyComputing(parent);
+
+	if (isCurrentlyHandlingActionInBackgroundThread(parent) || isComputing)
+		{
+		scheduleComputationPendingAction(
+			parent,
+			ComputationPendingAction::ReceiveComputationCheckpointStatus(child, stats, timestamp)
+			);
+		
+		if (isComputing)
+			mExternalInterface->interruptComputation(parent);
+
+		return;
+		}
+
+	Nullable<pair<CheckpointStatus, CheckpointRequest> > finalStatusAndTimestamp = 
+		mExternalInterface->addChildComputationCheckpointStatus(
+			parent,
+			child,
+			stats,
+			timestamp
+			);
+
+	if (finalStatusAndTimestamp)
+		handleOutgoingComputationCheckpointStatus(
+			parent, 
+			finalStatusAndTimestamp->first, 
+			finalStatusAndTimestamp->second
+			);
+	}
+
+void ActiveComputationsKernel::handleComputationStatusOnMachineChanged(const ComputationStatusOnMachineChanged& change)
+	{
+	lassert(change.computation().isRoot());
+
+	ComputationStatusOnMachine origStatus = 
+		lookupRootComputationStatusOnMachine(change.computation(), change.machine());
+
+	LOG_DEBUG << prettyPrintString(mOwnMachineId) 
+			<< " - handleComputationStatusOnMachineChanged " << prettyPrintStringWithoutWrapping(change);
+
+	lassert(change.machine() != mOwnMachineId);
+
+	mMachineRootComputationMap.setComputationStatus(
+							change.machine(), 
+							change.computation(), 
+							change.status()
+							);
+
+	//pull a global status by looking at all active statuses across the system.
+	//It's possible that because of message delay we receive a 'Blocked' status
+	//arrive after a 'Finished' status, and we want to make sure that the
+	//Finished status takes precedence.
+	Nullable<ComputationStatus> nStatus =
+		mMachineRootComputationMap.currentActiveStatus(change.computation());
+
+	if (nStatus)
+		{
+		@match ComputationStatus(*nStatus)
+			-| BlockedOnComputations(computations) ->> {
+				setComputationDependenciesForRemote(change.computation(), computations);
+				}
+			-| Finished() ->> {
+				setComputationDependenciesForRemote(change.computation(), ImmutableTreeSet<ComputationId>());
+
+				std::set<ComputationId> computations;
+
+				mDependencyGraph.getLocalComputationsDependingOn(
+					change.computation(),
+					computations
+					);
+
+				for (auto it = computations.begin(); it != computations.end(); ++it)
+					requestRootComputationResult(*it, change.computation());
+				}
+			-| _ ->> {
+				setComputationDependenciesForRemote(change.computation(), ImmutableTreeSet<ComputationId>());
+				}
+		}
+	
+	checkAndAssertInternalStateIfNecessary();
+	
+	cleanupAfterStateChange();
+	}
+
+void ActiveComputationsKernel::addComputationResultToComputation(
+										ComputationId computation,
+										ComputationResultFromMachine inResult
+										)
+	{
+	if (isCurrentlyHandlingActionInBackgroundThread(computation))
+		{
+		scheduleComputationPendingAction(
+			computation,
+			ComputationPendingAction::AddComputationResultToComputation(inResult)
+			);
+		return;
+		}
+
+	lassert(!isCurrentlyComputing(computation));
+
+	lassert(mExternalInterface->hasComputation(computation));
+
+	LOG_DEBUG << prettyPrintString(mOwnMachineId) 
+				 << ". Computation " << prettyPrintString(computation) 
+				<< " adding result for " << prettyPrintString(inResult.computation());
+
+	try {
+		lassert(!isCurrentlyComputing(computation));
+		lassert(!isCurrentlyHandlingActionInBackgroundThread(computation));
+
+		removePendingAddResultPendingActions(computation, inResult.computation());
+
+		mExternalInterface->addComputationResultToId(computation, *inResult.result());
+		}
+	catch(std::logic_error& e)
+		{
+		throw std::logic_error(e.what() + 
+				std::string("\ncomputationId = ") + prettyPrintString(computation));
+		}
+
+	handleComputationStatusChange(computation);
+
+	//if the computation was temporary, remove it
+	if (!inResult.computation().isRoot())
+		sendComputationToComputationMessage(
+			ComputationToComputationMessage::ResultAccepted(
+				inResult.computation(),
+				inResult.sourceMachine()
+				)
+			);
+
+	addComputationResultToComputationCompleted(computation, inResult);
+	}
+
+void ActiveComputationsKernel::addComputationResultToComputationCompleted(
+										ComputationId computation,
+										ComputationResultFromMachine inResult
+										)
+	{
+	if (inResult.referencedBigvecs())
+		{
+		hash_type moveGuid = inResult.referencedBigvecs()->first;
+
+		mPendingComputationResultsBeforeInflightDecref.drop(computation, moveGuid);
+
+		if (!mPendingComputationResultsBeforeInflightDecref.hasValue(moveGuid))
+			mExternalInterface->broadcastBigvecsInFlight(
+				inResult.referencedBigvecs()->second,
+				-1,
+				moveGuid
+				);
+		}
+	}
+
+void ActiveComputationsKernel::addInterpreterResultToComputation(
+										ComputationId computation,
+										ComputationId sourceComputation,
+										Fora::Interpreter::ComputationResult inResult,
+										ComputationStatistics stats
+										)
+	{
+	if (isCurrentlyHandlingActionInBackgroundThread(computation))
+		{
+		scheduleComputationPendingAction(
+			computation,
+			ComputationPendingAction::AddInterpreterResultToComputation(
+				sourceComputation,
+				inResult,
+				stats
+				)
+			);
+		return;
+		}
+
+	if (!mDependencyGraph.isLocalComputation(computation))
+		{
+		LOG_WARN << "Not adding for local computation " << computation;
+		return;
+		}
+
+	lassert(!isCurrentlyComputing(computation));
+
+	lassert(mExternalInterface->hasComputation(computation));
+
+	LOG_DEBUG << prettyPrintString(mOwnMachineId) 
+				 << ". Computation " << prettyPrintString(computation) 
+				<< " adding result for " << prettyPrintString(sourceComputation);
+
+	try {
+		lassert(!isCurrentlyComputing(computation));
+		lassert(!isCurrentlyHandlingActionInBackgroundThread(computation));
+
+		removePendingAddResultPendingActions(computation, sourceComputation);
+
+		mExternalInterface->addComputationResultToId(computation, sourceComputation, inResult, stats);
+		}
+	catch(std::logic_error& e)
+		{
+		throw std::logic_error(e.what() + 
+				std::string("\ncomputationId = ") + prettyPrintString(computation));
+		}
+
+	handleComputationStatusChange(computation);
+
+	if (sourceComputation.isSplit())
+		dropComputation(sourceComputation);
+	}
+
+void ActiveComputationsKernel::sendComputationToSchedulerMessage(ComputationToSchedulerMessage msg)
+	{
+	mExternalInterface->onCumulusComponentMessageCreated(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::ActiveComputationsToLocalScheduler(
+				ActiveComputationsToLocalSchedulerMessage::ComputationToScheduler(
+					msg
+					)
+				),
+			CumulusComponentEndpointSet::SpecificWorker(msg.schedulerMachine()),
+			CumulusComponentType::LocalScheduler()
+			)
+		);
+	}
+
+void ActiveComputationsKernel::handleSchedulerToComputationMessage(const SchedulerToComputationMessage& message)
+	{
+	LOG_DEBUG << "handling " << prettyPrintStringWithoutWrapping(message);
+
+	const ComputationId& computation(message.computation());
+	
+	if (!computationIsLocalAndUnfinished(computation))
+		{
+		sendComputationToSchedulerMessage(
+			ComputationToSchedulerMessage::OK(
+				computation,
+				message.guid(),
+				message.schedulerMachine()
+				)
+			);
+		return;
+		}
+
+	if (isCurrentlyHandlingActionInBackgroundThread(message.computation()))
+		{
+		scheduleComputationPendingAction(
+			message.computation(),
+			ComputationPendingAction::HandleSchedulerToComputationMessage(message)
+			);
+		return;
+		}
+
+	@match SchedulerToComputationMessage(message)
+		-| Split(threshold) ->> {
+			if (!mExternalInterface->hasEnoughComputeTimeElapsedToSplit(computation, threshold))
+				{
+				sendComputationToSchedulerMessage(
+					ComputationToSchedulerMessage::OK(
+						computation,
+						message.guid(),
+						message.schedulerMachine()
+						)
+					);
+				return;
+				}
+			}
+		-| _ ->> {}
+		;
+
+	if (isCurrentlyComputing(computation))
+		{
+		mExternalInterface->interruptComputation(computation);
+		scheduleComputationPendingAction(
+			message.computation(),
+			ComputationPendingAction::HandleSchedulerToComputationMessage(message)
+			);
+		return;
+		}
+
+	@match SchedulerToComputationMessage(message)
+		-| Split(threshold) ->> {
+			auto status = mExternalInterface->currentComputationStatusForId(computation);
+
+			if (status.isComputable() || status.isBlockedOnVectorLoad())
+				{
+				mComputationsCurrentlyHandlingBackgroundActions.insert(computation);
+
+				mExternalInterface->notifyThreadsWaitingForSplits();
+
+				mExternalInterface->scheduleComputationToHandleBackgroundAction(
+					computation,
+					ComputationBackgroundAction::HandleSchedulerMessage(message)
+					);
+				}
+			else
+				sendComputationToSchedulerMessage(
+					ComputationToSchedulerMessage::OK(
+						computation,
+						message.guid(),
+						message.schedulerMachine()
+						)
+					);
+			}
+		-| ResetPageDataAndBroadcast() ->> {
+			mComputationsCurrentlyHandlingBackgroundActions.insert(computation);
+
+			mExternalInterface->notifyThreadsWaitingForSplits();
+
+			mExternalInterface->scheduleComputationToHandleBackgroundAction(
+				computation,
+				ComputationBackgroundAction::HandleSchedulerMessage(message)
+				);
+			}
+		-| SearchForCliques() ->> {
+			mComputationsCurrentlyHandlingBackgroundActions.insert(computation);
+
+			mExternalInterface->notifyThreadsWaitingForSplits();
+
+			mExternalInterface->scheduleComputationToHandleBackgroundAction(
+				computation,
+				ComputationBackgroundAction::HandleSchedulerMessage(message)
+				);
+			}
+		-| MarkSelfCircular() ->> {
+			sendComputationToSchedulerMessage(
+				ComputationToSchedulerMessage::OK(
+					computation,
+					message.guid(),
+					message.schedulerMachine()
+					)
+				);
+
+			if (computationIsLocalAndUnfinished(computation) && 
+					!isCurrentlyComputing(computation))
+				{
+				mExternalInterface->markComputationCircular(computation);
+				handleComputationStatusChange(computation);
+				removeAllPendingAddResultPendingActions(computation);
+				}
+			}
+		-| PassthroughToOtherComputation(otherComputation) ->> {
+			if (computationIsLocalAndUnfinished(computation))
+				passthroughToOtherComputation(computation, otherComputation);
+			}
+
+	checkAndAssertInternalStateIfNecessary();
+	
+	cleanupAfterStateChange();
+	}
+
+bool ActiveComputationsKernel::computationIsLocal(const ComputationId& inComputation)
+	{
+	bool result = mDependencyGraph.isLocalComputation(inComputation);
+
+	if (mMovingComputations.contains(inComputation, IndexedSet::dim0))
+		lassert(!result);
+
+	if (result)
+		{
+		lassert(mExternalInterface->hasComputation(inComputation));
+		}
+	else
+		{
+		lassert(!mExternalInterface->hasComputation(inComputation) || 
+					mMovingComputations.contains(inComputation, IndexedSet::dim0));
+		}
+
+	return result;
+	}
+
+bool ActiveComputationsKernel::computationIsLocalAndUnfinished(const ComputationId& inComputation)
+	{
+	if (!computationIsLocal(inComputation))
+		return false;
+
+	return !mExternalInterface->currentComputationStatusForId(inComputation).isFinished();
+	}
+	
+void ActiveComputationsKernel::markComputationVectorLoadsComplete(ComputationId computation)
+	{
+	if (isCurrentlyHandlingActionInBackgroundThread(computation))
+		{
+		scheduleComputationPendingAction(
+			computation,
+			ComputationPendingAction::MarkComputationVectorLoadsComplete()
+			);
+
+		return;
+		}
+
+	mVectorLoadBlockedComputations.dropKey(computation);
+		
+	lassert(!isCurrentlyComputing(computation));
+	lassert(!isCurrentlyHandlingActionInBackgroundThread(computation));
+
+	if (mExternalInterface->currentComputationStatusForId(computation).isBlockedOnVectorLoad())
+		{
+		mExternalInterface->markSliceLoaded(computation);
+
+		handleComputationStatusChange(computation);
+		}
+	}
+
+void ActiveComputationsKernel::markComputationVectorLoadsFailedPermanently(ComputationId computation)
+	{
+	if (isCurrentlyHandlingActionInBackgroundThread(computation))
+		{
+		scheduleComputationPendingAction(
+			computation,
+			ComputationPendingAction::MarkComputationVectorLoadsFailedPermanently()
+			);
+
+		return;
+		}
+
+	mVectorLoadBlockedComputations.dropKey(computation);
+		
+	lassert(!isCurrentlyComputing(computation));
+	lassert(!isCurrentlyHandlingActionInBackgroundThread(computation));
+
+	if (mExternalInterface->currentComputationStatusForId(computation).isBlockedOnVectorLoad())
+		{
+		mExternalInterface->markSliceLoadFailedPermanently(computation);
+
+		handleComputationStatusChange(computation);
+		}
+	}
+
+void ActiveComputationsKernel::markComputationExternalIoTaskComplete(
+										ComputationId computation, 
+										ExternalIoTaskCompleted completed
+										)
+	{
+	if (isCurrentlyHandlingActionInBackgroundThread(computation))
+		{
+		scheduleComputationPendingAction(
+			computation,
+			ComputationPendingAction::MarkComputationExternalIoTaskComplete(completed)
+			);
+
+		return;
+		}
+
+	mExternalIoTaskBlockedComputations.dropKey(computation);
+		
+	lassert(!isCurrentlyComputing(computation));
+	lassert(!isCurrentlyHandlingActionInBackgroundThread(computation));
+
+	if (mExternalInterface->currentComputationStatusForId(computation).isBlockedOnExternalIoTask())
+		{
+		LOG_DEBUG << "Computation " << computation << " handling ExternalIoTaskCompleted " 
+			<< completed;
+
+		mExternalInterface->markExternalIoTaskCompleted(computation, completed);
+
+		handleComputationStatusChange(computation);
+		}
+	else
+		LOG_WARN << "Computation " << computation << " didn't depend on task " << completed.taskId();
+	
+	@match ExternalIoTaskCompleted(completed)
+		-| (_, TaskResultAsForaValue(_, bigvecs, guid)) ->> {
+			if (bigvecs.size())
+				mExternalInterface->broadcastBigvecsInFlight(bigvecs, -1, guid);
+			}
+		-| _ ->> {}
+	}
+
+void ActiveComputationsKernel::handleComputationMoveResponse(const ComputationMoveResponse& inResponse)
+	{
+	if (isCurrentlyHandlingActionInBackgroundThread(inResponse.computation()))
+		{
+		scheduleComputationPendingAction(
+			inResponse.computation(),
+			ComputationPendingAction::HandleComputationMoveResponse(inResponse)
+			);
+		return;
+		}
+
+	lassert(inResponse.sourceMachine() == mOwnMachineId);
+	
+	lassert(mMovingComputations.contains(inResponse.computation(), IndexedSet::dim0));
+
+	lassert(mExternalInterface->hasComputation(inResponse.computation()));
+
+	lassert(!isCurrentlyComputing(inResponse.computation()));
+
+	lassert(mLocalComputationStatuses.exists(inResponse.computation()));
+
+	mMovingComputations.eraseAll(inResponse.computation(), IndexedSet::dim0);
+
+	if (inResponse.moveWasSuccessful())
+		dropComputation(inResponse.computation());
+	else
+		{
+		mExternalInterface->broadcastBigvecsInFlight(
+			inResponse.referencedBigvecs(),
+			-1,
+			inResponse.moveGuid()
+			);
+
+		LOG_INFO << "Move of " << prettyPrintString(inResponse.computation()) << " to " 
+				<< prettyPrintString(inResponse.targetMachine()) << " rejected.";
+
+		mDependencyGraph.markComputationLocal(inResponse.computation());
+
+		handleComputationStatusChange(inResponse.computation());
+
+		//re-enable vector paging
+		mExternalInterface->enableVectorPagingForId(inResponse.computation());
+		}
+	
+	checkAndAssertInternalStateIfNecessary();
+	}
+
+void ActiveComputationsKernel::handleInitiateComputationMove(InitiateComputationMove move)
+	{
+	//goes to the kernel
+	if (mExternalInterface->hasDataTransfers())
+		{
+		mExternalInterface->scheduleDataTransferAsInitiateComputationMove(move);
+		}
+	else
+		{
+		moveComputationToMachine(
+			move.computation(), 
+			move.targetMachine(), 
+			DataTransferTokenId()
+			);
+		}
+	
+	checkAndAssertInternalStateIfNecessary();
+	
+	cleanupAfterStateChange();
+	}
+
+bool ActiveComputationsKernel::isPassthrough(const ComputationId& computation) const
+	{
+	return mExternalInterface->isPassthrough(computation);
+	}
+
+void ActiveComputationsKernel::setComputationParentMachine(const ComputationId& comp, MachineId machine)
+	{
+	mComputationParentMachineId[comp] = machine;
+	}
+
+void ActiveComputationsKernel::handleComputationStatusChange(ComputationId computation)
+	{
+	lassert_dump(
+		mDependencyGraph.isLocalComputation(computation),
+		prettyPrintString(computation)
+		);
+
+	lassert(!isCurrentlyComputing(computation));
+	lassert(!isCurrentlyHandlingActionInBackgroundThread(computation));
+
+	if (mVectorLoadBlockedComputations.hasKey(computation))
+		mVectorLoadBlockedComputations.dropKey(computation);
+
+	ComputationStatus status = mExternalInterface->currentComputationStatusForId(computation);
+
+	ComputationStatusOnMachine origStatusOnMachine = 
+		mLocalComputationStatuses.computationStatus(computation);
+
+	updateComputationLocalStatusMaps_(computation);
+
+	@match ComputationStatus(status)
+		-|	Uninitialized() ->> { 
+				lassert_dump(false, "A computation can't be Uninitialized after computing"); 
+				}
+		-|	Finished() ->> {
+				setComputationDependenciesForLocal(computation, ImmutableTreeSet<ComputationId>());
+				handleComputationFinished(computation);
+				}
+		-|	Computable() ->> {
+				setComputationDependenciesForLocal(computation, ImmutableTreeSet<ComputationId>());
+				}
+		-|	BlockedOnComputations(subthreads) ->> {
+				for (auto subthread: subthreads)
+					if (subthread.isRoot())
+						registerRootToRootDependency(computation.rootComputation(), subthread);
+
+				setComputationDependenciesForLocal(computation, subthreads);
+
+				if (mExternalInterface->currentComputationStatusForId(computation).isFinished())
+					handleComputationFinished(computation);
+				}
+		-|	BlockedOnVectorLoad(slice) ->> {
+				setComputationDependenciesForLocal(computation, ImmutableTreeSet<ComputationId>());
+				
+				LOG_DEBUG << "registering dependency of " 
+						<< prettyPrintStringWithoutWrapping(computation)
+						<< " on vector slice " 
+						<< slice;
+					
+				for (auto page: mExternalInterface->convertSliceToPages(slice))
+					if (!mExternalInterface->pageIsInRam(page))
+						mVectorLoadBlockedComputations.insert(computation, page);
+				}
+		-|	BlockedOnExternalIoTask(taskId) ->> {
+				setComputationDependenciesForLocal(computation, ImmutableTreeSet<ComputationId>());
+				
+				LOG_DEBUG << "Computation " << computation << " now blocked on task " << taskId;
+
+				if (mExternalIoTaskBlockedComputations.hasKey(computation))
+					{
+					lassert(mExternalIoTaskBlockedComputations.getValues(computation).size() == 1);
+					lassert(*mExternalIoTaskBlockedComputations.getValues(computation).begin() == taskId);
+					}
+					else
+				if (mUnbroadcastExternalIoTasks.find(taskId) != mUnbroadcastExternalIoTasks.end())
+					{
+					lassert(!mExternalIoTaskBlockedComputations.hasKey(computation));
+
+					mExternalIoTaskBlockedComputations.insert(computation, taskId);
+					mExternalInterface->onCumulusComponentMessageCreated(
+						CumulusComponentMessageCreated(
+							CumulusComponentMessage::ExternalIoTask(
+								ExternalIoTaskMessage::Create(mUnbroadcastExternalIoTasks[taskId])
+								),
+							CumulusComponentEndpointSet::SpecificWorker(mOwnMachineId),
+							CumulusComponentType::ExternalIoTasks()
+							)
+						);
+					mUnbroadcastExternalIoTasks.erase(taskId);
+					}
+				}
+
+	if (!status.isBlockedOnExternalIoTask() && mExternalIoTaskBlockedComputations.hasKey(computation))
+		mExternalIoTaskBlockedComputations.dropKey(computation);
+
+	if (!status.isBlockedOnVectorLoad() && mVectorLoadBlockedComputations.hasKey(computation))
+		mVectorLoadBlockedComputations.dropKey(computation);
+
+	//re-update the computation status, as it may have changed
+	updateComputationLocalStatusMaps_(computation);
+
+	broadcastComputationStatus(computation);
+
+	broadcastLocalComputationStatus(computation);
+
+	updateComputationCheckpointStatusTimestamp(computation);
+
+	if (status.isBlockedOnVectorLoad() && !mVectorLoadBlockedComputations.hasKey(computation))
+		markComputationVectorLoadsComplete(computation);
+
+	if (status.isBlockedOnVectorLoad())
+		{
+		bool isFailed = false;
+		for (auto page: mVectorLoadBlockedComputations.getValues(computation))
+			if (mPagesMarkedNotLoadable.find(page) != mPagesMarkedNotLoadable.end())
+				{
+				isFailed = true;
+				break;
+				}
+
+		if (isFailed)
+			markComputationVectorLoadsFailedPermanently(computation);
+		}
+	}
+
+void ActiveComputationsKernel::handleRootToRootDependencyCreated(RootToRootDependencyCreated dep)
+	{
+	lassert(dep.source().isRoot());
+	lassert(dep.dest().isRoot());
+	
+	mDependencyGraph.addRootToRootDependency(dep.source(), dep.dest());
+	}
+
+void ActiveComputationsKernel::registerRootToRootDependency(ComputationId root1, ComputationId root2)
+	{
+	lassert(root1.isRoot());
+	lassert(root2.isRoot());
+
+	if (mDependencyGraph.addRootToRootDependency(root1, root2))
+		{
+		CumulusComponentMessage msg = 
+			CumulusComponentMessage::CrossActiveComputations(
+				CrossActiveComputationsMessage::RootToRootDependency(
+					RootToRootDependencyCreated(root1, root2)
+					)
+				);
+
+		mExternalInterface->onCumulusComponentMessageCreated(
+			CumulusComponentMessageCreated(
+				msg,
+				CumulusComponentEndpointSet::AllWorkersExceptSelf(),
+				CumulusComponentType::ActiveComputations()
+				)
+			);
+
+		mExternalInterface->onCumulusComponentMessageCreated(
+			CumulusComponentMessageCreated(
+				msg,
+				CumulusComponentEndpointSet::AllClients(),
+				CumulusComponentType::CumulusClient()
+				)
+			);
+		}
+	}
+
+void ActiveComputationsKernel::handleComputationFinished(ComputationId computation)
+	{
+	//add our result to any local computations blocked on this
+	std::set<ComputationId> parents;
+	std::set<ComputationId> allParents;
+
+	mDependencyGraph.getLocalComputationsDependingOn(
+		computation,
+		parents
+		);
+	
+	allParents = mDependencyGraph.getComputationsDependingOn(
+		computation
+		);
+	
+	Nullable<Fora::Interpreter::ComputationResult> result = 
+					mExternalInterface->getResultForId(computation);
+
+	lassert(result);
+
+	for (auto it = parents.begin(); it != parents.end(); ++it)
+		{
+		try {
+			LOG_DEBUG << prettyPrintString(mOwnMachineId) 
+					<< ". Computation " << prettyPrintString(*it) 
+					<< " adding result for " << prettyPrintString(computation);
+
+			addInterpreterResultToComputation(
+				*it,
+				computation, 
+				*result,
+				mExternalInterface->currentComputationStatisticsForId(computation)
+				);
+			}
+		catch(std::logic_error& e)
+			{
+			throw std::logic_error(e.what() + 
+				std::string("\ncomputationId = ") + prettyPrintString(*it));
+			}
+
+		if (mComputationResultsRequested.contains(*it, computation))
+			mComputationResultsRequested.drop(*it, computation);
+		}
+
+	if (!computation.isRoot())
+		{
+		if (parents.size() == 0)
+			{
+			//this computation was started on another machine
+			lassert_dump(
+				*computationParentMachine(computation) != mOwnMachineId,
+				prettyPrintString(computation)
+				);
+			sendComputationToComputationMessage(
+				ComputationToComputationMessage::TemporarySubcomputationFinished(
+					computation,
+					mOwnMachineId,
+					*computationParentMachine(computation)
+					)
+				);
+			}
+		}
+	}
+
+void ActiveComputationsKernel::requestRootComputationResult(
+								ComputationId localComputationNeeding, 
+								ComputationId dependsOn
+								)
+	{
+	lassert(mExternalInterface->hasComputation(localComputationNeeding));
+	lassert(dependsOn.isRoot());
+
+	if (mComputationResultsRequested.hasValue(dependsOn))
+		{
+		mComputationResultsRequested.insert(localComputationNeeding, dependsOn);
+		return;
+		}
+
+	Nullable<MachineId> target = mMachineRootComputationMap.machineHoldingFinishedComputation(dependsOn);
+
+	if (!target)
+		{
+		ostringstream msg;
+
+		msg << prettyPrintString(mOwnMachineId) << " -> " 
+				<< prettyPrintString(lookupRootComputationStatusOnMachine(dependsOn, mOwnMachineId))
+				<< "\n";
+			
+		for (auto it = mOtherMachines.begin(); it != mOtherMachines.end(); ++it)
+			msg << prettyPrintString(*it) << " -> " 
+				<< prettyPrintString(lookupRootComputationStatusOnMachine(dependsOn, *it))
+				<< "\n";
+
+		lassert_dump(false, 
+			"Can't request a computation that doesn't appear to exist in the system. Machine ="
+				<< prettyPrintString(mOwnMachineId) << ", Requestor ="
+				<< prettyPrintString(localComputationNeeding) << " and requested computation = "
+				<< prettyPrintString(dependsOn) << "\n" << msg.str()
+				);
+		}
+		else 
+	if (*target == mOwnMachineId)
+		{
+		addLocalComputationResultToLocalComputation(localComputationNeeding, dependsOn);
+
+		return;
+		}
+
+	mComputationResultsRequested.insert(localComputationNeeding, dependsOn);
+	
+	LOG_DEBUG << prettyPrintString(mOwnMachineId) << " requesting " 
+			<< prettyPrintString(dependsOn) 
+			<< " from "
+			<< prettyPrintString(*target)
+			<< " for " 
+			<< prettyPrintString(localComputationNeeding)
+			;
+
+	mExternalInterface->onRequestComputationResultFromMachine(
+		RequestComputationResultFromMachine(
+			CumulusClientOrMachine::Machine(mOwnMachineId),
+			*target,
+			dependsOn
+			)
+		);
+	}
+
+void ActiveComputationsKernel::addLocalComputationResultToLocalComputation(
+												ComputationId computation, 
+												ComputationId subComp
+												)
+	{
+	lassert(mExternalInterface->hasComputation(subComp));
+
+	lassert(!isCurrentlyComputing(subComp));
+	lassert(!isCurrentlyHandlingActionInBackgroundThread(subComp));
+
+	Nullable<Fora::Interpreter::ComputationResult> result = mExternalInterface->getResultForId(subComp);
+	ComputationStatistics statistics = mExternalInterface->currentComputationStatisticsForId(subComp);
+
+	lassert(result);
+
+	addInterpreterResultToComputation(computation, subComp, *result, statistics);
+
+	if (mComputationResultsRequested.contains(computation, subComp))
+		mComputationResultsRequested.drop(computation, subComp);
+	}
+
+void ActiveComputationsKernel::createComputationFromSplit(
+												ComputationId parent,
+												ComputationId newId, 
+												ComputationStatePtr inComputation
+												)
+	{
+	lassert(newId.isSplit());
+
+	//this is a new computation - create it locally
+	lassert(!mExternalInterface->hasComputation(newId));
+
+	mExternalInterface->registerNewComputationState(newId, inComputation);
+
+	if (mComputationCheckpointStatusTimestamps.find(newId.rootComputation()) != 
+				mComputationCheckpointStatusTimestamps.end())
+		{
+		CheckpointRequest checkpoint = mComputationCheckpointStatusTimestamps[newId.rootComputation()];
+
+		if (mLocalComputationStatuses.exists(parent))
+			{
+			Nullable<pair<CheckpointStatus, CheckpointRequest> >  status = mExternalInterface->getCheckpointStatus(parent);
+
+			if (status && status->second == checkpoint)
+				mExternalInterface->setCheckpointStatusTimestamp(newId, checkpoint);
+			}
+		}
+
+	mDependencyGraph.markComputationLocal(newId);
+
+	handleComputationStatusChange(newId);
+	}
+
+void ActiveComputationsKernel::createComputationFromSplit(
+												ComputationId parent,
+												ComputationId newId, 
+												ComputationDefinition inComputation
+												)
+	{
+	lassert(newId.isSplit());
+
+	//this is a new computation - create it locally
+	lassert(!mExternalInterface->hasComputation(newId));
+
+	mExternalInterface->registerNewComputationState(newId, inComputation);
+
+	if (mComputationCheckpointStatusTimestamps.find(newId.rootComputation()) != 
+				mComputationCheckpointStatusTimestamps.end())
+		{
+		CheckpointRequest checkpoint = mComputationCheckpointStatusTimestamps[newId.rootComputation()];
+
+		if (mLocalComputationStatuses.exists(parent))
+			{
+			Nullable<pair<CheckpointStatus, CheckpointRequest> >  status = mExternalInterface->getCheckpointStatus(parent);
+
+			if (status && status->second == checkpoint)
+				mExternalInterface->setCheckpointStatusTimestamp(newId, checkpoint);
+			}
+		}
+
+	mDependencyGraph.markComputationLocal(newId);
+
+	handleComputationStatusChange(newId);
+	}
+
+void ActiveComputationsKernel::createRootComputation(
+								ComputationDefinition inDefinition, 
+								ComputationId newId
+								)
+	{
+	lassert(newId.isRoot());
+
+	if (mMachineRootComputationMap.machineHoldingComputation(newId))
+		//this computation already exists
+		return;
+
+	//we've already tried to create it
+	if (mDeferredRootComputations.find(newId) != mDeferredRootComputations.end())
+		return;
+
+	//defer it
+	mDeferredRootComputations[newId] = inDefinition;
+
+	//and find out if we should create it
+	mExternalInterface->onCumulusComponentMessageCreated(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::ComponentToPersistentCacheManager(
+				ComponentToPersistentCacheManagerMessage::ShouldCreateRootComputationQuery(
+					newId
+					)
+				),
+			CumulusComponentEndpointSet::LeaderMachine(),
+			CumulusComponentType::PersistentCacheManager()
+			)
+		);
+	}
+
+void ActiveComputationsKernel::handleShouldCreateRootComputationResponse(ComputationId newId, bool shouldCreate)
+	{
+	if (shouldCreate)
+		{
+		ComputationDefinition def = mDeferredRootComputations[newId];
+
+		mExternalInterface->registerNewComputationState(newId, def);
+
+		mDependencyGraph.markComputationLocal(newId);
+
+		handleComputationStatusChange(newId);
+		}
+
+	mDeferredRootComputations.erase(newId);
+	}
+
+void ActiveComputationsKernel::moveComputationToMachine(
+										ComputationId inId, 
+										MachineId inOtherMachine,
+										DataTransferTokenId token
+										)
+	{
+	lassert(inOtherMachine != mOwnMachineId);
+
+	if (isCurrentlyHandlingActionInBackgroundThread(inId))
+		{
+		scheduleComputationPendingAction(
+			inId,
+			ComputationPendingAction::MoveComputationToMachine(
+				inOtherMachine,
+				token
+				)
+			);
+		return;
+		}
+
+	if (isCurrentlyComputing(inId))
+		{
+		if (mMovesPendingCheckout.find(inId) == mMovesPendingCheckout.end())
+			{
+			mMovesPendingCheckout[inId] = make_pair(inOtherMachine, token);
+
+			mExternalInterface->interruptComputation(inId);
+			
+			return;
+			}
+		else
+			{
+			sendInitiateComputationMoveResponse(inId, false);
+
+			mExternalInterface->tokenReceived(token);
+
+			return;			
+			}
+		}
+	
+	if (!computationIsLocalAndUnfinished(inId) || isPassthrough(inId) ||
+				mExternalInterface->currentComputationStatusForId(inId)
+													.isBlockedOnExternalIoTask()
+			||	mExternalInterface->currentComputationStatusForId(inId)
+													.isBlockedOnComputations())
+		{
+		sendInitiateComputationMoveResponse(inId, false);
+
+		mExternalInterface->tokenReceived(token);
+
+		return;
+		}
+
+	auto movingTo = mMovingComputations.index(inId, IndexedSet::dim0);
+	lassert_dump(
+		movingTo.size() == 0,
+		"Computation " << prettyPrintString(inId) << " is already moving to " 
+			<< prettyPrintString(movingTo.begin()->target())
+			<< " on machine " << prettyPrintString(mOwnMachineId)
+		);
+
+	LOG_DEBUG << prettyPrintString(mOwnMachineId) << " Moving computation " 
+			<< prettyPrintString(inId) << " to " << prettyPrintString(inOtherMachine);
+
+
+	hash_type moveGuid = mExternalInterface->generateGuid();
+
+	mExternalInterface->scheduleSerializationAndSendOfComputation(
+		inId,
+		inOtherMachine,
+		token,
+		moveGuid
+		);
+
+	mMovingComputations.insert(MoveRecord(inId, inOtherMachine, moveGuid));
+
+	updateComputationLocalStatusMaps_(inId);
+
+	if (mVectorLoadBlockedComputations.hasKey(inId))
+		mVectorLoadBlockedComputations.dropKey(inId);
+
+	mComputationResultsRequested.dropKey(inId);
+
+	mDependencyGraph.markComputationNonlocal(inId);
+
+	broadcastComputationStatus(inId);
+
+	broadcastLocalComputationStatus(inId);
+
+	sendInitiateComputationMoveResponse(inId, true);
+
+	//executing a deferred action is no longer meaningful
+	clearPendingActionsForComputation(inId);
+	}
+
+void ActiveComputationsKernel::sendInitiateComputationMoveResponse(ComputationId computation, bool success)
+	{
+	mExternalInterface->onCumulusComponentMessageCreated(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::ActiveComputationsToLocalScheduler(
+				ActiveComputationsToLocalSchedulerMessage::InitiateComputationMoveResponse(
+					computation, 
+					success
+					)
+				),
+			CumulusComponentEndpointSet::SpecificWorker(mOwnMachineId),
+			CumulusComponentType::LocalScheduler()
+			)
+		);
+	}
+
+void ActiveComputationsKernel::updateComputationLocalStatusMaps_(ComputationId computation)
+	{
+	updateComputationLocalStatusMapsTo_(
+		computation, 
+		extractLocalComputationStatusOnMachine(computation)
+		);
+	}
+
+void ActiveComputationsKernel::updateComputationLocalStatusMapsTo_(ComputationId computation, ComputationStatusOnMachine status)
+	{
+	if (computation.isRoot())
+		mMachineRootComputationMap.setComputationStatus(
+							mOwnMachineId, 
+							computation,
+							status
+							);
+
+	mLocalComputationStatuses.setComputationStatus(computation, status);
+	}
+
+void ActiveComputationsKernel::computationsLost(const std::set<ComputationId>& computations)
+	{
+	LOG_DEBUG << prettyPrintString(mOwnMachineId) 
+		<< " Lost the following computations: " 
+		<< prettyPrintString(
+			ImmutableTreeSet<ComputationId>(
+				computations.begin(), 
+				computations.end()
+				)
+			);
+	}
+
+void ActiveComputationsKernel::dumpStateToLog()
+	{
+	LOGGER_INFO_T log = LOGGER_INFO;
+
+	log << "Machine " << mOwnMachineId << "\n";
+
+	for (auto compId: mDependencyGraph.getLocalComputations())
+		log << ": " << prettyPrintStringWithoutWrapping(compId) << " -> " 
+			<< "priority of " << mDependencyGraph.getPriority(compId) << ". "
+			<< "parent on " << computationParentMachine(compId) << ". "
+			<< prettyPrintStringWithoutWrapping(mLocalComputationStatuses.computationStatus(compId)) << "\n";
+
+	for (auto clientCompAndPriority: mDependencyGraph.getClientPriorities())
+		log << clientCompAndPriority.first.first << " has priority " 
+			<< clientCompAndPriority.second << " on " 
+			<< prettyPrintStringWithoutWrapping(clientCompAndPriority.first.second)
+			<< "\n"
+			;
+
+	for (auto& compAndChildren: mDependencyGraph.getRootToRootDependencies().getKeysToValues())
+		{
+		log << prettyPrintStringWithoutWrapping(compAndChildren.first) << " depends on\n";
+		for (auto c: compAndChildren.second)
+			log << "\t" << prettyPrintStringWithoutWrapping(c) << "\n";
+		}
+	}
+
+void ActiveComputationsKernel::cleanupAfterStateChange()
+	{
+	}
+
+void ActiveComputationsKernel::resubmitThreadsForComputation(ComputationId comp)
+	{
+	lassert_dump(!isCurrentlyHandlingActionInBackgroundThread(comp), "Computation: " << prettyPrintString(comp));
+	lassert_dump(!isCurrentlyComputing(comp), "Computation: " << prettyPrintString(comp));
+
+	ComputationStatus oldStatus = mExternalInterface->currentComputationStatusForId(comp);
+
+	lassert(mExternalInterface->canResubmitBlockingThreads(comp));
+
+	CreatedComputations result = mExternalInterface->resubmitBlockingThreads(comp, mExternalInterface->generateGuid());
+
+		{
+		LOGGER_INFO_T log = LOGGER_INFO;
+
+		log << "Resubmitted " << comp << " in state "
+			<< oldStatus << "\ngot " << result.computations().size() << " subcomputations:";
+		for (auto c: result.computations())
+			log << "\n\t" << prettyPrintStringWithoutWrapping(c.first);
+		}
+
+	for (auto idAndDef: result.computations())
+		createRootComputation(idAndDef.second, idAndDef.first);
+
+	for (auto idAndTask: result.ioTasks())
+		createExternalIoTaskGivenId(comp, idAndTask.second, idAndTask.first);
+		
+	handleComputationStatusChange(comp);
+	}
+
+void ActiveComputationsKernel::dropComputation(const ComputationId& computation)
+	{
+	if (isCurrentlyHandlingActionInBackgroundThread(computation))
+		{
+		scheduleComputationPendingAction(
+			computation,
+			ComputationPendingAction::DropComputation()
+			);
+		return;
+		}
+
+	if (isCurrentlyComputing(computation))
+		{
+		mWaitingToBeDropped.insert(computation);
+		return;
+		}
+
+	LOG_DEBUG << prettyPrintString(mOwnMachineId) 
+			<< ". Dropping computation " << prettyPrintString(computation);
+
+	mExternalInterface->dropComputationImmediately(computation);
+
+	mComputationResultsRequested.dropKey(computation);
+	
+	updateComputationLocalStatusMapsTo_(computation, ComputationStatusOnMachine::Inactive());
+
+	mDependencyGraph.markComputationNonlocal(computation);
+
+	if (mVectorLoadBlockedComputations.hasKey(computation))
+		mVectorLoadBlockedComputations.dropKey(computation);
+
+	broadcastComputationStatus(computation);
+
+	broadcastLocalComputationStatus(computation);
+
+	//executing a deferred action is no longer meaningful
+	clearPendingActionsForComputation(computation);
+	}
+
+void ActiveComputationsKernel::setComputationDependenciesForLocal(
+			const ComputationId& computation, 
+			const ImmutableTreeSet<ComputationId>& inSubComputations
+			)
+	{
+	std::set<ComputationId> subComputations;
+
+	for (long k = 0; k < inSubComputations.size(); k++)
+		{
+		ComputationId subComp = inSubComputations[k];
+
+		if (mLocalComputationStatuses.isFinished(subComp))
+			{
+			lassert(mExternalInterface->hasComputation(subComp));
+
+			lassert(!isCurrentlyComputing(subComp));
+
+			Nullable<Fora::Interpreter::ComputationResult> result = mExternalInterface->getResultForId(subComp);
+
+			lassert(result);
+
+			try {
+				LOG_DEBUG  << prettyPrintString(mOwnMachineId) 
+						<< ". Computation " << prettyPrintString(computation) 
+						<< " adding result for " << prettyPrintString(subComp);
+
+				removePendingAddResultPendingActions(computation, subComp);
+
+				mExternalInterface->addComputationResultToId(
+					computation, 
+					subComp, 
+					*result, 
+					mExternalInterface->currentComputationStatisticsForId(subComp)
+					);
+				}
+			catch(std::logic_error& e)
+				{
+				throw std::logic_error(e.what() + 
+						std::string("\ncomputationId = ") + prettyPrintString(computation));
+				}
+
+			if (mComputationResultsRequested.contains(computation, subComp))
+				mComputationResultsRequested.drop(computation, subComp);
+			}
+		else
+			{
+			subComputations.insert(subComp);
+
+			if (mLocalComputationStatuses.exists(subComp))
+				{
+				Nullable<pair<CheckpointStatus, CheckpointRequest> > status = 
+						mExternalInterface->getCheckpointStatus(subComp);
+
+				if (status)
+					{
+					auto result = mExternalInterface->addChildComputationCheckpointStatus(
+						computation,
+						subComp,
+						status->first,
+						status->second
+						);
+
+					if (result)
+						handleOutgoingComputationCheckpointStatus(computation, result->first, result->second);
+					}
+				}
+			}
+		}
+
+	std::set<ComputationId> outstandingLoads(
+			mComputationResultsRequested.getValues(computation)
+			);
+
+	for (auto it = outstandingLoads.begin(); it != outstandingLoads.end(); ++it)
+		if (subComputations.find(*it) == subComputations.end())
+			//cancel this load, since we no longer depend on it
+			mComputationResultsRequested.drop(computation, *it);
+
+	mDependencyGraph.setDependencies(computation, subComputations);
+
+	updateDependencyGraph();
+
+	//if any of these dependencies exist on other machines, send a load command, since we won't
+	//have actually created any threads
+	for (auto it = subComputations.begin(); it != subComputations.end(); ++it)
+		if (it->isRoot())
+			{
+			auto machine = mMachineRootComputationMap.machineHoldingFinishedComputation(*it);
+			if (machine)
+				{
+				lassert_dump(
+					*machine != mOwnMachineId, 
+					"Computation " << prettyPrintString(computation) << " depends on "
+						<< prettyPrintString(*it) << " which is local."
+					);
+
+				requestRootComputationResult(computation, *it);
+				}
+			}
+	}
+
+void ActiveComputationsKernel::setComputationDependenciesForRemote(
+			const ComputationId& computation, 
+			const ImmutableTreeSet<ComputationId>& inSubComputations
+			)
+	{
+	std::set<ComputationId> subComputations;
+
+	for (long k = 0; k< inSubComputations.size(); k++)
+		{
+		ComputationId subComp = inSubComputations[k];
+		subComputations.insert(subComp);
+		}
+
+	mDependencyGraph.setDependencies(computation, subComputations);
+
+	updateDependencyGraph();
+	}
+
+void ActiveComputationsKernel::updateDependencyGraph()
+	{
+	std::set<ComputationId> localComputationsUpdated;
+
+	mDependencyGraph.update(localComputationsUpdated);
+
+	for (auto it = localComputationsUpdated.begin(); it != localComputationsUpdated.end(); ++it)
+		//don't do this to any running computations!
+		if (mCurrentlyComputing.find(*it) == mCurrentlyComputing.end())
+			broadcastLocalComputationStatus(*it);
+	}
+
+void ActiveComputationsKernel::broadcastComputationStatusOnMachineChanged(const ComputationStatusOnMachineChanged& changeToFire)
+	{
+	mExternalInterface->onCumulusComponentMessageCreated(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::ComputationStatusOnMachine(
+				changeToFire
+				),
+			CumulusComponentEndpointSet::AllWorkersExceptSelf(),
+			CumulusComponentType::ActiveComputations()
+			)
+		);
+	mExternalInterface->onCumulusComponentMessageCreated(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::ComputationStatusOnMachine(
+				changeToFire
+				),
+			CumulusComponentEndpointSet::AllClients(),
+			CumulusComponentType::CumulusClient()
+			)
+		);
+	mExternalInterface->onCumulusComponentMessageCreated(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::ComputationStatusOnMachine(
+				changeToFire
+				),
+			CumulusComponentEndpointSet::LeaderMachine(),
+			emptyTreeSet() + 
+				CumulusComponentType::GlobalScheduler() + 
+				CumulusComponentType::PersistentCacheManager()
+			)
+		);
+	}
+
+void ActiveComputationsKernel::broadcastComputationStatus(const ComputationId& inId)
+	{
+	if (inId.isRoot())
+		broadcastComputationStatusOnMachineChanged(
+			ComputationStatusOnMachineChanged(
+				mOwnMachineId,
+				inId,
+				extractLocalComputationStatusOnMachine(inId)
+				)
+			);
+
+	if (mExternalInterface->hasComputation(inId))
+		{
+		lassert(!isCurrentlyComputing(inId));
+	
+		mExternalInterface->resetPagesHeld(inId);
+		}
+	}
+
+void ActiveComputationsKernel::broadcastLocalComputationStatus(const ComputationId& inId)
+	{
+	ComputationStatusOnMachine status = extractLocalComputationStatusOnMachine(inId);
+
+	LocalComputationPriorityAndStatusChanged changeToFire;
+
+	if (status.isActive())
+		changeToFire = LocalComputationPriorityAndStatusChanged::Active(
+							inId,
+							mDependencyGraph.getLocalPriority(inId),
+							status.getActive().status(),
+							status.getActive().stats()
+							);
+	else
+		changeToFire = LocalComputationPriorityAndStatusChanged::Inactive(inId);
+
+	mExternalInterface->onCumulusComponentMessageCreated(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::LocalComputationPriorityAndStatus(changeToFire),
+			CumulusComponentEndpointSet::SpecificWorker(mOwnMachineId),
+			emptyTreeSet() +  
+				CumulusComponentType::LocalScheduler() + 
+				CumulusComponentType::WorkerThreadPool() + 
+				CumulusComponentType::ComputationStateSummarizer()
+			)
+		);
+	}
+
+bool ActiveComputationsKernel::checkInternalState()
+	{
+	long computable = 0;
+	long pageLoading = 0;
+
+	bool isValid = true;
+
+	//check that there are no computations for which we have results but also an outstanding depdency
+	for (auto id: mExternalInterface->allComputationIds())
+		{
+		lassert(
+			mDependencyGraph.isLocalComputation(id) || 
+				mMovingComputations.contains(id, IndexedSet::dim0)
+			);
+
+		if (!isCurrentlyComputing(id))
+			{
+			// Only check for consistency if we're NOT in the middle of
+			// computing this, otherwise there will be race conditions.
+			auto status1 = extractLocalComputationStatusOnMachine(id);
+			auto status2 = lookupRootComputationStatusOnMachine(id, mOwnMachineId);
+			if (!status1.equalExceptForStatistics(status2))
+				{
+				LOG_WARN << "Computation " << prettyPrintString(id) << " has inconsistent statuses "
+					<< prettyPrintString(status1) << " and " << prettyPrintString(status2);
+				isValid = false;
+				}
+			}
+
+		auto status = mMachineRootComputationMap.computationStatusOnMachine(id, mOwnMachineId);
+		if (mMovingComputations.contains(id, IndexedSet::dim0) && 
+				!status.isMoving())
+			{
+			LOG_WARN << "Computation " << prettyPrintString(id) << " marked moving, but "
+				<< " not listed as such in mMachineRootComputationMap. Our own status has it as "
+				<< prettyPrintString(status);
+			isValid = false;
+			}
+
+		if (status.isMoving() && !mMovingComputations.contains(id, IndexedSet::dim0))
+			{
+			LOG_WARN << "Computation " << prettyPrintString(id) 
+				<< " marked moving in mMachineRootComputationMap, but "
+				<< " not listed as such in mMovingComputations.";
+			isValid = false;
+			}
+
+		if (status.isMoving() &&
+				mOtherMachines.find(status.getMoving().targetMachine()) == mOtherMachines.end()
+				)
+			{
+			LOG_WARN << "Computation " << prettyPrintString(id) 
+				<< " marked moving in mMachineRootComputationMap, but "
+				<< " the target machine " << prettyPrintString(status.getMoving().targetMachine())
+			   	<< " is not listed in mOtherMachines.";
+			isValid = false;
+			}
+
+		if (isCurrentlyComputing(id))
+			{
+			if (!status.isActiveAndComputable())
+				{
+				LOG_WARN << "Computation " << prettyPrintString(id) 
+					<< " is computing, but marked "
+					<< prettyPrintString(status);
+
+				isValid = false;
+				}
+			}
+		else
+			{
+			@match ComputationStatus(mExternalInterface->currentComputationStatusForId(id))
+				-|	Uninitialized() ->> { 
+						LOG_WARN << "Computation " << prettyPrintString(id) 
+							<< " is Uninitialized after computing"; 
+						isValid = false;
+						}
+				-|	Finished() ->> {
+						if (!status.isActiveAndFinished())
+							{
+							LOG_WARN << "Computation " << prettyPrintString(id) 
+								<< " is marked finished, but status in mMachineRootComputationMap is "
+								<< prettyPrintString(status)
+								;
+							isValid = false;
+							}
+						}
+				-|	Computable() ->> {
+						computable++;
+						}
+				-|	BlockedOnComputations(subthreads) ->> {
+						for (auto subit = subthreads.begin(); subit != subthreads.end(); ++subit)
+							{
+							if (mDependencyGraph.isLocalComputation(id) &&
+									!mMachineRootComputationMap.exists(*subit))
+								{
+								isValid = false;
+								LOG_WARN << "Computation " << prettyPrintString(id) 
+									<< " depending on " << prettyPrintString(*subit)
+									<< " which is Inactive according to local state."
+									;
+								}
+
+							if (mDependencyGraph.isLocalComputation(*subit) && 
+									mDependencyGraph.isLocalComputation(id))
+								if (!isCurrentlyComputing(*subit) && 
+										mExternalInterface->currentComputationStatusForId(*subit)
+													.isFinished())
+									{
+									isValid = false;
+									LOG_WARN << "Computation " << prettyPrintString(id) 
+										<< " depending on " << prettyPrintString(*subit)
+										<< " which is finished locally."
+										;
+									}
+							}
+						}
+				-|	BlockedOnVectorLoad(slice) ->> {
+						if (mDependencyGraph.isLocalComputation(id))
+							{
+							if (!mVectorLoadBlockedComputations.hasKey(id))
+								{
+								isValid = false;
+
+								LOG_WARN << "Computation " << id
+									<< " is blocked on " << slice
+									<< " but doesn't have an entry in mVectorLoadBlockedComputations"
+									;
+								} 
+							}
+
+						pageLoading++;
+						}
+				-| BlockedOnExternalIoTask() ->> {
+					}
+			}
+		}
+
+	for (auto it = mDependencyGraph.getLocalComputations().begin(); 
+					it != mDependencyGraph.getLocalComputations().end(); ++it)
+		{
+		if (!mExternalInterface->hasComputation(*it))
+			{
+			isValid = false;
+			LOG_WARN << "Computation " << prettyPrintString(*it) 
+				<< " is marked local, but doesn't have a computationstate.";
+			}
+		}
+
+	for (auto it = mVectorLoadBlockedComputations.getKeysToValues().begin(); 
+				it != mVectorLoadBlockedComputations.getKeysToValues().end(); ++it)
+		{
+		if (!mExternalInterface->hasComputation(it->first))
+			{
+			LOG_WARN << "Computation " << prettyPrintString(it->first) << " is blocked on "
+				<< "vector load, but isn't held locally.";
+
+			isValid = false;
+			}
+		else
+			{
+			if (!mExternalInterface->currentComputationStatusForId(it->first).isBlockedOnVectorLoad())
+				{
+				LOG_WARN << "Computation " << prettyPrintString(it->first) << " is marked as "
+					<< "blocked on VectorLoad, but its status is "
+					<< prettyPrintString(mExternalInterface->currentComputationStatusForId(it->first))
+					;
+
+				isValid = false;
+				}
+			}
+		}
+
+	if (!checkInternalStateDependencyGraph())
+		isValid = false;
+
+	if (!checkInternalStateRemoteLoadsMatchCurrentDependencies())
+		isValid = false;
+
+	if (!isValid)
+		{
+		LOG_WARN << "machine: " << prettyPrintString(mOwnMachineId);
+		LOG_WARN << "InternalState: " 
+			<< computable << " computable and " << pageLoading << " pageLoading.";
+
+		for (auto id: mExternalInterface->allComputationIds())
+			LOG_WARN << id << " -> " << mExternalInterface->currentComputationStatusForId(id);
+		}
+
+	//TODO: verify that 'moving' computations are not local, but that we do have a state for them
+	//TODO: verify that only 'local' computations have entries in mComputationResultsRequested
+	
+	mMachineRootComputationMap.validateInternalState();
+
+	return isValid;
+	}
+
+bool ActiveComputationsKernel::checkInternalStateDependencyGraph()
+	{
+	//verify that the priority of 
+	return mDependencyGraph.checkInternalState();
+	}
+
+bool ActiveComputationsKernel::checkInternalStateRemoteLoadsMatchCurrentDependencies()
+	{
+	bool isValid = true;
+
+	for (auto id: mExternalInterface->allComputationIds())
+		{
+		ImmutableTreeSet<ComputationId> deps;
+
+		@match ComputationStatus(mExternalInterface->currentComputationStatusForId(id))
+			-| BlockedOnComputations(computations) ->> {
+				deps = computations;
+				}
+			-| _ ->> {
+				}
+
+		for (auto it2 = mComputationResultsRequested.getValues(id).begin(), 
+				it2end = mComputationResultsRequested.getValues(id).end(); 
+				it2 != it2end; ++it2)
+			{
+			if (!deps.contains(*it2))
+				{
+				LOG_WARN << "Computation " << id << " has requested "
+					<< *it2 << " but doesn't depend on it";
+				isValid = false;
+				}
+			}
+		}
+
+	return isValid;
+	}
+
+void ActiveComputationsKernel::passthroughToOtherComputation(
+									ComputationId ourComputation, 
+									ComputationId otherComputation
+									)
+	{
+	if (isCurrentlyHandlingActionInBackgroundThread(ourComputation))
+		{
+		scheduleComputationPendingAction(
+			ourComputation,
+			ComputationPendingAction::PassthroughTo(otherComputation)
+			);
+		return;
+		}
+
+	LOG_INFO << prettyPrintString(ourComputation) 
+			<< " becoming passthrough to " 
+			<< prettyPrintString(otherComputation)
+			<< " with deps of " << mDependencyGraph.getDependencies().getValues(ourComputation)
+			;
+
+	//'ourComputation' should become a passthrough to 'otherComputation'
+	lassert(!isCurrentlyComputing(ourComputation));
+	lassert(mDependencyGraph.isLocalComputation(ourComputation));
+	if (mVectorLoadBlockedComputations.hasKey(ourComputation))
+		mVectorLoadBlockedComputations.dropKey(ourComputation);
+		
+	mExternalInterface->becomePassthroughTo(ourComputation, otherComputation);
+
+	handleComputationStatusChange(ourComputation);
+	}
+
+void ActiveComputationsKernel::checkAndAssertInternalStateIfNecessary()
+	{
+	if (mCheckInternalStateAfterAllOperations)
+		lassert(checkInternalState());
+	}
+
+void ActiveComputationsKernel::addMachine(MachineId machine)
+	{
+	lassert(machine != mOwnMachineId);
+
+	lassert(mOtherMachines.find(machine) == mOtherMachines.end());
+
+	mOtherMachines.insert(machine);
+
+	mMachineRootComputationMap.addMachine(machine);
+
+	checkAndAssertInternalStateIfNecessary();
+	
+	cleanupAfterStateChange();
+	}
+
+void ActiveComputationsKernel::dropCumulusClient(CumulusClientId inId)
+	{
+	mDependencyGraph.dropCumulusClient(inId);
+
+	updateDependencyGraph();
+	
+	checkAndAssertInternalStateIfNecessary();
+	
+	cleanupAfterStateChange();
+	}
+
+void ActiveComputationsKernel::handleComputationResultFromMachine(
+				const ComputationResultFromMachine& inResult
+				)
+	{
+	if (inResult.result())
+		{
+		std::set<ComputationId> computations(
+			mComputationResultsRequested.getKeys(inResult.computation())
+			);
+		mComputationResultsRequested.dropValue(inResult.computation());
+
+		if (computations.size() && inResult.referencedBigvecs())
+			{
+			//we have computations we're going to add this result to, and 
+			//they may take time to be added. When the last one actually
+			//adds the result, then we can broadcast the inflight change.
+			mPendingComputationResultsBeforeInflightDecref.insert(
+				computations,
+				inResult.referencedBigvecs()->first
+				);
+			}
+			else
+		if (inResult.referencedBigvecs())
+			{
+			mExternalInterface->broadcastBigvecsInFlight(
+				inResult.referencedBigvecs()->second,
+				-1,
+				inResult.referencedBigvecs()->first
+				);
+			}
+
+		for (auto it = computations.begin(); it != computations.end(); ++it)
+			addComputationResultToComputation(*it, inResult);
+		}
+	else
+		{
+		//the load failed, so we'll need to request the data again
+		std::set<ComputationId> computationsToReCheck(
+			mComputationResultsRequested.getKeys(inResult.computation())
+			);
+		mComputationResultsRequested.dropValue(inResult.computation());
+
+		LOG_DEBUG << prettyPrintString(mOwnMachineId) 
+				<< ". Loading " << prettyPrintString(inResult.computation())
+				;
+		
+		for (auto requestor: computationsToReCheck)
+			handleComputationStatusChange(requestor);
+	
+		if (inResult.referencedBigvecs())
+			{
+			mExternalInterface->broadcastBigvecsInFlight(
+				inResult.referencedBigvecs()->second,
+				-1,
+				inResult.referencedBigvecs()->first
+				);
+			}
+		}
+
+	checkAndAssertInternalStateIfNecessary();
+	
+	cleanupAfterStateChange();
+	}
+
+void ActiveComputationsKernel::handleRequestComputationResultFromMachineWithToken(
+									RequestComputationResultFromMachine inRequest,
+									DataTransferTokenId inToken
+									)
+	{	
+	ComputationId needed = inRequest.computation();
+
+	if (isCurrentlyHandlingActionInBackgroundThread(needed))
+		{
+		scheduleComputationPendingAction(
+			needed,
+			ComputationPendingAction::HandleRequestComputationResultFromMachineWithToken(
+				inRequest, 
+				inToken
+				)
+			);
+		return;
+		}
+
+	if (isCurrentlyComputing(needed))
+		{
+		mExternalInterface->tokenReceived(inToken);
+		
+		mExternalInterface->onComputationResultFromMachine(
+			ComputationResultFromMachine(
+				mOwnMachineId, 
+				inRequest.source(), 
+				needed, 
+				null(), 
+				null(),
+				DataTransferTokenId()
+				)
+			);
+
+		return;
+		}
+
+	if (!mExternalInterface->hasComputation(needed) || 
+				!mExternalInterface->currentComputationStatusForId(needed).isFinished())
+		{
+		mExternalInterface->tokenReceived(inToken);
+		
+		mExternalInterface->onComputationResultFromMachine(
+			ComputationResultFromMachine(
+				mOwnMachineId, 
+				inRequest.source(), 
+				needed, 
+				null(), 
+				null(),
+				DataTransferTokenId()
+				)
+			);
+		return;
+		}
+
+	PolymorphicSharedPtr<SerializedObject> res = 
+		mExternalInterface->getSerializedResult(needed);
+
+	if (!res)
+		{
+		mExternalInterface->tokenReceived(inToken);
+		
+		mExternalInterface->onComputationResultFromMachine(
+			ComputationResultFromMachine(
+				mOwnMachineId, 
+				inRequest.source(), 
+				needed, 
+				null(), 
+				null(),
+				DataTransferTokenId()
+				)
+			);
+		return;
+		}
+
+	Nullable<pair<hash_type, ImmutableTreeSet<Fora::BigVectorId> > > inflightRecord;
+
+	if (inRequest.source().isMachine() && inRequest.source().getMachine().machine() != mOwnMachineId)
+		{
+		hash_type moveGuid = mExternalInterface->generateGuid();
+
+		inflightRecord = make_pair(moveGuid, mExternalInterface->getReferencedBigVectors(needed));
+
+		//send bigvecInFlight messages to all the other machines so that they know that any vectors
+		//in here are going to be merged into data in the other machine
+		mExternalInterface->broadcastBigvecsInFlight(
+			mExternalInterface->getReferencedBigVectors(needed),
+			1,
+			moveGuid
+			);
+		}
+		else
+	if (inRequest.source().isClient())
+		{
+		inflightRecord = make_pair(hash_type(), mExternalInterface->getReferencedBigVectors(needed));
+		}
+
+	mExternalInterface->updateBytecountForDataTransfers(inToken, 
+		res->getSerializedData() ? res->getSerializedData()->totalByteCount() : 0);
+
+	ComputationResultFromMachine result(
+		mOwnMachineId, 
+		inRequest.source(),
+		needed, 
+		null() << Cumulus::ComputationResult(
+			needed, 
+			res,
+			mExternalInterface->currentComputationStatisticsForId(needed)
+			),
+		inflightRecord,
+		inToken
+		);
+
+	checkAndAssertInternalStateIfNecessary();
+	
+	cleanupAfterStateChange();
+
+	mExternalInterface->onComputationResultFromMachine(result);
+	}
+
+void ActiveComputationsKernel::handleExternalIoTaskCompleted(ExternalIoTaskCompleted completed)
+	{
+	LOG_DEBUG << "On " << mOwnMachineId << ", handling ExternalIoTaskCompleted " << completed;
+
+	std::set<ComputationId> computations = 
+		mExternalIoTaskBlockedComputations.getKeys(completed.taskId());
+
+	mExternalIoTaskBlockedComputations.dropValue(completed.taskId());
+
+	for (auto computation: computations)
+		markComputationExternalIoTaskComplete(computation, completed);
+	
+	cleanupAfterStateChange();
+	}
+
+void ActiveComputationsKernel::handlePageMarkedNotLoadable(const Fora::PageId& inPage)
+	{
+	mPagesMarkedNotLoadable.insert(inPage);
+
+	std::set<ComputationId> computations = mVectorLoadBlockedComputations.getKeys(inPage);
+	mVectorLoadBlockedComputations.dropValue(inPage);
+
+	for (auto c: computations)
+		if (!mVectorLoadBlockedComputations.hasKey(c))
+			markComputationVectorLoadsFailedPermanently(c);
+	
+	cleanupAfterStateChange();
+	}
+
+void ActiveComputationsKernel::handleLocalPageRefcountEvent(const Fora::PageRefcountEvent& event)
+	{
+	@match Fora::PageRefcountEvent(event)
+		-| PageMarkedNotLoadable(page) ->> {
+			handlePageMarkedNotLoadable(page);
+			}
+		-| PageAddedToRam(page) ->> {
+			std::set<ComputationId> computations = mVectorLoadBlockedComputations.getKeys(page);
+			mVectorLoadBlockedComputations.dropValue(page);
+
+			for (auto c: computations)
+				if (!mVectorLoadBlockedComputations.hasKey(c))
+					markComputationVectorLoadsComplete(c);
+			}
+		-| _ ->> {}
+	
+	cleanupAfterStateChange();
+	}
+	
+void ActiveComputationsKernel::rejectComputationMoveRequest(
+										ComputationMoveRequest inRequest
+										)
+	{
+	hash_type newMoveGuid = mExternalInterface->generateGuid();
+
+	//broadcast that we are handing these bigvecs back. At this point, we have
+	//increfed them, so we need to transfer the incref back.
+	mExternalInterface->broadcastBigvecsInFlight(
+			inRequest.referencedBigvecs(),
+			1,
+			newMoveGuid
+			);
+
+	//decref the existing move guid
+	mExternalInterface->broadcastBigvecsInFlight(
+			inRequest.referencedBigvecs(),
+			-1,
+			inRequest.moveGuid()
+			);
+
+	sendComputationMoveResponse(
+		ComputationMoveResponse(
+			inRequest.computation(),
+			inRequest.sourceMachine(),
+			inRequest.sourceComponent(),
+			inRequest.targetMachine(),
+			inRequest.referencedBigvecs(),
+			false,
+			newMoveGuid
+			)
+		);
+	}
+
+void ActiveComputationsKernel::handleComputationMoveRequest(	
+										ComputationMoveRequest inRequest,
+										ComputationStatePtr inPtr
+										)
+	{
+	lassert(inRequest.targetMachine() == mOwnMachineId);
+
+	LOG_DEBUG << prettyPrintString(mOwnMachineId) << ". Handling move request: " 
+			<< inRequest.computation()
+			<< " in state " << inPtr->currentComputationStatus()
+			<< " with parent on " << inRequest.computationParentMachine();
+
+	if (mMovingComputations.contains(inRequest.computation(), IndexedSet::dim0))
+		{
+		//we already started to move this computation, but have not received a response indicating
+		//that it was accepted. The other machine must already have moved it to some third machine,
+		//and now its being sent back to us. This can happen because of network delays.  The
+		//simplest way to handle this is just to send it back.
+		rejectComputationMoveRequest(inRequest);
+		return;
+		}
+
+	lassert_dump(
+		!mExternalInterface->hasComputation(inRequest.computation()),
+		"Can't accept computation " << prettyPrintString(inRequest.computation()) << " move on machine "
+			<< prettyPrintString(mOwnMachineId) << " because I already have it. "
+			<< "source is " << prettyPrintString(inRequest.sourceComponent())
+		);
+
+	mExternalInterface->registerNewComputationState(
+		inRequest.computation(), 
+		inPtr
+		);
+
+	// We should never be moving passthrough computations around
+	lassert_dump(inRequest.sourceComponent().isLiveCheckpointLoader() || 
+			!mExternalInterface->isPassthrough(inRequest.computation()),
+		"received a passthrough computation from someone other than the LiveCheckpointLoader"
+		);
+	auto status = mExternalInterface->currentComputationStatusForId(inRequest.computation());
+
+	bool anyAreMissing = false;
+	@match ComputationStatus(status)
+		-| BlockedOnComputations(computations) ->> {
+			lassert_dump(
+				inRequest.sourceComponent().isLiveCheckpointLoader(), 
+				"received a Blocked computation from someone other than the LiveCheckpointLoader"
+				);
+			for (auto c: computations)
+				if (c.isRoot() && !mMachineRootComputationMap.exists(c))
+					{
+					lassert(inRequest.sourceComponent().isLiveCheckpointLoader());
+					LOG_INFO << "Missing " << c << " in " << inRequest.computation() << ", so we'll resubmit";
+					anyAreMissing = true;
+					}
+			}
+		-| Finished()  ->> {
+			lassert_dump(
+				inRequest.sourceComponent().isLiveCheckpointLoader(), 
+				"received a Finished computation from something other than the LiveCheckpointLoader"
+				);
+			}
+		-| _ ->> {  }
+
+
+	mDependencyGraph.markComputationLocal(inRequest.computation());
+
+	//broadcast the temporary 'move' condition so that clients know which move request we're
+	//receiving things from.
+
+	//note that because we are recording calls to 'mExternalInterface', we must bind these values
+	//outside of the function call
+	auto statistics = mExternalInterface->currentComputationStatisticsForId(inRequest.computation());
+
+	if (inRequest.computation().isRoot())
+		broadcastComputationStatusOnMachineChanged(
+			ComputationStatusOnMachineChanged(
+				mOwnMachineId,
+				inRequest.computation(),
+				ComputationStatusOnMachine::ReceivedFrom(
+					inRequest.sourceMachine(),
+					inRequest.moveGuid(),
+					statistics
+					)
+				)
+			);
+
+	//also let our own ComputationStatus map know what happened
+	updateComputationLocalStatusMapsTo_(
+		inRequest.computation(),
+		ComputationStatusOnMachine::ReceivedFrom(
+			inRequest.sourceMachine(),
+			inRequest.moveGuid(),
+			statistics
+			)
+		);
+
+	mComputationMoveGuidsReceived.insert(inRequest.moveGuid());
+
+	ComputationMoveResponse result(
+		inRequest.computation(),
+		inRequest.sourceMachine(),
+		inRequest.sourceComponent(),
+		inRequest.targetMachine(),
+		inRequest.referencedBigvecs(),
+		true,
+		inRequest.moveGuid()
+		);
+
+	if (inRequest.computationParentMachine())
+		mComputationParentMachineId[inRequest.computation()] = 
+			*inRequest.computationParentMachine();
+	
+	checkAndAssertInternalStateIfNecessary();
+
+	//re-enable vector paging within the computation
+	mExternalInterface->enableVectorPagingForId(inRequest.computation());
+
+	sendComputationMoveResponse(result);
+
+	mExternalInterface->broadcastBigvecsInFlight(
+			inRequest.referencedBigvecs(),
+			-1,
+			inRequest.moveGuid()
+			);
+	
+	if (anyAreMissing)
+		//note that resubmitThreadsForComputation calls handleComputationStatusChange
+		resubmitThreadsForComputation(inRequest.computation());
+	else
+		handleComputationStatusChange(inRequest.computation());
+
+	cleanupAfterStateChange();
+	}
+
+Nullable<MachineId> ActiveComputationsKernel::computationParentMachine(const ComputationId& inComputation)
+	{
+	if (inComputation.isRoot())
+		return null();
+
+	auto it = mComputationParentMachineId.find(inComputation);
+
+	//this computation was created on us
+	if (it == mComputationParentMachineId.end())
+		return null() << mOwnMachineId;
+	else
+		return null() << it->second;
+	}
+
+void ActiveComputationsKernel::sendComputationMoveResponse(const ComputationMoveResponse& response)
+	{
+	mExternalInterface->onCumulusComponentMessageCreated(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::CrossActiveComputations(
+				CrossActiveComputationsMessage::MoveResponse(response)
+				),
+			CumulusComponentEndpointSet::SpecificWorker(response.sourceMachine()),
+			response.sourceComponent()
+			)
+		);
+	}
+
+void ActiveComputationsKernel::sendClientComputationCreatedResponse(const ClientComputationCreatedResponse& response)
+	{
+	mExternalInterface->onCumulusComponentMessageCreated(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::ActiveComputationsToCumulusClient(
+				ActiveComputationsToCumulusClientMessage::ClientComputationCreated(response)
+				),
+			CumulusComponentEndpointSet::SpecificClient(response.client()),
+			CumulusComponentType::CumulusClient()
+			)
+		);
+	}
+
+void ActiveComputationsKernel::handleClientComputationCreated(
+												const ClientComputationCreated& created,
+												bool isTemporary,
+												double timestamp
+												)
+	{
+	if (mMachineRootComputationMap.exists(created.computation()))
+		{
+		LOG_WARN << "Computation " << prettyPrintString(created.computation()) 
+			<< " already exists, but the CumulusClient resent it to us.";
+
+		//this is created by a race condition while shutting down. it would be better to have
+		//the client be aware of the regime system, but for now, we simply send back a message
+		//to the client so it can try again.
+		sendClientComputationCreatedResponse(
+			ClientComputationCreatedResponse(
+				created.computation(),
+				mOwnMachineId,
+				created.client(),
+				true
+				)
+			);
+
+		return;
+		}
+
+	if (isTemporary || created.definition().isSplit())
+		{
+		sendClientComputationCreatedResponse(
+			ClientComputationCreatedResponse(
+				created.computation(),
+				mOwnMachineId,
+				created.client(),
+				false
+				)
+			);
+
+		return;
+		}
+
+	createRootComputation(created.definition(), created.computation());
+
+	sendClientComputationCreatedResponse(
+		ClientComputationCreatedResponse(
+			created.computation(),
+			mOwnMachineId,
+			created.client(),
+			true
+			)
+		);
+
+	checkAndAssertInternalStateIfNecessary();
+	
+	cleanupAfterStateChange();
+	}
+
+void ActiveComputationsKernel::stopComputation(ComputationId computation, CreatedComputations result)
+	{
+	lassert(!isCurrentlyHandlingActionInBackgroundThread(computation));
+
+	lassert_dump(
+		isCurrentlyComputing(computation),
+		"Computation " << prettyPrintStringWithoutWrapping(computation) << " wasn't computing"
+		);
+
+	mCurrentlyComputing.erase(computation);
+
+	lassert(computationIsLocal(computation));
+
+	for (auto idAndDef: result.computations())
+		if (idAndDef.first.isRoot())
+			createRootComputation(idAndDef.second, idAndDef.first);
+		else
+			createComputationFromSplit(computation, idAndDef.first, idAndDef.second);
+
+	for (auto taskAndDef: result.ioTasks())
+		createExternalIoTaskGivenId(computation, taskAndDef.second, taskAndDef.first);
+
+	LOG_DEBUG
+			<< prettyPrintString(mOwnMachineId)
+			<< ". Checking in " 
+			<< prettyPrintStringWithoutWrapping(computation) 
+			<< " with status " 
+			<< prettyPrintString(mExternalInterface->currentComputationStatusForId(computation));
+
+	mExternalInterface->onCumulusComponentMessageCreated(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::ComputationComputeStatus(
+				ComputationComputeStatusChanged(
+					mOwnMachineId,
+					computation, 
+					false
+					)
+				),
+			CumulusComponentEndpointSet::SpecificWorker(mOwnMachineId),
+			emptyTreeSet() + 
+				CumulusComponentType::LocalScheduler() + 
+				CumulusComponentType::ComputationStateSummarizer()
+			)
+		);
+
+	mExternalInterface->resetInterruptStateForId(computation);
+
+	ImmutableTreeVector<ComputationEvent> events = mExternalInterface->extractRecentComputationEventsForId(computation);
+
+	if (events.size())
+		sendComputationToSchedulerMessage(
+			ComputationToSchedulerMessage::Events(
+				computation,
+				hash_type(), //OK to use an empty guid, since we're not planning on getting a response
+				mOwnMachineId,
+				events
+				)
+			);
+
+	auto waitingForDropIt = mWaitingToBeDropped.find(computation);
+	if (waitingForDropIt != mWaitingToBeDropped.end())
+		{
+		dropComputation(computation);
+		mWaitingToBeDropped.erase(waitingForDropIt);
+		}
+	else
+		{
+		handleComputationStatusChange(computation);
+
+		if (mMovesPendingCheckout.find(computation) != mMovesPendingCheckout.end())
+			{
+			MachineId targetMachine = mMovesPendingCheckout[computation].first;
+			DataTransferTokenId token = mMovesPendingCheckout[computation].second;
+
+			mMovesPendingCheckout.erase(computation);
+
+			moveComputationToMachine(
+				computation, 
+				targetMachine, 
+				token
+				);
+			}
+
+		fireOffPendingActions(computation);
+		}
+	
+	checkAndAssertInternalStateIfNecessary();
+	
+	cleanupAfterStateChange();
+	}
+
+bool ActiveComputationsKernel::startComputation(ComputationId computation)
+	{
+	if (mMovingComputations.contains(computation, IndexedSet::dim0))
+		return false;
+
+	if (!mExternalInterface->hasComputation(computation))
+		return false;
+
+	if (isCurrentlyComputing(computation))
+		return false;
+
+	if (!mExternalInterface->currentComputationStatusForId(computation).isComputable())
+		return false;
+
+	mCurrentlyComputing.insert(computation);
+
+	mExternalInterface->onCumulusComponentMessageCreated(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::ComputationComputeStatus(
+				ComputationComputeStatusChanged(
+					mOwnMachineId,
+					computation, 
+					true
+					)
+				),
+			CumulusComponentEndpointSet::SpecificWorker(mOwnMachineId),
+			emptyTreeSet() + 
+				CumulusComponentType::LocalScheduler() + 
+				CumulusComponentType::ComputationStateSummarizer()
+			)
+		);
+
+	checkAndAssertInternalStateIfNecessary();
+	
+	cleanupAfterStateChange();
+
+	return true;
+	}
+
+void ActiveComputationsKernel::searchForCliquesCompleted(
+										ComputationId computation,
+										hash_type guid,
+										MachineId schedulerMachine,
+										ImmutableTreeVector<ImmutableTreeSet<Fora::PageId> > cliques
+										)
+	{
+	mComputationsCurrentlyHandlingBackgroundActions.erase(computation);
+
+	sendComputationToSchedulerMessage(
+		ComputationToSchedulerMessage::Cliques(
+			computation,
+			guid,
+			schedulerMachine,
+			cliques
+			)
+		);
+	
+	fireOffPendingActions(computation);
+
+	mExternalInterface->notifyThreadsWaitingForSplits();
+	
+	cleanupAfterStateChange();
+	}
+
+void ActiveComputationsKernel::resetPageDataAndBroadcastCompleted(
+											ComputationId computation, 
+											hash_type guid, 
+											MachineId schedulerMachine
+											)
+	{
+	mComputationsCurrentlyHandlingBackgroundActions.erase(computation);
+
+	sendComputationToSchedulerMessage(
+		ComputationToSchedulerMessage::OK(
+			computation,
+			guid,
+			schedulerMachine
+			)
+		);
+	
+	broadcastComputationStatus(computation);
+
+	fireOffPendingActions(computation);
+
+	mExternalInterface->notifyThreadsWaitingForSplits();
+	
+	cleanupAfterStateChange();
+	}
+
+void ActiveComputationsKernel::splitCompleted(
+						ComputationId computation, 
+						bool didSplit,
+						hash_type guid,
+						MachineId schedulerMachine,
+						const map<ComputationId, ComputationStatePtr>& computationsCreated
+						)
+	{
+	mComputationsCurrentlyHandlingBackgroundActions.erase(computation);
+
+	if (didSplit)
+		{
+		for (auto computationDefAndId: computationsCreated)
+			{
+			createComputationFromSplit(
+				computation,
+				computationDefAndId.first,
+				computationDefAndId.second
+				);
+			}
+
+		}
+
+	sendComputationToSchedulerMessage(
+		ComputationToSchedulerMessage::OK(
+			computation,
+			guid,
+			schedulerMachine
+			)
+		);
+
+	if (didSplit)
+		handleComputationStatusChange(computation);
+
+	fireOffPendingActions(computation);
+
+	mExternalInterface->notifyThreadsWaitingForSplits();
+	
+	cleanupAfterStateChange();
+	}
+
+void ActiveComputationsKernel::fireOffPendingActions(ComputationId computation)
+	{
+	long count = 0;
+	while (mComputationPendingActions[computation].size() && 
+				!isCurrentlyHandlingActionInBackgroundThread(computation))
+		{
+		count++;
+
+		auto& actions = mComputationPendingActions[computation];
+
+		ComputationPendingAction action = actions.front();
+		actions.pop_front();
+
+		if (actions.size() == 0)
+			mComputationPendingActions.erase(computation);
+
+		executePendingActionForComputation(computation, action);
+		}
+
+	if (mComputationPendingActions[computation].size() == 0)
+		mComputationPendingActions.erase(computation);
+	}
+
+void ActiveComputationsKernel::clearPendingActionsForComputation(ComputationId inId)
+	{
+	for (auto action: mComputationPendingActions[inId])
+		{
+		@match ComputationPendingAction(action)
+			-| AddComputationResultToComputation(msg) ->> {
+				addComputationResultToComputationCompleted(inId, msg);
+				}
+			-| HandleSchedulerToComputationMessage(msg) ->> {
+				//this action is from the scheduler and will need a response
+				sendComputationToSchedulerMessage(
+					ComputationToSchedulerMessage::OK(
+						inId,
+						msg.guid(),
+						msg.schedulerMachine()
+						)
+					);
+				}
+			-| MoveComputationToMachine(otherMachine, token)  ->> {
+				mExternalInterface->tokenReceived(token);
+				}
+			-| HandleRequestComputationResultFromMachineWithToken(request, token) ->> {
+				mExternalInterface->tokenReceived(token);
+				}
+			-| Trigger(queue) ->> {
+				queue->write(true);
+				}
+			-| _ ->> {}
+		}
+
+	mComputationPendingActions.erase(inId);
+	}
+
+void ActiveComputationsKernel::executePendingActionForComputation(
+										ComputationId inId,
+										ComputationPendingAction action
+										)
+	{
+	@match ComputationPendingAction(action)
+		-| SetCheckpointStatus() ->> {
+			handleSetCheckpointStatusTimestamp(inId);
+			}
+		-| ReceiveComputationCheckpointStatus(subcomp, stats, timestamp) ->> {
+			handleIncomingComputationCheckpointStatus(inId, subcomp, stats, timestamp);
+			}
+		-| HandleOutgoingComputationCheckpointStatus(stats, timestamp) ->> {
+			handleOutgoingComputationCheckpointStatus(inId, stats, timestamp);
+			}
+		-| AddComputationResultToComputation(msg) ->> {
+			addComputationResultToComputation(inId, msg);
+			}
+		-| AddInterpreterResultToComputation(sourceComputation, result, stats) ->> {
+			addInterpreterResultToComputation(inId, sourceComputation, result, stats);
+			}
+		-| HandleSchedulerToComputationMessage(msg) ->> {
+			handleSchedulerToComputationMessage(msg);
+			}
+		-| MarkComputationVectorLoadsFailedPermanently() ->> {
+			markComputationVectorLoadsFailedPermanently(inId);
+			}
+		-| MarkComputationVectorLoadsComplete() ->> {
+			markComputationVectorLoadsComplete(inId);
+			}
+		-| MarkComputationExternalIoTaskComplete(completed) ->> {
+			markComputationExternalIoTaskComplete(inId, completed);
+			}
+		-| HandleComputationMoveResponse(resp) ->> {
+			handleComputationMoveResponse(resp);
+			}
+		-| MoveComputationToMachine(otherMachine, token)  ->> {
+			moveComputationToMachine(inId, otherMachine, token);
+			}
+		-| DropComputation() ->> {
+			dropComputation(inId);
+			}
+		-| PassthroughTo(otherComputation) ->> {
+			passthroughToOtherComputation(inId, otherComputation);
+			}
+		-| HandleRequestComputationResultFromMachineWithToken(request, token) ->> {
+			handleRequestComputationResultFromMachineWithToken(request, token);
+			}
+		-| Trigger(queue) ->> {
+			queue->write(true);
+			}
+	}
+
+void ActiveComputationsKernel::broadcastFinishedMessagesForAllFinishedTemporaryComputations()
+	{
+	std::set<ComputationId> allComputations = mExternalInterface->allComputationIds();
+
+	for (auto comp: allComputations)
+		if (comp.isSplit() && mExternalInterface->currentComputationStatusForId(comp).isFinished())
+			handleComputationFinished(comp);
+	}
+
+
+void ActiveComputationsKernel::handleCumulusComponentMessage(
+		const CumulusComponentMessage& message, 
+		const CumulusClientOrMachine& source, 
+		const CumulusComponentType& componentType,
+		double curTime
+		)
+	{
+	@match CumulusComponentMessage(message)
+		-| GlobalSchedulerToActiveComputations(msg) ->> {
+			handleGlobalSchedulerToActiveComputationsMessage(msg);
+			}
+		-| SchedulerToComputation(msg) ->> {
+			handleSchedulerToComputationMessage(msg);
+			}
+		-| CrossActiveComputations(MoveResponse(response)) ->> {
+			handleComputationMoveResponse(response);
+			}
+		-| CrossActiveComputations(RootToRootDependency(dep)) ->> {
+			handleRootToRootDependencyCreated(dep);
+			}
+		-| ComputationToComputation(msg) ->> {
+			handleComputationToComputationMessage(msg);
+			}
+		-| ComputationStatusOnMachine(m) ->> {
+			handleComputationStatusOnMachineChanged(m);
+			}
+		-| CumulusClientToActiveComputations(ClientComputationPriority(m)) ->> {
+			handleClientComputationPriorityChange(m);
+			}
+		-| CumulusClientToActiveComputations(ComputationCreated(m)) ->> {
+			handleClientComputationCreated(
+				m,
+				m.computation().isTemporary(),
+				curTime
+				);
+			}
+	}
+
+}
+

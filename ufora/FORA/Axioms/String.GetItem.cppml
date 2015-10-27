@@ -1,0 +1,111 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "String.GetItem.hppml"
+#include "Axiom.hppml"
+#include "TypedForaAxiomBuilder.hppml"
+#include "../Native/TypedNativeExpression.hppml"
+#include "../TypedFora/ABI/StringCodegen.hppml"
+
+StringGetItemAxiom::StringGetItemAxiom() :
+    AxiomGroup(
+        JOVT() + 
+        JOV::OfType(Type::String()) +
+        "GetItem" +
+        JOV::OfType(Type::Integer(64, true))
+        )
+    {
+    }
+
+Nullable<Axiom> StringGetItemAxiom::axiom(
+        TypedFora::Compiler&, const JudgmentOnValueTuple& inSignature
+        )
+    {
+    using namespace TypedNativeExpressionHelpers;
+
+    TypedFora::TypedForaAxiomBuilder axiomBuilder(
+        signature(),
+        TypedFora::RefcountStyle::Pooled()
+        );
+
+    TypedNativeExpression<String> stringExpression(
+        axiomBuilder.nativeVar(0).expr()
+        );
+    TypedNativeExpression<int64_t> indexExpression(
+        axiomBuilder.nativeVar(2).expr()
+        );
+
+    TypedNativeVariable<int64_t> wrappedIndexExpr;
+    TypedNativeVariable<size_t> stringSizeExpr;
+
+    TypedNativeExpression<bool> boundsCheckExpr(
+            wrappedIndexExpr >= TypedNativeExpression<int64_t>(0) &&
+            wrappedIndexExpr < static_cast<TypedNativeExpression<int64_t>>(stringSizeExpr)
+            );
+
+    TypedNativeExpression<void> finalExpression(
+        let(
+            stringSizeExpr,
+            stringExpression.size(),
+            let(
+                wrappedIndexExpr,
+                stringExpression.wrapNegativeIndexExpr(indexExpression, stringSizeExpr),
+                if_(
+                    boundsCheckExpr,
+                    return_(
+                        0,
+                        stringExpression.getItem(wrappedIndexExpr)
+                        ),
+                    return_(
+                        1,
+                        TypedNativeExpression<void>(NativeExpression::Nothing())
+                        ),
+                    0.99999
+                    )
+                )
+            )
+        );
+
+    Nullable<AxiomJOA> joa = axiomJOA(inSignature);
+
+    lassert(!joa.isNull() and joa->isNative());
+
+    return null() << axiomBuilder.axiomForNativeExpression(
+        finalExpression.getExpression(),
+        TypedFora::RefcountStyle::Pooled(), // what about this shiz??
+        joa->getNative().joa().resultPart(),
+        joa->getNative().joa().throwPart()
+        );
+    }
+
+Nullable<AxiomJOA> StringGetItemAxiom::axiomJOA(const JudgmentOnValueTuple&)
+    {
+    return null() <<
+        AxiomJOA::Native(
+            JudgmentOnAction(
+                JudgmentOnResult(
+                    JOV::OfType(
+                        Type::Integer(8, false)
+                        )
+                    ),
+                JudgmentOnResult(
+                    JOV::Constant(
+                        CSTValue("invalid index")
+                        )
+                    )
+                )
+            );                
+    }
+

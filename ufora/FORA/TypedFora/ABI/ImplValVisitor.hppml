@@ -1,0 +1,294 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../../Core/Type.hppml"
+#include "ForaValueArray.hppml"
+#include "../../TypedFora/ABI/VectorHandle.hpp"
+#include "../../TypedFora/ABI/ScatteredForaValues.hppml"
+#include "../../VectorDataManager/PageletTree.hppml"
+#include "../../Vector/MutableVectorRecord.hppml"
+#include "../../TypedFora/ABI/VectorRecord.hpp"
+
+//scans through objects and shows them to 'visitor'
+//visitor should expose
+//	bool visit(const Type& inType, void* data)
+//which returns whether it wants to visit the pieces
+template<class visitor_function>
+class ImplValVisitor {
+public:
+	visitor_function& mVisitor;
+
+	typedef TypedFora::Abi::VectorRecord VectorRecord;
+	typedef TypedFora::Abi::VectorHandle VectorHandle;
+	typedef TypedFora::Abi::ForaValueArray ForaValueArray;
+	typedef TypedFora::Abi::PackedForaValues PackedForaValues;
+	
+	set<VectorHandle*> mVectorHandles;
+	
+	set<ForaValueArray*> mValueArrays;
+
+	set<hash_type> mMutableVectorRecordsVisitedByHash;
+
+	ImplValVisitor(visitor_function& inVisitor) :
+			mVisitor(inVisitor)
+		{
+		}
+
+	void visit(
+			const Type& inType,
+			uint8_t* source,
+			uword_t count,
+			uword_t stride = 0
+			)
+		{
+		uword_t sz = inType.size();
+		if (stride == 0)
+			stride = sz;
+        
+		if (!mVisitor.visit(inType, source, count, stride))
+			return;
+
+		@match Type(inType)
+			-|	Nothing() ->> {;}
+			-|	String() ->> {;}
+			-|	ExternalFunction() ->> {;}
+			-|	Symbol() ->> {;}
+			-|	Tag() ->> {;}
+			-|	JOVAsValue() ->> {;}
+			-|	StackTrace() ->> {;}
+			-|	DateTime() ->> {;}
+			-|	TimeDuration() ->> {;}
+			-|	Integer(_) ->> {;}
+			-|	Float(_) ->> {;}
+			-|	Vector() ->> {
+					for (long k = 0; k < count;k++)
+						{
+						VectorRecord* sourceVD = (VectorRecord*)(source + k * stride);
+						visitVector(*sourceVD);
+						}
+					}
+			-|	MutableVector() ->> {
+					for (long k = 0; k < count;k++)
+						{
+						const MutableVectorRecord& sourceVH = 
+							*(MutableVectorRecord*)(source + k * stride);
+
+						visitMutableVectorRecord(sourceVH);
+						}
+					}
+			-|	Alternative(t) ->> {
+					visit(t, source + sizeof(symbol_type), count, stride);
+					}
+			-|	Class(types) ->> {
+					uword_t offset = 0;
+
+					for (long k = 0; k < types.size(); k++)
+						{
+						visit(types[k], source + offset, count, stride);
+						offset += types[k].size();
+						}
+					}
+			-|	Tuple(types) ->> {
+					uword_t offset = 0;
+
+					for (long k = 0; k < types.size(); k++)
+						{
+						visit(types[k], source + offset, count, stride);
+						offset += types[k].size();
+						}
+					}
+			-|	Dictionary(isCST) ->> {
+					for (long k = 0; k < count; k++)
+						{
+						Dictionary* sourceDictPtr = (Dictionary*)(source + k * stride);
+
+						for (long k = 0; k < sourceDictPtr->size(); k++)
+							{
+							ImplValContainer sourceDictValue = sourceDictPtr->pairAtPosition(k).second;
+							ImplVal sourceValImpl = sourceDictValue.getReference();
+
+							visit(
+								sourceValImpl.type(),
+								(uint8_t*)sourceValImpl.data(),
+								1
+								);
+							}
+						}
+					}
+		}
+
+	void visitScattered(
+			const Type& inType,
+			uint8_t** source,
+			uword_t count,
+			uword_t nudge
+			)
+		{
+		if (!mVisitor.visitScattered(inType, source, count, nudge))
+			return;
+
+		@match Type(inType)
+			-|	Nothing() ->> {;}
+			-|	String() ->> {;}
+			-|	ExternalFunction() ->> {;}
+			-|	Symbol() ->> {;}
+			-|	Tag() ->> {;}
+			-|	JOVAsValue() ->> {;}
+			-|	StackTrace() ->> {;}
+			-|	DateTime() ->> {;}
+			-|	TimeDuration() ->> {;}
+			-|	Integer(_) ->> {;}
+			-|	Float(_) ->> {;}
+			-|	Vector() ->> {
+					for (long k = 0; k < count;k++)
+						{
+						VectorRecord* sourceVD = (VectorRecord*)(source[k] + nudge);
+						visitVector(*sourceVD);
+						}
+					}
+			-|	MutableVector() ->> {
+					for (long k = 0; k < count;k++)
+						{
+						const MutableVectorRecord& sourceVH = 
+							*(MutableVectorRecord*)(source[k] + nudge);
+
+						visitMutableVectorRecord(sourceVH);
+						}
+					}
+			-|	Alternative(t) ->> {
+					visitScattered(t, source, count, nudge + sizeof(symbol_type));
+					}
+			-|	Class(types) ->> {
+					uword_t offset = 0;
+
+					for (long k = 0; k < types.size(); k++)
+						{
+						visitScattered(types[k], source, count, nudge + offset);
+						offset += types[k].size();
+						}
+					}
+			-|	Tuple(types) ->> {
+					uword_t offset = 0;
+
+					for (long k = 0; k < types.size(); k++)
+						{
+						visitScattered(types[k], source, count, nudge + offset);
+						offset += types[k].size();
+						}
+					}
+			-|	Dictionary(isCST) ->> {
+					for (long k = 0; k < count; k++)
+						{
+						Dictionary* sourceDictPtr = (Dictionary*)(source[k] + nudge);
+
+						for (long k = 0; k < sourceDictPtr->size(); k++)
+							{
+							ImplValContainer sourceDictValue = sourceDictPtr->pairAtPosition(k).second;
+							ImplVal sourceValImpl = sourceDictValue.getReference();
+
+							visit(
+								sourceValImpl.type(),
+								(uint8_t*)sourceValImpl.data(),
+								1
+								);
+							}
+						}
+					}
+		}
+
+	void visitVector(const VectorRecord& in)
+		{
+		if (in.dataPtr() && mVisitor.visitVectorRecord(in))
+			{
+			if (in.unpagedValues())
+				visitForaValueArray(in.unpagedValues());
+			}
+		}
+
+	void visitForaValueArray(ForaValueArray* array)
+		{
+		if (mValueArrays.find(array) == mValueArrays.end())
+			{
+			mValueArrays.insert(array);
+
+			array->visitScatteredValues([&](TypedFora::Abi::ScatteredForaValues values) {
+				this->visitScatteredValues(values);
+				});
+			}
+		}
+
+	void visitScatteredValues(TypedFora::Abi::ScatteredForaValues values)
+		{
+		this->visitScattered(
+			*values.elementJOV().type(),
+			(uint8_t**)values.data(),
+			values.count(),
+			values.nudge()
+			);
+		}
+
+	void operator()(PackedForaValues values)
+		{
+		visitPackedForaValues(values);
+		}
+
+	void visitPackedForaValues(PackedForaValues values)
+		{
+		if (values.elementJOV().constant())
+			{
+			//do nothing since there is no data
+			}
+			else
+		if (values.elementJOV().type())
+			{
+			visit(
+				*values.elementJOV().type(),
+				values.data(),
+				values.count(),
+				values.stride()
+				);
+			}
+		else
+			{
+			for (long k = 0; k < values.count();k++)
+				{
+				ImplVal* val = values.pointerToElement<ImplVal>(k);
+
+				visit(val->type(), (uint8_t*)val->data(), 1);
+				}
+			}		
+		}
+
+	void visitMutableVectorRecord(
+			const MutableVectorRecord& vec
+			)
+		{
+		if (!mVisitor.visitMutableVectorRecord(vec))
+			return;
+		
+		if (mMutableVectorRecordsVisitedByHash.find(vec.hash()) 
+					== mMutableVectorRecordsVisitedByHash.end())
+			{
+			PackedForaValues values = vec.packedValues();
+			
+			visitPackedForaValues(values);		
+			
+			mMutableVectorRecordsVisitedByHash.insert(vec.hash());
+			}
+		}
+};
+

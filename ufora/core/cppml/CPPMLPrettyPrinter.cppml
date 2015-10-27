@@ -1,0 +1,606 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "CPPMLPrettyPrinter.hppml"
+#include <boost/lexical_cast.hpp>
+#include <boost/enable_shared_from_this.hpp>
+#include <string>
+#include <sstream>
+#include <vector>
+#include <stack>
+#include <stdexcept>
+
+using namespace std;
+
+class CPPMLPrettyPrintStreamImpl :
+			public boost::enable_shared_from_this<CPPMLPrettyPrintStreamImpl> {
+public:
+		CPPMLPrettyPrintStreamImpl(Nullable<long> wrapWidth) : 
+				mWrapWidth(wrapWidth)
+			{
+			}
+		virtual ~CPPMLPrettyPrintStreamImpl() {}
+		
+		virtual void write(string s)
+			{
+			for (long k = 0; k < s.size();k++)
+				if (s[k] == '\n')
+					{
+					writeRaw(s.substr(0,k));
+					endl();
+					
+					//write the remaining newlines.
+					for (long j = k + 1; j <= s.size(); j++)
+						if (j == s.size() || s[j] == '\n')
+							{
+							if (j - k - 1 > 0)
+								writeRaw(s.substr(k+1, j - k - 1));
+							if (j != s.size())
+								endl();
+							k = j;
+							}
+					return;
+					}
+			//no newlines - just write it
+			writeRaw(s);
+			}
+		
+		virtual void writeRaw(string s) = 0;
+		virtual void sep() = 0;
+		virtual void endl() = 0;
+		
+		virtual CPPMLPrettyPrintStream	indented(string prefix);
+		virtual CPPMLPrettyPrintStream	group   (string prefix);
+		virtual CPPMLPrettyPrintStream	table();
+		
+		CPPMLPrettyPrintStream	makeStream(CPPMLPrettyPrintStreamImpl* impl)
+			{
+			return CPPMLPrettyPrintStream(
+				boost::shared_ptr<CPPMLPrettyPrintStreamImpl>(impl)
+				);
+			}
+		
+		virtual size_t tellp() const = 0;
+		
+		virtual std::stack<bool>& tupState() = 0;
+		
+		//set to mImpl if you're a passthrough
+		boost::shared_ptr<CPPMLPrettyPrintStreamImpl> mAlernateImpl;
+
+		Nullable<long> mWrapWidth;
+};
+
+namespace {
+
+class BaseImpl : public CPPMLPrettyPrintStreamImpl {
+public:
+		BaseImpl(std::ostream& s, Nullable<long> wrapWidth) : 
+				CPPMLPrettyPrintStreamImpl(wrapWidth),
+				mStream(s)
+			{
+			}
+
+		virtual void writeRaw(string s)
+			{
+			mStream << s;
+			}
+		virtual void sep()
+			{
+			mStream << std::endl;
+			}
+		virtual void endl()
+			{
+			mStream << std::endl;
+			}
+		virtual size_t tellp() const
+			{
+			return mStream.tellp();
+			}
+		
+		virtual std::stack<bool>& tupState()
+			{
+			return mTupState;
+			}
+		
+private:
+		std::ostream& mStream;
+		std::stack<bool> mTupState;
+};
+
+class IndentedImpl : public CPPMLPrettyPrintStreamImpl {
+public:
+		IndentedImpl(	boost::shared_ptr<CPPMLPrettyPrintStreamImpl> s,
+						string prefix,
+						Nullable<long> wrapWidth
+						) :
+				CPPMLPrettyPrintStreamImpl(wrapWidth),
+				mImpl(s),
+				mPrefix(prefix)
+			{
+			}
+		virtual void writeRaw(string s)
+			{
+			checkImpl();
+			mImpl->writeRaw(s);
+			}
+		virtual void endl()
+			{
+			checkImpl();
+			mImpl->endl();
+			mImpl->writeRaw(mPrefix);
+			}
+		virtual void sep()
+			{
+			checkImpl();
+			mImpl->sep();
+			mImpl->writeRaw(mPrefix);
+			}
+		size_t tellp() const
+			{
+			return mImpl->tellp();
+			}
+		
+		virtual std::stack<bool>& tupState()
+			{
+			return mImpl->tupState();
+			}
+			
+		CPPMLPrettyPrintStream indented(string prefix)
+			{
+			return makeStream(new IndentedImpl(mImpl, mPrefix + prefix, mWrapWidth));
+			}
+		
+private:
+		void checkImpl()
+			{
+			if (mImpl->mAlernateImpl)
+				{
+				mImpl = mImpl->mAlernateImpl;
+				
+				IndentedImpl* sub =
+					dynamic_cast<IndentedImpl*>(mImpl.get());
+				if (sub)
+					mAlernateImpl.reset(
+						new IndentedImpl(sub->mImpl, sub->mPrefix + mPrefix, mWrapWidth)
+						);
+				}
+			}
+		boost::shared_ptr<CPPMLPrettyPrintStreamImpl>		mImpl;
+		string												mPrefix;
+};
+
+class GroupImpl : public CPPMLPrettyPrintStreamImpl {
+public:
+		GroupImpl(boost::shared_ptr<CPPMLPrettyPrintStreamImpl> s,
+						string inPrefix,
+						Nullable<long> wrapWidth
+						) :
+				CPPMLPrettyPrintStreamImpl(wrapWidth),
+				mImpl(s),
+				mLimitUsed(0),
+				mTriggered(false),
+				mPrefix(inPrefix)
+			{
+			mGroups.resize(1);
+			}
+		~GroupImpl()
+			{
+			if (!mTriggered)
+				{
+				for (long k = 0; k < mGroups.size();k++)
+					for (long j = 0; j < mGroups[k].size(); j++)
+						mImpl->write(mGroups[k][j]);
+				}
+			}
+		virtual void writeRaw(string s)
+			{
+			checkImpl();
+			
+			if (mTriggered)
+				mImpl->writeRaw(s);
+			else
+				{
+				mGroups.back().push_back(s);
+				mLimitUsed += s.size();
+				if (mWrapWidth && mLimitUsed > *mWrapWidth)
+					trigger();
+				}
+			}
+		virtual void sep()
+			{
+			checkImpl();
+			
+			if (mTriggered)
+				endl();
+			else
+				mGroups.resize(mGroups.size()+1);
+			}
+		virtual void endl()
+			{
+			checkImpl();
+			
+			if (!mTriggered)
+				trigger();
+			
+			mImpl->endl();
+			mImpl->writeRaw(mPrefix);
+			}
+		size_t tellp() const
+			{
+			return mImpl->tellp() + (mTriggered ? 0 : mLimitUsed);
+			}
+		
+		virtual std::stack<bool>& tupState()
+			{
+			return mImpl->tupState();
+			}
+		
+private:
+		void checkImpl()
+			{
+			if (mImpl->mAlernateImpl)
+				mImpl = mImpl->mAlernateImpl;
+			}
+		void trigger()
+			{
+			mLimitUsed = 0;
+			mTriggered = true;
+			for (long k = 0; k < mGroups.size();k++)
+				{
+				endl();
+				for (long j = 0; j < mGroups[k].size(); j++)
+					writeRaw(mGroups[k][j]);
+				}
+			mAlernateImpl.reset(new IndentedImpl(mImpl, mPrefix, mWrapWidth));
+			}
+		
+		boost::shared_ptr<CPPMLPrettyPrintStreamImpl>		mImpl;
+		
+		vector<vector<string> >	mGroups;
+		uword_t					mLimit;
+		long					mLimitUsed;
+		bool					mTriggered;
+		string					mPrefix;
+};
+
+
+
+class TableImpl : public CPPMLPrettyPrintStreamImpl {
+public:
+		TableImpl(boost::shared_ptr<CPPMLPrettyPrintStreamImpl> s,
+					Nullable<long> wrapWidth
+					) :
+				CPPMLPrettyPrintStreamImpl(wrapWidth),
+				mImpl(s),
+				mWritten(0)
+			{
+			endl();
+			}
+		~TableImpl()
+			{
+			//convert the data
+			try {
+				vector<vector<vector<string> > > strings;	//row,col,inner_row
+				map<uint32_t, uint32_t> widths;
+				map<uint32_t, uint32_t> heights;
+				
+				for (long row = 0; row < mBuffers.size();row++)
+					{
+					strings.resize(strings.size()+1);
+					
+					for (long col = 0; col < mBuffers[row].size();col++)
+						{
+						strings.back().resize(strings.back().size()+1);
+						
+						split(mBuffers[row][col]->str(), strings.back().back());
+						
+						uint32_t width = maxWidth(strings.back().back());
+						uint32_t height = strings.back().back().size();
+						
+						if (widths[col] < width)
+							widths[col] = width;
+						
+						if (heights[row] < height)
+							heights[row] = height;
+						}
+					}
+				
+				for (long row = 0; row < strings.size();row++)
+					for (long innerRow = 0; innerRow < heights[row]; innerRow++)
+						{
+						for (long col = 0; col < strings[row].size();col++)
+							write(
+								pad(
+									innerRow < strings[row][col].size() ?
+										strings[row][col][innerRow] : string(),
+									widths[col]
+									)
+								);
+						endl();
+						}
+				}
+			catch(...)
+				{
+				//definitely don't want to throw in the destructor!
+				}
+			}
+		static void split(string s, vector<string>& out)
+			{
+			long last = 0;
+			for (long k = 0; k < s.size();k++)
+				if (s[k] == '\n')
+					{
+					out.push_back(s.substr(last,k));
+					last = k+1;
+					}
+				
+			out.push_back(s.substr(last));
+			}
+		static uint32_t maxWidth(const vector<string>& s)
+			{
+			uint32_t w = 0;
+			
+			for (long k = 0; k < s.size();k++)
+				if (s[k].size() > w)
+					w = s[k].size();
+			return w;
+			}
+		static string pad(string s, uint32_t spaces)
+			{
+			if (s.size() < spaces)
+				return s + string(spaces - s.size(), ' ');
+			return s;
+			}
+			
+		virtual void writeRaw(string s)
+			{
+			*mBuffers.back().back() << s;
+			mWritten += s.size();
+			}
+		virtual void endl()
+			{
+			mBuffers.resize(mBuffers.size() + 1);
+			sep();
+			}
+		virtual void sep()
+			{
+			mBuffers.back().push_back(newStream());
+			}
+		size_t tellp() const
+			{
+			return mImpl->tellp() + mWritten;
+			}
+		
+		virtual std::stack<bool>& tupState()
+			{
+			return mImpl->tupState();
+			}
+		
+		CPPMLPrettyPrintStream	indented(string prefix)
+			{
+			return CPPMLPrettyPrintStream(*mBuffers.back().back())
+				.indented(prefix);
+			}
+		CPPMLPrettyPrintStream	group(string prefix)
+			{
+			return CPPMLPrettyPrintStream(*mBuffers.back().back())
+				.group(prefix);
+			}
+		CPPMLPrettyPrintStream	table()
+			{
+			return CPPMLPrettyPrintStream(*mBuffers.back().back())
+				.table();
+			}
+		static boost::shared_ptr<ostringstream> newStream()
+			{
+			return boost::shared_ptr<ostringstream>(
+				new ostringstream()
+				);
+			}
+private:
+		boost::shared_ptr<CPPMLPrettyPrintStreamImpl>		mImpl;
+		uword_t												mWritten;
+		vector<vector<boost::shared_ptr<ostringstream> > >	mBuffers;
+};
+
+} //end anonymous namespace
+
+
+
+CPPMLPrettyPrintStream	CPPMLPrettyPrintStreamImpl::indented(string prefix)
+	{
+	return CPPMLPrettyPrintStream(
+		boost::shared_ptr<CPPMLPrettyPrintStreamImpl>(
+			new IndentedImpl(this->shared_from_this(), prefix, mWrapWidth)
+			)
+		);
+	}
+
+CPPMLPrettyPrintStream	CPPMLPrettyPrintStreamImpl::group(string prefix)
+	{
+	return CPPMLPrettyPrintStream(
+		boost::shared_ptr<CPPMLPrettyPrintStreamImpl>(
+			new GroupImpl(this->shared_from_this(), prefix, mWrapWidth)
+			)
+		);
+	}
+CPPMLPrettyPrintStream	CPPMLPrettyPrintStreamImpl::table()
+	{
+	return CPPMLPrettyPrintStream(
+		boost::shared_ptr<CPPMLPrettyPrintStreamImpl>(
+			new TableImpl(this->shared_from_this(), mWrapWidth)
+			)
+		);
+	}
+
+CPPMLPrettyPrintStream::CPPMLPrettyPrintStream(std::ostream& inStream, Nullable<long> wrapWidth) :
+				mImpl(new BaseImpl(inStream, wrapWidth))
+	{
+	}
+	
+CPPMLPrettyPrintStream::CPPMLPrettyPrintStream(std::ostream& inStream) :
+				mImpl(new BaseImpl(inStream, Nullable<long>(100)))
+	{
+	}
+	
+CPPMLPrettyPrintStream::CPPMLPrettyPrintStream(
+				boost::shared_ptr<CPPMLPrettyPrintStreamImpl> inImpl
+				) : mImpl(inImpl)
+	{
+	}
+
+void	CPPMLPrettyPrintStream::write(const string& s)
+	{
+	if (mImpl->mAlernateImpl)
+		mImpl = mImpl->mAlernateImpl;
+	
+	mImpl->write(s);
+	}
+void	CPPMLPrettyPrintStream::write(const char* s)
+	{
+	if (mImpl->mAlernateImpl)
+		mImpl = mImpl->mAlernateImpl;
+	
+	mImpl->write(s);
+	}
+void	CPPMLPrettyPrintStream::writeRaw(const string& s)
+	{
+	mImpl->writeRaw(s);
+	}
+void	CPPMLPrettyPrintStream::writeRaw(const char* s)
+	{
+	mImpl->writeRaw(s);
+	}
+void	CPPMLPrettyPrintStream::endl()
+	{
+	if (mImpl->mAlernateImpl)
+		mImpl = mImpl->mAlernateImpl;
+	
+	mImpl->endl();
+	}
+void	CPPMLPrettyPrintStream::separate()
+	{
+	if (mImpl->mAlernateImpl)
+		mImpl = mImpl->mAlernateImpl;
+	
+	mImpl->sep();
+	}
+
+
+
+void	CPPMLPrettyPrintStream::recordStartOfNewTuple()
+	{
+	mImpl->tupState().push(false);
+	}
+
+void	CPPMLPrettyPrintStream::recordOutputFirstElemOfTuple()
+	{
+	if (mImpl->tupState().empty())
+		throw logic_error("Cppml Pretty Printing: "
+			              "Not currently in a tuple, "
+		                  "so can't record first elem.");
+	if (mImpl->tupState().top())
+		throw logic_error("Cppml Pretty Printing: "
+		                  "Already recorded first elem of tuple.");
+	mImpl->tupState().pop();
+	mImpl->tupState().push(true);
+	}
+
+bool	CPPMLPrettyPrintStream::hasOutputFirstElemOfCurrentTuple() const
+	{
+	if (mImpl->tupState().empty())
+		throw logic_error("Cppml Pretty Printing:"
+	    	              "Not currently in a tuple, "
+	    	              "so can't check for output of first elem.");
+	return mImpl->tupState().top();
+	}
+
+void	CPPMLPrettyPrintStream::recordEndOfCurrentTuple()
+	{
+	if (mImpl->tupState().empty())
+		throw logic_error("Cppml Pretty Printing:"
+	    	              "Not currently in a tuple, "
+	    	              "so can't record end of current tuple.");
+	mImpl->tupState().pop();
+	}
+
+
+
+#define prettyPrint_direct_impl_macro( T )	\
+void	CPPMLPrettyPrintStream::write(T x)	\
+	{										\
+	write(boost::lexical_cast<string>(x));	\
+	}										// End of macro.
+
+prettyPrint_direct_impl_macro(float)
+prettyPrint_direct_impl_macro(double)
+
+prettyPrint_direct_impl_macro(unsigned short)
+prettyPrint_direct_impl_macro(signed short)
+prettyPrint_direct_impl_macro(unsigned int)
+prettyPrint_direct_impl_macro(signed int)
+prettyPrint_direct_impl_macro(unsigned long)
+prettyPrint_direct_impl_macro(signed long)
+prettyPrint_direct_impl_macro(unsigned long long)
+prettyPrint_direct_impl_macro(signed long long)
+
+
+CPPMLPrettyPrintStream	CPPMLPrettyPrintStream::indented(string prefix)
+	{
+	return mImpl->indented(prefix);
+	}
+CPPMLPrettyPrintStream	CPPMLPrettyPrintStream::group(string prefix)
+	{
+	return mImpl->group(prefix);
+	}
+CPPMLPrettyPrintStream	CPPMLPrettyPrintStream::table()
+	{
+	return mImpl->table();
+	}
+
+size_t	CPPMLPrettyPrintStream::tellp() const
+	{
+	return mImpl->tellp();
+	}
+
+CPPMLPrettyPrintStream operator<<(CPPMLPrettyPrintStream w, const char* t)
+	{
+	w.write(t);
+	return w;
+	}
+CPPMLPrettyPrintStream operator<<(
+							CPPMLPrettyPrintStream w,
+							std::ostream&(*maybeEndl)(std::ostream&)
+							)
+	{
+	if (maybeEndl == (std::ostream&(*)(std::ostream&))std::endl)
+		w.endl();
+	else
+		throwLogicErrorWithStacktrace("can't use any stl manipulators on "
+			"CPPMLPrettyPrintStream except for endl");
+	return w;
+	}
+CPPMLPrettyPrintStream operator<<(
+							CPPMLPrettyPrintStream w,
+							CPPMLPrettyPrintStream::Sep sep
+							)
+	{
+	w.separate();
+	return w;
+	}
+
+
+CPPMLPrettyPrintStream::Sep	CPPMLPrettyPrintStream::sep;
+

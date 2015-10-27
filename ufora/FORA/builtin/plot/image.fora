@@ -1,0 +1,156 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+
+// Port of http://mrcoles.com/media/js/bitmap.js
+
+
+bmp:
+fun(pixels, width, height) {
+    let file = 
+        header(pixels, width, height) + 
+        processData(pixels, width, height);
+
+    #Image(width, height, "data:image/jpeg;base64," + encodeBase64(file))
+    };
+
+
+header:
+fun(pixels, width, height) {
+    let row_padding = (4 - (width * 3) % 4) % 4;
+    let num_data_bytes = (width * 3 + row_padding) * height;
+    let num_file_bytes = 54 + num_data_bytes;
+    
+    let height_encoded = asLittleEndianHex(height, 4);
+    let width_encoded = asLittleEndianHex(width, 4);
+    let num_data_bytes_encoded = asLittleEndianHex(num_data_bytes, 4);
+    let num_file_bytes_encoded = asLittleEndianHex(num_file_bytes, 4);
+    
+    return [UInt8(0x42), UInt8(0x4D)] +   // B, M
+        num_file_bytes_encoded +
+        [0u8, 0u8,              // reserved
+         0u8, 0u8,               // reserved
+        UInt8(0x36), 0u8, 0u8, 0u8,    // offset where BMP data lives, 54 bytes
+        UInt8(0x28), 0u8, 0u8, 0u8     // number of remaining bytes in header from here 40 bytes
+        ] + 
+        width_encoded + 
+        height_encoded + [
+        UInt8(0x01), 0u8,                  // number of color planes (1)
+        UInt8(0x18), 0u8,                  // 24 bits / pixel
+        0u8, 0u8, 0u8, 0u8          // no compression
+        ] + num_data_bytes_encoded + [
+        UInt8(0x13), UInt8(0x0B), 0u8, 0u8,       // 2835 pixels / meter, horiz res.
+        UInt8(0x13), UInt8(0x0B), 0u8, 0u8,       // 2835 pixels / meter, vert res.
+        0u8, 0u8, 0u8, 0u8,
+        0u8, 0u8, 0u8, 0u8
+        ];
+};
+
+
+processData:
+fun (pixels, width, height) {
+    let row_padding = (4 - (width * 3) % 4) % 4;
+    let rowSize = width * 3 + row_padding;
+    let dataSize = rowSize * height;
+    
+    Vector.range(
+        dataSize,
+        fun(i) {
+            let rowPos = i % rowSize;
+            if (rowPos < width * 3) {
+                let x = rowPos / 3;
+                let y = i / rowSize;
+                
+                let pixel = pixels[y * width + x];
+                let offset = 2 - rowPos % 3;
+                UInt8(pixel[offset])
+                }
+            else {
+                0u8 // padding
+                }
+            }
+        )
+    
+};
+
+
+asLittleEndianHex: fun(value, numBytes) {
+    let result = [];
+    while (numBytes > 0) {
+        result = result :: UInt8(value & 255u8);
+        value = value >> 8;
+        numBytes = numBytes - 1;
+    }
+    result
+};
+
+
+// http://stackoverflow.com/questions/342409/how-do-i-base64-encode-decode-in-c
+encodeBase64:
+fun (data) {
+    let encoding_table = [  'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
+                            'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
+                            'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X',
+                            'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f',
+                            'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n',
+                            'o', 'p', 'q', 'r', 's', 't', 'u', 'v',
+                            'w', 'x', 'y', 'z', '0', '1', '2', '3',
+                            '4', '5', '6', '7', '8', '9', '+', '/'];
+    
+    let mod_table = (0, 2, 1);
+    let input_length = size(data);
+    let output_length = 4 * ((input_length + 2) / 3);
+    
+    
+    let end_padding = mod_table[input_length % 3];
+    let end_padding_limit = output_length - end_padding;
+    
+    let encoded_data = [];
+    let i = 0;
+    let j = 0;
+    while (i < input_length) {
+        let octet_a = if (i < input_length) { data[i] } else { 0u8 };
+        i = i + 1;
+        let octet_b = if (i < input_length) { data[i] } else { 0u8 };
+        i = i + 1;
+        let octet_c = if (i < input_length) { data[i] } else { 0u8 };
+        i = i + 1;
+
+        let triple = (octet_a << 0x10) + (octet_b << 0x08) + octet_c;
+
+        encoded_data = encoded_data :: encoding_table[(triple >> 3 * 6) & 0x3f][0];
+        j = j + 1;
+        encoded_data = encoded_data :: encoding_table[(triple >> 2 * 6) & 0x3f][0];
+        j = j + 1;
+
+        // At most the last two characters are nulled out as '='.
+        let val = if (j >= end_padding_limit) { "="[0] } else { 
+            encoding_table[(triple >> 1 * 6) & 0x3f][0]
+        };
+        encoded_data = encoded_data :: val;
+        j = j + 1;
+
+        let val = if (j >= end_padding_limit) { "="[0] } else { 
+            encoding_table[(triple >> 0 * 6) & 0x3f][0]
+        };
+        encoded_data = encoded_data :: val;
+        j = j + 1;
+    }
+
+    encoded_data.dataAsString
+};
+
+
+

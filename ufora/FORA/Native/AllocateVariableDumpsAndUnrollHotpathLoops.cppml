@@ -1,0 +1,954 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "AllocateVariableDumpsAndUnrollHotpathLoops.hppml"
+#include "BlockDuplicator.hppml"
+#include "../../core/cppml/CPPMLVisit.hppml"
+#include "../../core/Logging.hpp"
+#include "../../core/math/Random.hpp"
+#include "../../core/math/GraphUtil.hpp"
+#include "../../core/Clock.hpp"
+#include "../../core/containers/TwoWaySetMap.hpp"
+
+namespace {
+
+//when pruning 'hot paths', we consider only paths that are this fraction
+//of the best path or better
+const double kOutgoingPruneRatio = .1;
+
+//how many instructions per interrupt check do we want? if we see the average less than this,
+//we will do a loop unroll
+const long kInstructionsPerInterruptThreshold = 200;
+
+//visitor to figure out where every variable is created or defined
+class UsedVars {
+public:
+		UsedVars(std::set<NativeVariable>& ioUsed,
+				std::set<NativeVariable>& ioUsedByMeta,
+				std::set<NativeBlockID>& ioContsJumpedTo
+				) : 	used(ioUsed),
+						conts(ioContsJumpedTo),
+						usedByMeta(ioUsedByMeta)
+			{
+			}
+			
+		template<class T>
+		void processDown(const T& in, bool& out)
+			{
+			}
+		template<class T>
+		void processUp(const T& in)
+			{
+			}
+
+		void processDown(const NativeType& in, bool& out)
+			{
+			out = false;
+			}
+
+		void processDown(const NativeVariable& in, bool& out)
+			{
+			used.insert(in);
+			}
+		void processDown(const NativeCodeFlattened::Cont& in, bool& out)
+			{
+			conts.insert(in.block());
+			}
+		void processDown(const NativeCodeFlattened::Metadata& in, bool& out)
+			{
+			out = false;
+			std::set<NativeVariable> toss1, toss2;
+			std::set<NativeBlockID> toss3;
+			
+			UsedVars v(usedByMeta, toss2, toss3);
+			visit(in.vars(), v);
+			}
+private:
+		std::set<NativeVariable>& 	used;
+		std::set<NativeVariable>& 	usedByMeta;
+		std::set<NativeBlockID>& 	conts;
+};
+
+} //end anonymous namespace
+
+class AllocateVariableDumpsAndUnrollHotpathLoops {
+public:
+		AllocateVariableDumpsAndUnrollHotpathLoops(map<NativeBlockID, NativeCodeFlattened::Block>& outBlocks) : 
+				mBlocks(outBlocks),
+				mRandom(1),
+				mTimeInSim(0)
+			{
+			double t0 = curClock();
+
+			bool done = false;
+
+			long passes = 0;
+
+			while (!done && passes < 3)
+				{
+				passes++;
+				
+				clearSystemState();
+				updateRelativeFrequencies();
+				grabSystemData();
+
+				if (!unrollInterpreterCheckLoops())
+					done = true;
+				}
+
+			//pass 3 - actually propagate liveness
+			clearSystemState();
+			updateRelativeFrequencies();
+
+			grabSystemData();
+
+			computeUseAreas();
+			
+			enliven();
+
+			//try to avoid dumping values on the hotpath
+			fullyEnlivenVariablesOnHotpath();
+
+			dumpLiveVariables();
+			}
+		
+		double mTimeInSim;
+
+private:
+		void clearSystemState(void)
+			{
+			//reset the frequencies
+			mExternalBlocks.resize(0);
+
+			for (auto it = mBlocks.begin(), it_end = mBlocks.end(); it != it_end; ++it)
+				{
+				it->second.relativeFrequency() = 1.0;
+				if (!it->first.isInternal())
+					mExternalBlocks.push_back(it->first);
+				}
+
+			//reset the dump state of all blocks
+			for (auto it = mBlocks.begin(), it_end = mBlocks.end(); it != it_end; ++it)
+				{
+				it->second.liveOnInput() = emptyTreeSet();
+				it->second.dontWriteAnyVariables();
+				}
+			}
+		
+		void updateRelativeFrequencies()
+			{
+			double t0 = curClock();
+
+			long kPathCount = 2000;
+
+			for (long k = 0; k < kPathCount; k++)
+				simulateARandomPath();
+
+			mTimeInSim += curClock() - t0;
+			}
+
+		NativeBlockID pickBlockAtRandom()
+			{
+			lassert(mExternalBlocks.size());
+
+			return mExternalBlocks[mRandom() * mExternalBlocks.size()];
+			}
+
+		void simulateARandomPath()
+			{
+			long kMaxPathLength = 200;
+
+			NativeBlockID blockId = pickBlockAtRandom();
+
+			double curWeight = 1.0;
+
+			for (long k = 0; k < kMaxPathLength; k++)
+				{
+				mBlocks[blockId].relativeFrequency() += curWeight;
+
+				const NativeCodeFlattened::Block& block(mBlocks[blockId]);
+
+				if (block.term().isJump())
+					blockId = block.term().getJump().target().block();
+					else
+				if (block.term().isInterruptOrKickCheck())
+					blockId = block.term().getInterruptOrKickCheck().ifDoingInterrupt().block();
+					else
+				if (block.term().isBranch())
+					{
+					bool isTrue = mRandom() < block.term().getBranch().fractionTrue();
+
+					if (isTrue)
+						blockId = block.term().getBranch().ifTrue().block();
+					else
+						blockId = block.term().getBranch().ifFalse().block();
+					}
+				else
+					{
+					//we're done
+					return;
+					}
+				}
+			}
+
+		void grabSystemData(void)
+			{
+			for (auto it = mBlocks.begin(), it_end = mBlocks.end(); it != it_end; ++it)
+				{
+				observe(it->first, it->second);
+				
+				if (it->second.term().isJump())
+					{
+					observe(it->first,
+						it->second.term().getJump().target(), 
+						it->second.relativeFrequency()
+						);
+					}
+					else
+				if (it->second.term().isInterruptOrKickCheck())
+					{
+					observe(it->first,
+						it->second.term().getInterruptOrKickCheck().ifDoingInterrupt(), 
+						it->second.relativeFrequency()
+						);
+					}
+					else
+				if (it->second.term().isBranch())
+					{
+					observe(it->first,
+						it->second.term().getBranch().ifTrue(),
+						it->second.term().getBranch().fractionTrue() *
+							it->second.relativeFrequency()
+						);
+					observe(it->first,
+						it->second.term().getBranch().ifFalse(), 
+						(1.0 - it->second.term().getBranch().fractionTrue()) *
+							it->second.relativeFrequency()
+						);
+					}
+				}
+			
+			for (auto it = mBlocks.begin(), it_end = mBlocks.end(); it != it_end; ++it)
+				{
+				pruneHotPaths(mHotOutgoing[it->first]);
+				pruneHotPaths(mHotIncoming[it->first]);
+				}
+			
+			//a path is not hot unless it's hot in both directions
+			for (auto it = mBlocks.begin(), it_end = mBlocks.end(); it != it_end; ++it)
+				{
+				pruneHotPaths(mHotIncoming[it->first], it->first, mHotOutgoing);
+				pruneHotPaths(mHotOutgoing[it->first], it->first, mHotIncoming);
+				}
+			}
+
+		void dropInterrupts(map<NativeBlockID, NativeCodeFlattened::Block>& ioBlocks)
+			{
+			for (auto it = ioBlocks.begin(); it != ioBlocks.end(); ++it)
+				if (it->second.term().isInterruptOrKickCheck())
+					it->second.term() = NativeCodeFlattened::Term::Jump(
+						it->second.term().getInterruptOrKickCheck().ifPassing()
+						);
+			}
+
+		bool unrollInterpreterCheckLoops()
+			{
+			//identify any hot-path nodes that go through or are reachable from an 
+			//interpreter/kickcheck node
+
+			set<NativeBlockID> hotpathsReachableFromKickcheck;
+
+			long kMinFrequencyToDuplicateInterrupt = 1000;
+
+			long interruptNodeCount = 0;
+
+			for (auto it = mBlocks.begin(); it != mBlocks.end(); ++it)
+				if (it->second.term().isInterruptOrKickCheck())
+					{
+					interruptNodeCount++;
+
+					if (it->second.relativeFrequency() > kMinFrequencyToDuplicateInterrupt)
+						{
+						findAllHotpathsReachableFrom(
+							it->first, 
+							hotpathsReachableFromKickcheck
+							);
+						}
+					}
+
+			//just get the true loops and a minimum covering. We'll swap between the two copies of
+			//the graph at the loop points.
+			restrictNodesToLoops(hotpathsReachableFromKickcheck);
+
+			//count the number of instructions per hotpath
+			long instructions = countInstructionsIn(hotpathsReachableFromKickcheck);
+
+			LOG_DEBUG << "unrolling: " << 
+				hotpathsReachableFromKickcheck.size() << " vs. " << interruptNodeCount
+				<< " over " << instructions;
+
+			if (instructions > interruptNodeCount * kInstructionsPerInterruptThreshold)
+				return false;
+
+			if (!hotpathsReachableFromKickcheck.size())
+				return false;
+
+			//make a duplicate copy of the subgraph containing the hotpath nodes
+			map<NativeBlockID, NativeCodeFlattened::Block> subgraph;
+			map<NativeBlockID, NativeBlockID> nameMap;
+
+			subgraphContaining(hotpathsReachableFromKickcheck, subgraph, nameMap);
+
+			map<NativeBlockID, NativeBlockID> reverseNameMap;
+			for (auto it = nameMap.begin(); it != nameMap.end(); ++it)
+				reverseNameMap[it->second] = it->first;
+
+			//now we need to pick points that cover the cycles of the subgraph
+			set<NativeBlockID> rootsInSubgraph;
+
+			//compute the crossover roots
+			computeRoots(subgraph, rootsInSubgraph);
+
+			lassert_dump(rootsInSubgraph.size(), prettyPrintString(subgraph));
+
+			//now, anybody flowing into an interrupt node in one of the graphs needs to flow into
+			//the other instead
+			map<NativeBlockID, NativeBlockID> mainRootsToSubgraphRoots;
+			map<NativeBlockID, NativeBlockID> subgraphRootsToMainRoots;
+
+			for (auto it = rootsInSubgraph.begin(); it != rootsInSubgraph.end(); ++it)
+				{
+				NativeBlockID subgraphRoot = *it;
+
+				lassert(reverseNameMap.find(subgraphRoot) != reverseNameMap.end());
+				NativeBlockID root = reverseNameMap[subgraphRoot];
+
+				std::swap(subgraph[subgraphRoot], mBlocks[root]);
+				}
+
+			//now we have a subgraph containing copies of all of those nodes that's ready to merge
+			//back into the main graph.  We need to remove any interrupt or kickchecks in the subgraph
+			dropInterrupts(subgraph);
+
+
+			for (auto it = subgraph.begin(); it != subgraph.end(); ++it)
+				{
+				lassert(mBlocks.find(it->first) == mBlocks.end());
+				mBlocks[it->first] = it->second;
+				}
+
+			return true;
+			}
+
+		map<NativeBlockID, NativeCodeFlattened::Block> frequent(map<NativeBlockID, NativeCodeFlattened::Block> in)
+			{
+			map<NativeBlockID, NativeCodeFlattened::Block> tr;
+
+			for (auto it = in.begin(); it != in.end(); ++it)
+				if (it->second.relativeFrequency() > 1)
+					tr[it->first] = it->second;
+
+			return tr;
+			}
+
+		long countInstructionsIn(const set<NativeBlockID>& ioNodes)
+			{
+			long count = 0;
+
+			for (auto it = ioNodes.begin(); it != ioNodes.end(); ++it)
+				count += mBlocks[*it].defs().size();
+
+			return count;
+			}
+
+		void restrictNodesToLoops(set<NativeBlockID>& ioNodes)
+			{
+			map<NativeBlockID, set<NativeBlockID> > edgemap;
+
+			for (auto it = ioNodes.begin(); it != ioNodes.end(); ++it)
+				for (long k = 0; k < flowPoints(*it); k++)
+					if (ioNodes.find(flowPoint(*it, k)) != ioNodes.end())
+						edgemap[*it].insert(flowPoint(*it, k));
+
+			std::vector<std::set<NativeBlockID> > components;
+
+			GraphUtil::computeStronglyConnectedComponents(edgemap, components, false, false);
+
+			ioNodes = set<NativeBlockID>();
+
+			for (long k = 0; k < components.size();k++)
+				{
+				verifyAtLeastOneInterrupt(components[k]);
+				ioNodes.insert(components[k].begin(), components[k].end());
+				}
+			}
+
+		void verifyAtLeastOneInterrupt(const std::set<NativeBlockID>& blocks)
+			{
+			for (auto it = blocks.begin(); it != blocks.end(); ++it)
+				if (mBlocks[*it].term().isInterruptOrKickCheck())
+					return;
+
+			lassert(false);
+			}
+
+		void computeRoots(	const map<NativeBlockID, NativeCodeFlattened::Block>& ioNodes, 
+							set<NativeBlockID>& outRoots
+							)
+			{
+			TwoWaySetMap<NativeBlockID, NativeBlockID> remainingEdgemap;
+
+			for (auto it = ioNodes.begin(); it != ioNodes.end(); ++it)
+				for (long k = 0; k < flowPoints(it->first, ioNodes); k++)
+					if (ioNodes.find(flowPoint(it->first, k, ioNodes)) != ioNodes.end())
+						remainingEdgemap.insert(it->first, flowPoint(it->first, k, ioNodes));
+
+			//remove all non-interrupt nodes first. This should ensure that our 'roots' are
+			//interrupt nodes
+			std::vector<NativeBlockID> removalOrder;
+
+			for (auto it = ioNodes.begin(); it != ioNodes.end(); ++it)
+				if (!it->second.term().isInterruptOrKickCheck())
+					removalOrder.push_back(it->first);
+
+			//then try to remove the interrupt nodes. the set must be complete
+			for (auto it = ioNodes.begin(); it != ioNodes.end(); ++it)
+				if (it->second.term().isInterruptOrKickCheck())
+					removalOrder.push_back(it->first);
+
+			minimumGraphCovering(remainingEdgemap, outRoots, std::set<NativeBlockID>(), true, removalOrder);
+
+			//insist that every node is a root
+			for (auto it = outRoots.begin(); it != outRoots.end();++it)
+				lassert_dump(
+					ioNodes.find(*it)->second.term().isInterruptOrKickCheck(),
+					"roots are " << prettyPrintString(outRoots) << " within\n"
+						<< prettyPrintString(ioNodes)
+					);
+			}
+
+		void subgraphContaining(
+					const set<NativeBlockID>& nodes,
+					map<NativeBlockID, NativeCodeFlattened::Block>& outBlocks,
+					map<NativeBlockID, NativeBlockID>& outBlockNameMap
+					)
+			{
+			map<NativeBlockID, NativeCodeFlattened::Block> blockMap;
+
+			for (auto it = nodes.begin(); it != nodes.end(); ++it)
+				{
+				blockMap[*it] = mBlocks[*it];
+				outBlockNameMap[*it] = NativeBlockID::internal();
+				}
+
+			map<NativeBlockID, NativeCodeFlattened::Block> newBlockMap;
+
+			BlockDuplicator duplicator(&outBlockNameMap, false);
+
+			for (auto it = mBlocks.begin(); it != mBlocks.end(); ++it)
+				if (nodes.find(it->first) == nodes.end())
+					//this node is not one we're copying, so leave it alone in the blockmap.
+					//any references to this node will remain unchanged
+					outBlockNameMap[it->first] = it->first;
+
+			outBlocks = transform(blockMap, duplicator);
+			}
+
+		long flowPoints(const NativeBlockID& blockID)
+			{
+			return flowPoints(blockID, mBlocks);
+			}
+
+		NativeBlockID flowPoint(const NativeBlockID& blockID, long which)
+			{
+			return flowPoint(blockID, which, mBlocks);
+			}
+		
+		long flowPoints(
+				const NativeBlockID& blockID, 
+				const map<NativeBlockID, NativeCodeFlattened::Block>& blocks
+				)
+			{
+			const NativeCodeFlattened::Block& block = blocks.find(blockID)->second;
+
+			if (block.term().isJump())
+				return 1;
+				else
+			if (block.term().isInterruptOrKickCheck())
+				return 1;
+				else
+			if (block.term().isBranch())
+				return 2;
+			
+			return 0;
+			}
+
+		NativeBlockID flowPoint(
+				const NativeBlockID& blockID, 
+				long which,
+				const map<NativeBlockID, NativeCodeFlattened::Block>& blocks
+				)
+			{
+			const NativeCodeFlattened::Block& block = blocks.find(blockID)->second;
+
+			if (block.term().isJump())
+				return block.term().getJump().target().block();
+				else
+			if (block.term().isInterruptOrKickCheck())
+				return block.term().getInterruptOrKickCheck().ifDoingInterrupt().block();
+				else
+			if (block.term().isBranch())
+				{
+				if (which == 0)
+					return block.term().getBranch().ifTrue().block();
+				if (which == 1)
+					return block.term().getBranch().ifFalse().block();
+				}
+			
+			lassert(false);
+			}
+
+		void findAllHotpathsReachableFrom(NativeBlockID block, set<NativeBlockID>& ioHotNodes)
+			{
+			if (ioHotNodes.find(block) != ioHotNodes.end())
+				return;
+			
+			ioHotNodes.insert(block);
+
+			for (long k = 0; k < mHotOutgoing[block].size(); k++)
+				findAllHotpathsReachableFrom(mHotOutgoing[block][k].second, ioHotNodes);
+			}
+
+		long totalWeightInNodes()
+			{
+			long tr = 0;
+
+			for (auto it = mBlocks.begin(); it != mBlocks.end(); ++it)
+				tr += it->second.relativeFrequency();
+
+			return tr;
+			}
+
+		//is 'toFind' in 'vec'?
+		bool isConnectedTo(const vector<pair<double, NativeBlockID> >& vec, NativeBlockID toFind)
+			{
+			for (long k = 0; k < vec.size();k++)
+				if (vec[k].second == toFind)
+					return true;
+			return false;
+			}
+		
+		//get rid of elements in 'ioPaths' where inReverse[ioPaths[k].second]
+		//doesn't contain toSearch
+		void pruneHotPaths(
+					vector<pair<double, NativeBlockID> >& ioPaths,
+					NativeBlockID toSearch,
+					map<NativeBlockID, vector<pair<double, NativeBlockID> > >& inReverse
+					)
+			{
+			for (long k = 0; k < ioPaths.size();k++)
+				{
+				if (!isConnectedTo(inReverse[ioPaths[k].second], toSearch))
+					{
+					std::swap(ioPaths[k], ioPaths.back());
+					ioPaths.pop_back();
+					k--;
+					}
+				}
+			}
+		
+		//for each jump point note where the block goes and mark it. "frequency"
+		//is the relative number of times the jump is crossed
+		void observe(	NativeBlockID source,
+						const NativeCodeFlattened::JumpPoint& jp,
+						double frequency
+						)
+			{
+			NativeBlockID target = jp.block();
+			mIncomingPaths[target] = mIncomingPaths[target] + source;
+			
+			mHotOutgoing[source].push_back(make_pair(frequency, target));
+			mHotIncoming[target].push_back(make_pair(frequency, source));
+			}
+		
+		void pruneHotPaths(vector<pair<double, NativeBlockID> >& ioPaths)
+			{
+			sort(ioPaths.begin(), ioPaths.end());
+			
+			long k = 0;
+			
+			while (k < ioPaths.size() &&
+					ioPaths[k].first < kOutgoingPruneRatio * ioPaths.back().first
+					)
+				k++;
+			
+			ioPaths.erase(
+				ioPaths.begin(),
+				ioPaths.begin() + k
+				);
+			}
+		
+		//observe each block and mark the values it uses and defins
+		void observe(const NativeBlockID& id, NativeCodeFlattened::Block& block)
+			{
+			ImmutableTreeSet<NativeVariable> 	used;
+			ImmutableTreeSet<NativeVariable> 	defined = block.args();
+			ImmutableTreeSet<NativeVariable> 	usedByMeta;
+			ImmutableTreeSet<NativeBlockID> 	conts;
+			
+			std::set<NativeVariable> usedSet, usedByMetaSet;
+			std::set<NativeBlockID> contsSet;
+
+			UsedVars uv(usedSet, usedByMetaSet, contsSet);
+
+			for (long k = 0; k < block.defs().size();k++)
+				{
+				visit(block.defs()[k].second, uv);
+				defined = defined + block.defs()[k].first;
+				}
+
+			visit(block.term(), uv);
+
+			used = ImmutableTreeSet<NativeVariable>(usedSet);
+			usedByMeta = ImmutableTreeSet<NativeVariable>(usedByMetaSet);
+			conts = ImmutableTreeSet<NativeBlockID>(contsSet);
+
+			mDefinedByBlock[id] = defined;
+			mJumpedToViaContinuation[id] = conts;
+			
+			//we consider any continuation-jump to be an implicit jump since
+			//liveness must pass across it
+			for (long k = 0; k < conts.size();k++)
+				mIncomingPaths[conts[k]] = mIncomingPaths[conts[k]] + id;
+			
+			mUsedByBlockMeta[id] = usedByMeta;
+			used = used + usedByMeta;
+			
+			mUsedByBlock[id] = used;
+			}
+
+		//computeUseAreas - for each variable, figure out all the blocks that
+		//its definition spans
+		void computeUseAreas(void)
+			{
+			for (map<NativeBlockID, ImmutableTreeSet<NativeVariable> >::iterator
+					it = mUsedByBlock.begin(),
+					it_end = mUsedByBlock.end();
+					it != it_end;
+					++it
+					)
+				{
+				for (long k = 0; k < it->second.size();k++)
+					usedBy(it->first, it->second[k]);
+				}
+			}
+		
+		void usedBy(NativeBlockID blockID, NativeVariable var)
+			{
+			mUsesByVar[var] = mUsesByVar[var] + blockID;
+			neededBy(blockID, var);
+			}
+		
+		//recursively propagate the 'active' status of the variable up
+		//the tree...
+		void neededBy(NativeBlockID blockID, NativeVariable var)
+			{
+			map<NativeVariable, ImmutableTreeSet<NativeBlockID> >::iterator it =
+				mActiveByVar.find(var);
+				
+			if (it == mActiveByVar.end())
+				{
+				mActiveByVar[var];
+				it = mActiveByVar.find(var);
+				}
+			
+			if (!it->second.contains(blockID))
+				{
+				it->second = it->second + blockID;
+				if (!mDefinedByBlock[blockID].contains(var))
+					{
+					//everybody flowing into this block must define this variable
+					ImmutableTreeSet<NativeBlockID> incoming =
+						mIncomingPaths[blockID];
+					for (long k = 0; k < incoming.size(); k++)
+						neededBy(incoming[k], var);
+					}
+				}
+			}
+		
+		void enliven(void)
+			{
+			//go through each block, enliven the variables it uses but doesn't define
+			for (map<NativeBlockID, NativeCodeFlattened::Block>::iterator it = mBlocks.begin(), it_end = mBlocks.end(); it != it_end; ++it)
+				{
+				ImmutableTreeSet<NativeVariable> vars = mUsedByBlock[it->first] - mDefinedByBlock[it->first];
+				mBlocks[it->first].liveOnInput() = mBlocks[it->first].liveOnInput() + mBlocks[it->first].args();
+				for (long k = 0; k < vars.size();k++)
+					enlivenVar(vars[k], it->first);
+				}
+			}
+
+		void enlivenVar(NativeVariable var, NativeBlockID withinBlock)
+			{
+			if (!mBlocks[withinBlock].liveOnInput().contains(var) && !mDefinedByBlock[withinBlock].contains(var))
+				{
+				mBlocks[withinBlock].liveOnInput() = mBlocks[withinBlock].liveOnInput() + var;
+				
+				if (mHotIncoming.find(withinBlock) != mHotIncoming.end())
+					{
+					const vector<pair<double, NativeBlockID> >& incoming =
+						mHotIncoming[withinBlock];
+					
+					for (long k = 0; k < incoming.size();k++)
+						enlivenVar(var, incoming[k].second);
+					}
+				}
+			}
+
+		bool isOnHotPath(NativeBlockID sourceBlock, NativeBlockID destBlock)
+			{
+			auto it = mHotIncoming.find(destBlock);
+
+			if (it == mHotIncoming.end())
+				return false;
+
+			for (auto it2 = it->second.begin(); it2 != it->second.end(); ++it2)
+				if (it2->second == sourceBlock)
+					return true;
+
+			return false;
+			}
+
+		void fullyEnlivenVariablesOnHotpath()
+			{
+			//if a variable would be dumped on a hotpath, propagate the liveness of that variable
+			//as var as necessary
+
+			for (map<NativeBlockID, NativeCodeFlattened::Block>::iterator
+						it = mBlocks.begin(),
+						it_end = mBlocks.end();
+						it != it_end;
+						++it)
+				{
+				ImmutableTreeSet<NativeVariable> toCheck;
+
+				toCheck = it->second.liveOnInput() + mDefinedByBlock[it->first];
+
+				for (long k = 0; k < toCheck.size(); k++)
+					checkForHotpathLivenessPropagation(
+						it->first,
+						it->second,
+						toCheck[k]
+						);
+				}
+			}
+
+		void checkForHotpathLivenessPropagation(
+						NativeBlockID sourceBlock,
+						NativeCodeFlattened::Block& block,
+						NativeVariable var
+						)
+			{
+			if (block.term().isJump())
+				checkForHotpathLivenessPropagation(
+					sourceBlock, 
+					var,
+					block.term().getJump().target()
+					);
+				else
+			if (block.term().isInterruptOrKickCheck())
+				checkForHotpathLivenessPropagation(
+					sourceBlock, 
+					var,
+					block.term().getInterruptOrKickCheck().ifDoingInterrupt()
+					);
+				else
+			if (block.term().isBranch())
+				{
+				checkForHotpathLivenessPropagation(
+					sourceBlock, 
+					var,
+					block.term().getBranch().ifTrue()
+					);
+
+				checkForHotpathLivenessPropagation(
+					sourceBlock, 
+					var,
+					block.term().getBranch().ifFalse()
+					);
+				}
+			}
+
+
+		void checkForHotpathLivenessPropagation(
+						NativeBlockID sourceBlockID,
+						NativeVariable var,
+						NativeCodeFlattened::JumpPoint& ioJumpPoint
+						)
+			{
+			NativeBlockID target = ioJumpPoint.block();
+
+			if (!isOnHotPath(sourceBlockID, target))
+				return;
+
+			//check if the variable is already live or defined in the target
+			if (mBlocks[target].liveOnInput().contains(var) ||
+					mDefinedByBlock[target].contains(var))
+				return;
+
+			//if the variable is not active in the jump target, 
+			//we don't need to do anything - we wouldn't dump anyways
+			if (!mActiveByVar[var].contains(target))
+				return;
+
+			mBlocks[target].liveOnInput() = mBlocks[target].liveOnInput() + var;
+
+			//and recurse
+			checkForHotpathLivenessPropagation(target, mBlocks[target], var);
+			}
+
+		//now make sure that any variables that are 'live' or defined
+		//in a node get dumped on exit if they are going to be reused.
+		void dumpLiveVariables()
+			{
+			for (map<NativeBlockID, NativeCodeFlattened::Block>::iterator
+						it = mBlocks.begin(),
+						it_end = mBlocks.end();
+						it != it_end;
+						++it)
+				{
+				ImmutableTreeSet<NativeVariable> toCheck;
+
+				toCheck = it->second.liveOnInput() + mDefinedByBlock[it->first];
+				
+				for (long k = 0; k < toCheck.size();k++)
+					dumpLiveVariableInBlock(it->first, it->second, toCheck[k]);
+				}
+			}
+
+		void dumpLiveVariableInBlock(
+					NativeBlockID blockId, 
+					NativeCodeFlattened::Block& block, 
+					NativeVariable var
+					)
+			{
+			if (mUsedByBlockMeta[blockId].contains(var))
+				block.writeVariable(var);
+			else
+				{
+				//not used by the metadata. check each continuation
+				if (block.term().isJump())
+					{
+					dumpLiveVariable(blockId,
+						block.term().getJump().target(), 
+						var
+						);
+					}
+					else
+				if (block.term().isInterruptOrKickCheck())
+					{
+					dumpLiveVariable(blockId,
+						block.term().getInterruptOrKickCheck().ifDoingInterrupt(), 
+						var
+						);
+					}
+					else
+				if (block.term().isBranch())
+					{
+					dumpLiveVariable(blockId,
+						block.term().getBranch().ifTrue(),
+						var
+						);
+					dumpLiveVariable(blockId,
+						block.term().getBranch().ifFalse(), 
+						var
+						);
+					}
+				
+				for (long k = 0; k < mJumpedToViaContinuation[blockId].size();k++)
+					dumpLiveVariable(blockId, mJumpedToViaContinuation[blockId][k], var);
+				}
+			}
+
+
+		void dumpLiveVariable(NativeBlockID blockID,
+							NativeCodeFlattened::JumpPoint& ioJumpPoint,
+							NativeVariable var
+							)
+			{
+			NativeBlockID target = ioJumpPoint.block();
+			
+			//if the target block defines the variable or it's live
+			//in the target block, then no need to dump it
+			if (mBlocks[target].liveOnInput().contains(var) ||
+					mDefinedByBlock[target].contains(var))
+				return;
+			
+			if (mActiveByVar[var].contains(target))
+				ioJumpPoint.dumpToSlots().dumpToSlots() =
+					ioJumpPoint.dumpToSlots().dumpToSlots() + var;
+			}
+
+		void dumpLiveVariable(NativeBlockID blockID,
+							NativeBlockID resumingBlockID,
+							NativeVariable var
+							)
+			{
+			if (mActiveByVar[var].contains(resumingBlockID))
+				mBlocks[blockID].writeVariable(var);
+			}
+		
+		
+		//reference to original block list
+		map<NativeBlockID, NativeCodeFlattened::Block>& 		mBlocks;
+		
+		//for each block, what variables does he define?
+		map<NativeBlockID, ImmutableTreeSet<NativeVariable> > 	mDefinedByBlock;
+		
+		//for each block, what variables does it actually use?
+		map<NativeBlockID, ImmutableTreeSet<NativeVariable> > 	mUsedByBlock;
+
+		//for each block, what variables does its metadata refer to
+		map<NativeBlockID, ImmutableTreeSet<NativeVariable> > 	mUsedByBlockMeta;
+		
+		//for each block, which blocks can he get to via his continuation?
+		map<NativeBlockID, ImmutableTreeSet<NativeBlockID> >	mJumpedToViaContinuation;
+		
+		//for each variable, where is it used?
+		map<NativeVariable, ImmutableTreeSet<NativeBlockID> > 	mUsesByVar;
+		
+		//for each variable, where is it active?
+		map<NativeVariable, ImmutableTreeSet<NativeBlockID> > 	mActiveByVar;
+		
+		//for each block, what blocks jump into him?
+		map<NativeBlockID, ImmutableTreeSet<NativeBlockID> >	mIncomingPaths;
+
+		map<NativeBlockID,
+			vector<pair<double, NativeBlockID> > >				mHotIncoming;
+		map<NativeBlockID,
+			vector<pair<double, NativeBlockID> > >				mHotOutgoing;
+
+		std::vector<NativeBlockID> mExternalBlocks;
+
+		Ufora::math::Random::Uniform<float> mRandom;
+		
+};
+
+
+void allocateVariableDumpsAndUnrollHotpathLoops(std::map<NativeBlockID, NativeCodeFlattened::Block>& outBlocks)
+	{
+	AllocateVariableDumpsAndUnrollHotpathLoops dumper(outBlocks);
+	}
+

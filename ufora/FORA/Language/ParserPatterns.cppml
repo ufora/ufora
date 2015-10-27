@@ -1,0 +1,548 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ParserPatterns.hppml"
+#include "ParserExpressions.hppml"
+#include "Parser.hppml"
+
+typedef ImmutableTreeVector<SimpleParseNode>	NodeList;
+
+namespace {
+
+//class to validate the structure of a pattern. Insists that
+//patterns with default arguments are grouped together around
+//the 'star-args'.
+
+class PatternParsingValidator {
+public:
+		PatternParsingValidator ()
+			{
+			mState = state_not_started;
+			mHasPriorStarArgs = false;
+			}
+		
+		//indicate that the next term is a *args. Throws a parse
+		//error if its invalid.
+		void consumeVarArgs(const SimpleParseNode& node)
+			{
+			if (mState > state_arguments_with_defaults_left)
+				{
+				if (mHasPriorStarArgs)
+					throw FunctionParseError("Can't use *args twice in a pattern", node);
+				else
+					throw FunctionParseError("Can't use *args here", node);
+				}
+			mState = state_var_args;
+			mHasPriorStarArgs = true;
+			}
+		//indicate that the next term is a normal argument that might
+		//have a default.
+		void consumeRegularArg(bool hasDefault, const SimpleParseNode& node)
+			{
+			if (mState == state_not_started || 
+					mState == state_arguments_left)
+				{
+				if (hasDefault)
+					mState = state_arguments_with_defaults_left;
+				else
+					mState = state_arguments_left;
+				}
+				else
+			if (mState == state_arguments_with_defaults_left)
+				{
+				if (!hasDefault)
+					mState = state_arguments_right;
+				}
+				else
+			if (mState == state_var_args)
+				{
+				if (hasDefault)
+					mState = state_arguments_with_defaults_right;
+				else
+					mState = state_arguments_right;
+				}
+				else
+			if (mState == state_arguments_with_defaults_right)
+				{
+				if (!hasDefault)
+					mState = state_arguments_left;
+				}
+				else
+			if (mState == state_arguments_right)
+				{
+				if (hasDefault)
+					throw FunctionParseError("Can't interleave patterns with and without default arguments like this.", node);
+				}
+				else
+				{
+				throw standardLogicErrorWithStacktrace(
+					"Invalid state in PatternParsingStage. Memory must have been corrupted."
+					);
+				}
+			}
+private:
+		uword_t mState;
+		bool mHasPriorStarArgs;
+
+		//we're a little finite state machine. These are the states
+		//we can be in
+		enum {
+			state_not_started = 0, //nothing seen yet
+			state_arguments_left = 1, //we've only seen 'normal' arguments
+			state_arguments_with_defaults_left = 2, //we've seen some arguments with
+													//defaults, but no *args
+			state_var_args = 3,						//we've seen a *args
+			state_arguments_with_defaults_right = 4,//we've seen some default arguments after
+													//a *args
+			state_arguments_right = 5				//we saw a non-default argument after
+													//a star-args
+		};
+};
+
+}
+
+
+ImmutableTreeVector<TuplePatternElement>
+		ParserPatterns::parseCommaSepToTuplePatternElements(
+					const NodeList& nodes) const
+	{
+	if (nodes.size() == 1 && nodes[0].isEmpty())
+		return ImmutableTreeVector<TuplePatternElement>();
+
+	ImmutableTreeVector<TuplePatternElement> res;
+	
+	PatternParsingValidator validator;
+
+	for (long k = 0; k < nodes.size();k++)
+		{
+		TuplePatternElement patternElt = 
+			parseNodeToTuplePatternElement(nodes[k]);
+
+		@match TuplePatternElement(patternElt)
+			-|	VarArgs() ->> {
+				validator.consumeVarArgs(nodes[k]);
+				}
+			-|	Normal(_, _, defaultValue) ->> {
+				validator.consumeRegularArg(defaultValue, nodes[k]);
+				}
+			;
+
+		res = res + patternElt;
+		}
+
+	return res;
+	}
+TuplePatternElement ParserPatterns::parseNodeToTuplePatternElement(const SimpleParseNode& node) const
+	{
+	@match SimpleParseNode(node)
+		-|	Sequence(
+				Colon(),
+				Leaf(
+					Identifier(i),
+					Leaf(Sequence(Concatenation(), Leaf(Operator(op), rest)), Empty())
+					)
+				) ->> {
+				if (!mExprParser.isValidIdentifier(i))
+					throw FunctionParseError("invalid structure name: " + i,
+															node.extent());
+
+				if (op == "=")
+					return TuplePatternElement::Normal(
+						null() << Symbol(i),
+						PatternWithName(
+							Pattern::Anything(),
+							null() << Symbol(i),
+							null(),
+							ExpressionLocationMetadata::Empty()
+							),
+						null() << mExprParser.parseConcatenationSequence(rest)
+						);
+				}
+		-|	Sequence(
+				Colon(),
+				Leaf(
+					Identifier(i),
+					Leaf(Empty(), Empty())
+					)
+				) ->> {
+				if (!mExprParser.isValidIdentifier(i))
+					throw FunctionParseError("invalid structure name: " + i,
+															node.extent());
+				
+				return TuplePatternElement::Normal(
+					null() << Symbol(i),
+					PatternWithName(
+						Pattern::Anything(),
+						null() << Symbol(i),
+						null(),
+						ExpressionLocationMetadata::Empty()
+						),
+					null()
+					);
+				}
+		-|	Sequence(
+				Colon(),
+				Leaf(
+					Identifier(i),
+					Leaf(
+						tail,
+						Empty()
+						)
+					)
+				) ->> {
+				if (!mExprParser.isValidIdentifier(i))
+					throw FunctionParseError("invalid structure name: " + i,
+															node.extent());
+				
+				TuplePatternElement subpat = parseNodeToTuplePatternElement(tail);
+				
+				@match TuplePatternElement(subpat)
+					-|	VarArgs() ->> {
+							throw FunctionParseError(
+								"can't have *args with a name",
+								node
+								);
+							}
+					-|	Normal(field, namedPat, defaultValue) ->> {
+							if (field)
+								throw FunctionParseError(
+									"can't have two names on a pattern",
+									node);
+							return TuplePatternElement::Normal(
+								null() << Symbol(i),
+								namedPat,
+								defaultValue
+								);
+							}
+					;
+				}
+		-|	Sequence(Concatenation(),
+				Leaf(Identifier(nm),
+				Leaf(Operator(op), rest))) ->> {
+
+				if (mExprParser.isValidIdentifier(nm) && op == "=")
+					{
+					return TuplePatternElement::Normal(
+						null(),
+						PatternWithName(
+							Pattern::Anything(),
+							nm == "_" ?
+								Nullable<Symbol>()
+							:	null() << Symbol(nm),
+							null(),
+							ExpressionLocationMetadata::Empty()
+							),
+						null() << mExprParser.parseConcatenationSequence(rest)
+						);
+					}
+
+				if (mExprParser.isValidIdentifier(nm) && op == ":=")
+					return TuplePatternElement::Normal(
+						null() << Symbol(nm),
+						PatternWithName(
+							Pattern::Anything(),
+							null() << Symbol(nm),
+							null(),
+							ExpressionLocationMetadata::Empty()
+							),
+						null() << mExprParser.parseConcatenationSequence(rest)
+						);
+
+				}
+		-|	Sequence(Concatenation(),
+				Leaf(Operator(star),
+				Leaf(Identifier(nm), Empty()))) ->> {
+					if (mExprParser.isValidIdentifier(nm) && star == "*")
+						return TuplePatternElement::VarArgs(
+							nm == "_" ?
+								Nullable<Symbol>()
+							:	null() << Symbol(nm)
+							);
+					}
+		-|	_ ->> {;}
+		;
+	if (node == "...")
+		return TuplePatternElement::VarArgs(null());
+		
+	return TuplePatternElement::Normal(
+		null(),
+		parseNodeToNamedPattern(node),
+		null()
+		);
+	}
+	
+PatternWithName			ParserPatterns::parseNodeToNamedPattern(
+													const SimpleParseNode& node) const
+	{
+	@match SimpleParseNode(node)
+		-|	Sequence(Concatenation(), nodes) ->> {
+			return parseConcatSeqToNamedPattern(nodes);
+			}
+		-|	_ ->> {
+			return parseConcatSeqToNamedPattern(emptyTreeVec() + node);
+			}
+		;
+	}
+Nullable<Symbol>		ParserPatterns::parseNodeToPatternName(const SimpleParseNode& node) const
+	{
+	@match SimpleParseNode(node)
+		-|	Identifier(i) ->> {
+				if (i == "_")
+					return null();
+				if (mExprParser.isValidIdentifier(i))
+					return null() << Symbol(i);
+				
+				throw FunctionParseError("invalid identifier: " + i, node);
+				}
+		-|	_ ->> {
+				throw FunctionParseError("invalid variable name", node);
+				}
+		;
+	}
+pair<Nullable<Symbol>, Nullable<Expression> >
+				ParserPatterns::parseConcatSeqToPatternName(
+						const NodeList& inNodes) const
+	{
+	NodeList nodes = inNodes;
+	
+	pair<Nullable<Symbol>, Nullable<Expression> > tr;
+	
+	if (nodes.size() && nodes[0].isIdentifier() && 
+			!(nodes[0] == "if"))
+		{
+		tr.first = parseNodeToPatternName(nodes[0]);
+		nodes = nodes.slice(1);
+		}
+	if (nodes.size() && nodes[0] == "if")
+		{
+		tr.second = mExprParser.parseConcatenationSequence(nodes.slice(1));
+		nodes = NodeList();
+		}
+	
+	if (nodes.size())
+		throw FunctionParseError(
+			"expected end of sequence after parsing a pattern name",
+			nodes
+			);
+	
+	return tr;
+	}
+
+PatternWithName			ParserPatterns::parseConcatSeqToNamedPattern(
+													const NodeList& nodes) const
+	{
+	lassert(nodes.size());
+	
+	pair<Pattern, NodeList> tail = parseConcatSeqToPattern(nodes);
+	
+	pair<Nullable<Symbol>, Nullable<Expression> > patName =
+									parseConcatSeqToPatternName(tail.second);
+	return 
+		PatternWithName(
+			tail.first, 
+			patName.first, 
+			patName.second, 
+			ExpressionLocationMetadata::Empty()
+			);
+	}
+
+pair<Pattern, NodeList> ParserPatterns::parseConcatSeqToPattern(const NodeList& nodes) const
+	{
+	lassert(nodes.size());
+	
+	pair<Pattern, NodeList> curPats = parseConcatSeqToPatternTermWithAnd(nodes);
+	
+	while (curPats.second.size() && curPats.second[0] == "or")
+		{
+		if (curPats.second.size() == 1)
+			throw FunctionParseError(
+				"expected pattern after 'or'",
+				nodes.back().extent().stop()
+				);
+			
+		pair<Pattern, NodeList> remPat =
+			parseConcatSeqToPatternTermWithAnd(curPats.second.slice(1));
+		curPats.first = Pattern::MatchEither(curPats.first, remPat.first);
+		curPats.second = remPat.second;
+		}
+	
+	return curPats;
+	}
+
+pair<Pattern, NodeList> ParserPatterns::parseConcatSeqToPatternTermWithAnd(const NodeList& nodes) const
+	{
+	pair<Pattern, NodeList> tr = parseConcatSeqToPatternTerm(nodes);
+	
+	//pop off 'or' statements as long as they're around
+	while (tr.second.size() && tr.second[0] == "and")
+		{
+		pair<Pattern, NodeList> rem =
+			parseConcatSeqToPatternTerm(
+				tr.second.slice(1)
+				);
+		
+		tr.first = Pattern::MatchBoth(tr.first, rem.first);
+		tr.second = rem.second;
+		}
+	
+	return tr;
+	}
+
+Nullable<pair<Pattern, NodeList> > 
+ParserPatterns::tryParseConcatSeqToIdentifierWithParens(const NodeList& nodes) const
+	{
+	if (nodes.size() < 2)
+		return null();
+
+	NodeList matcherNodes = emptyTreeVec() + nodes[0];
+	NodeList remainingNodes(nodes.slice(1));
+
+	while (remainingNodes.size() > 1 &&
+			remainingNodes[0].isOperator() &&
+			remainingNodes[0].getOperator().val() == "." &&
+			remainingNodes[1].isIdentifier()
+			)
+		{
+		matcherNodes = matcherNodes + remainingNodes[0] + remainingNodes[1];
+		remainingNodes = remainingNodes.slice(2);			
+		}
+	
+	if (!(matcherNodes.size() > 1 || remainingNodes.size() && mExprParser.isParens(remainingNodes[0])))
+		return null();
+
+	Expression matcherExpr = mExprParser.parseConcatenationSequence(matcherNodes);
+
+	if (!remainingNodes.size() || !mExprParser.isParens(remainingNodes[0]))
+		return null() << make_pair(
+			Pattern::Constant(matcherExpr),
+			remainingNodes
+			);
+
+	@match SimpleParseNode(remainingNodes[0])
+		-|	Grouping(Parens(), Sequence(Comma(), inner)) ->> {
+			return null() << make_pair(
+				Pattern::ExpressionMatch(
+					matcherExpr,
+					TuplePattern(parseCommaSepToTuplePatternElements(inner))
+					),
+				remainingNodes.slice(1)
+				);
+		    }
+		-|	Grouping(Parens(), inner) ->> {
+			return null() <<  make_pair(
+				Pattern::ExpressionMatch(
+					matcherExpr,
+					TuplePattern(parseCommaSepToTuplePatternElements(emptyTreeVec() + inner))
+					),
+				remainingNodes.slice(1)
+				);
+			}
+		;
+	}
+
+pair<Pattern, NodeList> ParserPatterns::parseConcatSeqToPatternTerm(const NodeList& nodes) const
+	{
+	Nullable<pair<Pattern, NodeList> > tr = tryParseConcatSeqToIdentifierWithParens(nodes);
+	if (tr)
+		return *tr;	
+
+	if (nodes.size() && nodes[0].isOperator())
+		{
+		//any sequence of operators followed by a non-operator
+		long curPos = 0;
+
+		while (curPos < nodes.size())
+			{
+			if (nodes[curPos].isOperator())
+				curPos++;
+			else
+				{
+				curPos++;
+				if (curPos >= nodes.size() || !nodes[curPos].isOperator())
+					break;
+				}
+			}
+
+		if (curPos > nodes.size())
+			curPos = nodes.size();
+
+		return make_pair(
+			Pattern::Constant(
+				mExprParser.parseConcatenationSequence(nodes.slice(0, curPos))
+				),
+			nodes.slice(curPos)
+			);
+		}
+	
+	//check whether this is an expression match.	
+	if ((nodes.size()
+			&& !mExprParser.isParens(nodes[0])
+			&& !mExprParser.isBraces(nodes[0]) &&
+			!(nodes[0] == "_")) &&
+			(
+			!mExprParser.isValidVariableName(nodes[0]) ||
+			(nodes.size() > 1 && (mExprParser.isValidVariableName(nodes[1]) || nodes[1] == "_"))
+			)
+			)
+		{
+		return make_pair(
+			Pattern::Constant(
+				mExprParser.parseToExpression(nodes[0])
+				),
+			nodes.slice(1)
+			);
+		}
+
+
+		
+	if (nodes.size() && nodes[0] == "_")
+		return make_pair(Pattern::Anything(), nodes.slice(1));
+		
+	if (nodes.size() && nodes[0].isGrouping())
+		{
+		Pattern tr;
+		
+		@match SimpleParseNode(nodes[0])
+			-|	Grouping(Parens(), Empty()) ->> {
+				tr = Pattern::Tuple(TuplePattern(emptyTreeVec()));
+				}
+			-|	Grouping(Parens(), Sequence(Comma(), tail)) ->> {
+				tr = Pattern::Tuple(parseCommaSepToTuplePatternElements(tail));
+				}
+			-|	Grouping(Parens(), n) ->> {
+				tr = 
+					Pattern::Tuple(
+						TuplePattern(
+							parseCommaSepToTuplePatternElements(emptyTreeVec() + n)
+							)
+						)
+					;
+				}
+			-|	Grouping(Braces(), n) ->> {
+				tr = Pattern::TypeMatch(parseNodeToNamedPattern(n));
+				}
+			-|	_ ->> {
+				throw FunctionParseError("illegal pattern: " + prettyPrintString(nodes[0]), nodes[0]);
+				}
+			;
+		return make_pair(tr, nodes.slice(1));
+		}
+
+	return make_pair(Pattern::Anything(), nodes);
+	}
+
+
+	
+

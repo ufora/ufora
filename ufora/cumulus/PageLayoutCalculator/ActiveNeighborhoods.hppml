@@ -1,0 +1,714 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../../core/math/Smallest.hpp"
+#include "../../core/threading/Queue.hpp"
+#include "../ComputationId.hppml"
+#include "NeighborhoodSpectralTree.hppml"
+#include "NeighborhoodsOnMachines.hppml"
+#include "NeighborhoodSet.hppml"
+#include "NeighborhoodLoadHistory.hppml"
+#include "NeighborhoodLoadBalancer.hppml"
+#include "GroupTrackingNeighborhoodSpectralTreeWatcher.hppml"
+#include "ShortTermPageLayoutCalculator.hppml"
+#include "LongTermPageLayoutCalculation.hppml"
+#include "../../FORA/TypedFora/ABI/BigVectorPageLayout.hppml"
+
+namespace Cumulus {
+
+namespace PageLayoutCalculator {
+
+/****************************
+
+ActiveNeighborhoods
+
+Maintains a history of "load level" on active pages, a current page layout,
+and a target page layout.
+
+*****************************/
+
+class ActiveNeighborhoods {
+public:
+	ActiveNeighborhoods(double usableMemoryRatio = .9, double maxMachineMemoryRatio = .2, long seed = 1) : 
+			mMemoryRatio(usableMemoryRatio),
+			mTotalMemoryAvailable(0),
+			mTotalNeighborhoodsRemoved(0),
+			mMaxRatioToAddAtOnce(.025),
+			mDroppedSinceLastBalance(0),
+			mAddedSinceLastBalance(0),
+			mTimeOfLastBalance(curClock()),
+			mTotalAdds(0),
+			mTotalMoves(0),
+			mTotalUniquePageBytes(0),
+			mLongTermCalculation(new LongTermPageLayoutCalculation(usableMemoryRatio, maxMachineMemoryRatio, seed))
+		{
+		}
+
+	PolymorphicSharedPtr<LongTermPageLayoutCalculation> checkOutLongTermPageLayoutCalculation()
+		{
+		lassert_dump(
+			mLongTermCalculation, 
+			"The layout calculation is already checked out. You must update it and return it "
+				"before it can be checked out again."
+			);
+
+		PolymorphicSharedPtr<LongTermPageLayoutCalculation> result = mLongTermCalculation;
+		
+		mLongTermCalculation.reset();
+
+		map<MachineId, int64_t> machineSizesAvailable = mMachineSizes;
+
+		for (auto machineAndIndex: mDesiredDataTaskBytes)
+			machineSizesAvailable[machineAndIndex.first] -= machineAndIndex.second;
+
+		result->updateInternalState(
+			mPendingLongTermEvents, 
+			mMachines, 
+			machineSizesAvailable, 
+			mMachineCoreCount, 
+			mCurrentLayout,
+			mTargetLayout
+			);
+
+		mPendingLongTermEvents.clear();
+
+		return result;
+		}
+
+	void checkInUpdatedLongTermPageLayoutCalculation(PolymorphicSharedPtr<LongTermPageLayoutCalculation> inCalc)
+		{
+		lassert_dump(!mLongTermCalculation, "The layout calculation is not checked out. Check it out and update it");
+
+		mLongTermCalculation = inCalc;
+
+		mLongTermLayout = inCalc->getLongTermLayout();
+
+		for (auto m: mMachines)
+			for (auto orderAndPage: inCalc->getLongTermLayout().pageAddOrder(m))
+				if (isDropped(orderAndPage.second))
+					mLongTermLayout.dropPage(orderAndPage.second);
+
+		mAllPagesSeenSinceLastLongTermUpdate2 = mAllPagesSeenSinceLastLongTermUpdate;
+		mAllPagesSeenSinceLastLongTermUpdate.clear();
+		}
+
+	ImmutableTreeMap<MachineId, int64_t> allocationForTask(hash_type dataTaskId)
+		{
+		return mRealizedDataTaskLayout[dataTaskId];
+		}
+
+	void allocateDataTask(hash_type dataTaskId, int64_t bytecount, MachineId preferredMachine)
+		{
+		//decide how many machines this will live on and where it will live
+
+		//if the dataset is small and the machine is not overwhelmed with data tasks:
+		if (mMachineSizes[preferredMachine] > bytecount * 4 && 
+				mMachineSizes[preferredMachine] > (mDesiredDataTaskBytes[preferredMachine] + bytecount / 2))
+			{
+			mDesiredDataTaskLayout[dataTaskId] = emptyTreeMap() + preferredMachine + bytecount;
+			mDesiredDataTaskBytes[preferredMachine] += bytecount;
+			}
+		else
+			{
+			//otherwise, spread it out to use as many machines as we can where each machine is holding
+			//no less than 1/10th of the data
+
+			Smallest<MachineId, int64_t> smallestMachine;
+			for (auto machineAndSize: mMachineSizes)
+				smallestMachine.observe(machineAndSize.first, machineAndSize.second);
+
+			int64_t smallestMachineBytes = *smallestMachine.smallestWeight();
+
+			int64_t minBytesPerMachine = smallestMachineBytes / 10.0;
+			int64_t maxMachines = ((bytecount - 1) / minBytesPerMachine + 1);
+			int64_t machinesToUse = std::min<int64_t>(maxMachines, mMachines.size());
+			int64_t bytesPerMachine = bytecount / machinesToUse;
+
+			//assign machines to hold the data - this is a crappy n^2 implementation
+			//but the n^2eness shouldn't matter because we have O(100's) of machines
+			ImmutableTreeMap<MachineId, int64_t> bytecount;
+			for (long k = 0; k < machinesToUse; k++)
+				{
+				Smallest<MachineId, int64_t> leastLoadedMachine;
+
+				for (auto machine: mMachines)
+					if (!bytecount.contains(machine))
+						leastLoadedMachine.observe(machine, mDesiredDataTaskBytes[machine]);
+
+				MachineId machineToUse = *leastLoadedMachine.smallest();
+
+				bytecount = bytecount + machineToUse + bytesPerMachine;
+				mDesiredDataTaskBytes[machineToUse] += bytesPerMachine;
+				}
+
+			mDesiredDataTaskLayout[dataTaskId] = bytecount;
+			}
+		}
+
+	void dropDataTask(hash_type dataTaskId)
+		{
+		for (auto machineAndBytecount: mDesiredDataTaskLayout[dataTaskId])
+			mDesiredDataTaskBytes[machineAndBytecount.first] -= machineAndBytecount.second;
+		mDesiredDataTaskLayout.erase(dataTaskId);
+
+		for (auto machineAndBytecount: mRealizedDataTaskLayout[dataTaskId])
+			mRealizedDataTaskBytes[machineAndBytecount.first] -= machineAndBytecount.second;
+
+		mRealizedDataTaskLayout.erase(dataTaskId);
+		}
+
+	bool isDropped(Fora::PageId page) const
+		{
+		return mAllDroppedPages.find(page) != mAllDroppedPages.end();
+		}
+
+	long totalNeighborhoodsRemoved() const
+		{
+		return mTotalNeighborhoodsRemoved;
+		}
+
+	int64_t totalUsableBytes() const
+		{
+		return mTotalMemoryAvailable;
+		}
+
+	//this computation no longer has any load
+	void dropComputationLoad(ComputationId computation)
+		{
+		mComputationsTouchedSinceLastUpdate.erase(computation);
+		
+		mPendingLongTermEvents.push_back(LongTermPageLayoutCalculation::Event::DropComputationLoad(computation));
+
+		mCurrentComputations.erase(computation);
+		}
+
+	int64_t bytesAddedToMachine(MachineId inMachine)
+		{
+		int64_t bytesAdded = 0;
+
+		for (auto page: targetLayout().neighborhoodsForMachine(inMachine).allPages())
+			if (!currentLayout().neighborhoodsForMachine(inMachine).containsPage(page))
+				bytesAdded += page.bytecount();
+
+		return bytesAdded;
+		}
+
+	//this set the current expected load for this computation
+	void setComputationLoad(
+				ComputationId computationId, 
+				Neighborhood neighborhood, 
+				double load
+				)
+		{
+		mComputationsTouchedSinceLastUpdate.insert(computationId);
+
+		mCurrentComputations[computationId] = neighborhood;
+
+		for (auto p: neighborhood.pages())
+			if (mAllDroppedPages.find(p) != mAllDroppedPages.end())
+				return;
+		
+		mPendingLongTermEvents.push_back(
+			LongTermPageLayoutCalculation::Event::SetComputationLoad(
+				computationId, 
+				neighborhood, 
+				load
+				)
+			);
+		}
+
+	//this level of load was actually observed
+	void observeActualLoad(
+				Neighborhood neighborhood,
+				double load
+				)
+		{
+		for (auto p: neighborhood.pages())
+			if (mAllDroppedPages.find(p) != mAllDroppedPages.end())
+				return;
+
+		mPendingLongTermEvents.push_back(
+			LongTermPageLayoutCalculation::Event::ObservedLoad(neighborhood, load)
+			);
+		}
+
+	void pageDroppedAcrossSystem(Fora::PageId page)
+		{
+		mPagesDroppedAcrossEntireSystem.insert(page);
+		mAllDroppedPages.insert(page);
+
+		mPendingLongTermEvents.push_back(
+			LongTermPageLayoutCalculation::Event::PageDroppedAcrossSystem(page)
+			);
+
+		mTargetLayout.dropPage(page);
+		mCurrentLayout.dropPage(page);
+		mLongTermLayout.dropPage(page);
+		}
+
+	void erasePageLoad(
+			const ComputationId& inComputation,
+			const MachineId& inMachine
+			)
+		{
+		if (mComputationLoadMachines.contains(inComputation, inMachine))
+			{
+			mComputationLoadMachines.drop(inComputation, inMachine);
+			mComputationLoads.erase(make_pair(inComputation, inMachine));
+			
+			updateCompLoad(inComputation);
+			}
+		}
+
+	ImmutableTreeSet<Fora::PageId> getDesiredMachineContents(const MachineId& inMachine)
+		{
+		return targetLayout().neighborhoodsForMachine(inMachine).pagesAsITS();
+		}
+
+	void setMachineMemory(const MachineId& inMachine, uint64_t inMemoryLimit)
+		{
+		return setMachineUsableMemory(inMachine, inMemoryLimit);
+		}
+
+	void addPageToMachine(const Fora::PageId& inPage, const MachineId& inMachine)
+		{
+		//create a little load if this is a brand-new page so that we don't dump it accidentally
+		if (!currentLayout().pageIsOnAnyMachine(inPage))
+			observeActualLoad(Neighborhood(inPage), 0.00001);
+
+		addPage(inMachine, inPage);
+		}
+
+	void addLinearPageLayout(const TypedFora::Abi::BigVectorPageLayout& layout)
+		{
+		ImmutableTreeVector<Fora::PageId> pages = layout.getPagesReferenced();
+
+		for (long k = 0; k+1 < pages.size(); k++)
+			observeActualLoad(Neighborhood() + pages[k] + pages[k+1], 0.01);
+		}
+
+	const NeighborhoodsOnMachines& currentLayout() const
+		{
+		return mCurrentLayout;
+		}
+
+	const NeighborhoodsOnMachines& targetLayout() const
+		{
+		return mTargetLayout;
+		}
+
+	/**************** current state of the system ***********************/
+	void addMachine(MachineId machine)
+		{
+		lassert(!hasMachine(machine));
+
+		mMachines.insert(machine);
+		mMachineSizes[machine] = 0;
+		}
+
+	ImmutableTreeSet<Fora::PageId> getPagesInDesiredLayout() const
+		{
+		ImmutableTreeSet<Fora::PageId> result;
+
+		for (auto machine: machines())
+			for (auto p: targetLayout().neighborhoodsForMachine(machine).pagesAsITS())
+				result = result + p;
+
+		return result;
+		}
+
+	void dropMachine(MachineId machine)
+		{
+		lassert(false);
+		}
+
+	bool hasMachine(MachineId machine) const
+		{
+		return mMachineSizes.find(machine) != mMachineSizes.end();
+		}
+
+	int64_t getMachineUsableMemory(MachineId machine) const
+		{
+		auto it = mMachineSizes.find(machine);
+
+		if (it == mMachineSizes.end())
+			return 0;
+
+		return it->second;
+		}
+
+	int64_t getMachineCoreCount(MachineId machine) const
+		{
+		auto it = mMachineCoreCount.find(machine);
+
+		if (it == mMachineCoreCount.end())
+			return 0;
+
+		return it->second;
+		}
+
+	void setMachineUsableMemory(MachineId machine, int64_t bytesAvailable)
+		{
+		setMachineUsableMemory(machine, bytesAvailable, getMachineCoreCount(machine));
+		}
+
+	void setMachineCoreCount(MachineId machine, int64_t cores)
+		{
+		setMachineUsableMemory(machine, getMachineUsableMemory(machine), cores);
+		}
+
+	void setMachineUsableMemory(MachineId machine, int64_t bytesAvailable, int64_t coreCount)
+		{
+		lassert(hasMachine(machine));
+
+		mTotalMemoryAvailable += bytesAvailable - mMachineSizes[machine];
+		mMachineSizes[machine] = bytesAvailable;
+		mMachineCoreCount[machine] = coreCount;
+		}
+
+	void setMemoryContents(const NeighborhoodsOnMachines& ramContents)
+		{
+		mCurrentLayout = ramContents;
+		}
+
+	void addPage(MachineId machine, Fora::PageId page)
+		{
+		if (isDropped(page))
+			return;
+		
+		if (mAllPagesEverSeen.find(page) == mAllPagesEverSeen.end())
+			{
+			mAllPagesEverSeen.insert(page);
+			mAllPagesSeenSinceLastLongTermUpdate.insert(page);
+			mTotalUniquePageBytes += page.bytecount();
+			}
+
+		mAddedSinceLastBalance += page.bytecount();
+		mTotalAdds += page.bytecount();
+		mCurrentLayout.addNeighborhood(machine, Neighborhood(page));
+		}
+
+	void pageDroppedAcrossEntireSystem(Fora::PageId page)
+		{
+		mPagesDroppedAcrossEntireSystem.insert(page);
+		pageDroppedAcrossSystem(page);
+		}
+
+	bool isInWorkingSet(const Fora::PageId& inPage) const
+		{
+		return targetLayout().pageIsOnAnyMachine(inPage);
+		}
+
+	void dropPageFromMachine(const Fora::PageId& inPage, const MachineId& inMachine)
+		{
+		removePage(inMachine, inPage);
+		}
+
+	void removePage(MachineId machine, Fora::PageId page)
+		{
+		if (isDropped(page))
+			return;
+
+		mDroppedSinceLastBalance += page.bytecount();
+		mCurrentLayout.dropNeighborhood(machine, Neighborhood(page));
+		}
+
+	bool noPagesAreDropped(Neighborhood n)
+		{
+		for (auto p: n.pages())
+			if (mAllDroppedPages.find(p) != mAllDroppedPages.end())
+				return false;
+
+		return true;
+		}
+
+	void rebalance()
+		{
+		map<MachineId, int64_t> machineSizes = mMachineSizes;
+
+		for (auto machineAndIndex: mDesiredDataTaskBytes)
+			machineSizes[machineAndIndex.first] -= machineAndIndex.second;
+
+
+		ShortTermPageLayoutCalculator layoutCalculator(
+				mMachines, 
+				machineSizes, 
+				mCurrentLayout, 
+				mLongTermLayout,
+				mTargetLayout,
+				mMaxRatioToAddAtOnce,
+				(mMemoryRatio + 1)/2
+				);
+
+		layoutCalculator.initialize();
+
+		auto priorTarget = mTargetLayout;
+
+		for (auto page: mAllPagesSeenSinceLastLongTermUpdate)
+			layoutCalculator.ensurePageIsMaintainedOnSystem(page);
+
+		for (auto page: mAllPagesSeenSinceLastLongTermUpdate2)
+			layoutCalculator.ensurePageIsMaintainedOnSystem(page);
+
+		std::set<Fora::PageId> blockingNeighborhoodPages;
+
+		//we need to make sure that all neighborhoods added since we last got a
+		//long-term update get instantiated, even if we do so in an inefficient way.
+		for (auto computationAndNeighborhood: mCurrentComputations)
+			{
+			auto toDo = computationAndNeighborhood.second;
+			if (noPagesAreDropped(toDo))
+				{
+				for (auto p: toDo.pages())
+					layoutCalculator.ensurePageIsMaintainedOnSystem(p);
+				
+				layoutCalculator.tryToRealize(toDo);
+
+				for (auto p: toDo.pages())
+					blockingNeighborhoodPages.insert(p);
+				}
+			}
+
+		long totalTemporaryBytes = 0;
+		for (auto p: blockingNeighborhoodPages)
+			totalTemporaryBytes += p.bytecount();
+
+		layoutCalculator.update();
+		
+		mTotalMoves += impliedPageBytesToMove(mTargetLayout, priorTarget);
+
+		LOGGER_INFO_T log = LOGGER_INFO;
+
+		log << "Layout" 
+			<< std::setw(6) << std::setprecision(2) << std::fixed
+			<< ". add/drop=" << std::setw(6) << mAddedSinceLastBalance / 1024 / 1024.0 / 1024.0 
+			<< "/" << std::setw(6) << mDroppedSinceLastBalance / 1024 / 1024.0 / 1024.0 << " GB"
+			<< ". totalAdds=" << std::setw(6) << mTotalAdds / 1024 / 1024.0 / 1024.0 << " GB"
+			<< ". totalMoves=" << std::setw(6) << mTotalMoves / 1024 / 1024.0 / 1024.0 << " GB"
+			<< ". allPagesEver=" << std::setw(6) << mTotalUniquePageBytes / 1024 / 1024.0 / 1024.0 << " GB"
+			<< ". bandwidth=" << std::setw(6) << mAddedSinceLastBalance / 1024 / 1024.0 / (curClock() - mTimeOfLastBalance) << " MB/sec"
+			<< ". dCurrent=" << std::setw(6) << impliedPageBytesToMove(mTargetLayout, mCurrentLayout) / 1024 / 1024.0 / 1024.0 << " GB"
+			<< ". dLongTerm=" << std::setw(6) << impliedPageBytesToMove(mLongTermLayout, mCurrentLayout) / 1024 / 1024.0 / 1024.0 << " GB"
+			<< ". shortTermPages=" << std::setw(6) << totalTemporaryBytes / 1024 / 1024.0 / 1024.0 << " GB"
+			;
+
+		for (auto m: mMachines)
+			{
+			log << "\n\t" << m << " -- "
+				<< mCurrentLayout.bytesOnMachine(m) / 1024 / 1024.0 << " MB cur. "
+				<< mTargetLayout.bytesOnMachine(m) / 1024 / 1024.0 << " MB target. "
+				;
+			}
+
+		mTimeOfLastBalance = curClock();
+		mAddedSinceLastBalance = 0;
+		mDroppedSinceLastBalance = 0;
+		mComputationsTouchedSinceLastUpdate.clear();
+
+		//for every task, see if we can realize it now
+		for (auto taskAndDesired: mDesiredDataTaskLayout)
+			tryToRealizeTask(taskAndDesired.first);
+		}
+
+	void tryToRealizeTask(hash_type taskId)
+		{
+		if (mDesiredDataTaskLayout[taskId] == mRealizedDataTaskLayout[taskId])
+			return;
+
+		if (canRealizeTask(taskId))
+			{
+			mRealizedDataTaskLayout[taskId] = mDesiredDataTaskLayout[taskId];
+			
+			for (auto machineAndSize: mRealizedDataTaskLayout[taskId])
+				mRealizedDataTaskBytes[machineAndSize.first] += machineAndSize.second;
+			}
+		}
+
+	bool canRealizeTask(hash_type taskId)
+		{
+		for (auto machineAndSize: mDesiredDataTaskLayout[taskId])
+			{
+			MachineId m = machineAndSize.first;
+
+			int64_t bytesOnMachineNow = 
+				std::min<int64_t>(
+					mCurrentLayout.bytesOnMachine(m),
+					mTargetLayout.bytesOnMachine(m)
+					);
+
+			if (bytesOnMachineNow + mRealizedDataTaskBytes[m] + machineAndSize.second 
+					> mMachineSizes[m])
+				return false;
+			}
+
+		return true;
+		}
+
+	int64_t impliedPageBytesToMove(const NeighborhoodsOnMachines& target, const NeighborhoodsOnMachines& cur) const
+		{
+		int64_t toAdd = 0;
+
+		for (auto machine: mMachines)
+			toAdd += impliedPageBytesToMove(target, cur, machine);
+
+		return toAdd;
+		}
+
+	bool hasPageBeenDroppedAcrossEntireSystem(Fora::PageId page)
+		{
+		return mPagesDroppedAcrossEntireSystem.find(page) != mPagesDroppedAcrossEntireSystem.end();
+		}
+
+	int64_t impliedPageBytesToMove(const NeighborhoodsOnMachines& target, const NeighborhoodsOnMachines& cur, MachineId machine) const
+		{
+		int64_t toAdd = 0;
+
+		for (auto page: target.neighborhoodsForMachine(machine).allPages())
+			if (!cur.neighborhoodsForMachine(machine).pageVec().contains(page))
+				toAdd += page.bytecount();
+
+		return toAdd;
+		}
+
+	const std::set<MachineId>& machines() const
+		{
+		return mMachines;
+		}
+
+	void dropLinearPageLayout(const Fora::BigVectorId& layout)
+		{
+		}
+
+	void recordObservedLoad(const ImmutableTreeVector<pair<Neighborhood, double> >& loads)
+		{
+		for (auto loadPair: loads)
+			recordObservedLoad(loadPair.first, loadPair.second);
+		}
+
+	void recordObservedLoad(const Neighborhood& n, double load)
+		{
+		if (n.bytecount())
+			observeActualLoad(n, load);
+		}
+
+	void setPageLoad(
+			const ComputationId& inComputation, 
+			const MachineId& inMachine,
+			const pair<Neighborhood, double> &neighborhood
+			)
+		{
+		if (!mComputationLoadMachines.contains(inComputation, inMachine))
+			mComputationLoadMachines.insert(inComputation, inMachine);
+		mComputationLoads[make_pair(inComputation, inMachine)] = neighborhood;
+
+		updateCompLoad(inComputation);
+		}
+
+	void updateCompLoad(ComputationId comp)
+		{
+		Neighborhood n;
+		double load = 0.0;
+
+		for (auto machine: mComputationLoadMachines.getValues(comp))
+			{
+			auto curLoad = mComputationLoads[make_pair(comp, machine)];
+
+			if (curLoad.first.bytecount() > n.bytecount())
+				{
+				n = curLoad.first;
+				load = curLoad.second;
+				}
+			}
+
+		if (n.bytecount())
+			setComputationLoad(
+				comp, 
+				n, 
+				load
+				);
+		else
+			dropComputationLoad(comp);
+		}
+
+private:
+	PolymorphicSharedPtr<LongTermPageLayoutCalculation> mLongTermCalculation;
+
+	std::vector<LongTermPageLayoutCalculation::Event> mPendingLongTermEvents;
+
+	std::set<ComputationId> mComputationsTouchedSinceLastUpdate;
+
+	map<pair<ComputationId, MachineId>, pair<Neighborhood, double> > mComputationLoads;
+
+	TwoWaySetMap<ComputationId, MachineId> mComputationLoadMachines;
+
+	std::map<hash_type, ImmutableTreeMap<MachineId, int64_t> > mRealizedDataTaskLayout;
+
+	std::map<hash_type, ImmutableTreeMap<MachineId, int64_t> > mDesiredDataTaskLayout;
+
+	std::map<MachineId, int64_t> mRealizedDataTaskBytes;
+
+	std::map<MachineId, int64_t> mDesiredDataTaskBytes;
+	
+	NeighborhoodsOnMachines mCurrentLayout;
+
+	NeighborhoodsOnMachines mTargetLayout;
+
+	NeighborhoodsOnMachines mLongTermLayout;
+
+	int64_t mAddedSinceLastBalance;
+
+	double mTimeOfLastBalance;
+
+	int64_t mTotalAdds;
+
+	int64_t mTotalMoves;
+
+	int64_t mTotalUniquePageBytes;
+
+	int64_t mDroppedSinceLastBalance;
+
+	map<MachineId, int64_t> mMachineSizes;
+
+	map<MachineId, int64_t> mMachineCoreCount;
+
+	set<MachineId> mMachines;
+
+	std::map<ComputationId, Neighborhood> mCurrentComputations;
+
+	std::set<Fora::PageId> mAllDroppedPages;
+
+	std::set<Fora::PageId> mAllPagesEverSeen;
+
+	std::set<Fora::PageId> mAllPagesSeenSinceLastLongTermUpdate;
+
+	std::set<Fora::PageId> mAllPagesSeenSinceLastLongTermUpdate2;
+
+	std::set<Fora::PageId> mPagesDroppedAcrossEntireSystem;
+	
+	int64_t mTotalMemoryAvailable;
+
+	double mMemoryRatio;
+
+	double mMaxRatioToAddAtOnce;
+
+	double mLargestBlockAsFractionOfMachineMemory;
+
+	long mTotalNeighborhoodsRemoved;
+};
+
+}
+}

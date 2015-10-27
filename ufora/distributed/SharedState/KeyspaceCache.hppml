@@ -1,0 +1,100 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#ifndef KeyspaceCache_hppml_
+#define KeyspaceCache_hppml_
+
+#include <fstream>
+#include <stdio.h>
+
+#include "Types.hppml"
+#include "KeyState.hppml"
+#include "Storage/Storage.hppml"
+
+#include "../../core/cppml/CPPMLVisit.hppml"
+
+
+namespace SharedState {
+
+/*
+This object is responsible for the persistence and access to information about a given Keyrange
+For each new event it writes it to disk. When client code needs to access this information
+it loads it into memory. Given a new promise point (global minimum id) it will discard
+redundant data by compressing it.
+*/
+
+class KeyspaceCache {
+public:
+		KeyspaceCache(KeyRange inKeyRange, PolymorphicSharedPtr<KeyspaceStorage> inStorage);
+		
+		void newMinimumId(EventIDType minId);
+
+		void addEvent(const PartialEvent& event);
+
+		template<class visitor_type>
+		void visitRangeContents(const KeyRange& range, const visitor_type& inVisitor)
+			{
+			if(!mIsLoaded)
+				loadFromDisk();
+
+			auto it = startIterator(range.left());
+			auto it_end = endIterator(range.right());
+
+			for (; it != it_end; ++it)
+				for (auto it2 = it->second.begin(), it2_end = it->second.end(); it2 != it2_end; ++it2)
+					inVisitor(it2->first, it2->second);
+			}
+
+		uint64_t totalLoadedKeys();
+
+		void flushPendingWrites();
+
+private:
+		map<KeyNameType, map<Key, KeyState> >::iterator 
+		startIterator(const Nullable<KeyBound>& inKeyBound);
+
+		map<KeyNameType, map<Key, KeyState> >::iterator 	
+		endIterator(const Nullable<KeyBound>& inKeyBound);
+
+		
+		void loadEventInMemory(const PartialEvent& event);
+
+		void loadFromDisk(void);
+
+		void compactMemory(EventIDType id);
+
+		const KeyType& getKeyType() const;
+
+		// this object should never be copied...
+		KeyspaceCache(const KeyspaceCache& other);
+		const KeyspaceCache& operator=(const KeyspaceCache& other);
+
+		bool mIsLoaded;
+		
+		bool mDisablePersist;
+		
+		map<KeyNameType, map<Key, KeyState> > mKeyStates;
+
+		PolymorphicSharedPtr<KeyspaceStorage> mDataStore;
+
+		Keyspace mKeyspace;
+
+		KeyRange mKeyRange;
+};
+
+}
+
+#endif
+

@@ -1,0 +1,150 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <set>
+#include "AddDropSystemState.hppml"
+#include "AddDropPersistedState.hppml"
+#include "AddDropChanges.hppml"
+#include "AddDropFinalState.hppml"
+#include "AddDropPageAndBigvecGraph.hppml"
+
+/*******************
+
+AddDropSystemCalculations
+
+Models the state of the entire system at add/drop time.
+
+Recovery proceeds in phases:
+
+* We determine a list of all objects present in the system (bigvecs, pages, and computations)
+
+* We determine the total set of computation roots that are present. This determines the 
+	"active root set". It's possible we completely lose a root, in which case CumulusClient needs
+	to resubmit the data. Note that computation that produce roots can _always_ resubmit.
+
+* we determine which objects may need to be repaired. We do this by explicitly checking each
+	computation to see if it's missing depependencies, each bigvec to see if it's missing pages,
+	and each page to see if its missing bigvecs. We then propagate this up the graph. Each such
+	object is marked "MissingDependencies". We are specifically interested in "MissingDependencies" objects
+	that are also roots.
+
+* the outside system compares all the MissingDependencies bigvecs that might be recoverable and
+	marks them as "Recoverable". Recoverable objects can definitely be rebuilt from the
+	persistent cache, but we may not need them. At the end of this phase, we have a complete
+	model for all bigvecs and pages that can be loaded from the persistent cache.
+
+	note that if a page is not present in the system, and it also cannot be loaded from the persistent
+	cache, then we won't know which bigvecs it holds.
+
+* We mark all computations, bigvecs, and pages as "Valid" if they are either Recoverable or
+	not MissingDependencies. At this point we are not paying attention to persisted computations,
+	we are merely trying to determine which subtrees of the computations that are currently in 
+	memory can be kept.
+* For each root with MissingDependencies, we load a checkpoint. We then walk down from the top of the
+	root in the checkpoint, preferring to keep any Valid computations. We mark computations we're going to
+	keep as "Kept" and we mark persisted computations we're going to load as "Load"
+* We then compute reachability. An object is reachable if it can be reached from a root.
+* We remove unreachable computations.
+* We assign persisted computations to machines, keeping the total memory usage in mind (so that they
+	don't accidentally load too much stuff). We will ensure that total space used by computations
+	will fit, and machines are expected to drop unused pages (and move pinned pages to disk)
+	in order to fit everything if necessary.
+
+The final state of the model contains:
+	* list of root computations and associated priorities
+	* definitions for all relevant bigvecs
+	* bigvecs owned by all pages (along with definitions)
+	* list of synthetic pages and their definitions
+	* assignments of pages to all machines where we want them loaded.
+		this list can cause pages to drop, but not to be added
+	* list of computations that are on each machine, along with a list of
+		computations to load from each checkpoint.
+
+********************/
+
+namespace Cumulus {
+
+@type AddDropSystemCalculations = 
+	std::set<ComputationId> allComputations,
+	std::set<hash_type> allBigvecs,
+	std::set<Fora::PageId> allPages,
+	std::set<ComputationId> rootComputations,
+	std::set<ComputationId> computationsMissingDependencies,
+	std::set<ComputationId> rootComputationsMissingDependencies,
+	std::set<Fora::PageId> pagesMissingDependencies,
+	std::set<hash_type> bigvecsMissingDependencies,
+	std::set<hash_type> bigvecsRecoverable,
+	std::set<ComputationId> computationsValid,
+	std::set<ComputationId> computationsKept,
+	std::set<ComputationId> persistedComputationsLoaded,
+	std::set<hash_type> bigvecsReachable,
+	std::set<Fora::PageId> pagesReachable,
+	MapWithIndex<ComputationId, MachineId> persistedComputationsToLoad,
+	bool requiredCompleteWipeDueToLackOfSpace,
+	AddDropPageAndBigvecGraph pageAndBigvecGraph
+{
+public:
+	void computeMissingDependencies(const AddDropSystemState& state);
+
+	void computeRecoverableAndValidComputations(
+			const AddDropSystemState& state, 
+			const AddDropPersistedState& persistedState
+			);
+
+	AddDropChanges addDropChangesFor(
+						MachineId machineId,
+						const AddDropSystemState& state, 
+						const AddDropPersistedState& persistedState
+						);
+	
+	AddDropFinalState finalCheckpointState(
+						const AddDropSystemState& state, 
+						const AddDropPersistedState& persistedState
+						);
+private:
+	void computePageBigvecGraph(
+						const AddDropSystemState& state,
+						const AddDropPersistedState& persistedState
+						);
+
+	void validateComputations(
+						const AddDropSystemState& state, 
+						const AddDropPersistedState& persistedState
+						);
+
+	void computeRoots(const AddDropSystemState& state);
+
+	void computeValidComputations(const AddDropSystemState& state);
+
+	void chooseKeptComputationsBelow(
+			ComputationId computation,
+			const AddDropSystemState& state, 
+			const AddDropPersistedState& persistedState
+			);
+
+	void computeReachableBigvecsAndPages(
+			const AddDropSystemState& state, 
+			const AddDropPersistedState& persistedState
+			);
+
+	void allocatedPersistedComputationsToMachines(
+			const AddDropSystemState& state, 
+			const AddDropPersistedState& persistedState
+			);
+};
+
+}

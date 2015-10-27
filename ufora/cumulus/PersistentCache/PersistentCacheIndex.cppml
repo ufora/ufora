@@ -1,0 +1,1654 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "PersistentCacheIndex.hppml"
+#include <boost/thread.hpp>
+#include "../../core/cppml/CPPMLToJson.hppml"
+#include "../../core/PolymorphicSharedPtrBinder.hpp"
+#include "../../core/EventBroadcaster.hpp"
+#include "../../distributed/SharedState/EventBroadcasterAdapter.hppml"
+#include "../../core/math/GraphWithCalculatedProperty.hppml"
+
+using Ufora::Json;
+
+namespace Cumulus {
+namespace PersistentCache {
+
+@type ReachabilityGraphEntry = 
+	-| Script of std::string
+	-| Computation of hash_type computationHash
+	-| Checkpoint of CheckpointRequest request
+	;
+
+macro_defineCppmlComparisonOperators(ReachabilityGraphEntry);
+
+@type ValueEntry = 
+	-| Valid of 
+			ImmutableTreeSet<hash_type> dependencies, 
+			uint64_t bytecount,
+			hash_type dataHash,
+			double lastAccessTimestamp,
+			bool isFinished, //only meaningful for checkpoints
+			double totalSecondsOfCompute,
+			ImmutableTreeSet<hash_type> computationsReferenced
+	-| Configuration of 
+			int64_t maxTotalCacheBytes
+	-| Invalid of uint64_t bytecount
+{
+public:
+	uint64_t bytecount() const;
+	bool isFinished() const;
+	ImmutableTreeSet<hash_type> dependencies() const;
+	ImmutableTreeSet<hash_type> computationsReferenced() const;
+	double totalSecondsOfCompute() const;
+	hash_type dataHash() const;
+
+	ValueEntry withAccessTimestamp(double timestamp) const;
+
+	static ValueEntry Valid(
+					ImmutableTreeSet<hash_type> dependencies,
+					uint64_t bytecount,
+					hash_type dataHash,
+					double lastAccessTimestamp
+					)
+		{
+		return Valid(dependencies, bytecount, dataHash, lastAccessTimestamp, false, 0.0, emptyTreeSet());
+		}
+
+};
+
+inline ValueEntry ValueEntry::withAccessTimestamp(double timestamp) const
+	{
+	@match ValueEntry(*this)
+		-| Valid(deps, bytes, dataHash, _, finished, seconds, hashes) ->> {
+			return ValueEntry::Valid(deps, bytes, dataHash, timestamp, finished, seconds, hashes);
+			}
+		-| Invalid() ->> {
+			return *this;
+			}
+	}
+
+inline ImmutableTreeSet<hash_type> ValueEntry::dependencies() const
+	{
+	@match ValueEntry(*this)
+		-| Valid(d, _) ->> { return d; }
+		-| Invalid() ->> { return emptyTreeSet(); }
+	}
+
+inline ImmutableTreeSet<hash_type> ValueEntry::computationsReferenced() const
+	{
+	if (isValid())
+		return getValid().computationsReferenced();
+	return emptyTreeSet();
+	}
+
+inline uint64_t ValueEntry::bytecount() const
+	{
+	@match ValueEntry(*this)
+		-| Valid(_, b) ->> { return b; }
+		-| Invalid(b) ->> { return b; }
+	}
+
+inline hash_type ValueEntry::dataHash() const
+	{
+	@match ValueEntry(*this)
+		-| Valid(_, _, b) ->> { return b; }
+		-| Invalid() ->> { return hash_type(); }
+	}
+
+inline bool ValueEntry::isFinished() const
+	{
+	@match ValueEntry(*this)
+		-| Valid(_, _, _, _, b) ->> { return b; }
+		-| Invalid() ->> { return false; }
+	}
+
+double ValueEntry::totalSecondsOfCompute() const
+	{
+	@match ValueEntry(*this)
+		-| Valid(_, _, _, _, _, s) ->> { return s; }
+		-| Invalid() ->> { return 0.0; }
+	}
+
+macro_defineCppmlComparisonOperators(ValueEntry);
+
+const static double kReconnectSharedStateTimeout = 10.0;
+
+const std::string PersistentCacheIndex::schemaVersion = "1.0.2";
+
+class PersistentCacheIndexImpl : public PolymorphicSharedPtrBase<PersistentCacheIndexImpl> {
+public:
+	PersistentCacheIndexImpl(
+				std::string inUserName,
+				PolymorphicSharedPtr<SharedState::View> inView,
+				PolymorphicSharedPtr<CallbackScheduler> inScheduler
+				) :
+			mUserName(inUserName),
+			mView(inView),
+			mListener(new SharedState::EventBroadcasterAdapter(inScheduler)),
+			mTotalBytesInCache(0),
+			mTimesReconnected(0),
+			mOnObjectChanged(inScheduler),
+			mIsReachableByScriptGraph(
+				[](const std::set<ReachabilityGraphEntry>& cycle) { for (auto e: cycle) return e.isScript(); },
+				[](bool l, bool r) { return l || r; }
+				),
+			mBytecountOfReachableGraph(
+				[&](const std::set<PersistentCacheKey>& cycle) { 
+					ImmutableTreeMap<PersistentCacheKey, int64_t> res;
+					for (auto k: cycle)
+						res = res + k + (int64_t)this->objectBytecount(k);
+					return res;
+					},
+				[](ImmutableTreeMap<PersistentCacheKey, int64_t> l, ImmutableTreeMap<PersistentCacheKey, int64_t> r) { return l+r; }
+				)
+		{
+		mView->addListener(mListener);
+		}
+
+	void polymorphicSharedPtrBaseInitialized()
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		mListener->onChanged().subscribe(
+			polymorphicSharedWeakPtrFromThis(),
+			&PersistentCacheIndexImpl::onViewChanged
+			);
+
+		mView->subscribe(
+			SharedState::KeyRange(keyspace_(), 0, null(), null()),
+			true
+			);
+
+		updateFromView_();
+		}
+
+	bool hasConnectedView()
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		return mView->connected();
+		}
+
+	long timesViewReconnected()
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		return mTimesReconnected;
+		}
+
+	void resetView(PolymorphicSharedPtr<SharedState::View> inView)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		mTimesReconnected++;
+
+		mView = inView;
+		mView->addListener(mListener);
+
+		mView->subscribe(
+			SharedState::KeyRange(keyspace_(), 0, null(), null()),
+			true
+			);
+
+		map<PersistentCacheKey, ValueEntry> kvStateAsWeKnowIt = mKvState;
+
+		clearAllState_();
+		updateFromView_();
+
+		//now go through and ensure that the kvState matches what's on the store
+		for (auto kv: kvStateAsWeKnowIt)
+			{
+			auto it = mKvState.find(kv.first);
+			if (it == mKvState.end() || cppmlCmp(it->second, kv.second) != 0)
+				setKeyValue_(kv.first, null() << kv.second);
+			}
+
+		std::set<PersistentCacheKey> toDrop;
+
+		for (auto kv: mKvState)
+			if (kvStateAsWeKnowIt.find(kv.first) == kvStateAsWeKnowIt.end())
+				toDrop.insert(kv.first);
+
+		for (auto k: toDrop)
+			setKeyValue_(k, null());
+
+		lassert(mKvState.size() == kvStateAsWeKnowIt.size());
+		}
+
+	void onViewChanged(bool)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		updateFromView_();
+		}
+
+	void updateFromView_()
+		{
+		//loop over all changed keys and incorporate them
+		std::set<SharedState::Key> keys;
+
+		mListener->getChanged(keys);
+
+		if (keys.size())
+			{
+			mView->begin();
+
+			for (auto key: keys)
+				{
+				Nullable<SharedState::ValueType> value = mView->getValue(key);
+
+				if (value)
+					if (!handleKeyUpdateFromServer_(key.keyspace().name(), key[0], value->value()))
+						LOG_WARN << "Invalid Key: " << prettyPrintString(key[0]);
+				}
+
+			mView->end();
+			}
+		}
+
+
+	bool computationIsReachableFromAnyScript(ComputationId computation)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		mIsReachableByScriptGraph.update();
+
+		Nullable<bool> isReachable = 
+			mIsReachableByScriptGraph.propertyFor(
+				ReachabilityGraphEntry::Computation(*computation.rootComputation().computationHash())
+				);
+
+		if (isReachable)
+			return *isReachable;
+
+		return false;
+		}
+
+	bool pageExists(hash_type pageHash)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		return mPages.find(pageHash) != mPages.end();
+		}
+
+	bool bigvecExists(hash_type bigvecHash)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		return mBigvecs.find(bigvecHash) != mBigvecs.end();
+		}
+
+	bool checkpointFileExists(CheckpointRequest c, hash_type filename)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		return mCheckpointFiles.find(make_pair(c,filename)) != mCheckpointFiles.end();
+		}
+
+	bool checkpointExists(CheckpointRequest c)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		return mCheckpoints.find(c) != mCheckpoints.end();
+		}
+
+	ImmutableTreeSet<hash_type> checkpointComputationsReferenced(CheckpointRequest checkpoint)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		auto it = mCheckpoints.find(checkpoint);
+
+		if (it == mCheckpoints.end())
+			return emptyTreeSet();
+
+		return it->second.computationsReferenced();
+		}
+
+	double checkpointSecondsOfCompute(CheckpointRequest checkpoint)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+		
+		auto it = mCheckpoints.find(checkpoint);
+
+		if (it == mCheckpoints.end())
+			return 0;
+
+		return it->second.totalSecondsOfCompute();
+		}
+
+	ImmutableTreeSet<PersistentCacheKey> objectsDependedOn(PersistentCacheKey key)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		return ImmutableTreeSet<PersistentCacheKey>(mObjectDependencies.getValues(key));
+		}
+
+	ImmutableTreeSet<PersistentCacheKey> objectsDependingOn(PersistentCacheKey key)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		return ImmutableTreeSet<PersistentCacheKey>(mObjectDependencies.getKeys(key));
+		}
+
+	ImmutableTreeSet<CheckpointRequest>  checkpointsForComputation(ComputationId comp)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		return ImmutableTreeSet<CheckpointRequest>(mComputationCheckpoints.getValues(comp.guid()));
+		}
+
+	ImmutableTreeSet<hash_type> pageBigvecReferences(hash_type pageHash)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		auto it = mPages.find(pageHash);
+
+		if (it == mPages.end())
+			return ImmutableTreeSet<hash_type>();
+
+		return it->second.dependencies();
+		}
+
+	ImmutableTreeSet<hash_type> bigvecPageReferences(hash_type bigvecHash)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		auto it = mBigvecs.find(bigvecHash);
+
+		if (it == mBigvecs.end())
+			return ImmutableTreeSet<hash_type>();
+
+		return it->second.dependencies();
+		}
+
+	ImmutableTreeSet<hash_type> checkpointFileBigvecsReferenced(
+												CheckpointRequest checkpoint,
+												hash_type filename
+												)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		auto it = mCheckpointFiles.find(make_pair(checkpoint, filename));
+
+		if (it == mCheckpointFiles.end())
+			return ImmutableTreeSet<hash_type>();
+
+		return it->second.dependencies();
+		}
+
+	ImmutableTreeSet<hash_type> checkpointFilesReferenced(
+												CheckpointRequest checkpoint
+												)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		auto it = mCheckpoints.find(checkpoint);
+
+		if (it == mCheckpoints.end())
+			return ImmutableTreeSet<hash_type>();
+
+		return it->second.dependencies();
+		}
+
+	int32_t objectBytecount(PersistentCacheKey key)
+		{
+		@match PersistentCacheKey(key)
+			-| Page(p) ->> { return pageBytecount(p); }
+			-| BigvecDefinition(b) ->> { return bigvecBytecount(b); }
+			-| CheckpointFile(c,f) ->> { return checkpointFileBytecount(c,f); }
+			-| CheckpointSummary(c) ->> { return checkpointBytecount(c); }
+			-| _ ->> { return 0; }
+			;
+		}
+
+	uint32_t pageBytecount(hash_type pageHash)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		auto it = mPages.find(pageHash);
+
+		if (it == mPages.end())
+			return 0;
+
+		return it->second.bytecount();
+		}
+
+	uint32_t bigvecBytecount(hash_type bigvecHash)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		auto it = mBigvecs.find(bigvecHash);
+
+		if (it == mBigvecs.end())
+			return 0;
+
+		return it->second.bytecount();
+		}
+
+	uint32_t checkpointBytecount(CheckpointRequest checkpoint)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		auto it = mCheckpoints.find(checkpoint);
+
+		if (it == mCheckpoints.end())
+			return 0;
+
+		return it->second.bytecount();
+		}
+
+	uint32_t checkpointFileBytecount(CheckpointRequest checkpoint, hash_type filename)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		auto it = mCheckpointFiles.find(make_pair(checkpoint, filename));
+
+		if (it == mCheckpointFiles.end())
+			return 0;
+
+		return it->second.bytecount();
+		}
+
+	hash_type pageDataHash(hash_type pageHash)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		auto it = mPages.find(pageHash);
+
+		if (it == mPages.end())
+			return 0;
+
+		return it->second.dataHash();
+		}
+
+	hash_type bigvecDataHash(hash_type bigvecHash)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		auto it = mBigvecs.find(bigvecHash);
+
+		if (it == mBigvecs.end())
+			return 0;
+
+		return it->second.dataHash();
+		}
+
+	hash_type checkpointDataHash(CheckpointRequest checkpoint)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		auto it = mCheckpoints.find(checkpoint);
+
+		if (it == mCheckpoints.end())
+			return 0;
+
+		return it->second.dataHash();
+		}
+
+	hash_type checkpointFileDataHash(CheckpointRequest checkpoint, hash_type filename)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		auto it = mCheckpointFiles.find(make_pair(checkpoint, filename));
+
+		if (it == mCheckpointFiles.end())
+			return 0;
+
+		return it->second.dataHash();
+		}
+
+	void setKeyValue(PersistentCacheKey key, ValueEntry value)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+		setKeyValue_(key, null() << value);
+		}
+
+	void setKeyValue(PersistentCacheKey key, Nullable<ValueEntry> value)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+		setKeyValue_(key, value);
+		}
+
+	void setKeyToNull(PersistentCacheKey key)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+		setKeyValue_(key, null());
+		}
+
+	void touchPage(hash_type pageHash)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		if (mPages.find(pageHash) == mPages.end())
+			return;
+
+		setKeyValue_(
+			PersistentCacheKey::Page(pageHash),
+			null() << mPages[pageHash].withAccessTimestamp(curClock())
+			);
+		}
+
+	void touchBigvec(hash_type bigvecHash)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		if (mBigvecs.find(bigvecHash) == mBigvecs.end())
+			return;
+
+		setKeyValue_(
+			PersistentCacheKey::BigvecDefinition(bigvecHash),
+			null() << mBigvecs[bigvecHash].withAccessTimestamp(curClock())
+			);
+		}
+
+	void touchCheckpoint(CheckpointRequest checkpoint)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		if (mCheckpoints.find(checkpoint) == mCheckpoints.end())
+			return;
+
+		setKeyValue_(
+			PersistentCacheKey::CheckpointSummary(checkpoint),
+			null() << mCheckpoints[checkpoint].withAccessTimestamp(curClock())
+			);
+		}
+
+	void addPage(
+				hash_type pageHash,
+				ImmutableTreeSet<hash_type> bigvecsReferenced,
+				uint32_t bytecount,
+				hash_type dataHash
+				)
+		{
+		setKeyValue(
+			PersistentCacheKey::Page(pageHash),
+			ValueEntry::Valid(bigvecsReferenced, bytecount, dataHash, curClock())
+			);
+		}
+
+	void addBigvec(
+				hash_type bigvecHash,
+				ImmutableTreeSet<hash_type> pagesReferenced,
+				uint32_t bytecount,
+				hash_type dataHash
+				)
+		{
+		setKeyValue(
+			PersistentCacheKey::BigvecDefinition(bigvecHash),
+			ValueEntry::Valid(pagesReferenced, bytecount, dataHash, curClock())
+			);
+		}
+
+	void addCheckpointFile(
+				CheckpointRequest checkpoint,
+				hash_type fileHash,
+				ImmutableTreeSet<hash_type> bigvecsReferenced,
+				uint32_t bytecount,
+				hash_type dataHash
+				)
+		{
+		setKeyValue(
+			PersistentCacheKey::CheckpointFile(checkpoint, fileHash),
+			ValueEntry::Valid(bigvecsReferenced, bytecount, dataHash, curClock())
+			);
+		}
+
+	void addCheckpoint(
+				CheckpointRequest checkpoint,
+				ImmutableTreeSet<hash_type> filesReferenced,
+				uint32_t bytecount,
+				hash_type dataHash,
+				bool isFinished,
+				double totalSecondsOfCompute,
+				ImmutableTreeSet<hash_type> computationsReferenced
+				)
+		{
+		setKeyValue(
+			PersistentCacheKey::CheckpointSummary(checkpoint),
+			ValueEntry::Valid(
+				filesReferenced,
+				bytecount,
+				dataHash,
+				curClock(), 
+				isFinished, 
+				totalSecondsOfCompute,
+				computationsReferenced
+				)
+			);
+		}
+
+	ImmutableTreeSet<hash_type> allCheckpointedComputationGuids()
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		ImmutableTreeSet<hash_type> res;
+
+		for (auto& guidAndCheckpoints: mComputationCheckpoints.getKeysToValues())
+			res = res + guidAndCheckpoints.first;
+
+		return res;
+		}
+
+	ImmutableTreeSet<ComputationId> allCheckpointedComputations()
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		ImmutableTreeSet<ComputationId> res;
+
+		for (auto checkpointAndValue: mCheckpoints)
+			res = res + checkpointAndValue.first.rootComputation();
+
+		return res;
+		}
+
+	uint64_t totalBytesInCache() const
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		return mTotalBytesInCache;
+		}
+
+	void markPageInvalid(hash_type pageHash)
+		{
+		setKeyValue(PersistentCacheKey::Page(pageHash), ValueEntry::Invalid(mPages[pageHash].bytecount()));
+		}
+
+	void markBigvecInvalid(hash_type bv)
+		{
+		setKeyValue(PersistentCacheKey::BigvecDefinition(bv), ValueEntry::Invalid(mBigvecs[bv].bytecount()));
+		}
+
+	void markCheckpointInvalid(CheckpointRequest checkpoint)
+		{
+		setKeyValue(PersistentCacheKey::CheckpointSummary(checkpoint), ValueEntry::Invalid(mCheckpoints[checkpoint].bytecount()));
+		}
+
+	void markCheckpointFileInvalid(CheckpointRequest checkpoint, hash_type filename)
+		{
+		//mark the checkpoint invalid as well as the file. This ensures that if we can't find a file but somehow
+		//lost the dependency of the checkpoint on that file that we still invalidate the checkpoint.
+		markCheckpointInvalid(checkpoint);
+
+		setKeyValue(
+			PersistentCacheKey::CheckpointFile(checkpoint, filename),
+			ValueEntry::Invalid(
+				mCheckpointFiles[make_pair(checkpoint, filename)].bytecount()
+				)
+			);
+		}
+
+	void dropPage(hash_type pageHash)
+		{
+		setKeyToNull(PersistentCacheKey::Page(pageHash));
+		}
+
+	void dropBigvec(hash_type bigvec)
+		{
+		setKeyToNull(PersistentCacheKey::BigvecDefinition(bigvec));
+		}
+
+	void dropCheckpoint(CheckpointRequest checkpoint)
+		{
+		setKeyToNull(PersistentCacheKey::CheckpointSummary(checkpoint));
+		}
+
+	void dropCheckpointFile(CheckpointRequest checkpoint, hash_type filename)
+		{
+		setKeyToNull(PersistentCacheKey::CheckpointFile(checkpoint,filename));
+		}
+
+	bool isCheckpointForFinishedComputation(CheckpointRequest checkpoint)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		return mComputationCheckpointsFinished.find(checkpoint) != mComputationCheckpointsFinished.end();
+		}
+
+	bool anyInvalidObjectsExist()
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		return mInvalidPages.size() || mInvalidBigvecs.size()
+					|| mInvalidCheckpoints.size() || mInvalidCheckpointFiles.size();
+		}
+
+	ImmutableTreeSet<PersistentCacheKey> getInvalidObjects()
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		ImmutableTreeSet<PersistentCacheKey> res;
+
+		for (auto p: mInvalidPages)
+			res = res + PersistentCacheKey::Page(p);
+
+		for (auto b: mInvalidBigvecs)
+			res = res + PersistentCacheKey::BigvecDefinition(b);
+
+		for (auto c: mInvalidCheckpoints)
+			res = res + PersistentCacheKey::CheckpointSummary(c);
+
+		for (auto cf: mInvalidCheckpointFiles)
+			res = res + PersistentCacheKey::CheckpointFile(cf.first, cf.second);
+
+		return res;
+		}
+
+	ImmutableTreeSet<PersistentCacheKey> getAllObjects()
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		ImmutableTreeSet<PersistentCacheKey> res;
+
+		for (auto kV: mKvState)
+			res = res + kV.first;
+
+		return res;
+		}
+
+	void setScriptDependencies(
+				std::string scriptName,
+				ImmutableTreeSet<hash_type> computationHashesReferenced
+				)
+		{
+		setKeyValue(
+			PersistentCacheKey::Script(scriptName), 
+			null() << ValueEntry::Valid(computationHashesReferenced, 0, hash_type(), 0.0)
+			);
+		}
+
+	void dropScriptDependencies(std::string scriptName)
+		{
+		setKeyValue(
+			PersistentCacheKey::Script(scriptName),
+			null()
+			);
+		}
+
+	bool scriptExists(std::string scriptName)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		return mScriptDependencies.find(scriptName) != mScriptDependencies.end();
+		}
+
+	ImmutableTreeSet<hash_type> getScriptDependencies(std::string scriptName)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		auto it = mScriptDependencies.find(scriptName);
+
+		if (it == mScriptDependencies.end())
+			return emptyTreeSet();
+
+		return it->second.dependencies();
+		}
+
+	bool computationHasScriptDependencies(hash_type computationHash)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		return mScriptsToComputationHashes.hasValue(computationHash);
+		}
+
+	Nullable<CheckpointRequest> computationMostRecentCheckpoint(ComputationId computation)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		if (!mComputationCheckpoints.hasKey(computation.rootComputation().guid()))
+			return null();
+
+		return null() << *mComputationCheckpoints.getValues(computation.rootComputation().guid()).rbegin();
+		}
+
+	EventBroadcaster<PersistentCacheKey>& onObjectChanged()
+		{
+		return mOnObjectChanged;
+		}
+
+	Nullable<int64_t> maxBytesInCache() const
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		auto it = mKvState.find(PersistentCacheKey::Configuration());
+
+		if (it == mKvState.end() || !it->second.isConfiguration())
+			return null();
+
+		return null() << it->second.getConfiguration().maxTotalCacheBytes();
+		}
+
+	void setMaxBytesInCache(Nullable<int64_t> bytes)
+		{
+		setKeyValue(
+			PersistentCacheKey::Configuration(),
+			bytes ? null() << ValueEntry::Configuration(*bytes) : Nullable<ValueEntry>()
+			);
+		}
+
+	ImmutableTreeSet<ComputationId> computationsForHash(hash_type hash) const
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		ImmutableTreeSet<ComputationId> res;
+
+		for (auto checkpoint: mComputationCheckpointsByHash.getValues(hash))
+			res = res + checkpoint.rootComputation();
+
+		return res;
+		}
+
+	ImmutableTreeMap<PersistentCacheKey, int64_t> objectBytecountsReferenced(PersistentCacheKey key)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		mBytecountOfReachableGraph.update();
+
+		auto bytecounts = mBytecountOfReachableGraph.propertyFor(key);
+		if (!bytecounts)
+			return emptyTreeMap();
+
+		return *bytecounts;
+		}
+
+	uint64_t objectBytecountIncludingReachable(PersistentCacheKey key)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		mBytecountOfReachableGraph.update();
+
+		auto bytecounts = mBytecountOfReachableGraph.propertyFor(key);
+		if (!bytecounts)
+			return 0;
+
+		int64_t res = 0;
+
+		for (auto keyAndBytecount: *bytecounts)
+			res += keyAndBytecount.second;
+
+		return res;
+		}
+
+private:
+	void setKeyToNull_(PersistentCacheKey key)
+		{
+		mView->begin();
+
+		SharedState::Keyspace keyspace = keyspace_();
+
+		mView->write(
+			SharedState::KeyUpdate(
+				SharedState::Key(
+					keyspace,
+					cppmlToJson(key)
+					),
+				null()
+				)
+			);
+
+		mView->end();
+
+		dropKey_(key);
+		}
+
+	bool dropKey_(const Json& keyspaceName, const Json& key)
+		{
+		PersistentCacheKey cacheKey;
+		ValueEntry valueEntry;
+
+		try {
+			cacheKey = jsonToCppml<PersistentCacheKey>(key);
+			}
+		catch(std::logic_error& e)
+			{
+			return false;
+			}
+
+		dropKey_(cacheKey);
+		return true;
+		}
+
+	void dropKey_(const PersistentCacheKey& PersistentCacheKey)
+		{
+		@match PersistentCacheKey(PersistentCacheKey)
+			-| Page(p) ->> {
+				mTotalBytesInCache -= mPages[p].bytecount();
+				mPages.erase(p);
+				}
+			-| BigvecDefinition(b) ->> {
+				mTotalBytesInCache -= mBigvecs[b].bytecount();
+				mBigvecs.erase(b);
+				}
+			-| CheckpointSummary(checkpoint) ->> {
+				mTotalBytesInCache -= mCheckpoints[checkpoint].bytecount();
+				mCheckpoints.erase(checkpoint);
+				mComputationCheckpoints.dropValue(checkpoint);
+				mComputationCheckpointsByHash.dropValue(checkpoint);
+				}
+			-| CheckpointFile(checkpoint, hash) ->> {
+				mTotalBytesInCache -= mCheckpointFiles[make_pair(checkpoint, hash)].bytecount();
+				mCheckpointsToFiles.drop(checkpoint, hash);
+				mCheckpointFiles.erase(make_pair(checkpoint, hash));
+				}
+		}
+
+	bool handleKeyUpdateFromServer_(const Json& keyspaceName, const Json& jsonKey, const Nullable<Json>& value)
+		{
+		PersistentCacheKey key;
+		Nullable<ValueEntry> valueEntry;
+
+		try {
+			key = jsonToCppml<PersistentCacheKey>(jsonKey);
+			if (value)
+				valueEntry = jsonToCppml<ValueEntry>(*value);
+			}
+		catch(std::logic_error& e)
+			{
+			return false;
+			}
+
+		handleKey_(key, valueEntry);
+
+		return true;
+		}
+
+	void handleKey_(const PersistentCacheKey& key, const Nullable<ValueEntry>& valueEntry)
+		{
+			{
+			auto it = mKvState.find(key);
+			if (it == mKvState.end() && valueEntry ||
+					it != mKvState.end() && !valueEntry ||
+					it != mKvState.end() && valueEntry && it->second != *valueEntry &&
+					key.hasStoragePath())
+				mOnObjectChanged.broadcast(key);
+			}
+
+		Nullable<ValueEntry> oldValueEntry;
+		if (mKvState.find(key) != mKvState.end())
+			oldValueEntry = mKvState[key];
+
+		if (valueEntry == oldValueEntry)
+			return;
+			
+		if (valueEntry)
+			mKvState[key] = *valueEntry;
+		else
+			mKvState.erase(key);
+
+		if (!valueEntry)
+			{
+			mObjectDependencies.dropKey(key);
+			mBytecountOfReachableGraph.dropNode(key);
+			}
+
+		@match PersistentCacheKey(key)
+			-| Page(p) ->> {
+				mTotalBytesInCache -= mPages[p].bytecount();
+
+				if (valueEntry)
+					{
+					mPages[p] = *valueEntry;
+					mTotalBytesInCache += mPages[p].bytecount();
+
+					for (auto bv: valueEntry->dependencies())
+						{
+						mObjectDependencies.insert(key, PersistentCacheKey::BigvecDefinition(bv));
+						mBytecountOfReachableGraph.addEdge(key, PersistentCacheKey::BigvecDefinition(bv));
+						}
+					}
+				else
+					mPages.erase(p);
+
+				if (!valueEntry || valueEntry->isValid())
+					mInvalidPages.erase(p);
+				else
+					mInvalidPages.insert(p);
+				}
+			-| BigvecDefinition(b) ->> {
+				mTotalBytesInCache -= mBigvecs[b].bytecount();
+				if (valueEntry)
+					{
+					mBigvecs[b] = *valueEntry;
+					mTotalBytesInCache += mBigvecs[b].bytecount();
+
+					for (auto page: valueEntry->dependencies())
+						{
+						mObjectDependencies.insert(key, PersistentCacheKey::Page(page));
+						mBytecountOfReachableGraph.addEdge(key, PersistentCacheKey::Page(page));
+						}
+					}
+				else
+					mBigvecs.erase(b);
+
+				if (!valueEntry || valueEntry->isValid())
+					mInvalidBigvecs.erase(b);
+				else
+					mInvalidBigvecs.insert(b);
+				}
+			-| CheckpointSummary(checkpoint) ->> {
+				mTotalBytesInCache -= mCheckpoints[checkpoint].bytecount();
+
+				if (valueEntry)
+					{
+					mCheckpoints[checkpoint] = *valueEntry;
+					mTotalBytesInCache += mCheckpoints[checkpoint].bytecount();
+					mComputationCheckpoints.insert(checkpoint.rootComputation().guid(), checkpoint);
+					mComputationCheckpointsByHash.insert(*checkpoint.rootComputation().computationHash(), checkpoint);
+
+					mIsReachableByScriptGraph.addEdge(
+						ReachabilityGraphEntry::Checkpoint(checkpoint),
+						ReachabilityGraphEntry::Computation(*checkpoint.rootComputation().computationHash())
+						);
+
+					for (auto comp: valueEntry->computationsReferenced())
+						mIsReachableByScriptGraph.addEdge(
+							ReachabilityGraphEntry::Computation(comp),
+							ReachabilityGraphEntry::Checkpoint(checkpoint)
+							);
+
+					if (valueEntry->isFinished())
+						mComputationCheckpointsFinished.insert(checkpoint);
+
+					for (auto filename: valueEntry->dependencies())
+						{
+						mObjectDependencies.insert(key, PersistentCacheKey::CheckpointFile(checkpoint, filename));
+						mBytecountOfReachableGraph.addEdge(key, PersistentCacheKey::CheckpointFile(checkpoint, filename));
+						}
+					}
+				else
+					{
+					mIsReachableByScriptGraph.dropEdge(
+						ReachabilityGraphEntry::Checkpoint(checkpoint),
+						ReachabilityGraphEntry::Computation(*checkpoint.rootComputation().computationHash())
+						);
+
+					if (oldValueEntry)
+						for (auto comp: oldValueEntry->computationsReferenced())
+							mIsReachableByScriptGraph.dropEdge(
+								ReachabilityGraphEntry::Computation(comp),
+								ReachabilityGraphEntry::Checkpoint(checkpoint)
+								);
+
+					mCheckpoints.erase(checkpoint);
+					mComputationCheckpoints.dropValue(checkpoint);
+					mComputationCheckpointsByHash.dropValue(checkpoint);
+					mComputationCheckpointsFinished.erase(checkpoint);
+					}
+
+				if (!valueEntry || valueEntry->isValid())
+					mInvalidCheckpoints.erase(checkpoint);
+				else
+					mInvalidCheckpoints.insert(checkpoint);
+				}
+			-| CheckpointFile(checkpoint, hash) ->> {
+				mCheckpointsToFiles.insert(checkpoint, hash);
+
+				mTotalBytesInCache -= mCheckpointFiles[make_pair(checkpoint, hash)].bytecount();
+
+				if (valueEntry)
+					{
+					mCheckpointFiles[make_pair(checkpoint, hash)] = *valueEntry;
+					mTotalBytesInCache += mCheckpointFiles[make_pair(checkpoint, hash)].bytecount();
+
+					for (auto bv: valueEntry->dependencies())
+						{
+						mObjectDependencies.insert(key, PersistentCacheKey::BigvecDefinition(bv));						
+						mBytecountOfReachableGraph.addEdge(key, PersistentCacheKey::BigvecDefinition(bv));
+						}
+					}
+				else
+					mCheckpointFiles.erase(make_pair(checkpoint, hash));
+
+				if (!valueEntry || valueEntry->isValid())
+					mInvalidCheckpointFiles.erase(make_pair(checkpoint, hash));
+				else
+					mInvalidCheckpointFiles.insert(make_pair(checkpoint, hash));
+				}
+			-| Script(script) ->> {
+				if (valueEntry)
+					{
+					mScriptDependencies[script] = *valueEntry;
+					mScriptsToComputationHashes.dropKey(script);
+					for (auto dep: valueEntry->dependencies())
+						{
+						mScriptsToComputationHashes.insert(script, dep);
+
+						mIsReachableByScriptGraph.addEdge(
+							ReachabilityGraphEntry::Computation(dep),
+							ReachabilityGraphEntry::Script(script)
+							);
+						}
+					}
+				else
+					{
+					for (auto dep: mScriptsToComputationHashes.getValues(script))
+						mIsReachableByScriptGraph.addEdge(
+							ReachabilityGraphEntry::Computation(dep),
+							ReachabilityGraphEntry::Script(script)
+							);
+
+					mScriptDependencies.erase(script);
+					mScriptsToComputationHashes.dropKey(script);
+					}
+				}
+			-| Configuration() ->> {}
+		}
+
+
+
+	void setKeyValue_(PersistentCacheKey key, Nullable<ValueEntry> value)
+		{
+		try {
+			mView->begin();
+
+			SharedState::Keyspace keyspace = keyspace_();
+
+			mView->write(
+				SharedState::KeyUpdate(
+					SharedState::Key(
+						keyspace,
+						cppmlToJson(key)
+						),
+					value ?
+						null() << cppmlToJson(*value)
+					:	Nullable<Json>()
+					)
+				);
+
+			mView->end();
+			}
+		catch(std::logic_error& e)
+			{
+			LOG_WARN << "PersistentCache failed to write " << key << " -> " << value
+				<< "\nerror :" << e.what();
+			}
+
+		handleKey_(key, value);
+		}
+
+	SharedState::Keyspace keyspace_()
+		{
+		return SharedState::Keyspace(
+			"TakeHighestIdKeyType",
+			Json::Array(
+				Json::String("PersistentCacheIndex"),
+				Json::String(PersistentCacheIndex::schemaVersion),
+				Json::String(mUserName)
+				),
+			1
+			);
+		}
+
+	void clearAllState_()
+		{
+		mKvState.clear();
+		mPages.clear();
+		mBigvecs.clear();
+		mCheckpoints.clear();
+		mCheckpointFiles.clear();
+		mComputationCheckpointsFinished.clear();
+		mCheckpointsToFiles = TwoWaySetMap<CheckpointRequest, hash_type>();
+		mComputationCheckpoints = TwoWaySetMap<hash_type, CheckpointRequest>();
+		mComputationCheckpointsByHash = TwoWaySetMap<hash_type, CheckpointRequest>();
+		mTotalBytesInCache = 0;
+		}
+
+	mutable boost::recursive_mutex mMutex;
+
+	std::string mUserName;
+
+	PolymorphicSharedPtr<SharedState::View> mView;
+
+	PolymorphicSharedPtr<SharedState::EventBroadcasterAdapter,
+					PolymorphicSharedPtr<SharedState::Listener> > mListener;
+
+	uint64_t mTotalBytesInCache;
+
+	long mTimesReconnected;
+
+	std::map<hash_type, ValueEntry> mPages;
+
+	std::map<hash_type, ValueEntry> mBigvecs;
+
+	std::map<CheckpointRequest, ValueEntry> mCheckpoints;
+
+	std::map<pair<CheckpointRequest, hash_type>, ValueEntry> mCheckpointFiles;
+
+	std::set<hash_type> mInvalidPages;
+
+	std::set<hash_type> mInvalidBigvecs;
+
+	std::set<CheckpointRequest> mInvalidCheckpoints;
+
+	std::set<pair<CheckpointRequest, hash_type> > mInvalidCheckpointFiles;
+
+	std::map<std::string, ValueEntry> mScriptDependencies;
+
+	TwoWaySetMap<std::string, hash_type> mScriptsToComputationHashes;
+
+	TwoWaySetMap<CheckpointRequest, hash_type> mCheckpointsToFiles;
+
+	TwoWaySetMap<hash_type, CheckpointRequest> mComputationCheckpoints;
+
+	TwoWaySetMap<hash_type, CheckpointRequest> mComputationCheckpointsByHash;
+
+	TwoWaySetMap<PersistentCacheKey, PersistentCacheKey> mObjectDependencies;
+
+	std::set<CheckpointRequest> mComputationCheckpointsFinished;
+
+	std::map<PersistentCacheKey, ValueEntry> mKvState;
+
+	boost::condition_variable_any mViewReconnected;
+
+	EventBroadcaster<PersistentCacheKey> mOnObjectChanged;
+
+	Ufora::GraphWithCalculatedProperty<ReachabilityGraphEntry, bool> mIsReachableByScriptGraph;
+
+	Ufora::GraphWithCalculatedProperty<PersistentCacheKey, ImmutableTreeMap<PersistentCacheKey, int64_t> > mBytecountOfReachableGraph;
+
+};
+
+PersistentCacheIndex::PersistentCacheIndex(
+				std::string inUserName,
+				PolymorphicSharedPtr<SharedState::View> inView,
+				PolymorphicSharedPtr<CallbackScheduler> inScheduler
+				)
+	{
+	mImpl.reset(new PersistentCacheIndexImpl(inUserName, inView, inScheduler));
+	}
+
+void PersistentCacheIndex::resetView(PolymorphicSharedPtr<SharedState::View> inView)
+	{
+	mImpl->resetView(inView);
+	}
+
+bool PersistentCacheIndex::pageExists(hash_type pageHash)
+	{
+	return mImpl->pageExists(pageHash);
+	}
+
+bool PersistentCacheIndex::bigvecExists(hash_type bigvecHash)
+	{
+	return mImpl->bigvecExists(bigvecHash);
+	}
+
+bool PersistentCacheIndex::checkpointFileExists(CheckpointRequest c, hash_type pageHash)
+	{
+	return mImpl->checkpointFileExists(c, pageHash);
+	}
+
+bool PersistentCacheIndex::checkpointExists(CheckpointRequest c)
+	{
+	return mImpl->checkpointExists(c);
+	}
+
+bool PersistentCacheIndex::isCheckpointForFinishedComputation(CheckpointRequest checkpoint)
+	{
+	return mImpl->isCheckpointForFinishedComputation(checkpoint);
+	}
+
+ImmutableTreeSet<CheckpointRequest> PersistentCacheIndex::checkpointsForComputation(ComputationId id)
+	{
+	return mImpl->checkpointsForComputation(id);
+	}
+
+ImmutableTreeSet<hash_type> PersistentCacheIndex::pageBigvecReferences(hash_type pageHash)
+	{
+	return mImpl->pageBigvecReferences(pageHash);
+	}
+
+ImmutableTreeSet<hash_type> PersistentCacheIndex::bigvecPageReferences(hash_type bigvecHash)
+	{
+	return mImpl->bigvecPageReferences(bigvecHash);
+	}
+
+	ImmutableTreeSet<hash_type> PersistentCacheIndex::checkpointFileBigvecsReferenced(
+											CheckpointRequest checkpoint,
+											hash_type filename
+											)
+	{
+	return mImpl->checkpointFileBigvecsReferenced(checkpoint, filename);
+	}
+
+ImmutableTreeSet<hash_type> PersistentCacheIndex::checkpointFilesReferenced(
+											CheckpointRequest checkpoint
+											)
+	{
+	return mImpl->checkpointFilesReferenced(checkpoint);
+	}
+
+uint32_t PersistentCacheIndex::pageBytecount(hash_type pageHash)
+	{
+	return mImpl->pageBytecount(pageHash);
+	}
+
+uint32_t PersistentCacheIndex::bigvecBytecount(hash_type bigvecHash)
+	{
+	return mImpl->bigvecBytecount(bigvecHash);
+	}
+
+uint32_t PersistentCacheIndex::checkpointBytecount(CheckpointRequest checkpoint)
+	{
+	return mImpl->checkpointBytecount(checkpoint);
+	}
+
+uint32_t PersistentCacheIndex::checkpointFileBytecount(CheckpointRequest checkpoint, hash_type fileHash)
+	{
+	return mImpl->checkpointFileBytecount(checkpoint, fileHash);
+	}
+
+hash_type PersistentCacheIndex::pageDataHash(hash_type pageHash)
+	{
+	return mImpl->pageDataHash(pageHash);
+	}
+
+hash_type PersistentCacheIndex::bigvecDataHash(hash_type bigvecHash)
+	{
+	return mImpl->bigvecDataHash(bigvecHash);
+	}
+
+hash_type PersistentCacheIndex::checkpointDataHash(CheckpointRequest checkpoint)
+	{
+	return mImpl->checkpointDataHash(checkpoint);
+	}
+
+hash_type PersistentCacheIndex::checkpointFileDataHash(CheckpointRequest checkpoint, hash_type fileHash)
+	{
+	return mImpl->checkpointFileDataHash(checkpoint, fileHash);
+	}
+
+uint64_t PersistentCacheIndex::totalBytesInCache() const
+	{
+	return mImpl->totalBytesInCache();
+	}
+
+void PersistentCacheIndex::addPage(
+			hash_type pageHash,
+			ImmutableTreeSet<hash_type> bigvecsReferenced,
+			uint32_t bytecount,
+			hash_type dataHash
+			)
+	{
+	return mImpl->addPage(pageHash, bigvecsReferenced, bytecount, dataHash);
+	}
+
+void PersistentCacheIndex::addBigvec(
+			hash_type pageHash,
+			ImmutableTreeSet<hash_type> pagesReferenced,
+			uint32_t bytecount,
+			hash_type dataHash
+			)
+	{
+	return mImpl->addBigvec(pageHash, pagesReferenced, bytecount, dataHash);
+	}
+
+void PersistentCacheIndex::addCheckpoint(
+			CheckpointRequest checkpoint,
+			ImmutableTreeSet<hash_type> filesReferenced,
+			uint32_t bytecount,
+			hash_type dataHash,
+			bool isFinished,
+			double totalSecondsOfCompute,
+			ImmutableTreeSet<hash_type> computationsReferenced
+			)
+	{
+	return mImpl->addCheckpoint(checkpoint, filesReferenced, bytecount, dataHash, isFinished, totalSecondsOfCompute, computationsReferenced);
+	}
+
+ImmutableTreeSet<hash_type> PersistentCacheIndex::allCheckpointedComputationGuids()
+	{
+	return mImpl->allCheckpointedComputationGuids();
+	}
+
+ImmutableTreeSet<ComputationId> PersistentCacheIndex::allCheckpointedComputations()
+	{
+	return mImpl->allCheckpointedComputations();
+	}
+
+bool PersistentCacheIndex::hasConnectedView()
+	{
+	return mImpl->hasConnectedView();
+	}
+
+void PersistentCacheIndex::addCheckpointFile(
+			CheckpointRequest checkpoint,
+			hash_type fileHash,
+			ImmutableTreeSet<hash_type> bigvecsReferenced,
+			uint32_t bytecount,
+			hash_type dataHash
+			)
+	{
+	mImpl->addCheckpointFile(checkpoint, fileHash, bigvecsReferenced, bytecount, dataHash);
+	}
+
+void PersistentCacheIndex::markPageInvalid(hash_type pageHash)
+	{
+	LOG_ERROR << "Page " << pageHash << " marked invalid.";
+	mImpl->markPageInvalid(pageHash);
+	}
+
+void PersistentCacheIndex::markBigvecInvalid(hash_type bigvecHash)
+	{
+	LOG_ERROR << "Bigvec " << bigvecHash << " marked invalid.";
+	mImpl->markBigvecInvalid(bigvecHash);
+	}
+
+void PersistentCacheIndex::markCheckpointInvalid(CheckpointRequest checkpoint)
+	{
+	LOG_ERROR << "Checkpoint " << checkpoint << " marked invalid.";
+	mImpl->markCheckpointInvalid(checkpoint);
+	}
+
+void PersistentCacheIndex::markCheckpointFileInvalid(CheckpointRequest checkpoint, hash_type hash)
+	{
+	LOG_ERROR << "CheckpointFile " << checkpoint << " and " << hash << " marked invalid.";
+	mImpl->markCheckpointFileInvalid(checkpoint, hash);
+	}
+
+void PersistentCacheIndex::dropPage(hash_type pageHash)
+	{
+	mImpl->dropPage(pageHash);
+	}
+
+void PersistentCacheIndex::dropBigvec(hash_type bigvec)
+	{
+	mImpl->dropBigvec(bigvec);
+	}
+
+void PersistentCacheIndex::dropCheckpoint(CheckpointRequest checkpoint)
+	{
+	mImpl->dropCheckpoint(checkpoint);
+	}
+
+void PersistentCacheIndex::dropCheckpointFile(CheckpointRequest checkpoint, hash_type filename)
+	{
+	mImpl->dropCheckpointFile(checkpoint, filename);
+	}
+
+long PersistentCacheIndex::timesViewReconnected()
+	{
+	return mImpl->timesViewReconnected();
+	}
+
+ImmutableTreeSet<hash_type> PersistentCacheIndex::checkpointComputationsReferenced(CheckpointRequest checkpoint)
+	{
+	return mImpl->checkpointComputationsReferenced(checkpoint);
+	}
+
+double PersistentCacheIndex::checkpointSecondsOfCompute(CheckpointRequest c)
+	{
+	return mImpl->checkpointSecondsOfCompute(c);
+	}
+
+void PersistentCacheIndex::touchPage(hash_type pageHash)
+	{
+	mImpl->touchPage(pageHash);
+	}
+
+void PersistentCacheIndex::touchBigvec(hash_type pageHash)
+	{
+	mImpl->touchBigvec(pageHash);
+	}
+
+void PersistentCacheIndex::touchCheckpoint(CheckpointRequest checkpoint)
+	{
+	mImpl->touchCheckpoint(checkpoint);
+	}
+
+bool PersistentCacheIndex::anyInvalidObjectsExist()
+	{
+	return mImpl->anyInvalidObjectsExist();
+	}
+
+ImmutableTreeSet<PersistentCacheKey> PersistentCacheIndex::getInvalidObjects()
+	{
+	return mImpl->getInvalidObjects();
+	}
+
+uint32_t PersistentCacheIndex::objectBytecount(PersistentCacheKey key)
+	{
+	return mImpl->objectBytecount(key);
+	}
+
+
+hash_type PersistentCacheIndex::objectDataHash(PersistentCacheKey key)
+	{
+	@match PersistentCacheKey(key)
+		-| Page(p) ->> { return pageDataHash(p); }
+		-| BigvecDefinition(b) ->> { return bigvecDataHash(b); }
+		-| CheckpointFile(c,f) ->> { return checkpointFileDataHash(c,f); }
+		-| CheckpointSummary(c) ->> { return checkpointDataHash(c); }
+		;
+	}
+
+ImmutableTreeSet<PersistentCacheKey> PersistentCacheIndex::objectsDependedOn(PersistentCacheKey key)
+	{
+	return mImpl->objectsDependedOn(key);
+	}
+
+ImmutableTreeSet<PersistentCacheKey> PersistentCacheIndex::objectsDependingOn(PersistentCacheKey key)
+	{
+	return mImpl->objectsDependingOn(key);
+	}
+
+bool PersistentCacheIndex::objectExists(PersistentCacheKey key)
+	{
+	@match PersistentCacheKey(key)
+		-| Page(p) ->> { return pageExists(p); }
+		-| BigvecDefinition(b) ->> { return bigvecExists(b); }
+		-| CheckpointFile(c,f) ->> { return checkpointFileExists(c,f); }
+		-| CheckpointSummary(c) ->> { return checkpointExists(c); }
+		-| Script(s) ->> { return scriptExists(s); }
+		;
+	}
+
+void PersistentCacheIndex::markObjectInvalid(PersistentCacheKey key)
+	{
+	@match PersistentCacheKey(key)
+		-| Page(p) ->> { markPageInvalid(p); }
+		-| BigvecDefinition(b) ->> { markBigvecInvalid(b); }
+		-| CheckpointFile(c,f) ->> { markCheckpointFileInvalid(c,f); }
+		-| CheckpointSummary(c) ->> { markCheckpointInvalid(c); }
+		;
+	}
+
+void PersistentCacheIndex::dropObject(PersistentCacheKey key)
+	{
+	@match PersistentCacheKey(key)
+		-| Page(p) ->> { dropPage(p); }
+		-| BigvecDefinition(b) ->> { dropBigvec(b); }
+		-| CheckpointFile(c,f) ->> { dropCheckpointFile(c,f); }
+		-| CheckpointSummary(c) ->> { dropCheckpoint(c); }
+		-| Script(s) ->> { dropScriptDependencies(s); }
+		;
+	}
+
+ImmutableTreeSet<PersistentCacheKey> PersistentCacheIndex::getAllObjects()
+	{
+	return mImpl->getAllObjects();
+	}
+
+void PersistentCacheIndex::setScriptDependencies(
+				std::string scriptName,
+				ImmutableTreeSet<hash_type> computationHashesReferenced
+				)
+	{
+	mImpl->setScriptDependencies(scriptName, computationHashesReferenced);
+	}
+
+void PersistentCacheIndex::dropScriptDependencies(std::string scriptName)
+	{
+	mImpl->dropScriptDependencies(scriptName);
+	}
+
+ImmutableTreeSet<hash_type> PersistentCacheIndex::getScriptDependencies(std::string scriptName)
+	{
+	return mImpl->getScriptDependencies(scriptName);
+	}
+
+bool PersistentCacheIndex::scriptExists(std::string scriptName)
+	{
+	return mImpl->scriptExists(scriptName);
+	}
+
+bool PersistentCacheIndex::computationHasScriptDependencies(hash_type computationHash)
+	{
+	return mImpl->computationHasScriptDependencies(computationHash);
+	}
+
+Nullable<CheckpointRequest> PersistentCacheIndex::computationMostRecentCheckpoint(ComputationId computation)
+	{
+	return mImpl->computationMostRecentCheckpoint(computation);
+	}
+
+EventBroadcaster<PersistentCacheKey>& PersistentCacheIndex::onObjectChanged()
+	{
+	return mImpl->onObjectChanged();
+	}
+
+Nullable<int64_t> PersistentCacheIndex::maxBytesInCache() const
+	{
+	return mImpl->maxBytesInCache();
+	}
+
+void PersistentCacheIndex::setMaxBytesInCache(Nullable<int64_t> bytes)
+	{
+	mImpl->setMaxBytesInCache(bytes);
+	}
+
+ImmutableTreeSet<ComputationId> PersistentCacheIndex::computationsForHash(hash_type computationHash) const
+	{
+	return mImpl->computationsForHash(computationHash);
+	}
+
+bool PersistentCacheIndex::computationIsReachableFromAnyScript(ComputationId computation)
+	{
+	return mImpl->computationIsReachableFromAnyScript(computation);
+	}
+
+uint64_t PersistentCacheIndex::objectBytecountIncludingReachable(PersistentCacheKey key)
+	{
+	return mImpl->objectBytecountIncludingReachable(key);
+	}
+
+ImmutableTreeMap<PersistentCacheKey, int64_t> PersistentCacheIndex::objectBytecountsReferenced(PersistentCacheKey key)
+	{
+	return mImpl->objectBytecountsReferenced(key);
+	}
+
+}
+}
+

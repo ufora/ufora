@@ -1,0 +1,462 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Function.hppml"
+#include "StatementTerm.hppml"
+#include "ScopeNaming.hppml"
+
+namespace ScopeNaming {
+    
+    const std::string& 
+    NameClassMediatorsWithScopesTransformer::defaultClassMediatorSuffix()
+        {
+        static const std::string& tr = "<unnamed>";
+        return tr;
+        }
+
+    std::string 
+    NameClassMediatorsWithScopesTransformer::allocateClassMediatorSuffixForPatternWithName(
+            const PatternWithName& inPatternWithName
+            )
+        {
+        if (inPatternWithName.name().isValue())
+            return inPatternWithName.name()->toString();
+
+        return defaultClassMediatorSuffix();
+        }
+
+    std::string NameClassMediatorsWithScopesTransformer::classMediatorNameForSuffix(
+            const std::string& prefix, const std::string& suffix
+            )
+        {
+        return prefix + "." + suffix;
+        }
+
+    std::string 
+    NameClassMediatorsWithScopesTransformer::classMediatorName() const 
+        {
+        return classMediatorNameForSuffix(mContextPath, mClassMediatorSuffix);
+        }
+
+    std::string 
+    NameClassMediatorsWithScopesTransformer::suffixForExpression(const Expression& inExpr)
+        {
+        @match Expression(inExpr)
+            -|  CreateList(_) ->> { return "<unnamed vector>"; }
+            -|  CreateFunction(_) ->> { return "<unnamed function>"; }
+            -|  CreateLambda(_) ->> { return "<unnamed lambda>"; }
+            -|  CreateObject(_) ->> { return "<unnamed object>"; }
+            -|  CreateTuple(_) ->> { return  "<unnamed tuple>"; }
+            -|  CreateClass(_) ->> { return  "<unnamed class>"; }
+            -| _ ->> { return defaultClassMediatorSuffix(); }
+            ;
+        }
+
+    std::string
+    NameClassMediatorsWithScopesTransformer::classMediatorNameFor(
+            const Expression& inExpr
+            ) const
+        {
+        if (isDefaultClassMediatorSuffix())
+            {
+            std::string suffixToUse = suffixForExpression(inExpr);
+
+            return classMediatorNameForSuffix(mContextPath, suffixToUse);
+            }
+        else 
+            {
+            return classMediatorName();
+            }
+        }
+
+    bool NameClassMediatorsWithScopesTransformer::isDefaultClassMediatorSuffix() const
+        {
+        return mClassMediatorSuffix == defaultClassMediatorSuffix();
+        }
+
+    Nullable<Expression> 
+    NameClassMediatorsWithScopesTransformer::processDown(
+            const Expression& inExpr, 
+            bool& ioContinue
+            ) const 
+        {
+        @match Expression(inExpr)
+            -|  CreateList(exprs) ->> {
+                ioContinue = false;
+
+                return null() << 
+                    Expression::CreateList(
+                        inExpr.locationMetadata(),
+                        transform(
+                            exprs,
+                            NameClassMediatorsWithScopesTransformer(
+                                mContextPath,
+                                defaultClassMediatorSuffix()
+                                )
+                            )
+                        );
+                }
+            -|  CreateTuple(args) ->> {
+                ioContinue = false;
+                    
+                return null() <<
+                    Expression::CreateTuple(
+                        inExpr.locationMetadata(),
+                        transform(
+                            args,
+                            NameClassMediatorsWithScopesTransformer(
+                                mContextPath,
+                                defaultClassMediatorSuffix()
+                                )
+                            )
+                        );
+                }
+            -|  CreateClass(name, body, objectMetadata) ->> {
+                std::string newClassMediatorName = classMediatorNameFor(inExpr);
+
+                auto transformedBody = 
+                    transform(
+                        body,
+                        NameClassMediatorsWithScopesTransformer(
+                            newClassMediatorName,
+                            defaultClassMediatorSuffix()
+                            )
+                        );
+
+                ioContinue = false;
+                    
+                return null() << 
+                    Expression::CreateClass(
+                        inExpr.locationMetadata(),
+                        newClassMediatorName,
+                        transformedBody,
+                        objectMetadata
+                        );
+                }
+            -|  CreateObject(name, body, objectMetadata) ->> {
+                std::string newClassMediatorName = classMediatorNameFor(inExpr);
+
+                auto transformedBody = 
+                    transform(
+                        body,
+                        NameClassMediatorsWithScopesTransformer(
+                            newClassMediatorName,
+                            defaultClassMediatorSuffix()
+                            )
+                        );
+
+                ioContinue = false;
+                    
+                return null() << 
+                    Expression::CreateObject(
+                        inExpr.locationMetadata(),
+                        newClassMediatorName,
+                        transformedBody,
+                        objectMetadata
+                        );
+                }
+            -|  CreateLambda(name, predicate) ->> {
+                std::string newClassMediatorName = classMediatorNameFor(inExpr);
+
+                auto transformedPredicate = 
+                    transform(
+                        predicate,
+                        NameClassMediatorsWithScopesTransformer(
+                            newClassMediatorName,
+                            defaultClassMediatorSuffix()
+                            )
+                        );
+
+                ioContinue = false;
+
+                return null() << 
+                    Expression::CreateLambda(
+                        inExpr.locationMetadata(),
+                        newClassMediatorName,
+                        transformedPredicate
+                        );
+                    
+                }
+            -|  CreateFunction(name, predicate, objectMetadata) ->> {
+                std::string newClassMediatorName = classMediatorNameFor(inExpr);
+
+                auto transformedPredicate = 
+                    transform(
+                        predicate, 
+                        NameClassMediatorsWithScopesTransformer(
+                            newClassMediatorName,
+                            defaultClassMediatorSuffix()
+                            )
+                        );
+
+                ioContinue = false;
+
+                return null() <<  
+                    Expression::CreateFunction(
+                        inExpr.locationMetadata(),
+                        newClassMediatorName,
+                        transformedPredicate,
+                        objectMetadata
+                        );
+                }
+            -|  Let(elements, body) ->> {
+                auto transformedElements = transformElements(elements);
+
+                Expression transformedBody = transform(body, *this);
+                    
+                ioContinue = false;
+
+                return null() << 
+                    Expression::Let(
+                        inExpr.locationMetadata(),
+                        transformedElements, 
+                        transformedBody
+                        );
+                                    
+                }
+            -| _ ->> { return null(); }
+            ;
+        }
+
+    std::pair<PatternWithName, Expression> 
+    NameClassMediatorsWithScopesTransformer::transformElement(
+            const std::pair<PatternWithName, Expression>& element
+            ) const
+        {
+        std::string newSuffixForRighthandSide = 
+            allocateClassMediatorSuffixForPatternWithName(element.first);
+
+        auto transformedPatternWithName = transform(element.first, *this);
+
+        auto transformedExpression = 
+            transformLetBindingRightHandSide(
+                element.second, 
+                newSuffixForRighthandSide
+                );
+
+        return std::make_pair(
+            transformedPatternWithName,
+            transformedExpression
+            );
+        }
+
+    ImmutableTreeVector<pair<PatternWithName, Expression> > 
+    NameClassMediatorsWithScopesTransformer::transformElements(
+            const ImmutableTreeVector<pair<PatternWithName, Expression> >& elements
+            ) const
+        {
+        ImmutableTreeVector<pair<PatternWithName, Expression> > transformedElements;
+
+        for (auto it = elements.begin(); it != elements.end(); ++it)
+            {
+            transformedElements = transformedElements + transformElement(*it);
+            }
+
+        return transformedElements;
+        }
+
+    Expression NameClassMediatorsWithScopesTransformer::
+    transformLetBindingRightHandSide(
+            const Expression& letBindingRightHandSide, 
+            const std::string& newSuffix
+            ) const
+        {
+        Expression elementExpression = letBindingRightHandSide;
+        if (elementExpression.isCreateFunction() or 
+            elementExpression.isCreateLambda() or
+            elementExpression.isCreateObject() or
+            elementExpression.isCreateClass())
+            {
+            return transform(
+                letBindingRightHandSide,
+                NameClassMediatorsWithScopesTransformer(
+                    mContextPath, newSuffix
+                    )
+                );
+            }
+        else if (letBindingRightHandSide.isSequence()) {
+            return Expression(
+                letBindingRightHandSide.locationMetadata(),
+                transformSequenceInRighthandLetBinding(
+                    letBindingRightHandSide.getSequence(),
+                    newSuffix
+                    )
+                );
+            }
+        else if (letBindingRightHandSide.isLet()) {
+            return Expression(
+                letBindingRightHandSide.locationMetadata(),
+                transformLetInRighthandLetBinding(
+                    letBindingRightHandSide.getLet(),
+                    newSuffix
+                    )
+                );
+            }
+        else {
+            return transform(letBindingRightHandSide, *this);
+            }
+        }
+
+    Expression_LetType NameClassMediatorsWithScopesTransformer::
+    transformLetInRighthandLetBinding(
+            const Expression_LetType& let,
+            const std::string& newSuffix
+            ) const
+        {
+        auto transformedElements = transformElements(let.elements());
+        auto transformedBody = transformLetBindingRightHandSide(
+            let.body(), newSuffix
+            );
+
+        return Expression_LetType(transformedElements, transformedBody);
+        }
+
+    Expression_SequenceType NameClassMediatorsWithScopesTransformer::
+    transformSequenceInRighthandLetBinding(
+            const Expression_SequenceType& sequence,
+            const std::string& newSuffix
+            ) const {
+        Expression newFirst = transform(sequence.first(), *this);
+        Expression newSecond = transformLetBindingRightHandSide(
+            sequence.second(), newSuffix
+            );
+        return Expression_SequenceType(
+            newFirst, newSecond
+            );
+        }
+
+    Nullable<ApplyArgument> 
+    NameClassMediatorsWithScopesTransformer::processDown(
+            const ApplyArgument& applyArgument,
+            bool& ioContinue
+            ) const
+        {
+        @match ApplyArgument(applyArgument)
+            -|  Normal(name, expr) ->> {
+                if (!name.isNull())
+                    {
+                    ioContinue = false;
+
+                    return null() <<
+                        ApplyArgument::Normal(
+                            name,
+                            transform(
+                                expr,
+                                NameClassMediatorsWithScopesTransformer(
+                                    mContextPath, 
+                                    name->toString()
+                                    )
+                                )
+                            );
+                    }
+                else {
+                    ioContinue = false;
+                    
+                    return null() << 
+                        ApplyArgument::Normal(
+                            transform(
+                                expr, 
+                                NameClassMediatorsWithScopesTransformer(
+                                    mContextPath,
+                                    mClassMediatorSuffix
+                                    )
+                                )
+                            );
+                    }
+                }
+            -|  NamedArgument(name, expr) ->> {
+                ioContinue = false;
+
+                auto nextTransformer = 
+                    NameClassMediatorsWithScopesTransformer(
+                        mContextPath, 
+                        defaultClassMediatorSuffix()
+                        );
+
+                return null() <<
+                    ApplyArgument::NamedArgument(
+                        transform(name, nextTransformer),
+                        transform(expr, nextTransformer)
+                        );
+                }
+            -|  TupleCall(expr) ->> {
+                ioContinue = false;
+                
+                return null() << 
+                    ApplyArgument::TupleCall(
+                        transform(
+                            expr,
+                            NameClassMediatorsWithScopesTransformer(
+                                mContextPath,
+                                defaultClassMediatorSuffix()
+                                )
+                            )
+                        );
+                }
+            ;
+        }
+
+    Nullable<StatementTerm> 
+    NameClassMediatorsWithScopesTransformer::processDown(
+            const StatementTerm& statementTerm, 
+            bool& ioContinue
+            ) const
+        {
+        ioContinue = false;
+
+        @match StatementTerm(statementTerm)
+            -|  Expr(expression) ->> { 
+                return null() <<
+                    StatementTerm::Expr(transform(expression, *this));
+                }
+            -|  Let(elements) ->> {
+                return null() <<
+                    StatementTerm::Let(transformElements(elements));
+                }
+            ;        
+        }
+
+    Nullable<ObjectDefinitionTerm> 
+    NameClassMediatorsWithScopesTransformer::processDown(
+            const ObjectDefinitionTerm& objectDefinitionTerm,
+            bool& ioContinue
+            ) const 
+        {
+        @match ObjectDefinitionTerm(objectDefinitionTerm)
+            -|  Member(memberName, expr, depth) ->> {
+                ioContinue = false;
+
+                std::string newSuffix = memberName.toString();
+
+                return null() <<
+                    ObjectDefinitionTerm::Member(
+                        memberName,
+                        transform(
+                            expr,
+                            NameClassMediatorsWithScopesTransformer(
+                                mContextPath, newSuffix
+                                )
+                            ),
+                        depth
+                        );
+                }
+            -|  _ ->> {
+                return null();
+                }
+            ;
+        }
+
+    }
+

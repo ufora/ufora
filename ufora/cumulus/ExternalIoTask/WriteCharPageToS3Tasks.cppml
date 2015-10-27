@@ -1,0 +1,406 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "WriteCharPageToS3Tasks.hppml"
+#include "../../FORA/Serialization/SerializedObjectFlattener.hpp"
+#include "../../FORA/VectorDataManager/VectorPage.hppml"
+
+using Cumulus::PersistentCache::PersistentCacheIndex;
+
+namespace Cumulus {
+
+WriteCharPageToS3Tasks::WriteCharPageToS3Tasks(	
+			PolymorphicSharedPtr<VectorDataManager> inVDM,
+			PolymorphicSharedPtr<SystemwidePageRefcountTracker> inSPRT,
+			PolymorphicSharedPtr<OfflineCache> inOfflineCache,
+			boost::function0<hash_type> inCreateNewHash,
+			boost::function1<void, PythonIoTaskRequest> inBroadcastPythonTask,
+			boost::function1<void, ExternalIoTaskCreated> inCreateNewIoTask,
+			boost::function1<void, ExternalIoTaskCompleted> inOnExternalIoTaskCompleted,
+			boost::function2<void, ExternalIoTaskCreated, Cumulus::MachineId> inCreateNewRemoteIoTask,
+			boost::function1<void, CumulusComponentMessageCreated> inCumulusComponentMessageCreated,
+			MachineId inOwnMachineId
+			) : 
+		mOwnMachineId(inOwnMachineId),
+		mVDM(inVDM),
+		mOfflineCache(inOfflineCache),
+		mSPRT(inSPRT),
+		mCreateNewHash(inCreateNewHash),
+		mBroadcastPythonTask(inBroadcastPythonTask),
+		mCreateNewIoTask(inCreateNewIoTask),
+		mOnExternalIoTaskCompleted(inOnExternalIoTaskCompleted),
+		mRandomGenerator(inCreateNewHash()[0]),
+		mCreateNewRemoteIoTask(inCreateNewRemoteIoTask),
+		mCumulusComponentMessageCreated(inCumulusComponentMessageCreated)
+	{
+	}
+
+void WriteCharPageToS3Tasks::handleExternalIoTaskCompleted(ExternalIoTaskCompleted completed)
+	{
+	if (mTasksPendingOnOtherMachines.hasValue(completed.taskId()))
+		{
+		std::set<WriteCharPageToS3Task> tasks = mTasksPendingOnOtherMachines.getKeys(completed.taskId());
+
+		mTasksPendingOnOtherMachines.dropValue(completed.taskId());
+
+		for (auto task: tasks)
+			handleWriteTaskComplete(task, completed.result());
+		}
+	}
+
+void WriteCharPageToS3Tasks::handleRemoteTaskCompleted(ExternalIoTaskCompleted completed)
+	{
+	handleExternalIoTaskCompleted(completed);
+	}
+
+void WriteCharPageToS3Tasks::handleNewWriteCharPageToS3Task(ExternalIoTaskId taskId, WriteCharPageToS3Task task)
+	{
+	mCurrentPersistenceTasks.insert(taskId, task);
+
+	if (mCurrentPersistenceTasks.getKeys(task).size() > 1)
+		return;
+
+	scheduleExtractDataAndWrite_(task);
+	}
+
+void WriteCharPageToS3Tasks::checkDeferredTasks()
+	{
+	if (!mTasksDeferredUntilPagesLoaded.size())
+		return;
+
+	std::set<WriteCharPageToS3Task> awake;
+	for (auto p: mTasksDeferredUntilPagesLoaded)
+		if (anyMachineContainsAllPages(p.first))
+			awake.insert(p.first);
+
+	for (auto task: awake)
+		{
+		hash_type guid = mTasksDeferredUntilPagesLoaded[task];
+		mTasksDeferredUntilPagesLoaded.erase(task);
+
+		mCumulusComponentMessageCreated(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::ComponentToGlobalScheduler(
+					ComponentToGlobalSchedulerMessage::DropActiveNeighborhoodDependency(
+						guid
+						)
+					),
+				CumulusComponentEndpointSet::LeaderMachine(),
+				CumulusComponentType::GlobalScheduler()
+				)
+			);
+
+		scheduleExtractDataAndWrite_(task);
+		}
+	}
+
+void WriteCharPageToS3Tasks::handlePythonIoTaskResponse(PythonIoTaskResponse response)
+	{
+	hash_type requestGuid = response.guid();
+
+	if (mPythonIoTaskGuidToWriteTask.find(requestGuid) == mPythonIoTaskGuidToWriteTask.end())
+		return;
+
+	WriteCharPageToS3Task task = mPythonIoTaskGuidToWriteTask[requestGuid];
+	
+	mPythonIoTaskGuidToWriteTask.erase(requestGuid);
+
+	@match PythonIoTaskResponse(response)
+		-| Success() ->> {
+			handleWriteTaskComplete(
+				task, 
+				ExternalIoTaskResult::Success()
+				);
+			}
+		-| Failure(_, reason) ->> {
+			handleWriteTaskComplete(
+				task, 
+				ExternalIoTaskResult::PythonIoFailure(reason)
+				);
+			}
+		-| UserCausedFailure(_, reason) ->> {
+			handleWriteTaskComplete(
+				task, 
+				ExternalIoTaskResult::PythonIoFailure(reason)
+				);
+			}
+		-| _ ->> {
+			lassert_dump(false, prettyPrintString(response));
+			}
+	}
+
+void WriteCharPageToS3Tasks::scheduleExtractDataAndWrite_(WriteCharPageToS3Task task)
+	{
+	bool allExist = true;
+
+	ImmutableTreeVector<boost::shared_ptr<VectorPage> > pages;
+	for (auto pageAndSlice: task.pages())
+		{
+		auto page = mVDM->getPageFor(pageAndSlice.first);
+		if (!page)
+			allExist = false;
+		pages = pages + page;
+		}
+
+	if (allExist)
+		{
+		//make sure we hold onto the page data for the duration of the action
+		mLockedVectorPages[task] = pages;
+		extractDataAndScheduleWrite(task);
+		}
+	else
+		schedulePageDumpOnAppropriateMachine(task);
+	}
+
+void WriteCharPageToS3Tasks::schedulePageDumpOnAppropriateMachine(WriteCharPageToS3Task task)
+	{
+	Nullable<Cumulus::MachineId> idealMachine = pickRemoteMachineForTask(task);
+
+	if (idealMachine)
+		{
+		ExternalIoTaskId newTaskId(mCreateNewHash());
+
+		mCreateNewRemoteIoTask(
+			ExternalIoTaskCreated(
+				newTaskId,
+				ExternalIoTask::WriteCharPageToS3(task)
+				),
+			*idealMachine
+			);
+
+		mTasksPendingOnOtherMachines.insert(task, newTaskId);
+		}
+	else
+		{
+		for (auto pageAndSlice: task.pages())
+			if (mSPRT->hasPageBeenDroppedAcrossEntireSystem(pageAndSlice.first))
+				{
+				handleWriteTaskComplete(
+					task,
+					ExternalIoTaskResult::PageNoLongerExistsInSystem(pageAndSlice.first)
+					);
+				return;
+				}
+
+		LOG_INFO << "Deferring page load for " << task.pages();
+
+		deferTaskUntilPageLoaded(task);
+		}
+	}
+
+void WriteCharPageToS3Tasks::machinesContainingAllPages(std::set<Cumulus::MachineId>& outMachines, WriteCharPageToS3Task task)
+	{
+	Fora::PageId page = task.pages()[0].first;
+
+	std::set<Cumulus::MachineId> machines;
+
+	mSPRT->machinesWithPageInRam(page, machines);
+
+	outMachines.clear();
+
+	for (auto m: machines)
+		{
+		bool OK = true;
+		for (auto pageAndSlice: task.pages())
+			if (!mSPRT->pageIsInRam(pageAndSlice.first, m))
+				{
+				OK = false;
+				break;
+				}
+
+		if (OK)
+			outMachines.insert(m);
+		}
+	}
+
+bool WriteCharPageToS3Tasks::anyMachineContainsAllPages(WriteCharPageToS3Task task)
+	{
+	std::set<Cumulus::MachineId> machines;
+	machinesContainingAllPages(machines, task);
+
+	return machines.size() > 0;
+	}
+
+Nullable<Cumulus::MachineId> WriteCharPageToS3Tasks::pickRemoteMachineForTask(WriteCharPageToS3Task task)
+	{
+	Fora::PageId page = task.pages()[0].first;
+
+	std::set<Cumulus::MachineId> machines;
+
+	machinesContainingAllPages(machines, task);
+
+	machines.erase(mOwnMachineId);
+
+	if (machines.size())
+		return null() << Ufora::math::Random::pickRandomlyFromSet(machines, mRandomGenerator);
+		
+	mSPRT->machinesWithPageOnDisk(page, machines);
+
+	machines.erase(mOwnMachineId);
+
+	if (machines.size())
+		return null() << Ufora::math::Random::pickRandomlyFromSet(machines, mRandomGenerator);
+
+	return null();
+	}
+
+void WriteCharPageToS3Tasks::deferTaskUntilPageLoaded(WriteCharPageToS3Task task)
+	{
+	if (mTasksDeferredUntilPagesLoaded.find(task) != mTasksDeferredUntilPagesLoaded.end())
+		return;
+
+	hash_type guid = mCreateNewHash();
+
+	mTasksDeferredUntilPagesLoaded[task] = guid;
+
+	mCumulusComponentMessageCreated(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::ComponentToGlobalScheduler(
+				ComponentToGlobalSchedulerMessage::CreateActiveNeighborhoodDependency(
+					guid,
+					mapITV(task.pages(), [](pair<Fora::PageId, IntegerSequence> p) { return p.first; })
+					)
+				),
+			CumulusComponentEndpointSet::LeaderMachine(),
+			CumulusComponentType::GlobalScheduler()
+			)
+		);
+	}
+
+namespace {
+
+@type Bundle = 
+	uint8_t* ptr,
+	int64_t bytecount,
+	int64_t stride
+	;
+
+}
+
+void WriteCharPageToS3Tasks::extractDataAndScheduleWrite(WriteCharPageToS3Task task)
+	{
+	bool allExist = true;
+
+	ImmutableTreeVector<pair<boost::shared_ptr<VectorPage>, IntegerSequence> > pages;
+	for (auto pageAndSlice: task.pages())
+		{
+		auto page = mVDM->getPageFor(pageAndSlice.first);
+		
+		if (!page)
+			{
+			deferTaskUntilPageLoaded(task);
+			return;
+			}
+
+		pages = pages + make_pair(page, pageAndSlice.second);
+		}
+
+	std::vector<Bundle> bundles;
+	Nullable<std::string> errorMessageIfInvalid;
+
+	for (auto pageAndSlice: pages)
+		{
+		auto page = pageAndSlice.first;
+		auto slice = pageAndSlice.second;
+
+		page->getPageletTree()->visitTree(
+			[&](boost::shared_ptr<Fora::Pagelet> toCopy, IntegerRange subrange, long offsetInOrig) {
+				auto foraValues = toCopy->getValues();
+				if (!foraValues->isHomogenousPodArray() || foraValues->getHomogenousJOV() != JOV::OfType(Type::Integer(8, false)))
+					errorMessageIfInvalid = "Value array was not entirely made up of characters.";
+				else
+					{
+					IntegerSequence sequenceInPageletTree(subrange.size(), offsetInOrig);
+
+					//the subset of values in the pageletTree we actually plan on using from this slice
+					IntegerSequence sequenceInPageletTreeToKeep = 
+						sequenceInPageletTree.intersect(slice);
+
+					//subset of values in this Fora::Pagelet we want to keep
+					IntegerSequence sequenceInPageletToKeep = 
+						sequenceInPageletTreeToKeep.offset(-offsetInOrig);
+
+					bundles.push_back(
+						Bundle(
+							foraValues->offsetFor(sequenceInPageletTree.offset()),
+							sequenceInPageletTree.size(),
+							sequenceInPageletTree.stride()
+							)
+						);
+					}
+				},
+			slice.containingRange()
+			);
+		}
+
+	if (errorMessageIfInvalid)
+		{
+		handleWriteTaskComplete(
+			task,
+			ExternalIoTaskResult::PythonIoFailure(*errorMessageIfInvalid)
+			);
+		}
+	else
+		{
+		PolymorphicSharedPtr<NoncontiguousByteBlock> bytes(new NoncontiguousByteBlock);
+
+		for (auto b: bundles)
+			{
+			if (b.stride() == 1)
+				bytes->push_back(std::string((const char*)b.ptr(), b.bytecount()));
+			else
+				{
+				std::string data((char)0, b.bytecount());
+				uint8_t* ptr = b.ptr();
+				for (long ix = 0; ix < b.bytecount(); ix++)
+					{
+					data[ix] = *ptr;
+					ptr += b.stride();
+					}
+				bytes->push_back(data);
+				}
+			}
+
+		hash_type requestGuid = mCreateNewHash();
+
+		mPythonIoTaskGuidToWriteTask[requestGuid] = task;
+
+		//fire off the python upload of the bigvec
+		mBroadcastPythonTask(
+			PythonIoTaskRequest::WriteMultipartS3UploadPart(
+				requestGuid,
+				task.credentials(),
+				task.uploadId(),
+				task.slot(),
+				bytes
+				)
+			);
+		}
+	}
+
+void WriteCharPageToS3Tasks::handleWriteTaskComplete(WriteCharPageToS3Task task, ExternalIoTaskResult result)
+	{
+	for (auto taskId: mCurrentPersistenceTasks.getKeys(task))
+		mOnExternalIoTaskCompleted(
+			ExternalIoTaskCompleted(taskId, result)
+			);
+
+	mCurrentPersistenceTasks.dropValue(task);
+
+	mLockedVectorPages.erase(task);
+	}
+
+}
+

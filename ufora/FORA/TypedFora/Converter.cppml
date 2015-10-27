@@ -1,0 +1,1705 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Converter.hppml"
+#include "TypedFora.hppml"
+#include "TypedForaUtil.hppml"
+#include "CreateTupleExpression.hppml"
+#include "ABI/NativeLayoutType.hppml"
+#include "ABI/TruthValueCodegen.hppml"
+#include "ABI/TestTypedForaTupleArity.hppml"
+#include "ABI/TypedForaValueTypecasting.hppml"
+#include "ABI/TestTypedForaValueCoveredByJov.hppml"
+#include "ABI/DestructorsAndConstructors.hppml"
+#include "../Native/NativeCode.hppml"
+#include "../Native/NativeExpressionBuilder.hppml"
+#include "../Native/NativeCodeUtilities.hppml"
+#include "../Native/TypedNativeLibraryFunction.hpp"
+#include "../Interpreter/TransferNativeStackframeIntoInterpreter.hppml"
+#include "../Interpreter/InterpreterFrame.hppml"
+#include "../../core/Logging.hpp"
+#include "ExpressionConversionContext.hppml"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include "../Native/NativeCFGTransforms/Transforms.hppml"
+#include "../Native/NativeCFGTransforms/EliminateOverlappingRefcounts.hppml"
+#include "../../core/StringUtil.hpp"
+
+using namespace TypedFora::Abi;
+
+namespace TypedFora {
+
+Converter::Converter()
+	{
+	}
+
+NativeCFG Converter::convertCallable(const Callable& inCallable) const
+	{
+	try {
+		return convertCallable(inCallable, ExpressionConversionContext());
+		}
+	catch(std::logic_error& e)
+		{
+		throw std::logic_error(
+			e.what() + string("\nConverter::convertCallable(). callable = \n")
+				+ prettyPrintString(inCallable)
+			);
+		}
+	}
+
+NativeCFG Converter::convertCallable(
+			const Callable& inCallable,
+			const ExpressionConversionContext& context
+			) const
+	{
+	@match Callable(inCallable)
+		-| Graph(signature, blocks) ->> {
+			ImmutableTreeMap<NativeBlockID, NativeBlock> nativeBlocks;
+
+			for (long k = 0; k < blocks.size(); k++)
+				{
+				NativeBlock convertedBlock = 
+					convertBlock(
+						blocks.pairAtPosition(k).second, 
+						context.withNewBlockContext(signature, blocks)
+						);
+
+				nativeBlocks = nativeBlocks + 
+					convertBlockID(blocks.pairAtPosition(k).first) + 
+					convertedBlock
+					;
+				}
+
+			return NativeCFG(
+				returnTypesFromResultSignature(signature),
+				nativeBlocks
+				);
+			}
+		-| SingleExpression(vars, expression, resultType, isException) ->> {			
+			return convertCallable(
+				Callable::Graph(
+					inCallable.resultSignature(),
+					emptyTreeMap() + 
+						BlockID::entry() + 
+						Block(
+							vars,
+							Expression::Return(isException, expression),
+							1.0
+							)
+					),
+				context
+				);
+			}
+		-| NativeOperation(signature, entrypoints, implementation) ->> {
+			//all we have to do is add a dummy argument to each native block for the
+			//runtime callbacks
+			return *implementation;
+			}
+	}
+
+NativeBlockID Converter::convertBlockID(const BlockID& inBlock) const
+	{
+	return NativeBlockID(inBlock.isInternal(), inBlock.index());
+	}
+
+NativeBlock Converter::convertBlock(
+			const Block& inBlock,
+			const ExpressionConversionContext& context
+			) const
+	{
+	ImmutableTreeVector<NativeVariable> args;
+
+	ExpressionConversionContext newContext = context;
+
+	for (long k = 0; k< inBlock.args().size(); k++)
+		{
+		TypedFora::Variable variable = inBlock.args()[k];
+
+		NativeVariable nv = NativeVariable::Temp(nativeTypeForForaType(variable.type()));
+
+		args = args + nv;
+		newContext = newContext.withNewStackVariable(variable, nv);
+		}
+
+	NativeExpression expression = 
+		convertExpression(inBlock.expression(), newContext, null());
+
+ 	lassert_dump(!expression.type(), 
+		"Block expressions can't have a type. They are supposed to return or throw."
+		);
+
+	ImmutableTreeSet<NativeVariable> argsSet(args +  NativeRuntimeCallbacks::callbackVar());
+
+	lassert_dump(
+		(expression.freeVariables() - context.boundVars() - argsSet).size() == 0,
+		"evaluating expression " << prettyPrintString(inBlock.expression())
+			<< " produced free variables:\n"
+			<< prettyPrintString(expression.freeVariables() - context.boundVars() - argsSet)
+			<< " in\n" << prettyPrintString(expression)
+		);
+
+	return NativeBlock(
+		NativeRuntimeCallbacks::callbackVar() + args,
+		expression,
+		inBlock.relativeFrequency()
+		);
+	}
+
+NativeExpression
+	Converter::convertLetExpression(	
+			const TypedFora::Expression& inExpression,
+			const ExpressionConversionContext& context,
+			const Nullable<TypedFora::Type>& inTargetType,
+			ImmutableTreeSet<TypedFora::Variable>& ioTeardowns
+			) const
+	{
+	@match TypedFora::Expression(inExpression)
+		-| Let(v, toBind, toEvaluate) ->> {
+			if (!toBind.type())
+				return convertExpression(toBind, context, null());
+
+			NativeExpressionBuilder builder;
+
+			NativeVariable toBindVar = builder.addAndGetVar(
+				convertExpression(toBind, context, null() << v.type(), ioTeardowns)
+				);
+
+			ioTeardowns = ioTeardowns + v;
+
+			NativeExpression toEvalExpr = 
+				convertExpression(
+					toEvaluate, 
+					context.withNewStackVariable(v, toBindVar),
+					inTargetType,
+					ioTeardowns
+					);
+
+			if (!toEvalExpr.type())
+				{
+				ioTeardowns = ioTeardowns - v;
+				return builder(toEvalExpr);
+				}
+
+			toEvalExpr = builder.add(toEvalExpr);
+
+			if (ioTeardowns.contains(v))
+				{
+				builder.add(
+					wrapExpressionInTeardown(v.type(), toBindVar, NativeExpression::Nothing())
+					);
+				ioTeardowns = ioTeardowns - v;
+				}
+
+			return builder(toEvalExpr);
+			}
+	}
+
+NativeExpression
+	Converter::convertDiscardFirstExpression(	
+			const TypedFora::Expression& inExpression,
+			const ExpressionConversionContext& context,
+			const Nullable<TypedFora::Type>& inTargetType,
+			ImmutableTreeSet<TypedFora::Variable>& ioTeardowns
+			) const
+	{
+	@match TypedFora::Expression(inExpression)
+		-| DiscardFirst(Constant(), expr2) ->> {
+			return convertExpression(expr2, context, inTargetType, ioTeardowns);
+			}
+		-| DiscardFirst(Var(), expr2) ->> {
+			return convertExpression(expr2, context, inTargetType, ioTeardowns);
+			}
+		-| DiscardFirst(expr1, expr2) ->> {
+			if (!expr1.type())
+				return convertExpression(expr1, context, expr1.type());
+			NativeVariable expr1Var = 
+				NativeVariable::Temp(nativeTypeForForaType(*expr1.type()));
+
+			NativeExpression expr1Eval = 
+				convertExpression(expr1, context, expr1.type());
+
+			NativeExpression evalExpr1Expression = 
+				NativeExpression::Let(
+					expr1Var,
+					expr1Eval,
+					wrapExpressionInTeardown(
+						*expr1.type(), 
+						expr1Var, 
+						NativeExpression::Nothing()
+						)
+					);
+
+			return 
+				NativeExpression::DiscardFirst(
+					evalExpr1Expression,
+					convertExpression(expr2, context, inTargetType, ioTeardowns)
+					);
+			}
+	}
+
+NativeExpression
+	Converter::convertIfExpression(	
+			const TypedFora::Expression& inExpression,
+			const ExpressionConversionContext& context,
+			const Nullable<TypedFora::Type>& inTargetType,
+			ImmutableTreeSet<TypedFora::Variable>& ioTeardowns
+			) const
+	{
+	@match TypedFora::Expression(inExpression)
+		-| If(cond, ifTrue, ifFalse, frequencyTrue) ->> {
+			if (!cond.type())
+				return convertExpression(cond, context, cond.type());
+
+			NativeVariable condVar = 
+				NativeVariable::Temp(nativeTypeForForaType(*cond.type()));
+
+			ExpressionConversionContext newContext = 
+				context.withNewTeardown(*cond.type(), condVar);
+
+			NativeExpression ifTrueNative = 
+				convertExpression(ifTrue, newContext, inTargetType);
+
+			NativeExpression ifFalseNative = 
+				convertExpression(ifFalse, newContext, inTargetType);
+
+			NativeExpression resultExpr =  
+				NativeExpression::Let(
+					condVar,
+					convertExpression(cond, context, cond.type()),
+					NativeExpression::If(
+						TypedFora::Abi::testForaTruthValueExpression(condVar.expr(), *cond.type()),
+						ifTrueNative,
+						ifFalseNative,
+						frequencyTrue
+						)
+					);
+
+			return wrapExpressionInTeardown(*cond.type(), condVar, resultExpr);
+			}
+	}
+
+
+
+NativeExpression
+	Converter::convertInterruptCheckExpression(	
+			const TypedFora::Expression& inExpression,
+			const ExpressionConversionContext& context,
+			const Nullable<TypedFora::Type>& inTargetType,
+			ImmutableTreeSet<TypedFora::Variable>& ioTeardowns
+			) const
+	{
+	NativeVariable boundInterruptVar =
+						NativeVariable::Temp(NativeTypeFor<NativeRuntimeCallbacks>::get().ptr());
+	
+	NativeExpression callbackExpr = boundInterruptVar.expr();
+
+	@match TypedFora::Expression(inExpression)
+		-|	InterruptCheck(stackMetadata) ->> {
+			return 
+				NativeExpression::Tagged(
+					NativeCFG(emptyTreeVec() + boundInterruptVar,
+						NativeExpression::If(
+							NativeRuntimeCallbacks::checkInterruptExpr(callbackExpr),
+							NativeExpression::FollowContinuation(
+								NativeExpression::CreateComposite(
+									emptyTreeVec() + 
+										NativeExpression::Continuations(
+											emptyTreeVec() +
+												NativeContinuation(
+													NativeVariable::Temp(NativeType::Nothing()),
+													NativeExpression::Return(
+														0,
+														NativeExpression::Nothing()
+														)
+													),
+											convertMetadata(stackMetadata, context)
+											) +
+										NativeExpression::Zero(NativeType::Integer(8, false).ptr())
+									),
+								callbackExpr["interruptContinuation"].load(),
+								0
+								),
+							NativeExpression::Return(0, NativeExpression::Nothing()),
+							.000001	//almost certainly no interrupt, so set to 1 in a million.
+							)
+						)(NativeRuntimeCallbacks::callbackVar().expr()),
+					NativeExpressionTag::Interrupt()
+					);
+			}
+	}
+
+NativeExpression
+	Converter::convertKickCheckExpression(	
+			const TypedFora::Expression& inExpression,
+			const ExpressionConversionContext& context,
+			const Nullable<TypedFora::Type>& inTargetType,
+			ImmutableTreeSet<TypedFora::Variable>& ioTeardowns
+			) const
+	{
+	return
+		NativeExpression::Tagged(
+			NativeExpression::If(
+				NativeExpression::Constant(
+					NativeConstant::VoidPtr((uword_t)0)
+					).cast(NativeType::uword().ptr(), true).load(true)
+					!= NativeExpression::Zero(NativeType::uword()),
+				convertExpression(
+					inExpression.getKickCheck().transferExpression(), 
+					context, 
+					null(), 
+					ioTeardowns
+					),
+				NativeExpression::Nothing(),
+				.000001
+				),
+			NativeExpressionTag::KickToInterpreterCheck()
+			);
+	}
+
+NativeExpression
+	Converter::convertTransferToInterpreterExpression(	
+			const TypedFora::Expression& inExpression,
+			const ExpressionConversionContext& context,
+			const Nullable<TypedFora::Type>& inTargetType,
+			ImmutableTreeSet<TypedFora::Variable>& ioTeardowns
+			) const
+	{
+	@match TypedFora::Expression(inExpression)
+		-| TransferToInterpreter(stackMetadata) ->> {
+			NativeCallTarget callTarget = 
+				NativeCallTarget::Pointer(
+					NativeExpression::CreateComposite(emptyTreeVec() +
+						NativeExpression::ConstantPointer(
+							(void*)&Fora::Interpreter::transferNativeStackframeIntoInterpreter) +
+						NativeExpression::ConstantULong(0)
+					).taggedWith(
+						NativeExpressionTag::Comment("&Fora::Interpreter::transferNativeStackframeIntoInterpreter")
+						),
+					false
+					);
+
+			return NativeExpression::Call(
+				callTarget, 
+				emptyTreeVec(),
+				emptyTreeVec(),
+				convertMetadata(stackMetadata, context)
+				).taggedWith(
+					NativeExpressionTag::TransferToInterpreter()
+					);
+			}
+	}
+
+NativeExpression
+	Converter::convertCastWithoutCheckExpression(	
+			const TypedFora::Expression& inExpression,
+			const ExpressionConversionContext& context,
+			const Nullable<TypedFora::Type>& inTargetType,
+			ImmutableTreeSet<TypedFora::Variable>& ioTeardowns
+			) const
+	{
+	@match TypedFora::Expression(inExpression)
+		-|	CastWithoutCheck(expr, targetType) ->> {
+			
+			if (!expr.type())
+				return convertExpression(expr, context, null(), ioTeardowns);
+
+			NativeExpressionBuilder builder;
+
+			NativeExpression evaluatedExpr = 
+				builder.add(convertExpression(expr, context, expr.type(), ioTeardowns));
+
+			NativeExpression convertedExpr = 
+				builder.add(transferCastExpression(evaluatedExpr, *expr.type(), targetType));
+
+			return builder(transferCastExpression(convertedExpr, targetType, *inTargetType));
+			}
+	}
+
+NativeExpression
+	Converter::convertChangeClassBodyExpression(	
+			const TypedFora::Expression& inExpression,
+			const ExpressionConversionContext& context,
+			const Nullable<TypedFora::Type>& inTargetType,
+			ImmutableTreeSet<TypedFora::Variable>& ioTeardowns
+			) const
+	{
+	@match TypedFora::Expression(inExpression)
+		-|	ChangeClassBody(expr, _) ->> {
+			
+			if (!expr.type())
+				return convertExpression(expr, context, null(), ioTeardowns);
+
+			NativeExpressionBuilder builder;
+
+			NativeExpression evaluatedExpr = 
+				builder.add(convertExpression(expr, context, expr.type(), ioTeardowns));
+
+			Type currentType = *expr.type();
+
+			Type newType = *inExpression.type();
+
+			lassert(nativeLayoutType(currentType.jov()) == nativeLayoutType(newType.jov()));
+
+			return builder(transferCastExpression(evaluatedExpr, newType, *inTargetType));
+			}
+	}
+
+NativeExpression
+	Converter::convertInlineNativeOperationExpression(	
+			const TypedFora::Expression& inExpression,
+			const ExpressionConversionContext& context,
+			const Nullable<TypedFora::Type>& inTargetType,
+			ImmutableTreeSet<TypedFora::Variable>& ioTeardowns
+			) const
+	{
+	@match TypedFora::Expression(inExpression)
+		-|	InlineNativeOperation(varmap, nativeExpr, outputType, hasSideEffects, metadataFrames) ->> {
+
+			NativeExpressionBuilder builder;
+			ImmutableTreeVector<NativeVariable> vars;
+
+			for (long k = 0; k < varmap.size(); k++)
+				vars = vars + builder.addAndGetVar(
+					convertExpression(
+						varmap[k].externalArgSource(),
+						context,
+						null() << varmap[k].internalBindType(),
+						ioTeardowns
+						)
+					);
+
+			NativeExpression mappedNativeExpr = 
+				builder(
+					mapVariablesInNativeExpressionToSpecificVars(
+						*nativeExpr,
+						varmap, 
+						vars
+						)
+					);
+
+			ImmutableTreeVector<NativeContinuationMetadata> nativeMeta;
+
+			try {
+				nativeMeta = convertMetadata(metadataFrames, context);
+				}
+			catch(...)
+				{
+				LOG_ERROR << "converting " << prettyPrintString(nativeExpr);
+				LOG_ERROR << "args were  " << prettyPrintString(varmap);
+				LOG_ERROR << "meta is " << prettyPrintString(metadataFrames);
+				throw;
+				}
+
+			mappedNativeExpr = NativeCFGTransforms::pushMetadataOntoCallExpressions(
+										mappedNativeExpr,
+										nativeMeta
+										);
+
+			NativeExpression finalExpr =
+				transferCastExpression(
+					mappedNativeExpr,
+					outputType,
+					*inTargetType
+					);
+
+			return finalExpr;
+			}
+	}
+
+
+NativeExpression
+	Converter::convertTypeCheckExpression(	
+			const TypedFora::Expression& inExpression,
+			const ExpressionConversionContext& context,
+			const Nullable<TypedFora::Type>& inTargetType,
+			ImmutableTreeSet<TypedFora::Variable>& ioTeardowns
+			) const
+	{
+	@match TypedFora::Expression(inExpression)
+		-|	TypeCheck(expr, continuations) ->> {
+			
+			if (!expr.type())
+				return convertExpression(expr, context, null(), ioTeardowns);
+
+			NativeExpressionBuilder builder;
+
+			NativeVariable toCheckVar = 
+				builder.addAndGetVar(convertExpression(expr, context, expr.type()));
+			NativeExpression toCheckExpr = toCheckVar.expr();
+
+			NativeExpression resultExpr = 
+				NativeExpression::Halt("Couldn't map value of type " + 
+					prettyPrintString(*expr.type()) + " to continuations of type " + 
+					prettyPrintString(typeListFromContinuationArgTypes(continuations))
+					);
+			
+			for (long j = ((long)continuations.size()) - 1; j >= 0; j--)
+				{
+				NativeVariable contNativeVar = 
+					NativeVariable::Temp(nativeTypeForForaType(continuations[j].var().type()));
+
+				NativeExpression body = 
+					NativeExpression::Let(
+						contNativeVar,
+						transferCastExpression(
+							toCheckExpr,
+							*expr.type(),
+							continuations[j].var().type()
+							),
+						convertExpression(
+							continuations[j].resumption(),
+							context
+								.withNewStackVariable(continuations[j].var(), contNativeVar),
+							continuations[j].resumption().type()
+							)
+						);
+				
+				if (body.type())
+					body = transferCastExpression(
+						body,
+						*continuations[j].resumption().type(),
+						*inTargetType
+						);
+
+				if (typeDirectlyCastable(*expr.type(), continuations[j].var().type()))
+					resultExpr = body;
+				else
+					resultExpr = 
+						NativeExpression::If(
+							TypedFora::Abi::testTypedForaValueCoveredByJov(
+								toCheckVar.expr(),
+								*expr.type(),
+								continuations[j].var().type().jov()
+								),
+							body,
+							resultExpr
+							);
+				}
+
+			if (!resultExpr.type())
+				return builder(resultExpr);
+			else
+				{
+				//we're continuing from here, so we have to tear down the expression
+				//we evaluated.
+				NativeExpression finalResult = builder.add(resultExpr);
+				return builder(wrapExpressionInTeardown(*expr.type(), toCheckVar, finalResult));
+				}
+			}
+	}
+
+
+
+NativeExpression
+	Converter::convertCallExpression(	
+			const TypedFora::Expression& inExpression,
+			const ExpressionConversionContext& context,
+			const Nullable<TypedFora::Type>& inTargetType,
+			ImmutableTreeSet<TypedFora::Variable>& ioTeardowns
+			) const
+	{
+	@match TypedFora::Expression(inExpression)
+		-| Call(target, arguments, continuations, stackMetadata) ->> {
+			
+			for (long k = 0; k < arguments.size(); k++)
+				if (!arguments[k].type())
+					return convertExpression(
+						putDiscardFirstsAroundExpressionList(arguments.slice(0,k+1), context), 
+						context,
+						null()
+						);
+
+			NativeExpressionBuilder builder;
+
+			pair<ImmutableTreeVector<pair<NativeVariable, TypedFora::Type> >, 
+					ImmutableTreeVector<NativeExpression> > teardownsAndExpressions = 
+											evaluateExpressionList(arguments, context, builder);
+
+			NativeCallTarget nativeCallTarget = convertCallTarget(target, context);
+
+			ImmutableTreeVector<NativeContinuation> conts = 
+				convertContinuationFrame(
+					continuations, 
+					context.withNewTeardown(teardownsAndExpressions.first),
+					target.resultSignature(),
+					inTargetType,
+					ioTeardowns
+					);
+
+			//produce the args that the call is going to use
+			ImmutableTreeVector<NativeExpression> callArgList;
+			for (long k = 0; k < teardownsAndExpressions.second.size(); k++)
+				callArgList = callArgList + 
+					castExpression(
+						teardownsAndExpressions.second[k],
+						*arguments[k].type(),
+						target.callSignature()[k]
+						);
+			
+			auto teardowns = teardownsAndExpressions.first;
+
+			ImmutableTreeSet<NativeVariable> used = nativeCallTarget.freeVariables();
+
+			for (auto cont: conts)
+				used = used + cont.freeVariables();
+
+			NativeExpression tr;
+			try {
+				tr = NativeExpression::Call(
+					nativeCallTarget, 
+					conts, 
+					NativeRuntimeCallbacks::callbackVar().expr() + callArgList,
+					convertMetadata(
+						stackMetadata, 
+						context.withNewTeardown(teardowns),
+						used
+						)
+					);
+				}
+			catch(std::logic_error& e)
+				{
+				throw std::logic_error(e.what() + 
+					string("\ncalledNative = ") + prettyPrintString(nativeCallTarget) + "\n" + 
+					"called TypedFora = " + prettyPrintString(target)
+					);
+				}
+
+			if (tr.type())
+				{
+				NativeVariable tempVar = NativeVariable::Temp(*tr.type());
+
+				tr = NativeExpression::Let(
+					tempVar,
+					tr,
+					getTeardownExpression(
+						teardowns, 
+						emptyTreeSet(), 
+						context
+						) >> tempVar.expr()
+					);
+				}
+			tr = builder(tr);
+
+			return tr;
+			}
+	}
+
+NativeCallTarget Converter::convertCallTarget(	
+									const CallTarget& inCallTarget, 
+									const ExpressionConversionContext& context
+									) const
+	{
+	@match CallTarget(inCallTarget)
+		-|	Subgraph(callable, block) ->> {
+			NativeCFG subgraph = convertCallable(callable, context);
+
+			return NativeCallTarget::Inline(
+				subgraph, 
+				convertBlockID(block)
+				);
+			}
+		-|	ExternalSubgraph(_, _, name, blockID) ->> {
+			return NativeCallTarget::External(name, convertBlockID(blockID));
+			}
+	}
+
+ImmutableTreeVector<NativeContinuation> Converter::convertContinuationFrame(
+							const ContinuationFrame& inFrame,
+							const ExpressionConversionContext& context,
+							const ResultSignature& targetResultSignature,
+							const Nullable<TypedFora::Type>& inTargetType,
+							ImmutableTreeSet<TypedFora::Variable>& ioTeardowns
+							) const
+	{
+	ImmutableTreeVector<NativeContinuation> tr;
+	
+	//we need to generate a continuation for each element of targetResultSignature
+	for (long k = 0; k < targetResultSignature.size(); k++)
+		{
+		bool isException = targetResultSignature[k].second;
+		const Type& retType = targetResultSignature[k].first;
+
+		uword_t contIndex = pickContinuationFrameElement(inFrame, retType, isException);
+
+		Continuation cont = inFrame[contIndex].first;
+
+		cont = adaptContinuationToType(cont, retType);
+
+		tr = tr + convertContinuation(cont, isException, context, inTargetType, ioTeardowns);
+		}
+
+	return tr;
+	}
+
+NativeContinuation Converter::convertContinuation(
+							const Continuation& inFrame,
+							bool isException,
+							const ExpressionConversionContext& context,
+							const Nullable<TypedFora::Type>& inTargetType,
+							ImmutableTreeSet<TypedFora::Variable>& ioTeardowns
+							) const
+	{
+	NativeVariable contVar = NativeVariable::Temp(nativeTypeForForaType(inFrame.var().type()));
+
+	NativeExpression expr = 
+		convertExpression(
+			inFrame.resumption(), 
+			context.withNewStackVariable(inFrame.var(), contVar),
+			inTargetType,
+			ioTeardowns
+			);
+
+	if (expr.type())
+		expr = wrapExpressionInTeardown(inFrame.var().type(), contVar, expr);
+
+	return NativeContinuation(
+		contVar,
+		expr,
+		inFrame.relativeFrequency(),
+		NativeIndividualContinuationMetadata::ResumeWithResult(
+			isException, 
+			CPPMLOpaqueHandle<TypedFora::Type>(inFrame.var().type())
+			)
+		);
+	}
+
+
+NativeExpression
+	Converter::convertTransferToExpression(	
+			const TypedFora::Expression& inExpression,
+			const ExpressionConversionContext& context,
+			const Nullable<TypedFora::Type>& inTargetType,
+			ImmutableTreeSet<TypedFora::Variable>& ioTeardowns
+			) const
+	{
+	@match TypedFora::Expression(inExpression)
+		-| TransferTo(target, arguments, stackMetadata) ->> {
+			
+			for (long k = 0; k < arguments.size(); k++)
+				if (!arguments[k].type())
+					return convertExpression(
+						putDiscardFirstsAroundExpressionList(arguments.slice(0,k+1), context), 
+						context,
+						null()
+						);
+
+			NativeExpressionBuilder builder;
+
+			NativeExpression jumpExpression;
+
+			@match TypedFora::TransferTarget(target)
+				-|	ExternalSubgraph(output, input, name, block) ->> {
+
+					jumpExpression = 
+						computeTransferToExternalSubgraph(
+							arguments,
+							output,
+							input,
+							name,
+							block,
+							stackMetadata,
+							context
+							);
+					}
+
+			return 
+				builder(
+					jumpExpression
+					);
+			}
+		;
+	lassert(false);
+	}
+
+NativeExpression Converter::computeTransferToExternalSubgraph(
+						const ImmutableTreeVector<Expression>& arguments,
+						const ResultSignature& resultSignature,
+						const ImmutableTreeVector<TypedFora::Type>& input,
+						const std::string& inTargetName,
+						const BlockID& blockID,
+						const ImmutableTreeVector<MetadataStackFrame>& stackMetadata,
+						const ExpressionConversionContext& context
+						) const
+	{
+	NativeExpressionBuilder builder;
+
+	//take each argument and evaluate it into the target.
+	ImmutableTreeVector<NativeExpression>  jumpExpressions;
+
+	ImmutableTreeSet<Variable> toTearDown = context.variablesToTearDownOnControlTransfer();
+
+	for (long k = 0; k < arguments.size(); k++)
+		{
+		jumpExpressions = jumpExpressions + 
+			builder.add(
+				convertExpression(
+					arguments[k],
+					context,
+					null() << input[k],
+					toTearDown
+					)
+				);
+		}
+
+	ExpressionConversionContext subcontext = 
+		context
+			.withoutTeardowns()
+			.withNewTeardown(context.unnamedVariablesToTearDownOnControlTransfer())
+			.withNewTeardown(toTearDown)
+			;
+
+	ImmutableTreeVector<NativeContinuation> continuations = 
+		generateTransferContinuations(
+			resultSignature, 
+			subcontext
+			);
+
+
+	return builder(
+		NativeExpression::Call(
+			NativeCallTarget::External(inTargetName, convertBlockID(blockID)),
+			continuations,
+			emptyTreeVec() +
+				NativeRuntimeCallbacks::callbackVar().expr() +
+				jumpExpressions,
+			convertMetadata(stackMetadata, subcontext)
+			)
+		);
+	}
+
+ImmutableTreeVector<NativeContinuation> Converter::generateTransferContinuations(
+					const ResultSignature& inResultSignature,
+					const ExpressionConversionContext& inContext
+					) const
+	{
+	ImmutableTreeVector<NativeContinuation> tr;
+	for (long k = 0; k < inResultSignature.size(); k++)
+		{
+		Continuation cont = 
+			simpleReturnContinuation(
+				inResultSignature[k].first, 
+				inResultSignature[k].second
+				);
+
+		ImmutableTreeSet<TypedFora::Variable> emptyVars;
+
+		tr = tr + convertContinuation(cont, inResultSignature[k].second, inContext, null(), emptyVars);
+		}
+
+	return tr;
+	}
+
+
+TypedFora::Expression Converter::putDiscardFirstsAroundExpressionList(
+		const ImmutableTreeVector<TypedFora::Expression>& exprs,
+		const ExpressionConversionContext& context
+		) const
+	{
+	lassert(exprs.size());
+	if (exprs.size() == 1)
+		return exprs[0];
+	return 
+		TypedFora::Expression::DiscardFirst(
+			exprs[0], 
+			putDiscardFirstsAroundExpressionList(exprs.slice(1), context)
+			);
+	}
+
+
+NativeExpression
+	Converter::convertJumpExpression(	
+			const TypedFora::Expression& inExpression,
+			const ExpressionConversionContext& context,
+			const Nullable<TypedFora::Type>& inTargetType,
+			ImmutableTreeSet<TypedFora::Variable>& ioTeardowns
+			) const
+	{
+	@match TypedFora::Expression(inExpression)
+		-|	Jump(block, expressions) ->> {
+
+			lassert_dump(context.blockMap().contains(block), 
+				"Can't find " << prettyPrintString(block) << " within " << 
+					prettyPrintString(context.blockMap().keys())
+				);
+
+			for (long k = 0; k < expressions.size(); k++)
+				if (!expressions[k].type())
+					return convertExpression(
+						putDiscardFirstsAroundExpressionList(expressions.slice(0,k+1), context), 
+						context,
+						null()
+						);
+
+			NativeExpressionBuilder builder;
+
+			ImmutableTreeSet<TypedFora::Variable> varsToTeardown = 
+				context.variablesToTearDownOnControlTransfer();
+
+				pair<ImmutableTreeVector<pair<NativeVariable, TypedFora::Type> >, 
+					ImmutableTreeVector<NativeExpression> > teardownsAndExpressions = 
+						evaluateExpressionList(
+							expressions, 
+							typeListFromVariables(context.blockMap()[block]->args()),
+							context, 
+							builder,
+							varsToTeardown
+							);
+
+			ImmutableTreeVector<NativeExpression> jumpExpressions;
+			jumpExpressions = jumpExpressions + NativeRuntimeCallbacks::callbackVar().expr();
+
+			jumpExpressions = jumpExpressions + teardownsAndExpressions.second;
+
+			NativeExpression jumpExpr = 
+				NativeExpression::Jump(convertBlockID(block), jumpExpressions);
+
+			return 
+				builder(
+					NativeExpression::DiscardFirst(
+						getTeardownExpression(
+							context.unnamedVariablesToTearDownOnControlTransfer(),
+							varsToTeardown,
+							context
+							),
+						jumpExpr
+						)
+					);
+			}
+	}
+
+NativeExpression
+	Converter::convertReturnExpression(	
+			const TypedFora::Expression& inExpression,
+			const ExpressionConversionContext& context,
+			const Nullable<TypedFora::Type>& inTargetType,
+			ImmutableTreeSet<TypedFora::Variable>& ioTeardowns
+			) const
+	{
+	@match TypedFora::Expression(inExpression)
+		-|	Return (isException, result) ->> {
+			if (!result.type())
+				return convertExpression(result, context, null());
+
+			Nullable<uword_t> index = 
+				pickReturnContinuationFor(
+					context.resultSignature(), 
+					*result.type(), 
+					isException
+					);
+				
+			if (!index)
+				{
+				ostringstream errorMessage;
+				errorMessage << "Attempted to follow a NativeExpression::Halt produced in "
+					<< __PRETTY_FUNCTION__
+					<< " since we couldn't find a continuation for "
+					<< prettyPrintString(*result.type()) << " within "
+					<< prettyPrintString(context.resultSignature())
+					<< " when isException = " << (isException ? "true" : "false");
+				return NativeExpression::Halt(errorMessage.str());
+				} 
+
+			NativeExpressionBuilder builder;
+
+			ImmutableTreeSet<TypedFora::Variable> varsToTeardown = 
+				context.variablesToTearDownOnControlTransfer();
+
+			NativeExpression toReturn = 
+				builder.add(
+					convertExpression(
+						result, 
+						context, 
+						null() << context.resultSignature()[*index].first,
+						varsToTeardown
+						)
+					);
+
+			builder.add(
+				getTeardownExpression(
+					context.unnamedVariablesToTearDownOnControlTransfer(),
+					varsToTeardown,
+					context
+					)
+				);
+
+			return 
+				builder(
+					NativeExpression::Return(
+						*index,
+						toReturn
+						)
+					);
+			}
+	}
+
+NativeExpression
+	Converter::convertIsTupleExpression(	
+			const TypedFora::Expression& inExpression,
+			const ExpressionConversionContext& context,
+			const Nullable<TypedFora::Type>& inTargetType,
+			ImmutableTreeSet<TypedFora::Variable>& ioTeardowns
+			) const
+	{
+	@match TypedFora::Expression(inExpression)
+		-| IsTuple(expr, arity, arityExact) ->> {
+
+			NativeExpression toCheck = 
+				convertExpression(expr, context, expr.type());
+
+			if (!toCheck.type())
+				return toCheck;
+
+			NativeVariable var = NativeVariable::Temp(nativeTypeForForaType(*expr.type()));
+			
+			return NativeExpression::Let(
+				var,
+				toCheck,
+				wrapExpressionInTeardown(
+					*expr.type(),
+					var,
+					TypedFora::Abi::testTypedForaTupleArity(var, *expr.type(), arity, arityExact)
+					)
+				);
+			}
+	}
+
+NativeExpression
+	Converter::convertGetItemExpression(	
+			const TypedFora::Expression& inExpression,
+			const ExpressionConversionContext& context,
+			const Nullable<TypedFora::Type>& inTargetType,
+			ImmutableTreeSet<TypedFora::Variable>& ioTeardowns
+			) const
+	{
+	@match TypedFora::Expression(inExpression)
+		-| GetItem(expr, index) ->> {
+			
+			NativeExpression toCheck = convertExpression(expr, context, expr.type());
+
+			if (!toCheck.type())
+				return toCheck;
+
+			NativeVariable var = NativeVariable::Temp(nativeTypeForForaType(*expr.type()));
+			
+			return NativeExpression::Let(
+				var,
+				toCheck,
+				wrapExpressionInTeardown(
+					*expr.type(),
+					var,
+					transferCastExpression(
+						nativeExprTupleGetItem(var, *expr.type(), index, *inExpression.type()),
+						tupleGetItemType(*expr.type(), index),
+						*inTargetType
+						)
+					)
+				);
+			}
+	}
+
+NativeExpression
+	Converter::convertGetSliceExpression(	
+			const TypedFora::Expression& inExpression,
+			const ExpressionConversionContext& context,
+			const Nullable<TypedFora::Type>& inTargetType,
+			ImmutableTreeSet<TypedFora::Variable>& ioTeardowns
+			) const
+	{
+	@match TypedFora::Expression(inExpression)
+		-| GetSlice(expr, index) ->> {
+			
+			NativeExpression toCheck = convertExpression(expr, context, expr.type());
+
+			if (!toCheck.type())
+				return toCheck;
+
+			NativeVariable var = NativeVariable::Temp(nativeTypeForForaType(*expr.type()));
+			
+			return NativeExpression::Let(
+				var,
+				toCheck,
+				wrapExpressionInTeardown(
+					*expr.type(),
+					var,
+					transferCastExpression(
+						nativeExprTupleGetSlice(var, *expr.type(), index, *inExpression.type()),
+						tupleGetSliceType(*expr.type(), index),
+						*inTargetType
+						)
+					)
+				);
+			}
+	}
+
+NativeExpression
+	Converter::convertMakeTupleExpression(	
+			const TypedFora::Expression& inExpression,
+			const ExpressionConversionContext& context,
+			const Nullable<TypedFora::Type>& inTargetType,
+			ImmutableTreeSet<TypedFora::Variable>& ioTeardowns
+			) const
+	{
+	@match TypedFora::Expression(inExpression)
+		-|	MakeTuple(makeTupleArgs, outType) ->> {
+
+			NativeExpressionBuilder builder;
+
+			pair<ImmutableTreeVector<pair<NativeVariable, TypedFora::Type> >, 
+					ImmutableTreeVector<NativeExpression> > teardownsAndExpressions = 
+				evaluateExpressionList(
+					expressionsFromMakeTupleArgs(makeTupleArgs),
+					context, 
+					builder
+					);
+			
+			NativeExpression result = 
+				builder.add(
+					createTupleExpression(
+						teardownsAndExpressions.second, 
+						makeTupleArgs, 
+						outType
+						)
+					);
+
+			result = builder.add(
+				transferCastExpression(
+					result,
+					*inExpression.type(),
+					*inTargetType
+					)
+				);
+
+			return builder(
+				NativeExpression::DiscardFirst(
+					getTeardownExpression(
+						teardown_set_type(teardownsAndExpressions.first),
+						emptyTreeSet(),
+						context
+						),
+					result
+					)
+				);
+			}
+	}
+
+
+NativeExpression
+	Converter::convertExpression(	
+			const TypedFora::Expression& inExpression,
+			const ExpressionConversionContext& context,
+			const Nullable<TypedFora::Type>& inTargetType
+			) const
+	{
+	try {
+		ImmutableTreeSet<TypedFora::Variable> teardowns;
+
+		NativeExpression tr = convertExpression(inExpression, context, inTargetType, teardowns);
+
+		lassert_dump(teardowns.size() == 0, prettyPrintString(inExpression));
+
+		return tr;
+		}
+	catch(std::logic_error& e)
+		{
+		throw std::logic_error(e.what() + string("\n***********************\n") + 
+			"converting expression: " + prettyPrintString(inExpression) 
+			);
+		}
+	}
+
+NativeExpression
+	Converter::convertExpression(	
+			const TypedFora::Expression& inExpression,
+			const ExpressionConversionContext& context,
+			const Nullable<TypedFora::Type>& inTargetType,
+			ImmutableTreeSet<TypedFora::Variable>& ioTeardowns
+			) const
+	{
+	NativeExpression tr;
+
+	try {
+		@match TypedFora::Expression(inExpression)
+			-| Var(v) ->> {
+				if (ioTeardowns.contains(v) && inTargetType->refcountStyle().isAsValueOwned())
+					{
+					ioTeardowns = ioTeardowns - v;
+					
+					lassert(context.variableMap()[v]);
+
+					tr = transferCastExpression(
+						context.variableMap()[v]->expr(), 
+						v.type(),
+						*inTargetType
+						);
+					}
+				else
+					{
+					lassert(context.variableMap()[v]);
+
+					tr = castExpression(
+						context.variableMap()[v]->expr(), 
+						v.type(),
+						*inTargetType
+						);
+					}
+				}
+			-| Constant(c) ->> {
+				tr = transferCastExpression(
+					nativeExpressionForConstant(c),
+					*inExpression.type(),
+					*inTargetType
+					);
+				}
+			-| Let() ->> {
+				tr = convertLetExpression(inExpression, context, inTargetType, ioTeardowns);
+				}
+			-| DiscardFirst() ->> {
+				tr = convertDiscardFirstExpression(inExpression, context, inTargetType, ioTeardowns);
+				}
+			-| If() ->> {
+				tr = convertIfExpression(inExpression, context, inTargetType, ioTeardowns);
+				}
+			-| InterruptCheck() ->> {
+				tr = convertInterruptCheckExpression(inExpression, context, inTargetType, ioTeardowns);
+				}
+			-| CastWithoutCheck() ->> {
+				tr = convertCastWithoutCheckExpression(
+						inExpression,
+						context,
+						inTargetType,
+						ioTeardowns
+						);
+				}
+			-| ChangeClassBody() ->> {
+				tr = convertChangeClassBodyExpression(inExpression, context, inTargetType, ioTeardowns);
+				}
+			-| InlineNativeOperation() ->> {
+				tr = convertInlineNativeOperationExpression(
+						inExpression,
+						context,
+						inTargetType,
+						ioTeardowns
+						);
+				}
+			-| TypeCheck() ->> {
+				tr = convertTypeCheckExpression(inExpression, context, inTargetType, ioTeardowns);
+				}
+			-| Call() ->> {
+				tr = convertCallExpression(inExpression, context, inTargetType, ioTeardowns);
+				}
+			-| TransferTo() ->> {
+				tr = convertTransferToExpression(inExpression, context, inTargetType, ioTeardowns);
+				}
+			-| Jump() ->> {
+				tr = convertJumpExpression(inExpression, context, inTargetType, ioTeardowns);
+				}
+			-| KickCheck() ->> {
+				tr = convertKickCheckExpression(inExpression, context, inTargetType, ioTeardowns);
+				}
+			-| TransferToInterpreter() ->> {
+				tr = convertTransferToInterpreterExpression(inExpression, context, inTargetType, ioTeardowns);
+				}
+			-| Halt(message) ->> {
+				tr = NativeExpression::Halt(message);
+				}
+			-| Return() ->> {
+				tr = convertReturnExpression(inExpression, context, inTargetType, ioTeardowns);
+				}
+			-| IsTuple() ->> {
+				tr = convertIsTupleExpression(inExpression, context, inTargetType, ioTeardowns);
+				}
+			-| GetItem() ->> {
+				tr = convertGetItemExpression(inExpression, context, inTargetType, ioTeardowns);
+				}
+			-| GetSlice() ->> {
+				tr = convertGetSliceExpression(inExpression, context, inTargetType, ioTeardowns);
+				}
+			-| MakeTuple() ->> {
+				tr = convertMakeTupleExpression(inExpression, context, inTargetType, ioTeardowns);
+				}
+		}
+	catch(std::logic_error& e)
+		{
+		throw std::logic_error(e.what() + std::string("\nConverting ") + prettyPrintString(inExpression));
+		}
+
+	lassert_dump(!tr.type() || tr.type() == inTargetType,
+		"expected " << prettyPrintString(inTargetType) 
+			<< " but got " << prettyPrintString(tr.type())
+			<< ". Expression = \n" << prettyPrintString(inExpression)
+		);
+
+	lassert_dump(!tr.type() || *tr.type() == nativeTypeForForaType(*inTargetType),
+		"evaluating expression " << prettyPrintString(inExpression) << " produced invalid type. " 
+			<< "expected native type " << prettyPrintString(nativeTypeForForaType(*inTargetType))
+			<< " for " << prettyPrintString(*inTargetType)
+			<< " but got " << prettyPrintString(*tr.type())
+		);
+	
+	return tr;
+	}
+
+
+ImmutableTreeVector<NativeType> Converter::returnTypesFromResultSignature(
+									const ResultSignature& inSignature
+									) const
+	{
+	ImmutableTreeVector<NativeType> tr;
+	
+	for (long k = 0; k < inSignature.size(); k++)
+		tr = tr + nativeTypeForForaType(inSignature[k].first);
+
+	return tr;
+	}
+	
+pair<ImmutableTreeVector<pair<NativeVariable, TypedFora::Type> >, 
+		ImmutableTreeVector<NativeExpression> >
+Converter::evaluateExpressionList(
+				const ImmutableTreeVector<Expression>& inExpressions, 
+				const ExpressionConversionContext& inContext, 
+				NativeExpressionBuilder& ioBuilder
+				) const
+	{
+	ImmutableTreeVector<Type> targetTypes;
+	for (long k =0 ; k < inExpressions.size(); k++)
+		targetTypes = targetTypes + *inExpressions[k].type();
+
+	return evaluateExpressionList(inExpressions, targetTypes, inContext, ioBuilder);
+	}
+
+pair<ImmutableTreeVector<pair<NativeVariable, TypedFora::Type> >, 
+		ImmutableTreeVector<NativeExpression> >
+Converter::evaluateExpressionList(
+				const ImmutableTreeVector<Expression>& inExpressions, 
+				const ImmutableTreeVector<Type>& targetTypes,
+				const ExpressionConversionContext& inContext, 
+				NativeExpressionBuilder& ioBuilder
+				) const
+	{
+	ImmutableTreeSet<Variable> toTearDown;
+	return evaluateExpressionList(
+			inExpressions,
+			targetTypes,
+			inContext,
+			ioBuilder,
+			toTearDown
+			);
+	}
+
+pair<ImmutableTreeVector<pair<NativeVariable, TypedFora::Type> >, 
+		ImmutableTreeVector<NativeExpression> >
+Converter::evaluateExpressionList(
+				const ImmutableTreeVector<Expression>& inExpressions, 
+				const ImmutableTreeVector<Type>& targetTypes,
+				const ExpressionConversionContext& inContext, 
+				NativeExpressionBuilder& ioBuilder,
+				ImmutableTreeSet<Variable> &ioToTearDown
+				) const
+	{
+	ImmutableTreeVector<pair<NativeVariable, TypedFora::Type> > outTeardowns;
+	ImmutableTreeVector<NativeExpression> outExpressions;
+
+	for (long k = 0; k < inExpressions.size(); k++)
+		{
+		NativeExpression expr = 
+			convertExpression(
+				inExpressions[k], 
+				inContext,
+				null() << targetTypes[k],
+				ioToTearDown
+				);
+
+		lassert_dump(!expr.type() || 
+			*expr.type() == nativeTypeForForaType(targetTypes[k]),
+			prettyPrintString(inExpressions[k]) 
+				<< " of type " << prettyPrintString(targetTypes[k])
+				<< " produced native type of " 
+				<< prettyPrintString(*expr.type()) 
+				<< " instead of "
+				<< prettyPrintString(nativeTypeForForaType(targetTypes[k]))
+			);
+
+		if (targetTypes[k].refcountStyle().isAsValueOwned())
+			{
+			NativeVariable var = ioBuilder.addAndGetVar(expr);
+			outTeardowns = outTeardowns + make_pair(var, targetTypes[k]);
+			outExpressions = outExpressions + var.expr();
+			}
+		else
+			outExpressions = outExpressions + ioBuilder.add(expr);
+		}
+
+	return make_pair(outTeardowns, outExpressions);
+	}
+
+NativeExpression Converter::getTeardownExpression(
+									const ExpressionConversionContext& context
+									) const
+	{
+	return getTeardownExpression(
+		context.unnamedVariablesToTearDownOnControlTransfer(),
+		context.variablesToTearDownOnControlTransfer(),
+		context
+		);
+	}
+NativeExpression Converter::getTeardownExpression(
+									const teardown_set_type& inUnnamedTeardowns,
+									const ImmutableTreeSet<TypedFora::Variable>& inNamedTeardowns,
+									const ExpressionConversionContext& context
+									) const
+	{
+	NativeExpression tr = NativeExpression::Nothing();
+
+	for (long k = 0; k < inUnnamedTeardowns.size(); k++)
+		tr = wrapExpressionInTeardown(
+				inUnnamedTeardowns[k].second,
+				inUnnamedTeardowns[k].first,
+				tr
+				);
+
+	for (long k = 0; k < inNamedTeardowns.size(); k++)
+		tr = wrapExpressionInTeardown(
+			inNamedTeardowns[k].type(), 
+			*context.variableMap()[inNamedTeardowns[k]],
+			tr
+			);
+
+	return tr;
+	}
+
+Nullable<uword_t> Converter::pickReturnContinuationFor(	
+									const TypedFora::ResultSignature& inSignature,
+									const TypedFora::Type& inType,
+									bool isException
+									) const
+	{
+	Nullable<uword_t> curVal;
+
+	for (uword_t k = 0; k < inSignature.size(); k++)
+		if (inSignature[k].second == isException && 
+				typeDirectlyCastable(inType, inSignature[k].first))
+			{
+			if (!curVal || inSignature[*curVal].first.jov().covers(inSignature[k].first.jov()))
+				curVal = k;
+			}
+
+	return curVal;
+	}
+
+uword_t Converter::pickContinuationFrameElement(	
+									const TypedFora::ContinuationFrame& inFrame,
+									const TypedFora::Type& inType,
+									bool isException
+									) const
+	{
+	Nullable<uword_t> curVal;
+
+	for (long k = 0; k < inFrame.size(); k++)
+		if (inFrame[k].second == isException && 
+				typeDirectlyCastable(inType, inFrame[k].first.var().type()))
+			{
+			if (!curVal || inFrame[*curVal].first.var().type().jov()
+					.covers(inFrame[k].first.var().type().jov()))
+				curVal = k;
+			}
+
+	lassert_dump(curVal, "couldn't find " << 
+			prettyPrintString(inType) << " within " << prettyPrintString(inFrame) 
+			<< " when isException = " << (isException ? "true":"false"));
+
+	return *curVal;
+	}
+
+NativeContinuationMetadataInstruction Converter::convertMetadataInstruction(
+								const MetadataInstruction& inMetadata,
+								const ExpressionConversionContext& context
+								) const
+	{
+	return NativeContinuationMetadataInstruction::TypedForaInstruction(
+		CPPMLOpaqueHandle<TypedFora::MetadataInstruction>(
+			inMetadata
+			)
+		);
+	}
+
+NativeExpression Converter::dataMetadataForVar(	const NativeVariable& v, 
+												const Type& inType
+												) const
+	{
+	return v.expr();
+	}
+
+NativeExpression Converter::dataMetadataForVar(	const Variable& v, 
+												const ExpressionConversionContext& inContext
+												) const
+	{
+	auto var = inContext.variableMap()[v];
+
+	lassert_dump(var, 
+		"Couldn't find " << prettyPrintString(v) << " in " << prettyPrintString(inContext.variableMap())
+		);
+	return dataMetadataForVar(*var, v.type());
+	}
+
+NativeContinuationVarMetadata Converter::convertMetadataVariable(
+								const MetadataVariable& inMetadata,
+								const ExpressionConversionContext& context
+								) const
+	{
+	@match MetadataVariableLayout(inMetadata.layout())
+		-|	Var(v) ->> {
+			return NativeContinuationVarMetadata(
+				dataMetadataForVar(v, context),
+				CPPMLOpaqueHandle<TypedFora::Type>(v.type())
+				);
+			}
+		-|	Constant(c) ->> {
+			return NativeContinuationVarMetadata(
+				NativeExpression::Nothing(),
+				CPPMLOpaqueHandle<TypedFora::Type>(
+					TypedFora::Type(JOV::Constant(c), RefcountStyle::AsValueUnowned())
+					)
+				);
+			}
+	}
+
+ImmutableTreeVector<NativeContinuationVarMetadata> Converter::convertMetadataVariables(
+								const ImmutableTreeVector<MetadataVariable>& inMetadata,
+								const ExpressionConversionContext& context
+								) const
+	{
+	ImmutableTreeVector<NativeContinuationVarMetadata> tr;
+	
+	for (long k = 0; k < inMetadata.size(); k++)
+		tr = tr + convertMetadataVariable(inMetadata[k], context);
+
+	return tr;
+	}
+
+NativeContinuationMetadata Converter::convertMetadata(
+								const MetadataStackFrame& inMetadata,
+								const ExpressionConversionContext& context
+								) const
+	{
+	return NativeContinuationMetadata(
+		convertMetadataInstruction(inMetadata.instruction(), context),
+		convertMetadataVariables(inMetadata.vars(), context)
+		);
+	}
+
+NativeContinuationMetadata Converter::localVariablesMetadataStackFrame(
+											const ExpressionConversionContext& context
+											) const
+	{
+	ImmutableTreeVector<NativeContinuationVarMetadata> vars;
+
+	teardown_set_type toTearDown = context.unnamedVariablesToTearDownOnControlTransfer();
+
+	ImmutableTreeSet<TypedFora::Variable> namedToTeardown = 
+		context.variablesToTearDownOnControlTransfer();
+
+	for (long k = 0; k < namedToTeardown.size(); k++)
+		toTearDown = toTearDown + 
+			make_pair(
+				*context.variableMap()[namedToTeardown[k]], 
+				namedToTeardown[k].type()
+				);
+
+	for (long k = 0; k < toTearDown.size(); k++)
+		vars = vars + 
+			NativeContinuationVarMetadata(
+				dataMetadataForVar(toTearDown[k].first, toTearDown[k].second),
+				CPPMLOpaqueHandle<TypedFora::Type>(toTearDown[k].second)
+				);
+
+	return NativeContinuationMetadata(
+		NativeContinuationMetadataInstruction::LocalVariables(),
+		vars
+		);
+	}
+
+NativeContinuationMetadata Converter::localVariablesMetadataStackFrame(
+											const ExpressionConversionContext& context,
+											const ImmutableTreeSet<NativeVariable>& variablesUsed
+											) const
+	{
+	ImmutableTreeVector<NativeContinuationVarMetadata> vars;
+
+	teardown_set_type toTearDown = context.unnamedVariablesToTearDownOnControlTransfer();
+
+	ImmutableTreeSet<TypedFora::Variable> namedToTeardown = 
+		context.variablesToTearDownOnControlTransfer();
+
+	for (long k = 0; k < namedToTeardown.size(); k++)
+		toTearDown = toTearDown + 
+			make_pair(
+				*context.variableMap()[namedToTeardown[k]], 
+				namedToTeardown[k].type()
+				);
+
+	for (auto teardown: toTearDown)
+		if (typeNeedsDestructor(teardown.second) || variablesUsed.contains(teardown.first))
+			vars = vars + 
+				NativeContinuationVarMetadata(
+					dataMetadataForVar(teardown.first, teardown.second),
+					CPPMLOpaqueHandle<TypedFora::Type>(teardown.second)
+					);
+
+	return NativeContinuationMetadata(
+		NativeContinuationMetadataInstruction::LocalVariables(),
+		vars
+		);
+	}
+
+ImmutableTreeVector<NativeContinuationMetadata> Converter::convertMetadata(
+								const ImmutableTreeVector<MetadataStackFrame>& inMetadata,
+								const ExpressionConversionContext& context
+								) const
+	{
+	ImmutableTreeVector<NativeContinuationMetadata> tr;
+
+	for (long k = 0; k < inMetadata.size(); k++)
+		tr = tr + convertMetadata(inMetadata[k], context);
+	
+	tr = tr + localVariablesMetadataStackFrame(context);
+
+	return tr;
+	}
+
+ImmutableTreeVector<NativeContinuationMetadata> Converter::convertMetadata(
+								const ImmutableTreeVector<MetadataStackFrame>& inMetadata,
+								const ExpressionConversionContext& context,
+								const ImmutableTreeSet<NativeVariable>& variablesUsed
+								) const
+	{
+	ImmutableTreeVector<NativeContinuationMetadata> tr;
+
+	ImmutableTreeSet<NativeVariable> used = variablesUsed;
+
+	for (long k = 0; k < inMetadata.size(); k++)
+		{
+		NativeContinuationMetadata nativeMetadata = convertMetadata(inMetadata[k], context);
+		tr = tr + nativeMetadata;
+		used = used + nativeMetadata.freeVariables();
+		}
+	
+	tr = tr + localVariablesMetadataStackFrame(context, used);
+
+	return tr;
+	}
+
+
+
+}
+

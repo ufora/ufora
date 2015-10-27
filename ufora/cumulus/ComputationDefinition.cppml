@@ -1,0 +1,116 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ComputationDefinition.hppml"
+#include "../FORA/Serialization/SerializedObjectFlattener.hpp"
+#include "../FORA/Serialization/SerializedObjectContext.hpp"
+#include "../FORA/Core/ImplValContainerUtilities.hppml"
+
+namespace {
+
+ImplValContainer getArgAsImplValContainer(
+		const ControlFlowArg& arg,
+		const ImmutableTreeVector<ImplValContainer>& values)
+	{
+	@match ControlFlowArg(arg)
+		-| Arg(index) ->> {
+			return values[index];
+			}
+		-| Constant(value) ->> {
+			return ImplValContainer(value);
+			}
+		;
+	}
+
+ImplValContainer applyTupleFromControlFlowApplyArgs(
+		const ImmutableTreeVector<ControlFlowApplyArg>& args,
+		const ImmutableTreeVector<ImplValContainer>& values
+		)
+	{
+	std::vector<ImplValContainer> applyTupleValues;
+	std::vector<Nullable<Symbol>> applyTupleSymbols;
+
+	for (auto i = args.begin(); i != args.end(); ++i)
+		{
+		@match ControlFlowApplyArg(*i)
+			-| Normal(fieldName, arg) ->> {
+				applyTupleValues.push_back(getArgAsImplValContainer(arg, values));
+				applyTupleSymbols.push_back(fieldName);
+				}
+			-| TupleCall(arg) ->> {
+				ImplValContainer tupleIvc = getArgAsImplValContainer(arg, values);
+				Nullable<uword_t> tupleSize = tupleIvc.tupleGetSize();
+				lassert(tupleSize.isValue());
+				for (uword_t j = 0; j < *tupleSize; j++)
+					{
+					Nullable<ImplValContainer> tupleItem = tupleIvc.tupleGetItem(j);
+					lassert(tupleItem.isValue());
+					applyTupleValues.push_back(*tupleItem);
+					applyTupleSymbols.push_back(tupleIvc.tupleGetName(j));
+					}
+				}
+			-| _ ->> { lassert(false); }
+			;
+		}
+	return ImplValContainerUtilities::createTuple(
+			ImmutableTreeVector<ImplValContainer>(applyTupleValues),
+			ImmutableTreeVector<Nullable<Symbol>>(applyTupleSymbols)
+			);
+	}
+};
+
+namespace Cumulus {
+
+ComputationDefinitionTerm ComputationDefinitionTerm::UnnamedValue(ImplValContainer val)
+	{
+	return ComputationDefinitionTerm::Value(val, null());
+	}
+
+ImmutableTreeVector<ComputationDefinitionTerm> ComputationDefinitionTerm::ApplyFromTuple(
+														const ImplValContainer& inApplyAsTuple
+														)
+	{
+	Nullable<uword_t> count = inApplyAsTuple.tupleGetSize();
+
+	lassert_dump(
+		count && *count > 0,
+		"ComputationDefinition::Root requires a tuple of elements"
+		);
+
+	ImmutableTreeVector<ComputationDefinitionTerm> terms;
+
+	for (long k = 0; k < *count; k++)
+		terms = terms +
+			ComputationDefinitionTerm::Value(
+				*inApplyAsTuple.tupleGetItem(k),
+				inApplyAsTuple.tupleGetName(k)
+				);
+
+	return terms;
+	}
+
+ComputationDefinition ComputationDefinition::ApplyFromTuple(ImplValContainer val)
+	{
+	return ComputationDefinition::Root(
+		ComputationDefinitionTerm::ApplyFromTuple(val)
+		);
+	}
+
+}
+
+Fora::MemoizableDuringSerialization::MemoStorageBaseRegistrar<
+		Cumulus::ComputationDefinitionTerm
+		> Fora::MemoizableDuringSerialization::IsMemoizable<Cumulus::ComputationDefinitionTerm>::sRegistrar;
+

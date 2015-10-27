@@ -1,0 +1,136 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "PythonListConverter.hpp"
+
+#include "PythonAst.hppml"
+#include "../../Language/Function.hppml"
+#include "../../Core/ImplValContainerUtilities.hppml"
+#include "../../Core/MemoryPool.hpp"
+#include "../../VectorDataManager/VectorDataManager.hppml"
+#include "../../VectorDataManager/PageletTree.hppml"
+#include "../../TypedFora/ABI/ForaValueArray.hppml"
+#include "../../TypedFora/ABI/VectorHandle.hpp"
+#include "../../TypedFora/ABI/VectorRecord.hpp"
+#include "../../../core/math/RandomHashGenerator.hpp"
+
+namespace {
+    ImplValContainer createEmptyVector() 
+        {
+        TypedFora::Abi::ForaValueArray* foraValueArray = 
+            TypedFora::Abi::ForaValueArray::Empty(MemoryPool::getFreeStorePool());
+
+        TypedFora::Abi::VectorRecord vec(
+            MemoryPool::getFreeStorePool()->construct<TypedFora::Abi::VectorHandle>(
+                Fora::BigVectorId(),
+                Fora::PageletTreePtr(),
+                foraValueArray,
+                MemoryPool::getFreeStorePool(),
+                RandomHashGenerator::singleton().generateRandomHash()
+                )
+            );
+
+        return ImplValContainerUtilities::createVector(vec);
+        }
+    }
+
+namespace Fora {
+
+Expression PythonListConverter::convertPyList(
+        const Fora::PythonAstExpr_ListType& listExpr,
+        const std::function<Expression(const PythonAstExpr&)>& 
+            convertPythonAstExpressionToFora
+        ) const
+    {
+    return Expression::CreateList(
+        mapITV(listExpr.elts(), convertPythonAstExpressionToFora)
+        );
+    }
+
+Expression PythonListConverter::convertPyListComprehension(
+        const Fora::PythonAstExpr_ListCompType& listCompExpr,
+        const std::function<Expression(const PythonAstExpr&)>& 
+            convertPythonAstExpressionToFora,
+        const std::function<PatternWithName(const PythonAstExpr&)>&
+            convertPythonAstExpressionToPattern
+        ) const
+    {
+    Expression eltExpr = convertPythonAstExpressionToFora(listCompExpr.elt());
+
+    ListComprehensionChain chain = ListComprehensionChain::Leaf(eltExpr);
+
+    /*
+      Note the reverse iterator here: as written, the following examples give different 
+      answers in python vs. fora:
+
+      [(x, y) for x in [1,2,3] for y in [3,1,4]]
+    */
+    for (auto it = listCompExpr.generators().rbegin(); 
+         it != listCompExpr.generators().rend(); ++it)
+        {
+        Nullable<Expression> filter;
+
+        for (long k = 0; k < it->conditions().size(); k++)
+            {
+            if (!filter)
+                filter = convertPythonAstExpressionToFora(it->conditions()[k]);
+            else
+                filter = Expression::And(
+                    *filter,
+                    convertPythonAstExpressionToFora(it->conditions()[k])
+                    );
+            }
+
+        chain = ListComprehensionChain::Term(
+            convertPythonAstExpressionToPattern(it->target()),
+            filter,
+            convertPythonAstExpressionToFora(it->iter()),
+            chain
+            );
+        }
+    return Expression::ListComprehension(chain, false);
+    }
+    
+ImplValContainer PythonListConverter::createList(
+        const ImmutableTreeVector<ImplValContainer>& listElements,
+        PolymorphicSharedPtr<VectorDataManager> vdm
+        ) const
+    {
+    ImplValContainer vector = createEmptyVector();
+
+    for (const auto& ivc: listElements)
+        {
+        lassert(vdm);
+        
+        Nullable<ImplValContainer> result =
+            ImplValContainerUtilities::appendToVector(
+                vector,
+                ivc,
+                MemoryPool::getFreeStorePool(),
+                &*vdm,
+                RandomHashGenerator::singleton().generateRandomHash()
+                );
+
+        lassert(result.isValue());
+
+        vector = *result;
+        }
+
+    return vector;
+    }
+
+
+}
+

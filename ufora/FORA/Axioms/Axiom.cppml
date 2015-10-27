@@ -1,0 +1,122 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Axiom.hppml"
+#include "../Core/ClassMediator.hppml"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include "../TypedFora/TypedForaUtil.hppml"
+#include "../Native/NativeCode.hppml"
+
+JudgmentOnValueTuple Axiom::signature(void) const
+	{
+	@match Axiom(*this)
+		-|	Native(callSignature) ->> {
+			return  callSignature;
+			}
+		-|	Expands(s) ->> {
+			return  s;
+			}
+		;
+	}
+
+Axiom 	Axiom::Native(	const JudgmentOnValueTuple& sig,
+						const JudgmentOnAction& joa,
+						const NativeCFG& cfg
+						)
+	{
+	cfg.validate();
+	
+	lassert(!cfg.blocks().pairAtPosition(0).first.isInternal());
+
+	return Axiom::Native(
+		sig,
+		joa,
+		TypedFora::graphFromNativeCfgPassingOwned(sig, joa, cfg)
+		);
+	}
+
+Axiom Axiom::Native(	const JudgmentOnValueTuple& inSignature,
+						const JudgmentOnAction& resultSignature,
+						const TypedFora::Callable& callTarget
+						)
+	{
+	return Axiom::Native(
+		inSignature, 
+		resultSignature, 
+		CPPMLOpaqueHandle<TypedFora::Callable>(callTarget)
+		);
+	}
+
+Axiom 	Axiom::Native(	const JudgmentOnValueTuple& inSignature,
+						const ImmutableTreeVector<NativeVariable>& inVariables,
+						const JudgmentOnValue& inResultJOV,
+						bool inResultJOVIsException,
+						const NativeExpression& inExpression
+						)
+	{
+	ImmutableTreeSet<NativeVariable> freeVars = 
+		inExpression.freeVariables() 
+			- ImmutableTreeSet<NativeVariable>(inVariables)
+			- NativeVariable("callbacks", NativeTypeFor<NativeRuntimeCallbacks>::get().ptr());
+
+	lassert_dump(freeVars.size() == 0, "axiom had free variables: " << prettyPrintString(inExpression));
+
+	TypedFora::Callable callable = 
+		TypedFora::graphFromNativeCfgPassingOwned(
+				inSignature, 
+				inVariables, 
+				inResultJOV, 
+				inResultJOVIsException, 
+				inExpression
+				);
+
+	return Axiom::Native(
+		inSignature,
+		inResultJOVIsException ? 
+			JudgmentOnAction::Throws(inResultJOV)
+		:	JudgmentOnAction::Value(inResultJOV)
+			,
+		callable
+		);
+	}
+
+AxiomJOA AxiomJOA::Returns(const CSTValue& val)
+	{
+	return AxiomJOA::Native(
+		JudgmentOnAction::Value(
+			JudgmentOnValue::Constant(val)
+			)
+		);
+	}
+
+AxiomJOA AxiomJOA::Returns(const JudgmentOnValue& val)
+	{
+	return AxiomJOA::Native(JudgmentOnAction::Value(val));
+	}
+
+AxiomJOA AxiomJOA::Throws(const CSTValue& val)
+	{
+	return AxiomJOA::Native(
+		JudgmentOnAction::Throws(
+			JudgmentOnValue::Constant(val)
+			)
+		);
+	}
+
+AxiomJOA AxiomJOA::Throws(const JudgmentOnValue& val)
+	{
+	return AxiomJOA::Native(JudgmentOnAction::Throws(val));
+	}
+

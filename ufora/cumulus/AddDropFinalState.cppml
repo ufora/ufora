@@ -1,0 +1,127 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "AddDropFinalState.hppml"
+
+namespace Cumulus {
+
+void AddDropFinalState::recreatePageRefcountEventSequence(
+				boost::function2<void, Fora::PageRefcountEvent, Cumulus::MachineId> consumer
+				) const
+	{
+	//broadcast bigvec references
+	for (auto machineAndUsage: memoryUsage())
+		consumer(
+			Fora::PageRefcountEvent::MemoryUsageChanged(
+				machineAndUsage.second
+				),
+			machineAndUsage.first
+			);
+
+	//broadcast bigvec references
+	for (auto machineAndIds: bigvecsReferencedOnMachines())
+		for (auto id: machineAndIds.second)
+			consumer(
+				Fora::PageRefcountEvent::BigVectorReferenced(
+					*bigvecLayouts()[id]
+					),
+				machineAndIds.first
+				);
+
+	//now broadcast pages in RAM and on disk
+	for (auto machineAndPages: machineDiskContents())
+		for (auto page: machineAndPages.second)
+			{
+			//we have to do this awkward sequence to ensure that clients see the
+			//page-bigvec relationship
+			consumer(
+				Fora::PageRefcountEvent::PageAddedToRam(page, *pageBigvecReferences()[page]),
+				machineAndPages.first
+				);
+			consumer(
+				Fora::PageRefcountEvent::PageAddedToDisk(page),
+				machineAndPages.first
+				);
+			consumer(
+				Fora::PageRefcountEvent::PageDroppedFromRam(page),
+				machineAndPages.first
+				);
+			}
+
+	for (auto machineAndPages: machineRamContents())
+		for (auto page: machineAndPages.second)
+			{
+			consumer(
+				Fora::PageRefcountEvent::PageAddedToRam(page, *pageBigvecReferences()[page]),
+				machineAndPages.first
+				);
+			consumer(
+				Fora::PageRefcountEvent::PagePinnedStatusChanged(page, true),
+				machineAndPages.first
+				);
+			}
+
+	for (auto pageAndBigvecs: pageBigvecReferences())
+		consumer(
+			Fora::PageRefcountEvent::PageReferencedBigvecs(pageAndBigvecs.first, pageAndBigvecs.second),
+			//any machine will do
+			memoryUsage().pairAtPosition(0).first
+			);
+	}
+
+void AddDropFinalState::recreateClientComputationPriorities(
+				boost::function1<void, ClientComputationPriorityChange> consumer
+				) const
+	{
+	for (auto compAndPriorities: rootPriorities())
+		for (auto clientAndPriority: compAndPriorities.second)
+			consumer(
+				ClientComputationPriorityChange(
+					compAndPriorities.first,
+					clientAndPriority.first,
+					clientAndPriority.second
+					)
+				);
+	}
+
+void AddDropFinalState::recreateComputationStatusOnMachineEvents(
+				boost::function1<void, ComputationStatusOnMachineChanged> consumer
+				) const
+	{
+	for (auto compAndStatus: rootComputationStatuses())
+		consumer(
+			ComputationStatusOnMachineChanged(
+				*computationLocations()[compAndStatus.first],
+				compAndStatus.first,
+				compAndStatus.second
+				)
+			);
+	}
+
+void AddDropFinalState::recreateRootToRootDependencies(
+				boost::function1<void, RootToRootDependencyCreated> consumer
+				) const
+	{
+	for (auto compAndDeps: rootToRootDependencies())
+		for (auto comp: compAndDeps.second)
+			consumer(
+				RootToRootDependencyCreated(
+					compAndDeps.first,
+					comp
+					)
+				);
+	}
+
+}

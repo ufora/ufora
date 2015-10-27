@@ -1,0 +1,112 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "AddDropSystemState.hppml"
+
+namespace Cumulus {
+
+void AddDropSystemState::handleEvent(const CumulusWorkerAddDropEvent& inEvent)
+	{
+	@match CumulusWorkerAddDropEvent(inEvent)
+		-| PageOnMachine(machine, page, inRam, onDisk, isPinned, guids) ->> {
+			machinePageContents().insert(machine, page);
+
+			lassert(inRam || onDisk);
+
+			if (inRam)
+				machinePageRamContents().insert(machine, page);
+
+			if (onDisk)
+				machinePageDiskContents().insert(machine, page);
+
+			if (isPinned)
+				machinePagePinnedContents().insert(machine, page);
+
+			for (auto guid: guids)
+				pageBigvecReferences().insert(page, guid);
+			}
+		-| BigvecDefinition(layout) ->> {
+			auto it = bigvecLayouts().find(layout.identity().guid());
+
+			if (it != bigvecLayouts().end())
+				{
+				if (layout.vectorIdentities() < it->second.vectorIdentities())
+					{
+					it->second = layout;
+					bigvecToPages().dropKey(layout.identity().guid());
+					for (auto page: layout.getPagesReferenced())
+						bigvecToPages().insert(layout.identity().guid(), page);
+					}
+				}
+			else
+				{
+				for (auto page: layout.getPagesReferenced())
+					bigvecToPages().insert(layout.identity().guid(), page);
+
+				bigvecLayouts()[layout.identity().guid()] = layout;
+				}
+			}
+		-| SyntheticPage(pageId, bigvecId) ->> {
+			syntheticPages().set(pageId, bigvecId.guid());
+			lassert(bigvecLayouts().find(bigvecId.guid()) != bigvecLayouts().end());
+			}
+		-| ClientComputationPriority(client, computation, priority) ->> {
+			if (prioritizedRoots()[computation][client].isNull() || 
+					prioritizedRoots()[computation][client] < priority)
+				prioritizedRoots()[computation][client] = priority;
+			}
+		-| Computation(computation, machine, state, guidsReferenced, canResubmit) ->> {
+			auto it = computationStates().find(computation);
+
+			if (it == computationStates().end() || state.isFartherAheadThan(it->second))
+				{
+				computationStates()[computation] = state;
+				computationOnMachine().set(computation, machine);
+				
+				if (computationBigvecReferences().hasKey(computation))
+					computationBigvecReferences().dropKey(computation);
+
+				for (auto guid: guidsReferenced)
+					computationBigvecReferences().insert(computation, guid);
+
+				@match ComputationStatusOnMachine(state)
+					-| Active(BlockedOnComputations(comps)) ->> {
+						for (auto c: comps)
+							computationDependencies().insert(computation, c);
+						}
+					-| _ ->> {}
+					;
+				}
+			}
+		-| MemoryUsage(machine, usage) ->> {
+			memoryUsage()[machine] = usage;
+			}
+	}
+
+void AddDropSystemState::pruneRealizedSyntheticPages()
+	{
+	//remove any pages that are marked synthetic but that are actually realized somewhere.
+	std::set<Fora::PageId> notSynthetic;
+
+	for (auto pageAndBigvec: syntheticPages().getKeyToValue())
+		if (machinePageContents().hasValue(pageAndBigvec.first))
+			notSynthetic.insert(pageAndBigvec.first);
+
+	for (auto p: notSynthetic)
+		syntheticPages().discard(p);
+	}
+
+}
+

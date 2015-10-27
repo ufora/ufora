@@ -1,0 +1,303 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "CumulusWorkerToWorkerMessage.hppml"
+#include "CumulusWorkerToClientMessage.hppml"
+#include "CumulusClientToWorkerMessage.hppml"
+#include "CumulusWorkerEvent.hppml"
+#include "ActiveComputations.hppml"
+#include "PageLoader.hppml"
+#include "../FORA/Core/ExecutionContextConfiguration.hppml"
+#include "DataTransfers.hppml"
+
+#include "../core/PolymorphicSharedPtrBinder.hpp"
+#include "WorkerThreadPool.hppml"
+#include "../networking/InMemoryChannel.hpp"
+#include "../core/math/Random.hpp"
+#include "../core/containers/TwoWaySetMap.hpp"
+#include "../core/threading/CallbackScheduler.hppml"
+#include "LeaderQuorum.hppml"
+#include "ExternalIoTask/ExternalIoTasks.hppml"
+#include "CorruptedPersistentCacheRecoveryCoordinator.hppml"
+#include "SystemwideComputationScheduler/ComputationStateSummarizer.hppml"
+#include "SystemwideComputationScheduler/LocalScheduler.hppml"
+#include "SystemwideComputationScheduler/GlobalScheduler.hppml"
+#include "SystemwideComputationScheduler/ActivePageSynchronizer.hppml"
+#include "AddDropRecoveryCoordinator.hppml"
+#include "GenericCumulusComponent.hppml"
+
+namespace Cumulus {
+
+typedef PolymorphicSharedPtr<Channel<std::string, std::string> > string_channel_ptr;
+
+class CumulusWorkerImpl : 
+			public PolymorphicSharedPtrBase<CumulusWorkerImpl>,
+			public InstanceCounter<CumulusWorkerImpl> {
+public:
+	CumulusWorkerImpl(
+				PolymorphicSharedPtr<CallbackSchedulerFactory> inCallbackSchedulerFactory,
+				PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+				CumulusWorkerConfiguration inWorkerConfiguration,
+				PolymorphicSharedPtr<VectorDataManager> inVDM,
+				PolymorphicSharedPtr<OfflineCache> inOfflineCache,
+				boost::function1<void, CumulusWorkerEvent> inEventHandler
+				);
+
+	~CumulusWorkerImpl();
+
+	void startComputations();
+
+	void dumpStateToLog();
+
+	void teardown();
+
+	static pair<PolymorphicSharedPtr<ComputationState>, hash_type> threadPoolCheckoutFunc(
+						PolymorphicSharedWeakPtr<CumulusWorkerImpl> weakPtr,
+						ComputationId computation
+						);
+
+	static void threadPoolCheckinFunc(
+						PolymorphicSharedWeakPtr<CumulusWorkerImpl> weakPtr,
+						ComputationId computation,
+						CreatedComputations created
+						);
+
+	void addMachine(
+			MachineId machine, 
+			worker_to_worker_channel_ptr_type inChannel
+			);
+
+	void dropMachine(
+			MachineId machine
+			);
+
+	void onMachineDisconnected(
+			MachineId machine
+			);
+
+	void addCumulusClient(
+			CumulusClientId client,
+			worker_to_client_channel_ptr_type inChannel
+			);
+
+	void dropCumulusClient(
+			CumulusClientId client
+			);
+
+	void triggerRegimeChange();
+
+	Nullable<hash_type> currentRegimeHash();
+
+	void constructComponents_();
+
+	void wireSelfToIndividualComponents_();	
+
+	void wireCurrentClientsToComponents_();
+
+	void wireComponentsTogether_();
+
+	bool hasEstablishedHandshakeWithExistingMachines();
+
+	bool hasEstablishedHandshakeWithExistingMachines_();
+
+	long currentlyActiveWorkerThreads();
+
+	void handleComputationResultFromMachine(ComputationResultFromMachine result);
+
+	void handleComputationResultFromMachine_(ComputationResultFromMachine result);
+
+	void handleCumulusComponentMessageToSelf_(
+											CumulusComponentMessage message, 
+											CumulusClientOrMachine source, 
+											CumulusComponentType sourceComponent
+											);
+
+	void handleLocallyProducedCumulusComponentMessage(
+											CumulusComponentMessageCreated message,
+											CumulusComponentType componentType,
+											hash_type regime
+											);
+
+	void handleLocallyProducedCumulusComponentMessage_(
+											CumulusComponentMessageCreated message,
+											CumulusComponentType componentType
+											);
+
+	void handleIncomingCumulusComponentMessage_(
+											CumulusComponentMessage message,
+											const ImmutableTreeSet<CumulusComponentType>& targetComponent, 
+						                    const CumulusComponentType& sourceComponent,
+											const CumulusClientOrMachine& source 
+											);
+
+	void handleRequestComputationResultFromMachine(RequestComputationResultFromMachine request);
+
+	void handleRequestComputationResultFromMachine_(RequestComputationResultFromMachine request);
+
+	void handleRemotePageLoadRequest(RemotePageLoadRequest request);
+
+	void handleRemotePageLoadRequest_(RemotePageLoadRequest request);
+
+	void handleRemotePageLoadResponse(RemotePageLoadResponse response);
+
+	void handleRemotePageLoadResponse_(RemotePageLoadResponse response);
+
+	void handleRegimeChanged(Nullable<Regime> inNewRegime);
+
+	void handleRegimeChanged_(Nullable<Regime> inNewRegime);
+
+	void handlePythonIoTaskResponse(PythonIoTaskResponse descriptor);
+
+	void handleClientToWorkerMessage(CumulusClientId client, CumulusClientToWorkerMessage message);
+	
+	void handleClientToWorkerMessage_(CumulusClientId client, CumulusClientToWorkerMessage message);
+
+	void handleWorkerToWorkerMessage(MachineId machine, CumulusWorkerToWorkerMessage message);
+
+	void handleSynchronizerToSynchronizerMessage(ActivePageSynchronizerToSynchronizerMessage response);
+
+	void handleSynchronizerToSynchronizerMessage_(ActivePageSynchronizerToSynchronizerMessage response);
+
+	void handlePageNoLongerReferencedAcrossEntireSystem(hash_type regime, Fora::PageId page);
+
+	void handleLocalPageRefcountEvent(pair<Fora::PageRefcountEvent, long> event);
+
+	void processPageEvent(Fora::PageRefcountEvent event, MachineId machine);
+
+	void handleOutgoingLeaderQuorumMessage(LeaderQuorumMessage msg);
+
+	void resetRecoveryCoordinator_();
+
+	void polymorphicSharedPtrBaseInitialized();
+
+	void writeToAllClients_(const CumulusWorkerToClientMessage& msg);
+
+	void writeToAllWorkers_(const CumulusWorkerToWorkerMessage& msg);
+
+	void writeToAllClients_(const CumulusWorkerToClientMessage& msg, long pageEventId);
+
+	void writeToAllWorkers_(const CumulusWorkerToWorkerMessage& msg, long pageEventId);
+
+	void writeMessageToClient_(const CumulusClientId& client, const CumulusWorkerToClientMessage& msg);
+
+	void writeMessageToWorker_(const MachineId& worker, const CumulusWorkerToWorkerMessage& msg);
+
+	bool machineEverDropped_(const MachineId& machine);
+
+	bool clientEverDropped_(const CumulusClientId& client);
+
+	bool acceptingMessagesFromMachine_(MachineId machine);
+
+	void addWorkerToCurrentRegime_(MachineId machine);
+
+	void handleInitializedWithNewRegime_(MachineId machine, hash_type newRegime);
+
+	void sendInitialStateForRegime_();
+
+	void allWorkersHaveSentInitialState_();
+
+	void triggerAllWorkersAreReadyToCompute_();
+
+	void allWorkersAreReadyToCompute(hash_type regime);
+
+	void allWorkersAreReadyToCompute_(hash_type regime);
+
+	void resumeComputationsForRegime(hash_type regime);
+
+	void sendCurrentStateToClient_(CumulusClientId client);
+
+	void checkIfPersistentCacheIsInvalid();
+
+	void checkIfPersistentCacheIsInvalid_();
+
+	void handleCorruptedCacheRecoveryComplete_();
+
+	boost::mutex mMutex;
+
+	std::map<CumulusClientId, long> mClientPageEventIdStart;
+
+	std::map<MachineId, long> mWorkerPageEventIdStart;
+
+	std::set<CumulusClientId> mClientsEverSeen;
+
+	std::set<CumulusClientId> mClientsDropped;
+
+	std::map<CumulusComponentType, PolymorphicSharedPtr<GenericCumulusComponent> > mGenericComponents;
+
+	PolymorphicSharedPtr<DataTransfers> mDataTransfers;
+	
+	PolymorphicSharedPtr<CallbackSchedulerFactory> mCallbackSchedulerFactory;
+
+	PolymorphicSharedPtr<CallbackScheduler> mCallbackScheduler;
+
+	PolymorphicSharedPtr<ActiveComputations> mActiveComputations;
+
+	PolymorphicSharedPtr<SystemwideComputationScheduler::LocalScheduler> mLocalScheduler;
+
+	PolymorphicSharedPtr<SystemwideComputationScheduler::GlobalScheduler> mGlobalScheduler;
+
+	PolymorphicSharedPtr<SystemwideComputationScheduler::ActivePageSynchronizer> mActivePageSynchronizer;
+
+	PolymorphicSharedPtr<SystemwidePageRefcountTracker> mSystemwidePageRefcountTracker;
+
+	PolymorphicSharedPtr<SystemwideComputationScheduler::ComputationStateSummarizer> mComputationStateSummarizer;
+
+	PolymorphicSharedPtr<PageLoader> mPageLoader;
+
+	CumulusWorkerConfiguration mWorkerConfiguration;
+
+	std::set<MachineId> mMachinesEverSeen;
+
+	std::set<MachineId> mMachinesDropped;
+
+	MapWithIndex<MachineId, hash_type> mWorkerRegimesInitialized;
+
+	std::map<MachineId, worker_to_worker_channel_ptr_type> mWorkerChannels;
+
+	std::map<hash_type, CumulusComponentType> mPendingIoTaskServiceRequestSourceComponents;
+
+	std::map<hash_type, CumulusClientOrMachine> mPendingIoTaskServiceRequestSourceEndpoints;
+
+	std::map<CumulusClientId, worker_to_client_channel_ptr_type> mClientChannels;
+
+	PolymorphicSharedPtr<WorkerThreadPool> mWorkerThreadPool;
+
+	PolymorphicSharedPtr<VectorDataManager> mVDM;
+
+	PolymorphicSharedPtr<OfflineCache> mOfflineCache;
+
+	PolymorphicSharedPtr<LeaderQuorum> mLeaderQuorum;
+
+	PolymorphicSharedPtr<ExternalIoTasks> mExternalIoTasks;
+
+	Nullable<Regime> mCurrentRegime;
+
+	bool mAreComputationsStarted;
+
+	EventBroadcaster<PythonIoTaskRequest> mOnPythonIoTaskRequest;
+
+	boost::shared_ptr<AddDropRecoveryCoordinator> mAddDropRecoveryCoordinator;
+
+	boost::shared_ptr<CorruptedPersistentCacheRecoveryCoordinator> mCorruptedCacheRecoveryCoordinator;
+
+	boost::function1<void, CumulusWorkerEvent> mEventHandler;
+
+	bool mIsTornDown;
+};
+
+}
+

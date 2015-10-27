@@ -1,0 +1,295 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../../FORA/VectorDataManager/PageId.hppml"
+#include "../../core/math/Random.hpp"
+#include "../../core/math/Smallest.hpp"
+#include "../../core/containers/UnorderedTwoWaySetMap.hpp"
+#include "../../core/containers/MapWithIndex.hpp"
+#include "../../core/containers/UnorderedTwoWaySetMap.hpp"
+#include "../../core/containers/UnorderedMapWithIndex.hpp"
+#include "../../core/containers/ImmutableTreeSet.hppml"
+#include "../PageLayoutCalculator/Neighborhood.hppml"
+
+namespace Cumulus {
+
+namespace PageLayoutCalculator {
+
+template<class T>
+class UnorderedSetVec {
+public:
+	typedef typename std::vector<T>::const_iterator const_iterator;
+	
+	typename std::vector<T>::const_iterator begin() const
+		{
+		return mValues.begin();
+		}
+
+	typename std::vector<T>::const_iterator end() const
+		{
+		return mValues.end();
+		}
+
+	void add(const T& in)
+		{
+		mValues.push_back(in);
+		mIndices[in] = mValues.size() - 1;
+		}
+
+	void remove(const T& in)
+		{
+		auto it = mIndices.find(in);
+		lassert(it != mIndices.end());
+
+		if (mValues.size() == 1)
+			{
+			mIndices.erase(in);
+			mValues.resize(0);
+
+			return;
+			}
+
+		long ix = it->second;
+
+		if (ix == mValues.size() - 1)
+			{
+			mIndices.erase(it);
+			mValues.resize(mValues.size()-1);
+			return;
+			}
+
+		mIndices[mValues.back()] = ix;
+		mValues[ix] = mValues.back();
+		mValues.resize(mValues.size()-1);
+		mIndices.erase(it);
+		}
+
+	bool contains(const T& in) const
+		{
+		return mIndices.find(in) != mIndices.end();
+		}
+
+	size_t size() const
+		{
+		return mValues.size();
+		}
+
+	const T& operator[](long ix) const
+		{
+		return mValues[ix];
+		}
+
+	const T& operator[](Ufora::math::Random::Uniform<double>& rand) const
+		{
+		lassert(mValues.size());
+		int index = mValues.size() * rand();
+
+		if (index >= mValues.size())
+			index = 0;
+		return mValues[index];
+		}
+
+private:
+	boost::unordered_map<T, long> mIndices;
+
+	std::vector<T> mValues;
+};
+
+class NeighborhoodSet {
+public:
+	NeighborhoodSet() : 
+			mTotalNeighborhoodBytes(0),
+			mTotalPageBytes(0)
+		{
+		}
+
+	//naive compression ratio
+	double compressionRatio() const
+		{
+		if (mTotalPageBytes == 0)
+			return 0;
+
+		return mTotalNeighborhoodBytes / double(mTotalPageBytes);
+		}
+
+	void ensureNeighborhood(Neighborhood n)
+		{
+		if (!containsNeighborhood(n))
+			addNeighborhood(n);
+		}
+
+	void addNeighborhood(Neighborhood n)
+		{
+		lassert(!mNeighborhoods.hasKey(n));
+
+		mAllNeighborhoods.insert(n);
+		mAllNeighborhoodVec.add(n);
+
+		for (auto p: n.pages())
+			{
+			if (!mNeighborhoods.hasValue(p))
+				{
+				mTotalPageBytes += p.bytecount();
+				mPages.insert(p);
+				mPageVec.add(p);
+				mPagesAsNeighborhoodCache = null();
+				}
+
+			mNeighborhoods.insert(n, p);
+			mNeighborhoodVecsByPage[p].add(n);
+			}
+
+		mTotalNeighborhoodBytes += n.bytecount();
+		}
+
+	void dropNeighborhood(Neighborhood n)
+		{
+		lassert(mNeighborhoods.hasKey(n));
+
+		mAllNeighborhoods.erase(n);
+		mAllNeighborhoodVec.remove(n);
+
+		mTotalNeighborhoodBytes -= n.bytecount();
+
+		for (auto p: n.pages())
+			{
+			mNeighborhoods.drop(n, p);
+			mNeighborhoodVecsByPage[p].remove(n);
+
+			if (!mNeighborhoods.hasValue(p))
+				{
+				mNeighborhoodVecsByPage.erase(p);
+				mTotalPageBytes -= p.bytecount();
+				mPages.erase(p);
+				mPageVec.remove(p);
+				mPagesAsNeighborhoodCache = null();
+				}
+			}
+		}
+
+	const boost::unordered_set<Neighborhood>& neighborhoods(Fora::PageId page) const
+		{
+		return mNeighborhoods.getKeys(page);
+		}
+
+	const boost::unordered_set<Fora::PageId>& allPages() const
+		{
+		return mPages;
+		}
+
+	ImmutableTreeSet<Neighborhood> neighborhoodsAsITS() const
+		{
+		return ImmutableTreeSet<Neighborhood>(mAllNeighborhoods);
+		}
+
+	ImmutableTreeSet<Fora::PageId> pagesAsITS() const
+		{
+		return ImmutableTreeSet<Fora::PageId>(mPageVec);
+		}
+
+	const boost::unordered_set<Neighborhood>& allNeighborhoods() const
+		{
+		return mAllNeighborhoods;
+		}
+
+	int64_t bytesInPages() const
+		{
+		return mTotalPageBytes;
+		}
+
+	int64_t bytesInNeighborhoods() const
+		{
+		return mTotalNeighborhoodBytes;
+		}
+
+	bool containsPage(Fora::PageId p) const
+		{
+		return mPages.find(p) != mPages.end();
+		}
+
+	bool containsNeighborhood(Neighborhood n) const
+		{
+		return mAllNeighborhoods.find(n) != mAllNeighborhoods.end();
+		}
+
+	bool intersectsNeighborhood(Neighborhood n) const
+		{
+		for (auto p: n.pages())
+			if (containsPage(p))
+				return true;
+		return false;
+		}
+
+	bool coversNeighborhood(Neighborhood n) const
+		{
+		for (auto p: n.pages())
+			if (!containsPage(p))
+				return false;
+
+		return true;
+		}
+
+	const UnorderedSetVec<Fora::PageId>& pageVec() const
+		{
+		return mPageVec;
+		}
+
+	const UnorderedSetVec<Neighborhood>& neighborhoodVec() const
+		{
+		return mAllNeighborhoodVec;
+		}
+
+	const UnorderedSetVec<Neighborhood>& neighborhoodVec(Fora::PageId page) const
+		{
+		static UnorderedSetVec<Neighborhood> empty;
+
+		auto it = mNeighborhoodVecsByPage.find(page);
+
+		if (it == mNeighborhoodVecsByPage.end())
+			return empty;
+
+		return it->second;
+		}
+
+	bool isEmpty() const
+		{
+		return mPages.size() == 0;
+		}
+
+private:
+	boost::unordered_map<Fora::PageId, UnorderedSetVec<Neighborhood> > mNeighborhoodVecsByPage;
+
+	UnorderedTwoWaySetMap<Neighborhood, Fora::PageId> mNeighborhoods;
+
+	boost::unordered_set<Fora::PageId> mPages;
+
+	UnorderedSetVec<Fora::PageId> mPageVec;
+
+	mutable Nullable<Neighborhood> mPagesAsNeighborhoodCache;
+
+	UnorderedSetVec<Neighborhood> mAllNeighborhoodVec;
+
+	boost::unordered_set<Neighborhood> mAllNeighborhoods;
+
+	int64_t mTotalNeighborhoodBytes;
+
+	int64_t mTotalPageBytes;
+};
+
+}
+}
+

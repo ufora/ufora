@@ -1,0 +1,220 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+/*************************
+
+The PersistentCacheIndex describes the set of values that are checked into long-term storage.
+
+Pages, Bigvecs, and ComputationResults are all identified by their hashes. We only keep enough
+information around in the index for garbage collection.
+
+The index is intended to be used by one consumer at once. Its primary use of SharedState is
+as a persistent KV store, not as a sharer of distributed state. If disconnected, it will silently
+store up uncommitted values and attempt to re-post them later when it gets reconnected.
+
+************************/
+
+#include "../../core/PolymorphicSharedPtr.hpp"
+#include "../../core/EventBroadcaster.hpp"
+#include "../../distributed/SharedState/View.hppml"
+#include "../CheckpointRequest.hppml"
+#include "PersistentCacheKey.hppml"
+
+namespace Cumulus {
+namespace PersistentCache {
+
+typedef ImmutableTreeVector<Ufora::Json> JsonList;
+
+class PersistentCacheIndexImpl;
+
+class PersistentCacheIndex : public PolymorphicSharedPtrBase<PersistentCacheIndex> {
+public:
+	static const std::string schemaVersion; // used as prefix for keys in the store
+
+	PersistentCacheIndex(
+			std::string inUserName,
+			PolymorphicSharedPtr<SharedState::View> inView, 
+			PolymorphicSharedPtr<CallbackScheduler> inScheduler
+			);
+
+	void resetView(PolymorphicSharedPtr<SharedState::View> inView);
+
+	bool hasConnectedView();
+
+	long timesViewReconnected();
+
+	bool pageExists(hash_type pageHash);
+
+	bool bigvecExists(hash_type bigvecHash);
+
+	bool checkpointFileExists(CheckpointRequest c, hash_type pageHash);
+
+	bool checkpointExists(CheckpointRequest c);
+
+	Nullable<int64_t> maxBytesInCache() const;
+
+	void setMaxBytesInCache(Nullable<int64_t> bytes);
+
+	EventBroadcaster<PersistentCacheKey>& onObjectChanged();
+
+	ImmutableTreeSet<ComputationId> computationsForHash(hash_type computationHash) const;
+
+	ImmutableTreeSet<CheckpointRequest> checkpointsForComputation(ComputationId id);
+
+	ImmutableTreeSet<hash_type> pageBigvecReferences(hash_type pageHash);
+
+	ImmutableTreeSet<hash_type> bigvecPageReferences(hash_type bigvecHash);
+
+	ImmutableTreeSet<hash_type> checkpointFileBigvecsReferenced(
+												CheckpointRequest checkpoint,
+												hash_type filename
+												);
+
+	ImmutableTreeSet<hash_type> checkpointFilesReferenced(
+												CheckpointRequest checkpoint
+												);
+
+	ImmutableTreeSet<hash_type> allCheckpointedComputationGuids();
+
+	ImmutableTreeSet<ComputationId> allCheckpointedComputations();
+
+	Nullable<CheckpointRequest> computationMostRecentCheckpoint(ComputationId computation);
+
+	uint32_t objectBytecount(PersistentCacheKey key);
+
+	uint64_t objectBytecountIncludingReachable(PersistentCacheKey key);
+
+	ImmutableTreeMap<PersistentCacheKey, int64_t> objectBytecountsReferenced(PersistentCacheKey key);
+
+	hash_type objectDataHash(PersistentCacheKey key);
+
+	bool computationIsReachableFromAnyScript(ComputationId computation);
+
+	ImmutableTreeSet<PersistentCacheKey> objectsDependedOn(PersistentCacheKey key);
+
+	ImmutableTreeSet<PersistentCacheKey> objectsDependingOn(PersistentCacheKey key);
+
+	bool objectExists(PersistentCacheKey key);
+
+	void markObjectInvalid(PersistentCacheKey key);
+
+	void dropObject(PersistentCacheKey key);
+
+	uint32_t pageBytecount(hash_type pageHash);
+
+	uint32_t bigvecBytecount(hash_type bigvecHash);
+
+	uint32_t checkpointBytecount(CheckpointRequest checkpoint);
+
+	uint32_t checkpointFileBytecount(CheckpointRequest checkpoint, hash_type fileHash);
+
+	hash_type pageDataHash(hash_type pageHash);
+
+	hash_type bigvecDataHash(hash_type bigvecHash);
+
+	hash_type checkpointDataHash(CheckpointRequest checkpoint);
+
+	hash_type checkpointFileDataHash(CheckpointRequest checkpoint, hash_type fileHash);
+
+	double checkpointSecondsOfCompute(CheckpointRequest checkpoint);
+
+	ImmutableTreeSet<hash_type> checkpointComputationsReferenced(CheckpointRequest checkpoint);
+
+	uint64_t totalBytesInCache() const;
+
+	void addPage(
+				hash_type pageHash, 
+				ImmutableTreeSet<hash_type> bigvecsReferenced,
+				uint32_t bytecount,
+				hash_type dataHash
+				);
+
+	void addBigvec(
+				hash_type pageHash, 
+				ImmutableTreeSet<hash_type> pagesReferenced,
+				uint32_t bytecount,
+				hash_type dataHash
+				);
+
+	void addCheckpoint(
+				CheckpointRequest checkpoint, 
+				ImmutableTreeSet<hash_type> filesReferenced,
+				uint32_t bytecount,
+				hash_type dataHash,
+				bool isComputationFinished,
+				double totalSecondsOfCompute,
+				ImmutableTreeSet<hash_type> computationsReferenced
+				);
+
+	void addCheckpointFile(
+				CheckpointRequest checkpoint, 
+				hash_type fileHash,
+				ImmutableTreeSet<hash_type> bigvecsReferenced,
+				uint32_t bytecount,
+				hash_type dataHash
+				);
+
+	void setScriptDependencies(
+				std::string scriptName,
+				ImmutableTreeSet<hash_type> computationHashesReferenced
+				);
+
+	bool computationHasScriptDependencies(hash_type computationGuid);
+
+	void dropScriptDependencies(std::string scriptName);
+
+	bool scriptExists(std::string scriptName);
+
+	ImmutableTreeSet<hash_type> getScriptDependencies(std::string scriptName);
+
+	bool isCheckpointForFinishedComputation(CheckpointRequest checkpoint);
+
+	void markPageInvalid(hash_type pageHash);
+
+	void markBigvecInvalid(hash_type pageHash);
+
+	void markCheckpointInvalid(CheckpointRequest checkpoint);
+
+	void markCheckpointFileInvalid(CheckpointRequest checkpoint, hash_type filename);
+
+	void touchPage(hash_type pageHash);
+
+	void touchBigvec(hash_type bigvecHash);
+
+	void touchCheckpoint(CheckpointRequest checkpoint);
+
+	void dropPage(hash_type pageHash);
+
+	void dropBigvec(hash_type pageHash);
+
+	void dropCheckpoint(CheckpointRequest checkpoint);
+
+	void dropCheckpointFile(CheckpointRequest checkpoint, hash_type filename);
+
+	bool anyInvalidObjectsExist();
+
+	ImmutableTreeSet<PersistentCacheKey> getInvalidObjects();
+
+	ImmutableTreeSet<PersistentCacheKey> getAllObjects();
+
+private:
+	PolymorphicSharedPtr<PersistentCacheIndexImpl> mImpl;
+};
+
+}
+}
+

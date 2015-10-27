@@ -1,0 +1,232 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "DistributedDataTaskMessages.hppml"
+#include "../../FORA/VectorDataManager/PageRefcountTracker.hppml"
+#include "../../FORA/VectorDataManager/VectorDataManagerImpl.hppml"
+#include "../../FORA/VectorDataManager/VectorPage.hppml"
+#include "../../FORA/TypedFora/ABI/ForaValueArray.hppml"
+#include "../../FORA/TypedFora/ABI/ForaValueArraySpaceRequirements.hppml"
+#include "../../FORA/TypedFora/ABI/ForaValueArraySlice.hppml"
+#include "../../FORA/Core/ValueDeepcopier.hppml"
+#include "../../FORA/Core/ImplValContainerUtilities.hppml"
+#include "../../FORA/Serialization/SerializedObject.hpp"
+#include "../../FORA/Serialization/ForaValueSerializationStream.hppml"
+#include "ForaValueLexicalComparison.hppml"
+#include "SlottedForaValueArrayAppend.hppml"
+
+namespace Cumulus {
+
+DistributedDataTaskMessages::DistributedDataTaskMessages(
+				PolymorphicSharedPtr<VectorDataManager> inVDM
+				) :
+			mVDM(inVDM),
+			mMemoryPool(nullptr),
+			mValueArray(nullptr)
+	{
+	}
+
+DistributedDataTaskMessages::~DistributedDataTaskMessages()
+	{
+	reset();
+	}
+
+void DistributedDataTaskMessages::reset()
+	{
+	if (mValueArray)
+		{
+		mMemoryPool->destroy(mValueArray);
+		mValueArray = nullptr;
+		}
+
+	if (mMemoryPool)
+		{
+		delete mMemoryPool;
+		mMemoryPool = 0;
+		}
+	}
+
+void DistributedDataTaskMessages::writeMessages(boost::function1<void, TypedFora::Abi::ForaValueArray*> callbackWithAppend)
+	{
+	if (!mMemoryPool)
+		mMemoryPool = new DataTasksMemoryPool(mVDM);
+
+	if (!mValueArray)
+		mValueArray = TypedFora::Abi::ForaValueArray::Empty(mMemoryPool);
+
+	callbackWithAppend(mValueArray);
+	}
+
+void DistributedDataTaskMessages::writeMessages(TypedFora::Abi::ForaValueArray* inMessages)
+	{
+	writeMessages(
+		[&](TypedFora::Abi::ForaValueArray* array) {
+			ValueDeepcopierState deepcopierState;
+
+			ValueDeepcopier deepcopier(deepcopierState, false, array->getOwningMemoryPool(), false, true);
+			
+			deepcopier.duplicate(array, inMessages);
+			}
+		);
+	}
+
+ImplValContainer DistributedDataTaskMessages::extractValue(int32_t index)
+	{
+	lassert(mValueArray && index >= 0 && index < mValueArray->size());
+	
+	ValueDeepcopierState deepcopierState;
+
+	ValueDeepcopier deepcopier(deepcopierState, false, MemoryPool::getFreeStorePool(), false, true);
+	
+	return deepcopier.duplicate((*mValueArray)[index]);
+	}
+
+ImplValContainer DistributedDataTaskMessages::importImplValContainer(ImplValContainer value)
+	{
+	if (!mMemoryPool)
+		mMemoryPool = new DataTasksMemoryPool(mVDM);
+
+	ValueDeepcopierState deepcopierState;
+
+	ValueDeepcopier deepcopier(deepcopierState, false, mMemoryPool, false, true);
+	
+	return deepcopier.duplicate(value);
+	}
+
+ImplValContainer DistributedDataTaskMessages::exportImplValContainer(ImplValContainer value)
+	{
+	ValueDeepcopierState deepcopierState;
+
+	ValueDeepcopier deepcopier(deepcopierState, false, MemoryPool::getFreeStorePool(), false, true);
+	
+	return deepcopier.duplicate(value);
+	}
+
+void DistributedDataTaskMessages::writeMessage(TypedFora::Abi::ForaValueArray* inMessages, int32_t index)
+	{
+	writeMessages(
+		[&](TypedFora::Abi::ForaValueArray* array) {
+			ValueDeepcopierState deepcopierState;
+
+			ValueDeepcopier deepcopier(deepcopierState, false, array->getOwningMemoryPool(), false, true);
+			
+			deepcopier.duplicate(array, inMessages, index, index+1);
+			}
+		);
+	}
+
+PolymorphicSharedPtr<SerializedObject>
+				DistributedDataTaskMessages::extractSerializedStateAndBroadcastBigvecsInFlight()
+	{
+	if (!mMemoryPool || !mValueArray)
+		return PolymorphicSharedPtr<SerializedObject>();
+
+	ImmutableTreeSet<Fora::BigVectorId> bigvecs;
+	for (auto bigvecAndRefcount: mMemoryPool->getBigvecRefcounts())
+		bigvecs = bigvecs + bigvecAndRefcount.first;
+
+	hash_type moveGuid = mVDM->newVectorHash();
+
+	if (bigvecs.size())
+		mVDM->getPageRefcountTracker()->broadcastBigvecsInFlight(bigvecs, 1, moveGuid);
+
+	PolymorphicSharedPtr<SerializedObject> result = 
+		SerializedObject::serialize(
+			pair<
+				pair<ImmutableTreeSet<Fora::BigVectorId>, hash_type>, 
+				pair<int64_t, TypedFora::Abi::ForaValueArray*>
+				>(make_pair(bigvecs, moveGuid), make_pair(int64_t(mValueArray->size()), mValueArray)),
+			mVDM->getMemoryManager()
+			);
+
+	reset();
+
+	return result;
+	}
+
+void DistributedDataTaskMessages::acceptSerializedState(PolymorphicSharedPtr<SerializedObject> object)
+	{
+	pair<
+		pair<ImmutableTreeSet<Fora::BigVectorId>, hash_type>, 
+		pair<int64_t, TypedFora::Abi::ForaValueArray*>
+		> newArray;
+
+	SerializedObject::deserialize(
+		object,
+		mVDM->getMemoryManager(),
+		newArray
+		);
+
+	if (newArray.second.second)
+		{
+		lassert(newArray.second.first == newArray.second.second->size());
+
+		writeMessages(newArray.second.second);
+		MemoryPool::getFreeStorePool()->destroy(newArray.second.second);
+		}
+
+	if (newArray.first.first.size())
+		mVDM->getPageRefcountTracker()->broadcastBigvecsInFlight(newArray.first.first, -1, newArray.first.second);
+	}
+
+DataTaskMemoryFootprint DistributedDataTaskMessages::currentMemoryFootprint()
+	{
+	return DataTaskMemoryFootprint(
+		mValueArray ? mValueArray->size() : 0,
+		mMemoryPool ? mMemoryPool->totalBytesAllocated() : 0,
+		mMemoryPool ? mMemoryPool->totalBytesAllocatedFromOS() : 0
+		);
+	}
+
+void DistributedDataTaskMessages::sortLexically()
+	{
+	if (!mValueArray || !mValueArray->size())
+		return;
+
+	if (mValueArray->isHomogenous() && mValueArray->currentJor()[0] == JOV::OfType(Type::Integer(64, true)))
+		{
+		std::sort((int64_t*)mValueArray->offsetFor(0), (int64_t*)mValueArray->offsetFor(mValueArray->size()));
+		return;
+		}
+
+	if (mValueArray->isHomogenous() && mValueArray->currentJor()[0] == JOV::Tuple(JOVT() + JOV::OfType(Type::Integer(64, true)) + JOV::OfType(Type::Integer(64, true))))
+		{
+		std::sort((pair<int64_t, int64_t>*)mValueArray->offsetFor(0), (pair<int64_t, int64_t>*)mValueArray->offsetFor(mValueArray->size()));
+		return;
+		}
+
+	std::vector<pair<uint8_t*, JOV> > values;
+
+	for (long k = 0; k < mValueArray->size();k++)
+		values.push_back(make_pair(mValueArray->offsetFor(k), mValueArray->jovFor(k)));
+
+	std::sort(values.begin(), values.end(), LexicalUforaValueComparisonPredicate());
+
+	auto newValueArray = TypedFora::Abi::ForaValueArray::Empty(mMemoryPool);
+
+	slottedAppend(values, newValueArray);
+
+	mMemoryPool->destroy(mValueArray);
+
+	mValueArray = newValueArray;
+	}
+
+TypedFora::Abi::ForaValueArray* DistributedDataTaskMessages::getValues()
+	{
+	return mValueArray;
+	}
+
+}
+

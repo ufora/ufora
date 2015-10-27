@@ -1,0 +1,419 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "ActiveComputations.hppml"
+#include "ComputationState.hppml"
+#include "ComputationDependencyGraph.hpp"
+#include "MachineComputationMap.hppml"
+#include "LocalComputationStatuses.hppml"
+#include "../FORA/Core/ExecutionContextConfiguration.hppml"
+#include "../networking/statsd.hpp"
+#include "../core/threading/Queue.hpp"
+#include "../FORA/VectorDataManager/PageRefcountEvent.hppml"
+#include "../FORA/VectorDataManager/PageRefcountTracker.hppml"
+#include "../FORA/TypedFora/ABI/BigVectorLayouts.hppml"
+#include "ActiveComputationsKernelInterface.hppml"
+
+namespace Cumulus {
+
+@type MoveRecord = ComputationId computation, MachineId target, hash_type moveGuid;
+
+@type ComputationPendingAction = 
+	-| SetCheckpointStatus of ()
+	-| ReceiveComputationCheckpointStatus of 
+			ComputationId subcomp,
+			CheckpointStatus stats,
+			CheckpointRequest timestamp
+	-| HandleOutgoingComputationCheckpointStatus of 
+			CheckpointStatus stats,
+			CheckpointRequest timestamp
+	-| AddComputationResultToComputation of ComputationResultFromMachine result
+	-| AddInterpreterResultToComputation of 
+			ComputationId sourceComputation,
+			Fora::Interpreter::ComputationResult inResult,
+			ComputationStatistics stats
+	-| HandleSchedulerToComputationMessage of 
+			SchedulerToComputationMessage msg
+	-| MarkComputationVectorLoadsComplete of ()
+	-| MarkComputationVectorLoadsFailedPermanently of ()
+	-| MarkComputationExternalIoTaskComplete of 
+			ExternalIoTaskCompleted completed
+	-| HandleComputationMoveResponse of ComputationMoveResponse response
+	-| MoveComputationToMachine of 
+			MachineId inOtherMachine,
+			DataTransferTokenId token
+	-| DropComputation of ()
+	-| PassthroughTo of ComputationId otherComputation
+	-| HandleRequestComputationResultFromMachineWithToken of 
+			RequestComputationResultFromMachine inRequest,
+			DataTransferTokenId inToken
+	-| Trigger of boost::shared_ptr<Queue<bool> > queue
+	;
+
+class ActiveComputationsKernel {
+public:
+	ActiveComputationsKernel(
+				boost::shared_ptr<ActiveComputationsKernelInterface> inInterface,
+				MachineId inOwnMachineId,
+				MachineId inLeaderMachineId
+				) :
+			mExternalInterface(inInterface),
+			mOwnMachineId(inOwnMachineId),
+			mCheckInternalStateAfterAllOperations(false),
+			mMachineRootComputationMap(
+				boost::bind(
+					&ActiveComputationsKernel::computationsLost,
+					this,
+					boost::arg<1>()
+					)
+				),
+			mLeaderMachineId(inLeaderMachineId),
+			mLastDump(0)
+		{
+		mMachineRootComputationMap.addMachine(mOwnMachineId);
+		}
+
+	void enableVectorPaging();
+
+	void disableVectorPaging();
+
+	ComputationStatusOnMachine extractLocalComputationStatusOnMachine(const ComputationId& inId) const;
+
+	ComputationStatusOnMachine lookupRootComputationStatusOnMachine(
+								const ComputationId& computation, 
+								const MachineId& machine
+								) const;
+
+	void updateComputationLocalStatusMaps_(ComputationId computation);
+
+	void updateComputationLocalStatusMapsTo_(ComputationId computation, ComputationStatusOnMachine status);
+
+	void handleGlobalSchedulerToActiveComputationsMessage(const GlobalSchedulerToActiveComputationsMessage& msg);
+
+	void handleSetCheckpointStatusTimestamp(const ComputationId& computation);
+
+	void handleComputationToComputationMessage(const ComputationToComputationMessage& msg);
+
+	bool isCurrentlyComputing(const ComputationId& computation);
+
+	bool isCurrentlyHandlingActionInBackgroundThread(const ComputationId& inId);
+	
+	void handleClientComputationPriorityChange(const ClientComputationPriorityChange& priorityChange);
+
+	void handleComputationFinished(ComputationId computation);
+
+	void handleComputationStatusOnMachineChanged(const ComputationStatusOnMachineChanged& change);
+
+	void markComputationVectorLoadsComplete(ComputationId computation);
+
+	void markComputationVectorLoadsFailedPermanently(ComputationId computation);
+
+	void sendInitiateComputationMoveResponse(ComputationId computation, bool success);
+
+	void sendClientComputationCreatedResponse(const ClientComputationCreatedResponse& response);
+
+	void sendComputationToComputationMessage(const ComputationToComputationMessage& msg);
+
+	void broadcastComputationStatusOnMachineChanged(const ComputationStatusOnMachineChanged& changeToFire);
+
+	void sendComputationToSchedulerMessage(ComputationToSchedulerMessage msg);
+
+	void markComputationExternalIoTaskComplete(
+										ComputationId computation, 
+										ExternalIoTaskCompleted completed
+										);
+
+	void handleComputationMoveResponse(const ComputationMoveResponse& inResponse);
+	
+	void handleInitiateComputationMove(InitiateComputationMove move);
+
+	void handleSchedulerToComputationMessage(const SchedulerToComputationMessage& inId);
+
+	bool isPassthrough(const ComputationId& computation) const;
+
+	void passthroughToOtherComputation(ComputationId ourComputation, ComputationId otherComputation);
+
+	void handleComputationStatusChange(ComputationId computation);
+
+	void requestRootComputationResult(ComputationId localComputationNeeding, ComputationId dependsOn);
+
+	void cleanupAfterStateChange();
+
+	void removePendingAddResultPendingActions(
+								const ComputationId& dest,
+								const ComputationId& source
+								);
+
+	void removeAllPendingAddResultPendingActions(
+							const ComputationId& dest
+							);
+
+	void createComputationFromSplit(ComputationId parent, ComputationId computationId, ComputationStatePtr inComputation);
+
+	void createComputationFromSplit(ComputationId parent, ComputationId computationId, ComputationDefinition inComputation);
+
+	void createRootComputation(ComputationDefinition inDefinition, ComputationId id);
+
+	void moveComputationToMachine(
+					ComputationId inId, 
+					MachineId inOtherMachine, 
+					DataTransferTokenId inToken
+					);
+
+	void computationsLost(const std::set<ComputationId>& computations);
+	
+	void dropComputation(const ComputationId& computation);
+
+	void setComputationDependenciesForLocal(
+				const ComputationId& computation, 
+				const ImmutableTreeSet<ComputationId>& inSubComputations
+				);
+
+	void setComputationDependenciesForRemote(
+				const ComputationId& computation, 
+				const ImmutableTreeSet<ComputationId>& inSubComputations
+				);
+
+	void updateDependencyGraph();
+
+	void dumpStateToLog();
+
+	void broadcastComputationStatus(const ComputationId& inId);
+
+	void broadcastLocalComputationStatus(const ComputationId& inId);
+
+	bool checkInternalState();
+
+	void checkAndAssertInternalStateIfNecessary();
+
+	bool checkInternalStateDependencyGraph();
+
+	bool computationIsLocal(const ComputationId& inComputation);
+
+	bool computationIsLocalAndUnfinished(const ComputationId& inComputation);
+
+	bool checkInternalStateRemoteLoadsMatchCurrentDependencies();
+
+	void addComputationResultToComputation(
+							ComputationId computation,
+							ComputationResultFromMachine inResult
+							);
+
+	void addComputationResultToComputationCompleted(
+							ComputationId computation,
+							ComputationResultFromMachine inResult
+							);
+
+	void addInterpreterResultToComputation(
+							ComputationId computation,
+							ComputationId sourceComputation,
+							Fora::Interpreter::ComputationResult inResult,
+							ComputationStatistics stats
+							);
+
+	void resubmitThreadsForComputation(ComputationId comp);	
+
+	void addMachine(MachineId machine);
+
+	void dropCumulusClient(CumulusClientId inId);
+
+	void handleComputationResultFromMachine(
+				const ComputationResultFromMachine& inResult
+				);
+
+	void handleRequestComputationResultFromMachineWithToken(
+									RequestComputationResultFromMachine inRequest,
+									DataTransferTokenId inToken
+									);
+
+	void handleExternalIoTaskCompleted(ExternalIoTaskCompleted completed);
+
+	void handlePageMarkedNotLoadable(const Fora::PageId& inPage);
+		
+	void handleLocalPageRefcountEvent(const Fora::PageRefcountEvent& event);
+		
+	void registerRootToRootDependency(ComputationId root1, ComputationId root2);
+
+	void handleRootToRootDependencyCreated(RootToRootDependencyCreated dep);
+	
+	void rejectComputationMoveRequest(ComputationMoveRequest response);
+	
+	void sendComputationMoveResponse(const ComputationMoveResponse& response);
+
+	Nullable<MachineId> computationParentMachine(const ComputationId& inComputation);
+
+	void setComputationParentMachine(const ComputationId& comp, MachineId machine);
+
+	void handleComputationMoveRequest(
+					ComputationMoveRequest inRequest,
+					ComputationStatePtr statePtr
+					);
+			
+	void handleClientComputationCreated(
+					const ClientComputationCreated& created,
+					bool isTemporary,
+					double timestamp
+					);
+
+	void stopComputation(ComputationId computation, CreatedComputations result);
+
+	bool startComputation(ComputationId computation);
+
+	void searchForCliquesCompleted(
+				ComputationId computation, 
+				hash_type guid, 
+				MachineId schedulerMachine,
+				ImmutableTreeVector<ImmutableTreeSet<Fora::PageId> > clique
+				);
+
+	void handleWriteCheckpointCompleted(
+				ComputationId computation, 
+				CheckpointStatus status,
+				CheckpointRequest timestamp
+				);
+
+	void resetPageDataAndBroadcastCompleted(
+				ComputationId computation, 
+				hash_type guid, 
+				MachineId schedulerMachine
+				);
+
+	void splitCompleted(
+				ComputationId computation, 
+				bool didSplit,
+				hash_type splitGuid,
+				MachineId schedulerMachine,
+				const map<ComputationId, ComputationStatePtr>& computationsCreated
+				);
+
+	void sendSchedulerMessageResponse(
+			ComputationId computation,
+			ComputationToSchedulerMessage response
+			);
+
+	void clearPendingActionsForComputation(ComputationId inId);
+
+	void addLocalComputationResultToLocalComputation(
+											ComputationId computation, 
+											ComputationId subComp
+											);
+
+	void executePendingActionForComputation(
+							ComputationId inId,
+							ComputationPendingAction action
+							);
+
+	void scheduleComputationPendingAction(
+							const ComputationId& inId,
+							const ComputationPendingAction& action
+							);
+
+	void fireOffPendingActions(ComputationId id);
+
+	bool triggerIfCircular(ComputationId id);
+
+	void createExternalIoTaskGivenId(ComputationId parent, ExternalIoTask task, ExternalIoTaskId newTaskId);
+
+	void broadcastFinishedMessagesForAllFinishedTemporaryComputations();
+
+	void updateComputationCheckpointStatusTimestamp(const ComputationId& comp);
+
+	void handleIncomingComputationCheckpointStatus(
+									ComputationId childComputation, 
+									CheckpointStatus statistics, 
+									CheckpointRequest timestamp
+									);
+
+	void handleIncomingComputationCheckpointStatus(
+										ComputationId parent,
+										ComputationId child,
+										CheckpointStatus stats,
+										CheckpointRequest timestamp
+										);
+
+	void handleOutgoingComputationCheckpointStatus(
+										ComputationId computation, 
+										CheckpointStatus statistics,
+										CheckpointRequest timestamp
+										);
+
+	void handleCumulusComponentMessage(
+			const CumulusComponentMessage& message, 
+			const CumulusClientOrMachine& source, 
+			const CumulusComponentType& componentType,
+			double curTime
+			);
+
+	void handleShouldCreateRootComputationResponse(ComputationId newId, bool shouldCreate);
+
+//eventually private
+	IndexedSet::Set<MoveRecord> mMovingComputations;
+
+	std::set<ComputationId> mCurrentlyComputing;
+
+	std::map<ComputationId, ComputationDefinition> mDeferredRootComputations;
+
+	TwoWaySetMap<ComputationId, Fora::PageId> mVectorLoadBlockedComputations;
+
+	std::set<ComputationId> mWaitingToBeDropped;
+
+	std::set<MachineId> mOtherMachines;
+
+	ComputationDependencyGraph mDependencyGraph;
+
+	MachineComputationMap mMachineRootComputationMap;
+
+	LocalComputationStatuses mLocalComputationStatuses;
+
+	std::map<ComputationId, MachineId> mComputationParentMachineId;
+
+	TwoWaySetMap<ComputationId, ComputationId> mComputationResultsRequested;
+
+	TwoWaySetMap<ComputationId, ExternalIoTaskId> mExternalIoTaskBlockedComputations;
+
+	MachineId mOwnMachineId;
+
+	std::map<ComputationId, CheckpointStatusUpdateMessage> mMostRecentlyBroadcastCheckpointStatuses;
+
+	std::set<ComputationId> mComputationsCurrentlyHandlingBackgroundActions;
+
+	std::map<ComputationId, pair<MachineId, DataTransferTokenId> > mMovesPendingCheckout;
+
+	std::map<ComputationId, std::deque<ComputationPendingAction> > mComputationPendingActions;
+
+	std::set<hash_type> mComputationMoveGuidsReceived;
+
+	std::set<Fora::PageId> mPagesMarkedNotLoadable;
+
+	std::map<ExternalIoTaskId, ExternalIoTaskCreated> mUnbroadcastExternalIoTasks;
+
+	std::map<ComputationId, CheckpointRequest> mComputationCheckpointStatusTimestamps;
+
+	//Internal state of the object
+	bool mCheckInternalStateAfterAllOperations;
+
+	MachineId mLeaderMachineId;
+
+	double mLastDump;
+
+	TwoWaySetMap<ComputationId, hash_type> mPendingComputationResultsBeforeInflightDecref;
+	
+private:
+	boost::shared_ptr<ActiveComputationsKernelInterface> mExternalInterface;
+};
+
+}

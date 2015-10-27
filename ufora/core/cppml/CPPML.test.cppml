@@ -1,0 +1,155 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "../UnitTest.hpp"
+#include "../Logging.hpp"
+#include "../Clock.hpp"
+#include "CPPMLThreadSafety.hppml"
+#include "MemoizeByTagAndHash.hppml"
+
+namespace {
+
+@type List = Node of int, List -| Empty of ();
+
+int sum(const List& l)
+	{
+	@match List(l)
+		-|	Node(i, l) ->> {
+			return i + sum(l);
+			}
+		-|	Empty() ->> {
+			return 0;
+			}
+		;
+	}
+List doubleList(const List& l)
+	{
+	@match List(l)
+		-|	Node(i, l) ->> {
+			return List::Node(i * 2, doubleList(l));
+			}
+		-|	Empty() ->> {
+			return List::Empty();
+			}
+		;
+	}
+
+BOOST_AUTO_TEST_CASE( test_CppmlBasicFunctionality )
+{
+	List l1 = List::Empty();
+	l1 = List::Node(10, l1);
+	l1 = List::Node(20, l1);
+	
+	BOOST_CHECK_EQUAL(sum(l1), 30);
+	BOOST_CHECK_EQUAL(sum(doubleList(l1)), 60);
+}
+
+static int sCount = 0;
+
+class DeletionMarker {
+public:
+	DeletionMarker()
+		{
+		sCount++;
+		}
+	DeletionMarker(const DeletionMarker& in)
+		{
+		sCount++;
+		}
+	~DeletionMarker()
+		{
+		sCount--;
+		}
+};
+
+@type Elt = 
+	Leaf of DeletionMarker marker
+-|	Node of Elt elt, Elt elt2
+with
+	DeletionMarker aMarker = (this->computeDeletionMarker())
+{
+public:
+	DeletionMarker computeDeletionMarker() const
+		{
+		return DeletionMarker();
+		}
+};
+
+BOOST_AUTO_TEST_CASE( test_CppmlDeletionWorks )
+{
+	BOOST_CHECK_EQUAL(sCount, 0);
+
+		{
+		Elt e1 = Elt::Leaf(DeletionMarker());
+
+		e1.aMarker();
+
+		Elt e2 = Elt::Leaf(DeletionMarker());
+
+		e2.aMarker();
+		
+		Elt e3 = Elt::Node(e1, e2);
+
+		e3.aMarker();
+		}
+
+	BOOST_CHECK_EQUAL(sCount, 0);	
+}
+
+
+
+
+}
+
+class AnAlternativeForCppmlTesting;
+
+macro_memoizeCppmlClassByTagAndHash(AnAlternativeForCppmlTesting)
+
+@type AnAlternativeForCppmlTesting = 
+	AnEmptyAlternative of ()
+-|	ANonemptyAlternative of int i
+	;
+
+
+BOOST_AUTO_TEST_CASE( test_CppmlMemoizeByTagAndHash )
+	{
+	long timesOK = 0;
+
+	for (long tries = 0; tries < 4; tries++)
+		{
+		double t0 = curClock();
+
+		for (long k = 0; k < 1000000;k++)
+			AnAlternativeForCppmlTesting::AnEmptyAlternative();
+
+		double emptyElapsed = curClock() - t0;
+
+		t0 = curClock();
+
+		for (long k = 0; k < 1000000;k++)
+			AnAlternativeForCppmlTesting::ANonemptyAlternative(1);
+
+		double nonemptyElapsed = curClock() - t0;
+
+		//verify that memoizing an empty type is _much_ faster
+		if (nonemptyElapsed > emptyElapsed * 10)
+			timesOK++;
+		}
+
+	BOOST_CHECK(timesOK > 2);
+	}
+
+
+

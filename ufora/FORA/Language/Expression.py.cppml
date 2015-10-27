@@ -1,0 +1,630 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Function.hppml"
+#include "FunctionUtil.hppml"
+#include "Parser.hppml"
+#include "ParserExpressions.hppml"
+#include "RebindFree.hppml"
+#include "../Core/Type.hppml"
+#include "../Core/ClassMediator.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
+#include "ClassMediatorBindings.hppml"
+#include "FreeVariableListFromPython.hpp"
+
+#include <stdint.h>
+#include <boost/python.hpp>
+#include "../../native/Registrar.hpp"
+#include "../../core/python/utilities.hpp"
+#include "../../core/python/CPPMLWrapper.hpp"
+#include "../../core/python/ScopedPyThreads.hpp"
+#include "RebindFree.hppml"
+#include "RebindFreeMemberAccesses.hppml"
+
+class ExpressionWrapper :
+		public native::module::Exporter<ExpressionWrapper> {
+public:
+		std::string		 getModuleName(void)
+			{
+			return "FORA";
+			}
+
+		static std::string symbolToString(const Symbol& inSymbol)
+			{
+			return inSymbol.toString();
+			}
+		
+		static boost::python::object parseStringToExpression2(
+					std::string s, 
+					const CodeDefinitionPoint& inCodeDefPoint,
+					std::string inNameScope
+					)
+			{
+			return parseStringToExpression(s, inCodeDefPoint, false, inNameScope);
+			}
+
+		static boost::python::object parseStringToExpression(
+					std::string s, 
+					const CodeDefinitionPoint& inCodeDefPoint,
+					bool allowPrivate,
+					std::string inNameScope
+					)
+			{
+			try {
+				Expression expr;
+
+					{
+					ScopedPyThreads releaseTheGil;
+					
+					expr = parseToExpression(
+						parseStringToSimpleParse(s),
+						allowPrivate,
+						inCodeDefPoint,
+						inNameScope
+						);
+					}
+
+				return boost::python::object(expr);
+				}
+			catch(SimpleParseError& e)
+				{
+				return boost::python::object(
+					FunctionParseError(
+						e.errorString(),
+						e.extent()
+						)
+					);
+				}
+			catch(FunctionParseError& e)
+				{
+				return boost::python::object(e);
+				}
+			}
+
+		static boost::python::object
+						parseObjectDefinitionBodyToExpression(
+											string s,
+											boost::python::list defs,
+											bool allowPrivate,
+											string moduleName,
+											string moduleFullname
+											)
+			{
+			ImmutableTreeVector<string> strs;
+			for (long k = 0; k < boost::python::len(defs);k++)
+				strs = strs + string(boost::python::extract<std::string>(defs[k])());
+			
+			return parseObjectDefinitionBodyToExpressionWithCdp(
+				s, 
+				CodeDefinitionPoint::External(strs),
+				allowPrivate,
+				moduleName,
+				moduleFullname
+				);
+			}
+
+		static boost::python::object
+						parseObjectDefinitionBodyToExpressionWithCdp(
+											string s,
+											CodeDefinitionPoint cdp,
+											bool allowPrivate,
+											string moduleName,
+											string moduleFullname
+											)
+			{
+			try {
+				Expression expr;
+				
+					{
+					ScopedPyThreads releaseTheGil;
+
+					expr = ::parseObjectDefinitionBodyToExpression(
+						parseStringToSimpleParse(s),
+						allowPrivate,
+						cdp,
+						Symbol(moduleName),
+						Symbol(moduleFullname)
+						);
+					}
+
+				return boost::python::object(expr);
+				}
+			catch(SimpleParseError& e)
+				{
+				return boost::python::object(
+					FunctionParseError(
+						e.errorString(),
+						e.extent()
+						)
+					);
+				}
+			catch(FunctionParseError& e)
+				{
+				return boost::python::object(e);
+				}
+			}
+			
+		static boost::python::object getMentionedVariables(Expression& e)
+			{
+			return Ufora::python::containerWithBeginEndToList(mentionedVariables(e), symbolToString);
+			}
+
+		static boost::python::object getAssignedVariableRanges(Expression& e, string s)
+			{
+			return Ufora::python::containerWithBeginEndToList(
+				computeAssignedVariableLocations(
+					e,
+					Symbol(s)
+					)
+				);
+			}
+
+		static boost::python::object getReturnStatementRanges(Expression& e)
+			{
+			return Ufora::python::containerWithBeginEndToList(
+				computeReturnStatementLocations(e)
+				);
+			}
+		
+		static boost::python::object getFreeVariables(Expression& e)
+			{
+			return Ufora::python::containerWithBeginEndToList(e.freeVariables(), symbolToString);
+			}
+
+		static boost::python::object getFreeVariableRanges(Expression& e, string s)
+			{
+			return 
+				Ufora::python::containerWithBeginEndToList(
+					computeFreeVariableLocations(
+					e,
+					Symbol(s)
+					)
+				);
+			}
+
+		static boost::python::object getAssignedVariables(Expression& e)
+			{
+			return Ufora::python::containerWithBeginEndToList(
+				computeAssignedVariables(e),
+				symbolToString
+				);
+			}
+
+		static boost::python::object memberPairToTuple(const pair<Symbol, Symbol>& inMemberPairs) 
+			{
+			return boost::python::make_tuple(
+				inMemberPairs.first.toString(),
+				inMemberPairs.second.toString()
+				);
+			}
+		static boost::python::object getFreeVariableMemberAccesses(Expression& e)
+			{
+			return Ufora::python::containerWithBeginEndToList(
+				Fora::freeMemberAccesses(e), 
+				memberPairToTuple
+				);
+			}
+		static boost::python::object getFreeVariableMemberAccessChains(Expression& e)
+			{
+			return Ufora::python::containerWithBeginEndToList(
+				Fora::freeMemberAccessChains(e)
+				);
+			}
+
+		static Expression rebindFreeVariableMemberAccess(Expression e, string variable, string member, string newName)
+			{
+			return Fora::rebindFreeMemberAccesses(e,
+					emptyTreeMap() +
+						make_pair(Symbol(variable), Symbol(member)) +
+						Expression::Variable(Symbol(newName))
+						);
+			}
+			
+		static Expression rebindFreeVariableMemberAccessChain_list(
+				Expression e, 
+				boost::python::list chain,
+				std::string newName
+				)
+			{
+			ImmutableTreeVector<Symbol> vars;
+			for (long ix = 0; ix < boost::python::len(chain); ++ix)
+				vars = vars + Symbol(boost::python::extract<std::string>(chain[ix])());
+
+			return Fora::rebindFreeMemberAccessChains(
+				e,
+				emptyTreeMap() +
+					vars +
+					Expression::Variable(Symbol(newName))
+				);
+			}
+
+		static Expression rebindFreeVariableMemberAccessChain_tuple(
+				Expression e, 
+				boost::python::tuple chain,
+				std::string newName
+				)
+			{
+			ImmutableTreeVector<Symbol> vars;
+			for (long ix = 0; ix < boost::python::len(chain); ++ix)
+				vars = vars + Symbol(boost::python::extract<std::string>(chain[ix])());
+
+			return Fora::rebindFreeMemberAccessChains(
+				e,
+				emptyTreeMap() +
+					vars +
+					Expression::Variable(Symbol(newName))
+				);
+			}
+
+		static boost::python::object extractRootLevelCreateFunctionPredicate(Expression& e)
+			{
+			Nullable<Function> f = e.extractRootLevelCreateFunctionPredicate();
+			if (f)
+				return boost::python::object(*f);
+			return boost::python::object();
+			}
+			
+		static boost::python::object extractRootLevelCreateObjectPredicate(Expression& e)
+			{
+			Nullable<ObjectDefinition> o = e.extractRootLevelCreateObjectPredicate();
+			if (o)
+				return boost::python::object(*o);
+			return boost::python::object();
+			}
+			
+		static Function expressionToFunctionValue(Expression e, bool freeShouldBeLambdas)
+			{
+			ImmutableTreeSet<Symbol> freeVars = e.freeVariables();
+
+			return Function::SingleTermFunction(
+				ImmutableTreeVector<Symbol>(freeVars.begin(), freeVars.end()), null(),
+				freeShouldBeLambdas ?
+					rebindFreeAsLambdas(e, freeVars)
+				:	e
+				);
+			}
+
+		static Function expressionToFunctionValueWithPassthroughArgument(Expression e, bool freeShouldBeLambdas)
+			{
+			ImmutableTreeSet<Symbol> freeVars = e.freeVariables();
+
+			long ix = 0;
+
+			while (freeVars.contains(Symbol("temp_" + boost::lexical_cast<string>(ix))))
+				ix++;
+
+			Symbol extraSymbol("temp_" + boost::lexical_cast<string>(ix));
+
+			e = Expression::BinaryOperator(
+					e, 
+					Symbol("+"), 
+					Expression::CreateTuple(
+						emptyTreeVec() + 
+							ApplyArgument::Normal(
+								null(),
+								Expression::Variable(extraSymbol)
+								)
+						)
+					);
+
+			return Function::SingleTermFunction(
+				ImmutableTreeVector<Symbol>(freeVars.begin(), freeVars.end()) + extraSymbol, null(),
+				freeShouldBeLambdas ?
+					rebindFreeAsLambdas(e, freeVars)
+				:	e
+				);
+			}
+
+		static ImplValContainer expressionToFunctionImplval(Expression e, bool freeShouldBeLambdas)
+			{
+			return ImplValContainer(CSTValue::blankOf(
+				Type::Class(
+					ClassMediator::Function(
+						"",
+						expressionToFunctionValue(e, freeShouldBeLambdas),
+						LexicalBindingMap(),
+						CSTValue()
+						)
+					)
+				));
+
+			}
+
+		static ImplValContainer expressionToFunctionImplvalWithPassthroughArgument(
+														Expression e, 
+														bool freeShouldBeLambdas
+														)
+			{
+			return ImplValContainer(CSTValue::blankOf(
+				Type::Class(
+					ClassMediator::Function(
+						"",
+						expressionToFunctionValueWithPassthroughArgument(e, freeShouldBeLambdas),
+						LexicalBindingMap(),
+						CSTValue()
+						)
+					)
+				));
+
+			}
+
+		static boost::python::object rebindFreeAsLexicalScopeAccess(const Expression& e)
+			{
+			std::pair<Expression, Symbol> tr = ::rebindFreeAsLexicalScopeAccess(e);
+			
+			return boost::python::make_tuple(
+				boost::python::object(tr.first),
+				boost::python::object(ImplValContainer(CSTValue(tr.second)))
+				);
+			}
+
+		static Expression rebindFreeVariables(const Expression& e, boost::python::dict d)
+			{
+			ImmutableTreeMap<Symbol, Expression> toBind;
+
+			std::vector<pair<std::string, std::string> > items;
+
+			Ufora::python::toCPP(d.items(), items);
+
+			for (long k = 0; k < items.size();k++)
+				toBind = toBind + Symbol(items[k].first) + Expression::Variable(Symbol(items[k].second));
+
+			return rebindFreeAs(e, toBind);
+			}
+
+		static ImplValContainer bindExpressionToFunctionWithNoArguments(
+															Expression e,
+															boost::python::dict freeVariables
+															)
+			{
+			ImmutableTreeMap<Symbol, pair<ImplValContainer, Nullable<Symbol> > > freeVars = 
+				Fora::freeVariableListFromPython(freeVariables);
+
+			return Fora::Language::bindFunctionWithValues(
+				ClassMediator::Function(
+					Function::SingleTermFunction(emptyTreeVec(), null(), e),
+					LexicalBindingMap(),
+					CSTValue()
+					),
+				freeVars, 
+				CSTValue()
+				);
+			}
+
+		static ImplValContainer evaluateRootLevelCreateObjectExpression(
+															Expression expr,
+															boost::python::dict freeVariables
+															)
+			{
+			ImmutableTreeMap<Symbol, pair<ImplValContainer, Nullable<Symbol> > > freeVars = 
+				Fora::freeVariableListFromPython(freeVariables);
+
+			expr = expr.unwrapCodeLocationTags();
+
+			if (expr.isCreateObject())
+				{
+				return Fora::Language::bindFunctionWithValues(
+					ClassMediator::Object(
+						"",
+						expr.getCreateObject().body(),
+						LexicalBindingMap(),
+						CSTValue()
+						),
+					freeVars, 
+					expr.getCreateObject().objectMetadata()
+					);
+				}
+
+			if (expr.isCreateFunction())
+				{
+				return Fora::Language::bindFunctionWithValues(
+					ClassMediator::Function(
+						"",
+						expr.getCreateFunction().predicate(),
+						LexicalBindingMap(),
+						CSTValue()
+						),
+					freeVars, 
+					expr.getCreateFunction().objectMetadata()
+					);
+				}
+
+			if (expr.isCreateClass())
+				{
+				return Fora::Language::bindFunctionWithValues(
+					ClassMediator::Class(
+						"",
+						expr.getCreateClass().body(),
+						LexicalBindingMap(),
+						CSTValue()
+						),
+					freeVars,
+					expr.getCreateClass().classMetadata()
+					);
+				}
+
+			lassert_dump(false, prettyPrintString(expr));
+			}
+
+		static bool willAlwaysEvaluateToNothing(Expression& e)
+			{
+			@match Expression(e)
+				-| Assign() ->> { return true; }
+				-| Foreach() ->> { return true; }
+				-| While() ->> { return true; }
+				-| _ ->> { return false; }
+			}
+
+		static bool isValidVariableName(string s)
+			{
+			return ParserExpressions::isValidVariableName(s);
+			}
+		
+		template<class T>
+		static std::string	scopedPrettyPrinter(const T& in)
+			{
+			ScopedPyThreads threads;
+			return prettyPrintString(in);
+			}
+
+		static boost::python::object getCodeLocation(const hash_type& inHash)
+			{
+			Nullable<CodeLocation> loc = GlobalCodeLocationRegistry::getCodeLocation(inHash);
+			if (loc)
+				return boost::python::object(*loc);
+			return boost::python::object();
+			}
+
+		static boost::python::object getParseLocation(const Expression& e)
+			{
+			Nullable<CodeLocation> loc = GlobalCodeLocationRegistry::getCodeLocation(e.hash());
+			if (loc)
+				return boost::python::object(*loc);
+			return boost::python::object();
+			}
+			
+		static bool expressionsEqual(const Expression& e1, const Expression& e2)
+			{
+			return e1 == e2;
+			}
+
+		static bool expressionsNotEqual(const Expression& e1, const Expression& e2)
+			{
+			return !(e1 == e2);
+			}
+
+		static hash_type expressionHash(const Expression& e)
+			{
+			return e.hash();
+			}
+	
+		void exportPythonWrapper()
+			{
+			using namespace boost::python;
+			
+			class_<Expression>("Expression", init<>())
+				.def("__str__", scopedPrettyPrinter<Expression>)
+				.def("__eq__", &expressionsEqual)
+				.def("__ne__", &expressionsNotEqual)
+				.def("hash", &expressionHash)
+				.def("toFunction", &expressionToFunctionValue)
+				.def("toFunctionImplval", &expressionToFunctionImplval)
+				.def("toFunctionImplvalWithPassthroughArgument", &expressionToFunctionImplvalWithPassthroughArgument)
+				.def("extractRootLevelCreateFunctionPredicate", 
+							&extractRootLevelCreateFunctionPredicate,
+					"Extract a Function object from the expression. The expression must be of "
+					"the form 'fun(...) {...}'. ")
+				.def("extractRootLevelCreateObjectPredicate", 
+							&extractRootLevelCreateObjectPredicate,
+					"Extract an ObjectDefinition object from the expression. The expression must be of "
+					"the form 'object(...) {...}'. ")
+				.add_property("mentionedVariables", &getMentionedVariables, 
+					"Return a list of strings containing the names of variables mentioned"
+					" in the expression. This includes variables that are bound within the"
+					" expression, not just free variables."
+					)
+				.add_property("freeVariableMemberAccesses", &getFreeVariableMemberAccesses,
+					"Return a list of pairs of strings (var,sym) for every instance in the expression "
+					"of a subexpression of the form \"x.m\" where 'x' is a variable that's free in "
+					"the expression."
+					)
+				.add_property("freeVariableMemberAccessChains", &getFreeVariableMemberAccessChains,
+					"Return a list of lists of Symbols for every instance in the expression "
+					"of a subexpression of the form \"x.a1.(...).an\" where 'x' is a variable that's free in "
+					"the expression and a1.(...).an is a chain of member accesses"
+					)
+				.add_property("freeVariables", &getFreeVariables,
+					"Return a list of strings containing variables that are 'free' in the expression. "
+					"Free variables must be given values for the expression to be meaningful. "
+					)
+				.add_property("assignedVariables", &getAssignedVariables,
+					"Return a list of variables that are assigned to in this expression. They are not "
+					"considered 'free', in the sense that their values are not read, but they need "
+					"a value in order to be a valid expression."
+					)
+				.def("getFreeVariableRanges", &getFreeVariableRanges,
+					"Given a string 'v', returns a list of CodeLocation objects corresponding to "
+					"uses of 'v' as a free variable."
+					)
+				.def("getAssignedVariableRanges", &getAssignedVariableRanges,
+					"Given a string 'v', returns a list of CodeLocation objects corresponding to "
+					"uses of 'v' as an assigned free variable."
+					)
+				.def("rebindFreeVariableMemberAccess", &rebindFreeVariableMemberAccess,
+					"Given three string arguments, 'variable', 'member', 'newName', returns an expression "
+					"with free variable pairs 'variable.member' replaced with a single variable access "
+					"'newName'"
+					)
+				.def("rebindFreeVariableMemberAccessChain", &rebindFreeVariableMemberAccessChain_list,
+					"Given a vector of strings '[str1, str2, ... ]' and a string 'newName', returns "
+					"an expression with free variables chains str1.str2. ... replaced by a single "
+					"variable access 'newName'"
+					)
+				.def("rebindFreeVariableMemberAccessChain", &rebindFreeVariableMemberAccessChain_tuple,
+					"Given a vector of strings '[str1, str2, ... ]' and a string 'newName', returns "
+					"an expression with free variables chains str1.str2. ... replaced by a single "
+					"variable access 'newName'"
+					)
+				.def("rebindFreeVariables", &rebindFreeVariables,
+					"Takes a dictionary from string to string and renames free variables in the keys "
+					"to corresponding names in the values."
+					)
+				.def("packAssignedVarsIntoTuple", &packAssignedVarsIntoTuple,
+					"Return a copy of the expression with all free assigned variables packed into a "
+					"tuple along with the result of the expression. e.g. the expression 'x=10;20' would become "
+					"x = 10; (20, (10,)). The variables are packed in alphabetical order."
+					)
+				.def("getReturnStatementRanges", &getReturnStatementRanges,
+					"Return a set of CodeLocation objects covering all 'return' statements in the expression, "
+					"excluding those of contained closures and objects."
+					)
+				.def("getParseLocation", &getParseLocation)
+				.def("willAlwaysEvaluateToNothing", &willAlwaysEvaluateToNothing)
+				.def("bindExpressionToFunctionWithNoArguments", &bindExpressionToFunctionWithNoArguments)			
+				.enable_pickling()
+				;
+				
+			def("parseStringToExpression", &parseStringToExpression);
+			def("parseStringToExpression", &parseStringToExpression2);
+
+			def("parseObjectDefinitionBodyToExpression", &parseObjectDefinitionBodyToExpression);
+			def("parseObjectDefinitionBodyToExpression", &parseObjectDefinitionBodyToExpressionWithCdp);
+			def("prependMemberToCreateObjectExpression", &prependMemberToCreateObjectExpression);
+			def("prependMemberToCreateObjectExpressionWithMetadata", &prependMemberToCreateObjectExpressionWithMetadata);
+			def("rebindFreeAsLexicalScopeAccess", &rebindFreeAsLexicalScopeAccess);
+			def("evaluateRootLevelCreateObjectExpression", &evaluateRootLevelCreateObjectExpression);
+			
+			def("getCodeLocation",
+				getCodeLocation,
+				"returns the CodeLocation associated to an Id in the "
+				"GlobalCodeLocationRegistry, if it exists. If it does not exist, returns None."
+				);
+
+			def("isValidVariableName", &isValidVariableName);
+			}
+};
+
+//explicitly instantiating the registration element causes the linker to need
+//this file
+template<>
+char native::module::Exporter<ExpressionWrapper>::mEnforceRegistration =
+		native::module::ExportRegistrar<
+			ExpressionWrapper>::registerWrapper();
+
+
+
+
+
+

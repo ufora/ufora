@@ -1,0 +1,231 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "RandomWhitespaceInserter.hppml"
+#include "SimpleParse.hppml"
+
+RandomWhitespaceInserter::RandomWhitespaceInserter(int64_t seed) :
+    mMersenneTwister(boost::mt19937(seed)),
+    mRandomIntGenerator(
+        mMersenneTwister,
+        boost::uniform_int<>(0, boost::numeric::bounds<int64_t>::highest())
+        ),
+    mRandomUniformGenerator(
+        mMersenneTwister,
+        boost::uniform_real<>(0, 1)
+        ),
+    mNeedsLeadingWhitespaceBeforeNextComment(false)
+    {
+    }
+
+void RandomWhitespaceInserter::seed(int64_t seed)
+    {
+    mMersenneTwister.seed(seed);
+    }
+
+std::string 
+RandomWhitespaceInserter::stringifyWithRandomWhitespaceAndComments(
+        const SimpleParseNode& node
+        )
+    {
+    std::ostringstream oss;
+
+        {
+        CPPMLPrettyPrintStream stream(oss);
+        stringifyWithRandomWhitespaceAndComments(node, stream);
+        }
+
+    return oss.str();
+    }
+
+int64_t RandomWhitespaceInserter::randInt()
+    {
+    return mRandomIntGenerator();
+    }
+
+double RandomWhitespaceInserter::randUniform()
+    {
+    return mRandomUniformGenerator();
+    }
+
+std::string RandomWhitespaceInserter::singleRandomWhitespace()
+    {
+    double rand = randUniform();
+
+    if (rand < 0.3)
+        return "\n";
+    else if (rand < 0.6)
+        return " ";
+    else if (rand < 0.9)
+        return "\t";
+    else 
+        return "\r\n";
+    }
+
+std::string RandomWhitespaceInserter::singleRandomComment()
+    {
+    double rand = randUniform();
+    std::string tr;
+
+    if (mNeedsLeadingWhitespaceBeforeNextComment)
+        {
+        tr = singleRandomWhitespace();
+        mNeedsLeadingWhitespaceBeforeNextComment = false;
+        }
+
+    if (rand < 0.5)
+        tr += "/* comment */";
+    else if (rand < 0.9)
+        tr +=  "// comment\n";
+    else 
+        tr += "/**/";
+
+    return tr;
+    }
+
+std::string RandomWhitespaceInserter::singleRandomCommentOrWhitespace()
+    {
+    if (randUniform() < 0.75)
+        {
+        return singleRandomWhitespace();
+        }
+
+    return singleRandomComment();
+    }
+
+std::string RandomWhitespaceInserter::randomCommentOrWhitespace()
+    {
+    std::string tr = "";
+
+    if (randUniform() < 0.5)
+        return tr;
+
+    int64_t length = randInt() % 5;
+    while (length > 0)
+        {
+        tr = tr + singleRandomCommentOrWhitespace();
+        --length;
+        }
+
+    return tr;
+    }
+
+void RandomWhitespaceInserter::stringifyWithRandomWhitespaceAndComments(
+        const SimpleParseNode& node, CPPMLPrettyPrintStream& str
+        )
+    {
+    @match SimpleParseNode(node)
+        -|  Empty() ->> {;}
+        -|  Identifier(v) ->> { 
+            str << randomCommentOrWhitespace();
+            str << v;
+
+            if (v.size() > 0 and v[0] == '`')
+                mNeedsLeadingWhitespaceBeforeNextComment = true;
+
+            str << randomCommentOrWhitespace();
+            }
+        -|  Quote(v) ->> { 
+            str << randomCommentOrWhitespace();
+            str.writeRaw(stringToStringConstant(v));
+            str << randomCommentOrWhitespace();
+            }
+        -|  Number(v) ->> { 
+            padWithRandomWhitespaceOrComments(node, str);
+            }
+        -|  Operator(v) ->> { 
+            std::string padding = randomCommentOrWhitespace();
+            if (padding.size() > 0 and padding[padding.size() - 1] == '/')
+                {
+                str << padding;
+                str << singleRandomWhitespace();
+                }
+
+            str << prettyPrintString(node);
+
+            padding = randomCommentOrWhitespace();
+            if (padding.size() > 0)
+                {
+                str << singleRandomWhitespace();
+                str << padding;
+                }
+            else {
+                mNeedsLeadingWhitespaceBeforeNextComment = true;
+                }
+            }
+        -|  Sequence(Semicolon(), elts) ->> {
+            for (int64_t ix = 0; ix < elts.size(); ix++)
+                {
+                str << randomCommentOrWhitespace();
+                str << (ix == 0 ? "" : ";");
+                stringifyWithRandomWhitespaceAndComments(elts[ix], str);
+                str << randomCommentOrWhitespace();
+                }
+            }
+        -|  Sequence(Comma(), elts) ->> {
+            for (int64_t ix = 0; ix < elts.size(); ix++)
+                {
+                str << randomCommentOrWhitespace();
+                str << (ix == 0 ? "" : ",");
+                stringifyWithRandomWhitespaceAndComments(elts[ix], str);
+                str << randomCommentOrWhitespace();
+                }
+            }
+        -|  Sequence(Colon(), elts) ->> {
+            for (int64_t ix = 0; ix < elts.size(); ix++)
+                {
+                std::string padding = randomCommentOrWhitespace();
+                str << padding;
+                if (ix > 0 and padding[padding.size() - 1] == '/')
+                    {
+                    str << singleRandomWhitespace();
+                    }
+                
+                str << (ix == 0 ? "" : ": ");
+                if (ix > 0)
+                    mNeedsLeadingWhitespaceBeforeNextComment = true;
+                stringifyWithRandomWhitespaceAndComments(elts[ix], str);
+                
+                str << randomCommentOrWhitespace();
+                }
+            }
+        -|  Sequence(Concatenation(), elts) ->> {
+            for (int64_t ix = 0; ix < elts.size(); ix++)
+                {
+                str << randomCommentOrWhitespace();
+                str << (ix == 0 ? "" : " ");
+                stringifyWithRandomWhitespaceAndComments(elts[ix], str);
+                str << randomCommentOrWhitespace();
+                }
+            }
+        -|  Grouping(Parens(), node) ->> {
+            str << "(" << randomCommentOrWhitespace();
+            stringifyWithRandomWhitespaceAndComments(node, str);
+            str << randomCommentOrWhitespace() << ")";
+            }
+        -|  Grouping(Braces(), node) ->> {
+            str << "{" << randomCommentOrWhitespace();
+            stringifyWithRandomWhitespaceAndComments(node, str);
+            str << randomCommentOrWhitespace() << "}";
+            }
+        -|  Grouping(Brackets(), node) ->> {
+            str << "[" << randomCommentOrWhitespace();
+            stringifyWithRandomWhitespaceAndComments(node, str);
+            str << randomCommentOrWhitespace() << "]";
+            }
+        ;
+    }
+
+

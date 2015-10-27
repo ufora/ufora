@@ -1,0 +1,187 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "RebindFree.hppml"
+#include "Function.hppml"
+#include "../Core/ClassMediator.hppml"
+#include "../../core/cppml/CPPMLTransform.hppml"
+#include "FunctionBoundAboveTransformer.hppml"
+
+@type RebindFreeAs = ImmutableTreeMap<Symbol, Expression> vars {
+public:
+		template<class T>
+		Nullable<T>	processDown(T e, bool& outContinue,
+							const ImmutableTreeSet<Symbol>& boundAbove) const
+			{
+			return null();
+			}
+		template<class T>
+		Nullable<T>	processUp(T e,
+							const ImmutableTreeSet<Symbol>& boundAbove) const
+			{
+			return null();
+			}
+
+		Nullable<Expression> processDown(Expression e, bool& outContinue,
+							const ImmutableTreeSet<Symbol>& boundAbove) const
+			{
+			@match Expression(e)
+				-|	Variable(x) ->> {
+					if (vars()[x] && !boundAbove.contains(x))
+						{
+						outContinue = false;
+						return null() << *vars()[x];
+						}
+					else
+						return Nullable<Expression>();
+					}
+				-|	x ->> {
+					return Nullable<Expression>();
+					}
+				;
+			}
+};
+
+Function rebindFreeAs(	const Function& e,
+						const ImmutableTreeMap<Symbol, Expression>& freeVars)
+	{
+	RebindFreeAs rebinder(freeVars);
+	
+	return transform(
+		e,
+		FunctionBoundAboveTransformer<RebindFreeAs>(
+			emptyTreeSet(),
+			&rebinder
+			)
+		);
+	}
+Expression rebindFreeAs(const Expression& e,
+						const ImmutableTreeMap<Symbol, Expression>& freeVars)
+	{
+	RebindFreeAs rebinder(freeVars);
+	
+	return transform(
+		e,
+		FunctionBoundAboveTransformer<RebindFreeAs>(
+			emptyTreeSet(),
+			&rebinder
+			)
+		);
+	}
+
+Function rebindFreeAsConstants(const Function& e,
+						const ImmutableTreeMap<Symbol, CSTValue>& freeVars)
+	{
+	ImmutableTreeMap<Symbol, Expression> r;
+	for (long k = 0; k < freeVars.size(); k++)
+		r = r + make_pair(freeVars.pairAtPosition(k).first,
+					Expression::Constant(freeVars.pairAtPosition(k).second));
+	return rebindFreeAs(e, r);
+	}
+Expression rebindFreeAsConstants(const Expression& e,
+						const ImmutableTreeMap<Symbol, CSTValue>& freeVars)
+	{
+	ImmutableTreeMap<Symbol, Expression> r;
+	for (long k = 0; k < freeVars.size(); k++)
+		r = r + make_pair(freeVars.pairAtPosition(k).first,
+					Expression::Constant(freeVars.pairAtPosition(k).second));
+	return rebindFreeAs(e, r);
+	}
+
+ObjectDefinitionBody rebindFreeAs(const ObjectDefinitionBody& e,
+						const ImmutableTreeMap<Symbol, Symbol>& freeVars)
+	{
+	ImmutableTreeMap<Symbol, Expression> r;
+	
+	for (long k = 0; k < freeVars.size(); k++)
+		r = r + make_pair(freeVars.pairAtPosition(k).first,
+					Expression::Variable(freeVars.pairAtPosition(k).second));
+
+	RebindFreeAs rebinder(r);
+	
+	return transform(
+		e,
+		FunctionBoundAboveTransformer<RebindFreeAs>(
+			emptyTreeSet(),
+			&rebinder
+			)
+		);
+	}
+
+ClassDefinitionBody rebindFreeAs(const ClassDefinitionBody& e,
+						const ImmutableTreeMap<Symbol, Symbol>& freeVars)
+	{
+	ImmutableTreeMap<Symbol, Expression> r;
+	
+	for (long k = 0; k < freeVars.size(); k++)
+		r = r + make_pair(freeVars.pairAtPosition(k).first,
+					Expression::Variable(freeVars.pairAtPosition(k).second));
+
+	RebindFreeAs rebinder(r);
+	
+	return transform(
+		e,
+		FunctionBoundAboveTransformer<RebindFreeAs>(
+			emptyTreeSet(),
+			&rebinder
+			)
+		);
+	}
+
+Function rebindFreeAsLambdas(const Function& e,
+									const ImmutableTreeSet<Symbol>& freeVars)
+	{
+	ImmutableTreeMap<Symbol, Expression> r;
+	for (long k = 0; k < freeVars.size(); k++)
+		r = r + make_pair(freeVars[k], Expression::Variable(freeVars[k])());
+	return rebindFreeAs(e, r);
+	}
+Expression rebindFreeAsLambdas(const Expression& e,
+									const ImmutableTreeSet<Symbol>& freeVars)
+	{
+	ImmutableTreeMap<Symbol, Expression> r;
+	for (long k = 0; k < freeVars.size(); k++)
+		r = r + make_pair(freeVars[k], Expression::Variable(freeVars[k])());
+	return rebindFreeAs(e, r);
+	}
+
+//creates a fresh variable and rebinds all free members as accesses of that
+pair<Expression, Symbol>
+				rebindFreeAsLexicalScopeAccess(const Expression& e)
+	{
+	ImmutableTreeSet<Symbol>	mentioned = mentionedVariables(e);
+	
+	string s = "temp";
+	while (mentioned.contains(Symbol(s)))
+		s = s + "_";
+	
+	ImmutableTreeSet<Symbol> freeVars = e.freeVariables();
+	ImmutableTreeMap<Symbol, Expression> freeMap;
+	for (long k = 0; k < freeVars.size(); k++)
+		freeMap = freeMap + freeVars[k] +
+			Expression::Member(
+				Expression::Variable(Symbol(s)),
+				freeVars[k],
+				1
+				);
+	return make_pair(
+		rebindFreeAs(
+			e,
+			freeMap
+			),
+		Symbol(s)
+		);
+	}
+

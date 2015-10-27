@@ -1,0 +1,221 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "DistributedDataTaskMessages.hppml"
+#include "ForaValueLexicalComparison.hppml"
+
+#include "../../FORA/Core/ValueDeepcopier.hppml"
+
+namespace Cumulus {
+
+/************************
+
+SortingSpine
+
+Responsible for sorting FORA values in an array to target bins.
+
+When there are no splits, we always have the bin "0" with no values on either
+size (e.g. the bin represents the entire range of values). 
+
+We can split any bin into two child bins on a partical value. Every FORA value
+less than the split value sorts to the left. All other values sort to the right.
+
+We will always have one more bin than split. Each bin is either the topmost bin,
+or it has a right edge.
+
+*************************/
+
+template<class bin_index_type>
+class SortingSpine {
+public:
+	SortingSpine(PolymorphicSharedPtr<VectorDataManager> inVdm) : 
+			mMemoryPool(inVdm),
+			mTopBin()
+		{
+		mBinCounts[mTopBin]++;
+		}
+
+	SortingSpine(PolymorphicSharedPtr<VectorDataManager> inVdm, bin_index_type topBin) : 
+			mMemoryPool(inVdm),
+			mTopBin(topBin)
+		{
+		mBinCounts[mTopBin]++;
+		}
+
+	bin_index_type splitBin(bin_index_type leftSplitBin, bin_index_type rightSplitBin, ImplValContainer value)
+		{
+			{
+			ValueDeepcopierState deepcopierState;
+
+			ValueDeepcopier deepcopier(deepcopierState, false, &mMemoryPool, false, true);
+			
+			mSplitValues.push_back(
+				boost::shared_ptr<ImplValContainer>(
+					new ImplValContainer(
+						deepcopier.duplicate(value)
+						)
+					)
+				);
+			}
+
+		pair<uint8_t*, JOV> newPair((uint8_t*)mSplitValues.back()->data(), JOV::OfType(mSplitValues.back()->type()));
+
+		//find the insertion point
+		auto it = mSplits.find(newPair);
+		lassert(it == mSplits.end());
+
+		mSplits[newPair] = leftSplitBin;
+		mBinCounts[leftSplitBin]++;
+
+		it = mSplits.find(newPair);
+		it++;
+
+		if (it == mSplits.end())
+			{
+			bin_index_type oldBin = mTopBin;
+
+			mBinCounts[rightSplitBin]--;
+			mTopBin = rightSplitBin;
+			mBinCounts[mTopBin]++;
+
+			if (mBinCounts[rightSplitBin] == 0)
+				mBinCounts.erase(rightSplitBin);
+
+			return oldBin;
+			}
+		else
+			{
+			bin_index_type oldBin = it->second;
+			mBinCounts[oldBin]--;
+			it->second = rightSplitBin;
+			mBinCounts[rightSplitBin]++;
+
+			if (mBinCounts[oldBin] == 0)
+				mBinCounts.erase(oldBin);
+
+			return oldBin;
+			}
+		}
+
+	//assign bins assuming that 'array' is sorted
+	void assignBinsToSortedArray(TypedFora::Abi::ForaValueArray* array, std::vector<bin_index_type>& outBins) const
+		{
+		outBins.resize(array->size());
+
+		auto curSplitIt = mSplits.begin();
+
+		long curIndex = 0;
+
+		while (curSplitIt != mSplits.end() && curIndex < outBins.size())
+			{
+			pair<uint8_t*, JOV> curValue(array->offsetFor(curIndex), array->jovFor(curIndex));
+
+			if (LexicalUforaValueComparisonPredicate()(curValue, curSplitIt->first))
+				{
+				outBins[curIndex] = curSplitIt->second;
+				curIndex++;
+				}
+			else
+				curSplitIt++;
+			}
+
+		while (curIndex < outBins.size())
+			outBins[curIndex++] = mTopBin;
+		}
+
+	//assign bins assuming that 'array' is sorted
+	void assignBinsToUnsortedArray(TypedFora::Abi::ForaValueArray* array, std::vector<bin_index_type>& outBins) const
+		{
+		outBins.resize(array->size());
+
+		for (long k = 0; k < array->size(); k++)
+			{
+			pair<uint8_t*, JOV> curValue(array->offsetFor(k), array->jovFor(k));
+
+			auto it = mSplits.upper_bound(curValue);
+
+			if (it == mSplits.end())
+				outBins[k] = mTopBin;
+			else
+				outBins[k] = it->second;
+			}
+		}
+
+	//assign bins assuming that 'array' is sorted
+	void assignBinsToUnsortedArray(TypedFora::Abi::ForaValueArray* array, std::map<bin_index_type, std::vector<long> >& outBins) const
+		{
+		for (long k = 0; k < array->size(); k++)
+			{
+			pair<uint8_t*, JOV> curValue(array->offsetFor(k), array->jovFor(k));
+
+			auto it = mSplits.upper_bound(curValue);
+
+			if (it == mSplits.end())
+				outBins[mTopBin].push_back(k);
+			else
+				outBins[it->second].push_back(k);
+			}
+		}
+
+	void assignIndicesToBins(
+				const std::vector<bin_index_type>& bins, 
+				std::vector<pair<bin_index_type, int64_t> >& outBinAndIndex
+				) const
+		{
+		outBinAndIndex.clear();
+		for (int64_t k = 0; k < bins.size(); k++)
+			outBinAndIndex.push_back(make_pair(bins[k], k));
+		std::sort(outBinAndIndex.begin(), outBinAndIndex.end());
+		}
+
+	bin_index_type topBin() const
+		{
+		return mTopBin;
+		}
+
+	bin_index_type firstBin() const
+		{
+		if (mSplits.size())
+			return mSplits.begin()->first;
+		return mTopBin;
+		}
+
+	bool binExists(bin_index_type bin) const
+		{
+		return mBinCounts.find(bin) != mBinCounts.end();
+		}
+
+	template<class stream_type>
+	void logStateToStream(stream_type& s)
+		{
+		for (auto split: mSplits)
+			s << "\t" << ImplValContainer(*split.first.second.type(), split.first.first) << ": " << split.second << "\n";
+		}
+
+private:
+	DataTasksMemoryPool mMemoryPool;
+
+	std::vector<boost::shared_ptr<ImplValContainer> > mSplitValues;
+
+	std::map<pair<uint8_t*, JOV>, bin_index_type, LexicalUforaValueComparisonPredicate> mSplits;
+
+	std::map<bin_index_type, long> mBinCounts;
+
+	bin_index_type mTopBin;
+};
+
+}

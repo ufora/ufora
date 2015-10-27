@@ -1,0 +1,306 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../TypedFora/JitCompiler/Compiler.hppml"
+#include "../Judgment/JudgmentOnValue.fwd.hppml"
+#include <boost/enable_shared_from_this.hpp>
+#include "ErrorState.hppml"
+#include "Type.hppml"
+#include <boost/unordered_map.hpp>
+#include <boost/unordered_set.hpp>
+#include "ComputationResult.hppml"
+#include "../ControlFlowGraph/ControlFlowGraphSplitter.hppml"
+#include "../ControlFlowGraph/FuturesSplitResult.hppml"
+
+#include "../Vector/VectorDataID.hppml"
+#include "../VectorDataManager/BigVectorId.hppml"
+#include "../../core/SymbolExport.hpp"
+#include "../../core/PolymorphicSharedPtr.hpp"
+#include "../../core/threading/CallbackScheduler.hppml"
+#include "../Native/NativeRuntimeContinuationValue.hppml"
+#include "../Interpreter/InterpreterScratchSpace.hpp"
+#include "../Interpreter/InstructionPtr.hpp"
+#include "MemBlockAllocator.hpp"
+#include "StackframeMetadata.hppml"
+
+namespace TypedFora {
+namespace Abi {
+class VectorHandle;
+class StackFrameVisitor;
+}}
+
+class VectorDataManager;
+class VectorDataManagerImpl;
+class MemoryPool;
+class ExecutionContextMemoryPool;
+class NativeRuntimeCallbacks;
+
+namespace Fora {
+
+class InterpreterTraceTerm;
+class ForaValueSerializationStream;
+class ForaValueDeserializationStream;
+class BigVectorSlice;
+
+}
+
+class ValueDeepcopierState;
+
+namespace TypedFora {
+class TypedJumpTarget;
+}
+
+namespace Fora {
+namespace Interpreter {
+
+class PausedComputation;
+class ContinuationElement;
+class Compiler;
+class ExecutionContextConfiguration;
+class InterpreterFrame;
+class EvalFrame;
+class ExecutionContextScope;
+class RefcountPool;
+class InterpreterScratchSpace;
+class ExecutionContextImpl;
+class InterpreterHistory;
+
+//Represents a single interpreter thread with its own stack.
+//only one computation can run on a given interpreter at once, although
+//multiple interpreters can run simultaneously in separate threads,
+//sharing the rest of the runtime.
+class ExecutionContext : public PolymorphicSharedPtrBase<ExecutionContext> {
+	ExecutionContext(const ExecutionContext&);
+	ExecutionContext& operator=(const ExecutionContext&);
+public:
+	ExecutionContext(
+		PolymorphicSharedPtr<VectorDataManager> inVectorDataManager,
+		uword_t inStackIncrement = 32 * 1024,
+		uint64_t memoryQuota = 0x6400000 /* 100 MB */
+		);
+
+	~ExecutionContext();
+	
+	void enableVectorPaging();
+
+	void disableVectorPaging();
+
+	//trigger an interrupt
+	void interrupt();
+
+	//trigger an interrupt after this many interrupt checks. if zero, then this reset the
+	//counter (e.g. no interrupt will occur)
+	void interruptAfterCycleCount(sword_t checks);
+
+	sword_t remainingCycleCount();
+
+	//return how many bytes of stack space we have allocated
+	uword_t totalStackMemoryUsed();
+
+	//get the current ExecutionContext containing 
+	static ExecutionContext*	currentExecutionContext();
+	
+	static VectorDataManager&	currentVDM();
+
+	NativeRuntimeCallbacks& getRuntimeCallbacks();
+
+	VectorDataManager& getVDM();
+
+	void logAMessage(const ImplValContainer& msg);
+
+	void logSomeMessages(const ImplValContainer& msg);
+
+	ImplValContainer getComputationLog() const;
+
+	//is the context in the internal state
+	bool isEmpty() const;
+
+	bool isGarbageCollecting() const;
+
+	bool isGcScheduled();
+
+	void scheduleVdmCheck();
+
+	bool isGcPending();
+
+	bool isInterrupted() const;			//do we have an interrupted computation?
+
+	bool isVectorLoad() const;			//are we trying to load a vector
+
+	bool isCacheRequest() const;		//are we waiting on a cache check?
+
+	Fora::BigVectorSlice getVectorLoad() const;		//what vector are we trying to load?
+
+	bool isExecuting() const;
+	
+	//did the computation result in a finished value?
+	bool isFinished()  const;
+
+	//is the context in the 'error' state?
+	bool isError()  const;
+
+	void disableMemoryPoolDefragment();
+
+	//if it's a cache request, get the tuple of requests
+	ImplValContainer getCacheRequest();
+
+	//get the finished result out (if isFinished)
+	ComputationResult getFinishedResult();
+
+	void setFinishedResult(const ComputationResult& inResult);
+
+	MemBlockAllocator& getStackAllocator();
+
+	ImmutableTreeSet<Fora::BigVectorId> getReferencedBigVectors();
+
+	void setInterpreterTraceHandler(boost::function1<void, const Fora::InterpreterTraceTerm&> handler);
+
+	boost::function1<void, const Fora::InterpreterTraceTerm&> getInterpreterTraceHandler();
+
+	void visitStackFramesAndValues(TypedFora::Abi::StackFrameVisitor& visitor);
+
+	ImmutableTreeVector<pair<ForaStackTrace, Fora::Interpreter::StackframeMetadata> > 
+							extractStacktrace(bool inExportValues) const;
+
+	//displace whatever's in the current ExecutionContext and replace
+	//it with content deserialized from 'serializer'
+	void serialize(Fora::ForaValueSerializationStream& serializer) const;
+
+	//displace whatever's in the current ExecutionContext and replace
+	//it with content deserialized from 'serializer'
+	void deserialize(Fora::ForaValueDeserializationStream& serializer);
+
+	PausedComputation extractPausedComputation() const;
+
+	pair<uint64_t, uint64_t> getCurrentMemoryUsage();
+
+	pair<uint64_t, uint64_t> getMemoryUsageAtLastEvent();
+
+	void resumePausedComputation(const PausedComputation& computation);
+
+	bool copyValuesOutOfVectorPages();
+
+	void unloadAllVectorHandlesFromPool();
+
+	void setMemoryPoolPageSize(size_t newPageSize);
+
+	void resetMemoryPoolPageSize();
+
+	bool pageLargeVectorHandles(uword_t inBytecountThreshold);
+
+	//puts state in 'Empty' and then attempts to evaluate the values
+	void evaluate(const ImplValContainer& args);
+
+	void placeInEvaluationStateWithoutRenamingMutableVectors(const ImplValContainer& args);
+
+	//evaluate but immediately interrupt (so no actual computation occurs)
+	void placeInEvaluationState(const ImplValContainer& args);
+
+	//evaluate starting at some particular function rather than jumping
+	//directly to the interpreter
+	void evaluateFunctionPointer(
+					const TypedFora::TypedJumpTarget& toCall,
+					const ImplValContainer& args
+					);
+
+	Nullable<ControlFlowGraphSplitter::SplitPausedComputation> 
+				splitComputation(bool disableVectorPagingIfSplit = false);
+
+    PolymorphicSharedPtr<FuturesSplitResult> splitWithFutures();
+
+	Nullable<long> getCurrentBigvecSlotIndex() const; 
+
+	//resume the computation from an interrupted state
+	void resumeComputation();
+
+	//resumes the computation from a cachecall state
+	void resumeComputation(const ComputationResult& val);
+
+	//put the ExecutionContext back into the 'empty' state
+	void teardown(bool assertEmpty = false);
+
+	boost::shared_ptr<ExecutionContextConfiguration> getConfiguration() const;
+
+	double getTimeSpentInInterpreter() const;
+
+	double getTimeSpentInCompiledCode() const;
+
+	double getTimeSpentGarbageCollecting() const;
+
+	RefcountPool* getRefcountPool();
+
+	//reset the interrupt state
+	void resetInterruptState();
+
+	bool resetInterruptStateIfOnlyTriggeredInternally();
+
+	bool wasLastInterruptTriggeredExternally();
+
+	MemoryPool* getMemoryPool();
+
+	boost::shared_ptr<ExecutionContextMemoryPool> getExecutionContextMemoryPool();
+
+	InterpreterScratchSpace& getInterpreterScratchSpace();
+
+	InterpreterHistory& getInterpreterHistory();
+
+	std::string extractCurrentTextStacktrace();
+
+	void incrementBigVectorRefcount(Fora::BigVectorId inBigVectorId);
+
+	void decrementBigVectorRefcount(Fora::BigVectorId inBigVectorId);
+
+	void initialize();
+
+	PolymorphicSharedPtr<ExecutionContextImpl> getImpl()
+		{
+		return mImpl;
+		}
+
+	hash_type newVectorHash();
+
+	void setOnPageCreated(boost::function1<void, Fora::PageId> function);
+
+	void setOnCurrentActivePageGroupChanged(boost::function2<void, ImmutableTreeSet<Fora::PageId>, double> function);
+
+private:
+	PolymorphicSharedPtr<ExecutionContextImpl> mImpl;
+
+	friend class ExecutionContextScope;
+};
+}
+}
+
+template<>
+class Serializer<Fora::Interpreter::ExecutionContext, Fora::ForaValueSerializationStream> {
+public:
+	static void serialize(Fora::ForaValueSerializationStream& s, const Fora::Interpreter::ExecutionContext& t)
+		{
+		t.serialize(s);
+		}
+};
+
+template<>
+class Deserializer<Fora::Interpreter::ExecutionContext, Fora::ForaValueDeserializationStream> {
+public:
+	static void deserialize(Fora::ForaValueDeserializationStream& s, Fora::Interpreter::ExecutionContext& t)
+		{
+		t.deserialize(s);
+		}
+};
+
+

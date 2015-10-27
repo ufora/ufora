@@ -1,0 +1,705 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ContinuationArgs.hppml"
+#include "EvalFrameArgList.hpp"
+#include "InterpreterScratchSpace.hpp"
+#include "../ControlFlowGraph/ControlFlowGraphUtil.hppml"
+#include "../Core/TupleCategory.hppml"
+#include "../Core/ApplyArgFrame.hppml"
+#include "../Core/RefcountPool.hppml"
+#include "../../core/StringUtil.hpp"
+
+namespace Fora {
+namespace Interpreter {
+
+ContinuationArgs::ContinuationArgs()
+	{
+	mArgsToLeaveAlone = 0;
+	mArgsToGrab = 0;
+	mRefCount = 0;
+	mUsesResult = false;
+	mIsTupleExpand = false;
+	mIfIsTupleExpand_argument = 0;
+	mIfIsTupleExpand_arityIsExact = 0;
+	mIfIsTupleExpand_arity = 0;
+	mMakeTupleArgs = 0;
+	}
+
+ContinuationArgs::ContinuationArgs(const ContinuationArgs& in)
+	{
+	mArgsToLeaveAlone = in.mArgsToLeaveAlone;
+	mArgsToGrab = in.mArgsToGrab;
+	mArgSourceConstants = in.mArgSourceConstants;
+	mArgSource = in.mArgSource;
+	mRefCount = in.mRefCount;
+	mUsesResult = in.mUsesResult;
+	mIsTupleExpand = in.mIsTupleExpand;
+	mIfIsTupleExpand_argument = in.mIfIsTupleExpand_argument;
+	mIfIsTupleExpand_arityIsExact = in.mIfIsTupleExpand_arityIsExact;
+	mIfIsTupleExpand_arity = in.mIfIsTupleExpand_arity;
+	mMakeTupleArgs = in.mMakeTupleArgs;
+	mContinuation = in.mContinuation;
+
+	if (mRefCount)
+		(*mRefCount)++;
+	}
+
+ContinuationArgs::ContinuationArgs(	const ControlFlowGraph& inGraph, 
+									const Nullable<string>& inLabel, 
+									uword_t inContinuationIndex
+									)
+	{
+	const ControlFlowNodeBody& nodeBody(inGraph[inLabel].body());
+
+	@match ControlFlowNodeBody(nodeBody)
+		-|	TupleExpand(arg, (arity, arityIsExact, _), _) ->> {
+			mIsTupleExpand = true;
+			mIfIsTupleExpand_arity = arity;
+			mIfIsTupleExpand_argument = arg;
+			mIfIsTupleExpand_arityIsExact = arityIsExact;
+			}
+		-|	_ ->> {
+			mIsTupleExpand = false;
+			mIfIsTupleExpand_argument = 0;
+			mIfIsTupleExpand_arity = 0;
+			mIfIsTupleExpand_arityIsExact = true;
+			}
+		;
+	
+	mContinuation = nodeBody.getContinuationByIndex(inContinuationIndex);
+
+	@match ControlFlowContinuation(nodeBody.getContinuationByIndex(inContinuationIndex))
+		-|	Return(arg) ->> {
+			initializeReturnContinuation(arg);
+			}
+		-|	Node(_, args) ->> {
+			initializeNodeContinuation(args);
+			}
+		;
+	}
+
+const ImmutableTreeVector<ControlFlowContinuationTupleArg>& 
+ContinuationArgs::getMakeTupleArgs(uword_t ix) const
+	{
+	lassert(isMakeTuple(ix));
+	return mMakeTupleArgs[ix];
+	}
+
+void ContinuationArgs::initializeReturnContinuation(const ControlFlowContinuationArg& arg)
+	{
+	mRefCount = new uword_t (1);
+	mArgSourceConstants = new CSTValue[1];
+	mMakeTupleArgs = new ImmutableTreeVector<ControlFlowContinuationTupleArg>[1];
+	mArgSource = new long[1];
+	mArgsToGrab = 1;
+	mArgsToLeaveAlone = 0;
+	mUsesResult = false;
+	
+	initializeControlFlowArg(arg, 0);
+	}
+
+void ContinuationArgs::initializeNodeContinuation(const ImmutableTreeVector<ControlFlowContinuationArg>& args)
+	{
+	mRefCount = 0;
+	mArgsToLeaveAlone = 0;
+	mArgsToGrab = 0;
+	mArgSourceConstants = 0;
+	mArgSource = 0;
+	mUsesResult = false;
+	mMakeTupleArgs = 0;
+	
+	for (long k = 0; k < args.size(); k++)
+		{
+		bool isArgK = false;
+		@match ControlFlowContinuationArg(args[k])
+			-| Arg(Arg(h)) ->> { isArgK = h == k; }
+			-| _ ->> {}
+			;
+		
+		if (mArgsToLeaveAlone == k && isArgK)
+			mArgsToLeaveAlone++;
+		else
+			{
+			//first time we're seeing a no-copy arg
+			if (mArgsToGrab == 0)
+				{
+				mArgsToGrab = args.size() - k;
+				mArgSourceConstants = new CSTValue[mArgsToGrab];
+				mMakeTupleArgs = new ImmutableTreeVector<ControlFlowContinuationTupleArg>[mArgsToGrab];
+				mArgSource = new long[mArgsToGrab];
+				mRefCount = new uword_t (1);
+				}
+	
+			initializeControlFlowArg(args[k], k - mArgsToLeaveAlone);
+			}
+		}
+	}
+
+void ContinuationArgs::initializeControlFlowArg(const ControlFlowContinuationArg& arg, uword_t ix)
+	{
+	if (ControlFlowGraphUtil::referencesResult(arg))
+		mUsesResult = true;
+
+	@match ControlFlowContinuationArg(arg)
+		-|	Arg(Arg(ht)) ->> { 
+			mArgSource[ix] = ht;
+			}
+		-|	Arg(Constant(c)) ->> { 
+			mArgSource[ix] = arg_source_constant; 
+			mArgSourceConstants[ix] = c; 
+			}
+		-|	TupleElement(tupleIndex) ->> { 
+			mArgSource[ix] = arg_source_tuple_expand_element_base - tupleIndex; 
+			}
+		-|	TupleRemainingElements() ->> { 
+			mArgSource[ix] = arg_source_tuple_expand_remaining_elements; 
+			}
+		-|	Result() ->> {
+			mArgSource[ix] = arg_source_result;
+			}
+		-|	MakeTuple(args) ->> {
+			mArgSource[ix] = arg_source_make_tuple;
+			mMakeTupleArgs[ix] = args;
+			}
+		;
+	}
+
+ContinuationArgs& ContinuationArgs::operator=(const ContinuationArgs& in)
+	{
+	if (this == &in)
+		return *this;
+	
+	destroyData();
+	
+	mArgsToLeaveAlone = in.mArgsToLeaveAlone;
+	mArgsToGrab = in.mArgsToGrab;
+	mArgSourceConstants = in.mArgSourceConstants;
+	mArgSource = in.mArgSource;
+	mRefCount = in.mRefCount;
+	mUsesResult = in.mUsesResult;
+	
+	mIsTupleExpand = in.mIsTupleExpand;
+	mIfIsTupleExpand_arityIsExact = in.mIfIsTupleExpand_arityIsExact;
+	mIfIsTupleExpand_argument = in.mIfIsTupleExpand_argument;
+	mIfIsTupleExpand_arity = in.mIfIsTupleExpand_arity;
+	mMakeTupleArgs = in.mMakeTupleArgs;
+	mContinuation = in.mContinuation;
+
+	if (mRefCount)
+		(*mRefCount)++;
+	
+	return *this;
+	}
+
+ContinuationArgs::~ContinuationArgs()
+	{
+	destroyData();
+	}
+
+void ContinuationArgs::destroyData()
+	{
+	if (mRefCount)
+		{
+		(*mRefCount)--;
+		if (!*mRefCount)
+			{
+			delete mRefCount;
+			if (mArgSourceConstants)
+				delete [] mArgSourceConstants;
+			if (mArgSource)
+				delete [] mArgSource;
+			if (mMakeTupleArgs)
+				delete [] mMakeTupleArgs;
+			}
+		}
+	}
+
+void ContinuationArgs::returnArgs(
+				EvalFrameArgList& evalFrameArgList,
+				ImplVal result,
+				ImplVal* targetImplVal,
+				RefcountPool* refcountPool
+				) const
+	{
+	if (isConstant(0))
+		{
+		*targetImplVal = mArgSourceConstants[0].getReference();
+		}
+		else 
+	if (isResult(0))
+		{
+		*targetImplVal = result;
+		}
+		else 
+	if (isTupleExpandElement(0))
+		{
+		*targetImplVal = refcountPool->add(
+			TupleCategory::getItem(
+				evalFrameArgList[mIfIsTupleExpand_argument], 
+				getTupleExpandElementIndex(0)
+				)
+			);
+		}
+		else 
+	if (isTupleExpandRemainingElements(0))
+		{
+		*targetImplVal = refcountPool->addAlreadyRefcounted(
+			TupleCategory::getSliceReturnsOwned(
+				evalFrameArgList[mIfIsTupleExpand_argument], 
+				mIfIsTupleExpand_arity
+				)
+			);
+		}
+		else 
+	if (isIndex(0))
+		{
+		*targetImplVal = evalFrameArgList[mArgSource[0]];
+		}
+		else
+	if (isMakeTuple(0))
+		{
+		*targetImplVal = refcountPool->addAlreadyRefcounted(
+			createOwnedTupleFromLiveValues(
+				evalFrameArgList,
+				result,
+				mMakeTupleArgs[0],
+				refcountPool
+				)
+			);
+		}
+	else
+		{
+		lassert(false);
+		}
+	}
+		
+//rewrite the arguments in 'evalFrameArgList' according to our continuation
+//description. use the data in 'scratch' as extra space
+void ContinuationArgs::rewriteArgs(
+							EvalFrameArgList& evalFrameArgList,
+							ImplVal result,
+							InterpreterScratchSpace& scratchSpace,
+							RefcountPool* inRefcountPool
+							) const
+	{
+	scratchSpace.clear();
+
+	for (long k = 0; k < mArgsToGrab; k++)
+		{
+		if (isConstant(k))
+			scratchSpace.push(mArgSourceConstants[k].getReference());
+			else
+		if (isResult(k))
+			{
+			scratchSpace.push(result);
+			}
+			else
+		if (isTupleExpandElement(k))
+			{
+			scratchSpace.push(inRefcountPool->add(
+					TupleCategory::getItem(
+						evalFrameArgList[mIfIsTupleExpand_argument], 
+						getTupleExpandElementIndex(k)
+						)
+					)
+				);
+			}
+			else
+		if (isTupleExpandRemainingElements(k))
+			{
+			scratchSpace.push(
+				inRefcountPool->addAlreadyRefcounted(
+					TupleCategory::getSliceReturnsOwned(
+						evalFrameArgList[mIfIsTupleExpand_argument], 
+						mIfIsTupleExpand_arity
+						)
+					)
+				);
+			}
+			else
+		if (isMakeTuple(k))
+			{
+			scratchSpace.push(
+				inRefcountPool->addAlreadyRefcounted(
+					createOwnedTupleFromLiveValues(
+						evalFrameArgList, 
+						result, 
+						mMakeTupleArgs[k], 
+						inRefcountPool
+						)
+					)
+				);
+			}
+			else
+		if (isIndex(k))
+			{
+			//we're copying this value. if it's owned, and we make
+			//more than one copy, we have to duplicate it
+			long argSrc = mArgSource[k];
+
+			scratchSpace.push(evalFrameArgList[argSrc]);
+			}
+		else
+			{
+			lassert(false);
+			}
+		}
+	
+	evalFrameArgList.slice(mArgsToLeaveAlone);
+	
+	for (long k = 0; k < mArgsToGrab; k++)
+		evalFrameArgList.push(scratchSpace.getImplval(k));
+	}
+
+string ContinuationArgs::toString(void) const
+	{
+	ostringstream str;
+	
+	str << "(LeaveAlone=" << mArgsToLeaveAlone;
+	for (long k = 0;k < mArgsToGrab; k++)
+		if (isConstant(k))
+			str << ", [" << prettyPrintString(constant(k)) << "]";
+			else
+		if (isResult(k))
+			str << ", res";
+			else
+		if (isIndex(k))
+			str << ", " << index(k);
+		else
+			{
+			lassert(false);
+			}
+
+	str << ")";
+	
+	return str.str();
+	}	
+
+ImplVal ContinuationArgs::createOwnedTupleFromLiveValues(
+					const EvalFrameArgList& evalFrameArgList, 
+					ImplVal result,
+					const ImmutableTreeVector<ControlFlowContinuationTupleArg>& inArgs,
+					RefcountPool* inPool
+					) const
+	{
+	Fora::ApplyArgFrame vals;
+	
+	for (long k = 0; k < inArgs.size(); k++)
+		extractTupleElt(evalFrameArgList, result, inArgs[k], vals, inPool);
+
+	return TupleCategory::createNewTuple(vals.begin(), vals.end());
+	}
+
+ImplVal ContinuationArgs::extractTupleElt(
+					const EvalFrameArgList& evalFrameArgList, 
+					ImplVal result,
+					const ControlFlowContinuationArg& inArg,
+					RefcountPool* pool
+					) const
+	{
+	@match ControlFlowContinuationArg(inArg)
+		-|	Arg(Arg(ix)) ->> {
+				return evalFrameArgList[ix];
+				}
+		-|	Arg(Constant(c)) ->> {
+				return c.getReference();
+				}
+		-|	Result() ->> {
+				return result;
+				}
+		-|	TupleElement(index) ->> {
+				return pool->add(
+					TupleCategory::getItem(
+						evalFrameArgList[mIfIsTupleExpand_argument], 
+						index
+						)
+					);
+				}
+		-|	TupleRemainingElements() ->> {
+				return pool->addAlreadyRefcounted(
+					TupleCategory::getSliceReturnsOwned(
+						evalFrameArgList[mIfIsTupleExpand_argument], 
+						mIfIsTupleExpand_arity
+						)
+					);
+				}
+		-|	MakeTuple(args) ->> {
+				return pool->addAlreadyRefcounted(
+					createOwnedTupleFromLiveValues(evalFrameArgList, result, args, pool)
+					);
+				}
+		;
+	}
+
+void ContinuationArgs::extractTupleElt(
+					const EvalFrameArgList& evalFrameArgList, 
+					ImplVal result,
+					const ControlFlowContinuationTupleArg& inArg,
+					Fora::ApplyArgFrame& ioVals,
+					RefcountPool* inPool
+					) const
+	{
+	ImplVal val = extractTupleElt(evalFrameArgList, result, inArg.arg(), inPool);
+	
+	@match ControlFlowContinuationTupleArg(inArg)
+		-| Normal(fieldName, _) ->> {
+			ioVals.push_back(Fora::ApplyArg(val, fieldName, false));
+			}
+		-| TupleCall(_) ->> {
+			ioVals.push_back(Fora::ApplyArg(val, null(), true));
+			}
+	}
+
+
+ImmutableTreeVector<JudgmentOnValue>
+ContinuationArgs::targetJOV(const ImmutableTreeVector<JudgmentOnValue>& jovs) const
+	{
+	return targetJOV(jovs, null());
+	}
+
+ImmutableTreeVector<JudgmentOnValue>
+ContinuationArgs::targetJOV(	const ImmutableTreeVector<JudgmentOnValue>& jovs, 
+								const JudgmentOnValue& result
+								) const
+	{
+	return targetJOV(jovs, null() << result);
+	}
+
+ImmutableTreeVector<JudgmentOnValue>
+ContinuationArgs::targetJOV(
+		const ImmutableTreeVector<JudgmentOnValue>& jovs,
+		const Nullable<JudgmentOnValue>& result
+		) const
+	{
+	ImmutableTreeVector<JudgmentOnValue> tr = jovs.slice(0, mArgsToLeaveAlone);
+	
+	for (long k = 0; k < mArgsToGrab; k++)
+		tr = tr + jovForArg(jovs, result, k + mArgsToLeaveAlone);
+
+	return tr;
+	}
+
+
+JudgmentOnValue ContinuationArgs::jovForArg(
+		const ImmutableTreeVector<JudgmentOnValue>& jovs,
+		const Nullable<JudgmentOnValue>& result,
+		uword_t index
+		) const
+	{
+	if (index < mArgsToLeaveAlone)
+		return jovs[index];
+
+	uword_t indexOffset = index - mArgsToLeaveAlone;
+	
+	if (isResult(indexOffset))
+		return *result;
+		else
+	if (isTupleExpandRemainingElements(indexOffset))
+		return getJOVForTupleExpandRemainingElements(jovs[mIfIsTupleExpand_argument]);
+		else
+	if (isTupleExpandElement(indexOffset))
+		return getJOVForTupleExpandElement(
+				jovs[mIfIsTupleExpand_argument], 
+				getTupleExpandElementIndex(indexOffset)
+				);
+		else
+	if (isConstant(indexOffset))
+		return JudgmentOnValue::Constant(mArgSourceConstants[indexOffset]);
+		else
+	if (isMakeTuple(indexOffset))
+		return getJOVForMakeTuple(jovs, result, mMakeTupleArgs[indexOffset]);
+		else
+	if (isIndex(indexOffset))
+		return jovs[mArgSource[indexOffset]];
+	else
+		{
+		lassert(false);	
+		}
+	}
+
+JudgmentOnResult ContinuationArgs::jorForArg(
+		const ImmutableTreeVector<JudgmentOnValue>& jovs,
+		const JudgmentOnResult& result,
+		uword_t index
+		) const
+	{
+	if (index < mArgsToLeaveAlone)
+		return JudgmentOnResult(jovs[index]);
+
+	uword_t indexOffset = index - mArgsToLeaveAlone;
+	
+	if (isResult(indexOffset))
+		return result;
+		else
+	if (isTupleExpandRemainingElements(indexOffset))
+		return JudgmentOnResult(
+			getJOVForTupleExpandRemainingElements(jovs[mIfIsTupleExpand_argument])
+			);
+		else
+	if (isTupleExpandElement(indexOffset))
+		return JudgmentOnResult(
+			getJOVForTupleExpandElement(
+				jovs[mIfIsTupleExpand_argument], 
+				getTupleExpandElementIndex(indexOffset)
+				)
+			);
+		else
+	if (isMakeTuple(indexOffset))
+		{
+		ImmutableTreeSet<JudgmentOnValue> jorElements;
+		for (long k = 0; k < result.size(); k++)
+			jorElements = jorElements + 
+				getJOVForMakeTuple(jovs, null() << result[k], mMakeTupleArgs[indexOffset]);
+		return JudgmentOnResult(jorElements);
+		}
+		else
+	if (isConstant(indexOffset))
+		return JudgmentOnResult(
+			JudgmentOnValue::Constant(mArgSourceConstants[indexOffset])
+			);
+		else
+	if (isIndex(indexOffset))
+		return JudgmentOnResult(jovs[mArgSource[indexOffset]]);
+	else
+		{
+		lassert(false);	
+		}
+	}
+
+JudgmentOnValue
+ContinuationArgs::getJOVForMakeTuple(
+					const ImmutableTreeVector<JudgmentOnValue>& jovs,
+					const Nullable<JudgmentOnValue>& result,
+					const ImmutableTreeVector<ControlFlowContinuationTupleArg>& args
+					) const
+	{
+	JudgmentOnValueTuple tupleJudgment;
+
+	for (long k = 0; k < args.size(); k++)
+		tupleJudgment = 
+			JudgmentOnValueTuple::merge(
+				tupleJudgment, 
+				getJOVTForMakeTupleArg(jovs, result, args[k])
+				);
+	return JOV::Tuple(tupleJudgment);
+	}
+
+JudgmentOnValueTuple
+ContinuationArgs::getJOVTForMakeTupleArg(
+					const ImmutableTreeVector<JudgmentOnValue>& jovs,
+					const Nullable<JudgmentOnValue>& result,
+					const ControlFlowContinuationTupleArg& arg
+					) const
+	{
+	@match ControlFlowContinuationTupleArg(arg)
+		-|	Normal(fieldName, arg) ->> {
+			return JudgmentOnValueTuple(
+				emptyTreeVec() + 
+					getJOVForContinuationArg(jovs, result, arg),
+				emptyTreeVec() + 
+					fieldName
+				);
+			}
+		-|	TupleCall(arg) ->> {
+			JOV tupleCalledJOV = getJOVForContinuationArg(jovs, result, arg);
+
+			if (tupleCalledJOV.isTuple())
+				return tupleCalledJOV.getTuple().jov();
+				else
+			if (tupleCalledJOV.disjoint(jovTuple()))
+				return JudgmentOnValueTuple::Unnamed(emptyTreeVec() + tupleCalledJOV);
+			else
+				return jovTuple().getTuple().jov();
+			}
+	}
+
+JudgmentOnValue
+ContinuationArgs::getJOVForContinuationArg(
+					const ImmutableTreeVector<JudgmentOnValue>& jovs,
+					const Nullable<JudgmentOnValue>& result,
+					const ControlFlowContinuationArg& arg
+					) const
+	{
+	@match ControlFlowContinuationArg(arg)
+		-|	Arg(Arg(ix)) ->> {
+			return jovs[ix];
+			}
+		-|	Arg(Constant(c)) ->> {
+			return JOV::Constant(c);
+			}
+		-|	Result() ->> {
+			return *result;
+			}
+		-|	TupleElement(index) ->> {
+			return getJOVForTupleExpandElement(
+				jovs[mIfIsTupleExpand_argument],
+				index
+				);
+			}
+		-|	TupleRemainingElements() ->> {
+			return getJOVForTupleExpandRemainingElements(
+				jovs[mIfIsTupleExpand_argument]
+				);
+			}
+		-|	MakeTuple(elts) ->> {
+			return getJOVForMakeTuple(jovs, result, elts);
+			}
+	}
+
+
+Nullable<uword_t> 
+ContinuationArgs::getNullableTupleExpandIndex(void) const
+	{
+	if (!mIsTupleExpand)
+		return null();
+	return null() << mIfIsTupleExpand_argument;
+	}
+
+JudgmentOnValue
+ContinuationArgs::getJOVForTupleExpandElement(const JudgmentOnValue& inResult, uword_t inIndex) const
+	{
+	if (!inResult.isTuple())
+		return JudgmentOnValue::Unknown();
+
+	const JOVT& jovt = inResult.getTuple().jov();
+
+	return jovt[inIndex];
+	}
+
+JudgmentOnValue
+ContinuationArgs::getJOVForTupleExpandRemainingElements(const JudgmentOnValue& inResult) const
+	{
+	if (!inResult.isTuple())
+		return JudgmentOnValue::Unknown();
+
+	const JOVT& jovt = inResult.getTuple().jov();
+
+	return JOV::Tuple(jovt.slice(mIfIsTupleExpand_arity));
+	}
+	
+uword_t ContinuationArgs::toLeaveAlone(void) const
+	{
+	return mArgsToLeaveAlone;
+	}
+
+uword_t ContinuationArgs::toGrab(void) const
+	{
+	return mArgsToGrab;
+	}
+
+}
+}
+

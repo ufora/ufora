@@ -1,0 +1,645 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "InterpreterHistoryImpl.hppml"
+#include "../Core/ExecutionContextConfiguration.hppml"
+#include "TransferNativeStackframeIntoInterpreter.hppml"
+#include "EvalFrame.hpp"
+#include "../TypedFora/TypedForaUtil.hppml"
+#include "../TypedFora/JitCompiler/TypedJumpTarget.hppml"
+#include "../TypedFora/ABI/NativeStackFrameWrapper.hppml"
+#include "../../core/Logging.hpp"
+#include "../../core/Clock.hpp"
+
+using namespace Fora::Interpreter;
+
+namespace Fora {
+namespace Interpreter {
+
+InterpreterHistoryImpl::InterpreterHistoryImpl(
+			boost::shared_ptr<ExecutionContextConfiguration> inConfig
+			) : 
+		mHistory100(100),
+		mHistory1000(1000),
+		mHistory10000(10000),
+		mHistory100000(100000),
+		mCurrentTraceStackDepth(0),
+		mInterpreterTraceHandler(&*Runtime::getRuntime().getInterpreterTraceHandler()),
+		mHasSentInitializeTraceToExternalHandler(false),
+		mJustTransferredFromMachineCode(false),
+		mIsReturningToInterpreter(false),
+		mConfig(inConfig),
+		mWasInterpreterInterrupted(false)
+	{
+	}
+
+bool InterpreterHistoryImpl::isTracing() const
+	{
+	return shouldCollectInterpreterTraces();
+	}
+
+double InterpreterHistoryImpl::timeOfLastTraceEvent()
+	{
+	if (mTraceCollector)
+		return mTraceCollector->timeOfLastTraceTerm();
+	
+	return 0.0;
+	}
+
+
+void InterpreterHistoryImpl::clear()
+	{
+	mHistory100.clear();
+	mHistory1000.clear();
+	mHistory10000.clear();
+	mHistory100000.clear();
+
+	mJustTransferredFromMachineCode = false;
+
+	mWasInterpreterInterrupted = false;
+
+	mIsReturningToInterpreter= false;
+
+	mCurrentTraceStackDepth = 0;
+
+	mHasSentInitializeTraceToExternalHandler = false;
+
+	mTraceCollector.reset();
+	}
+
+void InterpreterHistoryImpl::pause()
+	{
+	if (mTraceCollector)
+		mTraceCollector->pauseTracing();
+	}
+
+void InterpreterHistoryImpl::resume()
+	{
+	if (mTraceCollector)
+		mTraceCollector->resumeTracing();
+	}
+
+void InterpreterHistoryImpl::onInterpreterStep(EvalFrame* inFrame)
+	{
+	Instruction* instructionPtr = inFrame->instructionPtr.get();
+
+	if (mExternalTraceHandler && !mHasSentInitializeTraceToExternalHandler)
+		{
+		mExternalTraceHandler(
+			getInitializeInterpreterTrace(inFrame)
+			);
+		mHasSentInitializeTraceToExternalHandler = true;
+		}
+
+	mHistory100.push_back(instructionPtr);
+	mHistory1000.push_back(instructionPtr);
+	mHistory10000.push_back(instructionPtr);
+	mHistory100000.push_back(instructionPtr);
+
+	askTraceHandlerWhetherToCollect(inFrame);
+	}
+
+void InterpreterHistoryImpl::onInterpreterInterrupted(EvalFrame* inFrame)
+	{
+	if (shouldCollectInterpreterTraces())
+		{
+		mWasInterpreterInterrupted = true;
+		mJustTransferredFromMachineCode = false;
+
+		collectInterpreterTrace(Fora::InterpreterTraceTerm::ArbitraryInterpreterLogging("onInterpreterInterrupted"));
+		}
+	}
+
+void InterpreterHistoryImpl::onInterpreterInterruptedForVectorLoad(EvalFrame* inFrame)
+	{
+	if (shouldCollectInterpreterTraces())
+		{
+		mWasInterpreterInterrupted = true;
+		mJustTransferredFromMachineCode = false;
+
+		collectInterpreterTrace(Fora::InterpreterTraceTerm::ArbitraryInterpreterLogging("onInterpreterInterruptedForVectorLoad"));
+		}
+	}
+
+namespace {
+
+Nullable<NativeContinuationMetadataSerialized> getTopInstructionMeta(
+							const ImmutableTreeVector<NativeContinuationMetadataSerialized>& in,
+							NativeRuntimeContinuationBase continuation
+							)
+	{
+	lassert(in.size());
+
+	for (long k = in.size()-1;k>=0;k--)
+		if (in[k].node().isTypedForaInstruction())
+			return null() << in[k];
+
+	return null();
+	}
+
+bool unwrapNativeContinuationData(
+				const NativeRuntimeContinuationBase& continuation,
+				ImmutableTreeVector<JOV>& ioJovsOfData,
+				ImmutableTreeVector<JOV>& ioJovsOfInstruction,
+				ControlFlowGraphJumpPoint& ioTargetGraphPoint,
+				Nullable<bool>& ioIsException,
+				std::string& ioFname
+				)
+	{
+	auto compiler = Runtime::getRuntime().getTypedForaCompiler();
+
+	NativeFunctionPointer funcPtr = continuation.jumpPtr();
+
+	lassert_dump(
+		compiler->isNativeFunctionPointer(funcPtr),
+		continuationToString(continuation, true)
+		);
+
+	ioFname = compiler->nameForFunctionPointer(funcPtr);
+
+	ImmutableTreeVector<NativeContinuationMetadataSerialized> stackMeta = 
+		compiler->slotMetadataForFuncPtr(funcPtr, continuation.metadataEntryId());
+
+	lassert(stackMeta.size());
+
+	Nullable<NativeContinuationMetadataSerialized> instruction = getTopInstructionMeta(stackMeta, continuation);
+
+	if (!instruction)
+		return false;
+
+	@match NativeContinuationMetadataInstruction(instruction->node())
+		-| TypedForaInstruction(tfMetadata) ->> {
+			@match TypedFora::MetadataInstruction(*tfMetadata)
+				-| Node(jumpPoint, jovs) ->> {
+					ioTargetGraphPoint = jumpPoint;
+					ioJovsOfInstruction = jovs;
+					}
+				-| NodeWithResult(jumpPoint, index, jovs, finalJov) ->> {
+					ioTargetGraphPoint = jumpPoint;
+					ioIsException = (index != 0);
+					ioJovsOfInstruction = jovs;
+					}
+			}
+
+	for (long k = 0; k < instruction->vars().size(); k++)
+		{
+		lassert(instruction->vars()[k].layout());
+
+		ioJovsOfData = ioJovsOfData + (*instruction->vars()[k].layout())->jov();
+		}
+
+	return true;
+	}
+
+}
+
+void InterpreterHistoryImpl::onTransferToInterpreterFromNativeCode(
+						const NativeRuntimeContinuationBase& continuation
+						)
+	{
+	if (shouldCollectInterpreterTraces())
+		{
+		ImmutableTreeVector<JOV> jovsOfData, jovsOfInstruction;
+		ControlFlowGraphJumpPoint targetGraphPoint;
+		Nullable<bool> isException;
+		std::string fname;
+
+		lassert_dump(
+			unwrapNativeContinuationData(continuation, jovsOfData, jovsOfInstruction, targetGraphPoint, isException, fname),
+			"couldn't unwrap " << continuationToString(continuation, true)
+			);
+
+		collectInterpreterTrace(
+			Fora::InterpreterTraceTerm::TransferToInterpreterFromMachineCode(
+				targetGraphPoint,
+				jovsOfInstruction,
+				isException ? jovsOfData.slice(0, jovsOfData.size() - 1) : jovsOfData,
+				isException ? 
+					null() << make_pair(*isException, jovsOfData.back())
+				:	null()
+				)
+			);
+
+		mCurrentTraceStackDepth = 0;
+
+		mJustTransferredFromMachineCode = true;
+		}
+	else
+		{
+		double t0 = curClock();
+
+		ImmutableTreeVector<JOV> jovsOfData, jovsOfInstruction;
+		ControlFlowGraphJumpPoint targetGraphPoint;
+		Nullable<bool> isException;
+		std::string fname;
+
+		unwrapNativeContinuationData(continuation, jovsOfData, jovsOfInstruction, targetGraphPoint, isException, fname);
+
+		LOG_DEBUG << "transferring to interpreter from " << fname << " -- "
+			<< prettyPrintString(targetGraphPoint.graph().graphName()) << ":" << prettyPrintString(targetGraphPoint.label())
+			<< " in " << curClock() - t0
+			;
+		}
+	}
+
+
+void InterpreterHistoryImpl::onInterpreterResumedWithoutValue(EvalFrame* inEvalFrame)
+	{
+	if (shouldCollectInterpreterTraces())
+		{
+		collectInterpreterTrace(Fora::InterpreterTraceTerm::ArbitraryInterpreterLogging("onInterpreterResumedWithoutValue"));
+
+		if (mWasInterpreterInterrupted)
+			mWasInterpreterInterrupted = false;
+		else
+			{
+			if (mJustTransferredFromMachineCode)
+				{
+				lassert_dump(mCurrentTraceStackDepth == 0, this);
+				}
+			}
+
+		if (mJustTransferredFromMachineCode)
+			{
+			collectInterpreterTrace(Fora::InterpreterTraceTerm::ArbitraryInterpreterLogging("onInterpreterResumedWithoutValue(from_machine_code)"));
+		
+			try {
+				mJustTransferredFromMachineCode = false;
+				collectInterpreterTrace(
+					getInitializeInterpreterTrace(inEvalFrame)
+					);
+				}
+			catch(std::logic_error& e)
+				{
+				std::ostringstream str;
+				str << e.what() << "\n";
+
+				str << continuationToString(
+					inEvalFrame->callFrame.conts[0].base(),
+					true
+					);
+				throw std::logic_error(str.str());
+				}
+			}
+		}
+	}
+
+void InterpreterHistoryImpl::onInterpreterResumedWithValue(EvalFrame* inEvalFrame, bool isException)
+	{
+	if (shouldCollectInterpreterTraces())
+		{
+		if (mIsReturningToInterpreter)
+			{
+			mIsReturningToInterpreter = false;
+			onReturnedToInterpreter(inEvalFrame, isException);
+			}
+		else
+			{
+			mJustTransferredFromMachineCode = false;
+
+			collectInterpreterTrace(
+				getInitializeInterpreterTrace(inEvalFrame, isException)
+				);
+			mCurrentTraceStackDepth = 0;
+			}
+		}
+	}
+
+void InterpreterHistoryImpl::onArbitraryInterpreterLogging(std::string msg)
+	{
+	if (shouldCollectInterpreterTraces())
+		collectInterpreterTrace(
+			Fora::InterpreterTraceTerm::ArbitraryInterpreterLogging(msg)
+			);
+	}
+
+
+void InterpreterHistoryImpl::onReturnToNativeCodeButImmediatelyTransferToInterpreter()
+	{
+	collectInterpreterTrace(
+		Fora::InterpreterTraceTerm::ArbitraryInterpreterLogging(
+			"onReturnToNativeCodeButImmediatelyTransferToInterpreter"
+			)
+		);
+	
+	mIsReturningToInterpreter = true;
+	}
+
+void InterpreterHistoryImpl::onFollowingTypedNativeContinuation(
+					const NativeRuntimeContinuationValue<1>& continuation,
+					const JOV& inResultJOV,
+					bool inIsException
+					)
+	{
+	onFollowingTypedNativeContinuation(continuation.base(), inResultJOV, inIsException);
+	}
+
+void InterpreterHistoryImpl::continuationAdapterFollowed(bool isException, TypedFora::Type type, bool isTargetNative)
+	{
+	if (shouldCollectInterpreterTraces())
+		collectInterpreterTrace(
+			Fora::InterpreterTraceTerm::ContinuationAdapterFollowed(
+				isException, 
+				type,
+				isTargetNative
+				)
+			);
+	}
+
+void InterpreterHistoryImpl::onFollowingTypedNativeContinuation(
+					const NativeRuntimeContinuationBase& continuation,
+					const JOV& inResultJOV,
+					bool inIsException
+					)
+	{
+	if (shouldCollectInterpreterTraces())
+		{
+		auto compiler = Runtime::getRuntime().getTypedForaCompiler();
+
+		if (compiler->isNativeFunctionPointer(continuation.jumpPtr()))
+			{
+			ImmutableTreeVector<JOV> jovsOfData, jovsOfInstruction;
+			ControlFlowGraphJumpPoint targetGraphPoint;
+			Nullable<bool> isException;
+			std::string fname;
+
+			if (!unwrapNativeContinuationData(continuation, jovsOfData, jovsOfInstruction, targetGraphPoint, isException, fname))
+				{
+				//the native stack doesn't have any content - it must be a post-transfer frame
+				//that we're just going to rip down.
+				TypedFora::Abi::NativeStackFrameWrapper wrapper(continuation);
+
+				onFollowingTypedNativeContinuation(
+					wrapper.getAllContinuations().base(), 
+					inResultJOV, 
+					inIsException
+					);
+
+				return;
+				}
+
+			lassert(!isException);
+
+			collectInterpreterTrace(
+				Fora::InterpreterTraceTerm::ReturnToMachineCode(
+					targetGraphPoint,
+					jovsOfInstruction,
+					jovsOfData, 
+					inIsException,
+					inResultJOV
+					)
+				);
+			}
+		else
+			{
+			collectInterpreterTrace(
+				Fora::InterpreterTraceTerm::ArbitraryInterpreterLogging(
+					"continuation is not native. returning to interpreter"
+					)
+				);
+
+			mIsReturningToInterpreter = true;
+			}
+		}
+	}
+
+void InterpreterHistoryImpl::onTransferToNativeCode(
+									EvalFrame* inEvalFrame,
+									const TypedFora::TypedJumpTarget& inTarget
+									)
+	{
+	if (shouldCollectInterpreterTraces())
+		{
+		collectInterpreterTrace(
+			Fora::InterpreterTraceTerm::TransferToMachineCode(
+				ControlFlowGraphJumpPoint(
+					inEvalFrame->instructionPtr->getGraph(),
+					inEvalFrame->instructionPtr->getLabel()
+					),
+				TypedFora::jovListFromTypes(inTarget.callSignature())
+				)
+			);
+		mCurrentTraceStackDepth = 0;
+		}
+	}
+
+void InterpreterHistoryImpl::onAxiomResult(EvalFrame* inEvalFrame, bool isException)
+	{
+	if (shouldCollectInterpreterTraces())
+		collectInterpreterTrace(
+			Fora::InterpreterTraceTerm::AxiomResult(
+				JOV::FromLiveValue(inEvalFrame->resultValue),
+				isException,
+				inEvalFrame->instructionPtr->getLabel()
+				)
+			);
+	}
+
+void InterpreterHistoryImpl::onNewStackframe(EvalFrame* inEvalFrame)
+	{
+	if (shouldCollectInterpreterTraces())
+		{
+		mCurrentTraceStackDepth++;
+
+		collectInterpreterTrace(
+			Fora::InterpreterTraceTerm::NewStackFrame(
+				ControlFlowGraphJumpPoint(
+					inEvalFrame->instructionPtr->getGraph(),
+					inEvalFrame->instructionPtr->getLabel()
+					),
+				inEvalFrame->uniqueId
+				)
+			);
+		}
+	}
+
+void InterpreterHistoryImpl::onReturnedToInterpreter(EvalFrame* inEvalFrame, bool isException)
+	{
+	if (shouldCollectInterpreterTraces())
+		{
+		Nullable<ImmutableTreeVector<JOV> > jovs;
+		Nullable<JOV> result;
+
+		if (mCurrentTraceStackDepth == 0)
+			{
+			jovs = emptyTreeVec();
+
+			for (uword_t k = 0; k < inEvalFrame->evalFrameArgList().size(); k++)
+				*jovs = *jovs + JOV::FromLiveValue(inEvalFrame->evalFrameArgList()[k]);
+
+			result = JOV::FromLiveValue(inEvalFrame->resultValue);
+			}
+		else
+			mCurrentTraceStackDepth--;
+
+		collectInterpreterTrace(
+			Fora::InterpreterTraceTerm::ReturnToStackFrame(
+				ControlFlowGraphJumpPoint(
+					inEvalFrame->instructionPtr->getGraph(),
+					inEvalFrame->instructionPtr->getLabel()
+					),
+				isException,
+				jovs,
+				result,
+				inEvalFrame->uniqueId,
+				inEvalFrame->wasEverMachineCodeFrame ? 
+					null() << *inEvalFrame->wasEverMachineCodeFrame
+				:	null()
+				)
+			);
+		}
+	}
+
+void InterpreterHistoryImpl::onCachecall()
+	{
+	if (shouldCollectInterpreterTraces())
+		clear();
+	}
+
+void InterpreterHistoryImpl::onBranch(EvalFrame* inEvalFrame, long whichBranch)
+	{
+	collectInterpreterTrace(
+		Fora::InterpreterTraceTerm::Branch(
+			whichBranch,
+			inEvalFrame->instructionPtr->getLabel()
+			)
+		);
+	}
+
+Nullable<size_t> InterpreterHistoryImpl::hasTrippedLoopTrigger(size_t minExpectedCycles)
+	{
+	if (mHistory100.fullAndAverageDensityExceeds(minExpectedCycles))
+		return null() << mHistory100.distinctItemCount();
+	
+	if (mHistory1000.fullAndAverageDensityExceeds(minExpectedCycles))
+		return null() << mHistory1000.distinctItemCount();
+	
+	if (mHistory10000.fullAndAverageDensityExceeds(minExpectedCycles))
+		return null() << mHistory10000.distinctItemCount();
+	
+	if (mHistory100000.fullAndAverageDensityExceeds(minExpectedCycles))
+		return null() << mHistory100000.distinctItemCount();
+
+	return null();
+	}
+
+void InterpreterHistoryImpl::setExternalTraceHandler(
+							boost::function1<void, const Fora::InterpreterTraceTerm&> handler
+							)
+	{
+	mExternalTraceHandler = handler;
+
+	mHasSentInitializeTraceToExternalHandler = false;
+	}
+
+boost::function1<void, const Fora::InterpreterTraceTerm&> 
+								InterpreterHistoryImpl::getExternalTraceHandler()
+	{
+	return mExternalTraceHandler;
+	}
+
+Fora::InterpreterTraceTerm 
+				InterpreterHistoryImpl::getInitializeInterpreterTrace(EvalFrame* evalFramePtr)
+	{
+	ImmutableTreeVector<JudgmentOnValue> jovs;
+	for (uword_t k = 0; k < evalFramePtr->evalFrameArgList().size(); k++)
+		jovs = jovs + JOV::FromLiveValue(
+							evalFramePtr->evalFrameArgList()[k]
+							);
+
+	return 
+		Fora::InterpreterTraceTerm::Initialize(
+			ControlFlowGraphJumpPoint(
+				evalFramePtr->instructionPtr->getGraph(),
+				evalFramePtr->instructionPtr->getLabel()
+				),
+			jovs,
+			null(),
+			evalFramePtr->uniqueId,
+			evalFramePtr->wasEverMachineCodeFrame ? 
+				null() << *evalFramePtr->wasEverMachineCodeFrame
+			: 	null()
+			);
+	}
+
+Fora::InterpreterTraceTerm 
+		InterpreterHistoryImpl::getInitializeInterpreterTrace(
+					EvalFrame* evalFramePtr, 
+					bool isException
+					)
+	{
+	ImmutableTreeVector<JudgmentOnValue> jovs;
+	for (uword_t k = 0; k < evalFramePtr->evalFrameArgList().size(); k++)
+		jovs = jovs + JOV::FromLiveValue(
+							evalFramePtr->evalFrameArgList()[k]
+							);
+
+	return 
+		Fora::InterpreterTraceTerm::Initialize(
+			ControlFlowGraphJumpPoint(
+				evalFramePtr->instructionPtr->getGraph(),
+				evalFramePtr->instructionPtr->getLabel()
+				),
+			jovs,
+			null() << make_pair(
+				isException,
+				JOV::FromLiveValue(evalFramePtr->resultValue)
+				),
+			evalFramePtr->uniqueId,
+			evalFramePtr->wasEverMachineCodeFrame ? 
+				null() << *evalFramePtr->wasEverMachineCodeFrame
+			: 	null()
+			);
+	}
+
+bool InterpreterHistoryImpl::shouldCollectInterpreterTraces() const
+	{
+	return mExternalTraceHandler || mTraceCollector;
+	}
+
+void InterpreterHistoryImpl::collectInterpreterTrace(const Fora::InterpreterTraceTerm& term)
+	{
+	if (mExternalTraceHandler)
+		mExternalTraceHandler(term);
+
+	if (mTraceCollector)
+		{
+		mTraceCollector->addTraceTerm(term);
+		
+		if (mTraceCollector->sendTraces(mConfig->blockUntilTracesAreCompiled()))
+			mTraceCollector.reset();
+		}
+	}
+
+void InterpreterHistoryImpl::askTraceHandlerWhetherToCollect(EvalFrame* inFrame)
+	{
+	if (mTraceCollector || mExternalTraceHandler)
+		return;
+
+	if (hasTrippedLoopTrigger(10))
+		{
+		clear();
+
+		if (mTraceCollector = mInterpreterTraceHandler->allocateTraceVisitor())
+			{
+			mTraceCollector->addTraceTerm(getInitializeInterpreterTrace(inFrame));
+			mCurrentTraceStackDepth = 0;
+			}
+		}
+	}
+
+
+}
+}

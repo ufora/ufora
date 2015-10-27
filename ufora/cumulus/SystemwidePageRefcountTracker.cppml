@@ -1,0 +1,757 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "SystemwidePageRefcountTracker.hppml"
+#include "../FORA/TypedFora/ABI/BigVectorLayouts.hppml"
+#include "../FORA/Core/ExecutionContext.hppml"
+#include "../core/Logging.hpp"
+#include "../core/Clock.hpp"
+#include "../core/threading/CallbackScheduler.hppml"
+#include "../FORA/VectorDataManager/VectorDataManager.hppml"
+#include "../cumulus/AddDropFinalState.hppml"
+
+namespace {
+
+const static double kSystemwidePageRefcountTrackerLogIntervalSeconds = 10.0;
+
+bool hasInternalPage(const TypedFora::Abi::BigVectorPageLayout& layout)
+	{
+	for (long k = 0; k < layout.vectorIdentities().size(); k++)
+		if (layout.vectorIdentities()[k].vector().isInternal())
+			return true;
+	return false;
+	}
+
+}
+
+SystemwidePageRefcountTracker::SystemwidePageRefcountTracker(
+						PolymorphicSharedPtr<TypedFora::Abi::BigVectorLayouts> inBigVectorLayouts,
+						PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+						boost::function1<void, SystemwidePageRefcountTrackerEvent> inEventHandler
+						) : 
+		mCallbackScheduler(inCallbackScheduler),
+		mBigVectorLayouts(inBigVectorLayouts),
+		mMessagesSinceLastLog(0),
+		mLastMessageLogTime(curClock()),
+		mElapsedTimeProcessingMessages(0),
+		mOnPageNoLongerReferencedAcrossEntireSystem(inCallbackScheduler),
+		mIsTornDown(false),
+		mEventHandler(inEventHandler)
+	{
+	}
+
+void SystemwidePageRefcountTracker::teardown()
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	mIsTornDown = true;
+	}
+
+void SystemwidePageRefcountTracker::initializeFromAddDropState(const Cumulus::AddDropFinalState& state)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	lassert(mMachineId);
+
+	state.recreatePageRefcountEventSequence(
+		boost::bind(
+			&SystemwidePageRefcountTracker::consumePageEvent,
+			this,
+			boost::arg<1>(),
+			boost::arg<2>()
+			)
+		);
+	}
+
+int32_t SystemwidePageRefcountTracker::getMachineCount()
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+	
+	return mPagesOnMachines.getAllMachineIds().size();
+	}
+
+bool SystemwidePageRefcountTracker::isMachineMemoryFull(const Cumulus::MachineId& inMachine)
+	{
+	Fora::MemoryUsage usage = getMachineMemoryUsage(inMachine);
+
+	return usage.totalBytesUsed() > usage.maxMemoryAvailable();
+	}
+
+bool SystemwidePageRefcountTracker::isExecutionBlockedOnMachine(
+											const Cumulus::MachineId& inMachineId
+											)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return mPagesOnMachines.isExecutionBlockedOnMachine(inMachineId);
+	}
+
+void SystemwidePageRefcountTracker::bigVectorInFlightRefcountChanged_(
+										Fora::BigVectorId identity, 
+										long netChange
+										)
+	{
+	LOG_DEBUG << "on " << prettyPrintString(mMachineId) 
+		<< " (" << this << ") "
+		<< "bigvec " 
+		<< prettyPrintString(identity) << " inflightedness changed from "
+		<< mBigvecsInFlight[identity] << " to " << mBigvecsInFlight[identity] + netChange;
+
+	mBigvecsInFlight[identity] += netChange;
+
+	lassert_dump(mBigvecsInFlight[identity] >= 0, prettyPrintString(identity));
+
+	if (mBigvecsInFlight[identity] == 0)
+		mBigvecsInFlight.erase(identity);
+
+	if (isBigvecNotReferenced_(identity))
+		bigVectorDroppedAcrossEntireSystem_(identity);
+	}
+
+bool SystemwidePageRefcountTracker::isBigvecNotReferenced_(Fora::BigVectorId identity) const
+	{
+	return mBigvecsInFlight.find(identity) == mBigvecsInFlight.end() 
+		&& !mBigVectorReferences.hasKey(identity)
+		&& !mSyntheticPages.hasValue(identity)
+		&& !mPagesOnMachines.isBigvecReferencedByPage(identity)
+		;
+	}
+
+Nullable<ImmutableTreeSet<Fora::BigVectorId> > SystemwidePageRefcountTracker::bigvecsReferencedByPage(Fora::PageId page)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return mPagesOnMachines.bigvecsReferencedByPage(page);
+	}
+
+void SystemwidePageRefcountTracker::consumePageEvent(
+								const Fora::PageRefcountEvent& inEvent, 
+								Cumulus::MachineId inMachineId
+								)
+	{
+	double t0 = curClock();
+
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	double t1 = curClock();
+
+	if (mIsTornDown)
+		return;
+
+	if (mEventHandler)
+		mEventHandler(
+			SystemwidePageRefcountTrackerEvent::PageEvent(
+				inEvent,
+				inMachineId
+				)
+			);
+
+	mMessagesSinceLastLog++;
+
+	if (t0 - mLastMessageLogTime > kSystemwidePageRefcountTrackerLogIntervalSeconds)
+		{
+		LOG_DEBUG << "on " << prettyPrintString(mMachineId) 
+			<< " (" << this << ") "
+			<< "SystemwidePageRefcountTracker processed " << mMessagesSinceLastLog 
+			<< " messages over the last " << (t0 - mLastMessageLogTime) << " seconds. "
+			<< mElapsedTimeProcessingMessages 
+			<< " of the time was actually spent processing the messages."
+			;
+
+		mLastMessageLogTime = curClock();
+		mMessagesSinceLastLog = 0;
+		mElapsedTimeProcessingMessages = 0;
+		}
+
+	lassert_dump(
+		mPagesOnMachines.hasMachine(inMachineId),
+		"On machine " << prettyPrintString(mMachineId) << ", "
+			<< " (" << this << ") "
+			<< "Can't find " << prettyPrintString(inMachineId) << " within "
+			<< prettyPrintString(
+				mPagesOnMachines.getAllMachineIds()
+				)
+			<< " for event " << prettyPrintString(inEvent)
+		);
+
+	LOG_DEBUG 
+			<< "on " << prettyPrintString(mMachineId) 
+			<< " (" << this << ") "
+			<< " from " << prettyPrintString(inMachineId) << ": " 
+			<< prettyPrintStringWithoutWrapping(inEvent);
+
+	mPagesOnMachines.consumePageEvent(inEvent, inMachineId);
+
+	@match Fora::PageRefcountEvent(inEvent)
+		-|	SyntheticPageCreated(pageId, layout) ->> {
+			mBigVectorLayouts->registerSyntheticPage(pageId, layout);
+	
+			if (mSyntheticPages.hasKey(pageId))
+				lassert(mSyntheticPages.getValue(pageId) == layout.identity());
+
+			if (mSyntheticPagesRealized.find(pageId) == mSyntheticPagesRealized.end())
+				mSyntheticPages.set(pageId, layout.identity());
+			}
+		-|	SyntheticPageRealized(pageId) ->> {
+			mBigVectorLayouts->syntheticPageRealized(pageId);
+
+			if (mSyntheticPages.hasKey(pageId))
+				{
+				Fora::BigVectorId id = mSyntheticPages.getValue(pageId);
+
+				mSyntheticPages.drop(pageId);
+
+				if (isBigvecNotReferenced_(id))
+					bigVectorDroppedAcrossEntireSystem_(id);
+				}
+
+			mSyntheticPagesRealized.insert(pageId);
+			}
+		-|	BigVectorReferenced(layout) ->> {
+			Fora::BigVectorId identity = layout.identity();
+
+			mBigVectorLayouts->registerNewLayout(layout);
+
+			if (!mBigVectorReferences.contains(identity,inMachineId))
+				mBigVectorReferences.insert(identity, inMachineId);
+
+			mBigVectorReferenceCounts[make_pair(identity, inMachineId)]++;
+			}
+		-|	BigVectorNoLongerReferenced(identity) ->> {
+
+			mBigVectorReferenceCounts[make_pair(identity, inMachineId)]--;
+
+			if (mBigVectorReferenceCounts[make_pair(identity, inMachineId)] == 0)
+				{
+				mBigVectorReferences.drop(identity, inMachineId);
+				mBigVectorReferenceCounts.erase(make_pair(identity, inMachineId));
+				}
+
+			if (isBigvecNotReferenced_(identity))
+				bigVectorDroppedAcrossEntireSystem_(identity);
+			}
+		-|	BigVectorsInFlight(ids, refcount, hash) ->> {
+			if (mPendingInFlightBigvecRefcounts[hash] == 0)
+				{
+				mPendingInFlightBigvecRefcounts[hash] = refcount;
+				mPendingInFlightBigvecs[hash] = ids;
+
+				for (auto bigvec: ids)
+					bigVectorInFlightRefcountChanged_(bigvec, 1);
+				}
+			else
+				{
+				lassert_dump(
+					mPendingInFlightBigvecRefcounts[hash] == -refcount,
+					"On " << prettyPrintString(mMachineId) << ":\n"
+						<< " (" << this << ") "
+						<< mPendingInFlightBigvecRefcounts[hash] << " != " 
+						<< -refcount
+						<< " for move guid " << prettyPrintString(hash)
+					);
+				
+				for (auto bigvec: mPendingInFlightBigvecs[hash])
+					bigVectorInFlightRefcountChanged_(bigvec, -1);
+
+				mPendingInFlightBigvecs.erase(hash);
+				mPendingInFlightBigvecRefcounts.erase(hash);
+				}
+			}
+		-| _ ->> {
+			}
+
+	mElapsedTimeProcessingMessages += curClock() - t0;
+
+	if (curClock() - t0 > 0.05)
+		LOG_INFO << "SystemwidePageRefcountTracker on " << prettyPrintString(mMachineId)
+			<< " took " << t1 - t0 << " to lock and "
+			<< " took " << curClock() - t1 << " to process page event: " 
+			<< prettyPrintStringWithoutWrapping(inEvent)
+			;
+	}
+
+bool SystemwidePageRefcountTracker::isBigVectorDroppedAcrossEntireSystem(hash_type id)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return mDroppedBigvecs.find(id) != mDroppedBigvecs.end();
+	}
+
+void SystemwidePageRefcountTracker::bigVectorDroppedAcrossEntireSystem_(const Fora::BigVectorId& id)
+	{
+	mDroppedBigvecs.insert(id.guid());
+
+	//any pages that were only held by this bigvec are now dropped also
+	ImmutableTreeSet<Fora::PageId> pages = 
+		mBigVectorLayouts->dropLayoutForIdAndReturnOrphanedPages(id);
+
+	for (auto page: pages)
+		{
+		if (page.isInternal())
+			{
+			LOG_INFO << "on " << mMachineId << " we are orphaning " << prettyPrintString(page) 
+				<< " because we dropped " << id;
+
+			if (mSyntheticPages.hasKey(page))
+				{
+				auto bigvec = mSyntheticPages.getValue(page);
+				mSyntheticPages.drop(page);
+				
+				if (isBigvecNotReferenced_(bigvec))
+					bigVectorDroppedAcrossEntireSystem_(bigvec);
+				}
+			else
+				{
+				Nullable<ImmutableTreeSet<Fora::BigVectorId> > bigvecs = mPagesOnMachines.bigvecsReferencedByPage(page);
+
+				if (!bigvecs)
+					LOG_WARN << "On " << mMachineId << ", no references for " << prettyPrintString(page) 
+						<< " after dropping " << prettyPrintString(id) << ". This is probably caused by the FCF";
+				else
+					for (auto bigvec: *bigvecs)
+						if (isBigvecNotReferenced_(bigvec))
+							bigVectorDroppedAcrossEntireSystem_(bigvec);
+				}
+
+			mPagesOnMachines.markInternalPageDropped(page);
+
+			mOnPageNoLongerReferencedAcrossEntireSystem.broadcast(page);
+			}
+		}
+	}
+
+bool SystemwidePageRefcountTracker::pageIsInRam(
+								const Fora::PageId& inPageId, 
+								const Cumulus::MachineId& inMachineId
+								)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return mPagesOnMachines.pageIsInRam(inPageId, inMachineId);
+	}
+
+bool SystemwidePageRefcountTracker::pageIsInRamAndPinned(
+								const Fora::PageId& inPageId, 
+								const Cumulus::MachineId& inMachineId
+								)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return mPagesOnMachines.pageIsInRamAndPinned(inPageId, inMachineId);
+	}
+
+bool SystemwidePageRefcountTracker::pageIsOnDisk(
+								const Fora::PageId& inPageId, 
+								const Cumulus::MachineId& inMachineId
+								)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return mPagesOnMachines.pageIsOnDisk(inPageId, inMachineId);
+	}
+
+void SystemwidePageRefcountTracker::addMachine(
+								const Cumulus::MachineId& inMachineId
+								)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mIsTornDown)
+		return;
+
+	mPagesOnMachines.addMachine(inMachineId);
+	}
+
+void SystemwidePageRefcountTracker::dropMachine(
+								const Cumulus::MachineId& inMachineId
+								)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	if (mIsTornDown)
+		return;
+
+	mPagesOnMachines.dropMachine(inMachineId);
+
+	auto bigvecs = mBigVectorReferences.getKeys(inMachineId);
+
+	for (auto id: bigvecs)
+		mBigVectorReferenceCounts.erase(make_pair(id, inMachineId));
+
+	mBigVectorReferences.dropValue(inMachineId);
+
+	for (auto id: bigvecs)
+		if (!mBigVectorReferences.hasKey(id) && mBigvecsInFlight.find(id) == mBigvecsInFlight.end())
+			bigVectorDroppedAcrossEntireSystem_(id);
+
+	LOG_INFO << "on " << prettyPrintString(mMachineId) 
+		<< " (" << this << ") "
+		<< " SystemwidePageRefcountTracker dropping " << prettyPrintString(inMachineId)
+		<< ". Total server count = " << mPagesOnMachines.getAllMachineIds().size();
+	}
+
+void SystemwidePageRefcountTracker::machineRamContents(const Cumulus::MachineId& inId, std::set<Fora::PageId>& outPages)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	mPagesOnMachines.machineRamContents(inId, outPages);
+	}
+
+void SystemwidePageRefcountTracker::machinesWithPageInRam(
+									const Fora::PageId& inPageId, 
+									std::set<Cumulus::MachineId>& outMachineIds
+									)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	mPagesOnMachines.machinesWithPageInRam(inPageId, outMachineIds);
+	}
+
+void SystemwidePageRefcountTracker::machinesWithPageInRamAndPinned(
+									const Fora::PageId& inPageId, 
+									std::set<Cumulus::MachineId>& outMachineIds
+									)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	mPagesOnMachines.machinesWithPageInRamAndPinned(inPageId, outMachineIds);
+	}
+
+
+bool SystemwidePageRefcountTracker::isPageNotLoadable(const Fora::PageId& inPageId)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return mPagesOnMachines.isPageNotLoadable(inPageId);
+	}
+
+bool SystemwidePageRefcountTracker::isPageAnywhereOnDisk(const Fora::PageId& inPageId)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return mPagesOnMachines.isPageAnywhereOnDisk(inPageId);
+	}
+
+bool SystemwidePageRefcountTracker::isPageAnywhereInRam(const Fora::PageId& inPageId)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return mPagesOnMachines.isPageAnywhereInRam(inPageId);
+	}
+
+void SystemwidePageRefcountTracker::machinesWithPageOnDisk(
+									const Fora::PageId& inPageId, 
+									std::set<Cumulus::MachineId>& outMachineIds
+									)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return mPagesOnMachines.machinesWithPageOnDisk(inPageId, outMachineIds);
+	}
+
+void SystemwidePageRefcountTracker::getAllPages(std::set<Fora::PageId>& outPages)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	mPagesOnMachines.getAllPages(outPages);
+	}
+
+std::set<Cumulus::MachineId> SystemwidePageRefcountTracker::getAllMachineIds() const
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return mPagesOnMachines.getAllMachineIds();
+	}
+
+std::string SystemwidePageRefcountTracker::getViewOfSystem()
+	{
+	return getViewOfSystem(
+		boost::function2<std::string, Fora::PageId, Cumulus::MachineId>(
+			[](Fora::PageId id, Cumulus::MachineId machine) { return std::string(); }
+			),
+		boost::function1<std::string, Fora::PageId>(
+			[](Fora::PageId id) { return std::string(); }
+			)
+		);
+	}
+std::string SystemwidePageRefcountTracker::getViewOfSystem(
+						boost::function2<std::string, Fora::PageId, Cumulus::MachineId> additional,
+						boost::function1<std::string, Fora::PageId> perPageAdditional
+						)
+	{
+	//NOTE THAT WE ARE NOT UNDER LOCK IN THIS FUNCTION!!!
+
+	double t0 = curClock();
+
+	std::ostringstream stream;
+
+	stream << "                 ";
+
+	for (auto machine: getAllMachineIds())
+		stream << prettyPrintString(machine).substr(0,3) << " | ";
+
+	stream << "\n";
+
+	std::vector<pair<uint64_t, Fora::BigVectorId> > bigvecs;
+
+	std::set<Fora::PageId> allPagesDrawn;
+
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		for (auto it = mBigVectorReferences.getKeysToValues().begin(); 
+						it != mBigVectorReferences.getKeysToValues().end(); ++it)
+			{
+			Fora::BigVectorId vec = it->first;
+
+			TypedFora::Abi::BigVectorPageLayout layout = mBigVectorLayouts->getLayoutForId(vec);
+
+			uint64_t bytecount = 0;
+			for (long k = 0; k < layout.vectorIdentities().size();k++)
+				bytecount += layout.vectorIdentities()[k].vector().getPage().bytecount();
+
+			bigvecs.push_back(make_pair(bytecount, vec));
+			}
+		}
+
+	std::sort(bigvecs.rbegin(), bigvecs.rend());
+
+	auto drawPage = [&](Fora::PageId pageId) {
+		stream << "|";
+		
+		for (auto machine: getAllMachineIds())
+			{
+			if (pageIsInRamAndPinned(pageId, machine))
+				stream << "P";
+				else
+			if (pageIsInRam(pageId, machine))
+				stream << "U";
+				else
+			if (pageIsOnDisk(pageId, machine))
+				stream << "D";
+			else
+				stream << " ";
+
+			stream << additional(pageId, machine);
+
+			stream << "|";
+			}
+		
+		stream << perPageAdditional(pageId);
+
+		stream << " -- " << prettyPrintString(pageId.guid()).substr(0,6) << " " 
+			<< std::fixed << std::setprecision(2)
+			<< pageId.bytecount() / 1024 / 1024.0 
+			<< " MB\n";
+		};
+
+	uint64_t totalBigvecBytes = 0;
+
+	for (auto bytecountAndBivecID: bigvecs)
+		{
+		Fora::BigVectorId vec = bytecountAndBivecID.second;
+		uint64_t bytecount = bytecountAndBivecID.first;
+
+		TypedFora::Abi::BigVectorPageLayout layout = 
+			mBigVectorLayouts->getLayoutForId(vec);
+
+		stream << "Bigvec " << prettyPrintString(layout.identity()) 
+			<< " -- " << std::fixed << std::setprecision(2) << 
+				(int64_t(bytecount / 1024 / 1024.0 * 100) / 100.0) << " MB. ";
+		stream << " over " << layout.vectorIdentities().size() << " pages\n";
+
+		totalBigvecBytes += bytecount;
+
+		for (long k = 0; k < layout.vectorIdentities().size();k++)
+			{
+			Fora::PageId pageId = layout.vectorIdentities()[k].vector().getPage();
+
+			allPagesDrawn.insert(pageId);
+
+			drawPage(pageId);
+			}
+		}
+
+	uint64_t allPageBytes = 0;
+	for (auto page: allPagesDrawn)
+		allPageBytes += page.bytecount();
+
+	bool hasDrawn = false;
+	for (auto page: pagesThatAppearOrphaned())
+		if (allPagesDrawn.find(page) == allPagesDrawn.end() && 
+				(isPageAnywhereInRam(page) || isPageAnywhereOnDisk(page)))
+			{
+			if (!hasDrawn)
+				{
+				stream << "Orphaned:\n";
+				hasDrawn = true;
+				}
+
+			drawPage(page);
+			}
+
+	stream << "\n\nstreaming took " << curClock() - t0 << "\n"; 
+	stream << "total bigvec bytes: " << totalBigvecBytes / 1024 / 1024.0 / 1024.0 << " GB\n";
+	stream << "total bytes over all nonorphaned pages: " << allPageBytes / 1024 / 1024.0 / 1024.0 << " GB\n";
+
+	return stream.str();
+	}
+
+ImmutableTreeSet<Fora::PageId> SystemwidePageRefcountTracker::pagesThatAppearOrphaned()
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	std::set<Fora::PageId> allPages;
+
+	for (auto it = mBigVectorReferences.getKeysToValues().begin(); 
+					it != mBigVectorReferences.getKeysToValues().end(); ++it)
+		{
+		Fora::BigVectorId vec = it->first;
+		
+		TypedFora::Abi::BigVectorPageLayout layout = 
+			mBigVectorLayouts->getLayoutForId(vec);
+
+		for (long k = 0; k < layout.vectorIdentities().size();k++)
+			{
+			Fora::PageId pageId = layout.vectorIdentities()[k].vector().getPage();
+
+			allPages.insert(pageId);
+			}
+		}
+
+	ImmutableTreeSet<Fora::PageId> result;
+
+	std::set<Fora::PageId> allPagesInPRT;
+	mPagesOnMachines.getAllPages(allPagesInPRT);
+
+	for (auto page: allPagesInPRT)
+		if (allPages.find(page) == allPages.end() && 
+				(mPagesOnMachines.isPageAnywhereInRam(page) || 
+							mPagesOnMachines.isPageAnywhereOnDisk(page)))
+			result = result + page;
+
+	return result;
+	}
+
+bool SystemwidePageRefcountTracker::hasPageBeenDroppedAcrossEntireSystem(Fora::PageId inPage)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return mPagesOnMachines.hasPageBeenDroppedAcrossEntireSystem(inPage);
+	}
+
+EventBroadcaster<Fora::PageId>& 
+					SystemwidePageRefcountTracker::onPageNoLongerReferencedAcrossEntireSystem()
+	{
+	return mOnPageNoLongerReferencedAcrossEntireSystem;
+	}
+
+Fora::MemoryUsage SystemwidePageRefcountTracker::getMachineMemoryUsage(const Cumulus::MachineId& inMachine)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return mPagesOnMachines.getMachineMemoryUsage(inMachine);
+	}
+
+Nullable<Cumulus::MachineId> SystemwidePageRefcountTracker::getMachineId()
+	{
+	return mMachineId;
+	}
+
+void SystemwidePageRefcountTracker::setMachineId(Cumulus::MachineId inMachineId)
+	{
+	LOG_DEBUG << "on " << prettyPrintString(inMachineId) << " (" << this << "): initialized SPRT.";
+	mMachineId = inMachineId;
+	}
+
+bool SystemwidePageRefcountTracker::doesPageAppearDroppedAcrossSystem(Fora::PageId inPage)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return mPagesOnMachines.doesPageAppearDroppedAcrossSystem(inPage);
+	}
+
+int64_t SystemwidePageRefcountTracker::totalBytesOnDisk() const
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	int64_t total = 0;
+
+	for (auto machineAndBytes: mPagesOnMachines.getMachineToBytesOnDisk())
+		total += machineAndBytes.second;
+
+	return total;
+	}
+
+int64_t SystemwidePageRefcountTracker::totalBytesInRam() const
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	int64_t total = 0;
+
+	for (auto machineAndBytes: mPagesOnMachines.getMachineToBytesInRam())
+		total += machineAndBytes.second;
+
+	return total;
+	}
+
+int64_t SystemwidePageRefcountTracker::uniqueBytesOnDisk() const
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	int64_t total = 0;
+
+	for (auto page: mPagesOnMachines.getPagesOnDisk())
+		total += page.bytecount();
+
+	return total;	
+	}
+
+int64_t SystemwidePageRefcountTracker::uniqueBytesInRam() const
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	int64_t total = 0;
+
+	for (auto page: mPagesOnMachines.getPagesInRam())
+		total += page.bytecount();
+
+	return total;
+	}
+
+int64_t SystemwidePageRefcountTracker::uniqueBytesOnlyOnDisk() const
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	int64_t total = 0;
+
+	for (auto page: mPagesOnMachines.getPagesOnlyOnDisk())
+		total += page.bytecount();
+
+	return total;
+	}
+
+int64_t SystemwidePageRefcountTracker::uniqueBytesOnlyInRam() const
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	int64_t total = 0;
+
+	for (auto page: mPagesOnMachines.getPagesOnlyInRam())
+		total += page.bytecount();
+
+	return total;
+	}
+

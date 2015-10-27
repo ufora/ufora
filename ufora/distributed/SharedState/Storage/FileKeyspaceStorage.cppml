@@ -1,0 +1,160 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "FileKeyspaceStorage.hppml"
+#include "FileStorageCommon.hppml"
+#include "LogFileSerialization.hpp"
+#include "../KeyState.hppml"
+#include "../KeyType.hppml"
+#include "LogEntry.hppml"
+#include "../Types.hppml"
+#include "OpenFiles.hpp"
+
+#include <boost/filesystem.hpp>
+#include <map>
+
+namespace SharedState {
+
+FileKeyspaceStorage::FileKeyspaceStorage(
+			        string cacheDirectory, 
+			        Keyspace inKeyspace, 
+			        KeyRange inKeyRange, 
+			        boost::shared_ptr<OpenFilesInterface> openFiles, 
+					boost::function<boost::shared_ptr<OpenSerializers> ()> inSerializersFactory,
+			        float maxLogSizeMB
+			        ) : 
+		mOpenFiles(openFiles),
+		mMaxLogSizeMB(maxLogSizeMB),
+		mKeySpace(inKeyspace),
+		mKeyRange(inKeyRange),
+		mLogFileDirectory(cacheDirectory, inKeyspace, inKeyRange)
+	{
+	// create path names here..
+	mSerializers = inSerializersFactory();
+	}
+
+
+void FileKeyspaceStorage::flushPendingWrites()
+	{
+	mOpenFiles->flush(mLogFileDirectory.getCurrentLogPath());
+	}
+
+void FileKeyspaceStorage::writeLogEntry(const LogEntry& entry)
+	{
+	std::string serialized;
+	std::string path = mLogFileDirectory.getCurrentLogPath();
+	mSerializers->serializeLogEntryForPath(path, entry, serialized);
+	mOpenFiles->append(path, serialized);
+
+	}
+
+Keyspace FileKeyspaceStorage::getKeyspace(void)
+	{
+	return mKeySpace;
+	}
+
+int FileKeyspaceStorage::getDimension(void)
+	{
+	return mKeyRange.index();
+	}
+
+
+void FileKeyspaceStorage::compress()
+	{
+	if (mOpenFiles->written(mLogFileDirectory.getCurrentLogPath()) < 1024.f * 1024.f * mMaxLogSizeMB &&
+		mLogFileDirectory.logFileCount() < 2)
+		{
+		return;
+		}
+
+	LOG_INFO << "compressing " << mLogFileDirectory.getCurrentLogPath();
+
+	pair<map<SharedState::Key, KeyState>, vector<LogEntry> > curState;
+	readState(curState);
+
+	std::map<Key, KeyState> newState = curState.first;
+	this->compressKeyStates(newState, curState.second);
+
+	writeState(newState);
+	startNextLogFile();
+	}
+
+void FileKeyspaceStorage::startNextLogFile()
+	{
+	std::string toClose = mLogFileDirectory.getCurrentLogPath();
+	mLogFileDirectory.startNextLogFile(); 
+	mSerializers->finishedWithSerializer(toClose);
+	mOpenFiles->closeFile(toClose);
+	}
+
+void FileKeyspaceStorage::writeStateExternal(const map<SharedState::Key, SharedState::KeyState>& state)
+	{
+	writeState(state);
+	startNextLogFile();
+	}
+
+void FileKeyspaceStorage::readState(pair<map<SharedState::Key, KeyState>, vector<LogEntry> >& outState)
+	{
+	Nullable<uint32_t> validLoadIter = loadLatestValidStatefile(outState.first);
+	loadLogEntriesAfterIter(validLoadIter, outState.second);
+	}
+
+void FileKeyspaceStorage::loadLogEntriesAfterIter(
+		Nullable<uint32_t> startIter, vector<LogEntry>& out)
+	{
+	lassert(out.size() == 0);
+	map<uint32_t, string> logFilePaths = mLogFileDirectory.getAllLogFiles();
+	auto firstLogFilePath = startIter ? logFilePaths.upper_bound(*startIter) : logFilePaths.begin();
+
+	for(auto it = firstLogFilePath; it != logFilePaths.end(); ++it)
+		{
+		std::vector<std::string> fileContents;
+		if(mOpenFiles->readFileAsStringVector(it->second, fileContents))
+			mSerializers->deserializeLog(fileContents, out);
+		}
+	}
+
+Nullable<uint32_t> FileKeyspaceStorage::loadLatestValidStatefile(
+		map<SharedState::Key, KeyState>& outState
+		)
+	{
+	// finds and loads the latest valid state file and returns
+	// its iteration number
+	map<uint32_t, string> stateFilePaths = mLogFileDirectory.getAllStateFiles();
+	for(auto it = stateFilePaths.rbegin(); it != stateFilePaths.rend();  ++it)
+		{
+		std::vector<std::string> outStringVec;
+		bool validRead = mOpenFiles->readFileAsStringVector(it->second, outStringVec);
+		if (validRead)
+			{
+			if (mSerializers->deserializeState(outStringVec, outState)) // read and deserialize were valid
+				return Nullable<uint32_t>(it->first);
+			}
+		}
+	return null();
+	}
+
+void FileKeyspaceStorage::writeState(const map<SharedState::Key, SharedState::KeyState>& state)
+	{
+	// used to write an itermediate state tombstone.
+	// only used during the compression stage.
+	std::string stateFilePath = mLogFileDirectory.getNextStatePath();
+	std::string serialized = mSerializers->serializeStateForPath(stateFilePath, state);
+	mOpenFiles->append(stateFilePath, serialized);
+	mOpenFiles->flush(stateFilePath);
+	}
+}
+
+

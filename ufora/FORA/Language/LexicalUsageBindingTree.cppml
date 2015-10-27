@@ -1,0 +1,121 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "LexicalUsageBindingTree.hppml"
+
+namespace Fora {
+namespace Language {
+
+LexicalUsageBindingTree 
+LexicalUsageBindingTree::treeForSequence(const ImmutableTreeVector<uint32_t>& indices)
+	{
+	if (indices.size() == 0)
+		return LexicalUsageBindingTree::Entirely();
+
+	return LexicalUsageBindingTree::Partially(
+		emptyTreeMap() + 
+			indices[0] + 
+			treeForSequence(indices.slice(1))
+		);
+	}
+
+LexicalUsageBindingTree 
+LexicalUsageBindingTree::merge(const ImmutableTreeVector<uint32_t>& indices) const
+	{
+	@match LexicalUsageBindingTree(*this) 
+		-|	Entirely() ->> {
+			return *this;
+			}
+		-|	Partially(children) ->> {
+			if (indices.size() == 0)
+				return LexicalUsageBindingTree::Entirely();
+
+			if (children.contains(indices[0]))
+				return LexicalUsageBindingTree::Partially(
+					children + 
+						indices[0] + 
+						children[indices[0]]->merge(indices.slice(1))
+					);
+			else
+				return LexicalUsageBindingTree::Partially(
+					children + 
+						indices[0] + 
+						LexicalUsageBindingTree::treeForSequence(indices.slice(1))
+					);
+			}
+	}
+
+pair<ImmutableTreeVector<uint32_t>, uint32_t> 
+LexicalUsageBindingTree::remainingIndicesAndChildIndex(
+					const ImmutableTreeVector<uint32_t>& indices
+					) const
+	{
+	if (indices.size() == 0 || this->isEntirely())
+		return make_pair(indices, 0);
+
+	uint32_t curIndex = indices[0];
+
+	@match LexicalUsageBindingTree(*this)
+		-|	Partially(children) ->> {
+			//if we fail this, then the tree wasn't properly constructed
+			lassert(children.contains(curIndex));
+
+			uint32_t pos = *children.positionFor(curIndex);
+
+			uint32_t offsetIntoFlattenedList = 0;
+
+			for (long k = 0; k < pos;k++)
+				offsetIntoFlattenedList += children.pairAtPosition(k).second.flatten().size();
+
+			pair<ImmutableTreeVector<uint32_t>, uint32_t> tr;
+
+			tr = children.pairAtPosition(pos).second.remainingIndicesAndChildIndex(indices.slice(1));
+
+			tr.second += offsetIntoFlattenedList;
+
+			return tr;
+			}
+		;
+	}
+
+ImmutableTreeVector<ImmutableTreeVector<uint32_t> > 
+LexicalUsageBindingTree::computedFlattened(void) const
+	{
+	@match LexicalUsageBindingTree(*this) 
+		-|	Entirely() ->> {
+			return 
+				ImmutableTreeVector<ImmutableTreeVector<uint32_t> >() + 
+					ImmutableTreeVector<uint32_t>();
+			}
+		-|	Partially(children) ->> {
+			ImmutableTreeVector<ImmutableTreeVector<uint32_t> > tr;
+			for (long k = 0; k < children.size();k++)
+				{
+				pair<uint32_t, LexicalUsageBindingTree> child = children.pairAtPosition(k);
+
+				ImmutableTreeVector<ImmutableTreeVector<uint32_t> > childList = child.second.flatten();
+				
+				//prepend the current index (child.first) to each element of the child's flattened
+				//tree
+				for (long j = 0; j < childList.size();j++)
+					tr = tr + (child.first + childList[j]);
+				}
+			return tr;
+			}
+	}
+
+}
+
+}

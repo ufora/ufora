@@ -1,0 +1,257 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "NativeCallSiteStatistics.hppml"
+
+#include <stdexcept>
+#include <sstream>
+#include <boost/utility.hpp>
+
+#include "../../core/containers/ImmutableTreeVector.hppml"
+#include "../../core/cppml/CPPMLTransform.hppml"
+#include "../../core/math/Nullable.hpp"
+#include "../Interpreter/RuntimeConfig.hppml"
+#include "../TypedFora/JitCompiler/Compiler.hppml"
+#include "../../core/Logging.hpp"
+
+using namespace std;
+
+const static int MAX_DYNAMIC_INLINE_COMPLEXITY = 10000;
+
+NativeCallSiteStatistics::NativeCallSiteStatistics(
+								const TypedFora::Compiler& inRuntime
+								) :
+								mTypedForaCompiler(inRuntime)
+	{
+	}
+
+uint64_t NativeCallSiteStatistics::getNextSiteIdFor(const string& name)
+	{
+    boost::lock_guard<boost::mutex> lock(mMutex);
+	if (mCurrentSiteIndices.count(name) == 0) //If we don't have that key yet...
+		mCurrentSiteIndices[name] = 0;
+	return mCurrentSiteIndices[name]++; //Initialized to zero
+	}
+//Generates a NativeExpression that increments the specified CallSiteCounter.
+//The returned expression must be tagged with CallSiteInstrumentation
+//by someone else.
+NativeExpression genInstrumentationCode(CallSiteCounter& counter)
+	{
+	uint64_t* addr = counter.getAddr();
+	NativeExpression counterExpr = NativeExpression::ConstantPointer(addr)
+		.cast(NativeType::uint64().ptr(), false);
+	NativeExpression one = NativeExpression::ConstantUInt64(1);
+	//Should I be loading volatile? (counterExpr.load(true))
+	return counterExpr.store(counterExpr.load() + one);
+	}
+
+class InstrumentationTransformer : boost::noncopyable {
+	NativeCallSiteStatistics& stats;
+	const string& callerName;
+
+public:
+	InstrumentationTransformer(NativeCallSiteStatistics& s, const string& n)
+		: stats(s), callerName(n) { }
+	
+	template<class T>
+	Nullable<T> processDown(const T& t, bool& b) const { return null(); }
+	template<class T>
+	Nullable<T> processUp(const T& t) const { return null(); }
+
+	Nullable<NativeType> processDown(const NativeType& e, bool& cont) const
+		{
+		cont = false;
+		return null();
+		}
+	
+	NativeExpression processDown(const NativeExpression& e, bool& cont) const
+		{
+		NativeExpression ret;
+		@match NativeExpression(e)
+			-|	DiscardFirst(Tagged(_, CallSiteInstrumentation()),
+				             Tagged(Call(Inline()), CallSiteTag())) ->> {
+					//We can't have an inline call site remain instrumented.
+					ret = e.getDiscardFirst().second();
+					}
+			-|	DiscardFirst(Tagged(_, CallSiteInstrumentation()),
+				             Tagged(_, CallSiteTag())) ->> {
+					//No need to retag and reinstrument.
+					cont = false;
+					ret = e;
+					}
+			-|	Call(External(calleeName, id), rets, args, meta) ->> {
+					cont = false; //Don't want to go in an infinite loop!
+					
+					uint64_t siteId = stats.getNextSiteIdFor(callerName);
+					CallSite site(callerName, siteId, calleeName);
+					
+					stats.mMutex.lock();
+					CallSiteCounter counter = stats.mLiveCounters[site];
+					stats.mMutex.unlock();
+					
+					NativeExpression instrumentation =
+						genInstrumentationCode(counter).taggedWith(
+							NativeExpressionTag::CallSiteInstrumentation(
+								callerName, siteId));
+					
+					NativeExpression taggedCall =
+						NativeExpression::Call(
+							NativeCallTarget::External(calleeName, id),
+							transform(rets, *this),
+							transform(args, *this),
+							meta
+							)
+						.taggedWith(NativeExpressionTag::CallSiteTag(
+							callerName, siteId, calleeName));
+					
+					ret = NativeExpression::DiscardFirst(
+						instrumentation, taggedCall);
+					}
+			-|	_ ->> { ret = e; }
+			;
+		
+		lassert(ret.type() == e.type());
+		
+		return ret;
+		}
+};
+
+
+NativeCFG NativeCallSiteStatistics::tagAndInstrument(const string& name,
+                                                     const NativeCFG& in)
+	{
+	if (in.complexity() > MAX_DYNAMIC_INLINE_COMPLEXITY)
+		return in;
+
+	return
+		transform(
+			in,
+			InstrumentationTransformer(*this, name)
+			);
+	}
+
+
+class DeinstrumentationTransformer : boost::noncopyable {
+public:
+	template<class T>
+	Nullable<T> processDown(const T& t, bool& b) const { return null(); }
+	template<class T>
+	Nullable<T> processUp(const T& t) const { return null(); }
+	
+	NativeExpression processUp(const NativeExpression& e) const
+		{
+		NativeExpression ret;
+		
+		@match NativeExpression(e)
+				-|	Tagged(_, CallSiteInstrumentation()) ->> {
+					ret = NativeExpression::Constant(NativeConstant::Nothing());
+					}
+				-|	Tagged(c, CallSiteTag()) ->> {
+					ret = c;
+					}
+				-|	_ ->> {
+					ret = e;
+					}
+				;
+		lassert_dump(ret.type() == e.type(),
+		             "Type changed from " << prettyPrintString(e.type()) <<
+		             " to " << prettyPrintString(ret.type()) << ".\n\n" <<
+		             "expression changed from " << prettyPrintString(e) <<
+		             " to " << prettyPrintString(ret) << endl);
+		return ret;
+		}
+};
+
+NativeCFG NativeCallSiteStatistics::
+		stripTagsAndInstrumentation(const NativeCFG& in) const
+	{
+	return transform(in, DeinstrumentationTransformer());
+	}
+
+
+void NativeCallSiteStatistics::printOutSiteStatistics() const
+	{
+	boost::lock_guard<boost::mutex> lock(mMutex);
+	
+	if (mLiveCounters.empty())
+		return;
+	
+	LOGGER_DEBUG_T log = LOGGER_DEBUG;
+	
+    log << "CALL SITE STATS:" << endl;
+	
+	map<CallSite, CallSiteCounter>::const_iterator iter;
+	for (iter = mLiveCounters.begin(); iter != mLiveCounters.end(); ++iter)
+		if (iter->second.get())
+			log << ">>> " << iter->second.get() << " calls to:\t\t\t\t"
+			    << prettyPrintString(iter->first) << endl << endl;
+	log << "END STATS" << endl << endl << endl;
+	}
+
+
+ImmutableTreeVector<CallSite> NativeCallSiteStatistics::recommendCallSite()
+	{
+	boost::lock_guard<boost::mutex> lock(mMutex);
+	
+	if (mLiveCounters.empty())
+		return emptyTreeVec(); //none
+	
+    uint64_t totalCalls = 0;
+	
+	map<CallSite, CallSiteCounter>::iterator maxPos = mLiveCounters.begin();
+	
+	//find the maximum call site
+	
+	for (map<CallSite, CallSiteCounter>::iterator
+					it = mLiveCounters.begin(),
+					it_end = mLiveCounters.end();
+				it != it_end;
+				++it)
+		{
+		totalCalls += it->second.get();
+		
+		if (it->second.get() > maxPos->second.get())
+			maxPos = it;
+		}
+	pair<CallSite, CallSiteCounter> maxCounter = *maxPos;
+	if (maxCounter.second.get() <
+					mTypedForaCompiler.getConfig().dynamicInlineCallThreshold())
+		{
+		return emptyTreeVec();
+		}
+	
+	//find every other callsite that's over the threshold in that function
+	ImmutableTreeVector<CallSite> callsites;
+	
+	for (map<CallSite, CallSiteCounter>::iterator
+					it = mLiveCounters.begin(),
+					it_end = mLiveCounters.end();
+				it != it_end;
+				++it)
+		{
+		if (it->second.get() >=
+					mTypedForaCompiler.getConfig().dynamicInlineCallThresholdSecondary()
+				&&	it->first.callerName == maxCounter.first.callerName)
+			callsites = callsites + it->first;
+		}
+	for (long k = 0; k < callsites.size();k++)
+		{
+		mEliminatedCounters.insert(
+			make_pair(callsites[k], mLiveCounters[callsites[k]]));
+		mLiveCounters.erase(callsites[k]);
+		}
+	return callsites;
+	}
+

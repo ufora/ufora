@@ -1,0 +1,323 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <iostream>
+#include "../TypedFora/ABI/StackFrameWalker.hppml"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include "../TypedFora/ABI/LiveValue.hppml"
+#include "../TypedFora/ABI/HomogenousVectorStashCodegen.hppml"
+#include "../TypedFora/TypedFora.hppml"
+#include "../../core/StringUtil.hpp"
+#include "ValueDeepcopier.hppml"
+
+namespace Fora {
+namespace Interpreter {
+
+/************
+StackValueModifyingStackFrameVisitor
+
+Walk a stackframe, passing values to a ValueUpdater, and copy changed ones back into the
+stackframe.
+
+**********/
+
+template<class value_updater_type>
+class StackValueModifyingStackFrameVisitor : public TypedFora::Abi::StackFrameVisitor {
+	//class to hold temporary values that have been updated on the stack. It's possible for
+	//the same slot in the stack to be referenced multiple times, so we don't want to write into
+	//a stack frame until we've processed all of its data. Otherwise, the writes into one set of
+	//variables would look like they were affecting other frames.
+	@type DeferredStackValueWriteback = 
+			std::vector<char> dataToWrite,
+			void* locationToWriteTo,
+			NativeContinuationExpressionSerialized dataLayout
+			;
+public:
+	typedef typename value_updater_type::state_type value_updater_state_type;
+
+	StackValueModifyingStackFrameVisitor(
+							value_updater_state_type& ioState,
+							bool inCheckWrites = true
+							) : 
+			mUpdaterState(ioState),
+			mModifiedAnyStackValuesInNativeCode(false),
+			mCheckWrites(inCheckWrites)
+		{
+		mCheckWrites = true;
+		}
+
+	bool visitFreeValue(ImplVal& value, bool isOwned)
+		{
+		visitValue(value, isOwned);
+		return true;
+		}
+
+	bool visitFreeValue(const ::Type& type, void* data, bool isOwned)
+		{
+		visitValue(type, data, isOwned);
+		return true;
+		}
+
+	bool visitFreeValue(ImplValContainer& value)
+		{
+		ImplVal val = value.getReference().duplicate();
+
+		visitValue(val, true);
+		
+		value = ImplValContainer::assumeOwnershipOf(val);
+
+		return true;
+		}
+
+	//vist (and update) a value, returning true if the value was modified
+	bool visitValue(const Type& inType, void* data, bool inIsOwned)
+		{
+		value_updater_type copier(mUpdaterState);
+
+		return copier.visit(inType, (uint8_t*)data, 1, 0, inIsOwned);
+		}
+
+	bool visitValue(ImplVal& v, bool inIsOwned)
+		{
+		value_updater_type copier(mUpdaterState);
+		
+		return copier.visit(v, inIsOwned);
+		}
+
+	bool visitValue(TypedFora::Abi::HomogenousVectorStash& stash)
+		{
+		value_updater_type copier(mUpdaterState);
+
+		return copier.visit(stash);
+		}
+
+	bool visitValue(TypedFora::Abi::LiveValue& value)
+		{
+		if (value.isConstant())
+			return false;
+			else
+		if (value.isTypedData())
+			return visitValue(value.untypedForaType(), value.data(), value.isOwned());
+			else
+		if (value.isUnion())
+			{
+			TypedFora::Abi::LiveValue sub = value.extractUnionValue();
+
+			return visitValue(sub);
+			}
+		else
+			return visitValue(value.getReferenceToImplval(), value.isOwned());
+		}
+
+	void visit(const NativeContinuationVarMetadataSerialized& varMetadata, void* data)
+		{
+		lassert(varMetadata.layout());
+
+		bool isOwned = (*varMetadata.layout())->refcountStyle().isAsValueOwned();
+
+		std::vector<char> tempData;
+
+		TypedFora::Abi::LiveValue value = 
+			TypedFora::Abi::NativeStackFrameWrapper::readStackFrameLayoutToLiveValue(tempData, varMetadata, data);
+
+		if (visitValue(value))
+			{
+			mWritebacks.push_back(
+				DeferredStackValueWriteback(
+					tempData,
+					data,
+					varMetadata.data()
+					)
+				);
+
+			mModifiedAnyStackValuesInNativeCode = true;
+			}
+		}
+
+	virtual bool visitNativeStackFrame(
+					TypedFora::Abi::NativeStackFrameWrapper& stackFrame
+					)
+		{
+		//get the metadata
+		ImmutableTreeVector<NativeContinuationMetadataSerialized> meta = stackFrame.getMetadata();
+		ImmutableTreeVector<NativeType> slotTypes = stackFrame.getSlotTypes();
+
+		long offset = 0;
+
+		for (long k = 0; k < slotTypes.size();k++)
+			{
+			if (slotTypes[k] == NativeTypeFor<TypedFora::Abi::HomogenousVectorStash>::get())
+				visitValue(*(TypedFora::Abi::HomogenousVectorStash*)((char*)stackFrame.getSlotData() + offset));
+
+			offset += slotTypes[k].packedSize();
+			}
+
+		for (long k = ((long)meta.size()-1); k >= 0; k--)
+			{
+			if (meta[k].node().isLocalVariables())
+				for (long j = 0; j < meta[k].vars().size();j++)
+					visit(meta[k].vars()[j], stackFrame.getSlotData());
+			}
+
+		purgeWritebacks();
+
+		return true;
+		}
+
+	void purgeWritebacks()
+		{
+		if (mCheckWrites)
+			{
+			std::vector<TypedFora::Abi::NativeStackFrameWrapper::Write> writes;
+
+			for (long k = 0; k < mWritebacks.size(); k++)
+				{
+				TypedFora::Abi::NativeStackFrameWrapper::pushStandardLayoutIntoStackframe(
+						(char*)&mWritebacks[k].dataToWrite()[0], 
+						(char*)mWritebacks[k].locationToWriteTo(), 
+						mWritebacks[k].dataLayout(),
+						writes
+						);
+				}
+
+			map<char*, std::string> writesAsMap;
+
+			set<char*> invalidLocations;
+
+			for (long k = 0; k < writes.size();k++)
+				if (writesAsMap.find(writes[k].target()) == writesAsMap.end())
+					writesAsMap[writes[k].target()] = writes[k].data();
+				else
+					{
+					std::string oldWrite = writesAsMap[writes[k].target()];
+					std::string newWrite = writes[k].data();
+
+					if (Ufora::beginsWith(newWrite, oldWrite) || Ufora::beginsWith(oldWrite, newWrite))
+						{
+						if (newWrite.size() > oldWrite.size())
+							writesAsMap[writes[k].target()] = newWrite;
+						}
+					else
+						invalidLocations.insert(writes[k].target());
+					}
+
+			if (invalidLocations.size() == 0)
+				{
+				for (long k = 0; k < writes.size();k++)
+					memcpy(writes[k].target(), &writes[k].data()[0], writes[k].data().size());
+				}
+			else
+				{
+				std::vector<NativeContinuationExpressionSerialized> conflictingDataLayouts;
+				std::vector<std::string> hexStrings;
+
+				for (long k = 0; k < mWritebacks.size(); k++)
+					{
+					std::vector<TypedFora::Abi::NativeStackFrameWrapper::Write> writes;
+
+					TypedFora::Abi::NativeStackFrameWrapper::pushStandardLayoutIntoStackframe(
+							(char*)&mWritebacks[k].dataToWrite()[0], 
+							(char*)mWritebacks[k].locationToWriteTo(), 
+							mWritebacks[k].dataLayout(),
+							writes
+							);
+
+					for (long j = 0; j < writes.size();j++)
+						if (invalidLocations.find(writes[j].target()) != invalidLocations.end())
+							{
+							conflictingDataLayouts.push_back(mWritebacks[k].dataLayout());
+							hexStrings.push_back(
+								bytesToHexString(
+									(unsigned char*)&writes[j].data()[0], 
+									writes[j].data().size()
+									)
+								);
+							}
+					}
+
+				lassert_dump(false, 
+					"The following locations had conflicting writes: " + 
+						prettyPrintString(conflictingDataLayouts) + " -> " + 
+						prettyPrintString(hexStrings)
+					);
+				}
+			}
+		else
+			{
+			for (long k = 0; k < mWritebacks.size(); k++)
+				TypedFora::Abi::NativeStackFrameWrapper::pushStandardLayoutIntoStackframe(
+						(char*)&mWritebacks[k].dataToWrite()[0], 
+						(char*)mWritebacks[k].locationToWriteTo(), 
+						mWritebacks[k].dataLayout()
+						);
+			}
+
+		mWritebacks.clear();
+		}
+
+	virtual bool visitInterpreterStackFrame(
+					Fora::Interpreter::EvalFrame* stackFrame
+					)
+		{
+		EvalFrameArgList& args = stackFrame->evalFrameArgList();
+
+		for (long k = 0; k < args.size(); k++)
+			visitValue(args[k], false);
+
+		return true;
+		}
+
+	virtual bool visitResultSignatureAdapterStackFrame(
+					TypedFora::Abi::ResultSignatureAdapterFrame* stackFrame
+					)
+		{
+		return true;
+		}
+
+	virtual bool visitHeldImplvalTeardownFrame(
+					TypedFora::Abi::InterpreterUniqueIdHolderFrame* stackFrame
+					)
+		{
+		return true;
+		}
+
+	virtual bool visitCppCallbackFrame(
+					TypedFora::NativeCppCallbackStackframe* cppCallbackFrame
+					)
+		{
+		return true;
+		}
+
+	bool modifiedAnyNativeStackFrames() const
+		{
+		return mModifiedAnyStackValuesInNativeCode;
+		}
+
+private:
+	std::vector<DeferredStackValueWriteback> mWritebacks;
+
+	value_updater_state_type& mUpdaterState;
+
+	bool mModifiedAnyStackValuesInNativeCode;
+
+	bool mCheckWrites;
+
+};
+
+}
+}
+

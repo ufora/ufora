@@ -1,0 +1,605 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+RandomNormal:
+class {
+    member mean;
+    member stdDev;
+    member seed;
+    member numSamples;
+    
+    #Markdown("""Build a column-major set of random 2d points.""")
+    generate: fun() {
+        let vals = [];
+        let rand = iterator(math.random.Normal(mean, stdDev, seed));
+        
+        for i in sequence(numSamples) {
+            let val = (pull rand);
+            vals = vals :: val;
+            }
+        
+        vals
+    };
+};
+
+RandomNormalColumns:
+class {
+    member mean;
+    member stdDev;
+    member seed;
+    member numSamples;
+    member numColumns;
+    
+    #Markdown("""Build a column-major set of random 2d points.""")
+    generate: fun() {
+        Vector.range(
+            numColumns, 
+            fun (index) {
+                RandomNormal(mean, stdDev, seed + index, numSamples).generate()
+                }
+            )
+        };
+};
+
+data_predictors: (
+    let columns = RandomNormalColumns(0.0, 1.0, 1, 100, 3).generate()
+    dataframe.DataFrame(columns)
+);
+
+data: (
+    let df = data_predictors;
+    let f =
+    fun(row) {
+        5.0 + row[0] * 2.0 + row[1] * 3.0 + row[2] * 4.0
+        };
+    df = df.addColumn(df.rowApply(f), name: "Y")
+
+    let noise =  RandomNormal(0.0, 1.8, 55, 100).generate();
+    df = df + dataframe.DataFrame([noise], columnNames: ["Y"])
+    df
+);
+
+
+regress: fun(df, fitIntercept:=true) {
+    math.regression.LinearRegression(
+        df("C0", "C1", "C2"),
+        df("Y"),
+        fitIntercept: fitIntercept
+        );
+    };
+
+fitWithoutIntercept: regress(data, fitIntercept:false);
+
+`test responses: (
+    let df = data;
+    let predictors = df("C0", "C1", "C2");
+    let responses = df("Y");
+    let fit = math.regression.LinearRegression(predictors, responses);
+
+    assertions.assertEqual(size(responses), 100);
+
+    assertions.assertAllClose(
+        responses.getColumn(0).dataVec[,16],
+        [3.83635150126071, -0.828980922257908, 5.8760947754524, 6.35608861228321, 
+         -5.93738901242421, 3.15039222198391, -1.29169790542116, 10.3374578134118, 
+         6.4817627189054, 3.50724200711157, -2.51941243914211, 6.17902743327853, 
+         5.8247986782112, 10.5581767540655, -11.1637829355397, -7.44987474538178]
+        );
+
+    fit = math.regression.LinearRegression(
+        predictors, responses, fitIntercept: false
+        );
+
+    assertions.assertEqual(size(responses), 100)
+
+    assertions.assertAllClose(
+        responses.getColumn(0).dataVec[,16],
+        [3.83635150126071, -0.828980922257908, 5.8760947754524, 6.35608861228321, 
+         -5.93738901242421, 3.15039222198391, -1.29169790542116, 10.3374578134118, 
+         6.4817627189054, 3.50724200711157, -2.51941243914211, 6.17902743327853, 
+         5.8247986782112, 10.5581767540655, -11.1637829355397, -7.44987474538178]
+        )
+    );
+
+`test fittedValues: (
+    let df = data;
+    let predictors = df("C0", "C1", "C2");
+    let responses = df("Y");
+    let fit = math.regression.LinearRegression(predictors, responses);
+
+    let fittedValues = fit.predict(predictors);
+
+    assertions.assertEqual(size(fittedValues), 100)
+
+    assertions.assertAllClose(
+        fittedValues.getColumn(0).dataVec[,16],
+        [4.79682548917914, -1.83192769516786, 6.15046978617681, 9.6221912972308, 
+         -7.28309048781778, -0.311671905506549, 1.79552680778522, 9.6765613199388, 
+         5.02708797942559, 3.92157277327972, -1.67744347384528, 5.7124561173148, 
+         3.94199454795134, 11.8091214716109, -10.8141451887901, -7.6050143521132]
+        )
+
+    fit = regress(data, fitIntercept: false);
+
+    fittedValues = fit.predict(predictors);
+
+    assertions.assertEqual(size(fittedValues), 100)
+
+    assertions.assertAllClose(
+        fittedValues.getColumn(0).dataVec[,16],
+        [-0.045274360823705, -5.56589895372937, 0.995407232613796, 3.88157668932561, 
+         -9.85057157081309, -4.52118767925897, -2.57267110975848, 5.12100541519216, 
+         0.207033175117603, -0.47796382345537, -5.60818976098271, 0.354619279203615,
+         -1.09669820902591, 6.69969705313492, -13.4906446491048, -11.4743295357603]
+        )
+    );
+
+`test
+sigmaSquared: (
+    let fit = regress(data)
+    assertions.assertClose(fit.sigmaSquared, 3.15294542897285);
+
+    fit = regress(data, fitIntercept: false)
+    assertions.assertClose(fit.sigmaSquared, 28.0024336688037);
+);
+
+`test residuals: (
+    let df = data;
+    let predictors = df("C0", "C1", "C2");
+    let responses = df("Y");
+    let fit = math.regression.LinearRegression(predictors, responses);
+    
+    let residuals = fit.residuals(predictors, responses);
+    
+    assertions.assertEqual(size(residuals), 100)
+    
+    assertions.assertAllClose(
+        residuals[,16], 
+        [-0.960473987918425, 1.00294677290995, -0.27437501072441, -3.26610268494759, 
+         1.34570147539357, 3.46206412749046, -3.08722471320638, 0.660896493472976, 
+         1.45467473947981, -0.414330766168155, -0.841968965296831, 0.46657131596373, 
+         1.88280413025986, -1.25094471754537, -0.349637746749593, 0.155139606731417]
+        );
+
+    fit = math.regression.LinearRegression(predictors, responses, fitIntercept: false);
+    
+    residuals = fit.residuals(predictors, responses);
+    
+    assertions.assertEqual(size(residuals), 100)
+    
+    assertions.assertAllClose(
+        residuals[,16], 
+        [3.88162586208442, 4.73691803147146, 4.8806875428386, 2.4745119229576, 
+         3.91318255838888, 7.67157990124289, 1.28097320433732, 5.21645239821961, 
+         6.2747295437878, 3.98520583056694, 3.0887773218406, 5.82440815407491, 
+         6.92149688723711, 3.8584797009306, 2.32686171356511, 4.02445479037854]
+        );
+    );
+
+`test degreesOfFreedom: (
+    let fit = regress(data);
+
+    assertions.assertEqual(fit.dfTotal(), 99);
+    assertions.assertEqual(fit.nModelDegreesOfFreedom(), 3);
+    assertions.assertEqual(fit.nResidualDegreesOfFreedom(), 96);
+
+    fit = regress(data, fitIntercept: false);
+
+    assertions.assertEqual(fit.dfTotal(), 100);
+    assertions.assertEqual(fit.nModelDegreesOfFreedom(), 3);
+    assertions.assertEqual(fit.nResidualDegreesOfFreedom(), 97);
+    );
+
+`test sumsOfSquares: (
+    let fit = regress(data);
+
+    assertions.assertClose(fit.residualSumOfSquares, 302.682761181393);
+    assertions.assertClose(fit.modelSumOfSquares(), 3408.10348460294);
+    assertions.assertClose(fit.totalSumOfSquares(), 3710.78624578433);
+    assertions.assertClose(fit.meanSumOfSquares(), 37.4826893513569);
+    assertions.assertClose(fit.meanModelSumOfSquares(), 1136.03449486764);
+
+    fit = regress(data, fitIntercept: false);
+
+    assertions.assertClose(fit.residualSumOfSquares, 2716.23606587395);
+    assertions.assertClose(fit.modelSumOfSquares(), 2656.68856911807);
+    assertions.assertClose(fit.totalSumOfSquares(), 5372.92463499203);
+    assertions.assertClose(fit.meanSumOfSquares(), 53.7292463499203);
+    assertions.assertClose(fit.meanModelSumOfSquares(), 885.562856372691);
+    );
+
+`test sigma: (
+    let fit = regress(data);
+
+    assertions.assertClose(fit.sigma(), 1.77565352165698)
+
+    fit = regress(data, fitIntercept: false);
+
+    assertions.assertClose(fit.sigma(), 5.29173257721927)
+    );
+
+`test rSquared: (
+    let fit = regress(data);
+
+    assertions.assertClose(fit.rSquared(), 0.918431636550001);
+    assertions.assertClose(fit.adjustedRSquared(), 0.915882625192189);
+
+    fit = regress(data, fitIntercept: false);
+
+    assertions.assertClose(fit.rSquared(), 0.494458558345666);
+    assertions.assertClose(fit.adjustedRSquared(), 0.47882325602646);
+    );
+
+`test fStat: (
+    let fit = regress(data);
+
+    assertions.assertAllClose(
+        fit.fStat(includePValue: true)[,-1], 
+        (fStatistic: 360.308962035457, pValue: 0.0)
+        )
+    assertions.assertEqual(
+        fit.fStat().degreesOfFreedom,
+        (3, 96)
+        );
+
+    fit = regress(data, fitIntercept: false);
+
+    assertions.assertAllClose(
+        fit.fStat(includePValue: true)[,-1], 
+        (fStatistic: 31.6244961722473, pValue: 2.40918396343659e-14)
+        )
+    assertions.assertEqual(
+        fit.fStat().degreesOfFreedom,
+        (3, 97)
+        );
+    );
+
+`test
+test_vcov: (
+    let fit = regress(data)
+
+    assertions.assertAllClose(
+        fit.vcov().columnMajorData(),
+        [0.0302356073313485, -0.000861091467008894, -0.00246135666410503, 
+         0.00091278691763479, -0.000861091467008901, 0.0282847130755386, 
+         0.00448302578978795, 0.00514887660721297, -0.00246135666410504, 
+         0.00448302578978797, 0.0264933550094939, 0.00238860367777824, 
+         0.000912786917634796, 0.00514887660721297, 0.00238860367777824, 
+         0.0326115642812638]
+        );
+);
+
+`test
+test_lower_confidence_intervals: (
+    let fit = regress(data);
+    
+    assertions.assertAllClose(
+        fit.confidenceIntervals().lowerConfidenceIntervals.columnMajorData(),
+        [1.63841175958725, 2.9809713805613, 3.78977642089729, 4.63792480140539]
+        );
+);
+
+`test
+test_upper_confidence_intervals: (
+    let fit = regress(data);
+
+    assertions.assertAllClose(
+        fit.confidenceIntervals().upperConfidenceIntervals.columnMajorData(),
+        [2.32872534842217, 3.64864307210141, 4.43595945891793, 5.35484842278711]
+        );
+);
+
+`test
+test_predict: (
+    let fit = regress(data)
+
+    assertions.assertAllClose(
+        fit.predict(data_predictors)[,16].getColumn(0).dataVec,
+        [4.79682548917914, -1.83192769516786, 6.15046978617681, 9.6221912972308, 
+         -7.28309048781778, -0.311671905506549, 1.79552680778522, 9.6765613199388, 
+         5.02708797942559, 3.92157277327972, -1.67744347384528, 5.7124561173148, 
+         3.94199454795134, 11.8091214716109, -10.8141451887901, -7.6050143521132]
+        );
+);
+
+`test rankDeficiency:
+(
+	let X = dataframe.DataFrame([[0, 1, 2, 3, 4], [1,0,-1,0,1], [1,1,1,3,5]]);
+	let y = dataframe.DataFrame([[12.87080599, 3.77080599, 14.67080599, 35.77080599, 36.87080599]]);
+
+	let fit = math.regression.LinearRegression(X, y);
+
+	let summary = fit.summary();
+
+	assertions.assertAllClose(
+		summary.coefficients.columnMajorData(),
+		[3.63333333333333, 0.733333333333332, 4.36666666666666, 3.77080598999999]
+		);
+);
+
+`test rankDeficiency_2: (
+    let X = dataframe.DataFrame([[0,1,2,3], [0,1,2,3]]);
+    let y = dataframe.DataFrame([[1,2,3,4]]);
+
+    let fit = math.regression.LinearRegression(X,y);
+
+    let summary = fit.summary();
+    
+    assertions.assertAllClose(
+        summary.coefficients.columnMajorData(), 
+        [0.5, 0.5, 1.0]
+        );
+    assertions.assertClose(summary.rSquared, 1.0);
+    assertions.assertEqual(summary.isFullRank, false)
+    assertions.assertEqual(fit.isFullRank(), false)
+
+    try {
+        fit.vcov();
+        assertions.assertTrue(false);
+        }
+    catch (Exception(e))
+        {
+        assertions.assertEqual(
+            e, "Don't know how to estimate vcov for a rank-deficient design matrix"
+            )
+        }
+
+    // check that this doesn't blow up in a rank-deficient case
+    fit.formatSummary()
+
+    true
+    );
+
+`test formatSummary: (
+    let X = dataframe.DataFrame([[0,1,2,3], [0,1,2,3]]);
+    let y = dataframe.DataFrame([[1,2,3,4]]);
+
+    let fit = math.regression.LinearRegression(X,y);
+
+    fit.formatSummary()
+
+    true
+    );
+
+`test residualsQuantiles: (
+    let nSamples = 100;
+    let randomData = iter.toVector(
+        iter.subseq(
+            math.random.Normal(0, 1, 99982323),
+            0, nSamples
+            )
+        );
+
+    let X = dataframe.DataFrame([Vector.range(nSamples)]);
+    let y = dataframe.DataFrame([randomData]);
+
+    let fit = math.regression.LinearRegression(X, y + X);
+
+    let residualQuantiles1 = fit.computeResidualsQuantiles(X, y);
+
+    let residuals = fit.residuals(X, y)
+
+    let residualQuantiles2 = 
+        math.stats.fivePointQuantiles(residuals, estimate: true);
+
+    assertions.assertEqual(
+        residualQuantiles1[0], residualQuantiles2[0]
+        )
+    assertions.assertEqual(
+        residualQuantiles1[-1], residualQuantiles2[-1]
+        )
+    
+    assertions.assertAllClose(
+        residualQuantiles1, residualQuantiles2
+        )
+    );
+
+`test residualsQuantiles2: (
+    let nSamples = 100000;
+    let randomData = iter.toVector(
+        iter.subseq(
+            math.random.Normal(0, 1, 99982323),
+            0, nSamples
+            )
+        );
+
+    let X = dataframe.DataFrame([Vector.range(nSamples)]);
+    let y = dataframe.DataFrame([randomData]);
+
+    let fit = math.regression.LinearRegression(X, y + X);
+
+    let residualQuantiles1 = fit.computeResidualsQuantiles(X, y);
+
+    let residuals = fit.residuals(X, y)
+
+    let residualQuantiles2 = 
+        math.stats.fivePointQuantiles(residuals, estimate: true);
+
+    assertions.assertEqual(
+        residualQuantiles1[0], residualQuantiles2[0]
+        )
+    assertions.assertEqual(
+        residualQuantiles1[-1], residualQuantiles2[-1]
+        )
+    
+    assertions.assertAllClose(
+        residualQuantiles1, residualQuantiles2
+        )
+    );
+
+`test underdetermined: (
+    let count = 10;
+    let fpow = fun(p) { fun(x) { Float32( (x / 1000000000.0) ** (p/100.0) + (x % 123) / 123.0 ) } };
+
+    let vecs = Vector.range(80)~~ fun(p) {
+        Vector.range(count, fpow(p))
+        }
+
+    let pred = dataframe.DataFrame(vecs[,-1])
+    let reg = dataframe.DataFrame(vecs[-1,])
+
+    let fit = math.regression.LinearRegression(pred, reg);
+
+    assertions.assertTrue(all(fit.tStats(includePValues: true).pValues ~~ { _.isNan }))
+    assertions.assertTrue(fit.fStat(includePValue: true).pValue.isNan)
+    assertions.assertTrue(fit.isUnderdetermined())
+
+    // check that these calls don't throw exceptions
+    fit.summary()
+    fit.formatSummary()
+
+    true
+    );
+
+`test variousResponseTypes: (
+    let df = dataframe.DataFrame([[1,2,3], [4,5,6]]);
+    
+    let fitFromDataframe = math.regression.LinearRegression(df, df("C1"));
+    let fitFromSeries = math.regression.LinearRegression(df, df.getColumn(1))
+    let fitFromVector = math.regression.LinearRegression(df, df.getColumn(1).dataVec)
+
+    assertions.assertEqual(
+        fitFromDataframe.coefficients(), fitFromSeries.coefficients()
+        );
+    assertions.assertEqual(
+        fitFromSeries.coefficients(), fitFromVector.coefficients()
+        );
+    );
+
+`test emptyDesignMatrix: (
+    let df = dataframe.DataFrame([[]]);
+
+    assertions.assertRaises(
+        Exception.AssertionError,
+        fun() { math.regression.LinearRegression(df, df) }
+        );
+    );
+
+`test unequalNumberOfRows: (
+    let X = dataframe.DataFrame([[1,2,3], [4,5,6]]);
+    let y = dataframe.DataFrame([[7,8,9,10]])
+    
+    assertions.assertRaises(
+        Exception.AssertionError,
+        fun() { math.regression.LinearRegression(X, y) }
+        );
+    );
+
+`test consistencyOfSplitLimit: (
+    let cols = 10;
+    let rows = 100;
+
+    let vecs =Vector.range(10).apply(fun(ix) {
+        Vector.range(rows, fun(r) { Float64(r % (ix + 2)) })
+        })
+
+    let pred = dataframe.DataFrame(vecs[,-1])
+    let out = dataframe.DataFrame(vecs[-1])
+
+    let initialCoefficients = 
+        math.regression.LinearRegression(pred, out)
+        .coefficients_.columnMajorData();
+
+    for splitLimit in sequence(1, rows, 10)
+        {
+        let coefficientsForSplitLimit = 
+            math.regression.LinearRegression(
+                pred, out, splitLimit: splitLimit
+                )
+                .coefficients_.columnMajorData();
+
+        assertions.assertAllClose(
+            initialCoefficients, coefficientsForSplitLimit,
+            msg: "coefficients off at splitLimit = " + String(splitLimit)
+            );
+        }
+
+    true
+    );    
+    
+(`perf, `callResult) repeatedRegressionsWithIntercept: (
+    let v1 = Vector.range(1000000); 
+    let v2 = Vector.range(1000000); 
+    let df = dataframe.DataFrame([v1,v2]);
+
+    fun() { 
+        math.regression.LinearRegression(
+            df.getColumn(1), 
+            df.getColumn(0), 
+            fitIntercept: true)
+            .coefficients()[0] 
+        }
+    );
+
+(`perf, `callResult) repeatedRegressionsWithIntercept_2: (
+    let v1 = Vector.range(1000000); 
+    let v2 = Vector.range(1000000); 
+    let df = dataframe.DataFrame([v1,v2]);
+
+    fun() { 
+        let X = df("C1");
+        let ones = Vector.uniform(size(v1), 1.0);
+        X = dataframe.DataFrame(
+            columns: X.columns :: ones,
+            columnNames: X.columnNames :: "intercept",
+            numRows: X.numRows,
+            numColumns: X.numColumns
+            );
+
+        let y = df("C0");
+
+        math.regression.LinearRegression(X, y, fitIntercept:false).coefficients()[0] 
+        }
+    );
+
+(`perf, `callResult) repeatedRegressionsWithoutIntercept: (
+    let v1 = Vector.range(1000000); 
+    let v2 = Vector.range(1000000); 
+    let df = dataframe.DataFrame([v1,v2]);
+
+    fun() { 
+        math.regression.LinearRegression(df.getColumn(1), df.getColumn(0), fitIntercept:false)
+            .coefficients()[0] 
+        }
+    );
+
+(`perf, `callResult) repeatedRegressionsWithInterceptRSquared: (
+    let v1 = Vector.range(1000000); 
+    let v2 = Vector.range(1000000); 
+    let df = dataframe.DataFrame([v1, v2]);
+
+    fun() { 
+        math.regression.LinearRegression(
+            df.getColumn(1), 
+            df.getColumn(0), 
+            fitIntercept: true)
+            .rSquared()
+        }
+    );
+
+(`perf, `callResult) repeatedRegressionsWithoutInterceptRSquared: (
+    let v1 = Vector.range(1000000); 
+    let v2 = Vector.range(1000000); 
+    let df = dataframe.DataFrame([v1, v2]);
+
+    fun() { 
+        math.regression.LinearRegression(
+            df.getColumn(1), 
+            df.getColumn(0), 
+            fitIntercept: false)
+            .rSquared()
+        }
+    );
+

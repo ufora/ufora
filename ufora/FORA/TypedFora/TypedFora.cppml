@@ -1,0 +1,605 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "TypedFora.hppml"
+#include "TypedForaUtil.hppml"
+#include "ABI/NativeLayoutType.hppml"
+#include "CreateTupleExpression.hppml"
+#include "../../core/math/UniqueIntegers.hpp"
+#include "../Native/NativeCode.hppml"
+#include "ABI/TypedForaValueTypecasting.hppml"
+
+using TypedFora::Abi::typeDirectlyCastable;
+
+macro_defineMemberHashFunctionBody(TypedFora::Type);
+macro_defineMemberHashFunctionBody(TypedFora::MetadataInstruction);
+
+char CPPMLEquality<TypedFora::Type, void>::cmp(const TypedFora::Type& lhs, const TypedFora::Type& rhs)
+	{
+	char c = lhs.jov().hash().cmp(rhs.jov().hash());
+	if (c)
+		return c;
+	return cppmlCmp(lhs.refcountStyle(), rhs.refcountStyle());
+	}
+
+char CPPMLEquality<TypedFora::MetadataInstruction, void>::cmp(
+							const TypedFora::MetadataInstruction& lhs, 
+							const TypedFora::MetadataInstruction& rhs
+							)
+	{
+	return lhs.hash().cmp(rhs.hash());
+	}
+
+char CPPMLEquality<TypedFora::ResultSignature, void>::cmp(const TypedFora::ResultSignature& lhs, const TypedFora::ResultSignature& rhs)
+	{
+	typedef TypedFora::ResultSignature T;
+	
+	return CPPMLEquality<T, typename T::kind>::cmp(lhs, rhs);
+	}
+
+void Serializer<TypedFora::ResultSignature, HashingStreamSerializer>::serialize(
+					HashingStreamSerializer& s, 
+					const TypedFora::ResultSignature& in
+					)
+	{
+	s.serialize(hashCPPMLDirect(in));
+	}
+
+
+hash_type TypedFora::Type::hash(void) const
+	{
+	return jov().hash() + hashValue(refcountStyle());
+	}
+
+namespace TypedFora {
+
+BlockID BlockID::internal()
+	{
+	static AO_t ix = 1;
+	return BlockID(true, AO_fetch_and_add_full(&ix, 1));
+	}
+
+BlockID BlockID::entry()
+	{
+	return BlockID(false, 0);
+	}
+
+BlockID BlockID::external(uint32_t index)
+	{
+	return BlockID(false, index);
+	}
+
+Variable Variable::Temp(const Type& t)
+	{
+	return Variable(UniqueIntegers::next(), t);
+	}
+Expression Variable::expr(void) const
+	{
+	return Expression::Var(*this);
+	}
+
+bool Expression::computeHasSideEffects(void) const
+	{
+	@match Expression(*this)
+		-|	Var(var) ->> { 
+			return false;
+			}
+		-|	Constant(c) ->> {
+			return false;
+			}
+		-|	Let(var, toBind, toEvaluate) ->> {
+			return toBind.hasSideEffects() || toEvaluate.hasSideEffects();
+			}
+		-|	DiscardFirst(first, second) ->> {
+			return first.hasSideEffects() || second.hasSideEffects();
+			}
+		-|	If(condition, ifTrue, ifFalse) ->> {
+			return condition.hasSideEffects() || ifTrue.hasSideEffects() || ifFalse.hasSideEffects();
+			}
+		-|	InterruptCheck() ->> {
+			return true;
+			}
+		-|	Halt(message) ->> {
+			return true;
+			}
+		-|	KickCheck() ->> {
+			return true;
+			}
+		-|	TransferToInterpreter() ->> {
+			return true;
+			}
+		-|	Call(target, args, continuations, stackMetadata) ->> {
+			return true;
+			}
+		-|	ChangeClassBody(expr, newClassBody) ->> {
+			return expr.hasSideEffects();
+			}
+		-|	CastWithoutCheck(expr, type) ->> {
+			return expr.hasSideEffects();
+			}
+		-|	InlineNativeOperation(varmap, expr, outputType, hasSideEffects) ->> {
+			return hasSideEffects;
+			}
+		-|	TypeCheck(expr, continuations) ->> {
+			return expr.hasSideEffects();
+			}
+		-|	TransferTo(target, expressions, stackMetadata) ->> {
+			return true;
+			}
+		-|	Jump(target, args) ->> {
+			return true;
+			}
+		-|	Return() ->> {
+			return true;
+			}
+		-|	IsTuple() ->> {
+			return false;
+			}
+		-|	GetItem(expr, index) ->> {
+			return expr.hasSideEffects();
+			}
+		-|	GetSlice(expr, index) ->> {
+			return expr.hasSideEffects();
+			}
+		-|	MakeTuple(arguments, outType) ->> {
+			for (long k = 0; k < arguments.size();k++)
+				if (arguments[k].arg().hasSideEffects())
+					return true;
+
+			return false;
+			}
+	}
+
+Nullable<Type> Expression::computeType(void) const
+	{
+	@match Expression(*this)
+		-|	Var(var) ->> { 
+			if (var.type().refcountStyle().isPooled())
+				return null() << Type(var.type().jov(), RefcountStyle::Pooled());
+
+			return null() << Type(var.type().jov(), RefcountStyle::AsValueUnowned());
+			}
+		-|	Constant(c) ->> {
+			return null() << Type(JOV::Constant(c), RefcountStyle::Pooled());
+			}
+		-|	Let(var, toBind, toEvaluate) ->> {
+			if (!toBind.type())
+				return null();
+
+			return toEvaluate.type();
+			}
+		-|	DiscardFirst(first, second) ->> {
+			if (!first.type())
+				return null();
+
+			return second.type();
+			}
+		-|	If(condition, ifTrue, ifFalse) ->> {
+			return typeForMergedControlFlowPaths(ifTrue.type(), ifFalse.type());
+			}
+		-|	InterruptCheck() ->> {
+			return null() << Type(JOV::Constant(CSTValue()), RefcountStyle::AsValueUnowned());
+			}
+		-|	Halt(message) ->> {
+			return null();
+			}
+		-|	TransferToInterpreter() ->> {
+			return null();
+			}
+		-|	KickCheck() ->> {
+			return null() << Type(JOV::Constant(CSTValue()), RefcountStyle::AsValueUnowned());
+			}
+		-|	Call(target, args, continuations, stackMetadata) ->> {
+			for (long k = 0; k < continuations.size(); k++)
+				if (continuations[k].first.type())
+					return continuations[k].first.type();
+			return null();
+			}
+		-|	ChangeClassBody(expr, newClassBody) ->> {
+			if (!expr.type())
+				return null();
+
+			return null() << applyNewClassBodyToType(*expr.type(), newClassBody);
+			}
+		-|	CastWithoutCheck(expr, type) ->> {
+			if (!expr.type())
+				return null();
+			return null() << type;
+			}
+		-|	InlineNativeOperation(varmap, expr, outputType) ->> {
+			return null() << outputType;
+			}
+		-|	TypeCheck(expr, continuations) ->> {
+			if (!expr.type())
+				return null();
+			
+			Nullable<Type> retType;
+
+			for (long k = 0; k < continuations.size(); k++)
+				retType = 
+					typeForMergedControlFlowPaths(
+						retType, 
+						continuations[k].resumption().type()
+						);
+
+			return retType;
+			}
+		-|	TransferTo(target, expressions, stackMetadata) ->> {
+			return null();
+			}
+		-|	Jump(target, args) ->> {
+			return null();
+			}
+		-|	Return() ->> {
+			return null();
+			}
+		-|	IsTuple() ->> {
+			return null() << boolType(); 
+			}
+		-|	GetItem(expr, index) ->> {
+			if (!expr.type())
+				return null();
+			return null() << tupleGetItemType(*expr.type(), index);
+			}
+		-|	GetSlice(expr, index) ->> {
+			if (!expr.type())
+				return null();
+			return null() << tupleGetSliceType(*expr.type(), index);
+			}
+		-|	MakeTuple(arguments, outType) ->> {
+			return null() << outType;
+			}
+	}
+
+Expression Expression::MakeTuple(const ImmutableTreeVector<MakeTupleArgument>& arguments)
+	{
+	Nullable<Type> outType = makeTupleType(arguments);
+	lassert(outType);
+
+	return MakeTuple(arguments, *outType);
+	}
+
+const Expression& MakeTupleArgument::arg(void) const
+	{
+	@match MakeTupleArgument(*this)
+		-|	Normal(_, arg) ->> {
+			return arg;
+			}
+		-|	TupleCall(arg) ->> {
+			return arg;
+			}
+		;
+	}
+
+JudgmentOnAction	Callable::resultSignatureAsJoa(void) const 
+	{
+	return resultSignature().asJoa();
+	}
+
+JudgmentOnValueTuple	Callable::callSignatureAsJovt(const BlockID& blockID) const 
+	{
+	return 
+		JudgmentOnValueTuple::Unnamed(
+			jovListFromTypes(callSignature(blockID))
+			);
+	}
+
+ResultSignature Callable::resultSignature() const
+	{
+	@match Callable(*this)
+		-|	NativeOperation(resSig) ->> {
+			return resSig;
+			}
+		-|	SingleExpression(vars, expression, resultType, isException, hasSideEffects) ->> {
+			if (isException)
+				return ResultSignature(emptyTreeVec(), emptyTreeVec() + resultType, hasSideEffects);
+			return ResultSignature(emptyTreeVec() + resultType, emptyTreeVec(), hasSideEffects);
+			}
+		-|	Graph(signature) ->> {
+			return signature;
+			}
+	}
+
+ImmutableTreeVector<Type> Callable::callSignature(const BlockID& blockID) const
+	{
+	@match Callable(*this)
+		-|	NativeOperation(resSig, inputTypes) ->> {
+			return *inputTypes[blockID];
+			}
+		-|	SingleExpression(vars, expression, resultType, isException) ->> {
+			return typeListFromVariables(vars);
+			}
+		-|	Graph(sig, blocks) ->> {
+			lassert_dump(blocks[blockID], 
+				"Callable doesn't have block " << prettyPrintString(blockID));
+			return typeListFromVariables(blocks[blockID]->args());
+			}
+	}
+
+JudgmentOnAction ResultSignature::asJoa(void) const
+	{
+	return JudgmentOnAction(
+		JudgmentOnResult(jovListFromTypes(normalTypes())),
+		JudgmentOnResult(jovListFromTypes(exceptionTypes())),
+		hasSideEffects()
+		);
+	}
+
+bool ResultSignature::covers(const ResultSignature& inResultSignature) const
+	{
+	return asJoa().covers(inResultSignature.asJoa());
+	}
+
+ResultSignature CallTarget::resultSignature(void) const
+	{
+	@match CallTarget(*this)
+		-|	Subgraph(subgraph) ->> {
+			return subgraph.resultSignature();
+			}
+		-|	ExternalSubgraph(resSig) ->> {
+			return resSig;
+			}
+	}
+
+ImmutableTreeVector<Type> CallTarget::callSignature(void) const
+	{
+	@match CallTarget(*this)
+		-|	Subgraph(subgraph, block) ->> {
+			return subgraph.callSignature(block);
+			}
+		-|	ExternalSubgraph(_, callSig) ->> {
+			return callSig;
+			}
+	}
+
+ResultSignature TransferTarget::resultSignature(void) const
+	{
+	@match TransferTarget(*this)
+		-|	ExternalSubgraph(resSig) ->> {
+			return resSig;
+			}
+	}
+
+ImmutableTreeVector<Type> TransferTarget::callSignature(void) const
+	{
+	@match TransferTarget(*this)
+		-|	ExternalSubgraph(_, callSig) ->> {
+			return callSig;
+			}
+	}
+
+uword_t ContinuationFrame::size(void) const
+	{
+	return normalContinuations().size() + exceptionContinuations().size();
+	}
+
+pair<Continuation, bool> ContinuationFrame::operator[](uword_t inIndex) const
+	{
+	if (inIndex < normalContinuations().size())
+		return make_pair(normalContinuations()[inIndex], false);
+
+	return make_pair(
+		exceptionContinuations()[inIndex - normalContinuations().size()], 
+		true
+		);
+	}
+
+Nullable<uword_t> ContinuationFrame::typedResumptionIndex(void) const
+	{
+	for (uword_t k = 0; k < size();k++)
+		if ((*this)[k].first.resumption().type())
+			return null() << k;
+
+	return null();
+	}
+
+uword_t ResultSignature::size(void) const
+	{
+	return normalTypes().size() + exceptionTypes().size();
+	}
+
+pair<Type, bool> ResultSignature::operator[](uword_t inIndex) const
+	{
+	if (inIndex < normalTypes().size())
+		return make_pair(normalTypes()[inIndex], false);
+
+	return make_pair(
+		exceptionTypes()[inIndex - normalTypes().size()], 
+		true
+		);	
+	}
+}
+
+void CPPML::Validator<TypedFora::ContinuationFrame, void>
+				::operator()(TypedFora::ContinuationFrame& in) const
+	{
+	Nullable<TypedFora::Type> retType;
+
+	for (long k = 0; k < in.size(); k++)
+		if (in[k].first.type())
+			{
+			if (retType && retType != in[k].first.type())
+				throw standardLogicErrorWithStacktrace(
+						"can't create a ContinuationFrame "
+						"with conflicting return types: " + 
+						prettyPrintString(retType) + " vs. " + 
+						prettyPrintString(in[k].first.type()
+						)
+					);
+			else
+				retType = in[k].first.type();
+			}
+	}
+
+void CPPML::Validator<TypedFora::Expression_LetType, void>
+				::operator()(TypedFora::Expression_LetType& in) const
+	{
+	if (in.toBind().type())
+		if (!typeDirectlyCastable(*in.toBind().type(), in.var().type()))
+			throw standardLogicErrorWithStacktrace(
+				"invalid type assignment: " + 
+					prettyPrintString(in.toBind().type()) + " is not directly castable to " + 
+					prettyPrintString(in.var().type())
+				);
+	}
+
+void CPPML::Validator<TypedFora::Expression_IfType, void>
+				::operator()(TypedFora::Expression_IfType& in) const
+	{
+	if (!in.expr().type())
+		return;
+	}
+
+void CPPML::Validator<TypedFora::Expression_MakeTupleType, void>
+				::operator()(TypedFora::Expression_MakeTupleType& in) const
+	{
+	}
+
+void CPPML::Validator<TypedFora::Expression_GetSliceType, void>
+				::operator()(TypedFora::Expression_GetSliceType& in) const
+	{
+	}
+
+void CPPML::Validator<TypedFora::Expression_GetItemType, void>
+				::operator()(TypedFora::Expression_GetItemType& in) const
+	{
+	if (!in.expr().type())
+		return;
+	if (tupleGetItemDefinitelyWillFail(in.expr().type()->jov(), in.index()))
+		throw standardLogicErrorWithStacktrace(
+			"invalid GetItem: " + 
+				prettyPrintString(*in.expr().type()) + "[" + 
+				prettyPrintString(in.index()) + "] will definitely fail."
+			);
+	}
+
+void CPPML::Validator<TypedFora::Expression_TransferToType, void>
+				::operator()(TypedFora::Expression_TransferToType& in) const
+	{
+	if (anyHaveNullType(in.expressions()))
+		return;
+	
+	//validate that the argument expressions match the target expressions
+	if (!expressionsMatchCallSignature(in.expressions(), in.target().callSignature()))
+		throw standardLogicErrorWithStacktrace(
+			"invalid transfer args: " + 
+				prettyPrintString(typeListFromExpressions(in.expressions())) + 
+				" don't match " + 
+				prettyPrintString(in.target().callSignature())
+			);
+	}
+
+void CPPML::Validator<TypedFora::Expression_CallType, void>
+				::operator()(TypedFora::Expression_CallType& in) const
+	{
+	if (anyHaveNullType(in.arguments()))
+		return;
+
+	if (!expressionsMatchCallSignature(in.arguments(), in.target().callSignature()))
+		throw standardLogicErrorWithStacktrace(
+			"invalid call signature: " + 
+				prettyPrintString(typeListFromExpressions(in.arguments())) + 
+				" don't match " + 
+				prettyPrintString(in.target().callSignature())
+			);
+
+	if (!continuationsMatchResultSignature(
+				in.continuations(),
+				in.target().resultSignature()
+				))
+		throw standardLogicErrorWithStacktrace(
+			"continuations normal " + 
+				prettyPrintString(typeListFromContinuationArgTypes(
+						in.continuations().normalContinuations())) + 
+				" exception " + 
+				prettyPrintString(typeListFromContinuationArgTypes(
+						in.continuations().exceptionContinuations())) + 
+				" don't match ResultSignature of " + 
+				prettyPrintString(in.target().resultSignature())
+			);
+	}
+
+void CPPML::Validator<TypedFora::Callable_NativeOperationType, void>
+				::operator()(TypedFora::Callable_NativeOperationType& in) const
+	{
+	if (!in.implementation())
+		return;
+
+	TypedFora::ResultSignature resultSig = in.resultSignature();
+	ImmutableTreeVector<NativeType> returnTypes = in.implementation()->returnTypes();
+	
+	if (TypedFora::nativeReturnTypesForResultSignature(resultSig) != returnTypes)
+		throw standardLogicErrorWithStacktrace(
+			"can't wrap NativeCFG\n" + prettyPrintString(*in.implementation()) + "\n" + 
+			"with signature of " + prettyPrintString(resultSig)
+			);
+	}
+
+void CPPML::Validator<TypedFora::Expression_InlineNativeOperationType, void>
+				::operator()(TypedFora::Expression_InlineNativeOperationType& in) const
+	{
+	ImmutableTreeSet<NativeVariable> vars = in.expr()->freeVariables();
+
+	for (long k = 0; k < in.variableMap().size();k++)
+		vars = vars - *in.variableMap()[k].internalArg();
+
+	vars = vars - NativeVariable("callbacks", NativeTypeFor<NativeRuntimeCallbacks>::get().ptr());
+
+	if (vars.size())
+		throw standardLogicErrorWithStacktrace(
+			"Inline expression has free variables: " + prettyPrintString(vars) + "\nexpr = " +
+				prettyPrintString(*in.expr())
+			);
+	}
+
+void CPPML::Validator<TypedFora::Expression_CastWithoutCheckType, void>
+				::operator()(TypedFora::Expression_CastWithoutCheckType& in) const
+	{
+	if (!in.expr().type())
+		return;
+
+	lassert_dump(in.expr().type()->jov().covers(in.toType().jov()),
+		"Can't CastWithoutCheck A->B unless A covers B. In this case\n"
+			<< "A = " << prettyPrintString(in.expr().type()->jov()) << "\n"
+			<< "B = " << prettyPrintString(in.toType().jov()) << "\n"
+		);
+	}
+
+
+void CPPML::Validator<TypedFora::Expression_ChangeClassBodyType, void>
+				::operator()(TypedFora::Expression_ChangeClassBodyType& in) const
+	{
+	if (!in.expr().type())
+		return;
+
+	@match JOV(in.expr().type()->jov())
+		-| Class(Class()) ->> {}
+		-| Tuple((judgments, names, NoExtras())) ->> {}
+		-| _ ->> {
+			lassert_dump(
+				false,
+				prettyPrintString(in.expr().type()->jov()) << 
+					"is not a valid JOV for a ChangeClassBody expression"
+				);
+			}
+	}
+
+void CPPML::Validator<TypedFora::Block, void>
+				::operator()(TypedFora::Block& in) const
+	{
+	}
+
+
+

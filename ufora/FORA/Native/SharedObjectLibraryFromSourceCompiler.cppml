@@ -1,0 +1,451 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "SharedObjectLibraryFromSourceCompiler.hppml"
+#include "../Runtime.hppml"
+#include "../Interpreter/RuntimeConfig.hppml"
+#include "../../core/Logging.hpp"
+
+#include "clang/CodeGen/CodeGenAction.h"
+#include "clang/Driver/Compilation.h"
+#include "clang/Driver/Driver.h"
+#include "clang/Driver/Tool.h"
+#include "clang/Frontend/CompilerInvocation.h"
+#include "clang/Frontend/CompilerInstance.h"
+#include "clang/Frontend/FrontendDiagnostic.h"
+#include "clang/Frontend/TextDiagnosticPrinter.h"
+#include "clang/Basic/DiagnosticOptions.h"
+#include "clang/AST/Mangle.h"
+
+#include "clang/Frontend/FrontendPluginRegistry.h"
+#include "clang/AST/ASTConsumer.h"
+#include "clang/AST/AST.h"
+
+#include "llvm/IR/Module.h"
+#include "llvm/Linker/Linker.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/PassManager.h"
+#include "llvm/ExecutionEngine/JIT.h"
+#include "llvm/ExecutionEngine/ExecutionEngine.h"
+#include "llvm/Support/ManagedStatic.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/Host.h"
+#include "llvm/Support/Path.h"
+#include "llvm/Support/TargetSelect.h"
+#include "llvm/Transforms/IPO/PassManagerBuilder.h"
+
+using namespace clang;
+
+namespace Fora {
+namespace SharedObjectLibraryFromSource {
+
+class ExtractFunctionSignaturesConsumer : public ASTConsumer {
+public:
+	ExtractFunctionSignaturesConsumer(
+				ImmutableTreeMap<std::string, FunctionSignature>* signatures
+				) :
+			mOutSignatures(signatures),
+			mContext(0)
+		{
+		}
+	
+	virtual void Initialize(ASTContext &Context) 
+		{
+		mContext = &Context;
+		mMangler.reset(mContext->createMangleContext());
+		}
+
+	virtual bool HandleTopLevelDecl(DeclGroupRef DG) 
+		{
+		for (DeclGroupRef::iterator i = DG.begin(), e = DG.end(); i != e; ++i) 
+			if (const NamedDecl *ND = dyn_cast<NamedDecl>(*i))
+				handleNamedDecl(ND);
+
+		return true;
+		}
+
+	void handleNamedDecl(const NamedDecl* decl)
+		{
+		if (const FunctionDecl* fd = dyn_cast<FunctionDecl>(decl))
+			handleFunctionDecl(fd);
+
+		if (const NamespaceDecl* fd = dyn_cast<NamespaceDecl>(decl))
+			handleNamespaceDecl(fd);
+		}
+
+	Nullable<LibraryType> clangTypeToLibraryType(clang::QualType inType)
+		{
+		if (!inType.isCanonical())
+			return clangTypeToLibraryType(inType.getCanonicalType());
+		
+		if (const BuiltinType *BT = dyn_cast<BuiltinType>(&*inType))
+			{
+			switch (BT->getKind())
+				{
+				case BuiltinType::Void:
+					return null() << LibraryType::Void();
+				case BuiltinType::Double:
+					return null() << LibraryType::Float(64, inType.isConstQualified());
+				case BuiltinType::Float:
+					return null() << LibraryType::Float(32, inType.isConstQualified());
+				}
+
+			if (BT->isInteger())
+				{
+				int bits = mContext->getTypeSize(inType);
+				return null() << LibraryType::Integer(bits, BT->isSignedInteger(), inType.isConstQualified());
+				}
+			}
+
+		if (const PointerType* pt = dyn_cast<PointerType>(inType))
+			{
+			Nullable<LibraryType> t = clangTypeToLibraryType(pt->getPointeeType());
+
+			if (!t)
+				return null();
+
+			return null() << LibraryType::Pointer(*t, inType.isConstQualified());
+			}
+
+		return null();
+		}
+
+	void handleNamespaceDecl(const NamespaceDecl* decl)
+		{
+		for (auto it = decl->decls_begin(); it != decl->decls_end(); ++it)
+			if (const NamedDecl* namedDecl = dyn_cast<NamedDecl>(*it))
+				handleNamedDecl(namedDecl);
+		}
+
+	void handleFunctionDecl(const FunctionDecl* decl)
+		{
+		if (!decl->hasBody())
+			return;
+
+		std::string name = decl->getQualifiedNameAsString();
+		std::string mangledName = name;
+
+		if (mMangler->shouldMangleDeclName(decl))
+			{
+			mangledName = std::string();
+			
+			llvm::raw_string_ostream stream(mangledName);
+
+			mMangler->mangleName(decl, stream);
+			}
+
+		ImmutableTreeVector<LibraryType> argTypes;
+		ImmutableTreeVector<std::string> argNames;
+
+		Nullable<LibraryType> retType = clangTypeToLibraryType(decl->getReturnType());
+
+		if (!retType)
+			return;
+
+		for (auto it = decl->param_begin(); it != decl->param_end(); ++it)
+			{
+			Nullable<LibraryType> argType = clangTypeToLibraryType((*it)->getType());
+
+			if (!argType)
+				return;
+
+			argTypes = argTypes + *argType;
+			argNames = argNames + (*it)->getNameAsString();
+			}
+
+		*mOutSignatures = *mOutSignatures + name + 
+			FunctionSignature(
+				mangledName,
+				*retType,
+				argTypes,
+				argNames
+				);
+		}
+
+	ImmutableTreeMap<std::string, FunctionSignature>* mOutSignatures;
+
+	std::unique_ptr<MangleContext> mMangler;
+	ASTContext* mContext;
+};
+
+class ExtractFunctionSignaturesAction : public PluginASTAction {
+public:
+	ExtractFunctionSignaturesAction(
+				ImmutableTreeMap<std::string, FunctionSignature>* signatures
+				) : 
+			mOutSignatures(signatures)
+		{
+		}
+
+	ASTConsumer *CreateASTConsumer(CompilerInstance &CI, llvm::StringRef) 
+		{
+		return new ExtractFunctionSignaturesConsumer(mOutSignatures);
+		}
+
+	bool ParseArgs(const CompilerInstance &CI, const std::vector<std::string>& args) 
+		{
+		return true;
+		}
+
+	void PrintHelp(llvm::raw_ostream& ros) 
+		{
+		}
+
+	ImmutableTreeMap<std::string, FunctionSignature>* mOutSignatures;
+};
+
+
+Compiler::Compiler(llvm::LLVMContext* inContext, llvm::ExecutionEngine* inEngine) : 
+		mContext(inContext),
+		mExecutionEngine(inEngine)
+	{
+	}
+
+
+ImmutableTreeVector<std::string> Compiler::extractUnlinkableFunctions(llvm::Module* module)
+	{
+	ImmutableTreeVector<std::string> tr;
+
+	for (auto it = module->begin(); it != module->end(); ++it)
+		{
+		if (it->isDeclaration() && 
+				!mExecutionEngine->getPointerToNamedFunction(it->getName(), false))
+			tr = tr + it->getName().str();
+		}
+
+	return tr;
+	}
+
+namespace {
+
+void setContents(
+		FileManager& fileManager, 
+		SourceManager& sourceManager, 
+		std::string name, 
+		std::string contents
+		)
+	{
+	const FileEntry* file = fileManager.getVirtualFile(name, contents.size(), time_t());
+
+	lassert(file);
+
+	sourceManager.overrideFileContents(file, llvm::MemoryBuffer::getMemBufferCopy(contents));
+	}
+
+void placeLibrarySourceInSourceManager(
+								FileManager& fileManager,
+								SourceManager& sourceManager,
+								std::vector<std::string>& args,
+								const LibrarySource& inSource,
+								std::string curDirectoryPath = "libraryBuilderInput"
+								)
+	{
+	@match LibrarySource(inSource)
+		-| CFile(cCode) ->> {
+			args.push_back("-x");
+			args.push_back("c");
+			args.push_back(curDirectoryPath);
+
+			setContents(fileManager, sourceManager, curDirectoryPath, cCode);
+			}
+		-| CppFile(cCode) ->> {
+			args.push_back("-x");
+			args.push_back("c++");
+			args.push_back(curDirectoryPath);
+
+			setContents(fileManager, sourceManager, curDirectoryPath, cCode);
+			}
+		-| CHeader(cCode) ->> {
+			setContents(fileManager, sourceManager, curDirectoryPath, cCode);
+			}
+		-| CppHeader(cCode) ->> {
+			setContents(fileManager, sourceManager, curDirectoryPath, cCode);
+			}
+		-| Directory(entries) ->> {
+			for (long k = 0; k < entries.size();k++)
+				placeLibrarySourceInSourceManager(
+					fileManager,
+					sourceManager,
+					args,
+					entries.pairAtPosition(k).second,
+					curDirectoryPath + "/" + entries.pairAtPosition(k).first
+					);
+			}
+	}
+
+}
+
+pair<BuildResult, llvm::Module*> Compiler::buildLibraryFromSource(
+										const LibrarySource& inSource
+										)
+	{
+	using namespace clang::driver;
+
+	IntrusiveRefCntPtr<DiagnosticOptions> diagnosticOptions = new DiagnosticOptions();
+	TextDiagnosticPrinter *diagnosticClient =
+		new TextDiagnosticPrinter(llvm::errs(), &*diagnosticOptions);
+	IntrusiveRefCntPtr<DiagnosticIDs> diagnosticIds(new DiagnosticIDs());
+	DiagnosticsEngine diagnosticsEngine(diagnosticIds, &*diagnosticOptions, diagnosticClient);
+
+	Driver clangDriver(
+		Runtime::getRuntime().getConfig().sharedObjectLibraryPath(), 
+		llvm::sys::getDefaultTargetTriple(),
+		diagnosticsEngine
+		);
+
+	clangDriver.setTitle("clang compiler");
+	clangDriver.setCheckInputsExist(false);
+
+	CompilerInstance clangCompilerInstance;
+
+	SmallString<256> textErrorStreamString2;
+    llvm::raw_svector_ostream textErrorStream2(textErrorStreamString2);
+
+	TextDiagnosticPrinter *diagnosticClient2 = 
+		new TextDiagnosticPrinter(textErrorStream2, &*diagnosticOptions);
+
+	IntrusiveRefCntPtr<DiagnosticIDs> diagnosticIds2(new DiagnosticIDs());
+
+	// Create the compilers actual diagnostics engine.
+	clangCompilerInstance.setDiagnostics(
+		new DiagnosticsEngine(
+			diagnosticIds2,
+			&*diagnosticOptions,
+			diagnosticClient2
+			)
+		);
+	lassert(clangCompilerInstance.hasDiagnostics());
+
+	clangCompilerInstance.createFileManager();
+	lassert(clangCompilerInstance.hasFileManager());
+
+	clangCompilerInstance.createSourceManager(clangCompilerInstance.getFileManager());
+	lassert(clangCompilerInstance.hasSourceManager());
+
+	FileManager& fileManager = clangCompilerInstance.getFileManager();
+	SourceManager& sourceManager = clangCompilerInstance.getSourceManager();
+
+	std::vector<std::string> args;
+
+	args.push_back(Runtime::getRuntime().getConfig().sharedObjectLibraryPath());
+	args.push_back("-fsyntax-only");
+
+	placeLibrarySourceInSourceManager(fileManager, sourceManager, args, inSource);
+	
+	llvm::SmallVector<const char *, 16> argPtrs;
+
+	for (long k = 0; k < args.size();k++)
+		argPtrs.push_back(args[k].c_str());
+
+	std::unique_ptr<Compilation> compilation(clangDriver.BuildCompilation(argPtrs));
+	lassert(compilation);
+
+	const driver::JobList &jobs = compilation->getJobs();
+	
+	ImmutableTreeMap<std::string, FunctionSignature> functions;
+
+	std::unique_ptr<llvm::Module> module(new llvm::Module("mod", *mContext));
+	llvm::Linker linker(module.get());
+
+	for (auto job_it = jobs.begin(); job_it != jobs.end(); ++job_it)
+		{
+		lassert(isa<driver::Command>(*job_it));
+		const driver::Command *command = cast<driver::Command>(*job_it);
+
+		lassert(llvm::StringRef(command->getCreator().getName()) == "clang");
+
+		// Initialize a compiler invocation object from the clang (-cc1) arguments.
+		const driver::ArgStringList &jobArgs = command->getArguments();
+
+		std::unique_ptr<CompilerInvocation> CI(new CompilerInvocation);
+		CompilerInvocation::CreateFromArgs(*CI,
+								const_cast<const char **>(jobArgs.data()),
+								const_cast<const char **>(jobArgs.data()) + jobArgs.size(),
+								diagnosticsEngine
+								);
+
+		clangCompilerInstance.setInvocation(CI.release());
+
+		std::unique_ptr<CodeGenAction> compileAndDefineAction(new EmitLLVMOnlyAction(mContext));
+
+
+		if (!clangCompilerInstance.ExecuteAction(*compileAndDefineAction))
+			{
+			std::string buildError = textErrorStreamString2.str();
+
+
+			return make_pair(
+				BuildResult::Failure(
+					BuildError(
+						buildError
+						)
+					),
+				(llvm::Module*)0
+				);
+			}
+
+		std::unique_ptr<PluginASTAction> extractFunctionsAction(new ExtractFunctionSignaturesAction(&functions));
+		lassert(clangCompilerInstance.ExecuteAction(*extractFunctionsAction));
+		linker.linkInModule(compileAndDefineAction->takeModule(), nullptr);
+		}
+
+	ImmutableTreeVector<std::string> unlinkable = extractUnlinkableFunctions(module.get());
+
+	if (unlinkable.size())
+		{
+		std::ostringstream undefinedSymbols;
+
+		undefinedSymbols << "The following symbols were not defined:\n";
+
+		for (long k = 0; k < unlinkable.size(); k++)
+			undefinedSymbols << "\t" << unlinkable[k] << "\n";
+
+		return make_pair(
+			BuildResult::Failure(
+				BuildError(
+					undefinedSymbols.str()
+					)
+				),
+			(llvm::Module*)0
+			);
+		}
+
+	llvm::legacy::FunctionPassManager* fpm = new llvm::legacy::FunctionPassManager(module.get());
+	llvm::PassManager* mpm = new llvm::PassManager();
+
+	llvm::PassManagerBuilder passBuilder;
+	passBuilder.OptLevel = 3;
+	passBuilder.populateFunctionPassManager(*fpm);
+	passBuilder.populateModulePassManager(*mpm);
+
+	for (auto it = module->begin(); it != module->end(); ++it)
+		fpm->run(*it);
+
+	mpm->run(*module);
+
+	return make_pair(
+		BuildResult::Success(
+			Library(
+				inSource,
+				FunctionManifest(functions)
+				)
+			),
+		module.release()
+		);
+	}
+
+}
+}
+

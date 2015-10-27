@@ -1,0 +1,259 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "View.hppml"
+
+#include <stdint.h>
+#include <boost/python.hpp>
+#include "../../native/Registrar.hpp"
+#include "../../core/python/CPPMLWrapper.hpp"
+#include "../../core/math/Alternative.hpp"
+#include "../../core/python/ScopedPyThreads.hpp"
+#include "../../core/python/utilities.hpp"
+
+using namespace SharedState;
+using namespace Ufora::python;
+
+namespace  {
+
+
+
+@type PyListenerEvent =
+		SubscriptionStart of KeyRange range
+	-|	SubscriptionEnd of KeyRange range
+	-|	KeyUpdates of set<Key>
+	;
+
+
+
+class PySharedStateListener : public Listener {
+public:
+	typedef PolymorphicSharedPtr<PySharedStateListener, Listener::pointer_type> pointer_type;
+	
+	PySharedStateListener() : mIsConnected(true)
+		{
+		mAllUpdates.reset(new Queue<Nullable<PyListenerEvent> >());
+		}
+
+	virtual void changed(const set<Key> & in)
+		{
+		if (in.size() == 0)
+			return;
+		mAllUpdates->write(null() << PyListenerEvent::KeyUpdates(in));
+		}
+
+	virtual void subscriptionLoadStarted(PolymorphicSharedPtr<Subscription> inSub)
+		{
+		for(set<KeyRange>::iterator it = inSub->ranges().begin(); it != inSub->ranges().end(); ++it)
+			{
+			mAllUpdates->write(null() << PyListenerEvent::SubscriptionStart(*it));
+			}
+		}
+	virtual void subscriptionLoadFinished(PolymorphicSharedPtr<Subscription> inSub)
+		{
+		for(set<KeyRange>::iterator it = inSub->ranges().begin(); it != inSub->ranges().end(); ++it)
+			{
+			mAllUpdates->write(null() << PyListenerEvent::SubscriptionEnd(*it));
+			}
+		}
+
+	virtual void disconnected(void)
+		{
+		// a null() in the queue signals that we're disconnected
+		setDisconnected();
+		mAllUpdates->write(null());
+		}
+
+	bool isConnected() const
+		{
+		return mIsConnected;
+		}
+
+
+	void wait(void)
+		{
+		ScopedPyThreads pythreads;
+		mAllUpdates->wait();
+		}
+
+	void wake(void)
+		{
+		mAllUpdates->write(null());
+		}
+
+	boost::python::list getUpdatesTimeout(double timeout)
+		{
+		std::vector<PyListenerEvent> tr;
+			{
+			ScopedPyThreads pythreads;
+			Nullable<PyListenerEvent> item;
+			mAllUpdates->getTimeout(item, timeout);
+			if (item)
+				{
+				tr.push_back(*item);
+				drainToVector(tr);
+				}
+			}
+		return convertForPython(tr);
+		}
+	
+	boost::python::list getUpdatesWait()
+		{
+		std::vector<PyListenerEvent> tr;
+			{
+			ScopedPyThreads pythreads;
+			Nullable<PyListenerEvent> item = mAllUpdates->get();
+			if (item)
+				{
+				tr.push_back(*item);
+				drainToVector(tr);
+				}
+			}
+		return convertForPython(tr);
+		}
+
+	boost::python::list getUpdatesNonblock()
+		{
+		std::vector<PyListenerEvent> tr;
+			{
+			ScopedPyThreads pythreads;
+			drainToVector(tr);
+			}
+		return convertForPython(tr);
+
+		}
+
+private:
+
+	void setDisconnected()
+		{
+		mIsConnected = false;
+		}
+	
+	boost::python::list convertForPython(const std::vector<PyListenerEvent>& inUpdates)
+		{
+		boost::python::list tr;
+		for (int i = 0; i < inUpdates.size(); i++)
+			{
+			@match PyListenerEvent(inUpdates[i])
+				-| KeyUpdates(events) ->> {
+					tr.append(boost::python::make_tuple("KeyUpdates", containerWithBeginEndToList(events)));
+					}
+				-| SubscriptionStart(keyrange) ->> {
+					tr.append(boost::python::make_tuple("SubscriptionStart", keyrange));
+					}
+				-| SubscriptionEnd(keyrange) ->> {
+					tr.append(boost::python::make_tuple("SubscriptionEnd", keyrange));
+					}
+			}
+		return tr;
+		}
+
+
+	void drainToVector(std::vector<PyListenerEvent>& outVec)
+		{
+		Nullable<PyListenerEvent> item;
+		while (mAllUpdates->get(item))
+			{
+			if (item) 
+				outVec.push_back(*item);
+			else
+				return;
+			}
+		}
+
+
+	boost::shared_ptr<Queue<Nullable<PyListenerEvent> > >  mAllUpdates;
+	bool	mIsConnected;
+};
+
+}
+
+
+class PySharedStateListenerWrapper :
+	public native::module::Exporter<PySharedStateListenerWrapper> {
+public:
+	std::string		getModuleName(void)
+		{
+		return "SharedState";
+		}
+
+	static void wait(PySharedStateListener::pointer_type& inListener)
+		{
+		return inListener->wait();
+		}
+
+	static boost::python::object getUpdatesWait(PySharedStateListener::pointer_type& inListener)
+		{
+		return inListener->getUpdatesWait();
+		}
+	static boost::python::object getUpdatesTimeoutDouble(PySharedStateListener::pointer_type& inListener, double timeout)
+		{
+		return inListener->getUpdatesTimeout(timeout);
+		}
+	static boost::python::object getUpdatesTimeoutFloat(PySharedStateListener::pointer_type& inListener, float timeout)
+		{
+		return inListener->getUpdatesTimeout(timeout);
+		}
+
+	static boost::python::object getUpdatesNonblock(PySharedStateListener::pointer_type& inListener)
+		{
+		return inListener->getUpdatesNonblock();
+		}
+
+	static void wake(PySharedStateListener::pointer_type& inListener)
+		{
+		return inListener->wake();
+		}
+
+
+	static bool isConnected(PySharedStateListener::pointer_type& inListener)
+		{
+		return inListener->isConnected();
+		}
+	static void listenToView(PySharedStateListener::pointer_type& l, PolymorphicSharedPtr<View>& v)
+		{
+		ScopedPyThreads scoper;
+		v->addListener(l);
+		}
+
+	void exportPythonWrapper()
+		{
+		using namespace boost::python;
+		
+		
+		class_<PySharedStateListener::pointer_type >("Listener", no_init)
+			.def("__init__", make_constructor(PySharedStateListener::pointer_type::Constructor0))
+			.def("wait", &wait)
+			.def("get", &getUpdatesWait)
+			.def("get", &getUpdatesTimeoutDouble)
+			.def("get", &getUpdatesTimeoutFloat)
+			.def("getNonblock", &getUpdatesNonblock)
+			.def("wake", &wake)
+			.def("listenToView", &listenToView)
+			.add_property("isConnected", &isConnected)
+			;
+
+		}
+	
+};
+
+//explicitly instantiating the registration element causes the linker to need
+//this file
+template<>
+char native::module::Exporter<PySharedStateListenerWrapper>::mEnforceRegistration =
+	native::module::ExportRegistrar<
+	PySharedStateListenerWrapper>::registerWrapper();
+

@@ -1,0 +1,356 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "FunctionStage1.hppml"
+#include "Function.hppml"
+#include "ClassMediatorBindings.hppml"
+#include "../Core/ClassMediator.hppml"
+
+namespace target = FunctionStage1;
+
+using target::variable_index_type;
+
+namespace Fora { 
+namespace Language {
+class LexicalBindingSelector;
+}
+}
+
+namespace FunctionStage1 {
+
+namespace source {
+
+typedef ::CacheCallArgument CacheCallArgument;
+typedef ::Expression Expression;
+typedef ::ApplyArgument ApplyArgument;
+typedef ::ObjectDefinitionTerm ObjectDefinitionTerm;
+typedef ::ObjectDefinitionBody ObjectDefinitionBody;
+typedef ::ObjectDefinition ObjectDefinition;
+typedef ::Function Function;
+typedef ::Pattern Pattern;
+typedef ::PatternWithName PatternWithName;
+typedef ::TuplePatternElement TuplePatternElement;
+typedef ::ListComprehensionChain ListComprehensionChain;
+typedef ::TuplePattern TuplePattern;
+
+};
+
+typedef ImmutableTreeMap<Symbol, variable_index_type>	symbol_map_type;
+
+source::TuplePatternElement	constSourcePat(const CSTValue& val);
+
+source::TuplePatternElement	symSourcePat(const Symbol& val);
+
+source::TuplePatternElement	symSourcePat(const string& val);
+
+source::TuplePatternElement	varSourcePat(Symbol  val);
+
+source::TuplePatternElement	anySourcePat();
+
+//convenience function to convert an expression to a "Normal" apply argument
+ApplyArgument	applyArg(const Expression& expr);
+
+ApplyArgument	applyArg(const CSTValue& c);
+
+ApplyArgument	applyArg(const variable_index_type& expr);
+
+Expression symExpr(Symbol s);
+
+Expression symExpr(string s);
+
+Expression varExpr(variable_index_type s);
+
+ApplyArgument symArg(Symbol s);
+
+ApplyArgument symArg(string s);
+
+Pattern varPat(variable_index_type s);
+
+Pattern symPat(Symbol s);
+
+Pattern symPat(string s);
+
+template<class T>
+TuplePatternElement symTPE(const T& in);
+
+bool needsMoveOutOfApply(const Expression& inExpr);
+
+Symbol memberDepthSymbol(int depth);
+
+Expression extractBoundClassMemberExpr(const Expression& inSelfExpr, uint32_t index);
+
+Expression extractBoundClassMemberExpr(	const Expression& inSelfExpr, 
+										const ImmutableTreeVector<uint32_t>& inIndices
+										);
+
+/******
+Converter
+
+Converts primary FORA language classes into the Stage1 form of the language.
+
+******/
+
+@type Converter =
+		symbol_map_type varmap,
+		ImmutableTreeSet<variable_index_type> variablesUsedOutside,
+		VariableAllocator allocator,
+		LexicalBindingMap	lexicalBindings,	//how to look up free variables in the current closure
+		symbol_map_type exposedLexicalBindings, //list of lexical variables pushed onto the stack
+		Nullable<variable_index_type> lexicalBindingsVar, //the variable to use for lexical lookup
+		Nullable<variable_index_type> curBreakThrow,
+		Nullable<variable_index_type> curNextThrow,
+		bool disallowStackTraceAugmentation
+{
+public:
+	//get a copy of the converter with a variable mapped to an index slot
+	Converter withMapping(	Nullable<Symbol> symbol,
+							variable_index_type var
+							) const;
+
+	//get a copy of the converter with a variable mapped to an index slot
+	Converter withMapping(	Symbol symbol,
+							variable_index_type var
+							) const;
+	
+	Converter withExposedLexicalBindings(const symbol_map_type& inMap) const;
+	
+	Converter withVariablesUsedOutside(const ImmutableTreeSet<Symbol>& inUsages) const;
+
+	//get a copy of the converter with a variable mapped to an index slot
+	Converter withMapping(symbol_map_type inMap) const;
+	
+	//get a copy of the converter with a variable mapped to an index slot
+	Converter withoutStackTraceAugmentation() const;
+
+	//get a copy of the converter with a variable mapped to an index slot
+	Converter withBreakTarget(variable_index_type breakTarget) const;
+
+	static target::Expression 
+	makeTuple(const ImmutableTreeVector<target::Expression>& inExprs);
+
+	static target::Expression 
+	makeTuple(const ImmutableTreeVector<target::ApplyArgument>& inApplyArgs);
+
+	target::Expression throwConstantExpressionWithoutStacktrace(const CSTValue& val) const;
+
+	//generate an expression that throws the given constant,
+	//along with a stacktrace
+	target::Expression throwConstantWithStacktrace(
+				const CSTValue& val,
+				const Nullable<hash_type>& curCodeHash
+				) const;
+
+	//returns a function that takes one argument and immediately
+	//throws it again
+	target::Function	getRethrowFunction() const;
+
+	//take function 'fun' and add a term right before 'otherwise' that
+	//rethrows the argument.  This version catches and throws 'raw' (e.g.
+	//without unpacking the thrown value as a tuple)
+	target::Function	addRethrowFunction(const target::Function& fun) const;
+
+	//take function 'fun' and add a term right before 'otherwise' that
+	//rethrows the argument. In this case, we're expecting that we've been
+	//handed the thrown value and that we need to augment it with the stacktrace
+	//variable that's been passed in to us
+	target::Function	
+	addRethrowFunction(const target::Function& fun, variable_index_type stacktraceVar) const;
+
+	//wraps the given expression in a wrapper that catches any
+	//thrown exceptions, adds the current CodeLocation onto it, and rethrows it
+	target::Expression	wrapExpressionInStackTraceAugment(
+				const target::Expression& inExpr,
+				const Nullable<hash_type>& curHash
+				) const;
+
+	target::Expression
+	createAugmentExceptionCall(
+				const target::Expression& inExpr,
+				const Nullable<hash_type>& curHash,
+				bool isRawExceptionValue
+				) const;
+
+	target::Expression lookupVariable(const Symbol& var) const;
+
+	target::ApplyArgument convertCacheCallArgument(const source::CacheCallArgument& inArg) const;
+
+	target::Expression	convert(
+							const source::Expression& inExpr
+							) const;
+
+	target::Expression	convert(
+							const source::Expression& inExpr,
+							const ImmutableTreeSet<Symbol>& inVariablesUsedOutside
+							) const;
+	
+	target::Expression	convertInner(
+							const source::Expression& inExpr
+							) const;
+
+	target::Function 	convertMemberObjectDefinitionTerm(
+							const source::ObjectDefinitionBody& inDef
+							) const;
+
+	target::Expression convertMultipleMembers(
+										const vector<pair<Symbol, source::Expression> >& inMembers,
+										variable_index_type inToMatch
+										) const;
+
+	ImmutableTreeVector<target::ApplyArgument>
+	convert(const ImmutableTreeVector<source::ApplyArgument>& in) const;
+	
+	pair<target::Pattern, symbol_map_type > convert(const source::PatternWithName& in) const;
+
+	pair<target::Pattern, symbol_map_type > convert(const source::Pattern& in) const;
+
+	target::Expression convertLexicalBinding(const LexicalBinding& binding) const;
+
+	//convert the tuple patterns, keeping in mind the variable binding.
+	//returns the pattern and also the variable
+	//bindings indicated by the pattern matches
+	pair<ImmutableTreeVector<target::TuplePatternElement>, symbol_map_type >
+	convert(const ImmutableTreeVector<source::TuplePatternElement>& in) const;
+
+	pair<target::TuplePattern, symbol_map_type > convert(const source::TuplePattern& in) const;
+
+	pair<target::TuplePatternElement,symbol_map_type >
+	convert(const source::TuplePatternElement& in) const;
+
+	target::ApplyArgument convert(const source::ApplyArgument& in) const;
+
+	target::Function convert(
+					const source::Function& in
+					) const;
+
+	target::Expression sequence(	const target::Expression& lhs,
+									const target::Expression& rhs
+									) const;
+
+	target::Expression sequence(	const target::Expression& lhs,
+									const target::Expression& lhs2,
+									const target::Expression& lhs3
+									) const;
+
+	target::Expression sequence(const ImmutableTreeVector<target::Expression>& elts) const;
+
+	source::ListComprehensionChain wrapInnerChainElementInYield(
+					const source::ListComprehensionChain& inChain
+					) const;
+
+	target::Expression evaluateChainToProcess(
+					const source::ListComprehensionChain& inChain
+					) const;
+
+	target::Expression evaluateChainToProcess(
+					const source::ListComprehensionChain& inChain,
+					const ExpressionLocationMetadata& locationMetadata
+					) const	;
+
+	//converts this to an actual expression that evaluates
+	//the entire process. unlike the other conversions, because there is
+	//no equivalent idea in the target language, we have to expand this
+	//in each of the potential target use cases
+	target::Expression evaluateChainDirectly(
+					const source::ListComprehensionChain& inChain,
+					const Nullable<hash_type>& curCodeHash
+					) const;
+	
+	target::Expression	evaluateForLoop(
+							variable_index_type procVar,
+							const target::Function& innerFun,
+							const Nullable<hash_type>& curCodeHash = null()
+							) const;
+
+	//allocates a fresh varname that doesn't conflict with the given
+	//symbol set. updates the symbolset.
+	
+	static Symbol	freshVarname(string base, ImmutableTreeSet<Symbol>& ioSymbols);
+
+	
+	target::Expression expandRecursiveLet(
+			const ImmutableTreeVector<pair<source::PatternWithName, source::Expression> >& inElts,
+			const source::Expression& inBody
+			) const;
+	
+	
+	//binds an object in a lexical closure.  We have to be careful to both
+	//bind all free variables, and also keep track of which of the
+	//LexicalBindingMap objects we actually need, since we don't want to bind
+	//surroundings that we're not using.
+	target::Expression bindFunction(
+					const ClassMediator& inPredicate,
+					const ImmutableTreeSet<Symbol>& freeVariableSet,
+					const CSTValue& metadata
+					) const;
+
+
+	target::Expression bindCreateObjectExpression(
+					const std::string& name,
+					const ObjectDefinition& body,
+					const CSTValue& objectMetadata
+					) const;
+
+	target::Expression bindCreateClassExpression(
+					const std::string& name,
+					const ClassDefinition& body,
+					const CSTValue& objectMetadata
+					) const;
+
+	//bind free variables and lexical surroundings to a class object
+	target::Expression	bindFreeTo(
+					const target::Expression& inExpr,
+					const ImmutableTreeVector<target::Expression>& expressionsToBind
+					) const;
+
+	target::Function	prependTerm(
+							const target::Function& inFun,
+							Symbol inPat
+							) const;
+
+	target::Function	prependTerm(
+							const target::Function& inFun,
+							const target::Pattern& inPat
+							) const;
+
+	target::Function	prependTerm(
+							const target::Function& inFun,
+							const target::TuplePatternElement& inPat
+							) const;
+
+	target::Function	prependTerm(
+							const target::Function& inFun,
+							const ImmutableTreeVector<target::TuplePatternElement>& inPat
+							) const;
+
+	target::Function	convert(const source::ObjectDefinitionBody& inDef) const;
+
+	//return the right kind of function for Apply on an object
+	//the Converter has already been primed with notions of 'self'
+	//and the relevant lexical closure data
+	target::Function	convertObjectBodyEntry(const source::ObjectDefinitionBody& inDef) const;
+
+	//return the right kind of target::Function for Apply on a function.
+	//This means we expand the source::Function with one argument per lexical
+	//scope argument and free variable (that's not defined in the
+	//LexicalBindingMap() object)
+	target::Function	convertFunctionBodyEntry(
+							const source::Function& inDef
+							) const;
+};
+
+}
+

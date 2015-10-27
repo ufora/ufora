@@ -1,0 +1,152 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "WrappingPythonConstantConverter.hppml"
+#include "PythonConstantType.hppml"
+#include "../../Core/CSTValue.hppml"
+#include "../../Core/ImplValContainerUtilities.hppml"
+#include "../../Core/MemoryPool.hpp"
+#include "../../Language/FunctionStage1Simulation.hppml"
+
+namespace Fora {
+
+WrappingPythonConstantConverter::WrappingPythonConstantConverter(
+        const ImmutableTreeMap<PythonConstantType, ImplValContainer>& primitiveTypeMapping)
+    : mTypeConvertersMap(primitiveTypeMapping)
+    {
+    for (const auto& typeConverterPair: primitiveTypeMapping)
+        {
+        mForaClassToPythonConstantType = mForaClassToPythonConstantType +
+            std::make_pair(
+                typeConverterPair.second,
+                typeConverterPair.first
+                );
+        }
+
+    }
+
+FunctionStage1::ExpressionEvaluationResult
+WrappingPythonConstantConverter::simulateClassOfCall(
+        const ImplValContainer& value
+        ) const
+    {
+    FunctionStage1::Simulation simulation(10);
+
+    ImmutableTreeVector<ImplValContainer> applyArgs;
+
+    applyArgs = applyArgs + value;
+    applyArgs = applyArgs + 
+        ImplValContainerUtilities::createSymbol(Symbol("Class"));
+    
+    return simulation.evaluateApply(applyArgs);
+    }
+
+FunctionStage1::ExpressionEvaluationResult
+WrappingPythonConstantConverter::simulateClassInstantiation(
+        const ImplValContainer& classImplVal, const ImplValContainer& memberImplVal
+        ) const
+    {
+    FunctionStage1::Simulation simulation(10);
+
+    ImmutableTreeVector<ImplValContainer> applyArgs;
+
+    applyArgs = applyArgs + classImplVal;
+    applyArgs = applyArgs + 
+        ImplValContainerUtilities::createSymbol(Symbol("CreateInstance"));
+    applyArgs = applyArgs + memberImplVal;
+
+    return simulation.evaluateApply(applyArgs);
+    }
+
+ImplValContainer WrappingPythonConstantConverter::wrappingValue(
+        const ImplValContainer& value, const PythonConstantType& pythonType
+        ) const
+    {
+    const auto& convertingClassOrNone = mTypeConvertersMap[pythonType];
+
+    lassert(convertingClassOrNone.isValue());
+    
+    FunctionStage1::ExpressionEvaluationResult result = 
+        simulateClassInstantiation(*convertingClassOrNone, value);
+
+    lassert(result.isResult());
+
+    return result.getResult().val();
+    }
+
+ImplValContainer WrappingPythonConstantConverter::convertBoolean(bool value) const
+    {
+    ImplValContainer boolImplVal = ImplValContainerUtilities::createBool(value);
+    return wrappingValue(boolImplVal, PythonConstantType::Boolean());
+    }
+
+ImplValContainer WrappingPythonConstantConverter::convertInt(int64_t value) const
+    {
+    ImplValContainer intImplVal = ImplValContainerUtilities::createSignedInteger(value);
+    return wrappingValue(intImplVal, PythonConstantType::Int());
+    }
+
+ImplValContainer WrappingPythonConstantConverter::convertString(const std::string& str) const
+    {
+    // we might want to move this MemoryPool away from 
+    // the FreeStore and into a VDM eventually
+    ImplValContainer strImplVal = 
+        ImplValContainerUtilities::createString(
+            String(str, MemoryPool::getFreeStorePool())
+            );
+
+    return wrappingValue(strImplVal, PythonConstantType::String());
+    }
+
+ImplValContainer WrappingPythonConstantConverter::convertLong(const std::string&) const
+    {
+    lassert_dump(false, "not implemented");
+    }
+    
+ImplValContainer WrappingPythonConstantConverter::noneValue() const
+    {
+    return wrappingValue(ImplValContainer(), PythonConstantType::None());
+    }
+    
+ImplValContainer WrappingPythonConstantConverter::convertFloat(double value) const
+    {
+    ImplValContainer floatImplVal = ImplValContainerUtilities::createDouble(value);
+    return wrappingValue(floatImplVal, PythonConstantType::Float());
+    }
+
+Nullable<ImplValContainer> WrappingPythonConstantConverter::unwrapToPrimitive(const ImplValContainer& value)
+    {
+    auto cls = simulateClassOfCall(value);
+
+    if (cls.isResult())
+        {
+        auto result = cls.getResult().val();
+
+        if (!mForaClassToPythonConstantType.contains(result))
+            return null();
+        }
+    else
+        return null();
+
+    Nullable<pair<ImplValContainer, Nullable<Symbol> > > member = 
+                ImplValContainerUtilities::objectGetMember(value, Symbol("@m"));
+
+    lassert(member && !member->second);
+
+    return null() << member->first;
+    }
+    
+}
+

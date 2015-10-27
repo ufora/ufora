@@ -1,0 +1,113 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "HomogenousVectorStash.hppml"
+#include "BigVectorHandle.hppml"
+#include "ForaValueArraySlice.hppml"
+#include "VectorHandle.hpp"
+
+namespace TypedFora {
+namespace Abi {
+
+HomogenousVectorStash HomogenousVectorStash::forArray(
+				ForaValueArray* array,
+				int64_t offset
+				)
+	{
+	if (!array->isHomogenous())
+		return TypedFora::Abi::HomogenousVectorStash();
+
+	return TypedFora::Abi::HomogenousVectorStash(
+		offset,
+		offset + array->size(),
+		array->homogenousStride(),
+		array->offsetFor(0) - offset * array->homogenousStride()
+		);
+	}
+
+HomogenousVectorStash HomogenousVectorStash::createStash(
+				TypedFora::Abi::VectorRecord handle,
+				int64_t offset,
+				int64_t packedArrayElementSize
+				)
+	{
+	//short-circuit for the common case where we are indexing into a small vector
+	if (handle.offset() == 0 && handle.stride() == 1 && handle.dataPtr())
+		{
+		HomogenousVectorStash stash = handle.dataPtr()->getHomogenousVectorStash();
+
+		if (stash.offsetStart() < stash.offsetStop() && offset >= stash.offsetStart() && offset < stash.offsetStop())
+			{
+			if (handle.size() < stash.offsetStop())
+				stash.offsetStop() = handle.size();
+
+			lassert(packedArrayElementSize == stash.stride());
+			return stash;
+			}
+		}
+
+	int64_t offsetMappedForward = offset < 0 ? offset + handle.size() : offset;
+
+	int64_t realOffset = handle.indexWithinHandle(offsetMappedForward);
+
+	ForaValueArraySlice slice = 
+		handle.dataPtr()->sliceForOffset(realOffset);
+
+	if (!slice.array())
+		return TypedFora::Abi::HomogenousVectorStash();
+
+	uint8_t* ptr = slice.array()->offsetFor(slice.mapping().offsetForIndex(realOffset));
+
+	if (!ptr)
+		return TypedFora::Abi::HomogenousVectorStash();
+
+	if (handle.dataPtr()->isWriteable())
+		{
+		handle.dataPtr()->markUnwriteable();
+		if (handle.dataPtr()->unpagedValues() && handle.dataPtr()->unpagedValues()->isWriteable())
+			handle.dataPtr()->unpagedValues()->markUnwriteable(false);
+		}
+
+	if (!slice.array()->isHomogenous())
+		return TypedFora::Abi::HomogenousVectorStash(offset, offset+1, 0, ptr);
+
+	//map the slice so that its in the coordinates of the vector itself
+	auto indices = handle.indicesWithinHandle();
+	if (!(indices.stride() == 1 && indices.offset() == 0 && indices.size() >= slice.mapping().highIndex()))
+		slice = slice.compose(
+			RangeToIntegerSequence(handle.indicesWithinHandle())
+			);
+
+	if (offset < 0)
+		//map the coordinates so that they are relative to the negative slice we have
+		slice = slice.offsetInputs(-handle.size());
+
+	//'slice' is now in terms of the original query 'offset'
+	lassert(slice.mapping().indexIsValid(offset));
+
+	int64_t offsetStrideInBytes = slice.mapping().stride() * packedArrayElementSize;
+
+	return TypedFora::Abi::HomogenousVectorStash(
+		slice.mapping().lowIndex(),
+		slice.mapping().highIndex(), 
+		offsetStrideInBytes,
+		slice.array()->offsetFor(slice.mapping().offsetForIndex(slice.mapping().lowIndex())) - 
+			offsetStrideInBytes * slice.mapping().lowIndex()
+		);
+	}
+
+}
+}
+

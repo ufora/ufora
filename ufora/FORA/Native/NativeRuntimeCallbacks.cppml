@@ -1,0 +1,140 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "NativeRuntimeCallbacks.hppml"
+#include "NativeCode.hppml"
+#include "TypedNativeLibraryFunction.hpp"
+#include "../Core/ExecutionContext.hppml"
+#include "../TypedFora/ABI/ImplValNativeCodeModel.hppml"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+
+extern "C" {
+
+BSA_DLLEXPORT
+
+BSA_DLLEXPORT
+void FORA_clib_triggerInterruptFromCounter()
+	{
+	Fora::Interpreter::ExecutionContext::currentExecutionContext()->interrupt();
+	}
+
+};
+
+bool NativeRuntimeCallbacks::checkInterruptFlag(void)
+	{
+	if (interruptCounter < 0)
+		{
+		interruptCounter++;
+		
+		if (interruptCounter == 0)
+			Fora::Interpreter::ExecutionContext::currentExecutionContext()->interrupt();	
+		}
+
+	return interruptFlag;
+	}
+
+NativeVariable NativeRuntimeCallbacks::callbackVar()
+	{
+	return NativeVariable("callbacks", NativeTypeFor<NativeRuntimeCallbacks>::get().ptr());
+	}
+
+NativeType NativeTypeForImpl<NativeRuntimeCallbacks>::get(void)
+	{
+	return NativeType(
+		NativeType::Composite("interruptFlag", NativeType::uword()) + 
+		NativeType::Composite("interruptCounter", NativeType::sword()) + 
+		NativeType::Composite("bigVectorSlotIndex", NativeType::sword()) + 
+		NativeType::Composite(
+			"interruptContinuation",
+			NativeType::Continuations(
+				emptyTreeVec() + 
+				NativeType::Composite(
+					emptyTreeVec() +
+						//resumption from interrupt
+						NativeType::Continuations(emptyTreeVec() + NativeType::Nothing())	+
+						//cache load request
+						NativeType::Integer(8, false).ptr()					
+					)
+				)
+			) + 
+		NativeType::Composite(
+			"cacheCallContinuation",
+			NativeType::Continuations(	//deferral
+				emptyTreeVec() + 
+				NativeType::Composite(
+					emptyTreeVec() +
+						TypedFora::Abi::nativeTypeForImplVal() + //tuple of tuples
+						NativeType::Composite(
+							emptyTreeVec() +
+								//normal resumption
+								NativeType::Continuations(
+									emptyTreeVec() + TypedFora::Abi::nativeTypeForImplVal()
+									) +
+								//exception resumption
+								NativeType::Continuations(
+									emptyTreeVec() + TypedFora::Abi::nativeTypeForImplVal()
+									)
+							)
+						)
+					)
+			)
+		);
+	}
+
+NativeExpression	NativeRuntimeCallbacks::bigVectorSlotIndexExpr(const NativeExpression& thisPtrExpr)
+	{
+	return thisPtrExpr["bigVectorSlotIndex"].load(false);
+	}
+
+NativeExpression	NativeRuntimeCallbacks::checkInterruptExpr(const NativeExpression& thisPtrExpr)
+	{
+	NativeVariable interruptCounterVar = NativeVariable::Temp(NativeType::sword());
+	
+	return
+		NativeExpression::Let(
+			interruptCounterVar,
+			//load the value into interruptCounterVar
+			thisPtrExpr["interruptCounter"].load(true),
+			//now check if it's negative
+			NativeExpression::If(
+				interruptCounterVar.expr() < NativeExpression::ConstantSLong(0),
+				//yes it is. increment it
+				thisPtrExpr["interruptCounter"].store(
+					interruptCounterVar.expr() + NativeExpression::ConstantSLong(1)
+					) >>		
+				NativeExpression::If(
+					interruptCounterVar.expr() == NativeExpression::ConstantSLong(-1),
+					makeTypedNativeLibraryFunction(
+						&FORA_clib_triggerInterruptFromCounter
+						)()
+					.getExpression(),
+					NativeExpression::Nothing()
+					),
+				NativeExpression::Nothing(),
+				.000001
+				) >> 
+			//now check the flag
+			thisPtrExpr["interruptFlag"].load(true)
+			);
+	}
+
+void NativeRuntimeCallbacks::resetNativeRuntimeState(void)
+	{
+	interruptFlag = 0;
+	interruptCounter = 0;
+	bigVectorSlotIndex = 0;
+	}
+
+

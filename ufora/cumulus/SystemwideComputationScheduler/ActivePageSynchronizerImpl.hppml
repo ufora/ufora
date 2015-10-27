@@ -1,0 +1,195 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <boost/shared_ptr.hpp>
+#include "../../core/PolymorphicSharedPtr.hpp"
+#include "../../core/EventBroadcaster.hpp"
+#include "../../core/math/Random.hpp"
+#include "../SystemwidePageRefcountTracker.hppml"
+#include "../ComputationId.hppml"
+#include "../VectorLoadRequest.hppml"
+#include "../VectorLoadedResponse.hppml"
+#include "../../core/containers/TwoWaySetMap.hpp"
+#include "../../core/containers/MapWithIndex.hpp"
+#include "../../core/PolymorphicSharedPtrBinder.hpp"
+#include "../../core/Logging.hpp"
+#include "../SchedulerToActivePageSynchronizerMessage.hppml"
+#include "../ActivePageSynchronizerToSynchronizerMessage.hppml"
+#include "SchedulerPageLoader.hppml"
+#include "../../FORA/VectorDataManager/OfflineCache.hpp"
+#include "../CumulusComponentMessageCreated.hppml"
+#include "../CumulusClientOrMachine.hppml"
+
+namespace Cumulus {
+
+namespace SystemwideComputationScheduler {
+
+
+/************
+
+ActivePageSynchronizerImpl
+
+This class is responsible for making sure that a given machine holds the right pages. The
+primary Scheduler recomputes the set of pages that each machine is supposed to hold. The 
+ActivePageSynchronizerImpl is responsible for adding and dropping pages to reach that target,
+managing loads from the paging system.
+
+************/
+
+class ActivePageSynchronizerImpl : 
+			public PolymorphicSharedPtrBase<ActivePageSynchronizerImpl> {
+public:
+	ActivePageSynchronizerImpl(
+				PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+				PolymorphicSharedPtr<SystemwidePageRefcountTracker> inPageTracker,
+            	PolymorphicSharedPtr<VectorDataManager> inVDM,
+				PolymorphicSharedPtr<OfflineCache> inOfflineCache,
+            	MachineId inOwnMachineId
+				);
+
+	PolymorphicSharedPtr<CallbackScheduler> getPrivateCallbackScheduler()
+		{
+		return mPrivateCallbackScheduler;
+		}
+
+	void teardown();
+
+	void initializeFromAddDropState(const AddDropFinalState& state);
+
+	void consumePageEvent(const Fora::PageRefcountEvent& inEvent, Cumulus::MachineId onMachineId);
+
+	void handleVectorLoadResponse(VectorLoadedResponse response);
+
+	void handleSchedulerToSynchronizerMessage(const SchedulerToActivePageSynchronizerMessage& message);
+
+	void handleSynchronizerToSynchronizerMessage(const ActivePageSynchronizerToSynchronizerMessage& message);
+
+	void pageNoLongerReferencedAcrossSystem(Fora::PageId page);
+
+	EventBroadcaster<CumulusComponentMessageCreated>& onCumulusComponentMessageCreated()
+		{
+		return mOnCumulusComponentMessageCreated;
+		}
+
+	void blockUntilAllDiskWritesAreCompleted();
+
+	void setAgressivelyPushPagesToDiskInBackground(bool pushPages);
+
+    void handleCumulusComponentMessage(
+                    const CumulusComponentMessage& message, 
+                    const CumulusClientOrMachine& source, 
+                    const CumulusComponentType& componentType
+                    );
+
+    void sendSynchronizerToSynchronizerMessage(const ActivePageSynchronizerToSynchronizerMessage& msg);
+
+private:
+	ImmutableTreeSet<Fora::PageId> expandSyntheticPages(ImmutableTreeSet<Fora::PageId> pages);
+
+	void polymorphicSharedPtrBaseInitialized();
+
+	void vectorDataMemoryManagerIsFullChanged(bool isFull);
+
+	bool tryToUnpinPage_(Fora::PageId page);
+
+	bool isAlreadyLoading_(const VectorDataID& inVector);
+
+	void initiateVectorSetLoad_(ImmutableTreeSet<VectorDataID> inVector);
+
+	void initiateVectorLoad_(const VectorDataID& inVector);
+
+	bool hasPageBeenDroppedAcrossEntireSystem_(Fora::PageId page);
+
+	void schedulePageWriteToDisk_(Fora::PageId pageId);
+
+	void writeToOfflineStorage(Fora::PageId page);
+
+	void handleSetDesiredContents_(
+				const ImmutableTreeSet<Fora::PageId>& targetPages, 
+				const ImmutableTreeSet<Fora::PageId>& currentPages,
+				const ImmutableTreeSet<Fora::PageId>& activePages,
+				long index,
+				bool isStalled
+				);
+
+	boost::recursive_mutex mMutex;
+
+	bool pageNeedsLoading_(Fora::PageId inPage);
+
+	bool triggerPageLoad_(Fora::PageId inPage);
+
+	bool isPageScheduledToGoToDisk_(Fora::PageId pageId);
+
+    PolymorphicSharedPtr<VectorDataManager> mVDM;
+
+	EventBroadcaster<CumulusComponentMessageCreated> mOnCumulusComponentMessageCreated;
+
+	PolymorphicSharedPtr<SystemwidePageRefcountTracker> mSystemwidePageRefcountTracker;
+
+	PolymorphicSharedPtr<PageRefcountTracker> mPageRefcountTracker;
+
+	MapWithIndex<Fora::PageId, MachineId> mPendingUnpinRequests;
+
+	std::map<VectorDataID, double> mVectorLoads;
+
+	PolymorphicSharedPtr<CallbackScheduler> mCallbackScheduler;
+
+	PolymorphicSharedPtr<CallbackScheduler> mPrivateCallbackScheduler;
+
+	PolymorphicSharedPtr<CallbackScheduler> mSendPagesToDiskCallbackScheduler;
+
+	std::set<Fora::PageId> mPagesScheduledForDiskWrite;
+
+	std::set<Fora::PageId> mPagesBeingWrittenToDisk;
+
+	std::set<Fora::PageId> mPagesToDropAfterFinishingDiskRead;
+
+	ImmutableTreeSet<Fora::PageId> mSchedulerTargetPages;
+	
+	ImmutableTreeSet<Fora::PageId> mSchedulerCurrentPages;
+
+	ImmutableTreeSet<Fora::PageId> mSchedulerActivePages;
+
+	MachineId mOwnMachineId;
+
+	SchedulerPageLoader mPageLoader;
+
+	void checkIfPageWantsToBeUnpinnedLocally_(Fora::PageId page);
+
+	Nullable<VectorDataID> pageToVectorDataId_(Fora::PageId inPage);
+
+	map<Fora::PageId, VectorDataID> mPageToVectorDataIdMap;
+
+	ImmutableTreeSet<Fora::PageId> mDesiredPages;
+
+	Ufora::math::Random::Uniform<double> mRandomGenerator;
+
+	std::map<Fora::PageId, long> mTimesPageLoadedUnsuccessfully;
+
+	std::set<Fora::PageId> mPagesDroppedAcrossEntireSystem;
+
+	PolymorphicSharedPtr<OfflineCache> mOfflineCache;
+
+	bool mIsTornDown;
+
+	bool mAgressivelyPushPagesToDisk;
+
+	bool mVdmmIsFull;
+};
+}
+}
+

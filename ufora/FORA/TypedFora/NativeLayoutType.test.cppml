@@ -1,0 +1,185 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "TypedFora.hppml"
+#include "ABI/NativeLayoutType.hppml"
+#include "ABI/DestructorsAndConstructors.hppml"
+#include "ABI/TypedForaValueTypecasting.hppml"
+#include "../../core/UnitTest.hpp"
+#include "../Native/NativeCFGTransforms/Transforms.hppml"
+#include "../Native/NativeCFGTransforms/EliminateOverlappingRefcounts.hppml"
+#include "JitCompiler/Compiler.hppml"
+
+using TypedFora::Abi::transferCastExpression;
+
+using TypedFora::Abi::castExpression;
+
+using TypedFora::Abi::nativeTypeForForaType;
+
+using TypedFora::RefcountStyle;
+
+class TestTypedForaLayoutFixture {
+public:
+	TestTypedForaLayoutFixture() :
+			jovString(JOV::OfType(Type::String())),
+			jovInt(JOV::OfType(Type::Integer(64, false))),
+			jovFloat(JOV::OfType(Type::Float(64))),
+			jovUnknown(),
+			jovUnionPod(JOV::Union(JudgmentOnResult(emptyTreeSet() + jovInt + jovFloat))),
+			jovUnionNonPod(JOV::Union(JudgmentOnResult(emptyTreeSet() + jovInt + jovString)))
+		{
+		}
+
+	void verifyTypeTransferIsNoOp(
+						const TypedFora::Type& unownedType, 
+						const TypedFora::Type& t1, 
+						const TypedFora::Type& t2
+						)
+		{
+		NativeVariable var = NativeVariable::Temp(nativeTypeForForaType(unownedType));
+
+		NativeExpression expr = var.expr();
+		expr = transferCastExpression(expr, unownedType, t1);
+		expr = transferCastExpression(expr, t1, t2);
+		expr = transferCastExpression(expr, t2, t1);
+		expr = transferCastExpression(expr, t1, unownedType);
+		expr = expr >> NativeExpression::Nothing();
+
+		expr = simplify(expr);
+
+		BOOST_CHECK_MESSAGE(cppmlCmp(expr, NativeExpression::Nothing()) == 0,
+			prettyPrintString(unownedType) << " -> "
+			<< prettyPrintString(t1) << " -> " 
+			<< prettyPrintString(t2) << " -> " 
+			<< prettyPrintString(t1) << " -> " 
+			<< prettyPrintString(unownedType) << " -> "
+			<< " produced " << prettyPrintString(expr) << ", not _"
+			);
+		}
+
+	NativeExpression simplify(NativeExpression expr)
+		{
+		for (long k = 0; k < 10;k++)
+			{
+			expr = NativeCFGTransforms::cleanupAndSimplify(expr);
+			expr = NativeCFGTransforms::eliminateOverlappingRefcounts(expr);
+			}
+
+		return expr;
+		}
+
+	TypedFora::Type owned(JOV jov)
+		{
+		return TypedFora::Type(jov, RefcountStyle::AsValueOwned());
+		}
+
+	TypedFora::Type unowned(JOV jov)
+		{
+		return TypedFora::Type(jov, RefcountStyle::AsValueUnowned());
+		}
+
+	TypedFora::Type pooled(JOV jov)
+		{
+		return TypedFora::Type(jov, RefcountStyle::Pooled());
+		}
+
+	JOV jovString;
+	JOV jovInt;
+	JOV jovFloat;
+	JOV jovUnknown;
+	JOV jovUnionPod;
+	JOV jovUnionNonPod;
+};
+
+BOOST_FIXTURE_TEST_SUITE( test_TypedFora_Layout, TestTypedForaLayoutFixture )
+
+BOOST_AUTO_TEST_CASE( test_UnownedToOwnedToUnownedIsNoOp )
+	{
+	vector<TypedFora::Type> types;
+
+	TypedFora::Type unownedType(jovString, RefcountStyle::AsValueUnowned());
+
+	types.push_back(TypedFora::Type(jovString, RefcountStyle::AsValueOwned()));
+	types.push_back(TypedFora::Type(jovString, RefcountStyle::AsValueUnowned()));
+
+	for (long k = 0; k < types.size();k++)
+		for (long j = 0; j < types.size();j++)
+			verifyTypeTransferIsNoOp(unownedType, types[k], types[j]);
+	}
+
+
+BOOST_AUTO_TEST_CASE( test_PooledToPooledIsNoOp )
+	{
+	TypedFora::Type pooledType(jovString, RefcountStyle::Pooled());
+
+	NativeVariable var = NativeVariable::Temp(nativeTypeForForaType(pooledType));
+
+		{
+		NativeExpression expr = 
+			castExpression(var.expr(), pooledType, pooledType) 
+				>> NativeExpression::Nothing();
+		
+		expr = simplify(expr);
+
+		BOOST_CHECK_MESSAGE(cppmlCmp(expr, NativeExpression::Nothing()) == 0,
+			prettyPrintString(pooledType) << " -> " 
+			<< prettyPrintString(pooledType)
+			<< " produced " << prettyPrintString(expr) << ", not _"
+			);
+		}
+
+		{
+		NativeExpression expr = 
+			transferCastExpression(var.expr(), pooledType, pooledType) 
+				>> NativeExpression::Nothing();
+		
+		expr = simplify(expr);
+
+		BOOST_CHECK_MESSAGE(cppmlCmp(expr, NativeExpression::Nothing()) == 0,
+			prettyPrintString(pooledType) << " -> " 
+			<< prettyPrintString(pooledType)
+			<< " produced " << prettyPrintString(expr) << ", not _"
+			);
+		}
+	}
+
+BOOST_AUTO_TEST_CASE( test_type_destructors )
+	{
+	using TypedFora::Abi::typeNeedsDestructor;
+
+	BOOST_CHECK(typeNeedsDestructor(owned(jovUnknown)));
+	BOOST_CHECK(!typeNeedsDestructor(unowned(jovUnknown)));
+	BOOST_CHECK(!typeNeedsDestructor(pooled(jovUnknown)));
+
+	BOOST_CHECK(typeNeedsDestructor(owned(jovString)));
+	BOOST_CHECK(!typeNeedsDestructor(unowned(jovString)));
+	BOOST_CHECK(!typeNeedsDestructor(pooled(jovString)));
+
+	BOOST_CHECK(!typeNeedsDestructor(owned(jovInt)));
+	BOOST_CHECK(!typeNeedsDestructor(unowned(jovInt)));
+	BOOST_CHECK(!typeNeedsDestructor(pooled(jovInt)));
+	
+	BOOST_CHECK(!typeNeedsDestructor(owned(jovUnionPod)));
+	BOOST_CHECK(!typeNeedsDestructor(unowned(jovUnionPod)));
+	BOOST_CHECK(!typeNeedsDestructor(pooled(jovUnionPod)));
+
+	BOOST_CHECK(typeNeedsDestructor(owned(jovUnionNonPod)));
+	BOOST_CHECK(!typeNeedsDestructor(unowned(jovUnionNonPod)));
+	BOOST_CHECK(!typeNeedsDestructor(pooled(jovUnionNonPod)));
+	
+	}
+
+BOOST_AUTO_TEST_SUITE_END()
+

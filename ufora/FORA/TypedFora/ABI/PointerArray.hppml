@@ -1,0 +1,126 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../../Core/MemoryPool.hpp"
+
+namespace TypedFora {
+namespace Abi {
+
+//A resizable array of naked pointers. This class deletes any pointers that are not to the 
+//"default" pointer value
+template<class T>
+@type PointerArray = T** pointers, long count, MemoryPool* memoryPool, T* defaultPointerValue {
+public:
+	PointerArray(MemoryPool* inPool, T* inDefaultValue = 0, long inInitialSize = 0)
+		{
+		memoryPool() = inPool;
+		pointers() = 0;
+		defaultPointerValue() = inDefaultValue;
+
+		resize(inInitialSize);
+		}
+
+	~PointerArray()
+		{
+		resize(0);
+		}
+
+	T*& operator[](long index)
+		{
+		return pointers()[index];
+		}
+
+	T* operator[](long index) const
+		{
+		return pointers()[index];
+		}
+
+	void storeAtomically(T* in, long index)
+		{
+		AO_store((AO_t*)&(*this)[index], (AO_t)in);
+		}
+
+	void resize(long inNewCount)
+		{
+		MemoryPool* pool = memoryPool();
+		if (!pool)
+			pool = MemoryPool::getFreeStorePool();
+
+		if (!pointers())
+			{
+			if (inNewCount == 0)
+				return;
+
+			pointers() = (T**)pool->allocate(sizeof(T*) * inNewCount);
+			
+			T* defaultVal = defaultPointerValue();
+
+			for (long k = 0; k < inNewCount; k++)
+				pointers()[k] = defaultVal;
+
+			count() = inNewCount;
+			}
+			else
+		if (inNewCount == 0)
+			{
+			T* defaultVal = defaultPointerValue();
+
+			for (long k = 0; k < count(); k++)
+				if (pointers()[k] != defaultVal)
+					pool->destroy(pointers()[k]);
+
+			pool->free((uint8_t*)pointers());
+
+			count() = 0;
+			pointers() = 0;
+			}
+			else
+		if (inNewCount > count())
+			{
+			pointers() = (T**)pool->realloc((uint8_t*)pointers(), sizeof(T*) * inNewCount);
+
+			T* defaultVal = defaultPointerValue();
+
+			for (long k = count(); k < inNewCount; k++)
+				pointers()[k] = defaultVal;
+
+			count() = inNewCount;
+			}
+			else
+		if (inNewCount < count())
+			{
+			T* defaultVal = defaultPointerValue();
+
+			for (long k = inNewCount; k < count(); k++)
+				if (pointers()[k] != defaultVal)
+					pool->destroy(pointers()[k]);
+
+			pointers() = (T**)pool->realloc((uint8_t*)pointers(), sizeof(T*) * inNewCount);
+
+			count() = inNewCount;
+			}
+		}
+
+	static void resizeStatic(PointerArray* array, long inCount)
+		{
+		array->resize(inCount);
+		}
+};
+
+}
+}
+

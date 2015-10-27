@@ -1,0 +1,453 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Vector.GetItem.hppml"
+#include "AxiomGroup.hppml"
+#include "Axiom.hppml"
+#include "../Interpreter/RuntimeConfig.hppml"
+#include "../TypedFora/ABI/VectorRecord.hpp"
+#include "../Core/ExecutionContext.hppml"
+#include "../VectorDataManager/VectorDataManager.hppml"
+#include "../Native/NativeExpressionBuilder.hppml"
+#include "../TypedFora/ABI/VectorRecordCodegen.hppml"
+#include "../TypedFora/ABI/FastJORCoverageTable.hppml"
+#include "../TypedFora/ABI/FastJORCoverageTableCodegen.hpp"
+#include "../TypedFora/ABI/DestructorsAndConstructors.hppml"
+#include "../TypedFora/ABI/ForaValueArray.hppml"
+#include "../TypedFora/ABI/ForaValueArrayCodegen.hpp"
+#include "../TypedFora/ABI/ArbitraryNativeConstantForString.hpp"
+#include "../TypedFora/ABI/HomogenousVectorStashCodegen.hppml"
+#include "TypedForaAxiomBuilder.hppml"
+
+using TypedFora::Abi::jovAsNativeConstant;
+
+using TypedFora::Abi::nativeLayoutType;
+
+using TypedFora::Abi::VectorRecord;
+
+using TypedFora::Abi::ForaValueArray;
+
+using TypedFora::Abi::HomogenousVectorStash;
+
+
+ImplValContainer	extractImplvalFromArrayAndOffset(	
+							TypedFora::Abi::ForaValueArray* array, 
+							int64_t index
+							)
+	{
+	lassert_dump(
+		array,
+		"vector was null!"
+		);
+
+	return (*array)[index];
+	}
+
+namespace {
+
+Nullable<JudgmentOnResult>	calculateJorForGetItemAxiom(
+									const JudgmentOnValue& jov, 
+									const JudgmentOnResult& specializations
+									)
+	{
+	@match JOV(jov)
+		-|	Vector((eltsJOR, _)) ->> {
+			for (long k = 0; k < eltsJOR.size(); k++)
+				if (!eltsJOR[k].isValidVectorElementJOV())
+					return null();
+
+			ImmutableTreeSet<JudgmentOnValue> elts = eltsJOR.vals();
+
+			for (auto jov: specializations.vals())
+				{
+				Nullable<JOV> vecJOV = jov.computeVectorElementJOV();
+
+				if (vecJOV)
+					elts = elts + *vecJOV;
+				}
+
+			return null() << JudgmentOnResult(elts);
+			}
+		;
+	}
+
+bool allJovsAreMinimal(const ImmutableTreeVector<JudgmentOnValue>& exitOrderings)
+	{
+	for (long k = 0; k < exitOrderings.size(); k++)
+		if (!exitOrderings[k].isSmallestPossibleVectorJudgment())
+			return false;
+
+	return true;
+	}
+
+
+TypedNativeExpression<void> computeGetitemExpression(
+									const TypedNativeExpression<VectorRecord>& vectorExpr,
+									const TypedNativeExpression<int64_t>& indexExpr,
+									ImmutableTreeVector<JudgmentOnValue> exitOrderings
+									)
+	{
+	if (exitOrderings.size() == 1 && exitOrderings[0] != JOV::Unknown())
+		{
+		return 
+			NativeExpression::Return(
+				0,
+				homogenousGetItemExpression(
+					vectorExpr,
+					indexExpr,
+					nativeLayoutType(exitOrderings[0])
+					).load()
+				);
+		}
+
+	using namespace TypedNativeExpressionHelpers;
+
+	NativeExpressionBuilder builder;
+
+	TypedNativeExpression<int64_t> wrappedIndex =
+		builder.add(vectorExpr.wrapNegativeIndexExpr(indexExpr));
+
+	builder.add(
+		if_(wrappedIndex < (int64_t)0 || 
+				wrappedIndex >= static_cast<TypedNativeExpression<int64_t> >(vectorExpr.size()),
+			//the 'exitOrdering.size()'th slot is the 'invalid expression' return slot
+			return_(exitOrderings.size(), TypedNativeExpression<void>()),
+			TypedNativeExpression<void>(),
+			0.000001
+			)
+		);
+
+	TypedNativeVariable<pair<TypedFora::Abi::ForaValueArray*, int64_t> > arrayAndOffset;
+
+	if (exitOrderings.size() == 1)
+		{
+		lassert(exitOrderings[0] == JOV::Unknown());
+
+		TypedNativeVariable<pair<TypedFora::Abi::ForaValueArray*, int64_t> > loadedArrayAndOffset;
+
+		//bail immediately
+		return builder(
+			return_(
+				0, 
+				let(arrayAndOffset,
+					vectorExpr.arrayAndOffsetFor(wrappedIndex),
+					let(loadedArrayAndOffset,
+						if_(arrayAndOffset.first(),
+							arrayAndOffset,
+							TypedNativeExpression<pair<TypedFora::Abi::ForaValueArray*, int64_t> >(
+								vectorExpr.loadCheck(wrappedIndex).getExpression()
+								)
+							),
+						makeTypedNativeLibraryFunction(extractImplvalFromArrayAndOffset)(
+							arrayAndOffset.first(),
+							arrayAndOffset.second()
+							)
+						)
+					).wrapInEmptyCFGLayer()
+				)
+			);
+		}
+	else
+		{
+		TypedNativeVariable<uint8_t*> offsetOrNull;
+
+		TypedNativeExpression<pair<uint8_t*, JudgmentOnValue> > offsetAndJovPtr(
+			builder.add(
+				let(arrayAndOffset,
+					vectorExpr.arrayAndOffsetFor(wrappedIndex),
+					if_(arrayAndOffset.first(),
+						let(offsetOrNull,
+							TypedNativeExpression<uint8_t*>(
+								TypedFora::Abi::ForaValueArrayCodegen::offsetForExpression(
+									arrayAndOffset.first().getExpression(), 
+									arrayAndOffset.second().getExpression()
+									)
+								),
+							TypedNativeExpression<pair<uint8_t*, JudgmentOnValue> >::create(
+								offsetOrNull,
+								TypedFora::Abi::ForaValueArrayCodegen::jovForExpression(
+									arrayAndOffset.first().getExpression(), 
+									arrayAndOffset.second().getExpression()
+									)
+								)
+							),
+						TypedNativeExpression<pair<uint8_t*, JudgmentOnValue> >(
+							vectorExpr.loadCheck(wrappedIndex).getExpression()
+							),
+						.999999
+						)
+					).wrapInEmptyCFGLayer()
+				).getExpression()
+			);
+
+		NativeExpression jovExpression = offsetAndJovPtr.second().getExpression();
+
+		if (!allJovsAreMinimal(exitOrderings))
+			{
+			using TypedFora::Abi::FastJORCoverageTable;
+
+			//the JOV coming out of the vector might not be exactly one of the ones in our list.
+			//we need to check them.
+			TypedNativeExpression<FastJORCoverageTable*> coverageTableConstant(
+				new FastJORCoverageTable(
+					JudgmentOnResult(ImmutableTreeSet<JudgmentOnValue>(exitOrderings))
+					)
+				);
+
+			TypedNativeExpression<JudgmentOnValue> lookedUpExpr = 
+				coverageTableConstant.lookup(
+					TypedNativeExpression<JudgmentOnValue>(jovExpression)
+					);
+
+			jovExpression = builder.add(
+				lookedUpExpr.getExpression().taggedWith(
+					NativeExpressionTag::Comment("JOV looked up in JOV table")
+					)
+				);
+			}
+
+		for (long k = 0; k < exitOrderings.size();k++)
+			{
+			NativeExpression retExpr = 
+				NativeExpression::Return(
+					k,
+					offsetAndJovPtr.first().getExpression().cast(
+						nativeLayoutType(exitOrderings[k]).ptr(), 
+						false
+						).load()
+					);
+
+			builder.add(
+				NativeExpression::If(
+					jovExpression == jovAsNativeConstant(exitOrderings[k]),
+					retExpr,
+					NativeExpression()
+					)
+				);
+			}
+	
+		return builder(NativeExpression::Halt("Illegal JOV in Vector.GetItem"));
+		}
+	}
+
+} //end anonymous namespace
+
+
+NativeExpression homogenousGetItemExpression(
+									const TypedNativeExpression<VectorRecord>& vectorExpr,
+									TypedNativeExpression<int64_t> indexExpr,
+									NativeType elementType
+									)
+	{
+	NativeExpressionBuilder builder;
+
+	using namespace TypedNativeExpressionHelpers;
+
+	TypedNativeExpression<int64_t> wrappedIndex = 
+		builder.add(vectorExpr.wrapNegativeIndexExpr(indexExpr));
+
+	builder.add(
+		if_(wrappedIndex < (int64_t)0 || 
+				wrappedIndex >= static_cast<TypedNativeExpression<int64_t> >(vectorExpr.size()),
+			//the 'exitOrdering.size()'th slot is the 'invalid expression' return slot
+			return_(1, TypedNativeExpression<void>()).taggedWith(
+				NativeExpressionTag::OnHomogenousVectorLookupBoundsCheckFailure()
+				),
+			TypedNativeExpression<void>(),
+			0.000001
+			)
+		);
+
+	TypedNativeVariable<uint8_t*> stashedOffset;
+
+	TypedNativeVariable<uint8_t*> offsetOrNull;
+
+	TypedNativeVariable<pair<TypedFora::Abi::ForaValueArray*, int64_t> > arrayAndOffset;
+
+	TypedNativeVariable<HomogenousVectorStash*> stashPtr;
+
+	NativeExpression offsetPtr =
+		builder.add(
+			let(arrayAndOffset,
+				vectorExpr.arrayAndOffsetFor(wrappedIndex),
+				if_(arrayAndOffset.first(),
+					TypedNativeExpression<uint8_t*>(
+						TypedFora::Abi::ForaValueArrayCodegen::offsetForExpression(
+							arrayAndOffset.first().getExpression(), 
+							arrayAndOffset.second().getExpression()
+							)
+						),
+					TypedNativeExpression<uint8_t*>(
+						vectorExpr.loadCheck(wrappedIndex).getExpression()
+						),
+					.999999
+					)
+				).wrapInEmptyCFGLayer()
+			).getExpression()
+			;
+
+	NativeExpression result = builder(offsetPtr.cast(elementType.ptr(), false));
+	
+	result = result.taggedWith(
+		NativeExpressionTag::HomogenousVectorLookup(
+			vectorExpr.getExpression(), 
+			indexExpr.getExpression(),
+			elementType
+			)
+		);
+
+	return result;
+	}
+
+NativeExpression homogenousGetItemExpressionAndStashUpdate(
+					NativeExpression stashExpr, 
+					NativeExpression vectorExpr,
+					NativeExpression indexExpr,
+					NativeType elementType,
+					NativeExpression onBoundsCheckFailure
+					)
+	{
+	TypedNativeExpression<HomogenousVectorStash> typedStashExpr(stashExpr);
+	TypedNativeExpression<TypedFora::Abi::VectorRecord> typedVecExpr(vectorExpr);
+	TypedNativeExpression<int64_t> typedIndexExpr(indexExpr);
+
+	NativeVariable stashVar = NativeVariable::Temp(NativeTypeFor<HomogenousVectorStash>::get());
+
+	return NativeExpression::Let(
+		stashVar,
+		typedStashExpr.updatedStash(
+			typedVecExpr,
+			typedIndexExpr,
+			elementType,
+			TypedNativeExpression<void>(onBoundsCheckFailure)
+			).taggedWith(
+				NativeExpressionTag::HomogenousVectorStashCheck(
+					typedVecExpr.getExpression(),
+					stashExpr,
+					indexExpr
+					)
+				)
+			.getExpression(),
+		NativeExpression::CreateComposite(
+			emptyTreeVec() + 
+				TypedNativeExpression<HomogenousVectorStash>(stashVar.expr())
+					.getStashedOffset(indexExpr, elementType).getExpression()
+					.cast(elementType.ptr(), false) + 
+				stashVar.expr()
+			)
+		);
+	}
+
+
+VectorGetItem::VectorGetItem() :
+   	AxiomGroup(
+		JOVT() +
+			jovAnyVector() +
+			"GetItem" +
+			JOV::OfType(Type::Integer(64, true))
+		)
+	{
+	}
+	
+Nullable<Axiom> VectorGetItem::axiom(		TypedFora::Compiler& inRuntime,
+											const JudgmentOnValueTuple& inSpecificAxiomSignature
+											)
+	{
+	return axiom(inRuntime, inSpecificAxiomSignature, JudgmentOnResult());
+	}
+
+Nullable<Axiom> VectorGetItem::axiom(		TypedFora::Compiler& inRuntime,
+											const JudgmentOnValueTuple& inSpecificAxiomSignature,
+											const JudgmentOnAction& specializations
+											)
+	{
+	return axiom(inRuntime, inSpecificAxiomSignature, specializations.resultPart());
+	}
+
+Nullable<Axiom> VectorGetItem::axiom(		TypedFora::Compiler& inRuntime,
+											const JudgmentOnValueTuple& inSpecificAxiomSignature,
+											const JudgmentOnResult& specializations
+											)
+	{
+	JudgmentOnValue vectorJudgment = inSpecificAxiomSignature.jovs()[0];
+
+	if (vectorJudgment == jovEmptyVector())
+		return null() << AxiomGroup::throwsAxiom(
+			JOVT() + vectorJudgment + "GetItem" + JOV::OfType(Type::Integer(64, true)),
+			CSTValue("invalid index")
+			);
+
+	Nullable<JudgmentOnResult>	getItemJOR = calculateJorForGetItemAxiom(vectorJudgment, specializations);
+
+	JudgmentOnValueTuple signatureToGenerate;
+
+	if (getItemJOR && inRuntime.getConfig().generateMachineCodeVectorAxioms())
+		//compute the signature for this specialization, which will use all info from the
+		//vector, but which will accept the index by type
+		signatureToGenerate = 
+			JOVT() +
+				vectorJudgment +
+				"GetItem" +
+				JOV::OfType(Type::Integer(64, true))
+				;
+	else
+		signatureToGenerate = signature();
+
+	TypedFora::TypedForaAxiomBuilder builder(
+		signatureToGenerate,
+		TypedFora::RefcountStyle::Pooled()
+		);
+
+	NativeExpression getItemExpr = 
+		computeGetitemExpression(
+			TypedNativeExpression<VectorRecord>(builder.nativeVar(0).expr()), 
+			TypedNativeExpression<int64_t>(builder.nativeVar(2).expr()), 
+			getItemJOR ? 
+				ImmutableTreeVector<JudgmentOnValue>(getItemJOR->vals())
+			: 	emptyTreeVec() + JOV()
+			).getExpression();
+
+	JudgmentOnAction finalJOA = 
+		(getItemJOR ? 
+			JudgmentOnAction::Value(*getItemJOR) : 
+			JudgmentOnAction::Value(JOV()))
+		| JudgmentOnAction::Throws(
+			JOV::Constant(CSTValue("invalid index"))
+			);
+
+	return null() << builder.axiomForNativeExpression(
+			getItemExpr, 
+			getItemJOR ? 
+				TypedFora::RefcountStyle::Pooled()
+			: 	TypedFora::RefcountStyle::AsValueOwned(),
+			finalJOA.resultPart(),
+			finalJOA.throwPart()
+			);
+	}
+
+Nullable<AxiomJOA>		VectorGetItem::axiomJOA(const JudgmentOnValueTuple& s)
+	{
+	@match JudgmentOnValue(s.jovs()[0])
+		-|	Vector((eltsJOR, _)) ->> {
+			JudgmentOnAction joa(
+						eltsJOR,
+						JudgmentOnResult(JOV::Constant(CSTValue("invalid index")))
+						);
+
+			return null() << AxiomJOA::Native(joa);
+			}
+		;
+	}
+

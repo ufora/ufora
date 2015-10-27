@@ -1,0 +1,323 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+LeafRuleMatcher: class {};
+
+LeafRuleMixin:
+object {
+    predict: fun(dfRow) {
+        return self.predictionValue;
+        };
+    
+    operator match(LeafRuleMatcher _) { 
+        (predictionValue: self.predictionValue)
+        };
+    };
+
+DecisionTreeMixin: 
+object { 
+    predict: 
+#Markdown("""#### Usage
+
+    tree.predict(dataframe.DataFrame(df))
+    tree.predict(row)
+
+#### Description
+
+Use to the decision tree to predict the values of 
+the rows of `df` or on a single row `row`.
+
+""")
+    fun
+    (dataframe.DataFrame(df), depth:=nothing) {
+        df.rowApply(fun(row) { predictionFunction_(row, depth) })
+        }
+    (row, depth:=nothing) {
+        predictionFunction_(row, depth)
+        };
+
+    predictionFunction_: fun(row, depth=nothing) {
+        if (depth is nothing)
+            depth = 1000000
+
+        let ix = 0;
+        let currentDepth = 0;
+        while (true) {
+            match (self.rules[ix]) with 
+                (SplitRule(rule, less, high, value)) {
+                    if (currentDepth == depth)
+                        return value;
+
+                    if (rule.isLess(row))
+                        ix = ix + less
+                    else
+                        ix = ix + high
+                    }
+                (LeafRuleMatcher(predictionValue: value)) {
+                    return value
+                    }
+                ;
+
+            currentDepth = currentDepth + 1
+            }
+        };
+
+    score:
+#Markdown("""#### Usage 
+
+    tree.score(X, y)
+
+#### Description
+
+Returns the coefficient of determination R^2 of the prediction.
+
+The coefficient R^2 is defined as (1 - u / v), where u is the regression sum of 
+squares ((yTrue - yPredicted) ** 2).sum() and v is the residual sum of squares 
+((yTrue - yTrue.mean()) ** 2).sum(). Best possible score is 1.0, lower 
+values are worse.
+""")
+    fun
+    (dataframe.DataFrame(X), dataframe.DataFrame(yTrue)) {
+        score(X, yTrue.getColumn(0))
+        }
+    (dataframe.DataFrame(X), dataframe.Series(yTrue)) {
+        let yPredicted = predict(X);
+        let u = ((yTrue - yPredicted) ** 2.0).sum()
+        let v = ((yTrue - math.stats.mean(yTrue)) ** 2.0).sum();
+
+        return 1.0 - u / v;
+        };
+
+    };
+
+SplitRule: 
+class {
+    member rule;
+    member jumpIfLess;
+    member jumpIfHigher;
+    member leafValue;
+
+    operator match(SplitRule _) { (rule, jumpIfLess, jumpIfHigher, leafValue) };
+
+    convert (String) {
+        "SplitRule(rule:%s, less->%s, higher->%s, leafValue->%s)".format(
+            visualize(rule), jumpIfLess, jumpIfHigher, leafValue
+            )
+        };
+
+    operator match(builtin.Visualizable) {
+        (String(self),)
+        };
+    };
+
+Rule: class { 
+    member dimension; 
+    member splitPoint;
+
+    // these next to members are with respect to training set which produced this rule,
+    // if any
+    member impurityImprovement; 
+    member numSamples;
+    
+    operator new
+    (dimension:, splitPoint:, impurityImprovement:= nothing, numSamples:= nothing) {
+        createInstance(
+            cls,
+            dimension: dimension,
+            splitPoint: splitPoint,
+            impurityImprovement: impurityImprovement,
+            numSamples: numSamples
+            );
+        };
+
+    isLess: fun(row) {
+        row[dimension] < splitPoint 
+        };
+    
+    """using our rule, split the dataset into two subsets, 
+       and return sample summaries of each piece"""
+    summaryPair: fun // TODO not a great name ...
+    (xVec:, yVec:, impurityMeasure:=SampleSummary)
+        {        
+        sum(0, size(xVec), 
+                fun(ix) { 
+                    if (xVec[ix] < splitPoint) 
+                        return (impurityMeasure(yVec[ix]), impurityMeasure())
+                    else
+                        return (impurityMeasure(), impurityMeasure(yVec[ix]))
+                    },
+                fun (nothing, rhs) { rhs }
+                    (lhs, nothing) { lhs }
+                    (lhs, rhs) { 
+                        (lhs[0] + rhs[0], lhs[1] + rhs[1])
+                        }
+                )
+        };
+        
+    splitDataframe: fun(dataframe.DataFrame(df), activeIndices) {
+        let xColumn = df.getColumn(dimension);
+
+        let leftSelector = fun(activeIndex) { xColumn[activeIndex] < splitPoint };
+        let rightSelector = fun(activeIndex) { xColumn[activeIndex] >= splitPoint };
+
+        let leftIndices = activeIndices.filter(leftSelector);
+        let rightIndices = activeIndices.filter(rightSelector);
+
+        return (leftIndices, rightIndices);
+        };
+    
+    operator match(builtin.Visualizable) { 
+        ("Rule(dim: %s, splitPoint: %s, impurityImprovement: %s, numSamples: %s)".format(
+            dimension, splitPoint, impurityImprovement, numSamples),)
+        };
+    };
+
+SampleSummary: 
+    """An additive class to track statistics of samplesets (mean, std-dev, count)"""
+    class {
+        member weight;
+        member xSum;
+        member xxSum;
+        
+        mean: xSum / weight;
+        
+        stdev: variance ** .5;
+        
+        //E[(x - E[x])^2)] = E[x^2] - E[x] ^ 2
+        variance: (xxSum / weight - mean * mean);
+        
+        impurity: fun() { variance };
+
+        operator new() {
+            createInstance(SampleSummary, weight: 0.0, xSum: 0.0, xxSum: 0.0)
+            };
+            
+        operator new(sampleValue) {
+            createInstance(
+                SampleSummary, 
+                weight: 1.0, 
+                xSum: sampleValue, 
+                xxSum: sampleValue * sampleValue
+                )
+            };
+            
+        operator match (builtin.Visualizable) { 
+            (String(self),)
+            };
+
+        convert (String) { 
+            "SampleSummary(weight: %s, mean: %s, stdev: %s)".format(
+                weight, mean, variance ** .5)
+            };
+
+        operator+(other) {
+            createInstance(
+                SampleSummary, 
+                weight: weight + other.weight, 
+                xSum: xSum + other.xSum, 
+                xxSum: xxSum + other.xxSum
+                )
+            };
+
+        operator-(other) {
+            createInstance(
+                SampleSummary,
+                weight: weight - other.weight,
+                xSum: xSum - other.xSum,
+                xxSum: xxSum - other.xxSum
+                )
+            };
+        
+        """computes the change in impurity by splitting the union of 
+           sampleSummary1 and sampleSummary2 into those pieces"""
+        static impurityImprovement: fun(sampleSummary1, sampleSummary2) {
+            if (sampleSummary1.weight == 0 or sampleSummary2.weight == 0)
+                return -math.inf
+
+            return (sampleSummary1 + sampleSummary2).variance - 
+                (sampleSummary1.variance * sampleSummary1.weight + 
+                    sampleSummary2.variance * sampleSummary2.weight) / 
+                    (sampleSummary1.weight + sampleSummary2.weight)
+            };
+    };
+
+SampleSummaryHistogram:
+"""A class which maintains xValue-bucketed `SampleSummary`s of y-values"""
+class {
+    member count;
+    member x0;
+    member x1;
+    member samples;
+    
+    operator new 
+        (inX0, inX1, inCount) {
+            let samples = MutableVector(`TypeJOV(SampleSummary())).create(inCount, SampleSummary());
+            
+            return createInstance(cls, count: inCount, x0: inX0, x1: inX1, samples: samples)
+            }
+        (x0: inX0, x1: inX1, samples: samples) {
+            return createInstance(cls, count: size(samples), x0: inX0, x1: inX1, samples: samples)
+            };
+            
+    observe: fun(xValue, sample) {
+        let bucket = (xValue - x0) / (x1 - x0) * count;
+        bucket = bucket >>> 0
+        bucket = bucket <<< (count - 1)
+        
+        samples[bucket] = samples[bucket] + sample
+        };
+    
+    bestSplitPointAndImpurityImprovement: fun() {
+        let above = SampleSummary()
+        for s in samples { above = above + s }
+        above = above - samples[0]
+        let below = samples[0]
+        
+        let bestIx = 0
+        let bestImpurityImprovement = SampleSummary.impurityImprovement(above, below)
+        
+        let curIx = 1
+        while (curIx + 1 < size(samples)) {
+            above = above - samples[curIx]
+            below = below + samples[curIx]
+            
+            let impurityImprovement = SampleSummary.impurityImprovement(above, below)
+            
+            if (impurityImprovement > bestImpurityImprovement) {
+                bestImpurityImprovement = impurityImprovement
+                bestIx = curIx
+                }
+            
+            curIx = curIx + 1
+            }
+            
+        return (x0 + ((bestIx + 1) * (x1 - x0) / count), bestImpurityImprovement)
+        };
+    
+    freeze: fun() {
+        return SampleSummaryHistogram(x0: x0, x1: x1, samples: [s for s in samples])    
+        };
+    
+    operator +(otherHistogram) {
+        let newSamples = []
+        
+        for ix in sequence(size(samples))
+            newSamples = newSamples :: (samples[ix] + otherHistogram.samples[ix])
+        
+        return SampleSummaryHistogram(x0: x0, x1: x1, samples: newSamples)
+        };
+    };
+
+

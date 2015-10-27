@@ -1,0 +1,272 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#Markdown("""
+### libraryBuilder
+
+#### Description
+
+Enables building and executing C and C++ code from Fora.
+
+""");
+
+#Markdown(
+"""
+#### Description
+
+The Library class provides access to FORA's internal C/C++ compiler, allowing clients to
+build and execute code written in C and C++.
+
+Compiled external code is _not_ safe - it's possible for your code to segfault the main FORA process.
+In the future, we may also develop a version of the compiler that is provably
+safe (using similar techniques to the NaCl project).
+
+For now, because of security concerns, this functionality is not available in the multi-tenant cloud
+version of Ufora.
+
+Compiled external code is also not interruptible, so be careful. If you start an infinite loop,
+the only way to stop the loop right now is to shut down the machine on which it's running.
+
+#### Usage
+
+Create a library of source code using the library static functions, and then simply access
+the functions contained within:
+
+	: let lib = libraryBuilder.Library.C("long f(long i) { return i + 1; }")
+	> lib.f(10)
+
+Libraries contain collections of code organized into a file structure, allowing you to wrap
+existing libraries that contain header files.
+
+	: let L = libraryBuilder.Library
+	: let lib = L.C("a.c", "long f(long i) { return i + 1; }"); 
+	: lib = lib + L.H("a.h", "long f(long i);")
+	: lib = lib + L.C("b.c", '#include "a.h"\\nlong g(long i) { return f(i) + 1; }')
+	> lib.g(0)
+
+FORA only exposes functions for which there are natural conversions into and out of FORA types. FORA
+will attempt to convert datatypes when natural (e.g. between integers and floating point numbers).
+If there is no natural conversion, FORA won't expose the function.
+
+Functions in C++ are exposed using their fully qualified names. This means that if they're contained
+within namespaces, you'll need to access them using a string:
+
+	: let L = libraryBuilder.Library
+	: let lib = L.CPP("namespace N { long f(long i) { return i+1; } }")
+	> lib.("N::f")(1)
+
+You may also use the '..allFunctions' member to get a list of all functions exposed by a library.
+
+	: let code = """ + '\"\"\"' + """
+		long f() { return 10; }; 
+		long g() { return 20; }""" + '\"\"\"' + """
+	> String(libraryBuilder.Library.CPP("asdf.cpp", code)..allFunctions)
+
+_WARNING_: FORA assumes that all the functions you are wrapping are deterministic and 
+side-effectless. This means that the compiler may optimize away calls that don't appear to do 
+anything, or lift functions out of loops. FORA may also execute sequential calls to 
+library functions on different machines as it moves a given thread of FORA code around.
+Also, because of FORA's splitting model, FORA may execute individual calls out of order.
+
+#### Type Conversions
+
+Currently, primitive numeric and floating point types are directly convertible between 
+C/C++ and FORA code.
+
+Strings may be passed to C or C++ functions accepting `const char*` or `const unsigned char*`. 
+
+	: let strlen = libraryBuilder.Library.C(
+	 	"long len(const char* c) { long i = 0; while (c[i]) i++; return i; }"
+		).len
+	> strlen("asdf")
+
+Vectors of primitive numeric or floating point types may be passed to functions accepting const 
+pointers.  Empty vectors will be passed as the null pointer.
+
+	: let sum = libraryBuilder.Library.C(
+	 	"long sum(const long* data, long sz) {" + 
+		"	long res = 0; while (sz) { res += *data; data++; sz--; } return res; " + 
+	 	"	}").sum
+	> sum([1,2,3,4,5],5)
+
+MutableVectors may be passed to functions accepting const or non-const pointers.
+
+Tuples of primitive numeric types or strings may be passed to functions accepting pointers.  The data is 
+converted into the appropriate type and copied into a contiguous array which is passed to the
+native function.  
+
+If the type of the pointed-to C/C++ value is not const, then FORA assumes you may be writing to the
+tuple. In this case, FORA will return a tuple consisting of the return value and one argument for
+every non-const tuple containing the values after they were written to.
+
+	: let incrementer = libraryBuilder.Library.C("void f(long* argument) { argument[0] += 1; }").f;
+	> incrementer((1,))
+
+
+""")
+
+Library:
+class 
+	{
+	member _fileDict;
+
+	static C: 
+		#Markdown("""
+		#### Description 
+
+		Creates a library consisting of a single C file.
+
+		#### Usage
+		
+			Library.C("filename", "/* source code */")
+			Library.C("/* source code */")
+
+		""")
+		fun(filename = "a.c", code) { Library({filename: #Code.C(code)}) };
+
+	static CPP: 
+		#Markdown("""
+		#### Description 
+
+		Creates a library consisting of a single C++ file.
+
+		#### Usage
+		
+			Library.CPP("filename", "/* source code */")
+			Library.CPP("/* source code */")
+
+		""")
+		fun(filename = "a.cpp", code) { Library({filename: #Code.CPP(code)}) };
+	
+	static H: 
+		#Markdown("""
+		#### Description 
+
+		Creates a library consisting of a single C header file. You must provide a name for the
+		header file, since it won't generate a translation unit by itself, and therefore can only
+		affect the result by being included.
+
+		#### Usage
+		
+			Library.H("filename", "/* source code */")
+
+		""")
+		fun(filename, code) { Library({filename: #Code.H(code)}) };
+	
+	static HPP: 
+		#Markdown("""
+		#### Description 
+
+		Creates a library consisting of a single C++ header file. You must provide a name for the
+		header file, since it won't generate a translation unit by itself, and therefore can only
+		affect the result by being included.
+
+		#### Usage
+		
+			Library.HPP("filename", "/* source code */")
+
+		""")
+		fun(filename, code) { Library({filename: #Code.HPP(code)}) };
+	
+	static Directory: 
+		#Markdown("""
+		#### Description 
+
+		Place a library in a directory.
+
+		#### Usage
+		
+			Library.Directory("dirname", existingLibrary)
+
+		""")
+		fun(filename, Library(fileDict)) { Library({filename: #Directory(fileDict)}) };
+	
+
+	#Markdown("""
+	#### Description 
+
+	Merge the contents of two libraries.
+
+	#### Usage
+	
+		//first define a header file
+		let l1 = Library.H("a.h", "int f();")
+
+		//then define a C file
+		let l2 = Library.C("a.c", '#include "a.h"\\nint f() { return 1; }')
+
+		//define another C file that uses the first header file
+		let l3 = Library.C("b.c", '#include "a.h"\\nint g() { return f(); }')
+
+		//'summing' the libraries produces a single library consisting of all of their code
+		(l1 + l2 + l3).g()
+
+	""")
+	operator+(Library(otherFileDict)) {
+		return Library(_fileDict + otherFileDict)
+		};
+
+	#Markdown("""
+	#### Description
+
+	Extract the internal definition of the Library
+
+	""")
+	operator match (Library _) { (_fileDict,) };
+
+	#Markdown("""
+	#### Description
+
+	Extract a named function from within the library. Arguments may be a string or a symbol
+
+	#### Usage
+
+		let lib = ...
+
+		//get function 'f'
+		lib.f
+
+		//get function 'f'
+		lib.("f")
+
+		//get function 'Namespace::f'
+		lib.("Namespace::f")
+
+	""")
+	...(`Member, x) {
+		`GetSharedObjectLibraryFunction(
+			#Directory(_fileDict), 
+			match (x) with 
+				(filters.IsString(...)) { x }
+				(...) { String(x)[1,] }
+			) 
+		};
+
+
+	#Markdown("""
+	#### Description
+
+	Get a dictionary of all functions contained within the library.
+
+	#### Usage
+
+		lib..allFunctions
+
+	""")
+	...(`Member2, `allFunctions) {
+		`GetAllSharedObjectLibraryFunctions(#Directory(_fileDict))
+		}
+	};
+

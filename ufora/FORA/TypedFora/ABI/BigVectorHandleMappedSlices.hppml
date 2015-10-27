@@ -1,0 +1,190 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <vector>
+#include "ForaValueArraySlice.hppml"
+#include "../../VectorDataManager/PageId.hppml"
+
+namespace TypedFora {
+namespace Abi {
+
+class BigVectorHandleMappedSlices {
+	@type CacheEntry = 
+			ForaValueArraySlice slice,
+			bool isReported,
+			Nullable<Fora::PageId> pageId;
+
+public:
+	BigVectorHandleMappedSlices()
+		{
+		}
+
+	void setAllSlicesToStatusUnreported()
+		{
+		for (auto it = mCacheEntries.begin(); it !=  mCacheEntries.end(); it++)
+			it->isReported() = false;
+		}
+
+	void addToCache(ForaValueArraySlice slice, Nullable<Fora::PageId> pageId)
+		{
+		pair<long, long> offsets = 
+			indicesOverlapping(
+				slice.mapping().lowIndex(), 
+				slice.mapping().highIndex()
+				);
+
+		//it's legal to add the same slice to the cache twice
+		if (offsets.first != offsets.second)
+			{
+			lassert(offsets.first + 1 == offsets.second);
+			lassert(mCacheEntries[offsets.first].slice().mapping() == slice.mapping());
+			lassert(mCacheEntries[offsets.first].slice().array() == slice.array());
+			return;
+			}
+
+		mCacheEntries.insert(mCacheEntries.begin() + offsets.first, 
+			BigVectorHandleMappedSlices::CacheEntry(slice, true, pageId));
+		}
+
+	ForaValueArraySlice sliceForOffset(int64_t offset)
+		{
+		pair<long, long> offsets = indicesOverlapping(offset, offset+1);
+
+		if (offsets.first < offsets.second)
+			{
+			lassert(offsets.first + 1 == offsets.second);
+			return mCacheEntries[offsets.first].slice();
+			}
+
+		return ForaValueArraySlice();
+		}
+
+	Nullable<int64_t> firstValueLoadedInRange(int64_t lowIndex, int64_t highIndex) const
+		{
+		pair<long, long> offsets = 
+			indicesOverlapping(lowIndex, highIndex);
+
+		if (offsets.first >= offsets.second)
+			return null();
+
+		return null() << std::max(lowIndex, mCacheEntries[offsets.first].slice().mapping().lowIndex());
+		}
+
+	Nullable<int64_t> firstValueNotLoadedInRange(int64_t lowIndex, int64_t highIndex) const
+		{
+		pair<long, long> offsets = 
+			indicesOverlapping(lowIndex, highIndex);
+
+		while (lowIndex < highIndex)
+			{
+			//check if the range is nonempty, but we have no more loaded ranges to consider
+			if (offsets.first >= offsets.second)
+				return null() << lowIndex;
+
+			if (mCacheEntries[offsets.first].slice().mapping().lowIndex() > lowIndex)
+				return null() << lowIndex;
+
+			lowIndex = mCacheEntries[offsets.first].slice().mapping().highIndex();
+			offsets.first++;
+			}
+
+		return null();
+		}
+
+	bool allValuesAreLoadedBetween(int64_t lowInclusive, int64_t highExclusive) const
+		{
+		return firstValueNotLoadedInRange(lowInclusive, highExclusive).isNull();
+		}
+
+	void unmapAllValuesBetween(int64_t lowInclusive, int64_t highExclusive)
+		{
+		pair<long, long> indices = indicesOverlapping(lowInclusive, highExclusive);
+
+		mCacheEntries.erase(mCacheEntries.begin() + indices.first, mCacheEntries.begin() + indices.second);
+		}
+
+	void visitAllLoadedArrays(boost::function1<void, ForaValueArraySlice> loadedSliceVisitor)
+		{
+		for (auto& slice: mCacheEntries)
+			loadedSliceVisitor(slice.slice());
+		}
+
+	size_t size() const
+		{
+		return mCacheEntries.size();
+		}
+
+	//returns a pair of indices containing all possible indices that overlap 'lowIndex' to 'highIndex'
+	pair<long, long> indicesOverlapping(int64_t lowIndex, int64_t highIndex) const
+		{
+		//index of the first entry where slot.indexHigh() is greater than lowIndex
+		long low =
+			std::upper_bound(
+				mCacheEntries.begin(),
+				mCacheEntries.end(),
+				lowIndex,
+				[](int64_t value, const CacheEntry& element) {
+					return value < element.slice().mapping().highIndex();
+					}
+				) - mCacheEntries.begin();
+
+		long high = 
+			std::lower_bound(
+				mCacheEntries.begin(),
+				mCacheEntries.end(),
+				highIndex,
+				[](const CacheEntry& lhs, int64_t rhs) {
+					return lhs.slice().mapping().lowIndex() < rhs;
+					}
+				) - mCacheEntries.begin();
+
+		return make_pair(low, high);
+		}
+
+	bool isReported(int64_t index)
+		{
+		pair<long, long> offsets = indicesOverlapping(index, index+1);
+		bool exists = offsets.first + 1 == offsets.second;
+		if(!exists)
+			{
+			return false;
+			}
+		return mCacheEntries[offsets.first].isReported();
+		}
+
+	void setToStatusReported(int64_t index)
+		{
+		pair<long, long> offsets = indicesOverlapping(index, index+1);
+		bool exists = offsets.first + 1 == offsets.second;
+		lassert(exists);
+		mCacheEntries[offsets.first].isReported() = true;
+		}
+
+	Nullable<Fora::PageId> getPageId(int64_t index)
+		{
+		pair<long, long> offsets = indicesOverlapping(index, index+1);
+		bool exists = offsets.first + 1 == offsets.second;
+		lassert(exists);
+		return mCacheEntries[offsets.first].pageId();
+		}
+
+private:
+	std::vector<CacheEntry> mCacheEntries;
+};
+
+}
+}

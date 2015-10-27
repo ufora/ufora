@@ -1,0 +1,336 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <set>
+#include <map>
+#include "CPPMLEquality.hppml"
+
+
+
+/*************
+
+IndexedSet::Set
+
+A std::set of tuples (which must contain CPPML-style metadata templates) indexed by the
+various columns of the tuple.
+
+Usage:
+
+	@type X = int a, std::string b, char c, char d
+
+	IndexedSet::Set<X> s;
+
+	//insert elements
+	s.insert(X(1,"hello",'2', '2'));
+	s.insert(X(1,"hello2",'2', '3'));
+
+	//look up the indices, which are just sets
+	s.index("hello").size() == 1;
+	s.index(1).size() == 2;
+
+	//if the type is insufficient for the lookup, add a dimension
+	s.index('2', 2).size() == 2;
+	s.index('2', 3).size() == 1;
+
+	s.erase(X(1, "hello", '2', '2'));
+	s.erase(X(1, "hello2", '2', '3'));
+
+	//get a key-to-valueset map
+	s.keyToValuesetMap(IndexedSet::dim0);
+	s.keyToValuesetMap(IndexedSet::dim1);
+
+**************/
+
+namespace IndexedSet {
+
+class CppmlLess {
+public:
+	template<class T>
+	bool operator()(const T& lhs, const T& rhs) const
+		{
+		return cppmlCmp(lhs, rhs) < 0;
+		}
+};
+
+
+template<class meta, int dim>
+class TypeForDimension {
+public:
+};
+
+template<class T, class member_type_in, class accessor_in, const int32_t ix, class TailChain>
+class TypeForDimension<
+	::CPPML::Chain< ::CPPML::TupleMember<T, member_type_in, accessor_in, ix>, TailChain>, ix> {
+public:
+	typedef member_type_in result_type;
+
+	typedef const std::map<result_type, std::set<T, CppmlLess>, CppmlLess> map_to_value_set_type;
+};
+
+template<class T, class member_type_in, class accessor_in, const int32_t ix, class TailChain, const int32_t ix2>
+class TypeForDimension<
+	::CPPML::Chain< ::CPPML::TupleMember<T, member_type_in, accessor_in, ix>, TailChain>, ix2> {
+public:
+	typedef typename TypeForDimension<TailChain, ix2>::result_type result_type;
+	
+	typedef typename TypeForDimension<TailChain, ix2>::map_to_value_set_type map_to_value_set_type;
+};
+
+template<int ix>
+class Dimension {};
+
+namespace {
+
+	Dimension<0> dim0;
+	Dimension<1> dim1;
+	Dimension<2> dim2;
+	Dimension<3> dim3;
+	Dimension<4> dim4;
+	Dimension<5> dim5;
+	Dimension<6> dim6;
+	Dimension<7> dim7;
+	Dimension<8> dim8;
+	Dimension<9> dim9;
+
+}
+
+
+template<class T, class meta>
+class Index {
+public:
+};
+
+template<class T, class member_type_in, class accessor_in, const int32_t ix, class TailChain>
+class Index<
+		T, 
+		::CPPML::Chain<
+			::CPPML::TupleMember<T, member_type_in, accessor_in, ix>, 
+			TailChain
+			> 
+		> {
+public:
+	bool contains(const member_type_in& in) const
+		{
+		auto it = mIndex.find(in);
+		
+		return it != mIndex.end();
+		}
+
+	const std::set<T, CppmlLess>& index(const member_type_in& in) const
+		{
+		auto it = mIndex.find(in);
+		
+		if (it != mIndex.end())
+			return it->second;
+
+		return mEmpty;
+		}
+
+	template<class elt_type>
+	bool contains(const elt_type& in) const
+		{
+		return mRight.contains(in);
+		}
+	
+	template<class elt_type>
+	const std::set<T, CppmlLess>& index(const elt_type& in) const
+		{
+		return mRight.index(in);
+		}
+	
+	template<class elt_type, int differentIndex>
+	bool contains(const elt_type& in, Dimension<differentIndex> dim) const
+		{
+		return mRight.contains(in, dim);
+		}
+	
+	template<class elt_type, int differentIndex>
+	const std::set<T, CppmlLess>& index(const elt_type& in, Dimension<differentIndex> dim) const
+		{
+		return mRight.index(in, dim);
+		}
+	
+	template<class elt_type>
+	bool contains(const elt_type& in, Dimension<ix> dim) const
+		{
+		auto it = mIndex.find(in);
+		
+		return it != mIndex.end();
+		}
+	
+	template<class elt_type>
+	const std::set<T, CppmlLess>& index(const elt_type& in, Dimension<ix> dim) const
+		{
+		auto it = mIndex.find(in);
+		
+		if (it != mIndex.end())
+			return it->second;
+
+		return mEmpty;
+		}
+
+	void insert(const T& in)
+		{
+		mIndex[accessor_in::get(in)].insert(in);
+
+		mRight.insert(in);
+		}
+
+	void erase(const T& in)
+		{
+		const member_type_in& elt(accessor_in::get(in));
+
+		auto it = mIndex.find(elt);
+
+		if (it != mIndex.end())
+			{
+			it->second.erase(in);
+			if (it->second.size() == 0)
+				mIndex.erase(it);
+			}
+		
+		mRight.erase(in);
+		}
+
+	template<int in_ix>
+	const typename TypeForDimension<typename T::metadata, in_ix>::map_to_value_set_type&
+	keyToValuesetMap(Dimension<in_ix> d) const
+		{
+		return mRight.keyToValuesetMap(d);
+		}
+
+	const typename TypeForDimension<typename T::metadata, ix>::map_to_value_set_type&
+	keyToValuesetMap(Dimension<ix> d) const
+		{
+		return mIndex;
+		}
+
+	void clear()
+		{
+		mIndex.clear();
+		mRight.clear();
+		}
+
+private:
+	std::map<member_type_in, std::set<T, CppmlLess>, CppmlLess> mIndex;
+
+	std::set<T, CppmlLess> mEmpty;
+
+	Index<T, TailChain> mRight;
+};
+
+template<class T>
+class Index<T, ::CPPML::Null> {
+public:
+	void insert(const T& in)
+		{
+		}
+	void erase(const T& in)
+		{
+		}
+	void clear()
+		{
+		}
+};
+
+template<class T>
+class Set {
+public:
+	void insert(const T& in)
+		{
+		mIndex.insert(in);
+		mElements.insert(in);
+		}
+
+	void erase(const T& in)
+		{
+		mIndex.erase(in);
+		mElements.erase(in);
+		}
+
+	bool contains(const T& in) const
+		{
+		return mElements.find(in) != mElements.end();
+		}
+
+	const std::set<T, CppmlLess>& elements() const
+		{
+		return mElements;
+		}
+
+	template<class elt_type>
+	const std::set<T, CppmlLess>& index(const elt_type& key) const
+		{
+		return mIndex.index(key);
+		}
+
+	template<class elt_type, int dimIndex>
+	bool contains(const elt_type& key, Dimension<dimIndex> dimension) const
+		{
+		return mIndex.contains(key, dimension);
+		}
+
+	template<class elt_type, int dimIndex>
+	const std::set<T, CppmlLess>& index(const elt_type& key, Dimension<dimIndex> dimension) const
+		{
+		return mIndex.index(key, dimension);
+		}
+
+	template<class elt_type>
+	void eraseAll(const elt_type& key)
+		{
+		std::set<T, CppmlLess> toRemove = index(key);
+
+		for (auto it = toRemove.begin(); it != toRemove.end(); ++it)
+			erase(*it);
+		}
+
+	template<class elt_type, int dimIndex>
+	void eraseAll(const elt_type& key, Dimension<dimIndex> dimension)
+		{
+		std::set<T, CppmlLess> toRemove = index(key, dimension);
+
+		for (auto it = toRemove.begin(); it != toRemove.end(); ++it)
+			erase(*it);
+		}
+
+	template<int ix>
+	const typename TypeForDimension<typename T::metadata, ix>::map_to_value_set_type&
+	keyToValuesetMap(Dimension<ix> d) const
+		{
+		return mIndex.keyToValuesetMap(d);
+		}
+
+	size_t size() const
+		{
+		return mElements.size();
+		}
+
+	void clear()
+		{
+		mElements.clear();
+		mIndex.clear();
+		}
+
+private:
+	std::set<T, CppmlLess> mElements;
+
+	Index<T, typename T::metadata> mIndex;
+};
+
+}
+

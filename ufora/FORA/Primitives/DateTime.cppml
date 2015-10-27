@@ -1,0 +1,327 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "DateTime.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../../core/Logging.hpp"
+#include <boost/thread.hpp>
+#include <boost/date_time/gregorian/gregorian.hpp>
+#include <locale>
+#include <boost/date_time/time_facet.hpp>
+#include <ctime>
+
+using Fora::Interpreter::ExecutionContext;
+
+DateTime::DateTime() {}
+    
+DateTime::DateTime(const date_time_impl_type& in)
+    :   mDateTimeRecord(in)
+    {}
+    
+DateTime::DateTime(
+                uint16_t inYear,
+                uint16_t inMonth,
+                uint16_t inDay
+                )
+    : mDateTimeRecord(
+        date_impl_type(
+            inYear,
+            inMonth,
+            inDay
+            )
+        )
+    {}
+        
+DateTime::DateTime(
+                uint16_t inYear,
+                uint16_t inMonth,
+                uint16_t inDay,
+                const TimeDuration& td
+                )
+    :   mDateTimeRecord(
+        boost::gregorian::date(
+            inYear,
+            inMonth,
+            inDay
+            ),
+        td.posix_time()
+        )
+    {}
+    
+DateTime::DateTime(
+        uint16_t inYear,
+        uint16_t inMonth,
+        uint16_t inDay,
+        int64_t inHour,
+        int64_t inMin,
+        int64_t inSec,
+        int64_t inMillisec,
+        int64_t inMicrosec
+        )
+    :   mDateTimeRecord(
+            boost::gregorian::date(
+                inYear,
+                inMonth,
+                inDay
+            ),
+            time_duration_impl_type(
+                boost::posix_time::hours(inHour) +
+                boost::posix_time::minutes(inMin) +
+                boost::posix_time::seconds(inSec) +
+                boost::posix_time::milliseconds(inMillisec) +
+                boost::posix_time::microseconds(inMicrosec)
+            )
+        )
+    {}
+    
+DateTime::DateTime(const date_impl_type& inDate)
+    :   mDateTimeRecord(
+        inDate,
+        time_duration_impl_type(0, 0, 0, 0)
+        )
+    {}
+        
+std::string DateTime::stdString() const
+    {
+    try {
+        return to_simple_string(mDateTimeRecord);
+        }
+    catch (std::out_of_range& e)
+        {
+        return std::string("INVALID DATE TIME");
+        }
+    }
+    
+String DateTime::isoString() const
+    {
+    try {
+        return String(
+                to_iso_string(mDateTimeRecord), 
+                ExecutionContext::currentExecutionContext()->getMemoryPool()
+                );
+        }
+    catch (std::out_of_range& e)
+        {
+        return String(
+            "INVALID DATE TIME", 
+            ExecutionContext::currentExecutionContext()->getMemoryPool()
+            );
+        }
+    }
+
+date_time_impl_type DateTime::posix_time() const
+    {
+    return mDateTimeRecord;
+    }
+    
+String DateTime::isoExtendedString() const
+    {
+    try {
+        return String(
+            to_iso_extended_string(mDateTimeRecord), 
+            ExecutionContext::currentExecutionContext()->getMemoryPool()
+            );
+        }
+    catch (std::out_of_range& e)
+        {
+        return String(
+            "INVALID DATE TIME", 
+            ExecutionContext::currentExecutionContext()->getMemoryPool()
+            );
+        }
+    }
+        
+bool DateTime::isNotADateTime() const
+    {
+    return mDateTimeRecord.is_not_a_date_time();
+    }
+
+date_impl_type DateTime::gregorian_date() const
+    {
+    return mDateTimeRecord.date();
+    }
+
+uint16_t DateTime::year() const
+    {
+    return gregorian_date().year();
+    }
+    
+uint16_t DateTime::month() const
+    {
+    return gregorian_date().month();
+    }
+    
+uint16_t DateTime::day() const
+    {
+    return gregorian_date().day();
+    }
+
+namespace {
+
+	void init_struct_tm(struct tm* tm)
+		{
+		tm->tm_sec = 0;
+		tm->tm_min = 0;
+		tm->tm_hour = 0;
+		tm->tm_mday = 1;
+		tm->tm_mon = 0;
+		tm->tm_year = 70;
+		tm->tm_wday = 4;
+		tm->tm_yday = 0;
+		tm->tm_isdst = 0;
+		}
+
+	}
+
+Nullable<DateTime> DateTime::strptime(
+            const String& format,
+            const String& dateTimeString
+            )
+    {
+	struct tm tm;
+	init_struct_tm(&tm);
+
+	if (::strptime(dateTimeString.c_str(), format.c_str(), &tm) == NULL)
+        return null();
+
+    try {
+        return null() << DateTime(boost::posix_time::ptime_from_tm(tm));	
+        }
+    catch (std::logic_error& e) {
+        return null();
+        }
+    }
+    
+DateTime DateTime::fromTime_t(std::time_t time)
+    {
+    return DateTime(date_time_impl_type(boost::posix_time::from_time_t(time)));
+    }
+    
+DateTime DateTime::epoch()
+    {
+    return DateTime::fromTime_t(0);
+    }
+
+DateTime DateTime::bySecSinceEpoch(int64_t sec)
+    {
+    return DateTime::epoch() + TimeDuration::fromSeconds(sec);
+    }
+
+DateTime DateTime::timeFromString(const std::string& in)
+    {
+    //there's a bug in boost's time_from_string:
+    //it calls a 'split' function which attempts to split a string into a
+    //date_part and a time_part on the separator ' '. If the separator is not found,
+    //for instance, if we called `time_from_string("2000-12-31")`, the splitter function
+    //actually duplicates the string, giving date_part "2000-12-31" _and_ time_part
+    //2000-12-31. The following is a hack around this problem:
+    if (in.find(' ') == string::npos) //the 'not found' condition in std::string::find
+        return DateTime(date_impl_type(boost::gregorian::from_string(in)));
+        
+    return DateTime(boost::posix_time::time_from_string(in));
+    }
+    
+DateTime DateTime::fromISOString(const std::string& in)
+    {
+    return DateTime(boost::posix_time::from_iso_string(in));
+    }
+    
+DateTime DateTime::timeFromString(const String& in)
+    {
+    return DateTime::timeFromString(in.stdString());
+    }
+    
+DateTime DateTime::fromISOString(const String& in)
+    {
+    return DateTime::fromISOString(in.stdString());
+    }
+    
+DateTime DateTime::fromDateString(const std::string& in)
+    {
+    return DateTime(date_impl_type(boost::gregorian::from_string(in)));
+    }
+    
+DateTime DateTime::fromDateString(const String& in)
+    {
+    return DateTime::fromDateString(in.stdString());
+    }
+    
+DateTime DateTime::fromUndelimitedDateString(const std::string& in)
+    {
+    return DateTime(date_impl_type(boost::gregorian::from_undelimited_string(in)));
+    }
+    
+DateTime DateTime::fromUndelimitedDateString(const String& in)
+    {
+    return DateTime::fromUndelimitedDateString(in.stdString());
+    }
+    
+TimeDuration DateTime::timeOfDay() const
+    {
+    return TimeDuration(mDateTimeRecord.time_of_day());
+    }
+    
+int64_t DateTime::secondsSinceEpoch() const
+    {
+    return timeDurationSinceEpoch().totalSeconds();
+    }
+    
+TimeDuration DateTime::timeDurationSinceEpoch() const
+    {
+    return *this - DateTime::epoch();
+    }
+    
+char DateTime::cmp(const DateTime& in) const
+    {
+    if (mDateTimeRecord < in.mDateTimeRecord)
+        return -1;
+    if (mDateTimeRecord > in.mDateTimeRecord)
+        return 1;
+    return 0;
+    }
+    
+TimeDuration DateTime::operator-(const DateTime& in) const
+    {
+    return TimeDuration(mDateTimeRecord - in.mDateTimeRecord);
+    }
+    
+// can throw a std::out_of_range if the offset in Timeduration is too large
+// this is detected by calling `to_simple_string()` on the underlying datetime_impl_type object
+// This is a bit of a hack due to the annoying fact that boost will happily create datetime objects
+// which throw exceptions upon printing.
+DateTime DateTime::operator-(const TimeDuration& in) const
+    {
+    DateTime dateTime(mDateTimeRecord - in.posix_time());
+    if (dateTime.mDateTimeRecord.is_special())
+        boost::posix_time::to_simple_string(dateTime.mDateTimeRecord);
+    return dateTime;
+    }
+    
+// same comment as for `DateTime DateTime::operator-(const TimeDuration& in) const`
+DateTime DateTime::operator+(const TimeDuration& in) const
+    {
+    DateTime dateTime(mDateTimeRecord + in.posix_time());
+    if (dateTime.mDateTimeRecord.is_special())
+        boost::posix_time::to_simple_string(dateTime.mDateTimeRecord);
+    return dateTime;
+    }
+    
+hash_type DateTime::hash() const
+    {
+    Hash tr(0);
+    ((date_time_impl_type*)&tr)[0] = mDateTimeRecord;
+    return tr;
+    }
+

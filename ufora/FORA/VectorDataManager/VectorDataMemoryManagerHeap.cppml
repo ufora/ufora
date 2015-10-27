@@ -1,0 +1,359 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "VectorDataMemoryManagerHeap.hppml"
+#include "VectorDataMemoryManager.hppml"
+#include "../../core/Logging.hpp"
+
+#define MAP_FAILED ((void*)-1)
+#define MREMAP_MAYMOVE 1
+
+size_t roundUp(size_t size, size_t blockSize)
+	{
+	if (size % blockSize)
+		return size + (blockSize - size % blockSize);
+
+	return size;
+	}
+
+VectorDataMemoryManagerHeap::VectorDataMemoryManagerHeap(
+					PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM,
+					MemoryPool* inPool
+					) : 
+		mInitialHeapPtr(nullptr),
+		mVDMM(inVDMM),
+		mPool(inPool),
+		mDefaultPageSize(inVDMM->getSmallAllocSize()),
+		mTotalBytesAllocatedFromOS(0)
+	{
+	initialize();
+	}
+
+VectorDataMemoryManagerHeap::VectorDataMemoryManagerHeap(
+					PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM,
+					MemoryPool* inPool,
+					size_t pageSizeOverride
+					) : 
+		mInitialHeapPtr(nullptr),
+		mVDMM(inVDMM),
+		mPool(inPool),
+		mDefaultPageSize(pageSizeOverride),
+		mTotalBytesAllocatedFromOS(0)
+	{
+	lassert(
+		pageSizeOverride == mVDMM->getVerySmallAllocSize() || 
+		pageSizeOverride == mVDMM->getSmallAllocSize()
+		);
+
+	initialize();
+	}
+
+void VectorDataMemoryManagerHeap::initialize()
+	{
+	mMemoryHeap.reset(
+		new MemoryHeap(
+			boost::bind(
+				&VectorDataMemoryManagerHeap::internalMmap,
+				this,
+				boost::arg<1>()
+				),
+			boost::bind(
+				&VectorDataMemoryManagerHeap::internalMunmap,
+				this,
+				boost::arg<1>(),
+				boost::arg<2>()
+				),
+			boost::bind(
+				&VectorDataMemoryManagerHeap::internalRemap,
+				this,
+				boost::arg<1>(),
+				boost::arg<2>(),
+				boost::arg<3>(),
+				boost::arg<4>()
+				),
+			mDefaultPageSize
+			)
+		);
+	}
+
+VectorDataMemoryManagerHeap::~VectorDataMemoryManagerHeap()
+	{
+	//clear the heap
+	mMemoryHeap.reset();
+
+	lassert_dump(mBlockTracker.bytesUsed() == 0, mBlockTracker.bytesUsed());
+
+	for (auto largeBlockAndData: mLargeBlocks)
+		mVDMM->munmapForPool(mPool, largeBlockAndData.first, largeBlockAndData.second);
+
+	for (auto slabBase: mSlabsAllocated)
+		mVDMM->munmapForPool(mPool, slabBase, mVDMM->getSlabSize());
+
+	if (mInitialHeapPtr)
+		mVDMM->munmapForPool(mPool, mInitialHeapPtr, mDefaultPageSize);
+	}
+
+void* VectorDataMemoryManagerHeap::internalMmap(size_t bytes)
+	{
+	bytes = roundUp(bytes, mVDMM->getOsPageSize());
+
+	if (!mInitialHeapPtr && bytes == mDefaultPageSize)
+		{
+		void* result = mVDMM->mmapForPool(mPool, bytes);
+
+		if (result == MAP_FAILED)
+			{
+			LOG_ERROR << "Map failed.";
+			return MAP_FAILED;
+			}
+
+		mTotalBytesAllocatedFromOS += bytes;
+
+		mInitialHeapPtr = (uint8_t*)result;
+
+		mBlockTracker.addUsedBytes((uint8_t*)result, bytes);
+
+		return result;
+		}
+	
+
+	if (bytes >= mVDMM->getSlabSize())
+		{
+		void* res = mVDMM->mmapForPool(mPool, bytes);
+		if (res == MAP_FAILED)
+			{
+			LOG_ERROR << "Map failed.";
+			return MAP_FAILED;
+			}
+
+		mTotalBytesAllocatedFromOS += bytes;
+
+		mLargeBlocks[(uint8_t*)res] = bytes;
+		mBlockTracker.addUsedBytes((uint8_t*)res, bytes);
+		return res;
+		}
+
+	uint8_t* result = mBlockTracker.allocateBytes(bytes);
+
+	if (result)
+		return result;
+
+	//need to add some memory
+	void* slab = mVDMM->mmapForPool(mPool, mVDMM->getSlabSize());
+	if (slab == MAP_FAILED)
+		{
+		LOG_ERROR << "Map failed.";
+		return MAP_FAILED;
+		}
+
+	mTotalBytesAllocatedFromOS += mVDMM->getSlabSize();
+
+	mSlabsAllocated.insert((uint8_t*)slab);
+
+	mBlockTracker.addUnusedBytes((uint8_t*)slab, mVDMM->getSlabSize());
+
+	return mBlockTracker.allocateBytes(bytes);
+	}
+
+int VectorDataMemoryManagerHeap::internalMunmap(void* data, size_t bytes)
+	{
+	bytes = roundUp(bytes, mVDMM->getOsPageSize());
+	
+	int64_t initBytes = mBlockTracker.bytesUsed();
+	mBlockTracker.deallocateBytes((uint8_t*)data, bytes);
+
+	pair<uint8_t*, int64_t> range = mBlockTracker.unusedRangeContaining((uint8_t*)data);
+	while (range.first)
+		{
+		//complicated logic because "ByteTracker" can coalesc ranges that were separately
+		//allocated by the VDMM but that share contiguous byte ranges. We need to be sure
+		//to release them with the structure that the VDMM originally gave them to us.
+		auto consume = [&](size_t toConsume) {
+			mVDMM->munmapForPool(mPool, range.first, toConsume);
+			mTotalBytesAllocatedFromOS -= toConsume;
+			mBlockTracker.unusedBytesReleasedToOS(range.first, toConsume);
+			range.first += toConsume;
+			range.second -= toConsume;
+			};
+
+		if (mSlabsAllocated.find(range.first) != mSlabsAllocated.end() && 
+				range.second >= mVDMM->getSlabSize())
+			{
+			mSlabsAllocated.erase(range.first);
+			consume(mVDMM->getSlabSize());
+			}
+		else
+			{
+			auto it = mLargeBlocks.find(range.first);
+			if (it != mLargeBlocks.end() && range.second >= it->second)
+				{
+				size_t toConsume = it->second;
+				mLargeBlocks.erase((uint8_t*)range.first);
+				consume(toConsume);
+				}
+				else
+			if (mInitialHeapPtr && range.first == mInitialHeapPtr && range.second >= mDefaultPageSize)
+				{
+				mInitialHeapPtr = 0;
+				consume(mDefaultPageSize);
+				}
+			else
+				range.first = nullptr;
+			}
+		}
+
+	if (mBlockTracker.bytesUsed() == 0)
+		{
+		lassert_dump(
+			mBlockTracker.bytesUnused() == 0,
+			mBlockTracker.bytesUnused() << " / " << mBlockTracker.bytesUsed() << ". Total= " << mTotalBytesAllocatedFromOS 
+				<< ". initBytesUsed = " << initBytes
+				<< ". " << (mInitialHeapPtr ? "has hp" :"no hp") << ". "
+				<< mLargeBlocks.size() << " large blocks. " 
+				<< mSlabsAllocated.size() << " slabs totalling " << mSlabsAllocated.size() * mVDMM->getSlabSize() << " ."
+			);
+		}
+
+	return 0;
+	}
+
+void* VectorDataMemoryManagerHeap::internalRemap(void* data, size_t oldBytecount, size_t newBytecount, int flags)
+	{
+	newBytecount = roundUp(newBytecount, mVDMM->getOsPageSize());
+	oldBytecount = roundUp(oldBytecount, mVDMM->getOsPageSize());
+	
+	if (newBytecount == oldBytecount)
+		return data;
+
+	if ((flags & MREMAP_MAYMOVE) && newBytecount > oldBytecount)
+		{
+		if (newBytecount >= mVDMM->getSlabSize() && oldBytecount >= mVDMM->getSlabSize() && 
+					mLargeBlocks.find((uint8_t*)data) != mLargeBlocks.end())
+			{
+			bool success = mVDMM->mremapForPoolWithoutMoving(mPool, data, oldBytecount, newBytecount);
+
+			if (success)
+				{
+				mBlockTracker.deallocateBytes((uint8_t*)data, oldBytecount);
+				mBlockTracker.unusedBytesReleasedToOS((uint8_t*)data, oldBytecount);
+				mBlockTracker.addUsedBytes((uint8_t*)data, newBytecount);
+				mLargeBlocks[(uint8_t*)data] = newBytecount;
+				mTotalBytesAllocatedFromOS += newBytecount;
+				mTotalBytesAllocatedFromOS -= oldBytecount;
+
+				return data;
+				}
+			}
+
+		void* newData = internalMmap(newBytecount);
+
+		if (newData == MAP_FAILED)
+			{
+			LOG_ERROR << "Map failed.";
+			return MAP_FAILED;
+			}
+
+		memcpy(newData, data, oldBytecount);
+
+		internalMunmap(data, oldBytecount);
+
+		return newData;
+		}
+	else
+		{
+		if (newBytecount > oldBytecount)
+			{
+			LOG_ERROR << "Map failed.";
+			return MAP_FAILED;
+			}
+
+		if (newBytecount >= mVDMM->getSlabSize() && oldBytecount >= mVDMM->getSlabSize() && 
+					mLargeBlocks.find((uint8_t*)data) != mLargeBlocks.end() && 
+					mLargeBlocks[(uint8_t*)data] == oldBytecount)
+			{
+			bool success = mVDMM->mremapForPoolWithoutMoving(mPool, data, oldBytecount, newBytecount);
+
+			if (success)
+				{
+				mBlockTracker.deallocateBytes((uint8_t*)data, oldBytecount);
+				mBlockTracker.unusedBytesReleasedToOS((uint8_t*)data, oldBytecount);
+				mBlockTracker.addUsedBytes((uint8_t*)data, newBytecount);
+				mLargeBlocks[(uint8_t*)data] = newBytecount;
+				mTotalBytesAllocatedFromOS += newBytecount;
+				mTotalBytesAllocatedFromOS -= oldBytecount;
+
+				return data;
+				}
+			}
+
+		internalMunmap((char*)data + newBytecount, oldBytecount - newBytecount);
+		return data;
+		}
+	}
+
+void* VectorDataMemoryManagerHeap::malloc(size_t size)
+	{
+	return mMemoryHeap->malloc(size);
+	}
+
+void VectorDataMemoryManagerHeap::free(void *ptr)
+	{
+	mMemoryHeap->free(ptr);
+	}
+
+void* VectorDataMemoryManagerHeap::realloc(void *ptr, size_t size)
+	{
+	return mMemoryHeap->realloc(ptr, size);
+	}
+
+size_t VectorDataMemoryManagerHeap::getBytesUsed() const
+	{
+	return mMemoryHeap->getBytesUsed();
+	}
+
+size_t VectorDataMemoryManagerHeap::getTotalBytesAllocatedFromOS() const
+	{
+	return mTotalBytesAllocatedFromOS;
+	}
+
+bool VectorDataMemoryManagerHeap::detachLargeAlloc(void* addr, size_t bytecount)
+	{
+	if (bytecount < mVDMM->getSlabSize())
+		return false;
+
+	if (!mMemoryHeap->isLargeAlloc(addr))
+		return false;
+
+	auto it = mLargeBlocks.find((uint8_t*)addr);
+	if (it == mLargeBlocks.end() || it->second != bytecount)
+		return false;
+
+	lassert(addr != mInitialHeapPtr);
+	lassert(mMemoryHeap->msize(addr) == bytecount);
+
+	if (!mVDMM->detachFromPool(mPool, addr, bytecount))
+		return false;
+
+	mTotalBytesAllocatedFromOS -= bytecount;
+
+	mLargeBlocks.erase((uint8_t*)addr);
+	mBlockTracker.deallocateBytes((uint8_t*)addr, bytecount);
+	mBlockTracker.unusedBytesReleasedToOS((uint8_t*)addr, bytecount);
+
+	mMemoryHeap->detachLargeAlloc(addr);
+
+	return true;
+	}
+

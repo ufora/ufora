@@ -1,0 +1,159 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include <string>
+
+#include "LogFileDirectory.hppml"
+#include "FileStorageCommon.hppml"
+#include "../Types.hppml"
+#include <boost/filesystem.hpp>
+
+namespace SharedState {
+
+namespace {
+
+}
+
+
+LogFileDirectory::LogFileDirectory(
+			const std::string& cacheDirectory,
+			const Keyspace& inKeyspace,
+			const KeyRange& inKeyRange
+			) :
+		mLastLogFileCount(0),
+		mWorkingDir(cacheDirectory + FileStorageCommon::pathSep() + FileStorageCommon::filenameForKeyspace(inKeyRange, inKeyspace))
+	{
+	// check if path exists and create it if necessary
+	boost::filesystem::path p(mWorkingDir);
+	if (!boost::filesystem::exists(p))
+		boost::filesystem::create_directories(p);
+
+	uint32_t logIteration = getInitialLogIteration();
+	mCurrentLogFilePath = fullPath(FileStorageCommon::logPrefix, logIteration);
+	}
+
+
+std::string LogFileDirectory::getNextStatePath()
+	{
+	uint32_t logFileIteration = getCurrentLogFileIteration();
+	map<uint32_t, string> stateFilePathMap = getAllStateFiles();
+	lassert(stateFilePathMap.size() == 0 || logFileIteration > stateFilePathMap.rbegin()->first);
+	return fullPath(FileStorageCommon::statePrefix, logFileIteration);
+	}
+
+map<uint32_t, string> LogFileDirectory::getAllLogFiles()
+	{
+	auto tr = getFilesWithPrefix(FileStorageCommon::logPrefix);
+	mLastLogFileCount = tr.size();
+	return tr;
+	}
+
+
+size_t LogFileDirectory::logFileCount() const
+	{
+	return mLastLogFileCount;
+	}
+
+map<uint32_t, string> LogFileDirectory::getAllStateFiles()
+	{
+	return getFilesWithPrefix(FileStorageCommon::statePrefix);
+	}
+
+std::string LogFileDirectory::getCurrentLogPath()
+	{
+	return mCurrentLogFilePath;
+	}
+
+uint32_t LogFileDirectory::getCurrentLogFileIteration()
+	{
+	return splitFileName(mCurrentLogFilePath).second;
+	}
+
+std::string LogFileDirectory::fullPath(std::string prefix, uint32_t iter)
+	{
+	return 	mWorkingDir + 
+			FileStorageCommon::pathSep() + 
+			prefix + 
+			FileStorageCommon::separator + 
+			FileStorageCommon::decToHex(iter);
+	}
+
+uint32_t LogFileDirectory::getInitialLogIteration()
+	{
+	uint32_t tr = 0;
+
+	// fetch the current state of the directories
+	map<uint32_t, string> logFilePathMap = getAllLogFiles();
+	map<uint32_t, string> stateFilePathMap = getAllStateFiles();
+
+	if (logFilePathMap.size())
+		tr = max(tr, logFilePathMap.rbegin()->first + 1);
+	if (stateFilePathMap.size())
+		tr = max(tr, stateFilePathMap.rbegin()->first + 1);
+	return tr;
+	}
+
+void LogFileDirectory::startNextLogFile(void)
+	{
+	// increment the iteration and set the current path to that
+	mCurrentLogFilePath = fullPath(FileStorageCommon::logPrefix, getCurrentLogFileIteration() + 1);
+	}
+
+map<uint32_t, string> LogFileDirectory::getFilesWithPrefix(string prefix)
+	{
+	//return a map from iter to prefix in the base path which
+	//match the given prefix
+	vector<string> files(getLocalFiles());
+	map<uint32_t, string> out;
+	for(uint32_t i = 0; i < files.size(); i++)
+		{
+		pair<string, uint32_t> split(splitFileName(files[i]));
+		if (split.first == prefix)
+			out[split.second] = mWorkingDir + FileStorageCommon::pathSep() + files[i];
+		}
+
+	return out;
+	}
+pair<string, uint32_t> LogFileDirectory::splitFileName(string fileName)
+	{
+	// split a file between its type and its iteration
+	size_t pos = fileName.rfind(FileStorageCommon::separator);
+	lassert(pos != string::npos);
+	string prefix = fileName.substr(0, pos);
+	string hex = fileName.substr(pos + 1);
+	lassert(hex.size() == 8);
+	return make_pair(prefix, FileStorageCommon::hexToDec(hex));
+	}
+
+vector<string> LogFileDirectory::getLocalFiles(void)
+	{
+	// get a list of files in the specified data directory
+	vector<string> tr;
+	boost::filesystem::path p(mWorkingDir);
+	lassert(boost::filesystem::exists(p));
+	for (boost::filesystem::directory_iterator dIt(p); dIt != boost::filesystem::directory_iterator(); ++dIt)
+		{
+		boost::filesystem::path::string_type pathStr = dIt->path().filename().native();
+		//TODO BUG mike: rework SharedState::ValueStorage to entirely use boost::filesystem paths, not strings
+		//on windows, boost paths are unicode, so we have to convert to a regular string. This is a very bad thing...
+		//we really ought to just use paths the whole way through
+		std::string pathStrNormal(pathStr.begin(), pathStr.end());
+		tr.push_back(pathStrNormal);
+		}
+	return tr;
+	}
+		
+}
+

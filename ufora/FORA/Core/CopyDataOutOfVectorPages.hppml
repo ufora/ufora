@@ -1,0 +1,141 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <iostream>
+#include "../TypedFora/ABI/StackFrameWalker.hppml"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include "ValueDeepcopier.hppml"
+#include "../Judgment/JudgmentUtil.hppml"
+#include "../VectorDataManager/PageletTree.hppml"
+#include "../TypedFora/ABI/HomogenousVectorStash.hppml"
+
+namespace TypedFora {
+namespace Abi {
+class HomogenousVectorStash;
+}
+}
+
+namespace Fora {
+namespace Interpreter {
+
+/******************
+CopyDataOutOfVectorPages
+
+scans over FORA values and copies any values that are in VectorPage object out and back into
+the current memory context.  This class modifies ImplVals that are normally not supposed to
+change, so it's important that it only be called on an object graph where every value not
+within a VectorPage is owned only by the caller. This is OK for values owned within an
+execution context, because they always get deepcopied before being moved in.
+******************/
+
+class CopyDataOutOfVectorPages {
+public:
+	class state_type {
+	public:
+		state_type(	MemoryPool* inTargetPool,
+					VectorDataManager* inManager
+					) : 
+				mMemoryPool(inTargetPool),
+				mVectorDataManager(inManager),
+				mTotalValuesCopied(0)
+			{
+			}
+
+		void cleanup()
+			{
+			}
+
+		long mTotalValuesCopied;
+
+		MemoryPool* mMemoryPool;
+
+		VectorDataManager* mVectorDataManager;
+
+		ValueDeepcopierState mDeepcopierState;
+	};
+
+	CopyDataOutOfVectorPages(state_type& inState) : 
+			mState(inState)
+		{
+		}
+
+	bool wantsToVisitStrings()
+		{
+		return true;
+		}
+
+	bool wantsToVisitString(String& s)
+		{
+		return s.getOwningMemoryPool() != mState.mMemoryPool;
+		}
+
+	bool visit(TypedFora::Abi::HomogenousVectorStash& stash)
+		{
+		//invalidate any vector stashes
+		stash = TypedFora::Abi::HomogenousVectorStash();
+
+		return true;
+		}
+	
+	Nullable<String> updateString(String& s)
+		{
+		mState.mTotalValuesCopied++;
+
+		return null() << String(s, mState.mMemoryPool);
+		}
+
+	bool wantsToVisitVectorContents(TypedFora::Abi::VectorHandle* handle)
+		{
+		return handle->owningMemoryPool() == mState.mMemoryPool && 
+													jorMightHavePointersWithin(handle->jor());
+		}
+
+	bool vectorHasReferenceToAnyOtherPools(TypedFora::Abi::VectorHandle* handle)
+		{
+		return (MemoryPool*)handle->owningMemoryPool() != mState.mMemoryPool;
+		}
+		
+	Nullable<TypedFora::Abi::VectorRecord> updateVectorHandle(TypedFora::Abi::VectorHandle* handle)
+		{
+		if ((MemoryPool*)handle->owningMemoryPool() != mState.mMemoryPool)
+			{
+			//we need to deepcopy this VectorHandle.
+			ValueDeepcopier deepcopier(
+								mState.mDeepcopierState, 
+								false,
+								mState.mMemoryPool,
+								true,
+								false
+								);
+
+			mState.mTotalValuesCopied++;
+
+			return null() << deepcopier.duplicate(
+				TypedFora::Abi::VectorRecord(handle, handle->size(), 0, 1)
+				);
+			}
+
+		return null();
+		}
+
+private:
+	state_type& mState;
+};
+
+}
+}
+

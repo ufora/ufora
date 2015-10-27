@@ -1,0 +1,242 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "PersistBigvecTasks.hppml"
+#include "../../FORA/Serialization/SerializedObjectFlattener.hpp"
+
+using Cumulus::PersistentCache::PersistentCacheIndex;
+
+namespace Cumulus {
+
+PersistBigvecTasks::PersistBigvecTasks(
+			PolymorphicSharedPtr<VectorDataManager> inVDM,
+			PolymorphicSharedPtr<SystemwidePageRefcountTracker> inSPRT,
+			boost::function0<hash_type> inCreateNewHash,
+			boost::function1<void, PythonIoTaskRequest> inBroadcastPythonTask,
+			boost::function1<void, ExternalIoTaskCreated> inCreateNewIoTask,
+			boost::function1<void, ExternalIoTaskCompleted> inOnExternalIoTaskCompleted
+			) : 
+		mVDM(inVDM),
+		mSPRT(inSPRT),
+		mCreateNewHash(inCreateNewHash),
+		mBroadcastPythonTask(inBroadcastPythonTask),
+		mCreateNewIoTask(inCreateNewIoTask),
+		mOnExternalIoTaskCompleted(inOnExternalIoTaskCompleted)
+	{
+	}
+
+void PersistBigvecTasks::handleNewSaveBigvecToPersistentCache(ExternalIoTaskId taskId, hash_type bigvecGuid)
+	{
+	mCurrentBigvecPersistenceTasks.insert(taskId, bigvecGuid);
+
+	if (mCurrentBigvecPersistenceTasks.getKeys(bigvecGuid).size() > 1)
+		return;
+
+	checkBigvecPersistenceTask_(bigvecGuid);
+	}
+
+void PersistBigvecTasks::handleExternalIoTaskCompleted(ExternalIoTaskCompleted completed)
+	{
+	auto it = mSavePageToPersistentCacheTasks.find(completed.taskId());
+
+	if (it == mSavePageToPersistentCacheTasks.end())
+		return;
+
+	Fora::PageId page = it->second;
+
+	mSavePageToPersistentCacheTasks.erase(it);
+
+	std::set<hash_type> guids = mBigvecsRequestingPages.getKeys(page);
+
+	for (auto bigvecGuid: guids)
+		handleBigvecPageLoadCompleted_(bigvecGuid, page, completed.result());
+	}
+
+void PersistBigvecTasks::handlePersistObjectResponse(
+					PythonIoTaskResponse loaded
+					)
+	{
+	hash_type requestGuid = loaded.guid();
+
+	if (mPythonIoTaskRequestGuidsToBigvecGuids.find(requestGuid) == 
+			mPythonIoTaskRequestGuidsToBigvecGuids.end())
+		return;
+
+	hash_type bigvecGuid = mPythonIoTaskRequestGuidsToBigvecGuids[requestGuid].first;
+	hash_type dataHash = mPythonIoTaskRequestGuidsToBigvecGuids[requestGuid].second;
+	mPythonIoTaskRequestGuidsToBigvecGuids.erase(requestGuid);
+
+	//the python task has completed. what happened?
+	@match PythonIoTaskResponse(loaded)
+		-| DataSuccessfullyPersisted(_, bytecount) ->> {
+			PolymorphicSharedPtr<PersistentCacheIndex> index = mVDM->getPersistentCacheIndex();
+
+			ImmutableTreeSet<hash_type> hashes;
+
+			for (auto page: mUploadingLayoutsForBigvec[bigvecGuid].getPagesReferenced())
+				hashes = hashes + page.guid();
+
+			index->addBigvec(
+				bigvecGuid,
+				hashes,
+				bytecount,
+				dataHash
+				);
+
+			broadcastBigvecPersistenceTaskComplete_(
+				bigvecGuid,
+				ExternalIoTaskResult::Success()
+				);
+			}
+		-| Failure(_, reason) ->> {
+			broadcastBigvecPersistenceTaskComplete_(
+				bigvecGuid,
+				ExternalIoTaskResult::PythonIoFailure(reason)
+				);
+			}
+		-| UserCausedFailure(_, reason) ->> {
+			broadcastBigvecPersistenceTaskComplete_(
+				bigvecGuid,
+				ExternalIoTaskResult::PythonIoFailure(reason)
+				);
+			}
+		-| _ ->> {
+			lassert_dump(false, prettyPrintString(loaded));
+			}
+	}
+
+void PersistBigvecTasks::checkBigvecPersistenceTask_(hash_type bigvecGuid)
+	{
+	TypedFora::Abi::BigVectorPageLayout pageLayout = 
+		mVDM->getBigVectorLayouts()->getLayoutForId(bigvecGuid);
+
+	PolymorphicSharedPtr<PersistentCacheIndex> index = mVDM->getPersistentCacheIndex();
+
+	if (!index)
+		{
+		broadcastBigvecPersistenceTaskComplete_(
+			bigvecGuid,
+			ExternalIoTaskResult::NoPersistentCacheAvailable()
+			);
+		return;
+		}
+
+	if (mCurrentBigvecPersistenceTasksAllPresent.find(bigvecGuid) == 
+			mCurrentBigvecPersistenceTasksAllPresent.end())
+		{
+		auto pageIdsReferenced = pageLayout.getPagesReferenced();
+
+		mUploadingLayoutsForBigvec[bigvecGuid] = pageLayout;
+
+		bool allPresent = true;
+
+		for (auto page: pageIdsReferenced)
+			if (!pageHasBeenSentToPersistentCache_(page))
+				{
+				allPresent = false;
+				requestSendPageToPersistentCache_(page, bigvecGuid);
+				}
+
+		if (!allPresent)
+			return;
+		else
+			mCurrentBigvecPersistenceTasksAllPresent.insert(bigvecGuid);
+		}
+
+
+	hash_type pythonTaskGuid = mCreateNewHash();
+
+	auto dataToPersist = SerializedObjectFlattener::flattenOnce(
+				SerializedObject::serialize(
+					pageLayout, 
+					mVDM->getMemoryManager()
+					)
+				);
+
+	mPythonIoTaskRequestGuidsToBigvecGuids[pythonTaskGuid] = make_pair(bigvecGuid, dataToPersist->hash());
+
+	//fire off the python upload of the bigvec
+	mBroadcastPythonTask(
+		PythonIoTaskRequest::PersistObject(
+			pythonTaskGuid,
+			dataToPersist,
+			PersistentCacheKey::BigvecDefinition(bigvecGuid).storagePath()
+			)
+		);
+	}
+
+bool PersistBigvecTasks::pageHasBeenSentToPersistentCache_(Fora::PageId page)
+	{
+	PolymorphicSharedPtr<PersistentCacheIndex> index = mVDM->getPersistentCacheIndex();
+
+	return index->pageExists(page.guid());
+	}
+
+void PersistBigvecTasks::requestSendPageToPersistentCache_(Fora::PageId page, hash_type bigvecGuid)
+	{
+	mBigvecsRequestingPages.insert(bigvecGuid, page);
+
+	if (mBigvecsRequestingPages.getKeys(page).size() > 1)
+		return;
+
+	//otherwise, we need to create the computation
+	ExternalIoTaskId taskId(mCreateNewHash());
+
+	ExternalIoTask task = ExternalIoTask::SavePageToPersistentCache(page);
+
+	mCreateNewIoTask(ExternalIoTaskCreated(taskId, task));
+
+	mSavePageToPersistentCacheTasks[taskId] = page;
+	}
+
+void PersistBigvecTasks::handleBigvecPageLoadCompleted_(
+						hash_type bigvecGuid, 
+						Fora::PageId page, 
+						ExternalIoTaskResult result
+						)
+	{
+	if (!result.isSuccess() && mBigvecsRequestingPages.contains(bigvecGuid, page))
+		{
+		broadcastBigvecPersistenceTaskComplete_(bigvecGuid, result);
+		return;
+		}
+
+	mBigvecsRequestingPages.drop(bigvecGuid, page);
+
+	if (!mBigvecsRequestingPages.hasKey(bigvecGuid))
+		{
+		mCurrentBigvecPersistenceTasksAllPresent.insert(bigvecGuid);
+		checkBigvecPersistenceTask_(bigvecGuid);
+		}
+	}
+
+void PersistBigvecTasks::broadcastBigvecPersistenceTaskComplete_(hash_type guid, ExternalIoTaskResult result)
+	{
+	for (auto task: mCurrentBigvecPersistenceTasks.getKeys(guid))
+		mOnExternalIoTaskCompleted(
+			ExternalIoTaskCompleted(task, result)
+			);
+
+	mCurrentBigvecPersistenceTasks.dropValue(guid);
+
+	mUploadingLayoutsForBigvec.erase(guid);
+
+	mCurrentBigvecPersistenceTasksAllPresent.erase(guid);
+
+	mBigvecsRequestingPages.dropKey(guid);
+	}
+
+
+}

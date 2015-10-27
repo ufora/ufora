@@ -1,0 +1,244 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../../core/Common.hppml"
+#include "../../core/math/IntegerRange.hppml"
+#include "../../core/math/IntegerSequence.hppml"
+#include "../../core/RefcountingPtr.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
+#include "Pagelet.hppml"
+
+class MemoryPool;
+
+class ImplValContainer;
+
+namespace TypedFora {
+namespace Abi {
+
+class BigVectorHandle;
+
+class ForaValueArraySpaceRequirements;
+
+class ForaValueArraySlice;
+
+}
+}
+
+namespace Fora {
+
+class PageletTree;
+class PageId;
+
+typedef RefcountingPtr<PageletTree> PageletTreePtr;
+
+class PageletTree : public InstanceCounter<PageletTree> {
+public:
+	PageletTree(
+			MemoryPool* inPool,
+			boost::shared_ptr<Pagelet> lhs,
+			int64_t lhsValueUsed
+			);
+
+	PageletTree(
+			MemoryPool* inPool,
+			const PageletTreePtr& lhs,
+			int64_t lhsValueUsed,
+			const PageletTreePtr& rhs,
+			int64_t rhsValueUsed
+			);
+
+	static PageletTreePtr concatenateAndBalance(MemoryPool* pool, PageletTreePtr lhs, PageletTreePtr rhs);
+
+	boost::shared_ptr<Pagelet> collapseToSinglePagelet(
+									PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM,
+									TypedFora::Abi::ForaValueArray* finalValueArray,
+									bool deepcopyAwayHeldPagelets
+									);
+
+	PageletTreePtr collapseToSinglePageletTreeWithoutHeldPagelets(
+									MemoryPool* targetPool,
+									PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM
+									);
+
+	PageletTreePtr withSmallPageletsCollapsed(
+							MemoryPool* targetPool, 
+							size_t minimumBytecount, 
+							size_t maximumBytecount,
+							PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM,
+							long minChildrenToCollapse,
+							bool isRoot = false
+							);
+
+	PageletTreePtr entirelyWithinMemoryPool(MemoryPool* inPool);
+
+	void associateValues(TypedFora::Abi::BigVectorHandle* inPtr, int64_t offset, IntegerSequence valsWithinPage, Nullable<PageId> pageId);
+
+	TypedFora::Abi::ForaValueArraySlice pageletContaining(int64_t offset);
+
+	PageletTreePtr restrictTo(MemoryPool* pool, long count);
+
+	void incrementRefcount();
+
+	void decrementRefcount();
+
+	~PageletTree();
+
+	JudgmentOnResult currentJor() const;
+
+	uint64_t bytecountFromOS() const;
+
+	uint64_t actualBytecount() const;
+
+	uint64_t bytecountIncludingHeldPagelets() const;
+
+	uint64_t bytecountFromOSIncludingHeldPagelets() const;
+
+	uint64_t size() const;
+
+	PageletTreePtr left() const
+		{
+		return mLeftPtr;
+		}
+
+	PageletTreePtr right() const
+		{
+		return mRightPtr;
+		}
+
+	boost::shared_ptr<Pagelet> leaf() const
+		{
+		return mLeaf;
+		}
+
+	long height() const
+		{
+		return mHeight;
+		}
+
+	long count() const
+		{
+		return mCount;
+		}
+
+	boost::shared_ptr<Pagelet> rightmostPagelet() const;
+
+	int64_t leafValuesUsed() const
+		{
+		return mLeafValuesUsed;
+		}
+
+	int64_t leftPtrValuesUsed() const
+		{
+		return mLeftPtrValuesUsed;
+		}
+
+	int64_t rightPtrValuesUsed() const
+		{
+		return mRightPtrValuesUsed;
+		}
+
+	MemoryPool* getOwningMemoryPool() const
+		{
+		return mOwningMemoryPool;
+		}
+
+
+	//get the memory pool for this node and all nodes below it. 
+	//If there is more than one in the tree, return nullptr.
+	MemoryPool* getMemoryPoolForEntireTree() const
+		{
+		return mMemoryPoolForEntireTree;
+		}
+
+	ImplValContainer extractValueIntoFreeStore(int64_t index) const;
+
+	template<class visitor_type>
+	void visitTree(const visitor_type& vis)
+		{
+		visitTree(vis, IntegerRange(size()));
+		}
+
+	//call 'vis' with every Pagelet that overlaps 'range'. Vis will be called with the arguments
+	//	boost::shared_ptr<Pagelet> pagelet
+	//	IntegerRange effectiveRange - the range within the pagelet that overlaps the input range
+	//	long offset - where in the original tree the bottom of this pagelet is
+	template<class visitor_type>
+	void visitTree(const visitor_type& vis, IntegerRange range, long offsetInOriginalTree = 0)
+		{
+		if (range.isEmpty())
+			return;
+
+		if (mLeaf)
+			{
+			IntegerRange subrange = range.intersect(IntegerRange(mLeafValuesUsed));
+
+			if (!subrange.isEmpty())
+				vis(mLeaf, subrange, offsetInOriginalTree);
+			}
+		
+		if (!mLeftPtr.isEmpty())
+			mLeftPtr->visitTree(
+				vis, 
+				range.intersect(IntegerRange(mLeftPtrValuesUsed)), 
+				offsetInOriginalTree
+				);
+
+		if (!mRightPtr.isEmpty())
+			mRightPtr->visitTree(
+				vis, 
+				(range - mLeftPtrValuesUsed).intersect(IntegerRange(mRightPtrValuesUsed)),
+				offsetInOriginalTree + mLeftPtrValuesUsed
+				);
+		}
+
+	TypedFora::Abi::ForaValueArraySpaceRequirements getSpaceRequirements() const;
+
+private:
+	MemoryPool* mOwningMemoryPool;
+
+	MemoryPool* mMemoryPoolForEntireTree;
+
+	mutable Nullable<JudgmentOnResult> mJor;
+
+	mutable Nullable<uint64_t> mBytecountFromOS;
+
+	mutable Nullable<uint64_t> mBytecount;
+
+	mutable Nullable<uint64_t> mBytecountIncludingHeldPagelets;
+
+	mutable Nullable<uint64_t> mBytecountFromOSIncludingHeldPagelets;
+
+	long mHeight;
+
+	long mCount;
+
+	AO_t mRefcount;
+
+	boost::shared_ptr<Pagelet> mLeaf;
+
+	int64_t mLeafValuesUsed;
+
+	PageletTreePtr mLeftPtr;
+
+	int64_t mLeftPtrValuesUsed;
+
+	PageletTreePtr mRightPtr;
+
+	int64_t mRightPtrValuesUsed;
+};
+
+}

@@ -1,0 +1,253 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../MachineId.hppml"
+#include "../ComputationId.hppml"
+#include "../CheckpointStatus.hppml"
+#include "../CheckpointRequest.hppml"
+#include "CheckpointStatusesKernel.hppml"
+#include "../CumulusCheckpointPolicy.hppml"
+#include "../ComputationStatusOnMachineChanged.hppml"
+#include "../CumulusComponentMessageCreated.hppml"
+#include "../../core/math/Smallest.hpp"
+#include "../CumulusComponentType.hppml"
+#include "../CumulusComponentMessageCreated.hppml"
+
+namespace Cumulus {
+
+/********************
+
+CheckpointStatuses decides when we should checkpoint computations
+depending on how much time has elased, how much data they contain,
+and how long its been since the last checkpoint.
+
+As part of this process, CheckpointStatuses sends TriggerCheckpoint
+messages to computations, who then aggregate this information across
+all their leaves.
+
+********************/
+
+namespace {
+
+double kTimeBetweenStatisticsUpdate = 1.0;
+
+}
+
+class CheckpointStatuses {
+public:
+	CheckpointStatuses(
+				CumulusCheckpointPolicy inCommitPolicy,
+				boost::function2<void, ComputationId, CheckpointRequest> onTriggerStatusUpdate,
+				boost::function1<void, CheckpointRequest> onCommitCheckpoint,
+				boost::function1<void, CumulusComponentMessageCreated> onCumulusComponentMessageCreated
+				) : 
+			mKernel(kTimeBetweenStatisticsUpdate, inCommitPolicy),
+			mOnCumulusComponentMessageCreated(onCumulusComponentMessageCreated),
+			mOnTriggerStatusUpdate(onTriggerStatusUpdate),
+			mOnCommitCheckpoint(onCommitCheckpoint),
+			mTimeOfLastCheckpointLog(0)
+		{
+		}
+	
+	void setCheckpointStatusInterval(double inInterval)
+		{
+		mKernel.setCheckpointStatusInterval(inInterval);
+		}
+
+	void checkpointLoaded(CheckpointRequest checkpoint, bool wasFinished)
+		{
+		mKernel.checkpointLoaded(checkpoint, wasFinished);
+		}
+
+	void pauseCheckpointingBeforeGc()
+		{
+		LOG_INFO << "CheckpointStatuses pausing checkpointing";
+
+		mKernel.pauseNewCommittedCheckpoints();
+
+		broadcastPauseSucceededIfNecessary();	
+		}
+
+	void resumeCheckpointingAfterGc()
+		{
+		LOG_INFO << "CheckpointStatuses resuming checkpointing";
+
+		mKernel.resumeNewCommittedCheckpoints();
+		}
+
+	void broadcastPauseSucceededIfNecessary()
+		{
+		if (mKernel.canBroadcastAfterPause())
+			mOnCumulusComponentMessageCreated(
+				CumulusComponentMessageCreated(
+					CumulusComponentMessage::ComponentToPersistentCacheManager(
+						ComponentToPersistentCacheManagerMessage::CheckpointingIsPausedForGc()
+						),
+					CumulusComponentEndpointSet::LeaderMachine(),
+					CumulusComponentType::PersistentCacheManager()
+					)
+				);
+		}
+
+	void handleComputationStatusOnMachineChanged(
+						const ComputationStatusOnMachineChanged& statusChange,
+						double curTime
+						)
+		{
+		mKernel.computationStatusReceived(statusChange.computation(), curTime);
+		}
+
+	void handleComputationStatusUpdate(
+					ComputationId computation, 
+					CheckpointStatus statistics,
+					CheckpointRequest request,
+					double curTime
+					)
+		{
+		if (mKernel.checkpointReceived(request, statistics, curTime))
+			mOnCommitCheckpoint(request);
+
+		checkStatusUpdates(curTime);
+
+		broadcastPauseSucceededIfNecessary();
+		}
+
+	void handleCheckpointCommitted(CheckpointRequest checkpoint, bool allDataPersistedSuccessfully, double curTime)
+		{
+		mKernel.checkpointCommitted(checkpoint, allDataPersistedSuccessfully, curTime);
+		updateCheckpointStatusOnComputation(checkpoint.rootComputation(), false);
+		checkStatusUpdates(curTime);
+
+		broadcastPauseSucceededIfNecessary();
+		}
+
+	ImmutableTreeMap<ComputationId, pair<CheckpointStatus, CheckpointRequest>>
+	currentOutstandingCheckpointStatuses(bool onlyUnfinished, bool onlyCommitted)
+		{
+		ImmutableTreeMap<ComputationId, pair<CheckpointStatus, CheckpointRequest> > result;
+
+		const auto& whichArray = 
+			(onlyCommitted ? 
+				mKernel.getCommittedCheckpointStatuses() : 
+				mKernel.getCheckpointStatuses()
+				);
+
+		for (auto compAndCheckpoint: whichArray)
+			if (!onlyUnfinished || !compAndCheckpoint.second.status().isRootComputationFinished())
+				result = result + compAndCheckpoint.first + 
+					make_pair(compAndCheckpoint.second.status(), compAndCheckpoint.second.checkpoint());
+
+		return result;
+		}
+
+	void updateCheckpointStatusOnComputation(ComputationId computation, bool isCheckpointing)
+		{
+		mOnCumulusComponentMessageCreated(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::GlobalSchedulerToCumulusClient(
+					GlobalSchedulerToCumulusClientMessage::CheckpointStatusChanged(
+						isCheckpointing ? 
+							ComputationIsCurrentlyCheckpointing::Checkpointing(computation)
+						:	ComputationIsCurrentlyCheckpointing::NotCheckpointing(computation)
+						)
+					),
+				CumulusComponentEndpointSet::AllClients(),
+				CumulusComponentType::CumulusClient()
+				)
+			);
+		}
+
+	void checkStatusUpdates(double curTime)
+		{
+		if (curTime - mTimeOfLastCheckpointLog > 5.0)
+			{
+			mTimeOfLastCheckpointLog = curTime;
+			logOutstandingState(curTime);
+			}
+
+		while (Nullable<CheckpointRequest> checkpoint = mKernel.nextCheckpointToRequest(curTime))
+			{
+			mOnTriggerStatusUpdate(checkpoint->rootComputation(), *checkpoint);
+			LOG_DEBUG << "Checkpointing in checkpoint statuses";
+			if(checkpoint->writeToStorage())
+				{
+				LOG_DEBUG << "Updating checkpointing status to true";
+				updateCheckpointStatusOnComputation(checkpoint->rootComputation(), true);
+				}
+			}
+		}
+
+	void logOutstandingState(double curTime)
+		{
+		LOGGER_INFO_T log = LOGGER_INFO;
+
+		for (auto compAndStatus: mKernel.getCheckpointStatuses())
+			{
+			log << "Computation " << compAndStatus.first.guid() << ": "
+				<< "checkpoint stats a/o " << std::setw(5) << std::fixed << std::setprecision(1) << (curTime - compAndStatus.second.checkpoint().timestamp()) << " ago, "
+				<< "with "
+				<< (mKernel.isFullCheckpointOutstandingAndWaitingForCommit(compAndStatus.first) ? "<commit>" : 
+					mKernel.isFullCheckpointOutstanding(compAndStatus.first) ? "<checkp>" : "        ")
+				<< " I: " << std::setw(10) << std::fixed << std::setprecision(2) << compAndStatus.second.status().statistics().timeSpentInInterpreter()
+				<< " C: " << std::setw(10) << std::fixed << std::setprecision(2) << compAndStatus.second.status().statistics().timeSpentInCompiler()
+				<< " G: " << std::setw(10) << std::fixed << std::setprecision(2) << compAndStatus.second.status().statistics().timeSpentGarbageCollecting()
+				<< " Ct: " << std::setw(10) << std::fixed << std::setprecision(2) << compAndStatus.second.status().totalComputations()
+				<< " SC: " << std::setw(10) << std::fixed << std::setprecision(2) << compAndStatus.second.status().statistics().totalSplitCount()
+				<< " TM: " << std::setw(10) << std::fixed << std::setprecision(2) << compAndStatus.second.status().statistics().timesMoved()
+				<< " TC: " << std::setw(10) << std::fixed << std::setprecision(2) << compAndStatus.second.status().statistics().timesComputed()
+				<< " MEM(MB): " << std::setw(10) << std::fixed << std::setprecision(2) << compAndStatus.second.status().statistics().totalBytesInMemoryFromOS() / 1024 / 1024.0
+				<< "\n";
+			}
+
+		log << "\n\n";
+		if (mKernel.areNewCheckpointsPaused())
+			log << "new checkpoints are paused";
+		}
+
+	void triggerFullCheckpointsOnOutstandingComputations(double curTime)
+		{
+		mKernel.triggerCheckpointsOnAllOutstanding();
+
+		while (Nullable<CheckpointRequest> checkpoint = mKernel.nextCheckpointToRequest(curTime))
+			mOnTriggerStatusUpdate(checkpoint->rootComputation(), *checkpoint);
+		}
+
+	bool anyOutstandingTriggeredCheckpoints()
+		{
+		return mKernel.anyOutstandingTriggeredCheckpoints();
+		}
+
+	void triggerCheckpointIfPossible(ComputationId computation)
+		{
+		mKernel.triggerCheckpointIfPossible(computation);
+		}
+
+private:
+	CheckpointStatusesKernel mKernel;
+
+	boost::function2<void, ComputationId, CheckpointRequest> mOnTriggerStatusUpdate;
+
+	boost::function1<void, CheckpointRequest> mOnCommitCheckpoint;
+
+	boost::function1<void, CumulusComponentMessageCreated> mOnCumulusComponentMessageCreated;
+
+	double mTimeOfLastCheckpointLog;
+};
+
+
+}
+

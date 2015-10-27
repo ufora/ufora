@@ -1,0 +1,148 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <string>
+#include "ImplValNativeCodeModel.hppml"
+#include "../../Native/NativeCode.hppml"
+#include "../../Native/TypedNativeLibraryFunction.hpp"
+
+class JudgmentOnValue;
+
+extern "C" {
+
+void FORA_clib_incrementAlternative(uword_t* dat);
+
+}
+
+namespace TypedFora {
+namespace Abi {
+
+NativeExpression duplicate( const NativeExpression& variable, 
+							const JudgmentOnValue& sourceJov, 
+							const JudgmentOnValue& destJov
+							);
+
+NativeExpression duplicate( const JudgmentOnValue& jov,
+							const NativeExpression& variable
+							);
+
+NativeExpression destroy(	const JudgmentOnValue& jov,
+							const NativeExpression& variable
+							);
+
+NativeExpression duplicate( const ::Type& jov,
+							const NativeExpression& variable
+							);
+
+NativeExpression destroy(	const ::Type& jov,
+							const NativeExpression& variable
+							);
+
+template <class F>
+NativeExpression decrementAlternative(	
+		const NativeExpression& e, 
+		const F& destructorFun, 
+		bool withRefcountTag,
+		const NativeType& type
+		);
+
+template <class F>
+NativeExpression incrementAlternative(	
+		const NativeExpression& e, 
+		const F& destructorFun,
+		bool withRefcountTag,
+		const NativeType& type
+		)
+	{
+	NativeExpression tr =
+	 	makeTypedNativeLibraryFunction(
+	 		FORA_clib_incrementAlternative
+	 		)(e.elemPtr(0, 0))
+	 	.getExpression()
+	 	;
+
+	if (withRefcountTag)
+		tr = tr.taggedWith(
+			NativeExpressionTag::Refcount(
+				e,
+				1,
+				decrementAlternative(e, destructorFun, false, type)
+				)
+			);
+
+	return tr;
+	}
+
+template <class F>
+NativeExpression decrementAlternative(	
+		const NativeExpression& e, 
+		const F& destructorFun, 
+		bool withRefcountTag,
+		const NativeType& type
+		)
+	{
+	NativeExpressionBuilder builder;
+
+	NativeExpression castExpr = 
+		builder.add(
+			e.elemPtr(0,0).cast(
+				type, false
+				)
+			);
+
+	NativeExpression valuePtr = 
+		builder.getPointerExprToCopyOnStack(
+			castExpr
+			);
+	
+	NativeExpression tr = 
+		builder(
+			makeTypedNativeLibraryFunction(
+				destructorFun
+				)(valuePtr)
+			.getExpression()
+			)
+		;
+	
+	if (withRefcountTag)
+		tr = tr.taggedWith(
+			NativeExpressionTag::Refcount(
+				e,
+				-1,
+				incrementAlternative(e, destructorFun, false, type)
+				)
+			);
+
+	return tr;
+	}
+
+bool typeNeedsDestructor(const TypedFora::Type& inType);
+
+Nullable<NativeExpression> teardownVariableExpression(
+							const TypedFora::Type& inType,
+							const NativeVariable& inVar
+							);
+
+NativeExpression wrapExpressionInTeardown(
+							const TypedFora::Type& inType,
+							const NativeVariable& inVar,
+							const NativeExpression& inExpression
+							);
+
+}
+}
+

@@ -1,0 +1,611 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Axioms.hppml"
+#include "Axiom.hppml"
+#include "AxiomGroup.hppml"
+#include "LibcallAxiomGroup.hppml"
+#include "../Core/ClassMediator.hppml"
+#include "../Core/ImplValContainerUtilities.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../Primitives/String.hppml"
+#include "../Runtime.hppml"
+#include "../TypedFora/TypedFora.hppml"
+#include "../TypedFora/TypedForaUtil.hppml"
+#include "../TypedFora/Transforms/RenameVariables.hppml"
+#include "../Primitives/ExternalFunctionDescription.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
+#include "../wrappers/FORTRAN.hppml"
+#include "../../core/SymbolExport.hpp"
+#include "../Serialization/SerializedObject.hpp"
+#include "ExternalFunctionCodegen.hppml"
+
+using namespace Fora;
+using namespace Fora::SharedObjectLibraryFromSource;
+
+namespace {
+
+class BadFortranCallException : public std::logic_error {
+public:	
+	explicit BadFortranCallException(const std::string& errString)
+		: std::logic_error(errString) {}
+};
+
+void addImplValToReturnTypeEncoding(
+		ImmutableTreeVector<uword_t>* indices, const ImplValContainer& val
+		)
+	{
+	if (val.type() == Type::Integer(64, true))
+		*indices = *indices + val.cast<sword_t>();
+	else
+		throw BadFortranCallException(
+			"ReturnType tuple elements should be 64 bit integers "
+			);
+	}
+
+ReturnValue<LibrarySource, std::string> extractLibrarySourceDefinition(
+											const ImplValContainer& inLibrarySource
+											)
+	{
+	Nullable<pair<Symbol, ImplValContainer> > what = 
+		ImplValContainerUtilities::extractAsAlternative(inLibrarySource);
+
+	if (!what)
+		return slot1(
+			std::string(
+				"Expected a hash-tag alternative. Got " + 
+					prettyPrintString(inLibrarySource)
+				)
+			);
+
+	if (!what->second.type().isTuple())
+		return slot1(std::string("Expected a tuple . Got " + prettyPrintString(what->second.type())));
+
+	ImmutableTreeVector<pair<Nullable<Symbol>, ImplValContainer> > tupleElts = 
+		ImplValContainerUtilities::extractTupleContents(what->second);
+
+	if (what->first == Symbol("Code.C") || what->first == Symbol("Code.CPP") || 
+			what->first == Symbol("Code.H") || what->first == Symbol("Code.HPP"))
+		{
+		if (tupleElts.size() != 1 || !tupleElts[0].second.type().isString())
+			return slot1(
+				std::string(
+					"Expected a single string. Got " + 
+						prettyPrintString(what->second)
+					)
+				);
+
+		std::string s = tupleElts[0].second.cast<string_type>().stdString();
+
+		if (what->first == Symbol("Code.C"))
+			return slot0(LibrarySource::CFile(s));
+		if (what->first == Symbol("Code.CPP"))
+			return slot0(LibrarySource::CppFile(s));
+		if (what->first == Symbol("Code.H"))
+			return slot0(LibrarySource::CHeader(s));
+		if (what->first == Symbol("Code.HPP"))
+			return slot0(LibrarySource::CppHeader(s));
+		}
+		else
+	if (what->first == Symbol("Directory"))
+		{
+		ImmutableTreeMap<std::string, LibrarySource> definitions;
+
+		if (tupleElts.size() != 1 || !tupleElts[0].second.type().isDictionary())
+			return slot1(
+				std::string(
+					"Expected a dictionary. Got " + 
+						prettyPrintString(what->second)
+					)
+				);
+
+		Dictionary dict = tupleElts[0].second.cast<Dictionary>();
+
+		for (long k = 0; k < dict.size();k++)
+			{
+			pair<CSTValue, ImplValContainer> elt = dict.pairAtPosition(k);
+
+			if (!elt.first.type().isString())
+				return slot1(std::string(
+					"Expected dictionary keys to be strings. Instead got " + 
+						prettyPrintString(elt.first)
+						)
+					);
+
+			ReturnValue<LibrarySource, std::string> subdef = 
+				extractLibrarySourceDefinition(elt.second);
+
+			if (subdef.getIndex() == 1)
+				return subdef;
+
+			definitions = definitions + 
+				elt.first.cast<string_type>().stdString() + 
+				subdef.get0()
+				;
+			}
+
+		return slot0(LibrarySource::Directory(definitions));
+		}
+	else
+		return slot1(std::string(
+			"Expected one of [Code.C, Code.CPP, Code.H, Code.HPP, Directory]. Got " + 
+				prettyPrintString(what->first)
+				)
+			);
+	}
+
+}
+
+extern "C" {
+
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer, string_type>
+FORA_clib_getAllExternalFunctionDefinitions(
+								const ImplValContainer& inLibrarySource
+								)
+	{
+	using namespace Fora::SharedObjectLibraryFromSource;
+
+	ReturnValue<LibrarySource, std::string> libResult = extractLibrarySourceDefinition(inLibrarySource);
+
+	if (libResult.getIndex() == 1)
+		return slot1(
+			string_type(
+				"Badly formed library definition: " + libResult.get1(),
+				Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+				)
+			);
+
+	BuildResult result;
+
+	result = Runtime::getRuntime().getTypedForaCompiler()->buildLibraryFromSource(libResult.get0());	
+
+	@match BuildResult(result)
+		-| Failure((errors)) ->> {
+			return slot1(
+				string_type(
+					errors,
+					Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+					)
+				);
+			}
+		-| Success(lib) ->> {
+			Dictionary result;
+
+			for (long k = 0; k < lib.manifest().signatures().size();k++)
+				result = result.addKeyValue(
+					CSTValue(lib.manifest().signatures().pairAtPosition(k).first),
+					ImplValContainerUtilities::createExternalFunction(
+						ExternalFunctionDescriptor::CompiledFunction(
+							lib, 
+							lib.manifest().signatures().pairAtPosition(k).first
+							)
+						)
+					);
+
+			return slot0(ImplValContainer(result, true));
+			}
+	}
+
+
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer, string_type>
+FORA_clib_getExternalFunctionDefinition(
+								const ImplValContainer& inLibrarySource,
+								const string_type& inFunctionToFind
+								)
+	{
+	using namespace Fora::SharedObjectLibraryFromSource;
+
+	ReturnValue<LibrarySource, std::string> libResult = extractLibrarySourceDefinition(inLibrarySource);
+
+	if (libResult.getIndex() == 1)
+		return slot1(
+			string_type(
+				"Badly formed library definition: " + libResult.get1(),
+				Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+				)
+			);
+
+	BuildResult result;
+
+	result = Runtime::getRuntime().getTypedForaCompiler()->buildLibraryFromSource(libResult.get0());
+
+	@match BuildResult(result)
+		-| Failure((errors)) ->> {
+			return slot1(
+				string_type(
+					errors,
+					Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+					)
+				);
+			}
+		-| Success(lib) ->> {
+			if (lib.manifest().signatures().contains(inFunctionToFind.stdString()))
+				return slot0(
+					ImplValContainerUtilities::createExternalFunction(
+						ExternalFunctionDescriptor::CompiledFunction(
+							lib, 
+							inFunctionToFind.stdString()
+							)
+						)
+					);
+
+			return slot1(
+				string_type(
+					"Couldn't find function " + inFunctionToFind.stdString(),
+					Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+					)
+				);
+			}
+	}
+
+void dgetrf_(int* M, int *N, double* A, int* lda, int* IPIV, int* INFO);
+
+auto tempFixForAllYourBlasWorries = &dgetrf_;
+
+/**************
+Create a FORTRAN function wrapper.
+
+visibleName - the name of the function in userspace
+libcallName - the name of the C library function we should call
+returnTypeEncoding - a tuple-based encoding of the function's return type
+	can either be a type object, indicating that the function doesn't modify
+	any of its arguments (this is very important!), or it can be a tuple
+	of indices indicating which arguments are going to be modified.
+	These are duplicated in-place returned in a tuple as the function result.
+
+	NOTE: we return the arguments in the order in which they are passed to the
+		function. The ordering of the indices in the returnTypeEncoding is ignored.
+**************/
+
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer, string_type> FORA_clib_getFORTRANFunctionWrapper_CWrapper(
+								const string_type& visibleName,
+								const string_type& libcallName,
+								const ImplValContainer& returnTypeEncoding,
+								const ImplValContainer& jovsTuple
+								)
+	{
+	try {
+		ImmutableTreeVector<JOV> argJovs;
+		
+		for (long k = 0; k < jovsTuple.type().getTuple().types().size(); k++)
+			{
+			JOV incomingJOV = (&jovsTuple.cast<JOV>())[k];
+			if (incomingJOV.type())
+				argJovs = argJovs + incomingJOV;
+			else
+				{
+				std::ostringstream err;
+
+				err << "Argument " << boost::lexical_cast<string>(k+1) 
+					<< " has no type.";
+				throw BadFortranCallException(
+					err.str()
+					);
+				}
+			}
+		
+		FortranReturnType fortranReturnTypeDescriptor;
+
+		if (returnTypeEncoding.type().isTuple())
+			{
+			ImmutableTreeVector<uword_t> indices;
+
+			using namespace boost;
+			ImplValContainerUtilities::iterateTupleContents(
+				returnTypeEncoding.getReference(), 
+				bind(addImplValToReturnTypeEncoding, &indices, _1)
+				);
+			
+			fortranReturnTypeDescriptor = FortranReturnType::ModifiesArgumentsInPlace(indices);
+			}
+		else
+			{
+			if (!returnTypeEncoding.type().isJOVAsValue())
+				throw BadFortranCallException(
+					"ReturnType argument must be a type or a tuple of 64 bit integers"
+					);
+
+			JOV returnTypeJOV = returnTypeEncoding.cast<JOV>();
+			if (returnTypeJOV.type())
+				fortranReturnTypeDescriptor = FortranReturnType::Normal(*returnTypeJOV.type());
+			else
+				throw BadFortranCallException(
+					"Given return-type JOV wasn't itself a type."
+					);
+			}
+
+		ExternalFunctionDescriptor res = 
+				getFORTRANFunctionWrapper(
+					visibleName.stdString(),
+					libcallName.stdString(),
+					argJovs,
+					fortranReturnTypeDescriptor
+					);
+		
+		return slot0(
+			ImplValContainerUtilities::createExternalFunction(
+				res
+				)
+			);
+		}
+	catch(BadFortranCallException& e)
+		{
+		return slot1(
+			string_type(
+				e.what(),
+				Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+				)
+			);
+		}
+	catch(std::logic_error& e)
+		{
+		return slot1(
+			string_type(
+				"Exception while creating FORTRAN wrapper: " + std::string(e.what()),
+				Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+				)
+			);
+		}
+	catch(...)
+		{
+		return slot1(
+			string_type(
+				"Unknown exception while creating FORTRAN wrapper.",
+				Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+				)
+			);
+		}
+	}
+}
+
+class ExternalFunctionCallAxiom : public AxiomGroup {
+public:
+		ExternalFunctionCallAxiom() : AxiomGroup(
+					JOVT() +
+						JudgmentOnValue::OfType(
+							Type::ExternalFunction(true)
+							) +
+						"Call" + 
+						JOVTE::Extras()
+					)
+			{
+			}
+		
+		Nullable<Axiom> axiom(TypedFora::Compiler& c, const JudgmentOnValueTuple& s)
+			{
+			bool hasCallTarget;
+
+			Nullable<AxiomJOA> aJoa = axiomJOA(s, hasCallTarget);
+			
+			if (!aJoa || !aJoa->isNative())
+				return null();
+			
+			//it covers - go ahead and generate the relevant axiom
+			if (hasCallTarget)
+				{
+				ExternalFunctionDescriptor desc =
+					s.jovs()[0].constant()->cast<ExternalFunctionDescriptor>();
+
+				return null() << Axiom::Native(
+					s,
+					aJoa->getNative().joa(),
+					TypedFora::addDummyArgumentsPassByValueUnowned(
+						TypedFora::Transforms::renameNativeVariables(
+							getCallableForExternalFunction(desc, s.slice(2), c)
+							),
+						s.jovs().slice(0,2)
+						)
+					);
+				}
+			else
+				{
+				//we assume that this is a constant
+				@match AxiomJOA(*aJoa)
+					-|	Native(joa) ->> {
+						return null() << AxiomGroup::throwsAxiom(
+							s,
+							*joa.throwPart()[0].constant()
+							);
+						}
+					;
+				}			
+			}
+
+		JudgmentOnValueTuple weakestAxiomFor(const Fora::ApplyArgFrame& inIndices)
+			{
+			//first one is the external function itself
+			ExternalFunctionDescriptor desc =
+				inIndices[0].first.cast<ExternalFunctionDescriptor>();
+			
+			if (desc.isEmpty())
+				//the empty one can't have anything done to it at all
+				return JOVT() + CSTValue(inIndices[0].first) + JOVTE::Extras();
+			
+			ImmutableTreeVector<Nullable<Symbol> > names;
+			ImmutableTreeVector<JudgmentOnValue> jovs;
+
+			for (long k = 0; k < inIndices.size(); k++)
+				{
+				names = names + inIndices[k].second;
+				jovs = jovs + JOV::FromLiveValue(inIndices[k].first);
+				}
+			
+			JOVT callJOVT(jovs.slice(2), names.slice(2));
+
+			JOVT tr = weakestAxiomFor_(desc, callJOVT, jovs, names);
+
+			return tr;
+			}
+
+		JudgmentOnValueTuple weakestAxiomFor_(
+							const ExternalFunctionDescriptor& desc, 
+							const JudgmentOnValueTuple& callJOVT,
+							const ImmutableTreeVector<JudgmentOnValue>& jovs,
+							const ImmutableTreeVector<Nullable<Symbol> >& names
+							)
+			{
+			bool dummy;
+			ImmutableTreeVector<pair<string, JOV> > dummy2;
+
+			Nullable<pair<JOVT, bool> > targetSignatureAndIsOK = 
+				getCallSignatureAsJOVTForExternalFunction(desc, callJOVT, dummy, dummy2);
+
+			lassert(targetSignatureAndIsOK);
+
+			return JOVT::merge(JOVT() + jovs[0] + "Call", targetSignatureAndIsOK->first);
+			}
+
+		Nullable<AxiomJOA>		axiomJOA(const JudgmentOnValueTuple& s)
+			{
+			bool dummy;
+
+			return axiomJOA(s, dummy);
+			}
+
+		Nullable<AxiomJOA>		axiomJOA(const JudgmentOnValueTuple& s, bool& outHasDefinition)
+			{
+			outHasDefinition = false;
+
+			if (!s.jovs()[0].constant())
+				return null();
+			
+			ExternalFunctionDescriptor desc =
+				s.jovs()[0].constant()->cast<ExternalFunctionDescriptor>();
+			
+			string funName;
+
+			Nullable<pair<JOVT, bool> > callSignatureAndIsOK;
+
+			JudgmentOnAction targetJOA;
+
+			JudgmentOnValueTuple appliedSignature = s.slice(2);
+			
+			bool needsRuntimeCheck = false;
+
+			@match ExternalFunctionDescriptor(desc)
+				-|	Empty() ->> {
+					return null() << AxiomJOA::Throws(
+						CSTValue("Can't call the empty ExternalFunction")
+						);
+					}
+				-|	_ ->> {
+					ImmutableTreeVector<pair<string, JOV> > dummy;
+					
+					callSignatureAndIsOK = 
+						getCallSignatureAsJOVTForExternalFunction(
+							desc, 
+							appliedSignature, 
+							needsRuntimeCheck,
+							dummy
+							);
+					
+					if (callSignatureAndIsOK)
+						{
+						targetJOA = getResultSignatureAsJOAForExternalFunction(desc, appliedSignature);
+
+						funName = visibleNameForExternalFunction(desc);
+						}
+					}
+			
+			//if we couldn't tell whether we'd succeed or fail, we can't produce an axiom
+			if (!callSignatureAndIsOK)
+				return null();
+			
+			if (!callSignatureAndIsOK->second)
+				{
+				return null() << AxiomJOA::Native(invalidCallSignatureForExternalFunctionJOA(desc));
+				}
+			else
+				{
+				outHasDefinition = true;
+
+				//it covers - go ahead and generate the relevant axiom
+				if (needsRuntimeCheck)
+					return null() << AxiomJOA::Native(
+						targetJOA | invalidCallSignatureForExternalFunctionJOA(desc)
+						);
+				else
+					return null() << AxiomJOA::Native(targetJOA);
+				}
+			}
+};
+
+
+class ExternalFunctionAxioms {
+public:
+		ExternalFunctionAxioms()
+			{
+			AxiomGroups("ExternalFunction") += new ExternalFunctionCallAxiom();
+			
+			AxiomGroups("ExternalFunction") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						" FORTRANFunctionWrapper" +
+						"Call" +
+						JOV::OfType(Type::String()) +
+						JOV::OfType(Type::String()) +
+						JOV() +
+						JOVTE::Extras(
+							JOV::OfType(Type::JOVAsValue())
+							)
+						,
+					ReturnSlots() + 
+						ReturnSlot::Normal(JOV()) +
+						ReturnSlot::Exception(JOV::OfType(Type::String())),
+					&FORA_clib_getFORTRANFunctionWrapper_CWrapper,
+					emptyTreeVec() + (uword_t)2 + 3 + 4 + 5
+					);
+			
+			AxiomGroups("ExternalFunction") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						"GetSharedObjectLibraryFunction" +
+						"Call" +
+						JOV() +
+						JOV::OfType(Type::String())
+						,
+					ReturnSlots() + 
+						ReturnSlot::Normal(JOV()) +
+						ReturnSlot::Exception(JOV::OfType(Type::String())),
+					&FORA_clib_getExternalFunctionDefinition,
+					emptyTreeVec() + (uword_t)2 + 3
+					);
+			
+			AxiomGroups("ExternalFunction") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						"GetAllSharedObjectLibraryFunctions" +
+						"Call" +
+						JOV()
+						,
+					ReturnSlots() + 
+						ReturnSlot::Normal(JOV()) +
+						ReturnSlot::Exception(JOV::OfType(Type::String())),
+					&FORA_clib_getAllExternalFunctionDefinitions,
+					emptyTreeVec() + (uword_t)2
+					);
+			}
+
+};
+
+
+ExternalFunctionAxioms externalAxioms;
+
+
+
+

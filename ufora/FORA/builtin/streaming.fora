@@ -1,0 +1,168 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+`hidden;
+
+toCSVString: fun
+( String str ){
+    return str
+}
+( filters.IsIterable(...) iterable ) { 
+    let outString = "";
+    let csvSeparator = ",";
+    let firstPass = true;
+    for elem in iterable {
+        if (firstPass) {
+            outString = outString + String(elem);
+            firstPass = false;
+        } else {
+            outString = outString + csvSeparator + String(elem);
+        }
+    }
+    return outString
+};
+
+
+VectorStream: class {
+    member vec;
+    
+    streamType: "Vector";
+    mimeTypes: ["CSV"];
+    
+    toString: fun(format:="CSV"){ 
+        if (format!="CSV") 
+            throw "Output format " + format + " is not implemented for " + streamType;
+        return toCSVString(vec)
+    };    
+    static mixin Stream;
+};
+    
+TupleStream: class {
+    member tup;
+    
+    streamType: "Tuple";
+    mimeTypes: ["CSV"];
+    
+    toString: fun(format:="CSV", showHeaders:=false, showOnlyHeaders:=false){
+        if (format!="CSV")
+            throw "Output format " + format + " is not implemented for " + streamType;
+
+        let headerString = "";
+
+        if (showHeaders or showOnlyHeaders){
+            let tupNames = [];
+            for n in tup..names{
+                tupNames = tupNames :: String(n).replace("`","");
+            };
+            // show headerString only if ALL fields in a tuple are named
+            headerString = if ("nothing" not in tupNames) {
+                    toCSVString( tupNames ) + "\n"
+                } else {
+                    ""
+                };
+        }; 
+        if (showOnlyHeaders)
+            return headerString
+        else
+            return headerString + toCSVString(tup) + "\n"
+    };
+
+    getChunkCount: fun(){ return 1 }; 
+
+    getChunk: fun( chunkInd, showHeaders:=false, showOnlyHeaders:=false ){
+        if (chunkInd == 0) 
+            return toString( showHeaders:showHeaders, showOnlyHeaders: showOnlyHeaders ).dataAsVector
+        else
+            return []
+    };
+        
+    // operator match(Stream _) { "Tuple " + String(tup) + " is matched to Stream" };
+    static mixin Stream;
+};
+
+VectorOfTuplesStream: class {
+    member vecOfTup;
+
+    streamType: "VectorOfTuples";
+    mimeTypes: ["CSV"];
+
+    chunkSizeInMB:  10*1024*1024;  // 10MB
+    chunkSizeInRowCounts: 10000;
+    getChunkCountFromNRows: fun(){
+        let numRows = size(vecOfTup);
+        let minChunks = if (numRows > 0) 1 else 0;
+        return Int64(max( minChunks, math.ceil(Float64(numRows)/Float64(chunkSizeInRowCounts))));
+    };
+
+    getChunkCount: fun(){
+        // check that the elements in the vector of the same type. 
+        let sampleIndexes = [math.round( 0.25*size(vecOfTup)), math.round( 0.5*size(vecOfTup))-1,
+                            math.round( 0.75*size(vecOfTup))-1, size(vecOfTup)-1];
+        let t0 = vecOfTup[0];
+        for ind in sampleIndexes{
+            let ti = vecOfTup[ind];
+
+            if ( size(t0) != size(ti)  ) throw "Tuples of variable length are not supported";
+            if ( t0..names != ti..names) throw "Tuple names must be the same for all elements in a vector";
+        }
+        return getChunkCountFromNRows();
+    };
+
+    toChunkingForm: fun
+    ( (firstTuple, lastTuple) ){
+        return toChunkingForm( firstTuple, lastTuple);
+    }
+    (firstTuple, lastTuple) {
+        let uint8vec = [];
+        for tupIndex in sequence( firstTuple, lastTuple ){
+            uint8vec = uint8vec + 
+                TupleStream( vecOfTup[tupIndex] ).getChunk(0);
+        }
+        return uint8vec;
+    };
+
+    getChunk: fun(chunkInd, parallelMode:=true){
+        let nChunks = getChunkCount();
+        let nRowsPerChunk = chunkSizeInRowCounts;
+        let numRows = size(vecOfTup);
+        let uint8vec = [];
+        if (chunkInd == 0) {
+            uint8vec = TupleStream( vecOfTup[0] ).getChunk(0, showOnlyHeaders:true);
+        };
+        let firstRow = chunkInd*nRowsPerChunk;
+        let lastRow = min( firstRow + nRowsPerChunk, numRows );
+        if (parallelMode) {
+            let smallChunkSize = 10;
+            let batches = [];
+            let startingChunk = firstRow;
+            while (startingChunk < lastRow){
+                batches = batches :: (startingChunk, min(lastRow, startingChunk+smallChunkSize));
+                startingChunk = startingChunk + smallChunkSize;
+            };
+            let vecOfuint8vec = batches ~~ {toChunkingForm(_)};
+            if (size(vecOfuint8vec) > 0){
+                return uint8vec + vecOfuint8vec.sum();
+            } else {
+                return uint8vec;
+            }
+        } else {
+            uint8vec = uint8vec + toChunkingForm( firstRow, lastRow );
+            return uint8vec;
+        }
+    };
+};
+
+
+

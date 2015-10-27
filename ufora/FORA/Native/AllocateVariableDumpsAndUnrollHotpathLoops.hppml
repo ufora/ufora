@@ -1,0 +1,75 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "NativeCodeFlattened.hppml"
+#include <map>
+
+/*******************
+allocateVariableDumpsAndUnrollHotpathLoops
+
+In the "NativeCodeFlattened" model, every block has a set of variables which are
+"live" when code passes to them, and every exit point from every block has a
+set of variables which are "dumped".  The "live" variables are held in PHI nodes
+inside of LLVM, and any block arguments are implicitly considered live.  If
+node N1 transfers to N2, any 'live' values in N1 that are also live in N2 are
+passed in LLVM registers. Any values that are not live in N1 but that are live in
+N2 must be loaded from our secondary stack. Variables are considered live when
+they are created as well.
+
+In order for an assignment of dumps to be "correct", it must be the case that every
+variable that stops being live gets dumped to a slot if it is going to ever be
+used again. So, for instance, there is no need to dump variables that are
+used exclusively in the block in which they are introduced.  On the other hand,
+any variables that are 'live' across a funtion call must be dumped to slots,
+since the slots are the only form of storage that persists across function
+calls.
+
+Given that we have reasonably accurate branch-path statistics, we can choose
+a set of 'dumps' and live variabless at each node that minimizes the number of
+dumps we do over the course of the function.  We'd like to minimize the number of
+live variables in total, since they force extra register pressure on the
+compiler and cause us to allocate unnecessary PHI nodes.  In our current
+model, we will, unfortunately, create N*M phi nodes where N is the number of
+variables in the system and M is the average number of blocks those
+variables are live within.  In regular LLVM, we would only create N phi nodes.
+As a result, it's very valuable to reduce the number of live nodes.
+
+In practice, our algorithm attempts to define a 'hot path', which consists of
+a set of nodes that are most often active (perhaps in a loop) and prioritizes
+variables that are passed among those blocks.  Our algorithm consists of
+defining, for each variable, the node where it is created, the nodes where
+it is used and the set of nodes across which is it well defined.  We then
+define, for each node a 'hot incoming path' and a 'hot outgoing path'.  Any
+values that are live in the target node then become live in the source node.
+We follow the chain upstream until this is true. Finally, we scan through
+the system and dump any nodes that are used downstream but that are not
+live in the target.
+
+In the future, we will need to more tightly integrate our model of the stack
+with LLVM, since our current implementation creates rather significant
+overhead for function calls, and since LLVM is only getting a little bit of the
+branch prediction data to help it allocate registers.
+
+********************/
+
+
+void allocateVariableDumpsAndUnrollHotpathLoops(std::map<NativeBlockID,
+									NativeCodeFlattened::Block>& outBlocks);
+
+
+
+

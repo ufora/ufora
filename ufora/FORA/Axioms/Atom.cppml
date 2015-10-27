@@ -1,0 +1,1418 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Axioms.hppml"
+#include "Axiom.hppml"
+#include "AxiomMetadataUtil.hppml"
+#include "LibcallAxiomGroup.hppml"
+#include <boost/lexical_cast.hpp>
+#include "../Runtime.hppml"
+#include "../Core/Integers.hppml"
+#include "../Primitives/String.hppml"
+#include <algorithm>
+#include "AxiomGroup.hppml"
+#include <boost/random.hpp>
+#include <limits>
+#include "../../core/SymbolExport.hpp"
+#include "../../core/StringUtil.hpp"
+#include "../Core/TupleCategory.hppml"
+#include "../Primitives/CodeLocation.hppml"
+#include "TypedForaAxiomBuilder.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../Core/ImplValContainerUtilities.hppml"
+#include "../Core/RefcountPool.hppml"
+#include "../Native/NativeExpressionBuilder.hppml"
+#include "../Native/TypedNativeLibraryFunction.hpp"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include "../TypedFora/ABI/TestTypedForaValuesIdentical.hppml"
+#include "../TypedFora/TypedFora.hppml"
+
+#include <boost/algorithm/string.hpp>
+
+using namespace Fora;
+
+using TypedFora::Abi::nativeLayoutType;
+
+extern "C" {
+
+ReturnValue<ForaStackTrace> FORA_clib_addStackTraces(
+	const ForaStackTrace& left, const ForaStackTrace& right
+	);
+
+ReturnValue<string_type> FORA_clib_implValToString(const ImplValContainer& v);
+
+ReturnValue<string_type> FORA_clib_implValBlockedToString(
+	const ImplValContainer& val, const ImplValContainer& dict
+	);
+
+ReturnValue<string_type> FORA_clib_implValToPrintableString(const ImplValContainer& v);
+
+BSA_DLLEXPORT
+int32_t  FORA_clib_symbolCompare(const Symbol& a, const Symbol& b)
+	{
+	return a.cmp(b);
+	}
+
+BSA_DLLEXPORT
+bool FORA_clib_float32IsNan(float f)
+	{
+	return boost::math::isnan(f);
+	}
+
+BSA_DLLEXPORT
+bool FORA_clib_float64IsNan(double d)
+	{
+	return boost::math::isnan(d);
+	}
+
+BSA_DLLEXPORT
+bool FORA_clib_float32IsFinite(float f)
+	{
+	return boost::math::isfinite(f);
+	}
+
+BSA_DLLEXPORT
+bool FORA_clib_float64IsFinite(double d)
+	{
+	return boost::math::isfinite(d);
+	}
+
+BSA_DLLEXPORT
+bool FORA_clib_float32IsNormal(float f)
+	{
+	return boost::math::isnormal(f);
+	}
+
+BSA_DLLEXPORT
+bool FORA_clib_float64IsNormal(double d)
+	{
+	return boost::math::isnormal(d);
+	}
+
+BSA_DLLEXPORT
+bool FORA_clib_float32IsInfinite(float f)
+	{
+	return boost::math::isinf(f);
+	}
+
+BSA_DLLEXPORT
+bool FORA_clib_float64IsInfinite(double d)
+	{
+	return boost::math::isinf(d);
+	}
+
+
+BSA_DLLEXPORT
+bool FORA_clib_implValIsCST(const ImplValContainer& i1)
+	{
+	return i1.isCST();
+	}
+
+BSA_DLLEXPORT
+bool FORA_clib_IVCsAreIdentical(const ImplValContainer& i1, const ImplValContainer& i2)
+	{
+	bool tr = i1.type() == i2.type() && i1.type().cmp(i1.data(), i2.data()) == 0;
+	return tr;
+	}
+
+namespace {
+
+void stripWhitespace(const char*& low, const char*& hi)
+	{
+	while (low < hi && isspace(*low)) low++;
+	while (low < hi && (hi-1) >= low && isspace(*(hi-1))) hi--;
+	}
+
+}
+
+
+#define def_FORA_clib_arith_from_string(t,tname) \
+BSA_DLLEXPORT \
+ReturnValue<t, string_type> FORA_clib_arith_from_string ## tname(const string_type& strVal)\
+	{\
+	const char* low = strVal.c_str(); \
+	const char* hi = low + strVal.size(); \
+	stripWhitespace(low, hi); \
+	try {\
+		return slot0(boost::lexical_cast<t>(low, hi - low)); \
+		}\
+	catch(...) {};\
+	return slot1(string_type(\
+		"can't convert to value", \
+		Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool() \
+		));\
+	}\
+
+BSA_DLLEXPORT
+ReturnValue<double, string_type> FORA_clib_arith_from_stringFloat64(const string_type& strVal)
+	{
+	const char* data = strVal.c_str();
+	char* outData = 0;
+
+	double out = strtod(data, &outData);
+	
+	if (outData == data)
+		{
+		return slot1(
+			string_type(
+				"can't convert to value of type Float64", 
+				Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool() 
+				)
+			);
+		}
+
+	return slot0(out);
+	}
+
+
+BSA_DLLEXPORT
+ReturnValue<bool, string_type> FORA_clib_arith_from_stringBool(const string_type& strVal)
+	{
+	std::string s = strVal.stdString();
+	boost::algorithm::trim(s);
+
+	try {
+		return slot0(boost::lexical_cast<bool>(s));
+		}
+	catch (boost::bad_lexical_cast& e)
+		{
+		boost::algorithm::to_lower(s);
+
+		if (s == "true")
+			return slot0(1);
+		if (s == "false")
+			return slot0(0);
+		}
+	catch (...) {};
+	return slot1(string_type(
+		"can't convert to value of type Bool", 
+		Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+		));
+	}
+
+BSA_DLLEXPORT
+ReturnValue<string_type> FORA_clib_arith_to_stringBool(bool value)
+	{
+	if (value)
+		return slot0(string_type("true", nullptr));
+	else
+		return slot0(string_type("false", nullptr));
+	}
+
+int fastSignedIntegerPrint(int64_t value, char* buffer)
+	{
+	static_assert(sizeof(string_type) >= 32, "string might not be large enough to hold result");
+	
+	int ct = 0;
+	bool isPositive = true;
+	if (value < 0)
+		{
+		isPositive = false;
+		value *= -1;
+		}
+	
+	if (value == 0)
+		{
+		buffer[0] = '0';
+		return 1;
+		}
+	
+	while (value != 0)
+		{
+		int valModTen = value % 10;
+		
+		buffer[ct++] = "0123456789"[valModTen];
+		value = value / 10;
+		}
+	
+	if (!isPositive)
+		buffer[ct++] = '-';
+	
+	for (long ix = 0; ix < ct - ix - 1; ix++)
+		std::swap(buffer[ix], buffer[ct - ix - 1]);
+	
+	return ct; 
+	} 
+
+int fastUnsignedIntegerPrint(uint64_t value, char* buffer)
+	{
+	static_assert(sizeof(string_type) >= 32, "string might not be large enough to hold result");
+
+	int ct = 0;
+
+	if (value == 0)
+		{
+		buffer[0] = '0';
+		return 1;
+		}
+
+	while (value != 0)
+		{
+		int valModTen = value % 10;
+		buffer[ct++] = "0123456789"[valModTen];
+		value = value / 10;
+		}
+
+	for (long ix = 0; ix < ct - ix - 1; ix++)
+		std::swap(buffer[ix], buffer[ct - ix - 1]);
+
+	return ct;
+	}
+
+BSA_DLLEXPORT
+ReturnValue<string_type> FORA_clib_arith_to_stringInt16(const int16_t& value)
+	{
+	char buf[sizeof(string_type) - 1];
+
+	int ct = fastSignedIntegerPrint(value, buf);
+
+	return slot0(string_type(buf, ct, nullptr));
+	}
+
+BSA_DLLEXPORT
+ReturnValue<string_type> FORA_clib_arith_to_stringUInt16(uint16_t value)
+	{
+	char buf[sizeof(string_type) - 1];
+
+	int ct = fastUnsignedIntegerPrint(value, buf);
+
+	return slot0(string_type(buf, ct, nullptr));
+	}
+
+BSA_DLLEXPORT
+ReturnValue<string_type> FORA_clib_arith_to_stringInt32(int32_t value)
+	{
+	char buf[sizeof(string_type) - 1];
+
+	int ct = fastSignedIntegerPrint(value, buf);
+
+	return slot0(string_type(buf, ct, nullptr));
+	}
+
+BSA_DLLEXPORT
+ReturnValue<string_type> FORA_clib_arith_to_stringUInt32(uint32_t value)
+	{
+	char buf[sizeof(string_type) - 1];
+
+	static_assert(sizeof(uint32_t) == sizeof(int), "expected int to be 4 bytes");
+
+	int ct = fastUnsignedIntegerPrint(value, buf);
+
+	return slot0(string_type(buf, ct, nullptr));
+	}
+
+BSA_DLLEXPORT
+ReturnValue<string_type> FORA_clib_arith_to_stringInt64(int64_t value)
+	{
+	char buf[sizeof(string_type) - 1];
+
+	int ct = fastSignedIntegerPrint(value, buf);
+
+	return slot0(string_type(buf, ct, nullptr));
+	}
+
+BSA_DLLEXPORT
+ReturnValue<string_type> FORA_clib_arith_to_stringUInt64(uint64_t value)
+	{
+	char buf[sizeof(string_type) - 1];
+
+	int ct = fastUnsignedIntegerPrint(value, buf);
+
+	return slot0(string_type(buf, ct, nullptr));
+	}
+
+BSA_DLLEXPORT
+ReturnValue<string_type> FORA_clib_arith_to_stringFloat32(float value)
+	{
+	ostringstream st;
+	st << setprecision(20) << value;
+	
+	std::string toWrite = st.str();
+	return slot0(string_type(toWrite + "f32", nullptr));
+	}
+
+BSA_DLLEXPORT
+ReturnValue<string_type> FORA_clib_arith_to_stringFloat64(double value)
+	{
+	char buf[100];
+
+	snprintf(buf, 100, "%.15g", value);
+
+	std::string toWrite(buf);
+	
+	int i = toWrite.find("e");
+	
+	if (i != std::string::npos && toWrite.find(".") == std::string::npos)
+		{
+		return slot0(string_type(
+			toWrite.substr(0,i) + ".0" + toWrite.substr(i),
+			nullptr
+			));
+		}
+
+	if (toWrite.find('.') == std::string::npos 
+			&& toWrite.find("nan") == std::string::npos
+			&& toWrite.find("inf") == std::string::npos
+			)
+		return slot0(string_type(toWrite + ".0", nullptr));
+	else
+		return slot0(string_type(toWrite, nullptr));
+	}
+
+BSA_DLLEXPORT
+ReturnValue<string_type> FORA_clib_arith_to_stringInt8(const int8_t& value)
+	{
+	return FORA_clib_arith_to_stringInt16(value);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<string_type> FORA_clib_arith_to_stringUInt8(uint8_t value)
+	{
+	return FORA_clib_arith_to_stringUInt16(value);
+	}
+
+BSA_DLLEXPORT
+ReturnValue<uint8_t, string_type> FORA_clib_arith_from_stringUInt8(const string_type& strVal)
+	{
+	const char* low = strVal.c_str();
+	const char* hi = low + strVal.size();
+	stripWhitespace(low, hi);
+	try {
+		uint16_t val = boost::lexical_cast<uint16_t>(low, hi - low);
+		if (val >= std::numeric_limits<uint8_t>::min() && 
+			val <= std::numeric_limits<uint8_t>::max())
+			return slot0(val);
+		}
+	catch(...) {};
+	return slot1(string_type(
+		"can't convert to value of type UInt8", 
+		Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+		));
+	}
+BSA_DLLEXPORT
+ReturnValue<int8_t, string_type> FORA_clib_arith_from_stringInt8(const string_type& strVal)
+	{
+	const char* low = strVal.c_str();
+	const char* hi = low + strVal.size();
+	stripWhitespace(low, hi);
+	try { 
+		int16_t val = boost::lexical_cast<int16_t>(low, hi - low);
+		if (val >= std::numeric_limits<int8_t>::min() && 
+			val <= std::numeric_limits<int8_t>::max())
+			return slot0(val);
+		} 
+	catch(...) {}; 
+	return slot1(
+		string_type("can't3 convert to value of type Int8", 
+			Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+			)
+		);
+	} 
+
+BSA_DLLEXPORT
+void FORA_clib_logMessage(const ImplValContainer& message)
+	{
+	Fora::Interpreter::ExecutionContext::currentExecutionContext()->logAMessage(message);
+	}
+
+
+def_FORA_clib_arith_from_string(uint16_t, UInt16)
+def_FORA_clib_arith_from_string(uint32_t, UInt32)
+def_FORA_clib_arith_from_string(uint64_t, UInt64)
+def_FORA_clib_arith_from_string(int16_t, Int16)
+def_FORA_clib_arith_from_string(int32_t, Int32)
+def_FORA_clib_arith_from_string(int64_t, Int64)
+def_FORA_clib_arith_from_string(float, Float32)
+
+//def_FORA_clib_arith_from_string(double, Float64)
+
+} // extern "C"
+
+Type upcastArithmeticTypes(const Type& ty1, const Type& ty2)
+	{
+	if (ty1 == ty2)
+		return ty1;
+
+	if (ty1.isFloat() && !ty2.isFloat())
+		return ty1;
+	if (!ty1.isFloat() && ty2.isFloat())
+		return ty2;
+	if (ty1.isFloat() && ty2.isFloat())
+		{
+		if (ty1.getFloat().bits() > ty2.getFloat().bits())
+			return ty1;
+			else
+			return ty2;
+		}
+	@match Type(ty1)
+		-| 	Integer(bits, sz) ->> {
+			@match Type(ty2)
+				-|	Integer(bits2, sz2) ->> {
+					return Type::Integer(max(bits, bits2), sz || sz2);
+					}
+				;
+			}
+		-|	_ ->> {
+			return Type::Nothing();
+			}
+		;
+	}
+	
+class IdenticalAxiom : public AxiomGroup {
+public:
+		IdenticalAxiom() : AxiomGroup(JOVT() + "Identical" + "Call" + JOV() + JOV())
+			{
+			}
+
+		Nullable<Axiom> axiom(TypedFora::Compiler& c, const JudgmentOnValueTuple& s)
+			{
+			if (s.jovs()[2].disjoint(s.jovs()[3]))
+				return null() << AxiomGroup::returnsAxiom(s, CSTValue((bool)false));
+
+			TypedFora::TypedForaAxiomBuilder builder(s, TypedFora::RefcountStyle::Pooled());
+			
+			return null() << 
+				builder.axiomForExpression(
+					TypedFora::Abi::exprTestArgsAreIdentical(
+						builder.var(2).expr(), 
+						builder.var(3).expr()
+						),
+					TypedFora::RefcountStyle::Pooled(),
+					JOV::OfType(Type::Integer(1,false)),
+					false
+					);
+			}
+		Nullable<AxiomJOA>		axiomJOA(const JudgmentOnValueTuple& s)
+			{
+			if (s.jovs()[2].disjoint(s.jovs()[3]))
+				return null() << AxiomJOA::Returns(JOV::Constant(CSTValue((bool)false)));
+
+			return null() << AxiomJOA::Returns(JOV::OfType(Type::Integer(1,false)));
+			}
+};
+	
+class IsCSTAxiom : public AxiomGroup {
+public:
+		IsCSTAxiom() : AxiomGroup(JOVT() + "IsCST" + "Call" + JOV())
+			{
+			}
+
+		Nullable<Axiom> axiom(TypedFora::Compiler& c, const JudgmentOnValueTuple& s)
+			{
+			if (s.jovs()[2].isCST())
+				return null() << AxiomGroup::returnsAxiom(s, CSTValue((bool)*s.jovs()[2].isCST()));
+
+			return null() << LibcallAxiomGroup::createAxiom(
+				signature(),
+				ReturnSlots() + JOV::OfType(Type::Integer(1, false)),
+				&FORA_clib_implValIsCST,
+				ImmutableTreeVector<uword_t>() + 2
+				);
+			}
+
+		Nullable<AxiomJOA>		axiomJOA(const JudgmentOnValueTuple& s)
+			{
+			if (s.jovs()[2].isCST())
+				return null() << AxiomJOA::Returns(JOV::Constant(CSTValue((bool)*s.jovs()[2].isCST())));
+
+			return null() << AxiomJOA::Returns(JOV::OfType(Type::Integer(1,false)));
+			}
+};
+
+class AtomAxioms {
+public:
+		ImmutableTreeVector<Type> mArithTypes;
+		ImmutableTreeVector<Type> mIntegerTypes;
+		ImmutableTreeVector<Type> mFloatTypes;
+		ImmutableTreeMap<std::string, NativeBinaryOpcode> mBinOps;
+		ImmutableTreeMap<std::string, NativeUnaryOpcode> mMathOps;
+		ImmutableTreeMap<std::string, NativeBinaryOpcode> mCompOps;
+		
+		
+		AtomAxioms()
+			{
+			setupTypes();
+			dumpAxioms();
+			}
+			
+		void setupTypes()
+			{
+			mIntegerTypes = mIntegerTypes + Type::Integer(1,false);
+			
+			for (uword_t s = 0; s < 2; s++)
+				mIntegerTypes = mIntegerTypes +
+								Type::Integer(8,s) +
+								Type::Integer(16,s) +
+								Type::Integer(32,s) +
+								Type::Integer(64,s);
+
+			mFloatTypes = mFloatTypes + Type::Float(32) + Type::Float(64);
+
+			mArithTypes = mIntegerTypes + mFloatTypes;
+
+			mBinOps = mBinOps +
+				make_pair("+", NativeBinaryOpcode::Add()) +
+				make_pair("-", NativeBinaryOpcode::Sub()) +
+				make_pair("*", NativeBinaryOpcode::Mul()) +
+				make_pair("/", NativeBinaryOpcode::Div()) +
+				make_pair("%", NativeBinaryOpcode::Mod())
+				;
+			mMathOps = mMathOps +
+				make_pair("log", NativeUnaryOpcode::Log()) +
+				make_pair("exp", NativeUnaryOpcode::Exp()) +
+				make_pair("sin", NativeUnaryOpcode::Sin()) +
+				make_pair("cos", NativeUnaryOpcode::Cos())
+				;
+			mCompOps = mCompOps +
+				make_pair("<", NativeBinaryOpcode::LT()) +
+				make_pair(">", NativeBinaryOpcode::GT()) +
+				make_pair("<=", NativeBinaryOpcode::LTE()) +
+				make_pair(">=", NativeBinaryOpcode::GTE()) +
+				make_pair("!=", NativeBinaryOpcode::NEQ()) +
+				make_pair("==", NativeBinaryOpcode::EQ())
+				;
+			}
+	
+		void dumpAxioms()
+			{
+			AxiomGroups("Atom") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						"SymbolCompare" +
+						"Call" +
+						JOV::OfType(Type::Symbol()) +
+						JOV::OfType(Type::Symbol()) +
+						JOVTE::NoExtras(),
+					ReturnSlots() + JOV::OfType(Type::Integer(32, true)),
+					&FORA_clib_symbolCompare,
+					ImmutableTreeVector<uword_t>() + 2 + 3
+					)
+				;
+				
+				{
+				NativeAxiomVars vars(
+									JOVT() +
+									CSTValue(JOV::OfType(Type::Symbol())) +
+									"Call" +
+									OfType(Type::Tag()) +
+									JOVTE::NoExtras()
+									);
+				AxiomGroups("Atom") += AxiomGroup::simple(vars, OfType(Type::Symbol()), vars[2], false);
+				}
+			
+				{
+				NativeAxiomVars vars(
+									JOVT() +
+									CSTValue(JOV::OfType(Type::Symbol())) +
+									"Call" +
+									OfType(Type::Tag()) +
+									JOVTE::NoExtras()
+									);
+				AxiomGroups("Atom") += AxiomGroup::simple(vars, OfType(Type::Symbol()), vars[2], false);
+				}
+				
+				{
+				NativeAxiomVars vars(
+									JOVT() +
+									CSTValue(JOV::OfType(Type::Tag())) +
+									"Call" +
+									OfType(Type::Symbol()) +
+									JOVTE::NoExtras()
+									);
+				AxiomGroups("Atom") += AxiomGroup::simple(vars, OfType(Type::Tag()), vars[2], false);
+				}
+
+			for (long k = 0; k < mArithTypes.size();k++)
+				dumpAxiomsForArithType(k);
+			
+			for (long k = 0; k < mIntegerTypes.size();k++)
+				dumpAxiomsForIntegerType(k);
+			
+			for (long bitness = 32; bitness <= 64; bitness += 32)
+				{
+				ImmutableTreeMap<string, string> nameMap;
+				nameMap = nameMap + string("isNan") + string("FORA_clib_floatXXIsNan");
+				nameMap = nameMap + string("isNormal") + string("FORA_clib_floatXXIsNormal");
+				nameMap = nameMap + string("isFinite") + string("FORA_clib_floatXXIsFinite");
+				nameMap = nameMap + string("isInfinite") + string("FORA_clib_floatXXIsInfinite");
+                
+                ImmutableTreeMap<string, string> descriptionMap;
+                descriptionMap = descriptionMap + string("isNan") + 
+                    string("Return whether or not a float value is NaN (\"not a number\")");
+                descriptionMap = descriptionMap + string("isNormal") +
+                    string("Return whether or not a float is a \"normal\" value "
+                        "(ie, not infinite, or not NaN).");
+                descriptionMap = descriptionMap + string("isFinite") + 
+                    string("Return whether or not a float is finite");
+                descriptionMap = descriptionMap + string("isInfinite") + 
+                    string("Return whether or not a string is infinite "
+                        "(either positive or negative infinity)");
+
+				for (long k = 0; k < nameMap.size();k++)
+					{
+                    auto axiomPtr = AxiomGroup::libcall(
+						JOVT() +
+							JOV::OfType(Type::Float(bitness)) + 
+							"Member" +
+							nameMap.pairAtPosition(k).first.c_str()
+							,
+						OfType(Type::Integer(1, false)),
+						Ufora::substitute(
+							nameMap.pairAtPosition(k).second,
+							"XX",
+							boost::lexical_cast<string>(bitness)
+							),
+						emptyTreeVec() + (uword_t)0
+						);
+
+                    axiomPtr->setMetadata(
+                        AxiomMetadataUtil::createMarkdownAlternative(
+                            "#### Usage\n\n"
+                            "    floatValue." + nameMap.pairAtPosition(k).first + "\n\n"
+                            "#### Description\n\n" + descriptionMap.pairAtPosition(k).second + "\n\n"
+                            "#### Examples\n\n"
+                            "    (1.0)." + nameMap.pairAtPosition(k).first + "\n\n"
+                            )
+                        );
+
+					AxiomGroups("Atom") += axiomPtr;
+					}
+				}
+
+			AxiomGroups("Atom") += LibcallAxiomGroup::create(
+								JOVT() +
+									"ParsableRepresentation" +
+									"Call" +
+									JudgmentOnValue() +
+									JOVTE::NoExtras(),
+								ReturnSlots() + JOV::OfType(Type::String()),
+								&FORA_clib_implValToString,
+								emptyTreeVec() + (uword_t)2
+								);
+
+
+			AxiomGroups("Atom") += LibcallAxiomGroup::create(
+								JOVT() +
+									"LogMessage" +
+									"Call" +
+									JOV(),
+								ReturnSlots() + JOV::OfType(Type::Nothing()),
+								&FORA_clib_logMessage,
+								emptyTreeVec() + (uword_t)2,
+								null(),
+								null(),
+								0,
+								true //has a sideeffect
+								);
+
+			AxiomGroups("Atom") += LibcallAxiomGroup::create(
+								JOVT() +
+									"ParsableRepresentation" +
+									"Call" +
+									JudgmentOnValue() +
+									jovAnyDictionary() +
+									JOVTE::NoExtras(),
+								ReturnSlots() + JOV::OfType(Type::String()),
+								&FORA_clib_implValBlockedToString,
+								emptyTreeVec() + (uword_t)2 + (uword_t)3
+								);
+
+			AxiomGroups("Atom") += LibcallAxiomGroup::create(
+								JOVT() +
+									"PrintableRepresentation" +
+									"Call" +
+									JudgmentOnValue() +
+									JOVTE::NoExtras(),
+								ReturnSlots() + JOV::OfType(Type::String()),
+								&FORA_clib_implValToPrintableString,
+								emptyTreeVec() + (uword_t)2
+								);
+
+			AxiomGroups("Atom") += new IdenticalAxiom();
+			AxiomGroups("Atom") += new IsCSTAxiom();
+			
+
+			AxiomGroups("Atom") +=
+				LibcallAxiomGroup::create(
+					JOVT() +
+						JOV::OfType(Type::StackTrace()) +
+						"Operator" +
+						"+" +
+						JOV::OfType(Type::StackTrace()) +
+						JOVTE::NoExtras(),
+					ReturnSlots() + JOV::OfType(Type::StackTrace()),
+					&FORA_clib_addStackTraces,
+					ImmutableTreeVector<uword_t>() + 0 + 3
+					)
+				;
+
+				{
+				NativeAxiomVars vars(
+									JOVT() +
+									OfType(Type::Symbol()) +
+									"Operator" +
+									"==" +
+									OfType(Type::Symbol()) +
+									JOVTE::NoExtras()
+									);
+				AxiomGroups("Atom") += AxiomGroup::simple(
+									vars,
+									OfType(Type::Integer(1,false)),
+									vars[0] == vars[3],
+									false
+									);
+				}
+			}
+		void dumpAxiomsForIntegerType(long k)
+			{
+			for (long j = 0; j < mIntegerTypes.size(); j++)
+				{
+				//<<
+					{
+					NativeAxiomVars vars(
+										JOVT() +
+										OfType(mIntegerTypes[k]) +
+										"Operator" +
+										"<<" +
+										OfType(mIntegerTypes[j]) +
+										JOVTE::NoExtras()
+										);
+					
+					Type target = upcastArithmeticTypes(mIntegerTypes[k], mIntegerTypes[j]);
+					
+					AxiomGroups("Atom") += AxiomGroup::simple(
+											vars,
+											OfType(target),
+											NativeExpression::BinaryOp(
+												NativeBinaryOpcode::ShiftLeft(),
+												vars[0].cast(
+													nativeLayoutType(target),
+													false
+													),
+												vars[3].cast(
+													nativeLayoutType(target),
+													false
+													)
+												),
+											false
+											);
+					}
+				//>>
+					{
+					NativeAxiomVars vars(
+										JOVT() +
+										OfType(mIntegerTypes[k]) +
+										"Operator" +
+										">>" +
+										OfType(mIntegerTypes[j]) +
+										JOVTE::NoExtras()
+									);
+					
+					Type target = upcastArithmeticTypes(mIntegerTypes[k], mIntegerTypes[j]);
+					
+					AxiomGroups("Atom") += AxiomGroup::simple(
+										vars,
+										OfType(target),
+										NativeExpression::BinaryOp(
+											NativeBinaryOpcode::ShiftRight(),
+											vars[0].cast(
+												nativeLayoutType(target),
+												false
+												),
+											vars[3].cast(
+												nativeLayoutType(target),
+												false
+												)
+											),
+										false);
+					}
+				//&
+					{
+					NativeAxiomVars vars(
+										JOVT() +
+										OfType(mIntegerTypes[k]) +
+										"Operator" +
+										"&" +
+										OfType(mIntegerTypes[j]) +
+										JOVTE::NoExtras()
+										);
+					Type target = upcastArithmeticTypes(mIntegerTypes[k], mIntegerTypes[j]);
+
+					AxiomGroups("Atom") += AxiomGroup::simple(
+										vars,
+										OfType(target),
+										NativeExpression::BinaryOp(
+											NativeBinaryOpcode::And(),
+											vars[0].cast(
+												nativeLayoutType(target),
+												false
+												),
+											vars[3].cast(
+												nativeLayoutType(target),
+												false
+												)
+											),
+										false
+										);
+					}
+				//|
+					{
+					NativeAxiomVars vars(
+										JOVT() +
+										OfType(mIntegerTypes[k]) +
+										"Operator" +
+										"|" +
+										OfType(mIntegerTypes[j]) +
+										JOVTE::NoExtras());
+					Type target = upcastArithmeticTypes(mIntegerTypes[k], mIntegerTypes[j]);
+
+					AxiomGroups("Atom") += AxiomGroup::simple(
+										vars,
+										OfType(target),
+										NativeExpression::BinaryOp(
+											NativeBinaryOpcode::Or(),
+											vars[0].cast(
+												nativeLayoutType(target),
+												false
+												),
+											vars[3].cast(nativeLayoutType(target), false)
+											),
+										false);
+					}
+				//^
+					{
+					NativeAxiomVars vars(
+										JOVT() +
+										OfType(mIntegerTypes[k]) +
+										"Operator" +
+										"^" +
+										OfType(mIntegerTypes[j]) +
+										JOVTE::NoExtras()
+										);
+					Type target = upcastArithmeticTypes(mIntegerTypes[k], mIntegerTypes[j]);
+
+					AxiomGroups("Atom") += AxiomGroup::simple(
+										vars,
+										OfType(target),
+										NativeExpression::BinaryOp(
+											NativeBinaryOpcode::Xor(),
+											vars[0].cast(nativeLayoutType(target), false),
+											vars[3].cast(nativeLayoutType(target), false)
+											),
+										false
+										);
+					}
+				}
+
+			//^ as a single operand
+				{
+				NativeAxiomVars vars(
+									JOVT() +
+									OfType(mIntegerTypes[k]) +
+									"LeftOperator" +
+									"^" +
+									JOVTE::NoExtras()
+									);
+
+				AxiomGroups("Atom") += AxiomGroup::simple(
+									vars,
+									OfType(mIntegerTypes[k]),
+									NativeExpression::UnaryOp(
+										NativeUnaryOpcode::NOT(),
+										vars[0]
+										),
+									false);
+				}
+
+			}
+
+		void dumpStringToArithAxiom(long k)
+			{
+			JOVT jovt = JOVT() + 
+				JOV::OfType(Type::String()) +
+				"Convert" +
+				CSTValue(JOV::OfType(mArithTypes[k]))
+				;
+
+			auto slots = ReturnSlots() + 
+				ReturnSlot::Normal(JOV::OfType(mArithTypes[k])) + 
+				ReturnSlot::Exception(JOV::OfType(Type::String()))
+				;
+
+			if (mArithTypes[k] == Type::Integer(1,false))
+				AxiomGroups("Atom") += LibcallAxiomGroup::create(jovt, slots, 
+					&FORA_clib_arith_from_stringBool, emptyTreeVec() + (uword_t)0);
+				else
+			if (mArithTypes[k] == Type::Integer(8,false))
+				AxiomGroups("Atom") += LibcallAxiomGroup::create(jovt, slots, 
+					&FORA_clib_arith_from_stringUInt8, emptyTreeVec() + (uword_t)0);
+				else
+			if (mArithTypes[k] == Type::Integer(8,true))
+				AxiomGroups("Atom") += LibcallAxiomGroup::create(jovt, slots, 
+					&FORA_clib_arith_from_stringInt8, emptyTreeVec() + (uword_t)0);
+				else
+			if (mArithTypes[k] == Type::Integer(64,false))
+				AxiomGroups("Atom") += LibcallAxiomGroup::create(jovt, slots, 
+					&FORA_clib_arith_from_stringUInt64, emptyTreeVec() + (uword_t)0);
+				else
+			if (mArithTypes[k] == Type::Integer(64,true))
+				AxiomGroups("Atom") += LibcallAxiomGroup::create(jovt, slots, 
+					&FORA_clib_arith_from_stringInt64, emptyTreeVec() + (uword_t)0);
+				else
+			if (mArithTypes[k] == Type::Integer(32,false))
+				AxiomGroups("Atom") += LibcallAxiomGroup::create(jovt, slots, 
+					&FORA_clib_arith_from_stringUInt32, emptyTreeVec() + (uword_t)0);
+				else
+			if (mArithTypes[k] == Type::Integer(32, true))
+				AxiomGroups("Atom") += LibcallAxiomGroup::create(jovt, slots, 
+					&FORA_clib_arith_from_stringInt32, emptyTreeVec() + (uword_t)0);
+				else
+			if (mArithTypes[k] == Type::Integer(16,false))
+				AxiomGroups("Atom") += LibcallAxiomGroup::create(jovt, slots, 
+					&FORA_clib_arith_from_stringUInt16, emptyTreeVec() + (uword_t)0);
+				else
+			if (mArithTypes[k] == Type::Integer(16,true))
+				AxiomGroups("Atom") += LibcallAxiomGroup::create(jovt, slots, 
+					&FORA_clib_arith_from_stringInt16, emptyTreeVec() + (uword_t)0);
+				else
+			if (mArithTypes[k] == Type::Float(64))
+				AxiomGroups("Atom") += LibcallAxiomGroup::create(jovt, slots, 
+					&FORA_clib_arith_from_stringFloat64, emptyTreeVec() + (uword_t)0);
+				else
+			if (mArithTypes[k] == Type::Float(32))
+				AxiomGroups("Atom") += LibcallAxiomGroup::create(jovt, slots, 
+					&FORA_clib_arith_from_stringFloat32, emptyTreeVec() + (uword_t)0);
+			else
+				lassert_dump(false, mArithTypes[k].toString());
+			}
+
+		void dumpArithToStringAxiom(long k)
+			{
+			JOVT jovt = JOVT() + 
+				CSTValue(JOV::OfType(Type::String())) +
+				"Call" +
+				JOV::OfType(mArithTypes[k])
+				;
+
+			auto slots = ReturnSlots() + 
+				JOV::OfType(Type::String())
+				;
+
+			if (mArithTypes[k] == Type::Integer(1,false))
+				AxiomGroups("Atom") += LibcallAxiomGroup::create(jovt, slots, 
+					&FORA_clib_arith_to_stringBool, emptyTreeVec() + (uword_t)2);
+				else
+			if (mArithTypes[k] == Type::Integer(8,false))
+				AxiomGroups("Atom") += LibcallAxiomGroup::create(jovt, slots, 
+					&FORA_clib_arith_to_stringUInt8, emptyTreeVec() + (uword_t)2);
+				else
+			if (mArithTypes[k] == Type::Integer(8,true))
+				AxiomGroups("Atom") += LibcallAxiomGroup::create(jovt, slots, 
+					&FORA_clib_arith_to_stringInt8, emptyTreeVec() + (uword_t)2);
+				else
+			if (mArithTypes[k] == Type::Integer(64,false))
+				AxiomGroups("Atom") += LibcallAxiomGroup::create(jovt, slots, 
+					&FORA_clib_arith_to_stringUInt64, emptyTreeVec() + (uword_t)2);
+				else
+			if (mArithTypes[k] == Type::Integer(64,true))
+				AxiomGroups("Atom") += LibcallAxiomGroup::create(jovt, slots, 
+					&FORA_clib_arith_to_stringInt64, emptyTreeVec() + (uword_t)2);
+				else
+			if (mArithTypes[k] == Type::Integer(32,false))
+				AxiomGroups("Atom") += LibcallAxiomGroup::create(jovt, slots, 
+					&FORA_clib_arith_to_stringUInt32, emptyTreeVec() + (uword_t)2);
+				else
+			if (mArithTypes[k] == Type::Integer(32, true))
+				AxiomGroups("Atom") += LibcallAxiomGroup::create(jovt, slots, 
+					&FORA_clib_arith_to_stringInt32, emptyTreeVec() + (uword_t)2);
+				else
+			if (mArithTypes[k] == Type::Integer(16,false))
+				AxiomGroups("Atom") += LibcallAxiomGroup::create(jovt, slots, 
+					&FORA_clib_arith_to_stringUInt16, emptyTreeVec() + (uword_t)2);
+				else
+			if (mArithTypes[k] == Type::Integer(16,true))
+				AxiomGroups("Atom") += LibcallAxiomGroup::create(jovt, slots, 
+					&FORA_clib_arith_to_stringInt16, emptyTreeVec() + (uword_t)2);
+				else
+			if (mArithTypes[k] == Type::Float(64))
+				AxiomGroups("Atom") += LibcallAxiomGroup::create(jovt, slots, 
+					&FORA_clib_arith_to_stringFloat64, emptyTreeVec() + (uword_t)2);
+				else
+			if (mArithTypes[k] == Type::Float(32))
+				AxiomGroups("Atom") += LibcallAxiomGroup::create(jovt, slots, 
+					&FORA_clib_arith_to_stringFloat32, emptyTreeVec() + (uword_t)2);
+			else
+				lassert_dump(false, mArithTypes[k].toString());
+			}
+
+		void dumpAxiomsForArithType(long k)
+			{
+			dumpStringToArithAxiom(k);
+			dumpArithToStringAxiom(k);
+
+			for (long j = 0; j < mArithTypes.size(); j++)
+				{
+				//arithmetic
+				for (long o = 0; o < mBinOps.size(); o++)
+					{
+					NativeAxiomVars vars(
+										JOVT() +
+										OfType(mArithTypes[k]) +
+										"Operator" +
+										mBinOps.pairAtPosition(o).first +
+										OfType(mArithTypes[j]) +
+										JOVTE::NoExtras()
+										);
+					
+					Type target = upcastArithmeticTypes(mArithTypes[k], mArithTypes[j]);
+					
+					if (mArithTypes[j].isFloat() ||
+							mArithTypes[k].isFloat() ||
+							(!mBinOps.pairAtPosition(o).second.isDiv() &&
+							!mBinOps.pairAtPosition(o).second.isMod()
+							)
+						)
+						{
+						AxiomGroups("Atom") += AxiomGroup::simple(
+							vars,
+							OfType(target),
+							NativeExpression::BinaryOp(
+								mBinOps.pairAtPosition(o).second,
+								vars[0].cast(nativeLayoutType(target), false),
+								vars[3].cast(nativeLayoutType(target), false)
+								),
+							false
+							);
+						}
+					else // op is `% or `/ and no argument type is Float.
+						{
+						NativeExpression divisor = vars[3];
+						
+						AxiomGroups("Atom") += AxiomGroup::simple(
+								AxiomGroup::simpleAxiom(
+									vars,
+									OfType(target),
+									JOV::Constant(CSTValue("Attempted division by zero.")),
+									NativeExpression::If(
+										divisor != NativeExpression::Zero(*divisor.type()),
+										NativeExpression::Return(
+											0,
+											NativeExpression::BinaryOp(
+												mBinOps.pairAtPosition(o).second,
+												vars[0].cast(nativeLayoutType(target), false),
+												vars[3].cast(nativeLayoutType(target), false)
+											)
+										),
+										NativeExpression::Return(
+											1,
+											NativeExpression::Nothing()
+										)
+									)
+								)
+							);
+						}
+					}
+				//comparison operators
+				for (long o = 0; o < mCompOps.size();o++)
+					{
+					NativeAxiomVars vars(
+										JOVT() +
+										OfType(mArithTypes[k]) +
+										"Operator" +
+										mCompOps.pairAtPosition(o).first +
+										OfType(mArithTypes[j]) +
+										JOVTE::NoExtras()
+										);
+					
+					Type target = upcastArithmeticTypes(mArithTypes[k], mArithTypes[j]);
+
+					AxiomGroups("Atom") +=
+						AxiomGroup::simple(
+							vars,
+							OfType(Type::Integer(1,false)),
+							NativeExpression::BinaryOp(
+								mCompOps.pairAtPosition(o).second,
+								vars[0].cast(nativeLayoutType(target), false),
+								vars[3].cast(nativeLayoutType(target), false)
+							),
+						false
+						);
+					}
+
+				//min/max
+					{
+					NativeAxiomVars vars(
+										JOVT() +
+										OfType(mArithTypes[k]) +
+										"Operator" +
+										"<<<" +
+										OfType(mArithTypes[j]) +
+										JOVTE::NoExtras());
+					
+					Type target = upcastArithmeticTypes(mArithTypes[k], mArithTypes[j]);
+
+					AxiomGroups("Atom") += AxiomGroup::simple(vars, OfType(target),
+						NativeExpression::Selector(
+							vars[0].cast(nativeLayoutType(target), false)  <
+								vars[3].cast(nativeLayoutType(target), false),
+							vars[0].cast(nativeLayoutType(target), false),
+							vars[3].cast(nativeLayoutType(target), false)
+							),
+						false
+						);
+					}
+
+					{
+					NativeAxiomVars vars(
+										JOVT() +
+										OfType(mArithTypes[k]) +
+										"Operator" +
+										">>>" +
+										OfType(mArithTypes[j]) +
+										JOVTE::NoExtras()
+										);
+					
+					Type target = upcastArithmeticTypes(mArithTypes[k], mArithTypes[j]);
+
+					AxiomGroups("Atom") += AxiomGroup::simple(vars, OfType(target),
+						NativeExpression::Selector(
+							vars[0].cast(nativeLayoutType(target), false) >
+								vars[3].cast(nativeLayoutType(target), false),
+							vars[0].cast(nativeLayoutType(target), false),
+							vars[3].cast(nativeLayoutType(target), false)
+							),
+						false
+						);
+					}
+
+
+				//type conversion
+				if (k != 0)
+					{
+					//not converting to 'bool'
+					NativeAxiomVars vars(
+										JOVT() +
+										CSTValue(JOV::OfType(mArithTypes[k])) +
+										"Call" +
+										OfType(mArithTypes[j]) +
+										JOVTE::NoExtras());
+					AxiomGroups("Atom") += AxiomGroup::simple(
+										vars,
+										OfType(mArithTypes[k]),
+										vars[2].cast(
+											nativeLayoutType(mArithTypes[k]),
+											false
+											),
+										false);
+					}
+					else
+					{
+					//converting to bool
+					NativeAxiomVars vars(
+										JOVT() +
+										CSTValue(JOV::OfType(mArithTypes[k])) +
+										"Call" +
+										OfType(mArithTypes[j]) +
+										JOVTE::NoExtras()
+										);
+					AxiomGroups("Atom") += AxiomGroup::simple(
+										vars,
+										OfType(mArithTypes[k]),
+										vars[2] != NativeExpression::Zero(
+													nativeLayoutType(mArithTypes[j])
+													),
+										false
+										);
+					}
+				}
+			//Zero
+				{
+				NativeAxiomVars vars(
+									JOVT() +
+									CSTValue(JOV::OfType(mArithTypes[k])) +
+									"Call" +
+									JOVTE::NoExtras());
+				AxiomGroups("Atom") += AxiomGroup::simple(
+									vars,
+									OfType(mArithTypes[k]),
+									NativeExpression::Zero(
+										nativeLayoutType(mArithTypes[k])
+										),
+									false
+									);
+				}
+			//NOT
+				{
+				NativeAxiomVars vars(
+									JOVT() +
+									OfType(mArithTypes[k]) +
+									"LeftOperator" +
+									"!" +
+									JOVTE::NoExtras()
+									);
+				AxiomGroups("Atom") += AxiomGroup::simple(
+									vars,
+									OfType(Type::Integer(1,false)),
+									vars[0] == NativeExpression::Zero(
+												nativeLayoutType(mArithTypes[k])
+												),
+									false
+									);
+				}
+			//Negation
+			if (mArithTypes[k].isFloat() || mArithTypes[k].isInteger())
+				{
+				NativeAxiomVars vars(
+
+					JOVT() +
+						OfType(mArithTypes[k]) +
+						"LeftOperator" +
+						"-"
+						);
+				
+				if (mArithTypes[k].isFloat())
+					AxiomGroups("Atom") +=
+						AxiomGroup::simple(
+							vars,
+							OfType(mArithTypes[k]),
+							NativeExpression::BinaryOp(
+								NativeBinaryOpcode::Mul(),
+								vars[0],
+								NativeExpression::Constant(
+									mArithTypes[k] == Type::Float(64) ?
+										NativeConstant::Double(-1.0) :
+										NativeConstant::Float(-1.0)
+									)
+								),
+							false
+							);
+					else
+				if (mArithTypes[k].getInteger().isSigned())
+					AxiomGroups("Atom") +=
+						AxiomGroup::simple(
+							vars,
+							OfType(mArithTypes[k]),
+							NativeExpression::UnaryOp(
+								NativeUnaryOpcode::Negate(),
+								vars[0]
+								),
+							false
+							);
+					else
+				if (k != 0) // Bools require a little extra attention
+					AxiomGroups("Atom") +=
+						AxiomGroup::simple(
+							vars,
+							OfType(
+								Type::Integer(
+									mArithTypes[k].getInteger().bits(),
+									true
+									)
+								),
+							NativeExpression::UnaryOp(
+								NativeUnaryOpcode::Negate(),
+								vars[0].cast(
+									NativeType::Integer(
+										mArithTypes[k].getInteger().bits(),
+										true
+										),
+									false
+									)
+								),
+							false
+							);
+					else // Bool case: -true -> true, -false -> false
+					AxiomGroups("Atom") +=
+						AxiomGroup::simple(
+							vars,
+							JOV::OfType(
+								Type::Integer(1, false)
+								),
+							vars[0],
+							false
+							);
+				}
+			
+			//log/exp/sin/cos
+			for (long o = 0; o < mMathOps.size();o++)
+				{
+				NativeAxiomVars vars(
+									JOVT() +
+									mMathOps.pairAtPosition(o).first +
+									"Call" +
+									OfType(mArithTypes[k]) +
+									JOVTE::NoExtras()
+									);
+				AxiomGroups("Atom") += AxiomGroup::simple(
+									vars,
+									OfType(Type::Float(64)),
+									NativeExpression::UnaryOp(
+										mMathOps.pairAtPosition(o).second,
+										vars[2].cast(NativeType::Float(64), false)
+										),
+									false
+									);
+				}
+			//x^y with y = integer has a different implementation than y=float
+			for (long j = 0; j < mIntegerTypes.size();j++)
+				{
+				NativeAxiomVars vars(
+									JOVT() +
+									OfType(mArithTypes[k]) +
+									"Operator" +
+									"**" +
+									OfType(mIntegerTypes[j]) +
+									JOVTE::NoExtras());
+				AxiomGroups("Atom") += AxiomGroup::simple(
+									vars,
+									OfType(Type::Float(64)),
+									NativeExpression::BinaryOp(
+										NativeBinaryOpcode::Power(),
+										vars[0].cast(NativeType::Float(64), false),
+										vars[3].cast(NativeType::Float(64),false)
+										),
+									false
+									);
+				}
+			for (long j = 0; j < mFloatTypes.size();j++)
+				{
+				NativeAxiomVars vars(
+									JOVT() +
+									OfType(mArithTypes[k]) +
+									"Operator" +
+									"**" +
+									OfType(mFloatTypes[j]) +
+									JOVTE::NoExtras()
+									);
+				AxiomGroups("Atom") += AxiomGroup::simple(
+									vars,
+									OfType(Type::Float(64)),
+									NativeExpression::BinaryOp(
+										NativeBinaryOpcode::Power(),
+										vars[0].cast(
+											NativeType::Float(64),
+											false
+											),
+										vars[3].cast(NativeType::Float(64), false)
+										),
+									false);
+				}
+
+			}
+
+			
+};
+AtomAxioms atomAxioms;
+

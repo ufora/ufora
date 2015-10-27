@@ -1,0 +1,215 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "GraphCycles.hppml"
+
+namespace Ufora {
+
+/******************
+
+GraphWithCalculatedProperty
+
+A utility class that keeps an updated copy of a graph with 
+properties on each node. Properties are computed for every node
+in a cycle by merging the properties of every parent node (thats
+not in the same cycle). We can use this to compute things like
+reachability, etc.
+
+******************/
+
+template<class node_type, class property_type>
+class GraphWithCalculatedProperty {
+public:
+	GraphWithCalculatedProperty(
+				boost::function<property_type (const std::set<node_type>&)> inInitializeFunction, 
+				boost::function<property_type (property_type, property_type)> inMergeFunction
+				) : 
+			mInitializeFunction(inInitializeFunction),
+			mMergeFunction(inMergeFunction),
+			mGraphWithCycles(
+				boost::bind(&GraphWithCalculatedProperty::addCycle_, this, boost::arg<1>()),
+				boost::bind(&GraphWithCalculatedProperty::dropCycle_, this, boost::arg<1>())
+				)
+		{
+		}
+
+	void addEdge(const node_type& source, const node_type& dest)
+		{
+		mGraphWithCycles.addEdge(source, dest);
+		mDirtyCycles.insert(mGraphWithCycles.cycleFor(source));
+		}
+
+	void dropEdge(const node_type& source, const node_type& dest)
+		{
+		mDirtyCycles.insert(mGraphWithCycles.cycleFor(source));
+		mGraphWithCycles.dropEdge(source, dest);
+		}
+
+	void dropNode(const node_type& node)
+		{
+		std::vector<std::pair<node_type, node_type> > edges;
+
+		for (auto child: mGraphWithCycles.edges().getValues(node))
+			edges.push_back(std::make_pair(node, child));
+		for (auto parent: mGraphWithCycles.edges().getKeys(node))
+			edges.push_back(std::make_pair(parent, node));
+
+		for (auto e: edges)
+			dropEdge(e.first, e.second);
+		}
+
+	const GraphCycles<node_type>& graph() const
+		{
+		return mGraphWithCycles;
+		}
+
+	void update()
+		{
+		std::set<node_type> discard;
+		update(discard);
+		}
+
+	void update(std::set<node_type>& outNodesWithNewValues)
+		{
+		std::set<int64_t> changedCycles;
+
+		while (mDirtyCycles.size())
+			{
+			int64_t cycle = *mDirtyCycles.begin();
+			mDirtyCycles.erase(cycle);
+
+			if (updateCycle(cycle))
+				{
+				changedCycles.insert(cycle);
+
+				for (auto upstream: mGraphWithCycles.cycleEdges().getKeys(cycle))
+					mDirtyCycles.insert(upstream);
+				}
+			}
+
+		for (auto cycle: changedCycles)
+			{
+			for (auto node: mGraphWithCycles.cycleContents(cycle))
+				{
+				if (mNodeValues.find(node) == mNodeValues.end() || 
+						mNodeValues[node] != mCycleProperties[cycle])
+					{
+					outNodesWithNewValues.insert(node);
+					mNodeValues[node] = mCycleProperties[cycle];
+					}
+				}
+			}
+		}
+
+	bool hasDirtyCycles() const
+		{
+		return mDirtyCycles.size();
+		}
+
+	Nullable<property_type> propertyFor(const node_type& node) const
+		{
+		if (!mGraphWithCycles.nodeExists(node))
+			return null();
+
+		lassert(!mDirtyCycles.size());
+
+		int64_t cycle = mGraphWithCycles.cycleFor(node);
+
+		auto it = mCycleProperties.find(cycle);
+
+		if (it == mCycleProperties.end())
+			return null();
+
+		return null() << it->second;
+		}
+
+	void validateState()
+		{
+		for (auto cycle: mGraphWithCycles.allCycles())
+			{
+			lassert_dump(
+				mCycleProperties.find(cycle) != mCycleProperties.end(),
+				"Can't find " << cycle
+				);
+			lassert_dump(
+				mCycleProperties[cycle] == calcPropertyFor(cycle),
+				cycle << " produced " << prettyPrintString(calcPropertyFor(cycle)) << ", not " 
+					<< prettyPrintString(mCycleProperties[cycle])
+				);
+			};
+		}
+
+	void markNodeDirty(const node_type& node)
+		{
+		lassert(mGraphWithCycles.nodeExists(node));
+		mDirtyCycles.insert(mGraphWithCycles.cycleFor(node));
+		}
+
+private:
+	void addCycle_(int64_t cycle)
+		{
+		mDirtyCycles.insert(cycle);
+		}
+
+	void dropCycle_(int64_t cycle)
+		{
+		mDirtyCycles.erase(cycle);
+		mCycleProperties.erase(cycle);
+		}
+	
+	bool updateCycle(int64_t cycleIndex)
+		{
+		property_type p = calcPropertyFor(cycleIndex);
+
+		auto it = mCycleProperties.find(cycleIndex);
+		if (it == mCycleProperties.end() || it->second != p)
+			{
+			mCycleProperties[cycleIndex] = p;
+			return true;
+			}
+
+		return false;
+		}
+
+	property_type calcPropertyFor(int64_t cycleIndex)
+		{
+		property_type base = mInitializeFunction(mGraphWithCycles.cycleContents(cycleIndex));
+
+		for (auto subcycle: mGraphWithCycles.cycleEdges().getValues(cycleIndex))
+			{
+			auto it = mCycleProperties.find(subcycle);
+			if (it != mCycleProperties.end())
+				base = mMergeFunction(base, it->second);
+			}
+
+		return base;
+		}
+
+	GraphCycles<node_type> mGraphWithCycles;
+
+	std::map<node_type, property_type> mNodeValues;
+
+	std::map<int64_t, property_type> mCycleProperties;
+
+	std::set<int64_t> mDirtyCycles;
+
+	boost::function<property_type (const std::set<node_type>&)> mInitializeFunction;
+
+	boost::function<property_type (property_type, property_type)> mMergeFunction;
+};
+
+}

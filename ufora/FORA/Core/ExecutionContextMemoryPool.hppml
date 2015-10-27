@@ -1,0 +1,206 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <boost/bind.hpp>
+#include <boost/unordered_map.hpp>
+#include "ShareableMemoryBlocks.hppml"
+#include "../../core/containers/MapWithIndex.hpp"
+#include "../VectorDataManager/VectorDataMemoryManagerHeap.hppml"
+#include "../Core/MemoryPool.hpp"
+#include "../../core/PolymorphicSharedPtr.hpp"
+
+class VectorDataMemoryManager;
+
+namespace Fora {
+namespace Interpreter {
+	
+class ExecutionContext;
+
+class ExecutionContextImpl;
+
+class ComputationResult;
+
+}
+}
+
+class ImplValContainer;
+
+class ExecutionContextMemoryPool : 
+				public MemoryPool, 
+				public boost::enable_shared_from_this<ExecutionContextMemoryPool> 
+{
+public:
+	ExecutionContextMemoryPool(
+					Fora::Interpreter::ExecutionContext* inContext,
+					PolymorphicSharedPtr<VectorDataMemoryManager> inMemoryManager
+					);
+
+	~ExecutionContextMemoryPool();
+
+	std::string stringRepresentation();
+
+	size_t totalBytesAllocated() const;
+
+	size_t totalBytesAllocatedFromOS() const;
+
+	size_t totalBytesAllocatedFromOSExcludingPagelets() const;
+	
+	size_t totalBytesFromOSHeldInPagelets() const;
+
+	uint8_t* allocate(size_t inBytes);
+
+	void free(uint8_t* inBytes);
+
+	uint8_t* realloc(uint8_t* inBytes, uword_t inNewBytes);
+
+	//throws if the pool is nonempty
+	void setPageSize(size_t pageSize);
+
+	bool permitAllocation(size_t inBytes);
+
+	ImplValContainer import(const ImplValContainer& inIVC);
+
+	Fora::Interpreter::ComputationResult import(const Fora::Interpreter::ComputationResult& inIVC);
+
+	Fora::Interpreter::ExecutionContext* getContext(void)
+		{
+		return mContext;
+		}
+
+	void incrementBigVectorRefcount(const Fora::BigVectorId& identity);
+
+	void decrementBigVectorRefcount(const Fora::BigVectorId& identity);
+
+	Fora::ShareableMemoryBlockHandle convertPointerToShareableMemoryBlock(uint8_t* inBytes, int64_t bytes);
+
+	uint8_t* importShareableMemoryBlock(const Fora::ShareableMemoryBlockHandle& inHandle);
+
+	void pageletIsHeld(boost::shared_ptr<Fora::Pagelet> inPagelet);
+
+	void pageletIsNoLongerHeld(boost::shared_ptr<Fora::Pagelet> inPagelet);
+
+	//called to indicate that there are no references to objects in any memory pools other than
+	//our own and the Pagelets that we hold. This releases any pagelet triggers. We may not
+	//destroy the memory pool before this has been called. We will reset the 'isDirty' flag after this.
+	void memoryPoolIsClean();
+
+	//must be called before beginning execution. If we return true, we may execute. Otherwise,
+	//we must clean the pool and try again.  Once this is called, it must be the case that we
+	//can acquire locks on all pagelets that we add to the pool. We must be clean before calling this.
+	bool acquireLocksOnPagelets();
+
+	//start execution. We must have acquired locks on all pagelets or we'll get an exception. 
+	//If we need to clean before we begin execution, this function returns false.
+	//if we may execute, it returns true.
+	bool beginExecution();
+
+	//end execution. We may not clean the pool while we are executing.
+	void endExecution();
+
+	//we must be executing for this to be valid.
+	void vectorPageMapped(
+						boost::shared_ptr<VectorPage> mappedPage,
+						boost::shared_ptr<Ufora::threading::Trigger> mappedPageWantsUnmapped
+						);
+
+	bool isVectorPageMapped(boost::shared_ptr<VectorPage> mappedPage);
+	
+	//called by Ufora::threading::Trigger callbacks to cause this EC to clean itself
+	void triggerCleaningCycleIfDirty();
+
+	//we are dirty if we have acquiredLocksOnPagelets and have yet to call memoryPoolIsClean
+	bool isDirty();
+
+	bool isExecuting();
+
+	bool needsCleanBeforeExecuting();
+
+	bool hasAcquiredPageLocks();
+
+	bool hasRefcountOnPagelet(boost::shared_ptr<Fora::Pagelet> pagelet);
+
+	MemoryPool* getBigvecMappingPool();
+
+	int64_t getBytesUsedInBigvecMappingPool();
+
+	int64_t getBytesAllocatedFromOsInBigvecMappingPool();
+
+private:
+	void pageletLeavingPoolEntirely_(boost::shared_ptr<Fora::Pagelet> inPagelet);
+
+	//needs to be held when we might conflict with a callback coming from one of the Trigger
+	//objects, which could be called off the EC's thread. Doesn't need to be held for memory 
+	//management operations (which can only be called on the main EC thread).
+	boost::mutex mMutex;
+
+	PolymorphicSharedPtr<CallbackScheduler> mSchedulerForPageMapping;
+
+	bool acquireLockOnPagelet_(
+			boost::shared_ptr<Fora::Pagelet> pagelet,
+			bool lockIsAlreadyImplicitlyAcquired
+			);
+
+	void increfPagelet_(boost::shared_ptr<Fora::Pagelet> pagelet);
+
+	void decrefPagelet_(boost::shared_ptr<Fora::Pagelet> pagelet);
+
+	bool mIsExecuting;
+
+	bool mIsDirty;
+
+	bool mMustCleanBeforeResumingExecution;
+
+	bool mHasAcquiredPageletLocks;
+
+	std::map<boost::shared_ptr<Fora::Pagelet>, long> mPageletRefcounts;
+
+	std::set<boost::shared_ptr<Fora::Pagelet> > mPageletsNoLongerReferenced;
+
+	void dropAllTriggers_();
+
+	MapWithIndex<
+		boost::shared_ptr<Ufora::threading::Trigger>,
+		boost::shared_ptr<VectorPage>
+		> mMappedVectorPages;
+
+	MapWithIndex<
+		boost::shared_ptr<Ufora::threading::Trigger>,
+		boost::shared_ptr<Fora::Pagelet>
+		> mMappedPagelets;
+
+	uint64_t mBytesInHeldPagelets;
+
+	uint64_t mMemoryLowWaterMark;
+
+	bool allocatingBytesShouldTriggerVdmCheck(size_t inBytes);
+
+	Fora::Interpreter::ExecutionContext* mContext;
+
+	PolymorphicSharedPtr<VectorDataMemoryManager> mMemoryManager;
+
+	boost::shared_ptr<VectorDataMemoryManagerHeap> mHeap;
+
+	Fora::ShareableMemoryBlocks mShareableMemoryBlocks;
+
+	boost::shared_ptr<MemoryPool> mBigVectorHandleMemoryPool;
+
+	std::map<uint8_t*, std::string> mAllocationPoints;
+};
+
+
+
+

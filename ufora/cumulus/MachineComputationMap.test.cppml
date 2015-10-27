@@ -1,0 +1,246 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "MachineComputationMap.hppml"
+#include "../core/UnitTest.hpp"
+#include "../core/UnitTestCppml.hpp"
+
+using namespace Cumulus;
+
+namespace {
+
+Fora::PageId page1(hash_type(1), 0, 0);
+
+Fora::BigVectorId bigvec1(hash_type(2), 1, JudgmentOnResult());
+
+ComputationId c1 = ComputationId::CreateIdForTesting(hash_type(0));
+ComputationId c1v2 = ComputationId::CreateIdForTesting(hash_type(0));
+ComputationId c2 = ComputationId::CreateIdForTesting(hash_type(1));
+
+MachineId m1(hash_type(0));
+MachineId m2(hash_type(1));
+MachineId m3(hash_type(2));
+
+ComputationStatusOnMachine active = 
+	ComputationStatusOnMachine::Active(ComputationStatus::Computable(), ComputationStatistics());
+
+ComputationStatusOnMachine finished = 
+	ComputationStatusOnMachine::Active(ComputationStatus::Finished(), ComputationStatistics().incremented(2));
+
+ComputationStatusOnMachine blockedOnComputation2 = 
+	ComputationStatusOnMachine::Active(
+		ComputationStatus::BlockedOnComputations(
+			ImmutableTreeSet<ComputationId>() + 
+				c2
+			),
+		ComputationStatistics().incremented(1)
+		);
+
+ComputationStatusOnMachine inactive = 
+	ComputationStatusOnMachine::Inactive();
+
+ComputationStatusOnMachine movingToM2 = 
+	ComputationStatusOnMachine::Moving(m2, hash_type(0), ComputationStatistics().incremented(1));
+
+ComputationStatusOnMachine receivedFromM1 = 
+	ComputationStatusOnMachine::ReceivedFrom(m1, hash_type(0), ComputationStatistics().incremented(1));
+
+}
+
+class TestMachineComputationMapFixture {
+public:
+	TestMachineComputationMapFixture() :
+			map(
+				boost::bind(addDropped, &droppedComputations, boost::arg<1>())
+				)
+		{
+		map.addMachine(m1);
+		map.addMachine(m2);
+		}
+
+	static void addDropped(
+			std::vector<std::set<ComputationId> >* vec, 
+			const std::set<ComputationId>& computations
+			)
+		{
+		vec->push_back(computations);
+		}
+
+	MachineComputationMap map;
+
+	std::vector<std::set<ComputationId> > droppedComputations;
+};
+
+BOOST_FIXTURE_TEST_SUITE( test_MachineComputationMap, TestMachineComputationMapFixture )
+
+
+BOOST_AUTO_TEST_CASE( test_basic )
+	{
+	BOOST_CHECK(!map.machineHoldingComputation(c1));
+
+	map.setComputationStatus(m1, c1, active);
+
+	BOOST_CHECK(*map.machineHoldingComputation(c1) == m1);
+
+	map.setComputationStatus(m2, c1, active);
+	map.setComputationStatus(m1, c1, inactive);
+
+	BOOST_CHECK(*map.machineHoldingComputation(c1) == m2);
+
+	map.setComputationStatus(m2, c1, inactive);
+
+	BOOST_CHECK(!map.machineHoldingComputation(c1));
+
+	//computation should be dropped at this point
+	BOOST_CHECK(droppedComputations.size() == 1);
+	}
+
+BOOST_AUTO_TEST_CASE( test_moving_doesnt_drop )
+	{
+	map.setComputationStatus(m1, c1, active);
+	map.setComputationStatus(m1, c1, movingToM2);
+	
+	map.setComputationStatus(m2, c1, receivedFromM1);
+
+	map.setComputationStatus(m2, c1, active);
+
+	map.setComputationStatus(m1, c1, inactive);
+
+	BOOST_CHECK(droppedComputations.size() == 0);
+
+	//verify we can drop it successfully
+	map.setComputationStatus(m2, c1, inactive);
+
+	BOOST_CHECK(droppedComputations.size() == 1);
+	}
+
+BOOST_AUTO_TEST_CASE( test_moving_doesnt_drop_2 )
+	{
+	//m1 acknowledges send before m2 acknowledges receipt
+	map.setComputationStatus(m1, c1, active);
+	map.setComputationStatus(m1, c1, movingToM2);
+	map.setComputationStatus(m1, c1, inactive);
+
+	map.setComputationStatus(m2, c1, receivedFromM1);
+	map.setComputationStatus(m2, c1, active);
+
+	BOOST_CHECK(droppedComputations.size() == 0);
+
+	//verify we can drop it successfully
+	map.setComputationStatus(m2, c1, inactive);
+
+	BOOST_CHECK(droppedComputations.size() == 1);
+	}
+
+BOOST_AUTO_TEST_CASE( test_moving_doesnt_drop_3 )
+	{
+	//m2 acknowledges receipt before m1 broadcasts send
+	map.setComputationStatus(m2, c1, receivedFromM1);
+	map.setComputationStatus(m2, c1, active);
+
+	map.setComputationStatus(m1, c1, active);
+	map.setComputationStatus(m1, c1, movingToM2);
+	map.setComputationStatus(m1, c1, inactive);
+
+	BOOST_CHECK(droppedComputations.size() == 0);
+
+	//verify we can drop it successfully
+	map.setComputationStatus(m2, c1, inactive);
+
+	BOOST_CHECK(droppedComputations.size() == 1);
+	}
+
+BOOST_AUTO_TEST_CASE( test_dropping_machine )
+	{
+	map.setComputationStatus(m1,c1, active);
+	map.dropMachine(m1);
+
+	BOOST_CHECK(droppedComputations.size() == 1);
+	}
+
+BOOST_AUTO_TEST_CASE( test_dropping_machine_midflight )
+	{
+	map.setComputationStatus(m1,c1, active);
+	
+	map.setComputationStatus(m1,c1, movingToM2);
+	
+	map.dropMachine(m1);
+	
+	BOOST_CHECK(droppedComputations.size() == 1);
+	}
+
+BOOST_AUTO_TEST_CASE( test_dropping_machine_midflight_and_received )
+	{
+	map.setComputationStatus(m1,c1, active);
+	map.setComputationStatus(m1,c1, movingToM2);
+	
+	map.dropMachine(m1);
+	
+	BOOST_CHECK(droppedComputations.size() == 1);
+	}
+
+BOOST_AUTO_TEST_CASE( test_search_finished )
+	{
+	map.setComputationStatus(m1,c1, active);
+
+	BOOST_CHECK(!map.machineHoldingFinishedComputation(c1));
+
+	map.setComputationStatus(m1, c1, finished);
+
+	BOOST_CHECK(*map.machineHoldingFinishedComputation(c1) == m1);
+
+	map.setComputationStatus(m1, c1, inactive);
+	map.setComputationStatus(m2, c1, finished);
+
+	BOOST_CHECK(*map.machineHoldingFinishedComputation(c1) == m2);
+
+	map.setComputationStatus(m2, c1, inactive);
+
+	BOOST_CHECK(!map.machineHoldingFinishedComputation(c1));
+	}
+
+BOOST_AUTO_TEST_CASE( test_currentActiveStatus )
+	{
+	map.addMachine(m3);
+
+	map.setComputationStatus(m1, c1, active);
+
+	BOOST_CHECK_EQUAL_CPPML(map.currentActiveStatus(c1), null() << ComputationStatus::Computable());
+	
+	map.setComputationStatus(m2, c1, blockedOnComputation2);
+	
+	BOOST_CHECK_EQUAL_CPPML(
+		map.currentActiveStatus(c1),
+		null() << ComputationStatus::BlockedOnComputations(
+			ImmutableTreeSet<ComputationId>() + c2
+			)
+		);
+
+	map.setComputationStatus(m3, c1, finished);
+	
+	BOOST_CHECK_EQUAL_CPPML(map.currentActiveStatus(c1), null() << ComputationStatus::Finished());
+
+	map.dropMachine(m3);
+	map.dropMachine(m2);
+
+	BOOST_CHECK_EQUAL_CPPML(map.currentActiveStatus(c1), null() << ComputationStatus::Computable());
+
+	map.setComputationStatus(m1, c1, inactive);
+
+	BOOST_CHECK_EQUAL_CPPML(map.currentActiveStatus(c1), Nullable<ComputationStatus>());
+	}
+
+BOOST_AUTO_TEST_SUITE_END()
+

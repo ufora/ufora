@@ -1,0 +1,286 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "JudgmentOnValue.hppml"
+#include "../TypedFora/ABI/VectorRecord.hpp"
+#include "../../core/Logging.hpp"
+#include "../Interpreter/RuntimeConfig.hppml"
+#include "../Runtime.hppml"
+
+const static uword_t kMaxVectorJudgmentsToAllow = 20;
+
+using TypedFora::Abi::VectorRecord;
+
+Nullable<JOV> mergeVectorJudgments(
+					const JudgmentOnValue& left, 
+					const JudgmentOnValue& right
+					)
+	{
+	JOVPair p(left, right);
+
+	@match JOVPair(p)
+		-|	(Vector((j1)), Vector((j2))) ->> {
+			return null() << JOV::Vector(
+				JudgmentOnValueVector(j1 + j2)
+				);
+			}
+		//TODO performance brax: implement vector judgment relax checks on tuples fully
+		//note that we could do better than this when there are extras
+		-|	(Tuple((jovs1, names1, NoExtras())), Tuple((jovs2, names2, NoExtras()))) ->> {
+			if (names1 != names2)
+				return null();
+
+			ImmutableTreeVector<JOV> newEltJOVs;
+
+			for (long k = 0; k < jovs1.size(); k++)
+				{
+				Nullable<JOV> eltJOV = mergeVectorJudgments(jovs1[k], jovs2[k]);
+				if (!eltJOV)
+					return null();
+
+				newEltJOVs = newEltJOVs + *eltJOV;
+				}
+
+			return null() << JOV::Tuple(JOVT(newEltJOVs, names1, JOVTE::NoExtras()));
+			}
+		-|	(Class(Class(jovs1, classBody1)), Class(Class(jovs2, classBody2))) ->> {
+			if (jovs1.size() != jovs2.size() || classBody1 != classBody2)
+				return null();
+
+			ImmutableTreeVector<JOV> newEltJOVs;
+			
+			for (long k = 0; k < jovs1.size(); k++)
+				{
+				Nullable<JOV> eltJOV = mergeVectorJudgments(jovs1[k], jovs2[k]);
+				if (!eltJOV)
+					return null();
+
+				newEltJOVs = newEltJOVs + *eltJOV;
+				}
+
+			return null() << JOV::Class(JudgmentOnValueClass::Class(newEltJOVs, classBody1));
+			}
+		-|	_ ->> {
+			if (left == right)
+				return null() << left;
+			else
+				return null();
+			}
+	}
+
+ImmutableTreeSet<JOV> collapseVectorJudgmentSet(ImmutableTreeSet<JOV> elements)
+	{
+	//check every pair - if it collapses, remove both and replace with the collapsed element
+	for (long k = 0; k < elements.size(); k++)
+		if (elements[k].isUnknown() || elements[k].isUnknownCSTKnown())
+			return emptyTreeSet() + elements[k];
+
+	for (long k = 0; k < elements.size(); k++)
+		lassert_dump(elements[k].isValidVectorElementJOV(),
+			prettyPrintString(elements[k]) << " is not a valid vector element JOV"
+			);
+
+	return JudgmentOnResult(elements).removeExtraneousJudgments().vals();
+	}
+
+JudgmentOnResult	JudgmentOnValueVector::vectorJOR(const JudgmentOnResult& jor)
+	{
+	JudgmentOnResult tr = 
+		JudgmentOnResult(collapseVectorJudgmentSet(jor.vals()))
+		.limitNumberOfJOVs(kMaxVectorJudgmentsToAllow);
+
+	return tr;
+	}
+
+JudgmentOnValue		JudgmentOnValueVector::FromLiveValue(const ImplVal& inImplVal)
+	{
+	const VectorRecord& vec = inImplVal.cast<VectorRecord>();
+	
+	JudgmentOnResult subjor = vec.jor();
+	
+	return JudgmentOnValue::Vector(
+		JudgmentOnValueVector(
+			subjor
+			)
+		);
+	}
+	
+JudgmentOnValue		JudgmentOnValueVector::OfType(const Type& type)
+	{
+	lassert(type.isVector());
+	
+	return jovAnyVector();
+	}
+	
+Nullable<Type>		JudgmentOnValueVector::computeType() const
+	{
+	return null() << Type::Vector();
+	}
+	
+Nullable<bool>		JudgmentOnValueVector::computeIsCST() const
+	{
+	return elementsJOR().isCST();
+	}
+	
+Nullable<CSTValue>	JudgmentOnValueVector::computeConstant() const
+	{
+	if (elementsJOR().size() == 0)
+		return null() << CSTValue::blankOf(Type::Vector());
+	return null();
+	}
+	
+void JudgmentOnValueVector::toString(CPPMLPrettyPrintStream& stream, bool isJOVAsValue) const
+	{
+	if (!isJOVAsValue)
+		stream << "{";
+
+	stream << "Vector";
+	if(elementsJOR().size() != 1
+		|| !elementsJOR()[0].isUnknown())
+		{
+		stream << "([";
+		for (long k = 0; k < elementsJOR().size(); k++)
+			{
+			if (k != 0)
+				stream << ", ";
+			elementsJOR()[k].toString(stream, false);
+			}
+		stream << "])";
+		}
+	
+	if (!isJOVAsValue)
+		stream << "}";
+	}
+	
+bool 				JudgmentOnValueVector::covers(const ImplVal& impl) const
+	{
+	if (!impl.type().isVector())
+		return false;
+	
+	VectorRecord vec = impl.cast<VectorRecord>();
+	
+	JudgmentOnResult valJOR = vec.jor();
+	
+	return elementsJOR().covers(valJOR);
+	}
+	
+bool 				JudgmentOnValueVector::covers(const JudgmentOnValue& other) const
+	{
+	@match JudgmentOnValue(other)
+		-|	Vector((elts)) ->> {
+			return 
+				elementsJOR().covers(elts)
+				;
+			}
+		-|	_ ->> {
+			return  false;
+			}
+		;
+	}
+	
+bool 				JudgmentOnValueVector::disjoint(const JudgmentOnValue& other) const
+	{
+	@match JudgmentOnValue(other)
+		-|	Vector((elts)) ->> {
+			return false;
+			}
+		-|	_ ->> {
+			return  true;
+			}
+		;
+	}
+	
+JudgmentOnResult 	JudgmentOnValueVector::intersectWith(const JudgmentOnValue& in) const
+	{
+	if (!in.isVector())
+		return JudgmentOnResult();
+	
+	JudgmentOnValueVector other = in.getVector().jov();
+	
+	return JudgmentOnResult(
+				JudgmentOnValue::Vector(
+					elementsJOR() & other.elementsJOR()
+					)
+				);
+	}
+	
+JudgmentOnResult 	JudgmentOnValueVector::restrictedToCSTness(bool inCSTness) const
+	{
+	JudgmentOnResult restrictedJOR = elementsJOR().restrictedToCSTness(inCSTness);
+	
+	return JudgmentOnResult(
+		JudgmentOnValue::Vector(
+			JudgmentOnValueVector(
+				restrictedJOR
+				)
+			)
+		);
+	}
+	
+JudgmentOnValue	JudgmentOnValueVector::smallestCovering(const JudgmentOnValue& otherJOV) const
+	{
+	if (!otherJOV.isVector())
+		return ::smallestCovering(JudgmentOnValue::Vector(*this), otherJOV);
+	
+	JudgmentOnValueVector other = otherJOV.getVector().jov();
+	
+	return JudgmentOnValue::Vector(
+		JudgmentOnValueVector(
+			elementsJOR() + other.elementsJOR()
+			)
+		);
+	}
+
+JudgmentOnValue	jovEmptyVector()
+	{
+	return
+		JOV::Vector(
+			JudgmentOnValueVector(
+				JudgmentOnResult()
+				)
+			);
+	}
+
+JudgmentOnValue	jovAnyVector()
+	{
+	return
+		JOV::Vector(
+			JudgmentOnValueVector(
+				JudgmentOnResult(JOV())
+				)
+			);
+	}
+	
+JudgmentOnValue	jovVector(JOV held)
+	{	
+	return JOV::Vector(
+			JudgmentOnValueVector(
+				JudgmentOnResult(held)
+				)
+			);
+	}
+	
+string JudgmentOnValueVector::toString(void) const
+	{
+	return prettyPrintString(*this);
+	}
+
+void CPPML::Validator<JudgmentOnValueVector, void>::operator()(JudgmentOnValueVector& jovv) const
+    {
+    jovv.elementsJOR() = JudgmentOnValueVector::vectorJOR(jovv.elementsJOR());
+    }
+
+    
+

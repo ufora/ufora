@@ -1,0 +1,1403 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+`hidden
+loopSum:
+fun(vec1) {
+    let s = nothing;
+    let i = 0;
+    let top = size(vec1);
+    while (i < top) {
+        s = s + vec1[i];
+        i = i + 1;
+        }
+    s
+    };
+
+`hidden
+_splitLimit: 1000000;
+
+`hidden
+computeXTX:
+fun(df, start=0, end=nothing, splitLimit:= _splitLimit, fitIntercept:=true)
+    {
+    if (end is nothing) { end = df.numRows }
+    
+    if ((end - start) <= splitLimit) 
+        {
+        let numColumns = df.numColumns;
+        if (fitIntercept)
+            numColumns = numColumns + 1;
+            
+        let numRows = end - start;
+
+        let tr = [];
+        
+        let values = Vector.range(numColumns, fun(row){
+            Vector.range(numColumns, fun(col) {
+                if (col < row)
+                    return 0.0
+
+                if (fitIntercept)
+                    {
+                    if (row == numColumns - 1 and col == numColumns - 1)
+                        return Float64(numRows)
+
+                    if (row == numColumns - 1)
+                        {
+                        return loopSum(df.getColumn(col)[start, end])
+                        }
+
+                    if (col == numColumns - 1)
+                        {
+                        return loopSum(df.getColumn(row)[start, end])
+                        }
+                    }
+
+                let right = df.getColumn(col)[start, end];
+                let left = df.getColumn(row)[start, end];
+                dotDontCheckLengths(right, left)
+                })
+            })
+
+        // Fill the upper diagonal. Matrix is symmetric.
+        let tr = [];
+        for row in sequence(numColumns) {
+            for col in sequence(numColumns) {
+                if (row <= col)
+                    tr = tr :: values[row][col]
+                else
+                    tr = tr :: values[col][row]
+                }
+            }
+        
+        return math.Matrix(tr, (numColumns, numColumns));
+        }
+    
+    let mid = Int64((start + end) / 2);
+    
+    computeXTX(df, start, mid, fitIntercept: fitIntercept, splitLimit: splitLimit) + 
+        computeXTX(df, mid, end, fitIntercept: fitIntercept, splitLimit: splitLimit)
+    };
+
+`hidden
+getResponses: fun
+(dataframe.DataFrame(y)) {
+    y.columns[0].dataVec
+    }
+(dataframe.Series(y)) {
+    y.dataVec
+    }
+(filters.IsVector(y)) {
+    y
+    };
+
+`hidden
+computeXTy:
+fun(predictors, y, start=0, end=nothing, splitLimit:= _splitLimit, fitIntercept:)
+    {
+    let numPredictors = predictors.numColumns;
+    if (fitIntercept)
+        numPredictors = numPredictors + 1
+
+    if (end is nothing) { end = predictors.numRows }
+
+    if ((end - start) <= splitLimit) {
+        y = getResponses(y);
+        
+        let tr =
+        Vector.range(
+            numPredictors,
+            fun(columnIndex){
+                if (fitIntercept)
+                    {
+                    if (columnIndex == numPredictors - 1)
+                        return loopSum(y[start, end])
+                    }
+
+                let columnVec = predictors.getColumn(columnIndex)[start, end];
+                dotDontCheckLengths(columnVec, y[start, end]);
+                }
+            );
+        
+        return tr
+        }
+    
+    let mid = Int64((start + end) / 2);
+    let s1 = computeXTy(predictors, y, start, mid, fitIntercept: fitIntercept);
+    let s2 = computeXTy(predictors, y, mid, end, fitIntercept: fitIntercept);
+
+    Vector.range(size(s1), {s1[_] + s2[_]})
+    };
+
+`hidden
+normSquared:
+fun(vec, start=0, end=nothing, splitLimit:= _splitLimit)
+    {
+    if (end is nothing) { end = size(vec) }
+
+    if (end - start <= splitLimit) {
+        let vecSlice = vec[start, end];
+        return dotDontCheckLengths(vecSlice, vecSlice);
+        }
+
+    let mid = Int64((start + end) / 2);
+    let leftSum = normSquared(vec, start, mid, splitLimit: splitLimit);
+    let rightSum = normSquared(vec, mid, end, splitLimit: splitLimit);
+    return leftSum + rightSum;
+    };
+
+LinearRegression:
+#Markdown(
+"""#### Usage 
+
+    math.regression.LinearRegression(
+        dataframe.DataFrame(predictors),
+        dataframe.DataFrame(responses),
+        fitIntercept:=true
+        )
+
+#### Description
+
+Ordinary least squares regression on large datasets. 
+
+For 8-byte floats, this method can currently handle billions of rows and 
+up to around 1980 columns. This method does not factorize the design matrix
+directly, instead we compute the 'covariance': design-transpose times design 
+and invert (or pseudo-invert) this matrix. In the case of rank-deficient 
+design matrix, there is not a unique least squares solution -- the pseudoinverse 
+returns the least-norm such solution. Note that the condition number of the  
+covariance matrix is the square of the condition number of the design matrix.
+
+#### Arguments
+
+* `predictors`: a dataframe of feature vectors.
+* `responses`: a dataframe of response values.
+* `fitIntercept`: boolean, optional, defaulting to true. If true, then we calculate 
+an intercept for the fit model (ie, `responses` is modeled as an _affine_ function 
+of `predictors`). In implementation, this means that the design matrix is 
+just `predictors` augmented by a column of all ones. If `fitIntercept` is false, we fit no such 
+intercept (ie, `responses` is modeled as a _linear_ function of `predictors`).
+
+#### Examples
+
+    let X = dataframe.DataFrame([[0,1,1,2], [1,0,1,3]]); 
+    let y = dataframe.DataFrame([[2.0, 1.9999, 3.0001, 5.4]]);
+    
+    let fit = math.regression.LinearRegression(X, y)
+    let fit = math.regression.LinearRegression(X, y, fitIntercept:false)
+
+"""
+)
+class {
+    member fitIntercept;
+    member coefficients_;
+    member nSamples;
+    member nPredictors;
+    member rank;
+    member sigmaSquared;
+    member standardErrors;
+    member residualSumOfSquares;
+    member rSquared_;
+    member normSquaredY;
+    member meanY;
+    member names_;
+    member XTX;
+
+    static computeResidualSumOfSquaresAndRSquared:
+    fun(XTX, XTy, y, beta, fitIntercept:, splitLimit:= _splitLimit)
+        {
+        /*
+        we're using the formulas:
+        
+        \sum(y_i - \hat{y}_i) = \beta^t X^t X \beta - 2 \beta^t X^ty + y^t y
+
+        and 
+        
+        R^2 = 1 - \frac{\sum(y_i - \hat{y}_i)}{\sum(y_i - \bar{y}_i)}
+
+        for models with intercept, and 
+
+        R^2 = 1 - \frac{\sum(y_i - \hat{y}_i)}{\sum(y_i)}
+
+        for models without intercept.
+        */
+        let normSquaredY = normSquared(y, splitLimit: splitLimit);
+        
+        let betaT = beta.transpose();
+        let tr = betaT * XTX * beta -
+            2.0 * betaT * XTy;
+        tr = tr[0, 0]
+        tr = tr + normSquaredY;
+
+        let meanY = math.stats.mean(y);
+
+        if (fitIntercept is false)
+            return (tr, 1.0 - tr / normSquaredY, normSquaredY, meanY);
+
+        tr = tr >>> 0.0
+
+        return (tr, 1.0 - tr / (normSquaredY - size(y) * meanY * meanY), normSquaredY, meanY);
+        };
+
+    computeResidualsQuantiles:
+    fun(predictors, responses, *args)
+        {
+        let histSize = 10000;
+            
+        if (nSamples < histSize)
+            {
+            let residuals = self.residuals(predictors, responses);
+            
+            return math.stats.fivePointQuantiles(
+                residuals, estimate: false
+                );
+            }
+
+        let responsesVec = responses.getColumn(0);
+        let (nonInterceptCoefficients, intercept) =
+             nonInterceptCoefficientsAndIntercept()
+
+        let (minResidual, maxResidual) = 
+            self.computeMinAndMaxResiduals(
+                predictors: predictors,
+                responsesVec: responsesVec,
+                nonInterceptCoefficients: nonInterceptCoefficients,
+                intercept: intercept
+                );
+
+        let residualsQuantilesSamples = 
+            computeResidualsQuantilesHistogram(
+                predictors: predictors,
+                responsesVec: responsesVec,
+                nonInterceptCoefficients: nonInterceptCoefficients,
+                intercept: intercept,
+                minResidual: minResidual,
+                maxResidual: maxResidual,
+                histSize: histSize
+                ).samples;
+
+        let stepSize = (maxResidual - minResidual) / histSize;
+        math.stats.computeQuantilesFromHistogram(
+            residualsQuantilesSamples, stepSize, self.nSamples, 
+            minResidual, maxResidual
+            );
+        };
+
+    dfTotal:
+#Markdown(
+"""#### Usage
+
+    linearRegressionInstance.dfTotal()
+
+#### Description
+
+Returns the total degrees of freedom, ie if we set `N` as the number of 
+observations used to construct `linearRegressionInstance`, `dfTotal` returns `N-1`.
+""")
+        fun()
+            {
+            match (self.fitIntercept) with
+                (true) { self.nSamples - 1 }
+                (false) { self.nSamples }
+            };
+
+    names:
+#Markdown(
+"""#### Usage
+
+    linearRegressionInstance.names()
+
+#### Description
+
+Returns the names of the model parameters in the same order as `linearRegressionInstance.coefficients()`
+""")
+    fun() { return self.names_ };
+
+    rSquared:
+#Markdown(
+"""#### Usage
+
+    linearRegressionInstance.rSquared()
+
+#### Description 
+
+Returns the coefficient of determination, <math>R^2</math> of a model.
+
+For models with intercept, this is defined to be
+
+<math>R^2 := \\frac{\\sum_i(\\hat{y_i} - \\bar{y})^2}{\\sum_i(y_i - \\bar{y})^2}</math>
+
+which equals <math>1 - frac{\\sum_i(y_i - \\hat{y}_i)^2}{\\sum_i(y_i - \\bar{y})^2}.</math>
+
+For models without intercept, this is defined to be 
+
+<math>R^2 := \\frac{\\sum_i(\\hat{y_i})^2}{\\sum_iy_i^2}</math>
+
+which equals <math>1 - frac{\\sum_i(y_i - \\hat{y}_i)^2}{\\sum_iy_i^2}.</math>
+""")
+    fun() { 
+        self.rSquared_ 
+        };
+
+    modelSumOfSquares:
+#Markdown(
+"""#### Usage
+
+    linearRegressionInstance.modelSumOfSquares()
+
+#### Description
+
+Returns the model sum of squares in the linear model `linearRegressionInstance`.
+
+This is defined to be 
+
+<math>\\sum_i(\\hat{y}_i - \\bar{y}_i)^2</math>
+""")
+        fun()
+            {
+            /*
+              modelSumOfSquares := MSS := \sum(\hat{y}_i - \bar{y})^2
+
+              MSS / totalSumOfSquares = 1 - RSS / totalSumOfSquares = R^2
+
+              => 
+
+              MSS = R^2 * TSS
+             */
+
+            self.rSquared_ * totalSumOfSquares()
+            };
+
+    totalSumOfSquares:
+#Markdown(
+"""#### Usage
+
+    linearRegressionInstance.totalSumOfSquares()
+
+#### Description
+
+Returns the total sum of squares in the linear model `linearRegressionInstance`.
+
+For models with intercept, this is defined to be 
+
+<math>\\sum_i(y_i - \\bar{y})^2</math>
+
+For models without intercept, this is defined to be
+
+<math>\\sum_i(y_i)^2</math>
+
+where <math>\\hat{y}_i</math> are the model-fitted values.
+""")
+        fun()
+            {
+            /*
+              totalSumOfSquares := TSS := \sum(y_i - \bar{y})^2 (if model has intercept)
+                                       := \sum(y_i)^2 (if the model has no intercept)
+              R^2 = 1 - RSS / totalSumOfSquares (in any case)
+
+              provided R^2 != 1, =>
+
+              totalSumOfSquares = RSS / (1 - R^2)
+             */
+                
+            if (self.rSquared_ != 1.0)
+                return self.residualSumOfSquares / (1.0 - self.rSquared_);
+
+            if (fitIntercept)
+                return self.normSquaredY - self.meanY * self.meanY * self.nSamples
+
+            return self.normSquaredY
+            };
+
+    vcov:
+#Markdown(
+"""#### Usage
+
+    linearRegressionInstance.vcov()
+
+#### Description
+
+Returns the estimated variance-covariance matrix of the estimated 
+coefficients. This assumes that the errors of the model are conditionally 
+independent and identically distributed from a normal distribution with 
+constant variance. It also assumes that the design matrix has full rank.
+
+""")
+    fun()
+        {
+        let (pinv: XTXinv, rank: rank) = self.XTX.pseudoinverse(withRank: true);
+        
+        if (not self.isFullRank())
+            throw Exception(
+                "Don't know how to estimate vcov for a rank-deficient design matrix"
+                );
+
+        self.sigmaSquared * XTXinv;
+        };
+
+    residuals:
+#Markdown(
+"""#### Usage
+
+    linearRegressionInstance.residuals()
+
+#### Description
+
+Returns the residuals of the model, 
+ie `linearRegressionInstance.responses - linearRegressionInstance.fittedValues()`
+
+""")
+    fun(predictors, responses) {
+        computeResiduals(
+            predictors, 
+            responses, 
+            self.coefficients_, 
+            self.fitIntercept)
+        };
+
+    computeResiduals:
+    fun(predictors, responses, coefficients, fitIntercept)
+        {
+        let fittedValues = 
+            computeFittedValues(predictors, coefficients, fitIntercept)
+        let tr = responses.columns[0] - fittedValues;
+        tr.dataVec
+        };
+
+    computeFittedValues:
+    fun(predictors, coefficients, fitIntercept)
+        {
+        let (nonInterceptCoefficients, intercept) =
+             computeNonInterceptCoefficientsAndIntercept(
+                 coefficients, fitIntercept
+                )
+
+        let tr = math.regression.logistic.dot(
+            predictors, nonInterceptCoefficients
+            );
+            
+        tr = dataframe.DataFrame([tr]);
+        tr = tr + intercept;
+        tr.columns[0]
+        };
+
+    computeNonInterceptCoefficientsAndIntercept:
+    fun(coefficients, fitIntercept) 
+        {
+        let coefficientsAsVec = coefficients.columnMajorData();
+        let nonInterceptCoefficients = coefficientsAsVec
+        let intercept = 0
+
+        if (fitIntercept)
+            {
+            nonInterceptCoefficients = nonInterceptCoefficients[,-1];
+            intercept = coefficientsAsVec[-1]
+            }
+
+        nonInterceptCoefficients = math.Matrix(
+            nonInterceptCoefficients, (size(nonInterceptCoefficients), 1)
+            );
+
+        (nonInterceptCoefficients, intercept)
+        };
+
+    nModelDegreesOfFreedom:
+#Markdown(
+"""#### Usage
+
+    linearRegressionInstance.nModelDegreesOfFreedom()
+
+#### Description
+
+Returns the model degrees of freedom, ie if we set `p` as the number of predictor 
+variables used to construct `linearRegressionInstance`, then `nModelDegreesOfFreedom` returns `p`.
+""")
+        fun()
+            {
+            match (self.fitIntercept) with
+                (true) { self.nPredictors - 1 }
+                (false) { self.nPredictors }
+            };
+
+    nResidualDegreesOfFreedom:
+#Markdown(
+"""#### Usage
+
+    linearRegressionInstance.nResidualDegreesOfFreedom()
+
+#### Description
+
+Returns the residual degrees of freedom, ie if we set `N` as the number of 
+observations used to construct `linearRegressionInstance`, and `p` as the number of predictor 
+variables, then `nResidualDegreesOfFreedom` returns `N - p - 1` if the model has an intercept,
+and `N - p` otherwise.
+""")
+        fun()
+        {
+        self.nSamples - self.nPredictors
+        };
+
+    isFullRank:
+#Markdown(
+"""#### Usage 
+
+    linearRegressionInstance.isFullRank()
+
+#### Description
+
+Returns whether or not the design matrix fit has full column rank or not.
+
+""")
+    fun()
+        {
+        return self.rank == self.nPredictors;
+        };
+
+    tStats:
+#Markdown(
+"""#### Usage
+
+    linearRegressionInstance.tStats(includePValues := false, sides := 2.0)
+
+#### Description
+
+Returns a named tuple of vectors of predictor _names_ and the _t-statistics_ corresponding
+to the fitted coefficients in the linear model `linearRegressionInstance`. 
+If `includePValues == true` then the _p-values_ are returned.
+`sides` indicates one- or two-sided p-values for the t-test.
+Names of vectors in the returned tuple are `variables`, `t`, `SE`, and `p`.
+""")
+    fun(includePValues:= false, sides:= 2.0)
+        {
+        if (not self.isFullRank())
+            throw Exception(
+                "don't know how to estimate standard errors in rank-deficient cases"
+                );
+
+        let pValues = nothing;
+        let tValues = [];
+        for i in sequence(self.nPredictors) {
+            tValues = tValues :: (self.coefficients_[i][0] / self.standardErrors[i]);
+            };
+
+        if (includePValues) {
+            let abs_t = tValues ~~ { math.abs(_) };
+
+            let nResidualDegreesOfFreedom = self.nResidualDegreesOfFreedom()
+            pValues = 
+                abs_t ~~ {
+                    try {
+                        (1.0 - math.random.T.cdf(_, nResidualDegreesOfFreedom)) * sides
+                        }
+                    catch (...) { 
+                        math.nan 
+                        }
+                    };
+            };
+
+        (standardErrors: self.standardErrors, tValues: tValues, pValues: pValues)
+        };
+    
+    coefficients:
+    fun() {
+        self.coefficients_.columnMajorData()
+        };
+
+    coefficientsWithNames:
+    fun() {
+        let coef = coefficients();
+        let numCoef = size(coef);
+
+        let tr = [];
+        let i = 0;
+        while (i < numCoef) {
+            tr = tr :: (self.names_[i], coef[i])
+            i = i + 1
+            }
+        tr
+        };
+
+    confidenceIntervals:
+#Markdown(
+"""#### Usage
+
+    linearRegressionInstance.confidenceIntervals(level: level = 0.95)
+
+#### Description
+
+Returns a named tuple of vectors of predictor variable _names_, _coefficients_ from the
+fitted model `linearRegressionInstance`, and the corresponding `level`-level confidence intervals.
+`level` must be in the interval (0,1). Names of vectors in the returned tuple are
+`variables`, `lowerCI`, and `upperCI`.
+""")
+    fun(level := 0.95)
+        {
+        assertions.assertLessEqual(level, 1.0);
+        assertions.assertGreaterEqual(level, 0.0);
+
+        let standardErrorsMatrix = 
+            math.Matrix(self.tStats().standardErrors);
+        
+        let nResidualDegreesOfFreedom = self.nResidualDegreesOfFreedom();
+        let t_critical = 
+            if (nResidualDegreesOfFreedom > 0)
+                {
+                math.random.T.quantile(
+                    0.5 + level / 2.0, nResidualDegreesOfFreedom);
+                }
+            else {
+                math.nan
+                }
+
+        let lower = self.coefficients_ - t_critical * standardErrorsMatrix;
+        let upper = self.coefficients_ + t_critical * standardErrorsMatrix;
+  
+        (lowerConfidenceIntervals: lower, upperConfidenceIntervals: upper)
+        };
+
+    meanSumOfSquares:
+#Markdown(
+"""#### Usage
+
+    linearRegressionInstance.meanSumOfSquares()
+
+#### Description
+
+Returns the mean total sum of squares in the linear model `linearRegressionInstance`. It is equivalent
+to `linearRegressionInstance.totalSumOfSquares() / linearRegressionInstance.dfTotal()`.
+""")
+        fun()
+            {
+            totalSumOfSquares() / dfTotal()
+            };
+
+    meanResidualSumOfSquares:
+#Markdown(
+"""#### Usage
+
+    linearRegressionInstance.meanResidualSumOfSquares()
+
+#### Description
+
+Returns the mean residual sum of squares in the linear model `linearRegressionInstance`, aka MEANRESIDUALSUMOFSQUARES. It is
+equivalent to `linearRegressionInstance.sigma()**2` or `linearRegressionInstance.residualSumOfSquares / linearRegressionInstance.nResidualDegreesOfFreedom()`.
+""")
+        fun()
+            {
+            self.residualSumOfSquares / nResidualDegreesOfFreedom()
+            };
+
+    meanModelSumOfSquares:
+#Markdown(
+"""#### Usage
+
+    linearRegressionInstance.meanModelSumOfSquares()
+
+#### Description
+
+Returns the mean model sum of squares in the linear model `linearRegressionInstance`. It is equivalent
+to `linearRegressionInstance.modelSumOfSquares() / linearRegressionInstance.nModelDegreesOfFreedom()`.
+""")
+        fun()
+            {
+            modelSumOfSquares() / nModelDegreesOfFreedom()
+            };
+
+    sigma:
+#Markdown(
+"""#### Usage
+
+    l.sigma()
+
+#### Description
+
+Returns the square root of the estimated variance of the random error. 
+Ie, given an `Lm`-instance `l`, the following holds:
+
+    l.sigma() == sqrt(l.sigmaSquared)
+
+""")
+    fun()
+        {
+        math.sqrt(self.sigmaSquared)
+        };
+
+    adjustedRSquared:
+#Markdown(
+"""#### Usage
+
+    linearRegressionInstance.adjustedRSquared()
+
+#### Description
+
+Returns the adjusted R-squared statistic of a linear model `linearRegressionInstance`.
+""")
+        fun() { 1.0 - (meanResidualSumOfSquares() / meanSumOfSquares()) };
+
+    fStat:
+#Markdown(
+"""#### Usage
+
+    linearRegressionInstance.fStat(includePValue := false, upperTail := true)
+
+#### Description
+
+Returns the F-statistic, and, if requested, its p-value for the linear model `linearRegressionInstance`.
+If `includePValue == true`, a named tuple of `(F: F-statistic, p: p-value)` is returned.
+`upperTail` indicates that the p-value returned should be relative to the upper tail of
+the F-distribtuion.
+""")
+        fun(includePValue := false, upperTail := true)
+            {
+            let fStatistic = meanModelSumOfSquares() / meanResidualSumOfSquares();
+            let pValue = nothing;
+            let numerator_df = nModelDegreesOfFreedom();
+            let denominator_df = nResidualDegreesOfFreedom();
+
+            if (includePValue)
+                {
+                if (fStatistic <= 0.0)
+                    pValue = math.nan
+                else
+                    pValue = math.random.F.cdf(fStatistic, numerator_df, denominator_df);
+
+                if (upperTail)
+                    {
+                    pValue = 1 - pValue
+                    }
+                }
+
+            (fStatistic: fStatistic, pValue: pValue, 
+             degreesOfFreedom: (numerator_df, denominator_df))
+            };
+    
+    isUnderdetermined:
+    fun()
+        {
+        return self.nSamples < self.nPredictors
+        };
+
+    summary:
+#Markdown(
+"""#### Usage 
+
+    linearRegressionInstance.summary(level := 0.95)
+
+#### Description
+
+Returns a named tuple of summary information for the fitted model object `linearRegressionInstance`.
+Output contains: `variables`, `coefficients`, `SE`, `t`, `t_p`, `lowerCI`, `upperCI`,
+`F`, `F_p`, `rSquared`, `adjustedRSquared`. `level` specifies the level of the confidence intervals.
+Can be used to store summary information from a regression, or to print a formatted summary table.
+""")
+        fun(responses:= nothing, level := 0.95)
+            {
+            let fStatistic = self.fStat(includePValue: true, upperTail: true);
+            let quantiles = 
+                if (responses is nothing)
+                    "residuals are not computed without a passed in responses vec"
+                else
+                    self.computeResidualsQuantiles(responses, estimate: true)
+                ;
+
+            let tr = 
+                 (
+                     coefficients: self.coefficients_,
+                     fStatistic: fStatistic.fStatistic,
+                     rSquared: self.rSquared(),
+                     adjustedRSquared: self.adjustedRSquared(),
+                     residualQuantiles: quantiles,
+                     isFullRank: self.isFullRank(),
+                     isUnderdetermined: self.isUnderdetermined()
+                    )
+
+            if (self.isFullRank())
+                {
+                let tStats = self.tStats(includePValues:true);
+                let confidenceIntervals = self.confidenceIntervals(level: level);
+
+                return tr + (
+                    standardErrors: tStats.standardErrors,
+                    tValues: tStats.tValues,
+                    tpValues: tStats.pValues,
+                    level: level,
+                    lowerConfidenceIntervals: 
+                        confidenceIntervals.lowerConfidenceIntervals,
+                    upperConfidenceIntervals: 
+                        confidenceIntervals.upperConfidenceIntervals,
+                    fpValue: fStatistic.pValue
+                    )
+                }
+
+            return tr;
+            };
+
+    anova:
+#Markdown(
+"""#### Usage 
+
+    linearRegressionInstance.anova()
+
+#### Description
+
+Returns an analysis of variance summary for the linear model `linearRegressionInstance`.
+The output is a named tuple containing the vectors 
+`Type`, `degreesOfFreedom`, `sumsOfSquareErrors`, `MS`,
+and the tuple `(F, p)`.
+""")
+        fun()
+            {
+            (
+                Type: [ "Model", "Error", "Total" ],
+                degreesOfFreedom: 
+                    [ nModelDegreesOfFreedom(), nResidualDegreesOfFreedom(), 
+                      dfTotal() ],
+                sumsOfSquareErrors: 
+                    [ modelSumOfSquares(), self.residualSumOfSquares, 
+                      totalSumOfSquares() ],
+                MS: [ meanModelSumOfSquares(), meanResidualSumOfSquares(), 
+                      meanSumOfSquares() ],
+                F: self.FStat(includePValue: true, upperTail: true)
+                )
+            };
+
+    operator match (Visualizable _) {
+        (#Markdown(self.formatSummary()),)
+        };
+
+    formatSummary: 
+#Markdown(
+"""#### Usage
+
+    linearRegressionInstance.formatSummary();
+
+#### Description
+
+Return a markdown string of formatted summary data for a linear regression fit.
+
+""")
+    fun(includeResidualsQuantiles:= false, estimateQuantiles:= true) 
+        {
+        try { 
+            formatSummary_(
+                includeResidualsQuantiles: includeResidualsQuantiles,
+                estimateQuantiles: estimateQuantiles
+                ) 
+            }
+        catch (...) {
+            "linear regression fit object"
+            }
+        };
+
+    buildResidualsQuantilesTable_:
+    fun()
+        {
+        let quantiles = self.computeResidualsQuantiles(estimate: true);
+            
+        let tr = "**Residuals**:  \n\n";
+        tr = tr + """ Min | 1Q | Median | 3Q | Max
+                           :-:  | :-:  |    :-:   |  :-: |  :-:
+                  """;
+            
+        tr = tr + """<code>%s</code>|<code>%s</code>|<code>%s</code>|<code>%s</code>|<code>%s</code>
+                  """.format(*quantiles)
+                          
+        tr + "  \n"
+        };
+
+    MAX_COEFFICIENTS_TO_SHOW_: 50;
+
+    displayCoefficientRange_:
+    fun(low:, high:, names, showStats:= true)
+        {
+        let tr = "";
+        if (showStats)
+            {
+            let tstats = self.tStats(includePValues: true);
+
+            for ix in sequence(low, high)
+                {
+                let name = names[ix];
+                let coef = self.coefficients_[ix][0];
+                let stdErr = self.standardErrors[ix];
+                let tValue = tstats.tValues[ix];
+                let tpValue = tstats.pValues[ix]
+                
+                tr = tr + """%s|<code>%s</code>|<code>%s</code>|<code>%s</code>|<code>%s</code>
+                          """.format(name, coef, stdErr, tValue, markWithSignificance_(tpValue))
+                };
+            }
+        else {
+            for ix in sequence(low, high)
+                {
+                let name = names[ix];
+                let coef = self.coefficients_[ix][0]
+                tr = tr + """|%s|<code>%s</code>|
+                          """.format(name, coef)
+                }
+            }
+
+        tr
+        };
+
+    addEllipsisRow_:
+    fun(showStats:)
+        {
+        if (showStats)
+            """...|...|...|...|...
+            """
+        else
+            """...|...
+            """
+        };
+
+    displayCoefficients_:
+    fun(showStats:=true)
+        {
+        let names = self.names()
+        let nCoefficients = size(names);
+        let nCoeffsToShow = min(nCoefficients, MAX_COEFFICIENTS_TO_SHOW_);
+        let tr = "";
+
+        let nRemaining = size(self.names()) - MAX_COEFFICIENTS_TO_SHOW_;
+
+        tr = tr + displayCoefficientRange_(
+            low: 0, high: nCoeffsToShow / 2,
+            names, showStats:showStats
+            )
+            
+        if (nRemaining > 0)
+            {
+            tr = tr + addEllipsisRow_(showStats:showStats)
+            }
+
+        tr = tr + displayCoefficientRange_(
+            low: max(nCoeffsToShow / 2, nCoefficients - nCoeffsToShow / 2 - 1), high: nCoefficients,
+            names, showStats:showStats
+            )            
+
+        tr + warnIfHiddenCoefficients_(
+            nRemaining:nRemaining
+            )
+        };
+
+    warnIfHiddenCoefficients_:
+    fun(nRemaining:) 
+        {
+        if (nRemaining > 0)
+            {
+            return """  \n\n**NOTE**: an additional %s coefficients have been hidden.  
+                   Call `.coefficients()` on your fit object to see all coefficients.
+                   The corresponding names are given in `.names()`.
+                   """
+                   .format(nRemaining)
+            }
+
+        return ""
+        };
+
+    markWithSignificance_:
+    fun(pValue)
+        {
+        let tr = String(pValue);
+        if (pValue < 0.001) 
+            return tr + " &#42;&#42;&#42;"
+        if (pValue < 0.01)
+            return tr + " &#42;&#42;"
+        if (pValue < 0.05)
+            return tr + " &#42;"
+        if (pValue < 0.1)
+            return tr + " ."
+                    
+        return tr
+        };
+            
+    buildCoefficientsTable_:
+    fun()
+        {
+        let tr = "**Coefficients**:  \n\n"
+        
+        if (not self.isFullRank())
+            {
+            let coefficientsTableHeader = 
+                """|   | Estimate |
+                   | - |     -:   |
+                """
+
+            tr = tr + coefficientsTableHeader;
+            tr = tr + displayCoefficients_(showStats:false);
+
+            return tr
+            }
+
+        let coefficientsTableHeader = 
+            """   | Estimate | Std Error | t-Value | Pr(>&#124;t&#124;)
+                - |     -:   |     -:    |    -:   |     -:   
+            """
+        
+        tr = tr + coefficientsTableHeader;
+        tr = tr + displayCoefficients_(showStats: true);
+        tr = tr + "  \n\nSignif. codes:  " + 
+            "<code>0 '&#42;&#42;&#42;' 0.001 '&#42;&#42;' 0.01 '&#42;' 0.05 '.' 0.1 ' ' 1 </code>"
+                
+        tr
+        };
+        
+    buildRssTable_:
+    fun()
+        {
+        "  \n  \n**Residual standard error**: %s on %s degrees of freedom"
+            .format(sigma(), nResidualDegreesOfFreedom())
+        };
+
+    buildRSquaredTable_:
+    fun()
+        {
+        let tr = "  \n  \n**Multiple R-Squared**: %s".format(rSquared());
+        tr = tr + ", **Adjusted R-Squared**: %s  ".format(adjustedRSquared())
+        tr
+        };
+
+    buildFStatisticTable_:
+    fun()
+        {
+        let fStat = self.fStat(includePValue: true);
+        let fStatistic = fStat.fStatistic;
+        let pValue = fStat.pValue
+        let degreesOfFreedom = fStat.degreesOfFreedom;
+        let tr = "  \n  \n**F-Statistic**: %s on %s and %s degrees of freedom, p-value: %s"
+            .format(fStatistic, *degreesOfFreedom, pValue)
+        tr    
+        };
+
+    buildRankWarningTable_:
+    fun()
+        {
+        if (self.isFullRank()) return "";
+
+        let tr = "  \n  \n**NOTE**: The design matrix for this example is "
+            + "rank-deficient (rank = %s < %s). We do not know how to compute "
+            + "confidence intervals for the fit coefficients, which are "
+            + "computed as _minimum norm_ solutions to the least-squares problem. "
+            + "Consider removing linearly independent columns from the design matrix."
+
+        tr.format(self.rank, self.nPredictors);
+        };
+
+    formatSummary_: 
+#Markdown(
+"""#### Usage
+
+    linearRegressionInstance.formatSummary();
+
+#### Description
+
+Return a markdown string of formatted summary data for a linear regression fit.
+
+""")
+    fun(includeResidualsQuantiles:= false, estimateQuantiles:= true) 
+        {
+        let tr = "### Linear model fit summary  \n\n";    
+            
+        if (includeResidualsQuantiles)
+            tr = tr + buildResidualsQuantilesTable_()
+
+        tr = tr + buildCoefficientsTable_()
+        tr = tr + buildRssTable_()
+        tr = tr + buildRSquaredTable_()
+        tr = tr + buildFStatisticTable_()
+        tr = tr + buildRankWarningTable_();
+
+        return tr
+        };
+
+    static checkParameters_:
+    fun(predictors, responses, fitIntercept)
+        {
+        assertions.assertEqual(
+            size(predictors), size(responses),
+            msg: "The number of rows in the design matrix and the response matrix " + 
+                "should be the same"
+            );
+        assertions.assertGreater(
+            predictors.numRows, 0,
+            msg: "can't regress on an empty dataframe"
+            );
+
+        match (responses) with 
+            (dataframe.DataFrame(y))
+                {
+                assertions.assertEqual(
+                    y.numColumns, 1, 
+                    msg: "dataframe response variables are only handled when they have one column. " + 
+                        "Consider getting the column you want by member-accessing: getColumn(columnIndexYouWant)"
+                    );
+                }
+            (...) { }
+            ;
+        };
+
+    operator new (dataframe.DataFrame(predictors),
+                  responses,
+                  fitIntercept:= true,
+                  coefficientsOnly:= false,
+                  splitLimit:= _splitLimit
+                  )
+        {
+        checkParameters_(predictors, responses, fitIntercept);
+
+        let Xm = predictors
+        
+        let XTX = computeXTX(Xm, fitIntercept: fitIntercept, 
+                             splitLimit: splitLimit);
+        
+        let XTy = computeXTy(Xm, responses, fitIntercept: fitIntercept, 
+                             splitLimit: splitLimit);
+        
+        let (pinv: XTXinv, rank: rank) = XTX.pseudoinverse(withRank:true);
+        
+        let coefficients = XTXinv * math.Matrix(XTy);
+        
+        let nSamples = predictors.numRows;
+        let nPredictors = Xm.numColumns;
+        if (fitIntercept)
+            nPredictors = nPredictors + 1;
+        
+        let residualSumOfSquares = nothing;
+        let sigmaSquared = nothing;
+        let standardErrors = nothing;
+        let rSquared_ = nothing;
+        let normSquaredY = nothing;
+        let meanY = nothing;
+
+        if (not coefficientsOnly)
+            {
+            (residualSumOfSquares, rSquared_, normSquaredY, meanY) = 
+                computeResidualSumOfSquaresAndRSquared(
+                    XTX, math.Matrix(XTy), getResponses(responses), 
+                    coefficients, fitIntercept: fitIntercept,
+                    splitLimit: splitLimit
+                    );
+            sigmaSquared = residualSumOfSquares / (nSamples - nPredictors);
+
+            // standard error estimates only make sense in the full-rank case
+            standardErrors = 
+            if (rank == nPredictors)
+                {
+                let vcov = sigmaSquared * XTXinv;
+                vcov.diagonalElements() ~~ { math.sqrt(_) };
+                }
+            else {
+                nothing
+                }
+                ;
+            }
+    
+        createInstance(
+            cls, 
+            fitIntercept: fitIntercept,
+            coefficients_: coefficients,
+            nSamples: nSamples,
+            nPredictors: nPredictors,
+            rank: rank,
+            sigmaSquared: sigmaSquared,
+            standardErrors: standardErrors,
+            residualSumOfSquares: residualSumOfSquares,
+            rSquared_: rSquared_,
+            normSquaredY: normSquaredY,
+            meanY: meanY,
+            names_: Xm.columnNames + (if (fitIntercept) { [ "intercept"] } else { [] }),
+            XTX: XTX
+            )
+        }
+    (predictors,
+     responses,
+     fitIntercept:= true,
+     coefficientsOnly:= false)
+        {
+        LinearRegression(
+            dataframe.DataFrame(predictors), 
+            dataframe.DataFrame(responses),
+            fitIntercept: fitIntercept, 
+            coefficientsOnly: coefficientsOnly
+            )
+        }
+    ;
+
+    predict:
+#Markdown(
+"""#### Usage
+
+    linearRegressionInstance.predict(X)
+
+#### Description
+
+Predict the response value for `X`. Here `X` can be either a dataframe,
+a matrix, or any indexable object of the appropriate size
+
+#### Description
+
+    let X = dataframe.DataFrame([[0,1,1,2], [1,0,1,3]]); 
+    let y = dataframe.DataFrame([[2.0, 1.9999, 3.0001, 5.4]]);
+    
+    let fit = math.regression.LinearRegression(X, y, fitIntercept:true)
+
+    fit.predict(X)
+    fit.predict(X[0])
+
+""")
+    fun (math.Matrix(...) X) {
+        X = addInitialScaleColumnIfNecessary_(X);
+        let predictedValues = X * coefficients_;
+        predictedValues
+        }
+    (dataframe.DataFrame(X)) {
+        X = addInitialScaleColumnIfNecessary_(X);
+        let predictedValues = math.regression.logistic.dot(X, coefficients_);
+        dataframe.DataFrame([predictedValues])
+        }
+    (filters.IsVector(X))
+        {
+        predict(dataframe.DataFrame([X]));
+        }
+    (X)
+        {
+        let XData = [];
+        for ix in sequence(size(X))
+            XData = XData :: X[ix];
+
+        predict(XData)
+        }
+    ;
+    
+    addInitialScaleColumnIfNecessary_:
+    fun(X) 
+        {
+        if (fitIntercept)
+            return math.regression.logistic.addInitialScaleColumn(X, 1)
+
+        return X
+        };
+    
+    nonInterceptCoefficientsAndIntercept:
+    fun()
+        {
+        self.computeNonInterceptCoefficientsAndIntercept(
+            coefficients_, fitIntercept
+            )
+        };
+
+    computeMinAndMaxResiduals:
+    fun(predictors:, responsesVec:, nonInterceptCoefficients:, intercept:,
+        low:=0, high:=self.nSamples)
+        {
+        if (high - low < 100000)
+            {
+            let bestMin = math.inf;
+            let bestMax = -math.inf;
+
+            let fittedValuesOnChunkMinusIntercept = 
+                math.regression.logistic.computeThetaDotDfOnChunk(
+                    nonInterceptCoefficients,
+                    predictors,
+                    low,
+                    high
+                    );
+
+            for ix in sequence(0, high - low)
+                {                 
+                let residual = responsesVec[low + ix] - 
+                    (intercept + fittedValuesOnChunkMinusIntercept[ix]); 
+
+                bestMin = bestMin <<< residual;
+                bestMax = bestMax >>> residual;
+                }
+
+            return (bestMin, bestMax)
+            }
+
+        let mid = Int64((high + low) / 2);
+
+        let leftStats = computeMinAndMaxResiduals(
+            predictors: predictors,
+            responsesVec: responsesVec, 
+            nonInterceptCoefficients: nonInterceptCoefficients,
+            intercept: intercept, low: low, high: mid
+            );
+        let rightStats = computeMinAndMaxResiduals(
+            predictors: predictors,
+            responsesVec: responsesVec, 
+            nonInterceptCoefficients: nonInterceptCoefficients,
+            intercept: intercept, low: mid, high: high
+            );
+        
+        let (bestMinLeft, bestMaxLeft) = leftStats;
+        let (bestMinRight, bestMaxRight) = rightStats;
+
+        return (bestMinLeft <<< bestMinRight, bestMaxLeft >>> bestMaxRight)
+        };
+
+    computeResidualsQuantilesHistogram:
+    fun(predictors:, responsesVec:, nonInterceptCoefficients:, intercept:, 
+        minResidual:, maxResidual:, low:=0, high:=self.nSamples, histSize:= 10000)
+        {
+        if (high - low < 100000)
+            {
+            let histogram = 
+                math.stats.AdditiveHistogram(
+                    minResidual, maxResidual, histSize
+                    );
+                
+            let fittedValuesOnChunkMinusIntercept = 
+                math.regression.logistic.computeThetaDotDfOnChunk(
+                    nonInterceptCoefficients,
+                    predictors,
+                    low,
+                    high
+                    );
+
+            for ix in sequence(0, high - low)
+                {
+                let residual = responsesVec[low + ix] - 
+                    (intercept + fittedValuesOnChunkMinusIntercept[ix])
+                histogram.observe(residual)
+                }
+
+            return histogram.freeze()
+            }
+            
+        let mid = (low + high) / 2;
+
+        return computeResidualsQuantilesHistogram(
+                predictors: predictors,
+                responsesVec: responsesVec, 
+                nonInterceptCoefficients: nonInterceptCoefficients, 
+                intercept: intercept,
+                minResidual: minResidual, 
+                maxResidual: maxResidual, 
+                low: low, high: mid) + 
+            computeResidualsQuantilesHistogram(
+                predictors: predictors,
+                responsesVec: responsesVec, 
+                nonInterceptCoefficients: nonInterceptCoefficients, 
+                intercept: intercept,
+                minResidual: minResidual, 
+                maxResidual: maxResidual, 
+                low: mid, high: high)
+        };
+
+    }; // end LinearRegression
+

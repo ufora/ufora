@@ -1,0 +1,107 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Validation.hppml"
+#include "../../core/Logging.hpp"
+#include "../../core/cppml/CPPMLVisit.hppml"
+#include "ABI/TypedForaValueTypecasting.hppml"
+
+namespace TypedFora {
+
+@type ExpressionVisitor = 
+	ImmutableTreeMap<BlockID, Block> blocks
+{
+public:
+	template<class T>
+	void processDown(const T& in,
+					 bool& outKeepProcessing
+					 )
+		{
+		}
+
+	void processDown(const Callable& in,
+					 bool& outKeepProcessing
+					 )
+		{
+		outKeepProcessing = false;
+
+		validateTypedForaJumpTargets(in);
+		}
+
+	void processDown(const Expression_JumpType& in,
+					 bool& outKeepProcessing
+					 )
+		{
+		lassert_dump(
+			blocks().contains(in.target()),
+			"No viable target for jump to " << prettyPrintString(in)
+			);
+
+		Block block = *blocks()[in.target()];
+
+		lassert(in.arguments().size() == block.args().size());
+
+		for (long k = 0; k < block.args().size(); k++)
+			if (in.arguments()[k].type())
+				{
+				lassert_dump(
+					TypedFora::Abi::typeDirectlyCastable(
+						*in.arguments()[k].type(),
+						block.args()[k].type()
+						),
+					"Jump target was invalid: "
+						<< prettyPrintString(block.args()[k].type())
+						<< " can't accept a jump argument of type " 
+						<< prettyPrintString(*in.arguments()[k].type())
+						<< " in slot " 
+						<< k
+						<< " of expression "
+						<< prettyPrintString(in)
+					);
+				}
+		}
+
+	template<class T>
+	void processUp(const T& in)
+		{
+
+		}
+
+
+};
+
+void validateTypedForaJumpTargets(const Callable& callable)
+	{
+	@match Callable(callable)
+		-| Graph(resultSignature, blocks) ->> {
+			
+			ExpressionVisitor visitor(blocks);
+
+			try {
+				::visit(blocks, visitor);
+				}
+			catch(...)
+				{
+				LOG_ERROR << "callable was " << callable;
+
+				throw;
+				}
+			}
+		-| _ ->> {
+			}
+	}
+
+}
+

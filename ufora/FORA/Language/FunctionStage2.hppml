@@ -1,0 +1,212 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#ifndef FORA_Language_FunctionStage2_hppml_
+#define FORA_Language_FunctionStage2_hppml_
+
+
+#include "../Core/CSTValue.hppml"
+#include "../Primitives/Symbol.hpp"
+#include "../../core/math/Nullable.hpp"
+#include "../../core/containers/ImmutableTreeMap.hppml"
+#include "../../core/containers/ImmutableTreeSet.hppml"
+#include "../../core/containers/ImmutableTreeVector.hppml"
+#include "../../core/Exception.hpp"
+#include "VariableAllocator.hppml"
+
+class ApplySignature;
+
+namespace FunctionStage1 {
+class Function;
+}
+
+/******
+
+namespace FunctionStage2
+
+The next step of language reduction after "Stage1".
+
+In this model, pattern matches are removed, and try/catch can have targets.
+
+We still allow continuations.
+
+Variable names must all be unique.
+
+
+******/
+
+namespace FunctionStage2 {
+
+//exception type that gets thrown if there is an error trying to convert
+//the function
+struct InvalidConversion : public Ufora::Exception {
+	InvalidConversion(const std::string& msg) : Ufora::Exception(msg) {}
+};
+
+typedef VariableAllocator::Variable variable_index_type;
+
+@type
+	//Expressions represent a sequence of operations to perform in a context
+	//in which a set of variables have already been bound.  "freeVariables"
+	//are variables in the surrounding context that the expression depends on
+	//and for execution to be meaningful, the variables have to be bound
+	Expression =
+			//evaluates to a constant
+			Constant of CSTValue val
+			
+			//look up the value of a variable
+		-|	Variable of variable_index_type variable
+		
+			//non-recursive let
+		-|	Let of	variable_index_type,
+					Expression value,
+					Expression body
+		
+			//bind elements of 'toExpand' to 'toBindArgsTo'. If not successful,
+			//send to 'ifUnsuccessful' with no additional variables bound
+		-|	TupleExpand of 
+					variable_index_type toExpand,
+					ImmutableTreeVector<variable_index_type> toBindArgsTo,
+					bool lastIsStarArgs,
+					Expression ifSuccessful,
+					Expression ifUnsuccessful
+
+			//evaluate 'value' and update patterns listed in 'toAssign'
+		-|	Assign of
+				variable_index_type toAssign,
+				Expression value
+			
+		-|	Apply of
+				Expression agent,
+				ImmutableTreeVector<ApplyArgument> arguments
+			
+		-|	While of
+				Expression condition,
+				Expression updater
+		
+		-|	RawCached of Expression expr
+		
+		-|	Is of Expression left, Expression right
+		
+		-|	Branch of 	Expression operand,
+						Expression ifTrue,
+						Expression ifFalse
+		
+		-|	Throw of 	Expression exception,
+						Nullable<variable_index_type> target
+		
+		-|	Try of 		Expression toTry,
+						Nullable<variable_index_type> name,
+						Function catchWith
+			
+		-|	Return of Expression toReturn
+			
+		-|	Continuation of Function withContinuation
+		
+		-|	CreateTuple of ImmutableTreeVector<ApplyArgument> args
+	with
+		Nullable<hash_type>	definingExpressionLocationId,
+		ImmutableTreeSet<variable_index_type> freeVariables =
+											(this->computeFreeVariables()),
+		ImmutableTreeSet<variable_index_type> throwTargets =
+											(this->computeThrowTargets()),
+		int depth = (this->computeDepth())
+	{
+	public:
+			int computeDepth() const;
+			ImmutableTreeSet<variable_index_type> computeFreeVariables() const;
+			ImmutableTreeSet<variable_index_type> computeThrowTargets() const;
+			string	toString() const;
+	}
+and
+	//ApplyArgument - a term in a call operation.
+	ApplyArgument =
+			//a regular argument (which may be named in the target structure)
+		-|	Normal of Nullable<Symbol> name, Expression expr
+		-|	TupleCall of Expression expr
+	with
+		ImmutableTreeSet<variable_index_type> freeVariables =
+											(this->computeFreeVariables()),
+		int depth = (this->computeDepth())
+	{
+	public:
+			int computeDepth() const;
+			static	ApplyArgument Constant(const CSTValue& val);
+			ImmutableTreeSet<variable_index_type> computeFreeVariables() const;
+			Expression expr() const;
+			string	toString() const;
+	}
+and
+	Function = ImmutableTreeVector<variable_index_type> vars, Expression result
+	{
+	public:
+			ImmutableTreeSet<variable_index_type> freeVariables() const;
+			string	toString() const;
+			int depth() const;
+	}
+	;
+
+ApplyArgument	applyArg(const Expression& expr);
+
+Expression symExpr(Symbol s);
+
+Expression symExpr(string s);
+
+ApplyArgument symArg(Symbol s);
+
+ApplyArgument symArg(string s);
+
+};
+
+
+
+template<>
+class CPPMLPrettyPrint<FunctionStage2::Expression> {
+public:
+		static void prettyPrint(
+							CPPMLPrettyPrintStream& stream,
+							const FunctionStage2::Expression& toPr
+							)
+			{
+			stream << toPr.toString();
+			}
+};
+
+template<>
+class CPPMLPrettyPrint<FunctionStage2::ApplyArgument> {
+public:
+		static void prettyPrint(
+							CPPMLPrettyPrintStream& stream,
+							const FunctionStage2::ApplyArgument& toPr
+							)
+			{
+			stream << toPr.toString();
+			}
+};
+template<>
+class CPPMLPrettyPrint<FunctionStage2::Function> {
+public:
+		static void prettyPrint(
+							CPPMLPrettyPrintStream& stream,
+							const FunctionStage2::Function& toPr
+							)
+			{
+			stream << toPr.toString();
+			}
+};
+
+
+#endif
+

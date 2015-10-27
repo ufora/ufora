@@ -1,0 +1,536 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "CleanupAndSimplify.hppml"
+#include "../TypedForaUtil.hppml"
+#include "../ABI/NativeLayoutType.hppml"
+#include "../ABI/TypedForaValueTypecasting.hppml"
+#include "../ABI/DestructorsAndConstructors.hppml"
+#include "../../../core/cppml/CPPMLTransform.hppml"
+#include "../../../core/Logging.hpp"
+
+namespace TypedFora {
+namespace Transforms {
+
+
+class RewritingMap {
+public:
+	@type RewritingTerm =
+			Variable of TypedFora::Variable v
+		-|	Constant of CSTValue c
+		;
+
+	void mapVariableTo(	const Variable& var,
+						const Variable& targVar
+						) const
+		{
+		mapVariableTo(var, createVariableRewriteTerm(targVar));
+		}
+	void mapVariableTo(	const Variable& var,
+						const CSTValue& c
+						) const
+		{
+		mapVariableTo(var, createConstantRewriteTerm(c));
+		}
+
+	Nullable<RewritingTerm> lookup(const Variable& v) const
+		{
+		auto it = mRewrites.find(v);
+
+		if (it != mRewrites.end())
+			return null() << it->second;
+
+		return null();
+		}
+
+private:
+	mutable map<Variable, RewritingTerm> mRewrites;
+
+	RewritingTerm createVariableRewriteTerm(const Variable& inVariable) const
+		{
+		auto it = mRewrites.find(inVariable);
+		if (it != mRewrites.end())
+			return it->second;
+		return RewritingTerm::Variable(inVariable);
+		}
+
+	RewritingTerm createConstantRewriteTerm(const CSTValue& inConstant) const
+		{
+		return RewritingTerm::Constant(inConstant);
+		}
+
+	void mapVariableTo(	const Variable& var,
+						const RewritingTerm& term
+						) const
+		{
+		lassert(mRewrites.find(var) == mRewrites.end());
+		mRewrites[var] = term;
+		}
+	
+};
+
+
+class CleanupAndSimplifyTransformer {
+public:
+	template<class T>
+	Nullable<T> processDown(const T& t, bool& b) const { return null(); }
+	
+	template<class T>
+	Nullable<T> processUp(const T& t) const { return null(); }
+
+	Nullable<JOV> processDown(const JOV& t, bool& b) const { b = false; return null(); }
+
+	Nullable<ControlFlowGraph> processDown(const ControlFlowGraph& t, bool& b) const { b = false; return null(); }
+
+	Nullable<Type> processDown(const Type& t, bool& b) const { b = false; return null(); }
+	
+	mutable RewritingMap mRewriteMap;
+
+	Nullable<MetadataVariableLayout> 
+	processDown(const MetadataVariableLayout& m, bool& ioContinue) const
+		{
+		@match MetadataVariableLayout(m)
+			-| Var(v) ->> {
+				Nullable<RewritingMap::RewritingTerm> term = mRewriteMap.lookup(v);
+
+				if (term)
+					@match RewritingMap::RewritingTerm(*term)
+						-|	Variable(v) ->> {
+							return null() << MetadataVariableLayout::Var(v);
+							}
+						-| Constant(c) ->> {
+							return null() << MetadataVariableLayout::Constant(c);
+							}
+					;
+				}
+			-| _ ->> {}
+			;
+
+		return null();
+		}
+
+	Nullable<Expression> processUp(const Expression& e) const
+		{
+		@match Expression(e)
+			-| Let(v1, val1, Return(isException, toReturn)) ->> {
+				return null() << 
+					Expression::Return(isException, 
+						Expression::Let(v1, val1, toReturn)
+						);
+				}
+			-| DiscardFirst(e1, Return(isException, toReturn)) ->> {
+				return null() << 
+					Expression::Return(isException, 
+						Expression::DiscardFirst(e1, toReturn)
+						);
+				}
+			-| DiscardFirst(Constant(), e2) ->> {
+				return null() << e2;
+				}
+			-| Let(v1, v1Value, withinExpr) ->> {
+				if (!withinExpr.freeVariables().contains(v1))
+					{
+					if (!v1Value.hasSideEffects())
+						return null() << withinExpr;
+					return null() << Expression::DiscardFirst(v1Value, withinExpr);
+					}
+				}
+			-| _ ->> {}
+
+		return null();
+		}
+
+	Nullable<Callable> processUp(const Callable& inCallable) const
+		{
+		@match Callable(inCallable)
+			-| Graph(resultSignature, blocks) ->> {
+				//see if its an inlineable block
+				if (resultSignature.size() == 1 && blocks.size() == 1)
+					{
+					@match Expression(blocks.pairAtPosition(0).second.expression())
+						-| Return(isException, result) ->> {
+							if (expressionDefinitelyHasValue(result))
+								return null() << 
+									Callable::SingleExpression(
+										blocks.pairAtPosition(0).second.args(),
+										result,
+										resultSignature[0].first,
+										isException,
+										resultSignature.hasSideEffects()
+										);
+							}
+						-| _ ->> {}
+					}
+				}
+			-| _ ->> {}
+
+		return null();
+		}
+
+	Nullable<Expression> processDown(const Expression& e, bool& ioContinue) const
+		{
+		@match Expression(e)
+			-| ChangeClassBody(expr, newClassBody) ->> {
+				
+				if (!expr.type() || jovAlreadyHasClassBody(expr.type()->jov(), newClassBody))
+					{
+					ioContinue = false;
+					return null() << transform(expr, *this);	
+					}
+
+				return null();
+				}
+			-| TypeCheck(toCheck, continuations) ->> {
+				if (!toCheck.type())
+					{
+					ioContinue = false;
+					return null() << transform(toCheck, *this);
+					}
+
+				bool changed = false;
+
+				TypedFora::Type t = *toCheck.type();
+
+				ImmutableTreeVector<TypedFora::Continuation> newConts;
+
+				newConts = 
+					filterITV(
+						continuations,
+						[&](const TypedFora::Continuation& c) {
+							if (t.jov().disjoint(c.var().type().jov()))
+								{
+								changed = true;
+								return false;
+								}
+							return true;
+							}
+						);
+
+				for (long k = 0; k < newConts.size(); k++)
+					if (TypedFora::Abi::typeDirectlyCastable(t, newConts[k].var().type()))
+						{
+						newConts = newConts.slice(0, k+1);
+						changed = true;
+						}
+
+				if (changed)
+					{
+					ioContinue = false;
+					return null() << Expression::TypeCheck(
+						transform(toCheck, *this),
+						transform(newConts, *this)
+						);
+					}
+
+				return null();
+				}
+			-| If(condition, ifTrue, ifFalse, frequency) ->> {
+				ioContinue = false;
+
+				Nullable<Expression> conditionN = transformNullable(condition, *this);
+				const Expression& conditionE(conditionN ? *conditionN : condition);
+
+				if (conditionE.type())
+					{
+					Nullable<bool> conditionalVal = conditionE.type()->jov().convertToBoolean();
+
+					if (conditionalVal)
+						{
+						auto branch = *conditionalVal ? ifTrue : ifFalse;
+
+						return null() << transform(
+							Expression::DiscardFirst(conditionE, branch),
+							*this
+							);
+						}
+					}
+
+				if (conditionN)
+					{
+					return null() << Expression::If(
+						*conditionN,
+						transform(ifTrue, *this),
+						transform(ifFalse, *this),
+						frequency
+						);
+					}
+
+				Nullable<Expression> ifTrueN, ifFalseN;
+				
+				ifTrueN = transformNullable(ifTrue, *this);
+				ifFalseN = transformNullable(ifFalse, *this);
+
+				if (!ifTrueN && !ifFalseN)
+					return null();
+
+				return null() << Expression::If(
+					condition,
+					ifTrueN ? *ifTrueN : ifTrue,
+					ifFalseN ? *ifFalseN : ifFalse,
+					frequency
+					);
+				}
+			-| IsTuple(expr, arity, arityExact) ->> {
+				if (!expr.type())
+					return null();
+
+				Nullable<bool> isTuple = jovIsTupleOfArity(expr.type()->jov(), arity, arityExact);
+
+				if (isTuple)
+					return null() << 
+						Expression::DiscardFirst(expr, Expression::Constant(CSTValue(*isTuple)));
+
+				return null();
+				}
+			-| CastWithoutCheck(expr, type) ->> {
+				
+				if (!expr.type() || *expr.type() == type)
+					{
+					ioContinue = false;
+					return null() << transform(expr, *this);	
+					}
+
+				return null();
+				}
+			-| Var(v) ->> {
+				Nullable<RewritingMap::RewritingTerm> term = mRewriteMap.lookup(v);
+
+				if (term)
+					@match RewritingMap::RewritingTerm(*term)
+						-|	Variable(v) ->> {
+							return null() << Expression::Var(v);
+							}
+						-| Constant(c) ->> {
+							return null() << Expression::Constant(c);
+							}
+					;
+				}
+			-| GetSlice(expr, index) ->> {
+				if (index == 0)
+					{
+					ioContinue = false;
+					return null() << transform(expr, *this);
+					}
+				return null();
+				}
+			-| DiscardFirst(MakeTuple(args), remaining) ->> {
+				ioContinue = false;
+				
+				Expression sub = remaining;
+				for (long k = ((long)args.size())-1; k >= 0; k--)
+					sub = Expression::DiscardFirst(args[k].arg(), sub);
+
+				return null() << transform(sub, *this);
+				}
+			-| DiscardFirst(CastWithoutCheck(expr), remaining) ->> {
+				ioContinue = false;
+				
+				if (!expr.type())
+					return null() << transform(expr, *this);
+				else
+					return null() << transform(Expression::DiscardFirst(expr, remaining), *this);
+				}
+			-| DiscardFirst(ChangeClassBody(expr), remaining) ->> {
+				ioContinue = false;
+				
+				if (!expr.type())
+					return null() << transform(expr, *this);
+				else
+					return null() << transform(Expression::DiscardFirst(expr, remaining), *this);
+				}
+			-| DiscardFirst(GetItem(expr, index), remaining) ->> {
+				ioContinue = false;
+				
+				if (!expr.type())
+					return null() << transform(expr, *this);
+				else
+					return null() << transform(Expression::DiscardFirst(expr, remaining), *this);
+				}
+			-| DiscardFirst(GetSlice(expr, index), remaining) ->> {
+				ioContinue = false;
+				
+				if (!expr.type())
+					return null() << transform(expr, *this);
+				else
+					return null() << transform(Expression::DiscardFirst(expr, remaining), *this);
+				}
+			-| DiscardFirst(Constant(), remaining) ->> {
+				ioContinue = false;
+				return null() << transform(remaining, *this);
+				}
+			-| DiscardFirst(Var(), remaining) ->> {
+				ioContinue = false;
+				return null() << transform(remaining, *this);
+				}
+			-| Let(v1, DiscardFirst(first, v1_val), within1) ->> {
+				ioContinue = false;
+				return null() << transform(
+					Expression::DiscardFirst(first, 
+						Expression::Let(
+							v1, 
+							v1_val, 
+							within1
+							)
+						),
+					*this
+					);
+				}
+			-| MakeTuple(args) ->> {
+				//check if this is MakeTuple(*a) where 'a' is already a tuple.
+				if (args.size() == 1 && args[0].isTupleCall() 
+						&& args[0].arg().type()->jov().isTuple() 
+						&& args[0].arg().type()->refcountStyle().isPooled()
+						)
+					{
+					ioContinue = false;
+					return null() << transform(args[0].arg(), *this);
+					}
+
+				return null();
+				}
+			-| Let(v1, Let(v2, expr2, within2), within1) ->> {
+				ioContinue = false;
+				return null() << transform(
+					Expression::Let(
+						v2, 
+						expr2,
+						Expression::Let(v1,
+							within2,
+							within1
+							)
+						),
+					*this
+					);
+				}
+			-| Let(v, Constant(c), within) ->> {
+				ioContinue = false;
+				mRewriteMap.mapVariableTo(v, c);
+				return null() << transform(
+					within,
+					*this
+					);
+				}
+			-| Let(v, expr, within) ->> {
+				ioContinue = false;
+
+				if (!expr.type())
+					return null() << transform(expr, *this);	
+				
+				Expression newExpr = transform(expr, *this);
+
+				if (checkIfCanRemoveLetAndAddBindingIfSo(v, newExpr, within))
+					return null() << transform(
+						Expression::DiscardFirst(newExpr, within),
+						*this
+						);
+				
+
+				//check if we can upgrade the type
+				if (v.type().refcountStyle().isAsValueUnowned() 
+							&& newExpr.type()->refcountStyle().isPooled())
+					{
+					Variable newVar = Variable::Temp(Type(v.type().jov(), RefcountStyle::Pooled()));
+
+					mRewriteMap.mapVariableTo(v, newVar);
+					
+					return null() << 
+						Expression::Let(
+							newVar,
+							newExpr,
+							transform(within, *this)
+							);
+					}
+
+				return null() << 
+					Expression::Let(
+						v,
+						newExpr,
+						transform(within, *this)
+						);
+				}
+			-| _ ->> {
+				}
+			;
+
+		return null();
+		}
+
+	bool checkIfCanRemoveLetAndAddBindingIfSo(
+				const Variable& v,
+				const Expression& expr,
+				const Expression& within
+				) const
+		{
+		if (expr.hasSideEffects())
+			return false;
+
+		if (v.type().jov().constant())
+			{
+			mRewriteMap.mapVariableTo(v, *v.type().jov().constant());
+
+			return true;
+			}
+			else
+		if (!within.freeVariables().contains(v))
+			{
+			//we don't need to keep the variable since nothing below us accesses it
+			return true;
+			}
+		else
+			{
+			@match Expression(expr)
+				-| Var(v2) ->> {
+					if (v.type().refcountStyle() == v2.type().refcountStyle())
+						//we can map directly to this variable - no reason to keep it 
+						//unmapped since we don't create any new references
+						{
+						mRewriteMap.mapVariableTo(v, v2);
+						return true;
+						}
+						else
+					if (!within.freeVariables().contains(v2))
+						//the subexpression doesn't contain the variable we're binding from
+						//so we can just bind to the original. We know that 'v' isn't going
+						//to get deallocated below us
+						{
+						mRewriteMap.mapVariableTo(v, v2);
+						return true;
+						}
+					}
+				-| _ ->> {}
+				;
+			}
+
+		return false;
+		}
+};
+
+Callable cleanupAndSimplify(const Callable& toCleanUp)
+	{
+	CleanupAndSimplifyTransformer transformer;
+
+	return transform(toCleanUp, transformer);
+	}
+
+Expression cleanupAndSimplify(const Expression& toCleanUp)
+	{
+	CleanupAndSimplifyTransformer transformer;
+	
+	return transform(toCleanUp, transformer);
+	}
+
+}
+}
+

@@ -1,0 +1,549 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Parser.hppml"
+#include "ParserExpressions.hppml"
+#include "FunctionValidation.hppml"
+#include "RebindFree.hppml"
+#include <limits>
+#include <boost/lexical_cast.hpp>
+#include "../Core/Type.hppml"
+#include "../../core/StringUtil.hpp"
+#include "FunctionUtil.hppml"
+#include "ExpressionLocationTagging.hppml"
+#include "ScopeNaming.hppml"
+
+#include <dtoa/dtoa.hpp>
+
+//helper functions used only locally to help parse numeric constants
+namespace {
+
+uint64_t hexDigitToInt(char c)
+	{
+	switch (c)
+		{
+		case '0':           return  0;
+		case '1':           return  1;
+		case '2':           return  2;
+		case '3':           return  3;
+		case '4':           return  4;
+		case '5':           return  5;
+		case '6':           return  6;
+		case '7':           return  7;
+		case '8':           return  8;
+		case '9':           return  9;
+		case 'a': case 'A': return 10;
+		case 'b': case 'B': return 11;
+		case 'c': case 'C': return 12;
+		case 'd': case 'D': return 13;
+		case 'e': case 'E': return 14;
+		case 'f': case 'F': return 15;
+		
+		default:
+			throw NumericConstantParseError::Other("hex-digit expected");
+		}
+	}
+
+//Wraps boost::lexical_cast to provide exceptions with more info
+//regarding the badity of the literal.
+template <class T>
+T integerLexicalCast(const string& toCast)
+	{
+	try
+		{
+		return boost::lexical_cast<T>(toCast);
+		}
+	catch(...)
+		{
+		if (toCast.size() == 0)
+			throw NumericConstantParseError::Unknown(); 
+		//first make sure all characters are valid
+		for (int i = 0; i < toCast.size(); i++)
+			if (!isdigit(toCast[i]))
+				if (i != 0 || toCast[i] != '+' || toCast[i] != '-')
+					throw NumericConstantParseError::InvalidCharacter();
+		//if all chars were valid, that means was out of range
+		throw NumericConstantParseError::OutOfRange();
+		}
+	}
+
+template <class T>
+T floatingPointLexicalCast(const string& toCast)
+	{
+	try
+		{
+		return ufora_strtod(toCast.c_str(), NULL);
+		}
+	catch (boost::bad_lexical_cast& e)
+		{
+		throw NumericConstantParseError::Other("invalid floating point literal");
+		}
+	}
+
+uint64_t binaryStringToInteger(const string& numString)
+	{
+	uint64_t res = 0;
+	
+	for (int i = 0; i < numString.size(); i++)
+		{
+		res = res << 1;
+		if (numString[i] == '1')
+			res = res | 1;
+		else if (numString[i] != '0')
+			throw NumericConstantParseError::Other("0 or 1 expected");
+		}
+
+	return res;
+	}
+
+uint64_t hexadecimalStringToInteger(const string& numString)
+	{
+	uint64_t res = 0;
+
+	for (int i = 0; i < numString.size(); i++)
+		{
+		res <<= 4;
+		res |= hexDigitToInt(numString[i]);
+		}
+	
+	return res;
+	}
+
+uint64_t parsePowerOfTwoBase(const string& numString, int numBits, int bitsPerChar)
+	{
+	//first check to make sure not the empty string
+	if (numString.size() == 0)
+		throw NumericConstantParseError::Other("expected binary or hex digits");
+	
+	if (numString.size() > numBits / bitsPerChar)
+		throw NumericConstantParseError::OutOfRange();
+	
+	if (bitsPerChar == 4)
+		return hexadecimalStringToInteger(numString);
+	else if (bitsPerChar == 1)
+		return binaryStringToInteger(numString);
+	else
+		throw NumericConstantParseError::Other("unrecognized base: " + (1 << bitsPerChar));
+	}
+
+CSTValue parseOtherNumericConstant(const string& s, int bitsPerChar)
+	{
+	string numString = s.substr(2);
+	
+	if (Ufora::endsWith(s, "s8"))
+		{
+		numString = numString.substr(0, numString.size() - 2);
+		return CSTValue((int8_t) parsePowerOfTwoBase(numString, 8, bitsPerChar));
+		}
+	if (Ufora::endsWith(s, "s16"))
+		{
+		numString = numString.substr(0, numString.size() - 3);
+		return CSTValue((int16_t) parsePowerOfTwoBase(numString, 16, bitsPerChar));
+		}
+	if (Ufora::endsWith(s, "s32"))
+		{
+		numString = numString.substr(0, numString.size() - 3);
+		return CSTValue((int32_t) parsePowerOfTwoBase(numString, 32, bitsPerChar));
+		}
+	if (Ufora::endsWith(s, "s64"))
+		{
+		numString = numString.substr(0, numString.size() - 3);
+		return CSTValue((int64_t) parsePowerOfTwoBase(numString, 64, bitsPerChar));
+		}
+	if (Ufora::endsWith(s, "u8"))
+		{
+		numString = numString.substr(0, numString.size() - 2);
+		return CSTValue((unsigned char) parsePowerOfTwoBase(numString, 8, bitsPerChar));
+		}
+	if (Ufora::endsWith(s, "u16"))
+		{
+		numString = numString.substr(0, numString.size() - 3);
+		return CSTValue((uint16_t) parsePowerOfTwoBase(numString, 16, bitsPerChar));
+		}
+	if (Ufora::endsWith(s, "u32"))
+		{
+		numString = numString.substr(0, numString.size() - 3);
+		return CSTValue((uint32_t) parsePowerOfTwoBase(numString, 32, bitsPerChar));
+		}
+	if (Ufora::endsWith(s, "u64"))
+		{
+		numString = numString.substr(0, numString.size() - 3);
+		return CSTValue((uint64_t) parsePowerOfTwoBase(numString, 64, bitsPerChar));
+		}
+	if (Ufora::endsWith(s, "u"))
+		{
+		numString = numString.substr(0, numString.size() - 1);
+		return CSTValue((uint64_t) parsePowerOfTwoBase(numString, 64, bitsPerChar));
+		}
+	if (Ufora::endsWith(s, "s"))
+		{
+		numString = numString.substr(0, numString.size() - 1);
+		return CSTValue((int64_t) parsePowerOfTwoBase(numString, 64, bitsPerChar));
+		}
+
+	//treat as Int64
+	return CSTValue((int64_t) parsePowerOfTwoBase(numString, 64, bitsPerChar));
+	}
+
+CSTValue parseDecimalNumericConstant(const string& s)
+	{
+	if (Ufora::endsWith(s, "s8"))
+		{
+		int32_t res = integerLexicalCast<int32_t>(s.substr(0, s.size() - 2));
+		if (res > std::numeric_limits<int8_t>::max() || res < std::numeric_limits<int8_t>::min())
+			throw NumericConstantParseError::OutOfRange();
+		return CSTValue((int8_t) res);
+		}
+	if (Ufora::endsWith(s, "s16"))
+		return CSTValue(integerLexicalCast<int16_t>(s.substr(0, s.size() - 3)));
+	if (Ufora::endsWith(s, "s32"))
+		return CSTValue(integerLexicalCast<int32_t>(s.substr(0, s.size() - 3)));
+	if (Ufora::endsWith(s, "s64"))
+		return CSTValue(integerLexicalCast<int64_t>(s.substr(0, s.size() - 3)));
+	if (Ufora::endsWith(s, "u8"))
+		{
+		uint32_t res = integerLexicalCast<uint32_t>(s.substr(0, s.size() - 2));
+		if (res > std::numeric_limits<uint8_t>::max() || res < std::numeric_limits<uint8_t>::min())
+			throw NumericConstantParseError::OutOfRange();
+		return CSTValue((uint8_t)res);
+		}
+	if (Ufora::endsWith(s, "u16"))
+		return CSTValue(integerLexicalCast<uint16_t>(s.substr(0, s.size() - 3)));
+	if (Ufora::endsWith(s, "u32"))
+		return CSTValue(integerLexicalCast<uint32_t>(s.substr(0, s.size() - 3)));
+	if (Ufora::endsWith(s, "u64"))
+		return CSTValue(integerLexicalCast<uint64_t>(s.substr(0, s.size() - 3)));
+	if (Ufora::endsWith(s, "s"))
+		return CSTValue(integerLexicalCast <int64_t>(s.substr(0, s.size() - 1)));
+	if (Ufora::endsWith(s, "u"))
+		return CSTValue(integerLexicalCast<uint64_t>(s.substr(0, s.size() - 1)));
+	
+	if (Ufora::endsWith(s, "f"))
+		return CSTValue(floatingPointLexicalCast<double>(s.substr(0, s.size() - 1)));
+	if (Ufora::endsWith(s, "f64"))
+		return CSTValue(floatingPointLexicalCast<double>(s.substr(0, s.size() - 3)));
+	if (Ufora::endsWith(s, "f32"))
+		return CSTValue(floatingPointLexicalCast <float>(s.substr(0, s.size() - 3)));
+	
+	//Not sure which kind of constant this is, so look for a '.', 'e', or 'E',
+	//which will indicate a floating point number.
+	if (s.find(".") != string::npos || s.find("e") != string::npos || s.find("E") != string::npos)
+		return CSTValue(floatingPointLexicalCast<double>(s));
+	else
+		return CSTValue(integerLexicalCast<int64_t>(s));
+	}
+
+}; //namespace
+
+ImmutableTreeVector<StatementTerm> parseStringToStatementTermsWithLocationInfo(
+											const string& s,
+											const CodeDefinitionPoint& inCodeDefinitionPoint,
+											const string& nameScope
+											)
+	{
+	ParserExpressions parser(false, inCodeDefinitionPoint, nameScope);
+
+	ImmutableTreeVector<StatementTerm> terms;
+
+	terms = parser.unpackNodeToStatementTerms(
+		parseStringToSimpleParse(s)
+		);
+	
+    terms = ScopeNaming::nameClassMediatorsWithScopes(terms, nameScope);
+
+	return
+		ExpressionLocationTagging::setCodeLocation(
+			terms,
+			inCodeDefinitionPoint
+			);
+	}
+
+Expression parseToExpression(
+					const SimpleParseNode& s,
+					bool allowPrivate,
+					const CodeDefinitionPoint& cdp,
+					const std::string& nameScope
+					)
+	{
+	ParserExpressions p(allowPrivate, cdp, nameScope);
+	
+	Expression expr = p.parseToExpression(s);
+	
+	FunctionValidation::checkStandaloneExpressionForOrphanBreaks(expr);
+
+    expr = ScopeNaming::nameClassMediatorsWithScopes(expr, nameScope);
+	
+	expr = ExpressionLocationTagging::setCodeLocation(
+        expr,
+        CodeLocation(
+            cdp,
+            s.extent()
+            )
+        );
+
+    return expr;
+	}
+	
+Expression parseObjectDefinitionBodyToExpression(
+					const SimpleParseNode& s,
+					bool allowPrivate,
+					const CodeDefinitionPoint& cdp,
+					Symbol moduleName,
+					Symbol moduleFullname
+					)
+	{
+	ParserExpressions p(allowPrivate, cdp, moduleFullname.toString());
+	
+	ImmutableTreeVector<pair<CSTValue, ObjectDefinitionTerm> > terms;
+
+	SimpleParseNode toParse = s;
+	
+	CSTValue userMetadata;
+	
+	@match SimpleParseNode(toParse)
+		-|	Sequence(Semicolon(), elts) ->> {
+				//if this is a constant, then it's the module metadata
+				try {
+					userMetadata = p.parseToConstant(elts[0]);
+
+					toParse = SimpleParseNode::Sequence(
+							toParse.extent(),
+							SimpleParseSeparator::Semicolon(),
+							elts.slice(1)
+							);
+					}
+				catch(FunctionParseError& err)
+					{
+					}
+				}
+		-|	_ ->> { }
+		;
+	
+	terms = p.parseObjectBody(toParse);
+
+    terms = ScopeNaming::nameClassMediatorsWithScopes(
+        terms, moduleFullname.toString()
+        );
+
+	return ExpressionLocationTagging::setCodeLocation(
+		p.objectTermsAndMetadataToObjectExpression(
+			userMetadata,
+			terms,
+			null(),
+			s.extent(),
+			emptyTreeVec() +
+				make_pair(
+					null() << Symbol("kind"),
+					CSTValue(Symbol("module"))
+					) +
+				make_pair(
+					null() << Symbol("name"),
+					CSTValue(moduleName)
+					) +
+				make_pair(
+					null() << Symbol("fullname"),
+					CSTValue(moduleFullname)
+					),
+			moduleFullname.toString()
+			),
+		CodeLocation(
+			cdp,
+			s.extent()
+			)
+		);
+	}
+	
+Function parseStringToFunction(	const string& s,
+								bool allowPrivate,
+								const CodeDefinitionPoint& cdp,
+								const std::string& inNameScope
+								)
+	{
+	SimpleParseNode node = parseStringToSimpleParse(s);
+	
+	Expression e = parseToExpression(node, allowPrivate, cdp, inNameScope);
+
+	ImmutableTreeSet<Symbol> freeVars = e.freeVariables();
+
+	return Function::SingleTermFunction(
+		ImmutableTreeVector<Symbol>(freeVars.begin(), freeVars.end()),
+		null(),
+		rebindFreeAsLambdas(e, freeVars)
+		);
+	}
+	
+bool isOperatorCharacter(char c)
+	{
+	return c == '/'
+		|| c == '|'
+		|| c == '-'
+		|| c == '+'
+		|| c == '='
+		|| c == '~'
+		|| c == ':'
+		|| c == '<'
+		|| c == '>'
+		|| c == '?'
+		|| c == '!'
+		|| c == '@'
+		|| c == '#'
+		|| c == '$'
+		|| c == '%'
+		|| c == '^'
+		|| c == '&'
+		|| c == '*'
+		;
+	}
+
+bool isOperatorCharacter(string c)
+	{
+	return c.size() && isOperatorCharacter(c[0]);
+	}
+
+CSTValue parseNumericConstant(const string& s)
+	{
+	//Hexadecimal?
+	if (Ufora::beginsWith(s, "0x") || Ufora::beginsWith(s, "0X"))
+		return parseOtherNumericConstant(s, 4);
+	
+	//No? Perhaps it's binary?
+	if (Ufora::beginsWith(s, "0b") || Ufora::beginsWith(s, "0B"))
+		return parseOtherNumericConstant(s, 1);
+	
+	//No? Decimal then.
+	return parseDecimalNumericConstant(s);
+	}
+
+CSTValue prependMemberMetadata(const CSTValue& existingMetadata, const CSTValue& meta)
+	{
+	if (!existingMetadata.type().isTuple())
+		return existingMetadata;
+
+	//find the tuple member 'members' and append out stuff to that
+	uword_t memberCount = *existingMetadata.tupleGetSize();
+
+	for (long k = 0; k < memberCount; k++)
+		if (existingMetadata.tupleGetName(k) && 
+					*existingMetadata.tupleGetName(k) == Symbol("members"))
+			{
+			CSTValue existingMemberMetadataTup = *existingMetadata.tupleGetItem(k);
+
+			CSTValue newMemberMetaTup = existingMemberMetadataTup.tupleInsert(null(), meta, 0);
+
+			CSTValue tr = existingMetadata.tupleReplaceItem(
+								null() << Symbol("members"),
+								newMemberMetaTup,
+								k
+								);
+			
+			return tr;
+			}
+
+	return existingMetadata;
+	}
+	
+Expression prependMemberToCreateObjectExpression(
+									const Expression& createExpr,
+									const string& memberName,
+									const Expression& memberExpr
+									)
+	{
+	Expression e = createExpr;
+	
+	@match Expression(e)
+		-|	CreateObject(name, (defBody, selfName, locationMetadata), meta) ->> {
+				return Expression::CreateObject(
+					name,
+					ObjectDefinition(
+						ObjectDefinitionBody::Term(
+							ObjectDefinitionTermWithMetadata(
+								ObjectDefinitionTerm::Member(
+									Symbol(memberName),
+									memberExpr,
+									1),
+								CSTValue()
+								),
+							defBody
+							),
+						selfName,
+						locationMetadata
+						),
+					prependMemberMetadata(
+						meta,
+						CSTValue()
+						)
+					);
+				};
+	}
+	
+Expression prependMemberToCreateObjectExpressionWithMetadata(
+									const Expression& createExpr,
+									const string& memberName,
+									const Expression& memberExpr,
+									const ImplValContainer& inMetadata
+									)
+	{
+	Expression e = createExpr;
+	
+	CSTValue userMetadata = ParserExpressions::extractUserMetadataField(memberExpr);
+
+	CSTValue wholeMetadata = inMetadata;
+
+	if (!userMetadata.type().isNothing())
+		wholeMetadata = 
+			CSTValue::Tuple(emptyTreeVec() + 
+				make_pair(null() << Symbol("outer"), CSTValue(inMetadata.getReference())) + 
+				make_pair(null() << Symbol("inner"), userMetadata)
+				);
+	else
+		wholeMetadata = 
+			CSTValue::Tuple(emptyTreeVec() + 
+				make_pair(null() << Symbol("outer"), CSTValue(inMetadata.getReference())) + 
+				make_pair(null() << Symbol("inner"), CSTValue())
+				);
+
+
+	@match Expression(e)
+		-|	CreateObject(name, (defBody, selfName, locationMetadata), meta) ->> {
+			return
+				Expression::CreateObject(
+					name,
+					ObjectDefinition(
+						ObjectDefinitionBody::Term(
+							ObjectDefinitionTermWithMetadata(
+								ObjectDefinitionTerm::Member(
+									Symbol(memberName),
+									memberExpr,
+									1
+									),
+								wholeMetadata
+								),
+							defBody
+							),
+						selfName,
+						locationMetadata
+						),
+					prependMemberMetadata(
+						meta,
+						wholeMetadata
+						)
+					);
+			}
+		-| _ ->> {
+			lassert_dump(false, "expected a CreateObject expression. got " << e.tagName());
+			}
+	}
+
+

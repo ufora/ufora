@@ -1,0 +1,180 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <unistd.h>
+#include "../Core/ShareableMemoryBlocks.hppml"
+#include "../Core/Type.hppml"
+#include "../Core/MemoryPool.hpp"
+#include "../Serialization/SerializedObject.hpp"
+#include "../../core/InstanceCounter.hpp"
+#include "../../core/threading/Trigger.hppml"
+#include "../../core/PolymorphicSharedPtr.hpp"
+#include "PageletTree.hppml"
+#include "BigVectorId.hppml"
+#include "PageId.hppml"
+#include <boost/unordered_set.hpp>
+#include <boost/enable_shared_from_this.hpp>
+
+namespace TypedFora {
+namespace Abi {
+
+class ForaValueArray;
+
+}
+}
+
+class VectorDataMemoryManager;
+class VectorDataManager;
+
+/****************
+VectorPage
+
+Models a single page of data held in the VDM. The VectorPage holds "pagelets" which hold the actual
+values.
+
+A VectorPage may be "frozen" at which point the only allocations that are legal within it are
+for BigVectorHandle allocation/deallocation.
+
+****************/
+
+class SerializedObjectContext;
+
+namespace Fora {
+class ForaValueSerializationStream;
+class ForaValueDeserializationStream;
+}
+
+class VectorPage : 
+		public MappableMemoryPool,
+		public InstanceCounter<VectorPage> {
+public:
+	VectorPage(
+		PolymorphicSharedPtr<VectorDataMemoryManager> inMemoryManager
+		);
+
+	~VectorPage();
+
+	std::string stringRepresentation();
+	
+	Fora::PageId getPageId() const;
+
+	static size_t getOsPageSize();
+
+	bool isFrozen() const;
+
+	//freeze the page and set its page ID
+	void freeze();
+
+	void freeze(Fora::PageId pageId);
+
+	size_t totalBytesAllocatedFromOSExcludingPagelets() const;
+
+	size_t totalBytesAllocatedFromOS() const;
+
+	size_t totalBytesAllocated() const;
+
+	size_t totalBytesAllocatedFromOSByNonPagelets() const;
+
+	size_t totalBytesFromOSHeldInPagelets() const;
+
+	uint8_t* allocate(size_t inBytes);
+
+	void free(uint8_t* inBytes);
+	
+	uint8_t* realloc(uint8_t* inBytes, uword_t inNewBytes);
+	
+	void appendPageletTree(Fora::PageletTreePtr newPagelet, IntegerSequence sequence);
+
+	void appendPageletTree(Fora::PageletTreePtr newPagelet);
+
+	void appendPagelet(boost::shared_ptr<Fora::Pagelet> newPagelet);
+
+	Fora::PageletTreePtr getPageletTree() const;
+
+	bool permitAllocation(size_t inBytes);
+
+	PolymorphicSharedPtr<SerializedObject> serialize();
+
+	static boost::shared_ptr<VectorPage> deserialize(
+						PolymorphicSharedPtr<VectorDataManager> inVDM,
+						PolymorphicSharedPtr<SerializedObject> serialized
+						);
+
+	const std::set<Fora::BigVectorId>& getReferencedBigVectorIds();
+
+	Fora::ShareableMemoryBlockHandle convertPointerToShareableMemoryBlock(uint8_t* inBytes, int64_t bytes);
+
+	uint8_t* importShareableMemoryBlock(const Fora::ShareableMemoryBlockHandle& inHandle);
+
+	void pageletIsHeld(boost::shared_ptr<Fora::Pagelet> inPagelet);
+
+	void pageletIsNoLongerHeld(boost::shared_ptr<Fora::Pagelet> inPagelet);
+
+	virtual void vectorPageMapped(
+						boost::shared_ptr<VectorPage> mappedPage,
+						boost::shared_ptr<Ufora::threading::Trigger> mappedPageWantsUnmapped
+						);
+	
+	virtual bool isVectorPageMapped(boost::shared_ptr<VectorPage> mappedPage);
+	
+	void collapseSmallPagelets();
+
+	void considerSmallPageletsCollapsed();
+
+	bool hasHadSmallPageletsCollapsed() const;
+
+private:
+	void setPageletTree(Fora::PageletTreePtr inPtr);
+
+	bool tryToAcquireMapTo_();
+
+	void hasBecomeUnmapped_();
+
+	mutable boost::mutex mPageletTreeMutex;
+
+	std::map<
+		boost::shared_ptr<Ufora::threading::Trigger>,
+		boost::shared_ptr<Fora::Pagelet>
+		> mMappedPageletTriggers;
+
+	void appendPageletTreeInternal(Fora::PageletTreePtr newPagelet);
+	
+	void destroyHeldValues();
+
+	PolymorphicSharedPtr<VectorDataMemoryManager> mMemoryManager;
+
+	Fora::PageletTreePtr mPageletTree;
+
+	Fora::PageId mPageId;
+
+	bool mIsFrozen;
+
+	std::set<Fora::BigVectorId> mReferencedBigvecs;
+
+	std::map<boost::shared_ptr<Fora::Pagelet>, long> mHeldPagelets;
+
+	size_t mBytesInHeldPagelets;
+
+	size_t mBytesInHeldPageletsFromOS;
+
+	bool mIsTearingDown;
+
+	bool mHasHadSmallPageletsCollapsed;
+};
+
+
+

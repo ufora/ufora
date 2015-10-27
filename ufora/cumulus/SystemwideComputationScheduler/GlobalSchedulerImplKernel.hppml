@@ -1,0 +1,189 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <boost/shared_ptr.hpp>
+#include "../../core/PolymorphicSharedPtr.hpp"
+#include "../../core/EventBroadcaster.hpp"
+#include "../../core/math/Random.hpp"
+#include "../PageLayoutCalculator/LongTermPageLayoutCalculation.hppml"
+
+#include "../SystemwidePageRefcountTracker.hppml"
+#include "../ComputationId.hppml"
+#include "../VectorLoadRequest.hppml"
+#include "../VectorLoadedResponse.hppml"
+#include "ComputationBehaviorPredictor.hppml"
+#include "../MachineComputationMap.hppml"
+#include "../ComputationDependencyGraph.hpp"
+#include "../LocalToGlobalSchedulerMessage.hppml"
+
+#include "../InitiateComputationMove.hppml"
+#include "../SchedulerToComputationMessage.hppml"
+#include "../../FORA/TypedFora/ABI/BigVectorPageLayout.hppml"
+#include "../../FORA/TypedFora/ABI/BigVectorLayouts.hppml"
+
+#include "../../core/containers/TwoWaySetMap.hpp"
+#include "../../core/containers/MapWithIndex.hpp"
+#include "../../core/PolymorphicSharedPtrBinder.hpp"
+#include "../../core/Logging.hpp"
+#include "SchedulerPageLoader.hppml"
+#include "ComputationPageDependencyTracker.hppml"
+#include "SchedulerInitializationParameters.hppml"
+#include "CheckpointStatuses.hppml"
+#include "../CumulusClientToGlobalSchedulerMessage.hppml"
+#include "../CumulusComponentMessageCreated.hppml"
+#include "../CumulusClientOrMachine.hppml"
+#include "../ComputationIsCurrentlyCheckpointing.hppml"
+
+#include "../SchedulerToActivePageSynchronizerMessage.hppml"
+#include "GlobalSchedulerToDataTasksMessage.hppml"
+
+#include "../PageLayoutCalculator/ActiveNeighborhoods.hppml"
+
+namespace Cumulus {
+
+namespace SystemwideComputationScheduler {
+
+/************
+
+GlobalSchedulerImplKernel
+
+The single-threaded kernel for the computation scheduler
+
+************/
+
+class GlobalSchedulerImplKernel {
+public:
+	GlobalSchedulerImplKernel(
+			uint64_t vdmMaxPageSizeInBytes,
+			uint64_t vdmMemoryLimitInBytes,
+	    	MachineId inOwnMachineId,
+			long inActiveThreadCount,
+			CumulusCheckpointPolicy inCheckpointCommitPolicy,
+			boost::function0<void> onTriggerRecomputePageLayoutIfNecessary,
+			boost::function2<void, ComputationId, CheckpointRequest> onTriggerComputationStatusUpdate,
+			boost::function1<void, CumulusComponentMessageCreated> onCumulusComponentMessageCreated
+			);
+
+	void addMachine(MachineId inMachine);
+
+	void handleDataTasksToGlobalSchedulerMessage(const DataTasksToGlobalSchedulerMessage& inMsg);
+
+    void consumePageEvent(const Fora::PageRefcountEvent& inEvent, Cumulus::MachineId onMachineId);
+
+	std::string currentLayoutAsString();
+
+	PolymorphicSharedPtr<PageLayoutCalculator::LongTermPageLayoutCalculation> checkOutLongTermPageLayoutCalculation();
+
+	void checkInUpdatedLongTermPageLayoutCalculation(
+		PolymorphicSharedPtr<PageLayoutCalculator::LongTermPageLayoutCalculation> inResult
+		);
+
+	void setCheckpointStatusInterval(double inInterval);
+
+	void computationStatusOnMachineChanged(
+					const ComputationStatusOnMachineChanged& change,
+					double curTime
+					);
+
+	void sendCommitCheckpointMessage(CheckpointRequest checkpoint);
+
+	void markProgressMade_();
+
+	std::string recomputePageLayout();
+
+	void pageNoLongerReferencedAcrossSystem(Fora::PageId page);
+
+	void triggerFullCheckpointsOnOutstandingComputations(double curTime);
+
+	void handleLocalToGlobalSchedulerMessage(const LocalToGlobalSchedulerMessage& msg);
+
+	void handleComputationToGlobalSchedulerMessage(
+				const ComputationToGlobalSchedulerMessage& message,
+				double curTime
+				);
+
+	boost::function2<std::string, Fora::PageId, Cumulus::MachineId>
+		getSystemViewCallbackForPageLayoutCalculator_(PageLayoutCalculator::ActiveNeighborhoods& layout);
+
+	long mActiveThreadCount;
+
+	void logCurrentLayout(bool forceCritical = false);
+
+	void handleCumulusClientToGlobalSchedulerMessage(const CumulusClientToGlobalSchedulerMessage& message);
+
+	void checkpointStatusesTriggeringStatusUpdate(const ComputationId& id, CheckpointRequest statusTimestamp);
+
+	void checkCheckpointsAndStatuses(double curTime);
+
+	void handleCumulusComponentMessage(
+                    const CumulusComponentMessage& message, 
+                    const CumulusClientOrMachine& source, 
+                    const CumulusComponentType& componentType,
+                    double curTime
+                    );
+
+	ImmutableTreeMap<ComputationId, pair<CheckpointStatus, CheckpointRequest> > 
+					currentOutstandingCheckpointStatuses(bool onlyUnfinished, bool onlyCommitted);
+
+	bool anyOutstandingTriggeredCheckpoints();
+
+	void initializeFromAddDropState(const AddDropFinalState& state);
+
+	map<hash_type, ImmutableTreeMap<MachineId, int64_t> > mAllocatedDataTasks;
+
+	boost::function0<void> mTriggerRecomputePageLayoutIfNecessary;
+
+	boost::function2<void, ComputationId, CheckpointRequest> mOnTriggerComputationStatusUpdate;
+
+	boost::function1<void, CumulusComponentMessageCreated> mOnCumulusComponentMessageCreated;
+
+	PolymorphicSharedPtr<SystemwidePageRefcountTracker> mSystemwidePageRefcountTracker;
+
+	std::map<Fora::BigVectorId, long> mBigVectorRefcounts;
+
+	PolymorphicSharedPtr<TypedFora::Abi::BigVectorLayouts> mBigVectorLayouts;
+
+	std::set<MachineId> mCurrentMachines;
+
+	MachineId mOwnMachineId;
+
+	std::map<hash_type, std::map<MachineId, int64_t> > mDataTaskBytesAllocated;
+
+	std::map<MachineId, int64_t> mBytesAddedByMachine;
+
+	std::map<MachineId, int64_t> mBytesSentToDiskByMachine;
+	
+	PageLayoutCalculator::ActiveNeighborhoods mActiveNeighborhoods;
+
+	bool hasPageBeenDroppedAcrossEntireSystem_(Fora::PageId page);
+
+	long mSetDesireIndex;
+
+	double mTimeOfLastProgress;
+
+	SchedulerInitializationParameters mInitializationParameters;
+
+	double mLastTimeDumped;
+
+	CheckpointStatuses mCheckpointStatuses;
+
+	bool mReportedMyExistence;
+};
+
+}
+}
+

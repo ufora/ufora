@@ -1,0 +1,3559 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ParserExpressions.hppml"
+
+#include "Function.hppml"
+#include "StatementTerm.hppml"
+#include "FunctionUtil.hppml"
+#include "FunctionValidation.hppml"
+#include "Parser.hppml"
+#include "ParserOperators.hppml"
+#include "ParserPatterns.hppml"
+#include "ExpressionLocationTagging.hppml"
+#include "../../core/SimpleParse/SimpleParse.hppml"
+
+#include "../Core/Type.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
+#include "../../core/Common.hppml"
+#include "../../core/STLOps.hpp"
+#include "../../core/math/GraphUtil.hpp"
+
+#include "../../core/Common.hppml"
+#include "../../core/STLOps.hpp"
+#include "../../core/math/GraphUtil.hpp"
+
+#include <boost/lexical_cast.hpp>
+#include <boost/numeric/conversion/cast.hpp>
+
+//TODO BUG anybody: Parser should be able to handle lack of ';' in member definitions
+//
+//the difficulty is metadata. the rule should be that if you don't use a ';', then
+//we pick the shortest expression
+
+//TODO BUG anybody: Parser shouldn't accept expression concatenation in 'expression-like' contexts
+//
+//only in statement-like contexts
+
+typedef ImmutableTreeVector<SimpleParseNode>	NodeList;
+
+namespace {
+
+CSTValue typeJOVConst(const Type& t)
+	{
+	return CSTValue(JOV::OfType(t));
+	}
+
+std::string concatWithDots(std::string leftString, std::string rightString)
+	{
+	if (!rightString.size())
+		return leftString;
+
+	if (leftString.size())
+		return leftString + "." + rightString;
+
+	return rightString;
+	}
+
+}
+
+ParserExpressions::ParserExpressions(
+		bool inAllowPrivate, 
+		const CodeDefinitionPoint& inCodeDefPoint, 
+		const std::string& inClassMediatorName
+		)
+	{
+	allowPrivate() = inAllowPrivate;
+	codeDefPoint() = inCodeDefPoint;
+	classMediatorName() = inClassMediatorName;
+	scopeCounter().reset(new int(-1));
+	}
+
+const map<string, CSTValue>& ParserExpressions::constants()
+	{
+	return ParserExpressions::twoWayConstants().getKeyToValue();
+	}
+
+const map<CSTValue, std::set<string> >& ParserExpressions::constantsInverse()
+	{
+	return ParserExpressions::twoWayConstants().getValueToKeys();
+	}
+
+const MapWithIndex<string, CSTValue>& ParserExpressions::twoWayConstants()
+	{
+	static MapWithIndex<string, CSTValue>* bijectiveConstantsToString = 0;
+	MapWithIndex<string, CSTValue>* initializeConstants;
+	if (!bijectiveConstantsToString)
+		{
+		initializeConstants = new MapWithIndex<string, CSTValue>();
+
+		//compound judgments
+		//TODO FORA brax: rename 'JOV' in the language to something more comprehensible
+		initializeConstants->insert("JOV",CSTValue(jovJOVAsValue()));
+		initializeConstants->insert("Dictionary",CSTValue(jovAnyDictionary()));
+		initializeConstants->insert("Vector",CSTValue(jovAnyVector()));
+		initializeConstants->insert("MutableVector",CSTValue(jovAnyMutableVector()));
+		initializeConstants->insert("Anything",CSTValue(JOV::Unknown()));
+		initializeConstants->insert("AnyConstant",CSTValue(JOV::UnknownCSTKnown(true)));
+		initializeConstants->insert("AnyMutable",CSTValue(JOV::UnknownCSTKnown(false)));
+		initializeConstants->insert("Class",
+									CSTValue(JOV::Class(JudgmentOnValueClass::Unknown())));
+		initializeConstants->insert("Tuple",CSTValue(jovTuple()));
+		initializeConstants->insert("Integer",
+									CSTValue(JOV::Atom(JudgmentOnValueAtom::Integer(null()))));
+		initializeConstants->insert("Float",CSTValue(JOV::Atom(JudgmentOnValueAtom::Float())));
+		
+		//atomic judgments
+		initializeConstants->insert("Nothing",typeJOVConst(Type::Nothing()));
+		initializeConstants->insert("String",typeJOVConst(Type::String()));
+		initializeConstants->insert("Symbol",typeJOVConst(Type::Symbol()));
+		initializeConstants->insert("Tag",typeJOVConst(Type::Tag()));
+		initializeConstants->insert("Bool",typeJOVConst(Type::Integer(1,false)));
+		initializeConstants->insert("Int8",typeJOVConst(Type::Integer(8,true)));
+		initializeConstants->insert("Int16",typeJOVConst(Type::Integer(16,true)));
+		initializeConstants->insert("Int32",typeJOVConst(Type::Integer(32,true)));
+		initializeConstants->insert("Int64",typeJOVConst(Type::Integer(64,true)));
+		initializeConstants->insert("UInt8",typeJOVConst(Type::Integer(8,false)));
+		initializeConstants->insert("UInt16",typeJOVConst(Type::Integer(16,false)));
+		initializeConstants->insert("UInt32",typeJOVConst(Type::Integer(32,false)));
+		initializeConstants->insert("UInt64",typeJOVConst(Type::Integer(64,false)));
+		initializeConstants->insert("Float32",typeJOVConst(Type::Float(32)));
+		initializeConstants->insert("Float64",typeJOVConst(Type::Float(64)));
+		initializeConstants->insert("DateTime",typeJOVConst(Type::DateTime()));
+		initializeConstants->insert("TimeDuration",typeJOVConst(Type::TimeDuration()));
+		initializeConstants->insert("StackTrace",typeJOVConst(Type::StackTrace()));
+
+		initializeConstants->insert(
+				"Alternative",
+				CSTValue(
+					JudgmentOnValue::Alternative(
+						JudgmentOnValueAlternative(
+							null(),
+							JOV::Unknown()
+							)
+						)
+					)
+				);
+		
+		//some basic built-in constants
+		initializeConstants->insert("nothing",CSTValue());
+		initializeConstants->insert("size",CSTValue(Symbol("size")));
+		initializeConstants->insert("true",CSTValue((bool)1));
+		initializeConstants->insert("false",CSTValue((bool)0));
+
+		//now try to assign it to tr
+		if(!AO_compare_and_swap_full((AO_t*)&bijectiveConstantsToString,
+									 0,
+									 (AO_t)initializeConstants))
+			delete initializeConstants;
+		}
+
+	return *bijectiveConstantsToString;
+	}
+
+const set<string>& ParserExpressions::keywords()
+	{
+	static set<string>* keywords = 0;
+	set<string>* initializeKeywords;
+	
+	if (!keywords)
+		{
+		initializeKeywords = new set<string>();
+
+		initializeKeywords->insert("if");
+		initializeKeywords->insert("else");
+		initializeKeywords->insert("is");
+		initializeKeywords->insert("not");
+		initializeKeywords->insert("as");
+		initializeKeywords->insert("and");
+		initializeKeywords->insert("of");
+		initializeKeywords->insert("or");
+		initializeKeywords->insert("while");
+		initializeKeywords->insert("return");
+		initializeKeywords->insert("yield");
+		initializeKeywords->insert("for");
+		initializeKeywords->insert("skip");
+		initializeKeywords->insert("over");
+		initializeKeywords->insert("pull");
+		initializeKeywords->insert("break");
+		initializeKeywords->insert("in");
+		initializeKeywords->insert("throw");
+		initializeKeywords->insert("fun");
+		initializeKeywords->insert("try");
+		initializeKeywords->insert("catch");
+		initializeKeywords->insert("while");
+		initializeKeywords->insert("with");
+		initializeKeywords->insert("object");
+		initializeKeywords->insert("static");
+		initializeKeywords->insert("class");
+		initializeKeywords->insert("member");
+		initializeKeywords->insert("operator");
+		initializeKeywords->insert("cached");
+		initializeKeywords->insert("let");
+		initializeKeywords->insert("match");
+		initializeKeywords->insert("mixin");
+		initializeKeywords->insert("from");
+		initializeKeywords->insert("__without_stacktrace_augmentation");
+		
+		//now try to assign it to tr
+		if(!AO_compare_and_swap_full((AO_t*)&keywords,
+									 0,
+									 (AO_t)initializeKeywords))
+			delete initializeKeywords;
+		}
+
+	return *keywords;
+	}
+
+std::string ParserExpressions::invalidIdentifierErrorMessage(const std::string& inCandidate)
+	{
+	if (inCandidate == keywords())
+		return inCandidate + " is a reserved keyword";
+
+	for (long k = 0; k < inCandidate.size(); k++)
+		if (!isalnum(inCandidate[k]) && inCandidate[k] != '_')
+			return " contains characters other than letters, numbers, or underscores.";
+	
+	return inCandidate + " isn't an invalid identifier";
+	}
+
+bool ParserExpressions::isValidIdentifier(const std::string& inCandidate)
+	{
+	if (inCandidate == keywords())
+		return false;
+
+	for (long k = 0; k < inCandidate.size(); k++)
+		if (!isalnum(inCandidate[k]) && inCandidate[k] != '_' && inCandidate[k] != '@')
+			return false;
+	return true;
+	}
+
+bool ParserExpressions::isValidIdentifier(const SimpleParseNode& node)
+	{
+	return node.isIdentifier()
+			&& isValidIdentifier(node.getIdentifier().val());
+	}
+
+bool ParserExpressions::isValidVariableName(const string& i)
+	{
+	return isValidIdentifier(i) && constants().find(i) == constants().end();
+	}
+
+bool ParserExpressions::isValidVariableName(const SimpleParseNode& node)
+	{
+	return node.isIdentifier()
+			&& isValidVariableName(node.getIdentifier().val());
+	}
+
+Nullable<pair<PatternWithName, NodeList> >
+			ParserExpressions::getAssignment(const NodeList& nodes) const
+	{
+	//find an equals sign. left is pattern, right is value
+	for (long k = 1; k < nodes.size(); k++)
+		if (nodes[k].isOperator() && nodes[k].getOperator().val() == "=")
+			{
+			if (nodes.size() == k + 1)
+				throw FunctionParseError("expected expression after =", nodes[k]);
+
+			PatternWithName p = 
+				ParserPatterns(*this).parseConcatSeqToNamedPattern(
+					nodes.slice(0, k)
+					);
+			
+			p = ExpressionLocationTagging::setCodeLocation(
+				p,
+				CodeLocation(
+					codeDefPoint(),
+					nodes[0].extent()
+					)
+				);				
+
+			return null() <<
+				make_pair(
+					p,
+					nodes.slice(k+1)
+					);
+			}
+
+	return null();
+	}
+
+//parse a statement from some nodes. if no expression can be matched,
+//throw a FunctionParseError with 'message' as the contents. If the first node is
+//a pair of {}'s, then don't treat them as a lambda function. parse them directly
+pair<Expression, NodeList> ParserExpressions::parseConcatSeqToStatementOrElseErrorFirstBracesAreNotLambdas(
+								const NodeList& nodes,
+								const string& message,
+								const SimpleParseNode& priorNode
+								) const
+	{
+	if (nodes.size() && isBraces(nodes[0]))
+		{
+		@match SimpleParseNode(nodes[0])
+			-|	Grouping(braces, sub) ->>  {
+			return make_pair(
+				parseToExpression(
+					sub
+					),
+				nodes.slice(1)
+				);
+			}
+		}
+
+	return parseConcatSeqToStatementOrElseError(nodes, message, priorNode);
+	}
+
+//parse a statement from some nodes. if no expression can be matched,
+//throw a FunctionParseError with 'message' as the contents
+pair<Expression, NodeList> ParserExpressions::parseConcatSeqToStatementOrElseError(
+								const NodeList& nodes,
+								const string& message,
+								const SimpleParseNode& priorNode
+								) const
+	{
+	if (!nodes.size())
+		throw FunctionParseError(message, priorNode.extent().stop());
+	
+	Nullable<pair<Expression, NodeList> > tr = parseConcatSeqToStatement(nodes);
+	if (!tr)
+		throw FunctionParseError(message, nodes[0].extent().start());
+	tr->first = tagExpression(tr->first, nodes.slice(0,nodes.size()-tr->second.size()));
+	return *tr;
+	}
+
+//Level0 - essentially statements
+Nullable<pair<Expression, NodeList> >
+ParserExpressions::parseConcatSeqToStatement(const NodeList& nodes) const
+	{
+	Nullable<pair<Expression, NodeList> > tr =
+		parseConcatSeqToStatementInner(nodes);
+	//verify that we consumed nodes!
+	if (tr)
+		{
+		lassert_dump(tr->second.size() < nodes.size(),
+			prettyPrintString(tr->first)
+			);
+		}
+	
+	return tagExpression(tr, nodes);
+	}
+
+bool isValidDictionaryBody(const SimpleParseNode& node) 
+	{
+	@match SimpleParseNode(node)
+		-|	Sequence(Colon(), node) ->> {
+			return  true;
+			}
+		-|	Sequence(Comma(), Leaf(Sequence(Colon(), _), _)) ->> {
+			return  true;
+			}
+		-|	_ ->> {
+			return  false;
+			}
+		;
+	}
+
+Nullable<pair<Expression, NodeList> >
+ParserExpressions::parseConcatSeqToStatementInner(const NodeList& nodes) const
+	{
+	if (!nodes.size())
+		return null();
+	
+	//if we have {}, then this is a single, terminal expression (e.g.
+	//it can't be used in an operator expression)
+	@match SimpleParseNode(nodes[0])
+		-|	Grouping(Braces(), subnode) ->> {
+				if (!isValidDictionaryBody(subnode))
+					return null() <<
+						make_pair(
+							parseToExpression(nodes[0]),
+							nodes.slice(1)
+							)
+						;
+				}
+		-|	_ ->> { ; }
+		;
+
+	if (nodes[0] == "__without_stacktrace_augmentation")
+		{
+		pair<Expression, NodeList> res =
+			parseConcatSeqToStatementOrElseError(nodes.slice(1, nodes.size()),
+				"expected expression after __without_stacktrace_augmentation",
+				nodes[0]
+				);
+
+		return null() << make_pair(
+			Expression::NoStackTraceAugmentations(res.first),
+			res.second
+			);
+		}
+
+	if (nodes[0] == "if" || nodes[0] == "while")
+		{
+		bool isIf = nodes[0].getIdentifier().val() == "if";
+
+		//the condition must be in parens
+		if (nodes.size() <= 1 || !isParens(nodes[1]))
+			throw FunctionParseError("expected ()'s after " +
+				string(isIf ? "if":"while"),
+				nodes[0].extent().stop()
+				);
+		
+		if (nodes.size() == 2)
+			throw FunctionParseError("expected body after condition",
+				nodes[1].extent().stop()
+				);
+		
+		Expression condition = parseToExpression(nodes[1]);
+			
+		pair<Expression, NodeList> bodyPair =
+			parseConcatSeqToStatementOrElseErrorFirstBracesAreNotLambdas(nodes.slice(2),
+				"expected expression after condition",
+				nodes[1]
+				);
+		
+		if (bodyPair.second.size() && bodyPair.second[0] == "else" && isIf)
+			{
+			pair<Expression, NodeList> branchPair =
+				parseConcatSeqToStatementOrElseErrorFirstBracesAreNotLambdas(bodyPair.second.slice(1),
+					"expected expression after 'else'",
+					bodyPair.second[0]
+					);
+			
+			return null() << make_pair(
+				Expression::Branch(
+					condition,
+					bodyPair.first,
+					null() << branchPair.first
+					),
+				branchPair.second
+				)
+				;
+			}
+		else
+			{
+			if (isIf)
+				return null() << make_pair(
+					Expression::Branch(
+						condition,
+						bodyPair.first,
+						null()
+						),
+					bodyPair.second
+					);
+			else
+				return null() << make_pair(
+					Expression::While(condition, bodyPair.first),
+					bodyPair.second
+					);
+			}
+		}
+	if (nodes[0] == "return" || nodes[0] == "yield")
+		{
+		if (nodes.size() > 1 && nodes[1] == "let")
+			throw FunctionParseError(
+				"Cannot " + nodes[0].getIdentifier().val() + " a let-statement.",
+				SimpleParseRange(nodes[0].extent().start(), nodes[1].extent().stop())
+				);
+
+		//parse everything to the right
+		pair<Expression, NodeList> tail =
+			parseConcatSeqToStatementOrElseError(nodes.slice(1),
+				"expected expression after " +
+					nodes[0].getIdentifier().val(),
+				nodes[0]
+				);
+		
+		Expression inner;
+
+		if (nodes[0] == "return")
+			inner = Expression::Return(tail.first);
+		else
+		if (nodes[0] == "yield")
+			inner = Expression::Yield(tail.first);
+		else
+			{
+			lassert(false);
+			}
+		
+		return null() << make_pair(inner, tail.second);
+		}
+	if (nodes[0] == "throw")
+		{
+		if (nodes.size() > 1 && nodes[1] == "let")
+			throw FunctionParseError(
+				"Cannot " + nodes[0].getIdentifier().val() + " a let-statement.",
+				SimpleParseRange(nodes[0].extent().start(), nodes[1].extent().stop())
+				);
+
+		NodeList remainder = nodes.slice(1);
+
+		Nullable<Symbol> stacktraceVarSymbol;
+		if (remainder.size() and remainder[0] == "from")
+			{
+			auto fromNode = remainder[0];
+			remainder = remainder.slice(1);
+
+			if (remainder.size() and remainder[0].isIdentifier())
+				{
+				stacktraceVarSymbol = null() << extractOpOrIdentifier(remainder[0]);
+				remainder = remainder.slice(1);
+				}
+			else {
+				throw FunctionParseError(
+					"expected identifier after \"from\"",
+					fromNode.extent()
+					);
+				}
+			}
+		
+		pair<Expression, NodeList> tail =
+			parseConcatSeqToStatementOrElseError(
+				remainder,
+				"expected expression after " +
+					nodes[0].getIdentifier().val(),
+				nodes[0]
+				);
+		
+		Expression inner = 
+			Expression::Throw(
+				tail.first, 
+				stacktraceVarSymbol.isNull() ? 
+				null() :
+				null() << Expression::Variable(*stacktraceVarSymbol)
+				);
+		
+		return null() << make_pair(inner, tail.second);		
+		}
+	if (nodes[0] == "pull")
+		{
+		if (nodes.size() == 1)
+			throw FunctionParseError("expected identifier after pull", nodes[0].extent());
+		
+		@match SimpleParseNode(nodes[1])
+			-|	Identifier(id) ->> {
+					if (nodes.size() > 2 && nodes[2] == "with")
+						{
+						pair<Expression, NodeList> tail =
+							parseConcatSeqToStatementOrElseError(
+								nodes.slice(3),
+								"expected expression after with",
+								nodes[2]
+								);
+						
+						lassert(nodes.size() > 3);
+
+						return null() << make_pair(
+							ExpressionLocationTagging::setCodeLocation(
+								Expression::Pull(Symbol(id), tail.first),
+								CodeLocation(
+									codeDefPoint(), 
+									SimpleParseRange(
+										nodes[0].extent().start(),
+										nodes[3].extent().stop()
+										)
+									)
+								),
+							tail.second
+							);
+						}
+					//'pull' without 'with';
+					//'pull id' => 'pull id with nothing'
+					return null() << make_pair(
+						ExpressionLocationTagging::setCodeLocation(
+							Expression::Pull(
+								Symbol(id),
+								Expression::Constant(CSTValue())
+								),
+							CodeLocation(
+								codeDefPoint(), 
+								SimpleParseRange(
+									nodes[0].extent().start(),
+									nodes[1].extent().stop()
+									)
+								)
+							),
+						nodes.slice(2)
+						);
+					}
+			-|	_ ->> {
+					throw FunctionParseError("expected identifier after pull", nodes[0].extent());
+					}
+			;
+		}
+	
+	if (nodes[0] == "break")
+		{
+		return null() << make_pair(
+				//FunctionValidation::checkForOrphanBreaks requires this be tagged
+				//so it can report the location of orphan breaks.
+				ExpressionLocationTagging::setCodeLocation(
+					Expression::Break(),
+					CodeLocation(codeDefPoint(), nodes[0].extent())
+					),
+			nodes.slice(1)
+			);
+		}
+
+	if (nodes[0] == "for")
+		{
+		//first, scan to the right for 'in'
+		Nullable<uint32_t> indexIn;
+		for (long k = 2; k < nodes.size() && !indexIn; k++)
+			if (nodes[k] == "in")
+				indexIn = k;
+		
+		if (!indexIn)
+			throw FunctionParseError(
+				"syntax error. expected 'in' after 'for' ",
+				nodes.back().extent().stop()
+				);
+		
+		
+		PatternWithName p =
+			ParserPatterns(*this).parseConcatSeqToNamedPattern(nodes.slice(1,*indexIn));
+		
+		if (nodes.size() <= *indexIn + 1)
+			throw FunctionParseError(
+				"expected expression after 'in'",
+				nodes.back().extent().stop()
+				);
+		
+		pair<Expression, NodeList> process =
+			parseConcatSeqToStatementOrElseError(
+				nodes.slice(*indexIn + 1),
+				"expected expression after 'in'",
+				nodes[*indexIn]
+				);
+		
+		if (process.second.size() == 0)
+			throw FunctionParseError(
+				"expected expression after 'in'",
+				nodes.back().extent().stop()
+				);
+		
+		Nullable<Expression> condition;
+		NodeList	afterCondition = process.second;
+		
+		if (process.second[0] == "if")
+			{
+			pair<Expression, NodeList> conditionP =
+				parseConcatSeqToExpressionOrElseError(
+					process.second.slice(1),
+					"expected expression after 'if'"
+					);
+			condition = conditionP.first;
+			afterCondition = conditionP.second;
+			}
+		
+		pair<Expression, NodeList> body =
+			parseConcatSeqToStatementOrElseErrorFirstBracesAreNotLambdas(
+				afterCondition,
+				"expected expression for for-loop body",
+				nodes.back()
+				);
+		
+		auto exprWithLocInfo = 
+			ExpressionLocationTagging::setCodeLocation(
+				Expression::Foreach(
+					ListComprehensionChain::Term(
+						p,
+						condition,
+						process.first,
+						ListComprehensionChain::Leaf(body.first)
+						)
+					),
+				CodeLocation(codeDefPoint(), nodes[1].extent())
+			);
+
+		return null() <<
+			make_pair(
+				exprWithLocInfo,
+				body.second
+				);
+		}
+	if (nodes.size() >= 2 && nodes[1] == "=")
+		{
+		SimpleParseRange eqPos = nodes[1].extent();
+		
+		if (nodes.size() == 2)
+			throw FunctionParseError("expected expression after =", eqPos);
+		if (nodes.size() >= 4 && nodes[3] == "=")
+			throw FunctionParseError(
+					"assignment expression not permitted on right side of =",
+					eqPos
+					);
+		
+		PatternWithName p = ParserPatterns(*this).parseConcatSeqToNamedPattern(nodes.slice(0, 1));
+		
+		p = ExpressionLocationTagging::setCodeLocation(
+			p,
+			CodeLocation(
+				codeDefPoint(),
+				nodes[0].extent()
+				)
+			);			
+
+		pair<Expression, NodeList> e =
+			parseConcatSeqToStatementOrElseError(
+				nodes.slice(2),
+				"expected expression after =",
+				nodes[1]
+				);
+		
+		return null() <<
+			make_pair(
+				//We apologize for this hack.
+				//FunctionValidation::checkExpressionForNonLocalAssignments
+				//requires this location information for helpful error messages.
+				ExpressionLocationTagging::setCodeLocation(
+					Expression::Assign(p, e.first), 
+					CodeLocation(
+						codeDefPoint(),
+						eqPos
+						)
+					),
+				e.second
+				);
+		}
+	
+	return parseConcatSeqToExpression(nodes);
+	}
+
+//parse a statement from some nodes. if no expression can be matched,
+//throw a FunctionParseError with 'message' as the contents
+pair<Expression, NodeList> ParserExpressions::parseConcatSeqToExpressionOrElseError(
+								const NodeList& nodes,
+								const string& message,
+								bool excludingOr
+								) const
+	{
+	Nullable<pair<Expression, NodeList> > tr =
+			parseConcatSeqToExpression(nodes, excludingOr);
+	if (!tr)
+		throw FunctionParseError(message, nodes[0].extent().start());
+	return *tr;
+	}
+
+//extract a sequence of operators and OpExpressionAtoms, and then apply
+//the operator glomming process
+Nullable<pair<Expression, NodeList> > ParserExpressions::parseConcatSeqToExpression(
+				const NodeList& nodes,
+				//should we exclude 'or' because we're in a pattern?
+				bool excludingOr
+				) const
+	{
+	Nullable<pair<Expression, NodeList> > tr =
+						parseConcatSeqToExpressionInner(nodes, excludingOr);
+	if (tr)
+		{
+		lassert_dump(
+			tr->second.size() < nodes.size(),
+			prettyPrintString(tr->first)
+			);
+		}
+	return tagExpression(tr, nodes);
+	}
+
+Nullable<pair<Expression, NodeList> >
+ParserExpressions::parseConcatSeqToExpressionInner(const NodeList& nodes, bool excludingOr) const
+	{
+	ParserOperators p;
+	
+	if (!nodes.size())
+		return null();
+	
+	ImmutableTreeVector<ParserOperators::OpOrExpression> ops;
+	NodeList	remainder = nodes;
+	bool	done = false;
+	while (remainder.size() && !done)
+		{
+		if (excludingOr && remainder[0] == "or")
+			done = true;
+		else
+		if (ParserOperators::isOperator(remainder[0]))
+			{
+			//an operator - consume it
+			Symbol opSymbol;
+			
+			@match SimpleParseNode(remainder[0])
+				-|	Operator(o) ->> {
+					opSymbol = o;
+					}
+				-|	Identifier(o) ->> {
+					opSymbol = o;
+					}
+				;
+						
+			ops = ops +
+				ParserOperators::OpOrExpression::Op(
+					remainder[0].extent(),
+					opSymbol
+					);
+			remainder = remainder.slice(1);
+			}
+		else
+		if (ops.size() && ops.back().isExpr())
+			{
+			//not an operator, but we can't glom two OpExpressionAtoms
+			done = true;
+			}
+		else
+			{
+			//is there another expression on the stack?
+			Nullable<pair<Expression, NodeList> > e =
+				parseConcatSeqToOpExpressionAtom(remainder);
+			
+			if (e)
+				{
+				lassert_dump(e->second.size() < remainder.size(),
+					prettyPrintString(e->first)
+					);
+				//yes - add it to the list and continue
+				ops = ops +
+					ParserOperators::OpOrExpression::Expr(
+						SimpleParseRange(
+							remainder[0].extent().start(),
+							e->second.size() ?
+								e->second[0].extent().start()
+							:	remainder.back().extent().stop()
+							),
+						e->first
+						);
+				remainder = e->second;
+				}
+			else
+				//we're done
+				done = true;
+			}
+		}
+	
+	if (!ops.size())
+		return null();
+
+	lassert_dump(remainder.size() < nodes.size(), prettyPrintString(ops));
+
+	if (ops.size() == 1 && ops[0].isExpr())
+		{
+		//nothing to do
+		return null() << make_pair(ops[0].getExpr().expr(), remainder);
+		}
+
+	bool onlyOps = true;
+	for (long k = 0; k < ops.size(); k++)
+		if (ops[k].isExpr())
+			onlyOps = false;
+
+	if (onlyOps)
+		throw FunctionParseError("expected expression", nodes.back());
+		
+	return null() << make_pair(
+		ParserOperators::collapseOpExpressionSeq(ops),
+		remainder
+		);
+	}
+
+//extract expression atoms
+Nullable<pair<Expression, NodeList> >
+ParserExpressions::parseConcatSeqToOpExpressionAtom(const NodeList& nodes) const
+	{
+	Nullable<pair<Expression, NodeList> > tr =
+		parseConcatSeqToOpExpressionAtomInner(nodes);
+	if (tr)
+		lassert_dump(tr->second.size() < nodes.size(),
+			prettyPrintString(tr->first)
+			);
+	return tagExpression(tr, nodes);
+	}
+
+
+Nullable<pair<Expression, NodeList> >
+ParserExpressions::parseConcatSeqToOpExpressionAtomInner(const NodeList& nodes) const
+	{
+	if (nodes[0] == "try")
+		{
+		pair<Expression, NodeList> bodyBlock;
+		
+		//insist upon {}'s after a try, even though its not technically
+		//'expressionlike'. we don't want to allow full statements - too
+		//much room for error.
+		if (nodes.size() > 1 && isBraces(nodes[1]))
+			{
+			@match SimpleParseNode(nodes[1])
+				-|	Grouping(braces, sub) ->>  {
+				bodyBlock = make_pair(
+					parseToExpression(
+						sub
+						),
+					nodes.slice(2)
+					);
+				}
+			}
+		else
+			throw FunctionParseError("expected {} after 'try'", nodes[0]);
+		
+		NodeList catchNodes = bodyBlock.second;
+		
+		if (!catchNodes.size() || catchNodes[0] != "catch")
+			throw FunctionParseError("expected catch",
+				bodyBlock.second.size() ?
+						bodyBlock.second.back().extent().stop()
+					:	nodes.back().extent().stop()
+					);
+		bool isRawCatch = false;
+		if (catchNodes.size() > 1 && catchNodes[1] == "`" && allowPrivate())
+			isRawCatch = true;
+		
+		NodeList remainder = catchNodes.slice(isRawCatch ? 2 : 1);
+
+		Nullable<Symbol> stacktraceVarSymbol;
+		if (remainder.size() and remainder[0] == "from")
+			{
+			auto fromNode = remainder[0];
+			remainder = remainder.slice(1);
+
+			if (remainder.size() and remainder[0].isIdentifier())
+				{
+				stacktraceVarSymbol = null() << extractOpOrIdentifier(remainder[0]);
+				remainder = remainder.slice(1);
+				}
+			else {
+				throw FunctionParseError(
+					"expected identifier after \"from\"",
+					fromNode.extent()
+					);
+				}
+			}
+
+		pair<Function, NodeList> catchF = extractFunction(
+			remainder
+			);
+
+		return null() << parseOpAtomExprAndConcatSeqToOpAtomExpr(
+			tagExpression(
+				Expression::Try(
+					bodyBlock.first, 
+					catchF.first, 
+					stacktraceVarSymbol, 
+					isRawCatch
+					),
+				nodes[0],
+				nodes[nodes.size() - catchNodes.size() - 1]
+				),
+			catchF.second,
+			nodes
+			);
+		}
+	if (nodes[0] == "object")
+		{
+		pair<Expression, NodeList>
+			objectParse = parseObjectDefinition(nodes, CSTValue());
+			
+		return null() << parseOpAtomExprAndConcatSeqToOpAtomExpr(
+			objectParse.first,
+			objectParse.second,
+			nodes
+			);
+		}
+	if (nodes[0] == "class")
+		{
+		pair<Expression, NodeList>
+			objectParse = parseClassDefinition(nodes, CSTValue());
+			
+		return null() << parseOpAtomExprAndConcatSeqToOpAtomExpr(
+			objectParse.first,
+			objectParse.second,
+			nodes
+			);
+		}
+	if (nodes[0] == "fun")
+		{
+		pair<Expression, NodeList>
+			funParse = parseFunctionDefinition(nodes);
+			
+		//TODO CLEANUP brax: merge this code into a function with similar code
+		//
+		//see parseOpAtomExprAndConcatSeqToOpAtomExprInner
+		@match Expression(funParse.first)
+			-|	CreateFunction(name, body, metadata) ->> {
+				if (metadata.type().isNothing())
+					funParse.first = 
+						Expression::CreateFunction(
+							name,
+							body,
+							CSTValue::Tuple(
+								emptyTreeVec() +
+									make_pair(
+										null() << Symbol("kind"),
+										CSTValue(Symbol("function"))
+										) +
+									make_pair(
+										null() << Symbol("user"),
+										CSTValue()
+										)
+									)
+							);
+				}
+				;
+		
+		return null() << parseOpAtomExprAndConcatSeqToOpAtomExpr(
+			funParse.first,
+			funParse.second,
+			nodes
+			);
+		}
+	if (nodes[0] == "cached")
+		{
+		if (nodes.size() < 2 )
+			throw FunctionParseError("syntax error. cached (...)", nodes[nodes.size()-1]);
+
+		if (nodes.size() > 2 && nodes[1] == "`")
+			{
+			if (!(nodes[2].isGrouping() && nodes[2].getGrouping().g().isParens()))
+				throw FunctionParseError("expected () around cache argument", nodes[2]);
+
+			return null() << parseOpAtomExprAndConcatSeqToOpAtomExpr(
+				Expression::RawCached(
+					parseCallArguments(nodes[2], false)
+					),
+				nodes.slice(3),
+				nodes
+				);
+			}
+		else
+			{
+			if (!(nodes[1].isGrouping() && nodes[1].getGrouping().g().isParens()))
+				throw FunctionParseError("expected () around cache argument", nodes[1]);
+
+			return null() << parseOpAtomExprAndConcatSeqToOpAtomExpr(
+				Expression::Cached(
+					parseCacheArgList(
+						nodes[1]
+						)
+					),
+				nodes.slice(2),
+				nodes
+				);
+			}
+		}
+	if (nodes[0] == "match")
+		{
+		if (nodes.size() <= 3 )
+			throw FunctionParseError(
+					"syntax error. match (value) with (pat) {body} ...",
+					nodes[nodes.size()-1]
+					);
+
+		if (!(nodes[1].isGrouping() && nodes[1].getGrouping().g().isParens()))
+			throw FunctionParseError("expected () around match argument", nodes[1]);
+
+		if (!(nodes[2] == "with"))
+			throw FunctionParseError("expected 'with'", nodes[2].extent());
+
+		pair<Function, NodeList> res = extractFunction(nodes.slice(3, nodes.size()), true);
+
+		lassert(res.first.locationMetadata().isWithSimpleParseRange());
+
+		return null() << parseOpAtomExprAndConcatSeqToOpAtomExpr(
+			ExpressionLocationTagging::setCodeLocation(
+				Expression::Match(parseCallArguments(nodes[1], false), res.first), 
+				CodeLocation(
+					codeDefPoint(),
+					SimpleParseRange(
+					  	nodes[0].extent().start(),
+					  	res.first.locationMetadata().getWithSimpleParseRange().simpleParseRange().stop()
+					 	)
+					)
+				),
+			res.second,
+			nodes
+			);
+		}
+		
+	//this must be a single atom expression
+		{
+		Nullable<Expression> e = parseSingleNodeToToExpressionOrNull(nodes[0]);
+		if (!e)
+			return null();
+		
+		//But is it an assignment?
+		if (nodes.size() > 1 && nodes[1] == "=")
+			throw FunctionParseError(
+				"Expected operand/atom, found assignment. "
+				"To use an assignment as an operand, wrap it in parens.",
+				nodes[1].extent()
+				);
+		
+		return null() << parseOpAtomExprAndConcatSeqToOpAtomExpr(*e, nodes.slice(1), nodes);
+		}
+	}
+
+Nullable<Expression>
+ParserExpressions::parseSingleNodeToToExpressionOrNull(const SimpleParseNode& node) const
+	{
+	return tagExpression(
+		parseSingleNodeToToExpressionOrNullInner(node),
+		node
+		);
+	}
+
+Expression ParserExpressions::parseNodesToCreateListBalanced(
+				const ImmutableTreeVector<SimpleParseNode>& nodes
+				) const
+	{
+	const int magicWidth = 500;
+	
+	int sz = boost::numeric_cast<int>(nodes.size());
+ 
+	ApplyArgument operatorSymbolApplyArg =
+			ApplyArgument::Normal(
+						null(),
+						Expression::Constant(CSTValue(Symbol("Operator")))
+						);
+	ApplyArgument plusSymbolApplyArg = 
+			ApplyArgument::Normal(
+						null(),
+						Expression::Constant(CSTValue(Symbol("+")))
+						);
+	
+	if (sz <= magicWidth)
+		{
+		ImmutableTreeVector<Expression> subs;
+		
+		for (long k = 0; k < sz; k++)
+			subs = subs + parseToExpression(nodes[k]);
+			
+		return Expression::CreateList(subs);
+		}
+		
+	return Expression::Apply(
+				parseNodesToCreateListBalanced(
+					nodes.slice(0, sz / 2)	
+				),
+				emptyTreeVec() +
+					operatorSymbolApplyArg +
+					plusSymbolApplyArg +
+					parseNodesToCreateListBalanced(
+						nodes.slice(sz / 2)
+					)
+			);
+	}
+
+Nullable<Expression>
+ParserExpressions::tryParseNodeToCreateDictionaryExpression(const SimpleParseNode& node) const
+	{
+	@match SimpleParseNode(node)
+		-|	Grouping(Braces(), Sequence(Colon(), nodes)) ->> {
+				// This is the single-pair dict, e.g. {2:3}, {:}
+				return null() << parseAddPairToDictionary(
+					// Pass in an empty Dictionary as the initial value, to
+					// which we will add the pairs one at a time...
+					Expression::Constant(
+						CSTValue::blankOf(Type::Dictionary(true))
+						),
+					nodes
+					);
+				}
+		-|	Grouping(Braces(), Sequence(Comma(), Leaf(Sequence(Colon(), _), _))) ->> {
+				@match SimpleParseNode(node) 
+					-|	Grouping(Braces(), Sequence(Comma(),nodes)) ->> {
+					//	 assert at least 2
+					if (nodes.size() < 2)
+						{
+						throw FunctionParseError(
+								"Dictionary is malformed. Has comma, but <2 pairs.",
+								nodes[0]
+								);
+						}
+				
+					// parse into pairs, repeatedly raw-call addPair on the dict
+					Expression e = Expression::Constant(
+										CSTValue::blankOf(Type::Dictionary(true))
+										);
+				
+					for (long k = 0; k < nodes.size(); k++)
+						{
+						@match SimpleParseNode(nodes[k])
+							-| Sequence(Colon(), pair) ->> {
+								e = parseAddPairToDictionary(e, pair);
+								}
+							-| _ ->> {
+								throw FunctionParseError(
+									"Syntax error. Dictionary pair is malformed.", 
+									nodes[k]
+									);
+								}
+							;
+						}
+				
+					return null() << e;
+					};
+				}
+		-| _ ->> {}
+
+	return null();
+	}
+
+Nullable<Expression>
+ParserExpressions::parseSingleNodeToToExpressionOrNullInner(const SimpleParseNode& node) const
+	{
+	Nullable<Expression> maybeDict = tryParseNodeToCreateDictionaryExpression(node);
+
+	if (maybeDict)
+		return maybeDict;
+
+	@match SimpleParseNode(node)
+		-|	Empty() ->> {
+				return null();
+				}
+		-|	Number(s) ->> {
+				try {
+					return null() << Expression::Constant(
+						parseNumericConstant(s)
+						);
+					}
+				catch (NumericConstantParseError& e)
+					{
+					string error = "Invalid numeric literal: '" + s + "'";
+					@match NumericConstantParseError(e)
+						-|	OutOfRange()		->> { error += "; out of range."; }
+						-|	InvalidCharacter()	->> { error += "; invalid character."; }
+						-|	Other(msg)			->> { error += "; " + msg + "."}
+						-|	_					->>	{ error += "." }
+					throw FunctionParseError(error, node);
+					}
+				}
+		-|	Identifier(i) ->> {
+				if (i == constants())
+					return null() <<
+						Expression::Constant(constants().find(i)->second);
+				
+				//TODO BUG:LOW brax: private symbols and tags might have lots of `'s or #'s
+				//but we don't handle them correctly.
+				if (i.size() && i[0] == '`')
+					{
+					if (i.size() == 1)
+						throw FunctionParseError(
+										"illegal symbol: symbol bodies must be non-empty",
+										node.extent());
+					if (i.size() > 1 && i[1] == '`' && !allowPrivate())
+						throw FunctionParseError("illegal symbol", node.extent());
+					if (i.size() > 1 && i[1] == '`')
+						return null() << Expression::Constant(CSTValue(Symbol(" " + i.substr(2))));
+					else
+						return null() << Expression::Constant(CSTValue(Symbol(i.substr(1))));
+					}
+				if (i.size() && i[0] == '#')
+					{
+					if (i.size() > 1 && i[1] == '#' && !allowPrivate())
+						throw FunctionParseError("illegal private tag", node.extent());
+					
+					if (i.size() == 1)
+						throw FunctionParseError("Can't make an empty tag", node.extent());
+					
+					if (i.size() > 1 && i[1] == '#')
+						return null() << Expression::Constant(
+											CSTValue::Tag(Symbol(" " + i.substr(2)))
+											);
+					else
+						return null() << Expression::Constant(CSTValue::Tag(Symbol(i.substr(1))));
+					}
+				else
+					{
+					if (node == "break")
+						return null() <<
+							//FunctionValidation requires this info so
+							//it can report the location of orphan breaks.
+							ExpressionLocationTagging::setCodeLocation(
+								Expression::Break(),
+								CodeLocation(
+									codeDefPoint(),
+									node.extent()
+									)
+								);
+					
+					if (!isValidVariableName(i))
+						return null();
+					
+					return null() << Expression::Variable(i);
+					}
+				}
+		-|	Quote(q) ->> {
+				return null() << Expression::Constant(CSTValue(q));
+				}
+		-|	Operator() ->> {
+				return null();
+				}
+		-|	Grouping(Parens(), Empty()) ->> {
+				return null() << Expression::CreateTuple(ImmutableTreeVector<Expression>());
+				}
+		-|	Grouping(Parens(), Sequence(Colon(), _)) ->> {
+				return null() << Expression::CreateTuple(
+					parseCallArguments(node, false)
+					);
+				}
+		-|	Grouping(Parens(), Sequence(Comma(), Leaf(singleNode, Leaf(Empty(), Empty())))) ->> {
+				return null() << Expression::CreateTuple(
+					parseCallArguments(emptyTreeVec() + singleNode, false)
+					);
+				}
+		-|	Grouping(Parens(), Sequence(Comma(), nodes)) ->> {
+				return null() << Expression::CreateTuple(
+					parseCallArguments(node, false)
+					);
+				}
+		-|	Grouping(Parens(), node) ->> {
+				@match SimpleParseNode(node)
+					-|	Sequence(Concatenation(), nodes) ->> {
+						return null() << parsePossibleIteratorComprehension(nodes, node);
+						}
+					-|	_ ->> {}
+					;
+				return null() << parseToExpression(node);
+				}
+		-|	Grouping(Brackets(), Sequence(Concatenation(), nodes)) ->> {
+				Expression listComprehension;
+
+				try {
+					//we could either be a list comprehension or a single-item list.
+					//If we parse as a list comprehension with only a leaf, then
+					//we must be a single-item list comprehension
+					ListComprehensionChain chain = parseListComprehension(nodes);
+
+					@match ListComprehensionChain(chain)
+						-|	Leaf(expr) ->> {
+							return null() << Expression::CreateList(
+								emptyTreeVec() + expr
+								);
+							}
+						-|	Term() ->> {
+							listComprehension = 
+								ExpressionLocationTagging::setCodeLocation(
+									Expression::ListComprehension(
+										chain,
+										false
+										),
+									CodeLocation(
+										codeDefPoint(),
+										nodes[2].extent()
+										)
+									);
+							}
+					}
+				catch(FunctionParseError& e)
+					{
+					pair<Expression, NodeList> res =
+						parseConcatSeqToStatementOrElseError(nodes,
+							"expected simple expression or list comprehension",
+							nodes[0]
+							);
+						
+					if (res.second.size())
+						throw FunctionParseError("expected simple expression or"
+							" list comprehension",
+							res.second);
+					
+					return null() << Expression::CreateList(
+						emptyTreeVec() + res.first
+						);
+					}
+
+				return null() << listComprehension;
+				}
+		-|	Grouping(Brackets(), Sequence(Comma(), nodes)) ->> {
+				return null() << parseNodesToCreateListBalanced(nodes);
+				}
+		-|	Grouping(Brackets(), Empty()) ->> {
+				return null() << Expression::CreateList(emptyTreeVec());
+				}
+		-|	Grouping(Brackets(), node) ->> {
+				return null() <<
+					Expression::CreateList(
+						emptyTreeVec() +
+							parseToExpression(node)
+						);
+				}
+		-|	Grouping(Braces(), node) ->> {
+				return null() << 
+					Expression::CreateLambda(
+						"", 
+						parseToExpression(node)
+						);
+				}
+		-|	Sequence(Comma()) ->> {
+				throw FunctionParseError("Syntax error. \",\" is not valid here", node.extent());
+				}
+		-|	_ ->> {
+				return null();
+				}
+		;
+	}
+
+
+Expression ParserExpressions::parseAddPairToDictionary(
+				const Expression& agent,
+				const NodeList& nodes) const
+	{
+	if (nodes.size() != 2)
+		{
+		throw FunctionParseError(
+				"Dictionary colon sequence should have exactly 2 args.", 
+				nodes[0]
+				);
+		}
+
+	bool keyIsEmpty = nodes[0].isEmpty();
+	bool valueIsEmpty = nodes[1].isEmpty();
+	
+	// If the user entered '{:}', return an empty dictionary.
+	if (keyIsEmpty && valueIsEmpty)
+		{
+		return Expression::Constant(CSTValue::blankOf(Type::Dictionary(true)));
+		}
+	
+	ImmutableTreeVector<ApplyArgument> addKeyValue;
+	addKeyValue = addKeyValue + ApplyArgument::Normal(
+									null(),
+									Expression::Constant(
+										CSTValue(Symbol("AddPair"))
+										)
+									);
+	addKeyValue = addKeyValue + ApplyArgument::Normal(
+								null(),
+								parseToExpression(nodes[0])
+								);
+	addKeyValue = addKeyValue + ApplyArgument::Normal(
+								null(),
+								parseToExpression(nodes[1])
+								);
+	
+	// want: dict `(`AddPair, key, value)
+	return Expression::Apply(agent, addKeyValue);
+	}
+
+
+//".", (), `(), and [] after an expression. returns an OpExpressionAtom and
+//the unconsumed nodes
+pair<Expression, NodeList>
+		ParserExpressions::parseOpAtomExprAndConcatSeqToOpAtomExpr(
+									const Expression& agent,
+									const NodeList& nodes,
+									const NodeList& nodesIncludingAgent
+									) const
+	{
+	pair<Expression, NodeList> tr =
+		parseOpAtomExprAndConcatSeqToOpAtomExprInner(agent, nodes, nodesIncludingAgent);
+	return tagExpression(tr, nodesIncludingAgent);
+	}
+
+pair<Expression, NodeList>
+		ParserExpressions::parseOpAtomExprAndConcatSeqToOpAtomExprInner(
+									const Expression& agent,
+									const NodeList& nodes,
+									const NodeList& nodesIncludingAgent
+									) const
+	{
+	if (!nodes.size())
+		return make_pair(agent, nodes);
+
+	if (nodes[0].isOperator() && nodes[0].getOperator().val()[0] == '.')
+		{
+		string s = "Member";
+		
+		int depth = nodes[0].getOperator().val().size();
+		
+		if (nodes.size() == 1)
+			throw FunctionParseError(
+				"syntax error. '" + nodes[0].getOperator().val()
+					+ "' without member",
+				nodes[0]
+				);
+		
+		if (nodes[1].isGrouping() && nodes[1].getGrouping().g().isParens())
+			return parseOpAtomExprAndConcatSeqToOpAtomExpr(
+				tagExpression(
+					Expression::ComputedMember(
+						agent,
+						parseToExpression(nodes[1]),
+						depth
+						),
+					nodes[1]
+					),
+				nodes.slice(2, nodes.size()),
+				nodesIncludingAgent
+				);
+		if (nodes[1].isIdentifier()
+				&& isValidIdentifier(nodes[1].getIdentifier().val()))
+			return parseOpAtomExprAndConcatSeqToOpAtomExpr(
+				tagExpression(
+					Expression::Member(
+						agent,
+						Symbol(nodes[1].getIdentifier().val()),
+						depth
+						),
+					nodesIncludingAgent[0],
+					nodes[1]
+					),
+				nodes.slice(2, nodes.size()),
+				nodesIncludingAgent
+				)
+			;
+		throw FunctionParseError(
+				"syntax error. '.' must be followed by () or an identifier",
+				nodes[1]
+				);
+		}
+	if (nodes.size() > 1 &&
+			nodes[0] == "`" &&
+			nodes[1].isGrouping() && nodes[1].getGrouping().g().isParens()
+			)
+		{
+		return parseOpAtomExprAndConcatSeqToOpAtomExpr(
+			tagExpression(
+				Expression::Apply(
+					agent,
+					parseCallArguments(nodes[1], false)
+					),
+				nodesIncludingAgent[0],
+				nodes[1]
+				),
+			nodes.slice(2, nodes.size()),
+			nodesIncludingAgent
+			);
+		}
+	if (nodes.size() > 0 &&
+		nodes[0].isGrouping() && nodes[0].getGrouping().g().isParens()
+		)
+		{
+		return parseOpAtomExprAndConcatSeqToOpAtomExpr(
+			tagExpression(
+				Expression::Call(
+					agent,
+					parseCallArguments(nodes[0], false)
+					),
+				nodesIncludingAgent[0],
+				nodes[0]
+				),
+			nodes.slice(1, nodes.size()),
+			nodesIncludingAgent
+			);
+		}
+	if (nodes.size() > 0 &&
+		nodes[0].isGrouping() && nodes[0].getGrouping().g().isBrackets()
+		)
+		{
+		if (nodes.size() > 1 && nodes[1].isOperator()
+							&& nodes[1].getOperator().val() == "=")
+			{
+			if (nodes.size()==2)
+				throw FunctionParseError(
+					"expected expression after []=",
+					nodes[1]
+					);
+					
+			pair<Expression, NodeList> rhs =
+				parseConcatSeqToExpressionOrElseError(
+					nodes.slice(2, nodes.size()),
+					"expected expression after []="
+					);
+			return
+				make_pair(
+					Expression::SetItem(
+						agent,
+						parseCallArguments(
+							extractCommas(nodes[0].getGrouping().node()),
+							true
+							),
+						rhs.first
+						),
+					rhs.second
+					)
+				;
+			}
+		else
+			return parseOpAtomExprAndConcatSeqToOpAtomExpr(
+				tagExpression(
+					Expression::GetItem(
+						agent,
+						parseCallArguments(
+							extractCommas(nodes[0].getGrouping().node()),
+							true
+							)
+						),
+					nodesIncludingAgent[0],
+					nodes[0]
+					),
+				nodes.slice(1, nodes.size()),
+				nodesIncludingAgent
+				);
+		}
+	//object/class-with-metadata definition. 'agent' is the metadata
+	if (nodes.size() > 0 && (nodes[0] == "object" || nodes[0] == "class"))
+		{
+		pair<Expression, NodeList> objectOrClassParse;
+
+		CSTValue meta = expressionToConstant(agent, nodes[0]);
+
+		if (nodes[0] == "object")
+			objectOrClassParse = parseObjectDefinition(nodes, meta);
+		else
+			objectOrClassParse = parseClassDefinition(nodes, meta);
+		
+		return parseOpAtomExprAndConcatSeqToOpAtomExpr(
+					tagExpression(
+						objectOrClassParse.first, 
+						nodesIncludingAgent[0], 
+						nodes[0]
+						),
+					objectOrClassParse.second,
+					nodesIncludingAgent
+					);
+		}
+	//function-with-metadata definition. 'agent' is the metadata
+	if (nodes.size() > 0 && nodes[0] == "fun")
+		{
+		pair<Expression, NodeList> funParse = parseFunctionDefinition(nodes);
+		
+		@match Expression(funParse.first)
+			-|	CreateFunction(name, body, currentMetadata) ->> {
+				if (currentMetadata.type().isNothing())
+					{
+					CSTValue metadata = 
+						expressionToConstant(agent, nodes[0]);
+
+					CSTValue metadataTuple = 
+						CSTValue::Tuple(
+							emptyTreeVec() + 
+								make_pair(
+									null() << Symbol("kind"),
+									CSTValue(Symbol("function"))
+									) + 
+								make_pair(
+									null() << Symbol("user"),
+									metadata
+									)
+								);
+
+					return parseOpAtomExprAndConcatSeqToOpAtomExpr(
+						tagExpression(
+							Expression::CreateFunction(
+								name,
+								body,
+								metadataTuple
+								),
+							nodesIncludingAgent[0],
+							nodes[0]
+							),
+						funParse.second,
+						nodesIncludingAgent
+						);
+					}
+				}
+				;
+		}
+	return make_pair(agent, nodes);
+	}
+
+
+
+NodeList ParserExpressions::extractCommas(const SimpleParseNode& node) const
+	{
+	@match SimpleParseNode(node)
+		-|	Sequence(Comma(), r) ->> {
+			return  r;
+			}
+		-|	_ ->> {
+			return  (emptyTreeVec() + node);
+			}
+		;
+	}
+
+pair<Function, NodeList> 
+ParserExpressions::extractFunction(const NodeList& nodes, bool tagWithRange) const
+	{
+	if (nodes.size() == 0)
+		return make_pair(Function(), nodes);
+	
+	long cur = 0;
+
+	ImmutableTreeVector<pair<ImmutableTreeVector<TuplePatternElement>, Expression> > bodies;
+
+	SimpleParsePosition start = nodes[0].extent().start();
+	SimpleParsePosition stop = start;
+
+	while (cur + 1 < nodes.size() &&
+		nodes[cur].isGrouping() && nodes[cur].getGrouping().g().isParens() &&
+		nodes[cur+1].isGrouping() && nodes[cur+1].getGrouping().g().isBraces()
+		)
+		{
+		ImmutableTreeVector<TuplePatternElement> pats = 
+			ParserPatterns(*this)
+				.parseCommaSepToTuplePatternElements(
+					extractCommas(nodes[cur].getGrouping().node())
+					);
+
+		Expression body = tagExpression(
+				parseToExpression(nodes[cur+1].getGrouping().node()),
+				nodes[cur + 1].extent()
+				);
+
+		stop = nodes[cur + 1].extent().stop();
+
+		bodies = bodies + make_pair(pats, body);
+		
+		cur += 2;
+		}
+
+	if (!bodies.size())
+		throw FunctionParseError("syntax error. function had no bodies", nodes[0]);
+
+	Function f;
+	for (long k = bodies.size() - 1; k >= 0; k--)
+		f = Function::Term(
+				bodies[k].first,
+				bodies[k].second,
+				f
+				);
+
+	if (tagWithRange)
+		f = tagFunction(f, SimpleParseRange(start, stop));
+	
+	return make_pair(f, nodes.slice(cur, nodes.size()));
+	}
+
+bool ParserExpressions::isParens(const SimpleParseNode& node) const
+	{
+	@match SimpleParseNode(node)
+		-|	Grouping(Parens()) ->> {
+			return  true;
+			}
+		-|	_ ->> {
+			return  false;
+			}
+		;
+	}
+
+bool ParserExpressions::isBraces(const SimpleParseNode& node) const
+	{
+	@match SimpleParseNode(node)
+		-|	Grouping(Braces()) ->> {
+			return  true;
+			}
+		-|	_ ->> {
+			return  false;
+			}
+		;
+	}
+
+bool ParserExpressions::isBrackets(const SimpleParseNode& node) const
+	{
+	@match SimpleParseNode(node)
+		-|	Grouping(Brackets()) ->> {
+			return  true;
+			}
+		-|	_ ->> {
+			return  false;
+			}
+		;
+	}
+
+
+/****
+extract a set of metadata/ObjectDefinitionTerm pairs from a SimpleParseNode
+defined in a class body. 
+
+Class members can take one of two forms:
+
+	metadataexpr_opt	symbol: memberexpr;
+	
+or
+
+	metadataexpr_opt	symbol(callArgs) { callbody } ...;
+
+it is illegal to write
+
+	m1:		2
+	
+	(meta: 'data')
+	m2:		3
+
+since it's ambiguous where the metadata goes. instead you have to write
+
+	m1:		2;
+	
+	(meta: 'data')
+	m2:		3;
+
+if you want to use complex expressions inside of member definitions, you
+need to use {}'s:
+	m1:	{	let x = 0;
+			x+1
+			};
+	m2:	...
+
+*****/
+
+ImmutableTreeVector<pair<CSTValue, ObjectDefinitionTerm> >
+							ParserExpressions::parseObjectBody(const SimpleParseNode& node) const
+	{
+	ImmutableTreeVector<pair<CSTValue, ClassDefinitionTerm> > terms;
+
+	terms = parseClassBody(node, false);
+
+	ImmutableTreeVector<pair<CSTValue, ObjectDefinitionTerm> > outTerms;
+
+	for (long k = 0; k < terms.size(); k++)
+		@match ClassDefinitionTerm(terms[k].second)
+			-| ObjectTerm(term) ->> {
+				outTerms = outTerms + make_pair(terms[k].first, term);
+				}
+
+	return outTerms;
+	}
+
+ImmutableTreeVector<pair<CSTValue, ClassDefinitionTerm> >
+							ParserExpressions::parseClassBody(
+											const SimpleParseNode& node, 
+											bool allowClassTerms
+											) const
+	{
+	ImmutableTreeVector<pair<CSTValue, ClassDefinitionTerm> > terms;
+		
+	@match SimpleParseNode(node)
+		-|	Empty() ->> {;}
+		-|	Sequence(Semicolon(), elts) ->> {
+				for (long k = 0; k < elts.size(); k++)
+					if (!elts[k].isEmpty())
+						parseClassDefinitionTerm(elts[k], terms, allowClassTerms);
+				}
+		-|	otherwise ->> {
+				parseClassDefinitionTerm(otherwise, terms, allowClassTerms);
+				}
+		;
+	
+	return terms;
+	}
+
+CSTValue ParserExpressions::extractUserMetadataField(const CSTValue& metadata)
+	{
+	if (!metadata.type().isTuple())
+		return CSTValue();
+
+	const ImmutableTreeVector<Nullable<Symbol> >& names = metadata.type().getTuple().names();
+
+	for (long k = 0; k < names.size(); k++)
+		if (names[k] && *names[k] == Symbol("user"))
+			return *metadata.tupleGetItem(k);
+
+	return CSTValue();
+	}
+
+CSTValue ParserExpressions::extractUserMetadataField(const Expression& e)
+	{
+	@match Expression(e)
+		-|	CreateFunction(name, _, meta) ->> {
+			return extractUserMetadataField(meta);
+			}
+		-|	CreateLambda(name, _) ->> {
+			return CSTValue();
+			}
+		-|	CreateObject(name, _, meta) ->> {
+			return extractUserMetadataField(meta);
+			}
+		-|	CreateClass(name, _, meta) ->> {
+			return extractUserMetadataField(meta);
+			}
+		-|	_ ->> {;}
+		;
+
+	return CSTValue();
+	}
+
+std::string ParserExpressions::extractClassDefinitionMemberNameString(
+										const SimpleParseNode& node,
+										int indexInDefinitionList
+										) const
+	{
+	@match SimpleParseNode(node)
+		-|	Identifier(i) ->> {
+			return i;
+			}
+		-|	Sequence(Concatenation(), nodes) ->> {
+			@match SimpleParseNode(nodes.back())
+				-|	Identifier(i) ->> {
+					return i;
+					}
+				-|	_ ->> {}
+				;
+			}
+		-| _ ->> {}
+		;
+	return "<member " + boost::lexical_cast<string>(indexInDefinitionList) + ">";
+	}
+
+Symbol ParserExpressions::extractOpOrIdentifier(const SimpleParseNode& node) const
+	{
+	@match SimpleParseNode(node)
+		-|	Operator(o) ->> {
+			return o;
+			}
+		-|	Identifier(i) ->> {
+			return i;
+			}
+		;
+	}
+
+std::string ParserExpressions::extractClassDefinitionMemberNameString(
+										const ImmutableTreeVector<SimpleParseNode>& nodes,
+										int indexInDefinitionList
+										) const
+	{
+	
+	if (nodes.size() > 2 &&
+			nodes[nodes.size()-3] == "left" &&
+			nodes[nodes.size()-2] == "operator" &&
+			nodes.back().isOperator()
+			)
+		return "<left operator " + extractOpOrIdentifier(nodes.back()).toString() + ">";
+
+	if (nodes.size() > 2 &&
+			nodes[nodes.size()-3] == "right" &&
+			nodes[nodes.size()-2] == "operator" &&
+			nodes.back().isOperator()
+			)
+		return "<right operator " + extractOpOrIdentifier(nodes.back()).toString() + ">";
+
+	if (nodes.size() > 2 &&
+			nodes[nodes.size()-3] == "reverse" &&
+			nodes[nodes.size()-2] == "operator" &&
+			nodes.back().isOperator()
+			)
+		return "<reverse operator " + extractOpOrIdentifier(nodes.back()).toString() + ">";
+
+	if (nodes.size() > 1 &&
+			nodes[nodes.size()-2] == "operator"
+			)
+		{
+		if (ParserOperators::isOperator(nodes.back()))
+			return "<operator " + extractOpOrIdentifier(nodes.back()).toString() + ">";
+
+		if (nodes.back() == "iterator")
+			return "<operator iterator>";
+
+		if (nodes.back() == "next")
+			return "<operator next>";
+		}
+
+	return "<member " + boost::lexical_cast<string>(indexInDefinitionList) + ">";
+	}
+
+CSTValue ParserExpressions::parseMetadata(const NodeList& metaNodes) const
+	{
+	if (metaNodes.size())
+		return expressionToConstant(
+			parseConcatenationSequence(metaNodes),
+			metaNodes.back()
+			);
+
+	return CSTValue();
+	}
+
+pair<CSTValue, ClassDefinitionTerm> ParserExpressions::applyMetadataNodes(
+										ImmutableTreeVector<SimpleParseNode> metaNodes,
+										ObjectDefinitionTerm innerTerm,
+										bool allowClassTerms
+										) const
+	{
+	bool isStatic = false;
+	if (metaNodes.size() && metaNodes.back() == "static")
+		{
+		if (!allowClassTerms)
+			throw FunctionParseError(
+				"static keyword may only be used in classes", 
+				metaNodes.back()
+				);
+
+		isStatic = true;
+		metaNodes = metaNodes.slice(0, metaNodes.size()-1);
+		}
+
+	CSTValue innerMetadata;
+
+	@match ObjectDefinitionTerm(innerTerm)
+		-| Member(_, body) ->> {
+			innerMetadata = extractUserMetadataField(body);
+			}
+		-| _ ->> {}
+		;
+
+	CSTValue metadata = 
+		CSTValue::Tuple(emptyTreeVec() + 
+			make_pair(null() << Symbol("outer"), parseMetadata(metaNodes)) + 
+			make_pair(null() << Symbol("inner"), innerMetadata)
+			);
+
+
+	if (isStatic)
+		{
+		return make_pair(
+			metadata,
+			ClassDefinitionTerm::Static(innerTerm)
+			);
+		}
+	else
+		return make_pair(
+			metadata,
+			ClassDefinitionTerm::ObjectTerm(innerTerm)
+			);
+	}
+
+
+pair<CSTValue, ClassDefinitionTerm>
+							ParserExpressions::bindExpressionToClassDefinitionTerm(
+										const SimpleParseNode& node,
+										const Expression& body,
+										bool allowClassTerms
+										) const
+	{
+	@match SimpleParseNode(node)
+		-|	Identifier(i) ->> {
+				if (!isValidVariableName(i))
+					throw FunctionParseError(
+						"invalid class membername: " + 
+							invalidIdentifierErrorMessage(i),
+						node
+						);
+				
+				//if the member is a simple object/function creation
+				//and it has metadata, we should replicate it in the member
+				//metadata. That way, if someone writes
+				//	object {
+				//		m:	"a function" fun() { };
+				//	};
+				//	the metadata will show up in both the object help
+				// the function help
+				
+				CSTValue metadata = 
+					CSTValue::Tuple(emptyTreeVec() + 
+						make_pair(null() << Symbol("outer"), CSTValue()) + 
+						make_pair(null() << Symbol("inner"), extractUserMetadataField(body))
+						);
+				
+				
+				return make_pair(
+					metadata,
+					ClassDefinitionTerm::ObjectTerm(
+						ObjectDefinitionTerm::Member(
+							i,
+							body,
+							1
+							)
+						)
+					);
+				}
+		-|	Sequence(Concatenation(), nodes) ->> {
+				@match SimpleParseNode(nodes.back())
+					-|	Identifier(i) ->> {
+						if (!isValidIdentifier(i))
+							throw FunctionParseError(
+								"invalid membername",
+								nodes.back()
+								);
+						
+						ObjectDefinitionTerm innerTerm;
+
+						return applyMetadataNodes(
+							nodes.slice(0, nodes.size()-1),
+							ObjectDefinitionTerm::Member(
+								i,
+								body,
+								1
+								),
+							allowClassTerms
+							);
+						}
+					-|	_ ->> {
+						throw FunctionParseError(
+							"invalid class membername",
+							nodes
+							);
+						}
+					;
+				}
+		-|	_ ->> {
+				throw FunctionParseError(
+					"invalid class member definition. "
+					"must be 'expr_opt symbol:' ",
+					node
+					);
+				}
+		;
+	}
+
+pair<NodeList, ObjectDefinitionTerm>	ParserExpressions::parseMemberFunctionName(
+							const NodeList& nodes,
+							const Function& body
+							) const
+	{
+	lassert(nodes.size());
+	
+	if (nodes.size() > 2 &&
+			nodes[nodes.size()-3] == "left" &&
+			nodes[nodes.size()-2] == "operator" &&
+			nodes.back().isOperator()
+			)
+		return make_pair(
+			nodes.slice(0, nodes.size()-3),
+			ObjectDefinitionTerm::LeftOperator(
+				nodes.back().getOperator().val(),
+				body
+				)
+			);
+	if (nodes.size() > 2 &&
+			nodes[nodes.size()-3] == "right" &&
+			nodes[nodes.size()-2] == "operator" &&
+			nodes.back().isOperator()
+			)
+		return make_pair(
+			nodes.slice(0, nodes.size()-3),
+			ObjectDefinitionTerm::RightOperator(
+				nodes.back().getOperator().val(),
+				body
+				)
+			);
+	if (nodes.size() > 2 &&
+			nodes[nodes.size()-3] == "reverse" &&
+			nodes[nodes.size()-2] == "operator" &&
+			nodes.back().isOperator()
+			)
+		return make_pair(
+			nodes.slice(0, nodes.size()-3),
+			ObjectDefinitionTerm::ReverseOperator(
+				nodes.back().getOperator().val(),
+				body
+				)
+			);
+	if (nodes.size() > 1 &&
+			nodes[nodes.size()-2] == "operator"
+			)
+		{
+		if (ParserOperators::isOperator(nodes.back()))
+			{
+			Symbol opSymbol = extractOpOrIdentifier(nodes.back());
+				
+			return make_pair(
+				nodes.slice(0, nodes.size()-2),
+				ObjectDefinitionTerm::Operator(
+					opSymbol,
+					body
+					)
+				);
+			}
+		if (nodes.back() == "iterator")
+			return make_pair(
+				nodes.slice(0, nodes.size()-2),
+				ObjectDefinitionTerm::Iter(body)
+				);
+		if (nodes.back() == "filter")
+			return make_pair(
+				nodes.slice(0, nodes.size()-2),
+				ObjectDefinitionTerm::Filter(
+					body
+					)
+				);
+		if (nodes.back() == "match")
+			return make_pair(
+				nodes.slice(0, nodes.size()-2),
+				ObjectDefinitionTerm::MatchFilter(
+					body
+					)
+				);
+		if (nodes.back() == "next")
+			return make_pair(
+				nodes.slice(0, nodes.size()-2),
+				ObjectDefinitionTerm::Next(body)
+				);
+
+		@match SimpleParseNode(nodes.back())
+			-|	Grouping(Parens(), Empty()) ->> {
+				return
+					make_pair(
+						nodes.slice(0, nodes.size()-2),
+						ObjectDefinitionTerm::Call(body)
+						);
+				}
+			-|	Grouping(Brackets(), Empty()) ->> {
+				return make_pair(
+						nodes.slice(0, nodes.size()-2),
+						ObjectDefinitionTerm::GetItem(body)
+						);
+				}
+			-|	_ ->> {
+				throw FunctionParseError("illegal operator definition: " +
+					prettyPrintString(nodes), nodes.back());
+				}
+			;
+		}
+	
+	//check for operator []= (x, val) { ... }
+	if (nodes.size() > 2 &&
+			nodes[nodes.size()-3] == "operator"
+			)
+		{
+		@match SimpleParseNode(nodes[nodes.size()-2])
+			-|	Grouping(Brackets(), Empty()) ->> {
+				if(nodes.back() == "=")
+					return make_pair(
+						nodes.slice(0, nodes.size()-3),
+						ObjectDefinitionTerm::SetItem(body)
+						);
+				}
+			-|	_ ->> {
+				}
+
+		throw FunctionParseError("illegal operator definition: " +
+			prettyPrintString(nodes), nodes.back());
+		}
+	if (nodes.size() &&
+			nodes.back() == "convert"
+			)
+		return make_pair(
+			nodes.slice(0, nodes.size()-1),
+			ObjectDefinitionTerm::Convert(
+				body
+				)
+			);
+	
+	@match SimpleParseNode(nodes.back())
+		-|	Operator(i) ->> {
+			if (i == "...")
+				return make_pair(
+					nodes.slice(0, nodes.size()-1),
+					ObjectDefinitionTerm::Anything(
+						body
+						)
+					);
+			throw FunctionParseError("illegal member function name: " +
+				prettyPrintString(nodes), nodes.back());
+			}
+		-|	_ ->> {
+			throw FunctionParseError("illegal member function name: " +
+				prettyPrintString(nodes), nodes.back());
+			}
+		;
+	}
+
+namespace {
+
+bool memberIsAlreadyDefined(
+					Symbol memberName, 
+					const ImmutableTreeVector<pair<CSTValue, ClassDefinitionTerm> >&	terms
+					)
+	{
+	for (long k = 0; k < terms.size(); k++)
+		@match ClassDefinitionTerm(terms[k].second)
+			-|	ObjectTerm(Member(nm)) ->> {
+					if (nm == memberName)
+						return true;
+					}
+			-|	DataMember(nm) ->> {
+					if (nm == memberName)
+						return true;
+					}
+			-|	Static(Member(nm)) ->> {
+					if (nm == memberName)
+						return true;
+					}
+			-|	_ ->> {;}
+			;
+	return false;
+	}
+
+void assertMemberIsNotAlreadyDefined(
+					const ClassDefinitionTerm& newTerm, 
+					const ImmutableTreeVector<pair<CSTValue, ClassDefinitionTerm> >&	terms,
+					const SimpleParseNode& node
+					)
+	{
+	Nullable<Symbol> badSymbol;
+
+	@match ClassDefinitionTerm(newTerm)
+		-|	ObjectTerm(Member(nm)) ->> {
+				if (memberIsAlreadyDefined(nm, terms))
+					badSymbol = nm;
+				}
+		-|	DataMember(nm) ->> {
+				if (memberIsAlreadyDefined(nm, terms))
+					badSymbol = nm;
+				}
+		-|	Static(Member(nm)) ->> {
+				if (memberIsAlreadyDefined(nm, terms))
+					badSymbol = nm;
+				}
+		-|	_ ->> {;}
+		;
+
+	if (badSymbol)
+		throw FunctionParseError(
+			"can't redefine member " + badSymbol->toString(),
+			node
+			);
+
+	}
+
+}
+
+pair<CSTValue, ClassDefinitionTerm> 
+ParserExpressions::parseMemberFunction(
+								const NodeList& subnodes,
+								uword_t termCountSoFar,
+								bool allowClassTerms
+								) const
+	{
+	//search from the right for (){} pairs. 
+	long firstParenGroup = ((long)subnodes.size());
+	
+	while (firstParenGroup > 2 &&
+				isBraces(subnodes[firstParenGroup - 1]) &&
+				isParens(subnodes[firstParenGroup - 2])
+				)
+		firstParenGroup -= 2;
+
+	lassert(firstParenGroup > 0);
+	
+	//[expr] funname(...) { }
+	//we should be able to try parsing 'expr' as an expression
+	//and then take 'funname' where funname is one of
+	//[], (), []=, operator.
+	
+	pair<Function, NodeList> res =
+        extractFunction(subnodes.slice(firstParenGroup));
+	
+	if (res.second.size())
+		throw FunctionParseError(
+			"syntax error - expected function term",
+			res.second[0].extent().left()
+			);
+	
+	NodeList memberNameNodes = subnodes.slice(0, firstParenGroup);
+
+	if (memberNameNodes.size() > 1 && 
+			memberNameNodes[memberNameNodes.size()-2] == "operator" && 
+			memberNameNodes.back() == "new"
+			)
+		{
+		if (!allowClassTerms)
+			throw FunctionParseError(
+				"'operator new' may only be used in a class definition",
+				memberNameNodes.back()
+				);
+
+		return
+			make_pair(
+				parseMetadata(memberNameNodes.slice(0, memberNameNodes.size()-2)),
+				ClassDefinitionTerm::Constructor(res.first)
+				);
+		}
+	else
+		{
+		pair<NodeList, ObjectDefinitionTerm> term =
+				parseMemberFunctionName(
+					subnodes.slice(0, firstParenGroup),
+					res.first
+					);
+		
+		return
+			applyMetadataNodes(
+				term.first, 
+				term.second,
+				allowClassTerms
+				);
+		}
+	}
+
+Nullable<pair<CSTValue, ClassDefinitionTerm> > 
+ParserExpressions::tryParseDataMember(
+						const NodeList& nodes,
+						bool allowClassTerms
+						) const
+	{
+	if (nodes.size() < 2 || 
+				nodes[nodes.size()-2] != "member" || 
+				!isValidIdentifier(nodes[nodes.size()-1])
+			)
+		return null();
+
+	
+	if (!allowClassTerms)
+		throw FunctionParseError(
+			"'member' keyword may only be used in a class definition",
+			nodes[nodes.size()-2]
+			);
+
+	return null() << 
+		make_pair(
+			parseMetadata(nodes.slice(0,nodes.size()-2)),
+			ClassDefinitionTerm::DataMember(
+				nodes.back().getIdentifier().val()
+				)
+			);
+	}
+
+Nullable<pair<CSTValue, ClassDefinitionTerm> > 
+ParserExpressions::tryParseMixinTerm(
+						const NodeList& nodes, 
+						bool allowClassTerms
+						) const
+	{
+	for (long k = 0; k < nodes.size(); k++)
+		if (nodes[k] == "mixin")
+			{
+			return null() << applyMetadataNodes(
+				nodes.slice(0,k),
+				ObjectDefinitionTerm::Mixin(
+					parseConcatenationSequence(nodes.slice(k+1))
+					),
+				allowClassTerms
+				);
+			}
+
+	return null();
+	}
+
+void ParserExpressions::parseClassDefinitionTerm(
+						const SimpleParseNode& node,
+						ImmutableTreeVector<pair<CSTValue, ClassDefinitionTerm> >&	ioTerms,
+						bool allowClassTerms
+						) const
+	{
+	@match SimpleParseNode(node)
+		-|	Sequence(Colon(), nodes) ->> {
+				
+				if (nodes.size() > 2)
+					throw FunctionParseError(
+						"missing ';' between members", node);
+					
+				if (nodes.size() != 2)
+					throw FunctionParseError("illegal member", node);
+				
+				Expression expr = parseToExpression(nodes[1]);
+
+				FunctionValidation::checkExpressionForNonLocalAssignments(expr, emptyTreeSet());
+				
+				pair<CSTValue, ClassDefinitionTerm> member =
+					bindExpressionToClassDefinitionTerm(
+						nodes[0],
+						ExpressionLocationTagging::setCodeLocation(
+							expr,
+							CodeLocation(
+								codeDefPoint(),
+								nodes[1].extent()
+								)
+							),
+						allowClassTerms
+						);
+				
+				//todo: don't do a linear scan here. this is n^2 in
+				//object size.
+				assertMemberIsNotAlreadyDefined(member.second, ioTerms, nodes[0]);
+				
+				ioTerms = ioTerms + member;
+				}
+		-|	Sequence(Concatenation(), subnodes) ->> {
+				//check for 'member x' pairs
+				Nullable<pair<CSTValue, ClassDefinitionTerm> > dataMemberTerm;
+
+				dataMemberTerm = tryParseDataMember(subnodes, allowClassTerms);
+
+				if (dataMemberTerm)
+					ioTerms = ioTerms + *dataMemberTerm;
+				else
+					{
+					Nullable<pair<CSTValue, ClassDefinitionTerm> > mixinTerm;
+
+					mixinTerm = tryParseMixinTerm(subnodes, allowClassTerms);
+
+					if (mixinTerm)
+						ioTerms = ioTerms + *mixinTerm;
+					else
+						ioTerms = ioTerms + 
+							parseMemberFunction(
+								subnodes, 
+								ioTerms.size(), 
+								allowClassTerms
+								);
+					}
+				}
+		-|	_ ->> {
+			throw FunctionParseError("invalid class term", node);
+			}
+		;
+	}
+
+template<class T>
+CSTValue packageObjectOrClassMetadata(
+		const CSTValue&	inUserMetadata,
+		const ImmutableTreeVector<pair<CSTValue, T> >& terms,
+		const ImmutableTreeVector<pair<Nullable<Symbol>, CSTValue> >& additionalMetas
+		)
+	{
+	ImmutableTreeVector<CSTValue> termMetas;
+	
+	for (long k = ((long)terms.size()) - 1; k >= 0; k--)
+		termMetas = terms[k].first + termMetas;
+		
+	ImmutableTreeVector<pair<Nullable<Symbol>, CSTValue> > individualMetas;
+	for (long k = 0; k < termMetas.size(); k++)
+		individualMetas = individualMetas +
+			make_pair(
+				null(),
+				termMetas[k]
+				);
+		
+	CSTValue finalMetadata =
+		CSTValue::Tuple(
+			emptyTreeVec() +
+				make_pair(null() << Symbol("user"),
+					inUserMetadata
+					) +
+				make_pair(null() << Symbol("members"),
+					CSTValue::Tuple(individualMetas)
+					) +
+				additionalMetas
+				);
+	
+	return finalMetadata;
+	}
+
+
+Expression	ParserExpressions::objectTermsAndMetadataToObjectExpression(
+		const CSTValue&	inMetadata,
+		const ImmutableTreeVector<pair<CSTValue, ObjectDefinitionTerm> >& terms,
+		const Nullable<Symbol>& selfName,
+		const SimpleParseRange& defRange,
+		const ImmutableTreeVector<pair<Nullable<Symbol>, CSTValue> >& additionalMetas,
+		const std::string& newClassMediatorName
+		) const
+	{
+	ObjectDefinitionBody f = ObjectDefinitionBody::Empty();
+	for (long k = ((long)terms.size()) - 1; k >= 0; k --)
+		f = ObjectDefinitionBody::Term(
+			ObjectDefinitionTermWithMetadata(
+				terms[k].second,
+				terms[k].first 
+				),
+			f
+			);
+	
+	CSTValue finalMetadata = packageObjectOrClassMetadata(inMetadata, terms, additionalMetas);
+	
+	ObjectDefinition obj(f, selfName, ExpressionLocationMetadata::Empty());
+	
+	FunctionValidation::checkObjectDefinitionForOrphanBreaks(obj);
+	
+	return 
+		Expression::CreateObject(
+			newClassMediatorName,
+			obj,
+			finalMetadata
+			);
+	}
+
+Expression	ParserExpressions::objectTermsAndMetadataToClassExpression(
+		const CSTValue&	inMetadata,
+		const ImmutableTreeVector<pair<CSTValue, ClassDefinitionTerm> >& terms,
+		const Nullable<Symbol>& className,
+		const Nullable<Symbol>& selfName,
+		const SimpleParseRange& defRange,
+		const ImmutableTreeVector<pair<Nullable<Symbol>, CSTValue> >& additionalMetas,
+		const std::string& newClassMediatorName
+		) const
+	{
+	ClassDefinitionBody f = ClassDefinitionBody::Empty();
+	for (long k = ((long)terms.size()) - 1; k >= 0; k --)
+		f = ClassDefinitionBody::Term(
+			ClassDefinitionTermWithMetadata(
+				terms[k].second, 
+				terms[k].first 
+				),
+			f);
+	
+	CSTValue finalMetadata = packageObjectOrClassMetadata(inMetadata, terms, additionalMetas);
+	
+	ClassDefinition obj(f, className, selfName, ExpressionLocationMetadata::Empty());
+	
+	FunctionValidation::checkClassDefinitionForOrphanBreaks(obj);
+	
+	return 
+		Expression::CreateClass(
+			newClassMediatorName,
+			obj,
+			finalMetadata
+			);
+	}
+	
+//given a sequence of nodes, the first of which is 'object', produce an
+//expression binding the object and a list of remaining unparsed nodes
+pair<Expression, NodeList> ParserExpressions::parseObjectDefinition(
+										const NodeList& nodes,
+										const CSTValue& inMetadata
+										) const
+	{
+	Nullable<uint64_t> nullableIndexOfClassBody;
+	for (long k = 1; k < nodes.size() && !nullableIndexOfClassBody; k++)
+		if (isBraces(nodes[k]))
+			nullableIndexOfClassBody = k;
+	
+	if (!nullableIndexOfClassBody)
+		throw FunctionParseError(
+				"invalid 'object'. object form is 'object [as self_name] { ... }",
+				nodes[0],
+				nodes[nodes.size() - 1]
+				);
+	
+	uint64_t indexOfClassBody = *nullableIndexOfClassBody;
+	
+	Nullable<Symbol> selfSym;
+
+	parseObjectTags(nodes.slice(1, indexOfClassBody), selfSym);
+	
+	ImmutableTreeVector<pair<CSTValue, ObjectDefinitionTerm> > terms;
+
+	@match SimpleParseNode(nodes[indexOfClassBody])
+		-|	Grouping(Braces(), x) ->> {
+			terms = parseObjectBody(x);
+			};
+	
+	Expression objExpr =
+		objectTermsAndMetadataToObjectExpression(
+			inMetadata,
+			terms,
+			selfSym,
+			SimpleParseRange(
+				nodes[0].extent().start(),
+				nodes.back().extent().stop()
+				),
+			emptyTreeVec() + 
+				make_pair(
+					null() << Symbol("kind"),
+					CSTValue(Symbol("object"))
+					),
+            ""
+            );
+	
+	FunctionValidation::checkStandaloneExpressionForOrphanBreaks(objExpr);
+	
+	return
+		make_pair(
+			objExpr,
+			nodes.slice(indexOfClassBody + 1)
+			);
+	}
+
+void ParserExpressions::parseClassTags(
+	const NodeList& classTags, 
+	Nullable<Symbol>& outSelfSym, 
+	Nullable<Symbol>& outClassSym) const
+	{
+	if (classTags.size() == 0)
+		return;
+
+	if (classTags[0] == "as")
+		{
+		if (classTags.size() < 2 || !isValidIdentifier(classTags[1]))
+			throw FunctionParseError("Expected identifier after 'as'", classTags[0]);
+		if (outClassSym)
+			throw FunctionParseError("Can't give two names to the class variable", classTags[0]);
+
+		outClassSym = classTags[1].getIdentifier().val();
+
+		parseClassTags(classTags.slice(2), outSelfSym, outClassSym);
+
+		return;
+		}
+
+	if (classTags[0] == "self")
+		{
+		if (classTags.size() < 2 || classTags[1] != "as")
+			throw FunctionParseError("Expected 'as' after 'self'", classTags[1]);
+
+		if (classTags.size() < 3 || !isValidIdentifier(classTags[2]))
+			throw FunctionParseError("Expected identifier after 'as'", classTags[2]);
+
+		if (outSelfSym)
+			throw FunctionParseError("Can't give two names to the self variable", classTags[0]);
+
+		outSelfSym = classTags[2].getIdentifier().val();
+
+		parseClassTags(classTags.slice(3), outSelfSym, outClassSym);
+
+		return;
+		}
+	
+	throw FunctionParseError(
+		"expected 'self as', 'as', or '{' after 'class'",
+		classTags[0]
+		);
+	}
+
+void ParserExpressions::parseObjectTags(const NodeList& objectTags, Nullable<Symbol>& outSelfSym) const
+	{
+	if (objectTags.size() == 0)
+		return;
+
+	if (objectTags[0] == "as")
+		{
+		if (objectTags.size() < 2 || !isValidIdentifier(objectTags[1]))
+			throw FunctionParseError("Expected identifier after 'as'", objectTags[0]);
+		if (outSelfSym)
+			throw FunctionParseError("Can't give two names to the class variable", objectTags[0]);
+
+		outSelfSym = objectTags[1].getIdentifier().val();
+
+		parseObjectTags(objectTags.slice(2), outSelfSym);
+
+		return;
+		}
+	
+	throw FunctionParseError(
+		"expected 'as', or '{' after 'object'",
+		objectTags[0]
+		);
+	}
+
+//given a sequence of nodes, the first of which is 'object', produce an
+//expression binding the object and a list of remaining unparsed nodes
+pair<Expression, NodeList> ParserExpressions::parseClassDefinition(
+										const NodeList& nodes,
+										const CSTValue& inMetadata
+										) const
+	{
+	Nullable<uint64_t> nullableIndexOfClassBody;
+	for (long k = 1; k < nodes.size() && !nullableIndexOfClassBody; k++)
+		if (isBraces(nodes[k]))
+			nullableIndexOfClassBody = k;
+	
+	if (!nullableIndexOfClassBody)
+		throw FunctionParseError(
+				"invalid 'class'. class form is 'class [as cls_name] [self as self_name] { ... }",
+				nodes[0],
+				nodes[nodes.size()-1]
+				);
+	
+	uint64_t indexOfClassBody = *nullableIndexOfClassBody;
+	
+	Nullable<Symbol> selfSym, classSym;
+
+	parseClassTags(nodes.slice(1, indexOfClassBody), selfSym, classSym);
+	
+	ImmutableTreeVector<pair<CSTValue, ClassDefinitionTerm> > terms;
+
+	@match SimpleParseNode(nodes[indexOfClassBody])
+		-|	Grouping(Braces(), x) ->> {
+			terms = parseClassBody(x, true);
+			};
+	
+	Expression objExpr =
+		objectTermsAndMetadataToClassExpression(
+			inMetadata,
+			terms,
+			classSym,
+			selfSym,
+			SimpleParseRange(
+				nodes[0].extent().start(),
+				nodes.back().extent().stop()
+				),
+			emptyTreeVec() + 
+				make_pair(
+					null() << Symbol("kind"),
+					CSTValue(Symbol("class"))
+					),
+			""
+			);
+	
+	FunctionValidation::checkStandaloneExpressionForOrphanBreaks(objExpr);
+	
+	return
+		make_pair(
+			objExpr,
+			nodes.slice(indexOfClassBody + 1)
+			);
+	}
+
+//given a sequence of nodes, the first of which is 'fun', produce an
+//expression binding the function and a list of remaining unparsed nodes
+pair<Expression, NodeList> ParserExpressions::parseFunctionDefinition(
+										const NodeList& nodes
+										) const
+	{
+	long cur = 1;
+
+	if (nodes.size() < 2 || !isParens(nodes[1]))
+		throw FunctionParseError("expected () after 'fun'", nodes);
+	
+	ImmutableTreeVector<SimpleParseNode> bodies = nodes.slice(1, nodes.size());
+
+	bool anyExtras = bodies.size() % 2 != 0;
+
+	for (long k = 0; k < bodies.size() && !anyExtras; k += 2)
+		if (!isParens(bodies[k]) || !isBraces(bodies[k+1]))
+			anyExtras = true;
+
+	pair<Function, NodeList> res = extractFunction(bodies);
+	
+	FunctionValidation::checkFunctionForNonLocalAssignments(res.first);
+	FunctionValidation::checkFunctionForOrphanBreaks(res.first);
+	
+	Expression funcExpr =
+		Expression::CreateFunction(
+			"",
+			res.first,
+			CSTValue()
+			);
+
+	return make_pair(
+		funcExpr,
+		res.second
+		);
+	}
+
+
+ImmutableTreeVector<CacheCallArgument>
+ParserExpressions::parseCacheArgList(const SimpleParseNode& node) const
+	{
+	@match SimpleParseNode(node)
+		-|	Grouping(Parens(), Sequence(Comma(), elts)) ->> {
+				ImmutableTreeVector<CacheCallArgument> args;
+				for (long k = 0; k < elts.size(); k++)
+					args = args + parseCacheArg(elts[k]);
+				return args;
+				}
+		-|	Grouping(Parens(), elt) ->> {
+				return emptyTreeVec() + parseCacheArg(elt);
+				}
+		-|	_ ->> {
+				throw FunctionParseError("bad cache-call argument list", node);
+				}
+		;
+	return emptyTreeVec();
+	}
+
+CacheCallArgument ParserExpressions::parseCacheArg(const SimpleParseNode& node) const
+	{
+	@match SimpleParseNode(node)
+		-|	Sequence(Concatenation(), elts) ->> {
+
+			NodeList cacheCallNodes = elts;
+			Nullable<Expression> nearExpr;
+			//search the list for 'near'
+			bool foundNear = false;
+			
+			for (long k = 0; k < elts.size() && !foundNear; k++)
+				if (elts[k] == "near")
+					{
+					cacheCallNodes = elts.slice(0, k);
+					nearExpr = parseConcatenationSequence(elts.slice(k+1));
+					foundNear = true;
+					}
+
+			Expression cacheCall = parseConcatenationSequence(cacheCallNodes);
+
+			@match Expression(cacheCall.unwrapCodeLocationTags())
+				-|	Call(agent, args) ->> {
+					return CacheCallArgument(agent, args, nearExpr);
+					}
+				-|	_ ->> {
+					throw FunctionParseError(
+							"Expected a call operation in 'cache'",
+							cacheCallNodes
+							);
+					}
+			}
+		-|	_ ->> {
+			throw FunctionParseError("badly formed cache argument", node);
+			}
+	}
+
+ImmutableTreeVector<Expression>
+ParserExpressions::parseExpressionList(const SimpleParseNode& node) const
+	{
+	@match SimpleParseNode(node)
+		-|	Grouping(Parens(), Sequence(Comma(), elts)) ->> {
+				return parseExpressionList(elts);
+				}
+		-|	Grouping(Parens(), elt) ->> {
+				return parseExpressionList(emptyTreeVec() + elt);
+				}
+		-|	_ ->> {
+				throw FunctionParseError("bad expression list", node);
+				}
+		;
+	return emptyTreeVec();
+	}
+
+ImmutableTreeVector<Expression> ParserExpressions::parseExpressionList(const NodeList& nodes) const
+	{
+	if (nodes.size() == 1 && nodes[0].isEmpty())
+		return emptyTreeVec();
+	ImmutableTreeVector<Expression> tr;
+	for (long k = 0; k < nodes.size(); k++)
+		tr = tr + parseToExpression(nodes[k]);
+	return tr;
+	}
+
+ImmutableTreeVector<ApplyArgument>
+ParserExpressions::parseCallArguments(const SimpleParseNode& node, bool allowEmpty) const
+	{
+	@match SimpleParseNode(node)
+		-|	Grouping(Parens(), Sequence(Comma(), elts)) ->> {
+				return parseCallArguments(elts, allowEmpty);
+				}
+		-|	Grouping(Parens(), elt) ->> {
+				return parseCallArguments(emptyTreeVec() + elt, allowEmpty);
+				}
+		-|	_ ->> {
+				throw FunctionParseError("bad call arguments", node);
+				}
+		;
+	return emptyTreeVec();
+	}
+
+ImmutableTreeVector<ApplyArgument>
+ParserExpressions::parseCallArguments(const NodeList& nodes, bool allowEmpty) const
+	{
+	if (nodes.size() == 1 && nodes[0].isEmpty())
+		return emptyTreeVec();
+	ImmutableTreeVector<ApplyArgument> tr;
+	for (long k = 0; k < nodes.size(); k++)
+		{
+		@match SimpleParseNode(nodes[k])
+			-|	Sequence(Concatenation(), Leaf(Operator(isTupleCall), right)) ->> {
+					if (isTupleCall == "*")
+						tr = tr + ApplyArgument::TupleCall(parseConcatenationSequence(right));
+					else
+						tr = tr + parseToExpression(nodes[k], allowEmpty);
+				}
+			-|	Sequence(Colon(), Leaf(Identifier(i), Leaf(tail, Empty()))) ->> {
+				if (isValidIdentifier(i))
+					tr = tr + ApplyArgument::Normal(
+						null() << Symbol(i),
+						parseToExpression(tail, allowEmpty)
+						);
+				else
+					throw FunctionParseError(
+							"invalid identifier: " + invalidIdentifierErrorMessage(i),
+							nodes[0],
+							nodes.back()
+							);
+				}
+			-|	Sequence(Colon(), Leaf(Grouping(Parens(), nameField), Leaf(tail, Empty()))) ->> {
+				tr = tr + ApplyArgument::NamedArgument(
+					parseToExpression(nameField, allowEmpty),
+					parseToExpression(tail, allowEmpty)
+					);
+				}
+			-|	_ ->> {
+				tr = tr + parseToExpression(nodes[k], allowEmpty);
+				}
+			;
+		}
+	return tr;
+	}
+
+//parse a set of concatenated nodes. to an expression. consume all the nodes
+//and throw a FunctionParseError if they don't parse
+Expression ParserExpressions::parseConcatenationSequence(const NodeList& nodes) const
+	{
+	if (!nodes.size())
+		return Expression::Constant(CSTValue());
+	
+	Nullable<pair<Expression, NodeList> > res = parseConcatSeqToStatement(nodes);
+	if (!res)
+		throw FunctionParseError("expected statement or expression", nodes);
+	
+	Expression curE = res->first;
+	NodeList remainingNodes = res->second;
+	
+	while (remainingNodes.size())
+		{
+		res = parseConcatSeqToStatement(remainingNodes);
+		if (!res)
+			throw FunctionParseError("expected statement or expression", remainingNodes);
+		curE =
+			Expression::Sequence(
+				curE,
+				res->first
+				);
+		remainingNodes = res->second;
+		}
+	
+	return curE;
+	}
+
+CSTValue ParserExpressions::expressionToConstant(
+								const Expression& inVal,
+								const SimpleParseNode& node
+								)
+	{
+	Nullable<CSTValue> constant = inVal.extractConstantIfPossible();
+
+	if (constant)
+		return *constant;
+
+	throw FunctionParseError("Expected a constant", node);
+	}
+
+CSTValue ParserExpressions::parseToConstant(const SimpleParseNode& node) const
+	{
+	Expression expr = parseToExpression(node, false);
+
+	return expressionToConstant(expr, node);
+	}
+
+Expression ParserExpressions::parseToExpression(const SimpleParseNode& node, bool allowEmpty) const
+	{
+	return tagExpression(parseToExpressionInner(node, allowEmpty), node);
+	}
+	
+Expression ParserExpressions::parseToExpressionInner(
+									const SimpleParseNode& node,
+									bool allowEmpty
+									) const
+	{
+	ImmutableTreeVector<StatementTerm> terms =
+						unpackNodeToStatementTerms(node);
+	
+	if (!terms.size())
+		{
+		if (allowEmpty)
+			return Expression::Constant(CSTValue());
+		else
+			throw FunctionParseError("Expected expression", node);
+		}
+	
+	if (terms.back().isLet())
+		throw FunctionParseError("expected expression after 'let'",
+			node.extent().stop());
+	
+	Expression tr = terms.back().getExpr().e();
+	for (long k = ((long)terms.size())-2; k >= 0; k--)
+		@match StatementTerm(terms[k])
+			-|	Expr(e) ->> {
+				tr = Expression::Sequence(e, tr);
+				}
+			-|	Let(l) ->> {
+				tr = Expression::Let(l, tr);
+				}
+			;
+
+	return tr;	
+	}
+	
+ImmutableTreeVector<Alternative<pair<StatementTerm, CodeLocation>, FunctionParseError> > 
+			ParserExpressions::unpackNodeToStatementTermsOrParseErrors(
+										const SimpleParseNode& inNode
+										) const
+	{
+	ImmutableTreeVector<Alternative<pair<StatementTerm, CodeLocation>, FunctionParseError> > terms;
+	
+	@match SimpleParseNode(inNode)
+		-|	Empty() ->> {;}
+		-|	Sequence(Semicolon(), nodes) ->> {
+				for (long k = 0; k < nodes.size(); k++)
+					terms = terms + unpackNodeToStatementTermsOrParseErrors(nodes[k]);
+				}
+		-|	Sequence(Concatenation(), subnodes) ->> {
+				terms = terms + unpackConcatSeqToStatementTermsOrParseErrors(subnodes);
+				}
+		-|	Sequence(Comma(), subnodes) ->> {
+				//at this level, comma is an operator. ParserOperators will
+				//not recognize it
+				NodeList withCommas;
+				for (long k = 0; k < subnodes.size(); k++)
+					{
+					if (k > 0)
+						withCommas = withCommas +
+							SimpleParseNode::Operator(
+								SimpleParseRange(
+									subnodes[k-1].extent().stop(),
+									subnodes[k].extent().start()
+									),
+								","
+								);
+					
+					@match SimpleParseNode(subnodes[k])
+						-|	Sequence(Concatenation(), subnodes2) ->> {
+							withCommas = withCommas + subnodes2;
+							}
+						-|	_ ->> {
+							withCommas = withCommas + subnodes[k];
+							}
+						;
+					}
+				terms = terms + unpackConcatSeqToStatementTermsOrParseErrors(withCommas);
+				}
+		-|	_ ->> {
+				Nullable<Expression> e =
+					parseSingleNodeToToExpressionOrNull(inNode);
+				
+				if (!e)
+					terms = terms + Alternative<pair<StatementTerm, CodeLocation>, FunctionParseError>(
+						FunctionParseError("expected expression", inNode)
+						);
+				else
+					{
+					Expression exprWithLocationInfo = 
+						tagExpression(*e,
+							inNode.extent()
+							);
+
+					terms = terms + Alternative<pair<StatementTerm, CodeLocation>, FunctionParseError>(
+						make_pair(
+							StatementTerm::Expr(
+								exprWithLocationInfo
+								),
+							CodeLocation(codeDefPoint(), inNode.extent())
+							)
+						);
+					}
+				}
+		;
+	
+	return terms;
+	}
+	
+ImmutableTreeVector<StatementTerm> ParserExpressions::unpackNodeToStatementTerms(
+										const SimpleParseNode& inNode
+										) const
+	{
+	ImmutableTreeVector<StatementTerm> terms;
+	
+	ImmutableTreeVector<Alternative<pair<StatementTerm, CodeLocation>, FunctionParseError> > termOrErrors;
+
+	for (auto termOrError: unpackNodeToStatementTermsOrParseErrors(inNode))
+		if (termOrError.isLeft())
+			terms = terms + termOrError.left().first;
+		else
+			throw termOrError.right();
+
+	return terms;
+	}
+
+//check that recursive let statements are sensible. Things like 'let x = x' are valid
+//FORA code, but will recurse forever...
+void	ParserExpressions::validateLetStatementTerm(
+				const ImmutableTreeVector<pair<PatternWithName, Expression> >& statementTerm, 
+				const NodeList& nodes
+				) const
+	{
+	//first, figure out where every bound variable is, and verify that they're unique
+	map<Symbol, uword_t> boundSymbolsToTermIndex;
+
+	for (long k = 0; k < statementTerm.size(); k++)
+		{
+		ImmutableTreeSet<Symbol> boundSymbols = statementTerm[k].first.boundVariables();
+
+		for (long j = 0; j < boundSymbols.size();j++)
+			{
+			if (boundSymbolsToTermIndex.find(boundSymbols[j]) != boundSymbolsToTermIndex.end())
+				throw FunctionParseError(
+					"Recursive let-statement binds variable "
+						+ boundSymbols[j].toString() + " twice.",
+					nodes
+					);
+
+			boundSymbolsToTermIndex[boundSymbols[j]] = k;
+			}
+		}
+	
+	for (long k = 0; k < statementTerm.size(); k++)
+		{
+		ImmutableTreeSet<Symbol> assignedVars = statementTerm[k].second.assignedVariables();
+		for (auto it = boundSymbolsToTermIndex.begin(); it != boundSymbolsToTermIndex.end(); ++it)
+			// if (it->second == k) //segfault happens even if they're not in the same "="
+			if (assignedVars.contains(it->first))
+				throw FunctionParseError(
+					"Right-hand side of let-statement assigns to variable " + it->first.toString()
+						+ ", which was bound (introduced) on the left-hand side. "
+						+ "Recursive assignments like this are not permitted. "
+						+ "Did you forget a semicolon?",
+					nodes
+					);
+		}
+	
+	
+	//next, make a map from each term's index to the set of terms it
+	//reads data from directly (e.g. not in closures)
+	map<uword_t, set<uword_t> > termIndexToTermIndicesReadFrom;
+
+	for (long k = 0; k < statementTerm.size(); k++)
+		{
+		ImmutableTreeSet<Symbol> readSymbols =
+			computeVariablesReadDirectly(statementTerm[k].second);
+
+		for (long j = 0; j < readSymbols.size();j++)
+			{
+			auto it = boundSymbolsToTermIndex.find(readSymbols[j]);
+			if (it != boundSymbolsToTermIndex.end())
+				termIndexToTermIndicesReadFrom[k].insert(it->second);
+			}
+		}
+
+	//check for strongly-connected components
+	std::vector<set<uword_t> > connectedComponents;
+	GraphUtil::computeStronglyConnectedComponents(
+		termIndexToTermIndicesReadFrom,
+		connectedComponents,
+		false,
+		false
+		);
+
+	if (connectedComponents.size())
+		{
+		ostringstream recursiveVariableGroup;
+
+		set<uword_t> firstComponent = connectedComponents[0];
+
+		for (auto it = firstComponent.begin(), it_end = firstComponent.end(); it != it_end; ++it)
+			recursiveVariableGroup << "\t" 
+				<< prettyPrintString(statementTerm[*it].first.boundVariables()) 
+				<< "\n"
+				;
+		
+		throw FunctionParseError(
+			"Recursive let-statement was valid, but would recurse forever. "
+			"Are you missing a 'fun' or 'object' somewhere, or perhaps a ';'? "
+			"The following variable groups are mutually recursive:\n" + 
+			recursiveVariableGroup.str(),
+			nodes
+			);
+		}
+	}
+	
+ImmutableTreeVector<StatementTerm>
+		ParserExpressions::unpackConcatSeqToStatementTerms(
+				const NodeList& nodes
+				) const
+	{
+	ImmutableTreeVector<StatementTerm> terms;
+	
+	ImmutableTreeVector<Alternative<pair<StatementTerm, CodeLocation>, FunctionParseError> > termOrErrors;
+
+	for (auto termOrError: unpackConcatSeqToStatementTermsOrParseErrors(nodes))
+		if (termOrError.isLeft())
+			terms = terms + termOrError.left().first;
+		else
+			throw termOrError.right();
+
+	return terms;
+	}
+
+ImmutableTreeVector<Alternative<pair<StatementTerm, CodeLocation>, FunctionParseError> > 
+		ParserExpressions::unpackConcatSeqToStatementTermsOrParseErrors(
+				const NodeList& nodes
+				) const
+	{
+	if (nodes.size() == 0)
+		return emptyTreeVec();
+
+	if (nodes[0].isEmpty())
+		return unpackConcatSeqToStatementTermsOrParseErrors(nodes.slice(1));
+	
+	if (nodes.size() == 1)
+		return unpackNodeToStatementTermsOrParseErrors(nodes[0]);
+
+	try {
+		if (nodes[0] == "let")
+			{
+			//ok, parse assignments and commas until we're done
+			ImmutableTreeVector<pair<PatternWithName, Expression> > terms;
+			
+			NodeList remaining = nodes.slice(1);
+			bool done = false;
+			while (!done)
+				{
+				Nullable<pair<PatternWithName, NodeList> > a = getAssignment(remaining);
+				
+				if (!a)
+					return emptyTreeVec() + Alternative<pair<StatementTerm, CodeLocation>, FunctionParseError>(
+						FunctionParseError("expected pattern", remaining)
+						);
+					
+				pair<Expression, NodeList> toAssign =
+	                parseConcatSeqToStatementOrElseError(
+	                    a->second,
+	                    "expected statement or expression",
+	                    remaining.back()
+	                    );
+
+				Expression exprWithLocationInfo = 
+					tagExpression(toAssign.first,
+						SimpleParseRange(remaining.slice(0, remaining.size() - toAssign.second.size()))
+						);
+
+				remaining = toAssign.second;
+				
+				terms = terms + make_pair(a->first, exprWithLocationInfo);
+				
+				if (remaining.size() && remaining[0] == ",")
+					remaining = remaining.slice(1);
+				else
+					done = true;
+				}
+			
+			validateLetStatementTerm(terms, nodes.slice(0, nodes.size() - remaining.size()));
+
+			pair<StatementTerm, CodeLocation> term(
+				StatementTerm::Let(terms),
+				CodeLocation(
+					codeDefPoint(), 
+					SimpleParseRange(nodes.slice(0, nodes.size() - remaining.size()))
+					)
+				);
+
+			return Alternative<pair<StatementTerm, CodeLocation>, FunctionParseError>(term) + 
+				unpackConcatSeqToStatementTermsOrParseErrors(remaining);
+			}
+
+		pair<Expression, NodeList> res =
+			parseConcatSeqToStatementOrElseError(nodes, "expected statement", nodes[0]);
+		
+		Expression exprWithLocationInfo = 
+			tagExpression(res.first,
+				SimpleParseRange(nodes.slice(0, nodes.size() - res.second.size()))
+				);
+
+		return 
+			Alternative<pair<StatementTerm, CodeLocation>, FunctionParseError>(
+				make_pair(
+					StatementTerm::Expr(
+						exprWithLocationInfo
+						),
+					CodeLocation(
+						codeDefPoint(), 
+						SimpleParseRange(nodes.slice(0, nodes.size() - res.second.size()))
+						)
+					)
+				) + 
+			unpackConcatSeqToStatementTermsOrParseErrors(res.second)
+			;
+		}
+	catch (FunctionParseError error)
+		{
+		return emptyTreeVec() + Alternative<pair<StatementTerm, CodeLocation>, FunctionParseError>(error);
+		}
+	}
+	
+Expression ParserExpressions::parsePossibleIteratorComprehension(const NodeList& nodes,
+											const SimpleParseNode& node
+											) const
+	{
+	for (long k = 0; k < nodes.size(); k++)
+		if (nodes[k] == "for")
+			{
+			Nullable<Expression> comprehensionExpression;
+
+			try {
+				comprehensionExpression = tagExpression(
+					Expression::ListComprehension(parseListComprehension(nodes), true),
+					nodes
+					);
+				}
+			catch(FunctionParseError& e)
+				{
+				}
+
+			if (comprehensionExpression)
+				{
+				FunctionValidation::checkExpressionForNonLocalAssignments(
+					*comprehensionExpression,
+					emptyTreeSet()
+					);
+				return *comprehensionExpression;
+				}
+
+			}
+	
+	return parseToExpression(node);
+	}
+
+ListComprehensionChain ParserExpressions::parseListComprehension(const NodeList& nodes) const
+	{
+	//work from the right
+	for (long k = ((long)nodes.size() - 1); k >= 0; k--)
+		if (nodes[k] == "for")
+			{
+			for (long j = k + 2; j < nodes.size();j++)
+				if (nodes[j] == "in")
+					{
+					if (j + 1 == nodes.size())
+						throw FunctionParseError(
+							"expected pattern after 'in'",
+							nodes[j]
+							);
+					
+					pair<Expression, NodeList> processP =
+						parseConcatSeqToExpressionOrElseError(nodes.slice(j+1),
+							"expected expression after 'in'");
+					Nullable<Expression> condition;
+					
+					if (processP.second.size())
+						{
+						if (processP.second[0] == "if")
+							{
+							if (processP.second.size() == 1)
+								throw FunctionParseError("expected expression after 'if'",
+									processP.second
+									);
+							
+							pair<Expression, NodeList> conditionP =
+								parseConcatSeqToExpressionOrElseError(
+									processP.second.slice(1),
+									"expected expression after 'if'"
+									);
+							if (conditionP.second.size())
+								throw FunctionParseError(
+									"expected end-of-expression",
+									conditionP.second
+									);
+							
+							condition = conditionP.first;
+							}
+						else
+							throw FunctionParseError(
+								"expected 'if' or end-of-expression",
+								processP.second
+								);
+						}
+					
+					return ListComprehensionChain::Term(
+						ParserPatterns(*this)
+							.parseConcatSeqToNamedPattern(nodes.slice(k+1, j)),
+						condition,
+						processP.first,
+						parseListComprehension(nodes.slice(0, k))
+						);
+					}
+			
+			throw FunctionParseError("expected 'in'", nodes[k], nodes.back());
+			}
+			
+	return ListComprehensionChain::Leaf(parseConcatenationSequence(nodes));
+	}
+
+//ensure that 'e' is tagged with a CodeSourceRange node.
+Expression ParserExpressions::tagExpression(const Expression& e, const NodeList& nodes) const
+	{
+	if (nodes.size() == 0)
+		return e;
+		
+	if (e.locationMetadata().isEmpty())
+		return CPPML::replaceCommonData(
+			e,
+			ExpressionLocationMetadata::WithSimpleParseRange(
+				SimpleParseRange(
+					nodes[0].extent().start(),
+					nodes.back().extent().stop()
+					)
+				)
+			);
+
+	return e;	
+	}
+
+//ensure that 'e' is tagged with a CodeSourceRange node.
+Expression ParserExpressions::tagExpression(const Expression& e,
+											const SimpleParseNode& node) const
+	{
+	if (e.locationMetadata().isEmpty())
+		return CPPML::replaceCommonData(
+			e,
+			ExpressionLocationMetadata::WithSimpleParseRange(
+				node.extent()
+				)
+			);			
+	return e;
+	}
+
+//ensure that 'e' is tagged with a CodeSourceRange node.
+Expression ParserExpressions::tagExpression(const Expression& e,
+											const SimpleParseRange& node) const
+	{
+	if (e.locationMetadata().isEmpty())
+		return CPPML::replaceCommonData(
+			e,
+			ExpressionLocationMetadata::WithSimpleParseRange(
+				node
+				)
+			);			
+	return e;
+	}
+
+Expression ParserExpressions::tagExpression(const Expression& e,
+											const SimpleParseNode& nodeStart,
+											const SimpleParseNode& nodeStop) const
+	{
+	if (e.locationMetadata().isEmpty())
+		return CPPML::replaceCommonData(
+			e,
+			ExpressionLocationMetadata::WithSimpleParseRange(
+				SimpleParseRange(
+					nodeStart.extent().start(),
+					nodeStop.extent().stop()
+					)
+				)
+			);
+
+	return e;		
+	}
+
+
+Function ParserExpressions::tagFunction(
+		const Function& f,
+		const SimpleParseRange& range
+		) const
+	{
+	if (f.locationMetadata().isEmpty())
+		return CPPML::replaceCommonData(
+			f,
+			ExpressionLocationMetadata::WithSimpleParseRange(
+				range
+				)
+			);
+
+	return f;	
+	}
+
+
+Function ParserExpressions::tagFunction(
+		const Function& f,
+		const SimpleParseNode& nodeStart,
+		const SimpleParseNode& nodeStop
+		) const
+	{
+	if (f.locationMetadata().isEmpty())
+		return CPPML::replaceCommonData(
+			f,
+			ExpressionLocationMetadata::WithSimpleParseRange(
+				SimpleParseRange(
+					nodeStart.extent().start(),
+					nodeStop.extent().stop()
+					)
+				)
+			);
+
+	return f;	
+	}
+

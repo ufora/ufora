@@ -1,0 +1,987 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "../../core/serialization/Serialization.hpp"
+#include "ForaValueSerializationStream.hppml"
+#include "../ControlFlowGraph/ControlFlowGraph.hppml"
+#include "../Core/ClassMediator.hppml"
+#include "../Core/MemoryPool.hpp"
+#include "../Core/ImplVal.hppml"
+#include "../Core/ImplValContainer.hppml"
+#include "../Primitives/ExternalFunctionDescription.hppml"
+#include "../Language/Function.hppml"
+#include "../ControlFlowGraph/ControlFlowGraph.hppml"
+#include "../TypedFora/ABI/MutableVectorHandle.hpp"
+#include "../TypedFora/ABI/ForaValueArray.hppml"
+#include "../TypedFora/ABI/ForaValueArrayImpl.hppml"
+#include "../TypedFora/ABI/ForaValueArraySpaceRequirements.hppml"
+#include "../Vector/VectorDataID.hppml"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include "../TypedFora/ABI/VectorRecord.hpp"
+#include "../Vector/MutableVectorRecord.hppml"
+#include "../VectorDataManager/PageletTree.hppml"
+#include "../../core/debug/StackTrace.hpp"
+#include "../../core/threading/ScopedThreadLocalContext.hpp"
+
+using TypedFora::Abi::ForaValueArray;
+
+using Fora::PageletTree;
+using Fora::PageletTreePtr;
+using Fora::Pagelet;
+
+namespace ForaValueSerializers {
+
+template<class T>
+void deserializeAsT(Fora::ForaValueDeserializationStream& s, uint8_t* inData, uword_t count, uword_t stride)
+	{
+	for (uword_t c = 0; c < count; c++)
+		{
+		T* eltPtr = (T*)(inData + c * stride);
+
+		new (eltPtr) T();
+
+		s.deserialize(*eltPtr);
+		}
+	}
+
+template<class T>
+void deserializeScatteredAsT(Fora::ForaValueDeserializationStream& s, uint8_t** inData, uword_t count, uword_t nudge)
+	{
+	for (uword_t c = 0; c < count; c++)
+		{
+		T* eltPtr = (T*)(inData[c] + nudge);
+
+		new (eltPtr) T();
+
+		s.deserialize(*eltPtr);
+		}
+	}
+
+void deserialize(Fora::ForaValueDeserializationStream& deserializer, 
+							const Type& inType, 
+							uint8_t* data, 
+							uword_t count,
+							uword_t stride
+							)
+	{
+	if (inType.isDirectlySerializable() && stride == inType.size())
+		{
+		deserializer.readBytes(data, count * inType.size());
+		return;
+		}
+
+	if (inType.isDirectlySerializable())
+		{
+		for (long k = 0; k < count; k++)
+			deserializer.readBytes(data + stride * k, inType.size());
+
+		return;
+		}
+
+	@match Type(inType)
+		-|	Nothing() ->>  {}
+		-|	String() ->>  {
+				for (uword_t k = 0; k < count; k++)
+					{
+					string_type& str( *reinterpret_cast<string_type*>(data + stride*k) );
+					
+					uint32_t sz;
+					deserializer.deserialize(sz);
+
+					if (sz == 0)
+						{
+						new (&str) string_type();
+						}
+					else
+						{
+						new (&str) string_type(string_type::empty(sz, deserializer.getTargetPool()));
+
+						lassert(str.size() == sz);
+						
+						deserializer.readBytes( str.base(), sz );
+						}
+					}				
+				}
+		-|	ExternalFunction() ->>  {
+				deserializeAsT<ExternalFunctionDescriptor>(deserializer,data,count,stride);
+				}
+		-|	JOVAsValue() ->>  {
+				deserializeAsT<JOV>(deserializer,data,count,stride);
+				}
+		-|	StackTrace() ->>  {
+				deserializeAsT<ForaStackTrace >(deserializer,data,count,stride);
+				}
+		-|	Symbol() ->>  {
+				deserializeAsT<symbol_type>(deserializer,data,count,stride);
+				}
+		-|	Tag() ->>  {
+				deserializeAsT<symbol_type>(deserializer,data,count,stride);
+				}
+		-|	Integer(bits, isSigned) ->>  {
+				uword_t sz = inType.size();
+				for (uword_t c = 0; c < count; c++)
+					{
+					deserializer.readBytes(data + c * stride, (bits + 7)/8);
+					clearUnusedIntegerBits(data + c * stride, bits);
+					}
+				}
+		-|	Float(bits) ->>  {
+				if (bits == 32)
+					deserializeAsT<float>(deserializer,data,count,stride);
+					else
+				if (bits == 64)
+					deserializeAsT<double>(deserializer,data,count,stride);
+					else
+					throw standardLogicErrorWithStacktrace("illegal Float bit count");
+				}
+		-|	Alternative(eltType) ->>  {
+				deserialize(deserializer, Type::Symbol(), data, count, stride);
+				deserialize(deserializer, eltType, data + sizeof(symbol_type), count, stride);
+				}
+		-|	Class(types) ->>  {
+				deserialize(deserializer, Type::UnnamedTuple(types), data, count, stride);
+				}
+		-|	Tuple(t) ->>  {
+				uword_t sz = 0;
+				for (long k = 0; k < t.size();k++)
+					{
+					deserialize(deserializer, t[k], data + sz, count, stride);
+					sz = sz + t[k].size();
+					}
+				}
+		-|	Dictionary() ->>  {
+				return deserializeAsT<dict_type>(deserializer,data,count,stride);
+				}
+		-|	Vector() ->>  {
+				for (uword_t k = 0; k < count; k++)
+					{
+					TypedFora::Abi::VectorRecord* recordPtr = 
+						(TypedFora::Abi::VectorRecord*)(data + k * stride);
+
+					new (recordPtr) TypedFora::Abi::VectorRecord();
+
+					deserializer.deserialize(*(TypedFora::Abi::VectorRecord*)(data + k * stride));
+					}
+				}
+		-|	MutableVector() ->>  {
+				for (uword_t k = 0; k < count; k++)
+					{
+					MutableVectorRecord* recordPtr = 
+						(MutableVectorRecord*)(data + k * stride);
+
+					new (recordPtr) MutableVectorRecord;
+
+					deserializer.deserialize(*(MutableVectorRecord*)(data + k * stride));
+					}
+				}
+		;
+	}
+
+void deserializeScattered(Fora::ForaValueDeserializationStream& deserializer, 
+							const Type& inType, 
+							uint8_t** data, 
+							uword_t count,
+							uword_t nudge
+							)
+	{
+	if (inType.size() == 0)
+		return;
+
+	if (inType.isDirectlySerializable())
+		{
+		for (long k = 0; k < count; k++)
+			deserializer.readBytes(data[k] + nudge, inType.size());
+
+		return;
+		}
+
+	@match Type(inType)
+		-|	Nothing() ->>  {}
+		-|	String() ->>  {
+				for (uword_t k = 0; k < count; k++)
+					{
+					string_type& str( *reinterpret_cast<string_type*>(data[k] + nudge) );
+					
+					uint32_t sz;
+					deserializer.deserialize(sz);
+
+					if (sz == 0)
+						{
+						new (&str) string_type();
+						}
+					else
+						{
+						new (&str) string_type(string_type::empty(sz, deserializer.getTargetPool()));
+
+						lassert(str.size() == sz);
+						
+						deserializer.readBytes( str.base(), sz );
+						}
+					}				
+				}
+		-|	ExternalFunction() ->>  {
+				deserializeScatteredAsT<ExternalFunctionDescriptor>(deserializer,data,count,nudge);
+				}
+		-|	JOVAsValue() ->>  {
+				deserializeScatteredAsT<JOV>(deserializer,data,count,nudge);
+				}
+		-|	StackTrace() ->>  {
+				deserializeScatteredAsT<ForaStackTrace >(deserializer,data,count,nudge);
+				}
+		-|	Symbol() ->>  {
+				deserializeScatteredAsT<symbol_type>(deserializer,data,count,nudge);
+				}
+		-|	Tag() ->>  {
+				deserializeScatteredAsT<symbol_type>(deserializer,data,count,nudge);
+				}
+		-|	Integer(bits, isSigned) ->>  {
+				uword_t sz = inType.size();
+				for (uword_t c = 0; c < count; c++)
+					{
+					deserializer.readBytes(data[c] + nudge, (bits + 7)/8);
+					clearUnusedIntegerBits(data[c] + nudge, bits);
+					}
+				}
+		-|	Float(bits) ->>  {
+				if (bits == 32)
+					deserializeScatteredAsT<float>(deserializer,data,count,nudge);
+					else
+				if (bits == 64)
+					deserializeScatteredAsT<double>(deserializer,data,count,nudge);
+				else
+					throw standardLogicErrorWithStacktrace("illegal Float bit count");
+				}
+		-|	Alternative(eltType) ->>  {
+				deserializeScattered(deserializer, Type::Symbol(), data, count, nudge);
+				deserializeScattered(deserializer, eltType, data, count, nudge + sizeof(symbol_type));
+				}
+		-|	Class(t) ->>  {
+				uword_t sz = 0;
+				for (long k = 0; k < t.size();k++)
+					{
+					deserializeScattered(deserializer, t[k], data, count, nudge + sz);
+					sz = sz + t[k].size();
+					}
+				}
+		-|	Tuple(t) ->>  {
+				uword_t sz = 0;
+				for (long k = 0; k < t.size();k++)
+					{
+					deserializeScattered(deserializer, t[k], data, count, nudge + sz);
+					sz = sz + t[k].size();
+					}
+				}
+		-|	Dictionary() ->>  {
+				return deserializeScatteredAsT<dict_type>(deserializer,data,count,nudge);
+				}
+		-|	Vector() ->>  {
+				for (uword_t k = 0; k < count; k++)
+					{
+					TypedFora::Abi::VectorRecord* recordPtr = 
+						(TypedFora::Abi::VectorRecord*)(data[k] + nudge);
+
+					new (recordPtr) TypedFora::Abi::VectorRecord();
+
+					deserializer.deserialize(*(TypedFora::Abi::VectorRecord*)(data[k] + nudge));
+					}
+				}
+		-|	MutableVector() ->>  {
+				for (uword_t k = 0; k < count; k++)
+					{
+					MutableVectorRecord* recordPtr = 
+						(MutableVectorRecord*)(data[k] + nudge);
+
+					new (recordPtr) MutableVectorRecord;
+
+					deserializer.deserialize(*(MutableVectorRecord*)(data[k] + nudge));
+					}
+				}
+		;
+	}
+
+template<class T>
+void serializeAsT(Fora::ForaValueSerializationStream& s, uint8_t* inData, uword_t count, uword_t stride)
+	{
+	for (uword_t c = 0; c < count; c++)
+		{
+		T* eltPtr = (T*)(inData + c * stride);
+
+		s.serialize(*eltPtr);
+		}
+	}
+
+template<class T>
+void serializeScatteredAsT(Fora::ForaValueSerializationStream& s, uint8_t** inData, uword_t count, uword_t nudge)
+	{
+	for (uword_t c = 0; c < count; c++)
+		{
+		T* eltPtr = (T*)(inData[c] + nudge);
+
+		s.serialize(*eltPtr);
+		}
+	}
+
+void	serialize(			Fora::ForaValueSerializationStream& serializer, 
+							const Type& inType, 
+							uint8_t* data, 
+							uword_t count,
+							uword_t stride
+							)
+	{
+	if (inType.isDirectlySerializable() && stride == inType.size())
+		{
+		serializer.writeBytes(data, count * inType.size());
+		return;
+		}
+	if (inType.isDirectlySerializable())
+		{
+		for (long k = 0; k < count; k++)
+			serializer.writeBytes(data + stride * k, inType.size());
+		return;
+		}
+
+	@match Type(inType)
+		-|	Nothing() ->>  { }
+		-|	String() ->>  {
+				for (uword_t k = 0; k < count; k++)
+					{
+					string_type& str( *reinterpret_cast<string_type*>(data + k * stride) );
+					
+					serializer.serialize( (uint32_t)str.size() );
+
+					serializer.writeBytes( str.base(), str.size() );
+					}
+				}
+		-|	ExternalFunction() ->>  {
+				serializeAsT<ExternalFunctionDescriptor>(serializer,data,count,stride);
+				}
+		-|	JOVAsValue() ->>  {
+				serializeAsT<JOV>(serializer,data,count,stride);
+				}
+		-|	StackTrace() ->>  {
+				serializeAsT<ForaStackTrace >(serializer,data,count,stride);
+				}
+		-|	Symbol() ->>  {
+				serializeAsT<symbol_type>(serializer,data,count,stride);
+				}
+		-|	Tag() ->>  {
+				serializeAsT<symbol_type>(serializer,data,count,stride);
+				}
+		-|	Integer(bits, isSigned) ->>  {
+				uword_t sz = inType.size();
+				for (uword_t c = 0; c < count; c++)
+					{
+					serializer.writeBytes(data + c * stride, (bits + 7)/8);
+					clearUnusedIntegerBits(data + c * stride, bits);
+					}
+				}
+		-|	Float(bits) ->>  {
+				if (bits == 32)
+					serializeAsT<float>(serializer,data,count,stride);
+					else
+				if (bits == 64)
+					serializeAsT<double>(serializer,data,count,stride);
+					else
+					throw standardLogicErrorWithStacktrace("illegal Float bit count");
+				}
+		-|	Alternative(eltType) ->>  {
+				serialize(serializer, Type::Symbol(), data, count, stride);
+				serialize(serializer, eltType, data + sizeof(symbol_type), count, stride);
+				}
+		-|	Class(types) ->>  {
+				serialize(serializer, Type::UnnamedTuple(types), data, count, stride);
+				}
+		-|	Tuple(t) ->>  {
+				uword_t sz = 0;
+				for (long k = 0; k < t.size();k++)
+					{
+					serialize(serializer, t[k], data + sz, count, stride);
+					sz = sz + t[k].size();
+					}
+				}
+		-|	Dictionary() ->>  {
+				return serializeAsT<dict_type>(serializer,data,count,stride);
+				}
+		-|	Vector() ->>  {
+				for (uword_t k = 0; k < count; k++)
+					serializer.serialize(*(TypedFora::Abi::VectorRecord*)(data + k * stride));
+				}
+		-|	MutableVector() ->>  {
+				for (uword_t k = 0; k < count; k++)
+					serializer.serialize(*(MutableVectorRecord*)(data + k * stride));
+				}
+	}
+
+void	serializeScattered(	Fora::ForaValueSerializationStream& serializer, 
+							const Type& inType, 
+							uint8_t** data, 
+							uword_t count,
+							uword_t nudge
+							)
+	{
+	if (inType.size() == 0)
+		return;
+	
+	if (inType.isDirectlySerializable())
+		{
+		for (long k = 0; k < count; k++)
+			serializer.writeBytes(data[k] + nudge, inType.size());
+
+		return;
+		}
+
+	@match Type(inType)
+		-|	Nothing() ->>  { }
+		-|	String() ->>  {
+				for (uword_t k = 0; k < count; k++)
+					{
+					string_type& str( *reinterpret_cast<string_type*>(data[k] + nudge) );
+					
+					serializer.serialize( (uint32_t)str.size() );
+
+					serializer.writeBytes( str.base(), str.size() );
+					}
+				}
+		-|	ExternalFunction() ->>  {
+				serializeScatteredAsT<ExternalFunctionDescriptor>(serializer,data,count,nudge);
+				}
+		-|	JOVAsValue() ->>  {
+				serializeScatteredAsT<JOV>(serializer,data,count,nudge);
+				}
+		-|	StackTrace() ->>  {
+				serializeScatteredAsT<ForaStackTrace >(serializer,data,count,nudge);
+				}
+		-|	Symbol() ->>  {
+				serializeScatteredAsT<symbol_type>(serializer,data,count,nudge);
+				}
+		-|	Tag() ->>  {
+				serializeScatteredAsT<symbol_type>(serializer,data,count,nudge);
+				}
+		-|	Integer(bits, isSigned) ->>  {
+				uword_t sz = inType.size();
+				for (uword_t c = 0; c < count; c++)
+					{
+					serializer.writeBytes(data[c] + nudge, (bits + 7)/8);
+					clearUnusedIntegerBits(data[c] + nudge, bits);
+					}
+				}
+		-|	Float(bits) ->>  {
+				if (bits == 32)
+					serializeScatteredAsT<float>(serializer,data,count,nudge);
+					else
+				if (bits == 64)
+					serializeScatteredAsT<double>(serializer,data,count,nudge);
+					else
+					throw standardLogicErrorWithStacktrace("illegal Float bit count");
+				}
+		-|	Alternative(eltType) ->>  {
+				serializeScattered(serializer, Type::Symbol(), data, count, nudge);
+				serializeScattered(serializer, eltType, data, count, nudge + sizeof(symbol_type));
+				}
+		-|	Class(t) ->>  {
+				uword_t sz = 0;
+				for (long k = 0; k < t.size();k++)
+					{
+					serializeScattered(serializer, t[k], data, count, nudge + sz);
+					sz = sz + t[k].size();
+					}
+				}
+		-|	Tuple(t) ->> {
+				uword_t sz = 0;
+				for (long k = 0; k < t.size();k++)
+					{
+					serializeScattered(serializer, t[k], data, count, nudge + sz);
+					sz = sz + t[k].size();
+					}
+				}
+		-|	Dictionary() ->>  {
+				return serializeScatteredAsT<dict_type>(serializer,data,count,nudge);
+				}
+		-|	Vector() ->>  {
+				for (uword_t k = 0; k < count; k++)
+					serializer.serialize(*(TypedFora::Abi::VectorRecord*)(data[k] + nudge));
+				}
+		-|	MutableVector() ->>  {
+				for (uword_t k = 0; k < count; k++)
+					serializer.serialize(*(MutableVectorRecord*)(data[k] + nudge));
+				}
+	}
+
+}
+
+void Serializer<ImplValContainer, Fora::ForaValueSerializationStream>::
+			serialize(Fora::ForaValueSerializationStream& s, const ImplValContainer& t)
+	{
+	s.serialize(t.type());
+	ForaValueSerializers::serialize(s, t.type(), (uint8_t*)t.data(), 1, t.type().size());
+	}
+
+void Deserializer<ImplValContainer, Fora::ForaValueDeserializationStream>
+		::deserialize(Fora::ForaValueDeserializationStream& s, ImplValContainer& ivc)
+	{
+	Type t;
+	s.deserialize(t);
+
+	ImplVal val = ImplVal::introduce(t);
+	ForaValueSerializers::deserialize(s, val.type(), (uint8_t*)val.data(), 1, val.type().size());
+	
+	ivc = ImplValContainer::assumeOwnershipOf(val);
+	}
+
+void Serializer<CSTValue, Fora::ForaValueSerializationStream>
+		::serialize(Fora::ForaValueSerializationStream& s, const CSTValue& t)
+	{
+	s.serialize(t.type());
+	ForaValueSerializers::serialize(s, t.type(), (uint8_t*)t.getReference().data(), 1, t.type().size());
+	}
+
+void Deserializer<CSTValue, Fora::ForaValueDeserializationStream>
+		::deserialize(Fora::ForaValueDeserializationStream& s, CSTValue& cstVal)
+	{
+	Type t;
+	s.deserialize(t);
+
+	ImplVal val = ImplVal::introduce(t);
+	ForaValueSerializers::deserialize(s, val.type(), (uint8_t*)val.data(), 1, val.type().size());
+	
+	cstVal = CSTValue::assumeOwnershipOf(val);
+	}
+
+
+void Serializer<MutableVectorRecord, Fora::ForaValueSerializationStream>::serialize(
+							Fora::ForaValueSerializationStream& s, 
+							const MutableVectorRecord& vec
+							)
+	{
+	s.serialize(vec.elementJOV());
+	s.serialize((uint32_t)vec.size());
+	s.serialize(vec.hash());
+
+	TypedFora::Abi::PackedForaValues values = vec.packedValues();
+
+	s.serialize(values);
+	}
+
+
+void Serializer<TypedFora::Abi::PackedForaValues, Fora::ForaValueSerializationStream>::serialize(
+						Fora::ForaValueSerializationStream& s,
+						const TypedFora::Abi::PackedForaValues& values
+						)
+	{
+	if (values.elementJOV().type())
+		ForaValueSerializers::serialize(
+			s,
+			*values.elementJOV().type(),
+			values.data(),
+			values.count(),
+			values.stride()
+			);
+	else
+		{
+		for (long k = 0; k < values.count();k++)
+			s.serialize(*values.pointerToElement<ImplValContainer>(k));
+		}
+	}
+
+
+namespace {
+class ForaValueArrayVisitor {
+public:
+	ForaValueArrayVisitor(Fora::ForaValueSerializationStream* inSerializer) : mSerializer(inSerializer)
+		{
+
+		}
+
+	void operator()(TypedFora::Abi::PackedForaValues values) const 
+		{
+		mSerializer->serialize((bool)true);
+		mSerializer->serialize((uint32_t)values.count());
+		mSerializer->serialize(values.elementJOV());
+		mSerializer->serialize(values);
+		}
+
+private:
+	Fora::ForaValueSerializationStream* mSerializer;
+};
+}
+
+void Serializer<TypedFora::Abi::ForaValueArray, Fora::ForaValueSerializationStream>::serialize(
+					Fora::ForaValueSerializationStream& s,
+					const TypedFora::Abi::ForaValueArray& values
+					)
+	{
+	auto spaceRequirements = values.getSpaceRequirements();
+
+	s.serialize(spaceRequirements);
+
+	if (spaceRequirements.isHomogenous() || 
+			values.currentJor().size() > ForaValueArray::MAX_JUDGMENTS_TO_USE_JUDGMENT_TABLE)
+		{
+		s.serialize((bool)true);
+
+		ForaValueArrayVisitor v(&s);
+
+		values.visitValuesSequentially(v);
+		
+		s.serialize((bool)false);
+		}
+	else
+		{
+		s.serialize((bool)false);
+
+		uint32_t valueCount = values.size();
+		
+		std::vector<uint8_t> jovsIndices;
+		jovsIndices.resize(valueCount);
+
+		values.fillOutJovIndexTable(jovsIndices, spaceRequirements.jor());
+
+		s.writeBytes(&jovsIndices[0], valueCount);
+
+		((ForaValueArray&)values).visitScatteredValues(0, valueCount,[&](TypedFora::Abi::ScatteredForaValues values) {
+			ForaValueSerializers::serializeScattered(
+				s,
+				*values.elementJOV().type(),
+				(uint8_t**)values.data(),
+				values.count(),
+				values.nudge()
+				);
+			});
+		}
+	}
+
+void Deserializer<TypedFora::Abi::ForaValueArray, Fora::ForaValueDeserializationStream>::deserialize(
+						Fora::ForaValueDeserializationStream& s,
+						TypedFora::Abi::ForaValueArray& values
+						)
+	{
+	TypedFora::Abi::ForaValueArraySpaceRequirements spaceRequirements;
+
+	s.deserialize(spaceRequirements);
+
+	bool isSequenceOfPackedValues;
+	s.deserialize(isSequenceOfPackedValues);
+
+	values.prepareForAppending(spaceRequirements);
+
+	if (isSequenceOfPackedValues)
+		{
+		bool anyRemaining;
+		do {
+			s.deserialize(anyRemaining);
+
+			if (anyRemaining)
+				{
+				uint32_t count;
+				JOV jov;
+
+				s.deserialize(count);
+				s.deserialize(jov);
+
+				TypedFora::Abi::PackedForaValues target = values.appendUninitialized(jov, count);
+				s.deserialize(target);
+				}
+
+			} while (anyRemaining);
+		}
+	else
+		{
+		lassert_dump(
+			values.usingJudgmentTable(),
+			"SpaceRequirements of "
+				<< prettyPrintString(spaceRequirements) << " should have triggered a judgment table."
+			);
+
+		uint32_t valueCount = spaceRequirements.valueCount();
+
+		std::vector<uint8_t> jovsIndices;
+		jovsIndices.resize(valueCount);
+
+		s.readBytes(&jovsIndices[0], valueCount);
+
+		values.prepareForIncomingDataGivenJovs(jovsIndices, spaceRequirements.jor());
+
+		((ForaValueArray&)values).visitScatteredValues(0, valueCount,[&](TypedFora::Abi::ScatteredForaValues values) {
+			ForaValueSerializers::deserializeScattered(
+				s,
+				*values.elementJOV().type(),
+				(uint8_t**)values.data(),
+				values.count(),
+				values.nudge()
+				);
+			});
+		}
+	}
+
+void Deserializer<MutableVectorRecord, Fora::ForaValueDeserializationStream>::deserialize(
+						Fora::ForaValueDeserializationStream& s, 
+						MutableVectorRecord& outVector
+						)
+	{
+	JOV elementJOV;
+	uint32_t elementCount;
+	hash_type identityHash;
+
+	s.deserialize(elementJOV);
+	s.deserialize(elementCount);
+	s.deserialize(identityHash);
+
+	outVector = MutableVectorRecord::allocateNewMutableVectorRecord(
+			elementJOV,
+			s.getTargetPool(),
+			identityHash
+			);
+
+	TypedFora::Abi::PackedForaValues toInitialize = 
+		outVector.appendUninitialized(elementCount);
+
+	s.deserialize(toInitialize);
+	}
+
+
+void Deserializer<TypedFora::Abi::PackedForaValues, Fora::ForaValueDeserializationStream>::deserialize(
+						Fora::ForaValueDeserializationStream& s,
+						TypedFora::Abi::PackedForaValues& toInitialize
+						)
+	{
+	JOV elementJOV = toInitialize.elementJOV();
+
+	if (elementJOV.type())
+		{
+		ForaValueSerializers::deserialize(
+			s,
+			*toInitialize.elementJOV().type(),
+			toInitialize.data(),
+			toInitialize.count(),
+			toInitialize.stride()
+			);
+		}
+	else
+		{
+		for (long k = 0; k < toInitialize.count(); k++)
+			{
+			ImplValContainer value;
+			s.deserialize(value);
+			new (toInitialize.pointerToElement<ImplValContainer>(k)) ImplValContainer(value);
+			}
+		}
+	}
+
+void Serializer<TypedFora::Abi::VectorRecord, Fora::ForaValueSerializationStream>::serialize(
+						Fora::ForaValueSerializationStream& s, 
+						const TypedFora::Abi::VectorRecord& inVectorRecord
+						)
+	{
+	s.serialize(inVectorRecord.size());
+
+	if (inVectorRecord.size())
+		{
+		s.serialize(inVectorRecord.offset());
+		s.serialize(inVectorRecord.stride());
+		s.serialize(TypedFora::Abi::VectorHandlePtr(inVectorRecord.dataPtr()));
+		}
+	}
+
+void Deserializer<TypedFora::Abi::VectorRecord, Fora::ForaValueDeserializationStream>
+		::deserialize(Fora::ForaValueDeserializationStream& s, TypedFora::Abi::VectorRecord& outVector)
+	{
+	uint64_t sz;
+	s.deserialize(sz);
+
+	if (!sz)
+		outVector = TypedFora::Abi::VectorRecord();
+	else
+		{
+		uint64_t offset;
+		int64_t stride;
+
+		s.deserialize(offset);
+		s.deserialize(stride);
+
+		TypedFora::Abi::VectorHandlePtr handle;
+		s.deserialize(handle);
+
+		outVector = TypedFora::Abi::VectorRecord(handle, sz, offset, stride);
+		}
+	}
+
+void Serializer<TypedFora::Abi::VectorHandlePtr, Fora::ForaValueSerializationStream>
+		::serialize(Fora::ForaValueSerializationStream&s, const TypedFora::Abi::VectorHandlePtr& handle)
+	{
+	s.serialize(handle->pagedValuesIdentity());
+
+	s.serialize(handle->vectorHash());
+
+	s.serialize(handle->pageletTree());
+
+	bool unpagedValuesArePagelet = (bool)handle->unpagedValuesPagelet();
+	s.serialize(unpagedValuesArePagelet);
+
+	if (unpagedValuesArePagelet)
+		s.serialize(handle->unpagedValuesPagelet());
+	else
+		s.serialize(handle->unpagedValues());
+	}
+
+
+void Deserializer<TypedFora::Abi::VectorHandlePtr, Fora::ForaValueDeserializationStream>
+		::deserialize(Fora::ForaValueDeserializationStream& s, TypedFora::Abi::VectorHandlePtr& outVector)
+	{
+	using namespace TypedFora::Abi;
+
+	Fora::BigVectorId identity;
+	s.deserialize(identity);
+
+	hash_type vectorHash;
+	s.deserialize(vectorHash);
+
+	PageletTreePtr pageletTree;
+	s.deserialize(pageletTree);
+
+	bool unpagedValuesArePagelet;
+	s.deserialize(unpagedValuesArePagelet);
+
+	if (unpagedValuesArePagelet)
+		{
+		boost::shared_ptr<Fora::Pagelet> unpagedValueArray;
+		s.deserialize(unpagedValueArray);
+
+		MemoryPool* pool = s.getTargetPool();
+
+		outVector = pool->construct<VectorHandle>(
+			identity,
+			pageletTree,
+			unpagedValueArray,
+			s.getTargetPool(),
+			vectorHash
+			);
+		}
+	else
+		{
+		ForaValueArray* unpagedValueArray;
+		s.deserialize(unpagedValueArray);
+
+		MemoryPool* pool = s.getTargetPool();
+
+		outVector = pool->construct<VectorHandle>(
+			identity,
+			pageletTree,
+			unpagedValueArray,
+			s.getTargetPool(),
+			vectorHash
+			);
+		}
+	}
+
+
+void Serializer<ForaValueArray*, Fora::ForaValueSerializationStream>
+		::serialize(Fora::ForaValueSerializationStream&s, ForaValueArray* handle)
+	{
+	if (!handle)
+		s.serialize(false);
+	else
+		{
+		s.serialize(true);
+		s.serialize(*handle);
+		}
+	}
+
+
+void Deserializer<ForaValueArray*, Fora::ForaValueDeserializationStream>
+		::deserialize(Fora::ForaValueDeserializationStream& s, ForaValueArray*& out)
+	{
+	bool hasOne;
+
+	s.deserialize(hasOne);
+
+	if (!hasOne)
+		out = 0;
+	else
+		{
+		MemoryPool* pool = s.getTargetPool();
+
+		out = ForaValueArray::Empty(pool);
+
+		s.deserialize(*out);
+		}
+	}
+
+void Serializer<PageletTreePtr, Fora::ForaValueSerializationStream>
+		::serialize(Fora::ForaValueSerializationStream&s, const PageletTreePtr& handle)
+	{
+	if (handle.isEmpty())
+		s.serialize((uint8_t)0);
+		else
+	if (handle->leaf())
+		{
+		s.serialize((uint8_t)1);
+		s.serialize(handle->leaf());
+		s.serialize((int32_t)handle->leafValuesUsed());
+		}
+	else
+		{
+		s.serialize((uint8_t)2);
+		s.serialize(handle->left());
+		s.serialize((int32_t)handle->leftPtrValuesUsed());
+		s.serialize(handle->right());
+		s.serialize((int32_t)handle->rightPtrValuesUsed());
+		}
+	}
+
+
+void Deserializer<PageletTreePtr, Fora::ForaValueDeserializationStream>
+		::deserialize(Fora::ForaValueDeserializationStream& s, PageletTreePtr& out)
+	{
+	uint8_t kind;
+	s.deserialize(kind);
+
+	if (kind == 0)
+		out = PageletTreePtr();
+		else
+	if (kind == 1)
+		{
+		boost::shared_ptr<Pagelet> pagelet;
+		int32_t valuesUsed;
+
+		s.deserialize(pagelet);
+		s.deserialize(valuesUsed);
+
+		out = s.getTargetPool()->construct<PageletTree>(
+			s.getTargetPool(),
+			pagelet,
+			valuesUsed
+			);
+		}
+	else
+		{
+		PageletTreePtr pageletLeft;
+		PageletTreePtr pageletRight;
+		int32_t valuesUsedLeft, valuesUsedRight;
+
+		s.deserialize(pageletLeft);
+		s.deserialize(valuesUsedLeft);
+		s.deserialize(pageletRight);
+		s.deserialize(valuesUsedRight);
+
+		out = s.getTargetPool()->construct<PageletTree>(
+			s.getTargetPool(),
+			pageletLeft,
+			valuesUsedLeft,
+			pageletRight,
+			valuesUsedRight
+			);
+		}
+	}
+

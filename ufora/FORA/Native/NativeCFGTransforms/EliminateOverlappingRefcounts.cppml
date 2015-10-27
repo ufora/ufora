@@ -1,0 +1,593 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "EliminateOverlappingRefcounts.hppml"
+#include "RenameVariables.hppml"
+#include "../../../core/cppml/CPPMLVisit.hppml"
+#include "../../../core/cppml/CPPMLTransform.hppml"
+#include "../../../core/cppml/CPPMLTransformWithIndex.hppml"
+#include "../NativeCode.hppml"
+#include <boost/filesystem.hpp>
+#include <fstream>
+
+namespace NativeCFGTransforms {
+
+class EliminateOverlappingRefcountsTransformer {
+public:
+		template<class T>
+		Nullable<T> processDown(const T& t, bool& b) const { return null(); }
+		template<class T>
+		Nullable<T> processUp(const T& t) const { return null(); }
+		
+		template<class T, class F>
+		Nullable<T> processDown(const T& t, bool& b, const F& f) const { return null(); }
+		template<class T, class F>
+		Nullable<T> processUp(const T& t, const F& f) const { return null(); }
+		
+		Nullable<NativeConstant> processDown(const NativeConstant& t, bool& b) const 
+			{
+			b = false;
+			return null(); 
+			}
+	
+		template<class F>		
+		Nullable<NativeConstant> processDown(const NativeConstant& t, bool& b, const F& f) const 
+			{
+			b = false;
+			return null(); 
+			}
+		
+		Nullable<NativeType> processDown(const NativeType& t, bool& b) const 
+			{
+			b = false;
+			return null(); 
+			}
+	
+		template<class F>		
+		Nullable<NativeType> processDown(const NativeType& t, bool& b, const F& f) const 
+			{
+			b = false;
+			return null(); 
+			}
+		
+		//if this method is invoked, then we're processing on an object
+		//that we don't actually want to look at - instead, we only want
+		//to look at its pieces.
+		Nullable<NativeExpression> processDown(const NativeExpression& t,
+												bool& ioContinue,
+												 const IsFirstTransform& isFirst
+												 ) const
+			{
+			if (!isFirst)
+				return processDown(t, ioContinue);
+				else
+				return null();
+			}
+		
+		Nullable<NativeExpression> processDown(const NativeExpression& t,
+												bool& ioContinue) const
+			{
+			ioContinue = false;
+			
+			pair<Nullable<NativeExpression>, refcount_map> res =
+										pushRefcountThrough(refcount_map(), t);
+			
+			if (!res.first && res.second.size() == 0)
+				return null();
+			
+			NativeExpression expr = res.first ? *res.first : t;
+			
+			if (!res.second.size())
+				return null() << expr;
+			
+			lassert_dump(
+				expr.type(),
+				"shouldn't be able to pass a refcount through a "
+					"non-returning expression!\norig = "
+				<< prettyPrintString(t) << "\nrefcounts = "
+				<< prettyPrintString(res.second) << "\nfinal = "
+				<< prettyPrintString(expr)
+				);
+			
+			NativeVariable v = NativeVariable::Temp(*expr.type());
+			
+			return null() << 
+				NativeExpression::Let(
+					v,
+					expr,
+					dumpRefcounts(res.second, v.expr())
+					);
+			}
+		
+};
+//evaluate 'valueToReturn' before 'toEvaluate', but return the value of 'valueToReturn'
+NativeExpression evaluateAfter(	const NativeExpression& toEvaluate,
+								const NativeExpression& valueToReturn
+								)
+	{
+	//constants we can just permute through
+	if (valueToReturn.isConstant() || valueToReturn.isZero() || valueToReturn.isVariable())
+		return toEvaluate >> valueToReturn;
+	
+	return toEvaluate >> valueToReturn;
+	}
+NativeExpression dumpRefcounts(const refcount_map& inRefcounts,
+							const NativeExpression& expr
+							)
+	{
+	NativeExpression tr = expr;
+	
+	Nullable<NativeExpression> refcountExprs;
+	
+	for (long k = 0; k < inRefcounts.size(); k++)
+		{
+		ImmutableTreeVector<NativeExpression> updateExprs =
+			inRefcounts.pairAtPosition(k).second.second;
+		
+		NativeExpressionTag_RefcountType matchExpr =
+			inRefcounts.pairAtPosition(k).second.first;
+		
+		for (long j = 0; j < updateExprs.size();j++)
+			{
+			NativeExpression tagExpr = NativeExpression::Tagged(
+					updateExprs[j],
+					NativeExpressionTag::Refcount(
+						matchExpr.refcountedExpression(),
+						matchExpr.refcountUpdate(),
+						matchExpr.opposite()
+						)
+				);
+			refcountExprs = refcountExprs >> tagExpr;
+			}
+		}
+	if (refcountExprs)
+		return evaluateAfter(*refcountExprs, expr);
+	else
+		return expr;
+	}
+
+@type	CommonRefcounts =
+			refcount_map commonRefcounts,
+			refcount_map residualRefcountsLeft,
+			refcount_map residualRefcountsRight
+			;
+
+namespace {
+
+//factor out any terms held in common by 'right' and by 'left'	
+CommonRefcounts	collectCommonRefcounts(refcount_map left, refcount_map right)
+	{
+	refcount_map result;
+	
+	for (long k = 0; k < left.size(); k++)
+		if (right.contains(left.pairAtPosition(k).first))
+			{
+			hash_type key = left.pairAtPosition(k).first;
+			
+			NativeExpressionTag_RefcountType keyExpr =
+					left.pairAtPosition(k).second.first;
+			
+			ImmutableTreeVector<NativeExpression> e1List =
+					left.pairAtPosition(k).second.second;
+					
+			ImmutableTreeVector<NativeExpression> e2List =
+					right[key]->second;
+			
+			uint32_t commonsize = std::min(
+				e1List.size(),
+				e2List.size()
+				);
+			
+			result = result + key +
+				make_pair(	keyExpr,
+							e1List.slice(0, commonsize)
+							);
+			
+			e1List = e1List.slice(commonsize);
+			e2List = e2List.slice(commonsize);
+			
+			if (e1List.size())
+				left = left + key + make_pair(keyExpr, e1List);
+				else
+				left = left - key;
+			
+			if (e2List.size())
+				right = right + key + make_pair(keyExpr, e2List);
+				else
+				right = right - key;
+			}
+	
+	return CommonRefcounts(result, left, right);
+	}
+	
+}
+
+pair<Nullable<NativeExpression>, refcount_map> pushRefcountThrough(
+			const refcount_map& inRefcounts,
+			const NativeExpression& toModify
+			)
+	{
+	bool cantCommute = false;
+	
+	@match NativeExpression(toModify)
+		-|	DiscardFirst(e1, e2) ->> {
+			pair<Nullable<NativeExpression>, refcount_map> r1 =
+										pushRefcountThrough(inRefcounts, e1);
+			pair<Nullable<NativeExpression>, refcount_map> r2 =
+										pushRefcountThrough(r1.second, e2);
+			
+			Nullable<NativeExpression> tr;
+			
+			if (r1.first || r2.first)
+				{
+				@match NativeExpression(
+					NativeExpression::DiscardFirst(
+						r1.first ? *r1.first : e1,
+						r2.first ? *r2.first : e2
+						))
+					-|	DiscardFirst(Constant(Nothing()), e2) ->> {
+						tr = e2;
+						}
+					-|	x ->> {
+						tr = x;
+						}
+					;
+				}
+			
+			return make_pair(tr, r2.second);
+			}
+		-|	CreateComposite(exprs) ->> {
+
+			ImmutableTreeVector<Nullable<NativeExpression> > outExprs;
+
+			refcount_map refcounts = inRefcounts;
+			bool anyNotNull = false;
+
+			for (long k = 0; k < exprs.size(); k++)
+				{
+				pair<Nullable<NativeExpression>, refcount_map> result =
+											pushRefcountThrough(refcounts, exprs[k]);
+
+				refcounts = result.second;
+				outExprs = outExprs + result.first;
+				if (result.first)
+					anyNotNull = true;
+				}
+
+			if (anyNotNull)
+				{
+				ImmutableTreeVector<NativeExpression> finalExprs;
+				for (long k = 0; k < outExprs.size(); k++)
+					if (outExprs[k])
+						finalExprs = finalExprs + *outExprs[k];
+					else
+						finalExprs = finalExprs + exprs[k];
+				return make_pair(null() << NativeExpression::CreateComposite(finalExprs), refcounts);
+				}
+
+			return make_pair(Nullable<NativeExpression>(), refcounts);
+			}
+		-|	Store(addr, valToStore) ->> {
+			pair<Nullable<NativeExpression>, refcount_map> addrP =
+										pushRefcountThrough(inRefcounts, addr);
+			
+			pair<Nullable<NativeExpression>, refcount_map> valToStoreP =
+										pushRefcountThrough(addrP.second, valToStore);
+			
+			Nullable<NativeExpression> tr;
+			
+			if (addrP.first || valToStoreP.first)
+				{
+				tr = NativeExpression::Store(
+					addrP.first ? *addrP.first : addr,
+					valToStoreP.first ? *valToStoreP.first : valToStore
+					);
+				}
+			
+			return make_pair(tr, valToStoreP.second);
+			}
+		-|	If(cond, e1, e2, ratio) ->> {
+			
+			pair<Nullable<NativeExpression>, refcount_map> condP =
+										pushRefcountThrough(inRefcounts, cond);
+			
+			pair<Nullable<NativeExpression>, refcount_map> e1p =
+										pushRefcountThrough(condP.second, e1);
+			
+			pair<Nullable<NativeExpression>, refcount_map> e2p =
+										pushRefcountThrough(condP.second, e2);
+			
+			//grab refcounts that are common to both branches and factor them out
+			CommonRefcounts common = collectCommonRefcounts(e1p.second, e2p.second);
+			
+			//if the ratio is very one-sided, and we have some refcounts coming out of
+			//one side of the if-statement but not the other, we can introduce a destructor
+			//in the infrequent pair.  This allows refcounts to get moved out of loops and into
+			//exit branches or infrequently called portions of a loop.
+			
+			//now reproduce the actual expression we want to return
+			Nullable<NativeExpression> tr;
+			
+			if (condP.first || e1p.first || e2p.first ||
+						common.residualRefcountsLeft().size() ||
+						common.residualRefcountsRight().size())
+				{
+				tr = NativeExpression::If(
+						condP.first ? *condP.first : cond,
+						dumpRefcounts(common.residualRefcountsLeft(), e1p.first ? *e1p.first : e1),
+						dumpRefcounts(common.residualRefcountsRight(), e2p.first ? *e2p.first : e2),
+						ratio
+						);
+				}
+			return make_pair(tr, common.commonRefcounts());
+			}
+		-|	Let(v, v_val, within) ->> {
+			pair<Nullable<NativeExpression>, refcount_map> r1 =
+										pushRefcountThrough(inRefcounts, v_val);
+			pair<Nullable<NativeExpression>, refcount_map> r2 =
+										pushRefcountThrough(r1.second, within);
+			
+			//we have to check whether 'v' is free in any of the expression
+			//keys in the refcount_map. if so, we can't move them outside of
+			//this block
+			bool variableFreeInAnyRefcount = false;
+			
+			refcount_map submap = r2.second;
+			
+			//variable refcounts we'll have to dump here
+			refcount_map dumpMap;
+			
+			for (long k = 0; k < submap.size(); k++)
+				if (submap.pairAtPosition(k).second.first.refcountedExpression().freeVariables()
+						.contains(v))
+					{
+					typedef pair<hash_type,
+						pair<NativeExpressionTag_RefcountType,
+							ImmutableTreeVector<NativeExpression>
+							>
+						> 		pair_type;
+							
+					pair_type p = submap.pairAtPosition(k);
+					
+					dumpMap = dumpMap + p.first + p.second;
+					
+					//pop it off the list
+					submap = submap - p.first;
+					k--;
+					}
+			
+			Nullable<NativeExpression> tr;
+			
+			if (r1.first || r2.first || dumpMap.size())
+				tr = NativeExpression::Let(
+					v,
+					r1.first ? *r1.first : v_val,
+					dumpRefcounts(
+						dumpMap,
+						r2.first ? *r2.first : within
+						)
+					);
+			
+			
+			return make_pair(tr, submap);
+			}
+		//don't look inside callsites
+		-|	Tagged(e, CallSiteTag()) ->> {
+			cantCommute = true;
+			}
+		//don't look inside callsites
+		-|	Tagged(e, CallSiteInstrumentation()) ->> {
+			cantCommute = true;
+			}
+		//don't commute with interrupts
+		-|	Tagged(e, Interrupt()) ->> {
+			cantCommute = true;
+			}
+		//don't commute with 'call' operations
+		-|	Call(_, conts, args) ->> {
+			cantCommute = true;
+			}
+		-|	Jump() ->> {
+			cantCommute = true;
+			}
+		-|	FollowContinuation() ->> {
+			cantCommute = true;
+			}
+		-|	Halt() ->> {
+			cantCommute = true;
+			}
+		-|	Tagged(e, Refcount(var, count, opposite)) ->> {
+			
+			hash_type varHash = hashValue(var);
+			
+			//this is the tag we'll put in the dictionary
+			NativeExpressionTag_RefcountType tag(
+				var,
+				//we use '1' for the tag, since that's the key we always use
+				//in the dictionary. We don't want the -1 in there...
+				1,
+				//if the count on this one is positive, then we'll use it's opposite.
+				//otherwise, it's a destructor.  Since we're making a positive refcount tag,
+				//we should use the encapsulated expression for the opposite.
+				count > 0 ? 
+				opposite
+				:	e
+				);
+								
+			if (count == -1)
+				{
+				if (inRefcounts.contains(varHash))
+					//remove one and move on
+					{
+					refcount_map subMap = inRefcounts;
+					
+					if (inRefcounts[varHash]->second.size() == 1)
+						//take out the whole list - useless to us now!
+						subMap = subMap - varHash;
+					else
+						//pop one off
+						subMap = subMap + varHash +
+							make_pair(
+								tag,
+								subMap[varHash]->second.slice(1)
+								);
+					
+					return make_pair(null() << NativeExpression(), subMap);
+					}
+				else
+					{
+					//we can't commute through this since we can't prove that
+					//it's not aliased to one of our existing values. so,
+					//we have to dump them all here.
+					return make_pair(
+						null() <<
+							dumpRefcounts(
+								inRefcounts,
+								toModify
+								),
+						refcount_map()
+						);
+					}
+				}
+				else
+				{
+				refcount_map subMap = inRefcounts;
+				if (subMap.contains(varHash))
+					subMap = subMap + varHash +
+						make_pair(tag, inRefcounts[varHash]->second + e);
+				else
+					subMap = subMap + varHash +
+						make_pair(tag, emptyTreeVec() + e);
+				
+				return make_pair(
+					null() << NativeExpression(),
+					subMap
+					);
+				}
+			}
+		-|	Tagged(e, tag) ->> {
+			pair<Nullable<NativeExpression>, refcount_map> r1 =
+										pushRefcountThrough(inRefcounts, e);
+			if (r1.first)
+				return make_pair(
+					null() << NativeExpression::Tagged(*r1.first, tag),
+					r1.second
+					);
+			else
+				return make_pair(null(), r1.second);
+			}
+		-|	CallLibraryFunction(_,_,_) ->> {
+			cantCommute = true;
+			}
+		-|	_ ->> {;}
+		;
+	
+	//is the expression side-effectless and guaranteed to return?
+	if (!toModify.hasSideEffects()
+				&& !toModify.exits().size()
+				&& !toModify.externalBranches().size()
+				&& !cantCommute
+				)
+		return make_pair(
+			transformNullable(toModify,
+				EliminateOverlappingRefcountsTransformer(),
+				//don't call this directly, since that would
+				//recurse. instead, only call on pieces of this object
+				IsFirstTransform(true)
+				),
+			inRefcounts
+			);
+	
+	//otherwise, we have no idea whether this will commute.
+	if (inRefcounts.size())
+		return make_pair(
+			null() <<
+				dumpRefcounts(
+					inRefcounts,
+					transform(toModify,
+						EliminateOverlappingRefcountsTransformer(),
+						//don't call this directly, since that would
+						//recurse. instead, only call on pieces of this object
+						IsFirstTransform(true)
+						)
+					),
+			refcount_map()
+			);
+	
+	return make_pair(
+		transformNullable(toModify,
+			EliminateOverlappingRefcountsTransformer(),
+			//don't call this directly, since that would
+			//recurse. instead, only call on pieces of this object
+			IsFirstTransform(true)
+			), inRefcounts
+		);
+	}
+
+NativeCFG	eliminateOverlappingRefcounts(const NativeCFG& in)
+	{
+	//cout << "Pass EliminateOverlappingRefcounts: height from " << in.height() << "\n";
+	
+	NativeCFG cfg = transform(in, EliminateOverlappingRefcountsTransformer());
+	
+	cfg = NativeCFGTransforms::renameVariables(cfg);
+
+	if (cfg != in)
+		{
+		static uint32_t version = 0;
+		version++;
+			/*
+			//TODO CLEANUP brax: make eliminateOverlappingRefcounts dump behavior configurable
+			{
+			ofstream outfile;
+			
+			//sanitize the name so that it doesn't contain
+			//any non alphanumeric characters by sticking _'s in.
+			ostringstream namestr;
+			namestr << "/home/braxton/projects/dev/refcount_init/";
+			namestr << version << ".txt";
+			
+			outfile.open(namestr.str().c_str(), ios_base::trunc);
+			outfile << prettyPrintString(in);
+			}
+			{
+			ofstream outfile;
+			
+			//sanitize the name so that it doesn't contain
+			//any non alphanumeric characters by sticking _'s in.
+			ostringstream namestr;
+			namestr << "/home/braxton/projects/dev/refcount_final/";
+			namestr << version << ".txt";
+			
+			outfile.open(namestr.str().c_str(), ios_base::trunc);
+			outfile << prettyPrintString(cfg);
+			}
+			*/
+		}
+	
+	//cout << "\tto " << cfg.height() << "\n";
+	
+	return cfg;
+	}
+
+NativeExpression	eliminateOverlappingRefcounts(const NativeExpression& in)
+	{
+	return transform(in, EliminateOverlappingRefcountsTransformer());
+	}
+
+}
+
+
+

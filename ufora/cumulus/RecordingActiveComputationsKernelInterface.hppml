@@ -1,0 +1,764 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "ActiveComputationsKernelInterface.hppml"
+
+namespace Cumulus {
+
+typedef PolymorphicSharedPtr<ComputationState> ComputationStatePtr;
+
+class RecordingActiveComputationsKernelInterface : public ActiveComputationsKernelInterface {
+public:
+	RecordingActiveComputationsKernelInterface(
+					PolymorphicSharedPtr<CallbackScheduler> scheduler,
+					RandomHashGenerator& hashGen,
+					PolymorphicSharedPtr<VectorDataManager> inVDM,
+					Fora::Interpreter::ExecutionContextConfiguration inConfig,
+					PolymorphicSharedPtr<SystemwidePageRefcountTracker> inSPRT,
+					PolymorphicSharedPtr<DataTransfers> inDataTransfers,
+					MachineId inOwnMachineId,
+					boost::function1<void, InitiateComputationMove> inOnScheduleDataTransferAsInitiateComputationMove,
+					boost::function1<void, RequestComputationResultFromMachine> inOnScheduleDataTransferAsSendComputationResult,
+					boost::function2<void, ComputationId, ComputationBackgroundAction> inOnScheduleHandleBackgroundAction,
+					boost::function4<void, ComputationId, MachineId, DataTransferTokenId, hash_type> inOnScheduleSerializationAndSendOfComputation,
+					boost::function1<void, ActiveComputationsEvent> inEventHandler
+					) : 
+			mOwnMachineId(inOwnMachineId),
+			mOnRequestComputationResultFromMachine(scheduler),
+			mOnComputationResultFromMachine(scheduler),
+			mOnComputationMoveResponse(scheduler),
+			mOnCumulusComponentMessageCreated(scheduler),
+			mGuidGen(hashGen),
+			mVDM(inVDM),
+			mConfig(inConfig),
+			mCallbackScheduler(scheduler),
+			mSPRT(inSPRT),
+			mDataTransfers(inDataTransfers),
+			mOnScheduleDataTransferAsInitiateComputationMove(inOnScheduleDataTransferAsInitiateComputationMove),
+			mOnScheduleDataTransferAsSendComputationResult(inOnScheduleDataTransferAsSendComputationResult),
+			mOnScheduleHandleComputationBackgroundAction(inOnScheduleHandleBackgroundAction),
+			mOnScheduleSerializationAndSendOfComputation(inOnScheduleSerializationAndSendOfComputation),
+			mEventHandler(inEventHandler)
+		{
+		}
+
+	void scheduleComputationToHandleBackgroundAction(
+						ComputationId computation, 
+						ComputationBackgroundAction action
+						)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_HandleComputationBackgroundAction(
+					computation, 
+					action
+					)
+				);
+
+		mOnScheduleHandleComputationBackgroundAction(computation, action);
+		}
+
+	void scheduleSerializationAndSendOfComputation(
+			ComputationId inId,
+			MachineId inOtherMachine,
+			DataTransferTokenId token,
+			hash_type moveGuid
+			)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_ScheduleSerializationAndSendOfComputation(
+					inId,
+					inOtherMachine,
+					token,
+					moveGuid
+					)
+				);
+
+		mOnScheduleSerializationAndSendOfComputation(
+			inId,
+			inOtherMachine,
+			token,
+			moveGuid
+			);
+		}
+
+	//public interface for the "ExternalInterface"
+	void registerNewComputationState(const ComputationId& computationId)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_ComputationCreatedEmpty(computationId)
+				);
+		
+		ComputationStatePtr newComputation(
+				new ComputationState(
+					computationId, 
+					mVDM, 
+					mConfig, 
+					mCallbackScheduler
+					)
+				);
+
+		mComputationStatesById[computationId] = newComputation;
+		mComputationIds.insert(computationId);
+		}
+
+	void registerNewComputationState(const ComputationId& computationId, ComputationStatePtr newComputation)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_ComputationCreatedEmpty(computationId)
+				);
+
+		mComputationStatesById[computationId] = newComputation;
+		mComputationIds.insert(computationId);
+		}
+
+	void registerNewComputationState(const ComputationId& computationId, ComputationDefinition def)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_ComputationCreatedWithDefinition(computationId)
+				);
+
+		ComputationStatePtr newComputation(
+				new ComputationState(
+					computationId, 
+					mVDM, 
+					mConfig, 
+					mCallbackScheduler
+					)
+				);
+
+		newComputation->initialize(def);
+		
+		mComputationStatesById[computationId] = newComputation;
+		mComputationIds.insert(computationId);
+		}
+
+	void registerNewComputationState(
+								const ComputationId& computationId,
+								PolymorphicSharedPtr<SerializedObject> object
+								)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_ComputationCreatedFromSerializedData(
+					computationId
+					)
+				);
+
+		ComputationStatePtr newComputation(
+				new ComputationState(
+					computationId, 
+					mVDM, 
+					mConfig, 
+					mCallbackScheduler
+					)
+				);
+
+		newComputation->deserialize(object);
+
+		mComputationStatesById[computationId] = newComputation;
+		mComputationIds.insert(computationId);
+		}
+
+	void dropComputationImmediately(const ComputationId& computationId)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_ComputationDropped(computationId)
+				);
+
+		mComputationStatesById.erase(computationId);
+		mComputationIds.erase(computationId);
+		}
+
+	PolymorphicSharedPtr<SerializedObject> getSerializedResult(ComputationId needed)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_GetSerializedResult()
+				);
+
+		return mComputationStatesById[needed]->getSerializedResult();
+		}
+
+	void onRequestComputationResultFromMachine(const RequestComputationResultFromMachine& in)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_SendRequestComputationResultFromMachine(in)
+				);
+
+		mOnRequestComputationResultFromMachine.broadcast(in);
+		}
+
+	void onComputationResultFromMachine(const ComputationResultFromMachine& in)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_SendComputationResultFromMachine(in)
+				);
+
+		mOnComputationResultFromMachine.broadcast(in);
+		}
+
+	void onCumulusComponentMessageCreated(CumulusComponentMessageCreated in)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_CumulusComponentMessageCreated(in)
+				);
+
+		mOnCumulusComponentMessageCreated.broadcast(in);
+		}
+
+	hash_type generateGuid()
+		{
+		hash_type result = mGuidGen.generateRandomHash();
+
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_GenerateGuid(result)
+				);
+
+		return result;
+		}
+
+	hash_type generateGuidWithoutRecording()
+		{
+		return mGuidGen.generateRandomHash();
+		}
+
+	void broadcastBigvecsInFlight(
+			ImmutableTreeSet<Fora::BigVectorId> id, 
+			int32_t refcount,
+			hash_type inMoveGuid
+			)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_BroadcastBigvecsInFlight(id, refcount, inMoveGuid)
+				);
+
+		mVDM->getPageRefcountTracker()->broadcastBigvecsInFlight(id, refcount, inMoveGuid);
+		}
+
+	ImmutableTreeVector<Fora::PageId> convertSliceToPages(Fora::BigVectorSlice slice)
+		{
+		ImmutableTreeVector<Fora::PageId> result = mVDM->getBigVectorLayouts()->convertSliceToPages(slice);
+
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_ConvertSliceToPages(slice, result)
+				);
+
+		return result;
+		}
+
+	bool pageIsInRam(Fora::PageId page)
+		{
+		bool result = mVDM->getPageRefcountTracker()->pageIsInRam(page);
+
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_PageIsInRam(page, result)
+				);
+
+		return result;
+		}
+
+	const std::set<ComputationId>& allComputationIds() const
+		{
+		return mComputationIds;
+		}
+
+	bool hasComputation(ComputationId computation) const
+		{
+		if (mComputationIds.find(computation) != mComputationIds.end())
+			{
+			lassert(mComputationStatesById.find(computation) != mComputationStatesById.end());
+			}
+		else
+			{
+			lassert(mComputationStatesById.find(computation) == mComputationStatesById.end());
+			}
+
+		bool result = mComputationIds.find(computation) != mComputationIds.end();
+
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_HasComputation(computation, result)
+				);
+		return result;
+		}
+
+	void enableVectorPagingForId(ComputationId id)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_EnableVectorPaging(id)
+				);
+		
+		mComputationStatesById[id]->enableVectorPaging();
+		}
+
+	void pageLargeVectorHandles(ComputationId id)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_PageLargeVectorHandles(id)
+				);
+		
+		mComputationStatesById[id]->pageLargeVectorHandles();
+		}
+
+	void unloadAllVectorHandles(ComputationId id)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_UnloadAllVectorHandles(id)
+				);
+		
+		mComputationStatesById[id]->unloadAllVectorHandles();
+		}
+
+	void disableVectorPagingForId(ComputationId id)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_DisableVectorPaging(id)
+				);
+		
+		mComputationStatesById[id]->disableVectorPaging();
+		}
+
+	void interruptComputation(ComputationId id)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_InterruptComputation(id)
+				);
+		
+		mComputationStatesById[id]->interrupt();
+		}
+
+	ImmutableTreeVector<pair<ForaStackTrace, Fora::Interpreter::StackframeMetadata> >  
+					extractStacktraceForId(ComputationId id, bool extractValues)
+		{
+		auto result = mComputationStatesById[id]->extractStacktrace(extractValues);
+
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_ExtractStacktrace(id, extractValues, result)
+				);
+
+		return result;
+		}
+
+	ImmutableTreeVector<ImplValContainer> extractCurrentLogsForId(ComputationId id)
+		{
+		auto result = mComputationStatesById[id]->extractCurrentLogs();
+
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_ExtractLogs(id, result)
+				);
+
+		return result;
+		}
+
+	void addComputationResultToId(ComputationId id, Cumulus::ComputationResult result)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_AddComputationResultToComputation(id, result.computation())
+				);
+
+		mComputationStatesById[id]->addComputationResult(result);
+		}
+
+	void addComputationResultToId(ComputationId id, 
+									ComputationId computation, 
+									Fora::Interpreter::ComputationResult result,
+									ComputationStatistics statistics
+									)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_AddComputationResultToComputation(id, computation)
+				);
+
+		mComputationStatesById[id]->addComputationResult(computation, result, statistics);
+		}
+
+	virtual Nullable<pair<CheckpointStatus, CheckpointRequest> > 
+			setCheckpointStatusTimestamp(ComputationId computation, CheckpointRequest timestamp)
+		{
+		Nullable<pair<CheckpointStatus, CheckpointRequest> > result;
+
+		result = mComputationStatesById[computation]->setCheckpointStatusTimestamp(timestamp);
+
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_SetCheckpointStatusTimestamp(
+					computation, 
+					timestamp, 
+					result
+					)
+				);
+		
+		return result;
+		}
+
+	virtual Nullable<pair<CheckpointStatus, CheckpointRequest> > 
+			getCheckpointStatus(ComputationId computation)
+		{
+		Nullable<pair<CheckpointStatus, CheckpointRequest> > result;
+
+		result = mComputationStatesById[computation]->getCheckpointStatus();
+
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_GetCheckpointStatus(
+					computation,
+					result
+					)
+				);
+		
+		return result;
+		}
+
+	virtual Nullable<pair<CheckpointStatus, CheckpointRequest> > 
+			addChildComputationCheckpointStatus(
+						ComputationId computation,
+						ComputationId childComputation,
+						CheckpointStatus stats,
+						CheckpointRequest timestamp
+						)
+		{
+		Nullable<pair<CheckpointStatus, CheckpointRequest> > result;
+
+		result = mComputationStatesById[computation]->addChildComputationCheckpointStatus(childComputation, stats, timestamp);
+
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_AddChildComputationCheckpointStatus(
+					computation,
+					childComputation,
+					stats,
+					timestamp, 
+					result
+					)
+				);
+		
+		return result;
+		}
+
+	ImmutableTreeVector<ComputationEvent> extractRecentComputationEventsForId(ComputationId id)
+		{
+		auto result = mComputationStatesById[id]->extractRecentEvents();
+
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_ExtractRecentComputationEvents(id, result)
+				);
+
+		return result;
+		}
+
+	ComputationStatus currentComputationStatusForId(ComputationId id)
+		{
+		auto result = mComputationStatesById[id]->currentComputationStatus();
+
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_GetComputationStatus(id, result)
+				);
+
+		return result;
+		}
+
+	bool hasEnoughComputeTimeElapsedToSplit(ComputationId computation, double threshold)
+		{
+		bool result = mComputationStatesById[computation]->hasEnoughComputeTimeElapsedToSplit(threshold);
+
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_HasEnoughTimeElapsedToSplit(computation, threshold, result)
+				);
+
+		return result;
+		}
+
+	void resetInterruptStateForId(ComputationId computation)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_ResetInterruptState(computation)
+				);
+
+		mComputationStatesById[computation]->resetInterruptState();
+		}
+
+	void markSliceLoaded(ComputationId computation)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_MarkSliceLoaded(computation)
+				);
+
+		mComputationStatesById[computation]->markSliceLoaded();
+		}
+
+	void markComputationCircular(ComputationId comp)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_MarkComputationCircular(comp)
+				);
+
+		mComputationStatesById[comp]->markComputationCircular();
+		}
+
+	void markSliceLoadFailedPermanently(ComputationId comp)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_MarkSliceLoadFailedPermanently(comp)
+				);
+
+		mComputationStatesById[comp]->markSliceLoadFailedPermanently();
+		}
+
+	void resetPagesHeld(ComputationId comp)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_ResetPagesHeld(comp)
+				);
+		}
+
+	void markExternalIoTaskCompleted(ComputationId computation, ExternalIoTaskCompleted comp)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_MarkExternalIoTaskCompleted(computation, comp)
+				);
+
+		mComputationStatesById[computation]->markExternalIoTaskCompleted(comp);
+		}
+
+	bool isPassthrough(const ComputationId& computation) const
+		{
+		bool result;
+
+		auto it = mComputationStatesById.find(computation);
+		if (it == mComputationStatesById.end())
+			result = false;
+		else
+			result = it->second->isPassthrough();
+
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_IsPassthrough(computation, result)
+				);
+
+		return result;
+		}
+
+	Nullable<Fora::Interpreter::ComputationResult> getResultForId(ComputationId comp)
+		{
+		auto result = mComputationStatesById[comp]->getResult();
+
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_GetResult(comp, result)
+				);
+
+		return result;
+		}
+
+	ComputationStatistics currentComputationStatisticsForId(ComputationId comp)
+		{
+		auto result = mComputationStatesById[comp]->currentComputationStatistics();
+
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_GetComputationStatistics(comp, result)
+				);
+
+		return result;
+		}
+
+	ImmutableTreeSet<Fora::BigVectorId> getReferencedBigVectors(ComputationId id)
+		{
+		auto result = mComputationStatesById[id]->getReferencedBigVectors();
+
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_GetReferencedBigvectors(id, result)
+				);
+
+		return result;
+		}
+
+	void becomePassthroughTo(ComputationId source, ComputationId dest)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_BecomePassthroughTo(source, dest)
+				);
+
+		mComputationStatesById[source]->becomePassthroughTo(dest);
+		}
+
+	void tokenReceived(DataTransferTokenId inToken)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_TokenReceived(inToken)
+				);
+
+		if (mDataTransfers)
+			mDataTransfers->tokenReceived(inToken);
+		}
+
+	void updateBytecountForDataTransfers(DataTransferTokenId inToken, int64_t bytecount)
+		{
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_TokenBytecountUpdated(inToken, bytecount)
+				);
+
+		if (mDataTransfers)
+			mDataTransfers->updateBytecount(inToken, bytecount);
+		}
+
+	bool hasDataTransfers()
+		{
+		return mDataTransfers;
+		}
+
+	void scheduleDataTransferAsInitiateComputationMove(InitiateComputationMove move)
+		{
+		lassert(mDataTransfers);
+
+		mOnScheduleDataTransferAsInitiateComputationMove(move);
+		}
+
+	void scheduleDataTransferAsSendComputationResult(
+									RequestComputationResultFromMachine inRequest
+									)
+		{
+		lassert(mDataTransfers);
+
+		mOnScheduleDataTransferAsSendComputationResult(inRequest);
+		}
+
+	bool canResubmitBlockingThreads(
+				ComputationId computation
+				)
+		{
+		auto result = mComputationStatesById[computation]->canResubmitBlockingThreads();
+
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_CanResubmitBlockingThreads(computation, result)
+				);
+
+		return result;
+		}
+
+	CreatedComputations resubmitBlockingThreads(
+				ComputationId computation,
+				hash_type guid
+				)
+		{
+		//now we can record all the events that these function calls produce
+		CreatedComputations result = mComputationStatesById[computation]->resubmitBlockingThreads(guid);
+
+		//first record ourselves
+		if (mEventHandler)
+			mEventHandler(
+				ActiveComputationsEvent::Internal_ResubmitBlockingThreads(
+					computation, 
+					guid,
+					result
+					)
+				);
+
+		return result;
+		}
+	
+	void notifyThreadsWaitingForSplits()
+		{
+		mComputationsCurrentlySplittingChanged.notify_all();
+		}
+
+	void waitForComputationToHandleSchedulerMessages(boost::recursive_mutex::scoped_lock& lock)
+		{
+		double t0 = curClock();
+
+		mComputationsCurrentlySplittingChanged.timed_wait(lock, boost::posix_time::milliseconds(1000));
+		}
+
+	//private state
+	RandomHashGenerator& mGuidGen;
+
+	MachineId mOwnMachineId;
+
+	boost::function1<void, ActiveComputationsEvent> mEventHandler;
+
+	PolymorphicSharedPtr<CallbackScheduler> mCallbackScheduler;
+
+	PolymorphicSharedPtr<SystemwidePageRefcountTracker> mSPRT;
+
+	Fora::Interpreter::ExecutionContextConfiguration mConfig;
+
+	boost::function1<void, InitiateComputationMove> mOnScheduleDataTransferAsInitiateComputationMove;
+
+	boost::function1<void, RequestComputationResultFromMachine> mOnScheduleDataTransferAsSendComputationResult;
+
+	boost::function2<void, ComputationId, ComputationBackgroundAction> mOnScheduleHandleComputationBackgroundAction;
+
+	boost::function4<void, ComputationId, MachineId, DataTransferTokenId, hash_type> mOnScheduleSerializationAndSendOfComputation;
+
+	PolymorphicSharedPtr<VectorDataManager> mVDM;
+
+	EventBroadcaster<RequestComputationResultFromMachine> mOnRequestComputationResultFromMachine;
+
+	EventBroadcaster<ComputationMoveResponse> mOnComputationMoveResponse;
+
+	EventBroadcaster<ComputationResultFromMachine> mOnComputationResultFromMachine;
+
+	EventBroadcaster<CumulusComponentMessageCreated> mOnCumulusComponentMessageCreated;
+
+	std::map<ComputationId, ComputationStatePtr> mComputationStatesById;
+
+	std::set<ComputationId> mComputationIds;
+
+	PolymorphicSharedPtr<DataTransfers> mDataTransfers;
+
+	boost::condition_variable_any mComputationsCurrentlySplittingChanged;
+};
+
+}
+
+

@@ -1,0 +1,520 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#ifndef FORA_Language_FunctionBoundAboveTransformer_hppml_
+#define FORA_Language_FunctionBoundAboveTransformer_hppml_
+
+#include "Function.hppml"
+
+/****
+makes a visitor that gets access to what variables
+have been bound above
+****/
+
+template<class inner_transformer_type>
+@type FunctionBoundAboveTransformer = 	ImmutableTreeSet<Symbol> boundAbove,
+										inner_transformer_type* innerTransformer
+{
+public:
+		template<class T>
+		Nullable<T> processDown(const T& in,
+						 bool& outKeepProcessing
+						 ) const
+			{
+			return innerTransformer()->processDown(
+										in, outKeepProcessing, boundAbove());
+			}
+		template<class T>
+		Nullable<T> processUp(const T& in) const
+			{
+			return innerTransformer()->processUp(in, boundAbove());
+			}
+		
+		Nullable<Expression_LetType> processDown(
+						const Expression_LetType& e,
+						bool& outKeepProcessing
+						) const
+			{
+			Nullable<Expression_LetType> tr1 =
+					innerTransformer()->processDown(e,
+										outKeepProcessing, boundAbove());
+			
+			if (!outKeepProcessing)
+				return tr1;
+			
+			Expression_LetType e2 = tr1 ? *tr1 : e;
+			
+			outKeepProcessing = false;
+			
+			//compute a list of all symbols bound by this 'let'
+			ImmutableTreeSet<Symbol> boundSyms;
+			for (long k = 0; k < e2.elements().size(); k++)
+				boundSyms = boundSyms + e2.elements()[k].first.boundVariables();
+			
+			FunctionBoundAboveTransformer<inner_transformer_type> subVis(
+								boundSyms + boundAbove(),
+								innerTransformer()
+								);
+			
+			Nullable<ImmutableTreeVector<pair<PatternWithName, Expression> > > elts;
+			Nullable<Expression> body;
+			
+			elts = transformNullable(e2.elements(), subVis);
+			body = transformNullable(e2.body(), subVis);
+			
+			if (!elts && !body)
+				return tr1;
+			return null() << Expression_LetType(elts ? *elts : e2.elements(),
+												body ? *body : e2.body()
+												);
+			}
+		
+
+		Nullable<ObjectDefinition> processDown(
+						const ObjectDefinition& e,
+						bool& outKeepProcessing
+						) const
+			{
+			Nullable<ObjectDefinition> tr1 = 
+				innerTransformer()->processDown(
+									e,
+									outKeepProcessing,
+									boundAbove()
+									);
+			
+			if (!outKeepProcessing)
+				return tr1;
+			
+			outKeepProcessing = false;
+			
+			ObjectDefinitionBody body =
+							tr1 ? tr1->body() : e.body();
+			
+			Nullable<ObjectDefinitionBody> bodyP =
+				transformObjectDefBody(
+					tr1 ? *tr1 : e,
+					body
+					);
+			
+			if (!bodyP)
+				return tr1;
+			
+			return null() <<
+				ObjectDefinition(
+					bodyP ? *bodyP : body,
+					e.selfName(),
+					e.locationMetadata()
+					);
+			}
+		
+		Nullable<ObjectDefinitionBody> transformObjectDefBody(
+						const ObjectDefinition& def,
+						const ObjectDefinitionBody& body
+						) const
+			{
+			@match ObjectDefinitionBody(body)
+				-| Empty() ->> { return null(); }
+				-| Term((term,meta), next) ->> {
+
+					Nullable<ObjectDefinitionBody> nextP;
+					nextP = transformObjectDefBody(def, next);
+
+					ImmutableTreeSet<Symbol> boundHere;
+
+					if (term.isInObjectScope())
+						boundHere = 
+							(def.selfName() ? *def.selfName() : Symbol("self"))
+							+ def.body().members()
+							;
+					
+					Nullable<ObjectDefinitionTerm> termP =
+						transformNullable(
+							term,
+							FunctionBoundAboveTransformer<inner_transformer_type>(
+								boundAbove() + boundHere,
+								innerTransformer()
+								)
+							);
+
+					if (!nextP && !termP)
+						return null();
+
+					return null() << ObjectDefinitionBody::Term(
+						termP ? 
+						ObjectDefinitionTermWithMetadata(*termP, meta) : 
+						ObjectDefinitionTermWithMetadata(term, meta),
+						nextP ? *nextP : next
+						);
+					}
+			}
+
+
+
+
+
+		Nullable<ClassDefinition> processDown(
+						const ClassDefinition& e,
+						bool& outKeepProcessing
+						) const
+			{
+			Nullable<ClassDefinition> tr1 = 
+				innerTransformer()->processDown(
+									e,
+									outKeepProcessing,
+									boundAbove()
+									);
+			
+			if (!outKeepProcessing)
+				return tr1;
+			
+			outKeepProcessing = false;
+			
+			ClassDefinitionBody body =
+							tr1 ? tr1->body() : e.body();
+			
+			Nullable<ClassDefinitionBody> bodyP =
+				transformClassDefBody(
+					tr1 ? *tr1 : e,
+					body
+					);
+			
+			if (!bodyP)
+				return tr1;
+			
+			return null() <<
+				ClassDefinition(
+					bodyP ? *bodyP : body,
+					e.className(),
+					e.selfName(),
+					e.locationMetadata()
+					);
+			}
+		
+		Nullable<ClassDefinitionBody> transformClassDefBody(
+						const ClassDefinition& def,
+						const ClassDefinitionBody& body
+						) const
+			{
+			@match ClassDefinitionBody(body)
+				-| Empty() ->> { return null(); }
+				-| Term((term, meta), next) ->> {
+
+					Nullable<ClassDefinitionBody> nextP;
+					nextP = transformClassDefBody(def, next);
+
+					ImmutableTreeSet<Symbol> boundHere;
+
+					if (term.isInObjectScope())
+						{
+						boundHere = boundHere 
+							+ (def.className() ? *def.className() : Symbol("cls"))
+						 	+ (term.isStaticLevel() ? 
+						 			def.body().staticMembers() : 
+						 			def.body().allMembers()
+						 				+ (def.selfName() ? *def.selfName() : Symbol("self"))
+						 			);
+						}
+					else
+						{
+						if (!term.isStaticLevel())
+							//static members are in scope but instance members are not
+							boundHere = boundHere 
+							 	+ (def.className() ? *def.className() : Symbol("cls"))
+							 	+ def.body().staticMembers()
+							 	;
+
+						}
+					
+					Nullable<ClassDefinitionTerm> termP =
+						transformNullable(
+							term,
+							FunctionBoundAboveTransformer<inner_transformer_type>(
+								boundAbove() + boundHere,
+								innerTransformer()
+								)
+							);
+
+					if (!nextP && !termP)
+						return null();
+
+					return null() << ClassDefinitionBody::Term(
+						termP ? 
+						ClassDefinitionTermWithMetadata(*termP, meta) : 
+						ClassDefinitionTermWithMetadata(term, meta),
+						nextP ? *nextP : next
+						);
+					}
+			}
+
+
+
+		Nullable<Function_TermType> processDown(
+						const Function_TermType& e,
+						bool& outKeepProcessing
+						) const
+			{
+			Nullable<Function_TermType> tr1 = 
+					innerTransformer()->processDown(e,
+										outKeepProcessing,
+										boundAbove()
+										);
+			
+			if (!outKeepProcessing)
+				return tr1;
+			
+			outKeepProcessing = false;
+			
+			TuplePattern pattern = tr1 ? tr1->pattern() : e.pattern();
+			Function otherwise = tr1 ? tr1->otherwise() : e.otherwise();
+			Expression result = tr1 ? tr1->result() : e.result();
+			
+			Nullable<TuplePattern> patternP = transformNullable(pattern, *this);
+			Nullable<Function> otherwiseP = transformNullable(otherwise, *this);
+			
+			Nullable<Expression> resultP = transformNullable(
+				result,
+				FunctionBoundAboveTransformer<inner_transformer_type>(
+					boundAbove() + pattern.boundVariables(),
+					innerTransformer()
+					)
+				);
+			
+			if (!patternP && !otherwiseP && !resultP)
+				return null();
+			
+			return null() <<
+				Function_TermType(
+					patternP ? *patternP : pattern,
+					resultP ? *resultP : result,
+					otherwiseP ? *otherwiseP : otherwise
+					);
+			}
+		
+
+
+		Nullable<Expression_CreateLambdaType> processDown(
+						const Expression_CreateLambdaType& e,
+						bool& outKeepProcessing
+						) const
+			{
+			Nullable<Expression_CreateLambdaType> tr1 = 
+					innerTransformer()->processDown(e,
+										outKeepProcessing,
+										boundAbove()
+										);
+			
+			if (!outKeepProcessing)
+				return tr1;
+			
+			outKeepProcessing = false;
+			
+			Expression predicate = tr1 ? tr1->predicate() : e.predicate();
+			
+			Nullable<Expression> predicateP = transformNullable(
+				predicate,
+				FunctionBoundAboveTransformer<inner_transformer_type>(
+					boundAbove() + Symbol("_"),
+					innerTransformer()
+					)
+				);
+
+			if (!tr1 && !predicateP)
+				return null();
+			
+			return null() <<
+				Expression_CreateLambdaType(
+					e.name(),
+					predicateP ? *predicateP : predicate
+					);
+			}
+		
+		Nullable<TuplePattern> processDown(
+						const TuplePattern& e,
+						bool& outKeepProcessing
+						) const
+			{
+			Nullable<TuplePattern> tr1 =
+				innerTransformer()->processDown(e,
+								outKeepProcessing,
+								boundAbove());
+			
+			if (!outKeepProcessing)
+				return tr1;
+			
+			outKeepProcessing = false;
+			
+			TuplePattern tp = tr1 ? *tr1 : e;
+			
+			ImmutableTreeSet<Symbol> boundVariables = boundAbove();
+			
+			bool any = false;
+			ImmutableTreeVector<TuplePatternElement> pats;
+			
+			//each successive TuplePatternElement binds variables in th
+			//pattern before it
+			for (long k = 0; k < tp.matchers().size();k++)
+				{
+				FunctionBoundAboveTransformer<inner_transformer_type> vis(
+					boundVariables,
+					innerTransformer()
+					);
+				
+				Nullable<TuplePatternElement> t =
+					transformNullable(tp.matchers()[k], vis);
+				
+				pats = pats + (t ? *t : tp.matchers()[k]);
+				
+				if (t)
+					any = true;
+					
+				boundVariables = boundVariables +
+											tp.matchers()[k].boundVariables();
+				}
+			
+			if (!any)
+				return null();
+			
+			return null() << TuplePattern(pats);
+			}
+		Nullable<Pattern_MatchBothType> processDown(
+						const Pattern_MatchBothType& e,
+						bool& outKeepProcessing
+						) const
+			{
+			Nullable<Pattern_MatchBothType> tr1 =
+				innerTransformer()->processDown(e,
+								outKeepProcessing,
+								boundAbove());
+			
+			if (!outKeepProcessing)
+				return tr1;
+			
+			outKeepProcessing = false;
+			
+			Pattern left = tr1 ? tr1->left() : e.left();
+			Pattern right = tr1 ? tr1->right() : e.right();
+			
+			Nullable<Pattern> leftP = transformNullable(left, *this);
+			
+			
+			FunctionBoundAboveTransformer<inner_transformer_type> vis(
+				boundAbove() + left.boundVariables(),
+				innerTransformer()
+				);
+		
+			Nullable<Pattern> rightP = transformNullable(right, vis);
+			
+			if (!leftP && !rightP)
+				return tr1;
+			
+			return null() << Pattern_MatchBothType(
+								leftP ? *leftP : left,
+								rightP ? *rightP : right
+								);
+			}
+		Nullable<PatternWithName> processDown(
+						const PatternWithName& e,
+						bool& outKeepProcessing
+						) const
+			{
+			Nullable<PatternWithName> tr1 =
+				innerTransformer()->processDown(e,
+								outKeepProcessing,
+								boundAbove());
+			
+			if (!outKeepProcessing)
+				return tr1;
+			
+			outKeepProcessing = false;
+			
+			Nullable<Symbol> name = tr1 ? tr1->name() : e.name();
+			Pattern pattern = tr1 ? tr1->pattern() : e.pattern();
+			Nullable<Expression> condition = tr1 ? tr1->condition() : e.condition();
+			ExpressionLocationMetadata meta = 
+				tr1 ? tr1->locationMetadata() : e.locationMetadata();
+			
+			Nullable<Pattern> patternP = transformNullable(pattern, *this);
+			
+			FunctionBoundAboveTransformer<inner_transformer_type> vis(
+				boundAbove() + pattern.boundVariables(),
+				innerTransformer()
+				);
+		
+			Nullable<Nullable<Expression> > conditionP = transformNullable(condition, vis);
+			
+			if (!patternP && !conditionP)
+				return tr1;
+			
+			return null() << PatternWithName(
+								patternP ? *patternP : pattern,
+								name,
+								conditionP ? *conditionP : condition,
+								meta
+								);
+			}
+		Nullable<Expression_TryType> processDown(
+						const Expression_TryType& e,
+						bool& outKeepProcessing
+						) const
+			{
+			Nullable<Expression_TryType> tr1 =
+				innerTransformer()->processDown(e,
+								outKeepProcessing,
+								boundAbove());
+			
+			if (!outKeepProcessing)
+				return tr1;
+			
+			outKeepProcessing = false;
+			
+			Expression toTry = tr1 ? tr1->toTry() : e.toTry();
+			Function catchWith = tr1 ? tr1->catchWith() : e.catchWith();
+			Nullable<Symbol> stacktrace =
+								tr1 ? tr1->stacktrace() : e.stacktrace();
+			
+			Nullable<Expression> toTryP = transformNullable(toTry, *this);
+			
+			Nullable<Function> catchWithP;
+			if (stacktrace)
+				{
+				FunctionBoundAboveTransformer<inner_transformer_type> vis(
+					boundAbove() + *stacktrace,
+					innerTransformer()
+					);
+			
+				catchWithP = transformNullable(catchWith, vis);
+				}
+				else
+				catchWithP = transformNullable(catchWith, *this);
+			
+			Nullable<Nullable<Symbol> > stacktraceP =
+					transformNullable(stacktrace, *this);
+			
+			if (!toTryP && !catchWithP && !stacktraceP)
+				return tr1;
+			
+			return null() << Expression_TryType(
+								toTryP ? *toTryP : toTry,
+								catchWithP ? *catchWithP : catchWith,
+								stacktraceP ? *stacktraceP : stacktrace,
+								e.isRawCatch()
+								);
+			}
+};
+
+
+
+#endif
+

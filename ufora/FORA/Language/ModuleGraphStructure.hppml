@@ -1,0 +1,139 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <set>
+#include "../../core/containers/TwoWaySetMap.hpp"
+#include "ModuleParseResult.hppml"
+#include "ModuleBindingResult.hppml"
+
+namespace Fora {
+
+class ModuleGraphStructure {
+public:
+	typedef ImmutableTreeVector<Symbol> symbol_list_type;
+
+	@type PathResolution = 
+			ToFreeVariable of ()
+		-|	ToMember of symbol_list_type pathToMember
+		-|	Unknown of ()
+		;
+
+	ModuleGraphStructure(
+				const ModuleParseResult& parseResult,
+				const ImmutableTreeMap<Symbol, pair<ImplValContainer, Nullable<Symbol> > >& freeVariableBindings
+				);
+
+	ModuleBindingResult computeBindingResult();
+
+private:
+	//walk the parse result and setup relevant data structures
+	void populateMembersByName(
+				const ModuleParseResult& parseResult,
+				symbol_list_type curList
+				);
+
+	//figure out which other members a given member points to
+	void resolveReferences(symbol_list_type path);
+
+	//figure out which module members are actually valid
+	void propagateDirtyness();
+
+	//verify that the module graph is closed under invalidation.
+	//e.g. no valid members point to invalid ones, which would break
+	//assumptions when building the final module
+	void validateDirtyness();
+
+	//decompose the graph into components
+	void computeConnectedComponents();
+
+	//given a member in the module and a sequence of future dot symbols, find the deepest
+	//possible member
+	symbol_list_type refinePathAsMuchAsPossible(symbol_list_type path, symbol_list_type dotAccesses);
+
+	//given a dot-access-chain 'internalPath' originating within module member
+	//'path', which member does this resolve to
+	PathResolution resolvePath(symbol_list_type internalPath, symbol_list_type path);
+
+	//get the ImplValContainer that represents a particular path
+	Nullable<ImplValContainer> boundValueForPath(symbol_list_type path);
+
+	//get the IVC that contains 'path' as a member, and the name of that member in the IVC
+	//this allows us to refer to the specific implementations of module members that are
+	//not functions
+	Nullable<pair<ImplValContainer, Symbol> > boundValuePairForPath(symbol_list_type path);
+
+	//use FunctionStage1::Simulation to compute object.(member)
+	Nullable<ImplValContainer> getObjectMember(ImplValContainer object, Symbol member);
+	
+	//recursively compute (and cache) the mirror of the module value for 'component'
+	ImplValContainer computeModuleCopyForComponent(long component);
+
+	//build the parse result representing a subset of members in the module
+	//this is then passed to the basic module binding functions to produce actual
+	//FORA modules
+	ModuleParseResult buildRestrictedParseResult(
+							const set<symbol_list_type>& members,
+							const set<symbol_list_type>& downstream,
+							const std::map<symbol_list_type, Symbol>& lookupForDownstream
+							);
+
+	//given the name of a module member, produce an expression that accesses it from
+	//the root
+	static Expression accessChainExpression(symbol_list_type path);
+
+	//produce a unique copy of 'symbol' that's not present in 'symbols'
+	static Symbol freshSymbolIn(std::string symbol, const std::set<symbol_list_type>& symbols);
+
+	//return the first parse error we can find for a given member
+	ImmutableTreeVector<ModuleParseError> firstParseErrorFor(symbol_list_type path);
+
+	//a number bigger than the depth of any single module member in the system
+	long mMaxMemberDepth;
+
+	//the actual parse object for each member we're considering.
+	std::map<symbol_list_type, ModuleParseResult> mMembersByName;
+
+	//for each dot sequence module.m1.m2, which connected component (by index) is
+	//it part of? Only members not marked invalid are in this set.
+	std::map<symbol_list_type, long> mMemberToConnectedComponent;
+
+	//for each connected component, a copy of the module just containing
+	//those elements
+	std::map<long, ImplValContainer> mModuleCopiesPerComponent;
+
+	//a list of sets of members corresponding to the connected components
+	//of the system
+	std::vector<std::set<symbol_list_type> > mConnectedModuleComponents;
+
+	//for every module, a list of known child names, and whether that list is complete
+	std::map<symbol_list_type, pair<std::set<Symbol>, bool> > mKnownChildNamesAndIsComplete;
+
+	//for every invalid module member, a list of additional parse errors describing why that
+	//module doesn't parse
+	std::map<symbol_list_type, ImmutableTreeVector<ModuleParseError> > mExtraParseErrors;
+
+	//of members we believe we can instantiate, what values do they reference
+	TwoWaySetMap<symbol_list_type, symbol_list_type> mModuleMemberReferences;
+
+	//members who we can't instantiate as actual objects
+	std::set<symbol_list_type> mInvalidMembers;
+
+	//bindings to free variables
+	ImmutableTreeMap<Symbol, pair<ImplValContainer, Nullable<Symbol> > > mFreeVariableBindings;
+};
+
+}

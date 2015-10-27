@@ -1,0 +1,439 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#ifndef CPPMLPrettyPrinter_hpp_
+#define CPPMLPrettyPrinter_hpp_
+
+#include <string>
+#include <sstream>
+#include <iostream>
+#include <vector>
+#include <set>
+#include <map>
+#include "../Common.hppml"
+#include "../math/Nullable.hpp"
+#include "../debug/StackTrace.hpp"
+#include <boost/shared_ptr.hpp>
+#include <boost/uuid/uuid.hpp>
+#include <boost/uuid/uuid_io.hpp>
+#include <boost/python.hpp>
+
+
+template<class T>
+class CPPMLPrettyPrint;
+
+
+class CPPMLPrettyPrintStreamImpl;
+
+class CPPMLPrettyPrintStream {
+		CPPMLPrettyPrintStream(boost::shared_ptr<CPPMLPrettyPrintStreamImpl> inImpl);
+		friend class CPPMLPrettyPrintStreamImpl;
+
+public:
+		class Sep {};
+	
+		static	Sep	sep;
+		
+		explicit CPPMLPrettyPrintStream(std::ostream& inStream);
+		explicit CPPMLPrettyPrintStream(std::ostream& inStream, Nullable<long> wrapWidth);
+		
+		void	write(const std::string& s);
+		void	write(const char* s);
+		void	writeRaw(const std::string& s);
+		void	writeRaw(const char* s);
+
+		void	endl();
+		void	separate();
+		
+		void	write(double x);
+		void	write(float x);
+
+		void	write(unsigned short);
+		void	write(signed short);
+		void	write(unsigned int);
+		void	write(signed int);
+		void	write(unsigned long);
+		void	write(signed long);
+		void	write(unsigned long long);
+		void	write(signed long long);
+		
+		//Usually, using group yields better results than indented.
+		CPPMLPrettyPrintStream	indented(std::string indentPrefix = "    ");
+		CPPMLPrettyPrintStream	group   (std::string indentPrefix = "    ");
+		CPPMLPrettyPrintStream	table();
+		
+		size_t	tellp() const;
+		
+		template<class T>
+		friend CPPMLPrettyPrintStream operator<<(
+									CPPMLPrettyPrintStream w,
+									const T& t
+									)
+			{
+			CPPMLPrettyPrint<T>::prettyPrint(w, t);
+			return w;
+			}
+		
+		friend CPPMLPrettyPrintStream operator<<(
+									CPPMLPrettyPrintStream w,
+									const char* t
+									);
+		friend CPPMLPrettyPrintStream operator<<(
+									CPPMLPrettyPrintStream w,
+									std::ostream&(*maybeEndl)(std::ostream&)
+									);
+		friend CPPMLPrettyPrintStream operator<<(
+									CPPMLPrettyPrintStream w,
+									Sep sep
+									);
+		
+		void	recordStartOfNewTuple();
+		void	recordOutputFirstElemOfTuple();
+		void	recordEndOfCurrentTuple();
+		bool	hasOutputFirstElemOfCurrentTuple() const;
+
+private:		
+		boost::shared_ptr<CPPMLPrettyPrintStreamImpl> mImpl;
+};
+
+
+//cppml prettyprinter in the case where "A" is a cppml objects with "kind"
+//metadata
+template<class A,class B>
+class CPPMLPrettyPrintWithMeta;
+
+template<class T>
+class CPPMLPrettyPrint {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream s, const T& inT)
+			{
+			CPPMLPrettyPrintWithMeta<T, typename T::kind>::streamOut(s,inT);
+			}
+};
+
+template<class T>
+class CPPMLPrettyPrint<std::vector<T> > {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream s, const std::vector<T>& t)
+			{
+			s << "[";
+				{
+				CPPMLPrettyPrintStream s2 = s.group();
+				
+				for (int32_t k = 0; k < t.size();k++)
+					{
+					s2 << t[k];
+					if (k + 1 < t.size())
+						s2 << ", " << s2.sep;
+					}
+				}
+
+			s << "]";
+			}
+};
+
+
+
+template<class T>
+class CPPMLPrettyPrint<boost::shared_ptr<T> > {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream s, const boost::shared_ptr<T>& t)
+			{
+			if (t)
+				s << *t;
+			else
+				s << "<null>";
+			}
+};
+
+
+template<class T, class T2>
+class CPPMLPrettyPrint<std::pair<T, T2> > {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream s, const std::pair<T, T2>& t)
+			{
+			s << t.first;
+			s << ", ";
+			s << t.second;
+			}
+};
+
+template<class T>
+class CPPMLPrettyPrint<std::set<T> > {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream s, const std::set<T>& t)
+			{
+			s << "{";
+			
+				{
+				CPPMLPrettyPrintStream s2 = s.group();
+				
+				for (typename std::set<T>::const_iterator it = t.begin(); it != t.end();)
+					{
+					s2 << *it;
+					++it;
+					if (it != t.end())
+						s2 << ", " << s.sep;
+					}
+				}
+				
+			s << "}";
+			}
+};
+
+template<class T, class T2>
+class CPPMLPrettyPrint<std::map<T, T2> > {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream s, const std::map<T, T2>& t)
+			{
+			s << "{";
+			
+				{
+				CPPMLPrettyPrintStream s2 = s.group();
+				
+				for (typename std::map<T,T2>::const_iterator it = t.begin(); it != t.end();)
+					{
+					s2 << it->first;
+					s2 << ": ";
+					s2 << it->second;
+					++it;
+					if (it != t.end())
+						s2 << ", " << s.sep;
+					}
+				}
+
+			s << "}";
+			}
+};
+
+template<>
+class CPPMLPrettyPrint<boost::uuids::uuid> {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream s, const boost::uuids::uuid& t)
+			{
+			s << to_string(t);
+			}
+};
+
+
+#define prettyPrint_direct_macro( T )									\
+template<>																\
+class CPPMLPrettyPrint<T> {												\
+public:																	\
+		static void prettyPrint(CPPMLPrettyPrintStream s, const T & t)	\
+			{															\
+			s.write(t);													\
+			}															\
+};																		// End of macro.
+
+typedef void* void_ptr;
+
+prettyPrint_direct_macro(std::string)
+prettyPrint_direct_macro(float)
+prettyPrint_direct_macro(double)
+prettyPrint_direct_macro(unsigned char)
+prettyPrint_direct_macro(signed char)
+prettyPrint_direct_macro(char)
+
+prettyPrint_direct_macro(unsigned short)
+prettyPrint_direct_macro(signed short)
+prettyPrint_direct_macro(unsigned int)
+prettyPrint_direct_macro(signed int)
+prettyPrint_direct_macro(unsigned long)
+prettyPrint_direct_macro(signed long)
+prettyPrint_direct_macro(unsigned long long)
+prettyPrint_direct_macro(signed long long)
+
+
+template<>
+class CPPMLPrettyPrint<bool> {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream s, bool t)
+			{
+			s << (t ? "true" : "false");
+			}
+};
+
+template<class T>
+class CPPMLPrettyPrint<T*> {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream s, T* t)
+			{
+			std::ostringstream sstream;
+			sstream << t;
+
+			s << sstream.str();
+			}
+};
+template<>
+class CPPMLPrettyPrint<const char*> {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream s, const char* t)
+			{
+			s.write(t);
+			}
+};
+
+template<>
+class CPPMLPrettyPrint<char*> {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream s, char* t)
+			{
+			s.write(t);
+			}
+};
+
+template<class T>
+class CPPMLPrettyPrintWithMeta<T, ::CPPML::Null> {
+public:
+		static void streamOut(CPPMLPrettyPrintStream s,const T& t)
+			{
+			}
+
+};
+template<class T>
+class CPPMLPrettyPrintWithMeta<T, ::CPPML::Kinds::alternative> {
+public:
+		static void streamOut(CPPMLPrettyPrintStream s,const T& t)
+			{
+			CPPMLPrettyPrintWithMeta<T, typename T::metadata>::streamOut(s,t);
+			}
+
+};
+
+template<class T>
+class CPPMLPrettyPrintWithMeta<T, ::CPPML::Kinds::tuple> {
+public:
+		static void streamOut(CPPMLPrettyPrintStream s,const T& t)
+			{
+			s << "(";
+			s.recordStartOfNewTuple();
+			CPPMLPrettyPrintWithMeta<T, typename T::metadata>::streamOut(s.group(),t);
+			s.recordEndOfCurrentTuple();
+			s << ")";
+			}
+};
+
+template<class T, class A1, class A2>
+class CPPMLPrettyPrintWithMeta<T, ::CPPML::Chain<A1, A2> > {
+public:
+		static void streamOut(CPPMLPrettyPrintStream s,const T& t)
+			{
+			CPPMLPrettyPrintWithMeta<T, A1>::streamOut(s,t);
+			CPPMLPrettyPrintWithMeta<T, A2>::streamOut(s,t);
+			}
+};
+
+template<class T, class member_type_in, class accessor_in, const int32_t ix>
+class CPPMLPrettyPrintWithMeta<T, ::CPPML::TupleMember<T, member_type_in, accessor_in, ix> > {
+public:
+		static void streamOut(CPPMLPrettyPrintStream s,const T& t)
+			{
+			if (!s.hasOutputFirstElemOfCurrentTuple())
+				s.recordOutputFirstElemOfTuple();
+			else
+				s << ", " << s.sep;
+			s << accessor_in::get(t);
+			}
+};
+
+
+template<class T, class member_type_in, class accessor_in>
+class CPPMLPrettyPrintWithMeta<T, ::CPPML::Alternative<T, member_type_in, accessor_in> > {
+public:
+		static void streamOut(CPPMLPrettyPrintStream s,const T& t)
+			{
+			bool is = accessor_in::is(t);
+			if (is)
+				{
+				s << accessor_in::name();
+				s << accessor_in::get(t);
+				}
+			}
+};
+template<class T, class member_type_in, class accessor_in, const int32_t ix>
+class CPPMLPrettyPrintWithMeta<
+	T,
+	::CPPML::AlternativeCommonMember<T, member_type_in, accessor_in, ix>
+	> {
+public:
+		static void streamOut(CPPMLPrettyPrintStream s,const T& t)
+			{
+			s << " with " << accessor_in::name() << " = ";
+			s << accessor_in::get(t);
+			}
+};
+
+template<class T>
+void prettyPrint(CPPMLPrettyPrintStream s, const T& t)
+	{
+	CPPMLPrettyPrint<T>::prettyPrint(s,t);
+	}
+//necessary to get const char* to route to the template override above.
+inline void prettyPrint(CPPMLPrettyPrintStream s, const char* t)
+	{
+	CPPMLPrettyPrint<const char*>::prettyPrint(s,t);
+	}
+
+template<class T>
+std::string prettyPrintStringWithoutWrapping(const T& t)
+	{
+	std::ostringstream s;
+		{
+		CPPMLPrettyPrintStream st(s, null());
+		st << t;
+		}
+	return s.str();
+	}
+
+template<class T>
+std::string prettyPrintStringWithWrapping(const T& t, long inWrapping)
+	{
+	std::ostringstream s;
+		{
+		CPPMLPrettyPrintStream st(s, null() << inWrapping);
+		st << t;
+		}
+	return s.str();
+	}
+
+template<class T>
+std::string prettyPrintString(const T& t)
+	{
+	std::ostringstream s;
+		{
+		CPPMLPrettyPrintStream st(s, Nullable<long>(100));
+		st << t;
+		}
+	return s.str();
+	}
+
+template<class T>
+void streamTo(CPPMLPrettyPrintStream& s, const T& t)
+	{
+	s << t;
+	}
+
+template<>
+class CPPMLPrettyPrint<boost::python::object> {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream s, boost::python::object t)
+			{
+			s << "<python object>";
+			}
+};
+
+#endif
+

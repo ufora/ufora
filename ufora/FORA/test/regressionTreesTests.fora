@@ -1,0 +1,222 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+make_friedman: fun(nSamples:= 1200, noise:=1.0) {
+    let generateUniforms = fun(nSamples, seed) {
+        `ProcessToVector(
+            iter.subseq(
+                math.random.UniformReal(0, 1, seed),
+                0, nSamples
+                )
+            );
+        }
+
+    let baseSeed = 7523234;
+    let X = dataframe.DataFrame(
+        X0: generateUniforms(nSamples, baseSeed),
+        X1: generateUniforms(nSamples, baseSeed + 1),
+        X2: generateUniforms(nSamples, baseSeed + 2),
+        X3: generateUniforms(nSamples, baseSeed + 3),
+        X4: generateUniforms(nSamples, baseSeed + 4)
+        );
+
+    let normals = `ProcessToVector(
+        iter.subseq(
+            math.random.Normal(0, 1, baseSeed),
+            0, nSamples
+            )
+        );
+
+    let y = X.rowApply(
+        fun(row) {
+            10 * math.sin(math.pi * row[0] * row[1]) +
+                20 * (row[2] - 0.5) ** 2 + 
+                10 * row[3] + 
+                5 * row[4]
+            }
+        );
+
+    y = y + dataframe.Series(normals) * noise
+    y = dataframe.DataFrame(y: y);
+
+    return (X, y);
+    };
+
+`test featureImportances_1: (
+    let (X, y) = make_friedman();
+
+    let fit = math.tree.RegressionTreeBuilder(maxDepth: 3).fit(X, y);
+
+    assertions.assertAllClose(
+        fit.rawFeatureImportances(),
+        [0.285752035005653, 0.266255756257227, 0.0, 0.428964488692204, 0.0190277200449155]
+        )        
+    assertions.assertAllClose(
+        [val for val in fit.featureImportances()],
+        [0.285752035005653, 0.266255756257227, 0.0, 0.428964488692204, 0.0190277200449155]
+        )        
+    );
+
+`test featureImportances_2: (
+    let (X, y) = make_friedman();
+
+    let fit = math.tree.RegressionTreeBuilder(maxDepth: 3, splitMethod: `exhaustive).fit(X, y);
+
+    assertions.assertAllClose(
+        fit.rawFeatureImportances(),
+        [0.284338793088502, 0.267849328414097, 0.0, 0.428829068400311, 0.01898281009709]
+        )        
+    assertions.assertAllClose(
+        [val for val in fit.featureImportances()],
+        [0.284338793088502, 0.267849328414097, 0.0, 0.428829068400311, 0.01898281009709]
+        )
+
+    let fit2 = math.tree.RegressionTreeBuilder(maxDepth: 3, splitMethod: `sample).fit(X, y);
+
+    assertions.assertAllClose(
+        fit.rawFeatureImportances(),
+        fit2.rawFeatureImportances(),
+        rtol: 0.01
+        );
+    );
+
+`test using_partial_depths: (
+    let seed = 148188;
+    let nPoints = 1024;
+    let column_0 = iter.toVector(
+        iter.subseq(
+            math.random.Normal(0, 10, seed),
+            0, nPoints
+            )
+        );
+    let column_1 = iter.toVector(
+        iter.subseq(
+            math.random.Normal(0, 20, seed),
+            0, nPoints
+            )
+        );
+
+    let y_noise = iter.toVector(
+        iter.subseq(
+            math.random.Normal(0, 1, seed),
+            0, nPoints
+            )
+        );
+
+    let X = dataframe.DataFrame([column_0, column_1]);
+    let y = X.rowApply(fun(row) { if (row[0] - row[1] < 0) 1 else -1 });
+    y = y + dataframe.Series(y_noise)
+    y = dataframe.DataFrame([y], columnNames:["target"])
+
+    let deepFit = math.tree.RegressionTreeBuilder(maxDepth:8).fit(X, y);
+    let shallowFit = math.tree.RegressionTreeBuilder(maxDepth:3).fit(X, y);
+
+    let deepPredictions = deepFit.predict(X, depth:3);
+    let shallowPredictions = shallowFit.predict(X)
+    
+    assertions.assertAllClose(deepPredictions.dataVec, shallowPredictions.dataVec)
+
+    let deepPredictions2 = deepFit.predict(X, depth:8)
+
+    assertions.assertNotEqual(deepPredictions, deepPredictions2)
+    );
+    
+regressionTreeFittingTest: fun(col: __columns__, rows: __rows__, depth:) {
+    let data = Vector.range(__columns__) ~~ fun(c) {
+        Vector.range(__rows__, fun(r) { Float64(r % (c+2)) })
+        };
+                
+    let dfResponse = dataframe.DataFrame(data[-1,], columnNames:[`response]);
+    let dfPredictors = dataframe.DataFrame(data[,-1]);
+
+    fun() {
+        let regressionTreeBuilder = 
+            math.tree.RegressionTree.RegressionTreeBuilder(
+                maxDepth: depth
+                );
+
+        let fitRegressionTree = 
+            regressionTreeBuilder.fit(dfPredictors, dfResponse);
+
+        fitRegressionTree
+        }
+    }
+    (mb:, columns:, depth:)
+    {
+    let valueCount = mb * 1024 * 1024 / 8
+    let rowCount = valueCount / columns
+
+    regressionTreeFittingTest(col: columns, rows: rowCount, depth: depth)
+    };
+
+`test regressionTreeCallSignatures: (
+    let (X, y) = make_friedman();
+    
+    let builder = math.tree.RegressionTreeBuilder(maxDepth: 3);
+
+    let res1 = builder.fit(X, y).score(X, y);
+    y = y.getColumn(0);
+    let res2 = builder.fit(X, y).score(X, y)
+
+    assertions.assertClose(res1, res2);
+    );
+
+(`perf, `callResult) regressionTreeFitting_1MB_10Col_depth3: 
+    regressionTreeFittingTest(mb: 1, columns: 10, depth: 3);
+
+(`perf, `callResult) regressionTreeFitting_1MB_10Col_depth5: 
+    regressionTreeFittingTest(mb: 1, columns: 10, depth: 5);
+
+(`perf, `callResult) regressionTreeFitting_1MB_10Col_depth7: 
+    regressionTreeFittingTest(mb: 1, columns: 10, depth: 7);
+
+regressionTreePredictionTest: fun(col: __columns__, rows: __rows__, depth:) {
+    let data = Vector.range(__columns__) ~~ fun(c) {
+        Vector.range(__rows__, fun(r) { Float64(r % (c+2)) })
+        };
+                
+    let dfResponse = dataframe.DataFrame(data[-1,], columnNames:[`response]);
+    let dfPredictors = dataframe.DataFrame(data[,-1]);
+
+    let regressionTreeBuilder = 
+        math.tree.RegressionTree.RegressionTreeBuilder(
+            maxDepth: depth
+            );
+
+    let fitRegressionTree = 
+        regressionTreeBuilder.fit(dfPredictors, dfResponse);
+
+    fun() {
+        fitRegressionTree.predict(dfPredictors)
+        }
+    }
+    (mb:, columns:, depth:)
+    {
+    let valueCount = mb * 1024 * 1024 / 8
+    let rowCount = valueCount / columns
+
+    regressionTreePredictionTest(col: columns, rows: rowCount, depth: depth)
+    };
+
+(`perf, `callResult) regressionTreePrediction_1MB_10Col_depth3: 
+    regressionTreePredictionTest(mb: 1, columns: 10, depth: 3);
+
+(`perf, `callResult) regressionTreePrediction_1MB_10Col_depth5: 
+    regressionTreePredictionTest(mb: 1, columns: 10, depth: 5);
+
+(`perf, `callResult) regressionTreePrediction_1MB_10Col_depth7: 
+    regressionTreePredictionTest(mb: 1, columns: 10, depth: 7);
+
+

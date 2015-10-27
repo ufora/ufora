@@ -1,0 +1,715 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ValueDeepcopier.hppml"
+#include "../../core/Memory.hpp"
+#include "../Core/ExecutionContext.hppml"
+#include "../TypedFora/ABI/MutableVectorHandle.hpp"
+#include "../../core/Logging.hpp"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include "../TypedFora/ABI/ScatteredForaValues.hppml"
+#include "../VectorDataManager/PageletTree.hppml"
+#include "../TypedFora/ABI/VectorRecord.hpp"
+#include "../TypedFora/ABI/ForaValueArraySpaceRequirements.hppml"
+#include "../VectorDataManager/VectorPage.hppml"
+#include "../VectorDataManager/VectorDataManager.hppml"
+#include "../../core/math/RandomHashGenerator.hpp"
+#include <boost/uuid/uuid.hpp>
+
+using TypedFora::Abi::VectorRecord;
+using TypedFora::Abi::VectorHandle;
+using TypedFora::Abi::ScatteredForaValues;
+using Fora::PageletTree;
+using Fora::PageletTreePtr;
+
+namespace {
+
+template<class T>
+T* nudge(T* in, long offset)
+	{
+	return (T*)((char*)in + offset);
+	}	
+
+}
+
+ValueDeepcopier::ValueDeepcopier(
+						ValueDeepcopierState& ioState,
+						bool produceNewIdentitiesForMutableVectors,
+						MemoryPool* targetMemoryPool,
+						bool unpagedVectorsAreWriteable,
+						bool collapsePageletTrees,
+						bool deepcopyAwayPagelets
+						) :
+		mVectors(ioState.mVectors),
+		mMutableVectors(ioState.mMutableVectors),
+		mProduceNewIdentitiesForMutableVectors(produceNewIdentitiesForMutableVectors),
+		mTargetMemoryPool(targetMemoryPool),
+		mUnpagedVectorsAreWriteable(unpagedVectorsAreWriteable),
+		mComputationDefinitions(ioState.mComputationDefinitions),
+		mPageletTreePtrs(ioState.mPageletTreePtrs),
+		mStrings(ioState.mStrings),
+		mCollapsePageletTrees(collapsePageletTrees),
+		mDeepcopyAwayPagelets(deepcopyAwayPagelets)
+	{
+	lassert(mTargetMemoryPool);
+	}
+
+void ValueDeepcopier::duplicate(
+		const Type& inType,
+		uint8_t* dest,
+		uint8_t* source,
+		uword_t count
+		) const
+	{
+	duplicate(inType, dest, source, count, inType.size(), inType.size());
+	}
+
+void ValueDeepcopier::duplicate(
+		const Type& inType,
+		uint8_t* dest,
+		uint8_t* source,
+		uword_t count,
+		uword_t destStride,
+		uword_t sourceStride
+		) const
+	{
+	uword_t sz = inType.size();
+
+	@match Type(inType)
+		-|	String() ->> {
+			for (long k = 0; k < count; k++)
+				{
+				String* destString = (String*)(dest + k * destStride);
+				String* sourceString = (String*)(source + k * sourceStride);
+
+				if (sourceString->isEmptyOrPackedIntoPointer())
+					new (destString) String(*sourceString, mTargetMemoryPool);
+				else
+					{
+					auto it = mStrings.find(sourceString->base());
+					if (it != mStrings.end())
+						{
+						new (destString) String(it->second);
+						}
+					else
+						{
+						new (destString) String(*sourceString, mTargetMemoryPool);
+						mStrings[sourceString->base()] = *destString;
+						}
+					}
+				}
+			}
+		-|	Alternative(t) ->> {
+			static Type symbolType = Type::Symbol();
+			static uword_t symbolSize = symbolType.size();
+
+			duplicate(
+				symbolType, 
+				dest, 
+				source, 
+				count, 
+				destStride, 
+				sourceStride
+				);
+
+			duplicate(
+				t, 
+				dest + symbolSize, 
+				source + symbolSize, 
+				count, 
+				destStride, 
+				sourceStride
+				);
+			}
+		-|	Class(t) ->> {
+			uword_t offset = 0;
+
+			for (long k = 0; k < t.size();k++)
+				{
+				duplicate(
+					t[k],
+					dest + offset,
+					source + offset,
+					count,
+					destStride,
+					sourceStride
+					);
+				offset += t[k].size();
+				}
+			}
+		-|	Tuple(t) ->> {
+			uword_t offset = 0;
+
+			for (long k = 0; k < t.size();k++)
+				{
+				duplicate(
+					t[k],
+					dest + offset,
+					source + offset,
+					count,
+					destStride,
+					sourceStride
+					);
+				offset += t[k].size();
+				}
+			}
+		-|	Dictionary(isCST) ->> {
+			for (long ix = 0; ix < count; ix++)
+				{
+				Dictionary* destDictPtr = (Dictionary*)(dest + ix * destStride);
+				Dictionary* sourceDictPtr = (Dictionary*)(source + ix * sourceStride);
+
+				Dictionary destDict = Dictionary::empty();
+
+				for (long k = 0; k < sourceDictPtr->size(); k++)
+					{
+					dict_pair_type sourcePair = sourceDictPtr->pairAtPosition(k);
+
+					const CSTValue& sourceKey = sourcePair.first;
+
+					const ImplValContainer& sourceValue = sourcePair.second;
+					
+					ImplVal sourceValueImpl = sourceValue.getReference();
+
+					// Introduce a new ImplVal of the type of the original source value.
+					ImplVal destValueImpl = ImplVal::introduce(sourceValueImpl.type());
+
+					duplicate(
+						sourceValueImpl.type(),
+						(uint8_t*)destValueImpl.data(),
+						(uint8_t*)sourceValueImpl.data(),
+						1
+						);
+					
+					ImplVal destKeyImpl = ImplVal::introduce(sourceKey.type());
+
+					duplicate(
+						sourceKey.type(),
+						(uint8_t*)destKeyImpl.data(),
+						(uint8_t*)sourceKey.getReference().data(),
+						1
+						);
+
+					destDict = destDict.addKeyValue(
+						CSTValue::assumeOwnershipOf(destKeyImpl), 
+						ImplValContainer::assumeOwnershipOf(destValueImpl)
+						);
+					}
+
+				// Placement new to duplicate the ix-th pointer with the new Dictionary.
+				new (destDictPtr) Dictionary(destDict);
+				}
+			}
+		-|	Vector() ->> {
+			for (long k = 0; k < count; k++)
+				{
+				VectorRecord* destVD = (VectorRecord*)(dest + k * destStride);
+				VectorRecord* sourceVD = (VectorRecord*)(source + k * sourceStride);
+
+				new (destVD) VectorRecord(duplicate(*sourceVD));
+				}
+			}
+		-|	MutableVector() ->> {
+			for (long k = 0; k < count; k++)
+				{
+				MutableVectorRecord* destVH = (MutableVectorRecord*)(dest + k * destStride);
+				MutableVectorRecord* sourceVH = (MutableVectorRecord*)(source + k * sourceStride);
+
+				new (destVH) MutableVectorRecord(duplicateMutableVector(*sourceVH));
+				}
+			}
+		-| _ ->> {
+			inType.initialize(dest, source, count, destStride, sourceStride);
+			}
+		;
+	}
+
+void ValueDeepcopier::duplicateScattered(
+		const Type& inType,
+		void** dest,
+		void** source,
+		uword_t count,
+		uword_t destNudge,
+		uword_t sourceNudge
+		) const
+	{
+	uword_t sz = inType.size();
+
+	@match Type(inType)
+		-|	String() ->> {
+			double t0 = curClock();
+
+			for (long k = 0; k < count; k++)
+				{
+				String* destString = nudge((String*)dest[k], destNudge);
+				String* sourceString = nudge((String*)source[k], sourceNudge);
+
+				if (sourceString->isEmptyOrPackedIntoPointer())
+					new (destString) String(*sourceString, mTargetMemoryPool);
+				else
+					{
+					auto it = mStrings.find(sourceString->base());
+					if (it != mStrings.end())
+						{
+						new (destString) String(it->second);
+						}
+					else
+						{
+						new (destString) String(*sourceString, mTargetMemoryPool);
+						mStrings[sourceString->base()] = *destString;
+						}
+					}
+				}
+			}
+		-|	Alternative(t) ->> {
+			static Type symbolType = Type::Symbol();
+			static uword_t symbolSize = symbolType.size();
+
+			duplicateScattered(
+				symbolType, 
+				dest, 
+				source, 
+				count,
+				destNudge, 
+				sourceNudge
+				);
+
+			duplicateScattered(
+				t, 
+				dest,
+				source,
+				count, 
+				destNudge + symbolSize,
+				sourceNudge + symbolSize
+				);
+			}
+		-|	Class(t) ->> {
+			uword_t offset = 0;
+
+			for (long k = 0; k < t.size();k++)
+				{
+				duplicateScattered(
+					t[k],
+					dest,
+					source,
+					count,
+					destNudge + offset,
+					sourceNudge + offset
+					);
+				offset += t[k].size();
+				}
+			}
+		-|	Tuple(t) ->> {
+			uword_t offset = 0;
+
+			for (long k = 0; k < t.size();k++)
+				{
+				duplicateScattered(
+					t[k],
+					dest,
+					source,
+					count,
+					destNudge + offset,
+					sourceNudge + offset
+					);
+				offset += t[k].size();
+				}
+			}
+		-|	Dictionary(isCST) ->> {
+			for (long ix = 0; ix < count; ix++)
+				{
+				Dictionary* destDictPtr = nudge((Dictionary*)dest[ix], destNudge);
+				Dictionary* sourceDictPtr = nudge((Dictionary*)source[ix], sourceNudge);
+
+				Dictionary destDict = Dictionary::empty();
+
+				for (long k = 0; k < sourceDictPtr->size(); k++)
+					{
+					dict_pair_type sourcePair = sourceDictPtr->pairAtPosition(k);
+
+					const CSTValue& sourceKey = sourcePair.first;
+
+					const ImplValContainer& sourceValue = sourcePair.second;
+					
+					ImplVal sourceValueImpl = sourceValue.getReference();
+
+					// Introduce a new ImplVal of the type of the original source value.
+					ImplVal destValueImpl = ImplVal::introduce(sourceValueImpl.type());
+
+					duplicate(
+						sourceValueImpl.type(),
+						(uint8_t*)destValueImpl.data(),
+						(uint8_t*)sourceValueImpl.data(),
+						1
+						);
+					
+					ImplVal destKeyImpl = ImplVal::introduce(sourceKey.type());
+
+					duplicate(
+						sourceKey.type(),
+						(uint8_t*)destKeyImpl.data(),
+						(uint8_t*)sourceKey.getReference().data(),
+						1
+						);
+
+					destDict = destDict.addKeyValue(
+						CSTValue::assumeOwnershipOf(destKeyImpl), 
+						ImplValContainer::assumeOwnershipOf(destValueImpl)
+						);
+					}
+
+				// Placement new to duplicate the ix-th pointer with the new Dictionary.
+				new (destDictPtr) Dictionary(destDict);
+				}
+			}
+		-|	Vector() ->> {
+			for (long k = 0; k < count; k++)
+				{
+				VectorRecord* destVD = nudge((VectorRecord*)dest[k], destNudge);
+				VectorRecord* sourceVD = nudge((VectorRecord*)source[k], sourceNudge);
+
+				new (destVD) VectorRecord(duplicate(*sourceVD));
+				}
+			}
+		-|	MutableVector() ->> {
+			for (long k = 0; k < count; k++)
+				{
+				MutableVectorRecord* destVH = nudge((MutableVectorRecord*)dest[k], destNudge);
+				MutableVectorRecord* sourceVH = nudge((MutableVectorRecord*)source[k], sourceNudge);
+
+				new (destVH) MutableVectorRecord(duplicateMutableVector(*sourceVH));
+				}
+			}
+		-| _ ->> {
+			inType.initializeScattered(dest, (const void**)source, count, destNudge, sourceNudge);
+			}
+		;
+	}
+
+MutableVectorRecord ValueDeepcopier::duplicateMutableVector(MutableVectorRecord inHandle) const
+	{
+	if (mMutableVectors.find(inHandle) != mMutableVectors.end())
+		return mMutableVectors[inHandle];
+
+	hash_type newHash = mProduceNewIdentitiesForMutableVectors ? 
+				RandomHashGenerator::singleton().generateRandomHash()
+			:	inHandle->identityHash();
+
+	if (mProduceNewIdentitiesForMutableVectors)
+		LOG_DEBUG << "sending mutable vector with ID " << prettyPrintString(inHandle->identityHash()) 
+			<< " -> " << prettyPrintString(newHash);
+	
+	MutableVectorRecord newVectorRecord = 
+		MutableVectorRecord::allocateNewMutableVectorRecord(
+			inHandle->elementJOV(),
+			mTargetMemoryPool,
+			newHash
+			);
+
+	TypedFora::Abi::PackedForaValues toInitialize = newVectorRecord->appendUninitialized(inHandle->size());
+	TypedFora::Abi::PackedForaValues sourceValues = inHandle->packedValues();
+
+	if (toInitialize.elementJOV().constant())
+		{
+		}
+		else
+	if (toInitialize.elementJOV().type())
+		duplicate(
+			*toInitialize.elementJOV().type(),
+			toInitialize.data(),
+			sourceValues.data(),
+			toInitialize.count(),
+			toInitialize.stride(),
+			sourceValues.stride()
+			);
+	else
+		{
+		for (long k = 0; k < toInitialize.count(); k++)
+			new (toInitialize.pointerToElement<ImplValContainer>(k)) ImplValContainer(
+				duplicate(*sourceValues.pointerToElement<ImplValContainer>(k))
+				);
+		}
+
+	mMutableVectors[inHandle] = newVectorRecord;
+
+	return newVectorRecord;
+	}
+
+PageletTreePtr ValueDeepcopier::duplicatePageletTree(PageletTreePtr ptr) const
+	{
+	if (ptr.isEmpty())
+		return ptr;
+
+	auto it = mPageletTreePtrs.find(ptr);
+
+	if (it != mPageletTreePtrs.end())
+		return it->second;
+
+	if (ptr->leaf())
+		mPageletTreePtrs[ptr] = mTargetMemoryPool->construct<PageletTree>(
+			mTargetMemoryPool,
+			ptr->leaf(),
+			ptr->leafValuesUsed()
+			);
+	else
+		mPageletTreePtrs[ptr] = mTargetMemoryPool->construct<PageletTree>(
+			mTargetMemoryPool,
+			duplicatePageletTree(ptr->left()),
+			ptr->leftPtrValuesUsed(),
+			duplicatePageletTree(ptr->right()),
+			ptr->rightPtrValuesUsed()
+			);
+
+	return mPageletTreePtrs[ptr];
+	}
+
+ImplValContainer ValueDeepcopier::duplicate(ImplValContainer ivc) const
+	{
+	ImplVal val = ImplVal::introduce(ivc.type());
+	
+	duplicate(val.type(), (uint8_t*)val.data(), (uint8_t*)ivc.getReference().data(), 1);
+
+	return ImplValContainer::assumeOwnershipOf(val);
+	}
+
+TypedFora::Abi::VectorRecord	ValueDeepcopier::duplicate(const TypedFora::Abi::VectorRecord& in) const
+	{
+	if (in.size() == 0)
+		return in;
+
+	lassert_dump(in.dataPtr(), "VectorRecord with nonzero size but zero dataPtr found");
+
+	if (mVectors.find(in) != mVectors.end())
+		return mVectors[in];
+
+	if (in.dataPtr()->size() != in.size())
+		{
+		TypedFora::Abi::VectorRecord v = duplicate(VectorRecord(in.dataPtr(), in.dataPtr()->size(), 0, 1));
+
+		return TypedFora::Abi::VectorRecord(v.dataPtr(), in.size(), in.offset(), in.stride());
+		}
+
+	TypedFora::Abi::VectorHandle* handle = nullptr;
+
+	if (mDeepcopyAwayPagelets && in.dataPtr()->unpagedAndPageletTreeValueCount())
+		{
+		TypedFora::Abi::ForaValueArray* unpagedValues = 0;
+
+		unpagedValues = TypedFora::Abi::ForaValueArray::Empty(mTargetMemoryPool);
+
+		TypedFora::Abi::ForaValueArraySpaceRequirements spaceRequirements;
+
+		if (!in.pageletTree().isEmpty())
+			spaceRequirements = spaceRequirements + in.pageletTree()->getSpaceRequirements();
+
+		if (in.unpagedValues())
+			spaceRequirements = spaceRequirements + in.unpagedValues()->getSpaceRequirements();
+
+		unpagedValues->prepareForAppending(spaceRequirements);
+
+		if (!in.pageletTree().isEmpty())
+			{
+			in.pageletTree()->visitTree(
+				[&](boost::shared_ptr<Fora::Pagelet> toCopy, IntegerRange subrange, long offsetInOrig) {
+					duplicate(unpagedValues, toCopy->getValues(), subrange.low(), subrange.high());
+					},
+				IntegerRange(0, in.pageletTree()->size())
+				);
+			}
+
+		if (in.unpagedValues())
+			duplicate(unpagedValues, in.unpagedValues(), 0, in.unpagedValues()->size());
+
+		if (!mUnpagedVectorsAreWriteable)
+			unpagedValues->markUnwriteable(true);
+
+		handle = 
+			mTargetMemoryPool->construct<TypedFora::Abi::VectorHandle>(
+				in.dataPtr()->pagedValuesIdentity(),
+				PageletTreePtr(),
+				unpagedValues,
+				mTargetMemoryPool,
+				in.dataPtr()->vectorHash()
+				);
+
+		lassert(handle->size() == in.dataPtr()->size());
+		}
+		else
+	if (in.dataPtr()->unpagedValuesPagelet())
+		{
+		handle = 
+			mTargetMemoryPool->construct<TypedFora::Abi::VectorHandle>(
+				in.dataPtr()->pagedValuesIdentity(),
+				duplicatePageletTree(in.pageletTree()),
+				in.dataPtr()->unpagedValuesPagelet(),
+				mTargetMemoryPool,
+				in.dataPtr()->vectorHash()
+				);
+		}
+		else
+	if (mCollapsePageletTrees && !in.pageletTree().isEmpty())
+		{
+		PageletTreePtr leftmost = in.pageletTree();
+		
+		while (!leftmost->leaf())
+			leftmost = leftmost->left();
+
+		boost::shared_ptr<Fora::Pagelet> pagelet = in.pageletTree()->collapseToSinglePagelet(
+			leftmost->leaf()->getVDMM(),
+			in.unpagedValues(),
+			false
+			);
+
+		handle = 
+			mTargetMemoryPool->construct<TypedFora::Abi::VectorHandle>(
+				in.dataPtr()->pagedValuesIdentity(),
+				PageletTreePtr(),
+				pagelet,
+				mTargetMemoryPool,
+				in.dataPtr()->vectorHash()
+				);
+		}
+		else
+	if (in.unpagedValues())
+		{
+		TypedFora::Abi::ForaValueArray* unpagedValues = 0;
+
+		unpagedValues = TypedFora::Abi::ForaValueArray::Empty(mTargetMemoryPool);
+
+		unpagedValues->prepareForAppending(in.unpagedValues()->getSpaceRequirements());
+		
+		duplicate(unpagedValues, in.unpagedValues(), 0, in.unpagedValues()->size());
+
+		if (!mUnpagedVectorsAreWriteable)
+			unpagedValues->markUnwriteable(true);
+
+		handle = 
+			mTargetMemoryPool->construct<TypedFora::Abi::VectorHandle>(
+				in.dataPtr()->pagedValuesIdentity(),
+				duplicatePageletTree(in.pageletTree()),
+				unpagedValues,
+				mTargetMemoryPool,
+				in.dataPtr()->vectorHash()
+				);
+		}
+	else
+		{
+		handle = 
+			mTargetMemoryPool->construct<TypedFora::Abi::VectorHandle>(
+				in.dataPtr()->pagedValuesIdentity(),
+				duplicatePageletTree(in.pageletTree()),
+				nullptr,
+				mTargetMemoryPool,
+				in.dataPtr()->vectorHash()
+				);
+		}
+
+	VectorRecord result(
+		handle,
+		in.size(),
+		in.offset(),
+		in.stride()
+		);
+
+	mVectors[in] = result;
+
+	return result;
+	}
+
+void ValueDeepcopier::duplicate(
+			TypedFora::Abi::ForaValueArray* targetArray,
+			TypedFora::Abi::ForaValueArray* sourceArray
+			) const
+	{
+	if (targetArray->size() == 0 && targetArray->bytesReserved() == 0 && 
+			sourceArray->isHomogenousPodArray())
+		{
+		targetArray->append(*sourceArray, mUnpagedVectorsAreWriteable);
+		return;
+		}
+
+	duplicate(targetArray, sourceArray, 0, sourceArray->size());
+	}
+
+void ValueDeepcopier::duplicate(
+			TypedFora::Abi::ForaValueArray* targetArray,
+			TypedFora::Abi::ForaValueArray* sourceArray,
+			long lowIndex,
+			long highIndex
+			) const
+	{
+	if (targetArray->size() == 0 && targetArray->bytesReserved() == 0 && 
+			sourceArray->isHomogenousPodArray() && lowIndex == 0 && highIndex == sourceArray->size())
+		{
+		targetArray->append(*sourceArray, mUnpagedVectorsAreWriteable);
+		return;
+		}
+
+	if (targetArray->size() == 0 && targetArray->bytesReserved() == 0)
+		{
+		targetArray->prepareForAppending(
+			sourceArray->getSpaceRequirements(lowIndex, highIndex)
+			);
+		}
+
+	targetArray->append(
+		*sourceArray,
+		lowIndex,
+		highIndex,
+		[&](ScatteredForaValues dest, ScatteredForaValues src) {
+			duplicateScattered(
+				*dest.elementJOV().type(),
+				dest.data(),
+				src.data(),
+				dest.count(),
+				dest.nudge(),
+				src.nudge()
+				);
+			}
+		);
+	}
+
+Cumulus::ComputationDefinition ValueDeepcopier::processDown(
+						const Cumulus::ComputationDefinition& in, 
+						bool& outContinue
+						) const
+	{
+	outContinue = false;
+
+	auto it = mComputationDefinitions.find(in.hash());
+
+	if (it != mComputationDefinitions.end())
+		return it->second;
+
+	Cumulus::ComputationDefinition out;
+
+	@match Cumulus::ComputationDefinition(in)
+		-| Root(terms) ->> {
+			out = Cumulus::ComputationDefinition::Root(
+				transform(terms, *this)
+				);
+			}
+		-| Split(rootId, pc) ->> {
+			out = Cumulus::ComputationDefinition::Split(
+				rootId,
+				transform(pc, *this)
+				);
+			}
+
+	mComputationDefinitions[in.hash()] = out;
+
+	return out;
+	}
+

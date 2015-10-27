@@ -1,0 +1,124 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../Core/MemoryPool.hpp"
+#include "../../core/threading/Trigger.hppml"
+#include "../../core/PolymorphicSharedPtr.hpp"
+#include "../../core/cppml/CPPMLPrettyPrinter.hppml"
+#include <boost/enable_shared_from_this.hpp>
+#include <map>
+#include <set>
+#include <vector>
+
+class CallbackScheduler;
+
+/**********************
+
+MappableMemoryPool
+
+Subclass of MemoryPool that can serve as a 'map target'. Other pools may "map-to" this pool,
+indicating that they may acquire references to internal objects. In order to 'unmap' an object,
+we need for all pools that have acquired 'map-to' locks on the pool to drop those locks.
+
+**********************/
+
+class MappableMemoryPool : 
+			public MemoryPool, 
+			public boost::enable_shared_from_this<MappableMemoryPool> 
+{
+public:
+	enum class UnmapState {
+		UnmappedAndMappable,		//we may be mapped at will
+		Mapped,						//we have been mapped, and are accepting new mappings
+		MappedAndWantsToBeUnmapped,	//we would like to be unmapped
+		UnmappedAndUnmappable,		//we know we are unmapped, and nobody can acquire a new mapping
+		GarbageCollecting 			//we are performing some task in the pool in the background
+									//and must wait for that task to complete. This is essentially
+									//an exclusive Mapped lock.
+	};
+
+	MappableMemoryPool(MemoryPoolType type, PolymorphicSharedPtr<CallbackScheduler> inScheduler);
+
+	~MappableMemoryPool();
+
+	/************ Mapping Interface *************/
+
+	//get the current state, and then get told about all future state changes
+	UnmapState subscribeToStateChanges(boost::function2<void, UnmapState, UnmapState> inStateCallback);
+
+	//A memory pool would like to map this page. If such a thing is possible, return a trigger 
+	//that gets fired when this VectorPage wants to get unmapped.
+	//if 'lockIsAlreadyImplicitlyAcquired' then we cannot deny the lock. This should only happen
+	//when a running piece of code acquires a direct reference to a Pagelet
+	boost::shared_ptr<Ufora::threading::Trigger> 
+						attemptToMapTo(bool lockIsAlreadyImplicitlyAcquired = false);
+
+	//If the pool is Mapped, place it in the MappedAndWantsToBeUnmapped state. Returns the new state.
+	//If the pool is not mapped mark it as unmappable.
+	UnmapState markWantsToBeUnmapped();
+
+	//if the state is UnmappedAndUnmappable, move to state 'UnmappedAndMappable'. Otherwise do nothing.
+	//returns the state we end up in.
+	UnmapState markMappable();
+
+	//indicate that a memory pool is no longer mapping the page. The mapping is uniquely identified
+	//by the trigger. When no mappings remain, we can go to a state of "UnmappedAndUnmappable", 
+	//in which case we may fire off some callbacks.
+	//clients are responsible for calling this on destructure. If they fail to do so,
+	//the VectorPage may never become mappable again.
+	void removeMapping(boost::shared_ptr<Ufora::threading::Trigger> trigger);
+
+	boost::function0<void> createMarkWantsToBeUnmappedTrigger();
+
+	UnmapState currentUnmapState();
+
+	//if we are UnmappedAndMappable, place us into the GarbageCollecting state.
+	bool acquireGarbageCollectionLock();
+
+	//we are no longer garbage collecting, and now we are 'UnmappedAndUnmappable'
+	void releaseGarbageCollectionLock();
+
+protected:
+	void setState_(UnmapState newState);
+
+	//called the first time we try to "map-to" the pool from a "UnmappedAndMappable" state. This function
+	//should acquire any subpool locks that are necessary
+	virtual bool tryToAcquireMapTo_() = 0;
+
+	//called whenever we achieve the 'UnmappedAndUnmappable' state
+	virtual void hasBecomeUnmapped_() = 0;
+
+	boost::mutex mMutex;
+
+	PolymorphicSharedPtr<CallbackScheduler> mScheduler;
+
+	std::set<boost::shared_ptr<Ufora::threading::Trigger> > mMemoryPoolTriggers;
+
+	std::vector<boost::function2<void, UnmapState, UnmapState> > mStateChangeCallbacks;
+
+	UnmapState mUnmapState;
+};
+
+
+template<>
+class CPPMLPrettyPrint<MappableMemoryPool::UnmapState> {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream& s, const MappableMemoryPool::UnmapState& t);
+};
+
+
+

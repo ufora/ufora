@@ -1,0 +1,306 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "Message.hppml"
+#include <deque>
+#include <boost/thread.hpp>
+#include "../../core/threading/BSAThread.hpp"
+
+template<class message_out_type, class message_in_type>
+class BundlingChannel : public QueuelikeChannel<message_out_type, message_in_type> {
+public:
+	typedef PolymorphicSharedPtr<
+									BundlingChannel<message_out_type, message_in_type>, 
+									typename QueuelikeChannel<message_out_type, message_in_type>::pointer_type
+									> shared_ptr_type;
+
+	typedef PolymorphicSharedWeakPtr<
+									BundlingChannel<message_out_type, message_in_type>, 
+									typename QueuelikeChannel<message_out_type, message_in_type>::weak_ptr_type
+									> weak_shared_ptr_type;
+									
+	BundlingChannel(
+				typename QueuelikeChannel<message_out_type, message_in_type>::pointer_type channel,
+				uword_t inBundleSize
+				) : 
+			mChannelToWrap(channel),
+			mBundleSize(inBundleSize),
+			mIsDisconnected(false),
+			mPlacedInPumpLoop(false)
+		{
+		}
+
+	~BundlingChannel()
+		{
+		try {
+			pumpQueuedMessages();
+			}
+		catch(ChannelDisconnected& disconnected)
+			{
+			}
+		}
+
+	bool messageForcesFlush(const SharedState::MessageIn& in)
+		{
+		return in.isFlushResponse();
+		}
+
+	bool messageForcesFlush(const SharedState::MessageOut& in)
+		{
+		return in.isFlushRequest();
+		}
+
+
+	void write(const message_out_type& in)
+		{
+		ensurePumpLoop();
+
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		if (mIsDisconnected)
+			throw ChannelDisconnected();
+
+		mQueue.push_back(in);
+
+		if (mQueue.size() > mBundleSize || messageForcesFlush(in))
+			pumpQueuedMessages();
+		}
+
+	void ensurePumpLoop()
+		{
+		bool shouldPlaceIntoPumpQueue = false;
+
+			{
+			boost::recursive_mutex::scoped_lock lock(mMutex);
+
+			if (!mPlacedInPumpLoop)
+				{
+				shouldPlaceIntoPumpQueue = true;
+				mPlacedInPumpLoop = true;	
+				}
+			}
+
+			{
+			boost::recursive_mutex::scoped_lock lock(mPumpThreadMutex);
+
+			const size_t kStackSize = 128 * 1024;
+
+			if (!mLoopStarted)
+				{
+				mLoopStarted = true;
+				mPumpThread = Ufora::thread::spawnThread(
+					pumpLoopStatic,
+					kStackSize
+					);
+				}
+
+			if (shouldPlaceIntoPumpQueue)
+				mChannelsToPump.insert(
+					weak_shared_ptr_type(
+						this->polymorphicSharedPtrFromThis().template dynamic_pointer_cast<shared_ptr_type>()
+						)
+					);
+			}
+
+		}
+
+	void disconnect()
+		{
+		try {
+			pumpQueuedMessages();
+			}
+		catch(ChannelDisconnected& disconnected)
+			{
+			}
+
+		mIsDisconnected = true;
+		mChannelToWrap->disconnect();
+		}
+
+	message_in_type get()
+		{
+		try {
+			return mChannelToWrap->get();
+			}
+		catch(...)
+			{
+			mIsDisconnected = true;
+			throw;
+			}
+		}
+
+	bool get(message_in_type& ioVal)
+		{
+		try {
+			return mChannelToWrap->get(ioVal);
+			}
+		catch(...)
+			{
+			mIsDisconnected = true;
+			throw;
+			}
+		}
+
+	bool getTimeout(message_in_type& ioVal, double inTimeout)
+		{
+		try {
+			return mChannelToWrap->getTimeout(ioVal, inTimeout);
+			}
+		catch(...)
+			{
+			mIsDisconnected = true;
+			throw;
+			}
+		}
+
+	bool hasPendingValues()
+		{
+		return mChannelToWrap->hasPendingValues();
+		}
+
+	void setHandlers(
+				boost::function1<void, message_in_type> inOnMessage, 
+				boost::function0<void> inOnDisconnected
+				)
+		{
+		lassert_dump(false, "Not implemented for BundlingChannel");
+		}
+
+	void setCallbackScheduler(PolymorphicSharedPtr<CallbackScheduler> inScheduler)
+		{
+		mChannelToWrap->setCallbackScheduler(inScheduler);
+		}
+
+	PolymorphicSharedPtr<CallbackScheduler> getScheduler()
+		{
+		return mChannelToWrap->getScheduler();
+		}
+	
+private:
+	static void pumpLoopStatic()
+		{
+		LOG_INFO << "BundlingChannel pump loop is started";
+
+		while (true)
+			{
+			const static double kPumpDelay = .005;
+
+			sleepSeconds(kPumpDelay);
+
+			boost::recursive_mutex::scoped_lock lock(mPumpThreadMutex);
+
+			std::set<weak_shared_ptr_type> toDrop;
+
+			for (auto it = mChannelsToPump.begin(); it != mChannelsToPump.end(); ++it)
+				{
+				shared_ptr_type channel;
+				
+				channel = it->lock();
+
+				if (!channel || channel->mIsDisconnected)
+					toDrop.insert(*it);
+				else
+					{
+					channel->pumpQueuedMessages();
+					}
+				}
+
+			for (auto it = toDrop.begin(); it != toDrop.end(); ++it)
+				mChannelsToPump.erase(*it);
+			}
+		}
+
+	void pumpQueuedMessages(void)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		try {
+			if (mQueue.size())
+				{
+				mChannelToWrap->write(
+					message_out_type::Bundle(mQueue)
+					);
+
+				mQueue.resize(0);
+				}
+			}
+		catch(ChannelDisconnected& disconnected)
+			{
+			mIsDisconnected = true;
+			}
+		catch(std::logic_error& e)
+			{
+			LOG_WARN << "Warning: BundlingChannel pump loop disconnected because:\n" << e.what();
+			mIsDisconnected = true;
+			}
+		catch(...)
+			{
+			LOG_WARN << "Warning: BundlingChannel pump loop disconnected because of unknown error";
+			mIsDisconnected = true;
+			}
+		}
+
+	std::vector<message_out_type> mQueue;
+
+	boost::recursive_mutex mMutex;
+
+	bool mPlacedInPumpLoop;
+
+	bool mIsDisconnected;
+
+	uword_t mBundleSize;
+
+	static bool mLoopStarted;
+
+	static Ufora::thread::BsaThreadData mPumpThread;
+
+	static boost::recursive_mutex mPumpThreadMutex;
+
+	static std::set<weak_shared_ptr_type> mChannelsToPump;
+
+	typename QueuelikeChannel<message_out_type, message_in_type>::pointer_type mChannelToWrap;
+};
+
+template<class message_out_type, class message_in_type>
+bool BundlingChannel<message_out_type, message_in_type>::mLoopStarted = false;
+
+template<class message_out_type, class message_in_type>
+Ufora::thread::BsaThreadData BundlingChannel<message_out_type, message_in_type>::mPumpThread;
+
+template<class message_out_type, class message_in_type>
+boost::recursive_mutex BundlingChannel<message_out_type, message_in_type>::mPumpThreadMutex;
+
+template<class message_out_type, class message_in_type>
+std::set<
+	typename BundlingChannel<message_out_type, message_in_type>::weak_shared_ptr_type
+	> BundlingChannel<message_out_type, message_in_type>::mChannelsToPump;
+
+
+template<class message_out_type, class message_in_type>
+typename QueuelikeChannel<message_out_type, message_in_type>::pointer_type makeBundleChannel(
+						PolymorphicSharedPtr<
+							QueuelikeChannel<message_out_type, message_in_type>,
+							typename Channel<message_out_type, message_in_type>::pointer_type
+							> inChannel,
+						uword_t inBundleSize = 50
+						)
+	{
+	return typename QueuelikeChannel<message_out_type, message_in_type>::pointer_type(
+		new BundlingChannel<message_out_type, message_in_type>(inChannel, inBundleSize)
+		);
+	}
+

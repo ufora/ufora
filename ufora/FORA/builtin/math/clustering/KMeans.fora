@@ -1,0 +1,853 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#Markdown(
+"""
+### KMeans
+
+#### Description
+
+Fora k-means Library.
+
+Much of this was implemented directly from the python scikit-learn library k-means implementation.
+
+The Primary entrypoint is the `operator()` (call operator on this module).
+"""
+);
+
+#Markdown(
+"""
+#### Description
+
+Perform k-means clustering on a `dataframe.DataFrame`, using Lloyd iterations.
+
+#### Usage
+
+    math.clustering.KMeans(
+        X, nClusters, init:=\"k-means++\", 
+        nInit:= 10, maxIter:= 300, tol:= 1e-4, parallel:= true, options:= (), seed: seed
+        )
+
+#### Arguments
+
+* `X` -- A `dataframe.DataFrame` instance whose rows give the points in Euclidean space to be clustered.
+* `nClusters` -- The number of clusters to be found (ie, the `k` in k-means clustering).
+* `init` -- The (optional) initialization method; one of `\"k-means++\"` (default value) or `\"random\"`.
+    - `\"k-means++\"` : `\"smart\"` seeding using the algorithm of D. Arthur and S. Vassilvitskii.
+    - `\"random\"` : selects `nClusters` initial points randomly from the rows of `X`.
+* `nInit` -- Integer, optional, defaults to 10. The total number of times the k-means algorithm will be ran with different centroid seeds. The best result is taken.
+* `maxIter` -- Integer, optional, defaults to 300. The maximum allowed number of Lloyd iterations.
+* `tol` -- Float, optional, defaults to `1e-4`. Lloyd iterations are declared converged if the relative difference of the center movements (in L2-norm) are less than `tol`.
+* `parallel` -- boolean, optional, defaults to `true`. Should the `nInit` independent k-means runs be perfomed in sequence or as a vector apply (in which case they will likely split).
+* `options` -- defaults to `()`, a tuple used to pass information to certain methods. 
+* `seed` -- a seed to be passed to a random number generator used for the k-means algorithm.
+
+#### Returns
+
+A named tuple `(centers: centers, labels: labels, inertia: inertia, nIter: nIter)`.
+
+Members:
+
+* `centers` -- A `dataframe.DataFrame` whose rows give the centroids of the assigned clusters.
+* `labels` -- A vector of indices (of length `X.numRows`) giving cluster assignments: 
+`labels[i]` is the cluster assignment of `X[i]`, ie, centers[i] is the (a) closest center to `X[i]`.
+* `inertia` -- The sum of squared distances to the closest centroid for all sample points in `X`.
+* `nIter` -- The total number of Lloyd iterations used in the computation of the assignments/inertia.
+
+#### Examples
+
+To cluster the points `(1.0, 2.0), (-1.0, 0.0), (1.0, 1.0), (-2.0, -1.0)` into two clusters, we could run:
+
+    math.clustering.KMeans(
+        dataframe.DataFrame([(1.0, 2.0), (-1.0, 0.0), (1.0, 1.0), (-2.0, -1.0)]),
+        2, seed: 4
+        )
+
+Which returns the tuple
+
+    (centers: dataframe.DataFrame([(1.0, 1.5), (-1.5, -0.5)], (2, 2)),
+    labels: [0, 1, 0, 1],
+    inertia: 1.5,
+    nIter: 20) 
+
+"""
+)
+object {
+operator()(X, nClusters, init:="k-means++",  
+           nInit:=10, maxIter:=300, tol:=1e-4, parallel:=true, options:=(), seed:seed)
+    {
+    let xSquaredNorms = rowSqNorms(X);
+
+    let (centers: centers, *args) = 
+        match (parallel) with 
+            (true) {
+                _k_means_papply(
+                    X, xSquaredNorms, nClusters, init, 
+                    nInit, maxIter:maxIter, tol:tol, seed:seed, options:options)
+                }
+            (false) {
+                _k_means_serial(X, xSquaredNorms, nClusters, init, 
+                   nInit, maxIter:maxIter, tol:tol, seed:seed, options:options)
+                }
+            ;
+    centers = convertToColumnMajor(centers)
+
+    return (centers: centers, *args)
+    };
+
+`hidden convertToColumnMajor: fun
+(dataframe.RowMajorDataFrame(X)) {
+    dataframe.DataFrame(
+        Vector.range(
+            X.numColumns,
+            fun(colIx) {
+                Vector.range(
+                    X.numRows,
+                    { X[_][colIx] }
+                    )
+                }
+            )
+        );
+    }
+(dataframe.DataFrame(X)) {
+    X
+    }
+;
+
+`hidden
+rowSqNorms: fun(X) {
+    X.rowApply(math.norms.l2_squared)
+    };
+
+`hidden
+sqNorm: fun(X) {
+    X.rowApply(
+        fun(row) {
+            math.norms.l2_squared(row)
+            }
+        ).sum()
+    };
+
+`hidden
+_k_means_papply:
+fun(X, xSquaredNorms, nClusters, init, 
+    nInit, maxIter:, tol:, seed:, options:)
+    {
+    let totalIter = 0;
+    let results = Vector.range(nInit) ~~ { _kmeans_single(
+                X, nClusters, maxIter:maxIter, init:init, tol:tol,
+                xSquaredNorms:xSquaredNorms, seed:seed + _, options:options
+                );
+           };
+
+    let bestResult = nothing;
+    let resultIx = 0;
+    while (resultIx < size(results))
+        {
+        let result = results[resultIx];
+        if (bestResult is nothing or result.inertia < bestResult.inertia)
+            bestResult = result
+
+        totalIter = totalIter + result.nIter
+        resultIx = resultIx + 1;
+        }
+
+    return (centers: bestResult.centers, labels: bestResult.labels, 
+            inertia: bestResult.inertia, nIter:totalIter)
+    };
+
+`hidden
+_k_means_serial:
+fun(X, xSquaredNorms, nClusters, init, 
+    nInit, maxIter:, tol:, seed:, options:)
+    {
+    let totalIter = 0;
+    let bestResult = nothing;
+    
+    let iterIx = 0;
+    while (iterIx < nInit) { 
+        let result = _kmeans_single(
+                X, nClusters, maxIter:maxIter, init:init, tol:tol,
+                xSquaredNorms:xSquaredNorms, seed:seed + iterIx,  
+                options:options
+                );
+
+        totalIter = totalIter + result.nIter;
+
+        if (bestResult is nothing or result.inertia < bestResult.inertia)
+            bestResult = result
+
+        iterIx = iterIx + 1;
+        }
+
+    return (centers:bestResult.centers, labels:bestResult.labels, 
+            inertia:bestResult.inertia, nIter:totalIter)
+    };
+
+`hidden
+_init_centroids:
+fun(X, XandNormsBlocks, nClusters, init, seed, xSquaredNorms:xSquaredNorms, maxAttempts:=5)
+    {
+    match (init) with 
+        ("random") {
+            _init_centroids_random(
+                X, nClusters, seed, xSquaredNorms:xSquaredNorms, maxAttempts:maxAttempts
+                )
+            }
+        ("k-means++") {
+            _init_centroids_kmeans_plus_plus(
+                X, XandNormsBlocks, nClusters:nClusters, nSamples:X.numRows, nFeatures:X.numColumns, seed:seed
+                )
+            }
+    };
+
+`hidden
+pull_n: 
+fun(iterator, n)
+    {
+    let res = [];
+
+    let ix = 0;
+    while (ix < n) 
+        {
+        ix = ix + 1;
+        res = res :: (pull iterator);
+        }
+
+    (res, iterator)
+    };
+
+`hidden
+minimum:
+fun(vec1, vec2)
+    {
+    assertions.assertEqual(size(vec1), size(vec2))
+
+    let tr = [];
+    let ix = 0;
+    while (ix < size(vec1))
+        {
+        tr = tr :: min(vec1[ix], vec2[ix])
+        ix = ix + 1;
+        }
+
+    tr
+    };
+
+`hidden
+euclideanDistances:
+// TODO optimization tom: we can optimize this access for dataframes as well as rowmajordataframes
+fun(X, Y, YNormSquared:, squared:=true)
+    {
+    assertions.assertEqual(X.numRows, 1, msg: "not implemented")
+
+    let X_norm = sqNorm(X);
+
+    let X_first_row = X[0];
+    Vector.range(
+        Y.numRows,
+        fun(rowIx) {
+            let dist = math.dot(X_first_row, Y[rowIx]);
+
+            dist = dist * -2.0;
+            dist = dist + X_norm;
+            dist = dist + YNormSquared[rowIx];
+
+            dist
+            }
+        );
+    };
+
+`hidden
+//assumes that point indices correspond to distinct points (ie, no repeats allowed in sample points)
+_init_centroids_random:
+fun(X, nClusters, seed, xSquaredNorms:xSquaredNorms, maxAttempts:=5)
+    {
+    let rng = iterator(math.random.MersenneTwister(seed));
+    
+    let currentAttempt = 0;
+    let centerIndices = [];
+    while(true) 
+        {
+        currentAttempt = currentAttempt + 1;
+
+        if (currentAttempt == maxAttempts)
+            throw Exception("Failed to produce unique seeding centers after maxAttempts = " 
+                + String(maxAttempts))
+
+        let ix = 0
+        centerIndices = []
+        while (ix < nClusters)
+            {
+            centerIndices = centerIndices :: ((pull rng) % X.numRows);
+            ix = ix + 1;
+            }
+
+        if (size(sorting.unique(centerIndices)) == nClusters)
+            break
+
+        }
+
+    let initialCenters = [];
+
+    let ix = 0;
+    while (ix < nClusters)
+        {
+        initialCenters = initialCenters :: X[centerIndices[ix]]
+        ix = ix + 1;
+        }
+
+    dataframe.RowMajorDataFrame(initialCenters, (nClusters, X.numColumns));
+    };
+
+`hidden
+emptyBins:
+fun(binContainer)
+    {
+    let tr = [];
+
+    let ix = 0;
+    while (ix < size(binContainer))
+        { 
+        if (binContainer[ix] == 0)
+            tr = tr :: ix
+        ix = ix + 1;
+        }
+
+    tr
+    };
+
+`hidden
+// could look into "Scalable K-Means++" for large datasets:
+// http://vldb.org/pvldb/vol5/p622_bahmanbahmani_vldb2012.pdf
+// or canopy clustering for seeding: 
+// http://en.wikipedia.org/wiki/Canopy_clustering_algorithm
+// this function assumes that point indices correspond to distinct
+//  points (ie, no repeats allowed in sample points)
+_init_centroids_kmeans_plus_plus:
+fun(X, XandNormsBlocks, nClusters:, nSamples:, 
+    nFeatures:, seed:, maxAttempts:=5, nLocalTrials:=nothing)
+    {
+    let rng = iterator(math.random.MersenneTwister(seed));
+
+    if (nLocalTrials is nothing)
+        nLocalTrials = 2 + Int64(math.log(nClusters))
+
+    let centers = [ X[(pull rng) % nSamples] ];
+
+    let blockClosestDistSqs = XandNormsBlocks ~~ fun(block) {
+        euclideanDistances(
+            dataframe.RowMajorDataFrame(centers, (1, nFeatures)), 
+            block.samples, YNormSquared:block.samplesSqNorms
+            )
+        };
+
+    let currentPot = blockClosestDistSqs.sum({ _.sum() });
+    let unif = iterator(math.random.UniformReal(0, 1, seed + 1));
+
+    let clusterIx = 1;
+    while (clusterIx < nClusters)
+        {
+        let randVals = nothing;
+        (randVals, unif) = pull_n(unif, nLocalTrials);
+
+        let blockDistSqCumsums = blockClosestDistSqs ~~ fun(block) { block.cumsum() };
+        let candidateIds = 
+            _get_ids(blockCumsums: blockDistSqCumsums, scale: currentPot,
+                           randVals: randVals);
+
+        let bestCandidate = nothing;
+        let bestPot = nothing;
+        let blockBestDistSqs = nothing;
+        
+        let trialIx = 0;
+        while (trialIx < nLocalTrials)
+            {
+            let blockDistToCandidateAtCurrentTrial = 
+                XandNormsBlocks ~~ fun(block) {
+                    euclideanDistances(
+                        dataframe.RowMajorDataFrame([X[candidateIds[trialIx]]], (1, nFeatures)),
+                        block.samples,
+                        YNormSquared:block.samplesSqNorms
+                    )
+                }
+                
+            let newBlockDistSqs = zipWith(
+                minimum,
+                blockDistToCandidateAtCurrentTrial,
+                blockClosestDistSqs
+                );
+
+            let newPot = newBlockDistSqs.sum({ _.sum() });
+            
+            if (bestCandidate is nothing or newPot < bestPot)
+                {
+                bestCandidate = candidateIds[trialIx];
+                bestPot = newPot;
+                blockBestDistSqs = newBlockDistSqs
+                }
+
+            trialIx = trialIx + 1;
+            }
+        centers = centers :: X[bestCandidate]
+        currentPot = bestPot;
+        blockClosestDistSqs = blockBestDistSqs;
+
+        clusterIx = clusterIx + 1
+        }
+    
+    dataframe.RowMajorDataFrame(centers, (nClusters, nFeatures));
+    };
+
+`hidden
+_get_ids:
+fun(blockCumsums:, scale:, randVals:)
+    {
+    let ids = [];
+
+    let randValsIx = 0; // could vec-apply over this guy, but it should be small in size
+    while (randValsIx < size(randVals))
+        {
+        let toSearch = randVals[randValsIx] * scale;
+        let blockIx = 0;
+        let ixOffset = 0;
+
+        while (blockIx < size(blockCumsums))
+            {
+            let currentBlock = blockCumsums[blockIx];
+
+            let blockMax = currentBlock[-1]
+            if (toSearch <= blockMax)
+                {
+                ids = ids :: 
+                    (ixOffset + 
+                     sorting.searchSorted(currentBlock, toSearch, requireExact:false));
+                break;
+                }
+            
+            toSearch = toSearch - blockMax;
+            ixOffset = ixOffset + size(currentBlock)
+                
+            blockIx = blockIx + 1;
+            }
+
+        randValsIx = randValsIx + 1;
+        }
+    ids
+    };
+
+`hidden
+_kmeans_single:
+fun(X, nClusters, maxIter:, init:, tol:, 
+    xSquaredNorms:, seed:, options:)
+    {
+    let (bestLabels, bestInertia, bestCenters) = (nothing, nothing, nothing);
+        
+    let inertia = nothing;
+    let nFeatures = X.numColumns;
+    let blockSize = 
+        try { options.blockSize }
+        catch (...) { 10000000 }
+        ;
+
+    let nBlocks = X.numRows / blockSize;
+    if (X.numRows % blockSize != 0)
+        nBlocks = nBlocks + 1;
+
+    // TODO question: perhaps it would be better to have a zipped vector of tuples in this guy
+    // instead of a pair of vectors
+    let XandNormsBlocks = Vector.range(
+        (0, nBlocks),
+        fun(ix) { 
+            (samples: X[ix * blockSize, (ix + 1) * blockSize],  
+             samplesSqNorms: xSquaredNorms[ix * blockSize, (ix + 1) * blockSize])
+            }
+        );
+
+    let centers = 
+        _init_centroids(
+            X, XandNormsBlocks, nClusters, init, seed, xSquaredNorms:xSquaredNorms
+            );
+
+    let nIter = 0;
+    while (nIter < maxIter)
+        {
+        nIter = nIter + 1;
+
+        let oldCenters = centers;
+
+        (centers, inertia) = _nextCentersAndInertia(
+            X, XandNormsBlocks, centers, 
+            nClusters:nClusters, nFeatures:nFeatures
+            );
+
+        if (bestInertia is nothing or inertia < bestInertia)
+            {
+            bestCenters = centers;
+            bestInertia = inertia;
+            }
+
+        let diff = sqNorm(oldCenters - centers);
+            
+        if (diff < tol)
+            break;
+        }
+
+    bestLabels = _bestLabels(XandNormsBlocks, centers, nFeatures, nClusters);
+
+    return (labels:bestLabels, inertia:bestInertia, centers:bestCenters, nIter:nIter);
+    };
+
+`hidden
+_nextCentersAndInertia:
+fun(X, XandNormsBlocks, centers, 
+    nClusters:nClusters, nFeatures:nFeatures
+   ) {
+    let blockSumsCountsAndInertias = 
+        _blockSumsCountsAndInertias(
+                XandNormsBlocks, centers, 
+                nClusters:nClusters, nFeatures:nFeatures
+                );
+
+    let nextCenters = _centersFromSumsCountsInertias(
+        X,
+        XandNormsBlocks,
+        blockSumsCountsAndInertias,
+        nFeatures,
+        nClusters,
+        centers
+        );
+
+    let inertia = _totalInertia(blockSumsCountsAndInertias);
+
+    (nextCenters, inertia)
+    };
+
+`hidden
+_computeDistances:
+fun(XandNormsBlocks, centers, nClusters, nFeatures) 
+    {
+    let centersSquaredNorms = rowSqNorms(centers);
+
+    let blockDistances = 
+        XandNormsBlocks ~~ { _blockDistances(_, centers, centersSquaredNorms, nClusters, nFeatures) }
+  
+    blockDistances.sum();
+    };
+
+`hidden
+_blockDistances:
+fun(XandNormsBlock, centers, centersSquaredNorms, nClusters, nFeatures)
+    {
+    let blockDistances = [];
+
+    let blockIx = 0;
+    while (blockIx < XandNormsBlock.samples.numRows)
+        {
+        let minDist = -1.0;
+        let centerIx = 0;
+
+        let currentSample = XandNormsBlock.samples[blockIx];
+        let currentSampleNormSquared = XandNormsBlock.samplesSqNorms[blockIx]
+
+        while (centerIx < nClusters)
+            {
+            let currentCenter = centers[centerIx];
+                
+            let dist = math.dot(currentSample, currentCenter);
+            dist = dist * -2.0;
+            dist = dist + centersSquaredNorms[centerIx];
+            dist = dist + currentSampleNormSquared;
+
+            if (minDist == -1.0 or dist < minDist)
+                minDist = dist;
+
+            centerIx = centerIx + 1;
+            }
+
+        blockDistances = blockDistances :: minDist;
+        blockIx = blockIx + 1;            
+        }
+ 
+    blockDistances;
+    };
+
+`hidden
+_centersFromSumsCountsInertias:
+// sumsCountsInertiasDistancesVec should be a vector of tuples of the form
+// (localClusterSums:, localClusterCounts:, inertia:, distances:)
+fun(
+    X, XandNormsBlocks, blockSumsCountsInertiasVec, nFeatures, 
+    nClusters, centers
+  )
+    {
+    let (centerSums, clusterSizes) = 
+            _aggregateSumsAndCounts(
+                blockSumsCountsInertiasVec,
+                nFeatures, 
+                nClusters
+                );    
+
+    let emptyClusters = emptyBins(clusterSizes);
+        
+    let farFromCenters = 
+        if (size(emptyClusters) > 0)
+            {
+            let distances = 
+                _computeDistances(
+                    XandNormsBlocks, centers, 
+                    nClusters, nFeatures
+                    );
+ 
+            sorting.sort(
+                Vector.range(size(distances)), 
+                fun(ix1, ix2) { distances[ix1] > distances[ix2] }
+                );
+            }
+        else { nothing } //not necessary
+        ;
+
+    let emptyClusterIx = 0;
+    while (emptyClusterIx < size(emptyClusters))
+        {
+        let clusterId = emptyClusters[emptyClusterIx];
+        let newCenter = X[farFromCenters[emptyClusterIx]];
+
+        let featureIx = 0;
+        while (featureIx < nFeatures)
+            {
+            centerSums[clusterId * nFeatures + featureIx] = newCenter[featureIx];
+            featureIx = featureIx + 1;
+            }
+
+        clusterSizes[clusterId] = 1.0;
+        emptyClusterIx = emptyClusterIx + 1;
+        }
+
+    let centersAsMV = MutableVector(Float64).create(nFeatures * nClusters, 0.0);
+    let clusterIx = 0
+    while (clusterIx < nClusters)
+        {
+        let featureIx = 0;
+        let clusterCountInverse = 1.0 / clusterSizes[clusterIx];
+        while (featureIx < nFeatures)
+            {
+            centersAsMV[clusterIx * nFeatures + featureIx] = 
+                    centerSums[clusterIx * nFeatures + featureIx] * clusterCountInverse
+
+            featureIx = featureIx + 1
+            }
+
+        clusterIx = clusterIx + 1;
+        }
+
+    let centers = [];
+    let clusterIx = 0;
+    while (clusterIx < nClusters)
+        {
+        let nextRow = ();
+        let featureIx = 0;
+        while (featureIx < nFeatures)
+            {
+            nextRow = nextRow + (centersAsMV[clusterIx * nFeatures + featureIx],);
+            featureIx = featureIx + 1
+            }
+        centers = centers :: nextRow;
+        clusterIx = clusterIx + 1;
+        }
+
+    return dataframe.RowMajorDataFrame(centers, (nClusters, X.numColumns));
+    };
+
+`hidden
+_aggregateSumsAndCounts:
+fun(sumsCountsInertiasDistancesVec, nFeatures, nClusters)
+    {
+    let clusterSizes = MutableVector(Float64).create(nClusters, 0.0);
+    let centerSums = MutableVector(Float64).create(nClusters * nFeatures, 0.0);
+    let blockIx = 0;
+    while (blockIx < size(sumsCountsInertiasDistancesVec))
+        {
+        let block = sumsCountsInertiasDistancesVec[blockIx]
+
+        let clusterIx = 0;
+        while (clusterIx < nClusters)
+            {
+            clusterSizes[clusterIx] = 
+                clusterSizes[clusterIx] + block.localClusterSize[clusterIx];
+
+            let featureIx = 0;
+            while (featureIx < nFeatures)
+                {
+                centerSums[clusterIx * nFeatures + featureIx] = 
+                    centerSums[clusterIx * nFeatures + featureIx] + 
+                    block.localClusterSums[clusterIx * nFeatures + featureIx];
+                featureIx = featureIx + 1;
+                }
+            clusterIx = clusterIx + 1;
+            }
+        blockIx = blockIx + 1;
+        }
+    (centerSums, clusterSizes)
+    };
+
+`hidden
+_totalInertia:
+fun(sumsCountsInertiaDistances)
+    {
+    let totalInertia = 0.0;
+    let blockIx = 0;
+
+    while (blockIx < size(sumsCountsInertiaDistances))
+        {
+        totalInertia = totalInertia + sumsCountsInertiaDistances[blockIx].inertia;
+        blockIx = blockIx + 1;
+        }
+
+    totalInertia
+    };
+
+`hidden
+_blockSumsCountsAndInertias:
+fun(XandNormsBlocks, centers, 
+    nClusters:nClusters, nFeatures:nFeatures)
+    {
+    let centersSquaredNorms = rowSqNorms(centers)
+
+    XandNormsBlocks ~~ fun(block) {
+        _sumsCountsInertias(
+            block,
+            centers,
+            centersSquaredNorms,
+            nClusters,
+            nFeatures
+            )
+        }
+    };
+
+`hidden
+_sumsCountsInertias:
+fun(block, centers, centersSquaredNorms, nClusters, nFeatures)
+    {
+    let localClusterSums = MutableVector(Float64).create(nFeatures * nClusters, 0.0);
+    let localClusterSize = MutableVector(Float64).create(nClusters, 0.0);
+
+    let inertia = 0.0;
+
+    let blockIx = 0;
+    while (blockIx < block.samples.numRows)
+        {
+        let minDist = -1.0;
+        let closestCenter = nothing;
+        let bestCenterIx = nothing;
+
+        let currentSample = block.samples[blockIx];
+        let currentSampleNormSquared = block.samplesSqNorms[blockIx];
+
+        let centerIx = 0;
+        while (centerIx < nClusters)
+            {
+            let currentCenter = centers[centerIx];
+
+            let dist = math.dot(currentSample, currentCenter);
+            dist = dist * -2.0;
+            dist = dist + centersSquaredNorms[centerIx];
+            dist = dist + currentSampleNormSquared;  
+
+            if (minDist == -1.0 or dist < minDist)
+                {
+                minDist = dist;
+                bestCenterIx = centerIx;
+                }
+
+            centerIx = centerIx + 1;
+            }
+        inertia = inertia + minDist;
+
+        let featureIx = 0;
+        while (featureIx < nFeatures)
+            {
+            localClusterSums[bestCenterIx * nFeatures + featureIx] = 
+                localClusterSums[bestCenterIx * nFeatures + featureIx] + currentSample[featureIx];
+
+            featureIx = featureIx + 1;
+            }
+
+        localClusterSize[bestCenterIx] = localClusterSize[bestCenterIx] + 1.0;
+
+        blockIx = blockIx + 1;
+        }
+
+        (localClusterSums:iter.toVector(localClusterSums), localClusterSize:iter.toVector(localClusterSize), 
+     inertia:inertia)
+    };
+
+`hidden
+_bestLabels:
+fun(XandNormsBlocks, centers, nFeatures, nClusters)
+    {
+    let blockLabels = XandNormsBlocks ~~ { _blockLabelFun(_, centers, nFeatures, nClusters) };
+    
+    let labels = [];
+    let blockIx = 0
+    while (blockIx < size(blockLabels))
+        {
+        labels = labels + blockLabels[blockIx];
+        blockIx = blockIx + 1;
+        }
+
+    labels
+    };
+
+`hidden
+_blockLabelFun:
+fun(XandNormsBlock, centers, nFeatures, nClusters)
+    {
+    let centersSquaredNorms = rowSqNorms(centers);
+    let blockLabels = [];
+    let blockIx = 0;
+    let nSamples = XandNormsBlock.samples.numRows;
+
+    while (blockIx < nSamples)
+        {
+        let minDist = -1.0;
+        let bestLabel = nothing;
+
+        let centerIx = 0;
+        let currentSample = XandNormsBlock.samples[blockIx];
+        let currentSampleSqNorm = XandNormsBlock.samplesSqNorms[blockIx]
+
+        while (centerIx < nClusters)
+            {
+            let dist = math.dot(currentSample, centers[centerIx]);
+            dist = dist * -2.0;
+            dist = dist + centersSquaredNorms[centerIx];
+            dist = dist + currentSampleSqNorm;
+
+            if (minDist == -1.0 or dist < minDist)
+                {
+                minDist = dist;
+                bestLabel = centerIx;
+                }
+            centerIx = centerIx + 1;
+            }
+        blockLabels = blockLabels :: bestLabel;
+
+        blockIx = blockIx + 1;
+        }
+
+    blockLabels;
+    };
+}

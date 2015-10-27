@@ -1,0 +1,881 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "View.hppml"
+#include "BundlingChannel.hppml"
+#include <boost/lexical_cast.hpp>
+
+namespace SharedState {
+
+void View::serviceChannelLoop(PolymorphicSharedWeakPtr<View> inViewWeakPtr, channel_ptr_type channel)
+	{
+	// TODO anybody This is really complicated and belongs in another level of abstraction
+	// Maybe this class can descend from, or access another whose sole purpose it is, is to
+	// send / receieve messages and be notified of channel-related events
+	//PolymorphicSharedPtr<View> p0 = inViewWeakPtr.lock();
+
+	do  {
+		PolymorphicSharedPtr<View> viewPtr = inViewWeakPtr.lock();
+		if (!viewPtr)
+			break;
+		viewPtr.reset();
+
+		MessageIn msg;
+
+		try {
+			msg = channel->get();
+			}
+		catch(std::logic_error& e)
+			{
+			LOGGER_DEBUG_T log = LOGGER_DEBUG;
+			log << "received exception in View::read loop" << "\n";
+			log << e.what();
+
+			viewPtr = inViewWeakPtr.lock();
+			if (!viewPtr)
+				break;
+			viewPtr->channelDisconnected(channel);
+			break;
+			}
+		catch(...)
+			{
+			LOG_CRITICAL << "serviceChannelLoop caught unknown exception!";
+
+			viewPtr = inViewWeakPtr.lock();
+			if (viewPtr)
+				viewPtr->channelDisconnected(channel);
+
+			break;
+			}
+
+		viewPtr = inViewWeakPtr.lock();
+		if (!viewPtr)
+			break;
+
+		try	{
+			do {
+				viewPtr->incomingMessage(msg, channel);
+				} while (channel->get(msg));
+
+			if (!viewPtr->isFrozen())
+				viewPtr->updateState();
+			}
+		catch(std::logic_error& e)
+			{
+			LOGGER_DEBUG_T log = LOGGER_DEBUG;
+			log << "received exception in View::read loop" << "\n";
+			log << e.what();
+
+			viewPtr = inViewWeakPtr.lock();
+			if (!viewPtr)
+				break;
+
+			viewPtr->channelDisconnected(channel);
+			break;
+			}
+		catch(...)
+			{
+			LOG_CRITICAL << "serviceChannelLoop caught unknown exception!";
+
+			viewPtr = inViewWeakPtr.lock();
+			if (viewPtr)
+				viewPtr->channelDisconnected(channel);
+
+			break;
+			}
+		} while(true);
+	}
+
+class SubscriptionListener : public Listener {
+public:
+		SubscriptionListener(const set<KeyRange>& inSig, Queue<bool>& inQ) : signature(inSig) , q(inQ){}
+		virtual void disconnected(void)
+			{
+			q.write(false);
+			}
+		virtual void subscriptionLoadStarted(subscription_ptr_type inSub)
+			{
+			if (inSub->ranges() == signature)
+				q.write(inSub->wasSuccessful());
+			}
+private:
+		Queue<bool>&							q;
+		set<KeyRange>							signature;
+};
+
+
+View::View(bool debugPrint) :
+		mFlushId(0),
+		mChannelAddedOrPending(false),
+		mDebugPrint(debugPrint),
+		mMaxId(1),
+		mIsFrozen(false),
+		mMustSubscribe(true),
+		mMinId(numeric_limits<uint64_t>::max())
+	{
+	mFrozenView.reset(new FrozenView(mReceivedKeyRanges, mDebugPrint));
+	}
+
+View::~View()
+	{
+    teardown();
+	}
+
+void View::teardown(void)
+	{
+	try
+		{
+		disconnect();
+		}
+	catch(std::logic_error& inError)
+		{
+		LOG_CRITICAL << "Got an exception tearing down a view: " << inError.what();
+		}
+	catch(...)
+		{
+		LOG_CRITICAL << "Got an unknown exception tearing down a view.";
+		}
+    mClientId.invalidate();
+    mChannel.invalidate();
+
+	if (mChannelPendingConnect)
+		mChannelPendingConnect->disconnect();
+
+    for (auto it = mFlushResponses.begin(); it != mFlushResponses.end(); ++it)
+        it->second->invalidate();
+	}
+Hash View::rand(void)
+	{
+	waitConnect();
+	return mRandomGenerator.rand();
+	}
+
+uint32_t View::randInt(void)
+	{
+	return rand()[0];
+	}
+
+void View::disconnect(void)
+	{
+	Nullable<channel_ptr_type> channel(mChannel.getNonblocking());
+	if (channel and *channel)
+		(*channel)->disconnect();
+	}
+
+void View::add(channel_ptr_type inChannel)
+	{
+	boost::recursive_mutex::scoped_lock 	lock(mMutex);
+
+	mChannelPendingConnect = makeBundleChannel(inChannel);
+
+	lassert_dump(!mChannelAddedOrPending, "already added a channel to this view.");
+	mChannelAddedOrPending = true;
+
+	const size_t kStackSize = 128 * 1024;
+
+	Ufora::thread::spawnAndDetach(
+		boost::bind(serviceChannelLoop,
+			PolymorphicSharedWeakPtr<View>(this->polymorphicSharedPtrFromThis()),
+			mChannelPendingConnect
+			),
+		kStackSize
+		);
+
+	LOG_INFO << "View " << (void*)this << " Sending a new session request for SharedState.";
+	mChannelPendingConnect->write(MessageOut::RequestSession(null()));
+	}
+
+void View::waitConnect(void) // blocks until the connection is established
+	{
+	fflush(stdout);
+	mChannel.get();
+	}
+
+bool View::waitConnectTimeout(double inTimeout) // blocks until the connection is established
+	{
+	fflush(stdout);
+
+	return mChannel.waitTimeout(inTimeout);
+	}
+
+Nullable<ValueType> View::getValue(const Key& inKey)
+	{
+	boost::recursive_mutex::scoped_lock 	lock(mMutex);
+
+	if (!isFrozen())
+		throw std::logic_error("Cannot call getValue when view is not Frozen");
+
+	lassert(isFrozen());
+
+	return mFrozenView->getValue(inKey);
+	}
+
+Nullable<Key> View::prevKey(const Key& inKey)
+	{
+	boost::recursive_mutex::scoped_lock 	lock(mMutex);
+
+	lassert(isFrozen());
+	return mFrozenView->prevKey(inKey);
+	}
+
+Nullable<Key> View::nextKey(const Key& inKey)
+	{
+	boost::recursive_mutex::scoped_lock 	lock(mMutex);
+
+	lassert(isFrozen());
+	return mFrozenView->nextKey(inKey);
+	}
+
+void View::setMustSubscribe(bool inMustSubscribe)
+	{
+	mMustSubscribe = inMustSubscribe;
+	}
+
+void View::write(const KeyUpdate& update)
+	{
+	boost::recursive_mutex::scoped_lock 	lock(mMutex);
+
+	if (!isFrozen())
+		throw std::logic_error("Cannot call write when view is not Frozen");
+
+	lassert(update.key().id().size() == update.key().keyspace().dimension());
+
+	mWrites.push_back(update);
+	}
+
+uint32_t View::size(void) const
+	{
+	boost::recursive_mutex::scoped_lock 	lock(mMutex);
+
+	return mWrites.size();
+	}
+
+bool View::connected(void) const
+	{
+	return mChannel.getNonblocking();
+	}
+
+bool View::hasWrites(void) const
+	{
+	boost::recursive_mutex::scoped_lock 	lock(mMutex);
+
+	return mWrites.size();
+	}
+
+void View::begin(void)
+	{
+	waitConnect();
+
+	boost::recursive_mutex::scoped_lock 	lock(mMutex);
+
+	lassert(connected());
+	lassert(!isFrozen()); // make sure no transaciton is being processed
+	mIsFrozen = true;
+	mWrites.clear();
+	}
+
+uint32_t View::abort(void)
+	{
+	boost::recursive_mutex::scoped_lock 	lock(mMutex);
+	uint32_t tr = 0;
+	mIsFrozen = false;
+	mWrites.clear();
+	updateState();
+	return tr;
+	}
+
+void View::end()
+	{
+	boost::recursive_mutex::scoped_lock 	lock(mMutex);
+	lassert(connected());
+	lassert(isFrozen());
+
+	uint64_t id = 0;
+	if (mWrites.size())
+		{
+		map<Key, PartialEvent> partials;
+		Event e(getNextId(), mWrites);
+		e.split(partials);
+		id = e.id().eventId();
+
+		for (map<Key, PartialEvent>::iterator it = partials.begin(); it != partials.end(); ++it)
+			{
+			if (!isValidEvent(it->second))
+				throw std::logic_error("Event is Invalid " + boost::lexical_cast<std::string>(it->second.keyspace()));
+
+			MessageOut msg(MessageOut::PushEvent(it->second));
+
+			channel_ptr_type channel = mChannel.get();
+
+			if (!channel)
+				throw ChannelDisconnected();
+
+			mChannel.get()->write(msg);
+
+			mFrozenView->applyEvent(it->second, false);
+			}
+		}
+
+	mWrites.clear();
+	mIsFrozen = false;
+	mMaxId = max(mMaxId, id);
+	updateState();
+	}
+
+bool View::isValidEvent(const PartialEvent& event) const
+	{
+	if (!mMustSubscribe)
+		return true;
+
+	return mReceivedKeyRanges.end() != std::find_if(
+		mReceivedKeyRanges.begin(),
+		mReceivedKeyRanges.end(),
+		[&event] (const KeyRange& keyRange) { return keyRange.contains(event.key()); }
+		);
+	}
+
+bool View::rangeReceived(const KeyRange& inRange) const
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return !mReceivedKeyRanges.intersection(inRange).size();
+	}
+
+bool View::isFrozen(void) const
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+	return mIsFrozen;
+	}
+
+void View::unsubscribe(KeyRange inRange)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	mChannel.get()->write(MessageOut::Unsubscribe(inRange));
+
+	mRequestedKeyRanges.erase(inRange);
+	mReceivedKeyRanges.erase(inRange);
+	}
+
+map<channel_ptr_type, set<KeyRange> > View::subscribeChannels(const set<KeyRange>& toAdd)
+	{
+	map<channel_ptr_type, set<KeyRange> > tr;
+	tr[mChannel.get()] = toAdd;
+
+	return tr; // return them all for now...
+	}
+
+void View::flush(bool assertNotFrozen)
+	{
+	LOG_DEBUG << "Shared state view: starting flush operation";
+
+	uint32_t flushId;
+	pair<map<uint32_t, boost::shared_ptr<BackgroundInitializedResource<uint32_t> > >::iterator, bool> insertResult;
+	boost::shared_ptr<BackgroundInitializedResource<uint32_t> > response;
+
+		{
+		boost::recursive_mutex::scoped_lock 	lock(mMutex);
+
+		if (!connected())
+			throw std::logic_error("Not connected to a manager");
+
+		if (assertNotFrozen && isFrozen())
+			throw std::logic_error("View is frozen so messages will still be pending");
+
+		flushId = mFlushId++;
+		mChannel.get()->write(MessageOut::FlushRequest(flushId));
+
+		response = boost::shared_ptr<BackgroundInitializedResource<uint32_t> >(
+			new BackgroundInitializedResource<uint32_t>()
+			);
+
+		insertResult = mFlushResponses.insert(make_pair(flushId, response));
+		lassert(insertResult.second); // verify we actually inserted
+		lassert(insertResult.first->second == response); //verify it's our actaul object
+		}
+
+	lassert(response->get() == flushId);
+
+		{
+		boost::recursive_mutex::scoped_lock 	lock(mMutex);
+
+		mFlushResponses.erase(insertResult.first);
+		}
+
+	LOG_DEBUG << "Shared state view: flushed";
+	}
+
+void View::subscribe(KeyRange inRange, bool inWait)
+	{
+	waitConnect();
+
+	LOG_INFO << "SharedState subscribing to " << inRange;
+
+	subscription_ptr_type s;
+
+	set<KeyRange> toAdd;
+		{
+		boost::recursive_mutex::scoped_lock 	lock(mMutex);
+
+		toAdd = mRequestedKeyRanges.difference(inRange);
+		mRequestedKeyRanges.insert(toAdd); // prevents multiple subscriptions of the same thing...
+
+		auto newSubscriptions = subscribeChannels(toAdd);
+		s = subscription_ptr_type(
+			new Subscription(toAdd, newSubscriptions)
+			);
+
+		mPendingSubscriptions.push_back(s);
+		mFrozenView->onSubscribe(s);
+		}
+
+	if (inWait)
+		{
+		double t0 = curClock();
+
+		LOG_DEBUG << "SharedState blocking on subscription to " << inRange;
+
+		lassert_dump(
+			waitForSubscription(toAdd),
+			"Failed to subscribe to " << inRange
+			);
+
+		if (curClock() - t0 > .15)
+			LOG_WARN << "SharedState subscription to " << inRange << " completed in "
+				<< curClock() - t0 << " seconds";
+		else
+			LOG_DEBUG << "SharedState subscription to " << inRange << " completed in "
+				<< curClock() - t0 << " seconds";
+		}
+	}
+
+
+bool View::setRecieved(const set<KeyRange>& in)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return 0 == std::accumulate(
+		in.begin(),
+		in.end(),
+		0U,
+		[this] (uint32_t sum, const KeyRange& range)
+			{
+			return sum + mReceivedKeyRanges.difference(range).size();
+			}
+		);
+	}
+
+bool View::waitForSubscription(const set<KeyRange>& in)
+	{
+	waitConnect();
+
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	lassert(!isFrozen());
+	if (setRecieved(in) || !connected())
+		return setRecieved(in);
+
+	Queue<bool>  queue;
+	PolymorphicSharedPtr<Listener> l(new SubscriptionListener(in, queue));
+	addListener(l);
+	lock.unlock();
+	return queue.get();
+	}
+
+void View::addListener(const PolymorphicSharedPtr<Listener>& inListener)
+	{
+	boost::recursive_mutex::scoped_lock 	lock(mMutex);
+
+	mListeners.push_back(PolymorphicSharedWeakPtr<Listener>(inListener));
+	}
+
+void View::channelDisconnected(channel_ptr_type inChannel)
+	{
+	boost::recursive_mutex::scoped_lock 	lock(mMutex);
+
+
+    LOG_INFO << "SharedState view is disconnecting";
+
+    //all auth requests have failed
+	while (mPendingAuthRequests.size())
+		{
+		mPendingAuthRequests.front()->write(false);
+		mPendingAuthRequests.pop_front();
+		}
+
+	//all flushes are failed
+	for (auto idAndPtr: mFlushResponses)
+		idAndPtr.second->invalidate();
+
+    try
+        {
+        if (!mChannel.getNonblocking())
+            {
+            //we never succeeded in connecting
+            lassert(mChannelAddedOrPending);
+            mChannelAddedOrPending = false;
+            LOG_INFO << "SharedState view disconnecting without a successful handshake.";
+            return;
+            }
+        }
+    catch(std::logic_error e)
+        {
+        LOG_INFO << "View is being torn down so mChannel is no longer valid View " << (void*)this  << endl  << e.what();
+        }
+
+
+    channel_ptr_type ourChannel;
+    bool caughtException = false;
+    try
+        {
+        ourChannel = mChannel.get();
+        }
+    catch(std::logic_error e)
+        {
+        LOG_INFO << "View is being torn down so mChannel is no longer valid View " << (void*)this << endl  << e.what();
+        caughtException = true;
+        }
+
+    if (!caughtException)
+        lassert(inChannel == ourChannel);
+
+    LOG_DEBUG << "resetting channel";
+	mChannel.reset(channel_ptr_type());
+
+	mChannelAddedOrPending = false;
+
+	for (int32_t k = 0; k < mListeners.size(); k++)
+		{
+		PolymorphicSharedPtr<Listener> listener = mListeners[k].lock();
+		if (listener)
+			{
+			try
+				{
+				lock.unlock();
+				listener->disconnected();
+				lock.lock();
+				}
+			catch(...)
+				{
+				}
+			}
+		else
+			{
+			mListeners.erase(mListeners.begin() + k);
+			k--;
+			}
+		}
+	}
+
+
+void View::triggerSubscriptionListeners(subscription_ptr_type sub, bool isFinished)
+	{
+	boost::recursive_mutex::scoped_lock 	lock(mMutex);
+
+	for (int32_t k = 0; k < mListeners.size(); k++)
+		{
+		PolymorphicSharedPtr<Listener> listener = mListeners[k].lock();
+		if (listener)
+			{
+			try
+				{
+				lock.unlock();
+				if (isFinished)
+					listener->subscriptionLoadFinished(sub);
+				else
+					listener->subscriptionLoadStarted(sub);
+				lock.lock();
+				}
+			catch(...)
+				{
+				}
+			}
+		else
+			{
+			mListeners.erase(mListeners.begin() + k);
+			k--;
+			}
+		}
+	}
+
+uint32_t View::getClientId(void)
+	{
+	return mClientId.get();
+	}
+
+Nullable<uint32_t> View::getClientIdNowait(void) const
+	{
+	return mClientId.getNonblocking();
+	}
+
+void View::loadSubscription_(subscription_ptr_type inSub)
+	{
+	//mutex should already be locked at this point.
+
+	uint32_t numEvents = inSub->values().size() + inSub->events().size();
+	while (inSub->values().size())
+		{
+		mMaxId = max(mMaxId, (inSub->values().front().second).id().eventId());
+		mFrozenView->updateBaseValue(
+			inSub->values().front().first,
+			inSub->values().front().second,
+			(inSub->values().front().second).id()
+			);
+		inSub->values().pop_front();
+		}
+
+	while (inSub->events().size())
+		{
+		mMaxId = max(mMaxId, inSub->events().front().signature().id().eventId());
+		mFrozenView->applyEvent(inSub->events().front());
+		inSub->events().pop_front();
+		}
+
+	LOG_INFO << numEvents << " loaded in subscription to " << prettyPrintString(inSub->ranges());
+
+
+	mReceivedKeyRanges.insert(inSub->ranges());
+	triggerSubscriptionListeners(inSub, false);
+	triggerChangeListeners();
+	triggerSubscriptionListeners(inSub, true);
+	}
+
+UniqueId View::getNextId(void)
+	{
+	mMaxId++;
+	return UniqueId(mMaxId, getClientId());
+	}
+
+
+void View::incomingMessage(const MessageIn& inMessage, channel_ptr_type inChannel)
+	{
+	boost::recursive_mutex::scoped_lock 	lock(mMutex);
+
+	@match MessageIn(inMessage)
+		-|	Bundle(messages) ->> {
+				for (long k = 0; k < messages.size();k++)
+					incomingMessage(messages[k], inChannel);
+				}
+		-|	KeyRangeLoaded(range) ->> {
+				auto subscriptionIter = findSubscription(range);
+				lassert_dump(
+					subscriptionIter != mPendingSubscriptions.end(),
+					"View is already subscribed to " << range);
+
+				auto subscription = *subscriptionIter;
+				if (subscription->keyRangeLoaded(inChannel, range, true) && !isFrozen())
+					{
+					loadSubscription_(subscription);
+					mPendingSubscriptions.erase(subscriptionIter);
+					}
+				}
+		-|	InvalidKeyspaceRead(range) ->> {
+				auto subscriptionIter = findSubscription(range);
+				lassert_dump(
+					subscriptionIter != mPendingSubscriptions.end(),
+					"No pending subscription for range: " << range);
+
+				auto subscription = *subscriptionIter;
+				if (subscription->keyRangeLoaded(inChannel, range, false) && !isFrozen())
+					{
+					loadSubscription_(subscription);
+					mPendingSubscriptions.erase(subscriptionIter);
+					}
+				}
+		-|	InvalidKeyspaceWrite(keyspace) ->> {
+				//right now, just log this and dump it on the floor
+				LOG_ERROR << "write to keyspace " << keyspace << " failed. Do you have authorization?";
+				disconnect();
+				}
+		-|	BaseValue(key, value) ->> {
+				auto subscriptionIter = findSubscription(key);
+				lassert_dump(
+					subscriptionIter != mPendingSubscriptions.end(),
+					"No pending subscription for key: " << key);
+
+				auto subscription = *subscriptionIter;
+				subscription->addValue(make_pair(key, value));
+				}
+		-|	Initialize(client, manager, generator) ->> {
+				//TODO DESIGN anybody: we should always send a generator...
+				if(generator)
+					mRandomGenerator = *generator;
+
+				LOG_DEBUG << "View " << (void*)this << " received a view ID of " << client;
+				mClientId.set(client);
+				mChannel.set(inChannel);
+				mChannelPendingConnect.reset();
+				}
+		-|	Event(event) ->> {
+				auto subscriptionIter = findSubscription(event.key());
+				if (subscriptionIter != mPendingSubscriptions.end())
+					(*subscriptionIter)->addEvent(event);
+				else
+					mPendingEvents.push_back(event);
+				}
+		-|	FlushResponse(flushId) ->> {
+				auto it = mFlushResponses.find(flushId);
+				lassert(it != mFlushResponses.end());
+				it->second->set(flushId);
+				}
+		-|	AuthorizationTokenResponse(wasValid) ->> {
+				LOG_INFO << "View received auth response of " << (wasValid ? "valid":"invalid");
+
+				lassert_dump(mPendingAuthRequests.size(), "Wasn't expecting an auth response!");
+
+				mPendingAuthRequests.front()->write(wasValid);
+				mPendingAuthRequests.pop_front();
+				}
+		-|	MinimumId(id, maxId) ->> {
+
+				mMinId = id;
+
+				mMaxId = max(maxId, mMaxId);
+
+				inChannel->write(MessageOut::MinimumIdResponse(mMaxId));
+
+				mFrozenView->compact(*mMinId);
+				}
+	}
+
+
+std::deque<subscription_ptr_type>::iterator View::findSubscription(const Key& key)
+	{
+	return std::find_if(
+		mPendingSubscriptions.begin(),
+		mPendingSubscriptions.end(),
+		[&key] (const subscription_ptr_type& subscription) { return subscription->contains(key); }
+		);
+	}
+
+std::deque<subscription_ptr_type>::iterator View::findSubscription(const KeyRange& range)
+	{
+	return std::find_if(
+		mPendingSubscriptions.begin(),
+		mPendingSubscriptions.end(),
+		[&range] (const subscription_ptr_type& subscription)
+			{
+			return subscription->ranges().end() != std::find_if(
+				subscription->ranges().begin(),
+				subscription->ranges().end(),
+				[&range] (const KeyRange& subscriptionRange) { return subscriptionRange.overlaps(range); }
+				);
+			}
+		);
+	}
+
+void View::updateState(void)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	auto it = mPendingSubscriptions.begin();
+	while(it != mPendingSubscriptions.end())
+		{
+		if((*it)->loaded())
+			{
+			loadSubscription_(*it);
+			it = mPendingSubscriptions.erase(it);
+			}
+		else
+			++it;
+		}
+
+	while (mPendingEvents.size())
+		{
+		mFrozenView->applyEvent(mPendingEvents.front());
+		mMaxId = max(mMaxId, mPendingEvents.front().signature().id().eventId() + 1);
+		mPendingEvents.pop_front();
+		}
+
+	triggerChangeListeners();
+	}
+
+void View::triggerChangeListeners(void)
+	{
+	set<Key> toUpdate = mFrozenView->getChanged();
+	for (int32_t k = 0; k < mListeners.size(); k++)
+		{
+		PolymorphicSharedPtr<Listener> listener = mListeners[k].lock();
+		if (listener)
+			{
+			try
+				{
+				listener->changed(toUpdate);
+				}
+			catch(...)
+				{
+				LOG_ERROR << "IN TRIGGER CHANGES?" << endl;
+				}
+			}
+		else
+			{
+			mListeners.erase(mListeners.begin() + k);
+			k--;
+			}
+		}
+	}
+
+ostream& operator<<(ostream& tr, const View& view)
+	{
+	Nullable<uint32_t> id(view.getClientIdNowait());
+	if (id)
+		tr << "View(" << *id << ")";
+	else
+		tr << "View(uninitialized)";
+	return tr;
+	}
+
+bool View::sendAuthorizationMessage(
+				std::string javaWebToken,
+				double inTimeout
+				)
+	{
+	boost::shared_ptr<Queue<bool> > authEvent(new Queue<bool>());
+
+	double t0 = curClock();
+
+	LOG_INFO << "View waiting for connection";
+	if (!waitConnectTimeout(inTimeout))
+		return false;
+
+	//reduce the timeout by the time elapsed waiting for a connection.
+	inTimeout -= curClock() - t0;
+
+		{
+		boost::recursive_mutex::scoped_lock 	lock(mMutex);
+
+		mPendingAuthRequests.push_back(authEvent);
+
+		LOG_INFO << "View sent auth token. Awaiting response.";
+
+		mChannel.get()->write(MessageOut::AuthorizationToken(javaWebToken));
+		}
+
+	bool tr;
+
+	if (!authEvent->getTimeout(tr, inTimeout))
+		{
+		LOG_INFO << "View auth response: failed";
+		return false;
+		}
+
+	LOG_INFO << "View auth response: succeeded";
+	return tr;
+	}
+
+}; // shared_state
+
+
+

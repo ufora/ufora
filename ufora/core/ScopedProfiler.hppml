@@ -1,0 +1,169 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "Clock.hpp"
+#include "Logging.hpp"
+#include "threading/ScopedThreadLocalContext.hpp"
+#include "math/StatisticsAccumulator.hpp"
+#include <map>
+
+namespace Ufora {
+
+/**************************
+
+ScopedProfiler
+
+Allows us to measure performance of specific tasks on callback threads.
+
+Task pools (like CallbackSchedulers) create a ScopedProfilerStorage object
+to hold timings. Before executing tasks, they should instantiate a 
+ScopedProfilerRoot task, as such
+
+	class SomeKindOfTaskExecutor {
+	public:
+		...
+
+		void taskLoop()
+			{
+			while (true)
+				{
+				...
+
+				ScopedProfilerRoot<std::string> profilerRoot(mProfilerStorage);
+
+				doTask();
+				}
+			}
+
+	private:
+		ScopedProfilerStorage<std::string> mProfilerStorage;
+	}
+
+within callbacks, clients can mark off specific areas of code using
+
+	ScopedProfiler<std::string> task("DoingSomething");
+
+Please note that the argument to the profiler is a const char*, and this
+must be valid for the lifetime of all the objects involved.
+
+***************************/
+
+template<class key_type>
+class ScopedProfilerStorage {
+public:
+	ScopedProfilerStorage() :
+			mTotalElapsed(0)
+		{
+		}
+
+	void observe(const key_type& tag, double elapsed)
+		{
+		mTimings[tag].observe(elapsed, 1.0);
+		mTotalElapsed += elapsed;
+		}
+
+	const std::map<key_type, 
+			StatisticsAccumulator<double, double> >& getTimings() const
+		{
+		return mTimings;
+		}
+
+	double getTimeElapsed() const
+		{
+		return mTotalElapsed;
+		}
+
+	void clear()
+		{
+		mTotalElapsed = 0;
+		mTimings.clear();
+		}
+
+	void merge(const ScopedProfilerStorage& other)
+		{
+		for (auto keyAndTiming: other.mTimings)
+			mTimings[keyAndTiming.first] += keyAndTiming.second;
+		}
+
+private:
+	std::map<key_type, StatisticsAccumulator<double, double> > mTimings;
+
+	double mTotalElapsed;
+};
+
+template<class key_type>
+class ScopedProfilerRoot {
+public:
+	ScopedProfilerRoot(ScopedProfilerStorage<key_type>& inStorage) : 
+			mSetScopedProfilerRoot(this),
+			mStorage(inStorage)
+		{
+		if (mSetScopedProfilerRoot.getOriginalPtr())
+			LOG_WARN << "A ScopedProfilerRoot already exists on the stack!";
+		}
+
+	void observe(const key_type& tag, double elapsed)
+		{
+		mStorage.observe(tag, elapsed);
+		}
+
+private:
+	Ufora::threading::ScopedThreadLocalContext<ScopedProfilerRoot<key_type> > mSetScopedProfilerRoot;
+
+	ScopedProfilerStorage<key_type>& mStorage;
+};
+
+template<class key_type>
+class ScopedProfiler {
+public:
+	ScopedProfiler(const key_type& tag) : 
+			mT0(curClock()),
+			mTag(tag),
+			mSetScopedProfiler(this)
+		{
+		}
+
+	~ScopedProfiler()
+		{
+		ScopedProfilerRoot<key_type>* root = 
+			Ufora::threading::ScopedThreadLocalContext<ScopedProfilerRoot<key_type> >::getPtr();
+
+		double elapsed = curClock() - mT0;
+
+		if (root)
+			root->observe(mTag, elapsed);
+
+		ScopedProfiler<key_type>* parent = mSetScopedProfiler.getOriginalPtr();
+
+		if (parent)
+			parent->timeElapsedWithinChild(elapsed);
+		}
+
+private:
+	void timeElapsedWithinChild(double elapsed)
+		{
+		mT0 += elapsed;
+		}
+
+	Ufora::threading::ScopedThreadLocalContext<ScopedProfiler<key_type> > mSetScopedProfiler;
+
+	key_type mTag;
+
+	double mT0;
+};
+
+}

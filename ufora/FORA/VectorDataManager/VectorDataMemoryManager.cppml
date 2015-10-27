@@ -1,0 +1,1034 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "VectorDataMemoryManager.hppml"
+#include "../Core/ExecutionContextMemoryPool.hppml"
+#include "../Core/ExecutionContextImpl.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "VectorPage.hppml"
+#include "../../core/MemoryUtil.hpp"
+#include "../../core/Memory.hpp"
+#include "../../core/lassert.hpp"
+#include "../../core/Logging.hpp"
+#include "LargeMemoryBlockTracker.hppml"
+#include <unistd.h>
+#include <sys/mman.h>
+
+const uint64_t VectorDataMemoryManager::DEFAULT_MAX_BYTES_PER_POOL = 512 * 1024 * 1024;
+const uint64_t VectorDataMemoryManager::DEFAULT_MAX_TOTAL_BYTES = 1024 * 1024 * 1024;
+const uint64_t VectorDataMemoryManager::DEFAULT_CALLBACK_GRANULARITY = 64 * 1024 * 1024;
+
+namespace {
+
+static int64_t gb = 1024 * 1024 * 1024;
+	
+size_t roundUp(size_t size, size_t blockSize)
+	{
+	if (size % blockSize)
+		return size + (blockSize - size % blockSize);
+
+	return size;
+	}
+
+}
+
+VectorDataMemoryManager::VectorDataMemoryManager(
+				PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+				PolymorphicSharedPtr<CallbackScheduler> inCallbackSchedulerForMappableMemoryPoolOps,
+				uint64_t inMaxBytesPerPool,
+				uint64_t inMaxTotalBytes,
+				RandomHashGenerator& inHashGenerator
+				) : 
+		mCallbackScheduler(inCallbackScheduler),
+		mCallbackSchedulerForMappableMemoryPoolOps(inCallbackSchedulerForMappableMemoryPoolOps),
+		mTotalBytesUsed(0),
+		mTotalBytesUsedByExecutionContexts(0),
+		mTotalBytesUsedByVectorPages(0),
+		mTotalBytesUsedByPagelets(0),
+		mTotalBytesUsedByBigVectorHandles(0),
+		mMaxTotalBytes(inMaxTotalBytes),
+		mMaxBytesPerPool(inMaxBytesPerPool),
+		mMemoryCallbackGranularity(DEFAULT_CALLBACK_GRANULARITY),
+		mHashGenerator(inHashGenerator),
+		mOnTotalBytesUsedByExecutionContextsChanged(inCallbackScheduler),
+		mOnTotalBytesUsedChanged(inCallbackScheduler),
+		mOnIsFullChanged(inCallbackScheduler),
+		mTotalBytesMmapped(0),
+		mPageletBytesWithinExecutionContexts(0),
+		mPageletBytesWithinVectorPages(0),
+		mOsPageSize(getpagesize()),
+		mTeardownGate(new Ufora::threading::Gate(false)),
+		mTotalBytesEverMMapped(0),
+		mTimestampOfLastLogMessage(0),
+		mTotalBytesMMappedAtLastLogMessage(0),
+		mSlabSize(1024 * 1024),
+		mSmallAllocSize(256 * 1024),
+		mVerySmallAllocSize(8 * 1024),
+		mTotalBytesInFrozenPagelets(0),
+		mTotalBytesAllocatedByFrozenPagelets(0),
+		mTotalPagelets(0),
+		mTcMallocMemoryCountedInEcMemory(0),
+		mTcMallocMemoryIsECMemory(false),
+		mLastTimeTcMallocMemoryChecked(0),
+		mTotalBytesMmappedHighWaterMark(0),
+		mPageletBytesWithinDataTasks(0),
+		mTotalBytesUsedByDataTasks(0)
+
+	{
+	LOG_INFO << "VectorDataMemoryManager created with " 
+		<< inMaxBytesPerPool / 1024 / 1024.0 << " MB max bytes per pool."
+		<< " and " << mMaxTotalBytes / 1024 / 1024.0 << " MB total memory."
+		;
+	}
+
+VectorDataMemoryManager::VectorDataMemoryManager(
+				PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+				PolymorphicSharedPtr<CallbackScheduler> inCallbackSchedulerForMappableMemoryPoolOps,
+				uint64_t inMaxBytesPerPool,
+				uint64_t inMaxTotalBytes,
+				uint64_t inGranularity,
+				RandomHashGenerator& inHashGenerator
+				) : 
+		mCallbackScheduler(inCallbackScheduler),
+		mCallbackSchedulerForMappableMemoryPoolOps(inCallbackSchedulerForMappableMemoryPoolOps),
+		mTotalBytesUsed(0),
+		mTotalBytesUsedByExecutionContexts(0),
+		mTotalBytesUsedByVectorPages(0),
+		mTotalBytesUsedByPagelets(0),
+		mTotalBytesUsedByBigVectorHandles(0),
+		mMaxTotalBytes(inMaxTotalBytes),
+		mMaxBytesPerPool(inMaxBytesPerPool),
+		mMemoryCallbackGranularity(inGranularity),
+		mHashGenerator(inHashGenerator),
+		mOnTotalBytesUsedByExecutionContextsChanged(inCallbackScheduler),
+		mOnTotalBytesUsedChanged(inCallbackScheduler),
+		mOnIsFullChanged(inCallbackScheduler),
+		mTotalBytesMmapped(0),
+		mPageletBytesWithinExecutionContexts(0),
+		mPageletBytesWithinVectorPages(0),
+		mOsPageSize(getpagesize()),
+		mTeardownGate(new Ufora::threading::Gate(false)),
+		mTotalBytesEverMMapped(0),
+		mTimestampOfLastLogMessage(0),
+		mTotalBytesMMappedAtLastLogMessage(0),
+		mSlabSize(1024 * 1024),
+		mSmallAllocSize(256 * 1024),
+		mVerySmallAllocSize(8 * 1024),
+		mTotalBytesInFrozenPagelets(0),
+		mTotalBytesAllocatedByFrozenPagelets(0),
+		mTcMallocMemoryCountedInEcMemory(0),
+		mTcMallocMemoryIsECMemory(false),
+		mLastTimeTcMallocMemoryChecked(0),
+		mTotalBytesMmappedHighWaterMark(0),
+		mPageletBytesWithinDataTasks(0),
+		mTotalBytesUsedByDataTasks(0)
+	{
+	LOG_INFO << "VectorDataMemoryManager created with " 
+		<< inMaxBytesPerPool / 1024 / 1024.0 << " MB max bytes per pool."
+		<< " and " << mMaxTotalBytes / 1024 / 1024.0 << " MB total memory."
+		;
+	}
+
+VectorDataMemoryManager::~VectorDataMemoryManager()
+	{
+	if (totalBytesAllocatedByClients_() == 0)
+		LOG_INFO << "Releasing VDMM " << this << " with max MB of " << mMaxTotalBytes / 1024 / 1024.0 
+			<< " and total mmapped bytes of " << mTotalBytesMmapped / 1024 / 1024.0 << " MB. "
+			;
+	else
+		LOG_ERROR << "Releasing VDMM " << this << " with max MB of " << mMaxTotalBytes / 1024 / 1024.0 
+			<< " and total mmapped bytes of " << mTotalBytesMmapped / 1024 / 1024.0 << " MB. "
+			<< "All used: " << totalBytesAllocatedByClients_() / 1024 / 1024.0 << " MB. "
+			<< "UsedVerySmall: " << mAllocatedVerySmallBlocks.size() * mVerySmallAllocSize / 1024 / 1024.0 << " MB. "
+			<< "FreeVerySmall: " << mFreeVerySmallBlocks.size() * mVerySmallAllocSize / 1024 / 1024.0 << " MB. "
+			<< "UsedSmall: " << mAllocatedSmallBlocks.size() * mSmallAllocSize / 1024 / 1024.0 << " MB. "
+			<< "FreeSmall: " << mFreeSmallBlocks.size() * mSmallAllocSize / 1024 / 1024.0 << " MB. "
+			<< "LargeAllocs: " << mLargeAllocTracker.bytesUsed() / 1024 / 1024.0 << " MB "
+			<< "MMAP from OS: " << mTotalBytesMmapped / 1024 / 1024.0 << " MB. "
+			<< "MAX: " << mMaxTotalBytes / 1024 / 1024.0 << " MB. "
+			<< "TCM: " << Ufora::Memory::getTotalBytesRequestedFromOS() / 1024 / 1024.0 << " MB. "
+			<< "PageletEfficiency " << std::setw(3) << std::setprecision(2) << 
+					(mTotalBytesAllocatedByFrozenPagelets > 0 ? 
+						float(mTotalBytesInFrozenPagelets) / float(mTotalBytesAllocatedByFrozenPagelets) : 1.0) 
+				<< " over " << mTotalPagelets
+			;
+
+	mLargeAllocTracker.deallocateAllUsedRanges();
+
+	pair<uint8_t*, int64_t> range;
+
+	while ((range = mLargeAllocTracker.smallestUnusedRange()).first)
+		{
+		munmapFromOS_(range.first, range.second);
+		mLargeAllocTracker.unusedBytesReleasedToOS(range.first, range.second);
+		}
+
+	mTeardownGate->open();
+	}
+
+void VectorDataMemoryManager::enableCountTcMallocMemoryAsEcMemory()
+	{
+	if (mTcMallocMemoryIsECMemory)
+		return;
+
+	mTcMallocMemoryCountedInEcMemory = 0;
+	mTcMallocMemoryIsECMemory = true;
+
+	LOG_INFO << "VDMM tracking TCMalloc memory as own memory.";
+	}
+
+boost::shared_ptr<Ufora::threading::Gate> VectorDataMemoryManager::getTeardownGate() const
+	{
+	return mTeardownGate;
+	}
+
+uint64_t VectorDataMemoryManager::totalBytesAllocatedByClients() const
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	return totalBytesAllocatedByClients_();
+	}
+
+int64_t VectorDataMemoryManager::totalBytesAllocatedByClients_() const
+	{
+	int64_t unusedButAllocatedBytes = 
+		mFreeSmallBlocks.size() * mSmallAllocSize + 
+		mFreeVerySmallBlocks.size() * mVerySmallAllocSize
+		;
+
+	return 
+		mAllocatedVerySmallBlocks.size() * mVerySmallAllocSize +
+		mAllocatedSmallBlocks.size() * mSmallAllocSize + 
+		mLargeAllocTracker.bytesUsed() - 
+		unusedButAllocatedBytes
+		;
+	}
+
+void* VectorDataMemoryManager::mmapFromOS_(int64_t size)
+	{
+	void* result = ::mmap(0, size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+	if (result == MAP_FAILED)
+		{
+		LOG_CRITICAL << "VDMM failed to mmap " << size / 1024 / 1024.0 << " MB on top of "
+			<< mTotalBytesMmapped / 1024 / 1024.0 << " MB. Reason: "
+			<< strerror(errno);
+
+		return result;
+		}
+
+	mTotalBytesEverMMapped += size;
+	mTotalBytesMmapped += size;
+
+	mTotalBytesMmappedHighWaterMark =
+		std::max<int64_t>(mTotalBytesMmappedHighWaterMark, mTotalBytesMmapped);
+
+	if (curClock() - mTimestampOfLastLogMessage > 1.0)
+		{
+		if (mTimestampOfLastLogMessage != 0)
+			LOG_INFO << "MMapped a total of " << (mTotalBytesEverMMapped - mTotalBytesMMappedAtLastLogMessage) / 1024 / 1024.0 
+					<< " in the last second. "
+					<< "All used: " << totalBytesAllocatedByClients_() / 1024 / 1024.0 << " MB. "
+					<< "UsedVerySmall: " << mAllocatedVerySmallBlocks.size() * mVerySmallAllocSize / 1024 / 1024.0 << " MB. "
+					<< "FreeVerySmall: " << mFreeVerySmallBlocks.size() * mVerySmallAllocSize / 1024 / 1024.0 << " MB. "
+					<< "UsedSmall: " << mAllocatedSmallBlocks.size() * mSmallAllocSize / 1024 / 1024.0 << " MB. "
+					<< "FreeSmall: " << mFreeSmallBlocks.size() * mSmallAllocSize / 1024 / 1024.0 << " MB. "
+					<< "LargeAllocs: " << mLargeAllocTracker.bytesUsed() / 1024 / 1024.0 << " MB over "
+					<< "MMAP from OS: " << mTotalBytesMmapped / 1024 / 1024.0 << " MB. "
+					<< "MAX: " << mMaxTotalBytes / 1024 / 1024.0 << " MB. "
+					<< "TCM: " << Ufora::Memory::getTotalBytesRequestedFromOS() / 1024 / 1024.0 << " MB. "
+					<< "PageletEfficiency " << std::setw(3) << std::setprecision(2) << 
+							(mTotalBytesAllocatedByFrozenPagelets > 0 ? 
+								float(mTotalBytesInFrozenPagelets) / float(mTotalBytesAllocatedByFrozenPagelets) : 1.0) 
+					<< " over " << mTotalPagelets
+					<< ". Counting " << mTcMallocMemoryCountedInEcMemory / 1024 / 1024.0 << " MB of TCM as EC."
+					;
+
+		mTotalBytesMMappedAtLastLogMessage = mTotalBytesEverMMapped;
+		mTimestampOfLastLogMessage = curClock();
+		}
+
+	return (uint8_t*)result;
+	}
+
+void VectorDataMemoryManager::munmapFromOS_(void* addr, int64_t size)
+	{
+	if (::munmap(addr, size) != 0)
+		{	
+		LOG_CRITICAL << "Failed to deallocate a section of bytes. "
+					<< "All used: " << totalBytesAllocatedByClients_() / 1024 / 1024.0 << " MB. "
+					<< "UsedVerySmall: " << mAllocatedVerySmallBlocks.size() * mVerySmallAllocSize / 1024 / 1024.0 << " MB. "
+					<< "FreeVerySmall: " << mFreeVerySmallBlocks.size() * mVerySmallAllocSize / 1024 / 1024.0 << " MB. "
+					<< "UsedSmall: " << mAllocatedSmallBlocks.size() * mSmallAllocSize / 1024 / 1024.0 << " MB. "
+					<< "FreeSmall: " << mFreeSmallBlocks.size() * mSmallAllocSize / 1024 / 1024.0 << " MB. "
+					<< "MMAP from OS: " << mTotalBytesMmapped / 1024 / 1024.0 << " MB. "
+					<< "MAX: " << mMaxTotalBytes / 1024 / 1024.0 << " MB. "
+					<< "TCM: " << Ufora::Memory::getTotalBytesRequestedFromOS() / 1024 / 1024.0 << " MB. "
+					<< "PageletEfficiency " << std::setw(3) << std::setprecision(2) << 
+							(mTotalBytesAllocatedByFrozenPagelets > 0 ? 
+								float(mTotalBytesInFrozenPagelets) / float(mTotalBytesAllocatedByFrozenPagelets) : 1.0) 
+						<< " over " << mTotalPagelets
+					;
+		lassert(false);
+		}
+
+	mTotalBytesMmapped -= size;
+	}
+
+
+uint64_t VectorDataMemoryManager::totalBytesMmappedCumulatively() const
+	{
+	return mTotalBytesEverMMapped;
+	}
+
+uint64_t VectorDataMemoryManager::totalBytesUsedSingleCountingPagelets() const
+	{
+	return mTotalBytesUsed + totalBytesOfUnallocatedECMemory();
+	}
+
+void VectorDataMemoryManager::poolNowHoldingPagelet(MemoryPool* poolThatsDoubleCounting, MemoryPool* pagelet)
+	{
+	if (poolThatsDoubleCounting->isExecutionContextPool())
+		{
+		AO_fetch_and_add_full(&mPageletBytesWithinExecutionContexts, pagelet->totalBytesAllocatedFromOS());
+		}
+		else
+	if (poolThatsDoubleCounting->isVectorPage())
+		AO_fetch_and_add_full(&mPageletBytesWithinVectorPages, pagelet->totalBytesAllocatedFromOS());
+		else
+	if (poolThatsDoubleCounting->isDataTasks())
+		AO_fetch_and_add_full(&mPageletBytesWithinDataTasks, pagelet->totalBytesAllocatedFromOS());
+	else
+		{
+		lassert_dump(false, "only ExecutionContext, VectorPage, or DataTask pools may call this");
+		}
+	}
+
+void VectorDataMemoryManager::poolNoLongerHoldingPagelet(MemoryPool* poolThatsDoubleCounting, MemoryPool* pagelet)
+	{
+	if (poolThatsDoubleCounting->isExecutionContextPool())
+		AO_fetch_and_add_full(&mPageletBytesWithinExecutionContexts, -pagelet->totalBytesAllocatedFromOS());
+		else
+	if (poolThatsDoubleCounting->isVectorPage())
+		AO_fetch_and_add_full(&mPageletBytesWithinVectorPages, -pagelet->totalBytesAllocatedFromOS());
+		else
+	if (poolThatsDoubleCounting->isDataTasks())
+		AO_fetch_and_add_full(&mPageletBytesWithinDataTasks, -pagelet->totalBytesAllocatedFromOS());
+	else
+		{
+		lassert_dump(false, "only ExecutionContext, VectorPage, or DataTask pools may call this");
+		}
+	}
+
+uint64_t VectorDataMemoryManager::totalBytesUsedByPageletsInVectors() const
+	{
+	return mPageletBytesWithinVectorPages;
+	}
+
+uint64_t VectorDataMemoryManager::totalBytesUsedByPageletsInDataTasks() const
+	{
+	return mPageletBytesWithinDataTasks;
+	}
+
+void VectorDataMemoryManager::checkBytecounts()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	bytecountChange_(0, MemoryPool::MemoryPoolType::VectorPage);
+	}
+
+void VectorDataMemoryManager::logMapFailed_()
+	{
+	LOG_CRITICAL << "Failed to allocate bytes:\n"
+				<< "\tAll used: " << totalBytesAllocatedByClients_() / 1024 / 1024.0 << " MB.\n"
+				<< "\tUsedVerySmall: " << mAllocatedVerySmallBlocks.size() * mVerySmallAllocSize / 1024 / 1024.0 << " MB.\n"
+				<< "\tFreeVerySmall: " << mFreeVerySmallBlocks.size() * mVerySmallAllocSize / 1024 / 1024.0 << " MB.\n"
+				<< "\tUsedSmall: " << mAllocatedSmallBlocks.size() * mSmallAllocSize / 1024 / 1024.0 << " MB.\n"
+				<< "\tFreeSmall: " << mFreeSmallBlocks.size() * mSmallAllocSize / 1024 / 1024.0 << " MB.\n"
+				<< "\tLargeAllocs: " << mLargeAllocTracker.bytesUsed() / 1024 / 1024.0 << " MB.\n"
+				<< "\tUsedByPagelets: " << mTotalBytesUsedByPagelets / 1024 / 1024.0 << " MB.\n"
+				<< "\tUsedByECs: " << mTotalBytesUsedByExecutionContexts / 1024 / 1024.0 << " MB.\n"
+				<< "\tUsedByVectors: " << mTotalBytesUsedByVectorPages / 1024 / 1024.0 << " MB.\n"
+				<< "\tAllocatedButUnused: " << mLargeAllocTracker.bytesUnused() / 1024 / 1024.0 << " MB.\n"
+				<< "\tLargestUnallocatedSlab: " << mLargeAllocTracker.sizeOfLargestUnusedBlock() / 1024 / 1024.0 << " MB.\n"
+				<< "\tMMAP from OS: " << mTotalBytesMmapped / 1024 / 1024.0 << " MB.\n"
+				<< "\tMAX: " << mMaxTotalBytes / 1024 / 1024.0 << " MB.\n"
+				<< "\tTCM: " << Ufora::Memory::getTotalBytesRequestedFromOS() / 1024 / 1024.0 << " MB.\n"
+				<< "\tPageletEfficiency " << std::setw(3) << std::setprecision(2) << 
+						(mTotalBytesAllocatedByFrozenPagelets > 0 ? 
+							float(mTotalBytesInFrozenPagelets) / float(mTotalBytesAllocatedByFrozenPagelets) : 1.0) 
+					<< " over " << mTotalPagelets
+					<< "\n"
+				;
+	}
+
+void* VectorDataMemoryManager::mmapForPool(MemoryPool* inPool, uint64_t size)
+	{
+	lassert(inPool);
+
+	size = roundUp(size, mOsPageSize);
+
+	if (size < mSlabSize)
+		lassert_dump(
+			size == mSmallAllocSize || size == mVerySmallAllocSize,
+			"Cannot allocate a chunk of size " 
+				<< size / 1024 / 1024.0 << " MB. Allocations must be either equal to "
+				<< mSmallAllocSize / 1024 / 1024.0 << " MB or "
+				<< mVerySmallAllocSize / 1024 / 1024.0 << " MB or "
+				<< "at least " 
+				<< mSlabSize / 1024 / 1024.0 << " MB."
+			);
+
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (!permitAllocationAndBlockUntilAvailable_(inPool, size, lock))
+		return MAP_FAILED;
+
+	if (size >= mSlabSize)
+		{
+		void* result = mLargeAllocTracker.allocateBytes(size);
+
+		if (result)
+			return result;
+
+		if (!makeLargeAllocSpace_(size))
+			{
+			bytecountChange_(-(int64_t)size, inPool->getPoolType());
+			logMapFailed_();
+			return MAP_FAILED;
+			}
+
+
+		result = mLargeAllocTracker.allocateBytes(size);
+		if (!result)
+			{
+			bytecountChange_(-(int64_t)size, inPool->getPoolType());
+			logMapFailed_();
+			return MAP_FAILED;
+			}
+
+		return result;
+		}
+
+	if (size == mSmallAllocSize)
+		{
+		if (!mFreeSmallBlocks.size())
+			{
+			//allocate a bunch of memory heap blocks in a single slab.
+			lassert(mSlabSize % mSmallAllocSize == 0);
+
+			void* result = mLargeAllocTracker.allocateBytes(mSlabSize);
+			if (!result)
+				{
+				if (!makeLargeAllocSpace_(mSlabSize))
+					{
+					bytecountChange_(-(int64_t)size, inPool->getPoolType());
+					logMapFailed_();
+					return MAP_FAILED;
+					}
+
+				result = mLargeAllocTracker.allocateBytes(mSlabSize);
+				}
+
+			if (!result)
+				{
+				bytecountChange_(-(int64_t)size, inPool->getPoolType());
+				logMapFailed_();
+				return MAP_FAILED;
+				}
+			
+			uint8_t* base = (uint8_t*)result;
+
+			while (base < (uint8_t*)result + mSlabSize)
+				{	
+				mFreeSmallBlocks.push_back(base);
+				base += mSmallAllocSize;
+				}
+			}
+
+		void* result = mFreeSmallBlocks.back();
+		mFreeSmallBlocks.pop_back();
+		mAllocatedSmallBlocks.insert((uint8_t*)result);
+		return result;
+		}
+
+	if (size == mVerySmallAllocSize)
+		{
+		if (!mFreeVerySmallBlocks.size())
+			{
+			//allocate a bunch of memory heap blocks in a single slab.
+			lassert(mSlabSize % mSmallAllocSize == 0);
+
+			void* result = mLargeAllocTracker.allocateBytes(mSlabSize);
+			if (!result)
+				{
+				if (!makeLargeAllocSpace_(mSlabSize))
+					{
+					bytecountChange_(-(int64_t)size, inPool->getPoolType());
+					logMapFailed_();
+					return MAP_FAILED;
+					}
+
+				result = mLargeAllocTracker.allocateBytes(mSlabSize);
+				}
+
+			if (!result)
+				{
+				bytecountChange_(-(int64_t)size, inPool->getPoolType());
+				logMapFailed_();
+				return MAP_FAILED;
+				}
+			
+			uint8_t* base = (uint8_t*)result;
+
+			while (base < (uint8_t*)result + mSlabSize)
+				{	
+				mFreeVerySmallBlocks.push_back(base);
+				base += mVerySmallAllocSize;
+				}
+			}
+
+		void* result = mFreeVerySmallBlocks.back();
+		mFreeVerySmallBlocks.pop_back();
+		mAllocatedVerySmallBlocks.insert((uint8_t*)result);
+		return result;
+		}
+
+	lassert(false);
+	}
+
+bool VectorDataMemoryManager::makeLargeAllocSpace_(uint64_t size)
+	{
+	while (mLargeAllocTracker.bytesUnused() > mMaxTotalBytes * .1)
+		{
+		pair<uint8_t*, int64_t> range = mLargeAllocTracker.smallestUnusedRange();
+
+		munmapFromOS_(range.first, range.second);
+
+		mLargeAllocTracker.unusedBytesReleasedToOS(range.first, range.second);
+		}
+
+
+	if (mTotalBytesMmapped + size < mMaxTotalBytes)
+		{
+		uint8_t* data = (uint8_t*)mmapFromOS_(size);
+		if (data == MAP_FAILED)
+			return false;
+
+		mLargeAllocTracker.addUnusedBytes(data, size);
+		return true;
+		}
+
+	while (mLargeAllocTracker.sizeOfLargestUnusedBlock() < size && mLargeAllocTracker.bytesUnused())
+		{
+		pair<uint8_t*, int64_t> range = mLargeAllocTracker.smallestUnusedRange();
+
+		munmapFromOS_(range.first, range.second);
+
+		mLargeAllocTracker.unusedBytesReleasedToOS(range.first, range.second);
+		}
+
+	uint8_t* data = (uint8_t*)mmapFromOS_(size);
+	if (data == MAP_FAILED)
+		{
+		return false;
+		}
+
+	mLargeAllocTracker.addUnusedBytes(data, size);
+	return true;
+	}
+
+int VectorDataMemoryManager::munmapForPool(MemoryPool* inPool, void* addr, uint64_t size)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (size == 0)
+		return 0;
+
+	size = roundUp(size, mOsPageSize);
+
+	if (size < mSlabSize)
+		lassert_dump(
+			size == mSmallAllocSize || size == mVerySmallAllocSize,
+			"Cannot allocate a chunk of size " 
+				<< size / 1024 / 1024.0 << " MB. Allocations must be either equal to "
+				<< mSmallAllocSize / 1024 / 1024.0 << " MB or "
+				<< mVerySmallAllocSize / 1024 / 1024.0 << " MB or "
+				<< "at least " 
+				<< mSlabSize / 1024 / 1024.0 << " MB."
+			);
+
+	if (inPool)
+		bytecountChange_(-(int64_t)size, inPool->getPoolType());
+
+	if (size >= mSlabSize)
+		{	
+		mLargeAllocTracker.deallocateBytes((uint8_t*)addr, size);
+		return 0;
+		}
+		else
+	if (size == mSmallAllocSize)
+		{
+		auto it = mAllocatedSmallBlocks.find((uint8_t*)addr);
+		lassert(it != mAllocatedSmallBlocks.end());
+		mAllocatedSmallBlocks.erase(it);
+		mFreeSmallBlocks.push_back((uint8_t*)addr);
+		return 0;
+		}
+	else
+		{
+		lassert(size == mVerySmallAllocSize);
+
+		auto it = mAllocatedVerySmallBlocks.find((uint8_t*)addr);
+		lassert(it != mAllocatedVerySmallBlocks.end());
+		mAllocatedVerySmallBlocks.erase(it);
+		mFreeVerySmallBlocks.push_back((uint8_t*)addr);
+		return 0;
+		}
+	}
+
+bool VectorDataMemoryManager::detachFromPool(MemoryPool* inPool, void* addr, uint64_t size)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	lassert(inPool);
+
+	size = roundUp(size, mOsPageSize);
+
+	if (size < mSlabSize)
+		return false;
+
+	bytecountChange_(-(int64_t)size, inPool->getPoolType());
+
+	return true;
+	}
+
+void VectorDataMemoryManager::attachToPool(MemoryPool* inPool, void* addr, uint64_t size)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	size = roundUp(size, mOsPageSize);
+
+	lassert(inPool);
+
+	bytecountChange_((int64_t)size, inPool->getPoolType());
+	}
+
+void* VectorDataMemoryManager::mremapForPool(
+										MemoryPool* inPool, 
+										void* addr, 
+										uint64_t oldSize, 
+										uint64_t newSize, 
+										int flags
+										)
+	{
+	if (oldSize == newSize)
+		return addr;
+
+	if (oldSize > newSize && newSize >= mSlabSize)
+		{
+		if (!mremapForPoolWithoutMoving(inPool, addr, oldSize, newSize))
+			return MAP_FAILED;
+		return addr;
+		}
+
+	void* newData = mmapForPool(inPool, newSize);
+
+	if (newData == MAP_FAILED)
+		return newData;
+
+	memcpy(newData, addr, std::min<size_t>(newSize,oldSize));
+
+	munmapForPool(inPool, addr, oldSize);
+
+	return newData;
+	}
+
+bool VectorDataMemoryManager::mremapForPoolWithoutMoving(
+										MemoryPool* inPool, 
+										void* addr, 
+										uint64_t oldSize, 
+										uint64_t newSize
+										)
+	{
+	lassert(inPool);
+
+	oldSize = roundUp(oldSize, mOsPageSize);
+	newSize = roundUp(newSize, mOsPageSize);
+
+	if (oldSize < newSize)
+		return false;
+
+	if (oldSize == newSize)
+		return true;
+
+	if (newSize >= mSlabSize)
+		{
+		lassert(newSize < oldSize);
+
+		boost::mutex::scoped_lock lock(mMutex);
+		uint8_t* baseToUnmap = (uint8_t*)addr + newSize;
+		int64_t bytesToUnmap = oldSize - newSize;
+
+		mLargeAllocTracker.deallocateBytes((uint8_t*)baseToUnmap, bytesToUnmap);
+
+		bytecountChange_(-(int64_t)bytesToUnmap, inPool->getPoolType());
+
+		return true;
+		}
+
+	return false;
+	}
+
+bool VectorDataMemoryManager::permitAllocation(MemoryPool* inPool, uint64_t size)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	bool result = inPool->totalBytesAllocatedFromOSExcludingPagelets() + size < mMaxBytesPerPool;
+
+	if (!result)
+		LOG_WARN << "denying allocation of " << size / 1024 / 1024.0 << " MB on top of "
+			<< inPool->totalBytesAllocatedFromOSExcludingPagelets() / 1024 / 1024.0 
+			<< " MB of nonpagelet memory for pool " << inPool->stringRepresentation()
+			<< " with " 
+			<< inPool->totalBytesFromOSHeldInPagelets() / 1024 / 1024.0 
+			<< " MB in pagelets"
+			;
+
+	return result;
+	}
+
+bool VectorDataMemoryManager::permitAllocationAndBlockUntilAvailable_(
+								MemoryPool* inPool, 
+								uint64_t size,
+								boost::mutex::scoped_lock& ioLock
+								)
+	{
+	lassert(size < 10e10);
+
+	bool result = inPool->totalBytesAllocatedFromOSExcludingPagelets() + size < mMaxBytesPerPool;
+
+	if (!result)
+		{
+		LOG_WARN << "denying allocation of " << size / 1024 / 1024.0 << " MB on top of "
+			<< inPool->totalBytesAllocatedFromOSExcludingPagelets() / 1024 / 1024.0 
+			<< " MB of nonpagelet memory for pool " << inPool->stringRepresentation()
+			<< " with " 
+			<< inPool->totalBytesFromOSHeldInPagelets() / 1024 / 1024.0 
+			<< " MB in pagelets"
+			;
+
+		return false;
+		}
+
+	bytecountChange_(size, inPool->getPoolType());
+
+	if (inPool->isExecutionContextPool() && mTotalBytesUsed > mMaxTotalBytes)
+		blockExecutionContextAllocation_(inPool, ioLock);
+
+	return result;
+	}
+
+void VectorDataMemoryManager::blockExecutionContextAllocation_(
+								MemoryPool* inPool,
+								boost::mutex::scoped_lock& ioLock
+								)
+	{
+	lassert(inPool->isExecutionContextPool());
+
+	bool hasTriggeredInVDM = false;
+
+	Fora::Interpreter::ExecutionContextImpl* context = 
+		dynamic_cast<ExecutionContextMemoryPool*>(inPool)->getContext()->getImpl().get();
+
+	while (dynamic_cast<ExecutionContextMemoryPool*>(inPool)->getContext() &&
+			dynamic_cast<ExecutionContextMemoryPool*>(inPool)->getContext()->isExecuting() && 
+			!dynamic_cast<ExecutionContextMemoryPool*>(inPool)->getContext()->isGarbageCollecting() && 
+			!dynamic_cast<ExecutionContextMemoryPool*>(inPool)->getContext()->isGcPending() && 
+				mTotalBytesUsed > mMaxTotalBytes)
+		{
+		LOG_DEBUG << "blocking ExecutionContext " 
+				<< context
+				<< " allocation" 
+				;
+
+		if (!hasTriggeredInVDM)
+			{
+			//can't hold the lock while we call into the VDM
+			ioLock.unlock();
+
+			context->blockedOnMemoryAllocation();
+
+			hasTriggeredInVDM = true;
+
+			ioLock.lock();
+			}
+		else
+			mTotalMemoryChangedCondition.wait(ioLock);
+		}
+
+	if (hasTriggeredInVDM)
+		{
+		//can't hold the lock while we call into the VDM
+		ioLock.unlock();
+
+		context->unblockedOnMemoryAllocation();
+
+		hasTriggeredInVDM = true;
+
+		ioLock.lock();
+		}
+	}
+
+void VectorDataMemoryManager::allowAllExecutionContextsBlockedOnMemoryToCheckState()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	mTotalMemoryChangedCondition.notify_all();
+	}
+
+uint64_t VectorDataMemoryManager::totalBytesOfUnallocatedECMemory_() const
+	{
+	return mFreeSmallBlocks.size() * mSmallAllocSize + mFreeVerySmallBlocks.size() * mVerySmallAllocSize;
+	}
+
+uint64_t VectorDataMemoryManager::totalBytesOfUnallocatedECMemory() const
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	return totalBytesOfUnallocatedECMemory_();
+	}
+
+uint64_t VectorDataMemoryManager::totalBytesUsedByExecutionContextsExcludingPagelets() const
+	{
+	return mTotalBytesUsedByExecutionContexts + totalBytesOfUnallocatedECMemory();
+	}
+
+uint64_t VectorDataMemoryManager::totalBytesUsedByVectorsExcludingPagelets() const
+	{
+	return mTotalBytesUsedByVectorPages;
+	}
+
+uint64_t VectorDataMemoryManager::totalBytesUsedByExecutionContextsIncludingPagelets() const
+	{
+	return std::max<int64_t>(
+		(int64_t)mTotalBytesUsedByPagelets - 
+			(int64_t)mPageletBytesWithinVectorPages,
+		0
+		) + mTotalBytesUsedByExecutionContexts + totalBytesOfUnallocatedECMemory();
+	}
+
+uint64_t VectorDataMemoryManager::totalBytesUsedByVectorsIncludingPagelets() const
+	{
+	return mTotalBytesUsedByVectorPages + mPageletBytesWithinVectorPages;
+	}
+
+uint64_t VectorDataMemoryManager::totalBytesUsedByDataTasks() const
+	{
+	return mTotalBytesUsedByDataTasks + mPageletBytesWithinDataTasks;
+	}
+
+uint64_t VectorDataMemoryManager::totalBytesMmapped() const
+	{
+	return mTotalBytesMmapped;
+	}
+
+uint64_t VectorDataMemoryManager::totalBytesUsedByOtherPools() const
+	{
+	return mTotalBytesUsed - 
+		(mTotalBytesUsedByExecutionContexts + mTotalBytesUsedByVectorPages
+				+ mTotalBytesUsedByPagelets + mTotalBytesUsedByBigVectorHandles);
+	}
+
+uint64_t VectorDataMemoryManager::totalBytesUsedByPagelets() const
+	{
+	return mTotalBytesUsedByPagelets;
+	}
+
+uint64_t VectorDataMemoryManager::totalBytesUsedByBigVectorHandles() const
+	{
+	return mTotalBytesUsedByBigVectorHandles;
+	}
+
+uint64_t VectorDataMemoryManager::tcmallocMemoryCountedAsEcMemory() const
+	{
+	return mTcMallocMemoryCountedInEcMemory;
+	}
+
+void VectorDataMemoryManager::bytecountChange_(
+									int64_t netBytes, 
+									MemoryPool::MemoryPoolType type
+									)
+	{
+	if (mTcMallocMemoryIsECMemory)
+		if (curClock() - mLastTimeTcMallocMemoryChecked > 1.0)
+			{
+			int64_t bytes = Ufora::Memory::getTotalBytesRequestedFromOS();
+			int64_t delta = bytes - mTcMallocMemoryCountedInEcMemory;
+
+			mTcMallocMemoryCountedInEcMemory = bytes;
+			mLastTimeTcMallocMemoryChecked = curClock();
+
+			mTotalBytesUsedByExecutionContexts += delta;
+			mTotalBytesMmapped += delta;
+			mTotalBytesUsed += delta;
+
+			LOG_INFO << "VDMM absorbing TCMalloc delta of " << delta / 1024 / 1024.0 << " MB for a "
+				<< "total of " << mTcMallocMemoryCountedInEcMemory / 1024 / 1024.0 << " MB."
+				;
+			}
+
+	int64_t totalBytesUsedOld = mTotalBytesUsed / mMemoryCallbackGranularity;
+	int64_t totalBytesUsedByEcOld = 
+		(mTotalBytesUsedByExecutionContexts + totalBytesOfUnallocatedECMemory_()) 
+			/ mMemoryCallbackGranularity;
+
+	bool wasFull = mTotalBytesUsed > mMaxTotalBytes;
+	
+	mTotalBytesUsed += netBytes;
+
+	bool isFullNow = mTotalBytesUsed > mMaxTotalBytes;
+
+	if (wasFull != isFullNow)
+		mOnIsFullChanged.broadcast(isFullNow);
+	
+	if (type == MemoryPool::MemoryPoolType::ExecutionContext)
+		mTotalBytesUsedByExecutionContexts += netBytes;
+
+	if (type == MemoryPool::MemoryPoolType::DataTask)
+		mTotalBytesUsedByDataTasks += netBytes;
+
+	if (type == MemoryPool::MemoryPoolType::VectorPage)
+		mTotalBytesUsedByVectorPages += netBytes;
+	
+	if (type == MemoryPool::MemoryPoolType::Pagelet)
+		mTotalBytesUsedByPagelets += netBytes;
+	
+	if (type == MemoryPool::MemoryPoolType::BigVectorHandle)
+		mTotalBytesUsedByBigVectorHandles += netBytes;
+	
+	int64_t totalBytesUsedNew = mTotalBytesUsed / mMemoryCallbackGranularity;
+	int64_t totalBytesUsedByEcNew = 
+		(mTotalBytesUsedByExecutionContexts + totalBytesOfUnallocatedECMemory_()) 
+			/ mMemoryCallbackGranularity;
+
+	if (totalBytesUsedNew != totalBytesUsedOld)
+		mOnTotalBytesUsedChanged.broadcast(mTotalBytesUsed);
+		
+	if (totalBytesUsedByEcNew != totalBytesUsedByEcOld)
+		mOnTotalBytesUsedByExecutionContextsChanged.broadcast(
+			mTotalBytesUsedByExecutionContexts + totalBytesOfUnallocatedECMemory_()
+			);
+
+	mTotalMemoryChangedCondition.notify_all();
+	}
+
+uint64_t VectorDataMemoryManager::getMaxBytesPerPool()
+	{
+	return mMaxBytesPerPool;
+	}
+
+uint64_t VectorDataMemoryManager::getMaxTotalBytes()
+	{
+	return mMaxTotalBytes;
+	}
+
+void VectorDataMemoryManager::setMaxTotalBytes(uint64_t bytes)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	mMaxTotalBytes = bytes;
+
+	if (mTotalBytesMmapped == 0)
+		{
+		int64_t gb = 1024 * 1024 * 1024;
+
+		if (mMaxTotalBytes < 100 * 1024 * 1024)
+			{
+			mVerySmallAllocSize = 0 * 1024;
+			mSmallAllocSize = 4 * 1024;
+			mSlabSize = 4 * 1024;
+			}
+			else
+		if (mMaxTotalBytes < gb)
+			{
+			mSmallAllocSize = 32 * 1024;
+			mSlabSize = 64 * 1024;
+			}
+		}
+
+	mTotalMemoryChangedCondition.notify_all();
+	}
+
+void VectorDataMemoryManager::setMaxBytesPerPool(uint64_t bytes)
+	{
+	LOG_INFO << "VectorDataMemoryManager setting max MB per pool to  " << bytes / 1024 / 1024.0;
+
+	mMaxBytesPerPool = bytes;
+	}
+
+uint64_t VectorDataMemoryManager::getMemoryCallbackGranularity()
+	{
+	return mMemoryCallbackGranularity;
+	}
+
+void VectorDataMemoryManager::setMemoryCallbackGranularity(uint64_t bytes)
+	{
+	mMemoryCallbackGranularity = bytes;
+	}
+
+EventBroadcaster<uint64_t>& VectorDataMemoryManager::onTotalBytesUsedByExecutionContextsChanged()
+	{
+	return mOnTotalBytesUsedByExecutionContextsChanged;
+	}
+
+EventBroadcaster<uint64_t>& VectorDataMemoryManager::onTotalBytesUsedByChanged()
+	{
+	return mOnTotalBytesUsedChanged;
+	}
+
+EventBroadcaster<bool>& VectorDataMemoryManager::onIsFullChanged()
+	{
+	return mOnIsFullChanged;
+	}
+
+hash_type VectorDataMemoryManager::newVectorHash()
+	{
+	return mHashGenerator.generateRandomHash();
+	}
+
+void VectorDataMemoryManager::pageletFrozen(int64_t totalBytes, int64_t totalBytesFromOS)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	mTotalBytesInFrozenPagelets += totalBytes;
+
+	mTotalBytesAllocatedByFrozenPagelets += totalBytesFromOS;
+
+	mTotalPagelets++;
+	}
+
+void VectorDataMemoryManager::pageletDropped(int64_t totalBytes, int64_t totalBytesFromOS)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	mTotalBytesInFrozenPagelets -= totalBytes;
+
+	mTotalBytesAllocatedByFrozenPagelets -= totalBytesFromOS;
+
+	mTotalPagelets--;
+	}
+
+
+

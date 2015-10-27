@@ -1,0 +1,353 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#Markdown("""### GradientBoostedClassifierBuilder
+
+#### Usage
+
+    math.ensemble.gradientBoosting.GradientBoostedClassifierBuilder( 
+        nBoosts:= 100, maxDepth:= 3,
+        minSamplesSplit:= 2, splitMethod:= `sample,
+        numBuckets:= 10000, learningRate:= 1.0)
+
+#### Description
+
+`GradientBoostedClassifierBuilder` is a class capable of building 
+(or "fitting") gradient-boosted classification trees to data with 
+specified parameters. These parameters are 
+
+* `nBoosts`: The number of "boosting iterations" used. 
+* `maxDepth`: The max depth allowed of each consituent regression tree.
+* `minSamplesSplit`: The minimum number of samples required to split a node.
+* `splitMethod`: The method used to split nodes. There are two possible values:
+`` `sample`` or `` `exhaustive``. `` `sample`` statistically estimates the optimal 
+split on an `X`-column, while `` `exhaustive`` considers all possible splits.
+* `numBuckets`: If `splitMethod` is `` `exhaustive``, this parameter is ignored.
+Otherwise, when `splitMethod` is `` `sample``, this gives the number of buckets
+used in the estimation of optimal column splits for building regression trees.
+* `learningRate`: The learning rate of the model, used for regularization. 
+Each successive tree from boosting stages are added with multiplier `learningRate`.
+
+Builders essentially just hold parameters which are later useful to perform fitting. 
+Builders are mainly only useful for their `fit` and `iterativeFitter` methods, 
+which use the builder's parameters to fit models to data. See those methods for examples
+
+""")
+class {
+    member nBoostingIterations;
+    member learningRate;
+    member treeBuilderArgs;
+
+    fit: 
+#Markdown(
+"""#### Usage
+
+    builder.fit(X, y, whichColumnsAreCategorical: whichColumnsAreCategorical)
+
+#### Description
+
+Use `GradientBoostedClassifierBuilder` `builder` to fit the predictors `X` to the responses `y`.
+
+If `X` has categorical data and `y` has only two classes, then clients may pass in a vector 
+of column indices which identify the categorical columns (the `whichColumnsAreCategorical` argument). 
+Note that these columns are NOT detected and treated automatically without such an argument. 
+If `whichColumnsAreCategorical` is not `nothing`, then the categorical columns are transformed 
+by `categoricalTransformations.fora` which replaces values by their class-proportion in 
+class-1 and then performing standard, numeric, GBM. On calls to `predict`, 
+the resulting fit model will automatically transform inputs in  the same way. Note that this is 
+not the only possible way to treat categorical data -- users should consider which method best 
+meets their needs.
+
+#### Arguments
+
+* `X` -- a `dataframe.DataFrame` which defines the predictors to be fit.
+* `y` -- a `dataframe.DataFrame` which defines the responses to be fit.
+* `whichColumnsAreCategorical` -- a named argument, defaulting to `nothing`, or a vector 
+describing which columns of `X` are categorical variables.
+
+#### Examples
+
+Purely continuous data:
+
+    /* Create some sample data */
+    let it = iterator(math.random.Normal(0, 1, 5551884))
+    let rands = [pull it for _ in sequence(40)]
+    let inputs = dataframe.DataFrame([
+        rands[,10],
+        rands[10,20],
+        rands[20,30]
+        ])
+    let outputs = rands[30,] ~~ { _ < 0.0 }
+
+    /* Perform the model fitting */ 
+    let fit = builder.fit(inputs, outputs)
+
+    /* a few methods on the fit */
+    /* prediction */
+    fit.predict(inputs)
+    /* scoring the model */
+    fit.score(inputs, outputs)
+
+Categorical data requires the use of the `whichColumnsAreCategorical` argument:
+
+    // columns 0 and 1 are categorical
+    let inputs = dataframe.DataFrame([
+        ["a", "a", "a", "a", "a", "b", "b", "c", "c"],
+        ["a", "a", "b", "b", "b", "c", "c", "d", "d"],
+        [0, 1, 2, 3, 4, 5, 6, 7, 8]    
+        ]);
+    let outputs = dataframe.Series([0, 0, 1, 1, 1, 0, 1, 0, 0]);
+
+    let builder = math.ensemble.gradientBoosting.GradientBoostedClassifierBuilder(nBoosts: 2);
+
+    let fit = builder.fit(inputs, outputs, whichColumnsAreCategorical: [0, 1]);
+
+    fit.predict(inputs)
+    fit.score(inputs, outputs)
+
+""")
+    fun
+    (dataframe.DataFrame(X), dataframe.DataFrame(y), 
+     whichColumnsAreCategorical:= nothing) {
+        let iterativeFitter = self.iterativeFitter(
+            X, y, whichColumnsAreCategorical: whichColumnsAreCategorical
+            );
+        let boostingIx = 0;        
+        while (boostingIx < self.nBoostingIterations) {
+            iterativeFitter = iterativeFitter.next();
+            boostingIx = boostingIx + 1
+            }
+
+        return iterativeFitter.model
+        }
+    (dataframe.DataFrame(X), y, whichColumnsAreCategorical:= nothing) {
+        fit(X, dataframe.DataFrame([y]), 
+            whichColumnsAreCategorical: whichColumnsAreCategorical)
+        }
+    ;
+
+    iterativeFitter:
+#Markdown(
+"""#### Usage
+
+    builder.iterativeFitter(X, y)
+
+#### Description
+
+Create an `IterativeFitter`, which is a sort of iterator which produces models 
+by boosting.
+
+#### Examples
+
+    let it = iterator(math.random.Normal(0, 1, 5551884))
+    let rands = [pull it for _ in sequence(40)]
+    let X = dataframe.DataFrame([
+        rands[,10],
+        rands[10,20],
+        rands[20,30]
+        ])
+    let y = rands[30,] ~~ { _ < 0 }
+
+    let builder = math.ensemble.gradientBoosting
+        .GradientBoostedClassifierBuilder(nBoosts: 2, maxDepth: 2);
+    let fitter = builder.iterativeFitter(X, y)
+
+    let numBoosts = 5;
+    let trainErrors = []; // for example, stash training errors to see progress
+    for ix in sequence(numBoosts) {
+        trainErrors = fitter.model.score(X, y)
+        fitter = fitter.next()
+        }
+
+    // get the relevant model and predictions from the fitter
+    fitter.model
+    fitter.predictions
+
+    // see how the training error changed with number of boosts
+    linePlot(trainErrors)
+
+    /* `fitter.model` is either a `math.ensemble.gradientBoosting.ClassificationModel` 
+        instance of a `math.ensemble.gradientBoosting.BinaryClassificationModel`. 
+       `fitter.model.predict(X)` is the same thing as `fitter.predictions` */
+
+""")
+    fun(dataframe.DataFrame(X), dataframe.DataFrame(y),
+       whichColumnsAreCategorical:= nothing) {
+        let yAsSeries = y.getColumn(0);
+        let model = 
+            self.getInitialModel(
+                X, yAsSeries, self.learningRate, self.treeBuilderArgs, 
+                whichColumnsAreCategorical
+                );
+
+        return IterativeFitter(model, nothing)
+        }
+    (dataframe.DataFrame(X), y, whichColumnsAreCategorical:= nothing) {
+        iterativeFitter(X, dataframe.DataFrame([y]), 
+            whichColumnsAreCategorical: whichColumnsAreCategorical)
+        }
+    ;
+
+    `hidden
+    IterativeFitter: class {
+        member model;
+        member previousRegressionValues;
+
+        next: fun() {
+            let (pseudoResiduals, regressionValues) =
+                model.pseudoResidualsAndRegressionValues(
+                    previousRegressionValues
+                    );
+
+            let newModel = model.boost(pseudoResiduals)
+            
+            return IterativeFitter(newModel, regressionValues)
+            };
+
+        pseudoResidualsAndRegressionValues: fun() {
+            model.pseudoResidualsAndRegressionValues(
+                previousRegressionValues
+                )
+            };
+
+        nextGivenPseudoResidualsAndRegressionValues: 
+        fun((pseudoResiduals, regressionValues)) {
+            let newModel = model.boost(pseudoResiduals);
+
+            return IterativeFitter(newModel, regressionValues)
+            };
+        
+        };
+
+    `hidden
+    getInitialModel: fun(X, yAsSeries, learningRate, treeBuilderArgs, 
+                         whichColumnsAreCategorical)
+        {
+        let classes = sorting.unique(yAsSeries);
+        let nClasses = size(classes)
+
+        if (nClasses < 2)
+            throw Exception("in a classification model, " +
+                            "the number of classes must be greater than one")
+
+        let inputTransformFun = nothing
+        if (whichColumnsAreCategorical is not nothing) {
+            if (nClasses > 2) {
+                throw Exception("We only know how to treat categorical predictors " +
+                                "when the output is binary (ie, two-class)")
+                }
+            else {
+                inputTransformFun =
+                    categoricalTransformations.makeCategoricalMapping(
+                        X, yAsSeries, classes: classes, 
+                        whichColumnsAreCategorical: whichColumnsAreCategorical
+                        );
+                X = inputTransformFun(X);
+                }
+            }
+
+        if (nClasses == 2)
+            return BinaryClassificationModel.getInitialModel(
+                X, yAsSeries, classes, learningRate, treeBuilderArgs, 
+                inputTransformFun
+                );
+
+        ClassificationModel.getInitialModel(
+            X, yAsSeries, classes, learningRate, treeBuilderArgs
+            );
+        };
+
+    operator new(nBoosts:= 100, maxDepth:= 3,
+                 minSamplesSplit:= 2, splitMethod:= `sample, 
+                 numBuckets:= 10000, learningRate:= 1.0)
+        {
+        let treeBuilderArgs = 
+            (
+                minSamplesSplit: minSamplesSplit,
+                maxDepth: maxDepth,
+                impurityMeasure: math.tree.Base.SampleSummary, // each base model is
+                                                               // fit to gradient by
+                                                               // least squares
+                splitMethod: splitMethod,
+                numBuckets: numBuckets
+                );                
+
+        createInstance(
+            cls,
+            nBoostingIterations: nBoosts,
+            learningRate: learningRate,
+            treeBuilderArgs: treeBuilderArgs
+            );
+        };
+
+    withDepth: 
+#Markdown(
+"""#### Usage 
+
+    builder.withDepth(newDepth)
+
+#### Description
+
+Return a new builder with a the same parameters as `builder` except that 
+it has `newDepth` for depth. 
+
+#### Examples
+
+    let builder = math.ensemble.gradientBoosting.GradientBoostedClassifierBuilder();
+    let newBuilder = builder.withDepth(1)
+
+""")
+    fun(newDepth) {
+        createInstance(
+            cls,
+            nBoostingIterations: nBoostingIterations,
+            learningRate: learningRate,
+            treeBuilderArgs: (
+                minSamplesSplit: treeBuilderArgs.minSamplesSplit,
+                maxDepth: newDepth,
+                impurityMeasure: treeBuilderArgs.impurityMeasure,
+                splitMethod: treeBuilderArgs.splitMethod)
+            );
+        };
+
+    withLearningRate: 
+#Markdown(
+"""#### Usage 
+
+    builder.withLearningRate(newLearningRate)
+
+#### Description
+
+Return a new builder with a the same parameters as `builder` except that 
+it has `newLearningRate` for learning rate. 
+
+#### Examples
+
+    let builder = math.ensemble.gradientBoosting.GradientBoostedClassifierBuilder();
+    let newBuilder = builder.learningRate(0.01)
+
+""")
+    fun(newLearningRate) {
+        createInstance(
+            cls,
+            nBoostingIterations: nBoostingIterations,
+            learningRate: newLearningRate,
+            treeBuilderArgs: treeBuilderArgs
+            );
+        };
+
+    };
+
+

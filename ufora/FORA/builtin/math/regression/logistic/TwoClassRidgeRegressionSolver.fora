@@ -1,0 +1,227 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+`hidden;
+
+#Markdown("""
+In the notation of 'Majorization for CRFs and Latent Likelihoods' by T.Jebara, A. Choromanska,
+we consider two-class examples (`size(classes) == 2`). We set `f(classZeroLabel) = 0 (zero vector)` and 
+`f(classOneLabel) = x` (assuming no intercepts in model).
+
+Note that there are infinitely such choices of `f` are possible: for any real number `c`, 
+`f(classZeroLabel) = c * x` and `f(classOneLabel) = (1 - c) * x` gives rise to an appropriate `f` for 
+l2-regularized logistic regression, and give rise to the same update rule for the regression coefficients, 
+theta.
+""")
+class {
+	member mX;
+	member mLambda;
+	member mTol;
+	member mMaxIter;
+	member mClassZeroLabel;
+	member mFSum;
+	member mChunkSize;
+	member mNFeatures;
+	member mNSamples;
+	member mNTheta;
+	member mSplitLimit;
+
+	operator new(X, Y, lambda:, tol:, maxIter:, classes:, 
+				 chunkSize:=5000000, classZeroLabel:=nothing, 
+				 splitLimit:=1000000, hasIntercept:=true, interceptScale:=1)
+		{
+		if (classZeroLabel is nothing)
+			classZeroLabel = classes[0]
+		else
+			{
+			if (classZeroLabel not in classes)
+				throw "classZeroLabel must be in classes"
+			};			
+
+		// we don't really need to store another column of ones, 
+		// but it makes the code much simpler
+		if (hasIntercept)
+			X = addInitialScaleColumn(X, interceptScale);
+
+		let fSum = computeFsum(X, Y.getColumn(0), classZeroLabel);
+			
+		// includes the "synthetic feature" in the case hasIntercept is true
+		let nFeatures = X.numColumns; 
+		let nTheta =  nFeatures;
+
+		createInstance(cls, mX:X, mLambda:Float64(lambda), mTol:tol, mMaxIter:maxIter, 
+					   mClassZeroLabel:classZeroLabel, mFSum:fSum, mChunkSize:chunkSize,
+					   mNFeatures:nFeatures, mNSamples:X.numRows, mNTheta:nTheta, 
+					   mSplitLimit:splitLimit)
+		};
+
+	// TODO should "chunkify" this function: zipWith is a linear scan
+	static computeFsum:
+	fun(X, Y, classZeroLabel) {
+		math.Matrix(
+			[ val for val in 
+				X.columnApply(
+					fun(col) { 
+						zipWith(
+							fun(x, y) {
+								if (y == classZeroLabel)
+									0.0
+								else
+									Float64(x)
+								},
+								col, Y
+							).sum()
+						}
+					)
+				]
+			)
+		};
+
+	computeCoefficients:
+	fun()
+		{
+		let oldTheta = math.Matrix([0.0 for _ in sequence(mNTheta)]);	
+		let newTheta = updateTheta(oldTheta)
+
+		let iters = 1;
+
+		// TODO: is this the right convergence condition? should we be looking at 
+		// the objective function instead?
+		while ((newTheta - oldTheta).norm() > mTol and iters <= mMaxIter)
+			{
+			oldTheta = newTheta;
+			newTheta = updateTheta(oldTheta)
+			iters = iters + 1
+			}
+
+		return (newTheta, iters);
+		};
+
+	updateTheta:
+	fun(theta)
+		{
+		let thetaDotX = dot(mX, theta, mChunkSize)
+		let sigma = computeSigma(thetaDotX);
+		let muSum = computeMuSum(thetaDotX);
+			
+		let A = sigma + math.Matrix.diagonal(mNTheta, mLambda * mNSamples)
+		let b = muSum - mFSum + (mLambda * mNSamples) * theta
+
+		theta - math.Matrix.linsolv(A, b)
+		};
+
+	computeSigma:
+	fun(thetaDotX) {
+		let computeSigma_ = fun(start = 0, end = nothing, depth = 0)
+			{
+			if (end is nothing) { end = mX.numRows }
+			
+			if (depth >= 3 or (end - start) < mSplitLimit)
+				{
+				// keys for the (symmetric) xTx-ish matrix
+				let upperTriangularKeys = [];
+				for row in sequence(mNFeatures) 
+					{
+					for col in sequence(0, row) 
+						{ 
+						// we don't really need this if we're smarter later
+						upperTriangularKeys = upperTriangularKeys :: nothing; 
+						}
+					for col in sequence(row, mNFeatures)
+						{
+						upperTriangularKeys = upperTriangularKeys :: (row, col);
+						}
+					}
+
+				let upperTriangularValues = 
+					upperTriangularKeys.apply(
+						fun(nothing) { 0.0 }
+						((row, col)) {
+							let right = mX.getColumn(col)[start, end];
+							let left = mX.getColumn(row)[start, end];
+							
+							computeSigmaEntry(left, right, thetaDotX:thetaDotX[start, end])
+							}
+						)
+				
+				let trData = []
+				for row in sequence(mNFeatures)
+					{
+					for col in sequence(mNFeatures) 
+						{
+						if (row <= col)
+							trData = trData :: upperTriangularValues[row * mNFeatures + col]
+						else
+							trData = trData :: upperTriangularValues[col * mNFeatures + row]
+						}
+					}
+			
+				return math.Matrix(trData, (mNFeatures, mNFeatures));
+				}
+
+			let mid = Int64((start + end) / 2);
+			
+			computeSigma_(start, mid, depth + 1) + computeSigma_(mid, end, depth + 1)
+			}
+
+		computeSigma_()
+		};
+
+	static sigmaMultiplierFun:
+	"""
+	returns the continuous exension of (exp(x) - 1) / (exp(x) + 1) / (2 * x) to the origin
+	"""
+	fun(x) {
+		let _exp = math.exp(x);
+
+		if (abs(x) < 1.0e-5)
+			return (0.5 + 0.25 * x) / (_exp + 1.0) // Taylor-expand (exp(x) - 1) / (2 * x)
+
+		return (_exp - 1.0) / (_exp + 1.0) / (2.0 * x)
+		};
+
+	static computeSigmaEntry: fun(left, right, thetaDotX:)
+		{
+		let res = nothing;
+		let ix = 0;
+		while (ix < size(left))
+			{
+			res = res + left[ix] * right[ix] * sigmaMultiplierFun(thetaDotX[ix])
+			ix = ix + 1
+			}
+		res
+		};
+
+	// TODO: might want to "chunkify" this function
+	computeMuSum:
+	fun(thetaDotX) {
+		let rowWiseScalarMultipliers = thetaDotX ~~ { 1.0 / (1.0 + math.exp(-_)) };
+
+		math.Matrix(
+			[val for val in 
+			 	mX.columnApply(
+					fun(col) {			
+						zipWith(
+							fun(x, y) { x * y },
+							col, rowWiseScalarMultipliers
+						).sum()
+						}	
+					)
+				]
+			)
+		};
+
+	};
+

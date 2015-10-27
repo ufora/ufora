@@ -1,0 +1,395 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#ifndef FORA_Language_FunctionStage1_hppml_
+#define FORA_Language_FunctionStage1_hppml_
+
+
+#include "../Core/CSTValue.hppml"
+#include "../../core/math/Nullable.hpp"
+#include "../../core/containers/ImmutableTreeMap.hppml"
+#include "../../core/containers/ImmutableTreeSet.hppml"
+#include "../../core/containers/ImmutableTreeVector.hppml"
+#include "../../core/Exception.hpp"
+#include "../Primitives/Symbol.hpp"
+#include "VariableAllocator.hppml"
+
+class Function;
+class ObjectDefinition;
+class CodeLocation;
+class ClassMediator;
+
+/******
+
+namespace FunctionStage1
+
+Provides a simplified model of FORA Expressions, in which basic syntactic sugar
+has been expanded, including
+	- closures and objects have been turned into applies
+	- multi-lets have been turned into objects
+	- each unique pattern has a unique variable binding, except "MatchEither",
+		in which cases the branches have identical variable names for
+		variables that should bind equivalently
+	- call, member, getitem, setitem, and, or, etc. have been expanded
+		into their component 'Apply' operations
+	- Cached has had its elements bound into closures
+	- yield has been expressed using continuations
+	- foreach, list comprehension, etc.
+
+but not pattern matches	
+******/
+
+namespace FunctionStage1 {
+
+typedef VariableAllocator::Variable variable_index_type;
+
+//exception type that gets thrown if there is an error trying to convert
+//the function
+struct InvalidConversion : public Ufora::Exception {
+	InvalidConversion(const std::string& msg) : Ufora::Exception(msg) {}
+};
+
+@type
+	//Expressions represent a sequence of operations to perform in a context
+	//in which a set of variables have already been bound.  "freeVariables"
+	//are variables in the surrounding context that the expression depends on
+	//and for execution to be meaningful, the variables have to be bound
+	Expression =
+			//evaluates to a constant
+			Constant of CSTValue val
+			
+			//look up the value of a variable
+		-|	Variable of variable_index_type variable
+		
+			//non-recursive let
+		-|	Let of	Pattern pat,
+					Expression value,
+					Expression body,
+					Expression ifMatchFails
+			
+			//evaluate 'value' and update patterns listed in 'toAssign'
+		-|	Assign of
+				Pattern toAssign,
+				Expression value,
+				Expression ifMatchFails
+			
+		-|	Apply of
+				Expression agent,
+				ImmutableTreeVector<ApplyArgument> arguments
+			
+		-|	While of
+				Expression condition,
+				Expression updater
+		
+		-|	Is of Expression v1, Expression v2
+		
+		-|	RawCached of Expression exprs
+		
+		-|	Branch of 	Expression operand,
+						Expression ifTrue,
+						Expression ifFalse
+		
+		-|	Throw of 	Expression exception,
+						Nullable<variable_index_type> throwTarget
+		
+		-|	Try of 		Expression toTry,
+						Nullable<variable_index_type> catchTarget,
+						Function catchWith
+			
+		-|	Return of Expression toReturn
+		
+		//calls 'withContinuation' with an argument that resumes at the
+		//current expression location.
+		-|	Continuation of Function withContinuation
+			
+		-|	Match of 	ImmutableTreeVector<ApplyArgument> toMatch,
+						Function predicate
+			
+		-|	CreateTuple of ImmutableTreeVector<ApplyArgument> args
+		
+		-|	Skip of ()
+	with
+		Nullable<hash_type> definingExpressionLocationId,
+		int depth = (this->computeDepth())
+	{
+	public:
+			void	toString(CPPMLPrettyPrintStream stream) const;
+			
+			static Expression	Let(variable_index_type var,
+									Expression expr,
+									Expression within,
+									Expression ifMatchFails
+									);
+
+			static Expression	Let(variable_index_type var,
+									Expression expr,
+									Expression within
+									);
+
+			static Expression	Let(Pattern pat,
+									Expression expr,
+									Expression within
+									);
+			
+			int computeDepth() const;
+	}
+and
+	//ApplyArgument - a term in a call operation.
+	ApplyArgument =
+			//a regular argument (which may be named)
+		-|	Normal of Nullable<Symbol> name, Expression expr
+		-|	TupleCall of Expression expr
+    with
+        int depth = (this->computeDepth())
+	{
+	public:
+            int computeDepth() const;
+			static	ApplyArgument Constant(const CSTValue& val);
+			static	ApplyArgument Normal(const Expression& expr);
+			void	toString(CPPMLPrettyPrintStream stream) const;
+
+			ApplyArgument withDifferentExpression(const Expression& inExpr) const;
+			Expression expr(void) const;
+	}
+and
+	//a Pattern is an expression that matches some subset of FORA values.
+	//if it matches, it binds variables to pieces of the expression
+	Pattern =
+			//matches anything, and bind to varname (if not null)
+		-|	Anything of variable_index_type varname
+		
+			//matches anything, and bind to varname (if not null)
+		-|	AnythingDiscard of ()
+		
+			//applies the match to the type of the argument
+		-|	TypeMatch of Pattern typeMatch
+			
+			//matches if this is a tuple matching 'pattern'
+		-|	Tuple of TuplePattern pattern
+			
+			//matches if the argument is identical to the evaluation of
+			//value
+		-|	Constant of Expression value
+			
+			//binds the argument to 'var', evaluates 'expr', and then
+			//matches _that_ against 'right'
+		-|	Guarded of variable_index_type var, Expression expr, Pattern right
+		
+			//checks 'left' and then 'right'. the two patterns must match
+			//exactly the same variables
+		-|	MatchEither of Pattern left, Pattern right
+			
+			//checks both 'left' and 'right'.  Variables bound in
+			//'right' and 'left' must be disjoint
+		-|	MatchBoth of Pattern left, Pattern right
+		
+			//matches 'pattern' first, and then evaluates 'expr'. if 'expr'
+			//is False, then no match 
+		-|	MatchIf of Pattern pattern, Expression expr
+    with
+		Nullable<hash_type> definingExpressionLocationId,
+        int depth = (this->computeDepth())
+	{
+	public:
+			//returns a pattern matching a specific constant
+			static	Pattern Constant(const CSTValue& v);
+			void	toString(CPPMLPrettyPrintStream stream) const;
+            int computeDepth() const;
+	}
+and
+	//a tuple pattern only matches Tuple objects (and can only be applied when
+	//we can guarantee that it's in a Tuple context). Each TuplePatternElement
+	//may match one value, no values, or all the remaining values if it's a
+	//VarArgs. There can only be one VarArgs in the tuple pattern
+	TuplePattern = ImmutableTreeVector<TuplePatternElement> matchers
+	{
+	public:
+			TuplePattern(const ImmutableTreeVector<Pattern>& inPats);
+			void	toString(CPPMLPrettyPrintStream stream) const;
+
+			bool 	canMatchZeroElements(void) const;
+
+			bool	allElementsMatchExactlyOneElement(void) const;
+            
+            int depth() const;
+	}
+and
+	//matches zero, one, or all of the remaining terms in a tuple pattern
+	TuplePatternElement =
+			//matches 'match'. If no value can be found, evaluates to
+			//'defaultValue' which has all patterns to the left in scope
+			//if 'name' is not Null, this binds to a named struct value
+			//and pops it off the structure from 
+		-|	Normal of 	Nullable<Symbol> fieldName,
+						Pattern match,
+						Nullable<Expression> defaultValue
+			//matches all remaining unmatched terms. there can be only
+			//one of these per match expression
+		-|	VarArgs of variable_index_type varname
+    with
+        int depth = (this->computeDepth())
+	{
+	public:
+			void	toString(CPPMLPrettyPrintStream stream) const;
+
+			bool 	canMatchZeroElements(void) const;
+
+			bool	matchesExactlyOneElement(void) const;
+            
+            int computeDepth() const;
+	}
+and
+	//a sequence of TuplePattern matches, along with predicate expressions
+	//Empty doesn't match anything, and behaviour is dependent on context.
+	//If Term doesn't match, it passes control to 'otherwise'
+	Function =
+			Empty of variable_index_type allArgs, Expression e
+		-|	Term of TuplePattern pattern, Expression result, Function otherwise
+    with
+        int depth = (this->computeDepth())
+	{
+	public:
+            int computeDepth() const;
+			void	toString(CPPMLPrettyPrintStream stream) const;
+	}
+	;
+
+
+namespace Convenience {
+	//convert an expression to a "Normal" apply argument
+	ApplyArgument 	applyArg(const Expression& expr);
+	ApplyArgument	applyArg(const variable_index_type& expr);
+	ApplyArgument	applyArg(const CSTValue& expr);
+
+	Expression symExpr(Symbol s);
+	Expression symExpr(string s);
+	Expression varExpr(variable_index_type s);
+	
+	ApplyArgument symArg(Symbol s);
+	ApplyArgument symArg(string s);
+	
+	Pattern varPat(variable_index_type s);
+	Pattern symPat(Symbol s);
+	Pattern symPat(string s);
+	
+}
+	
+Function operator+(const Function& inF1, const Function& inF2);
+
+//rename variables in a pattern. can't throw
+Pattern
+	remapVariables(
+		const Pattern& in,
+		const ImmutableTreeMap<variable_index_type, variable_index_type>& inMap
+		);
+//rename variables in an expression. can't throw
+Expression
+	remapVariables(
+		const Expression& in,
+		const ImmutableTreeMap<variable_index_type, variable_index_type>& inMap
+		);
+
+ImmutableTreeSet<variable_index_type> boundVariables(const Pattern& in);
+
+
+
+//convert from FORA to Stage1 form. Throws FunctionStage1::InvalidConversion
+//if there is some issue (e.g. invalid free variables, etc)
+FunctionStage1::Function	convert(
+								const ClassMediator& inMediator,
+								VariableAllocator& allocator
+								);
+
+FunctionStage1::Function	convert(const ClassMediator& inMediator);
+
+
+
+};
+
+template<>
+class CPPMLPrettyPrint<FunctionStage1::Expression> {
+public:
+		static void prettyPrint(
+							CPPMLPrettyPrintStream& stream,
+							const FunctionStage1::Expression& toPr
+							)
+			{
+			toPr.toString(stream);
+			}
+};
+
+template<>
+class CPPMLPrettyPrint<FunctionStage1::TuplePatternElement> {
+public:
+		static void prettyPrint(
+							CPPMLPrettyPrintStream& stream,
+							const FunctionStage1::TuplePatternElement& toPr
+							)
+			{
+			toPr.toString(stream);
+			}
+};
+
+
+template<>
+class CPPMLPrettyPrint<FunctionStage1::TuplePattern> {
+public:
+		static void prettyPrint(
+							CPPMLPrettyPrintStream& stream,
+							const FunctionStage1::TuplePattern& toPr
+							)
+			{
+			toPr.toString(stream);
+			}
+};
+
+template<>
+class CPPMLPrettyPrint<FunctionStage1::Pattern> {
+public:
+		static void prettyPrint(
+							CPPMLPrettyPrintStream& stream,
+							const FunctionStage1::Pattern& toPr
+							)
+			{
+			toPr.toString(stream);
+			}
+};
+
+template<>
+class CPPMLPrettyPrint<FunctionStage1::ApplyArgument> {
+public:
+		static void prettyPrint(
+							CPPMLPrettyPrintStream& stream,
+							const FunctionStage1::ApplyArgument& toPr
+							)
+			{
+			toPr.toString(stream);
+			}
+};
+template<>
+class CPPMLPrettyPrint<FunctionStage1::Function> {
+public:
+		static void prettyPrint(
+							CPPMLPrettyPrintStream& stream,
+							const FunctionStage1::Function& toPr
+							)
+			{
+			toPr.toString(stream);
+			}
+};
+
+
+#endif
+

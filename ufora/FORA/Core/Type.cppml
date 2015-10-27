@@ -1,0 +1,1208 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Type.hppml"
+
+#include "../../core/StringUtil.hpp"
+#include "../../core/Logging.hpp"
+#include "../../core/python/ScopedPyThreads.hpp"
+
+#include "../Primitives/String.hppml"
+#include <boost/lexical_cast.hpp>
+#include "ClassMediator.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
+#include "ImplVal.hppml"
+#include "../Primitives/Symbol.hpp"
+#include "../Serialization/SerializedObject.hpp"
+#include "../Primitives/ExternalFunctionDescription.hppml"
+#include "../TypedFora/TypedFora.hppml"
+#include "ImplVal.hppml"
+#include <boost/python.hpp>
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include "../TypedFora/ABI/VectorRecord.hpp"
+#include "../Vector/MutableVectorRecord.hppml"
+#include "../Native/NativeCode.hppml"
+
+#include "../FORAValuePrinting/FORAValuePrinter.hppml"
+
+using TypedFora::Abi::VectorRecord;
+
+
+namespace {
+
+template<class T>
+hash_type hashValuesWithHashMemberFunction(void* data, long ct, size_t inStride)
+	{
+	uint8_t* dataAsInt = (uint8_t*)data;
+
+	hash_type tr;
+
+	for (long k = 0; k < ct; k++)
+		tr = tr + reinterpret_cast<T*>(dataAsInt + k * inStride)->hash();
+
+	return tr;
+	}
+
+template<class T>
+hash_type hashValuesUsingGlobalHashValueFunction(void* data, long ct, size_t inStride)
+	{
+	uint8_t* dataAsInt = (uint8_t*)data;
+
+	hash_type tr;
+
+	for (long k = 0; k < ct; k++)
+		tr = tr + hashValue(*reinterpret_cast<T*>(dataAsInt + k * inStride));
+
+	return tr;
+	}
+
+template<class T>
+T* nudge(T* in, long offset)
+	{
+	return (T*)((char*)in + offset);
+	}
+
+template<class T>
+void initializeInPlace(T* dest, const void* src, uword_t inCount, uword_t inStrideDest, uword_t inStrideSource)
+	{
+	for (long k = 0; k < inCount; k++)
+		{
+		T* destPtr = reinterpret_cast<T*>(reinterpret_cast<char*>(dest) + inStrideDest * k);
+		const T* srcPtr = reinterpret_cast<const T*>(reinterpret_cast<const char*>(src) + inStrideSource * k);
+		new (destPtr) T(srcPtr[0]);
+		}
+	}
+
+template<class T>
+void initializeScatteredInPlace(T** dest, T** src, uword_t inCount, uword_t inDestNudge, uword_t inSourceNudge)
+	{
+	for (long k = 0; k < inCount; k++)
+		new (nudge(dest[k], inDestNudge)) T(*nudge(src[k], inSourceNudge));
+	}
+
+template<class T>
+void initializeInPlace(T* in, uword_t inCount, uword_t inStride)
+	{
+	for (long k = 0; k < inCount; k++)
+		new (reinterpret_cast<T*>(reinterpret_cast<char*>(in) + inStride * k)) T();
+	}
+
+template<class T, class F>
+void initializeInPlace(T* in, uword_t inCount, uword_t inStride, const F& f)
+	{
+	for (long k = 0; k < inCount; k++)
+		new (reinterpret_cast<T*>(reinterpret_cast<char*>(in) + inStride * k)) T(f());
+	}
+
+template<class T>
+void initializeScatteredInPlace(T** in, uword_t inCount, uword_t inNudge)
+	{
+	for (long k = 0; k < inCount; k++)
+		new (nudge(in[k], inNudge)) T();
+	}
+
+template<class T, class F>
+void initializeScatteredInPlace(T** in, uword_t inCount, uword_t inNudge, const F& f)
+	{
+	for (long k = 0; k < inCount; k++)
+		new (nudge(in[k], inNudge)) T(f());
+	}
+
+template<class T>
+void executeDestructorInPlace(T* in, uword_t inCount, uword_t inStride)
+	{
+	for (long k = 0; k < inCount; k++)
+		reinterpret_cast<T*>(reinterpret_cast<char*>(in) + inStride * k)->~T();
+	}
+
+template<class T>
+void executeScatteredDestructorInPlace(T** in, uword_t inCount, uword_t inNudge)
+	{
+	for (long k = 0; k < inCount; k++)
+		nudge(in[k], inNudge)->~T();
+	}
+
+int64_t offsetOfAlternativeSymbol()
+	{
+	AlternativeData d;
+
+	return (char*)&d.symbol - (char*)&d;
+	}
+
+int64_t offsetOfAlternativeData()
+	{
+	AlternativeData d;
+
+	return (char*)d.data - (char*)&d;
+	}
+
+}
+
+Type	Type::Class(const ImmutableTreeVector<Type>& elements,
+					const ClassMediator& mediator,
+					const ClassMediatorResumption& resumption
+					)
+	{
+	return Type::Class(
+		elements, 
+		ClassBody(
+			CPPMLOpaqueHandle<ClassMediator>(new ClassMediator(mediator)), 
+			resumption
+			)
+		);
+	}
+
+void* Type::computeTypeAsJov(void) const
+	{
+	JudgmentOnValue result = JudgmentOnValue::OfTypeNoMemo(*this);
+	return *(void**)(&result);
+	}
+
+Type Type::Tuple()
+	{
+	return Type::Tuple(emptyTreeVec(), emptyTreeVec());
+	}
+
+Type Type::Bool(void)
+	{
+	return Type::Integer(1,false);
+	}
+
+Type Type::UnnamedTuple(const ImmutableTreeVector<Type>& inElements)
+	{
+	ImmutableTreeVector<Nullable<symbol_type> > e;
+	e = e + Nullable<symbol_type>();
+	return Type::Tuple(inElements, e * inElements.size());
+	}
+
+void CPPML::Validator<Type_TupleType, void>::operator()(Type_TupleType& in) const
+	{
+	lassert(in.types().size() == in.names().size());
+	}
+
+Type Type::Class(const ClassMediator& inMediator)
+	{
+	return Type::Class(
+		emptyTreeVec(),
+		ClassBody(
+			CPPMLOpaqueHandle<ClassMediator>(inMediator),
+			ClassMediatorResumption::Entry()
+			)
+		);
+	}
+
+const ImmutableTreeVector<hash_type>& ForaStackTrace::elements(void) const
+	{
+	return getStackTrace().elements();
+	}
+
+ForaStackTrace ForaStackTrace::operator+(const ForaStackTrace& in) const
+	{
+	return ForaStackTrace::StackTrace(elements() + in.elements());
+	}
+
+bool Type::computeHasDictionaryWithin(void) const
+	{
+	@match Type(*this)
+		-|	Tuple(t) ->> {
+			for (long k = 0; k < t.size(); k++)
+				if (t[k].hasDictionaryWithin())
+					return true;
+			return false;
+			}
+		-|	Class(t) ->> {
+			for (long k = 0; k < t.size(); k++)
+				if (t[k].hasDictionaryWithin())
+					return true;
+			return false;
+			}
+		-|	Dictionary(isCST) ->> {
+			return true;
+			}
+		-| _ ->> {
+			return false;
+			}
+	}
+
+bool Type::computeIsPOD(void) const
+	{
+	@match Type(*this)
+		-|	Nothing() ->> {
+			return true;
+			}
+		-|	ExternalFunction() ->> {
+			return false;
+			}
+		-|	String() ->> {
+			return false;
+			}
+		-|	Symbol() ->> {
+			return true;
+			}
+		-|	Tag() ->> {
+			return true;
+			}
+		-|	TimeDuration() ->> {
+			return true;
+			}
+		-|	DateTime() ->> {
+			return true;
+			}
+		-|	JOVAsValue() ->> {
+			return false;
+			}
+		-|	StackTrace() ->> {
+			return false;
+			}
+		-|	Integer() ->> {
+			return true;
+			}
+		-|	Float() ->> {
+			return true;
+			}
+		-|	Alternative(t) ->> {
+			return t.isPOD();
+			}
+		-|	Vector() ->> {
+			return false;
+			}
+		-|	MutableVector() ->> {
+			return false;
+			}
+		-|	Tuple(t) ->> {
+			bool OK = true;
+			for (long k = 0; k < t.size() && OK; k++)
+				OK = t[k].isPOD();
+			return OK;
+			}
+		-|	Class(t) ->> {
+			bool OK = true;
+			for (long k = 0; k < t.size() && OK; k++)
+				OK = t[k].isPOD();
+			return OK;
+			}
+		-|	Dictionary(isCST) ->> {
+			return false;
+			}
+	}
+
+bool Type::computeIsDirectlySerializable(void) const
+	{
+	@match Type(*this)
+		-|	Nothing() ->> {
+			return true;
+			}
+		-|	ExternalFunction() ->> {
+			return false;
+			}
+		-|	String() ->> {
+			return false;
+			}
+		-|	Symbol() ->> {
+			return false;
+			}
+		-|	Tag() ->> {
+			return false;
+			}
+		-|	JOVAsValue() ->> {
+			return false;
+			}
+		-|	StackTrace() ->> {
+			return false;
+			}
+		-|	Integer(bits) ->> {
+			return ((bits % 8) == 0);
+			}
+		-|	Float() ->> {
+			return true;
+			}
+		-|	Alternative(t) ->> {
+			return false;
+			}
+		-|	Vector() ->> {
+			return false;
+			}
+		-|	MutableVector() ->> {
+			return false;
+			}
+		-|	TimeDuration() ->> {
+			return true;
+			}
+		-|	DateTime() ->> {
+			return true;
+			}
+		-|	Tuple(t) ->> {
+			bool OK = true;
+			for (long k = 0; k < t.size() && OK; k++)
+				OK = t[k].isDirectlySerializable();
+			return OK;
+			}
+		-|	Class(t) ->> {
+			bool OK = true;
+			for (long k = 0; k < t.size() && OK; k++)
+				OK = t[k].isDirectlySerializable();
+			return OK;
+			}
+		-|	Dictionary(isCST) ->> {
+			return false;
+			}
+	}
+
+
+
+bool Type::isCST(void* data) const
+	{
+	@match Type(*this)
+		-|	Nothing() ->> {
+			return true;
+			}
+		-|	ExternalFunction(isCST) ->> {
+			return isCST;
+			}
+		-|	String() ->> {
+			return true;
+			}
+		-|	Symbol() ->> {
+			return true;
+			}
+		-|	Tag() ->> {
+			return true;
+			}
+		-|	JOVAsValue() ->> {
+			return true;
+			}
+		-|	StackTrace() ->> {
+			return true;
+			}
+		-|	Integer() ->> {
+			return true;
+			}
+		-|	Float() ->> {
+			return true;
+			}
+		-|	TimeDuration() ->> {
+			return true;
+			}
+		-|	DateTime() ->> {
+			return true;
+			}
+		-|	Alternative(t) ->> {
+			return t.isCST( ((AlternativeData*)data)->data );
+			}
+		-|	Vector() ->> {
+			return true;
+			}
+		-|	MutableVector() ->> {
+			return false;
+			}
+		-|	Tuple(t) ->> {
+			bool OK = true;
+
+			unsigned char* dataBytes = (unsigned char*)data;
+
+			for (long k = 0; k < t.size() && OK; k++)
+				{
+				OK = t[k].isCST(dataBytes);
+				dataBytes += t[k].size();
+				}
+
+			return OK;
+			}
+		-|	Class(t) ->> {
+			bool OK = true;
+
+			unsigned char* dataBytes = (unsigned char*)data;
+
+			for (long k = 0; k < t.size() && OK; k++)
+				{
+				OK = t[k].isCST(dataBytes);
+				dataBytes += t[k].size();
+				}
+
+			return OK;
+			}
+		-|	Dictionary(isCST) ->> {
+			return isCST;
+			}
+		-|	_ ->> {
+			lassert_dump(false, prettyPrintString(*this));
+			return false;
+			}
+	}
+
+uword_t Type::computeSize(void) const
+	{
+	@match Type(*this)
+		-|	Nothing() ->> {
+			return 0;
+			}
+		-|	String() ->> {
+			return sizeof(string_type);
+			}
+		-|	ExternalFunction() ->> {
+			return sizeof(ExternalFunctionDescriptor);
+			}
+		-|	Symbol() ->> {
+			return sizeof(symbol_type);
+			}
+		-|	Tag() ->> {
+			return sizeof(symbol_type);
+			}
+		-|	JOVAsValue() ->> {
+			return sizeof(JOV);
+			}
+		-|	StackTrace() ->> {
+			return sizeof(ForaStackTrace);
+			}
+		-|	Integer(b,s) ->> {
+			return (uword_t((b + 7) / 8));
+			}
+		-|	Float(b) ->> {
+			return (uword_t((b + 7) / 8));
+			}
+		-|	Alternative(t) ->> {
+			return sizeof(symbol_type) + t.size();
+			}
+		-|	DateTime() ->> {
+			return sizeof(date_time_type) ;
+			}
+		-|	TimeDuration() ->> {
+			return sizeof(time_duration_type);
+			}
+		-|	Tuple(t) ->> {
+			uword_t sz = 0;
+			for (long k = 0; k < t.size(); k++)
+				sz += t[k].size();
+			return sz;
+			}
+		-|	Vector() ->> {
+			return sizeof(VectorRecord);
+			}
+		-|	MutableVector() ->> {
+			return sizeof(MutableVectorRecord);
+			}
+		-|	Class(t) ->> {
+			uword_t sz = 0;
+			for (long k = 0; k < t.size(); k++)
+				sz += t[k].size();
+			return sz;
+			}
+		-|	Dictionary(isCST) ->> {
+			return sizeof(dict_type);
+			}
+	}
+
+ImmutableTreeVector<uint64_t> Type::computeByteOffsets(void) const
+	{
+	ImmutableTreeVector<uint64_t> byteOffsets;
+
+	@match Type(*this)
+		-|	Tuple(types, names) ->>
+			{
+			uword_t curOffset = 0;
+			for (long k = 0; k < types.size(); k++)
+				{
+				byteOffsets = byteOffsets + curOffset;
+				curOffset += types[k].size();
+				}
+			byteOffsets = byteOffsets + curOffset;
+			}
+		-| _ ->> {}
+	;
+
+	return byteOffsets;
+	}
+
+void Type::initialize(void* data, MemoryPool* inPool) const
+	{
+	initialize(data, 1, size(), inPool);
+	}
+
+void Type::initialize(void* data, uword_t inCount, MemoryPool* inPool) const
+	{
+	initialize(data, inCount, size(), inPool);
+	}
+
+void Type::initialize(void* data, uword_t inCount, uword_t inStride, MemoryPool* inPool) const
+	{
+	@match Type(*this)
+		-|	Nothing() ->> {}
+		-|	String() ->> { 
+			initializeInPlace((string_type*)data, inCount, inStride);
+			}
+		-|	DateTime() ->> { 
+			initializeInPlace((date_time_type*)data, inCount, inStride);
+			}
+		-|	TimeDuration() ->> { 
+			initializeInPlace((time_duration_type*)data, inCount, inStride);
+			}
+		-|	ExternalFunction() ->> {
+			initializeInPlace((ExternalFunctionDescriptor*)data, inCount, inStride);
+			}
+		-|	Symbol() ->> { 
+			initializeInPlace((symbol_type*)data, inCount, inStride);
+			}
+		-|	Tag() ->> { 
+			initializeInPlace((symbol_type*)data, inCount, inStride);
+			}
+		-|	JOVAsValue() ->> { 
+			initializeInPlace((JOV*)data, inCount, inStride);
+			}
+		-|	StackTrace() ->> { 
+			initializeInPlace((ForaStackTrace*)data, inCount, inStride);
+			}
+		-|	Integer(bits, isSigned) ->> { 
+			if (bits == 8 || bits == 1)
+				initializeInPlace((uint8_t*)data, inCount, inStride);
+				else
+			if (bits == 16)
+				initializeInPlace((uint16_t*)data, inCount, inStride);
+				else
+			if (bits == 32)
+				initializeInPlace((uint32_t*)data, inCount, inStride);
+				else
+			if (bits == 64)
+				initializeInPlace((uint64_t*)data, inCount, inStride);
+				else
+				lassert_dump(false, bits);
+			}
+		-|	Float(bits) ->> {
+			if (bits == 32)
+				initializeInPlace((float*)data, inCount, inStride);
+				else
+			if (bits == 64)
+				initializeInPlace((double*)data, inCount, inStride);
+			}
+		-|	Alternative(t) ->> {
+			AlternativeData& alt( *(AlternativeData*)data);
+
+			static Type symbolType = Type::Symbol();
+			symbolType.initialize(&alt.symbol, inCount, inStride, inPool);
+
+			t.initialize(alt.data, inCount, inStride, inPool);
+			}
+		-|	Class(t, f) ->> {
+			uword_t sz = 0;
+			for (long k = 0; k < t.size(); k++)
+				{
+				t[k].initialize(((char*)data) + sz, inCount, inStride, inPool);
+				sz = sz + t[k].size();
+				}
+			}
+		-|	Tuple(t) ->> {
+			uword_t sz = 0;
+			for (long k = 0; k < t.size(); k++)
+				{
+				t[k].initialize(((char*)data) + sz, inCount, inStride, inPool);
+				sz = sz + t[k].size();
+				}
+			}
+		-|	Dictionary(isCST) ->> { 
+			initializeInPlace((dict_type*)data, inCount, inStride);
+			}
+		-|	Vector() ->> {
+			initializeInPlace((VectorRecord*)data, inCount, inStride);
+			}
+		-|	MutableVector() ->> {
+			initializeInPlace(
+				(MutableVectorRecord*)data, 
+				inCount, 
+				inStride, 
+				[&](){
+					return MutableVectorRecord::allocateNewMutableVectorRecordOfNothing(
+						inPool
+						);
+					}
+				);
+			}
+		;
+	}
+
+void Type::initializeScattered(void** data, uword_t inCount, uword_t inNudge, MemoryPool* inPool) const
+	{
+	@match Type(*this)
+		-|	Nothing() ->> {}
+		-|	String() ->> { 
+			initializeScatteredInPlace((string_type**)data, inCount, inNudge);
+			}
+		-|	DateTime() ->> { 
+			initializeScatteredInPlace((date_time_type**)data, inCount, inNudge);
+			}
+		-|	TimeDuration() ->> { 
+			initializeScatteredInPlace((time_duration_type**)data, inCount, inNudge);
+			}
+		-|	ExternalFunction() ->> {
+			initializeScatteredInPlace((ExternalFunctionDescriptor**)data, inCount, inNudge);
+			}
+		-|	Symbol() ->> { 
+			initializeScatteredInPlace((symbol_type**)data, inCount, inNudge);
+			}
+		-|	Tag() ->> { 
+			initializeScatteredInPlace((symbol_type**)data, inCount, inNudge);
+			}
+		-|	JOVAsValue() ->> { 
+			initializeScatteredInPlace((JOV**)data, inCount, inNudge);
+			}
+		-|	StackTrace() ->> { 
+			initializeScatteredInPlace((ForaStackTrace**)data, inCount, inNudge);
+			}
+		-|	Integer(bits, isSigned) ->> { 
+			if (bits == 8 || bits == 1)
+				initializeScatteredInPlace((uint8_t**)data, inCount, inNudge);
+				else
+			if (bits == 16)
+				initializeScatteredInPlace((uint16_t**)data, inCount, inNudge);
+				else
+			if (bits == 32)
+				initializeScatteredInPlace((uint32_t**)data, inCount, inNudge);
+				else
+			if (bits == 64)
+				initializeScatteredInPlace((uint64_t**)data, inCount, inNudge);
+			else
+				lassert_dump(false, bits);
+			}
+		-|	Float(bits) ->> {
+			if (bits == 32)
+				initializeScatteredInPlace((float**)data, inCount, inNudge);
+				else
+			if (bits == 64)
+				initializeScatteredInPlace((double**)data, inCount, inNudge);
+			}
+		-|	Alternative(t) ->> {
+			static Type symbolType = Type::Symbol();
+			symbolType.initializeScattered(data, inCount, inNudge + offsetOfAlternativeSymbol(), inPool);
+			t.initializeScattered(data, inCount, inNudge + offsetOfAlternativeData(), inPool);
+			}
+		-|	Class(t, f) ->> {
+			uword_t sz = 0;
+			for (long k = 0; k < t.size(); k++)
+				{
+				t[k].initializeScattered(data, inCount, inNudge + sz, inPool);
+				sz = sz + t[k].size();
+				}
+			}
+		-|	Tuple(t) ->> {
+			uword_t sz = 0;
+			for (long k = 0; k < t.size(); k++)
+				{
+				t[k].initializeScattered(data, inCount, inNudge + sz, inPool);
+				sz = sz + t[k].size();
+				}
+			}
+		-|	Dictionary(isCST) ->> { 
+			initializeScatteredInPlace((dict_type**)data, inCount, inNudge);
+			}
+		-|	Vector() ->> {
+			initializeScatteredInPlace((VectorRecord**)data, inCount, inNudge);
+			}
+		-|	MutableVector() ->> {
+			initializeScatteredInPlace(
+				(MutableVectorRecord**)data, 
+				inCount, 
+				inNudge, 
+				[&](){
+					return MutableVectorRecord::allocateNewMutableVectorRecordOfNothing(
+						inPool
+						);
+					}
+				);
+			}
+	}
+
+void Type::initializeScattered(void** dest, const void** src, uword_t inCount, uword_t inDestNudge, uword_t inSourceNudge) const
+	{
+	if (!size())
+		return;
+
+	@match Type(*this)
+		-|	Nothing() ->> {}
+		-|	String() ->> { 
+			initializeScatteredInPlace((string_type**)dest, (string_type**)src, inCount, inDestNudge, inSourceNudge);
+			}
+		-|	DateTime() ->> { 
+			initializeScatteredInPlace((date_time_type**)dest, (date_time_type**)src, inCount, inDestNudge, inSourceNudge);
+			}
+		-|	TimeDuration() ->> { 
+			initializeScatteredInPlace((time_duration_type**)dest, (time_duration_type**)src, inCount, inDestNudge, inSourceNudge);
+			}
+		-|	ExternalFunction() ->> {
+			initializeScatteredInPlace((ExternalFunctionDescriptor**)dest, (ExternalFunctionDescriptor**)src, inCount, inDestNudge, inSourceNudge);
+			}
+		-|	Symbol() ->> { 
+			initializeScatteredInPlace((symbol_type**)dest, (symbol_type**)src, inCount, inDestNudge, inSourceNudge);
+			}
+		-|	Tag() ->> { 
+			initializeScatteredInPlace((symbol_type**)dest, (symbol_type**)src, inCount, inDestNudge, inSourceNudge);
+			}
+		-|	JOVAsValue() ->> { 
+			initializeScatteredInPlace((JOV**)dest, (JOV**)src, inCount, inDestNudge, inSourceNudge);
+			}
+		-|	StackTrace() ->> { 
+			initializeScatteredInPlace((ForaStackTrace**)dest, (ForaStackTrace**)src, inCount, inDestNudge, inSourceNudge);
+			}
+		-|	Integer(bits, isSigned) ->> { 
+			if (bits == 8 || bits == 1)
+				initializeScatteredInPlace((uint8_t**)dest, (uint8_t**)src, inCount, inDestNudge, inSourceNudge);
+				else
+			if (bits == 16)
+				initializeScatteredInPlace((uint16_t**)dest, (uint16_t**)src, inCount, inDestNudge, inSourceNudge);
+				else
+			if (bits == 32)
+				initializeScatteredInPlace((uint32_t**)dest, (uint32_t**)src, inCount, inDestNudge, inSourceNudge);
+				else
+			if (bits == 64)
+				initializeScatteredInPlace((uint64_t**)dest, (uint64_t**)src, inCount, inDestNudge, inSourceNudge);
+			else
+				lassert(false);
+			}
+		-|	Float(bits) ->> {
+			if (bits == 32)
+				initializeScatteredInPlace((float**)dest, (float**)src, inCount, inDestNudge, inSourceNudge);
+				else
+			if (bits == 64)
+				initializeScatteredInPlace((double**)dest, (double**)src, inCount, inDestNudge, inSourceNudge);
+			}
+		-|	Alternative(t) ->> {
+			static int64_t symbolNudge = offsetOfAlternativeSymbol();
+			static int64_t dataNudge = offsetOfAlternativeData();
+
+			static Type symbolType = Type::Symbol();
+
+			symbolType.initializeScattered(dest, src, inCount, inDestNudge + symbolNudge, inSourceNudge + symbolNudge);
+			t.initializeScattered(dest, src, inCount, inDestNudge + dataNudge, inSourceNudge + dataNudge); 
+			}
+		-|	Tuple(t) ->> {
+			uword_t sz = 0;
+			for (long k = 0; k < t.size(); k++)
+				{
+				t[k].initializeScattered(
+					dest,
+					src,
+					inCount, 
+					inDestNudge + sz, 
+					inSourceNudge + sz
+					);
+				sz = sz + t[k].size();
+				}
+			}
+		-|	Class(t) ->> {
+			uword_t sz = 0;
+			for (long k = 0; k < t.size(); k++)
+				{
+				t[k].initializeScattered(
+					dest,
+					src,
+					inCount, 
+					inDestNudge + sz, 
+					inSourceNudge + sz
+					);
+				sz = sz + t[k].size();
+				}
+			}
+		-|	Dictionary(isCST) ->> { 
+			initializeScatteredInPlace((dict_type**)dest, (dict_type**)src, inCount, inDestNudge, inSourceNudge);
+			}
+		-|	Vector() ->> {
+			initializeScatteredInPlace((VectorRecord**)dest, (VectorRecord**)src, inCount, inDestNudge, inSourceNudge);
+			}
+		-|	MutableVector() ->> {
+			initializeScatteredInPlace((MutableVectorRecord**)dest, (MutableVectorRecord**)src, inCount, inDestNudge, inSourceNudge);
+			}
+		-|	_ ->> {
+			lassert_dump(false, prettyPrintString(*this));
+			}
+	}
+
+void Type::initialize(
+			void* targetData, 
+			const void* sourceData, 
+			uword_t inCount, 
+			uword_t inStrideDest,
+			uword_t inStrideSource
+			) const
+	{
+	if (!size())
+		return;
+
+	if (isPOD() && inStrideSource == size() && inStrideDest == size())
+		{
+		memcpy(targetData, sourceData, inCount * size());
+		return;
+		}
+
+	@match Type(*this)
+		-|	Nothing() ->> {}
+		-|	String() ->> { 
+			initializeInPlace((string_type*)targetData, sourceData, inCount, inStrideDest, inStrideSource);
+			}
+		-|	DateTime() ->> { 
+			initializeInPlace((date_time_type*)targetData, sourceData, inCount, inStrideDest, inStrideSource);
+			}
+		-|	TimeDuration() ->> { 
+			initializeInPlace((time_duration_type*)targetData, sourceData, inCount, inStrideDest, inStrideSource);
+			}
+		-|	ExternalFunction() ->> {
+			initializeInPlace((ExternalFunctionDescriptor*)targetData, sourceData, inCount, inStrideDest, inStrideSource);
+			}
+		-|	Symbol() ->> { 
+			initializeInPlace((symbol_type*)targetData, sourceData, inCount, inStrideDest, inStrideSource);
+			}
+		-|	Tag() ->> { 
+			initializeInPlace((symbol_type*)targetData, sourceData, inCount, inStrideDest, inStrideSource);
+			}
+		-|	JOVAsValue() ->> { 
+			initializeInPlace((JOV*)targetData, sourceData, inCount, inStrideDest, inStrideSource);
+			}
+		-|	StackTrace() ->> { 
+			initializeInPlace((ForaStackTrace*)targetData, sourceData, inCount, inStrideDest, inStrideSource);
+			}
+		-|	Integer(bits, isSigned) ->> { 
+			if (bits == 8 || bits == 1)
+				initializeInPlace((uint8_t*)targetData, sourceData, inCount, inStrideDest, inStrideSource);
+				else
+			if (bits == 16)
+				initializeInPlace((uint16_t*)targetData, sourceData, inCount, inStrideDest, inStrideSource);
+				else
+			if (bits == 32)
+				initializeInPlace((uint32_t*)targetData, sourceData, inCount, inStrideDest, inStrideSource);
+				else
+			if (bits == 64)
+				initializeInPlace((uint64_t*)targetData, sourceData, inCount, inStrideDest, inStrideSource);
+				else
+				lassert(false);
+			}
+		-|	Float(bits) ->> {
+			if (bits == 32)
+				initializeInPlace((float*)targetData, sourceData, inCount, inStrideDest, inStrideSource);
+				else
+			if (bits == 64)
+				initializeInPlace((double*)targetData, sourceData, inCount, inStrideDest, inStrideSource);
+			}
+		-|	Alternative(t) ->> {
+			AlternativeData& altDest( *(AlternativeData*)targetData);
+			const AlternativeData& altSource( *(AlternativeData*)sourceData);
+
+			static Type symbolType = Type::Symbol();
+
+			symbolType.initialize(&altDest.symbol, &altSource.symbol, inCount, inStrideDest, inStrideSource);
+
+			t.initialize(altDest.data, altSource.data, inCount, inStrideDest, inStrideSource);
+			}
+		-|	Class(t, f) ->> {
+			uword_t sz = 0;
+			for (long k = 0; k < t.size(); k++)
+				{
+				t[k].initialize(
+					((char*)targetData) + sz, 
+					((char*)sourceData) + sz, 
+					inCount, 
+					inStrideDest, 
+					inStrideSource
+					);
+				sz = sz + t[k].size();
+				}
+			}
+		-|	Tuple(t) ->> {
+			uword_t sz = 0;
+			for (long k = 0; k < t.size(); k++)
+				{
+				t[k].initialize(
+					((char*)targetData) + sz, 
+					((char*)sourceData) + sz, 
+					inCount, 
+					inStrideDest, 
+					inStrideSource
+					);
+				sz = sz + t[k].size();
+				}
+			}
+		-|	Dictionary(isCST) ->> { 
+			initializeInPlace((dict_type*)targetData, sourceData, inCount, inStrideDest, inStrideSource);
+			}
+		-|	Vector() ->> {
+			initializeInPlace((VectorRecord*)targetData, sourceData, inCount, inStrideDest, inStrideSource);
+			}
+		-|	MutableVector() ->> {
+			for (long k = 0; k < inCount; k++)
+				{
+				MutableVectorRecord* destPtr = 
+					reinterpret_cast<MutableVectorRecord*>(
+						reinterpret_cast<char*>(targetData) + inStrideDest * k
+						);
+
+				const MutableVectorRecord* srcPtr = 
+					reinterpret_cast<const MutableVectorRecord*>(
+						reinterpret_cast<const char*>(sourceData) + inStrideSource * k
+						);
+			
+				new (destPtr) MutableVectorRecord(srcPtr[0]);
+				}
+			}
+		-|	_ ->> {
+			lassert_dump(false, prettyPrintString(*this));
+			}
+	}
+
+void Type::initialize(void* dest, const void* data) const
+	{
+	initialize(dest, data, 1, size(), size());
+	}
+
+void Type::initialize(void* dest, const void* data, uword_t inCount) const
+	{
+	initialize(dest, data, inCount, size(), size());
+	}
+
+void Type::destroy(void* data) const
+	{
+	destroy(data, 1, size());
+	}
+
+void Type::destroy(void* data, uword_t inCount) const
+	{
+	destroy(data, inCount, size());
+	}
+
+void Type::destroyScattered(void** data, uword_t inCount, uword_t inNudge) const
+	{
+	if (isPOD())
+		return;
+
+	@match Type(*this)
+		-|	String() ->> { 
+			executeScatteredDestructorInPlace((string_type**)data, inCount, inNudge); 
+			}
+		-|	ExternalFunction() ->> { 
+			executeScatteredDestructorInPlace((ExternalFunctionDescriptor**)data, inCount, inNudge);
+			}
+		-|	JOVAsValue() ->> {
+			executeScatteredDestructorInPlace((JOV**)data, inCount, inNudge);
+			}
+		-|	StackTrace() ->> {
+			executeScatteredDestructorInPlace((ForaStackTrace**)data, inCount, inNudge);
+			}
+		-|	Alternative(t) ->> {
+			t.destroyScattered(data, inCount, inNudge + offsetOfAlternativeData());
+			}
+		-|	Class(t) ->> {
+			uword_t offset = 0;
+			for (long k = 0; k < t.size(); k++)
+				{
+				t[k].destroyScattered(data, inCount, inNudge + offset);
+				offset = offset + t[k].size();
+				}
+			}
+		-|	Tuple(t) ->> {
+			uword_t offset = 0;
+			for (long k = 0; k < t.size(); k++)
+				{
+				t[k].destroyScattered(data, inCount, inNudge + offset);
+				offset = offset + t[k].size();
+				}
+			}
+		-|	Dictionary(isCST) ->> { 
+			executeScatteredDestructorInPlace((dict_type**)data, inCount, inNudge); 
+			}
+		-|	Vector() ->> {
+			executeScatteredDestructorInPlace((VectorRecord**)data, inCount, inNudge); 
+			}
+		-|	MutableVector() ->> {
+			executeScatteredDestructorInPlace((MutableVectorRecord**)data, inCount, inNudge);
+			}
+	}
+
+void Type::destroy(void* data, uword_t inCount, uword_t inStride) const
+	{
+	if (isPOD())
+		return;
+
+	@match Type(*this)
+		-|	String() ->> { 
+			executeDestructorInPlace((string_type*)data, inCount, inStride); 
+			}
+		-|	ExternalFunction() ->> { 
+			executeDestructorInPlace((ExternalFunctionDescriptor*)data, inCount, inStride);
+			}
+		-|	JOVAsValue() ->> {
+			executeDestructorInPlace((JOV*)data, inCount, inStride);
+			}
+		-|	StackTrace() ->> {
+			executeDestructorInPlace((ForaStackTrace*)data, inCount, inStride);
+			}
+		-|	Alternative(t) ->> {
+			AlternativeData& alt = *(AlternativeData*)data;
+			t.destroy(alt.data, inCount, inStride);
+			}
+		-|	Class(t) ->> {
+			uword_t offset = 0;
+			for (long k = 0; k < t.size(); k++)
+				{
+				t[k].destroy(((char*)data) + offset, inCount, inStride);
+				offset = offset + t[k].size();
+				}
+			}
+		-|	Tuple(t) ->> {
+			uword_t offset = 0;
+			for (long k = 0; k < t.size(); k++)
+				{
+				t[k].destroy(((char*)data) + offset, inCount, inStride);
+				offset = offset + t[k].size();
+				}
+			}
+		-|	Dictionary(isCST) ->> { 
+			executeDestructorInPlace((dict_type*)data, inCount, inStride); 
+			}
+		-|	Vector() ->> {
+			executeDestructorInPlace((VectorRecord*)data, inCount, inStride); 
+			}
+		-|	MutableVector() ->> {
+			for (long k = 0; k < inCount; k++)
+				reinterpret_cast<MutableVectorRecord*>(
+					reinterpret_cast<char*>(data) + inStride * k
+					)->~MutableVectorRecord();
+			}
+	}
+
+template<class T>
+char cmpDirect(void* left, void* right)
+	{
+	return CPPMLEquality<T, void>::cmp( * ((T*) left ), * ((T*) right ) );
+	}
+
+char Type::cmp(void* left, void* right) const
+	{
+	return (hashObject(left) + hash()).cmp(hashObject(right) + hash());
+	}
+
+hash_type Type::hashObject(void* data, size_t inCount, size_t inStride) const
+	{
+	uword_t sz = this->size();
+	if (inStride == 0)
+		inStride = sz;
+
+	lassert(inStride >= sz);
+
+	if (sz == 0)
+		return hash_type(sz);
+
+	if (this->isDirectlySerializable())
+		return Hash::SHA1Strided(data, sz, inStride, inCount);
+
+	@match Type(*this)
+		-|	Symbol() ->> {
+			return hashValuesWithHashMemberFunction<symbol_type>(data, inCount, inStride);
+			}
+		-|	Tag() ->> {
+			return hashValuesWithHashMemberFunction<symbol_type>(data, inCount, inStride);
+			}
+		-|	String() ->> {
+			return hashValuesWithHashMemberFunction<string_type>(data, inCount, inStride);
+			}
+		-|	ExternalFunction() ->> {
+			return hashValuesUsingGlobalHashValueFunction<ExternalFunctionDescriptor>(data, inCount, inStride);
+			}
+		-|	JOVAsValue() ->> {
+			return hashValuesWithHashMemberFunction<JOV>(data, inCount, inStride);
+			}
+		-|	StackTrace() ->> {
+			return hashValuesUsingGlobalHashValueFunction<ForaStackTrace>(data, inCount, inStride);
+			}
+		-|	Integer(bits, isSigned) ->> {
+
+			//this is the only legal integer type that's not also 'directly serialiazable'
+			if (bits == 1 && !isSigned)
+				return hashValuesUsingGlobalHashValueFunction<bool>(data, inCount, inStride);
+
+			ostringstream str;
+			throw standardLogicErrorWithStacktrace("bad integer type: " + this->toString());
+			}
+		-|	DateTime() ->> {
+			return hashValuesWithHashMemberFunction<date_time_type>(data, inCount, inStride);
+			}
+		-|	TimeDuration() ->> {
+			return hashValuesWithHashMemberFunction<time_duration_type>(data, inCount, inStride);
+			}
+		-|	Class(types) ->> {
+			hash_type tr;
+
+			uword_t offset = 0;
+			for (long k = 0; k < types.size(); k++)
+				{
+				tr = tr + types[k].hashObject((uint8_t*)data + offset, inCount, inStride);
+				offset += types[k].size();
+				}
+
+			return tr;
+			}
+		-|	Alternative(t) ->> {
+			hash_type tr = hashValuesWithHashMemberFunction<symbol_type>(data, inCount, inStride);
+
+			return tr + t.hashObject((uint8_t*)data + sizeof(symbol_type), inCount, inStride);
+			}
+		-|	Tuple(types) ->> {
+			hash_type tr;
+
+			uword_t offset = 0;
+			for (long k = 0; k < types.size(); k++)
+				{
+				tr = tr + types[k].hashObject((uint8_t*)data + offset, inCount, inStride);
+				offset += types[k].size();
+				}
+
+			return tr;
+			}
+		-|	Vector() ->> {
+			return hashValuesWithHashMemberFunction<VectorRecord>(data, inCount, inStride);
+			}
+		-|	MutableVector() ->> {
+			return hashValuesWithHashMemberFunction<MutableVectorRecord>(
+				data, 
+				inCount, 
+				inStride
+				);
+			}
+		-|	Dictionary(isCST) ->> {
+			return hashValuesWithHashMemberFunction<dict_type>(data, inCount, inStride);
+			}
+	}
+
+std::string Type::toString(void) const
+	{
+	return prettyPrintString(*this);
+	}
+
+void Type::toString(CPPMLPrettyPrintStream stream) const
+	{
+	FORAValuePrinting::FORAValuePrinter(stream).toString(*this);
+	}
+
+char CPPMLEquality<Type, void>::cmp(const Type& lhs, const Type& rhs)
+	{
+	return lhs.hash().cmp(rhs.hash());
+	}
+
+void CPPMLPrettyPrint<Type>::prettyPrint(CPPMLPrettyPrintStream& stream,
+										 const Type& type)
+	{
+	type.toString(stream);
+	}
+
+void Type::toString(CPPMLPrettyPrintStream stream, void* data) const
+	{
+	FORAValuePrinting::FORAValuePrinter(stream).toString(*this,data);
+	}
+
+macro_defineMemberHashFunctionBody(Type)
+

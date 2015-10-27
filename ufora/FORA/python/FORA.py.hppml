@@ -1,0 +1,247 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#ifndef FORA_PY_HPP
+#define FORA_PY_HPP
+
+#include <boost/regex.hpp>
+
+#include "../Core/Type.hppml"
+#include "../../core/Clock.hpp"
+#include "../Runtime.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../Interpreter/RuntimeConfig.hppml"
+#include "../Language/Function.hppml"
+#include "../Language/FunctionUtil.hppml"
+#include "../Core/Integers.hppml"
+#include "../Core/PausedComputation.hppml"
+#include "../ControlFlowGraph/ControlFlowGraph.hppml"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include <stdint.h>
+#include <boost/python.hpp>
+#include "../../core/python/CPPMLWrapper.hpp"
+#include "../../core/cppml/CPPMLPrettyPrinter.hppml"
+#include "../../core/containers/ImmutableTreeVector.py.hpp"
+#include "../../core/serialization/CPPMLSerializer.hppml"
+#include "../../core/serialization/Serialization.hpp"
+#include "../../core/Logging.hpp"
+#include "../../core/SimpleParse/SimpleParse.py.hpp"
+#include "../../core/debug/StackTrace.hpp"
+#include "../Language/Parser.hppml"
+#include "../Language/ParserExpressions.hppml"
+#include "../Interpreter/Instruction.hppml"
+#include "FORAPythonUtil.hppml"
+
+namespace Fora {
+    // TODO CLEANUP brax: just make this a regular namespace (and move code out of header)
+    struct PythonDefinitions {
+		static void logicErrorExceptionTranslator(const std::logic_error& arg)
+			{
+			PyErr_SetString(PyExc_UserWarning, arg.what());
+			}
+		static void outOfRangeExceptionTranslator(const std::out_of_range& arg)
+			{
+			PyErr_SetString(PyExc_IndexError, arg.what());
+			}
+		static void memoErrorTranslator(const CPPML::CircularMemoError& arg)
+			{
+			PyErr_SetString(PyExc_UserWarning, "CircularMemoError");
+			}
+		static void matchErrorTranslator(const CPPML::MatchError& arg)
+			{
+			string s = "CPPMLMatchError()";
+
+			PyErr_SetString(PyExc_UserWarning, s.c_str());
+			}
+
+		static ImplValContainer makeSymbol(string s)
+			{
+			return ImplValContainer(CSTValue(Symbol(s)));
+			}
+		static ImplValContainer makeTag(string s)
+			{
+			return ImplValContainer(CSTValue::Tag(Symbol(s)));
+			}
+
+		static string testSimple(string s)
+			{
+			try {
+				return prettyPrintString(parseStringToSimpleParse(s));
+				}
+			catch (SimpleParseError e)
+				{
+				return "threw " + prettyPrintString(e);
+				}
+			}
+
+		static string errorStateToString(Fora::Interpreter::ErrorState& error)
+			{
+			@match Fora::Interpreter::ErrorState(error)
+				-| MemoryQuotaExceeded(uuid, amount, total) ->>
+					{
+					ostringstream str;
+					str << "MemoryQuotaExceeded: could not allocate " << amount;
+					str << " bytes, as doing so would require " << total 
+						<< " bytes  (Failure ID: " << uuid << ")";
+					return str.str();
+					}
+                -| Halt(uuid) ->>
+                    {
+                    ostringstream str;
+                    str << "Computation halted. Failure ID: " << uuid;
+                    return str.str();
+                    }
+                -| IllegalComputationState(stateStr) ->>
+                    {
+                    ostringstream str;
+                    str << "Illegal computation state: " << stateStr;
+                    return str.str();
+                    }
+				-| _ ->>
+					{
+					return "Computation failed.";
+					}
+			}
+
+		static boost::python::object getForaKeywords(void)
+			{
+			const set<string>& words = ParserExpressions::keywords();
+			return Ufora::python::iteratorPairToList(words.begin(), words.end());
+			}
+		static boost::python::object getForaConstants(void)
+			{
+			const map<string, CSTValue>& words = ParserExpressions::constants();
+
+			boost::python::list constants;
+			for (auto i = words.begin(); i != words.end(); ++i)
+				constants.append(i->first);
+			return constants;
+			}
+		static bool isForaOperator(string c)
+			{
+			return isOperatorCharacter(c);
+			}
+		static string convertToValidVariableName(const string str)
+			{
+			string tr = boost::regex_replace(str, boost::regex("\\W"), "_");
+			if ((ParserExpressions::keywords().find(tr) != ParserExpressions::keywords().end()) ||
+				(ParserExpressions::constants().find(tr) != ParserExpressions::constants().end()) ||
+				(tr[0] >= '0' && tr[0] <= '9'))
+				{
+				tr = "dataset_" + tr;
+				}
+			return tr;
+			}
+
+		static bool getHasForaInterpreter(void)
+			{
+			return true;
+			}
+
+		static Fora::Interpreter::PausedComputation* createPausedComputationWithPendingResult(
+					ImmutableTreeVector<Fora::Interpreter::PausedComputationFrame> frames,
+					ImplValContainer result,
+					bool isException
+					)
+			{
+			return new Fora::Interpreter::PausedComputation(
+					frames,
+					null() << make_pair(result, isException)
+					);
+			}
+
+		static Fora::Interpreter::PausedComputation* createPausedComputation(
+					ImmutableTreeVector<Fora::Interpreter::PausedComputationFrame> frames
+					)
+			{
+			return new Fora::Interpreter::PausedComputation(
+					frames,
+					null()
+					);
+			}
+			
+		static void exportPythonInterface()
+			{
+			using namespace boost::python;
+
+			PythonWrapper<SimpleParseNode>::exportPythonInterface();
+
+			boost::python::register_exception_translator<std::logic_error>(&logicErrorExceptionTranslator);
+			boost::python::register_exception_translator<std::out_of_range>(&outOfRangeExceptionTranslator);
+			boost::python::register_exception_translator<CPPML::MatchError>(&matchErrorTranslator);
+			boost::python::register_exception_translator<CPPML::CircularMemoError>(&memoErrorTranslator);
+
+			Ufora::python::CPPMLWrapper<Fora::Interpreter::ComputationResult>(string("ComputationResult")).class_()
+				.def("__str__", FORAPythonUtil::scopedPrettyPrinter<Fora::Interpreter::ComputationResult>)
+				.def("__repr__", FORAPythonUtil::scopedPrettyPrinter<Fora::Interpreter::ComputationResult>)
+				.def("__hash__", &FORAPythonUtil::hasher<Fora::Interpreter::ComputationResult>)
+				.def("__cmp__", &FORAPythonUtil::comparer<Fora::Interpreter::ComputationResult>)
+				.def("__getstate__", &FORAPythonUtil::serializer<Fora::Interpreter::ComputationResult>)
+				.def("__setstate__", &FORAPythonUtil::deserializer<Fora::Interpreter::ComputationResult>)
+				.add_property("hash", &FORAPythonUtil::scopedHashValue<Fora::Interpreter::ComputationResult>)
+				.enable_pickling()
+				;
+
+			PythonWrapper<ImmutableTreeVector<Fora::Interpreter::PausedComputationFrame> >
+				::exportPythonInterface("PausedComputationFrame")
+				;
+			
+			PythonWrapper<ImmutableTreeVector<ImplValContainer> >
+				::exportPythonInterface("ImplValContainer")
+				;
+			
+			Ufora::python::CPPMLWrapper<Fora::Interpreter::PausedComputation>(string("PausedComputation")).class_()
+				.def("__str__", FORAPythonUtil::scopedPrettyPrinter<Fora::Interpreter::PausedComputation>)
+				.def("__repr__", FORAPythonUtil::scopedPrettyPrinter<Fora::Interpreter::PausedComputation>)
+				.def("__hash__", &FORAPythonUtil::hasher<Fora::Interpreter::PausedComputation>)
+				.def("__cmp__", &FORAPythonUtil::comparer<Fora::Interpreter::PausedComputation>)
+				.def("__getstate__", &FORAPythonUtil::serializer<Fora::Interpreter::PausedComputation>)
+				.def("__setstate__", &FORAPythonUtil::deserializer<Fora::Interpreter::PausedComputation>)
+				.def("__init__", make_constructor(createPausedComputation))
+				.def("__init__", make_constructor(createPausedComputationWithPendingResult))
+				.add_property("hash", &FORAPythonUtil::scopedHashValue<Fora::Interpreter::PausedComputation>)
+				.enable_pickling()
+				;
+
+			Ufora::python::CPPMLWrapper<Fora::Interpreter::PausedComputationFrame>(string("PausedComputationFrame")).class_()
+				;
+
+			Ufora::python::CPPMLWrapper<Fora::Interpreter::ErrorState>(string("ErrorState")).class_()
+				.def("__str__", FORAPythonUtil::scopedPrettyPrinter<Fora::Interpreter::ErrorState>)
+				.def("__repr__", FORAPythonUtil::scopedPrettyPrinter<Fora::Interpreter::ErrorState>)
+				.def("__hash__", &FORAPythonUtil::hasher<Fora::Interpreter::ErrorState>)
+				.def("__cmp__", &FORAPythonUtil::comparer<Fora::Interpreter::ErrorState>)
+				.def("__getstate__", &FORAPythonUtil::serializer<Fora::Interpreter::ErrorState>)
+				.def("__setstate__", &FORAPythonUtil::deserializer<Fora::Interpreter::ErrorState>)
+				.add_property("hash", &FORAPythonUtil::scopedHashValue<Fora::Interpreter::ErrorState>)
+				.def("toString", &errorStateToString)
+				.enable_pickling()
+				;
+
+			def("makeSymbol", &makeSymbol);
+			def("makeTag", &makeTag);
+			
+			def("isForaOperator", &isForaOperator);
+			def("getForaKeywords", &getForaKeywords);
+			def("getForaConstants", &getForaConstants);
+			def("convertToValidVariableName", &convertToValidVariableName);
+
+			def("getHasForaInterpreter", getHasForaInterpreter);
+			}
+    }; //end class PythonDefinitions
+} // end Fora namespace
+
+#endif
+

@@ -1,0 +1,749 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include <stdint.h>
+#include <boost/python.hpp>
+#include "VectorDataManager.hppml"
+#include "../TypedFora/ABI/ForaValueArray.hppml"
+#include "../TypedFora/ABI/VectorRecord.hpp"
+#include "../../networking/SerializedChannel.hpp"
+#include "../../core/python/ScopedPyThreads.hpp"
+#include "../../core/python/utilities.hpp"
+#include "../../core/python/CPPMLWrapper.hpp"
+#include "../../native/Registrar.hpp"
+#include "../../core/math/RandomHashGenerator.hpp"
+#include "../Core/ExecutionContext.hppml"
+#include "../Core/MemoryPool.hpp"
+#include "../Core/ValueDeepcopier.hppml"
+#include "../Core/ImplValContainerUtilities.hppml"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include "../../core/PolymorphicSharedPtrFuncFromMemberFunc.hpp"
+
+
+using Fora::Interpreter::ExecutionContext;
+
+using TypedFora::Abi::VectorHandle;
+
+using TypedFora::Abi::VectorRecord;
+
+class VectorDataManagerWrapper :
+		public native::module::Exporter<VectorDataManagerWrapper> {
+public:
+		std::string		getModuleName(void)
+			{
+			return "FORA";
+			}
+		
+		static boost::python::object getMachineId(PolymorphicSharedPtr<VectorDataManager>& vdm)
+			{
+			auto m = vdm->getMachineId();
+
+			if (m)
+				return boost::python::object(*m);
+
+			return boost::python::object();
+			}
+
+		void	getDefinedTypes(std::vector<std::string>& outTypes)
+			{
+			outTypes.push_back(typeid(PolymorphicSharedPtr<VectorDataManager>).name());
+			}
+
+		static int VectorDataManagerCmp(
+						PolymorphicSharedPtr<VectorDataManager>& l, 
+						PolymorphicSharedPtr<VectorDataManager>& r
+						)
+			{
+			if (&*l < &*r)
+				return -1;
+			if (&*l > &*r)
+				return 1;
+			return 0;
+			}
+
+		static size_t	vectorDataTotalBytesAllocated(PolymorphicSharedPtr<VectorDataManager>& inVDM)
+			{
+			return inVDM->vectorDataTotalBytesAllocated();
+			}
+			
+		static void	setOfflineCache(
+						VectorDataManager::pointer_type inSelf, 
+						PolymorphicSharedPtr<OfflineCache> inPlugin
+						)
+			{
+			return inSelf->setOfflineCache(inPlugin);
+			}
+		
+		static uword_t	getVectorPageCount(VectorDataManager::pointer_type& inSelf)
+			{
+			return inSelf->getVectorPageCount();
+			}
+
+		static uword_t getTotalBytesLoaded(VectorDataManager::pointer_type& inSelf)
+			{
+			return inSelf->getTotalBytesLoaded();
+			}
+
+		static uword_t getTotalBytesInUnloadCache(VectorDataManager::pointer_type& inSelf)
+			{
+			return inSelf->getTotalBytesInUnloadCache();
+			}
+
+		static double	getLoadRatio(VectorDataManager::pointer_type& inSelf)
+			{
+			return inSelf->getLoadRatio();
+			}
+		
+		static void 	setLoadRatio(VectorDataManager::pointer_type& inSelf, double inRatio)
+			{
+			return inSelf->setLoadRatio(inRatio);
+			}
+		
+		static size_t	curTotalUsedBytes(VectorDataManager::pointer_type& inSelf)
+			{
+			return inSelf->curTotalUsedBytes();
+			}
+		
+		static void 	unloadAllPossible(VectorDataManager::pointer_type& inSelf)
+			{
+			inSelf->unloadAllPossible();
+			}
+
+		static PolymorphicSharedPtr<PageRefcountTracker> 
+		getPageRefcountTracker(VectorDataManager::pointer_type& inSelf)
+			{
+			return inSelf->getPageRefcountTracker();
+			}
+
+		static bool loadSerializedVectorPage(
+						VectorDataManager::pointer_type& inVDM,
+						Fora::PageId page,
+						PolymorphicSharedPtr<SerializedObject>& data
+						)
+			{
+			ScopedPyThreads releaseTheGil;
+			
+			return inVDM->loadSerializedVectorPage(page, data);
+			}
+
+		static bool loadByteArrayIntoExternalDatasetPage(
+						VectorDataManager::pointer_type& inVDM,
+						VectorDataID id,
+						std::string inData
+						)
+			{
+			ScopedPyThreads releaseTheGil;
+
+			return inVDM->loadByteArrayIntoExternalDatasetPage(
+				id,
+				(uint8_t*)&inData[0],
+				inData.size()
+				);
+			}
+
+		static ImplValContainer pagedVector(
+						VectorDataManager::pointer_type& inVDM,
+						ImplValContainer ivc
+						)
+			{
+			ScopedPyThreads releaseTheGil;
+
+			lassert(ivc.type().isVector());
+
+			return ImplValContainerUtilities::createVector(
+				ivc.cast<TypedFora::Abi::VectorRecord>()
+					.paged(MemoryPool::getFreeStorePool(), &*inVDM)
+				);
+			}
+
+		static ImplValContainer loadByteArrayIntoNewVector(
+						VectorDataManager::pointer_type& inVDM,
+						std::string inData
+						)
+			{
+			ScopedPyThreads releaseTheGil;
+					
+			TypedFora::Abi::VectorHandlePtr handle = 
+				inVDM->loadByteArrayIntoNewVector(
+					MemoryPool::getFreeStorePool(),
+					(uint8_t*)&inData[0], 
+					inData.size()
+					);
+
+			return ImplValContainerUtilities::createVector(
+				TypedFora::Abi::VectorRecord(handle)
+				);
+			}
+
+		static ImplValContainer loadByteArrayIntoNewVector2(
+						VectorDataManager::pointer_type& inVDM,
+						std::string inData,
+						const ImplValContainer& typeIvc
+						)
+			{
+			ScopedPyThreads releaseTheGil;
+					
+			lassert(typeIvc.type().isJOVAsValue());
+			
+			Nullable<Type> typeOrNull = typeIvc.cast<JOV>().type();
+
+			lassert(typeOrNull.isValue());
+
+			TypedFora::Abi::VectorHandlePtr handle = 
+				inVDM->loadByteArrayIntoNewVector(
+					MemoryPool::getFreeStorePool(),
+					(uint8_t*)&inData[0], 
+					inData.size(),
+					*typeOrNull
+					);
+
+			return ImplValContainerUtilities::createVector(
+				TypedFora::Abi::VectorRecord(handle)
+				);
+			}
+
+		static bool loadByteArrayIntoExternalDatasetPageFromFileDescriptor(
+						VectorDataManager::pointer_type& inVDM,
+						VectorDataID id,
+						int fd,
+						int64_t bytecount
+						)
+			{
+			ScopedPyThreads releaseTheGil;
+
+			return inVDM->loadByteArrayIntoExternalDatasetPageFromFileDescriptor(
+				id,
+				fd,
+				bytecount
+				);
+			}
+
+
+		static bool loadByteArrayIntoExternalDatasetPageAsVector(
+						VectorDataManager::pointer_type& inVDM,
+						VectorDataID id,
+						std::string inData
+						)
+			{
+			ScopedPyThreads releaseTheGil;
+			
+			return inVDM->loadByteArrayIntoExternalDatasetPageAsVector(
+				id,
+				(uint8_t*)&inData[0],
+				inData.size()
+				);
+			}
+
+		static bool loadImplvalIntoUnloadedVectorHandle(
+						VectorDataManager::pointer_type& inVDM,
+						VectorDataID& vdid,
+						ImplValContainer& inForaValue
+						)
+			{
+		   	ScopedPyThreads releaseTheGil;
+
+		   	return !inVDM->loadImplvalIntoUnloadedVectorHandle(
+		   		MemoryPool::getFreeStorePool(), 
+		   		vdid, 
+		   		inForaValue
+		   		).isEmpty();
+			}
+
+		static bool vectorDataIsLoaded(	
+							VectorDataManager::pointer_type& inVDM,
+							const ImplValContainer& inVector,
+							int64_t indexLow,
+							int64_t indexHigh
+							)
+			{
+			ScopedPyThreads releaseTheGil;
+			
+			return visitVectorData(
+				inVDM, 
+				inVector, 
+				indexLow,
+				indexHigh,
+				noOpVisitor
+				);
+			}
+
+		static bool vectorDataIdIsLoaded(	
+							VectorDataManager::pointer_type& inVDM,
+							const VectorDataID& inVector
+							)
+			{
+			return inVDM->hasDataForVectorPage(inVector.getPage());
+			}
+
+		static void noOpVisitor(TypedFora::Abi::ForaValueArray* values,
+								IntegerSequence seq
+								)
+			{
+			}
+
+		static boost::python::object 	
+		extractVectorItem(	VectorDataManager::pointer_type& inVDM,
+							const ImplValContainer& inVector, 
+							uword_t inIndex
+							)
+			{
+			boost::python::object result;
+
+			if (!visitVectorData(
+					inVDM, 
+					inVector,
+					inIndex,
+					inIndex+1,
+					boost::bind(
+						&extractIfVisited,
+						&result,
+						boost::arg<1>(), 
+						boost::arg<2>()
+						)
+					))
+				return boost::python::object();
+
+			return result;
+			}
+
+		static void extractIfVisited(
+								boost::python::object* out, 
+								TypedFora::Abi::ForaValueArray* values,
+								IntegerSequence sequence
+								)
+			{
+			if (sequence.size() != 1)
+				LOG_CRITICAL << "Somehow we visited an empty slice of a FORA array, which makes no sense.";
+			lassert(sequence.size() == 1);
+
+			ValueDeepcopierState state;
+
+			ValueDeepcopier deepcopier(state, false, MemoryPool::getFreeStorePool(), false, false);
+
+			*out = boost::python::object( 
+				deepcopier.duplicate((*values)[sequence.offset()])
+				);
+			}
+
+		class InvalidDtype {};
+
+		static string foraTypeToNumpyDType(Type t)
+			{
+			if (t == (Type::Float(64)))
+				return "numpy.float64";
+			if (t == (Type::Float(32)))
+				return "numpy.float32";
+			if (t == (Type::Integer(64, true)))
+				return "numpy.int64";
+			if (t == (Type::Integer(32, true)))
+				return "numpy.int32";
+			if (t == (Type::Integer(16, true)))
+				return "numpy.int16";
+			if (t == (Type::Integer(8, true)))
+				return "numpy.int8";
+			if (t == (Type::Integer(64, false)))
+				return "numpy.uint64";
+			if (t == (Type::Integer(32, false)))
+				return "numpy.uint32";
+			if (t == (Type::Integer(16, false)))
+				return "numpy.uint16";
+			if (t == (Type::Integer(8, false)))
+				return "numpy.uint8";
+			if (t.isTuple())
+				{
+				ImmutableTreeVector<Type> types = t.getTuple().types();
+				ImmutableTreeVector<Nullable<Symbol> > names = t.getTuple().names();
+				ostringstream s;
+				s << "[";
+
+				for (long k = 0; k < types.size();k++)
+					{
+					s << (k == 0 ? "" : ", ");
+					s << "(";
+					
+					if (names[k])
+						s << "\"" << names[k]->toString() << "\", ";
+						else
+						s << "\"f" << k << "\", ";
+					
+					s << foraTypeToNumpyDType(types[k]);
+					s << ")";
+					}
+				s << "]";
+				return s.str();
+				}
+
+			throw InvalidDtype();
+			}
+
+		static boost::python::object 	
+		extractVectorContentsAsPythonArray(
+					VectorDataManager::pointer_type& inVDM,
+					const ImplValContainer& inVector,
+					int64_t indexLow,
+					int64_t indexHigh
+					)
+			{
+			boost::python::list result;
+
+			if (visitVectorData(
+						inVDM, 
+						inVector,
+						indexLow,
+						indexHigh,
+						boost::bind(
+							&extractVectorContentsAsPythonArrayVisitor, 
+							&result, 
+							boost::arg<1>(), 
+							boost::arg<2>()
+							)
+						)
+					)
+				return result;
+
+			return boost::python::object();
+			}
+
+		static void extractVectorContentsAsPythonArrayVisitor(
+					boost::python::list* result,
+					TypedFora::Abi::ForaValueArray* array,
+					IntegerSequence sequence
+					)
+			{
+			for(int i = 0; i < sequence.size(); ++i)
+				result->append((*array)[sequence.offsetForIndex(i)]);
+			}
+
+		static boost::python::object 	
+		extractVectorContentsAsNumpyArray(
+						VectorDataManager::pointer_type& inVDM,
+						const ImplValContainer& inVector,
+						int64_t indexLow,
+						int64_t indexHigh
+						)
+			{
+			if (!inVector.type().isVector())
+				return boost::python::object();
+
+			VectorRecord vec = inVector.cast<VectorRecord>();
+
+			JudgmentOnResult jor = vec.jor();
+
+			if (jor.size() != 1 || !jor[0].type())
+				return boost::python::object();
+
+			::Type elementType = *jor[0].type();
+
+			string dtype;
+			try {
+				dtype = foraTypeToNumpyDType(elementType);
+				}
+			catch(InvalidDtype)
+				{
+				return boost::python::object();
+				}
+
+			boost::python::dict globals;
+
+			globals["numpy"] = boost::python::import("numpy");
+
+			ostringstream tr;
+
+			tr << "numpy.zeros(" << (indexHigh - indexLow) << ", " 
+				<< "dtype=numpy.dtype(" << dtype<< "))"
+				;
+
+			boost::python::object o = boost::python::eval(boost::python::str(tr.str()), globals, globals);
+
+			PyArrayObject* array = (PyArrayObject*)o.ptr();
+
+			uint8_t* dataPtr = (uint8_t*)array->data;
+
+			if (!visitVectorData(
+					inVDM, 
+					inVector,
+					indexLow,
+					indexHigh,
+					boost::bind(
+						&vectorDataToNumpyArray, 
+						&dataPtr, 
+						elementType,
+						boost::arg<1>(), 
+						boost::arg<2>()
+						)
+					))
+				return boost::python::object();
+
+			if (dataPtr == (uint8_t*)array->data)
+				return boost::python::object();
+
+			return o;
+			}
+
+		static void vectorDataToNumpyArray(
+					uint8_t** outResult,
+					Type elementType,
+					TypedFora::Abi::ForaValueArray* valueArray,
+					IntegerSequence values
+					)
+			{
+			if (values.size() == 0)
+				return;
+
+			if (valueArray->isHomogenous() && values.stride() == 1)
+				{
+				memcpy(*outResult, 
+					valueArray->offsetFor(values.offset()), 
+					elementType.size() * values.size()
+					);
+
+				*outResult += elementType.size() * values.size();
+				}
+			else
+				{
+				for (long k = 0; k < values.size(); k++)
+					{
+					memcpy(*outResult, 
+						valueArray->offsetFor(values.offsetForIndex(k)), 
+						elementType.size()
+						);
+					*outResult += elementType.size();
+					}
+				}
+			}
+
+
+		static boost::python::object
+		stringifyVectorAsList(
+				VectorDataManager::pointer_type& inVDM,
+				const ImplValContainer& inVector,
+				int64_t indexLow,
+				int64_t indexHigh
+				)
+			{
+			std::vector<std::string> tr;
+
+			visitVectorData(
+				inVDM, 
+				inVector,
+				indexLow,
+				indexHigh,
+				boost::bind(
+					stringifyVectorContentsData, 
+					boost::ref(tr),
+					boost::arg<1>(), 
+					boost::arg<2>()
+					)
+				);
+			return Ufora::python::containerWithBeginEndToList(tr);
+			}
+
+		static boost::python::object
+		stringifyAndJoinVectorContents(
+				VectorDataManager::pointer_type& inVDM,
+				const ImplValContainer& inVector,
+				std::string sep,
+				int64_t indexLow,
+				int64_t indexHigh
+				)
+			{
+			std::vector<std::string> resultVector;
+
+			visitVectorData(
+				inVDM, 
+				inVector,
+				indexLow,
+				indexHigh,
+				boost::bind(
+					stringifyVectorContentsData, 
+					boost::ref(resultVector),
+					boost::arg<1>(), 
+					boost::arg<2>()
+					)
+				);
+
+			std::ostringstream stream;
+			bool isFirst = true;
+			for (int i = 0; i < resultVector.size(); i++)
+				{
+				if (!isFirst)
+					stream << sep;
+				stream << resultVector[i];
+				isFirst = false;
+				}
+			return boost::python::str(stream.str());
+			}
+
+		static void stringifyVectorContentsData(
+					std::vector<std::string>& result,
+					TypedFora::Abi::ForaValueArray* array,
+					IntegerSequence sequence
+					)
+			{
+				{
+				ScopedPyThreads releasePythonGIL;
+				for(int i = 0; i < sequence.size(); ++i)
+					result.push_back(
+						prettyPrintString((*array)[sequence.offsetForIndex(i)])
+						);
+				}
+			}
+
+
+		//if the values from 'lowIndex' to 'highIndex' are loaded, visit them
+		static bool visitVectorData(
+					VectorDataManager::pointer_type& inVDM,
+					const ImplValContainer& inVector,
+					int64_t lowIndex,
+					int64_t highIndex,
+					boost::function2<void, TypedFora::Abi::ForaValueArray*, IntegerSequence> visitor
+					)
+			{
+			if (!inVector.type().isVector())
+				return false;
+
+			VectorRecord vec = inVector.cast<VectorRecord>();
+
+			return vec.visitAnyLoadedValues(
+				&*inVDM,
+				visitor, 
+				IntegerSequence(highIndex - lowIndex, lowIndex, 1)
+				);
+			}
+		
+		@type TeardownGate = boost::shared_ptr<Ufora::threading::Gate> gate {
+		public:
+			void wait()
+				{
+				ScopedPyThreads releasePythonGIL;
+
+				gate()->blockUntilOpen();
+				}
+
+			bool waitTimeout(double timeout)
+				{
+				ScopedPyThreads releasePythonGIL;
+
+				return gate()->blockUntilOpenWithTimeout(timeout);
+				}
+		};
+
+		static PolymorphicSharedPtr<VectorDataMemoryManager> 
+				VectorDataManagerGetMemoryManager(PolymorphicSharedPtr<VectorDataManager> inVdm)
+			{
+			return inVdm->getMemoryManager();
+			}
+
+		static TeardownGate getVdmmTeardownGate(PolymorphicSharedPtr<VectorDataManager>& vdm)
+			{
+			return TeardownGate(vdm->getMemoryManager()->getTeardownGate());
+			}
+
+		void exportPythonWrapper()
+			{
+			using namespace boost::python;
+			
+			class_<TeardownGate>("TeardownGate", no_init)
+				.def("wait", &TeardownGate::wait)
+				.def("wait", &TeardownGate::waitTimeout)
+				;
+
+			class_<VectorDataManager::pointer_type >("VectorDataManager", no_init)
+				.def("__init__", make_constructor(VectorDataManager::pointer_type::Constructor2<
+							PolymorphicSharedPtr<CallbackScheduler>, uword_t>))
+				.def("setOfflineCache", &setOfflineCache)
+				.def("setMemoryLimit",  
+					macro_polymorphicSharedPtrFuncFromMemberFunc(VectorDataManager::setMemoryLimit))
+				.def("getMemoryLimit",  
+					macro_polymorphicSharedPtrFuncFromMemberFunc(VectorDataManager::getMemoryLimit))
+				.def("setPersistentCacheIndex",  
+					macro_polymorphicSharedPtrFuncFromMemberFunc(VectorDataManager::setPersistentCacheIndex))
+				.def("getPersistentCacheIndex",  
+					macro_polymorphicSharedPtrFuncFromMemberFunc(VectorDataManager::getPersistentCacheIndex))
+				.def("teardown",  
+					macro_polymorphicSharedPtrFuncFromMemberFunc(VectorDataManager::teardown))
+				.def("getOfflineCache",  
+					macro_polymorphicSharedPtrFuncFromMemberFunc(VectorDataManager::getOfflineCache))
+				.def("getVdmmTeardownGate", &getVdmmTeardownGate)
+				.def("setDropUnreferencedPagesWhenFull",  
+						macro_polymorphicSharedPtrFuncFromMemberFunc(
+							VectorDataManager::setDropUnreferencedPagesWhenFull
+							)
+						)
+				.def("getMemoryManager", VectorDataManagerGetMemoryManager)
+				.def("getVectorPageCount", &getVectorPageCount)
+				.def("curTotalUsedBytes", &curTotalUsedBytes)
+				.def("dropPageWithoutWritingToDisk", 
+					macro_polymorphicSharedPtrFuncFromMemberFunc(
+						VectorDataManager::dropPageWithoutWritingToDisk
+						)
+					)
+				.def("unloadAllPossible", &unloadAllPossible)
+				.def("getLoadRatio", &getLoadRatio)
+				.def("setLoadRatio", &setLoadRatio)
+				.def("loadByteArrayIntoNewVector", 
+								&loadByteArrayIntoNewVector)
+				.def("loadByteArrayIntoNewVector", 
+								&loadByteArrayIntoNewVector2)
+				.def("loadByteArrayIntoExternalDatasetPage", 
+								&loadByteArrayIntoExternalDatasetPage)
+				.def("loadByteArrayIntoExternalDatasetPageFromFileDescriptor", 
+								&loadByteArrayIntoExternalDatasetPageFromFileDescriptor)
+				.def("loadByteArrayIntoExternalDatasetPageAsVector", 
+						&loadByteArrayIntoExternalDatasetPageAsVector)
+				.def("loadSerializedVectorPage", &loadSerializedVectorPage)
+				.def("loadImplvalIntoUnloadedVectorHandle", &loadImplvalIntoUnloadedVectorHandle)
+				.def("getPageRefcountTracker", &getPageRefcountTracker)
+				.def("__cmp__", &VectorDataManagerCmp)
+				.def("vectorDataTotalBytesAllocated", &vectorDataTotalBytesAllocated)
+
+				.def("stringifyAndJoinVectorContents", &stringifyAndJoinVectorContents)
+				.def("stringifyVectorAsList", &stringifyVectorAsList)
+
+				.def("extractVectorItem", &extractVectorItem, 
+					"ExecutionContext::extractVectorItem(vector, index)\n\n"
+					"Extract the 'index'th item from 'vector' if its loaded in the VDM.\n"
+					"Returns None if vector is not a vector or if the data isn't loaded."
+					)
+
+				.def("getMachineId", &getMachineId)
+
+				.def("vectorDataIsLoaded", &vectorDataIsLoaded)
+				.def("vectorDataIdIsLoaded", &vectorDataIdIsLoaded)
+
+				.def("extractVectorContentsAsPythonArray", &extractVectorContentsAsPythonArray, 
+					"ExecutionContext::extractLeafVectorContentsAsPythonArray(vector)\n\n"
+					"Extract the leaf of 'vector' as a python array, copying data into the\n"
+					"array and returning it. Returns None if vector is not a vector, or\n"
+					"if the data isn't loaded.\n"
+					)
+
+				.def("extractVectorContentsAsNumpyArray", &extractVectorContentsAsNumpyArray, 
+					"ExecutionContext::extractLeafVectorContentsAsNumpyArray(vector)\n\n"
+					"Extract the leaf of 'vector' as a numpy array, copying data into the\n"
+					"array and returning it. Returns None if vector is not a vector, \n"
+					"if the data isn't loaded, or if the data can't be mapped into a Numpy type.\n"
+					)
+				;
+				;
+			}
+};
+
+//explicitly instantiating the registration element causes the linker to need
+//this file
+template<>
+char native::module::Exporter<VectorDataManagerWrapper>::mEnforceRegistration =
+		native::module::ExportRegistrar<VectorDataManagerWrapper>::registerWrapper();
+

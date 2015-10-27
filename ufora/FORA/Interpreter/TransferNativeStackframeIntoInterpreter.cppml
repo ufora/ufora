@@ -1,0 +1,527 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "TransferNativeStackframeIntoInterpreter.hppml"
+#include "../Runtime.hppml"
+#include "../TypedFora/JitCompiler/Compiler.hppml"
+#include "../TypedFora/ABI/NativeStackFrameWrapper.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
+#include "../Judgment/JudgmentOnAction.hppml"
+#include "../Native/NativeRuntimeCallbacks.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../Core/RefcountPool.hppml"
+#include "InterpreterFrame.hppml"
+#include "../Compiler/InterpreterTraceTerm.hppml"
+#include "InstructionGraph.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../Core/ExecutionContextImpl.hppml"
+#include "Instruction.hppml"
+#include "Continuation.hppml"
+#include "AxiomCache.hppml"
+#include "../Core/ExecutionContextConfiguration.hppml"
+#include "../Core/ExecutionContextScope.hppml"
+#include "EvalFrame.hpp"
+#include "CallFrame.hpp"
+#include "../Core/MemBlock.hpp"
+#include "../Core/MemBlockAllocator.hpp"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include "../TypedFora/ABI/VectorLoadRequest.hppml"
+#include "../Core/TupleCategory.hppml"
+#include "../Judgment/JudgmentOnValueTree.hppml"
+#include "../Native/FunctionPointerHandle.hpp"
+#include "../Native/NativeRuntimeCallTarget.hppml"
+#include "../../core/threading/ScopedThreadLocalContext.hpp"
+#include "../../core/Logging.hpp"
+#include "../../core/Clock.hpp"
+#include "../../core/StringUtil.hpp"
+#include "../Core/CreatePausedComputationStackFrameVisitor.hppml"
+#include "../Core/PrintStacktraceStackFrameVisitor.hppml"
+#include "../Core/DestroyingStackFrameVisitor.hppml"
+#include "../TypedFora/ABI/StackFrameWalker.hppml"
+#include "../TypedFora/ABI/Stackframes.hppml"
+#include "../TypedFora/TypedForaUtil.hppml"
+#include "../Core/ValueDeepcopier.hppml"
+
+using namespace TypedFora::Abi;
+
+namespace Fora {
+namespace Interpreter {
+
+std::string continuationToString(NativeRuntimeContinuationBase continuation, bool printValues)
+	{
+	std::ostringstream s;
+	PrintStacktraceStackFrameVisitor vis(s, printValues, 1000000);
+
+	TypedFora::Abi::StackFrameWalker::visitStackFrame(
+		continuation,
+		vis
+		);
+
+	return s.str();
+	}
+
+std::string dumpMemBlock(MemBlock* block)
+	{
+	std::ostringstream s;
+
+	while (block)
+		{
+		s << "block @ " << (void*)block->data << " of size " << block->blockSize << "\n";
+		block = block->prevBlock;
+		}
+
+	return s.str();
+	}
+
+@type RippedDownNativeStackframe = 
+	NativeRuntimeContinuationValueVector continuations,
+	ImmutableTreeVector<PausedComputationFrame> computationFrames,
+	ImmutableTreeVector<TypedFora::MetadataInstruction> computationFrameMetadata,
+	Nullable<pair<ImplValContainer, bool> > pendingResult
+	;	
+
+//given a computation that resumes somewhere within a NativeStackFrame, extract it and release
+//the native frame
+RippedDownNativeStackframe ripDownNativeStackFrame(
+									NativeRuntimeContinuationBase continuation
+									)
+	{
+	ExecutionContext* context = ExecutionContext::currentExecutionContext();
+
+	//grab the continuation and free it
+
+	ValueDeepcopierState state;
+
+	CreatePausedComputationStackFrameVisitor visitor(context, state, false, true);
+	
+	TypedFora::Abi::StackFrameWalker::visitStackFrame(
+		continuation,
+		visitor
+		);
+
+	NativeRuntimeContinuationValueVector nextFrameContinuations;
+
+		{
+		NativeStackFrameWrapper curStackframe(continuation);
+
+		nextFrameContinuations = curStackframe.getAllContinuations();
+		}
+
+	DestroyingStackFrameVisitor destroyer(
+		context->getStackAllocator(),
+		true
+		);
+
+	TypedFora::Abi::StackFrameWalker::visitStackFrame(
+		continuation,
+		destroyer
+		);
+
+	return RippedDownNativeStackframe(
+		nextFrameContinuations,
+		visitor.getFrames(),
+		visitor.getFrameMetadata(),
+		visitor.getPendingResultValue()
+		);
+	}
+
+NativeRuntimeContinuationValue<1> instantiatePausedComputation(
+			NativeRuntimeContinuationValue<2> continuations,
+			ImmutableTreeVector<PausedComputationFrame> frames,
+			ImmutableTreeVector<TypedFora::MetadataInstruction> frameMetadata,
+			Nullable<pair<ImplValContainer, bool> > pendingResult,
+			Nullable<uint64_t> evalFrameUniqueId,
+			EvalFrame* inCurEvalFramePtr
+			)
+	{
+	lassert(frames.size());
+
+	ExecutionContext* context = ExecutionContext::currentExecutionContext();
+
+	for (long k = 0; k < frames.size(); k++)
+		{
+		PausedComputationFrame frame = frames[k];
+
+		EvalFrame* evalFramePtr = EvalFrame::allocate(
+			frame.graph(), 
+			frame.label(), 
+			context->getStackAllocator(),
+			evalFrameUniqueId && k == 0 ? 
+				*evalFrameUniqueId
+			:	context->getImpl()->allocateNewUniqueEvalFrameID(),
+			null() << frameMetadata[k]
+			);
+
+		inCurEvalFramePtr = evalFramePtr;
+
+		std::vector<ImplVal> values;
+		
+		for (long k = 0; k < frame.values().size(); k++)
+			values.push_back(
+				context->getRefcountPool()->add(frame.values()[k].getReference())
+				);
+
+		evalFramePtr->copyPooledImplValsIntoFrame(values);
+
+		evalFramePtr->callFrame.conts = continuations;
+
+		evalFramePtr->callFrame.callbacks = &context->getRuntimeCallbacks();
+
+		if (k + 1 == frames.size())
+			{
+			NativeRuntimeContinuationValue<1> result = 
+				Runtime::getRuntime().getTypedForaCompiler()->wrapCPPCallback(
+					&InterpreterFrame::interpreter,
+					evalFramePtr,
+					context->getStackAllocator().getMemBlockPtr()
+					) +
+				NativeRuntimeContinuationSlot(
+					!pendingResult ? cont_internal :
+					pendingResult->second ?  cont_cont_right : cont_cont_left,
+					&evalFramePtr->resultValue
+					);
+
+			if (pendingResult)
+				evalFramePtr->resultValue = context->getRefcountPool()->add(
+					pendingResult->first.getReference()
+					);
+
+			return result;
+			}
+		else
+			{
+			auto newConts = 
+				Runtime::getRuntime().getTypedForaCompiler()->wrapCPPCallback(
+					&InterpreterFrame::interpreter,
+					evalFramePtr,
+					context->getStackAllocator().getMemBlockPtr()
+					) +
+				NativeRuntimeContinuationSlot(
+					cont_cont_left,
+					&evalFramePtr->resultValue
+					) + 
+				NativeRuntimeContinuationSlot(
+					cont_cont_right,
+					&evalFramePtr->resultValue
+					);
+
+			continuations = newConts;
+			}	
+		}
+	}
+
+NativeRuntimeContinuationValue<1> 
+				convertNativeContinuationToInterpreterResumption(
+						const RippedDownNativeStackframe& rippedDownStack
+						)
+	{
+	//we're going to create an interpreter frame, but we need to get a pair of ImplVal continuations
+	NativeRuntimeContinuationValue<2> continuations;
+
+	ExecutionContext* context = ExecutionContext::currentExecutionContext();
+
+	Nullable<uint64_t> evalFrameUniqueId;
+
+	continuations = allocateInterpreterContinuations(
+							rippedDownStack.continuations(), 
+							context->getStackAllocator(),
+							evalFrameUniqueId
+							);
+
+	NativeRuntimeContinuationValue<1> resumeContinuation = instantiatePausedComputation(
+		continuations,
+		rippedDownStack.computationFrames(),
+		rippedDownStack.computationFrameMetadata(),
+		rippedDownStack.pendingResult(),
+		evalFrameUniqueId,
+		nullptr
+		);
+
+	if (!rippedDownStack.pendingResult())
+		lassert(!resumeContinuation.slots()[0].blockID());
+
+	return resumeContinuation;
+	}
+
+
+NativeRuntimeContinuationValue<1> transferNativeStackframeIntoInterpreter(
+									MemBlock** memory,
+									uword_t continuationIndex,
+									void* data
+									)
+	{
+	NativeRuntimeContinuationBase continuation = *(NativeRuntimeContinuationBase*)data;
+
+	LOG_DEBUG << "transferring native to interpreter " << continuationToString(continuation, true);
+	
+	ExecutionContext* context = ExecutionContext::currentExecutionContext();
+
+	//grab the continuation and free it
+	context->getStackAllocator().free(data);
+
+	if (context->getConfiguration()->allowInterpreterTracing())
+		context->getInterpreterHistory()
+			.onTransferToInterpreterFromNativeCode(continuation);
+
+	RippedDownNativeStackframe rippedDownStack = ripDownNativeStackFrame(continuation);
+
+	lassert(rippedDownStack.computationFrames().size());
+
+	return convertNativeContinuationToInterpreterResumption(rippedDownStack);
+	}
+
+
+
+NativeRuntimeContinuationValue<2>
+adaptContinuationsToInterpreterContinuations(
+		const NativeRuntimeContinuationValueVector& conts
+		)
+	{
+	NativeRuntimeContinuationValueVector strippedConts = 
+		removeAdapterContinuations(
+			conts,
+			ExecutionContext::currentExecutionContext()->getStackAllocator()
+			);
+
+	//if this continuation is a native one, we want to rip it down and re-instantiate it.
+	//otherwise, we just want to adapt it.
+	auto compiler = Runtime::getRuntime().getTypedForaCompiler();
+
+	NativeFunctionPointer nextFunction = strippedConts.base().jumpPtr();
+
+	if (!compiler->isNativeFunctionPointer(nextFunction))
+		{
+		lassert(strippedConts.size() == 2);
+		return NativeRuntimeContinuationValue<2>(strippedConts);
+		}
+
+	RippedDownNativeStackframe rippedDownStack = ripDownNativeStackFrame(strippedConts.base());
+
+	//this can happen if we're adapting to a frame where native code transfered to some other
+	//native stackframe
+	if (!rippedDownStack.computationFrames().size())
+		return adaptContinuationsToInterpreterContinuations(rippedDownStack.continuations());
+
+	NativeRuntimeContinuationValue<1> resumption = 
+		convertNativeContinuationToInterpreterResumption(rippedDownStack);
+
+	lassert_dump(
+		resumption.slots()[0].blockID() == cont_internal,
+		"we expected a resume continuation (which we could turn into an apply-resume)"
+		);
+
+	return resumption.base() + 
+		NativeRuntimeContinuationSlot(
+			cont_cont_left,
+			resumption.slots()[0].target()
+			) + 
+		NativeRuntimeContinuationSlot(
+			cont_cont_right,
+			resumption.slots()[0].target()
+			)
+		;
+	}
+
+//return either a native continuation, an interpreter continuation, or a dummy continuation
+NativeRuntimeContinuationValueVector
+removeAdapterContinuations(
+			NativeRuntimeContinuationValueVector nextFrameContinuations, 
+			MemBlockAllocator& stack
+			)
+	{
+	auto compiler = Runtime::getRuntime().getTypedForaCompiler();
+
+	NativeFunctionPointer nextFunction = nextFrameContinuations.base().jumpPtr();
+
+	if (compiler->isNativeFunctionPointer(nextFunction))
+		{
+		return nextFrameContinuations;
+		}
+		else
+	if (Runtime::getRuntime().getTypedForaCompiler()->isWrappedCPPCallbackPtr(nextFunction))
+		{
+		//pull out the next frame etc
+		TypedFora::NativeCppCallbackStackframe* tempFrame = 
+			(TypedFora::NativeCppCallbackStackframe*)nextFrameContinuations.base().stackframePtr();
+		
+		void* wrappedCPPPointer = tempFrame->cppFunctionPointerToCall();
+		void* slots = tempFrame->actualStackPointer();
+		
+		if (wrappedCPPPointer == (void*)&Fora::Interpreter::InterpreterFrame::interpreter)
+			{
+			lassert(nextFrameContinuations.size() == 2);
+			lassert(nextFrameContinuations.slots()[0].blockID() == cont_cont_left);
+			lassert(nextFrameContinuations.slots()[1].blockID() == cont_cont_right);
+
+			return nextFrameContinuations;
+			}
+			else
+		if (wrappedCPPPointer == (void*)&ResultSignatureAdapterFrame::adaptDataAndFollowContinuation)
+			{
+			//just ignore this one
+			ResultSignatureAdapterFrame* f = (ResultSignatureAdapterFrame*)slots;
+			
+			NativeRuntimeContinuationValueVector parentContinuations =
+				f->continuation.continuations();
+
+			f->~ResultSignatureAdapterFrame();
+
+			stack.free(tempFrame);
+			stack.free(f);
+
+			return removeAdapterContinuations(parentContinuations, stack);
+			}
+			else
+		if (wrappedCPPPointer == (void*)&InterpreterUniqueIdHolderFrame::teardownAndFollowContinuation)
+			{
+			InterpreterUniqueIdHolderFrame* f = (InterpreterUniqueIdHolderFrame*)slots;
+	
+			NativeRuntimeContinuationValueVector parentContinuations =
+				f->continuation.continuations();
+		
+			f->~InterpreterUniqueIdHolderFrame();
+
+			stack.free(tempFrame);
+			stack.free(f);
+
+			return removeAdapterContinuations(parentContinuations, stack);
+			}
+		else
+			{
+			lassert_dump(false, "Unknown wrapped CPP function");
+			}
+		}
+		else
+	if (compiler->isDummyContinuationTarget(nextFunction))
+		{
+		lassert(nextFrameContinuations.size() == 2);
+		return nextFrameContinuations;
+		}
+
+	lassert(false);
+	}
+
+
+NativeRuntimeContinuationValue<2>
+allocateInterpreterContinuations(
+			NativeRuntimeContinuationValueVector nextFrameContinuations, 
+			MemBlockAllocator& stack,
+			Nullable<uint64_t>& ioEvalFrameUniqueId
+			)
+	{
+	auto compiler = Runtime::getRuntime().getTypedForaCompiler();
+
+	NativeFunctionPointer nextFunction = nextFrameContinuations.base().jumpPtr();
+
+	if (compiler->isNativeFunctionPointer(nextFunction))
+		{
+		ImmutableTreeVector<NativeIndividualContinuationMetadata> metadatas;
+		
+		for (long k = 0; k < nextFrameContinuations.size(); k++)
+			metadatas = metadatas + compiler->continuationMetadataForFuncPtr(
+				nextFunction, 
+				nextFrameContinuations.slots()[k].blockID()
+				);
+
+		TypedFora::TypedContinuation typedCont(
+			nextFrameContinuations,
+			metadatas,
+			&ExecutionContext::currentExecutionContext()->getRuntimeCallbacks()
+			);
+
+		TypedFora::TypedContinuation newContinuation = 
+			TypedFora::Abi::adaptReturnContinuation(
+				typedCont,
+				TypedFora::interpreterResultSignature(),
+				stack.getMemBlockPtr(),
+				*compiler
+				);
+
+		lassert(newContinuation.continuations().size() == 2);
+
+		return NativeRuntimeContinuationValue<2>(
+			newContinuation.continuations()
+			);
+		}
+		else
+	if (Runtime::getRuntime().getTypedForaCompiler()->isWrappedCPPCallbackPtr(nextFunction))
+		{
+		//pull out the next frame etc
+		TypedFora::NativeCppCallbackStackframe* tempFrame = 
+			(TypedFora::NativeCppCallbackStackframe*)nextFrameContinuations.base().stackframePtr();
+		
+		void* wrappedCPPPointer = tempFrame->cppFunctionPointerToCall();
+		void* slots = tempFrame->actualStackPointer();
+		
+		if (wrappedCPPPointer == (void*)&Fora::Interpreter::InterpreterFrame::interpreter)
+			{
+			lassert(nextFrameContinuations.size() == 2);
+			lassert(nextFrameContinuations.slots()[0].blockID() == cont_cont_left);
+			lassert(nextFrameContinuations.slots()[1].blockID() == cont_cont_right);
+
+			return NativeRuntimeContinuationValue<2>(nextFrameContinuations);
+			}
+			else
+		if (wrappedCPPPointer == (void*)&ResultSignatureAdapterFrame::adaptDataAndFollowContinuation)
+			{
+			//just ignore this one
+			ResultSignatureAdapterFrame* f = (ResultSignatureAdapterFrame*)slots;
+			
+			NativeRuntimeContinuationValueVector parentContinuations =
+				f->continuation.continuations();
+
+			f->~ResultSignatureAdapterFrame();
+
+			stack.free(tempFrame);
+			stack.free(f);
+
+			return allocateInterpreterContinuations(parentContinuations, stack, ioEvalFrameUniqueId);
+			}
+			else
+		if (wrappedCPPPointer == (void*)&InterpreterUniqueIdHolderFrame::teardownAndFollowContinuation)
+			{
+			InterpreterUniqueIdHolderFrame* f = (InterpreterUniqueIdHolderFrame*)slots;
+	
+			NativeRuntimeContinuationValueVector parentContinuations =
+				f->continuation.continuations();
+			
+			ioEvalFrameUniqueId = f->originalStackFrameUniqueId;
+
+			f->~InterpreterUniqueIdHolderFrame();
+
+			stack.free(tempFrame);
+			stack.free(f);
+
+			return allocateInterpreterContinuations(parentContinuations, stack, ioEvalFrameUniqueId);
+			}
+		else
+			{
+			lassert_dump(false, "Unknown wrapped CPP function");
+			}
+		}
+		else
+	if (compiler->isDummyContinuationTarget(nextFunction))
+		{
+		lassert(nextFrameContinuations.size() == 2);
+		return NativeRuntimeContinuationValue<2>(nextFrameContinuations);
+		}
+
+	lassert(false);
+	}
+
+}
+}
+
+

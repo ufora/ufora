@@ -1,0 +1,108 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "EliminateOverlappingRefcounts.hppml"
+#include "../../../core/UnitTest.hpp"
+#include "../../../core/cppml/CPPMLVisit.hppml"
+
+
+@type NetRefcountVisitor = uword_t positive, uword_t negative {
+public:
+		template<class T>
+		void processDown(const T& t, bool& b) { }
+		template<class T>
+		void processUp(const T& t) { }
+		
+		void processDown(const NativeExpressionTag_RefcountType& r, bool& b)
+			{
+			if (r.refcountUpdate() < 0)
+				negative()++;
+				else
+				positive()++;
+			}
+		
+		template<class T>
+		static NetRefcountVisitor visit(const T& in)
+			{
+			NetRefcountVisitor tr;
+			::visit(in, tr);
+			return tr;
+			}
+};
+
+
+macro_defineCppmlComparisonOperators(NetRefcountVisitor)
+
+ostream& operator << (ostream& s, const NetRefcountVisitor& c)
+	{
+	s << prettyPrintString(c);
+	return s;
+	}
+
+BOOST_AUTO_TEST_CASE( test_FORA_NativeCode_EliminateOverlappingRefcounts )
+{
+	NativeVariable v = NativeVariable::Temp(NativeType::Integer(8,true));
+	
+	NativeExpression incE =
+		NativeExpression::CallLibraryFunction("inc", NativeType::Nothing(), emptyTreeVec());
+	NativeExpression decE =
+		NativeExpression::CallLibraryFunction("dec", NativeType::Nothing(), emptyTreeVec());
+	
+	NativeExpression incrementer =
+		incE.taggedWith(
+			NativeExpressionTag::Refcount(
+				v.expr(),
+				1,
+				decE
+				)
+			);
+	
+	NativeExpression decrementer =
+		decE.taggedWith(
+			NativeExpressionTag::Refcount(
+				v.expr(),
+				-1,
+				incE
+				)
+			);
+	
+	using namespace NativeCFGTransforms;
+
+	BOOST_CHECK_EQUAL(
+		NetRefcountVisitor::visit(eliminateOverlappingRefcounts(incrementer >> incrementer)),
+		NetRefcountVisitor(2,0)
+		);
+	BOOST_CHECK_EQUAL(
+		NetRefcountVisitor::visit(eliminateOverlappingRefcounts(incrementer >> decrementer)),
+		NetRefcountVisitor(0,0)
+		);
+	BOOST_CHECK_EQUAL(
+		NetRefcountVisitor::visit(eliminateOverlappingRefcounts(decrementer >> incrementer)),
+		NetRefcountVisitor(1,1)
+		);
+	
+	BOOST_CHECK_EQUAL(
+		NetRefcountVisitor::visit(eliminateOverlappingRefcounts(incrementer >> incrementer >> decrementer)),
+		NetRefcountVisitor(1,0)
+		);
+	BOOST_CHECK_EQUAL(
+		NetRefcountVisitor::visit(eliminateOverlappingRefcounts(incrementer >> decrementer >> decrementer)),
+		NetRefcountVisitor(0,1)
+		);
+
+		
+}
+
+

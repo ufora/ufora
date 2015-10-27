@@ -1,0 +1,139 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ExternalDatasetLoadTasks.hppml"
+
+namespace Cumulus {
+
+ExternalDatasetLoadTasks::ExternalDatasetLoadTasks(
+			boost::function0<hash_type> inCreateNewHash,
+			boost::function1<void, PythonIoTaskRequest> inBroadcastPythonTask,
+			boost::function1<void, ExternalIoTaskCompleted> inOnExternalIoTaskCompleted
+			) :
+		mCreateNewHash(inCreateNewHash),
+		mBroadcastPythonTask(inBroadcastPythonTask),
+		mOnExternalIoTaskCompleted(inOnExternalIoTaskCompleted)
+	{
+	}
+
+void ExternalDatasetLoadTasks::handleNewLoadExternalDataset(
+					ExternalIoTaskId taskId, 
+					ExternalDatasetDescriptor dataset, 
+					bool loadThroughVDID
+					)
+	{
+	mExternalDatasetLoadTasks.insert(taskId, make_pair(dataset, loadThroughVDID));
+
+	if (mExternalDatasetLoadTasks.getKeys(make_pair(dataset, loadThroughVDID)).size() > 1)
+		return;
+
+	if (loadThroughVDID)
+		mBroadcastPythonTask(
+			PythonIoTaskRequest::LoadExternalDatasetIntoVector(
+				mCreateNewHash(),
+				VectorDataID::External(dataset)
+				)
+			);
+	else
+		mBroadcastPythonTask(
+			PythonIoTaskRequest::LoadExternalDatasetAsForaValue(
+				mCreateNewHash(),
+				dataset
+				)
+			);
+	}
+
+void ExternalDatasetLoadTasks::handleExternalDatasetLoaded(ExternalDatasetDescriptor dataset, PythonIoTaskResponse response)
+	{
+	std::set<ExternalIoTaskId> tasks = mExternalDatasetLoadTasks.getKeys(make_pair(dataset, true));
+
+	if (!tasks.size())
+		return;
+
+	mExternalDatasetLoadTasks.dropValue(make_pair(dataset, true));
+
+	ExternalIoTaskResult result;
+
+	@match PythonIoTaskResponse(response)
+		-| Success() ->> {
+			result = ExternalIoTaskResult::Success();
+			}
+		-| S3KeyDoesNotExist() ->> {
+			result = ExternalIoTaskResult::S3KeyDoesNotExist();
+			}
+		-| S3PermissionError() ->> {
+			result = ExternalIoTaskResult::S3PermissionError();
+			}
+		-| Failure(guid, reason) ->> {
+			result = ExternalIoTaskResult::PythonIoFailure(reason);
+			}
+		-| UserCausedFailure(guid, reason) ->> {
+			result = ExternalIoTaskResult::UserCausedPythonFailure(reason);
+			}
+		-| _ ->> {
+			lassert_dump(false, prettyPrintString(response));
+			}
+		;
+
+	for (auto taskId: tasks)
+		mOnExternalIoTaskCompleted(
+			ExternalIoTaskCompleted(
+				taskId,
+				result
+				)
+			);
+	}
+
+void ExternalDatasetLoadTasks::handleExternalDatasetAsForaValue(ExternalDatasetDescriptor dataset, PythonIoTaskResponse response)
+	{
+	std::set<ExternalIoTaskId> tasks = mExternalDatasetLoadTasks.getKeys(make_pair(dataset, false));
+
+	if (!tasks.size())
+		return;
+
+	mExternalDatasetLoadTasks.dropValue(make_pair(dataset, false));
+
+	ExternalIoTaskResult result;
+
+	@match PythonIoTaskResponse(response)
+		-| DatasetAsForaValue(guid, value) ->> {
+			result = ExternalIoTaskResult::TaskResultAsForaValue(
+					value,
+					emptyTreeSet(),
+					hash_type()
+					);
+			}
+		-| Failure(guid, reason) ->> {
+			result = ExternalIoTaskResult::PythonIoFailure(reason);
+			}
+		-| UserCausedFailure(guid, reason) ->> {
+			result = ExternalIoTaskResult::UserCausedPythonFailure(reason);
+			}
+		-| _ ->> {
+			lassert_dump(false, prettyPrintString(response));
+			}
+		;
+
+	for (auto taskId: tasks)
+		mOnExternalIoTaskCompleted(
+			ExternalIoTaskCompleted(
+				taskId,
+				result
+				)
+			);
+	}
+
+}
+

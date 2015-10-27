@@ -1,0 +1,166 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "CumulusComponentMessageCreated.hppml"
+#include "CumulusClientOrMachine.hppml"
+#include "../FORA/VectorDataManager/VectorDataManager.hppml"
+#include "PersistentCache/PersistentCacheIndex.hppml"
+#include "PersistentCache/PersistentCacheCalculations.hppml"
+
+namespace Cumulus {
+
+class CorruptedPersistentCacheRecoveryCoordinatorImpl {
+public:
+	CorruptedPersistentCacheRecoveryCoordinatorImpl(
+				PolymorphicSharedPtr<VectorDataManager> inVDM,
+				boost::function1<void, CumulusComponentMessageCreated> inOnCumulusComponentMessageCreated,
+				boost::function0<void> inOnRecoveryComplete,
+				MachineId ownMachineId,
+				bool isTheLeader,
+				hash_type inRegime
+				) : 
+			mVDM(inVDM),
+			mOnCumulusComponentMessageCreated(inOnCumulusComponentMessageCreated),
+			mOnRecoveryComplete(inOnRecoveryComplete),
+			mOwnMachineId(ownMachineId),
+			mRegime(inRegime),
+			mIsTheLeader(isTheLeader)
+		{
+		if (!mIsTheLeader)
+			return;
+
+		mIndex = mVDM->getPersistentCacheIndex();
+
+		PersistentCache::PersistentCacheCalculations calculator(mIndex);
+
+		mKeysToDelete = calculator.invalidObjects();
+
+		LOG_INFO << "Recovering a corrupted PersistentCache with "
+			<< mKeysToDelete.size() 
+			<< " total invalid objects out of "
+			<< mIndex->getAllObjects().size()
+			<< " total objects."
+			;
+
+		pushStateForward();
+		}
+
+	void pushStateForward()
+		{
+		while (mKeysToDelete.size() && mOutstandingDeletions.size() < 10)
+			{
+			PersistentCacheKey toDelete = *mKeysToDelete.begin();
+
+			mKeysToDelete.erase(toDelete);
+
+			if (toDelete.hasStoragePath())
+				{
+				hash_type guid = mVDM->newVectorHash();
+
+				mOutstandingDeletions[guid] = toDelete;
+
+				mOnCumulusComponentMessageCreated(
+					CumulusComponentMessageCreated(
+						CumulusComponentMessage::PythonIoTaskService(
+							PythonIoTaskServiceMessage::Request(
+								PythonIoTaskRequest::DeletePersistedObject(
+									guid,
+									toDelete.storagePath()
+									)
+								)
+							),
+						CumulusComponentEndpointSet::SpecificWorker(mOwnMachineId),
+						CumulusComponentType::PythonIoTaskService()
+						)
+					);
+				}
+			else
+				{
+				if (mIndex->objectExists(toDelete))
+					mIndex->dropObject(toDelete);					
+				}
+			}
+
+		if (mKeysToDelete.size() == 0 && mOutstandingDeletions.size() == 0)
+			{
+			LOG_INFO << "Recovery is complete. Remaining objects in cache: " 
+				<< mIndex->getAllObjects().size();
+			mOnRecoveryComplete();
+			}
+		else
+			{
+			int64_t remaining = mKeysToDelete.size() + mOutstandingDeletions.size();
+
+			if (remaining < 100 && remaining % 10 == 0 || 
+					remaining < 1000 && remaining % 100 == 0 || 
+					remaining < 10000 && remaining % 1000 == 0 || 
+					remaining % 10000 == 0
+					)
+				LOG_INFO << remaining << " remaining to be purged from the corrupted store.";
+			}
+		}
+
+	void handleCumulusComponentMessage(
+						CumulusComponentMessage message, 
+						CumulusClientOrMachine source, 
+						CumulusComponentType component
+						)
+		{
+		@match CumulusComponentMessage(message)
+			-| PythonIoTaskService(Response(resp)) ->> {
+				auto it = mOutstandingDeletions.find(resp.guid());
+				if (it != mOutstandingDeletions.end())
+					{
+					PersistentCacheKey key = it->second;
+					mOutstandingDeletions.erase(it);
+
+					if (resp.isSuccess())
+						{
+						if (mIndex->objectExists(key))
+							mIndex->dropObject(key);
+						pushStateForward();
+						}
+					else
+						{
+						lassert_dump(false, "Eventually we should go into a no-cache-available state here.");
+						}
+					}
+				else
+					LOG_WARN << "Unknown message sent to CorruptedPersistentCacheRecoveryCoordinatorImpl";
+				}
+		}
+
+private:
+	std::set<PersistentCacheKey> mKeysToDelete;
+
+	std::map<hash_type, PersistentCacheKey> mOutstandingDeletions;
+
+	PolymorphicSharedPtr<VectorDataManager> mVDM;
+
+	PolymorphicSharedPtr<PersistentCache::PersistentCacheIndex> mIndex;
+
+	boost::function1<void, CumulusComponentMessageCreated> mOnCumulusComponentMessageCreated;
+
+	boost::function0<void> mOnRecoveryComplete;
+
+	MachineId mOwnMachineId;
+
+	bool mIsTheLeader;
+
+	hash_type mRegime;
+
+};
+
+}

@@ -1,0 +1,220 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#Markdown("""### losses
+
+#### Description
+
+loss functions used in gradient boosting.
+
+""");
+
+l2_loss: 
+object {
+    initialModel: fun(dataframe.Series(y)) 
+        {
+        let predictionValue = math.stats.mean(y);
+        AdditiveRegressionTree() + 
+            math.tree.RegressionTree.RegressionTree(
+                [math.tree.RegressionTree.RegressionLeafRule(predictionValue)]
+                );
+        };
+
+    needsTargetColumn: true;
+    needsPredictedValues: false;
+    needsOriginalYValues: false;
+
+    negativeGradient: fun(dataframe.Series(y), dataframe.Series(predicted_y)) {
+        return y - predicted_y
+        };
+
+    leafValueFun: fun(learningRate, *args) {
+        fun(leafValuesDf, activeIndices) {
+            learningRate * math.stats.mean(
+                math.tree.RegressionTreeBuilder.onDemandSelectedVector(
+                    leafValuesDf.getColumn(-1),
+                    activeIndices
+                    )
+                )
+            }
+        };
+    };
+
+absoluteLoss:
+object {
+    needsTargetColumn: false;
+    needsPredictedValues: true;
+    needsOriginalYValues: true;
+
+    initialModel: fun(dataframe.Series(y))
+        {
+        let predictionValue = math.stats.median(y); 
+        AdditiveRegressionTree() + 
+            math.tree.RegressionTree.RegressionTree([
+                math.tree.RegressionTree.RegressionLeafRule(predictionValue)
+                ]);
+        };
+
+    negativeGradient: fun(dataframe.Series(y), dataframe.Series(predicted_y)) {
+        return (y - predicted_y) ~~ { 2.0 * (_ > 0.0) - 1.0 }
+        };
+
+
+    leafValueFun: fun(learningRate, yDim: yDim) {
+        fun(leafValuesDf, activeIndices) {
+            let originalYInRegion = 
+                dataframe.Series(
+                    math.tree.RegressionTreeBuilder.onDemandSelectedVector(
+                        leafValuesDf.getColumn(yDim), activeIndices
+                        )
+                    );
+            let predictedYInRegion = 
+                dataframe.Series(
+                    math.tree.RegressionTreeBuilder.onDemandSelectedVector(
+                        leafValuesDf.getColumn(-1), activeIndices
+                        )
+                    );
+
+            learningRate * math.stats.median(
+                originalYInRegion - predictedYInRegion
+                );
+            }
+        };
+    };
+
+binomialLoss:
+object {
+    needsTargetColumn: true;
+    needsPredictedValues: false;
+    needsOriginalYValues: false;
+
+    transformY: fun(y, classZero, classOne) {
+        if (y == classZero) -1.0
+        else 1.0
+        };
+
+    initialModel: fun(yAsSeries, classes) {
+        let classZero = classes[0]
+        let classOne = classes[1]
+        let yBar = yAsSeries.sum({ transformY(_, classZero, classOne) });
+        AdditiveRegressionTree() + 
+            math.tree.RegressionTree.RegressionTree([
+                math.tree.RegressionTree.RegressionLeafRule(
+                    0.5 * math.log((1.0 + yBar) / (1.0 - yBar))
+                    )
+                ]);
+        };
+
+    negativeGradient: fun(yAsSeries, regressionTreeValues, classes) {
+        let classZero = classes[0];
+        let classOne = classes[1];
+        yAsSeries.applyWithIndex(
+            fun(y, ix) {
+                let yTransformed = transformY(y, classZero, classOne);
+                2.0 * yTransformed / 
+                    (1.0 + math.exp(2.0 * yTransformed * regressionTreeValues[ix]))
+               }
+            );
+        };
+
+    leafValueFun: fun(learningRate) {
+        fun(leafValues, activeIndices) {
+            let residuals = 
+                math.tree.RegressionTreeBuilder.onDemandSelectedVector(
+                    leafValues.getColumn(-1), activeIndices
+                    );
+            let (numerator, denominator) = 
+                sum(0, size(residuals), fun(ix) {
+                    let residual = residuals[ix];
+                    let absResidual = math.abs(residual);
+                    return (residual, absResidual * (2.0 - absResidual));
+                    },
+                    fun
+                    (nothing, rhs) { rhs }
+                    (lhs, nothing) { lhs }
+                    (lhs, rhs) {
+                        (lhs[0] + rhs[0], lhs[1] + rhs[1])
+                        }
+                    );
+            
+            return learningRate * numerator / denominator
+            };
+        };
+    };
+
+multinomialLoss:
+object {
+    needsTargetColumn: true;
+    needsPredictedValues: false;
+    needsOriginalYValues: false;
+
+    initialModel: fun(nClasses, *args) {
+        Vector.uniform(
+            nClasses,
+            AdditiveRegressionTree() + 
+                math.tree.RegressionTree.RegressionTree([
+                    math.tree.RegressionTree.RegressionLeafRule(0.0)
+                    ])
+            );
+        };
+
+    negativeGradient: fun(yAsSeries, probabilities, classes) {
+        let nClasses = size(classes);
+
+        Vector.range(
+            nClasses,
+            fun(classIx) {
+                zipWith(
+                    fun(yVal, probability) {
+                        (if (yVal == classes[classIx]) 1.0 else 0.0) - probability
+                        },
+                    yAsSeries, probabilities[classIx]
+                    )
+                }
+            );
+        };
+
+    leafValueFun: fun(nClasses, learningRate) { 
+        fun
+        (leafValues, activeIndices) {
+            let residuals = 
+                math.tree.RegressionTreeBuilder.onDemandSelectedVector(
+                    leafValues.getColumn(-1), activeIndices
+                    );
+            let (numerator, denominator) = 
+                sum(0, size(residuals),
+                    fun(ix) { 
+                        let residual = residuals[ix];
+                        let absResidual = math.abs(residual);
+                        return (residual, absResidual * (1.0 - absResidual));
+                    },
+                    fun 
+                    (nothing, rhs) { rhs }
+                    (lhs, nothing) { lhs }
+                    (lhs, rhs) { 
+                        (lhs[0] + rhs[0], lhs[1] + rhs[1])
+                        }
+                    );
+
+            let value = (nClasses - 1.0) * numerator / denominator / nClasses;
+            value = learningRate * value;
+
+            return value
+            }
+        (splitRule) { splitRule };
+        };
+        
+    };
+

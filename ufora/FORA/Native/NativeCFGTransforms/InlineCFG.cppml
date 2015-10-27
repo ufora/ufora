@@ -1,0 +1,89 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Transforms.hppml"
+#include "../../../core/cppml/CPPMLTransform.hppml"
+#include "../../../core/Logging.hpp"
+
+using namespace std;
+
+namespace NativeCFGTransforms {
+
+@type StaticInlineTransformer = string name, NativeCFG f {
+public:
+	template<class T>
+	Nullable<T> processDown(const T& in, bool& out) const { return null(); }
+	template<class T>
+	Nullable<T> processUp(const T& in) const { return null(); }
+	
+	Nullable<NativeExpression> processDown(const NativeExpression& t, bool& cont) const
+		{
+		@match NativeExpression(t)
+			-|	Call(External(n, id), rets, args, meta) ->>
+				{
+				if (n == name())
+					{
+					cont = false;
+					NativeExpression tr =
+						NativeExpression::Call(
+							NativeCallTarget::Inline(
+								remapNativeBlockIDsForInlining(
+									renameVariables(f()), id),
+								NativeBlockID::entry()
+								),
+							transform(rets, *this),
+							transform(args, *this),
+							transform(meta, *this)
+							);
+					tr.type();
+					
+					return null() << tr;
+					}
+				}
+			-|	_ ->> { }
+			;
+		if (!t.externalBranches().contains(name()))
+			cont = false;
+		return null();
+		}
+};
+
+//inlines a single external call in a given CFG.
+NativeCFG inlineCFG(const NativeCFG& caller,
+                    const NativeCFG& callee,
+                    const string& calleeName)
+	{
+	StaticInlineTransformer transformer(calleeName, callee);
+	return transform(caller, transformer);
+	}
+
+NativeCFG	remapNativeBlockIDsForInlining(
+					const NativeCFG& inCFG,
+					NativeBlockID id
+					)
+	{
+	ImmutableTreeMap<NativeBlockID, NativeBlockID> remap;
+	
+	remap = remap + id + NativeBlockID::entry();
+	for (long k = 0; k < inCFG.size();k++)
+		if (inCFG.name(k) != id)
+			remap = remap + inCFG.name(k) + NativeBlockID::internal();
+	
+	return renameNativeBlocks(inCFG, remap);
+	}
+
+};
+
+

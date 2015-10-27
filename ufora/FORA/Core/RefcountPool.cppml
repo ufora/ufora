@@ -1,0 +1,520 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "RefcountPool.hppml"
+#include "../../core/Logging.hpp"
+#include "ImplVal.hppml"
+#include "../TypedFora/ABI/ImplValVisitor.hppml"
+#include "Type.hppml"
+#include "../Primitives/String.hppml"
+#include "../Primitives/ExternalFunctionDescription.hppml"
+#include "../Primitives/CodeLocation.hppml"
+#include "../Primitives/Dictionary.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
+#include "../Vector/MutableVectorRecord.hppml"
+#include "../../core/Clock.hpp"
+#include "ExecutionContext.hppml"
+#include "../../core/math/Overflow.hpp"
+#include "MemoryPool.hpp"
+
+using TypedFora::Abi::VectorRecord;
+using TypedFora::Abi::PooledVectorRecord;
+
+namespace Fora {
+namespace Interpreter {
+
+//we also assume that every object in here is 'relocatable' the way all FORA values are - they
+//can't contain any 'this' pointers, so their state is not corrupted by memcopying them around.
+
+template<class T>
+class PushableQueue {
+public:
+	PushableQueue(MemoryPool* inPool) : 
+			mMemoryPool(inPool),
+			mUsed(0),
+			mAllocated(0),
+			mBase(0)
+		{
+		}
+
+	~PushableQueue()
+		{
+		while (size())
+			pop_back();
+		}
+
+	size_t size() const
+		{
+		return mUsed;
+		}
+
+	void push_back(const T& in)
+		{
+		if (mUsed + 1 > mAllocated)
+			{
+			size_t newAllocated = mAllocated * 1.25 + 128;
+
+			uint8_t* newBase = mMemoryPool->realloc((uint8_t*)mBase, newAllocated * sizeof(T));
+
+			lassert(newBase);
+
+			mBase = (T*)newBase;
+
+			mAllocated = newAllocated;
+			}
+
+		new (mBase + mUsed) T(in);
+
+		mUsed++;
+		}
+
+	T& back()
+		{
+		lassert(mUsed);
+
+		return mBase[mUsed-1];
+		}
+
+	void pop_back()
+		{
+		back().~T();
+		mUsed--;
+
+		if (mUsed == 0)
+			{
+			mMemoryPool->free((uint8_t*)mBase);
+			mBase = 0;
+			mAllocated = 0;
+			}
+		}
+
+	T& operator[](long index)
+		{
+		return mBase[index];
+		}
+
+private:
+	MemoryPool* mMemoryPool;
+
+	T* mBase;
+
+	size_t mAllocated;
+
+	size_t mUsed;
+};
+
+namespace {
+
+template<class T>
+void transferQueue(PushableQueue<T>& pullFrom, PushableQueue<T>& pushTo)
+	{
+	while (pullFrom.size())
+		{
+		pushTo.push_back(pullFrom.back());
+		pullFrom.pop_back();
+		}
+	}
+
+template<class T>
+void pushOntoVector(PushableQueue<T>& vector, const T& in)
+	{
+	vector.push_back(in);
+	}
+
+ImplVal pushOntoVector(PushableQueue<ImplVal>& vector, const ImplVal& in)
+	{
+	ImplVal tr = in.duplicate();
+
+	vector.push_back(tr);
+
+	return tr;
+	}
+
+void pushOntoVector(PushableQueue<VectorRecord>& vector, const VectorRecord& in)
+	{
+	vector.push_back(in);
+	}
+
+template<class T>
+void transferIntoVector(PushableQueue<T>& vector, const T& in)
+	{
+	vector.push_back(in);
+	vector.back().~T();
+	}
+
+void transferIntoVector(PushableQueue<ImplVal>& vector, const ImplVal& in)
+	{
+	vector.push_back(in);
+	}
+
+void transferIntoVector(PushableQueue<VectorRecord>& vector, const VectorRecord& in)
+	{
+	vector.push_back(in);
+	in.~VectorRecord();
+	}
+
+template<class T>
+void clearVector(PushableQueue<T>& vector)
+	{
+	while (vector.size())
+		vector.pop_back();
+	}
+
+void clearVector(PushableQueue<VectorRecord>& vector)
+	{
+	while (vector.size())
+		vector.pop_back();
+	}
+
+void clearVector(PushableQueue<ImplVal>& vector)
+	{
+	while (vector.size())
+		{
+		vector.back().destroy();
+		vector.pop_back();
+		}
+	}
+
+}
+
+
+class RefcountPoolState {
+public:
+	RefcountPoolState(MemoryPool* inPool) :
+			mRefcountedImplvals(inPool),
+			mRefcountedStrings(inPool),
+			mRefcountedTypes(inPool),
+			mRefcountedStacktraces(inPool),
+			mRefcountedJOVs(inPool),
+			mRefcountedDictionaries(inPool),
+			mRefcountedVectorRecords(inPool),
+			mRefcountedMutableVectorRecords(inPool),
+			mRefcountedExternalFunctionDescriptors(inPool)
+		{
+		}
+
+	PushableQueue<ImplVal> mRefcountedImplvals;
+
+	PushableQueue<String>	mRefcountedStrings;
+
+	PushableQueue<Type>	mRefcountedTypes;
+
+	PushableQueue<ForaStackTrace> mRefcountedStacktraces;
+
+	PushableQueue<JudgmentOnValue> mRefcountedJOVs;
+
+	PushableQueue<Dictionary> mRefcountedDictionaries;
+
+	PushableQueue<VectorRecord> mRefcountedVectorRecords;
+
+	PushableQueue<MutableVectorRecord> mRefcountedMutableVectorRecords;
+
+	PushableQueue<ExternalFunctionDescriptor> mRefcountedExternalFunctionDescriptors;
+};
+
+RefcountPool::RefcountPool(MemoryPool* inPool) : 
+		mState(new RefcountPoolState(inPool))
+	{
+	}
+
+RefcountPool::~RefcountPool()
+	{
+	clear();
+
+	delete mState;
+	}
+
+void RefcountPool::transferRefcountsTo(RefcountPool& otherPool)
+	{
+	transferQueue(mState->mRefcountedJOVs, otherPool.mState->mRefcountedJOVs);
+	transferQueue(mState->mRefcountedImplvals, otherPool.mState->mRefcountedImplvals);
+	transferQueue(mState->mRefcountedStrings, otherPool.mState->mRefcountedStrings);
+	transferQueue(mState->mRefcountedTypes, otherPool.mState->mRefcountedTypes);
+	transferQueue(mState->mRefcountedStacktraces, otherPool.mState->mRefcountedStacktraces);
+	transferQueue(mState->mRefcountedDictionaries, otherPool.mState->mRefcountedDictionaries);
+	transferQueue(mState->mRefcountedVectorRecords, otherPool.mState->mRefcountedVectorRecords);
+	transferQueue(mState->mRefcountedMutableVectorRecords, 
+		otherPool.mState->mRefcountedMutableVectorRecords);
+	transferQueue(mState->mRefcountedExternalFunctionDescriptors, 
+		otherPool.mState->mRefcountedExternalFunctionDescriptors);
+	}
+
+void RefcountPool::clear(void)
+	{
+	clearVector(mState->mRefcountedJOVs);
+	clearVector(mState->mRefcountedImplvals);
+	clearVector(mState->mRefcountedStrings);
+	clearVector(mState->mRefcountedTypes);
+
+	clearVector(mState->mRefcountedStacktraces);
+	clearVector(mState->mRefcountedDictionaries);
+	clearVector(mState->mRefcountedVectorRecords);
+	clearVector(mState->mRefcountedMutableVectorRecords);
+	clearVector(mState->mRefcountedExternalFunctionDescriptors);
+	}
+
+void RefcountPool::visitAllStrings(boost::function1<void, String&> inFunc)
+	{
+	for (long k = 0; k < mState->mRefcountedStrings.size(); k++)
+		inFunc(mState->mRefcountedStrings[k]);
+	}
+
+void RefcountPool::visitAllVectorRecords(boost::function1<void, VectorRecord&> inFunc)
+	{
+	for (long k = 0; k < mState->mRefcountedVectorRecords.size(); k++)
+		inFunc(mState->mRefcountedVectorRecords[k]);
+	}
+
+void RefcountPool::visitAllMutableVectorRecords(
+		boost::function1<void, MutableVectorRecord&> inFunc
+		)
+	{
+	for (long k = 0; k < mState->mRefcountedMutableVectorRecords.size(); k++)
+		inFunc(mState->mRefcountedMutableVectorRecords[k]);
+	}
+
+void RefcountPool::visitAllImplVals(boost::function1<void, ImplVal&> inFunc)
+	{
+	for (long k = 0; k < mState->mRefcountedImplvals.size(); k++)
+		inFunc(mState->mRefcountedImplvals[k]);
+	}
+
+ImplVal RefcountPool::add(ImplVal inImplval)
+	{
+	if (inImplval.isDataInline())
+		return inImplval;
+
+	return pushOntoVector(mState->mRefcountedImplvals, inImplval);
+	}
+
+void RefcountPool::add(const Type& t)
+	{
+	pushOntoVector(mState->mRefcountedTypes, t);
+	}
+
+void RefcountPool::add(const String& t)
+	{
+	if (!t.isEmptyOrPackedIntoPointer())
+		pushOntoVector(mState->mRefcountedStrings, t);
+	}
+
+void RefcountPool::add(const ForaStackTrace& t)
+	{
+	pushOntoVector(mState->mRefcountedStacktraces, t);
+	}
+
+void RefcountPool::add(const JudgmentOnValue& t)
+	{
+	pushOntoVector(mState->mRefcountedJOVs, t);
+	}
+
+void RefcountPool::add(const Dictionary& t)
+	{
+	pushOntoVector(mState->mRefcountedDictionaries, t);
+	}
+
+TypedFora::Abi::PooledVectorRecord RefcountPool::add(const VectorRecord& t)
+	{
+	pushOntoVector(mState->mRefcountedVectorRecords, t);
+
+	return TypedFora::Abi::PooledVectorRecord(t.dataPtr(), t.size(), t.offset(), t.stride());
+	}
+
+void RefcountPool::add(const MutableVectorRecord& t)
+	{
+	pushOntoVector(mState->mRefcountedMutableVectorRecords, t);
+	}
+
+void RefcountPool::add(const ExternalFunctionDescriptor& t)
+	{
+	pushOntoVector(mState->mRefcountedExternalFunctionDescriptors, t);
+	}
+
+ImplVal RefcountPool::addAlreadyRefcounted(ImplVal inImplval)
+	{
+	if (inImplval.isDataInline())
+		return inImplval;
+	
+	transferIntoVector(mState->mRefcountedImplvals, inImplval);
+
+	return inImplval;
+	}
+
+void RefcountPool::addAlreadyRefcounted(const Type& t)
+	{
+	transferIntoVector(mState->mRefcountedTypes, t);
+	}
+
+void RefcountPool::addAlreadyRefcounted(const String& t)
+	{
+	if (!t.isEmptyOrPackedIntoPointer())
+		transferIntoVector(mState->mRefcountedStrings, t);
+	}
+
+void RefcountPool::addAlreadyRefcounted(const ForaStackTrace& t)
+	{
+	transferIntoVector(mState->mRefcountedStacktraces, t);
+	}
+
+void RefcountPool::addAlreadyRefcounted(const JudgmentOnValue& t)
+	{
+	transferIntoVector(mState->mRefcountedJOVs, t);
+	}
+
+void RefcountPool::addAlreadyRefcounted(const Dictionary& t)
+	{
+	transferIntoVector(mState->mRefcountedDictionaries, t);
+	}
+
+void RefcountPool::addAlreadyRefcounted(const VectorRecord& t)
+	{
+	transferIntoVector(mState->mRefcountedVectorRecords, t);
+	}
+
+void RefcountPool::addAlreadyRefcounted(const MutableVectorRecord& t)
+	{
+	transferIntoVector(mState->mRefcountedMutableVectorRecords, t);
+	}
+
+void RefcountPool::addAlreadyRefcounted(const ExternalFunctionDescriptor& t)
+	{
+	transferIntoVector(mState->mRefcountedExternalFunctionDescriptors, t);
+	}
+
+namespace {
+class RefcountPoolVisitor {
+public:
+	typedef TypedFora::Abi::VectorRecord VectorRecord;
+	
+	RefcountPoolVisitor(RefcountPool& pool) : mPool(pool)
+		{
+		}
+
+	bool visitVectorRecord(const VectorRecord& leaf)
+		{
+		mPool.add(leaf);
+		return false;
+		}
+
+	bool visitMutableVectorRecord(const MutableVectorRecord& leaf)
+		{
+		return false;
+		}
+
+	template<class T>
+	void addToPoolStrided(uint8_t* data, uword_t inCount, uword_t inStride)
+		{
+		for (long k = 0; k < inCount; k++)
+			mPool.add(*reinterpret_cast<T*>(data + inStride * k));
+		}
+
+	template<class T>
+	void addToPoolScattered(uint8_t** data, uword_t inCount, uword_t inNudge)
+		{
+		for (long k = 0; k < inCount; k++)
+			mPool.add(*reinterpret_cast<T*>(data[k] + inNudge));
+		}
+
+	bool visit(const Type& inType, void* inData, uword_t inCount, uword_t inStride)
+		{
+		if (inType.isPOD())
+			return false;
+
+		uint8_t* bytes = (uint8_t*)inData;
+
+		@match Type(inType)
+			-| String() ->> {
+				addToPoolStrided<String>(bytes, inCount, inStride);
+				}
+			-| JOVAsValue() ->> {
+				addToPoolStrided<JOV>(bytes, inCount, inStride);
+				}
+			-| StackTrace() ->> {
+				addToPoolStrided<ForaStackTrace>(bytes, inCount, inStride);
+				}
+			-| Dictionary() ->> {
+				addToPoolStrided<Dictionary>(bytes, inCount, inStride);
+				}
+			-| ExternalFunction() ->> {
+				addToPoolStrided<ExternalFunctionDescriptor>(bytes, inCount, inStride);
+				}
+			-| MutableVector() ->> {
+				addToPoolStrided<MutableVectorRecord>(bytes, inCount, inStride);
+				return true;
+				}
+			-| Vector() ->> {
+				addToPoolStrided<VectorRecord>(bytes, inCount, inStride);
+				return true;
+				}
+			-| _ ->> {
+				return true; /* Recurse unless we hit a type we can add directly to the pool. */
+				}
+
+		return false; /* Do not recurse if we hit a type we could add directly to the pool. */
+		}
+
+	bool visitScattered(const Type& inType, uint8_t** inData, uword_t inCount, uword_t inNudge)
+		{
+		if (inType.isPOD())
+			return false;
+
+		@match Type(inType)
+			-| String() ->> {
+				addToPoolScattered<String>(inData, inCount, inNudge);
+				}
+			-| JOVAsValue() ->> {
+				addToPoolScattered<JOV>(inData, inCount, inNudge);
+				}
+			-| StackTrace() ->> {
+				addToPoolScattered<ForaStackTrace>(inData, inCount, inNudge);
+				}
+			-| Dictionary() ->> {
+				addToPoolScattered<Dictionary>(inData, inCount, inNudge);
+				}
+			-| ExternalFunction() ->> {
+				addToPoolScattered<ExternalFunctionDescriptor>(inData, inCount, inNudge);
+				}
+			-| MutableVector() ->> {
+				addToPoolScattered<MutableVectorRecord>(inData, inCount, inNudge);
+				return true;
+				}
+			-| Vector() ->> {
+				addToPoolScattered<VectorRecord>(inData, inCount, inNudge);
+				return true;
+				}
+			-| _ ->> {
+				return true; /* Recurse unless we hit a type we can add directly to the pool. */
+				}
+
+		return false; /* Do not recurse if we hit a type we could add directly to the pool. */
+		}
+private:
+	RefcountPool& mPool;
+};
+}
+
+void RefcountPool::addPieces(void* data, const Type& t)
+	{
+	if (t.isPOD())
+		return;
+
+	RefcountPoolVisitor poolVisitor(*this);
+
+	ImplValVisitor<RefcountPoolVisitor> visitor(poolVisitor);
+	visitor.visit(t, reinterpret_cast<uint8_t*>(data), 1);
+	}
+
+}
+}

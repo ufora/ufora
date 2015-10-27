@@ -1,0 +1,998 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Transforms.hppml"
+#include "../NativeExpressionBuilder.hppml"
+#include "../NativeCodeUtilities.hppml"
+#include "../../../core/cppml/CPPMLTransform.hppml"
+#include "../../../core/Logging.hpp"
+#include "../../../core/Clock.hpp"
+#include "../../../core/StringUtil.hpp"
+#include <boost/unordered_map.hpp>
+#include "BreakupInlineCalls.hppml"
+#include "SimplifyCFGStructure.hppml"
+#include "CollapseInlineInvariants.hppml"
+#include <boost/unordered_map.hpp>
+
+namespace NativeCFGTransforms {
+
+class HashFunc {
+public:
+	std::size_t operator()(const NativeVariable& t) const
+		{
+		return t.type().hash()[0] + t.varID();
+		}
+};
+
+class CleanupAndSimplifyTransformer {
+public:
+		//class to represent the target value a given variable has been
+		//rewritten to
+		@type RewritingTerm =
+				Variable of NativeVariable v
+			-|	Constant of NativeConstant c
+			-|	Composite of ImmutableTreeVector<RewritingTerm> subs
+			-|	ValueExtract of RewritingTerm term, ImmutableTreeVector<uword_t> indices
+			;
+		
+		//set of variable rewrites - we're going to get rid of all the keys
+		//so if we see such a key used, we will replace it with a structure
+		//that builds the result value
+		//note that we are assuming that renameVariables has been called,
+		//so that we can assume that no bindings ever overlap
+		mutable boost::unordered_map<NativeVariable, RewritingTerm, HashFunc> mRewrites;
+
+		mutable boost::unordered_map<void*, pair<NativeExpression, Nullable<NativeExpression> > > mCachedValues;
+		
+		RewritingTerm createVariableRewriteTerm(const NativeVariable& inVariable) const
+			{
+			auto it = mRewrites.find(inVariable);
+			if (it != mRewrites.end())
+				return it->second;
+			return RewritingTerm::Variable(inVariable);
+			}
+
+		RewritingTerm createConstantRewriteTerm(const NativeConstant& inConstant) const
+			{
+			return RewritingTerm::Constant(inConstant);
+			}
+
+		Nullable<RewritingTerm> tryToRebuildTupleTerm(const ImmutableTreeVector<RewritingTerm>& terms) const
+			{
+			//we might be rebuilding a tuple we've already bound somewhere.
+
+			Nullable<NativeVariable> possibleRebuildVar;
+
+			for (long k = 0; k < terms.size();k++)
+				@match RewritingTerm(terms[k])
+					-| ValueExtract(Variable(v), indices) ->> {
+						if (indices.size() != 1 || indices[0] != k)
+							return null();
+
+						if (possibleRebuildVar && v != *possibleRebuildVar)
+							return null();
+						
+						possibleRebuildVar = v;
+						}
+					-| Constant(c) ->> {
+						if (!c.isNothing())
+							return null();
+						}
+					-| _ ->> {
+						return null();
+						}
+
+			if (!possibleRebuildVar)
+				return null();
+
+			const ImmutableTreeVector<NativeType>& subtypes = 
+				possibleRebuildVar->type().getComposite().elements();
+
+			//verify that we have the right number of terms.
+			if (subtypes.size() != terms.size())
+				return null();
+
+			//now check all the 'nothing' entries and verify that the target variable has the right type
+			for (long k = 0; k < terms.size();k++)
+				@match RewritingTerm(terms[k])
+					-|	Constant() ->> {
+						if (!subtypes[k].isNothing())
+							return null();
+						}
+					-| _ ->> {}
+					;
+
+			return null() << RewritingTerm::Variable(*possibleRebuildVar);
+			}
+
+		RewritingTerm createCompositeRewriteTerm(const ImmutableTreeVector<RewritingTerm>& terms) const
+			{
+			Nullable<RewritingTerm> rebuildTerm = tryToRebuildTupleTerm(terms);
+			if (rebuildTerm)
+				return *rebuildTerm;
+			return RewritingTerm::Composite(terms);
+			}
+
+		RewritingTerm createExtractionTerm(const RewritingTerm& inTerm, uword_t inIndex) const
+			{
+			@match RewritingTerm(inTerm)
+				-| ValueExtract(term, indices) ->> {
+					return RewritingTerm::ValueExtract(term, indices + inIndex);
+					}
+				-| Composite(terms) ->>  {
+					return terms[inIndex];
+					}
+				-| _ ->> { 
+					}
+				;
+
+			return RewritingTerm::ValueExtract(inTerm, emptyTreeVec() + inIndex);
+			}
+
+		RewritingTerm createExtractionTerm(	const RewritingTerm& inTerm, 
+											const ImmutableTreeVector<uword_t>& inIndices) const
+			{
+			if (inIndices.size() == 0)
+				return inTerm;
+
+			@match RewritingTerm(inTerm)
+				-| ValueExtract(term, indices) ->> {
+					return RewritingTerm::ValueExtract(term, indices + inIndices);
+					}
+				-| Composite(terms) ->>  {
+					return createExtractionTerm(terms[inIndices[0]], inIndices.slice(1));
+					}
+				-| _ ->> { 
+					}
+				;
+
+			return RewritingTerm::ValueExtract(inTerm, inIndices);
+			}
+		
+		void mapVariableTo(	const NativeVariable& var,
+							const RewritingTerm& term
+							) const
+			{
+			lassert_dump(
+				mRewrites.find(var) == mRewrites.end(),
+				"already mapped " << prettyPrintString(var) << " to " << 
+					prettyPrintString(mRewrites[var]) << " ?= " << prettyPrintString(term)
+				);
+			mRewrites[var] = term;
+			}
+		
+		void mapVariableTo(	const NativeVariable& var,
+							const NativeVariable& targVar
+							) const
+			{
+			mapVariableTo(var, createVariableRewriteTerm(targVar));
+			}
+		void mapVariableTo(	const NativeVariable& var,
+							const NativeConstant& c
+							) const
+			{
+			mapVariableTo(var, createConstantRewriteTerm(c));
+			}
+		
+		template<class T>
+		Nullable<T> processDown(const T& t, bool& b) const { return null(); }
+		
+		Nullable<NativeType> processDown(const NativeType& t, bool& b) const 
+			{
+			b = false;
+			return null(); 
+			}
+		
+		template<class T>
+		Nullable<T> processUp(const T& t) const { return null(); }
+
+		static bool isPure(const NativeExpression& e)
+			{
+			return !e.hasSideEffects()
+				&& !e.exits().size()
+				&& !e.jumpTargets().size()
+				;
+			}
+		//if e1 and e2 are both 'if' expressions that are
+		//going to be evaluated sequentially, we attempt to
+		//merge them into a single expression
+		static Nullable<NativeExpression>
+					tryToMergeIfs(
+							const NativeExpression& e1,
+							const NativeExpression& e2
+							)
+			{
+			if (e1.isIf() && e2.isIf())
+				{
+				if (e1.getIf().condition().complexity() ==
+						e2.getIf().condition().complexity() &&
+						cppmlCmp(e1.getIf().condition(),
+								 e2.getIf().condition()) == 0)
+					{
+					//the two if statements have the same condition,
+					//so we can merge them
+					return null() << NativeExpression::If(
+						e1.getIf().condition(),
+						e1.getIf().ifTrue() >>
+							e2.getIf().ifTrue(),
+						e1.getIf().ifFalse() >>
+							e2.getIf().ifFalse()
+						);
+					}
+				}
+				
+			return null();
+			}
+
+		static NativeConstant constantFor(bool x)
+			{
+			return NativeConstant::Bool(x);
+			}
+
+		static NativeConstant constantFor(uint8_t x)
+			{
+			return NativeConstant::UInt8(x);
+			}
+
+		static NativeConstant constantFor(uint16_t x)
+			{
+			return NativeConstant::UInt16(x);
+			}
+
+		static NativeConstant constantFor(uint32_t x)
+			{
+			return NativeConstant::UInt32(x);
+			}
+
+		static NativeConstant constantFor(uint64_t x)
+			{
+			return NativeConstant::UInt64(x);
+			}
+
+		static NativeConstant constantFor(int8_t x)
+			{
+			return NativeConstant::Int8(x);
+			}
+
+		static NativeConstant constantFor(int16_t x)
+			{
+			return NativeConstant::Int16(x);
+			}
+
+		static NativeConstant constantFor(int32_t x)
+			{
+			return NativeConstant::Int32(x);
+			}
+
+		static NativeConstant constantFor(int64_t x)
+			{
+			return NativeConstant::Int64(x);
+			}
+
+		static NativeConstant add(bool lhs, bool rhs)
+			{
+			return NativeConstant::Bool( (lhs + rhs) % 2 );
+			}
+
+		static NativeConstant sub(bool lhs, bool rhs)
+			{
+			return NativeConstant::Bool( (lhs + rhs) % 2 );
+			}
+
+		static NativeConstant mul(bool lhs, bool rhs)
+			{
+			return NativeConstant::Bool( lhs && rhs );
+			}
+
+		template<class T>
+		static NativeConstant add(T lhs, T rhs)
+			{
+			return constantFor(T(lhs + rhs));
+			}
+
+		template<class T>
+		static NativeConstant sub(T lhs, T rhs)
+			{
+			return constantFor(T(lhs - rhs));
+			}
+
+		template<class T>
+		static NativeConstant mul(T lhs, T rhs)
+			{
+			return constantFor(T(lhs * rhs));
+			}
+
+		template<class T>
+		static Nullable<NativeExpression> expandNativeOpcode(
+						const NativeBinaryOpcode& opcode,
+						T lhs,
+						T rhs
+						)
+			{
+			@match NativeBinaryOpcode(opcode)
+				-| LT() ->> { 
+					return null() << NativeExpression::Constant(
+						NativeConstant::Bool(
+							lhs < rhs
+							)
+						);
+					}
+				-| GT() ->> { 
+					return null() << NativeExpression::Constant(
+						NativeConstant::Bool(
+							lhs > rhs
+							)
+						);
+					}
+				-| LTE() ->> { 
+					return null() << NativeExpression::Constant(
+						NativeConstant::Bool(
+							lhs <= rhs
+							)
+						);
+					}
+				-| GTE() ->> { 
+					return null() << NativeExpression::Constant(
+						NativeConstant::Bool(
+							lhs >= rhs
+							)
+						);
+					}
+				-| Add() ->> {
+					return null() << NativeExpression::Constant(add(lhs, rhs));
+					}
+				-| Sub() ->> { 
+					return null() << NativeExpression::Constant(sub(lhs, rhs));
+					}
+				-| Mul() ->> { 
+					return null() << NativeExpression::Constant(mul(lhs, rhs));
+					}
+				-| _ ->> {
+					return null();
+					}
+			}
+
+		Nullable<NativeExpression> process(const NativeExpression& e) const
+			{
+			@match NativeExpression(e)
+					-|	BinaryOp(EQ(), Constant(c1), Constant(c2)) ->> {
+							return null() << NativeExpression::Constant(NativeConstant::Bool(c1 == c2));
+							}
+					-|	BinaryOp(NEQ(), Constant(c1), Constant(c2)) ->> {
+							return null() << NativeExpression::Constant(NativeConstant::Bool(c1 != c2));
+							}
+					-|	BinaryOp(opcode, Constant(Bool(d1)), Constant(Bool(d2))) ->> {
+							return expandNativeOpcode(opcode, d1, d2);
+							}
+					-|	BinaryOp(opcode, Constant(UInt8(d1)), Constant(UInt8(d2))) ->> {
+							return expandNativeOpcode(opcode, d1, d2);
+							}
+					-|	BinaryOp(opcode, Constant(UInt16(d1)), Constant(UInt16(d2))) ->> {
+							return expandNativeOpcode(opcode, d1, d2);
+							}
+					-|	BinaryOp(opcode, Constant(UInt32(d1)), Constant(UInt32(d2))) ->> {
+							return expandNativeOpcode(opcode, d1, d2);
+							}
+					-|	BinaryOp(opcode, Constant(UInt64(d1)), Constant(UInt64(d2))) ->> {
+							return expandNativeOpcode(opcode, d1, d2);
+							}
+					-|	BinaryOp(opcode, Constant(Int8(d1)), Constant(Int8(d2))) ->> {
+							return expandNativeOpcode(opcode, d1, d2);
+							}
+					-|	BinaryOp(opcode, Constant(Int16(d1)), Constant(Int16(d2))) ->> {
+							return expandNativeOpcode(opcode, d1, d2);
+							}
+					-|	BinaryOp(opcode, Constant(Int32(d1)), Constant(Int32(d2))) ->> {
+							return expandNativeOpcode(opcode, d1, d2);
+							}
+					-|	BinaryOp(opcode, Constant(Int64(d1)), Constant(Int64(d2))) ->> {
+							return expandNativeOpcode(opcode, d1, d2);
+							}
+					-|	BinaryOp(NEQ(), Constant(Bool(maybeFalse)), e2) ->> {
+							if (maybeFalse == false && e2.type() && *e2.type() == NativeType::uint1())
+								return null() << e2;
+							else
+								return null();
+							}
+					-|	Zero(Composite(types)) ->> {
+						ImmutableTreeVector<NativeExpression> exprs;
+						for (long k = 0; k < types.size();k++)
+							exprs = exprs + NativeExpression::Zero(types[k]);
+						return null() << NativeExpression::CreateComposite(exprs);
+						}
+					-|	Zero(Integer(bits, isSigned)) ->> {
+						if (bits == 1 && !isSigned)
+							return null() << NativeExpression::Constant(NativeConstant::Bool(0));
+						if (bits == 8 && isSigned)
+							return null() << NativeExpression::Constant(NativeConstant::Int8(0));
+						if (bits == 16 && isSigned)
+							return null() << NativeExpression::Constant(NativeConstant::Int16(0));
+						if (bits == 32 && isSigned)
+							return null() << NativeExpression::Constant(NativeConstant::Int32(0));
+						if (bits == 64 && isSigned)
+							return null() << NativeExpression::Constant(NativeConstant::Int64(0));
+
+						if (bits == 8 && !isSigned)
+							return null() << NativeExpression::Constant(NativeConstant::UInt8(0));
+						if (bits == 16 && !isSigned)
+							return null() << NativeExpression::Constant(NativeConstant::UInt16(0));
+						if (bits == 32 && !isSigned)
+							return null() << NativeExpression::Constant(NativeConstant::UInt32(0));
+						if (bits == 64 && !isSigned)
+							return null() << NativeExpression::Constant(NativeConstant::UInt64(0));
+
+						return null();
+						}
+					-|	Zero(Float(bits)) ->> {
+						if (bits == 32)
+							return null() << NativeExpression::Constant(NativeConstant::Float(0));
+						if (bits == 64)
+							return null() << NativeExpression::Constant(NativeConstant::Double(0));
+
+						return null();
+						}
+					-|	Return(exitIndex, DiscardFirst(e1, e2)) ->> {
+						return null() <<
+							NativeExpression::DiscardFirst(
+								e1,
+								NativeExpression::Return(exitIndex, e2)
+								);
+						}
+					-|	Return(exitIndex, Let(v, e1, e2)) ->> {
+						return null() <<
+							NativeExpression::Let(
+								v,
+								e1,
+								NativeExpression::Return(exitIndex, e2)
+								);
+						}
+					-|	Variable(v) ->> {
+						return 
+							v.type().isNothing() ?
+								null() <<
+									NativeExpression::Constant(
+										NativeConstant::Nothing()
+										)
+								:
+							mRewrites.find(v) != mRewrites.end() ?
+								null() <<
+									rewriteTermToExpression(mRewrites.find(v)->second)
+								:
+								null()
+							;
+						}
+					-|	If(Constant(c), e1, e2) ->> {
+						return null() << (c.booleanValue() ? e1 : e2);
+						}
+					-|	If(c, e1, e2, ratio) ->> {
+						
+						if (e1.complexity() == e2.complexity() &&
+								cppmlCmp(e1, e2) == 0)
+							return null() << NativeExpression::DiscardFirst(c, e1);
+				
+						if (e1.isDiscardFirst() && e2.isDiscardFirst())
+							{
+							@match NativeExpression(e1) -| DiscardFirst(e11, e12) ->> {
+							@match NativeExpression(e2) -| DiscardFirst(e21, e22) ->> {
+								
+								if (e12.complexity() == e22.complexity() && 
+																cppmlCmp(e12, e22) == 0)
+									return null() << NativeExpression::DiscardFirst(
+										NativeExpression::If(
+											c,
+											e11 >> NativeExpression::Nothing(),
+											e21 >> NativeExpression::Nothing()
+											),
+										e12
+										);
+								};
+								}
+								;
+							}
+							
+						//if one of the branches is a 'return' or a jump then we can
+						//change this to {if (c) expr } expr2 instead
+						if ((!e1.type() || !e2.type()) && !e1.isConstant() && !e2.isConstant())
+							{
+							bool moveE2Out;
+							if (!e1.type() && !e2.type())
+								{
+								if (e2.computeExits().size() == 0)
+									moveE2Out = true;
+								else
+									moveE2Out = false;
+								}
+								else
+								{
+								if (!e2.type())
+									moveE2Out = false;
+								else
+									moveE2Out = true;
+								}
+							
+							if (moveE2Out)
+								{
+								return null() << (
+									NativeExpression::If(
+										c,
+										e1,
+										NativeExpression::Nothing(),
+										ratio
+										)
+									>> e2
+									);
+								}
+							else
+								return null() << (
+									NativeExpression::If(
+										c,
+										NativeExpression::Nothing(),
+										e2,
+										ratio
+										) >> e1
+									);
+							}
+						
+						return null();
+						}
+					-|	DiscardFirst(Let(v1, expr1, within1), e2) ->> {
+						if (!within1.type())
+							return null() << NativeExpression::Let(v1, expr1, within1);
+
+						return null() <<
+							NativeExpression::Let(
+								v1, 
+								expr1,
+								NativeExpression::DiscardFirst(within1, e2)
+								);
+						}
+					-|	DiscardFirst(e1, DiscardFirst(e2, e3)) ->> {
+						return null() <<
+							NativeExpression::DiscardFirst(
+								NativeExpression::DiscardFirst(e1, e2),
+								e3
+								);
+						}
+					-|	DiscardFirst(e1, e2) ->> {
+						
+						Nullable<NativeExpression> merged = tryToMergeIfs(e1, e2);
+						if (merged)
+							return merged;
+						
+						//if e1 always exits, we can avoid executing e2
+						if (!e1.type())
+							return null() << e1;
+						
+						//if e1 is a pure expression, we don't need to execute it
+						if (isPure(e1))
+							return null() << e2;
+						
+						//if e2 is a pure expression that evaluates to 'nothing'
+						//and e1 has type 'nothing', we can just evaluate e1
+						if (isPure(e2) && e2.type()->isNothing()
+								&& e1.type()->isNothing())
+							return null() << e1;
+						
+						//it may be the case that we have an expression like
+						// { _; (something pure) }; _
+						//in which case the 'something pure' expression, which might
+						//have a result, wouldn't get removed, so we search for that.
+						@match NativeExpression(e1)
+							-|	DiscardFirst(e11, e12) ->> {
+								if (isPure(e12))
+									return null() << NativeExpression::DiscardFirst(e11, e2);
+								
+								Nullable<NativeExpression> merged = tryToMergeIfs(e12, e2);
+								if (merged)
+									return null() <<
+										NativeExpression::DiscardFirst(
+											e11,
+											*merged
+											);
+								}
+							-|	_ ->> {}
+							;
+						
+						return null();
+						}
+					-|	Cast(destType, srcE, isBitcast) ->> {
+						return srcE.type() && *srcE.type() == destType ?
+							null() << srcE
+						:	null();
+						}
+					-|	ValueExtract(args, CreateComposite(exprs)) ->> {
+						if (args.size() == 0)
+							return null() <<
+								NativeExpression::CreateComposite(exprs);
+						
+						//check that they're all simple expressions
+						for (long k = 0; k < exprs.size();k++)
+							if (exprs[k].exits().size() ||
+									exprs[k].jumpTargets().size())
+								return null();
+							
+						
+						//get the actual subexpression
+						NativeExpression subexpr = exprs[args[0]];
+						if (args.size() > 1)
+							subexpr =
+								NativeExpression::ValueExtract(
+									args.slice(1),
+									subexpr
+									);
+						
+						//first, see if nobody has sideeffects
+						bool anyWithSideEffects = false;
+						for (long k = 0; k < exprs.size()
+								&& !anyWithSideEffects;k++)
+							anyWithSideEffects = exprs[k].hasSideEffects();
+						
+						//if no expressions had sideeffects, we can just
+						//return immediately
+						if (!anyWithSideEffects)
+							return null() << subexpr;
+						
+						//one of the subexpressions has a side effect, so we still
+						//have to evaluate them in order. We just don't need to
+						//keep the values around.
+						NativeVariable subvar =
+							NativeVariable::Temp(*exprs[args[0]].type());
+						
+						NativeExpression tr = subvar.expr();
+						
+						for (long k = ((long)exprs.size())-1; k>=0;k--)
+							if (k != args[0])
+								{
+								if (exprs[k].hasSideEffects())
+									tr =
+										NativeExpression::DiscardFirst(
+											exprs[k],
+											tr
+											);
+								}
+								else
+								tr = NativeExpression::Let(
+									subvar,
+									subexpr,
+									tr
+									);
+						
+						return null() << tr;
+						}
+					-|	ValueExtract(args, Let(v1, val_1, source)) ->> {
+							
+						return null() << 
+							NativeExpression::Let(v1, val_1,
+								NativeExpression::ValueExtract(args, source)
+								);
+						}
+					-|	ValueExtract(args, DiscardFirst(val_1, source)) ->> {
+						
+						return null() << NativeExpression::DiscardFirst(val_1,
+								NativeExpression::ValueExtract(args, source)
+								);
+						}
+					-|	Let(v1, Let(v2, v2_val, v1_val), within) ->> {
+						return null() << 
+							NativeExpression::Let(
+								v2, 
+								v2_val,
+								NativeExpression::Let(
+									v1, 
+									v1_val, 
+									within
+									)
+								);
+						}
+					-|	Let(v, expr, Variable(v2)) ->> {
+							return v == v2 ?
+								null() << expr :
+								null() << NativeExpression::DiscardFirst(
+									expr,
+									NativeExpression::Variable(v2)
+									);
+							}
+					-|	Let(v, val, within) ->> {
+						//make sure we _always_ fully transform target let values before
+						//'within'- this ensures that we always have a variable binding
+						//map in place.
+						Nullable<NativeExpression> targetVal = transformNullable(val, *this);
+
+						if (targetVal)
+							return null() << NativeExpression::Let(v, *targetVal, within);
+	
+						Nullable<NativeExpression> transformed = transformLet(v, val, within);
+
+						if (transformed)
+							return transformed;
+
+						Nullable<NativeExpression> transformedWithin = transformNullable(within, *this);
+
+						if (transformedWithin)
+							return null() << NativeExpression::Let(v, val, *transformedWithin);
+
+						if (!within.freeVariables().contains(v))
+							return null() << NativeExpression::DiscardFirst(val, within);
+
+						return null();
+						}
+					-|	_ ->> {
+						return null();
+						}
+					;
+			}
+
+		Nullable<NativeExpression> transformLet(
+						const NativeVariable& v,
+						const NativeExpression& val,
+						const NativeExpression& within
+						) const
+			{
+			if (v.type().isNothing())
+				{
+				return null() <<
+						NativeExpression::DiscardFirst(
+							val,
+							within
+							);
+				}
+
+			@match NativeExpression(val)
+				-|	Constant(c) ->> {
+					mapVariableTo(v,c);
+					
+					return null() << within;
+					}
+				-|	Variable(v2) ->> {
+					mapVariableTo(v,v2);
+					
+					return null() << within;
+					}
+				-|	DiscardFirst(e1, v1_val) ->> {
+					return null() << 
+						NativeExpression::DiscardFirst(e1,
+							NativeExpression::Let(v, v1_val, within)
+							);
+					}
+				-| 	ValueExtract(args, expr) ->> {
+					if (!expr.type())
+						return null() << expr;
+
+					if (!expr.isConstant() && !expr.isVariable())
+						{
+						NativeVariable var = NativeVariable::Temp(*expr.type());
+
+						return null() << 
+							NativeExpression::Let(
+								var,
+								expr,
+								NativeExpression::Let(
+									v,
+									NativeExpression::ValueExtract(args, var.expr()),
+									within
+									)
+								);
+						}
+
+					mapVariableTo(v, createExtractionTerm(mapExpressionToRewriteTerm(expr), args));
+
+					return null() << within;
+					}
+				-|  CreateComposite(args) ->> {
+					for (long k = 0; k < args.size();k++)
+						if (!args[k].type())
+							return null() << 
+								NativeCodeUtilities::expressionListToDiscardFirstSequence(
+									args.slice(0, k+1)
+									);
+
+					ImmutableTreeVector<RewritingTerm> subterms;
+
+					NativeExpression final = within;
+
+					for (long k = ((long)args.size()) - 1; k >= 0; k--)
+						{
+						@match NativeExpression(args[k])
+							-| Variable(argVar) ->> {
+								subterms = createVariableRewriteTerm(argVar) + subterms;
+								}
+							-| Constant(c) ->> {
+								subterms = RewritingTerm::Constant(c) + subterms;
+								}
+							-| _ ->> {
+								NativeVariable newVar = NativeVariable::Temp(*args[k].type());
+
+								subterms = RewritingTerm::Variable(newVar) + subterms;
+
+								final = NativeExpression::Let(newVar, args[k], final);
+								}
+						}
+
+					mapVariableTo(v, createCompositeRewriteTerm(subterms));
+					
+					return null() << final;
+					}
+				-| _ ->> {
+					}
+				;
+
+			return null();
+			}
+
+		RewritingTerm mapExpressionToRewriteTerm(const NativeExpression& inExpr) const
+			{
+			@match NativeExpression(inExpr)
+				-|	Variable(v) ->> {
+					return createVariableRewriteTerm(v);
+					}
+				-|	Constant(c) ->> {
+					return createConstantRewriteTerm(c);
+					}
+				;
+			}
+
+		ImmutableTreeVector<RewritingTerm> 
+		mapCompositeArgsToRewritingTerms(const ImmutableTreeVector<NativeExpression>& inArgs) const
+			{
+			ImmutableTreeVector<RewritingTerm> subterms;
+
+			for (long k = 0; k < inArgs.size();k++)
+				subterms = subterms + mapExpressionToRewriteTerm(inArgs[k]);
+
+			return subterms;
+			}
+
+			
+		Nullable<NativeExpression> processDown(const NativeExpression& e,
+		                                       bool& ioContinue) const
+			{
+			ioContinue = false;
+
+			//first see if we've ever seen this before
+			void* curPtr = (void*)&e.getIf(false);
+
+			auto cacheIt = mCachedValues.find(curPtr);
+
+			if (cacheIt != mCachedValues.end())
+				return cacheIt->second.second;
+
+			//we've never seen this one before.  
+			Nullable<NativeExpression> oneLevelProcessed = process(e);
+
+			if (oneLevelProcessed)
+				{
+				//processing did something! recurse
+				mCachedValues[curPtr] = make_pair(e, null() << transform(*oneLevelProcessed, *this));
+				return mCachedValues[curPtr].second;
+				}
+
+			//processing did nothing. apply recursively
+			oneLevelProcessed = CPPMLTransform<NativeExpression, void>::apply(e, *this);
+
+			if (oneLevelProcessed)
+				{
+				mCachedValues[curPtr] = make_pair(e, null() << transform(*oneLevelProcessed, *this));
+				return mCachedValues[curPtr].second;
+				}
+
+			//this term is stable
+			mCachedValues[curPtr] = make_pair(e, null());
+			return null();
+			}
+								
+		NativeExpression rewriteTermToExpression(const RewritingTerm& term) const
+			{
+			@match RewritingTerm(term)
+				-|	Variable(v) ->> {
+					auto it = mRewrites.find(v);
+
+					if (it != mRewrites.end())
+						return rewriteTermToExpression(it->second);
+
+					return  NativeExpression::Variable(v);
+					}
+				-|	Constant(c) ->> {
+					return  NativeExpression::Constant(c);
+					}
+				-|	Composite(terms) ->> {
+					ImmutableTreeVector<NativeExpression> subs;
+					
+					for (long k = 0; k < terms.size();k++)
+						subs = subs + rewriteTermToExpression(terms[k]);
+					
+					return NativeExpression::CreateComposite(subs);
+					}
+				-|	ValueExtract(subterm, args) ->> {
+					return NativeExpression::ValueExtract(args, rewriteTermToExpression(subterm));
+					}
+				;
+			}
+			
+};
+
+NativeExpression   cleanupAndSimplify(const NativeExpression& in)
+	{
+	return 
+		simplifyCFGStructure(
+			breakUpInlineCalls(
+				renameVariables(
+					transform(in, CleanupAndSimplifyTransformer())
+					)
+				)
+			);
+	}
+
+
+NativeCFG			cleanupAndSimplify(const NativeCFG& in)
+	{
+	double t0 = curClock();
+	NativeCFG toReturn = in;
+	
+	lassert_dump(verifyNoVarsBoundTwice(toReturn).size() == 0,
+		"variables "
+			<< prettyPrintString(verifyNoVarsBoundTwice(toReturn))
+			<< " were bound in multiple places in\n"
+			<< Ufora::indent(prettyPrintString(toReturn))
+		);
+	
+	NativeCFG update;
+	
+	toReturn = breakUpInlineCalls(toReturn);
+	
+	double t1 = curClock();
+	NativeCFG initial = toReturn;
+	try {
+		toReturn = transform(toReturn, CleanupAndSimplifyTransformer());
+		}
+	catch(...)
+		{
+		throw;
+		}
+
+	double t2 = curClock();
+	
+	toReturn = simplifyCFGStructure(toReturn);
+	
+	double t3 = curClock();
+	
+	toReturn = collapseInlineInvariants(toReturn);
+	
+	double t4 = curClock();
+	
+	//check to make sure we didn't 
+	//leave any variables hanging			
+	if (toReturn.freeVariables().size() == 0)
+		{
+		lassert_dump(
+			toReturn.freeVariables().size() == 0,
+			Ufora::indent(prettyPrintString(toReturn))
+			<< "\nvs\n"
+			<< Ufora::indent(prettyPrintString(toReturn))
+			<< "\n"
+			<< "free vars = " << prettyPrintString(toReturn.freeVariables())
+			<< "\n"
+			);
+		}
+
+	if (verifyNoVarsBoundTwice(toReturn).size())
+		toReturn = renameVariables(toReturn);
+
+	double t5 = curClock();
+	
+	return toReturn;
+	}
+
+}
+

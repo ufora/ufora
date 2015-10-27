@@ -1,0 +1,728 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "FunctionStage1.hppml"
+#include "FunctionStage1Converter.hppml"
+#include "Function.hppml"
+#include "../Core/Type.hppml"
+#include "../../core/cppml/CPPMLTransform.hppml"
+#include "../../core/cppml/CPPMLVisit.hppml"
+#include "../../core/Logging.hpp"
+#include "../Core/ClassMediator.hppml"
+#include "ClassDefinitionExpansion.hppml"
+
+namespace target = FunctionStage1;
+
+using target::variable_index_type;
+
+namespace FunctionStage1 {
+
+int ApplyArgument::computeDepth() const
+    {
+    @match ApplyArgument(*this)
+        -|  Normal(_, expr) ->> {
+            return 1 + expr.depth();
+            }
+        -|  TupleCall(expr) ->> {
+            return 1 + expr.depth();
+            }
+        ;
+    }
+
+int Expression::computeDepth() const
+    {
+    @match Expression(*this)
+        -|  Constant(_) ->> { return 0; }
+        -|  Variable(_) ->> { return 0; }
+        -|  Let(pat, value, body) ->> {
+            return 1 + max(pat.depth(), max(value.depth(), body.depth()));
+            }
+        -|  Assign(toAssign, value, ifMatchFails) ->> {
+            return 1 + max(toAssign.depth(), max(value.depth(), ifMatchFails.depth()));
+            }
+        -|  Apply(agent, args) ->> {
+            int tr = agent.depth();
+            for (auto it = args.begin(); it != args.end(); ++it)
+                tr = max(tr, it->depth());
+            return 1 + tr;
+            }
+        -|  While(cond, updater) ->> {
+            return 1 + max(cond.depth(), updater.depth());
+            }
+        -|  Is(v1, v2) ->> { return 1 + max(v1.depth(), v2.depth()); }
+        -|  RawCached(expr) ->> { return 1 + expr.depth(); }
+        -|  Branch(operand, ifTrue, ifFalse) ->> {
+            return 1 + max(operand.depth(), max(ifTrue.depth(), ifFalse.depth()));
+            }
+        -|  Throw(exception, _) ->> {
+            return 1 + exception.depth();
+            }
+        -|  Try(toTry, _, catchWith) ->> {
+            return 1 + max(toTry.depth(), catchWith.depth());
+            }
+        -|  Return(expr) ->> { return 1 + expr.depth(); }
+        -|  Continuation(withContinuation) ->> { return 1 + withContinuation.depth(); }
+        -|  Match(toMatch, predicate) ->> {
+            int tr = predicate.depth();
+            for (auto it = toMatch.begin(); it != toMatch.end(); ++it)
+                tr = max(tr, it->depth());
+            return 1 + tr;
+            }
+        -|  CreateTuple(args) ->> {
+            int tr = 0;
+            for (auto it = args.begin(); it != args.end(); ++it)
+                tr = max(tr, it->depth());
+            return 1 + tr;
+            }
+        -|  Skip() ->> { return 0; }
+    }
+    
+int TuplePattern::depth() const
+    {
+    int tr = 0;
+    for (auto it = matchers().begin(); it != matchers().end(); ++it)
+        tr = max(tr, it->depth());
+    return tr;
+    }
+    
+int TuplePatternElement::computeDepth() const
+    {
+    @match TuplePatternElement(*this)
+        -|  Normal(_, match, defaultValue) ->> {
+            int tr = match.depth();
+            if (defaultValue)
+                tr = max(tr, defaultValue->depth());
+            return 1 + tr;
+            }
+        -|  _ ->> { return 0; }
+        ;
+    }
+    
+int Function::computeDepth() const
+    {
+    @match Function(*this)
+        -|  Empty(_, expr) ->> { return 1 + expr.depth(); }
+        -|  Term(pattern, result, otherwise) ->> {
+            return max(pattern.depth(), max(result.depth(), otherwise.depth()));
+            }
+        ;
+    }
+    
+ApplyArgument ApplyArgument::withDifferentExpression(const Expression& inExpr) const
+	{
+	@match ApplyArgument(*this)
+		-|	Normal(sym, _) ->> {
+			return ApplyArgument::Normal(sym, inExpr);
+			}
+		-|	TupleCall(_) ->> {
+			return ApplyArgument::TupleCall(inExpr);
+			}
+		;
+	}
+
+Expression ApplyArgument::expr(void) const
+	{
+	@match ApplyArgument(*this)
+		-|	Normal(sym, expr) ->> {
+			return expr;
+			}
+		-|	TupleCall(expr) ->> {
+			return expr;
+			}
+		;
+	}
+
+TuplePattern::TuplePattern(const ImmutableTreeVector<Pattern>& inPats)
+	{
+	ImmutableTreeVector<target::TuplePatternElement> elts;
+	for (long k = 0; k < inPats.size();k++)
+		elts = elts +
+			target::TuplePatternElement::Normal(null(), inPats[k], null());
+	matchers() = elts;
+	}
+
+Expression	Expression::Let(variable_index_type var,
+						Expression expr,
+						Expression within,
+						Expression ifMatchFails
+						)
+	{
+	return Let(Pattern::Anything(var), expr, within, ifMatchFails);
+	}
+
+Expression	Expression::Let(variable_index_type var,
+						Expression expr,
+						Expression within
+						)
+	{
+	return Let(Pattern::Anything(var), expr, within);
+	}
+
+Expression	Expression::Let(Pattern pat,
+						Expression expr,
+						Expression within
+						)
+	{
+	return Let(pat, expr, within, 
+		Throw(
+			pat.definingExpressionLocationId(),
+			CreateTuple(
+				expr.definingExpressionLocationId(),
+				emptyTreeVec() + 
+				applyArg(
+					Constant(
+						CSTValue("bad pattern match")
+						)
+					) + 
+				applyArg(
+					Constant(
+						CSTValue(
+							ForaStackTrace()
+							)
+						)
+					)
+				),
+			null()
+			)
+		);
+	}
+
+int Pattern::computeDepth() const
+    {
+    @match Pattern(*this)
+        -|  Anything(_) ->> { return 0; }
+        -|  AnythingDiscard() ->> { return 0; }
+        -|  TypeMatch(typeMatch) ->> { return 1 + typeMatch.depth(); }
+        -|  Tuple(pattern) ->> { return 1 + pattern.depth(); }
+        -|  Constant(expr) ->> { return 1 + expr.depth(); }
+        -|  Guarded(_, expr, right) ->> { return 1 + max(expr.depth(), right.depth()); }
+        -|  MatchEither(left, right) ->> { return 1 + max(left.depth(), right.depth()); }
+        -|  MatchBoth(left, right) ->> { return 1 + max(left.depth(), right.depth()); }
+        -|  MatchIf(pattern, expr) ->> { return 1 + max(pattern.depth(), expr.depth()); }
+        ;
+    }
+    
+void Pattern::toString(CPPMLPrettyPrintStream s) const
+	{
+	@match Pattern(*this)
+		-|	TypeMatch(tm) ->> {
+				s << " { " << tm << " } ";
+				}
+		-|	AnythingDiscard() ->> {
+				s << "_";
+				}
+		-|	Anything(v) ->> {
+				s << v;
+				}
+		-|	Guarded(var, expr, right) ->> {
+				s << "(as " << var << ", match ("
+					<< expr
+					<< ") with ("  << right << ")";
+				}
+		-|	Tuple(elts) ->> {
+				s << elts;
+				}
+		-|	Constant(val) ->> {
+				s << "[" << val << "]";
+				}
+		-|	MatchEither(l,r) ->> {
+				s << l << " | " << r;
+				}
+		-|	MatchBoth(l,r) ->> {
+				s << l << " and " << r;
+				}
+		-|	MatchIf(pat, e) ->> {
+				s << pat << " if " << e;
+				}
+		;
+	}
+
+void TuplePatternElement::toString(CPPMLPrettyPrintStream s) const
+	{
+	@match TuplePatternElement(*this)
+		-|	Normal(fieldname, pat, expr) ->> {
+				if (fieldname)
+					s << *fieldname << ": ";
+				
+				s << pat;
+				if (expr)
+					s << " = " << *expr;
+				;}
+		-|	VarArgs(name) ->> {
+				s << "*" << name;
+				;}
+		;
+	}
+
+bool TuplePatternElement::canMatchZeroElements(void) const
+	{
+	@match TuplePatternElement(*this)
+		-|	Normal(fieldname, pat, defaultExpr) ->> {
+			return defaultExpr;
+			}
+		-|	VarArgs() ->> {
+			return true;
+			}
+	}
+
+bool TuplePatternElement::matchesExactlyOneElement(void) const
+	{
+	@match TuplePatternElement(*this)
+		-|	Normal(fieldname, pat, defaultExpr) ->> {
+			return !defaultExpr;
+			}
+		-|	VarArgs() ->> {
+			return false;
+			}
+	}
+
+bool	TuplePattern::allElementsMatchExactlyOneElement(void) const
+	{
+	for (long k = 0; k < matchers().size();k++)
+		if (!matchers()[k].matchesExactlyOneElement())
+			return false;
+	return true;
+	}
+
+bool TuplePattern::canMatchZeroElements(void) const
+	{
+	for (long k = 0; k < matchers().size();k++)
+		if (!matchers()[k].canMatchZeroElements())
+			return false;
+	return true;
+	}
+
+void TuplePattern::toString(CPPMLPrettyPrintStream s) const
+	{
+	s << matchers();
+	}
+
+void Expression::toString(CPPMLPrettyPrintStream s) const
+	{
+	@match Expression(*this)
+		-|	Constant(c) ->> {
+				s << c;
+				}
+		-|	Variable(v) ->> {
+				s << v;
+				}
+		-|	Let(pat,body, r) ->> {
+				s << "let ";
+
+				s << pat << " = " << body;
+				s << ";" << r;
+				}
+		-|	Assign(pat, val, otherwise) ->> {
+				s << "(" << pat << " = (" << val;
+				s << ") else " << otherwise << ")";
+				}
+		-|	Is(l,r) ->> {
+				s << "(" << l << ") is (" << r << ")";
+				}
+		-|	Apply(agent, args) ->> {
+				s << "(" << agent << ")";
+				s << "`(";
+				for (long k = 0; k < args.size();k++)
+					{
+					if (k > 0)
+						s  << ", ";
+					s << args[k];
+					}
+				s << ")";
+				}
+		-|	While(c,u) ->> {
+				s << "while (" << c << ") { "
+					<< u << "}"
+					;
+				}
+		-|	RawCached(e) ->> {
+				s << "cached `(" << e << ")";
+				}
+		-|	Branch(c,t,f) ->> {
+				s << "if (" << c
+					<< ") {";
+				s.group() << t;
+				s << "}";
+				s << " else {";
+				s.group() << f;
+				s << "}";
+				}
+		-|	Throw(expr, throwTarget) ->> {
+				s << "throw";
+				if (throwTarget)
+					s << "[" << *throwTarget << "]";
+				s << "(" << expr << ")";
+				}
+		-|	Return(x) ->> {
+				s << "return " << x;
+				}
+		-|	Continuation(withContinuation) ->> {
+				s << "continuation " << withContinuation;
+				}
+		-|	Try(expr, catchSym, catchWith) ->> {
+				s << "try { ";
+				s.group() << expr;
+				s << " } ";
+				s << "catch ";
+				if (catchSym)
+					s << "[" << *catchSym << "]";
+				s << catchWith;
+				}
+		-|	Match(args, predicate) ->> {
+				s << "match " << args
+					<< " with " << predicate << "\n";
+				}
+		-|	CreateTuple(args) ->> {
+				s << args;
+				}
+        -|  Skip() ->> {
+                s << "skip\n";
+                }
+		;
+	}
+
+void Function::toString(CPPMLPrettyPrintStream s) const
+	{
+	s << "fun";
+
+	Function p = *this;
+	while (true)
+		@match Function(p)
+			-|	Term(match, res, otherwise) ->> {
+				s << " " << match;
+
+				s << " { " << res << " }";
+
+				p = otherwise;
+				}
+			-|	Empty(var, expr) ->> {
+				s << "(*" << var << ") { " << expr << "}";
+				return;
+				}
+	}
+
+
+void ApplyArgument::toString(CPPMLPrettyPrintStream s) const
+	{
+	@match ApplyArgument(*this)
+		-|	Normal(field, x) ->> {
+				if (field)
+					s << *field << ": ";
+				s << x;
+				}
+		-|	TupleCall(x) ->> { s << "*" << x;; }
+		;
+	}
+
+ApplyArgument ApplyArgument::Constant(const CSTValue& val)
+	{
+	return ApplyArgument::Normal(
+		null(),
+		Expression::Constant(val)
+		);
+	}
+
+ApplyArgument ApplyArgument::Normal(const Expression& expr)
+	{
+	return ApplyArgument::Normal(
+		null(),
+		expr
+		);
+	}
+
+Pattern Pattern::Constant(const CSTValue& val)
+	{
+	return Pattern::Constant(Expression::Constant(val));
+	}
+
+Function operator+(const Function& inF1, const Function& inF2)
+	{
+	@match Function(inF1)
+		-|	Term(a,b,res) ->> {
+			return  Function::Term(a,b,res + inF2);
+			}
+		-|	Empty() ->> {
+			return  inF2;
+			}
+		;
+	}
+
+@type VariableRemapper =
+		ImmutableTreeMap<variable_index_type, variable_index_type> m
+{
+public:
+		template<class T>
+		Nullable<T>	processDown(const T& in, bool& outContinue) const
+			{
+			return null();
+			}
+		template<class T>
+		Nullable<T>	processUp(const T& in) const
+			{
+			return null();
+			}
+		
+		Nullable<target::Expression_VariableType> processDown(
+					const target::Expression_VariableType& in,
+					bool& outContinue
+					) const
+			{
+			if (m().contains(in.variable()))
+				return null() << target::Expression_VariableType(
+					*m()[in.variable()]
+					);
+			return null();
+			}
+		
+		Nullable<target::Pattern_AnythingType> processDown(
+					const target::Pattern_AnythingType& in,
+					bool& outContinue
+					) const
+			{
+			if (m().contains(in.varname()))
+				return null() << target::Pattern_AnythingType(
+					*m()[in.varname()]
+					);
+			return null();
+			}
+		Nullable<target::TuplePatternElement_VarArgsType> processDown(
+					const target::TuplePatternElement_VarArgsType& in,
+					bool& outContinue
+					) const
+			{
+			if (m().contains(in.varname()))
+				return null() << target::TuplePatternElement_VarArgsType(
+					*m()[in.varname()]
+					);
+			return null();
+			}
+};
+	
+target::Pattern
+	remapVariables(
+		const target::Pattern& in,
+		const ImmutableTreeMap<variable_index_type, variable_index_type>& inMap
+		)
+	{
+	target::Pattern pat = transform(in, VariableRemapper(inMap));
+	
+	return pat;
+	}
+	
+target::Expression
+	remapVariables(
+		const target::Expression& in,
+		const ImmutableTreeMap<variable_index_type, variable_index_type>& inMap
+		)
+	{
+	return transform(in, VariableRemapper(inMap));
+	}
+@type BoundVariablesVisitor = ImmutableTreeSet<variable_index_type> vars {
+public:
+		template<class T>
+		void	processDown(const T& in, bool& outContinue) 
+			{
+			}
+		template<class T>
+		void	processUp(const T& in) 
+			{
+			}
+		void processDown(
+					const target::Expression& in,
+					bool& outContinue
+					)
+			{
+			outContinue = false;
+			}
+		void processDown(
+					const target::TuplePatternElement_VarArgsType& in,
+					bool& outContinue
+					)
+		   	{
+			vars() = vars() + in.varname();
+			}
+	
+		void processDown(
+					const target::Pattern_AnythingType& in,
+					bool& outContinue
+					)
+			{
+			vars() = vars() + in.varname();
+			}
+		
+};
+
+ImmutableTreeSet<variable_index_type> boundVariables(const target::Pattern& in)
+	{
+	BoundVariablesVisitor vis;
+	visit(in, vis);
+	return vis.vars();
+	}
+
+target::Function	convert_(	const ClassMediator& inClassMediator,
+								VariableAllocator& inAlloc
+								)
+	{
+	@match ClassMediator(inClassMediator)
+		-|	Axiom(f) ->> {
+			lassert_dump(f.freeVariables().size() == 0,
+				"function " << prettyPrintString(f) << " has free variables "
+					<< prettyPrintString(f.freeVariables())
+				);
+			return Converter(
+					emptyTreeMap(),
+					emptyTreeSet(),
+					inAlloc,
+					LexicalBindingMap(),
+					emptyTreeMap(),
+					null(),
+					null(),
+					null(),
+					false
+					)
+				.convert(f);
+			}
+		-|	Object(inObject, lexicalBindings, _) ->> {
+			
+			variable_index_type selfVar = inAlloc.get();
+			
+			target::Function tr = Converter(
+					emptyTreeMap(),
+					emptyTreeSet(),
+					inAlloc,
+					lexicalBindings,
+					emptyTreeMap(),
+					null() << selfVar,
+					null(),
+					null(),
+					false
+					).convertObjectBodyEntry(inObject.body())
+				;
+			
+			return tr;
+			}
+		-|	Class(inClass, lexicalBindings, metadata) ->> {
+
+			ObjectDefinition inObject = 
+				expandClassDefinition(inClass, metadata, inClassMediator.name());
+
+
+			variable_index_type selfVar = inAlloc.get();
+			
+			target::Function tr = Converter(
+					emptyTreeMap(),
+					emptyTreeSet(),
+					inAlloc,
+					lexicalBindings,
+					emptyTreeMap(),
+					null() << selfVar,
+					null(),
+					null(),
+					false
+					).convertObjectBodyEntry(inObject.body())
+				;
+			
+			return tr;			
+			}
+		-|	Function(inFunction, lexicalBindings, _) ->> {
+				
+			variable_index_type selfVar = inAlloc.get();
+
+			target::Function tr = Converter(
+				emptyTreeMap(),
+				emptyTreeSet(),
+				inAlloc,
+				lexicalBindings,
+				emptyTreeMap(),
+				null() << selfVar,
+				null(),
+				null(),
+				false
+				).convertFunctionBodyEntry(inFunction);
+			
+			return tr;
+			}
+		-|	Lambda(inExpression, lexicalBindings) ->> {
+			
+			variable_index_type selfVar = inAlloc.get();
+
+			target::Function tr = Converter(
+				emptyTreeMap(),
+				emptyTreeSet(),
+				inAlloc,
+				lexicalBindings,
+				emptyTreeMap(),
+				null() << selfVar,
+				null(),
+				null(),
+				false
+				).convertFunctionBodyEntry(
+					source::Function::SingleTermFunction(
+						ImmutableTreeVector<Symbol>() + Symbol("_"),
+						null(),
+						inExpression
+						)
+					);
+
+			return tr;
+			}
+		;
+	}
+
+target::Function	convert(	const ClassMediator& inClassMediator,
+								VariableAllocator& inAlloc
+								)
+	{
+	//cache the contents of 'convert_', making sure to advance 'VariableAllocator' correctly
+	typedef VariableAllocator::Variable Variable;
+
+	static boost::mutex mutex;
+	static std::map<pair<hash_type, Variable>, pair<target::Function, Variable> > cache;
+
+	boost::mutex::scoped_lock lock(mutex);
+
+	pair<hash_type, Variable> key(inClassMediator.hash(), inAlloc.currentState());
+
+	if (cache.find(key) == cache.end())
+		{
+		lock.unlock();
+
+		target::Function result = convert_(inClassMediator, inAlloc);
+
+		lock.lock();
+
+		cache[key] = make_pair(result, inAlloc.currentState());
+
+		return result;
+		}
+
+	pair<target::Function, Variable> result = cache[key];
+
+	inAlloc.advanceToState(result.second);
+
+	return result.first;
+	}
+
+target::Function convert(const ClassMediator& inClassMediator)
+	{
+	VariableAllocator::Variable v;
+	VariableAllocator alloc(v);
+
+	return convert(inClassMediator, alloc);
+	}
+
+}; //end namespace FunctionStage1
+
+

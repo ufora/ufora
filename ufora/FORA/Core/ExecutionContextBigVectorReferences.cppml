@@ -1,0 +1,185 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ExecutionContextBigVectorReferences.hppml"
+#include "../../core/Logging.hpp"
+
+namespace Fora {
+namespace Interpreter {
+
+ExecutionContextBigVectorReferences::ExecutionContextBigVectorReferences(
+				PolymorphicSharedPtr<VectorDataManager> inVDM,
+				ExecutionContextImpl* inExecutionContextPtr
+				) :
+		mVectorDataManager(inVDM),
+		mContextPtr(inExecutionContextPtr),
+		mVectorDecrementsEnabled(false)
+	{
+	}
+
+long ExecutionContextBigVectorReferences::currentBigVectorRefcount(Fora::BigVectorId inBigVectorId)
+	{
+	//we assume that the lock is held above us by the initial compute entrypoint
+	auto it = mBigVectorRefcounts.find(inBigVectorId);
+	
+	if (it != mBigVectorRefcounts.end())
+		return it->second;
+
+	return 0;
+	}
+
+long ExecutionContextBigVectorReferences::incrementBigVectorRefcount(Fora::BigVectorId inBigVectorId)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	mBigVectorRefcounts[inBigVectorId]++;
+	
+	return mBigVectorRefcounts[inBigVectorId];
+	}
+
+long ExecutionContextBigVectorReferences::decrementBigVectorRefcount(Fora::BigVectorId inBigVectorId)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (mVectorDecrementsEnabled)
+		{
+		mBigVectorRefcounts[inBigVectorId]--;
+		
+		lassert(mBigVectorRefcounts[inBigVectorId] >= 0);
+
+		if (mBigVectorRefcounts[inBigVectorId] == 0)
+			{
+			mBigVectorRefcounts.erase(inBigVectorId);
+			return 0;
+			}
+		
+		return mBigVectorRefcounts[inBigVectorId];
+		}
+	else
+		{
+		mPendingBigVectorDecrements[inBigVectorId]++;
+		return mBigVectorRefcounts[inBigVectorId];
+		}
+	}
+
+void ExecutionContextBigVectorReferences::teardown()
+	{
+	if (mBigVectorRefcounts.size())
+		{
+		bool failed = false;
+
+		for (auto it = mBigVectorRefcounts.begin(); it != mBigVectorRefcounts.end(); ++it)
+			if (it->second)
+				{
+				failed = true;
+				LOG_CRITICAL
+					<< "ExecutionContextBigVectorReferences for ExecutionContextImpl " 
+					<< (void*)mContextPtr 
+					<< " still has " << it->second 
+					<< " references to page "
+					<< prettyPrintString(it->first)
+					;
+				}
+		}
+
+	mPendingBigVectorDecrements.clear();
+	mBigVectorRefcounts.clear();
+	}
+
+ImmutableTreeSet<Fora::BigVectorId> ExecutionContextBigVectorReferences::getReferencedBigVectors()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	ImmutableTreeSet<Fora::BigVectorId> result;
+
+	for (auto it = mBigVectorRefcounts.begin(); it != mBigVectorRefcounts.end(); ++it)
+		if (it->second)
+			result = result + it->first;
+
+	return result;
+	}
+
+void ExecutionContextBigVectorReferences::disableVectorDecrements()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+	lassert(mVectorDecrementsEnabled);
+	mVectorDecrementsEnabled = false;
+	}
+
+ImmutableTreeSet<Fora::BigVectorId> ExecutionContextBigVectorReferences::enableVectorDecrements()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	lassert(!mVectorDecrementsEnabled);
+	mVectorDecrementsEnabled = true;
+
+	return flushPendingDecrements_();
+	}
+
+ImmutableTreeSet<Fora::BigVectorId> 
+		ExecutionContextBigVectorReferences::getPendingVectorDecrements()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	ImmutableTreeSet<Fora::BigVectorId> result;
+
+	for (auto bigvecAndIncrement: mPendingBigVectorDecrements)
+		result = result + bigvecAndIncrement.first;
+
+	return result;
+	}
+
+bool ExecutionContextBigVectorReferences::areDecrementsEnabled()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	return mVectorDecrementsEnabled;
+	}
+
+ImmutableTreeSet<Fora::BigVectorId> ExecutionContextBigVectorReferences::flushPendingDecrements()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	return flushPendingDecrements_();
+	}
+
+ImmutableTreeSet<Fora::BigVectorId> ExecutionContextBigVectorReferences::flushPendingDecrements_()
+	{
+	ImmutableTreeSet<Fora::BigVectorId> result;
+
+	for (auto bigvecAndIncrement: mPendingBigVectorDecrements)
+		{
+		Fora::BigVectorId id = bigvecAndIncrement.first;
+
+		mBigVectorRefcounts[id] -= bigvecAndIncrement.second;
+		
+		lassert(mBigVectorRefcounts[id] >= 0);
+
+		if (mBigVectorRefcounts[id] == 0)
+			{
+			mBigVectorRefcounts.erase(id);
+			result = result + id;
+			}
+		}
+
+	mPendingBigVectorDecrements.clear();
+
+	return result;
+	}
+
+
+}
+}
+

@@ -1,0 +1,1626 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "UnrollHotLoopsWithComparisons.hppml"
+#include "../../core/cppml/ExtractAllVariablesOfGivenTypeVisitor.hppml"
+#include "NativeCFGTransforms/RenameNativeBlocks.hppml"
+#include "../../core/cppml/RenameTransformer.hppml"
+#include "../../core/Logging.hpp"
+#include "../../core/Clock.hpp"
+#include "../../core/containers/TwoWaySetMap.hpp"
+#include "../../core/containers/TwoWaySetMap.hpp"
+#include "../../core/cppml/CPPMLVisit.hppml"
+
+const static double kMinFraction = .9;
+
+const static int64_t kMaxLoopOffset = 65535;
+
+const static int64_t kMaxLoopCount = 65535;
+
+namespace {
+
+@type Comparison = 
+		Constant of NativeConstant c
+		//a root-level stable variable
+	-|	StableVariable of NativeVariable var
+	-|	IncrementingVariable of NativeVariable var
+	-|	Binary of NativeBinaryOpcode opcode, Comparison v1, Comparison v2
+	-|	And of ImmutableTreeVector<Comparison> items
+	;
+
+class IntegerVariableRewrites {
+public:
+	void set(NativeVariable var, NativeCodeFlattened::Expression expr)
+		{
+		@match NativeCodeFlattened::Expression(expr) 
+			-| Var(Variable(v)) ->> {
+				set(var, v);
+				}
+			-| BinaryOp(Add(), Variable(v), Constant(c)) ->> {
+				//we only work on 16 bits or higher integers with small loop updates
+				//so that we don't have to worry about overflow errors violating our
+				//assumptions
+				if (v.type() == NativeType::int64())
+					set(var, v, c);
+				}
+			-| BinaryOp(Add(), Constant(c), Variable(v)) ->> {
+				if (v.type() == NativeType::int64())
+					set(var, v, c);
+				}
+			-| _ ->> {}
+			;
+		}
+
+	void set(NativeVariable var, NativeCodeFlattened::Input i)
+		{
+		@match NativeCodeFlattened::Input(i)
+			-| Variable(v) ->> {
+				set(var, v);
+				}
+			-| _ ->> {}
+		}
+
+	void set(NativeVariable var, NativeVariable to)
+		{
+		mRewrites[var].first = to;
+		}
+
+	void set(NativeVariable var, NativeVariable to, NativeConstant plus)
+		{
+		lassert(var.type() == NativeType::int64());
+
+		int64_t offset = 0;
+
+		@match NativeConstant(plus)
+		 	-|	UInt8(o) ->> { offset = o; }
+			-|	UInt16(o) ->> { offset = o; }
+			-|	UInt32(o) ->> { offset = o; }
+			-|	UInt64(o) ->> { 
+					if (o > kMaxLoopOffset) 
+						return; 
+					offset = o
+					}
+			-|	Int8(o) ->> { offset = o; }
+			-|	Int16(o) ->> { offset = o; }
+			-|	Int32(o) ->> { offset = o; }
+			-|	Int64(o) ->> { offset = o; }
+			;
+
+		if (offset > kMaxLoopOffset || offset < -kMaxLoopOffset)
+			return;
+
+		mRewrites[var].first = to;
+		mRewrites[var].second = offset;
+		}
+
+	//this is not the clearest interface:
+	//returns null if it's not a loop
+	//returns null() << null() if it's stable within a loop
+	//returns null() << (null() << o) if its stable in a loop with an offset
+	Nullable<Nullable<int64_t> > checkIsLoop(NativeVariable var)
+		{
+		Nullable<int64_t> soFar;
+
+		NativeVariable curVar = var;
+
+		std::set<NativeVariable> varsSeenSoFar;
+
+		while (true)
+			{
+			if (mRewrites.find(curVar) == mRewrites.end())
+				return null();
+
+			if (mRewrites[curVar].second)
+				//we can afford to be imprecise with the addition order here because we are
+				//always adding, and integer addition is commutative
+				soFar = (soFar ? *soFar : 0) + *mRewrites[curVar].second;
+
+			curVar = mRewrites[curVar].first;
+
+			if (curVar == var)
+				//we've come back around
+				return null() << soFar;
+
+			//ensure that we are not stuck in an infinite loop. If we hit the constraint it
+			//means we have a loop, but that we didn't start on it.
+			if (varsSeenSoFar.find(curVar) != varsSeenSoFar.end())
+				return null();
+
+			varsSeenSoFar.insert(curVar);
+			}
+		}
+
+	const map<NativeVariable, pair<NativeVariable, Nullable<int64_t> > >& rewrites() const
+		{
+		return mRewrites;
+		}
+
+private:
+	map<NativeVariable, pair<NativeVariable, Nullable<int64_t> > > mRewrites;
+};
+
+class VariableDependencies {
+public:
+	void set(NativeVariable var, NativeCodeFlattened::Expression expr)
+		{
+		@match NativeCodeFlattened::Expression(expr)
+			-| Var(i) ->> {
+				mExpressions[var] = expr;
+				addDependency(var, i); 
+				}
+			-| CreateComposite(inputs) ->> {
+				mExpressions[var] = expr;
+				for (auto i: inputs)
+					addDependency(var, i);
+				}
+			-| Selector(c, t, f) ->> {
+				mExpressions[var] = expr;
+				addDependency(var, c);
+				addDependency(var, t);
+				addDependency(var, f);
+				}
+			-| BinaryOp(_, t, f) ->> {
+				mExpressions[var] = expr;
+				addDependency(var, t);
+				addDependency(var, f);
+				}
+			-| UnaryOp(_, e) ->> {
+				mExpressions[var] = expr;
+				addDependency(var, e);
+				}
+			-| Cast(_,i,_) ->> {
+				mExpressions[var] = expr;
+				addDependency(var, i);
+				}
+			-| ValueExtract(_, i) ->> {
+				mExpressions[var] = expr;
+				addDependency(var, i);
+				}
+			-| _ ->> {}
+		}
+
+	void addDependency(NativeVariable var, NativeCodeFlattened::Input i)
+		{
+		@match NativeCodeFlattened::Input(i)
+			-| Variable(v) ->> {
+				mDependencies.insert(var, v);
+				}
+			-| _ ->> {}
+		}
+
+	void set(NativeVariable var, NativeCodeFlattened::Input i)
+		{
+		@match NativeCodeFlattened::Input(i)
+			-| Variable(v) ->> {
+				mDependencies.insert(var, v);
+				mExpressions[var] = NativeCodeFlattened::Expression::Var(i);
+				}
+			-| _ ->> {}
+		}
+
+	void pruneToVariablesExclusivelyTouching(
+					const std::set<NativeVariable>& vars,
+					std::set<NativeVariable>& entirelyTouching
+					)
+		{
+		TwoWaySetMap<NativeVariable, NativeVariable> deps = mDependencies;
+
+		std::set<NativeVariable> toConsume = vars;
+
+		while (toConsume.size())
+			{
+			NativeVariable var = *toConsume.begin();
+			toConsume.erase(var);
+			entirelyTouching.insert(var);
+			
+			//these are the variables depending on this one
+			std::set<NativeVariable> dependingOn = deps.getKeys(var);
+			deps.dropValue(var);
+
+			//check all the guys depending on this one. If this was the last
+			//thing they depended on that wasn't in the set, then they themselves
+			//are in the set and need to be consumed
+			for (auto dep: dependingOn)
+				if (!deps.hasKey(dep))
+					toConsume.insert(dep);
+			}
+		}
+
+	const TwoWaySetMap<NativeVariable, NativeVariable>& getDependencies() const
+		{
+		return mDependencies;
+		}
+
+	const std::set<NativeVariable>& getVariablesDependedOn(NativeVariable var) const
+		{
+		return mDependencies.getValues(var);
+		}
+
+	//ensure that all the expressions depended on by "block" are appended the beginning of it
+	void insertNecessaryVariableDependencies(
+						NativeCodeFlattened::Block& ioBlock
+						) const
+		{
+		std::set<NativeVariable> rootStableVars;
+		
+		//these variables are defined right here...
+		for (auto arg: ioBlock.args())
+			rootStableVars.insert(arg);
+
+		ImmutableTreeSet<NativeVariable> varsMentioned = 
+			ExtractAllVariablesOfGivenTypeVisitor<NativeVariable>::extract(ioBlock);
+
+		ImmutableTreeSet<NativeVariable> varsDefinedInTheBlock;
+
+		for (auto varAndE: ioBlock.defs())
+			varsDefinedInTheBlock = varsDefinedInTheBlock + varAndE.first;
+
+		//first, get a list of all the variables we're going to add
+		std::set<NativeVariable> varsToAdd;
+
+		std::set<NativeVariable> dirty(varsMentioned.begin(), varsMentioned.end());
+
+		while (dirty.size())
+			{
+			NativeVariable var = *dirty.begin();
+			dirty.erase(var);
+
+			if (varsToAdd.find(var) == varsToAdd.end() && 
+					rootStableVars.find(var) == rootStableVars.end() &&
+					mDependencies.hasKey(var)
+					)
+				{
+				if (!varsDefinedInTheBlock.contains(var))
+					varsToAdd.insert(var);
+				
+				for (auto subvar: mDependencies.getValues(var))
+					dirty.insert(subvar);
+				}
+			}
+		//at this point, 'varsToAdd' should contain all the variables that we
+		//depend on, up to 'rootStableVars' (the entrypoint arguments to 'ioBlock')
+		//that are defined in mDependencies.
+		for (auto v: varsToAdd)
+			lassert(mDependencies.hasKey(v));
+
+		//varsToAdd now contains the set of variables that need to be added
+		//to the block. The order is important, however
+		TwoWaySetMap<NativeVariable, NativeVariable> subDeps;
+
+		for (auto var: varsToAdd)
+			{
+			for (auto dep: mDependencies.getValues(var))
+				if (mDependencies.hasKey(dep))
+					subDeps.insert(var, dep);
+			}
+
+		for (auto var: rootStableVars)
+			if (subDeps.hasValue(var))
+				subDeps.dropValue(var);
+
+		//seed the pushable set with the ones that don't have any dependencies
+		std::set<NativeVariable> pushable;
+		for (auto var: varsToAdd)
+			if (!subDeps.hasKey(var))
+				pushable.insert(var);
+
+		std::vector<NativeVariable> varsToPushInOrder;
+		while (pushable.size())
+			{
+			NativeVariable toPush = *pushable.begin();
+			pushable.erase(toPush);
+
+			varsToPushInOrder.push_back(toPush);
+
+			//if this value is pushable, it shouldn't have any dependencies left
+			lassert(!subDeps.hasKey(toPush));
+
+			//these are the values to check
+			std::set<NativeVariable> dependingOnThis = subDeps.getKeys(toPush);
+
+			if (subDeps.hasValue(toPush))
+				subDeps.dropValue(toPush);
+			
+			//everyone who depnded on this we can now check
+			for (auto v: dependingOnThis)
+				if (!subDeps.hasKey(v))
+					pushable.insert(v);
+			}
+
+		lassert_dump(
+			subDeps.getKeysToValues().size() == 0, 
+			"failed to clear the dependencies list: " << prettyPrintString(subDeps.getKeysToValues())
+			);
+
+		ImmutableTreeVector<pair<NativeVariable, NativeCodeFlattened::Expression> > newExpressions;
+		for (auto var: varsToPushInOrder)
+			{
+			auto it = mExpressions.find(var);
+			lassert_dump(it != mExpressions.end(), "No definition for " << prettyPrintString(var));
+			newExpressions = newExpressions + make_pair(var, it->second);
+			}
+
+		ioBlock.defs() = newExpressions + ioBlock.defs();
+		}
+
+private:
+	TwoWaySetMap<NativeVariable, NativeVariable> mDependencies;
+
+	std::map<NativeVariable, NativeCodeFlattened::Expression> mExpressions;
+};
+
+class StableComparisons {
+public:
+	StableComparisons(
+				const std::set<NativeVariable>& allRootStableVars,
+				const std::set<NativeVariable>& allStableVariables, 
+				const std::set<NativeVariable>& incrementingVars
+				) : 
+			mRootStableVars(allRootStableVars),
+			mStableVars(allStableVariables), 
+			mIncrementingVars(incrementingVars)
+		{
+		}	
+
+	void set(NativeVariable var, NativeCodeFlattened::Expression expr)
+		{
+		if (mStableVars.find(var) != mStableVars.end())
+			return;
+
+		if (mIncrementingVars.find(var) != mIncrementingVars.end())
+			return;
+
+		@match NativeCodeFlattened::Expression(expr)
+			-| BinaryOp(op, lhs, rhs) ->> {
+				if (isComparisonOp(op) && isStableAndSimple(lhs) && isStableAndSimple(rhs))
+					mStableComparisons[var] = 
+						Comparison::Binary(op, toComparison(lhs), toComparison(rhs));
+
+				if (op.isAnd() && isStable(lhs) && isStable(rhs))
+					mStableComparisons[var] = 
+						Comparison::And(emptyTreeVec() + toComparison(lhs) + toComparison(rhs));
+				}
+			-| _ ->> {}
+			;
+		}
+
+	static bool isComparisonOp(NativeBinaryOpcode opcode)
+		{
+		@match NativeBinaryOpcode(opcode)
+			-|	LT() ->> { return true; }
+			-|	GT() ->> { return true; }
+			-|	LTE() ->> { return true; }
+			-|	GTE() ->> { return true; }
+			-| _ ->> {}
+			;
+
+		return false;
+		}
+
+	bool isStableAndSimple(const NativeCodeFlattened::Input& inp)
+		{
+		@match NativeCodeFlattened::Input(inp)
+			-| Variable(v) ->> {
+				return mStableVars.find(v) != mStableVars.end() || 
+					mIncrementingVars.find(v) != mIncrementingVars.end()
+					;
+				}
+			-| Constant() ->> {
+				return true;
+				}
+			-| _ ->> {}
+
+		return false;
+		}
+
+	bool isStable(const NativeCodeFlattened::Input& inp, bool forceSimple = false)
+		{
+		@match NativeCodeFlattened::Input(inp)
+			-| Variable(v) ->> {
+				return mStableVars.find(v) != mStableVars.end() || 
+					mIncrementingVars.find(v) != mIncrementingVars.end() ||
+					mStableComparisons.find(v) != mStableComparisons.end()
+					;
+				}
+			-| Constant() ->> {
+				return true;
+				}
+			-| _ ->> {}
+
+		return false;
+		}
+
+	Comparison toComparison(const NativeCodeFlattened::Input& input)
+		{
+		@match NativeCodeFlattened::Input(input)
+			-| Variable(v) ->> {
+				if (mStableComparisons.find(v) != mStableComparisons.end())
+					return mStableComparisons[v];
+				if (mIncrementingVars.find(v) != mIncrementingVars.end())
+					return Comparison::IncrementingVariable(v);
+				if (mStableVars.find(v) != mStableVars.end())
+					return Comparison::StableVariable(v);
+
+				}
+			-| Constant(c) ->> {
+				return Comparison::Constant(c);
+				}
+			-| _ ->> {}
+
+		lassert(false);
+		}
+
+	void set(NativeVariable var, NativeCodeFlattened::Input i)
+		{
+		}
+
+	const std::map<NativeVariable, Comparison>& stableComparisons() const
+		{
+		return mStableComparisons;
+		}
+
+	Nullable<Comparison> getComparisonFor(NativeVariable var) const
+		{
+		auto it = mStableComparisons.find(var);
+
+		if (it == mStableComparisons.end())
+			return null();
+
+		return null() << it->second;
+		}
+
+	size_t totalComparisonVariables() const
+		{
+		return mStableComparisons.size();
+		}
+
+private:
+	//the stable variables in the root block of the loop
+	const std::set<NativeVariable>& mRootStableVars;
+
+	//variables that are stable, but that are calculated from
+	//the stable root variables in dependent blocks
+	const std::set<NativeVariable>& mStableVars;
+
+	const std::set<NativeVariable>& mIncrementingVars;
+
+	std::map<NativeVariable, Comparison> mStableComparisons;
+};
+
+//given a set of binary comparisons, produces a set of NativeExpression objects that 
+//calculate how long the loop will remain in effect and determine whether it is valid for
+//the entire life of the loop
+class ValidRangeCalculator {
+public:
+	ValidRangeCalculator(
+				const std::set<NativeVariable>& inRootStableVars,
+				const std::map<NativeVariable, int64_t>& incrementingVariableOffsets,
+				const VariableDependencies& variableDependencies
+				) : 
+			mRootStableVars(inRootStableVars),
+			mIncrementingVariableOffsets(incrementingVariableOffsets),
+			mLoopUpperBoundVariable(NativeVariable::Temp(NativeType::int64())),
+			mVariableDeps(variableDependencies)
+		{
+		}
+
+	//break down a comparison to a set of simple binary comparisons between a stable and 
+	//and incrementing variable. No other comparisons are considered factorable at this point.
+	static Nullable<ImmutableTreeVector<Comparison> > flattenComparisonToSimpleBinary(Comparison c)
+		{
+		@match Comparison(c)
+			-| Binary(opcode, c1, c2) ->> {
+				if ((c1.isStableVariable() || c1.isConstant()) && c2.isIncrementingVariable())
+					return null() << (emptyTreeVec() + c);
+				if ((c2.isStableVariable() || c2.isConstant()) && c1.isIncrementingVariable())
+					return null() << (emptyTreeVec() + c);
+				}
+			-| And(items) ->> {
+				ImmutableTreeVector<Comparison> comparisons;
+
+				for (auto c: items)
+					{
+					Nullable<ImmutableTreeVector<Comparison> > sub = 
+						flattenComparisonToSimpleBinary(c);
+
+					if (!sub)
+						return null();
+
+					comparisons = comparisons + *sub;
+					}
+
+				return null() << comparisons;
+				}
+			-| _ ->> {}
+
+		return null();
+		}
+
+	void addComparison(NativeVariable var, Comparison c, bool wantsToBeTrue)
+		{
+		//to be a valid comparison, you must be an 'AND' of a bunch of simple operations
+		//that need to end up being 'true' together
+		Nullable<ImmutableTreeVector<Comparison> > simple = 
+			flattenComparisonToSimpleBinary(c);
+
+		if (!simple)
+			return;
+
+		if (!wantsToBeTrue)
+			return;
+
+		mFactorableComparisons.insert(var);
+
+		for (auto c: *simple)
+			addValidComparison(c);
+		}
+
+	static NativeBinaryOpcode reversedOpcode(NativeBinaryOpcode o)
+		{
+		@match NativeBinaryOpcode(o)
+			-| LT() ->> { return NativeBinaryOpcode::GT(); }
+			-| GT() ->> { return NativeBinaryOpcode::LT(); }
+			-| LTE() ->> { return NativeBinaryOpcode::GTE(); }
+			-| GTE() ->> { return NativeBinaryOpcode::LTE(); }
+			-| _ ->> {
+				lassert_dump(false, "invalid opcode: " << prettyPrintString(o));
+				}
+			;
+		}
+
+	void addValidComparison(Comparison c)
+		{
+		//first, ensure it's a binary op with the incrementing var on the left 
+		//and the stable variable on the right
+		NativeExpression stableVar;
+		NativeVariable incrementingVar;
+		NativeBinaryOpcode opcode;
+
+		@match Comparison(c)
+			-| Binary(o, StableVariable(sv), IncrementingVariable(iv)) ->> {
+				incrementingVar = iv;
+				stableVar = sv.expr();
+				opcode = reversedOpcode(o);
+				}
+			-| Binary(o, IncrementingVariable(iv), StableVariable(sv)) ->> {
+				incrementingVar = iv;
+				stableVar = sv.expr();
+				opcode = o;
+				}
+			-| Binary(o, Constant(c), IncrementingVariable(iv)) ->> {
+				incrementingVar = iv;
+				stableVar = NativeExpression::Constant(c);
+				opcode = reversedOpcode(o);
+				}
+			-| Binary(o, IncrementingVariable(iv), Constant(c)) ->> {
+				incrementingVar = iv;
+				stableVar = NativeExpression::Constant(c);
+				opcode = o;
+				}
+			-| _ ->> {
+				lassert_dump(false, "Invalid comparison: " << prettyPrintString(c));
+				}
+
+		int64_t increment = getIncrementFor(incrementingVar);
+
+		lassert(increment != 0);
+
+		addValidComparison(incrementingVar, opcode, stableVar, increment);
+		}
+
+	static NativeExpression mul(NativeExpression lhs, int64_t rhs)
+		{
+		return NativeExpression::BinaryOp(
+			NativeBinaryOpcode::Mul(),
+			lhs,
+			NativeExpression::Constant(NativeConstant::Int64(rhs))
+			);
+		}
+
+	static NativeExpression add(NativeExpression lhs, NativeExpression rhs)
+		{
+		return NativeExpression::BinaryOp(
+			NativeBinaryOpcode::Add(),
+			lhs,
+			rhs
+			);
+		}
+
+	static NativeExpression sub(NativeExpression lhs, NativeExpression rhs)
+		{
+		return NativeExpression::BinaryOp(
+			NativeBinaryOpcode::Sub(),
+			lhs,
+			rhs
+			);
+		}
+
+	static NativeExpression add(NativeExpression lhs, int64_t rhs)
+		{
+		return NativeExpression::BinaryOp(
+			NativeBinaryOpcode::Add(),
+			lhs,
+			NativeExpression::Constant(NativeConstant::Int64(rhs))
+			);
+		}
+
+	static NativeExpression div(NativeExpression lhs, int64_t rhs)
+		{
+		return NativeExpression::BinaryOp(
+			NativeBinaryOpcode::Div(),
+			lhs,
+			NativeExpression::Constant(NativeConstant::Int64(rhs))
+			);
+		}
+
+	void addValidComparison(
+			NativeVariable incrementingVar, 
+			NativeBinaryOpcode opcode, 
+			NativeExpression stableVar, 
+			int64_t increment
+			)
+		{
+		mLoopIsValidConditions.push_back(
+			NativeExpression::BinaryOp(opcode, incrementingVar.expr(), stableVar)
+			);
+
+		mLoopIsValidConditions.push_back(
+			NativeExpression::BinaryOp(opcode, 
+				add(incrementingVar.expr(), mul(mLoopUpperBoundVariable.expr(), increment)),
+				stableVar
+				)
+			);
+		
+		//mLoopUpperBoundCalculations is _inclusive_
+		if (increment > 0 && opcode.isLT())
+			//some examples. without loss of generality, assume incrementing var is 0
+			//if increment is 1, then (stableVar-1) is the inclusive range
+			//if increment is 2, and stableVar is 0, then we'll get 0, which is incorrect, but the boundscheck will pick it up
+			//if increment is 2, and stableVar is 1, then we'll get 0, which is correct
+			//if increment is 2, and stableVar is 2, then we'll get 0, which is correct
+			//if increment is 2, and stableVar is 3, then we'll get 1
+			//if increment is 2, and stableVar is 4, then we'll get 1
+			mLoopUpperBoundCalculations.push_back(
+				div(sub(add(stableVar,-1), incrementingVar.expr()), increment)
+				);
+		
+		if (increment > 0 && opcode.isLTE())
+			mLoopUpperBoundCalculations.push_back(
+				div(sub(stableVar, incrementingVar.expr()), increment)
+				);
+		
+		if (increment < 0 && opcode.isGT())
+			//some examples. without loss of generality, assume incrementing var is 100
+			//if increment is -1 and stableVar is 99 then we get 0 which is correct
+			//if increment is -1 and stableVar is 98 then we get 1 which is correct
+			//if increment is -2, and stableVar is 100, then we'll get 0, which is incorrect, but the boundscheck will pick it up
+			//if increment is -2, and stableVar is 99, then we'll get 0, which is correct
+			//if increment is -2, and stableVar is 98, then we'll get 0, which is correct
+			//if increment is -2, and stableVar is 97, then we'll get 1, which is correct
+			//if increment is -2, and stableVar is 96, then we'll get 1, which is correct
+			//if increment is -2, and stableVar is 95, then we'll get 2, which is correct
+			mLoopUpperBoundCalculations.push_back(
+				div(sub(incrementingVar.expr(), add(stableVar, 1)), increment)
+				);
+		
+		if (increment < 0 && opcode.isGTE())
+			mLoopUpperBoundCalculations.push_back(
+				div(sub(incrementingVar.expr(), stableVar), increment)
+				);
+		}
+
+	int64_t getIncrementFor(NativeVariable var)
+		{
+		auto it = mIncrementingVariableOffsets.find(var);
+
+		if (it != mIncrementingVariableOffsets.end())
+			return it->second;
+
+		lassert_dump(false, "No increment data available for " << prettyPrintString(var));
+		}
+
+	const std::set<NativeVariable>& factorableComparisons() const
+		{
+		return mFactorableComparisons;
+		}
+
+	const std::vector<NativeExpression>& loopUpperBoundCalculations() const
+		{
+		return mLoopUpperBoundCalculations;
+		}
+
+	const std::vector<NativeExpression>& loopIsValidConditions() const
+		{
+		return mLoopIsValidConditions;
+		}
+
+	NativeCodeFlattened::Input flatten(NativeExpression expression, NativeCodeFlattened::Block& block)
+		{
+		@match NativeExpression(expression)
+			-| Constant(c) ->> {
+				return NativeCodeFlattened::Input::Constant(c);
+				}
+			-| Variable(v) ->> {
+				return NativeCodeFlattened::Input::Variable(v);
+				}
+			-| BinaryOp(opcode, v1, v2) ->> {
+				NativeVariable var = NativeVariable::Temp(*expression.type());
+
+				NativeCodeFlattened::Expression e = 
+					NativeCodeFlattened::Expression::BinaryOp(
+						opcode,
+						flatten(v1, block),
+						flatten(v2, block)
+						);
+
+				block.defs() = block.defs() + make_pair(var, e);
+
+				return NativeCodeFlattened::Input::Variable(var);
+				}
+			-| _ ->> {
+				lassert_dump(false, "didn't know what to do with " << prettyPrintString(expression));
+				}
+		}
+
+	//compute the 'min' of all of expressions in mLoopUpperBoundCalculation and return it
+	NativeCodeFlattened::Input getMinimizationOfAllLoopUpperBoundCalculations(
+				NativeCodeFlattened::Block& block,
+				int64_t loopDuplicationCount
+				)
+		{
+		std::vector<NativeCodeFlattened::Input> toMin;
+
+		for (auto e: mLoopUpperBoundCalculations)
+			toMin.push_back(flatten(e, block));
+
+		lassert_dump(toMin.size(), "we didn't have any loop bounds to consider");
+
+		//put a limit on how many times we go around the loop since we're going to remove
+		//the interrupt checks within it
+		NativeCodeFlattened::Input smallestValidLoopCount = 
+			NativeCodeFlattened::Input::Constant(NativeConstant::Int64(kMaxLoopCount));
+
+		for (long k = 0; k < toMin.size(); k++)
+			{
+			NativeVariable nextIsSmaller = NativeVariable::Temp(NativeType::uint1());
+
+			block.defs() = block.defs() + 
+				make_pair(nextIsSmaller, 
+					NativeCodeFlattened::Expression::BinaryOp(
+						NativeBinaryOpcode::GT(),
+						smallestValidLoopCount,
+						toMin[k]
+						)
+					);
+
+			NativeVariable newMin = NativeVariable::Temp(NativeType::int64());
+
+			if (k + 1 == toMin.size())
+				newMin = mLoopUpperBoundVariable;
+
+			block.defs() = block.defs() + make_pair(newMin, 
+				NativeCodeFlattened::Expression::Selector(
+					NativeCodeFlattened::Input::Variable(nextIsSmaller),
+					toMin[k],
+					smallestValidLoopCount
+					)
+				);
+
+			smallestValidLoopCount = NativeCodeFlattened::Input::Variable(newMin);
+			}
+
+		if (loopDuplicationCount > 1)
+			{
+			//we need to subtract off from the loop guard. We are going to produce this many
+			//copies of the loop, but we're only going to have one bounds check. So, if we're
+			//going to have N copies, we need to subtract (N-1) from the loop guard to make sure
+			//that we're in bounds for all iterations of the loop.
+
+			NativeVariable newMin = NativeVariable::Temp(NativeType::int64());
+
+			block.defs() = block.defs() + make_pair(newMin, 
+				NativeCodeFlattened::Expression::BinaryOp(
+					NativeBinaryOpcode::Sub(),
+					smallestValidLoopCount,
+					NativeCodeFlattened::Input::Constant(
+						NativeConstant::Int64(loopDuplicationCount - 1)
+						)
+					)
+				);
+			
+			smallestValidLoopCount = NativeCodeFlattened::Input::Variable(newMin);
+			}
+
+		return smallestValidLoopCount;		
+		}
+
+	NativeCodeFlattened::Input getLoopIsValid(
+				NativeCodeFlattened::Block& block, 
+				NativeCodeFlattened::Input smallestValidLoopCount
+				)
+		{
+		NativeVariable isGreaterThanZero = NativeVariable::Temp(NativeType::uint1());
+
+		block.defs() = block.defs() + make_pair(isGreaterThanZero, 
+			NativeCodeFlattened::Expression::BinaryOp(
+				NativeBinaryOpcode::GT(),
+				smallestValidLoopCount,
+				NativeCodeFlattened::Input::Constant(NativeConstant::Int64(0))
+				)
+			);
+
+		NativeCodeFlattened::Input loopIsValid = 
+			NativeCodeFlattened::Input::Variable(isGreaterThanZero);
+
+		for (auto e: mLoopIsValidConditions)
+			{
+			NativeCodeFlattened::Input thisCondition = flatten(e, block);
+
+			NativeVariable newVar = NativeVariable::Temp(NativeType::uint1());
+
+			block.defs() = block.defs() + make_pair(newVar, 
+				NativeCodeFlattened::Expression::BinaryOp(
+					NativeBinaryOpcode::And(),
+					loopIsValid,
+					thisCondition
+					)
+				);
+
+			loopIsValid = NativeCodeFlattened::Input::Variable(newVar);
+			}
+
+		return loopIsValid;
+		}
+
+	void computeLoopBoundsInBlock(
+				NativeCodeFlattened::Block& block, 
+				NativeBlockID ifValid, 
+				NativeBlockID ifInvalid,
+				NativeVariable loopBoundsVariable,
+				int64_t loopBoundsOffset,
+				int64_t loopDuplicationCount
+				)
+		{
+		NativeCodeFlattened::Input smallestValidLoopCount = 
+			getMinimizationOfAllLoopUpperBoundCalculations(block, loopDuplicationCount);
+
+		NativeCodeFlattened::Input loopIsValid = 
+			getLoopIsValid(block, smallestValidLoopCount);
+
+		NativeVariable loopBoundConditionVariable = 
+			NativeVariable::Temp(NativeType::int64());
+
+		NativeVariable loopBoundConditionVariableOffset = 
+			NativeVariable::Temp(NativeType::int64());
+
+		block.defs() = block.defs() + make_pair(
+			loopBoundConditionVariableOffset,
+			NativeCodeFlattened::Expression::BinaryOp(
+				NativeBinaryOpcode::Mul(),
+				smallestValidLoopCount,
+				NativeCodeFlattened::Input::Constant(
+					NativeConstant::Int64(loopBoundsOffset)
+					)
+				)
+			);
+
+		block.defs() = block.defs() + make_pair(
+			loopBoundConditionVariable,
+			NativeCodeFlattened::Expression::BinaryOp(
+				NativeBinaryOpcode::Add(),
+				NativeCodeFlattened::Input::Variable(loopBoundConditionVariableOffset),
+				NativeCodeFlattened::Input::Variable(loopBoundsVariable)
+				)
+			);		
+
+		block.term() = NativeCodeFlattened::Term::Branch(
+			loopIsValid,
+			NativeCodeFlattened::JumpPoint(
+				ifValid,
+				emptyTreeVec() + 
+					NativeCodeFlattened::Input::Variable(loopBoundConditionVariable),
+				NativeCodeFlattened::VariablesToDump()
+				),
+			NativeCodeFlattened::JumpPoint(
+				ifInvalid,
+				emptyTreeVec(),
+				NativeCodeFlattened::VariablesToDump()
+				),
+			.999999
+			);
+
+		mVariableDeps.insertNecessaryVariableDependencies(block);
+		}
+
+private:
+	const std::set<NativeVariable>& mRootStableVars;
+
+	std::set<NativeVariable> mFactorableComparisons;
+
+	const std::map<NativeVariable, int64_t>& mIncrementingVariableOffsets;
+
+	NativeVariable mLoopUpperBoundVariable;
+
+	std::vector<NativeExpression> mLoopUpperBoundCalculations;
+
+	std::vector<NativeExpression> mLoopIsValidConditions;
+
+	VariableDependencies mVariableDeps;
+};
+
+}
+
+class UnrollHotLoopsWithComparisons {
+public:
+	std::string mFN;
+
+	UnrollHotLoopsWithComparisons(map<NativeBlockID, NativeCodeFlattened::Block>& outBlocks, std::string funcName) : 
+			mBlocks(outBlocks),
+			mFN(funcName)
+		{
+		}
+
+	void search()
+		{
+		//we're going to break the CFG into a set of "hot loops" for analysis
+		std::vector<std::set<NativeBlockID> > loops;
+
+		for (auto startBlock: mBlocks)
+			if (mBlocksNotPartOfALoop.find(startBlock.first) == mBlocksNotPartOfALoop.end())
+				{	
+				std::set<NativeBlockID> loop;
+
+				if (searchForAHotLoop(startBlock.first, loop))
+					loops.push_back(loop);
+
+				for (auto block: loop)
+					mBlocksNotPartOfALoop.insert(block);
+				}
+
+		for (auto loop: loops)
+			tryToUnrollSimpleLoop(loop);
+		}
+
+private:
+	void removeUnnecessaryBranchInstructionsFromTerminators(
+						NativeCodeFlattened::Block& ioBlock,
+						const std::set<NativeVariable>& vars
+						)
+		{
+		@match NativeCodeFlattened::Term(ioBlock.term())
+			-| Branch(Variable(var), ifTrue, _, frequencyTrue) ->> {
+				if (vars.find(var) != vars.end())
+					ioBlock.term() = NativeCodeFlattened::Term::Jump(ifTrue);
+				}
+			-| InterruptOrKickCheck(_, ifNotInterrupt) ->> {
+				ioBlock.term() = NativeCodeFlattened::Term::Jump(ifNotInterrupt);
+				}
+			-| _ ->> {}
+		}
+
+	void fillOutSubtractionAndCheckBlock(
+				NativeCodeFlattened::Block& block, 
+				NativeBlockID target, 
+				NativeBlockID crossover,
+				NativeVariable loopCounterVariable,
+				int64_t loopCounterIndex
+				)
+		{
+		NativeVariable loopCounterVariableBounds = mBlocks[target].args()[0];
+
+		NativeVariable loopIsValid = NativeVariable::Temp(NativeType::uint1());
+
+		block.defs() = block.defs() + 
+			make_pair(
+				loopIsValid, 
+				NativeCodeFlattened::Expression::BinaryOp(
+					loopCounterIndex > 0 ? 
+						NativeBinaryOpcode::LTE()
+					:	NativeBinaryOpcode::GTE(),
+					NativeCodeFlattened::Input::Variable(loopCounterVariable),
+					NativeCodeFlattened::Input::Variable(loopCounterVariableBounds)
+					)
+				);
+
+		block.term() = 
+			NativeCodeFlattened::Term::Branch(
+				NativeCodeFlattened::Input::Variable(loopIsValid),
+				NativeCodeFlattened::JumpPoint(
+					target,
+					emptyTreeVec() + NativeCodeFlattened::Input::Variable(loopCounterVariableBounds),
+					NativeCodeFlattened::VariablesToDump()
+					),
+				NativeCodeFlattened::JumpPoint(
+					crossover,
+					emptyTreeVec(),
+					NativeCodeFlattened::VariablesToDump()
+					),
+				.999999
+				);
+		}
+
+	ImmutableTreeMap<NativeBlockID, NativeBlockID> 
+					createParallelBlockStructure(
+							const ImmutableTreeSet<NativeBlockID>& blocks
+							)
+		{
+		//create a copy of the graph with alternative names we can use
+		ImmutableTreeMap<NativeBlockID, NativeBlockID> parallelBlockNames;
+		ImmutableTreeMap<NativeBlockID, NativeCodeFlattened::Block> parallelBlocks;
+
+		for (auto blockId: blocks)
+			{
+			parallelBlockNames = parallelBlockNames + blockId + NativeBlockID::internal();
+			parallelBlocks = parallelBlocks + blockId + mBlocks[blockId];
+			}
+
+		ImmutableTreeMap<NativeBlockID, NativeCodeFlattened::Block> newBlocks = 
+			NativeCFGTransforms::renameNativeBlocks(parallelBlocks, parallelBlockNames);
+
+		for (auto nameAndBlock: newBlocks)
+			mBlocks[nameAndBlock.first] = nameAndBlock.second;
+
+		return parallelBlockNames;
+		}
+
+	void moveInitialBlockContents(
+					NativeBlockID initialBlock, 
+					NativeBlockID crossoverBlock,
+					bool hasLoopVariable
+					)
+		{
+		mBlocks[crossoverBlock] = mBlocks[initialBlock];
+		mBlocks[crossoverBlock].args() = emptyTreeVec();
+
+		NativeVariable loopVar = NativeVariable::Temp(NativeType::int64());
+
+		if (hasLoopVariable)
+			mBlocks[crossoverBlock].args() = mBlocks[crossoverBlock].args() +
+				loopVar;
+
+		ImmutableTreeVector<NativeCodeFlattened::Input> args;
+
+		if (hasLoopVariable)
+			args = args + NativeCodeFlattened::Input::Variable(loopVar);
+
+		mBlocks[initialBlock].defs() = emptyTreeVec();
+
+		mBlocks[initialBlock].liveOnInput() = emptyTreeSet();
+
+		mBlocks[initialBlock].term() = 
+			NativeCodeFlattened::Term::Jump(
+				NativeCodeFlattened::JumpPoint(
+					crossoverBlock,
+					args,
+					NativeCodeFlattened::VariablesToDump()
+					)
+				);
+		}
+
+	template<class visitor_type>
+	void visitAllLoopVariables(const std::set<NativeBlockID>& blocks, visitor_type& visitor)
+		{
+		NativeBlockID initialBlockId = *blocks.begin();
+
+		visitAllLoopVariables(blocks, visitor, initialBlockId);
+		}
+
+	template<class visitor_type>
+	void visitAllLoopVariables(const std::set<NativeBlockID>& blocks, visitor_type& visitor, NativeBlockID initialBlockId)
+		{
+		NativeBlockID blockId = initialBlockId;
+
+		while (true)
+			{
+			NativeCodeFlattened::Block block = mBlocks[blockId];
+
+			for (auto varAndExpression: block.defs())
+				visitor.set(varAndExpression.first, varAndExpression.second);
+
+			auto nextJumpPoint = *getNextJumpPoint(blockId);
+
+			ImmutableTreeVector<NativeCodeFlattened::Input> args = nextJumpPoint.args();
+
+			for (long k = 0; k < args.size(); k++)
+				{
+				NativeCodeFlattened::Input i = args[k];
+				NativeVariable var = mBlocks[nextJumpPoint.block()].args()[k];
+
+				visitor.set(var, i);
+				}
+
+			if (nextJumpPoint.block() == initialBlockId)
+				break;
+
+			blockId = nextJumpPoint.block();
+			}
+		}
+
+	ImmutableTreeSet<pair<NativeVariable, bool> > extractAllBranchVariables(NativeBlockID startBlock)
+		{
+		ImmutableTreeSet<pair<NativeVariable, bool> > vars;
+
+		//get a starting point
+		NativeBlockID blockId = startBlock;
+
+		while (true)
+			{
+			NativeCodeFlattened::Block block = mBlocks[blockId];	
+
+			NativeCodeFlattened::Term terminator = block.term();
+
+			@match NativeCodeFlattened::Term(terminator)
+				-| Branch(Variable(var), _, _, frequencyTrue) ->> {
+					vars = vars + make_pair(var, frequencyTrue > .5);
+					}
+				-| _ ->> {}
+
+			auto nextJumpPoint = *getNextJumpPoint(blockId);
+
+			if (nextJumpPoint.block() == startBlock)
+				break;
+
+			blockId = nextJumpPoint.block();
+			}
+
+		return vars;
+		}
+
+	bool searchForAHotLoop(NativeBlockID blockId, std::set<NativeBlockID>& loop)
+		{
+		std::vector<NativeBlockID> stack;
+		std::set<NativeBlockID> stackSet;
+
+		stack.push_back(blockId);
+		stackSet.insert(blockId);
+
+		while (true)
+			{
+			Nullable<NativeCodeFlattened::JumpPoint> nextJumpPoint = getNextJumpPoint(blockId);
+			Nullable<NativeBlockID> nextBlock;
+			if (nextJumpPoint)
+				nextBlock = nextJumpPoint->block();
+
+			if (!nextBlock || mBlocksNotPartOfALoop.find(*nextBlock) != mBlocksNotPartOfALoop.end())
+				{
+				for (auto b: stackSet)
+					loop.insert(b);
+
+				return false;
+				}
+
+			if (stackSet.find(*nextBlock) == stackSet.end())
+				{
+				stack.push_back(*nextBlock);
+				stackSet.insert(*nextBlock);
+				blockId = *nextBlock;
+				}
+			else
+				{
+				//we found a loop. Copy everything in the stack between us
+				//and the loop start point back in
+				loop.insert(*nextBlock);
+
+				while (stack.back() != *nextBlock)
+					{
+					loop.insert(stack.back());
+					stack.pop_back();
+					}
+
+				return true;
+				}
+			}
+		}
+
+	Nullable<NativeCodeFlattened::JumpPoint> getNextJumpPoint(NativeBlockID blockId)
+		{
+		@match NativeCodeFlattened::Term(mBlocks[blockId].term())
+			-| Jump(target) ->> {
+				return null() << target;
+				}
+			-| Branch(input, ifTrue, ifFalse, fractionTrue) ->> {
+				if (fractionTrue >= kMinFraction)
+					return null() << ifTrue;
+					else
+				if (fractionTrue < 1.0 - kMinFraction)
+					return null() << ifFalse;
+				}
+			-| InterruptOrKickCheck(_, target) ->> {
+				return null() << target;
+				}
+			-| _ ->> {
+				}
+
+		return null();
+		}
+
+	void performLoopDuplication(
+				ImmutableTreeSet<NativeBlockID> blocks, 
+				NativeBlockID initialBlock,
+				NativeBlockID crossoverBlock,
+				int64_t totalCopies
+				)
+		{
+		if (totalCopies <= 1)
+			return;
+
+		lassert(mBlocks[crossoverBlock].args().size() == 1);
+
+		/*************************************************************
+		We have a loop 
+			initialBlock(*i)
+				if (loopValid)
+					-> crossoverBlock(loopMax)
+				else
+					-> bailBlock
+
+			crossoverBlock(loopMax) 
+				-> b2 (...)
+			
+			b2(a2)
+				-> ...
+
+			bn(an) 
+				-> initialBlock(...)
+
+		We want to unroll the loop so that there is only one loop validity check.
+
+		We'll do this by making N-1 copies of the block set and replacing 
+		wiring each copy's initialBlock to the next one's crossover block.
+
+		We then remove the loop check in all but the first one
+		**************************************************************/
+
+		ImmutableTreeVector<ImmutableTreeMap<NativeBlockID, NativeBlockID> >
+			loopCopies;
+
+		ImmutableTreeMap<NativeBlockID, NativeBlockID> initialLoopCopy;
+		for (auto b: blocks)
+			initialLoopCopy = initialLoopCopy + b + b;
+		loopCopies = loopCopies + initialLoopCopy;
+
+		for (long k = 1; k < totalCopies; k++)
+			loopCopies = loopCopies + createParallelBlockStructure(blocks);
+
+		for (long k = 0; k < totalCopies; k++)
+			{
+			ImmutableTreeMap<NativeBlockID, NativeBlockID> loop1 = loopCopies[k];
+			ImmutableTreeMap<NativeBlockID, NativeBlockID> loop2 = loopCopies[(k+1)%totalCopies];
+
+			mBlocks[*loop1[initialBlock]] = RenameTransformer<NativeBlockID>::rename(
+				mBlocks[*loop1[initialBlock]],
+				*loop1[crossoverBlock],
+				*loop2[crossoverBlock]
+				);
+			}
+
+		for (long k = 1; k < totalCopies; k++)
+			{
+			ImmutableTreeMap<NativeBlockID, NativeBlockID> loop = loopCopies[k];
+
+			auto& block = mBlocks[*loop[initialBlock]];
+
+			@match NativeCodeFlattened::Term(block.term())
+				-| Branch(condition, ifTrue, ifFalse, freq) ->> {
+					//we expect that this is the most frequently taken branch. if this is
+					//not true, we're making a huge mistake removing this check
+					lassert(freq > .9);
+
+					block.term() = NativeCodeFlattened::Term::Jump(ifTrue);
+					}
+				-| _ ->> {
+					lassert_dump(false, "Expected a Branch here, but got " << prettyPrintString(block));
+					}
+			}
+		}
+
+	NativeBlockID pickInitialBlock(
+				const std::set<NativeBlockID>& blocks,
+				std::set<NativeVariable>& outStableVariables,
+				std::map<NativeVariable, int64_t>& outIncrementingVariableOffsets
+				)
+		{
+		IntegerVariableRewrites rewrites;
+
+		//first, find all variables that are simple arithmetic rewrites
+		//of each other.
+		visitAllLoopVariables(blocks, rewrites);
+
+		//we need to pick the block with the maximal number of incrementing variables
+		NativeBlockID bestBlockId = *blocks.begin();
+		long bestCount = 0;
+
+		for (auto b: blocks)
+			{
+			NativeCodeFlattened::Block initialBlock = mBlocks[b];
+
+			long count = 0;
+			for (auto var: initialBlock.args())
+				{
+				Nullable<Nullable<int64_t> > offset = rewrites.checkIsLoop(var);
+				if (offset && *offset && **offset)
+					count++;
+				}
+
+			if (count > bestCount)
+				{
+				bestBlockId = b;
+				bestCount = count;
+				}
+			}
+	
+		NativeCodeFlattened::Block initialBlock = mBlocks[bestBlockId];
+
+		for (auto var: initialBlock.args())
+			{
+			Nullable<Nullable<int64_t> > offset = rewrites.checkIsLoop(var);
+
+			if (offset)
+				{
+				if (*offset && **offset)
+					outIncrementingVariableOffsets[var] = **offset;
+				else
+					outStableVariables.insert(var);
+				}
+			}
+
+		return bestBlockId;
+		}
+
+	//find all the variables that we use but that we never define. These variables
+	//must be defined outside of the loop, and are therefore stable over its duration
+	void extractVariablesUsedButNeverDefined(
+						const std::set<NativeBlockID>& blocks, 
+						std::set<NativeVariable>& outVars
+						)
+		{
+		std::set<NativeVariable> definedVariables;
+
+		map<NativeBlockID, NativeCodeFlattened::Block> allBlocks;
+		for (auto b: blocks)
+			allBlocks[b] = mBlocks[b];
+
+		ImmutableTreeSet<NativeVariable> allVariables = 
+			ExtractAllVariablesOfGivenTypeVisitor<NativeVariable>::extract(
+				allBlocks
+				);
+
+		for (auto b: blocks)
+			{
+			for (auto def: mBlocks[b].defs())
+				definedVariables.insert(def.first);
+			for (auto arg: mBlocks[b].args())
+				definedVariables.insert(arg);
+			}
+
+		for (auto v: allVariables)
+			if (definedVariables.find(v) == definedVariables.end())
+				outVars.insert(v);
+		}
+
+	void tryToUnrollSimpleLoop(const std::set<NativeBlockID>& blocks)
+		{
+		std::set<NativeVariable> stableVariables;
+
+		std::map<NativeVariable, int64_t> incrementingVariableOffsets;
+
+		std::set<NativeVariable> incrementingVariables;
+
+		NativeBlockID initialBlockId = 
+			pickInitialBlock(
+				blocks, 
+				stableVariables, 
+				incrementingVariableOffsets
+				);
+
+		extractVariablesUsedButNeverDefined(blocks, stableVariables);
+		
+		if (!incrementingVariableOffsets.size())
+			return;
+
+		for (auto varAndOffset: incrementingVariableOffsets)
+			incrementingVariables.insert(varAndOffset.first);
+
+		//stable variables now contains all variables that are either constant
+		//over the course of the loop, or that change by a constant every time.
+
+		//now we need to find all values in the loop that depend only on stable values
+		VariableDependencies deps;
+
+		visitAllLoopVariables(blocks, deps, initialBlockId);
+
+		std::set<NativeVariable> allTouchingStable;
+		deps.pruneToVariablesExclusivelyTouching(
+				stableVariables, 
+				allTouchingStable
+				);
+		
+		//now look for comparisons
+		StableComparisons comparisons(stableVariables, allTouchingStable, incrementingVariables);
+
+		//continue looping over comparison variables until our comparison set has 
+		//stabilized
+		long passes = 0;
+		while (true)
+			{
+			passes++;
+			long priorStable = comparisons.totalComparisonVariables();
+			
+			visitAllLoopVariables(blocks, comparisons, initialBlockId);
+			
+			if (priorStable == comparisons.totalComparisonVariables())
+				break;
+			}
+
+		//find all variables on which we depend to "stay on track" in the hot loop
+		ImmutableTreeSet<pair<NativeVariable, bool> > branchVars = extractAllBranchVariables(*blocks.begin());
+
+		//now, for each comparison variable, we want to see if its factorable. If so, we 
+		//want need to generate two expressions: a "max t" expression and an expression
+		//that validates the loop conditions as a function of "t"
+		ValidRangeCalculator calculator(stableVariables, incrementingVariableOffsets, deps);
+
+		for (auto varAndWantsTrue: branchVars)
+			{
+			NativeVariable var = varAndWantsTrue.first;
+
+			auto nComparison = comparisons.getComparisonFor(var);
+
+			if (nComparison)
+				calculator.addComparison(var, *nComparison, varAndWantsTrue.second);
+			}
+
+		long comparisonsOptimized = calculator.factorableComparisons().size();
+		long comparisonsMissed = branchVars.size() - comparisonsOptimized;
+
+		if (comparisonsMissed > 0 && comparisonsMissed > comparisonsOptimized)
+			{
+			if (SHOULD_LOG_DEBUG())
+				{
+				LOGGER_DEBUG_T log = LOGGER_DEBUG;
+
+				log << "Converting " << mFN << "\n";
+				log << "Root block is " << initialBlockId << "\n";
+				log << "Incrementing variables are " << incrementingVariableOffsets << "\n";
+				log << "Root stable variables are " << stableVariables << "\n";
+				log << "Dependent stable variables are " << allTouchingStable << "\n";
+				log << "Stable comparison variables are " << comparisons.stableComparisons() << "\n";
+
+				for (auto varAndWantsTrue: branchVars)
+					{
+					NativeVariable var = varAndWantsTrue.first;
+
+					auto nComparison = comparisons.getComparisonFor(var);
+
+					if (!nComparison)
+						log << var << " is not a comparison...\n";
+						else
+					if (nComparison && calculator.factorableComparisons().find(var) == calculator.factorableComparisons().end())
+						log << "not factorable: " << *nComparison << "\n";
+					}
+
+				log << "\n\nblocks = \n";
+
+				map<NativeBlockID, NativeCodeFlattened::Block> localBlocks;
+				for (auto bn: blocks)
+					localBlocks[bn] = mBlocks[bn];
+
+				log << localBlocks;
+				}
+
+			return;
+			}
+
+		ImmutableTreeMap<NativeBlockID, NativeBlockID> parallelBlockNames = 
+			createParallelBlockStructure(blocks);
+
+		/*******************************************************************
+		We create the following structure, where "O_N" are the original blocks
+		and "L_N" are blocks in the stripped down structure.
+
+
+		O_0(a0)									L_0(a0)
+			if (loopCondition)		 			if (loopVar < loopMax)
+				-> L_crossover()					-> L_Crossover()
+			else								else
+				-> O_Crossover()					-> O_Crossover()
+
+		O_Crossover_(loopMax)					L_Crossover(loopMax)
+			-> O_1									-> L_1
+
+		O_1(a1)									L_1(a1)
+			-> O_2									-> L_2
+
+		O_2(a2)									L_2(a2)
+			-> O_3									-> L_3
+		...										...
+
+		O_N(aN)									L_N(aN)
+			-> O_0									-> L_0(a0)
+
+		**********************************************************************/
+
+		NativeBlockID crossoverBlockInOrig = NativeBlockID::internal();
+
+		NativeBlockID crossoverBlockInLoop = NativeBlockID::internal();
+
+		moveInitialBlockContents(initialBlockId, crossoverBlockInOrig, false);
+
+		NativeBlockID initialBlockIdInLoop = *parallelBlockNames[initialBlockId];
+
+		moveInitialBlockContents(initialBlockIdInLoop, crossoverBlockInLoop, true);
+
+		//we should eventually make this depend on the complexity of the function
+		long loopDuplicationCount = 1;
+
+		//fill out the body of O_0, instructing it to jump to L_Crossover
+		calculator.computeLoopBoundsInBlock(
+			mBlocks[initialBlockId], 
+			crossoverBlockInLoop,
+			crossoverBlockInOrig,
+			//use the first incrementing variable as the loop index
+			incrementingVariableOffsets.begin()->first,
+			incrementingVariableOffsets.begin()->second,
+			loopDuplicationCount
+			);
+
+		fillOutSubtractionAndCheckBlock(
+			mBlocks[initialBlockIdInLoop],
+			crossoverBlockInLoop,
+			crossoverBlockInOrig,
+			//use the first incrementing variable as the loop index
+			incrementingVariableOffsets.begin()->first,
+			incrementingVariableOffsets.begin()->second
+			);
+
+		for (auto n: parallelBlockNames)
+			removeUnnecessaryBranchInstructionsFromTerminators(
+				mBlocks[n.second], 
+				calculator.factorableComparisons()
+				);
+
+		removeUnnecessaryBranchInstructionsFromTerminators(
+			mBlocks[crossoverBlockInLoop], 
+			calculator.factorableComparisons()
+			);
+
+		performLoopDuplication(
+			parallelBlockNames.valueSet() + crossoverBlockInLoop, 
+			*parallelBlockNames[initialBlockId], 
+			crossoverBlockInLoop, 
+			loopDuplicationCount
+			);
+		}
+
+	map<NativeBlockID, NativeCodeFlattened::Block>& mBlocks;
+
+	std::set<NativeBlockID> mBlocksNotPartOfALoop;
+};
+
+void unrollHotLoopsWithComparisons(map<NativeBlockID, NativeCodeFlattened::Block>& outBlocks, std::string funcName)
+	{
+	UnrollHotLoopsWithComparisons unroller(outBlocks, funcName);
+
+	try {
+		unroller.search();
+		}
+	catch(...)
+		{
+		LOG_ERROR << "failed in " << outBlocks;
+		throw;
+		}
+	}
+
+

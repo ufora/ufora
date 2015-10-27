@@ -1,0 +1,432 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "../Core/ImplVal.hppml"
+#include "../TypedFora/ABI/NativeCodeCompilerTestFixture.hpp"
+#include "NativeCode.hppml"
+#include "NativeTypeForCppml.hpp"
+#include "../../core/cppml/CPPMLEquality.hppml"
+#include "../../core/cppml/CPPMLPrettyPrinter.hppml"
+#include "TypedNativeLibraryFunction.hpp"
+#include "TypedNativeLibraryFunction.test.hpp"
+#include <boost/type_traits.hpp>
+
+using namespace TypedFora::Abi;
+
+//verify that calling conventions for different kinds of objects make sense by calling a bunch
+//of them and validating that we can return stuff correctly
+
+template<class T>
+bool wasPassedByValue(T inT, T* tPointer)
+	{
+	return &inT == tPointer;
+	}
+
+class TypedNativeLibraryFunctionTestFixture : public NativeCodeCompilerTestFixture {
+public:
+	TypedNativeLibraryFunctionTestFixture()
+		{
+		}
+
+	static long destroyed;
+	static long created;
+
+	class Counter {
+	public:
+		Counter() : m(0)
+			{
+			created++;
+			}
+
+		Counter(int64_t i) : m(i)
+			{
+			created++;
+			}
+		Counter(const Counter& in) : m(in.m)
+			{
+			created++;
+			}
+		~Counter()
+			{
+			destroyed++;
+			}
+
+		Counter& operator=(int64_t i)
+			{
+			m = i;
+			return *this;
+			}
+
+		operator int64_t () const
+			{
+			return m;
+			}
+
+		int64_t m;
+	};
+
+	@type ASmallClass = int64_t i {
+	public:
+		operator int64_t() const
+			{
+			return i();
+			}
+	};
+
+	@type ASmallClassWithNontrivialDestructor = Counter c {
+	public:
+		ASmallClassWithNontrivialDestructor(int64_t i)
+			{
+			c() = Counter(i);
+			}
+
+		operator int64_t() const
+			{
+			return c();
+			}
+	};
+
+	@type AMediumClassWithNontrivialDestructor = Counter c, double d {
+	public:
+		AMediumClassWithNontrivialDestructor(int64_t i)
+			{
+			c() = Counter(i);
+			d() = i * 10;
+			}
+
+		operator int64_t() const
+			{
+			return (int64_t)c() + d();
+			}
+	};
+
+	@type ALargeClass = int64_t i, int64_t j, double d {
+	public:
+		ALargeClass(int64_t in)
+			{
+			i() = in;
+			j() = in * 10;
+			d() = in * 100;
+			}
+
+		operator int64_t() const
+			{
+			return (int64_t)i() + j() * 11 + d() * 122;
+			}
+
+	};
+
+	@type ALargeClassWithNontrivialDestructor = Counter i, int64_t j, double d {
+	public:
+		ALargeClassWithNontrivialDestructor(int64_t in)
+			{
+			i() = in;
+			j() = in * 10;
+			d() = in * 100;
+			}
+
+		operator int64_t() const
+			{
+			return (int64_t)i() + j() * 11 + d() * 122;
+			}
+	};
+
+
+	template<class T>
+	void assertEqual(T t1, T t2)
+		{
+		lassert_dump(
+			cppmlCmp(t1, t2) == 0, 
+			prettyPrintString(t1) << " != " << prettyPrintString(t2) << " in " <<
+				__PRETTY_FUNCTION__
+			);
+		}
+
+	
+	template<class A1>
+	void check(A1 a1)
+		{
+		assertEqual(
+			callLibraryFunction( &TestCaseCall<int64_t, A1>::call, a1 ), 
+			TestCaseCall<int64_t, A1>::call(a1)
+			);
+		assertEqual(
+			callLibraryFunction( &TestCaseCall<ASmallClass, A1>::call, a1 ), 
+			TestCaseCall<ASmallClass, A1>::call(a1)
+			);
+		assertEqual(
+			callLibraryFunction( &TestCaseCall<ALargeClass, A1>::call, a1 ), 
+			TestCaseCall<ALargeClass, A1>::call(a1)
+			);
+		assertEqual(
+			callLibraryFunction( 
+				&TestCaseCall<ASmallClassWithNontrivialDestructor, A1>::call, a1 
+				), 
+			TestCaseCall<ASmallClassWithNontrivialDestructor, A1>::call(a1)
+			);
+		assertEqual(
+			callLibraryFunction( 
+				&TestCaseCall<AMediumClassWithNontrivialDestructor, A1>::call, a1 
+				), 
+			TestCaseCall<AMediumClassWithNontrivialDestructor, A1>::call(a1)
+			);
+		assertEqual(
+			callLibraryFunction( 
+				&TestCaseCall<ALargeClassWithNontrivialDestructor, A1>::call,
+				a1 
+				), 
+			TestCaseCall<ALargeClassWithNontrivialDestructor, A1>::call(a1)
+			);
+		}
+
+	template<class A1, class A2>
+	void check2(A1 a1, A2 a2)
+		{
+		assertEqual(
+			callLibraryFunction( &TestCaseCall<int64_t, A1, A2>::call, a1, a2 ), 
+			TestCaseCall<int64_t, A1, A2>::call(a1, a2)
+			);
+		assertEqual(
+			callLibraryFunction( &TestCaseCall<ASmallClass, A1, A2>::call, a1, a2 ), 
+			TestCaseCall<ASmallClass, A1, A2>::call(a1, a2)
+			);
+		assertEqual(
+			callLibraryFunction( &TestCaseCall<ALargeClass, A1, A2>::call, a1, a2 ), 
+			TestCaseCall<ALargeClass, A1, A2>::call(a1, a2)
+			);
+		assertEqual(
+			callLibraryFunction( 
+				&TestCaseCall<ASmallClassWithNontrivialDestructor, A1, A2>::call, a1, a2 
+				), 
+			TestCaseCall<ASmallClassWithNontrivialDestructor, A1, A2>::call(a1, a2)
+			);
+		assertEqual(
+			callLibraryFunction( 
+				&TestCaseCall<AMediumClassWithNontrivialDestructor, A1, A2>::call, a1, a2 
+				), 
+			TestCaseCall<AMediumClassWithNontrivialDestructor, A1, A2>::call(a1, a2)
+			);
+		assertEqual(
+			callLibraryFunction( 
+				&TestCaseCall<ALargeClassWithNontrivialDestructor, A1, A2>::call,
+				a1, a2 
+				), 
+			TestCaseCall<ALargeClassWithNontrivialDestructor, A1, A2>::call(a1, a2)
+			);
+		}
+
+	template<class A1>
+	void check12(A1 a1)
+		{
+		check2(a1, 1000);
+		check2(a1, ASmallClass(1000));
+		check2(a1, ASmallClassWithNontrivialDestructor(1000));
+		check2(a1, ALargeClass(100, 1000, 10000));
+		check2(a1, ALargeClassWithNontrivialDestructor(100, 1000, 10000));
+		}
+
+};
+
+template<>
+class NativeTypeForImpl<TypedNativeLibraryFunctionTestFixture::ASmallClass> {
+public:
+	static NativeType get(void)
+		{
+		return nativeTypeForCppmlTuple<TypedNativeLibraryFunctionTestFixture::ASmallClass>();
+		}
+};
+
+template<>
+class NativeTypeForImpl<TypedNativeLibraryFunctionTestFixture::Counter> {
+public:
+	static NativeType get(void)
+		{
+		return NativeType::Integer(64, true);
+		}
+};
+
+template<>
+class NativeTypeForImpl<TypedNativeLibraryFunctionTestFixture::ALargeClass> {
+public:
+	static NativeType get(void)
+		{
+		return nativeTypeForCppmlTuple<TypedNativeLibraryFunctionTestFixture::ALargeClass>();
+		}
+};
+template<>
+class NativeTypeForImpl<TypedNativeLibraryFunctionTestFixture::ASmallClassWithNontrivialDestructor> {
+public:
+	static NativeType get(void)
+		{
+		return nativeTypeForCppmlTuple<TypedNativeLibraryFunctionTestFixture::ASmallClassWithNontrivialDestructor>();
+		}
+};
+template<>
+class NativeTypeForImpl<TypedNativeLibraryFunctionTestFixture::AMediumClassWithNontrivialDestructor> {
+public:
+	static NativeType get(void)
+		{
+		return nativeTypeForCppmlTuple<TypedNativeLibraryFunctionTestFixture::AMediumClassWithNontrivialDestructor>();
+		}
+};
+template<>
+class NativeTypeForImpl<TypedNativeLibraryFunctionTestFixture::ALargeClassWithNontrivialDestructor> {
+public:
+	static NativeType get(void)
+		{
+		return nativeTypeForCppmlTuple<TypedNativeLibraryFunctionTestFixture::ALargeClassWithNontrivialDestructor>();
+		}
+};
+
+template<>
+class CPPMLEquality<TypedNativeLibraryFunctionTestFixture::Counter, void> {
+public:
+	typedef TypedNativeLibraryFunctionTestFixture::Counter T;
+
+	static char cmp(const T& lhs, const T &rhs)
+		{
+		return cppmlCmp(lhs.m, rhs.m);
+		}
+};
+
+template<>
+class CPPMLPrettyPrint<TypedNativeLibraryFunctionTestFixture::Counter> {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream s, 
+					const TypedNativeLibraryFunctionTestFixture::Counter& inT)
+			{
+			s << inT.m;
+			}
+};
+
+long TypedNativeLibraryFunctionTestFixture::destroyed = 0;
+
+long TypedNativeLibraryFunctionTestFixture::created = 0;
+
+BOOST_FIXTURE_TEST_SUITE( test_TypedNativeLibraryFunction, TypedNativeLibraryFunctionTestFixture )
+
+BOOST_AUTO_TEST_CASE( test_calling_conventions )
+	{
+	BOOST_CHECK_EQUAL(
+		sizeof(ALargeClassWithNontrivialDestructor), 
+		NativeTypeFor<ALargeClassWithNontrivialDestructor>::get().packedSize()
+		);
+
+	check(1000);
+	check(ASmallClass(1000));
+	check(ASmallClassWithNontrivialDestructor(1000));
+	check(ALargeClass(100, 1000, 10000));
+	check(ALargeClassWithNontrivialDestructor(100, 1000, 10000));
+
+	check12(1000);
+	check12(ASmallClass(1000));
+	check12(ASmallClassWithNontrivialDestructor(1000));
+	check12(ALargeClass(100, 1000, 10000));
+	check12(ALargeClassWithNontrivialDestructor(100, 1000, 10000));
+
+	BOOST_CHECK_EQUAL(destroyed, created);
+	}
+
+namespace {
+
+void increment(int* i)
+	{
+	(*i)++;
+	}
+
+}
+
+BOOST_AUTO_TEST_CASE( test_calling_void )
+	{
+	int i = 123;
+
+	callLibraryFunction(increment, &i);
+
+	BOOST_CHECK_EQUAL(i, 124);
+	}
+
+namespace {
+
+void duplicateInto(std::pair<int64_t, int64_t> p1, std::pair<int64_t, int64_t>* into)
+	{
+	*into = p1;
+	}
+
+std::pair<int64_t, int64_t> incrementAndReturn(std::pair<int64_t, int64_t> p)
+	{
+	return std::make_pair(p.first + 1, p.second + 2);
+	}
+
+}
+
+BOOST_AUTO_TEST_CASE( test_calling_pair )
+	{
+	std::pair<int64_t, int64_t> p1(10,11);
+	std::pair<int64_t, int64_t> p2(0,0);
+
+	callLibraryFunction(duplicateInto, p1, &p2);
+
+	BOOST_CHECK_EQUAL(p1.first, p2.first);
+	BOOST_CHECK_EQUAL(p1.second, p2.second);
+	}
+
+
+BOOST_AUTO_TEST_CASE( test_returning_pair )
+	{
+	std::pair<int64_t, int64_t> p1(10,11);
+	
+	std::pair<int64_t, int64_t> p2 = callLibraryFunction(incrementAndReturn, p1);
+
+	BOOST_CHECK_EQUAL(p1.first + 1, p2.first);
+	BOOST_CHECK_EQUAL(p1.second + 2, p2.second);
+	}
+
+namespace {
+
+ImplVal implValFun(const ImplVal& in)
+	{
+	return in;
+	}
+
+}
+
+BOOST_AUTO_TEST_CASE( test_implVal_shiz )
+	{
+	lassert(is_pass_by_register_type<ImplVal>::value);	
+	lassert(is_pass_by_register_type<ImplVal*>::value);	
+
+	lassert(is_pass_by_register_type<int>::value);
+	lassert(is_pass_by_register_type<int&>::value);
+
+	lassert(is_pass_by_register_type<ImplVal&>::value);
+
+
+	NativeExpression ivPtr = 
+		NativeExpression::Alloc(
+			TypedFora::Abi::nativeTypeForImplVal(),
+			1,
+			false
+			);
+
+	auto fun = makeTypedNativeLibraryFunction(
+		&implValFun
+		);
+
+	fun(ivPtr);
+
+	}
+
+BOOST_AUTO_TEST_SUITE_END()
+

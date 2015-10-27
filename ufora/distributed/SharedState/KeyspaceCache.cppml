@@ -1,0 +1,172 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "KeyspaceCache.hppml"
+#include "KeyType.hppml"
+#include "Storage/LogEntry.hppml"
+#include "../../core/Logging.hpp"
+
+namespace SharedState {
+
+
+KeyspaceCache::KeyspaceCache(KeyRange inKeyRange, PolymorphicSharedPtr<KeyspaceStorage> inStorage) :
+		mKeyspace(inKeyRange.keyspace()),
+		mKeyRange(inKeyRange),
+		mIsLoaded(false),
+		mDataStore(inStorage)
+	{
+    if (!mDataStore)
+        mIsLoaded = true;
+	}
+
+void KeyspaceCache::newMinimumId(EventIDType minId)
+	{
+	// notification of a new promise point
+	compactMemory(minId);
+
+	if (mDataStore)
+		{
+		mDataStore->writeLogEntry(LogEntry::Id(minId));
+		mDataStore->compress();
+		}
+	}
+const KeyType& KeyspaceCache::getKeyType() const
+	{
+	return KeyTypeFactory::getTypeFor(mKeyspace.type());
+	}
+
+void KeyspaceCache::addEvent(const PartialEvent& event)
+	{
+	// the way in which new information from a client to be integrated into
+	// the representation
+
+    // if this cache is not supposed to persist then just load the event into memory
+
+	if(mIsLoaded)
+		loadEventInMemory(event);
+
+	if (mDataStore)
+		mDataStore->writeLogEntry(LogEntry::Event(event));
+	}
+
+
+void KeyspaceCache::flushPendingWrites()
+	{
+	if (mDataStore)
+		mDataStore->flushPendingWrites();
+	}
+
+void KeyspaceCache::loadEventInMemory(const PartialEvent& event)
+	{
+	const Key& key = event.key();
+	const KeyNameType& keyDimensionValue = key[mKeyRange.index()];
+
+	KeyState& keyState = mKeyStates[keyDimensionValue][event.key()];
+
+	getKeyType().insertEventIntoKeyState(
+		keyState, 
+		event,
+		false //eventMightBeDuplicate
+		);
+	}
+
+void KeyspaceCache::loadFromDisk(void)
+	{
+	// load disk representation into memory
+	lassert(!mIsLoaded && mKeyStates.size() == 0);
+
+	if (mDataStore)
+		{
+		pair<map<Key, KeyState>, vector<LogEntry> > state;
+	   	mDataStore->readState(state);
+
+		LOG_INFO << "Keyspace cache loading state with " << state.first.size()
+			<< " entries and " << state.second.size() << " log entries.";
+
+		for(map<Key, KeyState>::iterator it = state.first.begin(); it != state.first.end(); ++it)
+			{
+			const Key& newKey = it->first;
+			const KeyNameType& keyDimensionValue = it->first[mKeyRange.index()];
+
+			map<Key, KeyState>& mapForThisDimensionValue = mKeyStates[keyDimensionValue];
+
+			mapForThisDimensionValue[newKey] = it->second;
+			}
+
+		// needs to be done this way to allow the slice map to create slices
+		for(uint32_t i = 0; i < state.second.size(); i++)
+			{
+			@match LogEntry(state.second[i])
+				-|	Event(event) ->> { loadEventInMemory(event); }
+				-| 	Id(id) ->> { compactMemory(id); }
+				;
+			}
+		}
+
+	mIsLoaded = true;
+	}
+
+void KeyspaceCache::compactMemory(EventIDType id)
+	{
+	const KeyType& keyType = getKeyType();
+	//iterate over all the keystates and compact them.
+	vector<Key> keysToDelete;
+
+	for (auto it = mKeyStates.begin(), it_end = mKeyStates.end(); it != it_end; ++it)
+		for (auto key_keystate_it = it->second.begin(), key_keystate_it_end = it->second.end(); 
+				key_keystate_it != key_keystate_it_end; 
+				key_keystate_it++)
+            {
+            KeyState& keyStateToCompact(key_keystate_it->second);
+			keyType.compactKeyState(keyStateToCompact, UniqueId(id,0));
+			if (keyStateToCompact.wasDeleted())
+				keysToDelete.push_back(key_keystate_it->first);
+            }
+
+	if (keysToDelete.size() > 0)
+		{
+		LOG_INFO << "Deleting " << keysToDelete.size() << " keys during compaction";
+		for (auto & key : keysToDelete)
+			mKeyStates.erase(key[mKeyRange.index()]);
+		}
+	}
+
+uint64_t KeyspaceCache::totalLoadedKeys()
+	{
+	return mKeyStates.size();
+	}
+
+map<KeyNameType, map<Key, KeyState> >::iterator 	KeyspaceCache::startIterator(const Nullable<KeyBound>& inKeyBound)
+	{
+	if (!inKeyBound)
+		return mKeyStates.begin();
+
+	//lassert_dump(inKeyBound->leftBound(), "nonsensical to ask for a right bound as the lower bound");
+
+	return mKeyStates.lower_bound(inKeyBound->value());
+	}
+	
+map<KeyNameType, map<Key, KeyState> >::iterator 	KeyspaceCache::endIterator(const Nullable<KeyBound>& inKeyBound)
+	{
+	if (!inKeyBound)
+		return mKeyStates.end();
+
+	//lassert_dump(!inKeyBound->leftBound(), "nonsensical to ask for a left bound as the uppert bound");
+	
+	return mKeyStates.upper_bound(inKeyBound->value());
+	}
+
+}
+

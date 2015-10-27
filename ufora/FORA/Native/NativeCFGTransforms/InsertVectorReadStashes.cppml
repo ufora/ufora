@@ -1,0 +1,418 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "InsertVectorReadStashes.hppml"
+#include "BlockVariableFlow.hppml"
+#include "VectorVariableFlow.hppml"
+#include "Transforms.hppml"
+#include "../NativeTypeFor.hpp"
+#include "../../Axioms/Vector.GetItem.hppml"
+#include "../../TypedFora/ABI/HomogenousVectorStashCodegen.hppml"
+#include "../../TypedFora/ABI/VectorRecordCodegen.hppml"
+#include "../../TypedFora/TypedFora.hppml"
+#include "../../../core/cppml/CPPMLTransform.hppml"
+#include "../../../core/cppml/CPPMLVisit.hppml"
+#include "../../../core/Logging.hpp"
+
+
+namespace NativeCFGTransforms {
+
+//find the continuation metadatas in the vector cache-miss code
+@type DiscoverContinuationMetadata = ImmutableTreeVector<ImmutableTreeVector<NativeContinuationMetadata> > metadatas {
+public:
+	template<class T>
+	void processDown(const T& t, bool& outContinue) { }
+
+	template<class T>
+	void processUp(const T& t) { }
+	
+	void processDown(const NativeType& c, bool& outContinue)
+		{
+		outContinue = false;
+		}
+
+	void processDown(const NativeExpression& c, bool& outContinue)
+		{
+		@match NativeExpression(c)
+			-| Tagged(e, OnHomogenousVectorLookupBoundsCheckFailure()) ->> {
+				outContinue = false;
+				}
+			-| _ ->> {}
+		}
+
+	void processDown(const ImmutableTreeVector<NativeContinuationMetadata>& r, bool& outContinue)
+		{
+		outContinue = false;
+
+		if (r.size())
+			metadatas() = metadatas() + r;
+		}
+	
+	template<class T>
+	static ImmutableTreeVector<ImmutableTreeVector<NativeContinuationMetadata> >
+				getMetadatas(const T& in)
+		{
+		DiscoverContinuationMetadata items;
+
+		::visit(in, items);
+
+		return items.metadatas();
+		}
+};
+
+
+@type DiscoverBoundsCheckFailures = ImmutableTreeVector<NativeExpression> boundsCheckFailures {
+public:
+	template<class T>
+	void processDown(const T& t, bool& outContinue) { }
+
+	template<class T>
+	void processUp(const T& t) { }
+	
+	void processDown(const NativeType& c, bool& outContinue)
+		{
+		outContinue = false;
+		}
+	
+	void processDown(const NativeExpression& r, bool& outContinue)
+		{
+		@match NativeExpression(r)
+			-| Tagged(e, OnHomogenousVectorLookupBoundsCheckFailure()) ->> {
+				boundsCheckFailures() = boundsCheckFailures() + r;
+				}
+			-| _ ->> {}
+			;
+		}
+	
+	template<class T>
+	static NativeExpression getBoundsCheckFailureExpression(const T& in)
+		{
+		DiscoverBoundsCheckFailures items;
+
+		::visit(in, items);
+
+		lassert(items.boundsCheckFailures().size() == 1);
+
+		return items.boundsCheckFailures()[0];
+		}
+};
+
+class ReplaceCallbacksVar {
+public:
+	template<class T>
+	Nullable<T> processDown(const T& t, bool& outContinue) const 
+		{
+		return null(); 
+		}
+	
+	Nullable<NativeType> processDown(const NativeType& t, bool& outContinue) const 
+		{
+		outContinue = false;
+		return null(); 
+		}
+	
+	template<class T>
+	Nullable<T> processUp(const T& t) const 
+		{
+		return null(); 
+		}
+	
+	Nullable<NativeVariable> processDown(const NativeVariable& v, bool& outContinue) const
+		{
+		if (v.type() == NativeTypeFor<NativeRuntimeCallbacks>::get().ptr())
+			return null() << NativeVariable("callbacks", NativeTypeFor<NativeRuntimeCallbacks>::get().ptr());
+		return null();
+		}
+};
+
+
+class VectorStashUpdater {
+public:
+	VectorStashUpdater(
+				VectorVariableFlow& inFlow,
+				map<NativeBlockID, std::vector<VectorArgument> >& argsToAugment
+				) :
+			mFlow(inFlow),
+			mArgsToAugment(argsToAugment),
+			mJumpsVisited(0)
+		{
+		}
+
+	Nullable<pair<NativeBlockID, NativeBlock> > processDown(
+							const pair<NativeBlockID, NativeBlock>& t, 
+							bool& outContinue
+							) const 
+		{
+		outContinue = false;
+
+		mCurBlock = t.first;
+		mJumpsVisited = 0;
+
+		auto result = transformNullable(t.second, *this);
+
+		mCurBlock = null();
+
+		if (!result)
+			return null();
+
+		result = ::transform(result, ReplaceCallbacksVar());
+
+		return null() << make_pair(t.first, *result);
+		}
+
+	Nullable<NativeCFG> processDown(const NativeCFG& t, bool& outContinue) const 
+		{
+		if (mCurBlock)
+			//only process the outermost nativeCFG. If we have a block, we're in
+			//a CFG already
+			outContinue = false;
+		return null();
+		}
+
+	Nullable<NativeContinuation> processDown(const NativeContinuation& t, bool& outContinue) const 
+		{
+		return null();
+		}
+
+	Nullable<NativeBlock> processDown(const NativeBlock& t, bool& outContinue) const
+		{
+		auto it = mArgsToAugment.find(*mCurBlock);
+		if (it == mArgsToAugment.end())
+			return null();
+
+		outContinue = false;
+
+		//if we're already in a NativeBlock, this would be populated, and that shouldn't
+		//happen
+		lassert(mCurrentStashes.size() == 0);
+
+		ImmutableTreeVector<NativeVariable> variables = t.args();
+
+		for (auto vecArg: it->second)
+			{
+			NativeVariable newStashVar = 
+				NativeVariable::Temp(
+					NativeTypeFor<TypedFora::Abi::HomogenousVectorStash>::get()
+					);
+
+			variables = variables + newStashVar;
+			mCurrentStashes[vecArg] = newStashVar;
+			}
+
+		NativeExpression newExpression = transform(t.expression(), *this);
+
+		mCurrentStashes.clear();
+
+		return null() << NativeBlock(variables, newExpression, t.relativeFrequency());
+		}
+
+	Nullable<NativeExpression> processDown(const NativeExpression& t, bool& outContinue) const
+		{
+		@match NativeExpression(t)
+			-| Jump(target, expressions) ->> {
+				long jumpIndex = mJumpsVisited;
+				mJumpsVisited++;
+
+				auto it = mArgsToAugment.find(target);
+				if (it == mArgsToAugment.end())
+					return null();
+
+				ImmutableTreeVector<NativeExpression> newExpressions = expressions;
+
+				//depending on which jump are we in, we will be mapping our vectors to 
+				//target vectors very differently, and we need to ensure that the stashes
+				//get passed along appropriately
+				VectorJumpMapping jumpMap;
+				if (mFlow.jumpMappings().contains(make_pair(*mCurBlock, jumpIndex)))
+					jumpMap = *mFlow.jumpMappings()[make_pair(*mCurBlock, jumpIndex)];
+
+				for (VectorArgument var: it->second)
+					{
+					Nullable<NativeVariable> stashVar;
+
+					if (jumpMap.vectorArgumentMapping().contains(var))
+						{
+						VectorArgument mappedVar = *jumpMap.vectorArgumentMapping()[var];
+
+						auto it2 = mCurrentStashes.find(mappedVar);
+						if (it2 != mCurrentStashes.end())
+							stashVar = it2->second;
+						}
+					
+					if (stashVar)
+						newExpressions = newExpressions + stashVar->expr();
+					else
+						newExpressions = newExpressions + 
+							NativeExpression::Zero(NativeTypeFor<TypedFora::Abi::HomogenousVectorStash>::get());
+					}
+
+				return null() << NativeExpression::Jump(target, newExpressions);
+				}
+			-| Let(pointerVar, 
+						Load(Tagged(taggedExpr, HomogenousVectorLookup(vecExpr, indexExpr, nativeType))),
+						within
+						) ->> {
+
+				Nullable<VectorArgument> vectorRead = mFlow.valueForExpression(vecExpr).getSingleVectorArg();
+				
+				if (vectorRead && mCurrentStashes.find(*vectorRead) != mCurrentStashes.end())
+					{
+					outContinue = false;
+
+					NativeExpression onFailure = DiscoverBoundsCheckFailures::getBoundsCheckFailureExpression(taggedExpr);
+
+					NativeVariable currentStashVar = mCurrentStashes[*vectorRead];
+
+					NativeExpression updatedExpr = 
+						homogenousGetItemExpressionAndStashUpdate(
+							mCurrentStashes[*vectorRead].expr(),
+							vecExpr,
+							indexExpr, 
+							nativeType,
+							onFailure
+							);
+
+					NativeVariable updatedPointerAndStash = NativeVariable::Temp(*updatedExpr.type());
+
+					NativeVariable updatedStashVar = NativeVariable::Temp(
+						NativeTypeFor<TypedFora::Abi::HomogenousVectorStash>::get()
+						);
+
+					//extract any metadata that's already been pushed down onto any vector load continuations we might
+					//have floating around in here
+					auto metadatas = DiscoverContinuationMetadata::getMetadatas(taggedExpr);
+
+					lassert_dump(metadatas.size() == 1, metadatas.size() << " != 1\n" << prettyPrintString(metadatas)
+						<< "Expr = " << prettyPrintString(taggedExpr)
+						);
+
+					updatedExpr = pushMetadataOntoCallExpressions(updatedExpr, metadatas[0]);
+
+					mCurrentStashes[*vectorRead] = updatedStashVar;
+
+					updatedExpr = NativeExpression::Let(
+						updatedPointerAndStash,
+						updatedExpr,
+						NativeExpression::Let(
+							updatedStashVar,
+							updatedPointerAndStash.expr()[1],
+							NativeExpression::Let(
+								pointerVar,
+								updatedPointerAndStash.expr()[0].load(),
+								::transform(within, *this)
+								)
+							)
+						);
+
+					mCurrentStashes[*vectorRead] = currentStashVar;
+
+					return null() << updatedExpr;
+					}
+				}
+			-| _ ->> {}
+
+		return null();
+		}
+
+	
+	
+
+	template<class T>
+	Nullable<T> processDown(const T& t, bool& outContinue) const 
+		{
+		return null(); 
+		}
+	
+	Nullable<NativeType> processDown(const NativeType& t, bool& outContinue) const 
+		{
+		outContinue = false;
+		return null(); 
+		}
+	
+	template<class T>
+	Nullable<T> processUp(const T& t) const 
+		{
+		return null(); 
+		}
+
+private:
+	VectorVariableFlow& mFlow;
+
+	map<NativeBlockID, std::vector<VectorArgument> >& mArgsToAugment;
+
+	mutable Nullable<NativeBlockID> mCurBlock;
+
+	mutable map<VectorArgument, NativeVariable> mCurrentStashes;
+
+	mutable long mJumpsVisited;
+};
+
+class InsertVectorReadStashes {
+public:
+	InsertVectorReadStashes()
+		{
+		}
+	
+	
+	template<class T>
+	Nullable<T> processDown(const T& t, bool& outContinue) const { return null(); }
+	
+	Nullable<NativeType> processDown(const NativeType& t, bool& outContinue) const 
+		{
+		outContinue = false;
+		return null(); 
+		}
+	
+	template<class T>
+	Nullable<T> processUp(const T& t) const { return null(); }
+	
+	Nullable<NativeCFG> processDown(const NativeCFG& cfg, bool& outContinue) const
+		{
+		outContinue = false;
+
+		VectorVariableFlow flow(cfg);
+
+		ImmutableTreeSet<VectorArgument> argumentsToAugment = 
+			flow.calculateVectorArgsReadFromAndDownstream();
+
+		if (!argumentsToAugment.size())
+			return null();
+
+		//figure out which slots we're going to be passing information around for
+		map<NativeBlockID, std::vector<VectorArgument> > extraSlotsAllocated;
+		
+		for (auto arg: argumentsToAugment)
+			{
+			NativeBlockID block = arg.block();
+			extraSlotsAllocated[block].push_back(arg);
+			}
+
+		VectorStashUpdater updater(flow, extraSlotsAllocated);
+
+		auto result = ::transform(cfg, updater);
+
+		LOG_DEBUG << "flow is " << flow << " to produce " << result;
+
+		return null() << result;
+		}
+
+};
+
+NativeCFG insertVectorReadStashes(const NativeCFG& in)
+	{
+	return transform(in, InsertVectorReadStashes());
+	}
+
+}

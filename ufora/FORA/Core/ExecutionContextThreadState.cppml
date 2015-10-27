@@ -1,0 +1,906 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ExecutionContextThreadState.hppml"
+#include "ExecutionContextImpl.hppml"
+#include "PausedComputation.hppml"
+#include "ExecutionContextScope.hppml"
+
+#include "../../core/Logging.hpp"
+#include "../../core/Memory.hpp"
+#include "../../core/threading/ScopedThreadLocalContext.hpp"
+
+#include "ExecutionContextMemoryPool.hppml"
+#include "ExecutionContextConfiguration.hppml"
+#include "../ControlFlowGraph/ControlFlowGraphUtil.hppml"
+#include <boost/uuid/uuid_generators.hpp>
+#include <boost/uuid/uuid_io.hpp>
+
+#include "../Serialization/SerializedObject.hpp"
+#include "RefcountPool.hppml"
+#include "MemBlock.hpp"
+#include "MemBlockAllocator.hpp"
+#include "../VectorDataManager/VectorDataManager.hppml"
+#include "../VectorDataManager/VectorDataManagerImpl.hppml"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include "../../core/ScopedProfiler.hppml"
+#include "../../core/cppml/CPPMLPrettyPrinter.hppml"
+#include "../../core/threading/ScopedThreadLocalContext.hpp"
+#include "../../core/Memory.hpp"
+#include "../../core/StringUtil.hpp"
+#include "../../core/Logging.hpp"
+#include "../../core/Clock.hpp"
+#include "../../core/SymbolExport.hpp"
+#include "../../core/Memory.hpp"
+#include "../../core/PolymorphicSharedPtrBinder.hpp"
+#include "../VectorDataManager/PageRefcountTracker.hppml"
+#include "../../cumulus/SystemwidePageRefcountTracker.hppml"
+#include "ImplValContainerUtilities.hppml"
+
+#include "ValidateVectorRefcountsValueUpdater.hppml"
+#include "PageUnpagedVectorsValueUpdater.hppml"
+#include "StackValueModifyingStackFrameVisitor.hppml"
+#include "PrintStacktraceStackFrameVisitor.hppml"
+#include "RefcountPoolAddingStackFrameVisitor.hppml"
+#include "DestroyingStackFrameVisitor.hppml"
+#include "../Interpreter/CallFrame.hpp"
+#include "../Interpreter/EvalFrame.hpp"
+#include "../Interpreter/InterpreterFrame.hppml"
+#include "../Runtime.hppml"
+#include "../TypedFora/JitCompiler/TypedJumpTarget.hppml"
+#include "../TypedFora/TypedForaUtil.hppml"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include "../Native/NativeRuntimeContinuationValue.hppml"
+#include "../Native/NativeRuntimeCallTarget.hppml"
+#include "../TypedFora/ABI/ImplValVisitor.hppml"
+#include "../TypedFora/ABI/StackFrameWalker.hppml"
+#include "../TypedFora/ABI/Stackframes.hppml"
+
+using namespace Ufora::threading;
+
+namespace Fora {
+namespace Interpreter {
+
+ExecutionContextThreadState::ExecutionContextThreadState(
+								ExecutionContext* inActualExecutionContextPtr,
+								MemBlockAllocator& inStackAllocator,
+								PolymorphicSharedPtr<VectorDataManager> inVectorDataManager
+								) : 
+		mActualContextPtr(inActualExecutionContextPtr),
+		mStackAllocator(inStackAllocator),
+		mErrorState(ErrorState::None()),
+		mInitialized(false),
+		mWhichContinuationIx(cont_state_empty),
+		mVectorDataManager(inVectorDataManager)
+	{	
+	}
+
+ExecutionContextThreadState::~ExecutionContextThreadState()
+	{
+	if (!mKeepAlive.type().isNothing())
+		LOG_WARN << "Tearing down a nonempty mKeepAlive in ~ExecutionContextThreadState";
+	}
+
+void ExecutionContextThreadState::initialize()
+	{
+	if (!mInitialized)
+		{
+		mInitialized = true;
+		
+		LOG_DEBUG << "EC initialized. mem = " << 
+			Ufora::Memory::getTotalBytesAllocated() / 1024 / 1024.0;
+
+		try {
+			static_assert(cont_state_normal+1 == cont_state_exception, 
+				"expected cont_state_normal and cont_state_exception to be consecutive"
+				);
+
+			mNormalContinuations.setTo(
+				Runtime::getRuntime().getTypedForaCompiler()->generateDummyContinuation(
+					&mResult,
+					&mWhichContinuationIx,
+					cont_state_normal,
+					cont_state_normal + 2
+					)
+				);
+		
+			mRuntimeCallbacks.interruptContinuation = 
+				Runtime::getRuntime().getTypedForaCompiler()->generateDummyContinuation(
+						&mInterruptionResult,
+						&mWhichContinuationIx,
+						cont_state_interrupt
+						);
+				
+			mRuntimeCallbacks.cacheCallContinuation = 
+				Runtime::getRuntime().getTypedForaCompiler()->generateDummyContinuation(
+						&mCacheRequest,
+						&mWhichContinuationIx,
+						cont_state_cache_request
+						);
+			}
+		catch(std::logic_error& e) 
+			{
+			LOG_CRITICAL << "exception initializing an ExecutionContextThreadState: " << e.what();
+			throw e;
+			}
+		catch(...) 
+			{
+			LOG_CRITICAL << "unknown exception initializing an ExecutionContextThreadState";
+			throw;
+			}
+		}
+	}
+
+void ExecutionContextThreadState::teardown()
+	{
+	if (!mInitialized)
+		return;
+
+	lassert(mWhichContinuationIx != cont_state_error);
+	
+	if (isCacheRequest())
+		{
+		try {
+			destroyFrame(mCacheRequest.second[0]);
+			}
+		catch(std::logic_error& e)
+			{
+			throw std::logic_error(e.what() + 
+				std::string(". While destroying existing stackframe in CacheRequest"));
+			}
+		}
+		else
+	if (isInterrupted() || isVectorLoad())
+		{
+		try {
+			destroyFrame(mInterruptionResult.first);
+			}
+		catch(std::logic_error& e)
+			{
+			if (isInterrupted())
+				throw std::logic_error(e.what() + 
+					std::string(". error tearing down interrupted stack frame."));
+			else
+				throw std::logic_error(e.what() + 
+					std::string(". error tearing down VectorLoad stack frame."));
+			}
+		}
+		else
+	if (isFinished())
+		//no frame to destroy - just the object
+		{
+		}
+	
+	try {
+		mKeepAlive = ImplValContainer();
+		}
+	catch(std::logic_error& e)
+		{
+		throw std::logic_error(e.what() + 
+			std::string(". error destroying mKeepAlive in ExecutionContextThreadState::teardown."));
+		}
+	
+	try {
+		mComputationLog = ImplValContainer();
+		}
+	catch(std::logic_error& e)
+		{
+		throw std::logic_error(e.what() + 
+			std::string(". error destroying mComputationLog in ExecutionContextThreadState::teardown."));
+		}
+
+	mInterruptionResult.second = TypedFora::Abi::VectorLoadRequest();
+	mWhichContinuationIx = cont_state_empty;
+	mErrorState = ErrorState::None();
+	}
+
+
+bool ExecutionContextThreadState::isEmpty(void) const
+	{
+	return mWhichContinuationIx == cont_state_empty && mErrorState.isNone();
+	}
+
+bool ExecutionContextThreadState::isError(void) const
+	{
+	return mWhichContinuationIx == cont_state_error && mErrorState.isNone();
+	}
+
+bool ExecutionContextThreadState::isInterrupted(void) const
+	{
+	return mWhichContinuationIx == cont_state_interrupt &&
+				!mInterruptionResult.second.getHandle() && 
+				mErrorState.isNone();
+	}
+
+bool ExecutionContextThreadState::isVectorLoad(void) const
+	{
+	return mWhichContinuationIx == cont_state_interrupt &&
+				mInterruptionResult.second.getHandle() && 
+				mErrorState.isNone();
+	}
+
+Fora::BigVectorSlice ExecutionContextThreadState::getVectorLoad(void) const
+	{
+	lassert(isVectorLoad());
+	
+	return Fora::BigVectorSlice(
+		mInterruptionResult.second.getHandle()->pagedValuesIdentity().guid(),
+		mInterruptionResult.second.getIndexLow(),
+		mInterruptionResult.second.getIndexHigh()
+		);
+	}
+
+bool ExecutionContextThreadState::isCacheRequest(void) const
+	{
+	return mWhichContinuationIx == cont_state_cache_request && 
+			mErrorState.isNone();
+	}
+		
+bool ExecutionContextThreadState::isFinished(void) const
+	{
+	return mWhichContinuationIx == cont_state_normal ||
+			mWhichContinuationIx == cont_state_exception ||
+			!mErrorState.isNone();
+	}
+
+const ImplVal& ExecutionContextThreadState::getCacheRequestTuple() const
+	{
+	return mCacheRequest.first;
+	}
+
+void ExecutionContextThreadState::prepareStateToEnterNativeCode()
+	{
+	mWhichContinuationIx = cont_state_error;
+
+	mInterruptionResult.second = VectorLoadRequest();
+	}
+
+void ExecutionContextThreadState::resumeComputation(
+						const ImplValContainer& inValue,
+						bool isException
+						)
+	{
+	initialize();
+	
+	lassert(isCacheRequest());
+	
+	prepareStateToEnterNativeCode();
+	
+	//make sure there is enough space to write into the terminal continuation
+	NativeRuntimeContinuationValue<1> cont = mCacheRequest.second[isException ? 1 : 0];
+
+	ImplVal val = mActualContextPtr->getRefcountPool()->add(inValue.getReference());
+
+	resume(cont, &val, sizeof(ImplVal));
+	
+	checkForNaturalResumption();
+	}
+
+void ExecutionContextThreadState::resumeInterruptedComputationInternally()
+	{
+	prepareStateToEnterNativeCode();
+
+	//make sure there is enough space to write into the terminal continuation
+	NativeRuntimeContinuationValue<1> cont = mInterruptionResult.first;
+
+	uword_t toss;
+	
+	resume(cont, &toss, 0); //takes nothing
+	}
+
+void ExecutionContextThreadState::evaluateFunctionPointer(
+					const TypedFora::TypedJumpTarget& toCall, 
+					const ImplValContainer& inArgs,
+					RefcountPool* inRefcountPool
+					)
+	{
+	initialize();
+	
+	if (mWhichContinuationIx != cont_state_empty)
+		teardown();
+
+	
+	ImmutableTreeVector<JudgmentOnValue> jovs = 
+		TypedFora::jovListFromTypes(toCall.callSignature())
+		;
+
+	JOVT signature = JOVT::Unnamed(jovs);
+
+	//first make sure that the arguments match the signature
+	lassert_dump(
+		signature.covers(inArgs.getReference()),
+		"Can't call a function expecting "
+			<< prettyPrintString(signature) << " with args "
+			<< prettyPrintString(inArgs) << " because they don't match!"
+		);
+	
+	
+	mKeepAlive = inArgs;
+	
+	ImplVal inputVal = mKeepAlive.getReference();
+	
+	prepareStateToEnterNativeCode();
+
+	NativeRuntimeCallTarget callTarget;
+
+		{
+		callTarget = Runtime::getRuntime().getTypedForaCompiler()->
+			generateStackframeAndCallTargetFromArgTuple(
+				toCall,
+				TypedFora::TypedContinuation(
+					NativeRuntimeUntypedContinuation(
+						mNormalContinuations,
+						&mRuntimeCallbacks
+						)
+					),
+				mStackAllocator.getMemBlockPtr(),
+				inputVal,
+				inRefcountPool
+				);
+		}
+	
+	callNativeRuntimeCallTarget(callTarget);
+	
+	checkForNaturalResumption();
+	}
+
+void ExecutionContextThreadState::placeInEvaluationState(
+							const ImplValContainer& inArgs,
+							boost::function1<ImplValContainer, ImplValContainer> valueImportFunction
+							)
+	{
+	ControlFlowGraph graph = ControlFlowGraphUtil::canonicalApplyGraph(*inArgs.tupleGetSize());
+
+	ImmutableTreeVector<ImplValContainer> arguments;
+	for (long k = 0; k < *inArgs.tupleGetSize(); k++)
+		arguments = arguments + *inArgs.tupleGetItem(k);
+
+	NativeRuntimeContinuationValueVector vals = 
+		instantiatePausedComputation(
+			PausedComputation(
+				emptyTreeVec() + 
+					PausedComputationFrame(
+						arguments,
+						graph,
+						null()
+						),
+				null()
+				),
+			valueImportFunction
+			);
+
+	lassert(vals.size()==1)
+
+	mKeepAlive = valueImportFunction(inArgs);
+
+	mInterruptionResult.first = vals[0];
+	mInterruptionResult.second = TypedFora::Abi::VectorLoadRequest();
+	
+	mWhichContinuationIx = cont_state_interrupt;
+	}
+
+
+void ExecutionContextThreadState::evaluate(const ImplValContainer& inArgs)
+	{
+	initialize();
+
+	if (mWhichContinuationIx != cont_state_empty)
+		teardown();
+
+	mKeepAlive = inArgs;
+
+	ImplVal inputVal = mKeepAlive.getReference();
+	
+	prepareStateToEnterNativeCode();
+	
+	ControlFlowGraph graph = ControlFlowGraphUtil::canonicalApplyGraph(*inArgs.tupleGetSize());
+
+	EvalFrame* evalFrame = EvalFrame::allocate(
+		graph, 
+		null(), 
+		mActualContextPtr->getStackAllocator(),
+		mActualContextPtr->getImpl()->allocateNewUniqueEvalFrameID(),
+		null()
+		);
+
+	evalFrame->callFrame.conts = mNormalContinuations;
+	evalFrame->callFrame.callbacks = &mRuntimeCallbacks;
+	
+	evalFrame->unpackUnownedTupleIntoPooledArguments(
+		inArgs.getReference(), 
+		mActualContextPtr->getRefcountPool()
+		);
+
+	NativeRuntimeContinuationValue<1> term;
+		
+	term = callInterpreter(Fora::Interpreter::cont_internal, evalFrame);
+	
+	lassert(!term.jumpPtr().isEmpty());
+	
+	callNativeRuntimeCallTarget(term.getTypedForaCompilerCallTarget(0));
+	
+	checkForNaturalResumption();
+	}
+
+
+void ExecutionContextThreadState::resumeComputation()
+	{
+	initialize();
+
+	if (isFinished())
+		return;
+
+	lassert_dump(
+			isInterrupted() || 
+			isVectorLoad(),
+		(isCacheRequest() ? "cache request" :
+			isEmpty() ? "empty" : 
+			isFinished() ? "finished" : 
+			isError() ? "error" : 
+			"unknown")
+		);
+	
+	resumeInterruptedComputationInternally();
+	
+	checkForNaturalResumption();
+	}
+
+bool ExecutionContextThreadState::isRunningInInterpreter() const
+	{
+	return Runtime::getRuntime().getTypedForaCompiler()->isWrappedCPPCallbackPtr(
+				mInterruptionResult.first.jumpPtr()
+				);
+	}
+
+NativeRuntimeContinuationValue<1>
+ExecutionContextThreadState::callInterpreter(uword_t inBlockID, void* inCallFrame)
+	{
+	ExecutionContextScope scope(*mActualContextPtr, ExecutionContextScope::interpreter);
+
+	try {
+		return InterpreterFrame::interpreter(mStackAllocator.getMemBlockPtr(), inBlockID, inCallFrame);
+		}
+	catch (std::logic_error& e)
+		{
+		LOG_CRITICAL << "ExecutionContextThreadState caught an unexpected exception: " << e.what();
+		throw;
+		}
+	catch (...)
+		{
+		LOG_CRITICAL << "ExecutionContextThreadState caught an unexpected unknown exception.";
+		throw;
+		}
+	}
+
+void ExecutionContextThreadState::callNativeRuntimeCallTarget(const NativeRuntimeCallTarget& inCallTarget)
+	{
+	ExecutionContextScope scope(*mActualContextPtr, ExecutionContextScope::machineCode);
+	
+	try {
+		Runtime::getRuntime().getTypedForaCompiler()->callFunction(inCallTarget, mStackAllocator.getMemBlockPtr());
+		}
+	catch (std::logic_error& e)
+		{
+		LOG_CRITICAL << "ExecutionContextThreadState caught an unexpected exception: " << e.what();
+		throw;
+		}
+	catch (...)
+		{
+		LOG_CRITICAL << "ExecutionContextThreadState caught an unexpected unknown exception.";
+		throw;
+		}
+	}
+
+
+void ExecutionContextThreadState::resume(
+			NativeRuntimeContinuationValue<1> value,
+			void* data,
+			uword_t bytes
+			)
+	{
+	initialize();
+	
+	memcpy(value.slots()[0].target(), data, bytes);
+	
+	callNativeRuntimeCallTarget(
+		value.getTypedForaCompilerCallTarget(0)
+		);
+	}
+
+
+
+void ExecutionContextThreadState::checkForNaturalResumption()
+	{
+	while (isInterrupted() || isVectorLoad())
+		{
+		bool shouldResumeImmediately = false;
+
+		//check whether this was a vector load
+		if (mInterruptionResult.second.isPopulated())
+			{
+			double t0 = curClock();
+
+			TypedFora::Abi::VectorLoadRequest request = mInterruptionResult.second;
+
+			TypedFora::Abi::VectorHandle::LoadCheckResult result = 
+				TypedFora::Abi::VectorHandle::LoadCheckResult::Failed;
+
+			lassert(mActualContextPtr->getExecutionContextMemoryPool()->isExecuting());
+			lassert(mActualContextPtr->getExecutionContextMemoryPool()->hasAcquiredPageLocks());
+
+			if (request.getHandle() && 
+					!mVectorDataManager->getImpl()
+						->contextMayMapVectorHandles(
+							mActualContextPtr->getImpl().get()
+							)
+						)
+				{
+				LOG_DEBUG << "Context " << mActualContextPtr 
+					<< " unmapping everything because we may not map vector handles.";
+
+				result = TypedFora::Abi::VectorHandle::LoadCheckResult::UnmapAllAndTryAgain;
+				}
+				else
+			if (request.getHandle())
+				{
+				result = request.getHandle()->attemptToLoadValues(
+					&*mVectorDataManager,
+					request.getIndexLow(),
+					request.getIndexHigh()
+					);
+
+				LOG_DEBUG << "calling attemptToLoadValues " << request.getIndexLow() << " to " << request.getIndexHigh() 
+					<< " within " << request.getHandle()
+					<< " took " << curClock() - t0;
+				}
+
+			if (curClock() - t0 > .05)
+				LOG_WARN << "Took " << curClock() - t0 << " to call attemptToLoadValues on "
+					<< "[" << request.getIndexLow() << "," << request.getIndexHigh() << ") in "
+					<< request.getHandle()
+					;
+
+			if (result == TypedFora::Abi::VectorHandle::LoadCheckResult::UnmapAllAndTryAgain)
+				{
+				LOG_DEBUG << "Context " << mActualContextPtr << " unmapping everything.";
+				
+				mActualContextPtr->getImpl()->scheduleVdmCheck();
+				shouldResumeImmediately = false;
+				mInterruptionResult.second = TypedFora::Abi::VectorLoadRequest();
+				}
+				else
+			if (result == TypedFora::Abi::VectorHandle::LoadCheckResult::Success)
+				{
+				LOG_DEBUG << "Context " << mActualContextPtr << " successfully mapped " << request.getHandle() << ".";
+				
+				shouldResumeImmediately = true;
+				mInterruptionResult.second = TypedFora::Abi::VectorLoadRequest();
+				}
+				else 
+			if (result == TypedFora::Abi::VectorHandle::LoadCheckResult::Failed)
+				{
+				LOG_DEBUG << "Context " << mActualContextPtr << " failed to map " << request.getHandle() << ".";				
+
+				shouldResumeImmediately = false;
+				}
+			else
+				{
+				lassert_dump(false, "there are no other possibilities for the LoadCheckResult");
+				}
+			}
+		
+		if (shouldResumeImmediately)
+			resumeInterruptedComputationInternally();
+		else
+			return;
+		}
+	}
+
+void ExecutionContextThreadState::setResult(const ImplValContainer& finalValue, bool isException)
+	{
+	lassert(mWhichContinuationIx == cont_state_empty);
+
+	mResult = mActualContextPtr->getRefcountPool()->add(finalValue.getReference());
+
+	if (isException)
+		mWhichContinuationIx = cont_state_exception;
+	else
+		mWhichContinuationIx = cont_state_normal;
+	
+	}
+
+void ExecutionContextThreadState::destroyFrame(
+		NativeRuntimeContinuationValue<1> stackFramePtr
+		)
+	{
+	DestroyingStackFrameVisitor visitor(mStackAllocator);
+	TypedFora::Abi::StackFrameWalker::visitStackFrame(stackFramePtr.base(), visitor);
+	}
+
+
+void ExecutionContextThreadState::resumePausedComputation(
+						const PausedComputation& computation,
+						boost::function1<ImplValContainer, ImplValContainer> valueImportFunction
+						)
+	{
+	NativeRuntimeContinuationValueVector vals = 
+		instantiatePausedComputation(computation, valueImportFunction);
+
+	if (vals.size() == 0)
+		{
+		lassert_dump(isFinished(), "Expected to be finished if we have no continuations");
+		}
+		else
+	if (vals.size()==1)
+		{
+		mInterruptionResult.first = vals[0];
+		mInterruptionResult.second = TypedFora::Abi::VectorLoadRequest();
+		
+		mWhichContinuationIx = cont_state_interrupt;
+		}
+	else
+		{
+		mCacheRequest.second.setTo(vals);
+		
+		mCacheRequest.first = CSTValue().getReference();
+
+		mWhichContinuationIx = cont_state_cache_request;
+		}
+	}
+
+void ExecutionContextThreadState::resumePausedComputationAsCacheRequest(
+						const PausedComputation& computation,
+						const ImplValContainer& cacheRequestTuple,
+						boost::function1<ImplValContainer, ImplValContainer> valueImportFunction
+						)
+	{
+	NativeRuntimeContinuationValueVector vals = 
+		instantiatePausedComputation(computation, valueImportFunction);
+
+	lassert(vals.size() == 1);
+
+	mCacheRequest.second.setTo(vals + vals.slots()[0]);
+
+	mCacheRequest.second.slots()[0].blockID() = cont_cont_left;
+	mCacheRequest.second.slots()[1].blockID() = cont_cont_right;
+
+	mCacheRequest.first = mActualContextPtr->getRefcountPool()->add(
+		valueImportFunction(cacheRequestTuple).getReference()
+		);
+
+	mWhichContinuationIx = cont_state_cache_request;
+	}
+
+NativeRuntimeContinuationValueVector
+ExecutionContextThreadState::instantiatePausedComputation(	
+						const PausedComputation& computation,
+						boost::function1<ImplValContainer, ImplValContainer> valueImportFunction
+						)
+	{
+	if (computation.frames().size() == 0)
+		{
+		lassert_dump(computation.pendingResult(), "can't instantiate an empty computation");
+
+		ImplValContainer imported = valueImportFunction(computation.pendingResult()->first);
+
+		setResult(
+			mActualContextPtr->getRefcountPool()->add(imported.getReference()), 
+			computation.pendingResult()->second
+			);
+
+		return NativeRuntimeContinuationValueVector();
+		}
+
+	ImmutableTreeVector<PausedComputationFrame> frames = computation.frames();
+
+	if (computation.pendingResult())
+		{
+		frames = frames + 
+			PausedComputationFrame(
+				emptyTreeVec() + valueImportFunction(computation.pendingResult()->first),
+				ControlFlowGraphUtil::canonicalReturnGraph(computation.pendingResult()->second),
+				null()
+				);
+		}
+
+	//this is the return stackframe address for the outermost function call
+	NativeRuntimeContinuationValueVector curFramePtrPair(mNormalContinuations);
+
+	for (long frameIx = 0; frameIx < frames.size(); frameIx++)
+		{
+		std::vector<ImplVal> values;
+
+		PausedComputationFrame frame(frames[frameIx]);
+
+		for (long k = 0; k < frame.values().size();k++)
+			{
+			ImplValContainer importedValue = valueImportFunction(frame.values()[k]);
+
+			values.push_back(
+				mActualContextPtr->getRefcountPool()->add(
+					importedValue.getReference()
+					)
+				);
+			}
+
+		EvalFrame* evalFramePtr = EvalFrame::allocate(
+			frame.graph(), 
+			frame.label(), 
+			mActualContextPtr->getStackAllocator(),
+			mActualContextPtr->getImpl()->allocateNewUniqueEvalFrameID(),
+			null()
+			);
+
+		evalFramePtr->copyPooledImplValsIntoFrame(values);
+
+		evalFramePtr->callFrame.conts.setTo(curFramePtrPair);
+		evalFramePtr->callFrame.callbacks = &mRuntimeCallbacks;
+
+		NativeRuntimeContinuationValueVector continuations(
+			Runtime::getRuntime().getTypedForaCompiler()->wrapCPPCallback(
+				&InterpreterFrame::interpreter,
+				evalFramePtr,
+				mStackAllocator.getMemBlockPtr()
+				)
+			);
+
+		if (frameIx + 1 == frames.size())
+			{
+			continuations = continuations +
+				NativeRuntimeContinuationSlot(
+					cont_internal,
+					&evalFramePtr->resultValue
+					);
+			}
+		else
+			{
+			continuations = continuations + 
+				NativeRuntimeContinuationSlot(
+					cont_cont_left,
+					&evalFramePtr->resultValue
+					) +
+				NativeRuntimeContinuationSlot(
+					cont_cont_right,
+					&evalFramePtr->resultValue
+					)
+					;
+			}
+
+		curFramePtrPair = continuations;
+		}
+
+	return curFramePtrPair;
+	}
+
+bool ExecutionContextThreadState::isExceptionResult()
+	{
+	lassert(isFinished());
+
+	return mWhichContinuationIx == cont_state_exception;
+	}
+
+ErrorState ExecutionContextThreadState::getErrorState() const
+	{
+	return mErrorState;
+	}
+
+void ExecutionContextThreadState::setErrorState(const ErrorState& inErrorState)
+	{
+	mErrorState = inErrorState;
+	}
+
+void ExecutionContextThreadState::logAMessage(const ImplValContainer& message, MemoryPool* inPool)
+	{
+	if (mComputationLog.type().isNothing())
+		mComputationLog = ImplValContainerUtilities::createVector(
+			TypedFora::Abi::VectorRecord()
+			);
+
+	mComputationLog.cast<VectorRecord>() = 
+		mComputationLog.cast<VectorRecord>().append(
+			inPool, 
+			message,
+			&*mVectorDataManager,
+			boost::bind(&Fora::Interpreter::ExecutionContext::newVectorHash, mActualContextPtr)
+			);
+	}
+
+void ExecutionContextThreadState::logSomeMessages(const ImplValContainer& messagesOrNone, MemoryPool* inPool)
+	{
+	if (messagesOrNone.type().isNothing())
+		return;
+
+	lassert(messagesOrNone.type().isVector());
+
+	if (mComputationLog.type().isNothing())
+		mComputationLog = ImplValContainerUtilities::createVector(
+			TypedFora::Abi::VectorRecord()
+			);
+
+	mComputationLog.cast<VectorRecord>() = 
+		VectorRecord::concatenate(
+			mComputationLog.cast<VectorRecord>(),
+			messagesOrNone.cast<VectorRecord>(),
+			inPool,
+			&*mVectorDataManager,
+			mActualContextPtr->newVectorHash()
+			);
+	}
+
+void ExecutionContextThreadState::visitStackFramesAndValues(TypedFora::Abi::StackFrameVisitor& visitor)
+	{
+	visitor.visitFreeValue(mKeepAlive);
+	visitor.visitFreeValue(mComputationLog);
+
+	if (isInterrupted() || isVectorLoad())
+		{
+		visitStackFrames(
+			visitor, 
+			mInterruptionResult.first
+			);
+
+		if (isVectorLoad())
+			{
+			TypedFora::Abi::PooledVectorRecord vec(
+				mInterruptionResult.second.getHandle(), 
+				mInterruptionResult.second.getHandle()->size(),
+				0,
+				1
+				);
+
+			visitor.visitFreeValue(Type::Vector(), (void*)&vec, false);
+
+			mInterruptionResult.second.setHandle(vec.getVectorRecord().dataPtr());
+			}
+		}
+		else
+	if (isCacheRequest())
+		{
+		visitStackFrames(
+			visitor, 
+			mCacheRequest.second[0]
+			);
+
+		visitor.visitFreeValue(mCacheRequest.first, false);
+		}
+		else
+	if (isFinished())
+		{
+		if (!mErrorState.isNone())
+			return;
+
+		visitor.visitFreeValue(mResult, false);
+		}
+		else
+	if (isEmpty() || isError())
+		{
+		}
+	else
+		{
+		lassert_dump(false, "Unknown State");
+		}
+	}
+
+void ExecutionContextThreadState::visitStackFrames(
+		TypedFora::Abi::StackFrameVisitor& visitor,
+		NativeRuntimeContinuationValue<1> stackFramePtr
+		)
+	{
+	TypedFora::Abi::StackFrameWalker::visitStackFrame(stackFramePtr.base(), visitor);
+	}
+
+}
+}
+

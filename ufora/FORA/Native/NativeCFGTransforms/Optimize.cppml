@@ -1,0 +1,159 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Transforms.hppml"
+#include "InsertVectorReadStashes.hppml"
+#include "../../../core/Logging.hpp"
+#include "../../../core/StringUtil.hpp"
+#include "../../../core/Clock.hpp"
+#include "../../Interpreter/RuntimeConfig.hppml"
+
+#include "EliminateOverlappingRefcounts.hppml"
+
+namespace NativeCFGTransforms {
+
+NativeCFG doOnePassOfOptimization(const NativeCFG& in, const RuntimeConfig& inConfig)
+	{
+	NativeCFG tr = in;
+
+	ImmutableTreeSet<NativeVariable> multiplyBound = verifyNoVarsBoundTwice(tr);
+
+	if (multiplyBound.size())
+		{
+		tr = NativeCFGTransforms::renameVariables(tr);
+		
+		if (inConfig.extraDebugChecksDuringCompilation())
+			{
+			lassert_dump(tr.freeVariables().size() == 0,
+				"free variables created by renamer");
+			
+			multiplyBound = verifyNoVarsBoundTwice(tr);
+			lassert_dump(multiplyBound.size()==0,
+				"renameVariables failed to make sure every variable is unique. "
+					<< prettyPrintString(multiplyBound)
+					<< " are multiply bound in\n"
+					<< prettyPrintString(tr)
+					<< "\nwhich is a rename of \n"
+					<< prettyPrintString(tr)
+					);
+			}
+		}
+	
+	tr = NativeCFGTransforms::cleanupAndSimplify(tr);
+
+	tr = NativeCFGTransforms::insertVectorReadStashes(tr);
+
+	if (inConfig.extraDebugChecksDuringCompilation())
+		lassert_dump(tr.freeVariables().size() == 0,
+			"free variables "
+				<< prettyPrintString(tr.freeVariables())
+				<< " created by cleanupAndSimplify.\n"
+				<< prettyPrintString(tr) << "\n"
+				<< "became\n"
+				<< prettyPrintString(tr)
+				);
+	
+	if (inConfig.applyRefcountOptimization())
+		{
+		tr = NativeCFGTransforms::eliminateOverlappingRefcounts(tr);
+	
+		if (inConfig.extraDebugChecksDuringCompilation())
+			lassert_dump(tr.freeVariables().size() == 0,
+				"free variables "
+					<< prettyPrintString(tr.freeVariables())
+					<< " created by eliminateOverlappingRefcounts.\n"
+					);
+		}
+
+	return tr;
+	}
+
+NativeCFG optimize(const NativeCFG& in, const RuntimeConfig& inConfig)
+	{
+	lassert_dump(in.freeVariables().size() == 0,
+		"can't optimize with free variables. cfg = \n" << prettyPrintString(in));
+
+	double t0 = curClock();
+	
+	NativeCFG tr = in;
+	bool done = false;
+	uint32_t passes = 0;
+	uint32_t renames = 0;
+	uint32_t simplifies = 0;
+	
+	tr = doOnePassOfOptimization(tr, inConfig);
+	tr = doOnePassOfOptimization(tr, inConfig);
+	/*
+	while (!done)
+		{
+		NativeCFG newCFG = doOnePassOfOptimization(tr, inConfig);
+
+		passes++;
+		if (passes > 20)
+			{
+			LOG_CRITICAL << "optimize passes getting high: " << passes
+				<< "\ncode:\n" << prettyPrintString(tr);
+			}
+		
+		LOG_INFO << "Optimization pass " << passes << " after " 
+				<< curClock() - t0 << " seconds. complexity " << tr.complexity() << " -> " << newCFG.complexity();
+
+		if (newCFG == tr)
+			done = true;
+			else
+			tr = newCFG;
+		
+		}*/
+
+	NativeCFG orig = tr;
+	
+	lassert_dump(tr.freeVariables().size() == 0,
+		"free variables " << prettyPrintString(tr.freeVariables())
+			<< " created by hoisting "
+			<< prettyPrintString(orig)
+			<< "\n\ninto\n\n"
+			<< prettyPrintString(tr)
+			);
+	
+	ImmutableTreeSet<NativeVariable> multiplyBound = verifyNoVarsBoundTwice(tr);
+	lassert_dump(multiplyBound.size() == 0,
+		"variables "
+			<< prettyPrintString(multiplyBound)
+			<< " were bound in multiple places in\n"
+			<< Ufora::indent(prettyPrintString(tr)));
+	lassert_dump(tr.freeVariables().size() == 0,
+		"optimizing\n"
+			<< Ufora::indent(prettyPrintString(in)) << "\n"
+			<< "produced free variables "
+			<< prettyPrintString(tr.freeVariables()) << " in \n"
+			<< Ufora::indent(prettyPrintString(tr))
+			<< "\n"
+			);
+
+	//if (curClock() - t0 > .01)
+		LOG_INFO << "optimizing CFG of complexity "
+			<< in.complexity() << " and height " << in.height()
+			<< " to complexity " << tr.complexity()
+			<< " and height " << tr.height()
+			<< " took " << curClock() - t0
+			;
+	
+	return tr;
+	}
+	
+}
+		
+		
+

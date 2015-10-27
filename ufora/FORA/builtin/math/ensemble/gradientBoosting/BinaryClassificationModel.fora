@@ -1,0 +1,244 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#Markdown("""### BinaryClassificationModel
+
+#### Description
+
+A class representing gradient-boosted binary classification tree 
+model fit to data.
+
+""")
+class {
+    // mAdditiveRegressionTree essentially gives the class-0 probability
+    member mAdditiveRegressionTree;
+    member mX;
+    member classes;
+    member mXDimensions;
+    member m_yAsSeries;
+    member mLoss;
+    member mRegressionTreeBuilder;
+    member mLearningRate;
+    member mInputTransformFun;
+
+    mixin classifierMixin;
+
+    `hidden
+    predictionFunction_: fun(row) {
+        if (predictProbaFun_(row) >= 0.5)
+            return classes[0]
+        return classes[1]
+        };
+
+    deviance: 
+#Markdown(
+"""#### Usage
+
+    model.deviance(X, y)
+
+#### Description
+
+Compute the binomial deviance (average negative log-likihood) of the 
+instances in predictors `X` with responses `y`.
+
+""")
+    fun(X, yTrue) {
+        assertions.assertEqual(size(X), size(yTrue));
+
+        let probabilities = predictProbability(X);
+
+        let classZero = classes[0];
+        let tr = sum(0, size(X),
+            fun(ix) {
+                let tr = 
+                    if (yTrue[ix] == classZero)
+                        probabilities[ix]
+                    else 
+                        1 - probabilities[ix]
+                    ;
+                return math.log(tr);
+                }
+            ) / size(X)
+
+        return -tr
+        };
+
+    predictProbability: 
+#Markdown("""#### Usage
+
+    classificationModel.predictProbability(dataframe.DataFrame(df))
+    classificationModel.predictProbability(row)
+
+#### Description
+
+Return probability estimates of the rows of a dataframe `df`, or 
+of a single row `row`. Each such estimate is a vector of length 
+`classificationModel.nClasses`, with order corresponding to 
+`classificationModel.classes`.
+""")
+    fun
+    (dataframe.DataFrame(df)) {
+        df.rowApply(self.predictProbaFun_)
+        }
+    (row) {
+        self.predictProbaFun_(row)
+        };
+
+    `hidden
+    predictProbaFun_: fun(row) {
+        if (mInputTransformFun is not nothing)
+            row = mInputTransformFun(row)
+
+        return 1.0 / (1.0 + math.exp(2.0 * mAdditiveRegressionTree.predict(row)));
+        };
+
+    `hidden
+    pseudoResidualsAndRegressionValues: fun(previousRegressionValues) {
+        let regressionValues = 
+            if (previousRegressionValues is nothing) {
+                mAdditiveRegressionTree.predict(mX);
+                }
+            else {
+                previousRegressionValues + mAdditiveRegressionTree.getTree(-1).predict(mX)
+                }
+            ;
+
+        return (mLoss.negativeGradient(m_yAsSeries, regressionValues, classes), 
+                regressionValues)
+        };
+
+    `hidden
+    static getInitialModel: 
+    fun(X, yAsSeries, classes, learningRate, treeBuilderArgs, inputTransformFun) {
+        assertions.assertEqual(size(classes), 2);
+
+        let loss = losses.binomialLoss;
+
+        let additiveRegressionTree = loss.initialModel(classes, yAsSeries);
+
+        let XDimensions = Vector.range(X.numColumns);
+
+        let baseModelBuilder = math.tree.RegressionTreeBuilder(*treeBuilderArgs);
+
+        createInstance(
+            cls, 
+            mAdditiveRegressionTree: additiveRegressionTree,
+            mX: X, 
+            classes: classes, 
+            mXDimensions: XDimensions,
+            m_yAsSeries: yAsSeries, 
+            mLoss: loss,
+            mRegressionTreeBuilder: baseModelBuilder,
+            mLearningRate: learningRate,
+            mInputTransformFun: inputTransformFun
+            );
+        };
+
+    `hidden
+    boost: fun(pseudoResiduals) {
+        let localX = mX;
+        let yDim = localX.numColumns;
+
+        let nextRegressionTree = 
+            mRegressionTreeBuilder.fit_(
+                localX.addColumn(pseudoResiduals),
+                yDim: yDim,
+                xDimensions: mXDimensions,
+                leafValueFun: mLoss.leafValueFun(mLearningRate)
+                )
+
+        addRegressionTree(nextRegressionTree)
+        };
+
+    `hidden
+    addRegressionTree: fun(nextRegressionTree) {
+        BinaryClassificationModel(
+            mAdditiveRegressionTree: mAdditiveRegressionTree + nextRegressionTree,
+            mX: mX, 
+            classes: classes,
+            mXDimensions: mXDimensions,
+            m_yAsSeries: m_yAsSeries, 
+            mLoss: mLoss,
+            mRegressionTreeBuilder: mRegressionTreeBuilder,
+            mLearningRate: mLearningRate,
+            mInputTransformFun: mInputTransformFun
+            );
+        };
+
+    featureImportances: 
+    #Markdown(
+        """#### Usage
+
+            binaryClassificationModel.featureImportances()
+
+        #### Description
+
+        Return a `math.tree.FeatureImportances` object, which summarizes a measure of 
+        feature importance for the regression tree proposed by Breiman et al.
+
+        Element-wise, this measure gives the average feature importance for each of 
+        the tree-wise importances of the feature for each of the trees making up 
+        the GBM ensemble.
+
+        The tree-wise importance of feature `i` is a sort of weighted sum of 
+        impurity improvements of any internal nodes in the tree for which feature 
+        `i` is the split dimension.
+
+        Feature importances are normalized to sum to 1 with larger values being more
+        "important".
+
+        """)
+    fun()
+        {
+        let importances = rawFeatureImportances();
+
+        math.tree.FeatureImportances(importances, mX.columnNames);
+        };
+
+    rawFeatureImportances: 
+    #Markdown(
+        """#### Usage
+
+            binaryClassificationModel.rawFatureImportances()
+
+        #### Description
+
+        Return Vector of feature importance for the regression tree proposed by 
+        Breiman et al.
+
+        Element-wise, this measure gives the average feature importance for each of 
+        the tree-wise importances of the feature for each of the trees making up 
+        the GBM ensemble.
+
+        The tree-wise importance of feature `i` is a sort of weighted sum of 
+        impurity improvements of any internal nodes in the tree for which feature 
+        `i` is the split dimension.
+
+        Feature importances are normalized to sum to 1 with larger values being more
+        "important".
+
+        """)
+    fun()
+        {
+        let featureImportancesByTree =
+            mAdditiveRegressionTree.trees()[1,].apply(
+                fun(tree) { math.Matrix(tree.rawFeatureImportances()) }
+                );
+        let tr = featureImportancesByTree.sum();
+
+        return (tr / (mAdditiveRegressionTree.numTrees() - 1.0)).columnMajorData();
+        };
+    };
+

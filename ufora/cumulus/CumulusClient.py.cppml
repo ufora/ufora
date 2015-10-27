@@ -1,0 +1,397 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "CumulusClient.hppml"
+
+#include <stdint.h>
+#include <boost/python.hpp>
+#include "../core/threading/Queue.hpp"
+#include "../networking/SerializedChannel.hpp"
+#include "../networking/MultiChannel.hpp"
+#include "../networking/OrderedMessage.hppml"
+#include "../core/python/ScopedPyThreads.hpp"
+#include "../core/python/CPPMLWrapper.hpp"
+#include "../native/Registrar.hpp"
+#include "../core/PolymorphicSharedPtrFuncFromMemberFunc.hpp"
+#include "../FORA/Serialization/SerializedObjectFlattener.hpp"
+#include "../FORA/Serialization/SerializedObjectFlattenerStream.hpp"
+#include "CumulusClientToWorkerMessage.hppml"
+#include "CumulusWorkerToClientMessage.hppml"
+
+using namespace Cumulus;
+
+typedef Channel<std::string, std::string>::pointer_type string_channel_ptr;
+typedef Channel<
+			OrderedMessage<CumulusWorkerToClientMessage>,
+			OrderedMessage<CumulusClientToWorkerMessage>
+		> ordered_worker_to_client_channel_type;
+
+typedef Channel<
+			OrderedMessage<CumulusClientToWorkerMessage>,
+			OrderedMessage<CumulusWorkerToClientMessage>
+		> ordered_client_to_worker_channel_type;
+
+typedef SerializedChannel<
+			OrderedMessage<CumulusWorkerToClientMessage>,
+			OrderedMessage<CumulusClientToWorkerMessage>,
+			SerializedObjectFlattenerSerializer,
+			SerializedObjectInflaterDeserializer
+			> serialized_worker_to_client_channel_type;
+
+typedef SerializedChannel<
+			OrderedMessage<CumulusClientToWorkerMessage>,
+			OrderedMessage<CumulusWorkerToClientMessage>,
+			SerializedObjectFlattenerSerializer,
+			SerializedObjectInflaterDeserializer
+			> serialized_client_to_worker_channel_type;
+
+typedef MultiChannel<
+			CumulusClientToWorkerMessage,
+			CumulusWorkerToClientMessage
+			> client_to_worker_multi_channel_type;
+
+class CumulusClientWrapper :
+		public native::module::Exporter<CumulusClientWrapper> {
+public:
+		@type Event = 
+			-| Status of ComputationStatusOnMachineChanged msg
+			-| Res of ComputationResult msg
+			-| Page of VectorLoadedResponse msg
+			-| CheckpointStatus of pair<hash_type, Ufora::Json> msg
+			-| GlobalUserFacingLog of GlobalUserFacingLogMessage msg
+			-| ExternalIoTask of ExternalIoTaskCompleted msg
+			;
+		
+
+		std::string		getModuleName(void)
+			{
+			return "Cumulus";
+			}
+
+		void	getDefinedTypes(std::vector<std::string>& outTypes)
+			{
+			outTypes.push_back(typeid(PolymorphicSharedPtr<CumulusClient>).name());
+			}
+
+		static PolymorphicSharedPtr<CumulusClient>* constructCumulusClient(
+						PolymorphicSharedPtr<VectorDataManager> inVDM,
+						CumulusClientId inOwnClientId,
+						PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler
+						)
+			{
+			return new PolymorphicSharedPtr<CumulusClient>(
+				new CumulusClient(
+					inVDM,
+					inOwnClientId,
+					inCallbackScheduler
+					)
+				);
+			}
+
+		class CumulusClientListener : public PolymorphicSharedPtrBase<CumulusClientListener> {
+		public:
+			CumulusClientListener(PolymorphicSharedPtr<CumulusClient> inClient) : 
+					mClient(inClient)
+				{
+				}
+
+			void polymorphicSharedPtrBaseInitialized()
+				{
+				mClient->onComputationStatusOnMachineChanged().subscribe(
+					polymorphicSharedWeakPtrFromThis(),
+					&CumulusClientListener::addStatus
+					);
+				mClient->onComputationResultReceived().subscribe(
+					polymorphicSharedWeakPtrFromThis(),
+					&CumulusClientListener::addRes
+					);
+				mClient->onVectorLoadedResponse().subscribe(
+					polymorphicSharedWeakPtrFromThis(),
+					&CumulusClientListener::addPage
+					);
+				mClient->onCheckpointStatusReturned().subscribe(
+					polymorphicSharedWeakPtrFromThis(),
+					&CumulusClientListener::addCheckpointStatus
+					);
+				mClient->onGlobalUserFacingLogMessage().subscribe(
+					polymorphicSharedWeakPtrFromThis(),
+					&CumulusClientListener::addGlobalUserFacingLogMessage
+					);
+				mClient->onExternalIoTaskCompleted().subscribe(
+					polymorphicSharedWeakPtrFromThis(),
+					&CumulusClientListener::addExternalIoTaskCompleted
+					);
+				}
+
+			boost::python::object get()
+				{
+				Event e;
+
+					{
+					ScopedPyThreads releaseTheGil;
+				
+					e = mEvents.get();
+					}
+
+				return eventToPyObj(e);
+				}
+
+			boost::python::object getNonblock()
+				{
+				Nullable<Event> e;
+
+					{
+					ScopedPyThreads releaseTheGil;
+
+					e = mEvents.getNonblock();
+					}
+
+
+				if (e)
+					return eventToPyObj(*e);
+
+				return boost::python::object();
+				}
+
+			boost::python::object getTimeout(double t)
+				{
+				Event e;
+					
+					{
+					ScopedPyThreads releaseTheGil;
+					
+					if (!mEvents.getTimeout(e, t))
+						return boost::python::object();
+					}
+
+				return eventToPyObj(e);
+				}
+
+			boost::python::object eventToPyObj(const Event& e)
+				{
+				@match Event(e)
+					-| Status(m) ->> { return boost::python::object(m); }
+					-| Res(m) ->> { return boost::python::object(m); }
+					-| Page(m) ->> { return boost::python::object(m); }
+					-| CheckpointStatus(m) ->> { 
+							return boost::python::make_tuple(
+								boost::python::object(m.first), 
+								boost::python::object(m.second)
+								);
+							}
+					-| GlobalUserFacingLog(msg) ->> {
+							return boost::python::object(msg);
+							}
+					-| ExternalIoTask(completed) ->> {
+							return boost::python::object(completed);
+							}
+				}
+
+			Queue<Event> mEvents;
+
+			void addStatus(ComputationStatusOnMachineChanged msg)
+				{
+				if (!msg.computation().isRoot())
+					return;
+				
+				mEvents.write(Event::Status(msg));
+				}
+
+			void addRes(ComputationResult msg)
+				{
+				mEvents.write(Event::Res(msg));
+				}
+
+			void addPage(VectorLoadedResponse msg)
+				{
+				mEvents.write(Event::Page(msg));
+				}
+
+			void addCheckpointStatus(pair<hash_type, Ufora::Json> event)
+				{
+				mEvents.write(Event::CheckpointStatus(event));
+				}
+
+			void addGlobalUserFacingLogMessage(GlobalUserFacingLogMessage msg)
+				{
+				mEvents.write(Event::GlobalUserFacingLog(msg));
+				}
+
+			void addExternalIoTaskCompleted(ExternalIoTaskCompleted msg)
+				{
+				mEvents.write(Event::ExternalIoTask(msg));
+				}
+
+
+			PolymorphicSharedPtr<CumulusClient> mClient;
+		};
+
+		static PolymorphicSharedPtr<CumulusClientListener> createListener(
+									PolymorphicSharedPtr<CumulusClient> client
+									)
+			{
+			return PolymorphicSharedPtr<CumulusClientListener>(
+				new CumulusClientListener(
+					client
+					)
+				);
+			}
+
+		template <class message_type>
+		static uint32_t getMessagePriority(message_type message)
+			{
+			return message.priority();
+			}
+
+		static boost::python::object currentActiveStatus(
+								PolymorphicSharedPtr<CumulusClient> client,
+								ComputationId id
+								)
+			{
+			Nullable<ComputationStatus> status = client->currentActiveStatus(id);
+
+			if (!status)
+				return boost::python::object();
+
+			return boost::python::object(*status);
+			}
+
+		static void addMachine(	PolymorphicSharedPtr<CumulusClient> client,
+								MachineId machine,
+								boost::python::list channels,
+								ImplValContainer& inBuiltins,
+								PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler
+								)
+			{
+			std::vector<serialized_client_to_worker_channel_type::pointer_type> serializedChannels1;
+
+			for (int i = 0, len = boost::python::len(channels); i < len; i++)
+				{
+				serialized_client_to_worker_channel_type::pointer_type channelPtr(
+					new serialized_client_to_worker_channel_type(
+						inCallbackScheduler,
+						boost::python::extract<string_channel_ptr>(channels[i])()
+						)
+					);
+				serializedChannels1.push_back(channelPtr);
+				}
+
+			ScopedPyThreads releaseTheGil;
+
+			std::vector<ordered_client_to_worker_channel_type::pointer_type> serializedChannels2;
+			
+			for (auto channelPtr: serializedChannels1)
+				{
+				channelPtr->getSerializer().getSerializer().getFlattener().considerValueAlreadyWritten(inBuiltins);
+				channelPtr->getDeserializer().getDeserializer().getInflater().considerValueAlreadyRead(inBuiltins);
+				channelPtr->getDeserializer().getDeserializer().setVDMM(client->getVDM()->getMemoryManager());
+				
+				serializedChannels2.push_back(channelPtr);
+				}
+
+			client_to_worker_multi_channel_type::pointer_type multiChannel(
+					new client_to_worker_multi_channel_type(
+						serializedChannels2,
+						&CumulusClientWrapper::getMessagePriority<CumulusClientToWorkerMessage>,
+						inCallbackScheduler
+						)
+					);
+
+			client->addMachine(
+				machine, 
+				client_to_worker_channel_ptr_type(multiChannel)
+				);
+			}
+
+		void exportPythonWrapper()
+			{
+			using namespace boost::python;
+			
+			class_<PolymorphicSharedPtr<CumulusClientListener> >("CumulusClientListener", no_init)
+				.def("get", 
+						macro_polymorphicSharedPtrFuncFromMemberFunc(CumulusClientListener::get)
+						)
+				.def("getNonblock", 
+						macro_polymorphicSharedPtrFuncFromMemberFunc(CumulusClientListener::getNonblock)
+						)
+				.def("getTimeout", 
+						macro_polymorphicSharedPtrFuncFromMemberFunc(CumulusClientListener::getTimeout)
+						)
+				;
+
+			class_<PolymorphicSharedPtr<CumulusClient> >("CumulusClient", no_init)
+				.def("__init__", make_constructor(constructCumulusClient))
+				.def("addMachine", addMachine)
+				.def("dropMachine", 
+						macro_polymorphicSharedPtrFuncFromMemberFunc(CumulusClient::dropMachine)
+						)
+				.def("createComputation", 
+						macro_polymorphicSharedPtrFuncFromMemberFunc(CumulusClient::createComputation)
+						)
+				.def("setComputationPriority", 
+						macro_polymorphicSharedPtrFuncFromMemberFunc(CumulusClient::setComputationPriority)
+						)
+				.def("requestVectorLoad", 
+						macro_polymorphicSharedPtrFuncFromMemberFunc(CumulusClient::requestVectorLoad)
+						)
+				.def("createExternalIoTask", 
+						macro_polymorphicSharedPtrFuncFromMemberFunc(CumulusClient::createExternalIoTask)
+						)
+				.def("resetComputationState", 
+						macro_polymorphicSharedPtrFuncFromMemberFunc(CumulusClient::resetComputationState)
+						)
+				.def("requestCheckpointStatus", 
+						macro_polymorphicSharedPtrFuncFromMemberFunc(CumulusClient::requestCheckpointStatus)
+						)
+				.def("getSystemwidePageRefcountTracker", 
+						macro_polymorphicSharedPtrFuncFromMemberFunc(
+							CumulusClient::getSystemwidePageRefcountTracker
+							)
+						)
+				.def("requestComputationCheckpoint", 
+						macro_polymorphicSharedPtrFuncFromMemberFunc(
+							CumulusClient::requestComputationCheckpoint
+							)
+						)
+				.def("getJsonViewOfSystem", 
+						macro_polymorphicSharedPtrFuncFromMemberFunc(
+							CumulusClient::getJsonViewOfSystem
+							)
+						)
+				.def("createListener", 
+						createListener
+						)
+				.def("triggerCheckpoint", 
+						macro_polymorphicSharedPtrFuncFromMemberFunc(
+							CumulusClient::triggerCheckpoint
+							)
+						)
+				.def("triggerCheckpointGarbageCollection", 
+						macro_polymorphicSharedPtrFuncFromMemberFunc(
+							CumulusClient::triggerCheckpointGarbageCollection
+							)
+						)
+				.def("currentActiveStatus", currentActiveStatus)
+				;
+			}
+};
+
+//explicitly instantiating the registration element causes the linker to need
+//this file
+template<>
+char native::module::Exporter<CumulusClientWrapper>::mEnforceRegistration =
+		native::module::ExportRegistrar<CumulusClientWrapper>::registerWrapper();
+
+

@@ -1,0 +1,632 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "PageletTree.hppml"
+#include "PageId.hppml"
+#include "../TypedFora/ABI/BigVectorHandle.hppml"
+#include "../TypedFora/ABI/ForaValueArray.hppml"
+#include "../TypedFora/ABI/ForaValueArraySpaceRequirements.hppml"
+#include "../TypedFora/ABI/ForaValueArraySlice.hppml"
+#include "../Core/MemoryPool.hpp"
+#include "../../core/lassert.hpp"
+#include "../../core/threading/ThreadSafeSet.hpp"
+#include "../Core/ValueDeepcopier.hppml"
+
+using Fora::PageletTreePtr;
+using Fora::PageletTree;
+using Fora::Pagelet;
+
+PageletTree::PageletTree(
+			MemoryPool* inPool,
+			boost::shared_ptr<Pagelet> lhs,
+			int64_t lhsValuesUsed
+			) :
+		mOwningMemoryPool(inPool),
+		mMemoryPoolForEntireTree(inPool),
+		mLeaf(0),
+		mLeafValuesUsed(0),
+		mRightPtr(0),
+		mLeftPtr(0),
+		mRefcount(0),
+		mRightPtrValuesUsed(0),
+		mLeftPtrValuesUsed(0),
+		mHeight(0),
+		mCount(0)
+	{
+	lassert(lhs);
+	lassert(lhs->isFrozen());
+	lassert(lhsValuesUsed <= lhs->getValues()->size());
+
+	mLeaf = lhs;
+	mLeafValuesUsed = lhsValuesUsed;
+
+	mCount = 1;
+	mHeight = 1;
+
+	mOwningMemoryPool->pageletIsHeld(mLeaf);
+	}
+
+PageletTree::PageletTree(
+			MemoryPool* inPool,
+			const PageletTreePtr& lhs,
+			int64_t lhsValuesUsed,
+			const PageletTreePtr& rhs,
+			int64_t rhsValuesUsed
+			) :
+		mOwningMemoryPool(inPool),
+		mMemoryPoolForEntireTree(nullptr),
+		mLeaf(0),
+		mLeafValuesUsed(0),
+		mLeftPtr(0),
+		mRightPtr(0),
+		mRefcount(0),
+		mRightPtrValuesUsed(0),
+		mLeftPtrValuesUsed(0),
+		mHeight(0),
+		mCount(0)
+	{
+	mLeftPtr = lhs;
+	mLeftPtr->incrementRefcount();
+
+	mRightPtr = rhs;
+	mRightPtr->incrementRefcount();
+
+	lassert(lhsValuesUsed <= lhs->size());
+	lassert(lhsValuesUsed >= 0);
+	lassert(rhsValuesUsed <= rhs->size());
+	lassert(rhsValuesUsed >= 0);
+
+	mLeftPtrValuesUsed = lhsValuesUsed;
+	mRightPtrValuesUsed = rhsValuesUsed;
+
+	mHeight = std::max<long>(mLeftPtr->mHeight, mRightPtr->mHeight) + 1;
+
+	mCount = mRightPtr->count() + mLeftPtr->count();
+
+	if (mOwningMemoryPool == mLeftPtr->getMemoryPoolForEntireTree() && 
+				mOwningMemoryPool == mRightPtr->getMemoryPoolForEntireTree())
+		mMemoryPoolForEntireTree = mOwningMemoryPool;
+	}
+
+PageletTreePtr PageletTree::entirelyWithinMemoryPool(MemoryPool* inPool)
+	{
+	lassert(inPool);
+
+	if (getMemoryPoolForEntireTree() == inPool)
+		return PageletTreePtr(this);
+
+	if (leaf())
+		return PageletTreePtr(
+			inPool->construct<PageletTree>(
+				inPool,
+				leaf(),
+				mLeafValuesUsed
+				)
+			);
+
+	return PageletTreePtr(
+		inPool->construct<PageletTree>(
+			inPool,
+			left()->entirelyWithinMemoryPool(inPool),
+			mLeftPtrValuesUsed,
+			right()->entirelyWithinMemoryPool(inPool),
+			mRightPtrValuesUsed
+			)
+		);
+	}
+
+PageletTreePtr PageletTree::collapseToSinglePageletTreeWithoutHeldPagelets(
+								MemoryPool* targetPool,
+								PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM
+								)
+	{
+	boost::shared_ptr<Pagelet> pagelet = collapseToSinglePagelet(inVDMM, nullptr, true);
+
+	return PageletTreePtr(
+		targetPool->construct<PageletTree>(
+			targetPool,
+			pagelet,
+			size()
+			)
+		);
+	}
+
+PageletTreePtr PageletTree::withSmallPageletsCollapsed(
+						MemoryPool* targetPool, 
+						size_t minimumBytecount, 
+						size_t maximumBytecount,
+						PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM,
+						long minChildrenToCollapse,
+						bool isRoot
+						)
+	{
+	static double totalTime = 0.0;
+	static double totalTimeSpentCollapsing = 0.0;
+	static int64_t totalCollapsed = 0;
+	static int64_t totalCollapsedBytesCollapsed = 0;
+	
+
+	double t0 = curClock();
+
+	PageletTreePtr result;
+
+	if (leaf())
+		result = PageletTreePtr(this);
+	else
+		{
+		bool wantsCollapse = false;
+
+		if ((left()->bytecountFromOSIncludingHeldPagelets() + 
+						right()->bytecountFromOSIncludingHeldPagelets() < maximumBytecount))
+			{
+			if ((left()->bytecountFromOSIncludingHeldPagelets() < minimumBytecount || 
+					right()->bytecountFromOSIncludingHeldPagelets() < minimumBytecount) && 
+						count() >= minChildrenToCollapse)
+				wantsCollapse = true;
+
+			if (actualBytecount() < .9 * bytecountFromOS() && actualBytecount() >= minimumBytecount)
+				wantsCollapse = true;
+			}
+
+
+		
+		if (wantsCollapse)
+			{
+			double t1 = curClock();
+
+			boost::shared_ptr<Pagelet> pagelet = collapseToSinglePagelet(inVDMM, nullptr, false);
+
+			result = PageletTreePtr(
+				targetPool->construct<PageletTree>(
+					targetPool,
+					pagelet,
+					mLeftPtrValuesUsed + mRightPtrValuesUsed
+					)
+				);
+
+			LOG_DEBUG << "Collapsing trees with " << left()->count() << " and " << right()->count() 
+				<< " subtrees containing "
+				<< left()->bytecountFromOS() / 1024 / 1024.0 << " and "
+				<< right()->bytecountFromOS() / 1024 / 1024.0 
+				<< " respectively into a single pagelet with "
+				<< pagelet->totalBytesAllocatedFromOS() / 1024 / 1024.0
+				<< " holding "
+				<< pagelet->totalBytesAllocatedFromOS() / pagelet->getValues()->size()
+				<< " bytes per value for each "
+				<< pagelet->getValues()->currentJor()
+				;
+
+			totalTimeSpentCollapsing += curClock() - t1;
+			}
+		else
+			{
+			PageletTreePtr newLeft = 
+				left()->withSmallPageletsCollapsed(targetPool, minimumBytecount, maximumBytecount, inVDMM, minChildrenToCollapse);
+
+			PageletTreePtr newRight = 
+				right()->withSmallPageletsCollapsed(targetPool, minimumBytecount, maximumBytecount, inVDMM, minChildrenToCollapse);
+
+			if (newLeft != left() || newRight != right())
+				{
+				result = PageletTreePtr(
+					targetPool->construct<PageletTree>(
+						targetPool,
+						newLeft,
+						mLeftPtrValuesUsed,
+						newRight,
+						mRightPtrValuesUsed
+						)
+					);
+				}
+			else
+				result = PageletTreePtr(this);
+			}
+		}
+	
+	if (isRoot)
+		{
+		totalCollapsed += count();
+		totalCollapsedBytesCollapsed += bytecountFromOS();
+
+		if (int(totalTime) != int(totalTime + curClock() - t0))
+			LOG_INFO << totalTime << " spent with pagelets. " << totalTimeSpentCollapsing << " in actual collapse. Collapsed " 
+				<< totalCollapsedBytesCollapsed / 1024 / 1024.0 
+				<< " MB over " 
+				<< totalCollapsed
+				<< " total pagelets. avg = " << totalCollapsedBytesCollapsed / totalCollapsed / 1024 / 1024.0 << " MB"
+				;
+
+		totalTime += curClock() - t0;
+		}
+
+	return result;		
+	}
+
+
+boost::shared_ptr<Pagelet> PageletTree::collapseToSinglePagelet(
+								PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM,
+								TypedFora::Abi::ForaValueArray* finalValueArray,
+								bool deepcopyAwayHeldPagelets
+								)
+	{
+	int64_t totalBytes = 0;
+	visitTree(
+		[&](boost::shared_ptr<Pagelet> toCopy, IntegerRange subrange, long offsetInOrig) {
+			totalBytes += toCopy->totalBytesAllocated();
+			}
+		);
+
+	int64_t spaceToReserve = totalBytes;
+
+	boost::shared_ptr<Pagelet> pagelet(new Pagelet(inVDMM, spaceToReserve));
+
+	auto spaceRequirements = getSpaceRequirements();
+
+	if (finalValueArray)
+		spaceRequirements = spaceRequirements + finalValueArray->getSpaceRequirements();
+
+	pagelet->getValues()->prepareForAppending(spaceRequirements);
+
+	visitTree(
+		[&](boost::shared_ptr<Pagelet> toCopy, IntegerRange subrange, long offsetInOrig) {
+			pagelet->append(
+				toCopy->getValues(),
+				subrange.low(),
+				subrange.high(),
+				deepcopyAwayHeldPagelets
+				);
+			},
+		IntegerRange(0, size())
+		);
+
+	if (finalValueArray)
+		pagelet->append(
+			finalValueArray, 
+			0, 
+			finalValueArray->size(),
+			deepcopyAwayHeldPagelets
+			);
+
+	pagelet->freeze();
+
+	return pagelet;
+	}
+
+void PageletTree::associateValues(
+					TypedFora::Abi::BigVectorHandle* inPtr, 
+					int64_t offset, 
+					IntegerSequence valsWithinPage,
+					Nullable<PageId> pageId
+					)
+	{
+	if (valsWithinPage.size() == 0)
+		return;
+
+	if (leaf())
+		{
+		IntegerSequence sliceWithinArray = valsWithinPage.intersect(IntegerSequence(mLeafValuesUsed));
+
+		if (sliceWithinArray.size())
+			inPtr->associateArray(
+				leaf()->getValues(), 
+				offset, 
+				sliceWithinArray,
+				pageId
+				);
+
+		return;
+		}
+
+	IntegerSequence leftSubrange = valsWithinPage.intersect(IntegerSequence(mLeftPtrValuesUsed));
+	IntegerSequence rightSubrange = valsWithinPage.intersect(IntegerSequence(mRightPtrValuesUsed, mLeftPtrValuesUsed));
+
+	long leftRangeOffset = offset + (leftSubrange.offset() - valsWithinPage.offset()) / valsWithinPage.stride();
+	long rightRangeOffset = offset + (rightSubrange.offset() - valsWithinPage.offset()) / valsWithinPage.stride();
+
+	left()->associateValues(inPtr, leftRangeOffset, leftSubrange, pageId);
+	right()->associateValues(inPtr, rightRangeOffset, rightSubrange.offset(-mLeftPtrValuesUsed), pageId);
+	}
+
+PageletTreePtr PageletTree::restrictTo(MemoryPool* pool, long count)
+	{
+	if (count == size())
+		return PageletTreePtr(this);
+
+	if (leaf())
+		{
+		if (count >= mLeafValuesUsed)
+			return PageletTreePtr(this);
+		if (count == 0)
+			return PageletTreePtr();
+
+		return PageletTreePtr(pool->construct<PageletTree>(pool, leaf(), count));
+		}
+
+	if (count <= leftPtrValuesUsed())
+		return left()->restrictTo(pool, count);
+
+	return PageletTreePtr(
+		pool->construct<PageletTree>(pool,
+			left(),
+			leftPtrValuesUsed(),
+			right()->restrictTo(pool, count - leftPtrValuesUsed()),
+			count - leftPtrValuesUsed()
+			)
+		);
+	}
+
+PageletTreePtr PageletTree::concatenateAndBalance(
+										MemoryPool* pool, 
+										PageletTreePtr lhs, 
+										PageletTreePtr rhs
+										)
+	{
+	if (lhs.isEmpty() || lhs->size() == 0)
+		return rhs;
+	if (rhs.isEmpty() || rhs->size() == 0)
+		return lhs;
+
+	if (lhs->height() + 2 < rhs->height())
+		//the rhs is really tall - break it down
+		{
+		PageletTreePtr rhsLeft = rhs->left()->restrictTo(pool, rhs->leftPtrValuesUsed());
+		PageletTreePtr rhsRight = rhs->right()->restrictTo(pool, rhs->rightPtrValuesUsed());
+		
+		if (rhsLeft.isEmpty())
+			return concatenateAndBalance(pool, lhs, rhsRight);
+
+		if (rhsRight.isEmpty())
+			return concatenateAndBalance(pool, lhs, rhsLeft);
+
+		if (rhsLeft->height() < lhs->height() + 2) //we can just move it over
+			return concatenateAndBalance(
+				pool,
+				concatenateAndBalance(pool, lhs, rhsLeft),
+				rhsRight
+				);
+		else
+			{
+			PageletTreePtr rhsLeftLeft = 
+				rhsLeft->left()->restrictTo(pool, rhsLeft->leftPtrValuesUsed());
+
+			PageletTreePtr rhsLeftRight = 
+				rhsLeft->right()->restrictTo(pool, rhsLeft->rightPtrValuesUsed());
+
+			return concatenateAndBalance(pool,
+				concatenateAndBalance(pool,
+					lhs,
+					rhsLeftLeft
+					),
+				concatenateAndBalance(
+					pool,
+					rhsLeftRight,
+					rhsRight
+					)
+				);
+			}
+		}
+
+
+	if (rhs->height() + 2 < lhs->height())
+		//the lhs is really tall - break it down
+		{
+		PageletTreePtr lhsLeft = lhs->left()->restrictTo(pool, lhs->leftPtrValuesUsed());
+		PageletTreePtr lhsRight = lhs->right()->restrictTo(pool, lhs->rightPtrValuesUsed());
+		
+		if (lhsLeft.isEmpty())
+			return concatenateAndBalance(pool, lhsRight, rhs);
+
+		if (lhsRight.isEmpty())
+			return concatenateAndBalance(pool, lhsLeft, rhs);
+
+		if (lhsRight->height() < rhs->height() + 2) //we can just move it over
+			return concatenateAndBalance(
+				pool,
+				lhsLeft,
+				concatenateAndBalance(pool, lhsRight, rhs)
+				);
+		else
+			{
+			PageletTreePtr lhsRightLeft = 
+				lhsRight->left()->restrictTo(pool, lhsRight->leftPtrValuesUsed());
+
+			PageletTreePtr lhsRightRight = 
+				lhsRight->right()->restrictTo(pool, lhsRight->rightPtrValuesUsed());
+			
+			return concatenateAndBalance(pool,
+				concatenateAndBalance(pool,
+					lhsLeft,
+					lhsRightLeft
+					),
+				concatenateAndBalance(
+					pool,
+					lhsRightRight,
+					rhs
+					)
+				);
+			}
+		}
+
+	return pool->construct<PageletTree>(pool, lhs, lhs->size(), rhs, rhs->size());
+	}
+
+uint64_t PageletTree::bytecountFromOS() const
+	{
+	if (!mBytecountFromOS)
+		{
+		if (leaf())
+			mBytecountFromOS = leaf()->totalBytesAllocatedFromOS();
+		else
+			mBytecountFromOS = left()->bytecountFromOS() + right()->bytecountFromOS();
+		}
+
+	return *mBytecountFromOS;
+	}
+
+uint64_t PageletTree::actualBytecount() const
+	{
+	if (!mBytecount)
+		{
+		if (leaf())
+			mBytecount = leaf()->totalBytesAllocated();
+		else
+			mBytecount = left()->actualBytecount() + right()->actualBytecount();
+		}
+
+	return *mBytecount;
+	}
+
+uint64_t PageletTree::bytecountFromOSIncludingHeldPagelets() const
+	{
+	if (!mBytecountFromOSIncludingHeldPagelets)
+		{
+		if (leaf())
+			mBytecountFromOSIncludingHeldPagelets = 
+				leaf()->totalBytesAllocatedFromOSIncludingHeldPagelets();
+		else
+			mBytecountFromOSIncludingHeldPagelets = 
+				left()->bytecountFromOSIncludingHeldPagelets() + 
+				right()->bytecountFromOSIncludingHeldPagelets();
+		}
+
+	return *mBytecountFromOSIncludingHeldPagelets;
+	}
+
+uint64_t PageletTree::bytecountIncludingHeldPagelets() const
+	{
+	if (!mBytecountIncludingHeldPagelets)
+		{
+		if (leaf())
+			mBytecountIncludingHeldPagelets = 
+				leaf()->totalBytesAllocatedIncludingHeldPagelets();
+		else
+			mBytecountIncludingHeldPagelets = 
+				left()->bytecountIncludingHeldPagelets() + 
+				right()->bytecountIncludingHeldPagelets();
+		}
+
+	return *mBytecountIncludingHeldPagelets;
+	}
+
+boost::shared_ptr<Pagelet> PageletTree::rightmostPagelet() const
+	{
+	if (leaf())
+		return leaf();
+	return right()->rightmostPagelet();
+	}
+
+ImplValContainer PageletTree::extractValueIntoFreeStore(long index) const
+	{
+	lassert(index >= 0 && index < size());
+
+	if (leaf())
+		{
+		ValueDeepcopierState state;
+
+		ValueDeepcopier deepcopier(state, false, MemoryPool::getFreeStorePool(), false, false);
+
+		return deepcopier.duplicate(
+			(*leaf()->getValues())[index]
+			);
+		}
+
+	if (index < mLeftPtrValuesUsed)
+		return left()->extractValueIntoFreeStore(index);
+	else
+		return right()->extractValueIntoFreeStore(index - mLeftPtrValuesUsed);
+	}
+
+void PageletTree::incrementRefcount()
+	{
+	AO_fetch_and_add_full(&mRefcount, 1);
+	}
+
+void PageletTree::decrementRefcount()
+	{
+	if (AO_fetch_and_add_full(&mRefcount, -1) == 1)
+		mOwningMemoryPool->destroy(this);
+	}
+
+PageletTree::~PageletTree()
+	{
+	try {
+		if (mLeaf)
+			mOwningMemoryPool->pageletIsNoLongerHeld(mLeaf);
+
+		if (!mLeftPtr.isEmpty())
+			mLeftPtr->decrementRefcount();
+
+		if (!mRightPtr.isEmpty())
+			mRightPtr->decrementRefcount();
+		}
+	catch(std::logic_error& e)
+		{
+		LOG_CRITICAL << e.what();
+		}
+	}
+
+JudgmentOnResult PageletTree::currentJor() const
+	{
+	if (!mJor)
+		{
+		if (mLeaf)
+			mJor = mLeaf->getValues()->currentJor();
+		else
+			mJor = mLeftPtr->currentJor() + mRightPtr->currentJor();
+		}
+
+	return *mJor;
+	}
+
+uint64_t PageletTree::size() const
+	{
+	if (mLeaf)
+		return mLeafValuesUsed;
+	else
+		return mLeftPtrValuesUsed + mRightPtrValuesUsed;
+	}
+
+TypedFora::Abi::ForaValueArraySpaceRequirements PageletTree::getSpaceRequirements() const
+	{
+	if (mLeaf)
+		return mLeaf->getValues()->getSpaceRequirements(0, mLeafValuesUsed);
+
+	if (!left().isEmpty() && !right().isEmpty())
+		{
+		return left()->getSpaceRequirements() + right()->getSpaceRequirements();
+		}
+
+	lassert(left().isEmpty() && right().isEmpty());
+	return TypedFora::Abi::ForaValueArraySpaceRequirements(0,0,JudgmentOnResult());
+	}
+
+TypedFora::Abi::ForaValueArraySlice PageletTree::pageletContaining(int64_t offset)
+	{
+	lassert(offset >= 0 && offset < size());
+
+	if (mLeaf)
+		return TypedFora::Abi::ForaValueArraySlice(
+			mLeaf->getValues(), 
+			RangeToIntegerSequence(0, mLeafValuesUsed, 0, 1)
+			);
+		
+	if (mLeftPtrValuesUsed > offset)
+		return left()->pageletContaining(offset);
+
+	return right()->pageletContaining(offset - mLeftPtrValuesUsed).offsetInputs(mLeftPtrValuesUsed);
+	}
+
+
+

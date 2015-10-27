@@ -1,0 +1,186 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../core/PolymorphicSharedPtr.hpp"
+#include "../core/containers/TwoWaySetMap.hpp"
+#include "../core/EventBroadcaster.hpp"
+#include "../core/threading/CallbackScheduler.hppml"
+#include "PagesOnMachines.hppml"
+#include "MachineId.hppml"
+#include "SystemwidePageRefcountTrackerEvent.hppml"
+#include "../FORA/VectorDataManager/PageRefcountTracker.hppml"
+#include <vector>
+
+namespace Cumulus {
+
+class AddDropFinalState;
+
+}
+
+namespace TypedFora {
+namespace Abi {
+
+class BigVectorLayouts;
+
+}
+}
+
+/*********************
+SystemwidePageRefcountTracker
+
+Maintain a description of all the pages loaded in the system. For each page and machine, we track
+whether it's in RAM, on Disk, or referenced by something else.
+
+A page is 'referenced' if it's referred to by another page that's on disk or in RAM, or if it's used
+by another ExecutionContext.  It's possible for a page to be in RAM or on disk and not be referenced.
+
+**********************/
+
+class SystemwidePageRefcountTracker :
+			public PolymorphicSharedPtrBase<SystemwidePageRefcountTracker> {
+public:
+	SystemwidePageRefcountTracker(
+			PolymorphicSharedPtr<TypedFora::Abi::BigVectorLayouts> inBigVectorLayouts,
+			PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+			boost::function1<void, SystemwidePageRefcountTrackerEvent> inEventHandler
+			);
+
+	void teardown();
+
+	void initializeFromAddDropState(const Cumulus::AddDropFinalState& state);
+
+	void consumePageEvent(const Fora::PageRefcountEvent& inEvent, Cumulus::MachineId onMachineId);
+
+	bool isPageNotLoadable(const Fora::PageId& inPage);
+
+	bool pageIsInRam(const Fora::PageId& inPageId, const Cumulus::MachineId& inMachineId);
+
+	bool pageIsInRamAndPinned(const Fora::PageId& inPageId, const Cumulus::MachineId& inMachineId);
+
+	bool pageIsOnDisk(const Fora::PageId& inPageId, const Cumulus::MachineId& inMachineId);
+
+	Nullable<Cumulus::MachineId> getMachineId();
+
+	void setMachineId(Cumulus::MachineId inMachineId);
+
+	void addMachine(const Cumulus::MachineId& inMachineId);
+
+	void dropMachine(const Cumulus::MachineId& inMachineId);
+
+	bool isExecutionBlockedOnMachine(const Cumulus::MachineId& inMachineId);
+
+	bool isMachineMemoryFull(const Cumulus::MachineId& inMachineId);
+
+	Fora::MemoryUsage getMachineMemoryUsage(const Cumulus::MachineId& inMachine);
+
+	int32_t getMachineCount();
+
+	bool isPageAnywhereOnDisk(const Fora::PageId& inPageId);
+
+	bool isPageAnywhereInRam(const Fora::PageId& inPageId);
+
+	void machinesWithPageInRam(const Fora::PageId& inPageId, std::set<Cumulus::MachineId>& outMachineIds);
+
+	void machinesWithPageInRamAndPinned(const Fora::PageId& inPageId, std::set<Cumulus::MachineId>& outMachineIds);
+
+	void machinesWithPageOnDisk(const Fora::PageId& inPageId, std::set<Cumulus::MachineId>& outMachineIds);
+
+	void machineRamContents(const Cumulus::MachineId& inId, std::set<Fora::PageId>& outPages);
+
+	void getAllPages(std::set<Fora::PageId>& outPages);
+
+	EventBroadcaster<Fora::PageId>& onPageNoLongerReferencedAcrossEntireSystem();
+
+	std::string getViewOfSystem();
+	
+	std::string getViewOfSystem(
+				boost::function2<std::string, Fora::PageId, Cumulus::MachineId> additional,
+				boost::function1<std::string, Fora::PageId> additionalPerPage
+				);
+
+	std::set<Cumulus::MachineId> getAllMachineIds() const;
+
+	bool hasPageBeenDroppedAcrossEntireSystem(Fora::PageId inPage);
+
+	bool doesPageAppearDroppedAcrossSystem(Fora::PageId inPage);
+
+	ImmutableTreeSet<Fora::PageId> pagesThatAppearOrphaned();
+
+	Nullable<ImmutableTreeSet<Fora::BigVectorId> > bigvecsReferencedByPage(Fora::PageId page);
+
+	int64_t totalBytesOnDisk() const;
+
+	int64_t totalBytesInRam() const;
+
+	int64_t uniqueBytesOnDisk() const;
+
+	int64_t uniqueBytesInRam() const;
+
+	int64_t uniqueBytesOnlyOnDisk() const;
+
+	int64_t uniqueBytesOnlyInRam() const;
+		
+	bool isBigVectorDroppedAcrossEntireSystem(hash_type guid);
+
+private:
+	bool isBigvecNotReferenced_(Fora::BigVectorId bigvec) const;
+
+	void bigVectorInFlightRefcountChanged_(Fora::BigVectorId inPageId, long netChange);
+
+	bool mIsTornDown;
+
+	void bigVectorDroppedAcrossEntireSystem_(const Fora::BigVectorId& id);
+
+	boost::function1<void, SystemwidePageRefcountTrackerEvent> mEventHandler;
+
+	EventBroadcaster<Fora::PageId> mOnPageNoLongerReferencedAcrossEntireSystem;
+
+	PolymorphicSharedPtr<PageRefcountTracker> mPageRefcountTracker;
+
+	PagesOnMachines mPagesOnMachines;
+
+	mutable boost::recursive_mutex mMutex;
+
+	std::map<Fora::BigVectorId, int32_t> mBigvecsInFlight;
+
+	std::map<hash_type, ImmutableTreeSet<Fora::BigVectorId> > mPendingInFlightBigvecs;
+
+	std::map<hash_type, int32_t> mPendingInFlightBigvecRefcounts;
+
+	TwoWaySetMap<Fora::BigVectorId, Cumulus::MachineId> mBigVectorReferences;
+
+	MapWithIndex<Fora::PageId, Fora::BigVectorId> mSyntheticPages;
+
+	std::set<Fora::PageId> mSyntheticPagesRealized;
+
+	map<pair<Fora::BigVectorId, Cumulus::MachineId>, int32_t> mBigVectorReferenceCounts;
+
+	PolymorphicSharedPtr<CallbackScheduler> mCallbackScheduler;
+	
+	double mLastMessageLogTime;
+
+	long mMessagesSinceLastLog;
+
+	double mElapsedTimeProcessingMessages;
+
+	std::set<hash_type> mDroppedBigvecs;
+
+	Nullable<Cumulus::MachineId> mMachineId;
+
+	PolymorphicSharedPtr<TypedFora::Abi::BigVectorLayouts> mBigVectorLayouts;
+};
+

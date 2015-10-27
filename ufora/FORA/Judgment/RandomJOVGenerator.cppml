@@ -1,0 +1,672 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "RandomJOVGenerator.hppml"
+#include "../VectorDataManager/VectorDataManager.hppml"
+#include "../Core/ImplValContainerUtilities.hppml"
+#include  "../Core/ExecutionContext.hppml"
+#include "../Vector/VectorUtilities.hpp"
+#include "../Core/ImplVal.hppml"
+#include "../Core/MemoryPool.hpp"
+#include "../../core/debug/StackTrace.hpp"
+#include "../../core/math/RandomHashGenerator.hpp"
+#include <boost/limits.hpp>
+#include <boost/numeric/conversion/cast.hpp>
+#include <boost/generator_iterator.hpp>
+
+#include <cmath>
+#include <algorithm>
+
+RandomJOVGenerator::RandomJOVGenerator( int seed,
+                                        PolymorphicSharedPtr<Fora::Interpreter::ExecutionContext> inContextPtr
+                                        )
+    : mMersenneTwister(boost::mt19937(seed))
+    , mMaxExtras(7)
+    , mMaxTupleSize(7)
+    , mMaxVectorSize(10)
+    , mMinReal(-10)
+    , mMaxReal(10)
+    , mMaxStringLength(10)
+    , mRandIntGen(mMersenneTwister, boost::uniform_int<>(0, boost::numeric::bounds<int>::highest()))
+    , mRandDoubleGen(mMersenneTwister, boost::uniform_real<>(mMinReal, mMaxReal))
+    , mRandFloatGen(mMersenneTwister, boost::uniform_real<float>(mMinReal, mMaxReal))
+    , mRandBitGen(mMersenneTwister, boost::uniform_int<>(0, 1))
+    , mUnifGen(mMersenneTwister, boost::uniform_real<>(0,1))
+    , mSymbolStrings(std::vector<std::string>())
+    , mMaxTriesForRandomValue(10)
+    , mLikelyMaxInt(10) 
+    , mLikelyMinInt(-5)
+    , mNumTypes(5)
+    , mLikelyMaxUnsignedInt(11)
+    , mNumBitTypes(5)
+    , mProbabilityIntsLieInLikelyRange(0.95)
+    , mExecutionContextPtr(inContextPtr)
+    {}
+
+RandomJOVGenerator::RandomJOVGenerator(
+                        PolymorphicSharedPtr<Fora::Interpreter::ExecutionContext> inContextPtr
+                        )
+    : mMersenneTwister(boost::mt19937())
+    , mMaxExtras(7)
+    , mMaxTupleSize(7)
+    , mMaxVectorSize(10)
+    , mMinReal(-10)
+    , mMaxReal(10)
+    , mMaxStringLength(10)
+    , mRandIntGen(mMersenneTwister, boost::uniform_int<>(0, boost::numeric::bounds<int>::highest()))
+    , mRandDoubleGen(mMersenneTwister, boost::uniform_real<>(mMinReal, mMaxReal))
+    , mRandFloatGen(mMersenneTwister, boost::uniform_real<float>(mMinReal, mMaxReal))
+    , mRandBitGen(mMersenneTwister, boost::uniform_int<>(0, 1))
+    , mUnifGen(mMersenneTwister, boost::uniform_real<>(0,1))
+    , mSymbolStrings(std::vector<std::string>())
+    , mMaxTriesForRandomValue(10)
+    , mLikelyMaxInt(5) 
+    , mLikelyMinInt(-5)
+    , mNumTypes(5)
+    , mLikelyMaxUnsignedInt(11)
+    , mNumBitTypes(5)
+    , mProbabilityIntsLieInLikelyRange(0.95)
+    , mExecutionContextPtr(inContextPtr)
+    {}
+
+RandomJOVGenerator::RandomJOVGenerator(
+                        boost::mt19937& generator,
+                        PolymorphicSharedPtr<Fora::Interpreter::ExecutionContext> inContextPtr
+                        )
+    : mMersenneTwister(generator)
+    , mMaxExtras(7)
+    , mMaxTupleSize(7)
+    , mMaxVectorSize(10)
+    , mMinReal(-10)
+    , mMaxReal(10)
+    , mMaxStringLength(10)
+    , mRandIntGen(mMersenneTwister, boost::uniform_int<>(0, boost::numeric::bounds<int>::highest()))
+    , mRandDoubleGen(mMersenneTwister, boost::uniform_real<>(mMinReal, mMaxReal))
+    , mRandFloatGen(mMersenneTwister, boost::uniform_real<float>(mMinReal, mMaxReal))
+    , mRandBitGen(mMersenneTwister, boost::uniform_int<>(0, 1))
+    , mUnifGen(mMersenneTwister, boost::uniform_real<>(0,1))
+    , mSymbolStrings(std::vector<std::string>())
+    , mMaxTriesForRandomValue(10)
+    , mLikelyMaxInt(5) 
+    , mLikelyMinInt(-5)
+    , mNumTypes(5)
+    , mLikelyMaxUnsignedInt(11)
+    , mNumBitTypes(5)
+    , mProbabilityIntsLieInLikelyRange(0.95)
+    , mExecutionContextPtr(inContextPtr)
+    {}
+    
+RandomJOVGenerator& RandomJOVGenerator::setSymbolStrings(
+                            const std::vector<std::string>& inSymbolStrings
+                            )
+    {
+    mSymbolStrings = inSymbolStrings;
+    return *this;
+    }
+
+RandomJOVGenerator& RandomJOVGenerator::setMaxExtras(int inMaxExtras)
+    {
+    mMaxExtras = inMaxExtras;
+    return *this;
+    }
+
+RandomJOVGenerator& RandomJOVGenerator::setMaxTupleSize(int mMaxTupleSize)
+    {
+    lassert(mMaxTupleSize >= 0);
+    mMaxTupleSize = mMaxTupleSize;
+    return *this;
+    }
+
+RandomJOVGenerator& RandomJOVGenerator::setMaxTriesForRandomValue(
+                                int inMaxTriesForRandomValue
+                                )
+    {
+    lassert(inMaxTriesForRandomValue >= 0);
+    mMaxTriesForRandomValue = inMaxTriesForRandomValue;
+    return *this;
+    }
+    
+RandomJOVGenerator& RandomJOVGenerator::setMaxStringLength(
+                            int inMaxStringLength
+                            )
+    {
+    lassert(inMaxStringLength >= 0);
+    mMaxStringLength = inMaxStringLength;
+    return *this;
+    }
+    
+RandomJOVGenerator& RandomJOVGenerator::setLikelyMaxInt(
+                                            int inLikelyMaxInt
+                                            )
+    {
+    mLikelyMaxInt = inLikelyMaxInt;
+    return *this;
+    }
+    
+RandomJOVGenerator& RandomJOVGenerator::setLikelyMinInt(
+                                                int inLikelyMinInt
+                                                )
+    {
+    mLikelyMinInt = inLikelyMinInt;
+    return *this;
+    }
+    
+RandomJOVGenerator& RandomJOVGenerator::setMaxReal(
+                                                double inMaxReal
+                                                )
+    {
+    mMaxReal = inMaxReal;
+    mRandDoubleGen.distribution() = boost::uniform_real<>(mMinReal, mMaxReal);
+    mRandFloatGen.distribution() = boost::uniform_real<float>(mMinReal, mMaxReal);
+    return *this;
+    }
+    
+RandomJOVGenerator& RandomJOVGenerator::setMinReal(
+                                                double inMinReal
+                                                )
+    {
+    mMinReal = inMinReal;
+    mRandDoubleGen.distribution() = boost::uniform_real<>(mMinReal, mMaxReal);
+    mRandFloatGen.distribution() = boost::uniform_real<float>(mMinReal, mMaxReal);
+    return *this;
+    }
+    
+RandomJOVGenerator& RandomJOVGenerator::setLikelyMaxUnsignedInt(
+                                                unsigned int inLikelyMaxUnsignedInt
+                                                )
+    {
+    mLikelyMaxUnsignedInt = inLikelyMaxUnsignedInt;
+    return *this;
+    }
+    
+RandomJOVGenerator& RandomJOVGenerator::setProbabilityIntsLieInLikelyRange(
+                                                                        double pr
+                                                                        )
+    {
+    lassert(0.0 <= pr && pr <= 1.0);
+    mProbabilityIntsLieInLikelyRange = pr;
+    return *this;
+    }
+
+int RandomJOVGenerator::randInt(void) const
+    {
+    return mRandIntGen();
+    }
+
+double RandomJOVGenerator::randRealInZeroToOne(void) const
+    {
+    return mUnifGen();
+    }
+
+double RandomJOVGenerator::randDouble(void) const
+    {
+    return mRandDoubleGen();
+    }
+
+float RandomJOVGenerator::randFloat(void) const
+    {
+    return mRandFloatGen();
+    }
+
+bool RandomJOVGenerator::randBool(void) const
+    {
+    if (mRandBitGen())
+        return true;
+    return false;
+    }
+
+Nullable<ImplValContainer> RandomJOVGenerator::RandomValue(
+		const JudgmentOnValue& jov,
+		bool allowMutableTypes
+		) const
+	{
+    if (jov.constant())
+        return null() << ImplValContainer(jov.constant()->getReference());
+
+    @match JOV(jov)
+        -|  Unknown() ->> {
+				return UnknownRandomValue(allowMutableTypes);
+				}
+        -|  Atom(jova) ->> {
+				return AtomRandomValue(jova);
+				}
+        -|  Vector(j) ->> {
+        		return VectorRandomValue(j);
+	        	}
+        -|  Tuple(t) ->> {
+				return TupleRandomValue(t);
+				}
+		-|	JOVAsValue(Known(j)) ->> {
+				return null() << ImplValContainer(CSTValue(j));
+				}
+		-|	JOVAsValue(Unknown(j)) ->> {
+				Nullable<ImplValContainer> val;
+				int ct = 0;
+				while (ct < mMaxTriesForRandomValue && !val)
+					val = RandomValue(j, true);
+				if (val)
+					return null() << ImplValContainer(CSTValue(JOV::FromLiveValue(val->getReference())));
+				return null();
+				}
+        -|  _ ->> {
+				return null();
+				}
+		;
+	}
+    
+//TODO BUG tom: this does not always work for heterogeneous vectors
+Nullable<ImplValContainer> RandomJOVGenerator::VectorRandomValue(  
+                            const JudgmentOnValueVector& jovv
+                            ) const
+    {
+    JudgmentOnResult vecEltJOVs = jovv.elementsJOR();
+	
+	ImmutableTreeVector<ImplValContainer> elements;
+		
+	if (vecEltJOVs.size())
+		{
+		int size = randInt() % mMaxVectorSize;
+		
+		for (int i = 0; i < size; i++)
+			{
+			JOV jov = vecEltJOVs[randInt() % vecEltJOVs.size()];
+			
+			Nullable<ImplValContainer> v = RandomValue(jov);
+			if (v)
+				{
+				elements = elements + *v;
+				}
+				else
+				return null();
+			}
+		}
+            
+    ImplValContainer val = createFORAVector(
+                                    elements,
+                                    MemoryPool::getFreeStorePool(),
+                                    RandomHashGenerator::singleton().generateRandomHash()
+                                    );
+    return null() << val;
+    }
+
+Nullable<ImplValContainer> RandomJOVGenerator::AtomRandomValue(
+		const JudgmentOnValueAtom& jova
+		) const
+    {            
+    @match JudgmentOnValueAtom(jova)
+        -|  Typed(t) ->> {
+			return TypeRandomValue(t);
+			}
+        -|  Valued(v) ->> {
+            return null() << ImplValContainer(v);
+            }
+        -|  Float() ->> {
+            bool flag =
+                (randInt() >
+                    boost::numeric::bounds<int>::highest() / 2 ? true
+                   : false);
+            if (flag)
+                return RandomValue(JOV::OfType(Type::Float(64)));
+                else
+                return RandomValue(JOV::OfType(Type::Float(32)));
+            }
+        -|  Integer(s) ->> {
+            bool isSigned =
+             (randInt() > boost::numeric::bounds<int>::highest() / 2 ? true
+                : false);
+            if (s)
+                isSigned = *s;
+            int bit_type = randInt() % mNumBitTypes;
+            if (bit_type == 0)
+                return RandomValue(JOV::OfType(Type::Integer(1, false)));
+                else
+            if (bit_type == 1)
+                return RandomValue(JOV::OfType(Type::Integer(8, isSigned)));
+                else
+            if (bit_type == 2)
+                return RandomValue(JOV::OfType(Type::Integer(16, isSigned)));
+                else
+            if (bit_type == 3)
+                return RandomValue(JOV::OfType(Type::Integer(32, isSigned)));
+                else
+            return RandomValue(JOV::OfType(Type::Integer(64, isSigned)));
+            }
+        -|  _ ->> {
+			return null();
+			}
+        ;
+    }
+    
+Nullable<ImplValContainer> RandomJOVGenerator::TypeRandomValue(const Type& t) const
+    {        
+    int rand_int = randInt();
+    @match Type(t)
+        -|  Integer(bits, isSigned) ->> {
+                bool is_small = (randRealInZeroToOne() < mProbabilityIntsLieInLikelyRange ? true : false);
+                if (bits == 1)
+                    {
+                    bool rand_bool =
+                        (rand_int >
+                            boost::numeric::bounds<int>::highest() / 2 ? true
+                            : false);
+                    return null() <<
+                        ImplValContainer(CSTValue(rand_bool));
+                    }
+                    else
+                if (isSigned)
+                    {
+                    if (is_small)
+                        rand_int %= mLikelyMaxInt - mLikelyMinInt;
+                    if (is_small && bits == 64)
+                        {
+                        return null() <<
+                            ImplValContainer(CSTValue(boost::numeric_cast<int64_t>(rand_int + mLikelyMinInt)));
+                        }
+                    if (is_small && bits == 32)
+                        {
+                        rand_int %= boost::numeric::bounds<int32_t>::highest();
+                        return null() <<
+                            ImplValContainer(CSTValue(boost::numeric_cast<int32_t>(rand_int + mLikelyMinInt)));
+                        }
+                    if (is_small && bits == 16)
+                        {
+                        rand_int %= boost::numeric::bounds<int32_t>::highest();
+                        return null() <<
+                            ImplValContainer(CSTValue(boost::numeric_cast<int16_t>(rand_int + mLikelyMinInt)));
+                        }
+                    if (is_small && bits == 8)
+                        {
+                        rand_int %= boost::numeric::bounds<char>::highest();
+                        return null() <<
+                            ImplValContainer(CSTValue(boost::numeric_cast<char>(rand_int + mLikelyMinInt)));
+                        }
+                    if (!is_small && bits == 64)
+                        return null() <<
+                            ImplValContainer(CSTValue(
+                                                boost::numeric_cast<int64_t>(rand_int)
+                                                )
+                                             );
+                    if (!is_small && bits == 32)
+                        {
+                        rand_int %= boost::numeric::bounds<int32_t>::highest();
+                        rand_int *= (randBool() ? 1 : -1);
+                        return null() <<
+                            ImplValContainer(CSTValue(
+                                                boost::numeric_cast<int32_t>(rand_int)
+                                                )
+                                            );
+                        }
+                    if (!is_small && bits == 16)
+                        {
+                        rand_int %= boost::numeric::bounds<int16_t>::highest();
+                        rand_int *= (randBool() ? 1 : -1);
+                        return null() <<
+                            ImplValContainer(CSTValue(
+                                                boost::numeric_cast<int16_t>(rand_int)
+                                                )
+                                             );
+                        }
+                    if (!is_small && bits == 8)
+                        {
+                        rand_int %= boost::numeric::bounds<char>::highest();
+                        rand_int *= (randBool() ? 1 : -1);
+                        return null() <<
+                            ImplValContainer(CSTValue(
+                                                boost::numeric_cast<char>(rand_int)
+                                             )
+                                            );
+                        }
+                    }
+                    else // unsigned
+                    {
+                    if (is_small && bits == 64)
+                        {
+                        rand_int %= mLikelyMaxUnsignedInt;
+                        return null() <<
+                            ImplValContainer(CSTValue(boost::numeric_cast<uint64_t>(rand_int)));
+                        }
+                    if (is_small && bits == 32)
+                        {
+                        rand_int %= min(mLikelyMaxUnsignedInt,
+                                        boost::numeric_cast<unsigned int>(
+                                            boost::numeric::bounds<uint32_t>::highest()
+                                            )
+                                       );
+                        return null() <<
+                            ImplValContainer(CSTValue(boost::numeric_cast<uint32_t>(rand_int)));
+                        }
+                    if (is_small && bits == 16)
+                        {
+                        rand_int %= min(mLikelyMaxUnsignedInt,
+                                        boost::numeric_cast<unsigned int>(
+                                            boost::numeric::bounds<uint16_t>::highest()
+                                            )
+                                        );
+                        return null() <<
+                            ImplValContainer(CSTValue(boost::numeric_cast<uint16_t>(rand_int)));
+                        }
+                    if (is_small && bits == 8)
+                        {
+                        rand_int %= min(mLikelyMaxUnsignedInt,
+                                        boost::numeric_cast<unsigned int>(
+                                            boost::numeric::bounds<uint8_t>::highest()
+                                            )
+                                       );
+                        return null() <<
+                            ImplValContainer(CSTValue(boost::numeric_cast<unsigned char>(rand_int)));
+                        }
+                    if (!is_small && bits == 64)
+                        return null() <<
+                            ImplValContainer(CSTValue(boost::numeric_cast<uint64_t>(rand_int)));
+                    if (!is_small && bits == 32)
+                        {
+                        rand_int %= boost::numeric::bounds<int32_t>::highest();
+                        return null() <<
+                            ImplValContainer(CSTValue(boost::numeric_cast<uint32_t>(rand_int)));
+                        }
+                    if (!is_small && bits == 16)
+                        {
+                        rand_int %= boost::numeric::bounds<uint16_t>::highest();
+                        return null() <<
+                            ImplValContainer(CSTValue(boost::numeric_cast<uint16_t>(rand_int)));
+                        }                   
+                    }
+                    rand_int %= boost::numeric::bounds<unsigned char>::highest();
+                    return null() <<
+                        ImplValContainer(CSTValue(boost::numeric_cast<unsigned char>(rand_int))); 
+            }
+        -|  Float(bits) ->> {
+                if (bits == 32)
+                    return null() <<
+                        ImplValContainer(CSTValue(randFloat()));
+                    else
+                if (bits == 64)
+                    return null() <<
+                        ImplValContainer(CSTValue(randDouble()));
+                    else
+                    return null();                
+            }
+        -|  String() ->> {
+                int string_length = randInt() % mMaxStringLength;
+                std::string chars(
+                " abcdefghijklmnopqrstuvwxyz"
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                "1234567890"
+                 "!@#$%^&*()"
+                 "`~-_=+[{]{\\|;:'\",<.>/? ");
+                std::string rand_str;
+                for(int i = 0; i < string_length; ++i)
+                    rand_str += chars[randInt() % chars.size()];
+                return null() <<
+                    ImplValContainer(CSTValue(rand_str));
+            }
+        -|  Symbol() ->> {
+                if (mSymbolStrings.size() > 0)
+                    {
+                    rand_int = (rand_int >= 0 ? rand_int : (0 - rand_int)) % mSymbolStrings.size();
+				
+                    return null() <<
+                    ImplValContainer(CSTValue(Symbol(mSymbolStrings[rand_int])));
+                    }
+                    else
+                return null();
+            }   
+        -|  _ ->> {
+        	return  null();
+	        }
+        ;
+    }
+    
+Nullable<ImplValContainer> RandomJOVGenerator::TupleRandomValue(
+                            const JOVT& jovt
+                            ) const
+    {
+   	ImmutableTreeVector<Nullable<Symbol> > names = jovt.names();
+	JudgmentOnValueTupleExtras extras = jovt.extras();
+	ImmutableTreeVector<JOV> jovs = jovt.jovs();
+    
+    ImmutableTreeVector<ImplValContainer> values;
+    for (uint32_t i = 0; i < jovs.size(); i++)
+        {
+        Nullable<ImplValContainer> value = RandomValue(jovs[i], true);
+        if (!value)
+            return null();
+        values = values + *value;
+        }
+    if (extras.isExtras())
+        {
+        Nullable<ImplValContainer> extras_value;
+        @match JOVTE(extras)
+            -|  Extras(jov) ->> { 
+                    int num_extras = randInt() % mMaxExtras;
+                    //cout << "$" << num_extras << "$" << endl; 
+                    for (int i = 0; i < num_extras; i++)
+                        {
+                        // for some reason, allowing mutable types on this
+                        // call can produce some really crazy shit, probably
+                        // leading to stack overflows.
+                        extras_value = RandomValue(jov, false);
+                        if (extras_value)
+                            {
+                            values = values + *extras_value;
+                            names = names + null();
+                            }
+                        }
+                }
+            ;
+        }
+    return null() << ImplValContainerUtilities::createTuple(values, names);
+    }
+    
+Nullable<ImplValContainer> RandomJOVGenerator::UnknownRandomValue(
+                                bool allowMutableTypes
+                                ) const
+    {
+    return RandomValue(JOV::OfType(randomType(allowMutableTypes)));
+    }
+    
+Type RandomJOVGenerator::randomType(bool allowMutableTypes) const
+    {
+    //int i = randInt() % mNumTypes;
+    int i = randInt() % 4;
+    Type type = Type::Nothing();
+    switch (i)
+        {
+        case 0:
+            type = Type::String();
+            break;
+        case 1:
+            type = Type::Symbol();
+            break;
+        case 2:
+            type = randomIntegerType(); 
+            break;
+        case 3:
+            type = randomFloatType();
+            break;
+        /*case 5:
+            type = randomVectorType(allowMutableTypes);
+            break;*/
+        case 4:
+            type = randomTupleType();
+            break;
+        default:
+            break;
+        }
+    return type;
+    }
+    
+// might need to control recursion depth on the following two functions
+// to avoid blowing out stack.
+// [what is likelihood of this happening?]
+
+Type RandomJOVGenerator::randomTupleType(void) const
+    {
+    ImmutableTreeVector<Type> types;
+    ImmutableTreeVector<Nullable<Symbol> > names;
+    int size = randInt() % mMaxTupleSize;
+    for (int i = 0; i < size; i++)
+        {
+        types = types + randomType(true);
+        names = names + null();
+        }
+    return Type::Tuple(types, names);
+    }
+/*
+Type randomVectorType(boost::mt19937& generator, bool allowMutableTypes)
+    {
+    boost::variate_generator<boost::mt19937&, boost::uniform_int<> >
+        randBoolgen(
+            generator, boost::uniform_int<>(0, 1)
+            );
+    bool rand_bool = false;
+    if (allowMutableTypes)
+        rand_bool = (randBoolgen() > 0 ? true : false);
+    Type element = randomType(generator, true);
+    return Type::Vector(element, rand_bool);
+    }
+*/
+
+Type RandomJOVGenerator::randomIntegerType(void) const
+    {
+    int i = randInt();
+    Type type = Type::Integer(1, false);
+    bool rand_bool = randBool();
+    switch (i)
+        {
+        case 0:
+            type = Type::Integer(8, rand_bool);
+            break;
+        case 1:
+            type = Type::Integer(16, rand_bool);
+            break;
+        case 2:
+            type = Type::Integer(32, rand_bool);
+            break;
+        case 3:
+            type = Type::Integer(64, rand_bool);
+            break;
+        default: break;
+        }
+    return type;
+    }
+    
+Type RandomJOVGenerator::randomFloatType(void) const
+	{
+    if (randBool())
+        return Type::Float(32);
+    return Type::Float(64);
+    }
+

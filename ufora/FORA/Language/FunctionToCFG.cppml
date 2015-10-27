@@ -1,0 +1,413 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "FunctionToCFG.hppml"
+#include "../ControlFlowGraph/ControlFlowGraph.hppml"
+#include "../../core/STLOps.hpp"
+#include <boost/lexical_cast.hpp>
+#include <boost/thread.hpp>
+#include "../../core/Logging.hpp"
+#include "../../core/Clock.hpp"
+#include "../Core/Type.hppml"
+#include "Function.hppml"
+#include "FunctionStage1.hppml"
+#include "FunctionStage2.hppml"
+#include "FunctionStage3.hppml"
+#include "../Core/ClassMediator.hppml"
+#include "../ControlFlowGraph/ControlFlowGraph.hppml"
+#include "../ControlFlowGraph/ControlFlowGraphOptimizer.hppml"
+#include "../ControlFlowGraph/ControlFlowGraphUtil.hppml"
+#include "../../core/threading/ThreadSafeMap.hpp"
+#include "FunctionStage2Converter.hppml"
+#include "ExpressionToCFG.hppml"
+#include "ProcessedCFG.hppml"
+
+namespace Fora {
+namespace Language {
+
+ThreadSafeMap<pair<hash_type, hash_type>, ProcessedCFG> FunctionToCFG::mProcessedCFGCache;
+
+ThreadSafeMap<pair<hash_type, pair<hash_type, hash_type> >, ControlFlowGraph> FunctionToCFG::mCfgCache;
+
+FunctionToCFG::FunctionToCFG()
+	{
+	}
+
+ProcessedCFG	FunctionToCFG::functionToCFG(
+					const FunctionStage3::Function& inFun,
+					const ClassMediator& inMediator,
+					const ApplySignature& inSignature,
+					VariableAllocator& inAlloc
+					) const
+	{
+	ImmutableTreeVector<variable_index_type> 	varnames = inFun.vars();
+	
+	ImmutableTreeMap<string, ControlFlowNode> 	ioNodes;
+	ImmutableTreeMap<uint32_t, string> 			ioContinuations;
+	uint32_t 									ioCounter = 0;
+	
+	ExpressionToCFG converter(
+			ioCounter,
+			ioNodes,
+			ioContinuations,
+			inMediator,
+			inSignature,
+			inAlloc
+			);
+	
+	ExpressionEntry enter =
+		converter.convert(
+			inFun.result(),
+			ExpressionContinuation::Return(
+				ExpressionContinuationArg::Result(),
+				false
+				),
+			ExpressionContinuation::Return(
+				ExpressionContinuationArg::Result(),
+				true
+				),
+			emptyTreeMap(),
+			varnames
+			);
+	
+	return ProcessedCFG(enter.name(), ioContinuations, ioNodes);
+	}
+
+ProcessedCFG	FunctionToCFG::functionToProcessedCfg(
+					const ClassMediator& code,
+					const ApplySignature& args
+					) const
+	{
+	VariableAllocator::Variable index = 1;
+	VariableAllocator allocator(index);
+	
+	FunctionStage1::Function fs1 =
+		FunctionStage1::convert(code, allocator);
+	
+	FunctionStage2::Function fs2 =
+		FunctionStage2::convert(
+			fs1,
+			args,
+			allocator
+			);
+	
+	lassert_dump(fs2.freeVariables().size() == 0,
+		prettyPrintString(fs2.freeVariables()) << " are free\n" << 
+		prettyPrintString(code) << "\n\n"
+			<< prettyPrintString(fs1) << "\n\n"
+			<< prettyPrintString(fs2)
+		);
+	
+	FunctionStage3::Function fs3 =
+		FunctionStage3::convert(
+			fs2,
+			allocator
+			);
+	
+	lassert_dump(fs3.freeVariables().size() == 0,
+		prettyPrintString(fs3.freeVariables()) << " are free\n" << 
+		prettyPrintString(fs2) << "\n\n"
+			<< prettyPrintString(fs3)
+		);
+	
+	ProcessedCFG cfg = functionToCFG(
+		fs3,
+		code,
+		args,
+		allocator
+		);
+	
+	return cfg;
+	}
+	
+ApplySignature FunctionToCFG::signatureToUseFor(
+										const ClassMediatorResumption& resumption,
+										const ApplySignature& inArgs
+										) const
+	{
+	@match ClassMediatorResumption(resumption)
+		-|	Entry() ->> {
+			return inArgs;
+			}
+		-|	Resumption(_,args) ->> {
+			return args;
+			}
+			;
+	}
+
+string FunctionToCFG::nodeToUseFor(
+						const ClassMediator& mediator,
+						const ProcessedCFG& inCFG, 
+						const ClassMediatorResumption& inResumption
+						) const
+	{
+	@match ClassMediatorResumption(inResumption)
+		-|	Entry() ->> {
+			return inCFG.entrynode();
+			}
+		-|	Resumption(ix) ->> {
+			lassert_dump(
+				inCFG.resumptionNodes()[ix],
+				"missing resumption node " << ix << ". Have " 
+					<< prettyPrintString(inCFG.resumptionNodes())
+					<< ". " 
+					<< prettyPrintString(inCFG.cfgNodes())
+					<< ". original mediator was " << prettyPrintString(mediator)
+				);
+
+			return *inCFG.resumptionNodes()[ix];
+			}
+			;
+	}
+
+ProcessedCFG FunctionToCFG::getProcessedCfg(
+									const pair<hash_type, hash_type>& codeAndSignatureHash,
+									const ClassMediator& code,
+									const ApplySignature& sigToUse
+									) const
+	{
+	Nullable<ProcessedCFG> procCFG = mProcessedCFGCache.get(codeAndSignatureHash);
+	
+	if (!procCFG)
+		{
+		procCFG = functionToProcessedCfg(code, sigToUse);
+		
+		procCFG->optimize();
+
+		mProcessedCFGCache.set(codeAndSignatureHash, procCFG);
+		}
+
+	return *procCFG;
+	}
+
+ControlFlowGraph FunctionToCFG::getCfgForEnteringProcessedCfg(
+												const std::string& nodeToUse,
+												uword_t incomingVarCount, 
+												const ProcessedCFG& cfg,
+												const std::string& mediatorName
+												) const
+	{
+	uint32_t boundMemberVariableCount = cfg.cfgNodes()[nodeToUse]->argCount();
+	
+	lassert_dump(
+		boundMemberVariableCount == incomingVarCount,
+		"can't enter cfg with " << incomingVarCount << ". need " << boundMemberVariableCount
+		 	<< ".\n" << prettyPrintString(cfg)
+		 );
+	
+	return ControlFlowGraph(
+		ControlFlowNode(
+			boundMemberVariableCount,
+			ControlFlowNodeBody::Jump(
+				ControlFlowContinuation::Node(
+					nodeToUse,
+					ControlFlowGraphUtil::contArglist(0, boundMemberVariableCount)
+					)
+				)
+			),
+		cfg.cfgNodes(),
+		mediatorName
+		);
+	}
+
+//Generate a node that assumes its getting two arguments:
+//(0) the result of unbinding
+//(1) the result of calling MakeTuple on all the other arguments in 'args'
+//and jumps to 'nodeToUse' with 'boundMemberVariableCount' variables extracted from arg[0] and then
+//arg 1
+ControlFlowNode FunctionToCFG::getResumptionNodeBody(
+											const std::string& nodeToUse,
+											uword_t boundMemberVariableCount
+											) const
+	{
+	ImmutableTreeVector<ControlFlowContinuationArg> contArgs;
+
+	for (long k = 0; k < boundMemberVariableCount; k++)
+		contArgs = contArgs + ControlFlowContinuationArg::TupleElement(k);
+	contArgs = contArgs + ControlFlowContinuationArg::Arg(ControlFlowArg::Arg(1));
+
+	return 
+		ControlFlowNode(
+			2,
+			ControlFlowNodeBody::TupleExpand(
+				0,
+				ControlFlowTupleContinuation(
+					boundMemberVariableCount,
+					true,
+					ControlFlowContinuation::Node(nodeToUse, contArgs)
+					),
+				ControlFlowGraphUtil::throwSymbolCont(
+					Symbol("CFG passed wrong number of arguments.")
+					)
+				)
+			);
+	}
+
+ControlFlowNode FunctionToCFG::getResumpionNodeEntrypoint(
+											const std::string& nodeToJumpTo,
+											const ApplySignature& args
+											) const
+	{
+	//we're producing the equivalent of 
+	//fun(self, *args) { nodeToJumpTo(`Unbind(self), (*args) ) }
+
+	ImmutableTreeVector<ControlFlowContinuationArg> normalContArgs;
+	normalContArgs = normalContArgs + 
+		ControlFlowContinuationArg::Result();
+
+	ImmutableTreeVector<ControlFlowContinuationTupleArg> tupArgs;
+
+	for (long k = 1; k < args.terms().size();k++)
+		@match ApplyArgumentSignature(args.terms()[k])
+			-| Normal(sym) ->> {
+				tupArgs = tupArgs + 
+					ControlFlowContinuationTupleArg::Normal(
+						sym, 
+						ControlFlowContinuationArg::Arg(ControlFlowArg::Arg(k))
+						);
+				}
+			-| TupleCall() ->> {
+				tupArgs = tupArgs + 
+					ControlFlowContinuationTupleArg::TupleCall(
+						ControlFlowContinuationArg::Arg(ControlFlowArg::Arg(k))
+						);
+				}
+
+	normalContArgs = normalContArgs + ControlFlowContinuationArg::MakeTuple(tupArgs);
+
+	ImmutableTreeVector<ControlFlowApplyArg> applyArgs;
+	applyArgs = applyArgs + 
+		ControlFlowApplyArg::Normal(null(), ControlFlowArg::Constant(CSTValue(Symbol("Unbind")))) + 
+		ControlFlowApplyArg::Normal(null(), ControlFlowArg::Constant(CSTValue(Symbol("Call")))) + 
+		ControlFlowApplyArg::Normal(null(), ControlFlowArg::Arg(0))
+		; 
+	
+	return ControlFlowNode(
+		args.terms().size(),
+		ControlFlowNodeBody::Apply(
+			applyArgs,
+			ControlFlowContinuation::Node(nodeToJumpTo, normalContArgs),
+			ControlFlowGraphUtil::throwSymbolCont(
+				Symbol("Resumption passed wrong number of args.")
+				)
+			)
+		);
+	}
+
+ControlFlowGraph FunctionToCFG::getCfgForResumingProcessedCfg(
+											const std::string& nodeToUse,
+											const ApplySignature& args,
+											const ProcessedCFG& inCfg,
+											const std::string& mediatorName
+											) const
+	{
+	ProcessedCFG cfg = inCfg;
+	
+	//this is the actual number of state variables that the continuation is expecting us to provide
+	uint32_t boundMemberVariableCount = cfg.cfgNodes()[nodeToUse]->argCount() - 1;
+
+	ControlFlowNode resumptionNode = getResumptionNodeBody(nodeToUse, boundMemberVariableCount);
+
+	std::string resumeNodeBodyName = cfg.addNode(resumptionNode);
+
+	//resumeNodeBodyName now refers to a node epecting two args: `Unbind(self), and the original
+	//incoming args packed into a tuple. We now generate a node that jumps to it
+
+	ControlFlowNode node = 
+			getResumpionNodeEntrypoint(
+				resumeNodeBodyName,
+				args
+				);
+	
+	return ControlFlowGraph(node, cfg.cfgNodes(), mediatorName);
+	}
+
+ControlFlowGraph FunctionToCFG::functionToCFG(
+					const ClassMediator& code,
+					const ClassMediatorResumption& resumption,
+					const ApplySignature& args
+					) const
+	{
+	pair<hash_type, pair<hash_type, hash_type> > hashes =
+		make_pair(resumption.hash(), make_pair(code.hash(), args.hash()));
+	
+	
+	//check the main cache
+		{
+		Nullable<ControlFlowGraph> graph = mCfgCache.get(hashes);
+		if (graph)
+			return *graph;
+		}
+	
+	//not there. decide which version of this CFG we are expanding
+	ApplySignature sigToUse = signatureToUseFor(resumption, args);
+
+	ProcessedCFG cfg = 
+		getProcessedCfg(
+			make_pair(code.hash(), hashValue(sigToUse)), 
+			code, 
+			sigToUse
+			);
+
+	string nodeToUse = nodeToUseFor(code, cfg, resumption);
+	
+	lassert_dump(cfg.cfgNodes().contains(nodeToUse),
+		prettyPrintString(cfg)
+			<< " doesn't contain "
+			<< nodeToUse << "\n"
+		);
+
+	ControlFlowGraph finalCFG;
+	
+	if (resumption.isEntry())
+		finalCFG = getCfgForEnteringProcessedCfg(nodeToUse, args.terms().size(), cfg, code.name());
+	else
+		finalCFG = getCfgForResumingProcessedCfg(nodeToUse, args, cfg, code.name());
+
+	lassert_dump(finalCFG.valid(), 
+		"invalid cfg: \n" << prettyPrintString(finalCFG)
+		);
+
+	mCfgCache.set(hashes, finalCFG);
+	
+	return finalCFG;
+	}
+
+ControlFlowGraph FunctionToCFG::functionToCFG(
+		const CPPMLOpaqueHandle<Function>& code,
+		const ClassMediatorResumption& resumption,
+		const ApplySignature& args
+		) const
+	{
+	return functionToCFG(
+		ClassMediator::Axiom("", *code),
+		resumption,
+		args
+		);
+	}
+
+ControlFlowGraph FunctionToCFG::functionToCFG(
+		const CPPMLOpaqueHandle<ClassMediator>& code,
+		const ClassMediatorResumption& resumption,
+		const ApplySignature& args
+		) const
+	{
+	return functionToCFG(*code, resumption, args);
+	}
+
+
+}
+}
+

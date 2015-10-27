@@ -1,0 +1,1029 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ModuleParserImpl.hppml"
+#include "ModuleParseResult.hppml"
+#include "ModuleBindingResult.hppml"
+#include "Parser.hppml"
+#include "ParserExpressions.hppml"
+#include "ScopeNaming.hppml"
+#include "ExpressionLocationTagging.hppml"
+#include "FunctionValidation.hppml"
+#include "FunctionUtil.hppml"
+#include "ClassMediatorBindings.hppml"
+#include "ModuleBinding.hppml"
+#include "ModuleGraphStructure.hppml"
+#include "../../core/cppml/ExtractAllVariablesOfGivenTypeVisitor.hppml"
+
+namespace Fora {
+
+ModuleParserImpl::ModuleParserImpl()
+	{
+	}
+
+ModuleParserImpl::ModuleParserImpl(ModuleParser::CodeParsingCallback pythonParser) :
+		mPythonParser(pythonParser)
+	{
+	}
+
+ModuleParseResult ModuleParserImpl::parse(
+		const SourceCodeTree& s,
+		bool allowPrivate,
+		const CodeDefinitionPoint& cdp
+		)
+	{
+	return tag(parse(s, allowPrivate, cdp, s.name()));
+	}
+
+ModuleParseResult ModuleParserImpl::tag(const ModuleParseResult& result)
+	{
+	@match ModuleParseResult(result)
+		-| Member(name, memberMeta, ParseError(e), location, parseMeta) ->> {
+			return result;
+			}
+		-| Member(name, memberMeta, Result(e), location, parseMeta) ->> {
+			return ModuleParseResult::Member(
+				name,
+				memberMeta,
+				ExpressionOrParseError::Result(
+					ExpressionLocationTagging::setCodeLocation(
+						e,
+						location
+						)
+					),
+				location,
+				parseMeta
+				);
+			}
+		-| Module(name, moduleMeta, parseErr, submodules, namesKnown, location, parseMeta) ->> {
+			ImmutableTreeMap<Symbol, ModuleParseResult> res;
+
+			for (auto sAndSub: submodules)
+				res = res + sAndSub.first + tag(sAndSub.second);
+
+			return ModuleParseResult::Module(name, moduleMeta, parseErr, res, namesKnown, location, parseMeta);
+			}
+	}
+
+ModuleParseResult ModuleParserImpl::parse(
+		const SourceCodeTree& s,
+		bool allowPrivate,
+		const CodeDefinitionPoint& cdp,
+		const std::string& fullName
+		)
+	{
+	@match SourceCodeTree(s)
+		-| Script(name, text) ->> {
+			return ModuleParseResult::Member(
+				name, 
+				CSTValue(), 
+				ExpressionOrParseError::ParseError(
+					ModuleParseError(
+						"Illegal to parse a script at the root level of a SourceCodeTree",
+						CodeLocation(cdp, SimpleParseRange::ForText(text))
+						)
+					),
+				CodeLocation(cdp, SimpleParseRange::ForText(text)),
+				ModuleParseMetadata::WasUnparsableScript()
+				);
+			}
+		-| Module(name, text, subtrees) ->> {
+			ImmutableTreeMap<Symbol, ModuleParseResult> children;
+
+			//first, try to parse all the children
+			for (const auto& nameAndChild: subtrees)
+				{
+				if (nameAndChild.second.isScript())
+					{
+					children = children + parseScriptToModule(
+						nameAndChild.second.getScript().name(), 
+						nameAndChild.second.getScript().text(), 
+						allowPrivate, 
+						extendCodeDefinition(cdp, nameAndChild.second.getScript().name()),
+						fullName + (fullName.size()?".":"") + nameAndChild.second.getScript().name()
+						);
+					}
+				else
+					{
+					ModuleParseResult result =
+						parse(
+							nameAndChild.second, 
+							allowPrivate, 
+							extendCodeDefinition(cdp, nameAndChild.first),
+							fullName + (fullName.size()?".":"") + nameAndChild.first
+							);
+
+					children = children + Symbol(nameAndChild.first) + result;
+					}
+				}
+
+			//now we try to parse ourselves
+			SimpleParseNode textAsSimpleParse;
+			try {
+				textAsSimpleParse = parseStringToSimpleParse(text ? *text : "");
+				}
+			catch(const SimpleParseError& error)
+				{
+				//if we failed, then our internal text is so mangled that we cannot
+				//even balance braces, etc.
+
+				//if we have children, or are the root node, we cannot be considered a 
+				//simple module member
+				if (children.size() || fullName == name)
+					return ModuleParseResult::Module(
+						Symbol(name),
+						CSTValue(),
+						emptyTreeVec() + 
+							ModuleParseError(
+								error.errorString(),
+								CodeLocation(cdp, error.extent())
+								),
+						children,
+						false,
+						CodeLocation(cdp, textAsSimpleParse.extent()),
+						ModuleParseMetadata::None()
+						);
+				else
+					return ModuleParseResult::Member(
+						Symbol(name),
+						CSTValue(),
+						ExpressionOrParseError::ParseError(
+							ModuleParseError(
+								error.errorString(),
+								CodeLocation(cdp, error.extent())
+								)
+							),
+						CodeLocation(cdp, textAsSimpleParse.extent()),
+						ModuleParseMetadata::None()
+						);
+				}
+
+			//now, try to parse this as a module definition
+			try {
+				return tryToParseModuleDefinition(
+					textAsSimpleParse, 
+					allowPrivate, 
+					cdp, 
+					name, 
+					fullName, 
+					children
+					);
+				}
+			catch (const FunctionParseError& objectCreateErr)
+				{
+				//if we can't because of a structural reason, then try to parse
+				//as a simple module member. if fullName == name, then we're the 
+				//root node, and we can't do so
+				if (!subtrees.size() && fullName != name)
+					try {
+						return ModuleParseResult::Member(
+							Symbol(name),
+							CSTValue(),
+							ExpressionOrParseError::Result(
+								parseToExpression(
+									textAsSimpleParse,
+									allowPrivate,
+									cdp,
+									fullName
+									)
+								),
+							CodeLocation(cdp, textAsSimpleParse.extent()),
+							ModuleParseMetadata::None()
+							);
+						}
+					catch(FunctionParseError& err)
+						{
+						//take the error that's got a larger lower range as the 'real' error
+						if (err.range().start().rawOffset() > objectCreateErr.range().start().rawOffset())
+							return ModuleParseResult::Member(
+								Symbol(name),
+								CSTValue(),
+								ExpressionOrParseError::ParseError(
+									ModuleParseError(
+										err.error(),
+										CodeLocation(cdp, err.range())
+										)
+									),
+								CodeLocation(cdp, textAsSimpleParse.extent()),
+								ModuleParseMetadata::None()
+								);
+						}
+
+				//we couldn't make sense of this, but we can't treat it as an object either
+				return ModuleParseResult::Module(
+					Symbol(name),
+					CSTValue(),
+					emptyTreeVec() + 
+						ModuleParseError(
+							objectCreateErr.error(),
+							CodeLocation(cdp, objectCreateErr.range())
+							),
+					children,
+					false,
+					CodeLocation(cdp, textAsSimpleParse.extent()),
+					ModuleParseMetadata::None()
+					);
+				}
+			}
+	}
+
+
+
+
+
+namespace {
+
+Nullable<FunctionParseError> extractStatementTerms(
+		const ModuleParser::StatementTermsAndErrors & termsAndErrors,
+		std::vector<std::pair<StatementTerm, CodeLocation>> & outTerms)
+	{
+	for (const auto& term: termsAndErrors)
+		if (term.isLeft())
+			outTerms.push_back(term.left());
+		else
+			{
+			return null() << term.right();
+			}
+	return null();
+	}
+
+Symbol allocateFreeVariable(ImmutableTreeSet<Symbol>& ioAllSymbolsUsed, const std::string& base)
+	{
+	long highIndex = 1;
+	auto sym = [&](long ix) { 
+		return Symbol(base + "_" + boost::lexical_cast<string>(ix)); 
+		};
+
+	while (ioAllSymbolsUsed.contains(sym(highIndex)))
+		highIndex = highIndex * 2;
+
+	long lowIndex = highIndex / 2;
+
+	while (lowIndex + 1 < highIndex)
+		{
+		long mid = (lowIndex + highIndex)/2;
+
+		if (ioAllSymbolsUsed.contains(sym(mid)))
+			lowIndex = mid;
+		else
+			highIndex = mid;
+		}
+
+	lassert(!ioAllSymbolsUsed.contains(sym(highIndex)));
+	ioAllSymbolsUsed = ioAllSymbolsUsed + sym(highIndex);
+	return sym(highIndex);
+	}
+
+bool statementTermWantsDisplay(const StatementTerm& term)
+	{
+	@match StatementTerm(term)
+		-| Expr(e) ->> {
+			@match Expression(e)
+				-| Assign() ->> { return false; }
+				-| Foreach() ->> { return false; }
+				-| While() ->> { return false; }
+				-| _ ->> { return true; }
+			}
+		-| Let() ->> {
+			return false;
+			}
+	}
+
+bool isVerySimpleLetBindingOrExpression(const StatementTerm& term)
+	{
+	@match StatementTerm(term)
+		-| Expr(e) ->> {
+			return e.assignedVariables().size() == 0;
+			}
+		-| Let(terms) ->> {
+			if (terms.size() != 1)
+				return false;
+
+			if (terms[0].second.assignedVariables().size())
+				return false;
+
+			if (!terms[0].first.pattern().isAnything())
+				return false;
+
+			if (!terms[0].first.name())
+				return false;
+			
+			Symbol bound = *terms[0].first.name();
+
+			if (terms[0].second.freeVariables().contains(bound))
+				return false;
+
+			return true;
+			}
+	}
+
+}
+
+ImmutableTreeMap<Symbol, ModuleParseResult>
+			ModuleParserImpl::parseScriptToModule(
+					const std::string& name,
+					const std::string& text,
+					bool allowPrivate,
+					const CodeDefinitionPoint& cdp,
+					const std::string& fullName
+					)
+	{
+	SimpleParseNode textAsSimpleParse;
+
+	try {
+		textAsSimpleParse = parseStringToSimpleParse(text);
+		}
+	catch(const SimpleParseError& error)
+		{
+		return emptyTreeMap() + 
+			Symbol(name) +
+			ModuleParseResult::Member(
+				Symbol(name),
+				CSTValue(),
+				ExpressionOrParseError::ParseError(
+					ModuleParseError(
+						error.errorString(),
+						CodeLocation(cdp, error.extent())
+						)
+					),
+				CodeLocation(cdp, error.extent()),
+				ModuleParseMetadata::WasUnparsableScript()
+				);
+		}
+
+	ParserExpressions p(true, cdp, fullName);
+
+	std::vector<pair<StatementTerm, CodeLocation>> terms;
+	auto error = extractStatementTerms(
+		p.unpackNodeToStatementTermsOrParseErrors(textAsSimpleParse),
+		terms
+		);
+
+	if (error)
+		{
+		// try to parse as python
+		decltype(terms) pyTerms;
+		auto pyError = extractStatementTerms(mPythonParser(text), pyTerms);
+		if (!pyError || pyError->range().start().line() > error->range().start().line())
+			{
+			// we either successfully parsed as python or parsing as python hit an error later in the code
+			error = pyError;
+			std::swap(terms, pyTerms);
+			}
+		}
+
+	terms = ScopeNaming::nameClassMediatorsWithScopes(terms, fullName);
+
+	ImmutableTreeSet<Symbol> allSymbols = 
+		ExtractAllVariablesOfGivenTypeVisitor<Symbol>::extract(terms);
+
+	ImmutableTreeMap<Symbol, ModuleParseResult> boundChildren;
+
+	map<Symbol, Expression> boundSymbolMap;
+
+	ImmutableTreeVector<Symbol> expressionSymbols;
+
+	const std::string& nameOfModule = name + ".module";
+
+	Nullable<Symbol> symbolToEvaluateTo = bindScriptTerms(
+		nameOfModule,
+		terms, 
+		allSymbols,
+		boundChildren,
+		boundSymbolMap,
+		expressionSymbols
+		);
+
+	if (!symbolToEvaluateTo)
+		symbolToEvaluateTo = bindScriptTerm(
+			StatementTerm::Expr(
+				//push back an expression that evaluates to 'none' and that doesn't
+				//do anything, so that the expression parses, but make sure it doesn't
+				//display
+				Expression::While(Expression::Constant(CSTValue(false)), Expression())
+				),
+			CodeLocation(),
+			allSymbols,
+			boundChildren,
+			boundSymbolMap,
+			expressionSymbols
+			);
+
+	ImmutableTreeMap<Symbol, ModuleParseResult> result;
+
+	result = result + 
+		Symbol(nameOfModule) + 
+		ModuleParseResult::Module(
+			Symbol(nameOfModule),
+			CSTValue(),
+			emptyTreeVec(),
+			boundChildren,
+			true,
+			CodeLocation(cdp, SimpleParseRange::ForText(text)),
+			ModuleParseMetadata::ScriptModule(
+				expressionSymbols
+				)
+			);
+
+	if (!symbolToEvaluateTo)
+		{
+		error = FunctionParseError(
+			"Script doesn't have a valid value",
+			SimpleParseRange::ForText(text)
+			);
+		}
+
+	if (error)
+		{
+		result = result +
+			Symbol(name) + 
+			ModuleParseResult::Member(
+				Symbol(name),
+				CSTValue(),
+				ExpressionOrParseError::ParseError(
+					ModuleParseError(
+						error->error(),
+						CodeLocation(cdp, error->range())
+						)
+					),
+				CodeLocation(cdp, SimpleParseRange::ForText(text)),
+				ModuleParseMetadata::WasUnparsableScript()
+				);
+		}
+	else
+		{
+		lassert(symbolToEvaluateTo.isValue());
+
+		result = result +
+			Symbol(name) + 
+			ModuleParseResult::Member(
+				Symbol(name),
+				CSTValue(),
+				ExpressionOrParseError::Result(
+					Expression::Member(
+						Expression::Variable(
+							Symbol(nameOfModule)
+							),
+						*symbolToEvaluateTo,
+						1
+						)
+					),
+				CodeLocation(cdp, SimpleParseRange::ForText(text)),
+				ModuleParseMetadata::WasScript(
+					Symbol(nameOfModule),
+					*symbolToEvaluateTo
+					)
+				);
+		}
+
+	return result;
+	}
+
+Nullable<Symbol> ModuleParserImpl::bindScriptTerms(
+			const std::string& nameOfModule,
+			const std::vector<std::pair<StatementTerm, CodeLocation>>& terms,
+			ImmutableTreeSet<Symbol>& ioAllSymbolsUsed,
+			ImmutableTreeMap<Symbol, ModuleParseResult>& ioModuleMembers,
+			std::map<Symbol, Expression>& ioBoundSymbolMap,
+			ImmutableTreeVector<Symbol>& ioExpressionSymbols
+			)
+	{
+	Nullable<Symbol> symbolToEvaluateTo;
+
+	for (const auto& term: terms)
+		bindScriptTerm(
+			term.first,
+			term.second,
+			ioAllSymbolsUsed,
+			ioModuleMembers,
+			ioBoundSymbolMap,
+			ioExpressionSymbols
+			);
+
+	symbolToEvaluateTo = bindFinalScriptValueTerm(
+		nameOfModule,
+		ioAllSymbolsUsed,
+		ioModuleMembers,
+		ioBoundSymbolMap,
+		ioExpressionSymbols
+		);
+
+	return symbolToEvaluateTo;
+	}
+
+Expression ModuleParserImpl::getFinalScriptValueExpression(
+		const std::string& nameOfModule,
+		const ImmutableTreeSet<Symbol>& allSymbolsUsed,
+		const ImmutableTreeMap<Symbol, ModuleParseResult>& moduleMembers,
+		const std::map<Symbol, Expression>& boundSymbolMap,
+		const ImmutableTreeVector<Symbol>& expressionSymbols
+		)
+	{
+	// take one. NOT going to be fully correct due to possible throws in let bindings
+	// which are not referenced in expressionSymbols
+	Expression tr;
+	for (const auto& expressionSymbol: expressionSymbols) {
+		tr = Expression::Sequence(
+			tr,
+			Expression::Member(
+				Expression::Variable(
+					Symbol(nameOfModule)
+					),
+				expressionSymbol,
+				1
+				)
+			);
+		}
+
+	return tr;
+	}
+
+Nullable<Symbol> ModuleParserImpl::bindFinalScriptValueTerm(
+		const std::string& nameOfModule,
+		ImmutableTreeSet<Symbol>& ioAllSymbolsUsed,
+		ImmutableTreeMap<Symbol, ModuleParseResult>& ioModuleMembers,
+		std::map<Symbol, Expression>& ioBoundSymbolMap,
+		ImmutableTreeVector<Symbol>& ioExpressionSymbols
+		)
+	{
+	Expression expressionForFinalScriptValue = getFinalScriptValueExpression(
+		nameOfModule,
+		ioAllSymbolsUsed,
+		ioModuleMembers,
+		ioBoundSymbolMap,
+		ioExpressionSymbols
+		);
+
+	Nullable<Symbol> symbolToEvaluateTo = bindScriptTerm(
+		StatementTerm::Expr(expressionForFinalScriptValue),
+		CodeLocation(),
+		ioAllSymbolsUsed,
+		ioModuleMembers,
+		ioBoundSymbolMap,
+		ioExpressionSymbols
+		);
+
+	lassert(symbolToEvaluateTo.isValue());
+
+	if (std::find(ioExpressionSymbols.begin(), 
+			ioExpressionSymbols.end(), *symbolToEvaluateTo) 
+		!= ioExpressionSymbols.end())
+		ioExpressionSymbols = ioExpressionSymbols.slice(0, -1);
+
+	return symbolToEvaluateTo;
+	}
+
+Nullable<Symbol> ModuleParserImpl::bindScriptTerm(
+			const StatementTerm& term,
+			const CodeLocation& location,
+			//set of all symbols. Used to prevent collisions
+			ImmutableTreeSet<Symbol>& ioAllSymbolsUsed,
+			//module members used in the script module
+			ImmutableTreeMap<Symbol, ModuleParseResult>& ioModuleMembers,
+			//mapping, at this point, from symbols we're using to module members
+			std::map<Symbol, Expression>& ioBoundSymbolMap,
+			//for all 'expression' terms that we should show,
+			//the symbol in the module that evaluates to them
+			ImmutableTreeVector<Symbol>& ioExpressionSymbols
+			)
+	{
+	//convenience function allows us to export a particular expression to the new module
+	//so that code below can be more readable.
+	auto exportExpression = [&](Expression toExport, bool wrapInCachecall) {
+		ImmutableTreeSet<Symbol> freeInExpr = toExport.freeVariables();
+		for (const auto& f: freeInExpr)
+			{
+			auto it = ioBoundSymbolMap.find(f);
+			if (it != ioBoundSymbolMap.end())
+				toExport = Expression::Let(
+					f,
+					it->second,
+					toExport
+					);
+			}
+
+		if (wrapInCachecall)
+			toExport = wrapExpressionInCacheCall(toExport);
+
+		Symbol nameForThisExpression = allocateFreeVariable(
+			ioAllSymbolsUsed, 
+			hashToString(
+				ExpressionLocationTagging::withoutCodeLocationMetadata(toExport)
+					.hash()
+				)
+			);
+		//now push this expression onto the module stack
+		ioModuleMembers = ioModuleMembers + nameForThisExpression + 
+			ModuleParseResult::Member(
+				nameForThisExpression,
+				CSTValue(),
+				ExpressionOrParseError::Result(toExport),
+				location,
+				ModuleParseMetadata::None()
+				);
+		return nameForThisExpression;
+		};
+
+	if (isVerySimpleLetBindingOrExpression(term))
+		{
+		@match StatementTerm(term)
+			-| Let(terms) ->> {
+				Expression toBind = terms[0].second;
+				Symbol bound = term.boundVariables()[0];
+
+				ioBoundSymbolMap[bound] = Expression::Variable(exportExpression(toBind, true));
+
+				return null();
+				}
+			-| Expr(e) ->> {
+				Symbol final = exportExpression(e, true);
+
+				if (statementTermWantsDisplay(term))
+					ioExpressionSymbols = ioExpressionSymbols + final;
+				
+				return null() << final;
+				}
+		}
+	else
+		{
+		pair<ImmutableTreeSet<Symbol>, Expression> symbolsAndExpr = 
+					extractExpressionAndBoundVariables(term);
+
+		Symbol nameForCachecallExpr = exportExpression(symbolsAndExpr.second, true);
+
+		//now expose all the symbols in it we plan to use
+		long curIndex = 0;
+		for (const auto& exportedSymbol: symbolsAndExpr.first)
+			{
+			ioBoundSymbolMap[exportedSymbol] = 
+				Expression::Variable(nameForCachecallExpr)[1][curIndex]
+				;
+			curIndex++;
+			}
+
+		Nullable<Symbol> finalExprValue;
+
+		if (statementTermWantsDisplay(term))
+			{
+			finalExprValue = exportExpression(Expression::Variable(nameForCachecallExpr)[0], false);
+			ioExpressionSymbols = ioExpressionSymbols + *finalExprValue;
+			}
+		
+		return finalExprValue;
+		}
+	}
+
+//if the front term is a valid metadata constant, pop it off the front
+SimpleParseNode computeMetadata(const SimpleParseNode& toParse, CSTValue& outMetadata)
+	{
+	ParserExpressions p(true, CodeDefinitionPoint(), "");
+
+	outMetadata = 
+		CSTValue::Tuple()
+			.tupleAppend(null() << Symbol("outer"), CSTValue())
+			.tupleAppend(null() << Symbol("inner"), CSTValue())
+			;
+	
+	@match SimpleParseNode(toParse)
+		-|	Sequence(Semicolon(), elts) ->> {
+				//if this is a constant, then it's the module metadata
+				try {
+					outMetadata = 
+						CSTValue::Tuple()
+							.tupleAppend(null() << Symbol("outer"), CSTValue())
+							.tupleAppend(null() << Symbol("inner"), p.parseToConstant(elts[0]))
+							;
+
+					if (elts.size() == 1)
+						return elts[1];
+
+					return SimpleParseNode::Sequence(
+							toParse.extent(),
+							SimpleParseSeparator::Semicolon(),
+							elts.slice(1)
+							);
+					}
+				catch(FunctionParseError& err)
+					{
+					}
+				}
+		-|	_ ->> {
+			try {
+				outMetadata = 
+					CSTValue::Tuple()
+						.tupleAppend(null() << Symbol("outer"), CSTValue())
+						.tupleAppend(null() << Symbol("inner"), p.parseToConstant(toParse))
+						;
+
+				return SimpleParseNode::Empty();
+				}
+			catch(FunctionParseError& err)
+				{
+				}
+			}
+		;
+
+	return toParse;
+	}
+
+Nullable<Symbol> tryToFindMemberName(SimpleParseNode toParse)
+	{
+	@match SimpleParseNode(toParse)
+		-| Sequence(Colon(), elts) ->> {
+			if (elts.size() < 1)
+				return null();
+
+			@match SimpleParseNode(elts[0])
+				-| Sequence(Concatenation(), elts2) ->> {
+					if (elts2.size() == 0)
+						return null();
+
+					if (elts2[elts2.size()-1].isIdentifier())
+						return null() << Symbol(elts2[elts2.size()-1].getIdentifier().val());
+					}
+				-| Identifier(val) ->> {
+					return null() << Symbol(val);
+					}
+				-| _ ->> {
+					}
+			}
+		-| _ ->> {
+			}
+
+	return null();
+	}
+
+void parseSimpleParseToMemberDefinitions(
+					SimpleParseNode toParse,
+					bool allowPrivate,
+					const CodeDefinitionPoint& cdp,
+					Symbol moduleName,
+					Symbol moduleFullname,
+					CSTValue& outMetadata,
+					ImmutableTreeMap<Symbol, ModuleParseResult>& outMembers,
+					ImmutableTreeVector<ModuleParseError>& outGeneralErrors,
+					ImmutableTreeMap<Symbol, SimpleParseRange>& outMemberRanges
+					)
+	{
+	ParserExpressions p(allowPrivate, cdp, moduleFullname.toString());
+
+	toParse = computeMetadata(toParse, outMetadata);
+
+	ImmutableTreeVector<SimpleParseNode> nodesToParse;
+
+	@match SimpleParseNode(toParse)
+		-| Empty() ->> {
+			}
+		-| Sequence(Semicolon(), elts) ->> {
+			//if any of these is a colon-separated value, we will count ourselves as a module definition
+			bool hasOne = false;
+			bool hasSomethingElse = false;
+
+			for (long k = 0; k < elts.size(); k++)
+				{
+				@match SimpleParseNode(elts[k])
+					-| Sequence(Colon(), elts) ->> {
+						hasOne = true;
+						}
+					-| Empty() ->> {}
+					-| _ ->> {
+						hasSomethingElse = true;
+						}
+					;
+				}
+
+			if (!hasOne && hasSomethingElse)
+				throw FunctionParseError("Invalid module definition", toParse);
+
+			nodesToParse = elts;
+			}
+		-| Sequence(Colon(), elts) ->> {
+			nodesToParse = emptyTreeVec() + toParse;
+			}
+		-| otherwise ->> {
+			throw FunctionParseError("Invalid module definition", toParse);
+			}
+
+	for (const auto& e: nodesToParse)
+		if (!e.isEmpty())
+			{
+			try {
+				ImmutableTreeVector<pair<CSTValue, ClassDefinitionTerm> > terms;
+
+				p.parseClassDefinitionTerm(e, terms, false);
+
+				if (terms.size() > 1)
+					throw FunctionParseError("Invalid module entry", e);
+
+				if (terms.size() == 1)
+					{
+					terms = ScopeNaming::nameClassMediatorsWithScopes(
+						terms, moduleFullname.toString()
+						);
+
+					@match ClassDefinitionTerm(terms[0].second)
+						-| ObjectTerm(Member(name, expr, depth)) ->> {
+							if (depth != 1)
+								throw FunctionParseError("Invalid module member", e);
+
+							if (outMembers.contains(name))
+								throw FunctionParseError("Module member " + name.toString() + " already defined", e);
+
+							outMembers = outMembers + name + ModuleParseResult::Member(
+								name, 
+								terms[0].first, 
+								ExpressionOrParseError::Result(expr),
+								CodeLocation(cdp, e.extent()),
+								ModuleParseMetadata::None()
+								);
+							outMemberRanges = outMemberRanges + name + e.extent();
+							}
+						-| _ ->> {
+							throw FunctionParseError("Invalid module member", e)
+							}
+					}
+				}
+			catch(const FunctionParseError& err)
+				{
+				Nullable<Symbol> memberName = tryToFindMemberName(e);
+
+				if (memberName)
+					{
+					if (outMembers.contains(*memberName))
+						{
+						outGeneralErrors = outGeneralErrors + 
+							ModuleParseError(
+								"Module member " + memberName->toString() + " already defined",
+								CodeLocation(cdp, e.extent())
+								);
+						}
+					else
+						outMembers = outMembers + *memberName + 
+							ModuleParseResult::Member(
+								*memberName, 
+								CSTValue(),
+								ExpressionOrParseError::ParseError(
+									ModuleParseError(
+										err.error(),
+										CodeLocation(cdp, err.range())
+										)
+									),
+								CodeLocation(cdp, e.extent()),
+								ModuleParseMetadata::None()
+								);
+					}
+				else
+					outGeneralErrors = outGeneralErrors + 
+						ModuleParseError(
+							err.error(),
+							CodeLocation(cdp, err.range())
+							);
+				}
+			}
+	}
+
+ModuleParseResult ModuleParserImpl::tryToParseModuleDefinition(
+						const SimpleParseNode& textAsSimpleParse,
+						bool allowPrivate, 
+						const CodeDefinitionPoint& cdp, 
+						const std::string& name, 
+						const std::string& fullName, 
+						const ImmutableTreeMap<Symbol, ModuleParseResult>& children
+						)
+	{
+	ImmutableTreeMap<Symbol, ModuleParseResult> textChildren;
+	ImmutableTreeVector<ModuleParseError> generalErrors;
+	ImmutableTreeMap<Symbol, SimpleParseRange> textChildrenRanges;
+	CSTValue meta;
+
+	parseSimpleParseToMemberDefinitions(
+		textAsSimpleParse,
+		allowPrivate,
+		cdp,
+		name,
+		fullName,
+		meta,
+		textChildren,
+		generalErrors,
+		textChildrenRanges
+		);
+
+	if (!children.size() && !textChildren.size() && name != fullName)
+		throw FunctionParseError("Empty modules parse as expressions", textAsSimpleParse);
+	
+	//if any of our children overlap with the children defined outside, then we consider
+	//our children to be parse errors
+	for (long k = 0; k < textChildren.size();k++)
+		{
+		Symbol childName = textChildren.pairAtPosition(k).first;
+
+		if (children.contains(childName))
+			textChildren = textChildren + childName + 
+				ModuleParseResult::Member(
+					childName,
+					CSTValue(),
+					ExpressionOrParseError::ParseError(
+						ModuleParseError(
+							"Module member " + childName.toString() + " defined twice.",
+							CodeLocation(
+								cdp,
+								*textChildrenRanges[childName]
+								)
+							)
+						),
+					CodeLocation(cdp, *textChildrenRanges[childName]),
+					ModuleParseMetadata::None()
+					);
+		}
+
+	return ModuleParseResult::Module(
+		Symbol(name),
+		meta,
+		generalErrors,
+		children + textChildren,
+		true,
+		CodeLocation(cdp, textAsSimpleParse.extent()),
+		ModuleParseMetadata::None()
+		);
+	}
+
+CodeDefinitionPoint ModuleParserImpl::extendCodeDefinition(
+										CodeDefinitionPoint point, 
+										const std::string& path
+										)
+	{
+	@match CodeDefinitionPoint(point)
+		-| External(paths) ->> {
+			return CodeDefinitionPoint::External(paths + path);
+			}
+		-| _ ->> {
+			lassert_dump(false, "Can't extend " << prettyPrintString(point));
+			}
+	}
+
+ModuleBindingResult  ModuleParserImpl::bind(
+						const ModuleParseResult& parseResult,
+						const ImmutableTreeMap<Symbol, pair<ImplValContainer, Nullable<Symbol> > >& freeVariableBindings,
+						bool performDecompositionAndPartialBinding
+						)
+	{
+	if (performDecompositionAndPartialBinding)
+		{
+		ModuleGraphStructure graph(parseResult, freeVariableBindings);
+
+		return graph.computeBindingResult();
+		}
+
+	if (parseResult.errors().size())
+		return ModuleBindingResult::Module(
+			parseResult.name(),
+			null(),
+			emptyTreeMap(),
+			parseResult.errors(),
+			false,
+			ModuleParseMetadata::None()
+			);
+
+	for (const auto& symbol: parseResult.freeVariables())
+		if (!freeVariableBindings.contains(symbol))
+			return ModuleBindingResult::Module(
+				parseResult.name(),
+				null(),
+				emptyTreeMap(),
+				emptyTreeVec() + ModuleParseError(
+					"Variable " + symbol.toString() + " is undefined.",
+					parseResult.computeFreeVariableLocations(symbol)[0]
+					),
+				false,
+				ModuleParseMetadata::None()
+				);
+
+
+	//compute a binding expression
+	ImplValContainer result = bindModuleParseResultDirectly(parseResult, freeVariableBindings);
+
+	return ModuleBindingResult::Module(
+		parseResult.name(),
+		null() << result,
+		emptyTreeMap(),
+		emptyTreeVec(),
+		true,
+		ModuleParseMetadata::None()
+		);
+	}
+
+}
+
+

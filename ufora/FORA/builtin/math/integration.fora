@@ -1,0 +1,260 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#Markdown(
+"""### integration
+
+#### Description
+
+(Mathematical) integration functions.
+
+""");
+
+trapz:
+#Markdown(
+"""#### Usage
+    1. trapz(F)
+    2. trapz(f,low,high,s = 100)
+
+#### Description
+
+1. Takes a vector `F` of values of a real valued function and treats them as having unit 
+spacing.  The integral is calculated using the trapezoidal method. Non-unit spacing
+can be acheived by mutliplying the result times the spacing increment at which the 
+values were sampled.  If `F` is a matrix, the behavior is as described above, but a 
+vector is returned with the integral taken over the major dimension.
+
+2. Calculates the integral of a function `f` from `low` to `high`, and samples the function
+`f` at `s` uniformly spaced values from the interval `[low, high]` including at the endpoints.
+
+#### Examples
+
+    // For case 1: 
+    // To approximately integrate math.sin(x) on 0 to math.pi:
+    let values = Vector.range(100, fun(x) { math.sin((x * math.pi) / 100) });
+    let integral = math.integration.trapz(values) * math.pi / 100
+    integral
+
+    // For case 2:
+    // To approximately integrate math.sin(x) on 0 to math.pi, using 100000 samples:
+    math.integration.trapz(math.sin, 0, math.pi, 100000)
+
+""")
+	fun (F)
+		{
+		match(F) with 
+
+			(math.Matrix(...))
+			{
+			let data = F.data
+
+			//check that tensor has rank 1 or 2
+			if(size(F.dim) == 1)
+				return trapz(data)
+
+			assertions.assertEqual(size(F.dim), 2)
+
+			//length of the vectors we will operate on
+			let majorLength = size(data) / F.dim[1]
+			return splitTrapzOnMatrix(data,majorLength)
+			}
+
+			(...)
+			{
+			//ie interval length is 0
+			if(size(F) < 2)
+				return 0.0;
+			if(size(F) == 2)
+				return (0.5)*(F[0]+F[1])
+			trapzSizeAtLeastTwo(F)
+			}
+		}
+		
+		(X,F)
+		{
+        assertions.assertEqual(size(F), size(X));
+
+		if(size(F) < 2)
+			return 0.0;
+		if(size(F) == 2)
+			return (F[0] + F[1]) * 0.5 * (X[1] - X[0])
+		trapzSizeAtLeastTwo(X,F)
+		}
+
+		(f,low,high,s = 100)
+		{
+		if(s < 2)
+			throw #InvalidInput("There must be at least two sample points to estimate the integral.")
+		if(low == high)
+			return 0.0
+		if(low > high)
+			return -trapz(f,high,low,s)
+
+		let sF = Float64(s);
+		let samplePoints = Vector.range(s, fun(x) {low + (x * high) / sF});
+		let v = samplePoints.apply(f);
+		trapz(v) * (high - low) / sF
+		};
+`hidden
+splitTrapzOnMatrix:
+	fun (data,majorLength)
+		{
+		let currentPosition = 0;
+		let resultVector = []
+		while(currentPosition < size(data))
+			{
+			resultVector = resultVector::trapz(data[currentPosition,currentPosition + majorLength]);
+			currentPosition = currentPosition + majorLength;
+			}
+		return resultVector
+		};
+`hidden
+trapzSizeAtLeastTwo:
+	fun (F)
+		{
+		//value of integral so far
+		let soFar = 0;
+		//there are size(F)-1 intervals over which to evaluate the approximation
+		let end = size(F) - 1;
+		let currentPosition = 0;
+		while(currentPosition < end)
+			{
+			soFar = soFar + (F[currentPosition]+F[currentPosition + 1]) * 0.5;
+			currentPosition = currentPosition + 1;
+			}
+		soFar;
+		}
+
+		(X,F)
+		{
+		//value of integral so far
+		let soFar = 0;
+		//there are size(F)-1 intervals over which to evaluate the approximation
+		let end = size(F) - 1;
+		let currentPosition = 0;
+		while(currentPosition < end)
+			{
+			soFar = soFar + (F[currentPosition]+F[currentPosition + 1])
+							* 0.5
+							* (X[currentPosition + 1] - X[currentPosition]);
+			currentPosition = currentPosition + 1;
+			}
+		soFar;
+		};
+
+quad:
+#Markdown(
+"""#### Usage
+
+    math.integration.quad(func, low, high, errorBound)
+
+#### Description
+
+Returns an estimate of the integral of func over the interval [low, high] using the Adaptive
+Simpson's Method, the error of the result is bounded by errorBound, and the recursive call tree created
+has depth bounded above by maxDepth. For more information on the algorithm see:
+http://en.wikipedia.org/wiki/AdaptiveSimpson%27sMethod
+
+#### Examples
+
+    // to approximately integrate math.sin on 0 to math.pi, with an error bound of 1e-6:
+    math.integration.quad(math.sin, 0, math.pi, 1e-6)
+    
+""")
+	fun (func,a,b,e,maxDepth = 50)
+		{
+		decideTypeOfSimpsons(func,a,b,e,maxDepth,0)
+		};
+//the user needs to have either passed a vector valued function that returns
+//consistently dimensioned vectors over the interval on which it is being integrated
+//or a real valued function
+`hidden
+decideTypeOfSimpsons:
+	fun (func,a,b,e,maxDepth,currentDim)
+		{
+		let testResult = func(a)
+		match (testResult) with
+		
+			//works pending a way to match vectors of non-homogenous types...
+			(filters.IsVector(v))
+			{
+			//need to adjust error since each component can contribute to error
+			let dim = size(v);
+			e = (1.0 / dim) * e;
+			return vectorValuedSimpsons(func,a,b,e,maxDepth,0,dim)
+			}
+
+			(...)
+			{
+			return realValuedSimpsons(func,a,b,e,maxDepth)
+			}
+		};
+`hidden
+vectorValuedSimpsons:
+	fun (func,a,b,e,maxDepth,currentDim,dim)
+		{
+		let result = [];
+		while(currentDim < dim)
+			{
+			result = result::realValuedSimpsons(vectorToRealFactory(func,currentDim),
+													a,b,e,maxDepth);
+			currentDim = currentDim + 1;
+			}
+		result
+		};
+`hidden
+vectorToRealFactory:
+	fun(func,index)
+		{
+		return fun(x){ func(x)[index] };
+		};
+`hidden
+realValuedSimpsons:
+	fun (func,a,b,e,maxDepth)
+		{
+		let mid = (a + b) / 2.0;
+		let length = b - a;
+		let funcA = func(a);
+		let funcB = func(b);
+		let funcMid = func(mid);
+		let s = (length / 6.0) * (funcA + 4 * funcMid + funcB);
+		splitAdaptiveSimpsons(func,a,b,funcA,funcB,funcMid,s,e,maxDepth);
+		};
+`hidden
+splitAdaptiveSimpsons:
+	fun (func,a,b,funcA,funcB,funcMid,s,e,maxDepth)
+		{
+		let mid = (a + b) / 2.0;
+		let length = b - a;
+		let midL = (a + mid) / 2.0;
+		let midR = (mid + b) / 2.0;
+		let funcMidL = func(midL);
+		let funcMidR = func(midR);
+		let sLeft = (length / 12.0) * (funcA + 4 * funcMidL + funcMid);
+		let sRight = (length / 12.0) * (funcMid + 4 * funcMidR + funcB);
+		let sRefined = sLeft + sRight;
+
+		//if the estimate so far is accurate enough
+		if(maxDepth <= 0 or abs(s - sRefined) < 15.0 * e)
+			return sRefined + (sRefined - s) / 15.0;
+		
+		//otherwise compute a more refined estimate by splitting into two intervals
+		maxDepth = maxDepth - 1;
+		sLeft = splitAdaptiveSimpsons(func,a,mid,funcA,funcMid,funcMidL,sLeft,e,maxDepth)
+		sRight = splitAdaptiveSimpsons(func,mid,b,funcMid,funcB,funcMidR,sRight,e,maxDepth)
+
+		return sLeft + sRight
+		};
+

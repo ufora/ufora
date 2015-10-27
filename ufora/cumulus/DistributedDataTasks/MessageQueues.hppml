@@ -1,0 +1,330 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "DistributedDataTaskMessages.hppml"
+#include "../../core/containers/MapWithIndex.hpp"
+
+namespace Cumulus {
+
+/*******************
+
+MessageQueues
+
+Holds indexed sets of messages. Messages are identified by an arbitrary 
+key and are bundled into sets. We allow sets to be checked out so that we
+can append to them.
+
+*******************/
+
+
+template<class task_type, class tag_type=int64_t>
+class MessageQueues {
+public:
+	MessageQueues(
+				PolymorphicSharedPtr<VectorDataManager> vdm, 
+				int64_t maxSize
+				) : 
+			mVDM(vdm),
+			mMaxSize(maxSize)
+		{
+		}
+
+	MessageQueues(
+				PolymorphicSharedPtr<VectorDataManager> vdm, 
+				int64_t maxSize, 
+				boost::function1<tag_type, task_type> tagFunction
+				) : 
+			mVDM(vdm),
+			mMaxSize(maxSize),
+			mTagFunction(tagFunction)
+		{
+		}
+
+	//remove a bundle of tasks
+	boost::shared_ptr<DistributedDataTaskMessages> extract(task_type task)
+		{
+		for (long k = 0; k < 2; k++)
+			{
+			auto& queue = (k == 0 ? mMessageQueuesAboveLimit : mMessageQueuesBelowLimit);
+
+			auto it = queue.find(task);
+
+			if (it != queue.end() && it->second.size())
+				{
+				boost::shared_ptr<DistributedDataTaskMessages> toExtract = *it->second.begin();
+
+				mTaskFootprint.set(task, mTaskFootprint.getValue(task) - toExtract->currentMemoryFootprint());
+				updateTaggedTaskFootprint(task);
+
+				mTotalFootprint = mTotalFootprint - toExtract->currentMemoryFootprint();
+				mLastFootprint.erase(toExtract);
+
+				mTaskEventCount[task]++;
+		
+				it->second.erase(toExtract);
+				if (it->second.size() == 0)
+					queue.erase(task);
+
+				lassert(toExtract);
+
+				return toExtract;
+				}
+			}
+
+		return boost::shared_ptr<DistributedDataTaskMessages>();
+		}
+
+	Nullable<pair<boost::shared_ptr<DistributedDataTaskMessages>, task_type> > extractBiggest()
+		{
+		if (!mTaskFootprint.size())
+			return null();
+
+		if (mTaskFootprint.highestValue().totalMessages() <= 0)
+			return null();
+
+		task_type task = *mTaskFootprint.getValueToKeys().rbegin()->second.begin();
+
+		auto messages = extract(task);
+
+		//it's possible that we don't get anything because all the messages are checked out already
+		if (!messages)
+			return null();
+
+		return null() << make_pair(messages, task);
+		}
+
+	//checkout a bundle of tasks for modification
+	boost::shared_ptr<DistributedDataTaskMessages> checkout(task_type task)
+		{
+		mTaskEventCount[task]++;
+		
+		auto it = mMessageQueuesBelowLimit.find(task);
+
+		if (it == mMessageQueuesBelowLimit.end() || !it->second.size())
+			{
+			boost::shared_ptr<DistributedDataTaskMessages> messages(
+					new DistributedDataTaskMessages(mVDM)
+					);
+
+			mCheckedOutTaskPools.insert(messages);
+
+			return messages;
+			}
+
+		boost::shared_ptr<DistributedDataTaskMessages> messages = *it->second.begin();
+		it->second.erase(messages);
+
+		mCheckedOutTaskPools.insert(messages);
+
+		return messages;
+		}
+
+	//checkin a bundle of tasks that were previously checked out
+	void checkin(task_type task, boost::shared_ptr<DistributedDataTaskMessages> messages)
+		{
+		mTaskEventCount[task]++;
+		
+		lassert(messages);
+		lassert(mCheckedOutTaskPools.find(messages) != mCheckedOutTaskPools.end());
+
+		mCheckedOutTaskPools.erase(messages);
+
+		addPool(task, messages);
+		}
+
+	void extractCheckedOut(task_type task, boost::shared_ptr<DistributedDataTaskMessages> messages)
+		{
+		mTaskEventCount[task]++;
+		
+		lassert(mCheckedOutTaskPools.find(messages) != mCheckedOutTaskPools.end());
+		mCheckedOutTaskPools.erase(messages);
+
+		if (mTaskFootprint.hasKey(task))
+			mTaskFootprint.set(task, mTaskFootprint.getValue(task) - mLastFootprint[messages]);
+
+		updateTaggedTaskFootprint(task);
+		mTotalFootprint = mTotalFootprint - mLastFootprint[messages];
+
+		mLastFootprint.erase(messages);
+		}
+
+	void add(task_type task, boost::shared_ptr<DistributedDataTaskMessages> messages)
+		{
+		lassert(messages);
+		addPool(task, messages);
+		}
+
+	DataTaskMemoryFootprint totalFootprint() const
+		{
+		return mTotalFootprint;
+		}
+
+	const MapWithIndex<task_type, DataTaskMemoryFootprint>& getTaskMemoryFootprints() const
+		{
+		return mTaskFootprint;
+		}
+
+	DataTaskMemoryFootprint taskMemory(task_type task) const
+		{
+		if (mTaskFootprint.hasKey(task))
+			return mTaskFootprint.getValue(task);
+		else
+			return DataTaskMemoryFootprint();
+		}
+
+	int64_t taskEventCount(task_type task) const
+		{
+		auto it = mTaskEventCount.find(task);
+
+		if (it != mTaskEventCount.end())
+			return it->second;
+
+		return 0;
+		}
+
+	int64_t tagEventCount(tag_type tag) const
+		{
+		auto it = mTagEventCount.find(tag);
+
+		if (it != mTagEventCount.end())
+			return it->second;
+
+		return 0;
+		}
+
+	const map<tag_type, MapWithIndex<task_type, DataTaskMemoryFootprint> >& getTaggedTaskMemoryFootprints() const
+		{
+		return mTaggedTaskFootprint;
+		}
+
+	const MapWithIndex<task_type, DataTaskMemoryFootprint>& getTaggedTaskMemoryFootprints(tag_type tag) const
+		{
+		static MapWithIndex<task_type, DataTaskMemoryFootprint> empty;
+
+		auto it = mTaggedTaskFootprint.find(tag);
+		if (it == mTaggedTaskFootprint.end())
+			return empty;
+
+		return it->second;
+		}
+
+	DataTaskMemoryFootprint getAggregateMemoryByTag(tag_type tag) const
+		{
+		auto it = mTaggedTaskAggregatedFootprint.find(tag);
+		if (it != mTaggedTaskAggregatedFootprint.end())
+			return it->second;
+		return DataTaskMemoryFootprint();
+		}
+
+private:
+	void updateTaggedTaskFootprint(const task_type& task)
+		{
+		if (!mTagFunction)
+			return;
+
+		auto tag = mTagFunction(task);
+
+		DataTaskMemoryFootprint delta;
+
+		if (mTaskFootprint.hasKey(task))
+			delta = mTaskFootprint.getValue(task);
+
+		if (mTaggedTaskFootprint[tag].hasKey(task))
+			delta = delta - mTaggedTaskFootprint[tag].getValue(task);
+
+		if (delta.totalMessages() != 0)
+			mTagEventCount[tag]++;
+
+		mTaggedTaskAggregatedFootprint[tag] = mTaggedTaskAggregatedFootprint[tag] + delta;
+
+		if (mTaggedTaskAggregatedFootprint[tag].totalMessages() == 0)
+			mTaggedTaskAggregatedFootprint.erase(tag);
+
+		if (mTaskFootprint.hasKey(task))
+			{
+			auto footprint = mTaskFootprint.getValue(task);
+
+			if (footprint.totalMessages())
+				mTaggedTaskFootprint[tag].set(task, mTaskFootprint.getValue(task));
+			else
+				mTaggedTaskFootprint[tag].discard(task);
+			}
+		else
+			mTaggedTaskFootprint[tag].discard(task);
+
+		if (mTaggedTaskFootprint[tag].size() == 0)
+			mTaggedTaskFootprint.erase(tag);
+		}
+
+	void addPool(task_type task, boost::shared_ptr<DistributedDataTaskMessages> messages)
+		{
+		mTaskEventCount[task]++;
+
+		auto footprint = messages->currentMemoryFootprint();
+
+		if (footprint.totalMessages())
+			{
+			if (footprint.totalBytesUsed() < mMaxSize)
+				mMessageQueuesBelowLimit[task].insert(messages);
+			else
+				mMessageQueuesAboveLimit[task].insert(messages);
+			}
+
+		auto footprintDelta = footprint - mLastFootprint[messages];
+
+		mTotalFootprint = mTotalFootprint + footprintDelta;
+
+		mLastFootprint[messages] = footprint;
+
+		if (mTaskFootprint.hasKey(task))
+			mTaskFootprint.set(task, mTaskFootprint.getValue(task) + footprintDelta);
+		else
+			mTaskFootprint.set(task, footprintDelta);
+
+		updateTaggedTaskFootprint(task);
+		}
+
+	PolymorphicSharedPtr<VectorDataManager> mVDM;
+
+	int64_t mMaxSize;
+
+	std::map<task_type, std::set<boost::shared_ptr<DistributedDataTaskMessages> > > mMessageQueuesAboveLimit;
+
+	std::map<task_type, std::set<boost::shared_ptr<DistributedDataTaskMessages> > > mMessageQueuesBelowLimit;
+
+	MapWithIndex<task_type, DataTaskMemoryFootprint> mTaskFootprint;
+
+	std::map<task_type, int64_t> mTaskEventCount;
+
+	std::map<tag_type, int64_t> mTagEventCount;
+
+	std::map<task_type, tag_type> mTags;
+
+	std::map<tag_type, MapWithIndex<task_type, DataTaskMemoryFootprint> > mTaggedTaskFootprint;
+
+	std::map<tag_type, DataTaskMemoryFootprint> mTaggedTaskAggregatedFootprint;
+
+	std::set<boost::shared_ptr<DistributedDataTaskMessages> > mCheckedOutTaskPools;
+
+	map<boost::shared_ptr<DistributedDataTaskMessages>, DataTaskMemoryFootprint> mLastFootprint;
+
+	boost::function1<tag_type, task_type> mTagFunction;
+
+	DataTaskMemoryFootprint mTotalFootprint;
+};
+
+}

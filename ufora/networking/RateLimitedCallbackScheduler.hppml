@@ -1,0 +1,218 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <map>
+#include <deque>
+#include "../core/Logging.hpp"
+#include "../core/math/Nullable.hpp"
+#include "../core/Clock.hpp"
+#include "../core/threading/CallbackScheduler.hppml"
+
+/**************
+
+RateLimitedCallbackScheduler
+
+allows us to control the rate at which callbacks are fired. Each callback that's scheduled has a 
+cost. We have a rate per second which we can use to fire.  We allocate cost evenly across items
+in each group, where a group is identified by a value of type group_id_type
+
+***************/
+
+
+template<class group_id_type>
+class RateLimitedCallbackScheduler : 
+				public PolymorphicSharedPtrBase<RateLimitedCallbackScheduler<group_id_type> > {
+public:
+	RateLimitedCallbackScheduler(PolymorphicSharedPtr<CallbackScheduler> inScheduler, double inThroughput) : 
+			mScheduler(inScheduler),
+			mThroughput(inThroughput),
+			mLastCheckin(0),
+			mNextCheckinScheduledFor(curClock() * 2)
+		{
+		}
+
+	PolymorphicSharedPtr<CallbackScheduler> getScheduler()
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		return mScheduler;
+		}
+
+	void schedule(double cost, group_id_type group, boost::function0<void> callback)
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		updateInternalClocksAndFire_();
+
+		mPendingMessages[group].push_back(Entry(cost, callback));
+
+		scheduleNextCheckin_();
+		}
+
+	void dropGroup(group_id_type group)
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		updateInternalClocksAndFire_();
+
+		mPendingMessages.erase(group);
+
+		scheduleNextCheckin_();
+		}
+
+private:
+	void scheduleNextCheckin_()
+		{
+		Nullable<double> curMinCost = calcMinCost_();
+
+		if (!curMinCost)
+			return;
+
+		double perChannelThroughput = mThroughput / mPendingMessages.size();
+
+		double timeForNextCheckin = *curMinCost / perChannelThroughput + curClock();
+
+		if (timeForNextCheckin < mNextCheckinScheduledFor)
+			{
+			mNextCheckinScheduledFor = timeForNextCheckin;
+			mScheduler->schedule(getCheckinCallback_(), timeForNextCheckin, "RateLimitedCallbackScheduler");
+			}
+		}
+
+	boost::function0<void> getCheckinCallback_()
+		{
+		return boost::bind(
+			&callCheckinFunction,
+			this->polymorphicSharedWeakPtrFromThis()
+			);
+		}
+
+	static void callCheckinFunction(
+				PolymorphicSharedWeakPtr<RateLimitedCallbackScheduler<group_id_type> > inWeakSelf
+				)
+		{
+		auto ptr = inWeakSelf.lock();
+
+		if (ptr)
+			ptr->checkin();
+		}
+
+	void checkin()
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		mNextCheckinScheduledFor = curClock() * 2;
+
+		updateInternalClocksAndFire_();
+		}
+
+	void updateInternalClocksAndFire_()
+		{
+		while (true)
+			{
+			Nullable<double> curMinCost = calcMinCost_();
+
+			if (!curMinCost)
+				{
+				mLastCheckin = curClock();
+				return;
+				}
+
+			double thisCheckinT0 = curClock();
+
+			double timeElapsed = thisCheckinT0 - mLastCheckin;
+
+			double perChannelThroughput = mThroughput / mPendingMessages.size();
+
+			double maxTimeToConsume = *curMinCost / perChannelThroughput;
+
+			if (maxTimeToConsume > timeElapsed)
+				{
+				double costToConsume = timeElapsed * perChannelThroughput;
+
+				//consume what we can from the front of each chain, but don't fire anything
+				for (auto& group: mPendingMessages)
+					group.second[0].cost() -= costToConsume;
+
+				mLastCheckin = thisCheckinT0;
+
+				scheduleNextCheckin_();
+
+				return;
+				}
+			else
+				{
+				//we can fire something
+				double costToConsume = *curMinCost;
+
+				std::set<group_id_type> toRemove;
+
+				for (auto& group: mPendingMessages)
+					{
+					group.second[0].cost() -= costToConsume;
+					if (group.second[0].cost() <= 0.0)
+						{
+						mScheduler->scheduleImmediately(group.second[0].toFire(), "RateLimitedCallbackScheduler");
+						group.second.pop_front();
+
+						if (group.second.size() == 0)
+							toRemove.insert(group.first);
+						}
+					}
+
+				for (auto id: toRemove)
+					mPendingMessages.erase(id);
+
+				mLastCheckin += maxTimeToConsume;
+				}
+			}
+		}
+
+
+	Nullable<double> calcMinCost_()
+		{
+		Nullable<double> minCost;
+
+		for (auto& group: mPendingMessages)
+			{
+			if (group.second.size())
+				if (!minCost || *minCost > group.second[0].cost())
+					minCost = group.second[0].cost();
+			}
+
+		return minCost;
+		}
+
+	@type Entry = 
+		double cost,
+		boost::function0<void> toFire
+		;
+
+	boost::mutex mMutex;
+
+	PolymorphicSharedPtr<CallbackScheduler> mScheduler;
+
+	std::map<group_id_type, std::deque<Entry> > mPendingMessages;
+
+	double mThroughput;
+
+	double mNextCheckinScheduledFor;
+
+	double mLastCheckin;
+};
+
+

@@ -1,0 +1,207 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "ActiveComputations.hppml"
+#include "ActiveComputationsEvent.hppml"
+#include "ComputationState.hppml"
+#include "ComputationDependencyGraph.hpp"
+#include "MachineComputationMap.hppml"
+#include "../FORA/Core/ExecutionContextConfiguration.hppml"
+#include "../networking/statsd.hpp"
+#include "../FORA/VectorDataManager/PageRefcountEvent.hppml"
+#include "../FORA/VectorDataManager/PageRefcountTracker.hppml"
+#include "../FORA/TypedFora/ABI/BigVectorLayouts.hppml"
+#include "ActiveComputationsKernelInterface.hppml"
+#include "ActiveComputationsKernel.hppml"
+
+class SystemwidePageRefcountTracker;
+
+namespace Cumulus {
+
+class DataTransfers;
+class RecordingActiveComputationsKernelInterface;
+
+class ActiveComputationsImpl : public PolymorphicSharedPtrBase<ActiveComputationsImpl> {
+public:
+	ActiveComputationsImpl(
+					PolymorphicSharedPtr<CallbackSchedulerFactory> inCallbackSchedulerFactory,
+					PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+					PolymorphicSharedPtr<DataTransfers> inLargeMessageThrottler,
+					PolymorphicSharedPtr<VectorDataManager> inVDM,
+					uword_t inWorkerThreadCount,
+					Fora::Interpreter::ExecutionContextConfiguration inConfig,
+					MachineId inOwnMachineId,
+					PolymorphicSharedPtr<SystemwidePageRefcountTracker> inSprt,
+					RandomHashGenerator& guidGen,
+					boost::function1<void, ActiveComputationsEvent> inEventHandler,
+					MachineId inLeaderMachine
+					);
+
+	~ActiveComputationsImpl();
+
+	void setCheckInternalStateAfterAllOperations(bool inCheck);
+
+	void teardown();
+
+	void teardownButDontBlock();
+
+	void dumpStateToLog();
+
+	void polymorphicSharedPtrBaseInitialized();
+
+	//only valid if we've been torn down already
+	void extractStates(
+		std::map<ComputationId, PolymorphicSharedPtr<ComputationState> >& outStates
+		);
+
+	void enableVectorPaging();
+
+	void checkStateBeforeResumingComputation();
+
+	void disableVectorPaging();
+
+	void scheduleHandleComputationBackgroundAction(
+									ComputationId computation, 
+									ComputationBackgroundAction message
+									);
+
+	MachineId getMachineId() const;
+
+	void initializeFromAddDropState(
+			const std::map<ComputationId, PolymorphicSharedPtr<ComputationState> > &inStates,
+			const Cumulus::AddDropFinalState& state
+			);
+
+	void addMachine(MachineId machine);
+
+	void addCumulusClient(CumulusClientId inId);
+
+	void dropCumulusClient(CumulusClientId inId);
+
+	void handleComputationResultFromMachine(
+					const ComputationResultFromMachine& inResult
+					);
+
+	void handleLocalPageRefcountEvent(const Fora::PageRefcountEvent& event);
+
+	void handleExternalIoTaskCompleted(ExternalIoTaskCompleted completed);
+
+	void handleRequestComputationResultFromMachineWithToken(
+									RequestComputationResultFromMachine inRequest,
+									PolymorphicSharedPtr<DataTransfers> throttler,
+									DataTransferTokenId inToken
+									);
+
+	void sendCurrentStateToClient(CumulusClientId client);
+
+	void handleRequestComputationResultFromMachine(
+										RequestComputationResultFromMachine inRequest
+										);
+
+	pair<ComputationStatePtr, hash_type> startComputation(const ComputationId& computation);
+
+	void stopComputation(ComputationId computation, CreatedComputations result);
+	
+	void handleComputationMoveRequest(ComputationMoveRequest inRequest);
+
+	void handleComputationMoveResponse(ComputationMoveResponse inResponse);
+
+	void handleInitiateComputationMove(InitiateComputationMove move);
+
+	void handleInitiateComputationMoveWithToken(
+										InitiateComputationMove move,
+										PolymorphicSharedPtr<DataTransfers> throttler,
+										DataTransferTokenId inToken
+										);
+	
+	void handleSerializationAndSendOfComputationInBackgroundThread(
+				ComputationId inId,
+				MachineId inOtherMachine,
+				DataTransferTokenId token,
+				hash_type moveGuid
+				);
+
+	void scheduleSerializationAndSendOfComputation(
+				ComputationId inId,
+				MachineId inOtherMachine,
+				DataTransferTokenId token,
+				hash_type moveGuid
+				);
+
+	void handleComputationBackgroundActionInBackgroundThread(
+							const ComputationId& computation, 
+							ComputationBackgroundAction message
+							);
+
+	void handleComputationMoveRequestInBackgroundThread(ComputationMoveRequest inRequest);
+
+	void sendAddDropState(boost::function1<void, Cumulus::CumulusWorkerAddDropEvent> eventConsumer);
+
+	void scheduleDataTransferAsInitiateComputationMove(InitiateComputationMove move);
+	
+	void scheduleDataTransferAsSendComputationResult(
+									RequestComputationResultFromMachine inRequest
+									);
+
+	void serializeAndCheckpointComputation(
+									ComputationId computation,
+									CheckpointStatus status,
+									CheckpointRequest request,
+									PolymorphicSharedPtr<DataTransfers> transfers,
+									DataTransferTokenId inToken
+									);
+
+	void handleCumulusComponentMessage(
+					const CumulusComponentMessage& message, 
+					const CumulusClientOrMachine& source, 
+					const CumulusComponentType& componentType
+					);
+
+	bool isTornDown() const;
+
+	mutable boost::recursive_mutex mMutex;
+
+	bool mIsTornDown;
+
+	std::set<hash_type> mMoveGuidsBeingHandledInBackground;
+
+	std::map<hash_type, pair<ComputationId, pair<CheckpointStatus, CheckpointRequest> > > mCheckpointIoTasks;
+
+	std::map<hash_type, DataTransferTokenId> mCheckpointIoTaskTokens;
+
+	std::map<hash_type, double> mCheckpointIoTaskTimestamps;
+
+	std::set<ComputationId> mComputationsWaitingOnCheckpoint;
+
+	PolymorphicSharedPtr<VectorDataManager> mVDM;
+
+	boost::shared_ptr<RecordingActiveComputationsKernelInterface> mExternalInterface;
+
+	PolymorphicSharedPtr<CallbackScheduler> mCallbackScheduler;
+
+	PolymorphicSharedPtr<CallbackScheduler> mSplittingScheduler;
+
+	ActiveComputationsKernel mKernel;
+
+	MachineId mLeaderMachineId;
+
+	boost::function1<void, ActiveComputationsEvent> mEventHandler;
+
+};
+
+}
+

@@ -1,0 +1,187 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "BigVectorHandle.hppml"
+#include "BigVectorHandleMappedSlices.hppml"
+#include "BigVectorLayouts.hppml"
+#include "../../Core/ExecutionContextMemoryPool.hppml"
+#include "../../Core/ExecutionContextImpl.hppml"
+#include "../../VectorDataManager/Pagelet.hppml"
+#include "ForaValueArray.hppml"
+#include "../../../core/Logging.hpp"
+
+using Fora::PageId;
+
+namespace TypedFora {
+namespace Abi {
+
+void BigVectorHandle::initialize(
+			MemoryPool* inMemoryPool, 
+			Fora::Interpreter::ExecutionContextImpl* parentExecutionContext
+			) 
+	{
+	memoryPool() = inMemoryPool;
+	executionContext() = parentExecutionContext;
+	}
+
+BigVectorHandle* BigVectorHandle::create(
+							MemoryPool* inMemoryPool,
+							Fora::Interpreter::ExecutionContextImpl* parentExecutionContext
+							)
+	{
+	BigVectorHandle* result = inMemoryPool->construct<BigVectorHandle>();
+
+	result->initialize(inMemoryPool, parentExecutionContext);
+
+	return result;
+	}
+
+BigVectorHandle::~BigVectorHandle()
+	{
+	if (mappedSlices())
+		{
+		delete mappedSlices();
+		mappedSlices() = 0;
+		}
+	}
+
+bool BigVectorHandle::isTheEmptySlot() const
+	{
+	return memoryPool() == nullptr;
+	}
+
+
+bool BigVectorHandle::hasAnyLoadedArrays() const
+	{
+	return mappedSlices() && mappedSlices()->size() > 0;
+	}
+
+
+void BigVectorHandle::associateArray(ForaValueArray* array, int64_t offset, IntegerSequence sequence, Nullable<PageId> pageId)
+	{
+	associateArray(ForaValueArraySlice(array, RangeToIntegerSequence(sequence).offsetInputs(offset)), pageId);
+	}
+
+void BigVectorHandle::associateArray(ForaValueArraySlice slice, Nullable<PageId> pageId)
+	{
+	fixedSizeCache().insert(slice);
+
+	if (!mappedSlices())
+		mappedSlices() = new BigVectorHandleMappedSlices();
+
+	mappedSlices()->addToCache(slice, pageId);
+	}
+
+ForaValueArraySlice BigVectorHandle::sliceForOffset(int64_t offset)
+	{
+	ForaValueArraySlice result = fixedSizeCache().sliceFor(offset);
+	if (result.array())
+		return result;
+	
+	if (mappedSlices())
+		{
+		return mappedSlices()->sliceForOffset(offset);
+		}
+
+	return ForaValueArraySlice();
+	}
+
+///Retrieve a FVASlice
+ForaValueArraySlice BigVectorHandle::retrieveSlice_(int64_t index)
+	{
+	ForaValueArraySlice slice = sliceForOffset(index);
+	if (slice.array())
+		{
+		fixedSizeCache().insert(slice);
+		if (!mappedSlices()->isReported(index))
+			{
+			mappedSlices()->setToStatusReported(index);
+			Nullable<PageId> pageId = mappedSlices()->getPageId(index);
+			if(pageId)
+				executionContext()->reportPageReferenced(*pageId);
+			}
+		}
+
+	return slice;
+	}
+
+///Retrieve a FVASlice
+ForaValueArraySlice BigVectorHandle::retrieveSlice(BigVectorHandle* handle, int64_t index)
+	{
+	return handle->retrieveSlice_(index);
+	}
+
+void BigVectorHandle::visitAllLoadedArrays(boost::function1<void, ForaValueArraySlice> loadedSliceVisitor)
+	{
+	if (mappedSlices())
+		mappedSlices()->visitAllLoadedArrays(loadedSliceVisitor);
+	}
+
+uint8_t* BigVectorHandle::offsetFor(int64_t offset)
+	{
+	ForaValueArraySlice arrayAndOffset = sliceForOffset(offset);
+
+	return arrayAndOffset.offsetFor(offset);
+	}
+
+
+void BigVectorHandle::unmapAllValuesBetween(int64_t lowInclusive, int64_t highExclusive)
+	{
+	fixedSizeCache().clear();
+	if (mappedSlices())
+		mappedSlices()->unmapAllValuesBetween(lowInclusive, highExclusive);
+	}
+
+bool BigVectorHandle::allValuesAreLoadedBetween(int64_t lowInclusive, int64_t highExclusive) const
+	{
+	if (lowInclusive >= highExclusive)
+		return true;
+
+	if (mappedSlices())
+		return mappedSlices()->allValuesAreLoadedBetween(lowInclusive, highExclusive);
+
+	return false;
+	}
+Nullable<int64_t> BigVectorHandle::firstValueNotLoadedInRange(int64_t lowIndex, int64_t highIndex) const
+	{
+	if (lowIndex >= highIndex)
+		return null();
+
+	if (mappedSlices())
+		return mappedSlices()->firstValueNotLoadedInRange(lowIndex, highIndex);
+
+	return null() << lowIndex;
+	}
+
+Nullable<int64_t> BigVectorHandle::firstValueLoadedInRange(int64_t lowIndex, int64_t highIndex) const
+	{
+	if (lowIndex >= highIndex)
+		return null();
+
+	if (mappedSlices())
+		return mappedSlices()->firstValueLoadedInRange(lowIndex, highIndex);
+
+	return null();
+	}
+
+void BigVectorHandle::setSlicestoStatusUnreported()
+	{
+	fixedSizeCache().clear();
+	if (mappedSlices())
+		mappedSlices()->setAllSlicesToStatusUnreported();
+	}
+
+}
+}

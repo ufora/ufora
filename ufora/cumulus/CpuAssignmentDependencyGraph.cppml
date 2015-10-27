@@ -1,0 +1,657 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "CpuAssignmentDependencyGraph.hpp"
+#include "../core/math/GraphCycles.hppml"
+#include "../core/containers/TwoWaySetMap.hpp"
+#include "../core/threading/CallbackScheduler.hppml"
+#include "../core/PolymorphicSharedPtrBinder.hpp"
+#include "RootComputationComputeStatusChanged.hppml"
+#include "MachineComputationMap.hppml"
+#include "SystemwideComputationScheduler/ComputationBehaviorPredictor.hppml"
+#include "../FORA/VectorDataManager/VectorDataManager.hppml"
+#include "../FORA/TypedFora/ABI/BigVectorLayouts.hppml"
+#include "PersistentCache/PersistentCacheIndex.hppml"
+#include "../core/threading/CallbackSchedulerFactory.hppml"
+
+using namespace Cumulus::PersistentCache;
+
+namespace Cumulus {
+
+class CpuAssignmentDependencyGraphImpl : 
+			public PolymorphicSharedPtrBase<CpuAssignmentDependencyGraphImpl> {
+public:
+	CpuAssignmentDependencyGraphImpl(
+					PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+					PolymorphicSharedPtr<VectorDataManager> inVDM
+					) : 
+			mCallbackScheduler(inCallbackScheduler),
+			mUpdateCallbackScheduler(
+				inCallbackScheduler->getFactory()->createScheduler(
+					"CpuAssignmentDependencyGraph::updater",
+					1
+					)
+				),
+			mOnCpuAssignmentChanged(inCallbackScheduler),
+			mVDM(inVDM),
+			mIsUpdateScheduled(false)
+		{
+		}
+
+	void polymorphicSharedPtrBaseInitialized()
+		{
+		subscribeToPersistentCacheIfAvailable();
+		}
+
+	ComputationIsCurrentlyCheckpointing currentCheckpointingStatus_(ComputationId computation)
+		{
+		auto it = mComputationCheckpointingStatus.find(computation);
+
+		if (it == mComputationCheckpointingStatus.end())
+			return ComputationIsCurrentlyCheckpointing::NotCheckpointing(computation);
+		
+		return it->second;
+		}
+
+	void handleComputationIsCurrentlyCheckpointing(ComputationIsCurrentlyCheckpointing status)
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+		
+		ComputationIsCurrentlyCheckpointing curStatus = currentCheckpointingStatus_(status.computation());
+
+		if (curStatus == status)
+			return;
+		
+		if (status.isNotCheckpointing())
+			mComputationCheckpointingStatus.erase(status.computation());
+		else
+			mComputationCheckpointingStatus[status.computation()] = status;
+
+		mDirtyCoreCounts.insert(status.computation());
+
+		scheduleUpdate_();
+		}
+
+	void subscribeToPersistentCacheIfAvailable()
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+		
+		if (mPersistentCache)
+			return;
+
+		if (!mVDM)
+			return;
+
+		mPersistentCache = mVDM->getPersistentCacheIndex();
+
+		if (!mPersistentCache)
+			return;
+
+		mPersistentCache->onObjectChanged().subscribe(
+			polymorphicSharedWeakPtrFromThis(),
+			&CpuAssignmentDependencyGraphImpl::handlePersistentCacheKeyChanged
+			);
+		}
+
+	void handlePersistentCacheKeyChanged(PersistentCacheKey key)
+		{
+		//if possible, bail before the lock
+		if (!key.isCheckpointSummary())
+			return;
+
+		boost::mutex::scoped_lock lock(mMutex);
+
+		@match PersistentCacheKey(key)
+			-| CheckpointSummary(checkpoint) ->> {
+				ComputationId comp = checkpoint.rootComputation();
+
+				mDirtyCoreCounts.insert(comp);
+				scheduleUpdate_();
+				}
+			-| _ ->> {}
+		}
+
+	void scheduleUpdate_()
+		{		
+		if (!mIsUpdateScheduled)
+			{
+			mUpdateCallbackScheduler->schedule(
+				boost::bind(
+					PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+						&CpuAssignmentDependencyGraphImpl::updateDependencyGraph
+						),
+					this->polymorphicSharedWeakPtrFromThis()
+					),
+				curClock() + 0.01
+				);
+			mIsUpdateScheduled = true;
+			}
+		}
+
+	uint64_t computeBytecountForHashes(ImmutableTreeSet<hash_type> hashes)
+		{
+		if (!mVDM)
+			return 0;
+
+		return mVDM->getBigVectorLayouts()->computeBytecountForHashes(hashes);
+		}
+
+	void addMachine(MachineId inMachine)
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		//any time machines are added or dropped, we need to reset the graph because
+		//the state of the system resets completely every time there is a regime shift
+		resetState_();
+		}
+
+	void dropMachine(MachineId inMachine)
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		resetState_();
+		}
+
+	void handleCheckpointStatusUpdateMessage(CheckpointStatusUpdateMessage change)
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		LOG_DEBUG << "Received checkpoint: " << change;
+
+		mMostRecentCheckpointUpdates[change.computation()] = 
+					make_pair(change.timestamp(), change.stats());
+			
+		mDirtyCoreCounts.insert(change.computation());
+
+		if (mClosestRootComputations.find(change.computation()) == mClosestRootComputations.end())
+			mDirtyNearestParent.insert(change.computation());
+
+		scheduleUpdate_();
+		}
+
+	void handleRootComputationComputeStatusChanged(const RootComputationComputeStatusChanged& change)
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		if (change.coresAssigned() || change.countPageloading())
+			{
+			mCurrentlyComputingOnMachine.insert(change.computation(), change.machine());
+			mCurrentComputeStatuses[make_pair(change.computation(), change.machine())] = change;
+			}
+		else
+			{
+			mCurrentlyComputingOnMachine.drop(change.computation(), change.machine());
+			mCurrentComputeStatuses.erase(make_pair(change.computation(), change.machine()));
+			}
+			
+		mDirtyCoreCounts.insert(change.computation());
+
+		if (mClosestRootComputations.find(change.computation()) == mClosestRootComputations.end())
+			mDirtyNearestParent.insert(change.computation());
+		}
+
+	void dirtyAllAssociated_(ComputationId id)
+		{
+		if (mVeryDirty.find(id) != mVeryDirty.end())
+			return;
+
+		mVeryDirty.insert(id);
+		mDirtyNearestParent.insert(id);
+		mDirtyCoreCounts.insert(id);
+
+		for (auto a: mDependencies.getKeys(id))
+			dirtyAllAssociated_(a);
+		for (auto a: mDependencies.getValues(id))
+			dirtyAllAssociated_(a);
+		}
+
+	void handleRootToRootDependencyCreated(RootToRootDependencyCreated message)
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		mDependencies.insert(message.source(), message.dest());
+		if (message.source() != message.dest())
+			mDependencyCycles.addEdge(message.source(), message.dest());
+
+		mDirtyCoreCounts.insert(message.source());
+		
+		dirtyAllAssociated_(message.source());
+
+		scheduleUpdate_();
+		}
+
+	//indicate that we want to receive updates about a particular computation
+	void markRootComputation(const ComputationId& computation)
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		if (mLastBroadcastForRoot.find(computation) == 
+					mLastBroadcastForRoot.end())
+			mLastBroadcastForRoot[computation] = null();
+
+		mDirtyCoreCounts.insert(computation);
+		mDirtyNearestParent.insert(computation);
+
+		dirtyChildNearestParents_(computation);
+
+		dirtyAllAssociated_(computation);
+
+		scheduleUpdate_();
+		}
+
+	void markNonrootComputation(const ComputationId& computation)
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		mOnCpuAssignmentChanged.broadcast(
+			ComputationSystemwideCpuAssignment::withNoChildren(computation, 0, 0)
+			);
+
+		mLastBroadcastForRoot.erase(computation);
+		mDirtyNearestParent.insert(computation);
+		mDirtyCoreCounts.insert(computation);
+
+		dirtyAllAssociated_(computation);
+
+		scheduleUpdate_();
+		}
+
+	void dirtyParentCoreCounts_(const ComputationId& computation)
+		{		
+		std::set<ComputationId> parents = mDependencies.getKeys(computation);
+
+		for (auto it = parents.begin(); it != parents.end(); ++it)
+			mDirtyCoreCounts.insert(*it);
+		}
+
+	void dirtyChildNearestParents_(const ComputationId& computation)
+		{		
+		std::set<ComputationId> children = mDependencies.getValues(computation);
+
+		for (auto c: children)
+			mDirtyNearestParent.insert(c);
+		}
+
+	void updateDependencyGraph()
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		mIsUpdateScheduled = false;
+		
+		updateDependencyGraph_();
+		}
+
+	void updateDependencyGraph_()
+		{
+		mVeryDirty.clear();
+
+		for (auto c: mClosestRootComputations)
+			{
+			mDirtyNearestParent.insert(c.first);
+			mDirtyCoreCounts.insert(c.first);
+			}
+		for (auto c: mCurrentAssignments)
+			{
+			mDirtyNearestParent.insert(c.first);
+			mDirtyCoreCounts.insert(c.first);
+			}
+
+		while (mDirtyNearestParent.size())
+			{
+			ComputationId computation = *mDirtyNearestParent.begin();
+			mDirtyNearestParent.erase(computation);
+
+			updateNearestParent_(computation);
+			}
+
+		while (mDirtyCoreCounts.size())
+			{
+			ComputationId computation = *mDirtyCoreCounts.begin();
+			mDirtyCoreCounts.erase(computation);
+
+			update_(computation);
+			}
+
+		for (auto it = mComputationsNeedingBroadcast.begin(); 
+					it != mComputationsNeedingBroadcast.end(); ++it)
+			sendUpdate_(*it, mCurrentAssignments[*it]);
+
+		mComputationsNeedingBroadcast.clear();
+		}
+
+	void sendUpdate_(const ComputationId& computation, const ComputationSystemwideCpuAssignment& inAssignment)
+		{
+		if (!mLastBroadcastForRoot[computation] || 
+				*mLastBroadcastForRoot[computation] != inAssignment)
+			{
+			LOG_DEBUG << "Sending update for " << computation << ": " << inAssignment;
+
+			mOnCpuAssignmentChanged.broadcast(inAssignment);
+			mLastBroadcastForRoot[computation] = inAssignment;
+			}
+		}
+
+	void updateNearestParent_(ComputationId computation)
+		{
+		Nullable<ComputationId> parent = calcNearestParent_(computation);
+
+		Nullable<ComputationId> oldParent;
+		if (mClosestRootComputations.find(computation) != mClosestRootComputations.end())
+			oldParent = mClosestRootComputations[computation];
+
+		if (oldParent == parent)
+			return;
+
+		if (!parent)
+			{
+			if (oldParent)
+				mDirtyCoreCounts.insert(*oldParent);
+
+			mClosestRootComputations.erase(computation);
+			dirtyParentCoreCounts_(computation);
+			dirtyChildNearestParents_(computation);
+			}
+			else
+		if (parent)
+			{
+			if (oldParent)
+				mDirtyCoreCounts.insert(*oldParent);
+				
+			mClosestRootComputations[computation] = *parent;
+			dirtyParentCoreCounts_(computation);
+			dirtyChildNearestParents_(computation);
+			}
+		}
+
+	Nullable<ComputationId> calcNearestParent_(ComputationId computation)
+		{
+		//if we are a root ourselves, we're the root
+		if (isRoot(computation))
+			return null() << computation;
+
+		if (isInCycle(computation))
+			//this node is in a cycle. No root can exist.
+			return null();
+
+		Nullable<ComputationId> lowest;
+
+		for (auto c: mDependencies.getKeys(computation))
+			if (mClosestRootComputations.find(c) != mClosestRootComputations.end())
+				{			
+				ComputationId p = mClosestRootComputations[c];
+
+				if (isRoot(p))
+					{
+					if (!lowest || mDependencyCycles.cycleDepthForNode(*lowest) > mDependencyCycles.cycleDepthForNode(p))
+						lowest = p;
+					}
+				}
+
+		return lowest;
+		}
+
+	bool isRoot(ComputationId computation) const
+		{
+		return mLastBroadcastForRoot.find(computation) != mLastBroadcastForRoot.end();
+		}
+
+	void update_(const ComputationId& computation)
+		{
+		ComputationSystemwideCpuAssignment curAssignment = computeAssignment_(computation);
+
+		if (mCurrentAssignments.find(computation) == mCurrentAssignments.end() ||
+									mCurrentAssignments[computation] != curAssignment)
+			{
+			dirtyParentCoreCounts_(computation);
+			mCurrentAssignments[computation] = curAssignment;
+			}
+
+		if (mLastBroadcastForRoot.find(computation) != mLastBroadcastForRoot.end())
+			mComputationsNeedingBroadcast.insert(computation);
+		}
+
+	bool isActualChild(ComputationId parent, ComputationId child) const
+		{
+		auto child_it = mClosestRootComputations.find(child);
+		auto parent_it = mClosestRootComputations.find(parent);
+
+		return child_it != mClosestRootComputations.end() &&
+				parent_it != mClosestRootComputations.end() &&
+				child_it->second == parent_it->second;
+		}	
+
+	bool isInCycle(ComputationId computation) const
+		{
+		return mDependencyCycles.nodesInCycle(computation).size() > 1 || 
+			mDependencies.contains(computation, computation);
+		}
+
+	ComputationSystemwideCpuAssignment computeAssignment_(const ComputationId& computation)
+		{
+		if (isInCycle(computation))
+			//this node is in a cycle. Don't give it a meaningful assignment
+			return ComputationSystemwideCpuAssignment::withNoChildren(computation, 0, 0);
+
+		long totalCores = 0;
+		long totalPageloads = 0;
+
+		for (auto machine: mCurrentlyComputingOnMachine.getValues(computation))
+			{
+			auto it = mCurrentComputeStatuses.find(make_pair(computation, machine));
+			if (it != mCurrentComputeStatuses.end())
+				{
+				totalCores += it->second.coresAssigned();
+				totalPageloads += it->second.countPageloading();
+				}
+			}
+
+		ComputationSystemwideCpuAssignment assignment = 
+			ComputationSystemwideCpuAssignment::withNoChildren(computation, totalCores, totalPageloads);
+
+		assignment.totalComputeSecondsAtLastCheckpoint() = computeSecondsAtLastCheckpoint_(computation);
+		assignment.cacheObjectsAndSizesReferencedAtLastCheckpoint() = cacheObjectsAndSizesReferencedAtLastCheckpoint_(computation);
+
+		if (currentCheckpointingStatus_(computation).isCheckpointing())
+			assignment.isCheckpointing() = true;
+
+		if (currentCheckpointingStatus_(computation).isLoadingFromCheckpoint())
+			assignment.isLoadingFromCheckpoint() = true;
+
+		auto it = mMostRecentCheckpointUpdates.find(computation);
+		if (it != mMostRecentCheckpointUpdates.end())
+			assignment.checkpointStatus() = it->second.second;
+
+		const std::set<ComputationId>& children = 
+				mDependencies.getValues(computation);
+
+		for (auto it = children.begin(); it != children.end(); ++it)
+			if (isActualChild(computation, *it))
+				{
+				if (mCurrentAssignments.find(*it) != mCurrentAssignments.end())
+					{
+					ComputationSystemwideCpuAssignment childAssignment = 
+						mCurrentAssignments[*it];
+
+					assignment.absorbChild(*it, childAssignment);
+					}
+				}
+			else
+				{
+				auto root_it = mClosestRootComputations.find(*it);
+				if (root_it != mClosestRootComputations.end())
+					{
+					assignment.rootComputationDependencies() = 
+						assignment.rootComputationDependencies() + root_it->second;
+					}
+				}
+
+		return assignment;
+		}
+
+	double computeSecondsAtLastCheckpoint_(ComputationId computation)
+		{
+		if (!mPersistentCache)
+			return 0;
+
+		Nullable<CheckpointRequest> mostRecent = mPersistentCache->computationMostRecentCheckpoint(computation);
+
+		if (!mostRecent)
+			return 0;
+
+		return mPersistentCache->checkpointSecondsOfCompute(*mostRecent);
+		}
+
+	ImmutableTreeMap<PersistentCacheKey, int64_t> cacheObjectsAndSizesReferencedAtLastCheckpoint_(ComputationId computation)
+		{
+		if (!mPersistentCache)
+			return ImmutableTreeMap<PersistentCacheKey, int64_t>();
+
+		Nullable<CheckpointRequest> mostRecent = mPersistentCache->computationMostRecentCheckpoint(computation);
+
+		if (!mostRecent)
+			return ImmutableTreeMap<PersistentCacheKey, int64_t>();
+
+		return mPersistentCache->objectBytecountsReferenced(PersistentCacheKey::CheckpointSummary(*mostRecent));
+		}
+
+	void resetState_()
+		{
+		mCurrentlyComputingOnMachine = TwoWaySetMap<ComputationId, MachineId>();
+		mCurrentComputeStatuses.clear();
+		mCurrentAssignments.clear();
+		mComputationCheckpointingStatus.clear();
+
+		for (auto comp: mLastBroadcastForRoot)
+			mDirtyCoreCounts.insert(comp.first);
+
+		updateDependencyGraph_();
+		}
+
+	boost::mutex mMutex;
+
+	PolymorphicSharedPtr<CallbackScheduler> mCallbackScheduler;
+
+	PolymorphicSharedPtr<CallbackScheduler> mUpdateCallbackScheduler;
+
+	PolymorphicSharedPtr<PersistentCacheIndex> mPersistentCache;
+
+	Ufora::GraphCycles<ComputationId> mDependencyCycles;
+
+	EventBroadcaster<ComputationSystemwideCpuAssignment> mOnCpuAssignmentChanged;
+
+	TwoWaySetMap<ComputationId, ComputationId> mDependencies;
+
+	std::map<ComputationId, ComputationId> mClosestRootComputations;
+
+	TwoWaySetMap<ComputationId, MachineId> mCurrentlyComputingOnMachine;
+
+	map<pair<ComputationId, MachineId>, RootComputationComputeStatusChanged> mCurrentComputeStatuses;
+
+	std::map<ComputationId, pair<CheckpointRequest, CheckpointStatus> > mMostRecentCheckpointUpdates;
+
+	std::map<ComputationId, ComputationSystemwideCpuAssignment> mCurrentAssignments;
+
+	std::set<ComputationId> mDirtyCoreCounts;
+
+	std::set<ComputationId> mDirtyNearestParent;
+
+	std::set<ComputationId> mVeryDirty;
+
+	std::map<ComputationId, ComputationIsCurrentlyCheckpointing> mComputationCheckpointingStatus;
+
+	std::map<ComputationId, Nullable<ComputationSystemwideCpuAssignment> > mLastBroadcastForRoot;
+
+	std::set<ComputationId> mComputationsNeedingBroadcast;
+
+	PolymorphicSharedPtr<VectorDataManager> mVDM;
+
+	bool mIsUpdateScheduled;
+};
+
+CpuAssignmentDependencyGraph::CpuAssignmentDependencyGraph(
+							PolymorphicSharedPtr<CallbackScheduler> inScheduler,
+							PolymorphicSharedPtr<VectorDataManager> inVDM
+							) : 
+		mImpl(new CpuAssignmentDependencyGraphImpl(inScheduler, inVDM))
+	{
+	}
+
+void CpuAssignmentDependencyGraph::addMachine(MachineId inMachine)
+	{
+	mImpl->addMachine(inMachine);
+	}
+
+void CpuAssignmentDependencyGraph::dropMachine(MachineId inMachine)
+	{
+	mImpl->dropMachine(inMachine);
+	}
+
+void CpuAssignmentDependencyGraph::handleComputationIsCurrentlyCheckpointing(ComputationIsCurrentlyCheckpointing status)
+	{
+	mImpl->handleComputationIsCurrentlyCheckpointing(status);
+	}
+
+void CpuAssignmentDependencyGraph::handleRootComputationComputeStatusChanged(
+								RootComputationComputeStatusChanged change
+								)
+	{
+	mImpl->handleRootComputationComputeStatusChanged(change);
+	}
+
+//indicate that we want to receive updates about a particular computation
+void CpuAssignmentDependencyGraph::markRootComputation(
+								const ComputationId& computation
+								)
+	{
+	mImpl->markRootComputation(computation);
+	}
+
+//indicate that we want to receive updates about a particular computation
+void CpuAssignmentDependencyGraph::markNonrootComputation(
+								const ComputationId& computation
+								)
+	{
+	mImpl->markNonrootComputation(computation);
+	}
+
+void CpuAssignmentDependencyGraph::updateDependencyGraph()
+	{
+	mImpl->updateDependencyGraph();
+	}
+
+EventBroadcaster<ComputationSystemwideCpuAssignment>& CpuAssignmentDependencyGraph::onCpuAssignmentChanged()
+	{
+	return mImpl->mOnCpuAssignmentChanged;
+	}
+
+void CpuAssignmentDependencyGraph::handleRootToRootDependencyCreated(RootToRootDependencyCreated message)
+	{
+	mImpl->handleRootToRootDependencyCreated(message);
+	}
+
+void CpuAssignmentDependencyGraph::handleCheckpointStatusUpdateMessage(CheckpointStatusUpdateMessage change)
+	{
+	mImpl->handleCheckpointStatusUpdateMessage(change);
+	}
+
+uint64_t CpuAssignmentDependencyGraph::computeBytecountForHashes(ImmutableTreeSet<hash_type> hashes)
+	{
+	//TODO: this function should be exposed to python through the VDM or something more appropriate
+	return mImpl->computeBytecountForHashes(hashes);
+	}
+
+
+}
+

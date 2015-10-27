@@ -1,0 +1,1905 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include <stdint.h>
+#include <boost/python.hpp>
+#include "ImplVal.hppml"
+
+#include "../../core/python/ScopedPyThreads.hpp"
+#include "../../core/python/CPPMLWrapper.hpp"
+#include "../../core/math/RandomHashGenerator.hpp"
+
+#include "../../native/Registrar.hpp"
+#include "../Primitives/Dictionary.hppml"
+#include "../VectorDataManager/VectorDataManager.hppml"
+#include "../VectorDataManager/PageletTree.hppml"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include "../Vector/MutableVectorRecord.hppml"
+#include "../TypedFora/ABI/BigVectorLayouts.hppml"
+#include "../TypedFora/ABI/VectorRecord.hpp"
+#include "../TypedFora/ABI/ForaValueArray.hppml"
+#include "../Primitives/String.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
+#include "../Language/Function.hppml"
+#include "../Language/ClassMediatorBindings.hppml"
+#include "../Language/FunctionStage1.hppml"
+#include "../Language/FunctionStage1Simulation.hppml"
+#include "ClassMediator.hppml"
+#include "MemoryPool.hpp"
+#include "ImplValContainerUtilities.hppml"
+#include "TupleCategory.hppml"
+#include "../python/FORAPythonUtil.hppml"
+
+#include "../TypedFora/ABI/UpdateFreeStoreValues.hppml"
+
+using TypedFora::Abi::VectorRecord;
+
+class ImplValContainerWrapper :
+	public native::module::Exporter<ImplValContainerWrapper> {
+public:
+	static bool ImplValContainerIsCST(ImplValContainer& value)
+		{
+		return value.isCST();
+		}
+
+	static boost::python::object ImplValContainerGetStackTrace(ImplValContainer& value)
+		{
+		boost::python::list l;
+
+		if (!value.type().isStackTrace())
+			return boost::python::object();
+
+		ForaStackTrace tr = value.cast<ForaStackTrace>();
+
+		for (long k = 0; k < tr.elements().size(); k++)
+			l.append(tr.elements()[k]);
+
+		return l;
+		}
+
+	static boost::python::object ImplValContainerObjectMetadata(ImplValContainer& value)
+		{
+		if (!value.type().isClass())
+			return boost::python::object();
+		ClassMediator mediator = *value.type().getClass().classBody().mediator();
+
+		Nullable<CSTValue> result;
+
+		@match ClassMediator(mediator)
+			-| Function(_,_,meta) ->> { result = meta; }
+			-| Object(_,_,meta) ->> { result = meta; }
+			-| Class(_,_,meta) ->> { result = meta; }
+			-| Lambda() ->> { result = ImplValContainer(); }
+			-| _ ->> {}
+			;
+
+		if (result)
+			return boost::python::object(
+				ImplValContainer(
+					*result
+					)
+				);
+
+		return boost::python::object();
+		}
+
+
+	static bool ImplValContainerIsFunction(ImplValContainer& value)
+		{
+		if (!value.type().isClass())
+			return false;
+
+		ClassMediator mediator = *value.type().getClass().classBody().mediator();
+		return mediator.isFunction();
+		}
+
+	static bool ImplValContainerIsClass(ImplValContainer& value)
+		{
+		if (!value.type().isClass())
+			return false;
+
+		ClassMediator mediator = *value.type().getClass().classBody().mediator();
+		return mediator.isClass();
+		}
+
+	static bool ImplValContainerIsObject(ImplValContainer& value)
+		{
+		if (!value.type().isClass())
+			return false;
+
+		ClassMediator mediator = *value.type().getClass().classBody().mediator();
+		return mediator.isObject();
+		}
+
+	static 
+	boost::python::object getObjectDefinitionTermsWithMetadata(ImplValContainer& value)
+		{
+		if (!value.type().isClass())
+			return boost::python::object();
+		
+		ClassMediator mediator = *value.type().getClass().classBody().mediator();
+
+		if (mediator.isObject())
+			{
+			boost::python::list tr;
+
+			ObjectDefinitionBody body =
+				mediator.getObject().obj().body();
+				
+			while (!body.isEmpty())
+				{
+				tr.append(body.getTerm().termWithMetadata());
+
+				body = body.getTerm().otherwise();
+				}
+
+			return tr;
+			}
+		else if (mediator.isClass())
+			{
+			boost::python::list tr;
+			
+			ClassDefinitionBody body = 
+				mediator.getClass().obj().body();
+
+			while (!body.isEmpty())
+				{
+				tr.append(body.getTerm().termWithMetadata());
+
+				body = body.getTerm().otherwise();
+				}
+
+			return tr;
+			}				
+
+		return boost::python::object();
+		}
+
+	static boost::python::object ImplValContainerObjectLexicalMembers(ImplValContainer& value)
+		{
+		if (!value.type().isClass())
+			return boost::python::object();
+
+		ClassMediator mediator = *value.type().getClass().classBody().mediator();
+
+		boost::python::dict names;
+
+		for (auto nameAndBinding: mediator.lexicalSurroundings().bindings())
+			{
+			boost::python::list indexList;
+
+			for (auto i: nameAndBinding.second.unbindIndexSequence())
+				indexList.append(i);
+
+			names[nameAndBinding.first.toString()] = 
+				boost::python::make_tuple(
+					indexList, 
+					nameAndBinding.second.member() ? 
+						boost::python::object(nameAndBinding.second.member()->toString()) : 
+						boost::python::object()
+					);
+			}
+
+		return names;
+		}
+
+	static boost::python::object ImplValContainerObjectMembers(ImplValContainer& value)
+		{
+		if (!value.type().isClass())
+			return boost::python::object();
+
+		ClassMediator mediator = *value.type().getClass().classBody().mediator();
+
+		if (mediator.isObject())
+			{
+			boost::python::list tr;
+
+			ObjectDefinitionBody body =
+				mediator.getObject().obj().body();
+				
+			while (!body.isEmpty())
+				{
+				if (body.getTerm().termWithMetadata().objectDefinitionTerm().isMember())
+					tr.append(body.getTerm().termWithMetadata().objectDefinitionTerm()
+						.getMember().membername().toString());
+				else
+					tr.append(boost::python::object());
+				body = body.getTerm().otherwise();
+				}
+				
+			return boost::python::object(tr);
+			}
+		else
+		if (mediator.isClass())
+			{
+			boost::python::list tr;
+
+			ClassDefinitionBody body =
+				mediator.getClass().obj().body();
+				
+			while (!body.isEmpty())
+				{
+					@match ClassDefinitionTerm(body.getTerm().termWithMetadata().classDefinitionTerm())
+					-| DataMember(x) ->> { tr.append(x.toString()); }
+					-| Static(Member(x)) ->> { tr.append(x.toString()); }
+					-| ObjectTerm(Member(x)) ->> { tr.append(x.toString()); }
+					-| _ ->> { tr.append(boost::python::object()); }
+					;
+
+				body = body.getTerm().otherwise();
+				}
+				
+			return boost::python::object(tr);
+			}
+
+		return boost::python::object();
+		}
+
+	static boost::python::object ImplValContainerGetMemberDefinition(
+											ImplValContainer& ivc, 
+											const string& membername
+											)
+		{
+		if (!ivc.type().isClass())
+			return boost::python::object();
+
+		ClassMediator mediator = *ivc.type().getClass().classBody().mediator();
+
+		if (mediator.isObject())
+			{
+			boost::python::list tr;
+
+			ObjectDefinitionBody body =
+				mediator.getObject().obj().body();
+				
+			while (!body.isEmpty())
+				{
+				ObjectDefinitionTerm term = body.getTerm().termWithMetadata().objectDefinitionTerm();
+				if (term.isMember() && 
+						term.getMember().membername() == membername)
+					{
+					return boost::python::object(term.getMember().expr());
+					}
+				body = body.getTerm().otherwise();
+				}
+			}
+
+		return boost::python::object();
+		}
+
+	static boost::python::object ImplValContainerGetVectorSize(ImplValContainer& value)
+		{
+		if (!value.type().isVector())
+			return boost::python::object();
+		
+		return boost::python::object(value.cast<VectorRecord>().size());
+		}
+
+	static bool ImplValContainerIsVector(ImplValContainer& val)
+		{
+		return val.type().isVector();
+		}
+
+	static bool ImplValContainerIsVectorOfChar(ImplValContainer& val)
+		{
+		if (!val.type().isVector())
+			return false;
+
+		JudgmentOnResult jor = val.cast<VectorRecord>().jor();
+
+		if (jor.size() != 1)
+			return false;
+
+		return jor[0] == JOV::OfType(Type::Integer(8,false));
+		}
+
+	static bool ImplValContainerIsString(ImplValContainer& val)
+		{
+		return val.type().isString();
+		}
+
+	static bool ImplValContainerIsBoolean(ImplValContainer& val)
+		{
+		static Type t = Type::Integer(1, false);
+
+		return val.type() == t;
+		}
+
+	static bool ImplValContainerIsInt64(ImplValContainer& val)
+		{
+		static Type t = Type::Integer(64, true);
+
+		return val.type() == t;
+		}
+
+	static bool ImplValContainerIsFloat64(ImplValContainer& val)
+		{
+		static Type t = Type::Float(64);
+
+		return val.type() == t;
+		}
+
+	static bool typeIsSimple(const Type& t)
+		{
+		@match Type(t)
+			-| Nothing() ->> { return true; }
+			-| Integer() ->> { return true; }
+			-| Float() ->> { return true; }
+			-| String() ->> { return true; }
+			-| Symbol() ->> { return true; }
+			-| Tag() ->> { return true; }
+			-| Tuple(elementTypes) ->> { 
+				for (long k = 0; k < elementTypes.size(); k++)
+					if (!typeIsSimple(elementTypes[k]))
+						return false;
+				return true; 
+				}
+			-| _ ->> { return false; }
+		}
+
+	static bool ImplValContainerIsSimple(ImplValContainer& val)
+		{
+		return typeIsSimple(val.type());
+		}
+
+	static bool ImplValContainerIsFloat(ImplValContainer& val)
+		{
+		return val.type().isFloat();
+		}
+
+	static bool ImplValContainerIsInteger(ImplValContainer& val)
+		{
+		return val.type().isInteger();
+		}
+	
+	static bool ImplValContainerIsSymbol(ImplValContainer& val)
+		{
+		return val.type().isSymbol();
+		}
+
+	static bool ImplValContainerIsAlternative(ImplValContainer& val)
+		{
+		return val.type().isAlternative();
+		}
+
+	static bool ImplValContainerIsTag(ImplValContainer& val)
+		{
+		return val.type().isTag();
+		}
+
+	static bool ImplValContainerIsDictionary(ImplValContainer& val)
+		{
+		return val.type().isDictionary();
+		}
+
+	static bool ImplValContainerIsMutableVector(ImplValContainer& val)
+		{
+		return val.type().isMutableVector();
+		}
+
+	static boost::python::object ImplValContainerGetMutableVectorSize(ImplValContainer& value)
+		{
+		if (!value.type().isMutableVector())
+			return boost::python::object();
+		
+		return boost::python::object(value.cast<MutableVectorRecord>().size());
+		}
+
+	static bool ImplValContainerIsDateTime(ImplValContainer& val)
+		{
+		return val.type().isDateTime();
+		}
+
+	static bool ImplValContainerIsTimeDuration(ImplValContainer& val)
+		{
+		return val.type().isTimeDuration();
+		}
+
+	static boost::python::object ImplValContainerGetVectorBigvecGuid(ImplValContainer& value)
+		{
+		if (!value.type().isVector() || 
+				!value.cast<VectorRecord>().dataPtr() || 
+				!value.cast<VectorRecord>().dataPtr()->pagedValueCount())
+			return boost::python::object();
+		
+		return boost::python::object(value.cast<VectorRecord>().dataPtr()->pagedValuesIdentity().guid());
+		}
+
+	static boost::python::object ImplValContainerGetVectorElementsJOR(ImplValContainer& value)
+		{
+		if (!value.type().isVector())
+			return boost::python::object();
+		
+		return boost::python::object(value.cast<VectorRecord>().jor());
+		}
+
+	static boost::python::object ImplValContainerGetVectorMaxRowByteCount(ImplValContainer& value)
+		{
+		if (!value.type().isVector())
+			return boost::python::object();
+		
+		JudgmentOnResult jor = value.cast<VectorRecord>().jor();
+
+		uword_t tr = 0;
+
+		for (long k = 0; k < jor.size(); k++)
+			if (jor[k].type())
+				tr = std::max(tr, jor[k].type()->size());
+			else
+				return boost::python::object();
+
+		return boost::python::object(tr);
+		}
+	
+	static boost::python::object ImplValContainerGetEmptyVector()
+		{
+		ImplVal val = ImplVal::introduce(Type::Vector());
+		new (&val.cast<VectorRecord>()) VectorRecord();
+
+		ImplValContainer res = ImplValContainer::assumeOwnershipOf(val);
+
+		return boost::python::object(res);
+		}
+
+	static boost::python::object ImplValContainerConcatenateVectors(
+			ImplValContainer& left,
+			ImplValContainer& right,
+			PolymorphicSharedPtr<VectorDataManager> vdm
+			)
+		{
+		Nullable<ImplValContainer> result = 
+			ImplValContainerUtilities::concatenateVectors(
+				left,
+				right,
+				MemoryPool::getFreeStorePool(),
+				&*vdm,
+				RandomHashGenerator::singleton().generateRandomHash()
+				);
+		
+		if (result)
+			return boost::python::object(*result);
+		else
+			return boost::python::object();
+		}
+
+	static boost::python::object ImplValContainerVectorFromSimpleList(
+			boost::python::list elements,
+			PolymorphicSharedPtr<VectorDataManager> vdm
+			)
+		{
+		static JudgmentOnValue intJOV = JudgmentOnValue::OfType(Type::Integer(64, true));
+		static JudgmentOnValue floatJOV = JudgmentOnValue::OfType(Type::Float(64));
+		static JudgmentOnValue stringJOV = JudgmentOnValue::OfType(Type::String());
+		static JudgmentOnValue noneJOV = JudgmentOnValue::OfType(Type::Nothing());
+
+		TypedFora::Abi::ForaValueArray* values = 
+			TypedFora::Abi::ForaValueArray::Empty(MemoryPool::getFreeStorePool());
+
+		PyObject* listPtr = (PyObject*)elements.ptr();
+		size_t len = PyList_Size(listPtr);
+
+		for (size_t k = 0; k < len; k++)
+			{
+			PyObject* eltPtr = PyList_GetItem(listPtr, k);
+
+			if (PyFloat_Check(eltPtr))
+				{
+				double val = PyFloat_AsDouble(eltPtr);
+
+				values->append(floatJOV, (uint8_t*)&val, 1, sizeof(double));
+				}
+				else
+			if (PyInt_Check(eltPtr))
+				{
+				int64_t val = PyInt_AsLong(eltPtr);
+
+				values->append(intJOV, (uint8_t*)&val, 1, sizeof(int64_t));
+				}
+				else
+			if (PyLong_Check(eltPtr))
+				{
+				int64_t val = PyLong_AsLong(eltPtr);
+
+				values->append(intJOV, (uint8_t*)&val, 1, sizeof(int64_t));
+				}
+				else
+			if (eltPtr == Py_None)
+				{
+				int aValue = 0;
+
+				values->append(noneJOV, (uint8_t*)&aValue, 1, 0);
+				}
+				else
+			if (PyString_Check(eltPtr))
+				{
+				const char* dataPtr = PyString_AsString(eltPtr);
+
+				String aString;
+
+				if (dataPtr && dataPtr[0])
+					aString = String(dataPtr, PyString_Size(eltPtr), MemoryPool::getFreeStorePool());
+				
+				values->append(stringJOV, (uint8_t*)&aString, 1, sizeof(String));
+				}
+			else
+				{
+				MemoryPool::getFreeStorePool()->destroy(values);
+
+				throw std::logic_error(
+					"Invalid value in simple conversion from list to Vector: " + 
+						Ufora::python::pyToString(elements[k])
+					);
+				}
+			}
+
+		TypedFora::Abi::VectorRecord vec(
+			MemoryPool::getFreeStorePool()->construct<TypedFora::Abi::VectorHandle>(
+				Fora::BigVectorId(),
+				Fora::PageletTreePtr(),
+				values,
+				MemoryPool::getFreeStorePool(),
+				RandomHashGenerator::singleton().generateRandomHash()
+				)
+			);
+
+		return boost::python::object(
+			ImplValContainerUtilities::createVector(vec)
+			);
+		}
+
+	static boost::python::object ImplValContainerVectorAppendIVC(
+			ImplValContainer& left,
+			ImplValContainer& right,
+			PolymorphicSharedPtr<VectorDataManager> vdm
+			)
+		{
+		Nullable<ImplValContainer> result = 
+			ImplValContainerUtilities::appendToVector(
+				left,
+				right,
+				MemoryPool::getFreeStorePool(),
+				&*vdm,
+				RandomHashGenerator::singleton().generateRandomHash()
+				);
+		
+		if (result)
+			return boost::python::object(*result);
+		else
+			return boost::python::object();
+		}
+
+	static boost::python::object ImplValContainerGetAlternative(ImplValContainer& value)
+		{
+		Type t = value.type();
+		if (!t.isAlternative())
+			return boost::python::object();
+		
+		AlternativeData& altData(value.getReference().cast<AlternativeData>());
+		
+		return boost::python::make_tuple(
+			altData.symbol.toString(),
+			ImplValContainer(ImplVal(t.getAlternative().eltType(), altData.data))
+			);
+		}
+
+	static boost::python::object ImplValContainerGetSymbol(ImplValContainer& value)
+		{
+		Type t = value.type();
+		if (!t.isSymbol())
+			return boost::python::object();
+		
+		return boost::python::object(value.cast<Symbol>().toString());
+		}
+
+	static boost::python::object ImplValContainerGetTag(ImplValContainer& value)
+		{
+		Type t = value.type();
+		if (!t.isTag())
+			return boost::python::object();
+		
+		return boost::python::object(value.cast<Symbol>().toString());
+		}
+
+	static boost::python::object ImplValContainerJoinOverTuple(ImplValContainer& value, std::string sep)
+		{
+		Type t = value.type();
+		if (!t.isTuple())
+			return boost::python::object();
+
+		std::ostringstream ss;
+
+			{
+			ScopedPyThreads releasePythonGIL;
+
+			ImmutableTreeVector<Type> elts = t.getTuple().types();
+
+			char*dat = &value.cast<char>();
+
+			for (long k = 0; k < elts.size(); k++)
+				{
+				if (k > 0)
+					ss << sep;
+				ss << prettyPrintString(ImplVal(elts[k], dat));
+				dat += elts[k].size();
+				}
+			}
+
+		return boost::python::str(ss.str());
+		}
+
+	static boost::python::object ImplValContainerGetDictionaryAsListOfTuples(ImplValContainer& value)
+		{
+		Type t = value.type();
+		if (!t.isDictionary())
+			return boost::python::object();
+
+		Dictionary d = value.cast<Dictionary>();
+
+		const ImmutableTreeMap<CSTValue, ImplValContainer>& m = d.getMap();
+
+		boost::python::list result;
+
+		for (long k = 0; k < m.size(); k++)
+			result.append(
+				boost::python::make_tuple(
+					ImplValContainer(m.pairAtPosition(k).first.getReference()),
+					m.pairAtPosition(k).second
+					)
+				);
+		
+		return result;
+		}
+
+	static boost::python::object ImplValContainerGetTuple(ImplValContainer& value)
+		{
+		Type t = value.type();
+		if (!t.isTuple())
+			return boost::python::object();
+		ImmutableTreeVector<Type> elts = t.getTuple().types();
+
+		char*dat = &value.cast<char>();
+
+		boost::python::list l;
+		for (long k = 0; k < elts.size(); k++)
+			{
+			l.append(ImplValContainer(ImplVal(elts[k], dat)));
+			dat += elts[k].size();
+			}
+
+		return l;
+		}
+
+	static boost::python::object ImplValContainerGetTupleMember(ImplValContainer& value, std::string name)
+		{
+		Type t = value.type();
+		
+		if (!t.isTuple())
+			return boost::python::object();
+
+		ImmutableTreeVector<Type> types = t.getTuple().types();
+		
+		ImmutableTreeVector<Nullable<Symbol> > names = t.getTuple().names();
+		
+		char*dat = &value.cast<char>();
+
+		for (long k = 0; k < names.size(); k++)
+			{
+			if (names[k] && *names[k] == name)
+				return boost::python::object(ImplValContainer(ImplVal(types[k], dat)));
+
+			dat += types[k].size();
+			}
+
+		return boost::python::object();
+		}
+
+	static bool ImplValContainerIsTuple(ImplValContainer& value)
+		{
+		return value.type().isTuple();
+		}
+
+	static boost::python::object ImplValContainerGetTupleNames(ImplValContainer& value)
+		{
+		Type t = value.type();
+		if (!t.isTuple())
+			return boost::python::object();
+
+		ImmutableTreeVector<Nullable<Symbol> > elts = t.getTuple().names();
+
+		boost::python::list l;
+		for (long k = 0; k < elts.size(); k++)
+			if (elts[k])
+				l.append(elts[k]->toString());
+				else
+				l.append(boost::python::object());
+		return l;
+		}
+
+	static bool ImplValContainerHasNamedTupleElement(ImplValContainer& value, std::string inName)
+		{
+		Type t = value.type();
+		if (!t.isTuple())
+			return false;
+
+		ImmutableTreeVector<Nullable<Symbol> > elts = t.getTuple().names();
+
+		boost::python::list l;
+		for (long k = 0; k < elts.size(); k++)
+			if (elts[k] && elts[k]->toString() == inName)
+				return true;
+		return false;
+		}
+
+	static void addToTuple(boost::python::object* objectToAddTo, const ImplVal& iv, bool* isNull)
+		{
+		ImplValContainer ivc(iv);
+
+		Nullable<boost::python::object> o = ImplValContainerNullablePyval(ivc);
+
+		if (!o)
+			*isNull = true;
+		else
+			*objectToAddTo = *objectToAddTo + boost::python::make_tuple(*o);
+		}
+
+	static Nullable<boost::python::object> ImplValContainerNullablePyval(ImplValContainer& v)
+		{
+		Type a = v.type();
+
+		if (a.isSymbol())
+			return null() << boost::python::object("`" + v.cast<Symbol>().toString());
+		if (a.isTag())
+			return null() << boost::python::object("#" + v.cast<Symbol>().toString());
+		if (a.isString())
+			return null() << boost::python::object(v.cast<String>().stdString());
+		if (a == Type::Float(32))
+			return null() << boost::python::object(v.cast<float>());
+		if (a == Type::Float(64))
+			return null() << boost::python::object(v.cast<double>());
+		if (a == Type::Integer(1, false))
+			return null() << boost::python::object(v.cast<bool>());
+		if (a == Type::Integer(8, false))
+			return null() << boost::python::object(v.cast<uint8_t>());
+		if (a == Type::Integer(8, true))
+			return null() << boost::python::object(v.cast<int8_t>());
+		if (a == Type::Integer(16, false))
+			return null() << boost::python::object(v.cast<uint16_t>());
+		if (a == Type::Integer(16, true))
+			return null() << boost::python::object(v.cast<int16_t>());
+		if (a == Type::Integer(32, false))
+			return null() << boost::python::object(v.cast<uint32_t>());
+		if (a == Type::Integer(32, true))
+			return null() << boost::python::object(v.cast<int32_t>());
+		if (a == Type::Integer(64, false))
+			return null() << boost::python::object(v.cast<uint64_t>());
+		if (a == Type::Integer(64, true))
+			return null() << boost::python::object(v.cast<int64_t>());
+		if (a.isNothing())
+			return null() << boost::python::object();
+		if (a.isTuple())
+			{
+			boost::python::object o = boost::python::make_tuple();
+			
+			using namespace boost;
+			
+			bool isNull = false;
+
+			TupleCategory::tupleIterateContents(v.getReference(), boost::bind(addToTuple, &o, _1, &isNull));
+
+			if (isNull)
+				return null();
+
+			return null() << o;
+			}
+
+		return null();
+		}
+
+	static boost::python::object ImplValContainerPyval(ImplValContainer& v)
+		{
+		Nullable<boost::python::object> tr = ImplValContainerNullablePyval(v);
+
+		if (!tr)
+			lassert_dump(false, "no natural conversion for " << v.toString());
+
+		return *tr;
+		}
+
+	static boost::python::object ImplValContainerPyvalOrNone(ImplValContainer& v)
+		{
+		Nullable<boost::python::object> tr = ImplValContainerNullablePyval(v);
+
+		if (!tr)
+			return boost::python::object();
+
+		return *tr;
+		}
+
+	static bool ImplValContainer_getstate_manages_dict(ImplValContainer& v)
+		{
+		return true;
+		}
+
+	static int32_t ImplValContainerCmp(ImplValContainer& v, boost::python::object o)
+		{
+		boost::python::extract<ImplValContainer> x(o);
+		if (x.check())
+			return v.cmp(x());
+		return 1;
+		}
+
+	static ImplValContainer ImplValContainerFullPyImport(boost::python::object o)
+		{
+		return constructIVC(o, true);
+		}
+
+	static int32_t ImplValContainerPyHash(ImplValContainer& v)
+		{
+		ScopedPyThreads threads;
+		return v.hash()[0];
+		}
+
+	static boost::python::object ImplValContainerGetFunction(ImplValContainer& v)
+		{
+		if (v.type().isClass())
+			{
+			@match ClassMediator(*v.type().getClass().classBody().mediator())
+				-|	Function(f) ->> {
+						return boost::python::object(f);
+						}
+				-|	Class(o) ->> {
+						}
+				-|	Lambda(o) ->> {
+						}
+				-|	Object(o) ->> {
+						}
+				-|	Axiom(f) ->> {
+						return boost::python::object(f);
+						}
+				;
+			}
+		return boost::python::object();
+		}
+
+	static boost::python::object 
+	ImplValContainerGetDataMembersInDeclarationOrder(ImplValContainer& v)
+		{
+		if (v.type().isClass())
+			{
+			@match ClassMediator(*v.type().getClass().classBody().mediator())
+				-| Class(classDefinition, _, _) ->> {
+					auto members = classDefinition.body().allDataMembersInDeclarationOrder();
+					boost::python::list tr;
+					for (long ix = 0; ix < members.size(); ++ix) 
+						{
+						tr.append(members[ix]);
+						}
+					return tr;
+					}
+				-| _ ->> { ; }
+				;
+			}
+		
+		return boost::python::object();
+		}
+
+	static boost::python::object ImplValContainerObjectGetClass(ImplValContainer& v)
+		{
+		return ImplValContainerSimulateApply(ImplValContainer(emptyTreeVec() + v + ImplValContainer(CSTValue(Symbol("Class")))));
+		}
+
+	static boost::python::object ImplValContainerGetFunctionMembers(ImplValContainer& v)
+		{
+		if (v.type().isClass())
+			{
+			Type newType = Type::UnnamedTuple(v.type().getClass().elements());
+
+			return boost::python::object(
+				ImplValContainer(
+					ImplVal(
+						newType,
+						v.data()
+						)
+					)
+				);
+			}
+
+		return boost::python::object();
+		}
+
+	static boost::python::object ImplValContainerGetJOV(ImplValContainer& inJOV)
+		{
+		if (!inJOV.type().isJOVAsValue())
+			return boost::python::object();
+		return boost::python::object(inJOV.cast<JOV>());
+		}
+	
+	static boost::python::object ImplValContainerGetClassName(ImplValContainer& inValue)
+		{
+		@match Type(inValue.type())
+			-| Class(_, classBody) ->> {
+				return boost::python::object(classBody.mediator()->name());
+				}
+			-| _ ->> {
+				}
+
+		return boost::python::object();
+		}
+	
+	static bool ImplValContainerIsJovAsValue(ImplValContainer& inContainer)
+		{
+		return inContainer.type().isJOVAsValue();
+		}
+
+	static bool ImplValContainerIsNothing(ImplValContainer& inContainer)
+		{
+		return inContainer.type().isNothing();
+		}
+
+	static hash_type ImplValContainerHash(ImplValContainer& h)
+		{
+		ScopedPyThreads threads;
+		return h.hash();
+		}
+
+	static ImplValContainer ImplValContainerGetType(ImplValContainer& v)
+		{
+		return ImplValContainer(CSTValue(JOV::OfType(v.type())));
+		}
+
+	static std::string ImplValContainerGetTypeCategory(ImplValContainer& v)
+		{
+		return v.type().tagName();
+		}
+	
+	static JOV ImplValContainerGetTypeAsJOV(ImplValContainer& v)
+		{
+		return JOV::OfType(v.type());
+		}
+
+	static boost::python::object ImplValContainerGetPythonString(ImplValContainer& v)
+		{
+		if (!v.type().isString())
+			return boost::python::object();
+		
+		String s = v.cast<String>();
+		
+		return boost::python::object(s.stdString());
+		}
+
+	static ImplValContainer* newImplValContainer(boost::python::object pythonObject)
+		{
+		return new ImplValContainer(constructIVC(pythonObject, false));
+		}
+	
+	static uword_t ImplValContainerLen(ImplValContainer& inIVC)
+		{
+		@match Type(inIVC.type())
+			-|  Tuple(types, _) ->> { return types.size(); }
+			-|  Dictionary(_) ->> { return inIVC.cast<Dictionary>().size(); }
+			-|  Vector(_) ->> { return inIVC.cast<VectorRecord>().size(); }
+			-|  MutableVector(_) ->> { return inIVC.cast<MutableVectorRecord>().size(); }
+			-|  String(_) ->> { return inIVC.cast<String>().size(); }
+			-|  _ ->> { 
+				throw std::logic_error(
+					"Argument to ImplValContainer::__len__ is not a tuple, dictionary, vector, or mutable vector."
+					); 
+				}
+			;
+		}
+	
+	static boost::python::object ImplValContainerGetItem(
+			ImplValContainer& inIVC, boost::python::object index
+			)
+		{
+		if (!inIVC.type().isTuple() 
+					&& !inIVC.type().isMutableVector() 
+					&& !inIVC.type().isDictionary()
+					&& !inIVC.type().isVector()
+					&& !inIVC.type().isString()
+					)
+			throw std::logic_error(
+				"Argument to ImplValContainer::__getitem__ is not a tuple, dictionary, vector, or mutable vector."
+				);
+		
+		boost::python::extract<int> intIndexExtractor(index);
+		if (intIndexExtractor.check())
+			{
+			int intIndex = intIndexExtractor();
+
+			if (inIVC.type().isTuple())
+				{
+				if (intIndex < 0)
+					intIndex += TupleCategory::tupleSize(inIVC.getReference());
+				
+				if (intIndex < 0 || intIndex >= (int)TupleCategory::tupleSize(inIVC.getReference()))
+					throw std::out_of_range("Invalid tuple index");
+				
+				return boost::python::object(
+					ImplValContainer(
+						TupleCategory::tupleExtractElementNoIncref(
+							inIVC.getReference(), 
+							intIndex
+							)
+						)
+					);
+				}
+				else
+			if (inIVC.type().isMutableVector())
+				{
+				MutableVectorRecord& record(inIVC.cast<MutableVectorRecord>());
+
+				if (intIndex < 0)
+					intIndex += record.size();
+
+				if (intIndex < 0 || intIndex >= (int)record.size())
+					throw std::out_of_range("Invalid MutableVector index");
+				
+				return boost::python::object(
+					ImplValContainer(
+						(*record)[intIndex]
+						)
+					);
+				}
+				else
+			if (inIVC.type().isDictionary())
+				{
+				const Dictionary& d = inIVC.cast<Dictionary>();
+
+				if (intIndex < 0)
+					intIndex += d.size();
+
+				if (intIndex < 0 || intIndex >= d.size())
+					throw std::out_of_range("Invalid dictionary index");
+
+				pair<CSTValue, ImplValContainer> p = d.getMap().pairAtPosition(intIndex);
+
+				return boost::python::make_tuple(
+					ImplValContainer(p.first.getReference()),
+					ImplValContainer(p.second)
+					);
+				}
+				else
+			if (inIVC.type().isVector())
+				{
+				const VectorRecord& vec = inIVC.cast<VectorRecord>();
+
+				if (intIndex < 0)
+					intIndex += vec.size();
+
+				if (intIndex < 0 || intIndex >= vec.size())
+					throw std::out_of_range("Invalid vector index");
+
+				int64_t indexInHandle = vec.offset() + vec.stride() * intIndex;
+
+				if (indexInHandle < vec.pagedValuesIdentity().size())
+					return boost::python::object();
+
+				if (indexInHandle < vec.pagedAndPageletTreeValueCount())
+					{
+					//this should be deepcopied out
+					return boost::python::object(
+						vec.pageletTree()->extractValueIntoFreeStore(indexInHandle - vec.pagedValueCount())
+						);
+					}
+
+				return boost::python::object(
+					(*vec.unpagedValues())[indexInHandle - vec.pagedAndPageletTreeValueCount()]
+					);
+				}
+				else
+			if (inIVC.type().isString())
+				{
+				const String& s = inIVC.cast<String>();
+
+				if (intIndex < 0)
+					intIndex += s.size();
+
+				if (intIndex < 0 || intIndex >= s.size())
+					throw std::out_of_range("Invalid string index");
+
+				return boost::python::object(
+					std::string(s.c_str() + intIndex, s.c_str() + intIndex + 1)
+					);
+				}
+			else
+				{
+				lassert(false);
+				}
+			}
+		
+		boost::python::extract<string> stringIndexExtractor(index);
+		if (stringIndexExtractor.check())
+			{
+			if (inIVC.type().isMutableVector())
+				throw std::logic_error(
+					"ImplValContainer.__getitem__ only accepts strings "
+					"or symbols when the value is a tuple"
+					);
+
+			std::string stringIndex = stringIndexExtractor();
+			
+			ImmutableTreeVector<Nullable<Symbol> > names = 
+				TupleCategory::tupleNames(inIVC.getReference());
+
+			for (long k = 0; k < names.size(); k++)
+				if (names[k] && names[k]->toString() == stringIndex)
+					return boost::python::object(
+						ImplValContainer(
+							TupleCategory::tupleExtractElementNoIncref(
+								inIVC.getReference(), 
+								k
+								)
+							)
+						);
+					
+			throw std::logic_error(
+				"Index " + stringIndex + " in ImplValContainer::__getitem__ doesn't exist"
+				);			
+			}
+
+		boost::python::extract<ImplValContainer> ivcIndexExtractor(index.attr("implVal_"));
+		if (ivcIndexExtractor.check())
+			{
+			if (inIVC.type().isMutableVector())
+				throw std::logic_error(
+					"ImplValContainer.__getitem__ only accepts strings "
+					"or symbols when the value is a tuple"
+					);
+
+			ImplValContainer ivcIndex = ivcIndexExtractor();
+
+			if (!ivcIndex.type().isSymbol())
+				throw std::logic_error(
+					"ImplValContainer.__getitem__ only accepts strings "
+					"or symbols when the value is a tuple"
+					);
+			
+			return boost::python::object(
+				ImplValContainerUtilities::tupleMember(
+					inIVC, 
+					ivcIndex.cast<Symbol>()
+					)
+				);
+			}
+		
+		throw std::logic_error(
+			"Invalid index type in ImplValContainer::__getitem__."
+			" Use integers, strings, or symbols."
+			);
+		}
+	
+	static ImplValContainer constructIVC(boost::python::object pythonObject, bool inFullImport)
+		{
+		if (isNone(pythonObject))
+			return ImplValContainer(CSTValue());
+
+		if (isTuple(pythonObject))
+			return toForaTuple(pythonObject, inFullImport);
+
+		if (isDictionary(pythonObject))
+			return toForaDictionary(pythonObject, inFullImport);
+
+		if (isJOVAsValue(pythonObject))
+			return toForaJOVAsValue(pythonObject);
+			
+		if (isFunction(pythonObject))
+			return toForaFunction(pythonObject);
+
+		if (isImplValContainer(pythonObject))
+			return toImplValContainer(pythonObject);
+
+		if (isBoolean(pythonObject))
+			return toBoolean(pythonObject);
+
+		if (isString(pythonObject))
+			return toString(pythonObject);
+			
+		if (isFloat(pythonObject))
+			return toFloat(pythonObject);
+
+		if (isInteger(pythonObject))
+			return toInteger(pythonObject);
+
+		if (isForaStackTrace(pythonObject))
+			return toForaStackTrace(pythonObject);
+
+		lassert_dump(false, "object is not an obviously convertible type");
+		}
+
+	static 
+	bool isNone(boost::python::object pythonObject)
+		{
+		return pythonObject.ptr() == Py_None;
+		}
+
+	static 
+	bool isTuple(boost::python::object pythonObject)
+		{
+		return isOfType<boost::python::tuple>(pythonObject);
+		}
+
+	static 
+	ImplValContainer toForaTuple(boost::python::object pythonObject, bool inFullImport)
+		{
+		boost::python::extract<boost::python::tuple> extractor(pythonObject);
+		boost::python::tuple pythonTuple = extractor();
+		
+		ImmutableTreeVector<ImplValContainer> foraTuple;
+		for (long i = 0; i < boost::python::len(pythonTuple); ++i)
+			foraTuple = foraTuple + constructIVC(pythonTuple[i], inFullImport);
+		
+		return ImplValContainer(foraTuple);
+		}
+
+	static 
+	ImplValContainer ImplValContainerCreateNamedTuple(boost::python::tuple values, boost::python::tuple names)
+		{
+		ImmutableTreeVector<ImplValContainer> ivcs;
+		ImmutableTreeVector<Nullable<Symbol> > symbols;
+
+		for (long i = 0; i < boost::python::len(values); ++i)
+			{
+			ivcs = ivcs + constructIVC(values[i], true);
+
+			boost::python::extract<std::string> nameE(names[i]);
+
+			if (nameE.check())
+				symbols = symbols + Nullable<Symbol>(Symbol((std::string)nameE));
+			else
+				symbols = symbols + Nullable<Symbol>();
+			}
+		
+		return ImplValContainerUtilities::createTuple(ivcs, symbols);
+		}
+
+	static
+	bool isJOVAsValue(boost::python::object pythonObject)
+		{
+		return isOfType<JOV>(pythonObject);
+		}
+
+
+	static 
+	ImplValContainer toForaJOVAsValue(boost::python::object pythonObject)
+		{
+		boost::python::extract<JOV> extractor(pythonObject);
+		return ImplValContainer(
+			CSTValue(extractor())
+			);
+		}
+
+	static
+	bool isDictionary(boost::python::object pythonObject)
+		{
+		return isOfType<boost::python::dict>(pythonObject);
+		}
+	
+	static
+	ImplValContainer toForaDictionary(boost::python::object pythonObject, bool inFullImport)
+		{
+		boost::python::extract<boost::python::dict> extractor(pythonObject);
+		boost::python::dict pythonDictionary = extractor();
+
+		Dictionary foraDictionary;
+		boost::python::list keyValuePairs = pythonDictionary.items();
+		bool isConst = true;
+		for (long i = 0; i < boost::python::len(keyValuePairs); ++i)
+			{
+			ImplValContainer key = constructIVC(keyValuePairs[i][0], inFullImport);
+			lassert_dump(key.isCST(), "Keys must be const");
+
+			ImplValContainer value = constructIVC(keyValuePairs[i][1], inFullImport);
+			
+			isConst &= value.isCST();
+
+			foraDictionary = foraDictionary.addKeyValue(CSTValue(key), value);
+			}
+		return ImplValContainer(foraDictionary, isConst);
+		}
+
+	static 
+	bool isFunction(boost::python::object pythonObject)
+		{
+		return isOfType<Function>(pythonObject);
+		}
+
+	static 
+	ImplValContainer toForaFunction(boost::python::object pythonObject)
+		{
+		boost::python::extract<Function> extractor(pythonObject);
+		return ImplValContainer(
+			CSTValue::blankOf(
+				Type::Class(
+					ClassMediator::Function(
+						"",
+						(Function)extractor,
+						LexicalBindingMap(),
+						CSTValue()
+						)
+					)
+				)
+			);
+		}
+
+	static 
+	bool isImplValContainer(boost::python::object pythonObject)
+		{
+		return isOfType<ImplValContainer&>(pythonObject);
+		}
+
+	static 
+	ImplValContainer toImplValContainer(boost::python::object pythonObject)
+		{
+		boost::python::extract<ImplValContainer&> extractor(pythonObject);
+		return ImplValContainer(extractor());		
+		}
+
+	static 
+	bool isBoolean(boost::python::object pythonObject)
+		{
+		return PyBool_Check(pythonObject.ptr());
+		}
+
+	static 
+	ImplValContainer toBoolean(boost::python::object pythonObject)
+		{
+		return extractImplValContainer<bool>(pythonObject);
+		}
+
+	static 
+	bool isString(boost::python::object pythonObject)
+		{
+		return isOfType<string>(pythonObject);
+		}
+
+	static 
+	ImplValContainer toString(boost::python::object pythonObject)
+		{
+		return extractImplValContainer<string>(pythonObject);
+		}
+
+	static 
+	bool isFloat(boost::python::object pythonObject)
+		{
+		return PyFloat_Check(pythonObject.ptr());
+		}
+
+	static 
+	ImplValContainer toFloat(boost::python::object pythonObject)
+		{
+		return extractImplValContainer<double>(pythonObject);
+		}
+
+	static 
+	bool isInteger(boost::python::object pythonObject)
+		{
+		return isOfType<int64_t>(pythonObject);
+		}
+
+	static 
+	ImplValContainer toInteger(boost::python::object pythonObject)
+		{
+		return extractImplValContainer<int64_t>(pythonObject);
+		}
+
+	static 
+	bool isForaStackTrace(boost::python::object pythonObject)
+		{
+		return isOfType<ForaStackTrace>(pythonObject);
+		}
+
+	static 
+	ImplValContainer toForaStackTrace(boost::python::object pythonObject)
+		{
+		return extractImplValContainer<ForaStackTrace>(pythonObject);
+		}
+
+	template <class T>
+	static bool isOfType(boost::python::object pythonObject)
+		{
+		return boost::python::extract<T>(pythonObject).check();
+		}
+
+	template <class T>
+	static
+	ImplValContainer extractImplValContainer(boost::python::object pythonObject)
+		{
+		boost::python::extract<T> extractor(pythonObject);
+		return ImplValContainer(CSTValue((T)extractor));
+		}
+
+	static boost::python::object ImplValContainerStringObjectRefcount(ImplValContainer& value)
+		{
+		if (!value.type().isString())
+			return boost::python::object();
+		return boost::python::object(value.cast<String>().refcount());
+		}
+
+	std::string		getModuleName(void)
+		{
+		return "FORA";
+		}
+
+	static boost::python::object ImplValContainerSimulateApply(ImplValContainer applyTuple)
+		{
+		FunctionStage1::Simulation simulation(10);
+
+		lassert(applyTuple.type().isTuple());
+		
+		auto symbolsAndValues = ImplValContainerUtilities::extractTupleContents(applyTuple);
+
+		ImmutableTreeVector<ImplValContainer> applyArgs;
+		for (const auto& symbolAndValue: symbolsAndValues)
+			{
+			lassert(!symbolAndValue.first);
+			applyArgs = applyArgs + symbolAndValue.second;
+			}
+
+		FunctionStage1::ExpressionEvaluationResult result =
+			simulation.evaluateApply(applyArgs);
+
+		if (result.isResult())
+			return boost::python::object(result.getResult().val());
+
+		return boost::python::object();
+		}
+
+
+	static boost::python::object ImplValContainerSimulateCall(ImplValContainer& value, ImplValContainer args)
+		{
+		FunctionStage1::Simulation simulation(100);
+
+		lassert(args.type().isTuple());
+
+		auto symbolsAndValues = ImplValContainerUtilities::extractTupleContents(args);
+
+		ImmutableTreeVector<ImplValContainer> finalArgs;
+		finalArgs = finalArgs + value + ImplValContainerUtilities::createSymbol(Symbol("Call"));
+
+		for (const auto& symbolAndValue: symbolsAndValues)
+			{
+			lassert(!symbolAndValue.first);
+			finalArgs = finalArgs + symbolAndValue.second;
+			}
+
+		FunctionStage1::ExpressionEvaluationResult result = 
+			simulation.evaluateApply(finalArgs);
+
+		if (result.isResult())
+			return boost::python::object(result.getResult().val());
+
+		return boost::python::object();
+		}
+
+	static boost::python::object ImplValContainerGetObjectMember2(ImplValContainer& value, std::string memberName, long depth)
+		{
+		FunctionStage1::Simulation simulation(depth);
+
+		FunctionStage1::ExpressionEvaluationResult result = 
+			simulation.evaluateApply(
+				emptyTreeVec() + 
+					value + 
+					ImplValContainerUtilities::createSymbol(Symbol("Member")) + 
+					ImplValContainerUtilities::createSymbol(Symbol(memberName))
+				);
+
+		if (result.isResult())
+			return boost::python::object(result.getResult().val());
+
+		return boost::python::object();
+		}
+
+	static boost::python::object ImplValContainerGetObjectMember(ImplValContainer& value, std::string memberName)
+		{
+		return ImplValContainerGetObjectMember2(value, memberName, 10);
+		}
+
+	static boost::python::object ImplValContainerGetObjectLexicalMember(ImplValContainer& value, std::string memberName)
+		{
+        Nullable<pair<ImplValContainer, Nullable<Symbol> > > member = 
+                ImplValContainerUtilities::objectGetMember(value, Symbol(memberName));
+
+		if (!member)
+			return boost::python::object();
+
+		return boost::python::make_tuple(
+			boost::python::object(member->first),
+			member->second ? boost::python::object(member->second->toString()) : boost::python::object()
+			);
+		}
+
+	static bool ImplValContainerIsVectorEntirelyUnpaged(ImplValContainer& value)
+		{
+		if (!value.type().isVector())
+			return false;
+
+		VectorRecord origVec = value.cast<TypedFora::Abi::VectorRecord>();
+		VectorRecord vec = origVec.pagedPortion();
+
+		return !vec.size();
+		}
+
+	static bool ImplValContainerIsVectorEntirelyPaged(ImplValContainer& value)
+		{
+		if (!value.type().isVector())
+			return false;
+
+		VectorRecord origVec = value.cast<TypedFora::Abi::VectorRecord>();
+		VectorRecord vec = origVec.unpagedAndPageletTreePortion();
+
+		return !vec.size();
+		}
+
+	static boost::python::object ImplValContainerGetVectorDataIdsForSlice(
+												ImplValContainer& value, 
+												int64_t lowIndex,
+												int64_t highIndex,
+												PolymorphicSharedPtr<VectorDataManager> vdm
+												)
+		{
+		if (!value.type().isVector())
+			return boost::python::object();
+
+		VectorRecord origVec = value.cast<TypedFora::Abi::VectorRecord>();
+		VectorRecord vec = origVec.pagedPortion();
+
+		boost::python::list tr;
+
+		if (!vec.size())
+			return tr;
+
+		highIndex = 
+			std::max<int64_t>(0, 
+				std::min<int64_t>(
+					vec.indexWithinHandle(highIndex),
+					vec.dataPtr()->pagedValueCount()
+					)
+				);
+
+		lowIndex = 
+			std::max<int64_t>(0, 
+				std::min<int64_t>(
+					vec.indexWithinHandle(lowIndex), 
+					vec.dataPtr()->pagedValueCount()
+					)
+				);
+
+		if (lowIndex > highIndex)
+			std::swap(lowIndex, highIndex);
+
+		TypedFora::Abi::BigVectorPageLayout layout = 
+			vdm->getBigVectorLayouts()->getLayoutForId(
+				value.cast<TypedFora::Abi::VectorRecord>().pagedValuesIdentity()
+				);
+
+		ImmutableTreeVector<TypedFora::Abi::VectorDataIDSlice> slices = 
+			layout.slicesCoveringRange(lowIndex, highIndex);
+
+		for (long k = 0; k < slices.size(); k++)
+			tr.append(slices[k].vector());
+
+		return tr;
+		}
+
+	static boost::python::object ImplValContainerGetVectorPageSliceRanges(
+												ImplValContainer& value,
+												PolymorphicSharedPtr<VectorDataManager> vdm
+												)
+		{
+		if (!value.type().isVector())
+			return boost::python::object();
+
+		boost::python::list tr;
+
+		TypedFora::Abi::VectorRecord vec = value.cast<TypedFora::Abi::VectorRecord>();
+
+		TypedFora::Abi::VectorRecord pagedVec = vec.pagedPortion();
+
+		if (pagedVec.size())
+			{
+			TypedFora::Abi::BigVectorPageLayout identity = 
+				vdm->getBigVectorLayouts()->getLayoutForId(pagedVec.pagedValuesIdentity())
+					.slice(pagedVec.indicesWithinHandle(), vdm->newVectorHash());
+
+			for (long k = 0; k < identity.vectorIdentities().size(); k++)
+				tr.append(
+					boost::python::make_tuple(
+						identity.startIndex(k),
+						identity.startIndex(k) + identity.sliceSize(k)
+						)
+					);
+			}
+
+		TypedFora::Abi::VectorRecord unpagedVec = vec.unpagedAndPageletTreePortion();
+
+		if (unpagedVec.size())
+			tr.append(
+				boost::python::make_tuple(
+					pagedVec.size(),
+					pagedVec.size() + unpagedVec.size()
+					)
+				);
+
+		return tr;
+		}
+
+	static boost::python::object ImplValContainerGetVectorPageIds(
+												ImplValContainer& value,
+												PolymorphicSharedPtr<VectorDataManager> vdm
+												)
+		{
+		if (!value.type().isVector())
+			return boost::python::object();
+
+		boost::python::list tr;
+
+		TypedFora::Abi::VectorRecord vec = value.cast<TypedFora::Abi::VectorRecord>();
+
+		TypedFora::Abi::VectorRecord pagedVec = vec.pagedPortion();
+
+		if (pagedVec.size())
+			{
+			TypedFora::Abi::BigVectorPageLayout identity = 
+				vdm->getBigVectorLayouts()->getLayoutForId(pagedVec.pagedValuesIdentity())
+					.slice(pagedVec.indicesWithinHandle(), vdm->newVectorHash());
+
+			for (long k = 0; k < identity.vectorIdentities().size(); k++)
+				tr.append(
+					identity.vectorIdentities()[k].vector().getPage()
+					);
+			}
+
+		TypedFora::Abi::VectorRecord unpagedVec = vec.unpagedAndPageletTreePortion();
+
+		if (unpagedVec.size())
+			tr.append(
+				boost::python::make_tuple(
+					pagedVec.size(),
+					pagedVec.size() + unpagedVec.size()
+					)
+				);
+
+		return tr;
+		}
+
+	static std::string ImplValContainerParsableRepresentation(ImplValContainer& ivc)
+		{
+		std::ostringstream s;
+		
+			{
+			CPPMLPrettyPrintStream st(s);
+			ivc.getReference().toParsableString(st);
+			}
+		
+		return s.str();
+		}
+
+	static boost::python::object ImplValContainerGetObjectDefinitionPoint(ImplValContainer& val)
+		{
+		if (!val.type().isClass())
+			return boost::python::object();
+
+		ExpressionLocationMetadata meta;
+
+		@match ClassMediator(*val.type().getClass().classBody().mediator())
+			-| Function(f) ->> {
+				meta = f.locationMetadata();
+				}
+			-| Lambda(e) ->> {
+				meta = e.locationMetadata();
+				}
+			-| Object(o) ->> {
+				meta = o.locationMetadata();
+				}
+			-| Class(o) ->> {
+				meta = o.locationMetadata();
+				}
+			-| _ ->> { return boost::python::object(); }
+			;
+
+		Nullable<CodeLocation> loc;
+		if (meta.isWithId())
+			loc = GlobalCodeLocationRegistry::getCodeLocation(meta.getWithId().id());
+
+		if (loc)
+			return boost::python::object(*loc);
+		return boost::python::object();
+		}
+
+	void exportPythonWrapper()
+		{
+		using namespace boost::python;
+
+		class_<Symbol>("Symbol", init<std::string>())
+			.def("toString", &Symbol::toString)
+			.def("__str__", &Symbol::toString)
+			.def("__repr__", &Symbol::toString)
+			.def("__cmp__", &FORAPythonUtil::comparer<Symbol>)
+			.def("__hash__", &FORAPythonUtil::hasher<Symbol>)
+			;
+
+		class_< ImplValContainer >("ImplValContainer", init<>())
+			.def("__init__", make_constructor(newImplValContainer))
+			.def("__cmp__", &ImplValContainerCmp)
+			.def("__hash__", &ImplValContainerPyHash)
+			.def("isCST", &ImplValContainerIsCST)
+			.add_property("hash", &ImplValContainerHash)
+			.def("__str__", &FORAPythonUtil::scopedPrettyPrinter< ImplValContainer>)
+			.def("__repr__", &FORAPythonUtil::scopedPrettyPrinter< ImplValContainer>)
+			.def("parsableRepresentation", &ImplValContainerParsableRepresentation)
+			
+			.def("__getitem__", &ImplValContainerGetItem, "If the IV is a tuple, getitem for it.")
+			.def("__contains__", &ImplValContainerHasNamedTupleElement, "If the IV is a tuple, whether the item exists")
+			.def("__len__", &ImplValContainerLen, "If the IV is a tuple, len for it")
+			
+
+			.def("__getstate__", &FORAPythonUtil::serializer<ImplValContainer>)
+			.def("__setstate__", &FORAPythonUtil::deserializer<ImplValContainer>)
+			.def("__getstate_manages_dict__", &ImplValContainer_getstate_manages_dict)
+
+			.def("serializeEntireObjectGraph", &FORAPythonUtil::serializeEntireObjectGraph<ImplValContainer>)
+			.def("deserializeEntireObjectGraph", &FORAPythonUtil::deserializeEntireObjectGraph<ImplValContainer>)
+
+			.def("getFunction", &ImplValContainerGetFunction)
+			.def("getFunctionMembers", &ImplValContainerGetFunctionMembers)
+			.def("getAlternative", &ImplValContainerGetAlternative)
+			.def("getSymbol", &ImplValContainerGetSymbol)
+			.def("getTag", &ImplValContainerGetTag)
+			.def("isNothing", &ImplValContainerIsNothing)
+			.def("isJOVAsValue", &ImplValContainerIsJovAsValue)
+			.def("isVector", &ImplValContainerIsVector)
+			.def("isVectorOfChar", &ImplValContainerIsVectorOfChar)
+			.def("isBoolean", &ImplValContainerIsBoolean)
+			.def("isInt64", &ImplValContainerIsInt64)
+			.def("isFloat64", &ImplValContainerIsFloat64)
+			.def("isString", &ImplValContainerIsString)
+			.def("isSimple", &ImplValContainerIsSimple, "Is this a 'simple' IVC? If so, we can stringify locally")
+			.def("isFloat", &ImplValContainerIsFloat, "Is this IVC a float?")
+			.def("isInteger", &ImplValContainerIsInteger, "Is this IVC an integer?")
+			.def("isSymbol", &ImplValContainerIsSymbol, "Is this IVC a Fora Symbol?")
+			.def("isAlternative", &ImplValContainerIsAlternative)
+			.def("isTag", &ImplValContainerIsTag)
+			.def("isFunction", &ImplValContainerIsFunction, "Is this a fora Function")
+			.def("isClass", &ImplValContainerIsClass)
+			.def("isObject", &ImplValContainerIsObject)
+			.def("isDictionary", &ImplValContainerIsDictionary)
+			.def("isDateTime", &ImplValContainerIsDateTime)
+			.def("isTimeDuration", &ImplValContainerIsTimeDuration)
+			.def("isMutableVector", &ImplValContainerIsMutableVector)
+			.def("getObjectClass", &ImplValContainerObjectGetClass)
+			.def("getMutableVectorSize", &ImplValContainerGetMutableVectorSize)
+			.def("getVectorBigvecGuid", &ImplValContainerGetVectorBigvecGuid)
+			.def("getVectorPageSliceRanges", &ImplValContainerGetVectorPageSliceRanges)
+			.def("getVectorSize", &ImplValContainerGetVectorSize)
+            .def("getVectorPageIds", &ImplValContainerGetVectorPageIds)
+			.def("getVectorElementsJOR", &ImplValContainerGetVectorElementsJOR)
+			.def("getObjectDefinitionPoint", &ImplValContainerGetObjectDefinitionPoint)
+			.def("getVectorMaxRowByteCount", &ImplValContainerGetVectorMaxRowByteCount,
+					"Examine the vector's JOR and determine the width of the widest element "
+					"in the JOR. If an element is untyped, thus function returns None"
+					)
+			.def("isVectorEntirelyUnpaged", ImplValContainerIsVectorEntirelyUnpaged)
+			.def("isVectorEntirelyPaged", ImplValContainerIsVectorEntirelyPaged)
+			.def("appendToVector", &ImplValContainerVectorAppendIVC)
+			.def("concatenateVectors", &ImplValContainerConcatenateVectors)
+			.def("getVectorDataIdsForSlice", &ImplValContainerGetVectorDataIdsForSlice)
+			.def("getStringObjectRefcount", &ImplValContainerStringObjectRefcount)
+			.def("getJOV", &ImplValContainerGetJOV)
+			.def("getClassName", &ImplValContainerGetClassName)
+			.def("getStackTrace", &ImplValContainerGetStackTrace)
+			.def("getPythonString", &ImplValContainerGetPythonString)
+			.def("getTuple", &ImplValContainerGetTuple)
+			.def("getDictionaryAsListOfTuples", &ImplValContainerGetDictionaryAsListOfTuples)
+			.def("getTupleMember", &ImplValContainerGetTupleMember)
+			.def("getTupleNames", &ImplValContainerGetTupleNames)
+			.def("getObjectMember", &ImplValContainerGetObjectMember, 
+				"attempt to extract a member from an object without hitting the interpreter.\n"
+				"the member must be a constant or another CreateObject/CreateFunction/CreateClass\n"
+				"expression. Returns a FORA value if successful, and None otherwise"
+				)
+			.def("getObjectMember", &ImplValContainerGetObjectMember2, 
+				"attempt to extract a member from an object without hitting the interpreter.\n"
+				"the member must be a constant or another CreateObject/CreateFunction/CreateClass\n"
+				"expression. Returns a FORA value if successful, and None otherwise"
+				)
+			.def("getObjectLexicalMember", &ImplValContainerGetObjectLexicalMember,
+				"attempt to extract a member from an object without hitting the interpreter.\n"
+				"the member must be held as data and exposed to the object's definition lexically\n"
+				"under the supplied name. Result is None if no such lexical binding exists, or a \n"
+				"tuple (value, name) where 'value' is the value and 'name' is None, or a member of \n"
+				"value that the lexical binding resolves to."
+				)
+			.def("simulateCall", &ImplValContainerSimulateCall, 
+				"attempt to perform a 'call' operation on the object using the simulator"
+				)
+			.def("isTuple", &ImplValContainerIsTuple)
+			.def("joinOverTuple", &ImplValContainerJoinOverTuple)
+			.def("hasNamedTupleElement", &ImplValContainerHasNamedTupleElement)
+			.add_property("objectMetadata", &ImplValContainerObjectMetadata)
+			.add_property("objectMembers", &ImplValContainerObjectMembers)
+			.add_property("objectLexicalMembers", &ImplValContainerObjectLexicalMembers)
+			.def("getObjectDefinitionTermsWithMetadata", &getObjectDefinitionTermsWithMetadata)
+			.def("getMemberDefinition", &ImplValContainerGetMemberDefinition)
+			.add_property("pyval", &ImplValContainerPyval)
+			.add_property("pyvalOrNone", &ImplValContainerPyvalOrNone)
+			.add_property("type", &ImplValContainerGetType)
+			.add_property("typeAsJOV", &ImplValContainerGetTypeAsJOV)
+			.add_property("typeCategory", &ImplValContainerGetTypeCategory)
+			.add_property("getDataMembers", &ImplValContainerGetDataMembersInDeclarationOrder)
+
+			.enable_pickling()
+			;
+
+		def("simulateApply", &ImplValContainerSimulateApply);
+
+		def("CreateNamedTuple", &ImplValContainerCreateNamedTuple);
+		def("simpleListToVector", &ImplValContainerVectorFromSimpleList);
+			
+		def("emptyStackTrace", object(ImplValContainer(CSTValue(ForaStackTrace()))));
+		
+		def("Float32", object(ImplValContainer(CSTValue(JOV::OfType(Type::Float(32))))));
+		def("Float64", object(ImplValContainer(CSTValue(JOV::OfType(Type::Float(64))))));
+		def("StackTrace", object(ImplValContainer(CSTValue(JOV::OfType(Type::StackTrace())))));
+		def("Int64", object(ImplValContainer(CSTValue(JOV::OfType(Type::Integer(64, true))))));
+		def("Int32", object(ImplValContainer(CSTValue(JOV::OfType(Type::Integer(32, true))))));
+		def("Int16", object(ImplValContainer(CSTValue(JOV::OfType(Type::Integer(16, true))))));
+		def("Int8", object(ImplValContainer(CSTValue(JOV::OfType(Type::Integer(8, true))))));
+		def("Int128", object(ImplValContainer(CSTValue(JOV::OfType(Type::Integer(128, true))))));
+		def("UInt128", object(ImplValContainer(CSTValue(JOV::OfType(Type::Integer(128, false))))));
+		def("UInt64", object(ImplValContainer(CSTValue(JOV::OfType(Type::Integer(64, false))))));
+		def("UInt32", object(ImplValContainer(CSTValue(JOV::OfType(Type::Integer(32, false))))));
+		def("UInt16", object(ImplValContainer(CSTValue(JOV::OfType(Type::Integer(16, false))))));
+		def("UInt8", object(ImplValContainer(CSTValue(JOV::OfType(Type::Integer(8, false))))));
+		def("UInt1", object(ImplValContainer(CSTValue(JOV::OfType(Type::Integer(1, false))))));
+		def("String", object(ImplValContainer(CSTValue(JOV::OfType(Type::String())))));
+		def("Nothing", object(ImplValContainer(CSTValue(JOV::OfType(Type::Nothing())))));
+		def("Symbol", object(ImplValContainer(CSTValue(JOV::OfType(Type::Symbol())))));
+		def("Vector", object(ImplValContainer(CSTValue(jovAnyVector()))));
+		def("MutableVector", object(ImplValContainer(CSTValue(jovAnyMutableVector()))));
+		
+		def("true", object(ImplValContainer(CSTValue(true))));
+		def("false", object(ImplValContainer(CSTValue(false))));
+
+		
+		def("updateFreeStoreValues", &TypedFora::Abi::updateFreeStoreValues);
+
+
+		def("symbol_Function", object(ImplValContainer(CSTValue(Symbol("Function")))));
+		def("symbol_Call", object(ImplValContainer(CSTValue(Symbol("Call")))));
+		def("symbol_Member", object(ImplValContainer(CSTValue(Symbol("Member")))));
+
+		def("concatenateVectors", &ImplValContainerConcatenateVectors);
+		def("getEmptyVector", &ImplValContainerGetEmptyVector);
+			
+		def("JOV", object(ImplValContainer(CSTValue(JOV()))));
+		def("nothing", object(ImplValContainer()));
+		
+		def("pythonToFORA", &ImplValContainerFullPyImport);
+
+		def("classMemberBind", &ImplValContainerUtilities::classMemberBind);
+
+		def("totalImplvalCount", &ImplVal::ImplValRecord::totalImplValRecords);
+		def("totalStringCount", &String::totalStringCount);
+		}
+
+};
+
+//explicitly instantiating the registration element causes the linker to need
+//this file
+template<>
+char native::module::Exporter<ImplValContainerWrapper>::mEnforceRegistration =
+		native::module::ExportRegistrar<ImplValContainerWrapper>::registerWrapper();
+

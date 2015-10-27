@@ -1,0 +1,907 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ImplValContainerUtilities.hppml"
+#include "MemoryPool.hpp"
+#include "ExecutionContext.hppml"
+#include "Type.hppml"
+#include "ClassMediator.hppml"
+#include "../Primitives/ExternalFunctionDescription.hppml"
+#include "../TypedFora/ABI/PackedForaValues.hppml"
+#include "../TypedFora/ABI/ForaValueArray.hppml"
+#include "../TypedFora/ABI/VectorRecord.hpp"
+#include "../Language/ClassDefinitionExpansion.hppml"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include <boost/python.hpp>
+#include "../VectorDataManager/VectorDataManager.hppml"
+#include "../VectorDataManager/PageRefcountTracker.hppml"
+#include "../VectorDataManager/ExtractBigVectorReferencesVisitor.hppml"
+#include "../TypedFora/ABI/ImplValVisitor.hppml"
+
+using TypedFora::Abi::VectorRecord;
+
+namespace {
+
+std::string tupleErrorString(int64_t ix, uint64_t max)
+	{
+	return 
+		"Tuple index " + boost::lexical_cast<string>(ix) +
+					" is out of range. Valid range is [-" +
+						boost::lexical_cast<string>(max) + ", " +
+						boost::lexical_cast<string>(max) + ")"
+		;
+	}
+
+std::string tupleErrorString(
+			Symbol sym,
+			const ImmutableTreeVector<Nullable<Symbol> >& names
+			)
+	{
+	std::ostringstream tr;
+	
+	tr << "tuple member " << sym.toString() << " is invalid. ";
+	tr << "valid members are [";
+	
+	uint64_t written = 0;
+	for (long k = 0; k < names.size(); k++)
+		{
+		if (names[k])
+			{
+			if (written++ > 0)
+				tr << ", ";
+			tr << names[k]->toString();
+			}
+		}
+		
+	tr << "]";
+	
+	return tr.str();	
+	}
+
+template<class T>
+void copyStrided(void* dest, void* src, uint32_t count, uint32_t strideBytes)
+	{
+	if (strideBytes == sizeof(T))
+		memcpy(dest, src, count * sizeof(T));
+	else
+		{
+		char* dPtr = (char*)dest;
+		char* sPtr = (char*)src;
+		
+		for (long k = 0;  k < count; k++)
+			((T*)(dPtr + k * sizeof(T)))[0] = ((T*)(sPtr + strideBytes * k))[0];
+		}
+	}
+
+}//anonymous namespace
+
+namespace ImplValContainerUtilities {
+
+	ImplValContainer createString(const String& val)
+		{
+		String s(val);
+
+		return ImplValContainer(ImplVal(Type::String(), &s));
+		}
+
+	ImplValContainer createSymbol(const Symbol& val)
+		{
+		Symbol s(val);
+
+		return ImplValContainer(ImplVal(Type::Symbol(), &s));
+		}
+
+	ImplValContainer createVector(const VectorRecord& val)
+		{
+		ImplVal tr = ImplVal::introduce(Type::Vector());
+		
+		new (&tr.cast<VectorRecord>()) VectorRecord(val);
+
+		return ImplValContainer::assumeOwnershipOf(tr);
+		}
+
+	Nullable<std::string> extractString(const ImplValContainer& string)
+		{
+		if (string.type().isString())
+			return null() << string.cast<String>().stdString();
+		return null();
+		}
+	
+	ImmutableTreeVector<pair<Nullable<Symbol>, ImplValContainer> > 
+						extractTupleContents(const ImplValContainer& val)
+		{
+		ImmutableTreeVector<pair<Nullable<Symbol>, ImplValContainer> > tr;
+
+		if (!val.type().isTuple())
+			throw IVCException("arguments is not a tuple");
+		
+		char* data = (char*)val.data();
+		const ImmutableTreeVector<Type>& types = val.type().getTuple().types();
+
+		const ImmutableTreeVector<Nullable<Symbol> >& names = 
+			val.type().getTuple().names();
+
+		for (long k = 0; k < types.size(); k++)
+			{
+			tr = tr + make_pair(names[k], ImplValContainer( types[k], data ) );
+			data += types[k].size();
+			}
+
+		return tr;
+		}
+
+	
+	ImplValContainer tupleGetItem(const ImplValContainer& val, int64_t ix)
+		{
+		int64_t effective_ix = ix;
+		
+		lassert(val.type().isTuple());
+
+		const ImmutableTreeVector<Type>& types = val.type().getTuple().types();
+
+		if (ix < 0)
+			{
+			if (ix + (long)types.size() < 0)
+				throw IVCException(tupleErrorString(ix, types.size()));
+
+			effective_ix = types.size() + ix;
+			}
+		if (effective_ix >= types.size())
+			throw IVCException(tupleErrorString(ix, types.size()));
+
+		uword_t sz = 0;
+		for (long k = 0; k < effective_ix; k++)
+			sz += types[k].size();
+
+		return ImplValContainer(types[effective_ix], &val.cast<char>() + sz);
+		}
+
+	ImplValContainer tupleMember(const ImplValContainer& val, const Symbol& sym)
+		{
+		lassert(val.type().isTuple());
+
+		const ImmutableTreeVector<Type>& types = val.type().getTuple().types();
+		const ImmutableTreeVector<Nullable<Symbol> >& names = 
+			val.type().getTuple().names();
+
+		for (long k = 0; k < names.size(); k++)
+			if (names[k] && *names[k] == sym)
+				{
+				uword_t sz = 0;
+				for (long j = 0; j < k;j++)
+					sz += types[j].size();
+		
+				return ImplValContainer(types[k], &val.cast<char>() + sz);
+				}
+	
+		throw IVCException(tupleErrorString(sym, names));
+		}
+
+	ImplValContainer tupleGetSlice(
+			const ImplValContainer& val, 
+			int64_t ixLow, 
+			int64_t ixHigh
+			)
+		{
+		lassert(val.type().isTuple());
+
+		const ImmutableTreeVector<Type>& types = val.type().getTuple().types();
+		const ImmutableTreeVector<Nullable<Symbol> >& names =
+			val.type().getTuple().names();
+
+		int32_t existingTupleElementCount = types.size();
+	
+		if (ixLow < 0)
+			ixLow = existingTupleElementCount + ixLow;
+		if (ixHigh < 0)
+			ixHigh = existingTupleElementCount + ixHigh;
+		if (ixLow < 0)
+			ixLow = 0;
+		if (ixHigh < 0)
+			ixHigh = 0;
+	
+		if (ixHigh > types.size())
+			ixHigh = types.size();
+		if (ixLow > ixHigh)
+			ixLow = ixHigh;
+
+
+		ImplVal tr = ImplVal::introduce(
+			Type::Tuple(
+				types.slice(ixLow, ixHigh),
+				names.slice(ixLow, ixHigh)
+				)
+			);
+
+		char* readBase = &val.cast<char>();
+		for (long k = 0; k < ixLow; k++)
+			readBase += types[k].size();
+
+		char* writeBase = &tr.cast<char>();
+
+		for (long k = ixLow; k < ixHigh; k++)
+			{
+			const Type& t = types[k];
+
+			t.initialize(writeBase, readBase);
+			writeBase += t.size();
+			readBase += t.size();
+			}
+
+		return ImplValContainer::assumeOwnershipOf(tr);
+		}
+
+	uword_t tupleSize(const ImplValContainer& val)
+		{
+		lassert(val.type().isTuple());
+		
+		return val.type().getTuple().types().size();
+		}
+
+	ImplValContainer createClass(const ClassMediator& classMediator)
+		{
+		Type t = Type::Class(classMediator);
+		
+		ImplVal i = ImplVal::introduce(t);
+
+		t.initialize(i.data(), MemoryPool::getFreeStorePool());
+
+		return ImplValContainer::assumeOwnershipOf(i);
+		}
+	
+	Nullable<ImplValContainer> concatenateVectors(
+									const ImplValContainer& left,
+									const ImplValContainer& right,
+									MemoryPool* inPool,
+									VectorDataManager* inVDM,
+									hash_type newVectorHash
+									)
+		{
+		if (!(left.type().isVector() && right.type().isVector()))
+			return null();
+
+		return null() << 
+			createVector(
+				VectorRecord::concatenate(
+					left.cast<VectorRecord>(),
+					right.cast<VectorRecord>(),
+					inPool,
+					inVDM,
+					newVectorHash
+					)
+				);
+		}
+
+	namespace {
+	hash_type incrementAndReturnHash(hash_type* h)
+		{
+		(*h)[0]++;
+		return *h;
+		}
+	}
+
+	Nullable<ImplValContainer> appendToVector(
+									const ImplValContainer& left,
+									const ImplValContainer& right,
+									MemoryPool* inPool,
+									VectorDataManager* inVDM,
+									hash_type newVectorHash
+									)
+		{
+		if (!(left.type().isVector()))
+			return null();
+
+		return null() << 
+			createVector(
+				left.cast<VectorRecord>().append(
+					inPool,
+					right,
+					inVDM,
+					boost::bind(&incrementAndReturnHash, &newVectorHash)
+					)
+				);
+		}
+
+	ImplValContainer vectorGetSlice(
+			const ImplValContainer& val, 
+			int64_t ixLow, 
+			int64_t ixHigh,
+			int64_t stride
+			)
+		{
+		lassert(val.type().isVector());
+
+		return createVector(
+				val.cast<VectorRecord>().slice(null() << ixLow, null() << ixHigh, null() << stride)
+				);
+		}
+		
+
+	ImplValContainer classGetItem(const ImplValContainer& cls, uword_t index)
+		{
+		@match Type(cls.type())
+			-|	Class(types, (f, resump)) ->> {
+
+				lassert(index < types.size());
+
+				uword_t offset = 0;
+				for (long k = 0; k < index; k++)
+					offset += types[k].size();
+
+				char* dataPtr = reinterpret_cast<char*>(cls.data()) + offset;
+				
+				const Type& outType = types[index];
+
+				ImplVal tr;
+				if (ImplVal::typeIsPassByValue(outType))
+					tr = ImplVal::unincrementedInline(outType, dataPtr);
+				else
+					tr = ImplVal(outType, dataPtr);
+				
+				return ImplValContainer(tr);
+				}
+			-|  _ ->> { lassert(false); }
+			;
+		}
+
+	//extract the named element 'val' as if it were referred to in 'object's inner closure
+	//if it's a calculated field (say, on itself or a bound member) then the second element of the
+	//pair will be populated.
+	Nullable<pair<ImplValContainer, Nullable<Symbol> > > 
+			objectGetMember(const ImplValContainer& object, Symbol val)
+		{
+		if (!object.type().isClass())
+			return null();
+
+		//extract the 'lexicalSurroundings' from the mediator, which tells us how to 
+		//pull values out of the object.
+		auto lexicalSurroundings = object.type().getClass().classBody().mediator()->lexicalSurroundings().bindings();
+
+		if (!lexicalSurroundings.contains(val))
+			return null();
+
+		LexicalBinding binding = *lexicalSurroundings[val];
+
+		ImplValContainer item = object;
+
+		for (auto index: binding.unbindIndexSequence())
+			if (item.type().isTuple())
+				{
+				Nullable<ImplValContainer> child = item.tupleGetItem(index);
+				if (!child) 
+					return null();
+				item = *child;
+				}
+				else
+			if (item.type().isClass() && item.type().getClass().elements().size() > index)
+				item = classGetItem(item, index);
+			else
+				return null();
+
+		return null() << make_pair(item, binding.member());
+		}
+
+
+	ImplValContainer classMemberUnbind(const ImplValContainer& cls)
+		{
+		@match Type(cls.type())
+			-|	Class(types, (f, resump)) ->> {
+
+			Type newTupType = 
+				Type::Tuple(types, (emptyTreeVec() + Nullable<Symbol>()) * types.size());
+			
+			ImplVal tr = ImplVal::introduce(newTupType);
+			
+			tr.type().initialize(tr.data(), cls.data());
+			
+			return 	ImplValContainer::assumeOwnershipOf(tr);
+			}
+			-| _ ->> { lassert(false); }
+			;
+		}
+
+	ImplValContainer classMemberBind(
+			const ImplValContainer& cls,
+			const ImplValContainer& args
+			)
+	{
+	lassert(args.type().isTuple());
+	
+	@match Type(cls.type())
+		-|	Class(types, classBody) ->> {
+
+			ImmutableTreeVector<Type> argTypes = args.type().getTuple().types();
+
+			ImmutableTreeVector<Type> t = types + argTypes;
+
+			Type newClassType = Type::Class(t, classBody);
+
+			ImplVal tr = ImplVal::introduce(newClassType);
+
+			char* targetData = (char*)tr.data();
+
+				{
+				char* sourceData = (char*)cls.data();
+
+				for (long k = 0; k < types.size();k++)
+					{
+					types[k].initialize(targetData, sourceData);
+					uword_t sz = types[k].size();
+					targetData += sz;
+					sourceData += sz;
+					}
+				}
+				{
+				char* sourceData = (char*)args.data();
+
+				for (long k = 0; k < argTypes.size();k++)
+					{
+					argTypes[k].initialize(targetData, sourceData);
+					uword_t sz = argTypes[k].size();
+					targetData += sz;
+					sourceData += sz;
+					}
+				}
+
+			return ImplValContainer::assumeOwnershipOf(tr);
+			}
+		-| _ ->> { lassert(false); }
+		;
+	}		
+
+	ImplValContainer bindMixin(
+			const ImplValContainer& toUpdateImplVal,
+			const ImplValContainer& toMixInImplVal
+			)
+		{
+		Type toUpdateType = toUpdateImplVal.type();
+		Type toMixInType = toMixInImplVal.type();
+
+		Nullable<Type> merged = processClassMediatorMixin(toUpdateType, toMixInType);
+
+		if (!merged)
+			throw IVCException("Illegal mixin");
+
+		ImplVal outNormal = ImplVal::introduce(*merged);
+
+		char* target = (char*)outNormal.data();
+
+		toUpdateImplVal.type().initialize(target, toUpdateImplVal.data());
+		target += toUpdateImplVal.type().size();
+
+		toMixInImplVal.type().initialize(target, toMixInImplVal.data());
+
+		return ImplValContainer::assumeOwnershipOf(
+				outNormal
+				);
+		}
+
+	ImplValContainer createExternalFunction(
+			const ExternalFunctionDescriptor& efd,
+			bool isCST
+			)
+		{
+		ImplVal res = ImplVal::introduce(Type::ExternalFunction(isCST));
+
+		new (&res.cast<ExternalFunctionDescriptor>())
+			ExternalFunctionDescriptor(efd);
+
+		return ImplValContainer::assumeOwnershipOf(res);
+		}
+
+	ImplValContainer createUnsignedInteger(uint64_t val)
+		{
+		ImplVal result = ImplVal::introduce( Type::Integer(64, false) );
+		uint8_t* data = (uint8_t*)result.data();
+		new (data) uint64_t(val);
+
+		return ImplValContainer::assumeOwnershipOf(result);
+		}
+
+	ImplValContainer createSignedInteger(int64_t val)
+		{
+		ImplVal result = ImplVal::introduce(Type::Integer(64, true));
+		int8_t* data = (int8_t*)result.data();
+		new (data) int64_t(val);
+
+		return ImplValContainer::assumeOwnershipOf(result);
+		}
+
+	ImplValContainer createFloat(float val)
+		{
+		ImplVal result = ImplVal::introduce( Type::Float(32) );
+		uint8_t* data = (uint8_t*)result.data();
+		new (data) float(val);
+
+		return ImplValContainer::assumeOwnershipOf(result);
+		}
+
+	ImplValContainer createDouble(double val)
+		{
+		ImplVal result = ImplVal::introduce( Type::Float(64) );
+		uint8_t* data = (uint8_t*)result.data();
+		new (data) double(val);
+
+		return ImplValContainer::assumeOwnershipOf(result);
+		}
+
+	ImplValContainer createBool(uint8_t val)
+		{
+		ImplVal result = ImplVal::introduce( Type::Integer(1, false) );
+		uint8_t* data = (uint8_t*)result.data();
+		new (data) uint8_t(val);
+
+		return ImplValContainer::assumeOwnershipOf(result);
+		}
+
+	ImplValContainer createTuple(const ImmutableTreeVector<ImplValContainer>& tupleElements)
+		{
+		return createTuple(
+			tupleElements, 
+			(emptyTreeVec() + Nullable<Symbol>()) * tupleElements.size()
+			);
+		}
+
+	ImplValContainer createEmptyTuple()
+		{
+		return createTuple(ImmutableTreeVector<ImplValContainer>());
+		}
+
+	ImplValContainer createTuple(
+			const ImmutableTreeVector<ImplValContainer> & inValues,
+			const ImmutableTreeVector<Nullable<Symbol> > & inNames
+			)
+		{
+		ImmutableTreeVector<Type> types;
+		for (long k = 0; k < inValues.size(); k++)
+			types = types + inValues[k].type();
+	
+		ImplVal tr = ImplVal::introduce(Type::Tuple(types, inNames));
+		char* base = &tr.cast<char>();
+	
+		for (long k = 0; k < inValues.size(); k++)
+			{
+			types[k].initialize((void*)base, (void*)&inValues[k].cast<char>());
+			base = base + types[k].size();
+			}
+	
+		return ImplValContainer::assumeOwnershipOf(tr);
+		}
+
+	ImplValContainer createDict(
+			const ImmutableTreeMap<ImplValContainer, ImplValContainer>& keysAndValues
+			)
+		{
+        auto keys = keysAndValues.keys();
+        auto values = keysAndValues.values();
+
+        return createDict(keys, values);
+		}
+
+	ImplValContainer createDict(
+			const ImmutableTreeVector<ImplValContainer>& keys, 
+			const ImmutableTreeVector<ImplValContainer>& values
+			)
+		{
+		lassert(keys.size() == values.size());
+
+		ImplVal tr = ImplVal::introduce(Type::Dictionary(true));
+        Dictionary dict;
+
+		for (long ix = 0; ix < keys.size(); ++ix)
+			{
+			dict = dict.addKeyValue(
+				CSTValue(keys[ix]),
+				values[ix]
+				);
+			}
+
+        Dictionary* data = (Dictionary*)tr.data();
+        new (data) Dictionary(dict);
+
+		return ImplValContainer::assumeOwnershipOf(tr);
+		}
+
+
+	ImplValContainer createAlternative(const Symbol& sym, const ImplValContainer& val)
+		{
+		Type type = Type::Alternative(val.type());		
+		ImplVal outVal = ImplVal::introduce(type);
+
+		outVal.cast<AlternativeData>().symbol = sym;
+		
+		val.type().initialize(outVal.cast<AlternativeData>().data, val.data());
+
+		return ImplValContainer::assumeOwnershipOf(outVal);
+		}
+
+	ImplValContainer extractAlternative(const ImplValContainer& v, const Symbol& sym)
+		{
+		if (!v.type().isAlternative())
+			throw IVCException("ivc is not an Alternative");
+
+		if (sym != v.cast<AlternativeData>().symbol)
+			throw IVCException("symbols do not match");
+
+		Type t = v.type().getAlternative().eltType();
+
+		ImplVal outVal = ImplVal::introduce(t);
+		t.initialize(outVal.data(), v.cast<AlternativeData>().data);
+		
+		return ImplValContainer::assumeOwnershipOf(outVal);
+		}
+
+	Nullable<pair<Symbol, ImplValContainer> > extractAsAlternative(const ImplValContainer& v)
+		{
+		if (!v.type().isAlternative())
+			return null();
+
+		Type t = v.type().getAlternative().eltType();
+
+		ImplVal outVal = ImplVal::introduce(t);
+		t.initialize(outVal.data(), v.cast<AlternativeData>().data);
+		
+		return null() << make_pair(
+			v.cast<AlternativeData>().symbol,
+			ImplValContainer::assumeOwnershipOf(outVal)
+			);
+		}
+
+	ImplValContainer extractAnyAlternative(const ImplValContainer& v)
+		{
+		if (!v.type().isAlternative())
+			throw IVCException("passed in ivc is not an alternative");
+
+		Type t = v.type().getAlternative().eltType();
+
+		ImplVal tr = ImplVal::introduce(t);
+		t.initialize(tr.data(), v.cast<AlternativeData>().data);
+	
+		return ImplValContainer::assumeOwnershipOf(tr);
+		}
+
+	ImplValContainer implValFor(const pair<Nullable<Symbol>, ImplValContainer>& v)
+		{
+		return v.second;
+		}
+		
+	Nullable<Symbol> symbolValFor(const pair<Nullable<Symbol>, ImplValContainer>& v)
+		{
+		return v.first;
+		}
+
+	ImplValContainer implValFor(const ImplValContainer& v)
+		{
+		return v;
+		}
+		
+	Nullable<Symbol> symbolValFor(const ImplValContainer& v)
+		{
+		return null();
+		}
+
+	void toParsableString(
+			CPPMLPrettyPrintStream& str, 
+			const ImplValContainer& v
+			)
+		{
+		v.getReference().toParsableString(str);
+		}
+
+	void toParsableString(
+			CPPMLPrettyPrintStream& str, 
+			const ImplValContainer& v,
+			const ImplValContainer& dict
+			)
+		{
+		v.getReference().toParsableString(str, dict.getReference());
+		}
+
+	tuple_iterator::tuple_iterator(const tuple_iterator& inIterator) : 
+		mTupleToIterate(inIterator.mTupleToIterate),
+		mCurrentTupleIndex(inIterator.mCurrentTupleIndex),
+		mCurrentTupleByteOffset(inIterator.mCurrentTupleByteOffset)
+		{
+		}
+
+	tuple_iterator::tuple_iterator(
+			const ImplValContainer& inImplVal, 
+			uword_t inIndex, 
+			uword_t inByteOffset
+			) : 
+		mTupleToIterate(inImplVal),
+		mCurrentTupleIndex(inIndex),
+		mCurrentTupleByteOffset(inByteOffset)
+		{
+		}
+
+	tuple_iterator tuple_iterator::begin(const ImplValContainer& inValue)
+		{
+		return tuple_iterator(inValue, 0, 0);
+		}
+
+	tuple_iterator tuple_iterator::end(const ImplValContainer& inValue)
+		{
+		return tuple_iterator(
+			inValue, inValue.type().getTuple().types().size(), -1
+			);
+		}
+
+	sword_t tuple_iterator::operator-(const tuple_iterator& inIterator) const
+		{
+		return mCurrentTupleIndex - inIterator.mCurrentTupleIndex;
+		}
+
+	bool tuple_iterator::operator==(const tuple_iterator& inIterator) const
+		{
+		return mCurrentTupleIndex == inIterator.mCurrentTupleIndex;
+		}
+
+	bool tuple_iterator::operator!=(const tuple_iterator& inIterator) const
+		{
+		return mCurrentTupleIndex != inIterator.mCurrentTupleIndex;
+		}
+
+	bool tuple_iterator::operator<(const tuple_iterator& inIterator) const
+		{
+		return mCurrentTupleIndex < inIterator.mCurrentTupleIndex;
+		}
+
+	tuple_iterator tuple_iterator::operator+(int i) const
+		{
+		int newTupleOffset = mCurrentTupleIndex + i;
+		int newByteOffest;
+		if (newTupleOffset < 0)
+			newByteOffest = 0;
+		else
+			if (newTupleOffset >= tupleSize(mTupleToIterate))
+				newByteOffest = 0;
+			else
+				newByteOffest = 
+					mTupleToIterate.type().byteOffsets()[newTupleOffset];
+
+		return tuple_iterator(
+			mTupleToIterate,
+			newTupleOffset,
+			newByteOffest
+			);
+		}
+
+	tuple_iterator& tuple_iterator::operator++(void)
+		{
+		mCurrentTupleByteOffset += 
+			mTupleToIterate.type().getTuple().types()[mCurrentTupleIndex].size();
+		mCurrentTupleIndex++;
+
+		return *this;
+		}
+
+	tuple_iterator tuple_iterator::operator++(int)
+		{
+		tuple_iterator tr = *this;
+		++ *this;
+
+		return tr;
+		}
+
+	ImplValContainer tuple_iterator::operator*() const
+		{
+		const Type& t = mTupleToIterate.type().getTuple().types()[mCurrentTupleIndex];
+		char* dataPtr = reinterpret_cast<char*>(mTupleToIterate.data()) + mCurrentTupleByteOffset;
+	
+		if (ImplVal::typeIsPassByValue(t))
+			return ImplValContainer(ImplVal::unincrementedInline(t, dataPtr));
+	
+		return ImplValContainer(t, dataPtr);
+		}
+
+	const Nullable<Symbol>&	tuple_iterator::name(void)
+		{
+		return mTupleToIterate.type().getTuple().names()[mCurrentTupleIndex];
+		}
+
+	Nullable<ImmutableTreeVector<std::string> > extractListOfStringsFromTuple(const ImplValContainer& tupleOfStrings)
+		{
+		if (!tupleOfStrings.tupleGetSize())
+			return null();
+
+		ImmutableTreeVector<std::string> result;
+
+		for (long k = 0; k < *tupleOfStrings.tupleGetSize();k++)
+			{
+			ImplValContainer s = *tupleOfStrings.tupleGetItem(k);
+
+			if (!s.type().isString())
+				return null();
+
+			result = result + s.cast<String>().stdString();
+			}
+
+		return null() << result;
+		}
+
+
+	ClassMediator	bindClassMediatorMeta(ClassMediator mediator, CSTValue meta)
+		{	
+		@match ClassMediator(mediator)
+			-|	Function(fun, lexicalSurroundings, _) ->> {
+				return ClassMediator::Function(
+					mediator.name(),
+					fun,
+					lexicalSurroundings,
+					meta
+					);
+				}
+			-|	Object(obj, lexicalSurroundings, _) ->> {
+				return ClassMediator::Object(
+					mediator.name(),
+					obj,
+					lexicalSurroundings,
+					meta
+					);
+				}
+			-|	Class(obj, lexicalSurroundings, _) ->> {
+				return ClassMediator::Class(
+					mediator.name(),
+					obj,
+					lexicalSurroundings,
+					meta
+					);
+				}
+			-|	Lambda() ->> {
+				return mediator;
+				}
+			-|	Axiom() ->> {
+				return mediator;
+				}
+			;
+		}
+
+	pair<hash_type, ImmutableTreeSet<Fora::BigVectorId> > initiateValueSend(ImplValContainer toSend, VectorDataManager* inVDM)
+		{
+		std::set<Fora::BigVectorId> bigvecsSet;
+
+		ExtractBigVectorReferencesVisitor extractor(bigvecsSet);
+
+		ImplValVisitor<ExtractBigVectorReferencesVisitor> visitor(extractor);
+
+		visitor.visit(toSend.type(), (uint8_t*)toSend.data(), 1);
+
+		hash_type moveGuid = inVDM->newVectorHash();
+
+		ImmutableTreeSet<Fora::BigVectorId> bigvecs(bigvecsSet);
+
+		inVDM->getPageRefcountTracker()->broadcastBigvecsInFlight(bigvecs, 1, moveGuid);
+
+		return make_pair(moveGuid, bigvecs);
+		}
+
+	void finalizeValueSend(ImplValContainer toSend, VectorDataManager* inVDM, hash_type moveGuid)
+		{
+		std::set<Fora::BigVectorId> bigvecsSet;
+
+		ExtractBigVectorReferencesVisitor extractor(bigvecsSet);
+
+		ImplValVisitor<ExtractBigVectorReferencesVisitor> visitor(extractor);
+
+		visitor.visit(toSend.type(), (uint8_t*)toSend.data(), 1);
+
+		ImmutableTreeSet<Fora::BigVectorId> bigvecs(bigvecsSet);
+
+		inVDM->getPageRefcountTracker()->broadcastBigvecsInFlight(bigvecs, -1, moveGuid);
+		}
+
+}	
+

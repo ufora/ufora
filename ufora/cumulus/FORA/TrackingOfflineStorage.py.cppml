@@ -1,0 +1,153 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include <stdint.h>
+#include <boost/python.hpp>
+#include "../../native/Registrar.hpp"
+#include "../../core/python/CPPMLWrapper.hpp"
+#include "../../core/python/ScopedPyThreads.hpp"
+#include "../../FORA/VectorDataManager/VectorDataManager.hppml"
+#include "../../FORA/Serialization/SerializedObject.hpp"
+#include "../../core/python/utilities.hpp"
+using namespace Ufora::python;
+
+
+namespace Cumulus {
+
+class TrackingOfflineStorage :
+				public OfflineCache {
+public:
+		typedef PolymorphicSharedPtr<TrackingOfflineStorage, 
+						OfflineCache::pointer_type> pointer_type;
+
+		TrackingOfflineStorage(PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler) : 
+				OfflineCache(inCallbackScheduler),
+				mCacheItemsDropped(0),
+				mCacheBytesDropped(0)
+			{
+			}
+
+		//stores a value in the cache.
+		void	store(	const Fora::PageId& inDataID,
+						const PolymorphicSharedPtr<SerializedObject>& inData
+						)
+			{
+			boost::recursive_mutex::scoped_lock lock(mMutex);
+			mDropped.insert(inDataID);
+			
+			mCacheBytesDropped += inData->getSerializedData()->size();
+			mCacheItemsDropped++;
+			}
+		
+		void drop(const Fora::PageId& inPage)
+			{
+			}
+		
+		bool	alreadyExists(const Fora::PageId& inDataID)
+			{
+			return false;
+			}
+		
+		//checks whether a value for the given cache key definitely already
+		//exists.
+		PolymorphicSharedPtr<SerializedObject>
+						loadIfExists(const Fora::PageId& inDataID)
+			{
+			return PolymorphicSharedPtr<SerializedObject>();
+			}
+		
+		virtual uint64_t getCacheSizeUsedBytes(void) const
+			{
+			return 0;
+			}
+
+		virtual uint64_t getCacheItemCount(void) const
+			{
+			return 0;
+			}
+
+		virtual uint64_t getCacheBytesDropped(void) const
+			{
+			return mCacheBytesDropped;
+			}
+
+		virtual uint64_t getCacheItemsDropped(void) const
+			{
+			return mCacheItemsDropped;
+			}
+
+		void extractDropped(set<Fora::PageId>& outDropped)
+			{
+			boost::recursive_mutex::scoped_lock lock(mMutex);
+			std::swap(mDropped, outDropped);
+			}
+private:
+		mutable boost::recursive_mutex mMutex;
+
+		uint64_t mCacheBytesDropped;
+		uint64_t mCacheItemsDropped;
+
+		set<Fora::PageId> mDropped;
+};
+
+class TrackingOfflineStorageWrapper :
+		public native::module::Exporter<TrackingOfflineStorageWrapper> {
+public:
+		std::string		getModuleName(void)
+			{
+			return "Cumulus";
+			}
+		
+		void dependencies(std::vector<std::string>& outTypes)
+			{
+			outTypes.push_back(typeid(OfflineCache::pointer_type).name());
+			outTypes.push_back(typeid(hash_type).name());
+			}
+		
+		static boost::python::list extractDropped(TrackingOfflineStorage::pointer_type& inStorage)
+			{
+			set<Fora::PageId> toExport;
+			inStorage->extractDropped(toExport);
+
+			boost::python::list tr;
+			for (auto it = toExport.begin(), it_end = toExport.end(); it != it_end; ++it)
+				tr.append(*it);
+			return tr;
+			}
+
+		void exportPythonWrapper()
+			{
+			using namespace boost::python;
+			
+			class_<TrackingOfflineStorage::pointer_type,
+					boost::python::bases<OfflineCache::pointer_type>
+					>("TrackingOfflineStorage", no_init)
+				.def("__init__", make_constructor(
+							TrackingOfflineStorage::pointer_type::Constructor1<PolymorphicSharedPtr<CallbackScheduler> >))
+				.def("extractDropped", extractDropped)
+				;
+			}
+};
+
+}
+
+//explicitly instantiating the registration element causes the linker to need
+//this file
+template<>
+char native::module::Exporter<
+	Cumulus::TrackingOfflineStorageWrapper>::mEnforceRegistration =
+		native::module::ExportRegistrar<
+			Cumulus::TrackingOfflineStorageWrapper>::registerWrapper();
+

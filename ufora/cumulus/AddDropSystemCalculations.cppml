@@ -1,0 +1,840 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "AddDropSystemCalculations.hppml"
+#include "../core/math/Smallest.hpp"
+
+namespace Cumulus {
+
+namespace {
+
+template<class T>
+T popFront(std::set<T>& ioValues)
+	{
+	lassert(ioValues.size());
+	auto it = ioValues.begin();
+	T res = *it;
+	ioValues.erase(it);
+	return res;
+	}
+
+template<class T>
+bool contains(const std::set<T>& values, const T& val)
+	{
+	return values.find(val) != values.end();
+	}
+
+template<class T1, class T2>
+bool contains(const std::map<T1, T2>& values, const T1& val)
+	{
+	return values.find(val) != values.end();
+	}
+
+}
+
+void AddDropSystemCalculations::computeRoots(const AddDropSystemState& state)
+	{
+	//first, compute a list of all roots
+	for (auto& rootAndPriority: state.prioritizedRoots())
+		allComputations().insert(rootAndPriority.first);
+
+	for(auto& compAndDeps: state.computationDependencies().getKeysToValues())
+		{
+		allComputations().insert(compAndDeps.first);
+		for (auto dep: compAndDeps.second)
+			allComputations().insert(dep);
+		}
+
+	for (auto& compAndBigvecs: state.computationBigvecReferences().getKeysToValues())
+		{
+		allComputations().insert(compAndBigvecs.first);
+		for (auto b: compAndBigvecs.second)
+			allBigvecs().insert(b);
+		}
+
+	for (auto bigvecAndHash: state.bigvecLayouts())
+		allBigvecs().insert(bigvecAndHash.first);
+
+	for (auto& bigvecAndPages: state.bigvecToPages().getKeysToValues())
+		{
+		allBigvecs().insert(bigvecAndPages.first);
+		for (auto p: bigvecAndPages.second)
+			allPages().insert(p);
+		}
+
+	for (auto& pageAndBigvec: state.syntheticPages().getKeyToValue())
+		{
+		allPages().insert(pageAndBigvec.first);
+		allBigvecs().insert(pageAndBigvec.second);
+		}
+	
+	for (auto& pageAndBigvecs: state.pageBigvecReferences().getKeysToValues())
+		{
+		allPages().insert(pageAndBigvecs.first);
+		for (auto b: pageAndBigvecs.second)
+			allBigvecs().insert(b);
+		}
+
+	for (auto& pageAndMachines: state.machinePageContents().getValuesToKeys())
+		allPages().insert(pageAndMachines.first);
+
+	for (auto& compAndMachine: state.computationOnMachine().getKeyToValue())
+		allComputations().insert(compAndMachine.first);
+
+	for (auto& compAndState: state.computationStates())
+		allComputations().insert(compAndState.first);
+
+	for (auto c: allComputations())
+		rootComputations().insert(c.rootComputation());
+	}
+
+void AddDropSystemCalculations::computeMissingDependencies(const AddDropSystemState& state)
+	{
+	computeRoots(state);
+
+	std::set<ComputationId> dirtyComputations;
+	std::set<hash_type> dirtyBigvecs;
+	std::set<Fora::PageId> dirtyPages;
+
+	dirtyComputations = allComputations();
+	dirtyPages = allPages();
+	dirtyBigvecs = allBigvecs();
+
+	auto checkPage = [&](Fora::PageId page) {
+		if (contains(pagesMissingDependencies(), page))
+			return;
+		
+		bool isMissing = false;
+		
+		//if the page is not synthetic, and is not present on any machine, it's missing
+		if (!state.syntheticPages().hasKey(page) && !state.machinePageContents().hasValue(page))
+			isMissing = true;
+
+		//if the page is synthetic and the bigvec id it's holding is missing, it's missing
+		if (state.syntheticPages().hasKey(page) && 
+				contains(bigvecsMissingDependencies(), state.syntheticPages().getValue(page)))
+			isMissing = true;
+
+		//if the page has any bigvecs that are missing, it's missing
+		for (auto bv: state.pageBigvecReferences().getValues(page))
+			if (contains(bigvecsMissingDependencies(), bv))
+				isMissing = true;
+
+		if (isMissing)
+			{
+			pagesMissingDependencies().insert(page);
+			for (auto bv: state.bigvecToPages().getKeys(page))
+				dirtyBigvecs.insert(bv);
+			}
+		};
+
+	auto checkBigvec = [&](hash_type bigvec) {
+		if (contains(bigvecsMissingDependencies(), bigvec))
+			return;
+
+		bool isMissing = false;
+
+		//if we don't have the bigvec definition, it's missing
+		if (!contains(state.bigvecLayouts(), bigvec))
+			isMissing = true;
+
+		//if it's missing any pages, it's missing
+		for (auto page: state.bigvecToPages().getValues(bigvec))
+			if (contains(pagesMissingDependencies(), page))
+				isMissing = true;
+
+		if (isMissing)
+			{
+			bigvecsMissingDependencies().insert(bigvec);
+
+			for (auto page: state.syntheticPages().getKeys(bigvec))
+				dirtyPages.insert(page);
+
+			for (auto page: state.pageBigvecReferences().getKeys(bigvec))
+				dirtyPages.insert(page);
+
+			for (auto c: state.computationBigvecReferences().getKeys(bigvec))
+				dirtyComputations.insert(c);
+			}
+		};
+
+	auto checkComputation = [&](ComputationId compId) {
+		if (contains(computationsMissingDependencies(), compId))
+			return;
+
+		bool isMissing = false;
+
+		//if the computation isn't materialized somewhere, it's missing
+		if (!state.computationOnMachine().hasKey(compId))
+			isMissing = true;
+
+		//if the computation's non-root dependencies aren't materialized anywhere, they're missing
+		for (auto dep: state.computationDependencies().getValues(compId))
+			if (!dep.isRoot() && contains(computationsMissingDependencies(), dep))
+				isMissing = true;
+
+		//if the computation's bigvec dependencies are missing, it's missing
+		for (auto bigvec: state.computationBigvecReferences().getValues(compId))
+			if (contains(bigvecsMissingDependencies(), bigvec))
+				isMissing = true;
+
+		if (isMissing)
+			{
+			computationsMissingDependencies().insert(compId);
+			for (auto dep: state.computationDependencies().getKeys(compId))
+				dirtyComputations.insert(dep);
+			}
+		};
+
+	while (dirtyComputations.size() || dirtyPages.size() || dirtyBigvecs.size())
+		{
+		if (dirtyPages.size())
+			checkPage(popFront(dirtyPages));
+			else
+		if (dirtyComputations.size())
+			checkComputation(popFront(dirtyComputations));
+			else
+		if (dirtyBigvecs.size())
+			checkBigvec(popFront(dirtyBigvecs));
+		else
+			{
+			lassert(false);
+			}
+		}
+
+	for (auto c: computationsMissingDependencies())
+		if (c.isRoot())
+			rootComputationsMissingDependencies().insert(c);
+	}
+
+void AddDropSystemCalculations::computeValidComputations(const AddDropSystemState& state)
+	{
+	//a computation is "Valid" if it is not MissingDependencies, or if its dependents are all
+	//either Valid computations or persisted bigvecs.
+
+	std::set<ComputationId> dirtyComputations;
+
+	dirtyComputations = allComputations();
+
+	auto checkComputation = [&](ComputationId compId) {
+		if (contains(computationsValid(), compId))
+			return;
+
+		bool isValid = true;
+
+		if (!state.computationOnMachine().hasKey(compId))
+			isValid = false;
+
+		for (auto child: state.computationDependencies().getValues(compId))
+			if (!child.isRoot() && !contains(computationsValid(), child))
+				isValid = false;
+
+		//if the computation's bigvec dependencies are missing, it's missing
+		for (auto bigvec: state.computationBigvecReferences().getValues(compId))
+			if (contains(bigvecsMissingDependencies(), bigvec) && 
+						!contains(bigvecsRecoverable(), bigvec))
+				isValid = false;
+
+		if (isValid)
+			{
+			computationsValid().insert(compId);
+			for (auto dep: state.computationDependencies().getKeys(compId))
+				dirtyComputations.insert(dep);
+			}
+		};
+
+	while (dirtyComputations.size())
+		{
+		if (dirtyComputations.size())
+			checkComputation(popFront(dirtyComputations));
+		else
+			{
+			lassert(false);
+			}
+		}
+	}
+
+void AddDropSystemCalculations::computePageBigvecGraph(
+						const AddDropSystemState& state,
+						const AddDropPersistedState& persistedState
+						)
+	{
+	//we want to compute the "master graph" of pages and bigvecs. Essentially,
+	//there are no synthetic pages in the persisted data stores. As a result, we 
+	//want to compute a view of the world that takes into account synthetic pages
+	//that aren't in the store, but removes the ones that are.
+	pageAndBigvecGraph().pageToBigvec() = state.pageBigvecReferences();
+	pageAndBigvecGraph().bigvecToPage() = state.bigvecToPages();
+	pageAndBigvecGraph().syntheticPages() = state.syntheticPages();
+
+	//look at every page that's persisted and erase its synthetic page definition
+	for (auto& pageAndBigvecs: persistedState.bigvecsToPages().getValuesToKeys())
+		pageAndBigvecGraph().syntheticPages().discard(pageAndBigvecs.first);
+
+	//overlay the persisted bigvec-page graph
+	for (auto& bigvecAndPages: persistedState.bigvecsToPages().getKeysToValues())
+		{
+		pageAndBigvecGraph().bigvecToPage().update(bigvecAndPages.first, bigvecAndPages.second);
+		allBigvecs().insert(bigvecAndPages.first);
+		for (auto p: bigvecAndPages.second)
+			allPages().insert(p);
+		}
+
+	for (auto& pageAndBigvecs: persistedState.pagesToBigvecs().getKeysToValues())
+		{
+		pageAndBigvecGraph().pageToBigvec().update(pageAndBigvecs.first, pageAndBigvecs.second);
+		allPages().insert(pageAndBigvecs.first);
+		for (auto b: pageAndBigvecs.second)
+			allBigvecs().insert(b);
+		}
+	}
+
+
+void AddDropSystemCalculations::computeRecoverableAndValidComputations(
+		const AddDropSystemState& state, 
+		const AddDropPersistedState& persistedState
+		)
+	{
+	computePageBigvecGraph(state, persistedState);
+
+	bigvecsRecoverable() = persistedState.bigvecsHeldInPersistentCache();
+
+	computeValidComputations(state);
+
+	for (auto root: rootComputations())
+		chooseKeptComputationsBelow(root, state, persistedState);
+
+	computeReachableBigvecsAndPages(state, persistedState);
+
+	allocatedPersistedComputationsToMachines(state, persistedState);
+	}
+
+void AddDropSystemCalculations::chooseKeptComputationsBelow(
+		ComputationId computation,
+		const AddDropSystemState& state, 
+		const AddDropPersistedState& persistedState
+		)
+	{
+	if (contains(computationsValid(), computation))
+		{
+		computationsKept().insert(computation);
+
+		for (auto child: state.computationDependencies().getValues(computation))
+			chooseKeptComputationsBelow(child, state, persistedState);
+		}
+		else
+	if (contains(persistedState.persistedComputationCheckpointStatus(), computation))
+		{
+		persistedComputationsLoaded().insert(computation);
+		for (auto child: persistedState.persistedComputationDependencies().getValues(computation))
+			chooseKeptComputationsBelow(child, state, persistedState);
+		}
+	}
+
+void AddDropSystemCalculations::computeReachableBigvecsAndPages(
+		const AddDropSystemState& state, 
+		const AddDropPersistedState& persistedState
+		)
+	{
+	std::set<hash_type> dirtyBigvecs;
+	std::set<Fora::PageId> dirtyPages;
+
+	dirtyPages = allPages();
+	dirtyBigvecs = allBigvecs();
+
+	auto checkPage = [&](Fora::PageId page) {
+		if (contains(pagesReachable(), page))
+			return;
+		
+		bool isReachable = false;
+		
+		//if the page is owned by a reachable bigvec, it's reachable
+		for (auto bigvec: pageAndBigvecGraph().bigvecToPage().getKeys(page))
+			if (contains(bigvecsReachable(), bigvec))
+				isReachable = true;
+
+		if (isReachable)
+			{
+			pagesReachable().insert(page);
+			for (auto bv: pageAndBigvecGraph().pageToBigvec().getValues(page))
+				dirtyBigvecs.insert(bv);
+
+			if (pageAndBigvecGraph().syntheticPages().hasKey(page))
+				dirtyBigvecs.insert(pageAndBigvecGraph().syntheticPages().getValue(page));
+			}
+		};
+
+	auto checkBigvec = [&](hash_type bigvec) {
+		if (contains(bigvecsReachable(), bigvec))
+			return;
+
+		bool isReachable = false;
+
+		//if the bigvec is referenced by a reachable computation, it's reachable
+		for (auto computation: state.computationBigvecReferences().getKeys(bigvec))
+			if (contains(computationsKept(), computation))
+				isReachable = true;
+
+		for (auto computation: persistedState.persistedComputationBigvecReferences().getKeys(bigvec))
+			if (contains(persistedComputationsLoaded(), computation))
+				isReachable = true;
+
+		//if the bigvec is referenced by a reachable synthetic page, it's reachable
+		for (auto page: pageAndBigvecGraph().syntheticPages().getKeys(bigvec))
+			if (contains(pagesReachable(), page))
+				isReachable = true;
+
+		//if the bigvec is referenced by a reachable page, it's reachable
+		for (auto page: pageAndBigvecGraph().pageToBigvec().getKeys(bigvec))
+			if (contains(pagesReachable(), page))
+				isReachable = true;
+
+		if (isReachable)
+			{
+			bigvecsReachable().insert(bigvec);
+
+			for (auto page: pageAndBigvecGraph().bigvecToPage().getValues(bigvec))
+				dirtyPages.insert(page);
+			}
+		};
+
+	while (dirtyPages.size() || dirtyBigvecs.size())
+		{
+		if (dirtyPages.size())
+			checkPage(popFront(dirtyPages));
+			else
+		if (dirtyBigvecs.size())
+			checkBigvec(popFront(dirtyBigvecs));
+		else
+			{
+			lassert(false);
+			}
+		}
+	}
+
+void AddDropSystemCalculations::allocatedPersistedComputationsToMachines(
+			const AddDropSystemState& state, 
+			const AddDropPersistedState& persistedState
+			)
+	{
+	//first, compute how much space there is to hold new computations. We'll ignore computations
+	//we're dropping
+	std::map<MachineId, uint64_t> bytesRemaining;
+	std::map<MachineId, uint64_t> bytesLoading;
+
+	for (auto machineAndMemory: state.memoryUsage())
+		{
+		bytesRemaining[machineAndMemory.first] = 
+			std::max<uint64_t>(
+				0,
+				machineAndMemory.second.maxMemoryAvailable() - 
+					machineAndMemory.second.bytesUsedByContextsExcludingPagelets() - 
+					machineAndMemory.second.bytesUsedByPageletsOnlyInExecutionContexts()
+				);
+		bytesLoading[machineAndMemory.first] = 0;
+		}
+
+	auto allocateComputationToMachine = [&](const std::set<ComputationId>& computations) {
+		uint64_t bytes = 0;
+
+		for (auto computation: computations)
+			{
+			auto it = persistedState.persistedComputationCheckpointStatus().find(computation);
+			lassert(it != persistedState.persistedComputationCheckpointStatus().end());
+
+			bytes += it->second.bytecount();
+			}
+
+		Smallest<MachineId> best;
+
+		for (auto& machineAndRemaining: bytesRemaining)
+			if (bytesLoading[machineAndRemaining.first] + bytes < bytesRemaining[machineAndRemaining.first])
+				best.observe(machineAndRemaining.first, bytesLoading[machineAndRemaining.first]);
+
+		if (best.smallest())
+			{
+			for (auto computation: computations)
+				persistedComputationsToLoad().set(computation, *best.smallest());
+			
+			bytesLoading[*best.smallest()] += bytes;
+
+			return true;
+			}
+		else
+			return false;
+		};
+
+	bool failed = false;
+
+	std::map<pair<CheckpointRequest, hash_type>, std::set<ComputationId> > persistedCompsToLoadByFile;
+
+	for (auto computation: persistedComputationsLoaded())
+		{
+		auto it = persistedState.persistedComputationCheckpointAndFile().find(computation);
+		lassert(it != persistedState.persistedComputationCheckpointAndFile().end());
+
+		persistedCompsToLoadByFile[it->second].insert(computation);
+		}
+
+	for (auto fileAndComputations: persistedCompsToLoadByFile)
+		{
+		if (!allocateComputationToMachine(fileAndComputations.second))
+			{
+			//completely wipe the tree
+			LOG_CRITICAL << "Persisted ComputationTree " << fileAndComputations.second 
+				<< " couldn't be fit in available memory";
+			failed = true;
+			break;
+			}
+		}
+
+	if (failed)
+		{
+		computationsValid().clear();
+		computationsKept().clear();
+		persistedComputationsToLoad().clear();
+		bigvecsReachable().clear();
+		pagesReachable().clear();
+		persistedComputationsLoaded().clear();
+		requiredCompleteWipeDueToLackOfSpace() = true;
+		}
+	}
+
+AddDropChanges AddDropSystemCalculations::addDropChangesFor(
+						MachineId machineId,
+						const AddDropSystemState& state, 
+						const AddDropPersistedState& persistedState
+						)
+	{
+	AddDropChanges changes;
+
+	for (auto computation: state.computationOnMachine().getKeys(machineId))
+		if (contains(computationsKept(), computation))
+			changes.computationsToKeep() = changes.computationsToKeep() + computation;
+
+	for (auto computation: persistedComputationsToLoad().getKeys(machineId))
+		{
+		auto it = persistedState.persistedComputationCheckpointAndFile().find(computation);
+		lassert(it != persistedState.persistedComputationCheckpointAndFile().end());
+
+		changes.checkpointedComputationsToLoad() = 
+				changes.checkpointedComputationsToLoad() + 
+					computation + it->second;
+		}
+
+	for (auto bigvecAndLayout: persistedState.bigvecsLoadedFromCache())
+		changes.bigvecsLoadedFromCache() = changes.bigvecsLoadedFromCache() + 
+			bigvecAndLayout.first + bigvecAndLayout.second;
+
+	for (auto bigvecAndLayout: state.bigvecLayouts())
+		changes.bigvecsLoadedFromCache() = changes.bigvecsLoadedFromCache() + 
+			bigvecAndLayout.first + bigvecAndLayout.second;
+
+	LOG_INFO << "Machine " << machineId 
+		<< " keeping " << changes.computationsToKeep().size() << " of " 
+		<< state.computationOnMachine().getKeys(machineId).size() 
+		<< " and adding " << persistedComputationsToLoad().getKeys(machineId).size()
+		;
+
+	return changes;
+	}
+
+AddDropFinalState AddDropSystemCalculations::finalCheckpointState(
+					const AddDropSystemState& state, 
+					const AddDropPersistedState& persistedState
+					)
+	{
+	validateComputations(state, persistedState);
+
+	AddDropFinalState finalState;
+
+	std::set<MachineId> machines;
+	for (auto m: state.memoryUsage())
+		machines.insert(m.first);
+
+
+	map<hash_type, Fora::BigVectorId> hashToBigvecId;
+
+	finalState.memoryUsage() = 
+		ImmutableTreeMap<MachineId, Fora::MemoryUsage>(
+			state.memoryUsage().begin(),
+			state.memoryUsage().end()
+			);
+
+	for (auto bv: bigvecsReachable())
+		{
+		TypedFora::Abi::BigVectorPageLayout layout;
+		auto it = state.bigvecLayouts().find(bv);
+		if (it != state.bigvecLayouts().end())
+			layout = it->second;
+		else
+			{
+			auto it2 = persistedState.bigvecsLoadedFromCache().find(bv);
+			lassert(it2 != persistedState.bigvecsLoadedFromCache().end());
+
+			layout = it2->second;
+			}
+
+		hashToBigvecId[bv] = layout.identity();
+
+		finalState.bigvecLayouts() = finalState.bigvecLayouts() + layout.identity() + layout;
+		}
+
+	//filled out as we iterate over other data structures, and then used to populate
+	//bigvecsReferencedOnMachines
+	TwoWaySetMap<MachineId, hash_type> bigvecsOnMachines;
+
+	for (long pass = 0; pass < 2; pass++)
+		for (auto machine: machines)
+			{
+			ImmutableTreeSet<Fora::PageId> pages;
+			const auto& setToIterate = (
+				pass == 0 ? 
+					state.machinePageRamContents()
+				:	state.machinePageDiskContents()
+				);
+
+			for (auto page: setToIterate.getValues(machine))
+				if (contains(pagesReachable(), page))
+					{
+					ImmutableTreeSet<Fora::BigVectorId> ids;
+					for (auto bigvecId: pageAndBigvecGraph().pageToBigvec().getValues(page))
+						{
+						lassert(bigvecsReachable().find(bigvecId) != bigvecsReachable().end());
+
+						bigvecsOnMachines.insert(machine, bigvecId);
+
+						auto it = hashToBigvecId.find(bigvecId);
+						lassert(it != hashToBigvecId.end());
+
+						ids = ids + it->second;
+						}
+
+					pages = pages + page;
+					}
+
+			if (pass == 0)
+				finalState.machineRamContents() = 
+					finalState.machineRamContents() + machine + pages;
+			else
+				finalState.machineDiskContents() = 
+					finalState.machineDiskContents() + machine + pages;
+			}
+
+	for (auto page: pagesReachable())
+		{
+		ImmutableTreeSet<Fora::BigVectorId> ids;
+		for (auto bigvecId: pageAndBigvecGraph().pageToBigvec().getValues(page))
+			{
+			auto it = hashToBigvecId.find(bigvecId);
+			lassert(it != hashToBigvecId.end());
+
+			ids = ids + it->second;
+			}
+
+		finalState.pageBigvecReferences() = 
+			finalState.pageBigvecReferences() + page + ids;
+		}
+
+	for (auto pageAndBigvec: pageAndBigvecGraph().syntheticPages().getKeyToValue())
+		if (contains(pagesReachable(), pageAndBigvec.first))
+			finalState.syntheticPages() = finalState.syntheticPages() + pageAndBigvec;
+
+	for (auto computation: computationsKept())
+		{
+		MachineId machine = state.computationOnMachine().getValue(computation);
+
+		finalState.computationLocations() = 
+			finalState.computationLocations() + computation + machine;
+
+		for (auto bigvec: state.computationBigvecReferences().getValues(computation))
+			{
+			lassert(bigvecsReachable().find(bigvec) != bigvecsReachable().end());
+			bigvecsOnMachines.insert(machine, bigvec);
+			}
+		}
+
+	for (auto computationAndMachine: persistedComputationsToLoad().getKeyToValue())
+		{
+		finalState.computationLocations() = finalState.computationLocations() + computationAndMachine;
+
+		for (auto bigvec: persistedState.persistedComputationBigvecReferences().getValues(computationAndMachine.first))
+			{
+			lassert(bigvecsReachable().find(bigvec) != bigvecsReachable().end());
+			bigvecsOnMachines.insert(computationAndMachine.second, bigvec);
+			}
+		}
+
+	for (auto computation: computationsKept())
+		{
+		for (auto child: state.computationDependencies().getValues(computation))
+			if (child.isSplit())
+				finalState.splitComputationParents() = 
+					finalState.splitComputationParents() + child + computation;
+		}
+
+	for (auto computationAndMachine: persistedComputationsToLoad().getKeyToValue())
+		for (auto child: persistedState.persistedComputationDependencies().getValues(computationAndMachine.first))
+			if (child.isSplit())
+				finalState.splitComputationParents() = 
+					finalState.splitComputationParents() + child + computationAndMachine.first;
+
+	for (auto computation: computationsKept())
+		if (computation.isRoot())
+			{
+			auto it = state.computationStates().find(computation);
+			lassert(it != state.computationStates().end());
+
+			finalState.rootComputationStatuses() = 
+				finalState.rootComputationStatuses() + computation + it->second;
+			}
+
+	for (auto computationAndMachine: persistedComputationsToLoad().getKeyToValue())
+		if (computationAndMachine.first.isRoot())
+			{
+			lassert(persistedState.persistedComputationStatuses().contains(computationAndMachine.first));
+
+			finalState.rootComputationStatuses() = 
+				finalState.rootComputationStatuses() + computationAndMachine.first + 
+					*persistedState.persistedComputationStatuses()[computationAndMachine.first];
+			}
+
+	for (auto& compAndClientPriorities: state.prioritizedRoots())
+		if (finalState.rootComputationStatuses().contains(compAndClientPriorities.first))
+			finalState.rootPriorities() = finalState.rootPriorities() +
+				compAndClientPriorities.first +  
+				ImmutableTreeMap<CumulusClientId, ComputationPriority>(
+					compAndClientPriorities.second.begin(),
+					compAndClientPriorities.second.end()
+					);
+
+	for (auto machine: machines)
+		{
+		std::set<Fora::BigVectorId> bigvecs;
+		for (auto bv: bigvecsOnMachines.getValues(machine))
+			{
+			auto it = hashToBigvecId.find(bv);
+			lassert(it != hashToBigvecId.end());
+			bigvecs.insert(it->second);
+			}
+
+		finalState.bigvecsReferencedOnMachines() = 
+			finalState.bigvecsReferencedOnMachines() + 
+				machine + ImmutableTreeSet<Fora::BigVectorId>(bigvecs);
+		}
+
+	//all bigvecs must have a definition
+	for (auto bigvec: bigvecsReachable())
+		{
+		auto it = hashToBigvecId.find(bigvec);
+		lassert(it != hashToBigvecId.end());
+		lassert(finalState.bigvecLayouts().contains(it->second));
+		}
+
+	for (auto compAndMachine: finalState.computationLocations())
+		{
+		ComputationId computation = compAndMachine.first;
+
+		if (computation.isSplit())
+			lassert(finalState.splitComputationParents().contains(computation));
+
+		//verify all the dependencies are materialized somewhere.
+		if (contains(computationsKept(), computation))
+			{
+			for (auto dep: state.computationDependencies().getValues(computation))
+				if (dep.isSplit())
+					lassert_dump(
+						finalState.computationLocations().contains(dep),
+						"Kept computation " << prettyPrintString(computation) << " is missing "
+							<< prettyPrintString(dep) << " which is a split. "
+							<< "computation is " << (contains(computationsValid(), computation) ? "valid":"not valid") << ". "
+							<< "computation is " << (contains(computationsKept(), computation) ? "kept":"not kept") << ". "
+							<< "computation is " << (contains(persistedComputationsLoaded(), computation) ? "from persistence":"not from persistence") << ". "
+							<< "computation is " << (contains(computationsMissingDependencies(), computation) ? "missing deps":"not missing deps") << ". "
+							<< "dep is " << (contains(computationsValid(), dep) ? "valid":"not valid") << ". "
+							<< "dep is " << (contains(computationsKept(), dep) ? "kept":"not kept") << ". "
+							<< "dep is " << (contains(persistedComputationsLoaded(), dep) ? "from persistence":"not from persistence") << ". "
+							<< "dep is " << (contains(computationsMissingDependencies(), dep) ? "missing deps":"not missing deps") << ". "
+						);
+			}
+		else
+			{	
+			for (auto dep: persistedState.persistedComputationDependencies().getValues(computation))
+				if (dep.isSplit())
+					lassert_dump(
+						finalState.computationLocations().contains(dep),
+						"Stored computation " << prettyPrintString(computation) << " is missing "
+							<< prettyPrintString(dep) << " which is a split. "
+							<< "computation is " << (contains(computationsValid(), computation) ? "valid":"not valid") << ". "
+							<< "computation is " << (contains(computationsKept(), computation) ? "kept":"not kept") << ". "
+							<< "computation is " << (contains(persistedComputationsLoaded(), computation) ? "from persistence":"not from persistence") << ". "
+							<< "computation is " << (contains(computationsMissingDependencies(), computation) ? "missing deps":"not missing deps") << ". "
+							<< "dep is " << (contains(computationsValid(), dep) ? "valid":"not valid") << ". "
+							<< "dep is " << (contains(computationsKept(), dep) ? "kept":"not kept") << ". "
+							<< "dep is " << (contains(persistedComputationsLoaded(), dep) ? "from persistence":"not from persistence") << ". "
+							<< "dep is " << (contains(computationsMissingDependencies(), dep) ? "missing deps":"not missing deps") << ". "
+						);
+			}
+		}
+
+	return finalState;
+	}
+
+void AddDropSystemCalculations::validateComputations(
+						const AddDropSystemState& state, 
+						const AddDropPersistedState& persistedState
+						)
+	{
+	//all valid computations must exist somewhere
+	for (auto validComputation: computationsValid())
+		lassert_dump(
+			state.computationOnMachine().hasKey(validComputation),
+			prettyPrintString(validComputation) << " and " 
+				<< prettyPrintString(state.computationOnMachine().getKeyToValue())
+			);
+
+	//all bigvecs referenced by valid computations must exist and be reachable
+	for (auto validComputation: computationsKept())
+		for (auto bv: state.computationBigvecReferences().getValues(validComputation))
+			{
+			lassert(contains(bigvecsReachable(), bv));
+			lassert(!contains(bigvecsMissingDependencies(), bv) || contains(bigvecsRecoverable(), bv));
+			}
+
+	//valid root computations should be kept
+	for (auto validComputation: computationsValid())
+		if (validComputation.isRoot())
+			lassert(contains(computationsKept(), validComputation));
+
+	//if a bigvec is reachable, so are its pages
+	for (auto bv: bigvecsReachable())
+		{
+		for (auto page: pageAndBigvecGraph().bigvecToPage().getValues(bv))
+			lassert(contains(pagesReachable(), page));
+		}
+
+	//if a page is reachable, so are its bigvecs and synthetic-page-bigvecs
+	for (auto page: pagesReachable())
+		{
+		for (auto bv: pageAndBigvecGraph().pageToBigvec().getValues(page))
+			lassert(contains(bigvecsReachable(), bv));
+		if (pageAndBigvecGraph().syntheticPages().hasKey(page))
+			lassert(contains(bigvecsReachable(), pageAndBigvecGraph().syntheticPages().getValue(page)));
+		}
+	}
+
+
+}
+

@@ -1,0 +1,102 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#ifndef INCL_NATIVE_CFG_TABLE_HPPML
+#define INCL_NATIVE_CFG_TABLE_HPPML
+
+#include "NativeCode.hppml"
+#include <boost/thread.hpp>
+#include <boost/utility.hpp>
+#include <map>
+#include <vector>
+#include <string>
+#include <utility>
+#include "../../core/threading/IndexedMutex.hppml"
+
+class NativeCFG;
+
+/***********
+NativeCFGTable
+
+Implements a table holding the NativeCFG-representations of all of the versions
+(or "generations") of functions.  Lookup is performed by function name.
+
+Users begin by "defining" the "initial versions" of functions they wish
+to store, registering the provided CFGs as the zeroth versions of their 
+respective functions. (This table instruments its copy of the CFG, and
+may also perform optimizations such as static inlining on it.  [No longer
+true.])
+
+Calling `update` registers a new version of an already-defined
+function, returning that new version's generation number.  Checks are
+performed on the new version to ensure its validity.  It is illegal
+to update a function with a NativeCFG that refers to functions
+that have not been defined with this table.
+
+This class is intended to be fully thread-safe in a manner that is
+transparent to users.  No external synchronization is required.
+**********/
+
+class NativeCFGTable : boost::noncopyable {
+public:
+	NativeCFGTable() { }
+	
+	void				define(const std::string& name, const NativeCFG& code);
+	uint64_t			update(const std::string& name, const NativeCFG& code);
+	
+	bool				has(const std::string& name) const;
+	bool				hasVersion(const std::string& name,
+						           uint64_t version) const;
+	
+	const NativeCFG&	getInitial(const std::string& name) const;
+	const NativeCFG&	getVersion(const std::string& name,
+						           uint64_t version) const;
+	const NativeCFG&	getLatest(const std::string& name) const;
+	
+	uint64_t			latestVersionNumber(const std::string& name) const;
+	
+	//kick 'inFuncName' into the interpreter next time it checks
+	//its kick status
+	void				triggerKickToInterpreter(
+									std::string inFuncName,
+									uint32_t inVersionID
+									);
+	
+	void triggerKickToInterpreterForAllVersions(std::string inFuncName);
+
+	std::pair<
+		const NativeCFG&,
+		uint64_t>		getLatestWithNumber(const std::string& name) const;
+
+private:
+
+	//A reference to the NativeCallSiteStatistics object that is
+	//to instrument this table's NativeCFGs.
+	std::map<std::string, std::map<uint32_t, NativeCFG> >	mCFGsMap;
+	
+
+	//for each function, maintain a pointer indicating whether
+	//it should kick into the interpreter at interrupt
+	std::map<std::string, std::map<uint32_t, uword_t*> >	mKickTriggerStatus;
+
+	std::set<std::string> mFunctionsToAlwaysKickIntoInterpreter;
+	
+	mutable boost::recursive_mutex mMutex;
+
+	mutable IndexedMutex<string> mCFGMutexesMutexes;
+};
+
+#endif //INCL_NATIVE_CFG_TABLE_HPPML
+

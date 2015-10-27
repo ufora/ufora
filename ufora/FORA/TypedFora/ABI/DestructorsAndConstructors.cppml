@@ -1,0 +1,450 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "DestructorsAndConstructors.hppml"
+#include "../TypedFora.hppml"
+#include "../../Native/NativeCode.hppml"
+#include "../../Judgment/JudgmentOnValue.hppml"
+#include "NativeLayoutType.hppml"
+#include "VectorRecordCodegen.hppml"
+#include "../../Axioms/StringAxioms.hppml"
+#include "../../Axioms/MutableVectorAxioms.hppml"
+#include "../../Primitives/CodeLocation.hppml"
+#include "../../Primitives/ExternalFunctionDescription.hppml"
+#include "../../../core/SymbolExport.hpp"
+#include "../../Native/NativeExpressionBuilder.hppml"
+#include "../../Native/TypedNativeLibraryFunction.hpp"
+#include "UnionUtil.hppml"
+
+extern "C" {
+
+BSA_DLLEXPORT
+void FORA_clib_destroyDictionary(const Dictionary& dict)
+	{
+	dict.~Dictionary();
+	}
+
+BSA_DLLEXPORT
+void FORA_clib_destroyImplVal(ImplValContainer val)
+	{
+	val.~ImplValContainer();
+	}
+
+BSA_DLLEXPORT
+ImplValContainer FORA_clib_duplicateImplVal(ImplValContainer val)
+	{
+	return val;
+	}
+
+BSA_DLLEXPORT
+void FORA_clib_incrementAlternative(uword_t* dat)
+	{
+	AO_fetch_and_add_full((AO_t*)dat, 1);
+	}
+
+BSA_DLLEXPORT
+void FORA_clib_destroyExternalFunctionDefinition(
+		const ExternalFunctionDescriptor& fun
+		)
+	{
+	fun.~ExternalFunctionDescriptor();
+	}
+
+BSA_DLLEXPORT
+void FORA_clib_destroyStackTrace(const ForaStackTrace& in)
+	{
+	in.~ForaStackTrace();
+	}
+
+}
+
+namespace TypedFora {
+namespace Abi {
+
+typedef ::Type untyped_fora_type;
+
+NativeExpression duplicate( const NativeExpression& inExpr, 
+							const JudgmentOnValue& sourceJov, 
+							const JudgmentOnValue& destJov
+							)
+	
+	{
+	if (!inExpr.type())
+		//it doesn't return, so nothing to convert
+		return inExpr;
+
+	lassert(destJov.covers(sourceJov));
+
+	NativeType destNativeType = nativeLayoutType(destJov);
+	NativeType sourceNativeType = nativeLayoutType(sourceJov);
+	
+	lassert_dump(
+		*inExpr.type() == sourceNativeType,
+		"got expression of type " << prettyPrintString(*inExpr.type())
+			<< "but expected "
+			<< prettyPrintString(sourceNativeType)
+		);
+
+	const Nullable<untyped_fora_type>& nSourceType = sourceJov.type();
+
+	NativeExpressionBuilder builder;
+
+	BinaryLayoutStyle sourcePS = getPassingStyle(sourceJov);
+	BinaryLayoutStyle destPS = getPassingStyle(destJov);
+
+	if (sourcePS == BinaryLayoutStyle::Constant && destPS == BinaryLayoutStyle::Constant)
+		return NativeExpression::Nothing();
+	
+	if (sourcePS == BinaryLayoutStyle::Constant && destPS == BinaryLayoutStyle::Typed)
+		{
+		if (nSourceType->isPOD())
+			nativeExpressionForConstantHeldAsType(*sourceJov.constant());
+		else
+			{
+			NativeExpression constExpr = 
+				builder.add(nativeExpressionForConstantHeldAsType(*sourceJov.constant()));
+
+			return builder(duplicate(*destJov.type(), constExpr));
+			}
+		}
+	
+	if ((sourcePS == BinaryLayoutStyle::Constant || sourcePS == BinaryLayoutStyle::Typed) && destPS == BinaryLayoutStyle::Union)
+		{
+		int index = *destJov.getUnion().jov().alternatives().smallestCovering(sourceJov);
+
+		return createUnionExpression(
+			destJov,
+			NativeExpression::ConstantULong(index),
+			[&](long inIndex, JudgmentOnValue inJOV) {
+				if (inIndex == index)
+					return duplicate(inExpr, sourceJov, inJOV);
+				else
+					return NativeExpression::Zero(nativeLayoutType(inJOV));
+				}
+			);
+		}
+
+	if (sourcePS == BinaryLayoutStyle::Constant && destPS == BinaryLayoutStyle::Implval)
+		{
+		NativeExpression sourceWithType = 
+			builder.add(
+				duplicate(inExpr, sourceJov, JudgmentOnValue::OfType(*nSourceType))
+				);
+
+		NativeExpression sourceAsImplVal = 
+			builder.add(outputToImplVal(*nSourceType, true, sourceWithType));
+
+		return builder(sourceAsImplVal);
+		}
+
+	if (sourcePS == BinaryLayoutStyle::Typed && destPS == BinaryLayoutStyle::Typed)
+		return duplicate(*destJov.type(), inExpr);
+
+	if (sourcePS == BinaryLayoutStyle::Typed && destPS == BinaryLayoutStyle::Implval)
+		{
+		NativeExpression duplicated = builder.add(duplicate(*sourceJov.type(), inExpr));
+
+		return builder(outputToImplVal(*sourceJov.type(), true, inExpr));
+		}
+
+	if (sourcePS == BinaryLayoutStyle::Union && destPS == BinaryLayoutStyle::Union)
+		{
+		return foreachUnionAlternative(
+			sourceJov, 
+			inExpr, 
+			[&](NativeExpression expr, JudgmentOnValue jov) {
+				return duplicate(expr, jov, destJov);
+				}
+			);
+		}
+
+	if (sourcePS == BinaryLayoutStyle::Union && destPS == BinaryLayoutStyle::Implval)
+		{
+		return foreachUnionAlternative(
+			sourceJov, 
+			inExpr, 
+			[&](NativeExpression expr, JudgmentOnValue jov) {
+				return duplicate(expr, jov, destJov);
+				}
+			);
+		}
+		
+	if (sourcePS == BinaryLayoutStyle::Implval && destPS == BinaryLayoutStyle::Implval)
+		return 
+			makeTypedNativeLibraryFunction(
+				&FORA_clib_duplicateImplVal
+				)(inExpr)
+			.getExpression()
+			;
+
+	//thats all the cases
+	lassert(false);
+	}
+
+NativeExpression duplicate( const JudgmentOnValue& jov,
+							const NativeExpression& inExpr
+							)
+	{
+	return duplicate(inExpr, jov, jov);
+	}
+
+NativeExpression destroy(	const JudgmentOnValue& jov,
+							const NativeExpression& inExpr
+							)
+	{
+	if (jov.isUnion())
+		return foreachUnionAlternative(
+			jov, 
+			inExpr, 
+			[&](NativeExpression expr, JudgmentOnValue jov) {
+				return destroy(jov, expr);
+				}
+			);
+	
+	const Nullable<untyped_fora_type>& nType = jov.type();
+
+	if (nType && nType->isPOD() || jov.constant())
+		return NativeExpression::Nothing();
+		else
+	if (nType)
+		return destroy(*nType, inExpr);
+
+	return 
+		makeTypedNativeLibraryFunction(
+			&FORA_clib_destroyImplVal		
+			)(inExpr)
+		.getExpression()
+		;
+	}
+
+NativeExpression refcountIncrementNativeExpression( 
+							const untyped_fora_type& inType,
+							const NativeExpression& inExpr
+							)
+	{
+	if (inType.size() == 0)
+		return NativeExpression::Nothing();
+
+	if (inType.isPOD())
+		return NativeExpression::Nothing();
+
+	@match untyped_fora_type(inType)
+		-|	ExternalFunction() ->> {
+			return 
+				incrementAlternative(
+					inExpr,
+					&FORA_clib_destroyExternalFunctionDefinition,
+					true,
+					NativeTypeFor<ExternalFunctionDescriptor>::get()
+					);
+			}
+		-|	JOVAsValue() ->> {
+			return NativeExpression::Nothing();
+			}
+		-|	StackTrace() ->> {
+			return 
+				incrementAlternative(
+					inExpr,
+					&FORA_clib_destroyStackTrace,
+					true,
+					NativeTypeFor<ForaStackTrace>::get()
+					);
+			}
+		-|	Alternative(inType) ->> {
+			return refcountIncrementNativeExpression(inType, inExpr[1]);
+			}
+		-|	String() ->> {
+			return StringCategory::refcountIncrementer(inExpr, true);
+			}
+		-|	Class(types) ->> {
+			NativeExpressionBuilder builder;
+			for (long k = 0; k < types.size();k++)
+				builder.add(refcountIncrementNativeExpression(types[k], inExpr[k]));
+			return builder(NativeExpression::Nothing());
+			}
+		-|	Tuple(types) ->> {
+			NativeExpressionBuilder builder;
+			for (long k = 0; k < types.size();k++)
+				builder.add(refcountIncrementNativeExpression(types[k], inExpr[k]));
+			return builder(NativeExpression::Nothing());
+			}
+		-|	Dictionary(isCST) ->> {
+			return 
+				incrementAlternative(
+					inExpr,
+					&FORA_clib_destroyDictionary,
+					true,
+					NativeTypeFor<Dictionary>::get()
+					);
+			}
+		-|	Vector() ->> {
+			NativeExpressionBuilder builder;
+
+			TypedNativeExpression<VectorRecord> vecExpr(builder.add(inExpr));
+
+			return builder(vecExpr.incrementRefcount().getExpression());
+			}
+		-|	MutableVector() ->> {
+			NativeExpressionBuilder builder;
+			return builder(nativeIncrementerExprForMutableVectorWithTag(builder.addAndGetVar(inExpr)));
+			}
+		;
+	}
+
+NativeExpression duplicate( const untyped_fora_type& inType,
+							const NativeExpression& inExpr
+							)
+	{
+	NativeExpressionBuilder builder;
+	
+	NativeExpression expr = builder.add(inExpr);
+
+	return builder(refcountIncrementNativeExpression(inType, expr) >> expr); 
+	}
+
+NativeExpression destroy(	const untyped_fora_type& inType,
+							const NativeExpression& inExpr
+							)
+	{
+	NativeExpressionBuilder builder;
+
+	if (inType.size() == 0)
+		return NativeExpression::Nothing();
+
+	if (inType.isPOD())
+		return NativeExpression::Nothing();
+
+	@match untyped_fora_type(inType)
+		-|	JOVAsValue() ->> {
+			return NativeExpression::Nothing();
+			}
+		-|	ExternalFunction() ->> {
+			return decrementAlternative(
+				inExpr, 
+				&FORA_clib_destroyExternalFunctionDefinition, 
+				true,
+				NativeTypeFor<ExternalFunctionDescriptor>::get()
+				);
+			}
+		-|	StackTrace() ->> {
+			return decrementAlternative(
+				inExpr,
+				&FORA_clib_destroyStackTrace, true,
+				NativeTypeFor<ForaStackTrace>::get()
+				);
+			}
+		-|	Alternative(inType) ->>  {
+			return destroy(inType, inExpr[1]);
+			}
+		-|	String() ->> {
+			return StringCategory::refcountDecrementer(inExpr, true);
+			}
+		-|	Class(types) ->> {
+			return destroy(untyped_fora_type::UnnamedTuple(types), inExpr);
+			}
+		-|	Tuple(types) ->> {
+			NativeExpressionBuilder builder;
+
+			NativeExpression tupleExpr = builder.add(inExpr);
+
+			for (long k = 0; k < types.size();k++)
+				builder.add(destroy(types[k], tupleExpr[k]));
+
+			return builder(NativeExpression::Nothing());
+			}
+		-|	Dictionary(isCST) ->> {
+			return decrementAlternative(
+				inExpr, &FORA_clib_destroyDictionary, true,
+				NativeTypeFor<Dictionary>::get()
+				);
+			}
+		-|	Vector() ->> {
+			NativeExpressionBuilder builder;
+
+			TypedNativeExpression<VectorRecord> vecExpr(builder.add(inExpr));
+
+			return builder(vecExpr.decrementRefcount().getExpression());
+			}
+		-|	MutableVector() ->> {
+			return 
+				builder(
+					nativeDestructorExprForMutableVectorWithTag(
+						builder.addAndGetVar(inExpr)
+						)
+					);
+			}
+		-|	x ->> { 
+			}
+		;
+	
+	lassert_dump(false, "no destructor for " << prettyPrintString(inType)); 
+	}
+
+bool typeNeedsDestructor(const TypedFora::Type& inType)
+	{
+	if (inType.refcountStyle().isAsValueUnowned())
+		return false;
+	
+	if (inType.refcountStyle().isPooled())
+		return false;
+	
+	return !judgmentIsPOD(inType.jov());
+	}
+
+
+Nullable<NativeExpression> teardownVariableExpression(
+							const TypedFora::Type& inType,
+							const NativeVariable& inVar
+							)
+	{
+	if (!typeNeedsDestructor(inType))
+		return null();
+
+	return null() << TypedFora::Abi::destroy(inType.jov(), inVar.expr());
+	}
+
+NativeExpression wrapExpressionInTeardown(
+							const TypedFora::Type& inType,
+							const NativeVariable& inVar,
+							const NativeExpression& inExpression
+							)
+	{
+	if (!inExpression.type())
+		return inExpression;
+
+	Nullable<NativeExpression> tr = teardownVariableExpression(inType, inVar);
+	
+	if (!tr)
+		return inExpression;
+		else
+	if (inExpression.isVariable())
+		return *tr >> inExpression;
+	else
+		{
+		NativeVariable v = NativeVariable::Temp(*inExpression.type());
+		return 
+			NativeExpression::Let(
+				v,
+				inExpression,
+				*tr >> v.expr()
+				);
+		}
+	}
+
+
+
+}
+}
+

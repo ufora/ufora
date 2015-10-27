@@ -1,0 +1,374 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ExecutionContextExecutionState.hppml"
+#include "ExecutionContextImpl.hppml"
+#include "../../core/UnitTest.hpp"
+#include "../../core/threading/CallbackScheduler.hppml"
+#include "../../core/threading/CallbackSchedulerFactory.hppml"
+
+using namespace Fora::Interpreter;
+//using namespace Fora::Compiler;
+
+class ExecutionContextExecutionStateTestFixture {
+public:
+	ExecutionContextExecutionStateTestFixture() :
+			mCallbackSchedulerFactory(CallbackScheduler::singletonForTesting()->getFactory()),
+			mCallbackScheduler(mCallbackSchedulerFactory->createScheduler("",4))
+		{
+		managerPtr.reset(new VectorDataManager(mCallbackScheduler, 32 * 1024));
+
+		contextPtr.reset(new ExecutionContext(managerPtr));
+
+		implPtr = contextPtr->getImpl();
+
+		implPtr->mOnCheckGcStatusWithVdm.subscribeForever(
+			boost::bind(
+				&ExecutionContextExecutionStateTestFixture::vdmCheckHappened,
+				this,
+				boost::arg<1>()
+				)
+			);
+		}
+
+	~ExecutionContextExecutionStateTestFixture()
+		{
+		mCallbackScheduler->blockUntilPendingHaveExecutedAndQueueIsEmpty();
+		}
+
+	void vdmCheckHappened(double timestamp)
+		{
+		history.write(-1);
+		}
+
+	PolymorphicSharedPtr<CallbackSchedulerFactory> mCallbackSchedulerFactory;
+
+	PolymorphicSharedPtr<CallbackScheduler> mCallbackScheduler;
+
+	PolymorphicSharedPtr<VectorDataManager> managerPtr;
+
+	PolymorphicSharedPtr<ExecutionContext> contextPtr;
+
+	PolymorphicSharedPtr<ExecutionContextImpl> implPtr;
+
+
+	boost::mutex mutex;
+
+	Queue<long> history;
+
+	map<long, boost::shared_ptr<boost::condition_variable> > conditions;
+
+	void clear()
+		{
+		mCallbackScheduler->blockUntilPendingHaveExecutedAndQueueIsEmpty();
+
+		conditions.clear();
+		}
+
+	void wake(long l)
+		{
+		boost::mutex::scoped_lock lock(mutex);
+
+		if (conditions.find(l) == conditions.end())
+			conditions[l].reset(new boost::condition_variable());
+
+		conditions[l]->notify_one();
+		}
+
+	void sleep(long l)
+		{
+		boost::mutex::scoped_lock lock(mutex);
+
+		if (conditions.find(l) == conditions.end())
+			{
+			conditions[l].reset(new boost::condition_variable());
+			conditions[l]->wait(lock);
+			}
+		
+		conditions.erase(l);
+		}
+
+	void lockExecutingAndWaitForTrigger(long index)
+		{
+		ExecutionContextMarkExecutingScope scope(implPtr->mExecutionState);
+
+		history.write(index);
+		sleep(index);
+		}
+
+	void lockExecutingAndWaitForInterrupt(long index)
+		{
+		ExecutionContextMarkExecutingScope scope(implPtr->mExecutionState);
+
+		history.write(index);
+		
+		while (!implPtr->mExecutionState.isInterrupted())
+			sleepSeconds(.01);
+		
+		implPtr->mExecutionState.resetInterruptState();
+		}
+
+	void lockNormalAndWaitForTrigger(long index)
+		{
+		ExecutionContextInterruptAndLockScope scope(implPtr->mExecutionState);
+
+		history.write(index);
+		sleep(index);
+		}
+
+	void scheduleLockNormalAndWaitForTrigger(long index, bool waitToTryToLock = true)
+		{
+		long curCount = implPtr->mExecutionState.totalLocksBlocking();
+
+		mCallbackScheduler->scheduleImmediately(
+			boost::bind(
+				&ExecutionContextExecutionStateTestFixture::lockNormalAndWaitForTrigger,
+				this, 
+				index
+				)
+			);
+
+		double t0 = curClock();
+
+		while (implPtr->mExecutionState.totalLocksBlocking() != curCount+1 && waitToTryToLock)
+			{
+			sleepSeconds(.001);
+			if (curClock() - t0 > 1.0)
+				LOG_ERROR << "timed out waiting for lock count to reach " << curCount + 1 << ". currently, it's "
+					<< implPtr->mExecutionState.totalLocksBlocking();
+			}
+		}
+
+	void scheduleLockExecutingAndWaitForTrigger(long index, bool waitToTryToLock = true)
+		{
+		long curCount = implPtr->mExecutionState.totalLocksBlocking();
+
+		mCallbackScheduler->scheduleImmediately(
+			boost::bind(
+				&ExecutionContextExecutionStateTestFixture::lockExecutingAndWaitForTrigger,
+				this, 
+				index
+				)
+			);
+
+		while (implPtr->mExecutionState.totalLocksBlocking() != curCount+1 && waitToTryToLock)
+			sleepSeconds(.001);
+		}
+
+	void scheduleLockExecutingAndWaitForInterrupt(long index, bool waitToTryToLock = true)
+		{
+		long curCount = implPtr->mExecutionState.totalLocksBlocking();
+
+		mCallbackScheduler->scheduleImmediately(
+			boost::bind(
+				&ExecutionContextExecutionStateTestFixture::lockExecutingAndWaitForInterrupt,
+				this, 
+				index
+				)
+			);
+
+
+		double t0 = curClock();
+
+		while (implPtr->mExecutionState.totalLocksBlocking() != curCount+1 && waitToTryToLock)
+			{
+			sleepSeconds(.001);
+			lassert_dump(
+				curClock() - t0 < 1.0, 
+				"timed out waiting for lock count to reach " << curCount + 1
+				);
+			}
+		}
+};
+
+
+BOOST_FIXTURE_TEST_SUITE( test_ExecutionContextExecutionState, ExecutionContextExecutionStateTestFixture )
+
+BOOST_AUTO_TEST_CASE( test_lock_executing )
+	{
+		{
+		ExecutionContextMarkExecutingScope scope(implPtr->mExecutionState);
+
+		BOOST_CHECK(implPtr->mExecutionState.isExecuting());
+		}
+
+	BOOST_CHECK(!implPtr->mExecutionState.isExecuting());
+	}
+
+BOOST_AUTO_TEST_CASE( test_lock_nonexecuting )
+	{
+		{
+		ExecutionContextInterruptAndLockScope scope(implPtr->mExecutionState);
+
+		BOOST_CHECK(!implPtr->mExecutionState.isExecuting());
+		}
+
+	BOOST_CHECK(!implPtr->mExecutionState.isExecuting());
+	}
+
+BOOST_AUTO_TEST_CASE( test_lock_normal_ordering )
+	{
+	scheduleLockNormalAndWaitForTrigger(0);
+	scheduleLockNormalAndWaitForTrigger(1);
+	scheduleLockNormalAndWaitForTrigger(2);
+
+	wake(0);
+	wake(1);
+	wake(2);
+
+	BOOST_CHECK_EQUAL(history.get(), 0);
+	BOOST_CHECK_EQUAL(history.get(), 1);
+	BOOST_CHECK_EQUAL(history.get(), 2);
+	}
+
+BOOST_AUTO_TEST_CASE( test_lock_normal_ordering_2 )
+	{
+	scheduleLockNormalAndWaitForTrigger(0);
+	scheduleLockNormalAndWaitForTrigger(1);
+	scheduleLockNormalAndWaitForTrigger(2);
+
+	wake(2);
+	wake(1);
+	wake(0);
+
+	BOOST_CHECK_EQUAL(history.get(), 0);
+	BOOST_CHECK_EQUAL(history.get(), 1);
+	BOOST_CHECK_EQUAL(history.get(), 2);
+	}
+
+BOOST_AUTO_TEST_CASE( test_lock_interrupt_works )
+	{
+	scheduleLockExecutingAndWaitForInterrupt(0);
+	implPtr->mExecutionState.interrupt();
+	BOOST_CHECK_EQUAL(history.get(), 0);
+	}
+
+BOOST_AUTO_TEST_CASE( test_lock_normal_higher_priority_than_execution_lock )
+	{
+	scheduleLockExecutingAndWaitForTrigger(0);
+	scheduleLockExecutingAndWaitForTrigger(1);
+	scheduleLockExecutingAndWaitForTrigger(2);
+	scheduleLockNormalAndWaitForTrigger(3);
+
+	wake(0);
+	wake(1);
+	wake(2);
+	wake(3);
+
+	BOOST_CHECK_EQUAL(history.get(), 0);
+	BOOST_CHECK_EQUAL(history.get(), 3);
+	BOOST_CHECK_EQUAL(history.get(), 1);
+	BOOST_CHECK_EQUAL(history.get(), 2);
+	}
+
+BOOST_AUTO_TEST_CASE( test_several_locks_in_any_order )
+	{
+	for (long k = 0; k < 100; k++)
+		{
+		clear();
+
+		scheduleLockNormalAndWaitForTrigger(0, false);
+		scheduleLockNormalAndWaitForTrigger(1, false);
+		scheduleLockNormalAndWaitForTrigger(2, false);
+		scheduleLockNormalAndWaitForTrigger(3, false);
+
+		wake(0);
+		wake(1);
+		wake(2);
+		wake(3);
+
+		history.get();
+		history.get();
+		history.get();
+		history.get();
+		}
+	}
+
+BOOST_AUTO_TEST_CASE( test_lock_normal_higher_priority_than_execution_lock_2 )
+	{
+	scheduleLockExecutingAndWaitForTrigger(0);
+	scheduleLockExecutingAndWaitForTrigger(1);
+	scheduleLockExecutingAndWaitForTrigger(2);
+	scheduleLockNormalAndWaitForTrigger(3);
+
+	wake(3);
+	wake(2);
+	wake(1);
+	wake(0);
+
+	BOOST_CHECK_EQUAL(history.get(), 0);
+	BOOST_CHECK_EQUAL(history.get(), 3);
+	BOOST_CHECK_EQUAL(history.get(), 1);
+	BOOST_CHECK_EQUAL(history.get(), 2);
+	}
+
+BOOST_AUTO_TEST_CASE( test_lock_interrupts )
+	{
+	for (long k = 0; k < 1000; k++)
+		{
+		clear();
+
+		scheduleLockExecutingAndWaitForInterrupt(0, true);
+		scheduleLockNormalAndWaitForTrigger(1, false);
+
+		wake(0);
+		wake(1);
+
+		BOOST_CHECK_EQUAL(history.get(), 0);
+		BOOST_CHECK_EQUAL(history.get(), 1);
+		}
+	}
+
+BOOST_AUTO_TEST_CASE( test_vdm_check_works )
+	{
+	implPtr->mExecutionState.scheduleVdmCheck();
+
+	//this is the VDM check signal encoded as a '-1'
+	BOOST_CHECK_EQUAL(history.get(), -1);
+	}
+
+BOOST_AUTO_TEST_CASE( test_lock_vdm_check_takes_precedence )
+	{
+	for (long k = 0; k < 100; k++)
+		{
+		clear();
+		
+		scheduleLockExecutingAndWaitForTrigger(0);
+		scheduleLockNormalAndWaitForTrigger(1);
+		scheduleLockExecutingAndWaitForTrigger(2);
+		scheduleLockNormalAndWaitForTrigger(3);
+
+		//zero has the lock, and the rest are pending
+		implPtr->mExecutionState.scheduleVdmCheck();
+
+		wake(3);
+		wake(2);
+		wake(1);
+		wake(0);
+
+		BOOST_CHECK_EQUAL(history.get(), 0);
+
+		//this is the VDM check signal encoded as a '-1'
+		BOOST_CHECK_EQUAL(history.get(), -1);
+
+		BOOST_CHECK_EQUAL(history.get(), 1);
+		BOOST_CHECK_EQUAL(history.get(), 3);
+		BOOST_CHECK_EQUAL(history.get(), 2);
+		}
+	}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+

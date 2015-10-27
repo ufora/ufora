@@ -1,0 +1,360 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+`hidden;
+
+//Matrix Decomposition Functions
+
+lu:
+#Markdown(
+"""#### Usage
+
+    math.matrix.decomposition.lu(A)
+
+#### Description
+
+Computes the LU decomposition of a matrix `A` with partial pivoting. 
+
+Given some matrix `A` as input, returns a tuple `(P,L,U)` such that `A = P*L*U`, 
+where `U` is an upper triangular matrix with unit entries along the diagonal, 
+`L` is a strictly lower triangular matrix, and `P` is a permutation matrix.
+
+#### Arguments
+
+    A - a math.Matrix instance.
+
+""")
+	fun(A)
+		{
+		let m = A.dim[0]; //number of rows
+		let n = A.dim[1]; //number of columns
+
+		let (LU, IPIV) = blasWrappers.getrf(m,n,A.columnMajorData());
+		
+		//construct rowSwap - a permutation of the rows - and then P from IPIV
+		//Note: IPIV's range is one-based, as are all fortran arrays
+		let rowSwap = Vector.range(m)
+		for i in sequence(size(IPIV))
+			{
+			let ipivI = IPIV[i] - 1
+			let temp = rowSwap[ipivI];
+			if (ipivI < size(rowSwap) - 1)
+				{
+				rowSwap = rowSwap[0, ipivI] :: rowSwap[i]
+							+ rowSwap[ipivI + 1,];
+				}
+			else
+				{
+				rowSwap = rowSwap[0, ipivI] :: rowSwap[i];
+				}
+			if(i < size(rowSwap) - 1)
+				{
+				rowSwap = rowSwap[0, i] :: temp + rowSwap[i + 1,];
+				}
+			else
+				{
+				rowSwap = rowSwap[0, i] :: temp
+				}
+			}
+		//create data vector for P, in row - major form, we transpose later
+		let pData = []
+		for i in sequence(m)
+			{
+			let oneIndex = rowSwap[i]
+			for j in sequence(m)
+				{
+				if (j == oneIndex)
+					{
+					pData = pData :: 1.0
+					}
+				else
+					{
+					pData = pData :: 0.0
+					}
+				}
+			}
+
+		let pTranspose = math.Matrix(pData,(m,m),`row);
+		
+		//prepare dimensions for L and U
+		//if n > m (mxn) = (mxm) x (mxm) x (mxn)
+		//if m > n (mxn) = (mxm) X (mxn) x (nxn)
+		let uDim = A.dim
+		let lDim = A.dim
+		if (m > n)
+			{
+			uDim = (n,n)
+			}
+		if (n > m)
+			{
+			lDim = (m,m)
+			}
+
+		//create matrices
+		let U = math.Matrix(decompExtractTriangular(LU, m, uDim, decompUpperCmp),
+							uDim);
+		let L = math.Matrix(decompExtractTriangular(LU, m, lDim, decompLowerOneCmp),
+							lDim);
+
+		//return tuple with the computed matrices
+		(pTranspose.transpose(), L, U)
+		};
+
+`hidden
+decompExtractTriangular:
+	fun(inData, majorLength, dim, cmp)
+		{
+		let data = []
+		for i in sequence(dim[1])
+			{
+			for j in sequence(dim[0])
+				{
+				if (cmp(i,j) > 0)
+					{
+					data = data :: (inData[i * majorLength + j])
+					}
+				else if(cmp(i, j) == 0)
+					{
+					data = data :: 1.0
+					}
+				else
+					{
+					data = data :: 0.0
+					}
+				}
+			}
+		data
+		};
+
+`hidden
+decompUpperCmp:
+	fun(i, j)
+		{
+		if (i >= j) return 1;
+		return -1;
+		};
+
+`hidden
+decompLowerOneCmp:
+	fun(i, j)
+		{
+		if (i > j) return -1;
+		if (i == j) return 0;
+		return 1;
+		};
+
+svd:
+#Markdown(
+"""#### Usage
+
+    math.matrix.decomposition.svd(A)
+
+#### Description
+
+Computes the singular value decomposition of a matrix `A`.
+
+Given some `m`-by-`n` matrix `A` as, `A.svd()` is a tuple `(U, Sigma, Vt)` such that
+`A = U * Sigma * Vt` (approximately), where `Sigma` is an `m`-by-`n` matrix which 
+is zero except possibly its `min(m, n)` diagonal elements, `U` is an `m`-by-`m` 
+orthogonal matrix, and VT is an `n`-by-`n` orthogonal matrix.  The diagonal elements 
+of `Sigma` are the singular values of `A`; they are real and non-negative, and are returned in 
+descending order. 
+
+#### Arguments
+
+    A - a math.Matrix instance.
+
+""")
+	fun(A)
+		{
+		let (X, isTransposed) = 
+		    if (A.implIsColumnMajor_)
+			   { (A.columnMajorData(), false) }
+			else 
+				{ (A.rowMajorData(), true) }
+			;
+
+		let (m, n) = 
+			if (isTransposed) { (A.dim[1], A.dim[0]) }
+			else { (A.dim[0], A.dim[1]) }
+			;
+
+		let (s, UData, VTData) = blasWrappers.gesvd('A', 'A', m, n, X)
+
+		//just need to construct sigma
+		let sigmaData = [];
+		for i in sequence(n)
+			{
+			for j in sequence(m)
+				{
+				if (i == j)
+					{
+					sigmaData = sigmaData :: (s[i])
+					}
+				else
+					{
+					sigmaData = sigmaData :: 0.0
+					}
+				}
+			}
+
+		let SIGMA = math.Matrix(sigmaData,(m,n));
+		let U = math.Matrix(UData,(m,m));
+		let VT = math.Matrix(VTData, (n,n));
+
+		if (isTransposed)
+			{ return (VT.transpose(), SIGMA.transpose(), U.transpose()) }
+		else 
+		    { return (U, SIGMA, VT) }
+			;
+		};
+
+cholesky:
+#Markdown(
+"""#### Usage
+
+    math.matrix.decomposition.cholesky(A, uplo = `lower)
+
+#### Description
+
+Computes the Cholesky decomposition of a matrix.
+
+Given a real matrix `A`, let `sym(A, uplo)` denote the symmetric matrix 
+determined by the upper triangle of `A` if ``uplo == `upper``, or the 
+symmetric matrix determined by the lower triangle of `A` if 
+``uplo == `lower``. `A.cholesky(uplo)` computes the Cholesky 
+decomposition of `sym(A, uplo)`, returning the matrix `L` such that 
+`sym(A, uplo) = L * L.transpose()`. If the symmetric matrix inspected 
+is not positive definite, this function raises an exception (note though 
+that the mathematical Cholesky decomposition exists if the matrix is 
+just positive _semi_-definite).
+
+#### Arguments
+
+    A - a math.Matrix instance
+    uplo - a symbol, either `lower or `upper
+
+""")
+	fun(A, uplo = `lower)
+		{
+		if (!A.isSquare())
+		    throw "`cholesky` is only defined for square matrices"
+
+		let n = A.dim[0];
+		let resultData = blasWrappers.potrf(
+			match (uplo) with 
+				(`lower) { 'L' }
+				(`upper) { 'U' }, 
+			n, A.columnMajorData()
+			);
+		let LData = [];
+		for i in sequence(n)
+			{
+			for j in sequence(n)
+				{
+				if(i <= j)
+					{
+					LData = LData :: (resultData[i * n + j])
+					}
+				else
+					{
+					LData = LData :: 0.0
+					}
+				}
+			}
+		math.Matrix(LData, (n, n));
+		};
+qr:
+#Markdown( 
+"""#### Usage
+
+    math.matrix.decomposition.qr(A)
+
+#### Description
+
+Computes the QR decomposition of a matrix `A`.
+
+Given a real matrix `A`, `A.qr()` is a tuple `(Q, R)` where `A = Q * R` (approximately), the
+QR-Decomposition of `A`.  
+
+#### Arguments
+
+    A - a math.Matrix instance
+""")
+	fun(A)
+		{
+		let m = A.dim[0]; //number of rows
+		let n = A.dim[1]; //number of columns
+		
+		let (TAU, data) = blasWrappers.geqrf(m, n, A.columnMajorData());
+		
+		let RDim = (m <<< n, n)
+		let R = math.Matrix(decompExtractTriangular(data, m, RDim, decompUpperCmp),
+							RDim);
+
+		//construct Q from the product of reflectors
+		let k = (m <<< n);
+		let Q = elementaryReflector(0, data, m, m, TAU[0]);
+		for i in sequence(1, k)
+			{
+			Q = Q * elementaryReflector(i, data, m, m, TAU[i])
+			}
+		//if m > n, need to slice Q
+		if(m > n)
+			{
+			Q = math.Matrix(Q.columnMajorData()[0, n * m], (m, n))
+			}
+		(Q, R)
+		};
+
+`hidden
+elementaryReflector:
+	fun(i,data,m,columnLength,tau)
+		{
+		//first construct v
+		let v = [];
+		for j in sequence(m)
+			{
+			if(j < i)
+				{
+				v = v :: 0.0
+				}
+			else if (j == i)
+				{
+				v = v :: 1.0
+				}
+			else
+				{
+				v = v :: data[i * columnLength + j]
+				}
+			}
+
+		//now generate v * vT
+		tau = -1.0 * tau
+		let data = blasWrappers.gemm(false,
+										false,
+										m,
+										m,
+										1,
+										tau,
+										v,
+										m,
+										v,
+										1,
+										1.0,
+										nothing);
+		//return I - v * vT
+		(Matrix.diagonal(m) + Matrix(data,(m,m)))
+		};

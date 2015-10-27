@@ -1,0 +1,260 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <boost/shared_ptr.hpp>
+#include "../core/PolymorphicSharedPtr.hpp"
+#include "../core/EventBroadcaster.hpp"
+#include "../core/threading/CallbackScheduler.hppml"
+#include "../core/threading/CallbackSchedulerFactory.hppml"
+#include "CumulusComponentMessageCreated.hppml"
+#include "CumulusClientOrMachine.hppml"
+#include "GenericCumulusComponentKernel.hppml"
+
+namespace Cumulus {
+
+class GenericCumulusComponent : public PolymorphicSharedPtrBase<GenericCumulusComponent> {
+public:	
+	GenericCumulusComponent(
+					PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+					boost::shared_ptr<GenericCumulusComponentKernel> inKernel,
+					CumulusClientOrMachine inOwnEndpointId,
+					bool isTheLeader
+					) : 
+			mOnCumulusComponentMessageCreated(inCallbackScheduler),
+	 		mPrivateScheduler(
+	 			inCallbackScheduler->getFactory()->createScheduler(
+	 				"CumulusComponent::" + std::string(inKernel->componentType().tagName())
+	 				)
+	 			),
+	 		mKernel(inKernel),
+	 		mIsTornDown(false)
+		{
+		mKernel->setMessageCallback(
+			boost::bind(
+				&GenericCumulusComponent::sendMessageWithPossibleDelay,
+				this,
+				boost::arg<1>(),
+				boost::arg<2>()
+				)
+			);
+		mKernel->setOwnEndpoint(inOwnEndpointId, isTheLeader);
+		}
+
+	void sendMessageWithPossibleDelay(CumulusComponentMessageCreated message, Nullable<double> delay)
+		{
+		if (!delay)
+			mOnCumulusComponentMessageCreated.broadcast(message);
+		else
+			mPrivateScheduler->schedule(
+				boost::bind(
+					PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+						&GenericCumulusComponent::sendMessageWithPossibleDelay
+						),
+					polymorphicSharedWeakPtrFromThis(),
+					message,
+					Nullable<double>()
+					),
+				curClock() + *delay
+				);
+		}
+
+	void teardown()
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		mIsTornDown = true;
+		}
+
+    void consumePageEvent(const Fora::PageRefcountEvent& inEvent, Cumulus::MachineId onMachineId)
+    	{
+    	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		if (mIsTornDown)
+			return;
+
+		mPrivateScheduler->scheduleImmediately(
+			boost::bind(
+				PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+					&GenericCumulusComponent::consumePageEvent_
+					),
+				polymorphicSharedWeakPtrFromThis(),
+				inEvent,
+				onMachineId
+				)
+			);
+		}
+
+    void pageNoLongerReferencedAcrossSystem(Fora::PageId page)
+    	{
+    	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		if (mIsTornDown)
+			return;
+
+		mPrivateScheduler->scheduleImmediately(
+			boost::bind(
+				PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+					&GenericCumulusComponent::pageNoLongerReferencedAcrossSystem_
+					),
+				polymorphicSharedWeakPtrFromThis(),
+				page
+				)
+			);
+    	}
+
+    void initializeFromAddDropState(const AddDropFinalState& state)
+    	{
+    	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		lassert(!mIsTornDown);
+
+		mPrivateScheduler->blockUntilPendingHaveExecutedAndImmediateQueueIsEmpty();
+
+		mKernel->initializeFromAddDropState(state);
+    	}
+
+	void addMachine(MachineId inMachine)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		if (mIsTornDown)
+			return;
+
+		mPrivateScheduler->scheduleImmediately(
+			boost::bind(
+				PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+					&GenericCumulusComponent::addMachine_
+					),
+				polymorphicSharedWeakPtrFromThis(),
+				inMachine
+				)
+			);
+		}
+
+	void addCumulusClient(CumulusClientId id)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		if (mIsTornDown)
+			return;
+
+		mPrivateScheduler->scheduleImmediately(
+			boost::bind(
+				PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+					&GenericCumulusComponent::addCumulusClient_
+					),
+				polymorphicSharedWeakPtrFromThis(),
+				id
+				)
+			);
+		}
+
+	void dropCumulusClient(CumulusClientId id)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		if (mIsTornDown)
+			return;
+
+		mPrivateScheduler->scheduleImmediately(
+			boost::bind(
+				PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+					&GenericCumulusComponent::dropCumulusClient_
+					),
+				polymorphicSharedWeakPtrFromThis(),
+				id
+				)
+			);
+		}
+
+	void handleCumulusComponentMessage(
+					const CumulusComponentMessage& message, 
+					const CumulusClientOrMachine& source, 
+					const CumulusComponentType& componentType
+					)
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		if (mIsTornDown)
+			return;
+
+		mPrivateScheduler->scheduleImmediately(
+			boost::bind(
+				PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+					&GenericCumulusComponent::handleCumulusComponentMessage_
+					),
+				polymorphicSharedWeakPtrFromThis(),
+				message,
+				source,
+				componentType
+				)
+			);
+		}
+
+	EventBroadcaster<CumulusComponentMessageCreated>& onCumulusComponentMessageCreated()
+		{
+		return mOnCumulusComponentMessageCreated;
+		}
+
+private:
+	void addMachine_(MachineId inMachine)
+		{
+		mKernel->addMachine(inMachine);
+		}
+
+	void addCumulusClient_(CumulusClientId id)
+		{
+		mKernel->addCumulusClient(id);
+		}
+
+	void dropCumulusClient_(CumulusClientId id)
+		{
+		mKernel->dropCumulusClient(id);
+		}
+
+	void handleCumulusComponentMessage_(
+					const CumulusComponentMessage& message, 
+					const CumulusClientOrMachine& source, 
+					const CumulusComponentType& componentType
+					)
+		{
+		mKernel->handleCumulusComponentMessage(message, source, componentType);
+		}
+
+	void consumePageEvent_(const Fora::PageRefcountEvent& inEvent, Cumulus::MachineId onMachineId)
+		{
+		mKernel->consumePageEvent(inEvent, onMachineId);
+		}
+
+	void pageNoLongerReferencedAcrossSystem_(Fora::PageId page)
+		{
+		mKernel->pageNoLongerReferencedAcrossSystem(page);
+		}
+
+	boost::recursive_mutex mMutex;
+
+	boost::shared_ptr<GenericCumulusComponentKernel> mKernel;
+
+	EventBroadcaster<CumulusComponentMessageCreated> mOnCumulusComponentMessageCreated;
+
+	PolymorphicSharedPtr<CallbackScheduler> mPrivateScheduler;
+
+	bool mIsTornDown;
+};
+
+}
+

@@ -1,0 +1,199 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+"""
+DESCRIPTION:
+    Computes all eigenvalues and, optionally, eigenvectors of a
+    real symmetric matrix A.
+    
+ARGUMENTS:
+    
+    JOBZ        String.
+                Says whether we wish to return eigenvectors:
+                If 'N', then we're not returning them.
+                If 'V', then we return the eigenvectors.
+                
+    UPLO        String.
+                Says whether the (symmetric) matrix A is given as the upper-right triangle or
+                lower-left triangle of argument A":
+                If 'U', then A is stored in the upper-right triangle of A.
+                If 'L', then A is stored in the lower-left triangle of A.
+                
+    N           Integer type.
+                The number of rows (== the number of columns) of the matrix A.
+                
+    A	        A vector of floats of size N * N.
+                Stores A by either its lower-left triangle, or its upper-right, in accordance with
+                argument UPLO, in column-major format
+                
+RETURNS:
+    If JOBZ is 'V', then we get back a tuple (V, w). Here, w is a vector of floats of size N which
+    contains the eigenvalues of A. V is a vector of floats of size N * N. The columns of V give an
+    orthonormal set of eigenvectors of A (in particular, column i of V is an eigenvector
+    corresponding to the eigenvalue w[i]).
+    
+    If JOBZ is 'N' then we just return w, as above.
+                
+"""
+fun(   
+        jobz,
+        uplo,
+        n,
+        A
+        )
+    {
+    jobz = match (jobz) with
+        ('N')   { 'N'[0] }
+        ('V')   { 'V'[0] }
+        ;
+    uplo = match (uplo) with
+        ('U')   { 'U'[0] }
+        ('L')   { 'L'[0] }
+        ;
+    n = Int32(n);
+    
+    if (size(A) < n * n)
+        throw "size of matrix A too small"
+    
+    let elementType = nothing;
+    (elementType, A) = blasWrappers.eltTypeAndFloatifyIfNecessary(A);
+
+	let vecType = `JovOfVectorHolding(elementType);
+	let intVecType = `JovOfVectorHolding(Int32);
+
+    let w = Vector.uniform(n, elementType());
+    let work = [] :: elementType();
+    let lwork = -1s32;
+    let info = [0s32];
+
+    let blasname = addTypeSuffix(elementType, "syev_");
+    
+    let wrapper =
+        `FORTRANFunctionWrapper(
+            blasname,
+            blasname,
+            (3,5,8),		//arguments that are modified by the function
+            UInt8,          //0  JOBZ    (input) CHARACTER*1
+            UInt8,          //1  UPLO    (input) CHARACTER*1
+            Int32,          //2  N       (input) INTEGER
+            vecType,      	//3  A       (input/output) DOUBLE PRECISION array, dimension (LDA, N)
+            Int32,          //4  LDA     (input) INTEGER
+            vecType,       //5  W       (output) DOUBLE PRECISION array, dimension (N)
+            vecType,       //6  WORK    (workspace/output) DOUBLE PRECISION array, dimension (MAX(1,LWORK))
+            Int32,          //7  LWORK   (input) INTEGER
+            intVecType    //8  INFO    (output) INTEGER
+        );
+    
+    //first call generates the size of the work array, lwork
+    (A, w, info) = wrapper(jobz, uplo, n, A, n, w, work, lwork, info);
+        
+    if (info[0] < 0s32)
+        throw "argument " + String(-info[0]) + " to FORTRAN function xSYEV was illegal."
+        
+    if (info[0] > 0s32)
+        throw "algorithm for computing eigenvalues/eigenvectors failed to converge"
+
+    lwork = Int32(
+            match (work[0]) with
+            ((re,im)) { re }
+            (x) { x }
+        );    
+
+    work = Vector.uniform(lwork >>> 1, elementType());
+    
+    (A, w, info) = wrapper(jobz, uplo, n, A, n, w, work, lwork, info);
+    
+    if (jobz == 'N'[0]) return w;
+    
+    return (A, w);    
+    }
+    ;
+
+/*
+SUBROUTINE DSYEV( JOBZ, UPLO, N, A, LDA, W, WORK, LWORK, INFO )
+*
+*  -- LAPACK driver routine (version 3.2) --
+*  -- LAPACK is a software package provided by Univ. of Tennessee,    --
+*  -- Univ. of California Berkeley, Univ. of Colorado Denver and NAG Ltd..--
+*     November 2006
+*
+*     .. Scalar Arguments ..
+      CHARACTER          JOBZ, UPLO
+      INTEGER            INFO, LDA, LWORK, N
+*     ..
+*     .. Array Arguments ..
+      DOUBLE PRECISION   A( LDA, * ), W( * ), WORK( * )
+*     ..
+*
+*  Purpose
+*  =======
+*
+*  DSYEV computes all eigenvalues and, optionally, eigenvectors of a
+*  real symmetric matrix A.
+*
+*  Arguments
+*  =========
+*
+*0  JOBZ    (input) CHARACTER*1
+*          = 'N':  Compute eigenvalues only;
+*          = 'V':  Compute eigenvalues and eigenvectors.
+*
+*1  UPLO    (input) CHARACTER*1
+*          = 'U':  Upper triangle of A is stored;
+*          = 'L':  Lower triangle of A is stored.
+*
+*2  N       (input) INTEGER
+*          The order of the matrix A.  N >= 0.
+*
+*3  A       (input/output) DOUBLE PRECISION array, dimension (LDA, N)
+*          On entry, the symmetric matrix A.  If UPLO = 'U', the
+*          leading N-by-N upper triangular part of A contains the
+*          upper triangular part of the matrix A.  If UPLO = 'L',
+*          the leading N-by-N lower triangular part of A contains
+*          the lower triangular part of the matrix A.
+*          On exit, if JOBZ = 'V', then if INFO = 0, A contains the
+*          orthonormal eigenvectors of the matrix A.
+*          If JOBZ = 'N', then on exit the lower triangle (if UPLO='L')
+*          or the upper triangle (if UPLO='U') of A, including the
+*          diagonal, is destroyed.
+*
+*4  LDA     (input) INTEGER
+*          The leading dimension of the array A.  LDA >= max(1,N).
+*
+*5  W       (output) DOUBLE PRECISION array, dimension (N)
+*          If INFO = 0, the eigenvalues in ascending order.
+*
+*6  WORK    (workspace/output) DOUBLE PRECISION array, dimension (MAX(1,LWORK))
+*          On exit, if INFO = 0, WORK(1) returns the optimal LWORK.
+*
+*7  LWORK   (input) INTEGER
+*          The length of the array WORK.  LWORK >= max(1,3*N-1).
+*          For optimal efficiency, LWORK >= (NB+2)*N,
+*          where NB is the blocksize for DSYTRD returned by ILAENV.
+*
+*          If LWORK = -1, then a workspace query is assumed; the routine
+*          only calculates the optimal size of the WORK array, returns
+*          this value as the first entry of the WORK array, and no error
+*          message related to LWORK is issued by XERBLA.
+*
+*8  INFO    (output) INTEGER
+*          = 0:  successful exit
+*          < 0:  if INFO = -i, the i-th argument had an illegal value
+*          > 0:  if INFO = i, the algorithm failed to converge; i
+*                off-diagonal elements of an intermediate tridiagonal
+*                form did not converge to zero.
+*
+*  =====================================================================
+*/

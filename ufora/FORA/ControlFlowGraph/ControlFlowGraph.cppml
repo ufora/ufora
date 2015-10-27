@@ -1,0 +1,411 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ControlFlowGraph.hppml"
+#include "ControlFlowGraphUtil.hppml"
+#include "ControlFlowGraphValidation.hppml"
+#include <boost/lexical_cast.hpp>
+#include "../../core/StringUtil.hpp"
+#include "../../core/Logging.hpp"
+#include "../../core/cppml/CPPMLTransform.hppml"
+#include "../../core/cppml/CPPMLVisit.hppml"
+
+
+const ControlFlowContinuationArg& ControlFlowContinuationTupleArg::arg() const
+	{
+	@match ControlFlowContinuationTupleArg(*this)
+		-|	Normal(_,arg) ->> {
+			return arg;
+			}
+		-|	TupleCall(arg) ->> {
+			return arg;
+			}
+	}
+
+void ControlFlowGraph::setHash(void)
+	{
+	hash() = hashValue(entryNode()) + hashValue(subnodes());
+	maxArgCount() = entryNode().argCount();
+	for (long k = 0; k < subnodes().size();k++)
+		if (maxArgCount() < subnodes().pairAtPosition(k).second.argCount())
+			maxArgCount() = subnodes().pairAtPosition(k).second.argCount();
+
+	graphName() = hashToString(hash()).substr(0,8) + "[" + graphName() + "]";
+	}
+
+string ControlFlowGraph::newBlockName(string inSuggestion) const
+	{
+	uword_t ix = 0;
+	if (!subnodes().contains(inSuggestion))
+		return inSuggestion;
+
+	while (subnodes().contains(inSuggestion + "_" + boost::lexical_cast<string>(ix)))
+		ix++;
+
+	return inSuggestion + "_" + boost::lexical_cast<string>(ix);
+	}
+
+bool ControlFlowGraph::valid(void) const
+	{
+	//make sure that all jumps are correctly sized, all argument counts valid etc.
+
+	if (!ControlFlowGraphValidation::validBlock(*this, entryNode()))
+		{
+		LOG_DEBUG << "entryblock is invalid.";
+		return false;
+		}
+
+	for (long k =0 ; k < subnodes().size();k++)
+		if (!ControlFlowGraphValidation::validBlock(*this, subnodes().pairAtPosition(k).second))
+			{
+			LOG_DEBUG << "block " << subnodes().pairAtPosition(k).first << " is invalid.";
+			return false;
+			}
+
+	return true;
+	}
+
+ControlFlowGraph::ControlFlowGraph(const ControlFlowNode& node)
+	{
+	entryNode() = node;
+	graphName() = std::string();
+	lassert_dump(valid(), prettyPrintString(*this));
+	setHash();
+    }
+
+ControlFlowGraph::ControlFlowGraph(
+						const ControlFlowNode& node,
+						const std::string& inCFGName
+						)
+	{
+	entryNode() = node;
+	graphName() = inCFGName;
+	lassert_dump(valid(), prettyPrintString(*this));
+	setHash();
+	}
+
+ControlFlowGraph::ControlFlowGraph(
+			const ControlFlowNode& inNode,
+			const ImmutableTreeMap<string,
+							ControlFlowNode>& inSubnodes,
+			const std::string& inCFGName
+			)
+	{
+	entryNode() = inNode;
+	graphName() = inCFGName;
+	subnodes() = inSubnodes;
+
+	setHash();
+	}
+
+const ControlFlowNode& ControlFlowGraph::operator[](const Nullable<string>& s) const
+	{
+	if (!s)
+		return entryNode();
+	lassert_dump(
+		hasBlock(s),
+		"cfg " << prettyPrintString(*this)
+			<< " doesn't have "
+			<< prettyPrintString(s)
+			);
+	
+	return *subnodes()[*s];
+	}
+
+
+const ControlFlowNode& ControlFlowGraph::operator[](const string& s) const
+	{
+	lassert_dump(
+		hasBlock(s),
+		"cfg " << prettyPrintString(*this)
+			<< " doesn't have "
+			<< prettyPrintString(s)
+			);
+	
+	return *subnodes()[s];
+	}
+
+bool ControlFlowGraph::hasBlock(const Nullable<string>& s) const
+	{
+	if (!s)
+		return true;
+	return subnodes().contains(*s);
+	}
+
+bool ControlFlowGraph::hasBlock(const string& s) const
+	{
+	return subnodes().contains(s);
+	}
+
+
+void CPPMLPrettyPrint<ControlFlowArg>::prettyPrint(CPPMLPrettyPrintStream& s, const ControlFlowArg& t)
+	{
+	@match ControlFlowArg(t)
+		-|	Arg(x) ->> { s << "x" << x; ;}
+		-|	Constant(c) ->> { s << c;; }
+		;
+	}
+
+void CPPMLPrettyPrint<ControlFlowContinuation>::prettyPrint(CPPMLPrettyPrintStream& s, const ControlFlowContinuation& t)
+	{
+	@match ControlFlowContinuation(t)
+		-|	Return(arg, isException) ->> {
+				s << (isException ? "throw" : "return")
+					<< " " << arg;
+				}
+		-|	Node(label, args) ->> {
+				s << label;
+				
+				s << args;
+				}
+		;
+	}
+
+void CPPMLPrettyPrint<ControlFlowContinuationArg>::prettyPrint(CPPMLPrettyPrintStream& s, const ControlFlowContinuationArg& t)
+	{
+	@match ControlFlowContinuationArg(t)
+		-|	Arg(x) ->> { s << x;}
+		-|	Result() ->> { s << "res"; }
+		-|	TupleElement(ix) ->> { s << "tuple_expand[" << ix << "]"; }
+		-|	TupleRemainingElements() ->> { s << "tuple_expand_remaining"; }
+		-|	MakeTuple(elts) ->> { s << elts; }
+		;
+	}
+
+void CPPMLPrettyPrint<ControlFlowContinuationTupleArg>::prettyPrint(CPPMLPrettyPrintStream& s, const ControlFlowContinuationTupleArg& t)
+	{
+	@match ControlFlowContinuationTupleArg(t)
+		-|	Normal(fieldName, x) ->> { 
+			if (fieldName)
+				s << *fieldName << ": ";
+			s << x;
+			}
+		-|	TupleCall(x) ->> { s << "*" << x; }
+		;
+	}
+
+const ControlFlowContinuation& ControlFlowNodeBody::getContinuationByIndex(uword_t inIndex) const
+	{
+	@match ControlFlowNodeBody(*this)
+		-|	Apply(_,n,e) ->> {
+			if (inIndex == 0)
+				return n;
+			if (inIndex == 1)
+				return e;
+			}
+		-|	Cached(_,n,e) ->> {
+			if (inIndex == 0)
+				return n;
+			if (inIndex == 1)
+				return e;
+			}
+		-|	Branch(_,n,e) ->> {
+			if (inIndex == 0)
+				return n;
+			if (inIndex == 1)
+				return e;
+			}
+		-|	Jump(n) ->> {
+			if (inIndex == 0)
+				return n;
+			}
+		-|	TupleExpand(arg, (_,_,ifMatch), ifNotMatch) ->> {
+			if (inIndex == 0)
+				return ifMatch;
+			if (inIndex == 1)
+				return ifNotMatch;
+			}
+		-|	Switch(a, branches, otherwise) ->> {
+			if (inIndex < branches.size())
+				return branches.pairAtPosition(inIndex).second;
+			if (inIndex == branches.size())
+				return otherwise;
+			}
+		;
+
+	throw standardLogicErrorWithStacktrace(
+		"Constinuation index " + boost::lexical_cast<string>(inIndex) + 
+		" is invalid in " + prettyPrintString(*this)
+		);
+	}
+
+size_t ControlFlowNodeBody::getContinuationCount(void) const
+	{
+	@match ControlFlowNodeBody(*this)
+		-|	Apply(_,n,e) ->> {
+			return 2;
+			}
+		-|	Cached(_,n,e) ->> {
+			return 2;
+			}
+		-|	Branch(_,n,e) ->> {
+			return 2;
+			}
+		-|	Jump(n) ->> {
+			return 1;
+			}
+		-|	TupleExpand(arg, (_,_,ifMatch), ifNotMatch) ->> {
+			return 2;
+			}
+		-|	Switch(a, branches, otherwise) ->> {
+			return branches.size() + 1;
+			}
+	}
+
+void CPPMLPrettyPrint<ControlFlowGraph>::prettyPrint(CPPMLPrettyPrintStream& s, const ControlFlowGraph& t)
+	{
+	s << "ControlFlowGraph:\n<entry>: "
+		<< t.entryNode()
+		<< "\n";
+	
+	
+	//lets try for a good default ordering
+	ImmutableTreeSet<Nullable<string> > nodesWritten;
+	ImmutableTreeVector<Nullable<string> > nodeStack;
+	
+	nodesWritten = nodesWritten + Nullable<string>();
+
+	nodeStack = ControlFlowGraphUtil::naturalNextNodes(t.entryNode());
+	
+	for (long k = 0; k < t.subnodes().size(); k++)
+		nodeStack = nodeStack + (null() << t.subnodes().pairAtPosition(k).first);
+	
+	while (nodeStack.size())
+		{
+		Nullable<string> node = nodeStack[0];
+		nodeStack = nodeStack.slice(1);
+		
+		if (!nodesWritten.contains(node))
+			{
+			s << *node
+				<< ": "
+				;
+			if (t.subnodes()[*node])
+				s << *t.subnodes()[*node];
+			else
+				s << "<INVALID NODE: " << *node << ">";
+
+			s << "\n";
+			
+			nodesWritten = nodesWritten + node;
+			
+			if (t.subnodes()[*node])
+				nodeStack = ControlFlowGraphUtil::naturalNextNodes(*t.subnodes()[*node]) + nodeStack;
+			}
+		}
+	}
+void CPPMLPrettyPrint<ControlFlowNode>::prettyPrint(CPPMLPrettyPrintStream& s, const ControlFlowNode& t)
+	{
+	s << "(";
+	for (int32_t k = 0; k < t.argCount(); k++)
+		s << "x" << k << (k+1 < t.argCount() ? ", " :"");
+	s << ") ->> ";
+	
+	s << t.body();
+	}
+void CPPMLPrettyPrint<ControlFlowApplyArg>::prettyPrint(CPPMLPrettyPrintStream& s, const ControlFlowApplyArg& t)
+	{
+	@match ControlFlowApplyArg(t)
+		-|	Normal(field, arg) ->> {
+				if (field)
+					s << field->toString() << ": ";
+				s << arg;
+				}
+		-|	TupleCall(arg) ->> {
+				s << "*";
+				s << arg;
+				}
+		;
+	}
+void CPPMLPrettyPrint<ControlFlowNodeBody>::prettyPrint(CPPMLPrettyPrintStream& s, const ControlFlowNodeBody& t)
+	{
+	@match ControlFlowNodeBody(t)
+		-|	Apply(args, n, e) ->> {
+				s << "let res = "
+					<< args
+					<< " in \n"
+					<< "\tnormal: "
+					<< n << "\n"
+					<< "\texcept: "
+					<< e
+					<< "\n";
+				}
+		-|	Cached(arg, n, e) ->> {
+				s << "let res = cached(";
+				s << arg;
+				s << ")\n";
+				s << "\tnormal: " << n << "\n";
+				s << "\texcept: " << e << "\n";
+				}
+		-|	Jump(n) ->> {
+				s << n << "\n";
+				}
+		-|	Branch(c, t,f) ->> {
+				s << c << " ? "
+					<< t << " : "
+					<< f << "\n";
+				}
+		-|	TupleExpand(arg, (arity, arityIsExact, ifMatches), ifNotMatch) ->> {
+				s << "tuple_expand(" << arg << ", ";
+				s << "arity " << (arityIsExact ? "==" : ">=") << arity << "): ";
+				
+					{
+					CPPMLPrettyPrintStream s2 = s.group();
+					s2 << ifMatches << ", " << s2.sep;
+					s2 << "otherwise: " << ifNotMatch << s2.sep;
+					}
+				s << "}";
+				}
+		-|	Switch(c, branches, otherwise) ->> {
+				s << "switch(" << c << ") {";
+					{
+					CPPMLPrettyPrintStream s2 = s.group();
+					for (long k = 0; k <= branches.size();k++)
+						{
+						if (k > 0)
+							s2 << ", ";
+						s2 << s2.sep;
+						if (k < branches.size())
+							s2 << branches.pairAtPosition(k).first << ": "
+								<< branches.pairAtPosition(k).second
+								;
+							else
+							s2 << "otherwise: " << otherwise;
+						}
+					s2 << s2.sep;
+					}
+				s << "}";
+				}
+		;
+	}
+
+ControlFlowGraphTupleExpandInfo getTupleExpandInfo(const ControlFlowGraphJumpPoint& term)
+	{
+	return getTupleExpandInfo(term.graph()[term.label()].body());
+	}
+	
+
+ControlFlowGraphTupleExpandInfo getTupleExpandInfo(const ControlFlowNodeBody& body)
+	{
+	@match ControlFlowNodeBody(body)
+		-| TupleExpand(argIndex, (arity, arityExact, _), _) ->> {
+			return ControlFlowGraphTupleExpandInfo(argIndex, arity, arityExact);
+			}
+		-| _ ->> {
+			lassert_dump(false, "unexpected node body");
+			}
+	}
+	
+

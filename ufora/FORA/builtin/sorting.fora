@@ -1,0 +1,1205 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#Markdown(
+"""### sorting
+
+#### Description
+
+Utilities for sorting vectors.
+""");
+
+`hidden
+smallSize_: 200000;
+
+quickSelect:
+#Markdown(
+"""#### Usage
+
+    sorting.quickSelect(v, k, less = fun(x, y) { x < y })
+
+#### Description
+
+Returns the (really _a_) `k`th smallest (according to `less`) element in `v` (counting from 0). `less` should be a _strict_ total ordering on `v`.
+
+#### Examples
+
+Let `v` be any permutation of `[0, 1, 2, ... , n - 1]`. Then 
+
+    sorting.quickselect(v, k) == k
+
+is true for each `k` in `v`.
+"""
+)
+fun(list, k, less = fun(x, y) { x < y }) {
+	if (k >= size(list))
+		throw "can't request the " + String(k) + 
+		"-th smallest element in a vector of size " + String(size(list))
+
+	if (size(list) < smallSize_)
+		return quickSelectSmall_(list, k, less);
+
+	let samples = sampleVec_(vec:list, less:less)
+
+	if (size(samples) < 4)
+		return selectHomogeneous(list, k, less, samples[Int64(size(samples) / 2)]);
+
+	let (f1, eq1, f2) = partitionVec_(vec: list, less: less, samples: samples)
+
+	for (v,e) in [(f1, eq1), (f2, [])] {
+		if (size(v) >= k + 1)
+			return quickSelect(v, k, less)
+		k = k - size(v)
+
+		if (size(e) >= k + 1)
+			return e[k]
+		k = k - size(e)
+		}
+    };
+
+`hidden
+selectHomogeneous: 
+    fun(vec, k, less, splitPoint) {
+		let addfun = fun
+				(nothing, toAdd) {
+					addfun( ([], [], []), toAdd)
+					}
+				((eltsLt, eltsEq, eltsGt), toAdd) {
+					if (less(toAdd, splitPoint)) 
+						return (eltsLt :: toAdd, eltsEq, eltsGt)
+
+					if (less(splitPoint, toAdd)) 
+						return (eltsLt, eltsEq, eltsGt :: toAdd)
+
+					return (eltsLt, eltsEq :: toAdd, eltsGt)
+					}
+				;
+
+		let (eltsLt, eltsEq, eltsGt) = vec.sum( fun(x){x}, addfun, sumTupleElements );
+		
+		if (size(eltsLt) >= k + 1) {
+			return quickSelect(vec, k, less)
+		    }
+		else if (size(eltsLt) + size(eltsEq) >= k + 1) {
+			return splitPoint
+		    }
+		else {
+			quickSelect(eltsGt, k - size(eltsLt) - size(eltsEq), less)
+		    }
+	    };
+
+`hidden
+quickSelectSmall_:
+fun(list, k, less = fun(x, y) { x < y }) {
+	return quickselect_nsmallest_small_data_(list, k, less, method:`quickselect);
+    };
+
+
+nSmallest:
+#Markdown(
+"""#### Usage
+
+    sorting.nSmallest(vec, n, less = fun(x, y) { x < y }, sorted:=true)
+
+#### Description
+
+Return the (really _a_ collection of `n` smallest elements) `n` smallest elements in `vec` using T. Hoare's 'quickselect' algorithm in expected time O(n).  If `sorted == true`, the returned vector is sorted in increasing order. `less` should be a _strict_ total ordering on `v`.
+
+#### Example
+
+Let `v` be any permutation of `[0, 1, 2, ... , n - 1]`. Then 
+
+    sorting.nSmallest(v, k) == Vector.range(n - 1)[,k]
+
+for any value of `k`.
+"""
+)
+fun(list, n, less = fun(x, y) { x < y }, sorted:=true) {
+	if (n > size(list))
+		throw "can't request the " + String(n) + 
+		" smallest elements in a vector of size " + String(size(list))
+
+	if (size(list) < smallSize_)
+		return nSmallestSmall_(list, n, less, sorted:sorted);
+
+	let samples = sampleVec_(vec:list, less:less)
+
+	if (size(samples) < 4)
+		return nSmallestHomogeneous(list, n, less, samples[Int64(size(samples) / 2)], sorted:sorted);
+
+	let (f1, eq1, f2) = partitionVec_(vec:list, less:less, samples:samples)
+
+	let sortIfNecessary = fun(s) { if (sorted) sort(s, less) else s };
+
+	let tr = []
+
+	for (f, e) in [(f1, eq1), (f2, [])] {
+		if (n < size(f))
+			return tr + nSmallest(f, n, less, sorted:sorted)
+	
+		tr = tr + sortIfNecessary(f)
+
+		n = n - size(f)
+
+		if (n < size(e))
+			return tr + e[,n]
+		
+		n = n - size(e)
+
+		tr = tr + e
+		}
+
+	throw false
+	};
+
+`hidden
+nSmallestHomogeneous:
+fun(vec, n, less, splitPoint, sorted:)
+    {
+	let addfun = fun
+		(nothing, toAdd) {
+			addfun( ([], [], []), toAdd)
+			}
+		((eltsLt, eltsEq, eltsGt), toAdd) {
+			if (less(toAdd, splitPoint)) 
+				return (eltsLt :: toAdd, eltsEq, eltsGt)
+
+			if (less(splitPoint, toAdd)) 
+				return (eltsLt, eltsEq, eltsGt :: toAdd)
+
+			return (eltsLt, eltsEq :: toAdd, eltsGt)
+			}
+		;
+
+	let (eltsLt, eltsEq, eltsGt) = vec.sum( fun(x){x}, addfun, sumTupleElements );
+	
+	if (size(eltsLt) >= n + 1) {
+		return nSmallest(eltsLt, n, less, sorted:sorted)
+	    }
+
+	let tr = 
+		if (sorted) {
+			sort(eltsLt, less)
+			}
+		else {
+			eltsLt
+		}
+	;
+
+	if (size(eltsLt) + size(eltsEq) >= n + 1) {
+		return tr + eltsEq[, n - size(eltsLt)]
+	    }
+
+	tr = tr + eltsEq;
+
+	tr + nSmallest(eltsGt, n - size(eltsLt) - size(eltsEq), less, sorted:sorted)
+    };
+
+`hidden
+nSmallestSmall_:
+fun(list, n, less = fun(x, y) { x < y }, sorted:=true) {
+	let smallestVals = 
+		quickselect_nsmallest_small_data_(list, n, less, method:`nsmallest)
+
+	if (sorted == true)
+		return sort(smallestVals, less)
+
+	smallestVals
+    };
+
+nLargest:
+#Markdown(
+"""#### Usage
+
+    sorting.nLargest(vec, n, less = fun(x, y) { x < y }, sorted:=true)
+
+#### Description
+
+Return the `n` largest elements in `vec` using T. Hoare's 'quickselect' algorithm in expected time O(n).  If `sorted == true`, the returned vector is sorted in increasing order. `less` should be a _strict_ total ordering on `v`.
+
+#### Example
+
+Let `v` be any permutation of `[0, 1, 2, ... , n - 1]`. Then 
+
+    sorting.nLargest(v, k) == Vector.range(n - 1)[n - k,]
+
+for any value of `n`.
+"""
+)
+fun(list, n, less = fun(x, y) { x < y }, sorted:=true) {
+	let oppositeLess = fun(x, y) { not less(x, y) and x != y };
+	
+	match (sorted) with
+		(true) {
+			let greatestVals = nSmallest(list, n, oppositeLess, sorted:true)
+			return reverse(greatestVals)
+	    	}
+	    (false) {
+		   return nSmallest(list, n, oppositeLess, sorted:true)
+	       }
+    	(...) { throw "bad `sorted` arg: " + String(sorted) }
+    	;
+   };
+	
+`hidden
+quickselect_nsmallest_small_data_:
+fun(list, k, less = fun(x, y) { x < y }, method:)
+    {
+	if (method == `nsmallest and size(list) <= k)
+		return list
+
+	let indices = MutableVector(Int64).create(size(list), 0);
+	
+	for ix in sequence(size(list)) {
+		indices[ix] = ix
+	    }
+
+	let selector = object {
+		swap: fun(a, b) {
+			let tmp = indices[a];
+			indices[a] = indices[b];
+			indices[b] = tmp;
+		    };
+
+		isLess: fun(a, b) {
+			if (less(list[indices[a]], list[indices[b]]))
+				return true
+
+            if (not less(list[indices[b]], list[indices[a]]))
+				return indices[a] < indices[b]
+
+            return false
+		    }
+            ;
+		
+		partition: fun(left, right, pivotIndex)
+		    {
+			swap(pivotIndex, right);
+			let storeIndex = left;
+			for ix in sequence(left, right) {
+				if (isLess(ix, right)) {
+					swap(storeIndex, ix)
+					storeIndex = storeIndex + 1
+			    	}
+			    }
+			swap(right, storeIndex);
+			
+			storeIndex			
+		    };
+
+		select: fun(left:, right:, k:) {
+			right = right - 1;
+			let offset = 0;
+			while (true) {
+				if (left == right) 
+					return left
+				
+				let pivotIndex = (right + left) / 2;
+				pivotIndex = partition(left, right, pivotIndex);
+
+				let pivotDist = pivotIndex - left;
+				if (pivotDist == k) {
+					return pivotIndex
+			    	}
+				else if (k < pivotDist) {
+					right = pivotIndex - 1;
+				    }
+				else {
+					k = k - pivotDist - 1;
+					left = pivotIndex + 1;
+				    }
+			    }
+		    };
+	    };
+
+	let partitionIx = selector.select(left:0, right:size(list), k:k);
+
+	match (method) with 
+		(`quickselect) {
+			list[indices[partitionIx]]
+			}
+		(`nsmallest)
+	    	{
+			let tr = [];
+
+			for ix in sequence(partitionIx)
+				tr = tr :: list[indices[ix]];
+
+			tr
+		    }
+		;
+
+};
+
+`hidden
+quickSort:
+#Markdown(
+"""#### Usage
+   
+    sorting.quickSort(v, cmp = fun(x, y) { x < y })
+
+#### Description
+
+Sort a vector `v` according to comparison function `cmp`, but not in parallel
+(using in-memory quickSort). Will fail for sufficiently large vectors (greater than 
+50MB in size or so).
+""")
+	fun(list, less = fun(x, y) { x < y }) { 
+		if (size(list) <= 1) 
+			return list
+
+		let indices = MutableVector(Int64).create(size(list), 0)
+
+		for ix in sequence(size(list)) {
+			indices[ix] = ix
+			}
+
+		let sorter = object {
+			swap: fun(a,b) { 
+				try {
+					let temp = indices[a]
+					indices[a] = indices[b]
+					indices[b] = temp
+					}
+				catch(...)
+					{
+					throw ("invalid indices: ", a, b, size(indices))
+					}
+				};
+
+			isLess: fun(a,b) { 
+				let a_val = list[indices[a]];
+				let b_val = list[indices[b]];
+
+				isLess(a, b, a_val, b_val)
+                }
+            (a, b, a_val, b_val)
+                {
+				if (less(a_val, b_val))
+					return true;
+
+				if (not less(b_val, a_val))
+					return indices[a] < indices[b]
+
+                return false
+				};
+
+			sortIndexRange: fun(low,high) {
+				if (high - low < 2)
+					return nothing
+				else
+					quickSortRange(low, high)
+				};
+
+			allAreAlreadySorted: fun(low, high) {
+				while (low+1 < high)
+					{
+					if (isLess(low+1, low))
+						return false;
+					low = low+1;
+					}
+				return true
+				};
+
+			quickSortRange: fun(low, high) {
+				if (high - low == 2)
+					{
+					if (isLess(low+1, low))
+						swap(low, low+1)
+					return nothing
+					}
+				
+				if (low + 1 >= high)
+					return nothing;
+
+				let origLow = low;
+				let origHigh = high;
+				
+				//check if all are sorted
+				if (allAreAlreadySorted(low, high))
+					return nothing;
+
+				swap(low, (low+high) / 2)
+				high = high - 1
+				let isLow = true
+				
+				let allAreSame = true
+
+				let lv = list[indices[low]]
+				let hv = list[indices[high]]
+
+				while (low < high) {
+					if (isLess(high, low, hv, lv)) 
+						{
+						swap(low,high);
+						
+						(lv,hv) = (hv,lv)
+
+						isLow = not isLow
+
+						allAreSame = false
+						}
+						else
+					if (isLess(low, high, lv, hv)) 
+						{
+						allAreSame = false
+						}
+					else
+						{
+						isLow = not isLow
+						}
+
+					if (isLow)
+						{
+						high = high - 1
+						hv = list[indices[high]]
+						}
+					else
+						{
+						low = low + 1
+						lv = list[indices[low]]
+						}
+					}
+
+				if (not allAreSame) {
+					if (origLow + 1 < low)
+						sortIndexRange(origLow,low)
+
+					if (low+2 < origHigh)
+						sortIndexRange(low+1,origHigh)
+					}
+				}
+			};
+
+		sorter.sortIndexRange(0, size(list))
+
+		let tr = []
+
+		for ix in sequence(size(list))
+			tr = tr :: list[indices[ix]]
+
+		tr
+		};
+
+isSorted:
+#Markdown(
+"""#### Usage
+
+    sorting.isSorted(v, cmp = fun(x, y) { x < y })
+
+#### Description
+
+Returns `true` if vector `v` is sorted in ascending order, according to 
+comparison function `cmp`. Returns `false` otherwise.
+""")
+	fun(vec, cmp = fun(x, y) { x < y }) {
+		if (size(vec) < 2)
+			return true
+		
+		sum(0, size(vec) - 1, 
+			   fun(ix) { if (cmp(vec[ix + 1], vec[ix])) 1 else 0 }) == 0
+		};
+
+filterConsecutive:
+#Markdown(
+"""#### Usage
+
+    sorting.filterConsecutive(vec)
+
+#### Description
+
+Filter vector `vec`, removing consecutive elements that are identical. Returns a new vector.
+
+Note: No parallel implementation.
+""")
+	fun(vec) {
+		if (vec is [])
+			return []
+
+		let it = iterator(vec);
+
+		let curElement = pull it;
+		
+		let res = [] :: curElement;
+
+		while (hasNext(it)) {
+			let next = pull it;
+
+			if (next is not curElement) {
+				res = res :: next
+				curElement = next
+				}
+			}
+
+		res
+		};
+
+
+`hidden
+sumTupleElements: 
+		fun (nothing, x) { x } 
+			(x, nothing) { x }
+			((), ()) { () }
+			((a1, *args1),(a2, *args2)) {
+				(a1 + a2, *sumTupleElements(args1, args2))
+				};
+
+`hidden
+partitionVec_:
+fun(vec:vec, less:less, samples:samples)
+    {
+	let splitPoint1 = samples[Int64(size(samples) / 2)];
+
+	let partitionRange = fun(low, high) {
+		let v1 = []
+		let v1eq = []
+		let v2 = []
+
+		if (high > size(vec))
+			high = size(vec);
+
+		while (low < high) {
+			let toAdd = vec[low]
+
+			if (less(toAdd, splitPoint1))
+				v1 = v1 :: toAdd
+				else 
+			if (not less(splitPoint1, toAdd))
+				v1eq = v1eq :: toAdd
+				else 
+				v2 = v2 :: toAdd
+
+			low = low + 1
+			}
+		
+		return (v1, v1eq, v2)
+		};
+
+	let slices = (size(vec) - 1) / smallSize_ + 1
+
+	let addFun = fun
+		(nothing, toAdd) {
+			addFun( ([], [], []), toAdd)
+	    	}
+		((v1, v2, v3), (v1a, v2a, v3a)) { 
+			(v1 + v1a, v2 + v2a, v3 + v3a) 
+			};
+
+	sum(0, 
+		slices, 
+		fun(slice) { partitionRange(slice * smallSize_, (slice + 1) * smallSize_) },
+		addFun
+		)
+    };
+
+`hidden
+sampleVec_:
+fun(vec:vec, less:less, samplesToTake := 40) {
+	let samplePoints = 
+		[Int64(size(vec) * (ix + 1) / (samplesToTake + 1)) 
+					for ix in sequence(samplesToTake)];
+	
+	let samples = filterConsecutive(
+		quickSort(samplePoints.apply(fun(ix){vec[ix]}), less)
+	    );
+
+	samples;
+    };
+
+`hidden
+sortHomogenous: 
+	fun(vec, less, splitPoint) {
+		let addfun = fun
+				(nothing, toAdd) {
+					addfun( ([], [], []), toAdd)
+					}
+				((eltsLt, eltsEq, eltsGt), toAdd) {
+					if (less(toAdd, splitPoint)) 
+						return (eltsLt :: toAdd, eltsEq, eltsGt)
+
+					if (less(splitPoint, toAdd)) 
+						return (eltsLt, eltsEq, eltsGt :: toAdd)
+
+					return (eltsLt, eltsEq :: toAdd, eltsGt)
+					}
+				;
+
+		let (eltsLt, eltsEq, eltsGt) = vec.sum(fun(x){x}, addfun, sumTupleElements);
+
+		let (ltSorted, gtSorted) = (sort(eltsLt), sort(eltsGt))
+
+		return ltSorted + eltsEq + gtSorted
+		};
+
+sort:
+#Markdown(
+"""#### Usage
+
+    sorting.sort(vec, less = fun(x,y) { x < y })
+
+#### Description
+
+Sort a `Vector` `vec` in parallel according to comparison function `less`.
+
+`less` should be a callable that takes two vector elements and returns true if the first is
+less than the second.
+
+The behavior of the sort is undefined if the `less` function is inconsistent.
+
+""")
+	fun(vec, less = fun(x,y){x < y}) {
+		if (size(vec) < 2)
+			return vec
+
+		if (size(vec) < smallSize_)
+			return quickSort(vec, less)
+
+		let samples = sampleVec_(vec:vec, less:less);
+
+		if (size(samples) < 4)
+			return sortHomogenous(vec, less, samples[Int64(size(samples)/2)]);
+
+		let (f1, eq1, f2) = partitionVec_(vec:vec, less:less, samples:samples)
+
+		let sortpair = fun(p1, p2) { (sort(p1, less), sort(p2, less)) }
+
+		let (f1s, f2s) = sortpair(f1, f2)
+
+		f1s + eq1 + f2s
+		};
+
+
+//there could be a better implementation that doesn't fully sort the thing - it could
+//compute uniqueness on subsets etc.
+unique:
+#Markdown(
+"""#### Usage
+
+    sorting.unique(vec, cmp = fun(x, y) { x < y })
+
+#### Description
+
+Returns a sorted vector of unique elements of `vec`.
+""")
+    fun(vec, cmp = fun(x, y) { x < y }) { 
+    	sort(vec, cmp).filterWithIndex(
+    		fun(sortedVec, index) {
+    			index < 1 or cmp(sortedVec[index - 1], sortedVec[index])
+    			}
+    		)
+        };
+
+//there could be a better implementation that doesn't fully sort the thing - it could
+//compute uniqueness on subsets etc.
+countDistinct:
+#Markdown(
+"""#### Usage
+
+    sorting.countDistinct(vec)
+
+#### Description
+
+Returns the number of distinct elements in `vec`, measured using the `==` operator.
+""")
+    fun(vec) { 
+    	reduce(vec, 
+    		fun(x) { x },
+    		fun(x) { 0 },
+    		fun(count, x) { count + 1 },
+    		fun(count1, count2) { count1 + count2 }
+    		)
+        };
+
+searchSorted: 
+#Markdown(
+"""#### Usage
+
+    sorting.searchSorted(sortedVec, element, requireExact:=true, less:=fun(x, y){ x < y })
+
+#### Description
+
+Binary search a sorted vector `sortedVec` for `element`, and return an index of its occurence.
+
+If there is no such index, return `nothing`. 
+
+If `requireExact` is true, the function returns `nothing` if `element` is not found. Otherwise, it 
+returns the ideal insertion point for the element.
+""")
+fun(sortedVec, element, requireExact:=true, less:=fun(x, y) { x < y }) {
+	let lowIx = 0
+	let highIx = size(sortedVec)
+
+	while (lowIx + 1 < highIx) {
+		let mid = (lowIx + highIx) / 2;
+
+		if (less(sortedVec[mid], element))
+			lowIx = mid
+		else
+		if (less(element, sortedVec[mid]))
+			highIx = mid
+		else
+			return mid
+		}
+
+	if (requireExact)
+		{
+		if (less(sortedVec[lowIx], element) or less(element, sortedVec[lowIx]))
+			return nothing
+		return lowIx
+		}
+	else
+		{
+		if (less(sortedVec[lowIx], element))
+			return lowIx + 1
+		return lowIx
+		}
+	};
+
+lowerBound:
+#Markdown(
+"""#### Usage
+
+    sorting.lowerBound(sortedVec, element, less:=fun(x,y) { x < y })
+
+#### Description
+
+Assuming that `sortedVec` is sorted according to `less`, return the lowest index of
+an element in `sortedVec` which does not compare `less` to `element`. If every 
+element in `sortedVec` compares `less` than `element`, return `size(sortedVec)`.
+
+In other words, this returns the lowest index `0 <= ix < size(sortedVec)` such that 
+`not less(sortedVec[ix], element)` (else `size(sortedVec)`). In the common case that 
+`less` is `fun(x,y) { x < y }`, this is the least index `ix` such that 
+`element <= sortedVec[ix]` (else `size(sortedVec)`).
+
+`less` should be a strict total order on `sortedVec`.
+
+This function has undefined behavior if `sortedVec` is not sorted according to 
+`less`.
+
+""")
+fun(sortedVec, element, less:=fun(x,y) { x < y }) {
+    let aMatch = searchSorted(sortedVec, element, requireExact:false, less:less);
+
+    if (aMatch == size(sortedVec) or less(element, sortedVec[aMatch]))
+        return aMatch;
+
+    let lowIx = 0;
+    let highIx = aMatch;
+
+    while (lowIx < highIx) {
+        let mid = (lowIx + highIx) / 2;
+
+        if (less(sortedVec[mid], element))
+            lowIx = mid + 1
+        else
+            highIx = mid
+        }
+
+    return lowIx
+    };
+
+upperBound:
+#Markdown(
+"""#### Usage
+
+    sorting.upperBound(sortedVec, element, less:=fun(x,y) { x < y })
+
+#### Description
+
+Assuming that `sortedVec` is sorted according to `less`, return the lowest index of
+an element in `sortedVec` which is greater than `element`. If no element in 
+`sortedVec` is greater than `element`, return `size(sortedVec)`.
+
+In other words, this returns the lowest index `0 <= ix < size(sortedVec)` such that 
+`less(element, sortedVec[ix])` (else `size(sortedVec)`). In the common case that 
+`less` is `fun(x,y) { x < y }`, this is the least index `ix` such that 
+`element < sortedVec[ix]` (else `size(sortedVec)`).
+
+`less` should be a strict total order on `sortedVec`.
+
+This function has undefined behavior if `sortedVec` is not sorted according to 
+`less`.
+
+""")
+fun(sortedVec, element, less:=fun(x,y) { x < y }) {
+    let aMatch = searchSorted(sortedVec, element, requireExact:false, less:less);
+
+    if (aMatch == size(sortedVec))
+        return aMatch;
+
+    if (less(element, sortedVec[aMatch]))
+        return aMatch;
+
+    let lowIx = aMatch;
+    let highIx = size(sortedVec);
+    while (lowIx + 1 < highIx) {
+        let mid = (lowIx + highIx) / 2;
+
+        if (less(element, sortedVec[mid]))
+            highIx = mid
+        else 
+            lowIx = mid
+        }
+
+    return highIx
+    };
+
+VectorDictionary: 
+    class 
+        {
+        member mKeysAndValues;
+        member mKeys;
+        member mValues;
+        member mKeyCmp;
+
+        operator new(keysAndValues, keyCmp:=fun(x, y) { x < y }, isSorted:=false)
+            {
+            let sortedKeysAndValues = 
+                match (isSorted) with
+                    (false) { 
+                        sort(keysAndValues, fun(x, y) { keyCmp(x[0], y[0]) })
+                        }
+                    (true) {
+                        keysAndValues
+                        }
+                    ;
+       
+            createInstance(
+                cls, 
+                mKeysAndValues: sortedKeysAndValues,
+                mKeys: sortedKeysAndValues ~~ { _[0] },
+                mValues: sortedKeysAndValues ~~ { _[1] },
+                mKeyCmp: keyCmp
+                )
+            };
+
+        ...(`size) { 
+            size(mKeys)
+            };
+ 
+        ...(`Operator, `in, key) { hasKey(key) };
+
+        assertValid: fun() { 
+            let checkOkFun = fun(ix, key1, key2) {
+                if (not mKeyCmp(key1, key2)) 
+                    throw "Invalid VectorDictionary: at ix = " +
+                        String(ix) + " in mKeys, mKeys[ix] (= " + 
+                        String(key1) + ") >= mKeys[ix] (= " + 
+                        String(key2) + ")";
+                };
+
+            zipWith(
+                checkOkFun, 
+                Vector.range(size(self)),  
+                mKeys,
+                mKeys[1,]
+                )
+            };
+
+		hasKey: fun(key) { 
+			searchSorted(mKeys, key, less:mKeyCmp) is not nothing
+			};
+
+		operator [](key) {
+			let ix = searchSorted(mKeys, key, less:mKeyCmp)
+
+			if (ix is nothing)
+				throw "Key " + String(key) + " not found"
+
+			return mValues[ix]
+			};
+
+		convert(String) { 
+			"VectorDictionary(size=" + String(size(self)) + ")"
+			};
+		
+		};        
+        
+map:
+#Markdown(
+"""#### Usage
+
+    sorting.map(vec, iteratorFun)
+
+#### Description
+
+Returns a map (_a la_ map-reduce) of the elements of 'vec'. It is equivalent to
+
+    [x for x in iteratorFun(elt) for elt in vec]
+
+It returns a new vector that is the concatenation of the values of `iteratorFun(elt)` for
+each element `elt` in `vec`.
+
+#### Example
+
+	 let v = ["cat", "cat", "dog", "cat", "dog", "fish"];
+
+	 let res = 
+         sorting.map(
+             v, 
+             fun(x) { yield (x, 1) } // note the yield, *not* return
+             ); 
+
+Then 
+
+	 res == [("cat", 1), ("cat", 1), ("dog", 1), ("cat", 1), ("dog", 1), ("fish", 1)]
+""")
+	fun(vec, iteratorFun) {
+		let res = vec.sum(
+			fun(x) { x },
+			fun(vecSoFar, elt) { 
+				let result = vecSoFar
+				if (vecSoFar is nothing)
+					result = []
+
+				for x in iteratorFun(elt) {
+					result = result :: x
+					}
+
+				result
+				},
+			fun(v1, v2) { v1 + v2 }
+			);
+
+		if (res is nothing)
+			return []
+		else
+			return res
+		};
+
+
+groupBy:
+#Markdown(
+"""#### Usage
+
+    sorting.groupBy(vec, groupingFun, keepGroups = true)
+
+#### Description
+
+Groups the elements of a vector.
+
+The function applies `groupingFun` to each element of `vec`, and returns a vector containing
+the returned groups. Each element of the resulting vector is of the form
+
+    (group, elements)
+
+where `group` is the result of `groupingFun` on each element, and `elements` is a vector containing
+the elements of the group.
+
+If `keepGroups` is false, the returned vector does not include the groups, only the vectors containing
+the group elements.
+
+#### Examples
+
+    let v = Vector.range(30);
+    sorting.groupBy(v, { _ % 3 })        // group values in v by their mod-3 value
+    sorting.groupBy(v, { _ % 3 }, false) // group values in v by their mod-3 value, 
+                                         // but don't mark with the "group" value,
+                                         // which in this case is the mod-3 value
+
+""") 
+	fun(vec, groupingFun, keepGroups = true)
+		{
+		let result = reduce(
+			vec, 
+			groupingFun, 
+			fun(group) { [] },
+			fun(sum, element) { sum :: element },
+			fun(sumLeft, sumRight) { sumLeft + sumRight }
+			)
+
+		if (keepGroups)
+			result.apply(fun((group: group, reduction: reduction)) { (group, reduction) })
+		else
+			result.apply(fun(x){ x.reduction })
+		};
+
+reduce:
+#Markdown(
+"""#### Usage
+
+    sorting.reduce(vec, groupingFun, seedFun, addFun, mergeFun)
+
+#### Description
+
+Perform a reduce (_a la_ 'map reduce') on the elements of `vec`.
+
+This means the following: suppose we have sorted `vec` using comparison function `less = fun(x, y) { groupingFun(x) < groupingFun(y) }` (using `sorting.sort`) to produce a vector of the form:
+
+    sorted = [x_0, x_1, ... , x_{N - 1}]
+
+Now form the vector of vectors
+
+    vectorOfGroups = [ [x_0, x_1 ... , x_{g_0}], [x_{g_0 + 1}, x_{g_0 + 2}, ... , x_{g_0}], ... ]
+
+Which is uniquely defined by the following properties:
+
+* `vectorOfGroups.sum() == sorted` 
+
+* For all `v` in `vectorOfGroups`, `v` is nonempty 
+
+* For all `v` in `vectorOfGroups`, and for all `x,y` in `v`, `groupingFun(x) == groupingFun(y)` 
+
+* If `0 <= i < j < size(vectorOfGroups)`, then for all `x` in `vectorOfGroups[i]` and all `y` in 
+`vectorOfGroups[j]`, we have `groupingFun(x) < groupingFun(y)`
+
+In other words, the elements in `vectorOfGroups` form maximal nonempty groups of elements in `vec` sharing the same `groupingFun` value. Uniqueness is provided by the nonemptiness condition, and the fact that the order of `sorted` is respected.
+
+The mathematical meaning of `sorting.reduce(vec, groupingFun, seedFun, addFun, mergeFun)` should then be:
+
+    [f(v) for v in vectorOfGroups]
+
+Where 
+
+    f = fun(v) { 
+        let groupValue = groupingFun(v[0]); // recall that each `v` in `vectorOfGroups` is nonempty 
+		let reductionValue = seedFun(groupValue);
+		for x in v {
+		    reductionValue = addFun(reductionValue, x)
+			}
+		(group: groupValue, reduction: reductionValue)
+		}
+
+Note that this mathematical definition of `reduce` does not depend on `mergeFun`. This argument is used to (possibly) optimize the (parallel) implementation of `reduce`. In the above discussion, elements of `vectorOfGroups` are maximal, but in the implementation of `reduce`, we do not assume this. More precisely, we may have two (non-empty) vectors (on two different machines even) say `g1` and `g2` such that for all `x` in `g1`, and for all `y` in `g2` we have `groupingFun(x) == groupingFun(y)`. When forming their common reduction, we first compute the "unfinished groups" `f(g1)` and `f(g2)`. We then merge these two groups into
+
+    (group: f(g1).group, reduction: mergeFun( f(g1).reduction, f(g2).reduction ))
+
+and continue. Note that for this to agree with the proposed mathematical definition of `reduce`, we need `addFun` to be associative, and that `mergeFun` satisfy
+
+    mergeFun(reduction, f(g2).reduction) == { let tr = reduction; for x in g2 { tr = addFun(tr, x) }; tr }
+
+#### Examples
+
+Recall the classic "wordcount" problem: count the number of instances of each string appearing in a collection of strings. This can be implemented for vectors of strings as follows:
+
+    let wordcount = fun(vec) {
+        sorting.reduce(
+		    vec,
+			identity, //defined in builtin.fora; is just fun(x) { x }
+			fun(x) { 0 },
+			fun(x, y) { x + 1 },
+			fun(x, y) { x + y }
+			)
+		}
+
+Or, if one wishes to do more of a "Hadoopy" version, in tandem with `sorting.map`, we could do:
+
+    let wordcount = fun(vec) {
+	    let mapped = 
+            sorting.map(
+                vec, 
+                fun(x) { yield (x, 1) } // note the yield, *not* return
+                ); 
+
+		sorting.reduce(
+		    mapped,
+			fun(mappedPair) { mappedPair[0] },
+			fun(group) { 0 },
+			fun(x, y) { x + y[1] },
+			fun(x, y) { x + y }
+			);
+		}
+""")
+	fun(vec, groupingFun, seedFun, addFun, mergeFun) {
+		let sortedByGroup = sorting.sort(vec, fun(x,y) { groupingFun(x) < groupingFun(y) })
+
+		let addReduceGroupFun = fun
+			( nothing, element ) 
+				{
+				//this is the first element
+				let group = groupingFun(element);
+
+				return (
+					finishedGroups: [], 
+					unfinishedGroup: (
+						group: group, 
+						reduction: addFun(seedFun(group), element)
+						)
+					)
+				}
+			((finishedGroups: finishedGroups, unfinishedGroup: (group: group, reduction: reduction)), 
+					element
+					)
+				{
+				let newGroup = groupingFun(element);
+
+				if (newGroup == group) 
+					return (
+						finishedGroups:finishedGroups, 
+						unfinishedGroup: (
+							group: group, 
+							reduction: addFun(reduction, element)
+							)
+						)
+				else
+					//it's a new group
+					return (
+						finishedGroups: finishedGroups :: (group:group, reduction:reduction),
+						unfinishedGroup: (
+							group: newGroup, 
+							reduction: addFun(seedFun(newGroup), element)
+							)
+						)
+				};
+
+		let mergeReduceGroupFun = fun
+			(nothing, x) { x }
+			(x, nothing) { x }
+			(x,y) { 
+				if (x.unfinishedGroup.group == y.unfinishedGroup.group) {
+					if (y.finishedGroups) throw "Inconsistent grouping found";
+					
+					return (
+						finishedGroups: x.finishedGroups,
+						unfinishedGroup: (
+							group: y.unfinishedGroup.group, 
+							reduction: mergeFun(
+								x.unfinishedGroup.reduction, 
+								y.unfinishedGroup.reduction
+								)
+							)
+						)
+					}
+				if (size(y.finishedGroups) > 0 and 
+								x.unfinishedGroup.group == y.finishedGroups[0].group)
+					return (finishedGroups: x.finishedGroups + 
+							[(group: x.unfinishedGroup.group, reduction: 
+								mergeFun(
+									x.unfinishedGroup.reduction,
+									y.finishedGroups[0].reduction
+									)
+								)] + 
+							y.finishedGroups[1,],
+						unfinishedGroup: y.unfinishedGroup
+						)
+				return (finishedGroups: x.finishedGroups + [x.unfinishedGroup] + y.finishedGroups,
+						unfinishedGroup: y.unfinishedGroup
+						)
+				}
+		
+		let result = sortedByGroup.sum(
+			fun(x){x},
+			addReduceGroupFun,
+			mergeReduceGroupFun
+			)
+
+		if (result is nothing)
+			return []
+
+		return result.finishedGroups :: result.unfinishedGroup
+		};
+
+

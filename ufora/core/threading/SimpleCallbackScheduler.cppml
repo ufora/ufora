@@ -1,0 +1,637 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "SimpleCallbackScheduler.hppml"
+#include "ScopedThreadLocalContext.hpp"
+#include "../AtomicOps.hpp"
+#include "../lassert.hpp"
+#include "../Logging.hpp"
+#include "../Clock.hpp"
+#include "../ScopedProfiler.hppml"
+#include "../cppml/CPPMLPrettyPrinter.hppml"
+#include <boost/unordered_map.hpp>
+#include <algorithm>
+#include <iostream>
+#include <stack>
+#include <boost/thread/tss.hpp>
+
+using Ufora::threading::ScopedThreadLocalContext;
+
+@type CallbackContext = 
+	boost::function0<void> function, 
+	CallbackSchedulerStack stack
+	;
+
+
+class SimpleCallbackSchedulerImpl : public boost::enable_shared_from_this<SimpleCallbackSchedulerImpl> {
+public:
+	SimpleCallbackSchedulerImpl(
+						PolymorphicSharedPtr<CallbackSchedulerFactory> inFactory,
+						std::string inMetadata,
+						long inMaxScheduledItems
+						) : 
+			mShouldExit(false),
+			mHaveExitedCount(0),
+			mExecutingNowCount(false),
+			mVerboseTrigger(false),
+			mExceptionCount(0),
+			mTotalScheduled(0),
+			mMaxScheduledItems(inMaxScheduledItems),
+			mFactory(inFactory),
+			mMetadata(inMetadata),
+			mLastLogMessageTime(0),
+			mCallbacksProcessedSinceLastMessage(0),
+			mCallbacksTimesDelaySinceLastMessage(0),
+			mMaxCallbackDelay(0)
+		{
+		}
+
+	void setCallbackWrapper(boost::function1<void, boost::function0<void> > wrapper)
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		mCallbackWrapper = wrapper;
+		}
+
+	void startThreads(long threadCount)
+		{
+		for (long k = 0; k < threadCount; k++)
+			{
+			mThreads.push_back(
+				boost::shared_ptr<boost::thread>(
+					new boost::thread(
+						boost::bind(
+							&SimpleCallbackSchedulerImpl::callbackLoopStatic,
+							this->shared_from_this()
+							)
+						)
+					)
+				);
+			}
+		}
+
+	void teardown()
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+		
+		mShouldExit = true;
+
+		for (long k = 0; k < mThreads.size();k++)
+			if (mThreads[k]->get_id() == boost::this_thread::get_id())
+				mThreads.erase(mThreads.begin() + k);
+
+		while (mHaveExitedCount < mThreads.size())
+			{
+			mCondition.notify_one();
+			lock.unlock();
+
+			lock.lock();
+			}
+
+		for (long k = 0; k < mThreads.size(); k++)
+			mThreads[k]->join();
+		}
+
+
+	void schedule(
+				boost::function0<void> inCallback, 
+				double inTime, 
+				CallbackSchedulerStack curStack
+				)
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		if (mVerboseTrigger)
+			{
+			LOG_WARN << "Callback created from: \n"
+				<< Ufora::debug::StackTrace::getStringTrace() 
+				<< ". callback count = " << mItemsToCall.size()
+				;
+			if (mItemsToCall.size())
+				LOG_WARN << "time to next callback is " << mItemsToCall.begin()->first - curClock();
+			}
+		
+		mItemsToCall[inTime].push_back(
+			CallbackContext(
+				inCallback, 
+				curStack
+				)
+			);
+
+		mTotalScheduled++;
+
+		if (mTotalScheduled % 10000 == 0)
+			{
+			LOG_WARN << "there are " << mTotalScheduled 
+				<< " items in the SimpleCallbackScheduler " 
+				<< mMetadata << ". curStack = "
+				<< prettyPrintString(curStack);
+			}
+
+		mCondition.notify_one();
+		}
+
+	void recordCallbackDelay(double curDelay, long callbackCount)
+		{
+		mCallbacksTimesDelaySinceLastMessage += curDelay * callbackCount;
+
+		mMaxCallbackDelay = std::max<double>(mMaxCallbackDelay, curDelay);
+		
+		mCallbacksProcessedSinceLastMessage += callbackCount;
+		}
+
+	void logCallbackDelay(double curTime)
+		{
+		if (curTime - mLastLogMessageTime > 5.0)
+			{
+			LOGGER_INFO_T log = LOGGER_INFO;
+
+			if (curTime - mItemsToCall.begin()->first > 25.0)
+				log << "SERIOUS DELAY.  ";
+			
+			if (curTime - mItemsToCall.begin()->first > 5.0)
+				log << "DELAY.  ";
+
+			log << "Callback scheduler "
+				<< (void*)this
+				<< " [" << mMetadata << "] "
+				<< " has " << mTotalScheduled
+				<< " items scheduled and is operating with a current delay of " 
+				<< curTime - mItemsToCall.begin()->first << " seconds. processed "
+				<< mCallbacksProcessedSinceLastMessage << " with an average delay of "
+				<< (mCallbacksProcessedSinceLastMessage > 0 ? 
+						mCallbacksTimesDelaySinceLastMessage / mCallbacksProcessedSinceLastMessage
+					:	0.0)
+				<< " and a max delay of "
+				<< mMaxCallbackDelay
+				;
+
+			std::vector<pair<std::pair<double, long>, std::string> > elts;
+			for (auto p: mProfilerStorage.getTimings())
+				elts.push_back(make_pair(make_pair(p.second.getXW(), p.second.weight()), p.first));
+
+			std::sort(elts.begin(), elts.end());
+			std::reverse(elts.begin(), elts.end());
+			
+			double total = 0.0;
+			for (auto p: elts)
+				total += p.first.first;
+
+			if (total > 0.1)
+				{
+				log << "\n";
+
+				for (auto p: elts)
+					log << "\t" << p.first.first << " over " << p.first.second << ": " << p.second << "\n";
+
+				log << "\ntotal=" << total;
+				}
+			
+			mLastLogMessageTime = curTime;
+			mCallbacksProcessedSinceLastMessage = 0;
+			mCallbacksTimesDelaySinceLastMessage = 0;
+			mMaxCallbackDelay = 0;
+
+			mProfilerStorage.clear();
+			}
+		}
+
+	void callbackLoop()
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		Ufora::ScopedProfilerStorage<std::string> profilerStorageForThisThread;
+
+		double timeOfLastStorageMerge = 0.0;
+
+		while (!mShouldExit)
+			{
+			double curTime = curClock();
+
+			if (!mItemsToCall.size())
+				mCondition.wait(lock);
+			else
+				{
+				if (mItemsToCall.begin()->first < curTime)
+					{
+					while (mItemsToCall.size() && mItemsToCall.begin()->first < curTime 
+							&& !mShouldExit
+							&& curClock() - curTime < 1.0
+							)
+						{
+						if (curClock() - timeOfLastStorageMerge > .25)
+							{
+							mProfilerStorage.merge(profilerStorageForThisThread);
+							profilerStorageForThisThread.clear();
+							}
+
+						logCallbackDelay(curTime);
+
+						//note that we can't use 'mProfilerStorage' here because we might have multiple
+						//threads and the profiler root is not thread safe. Instead, we use a thread-local
+						//storage object and flush the profiler storage roots every quarter of a second.
+						//the timing is not perfect, but we are at least guaranteed to collect all the messages
+						Ufora::ScopedProfilerRoot<std::string> profilerRoot(profilerStorageForThisThread);
+
+						std::vector<CallbackContext> callbacks;
+
+						callbacks = mItemsToCall.begin()->second;
+
+						recordCallbackDelay(curTime - mItemsToCall.begin()->first, callbacks.size());
+
+						mItemsToCall.erase(mItemsToCall.begin());
+
+						mExecutingNowCount++;
+
+						lock.unlock();
+
+						for (long k = 0; k < callbacks.size();k++)
+							{
+							try {
+								Ufora::ScopedProfiler<std::string> taskProfilerRoot(
+									callbacks[k].stack().isCallback() ?
+										callbacks[k].stack().getCallback().descriptor()
+									:	std::string("<unknown>")
+									);
+
+								ScopedThreadLocalContext<CallbackSchedulerStack> stack(&callbacks[k].stack());
+
+								if (mCallbackWrapper)
+									mCallbackWrapper(callbacks[k].function());
+								else
+									callbacks[k].function()();
+								}
+							catch(const std::exception& e)
+								{
+								LOG_ERROR << "Timed callback threw an exception: \n" << e.what()
+									<< ". stack = " << prettyPrintString(callbacks[k].stack());
+
+								AO_fetch_and_add_full(&mExceptionCount, 1);
+								}
+							catch(...)
+								{
+								LOG_ERROR << "Timed callback threw an unknown exception.";
+								AO_fetch_and_add_full(&mExceptionCount, 1);
+								}
+							}
+
+						long callbacksExecuted = callbacks.size();
+
+							{
+							try {
+								// Force all callback destructors to run outside the lock.
+								std::vector<CallbackContext> tmp;
+								callbacks.swap(tmp);
+								}
+							catch(const std::exception& e)
+								{
+								LOG_ERROR << "Destroying callback threw an exception: \n" << e.what();
+								}
+							catch(...)
+								{
+								LOG_ERROR << "Destroying callback threw an unknown exception.";
+								}
+							}
+
+						lock.lock();
+
+						mTotalScheduled -= callbacksExecuted;
+
+						mExecutingNowCount--;
+
+						mNumberCurrentlyExecutingChanged.notify_all();
+						}
+					}
+				else
+					{
+					double timeoutSecs = mItemsToCall.begin()->first - curTime;
+
+					mCondition.timed_wait(lock, boost::posix_time::milliseconds(timeoutSecs * 1000));
+					}
+				}
+			}
+
+		mHaveExitedCount++;
+		}
+
+	static void lockAndNotify(boost::condition_variable* conditionPtr, boost::mutex* mutexPtr)
+		{
+		boost::mutex::scoped_lock lock(*mutexPtr);
+
+		conditionPtr->notify_one();
+		}
+
+	long currentlyExecuting()
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+		
+		return mExecutingNowCount;
+		}
+
+	long currentlyScheduled()
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+	
+		return mTotalScheduled;		
+		}
+
+	bool blockUntilPendingHaveExecuted()
+		{
+			{
+			boost::mutex::scoped_lock lock(mMutex);
+
+			if (mExecutingNowCount == 0 && (
+					mItemsToCall.size() == 0 || mItemsToCall.begin()->first > curClock()))
+				return false;
+			}
+
+		boost::mutex mutex;
+
+		boost::mutex::scoped_lock lock(mutex);
+
+		boost::condition_variable condition;
+
+		schedule(
+			boost::bind(lockAndNotify, &condition, &mutex),
+			curClock(),
+			CallbackSchedulerStack::None()
+			);
+
+		condition.wait(lock);
+
+		return true;
+		}
+
+	bool blockUntilPendingHaveExecutedAndQueueIsEmpty(bool logDelays)
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		double t0 = curClock();
+
+		bool didAnything = false;
+
+		while (mItemsToCall.size() || mExecutingNowCount)
+			{
+			didAnything = true;
+
+			bool isExecuting = mExecutingNowCount > 0;
+
+			lock.unlock();
+
+			if (!isExecuting)
+				blockUntilPendingHaveExecuted();
+
+			lock.lock();
+
+			if (curClock() - t0 > 1.0 && logDelays)
+				mVerboseTrigger = true;
+			}
+
+		mVerboseTrigger = false;
+
+		return didAnything;
+		}
+
+	void blockOnAllPossibleCallbacks()
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		while (mItemsToCall.size() || mExecutingNowCount)
+			mNumberCurrentlyExecutingChanged.wait(lock);
+		}
+
+	bool blockUntilPendingHaveExecutedAndImmediateQueueIsEmpty()
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		double t0 = curClock();
+
+		bool didAnything = false;
+
+		while (mItemsToCall.size() && mItemsToCall.begin()->first <= curClock() || mExecutingNowCount)
+			{
+			didAnything = true;
+
+			bool isExecuting = mExecutingNowCount > 0;
+
+			lock.unlock();
+
+			if (!isExecuting)
+				blockUntilPendingHaveExecuted();
+
+			lock.lock();
+
+			if (curClock() - t0 > 1.0)
+				mVerboseTrigger = true;
+			}
+
+		mVerboseTrigger = false;
+
+		return didAnything;
+		}
+
+	static void callbackLoopStatic(
+			boost::shared_ptr<SimpleCallbackSchedulerImpl> impl
+			)
+
+		{
+		impl->callbackLoop();
+		}
+
+	long unhandledExceptionsSinceLastCheck()
+		{
+		AO_t exceptions = AO_load(&mExceptionCount);
+
+		while(!AO_compare_and_swap_full(&mExceptionCount, exceptions, 0))
+			;
+
+		return exceptions;
+		}
+
+	CallbackSchedulerStack currentStack()
+		{
+		if (ScopedThreadLocalContext<CallbackSchedulerStack>::has())
+			return ScopedThreadLocalContext<CallbackSchedulerStack>::get();
+
+		return CallbackSchedulerStack::None();
+		}
+
+	PolymorphicSharedPtr<CallbackSchedulerFactory> getFactory()
+		{
+		return mFactory;
+		}
+
+	std::string getMetadata()
+		{
+		return mMetadata;
+		}
+
+private:
+	boost::mutex mMutex;
+
+	std::vector<boost::shared_ptr<boost::thread> > mThreads;
+
+	boost::condition_variable mCondition;
+
+	boost::condition_variable mNumberCurrentlyExecutingChanged;
+
+	std::map<double, std::vector<CallbackContext> > mItemsToCall;
+
+	PolymorphicSharedPtr<CallbackSchedulerFactory> mFactory;
+
+	Ufora::ScopedProfilerStorage<std::string> mProfilerStorage;
+
+	std::string mMetadata;
+
+	bool mShouldExit;
+
+	long mHaveExitedCount;
+
+	long mExecutingNowCount;
+
+	bool mVerboseTrigger;
+
+	long mTotalScheduled;
+
+	long mMaxScheduledItems;
+
+	AO_t mExceptionCount;
+
+	double mLastLogMessageTime;
+
+	long mCallbacksProcessedSinceLastMessage;
+
+	double mCallbacksTimesDelaySinceLastMessage;
+
+	double mMaxCallbackDelay;
+
+	boost::function1<void, boost::function0<void> > mCallbackWrapper;
+
+			
+
+};
+
+
+
+SimpleCallbackScheduler::SimpleCallbackScheduler(
+						PolymorphicSharedPtr<CallbackSchedulerFactory> inFactory,
+						std::string inMetadata,
+						long threadCount, 
+						long maxScheduledItems
+						) : 
+		mImpl(
+			new SimpleCallbackSchedulerImpl(
+				inFactory,
+				inMetadata,
+				maxScheduledItems
+				)
+			)
+	{
+	mImpl->startThreads(threadCount);
+	}
+
+SimpleCallbackScheduler::~SimpleCallbackScheduler()
+	{
+	mImpl->teardown();
+	}
+
+void SimpleCallbackScheduler::scheduleImmediately(
+							boost::function0<void> inCallback, 
+							std::string descriptor
+							)
+	{
+	CallbackSchedulerStack curStack = currentStack();
+
+	if (curStack.depth() > 100)
+		{
+		if (!curStack.isMaximum())
+			curStack = CallbackSchedulerStack::Maximum(curStack);
+		}
+	else
+		curStack = CallbackSchedulerStack::Callback(descriptor, currentStack());
+
+	mImpl->schedule(inCallback, curClock(), curStack);
+	}
+
+void SimpleCallbackScheduler::schedule(
+							boost::function0<void> inCallback, 
+							double inTime, 
+							std::string descriptor
+							)
+	{
+	mImpl->schedule(
+		inCallback, 
+		inTime, 
+		CallbackSchedulerStack::Callback(descriptor, CallbackSchedulerStack::None())
+		);
+	}
+
+PolymorphicSharedPtr<CallbackSchedulerFactory> SimpleCallbackScheduler::getFactory()
+	{
+	return mImpl->getFactory();
+	}
+
+std::string SimpleCallbackScheduler::getMetadata()
+	{
+	return mImpl->getMetadata();
+	}
+
+long SimpleCallbackScheduler::currentlyExecuting()
+	{
+	return mImpl->currentlyExecuting();
+	}
+
+void SimpleCallbackScheduler::blockOnAllPossibleCallbacks()
+	{
+	return mImpl->blockOnAllPossibleCallbacks();
+	}
+
+bool SimpleCallbackScheduler::blockUntilPendingHaveExecuted()
+	{
+	return mImpl->blockUntilPendingHaveExecuted();
+	}
+
+bool SimpleCallbackScheduler::blockUntilPendingHaveExecutedAndQueueIsEmpty(bool logDelays)
+	{
+	return mImpl->blockUntilPendingHaveExecutedAndQueueIsEmpty(logDelays);
+	}
+
+bool SimpleCallbackScheduler::blockUntilPendingHaveExecutedAndImmediateQueueIsEmpty()
+	{
+	return mImpl->blockUntilPendingHaveExecutedAndImmediateQueueIsEmpty();
+	}
+
+long SimpleCallbackScheduler::unhandledExceptionsSinceLastCheck()
+	{
+	return mImpl->unhandledExceptionsSinceLastCheck();
+	}
+
+long SimpleCallbackScheduler::currentlyScheduled()
+	{
+	return mImpl->currentlyScheduled();
+	}
+
+CallbackSchedulerStack SimpleCallbackScheduler::currentStack()
+	{
+	return mImpl->currentStack();
+	}
+
+void SimpleCallbackScheduler::setCallbackWrapper(boost::function1<void, boost::function0<void> > wrapper)
+	{
+	mImpl->setCallbackWrapper(wrapper);
+	}
+
+
+

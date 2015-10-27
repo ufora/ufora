@@ -1,0 +1,1963 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "CumulusWorker.hppml"
+#include "CumulusWorkerImpl.hppml"
+#include "../core/ScopedProfiler.hppml"
+#include "../core/cppml/CPPMLPrettyPrinterUnorderedContainers.hppml"
+#include "../core/threading/CallbackSchedulerFactory.hppml"
+#include "../core/threading/SimpleCallbackSchedulerFactory.hppml"
+#include "StripMessageOfLargeValues.hppml"
+#include "CumulusComponentSubscriptionAdapter.hppml"
+#include "LiveCheckpointLoaderFactory.hppml"
+#include "PersistentCacheManagerFactory.hppml"
+
+using namespace PolymorphicSharedPtrBinder;
+
+namespace Cumulus {
+
+void cumulusWorkerCallbackWrapper(boost::function0<void> in)
+	{
+	in();
+	}
+
+CumulusWorkerImpl::CumulusWorkerImpl(
+			PolymorphicSharedPtr<CallbackSchedulerFactory> inCallbackSchedulerFactory,
+			PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+			CumulusWorkerConfiguration inWorkerConfiguration,
+			PolymorphicSharedPtr<VectorDataManager> inVDM,
+			PolymorphicSharedPtr<OfflineCache> inOfflineCache,
+			boost::function1<void, CumulusWorkerEvent> inEventHandler
+			) :
+		mCallbackSchedulerFactory(inCallbackSchedulerFactory),
+		mCallbackScheduler(inCallbackScheduler),
+		mWorkerConfiguration(inWorkerConfiguration),
+		mVDM(inVDM),
+		mOfflineCache(inOfflineCache),
+		mLeaderQuorum(new LeaderQuorum(inWorkerConfiguration.machineId(), inCallbackScheduler)),
+		mAreComputationsStarted(false),
+		mOnPythonIoTaskRequest(inCallbackScheduler),
+		mEventHandler(inEventHandler),
+		mIsTornDown(false)
+	{
+	LOG_INFO <<
+		"Initializing CumulusWorkerImpl for machine " <<
+		prettyPrintString(mWorkerConfiguration.machineId());
+	mVDM->setMachineId(mWorkerConfiguration.machineId());
+	
+	mCallbackScheduler->setCallbackWrapper(
+		boost::function1<void, boost::function0<void> >(cumulusWorkerCallbackWrapper)
+		);
+
+	lassert(mCallbackScheduler == mVDM->getPageRefcountTracker()->getCallbackScheduler());
+	}
+
+namespace {
+
+template<class T>
+void freeTeardown(PolymorphicSharedPtr<T> ptr)
+	{
+	ptr->teardown();
+	}
+
+PolymorphicSharedPtr<CallbackScheduler> cumulusWorkerTeardownCallbackScheduler()
+	{
+	static PolymorphicSharedPtr<CallbackSchedulerFactory> factory(
+		new SimpleCallbackSchedulerFactory()
+		);
+	static PolymorphicSharedPtr<CallbackScheduler> result = factory->createScheduler();
+
+	return result;
+	}
+
+}
+
+CumulusWorkerImpl::~CumulusWorkerImpl()
+	{
+	for (auto it = mWorkerChannels.begin(); it != mWorkerChannels.end() ; ++it)
+		it->second->disconnect();
+
+	for (auto it = mClientChannels.begin(); it != mClientChannels.end() ; ++it)
+		it->second->disconnect();
+
+	cumulusWorkerTeardownCallbackScheduler()->scheduleImmediately(
+		boost::bind(
+			&freeTeardown<VectorDataManager>,
+			mVDM
+			)
+		);
+
+	if (mWorkerThreadPool)
+		cumulusWorkerTeardownCallbackScheduler()->scheduleImmediately(
+			boost::bind(
+				&freeTeardown<WorkerThreadPool>,
+				mWorkerThreadPool
+				)
+			);
+
+	cumulusWorkerTeardownCallbackScheduler()->scheduleImmediately(
+		boost::bind(
+			&freeTeardown<ActiveComputations>,
+			mActiveComputations
+			)
+		);
+
+	if (mExternalIoTasks)
+		cumulusWorkerTeardownCallbackScheduler()->scheduleImmediately(
+			boost::bind(
+				&freeTeardown<ExternalIoTasks>,
+				mExternalIoTasks
+				)
+			);
+
+	for (auto typeAndComponent: mGenericComponents)
+		cumulusWorkerTeardownCallbackScheduler()->scheduleImmediately(
+			boost::bind(
+				&freeTeardown<GenericCumulusComponent>,
+				typeAndComponent.second
+				)
+			);
+	}
+
+void CumulusWorkerImpl::dumpStateToLog()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (mActiveComputations)
+		mActiveComputations->dumpStateToLog();
+	}
+
+void CumulusWorkerImpl::startComputations()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (!mAreComputationsStarted)
+		{
+		mAreComputationsStarted = true;
+
+		if (mCurrentRegime && mWorkerThreadPool)
+			mWorkerThreadPool->startComputations();
+		}
+	}
+
+void CumulusWorkerImpl::triggerRegimeChange()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+	
+	mLeaderQuorum->forceRegimeChange();
+	}
+
+void CumulusWorkerImpl::teardown()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (mIsTornDown)
+		return;
+
+	handleRegimeChanged_(null());
+
+	mIsTornDown = true;
+	}
+
+bool CumulusWorkerImpl::hasEstablishedHandshakeWithExistingMachines()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	return hasEstablishedHandshakeWithExistingMachines_();
+	}
+
+bool CumulusWorkerImpl::hasEstablishedHandshakeWithExistingMachines_()
+	{
+	return mCurrentRegime && !mAddDropRecoveryCoordinator && !mCorruptedCacheRecoveryCoordinator;
+	}
+
+long CumulusWorkerImpl::currentlyActiveWorkerThreads()
+	{
+	if (!mWorkerThreadPool)
+		return 0;
+
+	return mWorkerThreadPool->currentlyActiveWorkerThreads();
+	}
+
+pair<PolymorphicSharedPtr<ComputationState>, hash_type> CumulusWorkerImpl::threadPoolCheckoutFunc(
+					PolymorphicSharedWeakPtr<CumulusWorkerImpl> weakPtr,
+					ComputationId computation
+					)
+	{
+	PolymorphicSharedPtr<CumulusWorkerImpl> ptr = weakPtr.lock();
+
+	if (!ptr)
+		return pair<PolymorphicSharedPtr<ComputationState>, hash_type>();
+
+	return ptr->mActiveComputations->startComputation(computation);
+	}
+
+void CumulusWorkerImpl::threadPoolCheckinFunc(
+					PolymorphicSharedWeakPtr<CumulusWorkerImpl> weakPtr,
+					ComputationId computation,
+					CreatedComputations result
+					)
+	{
+	PolymorphicSharedPtr<CumulusWorkerImpl> ptr = weakPtr.lock();
+
+	if (!ptr)
+		return;
+
+	ptr->mActiveComputations->stopComputation(computation, result);
+	}
+
+void CumulusWorkerImpl::addMachine(
+		MachineId machine,
+		worker_to_worker_channel_ptr_type inChannel
+		)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	LOG_INFO << "Machine " << mWorkerConfiguration.machineId() << " adding " << machine;
+
+	if (mEventHandler)
+		mEventHandler(
+			CumulusWorkerEvent::AddEndpoint(
+				curClock(),
+				CumulusClientOrMachine::Machine(machine)
+				)
+			);
+
+	handleRegimeChanged_(null());
+
+	lassert(mMachinesEverSeen.find(machine) == mMachinesEverSeen.end());
+	mMachinesEverSeen.insert(machine);
+
+	mWorkerChannels[machine] = inChannel;
+	
+	mLeaderQuorum->addMachine(machine);
+
+	mWorkerChannels[machine]->setHandlers(
+		boost::bind(
+			memberFunctionToWeakPtrFunction(
+				&CumulusWorkerImpl::handleWorkerToWorkerMessage
+				),
+			polymorphicSharedWeakPtrFromThis(),
+			machine,
+			boost::arg<1>()
+			),
+		boost::bind(
+			memberFunctionToWeakPtrFunction(
+				&CumulusWorkerImpl::onMachineDisconnected
+				),
+			polymorphicSharedWeakPtrFromThis(),
+			machine
+			)
+		);
+	}
+
+void CumulusWorkerImpl::onMachineDisconnected(MachineId machine)
+	{
+	mCallbackScheduler->scheduleImmediately(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&CumulusWorkerImpl::dropMachine
+				),
+			this->polymorphicSharedWeakPtrFromThis(),
+			machine
+			),
+		"DelayDropMachine"
+		);
+	}
+
+void CumulusWorkerImpl::dropMachine(MachineId machine)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+	
+	if (mEventHandler)
+		mEventHandler(
+			CumulusWorkerEvent::DropEndpoint(
+				curClock(),
+				CumulusClientOrMachine::Machine(machine)
+				)
+			);
+
+	if (mMachinesDropped.find(machine) != mMachinesDropped.end())
+		return;
+
+	LOG_INFO << "CumulusWorker " << prettyPrintString(mWorkerConfiguration.machineId())
+		<< " dropping machine " << prettyPrintString(machine);
+
+	//immediately, we have no regime
+	handleRegimeChanged_(null());
+
+	lassert(mMachinesEverSeen.find(machine) != mMachinesEverSeen.end());
+	lassert(mWorkerChannels.find(machine) != mWorkerChannels.end());
+
+	mMachinesDropped.insert(machine);
+
+	mWorkerChannels[machine]->disconnect();
+
+	mWorkerChannels.erase(machine);
+
+	mWorkerRegimesInitialized.discard(machine);
+
+	mLeaderQuorum->dropMachine(machine);
+	}
+
+void CumulusWorkerImpl::addCumulusClient(
+		CumulusClientId client,
+		worker_to_client_channel_ptr_type inChannel
+		)
+	{
+	LOG_INFO << "CumulusWorker " << prettyPrintString(mWorkerConfiguration.machineId()) 
+		<< " accepting connection from client " << prettyPrintString(client);
+	
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (mEventHandler)
+		mEventHandler(
+			CumulusWorkerEvent::AddEndpoint(
+				curClock(),
+				CumulusClientOrMachine::Client(client)
+				)
+			);
+
+	lassert(mClientsEverSeen.find(client) == mClientsEverSeen.end());
+
+	mClientsEverSeen.insert(client);
+
+	lassert(mClientChannels.find(client) == mClientChannels.end());
+	mClientChannels[client] = inChannel;
+
+	mClientChannels[client]->setHandlers(
+		boost::bind(
+			memberFunctionToWeakPtrFunction(
+				&CumulusWorkerImpl::handleClientToWorkerMessage
+				),
+			polymorphicSharedWeakPtrFromThis(),
+			client,
+			boost::arg<1>()
+			),
+		boost::bind(
+			memberFunctionToWeakPtrFunction(
+				&CumulusWorkerImpl::dropCumulusClient
+				),
+			polymorphicSharedWeakPtrFromThis(),
+			client
+			)
+		);
+
+	//send the regime message
+	writeMessageToClient_(client, CumulusWorkerToClientMessage::RegimeChanged(mCurrentRegime));
+
+	if (hasEstablishedHandshakeWithExistingMachines_())
+		{
+		sendCurrentStateToClient_(client);
+
+		mDataTransfers->addEndpoint(CumulusClientOrMachine::Client(client));
+
+		mActiveComputations->addCumulusClient(client);
+
+		mPageLoader->addCumulusClient(client);
+
+		for (auto typeAndComponent: mGenericComponents)
+			typeAndComponent.second->addCumulusClient(client);
+
+		writeMessageToClient_(client, CumulusWorkerToClientMessage::ComputationResumed(mCurrentRegime->regimeHash()));
+		}
+	}
+
+void CumulusWorkerImpl::sendCurrentStateToClient_(CumulusClientId client)
+	{
+	//send the current state to this channel
+	mClientPageEventIdStart[client] = 
+		mVDM->getPageRefcountTracker()->sendCurrentState(
+			boost::function1<void, pair<Fora::PageRefcountEvent, long> >(
+				[&](pair<Fora::PageRefcountEvent, long> event) {
+					writeMessageToClient_(
+						client,
+						CumulusWorkerToClientMessage::PageEvent(event.first, mCurrentRegime->regimeHash())
+						);
+					}
+				)
+			);
+
+	mActiveComputations->sendCurrentStateToClient(client);
+	}
+
+bool CumulusWorkerImpl::clientEverDropped_(const CumulusClientId& client)
+	{
+	return mClientsDropped.find(client) != mClientsDropped.end();
+	}
+
+void CumulusWorkerImpl::dropCumulusClient(
+		CumulusClientId client
+		)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+	
+	if (mEventHandler)
+		mEventHandler(
+			CumulusWorkerEvent::DropEndpoint(
+				curClock(),
+				CumulusClientOrMachine::Client(client)
+				)
+			);
+
+	lassert(mClientsEverSeen.find(client) != mClientsEverSeen.end());
+
+	mClientPageEventIdStart.erase(client);
+
+	if (mClientsDropped.find(client) != mClientsDropped.end())
+		return;
+
+	LOG_INFO << "CumulusWorker " << prettyPrintString(mWorkerConfiguration.machineId())
+		<< " dropping connection to client " << prettyPrintString(client);
+
+	mClientsDropped.insert(client);
+
+	mClientChannels.erase(client);
+
+	if (hasEstablishedHandshakeWithExistingMachines_())
+		{
+		mDataTransfers->dropEndpoint(CumulusClientOrMachine::Client(client));
+
+		mActiveComputations->dropCumulusClient(client);
+
+		for (auto typeAndComponent: mGenericComponents)
+			typeAndComponent.second->dropCumulusClient(client);
+
+		mPageLoader->dropCumulusClient(client);
+		}
+	}
+
+void CumulusWorkerImpl::handleLocallyProducedCumulusComponentMessage(
+												CumulusComponentMessageCreated message,
+												CumulusComponentType componentType,
+												hash_type regime
+												)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (!mCurrentRegime || mCurrentRegime->regimeHash() != regime)
+		return;
+	
+	handleLocallyProducedCumulusComponentMessage_(message, componentType);
+	}
+
+void CumulusWorkerImpl::handleLocallyProducedCumulusComponentMessage_(
+												CumulusComponentMessageCreated message,
+												CumulusComponentType componentType
+												)
+	{
+	@match CumulusComponentEndpointSet(message.targetEndpoints())
+		-| LeaderMachine() ->> {
+			if (mWorkerConfiguration.machineId() == mCurrentRegime->leaderMachine())
+				handleIncomingCumulusComponentMessage_(
+					message.message(),
+					message.targetComponentTypes(),
+					componentType,
+					CumulusClientOrMachine::Machine(mWorkerConfiguration.machineId())
+					);
+			else
+				writeMessageToWorker_(
+					mCurrentRegime->leaderMachine(),
+					CumulusWorkerToWorkerMessage::CrossComponent(
+						message.message(),
+						message.targetComponentTypes(),
+						componentType,
+						mCurrentRegime->regimeHash()
+						)
+					);
+			}
+		-| SpecificWorker(machine) ->> {
+			if (mWorkerConfiguration.machineId() == machine)
+				handleIncomingCumulusComponentMessage_(
+					message.message(),
+					message.targetComponentTypes(),
+					componentType,
+					CumulusClientOrMachine::Machine(mWorkerConfiguration.machineId())
+					);
+			else
+				writeMessageToWorker_(
+					machine,
+					CumulusWorkerToWorkerMessage::CrossComponent(
+						message.message(),
+						message.targetComponentTypes(),
+						componentType,
+						mCurrentRegime->regimeHash()
+						)
+					);
+			}
+		-| AllWorkers() ->> {
+			handleIncomingCumulusComponentMessage_(
+				message.message(),
+				message.targetComponentTypes(),
+				componentType,
+				CumulusClientOrMachine::Machine(mWorkerConfiguration.machineId())
+				);
+
+			writeToAllWorkers_(
+				CumulusWorkerToWorkerMessage::CrossComponent(
+					message.message(),
+					message.targetComponentTypes(),
+					componentType,
+					mCurrentRegime->regimeHash()
+					)
+				);
+			}
+		-| AllClients() ->> {
+			writeToAllClients_(
+				CumulusWorkerToClientMessage::CrossComponent(
+					message.message(),
+					message.targetComponentTypes(),
+					componentType,
+					mCurrentRegime->regimeHash()
+					)
+				);
+			}
+		-| SpecificClient(c) ->> {
+			writeMessageToClient_(
+				c,
+				CumulusWorkerToClientMessage::CrossComponent(
+					message.message(),
+					message.targetComponentTypes(),
+					componentType,
+					mCurrentRegime->regimeHash()
+					)
+				);
+			}
+		-| AllWorkersExceptSelf() ->> {
+			writeToAllWorkers_(
+				CumulusWorkerToWorkerMessage::CrossComponent(
+					message.message(),
+					message.targetComponentTypes(),
+					componentType,
+					mCurrentRegime->regimeHash()
+					)
+				);
+			}
+	}
+
+void CumulusWorkerImpl::handleIncomingCumulusComponentMessage_(
+												CumulusComponentMessage message,
+												const ImmutableTreeSet<CumulusComponentType>& targetComponents, 
+							                    const CumulusComponentType& sourceComponent,
+												const CumulusClientOrMachine& source 
+												)
+	{
+	for (auto targetComponent: targetComponents)
+		@match CumulusComponentType(targetComponent)
+			-| PythonIoTaskService() ->> {
+				@match CumulusComponentMessage(message)
+					-| PythonIoTaskService(Request(r)) ->> {
+						mPendingIoTaskServiceRequestSourceComponents[r.guid()] = sourceComponent;
+						mPendingIoTaskServiceRequestSourceEndpoints[r.guid()] = source;
+						mOnPythonIoTaskRequest.broadcast(r);
+						}
+				}
+			-| ActiveComputations() ->> {
+				mActiveComputations->handleCumulusComponentMessage(message, source, sourceComponent);
+				}
+			-| AddDropRecoveryCoordinator() ->> {
+				if (mAddDropRecoveryCoordinator)
+					mAddDropRecoveryCoordinator->handleCumulusComponentMessage(message, source, sourceComponent);
+				}
+			-| CorruptedPersistentCacheRecoveryCoordinator() ->> {
+				if (mCorruptedCacheRecoveryCoordinator)
+					mCorruptedCacheRecoveryCoordinator->handleCumulusComponentMessage(message, source, sourceComponent);
+				}
+			-| ExternalIoTasks() ->> {
+				mExternalIoTasks->handleCumulusComponentMessage(message, source, sourceComponent);
+				}
+			-| PageLoader() ->> {
+				mPageLoader->handleCumulusComponentMessage(message, source, sourceComponent);
+				}
+			-| LocalScheduler() ->> {
+				mLocalScheduler->handleCumulusComponentMessage(message, source, sourceComponent);
+				}
+			-| ComputationStateSummarizer() ->> {
+				mComputationStateSummarizer->handleCumulusComponentMessage(message, source, sourceComponent);
+				}
+			-| WorkerThreadPool() ->> {
+				mWorkerThreadPool->handleCumulusComponentMessage(message, source, sourceComponent);
+				}
+			-| ActivePageSynchronizer() ->> {
+				mActivePageSynchronizer->handleCumulusComponentMessage(message, source, sourceComponent);
+				}
+			-| GlobalScheduler() ->> {
+				if (mGlobalScheduler)
+					mGlobalScheduler->handleCumulusComponentMessage(message, source, sourceComponent);
+				else
+					LOG_WARN << "Received a message on " << mWorkerConfiguration.machineId()
+						<< " intended for the global scheduler, which we don't have";
+				}
+			-| _ ->> {
+				auto it = mGenericComponents.find(targetComponent);
+
+				if (it != mGenericComponents.end())
+					it->second->handleCumulusComponentMessage(message, source, sourceComponent);
+				else
+					LOG_WARN << "Received a message on " << mWorkerConfiguration.machineId() 
+						<< " intended for " << targetComponent << ", which we don't have"
+						;
+				}
+	}
+
+void CumulusWorkerImpl::handleRegimeChanged(Nullable<Regime> inNewRegime)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	Ufora::ScopedProfiler<std::string> lockAcquisitionProfiler("handleRegimeChanged");
+
+	handleRegimeChanged_(inNewRegime);
+	}
+
+void CumulusWorkerImpl::handleRegimeChanged_(Nullable<Regime> inNewRegime)
+	{
+	if (mIsTornDown)
+		return;
+
+	LOG_DEBUG << "on " << prettyPrintString(mWorkerConfiguration.machineId()) << ": handleRegimeChanged_ with "
+		<< prettyPrintString(inNewRegime);
+
+	if (mCurrentRegime == inNewRegime)
+		return;
+
+	for (auto clientAndChannel: mClientChannels)
+		writeMessageToClient_(
+			clientAndChannel.first, 
+			CumulusWorkerToClientMessage::RegimeChanged(inNewRegime)
+			);
+
+	bool needsReset = false;
+
+	if (mCurrentRegime && inNewRegime || !inNewRegime)
+		needsReset = true;
+
+	LOG_INFO << "Regime on " << mWorkerConfiguration.machineId()
+		<< " changing from " 
+		<< mCurrentRegime << " to " << inNewRegime
+		;
+
+	mCurrentRegime = inNewRegime;
+
+	if (needsReset)
+		{
+		if (mActiveComputations)
+			mActiveComputations->teardownButDontBlock();
+
+		//we are shutting down the system until we get a new regime
+		if (mAreComputationsStarted && mWorkerThreadPool)
+			mWorkerThreadPool->stopComputations();
+
+		//ensure that the VDM has unloaded all vector handles
+		mVDM->triggerUnmapOfAllVectorPagesAndBlock();
+		
+		if (mComputationStateSummarizer)
+			mComputationStateSummarizer->teardown();
+
+		if (mActivePageSynchronizer)
+			{
+			mActivePageSynchronizer->teardown();
+			mActivePageSynchronizer->blockUntilAllDiskWritesAreCompleted();
+			}
+
+		if (mPageLoader)
+			mPageLoader->teardown();
+		if (mExternalIoTasks)
+			mExternalIoTasks->teardown();
+		if (mSystemwidePageRefcountTracker)
+			mSystemwidePageRefcountTracker->teardown();
+		if (mLocalScheduler)
+			mLocalScheduler->teardown();
+		
+		if (mGlobalScheduler)
+			{
+			mGlobalScheduler->teardown();
+			mGlobalScheduler.reset();
+			}
+
+		if (mWorkerThreadPool)
+			{
+			mWorkerThreadPool->teardown();
+			mWorkerThreadPool.reset();
+			}
+
+		//make sure that no vectors get paged while we have state in-flight for add/drop
+		if (mActiveComputations)
+			mActiveComputations->disableVectorPaging();
+
+		//ensure that no threads are doing anything in the background with the ComputationState objects
+		if (mActiveComputations)
+			mActiveComputations->teardown();
+
+		for (auto typeAndComponent: mGenericComponents)
+			typeAndComponent.second->teardown();
+		mGenericComponents.clear();
+
+		mAddDropRecoveryCoordinator.reset();
+		mCorruptedCacheRecoveryCoordinator.reset();
+		}
+		
+	if (mCurrentRegime)
+		{
+		//initialize a new add-drop state
+		resetRecoveryCoordinator_();
+		
+		if (mWorkerChannels.size() == 0)
+			{
+			LOG_INFO << "Machine " << prettyPrintString(mWorkerConfiguration.machineId()) 
+				<< " initializing empty regime containing just itself."
+				;
+
+			sendInitialStateForRegime_();
+			}
+		else
+			{
+			LOG_INFO << "Machine " << prettyPrintString(mWorkerConfiguration.machineId()) 
+				<< " initializing new regime"
+				;
+
+			//we just got a new regime, so the current set of machines is stable
+			//broadcast to all the other machines our current regime
+			writeToAllWorkers_(CumulusWorkerToWorkerMessage::InitializedWithNewRegime(mCurrentRegime->regimeHash()));
+
+			//if any workers had already broadcast this regime, send them the 'sendInitialState' message
+			if (mCurrentRegime && mWorkerRegimesInitialized.getKeys(mCurrentRegime->regimeHash()).size() == mWorkerChannels.size())
+				sendInitialStateForRegime_();
+			}
+		}
+	}
+
+void CumulusWorkerImpl::handleInitializedWithNewRegime_(MachineId machine, hash_type newRegime)
+	{
+	LOG_INFO << "On " << prettyPrintString(mWorkerConfiguration.machineId()) 	
+		<< ": Machine " << prettyPrintString(machine) << " initialized with regime "
+		<< prettyPrintString(newRegime)
+		;
+
+	if (mWorkerRegimesInitialized.hasKey(machine))
+		lassert_dump(
+			mWorkerRegimesInitialized.getValue(machine) != newRegime,
+			"On " << prettyPrintString(mWorkerConfiguration.machineId()) << ", worker " << prettyPrintString(machine)
+				<< " is already initialized with regime " 
+				<< prettyPrintString(mWorkerRegimesInitialized.getValue(machine))
+			);
+
+	mWorkerRegimesInitialized.set(machine, newRegime);
+
+	if (mCurrentRegime && mWorkerRegimesInitialized.getKeys(mCurrentRegime->regimeHash()).size() == mWorkerChannels.size())
+		sendInitialStateForRegime_();
+	}
+
+void CumulusWorkerImpl::sendInitialStateForRegime_()
+	{
+	if (!mCurrentRegime)
+		{
+		LOG_WARN << "received a SendInitialStateForRegime for the wrong regime. ignoring it.";
+		return;
+		}
+
+	if (!mAddDropRecoveryCoordinator)
+		return;
+
+	lassert(mAddDropRecoveryCoordinator);
+
+	boost::function1<void, CumulusWorkerAddDropEvent> eventHandler(
+		[&](CumulusWorkerAddDropEvent event) {
+			mAddDropRecoveryCoordinator->handleLocalStateEvent(event);
+			}
+		);
+	
+	mVDM->resetSyntheticPageState();
+
+	mVDM->getPageRefcountTracker()->sendAddDropState(eventHandler);
+	
+	if (mActiveComputations)
+		{
+		if (!mActiveComputations->isTornDown())
+			{
+			//make sure that no vectors get paged while we have state in-flight for add/drop
+			mActiveComputations->disableVectorPaging();
+
+			//ensure that no threads are doing anything in the background with the ComputationState objects
+			mActiveComputations->teardown();
+			}
+
+		mActiveComputations->sendAddDropState(eventHandler);
+
+		std::map<ComputationId, PolymorphicSharedPtr<ComputationState> > states;
+
+		mActiveComputations->extractStates(states);
+
+		mAddDropRecoveryCoordinator->setComputationStates(states);
+		}
+
+	mAddDropRecoveryCoordinator->allLocalStateIsProvided();
+	}
+
+void CumulusWorkerImpl::addWorkerToCurrentRegime_(MachineId machine)
+	{
+	mPageLoader->addMachine(machine);
+
+	mExternalIoTasks->addMachine(machine);
+
+	mLocalScheduler->addMachine(machine);
+
+	if (mGlobalScheduler)
+		mGlobalScheduler->addMachine(machine);
+
+	mDataTransfers->addEndpoint(CumulusClientOrMachine::Machine(machine));
+
+	mSystemwidePageRefcountTracker->addMachine(machine);
+
+	mActiveComputations->addMachine(machine);
+
+	for (auto typeAndComponent: mGenericComponents)
+		typeAndComponent.second->addMachine(machine);
+	}
+
+void CumulusWorkerImpl::allWorkersHaveSentInitialState_()
+	{
+	lassert(mAddDropRecoveryCoordinator);
+
+	//first, drop unused pages and bigvecs. Nothing should really be listening to it right now
+	mVDM->restrictToAddDropState(mAddDropRecoveryCoordinator->getAddDropState());
+
+	//reinitialize the system
+	constructComponents_();
+
+	mVDM->resumeMappingOfVectorPages();
+
+	//at this point the PRT should be able to tie out to the bigvec references we have
+	for (auto machineAndChannel: mWorkerChannels)
+		addWorkerToCurrentRegime_(machineAndChannel.first);
+
+	mSystemwidePageRefcountTracker->initializeFromAddDropState(mAddDropRecoveryCoordinator->getAddDropState());
+
+	mLocalScheduler->initializeFromAddDropState(mAddDropRecoveryCoordinator->getAddDropState());
+
+	if (mGlobalScheduler)
+		mGlobalScheduler->initializeFromAddDropState(mAddDropRecoveryCoordinator->getAddDropState());
+
+	mActivePageSynchronizer->initializeFromAddDropState(mAddDropRecoveryCoordinator->getAddDropState());
+
+	mActiveComputations->initializeFromAddDropState(
+		mAddDropRecoveryCoordinator->getComputationStates(), 
+		mAddDropRecoveryCoordinator->getAddDropState()
+		);
+
+	for (auto typeAndComponent: mGenericComponents)
+		typeAndComponent.second->initializeFromAddDropState(
+			mAddDropRecoveryCoordinator->getAddDropState()
+			);
+
+	mAddDropRecoveryCoordinator->clearComputationStates();
+
+	mActiveComputations->enableVectorPaging();
+
+	wireComponentsTogether_();
+
+	wireSelfToIndividualComponents_();
+	}
+
+void CumulusWorkerImpl::handleCorruptedCacheRecoveryComplete_()
+	{
+	mLeaderQuorum->forceRegimeChange();
+	}
+
+void CumulusWorkerImpl::triggerAllWorkersAreReadyToCompute_()
+	{
+	mCallbackScheduler->scheduleImmediately(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&CumulusWorkerImpl::allWorkersAreReadyToCompute
+				),
+			this->polymorphicSharedWeakPtrFromThis(),
+			mCurrentRegime->regimeHash()
+			),
+		"allWorkersAreReadyToCompute"
+		);
+	}
+
+void CumulusWorkerImpl::allWorkersAreReadyToCompute(hash_type regime)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+	
+	allWorkersAreReadyToCompute_(regime);	
+	}
+
+void CumulusWorkerImpl::allWorkersAreReadyToCompute_(hash_type regime)
+	{
+	//this callback raced with a prior add/drop
+	if (!mCurrentRegime || mCurrentRegime->regimeHash() != regime)
+		return;
+
+		{
+		LOGGER_INFO_T log = LOGGER_INFO;
+		log << mWorkerConfiguration.machineId() << " is resuming with the following bigvecs:\n";
+
+		for (auto bv: mAddDropRecoveryCoordinator->getAddDropState().bigvecLayouts())
+			log << "\t" << bv.first << "\n";
+		}
+
+	if (!mVDM->getPageRefcountTracker()->validateStateAgainstAddDropState(
+				mAddDropRecoveryCoordinator->getAddDropState(),
+				mWorkerConfiguration.machineId()
+				)
+			)
+		LOG_WARN << "We don't have a consistent view of the world.";
+
+	mAddDropRecoveryCoordinator.reset();
+
+	LOG_INFO << "CumulusWorker on " << prettyPrintString(mWorkerConfiguration.machineId()) 
+		<< " preparing to compute under regime "
+		<< prettyPrintString(mCurrentRegime->regimeHash())
+		<< " with workers " << mSystemwidePageRefcountTracker->getAllMachineIds();
+
+	mLocalScheduler->onInitiateComputationMove().resume();
+	mLocalScheduler->onCumulusComponentMessageCreated().resume();
+
+	if (mGlobalScheduler)
+		mGlobalScheduler->onCumulusComponentMessageCreated().resume();
+	
+	mComputationStateSummarizer->onCumulusComponentMessageCreated().resume();
+
+	mActivePageSynchronizer->onCumulusComponentMessageCreated().resume();
+
+	mActiveComputations->resumeAllBroadcasters();
+
+	for (auto typeAndComponent: mGenericComponents)
+		typeAndComponent.second->onCumulusComponentMessageCreated().resume();
+
+	wireCurrentClientsToComponents_();
+
+	mCallbackScheduler->scheduleImmediately(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&CumulusWorkerImpl::resumeComputationsForRegime
+				),
+			this->polymorphicSharedWeakPtrFromThis(),
+			mCurrentRegime->regimeHash()
+			),
+		"ResumeComputations"
+		);
+	}
+
+void CumulusWorkerImpl::resumeComputationsForRegime(hash_type inRegime)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (!mCurrentRegime || inRegime != mCurrentRegime->regimeHash())
+		return;
+			
+	//only hook this up after we have fully exchanged state. If we allow this to happen before,
+	//it's possible to lose pages due to weird race conditions.
+	mSystemwidePageRefcountTracker->onPageNoLongerReferencedAcrossEntireSystem().subscribe(
+		polymorphicSharedWeakPtrFromThis(),
+		&CumulusWorkerImpl::handlePageNoLongerReferencedAcrossEntireSystem,
+		inRegime
+		);
+
+	LOG_INFO << "CumulusWorker on " << prettyPrintString(mWorkerConfiguration.machineId()) 
+		<< "resuming computation under regime "
+		<< prettyPrintString(mCurrentRegime->regimeHash())
+		<< " with " << mClientChannels.size() << " clients."
+		;
+
+	if (mAreComputationsStarted && mWorkerThreadPool)
+		mWorkerThreadPool->startComputations();
+	}
+
+void CumulusWorkerImpl::handlePageNoLongerReferencedAcrossEntireSystem(hash_type regime, Fora::PageId page)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (!mCurrentRegime || mCurrentRegime->regimeHash() != regime)
+		return;
+
+	mVDM->dropPageUnreferencedAcrossSystem(page);
+
+	mLocalScheduler->pageNoLongerReferencedAcrossSystem(page);
+	if (mGlobalScheduler)
+		mGlobalScheduler->pageNoLongerReferencedAcrossSystem(page);
+	mActivePageSynchronizer->pageNoLongerReferencedAcrossSystem(page);
+
+	for (auto typeAndComponent: mGenericComponents)
+		typeAndComponent.second->pageNoLongerReferencedAcrossSystem(page);
+	}
+
+void CumulusWorkerImpl::handleOutgoingLeaderQuorumMessage(LeaderQuorumMessage msg)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	writeToAllWorkers_(CumulusWorkerToWorkerMessage::LeaderQuorum(msg));
+	}
+
+void CumulusWorkerImpl::handleComputationResultFromMachine(ComputationResultFromMachine result)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	Ufora::ScopedProfiler<std::string> lockAcquisitionProfiler("handleComputationResultFromMachine");
+
+	handleComputationResultFromMachine_(result);
+	}
+
+void CumulusWorkerImpl::handleComputationResultFromMachine_(ComputationResultFromMachine result)
+	{
+	if (result.sourceMachine() == mWorkerConfiguration.machineId())
+		{
+		@match CumulusClientOrMachine(result.target())
+			-| Machine(sourceMachine) ->> {
+				if (mCurrentRegime)
+					writeMessageToWorker_(
+						sourceMachine,
+						CumulusWorkerToWorkerMessage::ComputationResultResponse(result, mCurrentRegime->regimeHash())
+						);
+				else
+					LOG_WARN << "Dropping ComputationResultResponse on the floor because we have no regime";
+				}
+			-| Client(sourceClient) ->> {
+				if (!clientEverDropped_(sourceClient))
+					writeMessageToClient_(
+						sourceClient,
+						CumulusWorkerToClientMessage::ComputationResult(result, mCurrentRegime->regimeHash())
+						);
+				}
+		}
+	else
+		mActiveComputations->handleComputationResultFromMachine(result);
+	}
+
+void CumulusWorkerImpl::handleRequestComputationResultFromMachine(RequestComputationResultFromMachine request)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	Ufora::ScopedProfiler<std::string> lockAcquisitionProfiler("handleRequestComputationResultFromMachine");
+
+	handleRequestComputationResultFromMachine_(request);
+	}
+
+void CumulusWorkerImpl::handleRequestComputationResultFromMachine_(RequestComputationResultFromMachine request)
+	{
+	if (request.source() == mWorkerConfiguration.machineId())
+		{
+		MachineId targetMachine = request.targetMachine();
+
+		if (mCurrentRegime)
+			{
+			lassert(hasEstablishedHandshakeWithExistingMachines_());
+
+			writeMessageToWorker_(
+				targetMachine,
+				CumulusWorkerToWorkerMessage::ComputationResultRequest(request, mCurrentRegime->regimeHash())
+				);
+			}
+		else
+			LOG_WARN << "Dropping ComputationResultRequest on the floor because we have no regime.";
+		}
+		else
+	if (request.targetMachine() == mWorkerConfiguration.machineId())
+		{
+		mActiveComputations->handleRequestComputationResultFromMachine(request);
+		}
+	else
+		{
+		lassert_dump(false, "Got a RequestComputationResultFromMachine from "
+				<< prettyPrintString(request.source())
+				<< " to "
+				<< prettyPrintString(request.targetMachine())
+				<< ", but I am neither ("
+				<< prettyPrintString(mWorkerConfiguration.machineId())
+				<< ")"
+				);
+		}
+	}
+
+void CumulusWorkerImpl::handleClientToWorkerMessage(
+							CumulusClientId client,
+							CumulusClientToWorkerMessage message
+							)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	Ufora::ScopedProfiler<std::string> lockAcquisitionProfiler("handleClientToWorkerMessage");
+
+	handleClientToWorkerMessage_(client, message);
+	}
+
+void CumulusWorkerImpl::handleClientToWorkerMessage_(
+							CumulusClientId client,
+							CumulusClientToWorkerMessage message
+							)
+	{
+	if (mClientsDropped.find(client) != mClientsDropped.end())
+		return;
+
+	if (!hasEstablishedHandshakeWithExistingMachines_())
+		return;
+
+	LOG_DEBUG << "on " << prettyPrintString(mWorkerConfiguration.machineId())
+		<< " from client " << prettyPrintString(client) << ": " << prettyPrintStringWithoutWrapping(message);
+
+	@match CumulusClientToWorkerMessage(message)
+		-| PageEvent(msg) ->> {
+			//events from the scheduler should only be "BigVectorReferenced"
+			lassert(msg.isBigVectorReferenced());
+			processPageEvent(msg, mWorkerConfiguration.machineId());
+			}
+		-| RequestComputation(msg) ->> {
+			handleRequestComputationResultFromMachine_(msg);
+			}
+		-| TokenReceived(token) ->> {
+			mDataTransfers->tokenReceived(token);
+			}
+		-| CrossComponent(message, targetComponents, sourceComponent) ->> {
+			handleIncomingCumulusComponentMessage_(
+				message, 
+				targetComponents, 
+				sourceComponent, 
+				CumulusClientOrMachine::Client(client)
+				);
+			}
+	}
+
+bool CumulusWorkerImpl::acceptingMessagesFromMachine_(MachineId machine)
+	{
+	return mCurrentRegime &&
+			mWorkerChannels.find(machine) != mWorkerChannels.end()
+			;
+	}
+
+void CumulusWorkerImpl::handleWorkerToWorkerMessage(MachineId machine, CumulusWorkerToWorkerMessage message)
+	{
+	Nullable<hash_type> msgRegime = message.currentRegime();
+	Nullable<DataTransferTokenId> token = message.extractToken();
+
+	Ufora::ScopedProfiler<std::string> lockAcquisitionProfiler("handleWorkerToWorkerMessage:WaitForLock");
+
+	double t0 = curClock();
+
+	boost::mutex::scoped_lock lock(mMutex);
+
+	Ufora::ScopedProfiler<std::string> profiler("handleWorkerToWorkerMessage:" + std::string(message.tagName()));
+
+	LOG_DEBUG << "on " << prettyPrintString(mWorkerConfiguration.machineId()) << " from " << prettyPrintString(machine)
+		<< " handling Worker-To-Worker message " << prettyPrintStringWithoutWrapping(message)
+		;
+
+	double t1 = curClock();
+
+	if (mMachinesDropped.find(machine) != mMachinesDropped.end())
+		return;
+
+	@match CumulusWorkerToWorkerMessage(message)
+		-| LeaderQuorum(msg) ->> {
+			mLeaderQuorum->handleLeaderQuorumMessage(msg);
+			return;
+			}
+		-| InitializedWithNewRegime(regime) ->> {
+			handleInitializedWithNewRegime_(machine, regime);
+			return;
+			}
+		-| _ ->> {}
+		;
+
+	if (!mCurrentRegime || !msgRegime || mCurrentRegime->regimeHash() != *msgRegime)
+		return;
+
+	lassert_dump(
+		mCurrentRegime, 
+		"if we're accepting messages from this machine, then we have a regime."
+		);
+
+	if (token)
+		{
+		LOG_DEBUG_SCOPED("DataTransfers") 
+				<< prettyPrintString(mWorkerConfiguration.machineId()) << ": "
+				<< "Token " << prettyPrintString(token) << " received from " 
+				<< prettyPrintString(machine)
+				;
+
+		writeMessageToWorker_(
+			machine, 
+			CumulusWorkerToWorkerMessage::TokenReceived(*token, mCurrentRegime->regimeHash())
+			);
+		}
+
+	double t2 = curClock();
+
+	@match CumulusWorkerToWorkerMessage(message)
+		-| ComputationResultRequest(msg) ->> {
+			handleRequestComputationResultFromMachine_(msg);
+			}
+		-| ComputationResultResponse(msg) ->> {
+			handleComputationResultFromMachine_(msg);
+			}
+		-| PageEvent(event) ->> {
+			processPageEvent(event, machine);
+			}
+		-| TokenReceived(token) ->> {
+			mDataTransfers->tokenReceived(token);
+			}
+		-| CrossComponent(message, targetComponents, sourceComponent) ->> {
+			handleIncomingCumulusComponentMessage_(
+				message, 
+				targetComponents, 
+				sourceComponent, 
+				CumulusClientOrMachine::Machine(machine)
+				);
+			}
+		-| _ ->> {
+			lassert_dump(false, "Received an unprocessable message: " << prettyPrintString(message));
+			}
+	}
+
+void CumulusWorkerImpl::writeToAllClients_(const CumulusWorkerToClientMessage& msg)
+	{
+	for (auto it = mClientChannels.begin(); it != mClientChannels.end(); ++it)
+		writeMessageToClient_(it->first, msg);
+	}
+
+void CumulusWorkerImpl::writeToAllWorkers_(const CumulusWorkerToWorkerMessage& msg)
+	{
+	for (auto it = mWorkerChannels.begin(); it != mWorkerChannels.end(); ++it)
+		writeMessageToWorker_(it->first, msg);
+	}
+
+void CumulusWorkerImpl::writeToAllClients_(const CumulusWorkerToClientMessage& msg, long eventId)
+	{
+	for (auto it = mClientChannels.begin(); it != mClientChannels.end(); ++it)
+		try {
+			if (mClientPageEventIdStart[it->first] < eventId)
+				writeMessageToClient_(it->first, msg);
+			}
+		catch(const ChannelDisconnected&)
+			{
+			}
+	}
+
+void CumulusWorkerImpl::writeToAllWorkers_(const CumulusWorkerToWorkerMessage& msg, long eventId)
+	{
+	for (auto it = mWorkerChannels.begin(); it != mWorkerChannels.end(); ++it)
+		try {
+			if (mWorkerPageEventIdStart[it->first] < eventId)
+				writeMessageToWorker_(it->first, msg);
+			}
+		catch(const ChannelDisconnected&)
+			{
+			}
+	}
+
+void CumulusWorkerImpl::writeMessageToClient_(
+							const CumulusClientId& client,
+							const CumulusWorkerToClientMessage& msg
+							)
+	{
+	LOG_DEBUG << "worker " << prettyPrintString(mWorkerConfiguration.machineId()) << " sending " 
+		<< prettyPrintString(msg) << " to " << prettyPrintString(client);
+
+	auto it = mClientChannels.find(client);
+
+	lassert(it != mClientChannels.end());
+
+	try {
+		it->second->write(msg);
+		}
+	catch(ChannelDisconnected& )
+		{
+		}
+	}
+
+void CumulusWorkerImpl::writeMessageToWorker_(
+							const MachineId& worker,
+							const CumulusWorkerToWorkerMessage& msg
+							)
+	{
+	auto it = mWorkerChannels.find(worker);
+
+	if (it != mWorkerChannels.end())
+		{
+		try {
+			it->second->write(msg);
+			}
+		catch(const ChannelDisconnected&)
+			{
+			}
+		}
+	else
+		{
+		LOG_WARN << "Tried to send a message " << msg.tagName() 
+			<< " to a nonexistent worker: " << worker;
+		}
+	}
+
+void CumulusWorkerImpl::processPageEvent(Fora::PageRefcountEvent event, MachineId machine)
+	{
+	mSystemwidePageRefcountTracker->consumePageEvent(event, machine);
+	mLocalScheduler->consumePageEvent(event, machine);
+	if (mGlobalScheduler)
+		mGlobalScheduler->consumePageEvent(event, machine);
+	mActivePageSynchronizer->consumePageEvent(event, machine);
+
+	for (auto typeAndComponent: mGenericComponents)
+		typeAndComponent.second->consumePageEvent(event, machine);
+
+	@match Fora::PageRefcountEvent(event)
+		-|	SyntheticPageCreated(pageId, layout) ->> {
+			mVDM->registerSyntheticPage(pageId, layout);
+			}
+		-|	SyntheticPageRealized(pageId) ->> {
+			mVDM->syntheticPageRealized(pageId);
+			}
+		-| _ ->> {}
+		;
+
+	mActiveComputations->handleLocalPageRefcountEvent(event);
+	}
+
+void CumulusWorkerImpl::handleLocalPageRefcountEvent(pair<Fora::PageRefcountEvent, long> event)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	Ufora::ScopedProfiler<std::string> lockAcquisitionProfiler("handleLocalPageRefcountEvent:" + std::string(event.first.tagName()));
+
+	LOG_DEBUG << "handling local PRT message " << event;
+
+	if (!(mCurrentRegime && (!mAddDropRecoveryCoordinator)))
+		{
+		LOG_DEBUG << "Dropping " << event << " on the floor because we aren't ready to compute yet.";
+		return;
+		}
+		
+	writeToAllClients_(
+		CumulusWorkerToClientMessage::PageEvent(event.first, mCurrentRegime->regimeHash()),
+		event.second
+		);
+
+	//if we're not actually set up yet, we don't want to propagate the local page events to the 
+	//Scheduler or the SPRT, since they're not yet ready to accept incoming messages.
+	if (event.second > mWorkerPageEventIdStart[mWorkerConfiguration.machineId()])
+		{
+		processPageEvent(event.first, mWorkerConfiguration.machineId());
+
+		writeToAllWorkers_(
+			CumulusWorkerToWorkerMessage::PageEvent(event.first, mCurrentRegime->regimeHash()),
+			event.second
+			);
+		}
+	else
+		LOG_DEBUG << "On " << mWorkerConfiguration.machineId() << ", ignoring local PRT message " << event 
+			<< " because the event ID " 
+			<< event.second << " is below " << mWorkerPageEventIdStart[mWorkerConfiguration.machineId()]
+			;
+	}
+
+void CumulusWorkerImpl::polymorphicSharedPtrBaseInitialized()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	mVDM->getPageRefcountTracker()->onPageRefcountEvent().subscribe(
+		polymorphicSharedWeakPtrFromThis(),
+		&CumulusWorkerImpl::handleLocalPageRefcountEvent
+		);
+
+	if (mOfflineCache)
+		mVDM->setOfflineCache(mOfflineCache);
+
+	mLeaderQuorum->onLeaderQuorumMessage().subscribe(
+		polymorphicSharedWeakPtrFromThis(),
+		&CumulusWorkerImpl::handleOutgoingLeaderQuorumMessage
+		);
+
+	mLeaderQuorum->onRegimeChanged().subscribe(
+		polymorphicSharedWeakPtrFromThis(),
+		&CumulusWorkerImpl::handleRegimeChanged
+		);
+
+	mCurrentRegime = mLeaderQuorum->currentRegime();
+
+	lassert(mCurrentRegime);
+
+	resetRecoveryCoordinator_();
+
+	sendInitialStateForRegime_();
+
+	mCallbackScheduler->schedule(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&CumulusWorkerImpl::checkIfPersistentCacheIsInvalid
+				),
+			this->polymorphicSharedWeakPtrFromThis()
+			),
+		curClock() + 1.0
+		);
+	}
+
+void CumulusWorkerImpl::checkIfPersistentCacheIsInvalid()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (mIsTornDown)
+		return;
+
+	checkIfPersistentCacheIsInvalid_();
+
+	mCallbackScheduler->schedule(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&CumulusWorkerImpl::checkIfPersistentCacheIsInvalid
+				),
+			this->polymorphicSharedWeakPtrFromThis()
+			),
+		curClock() + 1.0
+		);
+	}
+
+void CumulusWorkerImpl::checkIfPersistentCacheIsInvalid_()
+	{
+	//if we don't have a regime, nothing to do
+	if (!mCurrentRegime)
+		return;
+
+	//only the leader needs to worry about this
+	if (mCurrentRegime->leaderMachine() != mWorkerConfiguration.machineId())
+		return;
+
+	//if we have no cache, also nothing to do
+	if (!mVDM->getPersistentCacheIndex())
+		return;
+
+	//if there are no invalid objects, nothing to do
+	if (!mVDM->getPersistentCacheIndex()->anyInvalidObjectsExist())
+		return;
+
+	//if we are already handling the fault, nothing to do
+	if (mCorruptedCacheRecoveryCoordinator)
+		return;
+
+	//otherwise, we need to reset the regime which will trigger the corrupted cache recovery coordinator
+	mLeaderQuorum->forceRegimeChange();
+	}
+
+void CumulusWorkerImpl::resetRecoveryCoordinator_()
+	{
+	//if we have a corrupted cache, allow a pass of recovery before we do anything. We only do this on
+	//the leader machine.
+	if (mVDM->getPersistentCacheIndex() && mVDM->getPersistentCacheIndex()->anyInvalidObjectsExist()
+			 && mCurrentRegime->leaderMachine() == mWorkerConfiguration.machineId())
+		{
+		mCorruptedCacheRecoveryCoordinator.reset(
+			new CorruptedPersistentCacheRecoveryCoordinator(
+				mVDM,
+				boost::bind(
+					&CumulusWorkerImpl::handleLocallyProducedCumulusComponentMessage_,
+					this,
+					boost::arg<1>(), 
+					CumulusComponentType::CorruptedPersistentCacheRecoveryCoordinator()
+					),
+				boost::bind(
+					&CumulusWorkerImpl::handleCorruptedCacheRecoveryComplete_,
+					this
+					),
+				mWorkerConfiguration.machineId(),
+				mCurrentRegime->leaderMachine() == mWorkerConfiguration.machineId(),
+				mCurrentRegime->regimeHash()
+				)
+			);
+
+		return;
+		}
+
+	mAddDropRecoveryCoordinator.reset(
+		new AddDropRecoveryCoordinator(
+			mVDM,
+			boost::bind(
+				&CumulusWorkerImpl::handleLocallyProducedCumulusComponentMessage_,
+				this,
+				boost::arg<1>(), 
+				CumulusComponentType::AddDropRecoveryCoordinator()
+				),
+			boost::bind(
+				&CumulusWorkerImpl::allWorkersHaveSentInitialState_,
+				this
+				),
+			boost::bind(
+				&CumulusWorkerImpl::triggerAllWorkersAreReadyToCompute_,
+				this
+				),
+			mWorkerConfiguration.machineId(),
+			mCurrentRegime->regimeHash(),
+			mCurrentRegime->leaderMachine() == mWorkerConfiguration.machineId(),
+			*mWorkerConfiguration.executionContextConfiguration(),
+			mCallbackScheduler
+			)
+		);
+
+	for (auto machineAndChannel: mWorkerChannels)
+		mAddDropRecoveryCoordinator->addMachine(machineAndChannel.first);
+	}
+
+void CumulusWorkerImpl::handlePythonIoTaskResponse(PythonIoTaskResponse descriptor)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	Ufora::ScopedProfiler<std::string> lockAcquisitionProfiler("handlePythonIoTaskResponse");
+
+	if (mPendingIoTaskServiceRequestSourceComponents.find(descriptor.guid())
+			== mPendingIoTaskServiceRequestSourceComponents.end())
+		{
+		LOG_WARN << "Unknown PythonIoTaskResponse";
+		return;
+		}
+
+	handleLocallyProducedCumulusComponentMessage_(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::PythonIoTaskService(
+				PythonIoTaskServiceMessage::Response(descriptor)
+				),
+			CumulusComponentEndpointSet::fromEndpoint(
+				mPendingIoTaskServiceRequestSourceEndpoints[descriptor.guid()]
+				),
+			mPendingIoTaskServiceRequestSourceComponents[descriptor.guid()]
+			),
+		CumulusComponentType::PythonIoTaskService()
+		);
+
+	mPendingIoTaskServiceRequestSourceEndpoints.erase(descriptor.guid());
+	mPendingIoTaskServiceRequestSourceComponents.erase(descriptor.guid());
+	}
+
+namespace {
+
+void writeSchedulerEventToCumulusWorkerEventStream(
+			boost::function1<void, CumulusWorkerEvent> eventHandler,
+			hash_type schedulerGuid,
+			SystemwideComputationScheduler::LocalSchedulerEvent event
+			)
+	{
+	eventHandler(
+		CumulusWorkerEvent::LocalScheduler(curClock(), schedulerGuid, event)
+		);
+	}
+
+void writeGlobalSchedulerEventToCumulusWorkerEventStream(
+			boost::function1<void, CumulusWorkerEvent> eventHandler,
+			hash_type schedulerGuid,
+			SystemwideComputationScheduler::GlobalSchedulerEvent event
+			)
+	{
+	eventHandler(
+		CumulusWorkerEvent::GlobalScheduler(curClock(), schedulerGuid, event)
+		);
+	}
+
+void writeSprtEventToCumulusWorkerEventStream(
+			boost::function1<void, CumulusWorkerEvent> eventHandler,
+			hash_type sprtGuid,
+			SystemwidePageRefcountTrackerEvent event
+			)
+	{
+	eventHandler(
+		CumulusWorkerEvent::SPRT(curClock(), sprtGuid, event)
+		);
+	}
+
+void writeExternalIoTasksEventToCumulusWorkerEventStream(
+			boost::function1<void, CumulusWorkerEvent> eventHandler,
+			hash_type externalIoTasksGuid,
+			ExternalIoTasksEvent event
+			)
+	{
+	eventHandler(
+		CumulusWorkerEvent::ExternalIoTasks(
+			curClock(), 
+			externalIoTasksGuid, 
+			stripMessageOfLargeValues(event)
+			)
+		);
+	}
+
+void writeActiveComputationsEventToCumulusWorkerEventStream(
+			boost::function1<void, CumulusWorkerEvent> eventHandler,
+			hash_type activeComputationsGuid,
+			ActiveComputationsEvent event
+			)
+	{
+	eventHandler(
+		CumulusWorkerEvent::ActiveComputations(
+			curClock(), 
+			activeComputationsGuid, 
+			stripMessageOfLargeValues(event)
+			)
+		);
+	}
+
+void writeDataTransfersEventToCumulusWorkerEventStream(
+			boost::function1<void, CumulusWorkerEvent> eventHandler,
+			hash_type dataTransfersGuid,
+			DataTransferEvent event
+			)
+	{
+	eventHandler(
+		CumulusWorkerEvent::DataTransfer(curClock(), dataTransfersGuid, event)
+		);
+	}
+
+
+}
+
+void CumulusWorkerImpl::constructComponents_()
+	{
+	if (mWorkerThreadPool)
+		mWorkerThreadPool->teardown();
+	
+	mWorkerThreadPool.reset(
+			new WorkerThreadPool(
+				mWorkerConfiguration.workerThreadCount(),
+				boost::bind(
+					threadPoolCheckoutFunc,
+					polymorphicSharedWeakPtrFromThis(),
+					boost::arg<1>()
+					),
+				boost::bind(
+					threadPoolCheckinFunc,
+					polymorphicSharedWeakPtrFromThis(),
+					boost::arg<1>(),
+					boost::arg<2>()
+					),
+				mWorkerConfiguration.machineId()
+				)
+			);
+
+	mDataTransfers.reset(
+		new DataTransfers(
+			mCallbackSchedulerFactory->createScheduler(
+				"DataTransfers_" + prettyPrintString(mWorkerConfiguration.machineId())
+				), 
+			CumulusClientOrMachine::Machine(mWorkerConfiguration.machineId()),
+			mEventHandler ? 
+				boost::bind(
+					&writeDataTransfersEventToCumulusWorkerEventStream,
+					mEventHandler,
+					Hash::SHA1(boost::to_string(boost::uuids::random_generator()())),
+					boost::arg<1>()
+					)
+			:	boost::function1<void, DataTransferEvent>(),
+			std::max<double>(
+				100 * 1024 * 1024,
+				mVDM->getMemoryLimit() * 0.02
+				)
+			)
+		);
+
+	mSystemwidePageRefcountTracker.reset(
+		new SystemwidePageRefcountTracker(
+			mVDM->getBigVectorLayouts(),
+			mCallbackScheduler,
+			mEventHandler ? 
+				boost::bind(
+					&writeSprtEventToCumulusWorkerEventStream,
+					mEventHandler,
+					Hash::SHA1(boost::to_string(boost::uuids::random_generator()())),
+					boost::arg<1>()
+					)
+			:	boost::function1<void, SystemwidePageRefcountTrackerEvent>()
+			)
+		);
+
+	mSystemwidePageRefcountTracker->setMachineId(mWorkerConfiguration.machineId());
+
+	mActiveComputations.reset(
+		new ActiveComputations(
+			mCallbackSchedulerFactory, 
+			mCallbackScheduler,
+			mDataTransfers,
+			mVDM, 
+			mWorkerConfiguration.workerThreadCount(),
+			*mWorkerConfiguration.executionContextConfiguration(),
+			mWorkerConfiguration.machineId(), 
+			mSystemwidePageRefcountTracker,
+			RandomHashGenerator::singleton(),
+			mEventHandler ? 
+				boost::bind(
+					&writeActiveComputationsEventToCumulusWorkerEventStream,
+					mEventHandler,
+					Hash::SHA1(boost::to_string(boost::uuids::random_generator()())),
+					boost::arg<1>()
+					)
+			:	boost::function1<void, ActiveComputationsEvent>(),
+			mCurrentRegime ? mCurrentRegime->leaderMachine() : mWorkerConfiguration.machineId()
+			)
+		);
+
+	mActiveComputations->suspendAllBroadcasters();
+
+	mGenericComponents.clear();
+
+	mGenericComponents[CumulusComponentType::LiveCheckpointLoader()].reset(
+		new GenericCumulusComponent(
+			mCallbackScheduler,
+			createLiveCheckpointLoader(mVDM),
+			CumulusClientOrMachine::Machine(mWorkerConfiguration.machineId()),
+			mWorkerConfiguration.machineId() == mCurrentRegime->leaderMachine()
+			)
+		);
+
+	mGenericComponents[CumulusComponentType::PersistentCacheManager()].reset(
+		new GenericCumulusComponent(
+			mCallbackScheduler,
+			createPersistentCacheManager(mVDM),
+			CumulusClientOrMachine::Machine(mWorkerConfiguration.machineId()),
+			mWorkerConfiguration.machineId() == mCurrentRegime->leaderMachine()
+			)
+		);
+
+	for (auto typeAndComponent: mGenericComponents)
+		typeAndComponent.second->onCumulusComponentMessageCreated().suspend();
+
+	mSystemwidePageRefcountTracker->addMachine(mWorkerConfiguration.machineId());
+
+	mLocalScheduler.reset(
+		new SystemwideComputationScheduler::LocalScheduler(
+			mCallbackScheduler,
+			mVDM,
+			mWorkerConfiguration.machineId(),
+			mWorkerConfiguration.workerThreadCount(),
+			mEventHandler ? 
+				boost::bind(
+					&writeSchedulerEventToCumulusWorkerEventStream,
+					mEventHandler,
+					Hash::SHA1(boost::to_string(boost::uuids::random_generator()())),
+					boost::arg<1>()
+					)
+			:	boost::function1<void, SystemwideComputationScheduler::LocalSchedulerEvent>()
+			)
+		);
+
+	if (mWorkerConfiguration.diagnosticLogfilePath().size())
+		mLocalScheduler->setDiagnosticLogfilePath(mWorkerConfiguration.diagnosticLogfilePath());
+
+	mLocalScheduler->onInitiateComputationMove().suspend();
+	mLocalScheduler->onCumulusComponentMessageCreated().suspend();
+
+	if (mWorkerConfiguration.machineId() == mCurrentRegime->leaderMachine())
+		{
+		mGlobalScheduler.reset(
+			new SystemwideComputationScheduler::GlobalScheduler(
+				mCallbackScheduler,
+				mVDM,
+				mWorkerConfiguration.machineId(),
+				mWorkerConfiguration.workerThreadCount(),
+				mWorkerConfiguration.checkpointPolicy(),
+				mEventHandler ? 
+					boost::bind(
+						&writeGlobalSchedulerEventToCumulusWorkerEventStream,
+						mEventHandler,
+						Hash::SHA1(boost::to_string(boost::uuids::random_generator()())),
+						boost::arg<1>()
+						)
+				:	boost::function1<void, SystemwideComputationScheduler::GlobalSchedulerEvent>()
+				)
+			);
+		mGlobalScheduler->onCumulusComponentMessageCreated().suspend();
+
+		if (mWorkerConfiguration.diagnosticLogfilePath().size())
+			mGlobalScheduler->setDiagnosticLogfilePath(mWorkerConfiguration.diagnosticLogfilePath());
+		}
+	else
+		mGlobalScheduler.reset();
+
+	mActivePageSynchronizer.reset(
+		new SystemwideComputationScheduler::ActivePageSynchronizer(
+			mCallbackScheduler,
+			mSystemwidePageRefcountTracker,
+			mVDM,
+			mOfflineCache,
+			mWorkerConfiguration.machineId()
+			)
+		);
+
+	mActivePageSynchronizer->onCumulusComponentMessageCreated().suspend();
+
+	mComputationStateSummarizer.reset(
+		new SystemwideComputationScheduler::ComputationStateSummarizer(
+			mCallbackScheduler,
+			mWorkerConfiguration.machineId()
+			)
+		);
+	mComputationStateSummarizer->onCumulusComponentMessageCreated().suspend();
+
+	mPageLoader.reset(
+		new PageLoader(
+			mVDM,
+			mDataTransfers,
+			mSystemwidePageRefcountTracker,
+			mOfflineCache,
+			CumulusClientOrMachine::Machine(mWorkerConfiguration.machineId()),
+			mCallbackScheduler
+			)
+		);
+
+	if (mExternalIoTasks)
+		mExternalIoTasks->teardown();
+	mExternalIoTasks.reset(
+		new ExternalIoTasks(
+			mVDM,
+			mOfflineCache,
+			mSystemwidePageRefcountTracker,
+			mWorkerConfiguration.machineId(),
+			mCallbackScheduler,
+			mEventHandler ? 
+				boost::bind(
+					&writeExternalIoTasksEventToCumulusWorkerEventStream,
+					mEventHandler,
+					Hash::SHA1(boost::to_string(boost::uuids::random_generator()())),
+					boost::arg<1>()
+					)
+			:	boost::function1<void, ExternalIoTasksEvent>()
+			)
+		);
+
+	mWorkerPageEventIdStart[mWorkerConfiguration.machineId()] = 
+		mVDM->getPageRefcountTracker()->getCurrentEventCount() - 1;
+	}
+
+void CumulusWorkerImpl::wireComponentsTogether_()
+	{
+	mLocalScheduler->onInitiateComputationMove().subscribe(
+		mActiveComputations,
+		&ActiveComputations::handleInitiateComputationMove
+		);
+
+	mPageLoader->onVectorLoadedResponse().subscribe(
+		mActivePageSynchronizer,
+		&SystemwideComputationScheduler::ActivePageSynchronizer::handleVectorLoadResponse
+		);
+	}
+
+void CumulusWorkerImpl::wireCurrentClientsToComponents_()
+	{
+	for (auto clientAndChannel: mClientChannels)
+		{
+		CumulusClientId client = clientAndChannel.first;
+
+		sendCurrentStateToClient_(client);
+	
+		mDataTransfers->addEndpoint(CumulusClientOrMachine::Client(client));
+
+		mActiveComputations->addCumulusClient(client);
+
+		mPageLoader->addCumulusClient(client);
+
+		writeMessageToClient_(client, CumulusWorkerToClientMessage::ComputationResumed(mCurrentRegime->regimeHash()));
+		}
+	}
+
+void CumulusWorkerImpl::wireSelfToIndividualComponents_()
+	{
+	mPageLoader->onCumulusComponentMessageCreated().subscribe(
+		CumulusComponentSubscriptionAdapter<CumulusWorkerImpl>(
+			mCallbackScheduler,
+			polymorphicSharedWeakPtrFromThis(),
+			CumulusComponentType::PageLoader(),
+			mCurrentRegime->regimeHash()
+			)
+		);
+
+	mExternalIoTasks->onCumulusComponentMessageCreated().subscribe(
+		CumulusComponentSubscriptionAdapter<CumulusWorkerImpl>(
+			mCallbackScheduler,
+			polymorphicSharedWeakPtrFromThis(),
+			CumulusComponentType::ExternalIoTasks(),
+			mCurrentRegime->regimeHash()
+			)
+		);
+
+	mActiveComputations->onCumulusComponentMessageCreated().subscribe(
+		CumulusComponentSubscriptionAdapter<CumulusWorkerImpl>(
+			mCallbackScheduler,
+			polymorphicSharedWeakPtrFromThis(),
+			CumulusComponentType::ActiveComputations(),
+			mCurrentRegime->regimeHash()
+			)
+		);
+
+	mActiveComputations->onRequestComputationResultFromMachine().subscribe(
+		polymorphicSharedWeakPtrFromThis(),
+		&CumulusWorkerImpl::handleRequestComputationResultFromMachine
+		);
+
+	mActiveComputations->onComputationResultFromMachine().subscribe(
+		polymorphicSharedWeakPtrFromThis(),
+		&CumulusWorkerImpl::handleComputationResultFromMachine
+		);
+
+	for (auto typeAndComponent: mGenericComponents)
+		typeAndComponent.second->onCumulusComponentMessageCreated().subscribe(
+			CumulusComponentSubscriptionAdapter<CumulusWorkerImpl>(
+				mCallbackScheduler,
+				polymorphicSharedWeakPtrFromThis(),
+				typeAndComponent.first,
+				mCurrentRegime->regimeHash()
+				)
+			);
+
+	if (mGlobalScheduler)
+		{
+		mGlobalScheduler->onCumulusComponentMessageCreated().subscribe(
+			CumulusComponentSubscriptionAdapter<CumulusWorkerImpl>(
+				mCallbackScheduler,
+				polymorphicSharedWeakPtrFromThis(),
+				CumulusComponentType::GlobalScheduler(),
+				mCurrentRegime->regimeHash()
+				)
+			);
+		}
+
+	mLocalScheduler->onCumulusComponentMessageCreated().subscribe(
+		CumulusComponentSubscriptionAdapter<CumulusWorkerImpl>(
+			mCallbackScheduler,
+			polymorphicSharedWeakPtrFromThis(),
+			CumulusComponentType::LocalScheduler(),
+			mCurrentRegime->regimeHash()
+			)
+		);
+
+	mActivePageSynchronizer->onCumulusComponentMessageCreated().subscribe(
+		CumulusComponentSubscriptionAdapter<CumulusWorkerImpl>(
+			mCallbackScheduler,
+			polymorphicSharedWeakPtrFromThis(),
+			CumulusComponentType::ActivePageSynchronizer(),
+			mCurrentRegime->regimeHash()
+			)
+		);
+
+	mComputationStateSummarizer->onCumulusComponentMessageCreated().subscribe(
+		CumulusComponentSubscriptionAdapter<CumulusWorkerImpl>(
+			mCallbackScheduler,
+			polymorphicSharedWeakPtrFromThis(),
+			CumulusComponentType::ComputationStateSummarizer(),
+			mCurrentRegime->regimeHash()
+			)
+		);
+	}
+
+Nullable<hash_type> CumulusWorkerImpl::currentRegimeHash()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+	
+	return mCurrentRegime ? null() << mCurrentRegime->regimeHash() : Nullable<hash_type>();
+	}
+
+}
+

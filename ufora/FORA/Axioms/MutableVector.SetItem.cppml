@@ -1,0 +1,234 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "MutableVector.SetItem.hppml"
+#include "MutableVectorAxioms.hppml"
+#include "AxiomGroup.hppml"
+#include "Axiom.hppml"
+#include "LibcallAxiomGroup.hppml"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include "../Vector/MutableVectorRecord.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../VectorDataManager/VectorDataManager.hppml"
+#include "../Native/NativeExpressionBuilder.hppml"
+#include "../TypedFora/ABI/DestructorsAndConstructors.hppml"
+#include "../TypedFora/ABI/MutableVectorHandleCodegen.hpp"
+
+using namespace Fora;
+
+using TypedFora::Abi::nativeLayoutType;
+
+using Fora::Interpreter::ExecutionContext;
+
+extern "C" {
+
+	BSA_DLLEXPORT
+	ReturnValue<Nothing, String> FORA_clib_mutableVectorSetItem(
+											const MutableVectorRecord& vec,
+											int64_t inIndex,
+											const ImplValContainer& toSet
+											)
+		{
+		try {
+			vec.setItem(inIndex, toSet);				
+			}
+		catch (MutableVectorRecord::BadSetItemException& e) {
+			return slot1(
+				String(
+					e.what(),
+					Fora::Interpreter::ExecutionContext::
+					currentExecutionContext()->getMemoryPool()
+					)
+				);
+			}
+				
+		return slot0(Nothing());
+		}
+
+}
+
+namespace {
+
+//is 'index' within the bounds of [0, treePtr->size)?
+NativeExpression wrapNegativeIndexExpr(
+									const NativeExpression& sizeExpr,
+									const NativeExpression& indexExpr
+									)
+	{
+	return NativeExpression::Selector(
+		indexExpr < NativeExpression::Constant(NativeConstant::Int64(0)),
+		indexExpr + sizeExpr,
+		indexExpr
+		);
+	}
+
+NativeExpression computeSetitemExpression(
+										const NativeExpression& vectorExpr,
+										const NativeExpression& indexExpr,
+										const NativeExpression& valueExpr,
+										const JOV& inEltJov
+										)
+	{
+	NativeExpressionBuilder builder;
+
+	NativeExpression vectorSize = 
+		builder.add(
+			TypedFora::Abi::MutableVectorHandleCodegen::sizeExpression(vectorExpr["vectorHandle"])
+			);
+
+	NativeExpression wrappedIndex = 
+		builder.add(
+			wrapNegativeIndexExpr(vectorSize, indexExpr)
+			);
+
+	NativeType nativeEltType = nativeLayoutType(inEltJov);
+
+	return 
+		builder(
+			NativeExpression::If(
+				NativeExpression::BinaryOp(
+					NativeBinaryOpcode::And(),
+					wrappedIndex >= NativeExpression::Constant(NativeConstant::Int64(0)),
+					wrappedIndex < vectorSize
+					),
+				NativeExpression::Return(0,
+					TypedFora::Abi::MutableVectorHandleCodegen::setItemExpr(
+						vectorExpr["vectorHandle"],
+						wrappedIndex,
+						valueExpr,
+						inEltJov
+						)
+					),
+				NativeExpression::Return(1, NativeExpression::Nothing()),
+				.999999
+				)
+			);
+	}
+
+}
+
+MutableVectorSetItem::MutableVectorSetItem() : AxiomGroup(
+		JOVT() +
+			jovAnyMutableVector() +
+			"SetItem" +
+			JOV::OfType(Type::Integer(64, true)) +
+			JOV()
+		)
+	{
+	}
+	
+Nullable<Axiom> MutableVectorSetItem::axiom(	
+							TypedFora::Compiler& inRuntime,
+							const JudgmentOnValueTuple& inSpecificAxiomSignature
+							)
+	{
+	JudgmentOnValue vectorJudgment = inSpecificAxiomSignature.jovs()[0];
+	
+	JudgmentOnValue elementJOV;
+	
+	bool generateMachinecode = true;
+	
+	//if we don't actually know the full JOV of the vector, we have to use the libcall form
+	@match JudgmentOnValue(vectorJudgment)
+		-| MutableVector((Unknown(jov))) ->> {
+			generateMachinecode = false;
+			}
+		-| MutableVector((Known(jov))) ->> {
+			elementJOV = jov;
+
+			if (!elementJOV.type())
+				generateMachinecode = false;
+			}
+		;
+
+	JudgmentOnValue jovOfEltToSet = inSpecificAxiomSignature.jovs()[3];
+		
+	Nullable<bool> jovOfElementToSetIsCst = jovOfEltToSet.isCST();
+		
+	if (!elementJOV.covers(jovOfEltToSet) or
+		!jovOfElementToSetIsCst or
+		jovOfElementToSetIsCst and !*jovOfElementToSetIsCst)
+		generateMachinecode = false;
+	
+	if (!generateMachinecode)
+		return null() <<
+			LibcallAxiomGroup::createAxiom(
+				JOVT() + 
+					jovAnyMutableVector() + 
+					"SetItem" + 
+					JOV::OfType(Type::Integer(64, true)) + 
+					JOV()
+					,
+				ReturnSlots() + 
+					ReturnSlot::Normal(JOV::Constant(CSTValue())) +
+					ReturnSlot::Exception(JOV::OfType(Type::String())),
+				&FORA_clib_mutableVectorSetItem,
+				ImmutableTreeVector<uword_t>() + 0 + 2 + 3
+				);
+
+	NativeAxiomVars axiomVariables(
+			JOVT() +
+				vectorJudgment +
+				"SetItem" +
+				JOV::OfType(Type::Integer(64, true)) + 
+				elementJOV
+			);
+
+	return null() << AxiomGroup::simpleAxiom(
+		axiomVariables,
+		JOV::Constant(CSTValue()),
+		JOV::Constant(CSTValue("Index out of range")),
+		computeSetitemExpression(
+			axiomVariables[0], 
+			axiomVariables[2], 
+			axiomVariables[3], 
+			elementJOV
+			)
+		);
+	}
+
+Nullable<AxiomJOA>		MutableVectorSetItem::axiomJOA(const JudgmentOnValueTuple& s)
+	{
+	Nullable<bool> jovOfEltToSetIsCst = s.jovs()[3].isCST();
+	
+	if (jovOfEltToSetIsCst and !*jovOfEltToSetIsCst)
+		return null() <<
+				AxiomJOA::Throws(
+					JOV::OfType(Type::String())
+					);
+		
+	@match JudgmentOnValue(s.jovs()[0])
+		-|	MutableVector((Known(eltJOV))) ->> {
+			return null() << AxiomJOA::Native(
+					JudgmentOnAction::Value(JOV::Constant(CSTValue())) |
+					JudgmentOnAction::Throws(
+						JudgmentOnResult(JOV::OfType(Type::String()))
+						)
+					)
+				;
+			}
+		-|	MutableVector((Unknown(eltJOV))) ->> {
+			return null() << AxiomJOA::Native(
+					JudgmentOnAction::Value(JOV::Constant(CSTValue())) |
+					JudgmentOnAction::Throws(
+						JudgmentOnResult(JOV::OfType(Type::String()))
+						)
+					)
+				;
+			}
+			
+		;
+	}
+

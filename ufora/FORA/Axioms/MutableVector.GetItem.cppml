@@ -1,0 +1,196 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "MutableVector.GetItem.hppml"
+#include "MutableVectorAxioms.hppml"
+#include "AxiomGroup.hppml"
+#include "Axiom.hppml"
+#include "LibcallAxiomGroup.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include "../Vector/MutableVectorRecord.hppml"
+#include "../VectorDataManager/VectorDataManager.hppml"
+#include "../Native/NativeExpressionBuilder.hppml"
+#include "../TypedFora/ABI/DestructorsAndConstructors.hppml"
+#include "../TypedFora/ABI/MutableVectorHandleCodegen.hpp"
+
+using TypedFora::Abi::nativeLayoutType;
+
+using namespace Fora;
+
+extern "C" {
+
+	BSA_DLLEXPORT
+	ReturnValue<ImplValContainer, Nothing> FORA_clib_mutableVectorGetItem(
+											const MutableVectorRecord& vec,
+											int64_t inIndex
+											)
+		{
+		try {
+			return slot0(vec.getItem(inIndex));
+			}
+		catch (MutableVectorRecord::BadGetItemException& e)
+			{
+			return slot1(Nothing());
+			}
+		}
+
+}
+
+namespace {
+
+//is 'index' within the bounds of [0, treePtr->size)?
+NativeExpression wrapNegativeIndexExpr(
+									const NativeExpression& sizeExpr,
+									const NativeExpression& indexExpr
+									)
+	{
+	return NativeExpression::Selector(
+		indexExpr < NativeExpression::Constant(NativeConstant::Int64(0)),
+		indexExpr + sizeExpr,
+		indexExpr
+		);
+	}
+
+NativeExpression computeGetitemExpression(
+										const NativeExpression& vectorExpr,
+										const NativeExpression& indexExpr,
+										const JOV& inEltType
+										)
+	{
+	NativeType nativeEltType = nativeLayoutType(inEltType);
+
+	NativeExpressionBuilder builder;
+
+	NativeExpression sizeE = 
+		builder.add(TypedFora::Abi::MutableVectorHandleCodegen::sizeExpression(vectorExpr["vectorHandle"]));
+
+	NativeExpression wrappedIndex = 
+		builder.add(wrapNegativeIndexExpr(sizeE, indexExpr));
+
+	return builder(
+		NativeExpression::If(
+			NativeExpression::BinaryOp(
+				NativeBinaryOpcode::And(),
+				wrappedIndex >= NativeExpression::Constant(NativeConstant::Int64(0)),
+				wrappedIndex < sizeE
+				),
+			NativeExpression::Return(0,
+				TypedFora::Abi::MutableVectorHandleCodegen::getItemExpr(
+					vectorExpr["vectorHandle"],
+					wrappedIndex,
+					inEltType
+					)
+				),
+			NativeExpression::Return(1, NativeExpression::Nothing()),
+			.999999
+			)
+		);
+	}
+
+}
+
+MutableVectorGetItem::MutableVectorGetItem() : AxiomGroup(
+		JOVT() +
+			jovAnyMutableVector() +
+			"GetItem" +
+			JOV::OfType(Type::Integer(64, true))
+		)
+	{
+	}
+	
+Nullable<Axiom> MutableVectorGetItem::axiom(	
+							TypedFora::Compiler& inRuntime,
+							const JudgmentOnValueTuple& inSpecificAxiomSignature
+							)
+	{
+	JudgmentOnValue vectorJudgment = inSpecificAxiomSignature.jovs()[0];
+	
+	JudgmentOnValue elementJOV;
+
+	bool generateMachinecode = true;
+
+	//if we don't actually know the full JOV of the vector, we have to use the libcall form
+	@match JudgmentOnValue(vectorJudgment)
+		-| MutableVector((Unknown(jov))) ->> {
+			generateMachinecode = false;
+			}
+		-| MutableVector((Known(jov))) ->> {
+			elementJOV = jov;
+
+			if (!elementJOV.type())
+				generateMachinecode = false;
+			}
+
+	if (elementJOV.constant())
+		generateMachinecode = false;
+
+	if (!generateMachinecode)
+		return null() <<
+			LibcallAxiomGroup::createAxiom(
+				JOVT() + 
+					jovAnyMutableVector() + 
+					"GetItem" + 
+					JOV::OfType(Type::Integer(64, true))
+					,
+				ReturnSlots() + 
+					ReturnSlot::Normal(JOV()) +
+					ReturnSlot::Exception(
+						JOV::Constant(CSTValue("invalid index"))
+						),
+				&FORA_clib_mutableVectorGetItem,
+				ImmutableTreeVector<uword_t>() + 0 + 2
+				);
+
+	NativeAxiomVars axiomVariables(
+			JOVT() +
+				vectorJudgment +
+				"GetItem" +
+				JOV::OfType(Type::Integer(64, true))
+			);
+
+	return null() << AxiomGroup::simpleAxiom(
+		axiomVariables,
+		elementJOV,
+		JOV::Constant(CSTValue("invalid index")),
+		computeGetitemExpression(axiomVariables[0], axiomVariables[2], elementJOV)
+		);
+	}
+
+Nullable<AxiomJOA>		MutableVectorGetItem::axiomJOA(const JudgmentOnValueTuple& s)
+	{
+	@match JudgmentOnValue(s.jovs()[0])
+		-|	MutableVector((Known(eltJOV))) ->> {
+			return null() << AxiomJOA::Native(
+					JudgmentOnAction::Value(eltJOV) |
+					JudgmentOnAction::Throws(
+						JudgmentOnResult(JOV::Constant(CSTValue("invalid index")))
+						)
+					)
+				;
+			}
+		-|	MutableVector((Unknown(eltJOV))) ->> {
+			return null() << AxiomJOA::Native(
+					JudgmentOnAction::Value(eltJOV) |
+					JudgmentOnAction::Throws(
+						JudgmentOnResult(JOV::Constant(CSTValue("invalid index")))
+						)
+					)
+				;
+			}
+			
+		;
+	}
+

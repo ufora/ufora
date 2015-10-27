@@ -1,0 +1,947 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "AxiomGroup.hppml"
+#include "Axioms.hppml"
+#include "Axiom.hppml"
+#include "TypedForaAxiomBuilder.hppml"
+#include "SimpleAxiomGroup.hppml"
+#include "AxiomGroupInterpreterCache.hppml"
+#include "../ControlFlowGraph/ControlFlowGraphUtil.hppml"
+#include "../Language/Parser.hppml"
+#include "../Core/ClassMediator.hppml"
+#include "../Native/NativeCode.hppml"
+#include "../TypedFora/TypedFora.hppml"
+#include "../TypedFora/TypedForaUtil.hppml"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include "../../core/Logging.hpp"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+
+using TypedFora::Abi::nativeLayoutType;
+
+using TypedFora::Abi::continuationTypeFor;
+
+JudgmentOnValueTuple	AxiomGroup::weakestAxiomFor(const Fora::ApplyArgFrame& inIndices)
+	{
+	lassert_dump(mVars.signature().covers(inIndices),
+		"AxiomGroup::weakestAxiomFor called with bad implval. Signature:\n"
+			<< "\t" << prettyPrintString(mVars.signature())
+			);
+	
+	lassert_dump(axiomJOA(mVars.signature()), "Axiom for " <<
+			prettyPrintString(mVars.signature()) << " didn't generate an axiom"
+			<< " for its base signature, but didn't override weakestAxiomFor"
+			<< " either."
+			);
+	
+	return mVars.signature();
+	}
+PolymorphicSharedPtr<AxiomGroup> AxiomGroup::throws(
+								const JudgmentOnValueTuple& jovt,
+								CSTValue val
+								)
+	{
+	return PolymorphicSharedPtr<AxiomGroup>(new SimpleAxiomGroup(throwsAxiom(jovt, val)));
+	}
+PolymorphicSharedPtr<AxiomGroup> AxiomGroup::returns(
+								const JudgmentOnValueTuple& jovt,
+								CSTValue val
+								)
+	{
+	return PolymorphicSharedPtr<AxiomGroup>(
+		new SimpleAxiomGroup(returnsAxiom(jovt, val))
+		);
+	}
+PolymorphicSharedPtr<AxiomGroup> AxiomGroup::libcall(
+								const JudgmentOnValueTuple& jovt,
+								JudgmentOnValue out,
+								string name,
+								ImmutableTreeVector<uword_t> args,
+								const Nullable<NativeExpression>& toPrepend
+								)
+	{
+	return PolymorphicSharedPtr<AxiomGroup>(
+		new SimpleAxiomGroup(libcallAxiom(jovt, out, name, args, toPrepend))
+		);
+	}
+
+PolymorphicSharedPtr<AxiomGroup> AxiomGroup::libcall(
+								const JudgmentOnValueTuple& jovt,
+								JudgmentOnValue out,
+								axiom_signature_to_joa_function_ptr inAxiomResultSpecializer,
+								string name,
+								ImmutableTreeVector<uword_t> args,
+								const Nullable<NativeExpression>& toPrepend
+								)
+	{
+	return PolymorphicSharedPtr<AxiomGroup>(
+		new SimpleAxiomGroup(
+			libcallAxiom(jovt, out, name, args, toPrepend),
+			inAxiomResultSpecializer
+			)
+		);
+	}
+
+PolymorphicSharedPtr<AxiomGroup> AxiomGroup::libcall(
+								const JudgmentOnValueTuple& jovt,
+								JudgmentOnValue out,
+								JudgmentOnValue outE,
+								axiom_signature_to_joa_function_ptr inAxiomResultSpecializer,
+								string name,
+								ImmutableTreeVector<uword_t> args,
+								const Nullable<NativeExpression>& toPrepend
+								)
+	{
+	return PolymorphicSharedPtr<AxiomGroup>(
+		new SimpleAxiomGroup(
+			libcallAxiom(jovt, out, outE, name, args, toPrepend),
+			inAxiomResultSpecializer
+			)
+		);
+	}
+
+PolymorphicSharedPtr<AxiomGroup> AxiomGroup::libcall(
+								const JudgmentOnValueTuple& jovt,
+								JudgmentOnValue out,
+								JudgmentOnValue outE,
+								string name,
+								ImmutableTreeVector<uword_t> args,
+								const Nullable<NativeExpression>& toPrepend
+								)
+	{
+	return PolymorphicSharedPtr<AxiomGroup>(
+		new SimpleAxiomGroup(libcallAxiom(jovt, out, outE, name, args, toPrepend))
+		);
+	}
+
+PolymorphicSharedPtr<AxiomGroup> AxiomGroup::libcall(
+								const JudgmentOnValueTuple& jovt,
+								ImmutableTreeVector<pair<bool, JOV> > returnValueSlots,
+								string name,
+								ImmutableTreeVector<uword_t> args,
+								const Nullable<NativeExpression>& toPrepend
+								)
+	{
+	return PolymorphicSharedPtr<AxiomGroup>(
+			new SimpleAxiomGroup(libcallAxiom(
+				jovt, 
+				returnValueSlots, 
+				name, 
+				args, 
+				toPrepend
+				)
+			)
+		);
+	}
+PolymorphicSharedPtr<AxiomGroup> AxiomGroup::libcall(
+								const JudgmentOnValueTuple& jovt,
+								JudgmentOnValue out,
+								string name,
+								ImmutableTreeVector<uword_t> args,
+								const NativeExpressionTag& inTag,
+								const Nullable<NativeExpression>& toPrepend
+								)
+	{
+	return PolymorphicSharedPtr<AxiomGroup>(
+		new SimpleAxiomGroup(libcallAxiom(jovt, out, name, args, inTag, toPrepend))
+		);
+	}
+PolymorphicSharedPtr<AxiomGroup> AxiomGroup::libcall(
+								const JudgmentOnValueTuple& jovt,
+								JudgmentOnValue out,
+								JudgmentOnValue outE,
+								string name,
+								ImmutableTreeVector<uword_t> args,
+								const NativeExpressionTag& inTag,
+								const Nullable<NativeExpression>& toPrepend
+								)
+	{
+	return PolymorphicSharedPtr<AxiomGroup>(
+		new SimpleAxiomGroup(libcallAxiom(jovt, out, outE, name, args, inTag, toPrepend))
+		);
+	}
+
+PolymorphicSharedPtr<AxiomGroup> AxiomGroup::libcall(
+					const JudgmentOnValueTuple& jovt,
+					JudgmentOnValue out,
+					string name,
+					ImmutableTreeVector<uword_t> args,
+					const NativeExpressionTag& inTag
+					)
+	{
+	return libcall(jovt, out, name, args, inTag, null());
+	}
+
+PolymorphicSharedPtr<AxiomGroup> AxiomGroup::libcall(
+					const JudgmentOnValueTuple& jovt,
+					JudgmentOnValue out,
+					JudgmentOnValue outE,
+					string name,
+					ImmutableTreeVector<uword_t> args,
+					const NativeExpressionTag& inTag
+					)
+	{
+	return libcall(jovt, out, outE, name, args, inTag, null());
+	}
+
+PolymorphicSharedPtr<AxiomGroup> AxiomGroup::libcall(
+					const JudgmentOnValueTuple& jovt,
+					ImmutableTreeVector<pair<bool, JOV> > returnValueSlots,
+					string name,
+					ImmutableTreeVector<uword_t> args
+					)
+	{
+	return libcall(jovt, returnValueSlots, name, args, null());
+	}
+
+PolymorphicSharedPtr<AxiomGroup> AxiomGroup::libcall(
+					const JudgmentOnValueTuple& jovt,
+					JudgmentOnValue out,
+					string name,
+					ImmutableTreeVector<uword_t> args
+					)
+	{
+	return libcall(jovt, out, name, args, null());
+	}
+
+PolymorphicSharedPtr<AxiomGroup> AxiomGroup::libcall(
+					const JudgmentOnValueTuple& jovt,
+					JudgmentOnValue inAxiomResult,
+					axiom_signature_to_joa_function_ptr inAxiomResultSpecializer,
+					string name,
+					ImmutableTreeVector<uword_t> args
+					)
+	{
+	return libcall(jovt, inAxiomResult, inAxiomResultSpecializer, name, args, null());
+	}
+
+PolymorphicSharedPtr<AxiomGroup> AxiomGroup::libcall(
+					const JudgmentOnValueTuple& jovt,
+					JudgmentOnValue out,
+					JudgmentOnValue outE,
+					axiom_signature_to_joa_function_ptr inAxiomResultSpecializer,
+					string name,
+					ImmutableTreeVector<uword_t> args
+					)
+	{
+	return libcall(jovt, out, outE, inAxiomResultSpecializer, name, args, null());
+	}
+
+
+PolymorphicSharedPtr<AxiomGroup> AxiomGroup::libcall(
+					const JudgmentOnValueTuple& jovt,
+					JudgmentOnValue out,
+					JudgmentOnValue outE,
+					string name,
+					ImmutableTreeVector<uword_t> args
+					)
+	{
+	return libcall(jovt, out, outE, name, args, Nullable<NativeExpression>());
+	}
+
+
+
+PolymorphicSharedPtr<AxiomGroup> AxiomGroup::simple(
+								const NativeAxiomVars& v,
+								JudgmentOnValue out,
+								const NativeExpression& e,
+								bool isThrow
+								)
+	{
+	return PolymorphicSharedPtr<AxiomGroup>(
+		new SimpleAxiomGroup(simpleAxiom(v,out,e,isThrow))
+		);
+	}
+
+
+Nullable<Axiom> 		AxiomGroup::axiom(
+								TypedFora::Compiler& c,
+								const JudgmentOnValueTuple& s,
+								const JudgmentOnAction& joaWithSpecializations
+								)
+	{
+	return axiom(c, s);
+	}
+
+Nullable<Axiom>			AxiomGroup::bestAxiom(TypedFora::Compiler& c, const JudgmentOnValueTuple& s)
+	{
+	Nullable<AxiomJOA> joaN = axiomJOA(s);
+
+	if (!joaN)
+		return null();
+
+	Nullable<Axiom> trN = axiom(c, s);
+	if (!trN)
+		lassert(!joaN);
+	if (!joaN)
+		lassert(!trN);
+	
+	if (!trN)
+		return null();
+	
+	Axiom tr = *trN;
+	AxiomJOA joa = *joaN;
+
+	lassert_dump(tr.isExpands() == joa.isExpands(), "inconsistent axiom information from " << prettyPrintString(s));
+
+	@match Axiom(tr)
+		-|	Native(callSignature, resultSignature, callTarget) ->> {
+
+			//we may have been returned axiom with a signature different from the requested one,
+			//in which case we need to rationalize it with the JOA, which is required to produce
+		
+			return null() << 
+				Axiom::Native(
+					s,
+					joa.getNative().joa(),
+					TypedFora::adaptSignatureOfCallable(
+						*callTarget,
+						callSignature,
+						s,
+						TypedFora::resultSignatureFromJoa(
+							joa.getNative().joa(),
+							TypedFora::RefcountStyle::Pooled(),
+							TypedFora::RefcountStyle::Pooled()
+							),
+						resultSignature != joa.getNative().joa()
+						)
+					)
+				;
+			}
+		-| Expands(axiomSig, graph) ->> {
+			//its possible we have a graph with a signature that's not compatible with the call 
+			//signature we were given, in which case we need to add a node that packs the additional
+			//arguments into the graph.
+			if (axiomSig != s)
+				return null() << 
+					Axiom::Expands(
+						s,
+						graph
+						//adaptGraphSignature(axiomSig, s, graph)
+						);
+			}
+		;
+	return null() << tr;
+	}
+
+		
+Nullable<Axiom>	AxiomGroup::bestAxiomWithJoa(
+					TypedFora::Compiler& c,
+					const JudgmentOnValueTuple& s,
+					const JudgmentOnAction& joaWithSpecializations
+					)
+	{
+	Nullable<Axiom> trN = axiom(c, s, joaWithSpecializations);
+	
+	if (!trN)
+		return null();
+
+	Axiom tr = *trN;
+	
+	@match Axiom(tr)
+		-|	Native(callSignature, resultSignature, callTarget) ->> {
+
+			//we may have been returned axiom with a signature different from the requested one,
+			//in which case we need to rationalize it with the JOA, which is required to produce
+			
+			return null() << 
+				Axiom::Native(
+					s,
+					joaWithSpecializations,
+					TypedFora::adaptSignatureOfCallable(
+						*callTarget,
+						callSignature,
+						s,
+						TypedFora::resultSignatureFromJoa(
+							joaWithSpecializations,
+							TypedFora::RefcountStyle::Pooled(),
+							TypedFora::RefcountStyle::Pooled()
+							),
+						resultSignature != joaWithSpecializations
+						)
+					)
+				;
+			}
+		-| Expands(axiomSig, graph) ->> {
+			lassert(false);
+			}
+		;
+
+	return null() << tr;
+	}
+
+
+Axiom AxiomGroup::throwsAxiom(const JudgmentOnValueTuple& jovt, CSTValue val)
+	{
+	TypedFora::TypedForaAxiomBuilder builder(jovt);
+
+	return builder.axiomForExpression(
+		TypedFora::Expression::Constant(val),
+		TypedFora::RefcountStyle::Pooled(),
+		JOV::Constant(val),
+		true
+		);
+	}
+Axiom AxiomGroup::returnsAxiom(const JudgmentOnValueTuple& jovt, CSTValue val)
+	{
+	TypedFora::TypedForaAxiomBuilder builder(jovt);
+
+	return builder.axiomForExpression(
+		TypedFora::Expression::Constant(val),
+		TypedFora::RefcountStyle::Pooled(),
+		JOV::Constant(val),
+		false
+		);
+	}
+
+Axiom AxiomGroup::libcallAxiom(	const JudgmentOnValueTuple& jovt,
+								JudgmentOnValue out,
+								string name,
+								ImmutableTreeVector<uword_t> args,
+								const Nullable<NativeExpressionTag>& inTag,
+								const Nullable<NativeExpression>& toPrepend
+								)
+	{
+	if (toPrepend || inTag)
+		{
+		//old style
+		JudgmentOnAction joa = JudgmentOnAction::Value(out);
+
+		NativeAxiomVars v(jovt);
+		ImmutableTreeVector<NativeExpression> e;
+		for (long k = 0; k < args.size();k++)
+			e = e + v[args[k]];
+
+		return Axiom::Native(jovt,
+			joa,
+			NativeCFG(
+				emptyTreeVec()
+					+ NativeVariable("callbacks", NativeTypeFor<NativeRuntimeCallbacks>::get().ptr())
+					+ v.vars()
+					,
+				(toPrepend ? *toPrepend : NativeExpression::Nothing()) >> 
+				NativeExpression::CallLibraryFunction(name, nativeLayoutType(out), e)
+					.taggedWith(inTag)
+				)
+			);
+		}
+	else
+		{
+		TypedFora::TypedForaAxiomBuilder builder(jovt);
+
+		ImmutableTreeVector<NativeExpression> nativeArgumentList;
+		for (long k = 0; k < args.size();k++)
+			nativeArgumentList = nativeArgumentList + builder.nativeVar(args[k]).expr();
+
+		NativeExpression libcallExpression = 
+			NativeExpression::CallLibraryFunction(name, nativeLayoutType(out), nativeArgumentList);
+
+		if (inTag)
+			libcallExpression = libcallExpression.taggedWith(inTag);
+
+		if (toPrepend)
+			libcallExpression = *toPrepend >> libcallExpression;
+
+		return builder.axiomForNativeExpression(
+			libcallExpression, 
+			TypedFora::RefcountStyle::AsValueOwned(),
+			out,
+			false
+			);
+		}
+	}
+Axiom AxiomGroup::libcallAxiom(const JudgmentOnValueTuple& jovt, 
+								JudgmentOnValue out, 
+								string name, 
+								ImmutableTreeVector<uword_t> args, 
+								const NativeExpressionTag& inTag,
+								const Nullable<NativeExpression>& toPrepend)
+	{
+	return libcallAxiom(jovt, out, name, args, null() << inTag, toPrepend);
+	}
+Axiom AxiomGroup::libcallAxiom(const JudgmentOnValueTuple& jovt, 
+								JudgmentOnValue out, 
+								string name, 
+								ImmutableTreeVector<uword_t> args,
+								const Nullable<NativeExpression>& toPrepend)
+	{
+	return libcallAxiom(jovt, out, name, args, null(), toPrepend);
+	}
+Axiom AxiomGroup::libcallAxiom(const JudgmentOnValueTuple& jovt, 
+								JudgmentOnValue normal, 
+								JudgmentOnValue exception, 
+								string name, 
+								ImmutableTreeVector<uword_t> args,
+								const Nullable<NativeExpression>& toPrepend)
+	{
+	return libcallAxiom(jovt, normal, exception, name, args, null(), toPrepend);
+	}
+Axiom AxiomGroup::libcallAxiom(const JudgmentOnValueTuple& jovt, 
+								JudgmentOnValue normal, 
+								JudgmentOnValue exception, 
+								string name, 
+								ImmutableTreeVector<uword_t> args, 
+								const NativeExpressionTag& inTag,
+								const Nullable<NativeExpression>& toPrepend)
+	{
+	return libcallAxiom(jovt, normal, exception, name, args, null() << inTag, toPrepend);
+	}
+							
+Axiom AxiomGroup::libcallAxiom(const JudgmentOnValueTuple& jovt,
+								JudgmentOnValue normal, 
+								JudgmentOnValue exception, 
+								string name, 
+								ImmutableTreeVector<uword_t> args, 
+								const Nullable<NativeExpressionTag>& inTag,
+								const Nullable<NativeExpression>& toPrepend)
+	{
+	JudgmentOnAction joa = JudgmentOnAction::Value(normal) | JudgmentOnAction::Throws(exception);
+
+	NativeAxiomVars v(jovt);
+
+	ImmutableTreeVector<NativeExpression> e;
+	for (long k = 0; k < args.size();k++)
+		e = e + v[args[k]];
+
+	ImmutableTreeVector<pair<Nullable<NativeVariable>, NativeExpression> > lets;
+
+	NativeVariable outNormPtr("normPtr", nativeLayoutType(normal).ptr());
+	NativeVariable outExcPtr("excPtr", nativeLayoutType(exception).ptr());
+	NativeVariable outNormVal("normVal", nativeLayoutType(normal));
+	NativeVariable outExcVal("excVal", nativeLayoutType(exception));
+	NativeVariable res("res", NativeType::uword());
+	NativeVariable conts("conts", continuationTypeFor(joa));
+
+	Axiom tr = Axiom::Native(jovt,
+		joa,
+		NativeCFG(
+			emptyTreeVec()
+				+ NativeVariable("callbacks", NativeTypeFor<NativeRuntimeCallbacks>::get().ptr())
+				+ v.vars()
+				,
+			
+			(toPrepend ? *toPrepend : NativeExpression::Nothing()) >> 
+			NativeExpression::Let(outNormPtr, NativeExpression::Alloc(nativeLayoutType(normal), 1, false),
+				NativeExpression::Let(outExcPtr, NativeExpression::Alloc(nativeLayoutType(exception), 1, false),
+					NativeExpression::Let(res, NativeExpression::CallLibraryFunction(name, res.type(), emptyTreeVec() + outNormPtr.expr() + outExcPtr.expr() + e),
+						NativeExpression::If(res.expr() == NativeExpression::ConstantULong(0),
+							NativeExpression::Return(0,
+								NativeExpression::Let(outNormVal,
+									outNormPtr.expr().load(true),
+									outNormVal.expr()
+									)
+								),
+							NativeExpression::Return(1,
+								NativeExpression::Let(outExcVal,
+									outExcPtr.expr().load(true),
+									outExcVal.expr()
+									)
+								)
+							)
+						)
+					)
+				).taggedWith(inTag)
+			)
+		)
+			;
+
+	return tr;
+	}
+		
+
+Axiom AxiomGroup::libcallAxiom(	const JudgmentOnValueTuple& jovt,
+								ImmutableTreeVector<pair<bool, JOV> > returnValueSlots,
+								string name, 
+								ImmutableTreeVector<uword_t> args, 
+								const Nullable<NativeExpression>& toPrepend
+								)
+	{
+	lassert(returnValueSlots.size());
+
+	JudgmentOnAction joa;
+
+	for (long k = 0; k < returnValueSlots.size(); k++)
+		{
+		bool outputIsExceptionPath = returnValueSlots[k].first;
+
+		if (outputIsExceptionPath)
+			joa = joa | JudgmentOnAction::Throws(returnValueSlots[k].second);
+		else
+			joa = joa | JudgmentOnAction::Value(returnValueSlots[k].second);
+		}
+
+	ImmutableTreeVector<uword_t> outExitpoints;
+
+	for (long k = 0; k < returnValueSlots.size();k++)
+		{
+		Nullable<uword_t> covering = 
+			joa.smallestCovering(
+				make_pair(
+					returnValueSlots[k].second, 
+					returnValueSlots[k].first
+					)
+				);
+
+		lassert(covering);
+
+		outExitpoints = outExitpoints + *covering;
+		}
+
+	ImmutableTreeVector<NativeVariable> valPointers, values;
+
+	for (long k = 0; k < returnValueSlots.size();k++)
+		{
+		valPointers = valPointers + NativeVariable::Temp(
+			nativeLayoutType(returnValueSlots[k].second).ptr()
+			);
+		values = values + NativeVariable::Temp(
+			nativeLayoutType(returnValueSlots[k].second)
+			);
+		}
+
+	NativeAxiomVars v(jovt);
+
+	ImmutableTreeVector<NativeExpression> libcallArgs;
+
+	for (long k = 0; k < returnValueSlots.size();k++)
+		libcallArgs = libcallArgs + valPointers[k].expr();
+
+	for (long k = 0; k < args.size();k++)
+		libcallArgs = libcallArgs + v[args[k]];
+
+
+	NativeVariable res("res", NativeType::uword());
+	
+	NativeVariable conts("conts", continuationTypeFor(joa));
+
+	NativeExpression expr = 
+		NativeExpression::Halt("Bad exit value");
+
+	for (long k = 0; k < returnValueSlots.size();k++)
+		expr = NativeExpression::If(
+			res.expr() == NativeExpression::ConstantULong(k),
+			NativeExpression::Return(
+				outExitpoints[k],
+				NativeExpression::Let(
+					values[k],
+					valPointers[k].expr().load(),
+					values[k].expr()
+					)
+				),
+			expr
+			);
+
+	expr = 
+		NativeExpression::Let(
+			res, 
+			NativeExpression::CallLibraryFunction(
+				name, 
+				res.type(), 
+				libcallArgs
+				),
+			expr
+			);
+
+	for (long k = 0; k < returnValueSlots.size();k++)
+		expr = NativeExpression::Let(
+			valPointers[k],
+			NativeExpression::Alloc(
+				values[k].type(),
+				1,
+				false
+				),
+			expr
+			);
+			
+	Axiom tr = Axiom::Native(jovt,
+		joa,
+		NativeCFG(
+			emptyTreeVec()
+				+ NativeVariable("callbacks", NativeTypeFor<NativeRuntimeCallbacks>::get().ptr())
+				+ v.vars()
+				,
+			
+			(toPrepend ? *toPrepend : NativeExpression::Nothing()) >> expr
+			)
+		);
+
+	return tr;
+	}
+Axiom AxiomGroup::simpleAxiom(const NativeAxiomVars& v, const JudgmentOnValue& out, const NativeExpression& e, bool isThrow)
+	{
+	return Axiom::Native(
+		v.signature(),
+		v.vars(),
+		out,
+		isThrow,
+		e
+		);
+	}
+Axiom AxiomGroup::simpleAxiom(	const NativeAxiomVars& v,
+								const JudgmentOnValue& outNormal,
+								const JudgmentOnValue& outException,
+								const NativeExpression& e
+								)
+	{
+	JudgmentOnAction joa = JudgmentOnAction::Throws(outException) | JudgmentOnAction::Value(outNormal);
+
+	lassert(!e.type());
+
+	return Axiom::Native(v.signature(),
+		joa,
+		NativeCFG(
+			emptyTreeVec()
+				+ NativeVariable("callbacks", NativeTypeFor<NativeRuntimeCallbacks>::get().ptr())
+				+ v.vars()
+				,
+			e
+			)
+		)
+		;
+	}
+Axiom AxiomGroup::simpleAxiom(const NativeAxiomVars& v, const JudgmentOnAction& inJOA, const NativeExpression& e)
+	{
+	lassert(!e.type());
+
+	return Axiom::Native(v.signature(),
+		inJOA,
+		NativeCFG(
+			emptyTreeVec()
+				+ NativeVariable("callbacks", NativeTypeFor<NativeRuntimeCallbacks>::get().ptr())
+				+ v.vars()
+				,
+			e
+			)
+		)
+		;
+	}
+PolymorphicSharedPtr<AxiomGroup> AxiomGroup::simple(const Axiom& inAxiom)
+	{
+	return PolymorphicSharedPtr<AxiomGroup>(new SimpleAxiomGroup(inAxiom));
+	}
+
+boost::shared_ptr<AxiomGroupInterpreterCache> AxiomGroup::createInterpreterCache()
+	{
+	if (axiomJOA(signature()))
+		return AxiomGroupInterpreterCache::simpleCache();
+	else
+		return AxiomGroupInterpreterCache::genericCache();
+	}
+
+namespace {
+
+ImmutableTreeVector<JOV> extendJovsToCount(
+				const ImmutableTreeVector<JOV>& jovs,
+				const JudgmentOnValueTupleExtras& extras,
+				long count
+				)
+	{
+	if (count == jovs.size())
+		return jovs;
+
+	lassert(extras.isExtras());
+
+	return jovs + (emptyTreeVec() + extras.getExtras().jov()) * (count - jovs.size());
+	}
+
+}
+
+Nullable<JudgmentOnValueTuple>	AxiomGroup::weakestArgumentsProducingResultCoveredBy(
+			TypedFora::Compiler& c,
+			const JudgmentOnValueTuple& args,
+			const JudgmentOnAction& result
+			)
+	{
+	if (!signature().covers(args))
+		return null();
+
+	//first check if its possible to produce an output as specific as 'result'.
+		{
+		Nullable<AxiomJOA> axiomJoa = this->axiomJOA(args);
+
+		if (axiomJoa && axiomJoa->isNative())
+			{
+			JudgmentOnAction joa = axiomJoa->getNative().joa();
+
+			if (!result.covers(joa))
+				return null();
+			}
+		else
+			return null();
+		}
+
+
+	//we've verified that it's possible.  so now start with the signature and progressively 
+	//tighten to the 'args' from left to right
+	ImmutableTreeVector<JudgmentOnValue> sigJovs = signature().jovs();
+	ImmutableTreeVector<JudgmentOnValue> argJovs = args.jovs();
+	ImmutableTreeVector<JudgmentOnValue> curJovs = extendJovsToCount(sigJovs, signature().extras(), argJovs.size());
+
+	for (long shouldRelax = 1; shouldRelax != 0; shouldRelax--)
+		for (long k = -1; k < sigJovs.size() && k < argJovs.size(); k++)
+			{
+			if (k >= 0)
+				{
+				JudgmentOnValue subJOV = (shouldRelax ? relaxedJOV(argJovs[k]) : argJovs[k]);
+
+				if (!sigJovs[k].covers(subJOV))
+					subJOV = sigJovs[k];
+
+				curJovs = curJovs.slice(0, k) + subJOV + curJovs.slice(k + 1);
+				}
+
+			JOVT toTry(curJovs, args.names(), args.extras());
+
+			Nullable<AxiomJOA> axiomJoa = this->axiomJOA(toTry);
+
+			if (axiomJoa && axiomJoa->isNative())
+				{
+				JudgmentOnAction joa = axiomJoa->getNative().joa();
+
+				if (result.covers(joa))
+					return null() << toTry;
+				}
+			}
+
+	return null();
+	}
+
+Nullable<JudgmentOnValueTuple>	AxiomGroup::weakestArgumentsProducingExpansion(
+			TypedFora::Compiler& c,
+			const JudgmentOnValueTuple& args,
+			const ControlFlowGraph& result
+			)
+	{
+	if (!signature().covers(args))
+		return null();
+
+	//first check if its possible to produce an output as specific as 'result'.
+		{
+		Nullable<Axiom> axiom = this->axiom(c, args);
+
+		if (!(axiom && axiom->isExpands()))
+			return null();
+		}
+
+
+	//we've verified that it's possible.  so now start with the signature and progressively 
+	//tighten to the 'args' from left to right
+	ImmutableTreeVector<JudgmentOnValue> sigJovs = signature().jovs();
+	ImmutableTreeVector<JudgmentOnValue> argJovs = args.jovs();
+	ImmutableTreeVector<JudgmentOnValue> curJovs = extendJovsToCount(sigJovs, signature().extras(), argJovs.size());
+
+	for (long shouldRelax = 1; shouldRelax != 0; shouldRelax--)
+		for (long k = -1; k < sigJovs.size() && k < argJovs.size(); k++)
+			{
+			if (k >= 0)
+				{
+				JudgmentOnValue subJOV = (shouldRelax ? relaxedJOV(argJovs[k]) : argJovs[k]);
+
+				if (!sigJovs[k].covers(subJOV))
+					subJOV = sigJovs[k];
+
+				curJovs = curJovs.slice(0, k) + subJOV + curJovs.slice(k + 1);
+				}
+
+			JOVT toTry(curJovs, args.names(), args.extras());
+
+			Nullable<Axiom> axiom = this->axiom(c, toTry);
+
+			if (axiom && axiom->isExpands())
+				{
+				return null() << toTry;
+				}
+			}
+
+	return null();
+	}
+
+Axiom AxiomGroup::libcallAxiom(
+					const JudgmentOnValueTuple& jovt,
+					JudgmentOnValue out,
+					string name,
+					ImmutableTreeVector<uword_t> args
+					)
+	{
+	return libcallAxiom(jovt, out, name, args, Nullable<NativeExpression>());
+	}
+
+Axiom AxiomGroup::libcallAxiom(
+					const JudgmentOnValueTuple& jovt,
+					JudgmentOnValue normal,
+					JudgmentOnValue exception,
+					string name,
+					ImmutableTreeVector<uword_t> args
+					)
+	{
+	return libcallAxiom(jovt, normal, exception, name, args, Nullable<NativeExpression>());
+	}
+
+Axiom AxiomGroup::libcallAxiom(
+					const JudgmentOnValueTuple& jovt,
+					ImmutableTreeVector<pair<bool, JOV> > returnValueSlots,
+					string name,
+					ImmutableTreeVector<uword_t> args
+					)
+	{
+	return libcallAxiom(jovt, returnValueSlots, name, args, null());
+	}
+
+Axiom AxiomGroup::libcallAxiom(
+					const JudgmentOnValueTuple& jovt,
+					JudgmentOnValue out,
+					string name,
+					ImmutableTreeVector<uword_t> args,
+					const NativeExpressionTag& inTag
+					)
+	{
+	return libcallAxiom(jovt, out, name, args, inTag, null());
+	}
+
+Axiom AxiomGroup::libcallAxiom(
+					const JudgmentOnValueTuple& jovt,
+					JudgmentOnValue out,
+					string name,
+					ImmutableTreeVector<uword_t> args,
+					const Nullable<NativeExpressionTag>& inTag
+					)
+	{
+	return libcallAxiom(jovt, out, name, args, inTag, null());
+	}
+
+Axiom AxiomGroup::libcallAxiom(
+					const JudgmentOnValueTuple& jovt,
+					JudgmentOnValue normal,
+					JudgmentOnValue exception,
+					string name,
+					ImmutableTreeVector<uword_t> args,
+					const NativeExpressionTag& inTag
+					)
+	{
+	return libcallAxiom(jovt, normal, exception, name, args, inTag, null());
+	}
+
+Axiom AxiomGroup::libcallAxiom(
+					const JudgmentOnValueTuple& jovt,
+					JudgmentOnValue normal,
+					JudgmentOnValue exception,
+					string name,
+					ImmutableTreeVector<uword_t> args,
+					const Nullable<NativeExpressionTag>& inTag
+					)
+	{
+	return libcallAxiom(jovt, normal, exception, name, args, inTag, null());
+	}
+

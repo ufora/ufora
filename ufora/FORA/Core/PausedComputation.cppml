@@ -1,0 +1,147 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "PausedComputation.hppml"
+#include "../ControlFlowGraph/ControlFlowGraphToCodeLocation.hppml"
+
+namespace Fora {
+namespace Interpreter {
+
+bool PausedComputationFrame::areAllValuesConst() const
+    {
+	for (long k = 0; k < values().size(); k++)
+		if (!values()[k].isCST())
+			return false;
+
+	return true;
+    }
+
+bool PausedComputationFrame::isApplyFrame() const
+	{
+	const ControlFlowNode& currentNode = getCurrentControlFlowNode();
+	return currentNode.body().isApply();
+	}
+
+const ControlFlowNode& PausedComputationFrame::getCurrentControlFlowNode() const
+    {
+	if (label().isNull())
+		return graph().entryNode();
+
+	Nullable<const ControlFlowNode&> node = graph().subnodes()[*label()];
+	lassert(node.isValue());
+	return *node;
+    }
+
+std::vector<std::tuple<Hash, uint>> PausedComputation::hashConstApplyFrames(
+        boost::function<Hash (PausedComputationFrame)> hashFunc
+        ) const
+    {
+	std::vector<std::tuple<Hash, uint>> hashedFrames;
+
+	for (uint i = 0; i < frames().size(); i++)
+		{
+		if (frames()[i].areAllValuesConst() && frames()[i].isApplyFrame())
+			hashedFrames.push_back(
+				std::make_tuple(
+                    hashFunc(frames()[i]),
+                    i)
+					);
+		}
+	return hashedFrames;
+    }
+
+std::string PausedComputation::applyStackToString() const
+	{
+	std::ostringstream stream;
+
+	for (auto frame: frames())
+		{
+		if (frame.isApplyFrame())
+			{
+			stream << "apply: (";
+
+			ControlFlowNodeBody body = frame.getCurrentControlFlowNode().body();
+
+			auto args = body.getApply().args();
+
+			ImmutableTreeVector<ImplValContainer> vals;
+
+			for (long k = 0; k < args.size();k++)
+				@match ControlFlowApplyArg(args[k])
+					-| Normal(_, Arg(ix)) ->> {
+						stream << prettyPrintString(frame.values()[ix]);
+						if (k + 1 < args.size())
+							stream << ", ";
+						vals = vals + frame.values()[ix];
+						}
+					-| Normal(_, Constant(c)) ->> {
+						stream << prettyPrintString(c);
+						if (k + 1 < args.size())
+							stream << ", ";
+						vals = vals + ImplValContainer(c);
+						}
+					-| _ ->> {
+						stream << " -- ";
+						if (k + 1 < args.size())
+							stream << ", ";
+						}
+
+			stream << ")\n";
+			}
+		else
+			{
+			stream << "not an apply frame. " << prettyPrintString(frame.values()) << "\n";
+			}
+		}
+
+	return stream.str();
+	}
+}
+}
+
+void CPPMLPrettyPrint<Fora::Interpreter::PausedComputationFrame>::prettyPrint(
+												CPPMLPrettyPrintStream& s, 
+												const Fora::Interpreter::PausedComputationFrame& t
+												)
+	{
+	auto name = ControlFlowGraphToCodeLocation::graphAndLabelToDisplayString(t.graph(), t.label());
+
+	if (name)
+		s << name;
+	else
+		s << t.graph().graphName() << "@" << t.label();
+
+	s << "\n";
+
+	for (long k = 0; k < t.values().size(); k++)
+		s << "\t" << t.values()[k] << "\n";
+	}
+
+void CPPMLPrettyPrint<Fora::Interpreter::PausedComputation>::prettyPrint(
+												CPPMLPrettyPrintStream& s, 
+												const Fora::Interpreter::PausedComputation& t
+												)
+	{
+	for (long k = ((long)t.frames().size())-1; k >= 0; k--)
+		{
+		s << "Frame " << k << ": " << t.frames()[k] << "\n";
+		}
+
+	if (t.pendingResult())
+		s << "Result: " << t.pendingResult();
+	else
+		s << "No result.";
+	}
+

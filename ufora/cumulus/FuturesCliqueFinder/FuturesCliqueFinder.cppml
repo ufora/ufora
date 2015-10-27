@@ -1,0 +1,1241 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "FuturesCliqueFinder.hppml"
+
+#include <algorithm>
+#include <set>
+#include <iterator>
+
+#include "../../core/Clock.hpp"
+#include "../../core/threading/Trigger.hppml"
+#include "../../core/threading/SimpleCallbackSchedulerFactory.hppml"
+#include "../../FORA/ControlFlowGraph/CFGWithFutures.hppml"
+#include "../../FORA/ControlFlowGraph/ControlFlowGraphToCodeLocation.hppml"
+#include "../../FORA/Core/ExecutionContext.hppml"
+#include "../../FORA/Core/ExecutionContextConfiguration.hppml"
+#include "../../FORA/Core/PausedComputation.hppml"
+#include "../../FORA/TypedFora/ABI/VectorDataIDSlice.hppml"
+#include "../../FORA/TypedFora/ABI/BigVectorLayouts.hppml"
+#include "../../FORA/VectorDataManager/BigVectorSlice.hppml"
+#include "../../FORA/VectorDataManager/VectorDataManager.hppml"
+#include "../PageLayoutCalculator/Neighborhood.hppml"
+
+using Fora::BigVectorSlice;
+using Fora::Interpreter::PausedComputation;
+using Fora::Interpreter::PausedComputationFrame;
+using Fora::Interpreter::ComputationResult;
+using Cumulus::PageLayoutCalculator::Neighborhood;
+
+namespace {
+
+ComputationResult asComputationResult(const std::pair<ImplValContainer, bool>& result)
+    {
+    if (result.second)
+        return ComputationResult::Exception(
+            result.first,
+            ImplValContainer()
+            );
+
+    return ComputationResult::Result(
+        result.first,
+        ImplValContainer()
+        );
+    }
+
+}
+
+namespace Cumulus {
+namespace FuturesCliqueFinder {
+
+Task::Task( const Fora::Interpreter::PausedComputation& computation, 
+            Fora::Interpreter::ExecutionContext& context
+            ) : 
+        mContext(context),
+        mLowestFrameIsUnsplittable(false),
+        mWantsToBeExecuted(false),
+        mFirstFrameIsConstructedToCreateApply(false),
+        mTotalStepsTakenInThisTask(0),
+        mTotalStepsTakenInThisTaskAndBelow(0),
+        mTotalStepsTakenInFinishedSubtasks(0),
+        mIsLeaf(true)
+    {
+    mFrames = computation.frames();
+    mPendingResult = computation.pendingResult();
+
+    if (mPendingResult)
+        mWantsToBeExecuted = true;
+    }
+
+Task::Task( const CFGWithFutures::SubmittableArgs& computation, 
+            Fora::Interpreter::ExecutionContext& context
+            ) : 
+        mContext(context),
+        mLowestFrameIsUnsplittable(false),
+        mWantsToBeExecuted(false),
+        mFirstFrameIsConstructedToCreateApply(true),
+        mTotalStepsTakenInThisTask(0),
+        mTotalStepsTakenInThisTaskAndBelow(0),
+        mTotalStepsTakenInFinishedSubtasks(0),
+        mIsLeaf(true)
+    {
+    PausedComputation comp = computation.toPausedComputation();
+    
+    mFrames = comp.frames();
+    mPendingResult = comp.pendingResult();
+
+    if (mFrames.size() || mPendingResult)
+        mWantsToBeExecuted = true;
+    }
+
+Task::Task(Fora::Interpreter::ExecutionContext& context) : 
+        mContext(context),
+        mLowestFrameIsUnsplittable(false),
+        mWantsToBeExecuted(false),
+        mTotalStepsTakenInThisTask(0),
+        mTotalStepsTakenInThisTaskAndBelow(0),
+        mTotalStepsTakenInFinishedSubtasks(0),
+        mIsLeaf(true)
+    {
+    }
+
+PolymorphicSharedPtr<Task> Task::shallowClone()
+    {
+    PolymorphicSharedPtr<Task> task(new Task(mContext));
+
+    task->mIsLeaf = this->mIsLeaf;
+    task->mPageCache = this->mPageCache;
+    task->mFinalResult = this->mFinalResult;
+    task->mFrames = this->mFrames;
+    task->mPendingResult = this->mPendingResult;
+    task->mLowestFrameIsUnsplittable = this->mLowestFrameIsUnsplittable;
+    task->mLowestFrame = this->mLowestFrame;
+    task->mSubtasks = this->mSubtasks;
+    task->mSubtaskEvents = this->mSubtaskEvents;
+    task->mEvents = this->mEvents;
+    task->mWantsToBeExecuted = this->mWantsToBeExecuted;
+    task->mFirstFrameIsConstructedToCreateApply = mFirstFrameIsConstructedToCreateApply;
+    task->mTotalStepsTakenInThisTask = mTotalStepsTakenInThisTask;
+    task->mTotalStepsTakenInThisTaskAndBelow = mTotalStepsTakenInThisTaskAndBelow;
+    task->mTotalStepsTakenInFinishedSubtasks = mTotalStepsTakenInFinishedSubtasks;
+    
+    return task;
+    }
+    
+bool Task::rollForward()
+    {
+    if (mFinalResult)
+        return false;
+
+    if (mWantsToBeExecuted)
+        {
+        execute();
+        recordStepsTakenInThisTask(1);
+        return true;
+        }
+
+    long realFrameCount = mFrames.size() - (mFirstFrameIsConstructedToCreateApply ? 1:0);
+
+    if (!realFrameCount && !mLowestFrame)
+        return false;
+
+    if (realFrameCount && !mLowestFrame)
+        {
+        if (mLowestFrameIsUnsplittable)
+            return false;
+
+        PolymorphicSharedPtr<CFGWithFutures> cfgWithFutures =
+            CFGWithFutures::createCfgWithFutures(
+                mFrames.back().graph(),
+                mFrames.back().label(),
+                mFrames.back().values()
+                );
+
+        if (!cfgWithFutures)
+            {
+            mLowestFrameIsUnsplittable = true;
+            return false;
+            }
+
+        mLowestFrame = cfgWithFutures;
+
+        mFrames = mFrames.slice(0, mFrames.size() - 1);
+
+        recordStepsTakenInThisTask(1);
+
+        return true;
+        }
+
+    lassert(mLowestFrame);
+
+    return rollLowestFrameForward();
+    }
+
+void Task::rollLowestFrameForwardUntilMakingNoProgress()
+    {
+    long steps = 0;
+
+    while (true)
+        {
+        auto label = mLowestFrame->currentLabel();
+
+        mLowestFrame->continueSimulation();
+
+        if (label == mLowestFrame->currentLabel())
+            return;
+            
+        steps++;
+
+        lassert(steps < 1000);
+        }
+    }
+
+long Task::stepsTakenInThisFrame() const
+    {
+    return mTotalStepsTakenInThisTask + mTotalStepsTakenInFinishedSubtasks;
+    }
+
+long Task::stepsTakenBelowThisFrame() const
+    {
+    return mTotalStepsTakenInThisTaskAndBelow - stepsTakenInThisFrame();
+    }
+
+void Task::recordStepsTakenInThisTask(long steps)
+    {
+    mTotalStepsTakenInThisTask += steps;
+    mTotalStepsTakenInThisTaskAndBelow += steps;
+
+    mPageCache = null();
+    }
+
+void Task::recordStepsTakenBelowThisTask(long steps)
+    {
+    mTotalStepsTakenInThisTaskAndBelow += steps;
+
+    mPageCache = null();
+    }
+
+bool Task::rollLowestFrameForward()
+    {
+    rollLowestFrameForwardUntilMakingNoProgress();
+
+    bool didAnything = false;
+
+    if (absorbAnyFinalResultSubtasks())
+        didAnything = true;
+
+    const std::set<uint64_t>& submittableIndices = 
+        mLowestFrame->indicesOfSubmittableFutures();
+
+    for (auto index: submittableIndices)
+        {
+        auto subtaskIt = mSubtasks.find(index);
+
+        if (subtaskIt == mSubtasks.end())
+            {
+            PolymorphicSharedPtr<Task> subtask(
+                new Task(
+                    *mLowestFrame->asSubmittable(index),
+                    mContext
+                    )
+                );
+
+            mSubtasks[index] = subtask;
+            mSubtaskEvents[index] = Event();
+
+            recordStepsTakenInThisTask(1);
+
+            didAnything = true;
+            }
+        }
+
+    if (mLowestFrame->getFinalResult())
+        {
+        auto simResult = *mLowestFrame->getFinalResult();
+
+        @match CFGWithFutures::SimulationResult(simResult)
+            -| Result(result) ->> {
+                
+                if (mFrames.size() == 0)
+                    mFinalResult = result;
+                else
+                    {
+                    @match ComputationResult(result)
+                        -| Exception(e) ->> {
+                            mPendingResult = make_pair(e, true);
+                            mWantsToBeExecuted = true;
+                            }
+                        -| Result(e) ->> {
+                            mPendingResult = make_pair(e, false);
+                            mWantsToBeExecuted = true;
+                            }
+                        -| Failure(f) ->> {
+                            mFinalResult = result;
+                            mFrames = emptyTreeVec();
+                            }
+                    }
+                }
+            -| Paused(pcf) ->> {
+                mFrames = mFrames + pcf;
+                if (mFrames.size())
+                    mWantsToBeExecuted = true;
+                }
+
+        mEvents.push_back(extractAllEventsFromSubframes());
+
+        mLowestFrame.reset();
+        mSubtaskEvents.clear();
+        mSubtasks.clear();
+
+        recordStepsTakenInThisTask(1);
+
+        didAnything = true;
+        }
+
+    return didAnything;
+    }
+
+bool Task::splitLow()
+    {
+    if (mFinalResult)
+        return false;
+    
+    if (mFrames.size() < (mFirstFrameIsConstructedToCreateApply ? 2 : 1))
+        return false;
+
+    return split(mFrames.size());
+    }
+
+bool Task::splitMid()
+    {
+    if (mFinalResult)
+        return false;
+    
+    if (mFrames.size() < (mFirstFrameIsConstructedToCreateApply ? 2 : 1))
+        return false;
+
+    long index = ((mFirstFrameIsConstructedToCreateApply ? 2 : 1) + mFrames.size()) / 2;
+
+    return split(index);
+    }
+
+bool Task::splitHigh()
+    {
+    if (mFinalResult)
+        return false;
+    
+    if (mFrames.size() < (mFirstFrameIsConstructedToCreateApply ? 2 : 1))
+        return false;
+
+    return split(mFirstFrameIsConstructedToCreateApply ? 2 : 1);
+    }
+
+bool Task::split(long slicePoint)
+    {
+    lassert(slicePoint > 0);
+    lassert(slicePoint <= mFrames.size());
+    lassert(!mFinalResult);
+
+    PolymorphicSharedPtr<Task> subtask = this->shallowClone();
+
+    //pop the top stackframe, which we're going to hold
+    subtask->mPageCache = null();
+    subtask->mFrames = subtask->mFrames.slice(slicePoint);
+    subtask->mFirstFrameIsConstructedToCreateApply = false;
+
+    mLowestFrameIsUnsplittable = false;
+
+    mSubtasks.clear();
+    mSubtaskEvents.clear();
+    mEvents.clear();
+    mPendingResult = null();
+
+    Fora::Interpreter::PausedComputationFrame frameToHold = mFrames[slicePoint - 1];
+    mFrames = mFrames.slice(0, slicePoint - 1);
+
+    if (subtask->mFrames.size() || subtask->mPendingResult || subtask->mFinalResult || subtask->mLowestFrame)
+        {
+        mSubtasks[0] = subtask;     
+        mSubtaskEvents[0] = Event();
+        }
+    
+    mLowestFrame =
+        CFGWithFutures::createCfgWithFutures(
+            frameToHold.graph(),
+            frameToHold.label(),
+            frameToHold.values()
+            );
+    
+    mWantsToBeExecuted = false;
+
+    mPageCache = null();
+    mTotalStepsTakenInThisTask = 0;
+    mTotalStepsTakenInFinishedSubtasks = 0;
+    mTotalStepsTakenInThisTaskAndBelow = subtask->mTotalStepsTakenInThisTaskAndBelow;
+
+
+    return true;
+    }
+
+Event Task::extractAllEventsFromSubframes() const
+    {
+    ImmutableTreeVector<Event> subEvents;
+
+    for (auto ixAndEvents: mSubtaskEvents)
+        {
+        if (mSubtasks.find(ixAndEvents.first) != mSubtasks.end())
+            {
+            subEvents = subEvents + 
+                mSubtasks.find(ixAndEvents.first)->second->extractAllEvents();
+            }
+        else
+            subEvents = subEvents + ixAndEvents.second;
+        }
+
+    if (mLowestFrame && !mLowestFrame->getFinalResult() 
+            && !mLowestFrame->couldExitIfAllValuesWereFinished()
+            || !allUnfinishedStackframesAreImmediateReturns()
+            )
+        subEvents = subEvents + Event::DidntFinish();
+
+    return Event::Stackframe(subEvents);
+    }
+
+bool Task::allUnfinishedStackframesAreImmediateReturns() const
+    {
+    for (auto frame: mFrames)
+        {
+        auto cfn = frame.getCurrentControlFlowNode();
+
+        if (!cfn.body().isApply())
+            return false;
+        if (!cfn.body().getContinuationByIndex(0).isReturn())
+            return false;
+        }
+
+    return true;
+    }
+
+long Task::stepsTaken() const
+    {
+    return mTotalStepsTakenInThisTaskAndBelow;
+    }
+
+bool Task::isTopSplittable() const
+    {
+    return !mFirstFrameIsConstructedToCreateApply && mFrames.size() > 0 ||
+        mFrames.size() > 1;
+    }    
+
+ImmutableTreeVector<ImmutableTreeSet<Fora::PageId> > Task::cliques() const
+    {
+    if (!mPageCache)
+        mPageCache = CliqueFinder::extractCliques(extractAllEvents());
+
+    return *mPageCache;
+    }
+
+ImmutableTreeSet<Fora::PageId> Task::pages() const
+    {
+    return CliqueFinder::extractPages(extractAllEvents());
+    }
+
+long Task::rollForwardUntilACliqueIsProduced(long cliqueTarget, long maxEvents)
+    {
+    long totalSteps = 0;
+
+    while (cliques().size() < cliqueTarget)
+        {
+        long steps = rollForwardAndReturnStepCount(10);
+
+        totalSteps += steps;
+
+        if (isFinished() or steps == 0)
+            return totalSteps;
+
+        if (totalSteps > maxEvents)
+            return totalSteps;
+        }
+
+    return totalSteps;
+    }
+
+
+long Task::rollForwardAtTopOfTreeFromSeed(
+                double maxTimestamp,
+                long seed
+                )
+    {
+    Ufora::math::Random::Uniform<float> rand(seed);
+
+    for (long k = 0; k < 10000; k++)
+        rand();
+
+    return rollForwardAtTopOfTree(maxTimestamp, rand);
+    }
+
+long Task::rollForwardAtTopOfTree(double maxTimestamp, Ufora::math::Random::Uniform<float>& ioRand)
+    {
+    return rollForwardAtTopOfTreeReturningStepsAndCliquesCreated(maxTimestamp, ioRand, 0).second;
+    }
+
+long Task::absorbAnyFinalResultSubtasks()
+    {
+    if (!mLowestFrame)
+        return 0;
+
+    const std::set<uint64_t>& submittableIndices = 
+        mLowestFrame->indicesOfSubmittableFutures();
+
+    std::set<uint64_t> toSubmit;
+
+    for (auto index: submittableIndices)
+        {
+        auto subtaskIt = mSubtasks.find(index);
+
+        if (subtaskIt != mSubtasks.end() && subtaskIt->second->finalResult())
+            toSubmit.insert(index);
+        }
+
+    for (auto index: toSubmit)
+        {
+        auto finishedResult = mSubtasks[index]->finalResult();
+
+        mSubtaskEvents[index] = mSubtasks[index]->extractAllEvents();
+
+        mTotalStepsTakenInFinishedSubtasks += mSubtasks[index]->stepsTaken();
+
+        mSubtasks.erase(index);
+
+        mLowestFrame->slotCompleted(index, *finishedResult);
+
+        recordStepsTakenInThisTask(1);
+        }
+
+    return toSubmit.size();
+    }
+
+long Task::rollUntilTreeHasTwoBranches(double maxTimestamp, long maxValues)
+    {
+    if (!mLowestFrame)
+        return 0;
+
+    long absorbed = 0;
+
+    while (subtaskCount() == 1 && absorbed < maxValues)
+        {
+        double t0 = curClock();
+
+        if (!rollLowestFrameForward())
+            return absorbed;
+
+        for (long k = 1; k < subtaskCount(); k++)
+            {
+            double t0 = curClock();
+            subtaskByIndex(k)->rollForwardAndReturnStepCount(1);
+            }
+
+        if (subtaskCount() > 0)
+            absorbed += absorbAnyFinalResultSubtasks();
+
+        if (curClock() > maxTimestamp && maxTimestamp > 0)
+            return absorbed;
+        }
+
+    return absorbed;
+    }
+
+pair<long, long> Task::rollForwardAtTopOfTreeReturningStepsAndCliquesCreated(double maxTimestamp, Ufora::math::Random::Uniform<float>& ioRand, long depth)
+    {
+    if (curClock() > maxTimestamp && maxTimestamp > 0)
+        return make_pair(0,0);
+
+    long totalSteps = 0;
+    long totalCliquesFound = 0;
+
+    if (subtaskCount() == 0 && !splitHigh())
+        return make_pair(0,0);
+
+    if (subtaskCount() == 1)
+        {
+        double t0 = curClock();
+        rollUntilTreeHasTwoBranches(std::min<double>(curClock() + 0.1, maxTimestamp), 20);
+        }
+
+    if (subtaskCount() == 0)
+        return make_pair(totalSteps, totalCliquesFound);
+
+    //just go to one of the subtasks
+    //see if we already went down one of these
+
+    long whichSubtask = subtaskCount() * ioRand();
+
+    auto res = subtaskByIndex(whichSubtask)
+        ->rollForwardAtTopOfTreeReturningStepsAndCliquesCreated(
+            maxTimestamp, 
+            ioRand,
+            depth+1
+            );
+
+    recordStepsTakenBelowThisTask(res.first);
+
+    if (curClock() > maxTimestamp && maxTimestamp > 0)
+        return res;
+
+    if (!cliques().size())
+        { 
+        lassert(res.second == 0);
+
+        double t0 = curClock();
+
+        long steps = rollForwardUntilACliqueIsProduced(1, 30);
+
+        recordStepsTakenInThisTask(steps);
+        res.first += steps;
+
+        if (cliques().size())
+            res.second += 1;
+        }
+
+    return res;
+    }
+
+long Task::rollForwardWithSplitting(long maxEvents, long maxEventsPerChild, double maxTimestamp)
+    {
+    long origMaxEvents = maxEvents;
+
+    if (maxEvents < 0)
+        return 0;
+
+    long totalEvents = 0;
+
+    long maxEventsPerChildTree = maxEventsPerChild;
+
+    while (true)
+        {
+        if (curClock() > maxTimestamp)
+            return totalEvents;
+
+        bool didAnything = false;
+
+        if (totalEvents >= maxEvents)
+            return totalEvents;
+
+        if (stepsTaken() < maxEventsPerChild)
+            {
+            long events = rollForwardAndReturnStepCount(
+                std::min<long>(maxEventsPerChild, maxEvents - totalEvents)
+                );
+
+            if (events > 0)
+                didAnything = true;
+
+            totalEvents += events;
+            }
+
+        if (!didAnything)
+            {
+            if (splitHigh())
+                {
+                totalEvents += 1;
+                recordStepsTakenInThisTask(1);
+                
+                didAnything = true;
+                }
+            }
+
+        if (!didAnything && stepsTakenInThisFrame() < maxEventsPerChild)
+            {   
+            if (rollForward())
+                {
+                totalEvents += 1;
+                recordStepsTakenInThisTask(1);
+
+                didAnything = true;
+                }
+            }
+
+        if (!didAnything)
+            {
+            for (auto subtask: mSubtasks)
+                {
+                long events = subtask.second->rollForwardWithSplitting(
+                    std::min<long>(
+                        maxEvents - totalEvents, 
+                        maxEventsPerChildTree - subtask.second->stepsTaken()
+                        ),
+                    maxEventsPerChild,
+                    maxTimestamp
+                    );
+
+                totalEvents += events;
+
+                recordStepsTakenBelowThisTask(events);
+
+                if (events)
+                    didAnything = true;
+
+                if (totalEvents >= maxEvents)
+                    return totalEvents;
+                }
+            }
+
+        if (maxEventsPerChildTree < origMaxEvents)
+            {
+            maxEventsPerChildTree *= 1.5;
+            didAnything = true;
+            }
+
+        if (!didAnything)
+            return totalEvents;
+        }
+    }
+
+long Task::rollForwardAndReturnStepCount(long maxEvents)
+    {
+    if (maxEvents < 0)
+        return 0;
+
+    long totalEvents = 0;
+
+    std::set<long> subtasksVisited;
+
+    while (true)
+        {
+        bool visitedAnySubtasks = false;
+
+        for (auto subtask: mSubtasks)
+            if (subtasksVisited.find(subtask.first) == subtasksVisited.end())
+                {
+                long eventsBelow = subtask.second->rollForwardAndReturnStepCount(maxEvents - totalEvents);
+
+                recordStepsTakenBelowThisTask(eventsBelow);
+                totalEvents += eventsBelow;
+
+                if (totalEvents >= maxEvents)
+                    return totalEvents;
+
+                subtasksVisited.insert(subtask.first);
+
+                visitedAnySubtasks = true;
+                }
+
+        if (mFinalResult)
+            return totalEvents;
+        
+        if (mSubtasks.size() > 10)
+            return totalEvents;
+
+        if (visitedAnySubtasks)
+            {
+            //don't do anything - just go around the loop.
+            }
+            else
+        if (rollForward())
+            {
+            totalEvents++;
+
+            if (totalEvents >= maxEvents)
+                return totalEvents;
+            }
+            else
+        if (splitLow())
+            {
+            rollForward();
+
+            totalEvents++;
+
+            if (totalEvents >= maxEvents)
+                return totalEvents;
+
+            //the set of subtask indices that we don't want to visit has
+            //changed.
+            subtasksVisited.clear();
+            subtasksVisited.insert(0);
+            }
+        else
+            return totalEvents;
+        }
+    }
+
+Event Task::extractAllEvents() const
+    {
+    return Event::Stackframe(
+        ImmutableTreeVector<Event>(mEvents) + extractAllEventsFromSubframes()
+        );
+    }
+
+ImmutableTreeVector<Fora::PageId> 
+Task::getPageIds(const BigVectorSlice& inBigVectorSlice)
+    {
+    VectorDataManager& vdm = mContext.getVDM();
+
+    auto layout = vdm.getBigVectorLayouts()->getLayoutForId(inBigVectorSlice.identity());
+
+    ImmutableTreeVector<TypedFora::Abi::VectorDataIDSlice> slices = 
+        layout.slicesCoveringRange(
+            inBigVectorSlice.indexLow(), 
+            inBigVectorSlice.indexHigh()
+            );
+
+    ImmutableTreeVector<Fora::PageId> tr;
+
+    for (auto slice: slices)
+        tr = tr + slice.vector().getPage();
+
+    return tr;
+    }
+
+void Task::absorbEvent(Event e)
+    {
+    mEvents.push_back(e);
+    }
+
+void Task::execute()
+    {
+    lassert(mWantsToBeExecuted);
+    lassert(mFrames.size() || mPendingResult);
+    mWantsToBeExecuted = false;
+
+    double t0 = curClock();
+
+    if (mPendingResult && !mFrames.size())
+        {
+        if (mPendingResult->second)
+            mFinalResult = ComputationResult::Result(
+                mPendingResult->first, 
+                ImplValContainer()
+                );
+        else
+            mFinalResult = ComputationResult::Exception(
+                mPendingResult->first, 
+                ImplValContainer()
+                );
+        mPendingResult = null();
+        return;
+        }
+
+    mContext.resumePausedComputation(
+        PausedComputation(mFrames, mPendingResult)
+        );
+
+    mContext.setOnCurrentActivePageGroupChanged(
+        boost::function2<void, ImmutableTreeSet<Fora::PageId>, double>(
+            [&](ImmutableTreeSet<Fora::PageId> pages, double time) {
+                absorbEvent(Event::Load(ImmutableTreeVector<Fora::PageId>(pages)));
+                }
+            ));
+
+    static PolymorphicSharedPtr<CallbackSchedulerFactory> callbackSchedulerFactory(
+        new SimpleCallbackSchedulerFactory()
+        );
+    static PolymorphicSharedPtr<CallbackScheduler> scheduler = callbackSchedulerFactory->createScheduler("futures_clique_finder_timeouts");
+
+    using Ufora::threading::Trigger;
+    boost::shared_ptr<Trigger> trigger(new Trigger());
+    bool isDone = false;
+
+    mContext.resetInterruptState();
+
+    trigger->setTrigger(boost::function0<void>([&](){ if (!isDone) mContext.interrupt(); }));
+
+    double timeout = 0.005;
+    scheduler->schedule(boost::function0<void>([=]() { trigger->triggerIfNotTriggered(); }), curClock() + timeout);
+
+    double computeT0 = curClock();
+    mContext.resumeComputation();
+    double computeT1 = curClock();
+
+    isDone = true;
+    trigger->triggerIfNotTriggered();
+    
+    mContext.setOnCurrentActivePageGroupChanged(
+        boost::function2<void, ImmutableTreeSet<Fora::PageId>, double>()
+        );
+
+    bool wasLong = false;
+    
+    if (mContext.isFinished())
+        {
+        mFinalResult = mContext.getFinishedResult();
+        mFrames = emptyTreeVec();
+        mPendingResult = null();
+        //uncomment if trying to see what results are flowing through the computation
+        //absorbEvent(Event::Result(prettyPrintStringWithoutWrapping(mFinalResult)));
+        }
+    else
+        {
+        if (mContext.isVectorLoad())
+            {
+            auto pageIds = getPageIds(mContext.getVectorLoad());
+            absorbEvent(Event::Load(pageIds));
+            }
+
+        auto pc = mContext.extractPausedComputation();
+
+        mFrames = pc.frames();
+
+        lassert(!pc.pendingResult());
+        mPendingResult = null();
+        }
+    }
+
+void Task::toStringStream(std::ostringstream& stream, long depth, long maxDepth) const
+    {
+    auto indent = [&](long d) {
+        for (long k = 0; k < d; k++) 
+            stream << "  ";
+        };
+
+    auto emptyIfNull = [&](Nullable<std::string> s) { 
+        if (!s)
+            return std::string();
+        return *s;
+        };
+
+    indent(depth);
+
+    if (depth > maxDepth)
+        {   
+        stream << "...\n";
+        return;
+        }
+
+    if (mFinalResult)
+        {
+        stream << "finalResult: " << prettyPrintStringWithoutWrapping(mFinalResult) << "\n";
+        return;
+        } 
+
+    stream << this << " [steps: " << stepsTakenInThisFrame() << " / " << stepsTaken() << "]";
+
+    if (mIsLeaf)
+        stream << "[leaf]";
+
+    if (mSubtasks.size())
+        stream << "[subtasks: " << mSubtasks.size() << " with " << mSubtaskEvents.size() << "SE]";
+
+    if (mEvents.size())
+        stream << "[events: " << mEvents.size() << "]";
+
+    if (mFrames.size() && !(mFrames.size() == 1 && mFirstFrameIsConstructedToCreateApply))
+        stream << "[frames: " << mFrames.size() << (mFirstFrameIsConstructedToCreateApply ? "(fake top)": "") << "] ";
+
+    if (mWantsToBeExecuted)
+        stream << "[wants execution]";
+
+    if (mLowestFrame && !mLowestFrame->couldExitIfAllValuesWereFinished() || 
+            !allUnfinishedStackframesAreImmediateReturns())
+        stream << "[Unfinished]";
+    
+    if (cliques().size())
+        stream << "[cliques: " << cliques().size() << "]";
+
+    stream << "\n";
+
+    bool isFirst = true;
+    for (auto f: mFrames)
+        {
+        //if (!(isFirst && mFirstFrameIsConstructedToCreateApply))
+            {
+            indent(std::max<long>(20, depth+2));
+
+            stream << "frame -- " 
+                << emptyIfNull(ControlFlowGraphToCodeLocation::graphAndLabelToDisplayString(f.graph(), f.label())) << " holding "
+                << prettyPrintStringWithoutWrapping(f.values()) << "\n";
+            }
+        isFirst = false;
+        }
+
+    if (mPendingResult)
+        {
+        indent(std::max<long>(20, depth+2));
+        stream << "[pending result] " << prettyPrintStringWithoutWrapping(mPendingResult) << "\n";
+        }
+
+    if (mLowestFrame)
+        {
+        indent(std::max<long>(20, depth+2));
+
+        stream << "CFGWithFutures " << &*mLowestFrame << " with " << mSubtasks.size() << " tasks. "
+            << (mLowestFrame->mustBailEarly() ? "bailing early":"");
+
+        stream << " -- " 
+            << emptyIfNull(ControlFlowGraphToCodeLocation::graphAndLabelToDisplayString(mLowestFrame->graph(), mLowestFrame->currentLabel()))
+            << " holding "
+            << prettyPrintStringWithoutWrapping(mLowestFrame->currentNodeValues())
+            << "\n";
+        }
+    
+
+    for (auto subtask: mSubtasks)
+        subtask.second->toStringStream(stream, depth+1, maxDepth);
+    }
+
+std::string Task::toStringWithDepth(long maxDepth) const
+    {
+    std::ostringstream s;
+
+    double t0 = curClock();
+
+    toStringStream(s, 0, maxDepth);
+
+    return s.str();
+    }
+
+CliqueFinder::CliqueFinder(
+                PolymorphicSharedPtr<Fora::Interpreter::ExecutionContext> inExecutionContextPtr
+                ) :
+        mExecutionContextPtr(inExecutionContextPtr),
+        mMemoryExecutionContextPtr(
+            new Fora::Interpreter::ExecutionContext(
+                inExecutionContextPtr->getVDM()
+                    .polymorphicSharedPtrFromThis()
+                )
+            )
+    {
+    mMemoryExecutionContextPtr->getConfiguration()->allowInterpreterTracing() = false;
+    mMemoryExecutionContextPtr->disableVectorPaging();
+
+    PausedComputation pausedComputation = 
+        mExecutionContextPtr->extractPausedComputation();
+
+    mTask.reset(new Task(pausedComputation, *mMemoryExecutionContextPtr));
+    }
+
+Event CliqueFinder::searchForEvents(
+        long totalSteps, 
+        long stepsPerChild,
+        PolymorphicSharedPtr<Fora::Interpreter::ExecutionContext> inExecutionContextPtr,
+        double maxTimeToElapse
+        )
+    {
+    CliqueFinder finder(inExecutionContextPtr);
+
+    finder.simulate(
+        totalSteps,
+        stepsPerChild,
+        maxTimeToElapse
+        );
+
+    return finder.extractEvents();
+    }
+
+void CliqueFinder::simulate(long totalSteps, long stepsPerChild, double maxTimeToElapse)
+    {
+    mTask->rollForwardWithSplitting(totalSteps, stepsPerChild, curClock() + maxTimeToElapse);
+    }
+    
+Event CliqueFinder::extractEvents()
+    {
+    return mTask->extractAllEvents();
+    }
+
+ImmutableTreeVector<ImmutableTreeSet<Fora::PageId> > CliqueFinder::cliques()
+    {
+    return mTask->cliques();
+    }
+
+class CliqueExtractor {
+public:
+    void walkEvent(Event e)
+        {
+        @match Event(e)
+            -| Stackframe(events) ->> {
+                for (auto subEvent: events)
+                    walkEvent(subEvent);
+                }
+            -| Load(pages) ->> {
+                loadPage(Neighborhood(pages));
+                }
+            -| Result() ->> {}
+            -| DidntFinish() ->> {
+                didntFinish();
+                }
+        }
+
+    void loadPage(Neighborhood page)
+        {
+        mPages.insert(page);
+
+        if (mLastPageLoaded && mPagesInCurrentBlock.size())
+            {
+            if (page == *mLastPageLoaded)
+                //nothing to do
+                return;
+
+            mPagesInCurrentBlock.push_back(page);
+
+            mLastPageLoaded = page;
+            }
+            else
+        if (mLastPageLoaded && !mPagesInCurrentBlock.size())
+            {
+            mPagesInCurrentBlock.push_back(page);
+
+            if (page == *mLastPageLoaded)
+                return;
+            }
+        else
+            {
+            mLastPageLoaded = page;
+            mPagesInCurrentBlock.push_back(page);
+            }
+        }
+
+    void didntFinish()
+        {
+        map<Neighborhood, long> totalCount;
+
+        for (auto p: mPagesInCurrentBlock)
+            totalCount[p]++;
+
+        while (mPagesInCurrentBlock.size() && totalCount[mPagesInCurrentBlock.back()] == 1)
+            mPagesInCurrentBlock.pop_back();
+
+        long index = 0;
+        while (index < mPagesInCurrentBlock.size() && totalCount[mPagesInCurrentBlock[index]] == 1)
+            index++;
+
+        if (index < mPagesInCurrentBlock.size())
+            {
+            ImmutableTreeSet<Neighborhood> clique(
+                mPagesInCurrentBlock.begin() + index, 
+                mPagesInCurrentBlock.end()
+                );
+
+            if (clique.size() > 1)
+                mCycleCount[clique]++;
+            }
+
+        mPagesInCurrentBlock.clear();
+        mLastPageLoaded = null();
+        }
+
+    ImmutableTreeVector<ImmutableTreeSet<Fora::PageId> > extractCliques()
+        {
+        std::set<ImmutableTreeSet<Fora::PageId> > result;
+        
+        for (auto cycle: mCycleCount)
+            {
+            ImmutableTreeSet<Fora::PageId> pages;
+            for (auto n: cycle.first)
+                pages = pages + n.pages();
+
+            result.insert(pages);
+            }
+
+        return ImmutableTreeVector<ImmutableTreeSet<Fora::PageId> >(result.begin(), result.end());
+        }
+
+private:
+    std::map<ImmutableTreeSet<Neighborhood>, long> mCycleCount;
+
+    std::set<Neighborhood> mPages;
+
+    std::vector<Neighborhood> mPagesInCurrentBlock;
+
+    Nullable<Neighborhood> mLastPageLoaded;
+};
+
+
+
+class PageExtractor {
+public:
+    void walkEvent(Event e)
+        {
+        @match Event(e)
+            -| Stackframe(events) ->> {
+                for (auto subEvent: events)
+                    walkEvent(subEvent);
+                }
+            -| Load(pages) ->> {
+                for (auto p: pages)
+                    mPages.insert(p);
+                }
+            -| Result() ->> {}
+            -| DidntFinish() ->> {}
+        }
+
+    ImmutableTreeSet<Fora::PageId> pages() const
+        {
+        return ImmutableTreeSet<Fora::PageId>(mPages);
+        }
+
+private:
+    std::set<Fora::PageId> mPages;
+};
+
+ImmutableTreeVector<ImmutableTreeSet<Fora::PageId> > CliqueFinder::extractCliques(Event e)
+    {
+    CliqueExtractor extractor;
+    
+    extractor.walkEvent(e);
+
+    auto res = extractor.extractCliques();
+
+    return res;
+    }
+
+ImmutableTreeSet<Fora::PageId> CliqueFinder::extractPages(Event e)
+    {
+    PageExtractor extractor;
+    
+    extractor.walkEvent(e);
+
+    return extractor.pages();
+    }
+
+long CliqueFinder::searchFromTopOfTreeReturningCliquesCreatedSeed(
+                                double maxTimestamp, 
+                                long seed
+                                )
+    {
+    Ufora::math::Random::Uniform<float> rand(seed);
+
+    return searchFromTopOfTreeReturningCliquesCreated(maxTimestamp, rand);
+    }
+
+long CliqueFinder::searchFromTopOfTreeReturningCliquesCreated(
+                                double maxTimestamp, 
+                                Ufora::math::Random::Uniform<float>& ioRand
+                                )
+    {
+    try {
+        long created = 0;
+        long timesNoneCreated = 0;
+
+        while (curClock() < maxTimestamp && timesNoneCreated < 3)
+            {
+            long cliques = mTask->rollForwardAtTopOfTree(maxTimestamp, ioRand);
+            created += cliques;
+            if (cliques == 0)
+                timesNoneCreated++;
+            else
+                timesNoneCreated = 0;
+            }
+        return created;
+        }
+    catch(std::logic_error& e)
+        {
+        LOG_ERROR << "Failed: " << e.what() << "\n" << mTask->toString();
+
+        return 0;
+        }
+    }
+
+}
+}
+

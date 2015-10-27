@@ -1,0 +1,336 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../../../core/containers/ArbitraryTypeMap.hpp"
+#include "../../ControlFlowGraph/ControlFlowGraph.hppml"
+#include "Continuation.hppml"
+#include "InstructionBody.hppml"
+#include "InstructionPtr.hpp"
+#include "../../Judgment/JudgmentOnValueTupleMap.hppml"
+#include "../../Axioms/Axiom.hppml"
+#include "InstructionJOA.hppml"
+
+namespace TypedFora {
+
+class TypedJumpTarget;
+
+}
+
+namespace Fora {
+namespace Interpreter {
+
+class CompilerEntrypointMap;
+
+class Instruction;
+
+}
+}
+
+
+namespace Fora {
+namespace Compiler {
+namespace CompilerInstructionGraph {
+
+class InstructionGraph;
+class InstructionGraphRoot;
+class ApplyArgs;
+
+class Instruction {
+	Instruction();
+	
+	//not implemented, as we don't want Instructions to be copyable
+	Instruction(const Instruction& in);
+	Instruction& operator=(const Instruction& in);
+	
+	//init initializes the Instruction's InstructionBody and initializes its Continuations
+	void init();
+	
+	friend class InstructionGraph;
+	friend class Continuation;
+	friend class ContinuationElement;
+	friend class InstructionGraphRoot;
+	
+public:
+	Instruction(
+		InstructionGraph* instructionGraphPtr,
+		const InstructionPtr inRootInstructionPtr,
+		const ControlFlowGraph* controlFlowGraphPtr,
+		Nullable<string> label,
+		const ImmutableTreeVector<JudgmentOnValue>& jovs
+		);
+
+	~Instruction();
+
+	long executionCount() const;
+
+	long& timesCompiled() 
+		{
+		return mTimesCompiled;
+		}
+
+	const ImmutableTreeVector<JudgmentOnValue>& jovs(void) const;
+
+	const Nullable<ImmutableTreeVector<JudgmentOnValue> >& jovsWithConstantPropagation() const;
+
+	const Nullable<ImmutableTreeVector<JudgmentOnValue> >& getCompilerEntrypointJOVs() const;
+	
+	void setCompilerEntrypointJOVs(ImmutableTreeVector<JudgmentOnValue> jovs);
+
+	bool isCompilerEntrypoint() const;
+
+	void clearCompilerEntrypointJOVs();
+
+	const ImmutableTreeVector<JOV>& jovsWithConstantPropagationOrRootJovs() const;
+
+	void setJovsWithConstantPropagation(const Nullable<ImmutableTreeVector<JudgmentOnValue> >& jovs);
+
+	//set 'joa'. Asserts that this is an unfinished non-root node. returns whether the JOA has
+	//changed.
+	bool setJOA(const InstructionJOA& inJOA);
+
+	const InstructionJOA&	joa(void) const;
+	
+	bool isApply(void) const;
+
+	bool isJumpApply(void) const;
+
+	bool isUnknownApply(void) const;
+
+	//does this node produce a result? E.g. is it an apply or a CacheCall?
+	bool hasResult(void) const;
+	
+	bool setResultJOA(const InstructionJOA& inNewResultJOA);
+	
+	bool isAxiomApply(void) const;
+
+	bool setAxiomSpecializations(const JudgmentOnAction& inNewSpecializations);
+
+	const std::set<uint32_t>& getVariablesUnusedInContinuations() const;
+
+	const JudgmentOnAction& getAxiomSpecializations() const;
+
+	InstructionPtr followJumpNodesAsFarAsPossible();
+
+	InstructionJOA resultJOA(void) const;	//the joa of our target instruction (if it's known)
+	
+	InstructionJOA computeResultJOAFromNeighboringInstructions(void) const;
+
+	InstructionJOA computeJOAFromNeighboringInstructions(void);
+
+	//reset our joa and, if we're a JumpApply, our resultJoa
+	void resetJoaState(void);
+
+	uword_t argCount(void) const;
+	
+	long graphMaxArgCount(void) const;
+	
+	const InstructionBody& getInstructionBody(void) const;
+	
+	const ControlFlowGraph& getGraph(void) const;
+	
+	const Nullable<string>& getLabel(void) const;
+	
+	hash_type hash(void) const;
+	
+	//Each Instruction is covered by a unique Instruction each of whose judgments are unknown.
+	//This essentially corresponds to the node in the ControlFlowGraph that spawned this Instruction
+	InstructionPtr rootInstructionPtr(void) const;
+	
+	bool isRootInstruction(void) const;
+	
+	Continuation& getContinuation(uword_t index);
+	
+	const Continuation& getContinuation(uword_t index) const;
+	
+	size_t getContinuationCount() const;
+	
+	string toString(bool headerOnly = true, bool deterministicTrace = true) const;
+	
+	const ordered_instruction_set& incomingApplyInstructionPtrs(void) const;
+	
+	const set<ContinuationElement*>& incomingContinuationElementsPtrs(void) const;
+	
+	InstructionGraph& instructionGraph(void) const;
+
+	bool recomputeApplyTarget();
+	
+	Nullable<pair<CSTValue, bool> > applyResultIsKnown(void) const;
+	
+	ImmutableTreeVector<JudgmentOnValue> getApplyJOVsInTargetCFG(void) const;
+	
+	bool applyIsDeterministic() const;
+
+	//number of known instructions that control flow could go to
+	uword_t	flowsToCount(void);
+
+	InstructionPtr flowsTo(uword_t ix);
+	
+	const ImmutableTreeVector<JOV>& getJOVs(void) const;
+	
+	template<class T>
+	T& storageFor() { return mArbitraryStorage.get<T>(); }
+
+	Fora::Interpreter::CompilerEntrypointMap& getCompilerEntrypointMap() const;
+
+	//if we are an apply, do we know the exact result of our apply operation?
+	Nullable<pair<JOV, bool> > getConstantPropagationJOV() const;
+
+	Fora::Interpreter::Instruction* correspondingInterpreterInstruction() const;
+
+private:
+	void onNewChildInstruction(InstructionPtr ptr);
+
+	void ensureInitialized(void);
+
+	bool isInitialized() const;
+
+	void addContinuationDuringInit(
+			const ControlFlowContinuation& inCFC, 
+			bool hasResult,
+			uword_t indexInCFGNode
+			);
+
+	void initializeInstructionBody();
+	
+	void initializeJumpOrSwitchInstructionBody(
+			const vector<pair<CSTValue, uword_t> >& continuationIndices,
+			const ImmutableTreeVector<CSTValue>& cstValuesToCheck,
+			uint32_t ix
+			);
+	
+	void initializeInstructionBodyForBranch(
+			uint32_t ix,
+			ControlFlowContinuation trueContinuation,
+			ControlFlowContinuation falseContinuation
+			);
+	
+	void initializeInstructionBodyForSwitchOnIndex(
+			uint32_t ix,
+			const ImmutableTreeMap<CSTValue, ControlFlowContinuation>& branches,
+			ControlFlowContinuation otherwise
+			);
+
+	void initializeInstructionBodyTupleExpand(
+			uword_t inIndex, 
+			const ControlFlowTupleContinuation& ifMatch, 
+			const ControlFlowContinuation& ifNoMatch
+			);
+
+	void initializeInstructionBodyForSwitchOnConstant(
+			const CSTValue& cstValue,
+			const ImmutableTreeMap<CSTValue, ControlFlowContinuation>& branches,
+			ControlFlowContinuation otherwise
+			);
+
+	void initializeInstructionBodyForAxiomApply(
+			const AxiomJOA& axiomJoa,
+			const ApplyArgs& applyArgs
+			);
+
+	void initializeInstructionBodyForExpandApply(
+			const ControlFlowGraph& code,
+			const ApplyArgs& applyArgs
+			);
+
+	void initializeInstructionBodyForNativeApply(
+			const JudgmentOnAction& joa,
+			const ApplyArgs& applyArgs
+			);
+
+	void initializeInstructionBodyForApply(
+			const ImmutableTreeVector<ControlFlowApplyArg>& args,
+			const ControlFlowContinuation& normalContinuation,
+			const ControlFlowContinuation& exceptionalContinuation
+			);
+
+	const ApplyArgs& getApplyArgs() const;
+
+	long mTimesCompiled;
+
+	ArbitraryTypeMap mArbitraryStorage;
+
+	//our defining parameters
+	ImmutableTreeVector<JudgmentOnValue> mJOVs;
+
+	Nullable<ImmutableTreeVector<JudgmentOnValue> > mJOVsWithConstantPropagation;
+
+	Nullable<ImmutableTreeVector<JudgmentOnValue> > mCompilerEntrypointJOVs;
+	
+	const ControlFlowGraph*	mControlFlowGraphPtr;
+	
+	Nullable<string> mLabel;
+	
+	hash_type mHash;
+	
+	InstructionJOA mJOA;	//JOA from entering this node
+	
+	InstructionJOA mResultJOA;	//JOA passing into this node from our apply operations
+	
+	JudgmentOnAction mResultJOASpecializations;
+
+	vector<Continuation*> mContinuationsPtrs;
+
+	//Each Instruction is covered by a unique Instruction all of whose judgments are unknown.
+	//This essentially corresponds to the node in the ControlFlowGraph that spawned this Instruction
+	InstructionPtr mRootInstructionPtr;
+	
+	ordered_instruction_set mIncomingApplyInstructionPtrs;
+
+	set<ContinuationElement*> mIncomingContinuationElementsPtrs;
+	
+	//in the root node, all incoming continuation elements and apply instructions. This allows
+	//us to efficiently update targets when instructions are added
+	Fora::JudgmentOnValueTupleMap<set<ContinuationElement*> > mAllIncomingContinuationElementsByTargetJOVs;
+
+	Fora::JudgmentOnValueTupleMap<set<InstructionPtr> > mAllIncomingApplyInstructionPtrs;
+
+	InstructionBody	mInstructionBody;
+	
+	InstructionGraph* mInstructionGraphPtr;
+
+	std::set<uint32_t> mVariablesUnusedInContinuations;
+
+	bool mIsInitialized;
+	
+	void addIncomingInstruction(InstructionPtr instructionPtrToAdd);
+	
+	void dropIncomingInstruction(InstructionPtr instructionPtrToDrop);
+	
+	void addIncomingContinuationElement(ContinuationElement* continuationElementPtr);
+
+	void dropIncomingContinuationElement(ContinuationElement* continuationElementPtr);
+
+	boost::mutex mInitializationMutex;
+};
+
+
+}
+}
+}
+
+template<>
+class CPPMLPrettyPrint<Fora::Compiler::CompilerInstructionGraph::Instruction*> {
+public:
+	static void prettyPrint(CPPMLPrettyPrintStream& s,
+							Fora::Compiler::CompilerInstructionGraph::Instruction* t)
+		{
+		s << t->toString();
+		}
+};
+
+
+

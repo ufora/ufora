@@ -1,0 +1,410 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ExecutionContextExecutionState.hppml"
+#include "ExecutionContextImpl.hppml"
+#include "../../core/Logging.hpp"
+#include "../../core/threading/CallbackScheduler.hppml"
+#include "../../core/threading/CallbackSchedulerFactory.hppml"
+#include "../../core/PolymorphicSharedPtrBinder.hpp"
+#include "../VectorDataManager/VectorDataManagerImpl.hppml"
+
+namespace Fora {
+namespace Interpreter {
+
+namespace {
+
+namespace LockLevel {
+
+	const static int GC = 0;
+	const static int Normal = 1;
+	const static int Execute = 2;
+
+}
+
+}
+
+ExecutionContextExecutionState::ExecutionContextExecutionState(
+			ExecutionContextImpl* inContext,
+			uword_t* interruptFlagPtr, 
+			sword_t* interruptCounterPtr
+			) : 
+		mContext(inContext),
+		mIsCurrentlyExecuting(false),
+		mCurrentLockCount(0),
+		mLockIsBeingTransferred(false),
+		mInterruptFlagPtr(interruptFlagPtr),
+		mInterruptCounterPtr(interruptCounterPtr),
+		mGcScheduled(false),
+		mTotalLocksBlocking(0),
+		mIsDestroyed(false),
+		mIsGcPending(false),
+		mInterruptIsExternal(false)
+	{
+	}
+
+ExecutionContextExecutionState::~ExecutionContextExecutionState()
+	{
+	}
+
+void ExecutionContextExecutionState::markDestroyed()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	mIsDestroyed = true;
+	}	
+
+long ExecutionContextExecutionState::totalLocksBlocking()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+	return mTotalLocksBlocking;
+	}
+
+bool ExecutionContextExecutionState::isExecuting()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	return mIsCurrentlyExecuting;
+	}
+
+bool ExecutionContextExecutionState::isInterrupted()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	return *mInterruptFlagPtr;
+	}
+
+bool ExecutionContextExecutionState::isGcScheduled()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	return mGcScheduled;
+	}
+
+bool ExecutionContextExecutionState::isGcPending()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	return mIsGcPending;
+	}
+
+void ExecutionContextExecutionState::scheduleVdmCheck()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (mIsDestroyed)
+		return;
+
+	if (mGcScheduled)
+		return;
+
+	mGcScheduled = true;
+
+	boost::shared_ptr<Queue<bool> > lockAcquired(new Queue<bool>());
+
+	//set up half of the lock
+	lassert(mPendingLockConditions[LockLevel::GC].size() == 0);
+	mPendingLockConditions[LockLevel::GC].push_back(lockAcquired);
+
+	mTotalLocksBlocking++;
+	
+	interrupt_(false);
+
+	mTimestampOfGcScheduled = curClock();
+		
+	mContext->getVDM().getImpl()->getVdmCheckCallbackScheduler()->scheduleImmediately(
+		boost::bind(
+			&ExecutionContextExecutionState::lockAndExecuteVdmCheck,
+			this,
+			//make sure we get a lock on the ExecutionContext so that it's guaranteed
+			//to exist for the lifetime of the object
+			mContext->polymorphicSharedPtrFromThis(),
+			lockAcquired
+			),
+		"ExecutionContextExecutionState::scheduleVdmCheck"
+		);
+
+	if (mCurrentLockCount > 0 || mLockIsBeingTransferred)
+		{
+		//do nothing - the current lockholder will trigger this when it releases
+		if (mLockIsBeingTransferred)
+			lassert(mCurrentLockCount == 0);
+		}
+	else
+		{
+		//nobody has a lock, so we must transfer control to the other thread
+		lassert(mCurrentLockCount == 0);
+		mLockIsBeingTransferred = true;
+
+		lockAcquired->write(true);
+		}
+	}
+
+
+
+void ExecutionContextExecutionState::lockAndExecuteVdmCheck(
+				PolymorphicSharedPtr<ExecutionContextImpl> keepalive,
+				boost::shared_ptr<Queue<bool>> lockAcquiredCondition
+				)
+	{
+		{
+		//indicate that we're going to grab the VDM lock
+		boost::mutex::scoped_lock lock(mMutex);
+		mIsGcPending = true;
+		}
+
+	mContext->getVDM().allowAllExecutionContextsBlockedOnMemoryToCheckState();
+
+		{
+		//first, grab the lock
+
+		lockAcquiredCondition->get();
+
+		boost::mutex::scoped_lock lock(mMutex);
+
+		mIsGcPending = false;
+
+		lassert_dump(mCurrentLockCount == 0, mCurrentLockCount);
+		lassert(!mIsCurrentlyExecuting);
+
+		lassert(mPendingLockConditions[LockLevel::GC].size() 
+					&& mPendingLockConditions[LockLevel::GC].front() == lockAcquiredCondition);
+
+		mPendingLockConditions[LockLevel::GC].pop_front();
+		if (mPendingLockConditions[LockLevel::GC].size() == 0)
+			mPendingLockConditions.erase(LockLevel::GC);
+
+		mCurrentLockCount = 1;
+		mIsCurrentlyExecuting = false;
+		mCurrentlyLockingThreadId = boost::this_thread::get_id();
+		mLockIsBeingTransferred = false;
+		}
+
+	LOG_DEBUG << "Calling checkGcStatusWithVdm_ on " << (void*)mContext
+		<< ". There are " 
+		<< mContext->getVDM().getImpl()->getVdmCheckCallbackScheduler()->currentlyScheduled() 
+		<< " scheduled VDM checks on other execution contexts. "
+		<< "It took " << curClock() - mTimestampOfGcScheduled 
+		<< " seconds to start collecting after first scheduling."
+		;
+
+	//now that we're locked, call the synchronous VDM check
+	try {
+		mContext->checkGcStatusWithVdm_();
+		}
+	catch(std::exception& e)
+		{
+		LOG_ERROR << "checkGcStatusWithVdm_ threw exception: " << e.what();
+		}
+	catch(...)
+		{
+		LOG_ERROR << "checkGcStatusWithVdm_ threw unknown exception.";
+		}
+
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		mGcScheduled = false;
+
+		if (!mInterruptIsExternal)
+			*mInterruptFlagPtr = false;
+		}
+
+	releaseCurrentLock();
+	}
+
+void ExecutionContextExecutionState::interrupt()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	interrupt_(true);
+	}
+
+void ExecutionContextExecutionState::interrupt_(bool isExternal)
+	{
+	*mInterruptFlagPtr = 1;
+
+	if (isExternal)
+		mInterruptIsExternal = true;
+	}
+
+bool ExecutionContextExecutionState::interruptWasExternallyTriggered()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+	
+	return mInterruptIsExternal;
+	}
+
+void ExecutionContextExecutionState::interruptAfterCycleCount(sword_t inCycles)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+	
+	*mInterruptCounterPtr = -inCycles;
+	}
+
+sword_t ExecutionContextExecutionState::remainingCycleCount()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+	
+	if (*mInterruptCounterPtr < 0)
+		return - *mInterruptCounterPtr;
+
+	return 0;
+	}
+
+void ExecutionContextExecutionState::resetInterruptState()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	*mInterruptFlagPtr = 0;
+	*mInterruptCounterPtr = 0;
+	mInterruptIsExternal = false;
+	}
+
+bool ExecutionContextExecutionState::resetInterruptStateIfOnlyTriggeredInternally()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (!mInterruptIsExternal)
+		{
+		*mInterruptFlagPtr = 0;
+		*mInterruptCounterPtr = 0;
+		mInterruptIsExternal = false;
+		return true;
+		}
+
+	return false;
+	}
+
+void ExecutionContextExecutionState::releaseCurrentLock()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	lassert(mCurrentLockCount);
+	lassert(mCurrentlyLockingThreadId == boost::this_thread::get_id());
+
+	mCurrentLockCount--;
+	lassert(!mLockIsBeingTransferred);
+
+	if (mCurrentLockCount == 0)
+		{
+		mIsCurrentlyExecuting = false;
+
+		if (mPendingLockConditions.size())
+			{
+			mPendingLockConditions.begin()->second.front()->write(true);
+
+			lassert(mCurrentLockCount == 0);
+			mLockIsBeingTransferred = true;
+			}
+		else
+			mLockIsBeingTransferred = false;
+
+		mTotalLocksBlocking--;
+		}
+	}
+
+void ExecutionContextExecutionState::acquireLock(long lockLevel)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (mCurrentLockCount > 0 || mLockIsBeingTransferred)
+		{
+		if (mLockIsBeingTransferred)
+			lassert(mCurrentLockCount == 0);
+
+		if (mCurrentlyLockingThreadId == boost::this_thread::get_id() && mCurrentLockCount > 0)
+			{
+			lassert(!mLockIsBeingTransferred);
+			lassert_dump(
+				lockLevel != LockLevel::Execute,
+				"Recursive execution lock doesn't make sense"
+				);
+
+			mCurrentLockCount++;
+			return;
+			}
+
+		boost::shared_ptr<Queue<bool> > lockAcquired(new Queue<bool>);
+
+		mPendingLockConditions[lockLevel].push_back(lockAcquired);
+		mTotalLocksBlocking++;
+		
+		if (mIsCurrentlyExecuting)
+			{
+			interrupt_(false);
+			}
+
+			{
+			lock.unlock();
+			lockAcquired->get();
+			lock.lock();
+			}
+
+		lassert(mLockIsBeingTransferred);
+		lassert_dump(mCurrentLockCount == 0, mCurrentLockCount);
+		lassert(!mIsCurrentlyExecuting);
+
+		lassert(mPendingLockConditions[lockLevel].size() 
+					&& mPendingLockConditions[lockLevel].front() == lockAcquired);
+
+		mPendingLockConditions[lockLevel].pop_front();
+		if (mPendingLockConditions[lockLevel].size() == 0)
+			mPendingLockConditions.erase(lockLevel);
+		}
+	else
+		mTotalLocksBlocking++;
+
+	mCurrentLockCount = 1;
+	mLockIsBeingTransferred = false;
+	
+	mIsCurrentlyExecuting = (lockLevel == LockLevel::Execute);
+	mCurrentlyLockingThreadId = boost::this_thread::get_id();
+	}
+
+ExecutionContextMarkExecutingScope::ExecutionContextMarkExecutingScope(
+												ExecutionContextExecutionState& inContext
+												) : 
+		mContext(inContext),
+		mSetECContext(*inContext.mContext->mActualContextPtr)
+	{
+	inContext.acquireLock(LockLevel::Execute);
+
+	inContext.mContext->executionIsStarting_();
+	}
+
+ExecutionContextMarkExecutingScope::~ExecutionContextMarkExecutingScope()
+	{
+	mContext.mContext->executionIsStopping_();
+	mContext.releaseCurrentLock();
+	}
+
+ExecutionContextInterruptAndLockScope::ExecutionContextInterruptAndLockScope(
+												ExecutionContextExecutionState& inContext
+												) : 
+		mContext(inContext),
+		mSetECContext(*inContext.mContext->mActualContextPtr)
+	{
+	inContext.acquireLock(LockLevel::Normal);
+	}
+
+ExecutionContextInterruptAndLockScope::~ExecutionContextInterruptAndLockScope()
+	{
+	mContext.releaseCurrentLock();
+	}
+
+}
+}
+

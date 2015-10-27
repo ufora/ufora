@@ -1,0 +1,1457 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "PythonAstToFora.hppml"
+#include "PythonListConverter.hpp"
+#include "PythonTupleConverter.hpp"
+#include "PythonDictConverter.hppml"
+#include "PythonToForaConversionError.hppml"
+#include "PythonConstantConverter.hppml"
+#include "../../Judgment/JudgmentOnValue.hppml"
+#include "../../Language/ExpressionLocationMetadata.hppml"
+#include "../../../core/cppml/CPPMLVisit.hppml"
+#include "../../../core/cppml/CPPMLTransform.hppml"
+#include "../../../core/Logging.hpp"
+
+
+#define CALL_MEMBER_FUNCTION(object, ptrToMember)  ((object).*(ptrToMember))
+
+
+namespace {
+
+using namespace Fora;
+
+//take a member name (e.g. 'x') and return the private form of the name (the
+//name used by generated code) that refers to it. We use a space because it cannot
+//conflict with the names produced by actual python code.
+std::string publicDataMemberNameToPrivate(std::string name)
+    {
+    return "@" + name;
+    }
+
+Expression initializeUnboundVariablesForFunction(
+        const TuplePattern& pattern,
+        Expression functionBody
+        )
+    {
+    //look at all the variables we assign to at the root scope. If they are not bound
+    //then they are 'free', but also assigned. We don't allow globals, so they'll all need
+    //null let bindings
+    ImmutableTreeSet<Symbol> bound = pattern.boundVariables();
+    ImmutableTreeSet<Symbol> assigned = functionBody.assignedVariables();
+    ImmutableTreeSet<Symbol> needingBindings = assigned - bound;
+
+    for (auto s: needingBindings)
+        functionBody = Expression::Let(
+            s,
+            Expression::Constant(CSTValue()),
+            functionBody
+            );
+
+    return functionBody;
+    }
+
+ClassDefinitionTerm
+createInvalidNumberOfArgumentsClassDefinitionTerm(const std::string& name) {
+    return ClassDefinitionTerm::ObjectTerm(
+        ObjectDefinitionTerm::Member(
+            Symbol(name),
+            Expression::Throw(
+                Expression::Constant(
+                    CSTValue(name + "() takes no arguments; more than one given")
+                    ),
+                null()                    
+                ),
+            1
+            )
+        );        
+    }
+
+class AssertOnlySimpleInitStatementsVisitor {
+private:
+    const std::string& mSelfName;
+public:
+    AssertOnlySimpleInitStatementsVisitor(const std::string& inSelfName) :
+        mSelfName(inSelfName)
+        {
+        }
+
+    template<class T> void processDown(const T&, bool&) {}
+    template<class T> void processUp(const T&) {}
+
+    void processDown(const PythonAstStatement& stmt, bool& outContinue)
+        {
+        if (stmt.isFunctionDef() or stmt.isClassDef())
+            throw PythonToForaConversionError(
+                "don't know how to handle function or class definitions in __init__ methods",
+                stmt.extent()
+                );
+        if (stmt.isAssign()) {
+            if (stmt.getAssign().targets().size() != 1)
+                throw PythonToForaConversionError(
+                    "don't know how to handle multiple assignment in __init__ methods",
+                    stmt.extent()
+                    );
+
+            PythonAstExpr target = stmt.getAssign().targets()[0];
+
+            if (target.isName()) {
+                if (target.getName().id() == mSelfName) {
+                    std::ostringstream oss;
+                    oss << "don't know how to handle reassignments to self variable `" 
+                        << mSelfName << "' in __init__ methods";
+                    throw PythonToForaConversionError(
+                        oss.str(), stmt.extent()
+                        );
+                    }
+                }
+            }
+        }
+    };
+
+class ExtractVariablesReferencedInFunctionBodyVisitor {
+private:
+    std::set<std::string>& mReferencedVariables;
+public:
+    ExtractVariablesReferencedInFunctionBodyVisitor(
+            std::set<std::string>& inReferencedVariables
+            ): mReferencedVariables(inReferencedVariables)
+        {
+        }
+
+    template<class T> void processDown(const T&, bool&) {}
+    template<class T> void processUp(const T&) {}
+
+    void processDown(const PythonAstExpr& expr, bool& outContinue)
+        {
+        @match PythonAstExpr(expr)
+            -| Name(id, _) ->> {
+                mReferencedVariables.insert(id);
+                }
+            -| _ ->> {}
+            ;
+        }
+    };
+        
+class RewriteSelfSetAttrsTransformer {
+private:
+    std::set<std::pair<std::string, std::string>>& mSelfSetItemMap;
+    const std::set<std::string>& mReferencedVariables;
+    const std::string& mSelfName;
+public:
+    RewriteSelfSetAttrsTransformer(
+            std::set<std::pair<std::string, std::string>>& inSelfSetItemMap,
+            const std::set<std::string>& inReferencedVariables,
+            const std::string& selfName
+            ):
+        mSelfSetItemMap(inSelfSetItemMap),
+        mReferencedVariables(inReferencedVariables),
+        mSelfName(selfName)
+        {
+        }    
+
+    template<class T>
+    Nullable<T> processDown(const T& t, bool& b) const
+        {
+        return null();
+        }
+
+    template<class T>
+    Nullable<T> processUp(const T& t) const
+        {
+        return null();
+        }
+
+    Nullable<PythonAstExpr> processDown(
+            const PythonAstExpr& expr, bool& ioContinue
+            ) const
+        {
+        @match PythonAstExpr(expr) 
+            -| Attribute(value, attr, ctx) ->> {
+                if (!value.isName() or 
+                    value.getName().id() != mSelfName)
+                    return null();
+
+                std::string replacingName = getReplacingName(
+                    attr
+                    );
+
+                mSelfSetItemMap.insert(
+                    std::make_pair(
+                        attr,
+                        replacingName
+                        )
+                    );
+
+                return null() << 
+                    PythonAstExpr::Name(
+                        replacingName,
+                        ctx                        
+                        );
+                }
+            -| _ ->> { return null(); }
+        }
+    
+private:
+    std::string getReplacingName(const std::string& attrName) const 
+        {
+        std::string tr = mSelfName + "_" + attrName;
+        while (mReferencedVariables.find(tr) != mReferencedVariables.end())
+            {
+            tr = tr + "_";
+            }
+        return tr;
+        }
+    };
+
+Expression makeCreateInstanceCall(
+        const std::set<std::pair<std::string, std::string>>& selfSetItemMap,
+        const std::string& className
+        )
+    {
+    ImmutableTreeVector<ApplyArgument> arguments;
+
+    arguments = arguments + 
+        ApplyArgument::Normal(
+            null(),
+            Expression::Constant(
+                CSTValue(
+                    Symbol("CreateInstance")
+                    )
+                )
+            );
+
+    for (const auto& p: selfSetItemMap) {
+        arguments = arguments + 
+            ApplyArgument::Normal(
+                null() << Symbol(publicDataMemberNameToPrivate(p.first)),
+                Expression::Variable(
+                    Symbol(p.second)
+                    )
+                );
+        }
+
+    return Expression::Apply(
+        Expression::Variable(
+            Symbol(className)
+            ),
+        arguments
+        );
+    }
+
+void assertOnlySimpleInitStatements(
+        const ImmutableTreeVector<PythonAstStatement>& functionBody,
+        const std::string& inSelfName
+        )
+    {
+    AssertOnlySimpleInitStatementsVisitor visitor(inSelfName);
+    visit(functionBody, visitor);
+    }
+
+std::set<std::string> extractVariablesReferencedInFunctionBody(
+        const ImmutableTreeVector<PythonAstStatement>& functionBody
+        )
+    {
+    std::set<std::string> referencedVariables;
+    ExtractVariablesReferencedInFunctionBodyVisitor visitor(referencedVariables);
+    visit(functionBody, visitor);
+    return referencedVariables;
+    }
+
+std::pair<
+    ImmutableTreeVector<PythonAstStatement>, 
+    std::set<std::pair<std::string, std::string>>
+    > rewriteSelfSetAttrs(
+        const TuplePatternElement& selfArg,
+        const ImmutableTreeVector<PythonAstStatement>& body        
+        )
+    {
+    std::string selfName;
+        {
+        lassert(selfArg.isNormal());
+
+        auto nullableName = selfArg.getNormal().match().name();
+
+        lassert(nullableName.isValue());
+        selfName = nullableName->toString();
+        }
+
+    assertOnlySimpleInitStatements(body, selfName);
+
+    std::set<std::string> referencedVariables = 
+        extractVariablesReferencedInFunctionBody(
+            body
+            );
+
+    std::set<std::pair<std::string, std::string>> selfSetItemMap;
+
+    RewriteSelfSetAttrsTransformer transformer(
+        selfSetItemMap,
+        referencedVariables,
+        selfName
+        );
+
+    ImmutableTreeVector<PythonAstStatement> transformedBody = 
+        transform(body, transformer);
+
+    return std::make_pair(transformedBody, selfSetItemMap);
+    }
+
+void checkFunctionArgs(
+        const PythonAstArguments& args,
+        const SimpleParseRange& extent
+        )
+    {
+    if (args.vararg().isValue())
+        throw PythonToForaConversionError(
+            "don't know how to handle *args yet",
+            extent
+            );
+    if (args.kwarg().isValue())
+        throw PythonToForaConversionError(
+            "don't know how to handle **kwargs yet",
+            extent
+            );
+    }
+
+// we could probably move a more general 'slice' member function
+// on PythonAstArguments, but this serves our purposes for now
+PythonAstArguments dropFirstNormalArg(const PythonAstArguments& args)
+    {
+    if (args.defaults().size() < args.args().size())
+        {
+        return PythonAstArguments(
+            args.args().slice(1),
+            args.vararg(),
+            args.kwarg(),
+            args.defaults()
+            );
+        }
+
+    lassert(args.defaults().size() == args.args().size());
+        
+    return PythonAstArguments(
+        args.args().slice(1),
+        args.vararg(),
+        args.kwarg(),
+        args.defaults().slice(1)
+        );
+    }
+
+} // anonymous namespace
+
+namespace Fora {
+
+std::map<std::string, PythonAstConverter::member_function_converter> 
+PythonAstConverter::magicMethodDispatchTable {
+        { "__init__", &PythonAstConverter::convertPythonInitDefToForaClassDefinitionTerms},
+        {"__getitem__", &PythonAstConverter::convertPythonGetItemDefToForaClassDefinitionTerms }
+    };
+
+PythonAstConverter::PythonAstConverter(
+            PolymorphicSharedPtr<PythonConstantConverter> constantConverter,
+            PolymorphicSharedPtr<PythonListConverter> listConverter,
+            PolymorphicSharedPtr<PythonTupleConverter> tupleConverter,
+            PolymorphicSharedPtr<PythonDictConverter> dictConverter,
+            ImplValContainer pyObjectBaseMixin
+            )
+        : mConstantConverter(constantConverter),
+          mPythonListConverter(listConverter),
+          mPythonTupleConverter(tupleConverter),
+          mPythonDictConverter(dictConverter),
+          mPyObjectBaseMixin(pyObjectBaseMixin)
+    {
+    ImplValContainer falseValue = mConstantConverter->convertBoolean(false);
+    CSTValue falseTypeValue(JudgmentOnValue::OfType(falseValue.type()));
+    mBoolTypeExpr = Expression::Constant(falseTypeValue);
+    }
+
+PolymorphicSharedPtr<PythonConstantConverter> PythonAstConverter::constantConverter() const
+    {
+    return mConstantConverter;
+    }
+
+/*
+We've got an ITV<ClassDefinitionTerm> here because certain python class body statements produce
+more than one Fora ClassDefinitionTerm, for example __init__ gives a Constructor and (possibly)
+DataMembers.
+*/
+ImmutableTreeVector<ClassDefinitionTerm>
+PythonAstConverter::convertPythonClassBodyStatementToForaClassDefinitionTerms(
+        const PythonAstStatement& statement,
+        const std::string& className
+        ) const
+    {
+    @match PythonAstStatement(statement)
+        -| FunctionDef(_, _, _, _) ->> {
+            return convertPythonClassBodyFunctionDefToForaClassDefinitionTerms(
+                statement.getFunctionDef(),
+                statement.extent(),
+                className
+                );
+            }
+        -| _ ->> {
+            std::ostringstream oss;
+            oss << "Don't know what to do with " << statement.tagName();
+            throw PythonToForaConversionError(
+                oss.str(),
+                statement.extent()
+                );
+            }
+    }
+
+// should only be called from convertPythonClassBodyFunctionDefToForaClassDefinitionTerm
+// which does some preliminary verification 
+ImmutableTreeVector<ClassDefinitionTerm> 
+PythonAstConverter::convertPythonInitDefToForaClassDefinitionTerms(
+        const PythonAstStatement_FunctionDefType& functionDef,
+        const std::string& className
+        ) const
+    {
+    PythonAstArguments args = functionDef.args();
+
+    TuplePatternElement selfArg = TuplePatternElement::Normal(
+        null(),
+        convertPythonAstExpressionToPattern(args.args()[0]),
+        null()
+        );
+
+    ImmutableTreeVector<TuplePatternElement> foraArgs = 
+        computeForaArgs(dropFirstNormalArg(args));
+
+    std::pair<
+        ImmutableTreeVector<PythonAstStatement>,
+        std::set<std::pair<std::string, std::string>>
+        > transformedBodyAndSelfSetItemMap = rewriteSelfSetAttrs(
+            selfArg,
+            functionDef.body()
+            );
+
+    TuplePattern pattern = TuplePattern(foraArgs);
+    Expression functionBody = 
+        convertPythonAstStatementsToExpression(
+            transformedBodyAndSelfSetItemMap.first
+            );
+
+    Expression createInstanceCall = 
+        makeCreateInstanceCall(
+            transformedBodyAndSelfSetItemMap.second,
+            className
+            );
+
+    functionBody = Expression::Sequence(
+        functionBody,
+        createInstanceCall
+        );
+
+    functionBody = initializeUnboundVariablesForFunction(pattern, functionBody);
+
+    ImmutableTreeVector<ClassDefinitionTerm> tr;
+
+    for (const auto& p: transformedBodyAndSelfSetItemMap.second) {
+        tr = tr + ClassDefinitionTerm::DataMember(
+            Symbol(publicDataMemberNameToPrivate(p.first))
+            );
+        tr = tr + ClassDefinitionTerm::ObjectTerm(
+            ObjectDefinitionTerm::Anything(
+                Function::Term(
+                    TuplePattern(
+                        emptyTreeVec() + 
+                            TuplePatternElement::Normal(PatternWithName::Constant(CSTValue(Symbol("Member")))) + 
+                            TuplePatternElement::Normal(PatternWithName::Constant(CSTValue(Symbol(p.first))))
+                        ),
+                    Expression::Variable(publicDataMemberNameToPrivate(p.first)),
+                    Function::Empty()
+                    )
+                )
+            );
+        }
+
+    return tr + ClassDefinitionTerm::Constructor(
+        Function::Term(
+            pattern,
+            functionBody,
+            Function::Empty()
+            )
+        );
+    }
+
+
+// basic properties of functionDef.args() has already been vetted in 
+// convertPythonClassBodyFunctionDefToForaClassDefinitionTerms
+ImmutableTreeVector<ClassDefinitionTerm>
+PythonAstConverter::convertPythonGetItemDefToForaClassDefinitionTerms(
+        const PythonAstStatement_FunctionDefType& functionDef,
+        const std::string& className
+        ) const
+    {
+    std::pair<TuplePattern, Expression> tuplePatternAndFunctionBody = 
+        convertPythonMemberFunctionToPatternAndFunctionBody(
+            functionDef
+            );
+
+    return emptyTreeVec() +
+        ClassDefinitionTerm::ObjectTerm(
+            ObjectDefinitionTerm::GetItem(
+                Function::Term(
+                    tuplePatternAndFunctionBody.first,
+                    tuplePatternAndFunctionBody.second,
+                    Function::Empty()
+                    )
+                )
+            );
+    }
+
+
+std::pair<TuplePattern, Expression>
+PythonAstConverter::convertPythonMemberFunctionToPatternAndFunctionBody(
+        const PythonAstStatement_FunctionDefType& functionDef
+        ) const
+    {
+    std::pair<TuplePattern, Expression> tuplePatternAndExpression = 
+        computeTuplePatternAndFunctionBody(
+            dropFirstNormalArg(functionDef.args()),
+            functionDef.body()
+            );
+    TuplePattern pattern = tuplePatternAndExpression.first;
+    Expression functionBody = tuplePatternAndExpression.second;
+
+    functionBody = handleNonstandardSelfArgIfNecessary(
+        functionDef.args().args()[0],
+        functionBody
+        );
+
+    functionBody = initializeUnboundVariablesForFunction(pattern, functionBody);
+    
+    return std::make_pair(pattern, functionBody);
+    }
+
+ImmutableTreeVector<ClassDefinitionTerm>
+PythonAstConverter::convertPythonClassBodyFunctionDefToForaClassDefinitionTerms(
+        const PythonAstStatement_FunctionDefType& functionDef,
+        const SimpleParseRange& extent,
+        const std::string& className
+        ) const
+    {
+    PythonAstArguments args = functionDef.args();
+
+    checkFunctionArgs(args, extent);
+
+    if (args.args().size() == 0) {
+        return emptyTreeVec() + 
+            createInvalidNumberOfArgumentsClassDefinitionTerm(
+                functionDef.name()
+                );
+        }
+
+    const std::string& functionName = functionDef.name();
+
+    ImmutableTreeVector<PythonAstExpr> decoratorList = functionDef.decorator_list();
+
+    if (magicMethodDispatchTable.find(functionName) != magicMethodDispatchTable.end())
+        {
+        // should assert that there are no decorators
+        if (decoratorList.size() > 0)
+            throw PythonToForaConversionError(
+                "don't know how to convert magic methods with decorators right now",
+                extent
+                );
+        
+        return CALL_MEMBER_FUNCTION(
+            *this,
+            magicMethodDispatchTable[functionName])(
+                functionDef, className
+                );
+        }
+
+    ImmutableTreeVector<PythonAstStatement> body = functionDef.body();
+    if (decoratorList.size() > 0) {
+        if (decoratorList.size() == 1 
+            and decoratorList[0].isName() 
+            and decoratorList[0].getName().id() == "staticmethod") {
+            return emptyTreeVec() +
+                convertPythonClassBodyStaticMethodFunctionDefToForaClassDefinitionTerm(
+                    functionName,
+                    args,
+                    body
+                    );
+            }
+
+        throw PythonToForaConversionError(
+            "don't know how to convert decorator lists for functions, "
+            "besides \"staticmethod\", right now",
+            extent
+            );
+        }
+
+    std::pair<TuplePattern, Expression> tuplePatternAndFunctionBody = 
+        convertPythonMemberFunctionToPatternAndFunctionBody(
+            functionDef
+            );
+
+    //expose the function member as a ...(`Member, `f) { fun() {...} }
+    //so that we don't capture 'f' in the class binding
+    return emptyTreeVec() + ClassDefinitionTerm::ObjectTerm(
+        ObjectDefinitionTerm::Anything(
+            Function::Term(
+                TuplePattern(
+                    emptyTreeVec() + 
+                        TuplePatternElement::Normal(PatternWithName::Constant(CSTValue(Symbol("Member")))) + 
+                        TuplePatternElement::Normal(PatternWithName::Constant(CSTValue(Symbol(functionName))))
+                    ),
+                Expression::CreateFunction(
+                    functionName,
+                    Function::Term(
+                        tuplePatternAndFunctionBody.first,
+                        tuplePatternAndFunctionBody.second,
+                        Function::Empty()
+                        ),
+                    CSTValue()
+                    ),
+                Function::Empty()
+                )
+            )
+        );            
+    }
+
+namespace {
+    Expression constantExpressionForImplVal(const ImplValContainer& val)
+        {
+        return Expression::Constant(CSTValue(val));
+        }
+    }
+
+Expression PythonAstConverter::convertPythonAstExpressionToFora_inner(const PythonAstExpr& expr) const
+    {
+    @match PythonAstExpr(expr)
+        -| Str(stdString) ->> {
+            return constantExpressionForImplVal(
+                constantConverter()->convertString(stdString)
+                );
+            }
+        -| Num(Int(value)) ->> {
+            return constantExpressionForImplVal(
+                constantConverter()->convertInt(value)
+                );
+            }
+        -| Num(Long(value)) ->> {
+            return constantExpressionForImplVal(
+                constantConverter()->convertLong(value)
+                );
+            }
+        -| Num(Boolean(value)) ->> {
+            return constantExpressionForImplVal(
+                constantConverter()->convertBoolean(value)
+                );
+            }
+        -| Num(None()) ->> {
+             return constantExpressionForImplVal(
+                constantConverter()->noneValue()
+                );
+             }
+        -| Num(Float(value)) ->> {
+            return constantExpressionForImplVal(
+                constantConverter()->convertFloat(value)
+                );
+            }
+        -| BoolOp(And(), exprs) ->> {
+            Expression res = convertPythonAstExpressionToFora(exprs[0]);
+            for (long k = 1; k < exprs.size(); k++)
+                res = Expression::And(res, convertPythonAstExpressionToFora(exprs[k]));
+            return res;
+            }
+        -| BoolOp(Or(), exprs) ->> {
+            Expression res = convertPythonAstExpressionToFora(exprs[0]);
+            for (long k = 1; k < exprs.size(); k++)
+                res = Expression::Or(res, convertPythonAstExpressionToFora(exprs[k]));
+            return res;
+            }
+        -| Attribute(value, attribute, ctx) ->> {
+            Expression agent = convertPythonAstExpressionToFora(value);
+
+            return agent.member(Symbol(attribute));
+            }
+        -| Subscript(value, Index(indexExpr), ctx) ->> {
+            Expression agent = convertPythonAstExpressionToFora(value);
+            Expression slice = convertPythonAstExpressionToFora(indexExpr);
+
+            return agent[slice];
+            }
+        -| Subscript(value, Slice(lower, upper, step), ctx) ->> {
+            Expression agentE = convertPythonAstExpressionToFora(value);
+            Expression lowerE = (lower ? convertPythonAstExpressionToFora(*lower) : Expression::Constant(CSTValue()));
+            Expression upperE = (upper ? convertPythonAstExpressionToFora(*upper) : Expression::Constant(CSTValue()));
+            Expression stepE = (step ? convertPythonAstExpressionToFora(*step) : Expression::Constant(CSTValue()));
+
+            return Expression::GetItem(
+                agentE, 
+                emptyTreeVec() + 
+                    ApplyArgument::Normal(lowerE) +
+                    ApplyArgument::Normal(upperE) +
+                    ApplyArgument::Normal(stepE)
+                );
+            }
+        -| ListComp(elt, generators) ->> {
+            return mPythonListConverter->convertPyListComprehension(
+                expr.getListComp(),
+                boost::bind(
+                    &PythonAstConverter::convertPythonAstExpressionToFora,
+                    this, 
+                    _1
+                    ),
+                boost::bind(
+                    &PythonAstConverter::convertPythonAstExpressionToPattern,
+                    this,
+                    _1
+                    )
+                );     
+            }
+        -| List(elts) ->> {
+            return mPythonListConverter->convertPyList(
+                expr.getList(),
+                boost::bind(
+                    &PythonAstConverter::convertPythonAstExpressionToFora,
+                    this, 
+                    _1
+                    )
+                );
+            }
+        -| Dict(elts) ->> {
+            return mPythonDictConverter->convertPyDict(
+                expr.getDict(),
+                boost::bind(
+                    &PythonAstConverter::convertPythonAstExpressionToFora,
+                    this, 
+                    _1
+                    )
+                );
+            }
+        -| Tuple(elts) ->> {
+            return mPythonTupleConverter->convertPyTuple(
+                expr.getTuple(),
+                boost::bind(
+                    &PythonAstConverter::convertPythonAstExpressionToFora,
+                    this,
+                    _1
+                    )
+                );
+            }
+        -| UnaryOp(op, rhs) ->> {
+            Symbol opAsSymbol;
+            
+            @match PythonAstUnaryOp(op)
+                -| Invert() ->> { opAsSymbol = Symbol("-"); }
+                -| Not() ->> { opAsSymbol = Symbol("!"); }
+                -| UAdd() ->> { opAsSymbol = Symbol("+"); }
+                -| USub() ->> { opAsSymbol = Symbol("-"); }
+                ;
+
+            return Expression::LeftOperator(
+                opAsSymbol,
+                convertPythonAstExpressionToFora(rhs)
+                );
+            }
+        -| BinOp(lhs, Add(), List(Leaf(elt, Empty()))) ->> {
+            Expression convertedLhs = convertPythonAstExpressionToFora(lhs);
+            Expression convertedElt = convertPythonAstExpressionToFora(elt);
+
+            return mPythonListConverter->concatSingleEltVectorExpr(
+                convertedLhs, convertedElt
+                );
+            }
+        -| BinOp(lhs, op, rhs) ->> {
+            Symbol opAsSymbol;
+            
+            @match PythonAstBinaryOp(op)
+                -| Add() ->> { opAsSymbol = Symbol("+"); }
+                -| Sub() ->> { opAsSymbol = Symbol("-"); }
+                -| Mult() ->> { opAsSymbol = Symbol("*"); }
+                -| Div() ->> { opAsSymbol = Symbol("/"); }
+                -| Mod() ->> { opAsSymbol = Symbol("%"); }
+                -| Pow() ->> { opAsSymbol = Symbol("**"); }
+                -| LShift() ->> { opAsSymbol = Symbol("<<"); }
+                -| RShift() ->> { opAsSymbol = Symbol(">>"); }
+                -| BitOr() ->> { opAsSymbol = Symbol("|"); }
+                -| BitXor() ->> { opAsSymbol = Symbol("^"); }
+                -| BitAnd() ->> { opAsSymbol = Symbol("&"); }
+                -| FloorDiv() ->> { opAsSymbol = Symbol("//"); }
+                ;
+
+            return Expression::BinaryOperator(
+                convertPythonAstExpressionToFora(lhs),
+                opAsSymbol,
+                convertPythonAstExpressionToFora(rhs)
+                );
+            }
+        -| Lambda(arguments, body) ->> {
+            return convertPythonAstFunctionDefToFora(
+                PythonAstStatement_FunctionDefType(
+                    "<lambda>",
+                    arguments,
+                    emptyTreeVec() + PythonAstStatement::Return(null() << body),
+                    emptyTreeVec()
+                    ),
+                expr.extent()
+                );
+            }
+        -| IfExp(cond, ifTrue, ifFalse) ->> {
+            return Expression::Branch(
+                convertPythonAstExpressionToForaConditional(cond),
+                convertPythonAstExpressionToFora(ifTrue),
+                null() << convertPythonAstExpressionToFora(ifFalse)
+                );
+            }
+        -| Repr(expr) ->> {
+            return Expression::Call(
+                Expression::Constant(CSTValue(Symbol("ParsableRepresentation"))),
+                emptyTreeVec() + 
+                    ApplyArgument::Normal(
+                        convertPythonAstExpressionToFora(expr)
+                        )
+                );
+            }
+        -| Compare(expr, comparisons, comparisonExprs) ->> {
+            if (comparisons.size() != comparisonExprs.size())
+                throw PythonToForaConversionError(
+                    "valid python should have an equal number of comparison operators and expressions",
+                    expr.extent()
+                    );
+
+            Expression curExpr = convertPythonAstExpressionToFora(expr);
+            Expression result;
+
+            for (long k = 0; k < comparisons.size(); k++)
+                {
+                Expression curRhs = convertPythonAstExpressionToFora(comparisonExprs[k]);
+
+                Expression toAdd;
+
+                @match PythonAstComparisonOp(comparisons[k])
+                    -| Eq() ->> { toAdd = Expression::BinaryOperator(curExpr, Symbol("=="), curRhs); }
+                    -| NotEq() ->> { toAdd = Expression::BinaryOperator(curExpr, Symbol("!="), curRhs); }
+                    -| Lt() ->> { toAdd = Expression::BinaryOperator(curExpr, Symbol("<"), curRhs); }
+                    -| LtE() ->> { toAdd = Expression::BinaryOperator(curExpr, Symbol("<="), curRhs); }
+                    -| Gt() ->> { toAdd = Expression::BinaryOperator(curExpr, Symbol(">"), curRhs); }
+                    -| GtE() ->> { toAdd = Expression::BinaryOperator(curExpr, Symbol(">="), curRhs); }
+                    -| Is() ->> { 
+                        toAdd = Expression::Branch(
+                            Expression::Is(curExpr, curRhs), 
+                            Expression::Constant(mConstantConverter->convertBoolean(true)), 
+                            null() << Expression::Constant(mConstantConverter->convertBoolean(false))
+                            ); 
+                        }
+                    -| IsNot() ->> {
+                        toAdd = Expression::Branch(
+                            Expression::IsNot(curExpr, curRhs), 
+                            Expression::Constant(mConstantConverter->convertBoolean(true)), 
+                            null() << Expression::Constant(mConstantConverter->convertBoolean(false))
+                            ); 
+                        }
+                    -| In() ->> { toAdd = Expression::In(curExpr, curRhs); }
+                    -| NotIn() ->> { toAdd = Expression::NotIn(curExpr, curRhs); }
+                    ;
+
+                if (k == 0)
+                    result = toAdd;
+                else
+                    result = Expression::And(result, toAdd);
+                }
+
+            return result;
+            }
+        -| Yield(e) ->> {
+            return Expression::Yield(
+                e ? convertPythonAstExpressionToFora(*e) : Expression()
+                );
+            }
+        -| Call(func, args, kwds, starArgs, kwargs) ->> {
+            if (starArgs.isValue())
+                throw PythonToForaConversionError(
+                    "don't know how to convert starArgs just yet.",
+                    expr.extent()
+                    );
+
+            if (kwargs.isValue())
+                throw PythonToForaConversionError(
+                    "don't know how to convert kwargs just yet.",
+                    expr.extent()
+                    );
+
+            if (kwds.size() > 0)
+                throw PythonToForaConversionError(
+                    "don't know how to convert keywords just yet.",
+                    expr.extent()
+                    );
+
+            return Expression::Call(
+                convertPythonAstExpressionToFora(func),
+                mapITV(args, [this](PythonAstExpr expr) {
+                    return ApplyArgument::Normal(
+                        convertPythonAstExpressionToFora(expr)
+                        );
+                    })
+                );
+            }
+        -| Name(identifier, Load()) ->> {
+            return Expression::Variable(Symbol(identifier));
+            }
+        -| _ ->> {
+            std::ostringstream oss;
+            oss << "Don't know what to do with " << expr.tagName();
+            throw PythonToForaConversionError(
+                oss.str(),
+                expr.extent()
+                );
+            }
+    }
+
+Expression PythonAstConverter::convertPythonAstExpressionToForaConditional(const PythonAstExpr& expr) const
+    {
+    Expression tr = convertPythonAstExpressionToFora(expr);
+
+    //we need to convert this to a bool, which we do by calling PyBool (or equivalent as given)
+    //and then calling 'Bool' on that
+    return Expression::IsNot(
+        Expression::Constant(mConstantConverter->convertBoolean(false)),
+        Expression::Call(mBoolTypeExpr, emptyTreeVec() + ApplyArgument::Normal(tr))
+        );
+    }
+
+
+Expression PythonAstConverter::convertPythonAstExpressionToFora(const PythonAstExpr& expr) const
+    {
+    Expression tr = convertPythonAstExpressionToFora_inner(expr);
+
+    return CPPML::replaceCommonData(
+        tr,
+        ExpressionLocationMetadata::WithSimpleParseRange(expr.extent())
+        );
+    }
+
+Expression PythonAstConverter::convertPythonAstStatementsToExpression(
+        const ImmutableTreeVector<PythonAstStatement>& statements
+        ) const
+    {
+    Expression result;
+
+    for (auto s: statements)
+        result = Expression::Sequence(result, convertPythonAstStatementToExpression(s));
+
+    return result;
+    }
+
+Function PythonAstConverter::convertPythonAstExceptionHandlers(
+        const ImmutableTreeVector<PythonAstExceptionHandler>& handlers
+        ) const
+    {
+    if (handlers.size() == 0)
+        return Function::Empty();
+
+    Function tail = convertPythonAstExceptionHandlers(handlers.slice(1));
+
+    PatternWithName pattern = PatternWithName::Anything(null());
+
+    if (handlers[0].name())
+        pattern = convertPythonAstExpressionToPattern(*handlers[0].name());
+
+    if (handlers[0].type().isValue())
+        {
+        Expression e = convertPythonAstExpressionToFora(*handlers[0].type());
+
+        pattern.pattern() = 
+            Pattern::MatchBoth(
+                pattern.pattern(), 
+                Pattern::ExpressionMatch(
+                    e,
+                    TuplePattern(emptyTreeVec() + TuplePatternElement::VarArgs(null()))
+                    )
+                );
+        }
+
+    //augment the pattern to insist that it also matches 'PyforaException'
+    pattern.pattern() = 
+        Pattern::MatchBoth(
+            pattern.pattern(), 
+            Pattern::ExpressionMatch(
+                Expression::Constant(CSTValue(Symbol("PyforaException"))),
+                TuplePattern(emptyTreeVec() + TuplePatternElement::VarArgs(null()))
+                )
+            );
+
+    TuplePattern pat = TuplePattern(
+        emptyTreeVec() + TuplePatternElement::Normal(
+            null(),
+            pattern,
+            null()
+            )
+        );
+
+    return Function::Term(
+        pat, 
+        convertPythonAstStatementsToExpression(handlers[0].body()),
+        tail
+        );
+    }
+
+Expression PythonAstConverter::convertPythonAstStatementToExpression_inner(
+        const PythonAstStatement& statement
+        ) const
+    {
+    @match PythonAstStatement(statement)
+        -| FunctionDef(name) ->> {
+            return Expression::Assign(
+                PatternWithName::Anything(null() << Symbol(name)),
+                convertPythonAstFunctionDefToFora(
+                    statement.getFunctionDef(),
+                    statement.extent()
+                    )
+                );
+            }
+        -| ClassDef(name, bases, body, decoratorList) ->> {
+            return Expression::Assign(
+                PatternWithName::Anything(null() << Symbol(name)),
+                convertPythonAstClassDefToFora(
+                    statement.getClassDef(),
+                    statement.extent()
+                    )
+                );
+            }
+        -| Return(Null()) ->> {
+            return Expression::Return(Expression::Constant(mConstantConverter->noneValue()));
+            }
+        -| Return(Value(e)) ->> {
+            return Expression::Return(convertPythonAstExpressionToFora(e));
+            }
+        -| Pass() ->> { return Expression::Constant(mConstantConverter->noneValue()); }
+        -| Break() ->> { return Expression::Break(); }
+        -| Raise(type, inst, tback) ->> {
+            if (type && !inst && !tback)
+                {   
+                return Expression::Throw(
+                    type ? 
+                        convertPythonAstExpressionToFora(*type)
+                    :     Expression::Constant(CSTValue()),
+                    Nullable<Expression>()
+                    ); 
+                }
+            else
+                throw PythonToForaConversionError(
+                    "We only support 'raise' with a single argument",
+                    statement.extent()
+                    );
+            }
+        -| Expr(e) ->> {
+            return convertPythonAstExpressionToFora(e);
+            //return Expression::Sequence(
+                //convertPythonAstExpressionToFora(e),
+                //Expression::Constant(CSTValue())
+                //);
+            }
+        -| For(target, iter, body, orelse) ->> {
+            return Expression::Sequence(
+                Expression::Foreach(
+                    ListComprehensionChain::Term(
+                        convertPythonAstExpressionToPattern(target),
+                        null(),
+                        convertPythonAstExpressionToFora(iter),
+                        ListComprehensionChain::Leaf(
+                            convertPythonAstStatementsToExpression(body)
+                            )
+                        )
+                    ),
+                convertPythonAstStatementsToExpression(orelse)
+                );
+            }
+        -| While(cond, ifTrue, ifFalse) ->> {
+            return Expression::Sequence(
+                Expression::While(
+                    convertPythonAstExpressionToForaConditional(cond),
+                    convertPythonAstStatementsToExpression(ifTrue)
+                    ),
+                convertPythonAstStatementsToExpression(ifFalse)
+                );
+            }
+        -| If(cond, ifTrue, ifFalse) ->> {
+            return Expression::Branch(
+                convertPythonAstExpressionToForaConditional(cond),
+                convertPythonAstStatementsToExpression(ifTrue),
+                null() << convertPythonAstStatementsToExpression(ifFalse)
+                );
+            }
+        -| TryExcept(body, handlers, orelse) ->> {
+            if (orelse.size() > 0)
+                throw PythonToForaConversionError(
+                    "don't know how to convert else clauses in try statements",
+                    statement.extent()
+                    );
+
+            return Expression::Try(
+                convertPythonAstStatementsToExpression(body),
+                convertPythonAstExceptionHandlers(
+                    handlers
+                    ),
+                null(),
+                false
+                );
+            }
+        -| Assign(exprs, expression) ->> {
+            if (exprs.size() == 0)
+                throw PythonToForaConversionError(
+                    "valid python expressions should have a left hand side",
+                    statement.extent()
+                    );
+            if (exprs.size() == 1)
+                return Expression::Assign(
+                    convertPythonAstExpressionToPattern(exprs[0]),
+                    convertPythonAstExpressionToFora(expression)
+                    );
+            else
+                return Expression::Assign(
+                    PatternWithName(
+                        Pattern::Tuple(
+                            TuplePattern(
+                                mapITV(exprs, [this](PythonAstExpr ex) {
+                                    return TuplePatternElement::Normal(
+                                        null(),
+                                        convertPythonAstExpressionToPattern(ex),
+                                        null()
+                                        );
+                                    })
+                                )
+                            ),
+                        null(),
+                        null(),
+                        ExpressionLocationMetadata()
+                        ),
+                    convertPythonAstExpressionToFora(expression)
+                    );
+            }
+        -| _ ->> {
+            std::ostringstream oss;
+            oss << "Don't know what to do with " << statement.tagName();
+            throw PythonToForaConversionError(
+                oss.str(),
+                statement.extent()
+                );
+            }
+    }
+
+Expression PythonAstConverter::convertPythonAstStatementToExpression(
+        const PythonAstStatement& statement
+        ) const
+    {
+    Expression tr = convertPythonAstStatementToExpression_inner(statement);
+
+    return CPPML::replaceCommonData(
+        tr,
+        ExpressionLocationMetadata::WithSimpleParseRange(
+            statement.extent()
+            )
+        );
+    }
+
+PatternWithName PythonAstConverter::convertPythonAstExpressionToPattern_inner(
+        const PythonAstExpr& expr
+        ) const
+    {
+    @match PythonAstExpr(expr)
+        -| Name(n, Param()) ->> {
+            return PatternWithName::Anything(null() << Symbol(n));
+            }
+        -| Name(n, Store()) ->> {
+            return PatternWithName::Anything(null() << Symbol(n));
+            }
+        -| _ ->> {
+            std::ostringstream oss;
+            oss << "Don't know what to do with " << expr.tagName();
+            throw PythonToForaConversionError(
+                oss.str(),
+                expr.extent()
+                );
+            }
+    }
+
+PatternWithName PythonAstConverter::convertPythonAstExpressionToPattern(
+        const PythonAstExpr& expr
+        ) const
+    {
+    PatternWithName tr = convertPythonAstExpressionToPattern_inner(expr);
+
+    return PatternWithName(
+        tr.pattern(),
+        tr.name(),
+        tr.condition(),
+        ExpressionLocationMetadata::WithSimpleParseRange(
+            expr.extent()
+            )
+        );
+    }
+
+std::pair<TuplePattern, Expression> PythonAstConverter::computeTuplePatternAndFunctionBody(
+        const PythonAstArguments& args,
+        const ImmutableTreeVector<PythonAstStatement>& body
+        ) const
+    {
+    ImmutableTreeVector<TuplePatternElement> foraArgs = 
+        computeForaArgs(args);
+
+    TuplePattern pattern = TuplePattern(foraArgs);
+    Expression functionBody = convertPythonAstStatementsToExpression(body);
+    
+    return std::make_pair(pattern, functionBody);
+    }
+
+std::pair<TuplePattern, Expression> 
+PythonAstConverter::computeTuplePatternAndFunctionBodyAndInitUnboundVars(
+        const std::string& name,
+        const PythonAstArguments& args,
+        const ImmutableTreeVector<PythonAstStatement>& body
+        ) const
+    {
+    std::pair<TuplePattern, Expression> patternAndFunctionBody = 
+        computeTuplePatternAndFunctionBody(args, body);
+
+    return std::make_pair(
+        patternAndFunctionBody.first,
+        initializeUnboundVariablesForFunction(
+            patternAndFunctionBody.first,
+            patternAndFunctionBody.second
+            )
+        );
+    }
+
+Expression PythonAstConverter::convertPythonAstClassDefToFora(
+        const PythonAstStatement_ClassDefType& classDef,
+        const SimpleParseRange& extent
+        ) const
+    {
+    const std::string& className = classDef.name();
+    ImmutableTreeVector<PythonAstExpr> bases = classDef.bases();
+    ImmutableTreeVector<PythonAstStatement> body = classDef.body();
+    ImmutableTreeVector<PythonAstExpr> decoratorList = classDef.decorator_list();
+
+    if (decoratorList.size() > 0) {
+        throw PythonToForaConversionError(
+            "don't know how to convert decorator lists for classes right now",
+            extent
+            );
+        }
+
+    if (bases.size() > 0) {
+        throw PythonToForaConversionError(
+            "don't know how to deal with base classes right now",
+            extent
+            );
+        }
+
+    ImmutableTreeVector<ClassDefinitionTerm> classDefinitionTerms;
+
+    for (const auto& statement: body) {
+        classDefinitionTerms = classDefinitionTerms +
+            convertPythonClassBodyStatementToForaClassDefinitionTerms(
+                statement,
+                className
+                );
+        }
+
+    if (mPyObjectBaseMixin.type().isClass())
+        classDefinitionTerms = classDefinitionTerms + 
+            ClassDefinitionTerm::ObjectTerm(
+                ObjectDefinitionTerm::Mixin(
+                    Expression::Constant(
+                        CSTValue(mPyObjectBaseMixin)
+                        )
+                    )
+                );
+    else
+        lassert_dump(
+            mPyObjectBaseMixin.type().isNothing(), 
+            "pyObjectBaseMixin must be 'nothing' or an object"
+            );
+        
+    ClassDefinitionBody classDefinitionBody = ClassDefinitionBody::Empty();
+
+    for (long k = (long)classDefinitionTerms.size() - 1; k >= 0; k--)
+        classDefinitionBody = ClassDefinitionBody::Term(
+            ClassDefinitionTermWithMetadata(
+                classDefinitionTerms[k],
+                CSTValue()
+                ),
+            classDefinitionBody
+            );
+    
+    return Expression::CreateClass(
+        className, 
+        ClassDefinition(
+            classDefinitionBody,
+            null() << Symbol(className),
+            null(),
+            ExpressionLocationMetadata::WithSimpleParseRange(extent)
+            ),
+        CSTValue()
+        );
+    }
+
+Expression PythonAstConverter::convertPythonAstFunctionDefToFora(
+        const PythonAstStatement_FunctionDefType& functionDef,
+        const SimpleParseRange& extent
+        ) const
+    {
+    const std::string& functionName = functionDef.name();
+    PythonAstArguments args = functionDef.args();
+    ImmutableTreeVector<PythonAstStatement> body = functionDef.body();
+    
+    ImmutableTreeVector<PythonAstExpr> decoratorList = functionDef.decorator_list();
+
+    if (decoratorList.size() > 0) {
+        throw PythonToForaConversionError(
+            "don't know how to convert decorator lists for functions right now",
+            extent
+            );
+        }
+
+    checkFunctionArgs(args, extent);
+
+    ImmutableTreeVector<TuplePatternElement> foraArgs = computeForaArgs(args);
+    TuplePattern pattern = TuplePattern(foraArgs);
+    Expression functionBody = convertPythonAstStatementsToExpression(body);
+
+    //look at all the variables we assign to at the root scope. If they are not bound
+    //then they are 'free', but also assigned. We don't allow globals, so they'll all need
+    //null let bindings
+    ImmutableTreeSet<Symbol> bound = pattern.boundVariables();
+    ImmutableTreeSet<Symbol> assigned = functionBody.assignedVariables();
+
+    ImmutableTreeSet<Symbol> needingBindings = assigned - bound;
+
+    for (auto s: needingBindings)
+        functionBody = Expression::Let(s, Expression::Constant(CSTValue()), functionBody);
+
+    functionBody = Expression::Sequence(
+        functionBody,
+        Expression::Return(
+            Expression::Constant(
+                mConstantConverter->noneValue()
+                )
+            )
+        );
+
+    return Expression::CreateObject(
+        functionName,
+        ObjectDefinition(
+            ObjectDefinitionBody::Term(
+                ObjectDefinitionTermWithMetadata(
+                    ObjectDefinitionTerm::Call(
+                        Function::Term(pattern, functionBody, Function::Empty())
+                        ),
+                    CSTValue()
+                    ),
+                ObjectDefinitionBody::Empty()
+                ),
+            null() << Symbol(functionName),
+            ExpressionLocationMetadata::WithSimpleParseRange(extent)
+            ),
+        CSTValue()
+        ); 
+    }
+
+/*
+Called from convertPythonClassBodyFunctionDefToForaClassDefinitionTerm which verifies
+expected properties on `args`
+*/
+ClassDefinitionTerm 
+PythonAstConverter::convertPythonClassBodyStaticMethodFunctionDefToForaClassDefinitionTerm(
+        const std::string& name,
+        const PythonAstArguments& args,
+        const ImmutableTreeVector<PythonAstStatement>& body
+        ) const
+    {
+    std::pair<TuplePattern, Expression> patternAndFunctionBody = 
+        computeTuplePatternAndFunctionBodyAndInitUnboundVars(name, args, body);
+
+    return ClassDefinitionTerm::Static(
+        ObjectDefinitionTerm::Member(
+            Symbol(name),
+            Expression::CreateFunction(
+                name,
+                Function::Term(
+                    patternAndFunctionBody.first,
+                    patternAndFunctionBody.second,
+                    Function::Empty()
+                    ),
+                CSTValue()
+                ),
+            1
+            )
+        );
+    }
+
+Expression PythonAstConverter::handleNonstandardSelfArgIfNecessary(
+        const PythonAstExpr& selfArg,
+        Expression functionBody
+        ) const
+    {
+    TuplePatternElement foraSelfArg = TuplePatternElement::Normal(
+        null(),
+        convertPythonAstExpressionToPattern(selfArg),
+        null()
+        );
+
+    bool firstArgIsSelf = foraSelfArg.getNormal().match().name()->toString() == "self";
+
+    if (not firstArgIsSelf) {
+        functionBody = Expression::Let(
+            emptyTreeVec() + std::make_pair(
+                foraSelfArg.getNormal().match(),
+                Expression::Variable(
+                    Symbol("self")
+                    )
+                ),
+            functionBody
+            );
+        }
+
+    return functionBody;
+    }
+
+ImmutableTreeVector<TuplePatternElement> PythonAstConverter::computeForaArgs(
+        const PythonAstArguments& pythonArgs
+        ) const
+    {
+    ImmutableTreeVector<TuplePatternElement> foraArgs;
+
+    int defaultArgCount = pythonArgs.defaults().size();
+    int totalArgumentCount = pythonArgs.args().size();
+    int nonDefaultArgCount = totalArgumentCount - defaultArgCount;
+    for (long k = 0; k < nonDefaultArgCount; k++)
+        foraArgs = foraArgs + TuplePatternElement::Normal(
+            null(),
+            convertPythonAstExpressionToPattern(pythonArgs.args()[k]),
+            null()
+            );
+    int idx = 0;
+    for (long k = nonDefaultArgCount; k < totalArgumentCount; k++)
+        foraArgs = foraArgs + TuplePatternElement::Normal(
+            null(),
+            convertPythonAstExpressionToPattern(pythonArgs.args()[k]),
+            null() << convertPythonAstExpressionToFora(pythonArgs.defaults()[idx++])
+            );
+
+    return foraArgs;
+    }
+
+}
+
+

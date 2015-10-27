@@ -1,0 +1,281 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "DynamicInliner.hppml"
+
+#include <iostream>
+#include <sstream>
+#include <boost/thread.hpp>
+#include <boost/date_time/posix_time/posix_time.hpp>
+
+#include "Compiler.hppml"
+#include "StaticInliner.hppml"
+
+#include "../../Interpreter/RuntimeConfig.hppml"
+#include "../../Native/NativeCode.hppml"
+#include "../../Native/NativeCFGTable.hppml"
+#include "../../Native/FunctionPointerTable.hpp"
+#include "../../Native/CallSite.hpp"
+#include "../../Native/NativeCallSiteStatistics.hppml"
+#include "../../../core/Common.hppml"
+#include "../../Native/NativeCFGTransforms/Transforms.hppml"
+#include "../../../core/Logging.hpp"
+#include "../../../core/StringUtil.hpp"
+#include "../../../core/cppml/CPPMLTransform.hppml"
+#include "../../../core/containers/ImmutableTreeVector.hppml"
+#include "../../../core/Clock.hpp"
+
+using std::string;
+using namespace NativeCFGTransforms;
+
+namespace TypedFora {
+
+DynamicInliner::DynamicInliner(
+							StaticInliner& inInliner,
+				   			NativeCallSiteStatistics& inStats,
+                        	NativeCFGTable& inCfgTable,
+                        	TypedFora::Compiler& inRuntime
+							) : 
+						mStats(inStats), 
+						mCFGTable(inCfgTable), 
+						mRuntime(inRuntime),
+						mStaticInliner(inInliner)
+	{
+	}
+
+
+void DynamicInliner::runInliningTask()
+	{	
+	LOG_INFO << "STARTING DYNAMIC INLINING TASK!";
+	sleepSeconds(.1);
+	
+	while (true)
+		{
+		ImmutableTreeVector<CallSite> callsites = mStats.recommendCallSite();
+		if (callsites.size())
+			inlineSites(callsites);
+		else
+			sleepSeconds(mRuntime.getConfig().dynamicInlinerSleepTimeMilliseconds() / 1000.0);
+		}
+	}
+
+
+
+void DynamicInliner::inlineSites(const ImmutableTreeVector<CallSite>& sites)
+	{
+	lassert(sites.size());
+	
+	string callerName = sites[0].callerName;
+
+	ImmutableTreeSet<string> inGroup = mStaticInliner.getCallGroup(callerName);
+	
+	NativeCFG cfg = mCFGTable.getLatest(callerName);
+
+	if (cfg.complexity() > mRuntime.getConfig().maxDynamicInlineComplexity())
+		{
+		LOG_INFO << "not inlining " << callerName << " as it has complexity of "
+			<< cfg.complexity() << " > maxDynamicInlineComplexity = " 
+			<< mRuntime.getConfig().maxDynamicInlineComplexity()
+			;
+		return;
+		}
+	
+	//We create a new CFG with the call site inlined.
+	//The inlining process strips tags and instrumentation not only from
+	//the to-be-inlined call site itself but also from all of the call sites
+	//within the callee.  (Note that the dynamic inlining process considers
+	//call sites inside inline copies of a function body to be distinct from
+	//those in the original.)  We must generate new tags and instrumentation
+	//for the external call sites in the now-inlined callee.  The call to
+	//`tagAndInstrument` does not modify existing tags/instrumentation, except
+	//to remove them from now inline call sites.
+	
+	//FIXME: This results in repitition of work.
+	//Note that inlineCallSiteInCFG takes care of stripping tags
+	//from the callee.  (H)
+	//NativeCFG inlinedCFG = inlineCallSiteInCFG(oldCFG, c);
+	//NativeCFG inlinedAndStrippedCFG =
+	//	mStats.stripTagsAndInstrumentation(inlinedCFG);
+	
+	LOGGER_INFO_T log = LOGGER_INFO;
+	log << "DynamicInliner: inlining in " << callerName << ". complexity = " 
+			<< cfg.complexity() << "\n";
+
+	bool inlinedSomething = false;
+
+	bool done = false;
+
+	for (long k = 0; k < sites.size() && !done;k++)
+		{
+		lassert(sites[0].callerName == sites[k].callerName);
+	
+		CallSite c = sites[k];
+		
+		if (!inGroup.contains(c.calleeName))
+			{
+			NativeCFG newCfg = inlineCallSiteInCFG(cfg, c);
+
+			if (newCfg.complexity() > mRuntime.getConfig().maxDynamicInlineComplexity())
+				{
+				log << "not inlining " << sites[k].calleeName << " as it would push complexity to "
+					<< newCfg.complexity() << " > maxDynamicInlineComplexity = " 
+					<< mRuntime.getConfig().maxDynamicInlineComplexity()
+					;
+				}
+			else
+				{
+				cfg = newCfg;
+
+				log << sites[k].calleeName << ". complexity = " << cfg.complexity() << "\n";
+
+				inlinedSomething = true;
+				}
+			}
+		}
+	
+	if (inlinedSomething)
+		{
+		//apply an optimization pass on the newly created CFG.
+		cfg = NativeCFGTransforms::optimize(
+			cfg,
+			mRuntime.getConfig()
+			);
+
+		log << "after optimizing, complexity = " << cfg.complexity();
+		
+		//Update the CFG table with the new version, retaining the
+		//resultant new version number.
+		
+		mRuntime.update(callerName, cfg);
+		}
+	}
+
+
+class InliningTransformer {
+	const CallSite& toInline;
+	const NativeCFGTable& cfgTable; //For lookup of calleeBody.
+	NativeCallSiteStatistics& stats; //For stripping of calleeBody.
+	
+public:
+	InliningTransformer(const CallSite& cs,
+	                    const NativeCFGTable& ct,
+	                    NativeCallSiteStatistics& s)
+		: toInline(cs), cfgTable(ct), stats(s) { }
+	
+	template<class T>
+	Nullable<T> processDown(const T& in, bool& out) const { return null(); }
+
+	Nullable<NativeType> processDown(const NativeType& in, bool& out) const { out = false; return null(); }
+	
+	template<class T>
+	Nullable<T> processUp(const T& in) const { return null(); }
+	
+	Nullable<NativeExpression> processDown(	const NativeExpression& ex,
+											bool& cont) const
+		{
+		@match NativeExpression(ex)
+			-|	Tagged(Call(External(name, id), rets, args, meta),
+				       CallSiteTag(caller, siteId, callee)) ->> {
+					
+					lassert_dump(name == callee,
+					             "DynamicInliner: Target of call " << name
+					             << " does not match calleeName " << callee
+					             << " recorded in the CallSiteTag.")
+					cont = false; //Signal that there is no need to continue
+					              //to transform the returned tree.
+					if (CallSite(caller, siteId, callee) == toInline)
+						{
+						const NativeCFG& calleeBody = cfgTable.getLatest(name);
+						//Get rid of all the tags and instrumentation
+						//in the callee.  New tags and instrumentation
+						//will be added to it later.
+						NativeCFG strippedCallee =
+							stats.stripTagsAndInstrumentation(calleeBody);
+						
+						//Make sure we get fresh variable names
+						//for everything in the native CFG!
+						NativeCFG strippedAndTransformedCallee =
+							NativeCFGTransforms::remapNativeBlockIDsForInlining(
+								NativeCFGTransforms::renameVariables(strippedCallee),
+									id);
+						
+						
+						//now re-add instrumentation for the new version
+						strippedAndTransformedCallee =
+							stats.tagAndInstrument(caller, strippedAndTransformedCallee);
+	
+						
+						return null() << NativeExpression::Call(
+							NativeCallTarget::Inline(
+								strippedAndTransformedCallee,
+								NativeBlockID::entry()),
+							rets,
+							args,
+							meta
+							);
+						}
+				}
+			-|	Tagged(_, CallSiteTag()) ->> {
+					
+					throwLogicErrorWithStacktrace("found CallSiteTag without"
+						" corresponding call operation, which is illegal. "
+						" expression is \n" + prettyPrintString(ex)
+						);
+					}
+			-|	_ ->> { }
+			;
+		return null();
+		}
+	
+	//Second pass: Remove the instrumentation corresponding to the
+	//just-inlined call site.
+	Nullable<NativeExpression> processUp(const NativeExpression& e) const 
+		{
+		@match NativeExpression(e)
+			-|	Tagged(_, CallSiteInstrumentation(n, id)) ->> {
+				return 
+					//Is it the site we inlined?
+					(n == toInline.callerName && id == toInline.siteId)
+						? 
+							null() << NativeExpression::Constant(NativeConstant::Nothing())
+							:
+							null() //No: Don't get rid of the instrumentation.
+					;
+				}
+			-|	_ ->> {
+				return  null();
+				}
+			;
+		}
+};
+
+
+NativeCFG DynamicInliner::inlineCallSiteInCFG(const NativeCFG& callerBody,
+                                              const CallSite& site)
+	{
+	try {
+		return transform(callerBody, InliningTransformer(site, mCFGTable, mStats));
+		}
+	catch (std::logic_error& e)
+		{
+		throw std::logic_error(string(e.what()) + "\ninlining at site " +
+			prettyPrintString(site) + "\n\nbody:\n" +
+			prettyPrintString(callerBody)
+			);
+		}
+	}
+
+}
+

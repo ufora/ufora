@@ -1,0 +1,265 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#ifndef NativeCodeFlattened_hppml_
+#define NativeCodeFlattened_hppml_
+
+
+#include "NativeCode.hppml"
+#include "../../core/STLOps.hpp"
+
+/*
+intermediate model for 'NativeCode' that expliticly lays out which variables need to be in slots,
+which variables need to be in PHI nodes, etc.
+
+in each branch, some subset of variables are considered 'live', and will be held as PHI nodes.
+
+Every 'exit' from a block describes which variables must be pushed back into slots.
+
+Every continuation describes whether it re-uses the existing call Frame or whether it
+should duplicate it (reuseExistingCallFrame)
+
+Every exit point from the function must describe wehther or not to destroy the call frame
+(killCallFrame).
+
+*/
+
+
+class NativeCodeFlattened {
+public:
+
+	@type
+		Input =
+				Constant of NativeConstant c
+			-|	Zero of NativeType t
+			-|	Variable of NativeVariable var
+			-|	ReturnContinuation of ImmutableTreeVector<pair<uword_t, NativeType> > indexAndTypePairs
+		with
+			NativeType type = (this->computeType())
+		{
+		public:
+			NativeType computeType(void) const;
+		}
+	and
+		CompositeInput =
+			-|	Leaf of Input i
+			-|	Node of ImmutableTreeVector<CompositeInput> subs
+			-|	ValueExtract of ImmutableTreeVector<uword_t> args, CompositeInput sub
+	and
+		VarMetadata = CompositeInput dataVar, Nullable<CPPMLOpaqueHandle<TypedFora::Type> > layout
+	and
+		Metadata = 	NativeContinuationMetadataInstruction instruction,
+					ImmutableTreeVector<VarMetadata> vars
+	and
+		VariablesToDump = ImmutableTreeSet<NativeVariable> dumpToSlots
+	and
+		JumpPoint = NativeBlockID block,
+					ImmutableTreeVector<Input> args,
+					VariablesToDump dumpToSlots	//vars that we have to 'dump' back to slots
+												//before we jump
+	and
+		Cont = NativeType result, NativeBlockID block
+	and
+		Expression =
+				Var of Input c
+			-|	CreateComposite of ImmutableTreeVector<Input> subs
+			-|	Load of Input var, bool isVolatile
+			-|	Alloc of NativeType t, uint32_t count, bool forceInitialize
+			-|	Store of Input address, Input valueToStore
+			-|	Selector of Input condition, Input ifTrue, Input ifFalse
+			-|	BinaryOp of NativeBinaryOpcode opcode, Input lhs, Input rhs
+			-|	UnaryOp of NativeUnaryOpcode opcode, Input elt
+			-|	Cast of NativeType dest, Input source, bool forceBitcast
+			-|	ElementAddress of ImmutableTreeVector<Input> element, Input source
+			-|	ValueExtract of ImmutableTreeVector<uword_t> args, Input source
+			-|	CallLibraryFunction of 	NativeLibraryFunctionTarget name,
+										NativeType retType,
+										ImmutableTreeVector<Input> args
+				
+				//TODO CLEANUP brax: move "Continuations" into a special kind of expression
+				//only callable where they are used
+				//
+				//otherwise, we could create a continuation in a block where we don't pass it to
+				//some exit and create an inverted stack of some kind.  We'd like to be able to
+				//enforce the idea that the continuation is
+				//used where it is created in the structure of the code itself.
+			-|	Continuations of	ImmutableTreeVector<Cont> continuation,
+									ImmutableTreeVector<Metadata> metaData,
+									ImmutableTreeVector<NativeIndividualContinuationMetadata> contMetas
+	and
+		Term =
+			Jump of JumpPoint target
+		-|	Branch of Input var, JumpPoint ifTrue, JumpPoint ifFalse, double fractionTrue
+		-|	Halt of string reason
+		-|	Call of string targetName,
+					uword_t blockID,
+					ImmutableTreeVector<Cont> continuation,
+					ImmutableTreeVector<NativeIndividualContinuationMetadata> contMetas,
+					ImmutableTreeVector<Metadata> metaData,
+					ImmutableTreeVector<Input> args,
+					VariablesToDump dumpToSlots	//call another function. uses continuations
+										//(and doesn't destroy the local frame)
+		-|	Transfer of string targetName,
+						uword_t blockID,
+						ImmutableTreeVector<pair<uword_t, NativeType> > continuations,
+						ImmutableTreeVector<Input> args	//jump to other code. passes continuations
+														//directly (and destroys the local frame
+														//because it doesn't need it)
+		-|	CallGeneric of 	Input targetName,
+							ImmutableTreeVector<Input> args,
+							VariablesToDump dumpToSlots,
+							bool destroyLocalFrame,
+							bool isInternal
+		-|	Follow of 	Input cont,
+						Input result,
+						VariablesToDump dumpToSlots,
+						long indexInContinuation,
+						bool destroyLocalFrame
+		-|	Exit of uword_t index, Input value
+		-|	InterruptOrKickCheck of 	
+						JumpPoint ifDoingInterrupt,
+						JumpPoint ifPassing	//only valid as "term" in an empty block,
+													//indicating that it can be skipped
+													//(e.g. resolved directly to 'ifPassing')
+													//if we can prove all paths through it go
+													//through another interrupt
+	and
+		Block =
+			ImmutableTreeVector<NativeVariable> args,
+			ImmutableTreeVector<pair<NativeVariable, Expression> > defs,
+			ImmutableTreeSet<NativeVariable> liveOnInput,	//list of variables that are considered
+															//'live' upon entry to this block.
+															//any 'arg' contained within is passed
+															//as a phi, otherwise as a slot
+			Term term,
+			double relativeFrequency
+		{
+		public:
+			Input add(Expression e, NativeType t);
+			Input addArg(NativeType argType);
+
+			ImmutableTreeSet<NativeVariable> getDefinedVariables() const;
+			
+			void branch(Input i, NativeBlockID ifTrue, NativeBlockID ifFalse, double fractionTrue);
+			void jump(NativeBlockID block, ImmutableTreeVector<Input> args);
+			void halt(const string& reason);
+			void externalJump(
+					const string& block,
+					uword_t blockID,
+					const ImmutableTreeVector<Cont>& continuation,
+					const ImmutableTreeVector<NativeIndividualContinuationMetadata>& contMetas,
+					const ImmutableTreeVector<Metadata>& metaData,
+					const ImmutableTreeVector<Input>& args
+					);
+			void externalTransfer(
+					const string& block,
+					uword_t blockID,
+					const ImmutableTreeVector<pair<uword_t, NativeType> >& continuations,
+					const ImmutableTreeVector<Input>& args
+					);
+			void externalPointerJump(
+					Input block,
+					const ImmutableTreeVector<Input>& args,
+					bool destroyLocalFrame,
+					bool isInternal
+					);
+			void follow(Input res, Input cont, long inIndex, bool destroyLocalFrame);
+
+			void dontWriteAnyVariables(void);
+			void dontWriteVariable(const NativeVariable& var);
+			void writeVariable(const NativeVariable& var);
+
+			void enlivenVariable(const NativeVariable& var);
+		}
+		;
+	
+	//flatten an entire NativeCFG
+	static NativeBlockID flatten(
+							const NativeCFG& f,
+							const ImmutableTreeVector<NativeBlockID>& exitBlocks,
+							const ImmutableTreeVector<Nullable<uword_t> >& inSimpleExits, 
+																/*for each exit, *is it simple?*/
+							map<NativeBlockID, Block>& outBlocks,
+							const ImmutableTreeMap<NativeVariable, Input>& varMap,
+							const ImmutableTreeVector<Metadata>& exteriorMetadata,
+							bool renameAllBlocks,
+							NativeBlockID primaryBlock,
+							double relativeFrequency
+							);
+	//build the entryblock with arguments for 'block' in outBlocks, and setup 'varMap'
+	static void	setupBlockArgs(Block& outBlock, const NativeBlock& block);
+		
+	static void flatten(
+					Block& outBlock,
+					const NativeBlock& block,
+					const ImmutableTreeVector<NativeBlockID>& exitBlocks,
+					const ImmutableTreeVector<Nullable<uword_t> >& inSimpleExits,	//for each exit,
+																					//is it simple?
+					const map<NativeBlockID, NativeBlockID>& blockMap,
+					map<NativeBlockID, Block>& outBlocks,
+					const ImmutableTreeMap<NativeVariable, Input>& varMap,
+					const ImmutableTreeVector<Metadata>& exteriorMetadata
+					);
+
+	static Nullable<Input> flatten(
+							Block*& outBlock,
+							const NativeExpression& expr,
+							const ImmutableTreeVector<NativeBlockID>& exitBlocks,
+							const ImmutableTreeVector<Nullable<uword_t> >& inSimpleExits, //for each
+																			   //exit, is it simple?
+							const map<NativeBlockID, NativeBlockID>& blockMap,
+							map<NativeBlockID, Block>& outBlocks,
+							const ImmutableTreeMap<NativeVariable, Input>& varMap,
+							const ImmutableTreeVector<Metadata>& exteriorMetadata
+							);
+
+};
+
+ImmutableTreeVector<NativeBlockID> orderBlocks(
+										const map<NativeBlockID, NativeCodeFlattened::Block>& t
+										);
+
+template<>
+class CPPMLPrettyPrint<NativeCodeFlattened::Block> {
+public:
+	static void prettyPrint(CPPMLPrettyPrintStream& s, const NativeCodeFlattened::Block& t);
+};
+template<>
+class CPPMLPrettyPrint<map<NativeBlockID, NativeCodeFlattened::Block> > {
+public:
+	static void prettyPrint(
+					CPPMLPrettyPrintStream& s,
+					const map<NativeBlockID, NativeCodeFlattened::Block>& t
+					);
+};
+template<>
+class CPPMLPrettyPrint<NativeCodeFlattened::Term> {
+public:
+	static void prettyPrint(
+					CPPMLPrettyPrintStream s,
+					const NativeCodeFlattened::Term& t
+					);
+};
+template<>
+class CPPMLPrettyPrint<NativeCodeFlattened::Metadata> {
+public:
+	static void prettyPrint(CPPMLPrettyPrintStream s, const NativeCodeFlattened::Metadata& t);
+};
+
+macro_defineCppmlComparisonOperators(NativeCodeFlattened::Input)
+
+
+#endif
+

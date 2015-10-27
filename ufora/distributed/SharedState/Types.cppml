@@ -1,0 +1,402 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "Types.hppml"
+#include <limits>
+
+namespace SharedState {
+
+bool UniqueId::operator<(const UniqueId& other) const
+	{
+	if (eventId() != other.eventId())
+		return eventId() < other.eventId();
+	return clientId() < other.clientId();
+	}
+
+bool UniqueId::operator<=(const UniqueId& other) const
+	{
+	return (*this) < other || (*this) == other;
+	}
+
+bool UniqueId::operator==(const UniqueId& other) const
+	{
+	return (eventId() == other.eventId() && clientId() == other.clientId());
+	}
+
+
+//Keyspace
+bool Keyspace::operator==(const Keyspace& other) const
+	{
+	return type() == other.type() && name() == other.name() && dimension() == other.dimension();
+	}
+bool Keyspace::operator!=(const Keyspace& other) const
+	{
+	return !(*this == other);
+	}
+
+bool Keyspace::operator<(const Keyspace& other) const
+	{
+	if (type() != other.type())
+		return type() < other.type();
+	if (name() != other.name())
+		return name() < other.name();
+	return dimension() < other.dimension();
+	}
+
+
+
+
+//	Key 
+KeyNameType& Key::operator[](size_t ix)
+	{
+	lassert(ix < keyspace().dimension());
+	return id()[ix];
+	}
+const KeyNameType& Key::operator[](size_t ix) const
+	{
+	lassert_dump(ix < keyspace().dimension(),
+		"index " 
+			<< ix << " is not valid in key with " << id().size()
+			<< " dimensions."
+		);
+	return id()[ix];
+	}
+bool Key::operator==(const Key& other) const
+	{
+	if (keyspace() != other.keyspace())
+		return false;
+	for (long i = 0; i < id().size(); i++)
+		if (id()[i] != other.id()[i])
+			return false;
+	return true;
+	}
+bool Key::operator!=(const Key& other) const
+	{
+	return !(*this == other);
+	}
+
+bool Key::operator<(const Key& other) const
+	{
+	if (keyspace() != other.keyspace())
+		return keyspace() < other.keyspace();
+	lassert_dump(id().size() == other.id().size(), "invalid key (has wrong dimension)");
+
+	for (long i = 0; i < id().size(); i++)
+		if (id()[i] != other.id()[i])
+			return id()[i] < other.id()[i];
+	return false;
+	}
+
+
+
+// 	EventSignature
+EventSignature Event::signature(string meta) const
+	{
+	set<Key> tr;
+	for (int32_t k = 0; k < updates().size();k++)
+		tr.insert(updates()[k].key());
+	return EventSignature(tr, id());
+	}
+
+void Event::split(map<Key, PartialEvent>& outSplits)
+	{
+	EventSignature s = signature();
+
+	for (int32_t i = 0; i < updates().size(); i++)
+		{
+		Key k(updates()[i].key());
+		if (k != outSplits)
+			outSplits.insert(make_pair(k, PartialEvent(updates()[i], s)));
+		}
+	}
+
+
+
+//	KeyBound
+bool KeyBound::operator<(const KeyBound& other) const
+	{
+	if (leftBound() && !other.leftBound())
+		return value() <= other.value();
+	else
+		return value() < other.value();
+	}
+
+bool KeyBound::operator==(const KeyBound& other) const
+	{
+	return value() == other.value() && leftBound() == other.leftBound();
+	}
+
+bool KeyBound::operator>(const KeyBound& other) const
+	{
+	return !(*this == other) && !(*this < other);
+	}
+
+bool KeyBound::operator!=(const KeyBound& other) const
+	{
+	return !(*this == other);
+	}
+
+bool KeyBound::operator>=(const KeyBound& other) const
+	{
+	return *this > other || *this == other;
+	}
+
+bool KeyBound::operator<=(const KeyBound& other) const
+	{
+	return *this < other || *this == other;
+	}
+
+
+bool KeyBound::operator<(const KeyNameType& keyName) const
+	{
+	if (leftBound())
+		return value() <= keyName;
+	else
+		return value() < keyName;
+	}
+bool KeyBound::operator>(const KeyNameType& keyName) const
+	{
+	if (leftBound())
+		return value() > keyName;
+	else
+		return value() >= keyName;
+	}
+
+bool KeyBound::operator==(const Key& key) const
+	{
+	return false;
+	}
+
+bool KeyRange::operator==(const KeyRange& other) const
+	{
+	if (other.keyspace() != keyspace())
+		return false;
+	if(other.index() != index())
+		return false;
+	if (left() != other.left())
+		return false;
+	if (right() != other.right())
+		return false;
+	if(left() && *left() != *other.left())
+		return false;
+	if(right() && *right() != *other.right())
+		return false;
+	return true;
+	}
+
+bool KeyRange::operator<(const KeyRange& other) const
+	{
+	if (keyspace() != other.keyspace())
+		return keyspace() < other.keyspace();
+	if (index() != other.index())
+		return index() < other.index();
+
+	if (left() && other.left() && *left() != *other.left())
+		return *left() < *other.left();
+		else
+	if (!left() && other.left())
+		return true;
+		else
+	if (left() && !other.left())
+		return false;
+		else
+
+	// at this point we know both lefts are the same
+	if (right() && other.right() && *right() != *other.right())
+		return *right() < *other.right();
+		else
+	if (!right() && other.right())
+		return false;
+		else
+	if (right() && !other.right())
+		return true;
+		else
+	return false;	// they must equal here...
+	}
+bool KeyRange::contains(const Key& key) const
+	{
+	if (key.keyspace() != keyspace())
+		return false;
+	if (left() && *left() > key[index()])
+		return false;
+	if (right() && *right() < key[index()])
+		return false;
+	return true;
+	}
+
+bool KeyRange::contains(const KeyRange& other) const // basically >= on both sides
+	{
+	if(!sameKeyspaceAndDimension(other))
+		return false;
+
+	bool l;
+	if (left() && other.left())
+		l = left() <= other.left();
+		else
+	if (!left() && !other.left())
+		l = true;
+	else
+		l = !left();
+
+	bool r;
+	if (right() && other.right())
+		r = right() >= other.right();
+		else
+	if (!right() && !other.right())
+		r = true;
+	else
+		r = !right();
+	return l && r;
+	}
+
+bool KeyRange::overlaps(const KeyRange& other) const
+	{
+	if(!sameKeyspaceAndDimension(other))
+		return false;
+	return !(leftOf(other) || other.leftOf(*this));
+	}
+
+bool KeyRange::leftOf(const KeyRange& other) const // does not overlap
+	{
+	if (!other.right() || !left())
+		return false;
+	return *other.right() <= *left();
+	}
+
+bool KeyRange::sameKeyspaceAndDimension(const KeyRange& other) const
+	{
+	return index() == other.index() && keyspace() == other.keyspace();
+	}
+
+
+
+// These functions are only to be used in the following ostream operator<<
+// functions
+namespace {
+template<class T>
+std::ostream& operator<<(std::ostream& s, const std::vector<T>& vec)
+	{
+	using namespace std;
+	s <<"vector<";
+	bool isFirst = true;
+	for (uint32_t i = 0; i < vec.size(); i++)
+		{
+		if (!isFirst)
+			s << ", ";
+		isFirst = false;
+		s << prettyPrintString(vec[i]);
+		}
+	s <<">";
+	return s;
+	}
+
+template<class T>
+std::ostream& operator<<(std::ostream& s, const std::set<T>& st)
+	{
+	using namespace std;
+	s <<"set<";
+	bool isFirst = true;
+	for (typename set<T>::iterator it = st.begin(); it != st.end(); ++it)
+		{
+		if (!isFirst)
+			s << ", ";
+		isFirst = false;
+		s << prettyPrintString(*it);
+		}
+	s <<">";
+	return s;
+	}
+
+
+template<class T>
+ostream& operator<<(ostream& s, const Nullable<T>& v)
+	{
+	if (v)
+		s << "Nullable(" << *v << ")";
+	else
+		s << "null()";
+	return s;
+	}
+};
+
+
+ostream& operator<<(ostream& s, const UniqueId& id)
+	{
+	s << "Id(" << id.eventId() << ", " << id.clientId() << ")";
+	return s;
+	}
+
+ostream& operator<<(ostream& s, bool b)
+	{
+	s << (b ? "True" : "False");
+	return s;
+	}
+ostream& operator<<(ostream& s, const Keyspace& k)
+	{
+	s << "Keyspace(t=" << k.type() << ",n=" << prettyPrintString(k.name()) << ",d=" << k.dimension() <<")";
+	return s;
+	}
+
+ostream& operator<<(ostream& s, const ValueType& v)
+	{
+	if (v.value())
+		s << "Value(" << prettyPrintString(*v.value()) << ", " << v.id() << ")";
+	else
+		s << "Value(<NULL>, " << v.id() << ")";
+	return s;
+	}
+ostream& operator<<(ostream& s, const Key& k)
+	{
+	s << "Key(keyspace=" << k.keyspace() << ",id=" << k.id() << ")";
+	return s;
+	}
+ostream& operator<<(ostream& s, const KeyUpdate& update)
+	{
+	s << update.key() << "<=> Update:" << prettyPrintString(update.update());
+	return s;
+	}
+ostream& operator<<(ostream& s, const EventSignature& signature)
+	{
+	s << "EventSignature: " << signature.id() << ", ";
+		for(set<Key>::iterator it = signature.updated().begin(); it != signature.updated().end(); ++it)
+			s << " " << *it << endl;
+	return s;
+	}
+ostream& operator<<(ostream& s, const PartialEvent e)
+	{
+	s << "PartialEvent: " << e.content() << endl;
+	s << "    " << e.signature();
+	return s;
+	}
+ostream& operator<<(ostream& s, const KeyRange& range)
+	{
+	s << "Range(keyspace=" << prettyPrintString(range.keyspace().name()) 
+				<< ",index=" << range.index() << ",low=";
+
+	if (range.left())
+		s << prettyPrintString((*range.left()).value());
+	else
+		s << "-inf";
+	s << ",high=";
+	if (range.right())
+		s << prettyPrintString((*range.right()).value());
+	else
+		s << "inf";
+	s << ")";
+	return s;
+	}
+
+}; // namespace SharedState
+

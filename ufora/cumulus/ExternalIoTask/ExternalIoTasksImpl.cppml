@@ -1,0 +1,563 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ExternalIoTasksImpl.hppml"
+
+namespace Cumulus {
+
+ExternalIoTasksImpl::ExternalIoTasksImpl(
+			PolymorphicSharedPtr<VectorDataManager> inVDM,
+			PolymorphicSharedPtr<OfflineCache> inOfflineCache,
+			PolymorphicSharedPtr<SystemwidePageRefcountTracker> inSPRT,
+			MachineId inOwnMachineId,
+			PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+			boost::function1<void, ExternalIoTasksEvent> inEventHandler
+			) : 
+		mVDM(inVDM),
+		mEventHandler(inEventHandler),
+		mSPRT(inSPRT),
+		mOfflineCache(inOfflineCache),
+		mOwnMachineId(inOwnMachineId),
+		mCallbackScheduler(inCallbackScheduler->getFactory()->createScheduler("ExternalIoTasks")),
+		//seed our random generator with something dependent on our hash
+		mOnExternalIoTaskCompleted(inCallbackScheduler),
+		mOnCumulusComponentMessageCreated(inCallbackScheduler),
+		mIsTornDown(false),
+		mGuidGen(inOwnMachineId.guid() + Hash::SHA1("ExternalIoTaskId::GuidGen")),
+		mCheckpointTasks(
+			inVDM,
+			inSPRT,
+			inOwnMachineId,
+			boost::bind(&ExternalIoTasksImpl::createNewIoTaskGuid_, this),
+			boost::bind(&ExternalIoTasksImpl::registerAndBroadcastPythonIoTask_, this, boost::arg<1>()),
+			boost::bind(&ExternalIoTasksImpl::broadcastExternalIoTaskComplete_, this, boost::arg<1>()),
+			boost::bind(&ExternalIoTasksImpl::sendCumulusComponentMessage, this, boost::arg<1>()),
+			boost::bind(&ExternalIoTasksImpl::scheduleHandleExternalIoTaskCreated_, this, boost::arg<1>())
+			),
+		mWriteCharBigvecToS3Tasks(
+			inVDM, 
+			inSPRT,
+			boost::bind(&ExternalIoTasksImpl::createNewIoTaskGuid_, this),
+			boost::bind(&ExternalIoTasksImpl::registerAndBroadcastPythonIoTask_, this, boost::arg<1>()),
+			boost::bind(&ExternalIoTasksImpl::scheduleHandleExternalIoTaskCreated_, this, boost::arg<1>()),
+			boost::bind(&ExternalIoTasksImpl::broadcastExternalIoTaskComplete_, this, boost::arg<1>())
+			),
+		mPersistBigvecTasks(
+			inVDM, 
+			inSPRT,
+			boost::bind(&ExternalIoTasksImpl::createNewIoTaskGuid_, this),
+			boost::bind(&ExternalIoTasksImpl::registerAndBroadcastPythonIoTask_, this, boost::arg<1>()),
+			boost::bind(&ExternalIoTasksImpl::scheduleHandleExternalIoTaskCreated_, this, boost::arg<1>()),
+			boost::bind(&ExternalIoTasksImpl::broadcastExternalIoTaskComplete_, this, boost::arg<1>())
+			),
+		mPersistPageTasks(
+			inVDM,
+			inSPRT,
+			inOfflineCache,
+			boost::bind(&ExternalIoTasksImpl::createNewIoTaskGuid_, this),
+			boost::bind(&ExternalIoTasksImpl::registerAndBroadcastPythonIoTask_, this, boost::arg<1>()),
+			boost::bind(&ExternalIoTasksImpl::scheduleHandleExternalIoTaskCreated_, this, boost::arg<1>()),
+			boost::bind(&ExternalIoTasksImpl::broadcastExternalIoTaskComplete_, this, boost::arg<1>()),
+			boost::bind(&ExternalIoTasksImpl::createNewRemoteIoTask_, this, boost::arg<1>(), boost::arg<2>()),
+			boost::bind(&ExternalIoTasksImpl::sendCumulusComponentMessage, this, boost::arg<1>()),
+			inOwnMachineId
+			),
+		mWriteCharPageToS3Tasks(
+			inVDM,
+			inSPRT,
+			inOfflineCache,
+			boost::bind(&ExternalIoTasksImpl::createNewIoTaskGuid_, this),
+			boost::bind(&ExternalIoTasksImpl::registerAndBroadcastPythonIoTask_, this, boost::arg<1>()),
+			boost::bind(&ExternalIoTasksImpl::scheduleHandleExternalIoTaskCreated_, this, boost::arg<1>()),
+			boost::bind(&ExternalIoTasksImpl::broadcastExternalIoTaskComplete_, this, boost::arg<1>()),
+			boost::bind(&ExternalIoTasksImpl::createNewRemoteIoTask_, this, boost::arg<1>(), boost::arg<2>()),
+			boost::bind(&ExternalIoTasksImpl::sendCumulusComponentMessage, this, boost::arg<1>()),
+			inOwnMachineId
+			),
+		mExternalDatasetLoadTasks(
+			boost::bind(&ExternalIoTasksImpl::createNewIoTaskGuid_, this),
+			boost::bind(&ExternalIoTasksImpl::registerAndBroadcastPythonIoTask_, this, boost::arg<1>()),
+			boost::bind(&ExternalIoTasksImpl::broadcastExternalIoTaskComplete_, this, boost::arg<1>())
+			),
+		mReadPersistedPageIntoRamTasks(
+			inVDM,
+			boost::bind(&ExternalIoTasksImpl::createNewIoTaskGuid_, this),
+			boost::bind(&ExternalIoTasksImpl::registerAndBroadcastPythonIoTask_, this, boost::arg<1>()),
+			boost::bind(&ExternalIoTasksImpl::broadcastExternalIoTaskComplete_, this, boost::arg<1>())
+			),
+		mDistributedDataTasks(
+			new DistributedDataTasks(
+				inCallbackScheduler,
+				inVDM,
+				inSPRT,
+				inOfflineCache,
+				inOwnMachineId
+				)
+			)
+	{
+	}
+
+ExternalIoTasksImpl::~ExternalIoTasksImpl()
+	{
+	}
+
+void ExternalIoTasksImpl::teardown()
+	{
+	TimedLock lock(mMutex, "ExternalIoTasks");
+
+	mIsTornDown = true;
+
+	mDistributedDataTasks->teardown();
+	}
+
+void ExternalIoTasksImpl::polymorphicSharedPtrBaseInitialized()
+	{
+	scheduleNextCheckDeferredPageLoads();
+
+	mDistributedDataTasks->onCrossDistributedDataTasksMessage().subscribe(
+		polymorphicSharedWeakPtrFromThis(),
+		&ExternalIoTasksImpl::broadcastDistributedDataTasksMessage
+		);
+
+	mDistributedDataTasks->onDataTasksToGlobalSchedulerMessage().subscribe(
+		polymorphicSharedWeakPtrFromThis(),
+		&ExternalIoTasksImpl::handleDataTasksToGlobalSchedulerMessage
+		);
+
+	mDistributedDataTasks->onExternalIoTaskCompleted().subscribe(
+		polymorphicSharedWeakPtrFromThis(),
+		&ExternalIoTasksImpl::broadcastExternalIoTaskComplete
+		);
+	}
+
+void ExternalIoTasksImpl::handleDataTasksToGlobalSchedulerMessage(DataTasksToGlobalSchedulerMessage msg)
+	{	
+	mOnCumulusComponentMessageCreated.broadcast(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::DataTasksToGlobalScheduler(msg),
+			CumulusComponentEndpointSet::LeaderMachine(),
+			CumulusComponentType::GlobalScheduler()
+			)
+		);
+	}
+
+void ExternalIoTasksImpl::scheduleNextCheckDeferredPageLoads()
+	{
+	mCallbackScheduler->schedule(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&ExternalIoTasksImpl::checkDeferredPageLoads
+				),
+			this->polymorphicSharedWeakPtrFromThis()
+			),
+		curClock() + 1.0,
+		"ExternalIoTasksImpl::checkDeferredPageLoads"
+		);
+	}
+
+void ExternalIoTasksImpl::checkDeferredPageLoads()
+	{
+	if (mIsTornDown)
+		return;
+
+	mPersistPageTasks.checkDeferredPageLoads();
+
+	mWriteCharPageToS3Tasks.checkDeferredTasks();
+
+	scheduleNextCheckDeferredPageLoads();
+	}
+
+void ExternalIoTasksImpl::addMachine(MachineId inMachine)
+	{
+	TimedLock lock(mMutex, "ExternalIoTasks");
+
+	if (mIsTornDown)
+		return;
+
+	mMachines.insert(inMachine);
+	mCheckpointTasks.addMachine(inMachine);
+	mDistributedDataTasks->addMachine(inMachine);
+	}
+
+MachineId ExternalIoTasksImpl::getOwnMachineId() const
+	{
+	return mOwnMachineId;
+	}
+
+void ExternalIoTasksImpl::handleExternalIoTaskCreatedLocally(
+			ExternalIoTaskCreated task
+			)
+	{
+	TimedLock lock(mMutex, "ExternalIoTasks");
+
+	if (mEventHandler)
+		mEventHandler(
+			ExternalIoTasksEvent::In_ExternalIoTaskCreated(task)
+			);
+
+	handleExternalIoTaskCreated_(task);
+	}
+
+void ExternalIoTasksImpl::handleExternalIoTaskCreated(
+			ExternalIoTaskCreated task,
+            CumulusClientOrMachine source, 
+            CumulusComponentType componentType
+			)
+	{
+	TimedLock lock(mMutex, "ExternalIoTasks");
+
+	if (mEventHandler)
+		mEventHandler(
+			ExternalIoTasksEvent::In_ExternalIoTaskCreated(task)
+			);
+
+	mAllOutstandingTaskSources[task.taskId()] = make_pair(source, componentType);
+
+	LOG_DEBUG 
+		<< "ExternalIoTaskCreated " 
+		<< task 
+		<< ". all outstanding = "
+		<< mAllOutstandingTaskSources
+		;
+
+	handleExternalIoTaskCreated_(task);
+	}
+
+void ExternalIoTasksImpl::handleCrossIoTasksMessage(CrossIoTasksMessage message)
+	{
+	TimedLock lock(mMutex, "ExternalIoTasks");
+
+	@match CrossIoTasksMessage(message)
+		-| ExecuteTaskRemotely(requestor, shouldBeUs, task) ->> {
+			mRemotelyRequestedTasks.insert(requestor, task.taskId());
+			handleExternalIoTaskCreated_(task);
+			}
+		-| RemoteTaskResult(_, _, taskCompleted) ->> {
+			mPersistPageTasks.handleRemoteTaskCompleted(taskCompleted);
+			mWriteCharPageToS3Tasks.handleRemoteTaskCompleted(taskCompleted);
+			}
+		-| CheckpointFileCommitted(machine, checkpoint, summary, guids, anyFilesFailed) ->> {
+			mCheckpointTasks.handleCheckpointFileCommittedMessage(machine, checkpoint, summary, guids, anyFilesFailed);
+			}
+		-| DistributedDataTasksMessage(machine, message) ->> {
+			mDistributedDataTasks->handleCrossDistributedDataTasksMessage(message);
+			}
+	}
+
+void ExternalIoTasksImpl::broadcastDistributedDataTasksMessage(CrossDistributedDataTasksMessageCreated created)
+	{
+	TimedLock lock(mMutex, "ExternalIoTasks");
+
+	broadcastDistributedDataTasksMessage_(created);
+	}
+
+void ExternalIoTasksImpl::broadcastDistributedDataTasksMessage_(CrossDistributedDataTasksMessageCreated created)
+	{
+	if (created.target() == mOwnMachineId)
+		{
+		mCallbackScheduler->scheduleImmediately(
+			boost::bind(
+				PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+					&DistributedDataTasks::handleCrossDistributedDataTasksMessage
+					),
+				mDistributedDataTasks->polymorphicSharedWeakPtrFromThis(),
+				created.payload()
+				)
+			);
+		}
+	else
+		{
+		CrossIoTasksMessage msg =
+			CrossIoTasksMessage::DistributedDataTasksMessage(
+				created.target(),
+				created.payload()
+				);
+
+		CumulusComponentMessageCreated outMessage(
+			CumulusComponentMessage::CrossIoTasks(msg),
+			CumulusComponentEndpointSet::SpecificWorker(created.target()),
+			CumulusComponentType::ExternalIoTasks()
+			);
+
+		mOnCumulusComponentMessageCreated.broadcast(outMessage);
+		}
+	}
+
+void ExternalIoTasksImpl::createNewRemoteIoTask_(ExternalIoTaskCreated task, Cumulus::MachineId targetMachine)
+	{
+	lassert(targetMachine != mOwnMachineId);
+
+	CrossIoTasksMessage msg =
+		CrossIoTasksMessage::ExecuteTaskRemotely(
+			mOwnMachineId,
+			targetMachine,
+			task
+			);
+
+	CumulusComponentMessageCreated outMessage(
+		CumulusComponentMessage::CrossIoTasks(msg),
+		CumulusComponentEndpointSet::SpecificWorker(targetMachine),
+		CumulusComponentType::ExternalIoTasks()
+		);
+		
+	if (mEventHandler)
+		mEventHandler(
+			ExternalIoTasksEvent::Out_CumulusComponentMessage(outMessage)
+			);
+
+	mOnCumulusComponentMessageCreated.broadcast(outMessage);
+	}
+
+void ExternalIoTasksImpl::scheduleHandleExternalIoTaskCreated_(ExternalIoTaskCreated task)
+	{
+	mCallbackScheduler->scheduleImmediately(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&ExternalIoTasksImpl::handleExternalIoTaskCreatedLocally
+				),
+			this->polymorphicSharedWeakPtrFromThis(),
+			task
+			),
+		"ExternalIoTasksImpl::handleExternalIoTaskCreatedLocally"
+		);
+	}
+
+void ExternalIoTasksImpl::handleExternalIoTaskCreated_(ExternalIoTaskCreated task)
+	{
+	LOG_DEBUG << "Received task " << task;
+
+	@match ExternalIoTask(task.task())
+		-| Checkpoint(checkpointTask) ->> {
+			mCheckpointTasks.handleNewCheckpointTask(task.taskId(), checkpointTask);
+			}
+		-| WriteCharBigvecToS3(bigvecGuid, targetKey) ->> {
+			mWriteCharBigvecToS3Tasks.handleNewWriteCharBigvecToS3Task(task.taskId(), bigvecGuid, targetKey);
+			}
+		-| WriteCharPageToS3(writeTask) ->> {
+			mWriteCharPageToS3Tasks.handleNewWriteCharPageToS3Task(task.taskId(), writeTask);
+			}
+		-| SaveBigvecToPersistentCache(bigvecGuid) ->> {
+			mPersistBigvecTasks.handleNewSaveBigvecToPersistentCache(task.taskId(), bigvecGuid);
+			}
+		-| SavePageToPersistentCache(pageId) ->> {
+			mPersistPageTasks.handleNewSavePageToPersistentCache(task.taskId(), pageId);
+			}
+		-| DoNothing() ->> {
+			handleDoNothing_(task.taskId());
+			}
+		-| LoadExternalDatasetIntoRelevantVDID(dataset) ->> {
+			mExternalDatasetLoadTasks.handleNewLoadExternalDataset(task.taskId(), dataset, true);
+			}
+		-| LoadExternalDatasetAsForaValue(dataset) ->> {
+			mExternalDatasetLoadTasks.handleNewLoadExternalDataset(task.taskId(), dataset, false);
+			}
+		-| LoadPersistedPageIntoRam(page) ->> {
+			mReadPersistedPageIntoRamTasks.handleNewReadPersistedPageIntoRamTask(task.taskId(), page);
+			}
+		-| DistributedDataOp(dataOperation) ->> {
+			mDistributedDataTasks->handleNewTask(task.taskId(), dataOperation);
+			}
+	}
+
+void ExternalIoTasksImpl::handleDoNothing_(ExternalIoTaskId taskId)
+	{
+	ExternalIoTaskCompleted msg = 
+		ExternalIoTaskCompleted(
+			taskId,
+			ExternalIoTaskResult::Success()
+			);
+
+	sendExternalIoTaskCompleted(msg);
+	}
+
+void ExternalIoTasksImpl::registerAndBroadcastPythonIoTask_(PythonIoTaskRequest request)
+	{
+	mIdToOutstandingPythonIoTask[request.guid()] = request;
+
+	sendCumulusComponentMessage(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::PythonIoTaskService(
+				PythonIoTaskServiceMessage::Request(request)
+				),
+			CumulusComponentEndpointSet::SpecificWorker(mOwnMachineId),
+			CumulusComponentType::PythonIoTaskService()
+			)
+		);
+	}
+
+void ExternalIoTasksImpl::handlePythonIoTaskResponse(PythonIoTaskResponse loaded)
+	{
+	TimedLock lock(mMutex, "ExternalIoTasks");
+
+	if (mEventHandler)
+		mEventHandler(
+			ExternalIoTasksEvent::In_PythonIoTaskResponse(loaded)
+			);
+
+	LOG_DEBUG << "Received response " << loaded;
+
+	auto it = mIdToOutstandingPythonIoTask.find(loaded.guid());
+	lassert(it != mIdToOutstandingPythonIoTask.end());
+
+	PythonIoTaskRequest originalRequest = it->second;
+
+	mIdToOutstandingPythonIoTask.erase(loaded.guid());
+
+	@match PythonIoTaskRequest(originalRequest)
+		-| LoadExternalDatasetIntoVector(External(desc)) ->> {
+			mExternalDatasetLoadTasks.handleExternalDatasetLoaded(desc, loaded);
+			}
+		-| LoadExternalDatasetAsForaValue(desc) ->> {
+			mExternalDatasetLoadTasks.handleExternalDatasetAsForaValue(desc, loaded);
+			}
+		-| PersistObject() ->> {
+			mPersistBigvecTasks.handlePersistObjectResponse(loaded);
+			mCheckpointTasks.handlePersistObjectResponse(loaded);
+			mPersistPageTasks.handlePersistObjectResponse(loaded);
+			}
+		-| ExtractPersistedObject() ->> {
+			mReadPersistedPageIntoRamTasks.handleExtractPersistObjectResponse(loaded);
+			}
+		-| CheckS3BucketSizeAndEtag() ->> {
+			}
+		-| InitiateMultipartS3Upload() ->> {
+			mWriteCharBigvecToS3Tasks.handlePythonIoTaskResponse(loaded);
+			}
+		-| CompleteMultipartS3Upload() ->> {
+			mWriteCharBigvecToS3Tasks.handlePythonIoTaskResponse(loaded);
+			}
+		-| WriteMultipartS3UploadPart() ->> {
+			mWriteCharPageToS3Tasks.handlePythonIoTaskResponse(loaded);
+			}
+		-| _ ->> {
+			lassert_dump(false, prettyPrintString(originalRequest));
+			}
+	}
+
+hash_type ExternalIoTasksImpl::createNewIoTaskGuid_()
+	{
+	return mGuidGen.generateRandomHash();
+	}
+
+void ExternalIoTasksImpl::sendExternalIoTaskCompleted(ExternalIoTaskCompleted msg)
+	{
+	if (mAllOutstandingTaskSources.find(msg.taskId()) == mAllOutstandingTaskSources.end())
+		return;
+
+	CumulusClientOrMachine sourceEndpoint = mAllOutstandingTaskSources[msg.taskId()].first;
+	CumulusComponentType sourceType = mAllOutstandingTaskSources[msg.taskId()].second;
+
+	mAllOutstandingTaskSources.erase(msg.taskId());
+
+	sendCumulusComponentMessage(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::ExternalIoTask(
+				ExternalIoTaskMessage::Complete(msg)
+				),
+			CumulusComponentEndpointSet::fromEndpoint(sourceEndpoint),
+			emptyTreeSet() + sourceType
+			)
+		);
+	}
+
+void ExternalIoTasksImpl::sendCumulusComponentMessage(CumulusComponentMessageCreated msg)
+	{
+	if (mEventHandler)
+		mEventHandler(
+			ExternalIoTasksEvent::Out_CumulusComponentMessage(msg)
+			);
+
+	mOnCumulusComponentMessageCreated.broadcast(msg);
+	}
+
+void ExternalIoTasksImpl::broadcastExternalIoTaskComplete(ExternalIoTaskCompleted completed)
+	{
+	TimedLock lock(mMutex, "ExternalIoTasks");
+
+	broadcastExternalIoTaskComplete_(completed);
+	}
+
+void ExternalIoTasksImpl::handleGlobalSchedulerToDataTasksMessage(GlobalSchedulerToDataTasksMessage message)
+	{
+	mDistributedDataTasks->handleGlobalSchedulerToDataTasksMessage(message);
+	}
+
+void ExternalIoTasksImpl::broadcastExternalIoTaskComplete_(ExternalIoTaskCompleted completed)
+	{
+	mCheckpointTasks.handleExternalIoTaskCompleted(completed);
+
+	mWriteCharBigvecToS3Tasks.handleExternalIoTaskCompleted(completed);
+
+	mPersistBigvecTasks.handleExternalIoTaskCompleted(completed);
+
+	mPersistPageTasks.handleExternalIoTaskCompleted(completed);
+
+	mWriteCharPageToS3Tasks.handleExternalIoTaskCompleted(completed);
+
+	sendExternalIoTaskCompleted(completed);
+
+	LOG_DEBUG 
+		<< "ExternalIoTaskCompleted " 
+		<< completed 
+		<< ". all outstanding = "
+		<< mAllOutstandingTaskSources
+		;
+
+	for (auto pendingMachine: mRemotelyRequestedTasks.getKeys(completed.taskId()))
+		{
+		CrossIoTasksMessage msg = 
+			CrossIoTasksMessage::RemoteTaskResult(mOwnMachineId, pendingMachine, completed)
+			;
+
+		sendCumulusComponentMessage(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::CrossIoTasks(msg),
+				CumulusComponentEndpointSet::SpecificWorker(pendingMachine),
+				CumulusComponentType::ExternalIoTasks()
+				)
+			);
+		}
+
+	mRemotelyRequestedTasks.dropValue(completed.taskId());
+	}
+
+
+void ExternalIoTasksImpl::handleCumulusComponentMessage(
+	                    const CumulusComponentMessage& message, 
+	                    const CumulusClientOrMachine& source, 
+	                    const CumulusComponentType& componentType
+	                    )
+	{
+	@match CumulusComponentMessage(message)
+		-| CrossIoTasks(msg) ->> {
+			handleCrossIoTasksMessage(msg);
+			}
+		-| GlobalSchedulerToIoTasks(CommitCheckpoint(checkpoint)) ->> {
+			mCheckpointTasks.handleCommitCheckpointMessage(checkpoint);
+			}
+		-| ExternalIoTask(Create(msg)) ->> {
+			handleExternalIoTaskCreated(msg, source, componentType);
+			}
+		-| PythonIoTaskService(Response(r)) ->> {
+			handlePythonIoTaskResponse(r);
+			}
+		-| GlobalSchedulerToDataTasks(m) ->> {
+			handleGlobalSchedulerToDataTasksMessage(m);
+			}
+	}
+
+}
+
+

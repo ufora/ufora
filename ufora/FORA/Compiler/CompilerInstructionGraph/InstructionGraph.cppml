@@ -1,0 +1,649 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "InstructionGraph.hppml"
+#include "Instruction.hppml"
+#include "../InstructionCycle.hppml"
+#include "../../../core/Logging.hpp"
+#include "../../../core/Clock.hpp"
+#include "../../Judgment/JudgmentOnValueTupleMap.hppml"
+
+namespace Fora {
+namespace Compiler {
+namespace CompilerInstructionGraph {
+
+class InstructionGraphRoot {
+public:
+	InstructionGraphRoot(InstructionPtr inRootPtr) : 
+			mRootPtr(inRootPtr)
+		{
+		}
+
+	InstructionPtr getRootPtr() const
+		{
+		return mRootPtr;
+		}
+
+	void registerNewInstruction(InstructionPtr ptr)
+		{
+		JOVT jovt = JOVT::Unnamed(ptr->jovs());
+
+		lassert_dump(
+			!mSpecializations.contains(jovt),
+			prettyPrintString(jovt)
+			);
+
+		mSpecializations[jovt] = ptr;
+
+		mRootPtr->onNewChildInstruction(ptr);
+		}
+
+	InstructionPtr getSmallestInstructionCovering(const JOVT& inJOVT)
+		{
+		Nullable<JOVT> smallest = mSpecializations.smallestJovtCovering(inJOVT);
+
+		if (!smallest)
+			return mRootPtr;
+
+		return mSpecializations[*smallest];
+		}
+
+	const Fora::JudgmentOnValueTupleMap<InstructionPtr>& getSpecializations()
+		{
+		return mSpecializations;
+		}
+
+private:
+	InstructionPtr mRootPtr;
+
+	Fora::JudgmentOnValueTupleMap<InstructionPtr> mSpecializations;
+};
+
+InstructionGraph::InstructionGraph(
+					PolymorphicSharedPtr<Axioms> inAxioms,
+					PolymorphicSharedPtr<TypedFora::Compiler> inTypedForaCompiler,
+					PolymorphicSharedPtr<Fora::Interpreter::InstructionGraph> inInterpreterGraph
+					) : 
+		mAxioms(inAxioms),
+		mTypedForaCompiler(inTypedForaCompiler),
+		mInterpreterGraph(inInterpreterGraph)
+	{
+	}
+
+InstructionPtr InstructionGraph::createNewInstruction(
+				const InstructionPtr inRootInstructionPtr,
+				const ControlFlowGraph* controlFlowGraphPtr,
+				Nullable<string> label,
+				const ImmutableTreeVector<JudgmentOnValue>& jovs
+				)
+	{
+	ensureRoot_(make_pair(controlFlowGraphPtr->hash(), label));
+
+	InstructionPtr newInstructionPtr(
+		new Instruction(
+			this,
+			inRootInstructionPtr,
+			controlFlowGraphPtr,
+			label,
+			jovs
+			)
+		);
+
+	newInstructionPtr->ensureInitialized();
+
+	mRootInstructions[make_pair(controlFlowGraphPtr->hash(), label)]
+		->registerNewInstruction(newInstructionPtr);
+
+	mInstructionsAdded.insert(newInstructionPtr);
+
+	return newInstructionPtr;
+	}
+
+InstructionPtr InstructionGraph::createNonrootInstruction(
+							const ControlFlowGraph& inGraph,
+							Nullable<string> inLabel,
+							const ImmutableTreeVector<JudgmentOnValue>& jovs
+							)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	ensureGraph_(inGraph);
+
+	InstructionPtr candidateInst = getInstruction(inGraph, inLabel, jovs);
+
+	if (candidateInst->jovs() != jovs || candidateInst->isRootInstruction())
+		return createNewInstruction(
+					candidateInst->rootInstructionPtr(),
+					&mControlFlowGraphs[inGraph.hash()],
+					inLabel,
+					jovs
+					);
+	else
+		return candidateInst;
+	}
+
+ImmutableTreeSet<ControlFlowGraph> InstructionGraph::getGraphs(void)
+	{
+	return mControlFlowGraphSet;
+	}
+
+InstructionPtr InstructionGraph::getInstruction(
+							const ControlFlowGraph& controlFlowGraph,
+							Nullable<string> inLabel,
+							const ImmutableTreeVector<JudgmentOnValue>& jovs
+							)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	ensureGraph_(controlFlowGraph);
+	
+	pair<hash_type, Nullable<string> > p(controlFlowGraph.hash(), inLabel);
+
+	ensureRoot_(p);
+	
+	return mRootInstructions[p]->getSmallestInstructionCovering(JOVT::Unnamed(jovs));
+	}
+
+void InstructionGraph::ensureGraph_(const ControlFlowGraph& controlFlowGraph)
+	{
+	if (mControlFlowGraphs.find(controlFlowGraph.hash()) == mControlFlowGraphs.end())
+		{
+		mControlFlowGraphs[controlFlowGraph.hash()] = controlFlowGraph;
+		mControlFlowGraphSet = mControlFlowGraphSet + controlFlowGraph;
+
+		hash_type hash = controlFlowGraph.hash();
+
+		//initialize all the root nodes immediately
+		ensureRoot_(make_pair(hash, Nullable<string>()));
+
+		for (long k = 0; k < controlFlowGraph.subnodes().size();k++)
+			ensureRoot_(make_pair(hash, null() << controlFlowGraph.subnodes().pairAtPosition(k).first));
+		}
+	}
+
+void InstructionGraph::ensureRoot_(const pair<hash_type, Nullable<string> >& p)
+	{
+	if (mRootInstructions.find(p) == mRootInstructions.end())
+		{
+		mRootInstructions[p] =
+			new InstructionGraphRoot(
+				new Instruction(
+					this,
+					nullptr,
+					&mControlFlowGraphs[p.first],
+					p.second,
+					(emptyTreeVec() + JOV::Unknown()) *
+						mControlFlowGraphs[p.first][p.second].argCount()
+					)
+				);
+
+		mRootInstructions[p]->getRootPtr()->ensureInitialized();
+		}
+	}
+
+InstructionPtr InstructionGraph::getRootInstruction(
+							const ControlFlowGraph& controlFlowGraph,
+							Nullable<string> inLabel
+							)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	ensureGraph_(controlFlowGraph);
+
+	pair<hash_type, Nullable<string> > p(controlFlowGraph.hash(), inLabel);
+
+	ensureRoot_(p);
+
+	return mRootInstructions[p]->getRootPtr();
+	}
+
+void InstructionGraph::onInstructionContinuationsChanged(InstructionPtr instruction)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	mInstructionsWithChangedContinuations.insert(instruction);
+	}
+
+void InstructionGraph::onInstructionApplyTargetChanged(InstructionPtr instruction)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	mInstructionsWithChangedApplyTargets.insert(instruction);
+	}
+
+void InstructionGraph::onInstructionConstantPropJovsChanged(InstructionPtr instruction)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	mInstructionsFocused.insert(instruction);
+	}
+
+void InstructionGraph::collectChangedInstructions(
+				set<InstructionPtr>& outInstructionsWithChangedContinuations,
+				set<InstructionPtr>& outInstructionsWithChangedApplyTargets,
+				set<InstructionPtr>& outInstructionsAdded,
+				set<InstructionPtr>& outInstructionsFocused
+				)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	outInstructionsWithChangedContinuations.clear();
+	outInstructionsWithChangedApplyTargets.clear();
+	outInstructionsAdded.clear();
+	outInstructionsFocused.clear();
+
+	std::swap(mInstructionsWithChangedContinuations, outInstructionsWithChangedContinuations);
+	std::swap(mInstructionsWithChangedApplyTargets, outInstructionsWithChangedApplyTargets);
+	std::swap(mInstructionsAdded, outInstructionsAdded);
+	std::swap(mInstructionsFocused, outInstructionsFocused);
+	}
+
+bool InstructionGraph::updateInstructionJoas(InstructionPtr i)
+	{
+	if (i->isRootInstruction())
+		return false;
+
+	bool tr = false;
+
+	if (i->isJumpApply())
+		{
+		InstructionJOA newResultJOA = i->computeResultJOAFromNeighboringInstructions() | i->resultJOA();
+
+		if (i->setResultJOA(newResultJOA))
+			tr = true;
+		}
+
+	InstructionJOA newJOA = i->computeJOAFromNeighboringInstructions() | i->joa();
+
+	if (i->setJOA(newJOA))
+		tr = true;
+
+	return tr;
+	}
+
+namespace {
+
+Nullable<ImmutableTreeVector<JudgmentOnValue> >
+			computeImpliedJovsWithConstantPropagation(ContinuationElement* continuation)
+	{
+	if (!continuation->getContinuationPtr()->requiresResult())
+		return null() << 
+			continuation->getContinuationArgs().targetJOV(
+				continuation->getSourceInstructionPtr()->jovsWithConstantPropagationOrRootJovs()
+				);
+	
+	Nullable<pair<JOV, bool> > resultJOVToUse = continuation->getSourceInstructionPtr()->getConstantPropagationJOV();
+
+	if (resultJOVToUse && resultJOVToUse->second != continuation->getContinuationPtr()->isExceptionContinuation())
+		resultJOVToUse = null();
+
+	if (resultJOVToUse && !continuation->getFilter().covers(resultJOVToUse->first))
+		resultJOVToUse = null();
+
+	return null() << 
+		continuation->getContinuationArgs().targetJOV(
+			continuation->getSourceInstructionPtr()->jovsWithConstantPropagationOrRootJovs(),
+			resultJOVToUse ? resultJOVToUse->first : continuation->getFilter()
+			);
+	}
+
+//if an axiom has a number of possible continuations, but only one of them will be used,
+//then we want to discard the other ones.
+bool isValidIncomingContinuationElementPtr(ContinuationElement* continuation)
+	{
+	if (!continuation->getContinuationPtr()->requiresResult())
+		return true;
+
+	auto constantProp = continuation->getSourceInstructionPtr()->getConstantPropagationJOV();
+
+	if (!constantProp)
+		return true;
+
+	return continuation->getContinuationPtr()->isExceptionContinuation() == constantProp->second &&
+		 continuation->getFilter().covers(constantProp->first);
+	}
+
+}
+
+bool InstructionGraph::updateInstructionJovsWithConstantPropagation(InstructionPtr i)
+	{
+	if (i->isRootInstruction())
+		return false;
+
+	if (!i->getLabel())
+		return false;
+
+	Nullable<ImmutableTreeVector<JudgmentOnValue> > computed;
+
+	for (auto sourceCont: i->incomingContinuationElementsPtrs())
+		{
+		if (isValidIncomingContinuationElementPtr(sourceCont))
+			{
+			Nullable<ImmutableTreeVector<JudgmentOnValue> > jovs = 
+				computeImpliedJovsWithConstantPropagation(sourceCont);
+
+			if (!jovs)
+				{
+				computed = null();
+				break;
+				}
+				else
+			if (!computed)
+				computed = jovs;
+				else
+			if (*computed != *jovs)
+				{
+				computed = null();
+				break;
+				}
+			}
+		}
+
+	if (SHOULD_LOG_DEBUG())
+		{
+		std::map<hash_type, Nullable<ImmutableTreeVector<JOV> > > hashes;
+		for (auto sc: i->incomingContinuationElementsPtrs())
+			hashes[sc->getSourceInstructionPtr()->hash()] = computeImpliedJovsWithConstantPropagation(sc);
+
+		LOG_DEBUG << i->hash() << " -> " << computed << " from " << hashes;
+		}
+
+	if (computed != i->jovsWithConstantPropagation())
+		{
+		i->setJovsWithConstantPropagation(computed);
+		return true;
+		}
+
+	return false;
+	}
+
+bool InstructionGraph::stabilizeJoasOfNodeSet(std::set<InstructionPtr>& workingSet)
+	{
+	bool anyChanged = false;
+
+	std::set<InstructionPtr> checkSet = workingSet;
+
+	double t0 = curClock();
+
+	while(checkSet.size())
+		{
+		lassert(curClock() - t0 < 10.0);
+
+		InstructionPtr i = *checkSet.begin();
+		checkSet.erase(i);
+
+		if (workingSet.find(i) == workingSet.end())
+			{
+			workingSet.insert(i);
+			i->resetJoaState();
+			}
+
+		if (updateInstructionJoas(i))
+			{
+			anyChanged = true;
+
+			const auto& incomingApplys = i->incomingApplyInstructionPtrs();
+
+			for (auto it2 = incomingApplys.begin(); it2 != incomingApplys.end(); ++it2)
+				checkSet.insert(*it2);
+
+			const auto& incomingContinuations = i->incomingContinuationElementsPtrs();
+
+			for (auto it2 = incomingContinuations.begin(); it2 != incomingContinuations.end(); ++it2)
+				checkSet.insert((*it2)->getSourceInstructionPtr());
+			}
+		}
+
+	return anyChanged;
+	}
+
+void InstructionGraph::updateJoasAndResultJoasForAllChangedNodes()
+	{
+	double t0 = curClock();
+
+	std::set<InstructionPtr> workingSet;
+
+	bool anyChanged = true;
+	while (anyChanged)
+		{
+		anyChanged = false;
+
+		std::set<InstructionPtr> checkSet;
+
+		//refresh the working set
+			{
+			boost::recursive_mutex::scoped_lock lock(mMutex);
+
+			for (auto it = mInstructionsWithChangedContinuations.begin(); 
+					  it != mInstructionsWithChangedContinuations.end(); ++it)
+				if (workingSet.find(*it) == workingSet.end())
+					{
+					workingSet.insert(*it);
+					(*it)->resetJoaState();
+					}
+
+			for (auto it = mInstructionsWithChangedApplyTargets.begin(); 
+					  it != mInstructionsWithChangedApplyTargets.end(); ++it)
+				if (workingSet.find(*it) == workingSet.end())
+					{
+					workingSet.insert(*it);
+					(*it)->resetJoaState();
+					}
+
+			for (auto it = mInstructionsAdded.begin(); 
+					  it != mInstructionsAdded.end(); ++it)
+				if (workingSet.find(*it) == workingSet.end())
+					{
+					workingSet.insert(*it);
+					(*it)->resetJoaState();
+					}
+
+			for (auto it = mInstructionsFocused.begin(); 
+					  it != mInstructionsFocused.end(); ++it)
+				if (workingSet.find(*it) == workingSet.end())
+					{
+					workingSet.insert(*it);
+					(*it)->resetJoaState();
+					}
+			}
+
+
+		//now loop over everything in the working set and verify it's stable
+		if (stabilizeJoasOfNodeSet(workingSet))
+			anyChanged = true;
+		}
+
+	//grow the check set exactly one level, in case we need to propagate anything
+		{
+		std::set<InstructionPtr> checkSet;
+
+		checkSet = workingSet;
+
+		for (auto i: workingSet)
+			for (long k = 0; k < i->flowsToCount(); k++)
+				checkSet.insert(i->flowsTo(k));
+
+		workingSet = checkSet;
+		}
+
+	bool done = false;
+
+	while (!done)
+		{
+		if (!stabilizeConstantPropagationValues(workingSet) && 
+					!stabilizeJoasOfNodeSet(workingSet))
+			done = true;
+		else
+			lassert(curClock() - t0 < 10.0);
+		}
+	}
+
+bool InstructionGraph::stabilizeConstantPropagationValues(std::set<InstructionPtr>& workingSet)
+	{
+	bool didAnything = false;
+
+	bool anyChanged = true;
+
+	while (anyChanged)
+		{
+		anyChanged = false;
+
+		std::set<InstructionPtr> checkSet = workingSet;
+
+		while(checkSet.size())
+			{
+			InstructionPtr i = *checkSet.begin();
+			checkSet.erase(i);
+
+			if (workingSet.find(i) == workingSet.end())
+				workingSet.insert(i);
+
+			if (updateInstructionJovsWithConstantPropagation(i))
+				{
+				didAnything = true;
+				anyChanged = true;
+
+				for (long k = 0; k < i->flowsToCount(); k++)
+					{
+					checkSet.insert(i->flowsTo(k));
+					}
+				}
+			}
+		}
+
+	return didAnything;
+	}
+
+void InstructionGraph::verifyAllLoopsHaveEntrypoints()
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	std::set<InstructionPtr> instructionsToCheck;
+
+	std::set<InstructionPtr> instructionsThatAreOK;
+
+	std::vector<InstructionPtr> stack;
+
+	std::set<InstructionPtr> stackAsSet;
+
+	for (auto hashAndRoot: mRootInstructions)
+		for (auto jovtAndInstruction: hashAndRoot.second->getSpecializations().keyValueMap())
+			instructionsToCheck.insert(jovtAndInstruction.second);
+
+	while (instructionsToCheck.size() || stack.size())
+		{
+		if (!stack.size())
+			{
+			stack.push_back(*instructionsToCheck.begin());
+			stackAsSet.insert(stack.back());
+
+			instructionsToCheck.erase(stack.back());
+			}
+		else
+			{
+			if (stack.back()->isCompilerEntrypoint() || stack.back()->isRootInstruction())
+				{
+				instructionsThatAreOK.insert(stack.back());
+				stackAsSet.erase(stack.back());
+				stack.pop_back();
+				}
+			else
+				{
+				bool pushedOne = false;
+
+				for (long k = 0; k < stack.back()->flowsToCount() && !pushedOne; k++)
+					{
+					InstructionPtr next = stack.back()->flowsTo(k);
+
+					if (instructionsThatAreOK.find(next) == instructionsThatAreOK.end())
+						{
+						if (stackAsSet.find(next) != stackAsSet.end())
+							{
+							stack.push_back(next);
+							long j;
+
+							for (j = ((long)stack.size()) - 2; j >= 0; j--)
+								if (stack[j] == next)
+									break;
+
+							if (j < 0)
+								j = 0;
+
+							long cycleStart = j;
+
+							while (j < stack.size())
+								{
+								LOG_ERROR << "Instruction is " << stack[j]->toString(true);
+								LOG_ERROR << "\t\t" << (void*)&InstructionCycle::get(stack[j])
+									<< ". crossover = " << (InstructionCycle::get(stack[j]).isInterpreterCrossoverPoint(stack[j]) ? "yes":"no")
+									<< ". interrupt = " << (InstructionCycle::get(stack[j]).needsInterrupt(stack[j]) ? "yes":"no")
+									<< ". entrypoint = " << (InstructionCycle::get(stack[j]).isCompilerEntrypoint(stack[j]) ? "yes":"no")
+									<< ". thinksIsEntrypoint = " << (stack[j]->isCompilerEntrypoint() ? "yes":"no")
+									;
+								LOG_ERROR << "\t\t" << prettyPrintStringWithoutWrapping(stack[j]->jovsWithConstantPropagationOrRootJovs());
+
+								j++;
+								}
+
+							lassert_dump(
+								false, 
+								"We found an instruction cycle that had no compiler entrypoints."
+								);
+							}
+
+						stack.push_back(next);
+						stackAsSet.insert(next);
+						instructionsToCheck.erase(next);
+						pushedOne = true;
+						}
+					}
+
+				if (!pushedOne)
+					{
+					//this instruction is OK.
+					instructionsThatAreOK.insert(stack.back());
+					stackAsSet.insert(stack.back());
+					stack.pop_back();
+					}
+				}
+			}
+		}
+	}
+
+std::set<InstructionPtr> InstructionGraph::verifyAllInstructionsHaveStableConstantpropagation()
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	std::set<InstructionPtr> instructionsToCheck;
+
+	std::set<InstructionPtr> failed;
+
+	for (auto hashAndRoot: mRootInstructions)
+		for (auto jovtAndInstruction: hashAndRoot.second->getSpecializations().keyValueMap())
+			instructionsToCheck.insert(jovtAndInstruction.second);
+
+	for (auto instPtr: instructionsToCheck)
+		{
+		if (InstructionGraph::updateInstructionJovsWithConstantPropagation(instPtr))
+			failed.insert(instPtr);
+		}
+
+	return failed;
+	}
+
+}
+}
+}
+

@@ -1,0 +1,356 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#ifndef FORA_Language_FunctionBoundAboveVisitor_hppml_
+#define FORA_Language_FunctionBoundAboveVisitor_hppml_
+
+#include "Function.hppml"
+
+/****
+makes a visitor that gets access to what variables
+have been bound above
+****/
+
+template<class inner_visitor_type>
+@type FunctionBoundAboveVisitor = 	ImmutableTreeSet<Symbol> boundAbove,
+									inner_visitor_type* innerVisitor
+{
+public:
+		template<class T>
+		void processDown(const T& in,
+						 bool& outKeepProcessing
+						 )
+			{
+			innerVisitor()->processDown(in, outKeepProcessing, boundAbove());
+			}
+		template<class T>
+		void processUp(const T& in)
+			{
+			innerVisitor()->processUp(in, boundAbove());
+			}
+		
+		void processDown(const Expression_LetType& e,
+						 bool& outKeepProcessing
+						 )
+			{
+			innerVisitor()->processDown(e, outKeepProcessing, boundAbove());
+			
+			if (!outKeepProcessing)
+				return;
+			
+			outKeepProcessing = false;
+			
+			//compute a list of all symbols bound by this 'let'
+			ImmutableTreeSet<Symbol> boundSyms;
+			for (long k = 0; k < e.elements().size(); k++)
+				boundSyms = boundSyms + e.elements()[k].first.boundVariables();
+			
+			FunctionBoundAboveVisitor<inner_visitor_type>
+				subVis(boundSyms + boundAbove(), innerVisitor());
+			
+			for (long k = 0; k < e.elements().size(); k++)
+				{
+				visit(e.elements()[k].first, subVis);
+				visit(e.elements()[k].second, subVis);
+				}
+			
+			visit(e.body(), subVis);
+			}
+		
+		void processDown(const ListComprehensionChain& e,
+						 bool& outKeepProcessing)
+			{
+			innerVisitor()->processDown(e, outKeepProcessing, boundAbove());
+			
+			if (!outKeepProcessing)
+				return;
+			
+			outKeepProcessing = false;
+			
+			@match ListComprehensionChain(e)
+				-|	Leaf(expr) ->> {
+					visit(expr, *this);
+					}
+				-|	Term(pat, condition, proc, inner) ->> {
+					
+					FunctionBoundAboveVisitor<inner_visitor_type> vis(
+							boundAbove() + pat.boundVariables(),
+							innerVisitor()
+							);
+					
+					visit(pat, *this);
+					visit(condition, vis);
+					visit(proc, *this);
+					visit(inner, vis);
+					}
+				;
+			}
+		
+		
+		void processDown(const Function_TermType& e,
+						 bool& outKeepProcessing)
+			{
+			innerVisitor()->processDown(e, outKeepProcessing, boundAbove());
+			
+			if (!outKeepProcessing)
+				return;
+			
+			outKeepProcessing = false;
+			
+			visit(e.pattern(), *this);
+			FunctionBoundAboveVisitor<inner_visitor_type> vis(
+					boundAbove() + e.pattern().boundVariables(),
+					innerVisitor()
+					);
+			
+			visit(e.result(), vis);
+			visit(e.otherwise(), *this);
+			}
+
+		void processDown(const Expression_CreateLambdaType& e,
+						 bool& outKeepProcessing)
+			{
+			innerVisitor()->processDown(e, outKeepProcessing, boundAbove());
+			
+			if (!outKeepProcessing)
+				return;
+			
+			outKeepProcessing = false;
+			
+			FunctionBoundAboveVisitor<inner_visitor_type> vis(
+					boundAbove() + Symbol("_"),
+					innerVisitor()
+					);
+			
+			visit(e.predicate(), vis);
+			}
+
+
+		ObjectDefinitionBody processObjectDefinitionBody(
+						const ObjectDefinition& def,
+						const ObjectDefinitionBody& body
+						)
+			{
+			@match ObjectDefinitionBody(body)
+				-| Term((term, meta), next) ->> {
+
+					ImmutableTreeSet<Symbol> boundHere;
+
+					if (term.isInObjectScope())
+						boundHere = 
+							(def.selfName() ? *def.selfName() : Symbol("self")) +
+							def.body().members();
+
+					FunctionBoundAboveVisitor<inner_visitor_type> vis(
+						boundAbove() + boundHere,
+						innerVisitor()
+						);
+
+					visit(term, vis);
+
+					return next;
+					}
+			}
+
+		void processDown(const ObjectDefinition& e,
+						 bool& outKeepProcessing)
+			{
+			innerVisitor()->processDown(e, outKeepProcessing, boundAbove());
+			
+			if (!outKeepProcessing)
+				return;
+			
+			outKeepProcessing = false;
+
+			ObjectDefinitionBody body = e.body();
+
+			while (body.isTerm())
+				body = processObjectDefinitionBody(e, body);
+			
+			visit(e.selfName(), *this);
+			}
+
+
+		ClassDefinitionBody processClassDefinitionBody(
+						const ClassDefinition& def,
+						const ClassDefinitionBody& body
+						)
+			{
+			@match ClassDefinitionBody(body)
+				-| Term((term, _), next) ->> {
+
+					ImmutableTreeSet<Symbol> boundHere;
+
+					if (term.isInObjectScope())
+						{
+						boundHere = boundHere +
+							(def.className() ? *def.className() : Symbol("cls")) +
+							(term.isStaticLevel() ?
+								def.body().staticMembers() :
+								def.body().allMembers() + 
+									(def.selfName() ? *def.selfName() : Symbol("self"))
+								)
+							;
+						}
+					else
+						{
+						if (!term.isStaticLevel())
+							//static members are in scope but instance members are not
+							boundHere = boundHere 
+							 	+ (def.className() ? *def.className() : Symbol("cls"))
+							 	+ body.staticMembers()
+							 	;
+
+						}
+					FunctionBoundAboveVisitor<inner_visitor_type> vis(
+						boundAbove() + boundHere,
+						innerVisitor()
+						);
+
+					visit(term, vis);
+
+					return next;
+					}
+			}
+
+		void processDown(const ClassDefinition& e,
+						 bool& outKeepProcessing)
+			{
+			innerVisitor()->processDown(e, outKeepProcessing, boundAbove());
+			
+			if (!outKeepProcessing)
+				return;
+			
+			outKeepProcessing = false;
+			
+			ClassDefinitionBody body = e.body();
+
+			while (body.isTerm())
+				body = processClassDefinitionBody(e, body);
+			
+			visit(e.selfName(), *this);
+			visit(e.className(), *this);
+			}
+
+		void processDown(const TuplePattern& e,
+						 bool& outKeepProcessing)
+			{
+			innerVisitor()->processDown(e, outKeepProcessing, boundAbove());
+			
+			if (!outKeepProcessing)
+				return;
+			
+			outKeepProcessing = false;
+			
+			ImmutableTreeSet<Symbol> boundVariables = boundAbove();
+			
+			//each successive TuplePatternElement binds variables in th
+			//pattern before it
+			for (long k = 0; k < e.matchers().size();k++)
+				{
+				FunctionBoundAboveVisitor<inner_visitor_type> vis(
+							boundVariables,
+							innerVisitor()
+							);
+				
+				visit(e.matchers()[k], vis);
+				
+				boundVariables = boundVariables +
+											e.matchers()[k].boundVariables();
+				}
+			}
+		void processDown(const Pattern_MatchBothType& e,
+						 bool& outKeepProcessing
+						 )
+			{
+			innerVisitor()->processDown(e, outKeepProcessing, boundAbove());
+			
+			
+			if (!outKeepProcessing)
+				return;
+			
+			outKeepProcessing = false;
+			
+			visit(e.left(), *this);
+			
+			FunctionBoundAboveVisitor<inner_visitor_type> vis(
+				boundAbove() + e.left().boundVariables(),
+				innerVisitor()
+				);
+			
+			visit(e.right(), vis);
+			}
+		void processDown(const Expression_TryType& e,
+						 bool& outKeepProcessing
+						 )
+			{
+			innerVisitor()->processDown(e, outKeepProcessing, boundAbove());
+			
+			if (!outKeepProcessing)
+				return;
+			
+			outKeepProcessing = false;
+			
+			ImmutableTreeSet<Symbol> boundVariables = boundAbove();
+			
+			visit(e.toTry(), *this);
+			
+			if (e.stacktrace())
+				{
+				FunctionBoundAboveVisitor<inner_visitor_type> vis(
+					boundAbove() + *e.stacktrace(),
+					innerVisitor()
+					);
+				
+				visit(e.catchWith(), vis);
+				}
+				else
+				visit(e.catchWith(), *this);
+			}
+		void processDown(const PatternWithName& e,
+						 bool& outKeepProcessing
+						 )
+			{
+			innerVisitor()->processDown(e, outKeepProcessing, boundAbove());
+			
+			if (!outKeepProcessing)
+				return;
+			
+			outKeepProcessing = false;
+			
+			visit(e.pattern(), *this);
+			
+			if (e.condition())
+				{
+				FunctionBoundAboveVisitor<inner_visitor_type> vis(
+					boundAbove() +
+						e.pattern().boundVariables() +
+						(e.name() ?
+							emptyTreeSet() + *e.name()
+						:	emptyTreeSet()
+						)
+						,
+					innerVisitor()
+					);
+				
+				visit(*e.condition(), vis);
+				}
+			}
+};
+
+
+
+#endif
+

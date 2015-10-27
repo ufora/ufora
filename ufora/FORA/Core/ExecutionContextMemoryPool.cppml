@@ -1,0 +1,734 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ExecutionContextMemoryPool.hppml"
+#include "ExecutionContext.hppml"
+#include "ExecutionContextImpl.hppml"
+#include "../VectorDataManager/VectorPage.hppml"
+#include "../Core/ComputationResult.hppml"
+#include "../Core/ValueDeepcopier.hppml"
+#include "../../core/Logging.hpp"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include "../VectorDataManager/VectorDataMemoryManager.hppml"
+#include "../VectorDataManager/VectorDataMemoryManagerShareableMemoryBlock.hppml"
+#include "../TypedFora/ABI/BigVectorHandleMemoryPool.hppml"
+
+namespace {
+
+//enable to get granular feedback on each memory location that we fail to deallocate
+const static bool kShouldTrackAllAllocations = false;
+
+}
+
+ExecutionContextMemoryPool::ExecutionContextMemoryPool(
+									Fora::Interpreter::ExecutionContext* context,
+									PolymorphicSharedPtr<VectorDataMemoryManager> inMemoryManager
+									) :
+		MemoryPool(MemoryPool::MemoryPoolType::ExecutionContext),
+		mContext(context),
+		mMemoryManager(inMemoryManager),
+		mSchedulerForPageMapping(inMemoryManager->getCallbackSchedulerForMappableMemoryPools()),
+		mBytesInHeldPagelets(0),
+		mIsExecuting(false),
+		mIsDirty(false),
+		mHasAcquiredPageletLocks(false),
+		mMustCleanBeforeResumingExecution(false),
+		mMemoryLowWaterMark(0)
+	{
+	setPageSize(inMemoryManager->getSmallAllocSize());
+	}
+
+ExecutionContextMemoryPool::~ExecutionContextMemoryPool()
+	{
+	if (mPageletRefcounts.size())
+		LOG_CRITICAL << "Still have refcounts to " << mPageletRefcounts.size() 
+			<< " pagelets. These should have been dropped when we unwound all the objects in the Context."
+			;
+
+	if (mMappedPagelets.size())
+		LOG_CRITICAL << "Still have pagelets mapped in. These should have been dropped.";
+
+	if (mMappedVectorPages.size())
+		LOG_CRITICAL << "Still have VectorPages mapped in. These should have been dropped.";
+
+	if (mIsExecuting)
+		{
+		LOG_CRITICAL << "Unwinding an ExecutionContext while its executing!";
+		mIsExecuting = false;
+		}
+
+	if (mBigVectorHandleMemoryPool && mBigVectorHandleMemoryPool->totalBytesAllocated())
+		LOG_CRITICAL << "Still have memory in our BigVectorHandleMemoryPool";
+
+	//we may have destroyed some pagelets that we still need to release
+	memoryPoolIsClean();
+
+	long bytesDumped = totalBytesAllocated();
+
+	if (bytesDumped)
+		{
+		if (kShouldTrackAllAllocations)
+			LOG_CRITICAL << mAllocationPoints;
+		LOG_CRITICAL << "Bytes in shared mem: " << mShareableMemoryBlocks.getBytesHeldInSharedMemory();
+		LOG_CRITICAL << "Bytes in Heap: " << mHeap->getBytesUsed();
+		LOG_CRITICAL << "Bytes in Sub pagelets: " << mBytesInHeldPagelets;
+
+		LOG_CRITICAL << "freeing pointers to " << bytesDumped << " bytes at:\n"
+			<< Ufora::debug::StackTrace::getStringTrace();
+
+		if (std::uncaught_exception())
+			LOG_CRITICAL << "This is happening during a stack unwind due to an uncaught exception";
+
+		fflush(stdout);
+		fflush(stderr);
+
+		//abort();
+		}
+	}
+
+void ExecutionContextMemoryPool::setPageSize(size_t newPageSize)
+	{
+	lassert(!mHeap || totalBytesAllocated() == 0);
+
+	mHeap.reset(
+		new VectorDataMemoryManagerHeap(mMemoryManager, this, newPageSize)
+		);
+	}
+
+std::string ExecutionContextMemoryPool::stringRepresentation()
+	{
+	return "ExecutionContextMemoryPool(" + boost::lexical_cast<string>((void*)this) + ")";
+	}
+
+MemoryPool* ExecutionContextMemoryPool::getBigvecMappingPool()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+	
+	if (!mBigVectorHandleMemoryPool)
+		mBigVectorHandleMemoryPool.reset(
+			new TypedFora::Abi::BigVectorHandleMemoryPool(mMemoryManager)
+			);
+	
+	return mBigVectorHandleMemoryPool.get();
+	}
+
+uint8_t* ExecutionContextMemoryPool::allocate(size_t inBytes)
+	{
+	uint8_t* ptr = (uint8_t*)mHeap->malloc(inBytes);
+
+	if (!ptr && mContext)
+		mContext->getImpl()->memoryAllocationFailed(inBytes, totalBytesAllocated());
+
+	if (kShouldTrackAllAllocations)
+		mAllocationPoints[ptr] = Ufora::debug::StackTrace::getStringTrace();
+
+	if (allocatingBytesShouldTriggerVdmCheck(inBytes) && mContext)
+		mContext->getImpl()->scheduleVdmCheck();
+
+	return ptr;
+	}
+
+bool ExecutionContextMemoryPool::allocatingBytesShouldTriggerVdmCheck(size_t inBytes)
+	{
+	size_t maxBytes = mMemoryManager->getMaxBytesPerPool();
+	size_t bytesUsed = totalBytesAllocated();
+
+	if (bytesUsed + inBytes < maxBytes / 4)
+		return false;
+
+ 	long oldBlock = mMemoryLowWaterMark / int(maxBytes / 32);
+ 	long newBlock = (bytesUsed + inBytes) / int(maxBytes / 32);
+
+ 	if (newBlock - oldBlock > 1)
+ 		{
+ 		LOG_DEBUG << "Triggering VDM check because we're using " 
+ 			<< (bytesUsed + inBytes) / 1024 / 1024.0 
+ 			<< " MB which is greater than our last-trigger/low watermark of  " 
+ 			<< mMemoryLowWaterMark / 1024 / 1024.0
+ 			<< " and maxBytes = " << maxBytes / 1024 / 1024.0
+ 			<< ". allocating " << inBytes / 1024 / 1024.0
+ 			<< ". we are holding " 
+ 			<< mBytesInHeldPagelets / 1024 / 1024.0
+ 			<< " bytes of pagelets over "
+ 			<< mPageletRefcounts.size() + mPageletsNoLongerReferenced.size()
+ 			;
+
+ 		mMemoryLowWaterMark = bytesUsed + inBytes;
+
+ 		return true;
+ 		}
+
+ 	if (oldBlock - newBlock > 4)
+ 		{
+ 		LOG_DEBUG << "Setting watermark to " << mMemoryLowWaterMark / 1024 / 1024.0;
+ 		mMemoryLowWaterMark = bytesUsed;
+ 		}
+
+ 	return false;
+	}
+
+void ExecutionContextMemoryPool::free(uint8_t* inBytes) 
+	{
+	if (mShareableMemoryBlocks.hasShareableMemoryBlockHandle(inBytes))
+		{
+		Fora::ShareableMemoryBlockHandle handle = 
+			mShareableMemoryBlocks.getShareableMemoryBlockHandle(inBytes);
+
+		mMemoryManager->detachFromPool(this, inBytes, handle.getSize());
+
+		mShareableMemoryBlocks.decrefSharedMemoryBlock(inBytes);
+		}
+	else
+		{
+		if (kShouldTrackAllAllocations)
+			mAllocationPoints.erase(inBytes);
+		mHeap->free(inBytes);
+		}
+	}
+
+uint8_t* ExecutionContextMemoryPool::realloc(uint8_t* inBytes, uword_t inNewBytes)
+	{
+	lassert(!mShareableMemoryBlocks.hasShareableMemoryBlockHandle(inBytes));
+	
+	if (!inBytes && !inNewBytes)
+		return 0;
+
+	if (inBytes && !inNewBytes)
+		{
+		free(inBytes);
+		return 0;
+		}
+
+	if (allocatingBytesShouldTriggerVdmCheck(inNewBytes) && mContext)
+		mContext->getImpl()->scheduleVdmCheck();
+
+	if (!inBytes)
+		return allocate(inNewBytes);
+
+	uint8_t* newData = (uint8_t*)mHeap->realloc(inBytes, inNewBytes);
+
+	if (!newData && mContext)
+		mContext->getImpl()->memoryAllocationFailed(
+			inNewBytes, 
+			totalBytesAllocated()
+			);
+
+	if (kShouldTrackAllAllocations && newData != inBytes)
+		{
+		mAllocationPoints[newData] = mAllocationPoints[inBytes];
+		mAllocationPoints.erase(inBytes);
+		}
+
+	return newData;
+	}
+
+size_t ExecutionContextMemoryPool::totalBytesAllocated() const
+	{
+	return mHeap->getBytesUsed() + 
+		mShareableMemoryBlocks.getBytesHeldInSharedMemory() + 
+		mBytesInHeldPagelets
+		;
+	}
+
+size_t ExecutionContextMemoryPool::totalBytesFromOSHeldInPagelets() const
+	{
+	return mBytesInHeldPagelets;
+	}
+
+size_t ExecutionContextMemoryPool::totalBytesAllocatedFromOS() const
+	{
+	return mHeap->getTotalBytesAllocatedFromOS() + 
+		mShareableMemoryBlocks.getBytesHeldInSharedMemory() + 
+		mBytesInHeldPagelets
+		;
+	}
+
+size_t ExecutionContextMemoryPool::totalBytesAllocatedFromOSExcludingPagelets() const
+	{
+	return mHeap->getBytesUsed() + mShareableMemoryBlocks.getBytesHeldInSharedMemory();
+	}
+
+bool ExecutionContextMemoryPool::permitAllocation(size_t toAllocate)
+	{
+	bool result = mMemoryManager->permitAllocation(this, toAllocate);
+
+	if (!result)
+		{
+		LOGGER_WARN_T log = LOGGER_WARN;
+
+		log << "ECMP with " << mHeap->getBytesUsed()/1024/1024.0 << " MB heap and "
+			<< mShareableMemoryBlocks.getBytesHeldInSharedMemory() << " shared MB and "
+			<< mBytesInHeldPagelets / 1024 / 1024.0 << " in pagelets is denied. "
+			<< ". active pagelets = " << mPageletRefcounts.size() << ". droppable = "
+			<< ". mPageletsNoLongerReferenced.size() == " << mPageletsNoLongerReferenced.size()
+			<< "\n"
+			;
+
+		long count = 0;
+
+		for (auto pageletAndRefcount: mPageletRefcounts)
+			{
+			count++;
+
+			log << pageletAndRefcount.first->totalBytesAllocatedFromOS() << " from OS for "
+				<< pageletAndRefcount.first->getValues()->size() 
+				<< " x " 
+				<< pageletAndRefcount.first->getValues()->currentJor()
+				<< "\n"
+				;
+
+			if (count > 100)
+				{
+				log << "\nand " << mPageletRefcounts.size() - count << " other pagelets...";
+				break;
+				}
+			}
+		}
+
+	return result;
+	}
+
+ImplValContainer ExecutionContextMemoryPool::import(const ImplValContainer& inIVC)
+	{
+	ValueDeepcopierState state;
+
+	ValueDeepcopier extractor(state, true, this, true, false);
+		
+	ImplVal newVal = ImplVal::introduce(inIVC.type());
+	
+	extractor.duplicate(
+		inIVC.type(),
+		(uint8_t*)newVal.data(),
+		(uint8_t*)inIVC.data(),
+		1
+		);
+	
+	return ImplValContainer::assumeOwnershipOf(newVal);
+	}
+
+Fora::Interpreter::ComputationResult ExecutionContextMemoryPool::import(
+									const Fora::Interpreter::ComputationResult& inResult
+									)
+	{
+	@match Fora::Interpreter::ComputationResult(inResult)
+		-| Exception(ivc, log) ->> {
+			return Fora::Interpreter::ComputationResult::Exception(import(ivc), import(log));
+			}
+		-| Result(ivc, log) ->> {
+			return Fora::Interpreter::ComputationResult::Result(import(ivc), import(log));
+			}
+		-| Failure() ->> {
+			return inResult;
+			}
+	}
+
+Fora::ShareableMemoryBlockHandle 
+			ExecutionContextMemoryPool::convertPointerToShareableMemoryBlock(uint8_t* inBytes, int64_t byteCount)
+	{
+	Fora::ShareableMemoryBlockHandle handle = 
+		mShareableMemoryBlocks.getShareableMemoryBlockHandle(inBytes);
+
+	if (!handle.isEmpty())
+		return handle;
+
+	if (!mHeap->detachLargeAlloc(inBytes, byteCount))
+		return Fora::ShareableMemoryBlockHandle();
+
+	Fora::ShareableMemoryBlockHandle vdmmHandle(
+		new VectorDataMemoryManagerShareableMemoryBlock(
+			mMemoryManager,
+			inBytes,
+			byteCount
+			)
+		);
+
+	importShareableMemoryBlock(vdmmHandle);
+
+	return vdmmHandle;
+	}
+
+uint8_t* ExecutionContextMemoryPool::importShareableMemoryBlock(
+											const Fora::ShareableMemoryBlockHandle& inHandle
+											)
+	{
+	if (inHandle.isEmpty())
+		return nullptr;
+
+	if (mShareableMemoryBlocks.increfShareableMemoryBlockAndReturnIsNew(inHandle))
+		mMemoryManager->attachToPool(this, inHandle.getBaseAddress(), inHandle.getSize());
+
+	return inHandle.getBaseAddress();
+	}
+
+bool ExecutionContextMemoryPool::hasRefcountOnPagelet(boost::shared_ptr<Fora::Pagelet> pagelet)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	return mPageletRefcounts.find(pagelet) != mPageletRefcounts.end();
+	}
+
+void ExecutionContextMemoryPool::pageletIsHeld(boost::shared_ptr<Fora::Pagelet> inPagelet)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	increfPagelet_(inPagelet);
+
+	for (auto sub: inPagelet->getHeldPagelets())
+		increfPagelet_(sub.first);
+	}
+
+void ExecutionContextMemoryPool::increfPagelet_(boost::shared_ptr<Fora::Pagelet> inPagelet)
+	{
+	long& refcount = mPageletRefcounts[inPagelet];
+
+	refcount++;
+
+	if (refcount == 1)
+		{
+		if (mPageletsNoLongerReferenced.find(inPagelet) == mPageletsNoLongerReferenced.end())
+			{
+			if (allocatingBytesShouldTriggerVdmCheck(inPagelet->totalBytesAllocatedFromOS()) && mContext)
+				mContext->getImpl()->scheduleVdmCheck();
+
+			mMemoryManager->poolNowHoldingPagelet(this, &*inPagelet);
+
+			mBytesInHeldPagelets += inPagelet->totalBytesAllocatedFromOS();
+			}
+
+		if (mIsExecuting)
+			{
+			//we need to acquire a lock on this pagelet
+			lassert(acquireLockOnPagelet_(inPagelet, true));
+			}
+			else
+		if (mHasAcquiredPageletLocks)
+			{
+			bool gotLock = acquireLockOnPagelet_(inPagelet, false);
+
+			//if we couldn't get the lock, then we are violating constraints. To cure them,
+			if (!gotLock)
+				{
+				mMustCleanBeforeResumingExecution = true;
+				mHasAcquiredPageletLocks = false;
+				dropAllTriggers_();
+				}
+			}
+
+		if (mContext)
+			for (auto bigvec: inPagelet->getReferencedBigVectorIds())
+				mContext->incrementBigVectorRefcount(bigvec);
+		}
+
+	mPageletsNoLongerReferenced.erase(inPagelet);
+	}
+
+void ExecutionContextMemoryPool::pageletIsNoLongerHeld(boost::shared_ptr<Fora::Pagelet> inPagelet)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	decrefPagelet_(inPagelet);
+
+	for (auto sub: inPagelet->getHeldPagelets())
+		decrefPagelet_(sub.first);
+	}
+
+void ExecutionContextMemoryPool::decrefPagelet_(boost::shared_ptr<Fora::Pagelet> inPagelet)
+	{
+	long& refcount = mPageletRefcounts[inPagelet];
+
+	refcount--;
+
+	lassert_dump(refcount >= 0, refcount);
+
+	if (refcount == 0)
+		{
+		mPageletRefcounts.erase(inPagelet);
+		
+		if (mIsDirty)
+			mPageletsNoLongerReferenced.insert(inPagelet);
+		else
+			pageletLeavingPoolEntirely_(inPagelet);
+		}
+	}
+
+void ExecutionContextMemoryPool::pageletLeavingPoolEntirely_(
+									boost::shared_ptr<Fora::Pagelet> inPagelet
+									)
+	{
+	mMemoryManager->poolNoLongerHoldingPagelet(this, &*inPagelet);
+
+	mBytesInHeldPagelets -= inPagelet->totalBytesAllocatedFromOS();
+
+	if (mContext)
+		for (auto bigvec: inPagelet->getReferencedBigVectorIds())
+			mContext->decrementBigVectorRefcount(bigvec);
+	}
+
+void ExecutionContextMemoryPool::memoryPoolIsClean()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	lassert(!mIsExecuting);
+
+	size_t bytesInReleasedPagelets = 0;
+
+	for (auto pageletPtr: mPageletsNoLongerReferenced)
+		pageletLeavingPoolEntirely_(pageletPtr);
+	
+	if (bytesInReleasedPagelets > 0)
+		LOG_DEBUG << "Releasing " << bytesInReleasedPagelets / 1024 / 1024.0 << " bytes of pagelets.";
+
+	mPageletsNoLongerReferenced.clear();
+
+	//we can release all of our locks on pagelets and vector pages at this point
+	dropAllTriggers_();
+
+	if (mBigVectorHandleMemoryPool)
+		{
+		lassert_dump(
+			mBigVectorHandleMemoryPool->totalBytesAllocated() == 0,
+			mBigVectorHandleMemoryPool->totalBytesAllocated() / 1024 / 1024.0 << " MB allocated"
+			);
+		mBigVectorHandleMemoryPool.reset();
+		}
+
+	//we are no longer dirty
+	mIsDirty = false;
+
+	mMustCleanBeforeResumingExecution = false;
+
+	mHasAcquiredPageletLocks = false;
+	}
+
+namespace {
+
+void executionContextNeedsToInterrupt(
+				boost::weak_ptr<ExecutionContextMemoryPool> weakPoolPtr
+				)
+	{
+	boost::shared_ptr<ExecutionContextMemoryPool> pool = weakPoolPtr.lock();
+
+	if (pool)
+		pool->triggerCleaningCycleIfDirty();
+	}
+
+}
+
+void ExecutionContextMemoryPool::vectorPageMapped(
+					boost::shared_ptr<VectorPage> mappedPage,
+					boost::shared_ptr<Ufora::threading::Trigger> mappedPageWantsUnmapped
+					)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	mMappedVectorPages.set(mappedPageWantsUnmapped, mappedPage);
+
+	boost::function0<void> triggerFun = 
+		boost::bind(
+			&executionContextNeedsToInterrupt,
+			boost::weak_ptr<ExecutionContextMemoryPool>(this->shared_from_this())
+			);
+
+	if (!mappedPageWantsUnmapped->setTrigger(triggerFun))
+		mSchedulerForPageMapping->scheduleImmediately(triggerFun);
+	}
+
+
+bool ExecutionContextMemoryPool::isVectorPageMapped(
+					boost::shared_ptr<VectorPage> mappedPage
+					)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	return mMappedVectorPages.hasValue(mappedPage);
+	}
+
+void ExecutionContextMemoryPool::triggerCleaningCycleIfDirty()
+	{
+	//this function can get called at pretty much any time
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (mHasAcquiredPageletLocks)
+		{
+		mMustCleanBeforeResumingExecution = true;
+
+		if (mContext)
+			mContext->scheduleVdmCheck();
+		}
+	}
+
+bool ExecutionContextMemoryPool::acquireLocksOnPagelets()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	lassert(!mIsExecuting);
+
+	if (mMustCleanBeforeResumingExecution)
+		return false;
+
+	if (mHasAcquiredPageletLocks)
+		return true;
+
+	lassert(mMappedPagelets.size() == 0);
+	lassert(mMappedVectorPages.size() == 0);
+	
+	for (auto pageletAndRefcount: mPageletRefcounts)
+		{
+		if (!acquireLockOnPagelet_(pageletAndRefcount.first, false))
+			{
+			LOG_DEBUG 
+				<< pageletAndRefcount.first->stringRepresentation() 
+				<< " which is in state "
+				<< pageletAndRefcount.first->currentUnmapState()
+				<< " and which contains " 
+				<< pageletAndRefcount.first->getValues()->size() << " x " 
+				<< pageletAndRefcount.first->getValues()->currentJor()
+				<< " wouldn't give us a lock.";
+			dropAllTriggers_();
+			return false;
+			}
+		}
+
+	mHasAcquiredPageletLocks = true;
+
+	return true;
+	}
+
+bool ExecutionContextMemoryPool::needsCleanBeforeExecuting()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	return mMustCleanBeforeResumingExecution;
+	}
+
+bool ExecutionContextMemoryPool::acquireLockOnPagelet_(
+								boost::shared_ptr<Fora::Pagelet> pagelet,
+								bool lockIsAlreadyImplicitlyAcquired
+								)
+	{
+	boost::shared_ptr<Ufora::threading::Trigger> trigger;
+
+	trigger = pagelet->attemptToMapTo(lockIsAlreadyImplicitlyAcquired);
+
+	if (trigger)
+		{
+		mMappedPagelets.set(trigger, pagelet);
+
+		boost::function0<void> triggerFun = 
+			boost::bind(
+				&executionContextNeedsToInterrupt,
+				boost::weak_ptr<ExecutionContextMemoryPool>(this->shared_from_this())
+				);
+
+		if (!trigger->setTrigger(triggerFun))
+			mSchedulerForPageMapping->scheduleImmediately(triggerFun);
+
+		return true;
+		}
+
+	return false;
+	}
+
+//start execution. We must have acquired locks on all pagelets or we'll get an exception
+bool ExecutionContextMemoryPool::beginExecution()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	lassert(!mIsExecuting);
+	lassert(mHasAcquiredPageletLocks);
+
+	if (mMustCleanBeforeResumingExecution)
+		return false;
+
+	mIsExecuting = true;
+	mIsDirty = true;
+
+	return true;
+	}
+
+//end execution. We may not clean the pool while we are executing.
+void ExecutionContextMemoryPool::endExecution()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	lassert(mIsExecuting);
+
+	mIsExecuting = false;
+	}
+
+void ExecutionContextMemoryPool::dropAllTriggers_()
+	{
+	for (auto triggerAndPagelet: mMappedPagelets.getKeyToValue())
+		triggerAndPagelet.second->removeMapping(triggerAndPagelet.first);
+
+	mMappedPagelets.clear();
+
+	for (auto triggerAndVecPage: mMappedVectorPages.getKeyToValue())
+		triggerAndVecPage.second->removeMapping(triggerAndVecPage.first);
+	
+	mMappedVectorPages.clear();
+	}
+
+bool ExecutionContextMemoryPool::isDirty()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	return mIsDirty;
+	}
+
+bool ExecutionContextMemoryPool::isExecuting()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	return mIsExecuting;
+	}
+
+bool ExecutionContextMemoryPool::hasAcquiredPageLocks()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	return mHasAcquiredPageletLocks;
+	}
+
+int64_t ExecutionContextMemoryPool::getBytesUsedInBigvecMappingPool()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (!mBigVectorHandleMemoryPool)
+		return 0;
+
+	return mBigVectorHandleMemoryPool->totalBytesAllocated();
+	}
+
+int64_t ExecutionContextMemoryPool::getBytesAllocatedFromOsInBigvecMappingPool()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (!mBigVectorHandleMemoryPool)
+		return 0;
+
+	return mBigVectorHandleMemoryPool->totalBytesAllocatedFromOS();
+	}
+
+void ExecutionContextMemoryPool::incrementBigVectorRefcount(const Fora::BigVectorId& identity)
+	{
+	mContext->incrementBigVectorRefcount(identity);
+	}
+
+void ExecutionContextMemoryPool::decrementBigVectorRefcount(const Fora::BigVectorId& identity)
+	{
+	mContext->decrementBigVectorRefcount(identity);
+	}
+

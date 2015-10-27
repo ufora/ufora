@@ -1,0 +1,730 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "WorkerThreadPool.hppml"
+
+#include "../core/PolymorphicSharedPtr.hpp"
+#include <chrono>
+#include <boost/thread.hpp>
+#include <boost/unordered_map.hpp>
+#include "WorkerThreadPoolImpl.hppml"
+#include "../core/Logging.hpp"
+#include "../core/containers/MapWithIndex.hpp"
+#include "CumulusComponentType.hppml"
+#include "CumulusClientOrMachine.hppml"
+#include "CumulusComponentMessage.hppml"
+
+namespace Cumulus {
+
+    class CumulusWorkerImplThread : public InstanceCounter<CumulusWorkerImplThread> {};
+
+    typedef PolymorphicSharedPtr<ComputationState> ComputationStatePtr;
+
+    static boost::thread::id current_thread_id()
+        {
+        return boost::this_thread::get_id();
+        }
+
+
+    template <class computation_state_type>
+    class WorkerThreadPoolImpl :
+        public PolymorphicSharedPtrBase<WorkerThreadPoolImpl<computation_state_type> >,
+        public InstanceCounter<WorkerThreadPoolImpl<computation_state_type> >
+    {
+    public:
+        typedef PolymorphicSharedPtr<WorkerThreadPoolImpl<computation_state_type> > ptr_type;
+        typedef boost::function<pair<computation_state_type, hash_type> (ComputationId)> checkout_command_type;
+        typedef boost::function<void (ComputationId, CreatedComputations)> checkin_command_type;
+
+        WorkerThreadPoolImpl(
+                unsigned int inThreadCount,
+                checkout_command_type inCheckoutCommand,
+                checkin_command_type inCheckinCommand,
+                MachineId ownMachineId
+                )
+            : mCheckoutCommand(inCheckoutCommand)
+            , mCheckinCommand(inCheckinCommand)
+            , mThreadCount(inThreadCount)
+            , mTearingDown(false)
+            , mIsPaused(true)
+            , mOwnMachineId(ownMachineId)
+            {
+            }
+
+        void polymorphicSharedPtrBaseInitialized()
+            {
+            mThreads.reserve(mThreadCount);
+            for (uint i = 0; i < mThreadCount; i++)
+                {
+                mThreads.push_back(
+                    boost::shared_ptr<boost::thread>(
+                        new boost::thread(
+                            boost::bind(
+                                &WorkerThreadPoolImpl::workerThreadFunction,
+                                this->polymorphicSharedWeakPtrFromThis()
+                                )
+                            )
+                        )
+                    );
+                }
+            LOG_INFO << prettyPrintString(mOwnMachineId) 
+                << ". WorkerThreadPool created with " << mThreads.size() << " thread(s).";
+            }
+
+        ~WorkerThreadPoolImpl()
+            {
+            bool isTornDown = false;
+                {
+                boost::mutex::scoped_lock lock(mMutex);
+                isTornDown = mTearingDown;
+                }
+
+            if (!isTornDown)
+                teardown();
+            }
+
+        void teardown()
+            {
+            // NOTE: the order of the next two calls is significant.
+            //       We first set the mTearingDown flag and then call startComputations to
+            //       wake up threads that are waiting on the mThreadPoolResumed condition variable.
+            setTeardownSignal();
+            startComputations();
+
+            waitForAllThreads();
+            }
+
+        void startComputations()
+            {
+            boost::mutex::scoped_lock lock(mMutex);
+            if (mIsPaused)
+                {
+                mIsPaused = false;
+                mThreadPoolResumed.notify_all();
+                }
+            }
+
+        void stopComputations()
+            {
+            boost::mutex::scoped_lock lock(mMutex);
+
+            if (!mIsPaused)
+                {
+                mIsPaused = true;
+                interruptAllRunningComputations_();
+                }
+
+            double t0 = curClock();
+
+            while (mComputing.size() != 0)
+                {
+                mComputingIsEmpty.timed_wait(lock, boost::posix_time::milliseconds(curClock() - t0 < 5.0 ? 100 : 1000));
+
+                double elapsed = curClock() - t0;
+
+                if (elapsed > .1)
+                    {
+                    LOG_WARN << "Trying to shut down WorkerThreadPoolImpl has taken "
+                        << elapsed << " seconds so far."
+                        ;
+
+                    interruptAllRunningComputations_();
+                    }
+
+                if (elapsed > 10)
+                    {
+                    //force a stackdump
+                    fflush(stdout);
+                    fflush(stderr);
+                    ((char*)0)[0] = 0;
+                    }
+                }
+            }
+
+
+        void handleCumulusComponentMessage(
+                        const CumulusComponentMessage& message, 
+                        const CumulusClientOrMachine& source, 
+                        const CumulusComponentType& componentType
+                        )
+            {
+            @match CumulusComponentMessage(message)
+                -| LocalComputationPriorityAndStatus(msg) ->> {
+                    onComputationStatusChanged(msg);
+                    }
+            }
+
+        void onComputationStatusChanged(LocalComputationPriorityAndStatusChanged change)
+            {
+            boost::mutex::scoped_lock lock(mMutex);
+
+            onComputationStatusChanged_(change);
+            }
+
+        void onComputationStatusChanged_(LocalComputationPriorityAndStatusChanged change)
+            {
+            if (mComputing.find(change.computation()) != mComputing.end())
+                {
+                mStatusChangesPendingCheckin[change.computation()].push_back(change);
+                updateComputingPriority_(change.computation(), change.newPriority());
+                return;
+                } 
+
+            removeFromComputableSet_(change.computation());
+
+            if (change.newStatus() && change.newStatus()->isComputable())
+                {
+                addToComputableSet_(change.computation(), change.newPriority());
+                }
+
+            LOG_DEBUG << prettyPrintString(mOwnMachineId) 
+                    << ". Handled " << prettyPrintString(change) << ": " << isComputing_(change.computation());
+            }
+
+    //private:  These members aren't part of the WorkerThreadPool API.
+    //          They are left public for test purposes.
+        @type ComputablePriority =
+                ComputationPriority priority,
+                std::chrono::high_resolution_clock::time_point computableSince,
+                ComputationId computationId
+        {
+        public:
+            // Operator < is used to determine computation order.
+            // If two computations have the same priority, the one that
+            // has been waiting the longest to be computed (smallest computableSince)
+            // should be computed first.
+            bool operator<(const ComputablePriority& other) const
+                {
+                if (priority() != other.priority())
+                    return other.priority() < priority();
+
+                if (computableSince() != other.computableSince())
+                    return computableSince() < other.computableSince();
+
+                return computationId() < other.computationId();
+                }
+        };
+
+        class InProgressComputation {
+        public:
+            InProgressComputation(
+                        const ComputablePriority& inComputable
+                        ) : 
+                    mComputablePriority(inComputable),
+                    mIsInterrupted(false)
+                {
+                }
+
+            const ComputablePriority& getComputable() const
+                {
+                return mComputablePriority;
+                }
+
+            void interrupt()
+                {
+                boost::mutex::scoped_lock lock(mMutex);
+
+                mIsInterrupted = true;
+                if (mState)
+                    mState->interrupt();
+                }
+
+            bool isInterrupted() const
+                {
+                boost::mutex::scoped_lock lock(mMutex);
+                return mIsInterrupted;
+                }
+
+            void updatePriority(const ComputationPriority& inPriority)
+                {
+                boost::mutex::scoped_lock lock(mMutex);
+
+                mComputablePriority.priority() = inPriority;
+                }
+
+            CreatedComputations compute(
+                        computation_state_type state, 
+                        hash_type guid,
+                        MachineId inOwnMachineId
+                        )
+                {
+                    {
+                    lassert(state);
+                    lassert(!mState);
+
+                    boost::mutex::scoped_lock lock(mMutex);
+
+                    if (mIsInterrupted)
+                        return CreatedComputations();
+
+                    mState = state;
+                    }
+
+                CreatedComputations result;
+
+                try
+                    {
+                    double t0 = curClock();
+
+                    LOG_DEBUG 
+                            << prettyPrintString(inOwnMachineId) << ". "
+                            << "Started computing " 
+                            << prettyPrintString(mComputablePriority.computationId())
+                            ;
+                    
+                    result = mState->compute(guid);
+                
+                    LOG_DEBUG 
+                            << prettyPrintString(inOwnMachineId) << ". "
+                            << "Finished computing " 
+                            << prettyPrintString(mComputablePriority.computationId())
+                            << " after " << curClock() - t0
+                            ;
+                    }
+                catch (std::exception& ex)
+                    {
+                    LOG_ERROR << "Exception while computing: " << ex.what() << "\ncomputation = "
+                        << prettyPrintString(mComputablePriority.computationId())
+                        << ". MachineId = " << prettyPrintString(inOwnMachineId);
+                        ;
+
+                    }
+                catch (...)
+                    {
+                    LOG_ERROR << "Unknown exception while computing!";
+                    }
+                
+                return result;
+                }
+
+        private:
+            mutable boost::mutex mMutex;
+
+            computation_state_type mState;
+
+            ComputablePriority mComputablePriority;
+
+            bool mIsInterrupted;
+        };
+
+        typedef boost::shared_ptr<InProgressComputation> InProgressComputationPtr;
+
+        typedef std::map<ComputationId, InProgressComputationPtr> computing_map;
+        typedef boost::function<void (ComputablePriority)> computing_callback;
+
+        static void workerThreadFunction(PolymorphicSharedWeakPtr<WorkerThreadPoolImpl> weakThis)
+            {
+            CumulusWorkerImplThread threadIsAlive;
+            
+            try {
+                LOG_INFO << ". WorkerThreadPool started worker thread " << boost::lexical_cast<string>(current_thread_id());
+
+                while (true)
+                    {
+                    PolymorphicSharedPtr<WorkerThreadPoolImpl> pThis = weakThis.lock();
+                    if (!pThis)
+                        {
+                        LOG_INFO << ". WorkerThreadPool worker thread " << boost::lexical_cast<string>(current_thread_id())
+                            << " is exiting because WorkerThreadPool has been destroyed.";
+                        return;
+                        }
+
+                    InProgressComputationPtr computation = pThis->waitForInProgressComputation();
+                    if (!computation)
+                        {
+                        LOG_INFO << prettyPrintString(pThis->mOwnMachineId) 
+                            << ". WorkerThreadPool worker thread " << boost::lexical_cast<string>(current_thread_id())
+                            << " exiting";
+                        return;
+                        }
+
+                    pThis->fireComputingCallback(computation->getComputable());
+
+                    ComputationId computationId = computation->getComputable().computationId();
+                    ComputationPriority priority = computation->getComputable().priority();
+
+                    pair<computation_state_type, hash_type> computationState = pThis->mCheckoutCommand(computationId);
+
+                    bool needsReturn = true;
+
+                    if (computationState.first)
+                        {
+                        CreatedComputations result = computation->compute(
+                            computationState.first,
+                            computationState.second,
+                            pThis->mOwnMachineId
+                            );
+
+                        pThis->mCheckinCommand(computationId, result);
+
+                        if (computationState.first->currentComputationStatus().isComputable() && 
+                                    !computation->getComputable().priority().isNull())
+                            {
+                            // The computation is still computable (must have been interrupted).
+                            // We need to put it back in the computable set
+                            if (SHOULD_LOG_DEBUG())
+                                LOG_DEBUG << prettyPrintString(pThis->mOwnMachineId) 
+                                    << ". Returning " << prettyPrintString(computationId)
+                                    << " to computable set."
+                                    << "Status is " 
+                                    << prettyPrintString(computationState.first->currentComputationStatus());
+
+                            pThis->returnToComputableSetAndRemoveFromComputingSet(computation->getComputable());
+                            needsReturn = false;
+                            }
+                        }
+
+                    if (needsReturn)
+                        pThis->removeFromComputingSet(computationId);
+                    }
+                }
+            catch(std::exception& err)
+                {
+                LOG_ERROR << "WorkerThreadPool loop exiting because of exception: " << err.what();
+                }
+            catch(...)
+                {
+                LOG_ERROR << "WorkerThreadPool loop exiting because of unknown exception";
+                }
+            }
+
+        bool isTearingDown() const
+            {
+            return mTearingDown;
+            }
+
+        InProgressComputationPtr waitForInProgressComputation()
+            {
+            while (!isTearingDown())
+                {
+                boost::mutex::scoped_lock lock(mMutex);
+
+                while (isPaused() && !isTearingDown())
+                    {
+                    mThreadPoolResumed.wait(lock);
+                    }
+
+                if (isTearingDown())
+                    return InProgressComputationPtr();
+
+                if (mComputablePriorities.size() == 0)
+                    {
+                    if (!waitForComputationAvailable(lock, 100))
+                        {
+                        // wait timed out. Check if we're tearing down and wait again.
+                        continue;
+                        }
+                    }
+
+                if (isTearingDown())
+                    return InProgressComputationPtr();
+
+                if (isPaused())
+                    continue;
+                
+                InProgressComputationPtr nextComputation = selectNextComputation_();
+
+                if (!nextComputation)
+                    continue;
+
+                return nextComputation;
+                }
+
+            return InProgressComputationPtr();
+            }
+
+        bool isPaused() const
+            {
+            return mIsPaused;
+            }
+
+        bool waitForComputationAvailable(
+                boost::mutex::scoped_lock& lock,
+                uint64_t timeoutInMilliseconds)
+            {
+            return mComputationsAvailable.timed_wait(lock,
+                boost::get_system_time() + boost::posix_time::milliseconds(timeoutInMilliseconds)
+                );
+            }
+
+        void removeFromComputingSet(ComputationId computationId)
+            {
+            boost::mutex::scoped_lock lock(mMutex);
+
+            removeFromComputingSet_(computationId);
+
+            processLocalComputationStatusUpdatesPendingCheckin_(computationId);
+            }
+
+        void removeFromComputingSet_(ComputationId computationId)
+            {
+            mComputing.erase(computationId);
+            if (mComputing.size() == 0)
+                mComputingIsEmpty.notify_all();
+            }
+
+        InProgressComputationPtr selectNextComputation()
+            {
+            boost::mutex::scoped_lock lock(mMutex);
+
+            return selectNextComputation_();
+            }
+
+        InProgressComputationPtr selectNextComputation_()
+            {
+            if (mComputablePriorities.size() == 0)
+                return InProgressComputationPtr();
+
+            ComputablePriority nextComputation = mComputablePriorities.lowestValue();
+
+            mComputablePriorities.discard(nextComputation.computationId());
+
+            InProgressComputationPtr newInProgressComputationPtr(
+                    new InProgressComputation(
+                        nextComputation
+                        )
+                    );
+
+            lassert(mComputing.find(nextComputation.computationId()) == mComputing.end());
+
+            mComputing.insert(
+                make_pair(
+                    nextComputation.computationId(), 
+                    newInProgressComputationPtr
+                    )
+                );
+
+            return newInProgressComputationPtr;
+            }
+
+        void setTeardownSignal()
+            {
+            boost::mutex::scoped_lock lock(mMutex);
+            mTearingDown = true;
+            mComputationsAvailable.notify_all();
+
+            interruptAllRunningComputations_();
+            }
+
+        void waitForAllThreads()
+            {
+            for (auto thread = mThreads.begin(); thread != mThreads.end(); ++thread)
+                {
+                if ((*thread)->get_id() != current_thread_id())
+                    (*thread)->join();
+                }
+            }
+
+        void removeFromComputableSet(ComputationId computationId)
+            {
+            boost::mutex::scoped_lock lock(mMutex);
+
+            removeFromComputableSet_(computationId);
+            }
+
+        void removeFromComputableSet_(ComputationId computationId)
+            {
+            mComputablePriorities.discard(computationId);
+            }
+
+        void addToComputableSet(ComputationId computationId, ComputationPriority priority)
+            {
+            boost::mutex::scoped_lock lock(mMutex);
+
+            addToComputableSet_(computationId, priority);
+            }
+
+        void addToComputableSet_(ComputationId computationId, ComputationPriority priority)
+            {
+            if (isComputing_(computationId))
+                {
+                if (SHOULD_LOG_DEBUG())
+                    LOG_DEBUG << prettyPrintString(mOwnMachineId) 
+                        << ". Updating priority on running computation "
+                        << prettyPrintString(computationId)
+                        ;
+
+                updateComputingPriority_(computationId, priority);
+                }
+            else
+                {
+                if (!priority.isNull())
+                    insertToComputableSet_(
+                        ComputablePriority(
+                            priority, 
+                            std::chrono::high_resolution_clock::now(),
+                            computationId
+                            )
+                        );
+                }
+            }
+
+        void insertToComputableSet_(const ComputablePriority& inComputable)
+            {
+            lassert(!isComputing_(inComputable.computationId()));
+
+            mComputablePriorities.set(inComputable.computationId(), inComputable);
+
+            if (SHOULD_LOG_DEBUG())
+                LOG_DEBUG << prettyPrintString(mOwnMachineId) << ". Inserting " 
+                    << prettyPrintString(inComputable.computationId())
+                    << " to computable set. count = " << mComputablePriorities.size();
+
+            interruptComputationIfLowerPriority_(inComputable.priority());
+            
+            mComputationsAvailable.notify_one();
+            }
+
+        void returnToComputableSetAndRemoveFromComputingSet(const ComputablePriority& inComputable)
+            {
+            boost::mutex::scoped_lock lock(mMutex);
+
+            removeFromComputingSet_(inComputable.computationId());
+
+            insertToComputableSet_(inComputable);
+
+            processLocalComputationStatusUpdatesPendingCheckin_(inComputable.computationId());
+            }
+
+        void processLocalComputationStatusUpdatesPendingCheckin_(const ComputationId& inID)
+            {
+            lassert(mComputing.find(inID) == mComputing.end());
+
+            auto it = mStatusChangesPendingCheckin.find(inID);
+            if (it != mStatusChangesPendingCheckin.end())
+                {
+                for (long k = 0; k < it->second.size(); k++)
+                    onComputationStatusChanged_(it->second[k]);
+
+                mStatusChangesPendingCheckin.erase(it);
+                }
+            }
+
+        bool isComputing_(ComputationId computationId) const
+            {
+            return mComputing.count(computationId) == 1;
+            }
+
+        void updateComputingPriority_(ComputationId computationId, ComputationPriority priority)
+            {
+            auto iter = mComputing.find(computationId);
+            if (iter == mComputing.end())
+                return;
+
+            iter->second->updatePriority(priority);
+
+            if (mComputablePriorities.size() 
+                        && mComputing.size() == mThreads.size() 
+                        && priority < mComputablePriorities.lowestValue().priority()
+                    || priority.isNull())
+                {
+                if (SHOULD_LOG_DEBUG())
+                    LOG_DEBUG << "Interrupting " << prettyPrintString(computationId);
+                iter->second->interrupt();
+                }
+            }
+
+        void interruptComputationIfLowerPriority_(ComputationPriority priority)
+            {
+            if (mComputing.size() == 0 || mComputing.size() < mThreads.size())
+                return;
+
+            InProgressComputationPtr lowestPriorityComputing;
+
+            lowestPriorityComputing = getLowestPriorityComputing_();
+
+            lassert(lowestPriorityComputing);
+
+            if (!lowestPriorityComputing->isInterrupted() &&
+                 lowestPriorityComputing->getComputable().priority() < priority)
+                {
+                lowestPriorityComputing->interrupt();
+                }
+            }
+
+        void interruptAllRunningComputations_()
+            {
+            for (auto i = mComputing.begin(); i != mComputing.end(); ++i)
+                i->second->interrupt();
+            }
+
+        InProgressComputationPtr getLowestPriorityComputing_() const
+            {
+            auto iter = std::min_element(
+                                mComputing.begin(),
+                                mComputing.end(),
+                                WorkerThreadPoolImpl::compareComputingPriorities_
+                                );
+
+            return iter->second;
+            }
+
+        void setComputingCallback(computing_callback callback)
+            {
+            mComputingCallback = callback;
+            }
+
+        void fireComputingCallback(ComputablePriority computing)
+            {
+            if (mComputingCallback)
+                mComputingCallback(computing);
+            }
+
+        static bool compareComputingPriorities_(
+                const typename computing_map::value_type& lhs,
+                const typename computing_map::value_type& rhs)
+            {
+            // Interrupted computations are considered higher priority.
+            // This comparison is used to find the lowest priority computation that is currently
+            // running and has not been interrupted yet.
+            if (lhs.second->isInterrupted() == rhs.second->isInterrupted())
+                return lhs.second->getComputable().priority() < rhs.second->getComputable().priority();
+            return rhs.second->isInterrupted();
+            }
+
+        long currentlyActiveWorkerThreads()
+            {
+            boost::mutex::scoped_lock lock(mMutex);
+
+            return mComputing.size();
+            }
+
+        checkout_command_type mCheckoutCommand;
+        
+        checkin_command_type mCheckinCommand;
+        
+        computing_callback mComputingCallback;
+
+        std::map<ComputationId, std::vector<LocalComputationPriorityAndStatusChanged> >
+                                                                    mStatusChangesPendingCheckin;
+
+        std::vector<boost::shared_ptr<boost::thread> > mThreads;
+        
+        MapWithIndex<ComputationId, ComputablePriority> mComputablePriorities;
+        
+        computing_map mComputing;
+
+        boost::mutex mMutex;
+        boost::condition_variable mComputationsAvailable;
+        boost::condition_variable mThreadPoolResumed;
+        boost::condition_variable mComputingIsEmpty;
+        unsigned int mThreadCount;
+        bool mTearingDown;
+        bool mIsPaused;
+
+        MachineId mOwnMachineId;
+    };
+}
+

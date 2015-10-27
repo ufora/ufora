@@ -1,0 +1,470 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "NeighborhoodSpectralTreeSparse.hppml"
+#include "../../core/math/Largest.hpp"
+
+namespace Cumulus {
+
+namespace PageLayoutCalculator {
+
+double kMaxFractionOfDuplicatedPages = 0.1;
+
+NeighborhoodSpectralTreeSparse::NeighborhoodSpectralTreeSparse(const NeighborhoodSpectralTreeParams& params) : 
+		NeighborhoodSpectralTree(params),
+		mTotalPageBytes(0),
+		mTotalNeighborhoodBytes(0)
+	{
+	}
+
+int64_t NeighborhoodSpectralTreeSparse::bytesInPages() const
+	{
+	return mTotalPageBytes;
+	}
+
+int64_t NeighborhoodSpectralTreeSparse::bytesInNeighborhoods() const
+	{
+	return mTotalNeighborhoodBytes;
+	}
+
+int64_t NeighborhoodSpectralTreeSparse::neighborhoodCount() const
+	{
+	return mNeighborhoodToSubgroup.size();
+	}
+
+int64_t NeighborhoodSpectralTreeSparse::pageCount() const
+	{
+	return mPagesToSubgroups.keyCount();
+	}
+
+void NeighborhoodSpectralTreeSparse::addNeighborhood(const Neighborhood& inNeighborhood)
+	{
+	if (hasNeighborhood(inNeighborhood))
+		return;
+
+	mTotalNeighborhoodBytes += inNeighborhood.bytecount();
+
+	for (auto p: inNeighborhood.pages())
+		if (!hasPage(p))
+			mTotalPageBytes += p.bytecount();
+
+	//if it doesn't overlap any existing groups, it's its own group
+	if (noPagesOverlapping(inNeighborhood))
+		{
+		createNewGroup(inNeighborhood);
+		return;
+		}
+
+	//pick the best group to add this to
+	std::set<long> possibleGroups;
+
+	for (auto p: inNeighborhood.pages())
+		for (auto groupIx: mPagesToSubgroups.getValues(p))
+			possibleGroups.insert(groupIx);
+
+	//we want the group that shares the most in common with this neighborhood
+	Smallest<long> groupWithFewestNewBytes;
+
+	for (auto groupIx: possibleGroups)
+		groupWithFewestNewBytes.observe(groupIx, newBytesInGroupIfAdded(groupIx, inNeighborhood));
+
+	addNeighborhoodToGroup(inNeighborhood, *groupWithFewestNewBytes.smallest());
+
+	//now check all the groups that appear to be over the limit
+	std::set<long> groupsToMerge;
+
+	for (auto g: possibleGroups)
+		if (groupFractionOfNonuniquePages(g) > kMaxFractionOfDuplicatedPages)
+			groupsToMerge.insert(g);
+
+	if (groupsToMerge.size() == 0)
+		return;
+
+	//if there is more than one group, merge it
+	while (groupsToMerge.size() > 1)
+		{
+		mergeGroups(*groupsToMerge.begin(), *groupsToMerge.rbegin());
+		groupsToMerge.erase(*groupsToMerge.rbegin());
+		}
+
+	long remainingGroup = *groupsToMerge.begin();
+
+	while (groupFractionOfNonuniquePages(remainingGroup) > kMaxFractionOfDuplicatedPages)
+		remainingGroup = mergeGroupWithSomething(remainingGroup);
+	}
+
+long NeighborhoodSpectralTreeSparse::mergeGroupWithSomething(long groupIx)
+	{
+	//merge this group with the group that shares the most stuff in common with it
+	std::set<long> possibleGroups;
+
+	for (auto p: mPagesToSubgroups.getKeys(groupIx))
+		for (auto groupIx: mPagesToSubgroups.getValues(p))
+			possibleGroups.insert(groupIx);
+
+	Largest<long> groupWithLargestOverlap;
+
+	for (auto g: possibleGroups)
+		if (g != groupIx)
+			{
+			int64_t common = 0;
+
+			for (auto page: mPagesToSubgroups.getKeys(g))
+				if (mPagesToSubgroups.contains(page, groupIx))
+					common += page.bytecount();
+
+			groupWithLargestOverlap.observe(g, common);
+			}
+
+	lassert_dump(
+		groupWithLargestOverlap.largest(),
+		"Group " << groupIx << " has no other groups it overlaps with but "
+			<< groupFractionOfNonuniquePages(groupIx)
+			<< " overlap."
+		);
+
+	return mergeGroups(groupIx, *groupWithLargestOverlap.largest());
+	}
+
+long NeighborhoodSpectralTreeSparse::mergeGroups(long groupOne, long groupTwo)
+	{
+	lassert(groupOne != groupTwo);
+
+	if (mSubtrees[groupOne]->neighborhoodCount() < mSubtrees[groupTwo]->neighborhoodCount())
+		return mergeGroups(groupTwo, groupOne);
+
+	//we merge groupTwo into groupOne and then swap the last group out into its position
+	std::set<Neighborhood> neighborhoods = mNeighborhoodToSubgroup.getKeys(groupTwo);
+
+	for (auto neighborhood: neighborhoods)
+		{
+		dropNeighborhoodFromGroup(neighborhood, groupTwo);
+		addNeighborhoodToGroup(neighborhood, groupOne);
+		}
+
+	bool groupOneWasLastGroup = (groupOne + 1 == mSubtrees.size());
+
+	deleteGroup(groupTwo);
+
+	if (groupOneWasLastGroup)
+		//we deleted group two, but will have swapped group one into
+		//its position because it is the last group
+		return groupTwo;
+	return groupOne;
+	}
+
+void NeighborhoodSpectralTreeSparse::deleteGroup(long groupIx)
+	{
+	lassert_dump(
+		groupIx >= 0 && groupIx < mSubtrees.size(),
+		"invalid group index. Expected [0," << mSubtrees.size() << ")"
+		);
+
+	lassert_dump(
+		mNeighborhoodToSubgroup.getKeys(groupIx).size() == 0,
+		"group wasn't empty"
+		);
+
+	lassert_dump(
+		mPagesToSubgroups.getKeys(groupIx).size() == 0,
+		"page list for group was incorrect"
+		);
+
+	lassert(mSubgroupNonuniquePages[groupIx] == 0);
+	lassert(mSubgroupUniquePages[groupIx] == 0);
+
+	long lastGroup = mSubtrees.size() - 1;
+
+	if (lastGroup != groupIx)
+		{
+		//we have to replace the last group
+		std::set<Fora::PageId> pages = mPagesToSubgroups.getKeys(lastGroup);
+		mPagesToSubgroups.dropValue(lastGroup);
+		mPagesToSubgroups.insert(pages, groupIx);
+
+		mSubgroupNonuniquePages[groupIx] = mSubgroupNonuniquePages[lastGroup];
+		mSubgroupUniquePages[groupIx] = mSubgroupUniquePages[lastGroup];
+
+		std::set<Neighborhood> neighborhoods = mNeighborhoodToSubgroup.getKeys(lastGroup);
+
+		for (auto n: neighborhoods)
+			mNeighborhoodToSubgroup.set(n, groupIx);
+
+		mSubtrees[groupIx] = mSubtrees[lastGroup];
+
+		mGroupsNeedingUpdate.erase(groupIx);
+		if (mGroupsNeedingUpdate.find(lastGroup) != mGroupsNeedingUpdate.end())
+			mGroupsNeedingUpdate.insert(groupIx);
+		}
+
+	mSubtrees.resize(mSubtrees.size() - 1);
+
+	mSubgroupNonuniquePages.erase(lastGroup);
+	mSubgroupUniquePages.erase(lastGroup);
+	mGroupsNeedingUpdate.erase(lastGroup);
+
+	lassert(!mNeighborhoodToSubgroup.hasValue(lastGroup));
+	lassert(!mPagesToSubgroups.hasValue(lastGroup));
+	}
+
+double NeighborhoodSpectralTreeSparse::groupFractionOfNonuniquePages(long groupIndex)
+	{
+	double nonUnique = mSubgroupNonuniquePages[groupIndex];
+	double unique = mSubgroupUniquePages[groupIndex];
+
+	if (unique + nonUnique > 0.0)
+		return nonUnique / (unique + nonUnique);
+
+	return 0.0;
+	}
+
+int64_t NeighborhoodSpectralTreeSparse::newBytesInGroupIfAdded(long group, const Neighborhood& in)
+	{
+	int64_t res = 0;
+
+	for (auto page: in.pages())
+		if (!mPagesToSubgroups.contains(page, group))
+			res += page.bytecount();
+
+	return res;
+	}
+
+bool NeighborhoodSpectralTreeSparse::noPagesOverlapping(const Neighborhood& inNeighborhood)
+	{
+	for (auto p: inNeighborhood.pages())
+		if (mPagesToSubgroups.hasKey(p))
+			return false;
+
+	return true;
+	}
+
+bool NeighborhoodSpectralTreeSparse::hasPage(Fora::PageId p) const
+	{
+	return mPagesToSubgroups.hasKey(p);
+	}
+
+void NeighborhoodSpectralTreeSparse::createNewGroup(const Neighborhood& inNeighborhood)
+	{
+	mSubtrees.push_back(NeighborhoodSpectralTree::constructDense(mParams));
+	
+	addNeighborhoodToGroup(inNeighborhood, mSubtrees.size() - 1);
+	}
+
+void NeighborhoodSpectralTreeSparse::addNeighborhoodToGroup(const Neighborhood& inNeighborhood, long groupIx)
+	{
+	lassert_dump(
+		!mNeighborhoodToSubgroup.hasKey(inNeighborhood),
+		"A neighborhood can't be in two separate subgroups simultaneously"
+		);
+
+	mNeighborhoodToSubgroup.set(inNeighborhood, groupIx);
+
+	for (auto p: inNeighborhood.pages())
+		if (!mSubtrees[groupIx]->hasPage(p))
+			{
+			const auto& groups = mPagesToSubgroups.getValues(p);
+
+			if (groups.size() == 0)
+				mSubgroupUniquePages[groupIx] += p.bytecount();
+			else
+				{
+				if (groups.size() == 1)
+					for (auto otherGroup: groups)
+						{
+						mSubgroupUniquePages[otherGroup] -= p.bytecount();
+						mSubgroupNonuniquePages[otherGroup] += p.bytecount();
+						}
+
+				mSubgroupNonuniquePages[groupIx] += p.bytecount();
+				}
+
+			mPagesToSubgroups.insert(p, groupIx);
+			}
+
+	mSubtrees[groupIx]->addNeighborhood(inNeighborhood);
+
+	mGroupsNeedingUpdate.insert(groupIx);
+	}
+
+void NeighborhoodSpectralTreeSparse::dropNeighborhoodFromGroup(const Neighborhood& inNeighborhood, long groupIx)
+	{
+	lassert_dump(
+		mNeighborhoodToSubgroup.hasKey(inNeighborhood) && 
+			mNeighborhoodToSubgroup.getValue(inNeighborhood) == groupIx,
+		"trying to remove a neighborhood from a group that it doesn't belong to."
+		);
+
+	mNeighborhoodToSubgroup.drop(inNeighborhood);
+
+	lassert(mSubtrees[groupIx]->hasNeighborhood(inNeighborhood));
+
+	mSubtrees[groupIx]->dropNeighborhood(inNeighborhood);
+
+	for (auto p: inNeighborhood.pages())
+		if (!mSubtrees[groupIx]->hasPage(p))
+			{
+			mPagesToSubgroups.drop(p, groupIx);
+
+			const auto& groups = mPagesToSubgroups.getValues(p);
+
+			if (groups.size() == 0)
+				mSubgroupUniquePages[groupIx] -= p.bytecount();
+			else
+				{
+				if (groups.size() == 1)
+					for (auto otherGroup: groups)
+						{
+						mSubgroupUniquePages[otherGroup] += p.bytecount();
+						mSubgroupNonuniquePages[otherGroup] -= p.bytecount();
+						}
+
+				mSubgroupNonuniquePages[groupIx] -= p.bytecount();
+				}		
+			}
+
+	mGroupsNeedingUpdate.insert(groupIx);
+	}
+
+void NeighborhoodSpectralTreeSparse::dropNeighborhoodsFromGroup(const std::set<Neighborhood>& inNeighborhoods, long groupIx)
+	{
+	mSubtrees[groupIx]->dropNeighborhoods(inNeighborhoods);
+
+	std::set<Fora::PageId> pagesSeen;
+
+	for (auto n: inNeighborhoods)
+		{
+		lassert_dump(
+			mNeighborhoodToSubgroup.hasKey(n) && 
+				mNeighborhoodToSubgroup.getValue(n) == groupIx,
+			"trying to remove a neighborhood from a group that it doesn't belong to."
+			);
+
+		mNeighborhoodToSubgroup.drop(n);
+
+		for (auto p: n.pages())
+			if (pagesSeen.find(p) == pagesSeen.end())
+				{
+				if (!mSubtrees[groupIx]->hasPage(p))
+					{
+					mPagesToSubgroups.drop(p, groupIx);
+
+					const auto& groups = mPagesToSubgroups.getValues(p);
+
+					if (groups.size() == 0)
+						mSubgroupUniquePages[groupIx] -= p.bytecount();
+					else
+						{
+						if (groups.size() == 1)
+							for (auto otherGroup: groups)
+								{
+								mSubgroupUniquePages[otherGroup] += p.bytecount();
+								mSubgroupNonuniquePages[otherGroup] -= p.bytecount();
+								}
+
+						mSubgroupNonuniquePages[groupIx] -= p.bytecount();
+						}		
+					}
+				pagesSeen.insert(p);
+				}
+		}
+
+	mGroupsNeedingUpdate.insert(groupIx);
+	}
+
+void NeighborhoodSpectralTreeSparse::dropNeighborhood(const Neighborhood& inNeighborhood)
+	{
+	lassert(hasNeighborhood(inNeighborhood));
+
+	long group = mNeighborhoodToSubgroup.getValue(inNeighborhood);
+
+	dropNeighborhoodFromGroup(inNeighborhood, group);
+
+	if (mNeighborhoodToSubgroup.getKeys(group).size() == 0)
+		deleteGroup(group);
+
+	mTotalNeighborhoodBytes -= inNeighborhood.bytecount();
+
+	for (auto p: inNeighborhood.pages())
+		if (!hasPage(p))
+			mTotalPageBytes -= p.bytecount();
+	}
+
+void NeighborhoodSpectralTreeSparse::dropNeighborhoods(const std::set<Neighborhood>& inNeighborhoods)
+	{
+	std::map<long, std::set<Neighborhood> > neighborhoodsByGroup;
+
+	for (auto n: inNeighborhoods)
+		neighborhoodsByGroup[mNeighborhoodToSubgroup.getValue(n)].insert(n);
+
+	for (auto& groupAndToDrop: neighborhoodsByGroup)
+		dropNeighborhoodsFromGroup(groupAndToDrop.second, groupAndToDrop.first);
+
+	std::set<long> toDelete;
+	for (auto& groupAndToDrop: neighborhoodsByGroup)
+		if (mNeighborhoodToSubgroup.getKeys(groupAndToDrop.first).size() == 0)
+			toDelete.insert(groupAndToDrop.first);
+
+	while (toDelete.size())
+		{
+		deleteGroup(*toDelete.rbegin());
+		toDelete.erase(*toDelete.rbegin());
+		}
+	
+	std::set<Fora::PageId> pagesSeen;
+	for (auto n: inNeighborhoods)
+		{
+		mTotalNeighborhoodBytes -= n.bytecount();
+
+		for (auto p: n.pages())
+			if (pagesSeen.find(p) == pagesSeen.end())
+				{
+				if (!hasPage(p))
+					mTotalPageBytes -= p.bytecount();
+				pagesSeen.insert(p);
+				}
+		}
+	}
+
+void NeighborhoodSpectralTreeSparse::update(bool forceFullUpdate)
+	{
+	if (forceFullUpdate)
+		{
+		for (long groupIx = 0; groupIx < mSubtrees.size(); groupIx++)
+			mSubtrees[groupIx]->update(forceFullUpdate);
+		}
+	else
+		{
+		for (auto groupIx: mGroupsNeedingUpdate)
+			{
+			lassert_dump(
+				groupIx >= 0 && groupIx < mSubtrees.size(),
+				"Somehow an invalid group index made its way into 'mGroupsNeedingUpdate'"
+				);
+
+			mSubtrees[groupIx]->update(forceFullUpdate);
+			}
+		}
+
+	mGroupsNeedingUpdate.clear();
+	}
+
+bool NeighborhoodSpectralTreeSparse::hasNeighborhood(const Neighborhood& inNeighborhood)
+	{
+	return mNeighborhoodToSubgroup.hasKey(inNeighborhood);
+	}
+
+}
+
+}

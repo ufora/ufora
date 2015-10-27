@@ -1,0 +1,101 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <vector>
+#include <boost/shared_ptr.hpp>
+
+#include "Storage.hppml"
+#include "LogFileDirectory.hppml"
+#include "../Types.hppml"
+#include "../../../core/cppml/CPPMLPrettyPrinter.hppml"
+
+
+namespace SharedState {
+
+class LogEntry;
+class OpenFilesInterface;
+class OpenSerializers;
+class KeyState;
+class KeyspaceStorage;
+
+
+/*
+Implements the storage interface on a local filesystem. Writes data into two types
+of files named LOG-XXXXXXXX and STATE-XXXXXXXX where the Xs are hexidecimal numbers
+representing the current iteration of log / state files.
+
+It starts by writing log entries. When a log file gets too large it combines it with
+the previous state file into a new state file. To get the current state of the system
+it reads the latest state file and all subsequent log files
+
+*/
+
+class FileKeyspaceStorage : public KeyspaceStorage {
+public:
+	FileKeyspaceStorage(
+			string cacheDirectory, 
+			Keyspace inKeyspace, 
+			KeyRange inKeyRange, 
+			boost::shared_ptr<OpenFilesInterface> openFiles, 
+			boost::function<boost::shared_ptr<OpenSerializers> ()> inSerializersFactory,
+			float maxLogSizeMB = 10
+
+			);
+
+	void writeLogEntry(const LogEntry& entry);
+	
+	// compress all recent log entries and previous state into a new state file
+	void compress();
+
+	// used for testing
+	void writeStateExternal(const map<Key, KeyState>& state);
+
+	void flushPendingWrites();
+
+	void readState(pair<map<SharedState::Key, KeyState>, vector<LogEntry> >& outState);
+
+	Keyspace getKeyspace(void);
+
+	int getDimension(void);
+
+private:
+	void writeState(const map<SharedState::Key, KeyState>& inState);
+
+	void loadLogEntriesAfterIter(Nullable<uint32_t> start, vector<LogEntry>& out);
+
+	void startNextLogFile();
+
+	Nullable<uint32_t> loadLatestValidStatefile(map<SharedState::Key, KeyState>& outState);
+
+	boost::shared_ptr<OpenSerializers> mSerializers;
+	
+	boost::shared_ptr<OpenFilesInterface> mOpenFiles;
+
+	LogFileDirectory mLogFileDirectory;
+
+	uint32_t mIter;
+
+	Keyspace mKeySpace;
+
+	KeyRange mKeyRange;
+
+	float mMaxLogSizeMB;
+};
+
+}
+
+

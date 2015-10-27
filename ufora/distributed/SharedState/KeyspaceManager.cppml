@@ -1,0 +1,665 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "KeyspaceManager.hppml"
+#include "KeyspaceCache.hppml"
+#include "BundlingChannel.hppml"
+#include "Storage/FileStorage.hppml"
+
+namespace SharedState {
+
+KeyspaceManager::KeyspaceManager(
+			uint32_t randomSeed,
+			uint32_t numManagers,
+			uint32_t backupInterval,
+			double pingInterval,
+			std::string hmacKey,
+			PolymorphicSharedPtr<FileStorage> storage
+			) :
+		mManagerId(randomSeed),
+		mStatusEventUniqueID(0),
+		mPingInterval(pingInterval),
+		mAuthTable(hmacKey),
+		mNumEventsHandled(0),
+		mBackupInterval(backupInterval),
+		mStorage(storage)
+	{
+	time_t t = time(NULL);
+	mRandGenerator = RandomGenerator(serialize(randomSeed) + std::string(ctime(&t)));
+
+	srand(randomSeed);
+	}
+
+void KeyspaceManager::add(manager_channel_ptr_type inChannel)
+	{
+	LOG_INFO << "Incoming connection: adding a new Channel";
+	double t0 = curClock();
+
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	inChannel = makeBundleChannel(inChannel);
+
+	mChannels.insert(inChannel);
+
+	mChannelMaxIdentifiers[inChannel] = 0;
+
+	if (!mCheckIdsThread.joinable())
+		{
+		mCheckIdsThread = boost::thread(checkIdsLoop,
+			PolymorphicSharedWeakPtr<KeyspaceManager>(
+				this->polymorphicSharedPtrFromThis()
+				),
+			mPingInterval
+			);
+		}
+
+	boost::thread t(
+		incomingMessageLoop,
+		PolymorphicSharedWeakPtr<KeyspaceManager>(
+			this->polymorphicSharedPtrFromThis()
+			),
+		manager_channel_type::weak_ptr_type(inChannel)
+		);
+	t.detach();
+
+	LOG_INFO << "Adding new channel took " << curClock() - t0 << " seconds";
+	}
+
+void KeyspaceManager::addEvent(const PartialEvent& event)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	vector<boost::shared_ptr<KeyspaceCache> > cache = getKeyspaceCaches(event.key().keyspace());
+
+	for(uint32_t i = 0; i < cache.size(); i++)
+		cache[i]->addEvent(event);
+	}
+
+void KeyspaceManager::activeKeyspaces(const std::map<Keyspace, uint32_t>& inKeyspaces)
+	{
+	//if we have no storage, we can't unload a keyspace.
+	if (!mStorage)
+		return;
+
+	vector<Keyspace> toDump;
+	for (auto it = mKeyEvents.begin(); it != mKeyEvents.end(); ++it)
+		if (inKeyspaces.find(it->first) == inKeyspaces.end() && it->first != client_info_keyspace)
+			toDump.push_back(it->first);
+
+	while(toDump.size())
+		{
+		for (int i = 0; i < mKeyEvents[toDump.back()].size(); i++)
+			mKeyEvents[toDump.back()][i]->flushPendingWrites();
+		LOG_INFO << "Unloading Keyspace: " << prettyPrintString(toDump.back());
+		mKeyEvents.erase(toDump.back());
+		toDump.pop_back();
+		}
+
+	}
+
+void KeyspaceManager::check()
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	pair<uint64_t, uint64_t> minValAndMaxVal = computeMinAndMaxIDs();
+
+	uint64_t minVal = minValAndMaxVal.first;
+	uint64_t globalMax = minValAndMaxVal.second;
+
+	std::vector<manager_channel_ptr_type> toDrop;
+
+	for (auto & channel: mChannels)
+		{
+		if (mChannelMaxIdentifiers.find(channel) == mChannelMaxIdentifiers.end())
+			toDrop.push_back(channel);
+		else try
+			{
+			channel->write(MessageIn::MinimumId(minVal, globalMax));
+			}
+		catch(ChannelDisconnected& d)
+			{
+			toDrop.push_back(channel);
+			}
+		}
+
+	for(auto & channel: toDrop)
+		{
+		LOG_INFO << "dropping a channel because it violated minimum id requirements";
+		disconnect(channel);
+		}
+
+	compact(minVal);
+	mChannelMaxIdentifiers.clear();
+	activeKeyspaces(mSubscribersPerKeyspace);
+	}
+
+void KeyspaceManager::shutdown()
+	{
+	if(!mStorage)
+		return;
+
+	mStorage->shutdown();
+	}
+
+vector<Keyspace> KeyspaceManager::getAllKeyspaces()
+	{
+	vector<Keyspace> tr;
+	for(auto it = mKeyEvents.begin(); it != mKeyEvents.end(); ++it)
+		tr.push_back(it->first);
+	return tr;
+	}
+
+PolymorphicSharedPtr<FileStorage> KeyspaceManager::storage()
+	{
+	return mStorage;
+	}
+
+void KeyspaceManager::checkIdsLoop(
+		PolymorphicSharedWeakPtr<KeyspaceManager> pWeakThis,
+		double secondsBetweenChecks)
+	{
+	double lastCheckTime = curClock();
+	double timeToSleep = std::min(secondsBetweenChecks, 0.25);
+
+	PolymorphicSharedPtr<KeyspaceManager> manager;
+	while(manager = pWeakThis.lock())
+		{
+		try
+			{
+			if (manager->wantsToShutDownCheckIdsLoop())
+				break;
+
+			if (curClock() - lastCheckTime > secondsBetweenChecks)
+				{
+				manager->check();
+				lastCheckTime = curClock();
+				}
+			}
+		catch(std::exception& e)
+			{
+			LOG_CRITICAL << "exception in checkIdsLoop. Aborting. Exception was \n"
+				<< e.what();
+			fflush(stdout);
+			fflush(stderr);
+			}
+		catch(...)
+			{
+			LOG_CRITICAL << "unknown exception in checkIdsLoop. Aborting.";
+			fflush(stdout);
+			fflush(stderr);
+			}
+		sleepSeconds(timeToSleep);
+		}
+	}
+
+void KeyspaceManager::incomingMessageLoop(
+		PolymorphicSharedWeakPtr<KeyspaceManager> pWeakThis,
+		manager_channel_type::weak_ptr_type inChannel)
+	{
+	bool connected = true;
+	do {
+		manager_channel_ptr_type channel = inChannel.lock();
+		if (!channel)
+			break;
+
+		PolymorphicSharedPtr<KeyspaceManager> manager = pWeakThis.lock();
+		if (!manager)
+			break;
+
+		try
+			{
+			MessageOut m(channel->get());
+			manager->handleIncomingMessage(channel, m);
+
+			while (channel->get(m))
+				manager->handleIncomingMessage(channel, m);
+
+			connected = manager->isAlive(channel);
+			}
+		catch(ChannelDisconnected& d)
+			{
+			LOG_DEBUG << "ChannelDisconnected exception: disconnecting the channel.";
+			manager->disconnect(channel);
+			break;
+			}
+		catch(std::exception& e)
+			{
+			LOG_WARN << "Error in channel message loop: " << e.what() << ". Disconnecting the channel.";
+			manager->disconnect(channel);
+			break;
+			}
+		catch(...)
+			{
+			LOG_WARN << "Unknown error in channel message loop. Disconnecting the channel.";
+			manager->disconnect(channel);
+			break;
+			}
+		} while(connected);
+
+	LOG_INFO << "Exiting channel message loop thread";
+	}
+
+void KeyspaceManager::initializeClient(
+		manager_channel_ptr_type inChannel,
+		uint32_t clientId,
+		Nullable<RandomGenerator> generator
+		)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+	try
+		{
+		inChannel->write(MessageIn::Initialize(clientId, mManagerId, generator));
+		}
+	catch(ChannelDisconnected& d)
+		{
+		LOG_WARN << "Channel disconnected while trying to initialize client " << clientId;
+		}
+	}
+
+bool KeyspaceManager::wantsToShutDownCheckIdsLoop(void) const
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return (mChannels.size() == 0);
+	}
+
+pair<uint64_t, uint64_t> KeyspaceManager::computeMinAndMaxIDs()
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+	return std::accumulate(
+		mChannelMaxIdentifiers.begin(),
+		mChannelMaxIdentifiers.end(),
+		make_pair(numeric_limits<uint64_t>::max(), 0UL),
+		[](const std::pair<uint64_t, uint64_t>& minmax, const decltype(mChannelMaxIdentifiers)::value_type & current)
+			{
+			auto currentMin = current.second;
+			return make_pair(
+				min(minmax.first, currentMin),
+				max(minmax.second, currentMin)
+				);
+			}
+		);
+	}
+
+void KeyspaceManager::compact(uint64_t id)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	for (auto & keyAndCaches : mKeyEvents)
+		for (auto & keyspaceCache : keyAndCaches.second)
+			keyspaceCache->newMinimumId(id);
+	}
+
+void KeyspaceManager::handleIncomingMessage(manager_channel_ptr_type inChannel, MessageOut msg)
+	{
+	double t0 = curClock();
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	@match MessageOut(msg)
+		-|	Subscribe(range) ->> {
+			if (!mAuthTable.channelHasReadAccessToKeyspace(inChannel, range.keyspace()))
+				{
+				LOG_WARN << "Rejecting request for keyspace " << range.keyspace().name();
+				inChannel->write(MessageIn::InvalidKeyspaceRead(range));
+				return;
+				}
+			else
+				LOG_INFO << "Request for keyspace " << range.keyspace().name() << " is authorized.";
+
+			// insert new KeyRangeSet or return existing one
+			KeyRangeSet& keyRangeSet = mRanges.insert(std::make_pair(inChannel, KeyRangeSet())).first->second;
+			if (!keyRangeSet.intersects(range))
+				{
+				if(!keyRangeSet.containsKeyspace(range.keyspace()))
+					addKeyspaceSubscriber(range.keyspace());
+
+				keyRangeSet.insert(range);
+
+				LOG_INFO << "subscription request has never been seen before for this channel. writing range data.";
+
+				lock.unlock();
+
+				try {
+					writeKeyRangeTo(range, inChannel);
+					}
+				catch(ChannelDisconnected& d)
+					{
+					LOG_DEBUG << "KeyspaceManager disconnected during writeKeyRangeTo";
+					}
+				lock.lock();
+				}
+			}
+		-|	Unsubscribe(range) ->> {
+			mRanges[inChannel].erase(range);
+			if(!mRanges[inChannel].containsKeyspace(range.keyspace()))
+				removeKeyspaceSubscriber(range.keyspace());
+
+			if(mRanges[inChannel].size() == 0)
+				mRanges.erase(inChannel);
+			;
+			}
+		-|	MinimumIdResponse(id) ->> {
+			mChannelMaxIdentifiers[inChannel] = id;
+			}
+		-|	RequestSession(clientId) ->> {
+			if (!clientId)
+				{
+				uint32_t newId = mRandGenerator.rand()[0];
+				LOG_INFO << "RequestSession: clientId = " << newId << " channel " << inChannel.get() << "\n";
+				RandomGenerator newGen = mRandGenerator.newGenerator();
+				initializeClient(inChannel, newId, Nullable<RandomGenerator>(newGen));
+				mChannelIds[inChannel] = newId;
+				}
+			else
+				{
+				LOG_INFO << "RequestSession: clientId = " << clientId << " channel " << inChannel.get() << "\n";
+				initializeClient(inChannel, *clientId, null());
+				mChannelIds[inChannel] = *clientId;
+				}
+
+			pushEvent(statusEvent(inChannel, UpdateType(Ufora::Json::String("connected"))));
+			}
+		-|	PushEvent(event) ->> {
+
+			if (!mAuthTable.channelHasWriteAccessToKeyspace(inChannel, event.content().key().keyspace()))
+				{
+				LOG_INFO << "Rejecting write to keyspace " << prettyPrintString(event.content().key().keyspace().name());
+				inChannel->write(MessageIn::InvalidKeyspaceWrite(event.content().key().keyspace()));
+				return;
+				}
+
+			if (!isValidEventFromClient(inChannel, event))
+				{
+				LOG_WARN << "KeyspaceManager received an invalid event. Disconnecting the channel.";
+
+				throw ChannelDisconnected();
+				}
+
+			mNumEventsHandled++;
+			pushEvent(event);
+			}
+		-|  FlushRequest(flushId) ->> {
+			LOG_DEBUG << "Received FlushRequest with ID " << flushId;
+
+			inChannel->write(MessageIn::FlushResponse(flushId));
+			}
+		-|	AuthorizationToken(javaWebTokenMessage) ->> {
+			inChannel->write(
+				MessageIn::AuthorizationTokenResponse(
+					mAuthTable.processJavaWebToken(inChannel, javaWebTokenMessage)
+					)
+				);
+			}
+		-|	Bundle(messages) ->> {
+			for (long k = 0; k < messages.size();k++)
+				handleIncomingMessage(inChannel, messages[k]);
+			}
+		;
+
+	double duration = curClock() - t0;
+	if (duration > 0.1)
+		LOG_INFO << "Took " << curClock() - t0 << " seconds to handle message of type:" << msg.tagName();
+	}
+
+bool KeyspaceManager::isAlive(manager_channel_ptr_type inPtr) const
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+	return mChannels.find(inPtr) != mChannels.end();
+	}
+
+void KeyspaceManager::disconnect(manager_channel_ptr_type inChannel)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+	set<Keyspace> toRemove;
+	LOG_DEBUG << "disconnecting a channel!";
+	while (mRanges[inChannel].size())
+		{
+		KeyRange elt = *mRanges[inChannel].begin();
+		toRemove.insert(elt.keyspace());
+		mRanges[inChannel].erase(elt);
+		}
+
+	for (auto & keyspace : toRemove)
+		removeKeyspaceSubscriber(keyspace);
+
+	mRanges.erase(inChannel);
+	mChannels.erase(inChannel);
+
+	auto channelIter = mChannelIds.find(inChannel);
+	if (channelIter != mChannelIds.end())
+		{
+		LOG_DEBUG << "Disconnecting channel with ID: " << channelIter->second << "\n";
+
+		pushEvent(statusEvent(inChannel, UpdateType(Ufora::Json::String("disconnected"))));
+
+		mChannelIds.erase(inChannel);
+		}
+	else
+		LOG_WARN << "Disconnecting a channel that doesn't exist in mChannelIds\n";
+
+	mChannelMaxIdentifiers.erase(inChannel);
+
+	lock.unlock();
+
+	inChannel->disconnect();
+	}
+
+void KeyspaceManager::removeKeyspaceSubscriber(const Keyspace& keyspace)
+	{
+	auto it = mSubscribersPerKeyspace.find(keyspace);
+	if (it == mSubscribersPerKeyspace.end())
+		{
+		LOG_WARN << "Error in SubscribersPerKeyspace calculation... Trying to remove a keyspace that was never added";
+		return;
+		}
+	it->second--;
+	if (it->second == 0)
+		mSubscribersPerKeyspace.erase(it);
+	}
+
+void KeyspaceManager::pushEvent(const PartialEvent& event)
+	{
+	addEvent(event);
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	set<manager_channel_ptr_type> channels(getChannelsForKey(event.key()));
+	set<manager_channel_ptr_type > toDrop;
+
+	for (auto pChannel : channels)
+		{
+		uint32_t channelId = 0;
+		if (SHOULD_LOG_DEBUG())
+			{
+			channelId = getChannelId(pChannel);
+			LOG_DEBUG << "Pushing event " << prettyPrintString(event)
+					<< " to channel with ID " << channelId << "\n";
+			}
+
+		try {
+			pChannel->write(MessageIn::Event(event));
+			}
+		catch(ChannelDisconnected& d)
+			{
+			toDrop.insert(pChannel);
+			if (channelId == 0)
+				channelId = getChannelId(pChannel);
+			LOG_INFO << "Failed to push event " << prettyPrintString(event)
+					<< "to channel with ID " << channelId << "\n";
+			}
+		}
+	// What is being done with toDrop here?
+	for (auto pChannel : toDrop)
+		disconnect(pChannel);
+	}
+
+set<manager_channel_ptr_type> KeyspaceManager::getChannelsForKey(const Key& key)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+	set<manager_channel_ptr_type> tr;
+	for(auto & channel_and_keyRangeSet : mRanges)
+		for(auto & keyRange : channel_and_keyRangeSet.second)
+			if(keyRange.contains(key))
+				{
+				tr.insert(channel_and_keyRangeSet.first);
+				break;
+				}
+	return tr;
+	}
+
+void KeyspaceManager::addKeyspaceSubscriber(const Keyspace& keyspace)
+	{
+	auto it = mSubscribersPerKeyspace.find(keyspace);
+	if (it == mSubscribersPerKeyspace.end())
+		it = mSubscribersPerKeyspace.insert(make_pair(keyspace, 0)).first;
+	it->second++;
+	}
+
+bool KeyspaceManager::isValidEventFromClient(manager_channel_ptr_type inChannel, const PartialEvent& inEvent)
+	{
+	bool isSubscribed = mRanges[inChannel].containsKey(inEvent.key());
+	return inEvent.keyspace() != client_info_keyspace && isSubscribed;
+	}
+
+PartialEvent KeyspaceManager::statusEvent(manager_channel_ptr_type inChannel, UpdateType update)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	vector<KeyNameType> id;
+	id.push_back(Ufora::Json::String(boost::lexical_cast<string>(mManagerId)));
+	id.push_back(Ufora::Json::String(boost::lexical_cast<string>(mChannelIds[inChannel])));
+	vector<KeyUpdate> updates;
+	updates.push_back(KeyUpdate(Key(client_info_keyspace, id), update));
+
+	pair<uint64_t, uint64_t> minValAndMaxVal = computeMinAndMaxIDs();
+
+
+	Event event(UniqueId(mStatusEventUniqueID++, mChannelIds[inChannel]), updates);
+	map<Key, PartialEvent> out;
+	event.split(out);
+	lassert(out.size());
+	return out.begin()->second;
+	}
+
+uint32_t KeyspaceManager::getChannelId(manager_channel_ptr_type channel) const
+	{
+	uint32_t channelId = 0;
+	auto channelIdIter = mChannelIds.find(channel);
+	if (channelIdIter != mChannelIds.end())
+		channelId = channelIdIter->second;
+	return channelId;
+	}
+
+uint64_t KeyspaceManager::totalLoadedKeys(void)
+	{
+	uint64_t total = 0;
+	for (auto it = mKeyEvents.begin(); it != mKeyEvents.end(); ++it)
+		for(uint32_t i = 0; i < it->second.size(); i++)
+			total += it->second[i]->totalLoadedKeys();
+	return total;
+	}
+
+uint32_t KeyspaceManager::numLoadedKeyspaces(void)
+	{
+	return mKeyEvents.size();
+	}
+
+
+namespace {
+
+@type KeyspaceManagerKeyspaceVisitor = manager_channel_ptr_type channel {
+public:
+	void operator()(const Key& inKey, const KeyState& inState) const
+		{
+		if (inState.baseValue())
+			channel()->write(MessageIn::BaseValue(inKey, *inState.baseValue()));
+
+		map<UniqueId, PartialEvent>::const_iterator it = inState.events().begin();
+		map<UniqueId, PartialEvent>::const_iterator it_end = inState.events().end();
+
+		for (; it != it_end; ++it)
+			channel()->write(MessageIn::Event(it->second));
+		}
+};
+
+}
+void KeyspaceManager::writeKeyRangeTo(KeyRange range, manager_channel_ptr_type inChannel)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	boost::shared_ptr<KeyspaceCache> cache = getCache(range);
+
+	LOG_INFO << "sending messages for subscription request " << range;
+
+	cache->visitRangeContents(range, KeyspaceManagerKeyspaceVisitor(inChannel));
+
+	LOG_INFO << "messages for subscription request " << range << " are sent";
+
+	inChannel->write(MessageIn::KeyRangeLoaded(range));
+	}
+
+
+
+decltype(KeyspaceManager::mKeyEvents)::iterator
+KeyspaceManager::loadKeyspaceCaches(const Keyspace& keyspace)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	// this will eventually look at some state and create the appropriate caches
+	// based on the filesystem, but for now it will simply load one per dimesion since
+	// ranges are not being split yet.
+	map<Keyspace, vector<boost::shared_ptr<KeyspaceCache> > >::iterator it = mKeyEvents.find(keyspace);
+
+	if (it == mKeyEvents.end())
+		{
+		vector<boost::shared_ptr<KeyspaceCache> > temp;
+		for(uint32_t i = 0; i < keyspace.dimension(); i++)
+            {
+            // Prevent the client_info_keyspace from being persisted
+			KeyRange keyrange(keyspace, i, null(), null());
+
+            PolymorphicSharedPtr<KeyspaceStorage> storage;
+            bool persist = keyspace != client_info_keyspace;
+            if (persist && mStorage)
+				storage = mStorage->storageForKeyspace(keyspace, i);
+
+			temp.push_back(boost::shared_ptr<KeyspaceCache>(new KeyspaceCache(keyrange, storage)));
+            }
+
+		return mKeyEvents.insert(make_pair(keyspace, temp)).first;
+		}
+
+	return it;
+	}
+
+
+
+decltype(KeyspaceManager::mKeyEvents)::mapped_type KeyspaceManager::getKeyspaceCaches(const Keyspace& keyspace)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return loadKeyspaceCaches(keyspace)->second;
+	}
+
+boost::shared_ptr<KeyspaceCache> KeyspaceManager::getCache(const KeyRange& range)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return loadKeyspaceCaches(range.keyspace())->second[range.index()];
+	}
+
+
+} // SharedState
+
+

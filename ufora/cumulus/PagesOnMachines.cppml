@@ -1,0 +1,338 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "PagesOnMachines.hppml"
+#include "../core/Logging.hpp"
+#include "../core/Clock.hpp"
+#include "../core/threading/CallbackScheduler.hppml"
+
+PagesOnMachines::PagesOnMachines() : 
+		mTotalPagesAllocated(0)
+	{
+	}
+
+int32_t PagesOnMachines::getMachineCount()
+	{
+	return mMachineIdSet.size();
+	}
+
+bool PagesOnMachines::isMachineMemoryFull(const Cumulus::MachineId& inMachine)
+	{
+	Fora::MemoryUsage usage = getMachineMemoryUsage(inMachine);
+
+	return usage.totalBytesUsed() > usage.maxMemoryAvailable();
+	}
+
+bool PagesOnMachines::isExecutionBlockedOnMachine(
+											const Cumulus::MachineId& inMachineId
+											)
+	{
+	return mMachinesWhereExecutionIsBlocked.find(inMachineId) != 
+										mMachinesWhereExecutionIsBlocked.end();
+	}
+
+Nullable<ImmutableTreeSet<Fora::BigVectorId> > PagesOnMachines::bigvecsReferencedByPage(Fora::PageId page)
+	{
+	auto it = mPageBigvecs.find(page);
+
+	if (it != mPageBigvecs.end())
+		return null() << it->second;
+
+	return null();
+	}
+
+bool PagesOnMachines::isBigvecReferencedByPage(Fora::BigVectorId page) const
+	{
+	return mPageBigvecSetMap.hasValue(page);
+	}
+
+void PagesOnMachines::consumePageEvent(
+								const Fora::PageRefcountEvent& inEvent, 
+								Cumulus::MachineId inMachineId
+								)
+	{
+	@match Fora::PageRefcountEvent(inEvent)
+		-|	PageReferencedBigvecs(page, bigvecs) ->> {
+			if (mDroppedInternalPages.find(page) == mDroppedInternalPages.end() && 
+					mPageBigvecs.find(page) == mPageBigvecs.end())
+				{
+				mPageBigvecs[page] = bigvecs;
+				for (auto b: bigvecs)
+					mPageBigvecSetMap.insert(page, b);
+				}
+			}
+		-|  PageAddedToRam(page, bigvecs) ->> {
+			if (!mPagesInRam.contains(page, inMachineId))
+				mMachineToBytesInRam[inMachineId] += page.bytecount();
+
+			if (mPageBigvecs.find(page) == mPageBigvecs.end())
+				{
+				mPageBigvecs[page] = bigvecs;
+				for (auto b: bigvecs)
+					mPageBigvecSetMap.insert(page, b);
+				}
+
+			mAllPagesInRam.insert(page);
+			mAllPagesOnlyOnDisk.erase(page);
+
+			if (!mPagesOnDisk.hasKey(page))
+				mAllPagesOnlyInRam.insert(page);
+
+			mPagesInRam.insert(page, inMachineId);
+			mPagesPinned.insert(page, inMachineId);
+			}
+		-|	PageDroppedFromRam(page) ->> {
+			if (mPagesInRam.contains(page, inMachineId))
+				mMachineToBytesInRam[inMachineId] -= page.bytecount();
+
+			mPagesInRam.drop(page, inMachineId);	
+			mPagesPinned.drop(page, inMachineId);
+
+			if (!mPagesInRam.hasKey(page))
+				{
+				mAllPagesInRam.erase(page);
+				if (mPagesOnDisk.hasKey(page))
+					mAllPagesOnDisk.insert(page);
+				}
+			}
+		-|  PagePinnedStatusChanged(page, isPinned) ->> {
+			if (isPinned)
+				mPagesPinned.insert(page, inMachineId);
+			else
+				mPagesPinned.drop(page, inMachineId);
+			}
+		-|	PageMarkedNotLoadable(page) ->> {
+			mPagesMarkedNotLoadable.insert(page);
+			}
+		-|	PageAddedToDisk(page) ->> {
+			if (!mPagesOnDisk.contains(page, inMachineId))
+				mMachineToBytesOnDisk[inMachineId] += page.bytecount();
+
+			mPagesOnDisk.insert(page, inMachineId);
+			mAllPagesOnDisk.insert(page);
+			mAllPagesOnlyInRam.erase(page);
+
+			if (!mPagesInRam.hasKey(page))
+				mAllPagesOnlyOnDisk.insert(page);
+			}
+		-|	PageDroppedFromDisk(page) ->> {
+			if (mPagesOnDisk.contains(page, inMachineId))
+				mMachineToBytesOnDisk[inMachineId] -= page.bytecount();
+			
+			mPagesOnDisk.drop(page, inMachineId);
+
+			if (!mPagesOnDisk.hasKey(page))
+				{
+				mAllPagesOnDisk.erase(page);
+				if (mPagesInRam.hasKey(page))
+					mAllPagesOnlyInRam.insert(page);
+				}
+			}
+		-| 	ExecutionIsBlockedChanged(isBlocked) ->> {
+			if (isBlocked)
+				mMachinesWhereExecutionIsBlocked.insert(inMachineId);
+			else
+				mMachinesWhereExecutionIsBlocked.erase(inMachineId);
+			}
+		-|	MemoryUsageChanged(usage) ->> {
+			mMachineMemoryUsage[inMachineId] = usage;
+			}
+		-| _ ->> {
+			}
+	}
+
+void PagesOnMachines::machineRamContents(
+							const Cumulus::MachineId& inId, 
+							std::set<Fora::PageId>& outPages
+							)
+	{
+	outPages = mPagesInRam.getKeys(inId);
+	}
+
+bool PagesOnMachines::isPageNotLoadable(Fora::PageId pageId)
+	{
+	return mPagesMarkedNotLoadable.find(pageId) != mPagesMarkedNotLoadable.end();
+	}
+	
+bool PagesOnMachines::pageIsInRam(
+								const Fora::PageId& inPageId, 
+								const Cumulus::MachineId& inMachineId
+								)
+	{
+	return mPagesInRam.contains(inPageId, inMachineId);
+	}
+
+bool PagesOnMachines::pageIsInRamAndPinned(
+								const Fora::PageId& inPageId, 
+								const Cumulus::MachineId& inMachineId
+								)
+	{
+	return mPagesInRam.contains(inPageId, inMachineId) 
+		&& mPagesPinned.contains(inPageId, inMachineId);
+	}
+
+bool PagesOnMachines::pageIsOnDisk(
+								const Fora::PageId& inPageId, 
+								const Cumulus::MachineId& inMachineId
+								)
+	{
+	return mPagesOnDisk.contains(inPageId, inMachineId);
+	}
+
+void PagesOnMachines::addMachine(
+								const Cumulus::MachineId& inMachineId
+								)
+	{
+	lassert_dump(
+		mMachineIdSet.find(inMachineId) == mMachineIdSet.end(),
+		"already have " << prettyPrintString(inMachineId) << " amongst my " << 
+			mMachineIdSet.size() << " machines."
+		);
+
+	mMachineIdSet.insert(inMachineId);
+
+	LOG_INFO << "on " << prettyPrintString(mMachineId) 
+		<< " (" << this << ") "
+		<< " PagesOnMachines adding " << prettyPrintString(inMachineId)
+		<< ". Total server count = " << mMachineIdSet.size();
+	}
+
+void PagesOnMachines::dropMachine(
+								const Cumulus::MachineId& inMachineId
+								)
+	{
+	lassert(mMachineIdSet.find(inMachineId) != mMachineIdSet.end());
+
+	mMachineIdSet.erase(inMachineId);
+	mMachinesWhereExecutionIsBlocked.erase(inMachineId);
+
+	mPagesOnDisk.dropValue(inMachineId);
+	mPagesPinned.dropValue(inMachineId);
+	mPagesInRam.dropValue(inMachineId);
+	}
+
+void PagesOnMachines::machinesWithPageInRam(
+									const Fora::PageId& inPageId, 
+									std::set<Cumulus::MachineId>& outMachineIds
+									)
+	{
+	outMachineIds = mPagesInRam.getValues(inPageId);
+	}
+
+void PagesOnMachines::machinesWithPageInRamAndPinned(
+									const Fora::PageId& inPageId, 
+									std::set<Cumulus::MachineId>& outMachineIds
+									)
+	{
+	outMachineIds.clear();
+
+	for (auto machine: mPagesInRam.getValues(inPageId))
+		if (mPagesPinned.contains(inPageId, machine))
+			outMachineIds.insert(machine);
+	}
+
+
+bool PagesOnMachines::isPageAnywhereOnDisk(const Fora::PageId& inPageId)
+	{
+	return mPagesOnDisk.hasKey(inPageId);
+	}
+
+bool PagesOnMachines::isPageAnywhereInRam(const Fora::PageId& inPageId)
+	{
+	return mPagesInRam.hasKey(inPageId);
+	}
+
+void PagesOnMachines::machinesWithPageOnDisk(
+									const Fora::PageId& inPageId, 
+									std::set<Cumulus::MachineId>& outMachineIds
+									)
+	{
+	outMachineIds = mPagesOnDisk.getValues(inPageId);
+	}
+
+void PagesOnMachines::getAllPages(std::set<Fora::PageId>& outPages)
+	{
+	outPages.clear();
+
+	for (auto& pageAndMachineSet: mPagesOnDisk.getKeysToValues())
+		outPages.insert(pageAndMachineSet.first);
+
+	for (auto& pageAndMachineSet: mPagesInRam.getKeysToValues())
+		outPages.insert(pageAndMachineSet.first);
+	}
+
+const std::set<Cumulus::MachineId>& PagesOnMachines::getAllMachineIds() const
+	{
+	return mMachineIdSet;
+	}
+
+bool PagesOnMachines::hasPageBeenDroppedAcrossEntireSystem(Fora::PageId inPage)
+	{
+	return mDroppedInternalPages.find(inPage) != mDroppedInternalPages.end();
+	}
+
+Fora::MemoryUsage PagesOnMachines::getMachineMemoryUsage(const Cumulus::MachineId& inMachine)
+	{
+	auto it = mMachineMemoryUsage.find(inMachine);
+
+	if (it == mMachineMemoryUsage.end())
+		return Fora::MemoryUsage();
+
+	return it->second;
+	}
+
+bool PagesOnMachines::doesPageAppearDroppedAcrossSystem(Fora::PageId inPage)
+	{
+	return !isPageAnywhereOnDisk(inPage) && !isPageAnywhereInRam(inPage);
+	}
+
+void PagesOnMachines::markInternalPageDropped(Fora::PageId page)
+	{
+	mPageBigvecs.erase(page);
+	mPageBigvecSetMap.dropKey(page);
+	mDroppedInternalPages.insert(page);
+	}
+
+const std::set<Fora::PageId>& PagesOnMachines::getPagesOnlyInRam() const
+	{
+	return mAllPagesOnlyInRam;
+	}
+
+const std::set<Fora::PageId>& PagesOnMachines::getPagesOnlyOnDisk() const
+	{
+	return mAllPagesOnlyOnDisk;
+	}
+
+const std::set<Fora::PageId>& PagesOnMachines::getPagesInRam() const
+	{
+	return mAllPagesInRam;
+	}
+
+const std::set<Fora::PageId>& PagesOnMachines::getPagesOnDisk() const
+	{
+	return mAllPagesOnDisk;
+	}
+
+const std::map<Cumulus::MachineId, int64_t>& PagesOnMachines::getMachineToBytesOnDisk() const
+	{
+	return mMachineToBytesOnDisk;
+	}
+
+const std::map<Cumulus::MachineId, int64_t>& PagesOnMachines::getMachineToBytesInRam() const
+	{
+	return mMachineToBytesInRam;
+	}
+
+

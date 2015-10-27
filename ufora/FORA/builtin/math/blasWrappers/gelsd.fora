@@ -1,0 +1,317 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+"""
+DESCRIPTION:
+    Computes the minimum-norm solution to a real linear least squares problem:
+    minimize 2-norm(| b - A*x |)
+    using the singular value decomposition (SVD) of A. A is an M-by-N
+    matrix which may be rank-deficient.
+
+   Several right hand side vectors b and solution vectors x can be handled in a single call.
+
+ARGUMENTS:
+    M       Integer type.
+            The number of rows of A.
+    
+    N       Integer type.
+            The number of columns of A.
+            
+    NRHS    Integer type.
+            The number of right hand side vectors b, ie the number of columns of B
+            
+    A       Vector of float, size M * N.
+            The matrix A, stored in column-major format.
+            
+    B       Vector of float, size M * NRHS
+            The M-by-NRHS right hand side matrix B. The columns of B form the vectors b as in
+            DESCRIPTION.
+            
+    RCOND   Float.
+            RCOND is used to determine the effective rank of A.
+            Singular values S(i) <= RCOND*S(1) are treated as zero.
+            If RCOND < 0, machine precision is used instead.
+            Defaults to -1.0.
+            
+RETURNS:
+    A tuple, (X, s, rank).
+    
+    Here, X is a vector of float of size M * N. For i = 1, ... , N,
+    column i of X is the solution to the i-th least squares problem (of minimal rank), corresponding
+    to A and the i-th column of B. If m >= n, and rank == n, the residual sum-of-squares for the
+    solution in column i of X is given by the sum of squares of elements n+1:m in that column.
+    
+    s is a vector of float of size min(M,N) which stores the singular values of A in decreasing
+    order. The condition number of A in the 2-norm is given by S(1)/S(min(m,n)).
+
+    rank is an Int32 which gives the effective rank of A, i.e., the number of singular values which
+    are greater than RCOND*S(1).
+"""
+fun(   
+        m,
+        n,
+        nrhs,
+        A,
+        B,
+        rcond = -1.0
+        )
+    {    
+    m = Int32(m);
+    n = Int32(n);
+    nrhs = Int32(nrhs);
+    
+	let elementType = nothing;
+	(elementType, A, B) = blasWrappers.eltTypeAndFloatifyIfNecessary(A, B);
+
+    let vecType = `JovOfVectorHolding(elementType);
+	let intVecType = `JovOfVectorHolding(Int32);
+
+    if (size(A) < m * n)
+        throw "size of matrix A too small"
+    if (size (B) < m * nrhs)
+        throw "size of matrix B too small"
+    
+    A = A;
+    B = B;
+        
+    rcond = elementType(rcond);
+        
+    let blasname = addTypeSuffix(elementType, "gelsd_");
+    
+    let wrapper =
+        `FORTRANFunctionWrapper(
+            blasname,
+            blasname,
+            (3,5,7,9,10,13),          //arguments that are modified by the function
+            Int32,                  //M, 0
+            Int32,                  //N, 1
+            Int32,                  //NRHS, 2
+            vecType,               //A, 3
+            Int32,                  //LDA, 4
+            vecType,               //B, 5
+            Int32,                  //LDB, 6
+            vecType,               //S, 7 
+            elementType,           //RCOND, 8 
+            intVecType,       	//RANK, 9 
+            vecType,               //WORK, 10 
+            Int32,                  //LWORK, 11 
+            intVecType,       	//IWORK, 12 
+            intVecType        	//INFO, 13 
+            );
+
+    //first determine the size of WORK
+    let s = Vector.uniform(m <<< n, elementType());
+
+    let rank = [0s32]
+    let work = [] :: elementType();
+
+    let lwork = -1s32; // on first call to xGELSD, this indicates that we wish to determine the size of WORK
+    let iwork = [0s32];
+    let info = [0s32];
+
+    (_, B, s, rank, work, info) = wrapper(
+                                    m,
+                                    n,
+                                    nrhs,
+                                    A,
+                                    m,
+                                    B,
+                                    n >>> m,
+                                    s,
+                                    rcond,
+                                    rank,
+                                    work,
+                                    lwork,
+                                    iwork,
+                                    info
+                                );
+        
+    if (info[0] != 0s32)
+        throw "error calling FORTRAN function xGELSD" 
+        
+    lwork = Int32(
+                match (work[0]) with
+                ((re,im)) { re }
+                (x) { x }
+            );
+    
+    work = Vector.uniform(lwork >>> 1, elementType());
+    let liwork = iwork[0];
+    
+    iwork = Vector.uniform(1 >>> liwork, 0s32);
+    
+    //now call to actually compute the least squares    
+    (_, B, s, rank, work, info) = wrapper(
+                                    m,
+                                    n,
+                                    nrhs,
+                                    A,
+                                    m,
+                                    B,
+                                    n >>> m,
+                                    s,
+                                    rcond,
+                                    rank,
+                                    work,
+                                    lwork,
+                                    iwork,
+                                    info
+                                );
+        
+    if (info[0] != 0s32)
+        throw "error calling FORTRAN function xGELSD"
+        
+    return (B, s, rank[0]);    
+    }
+    ;
+
+/*
+SUBROUTINE DGELSD( M, N, NRHS, A, LDA, B, LDB, S, RCOND, RANK,
+     $                   WORK, LWORK, IWORK, INFO )
+*
+*  -- LAPACK driver routine (version 3.2.2) --
+*  -- LAPACK is a software package provided by Univ. of Tennessee,    --
+*  -- Univ. of California Berkeley, Univ. of Colorado Denver and NAG Ltd..--
+*     June 2010
+*
+*     .. Scalar Arguments ..
+      INTEGER            INFO, LDA, LDB, LWORK, M, N, NRHS, RANK
+      DOUBLE PRECISION   RCOND
+*     ..
+*     .. Array Arguments ..
+      INTEGER            IWORK( * )
+      DOUBLE PRECISION   A( LDA, * ), B( LDB, * ), S( * ), WORK( * )
+*     ..
+*
+*  Purpose
+*  =======
+*
+*  DGELSD computes the minimum-norm solution to a real linear least
+*  squares problem:
+*      minimize 2-norm(| b - A*x |)
+*  using the singular value decomposition (SVD) of A. A is an M-by-N
+*  matrix which may be rank-deficient.
+*
+*  Several right hand side vectors b and solution vectors x can be
+*  handled in a single call; they are stored as the columns of the
+*  M-by-NRHS right hand side matrix B and the N-by-NRHS solution
+*  matrix X.
+*
+*  The problem is solved in three steps:
+*  (1) Reduce the coefficient matrix A to bidiagonal form with
+*      Householder transformations, reducing the original problem
+*      into a "bidiagonal least squares problem" (BLS)
+*  (2) Solve the BLS using a divide and conquer approach.
+*  (3) Apply back all the Householder tranformations to solve
+*      the original least squares problem.
+*
+*  The effective rank of A is determined by treating as zero those
+*  singular values which are less than RCOND times the largest singular
+*  value.
+*
+*  The divide and conquer algorithm makes very mild assumptions about
+*  floating point arithmetic. It will work on machines with a guard
+*  digit in add/subtract, or on those binary machines without guard
+*  digits which subtract like the Cray X-MP, Cray Y-MP, Cray C-90, or
+*  Cray-2. It could conceivably fail on hexadecimal or decimal machines
+*  without guard digits, but we know of none.
+*
+*  Arguments
+*  =========
+*
+*0  M       (input) INTEGER
+*          The number of rows of A. M >= 0.
+*
+*1  N       (input) INTEGER
+*          The number of columns of A. N >= 0.
+*
+*2  NRHS    (input) INTEGER
+*          The number of right hand sides, i.e., the number of columns
+*          of the matrices B and X. NRHS >= 0.
+*
+*3  A       (input) DOUBLE PRECISION array, dimension (LDA,N)
+*          On entry, the M-by-N matrix A.
+*          On exit, A has been destroyed.
+*
+*4  LDA     (input) INTEGER
+*          The leading dimension of the array A.  LDA >= max(1,M).
+*
+*5  B       (input/output) DOUBLE PRECISION array, dimension (LDB,NRHS)
+*          On entry, the M-by-NRHS right hand side matrix B.
+*          On exit, B is overwritten by the N-by-NRHS solution
+*          matrix X.  If m >= n and RANK = n, the residual
+*          sum-of-squares for the solution in the i-th column is given
+*          by the sum of squares of elements n+1:m in that column.
+*
+*6  LDB     (input) INTEGER
+*          The leading dimension of the array B. LDB >= max(1,max(M,N)).
+*
+*7  S       (output) DOUBLE PRECISION array, dimension (min(M,N))
+*          The singular values of A in decreasing order.
+*          The condition number of A in the 2-norm = S(1)/S(min(m,n)).
+*
+*8  RCOND   (input) DOUBLE PRECISION
+*          RCOND is used to determine the effective rank of A.
+*          Singular values S(i) <= RCOND*S(1) are treated as zero.
+*          If RCOND < 0, machine precision is used instead.
+*
+*9  RANK    (output) INTEGER
+*          The effective rank of A, i.e., the number of singular values
+*          which are greater than RCOND*S(1).
+*
+*10  WORK    (workspace/output) DOUBLE PRECISION array, dimension (MAX(1,LWORK))
+*          On exit, if INFO = 0, WORK(1) returns the optimal LWORK.
+*
+*11  LWORK   (input) INTEGER
+*          The dimension of the array WORK. LWORK must be at least 1.
+*          The exact minimum amount of workspace needed depends on M,
+*          N and NRHS. As long as LWORK is at least
+*              12*N + 2*N*SMLSIZ + 8*N*NLVL + N*NRHS + (SMLSIZ+1)**2,
+*          if M is greater than or equal to N or
+*              12*M + 2*M*SMLSIZ + 8*M*NLVL + M*NRHS + (SMLSIZ+1)**2,
+*          if M is less than N, the code will execute correctly.
+*          SMLSIZ is returned by ILAENV and is equal to the maximum
+*          size of the subproblems at the bottom of the computation
+*          tree (usually about 25), and
+*             NLVL = MAX( 0, INT( LOG_2( MIN( M,N )/(SMLSIZ+1) ) ) + 1 )
+*          For good performance, LWORK should generally be larger.
+*
+*          If LWORK = -1, then a workspace query is assumed; the routine
+*          only calculates the optimal size of the WORK array, returns
+*          this value as the first entry of the WORK array, and no error
+*          message related to LWORK is issued by XERBLA.
+*
+*12  IWORK   (workspace) INTEGER array, dimension (MAX(1,LIWORK))
+*          LIWORK >= max(1, 3 * MINMN * NLVL + 11 * MINMN),
+*          where MINMN = MIN( M,N ).
+*          On exit, if INFO = 0, IWORK(1) returns the minimum LIWORK.
+*
+*13  INFO    (output) INTEGER
+*          = 0:  successful exit
+*          < 0:  if INFO = -i, the i-th argument had an illegal value.
+*          > 0:  the algorithm for computing the SVD failed to converge;
+*                if INFO = i, i off-diagonal elements of an intermediate
+*                bidiagonal form did not converge to zero.
+*
+*  Further Details
+*  ===============
+*
+*  Based on contributions by
+*     Ming Gu and Ren-Cang Li, Computer Science Division, University of
+*       California at Berkeley, USA
+*     Osni Marques, LBNL/NERSC, USA
+*
+*  =====================================================================
+*/

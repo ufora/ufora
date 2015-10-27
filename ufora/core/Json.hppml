@@ -1,0 +1,229 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "containers/ImmutableTreeVector.hppml"
+#include "containers/ImmutableTreeMap.hppml"
+#include "cppml/CPPMLEquality.hppml"
+#include "cppml/CPPMLPrettyPrinter.hppml"
+#include "python/CPPMLToSimple.hpp"
+#include "math/Hash.hpp"
+#include "SimpleParse/SimpleParse.hppml"
+
+/************
+Json - A CPPML representation of json data, along with converters to and from python.
+
+Our strings are just regular c strings. Clients are responsible for picking a unicode
+encoding (e.g. UTF-8) and playing nicely with the format.
+
+Json objects are comparable, hashable, parseable, and prettyprintable.
+************/
+
+namespace Ufora {
+
+@type JsonParseError = string error, SimpleParseRange range {
+public:
+		JsonParseError(string inError, const SimpleParseNode& node)
+			{
+			error() = inError;
+			range() = node.extent();
+			}
+};
+
+@type Json = 
+		Null of ()
+	-|	Number of double value
+	-|	Boolean of bool value
+	-|	String of std::string value
+	-|	Array of ImmutableTreeVector<Json> elements
+	-|	Object of ImmutableTreeMap<std::string, Json> members
+with
+	Hash hash = (hashCPPMLDirect(*this))
+	{
+	public:
+		static Json parse(std::string inToParse);
+
+		Json operator+(const Json& inJson) const;
+
+		static Json Object(std::string s, Json j)
+			{
+			return Json::Object(emptyTreeMap() + s + j);
+			}
+
+		static Json Array(TreeVec empty)
+			{
+			return Array(ImmutableTreeVector<Json>());
+			}
+
+		static Json Array(ImmutableTreeVector<std::string> args)
+			{
+			ImmutableTreeVector<Json> elts;
+
+			for (long k = 0; k < args.size(); k++)
+				elts = elts + Json::String(args[k]);
+
+			return Json::Array(elts);
+			}
+
+		static Json Array()
+			{
+			return Json::Array(ImmutableTreeVector<Json>());
+			}
+
+		static Json Array(Json j)
+			{
+			return Json::Array(emptyTreeVec() + j);
+			}
+
+		static Json Array(Json j1, Json j2)
+			{
+			return Json::Array(emptyTreeVec() + j1 + j2);
+			}
+
+		static Json Array(Json j1, Json j2, Json j3)
+			{
+			return Json::Array(emptyTreeVec() + j1 + j2 + j3);
+			}
+	}
+	;
+
+macro_defineCppmlComparisonOperators(Ufora::Json);
+
+template<class T, class F>
+Ufora::Json jsonArray(const T& container, const F& f)
+	{
+	ImmutableTreeVector<Ufora::Json> vec;
+
+	for (auto val: container)
+		vec = vec + f(val);
+
+	return Ufora::Json::Array(vec);
+	}
+
+};
+
+macro_defineMemberHashFunction(Ufora::Json);
+
+
+//lexical comparison for Json arrays
+template<>
+class CPPMLEquality<Ufora::Json, void> {
+public:
+		static char cmp(const Ufora::Json& lhs, const Ufora::Json& rhs);
+};
+
+template<>
+class CPPMLPrettyPrint<Ufora::Json> {
+public:
+		static void prettyPrint(CPPMLPrettyPrintStream& s, const Ufora::Json& t);
+};
+
+inline boost::python::object jsonToPythonObject(const Ufora::Json& in)
+	{
+	@match Ufora::Json(in)
+		-| Number(x) ->> { return cppmlToSimplePythonRepresentation(x); }
+		-| String(x) ->> { return cppmlToSimplePythonRepresentation(x); }
+		-| Boolean(x) ->> { return cppmlToSimplePythonRepresentation(x); }
+		-| Null() ->> { return boost::python::object(); }
+		-| Object(x) ->> { return cppmlToSimplePythonRepresentation(x); }
+		-| Array(x) ->> { return cppmlToSimplePythonRepresentation(x); }
+	}
+
+template<>
+class CPPMLToSimple<Ufora::Json> {
+public:
+	static boost::python::object toSimple(const Ufora::Json& in)
+		{
+		return jsonToPythonObject(in);
+		}
+
+	static void fromSimple(Ufora::Json& out, boost::python::object in)
+		{
+		using Ufora::Json;
+
+		if (in.ptr() == Py_None)
+			{
+			out = Json::Null();
+			return;
+			}
+
+		boost::python::extract<Json> extractJson(in);
+		if (extractJson.check())
+			{
+			out = extractJson();
+			return;
+			}
+
+		boost::python::extract<string> extractString(in);
+		if (extractString.check())
+			{
+			out = Json::String(extractString());
+			return;	
+			}
+
+		if (PyBool_Check(in.ptr()))
+			{
+			out = Json::Boolean(boost::python::extract<bool>(in)());
+			return;	
+			}
+
+		boost::python::extract<double> extractDouble(in);
+		if (extractDouble.check())
+			{
+			out = Json::Number(extractDouble());
+			return;	
+			}
+
+
+		boost::python::extract<boost::python::tuple> extractTuple(in);
+		if (extractTuple.check())
+			{
+			ImmutableTreeVector<Json> elements;
+
+			cppmlFromSimplePythonRepresentation(elements, in);
+
+			out = Json::Array(elements);
+			return;
+			}
+
+
+		boost::python::extract<boost::python::list> extractList(in);
+		if (PyList_Check(in.ptr()))
+			{
+			ImmutableTreeVector<Json> elements;
+
+			cppmlFromSimplePythonRepresentation(elements, in);
+
+			out = Json::Array(elements);
+			return;
+			}
+
+		boost::python::extract<boost::python::dict> extractDict(in);
+		if (extractDict.check())
+			{
+			ImmutableTreeMap<std::string, Json> elements;
+
+			cppmlFromSimplePythonRepresentation(elements, in);
+
+			out = Json::Object(elements);
+			return;
+			}
+
+		throw std::logic_error("Can't convert to Json");
+		}
+};
+
+

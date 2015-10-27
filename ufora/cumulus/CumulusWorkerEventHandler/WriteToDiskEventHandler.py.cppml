@@ -1,0 +1,116 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "WriteToDiskEventHandler.hppml"
+
+#include <stdint.h>
+#include <boost/python.hpp>
+#include "../../core/python/ScopedPyThreads.hpp"
+#include "../../core/python/CPPMLWrapper.hpp"
+#include "../../native/Registrar.hpp"
+#include "../../core/PolymorphicSharedPtrBinder.hpp"
+#include "../../core/PolymorphicSharedPtrFuncFromMemberFunc.hpp"
+#include "../../core/serialization/IFileProtocol.hpp"
+
+using namespace Cumulus::CumulusWorkerEventHandler;
+
+class WriteToDiskEventHandlerWrapper :
+		public native::module::Exporter<WriteToDiskEventHandlerWrapper> {
+public:
+		std::string		getModuleName(void)
+			{
+			return "Cumulus";
+			}
+
+		virtual void dependencies(std::vector<std::string>& outDeps)
+			{
+			outDeps.push_back(typeid(EventHandler::pointer_type).name());
+			}
+
+		void	getDefinedTypes(std::vector<std::string>& outTypes)
+			{
+			outTypes.push_back(typeid(WriteToDiskEventHandler::pointer_type).name());
+			}
+
+		static WriteToDiskEventHandler::pointer_type* create(
+							PolymorphicSharedPtr<CallbackScheduler> scheduler,
+							std::string filename
+							)
+			{
+			return new WriteToDiskEventHandler::pointer_type(
+				new WriteToDiskEventHandler(scheduler, filename)
+				);
+			}
+
+		static boost::python::object extractCumulusWorkerEventsFromFile(std::string filename)
+			{
+			FILE* f = fopen(filename.c_str(),"rb");
+
+			lassert_dump(f, "couldn't open " << filename);
+			
+			IFileProtocol protocol(f);
+
+			IBinaryStream stream(protocol);
+
+			SerializedObjectInflater inflater;
+
+			SerializedObjectInflaterDeserializer deserializer(
+				inflater, 
+				stream,
+				PolymorphicSharedPtr<VectorDataMemoryManager>()
+				);
+
+			boost::python::list l;
+
+			try {
+				while (true)
+					{
+					Cumulus::CumulusWorkerEvent event;
+
+					deserializer.deserialize(event);
+
+					l.append(event);
+					}
+				}
+			catch(...)
+				{
+				}
+
+			return l;
+			}
+
+		void exportPythonWrapper()
+			{
+			using namespace boost::python;
+			
+			class_<WriteToDiskEventHandler::pointer_type,
+							bases<EventHandler::pointer_type> >(
+					"CumulusWorkerWriteToDiskEventHandler", 
+					no_init
+					)
+				.def("__init__", make_constructor(create))
+				;
+
+			def("extractCumulusWorkerEventsFromFile", extractCumulusWorkerEventsFromFile);
+			}
+};
+
+//explicitly instantiating the registration element causes the linker to need
+//this file
+template<>
+char native::module::Exporter<WriteToDiskEventHandlerWrapper>::mEnforceRegistration =
+		native::module::ExportRegistrar<WriteToDiskEventHandlerWrapper>::registerWrapper();
+
+

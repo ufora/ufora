@@ -1,0 +1,405 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "FORAValuePrinter.hppml"
+#include "PrintableExpressionTree.hppml"
+#include "../Language/Function.hppml"
+
+namespace FORAValuePrinting{
+
+void FORAValuePrinter::toString(const Function& fun) const
+	{
+	toString(fun,true);
+	}
+
+void FORAValuePrinter::toString(const Function& inFunction, bool isFirst) const
+	{
+	if(isFirst)
+		stream() << "fun";
+	Function fun = const_cast<Function&>(inFunction);
+	for(int i=0; !fun.isEmpty(); i++)
+		@match Function(fun)
+			-|	Term(match, body, otherwise) ->> {
+				CPPMLPrettyPrintStream indentedStream = stream().indented(INDENT);
+				if(i>0)
+					stream() << "\n   "; //aligns tuples of arguments
+				
+				toString(match.matchers());
+				
+				indentedStream << "\n" << "{";
+
+				PrintableExpressionTree bodyExpressionTree
+					= buildExpressionTree(body,getPrintingParameters());
+				ImmutableTreeVector<PrintableExpressionTree> children
+					= bodyExpressionTree.getChildren();
+
+				//takes a peek at what is going to print to force newLine
+				bodyExpressionTree = bodyExpressionTree.withLineWrap(BREAK_BEFORE);
+
+				//Try statements are a special case, so ignore them
+				if((children.size() > 0 ) 
+					&& (children[0].getLineWrap() == BREAK_BEFORE)
+					&& !bodyExpressionTree.getThis().isTry())
+					{
+					ImmutableTreeVector<PrintableExpressionTree> newChildren;
+					newChildren = newChildren + children[0].withLineWrap(NOWRAP);
+					for(int i = 1; i < children.size(); i++)
+						newChildren = newChildren + children[i];
+					bodyExpressionTree = PrintableExpressionTree::Node(bodyExpressionTree.getProperties(),
+																		getPrintingParameters(),
+																		newChildren);
+					}
+				indentedStream << bodyExpressionTree
+								<< "\n" << "}";
+				fun = otherwise;
+				};
+	}
+
+void FORAValuePrinter::toString(const Pattern& pat) const
+	{
+	@match Pattern(pat)
+		-|	TypeMatch(type) ->> {
+				stream() << " { ";
+				toString(type);
+				stream() << " } ";
+				}
+		-|	Anything() ->> {
+				stream() << "_";
+				}
+		-|	ExpressionMatch(symbol,pattern) ->> {
+				stream() << buildExpressionTree(symbol,getPrintingParameters());
+				toString(pattern.matchers());
+				}
+		-|	Tuple(elements) ->> {
+				toString(elements);
+				}
+		-|	Constant(value) ->> {
+				toString(value);
+				}
+		-|	MatchEither(left,right) ->> {
+				toString(left);
+				stream() << " or ";
+				toString(right);
+				}
+		-|	MatchBoth(left,right) ->> {
+				toString(left);
+				stream() << " and ";
+				toString(right);
+				}
+		;
+	}
+
+void FORAValuePrinter::toString(const PatternWithName& namedPattern) const
+	{
+	if (namedPattern.pattern().isAnything())
+		{
+		if (namedPattern.name())
+			{
+			if(variableSwap()[*namedPattern.name()])
+				stream() << variableSwap()[*namedPattern.name()];
+			else
+				stream() << *namedPattern.name();
+			}
+		else
+			stream() << "_";
+		}
+	else
+		{
+		toString(namedPattern.pattern());
+		if (namedPattern.name())
+			{
+			stream() << " ";
+			if(variableSwap()[*namedPattern.name()])
+				stream() << variableSwap()[*namedPattern.name()];
+			else
+				stream() << *namedPattern.name();
+			}
+			else
+		if (namedPattern.pattern().isConstant() && 
+				namedPattern.pattern().getConstant().value().isVariable())
+			//if the pattern is simply a variable, so we need the trailing '_' to make it
+			//parse as a constant pattern instead of a variable binding.
+			stream() << " _";
+		}
+	if (namedPattern.condition())
+		{
+		stream() << " if ";
+		toString(*namedPattern.condition());
+		}
+	}
+
+void FORAValuePrinter::toString(const TuplePatternElement& toPrint) const
+	{
+	@match TuplePatternElement(toPrint)
+		-|	Normal(fieldname, pat, expression) ->> {
+				if (fieldname)
+					stream() << *fieldname << ": ";
+				toString(pat);
+				if (expression)
+					{
+					stream() << " = ";
+					toString(*expression);
+					}
+				}
+		-|	VarArgs(name) ->> {
+				if (name)
+					stream() << "*" << *name;
+				else
+					stream() << "...";
+				}
+		;
+	}
+
+//anonymous namespace for helper function
+namespace {
+bool shouldWrapExpressionIfIntermixedWithSemicolons(PrintableExpressionTree& expressionTree)
+	{
+	Expression containedExpression = expressionTree.getProperties().expression;
+	if(!(containedExpression.isLet()
+		|| containedExpression.isSequence()
+		|| containedExpression.isCached()
+		|| containedExpression.isRawCached()
+		|| containedExpression.isBranch()
+		|| containedExpression.isTry()
+		|| containedExpression.isForeach()
+		|| containedExpression.isListComprehension()
+		))
+		return false;
+	return true;
+	}
+}
+void FORAValuePrinter::toString(const ListComprehensionChain& list) const
+	{
+	@match ListComprehensionChain(list)
+		-|	Leaf(expression) ->> {
+				PrintableExpressionTree toPrint = buildExpressionTree(expression,getPrintingParameters());
+				toPrint = toPrint.withLineWrap(NOWRAP);
+				if(shouldWrapExpressionIfIntermixedWithSemicolons(toPrint))
+					toPrint = toPrint.withWraps(PARENS);
+				stream() << toPrint;
+				}
+		-|	Term(pat, filter, process, inner) ->> {
+				toString(inner);
+				stream() << " for ";
+				toString(pat);
+				stream() << " in ";
+				toString(process);
+				}
+	}
+
+void FORAValuePrinter::toString(const CacheCallArgument& argument) const
+	{
+	stream() << "(" << buildExpressionTree(argument.agent(),getPrintingParameters()) << ")";
+	toString(argument.arguments());
+
+	if (argument.nearExpression())
+		stream() << " near " << buildExpressionTree(*argument.nearExpression(),
+													getPrintingParameters());
+	}
+
+void FORAValuePrinter::toString(const ApplyArgument& applyArg) const
+	{
+	@match ApplyArgument(applyArg)
+		-|	Normal(field, expression) ->> {
+				if (field)
+					stream() << *field << ": ";
+				stream() << buildExpressionTree(expression,getPrintingParameters());
+				}
+		-|	NamedArgument(name, value) ->> {
+				stream() << "(" << buildExpressionTree(name,getPrintingParameters())
+					   << ")" << ": " << buildExpressionTree(value,getPrintingParameters());
+				}
+		-|	TupleCall(expression) ->> {
+				stream() << "*" << buildExpressionTree(expression,getPrintingParameters());
+				}
+		;
+	}
+
+void FORAValuePrinter::toString(const ObjectDefinition& object) const
+	{
+	stream() << "object";
+	if (object.selfName())
+		stream() << " as " << *object.selfName();
+	if(!object.body().isEmpty())
+		{
+		CPPMLPrettyPrintStream indentedStream = stream().indented(INDENT); 
+		indentedStream << indentedStream.sep << "{"
+						<< indentedStream.sep;
+		withStream(indentedStream).toString(object.body());
+		indentedStream << indentedStream.sep << "}";
+		}
+	else
+		stream() << "{}";
+	}
+
+void FORAValuePrinter::toString(const ObjectDefinitionBody& object) const
+	{
+	@match ObjectDefinitionBody(object)
+		-|	Empty() ->> {;}
+		-|	Term((term, meta), otherwise) ->> {
+				toString(term); //TODO question: print the metadata as well??
+				stream() << "; ";
+				if(!otherwise.isEmpty())
+					stream() << stream().sep;
+				toString(otherwise);
+				}
+		;
+	}
+
+void FORAValuePrinter::toString(const ObjectDefinitionTerm& object) const
+	{
+	@match ObjectDefinitionTerm(object)
+		-|	Member(name, expression, depth) ->> {
+			if (depth != 1)
+				for (long k = 0; k < depth;k++)
+					stream() << ".";
+			stream() << name << ": ";
+
+			PrintableExpressionTree toPrint = buildExpressionTree(expression,getPrintingParameters());
+
+			if (shouldWrapExpressionIfIntermixedWithSemicolons(toPrint))
+				toPrint = toPrint.withWraps(CURLY);
+			
+			stream() << toPrint;
+			}
+		-|	MatchFilter(fun) ->> {
+			stream() << "operator match";
+			toString(fun, false);
+			}
+		-|	Filter(fun) ->> {
+			stream() << "operator filter";
+			toString(fun, false);
+			}
+		-|	Call(function) ->> {
+			stream() << "operator ()";
+			toString(function, false);
+			}
+		-|	Operator(operation, function) ->> {
+			stream() << "operator " << operation;
+			toString(function, false);
+			}
+		-|	LeftOperator(operation, function) ->> {
+			stream() << "left operator " << operation;
+			toString(function, false);
+			}
+		-|	RightOperator(operation, function) ->> {
+			stream() << "right operator " << operation;
+			toString(function, false);
+			}
+		-|	Mixin(expr) ->> {
+			stream() << "mixin ";
+			toString(expr);
+			}
+		-|	ReverseOperator(operation, function) ->> {
+			stream() << "reverse operator " << operation;
+			toString(function, false);
+			}
+		-|	Convert(function) ->> {
+			stream() << "convert";
+			toString(function, false);
+			}
+		-|	GetItem(function) ->> {
+			stream() << "operator []";
+			toString(function, false);
+			}
+		-|	SetItem(function) ->> {
+			stream() << "operator []=";
+			toString(function, false);
+			}
+		-|	Iter(function) ->> {
+			stream() << "operator iterator";
+			toString(function, false);
+			}
+		-|	Next(function) ->> {
+			stream() << "operator next";
+			toString(function, false);
+			}
+		-|	Anything(function) ->> {
+			stream() << "...";
+			toString(function, false);
+			}
+		-| _ ->>{
+			lassert(false);
+			}
+		;
+	}
+
+void FORAValuePrinter::toString(const ClassDefinition& cls) const
+	{
+	stream() << "class";
+	if (cls.className())
+		stream() << " as " << *cls.className();
+	if (cls.selfName())
+		stream() << " self as " << *cls.selfName();
+	if(!cls.body().isEmpty())
+		{
+		CPPMLPrettyPrintStream indentedStream = stream().indented(INDENT); 
+		indentedStream << indentedStream.sep << "{"
+						<< indentedStream.sep;
+		withStream(indentedStream).toString(cls.body());
+		indentedStream << indentedStream.sep << "}";
+		}
+	else
+		stream() << "{}";
+	}
+
+void FORAValuePrinter::toString(const ClassDefinitionBody& cls) const
+	{
+	@match ClassDefinitionBody(cls)
+		-|	Empty() ->> {;}
+		-|	Term((term, meta), otherwise) ->> {
+				toString(term);
+				stream() << "; ";
+				if(!otherwise.isEmpty())
+					stream() << stream().sep;
+				toString(otherwise);
+				}
+		;
+	}
+
+void FORAValuePrinter::toString(const ClassDefinitionTerm& cls) const
+	{
+	@match ClassDefinitionTerm(cls)
+		-|	DataMember(name) ->> {
+			stream() << "member " << name;
+			}
+		-|	Constructor(function) ->> {
+			stream() << "operator new ";
+			toString(function, false);
+			}
+		-|	Static(term) ->> {
+			stream() << "static ";
+			toString(term);
+			}
+		-|	ObjectTerm(term) ->> {
+			toString(term);
+			}
+			;
+	}
+
+void FORAValuePrinter::toString(const TuplePattern& pat) const
+	{
+	toString(pat.matchers());
+	}
+
+void FORAValuePrinter::toString(const Expression& toPrint) const
+	{
+	//create Printable expression tree using print params, and then print
+	buildExpressionTree(toPrint,getPrintingParameters()).withLineWrap(NOWRAP)
+														.toString(stream());
+	}
+
+}
+

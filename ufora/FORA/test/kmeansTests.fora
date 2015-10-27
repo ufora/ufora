@@ -1,0 +1,281 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+seed: 123123;
+kmeansSeed: 3939393;
+
+closeWithinTol:
+fun(computed, actual, tol) {
+    if (actual == 0)
+        return math.abs(computed - actual) < tol;
+
+    return math.abs((actual - computed) / actual) < tol;
+    };                
+
+assertClose:
+fun(computed, actual, tol := 1e-5, msg := "") {
+    if (not closeWithinTol(computed, actual, tol))
+        throw msg + "\nnot close enough. computed = " + String(computed) + 
+            ", actual = " + String(actual)
+    };                
+
+assertAllClose:
+fun(computed, actual, tol := 1e-5, msg := "") {
+    if (size(computed) != size(actual))
+        throw msg + "\nsizes off, can't possibly be compared. computed size = " + 
+            String(size(computed)) + ", actual size = " + String(size(actual))
+
+    for rowIx in sequence(size(computed)) {
+		for colIx in sequence(size(computed[0]))
+    		{
+            if (not closeWithinTol(computed[rowIx][colIx], actual[rowIx][colIx], tol))
+                throw msg + "\nnot close enough at ix = " + String(rowIx) + ", " + String(colIx) + ". computed = " +
+                String(computed) + ", actual = " + String(actual)
+		    }
+        }
+    };
+
+assertEqual:
+fun(x, y, msg:="") {
+	assertTrue(x == y, msg: msg + " - computed = " + String(x) + " actual = " + String(y))
+    };
+
+assertTrue:
+fun(cond, msg :="") {
+    if (not cond) 
+        throw "assertion failed: " + msg
+    }; 
+
+pickCenters:
+fun(nCenters, dim, rng, range)
+    {
+	let centerData = [];
+	for _ in sequence(nCenters) 
+		{
+		let nextRow = ();
+		for _ in sequence(dim) 
+    		nextRow = nextRow + ((pull rng) % range,);
+
+		centerData = centerData :: nextRow
+		}
+		
+	(dataframe.DataFrame(centerData), rng)
+    };
+
+symmetricGaussianData:
+fun
+(nSamples:, nClusters:, dim:, seed:, range:=100, sd:=1.0)		
+    {
+	let rng = iterator(math.random.MersenneTwister(seed));
+	let centers = nothing; 
+
+	(centers, rng) = pickCenters(nClusters, dim, rng, range);
+
+	symmetricGaussianData(
+		nSamples:nSamples,
+		centers:centers,
+		dim:dim,
+		seed:seed,
+		rng:rng,
+		range:range,
+		sd:sd
+		)
+	}
+(nSamples:, centers:, dim:, seed:, rng:=nothing, range:=100, sd:=1.0)
+	{
+	if (rng is nothing)
+		rng = iterator(math.random.MersenneTwister(seed));
+
+	let nCenters = centers.numRows;
+	let norm = iterator(math.random.Normal(0, sd, seed + 1));
+	let sampleData = [];
+	for _ in sequence(nSamples) {
+		let nextRow = ();
+
+	    let centerIx = ((pull rng) % nCenters);
+		
+		for coord in centers[centerIx]
+         	nextRow = nextRow + ((pull norm) + coord,)
+
+		sampleData = sampleData :: nextRow
+		}
+
+	(realCenters: centers, samples: 
+	 dataframe.DataFrame(sampleData));
+	};
+
+randomInitCenters: [(34.032806408059, 81.9779670851132), (35.0442923430924, 85.1111789857454), (42.98000773963, 18.940765416656)];
+
+rowMajor: fun
+(dataframe.DataFrame(X)) {
+    dataframe.RowMajorDataFrame(
+        Vector.range(
+            X.numRows,
+            fun(rowIx) {
+                Vector.range(
+                    X.numColumns,
+                    { X[rowIx][_] }
+                    )
+                }
+            )
+        );
+    }
+(dataframe.RowMajorDataFrame(X)) {
+    X
+    };
+
+kmeans_random_init:
+fun(parallel) 
+    {
+	let (realCenters:realCenters, samples:samples) = 
+		symmetricGaussianData(nSamples:3000, nClusters:3, dim:2, seed:seed);
+
+    samples = dataframe.DataFrame(samples)
+
+	let res = math.clustering.KMeans(
+        samples, 3, seed: kmeansSeed, init: "random", parallel: parallel
+        );
+
+	assertAllClose(
+		rowMajor(res.centers.sort("C0")).rows(),
+		randomInitCenters,
+		msg:"centers"
+	    );
+	assertClose(res.inertia, 5520.23553424359, msg:"inertia");
+	assertEqual(res.nIter, 97, msg:"iter");
+	assertEqual(sorting.unique(res.labels), [0, 1, 2], msg:"labels")
+
+	true;
+    };
+
+`test KMeans_random_init_no_parallel:
+	kmeans_random_init(false)
+    ;
+
+`test KMeans_random_init_parallel: 
+	kmeans_random_init(true)
+    ;
+
+kmeans_kplusplus: 
+fun(parallel)
+    {
+	let (realCenters:realCenters, samples:samples) = 
+		symmetricGaussianData(nSamples:3000, nClusters:3, dim:2, seed:seed);
+
+	let res = math.clustering.KMeans(samples, 3, seed:kmeansSeed, init:"k-means++", parallel:parallel)
+
+	assertAllClose(
+		rowMajor(res.centers.sort("C0")).rows(),
+		[(34.032806408059, 81.9779670851132), (35.0442923430924, 85.1111789857454), (42.98000773963, 18.940765416656)],
+		msg:"centers",
+		tol:1e-3
+	    );
+	assertClose(res.inertia, 5520.23553424359, msg:"inertia");
+	assertEqual(res.nIter, 51, msg:"iter")
+	assertEqual(sorting.unique(res.labels), [0, 1, 2], msg:"labels")
+
+	true
+    };
+
+`test KMeans_kplusplus_init_no_parallel: 
+	kmeans_kplusplus(false)
+    ;
+
+`test KMeans_kplusplus_init_parallel:
+	kmeans_kplusplus(true)
+    ;
+
+`test bigIsh_kmeans: (
+	let (realCenters:realCenters, samples:samples) = 
+		symmetricGaussianData(nSamples:6000, nClusters:6, dim:5, seed:seed);
+
+	math.clustering.KMeans(samples, 3, seed:kmeansSeed, init:"random", parallel:false);
+
+	return true;
+	);
+
+test_block_kmeans:
+fun(dim:, nClusters:, nSamples:, blockSize:)
+    {
+	let (realCenters:realCenters, samples:samples) = 
+		symmetricGaussianData(nSamples:nSamples, nClusters:nClusters, dim:dim, seed:seed);
+
+	let blockRes = math.clustering.KMeans(
+		samples, nClusters, options:(blockSize:blockSize), seed:kmeansSeed
+    	);
+
+	let stdRes = math.clustering.KMeans(
+		samples, nClusters, seed:kmeansSeed
+    	);
+	
+	assertAllClose(stdRes.centers.columns, blockRes.centers.columns)
+	
+	assertEqual(stdRes.labels, blockRes.labels)
+	assertClose(stdRes.inertia, blockRes.inertia)
+    assertEqual(stdRes.nIter, blockRes.nIter)
+
+	true;
+    };
+
+`test block_kmeans_1:
+	test_block_kmeans(dim:5, nClusters:5, nSamples:3000, blockSize:1000) 
+    ;
+`test block_kmeans_2: 
+	test_block_kmeans(dim:5, nClusters:4, nSamples:3300, blockSize:1000) 
+    ;
+
+`test block_kmeans_3: (
+    let sampleGenerator = fun(ct, mu, sigma, unif)
+	{
+		let data = [];
+		for _ in sequence(ct) 
+			data = data :: (math.random.Normal.quantile(pull unif, mu, sigma),);
+		    
+	(data, unif)
+	}
+
+	let unif = iterator(math.random.UniformReal(0, 1, seed));
+
+	let samples = nothing;
+	(samples, unif) = sampleGenerator(100, 0, 0.1, unif);
+
+	let points = dataframe.DataFrame(
+        samples :: (1000.0,)
+        );
+
+	let res = math.clustering.KMeans(points, 2, options:(blockSize:50), seed:kmeansSeed, init:"random");
+
+	assertAllClose(rowMajor(res.centers).rows(), [(1000.0,), (0.00308593471951371,)]);
+    assertEqual(res.labels, Vector.uniform(100, 1) :: 0);
+	assertClose(res.inertia, 0.768596931515977);
+	assertEqual(res.nIter, 30);
+
+	true;
+	);
+
+`perf largeish_kmeans: (
+	//this code path should hit some empty cluster conditions; none of the other examples do
+	//so this example is just to check that they work
+
+	let nClusters = 6
+	let seed = 3939393;
+
+	let data = symmetricGaussianData(nSamples:500, nClusters:nClusters, dim:5, seed:seed);
+
+	let res = math.clustering.KMeans(data.samples, nClusters, options:(blockSize:100), seed:seed, init:"random");
+
+	true
+	);
+

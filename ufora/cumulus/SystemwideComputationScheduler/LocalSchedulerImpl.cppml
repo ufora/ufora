@@ -1,0 +1,242 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "LocalSchedulerImpl.hppml"
+#include "../../FORA/VectorDataManager/VectorDataManager.hppml"
+#include "../../FORA/TypedFora/ABI/BigVectorLayouts.hppml"
+#include "../../core/threading/TimedLock.hpp"
+#include "../../core/threading/CallbackScheduler.hppml"
+#include "../../core/threading/CallbackSchedulerFactory.hppml"
+#include "../../core/StringUtil.hpp"
+#include "../../core/Memory.hpp"
+#include "../../core/threading/Queue.hpp"
+#include "../../core/threading/LimitToTime.hpp"
+#include "../AddDropFinalState.hppml"
+#include <iomanip>
+#include <fstream>
+
+namespace Cumulus {
+namespace SystemwideComputationScheduler {
+
+const double kMaxSplitFrequency = 400;
+const double kRecomputePageLayoutInterval = 1.0;
+const double kRecomputeLongTermLayoutInterval = 1.0;
+
+LocalSchedulerImpl::LocalSchedulerImpl(
+			PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
+			PolymorphicSharedPtr<VectorDataManager> inVDM,
+        	MachineId inOwnMachineId,
+			long inActiveThreadCount,
+			boost::function1<void, LocalSchedulerEvent> inEventHandler
+			) : 
+		mOnCumulusComponentMessageCreated(inCallbackScheduler),
+		mOnInitiateComputationMoved(inCallbackScheduler),
+		mEventHandler(inEventHandler),
+		mKernel(
+			inVDM->maxPageSizeInBytes(),
+			inVDM->getMemoryLimit(),
+			inOwnMachineId,
+			inActiveThreadCount,
+			boost::bind(
+				&LocalSchedulerImpl::onKernelInitiateComputationMoved,
+				this,
+				boost::arg<1>()
+				),
+			boost::bind(
+				&LocalSchedulerImpl::onKernelCumulusComponentMessageCreated,
+				this,
+				boost::arg<1>()
+				)
+			),
+		mLastSplitTime(0.0),
+		mSplitCallbackIsScheduled(false),
+		mCallbackScheduler(inCallbackScheduler->getFactory()->createScheduler("LocalSchedulerImpl")),
+		mIsTornDown(false)
+	{
+	if (mEventHandler)
+		mEventHandler(
+			LocalSchedulerEvent::Initialized(
+				SchedulerInitializationParameters(
+					inVDM->maxPageSizeInBytes(),
+					inVDM->getMemoryLimit(),
+					inOwnMachineId,
+					inActiveThreadCount
+					)
+				)
+			);
+	}
+
+void LocalSchedulerImpl::onKernelCumulusComponentMessageCreated(CumulusComponentMessageCreated msg)
+	{
+	if (mEventHandler)
+		mEventHandler(LocalSchedulerEvent::OutCumulusComponentMessageCreated(msg));
+
+	mOnCumulusComponentMessageCreated.broadcast(msg);
+	}
+
+void LocalSchedulerImpl::onKernelInitiateComputationMoved(InitiateComputationMove move)
+	{
+	if (mEventHandler)
+		mEventHandler(LocalSchedulerEvent::OutInitiateComputationMove(move));
+
+	mOnInitiateComputationMoved.broadcast(move);
+	}
+
+void LocalSchedulerImpl::teardown()
+	{
+	TimedLock lock(mMutex, "LocalSchedulerImpl");
+
+	mIsTornDown = true;
+	}
+
+void LocalSchedulerImpl::initializeFromAddDropState(const AddDropFinalState& state)
+	{
+	TimedLock lock(mMutex, "LocalSchedulerImpl");
+
+	state.recreatePageRefcountEventSequence(
+		boost::bind(
+			&LocalSchedulerImpl::consumePageEvent,
+			this,
+			boost::arg<1>(),
+			boost::arg<2>()
+			)
+		);
+	}
+
+void LocalSchedulerImpl::consumePageEvent(
+								const Fora::PageRefcountEvent& inEvent, 
+								Cumulus::MachineId onMachineId
+								)
+	{
+	TimedLock lock(mMutex, "LocalSchedulerImpl");
+
+	if (mIsTornDown)
+		return;
+
+	if (mEventHandler)
+		mEventHandler(LocalSchedulerEvent::InPageEvent(inEvent, onMachineId));
+
+	mKernel.consumePageEvent(inEvent, onMachineId);
+	}
+
+void LocalSchedulerImpl::pageNoLongerReferencedAcrossSystem(Fora::PageId page)
+	{
+	TimedLock lock(mMutex, "LocalSchedulerImpl");
+
+	if (mIsTornDown)
+		return;
+	
+	if (mEventHandler)
+		mEventHandler(LocalSchedulerEvent::InPageNoLongerReferencedAcrossEntireSystem(page));
+
+	mKernel.pageNoLongerReferencedAcrossSystem(page);
+	}
+
+void LocalSchedulerImpl::addMachine(MachineId inMachine)
+	{
+	TimedLock lock(mMutex, "LocalSchedulerImpl");
+
+	if (mIsTornDown)
+		return;
+
+	if (mEventHandler)
+		mEventHandler(LocalSchedulerEvent::InAddMachine(inMachine));
+
+	mKernel.addMachine(inMachine);
+	}
+
+void LocalSchedulerImpl::scheduleIfNecessary_()
+	{
+	if (mSplitCallbackIsScheduled)
+		return;
+
+	mCallbackScheduler->schedule(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&LocalSchedulerImpl::splitOrMoveIfNeededCallback
+				),
+			polymorphicSharedWeakPtrFromThis()
+			),
+		curClock() + 1.0 / kMaxSplitFrequency * 1.01,
+		"LocalSchedulerImpl::splitOrMoveIfNeededCallback"
+		);
+
+	mSplitCallbackIsScheduled = true;
+	}
+
+void LocalSchedulerImpl::splitOrMoveIfNeededCallback()
+	{
+	TimedLock lock(mMutex, "LocalSchedulerImpl");
+
+	if (mIsTornDown)
+		return;
+
+	mSplitCallbackIsScheduled = false;
+
+	splitOrMoveIfNeeded_();
+	}
+
+void LocalSchedulerImpl::splitOrMoveIfNeeded_()
+	{
+	mLastSplitTime = curClock();
+
+	if (mEventHandler)
+		mEventHandler(LocalSchedulerEvent::SplitOrMoveIfNeeded(mLastSplitTime));
+
+	mKernel.splitOrMoveIfNeeded(mLastSplitTime);
+
+	scheduleIfNecessary_();	
+	}
+
+void LocalSchedulerImpl::setDiagnosticLogfilePath(std::string inLogfilePath)
+	{
+	TimedLock lock(mMutex, "LocalSchedulerImpl");
+	
+	mLogfilePath = inLogfilePath;
+	}
+
+Nullable<std::string> LocalSchedulerImpl::getDiagnosticLogfilePath()
+	{
+	TimedLock lock(mMutex, "LocalSchedulerImpl");
+
+	return mLogfilePath;
+	}
+
+void LocalSchedulerImpl::handleCumulusComponentMessage(
+                const CumulusComponentMessage& message, 
+                const CumulusClientOrMachine& source, 
+                const CumulusComponentType& componentType
+                )
+	{
+	TimedLock lock(mMutex, "LocalSchedulerImpl");
+
+	double curTime = curClock();
+
+	if (mEventHandler)
+		mEventHandler(LocalSchedulerEvent::InCumulusComponentMessage(message, source, componentType, curTime));
+
+	mKernel.handleCumulusComponentMessage(message, source, componentType, curTime);
+
+	scheduleIfNecessary_();
+	}
+
+long LocalSchedulerImpl::getComputationsMoved()
+	{
+	return mKernel.mComputationsMoved;
+	}
+}
+}
+
+

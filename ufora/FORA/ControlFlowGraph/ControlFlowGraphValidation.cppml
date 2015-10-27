@@ -1,0 +1,164 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ControlFlowGraphValidation.hppml"
+#include "../../core/Logging.hpp"
+namespace ControlFlowGraphValidation {
+
+bool validBlock(const ControlFlowGraph& graph, const ControlFlowNode& node)
+	{
+	@match ControlFlowNodeBody(node.body())
+		-|	Apply(args, normal, exception) ->> {
+				return validArgs(graph, args, node.argCount()) &&
+					validContinuation(graph, normal, node.argCount(), ResultInfo::SingleItemResult()) &&
+					validContinuation(graph, exception, node.argCount(), ResultInfo::SingleItemResult());
+				}
+		-|	Cached(arg, normal, exception) ->> {
+				return validArg(graph, arg, node.argCount()) &&
+					validContinuation(graph, normal, node.argCount(), ResultInfo::SingleItemResult()) &&
+					validContinuation(graph, exception, node.argCount(), ResultInfo::SingleItemResult());
+				}
+		-|	Branch(arg, normal, exception) ->> {
+				return validArg(graph, arg, node.argCount()) &&
+					validContinuation(graph, normal, node.argCount(), ResultInfo::NoResult()) &&
+					validContinuation(graph, exception, node.argCount(), ResultInfo::NoResult());
+				}
+		-|	Switch(arg, branches, otherwise) ->> {
+				if (!validArg(graph, arg, node.argCount()))
+					return false;
+				for (long k = 0; k < branches.size(); k++)
+					if (!validContinuation(graph, branches.pairAtPosition(k).second, 
+									node.argCount(), ResultInfo::NoResult()))
+						return false;
+
+				if (!validContinuation(graph, otherwise, node.argCount(), 
+									ResultInfo::NoResult()))
+					return false;
+
+				return true;
+				}
+		-|	TupleExpand(arg, (arityToMatch, arityIsExact, continuationIfMatch), ifNoMatch) ->> {
+				if (!validContinuation(graph, ifNoMatch, node.argCount(), ResultInfo::NoResult()))
+					return false;
+
+				return 
+					validContinuation(
+						graph, 
+						continuationIfMatch, 
+						node.argCount(), 
+						ResultInfo::MultipleItemResult(arityToMatch, arityIsExact)
+						);
+				}
+		-|	Jump(normal) ->> {
+				return validContinuation(graph, normal, node.argCount(), ResultInfo::NoResult());
+				}
+		;
+	}
+
+bool validContinuation(
+				const ControlFlowGraph& graph, 
+				const ControlFlowContinuation& arg, 
+				uword_t argCount,
+				const ResultInfo& inResult
+				)
+	{
+	@match ControlFlowContinuation(arg)
+		-|	Return(arg, isException) ->> {
+			return validContinuationArg(graph, arg, argCount, inResult);
+			}
+		-|	Node(label, args) ->> {
+			if (!graph.hasBlock(label))
+				LOG_DEBUG << "node label doesn't exist";
+
+			uword_t targetNodeArgCount = graph[label].argCount();
+			
+			if (targetNodeArgCount != args.size())
+				return false;
+
+			return validContinuationArgs(graph, args, argCount, inResult);
+			}
+			;
+	}
+
+bool validArg(const ControlFlowGraph& graph, const ControlFlowArg& arg, uword_t argCount)
+	{
+	@match ControlFlowArg(arg)
+		-|	Arg(ix) ->> { return ix < argCount; }
+		-|	_ ->> { return true; }
+		;
+	}
+
+bool validArgs(
+		const ControlFlowGraph& graph,
+		const ImmutableTreeVector<ControlFlowApplyArg>& args,
+		uword_t argCount
+		)
+	{
+	for (long k = 0; k < args.size();k++)
+		{
+		@match ControlFlowApplyArg(args[k])
+			-|	Normal(_,a) ->> { if (!validArg(graph, a, argCount)) return false; }
+			-|	TupleCall(a) ->> { if (!validArg(graph, a, argCount)) return false; }
+				;
+		}
+	return true;
+	}
+
+bool validContinuationArg(	const ControlFlowGraph& graph, 
+									const ControlFlowContinuationArg& arg, 
+									uword_t argCount, 
+									const ResultInfo& inResult
+									)
+	{
+	@match ControlFlowContinuationArg(arg)
+		-|	Result() ->> { 
+			return inResult.isSingleItemResult(); 
+			}
+		-|	TupleElement(index) ->> { 
+			return inResult.isMultipleItemResult() && 
+				index < inResult.getMultipleItemResult().arity();
+			}
+		-|	TupleRemainingElements() ->> { 
+			return inResult.isMultipleItemResult() && 
+				!inResult.getMultipleItemResult().arityIsExact();
+			}
+		-|	Arg(x) ->> { 
+			return validArg(graph, x, argCount); 
+			}
+		-|	MakeTuple(args) ->> {
+			for (long k = 0; k < args.size(); k++)
+				if (!validContinuationArg(graph, args[k].arg(), argCount, inResult))
+					return false;
+			return true;
+			}
+		;
+	}
+
+bool validContinuationArgs(
+				const ControlFlowGraph& graph,
+				const ImmutableTreeVector<ControlFlowContinuationArg>& arg, 
+				uword_t argCount,
+				const ResultInfo& inResult
+				)
+	{
+	for (long k = 0; k < arg.size();k++)
+		if (!validContinuationArg(graph, arg[k], argCount, inResult))
+			return false;
+	
+	return true;
+	}
+
+}
+

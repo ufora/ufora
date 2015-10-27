@@ -1,0 +1,91 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "TruthValueCodegen.hppml"
+#include "../../Native/NativeCode.hppml"
+#include "../TypedFora.hppml"
+#include "NativeLayoutType.hppml"
+#include "UnionUtil.hppml"
+#include "../../Native/NativeExpressionBuilder.hppml"
+#include "../../Native/TypedNativeLibraryFunction.hpp"
+
+namespace TypedFora {
+namespace Abi {
+
+uint8_t FORA_clib_boolFromImplVal(const ImplVal& valueToTest)
+	{
+	return valueToTest.convertToBoolean();
+	}
+
+NativeExpression testForaTruthValueExpression(
+							const NativeExpression& inCond,
+							const TypedFora::Type& inCondVarType
+							)
+	{
+	const JudgmentOnValue& jov = inCondVarType.jov();
+
+	if (jov.constant())
+		return NativeExpression::Constant(
+			NativeConstant::Bool(
+				jov.constant()->getReference().convertToBoolean()
+				)
+			);
+
+	if (jov.type() && !jov.type()->isInteger())
+		return NativeExpression::Constant(NativeConstant::Bool(false));
+
+	if (jov.type() && jov.type()->isInteger())
+		{
+		NativeExpression zeroExpr = NativeExpression::Zero(nativeTypeForForaType(inCondVarType));
+
+		return zeroExpr != inCond;
+		}
+
+	if (jov.isUnion())
+		{
+		//unions are laid out as a flag and then one value for each possibility. We need to check
+		//each one
+		return TypedFora::Abi::foreachUnionAlternative(
+			jov, 
+			inCond,
+			[&](NativeExpression expr, JudgmentOnValue jov) {
+				return testForaTruthValueExpression(
+					expr, 
+					TypedFora::Type(jov, inCondVarType.refcountStyle())
+					);
+				}
+			);
+		}
+	else
+		{
+		NativeExpressionBuilder builder;
+
+		NativeExpression implValPtr =
+			builder.getPointerExprToCopyOnStack(inCond);
+
+		return 
+			builder(
+				makeTypedNativeLibraryFunction(
+					&FORA_clib_boolFromImplVal
+					)(implValPtr)
+				.getExpression() 
+				!= NativeExpression::Zero(NativeType::uint8())
+				);
+		}
+	}
+
+}
+}
+

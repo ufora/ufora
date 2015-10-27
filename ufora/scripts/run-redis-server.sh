@@ -1,0 +1,4 @@
+#!bash
+redis-server
+
+

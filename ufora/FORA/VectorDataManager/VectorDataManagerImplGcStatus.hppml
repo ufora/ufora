@@ -1,0 +1,644 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../../core/Logging.hpp"
+#include "../Core/ExecutionContextImpl.hppml"
+#include "../Core/ExecutionContextMemoryPool.hppml"
+#include "../../core/threading/Gate.hpp"
+#include "../../core/Memory.hpp"
+#include "PageletTree.hppml"
+#include "PageRefcountTracker.hppml"
+#include "../TypedFora/ABI/BigVectorLayouts.hppml"
+
+#include <gperftools/malloc_extension.h>
+#include <gperftools/heap-profiler.h>
+
+
+/*****************************
+VectorDataManagerImplGcStatus
+
+Maintains the current state of the VDM's GC loop. At any given moment we
+have the following state in the external system
+
+	- execution contexts
+		- live contexts
+		- computing contexts
+		- amount of memory allocated by each context
+		- amount of memory allocated since the context was last GC'd
+		- unmeasured amount of memory in unpaged vectors
+	- memory used by VectorPages
+		- pages that are unmapped
+			- those that are droppable immediately
+			- those that cannot be dropped
+		- pages that are currently mapped by an ExecutionContext
+		- pages that are mapped by another page (and hence indirectly
+			by an execution context)
+		- RAM allocated by scaffolding created when we map pages in
+
+At any moment, we have the following options
+	- we can choose to prevent execution contexts from allocating any
+		additional memory (unless they are about to GC)
+	- we can choose to prevent execution contexts from mapping any additional
+		vectors in
+	- we can choose a subset of execution contexts to interrupt and callback
+		with GC options
+	- contexts that are in the GC callback can be GC'd, paged, or compressed.
+	- we can choose a page to drop
+	- we can choose to not do anything until a page is unpinned
+
+*******************************/
+
+typedef Fora::Interpreter::ExecutionContextImpl* execution_context_impl_ptr;
+
+class VectorDataManagerImplGcStatus {
+public:
+	VectorDataManagerImplGcStatus(
+					PolymorphicSharedPtr<PageRefcountTracker> inRefcountTracker,
+					PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM,
+					PolymorphicSharedPtr<VectorPages> inPages,
+					PolymorphicSharedPtr<TypedFora::Abi::BigVectorLayouts> inHandles,
+					uint64_t inMemoryLimit,
+					uint64_t inCumulusMaxVectorChunkSizeBytes,
+					boost::function0<bool> inTryToUnloadVectorPages,
+					ufora::Statsd& inStatsd
+					) :
+			mPageRefcountTracker(inRefcountTracker),
+			mVectorPages(inPages),
+			mMemoryManager(inVDMM),
+			mExecutionStoppedTime(0),
+			mLastTimeLogged(0),
+			mTotalTimeSpentStopped(0),
+			mLoadRatio(.75),
+			mBigVectorLayouts(inHandles),
+			mMemoryLimit(inMemoryLimit),
+			mMaxTotalBytes(inMemoryLimit),
+			mExecutionIsBlocked(false),
+			mTryToUnloadVectorPages(inTryToUnloadVectorPages),
+			mStatsd(inStatsd),
+			mCumulusMaxVectorChunkSizeBytes(inCumulusMaxVectorChunkSizeBytes),
+			mTimesLimitChecked(0),
+			mTotalExecutionContextsBlocked(0),
+			mGcEventCount(0),
+			mIsTornDown(false),
+			mShouldDropUnreferencedPagesWhenFull(false)
+		{
+		}
+
+	~VectorDataManagerImplGcStatus()
+		{
+		if (mContexts.size())
+			LOG_CRITICAL << "Warning: shutting down VDMC with " << 
+				mContexts.size() << " registered ExecutionContexts";
+		}
+
+	void registerExecutionContext(execution_context_impl_ptr context)
+		{
+		lassert(mContexts.find(context) == mContexts.end());
+
+		mContexts.insert(context);
+		}
+
+	void setLoadRatio(double inLoadRatio)
+		{
+		mLoadRatio = inLoadRatio;
+		}
+
+	size_t curTotalUsedBytes()
+		{
+		return mMemoryManager->totalBytesUsedSingleCountingPagelets();
+		}
+
+	uword_t totalBytesUsedByReferencingPages() const
+		{
+		return getTotalBytesOfBigvecHandlePointerArrays() + mVectorPages->getBytesInReferencedPages();
+		}
+
+	uword_t totalBytesUsedByExecutionContexts() const
+		{
+		return mMemoryManager->totalBytesUsedByExecutionContextsIncludingPagelets();
+		}
+
+	uword_t getTotalBytesOfBigvecHandlePointerArrays() const
+		{
+		return mMemoryManager->totalBytesUsedByBigVectorHandles();
+		}
+
+	void triggerVdmCheckInAllExecutionContexts()
+		{
+		LOG_DEBUG << "Triggering vdm check in all contexts.";
+
+		for (auto ecmp: mContexts)
+			ecmp->scheduleVdmCheck();
+		}
+
+	void unregisterExecutionContext(execution_context_impl_ptr context)
+		{
+		lassert(mContexts.find(context) != mContexts.end());
+
+		lassert(mCurrentlyExecutingContexts.find(context) == mCurrentlyExecutingContexts.end());
+		
+		mContexts.erase(context);
+
+		mExecutionContextMemoryTriggers.erase(context);
+		}
+
+	bool anyContextsHaveGcScheduled()
+		{
+		for (auto context: mContexts)
+			if (context->isGcScheduled())
+				return true;
+		return false;
+		}
+
+	bool contextsAndHandlesOverMemoryLimit_()
+		{
+		return (mMemoryManager->totalBytesUsedByExecutionContextsIncludingPagelets() + 
+					mMemoryManager->totalBytesUsedByBigVectorHandles()) > mLoadRatio * mMemoryLimit;
+		}
+
+	bool contextNeedsGc_(execution_context_impl_ptr context)
+		{
+		pair<uint64_t, uint64_t> memUsageByEcAndFromOs = context->getCurrentMemoryUsage();
+		pair<uint64_t, uint64_t> memUsageByEcAndFromOsAtLastGc = context->getMemoryUsageAtLastEvent();
+
+		if (memUsageByEcAndFromOs.first > memUsageByEcAndFromOsAtLastGc.first + 
+												getCurrentLargeVectorHandlePageSize(context))
+			return true;
+
+		if (memUsageByEcAndFromOs.first > executionContextGcTriggerMemUsage(context))
+			return true;
+
+		if (contextsAndHandlesOverMemoryLimit_())
+			return true;
+
+		if (curTotalUsedBytes() > mMaxTotalBytes)
+			return true;
+
+		if (context->getExecutionContextMemoryPool()
+				->getBigvecMappingPool()->totalBytesAllocatedFromOS()
+					> mMemoryManager->getMaxBytesPerPool() / 2)
+			return true;
+
+		return false;
+		}
+
+	void checkGcStatus_(std::string reason)
+		{
+		mTimesLimitChecked++;
+
+		logState("checkGcStatus -- " + reason);
+
+		while (mShouldDropUnreferencedPagesWhenFull &&  
+					mVectorPages->hasUnreferencedPages() && 
+					curTotalUsedBytes() >= mMaxTotalBytes)
+			if (!mTryToUnloadVectorPages())
+				break;
+		
+		if ((curTotalUsedBytes() > mMaxTotalBytes || 
+						contextsAndHandlesOverMemoryLimit_()) && mContexts.size())
+			{
+			LOG_DEBUG << "Triggering VDM check in all ExecutionContexts because we are over the memory limit.";
+
+			double t0 = curClock();
+
+			for (auto it = mContexts.begin(); it != mContexts.end();++it)
+				(*it)->scheduleVdmCheck();
+
+			if (curClock() - t0 > 1.0)
+				LOG_ERROR << "Took " << curClock() - t0 << " to call scheduleVdmCheck on " 
+					<< mContexts.size() << " contexts";
+			}
+
+		if (totalBytesUsedByExecutionContexts() > mLoadRatio * mMemoryLimit)
+			{
+			for (auto contextPtr: mContexts)
+				contextPtr->scheduleVdmCheck();
+			}
+
+		if (curTotalUsedBytes() >= mMaxTotalBytes || 
+								totalBytesUsedByReferencingPages() > mLoadRatio * mMemoryLimit)
+			{
+			if (!mExecutionIsBlocked)
+				{
+				LOG_INFO << "VDM blocking execution.";
+
+				mPageRefcountTracker->executionIsBlockedChanged(true);
+
+				mExecutionStoppedTime = curClock();
+
+				mExecutionIsBlocked = true;
+
+				if (!mIsTornDown)
+					{
+					mExecutionContextsCanRun.close();
+					
+					double t0 = curClock();
+
+					for (auto contextPtr: mContexts)
+						{
+						LOG_DEBUG << "Scheduling VDM because we're blocked...";
+						contextPtr->scheduleVdmCheck();
+						}
+
+					if (curClock() - t0 > 1.0)
+						LOG_ERROR << "Took " << curClock() - t0 << " to call scheduleVdmCheck on " 
+							<< mContexts.size() << " contexts";
+					}
+				}
+			}
+		else
+			{
+			if (curTotalUsedBytes() <= (mMaxTotalBytes + mMemoryLimit) / 2 && 
+					totalBytesUsedByReferencingPages() < mLoadRatio * mMemoryLimit)
+				{
+				if (mExecutionIsBlocked)
+					{
+					mTotalTimeSpentStopped += curClock() - mExecutionStoppedTime;
+					LOG_INFO << "VDM re-enabling execution after " << (curClock() - mExecutionStoppedTime) 
+						<< ". total time spent stopped = " << mTotalTimeSpentStopped;
+					
+					mPageRefcountTracker->executionIsBlockedChanged(false);
+
+					mExecutionIsBlocked = false;
+
+					mExecutionContextsCanRun.open();
+					}
+				}
+			}
+		}
+
+	void logState(std::string message, bool force = false)
+		{
+		if (curClock() - 10.0 > mLastTimeLogged || mTimesLimitChecked % 1000 == 0 || force)
+			{
+			long contextsWithPagesMapped = 0;
+			
+			int64_t totalMemInECs = 0;
+			int64_t totalECBigvecOS = 0;
+			int64_t totalECBigvecUsed = 0;
+
+			LOGGER_INFO_T log = (mExecutionIsBlocked & curClock() - mExecutionStoppedTime > 10.0 ? 
+					LOGGER_CRITICAL : LOGGER_INFO);
+
+			log << "VDM " << (void*)this << " (" << mPageRefcountTracker->getMachineId() << ") -- " << message << endl 
+				<< "\tTimes checked = " << mTimesLimitChecked << endl
+				<< "\tGC events = " << mGcEventCount << endl
+				<< "\tTotal memory usage = " << curTotalUsedBytes() / 1024 / 1024.0 << endl
+				<< "\tContexts = " << mContexts.size() << endl
+				<< "\t\tWith pages mapped: " << contextsWithPagesMapped << endl
+				<< "\t\tBlocking: " << mTotalExecutionContextsBlocked << endl
+				<< "\t\tExecuting: " << mCurrentlyExecutingContexts.size() << endl
+				<< "\t\tGCing right now: " << mContextsActuallyGcing.size() << endl
+				<< "\tVectors to drop when unreferenced = " 
+					<< mVectorPages->bytesOfPagesToDropWhenFullyUnreferenced() / 1024 / 1024.0 
+					<< " MB "
+				<< " (over " << mVectorPages->getCountOfReferencedPages() << " vectors)" << endl
+				<< "\tTotal time spent blocked = " << mTotalTimeSpentStopped << endl
+				<< "\tExecution is blocked = " << (mExecutionIsBlocked ? "true":"false")
+				;
+
+			if (mExecutionIsBlocked)
+				log << " for " << curClock() - mExecutionStoppedTime << " seconds.";
+
+			log << endl;
+
+			log << "\tExecution Context MB: " << totalBytesUsedByExecutionContexts() / 1024 / 1024.0 << endl
+				<< "\tTotal VEC MB: " << mVectorPages->getTotalBytesUsed() / 1024 / 1024.0 << endl
+					<< "\t\tLoaded Vec MB = " << mVectorPages->getBytesInReferencedPages() / 1024 / 1024.0 << endl
+					<< "\t\tUnloaded Vec MB = " << mVectorPages->getBytecountOfUnreferencedPages() / 1024 / 1024.0
+					<< " over " << mVectorPages->getCountOfUnreferencedPages() << " pages" << endl
+				<< "\tVDMM:\n"
+				<< "\t\tEC:     " << (mMemoryManager->totalBytesUsedByExecutionContextsExcludingPagelets() - 
+											mMemoryManager->tcmallocMemoryCountedAsEcMemory()) / 1024 / 1024.0 << endl
+				<< "\t\tEC+P:   " << (mMemoryManager->totalBytesUsedByExecutionContextsIncludingPagelets() - 
+											mMemoryManager->tcmallocMemoryCountedAsEcMemory()) / 1024 / 1024.0 << endl
+				<< "\t\tVEC:    " << mMemoryManager->totalBytesUsedByVectorsExcludingPagelets() / 1024 / 1024.0 << endl
+				<< "\t\tVEC+P:  " << mMemoryManager->totalBytesUsedByVectorsIncludingPagelets() / 1024 / 1024.0 << endl
+				<< "\t\t\t\tover " << InstanceCounter<VectorPage>::totalCount() << " instances\n"
+				<< "\t\tPAGELET:" << mMemoryManager->totalBytesUsedByPagelets() / 1024 / 1024.0 << " over "
+					<< InstanceCounter<Fora::Pagelet>::totalCount() << " pagelets.\n"
+				<< "\t\tBIGVEC: " << mMemoryManager->totalBytesUsedByBigVectorHandles() / 1024 / 1024.0 << "\n"
+				<< "\t\t\tIN EC (USED): " << totalECBigvecUsed / 1024 / 1024.0 << "\n"
+				<< "\t\t\tIN EC (OS): " << totalECBigvecOS / 1024 / 1024.0 << "\n"
+				<< "\t\tOTHER:  " << mMemoryManager->totalBytesUsedByOtherPools() / 1024 / 1024.0 << "\n"
+				<< "\t\tMMAP:   " << mMemoryManager->totalBytesMmapped() / 1024 / 1024.0 << "\n"
+				<< "\tMemoryLimit = " << mMemoryLimit / 1024 / 1024.0 << endl
+				<< "\tMaxMemLimit = " << mMaxTotalBytes / 1024 / 1024.0 << endl
+				<< "\tUnload Ratio = " << mLoadRatio << endl
+				<< "Total MB used = " << Ufora::Memory::getTotalBytesAllocated() / 1024 / 1024.0 << endl
+				<< "Total MB allocated from OS = " << Ufora::Memory::getTotalBytesRequestedFromOS() / 1024 / 1024.0 << endl
+				;
+
+			mLastTimeLogged = curClock();
+			}
+		}
+
+
+
+	void checkDesiredEcCleanupStatus(
+							execution_context_impl_ptr context,
+							bool& outWantGc,
+							bool& outWantPageLargeVectors,
+							bool& outWantUnloadAllVectorHandles,
+							bool& outWantMemoryPoolDefragment
+							)
+		{
+		mGcEventCount++;
+
+		checkGcStatus_("checkDesiredEcCleanupStatus");
+
+		lassert(mContextsActuallyGcing.find(context) == mContextsActuallyGcing.end());
+
+		mStatsd.increment("checkDesiredEcCleanupStatus");
+		
+		pair<uint64_t, uint64_t> memUsageByEcAndFromOs = context->getCurrentMemoryUsage();
+
+		outWantUnloadAllVectorHandles = true;
+
+		if (contextNeedsGc_(context))
+			{
+			outWantGc = true;
+			outWantPageLargeVectors = true;
+
+			if (mMemoryManager->totalBytesUsedByExecutionContextsIncludingPagelets() > mLoadRatio * mMemoryLimit)
+				outWantMemoryPoolDefragment = 
+					memUsageByEcAndFromOs.second - memUsageByEcAndFromOs.first > 32 * 1024;
+			else
+				outWantMemoryPoolDefragment = 
+					memUsageByEcAndFromOs.second - memUsageByEcAndFromOs.first > 4 * 1024 * 1024;
+
+			outWantUnloadAllVectorHandles = true;
+			}
+
+		LOG_DEBUG << context << " checking GC: mem usage is "
+			<< context->getCurrentMemoryUsage().first / 1024 / 1024.0 << " MB now vs. "
+			<< context->getMemoryUsageAtLastEvent().first / 1024 / 1024.0 << " MB prior."
+			<< "bigvec = " 
+			<< "contextsAndHandlesOverMemoryLimit? = " << (contextsAndHandlesOverMemoryLimit_()?"true":"false")
+			<< ". outWantGc = " << (outWantGc?"true":"false")
+			<< ". outWantPageLargeVectors = " << (outWantPageLargeVectors?"true":"false")
+			<< ". outWantUnloadAllVectorHandles = " << (outWantUnloadAllVectorHandles?"true":"false")
+			<< ". pageSize = " << getCurrentLargeVectorHandlePageSize(context) / 1024 / 1024.0
+			<< ". maxChunk = " << mCumulusMaxVectorChunkSizeBytes / 1024 / 1024.0 << " MB. "
+			<< context->getTimeSpentInInterpreter()  + context->getTimeSpentInCompiledCode()
+			<< " executing, " << context->getTimeSpentGarbageCollecting() << " gcing"
+			;
+
+		mContextsActuallyGcing.insert(context);
+		}
+
+	bool shouldEcCleanupRetry(execution_context_impl_ptr context)
+		{
+		lassert(mContextsActuallyGcing.find(context) != mContextsActuallyGcing.end());
+
+		mContextsActuallyGcing.erase(context);
+
+		LOG_DEBUG << context << " after checking GC on "
+			<< mExecutionContextRetries[context] << " prior tries, mem usage is " 
+			<< context->getCurrentMemoryUsage().first / 1024 / 1024.0 << " MB now and "
+			<< context->getCurrentMemoryUsage().second / 1024 / 1024.0 << " MB from OS. "
+			<< "bigvec = " 
+			<< context->getExecutionContextMemoryPool()->getBigvecMappingPool()->totalBytesAllocatedFromOS() / 1024 / 1024.0 << " MB. "
+			;
+
+		//if we're running out of memory in this context, keep retrying with tighter paging limits
+		if (context->getCurrentMemoryUsage().first > mMemoryManager->getMaxBytesPerPool() / 4)
+			{
+			mExecutionContextRetries[context]++;
+
+			if (mExecutionContextRetries[context] > 8)
+				{
+				if (mExecutionContextMemoryTriggers[context] > mMemoryManager->getMaxBytesPerPool())
+					return false;
+				
+				//LOG_WARN << "Failed to get " << context << " underneath the limit.";
+
+				mExecutionContextRetries.erase(context);
+				mExecutionContextMemoryTriggers[context] = 
+					executionContextGcTriggerMemUsage(context) + 
+						mMemoryManager->getMaxBytesPerPool() / 8;
+
+				if (mExecutionContextMemoryTriggers[context] > 
+						mMemoryManager->getMaxBytesPerPool() / 2)
+					LOG_WARN << "Pool " << context << " using memory of " 
+						<< context->getMemoryUsageAtLastEvent().first / 1024 / 1024.0 << " MB. "
+						<< "AllocatedFromOS = "
+						<< context->getMemoryUsageAtLastEvent().second / 1024 / 1024.0 << " MB. "
+						<< "GC threshold widened to " 
+						<< mExecutionContextMemoryTriggers[context] / 1024 / 1024.0 << " MB."
+						;
+				else
+					LOG_DEBUG << "Pool " << context << " using memory of " 
+						<< context->getMemoryUsageAtLastEvent().first / 1024 / 1024.0 << " MB. "
+						<< "AllocatedFromOS = "
+						<< context->getMemoryUsageAtLastEvent().second / 1024 / 1024.0 << " MB. "
+						<< "GC threshold widened to " 
+						<< mExecutionContextMemoryTriggers[context] / 1024 / 1024.0 << " MB."
+						;
+
+				return false;
+				}
+
+			return true;
+			}
+		else
+			mExecutionContextRetries.erase(context);
+
+		return false;
+		}
+
+	void setMemoryLimit(uint64_t maxVectorBytes, uint64_t maxTotalBytes)
+		{
+		mMemoryLimit = maxVectorBytes;
+		mMaxTotalBytes = maxTotalBytes;
+		}
+
+	void executionIsStarting(execution_context_impl_ptr context)
+		{
+		lassert(mCurrentlyExecutingContexts.find(context) == mCurrentlyExecutingContexts.end());
+		
+		mCurrentlyExecutingContexts.insert(context);
+		}
+
+	void executionIsStopping(execution_context_impl_ptr context)
+		{
+		lassert(mCurrentlyExecutingContexts.find(context) != mCurrentlyExecutingContexts.end());
+
+		mCurrentlyExecutingContexts.erase(context);
+		}
+
+	uint64_t executionContextGcTriggerMemUsage(execution_context_impl_ptr context)
+		{
+		auto it = mExecutionContextMemoryTriggers.find(context);
+
+		if (it != mExecutionContextMemoryTriggers.end())
+			return it->second;
+
+		return mMemoryManager->getMaxBytesPerPool() / 4;
+		}
+
+	uint64_t getCurrentLargeVectorHandlePageSize(execution_context_impl_ptr context)
+		{
+		uint64_t result = mCumulusMaxVectorChunkSizeBytes;
+
+		if (mExecutionContextRetries.find(context) != mExecutionContextRetries.end())
+			{
+			uint64_t val = mExecutionContextRetries.find(context)->second;
+
+			for (long k = 0; k < val; k++)
+				result /= 2;
+			}
+
+		if (mMemoryManager->totalBytesUsedByExecutionContextsIncludingPagelets() > 
+				mMemoryLimit * mLoadRatio * .8)
+			result /= 2;
+
+		if (mMemoryManager->totalBytesUsedByExecutionContextsIncludingPagelets() > 
+				mMemoryLimit * mLoadRatio * .9)
+			result /= 4;
+
+		if (mMemoryManager->totalBytesUsedByExecutionContextsIncludingPagelets() > 
+				mMemoryLimit * mLoadRatio)
+			result /= 4;
+
+		return std::max<int64_t>(result, mMemoryManager->getSlabSize());
+		}
+
+	bool contextMayMapVectorHandles(
+						execution_context_impl_ptr context
+						)
+		{
+		if (curTotalUsedBytes() > mMaxTotalBytes)
+			return false;
+
+		if (mExecutionIsBlocked)
+			return false;
+
+		if (context->getExecutionContextMemoryPool()
+				->getBigvecMappingPool()->totalBytesAllocatedFromOS()
+					> mMemoryManager->getMaxBytesPerPool() / 4)
+			{
+			LOG_WARN << "Execution context " << &*context << " had " 
+				<< context->getExecutionContextMemoryPool()
+					->getBigvecMappingPool()->totalBytesAllocatedFromOS() / 1024 / 1024.0 
+				<< " MB of bigvec memory allocated, so we're triggering it."
+				;
+
+			context->scheduleVdmCheck();
+			return false;
+			}
+
+		
+		return true;
+		}
+
+	void executionContextBlockedOnMemoryAllocation(
+										execution_context_impl_ptr executionContext
+										)
+		{
+		mTotalExecutionContextsBlocked++;
+
+		LOG_DEBUG << this << " blocking " << executionContext 
+			<< " with " << prettyPrintString(executionContext->getMemoryUsageAtLastEvent())
+			<< " vs. " << prettyPrintString(executionContext->getCurrentMemoryUsage())
+			<< ". total blocked = " << mTotalExecutionContextsBlocked
+			;
+
+		checkGcStatus_("executionContextBlockedOnMemoryAllocation");
+		}
+
+	void executionContextUnblockedOnMemoryAllocation(
+										execution_context_impl_ptr executionContext
+										)
+		{
+		mTotalExecutionContextsBlocked--;
+		
+		LOG_DEBUG
+			<< this << "unblocking ExecutionContext " << executionContext << " allocation"
+			<< ". total blocked = " << mTotalExecutionContextsBlocked
+			;	
+		}
+
+	Ufora::threading::Gate& executionContextsCanRunGate()
+		{
+		return mExecutionContextsCanRun;
+		}
+
+	void teardown()
+		{
+		mExecutionContextsCanRun.open();
+
+		mIsTornDown = true;
+		}
+
+	void setDropUnreferencedPagesWhenFull(bool inShouldDrop)
+		{
+		mShouldDropUnreferencedPagesWhenFull = inShouldDrop;
+		}
+
+private:
+	long mTotalExecutionContextsBlocked;
+
+	long mGcEventCount;
+	
+	uint64_t mMemoryLimit;
+
+	uint64_t mMaxTotalBytes;
+
+	double mLoadRatio;
+
+	bool mExecutionIsBlocked;
+
+	bool mIsTornDown;
+
+	bool mShouldDropUnreferencedPagesWhenFull;
+
+	PolymorphicSharedPtr<TypedFora::Abi::BigVectorLayouts> mBigVectorLayouts;
+
+	std::map<execution_context_impl_ptr, long> mExecutionContextRetries;
+
+	uword_t mCumulusMaxVectorChunkSizeBytes;
+
+	PolymorphicSharedPtr<PageRefcountTracker> mPageRefcountTracker;
+
+	set<execution_context_impl_ptr> mContexts;
+
+	set<execution_context_impl_ptr> mContextsActuallyGcing;
+
+	std::map<execution_context_impl_ptr, uint64_t> mExecutionContextMemoryTriggers;
+
+	std::set<execution_context_impl_ptr> mCurrentlyExecutingContexts;
+
+	PolymorphicSharedPtr<VectorPages> mVectorPages;
+
+	PolymorphicSharedPtr<VectorDataMemoryManager> mMemoryManager;
+
+	double mExecutionStoppedTime;
+
+	double mLastTimeLogged;
+
+	double mTotalTimeSpentStopped;
+
+	boost::function0<bool> mTryToUnloadVectorPages;
+
+	ufora::Statsd& mStatsd;
+
+	long mTimesLimitChecked;
+
+	Ufora::threading::Gate mExecutionContextsCanRun;
+};
+

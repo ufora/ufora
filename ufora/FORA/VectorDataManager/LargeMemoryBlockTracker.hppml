@@ -1,0 +1,244 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "ByteRanges.hppml"
+
+/*******************
+
+LargeMemoryBlockTracker
+
+Tracks allocation and recycling of large blocks of memory. Rather than allocating using mmap,
+we allocate very large chunks (GB's) and manage the lifecycle ourselves.  This is primarily for
+performance reasons: on virtualized hardware, it is very expensive to repeatedly allocate memory 
+from the OS, use it, and release it. 
+
+This class allows us to track allocations in detail.
+
+********************/
+
+class LargeMemoryBlockTracker {
+public:
+	LargeMemoryBlockTracker() : 
+			mBytesUsed(0),
+			mBytesUnused(0)
+		{
+		}
+
+	void addUnusedBytes(uint8_t* base, int64_t inBytes)
+		{
+		lassert(base);
+
+		mUnusedBlocks.addRange(base, inBytes);
+		mBytesUnused += inBytes;
+		}
+
+	void addUsedBytes(uint8_t* base, int64_t inBytes)
+		{
+		lassert(base);
+
+		mUsedBlocks.addRange(base, inBytes);
+		mBytesUsed += inBytes;
+		}
+
+	int64_t bytesUsed() const
+		{
+		return mBytesUsed;
+		}
+
+	int64_t bytesUnused() const
+		{
+		return mBytesUnused;
+		}
+
+	int64_t totalBytes() const
+		{
+		return mBytesUnused + mBytesUsed;
+		}
+
+	uint8_t* allocateBytes(int64_t inBytes)
+		{
+		//find the smallest range that could hold this and use it
+		auto it = mUnusedBlocks.getValueToKeys().lower_bound(inBytes);
+
+		if (it != mUnusedBlocks.getValueToKeys().end())
+			{
+			uint8_t* base = *it->second.begin();
+			useRange(base, inBytes);
+			return base;
+			}
+
+		return nullptr;
+		}
+
+	void deallocateBytes(uint8_t* base, int64_t inBytes)
+		{
+		stopUsingRange(base, inBytes);
+		}
+
+	std::pair<uint8_t*, int64_t> smallestUnusedRange()
+		{
+		if (!mUnusedBlocks.blockCount())
+			return std::pair<uint8_t*, int64_t>();
+
+		int64_t sz = mUnusedBlocks.smallestBlockSize();
+
+		return std::make_pair(*mUnusedBlocks.blocksOfSize(sz).begin(), sz);
+		}
+
+	std::pair<uint8_t*, int64_t> smallestUsedRange()
+		{
+		if (!mUsedBlocks.blockCount())
+			return std::pair<uint8_t*, int64_t>();
+
+		int64_t sz = mUsedBlocks.smallestBlockSize();
+
+		return std::make_pair(*mUsedBlocks.blocksOfSize(sz).begin(), sz);
+		}
+
+	std::pair<uint8_t*, int64_t> unusedRangeContaining(uint8_t* ptr)
+		{
+		return mUnusedBlocks.rangeContaining(ptr);
+		}
+
+	int64_t sizeOfLargestUnusedBlock() const
+		{
+		if (mUnusedBlocks.blockCount() == 0)
+			return 0;
+
+		return mUnusedBlocks.largestBlockSize();
+		}
+
+	void deallocateAllUsedRanges()
+		{
+		while (true)
+			{
+			auto range = smallestUsedRange();
+			if (range.first)
+				deallocateBytes(range.first, range.second);
+			else
+				return;
+			}
+		}
+
+	void unusedBytesReleasedToOS(uint8_t* base, int64_t inBytes)
+		{
+		lassert(mUnusedBlocks.containsRangeEntirely(base, inBytes));
+		mUnusedBlocks.dropRange(base, inBytes);
+
+		mBytesUnused -= inBytes;
+		}
+
+	void validateState()
+		{
+		validateUsedBytecount();
+		validateUnusedBytecount();
+		validateNoConsecutiveUnusedBytecounts();
+		}
+
+private:
+	void validateNoConsecutiveUnusedBytecounts()
+		{
+		for (auto it = mUnusedBlocks.getKeyToValue().begin(); 
+						it != mUnusedBlocks.getKeyToValue().end(); ++it)
+			{
+			auto it2 = it;
+			it2++;
+
+			if (it2 != mUnusedBlocks.getKeyToValue().end())
+				lassert(it->first + it->second < it2->first);
+			}
+		}
+
+	void validateUnusedBytecount()
+		{
+		long unused = 0;
+		for (auto baseAndBytes: mUnusedBlocks.getKeyToValue())
+			{
+			unused += baseAndBytes.second;
+			
+			std::pair<uint8_t*, int64_t> range = rangeContaining(baseAndBytes.first);
+
+			lassert(range.first == baseAndBytes.first);
+			lassert(range.second == baseAndBytes.second);
+			}
+
+		lassert(unused == mBytesUnused);
+		}
+
+	void validateUsedBytecount()
+		{
+		long used = 0;
+		for (auto baseAndBytes: mUsedBlocks.getKeyToValue())
+			{
+			used += baseAndBytes.second;
+			
+			std::pair<uint8_t*, int64_t> range = rangeContaining(baseAndBytes.first);
+
+			lassert(range.first == baseAndBytes.first);
+			lassert(range.second == baseAndBytes.second);
+			}
+
+		lassert(used == mBytesUsed);
+		}
+
+	void useRange(uint8_t* base, int64_t inBytes)
+		{
+		lassert(mUnusedBlocks.containsRangeEntirely(base, inBytes));
+
+		mUnusedBlocks.dropRange(base, inBytes);
+		mUsedBlocks.addRange(base, inBytes);
+
+		mBytesUsed += inBytes;
+		mBytesUnused -= inBytes;
+		}
+
+	void stopUsingRange(uint8_t* base, int64_t inBytes)
+		{
+		lassert_dump(
+			mUsedBlocks.containsRangeEntirely(base, inBytes),
+			(void*)base << " and " << inBytes << " not in " 
+				<< (void*)mUsedBlocks.rangeContaining(base).first
+				<< " and " << mUsedBlocks.rangeContaining(base).second
+			);
+
+		mBytesUnused += inBytes;
+		mBytesUsed -= inBytes;
+
+		mUsedBlocks.dropRange(base, inBytes);
+		mUnusedBlocks.addRange(base, inBytes);
+		}
+
+	std::pair<uint8_t*, int64_t> rangeContaining(uint8_t* ptr) const
+		{
+		auto res = mUsedBlocks.rangeContaining(ptr);
+
+		if (res.first)
+			return res;
+
+		return mUnusedBlocks.rangeContaining(ptr);
+		}
+
+
+	int64_t mBytesUsed;
+
+	int64_t mBytesUnused;
+
+	ByteRanges mUsedBlocks;
+
+	ByteRanges mUnusedBlocks;
+};
+

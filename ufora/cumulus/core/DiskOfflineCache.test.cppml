@@ -1,0 +1,169 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "DiskOfflineCache.hpp"
+#include "../../FORA/VectorDataManager/VectorDataMemoryManager.hppml"
+#include "../../core/UnitTest.hpp"
+#include "../../core/math/Random.hpp"
+#include <boost/filesystem.hpp>
+
+using namespace Cumulus;
+using namespace boost::filesystem;
+
+BOOST_AUTO_TEST_SUITE( test_Cumulus_DiskOfflineCache )
+
+template<class T>
+void testReadsAndWritesSuccessfully(const T& in)
+	{
+	PolymorphicSharedPtr<VectorDataMemoryManager> vdmm(
+		new VectorDataMemoryManager(
+			CallbackScheduler::singletonForTesting(),
+			CallbackScheduler::singletonForTesting()
+			)
+		);
+
+	path basePath = unique_path();
+
+		{
+		PolymorphicSharedPtr<OfflineCache> cache(
+			new DiskOfflineCache(
+				CallbackScheduler::singletonForTesting(),
+				basePath,
+				100L * 1024 * 1024 * 1024,
+				100000
+				)
+			);
+
+		Fora::PageId page(hash_type(1), 1, 1);
+
+		PolymorphicSharedPtr<SerializedObject> obj = 
+			SerializedObject::serialize(in, vdmm);
+
+		BOOST_CHECK(!cache->alreadyExists(page));
+
+		cache->store(page, obj);
+
+		BOOST_CHECK(cache->alreadyExists(page));
+
+		PolymorphicSharedPtr<SerializedObject> obj2 = 
+			cache->loadIfExists(page);
+
+		BOOST_CHECK(obj2);
+
+		BOOST_CHECK(obj->hash() == obj2->hash());
+
+		T shouldEqualInput;
+		SerializedObject::deserialize(obj2, vdmm, shouldEqualInput);
+
+		BOOST_CHECK(cppmlCmp(in, shouldEqualInput) == 0);
+		}
+
+	boost::filesystem::remove_all(basePath);
+	}
+
+BOOST_AUTO_TEST_CASE( test_writing_string )
+	{
+	testReadsAndWritesSuccessfully(std::string("this is a test string"));
+	}
+
+BOOST_AUTO_TEST_CASE( test_writing_something_big )
+	{
+	std::vector<char> data;
+	data.resize(1000000);
+	data[1000] = 1;
+
+	testReadsAndWritesSuccessfully(data);
+	}
+
+BOOST_AUTO_TEST_CASE( test_multithreading )
+	{
+	std::vector<Fora::PageId> pages;
+	for (long k = 0; k < 100; k++)
+		pages.push_back(Fora::PageId(hash_type(k), 1000, 1000));
+
+	PolymorphicSharedPtr<SerializedObject> someData = 
+		SerializedObject::serialize(
+			std::string("this is a string"), 
+			PolymorphicSharedPtr<VectorDataMemoryManager>()
+			);
+
+	path basePath = unique_path();
+
+	PolymorphicSharedPtr<OfflineCache> cache(
+		new DiskOfflineCache(
+			CallbackScheduler::singletonForTesting(),
+			basePath,
+			100L * 1024 * 1024 * 1024,
+			40
+			)
+		);
+
+	double t0 = curClock();
+
+	bool OK = true;
+
+	boost::function1<void, long> threadFunc = [&](long index) {
+		try {
+			Ufora::math::Random::Uniform<float> random(index+1);
+
+			while (curClock() - t0 < 4.0)
+				{
+				Fora::PageId page = pages[random() * pages.size()];
+
+				if (random() < .33)
+					cache->store(page, someData);
+					else
+				if (random() < .5)
+					cache->drop(page);
+				else
+					cache->loadIfExists(page);
+				}
+			}
+		catch(std::logic_error& e)
+			{
+			LOG_CRITICAL << "Failed: " << e.what();
+			OK = false;
+			}
+		catch(...)
+			{
+			LOG_CRITICAL << "Failed due to unknown exception.";
+			OK = false;
+			}
+		};
+
+	std::vector<boost::shared_ptr<boost::thread> > threads;
+	for (long k = 0; k < 20; k++)
+		threads.push_back(
+			boost::shared_ptr<boost::thread>(
+				new boost::thread(
+					boost::bind(
+						threadFunc,
+						k
+						)
+					)
+				)
+			);
+
+	for (auto thread: threads)
+		thread->join();
+
+	boost::filesystem::remove_all(basePath);
+	
+	BOOST_CHECK(OK);
+	}
+
+BOOST_AUTO_TEST_SUITE_END( )
+
+

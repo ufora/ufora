@@ -1,0 +1,383 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "VectorRecord.hpp"
+#include "VectorHandle.test.hpp"
+#include "ForaValueArray.hppml"
+#include "../../../core/math/Random.hpp"
+#include "../../../core/UnitTest.hpp"
+#include "../../Core/ExecutionContextMemoryPool.hppml"
+#include "../../VectorDataManager/VectorDataMemoryManager.hppml"
+
+using TypedFora::Abi::VectorRecord;
+using TypedFora::Abi::VectorHandle;
+using TypedFora::Abi::VectorHandlePtr;
+using TypedFora::Abi::ForaValueArray;
+
+class VectorRecordTestFixture : public TypedFora::Abi::VectorHandleTestFixture {
+public:
+	VectorRecordTestFixture()
+		{
+		}
+};
+
+BOOST_FIXTURE_TEST_SUITE( test_TypedFora_Abi_VectorRecord, VectorRecordTestFixture )
+
+BOOST_AUTO_TEST_CASE( test_instantiate_empty )
+	{
+	VectorRecord record;
+
+	BOOST_CHECK(record.size() == 0);
+
+	BOOST_CHECK(!record);
+	}
+
+BOOST_AUTO_TEST_CASE( test_holding_unpaged_vector )
+	{
+	VectorRecord record(newUnpagedHandle(0, 10));
+
+	BOOST_CHECK(record.size() == 10);
+	BOOST_CHECK(record);
+	}
+
+BOOST_AUTO_TEST_CASE( test_holding_paged_vector )
+	{
+	VectorRecord record(
+		newPagedHandle(0, ImmutableTreeVector<int64_t>() + 10 + 5)
+		);
+
+	BOOST_CHECK_EQUAL(record.size(), 15);
+	BOOST_CHECK(record);
+	BOOST_CHECK_EQUAL(record.dataPtr()->refcount(), 1);
+	}
+
+BOOST_AUTO_TEST_CASE( test_concatenate )
+	{
+	VectorRecord record1(
+		newPagedHandle(0, ImmutableTreeVector<int64_t>() + 10 + 5)
+		);
+
+	VectorRecord record2(
+		newPagedHandle(1, ImmutableTreeVector<int64_t>() + 11)
+		);
+
+	VectorRecord record3 = 
+		VectorRecord::concatenate(record1, record2, &memoryPool, &*vdm, hash_type(2));
+
+	BOOST_CHECK(record3.size() == 26);
+
+	record3 = VectorRecord::concatenate(record3, record3, &memoryPool, &*vdm, hash_type(3));
+
+	BOOST_CHECK_EQUAL(record3.size(), 52);
+	}
+
+BOOST_AUTO_TEST_CASE( test_slice )
+	{
+	VectorRecord record1(
+		newUnpagedHandle(0, 10)
+		);
+
+	VectorRecord record2 = 
+		record1.slice(
+			null() << (int64_t)1, 
+			null() << (int64_t)-1, 
+			null()
+			);
+
+	BOOST_CHECK(record2.size() == 8);
+	BOOST_CHECK(record2.offset() == 1);
+	BOOST_CHECK(record2.stride() == 1);
+	}
+
+BOOST_AUTO_TEST_CASE( test_portion_allotment )
+	{
+	//construct a vector with 10 paged values, 100 pageletTree values, and 1000 unpaged values
+	VectorRecord record1(newUnpagedHandle(0, 10));
+	VectorRecord record2(newUnpagedHandle(1, 100));
+	VectorRecord record3(newUnpagedHandle(2, 1000));
+
+	record1 = record1.paged(&memoryPool, &*vdm);
+	record2.dataPtr()->moveUnpagedValueArrayIntoPagelet(&*vdm);
+
+	VectorRecord wholeRecord = 
+		VectorRecord::concatenate(record1, record2, &memoryPool, &*vdm, hash_type(3));
+
+	wholeRecord.dataPtr()->makeSpaceForNewUnpagedValues(&*vdm);
+	
+	wholeRecord.dataPtr()->unpagedValues()->append(*record3.unpagedValues());
+	wholeRecord.dataPtr()->valueAppendedToUnpagedData(1000);
+
+	wholeRecord = VectorRecord(
+		wholeRecord.dataPtr(),
+		wholeRecord.size() + 1000,
+		0,
+		1
+		);
+
+	//verify all the pieces add up correctly
+	BOOST_CHECK_EQUAL(wholeRecord.dataPtr()->pagedValuesIdentity().size(), 10);
+	BOOST_CHECK_EQUAL(wholeRecord.dataPtr()->pageletTree()->size(), 100);
+	BOOST_CHECK_EQUAL(wholeRecord.dataPtr()->unpagedValues()->size(), 1000);
+
+	BOOST_CHECK_EQUAL(wholeRecord.dataPtr()->pagedValueCount(), 10);
+	BOOST_CHECK_EQUAL(wholeRecord.dataPtr()->pageletTreeValueCount(), 100);
+	BOOST_CHECK_EQUAL(wholeRecord.dataPtr()->unpagedValueCount(), 1000);
+
+	BOOST_CHECK_EQUAL(wholeRecord.size(), 1110);
+
+	BOOST_CHECK_EQUAL(wholeRecord.pagedPortion().size(), 10);
+	BOOST_CHECK_EQUAL(wholeRecord.pagedPortion().offset(), 0);
+
+	BOOST_CHECK_EQUAL(wholeRecord.pageletTreePortion().size(), 100);
+	BOOST_CHECK_EQUAL(wholeRecord.pageletTreePortion().offset(), 10);
+
+	BOOST_CHECK_EQUAL(wholeRecord.pagedAndPageletTreePortion().size(), 110);
+	BOOST_CHECK_EQUAL(wholeRecord.pagedAndPageletTreePortion().offset(), 0);
+
+	BOOST_CHECK_EQUAL(wholeRecord.unpagedPortion().size(), 1000);
+	BOOST_CHECK_EQUAL(wholeRecord.unpagedPortion().offset(), 110);
+
+	BOOST_CHECK_EQUAL(wholeRecord.unpagedAndPageletTreePortion().size(), 1100);
+	BOOST_CHECK_EQUAL(wholeRecord.unpagedAndPageletTreePortion().offset(), 10);
+
+	//restrict the vector to each of the three slices and check that we have the right proportions
+	wholeRecord = VectorRecord(wholeRecord.dataPtr(), 5, 0, 1);
+
+	BOOST_CHECK_EQUAL(wholeRecord.pagedPortion().size(), 5);
+	BOOST_CHECK_EQUAL(wholeRecord.unpagedPortion().size(), 0);
+	BOOST_CHECK_EQUAL(wholeRecord.pageletTreePortion().size(), 0);
+
+	wholeRecord = VectorRecord(wholeRecord.dataPtr(), 5, 10, 1);
+
+	BOOST_CHECK_EQUAL(wholeRecord.pagedPortion().size(), 0);
+	BOOST_CHECK_EQUAL(wholeRecord.unpagedPortion().size(), 0);
+	BOOST_CHECK_EQUAL(wholeRecord.pageletTreePortion().size(), 5);
+
+	wholeRecord = VectorRecord(wholeRecord.dataPtr(), 5, 110, 1);
+
+	BOOST_CHECK_EQUAL(wholeRecord.pagedPortion().size(), 0);
+	BOOST_CHECK_EQUAL(wholeRecord.unpagedPortion().size(), 5);
+	BOOST_CHECK_EQUAL(wholeRecord.pageletTreePortion().size(), 0);
+	}
+
+BOOST_AUTO_TEST_CASE( test_concatenate_unpaged )
+	{
+	VectorRecord record1(newUnpagedHandle(0, 10));
+
+	VectorRecord record2(newUnpagedHandle(1, 15));
+
+	BOOST_CHECK(record1.size() == 10);
+	BOOST_CHECK(record2.size() == 15);
+
+	VectorRecord record3 = 
+		VectorRecord::concatenate(record1, record2, &memoryPool, &*vdm, hash_type(2));
+
+	BOOST_CHECK_EQUAL(record3.size(), 25);
+	}
+
+BOOST_AUTO_TEST_CASE( test_pagelets_of_string_have_low_overhead )
+	{
+	VectorRecord record(newUnpagedHandle(0, 0));
+
+	for (long k = 0; k < 20000; k++)
+		record = record.append(
+			&memoryPool, 
+			ImplValContainer(CSTValue(boost::lexical_cast<string>(k))),
+			&*vdm,
+			[&]() { return hash_type(); }
+			);
+
+	record.dataPtr()->moveUnpagedValueArrayIntoPagelet(&*vdm);
+	
+	auto tree = record.pageletTree();
+
+	long bytesPerValue = tree->bytecountIncludingHeldPagelets() / tree->size();
+
+	BOOST_CHECK(bytesPerValue >= sizeof(String));
+	BOOST_CHECK(bytesPerValue <= sizeof(String) + 2);
+	}
+
+BOOST_AUTO_TEST_CASE( test_pagelets_of_mixed_float_and_nothing_have_low_overhead )
+	{
+	VectorRecord record(newUnpagedHandle(0, 0));
+
+	for (long k = 0; k < 20000; k++)
+		record = record.append(
+			&memoryPool, 
+			ImplValContainer(
+				k % 2 ? CSTValue((int64_t)k) : CSTValue()
+				),
+			&*vdm,
+			[&]() { return hash_type(); }
+			);
+
+	record.dataPtr()->moveUnpagedValueArrayIntoPagelet(&*vdm);
+	
+	auto tree = record.pageletTree();
+
+	long bytesPerValue = tree->bytecountIncludingHeldPagelets() / tree->size();
+
+	BOOST_CHECK(bytesPerValue >= sizeof(int64_t));
+	BOOST_CHECK(bytesPerValue <= sizeof(int64_t) + 2);
+	}
+
+BOOST_AUTO_TEST_CASE( test_append_to_sliced )
+	{
+	VectorRecord record1(newUnpagedHandle(0, 10));
+
+	record1.dataPtr()->moveUnpagedValueArrayIntoPagelet(&*vdm);
+
+	VectorRecord record2 = 
+		record1.slice(Nullable<int64_t>(0), Nullable<int64_t>(2), null());
+
+	VectorRecord record3 = 
+		record2.append(
+			&memoryPool, 
+			ImplValContainer(CSTValue(100)), &*vdm, []() { return hash_type(2); }
+			);
+
+	BOOST_CHECK(record3.size() == 3);
+
+	TypedFora::Abi::ForaValueArraySlice offset = record3.sliceForOffset(2);
+	BOOST_CHECK(offset.offsetFor(2));
+
+	BOOST_CHECK( offset[2] == ImplValContainer(CSTValue(100)) );
+	}
+
+BOOST_AUTO_TEST_CASE( test_small_vectors_stay_unpaged )
+	{
+	const static long kPasses = 1000;
+	const static long kDepth = 100;
+	const static long kVectorCount = 3;
+	const static long kMaxVectorSize = 10;
+
+
+	//verify that if we're dealing entirely with small vectors of integer that we never produce
+	//pages or pagelets
+	for (long passIx = 0; passIx < kPasses; passIx++)
+		{
+		LOG_INFO << "Pass: " << passIx;
+		Ufora::math::Random::Uniform<float> random(passIx+1);
+
+		std::vector<VectorRecord> vectors;
+
+		for (long k = 0; k < kVectorCount; k++)
+			vectors.push_back(VectorRecord(newUnpagedHandle(0, kMaxVectorSize / 2)));
+
+		for (long opIx = 0; opIx < kDepth; opIx++)
+			{
+			LOG_DEBUG << "Pass " << passIx << ". op " << opIx;
+				
+			long which = random() * 4;
+
+			if (which == 0)
+				{
+				long ix = random() * vectors.size();
+				
+				Nullable<int64_t> low = random() < .5 ? Nullable<int64_t>() : Nullable<int64_t>(random() * 7 - 3);
+				Nullable<int64_t> high = random() < .5 ? Nullable<int64_t>() : Nullable<int64_t>(random() * 7 - 3);
+				Nullable<int64_t> stride = random() < .5 ? Nullable<int64_t>() : Nullable<int64_t>(random() * 7 - 3);
+
+				if (stride && *stride == 0)
+					stride = null();
+
+				LOG_DEBUG << "Slice " << ix << " VectorRecord(sz=" << vectors[ix].size() 
+							<< ".o=" << vectors[ix].offset() << ",stride=" << vectors[ix].stride() 
+							<< "," << vectors[ix].dataPtr() << ")"
+							<< " with "
+							<< low << ", " << high << ", " << stride
+					;
+
+				vectors[ix] = vectors[ix].slice(low, high, stride);
+				}
+				else
+			if (which == 1)
+				{
+				long ix = random() * vectors.size();
+
+				if (vectors[ix].size() < kMaxVectorSize)
+					{
+					LOG_DEBUG << "Append to " << ix << " VectorRecord(sz=" << vectors[ix].size() 
+							<< ".o=" << vectors[ix].offset() << ",stride=" << vectors[ix].stride() 
+							<< "," << vectors[ix].dataPtr() << ")"
+							<< ". " 
+							<< (vectors[ix].isCanonicallySliced() ? "":"not canonically sliced");
+
+					//append to the vector
+					vectors[ix] = vectors[ix].append(
+						&memoryPool, 
+						ImplValContainer(CSTValue((int64_t)0)), 
+						&*vdm, 
+						[]() { return hash_type(2); }
+						);
+
+					LOG_DEBUG << "Now it's " << ix << " VectorRecord(sz=" << vectors[ix].size() 
+							<< ".o=" << vectors[ix].offset() << ",stride=" << vectors[ix].stride() 
+							<< "," << vectors[ix].dataPtr() << ")";
+					}
+				}
+				else
+			if (which == 2)
+				{
+				//concatenate two vectors
+				long ix1 = random() * vectors.size();
+				long ix2 = random() * vectors.size();
+				
+				if (vectors[ix1].size() + vectors[ix2].size() <= kMaxVectorSize)
+					{	
+					LOG_DEBUG << "Concatenate " << ix1 << " (" << vectors[ix1].dataPtr() << ") with "
+						 << "Concatenate " << ix2 << " (" << vectors[ix2].dataPtr() << ")";
+				
+					vectors[ix1] = VectorRecord::concatenate(
+						vectors[ix1], 
+						vectors[ix2], 
+						&memoryPool, 
+						&*vdm, 
+						hash_type()
+						);
+					}
+				}
+				else
+			if (which == 3)
+				{
+				//put something in a pagelet
+				//concatenate two vectors
+				long ix1 = random() * vectors.size();
+				
+				if (vectors[ix1].dataPtr())
+					{	
+					LOG_DEBUG << "Put " << ix1 << " (" << vectors[ix1].dataPtr() << ") into pagelet";
+					vectors[ix1].dataPtr()->moveUnpagedValueArrayIntoPagelet(&*vdm);
+					}
+				}
+
+			for (long k = 0; k < vectors.size();k++)
+				{
+				BOOST_CHECK(vectors[k].size() <= kMaxVectorSize);
+				if (vectors[k].dataPtr())
+					lassert_dump(
+						vectors[k].dataPtr()->pagedValueCount() == 0,
+						"Vector in slot " << k << " on pass " << passIx << " and opIx " 
+							<< opIx << " is " << vectors[k].dataPtr()
+						);
+				}
+			}
+		}
+	}
+
+
+BOOST_AUTO_TEST_SUITE_END()
+
+

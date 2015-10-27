@@ -1,0 +1,236 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "StringCodegen.hppml"
+#include "StringImplCodegen.hppml"
+
+typedef TypedNativeExpressionBehaviors<String> behaviors_type;
+
+TypedNativeExpression<uint8_t> behaviors_type::getItem(
+        const TypedNativeExpression<int64_t>& inIndexExpr
+        )
+    {
+    using namespace TypedNativeExpressionHelpers;
+
+    // NOTE: we're not checking recordPtr() here, 
+    // since this makes no sense for empty strings.
+    // Futhermore, bounds checking is done at the axiom layer 
+    // (in String.GetItem.cppml)
+
+    NativeExpression nativeIndexExpr = inIndexExpr.getExpression();
+    TypedNativeVariable<uint64_t> rawRecordPtrExpr;
+
+    return
+        let(
+            rawRecordPtrExpr,
+            rawRecordPtr(),
+            if_(
+                isPackedStringImpl(rawRecordPtrExpr),
+                TypedNativeExpression<uint8_t>(
+                    packedStringGetItem(nativeIndexExpr)
+                    ),
+                TypedNativeExpression<uint8_t>(
+                    TypedNativeExpression<StringImpl*>(
+                        rawRecordPtrExpr.getExpression().cast(
+                            NativeTypeFor<StringImpl*>::get(),
+                            false
+                            )
+                        ).getExpression()["mData"]
+                    .cast(NativeType::uint8().ptr(), false)[nativeIndexExpr].load()
+                    )
+                )
+            );
+    }
+
+TypedNativeExpression<size_t> behaviors_type::size() const
+    {
+    using namespace TypedNativeExpressionHelpers;
+
+    // String::size lasserts mStringRecord->validStringRecord().
+    // should we be doing that here too?
+
+    TypedNativeVariable<uint64_t> rawRecordPtrExpr;
+
+    return
+        let(
+            rawRecordPtrExpr,
+            rawRecordPtr(),
+            if_(
+                rawRecordPtrExpr != TypedNativeExpression<uint64_t>(0),
+                if_(
+                    isPackedStringImpl(rawRecordPtrExpr),
+                    packedStringSize(rawRecordPtrExpr),
+                    TypedNativeExpression<StringImpl*>(
+                        rawRecordPtrExpr.getExpression().cast(
+                            NativeTypeFor<StringImpl*>::get(), 
+                            false
+                            )
+                        ).size()
+                    ),         
+                TypedNativeExpression<size_t>(0)
+                )
+            );
+    }
+
+TypedNativeExpression<uint64_t> behaviors_type::rawRecordPtr() const
+    {
+    return TypedNativeExpression<uint64_t>(mThis[0]);
+    }
+
+TypedNativeExpression<StringImpl*> behaviors_type::recordPtr() const
+    {
+    return TypedNativeExpression<StringImpl*>(
+        mThis[0].cast(NativeTypeFor<StringImpl*>::get(), false)
+        );
+    }
+
+TypedNativeExpression<void*> behaviors_type::emptyData(uword_t ix) const
+    {
+    lassert(0 <= ix and ix <= 2);
+
+    return TypedNativeExpression<void*>(
+        mThis[ix + 1].cast(NativeTypeFor<void*>::get(), false)
+        );
+    }
+
+TypedNativeExpression<uint8_t> 
+behaviors_type::getPackedItemFromWord(
+        const TypedNativeExpression<int64_t>& inIndexExpr,
+        int64_t inWordIx, 
+        int64_t byteOffset
+        )
+    {
+    /*
+      computes 
+
+      (mThis[inWordIx] >> ((inIndexExpr - byteOffset) << 3)) & 0xFF
+
+      recall << 3 is multiplication by 8, so this computes the (inIndexExpr - byteOffset)
+      sub-byte of the 64-bit word mThis[inWordIx]. This assumes little-endian architecture,
+      like Linux
+     */
+
+    return TypedNativeExpression<uint8_t>(
+        NativeExpression::BinaryOp(
+            NativeBinaryOpcode::And(),
+            NativeExpression::BinaryOp(
+                NativeBinaryOpcode::ShiftRight(),
+                mThis[inWordIx],
+                NativeExpression::BinaryOp(
+                    NativeBinaryOpcode::ShiftLeft(),
+                    (inIndexExpr - TypedNativeExpression<int64_t>(byteOffset))
+                        .getExpression(),
+                    NativeExpression::Constant(
+                        NativeConstant::UInt64(3)
+                        )
+                    )
+                ),
+            NativeExpression::Constant(
+                NativeConstant::UInt64(0xFF)
+                )
+            ).cast(NativeType::uint8(), false)
+        );
+    } 
+
+TypedNativeExpression<uint8_t> behaviors_type::packedStringGetItem(
+        const TypedNativeExpression<int64_t>& inIndexExpr
+        )
+    {
+    using namespace TypedNativeExpressionHelpers;
+
+    return if_(
+        inIndexExpr < TypedNativeExpression<int64_t>(7),
+        getPackedItemFromWord(inIndexExpr, 0, -1),
+        if_(
+            inIndexExpr < TypedNativeExpression<int64_t>(15),
+            getPackedItemFromWord(inIndexExpr, 1, 7),
+            if_(
+                inIndexExpr < TypedNativeExpression<int64_t>(23),
+                getPackedItemFromWord(inIndexExpr, 2, 15),
+                getPackedItemFromWord(inIndexExpr, 3, 23)
+                )
+            )
+        );
+    }
+
+TypedNativeExpression<uint8_t> behaviors_type::offsetIndex(
+        const TypedNativeExpression<void*>& inPtr, 
+        const TypedNativeExpression<int64_t>& inIx
+        )
+    {
+    NativeExpression nativePtr = inPtr.getExpression();
+
+    NativeVariable var = NativeVariable::Temp(nativePtr.type()->ptr());
+
+    return NativeExpression::Let(
+        var,
+        NativeExpression::Alloc(*nativePtr.type(), 1, false),
+        var.expr().store(nativePtr) >>
+        var.expr().cast(NativeType::uint8().ptr(), false)
+        )
+        [inIx.getExpression()].load();
+    }
+
+TypedNativeExpression<bool> 
+behaviors_type::isPackedStringImpl(const TypedNativeExpression<int64_t>& in)
+    {
+    NativeExpression tr = 
+        NativeExpression::BinaryOp(
+            NativeBinaryOpcode::And(),
+            // is this casting the correct bytes in the stringImplPtr??
+            in.getExpression().cast(NativeType::uint8(), false),
+            NativeExpression::Constant(
+                NativeConstant::UInt8(1)
+                )
+            );
+
+    tr = tr.cast(NativeType::Integer(1, false), false);
+
+    return TypedNativeExpression<bool>(tr);
+    }
+
+TypedNativeExpression<size_t>
+behaviors_type::packedStringSize(const TypedNativeExpression<int64_t>& in)
+    {
+    NativeExpression stringImplPtr = in.getExpression();
+
+    NativeExpression tr = 
+        NativeExpression::BinaryOp(
+            NativeBinaryOpcode::Div(),
+            stringImplPtr.cast(NativeType::uint8(), false),
+            NativeExpression::Constant(
+                NativeConstant::UInt8(2)
+                )
+            );
+
+    tr = tr.cast(NativeTypeFor<size_t>::get(), false);
+
+    return TypedNativeExpression<size_t>(tr);
+    }
+
+TypedNativeExpression<int64_t> behaviors_type::wrapNegativeIndexExpr(
+        const TypedNativeExpression<int64_t>& inIndexExpr,
+        const TypedNativeExpression<size_t>& inSizeExpr
+        )
+    {
+    using namespace TypedNativeExpressionHelpers;
+
+    return select_(
+        inIndexExpr < (int64_t)0,
+        inIndexExpr + static_cast<TypedNativeExpression<int64_t>>(inSizeExpr),
+        inIndexExpr
+        );
+    }
+

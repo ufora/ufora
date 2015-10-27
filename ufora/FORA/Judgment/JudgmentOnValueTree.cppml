@@ -1,0 +1,949 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "JudgmentOnValueTree.hppml"
+#include "../../core/cppml/CPPMLTransform.hppml"
+#include "../Core/ClassMediator.hppml"
+#include "../Core/ApplyArgFrame.hppml"
+
+/*****
+transform client class that merges together subsequent Type or Symbol matches
+into ConstantMap or TypeMap matches, which are substantially more efficient
+during the axiom search process.
+*****/
+
+
+class JOVTreeCollapser {
+public:
+	typedef map<pair<bool, hash_type>, pair<JOV, JudgmentOnValueTree> > constant_map_type;
+	
+	template<class T>
+	Nullable<T> processDown(const T& in, bool& out) const
+		{
+		return null();
+		}
+	template<class T>
+	Nullable<T> processUp(const T& in) const
+		{
+		return null();
+		}
+
+	constant_map_type mergeConstantMap(
+							const JOV& jov,
+							const JudgmentOnValueTree& t,
+							const JOV& jov2,
+							const JudgmentOnValueTree& t2
+							) const
+		{
+		constant_map_type m;
+		if (jov.constant()->type().isSymbol())
+			m[make_pair(true, jov.constant()->cast<Symbol>().hash())] = make_pair(jov, t);
+		else
+			m[make_pair(false, jov.constant()->cast<JOV>().hash())] = make_pair(jov, t);
+
+		if (jov2.constant()->type().isSymbol())
+			m[make_pair(true, jov2.constant()->cast<Symbol>().hash())] = make_pair(jov2, t2);
+		else
+			m[make_pair(false, jov2.constant()->cast<JOV>().hash())] = make_pair(jov2, t2);
+
+		return m;
+		}
+
+	constant_map_type mergeConstantMap(
+						const JOV& jov,
+						const JudgmentOnValueTree& t,
+						const constant_map_type& m
+						) const
+		{
+		constant_map_type m2 = m;
+
+		if (jov.constant()->type().isSymbol())
+			m2[make_pair(true, jov.constant()->cast<Symbol>().hash())] = make_pair(jov, t);
+		else
+			m2[make_pair(false, jov.constant()->cast<JOV>().hash())] = make_pair(jov, t);
+		
+		return m2;
+		}
+
+	JudgmentOnValueTree processUp(const JudgmentOnValueTree& inTree) const
+		{
+		@match JudgmentOnValueTree(inTree)
+			-|	Rule(Matches(dim, jov, fieldname), t,f) ->> {
+				if (jov.constant() &&
+						(jov.constant()->type().isSymbol()
+							|| jov.constant()->type().isJOVAsValue()
+									) &&
+						!fieldname
+						)
+					{
+					@match JudgmentOnValueTree(f)
+						-|	Rule(Matches(dim2,jov2,fieldname2), t2, f2) ->> {
+							if (jov2.constant()
+									&& (jov2.constant()->type().isSymbol()
+										|| jov2.constant()->type().isJOVAsValue()
+										)
+									&& dim == dim2
+									&& !fieldname2
+									)
+								{
+								return JudgmentOnValueTree::ConstantMap(
+									dim,
+									mergeConstantMap(jov, t, jov2, t2),
+									f2
+									);
+								}
+							}
+						-|	ConstantMap(dim2, m, f2) ->> {
+
+							if (dim == dim2)
+								{
+								return JudgmentOnValueTree::ConstantMap(
+									dim,
+									mergeConstantMap(jov, t, m),
+									f2
+									);
+								}
+
+							}
+						-|	_ ->> {;}
+						;
+					}
+					else
+				if (jov.type()
+						&& jov == JudgmentOnValue::OfType(*jov.type())
+						&& !fieldname)
+					{
+					@match JudgmentOnValueTree(f)
+						-|	Rule(Matches(dim2,jov2,fieldname2), t2, f2) ->> {
+							if (jov2.type() && jov2 ==
+									JOV::OfType(*jov2.type()) && dim == dim2)
+								{
+								map<hash_type, pair<JOV, JudgmentOnValueTree> > judgmentMap;
+
+								judgmentMap[jov.type()->hash()] = make_pair(jov, t);
+								judgmentMap[jov2.type()->hash()] = make_pair(jov, t2);
+
+								return JudgmentOnValueTree::TypeMap(
+									dim, 
+									judgmentMap, 
+									f2,
+									JOV::OfType(*jov.type())
+										.smallestCovering(JOV::OfType(*jov2.type()))
+									);
+								}
+							}
+						-|	TypeMap(dim2, judgmentMap, f2, commonJOV, hashToJOVMap) ->> {
+							if (dim == dim2)
+								{
+								map<hash_type, pair<JOV, JudgmentOnValueTree> > newJudgmentMap = judgmentMap;
+								newJudgmentMap[jov.type()->hash()] = make_pair(jov, t);
+								
+								return JudgmentOnValueTree::TypeMap(
+									dim, 
+									newJudgmentMap, 
+									f2, 
+									commonJOV.smallestCovering(JOV::OfType(*jov.type()))
+									);
+								}
+							}
+						-|	_ ->> {;}
+						;
+					}
+
+				}
+			-|	_ ->> {;}
+			;
+		return inTree;
+		}
+
+};
+JudgmentOnValueTree collapseJOVTree(const JudgmentOnValueTree& inTree)
+	{
+	JudgmentOnValueTree tr = transform(inTree, JOVTreeCollapser());
+	return tr;
+	}
+bool JudgmentOnValueTreeBinaryRule::covers(
+				const Fora::ApplyArgFrame& vals
+				) const
+	{
+	@match JudgmentOnValueTreeBinaryRule(*this)
+		-|	ExactCount(ct) ->> {
+			return vals.size() == ct;
+			}
+		-|	MatchesAllAbove(d,j) ->> {
+			
+			if (d < vals.size())
+				{
+				for (long k = d; k < vals.size(); k++)
+					if (!j.covers(vals[k].first))
+						return false;
+				}
+			return true;
+			}
+		-|	Matches(d, j, fieldname) ->> {
+			if (d < vals.size())
+				{
+				auto p = vals[d];
+
+				if (j.covers(p.first) && p.second == fieldname)
+					return true;
+					else
+					return false;
+				}
+			return false;
+			}
+		;
+	}
+
+
+
+Nullable<bool> JudgmentOnValueTreeBinaryRule::covers(const JudgmentOnValueTuple& inJOVTuple) const
+	{
+	@match JudgmentOnValueTreeBinaryRule(*this)
+		-|	ExactCount(ct) ->> {
+			if (!inJOVTuple.hasExtras())
+				return null() << (inJOVTuple.jovs().size() == ct);
+			else
+				{
+				if (ct < inJOVTuple.jovs().size())	
+					return null() << false;
+				return null();
+				}
+			}
+		-|	Matches(dim, jov, fieldName) ->> {
+			if (dim >= inJOVTuple.jovs().size() && !inJOVTuple.hasExtras())
+				return null() << false;
+
+			if (dim >= inJOVTuple.jovs().size())
+				//not possible to know, because we know nothing about the symbols here
+				return null();
+
+			if (fieldName != inJOVTuple.names()[dim])
+				return null() << false;
+
+			if (jov.covers(inJOVTuple[dim]))
+				return null() << true;
+
+			if (jov.disjoint(inJOVTuple[dim]))
+				return null() << false;
+			
+			return null();
+			}
+		-|	MatchesAllAbove(dim, jov) ->> {
+			
+			bool allCover = true;
+
+			for (long k = dim; k < inJOVTuple.jovs().size();k++)
+				{
+				if (jov.disjoint(inJOVTuple[k]))
+					return null() << false;
+				
+				if (!jov.covers(inJOVTuple[k]))
+					allCover = false;
+				}
+
+			@match JudgmentOnValueTupleExtras(inJOVTuple.extras()) 
+				-|	Extras(jovForExtras) ->> {
+					if (jovForExtras.disjoint(jov))
+						return null() << false;
+					if (!jov.covers(jovForExtras))
+						allCover = false;
+					}
+				-|	 _ ->>  {}
+				;
+
+			if (allCover)
+				return null() << true;
+			return null();
+			}
+	lassert(false);
+	}
+
+namespace {
+
+template<class T>
+void addSetToSet(set<T>& ioSet, const set<T>& setToAdd)
+	{
+	ioSet.insert(
+		setToAdd.begin(), 
+		setToAdd.end()
+		);
+	}
+
+template<class T>
+set<T> intersectSets(const set<T>& inSet1, const set<T>& inSet2);
+
+template<class T>
+void intersectSetWithSet(set<T>& toRestrict, const set<T>& toRestrictBy)
+	{
+	toRestrict = intersectSets(toRestrict, toRestrictBy);
+	}
+
+template<class T>
+set<T> intersectSets(const set<T>& inSet1, const set<T>& inSet2)
+	{
+	if (inSet1.size() > inSet2.size())
+		return intersectSets(inSet2, inSet1);
+
+	set<T> tr;
+	for (auto it = inSet1.begin(), it_end = inSet1.end(); it != it_end; ++it)
+		if (inSet2.find(*it) != inSet2.end())
+			tr.insert(*it);
+
+	return tr;
+	}
+}
+
+set<uword_t> JudgmentOnValueTree::computeChildLeafIndices(void) const
+	{
+	set<uword_t> indices;
+	
+	@match JudgmentOnValueTree(*this)
+		-|	Leaf(index) ->> {
+			indices.insert(index);
+			}
+		-|	Rule(_, t, f) ->> {
+			addSetToSet(indices, t.childLeafIndices());
+			addSetToSet(indices, f.childLeafIndices());
+			}
+		-|	TypeMap(_, m, ifNoMatch) ->> {
+			addSetToSet(indices, ifNoMatch.childLeafIndices());
+			for (auto it = m.begin(), it_end = m.end(); it != it_end; ++it)
+				addSetToSet(indices, it->second.second.childLeafIndices());
+			}
+		-|	ConstantMap(_, m, ifNoMatch) ->> {
+			addSetToSet(indices, ifNoMatch.childLeafIndices());
+			for (auto it = m.begin(), it_end = m.end(); it != it_end; ++it)
+				addSetToSet(indices, it->second.second.childLeafIndices());
+			}
+		;
+
+	return indices;
+	}
+
+JudgmentOnValueTree JudgmentOnValueTree::Rule(
+			const JudgmentOnValueTreeBinaryRule& inRule,
+			const JudgmentOnValueTree& ifTrue,
+			const JudgmentOnValueTree& ifFalse
+			)
+	{
+	return JudgmentOnValueTree::Rule(
+		inRule, 
+		ifTrue, 
+		ifFalse, 
+		intersectSets(
+			ifTrue.childLeafIndices(), 
+			ifFalse.childLeafIndices()
+			)
+		);
+	}
+
+JudgmentOnValueTree JudgmentOnValueTree::TypeMap(
+			uword_t inDimension,
+			const map<hash_type, pair<JOV, JudgmentOnValueTree> >& matches,
+			const JudgmentOnValueTree& ifFalse,
+			const JudgmentOnValue& inCommon
+			)
+	{
+	set<uword_t> indices = ifFalse.childLeafIndices();
+	for (auto it = matches.begin(), it_end = matches.end(); it != it_end; ++it)
+		{
+		intersectSetWithSet(indices, it->second.second.childLeafIndices());
+		}
+
+	return JudgmentOnValueTree::TypeMap(inDimension, matches, ifFalse, inCommon, indices);
+	}
+
+JudgmentOnValueTree JudgmentOnValueTree::ConstantMap(
+			uword_t inDimension,
+			const map<pair<bool, hash_type>, pair<JOV, JudgmentOnValueTree> >& matches,
+			const JudgmentOnValueTree& ifFalse
+			)
+	{
+	set<uword_t> indices = ifFalse.childLeafIndices();
+	for (auto it = matches.begin(), it_end = matches.end(); it != it_end; ++it)
+		intersectSetWithSet(indices, it->second.second.childLeafIndices());
+
+	return JudgmentOnValueTree::ConstantMap(inDimension, matches, ifFalse, indices);
+	}
+
+Nullable<uword_t> searchJOVTreeConstantMapGivenAmbiguousJOVT(
+						const JudgmentOnValueTree& in,
+						const JudgmentOnValueTuple& inJOVT,
+						const JudgmentOnValue& inJOVForDim
+						)
+	{
+	@match JudgmentOnValueTree(in)
+		-|	ConstantMap(dim, judgmentMap, ifNoMatch) ->> {
+			static JOV symbolsJOV = JOV::OfType(Type::Symbol());
+			static JOV jovJOV = JOV::OfType(Type::JOVAsValue());
+
+			//its not a constant. If we can prove that its not a symbol or a jov then
+			//its not actually ambiguous, since it would always be 'not a match'.
+			if (inJOVForDim.disjoint(symbolsJOV) && inJOVForDim.disjoint(jovJOV))
+				return searchJOVTree(ifNoMatch, inJOVT);
+
+			Nullable<uword_t> result = searchJOVTree(ifNoMatch, inJOVT);
+
+			if (!result)
+				return null();
+			
+			for (auto it = judgmentMap.begin(), it_end = judgmentMap.end(); it != it_end; ++it)
+				{
+				const JudgmentOnValue& jovComparingAgainst = it->second.first;
+				const JudgmentOnValueTree& resultTree = it->second.second;
+
+				if (!jovComparingAgainst.disjoint(inJOVForDim))
+					{
+					Nullable<uword_t> subResult = searchJOVTree(resultTree, inJOVT);
+					if (!subResult)
+						return null();
+					if (result && result != subResult)
+						return null();
+					
+					result = subResult;
+					}
+				}
+
+			return result;
+			}
+	}
+
+Nullable<uword_t> searchJOVTreeTypeMapGivenAmbiguousJOVT(
+						const JudgmentOnValueTree& in,
+						const JudgmentOnValueTuple& inJOVT,
+						const JudgmentOnValue& inJOVForDim
+						)
+	{
+	@match JudgmentOnValueTree(in)
+		-|	TypeMap(dim, judgmentMap, ifNoMatch, commonJOV) ->> {
+
+			//first, we check whether 'inJOVForDim' would force us down 'ifNoMatch'
+			if (inJOVForDim.disjoint(commonJOV))
+				return searchJOVTree(ifNoMatch, inJOVT);
+
+			//we can't just use the "commonIndices" trick because some subset of our type nodes
+			//may actually be disjoint from inJOVForDim. In this case, we can only reason about 
+			//the interesection of the indices of those subrules, and we don't have that.
+
+			Nullable<uword_t> result = searchJOVTree(ifNoMatch, inJOVT);
+
+			if (!result)
+				return null();
+			
+			for (auto it = judgmentMap.begin(), it_end = judgmentMap.end(); it != it_end; ++it)
+				{
+				const JudgmentOnValue& jovComparingAgainst = it->second.first;
+				const JudgmentOnValueTree& resultTree = it->second.second;
+
+				if (!jovComparingAgainst.disjoint(inJOVForDim))
+					{
+					Nullable<uword_t> subResult = searchJOVTree(resultTree, inJOVT);
+					if (!subResult)
+						return null();
+					if (result && result != subResult)
+						return null();
+					
+					result = subResult;
+					}
+				}
+
+			return result;
+			}
+	}
+
+Nullable<uword_t> searchJOVTreeRuleGivenAmbiguousJOVT(
+						const JudgmentOnValueTree& in,
+						const JudgmentOnValueTuple& inJOVT
+						)
+	{
+	@match JudgmentOnValueTree(in)
+		-|	Rule(_, t, f, commonSubIndices) ->> {
+			//check if we can short-circuit
+			if (commonSubIndices.size() == 0)
+				return null();
+
+			Nullable<uword_t> fromTrue = searchJOVTree(t, inJOVT);
+
+			if (!fromTrue || commonSubIndices.find(*fromTrue) == commonSubIndices.end())
+				return null();
+
+			Nullable<uword_t> fromFalse = searchJOVTree(f, inJOVT);
+
+			if (!fromFalse || fromFalse != fromTrue || 
+						commonSubIndices.find(*fromFalse) == commonSubIndices.end())
+				return null();
+
+			return fromFalse;
+			}
+		;
+	lassert(false);
+	}
+
+
+
+Nullable<uword_t> searchJOVTree(
+						const JudgmentOnValueTree& in,
+						const JudgmentOnValueTuple& inJOVT
+						)
+	{
+	@match JudgmentOnValueTree(in)
+		-|	Leaf(res) ->> {
+			return null() << res;
+			}
+		-|	Rule(r, t, f) ->> {
+			Nullable<bool> ruleCoversJOVT = r.covers(inJOVT);
+
+			if (!ruleCoversJOVT)
+				return searchJOVTreeRuleGivenAmbiguousJOVT(in, inJOVT);
+			else
+				return searchJOVTree(*ruleCoversJOVT ? t : f, inJOVT);
+			}
+		-|	TypeMap(dim,judgmentMap,ifF, commonJOV, eachIndividualMatchJudgment) ->> {
+			if (!inJOVT.hasExtras() && dim >= inJOVT.jovs().size())
+				return searchJOVTree(ifF, inJOVT);
+
+			if (dim >= inJOVT.jovs().size())
+				{
+				//because we don't know the symbol value, and we only match 'null', we really
+				//don't know how it will resolve. So we treat it as ambiguous with 'unknown'
+				static JOV jovUnknown = JOV::Unknown();
+				return searchJOVTreeTypeMapGivenAmbiguousJOVT(in, inJOVT, jovUnknown);
+				}
+			else
+				{
+				JudgmentOnValue jovForDim = inJOVT[dim];
+
+				if (!jovForDim.type())
+					return searchJOVTreeTypeMapGivenAmbiguousJOVT(in, inJOVT, jovForDim);
+				else
+					{
+					auto it = judgmentMap.find(jovForDim.type()->hash());
+					
+					if (it != judgmentMap.end())
+						return searchJOVTree(it->second.second, inJOVT);
+
+					return searchJOVTree(ifF, inJOVT);
+					}
+				}
+			}
+		-|	ConstantMap(dim, judgmentMap, ifF) ->> {
+			if (!inJOVT.hasExtras() && dim >= inJOVT.jovs().size())
+				return searchJOVTree(ifF, inJOVT);
+
+			if (dim >= inJOVT.jovs().size())
+				{
+				static JudgmentOnValue jovUnknown = JOV::Unknown();
+
+				return searchJOVTreeConstantMapGivenAmbiguousJOVT(in, inJOVT, jovUnknown);
+				}
+			else
+				{
+				JudgmentOnValue jovForDim = inJOVT[dim];
+
+				if (!jovForDim.constant())
+					return searchJOVTreeConstantMapGivenAmbiguousJOVT(in, inJOVT, jovForDim);
+
+				if (!jovForDim.constant()->type().isSymbol() &&
+						!jovForDim.constant()->type().isJOVAsValue())
+					return searchJOVTree(ifF, inJOVT);
+				
+				CSTValue valueToLookup = *jovForDim.constant();
+
+				hash_type hashToLookup;
+
+				if (valueToLookup.type().isSymbol())
+					hashToLookup = valueToLookup.cast<Symbol>().hash();
+				else
+					hashToLookup = valueToLookup.cast<JOV>().hash();
+
+				auto it = judgmentMap.find(make_pair(valueToLookup.type().isSymbol(), hashToLookup));
+				
+				if (it != judgmentMap.end())
+					return searchJOVTree(it->second.second, inJOVT);
+				return searchJOVTree(ifF, inJOVT);
+				}
+			}
+		;
+	}
+
+uword_t searchJOVTree(	const JudgmentOnValueTree& in,
+						const Fora::ApplyArgFrame& vals
+						)
+	{
+	@match JudgmentOnValueTree(in)
+		-|	Leaf(res) ->> {
+			return res;
+			}
+		-|	Rule(r, t, f) ->> {
+			return searchJOVTree(r.covers(vals) ? t : f, vals);
+			}
+		-|	TypeMap(dim,judgmentMap, ifF) ->> {
+			if (dim >= vals.size())
+				return searchJOVTree(ifF, vals);
+
+			map<hash_type, pair<JOV, JudgmentOnValueTree> >::const_iterator it;
+			
+			if (vals[dim].second)
+				it = judgmentMap.end();
+			else
+				it = judgmentMap.find(vals[dim].first.type().hash());
+			
+			if (it != judgmentMap.end())
+				return searchJOVTree(it->second.second, vals);
+			return searchJOVTree(ifF, vals);
+			}
+		-|	ConstantMap(dim,judgmentMap, ifF) ->> {
+			auto val = vals[dim];
+
+			if (dim >= vals.size()
+					|| !(val.first.type().isSymbol()
+							|| val.first.type().isJOVAsValue())
+					|| val.second
+					)
+				return searchJOVTree(ifF, vals);
+				
+			map<pair<bool, hash_type>, pair<JOV, JudgmentOnValueTree> >::const_iterator it;
+			
+			if (val.first.type().isSymbol())
+				{
+				it = judgmentMap.find(
+					make_pair(true, val.first.cast<Symbol>().hash())
+					);
+				}
+				else
+			if (val.first.type().isJOVAsValue())
+				{
+				it = judgmentMap.find(
+					make_pair(false, val.first.cast<JOV>().hash())
+					);
+				}
+				else
+				{
+				//this should never happen, since we checked for
+				//'typeness' above
+				lassert(false);
+				}
+			
+			if (it != judgmentMap.end())
+				return searchJOVTree(it->second.second, vals);
+			return searchJOVTree(ifF, vals);
+			}
+		;
+	}
+
+	
+//computes whether *this matches everything that other matches and more
+bool JudgmentOnValueTreeBinaryRule::covers(const JudgmentOnValueTreeBinaryRule& other) const
+	{
+	if (other.isExactCount() && isExactCount())
+		return other.getExactCount().size() == getExactCount().size();
+	
+	if (other.isMatches() && isMatches())
+		{
+		@match JudgmentOnValueTreeBinaryRule(*this) -| Matches(d,j,n) ->> {
+			@match JudgmentOnValueTreeBinaryRule(other) -| Matches(d2,j2,n2) ->> {
+				return (j.covers(j2) && d == d2 && n == n2);
+				}
+				;
+			};
+		}
+	
+	if (other.isMatchesAllAbove() && isMatchesAllAbove())
+		{
+		@match JudgmentOnValueTreeBinaryRule(*this) -| MatchesAllAbove(d,j) ->> {
+			@match JudgmentOnValueTreeBinaryRule(other) -| MatchesAllAbove(d2,j2) ->> {
+				return (j.covers(j2) && d >= d2);
+				}
+				;
+			}
+			;
+		}
+
+	return false;
+	}
+//is it mutually exclusive to match *this and 'other'?
+bool JudgmentOnValueTreeBinaryRule::disjoint(const JudgmentOnValueTreeBinaryRule& other) const
+	{
+	@match JudgmentOnValueTreeBinaryRule(*this)
+		-|	Matches(d,j,n) ->> {
+			@match JudgmentOnValueTreeBinaryRule(other)
+				-|	Matches(d2, j2, n2) ->> {
+					return d == d2 && (j.disjoint(j2) || n != n2);
+					}
+				-|	MatchesAllAbove() ->> {
+					return false;
+					}
+				-|	ExactCount(ct2) ->> {
+					//if it's an exact count less than d, and !a, then true
+					return ct2 < d;
+					}
+				;
+			}
+		-|	MatchesAllAbove(d,j) ->> {
+			return false;
+			}
+		-|	ExactCount(ct) ->> {
+			@match JudgmentOnValueTreeBinaryRule(other)
+				-|	Matches(d2, j2, n2) ->> {
+					return ct < d2;
+					}
+				-|	MatchesAllAbove() ->> {
+					return false;
+					}
+				-|	ExactCount(ct2) ->> {
+					//if it's an exact count less than d, and !a, then true
+					return ct != ct2;
+					}
+				;
+			}
+			;
+	
+	lassert(false);
+	}
+
+@type RuleGroup = 	ImmutableTreeSet<JudgmentOnValueTreeBinaryRule> t,
+					ImmutableTreeSet<JudgmentOnValueTreeBinaryRule> f
+{
+public:
+		RuleGroup(const JudgmentOnValueTuple& jovt)
+			{
+			if (jovt.extras().isExtras())
+				{
+				if (!jovt.extras().getExtras().jov().isUnknown())
+					t() = t() +
+						JudgmentOnValueTreeBinaryRule::MatchesAllAbove(
+							jovt.jovs().size(),
+							jovt.extras().getExtras().jov()
+							);
+				for (long k = 0; k < jovt.jovs().size();k++)
+					f() = f() + JudgmentOnValueTreeBinaryRule::ExactCount(k);
+				}
+				else
+				t() = t() +
+					JudgmentOnValueTreeBinaryRule::ExactCount(jovt.jovs().size());
+
+			for (long k = 0; k < jovt.jovs().size();k++)
+				t() = t() +
+					JudgmentOnValueTreeBinaryRule::Matches(
+						k,
+						jovt.jovs()[k],
+						jovt.names()[k]
+						);
+			}
+		ImmutableTreeSet<JudgmentOnValueTreeBinaryRule> rules(void) const
+			{
+			return t() + f();
+			}
+		RuleGroup ruleTrue(const JudgmentOnValueTreeBinaryRule& rule) const
+			{
+			//get rid of any true rules that cover this,
+			//since they're obviously true now
+			ImmutableTreeSet<JudgmentOnValueTreeBinaryRule> ts;
+			for (long k = 0; k < t().size();k++)
+				if (!t()[k].covers(rule))
+					ts = ts + t()[k];
+
+			return RuleGroup(ts, f());
+			}
+		RuleGroup ruleFalse(const JudgmentOnValueTreeBinaryRule& rule) const
+			{
+			//get rid of any true rules that this covers
+			ImmutableTreeSet<JudgmentOnValueTreeBinaryRule> fs;
+			for (long k = 0; k < f().size();k++)
+				if (!f()[k].covers(rule))
+					fs = fs + f()[k];
+
+			return RuleGroup(t(), fs);
+			}
+};
+
+//does succeeding at 'rule' rule out 'group'?
+bool ruleRulesOut(const RuleGroup& group, const JudgmentOnValueTreeBinaryRule& rule)
+	{
+	for (long k = 0; k < group.t().size();k++)
+		if (rule.disjoint(group.t()[k]))
+			return true;
+	for (long k = 0; k < group.f().size();k++)
+		if (group.f()[k].covers(rule))	//group.f()[k] is definitely false,
+			return true;
+
+	return false;
+	}
+//does failing 'rule' mean that 'group' can't be true?
+bool ruleFailureRulesOut(	const RuleGroup& group,
+							const JudgmentOnValueTreeBinaryRule& rule)
+	{
+	for (long k = 0; k < group.t().size();k++)
+		//if rule is false, then group can't be true!
+		if (rule.covers(group.t()[k]))	
+			return true;
+
+	return false;
+	}
+
+double computeRemovalProbabilityForSplit(
+							const JudgmentOnValueTreeBinaryRule& candidateSplitRule,
+							const ImmutableTreeVector<pair<RuleGroup, uword_t> >& ruleGroups,
+							const ImmutableTreeVector<uword_t>& ruleGroupFrequencies
+							)
+	{
+	double defTrue = 0;
+	double defFalse = 0;
+	double both = 0;
+
+	for (long j = 0; j < ruleGroups.size();j++)
+		{
+		bool notInTrue = ruleRulesOut(ruleGroups[j].first, candidateSplitRule);
+		bool notInFalse = ruleFailureRulesOut(ruleGroups[j].first, candidateSplitRule);
+
+		//not possible to be in neither
+		lassert_dump(!(notInFalse && notInTrue),
+			"nonsense: "
+				<< prettyPrintString(candidateSplitRule)
+				<< "\nrules out "
+				<< prettyPrintString(ruleGroups[j].first)
+				);
+
+		if (!notInFalse && !notInTrue)
+			both += ruleGroupFrequencies[j] + .0001;
+			else
+		if (notInTrue)
+			defFalse += ruleGroupFrequencies[j] + .0001;
+			else
+			defTrue += ruleGroupFrequencies[j] + .0001;
+		}
+
+	//imagine picking one at random. how many did we rule out,
+	//on average? defTrue * defFalse * 2 + imagine that a 'both'
+	//goes 50/50 on the rule. then it's both * (defTrue + defFalse) / 2.
+
+	double prob =
+		(defTrue * defFalse* 2.0 + both * (defTrue + defFalse) / 2.0)
+			/ (defTrue + defFalse + both)
+			/ (defTrue + defFalse + both)
+		;
+	
+	lassert_dump(prob >= 0.0, defTrue << ", " << defFalse << ", and both = " << both);
+
+	return prob;
+	}
+
+JudgmentOnValueTree createJOVTreeRuleDirect(
+					const ImmutableTreeVector<pair<RuleGroup, uword_t> >& ruleGroups,
+					const ImmutableTreeVector<uword_t>& ruleGroupFrequencies,
+					long depth = 0
+					)
+	{
+	lassert(ruleGroups.size());
+	lassert(ruleGroupFrequencies.size() == ruleGroups.size());
+
+	if (ruleGroups.size() == 1
+				|| ruleGroups[0].first.t().size() == 0 && ruleGroups[0].first.f().size() == 0)
+		return JudgmentOnValueTree::Leaf(ruleGroups[0].second);
+
+	ImmutableTreeSet<JudgmentOnValueTreeBinaryRule> allRules;
+
+	for (long k = 0; k < ruleGroups.size();k++)
+		allRules = allRules + ruleGroups[k].first.rules();
+
+	//for each rule, figure out which rule has
+	//the smallest sum of frequencies within its two subgroups
+	Nullable<pair<uword_t, double> > curBest;
+
+	for (long k = 0; k < allRules.size();k++)
+		{
+		double prob = computeRemovalProbabilityForSplit(allRules[k], ruleGroups, ruleGroupFrequencies);
+
+		if (!curBest || prob > curBest->second)
+			curBest = make_pair(k, prob);
+		}
+
+	ImmutableTreeVector<pair<RuleGroup, uword_t> > ifTrue, ifFalse;
+	JudgmentOnValueTreeBinaryRule rule = allRules[curBest->first];
+	ImmutableTreeVector<uword_t> freqTrue, freqFalse;
+
+	for (long k = 0; k < ruleGroups.size();k++)
+		{
+		bool notInTrue = ruleRulesOut(ruleGroups[k].first, rule);
+		bool notInFalse = ruleFailureRulesOut(ruleGroups[k].first, rule);
+
+		if (!notInTrue)
+			{
+			ifTrue = ifTrue +
+				make_pair(ruleGroups[k].first.ruleTrue(rule), ruleGroups[k].second);
+				
+			freqTrue = freqTrue + ruleGroupFrequencies[k];
+			}
+		if (!notInFalse)
+			{
+			ifFalse = ifFalse +
+				make_pair(ruleGroups[k].first.ruleFalse(rule), ruleGroups[k].second);
+				
+			freqFalse = freqFalse + ruleGroupFrequencies[k];
+			}
+		}
+
+	//if we can't split the rules at all, then they must all be the same.
+	if (!(ifTrue.size() && ifFalse.size()))
+		return JudgmentOnValueTree::Leaf(ruleGroups[0].second);
+
+	return JudgmentOnValueTree::Rule(
+		rule,
+		createJOVTreeRuleDirect(ifTrue, freqTrue, depth+1),
+		createJOVTreeRuleDirect(ifFalse, freqFalse, depth+1)
+		);
+	}
+JudgmentOnValueTree createJOVTreeRuleDirect(
+						const ImmutableTreeVector<JudgmentOnValueTuple>& m,
+						const ImmutableTreeVector<uword_t>& frequency
+						)
+	{
+	ImmutableTreeVector<pair<RuleGroup, uword_t> > rules;
+	for (long k = 0; k < m.size();k++)
+		rules = rules + pair<RuleGroup, uword_t>(RuleGroup(m[k]), k);
+
+	return createJOVTreeRuleDirect(rules, frequency);
+	}
+
+JudgmentOnValueTree	addRuleToJOVTree(const JudgmentOnValueTuple& jovt,
+									 const JudgmentOnValueTree& toTree,
+									 uword_t inIndex
+									 )
+	{
+	RuleGroup rules(jovt);
+	
+	//if we match all the rules correctly, we can go to this one
+	//otherwise, we go to "failureTree"
+	JudgmentOnValueTree failureTree = toTree;
+	JudgmentOnValueTree successTree = JudgmentOnValueTree::Leaf(inIndex);
+	
+	for (long k = 0; k < rules.t().size();k++)
+		successTree =
+			JudgmentOnValueTree::Rule(
+				rules.t()[k],
+				successTree,
+				failureTree
+				);
+	for (long k = 0; k < rules.f().size();k++)
+		successTree =
+			JudgmentOnValueTree::Rule(
+				rules.f()[k],
+				failureTree,
+				successTree
+				);
+	return successTree;
+	}
+

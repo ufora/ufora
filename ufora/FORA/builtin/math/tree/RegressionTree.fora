@@ -1,0 +1,668 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+buildTree: 
+#Markdown("""#### Usage
+
+    math.tree.RegressionTree.buildTree
+
+#### Description
+
+Aliases the static method `RegressionTreeBuilder.buildTree`
+
+""")
+fun(*args) { RegressionTreeBuilder.buildTree(*args) };
+
+RegressionTreeBuilder: 
+#Markdown("""### RegressionTreeBuilder
+
+#### Usage
+
+    math.tree.RegressionTree.RegressionTreeBuilder(
+            maxDepth:,
+            splitMethod:= `sample,
+            minSamplesSplit:= 2,
+            numBuckets:= 10000
+        )
+
+#### Description
+
+A `RegressionTreeBuilder` is a class capable of building (or "fitting") 
+regression trees to data with specified parameters. These  parameters are:
+
+* `maxDepth`: The maximum depth of a fit tree.
+* `splitMethod`: The method used to split nodes. There are two possible values:
+`` `sample`` or `` `exhaustive``. `` `sample`` statistically estimates the optimal 
+split on an `X`-column, while `` `exhaustive`` considers all possible splits.
+* `minSamplesSplit`: The minimum number of samples required to split a node.
+* `numBuckets`: If `splitMethod` is `` `exhaustive``, this parameter is ignored.
+Otherwise, when `splitMethod` is `` `sample``, this gives the number of buckets
+used in the estimation of optimal column splits.
+
+#### Examples
+
+    let builder = math.tree.RegressionTree.RegressionTreeBuilder(
+        maxDepth:1, minSamplesSplit:2)
+    let X = dataframe.DataFrame([[-1,0,1], [0,1,1]]);
+	let y = dataframe.DataFrame([[0,1,1]], columnNames:["y"])
+    builder.fit(X, y)
+
+""")
+class { 
+    member mMaxDepth;
+    member mMinSamplesSplit;
+    member mImpurityMeasure;
+    member mSplitMethod;
+    member mMinSplitThresh;
+    member mNumBuckets;
+
+    static sampleSummary: fun(xVec) {
+        sum(0, size(xVec), fun(ix) { Base.SampleSummary(xVec[ix]) })
+        };    
+
+    bestRule: fun(dataframe.DataFrame(df), yDim:, xDimensions:, activeIndices:) {
+        let bestRuleByDimension = 
+            xDimensions ~~ 
+                fun(ix) { 
+                    bestRuleForXDimension(
+                        df, yDim: yDim, xDim: ix, 
+                        activeIndices: activeIndices
+                        );
+                    }
+        
+        let bestRuleIx = 
+            argmax(bestRuleByDimension ~~ { _.impurityImprovement })
+        
+        return bestRuleByDimension[bestRuleIx]
+        };
+
+    bestRuleForXDimension:
+    fun(dataframe.DataFrame(df), yDim:, xDim:, activeIndices:) {
+        match (mSplitMethod) with 
+            (`sample) {
+                bestRuleForXDimensionBySampling(
+                    df, yDim: yDim, xDim: xDim, 
+                    activeIndices: activeIndices)
+                }
+            (`exhaustive) {
+                bestRuleForXDimensionExhaustive(
+                    df, yDim: yDim, xDim: xDim,
+                    activeIndices: activeIndices)
+                }
+            ;
+        };
+
+    static sortByFirstArg_: fun(v1, v2) {
+        let tr0 = sorting.sort(v1);
+        let tr1 = 
+            sorting.sort(
+                zipWith(fun(x, y) { (x, y) }, v1, v2)
+                ).apply(fun((x, y)) { y } );
+                        
+        return (tr0, tr1);
+        };
+
+    static sortIndices_: fun(activeIndices, xValues) {
+        sorting.sort(activeIndices, fun(ix1, ix2) { xValues[ix1] < xValues[ix2] });
+        };
+
+    static onDemandSelectedVector: fun(vectorToSelectFrom, selectingIndices) {
+        object {
+            operator [](ix) {
+                vectorToSelectFrom[selectingIndices[ix]];
+                };
+            ...(`size) { size(selectingIndices) };
+            operator iterator() {
+                for ix in sequence(size(self))
+                    yield self[ix]
+                };
+            toVector: fun() {
+                [x for x in self]
+                };
+            }
+        };
+
+    bestRuleForXDimensionExhaustive:
+    fun(dataframe.DataFrame(df), yDim:, xDim:, activeIndices:) {
+        // we can definitely do better here: 
+        // we can sort all columns up front first
+
+        let SampleSummary = math.tree.Base.SampleSummary
+        let xColumn = df.columns[xDim];
+        let yColumn = df.columns[yDim];
+        let sortedIndices = sortIndices_(activeIndices, xColumn)
+
+        let xVecSorted = onDemandSelectedVector(xColumn, sortedIndices);
+        let yVecSorted = onDemandSelectedVector(yColumn, sortedIndices);
+
+        let findHighestMatchingIndex = fun(ix) {
+            let tr = ix;
+            let xValue = xVecSorted[ix];
+            while (tr < size(xVecSorted) - 1 and xVecSorted[tr + 1] == xValue)
+                {
+                tr = tr + 1;
+                }
+            return tr;
+            };
+ 
+        let topIx = findHighestMatchingIndex(0) + 1; 
+
+        if (topIx == size(activeIndices))
+            {
+            let bestSplitPoint = 0.5 * (xVecSorted[0] + xVecSorted[-1]);
+            let (summaryLeft, summaryRight) = 
+                Base.Rule(
+                    dimension: xDim, 
+                    splitPoint: bestSplitPoint
+                    ).summartPair(
+                        xVec: xVecSorted, 
+                        yVec: yVecSorted, 
+                        impurityMeasure: mImpurityMeasure
+                        )
+
+            let impurityImprovement = SampleSummary.impurityImprovement(summaryLeft, summaryRight)
+
+            return (rule: Base.Rule(dimension: xDim, splitPoint: bestSplitPoint),
+                    impurityImprovement: impurityImprovement)
+            }
+
+        let bestSplitPoint = xVecSorted[topIx + 0]; 
+
+        let (summaryLeft, summaryRight) = 
+            Base.Rule(
+                dimension: xDim, 
+                splitPoint: bestSplitPoint
+                )
+            .summaryPair(
+                xVec: xVecSorted, 
+                yVec: yVecSorted, 
+                impurityMeasure: mImpurityMeasure
+                )
+
+        let bestImpurityImprovement = 
+            SampleSummary.impurityImprovement(summaryLeft, summaryRight)
+
+        let ix = topIx;
+        while (ix < size(xVecSorted))
+            {
+            let topIx = findHighestMatchingIndex(ix) + 1;
+            let impurityToTransfer = 
+                sum(ix, topIx,
+                    fun(ix) { mImpurityMeasure(yVecSorted[ix]) });
+            
+            summaryLeft = summaryLeft + impurityToTransfer;
+            summaryRight = summaryRight - impurityToTransfer;
+
+            let impurityImprovement = SampleSummary.impurityImprovement(summaryLeft, summaryRight);
+
+            if (impurityImprovement > bestImpurityImprovement)
+                {
+                bestImpurityImprovement = impurityImprovement;
+                bestSplitPoint = 0.5 * (xVecSorted[0 + topIx] + xVecSorted[ix]);
+                }
+            ix = topIx; 
+            }
+
+        return Base.Rule(
+            dimension: xDim, 
+            splitPoint: bestSplitPoint, 
+            impurityImprovement: bestImpurityImprovement,
+            numSamples: size(activeIndices)
+            )
+        };
+
+    computeBucketedSampleSummaries: 
+    fun(xCol, yCol, x0, x1, count, low = 0, 
+        high = size(xCol)) {
+        if (high - low < mMinSplitThresh) {
+            let h = Base.SampleSummaryHistogram(x0, x1, count)
+            
+            for ix in sequence(low, high) {
+                h.observe(xCol[ix], Base.SampleSummary(yCol[ix]))
+                }
+            
+            return h.freeze()
+            }
+        
+        let mid = (low + high) / 2
+        
+        return 
+            computeBucketedSampleSummaries(xCol, yCol, x0, x1, count, low, mid) + 
+            computeBucketedSampleSummaries(xCol, yCol, x0, x1, count, mid, high)
+        };
+
+    bestRuleForXDimensionBySampling:
+    fun(dataframe.DataFrame(df), yDim:, xDim:, activeIndices:) {
+        let xColumn = onDemandSelectedVector(df.getColumn(xDim), activeIndices);
+        let yColumn = onDemandSelectedVector(df.getColumn(yDim), activeIndices);
+
+        let xColumnSampleSummary = sampleSummary(xColumn);
+
+        let bucketedSampleSummaries = computeBucketedSampleSummaries(
+            xColumn,
+            yColumn,
+            xColumnSampleSummary.mean - xColumnSampleSummary.stdev * 3.0,
+            xColumnSampleSummary.mean + xColumnSampleSummary.stdev * 3.0,
+            mNumBuckets
+            )
+        
+        let (splitPoint, impurityImprovement) = 
+            bucketedSampleSummaries.bestSplitPointAndImpurityImprovement()
+        
+        return Base.Rule(
+            dimension: xDim, 
+            splitPoint: splitPoint, 
+            impurityImprovement: impurityImprovement,
+            numSamples: size(activeIndices)
+            )
+        };
+
+    static checkParams_: fun(minSamplesSplit, maxDepth) {
+        assertions.assertGreaterEqual(minSamplesSplit, 0);
+        assertions.assertGreaterEqual(maxDepth, 0);
+        };
+
+    operator new(
+            maxDepth:,
+            impurityMeasure:= Base.SampleSummary,
+            splitMethod:= `sample,
+            minSamplesSplit:= 2,
+            minSplitThresh:= 1000002,
+            numBuckets:= 10000
+            ) {
+        checkParams_(minSamplesSplit, maxDepth);
+        
+        createInstance(
+            cls, 
+            mMaxDepth: maxDepth,
+            mMinSamplesSplit: minSamplesSplit,
+            mImpurityMeasure: impurityMeasure,
+            mSplitMethod: splitMethod,
+            mMinSplitThresh: minSplitThresh,
+            mNumBuckets: numBuckets
+            );
+        };
+
+    fit: 
+#Markdown("""#### Usage
+
+    regressionTreeBuilder.fit(
+         dataframe.DataFrame(X), 
+         dataframe.DataFrame(y), 
+         xDimensions:=nothing);
+    regressionTreeBuilder.fit(
+         dataframe.DataFrame(X), 
+         y, 
+         xDimensions:=nothing);
+    regressionTreeBuilder.fit(
+        dataframe.DataFrame(df), 
+        yDim:, xDimensions:=nothing);
+
+#### Description
+
+Fit a regression tree with the parameters in `regressionTreeBuilder` to data.
+Returns an instance of `math.tree.RegressionTree.RegressionTree`.
+
+#### Examples
+
+    let builder = math.tree.RegressionTree.RegressionTreeBuilder(
+         maxDepth:1, minSamplesSplit:2)
+    let X = dataframe.DataFrame([[-1,0,1], [0,1,1]]);
+	let y = dataframe.DataFrame([[0,1,1]], columnNames:["y"])
+    builder.fit(X, y)
+
+""")
+    fun
+    (dataframe.DataFrame(X), dataframe.DataFrame(y), xDimensions:=nothing)
+        { 
+        assertions.assertEqual(y.numColumns, 1);
+        fit(
+            X.addColumn(y.columns[0], name: y.columnNames[0]), 
+            yDim: X.numColumns, 
+            xDimensions: xDimensions
+            )
+        }
+    (dataframe.DataFrame(X), y, xDimensions:=nothing) {
+        fit(X, dataframe.DataFrame([y]), xDimensions: xDimensions);
+        }
+    (dataframe.DataFrame(df), yDim:, xDimensions:= nothing) {
+        if (xDimensions is nothing)
+            xDimensions = [ix for ix in sequence(df.numColumns) if ix != yDim];
+
+        let tr = fit_(df, yDim: yDim, xDimensions: xDimensions);
+        return tr.withColumnNames(
+            xDimensions ~~ { df.columnNames[_] }
+            );
+        }
+    ;
+
+    static buildTree: 
+#Markdown("""#### Usage
+
+    math.tree.RegressionTree.buildTree(
+        dataframe.DataFrame(X), dataframe.DataFrame(y),
+        minSamplesSplit:, maxDepth:, 
+        impurityMeasure:= Base.SampleSummary,
+        splitMethod:= `sample);
+    math.tree.RegressionTree.buildTree(
+        dataframe.DataFrame(X), y,
+        minSamplesSplit:, maxDepth:, 
+        impurityMeasure:= Base.SampleSummary,
+        splitMethod:= `sample);
+    math.tree.RegressionTree.buildTree(
+        dataframe.DataFrame(df), yDim:,
+        minSamplesSplit:, maxDepth:, 
+        impurityMeasure:= Base.SampleSummary,
+        splitMethod:= `sample);
+
+#### Description 
+
+In any case, set 
+
+    let builder = math.tree.RegressionTree.RegressionTreeBuilder(
+        minSamplesSplit:, maxDepth:, 
+        impurityMeasure:= Base.SampleSummary,
+        splitMethod:= `sample)
+
+Then the first clause is equivalent to calling 
+
+    builder.fit(dataframe.DataFrame(X), dataframe.DataFrame(y))
+
+the second clause is equivalent to calling 
+ 
+    builder.fit(dataframe.DataFrame(X), dataframe.DataFrame([y]))
+
+and the third is equivalent to calling 
+
+    builder.fit(dataframe.DataFrame(df), yDim:)
+
+""")
+    fun
+    (dataframe.DataFrame(X), dataframe.DataFrame(y),
+     minSamplesSplit:, maxDepth:, 
+     impurityMeasure:= Base.SampleSummary,
+     splitMethod:= `sample) {
+        assertions.assertEqual(y.numColumns, 1);
+        RegressionTreeBuilder(
+            minSamplesSplit: minSamplesSplit,
+            maxDepth: maxDepth,
+            impurityMeasure: impurityMeasure,
+            splitMethod: splitMethod
+            )
+            .fit(X, y);
+        }
+    (dataframe.DataFrame(X), y,
+     minSamplesSplit:, maxDepth:, 
+     impurityMeasure:= Base.SampleSummary,
+     splitMethod:= `sample) {
+        RegressionTreeBuilder(
+            minSamplesSplit: minSamplesSplit,
+            maxDepth: maxDepth,
+            impurityMeasure: impurityMeasure,
+            splitMethod: splitMethod
+            )
+            .fit(X, dataframe.DataFrame([y]));
+        }
+    (dataframe.DataFrame(df), yDim:,
+     minSamplesSplit:, maxDepth:, 
+     impurityMeasure:= Base.SampleSummary,
+     splitMethod:= `sample) {
+        RegressionTreeBuilder(
+            minSamplesSplit: minSamplesSplit,
+            maxDepth: maxDepth,
+            impurityMeasure: impurityMeasure,
+            splitMethod: splitMethod
+            )
+            .fit(df, yDim: yDim);
+        }
+    ;
+
+    static defaultLeafValueFun: fun(yDim) { 
+        fun(values, activeIndices) {
+            math.stats.mean(
+                onDemandSelectedVector(values.getColumn(yDim), activeIndices)
+                )
+            }
+        };
+
+    fit_: fun
+    (dataframe.DataFrame(df), yDim:, xDimensions:=nothing, 
+     leafValueFun:= defaultLeafValueFun(yDim), activeIndices:= nothing) {
+        fit_(df, yDim: yDim, maxDepth: mMaxDepth, xDimensions: xDimensions,
+             leafValueFun: leafValueFun, activeIndices: activeIndices)
+        }
+    (dataframe.DataFrame(df), yDim:, maxDepth:, xDimensions:= nothing, 
+     leafValueFun:= defaultLeafValueFun(yDim), activeIndices:= nothing) {
+        if (xDimensions is nothing)
+            xDimensions = [ix for ix in sequence(df.numColumns) if ix != yDim];
+
+        if (activeIndices is nothing)
+            activeIndices = Vector.range(size(df));
+        
+        if (size(activeIndices) < mMinSamplesSplit or maxDepth == 0)
+            {
+            return RegressionTree(
+                rules: [RegressionLeafRule(
+                    predictionValue: leafValueFun(df, activeIndices)
+                    )],
+                numDimensions: size(xDimensions)
+                )
+            }
+
+        let bestRule = 
+            self.bestRule(
+                df, 
+                yDim: yDim, 
+                xDimensions: xDimensions, 
+                activeIndices: activeIndices
+                );
+        
+        let (leftIndices, rightIndices) = 
+            bestRule.splitDataframe(df, activeIndices);
+        
+        if (size(leftIndices) == 0 or size(rightIndices) == 0)
+            {
+            return RegressionTree(
+                rules: [RegressionLeafRule(
+                    predictionValue: leafValueFun(df, activeIndices)
+                    )],
+                numDimensions: size(xDimensions)
+                );
+            }
+
+        let nextDepth = maxDepth - 1;
+        let treeLeft  = 
+            fit_(
+                df, yDim: yDim, maxDepth: nextDepth, 
+                xDimensions: xDimensions,
+                leafValueFun: leafValueFun,
+                activeIndices: leftIndices
+                );
+        let treeRight = 
+            fit_(
+                df, yDim: yDim, maxDepth: nextDepth, 
+                xDimensions: xDimensions,
+                leafValueFun: leafValueFun,
+                activeIndices: rightIndices
+                );
+                
+        treeLeft = treeLeft.rules
+        treeRight = treeRight.rules
+                    
+        let leafValue = (size(leftIndices) * leafValueFor(treeLeft[0]) + 
+                         size(rightIndices) * leafValueFor(treeRight[0])) / 
+                             (size(leftIndices) + size(rightIndices))
+
+        return RegressionTree(
+            rules: [Base.SplitRule(
+                rule: bestRule, 
+                jumpIfLess: 1, 
+                jumpIfHigher: 1 + size(treeLeft),
+                leafValue: leafValue
+                )]
+            + treeLeft + treeRight,
+            numDimensions: size(xDimensions)
+            )
+        };
+    
+    };
+
+leafValueFor:
+fun
+(Base.LeafRuleMatcher(predictionValue: value))
+    {
+    return value;
+    }
+(Base.SplitRule(rule, less, high, value))
+    {
+    return value
+    };
+
+RegressionLeafRule: 
+class {
+    member predictionValue;
+
+    operator match(builtin.Visualizable) {
+        (String(self),)
+        };
+
+    convert(String) { 
+        "RegressionLeafRule(predictionValue:%s)".format(predictionValue)
+        };
+    
+    mixin Base.LeafRuleMixin;
+    };
+
+RegressionTree: class {
+    mixin Base.DecisionTreeMixin;
+
+    member rules;
+    member numDimensions;
+    member columnNames;
+
+    operator new(rules) {
+        createInstance(
+            cls,
+            rules: rules,
+            numDimensions: nothing,
+            columnNames: nothing
+            )
+        }
+    (rules, numDimensions) {
+        createInstance(
+            cls,
+            rules: rules,
+            numDimensions: numDimensions,
+            columnNames: nothing
+            )
+        }
+    (rules:, numDimensions:) {
+        createInstance(
+            cls,
+            rules: rules,
+            numDimensions: numDimensions,
+            columnNames: nothing
+            )
+        };
+
+    withColumnNames: fun(columnNames) {
+        createInstance(
+            cls,
+            rules: rules,
+            numDimensions: numDimensions,
+            columnNames: columnNames
+            );
+        };
+
+    featureImportances: 
+    #Markdown(
+        """#### Usage
+
+            regressionTree.featureImportances()
+
+        #### Description
+
+        Return a `math.tree.FeatureImportances` object, which summarizes a measure of 
+        feature importance for the regression tree proposed by Breiman et al.
+
+        This method returns a vector-like object which in entry `i` (get-item[i]) is 
+        the importance of feature `i`. This is a sort of weighted sum of 
+        impurity improvements of any internal nodes in the tree for which feature 
+        `i` is the split dimension.
+
+        Feature importances are normalized to sum to 1 with larger values being more
+        "important".
+
+        """)
+    fun()
+        {
+        let importances = rawFeatureImportances();
+
+        math.tree.FeatureImportances(importances, columnNames);
+        };
+
+    rawFeatureImportances: 
+    #Markdown(
+        """#### Usage
+
+            regressionTree.rawFeatureImportances()
+
+        #### Description
+
+        Return a Vector of feature importances for the regression tree proposed 
+        by Breiman et al.
+
+        This method returns a vector which in entry `i` (get-item[i]) is 
+        the importance of feature `i`. This is a sort of weighted sum of 
+        impurity improvements of any internal nodes in the tree for which feature 
+        `i` is the split dimension.
+
+        Feature importances are normalized to sum to 1 with larger values being more
+        "important".
+
+        """)
+    fun()
+        {
+        let unnormalizedImportances =
+            Vector.range(
+                numDimensions,
+                importanceForFeature
+                );
+        let normalizer = unnormalizedImportances.sum();
+        
+        unnormalizedImportances ~~ { _ / normalizer }
+        };
+
+    `hidden
+    importanceForFeature: fun(featureIx) {
+        let tr = 
+            rules.sum(
+                fun(math.tree.Base.SplitRule(rule, _, _, _)) {
+                    if (rule.dimension == featureIx)
+                        {
+                        rule.numSamples * rule.impurityImprovement
+                        }
+                    else {
+                        0.0
+                        };
+                    }
+                    (...) 
+                        { 0.0 }
+                    ;
+                );
+        tr
+        };
+    };
+

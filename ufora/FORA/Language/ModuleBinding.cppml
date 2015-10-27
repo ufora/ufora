@@ -1,0 +1,135 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "ModuleBinding.hppml"
+#include "../Core/Type.hppml"
+#include "ModuleParseResult.hppml"
+#include "Parser.hppml"
+#include "ParserExpressions.hppml"
+#include "ExpressionLocationTagging.hppml"
+#include "FunctionValidation.hppml"
+#include "FunctionUtil.hppml"
+#include "ClassMediatorBindings.hppml"
+
+namespace Fora {
+
+ImplValContainer bindModuleParseResultDirectly(
+					const ModuleParseResult& parseResult, 
+					ImmutableTreeMap<Symbol, pair<ImplValContainer, Nullable<Symbol> > > freeVariableBindings
+					)
+	{
+	lassert(parseResult.isModule());
+
+	Expression createObjectExpr = computeCreateObjectExpression(parseResult, "");
+
+	return Fora::Language::bindFunctionWithValues(
+		ClassMediator::Object(
+			parseResult.getModule().name().toString(),
+			createObjectExpr.getCreateObject().body(),
+			LexicalBindingMap(),
+			CSTValue()
+			),
+		freeVariableBindings, 
+		createObjectExpr.getCreateObject().objectMetadata()
+		);
+	}
+
+CSTValue augmentMetadata(CSTValue memberMeta, Symbol type)
+	{
+	if (memberMeta.type().isNothing())
+		memberMeta = CSTValue::Tuple()
+			.tupleAppend(null() << Symbol("outer"), CSTValue())
+			.tupleAppend(null() << Symbol("inner"), CSTValue())
+			;
+
+	lassert_dump(memberMeta.type().isTuple(), prettyPrintString(memberMeta));
+	lassert(*memberMeta.tupleGetSize() == 2);
+	lassert(*memberMeta.tupleGetName(0) == Symbol("outer"))
+	lassert(*memberMeta.tupleGetName(1) == Symbol("inner"))
+
+	return memberMeta.tupleAppend(null() << Symbol("moduleMemberType"), CSTValue(type));
+	}
+
+Expression computeCreateObjectExpression(const ModuleParseResult& result, std::string fullNameAbove)
+	{
+	@match ModuleParseResult(result)
+		-| Module(name, meta, _, members, _, location) ->> {
+			std::string fullName = fullNameAbove;
+			if (fullName.size())
+				fullName = fullName + ".";
+			fullName = fullName + name.toString();
+
+			ParserExpressions p(true, location.defPoint(), fullName);
+			
+			ImmutableTreeVector<pair<CSTValue, ObjectDefinitionTerm> > terms;
+
+			ImmutableTreeSet<std::string> namesAsStrings;
+			for (auto nameAndMember: members)
+				namesAsStrings = namesAsStrings + nameAndMember.first.toString();
+
+			for (auto name: namesAsStrings)
+				{
+				ModuleParseResult child = *members[Symbol(name)];
+
+				@match ModuleParseResult(child)
+					-| Member(name, memberMeta, Result(expr), memberLocation) ->> {
+						Symbol moduleType("member");
+
+						if (cppmlCmp(memberLocation.defPoint(), location.defPoint()) != 0)
+							//this is a member who was defined in its own file
+							moduleType = Symbol("submodule");
+
+						terms = terms + make_pair(
+							augmentMetadata(memberMeta, moduleType), 
+							ObjectDefinitionTerm::Member(name, expr, 1)
+							);
+						}
+					-| Module(name, memberMeta) ->> {
+						auto expr = computeCreateObjectExpression(child, fullName);
+						terms = terms + make_pair(
+							augmentMetadata(memberMeta, Symbol("submodule")), 
+							ObjectDefinitionTerm::Member(name, expr, 1)
+							);
+						}
+					-| _ ->> {}
+				}
+
+			return p.objectTermsAndMetadataToObjectExpression(
+					meta,
+					terms,
+					null() << name,
+					location.range(),
+					emptyTreeVec() +
+						make_pair(
+							null() << Symbol("kind"),
+							CSTValue(Symbol("module"))
+							) +
+						make_pair(
+							null() << Symbol("name"),
+							CSTValue(Symbol(name))
+							) +
+						make_pair(
+							null() << Symbol("fullname"),
+							CSTValue(Symbol(fullName))
+							),
+					fullName
+					);
+			}
+		-| _ ->> {
+			lassert_dump(false, prettyPrintString(result));
+			}
+	}
+
+}

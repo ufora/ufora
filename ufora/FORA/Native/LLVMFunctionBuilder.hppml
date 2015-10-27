@@ -1,0 +1,304 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#ifndef LLVMFunctionBuilder_hppml_
+#define LLVMFunctionBuilder_hppml_
+
+#include "LLVMUtil.hppml"
+#include "NativeCode.hppml"
+#include "NativeCodeFlattened.hppml"
+#include "../TypedFora/JitCompiler/Compiler.hppml"
+#include "FunctionPointerHandle.hpp"
+
+typedef llvm::Value* llvm_value_ptr;
+typedef llvm::BasicBlock* llvm_block_ptr;
+typedef llvm::PHINode* llvm_phinode_ptr;
+
+class LLVMValue;
+class LLVMValueEvaluationContext;
+class NativeCodeCompiler;
+class LLVMPartialBlock;
+class LLVMValueEvaluationContext;
+class LLVMEntrypoint;
+class LLVMFunctionBuilder;
+
+@type LLVMValue = llvm_value_ptr p, NativeType t {
+public:
+	operator bool() const
+		{
+		return p() ? true : false;
+		}
+	operator llvm_value_ptr() const
+		{
+		lassert(p());
+		return p();
+		}
+};
+
+class LLVMFunctionBuilder {
+public:
+	LLVMFunctionBuilder(
+		NativeCodeCompiler& inCompiler,
+		llvm::Function*& outFunction,
+		NativeType& outSlotsType,
+		map<uword_t, ImmutableTreeVector<NativeContinuationMetadataSerialized> >& outMetadataMap,
+		map<uword_t, NativeIndividualContinuationMetadata>& outIndividualMetadataMap,
+		const string& inName,
+		const NativeCFG& inFun,
+		llvm::Module* inModule
+		);
+private:
+	NativeCodeCompiler& mCompiler;
+	const RuntimeConfig& mConfig;	
+	map<uword_t, ImmutableTreeVector<NativeContinuationMetadataSerialized> >& mOutMetadataMap;
+	map<uword_t, NativeIndividualContinuationMetadata>& mOutIndividualMetadataMap;
+	llvm::Function* mFunction;
+	const NativeCFG& mNativeFun;
+	std::string mName;	
+	map<NativeBlockID, NativeCodeFlattened::Block> mFlatBlockMap;
+	map<NativeBlockID, llvm_block_ptr> mBlockMap;
+	map<NativeBlockID, pair<llvm_block_ptr, llvm_block_ptr> > mBranchBlockMap;
+	map<NativeBlockID, map<NativeVariable, llvm_phinode_ptr> > mBlockLiveVarPHIs;
+	map<NativeBlockID, uword_t> mEntryBlockIDs;
+	llvm_block_ptr mJumpBlock;
+	llvm_block_ptr mFunctionEntryBlock;
+	llvm_block_ptr mFunctionBranchPoint;
+	llvm_block_ptr mNewSlotsBlock;
+	llvm_block_ptr mExistingSlotsBlock;
+	llvm_phinode_ptr mFinalFunPtr;
+	llvm_phinode_ptr mFinalCont;
+	llvm_phinode_ptr mFinalStackPtr;
+	llvm_phinode_ptr mTempVarForBitcasting;
+	llvm_phinode_ptr mSlotsPhi;
+	llvm_value_ptr mBranchIDVal;
+	llvm_value_ptr  mArgPtrVal;
+	llvm::SwitchInst* mInitialSwitchInst;
+	uword_t mTempVarSize;
+	uword_t mNextBlockID;
+	ImmutableTreeVector<NativeVariable>	mSlots;
+	ImmutableTreeVector<uword_t> mSlotOffsets;
+	LLVMValue mSlotsPtr;
+	NativeType mSlotsType;
+	NativeVariable mContVar;
+	map<NativeVariable, uword_t> mVarsToSlots;
+	LLVMValue mBaseMemBlockPtr;
+
+	bool wantsPathTrace() const;
+	bool wantsArgumentTrace() const;
+	bool wantsSlotStorageTracers() const;
+
+	LLVMValue getTempVarPtr(uword_t sz);
+	uword_t entryBlockIDFor(NativeBlockID id);
+	
+	LLVMValue evaluate(
+				llvm_block_ptr blockPtr,
+				const NativeCodeFlattened::Input& in,
+				map<NativeVariable, LLVMValue>& ioVals
+				);
+	
+	LLVMValue evaluate(
+				llvm_block_ptr blockPtr,
+				const NativeCodeFlattened::Expression& in,
+				map<NativeVariable, LLVMValue>& ioVals
+				);
+
+	LLVMValue evaluate(
+			llvm_block_ptr blockPtr,
+			const NativeConstant& in,
+			map<NativeVariable, LLVMValue>& ioVals
+			);
+
+	ImmutableTreeVector<LLVMValue> evaluate(
+										llvm_block_ptr blockPtr,
+										const ImmutableTreeVector<NativeCodeFlattened::Input>& in,
+										map<NativeVariable, LLVMValue>& ioVals
+										);
+	
+	//Emits the specified block-terminating instruction (e.g., br, call, etc).
+	void terminate(
+			llvm_block_ptr blockPtr,
+			const NativeCodeFlattened::Term& term,
+			map<NativeVariable, LLVMValue>& ioVals
+			);
+
+	llvm_value_ptr getLlvmFuncPtrFromSlot(llvm_block_ptr blockPtr, FunctionPointerHandle slot);
+
+	uword_t mapMetadata(const NativeCodeFlattened::Input& meta);
+	NativeContinuationExpressionSerialized mapMetadata(
+												const NativeCodeFlattened::CompositeInput& meta
+												);
+	NativeContinuationVarMetadataSerialized mapMetadata(
+												const NativeCodeFlattened::VarMetadata& meta
+												);
+	NativeContinuationMetadataSerialized mapMetadata(const NativeCodeFlattened::Metadata& meta);
+	ImmutableTreeVector<NativeContinuationMetadataSerialized> mapMetadata(
+								const ImmutableTreeVector<NativeCodeFlattened::Metadata>& meta
+								);
+	
+	void extractWriteBackSlots(const NativeCodeFlattened::Block& block);
+	void extractContinuationSlots(const NativeCodeFlattened::Block& block);
+	void extractContinuationSlots(const NativeCodeFlattened::Cont& cont);
+
+	void setSpillWeight(llvm_block_ptr block, double spillWeight);
+
+	llvm::Type* blockPtrType();
+	vector<llvm::Type*> toLLVM(const ImmutableTreeVector<NativeType>& types);
+	vector<llvm::Type*> toLLVM(const ImmutableTreeVector<NativeVariable>& vars);
+	llvm::Type* toLLVM(const NativeType& type);
+	llvm_value_ptr llvmUInt32(uint32_t x);
+	llvm_value_ptr llvmULong(uword_t x);
+	llvm::FunctionType* jumpFuncType(bool isInternal);
+
+	void callFree(
+			llvm_block_ptr& ioBlockPtr,
+			llvm_value_ptr baseMemBlockPtr,
+			llvm_value_ptr v, bool isInline
+			);
+	llvm_value_ptr callMalloc(
+					llvm_block_ptr& block,
+					llvm_value_ptr baseMemBlockPtr,
+					uword_t bytes,
+					bool isInline
+					);
+	llvm_value_ptr callMalloc(
+					llvm_block_ptr& block,
+					llvm_value_ptr baseMemBlockPtr,
+					llvm_value_ptr bytes,
+					bool isInline
+					);
+
+	string llvmTypeToString(llvm::Type* t);
+
+	LLVMValue makeComposite(llvm_block_ptr block, ImmutableTreeVector<LLVMValue> vals);
+	llvm_value_ptr makeComposite(llvm_block_ptr block, ImmutableTreeVector<llvm_value_ptr> vals);
+	
+	//helper functions for LLVMFunctionBuilder's constructor, which does everything!
+	void initializeFunction(llvm::Function*& ioFunPtr, llvm::Module* inModule);
+	void createTempVarForBitcasting();
+	void flattenAndSimplifyNativeFun();
+	void flattenNativeFun();
+	void dumpFlattenedBlocksToFile(const string& inFilename) const;
+	void logFlattenedBlocks(const string& message, bool withNativeCFG) const;
+	void simplifyFlattenedNativeFun(); 
+	void addPhiNodesToBlocks();
+	void createExitBlock();
+	void computeEntryBlockIDs();
+	void computeSlots();
+	void createSlotsPtr(NativeType& outSlotsType);
+	void translateNativeBlocks();
+	void addBlockWithTerminator(
+			llvm_block_ptr blockPtr,
+			NativeBlockID id,
+			const NativeCodeFlattened::Block& nativeBlock
+			);
+	void createTerminalBranch(
+			llvm_block_ptr blockPtr,
+			NativeBlockID id,
+			const NativeCodeFlattened::Block& nativeBlock,
+			map<NativeVariable, LLVMValue>& liveValues
+			);
+	void finishSlotsPtr();
+	void createInitialSwitchBlock();
+	llvm_block_ptr createStagingBlock(const NativeBlockID& nativeBlockId, uword_t index);
+	void completeStagingBlocks(
+			llvm_block_ptr& ioBlockPtr,
+			const NativeCodeFlattened::Block& flattenedNativeBlock,
+			ImmutableTreeVector<LLVMValue>& ioValues,
+			llvm_value_ptr inArgsPtrCast,
+			llvm_value_ptr& ioContValue
+			);
+	void createJumpFromStagingBlockToBlockById(
+			llvm_block_ptr inFromStagingBlock,
+			const NativeBlockID& inToNativeBlockId,
+			const NativeCodeFlattened::Block& inFlattenedNativeBlock,
+			const ImmutableTreeVector<LLVMValue>& inLLVMValues,
+			llvm_value_ptr inArgsPtrCast,
+			llvm_value_ptr inContValue
+			);
+	void completeStagingBlocksAndJumpToBlockById(
+			llvm_block_ptr inFromStagingBlock,
+			const NativeBlockID id
+			);
+	void createJumpFromStagingToBlockByIDForContinuationResumption(
+			llvm_block_ptr inFromStagingBlock,
+			const NativeBlockID& inToId
+			);
+	void createStagingBlocksAndTheirJumps();
+	void replaceTempVarForBitcastingWithAlloc();
+	
+	//Generates code for printing out debug information.
+	void genTracerCritical(llvm_block_ptr b, string msg);
+	void genTracer(llvm_block_ptr b);
+	void genTracer(llvm_block_ptr b, string msg);
+	void genTracerHex(llvm_block_ptr b, string msg, llvm_value_ptr v);
+	void genTracer(llvm_block_ptr b, string msg, llvm_value_ptr v);
+	void genTracer(llvm_block_ptr b, string msg, llvm_value_ptr v, llvm_value_ptr v2);
+	void genTracerMem(llvm_block_ptr b, string msg, llvm_value_ptr v, uword_t sz);
+	void genTracerMem(llvm_block_ptr b, string msg, llvm_value_ptr v, llvm_value_ptr v2);
+	void genTracerImplVal(llvm_block_ptr b, string msg, llvm_value_ptr v);
+	void genTracerImplValPtr(llvm_block_ptr b, string msg, llvm_value_ptr v);
+	void genTracerFloat64Ptr(llvm_block_ptr b, string msg, llvm_value_ptr v);
+	void genTracerImplValList(llvm_block_ptr b, string msg, llvm_value_ptr v);
+	void genTracerTyped(llvm_block_ptr b, string msg, NativeType t, llvm_value_ptr v);
+
+	llvm_value_ptr toULong(llvm_block_ptr b, llvm_value_ptr v);
+	llvm_value_ptr getStringPointer(llvm_block_ptr b, string s);
+	llvm_value_ptr toVoidPointer(llvm_block_ptr b, llvm_value_ptr v);
+	LLVMValue toVoidPointer(llvm_block_ptr b, LLVMValue v);
+	
+	void longJump(
+			llvm_value_ptr jumpToFunPtrAndSlot,
+			llvm_value_ptr baseMemBlockPtr,
+			llvm_block_ptr& block,
+			const ImmutableTreeVector<LLVMValue>& args,
+			bool memIsInline,
+			bool isInternal
+			);
+
+	llvm::Constant* getNullConstantFor(NativeType t);
+
+	LLVMValue generateCallFrame(
+				llvm_block_ptr& block,
+				llvm_value_ptr baseMemBlockPtr,
+				const ImmutableTreeVector<LLVMValue>& args,
+				bool memIsInline
+				);
+	
+	ImmutableTreeVector<NativeType> typesFor(ImmutableTreeVector<LLVMValue> vals);
+
+	llvm_phinode_ptr createPhi(
+						llvm_block_ptr block,
+						const NativeType& type,
+						const char* c = ""
+						);
+	void addIncoming(llvm_phinode_ptr p, llvm_value_ptr v, llvm_block_ptr b);
+	void addIncoming(llvm_phinode_ptr p, LLVMValue v, llvm_block_ptr b);
+	
+	llvm::Function* getLibFunc(
+						NativeLibraryFunctionTarget name,
+						NativeType t,
+						const ImmutableTreeVector<NativeType>& args,
+						llvm::Module* inModule
+						);
+	llvm::Function* getLibFunc(
+						NativeLibraryFunctionTarget name,
+						llvm::Type* t,
+						vector<llvm::Type*> args,
+						llvm::Module* inModule
+						);
+};
+
+#endif
+

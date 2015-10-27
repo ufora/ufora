@@ -1,0 +1,367 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../CumulusCheckpointPolicy.hppml"
+
+namespace Cumulus {
+
+class CheckpointStatusesKernel {
+public:
+	@type ReceivedCheckpoint = CheckpointRequest checkpoint, CheckpointStatus status, double timestampReceived;
+
+	CheckpointStatusesKernel(double inCheckpointInterval, CumulusCheckpointPolicy inCommitPolicy) : 
+			mCheckpointInterval(inCheckpointInterval),
+			mCommitPolicy(inCommitPolicy),
+			mNewCommittedCheckpointsPaused(false),
+			mHasBroadcastAfterCheckpointPause(false)
+		{
+		}
+
+	void computationStatusReceived(ComputationId computation, double curTime)
+		{
+		//check if we've ever seen this one before
+		if (mFirstObservedTimestamp.find(computation) != mFirstObservedTimestamp.end())
+			return;
+
+		//it's new
+		mFirstObservedTimestamp[computation] = curTime;
+		
+		setNextCheckpointTimestamps(computation, curTime);
+		}
+
+	void checkpointLoaded(CheckpointRequest checkpoint, bool wasFinished)
+		{
+		if (!wasFinished)
+			return;
+
+		mFinishedComputationsLoadedFromCheckpoint.insert(checkpoint.rootComputation());
+		}
+
+	//returns whether we should initiate the commit-checkpoint protocol
+	bool checkpointReceived(CheckpointRequest request, CheckpointStatus status, double curTime)
+		{
+		if (!request.writeToStorage() || !status.checkpointSuccessful())
+			{
+			finalizeCheckpoint(request, status, curTime);
+			return false;
+			}
+
+		mCheckpointsPendingCommit[request] = status;
+
+		return true;
+		}
+
+	void checkpointCommitted(CheckpointRequest checkpoint, bool allDataPersistedSuccessfully, double curTime)
+		{
+		lassert(mCheckpointsPendingCommit.find(checkpoint) != mCheckpointsPendingCommit.end());
+
+		CheckpointStatus status = mCheckpointsPendingCommit[checkpoint];
+		mCheckpointsPendingCommit.erase(checkpoint);
+
+		if (!allDataPersistedSuccessfully)
+			status = status.withCheckpointError();
+
+		finalizeCheckpoint(checkpoint, status, curTime);
+		}
+
+	//pull out the next thing to trigger
+	Nullable<CheckpointRequest> nextCheckpointToRequest(double curTime)
+		{
+		if (mNextCommittedCheckpointTime.size() && 
+				mNextCommittedCheckpointTime.lowestValue() < curTime && 
+				!mNewCommittedCheckpointsPaused)
+			{
+			ComputationId comp = *mNextCommittedCheckpointTime.getValueToKeys().begin()->second.begin();
+
+			CheckpointRequest req(curTime, true, comp);
+
+			checkpointInitiated(req);
+
+			return null() << req;
+			}
+
+		if (mNextCheckpointTime.size() && 
+				mNextCheckpointTime.lowestValue() < curTime)
+			{
+			ComputationId comp = *mNextCheckpointTime.getValueToKeys().begin()->second.begin();
+
+			CheckpointRequest req(curTime, false, comp);
+
+			checkpointInitiated(req);
+
+			return null() << req;
+			}
+
+		return null();
+		}
+	
+	void setCheckpointStatusInterval(double inInterval)
+		{
+		mCheckpointInterval = inInterval;
+		}
+
+	bool hasOutstandingCheckpointRequest(ComputationId computation) const
+		{
+		return mInFlightCheckpointRequests.find(computation) != mInFlightCheckpointRequests.end();
+		}
+
+	void triggerCheckpointsOnAllOutstanding()
+		{
+		for (auto computationAndTs: mFirstObservedTimestamp)
+			triggerCheckpointIfPossible(computationAndTs.first);
+		}
+
+	const map<ComputationId, ReceivedCheckpoint>& getCheckpointStatuses() const
+		{
+		return mCheckpointStatuses;
+		}
+
+	const map<ComputationId, ReceivedCheckpoint>& getCommittedCheckpointStatuses() const
+		{
+		return mCommittedCheckpointStatuses;
+		}
+
+	bool anyOutstandingTriggeredCheckpoints() const
+		{
+		return mComputationsNeedingImmediateCommit.size() > 0;
+		}
+
+	void triggerCheckpointIfPossible(ComputationId computation)
+		{
+		if (isFinishedAndCheckpointed(computation))
+			return;
+		
+		if (mComputationsNeedingImmediateCommit.find(computation) != mComputationsNeedingImmediateCommit.end())
+			return;
+
+		LOG_INFO << "Adding " << computation << " to immediate-checkpoint list";
+
+		mComputationsNeedingImmediateCommit.insert(computation);
+		}
+
+	bool isFullCheckpointOutstandingAndWaitingForCommit(ComputationId computation) const
+		{
+		auto it = mInFlightCheckpointRequests.find(computation);
+
+		if (it == mInFlightCheckpointRequests.end())
+			return false;
+
+		return mCheckpointsPendingCommit.find(it->second) != mCheckpointsPendingCommit.end();
+		}
+
+	bool isFullCheckpointOutstanding(ComputationId computation) const
+		{
+		auto it = mInFlightCheckpointRequests.find(computation);
+
+		if (it == mInFlightCheckpointRequests.end())
+			return false;
+
+		return it->second.writeToStorage();
+		}
+
+	void pauseNewCommittedCheckpoints()
+		{
+		mNewCommittedCheckpointsPaused = true;
+		mHasBroadcastAfterCheckpointPause = false;
+		}
+
+	bool areNewCheckpointsPaused()
+		{
+		return mNewCommittedCheckpointsPaused;
+		}
+
+	void resumeNewCommittedCheckpoints()
+		{
+		mNewCommittedCheckpointsPaused = false;
+		}
+
+	bool canBroadcastAfterPause()
+		{
+		if (mNewCommittedCheckpointsPaused && !mHasBroadcastAfterCheckpointPause && 
+				!mInFlightCheckpointRequests.size())
+			{
+			mHasBroadcastAfterCheckpointPause = true;
+			return true;
+			}
+
+		return false;
+		}
+
+private:
+	void finalizeCheckpoint(CheckpointRequest checkpoint, CheckpointStatus status, double curTime)
+		{
+		mCheckpointStatuses[checkpoint.rootComputation()] = ReceivedCheckpoint(checkpoint, status, curTime);
+
+		if (checkpoint.writeToStorage())
+			mCommittedCheckpointStatuses[checkpoint.rootComputation()] = ReceivedCheckpoint(checkpoint, status, curTime);
+
+		mInFlightCheckpointRequests.erase(checkpoint.rootComputation());
+
+		if (checkpoint.writeToStorage() && status.checkpointSuccessful())
+			mComputationsNeedingImmediateCommit.erase(checkpoint.rootComputation());
+
+		setNextCheckpointTimestamps(checkpoint.rootComputation(), curTime);
+		}
+
+	void setNextCheckpointTimestamps(ComputationId computation, double curTime)
+		{
+		Nullable<double> timestamp = nextRegularCheckpointFor(computation, curTime);
+
+		if (timestamp)
+			mNextCheckpointTime.set(computation, *timestamp);
+
+		Nullable<double> timestamp2 = nextCommittedCheckpointFor(computation, curTime);
+
+		if (timestamp2)
+			mNextCommittedCheckpointTime.set(computation, *timestamp2);
+		}
+
+	Nullable<double> nextRegularCheckpointFor(ComputationId computation, double curTime) const
+		{
+		//we always want a status if it's new
+		auto it = mCheckpointStatuses.find(computation);
+
+		if (it == mCheckpointStatuses.end())
+			return null() << curTime;
+
+		if (isFinishedAndCheckpointed(computation))
+			return null();
+
+		return null() << it->second.timestampReceived() + mCheckpointInterval;
+		}
+
+	Nullable<double> nextCommittedCheckpointFor(ComputationId computation, double curTime) const
+		{
+		if (isFinishedAndCheckpointed(computation))
+			return null();
+
+		if (mFirstObservedTimestamp.find(computation) == mFirstObservedTimestamp.end())
+			return null();
+
+		//if we've never sampled it before
+		if (mCheckpointStatuses.find(computation) == mCheckpointStatuses.end())
+			return null();
+
+		auto checkpoint_it = mCheckpointStatuses.find(computation);
+
+		//we definitely have a checkpoint sample
+		lassert(checkpoint_it != mCheckpointStatuses.end()); 
+
+		double interval = 0;
+
+		//if we need an immediate commit, we override even if commit interval is zero
+		if (mComputationsNeedingImmediateCommit.find(computation) != mComputationsNeedingImmediateCommit.end())
+			{
+			interval = 0;
+			}
+		else
+			{
+			//check if auto-checkpoint is off
+			if (mCommitPolicy.isNone())
+				return null();
+
+			if (checkpoint_it->second.status().isRootComputationPassthrough())
+				return null();
+
+			double totalSecondsElapsed = 
+					checkpoint_it->second.status().statistics().timeSpentInInterpreter()
+				+ 	checkpoint_it->second.status().statistics().timeSpentInCompiler()
+				;
+
+			@match CumulusCheckpointPolicy(mCommitPolicy)
+				-| None() ->> {}
+				-| Periodic(seconds) ->> {
+					interval = seconds;
+					};
+			}
+
+		auto commit_it = mCommittedCheckpointStatuses.find(computation);
+
+		//if the computation is finished, but not checkpointed yet, checkpoint immediately
+		if (checkpoint_it->second.status().isRootComputationFinished() && 
+				(commit_it == mCommittedCheckpointStatuses.end() || !commit_it->second.status().isRootComputationFinished()))
+			interval = 0;
+
+		//if we have a sample but no checkpoint yet, time it from the initial observation
+		if (commit_it == mCommittedCheckpointStatuses.end())
+			return null() << (mFirstObservedTimestamp.find(computation)->second + interval);
+
+		return null() << commit_it->second.timestampReceived() + interval;
+		}
+
+	bool isFinishedAndCheckpointed(ComputationId computation) const
+		{
+		if (mFinishedComputationsLoadedFromCheckpoint.find(computation) != 
+								mFinishedComputationsLoadedFromCheckpoint.end())
+			return true;
+		
+		auto it = mCommittedCheckpointStatuses.find(computation);
+		if (it == mCommittedCheckpointStatuses.end())
+			return false;
+
+		if (it->second.status().checkpointSuccessful() && 
+					it->second.status().isRootComputationFinished())
+			return true;
+
+		return false;
+		}
+
+	void checkpointInitiated(CheckpointRequest checkpoint)
+		{
+		lassert(!hasOutstandingCheckpointRequest(checkpoint.rootComputation()));
+
+		mInFlightCheckpointRequests[checkpoint.rootComputation()] = checkpoint;
+
+		mNextCheckpointTime.discard(checkpoint.rootComputation());
+		mNextCommittedCheckpointTime.discard(checkpoint.rootComputation());
+		}
+
+	CumulusCheckpointPolicy mCommitPolicy;
+
+	bool mNewCommittedCheckpointsPaused;
+
+	bool mHasBroadcastAfterCheckpointPause;
+
+	double mCheckpointInterval;
+
+	//the most recent update we've received (could be a committed or uncommitted checkpoint)
+	map<ComputationId, ReceivedCheckpoint> mCheckpointStatuses;
+
+	//the most recent committed checkpoint we've received
+	map<ComputationId, ReceivedCheckpoint> mCommittedCheckpointStatuses;
+
+	//any successfully written checkpoints that are in the second step of our two-phase commit process
+	std::map<CheckpointRequest, CheckpointStatus> mCheckpointsPendingCommit;
+
+	//any pending checkpoint requests
+	std::map<ComputationId, CheckpointRequest> mInFlightCheckpointRequests;
+
+	std::map<ComputationId, double> mFirstObservedTimestamp;
+
+	//for each live computation, the next timestamp at which we will take a measurement
+	MapWithIndex<ComputationId, double> mNextCheckpointTime;
+
+	//for each live computation, the next timestamp at which we will commit the checkpoint to the store
+	MapWithIndex<ComputationId, double> mNextCommittedCheckpointTime;
+
+	std::set<ComputationId> mComputationsNeedingImmediateCommit;
+
+	std::set<ComputationId> mFinishedComputationsLoadedFromCheckpoint;
+};
+
+}
+

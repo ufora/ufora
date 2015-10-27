@@ -1,0 +1,388 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "NativeStackFrameWrapper.hppml"
+#include "../TypedFora.hppml"
+#include "../../../core/Logging.hpp"
+#include "LiveValue.hppml"
+#include "NativeLayoutType.hppml"
+
+namespace TypedFora {
+namespace Abi {
+
+NativeStackFrameWrapper::NativeStackFrameWrapper(const NativeRuntimeContinuationBase& inStackFramePtr) : 
+		mStackFramePtr(inStackFramePtr)
+	{
+	auto compiler = Runtime::getRuntime().getTypedForaCompiler();
+
+	lassert(compiler->isNativeFunctionPointer(inStackFramePtr.jumpPtr()));
+
+	//get the metadata
+	mMetadata = compiler->slotMetadataForFuncPtr(
+		mStackFramePtr.jumpPtr(), 
+		mStackFramePtr.metadataEntryId()
+		);
+
+	mSlotTypes = compiler->slotTypesForFuncPtr(mStackFramePtr.jumpPtr()).getComposite().elements();
+	}
+
+char* NativeStackFrameWrapper::reassembleNativeConstantDirectly(const NativeConstant& c, char* targetData)
+	{
+	@match NativeConstant(c)
+		-|	Nothing()->> {
+				return targetData;
+				}
+		-|	Double(b) ->> {
+				((double*)targetData)[0] = b; 
+				return targetData + sizeof(double);
+				}
+		-|	Float(b) ->> {
+				((float*)targetData)[0] = b;
+				return targetData + sizeof(float);
+				}
+		-|	Bool(b) ->> {
+				((bool*)targetData)[0] = b;
+				return targetData + sizeof(bool);
+				}
+		-|	UInt8(b) ->>  {
+				((uint8_t*)targetData)[0] = b;
+				return targetData + sizeof(uint8_t);
+				}
+		-|	UInt16(b) ->> {
+				((uint16_t*)targetData)[0] = b;
+				return targetData + sizeof(uint16_t);
+				}
+		-|	UInt32(b) ->> {
+				((uint32_t*)targetData)[0] = b;
+				return targetData + sizeof(uint32_t);
+				}
+		-|	UInt64(b) ->> {
+				((uint64_t*)targetData)[0] = b;
+				return targetData + sizeof(uint64_t);
+				}
+		-|	Int8(b) ->> {
+				((int8_t*)targetData)[0] = b;
+				return targetData + sizeof(int8_t);
+				}
+		-|	Int16(b) ->> {
+				((int16_t*)targetData)[0] = b;
+				return targetData + sizeof(int16_t);
+				}
+		-|	Int32(b) ->> {
+				((int32_t*)targetData)[0] = b;
+				return targetData + sizeof(int32_t);
+				}
+		-|	Int64(b) ->> {
+				((int64_t*)targetData)[0] = b;
+				return targetData + sizeof(int64_t);
+				}
+		-|	Composite(constants) ->> {
+				for (auto child: constants)
+					targetData = reassembleNativeConstantDirectly(child, targetData);
+				return targetData;
+				}
+		-|	ArbitraryConstant(a) ->> {
+				NativeType nativeTy = a->nativeType();
+				memcpy(targetData, a->pointerToData(), nativeTy.packedSize());
+				return targetData + nativeTy.packedSize();
+				}
+		-|	NullPointer() ->> {
+				((void**)targetData)[0] = 0;
+				return targetData + sizeof(void*);
+				}
+		-|	_ ->> {
+				lassert_dump(false, "can't provide a pointer to data for NativeConstant " 
+						<< prettyPrintString(c));
+				}
+		;
+	}
+
+const void* NativeStackFrameWrapper::nativeConstantSourceData(const NativeConstant& c)
+	{
+	@match NativeConstant(c)
+		-|	Double(b) ->> {
+				return &b;
+				}
+		-|	Float(b) ->> {
+				return &b;
+				}
+		-|	Bool(b) ->> {
+				return &b;
+				}
+		-|	UInt8(b) ->>  {
+				return &b;
+				}
+		-|	UInt16(b) ->> {
+				return &b;
+				}
+		-|	UInt32(b) ->> {
+				return &b;
+				}
+		-|	UInt64(b) ->> {
+				return &b;
+				}
+		-|	Int8(b) ->> {
+				return &b;
+				}
+		-|	Int16(b) ->> {
+				return &b;
+				}
+		-|	Int32(b) ->> {
+				return &b;
+				}
+		-|	Int64(b) ->> {
+				return &b;
+				}
+		-|	Int64(b) ->> {
+				return &b;
+				}
+		-|	ArbitraryConstant(a) ->> {
+				return a->pointerToData();
+				}
+		-|	NullPointer() ->> {
+				static void* aNullPtr = 0;
+				return aNullPtr;
+				}
+		-|	_ ->> {
+				lassert_dump(false, "can't provide a pointer to data for NativeConstant " 
+						<< prettyPrintString(c));
+				}
+		;
+	}
+
+char* NativeStackFrameWrapper::reassembleNativeConstant(
+					char* targetData, 
+					NativeConstant constant,
+					NativeType subtype,
+					long offset
+					)
+	{
+	if (offset == 0 && subtype == constant.type())
+		return reassembleNativeConstantDirectly(constant, targetData);
+
+	if (offset != 0)
+		lassert(subtype != constant.type());
+
+	if (subtype.packedSize() == 0)
+		return targetData;
+
+	@match NativeConstant(constant)
+		-| Composite(elements) ->> {
+			//subtype should be one of the composite elements, and offset should index into
+			//the tuple
+			long offsetLeft = offset;
+			for (long k = 0; k < elements.size(); k++)
+				{
+				if (offsetLeft == 0)
+					{
+					lassert(elements[k].type() == subtype);
+
+					return reassembleNativeConstant(targetData, elements[k], subtype, 0);
+					}
+
+				offsetLeft += elements[k].type().packedSize();
+				}
+
+			lassert(false);
+			}
+		-| _ ->> {
+			const char* readFrom = (const char*)nativeConstantSourceData(constant);
+			memcpy(targetData, readFrom + offset, subtype.packedSize());
+
+			return targetData + subtype.packedSize();
+			}
+	}
+
+char* NativeStackFrameWrapper::readStackFrameLayoutToStandardLayout(
+		char* targetData,
+		char* sourceData,
+		const NativeContinuationExpressionSerialized& node
+		)
+	{
+	@match NativeContinuationExpressionSerialized(node)
+		-|	Leaf(t, o) ->> {
+				memcpy(targetData, sourceData + o, t.packedSize());
+				return targetData + t.packedSize();
+				}
+		-|	Constant(c, subtype, offset) ->> {
+				return reassembleNativeConstant(targetData, c, subtype, offset);
+				}
+		-|	Tuple(n) ->> {
+				for (long k = 0; k < n.size(); k++)
+					targetData = readStackFrameLayoutToStandardLayout(targetData, sourceData, n[k]);
+				return targetData;
+				}
+		;
+	}
+
+char* NativeStackFrameWrapper::pushStandardLayoutIntoStackframe(
+		char* standardLayoutData,
+		char* stackFrameData,
+		const NativeContinuationExpressionSerialized& node
+		)
+	{
+	@match NativeContinuationExpressionSerialized(node)
+		-|	Leaf(t, o) ->> {
+				memcpy(stackFrameData + o, standardLayoutData, t.packedSize());
+				return standardLayoutData + t.packedSize();
+				}
+		-|	Constant(c, subtype, offset) ->> {
+				return standardLayoutData + subtype.packedSize();
+				}
+		-|	Tuple(n) ->> {
+				for (long k = 0; k < n.size(); k++)
+					standardLayoutData = pushStandardLayoutIntoStackframe(standardLayoutData, stackFrameData, n[k]);
+				return standardLayoutData;
+				}
+		;
+	}
+
+char* NativeStackFrameWrapper::pushStandardLayoutIntoStackframe(
+		char* standardLayoutData,
+		char* stackFrameData,
+		const NativeContinuationExpressionSerialized& node,
+		std::vector<NativeStackFrameWrapper::Write>& outWrites
+		)
+	{
+	@match NativeContinuationExpressionSerialized(node)
+		-|	Leaf(t, o) ->> {
+				outWrites.push_back(
+					NativeStackFrameWrapper::Write(
+						stackFrameData + o, 
+						std::string(standardLayoutData, standardLayoutData + t.packedSize())
+						)
+					);
+				return standardLayoutData + t.packedSize();
+				}
+		-|	Constant(c, subtype, offset) ->> {
+				return standardLayoutData + subtype.packedSize();
+				}
+		-|	Tuple(n) ->> {
+				for (long k = 0; k < n.size(); k++)
+					standardLayoutData = pushStandardLayoutIntoStackframe(standardLayoutData, stackFrameData, n[k], outWrites);
+				return standardLayoutData;
+				}
+		;
+	}
+
+
+const ImmutableTreeVector<NativeContinuationMetadataSerialized>& 
+NativeStackFrameWrapper::getMetadata() const
+	{
+	return mMetadata;
+	}
+
+const ImmutableTreeVector<NativeType>& 
+NativeStackFrameWrapper::getSlotTypes() const
+	{
+	return mSlotTypes;
+	}
+
+void* NativeStackFrameWrapper::getSlotData() const
+	{
+	return mStackFramePtr.stackframePtr();
+	}
+
+LiveValue NativeStackFrameWrapper::readStackFrameLayoutToLiveValue(
+											std::vector<char>& ioTempStorage,
+											NativeContinuationVarMetadataSerialized varMetadata,
+											void* data
+											)
+	{
+	lassert(varMetadata.layout());
+
+	TypedFora::Type type = **varMetadata.layout();
+
+	if (type.jov().constant())
+		return LiveValue(
+			TypedFora::Type(
+				type.jov(), 
+				type.refcountStyle()
+				),
+			0
+			);
+
+	if (type.jov().type())
+		ioTempStorage.resize(type.jov().type()->size());
+		else
+	if (type.jov().isUnion())
+		ioTempStorage.resize(nativeLayoutType(type.jov()).packedSize());
+	else
+		ioTempStorage.resize(sizeof(ImplVal));
+
+	lassert(readStackFrameLayoutToStandardLayout((char*)&ioTempStorage[0], (char*)data, varMetadata.data()) ==
+			((char*)&ioTempStorage[0]) + ioTempStorage.size());
+
+	return LiveValue(
+		TypedFora::Type(
+			type.jov(), 
+			type.refcountStyle()
+			),
+		&ioTempStorage[0]
+		);
+	}
+
+void NativeStackFrameWrapper::destroyValue(NativeContinuationVarMetadataSerialized varMetadata, void* data)
+	{
+	lassert(varMetadata.layout());
+
+	TypedFora::Type type = **varMetadata.layout();
+
+	bool isOwned = type.refcountStyle().isAsValueOwned();
+	
+	if (!isOwned)
+		return;
+
+	vector<char> dat;
+
+	LiveValue value = readStackFrameLayoutToLiveValue(dat, varMetadata, data);
+
+	value.destroy();
+	}
+
+NativeRuntimeContinuationValueVector
+NativeStackFrameWrapper::getAllContinuations() const
+	{
+	NativeRuntimeContinuationValue<0>* continuationPtr = (NativeRuntimeContinuationValue<0>*)getSlotData();
+
+	NativeType slotType = getSlotTypes()[0];
+
+	while (true)
+		{
+		if (slotType.isContinuations())
+			{
+			long count = slotType.getContinuations().inputTypes().size();
+
+			return NativeRuntimeContinuationValueVector::extract(continuationPtr, count);
+			}
+			else
+		if (slotType.isComposite())
+			{
+			ImmutableTreeVector<NativeType> subTypes = slotType.getComposite().elements();
+
+			lassert(subTypes.size());
+
+			slotType = subTypes[0];
+			}
+		else
+			{
+			lassert(false);
+			}
+		}
+	}
+
+}
+}
+

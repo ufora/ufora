@@ -1,0 +1,98 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+`hidden
+
+// takes a dataframe and column key and builds a groupBy object on it
+// *assumes that the df is sorted by this column*
+class {
+
+    member mKeys; // Vector of keys (produced similar to sorting.unique)
+    member mGroupKeyMapping; // a VectorDictionary mapping key -> dataframe slice
+
+    operator new(inDataFrame, key: inKeyColumn, dropLastColumnInSlices := false)
+        {
+        let sortedKeysWithRepeats = inDataFrame.getColumn(inKeyColumn).dataVec;
+        let uniqueKeys = computeUniqueKeys_(sortedKeysWithRepeats);
+            
+        let groupKeyMapping = cls.computeGroupKeyMapping_(
+            inDataFrame, sortedKeysWithRepeats, uniqueKeys, dropLastColumnInSlices
+            );
+
+        createInstance(
+            cls,
+            mKeys: uniqueKeys, 
+            mGroupKeyMapping: groupKeyMapping
+            )
+        };
+
+    groupKeys: fun() { mKeys };
+    
+    groups: fun() { 
+        mKeys ~~ { getGroup(_) }
+        };
+
+    getGroup: fun(key) {
+        mGroupKeyMapping[key];
+        };
+
+    operator iterator()
+        {
+        for key in mKeys {
+            yield (key, getGroup(key))
+            }
+        };
+
+    static computeGroupKeyMapping_:
+    fun(inDataFrame, sortedKeysWithRepeats, uniqueKeys, dropLastColumnInSlices)
+        {
+        let computeLowHighRangeForKey = 
+            fun(key) {
+                let lowIx = sorting.lowerBound(sortedKeysWithRepeats, key);
+                let highIx = sorting.upperBound(sortedKeysWithRepeats, key);
+
+                let slice = inDataFrame[lowIx, highIx];
+                if (dropLastColumnInSlices)
+                    { 
+                    // this really should be invoked on a method in DataFrame,
+                    // but we're doing this for performance reasons
+                    slice = DataFrame(
+                        columns: slice.columns[,-1],
+                        columnNames: slice.columnNames[,-1],
+                        numRows: slice.numRows,
+                        numColumns: slice.numColumns - 1
+                        )
+                    }
+                
+                return (key, slice);
+                };
+
+        sorting.VectorDictionary(uniqueKeys ~~ computeLowHighRangeForKey);
+        };
+
+    static computeUniqueKeys_:
+    fun(inSortedKeys)
+        {
+        let uniqueKeys = inSortedKeys.filterWithIndex(
+            fun(key, ix) {
+                ix < 1 or inSortedKeys[ix - 1] < inSortedKeys[ix]
+                }
+            );
+
+        return uniqueKeys
+        };
+
+    };
+

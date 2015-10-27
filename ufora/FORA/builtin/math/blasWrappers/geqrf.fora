@@ -1,0 +1,189 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+"""
+DESCRIPTION:
+    Computes a QR factorization of a real M-by-N matrix A:
+    A = Q * R.
+
+ARGUMENTS:
+    M       Integer type.
+            The number of rows of the matrix A.
+        
+    N       Integer type.
+            The number of columns of the matrix A.
+            
+    A       Vector of float, length M * N.
+            The input matrix A, stored in column-major format.
+            
+RETURNS:
+    A tuple: (TAU, B).
+    
+    B is a vector of float of size M * N. Viewing this as an M-by-N matrix, the
+    elements on and above the diagonal in B give the matrix R.
+    
+    The matrix Q is represented as a product of elementary reflectors
+    
+        Q = H(1) H(2) . . . H(k), where k = min(m,n).
+    
+    Each H(i) has the form
+    
+         H(i) = I - tau * v * v**T
+    
+    where tau is a real scalar, and v is a real vector with
+    v[1:i-1] = 0 and v[i] = 1; v[i+1:m] is stored on exit in B[i+1:m,i],
+    and tau in TAU[i].  When M > N, Q is an M-by-N real matrix with orthonormal 
+    columns, which is defined as the first N columns of a product of K elementary
+    reflectors of order M.
+"""
+fun(   
+        m,
+        n,
+        A
+        )
+    {
+    m = Int32(m);
+    n = Int32(n);
+    
+    if (size(A) < m * n)
+        throw "size of input matrix A too small";
+        
+	let elementType = nothing;
+	(elementType, A) = blasWrappers.eltTypeAndFloatifyIfNecessary(A);
+
+	let vecType = `JovOfVectorHolding(elementType);	
+	let intVecType = `JovOfVectorHolding(Int32);    
+
+    let tau = Vector.uniform(m <<< n, elementType());
+    let work = [] :: elementType();
+    let lwork = -1s32;
+    let info = [0s32];
+    
+    let fortranName = addTypeSuffix(elementType, "geqrf_");
+
+    let wrapper =
+        `FORTRANFunctionWrapper(
+            fortranName,
+            fortranName,
+            (2,4,5,7),          //arguments that are modified by the function
+            Int32,              //0 M       (input) INTEGER
+            Int32,              //1 N       (input) INTEGER
+            vecType,           //2 A       (input/output) DOUBLE PRECISION array, dimension (LDA,N)
+            Int32,              //3 LDA     (input) INTEGER
+            vecType,           //4 TAU     (output) DOUBLE PRECISION array, dimension (min(M,N))
+            vecType,           //5 WORK    (workspace/output) DOUBLE PRECISION array, dimension (MAX(1,LWORK))
+            Int32,              //6 LWORK   (input) INTEGER
+            intVecType    	//7 INFO    (output) INTEGER
+        );
+        
+    (A, tau, work, info) = wrapper(m, n, A, m, tau, work, lwork, info);
+
+    if (info[0] != 0)
+        throw "illegal input to FORTRAN function xGEQRF: argument " + String(-info[0])
+
+    lwork = Int32(
+            match (work[0]) with
+            ((re,im)) { re }
+            (x) { x }
+        );
+
+    work = Vector.uniform(lwork >>> 1, elementType());
+    
+    (A, tau, work, info) = wrapper(m, n, A, m, tau, work, lwork, info);
+    
+    return (tau, A);
+    }
+    ;
+
+/*
+      SUBROUTINE DGEQRF( M, N, A, LDA, TAU, WORK, LWORK, INFO )
+*
+*  -- LAPACK routine (version 3.3.1) --
+*  -- LAPACK is a software package provided by Univ. of Tennessee,    --
+*  -- Univ. of California Berkeley, Univ. of Colorado Denver and NAG Ltd..--
+*  -- April 2011                                                      --
+*
+*     .. Scalar Arguments ..
+      INTEGER            INFO, LDA, LWORK, M, N
+*     ..
+*     .. Array Arguments ..
+      DOUBLE PRECISION   A( LDA, * ), TAU( * ), WORK( * )
+*     ..
+*
+*  Purpose
+*  =======
+*
+*  DGEQRF computes a QR factorization of a real M-by-N matrix A:
+*  A = Q * R.
+*
+*  Arguments
+*  =========
+*
+*  M       (input) INTEGER
+*          The number of rows of the matrix A.  M >= 0.
+*
+*  N       (input) INTEGER
+*          The number of columns of the matrix A.  N >= 0.
+*
+*  A       (input/output) DOUBLE PRECISION array, dimension (LDA,N)
+*          On entry, the M-by-N matrix A.
+*          On exit, the elements on and above the diagonal of the array
+*          contain the min(M,N)-by-N upper trapezoidal matrix R (R is
+*          upper triangular if m >= n); the elements below the diagonal,
+*          with the array TAU, represent the orthogonal matrix Q as a
+*          product of min(m,n) elementary reflectors (see Further
+*          Details).
+*
+*  LDA     (input) INTEGER
+*          The leading dimension of the array A.  LDA >= max(1,M).
+*
+*  TAU     (output) DOUBLE PRECISION array, dimension (min(M,N))
+*          The scalar factors of the elementary reflectors (see Further
+*          Details).
+*
+*  WORK    (workspace/output) DOUBLE PRECISION array, dimension (MAX(1,LWORK))
+*          On exit, if INFO = 0, WORK(1) returns the optimal LWORK.
+*
+*  LWORK   (input) INTEGER
+*          The dimension of the array WORK.  LWORK >= max(1,N).
+*          For optimum performance LWORK >= N*NB, where NB is
+*          the optimal blocksize.
+*
+*          If LWORK = -1, then a workspace query is assumed; the routine
+*          only calculates the optimal size of the WORK array, returns
+*          this value as the first entry of the WORK array, and no error
+*          message related to LWORK is issued by XERBLA.
+*
+*  INFO    (output) INTEGER
+*          = 0:  successful exit
+*          < 0:  if INFO = -i, the i-th argument had an illegal value
+*
+*  Further Details
+*  ===============
+*
+*  The matrix Q is represented as a product of elementary reflectors
+*
+*     Q = H(1) H(2) . . . H(k), where k = min(m,n).
+*
+*  Each H(i) has the form
+*
+*     H(i) = I - tau * v * v**T
+*
+*  where tau is a real scalar, and v is a real vector with
+*  v(1:i-1) = 0 and v(i) = 1; v(i+1:m) is stored on exit in A(i+1:m,i),
+*  and tau in TAU(i).
+*
+*  =====================================================================
+*/
