@@ -19,13 +19,14 @@ import ast
 import os
 import textwrap
 
+LINENO_ATTRIBUTE_NAME = 'lineno'
+
 def CachedByArgs(f):
     """Function decorator that adds a simple memo to 'f' on its arguments"""
     cache = {}
     def inner(*args):
-        if args in cache:
-            return cache[args]
-        cache[args] = f(*args)
+        if args not in cache:
+            cache[args] = f(*args)
         return cache[args]
     return inner
 
@@ -75,22 +76,76 @@ def getAstFromFilePath(filename):
     with open(filename, "r") as f:
         return pyAstFromText(f.read())
 
-class _ClassDefsAtLineNumberVisitor(ast.NodeVisitor):
+
+class FindEnclosingFunctionVisitor(ast.NodeVisitor):
+    """"Visitor used to find the enclosing function at a given line of code.
+
+    The class method 'find' is the preferred API entry point."""
+    class VisitDone(Exception):
+        """Raise this exception to short-circuit the visitor once we're done searching."""
+        pass
+    def __init__(self, line):
+        self.targetLine = line
+        self.enclosingFunction = None
+        self._currentFunction = None
+        self._stash = []
+
+    def generic_visit(self, node):
+        if hasattr(node, LINENO_ATTRIBUTE_NAME):
+            if node.lineno >= self.targetLine:
+                self.enclosingFunction = self._currentFunction
+                raise FindEnclosingFunctionVisitor.VisitDone
+        super(FindEnclosingFunctionVisitor, self).generic_visit(node)
+
+    def visit_FunctionDef(self, node):
+        if node.lineno > self.targetLine:
+            raise FindEnclosingFunctionVisitor.VisitDone
+        self._stash.append(self._currentFunction)
+        self._currentFunction = node.name
+        self.generic_visit(node)
+        self._currentFunction = self._stash.pop()
+
+    def find(self, node):
+        if hasattr(node, LINENO_ATTRIBUTE_NAME):
+            if node.lineno > self.targetLine:
+                return None
+        try:
+            self.visit(node)
+        except FindEnclosingFunctionVisitor.VisitDone:
+            pass
+        return self.enclosingFunction
+
+
+class _AtLineNumberVisitor(ast.NodeVisitor):
+    """Collects various types of nodes occurring at a given line number."""
     def __init__(self, lineNumber):
-        self.subnodesAtLineNumber = []
+        self.classDefSubnodesAtLineNumber = []
+        self.withBlockSubnodesAtLineNumber = []
+        self.funcDefSubnodesAtLineNumber = []
         self.lineNumber = lineNumber
 
     def visit_ClassDef(self, node):
         if node.lineno == self.lineNumber:
-            self.subnodesAtLineNumber.append(node)
+            self.classDefSubnodesAtLineNumber.append(node)
         ast.NodeVisitor.generic_visit(self, node)
+
+    def visit_With(self, node):
+        if node.lineno == self.lineNumber:
+            self.withBlockSubnodesAtLineNumber.append(node)
+        ast.NodeVisitor.generic_visit(self, node)
+
+    def visit_FunctionDef(self, node):
+        if node.lineno == self.lineNumber:
+            self.funcDefSubnodesAtLineNumber.append(node)
+        ast.NodeVisitor.generic_visit(self, node)
+
 
 @CachedByArgs
 def classDefAtLineNumber(sourceAst, lineNumber):
-    visitor = _ClassDefsAtLineNumberVisitor(lineNumber)
+    visitor = _AtLineNumberVisitor(lineNumber)
     visitor.visit(sourceAst)
 
-    subnodesAtLineNumber = visitor.subnodesAtLineNumber
+    subnodesAtLineNumber = visitor.classDefSubnodesAtLineNumber
 
     if len(subnodesAtLineNumber) == 0:
         raise Exceptions.CantGetSourceTextError(
@@ -103,52 +158,32 @@ def classDefAtLineNumber(sourceAst, lineNumber):
 
     return subnodesAtLineNumber[0]
 
-class _WithBlockAtLineNumberVisitor(ast.NodeVisitor):
-    def __init__(self, lineNumber):
-        self.lineNumber = lineNumber
-        self.subnodesAtLineNumber = []
-    
-    def visit_With(self, node):
-        if node.lineno == self.lineNumber:
-            self.subnodesAtLineNumber.append(node)
-        ast.NodeVisitor.generic_visit(self, node)
-
 
 @CachedByArgs
 def withBlockAtLineNumber(sourceAst, lineNumber):
-    visitor = _WithBlockAtLineNumberVisitor(lineNumber)
+    visitor = _AtLineNumberVisitor(lineNumber)
     visitor.visit(sourceAst)
 
-    subnodesAtLineNumber = visitor.subnodesAtLineNumber
+    subnodesAtLineNumber = visitor.withBlockSubnodesAtLineNumber
 
     if len(subnodesAtLineNumber) == 0:
-        raise CantGetSourceTextError(
+        raise Exceptions.CantGetSourceTextError(
             "can't find a WithBlock at line %s" % lineNumber
             )
     if len(subnodesAtLineNumber) > 1:
-        raise CantGetSourceTextError(
+        raise Exceptions.CantGetSourceTextError(
             "can't find a unique WithBlock at line %s" % lineNumber
             )
 
     return subnodesAtLineNumber[0]
 
-class _FunctionDefsAtLineNumberVisitor(ast.NodeVisitor):
-    def __init__(self, lineNumber):
-        self.subnodesAtLineNumber = []
-        self.lineNumber = lineNumber
-
-    def visit_FunctionDef(self, node):
-        if node.lineno == self.lineNumber:
-            self.subnodesAtLineNumber.append(node)
-        ast.NodeVisitor.generic_visit(self, node)
-
 
 @CachedByArgs
 def functionDefAtLineNumber(sourceAst, lineNumber):
-    visitor = _FunctionDefsAtLineNumberVisitor(lineNumber)
+    visitor = _AtLineNumberVisitor(lineNumber)
     visitor.visit(sourceAst)
 
-    subnodesAtLineNumber = visitor.subnodesAtLineNumber
+    subnodesAtLineNumber = visitor.funcDefSubnodesAtLineNumber
 
     if len(subnodesAtLineNumber) == 0:
         raise Exceptions.CantGetSourceTextError(
@@ -227,7 +262,7 @@ class _ExtractSimpleSelfMemberAssignmentsVisitor(ast.NodeVisitor):
 
 
 class _AssertOnlySimpleStatementsVisitor(ast.NodeVisitor):
-
+    # should we also be raising for ast.Call nodes?
     def visit_FunctionDef(self, node):
         raise Exceptions.PythonToForaConversionError(
             "functions in `__init__ method may rebind `self argument, " \

@@ -18,85 +18,60 @@ import traceback
 import logging
 import pyfora.PyforaInspect as PyforaInspect
 import pyfora.Exceptions as Exceptions
+import pyfora.PyAstUtil as PyAstUtil
 import pyfora.DownloadPolicy as DownloadPolicy
 import sys
 import pyfora.PyforaWithBlock as PyforaWithBlock
 import ast
 
-augmentRaiseFunctionTemplate = """
-def f(rf):
-    def inner():
-        if rf is None:
-            raise Exception()
-        else:
-            rf()
-    return inner
-"""
-LINENO_ATTRIBUTE_NAME = 'lineno'
 
-class FindEnclosingFunctionVisitor(ast.NodeVisitor):
-    class FoundEnclosingFunction(Exception):
-        pass
-    def __init__(self, line):
-        self.line = line
-        self.enclosingFunction = None
-        self._currentFunction = None
-        self._stash = []
+INNER_FUNCTION_NAME = 'inner'
 
-    def generic_visit(self, node):
-        if hasattr(node, LINENO_ATTRIBUTE_NAME):
-            if (node.lineno >= self.line):
-                self.enclosingFunction = self._currentFunction
-                raise FindEnclosingFunctionVisitor.FoundEnclosingFunction
-        super(FindEnclosingFunctionVisitor, self).generic_visit(node)
+class AugmentRaiseFunctionModificationVisitor(ast.NodeVisitor):
+    """Takes a line number, column number, and function name updates the AST.
 
-    def visit_FunctionDef(self, node):
-        self._stash.append(self._currentFunction)
-        self._currentFunction = node.name
-        self.generic_visit(node)
-        self._currentFunction = self._stash.pop()
-
-    def find(self, node):
-        try:
-            self.visit(node)
-        except FindEnclosingFunctionVisitor.FoundEnclosingFunction:
-            pass
-        return self.enclosingFunction
-
-class LineNumberModificationVisitor(ast.NodeVisitor):
+    All nodes that have a 'lineno' attribute have their lineno and col attributes
+    set, and any identifier (in FunctionDef or Name nodes) whose text is
+    'INNER_FUNCTION_NAME' is replaced with the provided function name."""
     def __init__(self, line, col, functionName = None):
         self.line = line
         self.col = col
         self.functionName = functionName
 
     def generic_visit(self, node):
-        super(LineNumberModificationVisitor, self).generic_visit(node)
-        if hasattr(node, LINENO_ATTRIBUTE_NAME):
+        super(AugmentRaiseFunctionModificationVisitor, self).generic_visit(node)
+        if hasattr(node, PyAstUtil.LINENO_ATTRIBUTE_NAME):
             node.lineno = self.line
             node.col_offset = self.col
 
-        if isinstance(node, ast.FunctionDef) and node.name == 'inner' and \
+        if isinstance(node, ast.FunctionDef) and node.name == INNER_FUNCTION_NAME and \
                 self.functionName is not None:
             node.name = self.functionName
-        if isinstance(node, ast.Name) and node.id == 'inner' and \
+        if isinstance(node, ast.Name) and node.id == INNER_FUNCTION_NAME and \
                 self.functionName is not None:
             node.id = self.functionName
 
+augmentRaiseFunctionTemplate = """
+def _augmentRaiseFunctionTempl(rf):
+    def """ + INNER_FUNCTION_NAME + """():
+        if rf is None:
+            raise Exception()
+        else:
+            rf()
+    return """ + INNER_FUNCTION_NAME
 
 def augmentRaiseFunction(raiseFunction, path, line, col):
-    enclosingFunctionVisitor = FindEnclosingFunctionVisitor(line)
-    with open(path, "r") as fileHandle:
-        codeText = fileHandle.read()
-    codeAst = ast.parse(codeText)
+    enclosingFunctionVisitor = PyAstUtil.FindEnclosingFunctionVisitor(line)
+    codeAst = PyAstUtil.getAstFromFilePath(path)
     enclosingFunctionName = enclosingFunctionVisitor.find(codeAst)
-    vis = LineNumberModificationVisitor(line, col, enclosingFunctionName)
+    vis = AugmentRaiseFunctionModificationVisitor(line, col, enclosingFunctionName)
     module = ast.parse(augmentRaiseFunctionTemplate)
     vis.visit(module)
 
     code = compile(module, path, 'exec')
     exec code in globals(), locals()
 
-    return f(raiseFunction)
+    return _augmentRaiseFunctionTempl(raiseFunction)
 
 def syntheticTraceback(trace):
     raiseFunction = None

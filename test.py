@@ -184,24 +184,24 @@ class UnitTestArgumentParser(argparse.ArgumentParser):
         return args
 
 def composeSemanticFilter(f1, f2):
-    def filter(moduleName, testName):
+    def filterFunc(moduleName, testName):
         return f1(moduleName, testName) and f2(moduleName, testName)
-    return filter
+    return filterFunc
 
 def semanticFilterContainingString(string):
-    def filter(moduleName, testName):
+    def filterFunc(moduleName, testName):
         return string in (moduleName + "." + testName)
-    return filter
+    return filterFunc
 
 def alwaysTrueSemanticFilter(moduleName, testName):
     return True
 
 def semanticFilterModpair(modTarget, modVal):
-    def filter(moduleName, testName):
+    def filterFunc(moduleName, testName):
         hashval = hexToInt(hashlib.sha1(repr(moduleName + "." + testName)).hexdigest())
 
         return hashval % modVal == modTarget
-    return filter
+    return filterFunc
 
 def makeSemanticsTestFilter(args):
     filterFun = alwaysTrueSemanticFilter
@@ -251,7 +251,7 @@ class PythonTestArgumentParser(argparse.ArgumentParser):
 
 
 def regexMatchesSubstring(pattern, toMatch):
-    for x in re.finditer(pattern, toMatch):
+    for _ in re.finditer(pattern, toMatch):
         return True
     return False
 
@@ -411,7 +411,7 @@ def executeTests(args):
 
 
     if args.py:
-        filter = None
+        filterFunc = None
 
         if args.modpair is not None:
             def testFilterFunc(tests):
@@ -421,14 +421,14 @@ def executeTests(args):
                     if hashval % args.modpair[1] == args.modpair[0]:
                         result.append(t)
                 return result
-            filter = testFilterFunc
+            filterFunc = testFilterFunc
 
         if not args.list:
             print "Running python unit tests."
             print "nose version: ", nose.__version__
             print time.ctime(time.time())
 
-        if runPythonUnitTests(args, filter):
+        if runPythonUnitTests(args, filterFunc):
             anyFailed = True
 
         print "\n\n\n"
