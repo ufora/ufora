@@ -130,9 +130,6 @@ class DummyView(object):
         return self.pendingMessages.pop(0)
 
     def initialize(self):
-        javaWebToken = ViewFactory.EMPTY_KEY_ALL_KEYSPACE_ACCESS_AUTH_TOKEN
-        self.viewChannel.write(SharedState.MessageOut.AuthorizationToken(javaWebToken))
-
         message = self.getMessage()
         self.viewChannel.write(SharedStateNative.MessageRequestSession())
 
@@ -300,8 +297,7 @@ class SharedStateMemoryTest(unittest.TestCase):
         view = createViewWithNoChannel()
         before = TCMalloc.getBytesUsed()
         keyspace = SharedState.Keyspace("TakeHighestIdKeyType", json('test'), 1)
-        #keyrange = SharedState.KeyRange(keyspace, 0, None, None, True, True)
-        cache = SharedStateNative.KeyspaceManager(0, 1, 0x7fffffff, 0x7fffffff, '', None)
+        cache = SharedStateNative.KeyspaceManager(0, 1, 0x7fffffff, 0x7fffffff, None)
         for event in producePartialEvents(view, [keyspace], 'test', 1024 * 32, 1, 8):
             cache.addEvent(event)
         view = None

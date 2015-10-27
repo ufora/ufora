@@ -49,13 +49,9 @@ def KeyspaceManager(randomSeed,
                     pingInterval=20,
                     cachePathOverride=None,
                     maxOpenFiles=None,
-                    maxLogFileSizeMb=10,
-                    hmacKey=None):
+                    maxLogFileSizeMb=10):
     if cachePathOverride is None:
         cachePathOverride = Setup.config().sharedStateCache
-
-    if hmacKey is None:
-        hmacKey = Setup.config().tokenSigningKey
 
     if maxOpenFiles is None:
         import resource
@@ -73,19 +69,17 @@ def KeyspaceManager(randomSeed,
     else:
         storage = None
 
-    logging.info("Token signing key is %s", hmacKey)
     return SharedStateNative.KeyspaceManager(
         randomSeed,
         numManagers,
         backupInterval,
         pingInterval,
-        hmacKey,
         storage
         )
 
 
 class SharedStateService(CloudService.Service):
-    def __init__(self, callbackScheduler, tokenSigningKey=None, cachePathOverride=None, port=None):
+    def __init__(self, callbackScheduler, cachePathOverride=None, port=None):
         self.callbackScheduler = callbackScheduler
         port = Setup.config().sharedStatePort
         logging.info("Initializing SharedStateService with port = %s", port)
@@ -102,8 +96,7 @@ class SharedStateService(CloudService.Service):
             0,
             1,
             pingInterval=120,
-            cachePathOverride=cachePathOverride,
-            hmacKey=tokenSigningKey
+            cachePathOverride=cachePathOverride
             )
 
 

@@ -29,7 +29,6 @@ if __name__ == "__main__":
     callbackSchedulerFactory = CallbackScheduler.createSimpleCallbackSchedulerFactory()
     callbackScheduler = callbackSchedulerFactory.createScheduler("sharedStateScheduler", 1)
     parser = argparse.ArgumentParser()
-    parser.add_argument('--tokenSigningKey')
     parser.add_argument('--cacheDir')
     parsed, remaining = parser.parse_known_args(sys.argv[1:])
 
@@ -41,7 +40,7 @@ if __name__ == "__main__":
             logging.info("Shared state cache directory: %s", parsed.cacheDir)
             Setup.config().sharedStateCache = parsed.cacheDir
 
-        service = SharedStateService.SharedStateService(callbackScheduler, parsed.tokenSigningKey)
+        service = SharedStateService.SharedStateService(callbackScheduler)
 
         service.startService()
         service.blockUntilListening()

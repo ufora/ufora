@@ -15,10 +15,6 @@
 module.exports = (app) ->
     logger = app.get 'logger'
 
-    sts = require '../sts'
-
-    app.get '/sts/jwt', sts.get
-
     # Cumulus Web Adapter
     #####################
 

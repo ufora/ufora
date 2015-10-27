@@ -158,7 +158,8 @@ class AsyncView(object):
             return valueHolder.value()
 
     def pushTransaction(self, key, value, callback = None, errback = None):
-        assert not self._stopFlag.is_set()
+        if self._stopFlag.is_set():
+            return
         if key.keyspace not in self._subscribedKeyspaces:
             raise UserWarning("Must be subscribed to a keyspace before pushing a transaction")
 

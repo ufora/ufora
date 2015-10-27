@@ -37,10 +37,6 @@ parser.addArgument ['--gatewayport'],
     type: 'int'
     defaultValue: 30008
 
-parser.addArgument ['--signingKey'],
-    required: true,
-    help: 'Key used to sign auth tokens'
-
 
 module.exports.parse = (app) ->
     args = parser.parseArgs()

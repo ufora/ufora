@@ -27,10 +27,6 @@ using namespace SharedState;
 
 namespace {
 
-const char* TEST_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJ1Zm9yYSIsImV4cCI6MTM1MjkyODA0NSwiaWF0Ijo"
-	"xMzUyOTI3NzQ1LCJhdWQiOiJ1cm46dWZvcmE6c2VydmljZXM6c2hhcmVkc3RhdGUiLCJwcm4iOiJ0ZXN0IiwianR"
-    "pIjoiNThjZjgyYzYtNzRjZi00ZjY1LTliODktNDNhM2NiYTEzODlmIiwiYXV0aG9yaXphdGlvbnMiOlt7ImFjY2V"
-    "zcyI6InJ3IiwicHJlZml4IjoiIn1dfQ.ZlvMNT8C8Iwh7NpMclzU9-XH_NOnc-5fHV-jsqCdmm0";
 
 Keyspace getKeyspace(void)
 	{
@@ -80,15 +76,6 @@ void clientThread(	PolymorphicSharedPtr<View> inView,
 	{
 	std::string passIndexAsString = boost::lexical_cast<string>(inPassIndex);
 
-	bool loginOK = inView->sendAuthorizationMessage(TEST_TOKEN, 1000);
-
-	if (!loginOK)
-		{
-		LOG_WARN << "failed to authenticate in thread #" << inThreadIndex << ". failing";
-		*ioSuccess = false;
-		return;
-		}
-	
 	inView->waitConnect();
 	
 	inView->subscribe(
@@ -141,7 +128,6 @@ BOOST_AUTO_TEST_CASE( test_InMemorySharedState )
 			1, 
 			60, 
 			2, 
-			"", //hmac key
 			PolymorphicSharedPtr<FileStorage>()
 			)
 		);

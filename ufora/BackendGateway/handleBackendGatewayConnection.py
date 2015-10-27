@@ -51,8 +51,7 @@ class BackendGatewayRequestHandler(object):
         sharedStateViewFactory = ViewFactory.ViewFactory.TcpViewFactory(
             self.callbackSchedulerFactory.createScheduler('SharedState', 1),
             sharedStateHost,
-            int(sharedStatePort),
-            ViewFactory.TEST_KEY_ALL_KEYSPACE_ACCESS_AUTH_TOKEN
+            int(sharedStatePort)
             )
 
         self.subscribableHandler = ConnectionHandler.ConnectionHandler(

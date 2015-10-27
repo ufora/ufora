@@ -88,29 +88,6 @@ class TestAsyncView(unittest.TestCase):
                 simpleView.stopService()
             self.harness.teardown()
 
-    def test_disconnect(self):
-        try:
-            simpleView = None
-
-            finished = threading.Event()
-
-            def onDisconnect(_):
-                finished.set()
-
-            simpleView = AsyncView.AsyncView(self.harness.viewFactory,
-                                             onErrorCallback=onDisconnect)
-            simpleView.startService()
-
-            self.harness.teardown()
-            simpleView._view.teardown()
-            finished.wait()
-
-        finally:
-            if simpleView:
-                simpleView.stopService()
-            self.harness.teardown()
-
-
 
     def test_two_keyspaces(self):
         try:

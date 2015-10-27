@@ -13,7 +13,6 @@
 #   limitations under the License.
 
 import time
-import logging
 
 import ufora.config.Setup as Setup
 import ufora.distributed.util.common as common
@@ -22,44 +21,27 @@ import ufora.native.SharedState as SharedStateNative
 
 from ufora.distributed.SharedState.Connections.TcpChannelFactory import TcpMessageChannelFactory
 from ufora.distributed.SharedState.Exceptions import SharedStateConnectionError
-from ufora.distributed.SharedState.Exceptions import SharedStateAuthorizationError
 
 import ufora.util.ThreadLocalStack as ThreadLocalStack
 
-#jsonWebToken that authorizes all-keyspace access assuming that the hmac key is the empty string
-EMPTY_KEY_ALL_KEYSPACE_ACCESS_AUTH_TOKEN = (
-    'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJ1Zm9yYSIsImV4cCI6MTM1MjkyODA0NSwiaWF0Ijo' +
-    'xMzUyOTI3NzQ1LCJhdWQiOiJ1cm46dWZvcmE6c2VydmljZXM6c2hhcmVkc3RhdGUiLCJwcm4iOiJ0ZXN0IiwianR' +
-    'pIjoiNThjZjgyYzYtNzRjZi00ZjY1LTliODktNDNhM2NiYTEzODlmIiwiYXV0aG9yaXphdGlvbnMiOlt7ImFjY2V' +
-    'zcyI6InJ3IiwicHJlZml4IjoiIn1dfQ.ZlvMNT8C8Iwh7NpMclzU9-XH_NOnc-5fHV-jsqCdmm0'
-    )
-
-#jsonWebToken that authorizes all-keyspace access using the default hmac key from Config.py
-TEST_KEY_ALL_KEYSPACE_ACCESS_AUTH_TOKEN = (
-    'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJ1Zm9yYSIsImV4cCI6MTM1MzAxOTI1NywiaWF0Ijo' +
-    'xMzUzMDE4OTU3LCJhdWQiOiJ1cm46dWZvcmE6c2VydmljZXM6c2hhcmVkc3RhdGUiLCJwcm4iOiJ0ZXN0IiwianR' +
-    'pIjoiOGNmMmMwYmItOWZhOS00MGM2LWJjNTktYTBmMmRhMmYzOTBjIiwiYXV0aG9yaXphdGlvbnMiOlt7ImFjY2V' +
-    'zcyI6InJ3IiwicHJlZml4IjoiIn0seyJhY2Nlc3MiOiJyIiwicHJlZml4IjoicHVibGljOjoifSx7ImFjY2VzcyI' +
-    '6InJ3IiwicHJlZml4IjoicHVibGljOjp3cml0ZWFibGU6OiJ9LHsiYWNjZXNzIjoiciIsInByZWZpeCI6Il9fQ0x' +
-    'JRU5UX0lORk9fU1BBQ0VfXyJ9XX0.JNoCVv5-wFm7e5ZDBD-GejiMzunnfhMi1AzTeSGw41k'
-    )
-
 class ViewFactory(ThreadLocalStack.ThreadLocalStackPushable):
-    def __init__(self, channelFactory, accessToken=None):
+    def __init__(self, channelFactory):
         ThreadLocalStack.ThreadLocalStackPushable.__init__(self)
         self.channelFactory = channelFactory
         self.enableDebugPrint = False
-        self.accessToken = accessToken
 
     def __str__(self):
         return "SharedStateViewFactory(%s)" % (self.channelFactory)
 
-    def createView(self, friendlyName = None, retrySeconds = None, numRetries = 4.0, authorize = True):
+    def createView(self,
+                   friendlyName=None,
+                   retrySeconds=None,
+                   numRetries=4.0):
         view = None
         t0 = time.time()
         while view is None:
             try:
-                view = self.createView_(friendlyName, authorize)
+                view = self.createView_(friendlyName)
             except (SharedStateConnectionError, common.SocketException):
                 if not ViewFactory.waitForRetry_(t0, retrySeconds, numRetries):
                     raise
@@ -67,7 +49,7 @@ class ViewFactory(ThreadLocalStack.ThreadLocalStackPushable):
         return view
 
     @staticmethod
-    def TcpViewFactory(callbackScheduler, address = None, port = None, accessToken = None):
+    def TcpViewFactory(callbackScheduler, address=None, port=None):
         if address is None:
             raise ValueError("address cannot be None")
 
@@ -75,20 +57,12 @@ class ViewFactory(ThreadLocalStack.ThreadLocalStackPushable):
             port = Setup.config().sharedStatePort
 
         channelFactory = TcpMessageChannelFactory(callbackScheduler, address, port)
-        return ViewFactory(channelFactory, accessToken)
+        return ViewFactory(channelFactory)
 
-    def createView_(self, friendlyName, authorize):
+    def createView_(self, friendlyName):
         view = SharedStateNative.createView(self.enableDebugPrint)
         channel = self.channelFactory.createChannel()
         view.add(channel)
-
-        if authorize:
-            logging.info("Authorizing view")
-            if not view.sendAuthorizationMessage(
-                    self.accessToken or TEST_KEY_ALL_KEYSPACE_ACCESS_AUTH_TOKEN,
-                    3.0
-                    ):
-                raise SharedStateAuthorizationError()
 
         return view
 

@@ -650,17 +650,6 @@ public:
 			return inView->waitConnectTimeout(inTimeout);
 			}
 
-		static bool sendAuthorizationMessage(
-							PolymorphicSharedPtr<View>& inView, 
-							std::string javaWebToken, 
-							double inTimeout
-							)
-			{
-			ScopedPyThreads releasePythonGIL;
-
-			return inView->sendAuthorizationMessage(javaWebToken, inTimeout);
-			}
-
 		static PolymorphicSharedPtr<View> createView(bool inDebugTracing)
 			{
 			return PolymorphicSharedPtr<View>(PolymorphicSharedPtr<View>(new View(inDebugTracing)));
@@ -688,7 +677,6 @@ public:
 				uint32_t numManagers, 
 				uint32_t backupInterval, 
 				double pingInterval, 
-				std::string inHmacKey,
 				boost::python::object storageOrNone
 				)
 			{
@@ -703,7 +691,6 @@ public:
 					numManagers, 
 					backupInterval, 
 					pingInterval, 
-					inHmacKey,
 					inStorage
 					)
 				);
@@ -725,8 +712,7 @@ public:
 				uint32_t inSeedVal, 
 				uint32_t numManagers, 
 				uint32_t backupInterval, 
-				double pingInterval, 
-				std::string inHmacKey
+				double pingInterval
 				)
 			{
 			return new KeyspaceManager::pointer_type(
@@ -735,7 +721,6 @@ public:
 					numManagers, 
 					backupInterval, 
 					pingInterval, 
-					inHmacKey,
 					PolymorphicSharedPtr<FileStorage>()
 					)
 				);
@@ -1003,7 +988,6 @@ public:
 				.def("waitConnect", &waitConnect) 
 				.def("waitConnectTimeout", &waitConnectTimeout) 
 				.def("teardown", &view_teardown) 
-				.def("sendAuthorizationMessage", &sendAuthorizationMessage)
 				.add_property("id", &view_id)
 				.add_property("isFrozen", &view_frozen)
 				.add_property("connected", &view_connected)

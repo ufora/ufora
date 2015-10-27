@@ -144,7 +144,7 @@ class MessageFilteringTest(unittest.TestCase):
                     True,
                     inMemChannelFactoryFactory=createFilteredChannelFactory
                     )
-            view = harness.viewFactory.createView(authorize=False)
+            view = harness.viewFactory.createView()
             def getViewId():
                 try:
                     view.id

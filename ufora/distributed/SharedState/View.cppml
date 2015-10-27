@@ -508,13 +508,6 @@ void View::channelDisconnected(channel_ptr_type inChannel)
 
     LOG_INFO << "SharedState view is disconnecting";
 
-    //all auth requests have failed
-	while (mPendingAuthRequests.size())
-		{
-		mPendingAuthRequests.front()->write(false);
-		mPendingAuthRequests.pop_front();
-		}
-
 	//all flushes are failed
 	for (auto idAndPtr: mFlushResponses)
 		idAndPtr.second->invalidate();
@@ -730,14 +723,6 @@ void View::incomingMessage(const MessageIn& inMessage, channel_ptr_type inChanne
 				lassert(it != mFlushResponses.end());
 				it->second->set(flushId);
 				}
-		-|	AuthorizationTokenResponse(wasValid) ->> {
-				LOG_INFO << "View received auth response of " << (wasValid ? "valid":"invalid");
-
-				lassert_dump(mPendingAuthRequests.size(), "Wasn't expecting an auth response!");
-
-				mPendingAuthRequests.front()->write(wasValid);
-				mPendingAuthRequests.pop_front();
-				}
 		-|	MinimumId(id, maxId) ->> {
 
 				mMinId = id;
@@ -834,44 +819,6 @@ ostream& operator<<(ostream& tr, const View& view)
 		tr << "View(" << *id << ")";
 	else
 		tr << "View(uninitialized)";
-	return tr;
-	}
-
-bool View::sendAuthorizationMessage(
-				std::string javaWebToken,
-				double inTimeout
-				)
-	{
-	boost::shared_ptr<Queue<bool> > authEvent(new Queue<bool>());
-
-	double t0 = curClock();
-
-	LOG_INFO << "View waiting for connection";
-	if (!waitConnectTimeout(inTimeout))
-		return false;
-
-	//reduce the timeout by the time elapsed waiting for a connection.
-	inTimeout -= curClock() - t0;
-
-		{
-		boost::recursive_mutex::scoped_lock 	lock(mMutex);
-
-		mPendingAuthRequests.push_back(authEvent);
-
-		LOG_INFO << "View sent auth token. Awaiting response.";
-
-		mChannel.get()->write(MessageOut::AuthorizationToken(javaWebToken));
-		}
-
-	bool tr;
-
-	if (!authEvent->getTimeout(tr, inTimeout))
-		{
-		LOG_INFO << "View auth response: failed";
-		return false;
-		}
-
-	LOG_INFO << "View auth response: succeeded";
 	return tr;
 	}
 

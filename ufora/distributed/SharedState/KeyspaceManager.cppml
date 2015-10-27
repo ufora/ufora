@@ -25,13 +25,11 @@ KeyspaceManager::KeyspaceManager(
 			uint32_t numManagers,
 			uint32_t backupInterval,
 			double pingInterval,
-			std::string hmacKey,
 			PolymorphicSharedPtr<FileStorage> storage
 			) :
 		mManagerId(randomSeed),
 		mStatusEventUniqueID(0),
 		mPingInterval(pingInterval),
-		mAuthTable(hmacKey),
 		mNumEventsHandled(0),
 		mBackupInterval(backupInterval),
 		mStorage(storage)
@@ -309,15 +307,6 @@ void KeyspaceManager::handleIncomingMessage(manager_channel_ptr_type inChannel, 
 
 	@match MessageOut(msg)
 		-|	Subscribe(range) ->> {
-			if (!mAuthTable.channelHasReadAccessToKeyspace(inChannel, range.keyspace()))
-				{
-				LOG_WARN << "Rejecting request for keyspace " << range.keyspace().name();
-				inChannel->write(MessageIn::InvalidKeyspaceRead(range));
-				return;
-				}
-			else
-				LOG_INFO << "Request for keyspace " << range.keyspace().name() << " is authorized.";
-
 			// insert new KeyRangeSet or return existing one
 			KeyRangeSet& keyRangeSet = mRanges.insert(std::make_pair(inChannel, KeyRangeSet())).first->second;
 			if (!keyRangeSet.intersects(range))
@@ -372,14 +361,6 @@ void KeyspaceManager::handleIncomingMessage(manager_channel_ptr_type inChannel, 
 			pushEvent(statusEvent(inChannel, UpdateType(Ufora::Json::String("connected"))));
 			}
 		-|	PushEvent(event) ->> {
-
-			if (!mAuthTable.channelHasWriteAccessToKeyspace(inChannel, event.content().key().keyspace()))
-				{
-				LOG_INFO << "Rejecting write to keyspace " << prettyPrintString(event.content().key().keyspace().name());
-				inChannel->write(MessageIn::InvalidKeyspaceWrite(event.content().key().keyspace()));
-				return;
-				}
-
 			if (!isValidEventFromClient(inChannel, event))
 				{
 				LOG_WARN << "KeyspaceManager received an invalid event. Disconnecting the channel.";
@@ -394,13 +375,6 @@ void KeyspaceManager::handleIncomingMessage(manager_channel_ptr_type inChannel, 
 			LOG_DEBUG << "Received FlushRequest with ID " << flushId;
 
 			inChannel->write(MessageIn::FlushResponse(flushId));
-			}
-		-|	AuthorizationToken(javaWebTokenMessage) ->> {
-			inChannel->write(
-				MessageIn::AuthorizationTokenResponse(
-					mAuthTable.processJavaWebToken(inChannel, javaWebTokenMessage)
-					)
-				);
 			}
 		-|	Bundle(messages) ->> {
 			for (long k = 0; k < messages.size();k++)

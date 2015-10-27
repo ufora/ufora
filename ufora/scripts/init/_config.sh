@@ -20,11 +20,6 @@ load_config() {
       exit 1
     fi
 
-    if [ -z $TOKEN_SIGNING_KEY ]; then
-      echo "ERROR: TOKEN_SIGNING_KEY not specified in $BSA_CONFIG_FILE."
-      exit 1
-    fi
-
     if [ -z $UFORA_SSL_DIR ]; then
       UFORA_SSL_DIR=$ROOT_DATA_DIR/ssl
     fi

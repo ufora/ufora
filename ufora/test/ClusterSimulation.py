@@ -156,7 +156,6 @@ class Simulator(object):
         self.sharedStatePort = Setup.config().sharedStatePort
         self.restApiPort = Setup.config().restApiPort
         self.subscribableWebObjectsPort = Setup.config().subscribableWebObjectsPort
-        self.tokenSigningKey = Setup.config().tokenSigningKey
 
         self.user = user
         self.password = password
@@ -257,8 +256,7 @@ class Simulator(object):
     def getViewFactory(self):
         return ViewFactory.ViewFactory.TcpViewFactory(self.callbackScheduler,
                                                       'localhost',
-                                                      self.sharedStatePort,
-                                                      ViewFactory.TEST_KEY_ALL_KEYSPACE_ACCESS_AUTH_TOKEN)
+                                                      self.sharedStatePort)
 
     def startService(self):
         self.stopRelay()
@@ -317,7 +315,6 @@ class Simulator(object):
                     '-l', self.sharedStateLogFile,
                     'start',
                     '-c', 'python', self.sharedStateMainline,
-                    '--tokenSigningKey', self.tokenSigningKey,
                     '--cacheDir', cacheDir,
                     '--logging', 'info'
                    ]
@@ -438,8 +435,7 @@ class Simulator(object):
 
         args = [relayScript,
                 '--port', str(self.relayPort),
-                '--gatewayport', str(self.subscribableWebObjectsPort),
-                '--signingKey', self.tokenSigningKey]
+                '--gatewayport', str(self.subscribableWebObjectsPort)]
 
         command = ['forever',
                    '-f', '-l', self.relayLogFile,

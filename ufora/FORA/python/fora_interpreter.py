@@ -300,8 +300,7 @@ def createViewFactory():
     return ViewFactory.ViewFactory.TcpViewFactory(
         callbackSchedulerFactory.createScheduler('fora-interpreter', 1),
         'localhost',
-        Setup.config().sharedStatePort,
-        ViewFactory.TEST_KEY_ALL_KEYSPACE_ACCESS_AUTH_TOKEN
+        Setup.config().sharedStatePort
         )
 
 

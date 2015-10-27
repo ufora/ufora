@@ -81,8 +81,7 @@ def createService(args):
     sharedStateViewFactory = ViewFactory.ViewFactory.TcpViewFactory(
         callbackSchedulerFactory.createScheduler('SharedState', 1),
         store_host,
-        int(store_port),
-        ViewFactory.TEST_KEY_ALL_KEYSPACE_ACCESS_AUTH_TOKEN
+        int(store_port)
         )
 
     cluster_name = args.cluster_name
