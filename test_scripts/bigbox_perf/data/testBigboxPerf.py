@@ -249,7 +249,7 @@ class BigboxPerformanceTest(unittest.TestCase):
         self.writeToS3Test(200 * 1000 * 1000, workers=4,memoryLimitMb=100, threadCount=1)
 
     @PerformanceTestReporter.PerfTest("python.BigBox.WriteToS3.2GB")
-    def DISABLEDtest_write_to_s3_2gb_multibox(self):
+    def test_write_to_s3_2gb_multibox(self):
         self.writeToS3Test(1000 * 1000 * 1000, workers=4,memoryLimitMb=1000, threadCount=2)
 
     def writeToS3Test(self, bytecount, pageSizeOverride=1024*1024, workers=1, memoryLimitMb=45 * 1024,threadCount=30):

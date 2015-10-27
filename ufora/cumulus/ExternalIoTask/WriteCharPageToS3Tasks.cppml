@@ -294,16 +294,23 @@ void WriteCharPageToS3Tasks::extractDataAndScheduleWrite(WriteCharPageToS3Task t
 	bool allExist = true;
 
 	ImmutableTreeVector<pair<boost::shared_ptr<VectorPage>, IntegerSequence> > pages;
+	std::vector<boost::shared_ptr<Ufora::threading::Trigger> > triggers;
+
 	for (auto pageAndSlice: task.pages())
 		{
 		auto page = mVDM->getPageFor(pageAndSlice.first);
 		
-		if (!page)
+		auto trigger = page->attemptToMapTo();
+
+		if (!page || !trigger)
 			{
+			for (long k = 0; k < triggers.size(); k++)
+				pages[k].first->removeMapping(triggers[k]);
 			deferTaskUntilPageLoaded(task);
 			return;
 			}
 
+		triggers.push_back(trigger);
 		pages = pages + make_pair(page, pageAndSlice.second);
 		}
 
@@ -332,11 +339,19 @@ void WriteCharPageToS3Tasks::extractDataAndScheduleWrite(WriteCharPageToS3Task t
 					IntegerSequence sequenceInPageletToKeep = 
 						sequenceInPageletTreeToKeep.offset(-offsetInOrig);
 
+					lassert(sequenceInPageletToKeep.offset() >= 0 && sequenceInPageletToKeep.offset() < foraValues->size());
+
+					//compute the last value in the pagelet that we'll touch
+					long finalOffset = sequenceInPageletToKeep.offset() + (sequenceInPageletToKeep.size()-1) * sequenceInPageletToKeep.stride();
+
+					//verify that this value is in bounds
+					lassert(finalOffset >= 0 && finalOffset < foraValues->size());
+
 					bundles.push_back(
 						Bundle(
-							foraValues->offsetFor(sequenceInPageletTree.offset()),
-							sequenceInPageletTree.size(),
-							sequenceInPageletTree.stride()
+							foraValues->offsetFor(sequenceInPageletToKeep.offset()),
+							sequenceInPageletToKeep.size(),
+							sequenceInPageletToKeep.stride()
 							)
 						);
 					}
@@ -388,6 +403,9 @@ void WriteCharPageToS3Tasks::extractDataAndScheduleWrite(WriteCharPageToS3Task t
 				)
 			);
 		}
+		
+	for (long k = 0; k < triggers.size(); k++)
+		pages[k].first->removeMapping(triggers[k]);
 	}
 
 void WriteCharPageToS3Tasks::handleWriteTaskComplete(WriteCharPageToS3Task task, ExternalIoTaskResult result)
