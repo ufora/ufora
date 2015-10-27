@@ -376,7 +376,6 @@ PythonAstConverter::PythonAstConverter(
     {
     ImplValContainer falseValue = mConstantConverter->convertBoolean(false);
     CSTValue falseTypeValue(JudgmentOnValue::OfType(falseValue.type()));
-    mBoolTypeExpr = Expression::Constant(falseTypeValue);
     }
 
 PolymorphicSharedPtr<PythonConstantConverter> PythonAstConverter::constantConverter() const
@@ -668,15 +667,47 @@ Expression PythonAstConverter::convertPythonAstExpressionToFora_inner(const Pyth
                 );
             }
         -| BoolOp(And(), exprs) ->> {
-            Expression res = convertPythonAstExpressionToFora(exprs[0]);
-            for (long k = 1; k < exprs.size(); k++)
-                res = Expression::And(res, convertPythonAstExpressionToFora(exprs[k]));
+            lassert(exprs.size() > 0)
+
+            Expression res = convertPythonAstExpressionToFora(exprs.back());
+
+            for (long k = exprs.size() - 2; k >= 0; k--)
+                {
+                Symbol conditional("@conditional");
+
+                res = Expression::Let(
+                    conditional, 
+                    convertPythonAstExpressionToFora(exprs[k]), 
+                    Expression::Branch(
+                        convertPythonAstExpressionToForaConditional(Expression::Variable(conditional)),
+                        res,
+                        null() << Expression::Variable(conditional)
+                        )
+                    );
+                }
+
             return res;
             }
         -| BoolOp(Or(), exprs) ->> {
-            Expression res = convertPythonAstExpressionToFora(exprs[0]);
-            for (long k = 1; k < exprs.size(); k++)
-                res = Expression::Or(res, convertPythonAstExpressionToFora(exprs[k]));
+            lassert(exprs.size() > 0)
+
+            Expression res = convertPythonAstExpressionToFora(exprs.back());
+
+            for (long k = exprs.size() - 2; k >= 0; k--)
+                {
+                Symbol conditional("@conditional");
+
+                res = Expression::Let(
+                    conditional, 
+                    convertPythonAstExpressionToFora(exprs[k]), 
+                    Expression::Branch(
+                        convertPythonAstExpressionToForaConditional(Expression::Variable(conditional)),
+                        Expression::Variable(conditional),
+                        null() << res
+                        )
+                    );
+                }
+            
             return res;
             }
         -| Attribute(value, attribute, ctx) ->> {
@@ -830,6 +861,12 @@ Expression PythonAstConverter::convertPythonAstExpressionToFora_inner(const Pyth
                     expr.extent()
                     );
 
+            if (comparisons.size() != 1)
+                throw PythonToForaConversionError(
+                    "don't know how to convert chained comparisons yet.",
+                    expr.extent()
+                    );
+
             Expression curExpr = convertPythonAstExpressionToFora(expr);
             Expression result;
 
@@ -918,16 +955,22 @@ Expression PythonAstConverter::convertPythonAstExpressionToFora_inner(const Pyth
             }
     }
 
+Expression PythonAstConverter::convertPythonAstExpressionToForaConditional(const Expression& expr) const
+    {
+    //we need to convert this to a bool, which we do by calling PyBool (or equivalent as given)
+    //and then calling 'Bool' on that
+    return Expression::Apply(expr, 
+            emptyTreeVec() 
+                + ApplyArgument::Normal(Expression::Constant(CSTValue(Symbol("Convert"))))
+                + ApplyArgument::Normal(Expression::Constant(CSTValue(JOV::OfType(Type::Integer(1,false)))))
+            );
+    }
+
 Expression PythonAstConverter::convertPythonAstExpressionToForaConditional(const PythonAstExpr& expr) const
     {
     Expression tr = convertPythonAstExpressionToFora(expr);
 
-    //we need to convert this to a bool, which we do by calling PyBool (or equivalent as given)
-    //and then calling 'Bool' on that
-    return Expression::IsNot(
-        Expression::Constant(mConstantConverter->convertBoolean(false)),
-        Expression::Call(mBoolTypeExpr, emptyTreeVec() + ApplyArgument::Normal(tr))
-        );
+    return convertPythonAstExpressionToForaConditional(tr);
     }
 
 

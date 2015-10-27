@@ -83,8 +83,6 @@ class TestAllBinaryOperators(unittest.TestCase):
         connection.__dict__['s3Interface'] = s3[0]
         return connection
 
-
-
     def equivalentEvaluationTestThatHandlesExceptions(self, executor, func, *args):
         try:
             r1 = func(*args)

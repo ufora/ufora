@@ -84,6 +84,7 @@ class ExecutorTestCases(
                 comparisonFunction(pyforaResult, pythonResult), 
                 "Pyfora and python returned different results: %s != %s" % (pyforaResult, pythonResult)
                 )
+        return pythonResult
 
     def test_string_indexing(self):
         def f():
@@ -145,31 +146,139 @@ class ExecutorTestCases(
         self.equivalentEvaluationTest(f, 10, 5, 5)
         self.equivalentEvaluationTest(f, 10, 10, 10)
 
-    def test_slicing_operations_1(self):
-        def f():
-            a = "testing" * 3
-            l = len(a)
-            toReturn = []
-            for idx1 in range(l):
-                for idx2 in range(l):
-                    r = a[idx1:idx2]
-                    toReturn = toReturn + [r]
-            return toReturn
-        self.equivalentEvaluationTest(f)
+    def equivalentEvaluationTestThatHandlesExceptions(self, func, *args):
+        with self.create_executor() as executor:
+            try:
+                r1 = func(*args)
+                pythonSucceeded = True
+            except Exception as ex:
+                pythonSucceeded = False
+                
+            try:
+                r2 = self.evaluateWithExecutor(func, *args, executor=executor)
+                pyforaSucceeded = True
+            except pyfora.Exceptions.ComputationError as ex:
+                pyforaSucceeded = False
 
+            self.assertEqual(pythonSucceeded, pyforaSucceeded)
+            if pythonSucceeded:
+                self.assertEqual(r1, r2)
+                return r1
+
+    def test_slicing_operations_1(self):
+        a = "testing"
+        l = len(a)
+        with self.create_executor() as fora:
+            pythonResults = []
+            futures = []
+            for idx1 in range(-l - 1, l + 1):
+                for idx2 in range(-l - 1, l + 1):
+                    def f():
+                        return a[idx1:idx2]
+                    futures.append(
+                        fora.submit(f)
+                        )
+                    try:
+                        result = f()
+                        pythonResults.append(result)
+                    except:
+                        pass
+        foraResults = self.resolvedFutures(futures)
+        self.assertTrue(len(foraResults) > (l * 2 + 1) ** 2)
+        self.assertEqual(pythonResults, foraResults)
+
+
+    def resolvedFutures(self, futures):
+        results = [f.result() for f in futures]
+        localResults = [r.toLocal() for r in results]
+        foraResults = []
+        for f in localResults:
+            try:
+                foraResults.append(f.result())
+            except Exception as e:
+                pass
+        return foraResults        
 
     def test_slicing_operations_2(self):
+        a = "abcd"
+        l = len(a) + 1
+        with self.create_executor() as fora:
+            pythonResults = []
+            futures = []
+            for idx1 in range(-l, l):
+                for idx2 in range(-l, l):
+                    for idx3 in range(-l, l):
+                        def f():
+                            return a[idx1:idx2:idx3]
+                        futures.append(
+                            fora.submit(f)
+                            )
+                        try:
+                            result = f()
+                            pythonResults.append(result)
+                        except:
+                            pass
+
+            foraResults = self.resolvedFutures(futures)
+            # we are asserting that we got a lot of results
+            # we don't expect to have (l * 2 -1)^3, because we expect some of the 
+            # operations to fail
+            self.assertTrue(len(foraResults) > 500)
+            self.assertEqual(pythonResults, foraResults)
+
+    def test_python_if_int(self):
         def f():
-            a = "testing" * 3
-            l = len(a)
-            toReturn = []
-            for idx1 in range(l):
-                for idx2 in range(l):
-                    for idx3 in range(1, l):
-                        r = a[idx1:idx2:idx3]
-                        toReturn = toReturn + [r]
-            return toReturn
+            if 1:
+                return True
+            else:
+                return False
         self.equivalentEvaluationTest(f)
+
+    def test_python_if_int_2(self):
+        def f2():
+            if 0:
+                return True
+            else:
+                return False
+        self.equivalentEvaluationTest(f2)
+
+    def test_python_and_or(self):
+        def f():
+            return (
+                0 or 1,
+                1 or 2,
+                1 or 0,
+                0 or False, 
+                1 or 2 or 3, 
+                0 or 1,
+                0 or 1 or 2,
+                1 and 2,
+                0 and 1,
+                1 and 0,
+                0 and False,
+                1 and 2 and 3,
+                0 and 1 and 2,
+                1 and 2 and 0,
+                1 and 0 and 2,
+                0 and False and 2
+                )
+
+        self.equivalentEvaluationTest(f)
+
+    def test_slicing_operations_3(self):
+        a = "abcd"
+        l = len(a)
+        l2 = -l + 1
+        def f():
+            toReturn = []
+            for idx1 in range(l2, l + 1):
+                for idx2 in range(l2, l + 1):
+                    for idx3 in range(l2, l + 1):
+                        if(idx3 != 0):
+                            r = a[idx1:idx2:idx3]
+                            toReturn = toReturn + [r]
+            return toReturn
+        self.equivalentEvaluationTestThatHandlesExceptions(f)
 
     def test_string_equality_methods(self):
         def f():
