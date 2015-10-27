@@ -24,7 +24,7 @@ import argparse
 import os
 import re
 
-DEFAULT_CONFIG_ENV_VARNAME = 'BSA_CONFIG_FILE'
+DEFAULT_CONFIG_ENV_VARNAME = 'UFORA_CONFIG_FILE'
 
 class InitializationException(Exception):
     pass

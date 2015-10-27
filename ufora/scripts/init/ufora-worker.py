@@ -30,7 +30,10 @@ import ufora.native.Cumulus as CumulusNative
 from ufora.networking.MultiChannelListener import MultiChannelListener
 
 def get_own_ip():
-    return socket.gethostbyname(socket.getfqdn())
+    try:
+        return socket.gethostbyname(socket.getfqdn())
+    except socket.gaierror:
+        return '127.0.0.1'
 
 def createArgumentParser():
     parser = argparse.ArgumentParser()
@@ -43,14 +46,19 @@ def createArgumentParser():
 
     parser.add_argument('-a',
                         '--own-address',
-                        default=os.getenv("UFORA_WORKER_OWN_ADDRESS", get_own_ip()),
-                        help=("The IP address that this worker should bind to. "
-                              "Default: %(default)s"))
+                        default=os.getenv("UFORA_WORKER_OWN_ADDRESS", None),
+                        help="The IP address that this worker should bind to.")
+
 
     parser.add_argument('-s',
                         '--store-address',
-                        default=os.getenv("UFORA_WORKER_STORE_ADDRESS", "localhost:30002"),
-                        help=("The address and port of the Ufora store service. "
+                        default=os.getenv("UFORA_WORKER_STORE_ADDRESS", "localhost"),
+                        help=("The address of the Ufora store service. "
+                              "Default: %(default)s"))
+
+    parser.add_argument('--store-port',
+                        default=os.getenv("UFORA_WORKER_STORE_PORT", 30002),
+                        help=("The port of the Ufora store service. "
                               "Default: %(default)s"))
 
     return parser
@@ -71,11 +79,10 @@ def createService(args):
     channelListener = MultiChannelListener(callbackScheduler,
                                            [args.base_port, args.base_port + 1])
 
-    store_host, store_port = args.store_address.split(':')
     sharedStateViewFactory = ViewFactory.ViewFactory.TcpViewFactory(
         callbackSchedulerFactory.createScheduler('SharedState', 1),
-        store_host,
-        int(store_port)
+        args.store_address,
+        int(args.store_port)
         )
 
     channelFactory = TcpChannelFactory.TcpStringChannelFactory(callbackScheduler)
@@ -86,8 +93,11 @@ def createService(args):
         callbackSchedulerFactory.createScheduler("ufora-worker-event-handler", 1)
         )
 
+    own_address = args.own_address or get_own_ip()
+    print "Listening on", own_address, "ports:", args.base_port, "and", args.base_port+1
+
     return CumulusService.CumulusService(
-        args.own_address,
+        own_address,
         channelListener,
         channelFactory,
         eventHandler,

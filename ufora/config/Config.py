@@ -103,8 +103,6 @@ class Config(object):
 
         self._configDir = os.path.split(__file__)[0]
 
-        self.isOnPremise = parseBool(self.getConfigValue("IS_ON_PREMISE_CLUSTER", False))
-
         self.nativeStackDumpInterval = 30
         self.enableNativeStackDump = parseBool(
             self.getConfigValue("ENABLE_NATIVE_STACK_DUMP", False)
@@ -182,7 +180,6 @@ class Config(object):
             )
 
         self.userDataS3Bucket = self.getConfigValue("USER_DATA_BUCKET", 'ufora.user.data')
-        self.crashLogsS3Bucket = self.getConfigValue("CRASH_LOGS_BUCKET", 'ufora.logs')
 
         self.foraCompilerThreads = long(self.getConfigValue("FORA_COMPILER_THREADS", 4))
 
@@ -253,8 +250,6 @@ class Config(object):
         self.relayPort = \
             int(self.getConfigValue('UFORA_WEB_HTTP_PORT', 0)) or basePort
         self.numPorts = numPorts
-        self.clusterManagerPort = \
-            int(self.getConfigValue('UFORA_CLUSTER_PORT', 0)) or basePort + 1
         self.sharedStatePort = basePort + 2
         self.appServerPort = basePort + 3
         self.fakeEc2Port = basePort + 4

@@ -13,7 +13,6 @@
 #   limitations under the License.
 
 import unittest
-import time
 import pyfora.Connection
 import ufora.FORA.python.PurePython.ExecutorTestCases as ExecutorTestCases
 import ufora.config.Setup as Setup

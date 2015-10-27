@@ -1,62 +1,36 @@
 load_config() {
-    if [ -z $BSA_CONFIG_FILE ]; then
-      if [ -f $CONFIG_FILE ]; then
-        BSA_CONFIG_FILE=$CONFIG_FILE
-      else
-        echo "ERROR: Cannot find Ufora configuration file. Please set the BSA_CONFIG_FILE environment variable and retry."
-        exit 1
-      fi
+    if [ -f "$UFORA_CONFIG_FILE" ]; then
+      # Load the configuration
+      . $UFORA_CONFIG_FILE
     fi
 
-    # Load the configuration
-    . $BSA_CONFIG_FILE
-
     if [ -z $ROOT_DATA_DIR ]; then
-      echo "ERROR: ROOT_DATA_DIR not specified in $BSA_CONFIG_FILE."
+      echo "ERROR: ROOT_DATA_DIR has not been specified"
       exit 1
     fi
     if [ ! -d $ROOT_DATA_DIR ]; then
-      echo "ERROR: ROOT_DATA_DIR specified in $BSA_CONFIG_FILE does not exist ($ROOT_DATA_DIR)."
+      echo "ERROR: ROOT_DATA_DIR does not exist ($ROOT_DATA_DIR)."
       exit 1
     fi
 
-    if [ -z $UFORA_SSL_DIR ]; then
-      UFORA_SSL_DIR=$ROOT_DATA_DIR/ssl
-    fi
-
     if [ -z $UFORA_PID_DIR ]; then
-      echo "WARNING: UFORA_PID_DIR not specified in $BSA_CONFIG_FILE. Defaulting to $ROOT_DATA_DIR/services."
-      UFORA_PID_DIR=$ROOT_DATA_DIR/services
+      UFORA_PID_DIR=$ROOT_DATA_DIR/pid
     fi
 
     if [ -z $UFORA_LOG_DIR ]; then
-      echo "WARNING: UFORA_LOG_DIR not specified in $BSA_CONFIG_FILE. Defaulting to $ROOT_DATA_DIR/logs"
       UFORA_LOG_DIR=$ROOT_DATA_DIR/logs
     fi
 
-    if [ -z $UFORA_LOCAL_S3_DIR ]; then
-      echo "WARNING: UFORA_LOCAL_S3_DIR not specified in $BSA_CONFIG_FILE. Defaulting to $ROOT_DATA_DIR/s3_storage"
-      UFORA_LOCAL_S3_DIR=$ROOT_DATA_DIR/s3_storage
+    if [ -z $UFORA_STORE_PORT ]; then
+      export UFORA_STORE_PORT=30002
     fi
 
-    if [ -z $UFORA_REDIS_DIR ]; then
-      echo "WARNING: UFORA_REDIS_DIR not specified in $BSA_CONFIG_FILE. Defaulting to $ROOT_DATA_DIR/redis"
-      UFORA_REDIS_DIR=$ROOT_DATA_DIR/redis
-    fi
-
-    if [ -z $UFORA_CLUSTER_PORT ]; then
-      echo "WARNING: UFORA_CLUSTER_PORT not specified in $BSA_CONFIG_FILE. Defaulting to 30001"
-      export UFORA_CLUSTER_PORT=30001
+    if [ -z $UFORA_GATEWAY_PORT ]; then
+      export UFORA_GATEWAY_PORT=30008
     fi
 
     if [ -z $UFORA_WEB_HTTP_PORT ]; then
-      echo "WARNING: UFORA_WEB_HTTP_PORT not specified in $BSA_CONFIG_FILE. Defaulting to 30000"
       export UFORA_WEB_HTTP_PORT=30000
-    fi
-
-    if [ -z $UFORA_WEB_HTTPS_PORT ]; then
-      echo "WARNING: UFORA_WEB_HTTPS_PORT not specified in $BSA_CONFIG_FILE. Defaulting to 30005"
-      export UFORA_WEB_HTTPS_PORT=30005
     fi
 
     # PORT0, PORT1 are set when running in Apache Marathon
@@ -68,48 +42,9 @@ load_config() {
       export UFORA_WORKER_DATA_PORT=${PORT1:-30010}
     fi
 
-    UFORA_PACKAGE_DEPENDENCIES_DIR=$UFORA_PACKAGE_ROOT/dependencies
-    if [ ! -d $UFORA_PACKAGE_DEPENDENCIES_DIR ]; then
-      UFORA_PACKAGE_DEPENDENCIES_DIR=""
-    fi
-    UFORA_PACKAGE_BIN_DIR=$UFORA_PACKAGE_DEPENDENCIES_DIR/usr/bin
-    FOREVER=$UFORA_PACKAGE_BIN_DIR/forever
-    if [ "$UFORA_SERVICE_ACCOUNT" != "" ] && [ $UFORA_SERVICE_ACCOUNT != `whoami` ]; then
-      RUN_AS_USER="sudo -u $UFORA_SERVICE_ACCOUNT"
-    else
-      UFORA_SERVICE_ACCOUNT=`whoami`
-      RUN_AS_USER=
-    fi
+    create_data_dirs
 }
 
-set_package_root() {
-    if [ -d $SCRIPT_DIR/lib ]; then
-      UFORA_PACKAGE_ROOT=$SCRIPT_DIR/lib
-    else
-      UFORA_PACKAGE_ROOT=`readlink -m $SCRIPT_DIR/../../..`
-    fi
-}
-
-init_config() {
-    set_package_root
-    if [ -f $CONFIG_FILE ]; then
-        # Update the existing configuration file
-        update_config_file
-    else
-        # We don't have a configuration file. Create one.
-        create_config_file
-    fi
-
-    # Load configuration
-    . $CONFIG_FILE
-    load_config
-}
-
-update_config_file() {
-    # update the package root directory
-    sed -i s^UFORA_PACKAGE_ROOT=.*^UFORA_PACKAGE_ROOT=$UFORA_PACKAGE_ROOT^g $CONFIG_FILE
-
-}
 
 create_config_file() {
     CONFIG_TEMPLATE=$UFORA_PACKAGE_ROOT/ufora/scripts/init/config.template
@@ -178,14 +113,11 @@ create_data_dirs() {
 }
 
 set_runtime_env() {
-    if [[ ! $PATH == *"$UFORA_PACKAGE_BIN_DIR"* ]]; then
-      export PATH="$UFORA_PACKAGE_BIN_DIR:$UFORA_PACKAGE_BIN_DIR/../local/bin:$PATH"
-    fi
+    export UFORA_PACKAGE_ROOT=`readlink -m $SCRIPT_DIR/../../..`
     if [[ ! $PYTHONPATH == *"$UFORA_PACKAGE_ROOT"* ]]; then
       export PYTHONPATH="$PYTHONPATH:$UFORA_PACKAGE_ROOT"
     fi
-    export BSA_CONFIG_FILE
-    export node=$UFORA_PACKAGE_BIN_DIR/node
+    export UFORA_CONFIG_FILE
 }
 
 start_service() {
@@ -207,12 +139,11 @@ run_with_forever() {
     # Create the pid file, making sure that 
     # the target use has access to them
     touch $PID_FILE
-    chown $UFORA_SERVICE_ACCOUNT $PID_FILE
 
     cd $SERVICE_DIR
 
     FOREVER_DIR=$UFORA_PID_DIR/forever
-    FOREVER_COMMAND="$RUN_AS_USER $FOREVER $FOREVER_ACTION $FOREVER_ARGS --minUptime 1000 --spinSleepTime 1000 -l $UFORA_LOG_DIR/$SERVICE_NAME.log -p $FOREVER_DIR --pidFile $PID_FILE -a -c $SERVICE_LAUNCHER $SERVICE_FILE $SERVICE_ARGS"
+    FOREVER_COMMAND="forever $FOREVER_ACTION $FOREVER_ARGS --minUptime 1000 --spinSleepTime 1000 -l $UFORA_LOG_DIR/$SERVICE_NAME.log -p $FOREVER_DIR --pidFile $PID_FILE -a -c $SERVICE_LAUNCHER $SERVICE_FILE $SERVICE_ARGS"
     echo $FOREVER_COMMAND
     $FOREVER_COMMAND
     RETVAL=$?
@@ -226,7 +157,7 @@ stop_service() {
   if [ "$FOREVER_ID" != "" ]; then
     echo -n "Shutting down $SERVICE_NAME:"
     FOREVER_DIR=$UFORA_PID_DIR/forever
-    $FOREVER stop -p $FOREVER_DIR $FOREVER_ID
+    forever stop -p $FOREVER_DIR $FOREVER_ID
     RETVAL=$?
   else
     echo "$SERVICE_NAME is not running"
@@ -252,8 +183,8 @@ find_forever_id() {
   fi
 
   if [ "$PID" != "" ]; then
-    FOREVER_ID=`$RUN_AS_USER $FOREVER list --plain | $UFORA_PACKAGE_ROOT/ufora/scripts/init/foreverListAndPidToForeverId.py $PID id`
-    SERVICE_UPTIME=`$RUN_AS_USER $FOREVER list --plain | $UFORA_PACKAGE_ROOT/ufora/scripts/init/foreverListAndPidToForeverId.py $PID uptime`
+    FOREVER_ID=`forever list --plain | $UFORA_PACKAGE_ROOT/ufora/scripts/init/foreverListAndPidToForeverId.py $PID id`
+    SERVICE_UPTIME=`forever list --plain | $UFORA_PACKAGE_ROOT/ufora/scripts/init/foreverListAndPidToForeverId.py $PID uptime`
   fi
 }
 

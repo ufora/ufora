@@ -16,13 +16,13 @@ import logging
 import os
 import os.path
 import socket
-import tempfile
 import time
 import threading
 import traceback
 import shutil
 import subprocess
 
+import ufora
 import ufora.core.SubprocessRunner as SubprocessRunner
 import ufora.distributed.ServerUtils.SimpleServer as SimpleServer
 import ufora.distributed.util.common as common
@@ -33,22 +33,20 @@ def createTestRunner(testDir='test_scripts/clusterperf'):
     assert 'TEST_LOOPER_MULTIBOX_OWN_IP' in os.environ
     assert 'TEST_LOOPER_MULTIBOX_IP_LIST' in os.environ
     assert 'TEST_LOOPER_TEST_ID' in os.environ
-    assert 'BSA_DATA_DIR' in os.environ
+    assert 'TEST_OUTPUT_DIR' in os.environ
 
-    machinesInCluster = sorted(os.getenv('TEST_LOOPER_MULTIBOX_IP_LIST').split(' '))
+    machinesInCluster = sorted(os.getenv('TEST_LOOPER_MULTIBOX_IP_LIST').split(','))
     ownAddress = os.getenv('TEST_LOOPER_MULTIBOX_OWN_IP')
     assert ownAddress in machinesInCluster
 
-    testId  = os.getenv('TEST_LOOPER_TEST_ID')
+    testId = os.getenv('TEST_LOOPER_TEST_ID')
 
     testRunnerClass = MultiMachineMasterRunner if ownAddress == machinesInCluster[0] \
                       else MultiMachineWorkerRunner
     return testRunnerClass(machinesInCluster, ownAddress, testId, testDir)
 
-def extractErrorMessagesFromLogfile(logfile, targetDir):  
+def extractErrorMessagesFromLogfile(logfile, targetDir):
     try:
-        hasOne = False
-
         lineNumber = 0
 
         curBlock = []
@@ -57,7 +55,7 @@ def extractErrorMessagesFromLogfile(logfile, targetDir):
         def contains(msg):
             return " ERROR " in msg or " CRITICAL " in msg
 
-        for line in open(logfile,"r"):
+        for line in open(logfile, "r"):
             lineNumber += 1
 
             if line[0] in (' ', '\t') or not curBlock:
@@ -68,7 +66,7 @@ def extractErrorMessagesFromLogfile(logfile, targetDir):
                     output.append("\n".join(curBlock))
 
                 curBlock = []
-                
+
                 curBlock.append(line.rstrip())
 
 
@@ -77,8 +75,6 @@ def extractErrorMessagesFromLogfile(logfile, targetDir):
 
         if output:
             fname = os.path.split(logfile)[1]
-            fname_without_ext = os.path.splitext(fname)
-
             finalFname = os.path.join(targetDir, fname + "_errors.txt")
 
             with open(finalFname, "w") as resultFile:
@@ -94,8 +90,9 @@ def extractErrorMessagesFromLogfile(logfile, targetDir):
         else:
             logging.info("Checked %s lines of %s, but found no error messages", lineNumber, logfile)
     except:
-        import traceback
-        logging.error("Failed to extract error messages from %s:\n%s", logfile, traceback.format_exc())
+        logging.error("Failed to extract error messages from %s:\n%s",
+                      logfile,
+                      traceback.format_exc())
 
 class MultiMachineTestRunner(object):
     ProtoclVersion = '0.0.3'
@@ -105,7 +102,7 @@ class MultiMachineTestRunner(object):
         self.ownAddress = ownAddress
         assert self.ownAddress in self.machinesInCluster
 
-        self.testId  = testId
+        self.testId = testId
         self.testDir = testDir
         assert os.path.exists(self.testDir), "test directory '%s' does not exist" % self.testDir
 
@@ -119,110 +116,96 @@ class MultiMachineTestRunner(object):
 
     @property
     def serviceName(self):
-        assert False, "Must be implemented by derived class"
+        raise NotImplementedError("Must be implemented by derived class")
 
     def run_(self):
-        assert False, "Must be implemented by derived class"
+        raise NotImplementedError("Must be implemented by derived class")
 
-    def getInstallationEnvVars(self):
-        envVars = {}
-        try: 
-            result = subprocess.check_output([
-                'curl', 'http://169.254.169.254/latest/meta-data/local-ipv4',
-                    '--connect-timeout', '1', '--silent', '-f']
-                )
-            envVars['UFORA_CLUSTER_HOST'] = result
-            logging.info("resolved cluster host: %s", result)
-        except:
-            logging.warn("Failed to get public ip address from meta-data endpoint")
+    def getWorkerEnvironment(self):
+        env = dict(os.environ)
+        env.update({
+            "UFORA_WORKER_STORE_ADDRESS": self.clusterMaster,
+            "UFORA_WORKER_OWN_ADDRESS": self.ownAddress
+            })
+        return env
 
-        return envVars
-            
-        
 
     def run(self):
         logging.info("machinesInCluster: %s, ownAddress: %s, master: %s, isMaster: %s",
             self.machinesInCluster, self.ownAddress, self.clusterMaster, self.isClusterMaster)
 
         try:
-            self.rootDataDir = os.path.join(os.getenv('BSA_DATA_DIR'), 'on-prem-cluster')
-            os.makedirs(self.rootDataDir)
-            self.runInstallScript(self.serviceName, env=self.getInstallationEnvVars())
+            outputDir = os.path.join(os.getenv('TEST_OUTPUT_DIR'), 'cluster')
+            os.makedirs(outputDir)
             return self.run_()
         except Exception as e:
             logging.error("Error running multi-machine test: %s\n%s", e, traceback.format_exc())
             return False
         finally:
-            self.postExecutionCleanup()
+            self.postExecutionCleanup(outputDir)
 
-    def postExecutionCleanup(self):
-        self.removePath(os.path.join(self.rootDataDir, "cumulus_disk_storage"))
+    def postExecutionCleanup(self, outputDir):
+        self.removePath(os.path.join(outputDir, "cumulus_disk_storage"))
 
-        logging.info("searching for logs in %s", os.path.join(self.rootDataDir, "logs"))
-        
-        for logfile in os.listdir(os.path.join(self.rootDataDir, "logs")):
-            fullPath = os.path.join(self.rootDataDir, "logs", logfile)
+        logDir = os.path.join(outputDir, "logs")
+        logging.info("searching for logs in %s", logDir)
+
+        if not os.path.exists(logDir):
+            logging.info("Log directory %s does not exist")
+            return
+
+        for logfile in os.listdir(logDir):
+            fullPath = os.path.join(logDir, logfile)
             if os.path.isfile(fullPath):
-                extractErrorMessagesFromLogfile(fullPath, os.getenv("LOOPER_DATA_DIR"))
+                extractErrorMessagesFromLogfile(fullPath, outputDir)
 
         try:
-            logDir = os.path.join(self.rootDataDir, "logs")
-            targetLogPath = os.path.join(os.getenv("LOOPER_DATA_DIR"), "cumulus_logs.tar.gz")
+            targetLogPath = os.path.join(outputDir, "cumulus_logs.tar.gz")
 
             subprocess.call(['tar czf %s %s' % (targetLogPath, logDir)], shell=True)
         except:
             logging.error("Tried to copy %s to %s but failed: %s",
-                logDir,
-                targetLogDir,
-                traceback.format_exc()
-                )
+                          logDir,
+                          targetLogPath,
+                          traceback.format_exc())
 
-    def removePath(self, path):
+    @staticmethod
+    def removePath(path):
+        if not os.path.exists(path):
+            return
+
         for tries in range(3):
             try:
                 shutil.rmtree(path)
                 return True
             except:
                 if tries == 2:
-                    logging.warn("Failed to remove the path %s three times because:\n%s", path, traceback.format_exc())
+                    logging.warn("Failed to remove the path %s three times because:\n%s",
+                                 path,
+                                 traceback.format_exc())
         return False
 
-
-    def runInstallScript(self, serviceName, env=None):
-        args = [] if self.isClusterMaster else ['-c', self.clusterMaster]
-
-        subprocess_env = dict(os.environ)
-        if env is not None:
-            subprocess_env.update(env)
-
-        exitCode, stdOut, stdErr = SubprocessRunner.callAndReturnResultAndOutput(
-                ['ufora/scripts/install/install-%s.sh' % serviceName, '-d', self.rootDataDir, '-s'] + args,
-                env=subprocess_env
-                )
-
-        logging.info("install-%s.sh STDOUT> %s", serviceName, stdOut)
-        logging.info("install-%s.sh STDERR> %s", serviceName, stdErr)
-        if exitCode != 0:
-            raise Exception("Failed to initialize %s. Exit code: %s.\nstdout: %s\nstderr: %s",
-                    serviceName, exitCode, stdOut, stdErr)
-
-        configFile = os.path.join(self.rootDataDir, 'config.cfg')
-        assert os.path.exists(configFile), \
-                "install-worker.sh failed to create config file in %s" % configFile
-
-    def controlService(self, serviceName, controlArg):
+    def controlService(self, serviceName, controlArg=None, env=None):
         logging.info("Attempting to %s service %s", controlArg, serviceName)
-        binDir = os.path.join(self.rootDataDir, 'bin')
-        exitCode = self.runCommandAndLogOutput(binDir, serviceName, controlArg)
+        binDir = os.path.join(ufora.rootPythonPath, 'ufora/scripts/init')
+        exitCode = self.runCommandAndLogOutput(binDir, serviceName, controlArg, env=env)
         if exitCode != 0:
+            logging.error("Failed to %s %s. Exit code: %s", controlArg, serviceName, exitCode)
             raise Exception("Failed to %s %s. Exit code: %s" % (controlArg, serviceName, exitCode))
         logging.info("Service %s successfully completed %s command", serviceName, controlArg)
 
-    def runCommandAndLogOutput(self, path, command, *args):
-        args = list(args)
+    @staticmethod
+    def runCommandAndLogOutput(path, command, argument=None, env=None):
+        toRun = [os.path.join(path, command)]
+        if argument:
+            toRun.append(argument)
+
+        logging.info("Running command: %s", toRun)
         exitCode, stdOut, stdErr = SubprocessRunner.callAndReturnResultAndOutput(
-                [os.path.join(path, command)] + args
-                )
+            toRun,
+            env=env
+            )
+        logging.info("Exit code: %s", exitCode)
         logging.info("%s STDOUT> %s", command, stdOut)
         logging.info("%s STDERR> %s", command, stdErr)
         return exitCode
@@ -261,8 +244,7 @@ class MultiMachineWorkerRunner(MultiMachineTestRunner):
     def connectToMaster(self):
         logging.info("Connecting to master at %s:%s",
                      self.clusterMaster,
-                     MultiMachineWorkerRunner.TestControlPort
-                     )
+                     MultiMachineWorkerRunner.TestControlPort)
         while True:
             socketError = None
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -288,7 +270,8 @@ class MultiMachineWorkerRunner(MultiMachineTestRunner):
                 logging.info("Waiting for master. %s", socketError)
                 time.sleep(0.5)
 
-    def waitForStopCommand(self, sock):
+    @staticmethod
+    def waitForStopCommand(sock):
         message = common.readString(sock)
         if message != 'ok:stop_worker':
             logging.error("Expected stop command from server. Received: %s", message)
@@ -296,7 +279,7 @@ class MultiMachineWorkerRunner(MultiMachineTestRunner):
             logging.info("Received 'stop' command from master")
 
     def startWorker(self):
-        self.controlService('ufora-worker', 'start')
+        self.controlService('ufora-worker', 'start', env=self.getWorkerEnvironment())
 
     def stopWorker(self):
         self.controlService('ufora-worker', 'stop')
@@ -323,7 +306,6 @@ class MultiMachineMasterRunner(MultiMachineTestRunner):
     def run_(self):
         try:
             self.startTestControlServer()
-            self.createTestUser()
             self.waitForAllWorkers()
             self.startMaster()
             self.startWorkers()
@@ -358,28 +340,18 @@ class MultiMachineMasterRunner(MultiMachineTestRunner):
         logging.info("Test control server stopped")
 
 
-    def createTestUser(self):
-        addUserCommand = os.path.join(self.rootDataDir, 'bin', 'addUser.py')
-        exitCode, stdOut, stdErr = SubprocessRunner.callAndReturnResultAndOutput(
-                [addUserCommand, '-e', 'test', '-p', 'asdfasdf', '-f', 'test', '-l', 'test', '-r']
-                )
-        logging.info("addUser.py STDOUT> %s", stdOut)
-        logging.info("addUser.py STDERR> %s", stdErr)
-        if exitCode != 0:
-            raise Exception("Failed to create test user account")
-
     def waitForAllWorkers(self):
         logging.info("Waiting for all workers to come online")
         self.allWorkersConnectedEvent.wait()
 
     def startMaster(self):
-        self.controlService('start', '')
-        self.controlService('ufora-worker', 'start')
+        self.controlService('start')
+        self.controlService('ufora-worker', 'start', env=self.getWorkerEnvironment())
 
     def stopMaster(self):
         logging.info("Stopping ufora cluster")
         self.controlService('ufora-worker', 'stop')
-        self.controlService('stop', '')
+        self.controlService('stop')
 
     def startWorkers(self):
         self.forEachWorker(

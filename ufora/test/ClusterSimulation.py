@@ -17,7 +17,6 @@ import logging
 import os
 import ufora.core.SubprocessRunner as SubprocessRunner
 import traceback
-import redis
 import threading
 import sys
 import uuid
@@ -67,11 +66,12 @@ class WorkerProcesses(object):
         self.desired = 0
         self.num_ever_started = 0
         self.processes = {}
+        self.threads = {}
 
     def desireNumberOfWorkers(self, count, blocking=False):
         logging.info('desiring %d workers', count)
         self.desired = count
-        delta = count - len(self.processes)
+        delta = count - len(self.threads)
         if delta > 0:
             self._addWorkers(delta)
         elif delta < 0:
@@ -81,7 +81,7 @@ class WorkerProcesses(object):
         pass
 
     def stopService(self):
-        self._removeWorkers(len(self.processes))
+        self._removeWorkers(len(self.threads))
 
     def _addWorkers(self, count):
         for _ in range(count):
@@ -89,47 +89,53 @@ class WorkerProcesses(object):
 
     def _removeWorkers(self, count):
         while count > 0:
-            worker_id, (proc, thread, logfile) = self.processes.iteritems().next()
+            worker_id, proc = self.processes.iteritems().next()
+            thread = self.threads[worker_id]
             del self.processes[worker_id]
+            del self.threads[worker_id]
             proc.stop()
             thread.join()
-            logfile.close()
             count -= 1
 
 
     def _addWorker(self):
         worker_id = uuid.uuid4()
-        log_path = self._workerLogFile(worker_id)
-        logging.info("adding worker. script: %s, log: %s", self.worker_path, log_path)
-        logfile = open(log_path, 'w')
-        def writeline(msg):
-            logfile.write(msg + '\n')
-        env = dict(os.environ)
-        env['UFORA_WORKER_BASE_PORT'] = str(30009 + 2*self.num_ever_started)
-        env['UFORA_WORKER_CLUSTER_NAME'] = 'test'
-        proc = SubprocessRunner.SubprocessRunner(
-            [sys.executable, '-u', self.worker_path],
-            writeline,
-            writeline,
-            env=env
-            )
-        thread = threading.Thread(target=self._runWorker, args=(worker_id,))
-        self.processes[worker_id] = (proc, thread, logfile)
+        thread = threading.Thread(target=self._runWorker,
+                                  args=(worker_id, Setup.config().fakeAwsBaseDir))
+        self.threads[worker_id] = thread
         thread.start()
 
     @staticmethod
-    def _workerLogFile(worker_id):
-        return os.path.join(Setup.config().fakeAwsBaseDir,
-                            "worker-%s.log" % worker_id)
+    def _workerLogFile(worker_id, iteration, logDir):
+        return os.path.join(logDir,
+                            "worker-%s-%s.log" % (worker_id, iteration))
 
-    def _runWorker(self, worker_id):
-        while worker_id in self.processes:
-            proc, _, logfile = self.processes[worker_id]
-            logfile.write("***Starting worker***\n")
-            logging.info("Starting worker %s", worker_id)
-            logfile.flush()
-            proc.start()
-            proc.wait()
+    def _runWorker(self, worker_id, logDir):
+        iteration = 0
+        while worker_id in self.threads:
+            iteration += 1
+            log_path = self._workerLogFile(worker_id, iteration, logDir)
+            logging.info("adding worker. script: %s, log: %s", self.worker_path, log_path)
+            with open(log_path, 'a') as logfile:
+                def writeline(msg):
+                    logfile.write(msg + '\n')
+
+                env = dict(os.environ)
+                env['UFORA_WORKER_BASE_PORT'] = str(30009 + 2*self.num_ever_started)
+                proc = SubprocessRunner.SubprocessRunner(
+                    [sys.executable, '-u', self.worker_path],
+                    writeline,
+                    writeline,
+                    env=env
+                    )
+
+                logfile.write("***Starting worker***\n")
+                logging.info("Starting worker %s", worker_id)
+                logfile.flush()
+                proc.start()
+                self.processes[worker_id] = proc
+                proc.wait()
+                logging.info("Worker exited: %s", worker_id)
 
 
 
@@ -259,8 +265,6 @@ class Simulator(object):
         try:
             self.startGatewayService()
 
-            self.createTestAccount()
-
             logging.info('Starting relay')
 
             with DirectoryScope.DirectoryScope(self.webPath):
@@ -284,11 +288,9 @@ class Simulator(object):
 
     def startSharedState(self):
         cacheDir = Setup.config().getConfigValue(
-            "SHARED_STATE_CACHE", None
+            "SHARED_STATE_CACHE",
+            os.path.join(Setup.config().fakeAwsBaseDir, 'ss_cache')
             )
-        if cacheDir is None:
-            logging.error("Expected shared state cache to have a value")
-            cacheDir = os.path.join(Setup.config().fakeAwsBaseDir, 'ss_cache')
 
         logging.info("Starting shared state with cache dir '%s' and log file '%s'",
                      cacheDir,
@@ -438,37 +440,6 @@ class Simulator(object):
     def createSimulationDirectory():
         if not os.path.exists(Setup.config().fakeAwsBaseDir):
             os.makedirs(Setup.config().fakeAwsBaseDir)
-
-    @staticmethod
-    def createTestAccount():
-        r = redis.StrictRedis()
-        r.hmset("user:test", {
-            "id": "test",
-            "password": "$2a$10$PZW.M1.1p4BJpDDLhHIDd.2ROOdHAP40y4tdf5NBd48C7r3sqEGnS",
-            "email": "test",
-            "eula": "1",
-            "role": "user",
-            "first_name": "Test",
-            "last_name": ""
-            })
-        r.hmset("user:test_dev", {
-            "id": "test_dev",
-            "password": "$2a$10$PZW.M1.1p4BJpDDLhHIDd.2ROOdHAP40y4tdf5NBd48C7r3sqEGnS",
-            "email": "test",
-            "eula": "1",
-            "role": "dev",
-            "first_name": "Test",
-            "last_name": "Dev"
-            })
-        r.hmset("user:test_admin", {
-            "id": "test_admin",
-            "password": "$2a$10$PZW.M1.1p4BJpDDLhHIDd.2ROOdHAP40y4tdf5NBd48C7r3sqEGnS",
-            "email": "test_admin",
-            "eula": "1",
-            "role": "admin",
-            "first_name": "Test",
-            "last_name": "Admin"
-            })
 
 
     def stopService(self):

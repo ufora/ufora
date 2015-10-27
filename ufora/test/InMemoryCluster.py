@@ -22,7 +22,8 @@ import ufora.config.Setup as Setup
 import ufora.cumulus.distributed.CumulusActiveMachines as CumulusActiveMachines
 import ufora.cumulus.distributed.CumulusGatewayRemote as CumulusGatewayRemote
 import ufora.cumulus.distributed.CumulusService as CumulusService
-import ufora.distributed.SharedState.Connections.InMemoryChannelFactory as InMemorySharedStateChannelFactory
+import ufora.distributed.SharedState.Connections.InMemoryChannelFactory \
+    as InMemorySharedStateChannelFactory
 import ufora.distributed.SharedState.Connections.ViewFactory as ViewFactory
 import ufora.distributed.SharedState.SharedStateService as SharedStateService
 import ufora.networking.MultiChannelListener as MultiChannelListener

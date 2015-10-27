@@ -126,9 +126,9 @@ class UnitTestArgumentParser(argparse.ArgumentParser):
                     help = 'run the local perf unit tests',
                     default = False
                     )
-        self.subsetsGroup.add_argument('-clusterperf',
+        self.subsetsGroup.add_argument('-multibox',
                     action = 'store_true',
-                    help = 'run the cluster performance tests',
+                    help = 'run the multi-box tests',
                     default = False
                     )
         self.subsetsGroup.add_argument('-browser',
@@ -386,7 +386,7 @@ def executeTests(args):
 
     #TODO FIX
     if not args.list:
-        print "UFORA root is " + ufora.__file__
+        print "UFORA root is " + ufora.rootPythonPath
         print "Test arguments: ", args
         print
         print
@@ -428,7 +428,7 @@ def executeTests(args):
             print "nose version: ", nose.__version__
             print time.ctime(time.time())
 
-        if runPythonUnitTests(args,filter):
+        if runPythonUnitTests(args, filter):
             anyFailed = True
 
         print "\n\n\n"
@@ -445,10 +445,10 @@ def executeTests(args):
             anyFailed = True
         print "\n\n\n"
 
-    if args.clusterperf:
-        print "Running cluster performance tests"
+    if args.multibox:
+        print "Running multibox tests"
         testRunner = MultiMachineTestRunner.createTestRunner(
-            testDir=args.scriptPath or 'test_scripts/clusterperf'
+            testDir=args.scriptPath or 'test_scripts/multibox'
             )
         if not testRunner.run():
             anyFailed = True
@@ -496,7 +496,7 @@ def executeTests(args):
 
 def noTestsSelected(args):
     return not (args.lang or args.native or args.scripts or args.py or \
-                    args.node or args.browser or args.localperf or args.clusterperf)
+                    args.node or args.browser or args.localperf or args.multibox)
 
 def main(args):
     if noTestsSelected(args):

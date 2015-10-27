@@ -60,9 +60,6 @@ function stop_tests_and_exit {
 
     find | grep 'core\.[0-9]\+$' | xargs -I{} mv -v '{}' $ARTIFACT_DIR/
 
-    killall -2 redis-cli > /dev/null
-    killall redis-server > /dev/null
-
     tar czf $TEST_OUTPUT_DIR/artifacts.tar.gz $ARTIFACT_DIR/
 }
 
@@ -92,11 +89,6 @@ calling_format = boto.s3.connection.OrdinaryCallingFormat
 EOM
 
     trap stop_tests_and_exit SIGTERM SIGINT SIGHUP SIGPIPE EXIT
-
-    redis-cli MONITOR &> $ARTIFACT_DIR/redis.log &
-
-    echo "Starting redis-server"
-    redis-server --dbfilename ufora.rdb --dir $ARTIFACT_DIR --save 60 1 > $ARTIFACT_DIR/redis-server.log &
 
     export NESTED_TESTS_GUARD=1
 fi

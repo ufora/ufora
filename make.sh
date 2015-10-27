@@ -105,10 +105,17 @@ fi
 container_env="-e UFORA_PERFORMANCE_TEST_RESULTS_FILE=$UFORA_PERFORMANCE_TEST_RESULTS_FILE \
                -e AWS_AVAILABILITY_ZONE=$AWS_AVAILABILITY_ZONE \
                -e TEST_LOOPER_TEST_ID=$TEST_LOOPER_TEST_ID \
+               -e TEST_LOOPER_MULTIBOX_IP_LIST=${TEST_LOOPER_MULTIBOX_IP_LIST// /,} \
+               -e TEST_LOOPER_MULTIBOX_OWN_IP=$TEST_LOOPER_MULTIBOX_OWN_IP \
                -e TEST_OUTPUT_DIR=/volumes/output \
                -e REVISION=$REVISION"
 
+
 container_name=`uuidgen`
+
+if [ ! -z "$TEST_LOOPER_MULTIBOX_IP_LIST" ]; then
+    network_settings="--net=host"
+fi
 
 function cleanup {
     docker stop $container_name &> /dev/null
@@ -118,4 +125,10 @@ function cleanup {
 # Ensure the container is not left running
 trap cleanup EXIT
 
-docker run --rm --name $container_name $container_env $src_volume $output_volume $ccache_volume $docker_image bash -c "cd /volumes/src; $command_to_run"
+docker run --rm --name $container_name \
+    $container_env \
+    $network_settings \
+    $src_volume \
+    $output_volume \
+    $ccache_volume \
+    $docker_image bash -c "cd /volumes/src; $command_to_run"
