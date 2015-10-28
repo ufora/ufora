@@ -29,10 +29,10 @@ class ComputationError(PyforaError):
         self.trace = trace
 
     def __str__(self):
-        return "ComputationError(exceptionValue=" + str(self.exceptionValue) + ",trace=" + str(self.trace) + ")"
+        return "ComputationError(exceptionValue=%s,trace=%s)" % (self.exceptionValue, self.trace)
 
     def __repr__(self):
-        return "ComputationError(exceptionValue=" + repr(self.exceptionValue) + ",trace=" + str(self.trace) + ")"
+        return str(self)
 
 class PythonToForaConversionError(PyforaError):
     '''Unable to convert the specified Python object.'''

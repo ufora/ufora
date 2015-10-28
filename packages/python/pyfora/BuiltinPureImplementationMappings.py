@@ -25,50 +25,88 @@ class Str:
 
 class Range:
     def __call__(self, first, second=None, increment=None):
-        start = 0
-        stop = 0
-        if second == None:
-            stop = first
-        else:
-            start = first
-            stop = second
+        return [x for x in xrange(first, second, increment)]
 
-        if increment == None:
-            increment = 1
-        
-        toReturn = []
-        currentVal = start
+class XRangeInstance:
+    def __init__(self, start, count, increment):
+        self.start = start
+        self.count = count
+        self.increment = increment
 
-        while currentVal < stop:
-            toReturn = toReturn + [currentVal]
-            currentVal = currentVal + increment
-        return toReturn
+    def __iter__(self):
+        currentVal = self.start
+        ix = 0
+
+        while ix < self.count:
+            yield currentVal
+            currentVal = currentVal + self.increment
+            ix = ix + 1
+
+    def __pyfora_summable__(self, f):
+        if self.count <= 0:
+            return None
+
+        def sum(val,count,increment,depth):
+            if count == 1:
+                return f(val)
+
+            if depth > 9:
+                res = f(val)
+                val = val + increment
+                count = count - 1
+                while count > 0:
+                    res = res + f(val)
+                    val = val + increment
+                    count = count - 1
+                return res
+            else:
+                lowCount = count / 2
+
+                return (
+                    sum(val, lowCount, increment, depth+1) + 
+                    sum(val + lowCount * increment, count-lowCount, increment, depth+1)
+                    )
+
+        sum(self.start, self.count, self.increment, 0)
 
 class XRange:
     def __call__(self, first, second=None, increment=None):
-        # this is some unfortunate code duplication
-        # Range() should really return list(xrange())
-        # but that isn't converting properly right now
-        # --Amichai
         start = 0
         stop = 0
-        if second == None:
+        if second is None:
             stop = first
         else:
             start = first
             stop = second
 
-        if increment == None:
+        if increment is None:
             increment = 1
-        
-        currentVal = start
 
-        while currentVal < stop:
-            yield currentVal
-            currentVal = currentVal + increment
+        if increment == 0:
+            raise ValueError("xrange() arg 3 must not be zero")
+
+        if increment > 0:
+            count = max(0, (stop - start - 1) / increment + 1)
+        else:
+            count = max(0, (start - stop - 1) / (-increment) + 1 )
+
+        return XRangeInstance(start, count, increment)
 
 class Sum:
     def __call__(self, sequence, start=0):
+        #see if we can get a 'summation' interface
+        summable = None
+        try:
+            #note that we don't use 'getattr', which is
+            #currently not going to fully compile because it requires us to
+            #convert symbols to strings
+            summable = sequence.__pyfora_summable__
+        except AttributeError:
+            pass
+
+        if summable is not None:
+            return summable(lambda x:x)
+
         res = start
         for elt in sequence:
             res = res + elt
@@ -99,6 +137,18 @@ class Chr:
     def __call__(self, asciiValue):
         return asciiValue.__pyfora_chr__()
 
+class Max:
+    def __call__(self, a,b):
+        if a<b:
+            return b
+        return a
+
+class Min:
+    def __call__(self, a,b):
+        if a<b:
+            return a
+        return b
+
 mappings_ = [
     (len, Len), 
     (str, Str), 
@@ -108,7 +158,9 @@ mappings_ = [
     (abs, Abs), 
     (all, All),
     (ord, Ord),
-    (chr, Chr)
+    (chr, Chr),
+    (max, Max), 
+    (min, Min)
     ]
 
 def generateMappings():

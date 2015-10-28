@@ -82,7 +82,7 @@ class ExecutorTestCases(
             pythonResult = func(*args)
             self.assertTrue(
                 comparisonFunction(pyforaResult, pythonResult), 
-                "Pyfora and python returned different results: %s != %s" % (pyforaResult, pythonResult)
+                "Pyfora and python returned different results: %s != %s for arguments %s" % (pyforaResult, pythonResult, args)
                 )
         return pythonResult
 
@@ -101,6 +101,13 @@ class ExecutorTestCases(
         self.equivalentEvaluationTest(f, -2)
         self.equivalentEvaluationTest(f, 0)
         self.equivalentEvaluationTest(f, 1)
+
+    def test_class_pass(self):
+        def f():
+            class X:
+                pass
+
+        self.equivalentEvaluationTest(f)
 
     def test_string_comparison(self):
         def f():
@@ -815,12 +822,32 @@ class ExecutorTestCases(
 
             self.assertIs(self.evaluateWithExecutor(f), None)
 
-    def test_iterator_expressions(self):
+    def test_negate_int(self):
         with self.create_executor() as executor:
-            def f():
-                return sum(xrange(10))
-
+            def f(): return -10
             self.equivalentEvaluationTest(f)
+
+    def test_sum_xrange(self):
+        with self.create_executor() as executor:
+            arg = 1000000000
+            def f():
+                return sum(xrange(arg))
+
+            self.assertEqual(self.evaluateWithExecutor(f), arg*(arg-1)/2)
+
+    def test_xrange(self):
+        with self.create_executor() as executor:
+            low = 0
+            for high in [None] + range(-7,7):
+                for step in [-3,-2,-1,None,1,2,3]:
+                    print low, high, step
+                    if high is None:
+                        self.equivalentEvaluationTest(range, low)
+                    elif step is None:
+                        self.equivalentEvaluationTest(range, low, high)
+                    else:
+                        self.equivalentEvaluationTest(range, low, high, step)
+
 
     def test_jsonConversionError(self):
         with self.create_executor(allowCached=False) as executor:

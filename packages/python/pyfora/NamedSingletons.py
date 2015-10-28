@@ -23,6 +23,7 @@ pythonSingletonToName = {
     Exception: 'Exception',
     UserWarning: 'UserWarning',
     TypeError: 'TypeError',
+    ValueError: 'ValueError',
     AttributeError: 'AttributeError',
     ZeroDivisionError: 'ZeroDivisionError',
     ValueError: 'ValueError'
@@ -34,6 +35,7 @@ singletonNameToObject = {
     'Exception': Exception,
     'UserWarning': UserWarning,
     'TypeError': TypeError,
+    'ValueError': ValueError,
     'AttributeError': AttributeError,
     'ZeroDivisionError': ZeroDivisionError,
     'ValueError': ValueError
@@ -44,6 +46,7 @@ pythonNameToPyforaName = {
     'object': 'Object',
     'Exception': 'Exception',
     'TypeError': 'TypeError',
+    'ValueError': 'ValueError',
     'UserWarning': 'UserWarning',
     'AttributeError': 'AttributeError',
     'ZeroDivisionError': 'ZeroDivisionError',

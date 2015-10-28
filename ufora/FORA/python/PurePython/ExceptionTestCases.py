@@ -69,7 +69,7 @@ class ExceptionTestCases(object):
         self.assertIs(res[1], object)
         self.assertIs(res[2], Exception)
 
-    def test_exceptions_attribute_error(self):
+    def test_exceptions_attribute_error_str(self):
         def f():
             "asdf".not_an_attribute
 
@@ -77,7 +77,29 @@ class ExceptionTestCases(object):
             e = fora.submit(f).result().toLocal().exception()
             self.assertTrue(isinstance(e, Exceptions.ComputationError))
             self.assertTrue(isinstance(e.exceptionValue, AttributeError))
-                              
+
+    def test_exceptions_attribute_error_class(self):
+        def f():
+            class X:
+                def f(self):
+                    pass
+
+            X().not_an_attribute
+
+        with self.create_executor() as fora:
+            e = fora.submit(f).result().toLocal().exception()
+            self.assertTrue(isinstance(e, Exceptions.ComputationError))
+            self.assertTrue(isinstance(e.exceptionValue, AttributeError))
+
+    def test_exceptions_attribute_error_translated_class_instance(self):
+        def f():
+            len.not_an_attribute
+
+        with self.create_executor() as fora:
+            e = fora.submit(f).result().toLocal().exception()
+            self.assertTrue(isinstance(e, Exceptions.ComputationError))
+            self.assertTrue(isinstance(e.exceptionValue, AttributeError))
+
     def test_exceptions_can_call_Exception(self):
         def f():
             return Exception("hi")
