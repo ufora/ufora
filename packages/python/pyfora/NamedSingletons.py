@@ -18,24 +18,26 @@ A manifest of python objects that have explicit FORA implementations in the pure
 """
 
 pythonSingletonToName = {
-	type: 'type',
-	object: 'object',
-	Exception: 'Exception',
-	UserWarning: 'UserWarning',
-	TypeError: 'TypeError',
-	AttributeError: 'AttributeError',
-	ZeroDivisionError: 'ZeroDivisionError'
-	}
+    type: 'type',
+    object: 'object',
+    Exception: 'Exception',
+    UserWarning: 'UserWarning',
+    TypeError: 'TypeError',
+    AttributeError: 'AttributeError',
+    ZeroDivisionError: 'ZeroDivisionError',
+    ValueError: 'ValueError'
+    }
 
 singletonNameToObject = {
-	'type': type,
-	'object': object,
-	'Exception': Exception,
-	'UserWarning': UserWarning,
-	'TypeError': TypeError,
-	'AttributeError': AttributeError,
-	'ZeroDivisionError': ZeroDivisionError
-	}
+    'type': type,
+    'object': object,
+    'Exception': Exception,
+    'UserWarning': UserWarning,
+    'TypeError': TypeError,
+    'AttributeError': AttributeError,
+    'ZeroDivisionError': ZeroDivisionError,
+    'ValueError': ValueError
+    }
 
 pythonNameToPyforaName = {
     'type': 'Type',
@@ -44,6 +46,7 @@ pythonNameToPyforaName = {
     'TypeError': 'TypeError',
     'UserWarning': 'UserWarning',
     'AttributeError': 'AttributeError',
-    'ZeroDivisionError': 'ZeroDivisionError'
+    'ZeroDivisionError': 'ZeroDivisionError',
+    'ValueError': 'ValueError'
     }
 

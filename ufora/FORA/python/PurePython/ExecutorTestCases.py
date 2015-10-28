@@ -226,6 +226,14 @@ class ExecutorTestCases(
             self.assertTrue(len(foraResults) > 500)
             self.assertEqual(pythonResults, foraResults)
 
+    def test_ord_chr_builtins(self):
+        def f():
+            chars = [chr(val) for val in range(40, 125)]
+            vals = [ord(val) for val in chars]
+            return (chars, vals)
+
+        r = self.equivalentEvaluationTest(f)
+
     def test_python_if_int(self):
         def f():
             if 1:
