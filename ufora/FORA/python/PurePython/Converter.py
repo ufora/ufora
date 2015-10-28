@@ -80,6 +80,11 @@ class Converter(object):
         else:
             self.pyObjectMixinBaseIVC = purePythonModuleImplVal.getObjectMember("PyObjectBase")
 
+        if purePythonModuleImplVal is None:
+            self.pyObjectGeneratorFactoryIVC = ForaNative.makeSymbol("ConvertYieldToIter")
+        else:
+            self.pyObjectGeneratorFactoryIVC = purePythonModuleImplVal.getObjectMember("CreateGeneratorFromYield")
+
     def extractWrappedForaConstant(self, value):
         """Convenience method for testing. If 'value' is an ImplVal, get @m out of it."""
         if isinstance(value, ForaValue.FORAValue):
@@ -621,6 +626,7 @@ class Converter(object):
                 self.nativeTupleConverter,
                 self.nativeDictConverter,
                 self.pyObjectMixinBaseIVC,
+                self.pyObjectGeneratorFactoryIVC,
                 list(assignedVariables)
                 )
 
@@ -833,7 +839,8 @@ class Converter(object):
                 self.nativeListConverter,
                 self.nativeTupleConverter,
                 self.nativeDictConverter,
-                self.pyObjectMixinBaseIVC
+                self.pyObjectMixinBaseIVC,
+                self.pyObjectGeneratorFactoryIVC
                 )
 
         elif isinstance(classOrFunctionDefinition, TypeDescription.ClassDefinition):
@@ -845,7 +852,8 @@ class Converter(object):
                 self.nativeListConverter,
                 self.nativeTupleConverter,
                 self.nativeDictConverter,
-                self.pyObjectMixinBaseIVC
+                self.pyObjectMixinBaseIVC,
+                self.pyObjectGeneratorFactoryIVC
                 )
 
         else:

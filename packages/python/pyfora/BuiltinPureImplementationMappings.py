@@ -15,6 +15,15 @@
 import pyfora.PureImplementationMapping as PureImplementationMapping
 import pyfora.PureImplementationMappings as PureImplementationMappings
 
+def getPyforaSummable(possiblySummable):
+    try:
+        #note that we don't use 'getattr', which is
+        #currently not going to fully compile because it requires us to
+        #convert symbols to strings
+        return possiblySummable.__pyfora_summable__
+    except AttributeError:
+        return None
+
 class Len:
 	def __call__(self, other):
 		return other.__len__()
@@ -23,9 +32,22 @@ class Str:
 	def __call__(self, other):
 		return other.__str__()
 
+class List:
+    def __call__(self, other):
+        summable = getPyforaSummable(other)
+
+        if summable is None:
+            return [x for x in other]
+        
+        res = summable(lambda x: [x])
+
+        if res is None:
+            return []
+        return res
+
 class Range:
     def __call__(self, first, second=None, increment=None):
-        return [x for x in xrange(first, second, increment)]
+        return list(xrange(first, second, increment))
 
 class XRangeInstance:
     def __init__(self, start, count, increment):
@@ -47,6 +69,8 @@ class XRangeInstance:
             return None
 
         def sum(val,count,increment,depth):
+            if count == 0:
+                return None
             if count == 1:
                 return f(val)
 
@@ -95,14 +119,7 @@ class XRange:
 class Sum:
     def __call__(self, sequence, start=0):
         #see if we can get a 'summation' interface
-        summable = None
-        try:
-            #note that we don't use 'getattr', which is
-            #currently not going to fully compile because it requires us to
-            #convert symbols to strings
-            summable = sequence.__pyfora_summable__
-        except AttributeError:
-            pass
+        summable = getPyforaSummable(sequence)
 
         if summable is not None:
             return summable(lambda x:x)
@@ -160,7 +177,8 @@ mappings_ = [
     (ord, Ord),
     (chr, Chr),
     (max, Max), 
-    (min, Min)
+    (min, Min),
+    (list, List)
     ]
 
 def generateMappings():

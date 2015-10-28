@@ -166,6 +166,8 @@ class PyforaComputedValue(ComputedValue.ComputedValue):
             codeLocations = [ForaNative.getCodeLocation(h) for h in hashes]
 
             def formatCodeLocation(c):
+                if c is None:
+                    return None
                 if not c.defPoint.isExternal():
                     return None
                 def posToJson(simpleParsePosition):

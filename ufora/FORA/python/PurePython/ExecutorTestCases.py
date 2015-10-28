@@ -875,6 +875,17 @@ class ExecutorTestCases(
                 self.assertIsInstance(e.message, MyException)
                 self.assertEqual(e.message.message, errorMsg)
 
+    def test_iterable_is_pyfora_object(self):
+        def it(x):
+            while x > 0:
+                yield x
+                x = x - 1
+
+        def f():
+            return it(10).__is_pyfora__
+        
+        self.assertIs(self.evaluateWithExecutor(f), True)
+
     def test_free_function_is_pyfora_object(self):
         def g():
             return 10
@@ -890,6 +901,21 @@ class ExecutorTestCases(
             return g.__is_pyfora__
         
         self.assertIs(self.evaluateWithExecutor(f), True)
+
+    def test_list_on_iterable(self):
+        def it(x):
+            while x > 0:
+                yield x
+                x = x - 1
+
+        def f1():
+            return list(xrange(10))
+        
+        def f2():
+            return list(it(10))
+
+        self.equivalentEvaluationTest(f1)
+        self.equivalentEvaluationTest(f2)
 
     def test_member_access(self):
         def g():
