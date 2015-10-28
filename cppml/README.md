@@ -1,5 +1,5 @@
 
-************** OVERVIEW ***********
+# CPPML
 
 CPPML is a simple overlay on top of C++ syntax that creates a concise
 syntax to mimic the typing and pattern matching found in ML based languages.
@@ -12,38 +12,26 @@ in CPPML,
 	@type List = Nil of () -| Node of int, List;
 
 In particular, this syntax makes it easy to create simple tuples or tagged union
-types. These classes protect their members, have correct copy constructors and
-operator= functions.
+types. These classes expose simple interfaces that can be manipulated by cppml
+"match" statements, and also expose template metadata that makes it possible
+to automatically generate constructs such as serializers, python wrappers,
+and arbitrary tree transformations.
 
 CPPML consists of a program "cppml" which takes C++ code that has already
 been passed through a preprocessor and expands CPPML language extensions back
 into regular C++ code ready to be fed back into a compiler.
 
-gccml.py is a simple wrapper for gcc. If the first argument is a file
-ending in .cppml or .hppml, it preprocesses the file, passes it through
-CPPML, and then passes it back to gcc. eventually gccml.py will become a full
-wrapper for gcc to support the language exension.
+## Running CPPML
 
-*********** RUNNING AND INSTALLATION ************
+CPPML is written in OCaml, so you need OCaml installed.
 
-CPPML is written in OCaml, so you need OCaml installed. gccml.py is a
-python script, so you'll need python.
-
-Run "make cppml" to build the cppml binary, which you need in your path for
-gccml.py to work.
-
-Run "gccml.py X.cppml <options> -o whatever.o" will compile X.cppml into an
-object file.
+Run "make cppml" to build the cppml binary.
 
 Run "make test" to build the test app out of test.cppml as a simple example,
 and "./test" to run it. Check out test.cppml to see some example code.
 
-Use "-atomic_ops" within gccml.py to cause cppml to use atomic increment
-and decrement operations, making tagged unions thread safe.
 
-
-
-************ LANGUAGE EXAMPLES *************
+## Language Examples
 
 The extension @type allows us to easily declare tuples and tagged union types.
 For instance, to declare a type T1 which is a tuple of int and int, we write
@@ -51,10 +39,7 @@ For instance, to declare a type T1 which is a tuple of int and int, we write
 	@type T1 = int, int;
 
 The tuple elements are accessible as getM1() and getM2() when they're not named.
-The tuple has a copy constructor and operator= defined, so its safe to copy
-around. We also define functions getM1, getM2, etc. to access the relevant members.
-
-We can name the members as well. In this example
+We can, however, give them names:
 
 	@type T1 = int a, int b;
 
@@ -68,27 +53,24 @@ Any type declared this way can be given a body to expose member functions
 
 	@type T1 = int a, int b {
 	public:
-			int sum(void) const { return a() + b(); };
+		int sum(void) const { return a() + b(); };
 	};
 
 Simple pattern matching can take apart a tuple and bind the tuple elements
 to variables in the subpattern. for instance, we can sum the elements of the
 tuple like this:
 
-	int sum = @match T1(t) -| x,y ->> x + y;
-
-in ocaml, we would have written
-
-	type T1 = int, int;;
-	match t with x,y -> x+y;;
+	@match T1(t) -| (x,y) ->> {
+		return x + y;
+		};
 
 here's what these pieces are:
 
 	-|				 indicates a term in a match. like | in ocaml matching
-	x,y   		 	 the pattern to match. decomposes the tuple and binds
+	(x,y)  		 	 the pattern to match. decomposes the tuple and binds
 						x and y to the members of the tuple
 	->> 			 indicates the pattern is over, time to have a result
-	x+y; 			 predicate. "x" is a reference to the first element
+	{ return x+y; }  predicate. "x" is a reference to the first element
 			        	of the tuple, "y" is a reference to the second element
 						result gets passed back
 
@@ -106,8 +88,7 @@ a pair of strings. in ocaml we would have written
 
 The resulting union is stored as a pointer to a block of memory containing
 the tag, a refcount, and the data of the tuple represented by the tag. GC is
-done using the refcount. currently its not threadsafe, but its pretty cheap to
-copy around.
+done using the refcount.
 
 Instances of the tagged union are created using a static member function. In
 this case, T2::Tag1 and T2::Tag2.
@@ -120,7 +101,7 @@ are equivalent to ocaml code
 	let aTag1Object = Tag1(1,2);
 	let aTag2Object = Tag2("hello", "world");
 
-We can query a tagged union rather than using the pattern matching:
+We can query a tagged union rather without using the pattern matching:
 
 	//we can find out which tag we have:
 	assert(aTag1Object.isTag1());
@@ -129,7 +110,7 @@ We can query a tagged union rather than using the pattern matching:
 we can also get the tag1 object out as a tuple and query it. The parser generates
 "getX" and "isX" functions for every possible tag. "getX" functions don't check
 what kind of object you have to reduce overhead, so be careful. Use @match
-to be sure...
+to be sure.
 
 	assert(aTag1Object.getTag1().getM1() == 1);
 
@@ -137,9 +118,11 @@ We support pattern matching on tagged unions like ocaml has using @match:
 
 	@match T2(aTag1Object)
 		-|	Tag1(a,b) ->> {
-			return  "was a tag1 with integers...";
+			return "was a tag1 with integers...";
 			}
-		-|	Tag2(a,b) ->> "was a tag2 with " + a + b;
+		-|	Tag2(a,b) ->> {
+			return "was a tag2 with " + a + b;
+			}
 
 In this case, we match the first line if "aTag1Object" is an object with tag Tag1
 or the second line otherwise. Patterns can be arbitrarily complicated trees.
@@ -147,21 +130,27 @@ If the set of matches doen't match the result the operation throws an exception.
 For instance, this would throw T2::MatchError:
 
 	@match T2(aTag1Object)
-		-|	Tag2(a,b) ->> "not going to match";
+		-|	Tag2(a,b) ->> {
+			return "not going to match";
+			}
 
 we can get around this by writing
 
 	@match T2(aTag1Object)
-		-|	Tag2(a,b) ->> "not going to match";
-		-|	_ ->> "matches anything and throws away the result";
+		-|	Tag2(a,b) ->> {
+			return "not going to match";
+			}
+		-|	_ ->> {
+			"matches anything and throws away the result";
+			}
 
-since "_" matches anything and doesn't bind the variable. We implicitly add
-as many _'s as necessary to fill out the match, so
+since "_" matches anything and doesn't bind the variable. 
+
+Note that matching doesn't insist that we consume all the match terms. So,
+even though all Tag2 objects have two members, the following will work:
 
 	@match T2(aTag1Object)
-		-| Tag2(a) ->> ...
-
-would work as well.
+		-| Tag2(a) ->> { ... }
 
 Of course the power of this sort of typing comes when you make the types
 refer to themselves. Here's the definition of a list of integers, defined in
@@ -173,20 +162,17 @@ and in CPPML as
 
 	@type List =
 		Nil of ()					// empty tag denoted by "()"
-	-|	Node of int, List as >>=;	// >>= is a right associative operator in C.
-									// the "as" syntax generates a function
-									// List operator >>=(int, List)
-									// which just calls the right constructor
+	-|	Node of int, List
+		;
+
 	//make a list
 	List nil = List::Nil();
 
 	//create a list with "10" in it. two ways to do it
-	List withOneThing = 10 >>= nil;
-	List withOneThingNotUsingAnOperator = List::Node(10, nil);
+	List withOneThing = List::Node(10, nil);
 
 	//operators are more conscise than constructors. these are equivalent:
-	List withSeveralThings = 1 >>= 2 >>= 3 >>= nil;
-	List withSeveralThings2 = List::Node(1, List::Node(2, List::Node(3, nil)));
+	List withSeveralThings = List::Node(1, List::Node(2, List::Node(3, nil)));
 
 We can sum a list using recursion and pattern matching. Unlike OCaml,
 c++ compilers will usually not turn the tail recursion into a loop.
@@ -197,17 +183,25 @@ c++ compilers will usually not turn the tail recursion into a loop.
 			-|	Nil()	->> {
 				return  0;
 				}
-			-|	Node(head,tail) ->> head + sumList(tail);
+			-|	Node(head,tail) ->> {
+				return head + sumList(tail);
+				}
 		}
 
 A non-recursive loop would look like this
 
 	int sumListLoop(List l)
 		{
-		int tr = 0;
-		while (! l.isNil() )
-			l = @match List(l) -| Node(head, tail) ->> (tr += head, tail);
-		return tr;
+		int result = 0;
+		while (true)
+			{
+			@match List(l) 
+				-| Nil() ->> { return result; }
+				-| Node(head, tail) ->>  { 
+					result += head;
+					l = tail;
+					}
+			}
 		}
 
 We can define several types that refer to each other at once
@@ -222,22 +216,22 @@ We can define several types that refer to each other at once
 And we also support templates
 
 	template <class T>
-	@type ListT = 		Nil of ()
-					-| 	Node of T head, ListT<T> tail as >>=
+	@type ListT = 		
+		-|	Nil of ()
+		-| 	Node of T head, ListT<T> tail
 	{
 	public:
-			T sum(void) const
-				{
-				@match self_type(*this)
-					-| Nil() ->> { return T(); }
-					-| Node(head,tail) ->> { return head + tail.sum(); }
-				}
+		T sum(void) const
+			{
+			@match self_type(*this)
+				-| Nil() ->> { return T(); }
+				-| Node(head,tail) ->> { return head + tail.sum(); }
+			}
 	};
 
-	(10 >>= List<int>::Nil()).sum();
-	("test" >>= List<string>::Nil()).sum();
+	List<int>::Node(10, List<int>::Nil());
 
-********** COMMON DATA **************************
+## COMMON DATA
 
 We allow clients to define "common" data members that exist for all alternatives of a tagged union.
 
@@ -273,7 +267,7 @@ without having to use a pattern match.  The value is available in the pattern ma
 
 is valid.  values placed in the "with' clause are full pattern matchers
 
-***************** MEMOIZATION ************************
+## MEMOIZATION
 
 We also support adding common memo-values to tagged union.  These values are computed
 once, on demand, the first time they are accessed.  As an example
@@ -282,30 +276,18 @@ once, on demand, the first time they are accessed.  As an example
 		-|	Option1 of float val
 		-|	Option2 of double val
 	with
-		double square = (@match Alt(*this) -| Option1(val) ->> (double)val*val -| Option2(val) ->> val*val);
-		;
+		double square = (this->computeSquare())
+	{
+	public:
+		double computeSquare()
+			{
+			@match Alt(*this) 
+				-| Option1(val) ->> { return val*val; }
+				-| Option2(val) ->> { return val*val; }
+			}
+	};
 
 "square", when accessed, is computed once and then cached. This is particularly useful for caching hashes of constant objects.
 
-If a memo-function is called recursively while it is being computed, it throws an exception.
+If a memo-function on a given instance calls back into itself (indicating that it would cycle forever), it throws an exception.
 
-************* METADATA ********************************
-
-cppml creates metadata classes for all tuples and tagged unions. These
-classes allow for template metaprogramming, letting you automate
-
-	1) creation of serializers
-	2) boost::python wrappers
-	3) pretty printers and other output
-
-more documentation on these classes will be forthcoming. for the moment,
-email me at braxton.mckee@gmail.com if you're interested and i'll send you some source code.
-
-************** KNOWN ISSUES **********************
-1) destructors operate using recursion, so you can run
-out of stack space if you have large lists.
-
-2) you cannot use @type within template specializations right now.
-
-3) CPPML doesn't know about structs right now, so you can't put
-@type declarations inside them.
