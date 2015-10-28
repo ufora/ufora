@@ -978,8 +978,8 @@ class Converter(object):
                     for memberName in objectClass.objectMembers:
                         if memberName is not None:
                             member = implval.getObjectLexicalMember(memberName)
-                            assert member is not None and member[1] is None
-                            members[str(memberName)[1:]] = self.transformPyforaImplval(member[0], transformer, vectorContentsExtractor)
+                            if member is not None and member[1] is None:
+                                members[str(memberName)[1:]] = self.transformPyforaImplval(member[0], transformer, vectorContentsExtractor)
 
                     return transformer.transformClassInstance(classObject, members)
                 else:
@@ -990,8 +990,8 @@ class Converter(object):
                         if memberAndBindingSequence[1][0]:
                             memberName = memberAndBindingSequence[0]
                             member = implval.getObjectLexicalMember(memberName)
-                            assert member is not None and member[1] is None
-                            members[str(memberName)] = self.transformPyforaImplval(member[0], transformer, vectorContentsExtractor)
+                            if member is not None and member[1] is None:
+                                members[str(memberName)] = self.transformPyforaImplval(member[0], transformer, vectorContentsExtractor)
 
                     return transformer.transformFunctionInstance(
                         defPoint.defPoint.asExternal.paths[0], 
@@ -1009,8 +1009,8 @@ class Converter(object):
                 if memberAndBindingSequence[1][0]:
                     memberName = memberAndBindingSequence[0]
                     member = implval.getObjectLexicalMember(memberName)
-                    assert member is not None and member[1] is None
-                    members[str(memberName)] = self.transformPyforaImplval(member[0], transformer, vectorContentsExtractor)
+                    if member is not None and member[1] is None:
+                        members[str(memberName)] = self.transformPyforaImplval(member[0], transformer, vectorContentsExtractor)
 
             return transformer.transformClassObject(
                     defPoint.defPoint.asExternal.paths[0], 

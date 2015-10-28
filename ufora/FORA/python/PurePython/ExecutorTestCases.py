@@ -875,6 +875,22 @@ class ExecutorTestCases(
                 self.assertIsInstance(e.message, MyException)
                 self.assertEqual(e.message.message, errorMsg)
 
+    def test_free_function_is_pyfora_object(self):
+        def g():
+            return 10
+        def f():
+            return g.__is_pyfora__
+        
+        self.assertIs(self.evaluateWithExecutor(f), True)
+
+    def test_local_function_is_pyfora_object(self):
+        def f():
+            def g():
+                pass
+            return g.__is_pyfora__
+        
+        self.assertIs(self.evaluateWithExecutor(f), True)
+
     def test_member_access(self):
         def g():
             return 10

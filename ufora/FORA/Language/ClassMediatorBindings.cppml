@@ -15,7 +15,9 @@
 ****************************************************************************/
 #include "ClassMediatorBindings.hppml"
 #include "LexicalBindingSelector.hppml"
+#include "ExtractMixinExpressions.hppml"
 #include "FunctionStage1Converter.hppml"
+#include "../Core/ImplValContainerUtilities.hppml"
 #include "../Core/Type.hppml"
 #include "../../core/Logging.hpp"
 
@@ -154,6 +156,31 @@ ImplValContainer bindFunctionWithValues(
 				const CSTValue& metadata
 				)
 	{
+	pair<ClassMediator, ImmutableTreeVector<Expression> > mixins =
+		Fora::Language::extractMixinExpressions(inPredicate);
+
+	ClassMediator newPredicate = mixins.first;
+
+	ImmutableTreeVector<ImplValContainer> mixinValues;
+	for (auto mixinExpr: mixins.second)
+		{
+		@match Expression(mixinExpr)
+			-| Constant(c) ->> {
+				mixinValues = mixinValues + c;
+				}
+			-| Variable(v) ->> {
+				lassert_dump(
+					freeVariableMap.contains(v),
+					"Needed a value for variable " + v.toString() + " which was mixed in."
+					);
+
+				mixinValues = mixinValues + *freeVariableMap[v];
+				}
+			-| _ ->> {
+				lassert_dump(false, "Can't instantiate object because it has non-simple mixins.");
+				}
+		}
+
 	symbol_map_type fakeSymbolMap;
 
 	for (long k = 0; k < freeVariableMap.size();k++)
@@ -169,7 +196,7 @@ ImplValContainer bindFunctionWithValues(
 			null()
 			);
 	
-	ClassMediator predicate = bindLexicalBindingsToPredicate(inPredicate, selector, metadata);
+	ClassMediator predicate = bindLexicalBindingsToPredicate(newPredicate, selector, metadata);
 	
 	//bind the free variable one after another, since this binding has no lexical closure
 	ImmutableTreeVector<ImplValContainer> constantsToBind;
@@ -194,6 +221,9 @@ ImplValContainer bindFunctionWithValues(
 
 	ImplValContainer tr(ImplVal(Type::Class(types, predicate, ClassMediatorResumption::Entry()), tupleIVC.data()));
 
+	for (auto value: mixinValues)
+		tr = ImplValContainerUtilities::bindMixin(tr, value);
+
 	return tr;
 	}
 
@@ -203,6 +233,31 @@ ImplValContainer bindFunctionWithValues(
 				const CSTValue& metadata
 				)
 	{
+	pair<ClassMediator, ImmutableTreeVector<Expression> > mixins =
+		Fora::Language::extractMixinExpressions(inPredicate);
+
+	ClassMediator newPredicate = mixins.first;
+
+	ImmutableTreeVector<ImplValContainer> mixinValues;
+	for (auto mixinExpr: mixins.second)
+		{
+		@match Expression(mixinExpr)
+			-| Constant(c) ->> {
+				mixinValues = mixinValues + c;
+				}
+			-| Variable(v) ->> {
+				lassert_dump(
+					freeVariableMap.contains(v) && !freeVariableMap[v]->second,
+					"Needed a concrete value for variable " + v.toString() + " which was mixed in."
+					);
+
+				mixinValues = mixinValues + freeVariableMap[v]->first;
+				}
+			-| _ ->> {
+				lassert_dump(false, "Can't instantiate object because it has non-simple mixins.");
+				}
+		}
+
 	std::vector<ImplValContainer> constantsToBind;
 	std::map<ImplValContainer, long> constantsToBindIndices;
 
@@ -228,7 +283,7 @@ ImplValContainer bindFunctionWithValues(
 			;
 		}
 
-	ClassMediator predicate = bindLexicalBindingsToPredicate(inPredicate, newBindings, metadata);
+	ClassMediator predicate = bindLexicalBindingsToPredicate(newPredicate, newBindings, metadata);
 	
 	ImmutableTreeVector<Type> types;
 	for (long k = 0; k < constantsToBind.size();k++)
@@ -237,6 +292,9 @@ ImplValContainer bindFunctionWithValues(
 	ImplValContainer tupleIVC = ImplValContainer(constantsToBind);
 
 	ImplValContainer tr(ImplVal(Type::Class(types, predicate, ClassMediatorResumption::Entry()), tupleIVC.data()));
+
+	for (auto value: mixinValues)
+		tr = ImplValContainerUtilities::bindMixin(tr, value);
 
 	return tr;
 	}
