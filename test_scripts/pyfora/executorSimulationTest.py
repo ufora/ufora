@@ -19,7 +19,7 @@ import ufora.config.Setup as Setup
 
 import ufora.test.ClusterSimulation as ClusterSimulation
 
-class TestRemoteExecutor(unittest.TestCase, ExecutorTestCases.ExecutorTestCases):
+class ExecutorSimulationTest(unittest.TestCase, ExecutorTestCases.ExecutorTestCases):
     @classmethod
     def setUpClass(cls):
         cls.config = Setup.config()
