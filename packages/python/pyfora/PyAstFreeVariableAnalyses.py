@@ -137,10 +137,12 @@ class GenericBoundValuesScopedVisitor(NodeVisitorBases.GenericScopedVisitor):
     @staticmethod
     def _computeScopeBoundValues(node, oldValueSets):
         return (oldValueSets[0].union(collectBoundValuesInScope(node)), set())
-
     def isBoundSoFar(self, name):
         return name in self._boundValues or name in self._boundInScopeSoFar
 
+    def visit_ClassDef(self, node):
+        self._boundValues.add(node.name)
+        NodeVisitorBases.GenericScopedVisitor.visit_ClassDef(self, node)
 
 class _FreeVarsVisitor(GenericBoundValuesScopedVisitor):
     """Collect the free variables in a block of code."""
@@ -159,6 +161,7 @@ class _FreeVarsVisitor(GenericBoundValuesScopedVisitor):
         elif not self.isBoundSoFar(identifier) and \
            isinstance(node.ctx, ast.Load):
             self._freeVars.add(identifier)
+
 
 def getFreeVariables(pyAstNode, isClassContext = None):
     pyAstNode = PyAstUtil.getRootInContext(pyAstNode, isClassContext)

@@ -761,6 +761,48 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
             res
             )
 
+    def test_class_context(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                class testClass:
+                    def __init__(self, x):
+                        self.x = x
+
+                    def f(self):
+                        return testClass("a")
+                """
+                )
+            )
+
+        self.assertEqual(
+            set([]),
+            PyAstFreeVariableAnalyses.getFreeVariables(tree.body[0])
+            )
+
+    def test_function_context(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def fib(x):
+                    if x < 2:
+                        return 1
+                    else:
+                        return fib(x-1) + fib(x-2)
+                """
+                )
+            )
+
+        self.assertEqual(
+            set([]),
+            PyAstFreeVariableAnalyses.getFreeVariables(tree.body[0], isClassContext = False)
+            )
+
+        self.assertEqual(
+            set(['fib']),
+            PyAstFreeVariableAnalyses.getFreeVariables(tree.body[0], isClassContext = True)
+            )
+
 if __name__ == "__main__":
     unittest.main()
 
