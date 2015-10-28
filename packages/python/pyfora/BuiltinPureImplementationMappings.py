@@ -67,7 +67,12 @@ class XRange:
             yield currentVal
             currentVal = currentVal + increment
 
-
+class Sum:
+    def __call__(self, sequence, start=0):
+        res = start
+        for elt in sequence:
+            res = res + elt
+        return res
 
 class Abs:
     def __call__(self, val):
@@ -94,7 +99,17 @@ class Chr:
     def __call__(self, asciiValue):
         return asciiValue.__pyfora_chr__()
 
-mappings_ = [(len, Len), (str, Str), (range, Range), (xrange, XRange), (abs, Abs), (all, All), (ord, Ord), (chr, Chr)]
+mappings_ = [
+    (len, Len), 
+    (str, Str), 
+    (range, Range), 
+    (xrange, XRange), 
+    (sum, Sum),
+    (abs, Abs), 
+    (all, All),
+    (ord, Ord),
+    (chr, Chr)
+    ]
 
 def generateMappings():
 	return [PureImplementationMapping.InstanceMapping(instance, pureType) for (instance, pureType) in mappings_]

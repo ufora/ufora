@@ -815,6 +815,13 @@ class ExecutorTestCases(
 
             self.assertIs(self.evaluateWithExecutor(f), None)
 
+    def test_iterator_expressions(self):
+        with self.create_executor() as executor:
+            def f():
+                return sum(xrange(10))
+
+            self.equivalentEvaluationTest(f)
+
     def test_jsonConversionError(self):
         with self.create_executor(allowCached=False) as executor:
             def f():
