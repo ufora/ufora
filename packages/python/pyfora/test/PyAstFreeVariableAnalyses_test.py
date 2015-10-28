@@ -20,6 +20,36 @@ import textwrap
 import unittest
 
 class PyAstFreeVariableAnalyses_test(unittest.TestCase):
+    def test_call_and_then_member(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def f():
+                    return g(1).__str__()
+                """
+                )
+            )
+
+        self.assertEqual(
+            set(['g']),
+            PyAstFreeVariableAnalyses.getFreeVariables(tree)
+            )
+
+    def test_call_and_then_member_chain(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def f():
+                    return g(1).__str__()
+                """
+                )
+            )
+
+        self.assertEqual(
+            set([('g',)]),
+            PyAstFreeVariableAnalyses.getFreeVariableMemberAccessChains(tree)
+            )
+
     def test_freeVariables_assignToSelf(self):
         tree = ast.parse(
             textwrap.dedent(

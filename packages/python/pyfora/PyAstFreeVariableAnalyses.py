@@ -181,6 +181,11 @@ class _FreeVariableMemberAccessChainsVisitor(GenericBoundValuesScopedVisitor):
         if chainOrNone is not None:
             if chainOrNone[0] not in self._boundValues:
                 self.freeVariableMemberAccessChains.add(chainOrNone)
+        else:
+            #required to recurse deeper into the AST, but only do it if
+            #_freeVariableMemberAccessChain was None, indicating that it
+            #doesn't want to consume the whole expression
+            self.generic_visit(node.value)
 
     def visit_Name(self, node):
         identifier = node.id

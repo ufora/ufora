@@ -875,3 +875,10 @@ class ExecutorTestCases(
                 self.assertIsInstance(e.message, MyException)
                 self.assertEqual(e.message.message, errorMsg)
 
+    def test_member_access(self):
+        def g():
+            return 10
+        def f():
+            return g().__str__()
+        
+        self.equivalentEvaluationTest(f)
