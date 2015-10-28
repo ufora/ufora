@@ -100,7 +100,6 @@ def createWorker_(machineId,
 
     vdm.setPersistentCacheIndex(
         CumulusNative.PersistentCacheIndex(
-            "test",
             viewFactory.createView(),
             callbackSchedulerToUse
             )

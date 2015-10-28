@@ -35,12 +35,10 @@ class RemoteGateway(CumulusGateway.CumulusGateway,
                  vdm,
                  channelFactory,
                  activeMachines,
-                 username,
                  viewFactory):
         CumulusGateway.CumulusGateway.__init__(self,
                                                callbackScheduler,
                                                vdm,
-                                               username,
                                                viewFactory)
 
         ModuleImporter.initialize()

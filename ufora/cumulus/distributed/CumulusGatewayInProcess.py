@@ -37,7 +37,6 @@ class InProcessGateway(CumulusGateway.CumulusGateway):
         CumulusGateway.CumulusGateway.__init__(self,
                                                callbackScheduler,
                                                vdm,
-                                               "test",
                                                simulation.sharedStateViewFactory)
 
         self.s3Service = s3Service

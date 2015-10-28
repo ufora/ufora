@@ -43,17 +43,13 @@ class ConnectionHandler:
         logging.info("Initiating ConnectionHandler: %s", jsonRequest)
         t0 = time.time()
 
-        user = jsonRequest['user']
-
         def createCumulusComputedValueGateway():
             def createCumulusGateway(callbackScheduler, vdm):
                 result = CumulusGatewayRemote.RemoteGateway(
                     callbackScheduler,
                     vdm,
                     self.channelFactoryFactory(),
-                    CumulusActiveMachines.CumulusActiveMachines(user['id'],
-                                                                self.sharedStateViewFactory),
-                    user['id'],
+                    CumulusActiveMachines.CumulusActiveMachines(self.sharedStateViewFactory),
                     self.sharedStateViewFactory
                     )
                 logging.info("Returing %s as createCumulusGateway", result)
@@ -68,8 +64,7 @@ class ConnectionHandler:
         messageProcessor = MessageProcessor.MessageProcessor(
             self.callbackScheduler,
             self.sharedStateViewFactory,
-            createCumulusComputedValueGateway,
-            user
+            createCumulusComputedValueGateway
             )
 
         logging.info("Initialized MessageProcessor in %s seconds", time.time() - t0)
@@ -80,7 +75,6 @@ class ConnectionHandler:
                 logging.info("New Connection. Total active connections = %s", self.activeCount)
 
             with messageProcessor:
-                userId = user['id']
                 while True:
                     message = channel.getTimeout(GRAPH_UPDATE_TIME)
                     responses = messageProcessor.handleIncomingMessage(message)

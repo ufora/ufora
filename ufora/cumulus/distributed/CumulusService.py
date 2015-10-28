@@ -44,7 +44,6 @@ HANDSHAKE_TIMEOUT = 20.0
 
 class CumulusService(Stoppable.Stoppable):
     def __init__(self,
-                 clusterName,
                  ownAddress,
                  channelListener,
                  channelFactory,
@@ -103,7 +102,6 @@ class CumulusService(Stoppable.Stoppable):
         ModuleImporter.initialize()
 
         self.cumulusActiveMachines = CumulusActiveMachines.CumulusActiveMachines(
-            clusterName,
             self.viewFactory
             )
 
@@ -112,10 +110,10 @@ class CumulusService(Stoppable.Stoppable):
             )
 
         self.vdm = VectorDataManager.constructVDM(
-                                callbackScheduler,
-                                self.cumulusVectorRamCacheSizeOverride,
-                                self.cumulusMaxRamCacheSizeOverride
-                                )
+            callbackScheduler,
+            self.cumulusVectorRamCacheSizeOverride,
+            self.cumulusMaxRamCacheSizeOverride
+            )
 
         if self.cumulusTrackTcMalloc:
             logging.info(
@@ -125,7 +123,6 @@ class CumulusService(Stoppable.Stoppable):
             self.vdm.getMemoryManager().enableCountTcMallocMemoryAsEcMemory()
 
         self.persistentCacheIndex = CumulusNative.PersistentCacheIndex(
-            clusterName,
             viewFactory.createView(retrySeconds=10.0, numRetries=10),
             callbackScheduler
             )

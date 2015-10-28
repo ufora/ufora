@@ -297,10 +297,8 @@ class InMemoryCluster(object):
                 ),
             self.channelManager.createChannelFactory(),
             CumulusActiveMachines.CumulusActiveMachines(
-                self.client.getClusterName(),
                 self.sharedStateViewFactory
                 ),
-            self.client.getClusterName(),
             self.sharedStateViewFactory
             )
 
@@ -337,7 +335,6 @@ class InMemoryCluster(object):
             [Setup.config().cumulusControlPort, Setup.config().cumulusDataPort],
             ownAddress)
         service = CumulusService.CumulusService(
-            clusterName='test',
             ownAddress=ownAddress,
             channelListener=channelListener,
             channelFactory=self.channelManager.createChannelFactory(),

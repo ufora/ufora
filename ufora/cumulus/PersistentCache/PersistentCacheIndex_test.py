@@ -66,7 +66,6 @@ class TestPersistentCacheIndex(unittest.TestCase):
     @ComputedGraphTestHarness.UnderHarness
     def test_persistentCacheUnderLoad(self):
         cppView1 = CumulusNative.PersistentCacheIndex(
-            "username",
             self.sharedState.newView(),
             callbackScheduler
             )
@@ -85,7 +84,6 @@ class TestPersistentCacheIndex(unittest.TestCase):
         bytes0 = TCMallocNative.getBytesUsed()
 
         cppView2 = CumulusNative.PersistentCacheIndex(
-            "username",
             self.sharedState.newView(),
             callbackScheduler
             )
@@ -106,7 +104,6 @@ class TestPersistentCacheIndex(unittest.TestCase):
 
     def circularPageReferenceTest(self, shouldBeInvalid):
         cppView1 = CumulusNative.PersistentCacheIndex(
-            "username",
             self.sharedState.newView(),
             callbackScheduler
             )
@@ -130,7 +127,6 @@ class TestPersistentCacheIndex(unittest.TestCase):
     @ComputedGraphTestHarness.UnderHarness
     def test_orphanedPageIsCollected(self):
         cppView1 = CumulusNative.PersistentCacheIndex(
-            "username",
             self.sharedState.newView(),
             callbackScheduler
             )
@@ -143,13 +139,11 @@ class TestPersistentCacheIndex(unittest.TestCase):
     @ComputedGraphTestHarness.UnderHarness
     def test_basicPersistentCache(self):
         cppView1 = CumulusNative.PersistentCacheIndex(
-            "username",
             self.sharedState.newView(),
             callbackScheduler
             )
 
         cppView2 = CumulusNative.PersistentCacheIndex(
-            "username",
             self.sharedState.newView(),
             callbackScheduler
             )
@@ -188,7 +182,6 @@ class TestPersistentCacheIndex(unittest.TestCase):
         currentView = [self.sharedState.newView()]
 
         cppView1 = CumulusNative.PersistentCacheIndex(
-            "username",
             currentView[0],
             callbackScheduler
             )
@@ -219,7 +212,6 @@ class TestPersistentCacheIndex(unittest.TestCase):
         self.assertTrue(cppView1.timesViewReconnected() > 10)
 
         cppView2 = CumulusNative.PersistentCacheIndex(
-            "username",
             self.sharedState.newView(),
             callbackScheduler
             )

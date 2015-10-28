@@ -137,7 +137,7 @@ class WorkerProcesses(object):
 class Simulator(object):
     _globalSimulator = None
     _originalFakeAwsDir = None
-    def __init__(self, user, password, clusterType="public"):
+    def __init__(self):
         callbackSchedulerFactory = CallbackScheduler.createSimpleCallbackSchedulerFactory()
         self.callbackScheduler = callbackSchedulerFactory.createScheduler("Simulator", 1)
 
@@ -157,21 +157,12 @@ class Simulator(object):
         self.restApiPort = Setup.config().restApiPort
         self.subscribableWebObjectsPort = Setup.config().subscribableWebObjectsPort
 
-        self.user = user
-        self.password = password
-
-        # Specifies a namespace for cluster functionality available in the relay. Should be either
-        # "public" or "dedicated".
-        self.clusterType = clusterType
 
         self.desirePublisher = None
         self._connectionManager = None
 
 
-    def dumpRelayLogs(self, user=None):
-        if user is None:
-            user = self.user
-
+    def dumpRelayLogs(self):
         try:
             logging.info("Reading from relay log at %s", self.relayLogFile)
             with open(self.relayLogFile, "r") as f:
@@ -199,10 +190,7 @@ class Simulator(object):
         return Simulator._globalSimulator
 
     @staticmethod
-    def createGlobalSimulator(useUniqueFakeAwsDir=True,
-                              user='test',
-                              password='asdfasdf',
-                              clusterType="public"):
+    def createGlobalSimulator(useUniqueFakeAwsDir=True):
         # Mark our process as the process leader
         os.setpgid(0, 0)
 
@@ -219,9 +207,7 @@ class Simulator(object):
             os.symlink(newDirName, latestLinkPath)
 
         assert Simulator._globalSimulator is None
-        Simulator._globalSimulator = Simulator(user=user,
-                                               password=password,
-                                               clusterType=clusterType)
+        Simulator._globalSimulator = Simulator()
         return Simulator._globalSimulator
 
     def createCumulusGateway(self, callbackScheduler, vdm=None):
@@ -235,8 +221,7 @@ class Simulator(object):
             self.callbackScheduler,
             vdm,
             TcpChannelFactory.TcpStringChannelFactory(self.callbackScheduler),
-            CumulusActiveMachines.CumulusActiveMachines(self.user, viewFactory),
-            self.user,
+            CumulusActiveMachines.CumulusActiveMachines(viewFactory),
             viewFactory
             )
 

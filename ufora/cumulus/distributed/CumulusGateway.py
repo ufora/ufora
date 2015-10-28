@@ -33,7 +33,7 @@ class CumulusGateway(Stoppable.Stoppable):
     Clients should reassign "onCPUCountIncrement" and "onCPUCountDecrement"
         to get notified of cpu assignment changes.
     """
-    def __init__(self, callbackScheduler, vdm, username, viewFactory):
+    def __init__(self, callbackScheduler, vdm, viewFactory):
         Stoppable.Stoppable.__init__(self)
 
         self.lock_ = threading.Lock()
@@ -45,7 +45,6 @@ class CumulusGateway(Stoppable.Stoppable):
         self.onJsonViewOfSystemChanged = None
 
         self.persistentCacheIndex = CumulusNative.PersistentCacheIndex(
-            username,
             viewFactory.createView(retrySeconds=10.0, numRetries=10),
             callbackScheduler
             )

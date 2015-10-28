@@ -49,8 +49,7 @@ def create_executor():
         return MessageProcessor.MessageProcessor(
             harness.callbackScheduler,
             harness.viewFactory,
-            createCumulusComputedValueGateway,
-            {'id':'test','machine_ttl':3600}
+            createCumulusComputedValueGateway
             )
 
     socketIoToJsonInterface = InMemorySocketIoJsonInterface.InMemorySocketIoJsonInterface(createMessageProcessor)

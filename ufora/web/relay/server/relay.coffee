@@ -19,7 +19,6 @@ async = require 'async'
 logger = null
 messageReader = require './MessageReader'
 queue = require './queue'
-sts = require './sts'
 
 
 class Relay
@@ -127,8 +126,6 @@ class Relay
       initialMessage =
         content: JSON.stringify
           requestType: 'SubscribableWebObjects'
-          user: @userReference()
-          sharedStateToken: @issueSharedStateToken()
 
       @logger.debug "sending initial message: ", initialMessage
       channel.upstreamMessages.push initialMessage, (err) =>
@@ -154,12 +151,6 @@ class Relay
         @logger.error "Error enqueuing message:", message, "Error:", err
         socket.disconnect()
 
-  issueSharedStateToken: () =>
-    sts.issueToken
-      prn: '(default)'
-      aud: 'urn:ufora:services:sharedstate'
-      ttl: 300
-      is_admin: true
 
   make_channel: ({group, id, host, port, encoding}) =>
     channel =
@@ -219,8 +210,6 @@ class Relay
           () => @start(callback),
           2000)
 
-  userReference: () ->
-    id: 'test'
 
 
 module.exports = (app, httpServer, callback) ->

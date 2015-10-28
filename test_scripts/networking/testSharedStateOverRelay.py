@@ -33,7 +33,7 @@ callbackScheduler = CallbackScheduler.singletonForTesting()
 class SharedStateRelayTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.simulator = ClusterSimulation.Simulator.createGlobalSimulator(user='test_admin')
+        cls.simulator = ClusterSimulation.Simulator.createGlobalSimulator()
         cls.simulator.startService()
         cls.simulator.verifySharedStateRunning()
 
@@ -99,5 +99,7 @@ class SharedStateRelayTests(unittest.TestCase):
 if __name__ == '__main__':
     import ufora.config.Mainline as Mainline
     import ufora.config.LoginConfiguration as LoginConfiguration
-    Mainline.UnitTestMainline(loginConfiguration=LoginConfiguration.LoginConfiguration("test_admin", "asdfasdf", True, {}))
+    Mainline.UnitTestMainline(
+        loginConfiguration=LoginConfiguration.LoginConfiguration("test_admin", "asdfasdf", True, {})
+        )
 

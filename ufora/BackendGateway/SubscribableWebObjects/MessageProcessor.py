@@ -215,15 +215,12 @@ class MessageProcessor(object):
     def __init__(self,
                  callbackScheduler,
                  sharedStateViewFactory,
-                 computedValueGatewayFactory,
-                 user):
+                 computedValueGatewayFactory):
         self.lock = threading.Lock()
         self.cacheLoadEvents = {}
 
         self.resultsById_ = {}
         self.eventsById_ = {}
-
-        username = user['id']
 
         logging.info("created a component host")
 

@@ -53,12 +53,6 @@ def createArgumentParser():
                         help=("The address and port of the Ufora store service. "
                               "Default: %(default)s"))
 
-    parser.add_argument('-c',
-                        '--cluster-name',
-                        default=os.getenv("UFORA_WORKER_CLUSTER_NAME", "(default)"),
-                        help=("The name of the cluster this worker belongs to. "
-                              "Default: %(default)s"))
-
     return parser
 
 
@@ -84,8 +78,6 @@ def createService(args):
         int(store_port)
         )
 
-    cluster_name = args.cluster_name
-
     channelFactory = TcpChannelFactory.TcpStringChannelFactory(callbackScheduler)
 
     diagnostics_dir = os.getenv("UFORA_WORKER_DIAGNOSTICS_DIR")
@@ -95,7 +87,6 @@ def createService(args):
         )
 
     return CumulusService.CumulusService(
-        cluster_name,
         args.own_address,
         channelListener,
         channelFactory,

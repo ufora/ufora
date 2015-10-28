@@ -58,8 +58,8 @@ class TestAllBinaryOperators(unittest.TestCase):
                             vdm
                             )
 
-                        #pull out the inmemory s3 interface so that we can surface it and attach it to the connection
-                        #object.
+                        # pull out the inmemory s3 interface so that we can surface
+                        # it and attach it to the connection object.
 
                         s3.append(result.s3Service)
                         return result
@@ -73,11 +73,12 @@ class TestAllBinaryOperators(unittest.TestCase):
             return MessageProcessor.MessageProcessor(
                 harness.callbackScheduler,
                 harness.viewFactory,
-                createCumulusComputedValueGateway,
-                {'id':'test','machine_ttl':3600}
+                createCumulusComputedValueGateway
                 )
 
-        socketIoToJsonInterface = InMemorySocketIoJsonInterface.InMemorySocketIoJsonInterface(createMessageProcessor)
+        socketIoToJsonInterface = InMemorySocketIoJsonInterface.InMemorySocketIoJsonInterface(
+            createMessageProcessor
+            )
         connection = Connection.connectGivenSocketIo(socketIoToJsonInterface)
         connection.__dict__['s3Interface'] = s3[0]
         return connection

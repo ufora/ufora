@@ -47,7 +47,7 @@ class CumulusActiveMachines(Stoppable.Stoppable):
     Adding listeners starts the CumulusActiveMachines background loop. Removing the last
     listener stops it.
     """
-    def __init__(self, clusterName, viewFactory):
+    def __init__(self, viewFactory):
         Stoppable.Stoppable.__init__(self)
         self.viewFactory = viewFactory
         self.activeMachineIds = set()
@@ -78,7 +78,7 @@ class CumulusActiveMachines(Stoppable.Stoppable):
 
         self.workerStatusKeyspace = SharedState.Keyspace(
             "ComparisonKeyType",
-            NativeJson.Json((('P', 'users'), ('P', clusterName), ('P', 'CumulusNodeStatus'))),
+            NativeJson.Json((('P', 'CumulusNodeStatus'),)),
             1
             )
 

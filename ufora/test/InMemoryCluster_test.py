@@ -52,7 +52,6 @@ class TestInMemoryCluster(unittest.TestCase):
             listener = WorkerCounterListener()
 
             cumulusActiveMachines = CumulusActiveMachines.CumulusActiveMachines(
-                cluster.client.getClusterName(),
                 cluster.sharedStateViewFactory
                 )
             cumulusActiveMachines.addListener(listener)
@@ -71,7 +70,6 @@ class TestInMemoryCluster(unittest.TestCase):
             listener = WorkerCounterListener()
 
             cumulusActiveMachines = CumulusActiveMachines.CumulusActiveMachines(
-                cluster.client.getClusterName(),
                 cluster.sharedStateViewFactory
                 )
             cumulusActiveMachines.addListener(listener)
@@ -90,7 +88,6 @@ class TestInMemoryCluster(unittest.TestCase):
             listener = WorkerCounterListener()
 
             cumulusActiveMachines = CumulusActiveMachines.CumulusActiveMachines(
-                cluster.client.getClusterName(),
                 cluster.sharedStateViewFactory
                 )
             cumulusActiveMachines.addListener(listener)
@@ -111,7 +108,6 @@ class TestInMemoryCluster(unittest.TestCase):
             listener = WorkerCounterListener()
 
             cumulusActiveMachines = CumulusActiveMachines.CumulusActiveMachines(
-                cluster.client.getClusterName(),
                 cluster.sharedStateViewFactory
                 )
             cumulusActiveMachines.addListener(listener)
@@ -153,7 +149,6 @@ class TestInMemoryCluster(unittest.TestCase):
             listener = WorkerCounterListener()
 
             cumulusActiveMachines = CumulusActiveMachines.CumulusActiveMachines(
-                cluster.client.getClusterName(),
                 cluster.sharedStateViewFactory
                 )
             cumulusActiveMachines.addListener(listener)
