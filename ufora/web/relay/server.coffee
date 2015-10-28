@@ -31,42 +31,14 @@ require('./server/arguments').parse(app)
 
 process.stdout.write("server.coffee parsed arguments\n")
 
-app.set 'loglevel', 'debug'
-
 logger.info "server.coffee configured for:", process.env.NODE_ENV
 
-if process.env.NODE_ENV is 'test'
-    app.use express.errorHandler()
-logger.initialize app.get('loglevel')
+logger.initialize 'debug'
 logger.info "relay logging initialized"
 
 process.stdout.write("server.coffee initialized logging\n")
 
-
 app.set 'logger', logger
-
-app.set 'views', __dirname + '/server/views'
-app.set 'view engine', 'jade'
-
-app.use express.favicon(__dirname + '/public/images/favicon.ico')
-app.use express.logger('dev')
-app.use express.bodyParser()
-app.use express.methodOverride()
-
-app.use express.compress
-    filter: (req, res) ->
-        if /.*gz$/.test(req.url)
-            return false
-        return true
-
-app.use express.static(path.join(__dirname, 'public'))
-app.use require('connect-flash')()
-app.use logger.requestLogger
-
-app.use app.router
-app.use logger.requestErrorLogger # this middleware must come after app.router
-
-require('./server/routes') app
 
 httpPort = app.get 'port'
 
