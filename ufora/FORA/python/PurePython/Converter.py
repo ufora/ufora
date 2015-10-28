@@ -380,9 +380,16 @@ class Converter(object):
             ):
         naiveConvertedFunctions = dict()
         for objectId in stronglyConnectedComponent:
+            objectDefinition = objectIdToObjectDefinition[objectId]
+
+            assert isinstance(
+                objectDefinition, 
+                (TypeDescription.FunctionDefinition, 
+                 TypeDescription.ClassDefinition)), type(objectDefinition)
+
             naiveConvertedFunctions[objectId] = \
                 self.convertPyClassOrFunctionDefinitionToForaFunctionExpression(
-                    objectIdToObjectDefinition[objectId],
+                    objectDefinition,
                     objectIdToObjectDefinition
                     )
 

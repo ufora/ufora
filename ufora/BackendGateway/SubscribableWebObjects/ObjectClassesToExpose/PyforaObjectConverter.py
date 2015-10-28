@@ -66,6 +66,10 @@ class PyforaObjectConverter(ComputedGraph.Location):
                 }
 
 
+            nativeConstantConverter = ForaNative.PythonConstantConverter(
+                primitiveTypeMapping
+                )
+
             wrappingNativeListConverter = ForaNative.makeWrappingPythonListConverter(
                 purePythonModuleImplval.getObjectMember("PyList")
                 )
@@ -82,9 +86,7 @@ class PyforaObjectConverter(ComputedGraph.Location):
                 nativeListConverter=wrappingNativeListConverter,
                 nativeTupleConverter=wrappingNativeTupleConverter,
                 nativeDictConverter=wrappingNativeDictConverter,
-                nativeConstantConverter=ForaNative.WrappingPythonConstantConverter(
-                    primitiveTypeMapping
-                    ),
+                nativeConstantConverter=nativeConstantConverter,
                 singletonAndExceptionConverter=singletonAndExceptionConverter,
                 vdmOverride=ComputedValueGateway.getGateway().vdm,
                 purePythonModuleImplVal=purePythonModuleImplval

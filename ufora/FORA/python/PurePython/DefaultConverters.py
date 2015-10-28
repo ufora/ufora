@@ -17,7 +17,6 @@ import os
 import ufora.FORA.python.ModuleImporter as ModuleImporter
 
 import pyfora
-import pyfora.ObjectVisitors as ObjectVisitors
 
 import ufora.native.FORA as ForaNative
 

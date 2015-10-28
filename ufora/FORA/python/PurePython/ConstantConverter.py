@@ -19,9 +19,6 @@ import ufora.native.FORA as ForaNative
 
 class ConstantConverter(object):
     def __init__(self, nativeConstantConverter=None):
-        if nativeConstantConverter is None:
-            nativeConstantConverter = ForaNative.DirectPythonConstantConverter()
-
         self.conversionDict = \
             ConstantConverter.createConversionDict(nativeConstantConverter)
 

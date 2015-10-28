@@ -15,7 +15,6 @@
 import pyfora.PureImplementationMappings as PureImplementationMappings
 import pyfora.BuiltinPureImplementationMappings as BuiltinPureImplementationMappings
 import pyfora.typeConverters.Numpy as Numpy
-import numpy as numpy
 
 defaultMapping_ = PureImplementationMappings.PureImplementationMappings()
 

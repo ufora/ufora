@@ -14,10 +14,13 @@
 
 import pyfora
 import pyfora.PyAstUtil as PyAstUtil
-import numpy
-import time
 import ufora.FORA.python.PurePython.EquivalentEvaluationTestCases as EquivalentEvaluationTestCases
 import ufora.FORA.python.PurePython.ExceptionTestCases as ExceptionTestCases
+
+
+import time
+import numpy
+
 
 class ExecutorTestCases(
             EquivalentEvaluationTestCases.EquivalentEvaluationTestCases,
@@ -451,13 +454,28 @@ class ExecutorTestCases(
         res = self.evaluateWithExecutor(f, ct)
         self.assertEqual(res, ct * (ct-1)/2)
 
-    def test_list_getitem(self):
+    def test_list_getitem_1(self):
         def f():
             l = [1,2,3]
 
             return l[0]
 
         self.equivalentEvaluationTest(f)
+
+    def test_list_getitem_2(self):
+        v = [1,2,3]
+        def f(ix):
+            return v[ix]
+
+        for ix in range(-3,3):
+            self.equivalentEvaluationTest(f,ix)
+
+    def test_list_getitem_3(self):
+        def nestedLists():
+            x = [[0,1,2], [3,4,5], [7,8,9]]
+            return x[0][0]
+
+        self.equivalentEvaluationTest(nestedLists)
 
     def test_list_len(self):
         def f():
@@ -467,12 +485,37 @@ class ExecutorTestCases(
 
         self.equivalentEvaluationTest(f)
 
+    def test_lists_3(self):
+        def f(elt):
+            x = [1,2,3]
+            return x.index(elt)
+
+        for ix in range(1, 4):
+            self.equivalentEvaluationTest(f, ix)
+
+    def test_lists_6(self):
+        v = [1,2,3]
+        def f(val):
+            return v.index(val)
+
+        for ix in range(1, 4):
+            self.equivalentEvaluationTest(f, ix)
+
     def test_tuple_conversion(self):
         def f(x):
             return (x,x+1)
 
         self.equivalentEvaluationTest(f, 10)
 
+    def test_tuples_1(self):
+        tup = (1, 2, 3)
+
+        def f(ix):
+            return tup[ix]
+        
+        for ix in range(-3, 3):
+            self.equivalentEvaluationTest(f, ix)
+            
     def test_len(self):
         def f(x):
             return len(x)
@@ -1167,3 +1210,975 @@ class ExecutorTestCases(
 
         self.equivalentEvaluationTest(lambda: sum(isPrime(x) for x in xrange(1000000)))
 
+    def test_inStatement_1(self):
+        def f():
+            x = [0,1,2,3]
+            return 0 in x
+
+        self.equivalentEvaluationTest(f)
+
+    def test_iteration_1(self):
+        def iteration_1():
+            x = [0,1,2,3]
+            tr = 0
+            for val in x:
+                tr = tr + val
+            return tr
+
+        self.equivalentEvaluationTest(iteration_1)
+
+    def test_nestedComprehensions_1(self):
+        def nestedComprehensions():
+            x = [[1,2], [3,4], [5,6]]
+            res = [[row[ix] for row in x] for ix in [0,1]]
+
+            return res[0][0]
+
+        self.equivalentEvaluationTest(nestedComprehensions)
+
+    def test_listComprehensions_1(self):
+        def listComprehensions_1():
+            aList = [0,1,2,3]
+            aList = [elt * 2 for elt in aList]
+            return aList[-1]
+
+        self.equivalentEvaluationTest(listComprehensions_1)
+
+    def test_listComprehensions_3(self):
+        def listComprehensions_3():
+            aList = [(x, y) for x in [1,2,3] for y in [3,1,4]]
+            return aList[1][0]
+
+        self.equivalentEvaluationTest(listComprehensions_3)
+
+    def test_basicLists_1(self):
+        def basicLists(x):
+            aList = [x] + [x]
+            return aList[0] + aList[1]
+
+        self.equivalentEvaluationTest(basicLists, 1)
+
+    def test_pyTuples_1(self):
+        def f(ix):
+            t = (1,2,3)
+            return t[ix]
+
+        for ix in range(-3,3):
+            self.equivalentEvaluationTest(f, ix)
+
+    def test_pyTuples_3(self):
+        def f(elt):
+            t = (1,2,3)
+            return t.index(elt)
+
+        for ix in range(1, 4):
+            self.equivalentEvaluationTest(f, ix)
+
+    def test_ints(self):
+        def f():
+            x = 100
+            return x
+
+        self.equivalentEvaluationTest(f)
+
+    def test_ints_1(self):
+        def f():
+            return 42
+
+        self.equivalentEvaluationTest(f)
+
+    def test_ints_2(self):
+        def f():
+            return 2 == 2
+
+        self.equivalentEvaluationTest(f)
+
+    def test_floats_1(self):
+        def f():
+            return 42.0
+
+        self.equivalentEvaluationTest(f)
+
+    def test_bools_1(self):
+        def f():
+            return True
+
+        self.equivalentEvaluationTest(f)
+
+    def test_strings_1(self):
+        def f():
+            x = "asdf"
+            return x
+
+        self.equivalentEvaluationTest(f)
+
+    def test_len_1(self):
+        class ThingWithLen:
+            def __init__(self, len):
+                self.len = len
+            def __len__(self):
+                return self.len
+
+        def f(x):
+            return len(ThingWithLen(x))
+
+        self.equivalentEvaluationTest(f, 2)
+
+    def test_len_2(self):
+        def f():
+            return len([1,2,3])
+
+        self.equivalentEvaluationTest(f)
+
+    def test_len_3(self):
+        def f():
+            return len("asdf")
+
+        self.equivalentEvaluationTest(f)
+
+    def test_str_1(self):
+        class ThingWithStr:
+            def __init__(self, str):
+                self.str = str
+            def __str__(self):
+                return self.str
+
+        def f(x):
+            return str(ThingWithStr(x))
+
+        self.equivalentEvaluationTest(f, "2")
+
+    def test_str_2(self):
+        def f(x):
+            return str(x)
+            
+        self.equivalentEvaluationTest(f, 42)
+        self.equivalentEvaluationTest(f, "foo")
+        self.equivalentEvaluationTest(f, None)
+
+    def test_functions_1(self):
+        def f(x):
+            return x + 1
+
+        for ix in range(3):
+            self.equivalentEvaluationTest(f, ix)
+
+    def test_functions_2(self):
+        y = 3
+        def f(x):
+            return x + y
+
+        for ix in range(3):
+            self.equivalentEvaluationTest(f, ix)
+
+    def test_functions_4(self):
+        def f(x):
+            if x < 0:
+                return x
+            return x + g(x - 1)
+        def g(x):
+            if x < 0:
+                return x
+            return x * f(x - 1)
+
+        for ix in range(10):
+            self.equivalentEvaluationTest(f, ix)
+
+    def test_functions_mutual_recursion_across_modules(self):
+        import ufora.FORA.python.PurePython.testModules.MutualRecursionAcrossModules.A as A
+
+
+        for ix in range(4):
+            self.equivalentEvaluationTest(A.f, ix)
+
+    def test_functions_5(self):
+        def f(x):
+            def g():
+                return 1 + x
+            return g()
+
+        for ix in range(-3,0):
+            self.equivalentEvaluationTest(f, ix)
+
+    def test_functions_7(self):
+        w = 3
+        def h(x):
+            return w + 2 * x
+        def f(x):
+            if x < 0:
+                return x
+            return g(x - 1) + h(x)
+        def g(x):
+            if x < 0:
+                return x
+            return f(x - 1) + h(x - 1)
+
+        for ix in range(10):
+            self.equivalentEvaluationTest(f, ix)
+
+    def test_functions_8(self):
+        y = 1
+        z = 2
+        w = 3
+        def h(x):
+            return w + 2 * x
+        def f(x):
+            if x < 0:
+                return x
+            return y + g(x - 1) + h(x)
+        def g(x):
+            if x < 0:
+                return x
+            return z * f(x - 1) + h(x - 1)
+
+        for ix in range(10):
+            self.equivalentEvaluationTest(f, ix)
+
+    def test_functions_9(self):
+        y = 2
+        def h(x, fn):
+            if x < 0:
+                return x
+            return x + y * fn(x - 1)
+        def f(x):
+            def g(arg):
+                if arg < 0:
+                    return x + arg
+                return x * h(arg - 1, g)
+            return g
+
+        for ix in range(10):
+            self.equivalentEvaluationTest(f(2), ix)
+
+    def test_functions_10(self):
+        y = 3
+        def f(x):
+            if x <= 0:
+                return x
+            return x + g(x - 1)
+        def g(x):
+            if x <= 0:
+                return x
+            return y + f(x - 2) + h(x - 3)
+        def h(x):
+            return x + 1
+
+        arg = 10
+        self.equivalentEvaluationTest(f, arg)
+        self.equivalentEvaluationTest(g, arg)
+        self.equivalentEvaluationTest(h, arg)
+        
+    def test_classes_1(self):
+        class C1:
+            def __init__(self, x):
+                self.x = x
+            def f(self, arg):
+                return self.x + arg
+
+        def f(x):
+            c = C1(x)
+            return c.f(x)
+
+        self.equivalentEvaluationTest(f, 10)
+
+    def test_classes_2(self):
+        a = 2
+        def func_1(arg):
+            return arg + a
+        class C2:
+            def __init__(self, x):
+                self.x = x
+            def func_2(self, arg):
+                return self.x + func_1(arg)
+
+        def f(x, y):
+            c = C2(x)
+            return c.func_2(y)
+
+        self.equivalentEvaluationTest(f, 2, 3)
+
+    def test_classes_3(self):
+        class C3:
+            @staticmethod
+            def g(x):
+                return x + 1
+
+        def f(x):
+            return C3.g(x)
+
+        self.equivalentEvaluationTest(f, 2)
+
+    def test_class_instances_1(self):
+        class C4:
+            def __init__(self, x, y):
+                self.x = x
+                self.y = y
+                self.z = x + y
+            def f(self, arg):
+                return arg + self.x + self.y + self.z
+
+        c = C4(100, 200)
+
+        def f(arg):
+            return c.f(arg)
+
+        self.equivalentEvaluationTest(f, 4)
+        
+        def members():
+            return (c.x, c.y, c.z)
+
+        self.equivalentEvaluationTest(members)
+
+    def test_class_instances_2(self):
+        class C5:
+            def __init__(self, x):
+                self.x = x
+            def f(self, y):
+                return self.x + y
+
+        c = C5(42)
+
+        def f(arg):
+            return c.f(arg)
+
+        def g():
+            return c.x
+
+        self.equivalentEvaluationTest(f, 10)
+        self.equivalentEvaluationTest(g)
+
+    def test_class_instances_3(self):
+        class C6:
+            def __init__(self, x, y):
+                self.x = x
+                self.y = y
+
+        c = C6(1, 2)
+
+        def f():
+            return (c.x, c.y)
+
+    def test_class_instances_5(self):
+        class C8:
+            def __init__(self, x):
+                self.x = x
+
+            def f(self, arg):
+                if arg <= 0:
+                    return self.x
+                return arg * self.g(arg - 1)
+
+            def g(self, arg):
+                if arg <= 0:
+                    return (-1) * self.x
+                return arg + self.f(arg - 2)
+
+        c = C8(10)
+
+        def f():
+            return c.x
+
+        self.equivalentEvaluationTest(f)
+
+        def g(arg):
+            return c.f(arg)
+
+        for arg in range(10):
+            self.equivalentEvaluationTest(g, arg)
+
+    def test_freeVariablesInClasses_1(self):
+        x = 42
+        class C11:
+            @staticmethod
+            def f1(x):
+                return x
+            @staticmethod
+            def f2(arg):
+                return x + arg
+            def f3(self, arg):
+                return x + arg
+            def f4(self, x):
+                return x
+
+        def f(arg):
+            return (C11.f1(arg), C11.f2(arg))
+
+        self.equivalentEvaluationTest(f, 0)
+        self.equivalentEvaluationTest(f, 1)
+
+        c = C11()
+
+        def g(arg):
+            return (c.f3(arg), c.f4(arg))
+
+        self.equivalentEvaluationTest(g, 0)
+        self.equivalentEvaluationTest(g, 1)
+
+    def test_freeVariablesInClasses_2(self):
+        class C12:
+            def __init__(self, x):
+                self.x = x
+
+        c8 = C12(42)
+        class C13:
+            def f(self, arg):
+                if arg < 0:
+                    return 0
+                return c8.x + self.g(arg - 1)
+            def g(self, arg):
+                if arg < 0:
+                    return arg
+                return c8.x * self.f(arg - 2)
+
+        c = C13()
+
+        def f(arg):
+            return c.f(arg), c.g(arg)
+
+        for ix in range(10):
+            self.equivalentEvaluationTest(f, ix)
+
+    def test_freeVariablesInClasses_4(self):
+        class C_freeVars_4_1:
+            @staticmethod
+            def f(x):
+                return x + 1
+
+        class C_freeVars_4_2:
+            def g(self, arg):
+                if arg < 0:
+                    return 0
+                return C_freeVars_4_1.f(arg) + self.h(arg - 1)
+            def h(self, arg):
+                if arg < 0:
+                    return arg
+                return C_freeVars_4_1.f(arg) * self.g(arg - 2)
+
+        c = C_freeVars_4_2()
+
+        def f(arg):
+            return c.h(arg), c.g(arg)
+
+        for ix in range(10):
+            self.equivalentEvaluationTest(f, ix)
+
+    def test_freeVariablesInClasses_5(self):
+        class C_freeVars_5_1:
+            def f(self, x):
+                return x + 1
+
+        c = C_freeVars_5_1()
+        class C_freeVars_5_2:
+            def f(self, arg):
+                if arg < 0:
+                    return 0
+                return c.f(arg) + self.g(arg - 1)
+            def g(self, arg):
+                if arg < 0:
+                    return arg
+                return c.f(arg) * self.f(arg - 2)
+
+        c2 = C_freeVars_5_2()
+
+        def f(arg):
+            return c2.f(arg), c2.g(arg)
+        
+        for ix in range(10):
+            self.equivalentEvaluationTest(f, ix)
+
+    def test_freeVariablesInClasses_6(self):
+        x = 2
+        class C_freeVars_6_1:
+            def f(self):
+                return x
+
+        c = C_freeVars_6_1()
+
+        def f():
+            return c.f()
+
+        self.equivalentEvaluationTest(f)
+
+    def test_freeVariablesInClasses_7(self):
+        class C_freeVars_7_1:
+            def f(self, arg):
+                return arg + 1
+
+        c = C_freeVars_7_1()
+        def f(x):
+            return c.f(x)
+
+        self.equivalentEvaluationTest(f, 10)
+
+    def test_lists_1(self):
+        x = [1,2,3,4]
+
+        def f(ix):
+            return x[ix]
+
+        for ix in range(-len(x), len(x)):
+            self.equivalentEvaluationTest(f, ix)
+
+    def test_lists_2(self):
+        class C_lists:
+            def __init__(self, x):
+                self.x = x
+            def __eq__(self, other):
+                return self.x == other.x
+
+        xs = [1,2,3,C_lists(3)]
+
+        def elt(ix):
+            return xs[ix]
+
+        for ix in range(-4,4):
+            self.equivalentEvaluationTest(elt, ix)
+
+    def test_classes_with_getitems(self):
+        class C_with_getitem:
+            def __init__(self, m):
+                self.__m__ = m
+
+            def __getitem__(self, ix):
+                return self.__m__[ix]
+
+        size = 10
+        c = C_with_getitem(range(10))
+
+        def f(ix):
+            return c[ix]
+        
+        for ix in range(size):
+            self.equivalentEvaluationTest(f, ix)
+
+    def test_lists_with_circular_references_1(self):
+        circularList = [1,2,3]
+        circularList.append(circularList)
+
+        def f():
+            return circularList
+
+        with self.assertRaises(pyfora.Exceptions.PythonToForaConversionError):
+            self.equivalentEvaluationTest(f)
+
+    def test_lists_with_circular_references_2(self):
+        circularList = [1,2,3]
+        class SomeClass1:
+            def __init__(self, val):
+                self.__m__ = val
+        circularList.append(SomeClass1(circularList))
+
+        def f():
+            return circularList
+
+        with self.assertRaises(pyfora.Exceptions.PythonToForaConversionError):
+            self.equivalentEvaluationTest(f)
+
+    def test_lists_with_circular_references_3(self):
+        circularList = [1,2,3]
+        class SomeClass2:
+            def __init__(self, val):
+                self.__m__ = val
+        circularList.append(
+            SomeClass2(
+                SomeClass2(
+                    [circularList, 2]
+                    )
+                )
+            )
+
+        def f():
+            return circularList
+
+        with self.assertRaises(pyfora.Exceptions.PythonToForaConversionError):
+            self.equivalentEvaluationTest(f)
+
+    def test_dicts(self):
+        x = { 1: 2, 3: 4, 5: 6, 7: 8, 9: 10, 11: 12 }
+
+        def f(key):
+            return x[key]
+
+        for key in x:
+            self.equivalentEvaluationTest(f, key)
+        
+    def test_implicitReturnNone_1(self):
+        def f():
+            x = 2
+
+        self.equivalentEvaluationTest(f)
+
+    def test_implicitReturnNone_2(self):
+        def f(x):
+            x
+
+        self.equivalentEvaluationTest(f, 2)
+
+    def test_implicitReturnNone_3(self):
+        def f(x):
+            if x > 0:
+                return
+            else:
+                return 1
+
+        self.equivalentEvaluationTest(f, 1)
+        self.equivalentEvaluationTest(f, -1)
+
+    def test_loopsum(self):
+        def loopSum(x):
+            y = 0
+            while x > 0:
+                y = y + x
+                x = x - 1
+            return y
+
+        for ix in range(3):
+            self.equivalentEvaluationTest(loopSum, ix)
+
+
+    def test_inlineFunction(self):
+        def inlineFunction(x):
+            def z(y):
+                return x+y
+            return z(10)
+
+        for ix in range(4):
+            self.equivalentEvaluationTest(inlineFunction, ix)
+
+    def test_lambdaFunction(self):
+        def lambdaFunction(x):
+            z = lambda y: x + y
+            return z(10)
+
+        for ix in range(4):
+            self.equivalentEvaluationTest(lambdaFunction, ix)
+
+    def test_isPrime(self):
+        def isPrime(p):
+            x = 2
+            while x * x <= p:
+                if p % x == 0:
+                    return 0
+                x = x + 1
+            return 0
+
+        for ix in range(10):
+            self.equivalentEvaluationTest(isPrime, ix)
+
+    def test_whileLoop(self):
+        def whileLoop(x):
+            y = 0
+            while x < 100:
+                y = y + x
+                x = x + 1
+            return y
+
+        for ix in range(4):
+            self.equivalentEvaluationTest(whileLoop, ix)
+
+    def test_variableAssignment(self):
+        def variableAssignment(x):
+            y = x + 1
+            return x+y
+
+        for ix in range(3):
+            self.equivalentEvaluationTest(variableAssignment, ix)
+
+
+    def test_argumentAssignment(self):
+        def argumentAssignment(x):
+            x = x + 1
+            return x
+
+        self.equivalentEvaluationTest(argumentAssignment, 100)
+
+    def test_basicAddition(self):
+        def basicAddition(x):
+            return x + 1
+
+        self.equivalentEvaluationTest(basicAddition, 4)
+
+    def test_listComprehensions_5(self):
+        def listComprehensions_3(arg):
+            aList = [(x, y) for x in [1,2,3] for y in [3,1,4]]
+            return aList[arg]
+
+        for ix in range(-9,9):
+            self.equivalentEvaluationTest(listComprehensions_3, ix)
+
+    def test_listComprehensions_6(self):
+        def listComprehensions_1(arg):
+            aList = [0,1,2,3]
+            aList = [elt * 2 for elt in aList]
+            return aList[arg]
+
+        for ix in range(-4, 4):
+            self.equivalentEvaluationTest(listComprehensions_1, ix)
+
+    def test_nestedComprehensions_2(self):
+        def nestedComprehensions():
+            x = [[1,2], [3,4], [5,6]]
+            res = [[row[ix] for row in x] for ix in [0,1]]
+
+            return res[0][0]
+
+        self.equivalentEvaluationTest(nestedComprehensions)
+
+    def test_returningTuples_1(self):
+        def returningATuple_1():
+            return (0, 1)
+
+        self.equivalentEvaluationTest(returningATuple_1)
+
+    def test_returningTuples_2(self):
+        def returningATuple_2():
+            return 0, 1
+
+        self.equivalentEvaluationTest(returningATuple_2)
+
+    def test_pass(self):
+        def passStatement():
+            def f():
+                pass
+
+            x = f()
+            return x
+
+        self.equivalentEvaluationTest(passStatement)
+
+    def test_iteration_2(self):
+        def iteration_1():
+            x = [0,1,2,3]
+            tr = 0
+            for val in x:
+                tr = tr + val
+            return tr
+
+        self.equivalentEvaluationTest(iteration_1)
+
+    def test_inStatement_2(self):
+        def inStatement():
+            x = [0,1,2,3]
+            return 0 in x
+
+        self.equivalentEvaluationTest(inStatement)
+
+    def test_nestedLists_1(self):
+        def nestedLists():
+            x = [[0,1,2], [3,4,5], [7,8,9]]
+            return x[0][0]
+
+        self.equivalentEvaluationTest(nestedLists)
+
+    def test_recursiveFunctions_1(self):
+        def fact(n):
+            if n == 0:
+                return 1
+            return n * fact(n - 1)
+
+        for ix in range(5):
+            self.equivalentEvaluationTest(fact, ix)
+
+    def test_recursiveFunctions_2(self):
+        def fib(n):
+            if n <= 1:
+                return n
+
+            return fib(n - 1) + fib(n - 2)
+
+        for ix in range(5):
+            self.equivalentEvaluationTest(fib, ix)
+
+    def test_initMethods_1(self):
+        class A1():
+            def __init__(self):
+                class B():
+                    pass                
+
+        def f():
+            a = A1()
+            return None
+
+        with self.assertRaises(pyfora.Exceptions.PythonToForaConversionError):
+            self.equivalentEvaluationTest(f)
+
+    def test_initMethods_2(self):
+        class A2():
+            def __init__(self):
+                def foo():
+                    pass
+
+        def f():
+            a = A2()
+            return None
+
+        with self.assertRaises(pyfora.Exceptions.PythonToForaConversionError):
+            self.equivalentEvaluationTest(f)
+
+    def test_initMethods_3(self):
+        def f(arg):
+            class A():
+                def __init__(self, x):
+                    self.x = x + arg
+            return A(2).x
+
+        for ix in range(-10, 10):
+            self.equivalentEvaluationTest(f, ix)
+
+    def test_initMethods_4(self):
+        def f(arg):
+            class A():
+                def __init__(self, x):
+                    self_x = arg
+                    self.x = x + self_x
+            return A(2).x
+
+        for ix in range(4):
+            self.equivalentEvaluationTest(f, ix)
+
+    def test_initMethods_5(self):
+        def f():
+            class A():
+                def __init__(self, x):
+                    self = 2
+                    self.x = x
+            return None
+
+        with self.assertRaises(pyfora.Exceptions.PythonToForaConversionError):
+            self.equivalentEvaluationTest(f)
+
+    def test_initMethods_6(self):
+        def f():
+            class A():
+                def __init__(self, x):
+                    (self.x, self.y) = (x, x + 1)
+            return A(2).x
+
+        with self.assertRaises(pyfora.Exceptions.PythonToForaConversionError):
+            self.equivalentEvaluationTest(f)
+
+    def test_initMethods_7(self):
+        def f(arg):
+            class A():
+                def __init__(self, x):
+                    self.x = x
+                    self.y = self.x + 1
+            return A(arg).x
+
+        for ix in range(3):
+            self.equivalentEvaluationTest(f, ix)
+
+    def test_initMethods_8(self):
+        def f(arg):
+            class A():
+                def __init__(selfArg):
+                    selfArg.x = 2
+                    selfArg.x = selfArg.x + 1
+            return A().x + arg
+
+        for ix in range(4):
+            self.equivalentEvaluationTest(f, ix)
+
+    def test_initMethods_9(self):
+        def f(arg):
+            class A():
+                def __init__(self, x):
+                    self.x = x
+                    self.x = self.x + 1
+                def foo(self, y):
+                    return self.x + y
+
+            return A(arg).foo(2)
+
+        for ix in range(4):
+            self.equivalentEvaluationTest(f, ix)
+
+    def test_initMethods_10(self):
+        def f(_):
+            class A():
+                def __init__(selfArg, x):
+                    if x > 0:
+                        selfArg.x = x
+                    else:
+                        selfArg.x = (-1) * x
+
+            return A(1).x + A(-1).x
+
+        for ix in range(-4,1):
+            self.equivalentEvaluationTest(f, ix)
+
+    def test_functionsWithTheSameName(self):
+        # inspect, from the python std library, which we use,
+        # does the right thing for functions.
+        # the corresponding test for classes fails
+        def f1():
+            def f():
+                return 1
+            return f
+        def f2():
+            def f():
+                return -1
+            return f
+
+        self.equivalentEvaluationTest(f1())
+        self.equivalentEvaluationTest(f2())
+
+    def test_imports_1(self):
+        import ufora.FORA.python.PurePython.testModules.ModuleWithImport \
+            as ModuleWithImport
+
+        self.equivalentEvaluationTest(ModuleWithImport.h, 2)
+
+    def test_imports_2(self):
+        import ufora.FORA.python.PurePython.testModules.ModuleWithOneMember \
+            as ModuleWithOneMember
+
+        def f(x):
+            return ModuleWithOneMember.h(x)
+
+        self.equivalentEvaluationTest(f, 2)
+
+    def test_imports_3(self):
+        import ufora.FORA.python.PurePython.testModules.ModuleWithUnconvertableMember \
+            as ModuleWithUnconvertableMember
+
+        def f(x):
+            return ModuleWithUnconvertableMember.convertableMember(x)
+
+        def unconvertable(x):
+            return ModuleWithUnconvertableMember.unconvertableMember(x)
+
+        with self.assertRaises(pyfora.Exceptions.PythonToForaConversionError):
+            self.equivalentEvaluationTest(unconvertable, 2)
+
+        self.equivalentEvaluationTest(f, 2)
+
+    def test_closures_1(self):
+        import ufora.FORA.python.PurePython.testModules.ModuleWithClosures1 \
+            as ModuleWithClosures1
+
+        self.equivalentEvaluationTest(ModuleWithClosures1.f1, 3, 4)
+
+    def test_closures_2(self):
+        import ufora.FORA.python.PurePython.testModules.ModuleWithClosures2 \
+            as ModuleWithClosures2
+
+        self.equivalentEvaluationTest(ModuleWithClosures2.f2(3), 4)
+
+    def test_mutuallyRecursiveModuleMembers_1(self):
+        import ufora.FORA.python.PurePython.testModules.MutuallyRecursiveModuleMembers1 \
+            as MutuallyRecursiveModuleMembers1
+
+        self.equivalentEvaluationTest(MutuallyRecursiveModuleMembers1.f, 2)
+
+    def test_mutuallyRecursiveModuleMembers_2(self):
+        import ufora.FORA.python.PurePython.testModules.MutuallyRecursiveModuleMembers2 \
+            as MutuallyRecursiveModuleMembers2
+
+        self.equivalentEvaluationTest(MutuallyRecursiveModuleMembers2.f4, 109)
+
+    def test_mutuallyRecursiveModuleMembers_3(self):
+        import ufora.FORA.python.PurePython.testModules.MutuallyRecursiveModuleMembers3 \
+            as MutuallyRecursiveModuleMembers1
+
+        self.equivalentEvaluationTest(MutuallyRecursiveModuleMembers1.f, 5)
