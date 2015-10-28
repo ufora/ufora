@@ -146,16 +146,3 @@ class ModuleParserTest(unittest.TestCase):
         self.assertTrue(memberForResult.isMember())
         self.assertEqual(memberForResult.asMember.name, symbols[0])
 
-    def test_parse_python(self):
-        parser = ForaNative.ModuleParser(PythonAstConverter.parseStringToPythonAst)
-        tree = sourceCodeTree(('module', '', [('test.script', addOnePyCode)]))
-        parsed = parser.parse(
-            tree,
-            True,
-            ForaNative.CodeDefinitionPoint.ExternalFromStringList([])
-            )
-        self.assertIsNotNone(parsed)
-
-
-
-
