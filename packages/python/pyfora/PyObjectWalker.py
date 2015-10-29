@@ -257,7 +257,7 @@ class PyObjectWalker(object):
         sourceAst = PyAstUtil.getSourceFileAst(pyObject)
 
         if classOrFunction is PyObjectNodes.FunctionDefinition:
-            pyAst = PyAstUtil.functionDefAtLineNumber(sourceAst, sourceLine)
+            pyAst = PyAstUtil.functionDefOrLambdaAtLineNumber(sourceAst, sourceLine)
         else:
             assert classOrFunction is PyObjectNodes.ClassDefinition
             pyAst = PyAstUtil.classDefAtLineNumber(sourceAst, sourceLine)

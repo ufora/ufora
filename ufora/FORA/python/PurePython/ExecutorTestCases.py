@@ -957,3 +957,26 @@ class ExecutorTestCases(
             return g().__str__()
         
         self.equivalentEvaluationTest(f)
+
+    def test_convert_lambda_external(self):
+        g = lambda: 10
+        def f():
+            return g()
+        
+        self.equivalentEvaluationTest(f)
+
+    def test_convert_lambda_internal(self):
+        def f():
+            g = lambda: 10
+            return g()
+        
+        self.equivalentEvaluationTest(f)
+
+    def test_evaluate_lambda_directly(self):
+        self.equivalentEvaluationTest(lambda x,y: x+y, 10, 20)
+
+    def test_return_lambda(self):
+        def f():
+            return lambda: 10
+        
+        self.assertEqual(self.evaluateWithExecutor(f)(), 10)

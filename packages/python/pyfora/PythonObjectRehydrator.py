@@ -186,19 +186,29 @@ class PythonObjectRehydrator:
             return objectOrNone
 
         sourceAst = PyAstUtil.getAstFromFilePath(filename)
-        functionAst = PyAstUtil.functionDefAtLineNumber(sourceAst, lineNumber)
+        functionAst = PyAstUtil.functionDefOrLambdaAtLineNumber(sourceAst, lineNumber)
 
         outputLocals = {}
         globalScope = {}
         globalScope.update(memberDictionary)
         self.importModuleMagicVariables(globalScope, filename)
 
-        code = compile(ast.Module([functionAst]), filename, 'exec')
+        if isinstance(functionAst, ast.Lambda):
+            expr = ast.Expression()
+            expr.body = functionAst
+            expr.lineno = functionAst.lineno
+            expr.col_offset = functionAst.col_offset
 
-        exec code in globalScope, outputLocals
+            code = compile(expr, filename, 'eval')
 
-        assert len(outputLocals) == 1
+            return eval(code, globalScope, outputLocals)
+        else:
+            code = compile(ast.Module([functionAst]), filename, 'exec')
 
-        return list(outputLocals.values())[0]
-        
+            exec code in globalScope, outputLocals
+
+            assert len(outputLocals) == 1
+
+            return list(outputLocals.values())[0]
+            
 

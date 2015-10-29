@@ -723,7 +723,7 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
             res
             )
 
-        tree2 = PyAstUtil.functionDefAtLineNumber(tree1, 2)
+        tree2 = PyAstUtil.functionDefOrLambdaAtLineNumber(tree1, 2)
 
         self.assertEqual(
             set([('h',), ('x',)]),

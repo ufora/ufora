@@ -831,17 +831,31 @@ class Converter(object):
 
         tr = None
         if isinstance(classOrFunctionDefinition, TypeDescription.FunctionDefinition):
-            tr = ForaNative.convertPythonAstFunctionDefToForaOrParseError(
-                pyAst.asFunctionDef,
-                pyAst.extent,
-                ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath]),
-                self.nativeConstantConverter,
-                self.nativeListConverter,
-                self.nativeTupleConverter,
-                self.nativeDictConverter,
-                self.pyObjectMixinBaseIVC,
-                self.pyObjectGeneratorFactoryIVC
-                )
+            if isinstance(pyAst, ForaNative.PythonAstStatement) and pyAst.isFunctionDef():
+                tr = ForaNative.convertPythonAstFunctionDefToForaOrParseError(
+                    pyAst.asFunctionDef,
+                    pyAst.extent,
+                    ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath]),
+                    self.nativeConstantConverter,
+                    self.nativeListConverter,
+                    self.nativeTupleConverter,
+                    self.nativeDictConverter,
+                    self.pyObjectMixinBaseIVC,
+                    self.pyObjectGeneratorFactoryIVC
+                    )
+            else:
+                assert pyAst.isLambda()
+                tr = ForaNative.convertPythonAstLambdaToForaOrParseError(
+                    pyAst.asLambda,
+                    pyAst.extent,
+                    ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath]),
+                    self.nativeConstantConverter,
+                    self.nativeListConverter,
+                    self.nativeTupleConverter,
+                    self.nativeDictConverter,
+                    self.pyObjectMixinBaseIVC,
+                    self.pyObjectGeneratorFactoryIVC
+                    )
 
         elif isinstance(classOrFunctionDefinition, TypeDescription.ClassDefinition):
             tr = ForaNative.convertPythonAstClassDefToForaOrParseError(
@@ -875,7 +889,7 @@ class Converter(object):
 
         assert pyAst is not None
 
-        pyAst = pyAst.functionOrClassdefAtLine(classOrFunctionDefinition.lineNumber)
+        pyAst = pyAst.functionClassOrLambdaDefAtLine(classOrFunctionDefinition.lineNumber)
 
         assert pyAst is not None, (sourceText, classOrFunctionDefinition.lineNumber)
         

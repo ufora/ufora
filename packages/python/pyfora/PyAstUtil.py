@@ -122,6 +122,7 @@ class _AtLineNumberVisitor(ast.NodeVisitor):
         self.classDefSubnodesAtLineNumber = []
         self.withBlockSubnodesAtLineNumber = []
         self.funcDefSubnodesAtLineNumber = []
+        self.lambdaSubnodesAtLineNumber = []
         self.lineNumber = lineNumber
 
     def visit_ClassDef(self, node):
@@ -137,6 +138,11 @@ class _AtLineNumberVisitor(ast.NodeVisitor):
     def visit_FunctionDef(self, node):
         if node.lineno == self.lineNumber:
             self.funcDefSubnodesAtLineNumber.append(node)
+        ast.NodeVisitor.generic_visit(self, node)
+
+    def visit_Lambda(self, node):
+        if node.lineno == self.lineNumber:
+            self.lambdaSubnodesAtLineNumber.append(node)
         ast.NodeVisitor.generic_visit(self, node)
 
 
@@ -177,13 +183,12 @@ def withBlockAtLineNumber(sourceAst, lineNumber):
 
     return subnodesAtLineNumber[0]
 
-
 @CachedByArgs
-def functionDefAtLineNumber(sourceAst, lineNumber):
+def functionDefOrLambdaAtLineNumber(sourceAst, lineNumber):
     visitor = _AtLineNumberVisitor(lineNumber)
     visitor.visit(sourceAst)
 
-    subnodesAtLineNumber = visitor.funcDefSubnodesAtLineNumber
+    subnodesAtLineNumber = visitor.funcDefSubnodesAtLineNumber + visitor.lambdaSubnodesAtLineNumber
 
     if len(subnodesAtLineNumber) == 0:
         raise Exceptions.CantGetSourceTextError(
