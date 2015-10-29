@@ -15,7 +15,6 @@
 import logging
 import os
 import socket
-import zope.interface
 
 import ufora.distributed.ServerUtils.SimpleServer as SimpleServer
 import ufora.distributed.SharedState.SharedStateService as SharedStateService
@@ -24,11 +23,9 @@ import ufora.distributed.SharedState.Exceptions as Exceptions
 
 import ufora.networking.SocketStringChannel as SocketStringChannel
 
-class TcpChannelFactory(object):
-    zope.interface.implements(ChannelFactory.ChannelFactory)
-
+class TcpChannelFactory(ChannelFactory.ChannelFactory):
     def createSocketChannel(self, sock):
-        assert False, "must be implemented by derived classes"
+        raise NotImplementedError()
 
     def establishConnection_(self, host, port):
         try:

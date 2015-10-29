@@ -33,7 +33,7 @@ log = (level, format, args...)->
         now = new Date()
         console[level]("#{now.toJSON()} - #{level}: #{format}", args...)
 
-module.exports.initialize = (level) ->
+module.exports.setLogLevel = (level) ->
     throw Error("Invalid log level '#{level}'") unless level of log_levels
     logLevel = log_levels[level]
 

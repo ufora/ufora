@@ -12,16 +12,13 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import zope.interface
 import ufora.native.StringChannel as StringChannelNative
 import ufora.native.SharedState as SharedStateNative
 import threading
 
 from ufora.distributed.SharedState.Connections.ChannelFactory import ChannelFactory
 
-class InMemoryChannelFactory(object):
-    zope.interface.implements(ChannelFactory)
-
+class InMemoryChannelFactory(ChannelFactory):
     def __init__(self, callbackScheduler, channelManager):
         self.callbackScheduler = callbackScheduler
         self.channelManager = channelManager
@@ -47,9 +44,7 @@ class InMemoryChannelFactory(object):
         pass
 
 
-class SerializedChannelFactoryBase(object):
-    zope.interface.implements(ChannelFactory)
-
+class SerializedChannelFactoryBase(ChannelFactory):
     def __init__(self, callbackScheduler, channelManager, channelGroup):
         self.callbackScheduler = callbackScheduler
         self.channelManager = channelManager

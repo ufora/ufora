@@ -12,9 +12,8 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import zope.interface
-
-class ChannelFactory(zope.interface.Interface):
-    def createChannel(self, ipEndpoint = None):
+class ChannelFactory(object):
+    def createChannel(self, ipEndpoint=None):
         """Establishes a new communication channel"""
+        raise NotImplementedError()
 

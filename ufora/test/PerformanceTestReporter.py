@@ -20,7 +20,7 @@ in test files. The location of the files is passed to client programs using envi
 """
 
 import os
-import simplejson
+import json
 import time
 import inspect
 
@@ -37,14 +37,14 @@ def recordTest(testName, elapsedTime, metadata, **kwargs):
         raise UserWarning("We may only record a float, or None (in case of failure) for elapsed time")
 
     if not isCurrentlyTesting():
-        raise UserWarning("We are not currently testing, so we can't record test results. " + 
+        raise UserWarning("We are not currently testing, so we can't record test results. " +
                 "Set the environment variable " + TEST_DATA_LOCATION_ENVIRONMENT_VARIABLE
                 + " to point to a valid path.")
 
     targetPath = os.getenv(TEST_DATA_LOCATION_ENVIRONMENT_VARIABLE)
 
-    perfLogEntry = {"name": str(testName), 
-              "time": elapsedTime if isinstance(elapsedTime, float) else None, 
+    perfLogEntry = {"name": str(testName),
+              "time": elapsedTime if isinstance(elapsedTime, float) else None,
               "metadata": metadata}
     perfLogEntry.update(kwargs)
 
@@ -52,20 +52,20 @@ def recordTest(testName, elapsedTime, metadata, **kwargs):
         print "%2.2f  --  %s" % (elapsedTime, testName)
     else:
         with open(targetPath, "ab+") as f:
-            f.write(simplejson.dumps(perfLogEntry) + "\n")
+            f.write(json.dumps(perfLogEntry) + "\n")
 
 def recordThroughputTest(testName, runtime, n, baseMultiplier, metadata):
-    recordTest(testName, runtime / n * baseMultiplier, metadata, n = n, 
+    recordTest(testName, runtime / n * baseMultiplier, metadata, n = n,
                baseMultiplier = baseMultiplier, actualTime = runtime)
 
 def testThroughput(testName, testFunOfN, setupFunOfN = None, transformOfN = None,
-                   metadata = None, maxNToSearch = 1000000, baseMultiplier = 1, 
+                   metadata = None, maxNToSearch = 1000000, baseMultiplier = 1,
                    timeoutInSec = 30.0):
     counter = 0
     unitOfWork = counter
     unitsOfWorkCompleted = 0
     runtime = None
-    
+
     timeUsed = 0
 
     while timeUsed < timeoutInSec and counter <= maxNToSearch:
@@ -92,7 +92,7 @@ def testThroughput(testName, testFunOfN, setupFunOfN = None, transformOfN = None
             break
 
     # we had at least one passing result before timing out
-    assert runtime is not None 
+    assert runtime is not None
     assert unitsOfWorkCompleted > 0
 
     if isCurrentlyTesting():
@@ -100,7 +100,7 @@ def testThroughput(testName, testFunOfN, setupFunOfN = None, transformOfN = None
 
 def loadTestsFromFile(testFileName):
     with open(testFileName, "rb") as f:
-        return [simplejson.loads(x) for x in f.readlines()]
+        return [json.loads(x) for x in f.readlines()]
 
 def PerfTest(testName):
     """Decorate a unit-test so that it records performance in the global test database"""
@@ -112,7 +112,7 @@ def PerfTest(testName):
 
         def innerTestFun(self):
             t0 = time.time()
-            
+
             try:
                 result = f(self)
             except:
@@ -122,7 +122,7 @@ def PerfTest(testName):
 
             if isCurrentlyTesting():
                 recordTest(testName, time.time() - t0, meta)
-            
+
             return result
 
         innerTestFun.__name__ = f.__name__

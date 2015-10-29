@@ -63,29 +63,15 @@ def configure(conf):
 
     conf.check_python_module('argparse')
     conf.check_python_module('boto')
-    conf.check_python_module('coverage', mandatory=False)
-    conf.check_python_module('markdown')
     conf.check_python_module('nose')
     conf.check_python_module('numpy')
-    conf.check_python_module('os')
-    conf.check_python_module('paramiko')
-    conf.check_python_module('re')
-    conf.check_python_module('redis')
     conf.check_python_module('requests')
-    conf.check_python_module('sys')
-    conf.check_python_module('unittest')
-    conf.check_python_module('xml')
-    conf.check_python_module('zlib')
 
     conf.load('gcov')
     conf.load('bison')
     conf.load('bison_cppml')
     conf.load('ocaml')
     conf.load('cppml')
-
-    if conf.env['CXX'][0].find("pgcc") == -1:
-        #use distCC only if we're not using pgcc
-        conf.load('distcc')
 
     conf.check_cfg(
         package='python-2.7',
@@ -168,7 +154,6 @@ def configure(conf):
 
         # needed to test
         conf.find_program("mocha", var="MOCHA")
-        conf.find_program("redis-cli", var="REDIS_CLI")
 
 clang_libs = [
              'clangFrontend',
@@ -243,12 +228,9 @@ def build(bld):
     """Primary WAF entry point."""
     bld.post_mode = Build.POST_LAZY
 
-    if bld.env['CXX'][0].find("pgcc") == -1:
-        bld.load('distcc')
-
     extensions = ('cpp', 'hpp', 'cppml', 'hppml', 'ypp', 'h', 'c', 'cc', 'inc', 'inl', 'gen', 'def')
     folders = ('ufora/', 'third_party/', 'test_scripts/', 'perf_tests')
-    excludes = ('opengl/MesaOffscreen', 'ufora/web/', 'third_party/boost_1_53_0/boost')
+    excludes = ('ufora/web/', 'third_party/boost_1_53_0/boost')
     boost_libs_root = 'third_party/boost_1_53_0/libs'
 
     def shouldExclude(x):

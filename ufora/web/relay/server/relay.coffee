@@ -22,15 +22,14 @@ queue = require './queue'
 
 
 class Relay
-  constructor: (app) ->
+  constructor: (config) ->
     @socketIOSessions = {}
-    @app = app
-    @logger = app.get 'logger'
+    @logger = config.logger
     @logger.info 'initializing node socket.io server'
 
     @gatewayEndpoint =
-      host: app.get 'gatewayhost'
-      port: app.get 'gatewayport'
+      host: config.gatewayhost
+      port: config.gatewayport
     @logger.info 'Gateway Service endpoint:', @gatewayEndpoint
 
 
@@ -212,8 +211,8 @@ class Relay
 
 
 
-module.exports = (app, httpServer, callback) ->
-  relay = new Relay(app)
+module.exports = (config, httpServer, callback) ->
+  relay = new Relay(config)
   relay.initializeSocketIO(httpServer)
   relay.start(callback)
   return relay

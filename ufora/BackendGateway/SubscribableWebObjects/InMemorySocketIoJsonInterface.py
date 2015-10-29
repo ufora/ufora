@@ -15,7 +15,6 @@
 """Creates an in-memory SubscribableWebObjects backend and wires it to a SocketIoJsonInterface"""
 
 import json
-import requests
 import threading
 import Queue
 import logging
@@ -33,7 +32,7 @@ class InMemorySocketIoJsonInterface(object):
         self.reactorThread = None
         self.nextMessageId = 0
         self.messageHandlers = {}
-        
+
         self.lock = threading.Lock()
         self.messageQueue = Queue.Queue()
 
@@ -60,7 +59,7 @@ class InMemorySocketIoJsonInterface(object):
                         message = None
 
                     responses = self.messageProcessor.handleIncomingMessage(message)
-                    
+
                     responses += self.messageProcessor.extractPendingMessages()
 
                     if self.messageProcessor.isDisconnectedFromSharedState():

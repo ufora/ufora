@@ -16,7 +16,6 @@ import ufora.util.SubprocessingModified as subprocess
 import os
 import time
 import threading
-import zope.interface
 import ufora.config.Setup as Setup
 import ufora.networking.Transport as Transport
 import ufora.util.Deferred as Deferred
@@ -25,9 +24,7 @@ import ufora.networking.InMemoryTransport as InMemoryTransport
 import logging
 import Queue
 
-class PipeTransport(object):
-    zope.interface.implements(Transport.Transport)
-
+class PipeTransport(Transport.Transport):
     AuthMessage = 'Authentication: '
     LogMessage = 'LOG:'
     DisconnectMessage = 'DISCONNECT'
@@ -36,7 +33,7 @@ class PipeTransport(object):
         """Initialize a PipeTransport.
 
         messageDelayInSeconds - if not None, then all messages will be delayed by this many
-            seconds before being pumped into the receiving channel. This can simulate 
+            seconds before being pumped into the receiving channel. This can simulate
             delays talking over the internet.
         """
         self.onMessageReceived = None
@@ -210,7 +207,7 @@ class PipeTransport(object):
         try:
             while not self.isShuttingDown:
                 message = self.proxyStdOut.readline().rstrip()
-                
+
                 if message != "":
                     self.messagePumpQueue.put((time.time(), message))
 

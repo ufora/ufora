@@ -12,30 +12,26 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import zope.interface
-
-class Transport(zope.interface.Interface):
-    onMessageReceived = zope.interface.Attribute(
-                            """A callback that is fired whenever a message is received.
-                               It takes a single string argument that holds the incoming message.
-                            """)
-
-    def connect(credentials):
+class Transport(object):
+    def connect(self, credentials):
         """
         Establish a connection on behalf of a user.
 
         - credentials: a tuple of the form (username, password)
         Returns: a Deferred that fires when the connection attempt completes.
         """
+        raise NotImplementedError()
 
-    def send(content):
+    def send(self, content):
         """
         Send a string of data
         """
+        raise NotImplementedError()
 
-    def disconnect():
+    def disconnect(self):
         """
         Close all connections and free any bound resources
         """
+        raise NotImplementedError()
 
 

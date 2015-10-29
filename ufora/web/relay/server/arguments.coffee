@@ -38,8 +38,7 @@ parser.addArgument ['--gatewayport'],
     defaultValue: 30008
 
 
-module.exports.parse = (app) ->
-    args = parser.parseArgs()
-    app.set(key, value) for key, value of args
+module.exports = ->
+    return parser.parseArgs()
 
 

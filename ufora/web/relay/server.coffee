@@ -12,44 +12,24 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-process.stdout.write("server.coffee starting\n")
+console.info("server.coffee starting")
 
-express = require 'express'
+config = require('./server/arguments')()
+console.info("server.coffee parsed arguments")
+
 logger = require './server/logging'
-path = require 'path'
+logger.info "relay logging initialized"
+config.logger = logger
 
 process.on 'uncaughtException', (err) ->
     logger.error "server.coffee caught root exception: %j", err
     for line in err.stack.split('\n')
         logger.error line
 
-app = express()
-
-process.stdout.write("server.coffee got express\n")
-
-require('./server/arguments').parse(app)
-
-process.stdout.write("server.coffee parsed arguments\n")
-
-logger.info "server.coffee configured for:", process.env.NODE_ENV
-
-logger.initialize 'debug'
-logger.info "relay logging initialized"
-
-process.stdout.write("server.coffee initialized logging\n")
-
-app.set 'logger', logger
-
-httpPort = app.get 'port'
-
-logger.info("relay app initialization starting")
-
-httpServer = require('http').createServer(app)
-relay = require('./server/relay') app, httpServer, () ->
+httpServer = require('http').createServer()
+relay = require('./server/relay') config, httpServer, () ->
     logger.info("relay app initialization callback fired")
 
-    httpServer.listen httpPort
-    logger.info "HTTP listening on", httpPort
-
-app.set 'relay', relay
+    httpServer.listen config.port
+    logger.info "HTTP listening on", config.port
 

@@ -13,15 +13,12 @@
 #   limitations under the License.
 
 import threading
-import zope.interface
 import ufora.networking.Transport as Transport
 import ufora.util.ManagedThread as ManagedThread
 import ufora.util.Deferred as Deferred
 
 
-class InMemoryTransport(object):
-    zope.interface.implements(Transport.Transport)
-
+class InMemoryTransport(Transport.Transport):
     ConnectMessage = 'CONNECT:'
     LogMessage = 'LOG:'
     DisconnectMessage = 'DISCONNECT'
