@@ -980,3 +980,6 @@ class ExecutorTestCases(
             return lambda: 10
         
         self.assertEqual(self.evaluateWithExecutor(f)(), 10)
+
+    def test_GeneratorExp_works(self):
+        self.equivalentEvaluationTest(lambda: list(x for x in xrange(10)))
