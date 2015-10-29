@@ -82,6 +82,7 @@ class PyforaSingletonAndExceptionConverter:
         if instanceClassName == self.pyExceptionClassInstanceName:
             typeInstance = exceptionInstance.getObjectLexicalMember("@class")[0]
             typeInstanceName = self.convertInstanceToSingletonName(typeInstance)
+
             assert typeInstanceName is not None
             args = exceptionInstance.getObjectLexicalMember("@args")[0]
 

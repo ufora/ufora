@@ -253,7 +253,7 @@ class PyforaResultAsJson(ComputedGraph.Location):
                 if self.computedValue.isException and isinstance(e, Exceptions.ForaToPythonConversionError):
                     return {
                         'result': {
-                            "untranslatableException": str(self.computedValue.valueIVC)
+                            "untranslatableException": str(ForaValue.FORAValue(self.computedValue.valueIVC))
                             }, 
                         'isException': True,
                         'trace': self.computedValue.exceptionCodeLocationsAsJson

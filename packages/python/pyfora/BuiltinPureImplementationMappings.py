@@ -15,15 +15,6 @@
 import pyfora.PureImplementationMapping as PureImplementationMapping
 import pyfora.PureImplementationMappings as PureImplementationMappings
 
-def getPyforaSummable(possiblySummable):
-    try:
-        #note that we don't use 'getattr', which is
-        #currently not going to fully compile because it requires us to
-        #convert symbols to strings
-        return possiblySummable.__pyfora_summable__
-    except AttributeError:
-        return None
-
 class Len:
 	def __call__(self, other):
 		return other.__len__()
@@ -34,16 +25,24 @@ class Str:
 
 class List:
     def __call__(self, other):
-        summable = getPyforaSummable(other)
+        generator = other.__pyfora_generator__()
 
-        if summable is None:
-            return [x for x in other]
-        
-        res = summable(lambda x: [x])
+        def listSum(subGenerator, depth):
+            if depth > 9 or not subGenerator.canSplit() or True:
+                result = []
+                for val in subGenerator:
+                    result = result + [val]
+                return result
+            else:
+                split = subGenerator.split()
+                if split is None:
+                    raise TypeError("Generator should have split!")
+                left = listSum(split[0], depth+1)
+                right = listSum(split[1], depth+1)
 
-        if res is None:
-            return []
-        return res
+                return left+right
+
+        return listSum(generator, 0)
 
 class Range:
     def __call__(self, first, second=None, increment=None):
@@ -64,34 +63,47 @@ class XRangeInstance:
             currentVal = currentVal + self.increment
             ix = ix + 1
 
-    def __pyfora_summable__(self, f):
-        if self.count <= 0:
-            return None
 
-        def sum(val,count,increment,depth):
-            if count == 0:
-                return None
-            if count == 1:
-                return f(val)
+    def __pyfora_generator__(self):
+        class Generator:
+            def __init__(self, start, count, increment, f):
+                self.start = start
+                self.count = count
+                self.increment = increment
+                self.f = f
 
-            if depth > 9:
-                res = f(val)
-                val = val + increment
-                count = count - 1
-                while count > 0:
-                    res = res + f(val)
-                    val = val + increment
-                    count = count - 1
-                return res
-            else:
-                lowCount = count / 2
+            def __pyfora_generator__(self):
+                return self
+
+            def __iter__(self):
+                ix = 0
+                currentVal = self.start
+                while ix < self.count:
+                    yield self.f(currentVal)
+                    currentVal = currentVal + self.increment
+                    ix = ix + 1
+
+            def canSplit(self):
+                return self.count > 1
+
+            def split(self):
+                if self.count <= 1:
+                    return None
+
+                lowCount = self.count / 2
+                highCount = self.count - lowCount
 
                 return (
-                    sum(val, lowCount, increment, depth+1) + 
-                    sum(val + lowCount * increment, count-lowCount, increment, depth+1)
+                    Generator(self.start, lowCount, self.increment, self.f),
+                    Generator(self.start + self.increment * lowCount, highCount, self.increment, self.f)
                     )
 
-        return sum(self.start, self.count, self.increment, 0)
+            def map(self, f):
+                mapfun = lambda x: f(self.f(x))
+                return Generator(self.start, self.count, self.increment, mapfun)
+
+
+        return Generator(self.start, self.count, self.increment, lambda x:x)
 
 class XRange:
     def __call__(self, first, second=None, increment=None):
@@ -118,16 +130,42 @@ class XRange:
 
 class Sum:
     def __call__(self, sequence, start=0):
-        #see if we can get a 'summation' interface
-        summable = getPyforaSummable(sequence)
+        #get a generator
+        generator = sequence.__pyfora_generator__()
 
-        if summable is not None:
-            return summable(lambda x:x)
+        class Empty:
+            pass
 
-        res = start
-        for elt in sequence:
-            res = res + elt
-        return res
+        def sum(sumSubGenerator, depth):
+            if depth > 9 or not sumSubGenerator.canSplit():
+                isFirst = True
+                result = None
+                for val in sumSubGenerator:
+                    if isFirst:
+                        result = val
+                        isFirst = False
+                    else:
+                        result = result + val
+                if isFirst:
+                    return Empty
+                return result
+            else:
+                split = sumSubGenerator.split()
+                left = sum(split[0], depth+1)
+                right = sum(split[1], depth+1)
+
+                if left is Empty:
+                    return right
+                if right is Empty:
+                    return left
+                return left+right
+
+        result = sum(generator, 0)
+
+        if result is Empty:
+            return start
+
+        return start + result
 
 class Abs:
     def __call__(self, val):

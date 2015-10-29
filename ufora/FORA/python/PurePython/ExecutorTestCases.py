@@ -74,16 +74,24 @@ class ExecutorTestCases(
             comparisonFunction = kwds['comparisonFunction']
 
         with self.create_executor() as executor:
+            t0 = time.time()
             func_proxy = executor.define(func).result()
             args_proxy = [executor.define(a).result() for a in args]
             res_proxy = func_proxy(*args_proxy).result()
 
             pyforaResult = res_proxy.toLocal().result()
+            t1 = time.time()
             pythonResult = func(*args)
+            t2 = time.time()
+
             self.assertTrue(
                 comparisonFunction(pyforaResult, pythonResult), 
                 "Pyfora and python returned different results: %s != %s for arguments %s" % (pyforaResult, pythonResult, args)
                 )
+
+            if t2 - t0 > 5.0:
+                print "Pyfora took ", t1 - t0, ". python took ", t2 - t1
+
         return pythonResult
 
     def test_string_indexing(self):
@@ -983,3 +991,150 @@ class ExecutorTestCases(
 
     def test_GeneratorExp_works(self):
         self.equivalentEvaluationTest(lambda: list(x for x in xrange(10)))
+
+    def test_is_returns_true(self):
+        self.equivalentEvaluationTest(lambda x: x is 10, 10)
+        self.equivalentEvaluationTest(lambda x: x is 10, 11)
+
+    def test_sum_on_generator(self):
+        class Generator1:
+            def __pyfora_generator__(self):
+                return self
+
+            def __init__(self, x, y, func):
+                self.x = x
+                self.y = y
+                self.func = func
+
+            def __iter__(self):
+                yield self.func(self.x)
+
+            def canSplit(self):
+                return self.x + 1 < self.y
+
+            def split(self):
+                if not self.canSplit():
+                    return None
+
+                return (
+                    Generator1(self.x, (self.x+self.y)/2, self.func),
+                    Generator1((self.x+self.y)/2, self.y, self.func)
+                    )
+
+            def map(self, mapFun):
+                newMapFun = lambda x: mapFun(self.func(x))
+                return Generator1(self.x, self.y, newMapFun)
+
+        def f():
+            return sum(Generator1(0, 100, lambda x:x))
+
+        self.assertEqual(f(), 0)
+        self.assertEqual(self.evaluateWithExecutor(f), sum(xrange(100)))
+    
+    def test_tuples_are_pyfora_objects(self):
+        def f():
+            return (1,2,3).__is_pyfora__
+        
+        self.assertTrue(self.evaluateWithExecutor(f))
+
+    def test_list_generators_splittable(self):
+        def f():
+            return [1,2,3].__pyfora_generator__().canSplit()
+        
+        self.assertTrue(self.evaluateWithExecutor(f))
+
+    def test_list_generators_splittable(self):
+        def f():
+            return [1,2,3].__pyfora_generator__().canSplit()
+        
+        self.assertTrue(self.evaluateWithExecutor(f))
+
+    def test_list_generators_mappable(self):
+        def f():
+            return list([1,2,3].__pyfora_generator__().map(lambda z:z*2)) == [2,4,6]
+        
+        self.assertTrue(self.evaluateWithExecutor(f))
+
+    def test_iterate_split_xrange(self):
+        def f():
+            g = xrange(100).__pyfora_generator__().split()[0]
+            res = []
+            for x in g:
+                res = res + [x]
+
+            return res == range(50)
+
+        self.assertTrue(self.evaluateWithExecutor(f))
+
+    def test_iterate_split_mapped_xrange(self):
+        def f():
+            g = xrange(100).__pyfora_generator__().map(lambda x:x).split()[0]
+            res = []
+            for x in g:
+                res = res + [x]
+
+            return res == range(50)
+
+        self.assertTrue(self.evaluateWithExecutor(f))
+
+    def test_iterate_map_split_xrange(self):
+        def f():
+            g = xrange(100).__pyfora_generator__().split()[0].map(lambda x:x)
+            res = []
+            for x in g:
+                res = res + [x]
+
+            return res == range(50)
+
+        self.assertTrue(self.evaluateWithExecutor(f))
+
+    def test_iterate_xrange(self):
+        def f():
+            res = []
+
+            for x in xrange(50):
+                res = res + [x]
+
+            return res == range(50)
+
+        self.assertTrue(self.evaluateWithExecutor(f))
+
+    def test_iterate_xrange_generator(self):
+        def f():
+            res = []
+
+            for x in xrange(50).__pyfora_generator__().map(lambda x:x):
+                res = res + [x]
+
+            return res == range(50)
+
+        self.assertTrue(self.evaluateWithExecutor(f))
+
+    def test_iterate_xrange_empty(self):
+        def f():
+            res = []
+
+            for x in xrange(0):
+                res = res + [x]
+
+            return res == []
+
+        self.assertTrue(self.evaluateWithExecutor(f))
+
+    def test_list_on_xrange(self):
+        for ct in [0,1,2,4,8,16,32,64,100,101,102,103]:
+            self.equivalentEvaluationTest(lambda: sum(x for x in xrange(ct)))
+            self.equivalentEvaluationTest(lambda: list(x for x in xrange(ct)))
+            self.equivalentEvaluationTest(lambda: [x for x in xrange(ct)])
+
+    def test_sum_isPrime(self):
+        def isPrime(p):
+            x = 2
+            while x*x <= p:
+                if p%x == 0:
+                    return 0
+                x = x + 1
+            return x
+
+        self.equivalentEvaluationTest(lambda: sum(isPrime(x) for x in xrange(1000000)))
+
