@@ -347,10 +347,28 @@ class ExecutorTestCases(
             return all(x)
         self.equivalentEvaluationTest(f, [])
         self.equivalentEvaluationTest(f, [True])
+        self.equivalentEvaluationTest(f, [False])
         self.equivalentEvaluationTest(f, [True, True])
         self.equivalentEvaluationTest(f, [True, False])
         self.equivalentEvaluationTest(f, [False, True])
         self.equivalentEvaluationTest(f, [False, False])
+
+    def test_builtins_any(self):
+        def f(x):
+            return any(x)
+        self.equivalentEvaluationTest(f, [])
+        self.equivalentEvaluationTest(f, [True])
+        self.equivalentEvaluationTest(f, [False])
+        self.equivalentEvaluationTest(f, [True, True])
+        self.equivalentEvaluationTest(f, [True, False])
+        self.equivalentEvaluationTest(f, [False, True])
+        self.equivalentEvaluationTest(f, [False, False])
+
+    def test_builtins_zip_not_implemented(self):
+        def f(x):
+            return zip(x)
+        with self.assertRaises(pyfora.Exceptions.PyforaNotImplementedError):
+            self.equivalentEvaluationTest(f, [])
 
     def test_large_strings(self):
         def f():

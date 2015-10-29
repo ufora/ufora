@@ -99,6 +99,10 @@ class InstanceMapping(PureImplementationMapping):
 
     def mapPythonInstanceToPyforaInstance(self, instance):
         assert instance is self.instance
+        if self.pureClass is None:
+            raise Exceptions.PyforaNotImplementedError(
+                "conversion of '%s' not yet implemented" %
+                (instance.__name__ if hasattr(instance, "__name__") else instance))
         return self.pureClass()
 
     def mapPyforaInstanceToPythonInstance(self, instance):
