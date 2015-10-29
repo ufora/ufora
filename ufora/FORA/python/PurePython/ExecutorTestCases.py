@@ -21,8 +21,7 @@ import traceback
 import time
 import ufora.FORA.python.PurePython.EquivalentEvaluationTestCases as EquivalentEvaluationTestCases
 import ufora.FORA.python.PurePython.ExceptionTestCases as ExceptionTestCases
-
-import random
+import random as random
 
 class ExecutorTestCases(
             EquivalentEvaluationTestCases.EquivalentEvaluationTestCases,
@@ -57,6 +56,24 @@ class ExecutorTestCases(
 
 
     @staticmethod
+    def compareButDontCheckTypes(x, y):
+        if isinstance(x, basestring) and isinstance(y, basestring):
+            return x == y
+
+        if hasattr(x, '__len__') and hasattr(y, '__len__'):
+            l1 = len(x)
+            l2 = len(y)
+            if l1 != l2:
+                return False
+            for idx in range(l1):
+                # print "x", x, y, type(x), type(y)
+                if not ExecutorTestCases.compareButDontCheckTypes(x[idx], y[idx]):
+                    return False
+            return True
+        else:
+            return x == y
+
+    @staticmethod
     def defaultComparison(x, y):
         if isinstance(x, basestring) and isinstance(y, basestring):
             return x == y
@@ -71,7 +88,10 @@ class ExecutorTestCases(
                     return False
             return True
         else:
-            return x == y and type(x) is type(y)
+            sameType = x == y and type(x) is type(y)
+            if not sameType:
+                print "Different types", x, y, type(x), type(y)
+            return sameType
 
     def equivalentEvaluationTest(self, func, *args, **kwds):
         comparisonFunction = ExecutorTestCases.defaultComparison
@@ -166,7 +186,11 @@ class ExecutorTestCases(
         self.equivalentEvaluationTest(f, 10, 5, 5)
         self.equivalentEvaluationTest(f, 10, 10, 10)
 
-    def equivalentEvaluationTestThatHandlesExceptions(self, func, *args):
+    def equivalentEvaluationTestThatHandlesExceptions(self, func, *args, **kwds):
+        comparisonFunction = ExecutorTestCases.defaultComparison
+        if 'comparisonFunction' in kwds:
+            comparisonFunction = kwds['comparisonFunction']
+
         with self.create_executor() as executor:
             try:
                 pythonResult = func(*args)
@@ -188,9 +212,8 @@ class ExecutorTestCases(
             self.assertEqual(pythonSucceeded, pyforaSucceeded,
                     "Pyfora and python returned successes: %s%s" % (func, args)
                     )
-
             if pythonSucceeded:
-                self.assertEqual(pythonResult, pyforaResult, 
+                self.assertTrue(comparisonFunction(pythonResult, pyforaResult),
                     "Pyfora and python returned different results: %s != %s for %s%s" % (pyforaResult, pythonResult, func, args)
                     )
                 return pythonResult
@@ -403,6 +426,71 @@ class ExecutorTestCases(
             return toReturn
         r = self.equivalentEvaluationTest(f)
 
+    def test_numpy_transpose(self):
+        def f():
+            array = numpy.array([ [67.0, 63.0, 87.0],
+                [77.0, 69.0, 59.0], 
+                [85.0, 87.0, 99.0],
+                [15.0, 17.0, 19.0] ])
+
+            return array.transpose()
+        r = self.equivalentEvaluationTest(f)
+
+
+        def f2():
+            arr = numpy.array([[[67.0], [87.0]], [[69.0], [85.0]], [[69.0], [15.0]]])
+
+            return arr.transpose()
+        r = self.equivalentEvaluationTest(f2)
+
+
+        def f3():
+            arr = numpy.array([1.0, 2.0, 3.0, 4.0, 5.0])
+
+            return arr.transpose()
+        r = self.equivalentEvaluationTest(f3)
+
+    def test_numpy_indexing_1(self):
+        def f():
+            array = numpy.array([ [67.0, 63.0, 87.0], 
+                [77.0, 69.0, 59.0], 
+                [85.0, 87.0, 99.0],
+                [15.0, 17.0, 19.0] ])
+
+            toReturn = []
+            l = len(array)
+            l2 = len(array[0])
+            for x in range(l):
+                for y in range(l2):
+                    toReturn = toReturn + [array[x][y]]
+            return toReturn
+
+    def test_numpy_indexing_2(self):
+        def f():
+            arr = numpy.array([ 67.0, 63.0, 87.0, 77.0, 69.0, 59.0, 85.0, 87.0, 99.0 ])
+            return (arr, arr[0], arr[1], arr[8])
+
+        r = self.equivalentEvaluationTest(f, comparisonFunction=ExecutorTestCases.compareButDontCheckTypes)
+
+
+    def test_numpy_indexing_3(self):
+        def f():
+            arr = numpy.array([[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]])
+            return (arr, arr[0], arr[1], arr[1][0], arr[0][1][1])
+        r = self.equivalentEvaluationTest(f, comparisonFunction=ExecutorTestCases.compareButDontCheckTypes)
+
+        def f2():
+            arr = numpy.array([[[67.0], [87.0]], [[69.0], [85.0]], [[69.0], [15.0]]])
+            return (arr, arr[0], arr[1], arr[1][0], arr[2][1][0])
+
+        r = self.equivalentEvaluationTest(f2, comparisonFunction=ExecutorTestCases.compareButDontCheckTypes)
+
+        def f3():
+            arr = numpy.array([[[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]], [[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]]])
+            return (arr, arr[0], arr[1], arr[1][0], arr[0][1][1], arr[0][1][1][1])
+
+        r = self.equivalentEvaluationTest(f3, comparisonFunction=ExecutorTestCases.compareButDontCheckTypes)
+
     def test_return_numpy(self):
         n = numpy.zeros(10)
         def f():
@@ -440,9 +528,74 @@ class ExecutorTestCases(
             return reduce(lambda x, y: x * y, toReduce)
         r = self.equivalentEvaluationTest(f)
 
+    def test_numpy_dot_product(self):
+        listLength = 20
+        def f(arr1, arr2):
+            return numpy.dot(arr1, arr2)
+
+        for _ in range(10):
+            r = self.equivalentEvaluationTest(
+                f, 
+                [random.uniform(-10, 10) for _ in range(0, listLength)],
+                [random.uniform(-10, 10) for _ in range(0, listLength)],
+                comparisonFunction=ExecutorTestCases.compareButDontCheckTypes
+                )
+
+
+    def test_reshape(self):
+        def f(newShape):
+            m1 = numpy.array([ [67.0, 63, 87],
+                       [77, 69, 59],
+                       [85, 87, 99],
+                       [79, 72, 71],
+                       [63, 89, 93],
+                       [68, 92, 78] ])
+            return m1.reshape(newShape)
+
+        self.equivalentEvaluationTest(f, (1, 18))
+        self.equivalentEvaluationTest(f, (2, 9))
+        self.equivalentEvaluationTest(f, (3, 6))
+        self.equivalentEvaluationTestThatHandlesExceptions(f, (1, 1))
+
+    def test_numpy_matrix_division(self):
+        matrix = numpy.array([ [67, 63, 87],
+                       [77, 69, 59],
+                       [85, 87, 99],
+                       [79, 72, 71],
+                       [63, 89, 93],
+                       [68, 92, 78] ])
+
+        for _ in range(10):
+            def f(x):
+                return matrix / x
+            r = self.equivalentEvaluationTest(f, random.uniform(-10, 10))
+
+            def f2(x):
+                return matrix * x
+            r = self.equivalentEvaluationTest(f2, random.uniform(-10, 10))
+
+            def f3(x):
+                return matrix + x
+            r = self.equivalentEvaluationTest(f3, random.uniform(-10, 10))
+
+            def f4(x):
+                return matrix - x
+            r = self.equivalentEvaluationTest(f4, random.uniform(-10, 10))
+
+            def f5(x):
+                return matrix ** x
+            r = self.equivalentEvaluationTest(f5, random.uniform(-10, 10))
+
+
+    def test_numpy_make_array(self):
+        def f():
+            return numpy.zeros(10)
+
+        self.equivalentEvaluationTest(f)
+
     def test_return_list(self):
         def f():
-            return [1,2,3,4,5]
+            return [1, 2, 3, 4, 5]
 
         self.equivalentEvaluationTest(f)
 
@@ -461,7 +614,7 @@ class ExecutorTestCases(
 
         ct = 1000000
         res = self.evaluateWithExecutor(f, ct)
-        self.assertEqual(res, ct * (ct-1)/2)
+        self.assertEqual(res, ct * (ct-1) / 2)
 
     def test_list_getitem_1(self):
         def f():
@@ -1052,7 +1205,6 @@ class ExecutorTestCases(
             low = 0
             for high in [None] + range(-7,7):
                 for step in [-3,-2,-1,None,1,2,3]:
-                    print low, high, step
                     if high is None:
                         self.equivalentEvaluationTest(range, low)
                     elif step is None:
@@ -1323,7 +1475,7 @@ class ExecutorTestCases(
 
         for c in callables:
             for i in instances:
-                self.equivalentEvaluationTestThatHandlesExceptions(c, i)
+                self.equivalentEvaluationTestThatHandlesExceptions(c, i, comparisonFunction=lambda x, y: x == y)
 
     def test_issubclass(self):
         test = self.equivalentEvaluationTestThatHandlesExceptions

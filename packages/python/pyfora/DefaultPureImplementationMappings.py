@@ -23,6 +23,9 @@ defaultMapping_.addMapping(Numpy.PurePythonNumpyArrayMapping())
 for mapping in BuiltinPureImplementationMappings.generateMappings():
     defaultMapping_.addMapping(mapping)
 
+for mapping in Numpy.generateMappings():
+    defaultMapping_.addMapping(mapping)
+
 def getMappings():
 	return defaultMapping_
 
