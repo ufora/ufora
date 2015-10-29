@@ -20,9 +20,9 @@ README = open(os.path.join(here, 'README.rst')).read()
 NEWS = open(os.path.join(here, 'NEWS.txt')).read()
 
 
-version = '0.1'
+version = '0.0.1'
 
-install_requires = ['futures', 'requests==2.7.0', 'socketIO-client==0.6.5']
+install_requires = ['futures', 'socketIO-client>=0.6.5']
 
 
 setup(
@@ -32,12 +32,19 @@ setup(
     long_description=README + '\n\n' + NEWS,
     classifiers=[
         # Get strings from http://pypi.python.org/pypi?%3Aaction=list_classifiers
+        'Development Status :: 3 - Alpha',
+        'Environment :: Console',
+        'Intended Audience :: Science/Research',
+        'License :: OSI Approved :: Apache Software License',
+        'Operating System :: OS Independent',
+        'Programming Language :: Python :: 2.7',
+        'Topic :: Scientific/Engineering'
     ],
     keywords='ufora fora parallel remote data-science machine-learning',
     author='Ufora Inc.',
     author_email='info@ufora.com',
     url='http://www.ufora.com/',
-    license='',
+    license='Apache',
     packages=find_packages('.'),
     #package_dir={'': 'pyfora'}, include_package_data=True,
     zip_safe=False,
