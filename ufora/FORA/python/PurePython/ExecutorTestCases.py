@@ -815,6 +815,39 @@ class ExecutorTestCases(
 
             self.assertIs(self.evaluateWithExecutor(f), None)
 
+    def test_run_off_end_of_class_member_function_returns_None(self):
+        with self.create_executor() as executor:
+            def f():
+                class X2:
+                    def f(self):
+                        x = 10
+
+                return X2().f()
+
+            self.assertIs(self.evaluateWithExecutor(f), None)
+
+    def test_class_member_function_return_correct(self):
+        with self.create_executor() as executor:
+            def f():
+                class X2:
+                    def f(self):
+                        return 10
+
+                return X2().f()
+
+            self.assertIs(self.evaluateWithExecutor(f), 10)
+
+    def test_run_off_end_of_class_member_function_returns_None_2(self):
+        with self.create_executor() as executor:
+            class X3:
+                def f(self):
+                    x = 10
+
+            def f():
+                return X3().f()
+
+            self.assertIs(self.evaluateWithExecutor(f), None)
+
     def test_empty_return_returns_None(self):
         with self.create_executor() as executor:
             def f():

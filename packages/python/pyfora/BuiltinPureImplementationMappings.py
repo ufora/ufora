@@ -91,7 +91,7 @@ class XRangeInstance:
                     sum(val + lowCount * increment, count-lowCount, increment, depth+1)
                     )
 
-        sum(self.start, self.count, self.increment, 0)
+        return sum(self.start, self.count, self.increment, 0)
 
 class XRange:
     def __call__(self, first, second=None, increment=None):
