@@ -13,7 +13,7 @@
 #   limitations under the License.
 
 import time
-import pyfora.Exceptions as Exceptions
+import pyfora
 import ufora.FORA.python.PurePython.ExecutorTestCases as ExecutorTestCases
 
 
@@ -39,7 +39,7 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
             remote = executor.submit(f).result()
 
             noneOrExceptionFuture = executor.exportS3Dataset(remote, "bucket", 10)
-            with self.assertRaises(Exceptions.PyforaError):
+            with self.assertRaises(pyfora.PyforaError):
                 noneOrExceptionFuture.result()
 
     def test_pyfora_s3_write_valueNotString(self):
@@ -51,7 +51,7 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
             remote = executor.submit(f).result()
 
             noneOrExceptionFuture = executor.exportS3Dataset(remote, "bucket", "key")
-            with self.assertRaises(Exceptions.PyforaError):
+            with self.assertRaises(pyfora.PyforaError):
                 noneOrExceptionFuture.result()
 
     def test_pyfora_s3_write_succeeds(self):

@@ -21,8 +21,7 @@ import pyfora.TypeDescription as TypeDescription
 import pyfora.StronglyConnectedComponents as StronglyConnectedComponents
 import pyfora.PyAstUtil as PyAstUtil
 import pyfora.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
-import logging
-import pyfora.Exceptions as Exceptions
+import pyfora
 
 import ast
 
@@ -55,7 +54,7 @@ class Converter(object):
             )
 
         self.singletonAndExceptionConverter = singletonAndExceptionConverter
-        
+
         self.nativeConstantConverter = \
             self.constantConverter.nativeConstantConverter
 
@@ -104,7 +103,7 @@ class Converter(object):
             convertedValue = self._convert(objectId, dependencyGraph, objectIdToObjectDefinition)
             self.convertedValues[objectId] = convertedValue
             callback(convertedValue)
-        except Exceptions.PythonToForaConversionError as e:
+        except pyfora.PythonToForaConversionError as e:
             callback(e)
 
     def _convert(self, objectId, dependencyGraph, objectIdToObjectDefinition):
@@ -119,8 +118,8 @@ class Converter(object):
         elif isinstance(objectDefinition, TypeDescription.BuiltinExceptionInstance):
             return self.convertBuiltinExceptionInstance(
                 objectId,
-                objectDefinition, 
-                dependencyGraph, 
+                objectDefinition,
+                dependencyGraph,
                 objectIdToObjectDefinition
                 )
         elif isinstance(objectDefinition,
@@ -129,7 +128,7 @@ class Converter(object):
                          TypeDescription.ClassInstanceDescription)
                        ):
             return (
-                self.convertObjectWithDependencies( 
+                self.convertObjectWithDependencies(
                     objectId,
                     dependencyGraph,
                     objectIdToObjectDefinition
@@ -169,32 +168,32 @@ class Converter(object):
                     )
                 )
         else:
-            raise Exceptions.PythonToForaConversionError(
+            raise pyfora.PythonToForaConversionError(
                 "don't know how to convert %s of type %s" % (
                     objectDefinition, type(objectDefinition)
                     )
                 )
-    
+
     def convertNamedSingleton(self, objectDefinition):
         singleton = self.singletonAndExceptionConverter.convertSingletonByName(
             objectDefinition.singletonName
             )
 
         if singleton is None:
-            raise Exceptions.PythonToForaConversionError("No singleton named %s" % objectDefinition.singletonName)
-        
+            raise pyfora.PythonToForaConversionError("No singleton named %s" % objectDefinition.singletonName)
+
         return singleton
 
-    def convertBuiltinExceptionInstance(self, 
+    def convertBuiltinExceptionInstance(self,
                 objectId,
                 objectDefinition,
-                dependencyGraph, 
+                dependencyGraph,
                 objectIdToObjectDefinition
                 ):
         args = self.convertedValues[objectDefinition.argId]
 
         return self.singletonAndExceptionConverter.instantiateException(
-            objectDefinition.builtinExceptionTypeName, 
+            objectDefinition.builtinExceptionTypeName,
             args
             )
 
@@ -247,7 +246,7 @@ class Converter(object):
 
         if len(stronglyConnectedComponents[-1]) > 1 or \
            containerId in dependencyGraph[containerId]:
-            raise Exceptions.PythonToForaConversionError(
+            raise pyfora.PythonToForaConversionError(
                 "don't know how to convert lists or tuples which reference themselves"
                 )
 
@@ -631,7 +630,7 @@ class Converter(object):
                 )
 
         return foraFunctionExpression
-        
+
     def _getNativePythonFunctionDefFromWithBlockDescription(
             self,
             withBlockDescription,
@@ -655,7 +654,7 @@ class Converter(object):
                 kwarg=None,
                 defaults=[]),
             body=withTree.body,
-            decorator_list=[]            
+            decorator_list=[]
             )
 
         assignedVariables = \
@@ -677,7 +676,7 @@ class Converter(object):
         # in this returnTuple, elt 0 is the assigned vars,
         # elt 1 is the traceback (which is not a list so it's handled properly later)
         # and elt 2 is the exception value
-        
+
         returnTuple = "({" + \
             ",".join(("'%s': %s" % (var, var) for var in assignedVariables)) \
             + "}, 0, 0)"
@@ -874,7 +873,7 @@ class Converter(object):
             assert False
 
         if isinstance(tr, ForaNative.PythonToForaConversionError):
-            raise Exceptions.PythonToForaConversionError(tr)
+            raise pyfora.PythonToForaConversionError(tr)
 
         return tr
 
@@ -892,7 +891,7 @@ class Converter(object):
         pyAst = pyAst.functionClassOrLambdaDefAtLine(classOrFunctionDefinition.lineNumber)
 
         assert pyAst is not None, (sourceText, classOrFunctionDefinition.lineNumber)
-        
+
         return pyAst
 
     def unwrapPyforaDictToDictOfAssignedVars(self, dictIVC):
@@ -910,7 +909,7 @@ class Converter(object):
                     res[maybePyforaKeyString[0]] = pyforaValue
                 else:
                     return None
-                    
+
         return res
 
     def unwrapPyforaTupleToTuple(self, tupleIVC):
@@ -919,7 +918,7 @@ class Converter(object):
             return None
 
         res = tuple([pyforaValue for pyforaValue in pyforaTuple])
-        return res        
+        return res
 
     def transformPyforaImplval(self, implval, transformer, vectorContentsExtractor):
         """Walk an implval that represents a pyfora value and unwrap it, passing data to the transformer.
@@ -953,7 +952,7 @@ class Converter(object):
             value = self.singletonAndExceptionConverter.convertExceptionInstance(implval)
             if value is not None:
                 return transformer.transformBuiltinException(
-                    value[0], 
+                    value[0],
                     self.transformPyforaImplval(value[1], transformer, vectorContentsExtractor)
                     )
 
@@ -1016,7 +1015,7 @@ class Converter(object):
                                 members[str(memberName)] = self.transformPyforaImplval(member[0], transformer, vectorContentsExtractor)
 
                     return transformer.transformFunctionInstance(
-                        defPoint.defPoint.asExternal.paths[0], 
+                        defPoint.defPoint.asExternal.paths[0],
                         defPoint.range.start.line,
                         members
                         )
@@ -1035,18 +1034,18 @@ class Converter(object):
                         members[str(memberName)] = self.transformPyforaImplval(member[0], transformer, vectorContentsExtractor)
 
             return transformer.transformClassObject(
-                    defPoint.defPoint.asExternal.paths[0], 
+                    defPoint.defPoint.asExternal.paths[0],
                     defPoint.range.start.line,
                     members
                     )
 
-        raise Exceptions.ForaToPythonConversionError(
+        raise pyfora.ForaToPythonConversionError(
             "Computation references a value of type %s that cannot be translated back to python."
                 % (str(implval.type))
             )
 
     def getStackTraceAsJsonOrNone(self, implval):
-        tup = implval.getTuple()        
+        tup = implval.getTuple()
 
         if len(tup) != 2:
             return None
@@ -1058,7 +1057,7 @@ class Converter(object):
 
         if hashes is None:
             return None
-            
+
         codeLocations = [ForaNative.getCodeLocation(h) for h in hashes]
 
         def formatCodeLocation(c):
@@ -1066,12 +1065,12 @@ class Converter(object):
                 return None
             def posToJson(simpleParsePosition):
                 return {
-                    'characterOffset': simpleParsePosition.rawOffset, 
-                    'line': simpleParsePosition.line, 
-                    'col': simpleParsePosition.col 
+                    'characterOffset': simpleParsePosition.rawOffset,
+                    'line': simpleParsePosition.line,
+                    'col': simpleParsePosition.col
                     }
             return {
-                'path': list(c.defPoint.asExternal.paths), 
+                'path': list(c.defPoint.asExternal.paths),
                 'range': {
                     'start': posToJson(c.range.start),
                     'stop': posToJson(c.range.stop)

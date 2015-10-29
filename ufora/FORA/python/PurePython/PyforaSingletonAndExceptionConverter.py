@@ -20,7 +20,7 @@ and builtin objects like 'type', 'object', 'Exception', etc.
 We need to implement these types directly in pure FORA because our primitives (like
 PyInt) need them to throw appropriate exceptions.
 """
-import pyfora.Exceptions as Exceptions
+import pyfora
 import ufora.native.FORA as ForaNative
 import ufora.FORA.python.FORA as FORA
 import pyfora.NamedSingletons as NamedSingletons
@@ -35,7 +35,7 @@ class PyforaSingletonAndExceptionConverter:
 
         self.pyExceptionClass = pyforaBuiltinsModule.getObjectMember("PyException")
         self.invalidPyforaOperationClass = pyforaBuiltinsModule.getObjectMember("InvalidPyforaOperation")
-        
+
         self.pyExceptionClassInstanceName = ForaNative.simulateApply(
             ForaNative.ImplValContainer(
                 (self.pyExceptionClass,
@@ -93,7 +93,7 @@ class PyforaSingletonAndExceptionConverter:
         if instance.getClassName() == self.invalidPyforaOperationClassInstanceName:
             result = instance.getObjectLexicalMember("@message")[0]
             if not result.isString():
-                raise Exceptions.ForaToPythonConversionError(
+                raise pyfora.ForaToPythonConversionError(
                     "InvalidPyforaOperation message should be a raw FORA string."
                     )
             return result.pyval
@@ -110,7 +110,7 @@ class PyforaSingletonAndExceptionConverter:
         args = (
             self.pyExceptionClass,
             ForaNative.makeSymbol("CreateInstance"),
-            exceptionTypeInstance, 
+            exceptionTypeInstance,
             exceptionArgsAsPyTuple
             )
 

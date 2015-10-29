@@ -12,7 +12,7 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import pyfora.Exceptions
+import pyfora
 import pyfora.PyAstUtil as PyAstUtil
 import numpy
 import time
@@ -34,10 +34,10 @@ class ExecutorTestCases(
         if 'executor' in kwds:
             executor = kwds['executor']
             shouldClose = False
-        else: 
+        else:
             executor = self.create_executor()
 
-        try: 
+        try:
             func_proxy = executor.define(func).result()
             args_proxy = [executor.define(a).result() for a in args]
             res_proxy = func_proxy(*args_proxy).result()
@@ -85,8 +85,9 @@ class ExecutorTestCases(
             t2 = time.time()
 
             self.assertTrue(
-                comparisonFunction(pyforaResult, pythonResult), 
-                "Pyfora and python returned different results: %s != %s for arguments %s" % (pyforaResult, pythonResult, args)
+                comparisonFunction(pyforaResult, pythonResult),
+                "Pyfora and python returned different results: %s != %s for arguments %s" % \
+                    (pyforaResult, pythonResult, args)
                 )
 
             if t2 - t0 > 5.0:
@@ -168,7 +169,7 @@ class ExecutorTestCases(
                 pythonSucceeded = True
             except Exception as ex:
                 pythonSucceeded = False
-                
+
             try:
                 r2 = self.evaluateWithExecutor(func, *args, executor=executor)
                 pyforaSucceeded = True
@@ -212,7 +213,7 @@ class ExecutorTestCases(
                 foraResults.append(f.result())
             except Exception as e:
                 pass
-        return foraResults        
+        return foraResults
 
     def test_slicing_operations_2(self):
         a = "abcd"
@@ -236,7 +237,7 @@ class ExecutorTestCases(
 
             foraResults = self.resolvedFutures(futures)
             # we are asserting that we got a lot of results
-            # we don't expect to have (l * 2 -1)^3, because we expect some of the 
+            # we don't expect to have (l * 2 -1)^3, because we expect some of the
             # operations to fail
             self.assertTrue(len(foraResults) > 500)
             self.assertEqual(pythonResults, foraResults)
@@ -271,8 +272,8 @@ class ExecutorTestCases(
                 0 or 1,
                 1 or 2,
                 1 or 0,
-                0 or False, 
-                1 or 2 or 3, 
+                0 or False,
+                1 or 2 or 3,
                 0 or 1,
                 0 or 1 or 2,
                 1 and 2,
@@ -356,25 +357,25 @@ class ExecutorTestCases(
         def f1():
             return 4 / 0
 
-        with self.assertRaises(pyfora.Exceptions.ComputationError):
+        with self.assertRaises(pyfora.ComputationError):
             self.evaluateWithExecutor(f1)
 
         def f2():
             return 4.0 / 0
 
-        with self.assertRaises(pyfora.Exceptions.ComputationError):
+        with self.assertRaises(pyfora.ComputationError):
             self.evaluateWithExecutor(f2)
 
         def f3():
             return 4 / 0.0
 
-        with self.assertRaises(pyfora.Exceptions.ComputationError):
+        with self.assertRaises(pyfora.ComputationError):
             self.evaluateWithExecutor(f3)
 
         def f4():
             return 4.0 / 0.0
 
-        with self.assertRaises(pyfora.Exceptions.ComputationError):
+        with self.assertRaises(pyfora.ComputationError):
             self.evaluateWithExecutor(f4)
 
     def test_builtins_abs(self):
@@ -382,14 +383,14 @@ class ExecutorTestCases(
             return abs(x)
         for x in range(-10, 10):
             self.equivalentEvaluationTest(f, x)
-            
+
         self.equivalentEvaluationTest(f, True)
         self.equivalentEvaluationTest(f, False)
-        with self.assertRaises(pyfora.Exceptions.ComputationError):
+        with self.assertRaises(pyfora.ComputationError):
             self.evaluateWithExecutor(f, [])
-        with self.assertRaises(pyfora.Exceptions.ComputationError):
+        with self.assertRaises(pyfora.ComputationError):
             self.evaluateWithExecutor(f, ["test"])
-        with self.assertRaises(pyfora.Exceptions.ComputationError):
+        with self.assertRaises(pyfora.ComputationError):
             self.evaluateWithExecutor(f, "test")
 
     def test_builtins_all(self):
@@ -692,7 +693,7 @@ class ExecutorTestCases(
 
         self.assertEqual(shouldBeReturnedClass.x, 10)
         self.assertEqual(str(shouldBeReturnedClass.__class__), str(ReturnedClass))
-        
+
 
     def test_returnFunctions(self):
         y = 2
@@ -778,7 +779,7 @@ class ExecutorTestCases(
             self.assertFalse(future.done())
             self.assertTrue(future.cancel())
             self.assertTrue(future.cancelled())
-            with self.assertRaises(pyfora.Exceptions.CancelledError):
+            with self.assertRaises(pyfora.CancelledError):
                 future.result()
 
 
@@ -789,9 +790,9 @@ class ExecutorTestCases(
             arg = 0
 
             future = executor.submit(f, arg)
-            with self.assertRaises(pyfora.Exceptions.PyforaError):
+            with self.assertRaises(pyfora.PyforaError):
                 future.result().toLocal().result()
-                
+
 
     def test_invalid_apply(self):
         with self.create_executor() as executor:
@@ -800,7 +801,7 @@ class ExecutorTestCases(
             arg = 0
 
             future = executor.submit(f, arg)
-            with self.assertRaises(pyfora.Exceptions.ComputationError):
+            with self.assertRaises(pyfora.ComputationError):
                 try:
                     print "result=",future.result()
                     print future.result().toLocal().result()
@@ -816,7 +817,7 @@ class ExecutorTestCases(
                 return y
 
             future = executor.define(f)
-            with self.assertRaises(pyfora.Exceptions.PythonToForaConversionError):
+            with self.assertRaises(pyfora.PythonToForaConversionError):
                 future.result()
 
     def test_pass_returns_None(self):
@@ -906,7 +907,7 @@ class ExecutorTestCases(
                 pass
 
             errorMsg = "I always throw!"
-                
+
             class MyException(Exception):
                 pass
 
@@ -922,7 +923,7 @@ class ExecutorTestCases(
             try:
                 res_proxy.toLocal().result()
             except Exception as e:
-                self.assertIsInstance(e, pyfora.Exceptions.PyforaError)
+                self.assertIsInstance(e, pyfora.PyforaError)
                 self.assertIsInstance(e.message, MyException)
                 self.assertEqual(e.message.message, errorMsg)
 
@@ -934,7 +935,7 @@ class ExecutorTestCases(
 
         def f():
             return it(10).__is_pyfora__
-        
+
         self.assertIs(self.evaluateWithExecutor(f), True)
 
     def test_free_function_is_pyfora_object(self):
@@ -942,7 +943,7 @@ class ExecutorTestCases(
             return 10
         def f():
             return g.__is_pyfora__
-        
+
         self.assertIs(self.evaluateWithExecutor(f), True)
 
     def test_local_function_is_pyfora_object(self):
@@ -950,7 +951,7 @@ class ExecutorTestCases(
             def g():
                 pass
             return g.__is_pyfora__
-        
+
         self.assertIs(self.evaluateWithExecutor(f), True)
 
     def test_list_on_iterable(self):
@@ -961,7 +962,7 @@ class ExecutorTestCases(
 
         def f1():
             return list(xrange(10))
-        
+
         def f2():
             return list(it(10))
 
@@ -973,21 +974,21 @@ class ExecutorTestCases(
             return 10
         def f():
             return g().__str__()
-        
+
         self.equivalentEvaluationTest(f)
 
     def test_convert_lambda_external(self):
         g = lambda: 10
         def f():
             return g()
-        
+
         self.equivalentEvaluationTest(f)
 
     def test_convert_lambda_internal(self):
         def f():
             g = lambda: 10
             return g()
-        
+
         self.equivalentEvaluationTest(f)
 
     def test_evaluate_lambda_directly(self):
@@ -996,7 +997,7 @@ class ExecutorTestCases(
     def test_return_lambda(self):
         def f():
             return lambda: 10
-        
+
         self.assertEqual(self.evaluateWithExecutor(f)(), 10)
 
     def test_GeneratorExp_works(self):
@@ -1043,29 +1044,29 @@ class ExecutorTestCases(
 
         self.assertEqual(f(), 0)
         self.assertEqual(self.evaluateWithExecutor(f), sum(xrange(100)))
-    
+
     def test_tuples_are_pyfora_objects(self):
         def f():
             return (1,2,3).__is_pyfora__
-        
+
         self.assertTrue(self.evaluateWithExecutor(f))
 
     def test_list_generators_splittable(self):
         def f():
             return [1,2,3].__pyfora_generator__().canSplit()
-        
+
         self.assertTrue(self.evaluateWithExecutor(f))
 
     def test_list_generators_splittable(self):
         def f():
             return [1,2,3].__pyfora_generator__().canSplit()
-        
+
         self.assertTrue(self.evaluateWithExecutor(f))
 
     def test_list_generators_mappable(self):
         def f():
             return list([1,2,3].__pyfora_generator__().map(lambda z:z*2)) == [2,4,6]
-        
+
         self.assertTrue(self.evaluateWithExecutor(f))
 
     def test_iterate_split_xrange(self):

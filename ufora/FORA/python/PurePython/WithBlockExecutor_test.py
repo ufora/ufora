@@ -16,11 +16,9 @@ import ufora.FORA.python.PurePython.EquivalentEvaluationTestCases as EquivalentE
 import ufora.FORA.python.PurePython.InMemorySimulationExecutorFactory as InMemorySimulationExecutorFactory
 import pyfora.RemotePythonObject as RemotePythonObject
 
-import pyfora.Exceptions
 
 import unittest
 import traceback
-import logging
 
 
 class WithBlockExecutors_test(unittest.TestCase, EquivalentEvaluationTestCases.EquivalentEvaluationTestCases):
@@ -197,7 +195,7 @@ class WithBlockExecutors_test(unittest.TestCase, EquivalentEvaluationTestCases.E
 
             self.assertIsInstance(smallString, str)
             self.assertIsInstance(largeString, RemotePythonObject.ComputedRemotePythonObject)
-            
+
 
     def test_exception_in_with_block(self):
         fora = self.create_executor()
@@ -300,7 +298,7 @@ class WithBlockExecutors_test(unittest.TestCase, EquivalentEvaluationTestCases.E
                 x = 0
                 for ix in xrange(10):
                     x = x + 1
-            
+
             self.assertEqual(x.toLocal().result(), 10)
 
             # doesn't work

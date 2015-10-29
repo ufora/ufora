@@ -12,8 +12,7 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-from pyfora.Exceptions \
-    import PythonToForaConversionError, ForaToPythonConversionError
+from pyfora.Exceptions import PythonToForaConversionError
 
 import ufora.native.FORA as ForaNative
 
@@ -46,7 +45,7 @@ class ConstantConverter(object):
             raise PythonToForaConversionError("can't convert " + str(pyObject))
 
     def invertForaConstant(self, implVal):
-        """attempt to unwrap the ForaValue as a constant (returning it in a tuple), 
+        """attempt to unwrap the ForaValue as a constant (returning it in a tuple),
         or return None if we can't unwrap it.
         """
         return self.nativeConstantConverter.invertForaConstant(implVal)

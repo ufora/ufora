@@ -12,7 +12,7 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import pyfora.Exceptions
+import pyfora
 import ufora.FORA.python.PurePython.OperationsToTest as OperationsToTest
 import unittest
 import pyfora.Connection as Connection
@@ -93,7 +93,7 @@ class TestAllBinaryOperators(unittest.TestCase):
         try:
             r2 = self.evaluateWithExecutor(func, *args, executor=executor)
             pyforaSucceeded = True
-        except pyfora.Exceptions.ComputationError as ex:
+        except pyfora.ComputationError as ex:
             pyforaSucceeded = False
 
         self.assertEqual(pythonSucceeded, pyforaSucceeded)

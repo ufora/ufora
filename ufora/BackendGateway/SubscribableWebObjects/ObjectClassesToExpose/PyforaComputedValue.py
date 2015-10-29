@@ -12,6 +12,9 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+import logging
+import traceback
+
 import ufora.FORA.python.ForaValue as ForaValue
 import ufora.BackendGateway.ComputedValue.ComputedValue as ComputedValue
 import ufora.BackendGateway.ComputedGraph.ComputedGraph as ComputedGraph
@@ -20,8 +23,6 @@ import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.PyforaT
 import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.PyforaObjectConverter \
     as PyforaObjectConverter
 import ufora.native.FORA as ForaNative
-import logging
-import traceback
 
 def validateObjectIds(ids):
     converter = PyforaObjectConverter.PyforaObjectConverter()
@@ -97,7 +98,7 @@ class PyforaComputedValue(ComputedValue.ComputedValue):
 
     @ComputedGraph.ExposedProperty()
     def jsonStatusRepresentation(self):
-        """Indicate the current status of the computation. 
+        """Indicate the current status of the computation.
 
         States:
             None - the computation is unfinished
@@ -162,7 +163,7 @@ class PyforaComputedValue(ComputedValue.ComputedValue):
 
             if hashes is None:
                 return None
-            
+
             codeLocations = [ForaNative.getCodeLocation(h) for h in hashes]
 
             def formatCodeLocation(c):
@@ -172,12 +173,12 @@ class PyforaComputedValue(ComputedValue.ComputedValue):
                     return None
                 def posToJson(simpleParsePosition):
                     return {
-                        'characterOffset': simpleParsePosition.rawOffset, 
-                        'line': simpleParsePosition.line, 
-                        'col': simpleParsePosition.col 
+                        'characterOffset': simpleParsePosition.rawOffset,
+                        'line': simpleParsePosition.line,
+                        'col': simpleParsePosition.col
                         }
                 return {
-                    'path': list(c.defPoint.asExternal.paths), 
+                    'path': list(c.defPoint.asExternal.paths),
                     'range': {
                         'start': posToJson(c.range.start),
                         'stop': posToJson(c.range.stop)
@@ -193,7 +194,7 @@ class PyforaResultAsJson(ComputedGraph.Location):
     computedValue = object
 
     #the maximum number of bytes we'll permit, or None
-    #note that this isn't a perfect calculation, since we're going to encode as json. We assume a 
+    #note that this isn't a perfect calculation, since we're going to encode as json. We assume a
     #fixed byte overhead for every object because of the json encoding
     maxBytecount = object
 
@@ -244,17 +245,17 @@ class PyforaResultAsJson(ComputedGraph.Location):
 
             try:
                 res = c.transformPyforaImplval(
-                    value, 
+                    value,
                     transformer,
                     extractVectorContents
                     )
             except Exception as e:
-                import pyfora.Exceptions as Exceptions
-                if self.computedValue.isException and isinstance(e, Exceptions.ForaToPythonConversionError):
+                import pyfora
+                if self.computedValue.isException and isinstance(e, pyfora.ForaToPythonConversionError):
                     return {
                         'result': {
                             "untranslatableException": str(ForaValue.FORAValue(self.computedValue.valueIVC))
-                            }, 
+                            },
                         'isException': True,
                         'trace': self.computedValue.exceptionCodeLocationsAsJson
                         }
@@ -298,8 +299,8 @@ class PyforaDictionaryElement(PyforaComputedValue):
         return ()
 
     def args(self):
-        return (self.baseCV, 
-                ForaNative.makeSymbol("RawGetItemByString"), 
+        return (self.baseCV,
+                ForaNative.makeSymbol("RawGetItemByString"),
                 ForaNative.ImplValContainer(self.keyname))
 
     def __str__(self):
@@ -316,8 +317,8 @@ class PyforaTupleElement(PyforaComputedValue):
         return ()
 
     def args(self):
-        return (self.baseCV, 
-                ForaNative.makeSymbol("RawGetItemByInt"), 
+        return (self.baseCV,
+                ForaNative.makeSymbol("RawGetItemByInt"),
                 ForaNative.ImplValContainer(self.index))
 
     def __str__(self):
