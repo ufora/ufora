@@ -58,7 +58,7 @@ class Relay
   registerSubscribableWebObjectsHandlers: (socket) =>
     @setSession(socket, {})
     socket.on 'message', (payload) =>
-      @logger.info "Received message on subscribable socket:", payload
+      @logger.debug "Received message on subscribable socket:", payload
       unless payload?.body?
         @logger.error('Invalid data in "message": ', payload)
         return socket.disconnect()
@@ -77,7 +77,7 @@ class Relay
   handleIncomingSubscribableWebObjectsMessage: (socket, message) =>
     session = @getSession(socket)
     if session.channel?
-      @logger.info "pushing message to session channel. socket.id:", socket.id
+      @logger.debug "pushing message to session channel. socket.id:", socket.id
       @pushMessageToBackend(socket, message)
       return
 
@@ -109,7 +109,7 @@ class Relay
 
     messageCallback = (buffer) =>
       response = buffer.toString('utf8')
-      @logger.info "Emitting response:", response
+      @logger.debug "Emitting response:", response
       socket.emit "response", response
 
     channel.upstreamMessages = queue.create -1, (messageToSend) =>
@@ -117,7 +117,7 @@ class Relay
         # A zero-length message means that the client is initiating a disconnect
         channel.onDisconnect 'Graceful disconnect initiated by client'
       else if channel.socket?
-        @logger.info "sending message to backend:", messageToSend.content
+        @logger.debug "sending message to backend:", messageToSend.content
         messageReader.sendData channel.socket,
           new Buffer(messageToSend.content, channel.encodingType)
 

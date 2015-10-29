@@ -38,7 +38,7 @@ module.exports.setLogLevel = (level) ->
     logLevel = log_levels[level]
 
 module.exports.debug = debug = (format, args...) ->
-    log('log', format, args...)
+    log('info', format, args...) if logLevel is log_levels.debug
 
 module.exports.info = info = (format, args...) ->
     log('info', format, args...)
