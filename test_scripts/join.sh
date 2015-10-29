@@ -7,6 +7,5 @@ fi
 TEST_NAME=join
 TEST_ARGS="-py -filter=DataTask"
 
-setup_virtualenv
 run_test
 

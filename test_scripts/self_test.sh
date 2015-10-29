@@ -11,7 +11,6 @@ echo "*    EXECUTING test-harness self-test"
 echo "********************************************************************************"
 echo
 kill_all_running_procs
-setup_virtualenv
 
 echo "Verifying that python tests report error correctly"
 TEST_HARNESS_TESTS=1 python -u $WORKSPACE/test.py $PYTHON_TEST_ARGS -py -filter=TestHarnessCorrectnessTest &> $WORKSPACE/self_test.log

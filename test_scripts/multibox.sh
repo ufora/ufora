@@ -8,5 +8,4 @@ TEST_NAME=multibox
 TEST_ARGS="-multibox --logging=info $*"
 export UFORA_CONFIG_FILE=$WORKSPACE/test_scripts/multibox/test.config
 
-setup_virtualenv
 run_test

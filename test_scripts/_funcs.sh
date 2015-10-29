@@ -7,20 +7,6 @@ function kill_all_running_procs {
     $WORKSPACE/ufora/scripts/killexp sharedStateMainline > /dev/null
 }
 
-VIRTUALENV_NAME=testenv
-function setup_virtualenv {
-    rm -rf $WORKSPACE/$VIRTUALENV_NAME > /dev/null
-
-    virtualenv --system-site-packages $VIRTUALENV_NAME
-    source $WORKSPACE/$VIRTUALENV_NAME/bin/activate
-    pip install -e $WORKSPACE/packages/python --upgrade
-    }
-
-function exit_and_cleanup_virtualenv {
-    deactivate
-    rm -rf $WORKSPACE/$VIRTUALENV_NAME/
-}
-
 function run_test {
     echo
     echo "********************************************************************************"
@@ -81,6 +67,8 @@ if [ -z $NESTED_TESTS_GUARD ]; then
     echo "ROOT_DATA_DIR: $ROOT_DATA_DIR"
 
     mkdir $ARTIFACT_DIR
+
+    pip install -e $WORKSPACE/packages/python
 
     # Necessary in order to access S3 keys with dots ('.') in their name
     cat > ~/.boto << EOM

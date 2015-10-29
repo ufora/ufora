@@ -7,5 +7,4 @@ fi
 TEST_NAME=python
 TEST_ARGS="-py $*"
 
-setup_virtualenv
 run_test

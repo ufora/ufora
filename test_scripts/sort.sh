@@ -7,5 +7,4 @@ fi
 TEST_NAME=sort
 TEST_ARGS="-py -filter=sort"
 
-setup_virtualenv
 run_test

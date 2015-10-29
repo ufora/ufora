@@ -7,5 +7,4 @@ fi
 TEST_NAME=pyfora
 TEST_ARGS="-scripts --scriptPath test_scripts/pyfora -timeout 660"
 
-setup_virtualenv
 run_test
