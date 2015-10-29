@@ -21,8 +21,8 @@ load_config() {
       UFORA_LOG_DIR=$ROOT_DATA_DIR/logs
     fi
 
-    if [ -z $UFORA_STORE_PORT ]; then
-      export UFORA_STORE_PORT=30002
+    if [ -z $UFORA_MANAGER_PORT ]; then
+      export UFORA_MANAGER_PORT=30002
     fi
 
     if [ -z $UFORA_GATEWAY_PORT ]; then

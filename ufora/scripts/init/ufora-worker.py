@@ -50,15 +50,15 @@ def createArgumentParser():
                         help="The IP address that this worker should bind to.")
 
 
-    parser.add_argument('-s',
-                        '--store-address',
-                        default=os.getenv("UFORA_WORKER_STORE_ADDRESS", "localhost"),
-                        help=("The address of the Ufora store service. "
+    parser.add_argument('-m',
+                        '--manager-address',
+                        default=os.getenv("UFORA_MANAGER_ADDRESS", "localhost"),
+                        help=("The address of the Ufora manager service. "
                               "Default: %(default)s"))
 
-    parser.add_argument('--store-port',
-                        default=os.getenv("UFORA_WORKER_STORE_PORT", 30002),
-                        help=("The port of the Ufora store service. "
+    parser.add_argument('--manager-port',
+                        default=os.getenv("UFORA_MANAGER_PORT", 30002),
+                        help=("The port of the Ufora manager service. "
                               "Default: %(default)s"))
 
     return parser
@@ -81,8 +81,8 @@ def createService(args):
 
     sharedStateViewFactory = ViewFactory.ViewFactory.TcpViewFactory(
         callbackSchedulerFactory.createScheduler('SharedState', 1),
-        args.store_address,
-        int(args.store_port)
+        args.manager_address,
+        int(args.manager_port)
         )
 
     channelFactory = TcpChannelFactory.TcpStringChannelFactory(callbackScheduler)

@@ -37,9 +37,6 @@ fi
 
 echo "Packaging ufora version ${v} into ${TARGET}"
 
-cd $REPO_ROOT/ufora/machine_model/test_ssl_keys
-find . -regextype posix-extended -regex '\.\/[0-9]{7}' -exec rm '{}' \;
-
 cd $REPO_ROOT/ufora/web/relay
 rm -rf node_modules/ > /dev/null
 
@@ -54,7 +51,7 @@ DEST_DIR=${d}/ufora-${v}
 rm -rf $DEST_DIR
 mkdir -p $DEST_DIR
 echo "Copying ufora source code"
-rsync -a --exclude '*.cppml' --exclude '*.cpp', --exclude '*.hppml' --exclude '*.hpp' $REPO_ROOT/ufora $DEST_DIR/lib
+rsync -a --exclude '*.cppml' --exclude '*.cpp', --exclude '*.hppml' --exclude '*.hpp' --exclude '*.pyc' $REPO_ROOT/ufora $DEST_DIR/lib
 if [ $? -ne 0 ]; then
   echo "Error: Failed to rsync /ufora directory"
   exit 2
@@ -74,10 +71,11 @@ if [ $? -ne 0 ]; then
   echo "Error: Failed to rsync /packages directory"
   exit 2
 fi
-cp $REPO_ROOT/ufora/scripts/install/* $DEST_DIR
+cp $REPO_ROOT/LICENSE $DEST_DIR
+rsync -a $REPO_ROOT/license/ $DEST_DIR/license
+cp $REPO_ROOT/docker/service/Dockerfile $DEST_DIR
 
 cd ${d}
-find ./ -name "*.pyc" | xargs rm
 tar cfz $TARGET ufora-${v}
 rm -rf $DEST_DIR
 echo "Packaging complete"

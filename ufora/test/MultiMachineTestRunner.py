@@ -124,7 +124,7 @@ class MultiMachineTestRunner(object):
     def getWorkerEnvironment(self):
         env = dict(os.environ)
         env.update({
-            "UFORA_WORKER_STORE_ADDRESS": self.clusterMaster,
+            "UFORA_MANAGER_ADDRESS": self.clusterMaster,
             "UFORA_WORKER_OWN_ADDRESS": self.ownAddress
             })
         return env
