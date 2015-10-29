@@ -122,10 +122,13 @@ container_env="-e UFORA_PERFORMANCE_TEST_RESULTS_FILE=$UFORA_PERFORMANCE_TEST_RE
                -e TEST_LOOPER_MULTIBOX_IP_LIST=${TEST_LOOPER_MULTIBOX_IP_LIST// /,} \
                -e TEST_LOOPER_MULTIBOX_OWN_IP=$TEST_LOOPER_MULTIBOX_OWN_IP \
                -e TEST_OUTPUT_DIR=/volumes/output \
+               -e CORE_DUMP_DIR=$CORE_DUMP_DIR \
                -e REVISION=$REVISION"
 
 
 container_name=`uuidgen`
+
+container_options="--ulimit core=-1"
 
 if [ ! -z "$TEST_LOOPER_MULTIBOX_IP_LIST" ]; then
     network_settings="--net=host"
@@ -141,6 +144,7 @@ trap cleanup EXIT
 
 docker run --rm --name $container_name \
     $container_env \
+    $container_options \
     $network_settings \
     $src_volume \
     $output_volume \

@@ -75,3 +75,4 @@ ENV CCACHE_COMPILERCHECK content
 
 RUN ln -s /usr/bin/clang-3.5 /usr/bin/clang
 RUN ln -s /usr/bin/clang++-3.5 /usr/bin/clang++
+RUN mkdir /var/core

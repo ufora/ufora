@@ -57,8 +57,13 @@ function stop_tests_and_exit {
     echo "********************************************************************************"
     echo
 
-
-    find | grep 'core\.[0-9]\+$' | xargs -I{} mv -v '{}' $ARTIFACT_DIR/
+    echo "Core dump directory content: `ls $CORE_DUMP_DIR`"
+    for corefile in $CORE_DUMP_DIR/*; do
+        filename=`basename $corefile`
+        gdb python $corefile -batch -n -ex "thread apply all bt" &> $TEST_OUTPUT_DIR/$filename.stack.log
+        rm $corefile
+    done
+    echo "Stack files: `ls $TEST_OUTPUT_DIR/*.stack.log`"
 
     tar czf $TEST_OUTPUT_DIR/artifacts.tar.gz $ARTIFACT_DIR/
 }
@@ -71,6 +76,9 @@ export PYTHONPATH=$WORKSPACE
 cd $WORKSPACE
 
 if [ -z $NESTED_TESTS_GUARD ]; then
+    echo "ulimits: `ulimit -a`"
+    echo "core_pattern: `cat /proc/sys/kernel/core_pattern`"
+
     if [ -z $TEST_OUTPUT_DIR ]; then
         TEST_OUTPUT_DIR=$WORKSPACE
     fi
@@ -79,6 +87,8 @@ if [ -z $NESTED_TESTS_GUARD ]; then
     export ROOT_DATA_DIR=$ARTIFACT_DIR
 
     echo "ROOT_DATA_DIR: $ROOT_DATA_DIR"
+
+    rm -rf $CORE_DUMP_DIR/* > /dev/null
 
     mkdir $ARTIFACT_DIR
 
