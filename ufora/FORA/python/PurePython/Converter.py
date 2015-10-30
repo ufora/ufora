@@ -17,6 +17,8 @@ import ufora.FORA.python.PurePython.PythonAstConverter as PythonAstConverter
 import ufora.FORA.python.PurePython.ConstantConverter as ConstantConverter
 import ufora.FORA.python.ForaValue as ForaValue
 import ufora.BackendGateway.ComputedValue.ComputedValue as ComputedValue
+
+import logging
 import pyfora.TypeDescription as TypeDescription
 import pyfora.StronglyConnectedComponents as StronglyConnectedComponents
 import pyfora.PyAstUtil as PyAstUtil
@@ -169,6 +171,9 @@ class Converter(object):
                 )
 
     def convertNamedSingleton(self, objectDefinition):
+        if self.singletonAndExceptionConverter is None:
+            logging.error("Can't convert %s without a converter", objectDefinition.singletonName)
+
         singleton = self.singletonAndExceptionConverter.convertSingletonByName(
             objectDefinition.singletonName
             )
@@ -937,6 +942,10 @@ class Converter(object):
             else:
                 #this is a vector
                 assert isinstance(value, ForaNative.ImplValContainer)
+
+                if len(value) == 0:
+                    return transformer.transformPrimitive("")
+
                 assert value.isVectorOfChar()
 
                 contents = vectorContentsExtractor(value)

@@ -19,33 +19,6 @@ class Len:
 	def __call__(self, other):
 		return other.__len__()
 
-class List:
-    def __call__(self, other):
-        generator = other.__pyfora_generator__()
-
-        def listSum(subGenerator, depth):
-            if depth > 9 or not subGenerator.canSplit():
-                result = []
-                if subGenerator.isNestedGenerator():
-                    #the outer generator might not be splittable anymore, but
-                    #the inner ones might
-                    for childGenerator in subGenerator.childGenerators():
-                        result = result + sum(childGenerator, depth+1)
-                else:
-                    for val in subGenerator:
-                        result = result + [val]
-                return result
-            else:
-                split = subGenerator.split()
-                if split is None:
-                    raise TypeError("Generator should have split!")
-                left = listSum(split[0], depth+1)
-                right = listSum(split[1], depth+1)
-
-                return left+right
-
-        return listSum(generator, 0)
-
 class Range:
     def __call__(self, first, second=None, increment=None):
         return list(xrange(first, second, increment))
@@ -229,8 +202,7 @@ mappings_ = [
     (ord, Ord),
     (chr, Chr),
     (max, Max), 
-    (min, Min),
-    (list, List)
+    (min, Min)
     ]
 
 def generateMappings():

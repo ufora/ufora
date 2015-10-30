@@ -1143,8 +1143,8 @@ class ExecutorTestCases(
             self.equivalentEvaluationTest(lambda: sum((outer * 503 + inner for outer in xrange(ct) for inner in xrange(outer) if inner % 2 == 0)))
         
     def test_types_and_combos(self):
-        types = [bool, str, int, type, object]
-        instances = [10, "10", 10.0, None, True] + types
+        types = [bool, str, int, type, object, list]
+        instances = [10, "10", 10.0, None, True, []] + types
         callables = types + [lambda x: x.__class__]
 
         for c in callables:
