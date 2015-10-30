@@ -249,8 +249,8 @@ class PyObjectWalker(object):
     def _pyObjectNodeForClassOrFunction(self, pyObject, classOrFunction):
         try:
             sourceFileText, sourceFileName = PyAstUtil.getSourceFilenameAndText(pyObject)
-        except PyAstUtil.CantGetSourceTextError as e:
-            raise WalkError(e.message)
+        except Exceptions.CantGetSourceTextError as e:
+            raise Exceptions.PythonToForaConversionError(e.message)
 
         _, sourceLine = PyforaInspect.getsourcelines(pyObject)
 
@@ -348,7 +348,9 @@ class PyObjectWalker(object):
         # (i.e., it is not an instance method). In that case, we need to pass
         # 'True' as the 2nd argument.
         freeVariableMemberAccessChains = \
-            PyAstFreeVariableAnalyses.getFreeVariableMemberAccessChains(pyAst, False)
+            PyAstFreeVariableAnalyses.getFreeVariableMemberAccessChains(
+                pyAst, isClassContext=False
+                )
 
         resolutions = dict()
 

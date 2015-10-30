@@ -224,7 +224,7 @@ def _freeVariableMemberAccessChainImpl(pyAstNode):
     return []  # how can this path be exercised?
 
 
-def getFreeVariableMemberAccessChains(pyAstNode, isClassContext = None):
+def getFreeVariableMemberAccessChains(pyAstNode, isClassContext=None):
     pyAstNode = PyAstUtil.getRootInContext(pyAstNode, isClassContext)
     freeVariableMemberAccessChainsVisitor = _FreeVariableMemberAccessChainsVisitor()
     freeVariableMemberAccessChainsVisitor.visit(pyAstNode)

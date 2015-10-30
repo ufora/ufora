@@ -13,9 +13,7 @@
 #   limitations under the License.
 
 import pyfora.TypeDescription as TypeDescription
-import pyfora.Exceptions
 
-import logging
 
 class ObjectRegistry(object):
     def __init__(self):
@@ -149,18 +147,15 @@ class ObjectRegistry(object):
                        TypeDescription.NamedSingleton
                        )):
             return []
-
         elif isinstance(objectDefinition, (TypeDescription.BuiltinExceptionInstance)):
             return [objectDefinition.argId]
         elif isinstance(objectDefinition, (TypeDescription.List, TypeDescription.Tuple)):
             return objectDefinition.memberIds
-
         elif isinstance(objectDefinition,
                         (TypeDescription.FunctionDefinition, TypeDescription.ClassDefinition)):
             tr = objectDefinition.freeVariableMemberAccessChainsToId.values()
             tr.append(objectDefinition.sourceFileId)
             return tr
-
         elif isinstance(objectDefinition, TypeDescription.ClassInstanceDescription):
             tr = [objectDefinition.classId]
             tr.extend(
@@ -173,15 +168,12 @@ class ObjectRegistry(object):
             tr.extend(classMemberIds)
 
             return tr
-
         elif isinstance(objectDefinition, TypeDescription.Dict):
             return objectDefinition.keyIds + objectDefinition.valueIds            
-
         elif isinstance(objectDefinition, TypeDescription.WithBlockDescription):
             tr = objectDefinition.freeVariableMemberAccessChainsToId.values()
             tr.append(objectDefinition.sourceFileId)
             return tr
-
         else:
             assert False, "don't know what to do with %s" % type(objectDefinition)
 
