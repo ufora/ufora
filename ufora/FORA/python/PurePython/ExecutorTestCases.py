@@ -390,6 +390,17 @@ class ExecutorTestCases(
 
         self.assertTrue(isinstance(res, numpy.ndarray), res)
 
+    def test_reversed_builtins(self):
+        def f():
+            a = [1, 2, 3, 4, 5, 6]
+            b = reversed(a)
+            toReturn = []
+            for v in b:
+                toReturn = toReturn + [v]
+            return toReturn
+
+        r = self.equivalentEvaluationTest(f)
+
     def test_return_list(self):
         def f():
             return [1,2,3,4,5]

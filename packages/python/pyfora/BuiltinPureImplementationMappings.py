@@ -155,6 +155,13 @@ class Sum:
 
         return start + result
 
+class Reversed:
+    def __call__(self, arr):
+        l = len(arr)
+        for idx in range(l):
+            v = arr[l - idx - 1]
+            yield v
+
 class Abs:
     def __call__(self, val):
         return val.__abs__()
@@ -201,8 +208,9 @@ mappings_ = [
     (all, All),
     (ord, Ord),
     (chr, Chr),
-    (max, Max), 
-    (min, Min)
+    (max, Max),
+    (min, Min),
+    (reversed, Reversed)
     ]
 
 def generateMappings():
