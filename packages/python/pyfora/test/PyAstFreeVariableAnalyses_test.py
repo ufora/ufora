@@ -20,6 +20,23 @@ import textwrap
 import unittest
 
 class PyAstFreeVariableAnalyses_test(unittest.TestCase):
+    def test_members(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def f(arg):
+                    if arg:
+                        x.y = 3
+                    return x
+                """
+                )
+            )
+        expectedResult = set(['x'])
+        self.assertEqual(
+            expectedResult,
+            PyAstFreeVariableAnalyses.getFreeVariables(tree)
+            )
+
     def test_call_and_then_member(self):
         tree = ast.parse(
             textwrap.dedent(
