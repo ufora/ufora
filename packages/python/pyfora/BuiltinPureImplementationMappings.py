@@ -65,12 +65,14 @@ class XRangeInstance:
 
 
     def __pyfora_generator__(self):
+        #eventually this class should inherit behaviors from "PyGeneratorBase"
         class Generator:
-            def __init__(self, start, count, increment, f):
+            def __init__(self, start, count, increment, mapFun, filterFun):
                 self.start = start
                 self.count = count
                 self.increment = increment
-                self.f = f
+                self.mapFun = mapFun
+                self.filterFun = filterFun
 
             def __pyfora_generator__(self):
                 return self
@@ -79,7 +81,8 @@ class XRangeInstance:
                 ix = 0
                 currentVal = self.start
                 while ix < self.count:
-                    yield self.f(currentVal)
+                    if self.filterFun(currentVal):
+                        yield self.mapFun(currentVal)
                     currentVal = currentVal + self.increment
                     ix = ix + 1
 
@@ -94,16 +97,20 @@ class XRangeInstance:
                 highCount = self.count - lowCount
 
                 return (
-                    Generator(self.start, lowCount, self.increment, self.f),
-                    Generator(self.start + self.increment * lowCount, highCount, self.increment, self.f)
+                    Generator(self.start, lowCount, self.increment, self.mapFun, self.filterFun),
+                    Generator(self.start + self.increment * lowCount, highCount, self.increment, self.mapFun, self.filterFun)
                     )
 
             def map(self, f):
-                mapfun = lambda x: f(self.f(x))
-                return Generator(self.start, self.count, self.increment, mapfun)
+                mapfun = lambda x: f(self.mapFun(x))
+                return Generator(self.start, self.count, self.increment, mapfun, self.filterFun)
+
+            def filter(self, f):
+                filterfun = lambda x: f(x) and self.filterFun(x)
+                return Generator(self.start, self.count, self.increment, self.mapFun, filterfun)
 
 
-        return Generator(self.start, self.count, self.increment, lambda x:x)
+        return Generator(self.start, self.count, self.increment, lambda x:x, lambda x: True)
 
 class XRange:
     def __call__(self, first, second=None, increment=None):
