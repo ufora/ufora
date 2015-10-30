@@ -49,7 +49,7 @@ class Connection(object):
         computedValue = valueAsString.computedValue
         computedValueToCalculate = self.webObjectFactory.ComputedValueForMember(
             {'baseComputedValue':computedValue,
-             'memberName': '__pyfora_string_as_paged_vec_of_char__'}
+             'memberName': '@pyfora_string_as_paged_vec_of_char'}
             )
 
         def onFailure(err):

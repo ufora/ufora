@@ -596,6 +596,12 @@ class ExecutorTestCases(
 
         self.equivalentEvaluationTest(testFun)
 
+    def test_list_bound_methods_know_they_are_pyfora(self):
+        def testFun():
+            return [].__add__.__is_pyfora__
+
+        self.assertTrue(self.evaluateWithExecutor(testFun))
+
     def test_primitives_know_they_are_pyfora(self):
         def testFun():
             x = 10
