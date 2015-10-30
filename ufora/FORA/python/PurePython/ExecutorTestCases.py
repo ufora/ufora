@@ -21,6 +21,8 @@ import time
 import ufora.FORA.python.PurePython.EquivalentEvaluationTestCases as EquivalentEvaluationTestCases
 import ufora.FORA.python.PurePython.ExceptionTestCases as ExceptionTestCases
 
+import random
+
 class ExecutorTestCases(
             EquivalentEvaluationTestCases.EquivalentEvaluationTestCases,
             ExceptionTestCases.ExceptionTestCases
@@ -399,6 +401,14 @@ class ExecutorTestCases(
                 toReturn = toReturn + [v]
             return toReturn
 
+        r = self.equivalentEvaluationTest(f)
+
+    def test_reduce_builtin(self):
+        toReduce = []
+        for _ in range(10):
+            toReduce.append(random.uniform(-10, 10))
+        def f():
+            return reduce(lambda x, y: x * y, toReduce)
         r = self.equivalentEvaluationTest(f)
 
     def test_return_list(self):

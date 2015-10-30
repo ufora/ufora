@@ -199,6 +199,16 @@ class Min:
             return a
         return b
 
+class Reduce:
+    def __call__(self, f, arr):
+        toReturn = arr[0]
+        idx = 0
+        for a in arr:
+            if idx != 0:
+                toReturn = f(toReturn, a)
+            idx = idx + 1
+        return toReturn
+
 mappings_ = [
     (len, Len), 
     (range, Range), 
@@ -210,7 +220,8 @@ mappings_ = [
     (chr, Chr),
     (max, Max),
     (min, Min),
-    (reversed, Reversed)
+    (reversed, Reversed),
+    (reduce, Reduce)
     ]
 
 def generateMappings():
