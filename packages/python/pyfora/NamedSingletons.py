@@ -19,7 +19,14 @@ A manifest of python objects that have explicit FORA implementations in the pure
 
 pythonSingletonToName = {
     type: 'type',
+    float: 'float',
+    int: 'int',
+    bool: 'bool',
+    str: 'str',
     object: 'object',
+    type(None): 'NoneType',
+    issubclass: 'issubclass',
+    isinstance: 'isinstance',
     Exception: 'Exception',
     UserWarning: 'UserWarning',
     TypeError: 'TypeError',
@@ -32,7 +39,14 @@ pythonSingletonToName = {
 
 singletonNameToObject = {
     'type': type,
+    'float': float,
+    'int': int,
+    'bool': bool,
+    'str': str,
     'object': object,
+    'NoneType': type(None),
+    'issubclass': issubclass,
+    'isinstance': isinstance,
     'Exception': Exception,
     'UserWarning': UserWarning,
     'TypeError': TypeError,
@@ -44,7 +58,14 @@ singletonNameToObject = {
 
 pythonNameToPyforaName = {
     'type': 'Type',
+    'float': 'FloatType',
+    'int': 'IntType',
+    'bool': 'BoolType',
+    'str': 'StrType',
+    'NoneType': 'NoneType',
     'object': 'Object',
+    'isinstance': 'IsInstance',
+    'issubclass': 'IsSubclass',
     'Exception': 'Exception',
     'TypeError': 'TypeError',
     'ValueError': 'ValueError',

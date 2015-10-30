@@ -58,7 +58,13 @@ class PyforaSingletonAndExceptionConverter:
         self.pythonNameToPyforaName = NamedSingletons.pythonNameToPyforaName
 
         for pyName, pyforaName in self.pythonNameToPyforaName.iteritems():
-            instance = FORA.ForaValue.FORAValue(pyforaBuiltinsModule).__getattr__(pyforaName).implVal_
+            try:
+                instance = FORA.ForaValue.FORAValue(pyforaBuiltinsModule).__getattr__(pyforaName).implVal_
+            except:
+                logging.error(
+                    "Initializing PyforaSingletonAndExceptionConverter failed:"+
+                        " couldn't find %s in the pyfora builtins", pyforaName)
+                raise
 
             self.pythonNameToInstance[pyName] = instance
             self.instanceToPythonName[instance] = pyName

@@ -144,7 +144,7 @@ class PyObjectWalker(object):
                 NamedSingletons.pythonSingletonToName[pyObject.__class__], 
                 pyObject.args
                 )
-        elif isinstance(pyObject, type) and pyObject in NamedSingletons.pythonSingletonToName:
+        elif isinstance(pyObject, (type, type(isinstance))) and pyObject in NamedSingletons.pythonSingletonToName:
             tr = PyObjectNodes.NamedSingleton(pyObject, NamedSingletons.pythonSingletonToName[pyObject])
         elif isinstance(pyObject, PyforaWithBlock.PyforaWithBlock):
             tr = self._pyObjectNodeForWithBlock(pyObject)

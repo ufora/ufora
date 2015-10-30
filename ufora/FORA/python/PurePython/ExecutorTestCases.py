@@ -14,13 +14,11 @@
 
 import pyfora
 import pyfora.PyAstUtil as PyAstUtil
+import numpy
+import logging
+import time
 import ufora.FORA.python.PurePython.EquivalentEvaluationTestCases as EquivalentEvaluationTestCases
 import ufora.FORA.python.PurePython.ExceptionTestCases as ExceptionTestCases
-
-
-import time
-import numpy
-
 
 class ExecutorTestCases(
             EquivalentEvaluationTestCases.EquivalentEvaluationTestCases,
@@ -88,9 +86,8 @@ class ExecutorTestCases(
             t2 = time.time()
 
             self.assertTrue(
-                comparisonFunction(pyforaResult, pythonResult),
-                "Pyfora and python returned different results: %s != %s for arguments %s" % \
-                    (pyforaResult, pythonResult, args)
+                comparisonFunction(pyforaResult, pythonResult), 
+                "Pyfora and python returned different results: %s != %s for %s(%s)" % (pyforaResult, pythonResult, func, args)
                 )
 
             if t2 - t0 > 5.0:
@@ -168,21 +165,26 @@ class ExecutorTestCases(
     def equivalentEvaluationTestThatHandlesExceptions(self, func, *args):
         with self.create_executor() as executor:
             try:
-                r1 = func(*args)
+                pythonResult = func(*args)
                 pythonSucceeded = True
             except Exception as ex:
                 pythonSucceeded = False
 
             try:
-                r2 = self.evaluateWithExecutor(func, *args, executor=executor)
+                pyforaResult = self.evaluateWithExecutor(func, *args, executor=executor)
                 pyforaSucceeded = True
             except pyfora.Exceptions.ComputationError as ex:
+                if pythonSucceeded:
+                    logging.error("Python succeeded, but pyfora threw %s for %s%s", ex, func, args)
                 pyforaSucceeded = False
 
             self.assertEqual(pythonSucceeded, pyforaSucceeded)
+
             if pythonSucceeded:
-                self.assertEqual(r1, r2)
-                return r1
+                self.assertEqual(pythonResult, pyforaResult, 
+                    "Pyfora and python returned different results: %s != %s for %s%s" % (pyforaResult, pythonResult, func, args)
+                    )
+                return pythonResult
 
     def resolvedFutures(self, futures):
         results = [f.result() for f in futures]
@@ -1139,6 +1141,33 @@ class ExecutorTestCases(
             self.equivalentEvaluationTest(lambda: sum((outer * 503 + inner for outer in xrange(ct) if outer % 2 == 0 for inner in xrange(outer))))
             self.equivalentEvaluationTest(lambda: sum((outer * 503 + inner for outer in xrange(ct) if outer % 2 == 0 for inner in xrange(outer) if inner % 2 == 0)))
             self.equivalentEvaluationTest(lambda: sum((outer * 503 + inner for outer in xrange(ct) for inner in xrange(outer) if inner % 2 == 0)))
+        
+    def test_types_and_combos(self):
+        types = [bool, str, int, type, object]
+        instances = [10, "10", 10.0, None, True] + types
+        callables = types + [lambda x: x.__class__]
+
+        for c in callables:
+            for i in instances:
+                self.equivalentEvaluationTestThatHandlesExceptions(c, i)
+
+    def test_issubclass(self):
+        test = self.equivalentEvaluationTestThatHandlesExceptions
+        types = [float, int, bool, object, Exception]
+
+        for t1 in types:
+            for t2 in types:
+                test(issubclass, t1, t2)
+                test(issubclass, t1, (t2,))
+
+    def test_isinstance(self):
+        test = self.equivalentEvaluationTestThatHandlesExceptions
+
+        for inst in [10, 10.0, True]:
+            for typ in [float, object, int, bool]:
+                test(lambda: isinstance(inst, typ))
+                test(lambda: issubclass(type(inst), typ))
+
         
     def test_sum_isPrime(self):
         def isPrime(p):

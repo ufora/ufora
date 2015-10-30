@@ -19,10 +19,6 @@ class Len:
 	def __call__(self, other):
 		return other.__len__()
 
-class Str:
-	def __call__(self, other):
-		return other.__str__()
-
 class List:
     def __call__(self, other):
         generator = other.__pyfora_generator__()
@@ -225,7 +221,6 @@ class Min:
 
 mappings_ = [
     (len, Len), 
-    (str, Str), 
     (range, Range), 
     (xrange, XRange), 
     (sum, Sum),
