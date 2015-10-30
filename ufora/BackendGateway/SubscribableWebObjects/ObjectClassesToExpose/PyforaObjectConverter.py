@@ -70,22 +70,22 @@ class PyforaObjectConverter(ComputedGraph.Location):
                 primitiveTypeMapping
                 )
 
-            wrappingNativeListConverter = ForaNative.makePythonListConverter(
+            nativeListConverter = ForaNative.makePythonListConverter(
                 purePythonModuleImplval.getObjectMember("PyList")
                 )
 
-            wrappingNativeTupleConverter = ForaNative.makePythonTupleConverter(
+            nativeTupleConverter = ForaNative.makePythonTupleConverter(
                 purePythonModuleImplval.getObjectMember("PyTuple")
                 )
 
-            wrappingNativeDictConverter = ForaNative.makeWrappingPythonDictConverter(
+            nativeDictConverter = ForaNative.makePythonDictConverter(
                 purePythonModuleImplval.getObjectMember("PyDict")
                 )
 
             converter_[0] = Converter.Converter(
-                nativeListConverter=wrappingNativeListConverter,
-                nativeTupleConverter=wrappingNativeTupleConverter,
-                nativeDictConverter=wrappingNativeDictConverter,
+                nativeListConverter=nativeListConverter,
+                nativeTupleConverter=nativeTupleConverter,
+                nativeDictConverter=nativeDictConverter,
                 nativeConstantConverter=nativeConstantConverter,
                 singletonAndExceptionConverter=singletonAndExceptionConverter,
                 vdmOverride=ComputedValueGateway.getGateway().vdm,

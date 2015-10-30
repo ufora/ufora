@@ -41,7 +41,7 @@ defaultWrappingNativeTupleConverter = ForaNative.makePythonTupleConverter(
     builtinPythonImplVal.getObjectMember("PyTuple")
     )
 
-defaultWrappingNativeDictConverter = ForaNative.makeWrappingPythonDictConverter(
+defaultWrappingNativeDictConverter = ForaNative.makePythonDictConverter(
     builtinPythonImplVal.getObjectMember("PyDict")
     )
 

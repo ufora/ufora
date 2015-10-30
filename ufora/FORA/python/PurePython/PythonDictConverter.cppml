@@ -17,11 +17,25 @@
 
 #include "PythonAst.hppml"
 #include "../../Language/Function.hppml"
+#include "../../Language/FunctionStage1Simulation.hppml"
+#include "../../Core/ClassMediator.hppml"
 #include "../../Core/ImplValContainerUtilities.hppml"
+#include "../../../core/Logging.hpp"
 
 namespace Fora {
 
-Expression PythonDictConverter::convertPyDict(
+PythonDictConverter::PythonDictConverter(
+        const ImplValContainer& pyDictClassImplVal
+        ) : mPyDictClass(pyDictClassImplVal)
+    {
+    lassert(pyDictClassImplVal.isCST());
+    
+    mEmptyInstance = createDict(
+        emptyTreeVec(), emptyTreeVec()
+        );
+    }
+
+Expression PythonDictConverter::convertPyDictRaw(
         const Fora::PythonAstExpr_DictType& dictExpr,
         const std::function<Expression(const PythonAstExpr&)>& 
             convertPythonAstExpressionToFora
@@ -41,10 +55,24 @@ Expression PythonDictConverter::convertPyDict(
             convertPythonAstExpressionToFora(dictExpr.values()[ix]);
         }
 
-    return PythonDictConverter::createDictExpr(keyExprs, valueExprs);
+    return createDictExprRaw(keyExprs, valueExprs);
     }
 
-Expression PythonDictConverter::createDictExpr(
+Expression PythonDictConverter::convertPyDict(
+        const Fora::PythonAstExpr_DictType& dictExpr,
+        const std::function<Expression(const PythonAstExpr&)>& 
+            convertPythonAstExpressionToFora
+        ) const
+    {
+    auto rawForaDictExpr = convertPyDictRaw(
+        dictExpr,
+        convertPythonAstExpressionToFora
+        );
+
+    return instantiatePyDictExpr(rawForaDictExpr);
+    }
+
+Expression PythonDictConverter::createDictExprRaw(
         const ImmutableTreeVector<Expression>& keys,
         const ImmutableTreeVector<Expression>& values
         ) const
@@ -78,11 +106,40 @@ Expression PythonDictConverter::createDictExpr(
     return tr;
     }
 
-ImplValContainer PythonDictConverter::createDict(
-        const ImmutableTreeMap<ImplValContainer, ImplValContainer>& keysAndValus
+Expression PythonDictConverter::createDictExpr(
+        const ImmutableTreeVector<Expression>& keys,
+        const ImmutableTreeVector<Expression>& values
         ) const
     {
-    return ImplValContainerUtilities::createDict(keysAndValus);
+    Expression rawForaDictExpr = createDictExprRaw(keys, values);
+
+    return instantiatePyDictExpr(rawForaDictExpr);
+    }
+ 
+Expression PythonDictConverter::instantiatePyDictExpr(
+        const Expression& memberExpr
+        ) const
+    {
+    ImmutableTreeVector<ApplyArgument> applyArguments;
+
+    applyArguments = applyArguments +
+        ApplyArgument::Normal(
+            null(),
+            Expression::Constant(
+                CSTValue(
+                    Symbol("CreateInstance")
+                    )
+                )
+            );
+
+    applyArguments = applyArguments + memberExpr;
+
+    return Expression::Apply(
+        Expression::Constant(
+            CSTValue(mPyDictClass)
+            ),
+        applyArguments
+        );
     }
 
 ImplValContainer PythonDictConverter::createDict(
@@ -90,9 +147,53 @@ ImplValContainer PythonDictConverter::createDict(
         const ImmutableTreeVector<ImplValContainer>& values
         ) const
     {
-    return ImplValContainerUtilities::createDict(keys, values);
+    FunctionStage1::Simulation simulation(10);
+
+    ImmutableTreeVector<ImplValContainer> applyArgs;
+
+    applyArgs = applyArgs + ImplValContainer(mPyDictClass);
+
+    applyArgs = applyArgs + 
+        ImplValContainerUtilities::createSymbol(
+            Symbol("CreateInstance")
+            );
+
+    applyArgs = applyArgs + ImplValContainerUtilities::createDict(keys, values);
+
+    FunctionStage1::ExpressionEvaluationResult res = 
+        simulation.evaluateApply(applyArgs);
+
+    lassert(res.isResult());
+
+    return res.getResult().val();
     }
 
+Nullable<std::pair<ImmutableTreeVector<CSTValue>, ImmutableTreeVector<ImplValContainer>>>
+PythonDictConverter::invertDict(ImplValContainer possibleDict)
+    {
+    //if its the same class object that we would create for the empty dict
+    if (possibleDict.type().isClass() && possibleDict.type().getClass().classBody() == 
+            mEmptyInstance.type().getClass().classBody())
+        {
+        Nullable<pair<ImplValContainer, Nullable<Symbol> > > member = 
+                ImplValContainerUtilities::objectGetMember(possibleDict, Symbol("@m"));
+
+        lassert_dump(member && !member->second, "Expected the PyDict '@m' field to be simple data");
+
+        lassert(member->first.type().isDictionary());
+
+        const Dictionary& dict = member->first.cast<Dictionary>();
+
+        return null() <<
+            std::make_pair(
+                dict.keys(),
+                dict.values()
+                );
+        }
+        
+    return null();
+    }
 
 }
+
 

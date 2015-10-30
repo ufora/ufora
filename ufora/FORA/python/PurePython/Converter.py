@@ -62,8 +62,6 @@ class Converter(object):
 
         self.nativeTupleConverter = nativeTupleConverter
 
-        if nativeDictConverter is None:
-            nativeDictConverter = ForaNative.makeDirectPythonDictConverter()
         self.nativeDictConverter = nativeDictConverter
 
         self.vdm_ = vdmOverride
