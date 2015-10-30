@@ -24,6 +24,7 @@ pythonSingletonToName = {
     bool: 'bool',
     str: 'str',
     list: 'list',
+    tuple: 'tuple',
     object: 'object',
     type(None): 'NoneType',
     issubclass: 'issubclass',
@@ -38,25 +39,7 @@ pythonSingletonToName = {
     IndexError: 'IndexError'
     }
 
-singletonNameToObject = {
-    'type': type,
-    'float': float,
-    'int': int,
-    'bool': bool,
-    'str': str,
-    'list': list,
-    'object': object,
-    'NoneType': type(None),
-    'issubclass': issubclass,
-    'isinstance': isinstance,
-    'Exception': Exception,
-    'UserWarning': UserWarning,
-    'TypeError': TypeError,
-    'ValueError': ValueError,
-    'AttributeError': AttributeError,
-    'ZeroDivisionError': ZeroDivisionError,
-    'IndexError': IndexError
-    }
+singletonNameToObject = {v:k for k,v in pythonSingletonToName.iteritems()}
 
 pythonNameToPyforaName = {
     'type': 'Type',
@@ -65,6 +48,7 @@ pythonNameToPyforaName = {
     'bool': 'BoolType',
     'str': 'StrType',
     'list': 'ListType',
+    'tuple': 'TupleType',
     'NoneType': 'NoneType',
     'object': 'Object',
     'isinstance': 'IsInstance',
