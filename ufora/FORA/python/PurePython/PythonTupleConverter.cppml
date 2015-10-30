@@ -13,22 +13,62 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 ****************************************************************************/
-#include "PythonTupleConverter.hpp"
+#include "PythonTupleConverter.hppml"
 
 #include "PythonAst.hppml"
 #include "../../Language/Function.hppml"
+#include "../../Language/FunctionStage1Simulation.hppml"
+#include "../../Core/ClassMediator.hppml"
 #include "../../Core/ImplValContainerUtilities.hppml"
+#include "../../../core/Logging.hpp"
 
 namespace Fora {
+
+PythonTupleConverter::PythonTupleConverter(
+        const ImplValContainer& pyTupleClassImplVal
+        ) : mPyTupleClass(pyTupleClassImplVal)    
+    {
+    lassert(pyTupleClassImplVal.isCST());
+
+    mEmptyInstance = createTuple(emptyTreeVec());
+    }
 
 Expression PythonTupleConverter::convertPyTuple(
         const Fora::PythonAstExpr_TupleType& tupleExpr,
         const std::function<Expression(const PythonAstExpr&)>& 
             convertPythonAstExpressionToFora
+        ) const 
+    {
+    auto rawForaTupleExpr = Expression::CreateTuple(
+        mapITV(tupleExpr.elts(), convertPythonAstExpressionToFora)
+        );
+
+    return createTupleExpression(rawForaTupleExpr);
+    }
+
+Expression PythonTupleConverter::createTupleExpression(
+        const Expression& memberExpr
         ) const
     {
-    return Expression::CreateTuple(
-        mapITV(tupleExpr.elts(), convertPythonAstExpressionToFora)
+    ImmutableTreeVector<ApplyArgument> applyArguments;
+
+    applyArguments = applyArguments +
+        ApplyArgument::Normal(
+            null(),
+            Expression::Constant(
+                CSTValue(
+                    Symbol("CreateInstance")
+                    )
+                )
+            );
+
+    applyArguments = applyArguments + memberExpr;
+
+    return Expression::Apply(
+        Expression::Constant(
+            CSTValue(mPyTupleClass)
+            ),
+        applyArguments
         );
     }
 
@@ -36,8 +76,54 @@ ImplValContainer PythonTupleConverter::createTuple(
         const ImmutableTreeVector<ImplValContainer>& tupleElements
         ) const
     {
-    return ImplValContainerUtilities::createTuple(tupleElements);
+    FunctionStage1::Simulation simulation(10);
+
+    ImmutableTreeVector<ImplValContainer> applyArgs;
+
+    applyArgs = applyArgs + ImplValContainer(mPyTupleClass);
+
+    applyArgs = applyArgs + 
+        ImplValContainerUtilities::createSymbol(
+            Symbol("CreateInstance")
+            );
+
+    applyArgs = applyArgs + 
+        ImplValContainerUtilities::createTuple(
+            tupleElements
+            );
+
+    FunctionStage1::ExpressionEvaluationResult res = 
+        simulation.evaluateApply(applyArgs);
+
+    lassert(res.isResult());
+
+    return res.getResult().val();
     }
 
+
+Nullable<ImmutableTreeVector<ImplValContainer> > 
+                PythonTupleConverter::invertTuple(ImplValContainer possibleTuple)
+    {
+    //if its the same class object that we would create for the empty tuple
+    if (possibleTuple.type().isClass() && possibleTuple.type().getClass().classBody() == 
+            mEmptyInstance.type().getClass().classBody())
+        {
+        Nullable<pair<ImplValContainer, Nullable<Symbol> > > member = 
+                ImplValContainerUtilities::objectGetMember(possibleTuple, Symbol("@m"));
+
+        lassert_dump(member && !member->second, "Expected the PyTuple '@m' field to be simple data");
+    
+        typedef ImplValContainerUtilities::tuple_iterator tuple_iterator;
+
+        ImmutableTreeVector<ImplValContainer> res;
+
+        for (tuple_iterator iterator = ImplValContainerUtilities::tuple_iterator::begin(member->first),
+                end = ImplValContainerUtilities::tuple_iterator::end(member->first);
+                iterator != end; ++iterator)
+            res = res + *iterator;
+        return null() << res;
+        }
+    return null();
+    }
 }
 

@@ -74,7 +74,7 @@ class PyforaObjectConverter(ComputedGraph.Location):
                 purePythonModuleImplval.getObjectMember("PyList")
                 )
 
-            wrappingNativeTupleConverter = ForaNative.makeWrappingPythonTupleConverter(
+            wrappingNativeTupleConverter = ForaNative.makePythonTupleConverter(
                 purePythonModuleImplval.getObjectMember("PyTuple")
                 )
 

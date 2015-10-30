@@ -37,7 +37,7 @@ defaultWrappingNativeListConverter = ForaNative.makeWrappingPythonListConverter(
     builtinPythonImplVal.getObjectMember("PyList")
     )
 
-defaultWrappingNativeTupleConverter = ForaNative.makeWrappingPythonTupleConverter(
+defaultWrappingNativeTupleConverter = ForaNative.makePythonTupleConverter(
     builtinPythonImplVal.getObjectMember("PyTuple")
     )
 

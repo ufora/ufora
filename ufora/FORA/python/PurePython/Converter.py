@@ -62,8 +62,6 @@ class Converter(object):
             nativeListConverter = ForaNative.makeDirectPythonListConverter()
         self.nativeListConverter = nativeListConverter
 
-        if nativeTupleConverter is None:
-            nativeTupleConverter = ForaNative.makeDirectPythonTupleConverter()
         self.nativeTupleConverter = nativeTupleConverter
 
         if nativeDictConverter is None:
