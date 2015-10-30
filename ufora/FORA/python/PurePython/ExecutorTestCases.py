@@ -624,6 +624,16 @@ class ExecutorTestCases(
 
         self.assertTrue(self.evaluateWithExecutor(testFun))
 
+    def test_class_objects_know_they_are_pyfora(self):
+        class ClassTest3:
+            def __init__(self):
+                pass
+
+        def testFun():
+            return ClassTest3.__is_pyfora__
+
+        self.assertTrue(self.evaluateWithExecutor(testFun))
+
     def test_classes_know_they_are_pyfora(self):
         class ClassTest2:
             def __init__(self):
@@ -1009,6 +1019,9 @@ class ExecutorTestCases(
             def __iter__(self):
                 yield self.func(self.x)
 
+            def isNestedGenerator(self):
+                return False
+
             def canSplit(self):
                 return self.x + 1 < self.y
 
@@ -1078,15 +1091,17 @@ class ExecutorTestCases(
         self.assertTrue(self.evaluateWithExecutor(f))
 
     def test_iterate_map_split_xrange(self):
-        def f():
-            g = xrange(100).__pyfora_generator__().split()[0].map(lambda x:x)
-            res = []
-            for x in g:
-                res = res + [x]
+        for ix in range(10):
+            def f():
+                g = xrange(100).__pyfora_generator__().split()[0].map(lambda x:x)
+                res = []
+                for x in g:
+                    res = res + [x]
 
-            return res == range(50)
+                return res == range(50)
 
-        self.assertTrue(self.evaluateWithExecutor(f))
+            self.assertTrue(self.evaluateWithExecutor(f))
+
 
     def test_iterate_xrange(self):
         def f():
@@ -1129,11 +1144,17 @@ class ExecutorTestCases(
 
     def test_filtered_generator_expression(self):
         for ct in [0,1,2,4,8,16,32,64,100,101,102,103]:
-            print ct
             self.equivalentEvaluationTest(lambda: sum(x for x in xrange(ct) if x < ct / 2))
             self.equivalentEvaluationTest(lambda: list(x for x in xrange(ct) if x < ct / 2))
             self.equivalentEvaluationTest(lambda: [x for x in xrange(ct) if x < ct / 2])
 
+    def test_filtered_nested_expression(self):
+        for ct in [0, 1, 2, 4, 8, 16, 32, 64]:
+            self.equivalentEvaluationTest(lambda: sum((outer * 503 + inner for outer in xrange(ct) for inner in xrange(outer))))
+            self.equivalentEvaluationTest(lambda: sum((outer * 503 + inner for outer in xrange(ct) if outer % 2 == 0 for inner in xrange(outer))))
+            self.equivalentEvaluationTest(lambda: sum((outer * 503 + inner for outer in xrange(ct) if outer % 2 == 0 for inner in xrange(outer) if inner % 2 == 0)))
+            self.equivalentEvaluationTest(lambda: sum((outer * 503 + inner for outer in xrange(ct) for inner in xrange(outer) if inner % 2 == 0)))
+        
     def test_sum_isPrime(self):
         def isPrime(p):
             x = 2

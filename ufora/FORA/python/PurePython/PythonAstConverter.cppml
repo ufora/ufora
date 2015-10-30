@@ -762,21 +762,50 @@ Expression PythonAstConverter::convertPythonAstExpressionToFora_inner(const Pyth
                     ApplyArgument::Normal(stepE)
                 );
             }
-        -| GeneratorExp(elt, generators) ->> {
-            if (generators.size() == 1)
+        -| GeneratorExp(expr, generators) ->> {
+            lassert(generators.size());
+
+            /************************************
+            generator-expressions get transformed as follows: 
+            
+                (expr for pat in generator if filterExpr)
+            
+            becomes
+
+                generator.__pyfora_generator__().filter(lambda pat: filterExpr).map(lambda pat: expr)
+
+            with nested iterators, we have
+                
+                (expr1 for pat1 in generator if filtExpr for pat2 in sub_generator if filtExpr2) 
+
+            becoming
+
+                generator
+                    .__pyfora_generator__()
+                    .filter(lambda pat1: filtExpr)
+                    .nest(lambda pat1: 
+                        sub_generator
+                            .__pyfora_generator__()
+                            .filter(lambda pat2: filtExpr2)
+                            .map(lambda pat2: expr)
+                        )
+
+            ***********************************/
+            
+            Nullable<Expression> accumulator;
+
+            for (long genIx = generators.size() - 1; genIx >= 0; genIx--)
                 {
-                //vanilla list-comprehension: [expr for pat in it] becomes
-                //it.__pyfora_generator__().map(lambda pat: expr)
-                Expression rootGenerator = convertPythonAstExpressionToFora(generators[0].iter());
+                Expression generator = 
+                    convertPythonAstExpressionToFora(generators[genIx].iter())
+                        .member(Symbol("__pyfora_generator__"))();
 
-                auto generator = rootGenerator.member(Symbol("__pyfora_generator__"))();
-
-                for (auto c: generators[0].conditions())
+                for (auto c: generators[genIx].conditions())
                     generator = generator.member(Symbol("filter"))(
                         convertPythonAstExpressionToFora(
                             PythonAstExpr::Lambda(
                                 PythonAstArguments(
-                                    emptyTreeVec() + generators[0].target(),
+                                    emptyTreeVec() + generators[genIx].target(),
                                     null(),
                                     null(),
                                     emptyTreeVec()
@@ -786,22 +815,41 @@ Expression PythonAstConverter::convertPythonAstExpressionToFora_inner(const Pyth
                             )
                         );
 
-                Expression result = generator.member(Symbol("map"))(
-                    convertPythonAstExpressionToFora(
-                        PythonAstExpr::Lambda(
-                            PythonAstArguments(
-                                emptyTreeVec() + generators[0].target(),
-                                null(),
-                                null(),
-                                emptyTreeVec()
-                                ),
-                            elt
+                //the first time in the loop, we are calculating the 
+                if (!accumulator)
+                    accumulator = generator.member(Symbol("map"))(
+                        convertPythonAstExpressionToFora(
+                            PythonAstExpr::Lambda(
+                                PythonAstArguments(
+                                    emptyTreeVec() + generators[genIx].target(),
+                                    null(),
+                                    null(),
+                                    emptyTreeVec()
+                                    ),
+                                expr
+                                )
                             )
-                        )
-                    );
-
-                return result;
+                        );
+                else
+                    accumulator = generator.member(Symbol("nest"))(
+                        createObjectImplementingCallOperatorForFunction(
+                            Function::Term(
+                                TuplePattern(
+                                    emptyTreeVec() + 
+                                        TuplePatternElement::Normal(
+                                            convertPythonAstExpressionToPattern(generators[genIx].target())
+                                            )
+                                    ),
+                                *accumulator,
+                                Function::Empty()
+                                ),
+                            "<lambda>",
+                            null()
+                            )
+                        );
                 }
+            
+            return *accumulator;
             }
         -| ListComp(elt, generators) ->> {
             return mPythonListConverter->convertPyListComprehension(
@@ -1392,6 +1440,7 @@ Expression PythonAstConverter::convertPythonAstClassDefToFora(
         }
 
     if (mPyObjectBaseMixin.type().isClass())
+        {
         classDefinitionTerms = classDefinitionTerms + 
             ClassDefinitionTerm::ObjectTerm(
                 ObjectDefinitionTerm::Mixin(
@@ -1400,6 +1449,17 @@ Expression PythonAstConverter::convertPythonAstClassDefToFora(
                         )
                     )
                 );
+
+        //the class object itself is also a PyObject
+        classDefinitionTerms = classDefinitionTerms + 
+            ClassDefinitionTerm::Static(
+                ObjectDefinitionTerm::Mixin(
+                    Expression::Constant(
+                        CSTValue(mPyObjectBaseMixin)
+                        )
+                    )
+                );
+        }
     else
         lassert_dump(
             mPyObjectBaseMixin.type().isNothing(), 
@@ -1549,7 +1609,7 @@ Expression PythonAstConverter::convertPythonAstFunctionDefToForaWrappingBodyInTr
     return createObjectImplementingCallOperatorForFunction(
         function,
         functionName,
-        extent
+        null() << extent
         );
     }
 
@@ -1683,14 +1743,14 @@ Expression PythonAstConverter::convertPythonAstFunctionDefToFora(
     return createObjectImplementingCallOperatorForFunction(
         function,
         functionName,
-        extent
+        null() << extent
         );
     }
 
 Expression PythonAstConverter::createObjectImplementingCallOperatorForFunction(
         const Function& function,
         const std::string& functionName,
-        const SimpleParseRange& extent
+        Nullable<SimpleParseRange> extent
         ) const
     {
     return Expression::CreateObject(
@@ -1718,7 +1778,9 @@ Expression PythonAstConverter::createObjectImplementingCallOperatorForFunction(
                 :   ObjectDefinitionBody::Empty()
                 ),
             null() << Symbol(functionName),
-            ExpressionLocationMetadata::WithSimpleParseRange(extent)
+            extent ? 
+                ExpressionLocationMetadata::WithSimpleParseRange(*extent)
+            :   ExpressionLocationMetadata::Empty()
             ),
         CSTValue()
         );

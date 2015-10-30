@@ -28,10 +28,16 @@ class List:
         generator = other.__pyfora_generator__()
 
         def listSum(subGenerator, depth):
-            if depth > 9 or not subGenerator.canSplit() or True:
+            if depth > 9 or not subGenerator.canSplit():
                 result = []
-                for val in subGenerator:
-                    result = result + [val]
+                if subGenerator.isNestedGenerator():
+                    #the outer generator might not be splittable anymore, but
+                    #the inner ones might
+                    for childGenerator in subGenerator.childGenerators():
+                        result = result + sum(childGenerator, depth+1)
+                else:
+                    for val in subGenerator:
+                        result = result + [val]
                 return result
             else:
                 split = subGenerator.split()
@@ -65,14 +71,11 @@ class XRangeInstance:
 
 
     def __pyfora_generator__(self):
-        #eventually this class should inherit behaviors from "PyGeneratorBase"
         class Generator:
-            def __init__(self, start, count, increment, mapFun, filterFun):
+            def __init__(self, start, count, increment):
                 self.start = start
                 self.count = count
                 self.increment = increment
-                self.mapFun = mapFun
-                self.filterFun = filterFun
 
             def __pyfora_generator__(self):
                 return self
@@ -81,10 +84,12 @@ class XRangeInstance:
                 ix = 0
                 currentVal = self.start
                 while ix < self.count:
-                    if self.filterFun(currentVal):
-                        yield self.mapFun(currentVal)
+                    yield currentVal
                     currentVal = currentVal + self.increment
                     ix = ix + 1
+
+            def isNestedGenerator(self):
+                return False
 
             def canSplit(self):
                 return self.count > 1
@@ -97,20 +102,21 @@ class XRangeInstance:
                 highCount = self.count - lowCount
 
                 return (
-                    Generator(self.start, lowCount, self.increment, self.mapFun, self.filterFun),
-                    Generator(self.start + self.increment * lowCount, highCount, self.increment, self.mapFun, self.filterFun)
+                    Generator(self.start, lowCount, self.increment),
+                    Generator(self.start + self.increment * lowCount, highCount, self.increment)
                     )
 
             def map(self, f):
-                mapfun = lambda x: f(self.mapFun(x))
-                return Generator(self.start, self.count, self.increment, mapfun, self.filterFun)
+                return Generator.__pyfora_builtins__.MappingGenerator(self, f)
 
             def filter(self, f):
-                filterfun = lambda x: f(x) and self.filterFun(x)
-                return Generator(self.start, self.count, self.increment, self.mapFun, filterfun)
+                return Generator.__pyfora_builtins__.FilteringGenerator(self, f)
+
+            def nest(self, subgeneratorFun):
+                return Generator.__pyfora_builtins__.NestedGenerator(self, subgeneratorFun)
 
 
-        return Generator(self.start, self.count, self.increment, lambda x:x, lambda x: True)
+        return Generator(self.start, self.count, self.increment)
 
 class XRange:
     def __call__(self, first, second=None, increment=None):
@@ -145,16 +151,22 @@ class Sum:
 
         def sum(sumSubGenerator, depth):
             if depth > 9 or not sumSubGenerator.canSplit():
-                isFirst = True
-                result = None
-                for val in sumSubGenerator:
-                    if isFirst:
-                        result = val
-                        isFirst = False
-                    else:
-                        result = result + val
-                if isFirst:
-                    return Empty
+                result = Empty
+
+                if sumSubGenerator.isNestedGenerator():
+                    #the outer generator might not be splittable anymore, but
+                    #the inner ones might
+                    for childGenerator in sumSubGenerator.childGenerators():
+                        if result is Empty:
+                            result = sum(childGenerator, depth+1)
+                        else:
+                            result = result + sum(childGenerator, depth+1)
+                else:
+                    for val in sumSubGenerator:
+                        if result is Empty:
+                            result = val
+                        else:
+                            result = result + val
                 return result
             else:
                 split = sumSubGenerator.split()
