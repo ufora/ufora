@@ -366,6 +366,22 @@ class ExecutorTestCases(
             return n.shape
         self.equivalentEvaluationTest(f)
 
+    def test_primitive_type_comparisons(self):
+        def f():
+            toReturn = []
+            toCompare = [True, False, 0, 1, 2, 0.0, 1.0, 2.0, -1, -1.1, "test", []]
+            l = len(toCompare)
+            for idx1 in range(l):
+                for idx2 in range(l):
+                    a = toCompare[idx1]
+                    b = toCompare[idx2]
+                    toReturn = toReturn + [a < b]
+                    toReturn = toReturn + [a > b]
+                    toReturn = toReturn + [a <= b]
+                    toReturn = toReturn + [a >= b]
+            return toReturn
+        r = self.equivalentEvaluationTest(f)
+
     def test_return_numpy(self):
         n = numpy.zeros(10)
         def f():

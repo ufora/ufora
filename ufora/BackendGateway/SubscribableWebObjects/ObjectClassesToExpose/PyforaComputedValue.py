@@ -186,6 +186,7 @@ class PyforaComputedValue(ComputedValue.ComputedValue):
                     }
 
             return [x for x in [formatCodeLocation(c) for c in codeLocations] if x is not None]
+
         else:
             return None
 
