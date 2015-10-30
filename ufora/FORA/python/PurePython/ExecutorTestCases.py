@@ -16,6 +16,7 @@ import pyfora
 import pyfora.PyAstUtil as PyAstUtil
 import numpy
 import logging
+import traceback
 import time
 import ufora.FORA.python.PurePython.EquivalentEvaluationTestCases as EquivalentEvaluationTestCases
 import ufora.FORA.python.PurePython.ExceptionTestCases as ExceptionTestCases
@@ -177,8 +178,13 @@ class ExecutorTestCases(
                 if pythonSucceeded:
                     logging.error("Python succeeded, but pyfora threw %s for %s%s", ex, func, args)
                 pyforaSucceeded = False
+            except:
+                logging.error("General exception in pyfora for %s%s:\n%s", func, args, traceback.format_exc())
+                return False
 
-            self.assertEqual(pythonSucceeded, pyforaSucceeded)
+            self.assertEqual(pythonSucceeded, pyforaSucceeded,
+                    "Pyfora and python returned successes: %s%s" % (func, args)
+                    )
 
             if pythonSucceeded:
                 self.assertEqual(pythonResult, pyforaResult, 
@@ -1143,8 +1149,8 @@ class ExecutorTestCases(
             self.equivalentEvaluationTest(lambda: sum((outer * 503 + inner for outer in xrange(ct) for inner in xrange(outer) if inner % 2 == 0)))
         
     def test_types_and_combos(self):
-        types = [bool, str, int, type, object, list, tuple]
-        instances = [10, "10", 10.0, None, True, [], ()] + types
+        types = [bool, str, int, type, object, list, tuple, dict]
+        instances = [10, "10", 10.0, None, True, [], (), {}] + types
         callables = types + [lambda x: x.__class__]
 
         for c in callables:
