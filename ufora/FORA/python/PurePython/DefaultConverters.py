@@ -33,7 +33,7 @@ primitiveTypeMapping = {
     type(None): builtinPythonImplVal.getObjectMember("PyNone"),
     }
 
-defaultWrappingNativeListConverter = ForaNative.makeWrappingPythonListConverter(
+defaultWrappingNativeListConverter = ForaNative.makePythonListConverter(
     builtinPythonImplVal.getObjectMember("PyList")
     )
 

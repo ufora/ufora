@@ -58,8 +58,6 @@ class Converter(object):
         self.nativeConstantConverter = \
             self.constantConverter.nativeConstantConverter
 
-        if nativeListConverter is None:
-            nativeListConverter = ForaNative.makeDirectPythonListConverter()
         self.nativeListConverter = nativeListConverter
 
         self.nativeTupleConverter = nativeTupleConverter

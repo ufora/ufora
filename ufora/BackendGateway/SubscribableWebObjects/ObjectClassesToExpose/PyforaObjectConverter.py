@@ -70,7 +70,7 @@ class PyforaObjectConverter(ComputedGraph.Location):
                 primitiveTypeMapping
                 )
 
-            wrappingNativeListConverter = ForaNative.makeWrappingPythonListConverter(
+            wrappingNativeListConverter = ForaNative.makePythonListConverter(
                 purePythonModuleImplval.getObjectMember("PyList")
                 )
 

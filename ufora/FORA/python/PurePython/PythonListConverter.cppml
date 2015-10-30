@@ -13,10 +13,11 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 ****************************************************************************/
-#include "PythonListConverter.hpp"
+#include "PythonListConverter.hppml"
 
 #include "PythonAst.hppml"
 #include "../../Language/Function.hppml"
+#include "../../Language/FunctionStage1Simulation.hppml"
 #include "../../Core/ImplValContainerUtilities.hppml"
 #include "../../Core/MemoryPool.hpp"
 #include "../../VectorDataManager/VectorDataManager.hppml"
@@ -27,39 +28,94 @@
 #include "../../../core/math/RandomHashGenerator.hpp"
 
 namespace {
-    ImplValContainer createEmptyVector() 
-        {
-        TypedFora::Abi::ForaValueArray* foraValueArray = 
-            TypedFora::Abi::ForaValueArray::Empty(MemoryPool::getFreeStorePool());
 
-        TypedFora::Abi::VectorRecord vec(
-            MemoryPool::getFreeStorePool()->construct<TypedFora::Abi::VectorHandle>(
-                Fora::BigVectorId(),
-                Fora::PageletTreePtr(),
-                foraValueArray,
-                MemoryPool::getFreeStorePool(),
-                RandomHashGenerator::singleton().generateRandomHash()
-                )
-            );
+ImplValContainer createEmptyVector() 
+    {
+    TypedFora::Abi::ForaValueArray* foraValueArray = 
+        TypedFora::Abi::ForaValueArray::Empty(MemoryPool::getFreeStorePool());
 
-        return ImplValContainerUtilities::createVector(vec);
-        }
+    TypedFora::Abi::VectorRecord vec(
+        MemoryPool::getFreeStorePool()->construct<TypedFora::Abi::VectorHandle>(
+            Fora::BigVectorId(),
+            Fora::PageletTreePtr(),
+            foraValueArray,
+            MemoryPool::getFreeStorePool(),
+            RandomHashGenerator::singleton().generateRandomHash()
+            )
+        );
+
+    return ImplValContainerUtilities::createVector(vec);
     }
 
+}
+
 namespace Fora {
+
+PythonListConverter::PythonListConverter(
+        const ImplValContainer& pyListClassImplVal
+        ) : mPyListClass(pyListClassImplVal)    
+    {
+    lassert(pyListClassImplVal.isCST());
+
+    mEmptyInstance = createList(emptyTreeVec(), PolymorphicSharedPtr<VectorDataManager>());
+    }
 
 Expression PythonListConverter::convertPyList(
         const Fora::PythonAstExpr_ListType& listExpr,
         const std::function<Expression(const PythonAstExpr&)>& 
             convertPythonAstExpressionToFora
+        ) const 
+    {
+    auto rawForaListExpr = Expression::CreateList(
+        mapITV(listExpr.elts(), convertPythonAstExpressionToFora)
+        );
+
+    return instantiatePyListExpr(rawForaListExpr);
+    }
+
+Expression PythonListConverter::concatSingleEltVectorExpr(
+        const Expression& lhs,
+        const Expression& eltInVector
         ) const
     {
-    return Expression::CreateList(
-        mapITV(listExpr.elts(), convertPythonAstExpressionToFora)
+    return Expression::Call(
+        Expression::Member(
+            lhs,
+            Symbol("__pyfora_concat__"),
+            1
+            ),
+        emptyTreeVec() +
+            ApplyArgument::Normal(eltInVector)
         );
     }
 
-Expression PythonListConverter::convertPyListComprehension(
+Expression PythonListConverter::instantiatePyListExpr(
+        const Expression& memberExpr
+        ) const
+    {
+    ImmutableTreeVector<ApplyArgument> applyArguments;
+
+    applyArguments = applyArguments +
+        ApplyArgument::Normal(
+            null(),
+            Expression::Constant(
+                CSTValue(
+                    Symbol("CreateInstance")
+                    )
+                )
+            );
+
+    applyArguments = applyArguments + memberExpr;
+
+    return Expression::Apply(
+        Expression::Constant(
+            CSTValue(mPyListClass)
+            ),
+        applyArguments
+        );
+    }
+
+Expression PythonListConverter::convertPyListComprehensionRaw(
         const Fora::PythonAstExpr_ListCompType& listCompExpr,
         const std::function<Expression(const PythonAstExpr&)>& 
             convertPythonAstExpressionToFora,
@@ -107,8 +163,25 @@ Expression PythonListConverter::convertPyListComprehension(
         }
     return Expression::ListComprehension(chain, false);
     }
-    
-ImplValContainer PythonListConverter::createList(
+
+Expression PythonListConverter::convertPyListComprehension(
+        const Fora::PythonAstExpr_ListCompType& listCompExpr,
+        const std::function<Expression(const PythonAstExpr&)>& 
+            convertPythonAstExpressionToFora,
+        const std::function<PatternWithName(const PythonAstExpr&)>&
+            convertPythonAstExpressionToPattern
+        ) const
+    {
+    auto rawListCompExpr = convertPyListComprehensionRaw(
+        listCompExpr,
+        convertPythonAstExpressionToFora,
+        convertPythonAstExpressionToPattern
+        );
+
+    return instantiatePyListExpr(rawListCompExpr);
+    }
+
+ImplValContainer PythonListConverter::createListRaw(
         const ImmutableTreeVector<ImplValContainer>& listElements,
         PolymorphicSharedPtr<VectorDataManager> vdm
         ) const
@@ -136,6 +209,49 @@ ImplValContainer PythonListConverter::createList(
     return vector;
     }
 
+ImplValContainer PythonListConverter::createList(
+        const ImmutableTreeVector<ImplValContainer>& listElements,
+        PolymorphicSharedPtr<VectorDataManager> vdm
+        ) const
+    {
+    FunctionStage1::Simulation simulation(10);
+
+    ImmutableTreeVector<ImplValContainer> applyArgs;
+
+    applyArgs = applyArgs + ImplValContainer(mPyListClass);
+
+    applyArgs = applyArgs +
+        ImplValContainerUtilities::createSymbol(
+            Symbol("CreateInstance")
+            );
+
+    applyArgs = applyArgs + createListRaw(listElements, vdm);
+
+    FunctionStage1::ExpressionEvaluationResult res =
+        simulation.evaluateApply(applyArgs);
+
+    lassert(res.isResult());
+    
+    return res.getResult().val();
+    }
+
+
+Nullable<ImplValContainer> PythonListConverter::invertList(ImplValContainer possibleList)
+    {
+    //if its the same class object that we would create for the empty tuple
+    if (possibleList.type().isClass() && possibleList.type().getClass().classBody() == 
+            mEmptyInstance.type().getClass().classBody())
+        {
+        Nullable<pair<ImplValContainer, Nullable<Symbol> > > member = 
+                ImplValContainerUtilities::objectGetMember(possibleList, Symbol("@m"));
+
+        lassert_dump(member && !member->second, "Expected the PyTuple 'm' field to be simple data");
+    
+        return null() << member->first;
+        }
+    
+    return null();
+    }
 
 }
 
