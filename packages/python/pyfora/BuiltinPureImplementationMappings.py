@@ -12,9 +12,12 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+"""Pure Python Implementations of Python builtins (in alphabetical order)."""
+
 import pyfora.PureImplementationMapping as PureImplementationMapping
 import pyfora.PureImplementationMappings as PureImplementationMappings
 
+# List of Python 2.7 builtins:
 # 'abs', 'all', 'any', 'apply', 'basestring', 'bin', 'bool', 'buffer', 'bytearray',
 # 'bytes', 'callable', 'chr', 'classmethod', 'cmp', 'coerce', 'compile', 'complex',
 # 'copyright', 'credits', 'delattr', 'dict', 'dir', 'divmod', 'enumerate', 'eval',

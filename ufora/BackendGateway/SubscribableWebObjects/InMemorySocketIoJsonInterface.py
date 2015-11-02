@@ -37,7 +37,7 @@ class InMemorySocketIoJsonInterface(object):
         self.messageQueue = Queue.Queue()
 
         if enableProfiling:
-	        self.profiler = cProfile.Profile()
+            self.profiler = cProfile.Profile()
         else:
             self.profiler = None
 
