@@ -2182,3 +2182,26 @@ class ExecutorTestCases(
             as MutuallyRecursiveModuleMembers1
 
         self.equivalentEvaluationTest(MutuallyRecursiveModuleMembers1.f, 5)
+
+    def test_continue_in_while(self):
+        def f():
+            x = 0
+            y = 0
+            while x < 100:
+                x = x + 1
+                if x % 2:
+                    continue
+                y = y + x
+
+        self.equivalentEvaluationTest(f)
+
+    def test_continue_in_for(self):
+        def f():
+            x = 0
+            y = 0
+            for x in xrange(100):
+                if x % 2:
+                    continue
+                y = y + x
+
+        self.equivalentEvaluationTest(f)
