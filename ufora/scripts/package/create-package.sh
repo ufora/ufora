@@ -51,13 +51,13 @@ DEST_DIR=${d}/ufora-${v}
 rm -rf $DEST_DIR
 mkdir -p $DEST_DIR
 echo "Copying ufora source code"
-rsync -a --exclude '*.cppml' --exclude '*.cpp', --exclude '*.hppml' --exclude '*.hpp' --exclude '*.pyc' $REPO_ROOT/ufora $DEST_DIR/lib
+rsync -a --exclude '*.cppml' --exclude '*.cpp' --exclude '*.hppml' --exclude '*.hpp' --exclude '*.pyc' $REPO_ROOT/ufora $DEST_DIR/lib
 if [ $? -ne 0 ]; then
   echo "Error: Failed to rsync /ufora directory"
   exit 2
 fi
 echo "Copying test scripts"
-rsync -a $REPO_ROOT/test_scripts $DEST_DIR/lib
+rsync -a --exclude '*.pyc' $REPO_ROOT/test_scripts $DEST_DIR/lib
 if [ $? -ne 0 ]; then
   echo "Error: Failed to rsync /test_scripts directory"
   exit 2
@@ -66,7 +66,7 @@ cp $REPO_ROOT/test.py $DEST_DIR/lib
 cp $REPO_ROOT/make.sh $DEST_DIR/lib
 rsync -a $REPO_ROOT/docker $DEST_DIR/lib
 echo "Copying packages"
-rsync -a $REPO_ROOT/packages $DEST_DIR/lib
+rsync -a --exclude '*.pyc' --exclude build/ --exclude dist/ --exclude pyfora.egg-info/ $REPO_ROOT/packages $DEST_DIR/lib
 if [ $? -ne 0 ]; then
   echo "Error: Failed to rsync /packages directory"
   exit 2
