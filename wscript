@@ -42,6 +42,11 @@ def configure(conf):
     # use clang/clang++ if available
     conf.find_program('clang', var='CC')
     conf.find_program('clang++', var='CXX')
+    ccache = conf.find_program('ccache', var='CCACHE', mandatory=False)
+    if ccache:
+        print "CC=", conf.env['CC']
+        conf.env['CC'] = ccache + ' ' + conf.env['CC']
+        conf.env['CXX'] = ccache + ' ' + conf.env['CXX']
 
     conf.load('compiler_cxx')
     conf.load('compiler_c')
@@ -227,6 +232,9 @@ def rebuildSubscribableWebObjectsWrapper(bld):
 def build(bld):
     """Primary WAF entry point."""
     bld.post_mode = Build.POST_LAZY
+
+    if bld.env.CCACHE:
+        bld.nocache = True
 
     extensions = ('cpp', 'hpp', 'cppml', 'hppml', 'ypp', 'h', 'c', 'cc', 'inc', 'inl', 'gen', 'def')
     folders = ('ufora/', 'third_party/', 'test_scripts/', 'perf_tests')
