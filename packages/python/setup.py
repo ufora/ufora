@@ -14,13 +14,22 @@
 
 from setuptools import setup, find_packages
 import os
+import re
 
 here = os.path.abspath(os.path.dirname(__file__))
 README = open(os.path.join(here, 'README.rst')).read()
 NEWS = open(os.path.join(here, 'NEWS.txt')).read()
 
+def read_package_version():
+    version_file = 'pyfora/_version.py'
+    with open(version_file, 'rt') as version_file:
+        version_line = version_file.read()
+    match = re.search(r"^__version__ = ['\"]([^'\"]*)['\"]", version_line, re.M)
+    if match:
+        return match.group(1)
+    raise RuntimeError("Can't read version string from '%s'." % (version_file,))
 
-version = '0.0.1'
+version = read_package_version()
 
 install_requires = ['futures', 'socketIO-client>=0.6.5']
 

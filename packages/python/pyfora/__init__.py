@@ -12,5 +12,7 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+from pyfora._version import __version__
+
 from pyfora.Connection import connect
 from pyfora.Exceptions import *
