@@ -69,12 +69,12 @@ backend currently builds on linux. We maintain docker images of the latest
 builds so you can get going quickly, as well as an image you can build ufora
 in yourself.
 
-## How can I get involved?
+## Contact us.
 
 Users of the Ufora platform should visit [ufora-users](https://groups.google.com/forum/#!forum/ufora-user). Developers
 should visit [ufora-dev](https://groups.google.com/forum/#!forum/ufora-dev).
 
 The development of Ufora is ongoing, and led by [Ufora Inc.](http://www.ufora.com/). Drop us
-a line if you'd like to get involved or need support.  
+a line if you'd like to get involved or need enterprise support.  
 
 
