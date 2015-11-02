@@ -1244,12 +1244,29 @@ class ExecutorTestCases(
 
         self.equivalentEvaluationTest(listComprehensions_1)
 
+    def test_listComprehensions_2(self):
+        def listComprehensions_2(arg):
+            aList = range(4)
+            filteredList = [elt for elt in aList if elt % 2 == 0]
+            return filteredList[arg]
+
+        for ix in range(-2, 2):
+            self.equivalentEvaluationTest(listComprehensions_2, ix)
+
     def test_listComprehensions_3(self):
         def listComprehensions_3():
             aList = [(x, y) for x in [1,2,3] for y in [3,1,4]]
             return aList[1][0]
 
         self.equivalentEvaluationTest(listComprehensions_3)
+
+    def test_listComprehensions_4(self):
+        def listComprehensions_4(arg):
+            aList = [(x, y) for x in [1,2,3] for y in [3,1,4] if x != y]
+            return aList[arg]
+
+        for ix in range(-7, 7):
+            self.equivalentEvaluationTest(listComprehensions_4, ix)
 
     def test_basicLists_1(self):
         def basicLists(x):
