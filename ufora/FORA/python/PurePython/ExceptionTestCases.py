@@ -176,3 +176,57 @@ class ExceptionTestCases(object):
             self.assertIsInstance(e, pyfora.ComputationError)
             self.assertIsInstance(e.exceptionValue, pyfora.InvalidPyforaOperation)
 
+    def test_IndexError_lists_1(self):
+        def f():
+            return [][100]
+
+        with self.create_executor() as fora:
+            e = fora.submit(f).result().toLocal().exception()
+            self.assertIsInstance(e, pyfora.ComputationError)
+            self.assertIsInstance(e.exceptionValue, IndexError)
+
+    def test_IndexError_lists_2(self):
+        def f():
+            return [][10]
+
+        with self.create_executor() as fora:
+            with self.assertRaises(IndexError):
+                with fora.remotely:
+                    f()
+                
+    def test_IndexError_tuples_1(self):
+        def f():
+            return (1,2)[100]
+
+        with self.create_executor() as fora:
+            e = fora.submit(f).result().toLocal().exception()
+            self.assertIsInstance(e, pyfora.ComputationError)
+            self.assertIsInstance(e.exceptionValue, IndexError)
+
+    def test_IndexError_tuples_2(self):
+        def f():
+            return (1,2)[10]
+
+        with self.create_executor() as fora:
+            with self.assertRaises(IndexError):
+                with fora.remotely:
+                    f()
+
+    def test_IndexError_strings_1(self):
+        def f():
+            return "asdf"[100]
+
+        with self.create_executor() as fora:
+            e = fora.submit(f).result().toLocal().exception()
+            self.assertIsInstance(e, pyfora.ComputationError)
+            self.assertIsInstance(e.exceptionValue, IndexError)
+
+    def test_IndexError_strings_2(self):
+        def f():
+            return "asdf"[10]
+
+        with self.create_executor() as fora:
+            with self.assertRaises(IndexError):
+                with fora.remotely:
+                    f()
+
