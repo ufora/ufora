@@ -392,6 +392,16 @@ class ExecutorTestCases(
 
         self.assertTrue(isinstance(res, numpy.ndarray), res)
 
+        self.equivalentEvaluationTest(f)
+
+    def test_len_on_tuple(self):
+        def f():
+            a = (9,)
+            b = ()
+            c = (1,2,4)
+            return (len(a), len(b), len(c))
+        res = self.evaluateWithExecutor(f)
+
     def test_reversed_builtins(self):
         def f():
             a = [1, 2, 3, 4, 5, 6]
