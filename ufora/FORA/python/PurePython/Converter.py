@@ -692,13 +692,18 @@ class Converter(object):
         return objectDefinition.text
 
     def _computeRestrictedGraph(self, objectId, dependencyGraph):
+        """Compute the subgraph of nodes reachable from `objectId`"""
         tr = dict()
-        dependentIds = dependencyGraph[objectId]
 
-        for dependentId in dependentIds:
-            tr[dependentId] = dependencyGraph[dependentId]
+        stack = [objectId]
+        visited = set()
 
-        tr[objectId] = dependentIds
+        while stack:
+            toVisit = stack.pop()
+            if toVisit not in visited:
+                tr[toVisit] = dependencyGraph[toVisit]
+                stack.extend(dependencyGraph[toVisit])
+                visited.add(toVisit)
 
         return tr
 

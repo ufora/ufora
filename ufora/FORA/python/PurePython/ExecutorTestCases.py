@@ -832,6 +832,13 @@ class ExecutorTestCases(
             with self.assertRaises(pyfora.PyforaError):
                 future.result().toLocal().result()
 
+    def test_convertListOfTuple(self):
+        x = [(3,4)]
+
+        def returnX():
+            return x
+
+        self.equivalentEvaluationTest(returnX)
 
     def test_invalid_apply(self):
         with self.create_executor() as executor:
