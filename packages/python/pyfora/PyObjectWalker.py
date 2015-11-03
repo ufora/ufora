@@ -464,6 +464,13 @@ class PyObjectWalker(object):
         subchain, terminalValue = chain[:ix], rootValue
 
         while PyforaInspect.ismodule(terminalValue):
+            if ix >= len(chain):
+                #we're terminating at a module
+                raise Exceptions.PythonToForaConversionError("Can't convert the module %s" % str(terminalValue))
+            
+            if not hasattr(terminalValue, chain[ix]):
+                raise Exceptions.PythonToForaConversionError("Module %s has no member %s" % (str(terminalValue), chain[ix]))
+
             terminalValue = getattr(terminalValue, chain[ix])
             ix += 1
             subchain = chain[:ix]

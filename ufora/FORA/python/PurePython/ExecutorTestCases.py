@@ -916,6 +916,25 @@ class ExecutorTestCases(
         self.equivalentEvaluationTest(all, [True, False])
         self.equivalentEvaluationTest(all, [False, False])
 
+    def test_reference_module(self):
+        with self.create_executor() as executor:
+            import socket
+            def f():
+                return str(socket)
+
+            with self.assertRaises(pyfora.PythonToForaConversionError):
+                executor.submit(f)
+
+    def test_reference_nonexistent_module_member(self):
+        with self.create_executor() as executor:
+            import socket
+            def f():
+                return socket.this_doesnt_exist
+
+            with self.assertRaises(pyfora.PythonToForaConversionError):
+                executor.submit(f)
+
+
     def test_invalid_apply(self):
         with self.create_executor() as executor:
             def f(x):
