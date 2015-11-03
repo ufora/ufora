@@ -55,7 +55,11 @@ setup(
     url='http://www.ufora.com/',
     license='Apache',
     packages=find_packages('.'),
-    #package_dir={'': 'pyfora'}, include_package_data=True,
+    package_dir={'': '.'},
+    package_data={
+        '': ['*.txt', '*.rst'],
+        'pyfora': ['fora/**/*.fora']
+        },
     zip_safe=False,
     install_requires=install_requires,
     entry_points={
