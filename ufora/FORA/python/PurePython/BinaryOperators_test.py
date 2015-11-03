@@ -100,6 +100,19 @@ class TestAllBinaryOperators(unittest.TestCase):
         if pythonSucceeded:
             self.assertEqual(r1, r2)
 
+    def test_division_rounding(self):
+        with self.create_executor() as executor:
+            arr = [1, 2, -4.4, 1e-6, -3.3e-4, -1, -2, 0, 0.0]
+            ct = len(arr)
+            for idx1 in range(ct):
+                for idx2 in range(ct):
+                    v1 = arr[idx1]
+                    v2 = arr[idx2]
+                    def f():
+                        return v1 / v2
+                    r = self.equivalentEvaluationTestThatHandlesExceptions(executor, f)
+                    print r
+
     def test_all_binary_operations(self):
         with self.create_executor() as executor:
             arr = [1, 2, None, -4.4, 1e-6, -3.3e-4, "test", "", [], ["test"]]
