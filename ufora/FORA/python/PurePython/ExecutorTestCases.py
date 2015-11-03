@@ -184,29 +184,6 @@ class ExecutorTestCases(
                 self.assertEqual(r1, r2)
                 return r1
 
-    def test_slicing_operations_1(self):
-        a = "testing"
-        l = len(a)
-        with self.create_executor() as fora:
-            pythonResults = []
-            futures = []
-            for idx1 in range(-l - 1, l + 1):
-                for idx2 in range(-l - 1, l + 1):
-                    def f():
-                        return a[idx1:idx2]
-                    futures.append(
-                        fora.submit(f)
-                        )
-                    try:
-                        result = f()
-                        pythonResults.append(result)
-                    except:
-                        pass
-        foraResults = self.resolvedFutures(futures)
-        self.assertTrue(len(foraResults) > (l * 2 + 1) ** 2)
-        self.assertEqual(pythonResults, foraResults)
-
-
     def resolvedFutures(self, futures):
         results = [f.result() for f in futures]
         localResults = [r.toLocal() for r in results]
@@ -217,33 +194,6 @@ class ExecutorTestCases(
             except Exception as e:
                 pass
         return foraResults
-
-    def test_slicing_operations_2(self):
-        a = "abcd"
-        l = len(a) + 1
-        with self.create_executor() as fora:
-            pythonResults = []
-            futures = []
-            for idx1 in range(-l, l):
-                for idx2 in range(-l, l):
-                    for idx3 in range(-l, l):
-                        def f():
-                            return a[idx1:idx2:idx3]
-                        futures.append(
-                            fora.submit(f)
-                            )
-                        try:
-                            result = f()
-                            pythonResults.append(result)
-                        except:
-                            pass
-
-            foraResults = self.resolvedFutures(futures)
-            # we are asserting that we got a lot of results
-            # we don't expect to have (l * 2 -1)^3, because we expect some of the
-            # operations to fail
-            self.assertTrue(len(foraResults) > 500)
-            self.assertEqual(pythonResults, foraResults)
 
     def test_ord_chr_builtins(self):
         def f():
@@ -291,21 +241,6 @@ class ExecutorTestCases(
                 )
 
         self.equivalentEvaluationTest(f)
-
-    def test_slicing_operations_3(self):
-        a = "abcd"
-        l = len(a)
-        l2 = -l + 1
-        def f():
-            toReturn = []
-            for idx1 in range(l2, l + 1):
-                for idx2 in range(l2, l + 1):
-                    for idx3 in range(l2, l + 1):
-                        if(idx3 != 0):
-                            r = a[idx1:idx2:idx3]
-                            toReturn = toReturn + [r]
-            return toReturn
-        self.equivalentEvaluationTestThatHandlesExceptions(f)
 
     def test_string_equality_methods(self):
         def f():
