@@ -840,6 +840,82 @@ class ExecutorTestCases(
 
         self.equivalentEvaluationTest(returnX)
 
+    def test_boolean_conversion(self):
+        class HasBoolConversion:
+            def __init__(self, x):
+                self.x = x
+
+            def __nonzero__(self):
+                return bool(self.x)
+
+        class HasNoBoolConversion:
+            pass
+
+        candidates = [
+            0, 1, 
+            0.0, 1.0, 
+            "", "string", 
+            False, True, 
+            lambda x:x,
+            HasBoolConversion(0),
+            HasBoolConversion(1),
+            HasNoBoolConversion(),
+            None,
+            (), (1,), (3,4),
+            [], [1], [1,2],
+            {}, {1:2}, {1:2, 3:4},
+            bool, type(None)
+            ]
+
+        self.equivalentEvaluationTest(lambda : [bool(c) for c in candidates])
+        self.equivalentEvaluationTest(lambda : [True if c else False for c in candidates])
+
+    def test_operator_pos_neg_invert(self):
+        class HasPos:
+            def __pos__(self):
+                return 1
+
+        class HasNeg:
+            def __neg__(self):
+                return 1
+
+        class HasInvert:
+            def __invert__(self):
+                return 1
+
+        class HasNothing:
+            pass
+
+        candidates = [
+            0, 1, -1,
+            0.0, 1.0, 
+            "string", 
+            False, True, 
+            lambda x:x,
+            HasPos(),
+            HasNeg(),
+            HasInvert(),
+            HasNothing(),
+            None, (), [], {}, bool
+            ]
+
+        for c in candidates:
+            self.equivalentEvaluationTestThatHandlesExceptions(lambda x: +x, c)
+            self.equivalentEvaluationTestThatHandlesExceptions(lambda x: -x, c)
+            self.equivalentEvaluationTestThatHandlesExceptions(lambda x: ~x, c)
+
+    def test_builtins_any(self):
+        self.equivalentEvaluationTest(any, [])
+        self.equivalentEvaluationTest(any, [True])
+        self.equivalentEvaluationTest(any, [True, False])
+        self.equivalentEvaluationTest(any, [False, False])
+
+    def test_builtins_all(self):
+        self.equivalentEvaluationTest(all, [])
+        self.equivalentEvaluationTest(all, [True])
+        self.equivalentEvaluationTest(all, [True, False])
+        self.equivalentEvaluationTest(all, [False, False])
+
     def test_invalid_apply(self):
         with self.create_executor() as executor:
             def f(x):

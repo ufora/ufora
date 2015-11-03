@@ -168,12 +168,17 @@ class Abs:
 
 class All:
     def __call__(self, iterable):
-        if len(iterable) == 0:
-            return True
         for i in iterable:
             if not i:
                 return False
         return True
+
+class Any:
+    def __call__(self, iterable):
+        for i in iterable:
+            if i:
+                return True
+        return False
 
 class Ord:
     def __call__(self, character):        
@@ -215,7 +220,8 @@ mappings_ = [
     (xrange, XRange), 
     (sum, Sum),
     (abs, Abs), 
-    (all, All),
+    (all, All), 
+    (any, Any),
     (ord, Ord),
     (chr, Chr),
     (max, Max),
