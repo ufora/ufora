@@ -304,6 +304,12 @@ class WithBlockExecutors_test(unittest.TestCase, EquivalentEvaluationTestCases.E
             # doesn't work
             # self.assertEqual(ix.toLocal().result(), 10)
 
+    def test_divide_by_zero_throws_ZeroDivisionError(self):
+        with self.create_executor() as fora:
+            with self.assertRaises(ZeroDivisionError):
+                with fora.remotely:
+                    x = 1 / 0
+
 if __name__ == "__main__":
     import ufora.config.Mainline as Mainline
     Mainline.UnitTestMainline([])
