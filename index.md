@@ -59,15 +59,14 @@ that Ufora supports, look
 The ufora front-end runs anywhere you can get a CPython interpreter - it's pure
 python, installed using `pip`.
 
-The ufora backend can be deployed three ways: you can stand up a "cluster"
-consisting of just a
+The ufora backend can be deployed three ways: you can stand up an all-in-one "cluster" consisting of just a
 [single machine](https://ufora.github.io/ufora/github-pages/tutorials/getting-started-local.html),
 you can create a cluster in the 
 [cloud](https://ufora.github.io/ufora/github-pages/tutorials/getting-started-aws.html),
-or you can set up a cluster on a grid of machines in your datacenter.  The
+or you can set up a cluster on a grid of machines on a local network. The
 backend currently builds on linux. We maintain docker images of the latest
-builds so you can get going quickly, as well as an image you can build ufora
-in yourself.
+builds so you can get going quickly, as well as a development image in which you can build ufora
+yourself.
 
 ## Contact us.
 

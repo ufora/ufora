@@ -9,7 +9,7 @@ tagline: What Ufora can optimize and what it can't
 The Ufora VM performs two kinds of optimization: JIT compilation,
 which ensures that single-threaded code is fast, and automatic
 parallelization, which ensures that you can use many cores at once.
-In both cases, our goal is to get as close as possible to the 
+In both cases, our goal is to get as close as possible to the
 performance one can achieve using C with hand-crafted parallelism.
 As with any programming model, however, there are often multiple ways
 to write the same program that have very different performance implications.
@@ -49,10 +49,10 @@ For achieving maximum parallelism, the main takeaways are:
 
 ## The basic behavior of the JIT
 
-The Ufora JIT compiler optimizes the code your program spends the most time in. 
+The Ufora JIT compiler optimizes the code your program spends the most time in.
 So, for instance, if you write
 
-```py
+```python
 def loopSum(x):
     result = 0.0
     while x > 0:
@@ -89,7 +89,7 @@ This flexibility comes at a cost: the compiler generates new code for every
 combination of types and functions that the it sees. For instance, if you
 write
 
-```py
+```python
 def loopSum(x, f):
     result = 0
     while x>0:
@@ -102,7 +102,7 @@ then the compiler will generate completely different code for
 `loopSum(1000000, lambda x:x)` and `loopSum(1000000, lambda x:x*x)` and both
 will be very fast.  This extends to classes. For instance, if you write
 
-```py
+```python
 class Add:
     def __init__(self, arg):
         self.arg = arg
@@ -126,11 +126,11 @@ class Compose:
         return self.f(self.g(x))
 ```
 
-then you'll get idential performance if you write 
-`loopSum(1000000, lambda x: x * 10.0 + 20.0)` and 
-`loopSum(1000000, Compose(Mul(10.0), Add(20.0)))` - 
+then you'll get idential performance if you write
+`loopSum(1000000, lambda x: x * 10.0 + 20.0)` and
+`loopSum(1000000, Compose(Mul(10.0), Add(20.0)))` -
 they boil down to the same mathematical operations,
-and because Ufora doesn't allow class methods to be 
+and because Ufora doesn't allow class methods to be
 modified, Ufora can reason about the code well enough
 to produce fast code.
 
@@ -140,7 +140,7 @@ The Ufora compiler operates by tracking all the distinct combinations of types
 it sees for all the variables in a given stackframe, and generating code for
 each combination. This means that code like
 
-```py
+```python
 def typeExplosion(v):
     a = None
     b = None
@@ -176,7 +176,7 @@ equivalent to `x` regardless of what `y` is.
 This is great until you start using tuples to represent data with a huge
 variety of structure, which can overwhelm the compiler. For instance,
 
-```py
+```python
 def buildTuple(ct):
     res = ()
     for ix in xrange(ct):
@@ -198,7 +198,7 @@ you index into the tuple with a non-constant index, you will generate slower
 code. This is because the compiler needs to  generate a separate pathway for
 each possible resulting type. For instance, if you write
 
-```py
+```python
 aTuple = (0.0, 1, "a string", lambda x:x)
 functionCount = floatCount = 0
 
@@ -246,7 +246,7 @@ to duplicate `l` unless absolutely necessary. This is, in fact, the fastest
 way to build lists
 
 Large lists are cheap to concatenate - they're held as a tree structure,
-so you don't have to worry that each time you concatenate you're making a 
+so you don't have to worry that each time you concatenate you're making a
 copy.
 
 Finally, avoid nesting lists deeply - this places a huge strain on the
@@ -258,8 +258,8 @@ Dictionaries are currently **very** slow[^5]. Don't use them inside of loops.
 
 Strings, however are fast. The Ufora string structure is 32 bytes, allowing
 the VM to pack any string of 30 characters or less into a data structure that doesn't
-hit the memory manager.  Indexing into strings is also fast. Strings may be as large as you like 
-(if they get big enough, they'll be split across machines).  
+hit the memory manager.  Indexing into strings is also fast. Strings may be as large as you like
+(if they get big enough, they'll be split across machines).
 
 Note that for strings that are under 100000 characters, string concatenation makes a copy,
 so you can accidentally get N^2 performance behavior if you write code where you are repeatedly
@@ -273,18 +273,18 @@ Ufora exploits "dataflow" parallelism at the stack-frame level. Ufora operates
 by executing your code on a single thread and then periodically interrupting it
 and walking its stack. It looks at the flow of data within each stackframe to see
 whether there are upcoming calls to functions that it can schedule while the current
-call is executing.  
+call is executing.
 
-For instance, if you write `f(g(),h())`, then while Ufora is 
+For instance, if you write `f(g(),h())`, then while Ufora is
 executing the call to `g()`, it can see that you are going to execute `h()` next. If you
 have unsaturated cores, it will rewrite the stackframe to also call `h()` in parallel.
 When both calls return, it will resume and call `f`. You can think of this as
 fork-join parallelism where the forks are placed automatically.
 
 As an example, the simple divide-and-conquer implementation of a "sum" function could
-be written as 
+be written as
 
-```py
+```python
 def sum(a,b,f):
     if a >= b:
         return 0
@@ -297,14 +297,14 @@ def sum(a,b,f):
 ```
 
 We can then write `sum(0, 1000000000000, lambda x: x**0.5)` and get a parallel
-implementation. This works because each call to `sum` contains two recursive 
+implementation. This works because each call to `sum` contains two recursive
 calls to `sum`, and Ufora can see that these are independent.
 
-Note that Ufora assumes that exceptions are rare - in the case of `f(g(),h())`, 
+Note that Ufora assumes that exceptions are rare - in the case of `f(g(),h())`,
 Ufora assumes that by default, `g()` is not going to throw an exception and that
 it can start working on `h()`. In the case where `g()` routinely throws exceptions,
 Ufora will start working on `h()` only to find that the work is not relevant.
-Some python idioms use exceptions for flow control: for instance, accessing an attribute 
+Some python idioms use exceptions for flow control: for instance, accessing an attribute
 and then catching `AttributeError` as a way of determining if an object meets an
 interface. In this case, make sure that you don't have an expensive operation in between
 the attribute check and the catch block.
@@ -326,7 +326,7 @@ splitting additional threads.
 This model is particularly effective when your functions have different runtimes
 depending on their input. For instance, consider
 
-```py
+```python
 def isPrime(p):
     if p < 2: return 0
     x = 2
@@ -347,7 +347,7 @@ this because it sees the fine structure of parallelism available to `sum` and ca
 repeatedly subdivide the larger ranges, keeping all the cores busy.
 
 This technique works best, however, when your tasks subdivide to a very
-granular level. In the case where you have a few subtasks with long sections 
+granular level. In the case where you have a few subtasks with long sections
 of naturally single-threaded code, Ufora may not schedule those sections until
 partway through the calculation. You'll get better performance if you can find
 a way to get the calculation to break down as finely as possible.
@@ -367,20 +367,20 @@ single-threaded performance and parallelism granularity.
 
 By default, list comprehensions like `[isPrime(x) for x in xrange(10000000)]` are
 parallel if the generator in the righthand side supports the `__pyfora_generator__`
-parallelism model, which both `xrange`, and lists support out of the box. 
+parallelism model, which both `xrange`, and lists support out of the box.
 
 Similarly, functions like `sum` are parallel if their argument supports the
 `__pyfora_generator__` interface. Note that this subtly changes the semantics of `sum`:
 in standard python, `sum(f(x) for x in xrange(4))` would be equivalent to
 
-```py
+```python
 (((f(0)+f(1))+f(2))+f(3))+f(4)
 ```
 
 performing the addition operations linearly. In the parallel case, we have a
 tree structure:
 
-```py
+```python
 (f(0)+f(1)) + (f(2)+f(3))
 ```
 
@@ -388,15 +388,15 @@ when addition is associative. Usually this produces the same results, but it's n
 always true. For instance, roundoff errors in floating point arithmetic mean that
 floating point addition is not perfectly associative[^6]. As this
 is a deviation from standard python, we plan to make it an optional feature in the
-future. 
+future.
 
 ## Loops are sequential
 
 Note that Ufora doesn't try to parallelize across loops. The `isPrime` example above
 runs sequentially. In the future, we plan to implement loop unrolling so that if you
-write something like 
+write something like
 
-```py
+```python
 res = None
 for x in xrange(...):
     res = f(g(x), res)
@@ -440,18 +440,18 @@ so that list accesses are "cache local", meaning that when you access one part o
 list you tend to access other parts of the list that are nearby in the index
 space.[^7]
 
-[^1]: We consider this to be a performance defect that we can eventually fix. 
+[^1]: We consider this to be a performance defect that we can eventually fix.
     However, some of these defects will be easier to fix than others.
 
-[^2]: 
+[^2]:
     e.g. the following code
-    
+
         class X:
             def f(self):
                 return 0
 
         x = X()
-        
+
         print x.f()
 
         #modify all instances of 'X'
@@ -476,7 +476,7 @@ space.[^7]
 
 [^6]: For instance, `10e30 + (-10e30) + 10e-50` is not the same as `10e30 + ((-10e30) + 10e-50)`
 
-[^7]: 
+[^7]:
     In the future, we plan to implement a "streaming read" model for
     inherently non-cache-local algorithms. Essentially the idea is to use the same
     simulation technique that we use to determine what your cache misses are going

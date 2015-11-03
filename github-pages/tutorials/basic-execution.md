@@ -7,7 +7,7 @@ tagline: How to use ufora.remote to execute code
 Once you've booted a ufora cluster (remotely or locally), you can connect to it
 and start executing code:
 
-```py
+```python
 import pyfora
 ufora = pyfora.connect("http://localhost:8000/")
 ```
@@ -18,7 +18,7 @@ powerful but more cumbersome), or using `with` blocks, which we'll detail here.
 
 First, let's define a function we want to work with:
 
-```py
+```python
 def isPrime(p):
     x = 2
     while x*x <= p:
@@ -30,7 +30,7 @@ def isPrime(p):
 
 Now, we can use the executor to do something interesting with the function.
 
-```py
+```python
 with ufora.remote.downloadAll():
     result = sum(isPrime(x) for x in xrange(10 * 1000 * 1000))
 
@@ -46,9 +46,9 @@ downloads them and copies them back into the local environment because we used
 
 Now, imagine that we want to get a list of primes. We can then write
 
-```py
+```python
 with ufora.remote.remoteAll():
-	primes = [x for x in xrange(10 * 1000 * 1000) if isPrime(x)]
+    primes = [x for x in xrange(10 * 1000 * 1000) if isPrime(x)]
 ```
 
 Now, because we used `ufora.remote.remoteAll()`, the variable `primes` is a
@@ -57,7 +57,7 @@ objects can be used in two ways: they can be downloaded into the local python
 scope, or they can be passed to additional computations.  To download a proxy,
 we might write
 
-```py
+```python
 primes = primes.toLocal().result()
 ```
 
@@ -65,9 +65,9 @@ If the list is very large, or our connection to the cluster is slow, however,
 that might be a bad idea.  In this case, we can interact with the proxy object
 again inside of another `with ufora.remote` block:
 
-```py
+```python
 with ufora.remote.downloadAll():
-	lastFewPrimes = primes[-100:]
+    lastFewPrimes = primes[-100:]
 ```
 
 Ufora recognizes that `primes` refers to an object living remotely on the server,
@@ -76,9 +76,9 @@ python objects.
 
 For convenience, we may also write:
 
-```py
+```python
 with ufora.remote.downloadSmall(bytecount=100*1024):
-	...
+    ...
 ```
 
 in which case objects requiring more than `bytecount` bytes will be left on the

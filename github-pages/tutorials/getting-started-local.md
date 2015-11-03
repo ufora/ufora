@@ -18,14 +18,14 @@ You can also, optionally, follow [these instructions](http://askubuntu.com/a/477
 Once docker is installed, you can pull the Ufora service image. You will need to use an image compatible with your version of pyfora.
 To find the version of pyfora you have installed you can run the following command from your terminal:
 
-```sh
+```bash
 $ python -c "import pyfora; print pyfora.__version__"
 0.1
 ```
 
 Now pull the ufora service image with the same version number. For example, if you are using pyfora version `0.1`, run:
 
-```sh
+```bash
 $ docker pull ufora/service:0.1
 ```
 
@@ -38,13 +38,13 @@ The command below starts an all-in-one docker container that runs all the Ufora 
 
 Create a local directory for the Ufora service logs:
 
-```sh
+```bash
 $ mkdir ~/ufora
 ```
 
 From your terminal run:
 
-```sh
+```bash
 $ docker run -d --name ufora -p 30000:30000 -v ~/ufora:/var/ufora ufora/service:0.1
 ```
 
@@ -65,7 +65,7 @@ This is where Ufora writes all of its log files.
 You are now ready to connect `pyfora` to your running container and run some code.
 Create a new Python file called `tryfora.py` with the following content:
 
-```py
+```python
 import pyfora
 
 connection = pyfora.connect('http://localhost:30000')
@@ -80,7 +80,7 @@ connection = pyfora.connect('http://localhost:30000')
 
 When you are done and want to stop the Ufora service container, run:
 
-```sh
+```bash
 $ docker stop ufora
 ```
 
@@ -88,7 +88,7 @@ This stops the container but does preserves its state so it can be restarted at 
 
 To permanently delete the container and all its state, run the following command after stopping the container:
 
-```sh
+```bash
 $ docker rm ufora
 ```
 
@@ -97,6 +97,6 @@ $ docker rm ufora
 
 To restarted a stopped Ufora service container, run:
 
-```sh
+```bash
 $ docker start ufora
 ```
