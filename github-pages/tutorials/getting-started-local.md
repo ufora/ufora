@@ -1,12 +1,35 @@
 ---
 layout: main
-title: Getting Started with Docker
-tagline: How to run a Ufora worker locally with Docker
+title: Getting Started Locally
+tagline: How to run Ufora on one machine using Docker
 ---
 
 You can easily run the Ufora backend locally on your machine using [docker](http://www.docker.com/).
 Then you can connect pyfora to your local backend and start using it to speed up your python code.
 
+# What you need to get started
+## OS
+You'll need an OS that can run docker. Currently this means:
+
+- A reasonably recent version of a 64-bit Linux distribution such as: Ubuntu, Debian, RedHat, Fedora, Centos, Gentoo, Suse, Amazon, Oracle, etc.
+- OS X 10.8 "*Mountain Lion*" or newer.
+- Windows 7.1, 8/8.1 or newer.
+
+
+## Python
+Ufora's python client, `pyfora`, requires CPython 2.7.
+
+**Note:** Python 3 is not supported yet.
+
+**Important:** Only official CPython distributions from python.org are supported at this time.
+This is what OS X and most Linux distributions include by default as their "native" Python.
+
+
+# Install pyfora
+
+```bash
+$ [sudo] pip install pyfora [--upgrade]
+```
 
 # Install docker
 Docker is available for Linux, OS X, or Windows. To install docker on your machine, visit [http://www.docker.com/](http://www.docker.com/), click the *Get Started* link, and follow the instructions.
@@ -26,10 +49,17 @@ $ python -c "import pyfora; print pyfora.__version__"
 Now pull the ufora service image with the same version number. For example, if you are using pyfora version `0.1`, run:
 
 ```bash
-$ docker pull ufora/service:0.1
+$ [sudo] docker pull ufora/service:0.1
 ```
 
 **Note:** Depending on your docker setup, you may need to run the last command, and subsequent docker commands, as `root`, by using `sudo`, for example.
+
+
+You can also combine the last two commands into a one-liner:
+
+```bash
+$ [sudo] docker pull ufora/service:`python -c "import pyfora; print pyfora.__version__"`
+```
 
 
 # Start the Ufora container
@@ -45,7 +75,7 @@ $ mkdir ~/ufora
 From your terminal run:
 
 ```bash
-$ docker run -d --name ufora -p 30000:30000 -v ~/ufora:/var/ufora ufora/service:0.1
+$ [sudo] docker run -d --name ufora -p 30000:30000 -v ~/ufora:/var/ufora ufora/service:0.1
 ```
 
 **What does this do?**
@@ -65,13 +95,29 @@ This is where Ufora writes all of its log files.
 You are now ready to connect `pyfora` to your running container and run some code.
 Create a new Python file called `tryfora.py` with the following content:
 
-```python
+{% highlight python linenos %}
 import pyfora
 
-connection = pyfora.connect('http://localhost:30000')
+ufora = pyfora.connect('http://localhost:30000')
 
-# TODO: put sample code here...
-```
+def isPrime(p):
+    x = 2
+    while x*x <= p:
+        if p%x == 0:
+            return 0
+        x = x + 1
+    return 1
+
+print "Counting primes..."
+with ufora.remotely.downloadAll():
+    result = sum(isPrime(x) for x in xrange(100 * 1000 * 1000))
+
+print result
+{% endhighlight %}
+
+**Congratulations!** You just ran your first Ufora computations and counted the number of primes between
+0 and 10 million. The computation inside the `with` block (line 15) was shipped to Ufora, which then compiled it
+to efficient machine code and ran it parallel on all cores available on your machine.
 
 **Important:** At this point `pyfora` cannot be used interactively in the Python REPL. You MUST place your code in a .py file and run it from there.
 
@@ -81,7 +127,7 @@ connection = pyfora.connect('http://localhost:30000')
 When you are done and want to stop the Ufora service container, run:
 
 ```bash
-$ docker stop ufora
+$ [sudo] docker stop ufora
 ```
 
 This stops the container but does preserves its state so it can be restarted at a later time.
@@ -89,14 +135,14 @@ This stops the container but does preserves its state so it can be restarted at 
 To permanently delete the container and all its state, run the following command after stopping the container:
 
 ```bash
-$ docker rm ufora
+$ [sudo] docker rm ufora
 ```
 
 
 # Restart the Ufora Container
 
-To restarted a stopped Ufora service container, run:
+To restart a stopped Ufora service container, run:
 
 ```bash
-$ docker start ufora
+$ [sudo] docker start ufora
 ```

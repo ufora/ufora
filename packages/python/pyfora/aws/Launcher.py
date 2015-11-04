@@ -311,7 +311,6 @@ class Launcher(object):
         return security_group
 
 
-
 def get_region(region):
     region = region or os.getenv('PYFORA_AWS_EC2_REGION')
     if region is None:
@@ -320,22 +319,20 @@ def get_region(region):
 
 
 def get_ssh_keyname(keyname):
-    keyname = keyname or os.getenv('PYFORA_AWS_SSH_KEYNAME')
-    if keyname is None:
-        raise ValueError('EC2 ssh keyname not specified')
-    return keyname
+    return keyname or os.getenv('PYFORA_AWS_SSH_KEYNAME')
 
 
 def start_instances(args):
     assert args.num_instances > 0
     ssh_keyname = get_ssh_keyname(args.ssh_keyname)
+    open_public_port = args.open_public_port or ssh_keyname is None
 
     launcher = Launcher(region=get_region(args.ec2_region),
                         vpc_id=args.vpc_id,
                         subnet_id=args.subnet_id,
                         security_group_id=args.security_group_id,
                         instance_type=args.instance_type,
-                        open_public_port=args.open_public_port)
+                        open_public_port=open_public_port)
     print "Launching ufora manager..."
     manager = launcher.launch_manager(ssh_keyname, args.spot_price)
     print "Ufora manager started:\n"
@@ -351,7 +348,7 @@ def start_instances(args):
                                           ssh_keyname,
                                           manager.id,
                                           args.spot_price)
-    print "Workers started:"
+        print "Workers started:"
     for worker in workers:
         print_instance(worker, 'worker')
 

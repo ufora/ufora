@@ -25,8 +25,8 @@ big, fast machine that you can program in regular python.
 
 Ufora can execute python code hundreds or thousands of times  faster  than a
 regular python interpreter, and can operate on datasets many times larger than
-the memory provided by a single machine. See 
-[this page](https://ufora.github.io/ufora/github-pages/tutorial/basic-execution.html) 
+the memory provided by a single machine. See
+[this page](https://ufora.github.io/ufora/github-pages/tutorials/basic-execution.html)
 for a very simple example of what it looks like.  And best of
 all, we're still just scratching the surface of what's possible.
 
@@ -51,7 +51,7 @@ structures or have side effects.  This restriction allows the Ufora runtime to
 agressively reorder calculations, which is crucial for
 parallelism, and allows it to perform compile-time
 optimizations than would not be possible otherwise. For more on the subset of python
-that Ufora supports, look 
+that Ufora supports, look
 [here](https://ufora.github.io/ufora/github-pages/documentation/python-restrictions.html).
 
 ## How can I deploy ufora?
@@ -61,7 +61,7 @@ python, installed using `pip`.
 
 The ufora backend can be deployed three ways: you can stand up an all-in-one "cluster" consisting of just a
 [single machine](https://ufora.github.io/ufora/github-pages/tutorials/getting-started-local.html),
-you can create a cluster in the 
+you can create a cluster in the
 [cloud](https://ufora.github.io/ufora/github-pages/tutorials/getting-started-aws.html),
 or you can set up a cluster on a grid of machines on a local network. The
 backend currently builds on linux. We maintain docker images of the latest
@@ -74,6 +74,6 @@ Users of the Ufora platform should visit [ufora-users](https://groups.google.com
 should visit [ufora-dev](https://groups.google.com/forum/#!forum/ufora-dev).
 
 The development of Ufora is ongoing, and led by [Ufora Inc.](http://www.ufora.com/). Drop us
-a line if you'd like to get involved or need enterprise support.  
+a line if you'd like to get involved or need enterprise support.
 
 
