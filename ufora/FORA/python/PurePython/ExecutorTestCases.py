@@ -14,6 +14,7 @@
 
 import pyfora
 import pyfora.PyAstUtil as PyAstUtil
+import pyfora.Exceptions as Exceptions
 import numpy
 import logging
 import traceback
@@ -1851,6 +1852,23 @@ class ExecutorTestCases(
             return c.f(x)
 
         self.equivalentEvaluationTest(f, 10)
+
+    def test_self_recursive_class_instance(self):
+        class ClassThatRefersToOwnInstance:
+            def f(self):
+                return c
+            def g(self):
+                return 10
+
+        c = ClassThatRefersToOwnInstance()
+
+        with self.create_executor() as fora:
+            try:
+                fora.submit(lambda: c.f().g())
+                self.assertFalse(True, "should have thrown")
+            except Exceptions.PythonToForaConversionError as e:
+                self.assertTrue("cannot be mutually recursive" in e.message, e.message)
+                self.assertTrue(e.trace is not None)
 
     def test_lists_1(self):
         x = [1,2,3,4]

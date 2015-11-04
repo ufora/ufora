@@ -63,6 +63,7 @@ class PythonToForaConversionError(PyforaError):
 
         for tb in trace:
             path = os.path.abspath(tb["path"])
+
             lineNumber = tb["line"]
 
             res.append('  File "%s", line %s' % (path, lineNumber))

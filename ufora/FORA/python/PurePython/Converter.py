@@ -392,6 +392,15 @@ class Converter(object):
         for objectId in stronglyConnectedComponent:
             objectDefinition = objectIdToObjectDefinition[objectId]
 
+            if isinstance(objectDefinition, TypeDescription.ClassInstanceDescription):
+                classDesc = objectIdToObjectDefinition[objectDefinition.classId]
+                sourceFile = objectIdToObjectDefinition[classDesc.sourceFileId]
+                lineNumber = classDesc.lineNumber
+                raise pyfora.PythonToForaConversionError(
+                    "Classes and instances cannot be mutually recursive",
+                    trace=[{'path': sourceFile.path, 'line': lineNumber}]
+                    )
+
             assert isinstance(
                 objectDefinition, 
                 (TypeDescription.FunctionDefinition, 
