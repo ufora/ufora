@@ -317,6 +317,12 @@ class WithBlockExecutors_test(unittest.TestCase, EquivalentEvaluationTestCases.E
                 with fora.remotely:
                     print "this shouldn't work"
 
+    def test_list_append_throws_reasonable_exception(self):
+        with self.create_executor() as fora:
+            with self.assertRaises(Exceptions.InvalidPyforaOperation):
+                with fora.remotely:
+                    [].append(10)
+
 if __name__ == "__main__":
     import ufora.config.Mainline as Mainline
     Mainline.UnitTestMainline([])
