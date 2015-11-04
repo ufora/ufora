@@ -157,6 +157,13 @@ class Executor(object):
                     future.set_exception(jsonResult)
                     return
 
+                if 'foraToPythonConversionError' in jsonResult:
+                    future.set_exception(
+                        Exceptions.ForaToPythonConversionError(
+                            str(jsonResult['foraToPythonConversionError'])
+                            )
+                        )
+                    return
                 if not jsonResult['isException']:
                     if 'maxBytesExceeded' in jsonResult:
                         future.set_exception(Exceptions.ResultExceededBytecountThreshold())

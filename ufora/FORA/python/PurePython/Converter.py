@@ -1083,9 +1083,10 @@ class Converter(object):
                     members
                     )
 
+        logging.error("Failed to convert %s of type %s back to python", implval, str(implval.type))
+        
         raise pyfora.ForaToPythonConversionError(
-            "Computation references a value of type %s that cannot be translated back to python."
-                % (str(implval.type))
+            "Result cannot be translated back to python."
             )
 
     def getStackTraceAsJsonOrNone(self, implval):

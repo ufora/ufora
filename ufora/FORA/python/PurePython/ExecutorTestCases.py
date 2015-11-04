@@ -2377,3 +2377,15 @@ class ExecutorTestCases(
         except Exceptions.PythonToForaConversionError as e:
             self.assertIsInstance(e.message, str)
             self.assertTrue(e.trace is not None)
+
+    def test_return_generator_object_throws_exception(self):
+        def f():
+            def yields(ct):
+                yield ct
+            return yields(10)
+
+        try:
+            self.evaluateWithExecutor(f)
+            self.assertTrue(False)
+        except Exceptions.ForaToPythonConversionError as e:
+            self.assertIsInstance(e.message, str)

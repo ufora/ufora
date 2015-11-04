@@ -260,6 +260,10 @@ class PyforaResultAsJson(ComputedGraph.Location):
                         'isException': True,
                         'trace': self.computedValue.exceptionCodeLocationsAsJson
                         }
+                elif isinstance(e, pyfora.ForaToPythonConversionError):
+                    return {
+                        'foraToPythonConversionError': e.message
+                        }
                 else:
                     raise
 
