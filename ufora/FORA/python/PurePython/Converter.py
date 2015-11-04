@@ -658,7 +658,7 @@ class Converter(object):
         if isinstance(foraFunctionExpression, ForaNative.PythonToForaConversionError):
             raise convertNativePythonToForaConversionError(
                 foraFunctionExpression,
-                objectIdToVarname[withBlockDescription.sourceFileId].path
+                objectIdToObjectDefinition[withBlockDescription.sourceFileId].path
                 )
 
         return foraFunctionExpression

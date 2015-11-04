@@ -15,6 +15,7 @@
 import ufora.FORA.python.PurePython.EquivalentEvaluationTestCases as EquivalentEvaluationTestCases
 import ufora.FORA.python.PurePython.InMemorySimulationExecutorFactory as InMemorySimulationExecutorFactory
 import pyfora.RemotePythonObject as RemotePythonObject
+import pyfora.Exceptions as Exceptions
 
 
 import unittest
@@ -309,6 +310,12 @@ class WithBlockExecutors_test(unittest.TestCase, EquivalentEvaluationTestCases.E
             with self.assertRaises(ZeroDivisionError):
                 with fora.remotely:
                     x = 1 / 0
+
+    def test_invalid_conversion_throws(self):
+        with self.create_executor() as fora:
+            with self.assertRaises(Exceptions.PythonToForaConversionError):
+                with fora.remotely:
+                    print "this shouldn't work"
 
 if __name__ == "__main__":
     import ufora.config.Mainline as Mainline

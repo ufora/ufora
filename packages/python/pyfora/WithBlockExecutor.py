@@ -186,7 +186,12 @@ class WithBlockExecutor(object):
 
             for k, v in globalsToSet.iteritems():
                 f_locals[k] = self.downloadPolicy.resolveToFinalValue(policyInstances[k])
-                
+        except Exceptions.PythonToForaConversionError as err:
+            frame.f_lineno = frame.f_lineno-1
+            raise err
+        except Exceptions.ForaToPythonConversionError as err:
+            frame.f_lineno = frame.f_lineno-1
+            raise err
         except:
             logging.error("Exception in With-Block handler: %s", traceback.format_exc())
 
