@@ -2421,3 +2421,31 @@ class ExecutorTestCases(
                 e.message,
                 "don't know how to convert lists or tuples which reference themselves"
                 )
+
+    def test_print(self):
+        def f():
+            print "hello world"
+
+        try:
+            self.evaluateWithExecutor(f)
+            self.assertTrue(False)
+        except Exceptions.PythonToForaConversionError as e:
+            self.assertIsInstance(e.message, str)
+            self.assertIn(
+                "Pyfora can't convert this code",
+                e.message
+                )
+
+    def test_import(self):
+        def f():
+            import sys
+
+        try:
+            self.evaluateWithExecutor(f)
+            self.assertTrue(False)
+        except Exceptions.PythonToForaConversionError as e:
+            self.assertIsInstance(e.message, str)
+            self.assertIn(
+                "Pyfora can't convert this code",
+                e.message
+                )
