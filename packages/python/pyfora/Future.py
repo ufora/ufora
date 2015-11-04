@@ -12,12 +12,27 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+"""
+Future
+
+Wraps the result to an asynchronous computation
+"""
+
 import concurrent.futures._base as Futures
 
 class Future(Futures.Future):
-    '''An implementaion of Future that can hold user-defined state, and may be
-    cancellable even from its RUNNING state.
-    '''
+    """
+    This pyfora.Future object subclasses the standard Python
+    concurrent.futures._base.Future object. See:
+    http://pythonhosted.org/futures/
+    https://pypi.python.org/pypi/futures
+
+    Futures wrap the result to an asynchronous computation which can
+    be accessed by a blocking call to 'result()'.
+
+    The pyfora Future object extends the concurrent.futures object by 
+    supporting cancellation with the 'cancel()' method.
+    """
     def __init__(self, executorState=None, onCancel=None):
         super(Future, self).__init__()
         self._executorState = executorState
@@ -25,6 +40,7 @@ class Future(Futures.Future):
 
 
     def cancel(self):
+        """Cancel a running computation"""
         if super(Future, self).cancel():
             return True
 

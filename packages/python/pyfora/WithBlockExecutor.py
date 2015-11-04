@@ -13,6 +13,12 @@
 #   limitations under the License.
 
 # ideas used from withhacks, python library: https://github.com/rfk/withhacks
+"""
+WithBlockExecutor
+
+Extracts the Python code nested in its code-block and automatically sends 
+that code as a callable to the Ufora cluster
+"""
 
 import traceback
 import logging
@@ -91,6 +97,17 @@ def syntheticTraceback(trace):
         return sys.exc_info()[2].tb_next
 
 class WithBlockExecutor(object):
+    """
+    will extract python code from a with block and submit that code 
+    to the ufora cluster for remote execution. Results of the remote 
+    execution are returned as RemotePythonObject and are automatically 
+    reasigned to their corresponding local variables in the with block.
+
+    use downloadAll(), remoteAll() and downloadSmall() to modify the 
+    behavior of the executor and set which objects should be download 
+    from the server and which objects should be returned as 
+    RemotePythonObject futures.
+    """
     def __init__(self, executor):
         self.executor = executor
         self.lineNumber = None

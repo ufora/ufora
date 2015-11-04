@@ -12,6 +12,12 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+"""
+Connection
+
+Manages a connection to a Ufora cluster
+"""
+
 import pyfora.Exceptions as Exceptions
 import pyfora.Executor as Executor
 import pyfora.ObjectConverter as ObjectConverter
@@ -23,7 +29,8 @@ import pyfora
 import os
 
 class Connection(object):
-    """Connection - a live connection to a Ufora cluster that can execute pyfora code.
+    """Connection - a live connection to a Ufora cluster that can execute submitted
+    Python code.
 
     This is an internal implementation class that is primarily used by Executor.Executor.
     """
@@ -267,6 +274,13 @@ def createObjectConverter(webObjectFactory):
     return ObjectConverter.ObjectConverter(webObjectFactory, moduleTree.toJson())
 
 def connect(url):
+    """Connects to a Ufora cluster listening on the url and port provided by 'url'
+
+    Returns:
+        An executor object responsibe for submitting python code to the cluster for 
+        execution returning RemotePythonObjects that can be used to download the 
+        results from the server.
+    """
     socketIoInterface = SocketIoJsonInterface.SocketIoJsonInterface(
         url,
         '/subscribableWebObjects'

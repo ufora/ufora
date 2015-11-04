@@ -11,6 +11,13 @@
 #   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
+"""
+Executor
+
+Responsible for sending python computations to a Ufora cluster and returns
+their result
+"""
+
 
 import pyfora.Future as Future
 import pyfora.Exceptions as Exceptions
@@ -26,7 +33,17 @@ import threading
 
 
 class Executor(object):
-    """Main executor for Pyfora code."""
+    """Main executor for Pyfora code. This is the component responible for sending
+    computations to the Ufora cluster and returning the result as a RemotePythonObject
+    future.
+
+    Python objects are sent to the server using the define() method. A Future that 
+    resolves to a RemotePythonObject corresponding to the submitted object is returned.
+
+    Similarly, functions and their arguments can be submitted using the submit method which 
+    returns a Future that resolves to a RemotePythonObject of the evaluated expression or
+    thrown exception. 
+    """
     def __init__(self, connection, pureImplementationMappings=None):
         """Initialize a Pyfora executor.
 
@@ -41,6 +58,8 @@ class Executor(object):
         self.lock = threading.Lock()
 
     def importS3Dataset(self, bucketname, keyname):
+        """Takes an S3 bucket and key and returns a RemotePythonObject representing the s3
+        dataset on the server"""
         def importS3Dataset():
             builtins = bucketname.__pyfora_builtins__
             return builtins.loadS3Dataset(bucketname, keyname)
@@ -69,6 +88,9 @@ class Executor(object):
     def define(self, obj):
         """Send 'obj' to the server and return a Future that resolves to a RemotePythonObject
         representing the object on the server.
+
+        Returns:
+            A Future object representing the PyFora object on the server
         """
 
         self._raiseIfClosed()
@@ -95,7 +117,8 @@ class Executor(object):
         return future
 
     def submit(self, fn, *args, **kwargs):
-        """Submits a callable to be executed with the given arguments.
+        """Submits a callable to be executed on the server with the provided arguments 'args'.
+        kwargs are not currently supported.
 
         Returns:
             A Future representing the given call. The future will eventually resolve to a
@@ -119,6 +142,17 @@ class Executor(object):
 
     @property
     def remotely(self):
+        """
+        'with fora.remotely:' syntax allows you to automatically submit an entire block of 
+        python code for remote execution. All the code nested in the remotely with block is 
+        submitted.
+
+        Returns:
+            A WithBlockExecutor that will extract python code from a with block and submit 
+            that code to the ufora cluster for remote execution. Results of the remote execution
+            are returned as RemotePythonObject and are automatically reasigned to their
+            corresponding local variables in the with block.
+            """
         return WithBlockExecutor.WithBlockExecutor(self)
 
     def isClosed(self):

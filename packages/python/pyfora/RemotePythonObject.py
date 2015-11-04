@@ -11,17 +11,27 @@
 #   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
+"""
+RemotePythonObject
+
+A proxy to some object, data or callable that lives in memory on the Ufora
+cluster
+"""
+
 
 import pyfora.Exceptions as Exceptions
 
 class RemotePythonObject(object):
-    """RemotePythonObject
+    """RemotePythonObject exposes a python object which lives in memory on the Ufora
+    cluster, but is also referenced locally by proxy.
 
-    Represents a wrapped python object on the ufora server, held locally by proxy.
+    There are two subclasses of RemotePythonObject corresponding to two different
+    types of remote objects:
 
-    We have subclasses that implement values that are held locally (because
-    we defined them and sent them to the server) and remotely (because
-    they were the result of a computation)
+        - DefinedRemotePythonObject - objects that were created locally and remoted
+            to the Ufora cluster
+        - ComputedRemotePythonObject - an object that is the result of a computation 
+            that ran on the Ufora cluster
     """
 
     def __init__(self, executor):
@@ -64,7 +74,6 @@ class DefinedRemotePythonObject(RemotePythonObject):
 
     def toLocal(self):
         return self.executor._downloadDefinedObject(self.objectId)
-
 
 class ComputedRemotePythonObject(RemotePythonObject):
     """A remote python object that we created by computing something on a Ufora cluster.
