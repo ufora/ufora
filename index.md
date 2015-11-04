@@ -68,6 +68,16 @@ backend currently builds on linux. We maintain docker images of the latest
 builds so you can get going quickly, as well as a development image in which you can build ufora
 yourself.
 
+## Disclaimer
+
+Ufora began its life in 2010 as the implementation of a new language called FORA. Its core 
+components are quite robust, but its transition to using python as the preferred means
+of accessing the Ufora VM is quite recent.
+
+As a result, lots of python functions are still unimplemented and some language features
+are still missing. Please let us know if you find bugs, or if there are functions, libraries,
+or features that you'd really like to see. Or, better yet, help us implement some of them!
+
 ## Contact us.
 
 Users of the Ufora platform should visit [ufora-users](https://groups.google.com/forum/#!forum/ufora-user). Developers
