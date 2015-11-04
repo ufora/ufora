@@ -747,21 +747,21 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
             PyAstFreeVariableAnalyses.getFreeVariableMemberAccessChains(tree2, False)
             )
 
-    def test_freeVariableMemberAccessChain_1(self):
+    def test_memberAccessChain_1(self):
         tree = ast.parse("x.y.z.w")
 
         self.assertEqual(
             ('x', 'y', 'z', 'w'),
-            PyAstFreeVariableAnalyses._freeVariableMemberAccessChain(
+            PyAstFreeVariableAnalyses._memberAccessChainOrNone(
                 tree.body[0].value
                 )
             )
 
-    def test_freeVariableMemberAccessChain_2(self):
+    def test_memberAccessChain_2(self):
         tree = ast.parse("(1).y.z.w")
 
         self.assertIsNone(
-            PyAstFreeVariableAnalyses._freeVariableMemberAccessChain(
+            PyAstFreeVariableAnalyses._memberAccessChainOrNone(
                 tree.body[0].value
                 )
             )

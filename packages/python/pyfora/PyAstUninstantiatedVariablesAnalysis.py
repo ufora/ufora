@@ -19,11 +19,11 @@ import pyfora.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
 
 def collectPossiblyUninitializedLocalVariablesInScope(pyAstNode):
     boundVariables = PyAstFreeVariableAnalyses.collectBoundVariablesInScope(pyAstNode)
-    vis = _PossiblyUninitializedLocalVariablesInScopeVisitor(
+    visitor = _PossiblyUninitializedLocalVariablesInScopeVisitor(
         pyAstNode,
         boundVariables)
-    possiblyUninitVars = vis.getPossiblyUninitializedLocalVariablesInScope()
-    return possiblyUninitVars
+    possiblyUninitializedVariables = visitor.getPossiblyUninitializedLocalVariablesInScope()
+    return possiblyUninitializedVariables
 
 class _PossiblyUninitializedLocalVariablesInScopeVisitor(NodeVisitorBases.GenericInScopeVisitor):
     """Collect possibly uninitialized local variables in current scope"""
@@ -112,7 +112,7 @@ class _PossiblyUninitializedLocalVariablesInScopeVisitor(NodeVisitorBases.Generi
         self._definitelyInitialized.intersection_update(sumDefinitelyInit)
 
 
-class _PossiblyUninitializedcopedVisitor(NodeVisitorBases.NodeVisitorBase):
+class _PossiblyUninitializedScopedVisitor(NodeVisitorBases.NodeVisitorBase):
     """Visitor used for collecting possibly uninitialized local variables."""
     def __init__(self):
         self._possiblyUninitializedLocalVariables = set()
@@ -149,7 +149,7 @@ def collectPossiblyUninitializedLocalVariables(pyAstNode):
         raise Exceptions.InternalError(
             "Unsupported type of root node in Analysis (%s)"
             % type(pyAstNode))
-    possiblyUninitVisitor = _PossiblyUninitializedcopedVisitor()
+    possiblyUninitVisitor = _PossiblyUninitializedScopedVisitor()
     possiblyUninitVisitor.visit(pyAstNode)
 
     return possiblyUninitVisitor.getPossiblyUninitializedLocalVariables()

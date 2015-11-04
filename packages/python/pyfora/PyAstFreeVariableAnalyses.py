@@ -75,7 +75,6 @@ class _CollectBoundValuesInScopeVisitor(NodeVisitorBases.GenericInScopeVisitor):
     def visit_FunctionDef(self, node):
         self._boundNames.add(node.name)
 
-
     def visit_ClassDef(self, node):
         self._boundNames.add(node.name)
 
@@ -144,6 +143,7 @@ class GenericBoundValuesScopedVisitor(NodeVisitorBases.GenericScopedVisitor):
         self._boundValues.add(node.name)
         NodeVisitorBases.GenericScopedVisitor.visit_ClassDef(self, node)
 
+
 class _FreeVarsVisitor(GenericBoundValuesScopedVisitor):
     """Collect the free variables in a block of code."""
     def __init__(self):
@@ -177,7 +177,7 @@ class _FreeVariableMemberAccessChainsVisitor(GenericBoundValuesScopedVisitor):
         self.freeVariableMemberAccessChains = set()
 
     def visit_Attribute(self, node):
-        chainOrNone = _freeVariableMemberAccessChain(node)
+        chainOrNone = _memberAccessChainOrNone(node)
         if chainOrNone is not None:
             if chainOrNone[0] not in self._boundValues:
                 self.freeVariableMemberAccessChains.add(chainOrNone)
@@ -196,8 +196,8 @@ class _FreeVariableMemberAccessChainsVisitor(GenericBoundValuesScopedVisitor):
             self.freeVariableMemberAccessChains.add((identifier,))
 
 
-def _freeVariableMemberAccessChain(pyAstNode):
-    res = _freeVariableMemberAccessChainImpl(pyAstNode)
+def _memberAccessChainOrNone(pyAstNode):
+    res = _memberAccessChainOrNoneImpl(pyAstNode)
 
     if len(res) == 0:
         return None
@@ -205,16 +205,16 @@ def _freeVariableMemberAccessChain(pyAstNode):
     return tuple(res)
 
 
-def _freeVariableMemberAccessChainImpl(pyAstNode):
+def _memberAccessChainOrNoneImpl(pyAstNode):
     if isinstance(pyAstNode, ast.Name):
         return [pyAstNode.id]
 
     if isinstance(pyAstNode, ast.Expr):
-        return _freeVariableMemberAccessChainImpl(pyAstNode.value)
+        return _memberAccessChainOrNoneImpl(pyAstNode.value)
 
     if isinstance(pyAstNode, ast.Attribute):
         # Attribute(expr value, identifier attr, expr_context context)
-        prefix = _freeVariableMemberAccessChainImpl(pyAstNode.value)
+        prefix = _memberAccessChainOrNoneImpl(pyAstNode.value)
         if len(prefix) == 0:
             return []  # how can this path be exercised?
 
