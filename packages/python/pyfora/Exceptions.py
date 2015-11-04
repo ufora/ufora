@@ -16,6 +16,37 @@ from concurrent.futures._base import Error, TimeoutError, CancelledError
 
 import os
 import linecache
+import logging
+import traceback
+
+import pyfora
+_pyforaRoot = os.path.split(pyfora.__file__)[0]
+
+def renderTraceback(trace):
+    res = []
+
+    for tb in trace:
+        if isinstance(tb["path"],tuple):
+            path = tb["path"]
+            if path[0] == "ModuleImporter":
+                path = os.path.join(_pyforaRoot, *path[1:]) + ".fora"
+            else:
+                path = path[0]
+        else:
+            path = os.path.abspath(tb["path"])
+
+        if 'range' in tb:
+            lineNumber = tb['range']['start']['line']
+        else:
+            lineNumber = tb["line"]
+
+        res.append('  File "%s", line %s' % (path, lineNumber))
+
+        lines = linecache.getlines(os.path.abspath(path))
+        if lines is not None and lineNumber >= 1 and lineNumber <= len(lines):
+            res.append("    " + lines[lineNumber-1][:-1].lstrip())
+
+    return "\n".join(res)
 
 class PyforaError(Error):
     '''Base class for all pyfora exceptions.'''
@@ -32,10 +63,17 @@ class ComputationError(PyforaError):
         self.trace = trace
 
     def __str__(self):
-        return "ComputationError(exceptionValue=%s,trace=%s)" % (self.exceptionValue, self.trace)
+        if self.trace is None:
+            return "%s" % self.exceptionValue
+
+        try:
+            return "%s\n%s" % (str(self.exceptionValue), renderTraceback(self.trace))
+        except:
+            logging.error("%s", traceback.format_exc())
+            raise
 
     def __repr__(self):
-        return str(self)
+        return "ComputationError(exceptionValue=%s,trace=%s)" % (self.exceptionValue, self.trace)
 
 class PythonToForaConversionError(PyforaError):
     '''Unable to convert the specified Python object.'''
@@ -55,24 +93,7 @@ class PythonToForaConversionError(PyforaError):
         if self.trace is None:
             return self.message
         else:
-            return "%s\n%s" % (self.message, PythonToForaConversionError.renderTraceback(self.trace))
-
-    @staticmethod
-    def renderTraceback(trace):
-        res = []
-
-        for tb in trace:
-            path = os.path.abspath(tb["path"])
-
-            lineNumber = tb["line"]
-
-            res.append('  File "%s", line %s' % (path, lineNumber))
-
-            lines = linecache.getlines(os.path.abspath(path))
-            if lines is not None and lineNumber >= 1 and lineNumber <= len(lines):
-                res.append("    " + lines[lineNumber-1].lstrip())
-
-        return "\n".join(res)
+            return "%s\n%s" % (self.message, renderTraceback(self.trace))
 
     def __repr__(self):
         return "PythonToForaConversionError(message=%s,trace=%s)" % (repr(self.message), repr(self.trace))
