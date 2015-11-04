@@ -157,7 +157,7 @@ class _FreeVarsVisitor(GenericBoundValuesScopedVisitor):
     def visit_Name(self, node):
         identifier = node.id
         if isinstance(node.ctx, ast.Store):
-            self._boundInScopeSoFar.update(identifier)
+            self._boundInScopeSoFar.add(identifier)
         elif not self.isBoundSoFar(identifier) and \
            isinstance(node.ctx, ast.Load):
             self._freeVars.add(identifier)
@@ -190,7 +190,7 @@ class _FreeVariableMemberAccessChainsVisitor(GenericBoundValuesScopedVisitor):
     def visit_Name(self, node):
         identifier = node.id
         if isinstance(node.ctx, ast.Store):
-            self._boundInScopeSoFar.update(identifier)
+            self._boundInScopeSoFar.add(identifier)
         elif not self.isBoundSoFar(identifier) and \
            isinstance(node.ctx, ast.Load):
             self.freeVariableMemberAccessChains.add((identifier,))

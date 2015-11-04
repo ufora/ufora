@@ -850,6 +850,21 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
             PyAstFreeVariableAnalyses.getFreeVariables(tree.body[0], isClassContext = True)
             )
 
+    def test_name_substring_bug(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                al = 10
+                l
+                """
+                )
+            )
+        expectedResult = set(['l'])
+        self.assertEqual(
+            expectedResult,
+            PyAstFreeVariableAnalyses.getFreeVariables(tree)
+            )
+
 if __name__ == "__main__":
     unittest.main()
 
