@@ -119,10 +119,10 @@ public:
 		return mInFlightCheckpointRequests.find(computation) != mInFlightCheckpointRequests.end();
 		}
 
-	void triggerCheckpointsOnAllOutstanding()
+	void triggerCheckpointsOnAllOutstanding(double curTime)
 		{
 		for (auto computationAndTs: mFirstObservedTimestamp)
-			triggerCheckpointIfPossible(computationAndTs.first);
+			triggerCheckpointIfPossible(computationAndTs.first, curTime);
 		}
 
 	const map<ComputationId, ReceivedCheckpoint>& getCheckpointStatuses() const
@@ -140,7 +140,7 @@ public:
 		return mComputationsNeedingImmediateCommit.size() > 0;
 		}
 
-	void triggerCheckpointIfPossible(ComputationId computation)
+	void triggerCheckpointIfPossible(ComputationId computation, double curTime)
 		{
 		if (isFinishedAndCheckpointed(computation))
 			return;
@@ -151,6 +151,9 @@ public:
 		LOG_INFO << "Adding " << computation << " to immediate-checkpoint list";
 
 		mComputationsNeedingImmediateCommit.insert(computation);
+
+		if (mInFlightCheckpointRequests.find(computation) == mInFlightCheckpointRequests.end())
+			setNextCheckpointTimestamps(computation, curTime);
 		}
 
 	bool isFullCheckpointOutstandingAndWaitingForCommit(ComputationId computation) const
@@ -238,7 +241,7 @@ private:
 		if (it == mCheckpointStatuses.end())
 			return null() << curTime;
 
-		if (isFinishedAndCheckpointed(computation))
+		if (isFinishedAndCheckpointStatusIsUpToDate(computation))
 			return null();
 
 		return null() << it->second.timestampReceived() + mCheckpointInterval;
@@ -311,6 +314,23 @@ private:
 		
 		auto it = mCommittedCheckpointStatuses.find(computation);
 		if (it == mCommittedCheckpointStatuses.end())
+			return false;
+
+		if (it->second.status().checkpointSuccessful() && 
+					it->second.status().isRootComputationFinished())
+			return true;
+
+		return false;
+		}
+
+	bool isFinishedAndCheckpointStatusIsUpToDate(ComputationId computation) const
+		{
+		if (mFinishedComputationsLoadedFromCheckpoint.find(computation) != 
+								mFinishedComputationsLoadedFromCheckpoint.end())
+			return true;
+		
+		auto it = mCheckpointStatuses.find(computation);
+		if (it == mCheckpointStatuses.end())
 			return false;
 
 		if (it->second.status().checkpointSuccessful() && 

@@ -401,7 +401,8 @@ class ComputedValueTestCases(object):
             self.waitUntilTrue(lambda: 
                 simpleComp1.totalComputeSecondsAtLastCheckpoint > 0.0 or
                 simpleComp2.totalComputeSecondsAtLastCheckpoint > 0.0 or
-                simpleComp3.totalComputeSecondsAtLastCheckpoint > 0.0
+                simpleComp3.totalComputeSecondsAtLastCheckpoint > 0.0,
+                timeout=30.0
                 )
 
 
