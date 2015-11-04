@@ -961,7 +961,6 @@ class Converter(object):
         transformer - an instance of PyforaToJsonTransformer that receives data and builds the relevant
             representation that we will return.
         """
-
         value = self.constantConverter.invertForaConstant(implval)
         if value is not None:
             if isinstance(value, tuple):
@@ -1098,6 +1097,7 @@ class Converter(object):
             return None
 
         codeLocations = [ForaNative.getCodeLocation(h) for h in hashes]
+        codeLocations = [c for c in codeLocations if c is not None]
 
         def formatCodeLocation(c):
             if not c.defPoint.isExternal():
