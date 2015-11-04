@@ -51,6 +51,7 @@ class SocketIoJsonInterface(object):
         with self.lock:
             self.socketIO = SocketIO(self.url)
             self.reactorThread = threading.Thread(target=self.socketIO.wait)
+            self.reactorThread.daemon = True
             self.namespace = self.socketIO.define(self._namespaceFactory, self.path)
             self.reactorThread.start()
         return self
