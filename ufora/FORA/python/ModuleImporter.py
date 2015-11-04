@@ -109,12 +109,12 @@ def importModuleFromPath(p,
     mds = ModuleDirectoryStructure.ModuleDirectoryStructure.read(directory, fname, "fora")
 
     return importModuleFromMDS(
-        mds, 
-        directory, 
-        fname, 
-        searchForFreeVariables, 
-        allowPrivate, 
-        moduleImportParentList, 
+        mds,
+        directory,
+        fname,
+        searchForFreeVariables,
+        allowPrivate,
+        moduleImportParentList,
         pathToCodeDefinitionStrings
         )
 
@@ -164,7 +164,7 @@ def importModuleFromMDS(
 
     assert result.isModule()
     assert result.asModule.result is not None
-    
+
     return result.asModule.result
 
 def convertMDSToSourceCodeTree(mds, name):
@@ -192,7 +192,7 @@ def convertMDSToCreateObjectExpression(mds, path, allowPrivate, name, pathToCode
     parser = ForaNative.ModuleParser()
 
     result = parser.parse(
-        tree, 
+        tree,
         allowPrivate,
         ForaNative.CodeDefinitionPoint.ExternalFromStringList(
             pathToCodeDefinitionStrings(path)
@@ -332,10 +332,7 @@ def initialize(setupObjectToUse = None, reimport = False):
         setupObjectToUse = Setup.currentSetup()
 
     try:
-        if setupObjectToUse is not None and setupObjectToUse.config.foraBuiltinsPath is not None:
-            _builtinPath = os.path.abspath(setupObjectToUse.config.foraBuiltinsPath)
-        else:
-            _builtinPath = os.path.abspath(os.path.join(_curDir, "..","builtin"))
+        _builtinPath = os.path.abspath(os.path.join(_curDir, "..","builtin"))
 
         def pathToCodeDefinitionStrings(path):
             return ["Builtins", os.path.relpath(path, os.path.join(_builtinPath, ".."))]

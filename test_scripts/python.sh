@@ -22,4 +22,6 @@ fi
 TEST_NAME=python
 TEST_ARGS="-py $*"
 
+export CUMULUS_TRACK_TCMALLOC=False
+
 run_test

@@ -15,7 +15,6 @@
 #read in config.cfg
 #if its not there, seed an empty one and try to fill it out as best you can
 #export values from config.cfg as module members so that people can query the install
-import ufora
 import logging
 import json
 import sys
@@ -103,32 +102,19 @@ class Config(object):
 
         self._configDir = os.path.split(__file__)[0]
 
-        self.nativeStackDumpInterval = 30
-        self.enableNativeStackDump = parseBool(
-            self.getConfigValue("ENABLE_NATIVE_STACK_DUMP", False)
-            )
-
-        self.numCompilerThreads = 2
-
         rootDataDir = expandConfigPath(
             self.getConfigValue("ROOT_DATA_DIR",
-                                default=os.path.join(os.path.expanduser('~'), '.bsa'),
+                                default=os.path.join(os.path.expanduser('~'), '.ufora'),
                                 checkEnviron=True)
             )
         self.setRootDataDir(rootDataDir)
 
         self.setAllPorts(int(self.getConfigValue("BASE_PORT", 30000)))
 
-        self.foraBuiltinsPath = self.getConfigValue("FORA_BUILTINS_PATH", None)
-
         # FORA CONFIG
         self.maxLocalThreads = int(self.getConfigValue("MAX_LOCAL_THREADS", -1))
         if self.maxLocalThreads == -1:
             self.maxLocalThreads = maxLocalThreads()
-
-        self.diskBlockSizeOverride = self.getConfigValue("DISK_BLOCK_SIZE_OVERRIDE", None)
-        if self.diskBlockSizeOverride is not None:
-            self.diskBlockSizeOverride = int(self.diskBlockSizeOverride)
 
         self.wantsPythonGilLoopChecker = parseBool(
             self.getConfigValue("START_PYTHON_GIL_LOOP_THREAD", False)
@@ -138,7 +124,9 @@ class Config(object):
             )
 
         self.maxMemoryMB = long(self.getConfigValue("FORA_MAX_MEM_MB", 10000))
-        self.cumulusTrackTcmalloc = parseBool(self.getConfigValue("CUMULUS_TRACK_TCMALLOC", False))
+        self.cumulusTrackTcmalloc = parseBool(self.getConfigValue("CUMULUS_TRACK_TCMALLOC",
+                                                                  default=True,
+                                                                  checkEnviron=True))
         self.setCumulusMemoryBounds(self.cumulusTrackTcmalloc)
 
         # Cumulus options
@@ -181,35 +169,15 @@ class Config(object):
 
         self.userDataS3Bucket = self.getConfigValue("USER_DATA_BUCKET", 'ufora.user.data')
 
-        self.foraCompilerThreads = long(self.getConfigValue("FORA_COMPILER_THREADS", 4))
+        self.foraCompilerThreads = long(
+            self.getConfigValue("FORA_COMPILER_THREADS",
+                                2 if self.maxLocalThreads < 4 else 4)
+            )
 
         if sys.platform == "linux2":
             import resource
             resource.setrlimit(resource.RLIMIT_AS, (self.maxMemoryMB * 1024 * 1024, -1))
 
-        self.builtinDir = os.path.abspath(
-            os.path.join(
-                os.path.split(self._configDir)[0],
-                "FORA",
-                "builtin"
-                )
-            )
-
-
-        self.desireTtl = int(self.getConfigValue("DESIRE_TTL", 60*60))
-
-        self.fakeEC2ThreadCount = int(
-            self.getConfigValue("FAKE_EC2_THREAD_COUNT", maxLocalThreads())
-            )
-
-        self.tokenSigningKey = self.getConfigValue("TOKEN_SIGNING_KEY",
-                                                   "TUQN5I19OO1GE15475U6R7FA0YLJVIMJ")
-
-        # these need to go elsewhere
-        self.cloudCredentials = (
-                '__internal_cloud__',
-                '7560171364811a89d69db97060476828f5957fdb90437dfd551cb29e6c267cde'
-                )
 
         self.foregroundLoggingLevel = logging.WARN
         self.backgroundLoggingLevel = logging.INFO
@@ -234,10 +202,12 @@ class Config(object):
         defaultRamCacheBounds = (1000, 4000) if isTrackingTcMalloc else (1000, 10000)
         defaultVdmBounds = (1000, 4000) if isTrackingTcMalloc else (500, 4000)
 
-        self.cumulusOverflowBufferMbLower = long(self.getConfigValue("CUMULUS_OVERFLOW_BUFFER_MB_LOWER",
-                                                                     defaultRamCacheBounds[0]))
-        self.cumulusOverflowBufferMbUpper = long(self.getConfigValue("CUMULUS_OVERFLOW_BUFFER_MB_UPPER",
-                                                                     defaultRamCacheBounds[1]))
+        self.cumulusOverflowBufferMbLower = long(
+            self.getConfigValue("CUMULUS_OVERFLOW_BUFFER_MB_LOWER", defaultRamCacheBounds[0])
+            )
+        self.cumulusOverflowBufferMbUpper = long(
+            self.getConfigValue("CUMULUS_OVERFLOW_BUFFER_MB_UPPER", defaultRamCacheBounds[1])
+            )
 
         self.vdmOverflowBufferMbLower = long(self.getConfigValue("VDM_OVERFLOW_BUFFER_MB_LOWER",
                                                                  defaultVdmBounds[0]))
@@ -293,8 +263,6 @@ class Config(object):
         else:
             self.interpreterTraceDumpFile = ""
 
-        self.s3LocalStorageDir = self.getLocalS3Dir(rootDataDir)
-        self.useRealS3 = parseBool(self.getConfigValue("USE_REAL_S3", False))
 
         self.objectStore = self.getConfigValue('OBJECT_STORE', 's3')
         self.objectStoreMaxAttempts = int(self.getConfigValue('OBJECT_STORE_MAX_ATTEMPTS',
@@ -312,9 +280,6 @@ class Config(object):
         self.fakeAwsBaseDir = self.getConfigValue("FAKE_AWS_DIR",
                                                   os.path.join(self.rootDataDir, 'fakeAws'))
 
-        self.sharedStateBackupInterval = int(self.getConfigValue("SHARED_STATE_BACKUP_INTERVAL",
-                                                                 60 * 60))
-
         self.sharedStateLogPruneFrequency = int(self.getConfigValue(
             "SHARED_STATE_LOG_PRUNE_FREQUENCY",
             60 * 60))
@@ -322,18 +287,13 @@ class Config(object):
         self.sharedStateCache = str(self.getConfigValue("SHARED_STATE_CACHE",
                                                         os.path.join(self.rootDataDir, "ss_cache")))
 
-        self.cumulusDiskCacheStorageDir = self.getConfigValue("CUMULUS_DISK_STORAGE_DIR",
-                            self.rootDataDir + os.sep + "cumulus_disk_storage")
+        self.cumulusDiskCacheStorageDir = self.getConfigValue(
+            "CUMULUS_DISK_STORAGE_DIR",
+            self.rootDataDir + os.sep + "cumulus_disk_storage"
+            )
 
         self.cumulusEventsPath = os.path.join(self.rootDataDir, "cumulus_events")
 
-    def getLocalS3Dir(self, rootDataDir):
-        # we support S3_LOCAL_STORAGE_DIR for backward compatibility.
-        # the new config value name is UFORA_LOCAL_S3_DIR
-        s3DirName = self.getConfigValue("UFORA_LOCAL_S3_DIR") or \
-                    self.getConfigValue("S3_LOCAL_STORAGE_DIR") or \
-                    os.path.join(self.rootDataDir, "s3_storage")
-        return expandConfigPath(os.path.abspath(s3DirName))
 
     def setLoggingLevel(self, foregroundLevel, backgroundLevel=None):
         if backgroundLevel is not None:
