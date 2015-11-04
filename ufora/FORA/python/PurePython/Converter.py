@@ -126,10 +126,7 @@ class Converter(object):
             return self.convertNamedSingleton(objectDefinition)
         elif isinstance(objectDefinition, TypeDescription.BuiltinExceptionInstance):
             return self.convertBuiltinExceptionInstance(
-                objectId,
-                objectDefinition,
-                dependencyGraph,
-                objectIdToObjectDefinition
+                objectDefinition
                 )
         elif isinstance(objectDefinition,
                         (TypeDescription.FunctionDefinition,
@@ -197,10 +194,7 @@ class Converter(object):
         return singleton
 
     def convertBuiltinExceptionInstance(self,
-                objectId,
-                objectDefinition,
-                dependencyGraph,
-                objectIdToObjectDefinition
+                objectDefinition
                 ):
         args = self.convertedValues[objectDefinition.argId]
 
@@ -578,13 +572,7 @@ class Converter(object):
         elif isinstance(objectDefinition, TypeDescription.BuiltinExceptionInstance):
             self.convertedValues[objectId] = \
                 self.convertBuiltinExceptionInstance(
-                    objectId,
-                    objectDefinition,
-                    self._computeRestrictedGraph(
-                        objectId,
-                        dependencyGraph
-                        ),
-                    objectIdToObjectDefinition
+                    objectDefinition
                     )
 
         elif isinstance(objectDefinition, TypeDescription.NamedSingleton):
