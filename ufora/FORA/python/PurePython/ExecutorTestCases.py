@@ -2407,3 +2407,17 @@ class ExecutorTestCases(
             self.assertTrue(False)
         except Exceptions.ForaToPythonConversionError as e:
             self.assertIsInstance(e.message, str)
+
+    def test_list_containing_itself(self):
+        evilList = []
+        evilList.append(evilList)
+        
+        try:
+            self.equivalentEvaluationTest(lambda: len(evilList))
+            self.assertTrue(False)
+        except Exceptions.PythonToForaConversionError as e:
+            self.assertIsInstance(e.message, str)
+            self.assertEqual(
+                e.message,
+                "don't know how to convert lists or tuples which reference themselves"
+                )
