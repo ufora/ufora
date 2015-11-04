@@ -29,7 +29,7 @@ import ufora.distributed.util.common as common
 
 from ufora.test.TestScriptRunner import TestScriptRunner
 
-def createTestRunner(testDir='test_scripts/clusterperf'):
+def createTestRunner(testDir='test_scripts/clusterperf', timeout=None):
     assert 'TEST_LOOPER_MULTIBOX_OWN_IP' in os.environ
     assert 'TEST_LOOPER_MULTIBOX_IP_LIST' in os.environ
     assert 'TEST_LOOPER_TEST_ID' in os.environ
@@ -43,7 +43,7 @@ def createTestRunner(testDir='test_scripts/clusterperf'):
 
     testRunnerClass = MultiMachineMasterRunner if ownAddress == machinesInCluster[0] \
                       else MultiMachineWorkerRunner
-    return testRunnerClass(machinesInCluster, ownAddress, testId, testDir)
+    return testRunnerClass(machinesInCluster, ownAddress, testId, testDir, timeout=timeout)
 
 def extractErrorMessagesFromLogfile(logfile, targetDir):
     try:
@@ -97,13 +97,14 @@ def extractErrorMessagesFromLogfile(logfile, targetDir):
 class MultiMachineTestRunner(object):
     ProtoclVersion = '0.0.3'
     TestControlPort = 34532
-    def __init__(self, machinesInCluster, ownAddress, testId, testDir):
+    def __init__(self, machinesInCluster, ownAddress, testId, testDir, timeout=None):
         self.machinesInCluster = machinesInCluster
         self.ownAddress = ownAddress
         assert self.ownAddress in self.machinesInCluster
 
         self.testId = testId
         self.testDir = testDir
+        self.timeout = timeout
         assert os.path.exists(self.testDir), "test directory '%s' does not exist" % self.testDir
 
     @property
@@ -212,9 +213,9 @@ class MultiMachineTestRunner(object):
 
 
 class MultiMachineWorkerRunner(MultiMachineTestRunner):
-    def __init__(self, machinesInCluster, ownAddress, testId, testDir):
+    def __init__(self, machinesInCluster, ownAddress, testId, testDir, timeout=None):
         super(MultiMachineWorkerRunner, self).__init__(
-            machinesInCluster, ownAddress, testDir, testDir
+            machinesInCluster, ownAddress, testDir, testDir, timeout
             )
 
     @property
@@ -286,9 +287,9 @@ class MultiMachineWorkerRunner(MultiMachineTestRunner):
 
 
 class MultiMachineMasterRunner(MultiMachineTestRunner):
-    def __init__(self, machinesInCluster, ownAddress, testId, testDir):
+    def __init__(self, machinesInCluster, ownAddress, testId, testDir, timeout=None):
         super(MultiMachineMasterRunner, self).__init__(
-            machinesInCluster, ownAddress, testDir, testDir
+            machinesInCluster, ownAddress, testDir, testDir, timeout
             )
         self.testControlServer = SimpleServer.SimpleServer(MultiMachineMasterRunner.TestControlPort)
         self.testControlServer._onConnect = self.onConnect
@@ -373,7 +374,7 @@ class MultiMachineMasterRunner(MultiMachineTestRunner):
                 workerSocket.close()
 
     def runTests(self):
-        scriptRunner = TestScriptRunner(testRoot=self.testDir)
+        scriptRunner = TestScriptRunner(testRoot=self.testDir, defaultTimeout=self.timeout)
         return scriptRunner.run()
 
     def onConnect(self, workerSocket, address):
