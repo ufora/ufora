@@ -2449,3 +2449,53 @@ class ExecutorTestCases(
                 "Pyfora can't convert this code",
                 e.message
                 )
+
+    def test_uninitializedVars_1(self):
+        def f():
+            x = x
+            return 0
+
+        try:
+            self.evaluateWithExecutor(f)
+            self.assertTrue(False)
+        except Exceptions.PythonToForaConversionError as e:
+            self.assertIsInstance(e.message, str)
+
+    def test_uninitializedVars_2(self):
+        x = 2
+        def f():
+            x = x
+            return 0
+
+        try:
+            self.evaluateWithExecutor(f)
+            self.assertTrue(False)
+        except Exceptions.PythonToForaConversionError as e:
+            self.assertIsInstance(e.message, str)
+
+    def test_uninitializedVars_3(self):
+        x = 2
+        def f(x):
+            x = x
+            return 0
+
+        self.equivalentEvaluationTest(f, 2)
+
+    def test_free_variables_propagate_in_with_blocks(self):
+        def f():
+            return thisVariableDoesntExist
+
+        with self.create_executor() as fora:
+            with self.assertRaises(Exceptions.PythonToForaConversionError):
+                with fora.remotely:
+                    result = f()
+
+    def test_unbound_variables_propagate_in_with_blocks(self):
+        def f():
+            x = x
+            return x
+
+        with self.create_executor() as fora:
+            with self.assertRaises(Exceptions.PythonToForaConversionError):
+                with fora.remotely:
+                    result = f()

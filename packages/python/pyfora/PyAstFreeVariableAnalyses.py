@@ -163,7 +163,7 @@ class _FreeVarsVisitor(GenericBoundValuesScopedVisitor):
             self._freeVars.add(identifier)
 
 
-def getFreeVariables(pyAstNode, isClassContext = None):
+def getFreeVariables(pyAstNode, isClassContext=None):
     pyAstNode = PyAstUtil.getRootInContext(pyAstNode, isClassContext)
     freeVarsVisitor = _FreeVarsVisitor()
     freeVarsVisitor.visit(pyAstNode)

@@ -323,6 +323,19 @@ class WithBlockExecutors_test(unittest.TestCase, EquivalentEvaluationTestCases.E
                 with fora.remotely:
                     [].append(10)
 
+    def test_reassignment_in_separate_with_block(self):
+        with self.create_executor() as fora:
+            ctx = fora.remotely.downloadAll()
+            with ctx:
+                x = 1
+
+            self.assertEqual(x, 1)
+
+            with ctx:
+                x = x + 1
+                
+            self.assertEqual(x, 2)
+
 if __name__ == "__main__":
     import ufora.config.Mainline as Mainline
     Mainline.UnitTestMainline([])

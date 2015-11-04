@@ -14,6 +14,7 @@
 
 import pyfora.Exceptions as Exceptions
 import pyfora.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
+import pyfora.PyAstUninstantiatedVariablesAnalysis as PyAstUninstantiatedVariablesAnalysis
 import pyfora.PyAstUtil as PyAstUtil
 import pyfora.PureImplementationMappings as PureImplementationMappings
 import pyfora.RemotePythonObject as RemotePythonObject
@@ -38,10 +39,6 @@ def _isPrimitive(pyObject):
     return isinstance(pyObject, (NoneType, int, float, str, bool))
 
 
-class WalkError(Exception):
-    pass
-
-
 class PyObjectWalker(object):
     """
     Generic class for walking a python object (in a way we like), and calling
@@ -54,9 +51,6 @@ class PyObjectWalker(object):
       _convertedObjectCache: dictionary (id -> PyObjectNode?)
       _fileTextCache: dictionary (? -> ?)
     """
-
-    class UnBoundInFunctionError(Exception):
-        pass
 
     def __init__(
             self,
@@ -213,10 +207,7 @@ class PyObjectWalker(object):
             )
 
         freeVariableMemberAccessChains = \
-            PyAstFreeVariableAnalyses.getFreeVariableMemberAccessChains(
-                withBlockFun,
-                isClassContext=False
-                )
+            self._freeOrUninitializedMemberAccesChains(withBlockFun)
 
         freeVariableMemberAccessChainResolutions = \
             self._resolveFreeVariableMemberAccesChains(
@@ -352,6 +343,19 @@ class PyObjectWalker(object):
             self, pyObject, pyAst
             ):
 
+        resolutions = dict()
+
+        freeVariableMemberAccessChains = \
+            self._freeOrUninitializedMemberAccesChains(pyAst)
+
+        for chain in freeVariableMemberAccessChains:
+            if not chain or chain[0] not in ['staticmethod']:
+                subchain, resolution = self._resolveChainInPyObject(chain, pyObject)
+                resolutions[subchain] = resolution
+
+        return resolutions
+
+    def _freeOrUninitializedMemberAccesChains(self, pyAst):
         # ATz: just added 'False' as a 2nd argument, but we may need to check
         # that whenever pyAst is a FunctionDef node, its context is not a class
         # (i.e., it is not an instance method). In that case, we need to pass
@@ -361,21 +365,24 @@ class PyObjectWalker(object):
                 pyAst, isClassContext=False
                 )
 
-        resolutions = dict()
+        possiblyUninitializedVariables = \
+            PyAstUninstantiatedVariablesAnalysis\
+                .collectPossiblyUninitializedLocalVariablesInScope(
+                    pyAst
+                    )
 
-        for chain in freeVariableMemberAccessChains:
-            if not chain or chain[0] not in ['staticmethod']:
-                subchain, resolution = self._resolveChainInPyObject(chain, pyObject)
-                resolutions[subchain] = resolution
+        possiblyUninitializedVariablesAsChains = [
+            (val,) for val in possiblyUninitializedVariables]
 
-        return resolutions
+        return freeVariableMemberAccessChains.union(
+            possiblyUninitializedVariablesAsChains)
 
     def _resolveChainByDict(self, chain, boundVariables):
         freeVariable = chain[0]
 
         if freeVariable in boundVariables:
             rootValue = boundVariables[freeVariable]
-            subchain, terminalValue = self._computeTerminalValueAlongModules(
+            subchain, terminalValue = self._computeSubchainAndTerminalValueAlongModules(
                 rootValue, chain
                 )
             return subchain, terminalValue
@@ -383,7 +390,7 @@ class PyObjectWalker(object):
         if hasattr(__builtin__, freeVariable):
             rootValue = getattr(__builtin__, freeVariable)
 
-            return self._computeTerminalValueAlongModules(rootValue, chain)
+            return self._computeSubchainAndTerminalValueAlongModules(rootValue, chain)
 
         raise Exceptions.PythonToForaConversionError(
             "don't know how to resolve free variable `%s`" % freeVariable
@@ -398,21 +405,27 @@ class PyObjectWalker(object):
         along modules (or "empty" modules)
 
         """
-        subchain, terminalValue = self._lookupChain(pyObject, chain)
+        subchainAndResolutionOrNone = self._subchainAndResolutionOrNone(pyObject, chain)
+        if subchainAndResolutionOrNone is None:
+            raise Exceptions.PythonToForaConversionError(
+                "don't know how to resolve %s in %s" % (chain, pyObject)
+                )
+
+        subchain, terminalValue = subchainAndResolutionOrNone
         
         if id(terminalValue) in self._convertedObjectCache:
             terminalValue = self._convertedObjectCache[id(terminalValue)][1]
 
         return subchain, terminalValue
 
-    def _lookupChain(self, pyObject, chain):
+    def _subchainAndResolutionOrNone(self, pyObject, chain):
         if PyforaInspect.isfunction(pyObject):
             return self._lookupChainInFunction(pyObject, chain)
 
         if PyforaInspect.isclass(pyObject):
             return self._lookupChainInClass(pyObject, chain)
         
-        assert False, "don't know how to lookup values in %s" % pyObject
+        return None
 
     def _classMemberFunctions(self, pyObject):
         return PyforaInspect.getmembers(
@@ -420,21 +433,29 @@ class PyObjectWalker(object):
             lambda elt: PyforaInspect.ismethod(elt) or PyforaInspect.isfunction(elt)
             )
 
-    def _lookupChainInClass(self, pyObject, chain):
-        memberFunctions = self._classMemberFunctions(pyObject)
+    def _lookupChainInClass(self, pyClass, chain):
+        """
+        return a pair `(subchain, subchainResolution)`
+        where subchain resolves to subchainResolution in pyClass
+        """
+        memberFunctions = self._classMemberFunctions(pyClass)
 
         for _, func in memberFunctions:
-            try:
-                # lookup should be indpendent of which function we 
-                # actually choose. However, the unbound chain may not
-                # appear in every member function
-                return self._lookupChainInFunction(func, chain)
-            except PyObjectWalker.UnBoundInFunctionError:
-                pass
+            # lookup should be indpendent of which function we 
+            # actually choose. However, the unbound chain may not
+            # appear in every member function
+                 
+            subchainAndResolutionOrNone = self._lookupChainInFunction(func, chain)
+            if subchainAndResolutionOrNone is not None:
+                return subchainAndResolutionOrNone
 
-        assert False, "it looks like %s is free in %s" % (chain, pyObject)
+        return None
 
     def _lookupChainInFunction(self, pyFunction, chain):
+        """
+        return a pair `(subchain, subchainResolution)`
+        where subchain resolves to subchainResolution in pyFunction
+        """
         freeVariable = chain[0]
         
         if freeVariable in pyFunction.func_code.co_freevars:
@@ -445,24 +466,21 @@ class PyObjectWalker(object):
                 logging.error("Failed to get value for free variable %s", freeVariable)
                 raise
             
-            return self._computeTerminalValueAlongModules(rootValue, chain)
+            return self._computeSubchainAndTerminalValueAlongModules(rootValue, chain)
 
         if freeVariable in pyFunction.func_globals:
             rootValue = pyFunction.func_globals[freeVariable]
 
-            return self._computeTerminalValueAlongModules(rootValue, chain)
+            return self._computeSubchainAndTerminalValueAlongModules(rootValue, chain)
 
         if hasattr(__builtin__, freeVariable):
             rootValue = getattr(__builtin__, freeVariable)
 
-            return self._computeTerminalValueAlongModules(rootValue, chain)
+            return self._computeSubchainAndTerminalValueAlongModules(rootValue, chain)
 
-        raise PyObjectWalker.UnBoundInFunctionError(
-            "couldn't find a binding for var %s in pyFunction %s" % (
-                freeVariable, pyFunction)
-            )
+        return None
 
-    def _computeTerminalValueAlongModules(self, rootValue, chain):
+    def _computeSubchainAndTerminalValueAlongModules(self, rootValue, chain):
         ix = 1
 
         subchain, terminalValue = chain[:ix], rootValue
@@ -470,10 +488,14 @@ class PyObjectWalker(object):
         while PyforaInspect.ismodule(terminalValue):
             if ix >= len(chain):
                 #we're terminating at a module
-                raise Exceptions.PythonToForaConversionError("Can't convert the module %s" % str(terminalValue))
+                raise Exceptions.PythonToForaConversionError(
+                    "Can't convert the module %s" % str(terminalValue)
+                    )
             
             if not hasattr(terminalValue, chain[ix]):
-                raise Exceptions.PythonToForaConversionError("Module %s has no member %s" % (str(terminalValue), chain[ix]))
+                raise Exceptions.PythonToForaConversionError(
+                    "Module %s has no member %s" % (str(terminalValue), chain[ix])
+                    )
 
             terminalValue = getattr(terminalValue, chain[ix])
             ix += 1

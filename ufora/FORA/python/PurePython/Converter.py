@@ -624,12 +624,21 @@ class Converter(object):
             withBlockDescription,
             objectIdToObjectDefinition
             ):
-        nativeWithBodyAst, assignedVariables = self._getNativePythonFunctionDefFromWithBlockDescription(
-            withBlockDescription,
-            objectIdToObjectDefinition
-            )
+        nativeWithBodyAst, assignedVariables = \
+            self._getNativePythonFunctionDefFromWithBlockDescription(
+                withBlockDescription,
+                objectIdToObjectDefinition
+                )
 
         sourcePath = objectIdToObjectDefinition[withBlockDescription.sourceFileId].path
+
+        freeBoundByClosure = []
+        for freeVariableMemberAccessChain in \
+            withBlockDescription.freeVariableMemberAccessChainsToId:
+            if len(freeVariableMemberAccessChain) == 1:
+                freeBoundByClosure.append(freeVariableMemberAccessChain[0])
+
+        assignedVariablesNotBoundByClosure = assignedVariables.difference(freeBoundByClosure)
 
         foraFunctionExpression = \
             ForaNative.convertPythonAstFunctionDefToForaOrParseErrorWrappingBodyInTryCatch(
@@ -643,7 +652,7 @@ class Converter(object):
                 self.pyObjectMixinBaseIVC,
                 self.pyObjectGeneratorFactoryIVC,
                 self.pyListTypeObjectIVC,
-                list(assignedVariables)
+                list(assignedVariablesNotBoundByClosure)
                 )
 
         if isinstance(foraFunctionExpression, ForaNative.PythonToForaConversionError):
