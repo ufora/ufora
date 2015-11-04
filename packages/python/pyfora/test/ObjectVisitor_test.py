@@ -91,8 +91,8 @@ class PyObjectWalkerTest(unittest.TestCase):
         walker.walkPyObject(f)
 
         self.assertEqual(
-            testVisitor.visitedValues,
-            ['3', 'h', 'g', '2', 'f']
+            set(testVisitor.visitedValues),
+            set(['3', 'h', 'g', '2', 'f'])
             )
 
 if __name__ == "__main__":

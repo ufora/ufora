@@ -30,7 +30,9 @@ import ast
 def isClassInstance(pyObject):
     return hasattr(pyObject, "__class__")
 
+
 NoneType = type(None)
+
 
 def _isPrimitive(pyObject):
     return isinstance(pyObject, (NoneType, int, float, str, bool))
@@ -38,6 +40,7 @@ def _isPrimitive(pyObject):
 
 class WalkError(Exception):
     pass
+
 
 class PyObjectWalker(object):
     """
@@ -263,7 +266,7 @@ class PyObjectWalker(object):
             pyAst = PyAstUtil.classDefAtLineNumber(sourceAst, sourceLine)
 
         freeVariableMemberAccessChainResolutions = \
-            self._resolveFreeVariableMemberAccessChainsAndVisitUnvisited(
+            self._resolveFreeVariableMemberAccessChains(
                 pyObject, pyAst
                 )
 
@@ -308,10 +311,16 @@ class PyObjectWalker(object):
         self.walkPyObject(pyObject.args)
             
     def _walkFunctionDefinition(self, functionDefinition):
-        self.walkPyObject(functionDefinition.sourceFile)
+        self._walkFunctionOrClassDefinition(functionDefinition)
 
     def _walkClassDefinition(self, classDefinition):
-        self.walkPyObject(classDefinition.sourceFile)
+        self._walkFunctionOrClassDefinition(classDefinition)
+
+    def _walkFunctionOrClassDefinition(self, functionOrClassDefinition):
+        self.walkPyObject(functionOrClassDefinition.sourceFile)
+        for _, resolution in functionOrClassDefinition\
+            .freeVariableMemberAccessChainResolutions.iteritems():
+            self.walkPyObject(resolution)
 
     def _walkWithBlock(self, withBlock):
         self.walkPyObject(withBlock.sourceFile)
@@ -330,7 +339,7 @@ class PyObjectWalker(object):
         resolutions = dict()
 
         for chain in freeVariableMemberAccessChains:
-            subchain, resolution = self._resolveChain(chain, boundVariables)
+            subchain, resolution = self._resolveChainByDict(chain, boundVariables)
 
             if id(resolution) in self._convertedObjectCache:
                 resolution = self._convertedObjectCache[id(resolution)][1]
@@ -339,7 +348,7 @@ class PyObjectWalker(object):
 
         return resolutions
 
-    def _resolveFreeVariableMemberAccessChainsAndVisitUnvisited(
+    def _resolveFreeVariableMemberAccessChains(
             self, pyObject, pyAst
             ):
 
@@ -356,12 +365,12 @@ class PyObjectWalker(object):
 
         for chain in freeVariableMemberAccessChains:
             if not chain or chain[0] not in ['staticmethod']:
-                subchain, resolution = self._resolveChainAndWalkIfNecessary(chain, pyObject)
+                subchain, resolution = self._resolveChainInPyObject(chain, pyObject)
                 resolutions[subchain] = resolution
 
         return resolutions
 
-    def _resolveChain(self, chain, boundVariables):
+    def _resolveChainByDict(self, chain, boundVariables):
         freeVariable = chain[0]
 
         if freeVariable in boundVariables:
@@ -380,7 +389,7 @@ class PyObjectWalker(object):
             "don't know how to resolve free variable `%s`" % freeVariable
             )
 
-    def _resolveChainAndWalkIfNecessary(self, chain, pyObject):
+    def _resolveChainInPyObject(self, chain, pyObject):
         """
         This name could be improved.
 
@@ -393,11 +402,6 @@ class PyObjectWalker(object):
         
         if id(terminalValue) in self._convertedObjectCache:
             terminalValue = self._convertedObjectCache[id(terminalValue)][1]
-        
-        idForTerminalValue = id(terminalValue)
-
-        if idForTerminalValue not in self.walkedNodes:
-            self.walkPyObject(terminalValue)
 
         return subchain, terminalValue
 
