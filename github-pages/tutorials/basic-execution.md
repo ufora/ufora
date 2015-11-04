@@ -4,6 +4,8 @@ title: Running python code
 tagline: How to use ufora.remote to execute code
 ---
 
+## Connecting to a cluster
+
 Once you've booted a ufora cluster (remotely or locally), you can connect to it
 and start executing code:
 
@@ -28,6 +30,8 @@ def isPrime(p):
     return 1
 ```
 
+## Calculating on the cluster
+
 Now, we can use the executor to do something interesting with the function.
 
 ```python
@@ -43,6 +47,8 @@ block. This code gets translated into Ufora bitcode, and executed by the Ufora
 VM. The resulting objects are returned over the `ufora` connection, which
 downloads them and copies them back into the local environment because we used
 `ufora.remote.downloadAll()`.
+
+## Working with proxies
 
 Now, imagine that we want to get a list of primes. We can then write
 
