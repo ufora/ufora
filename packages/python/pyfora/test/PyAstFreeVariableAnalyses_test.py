@@ -722,7 +722,105 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
             PyAstFreeVariableAnalyses.getFreeVariables(tree)
             )
 
-    def test_freeVariables_onFunctionDefNode(self):
+    def test_freeVariables_CompsAndGenExp1(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                [elt1 for elt1 in container1]
+                {elt2 for elt2 in container2}
+                {elt3: elt4 for elt4 in container4 for elt3 in container3}
+                (x*y for x in range(10) for y in bar(x))
+                """
+                )
+            )
+        expectedResult = set(['container1', 'container2', 'container3',
+                              'container4', 'bar', 'range'])
+        self.assertEqual(
+            expectedResult,
+            PyAstFreeVariableAnalyses.getFreeVariables(tree)
+        )
+
+    def test_freeVariables_CompsAndGenExp2(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                [elt01 for elt1 in container1]
+                {elt02 for elt2 in container2}
+                {elt03: elt04 for elt4 in container4 for elt3 in container3}
+                (x0*y0 for x in range(10) for y in bar(x))
+                """
+                )
+            )
+        expectedResult = set(['container1', 'container2', 'container3',
+                              'container4', 'bar', 'range', 'elt01',
+                              'elt02', 'elt03', 'elt04', 'x0', 'y0'])
+        self.assertEqual(
+            expectedResult,
+            PyAstFreeVariableAnalyses.getFreeVariables(tree)
+        )
+
+    def test_freeVariables_class_context(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                class testClass:
+                    def __init__(self, x):
+                        self.x = x
+
+                    def f(self):
+                        return testClass("a")
+                """
+                )
+            )
+
+        self.assertEqual(
+            set([]),
+            PyAstFreeVariableAnalyses.getFreeVariables(tree.body[0])
+            )
+
+    def test_freeVariables_function_context(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def fib(x):
+                    if x < 2:
+                        return 1
+                    else:
+                        return fib(x-1) + fib(x-2)
+                """
+                )
+            )
+
+        self.assertEqual(
+            set([]),
+            PyAstFreeVariableAnalyses.getFreeVariables(tree.body[0], isClassContext = False)
+            )
+
+        self.assertEqual(
+            set(['fib']),
+            PyAstFreeVariableAnalyses.getFreeVariables(tree.body[0], isClassContext = True)
+            )
+
+    def test_freeVariables_name_substring_bug(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                al = 10
+                l
+                """
+                )
+            )
+        expectedResult = set(['l'])
+        self.assertEqual(
+            expectedResult,
+            PyAstFreeVariableAnalyses.getFreeVariables(tree)
+            )
+
+##########################################################################
+#  Free Variable Member Access Chain Tests
+##########################################################################
+
+    def test_freeVariablesMemberAccessChain_onFunctionDefNode(self):
         tree1 = ast.parse(
             textwrap.dedent(
                 """
@@ -808,62 +906,6 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
             res
             )
 
-    def test_class_context(self):
-        tree = ast.parse(
-            textwrap.dedent(
-                """
-                class testClass:
-                    def __init__(self, x):
-                        self.x = x
-
-                    def f(self):
-                        return testClass("a")
-                """
-                )
-            )
-
-        self.assertEqual(
-            set([]),
-            PyAstFreeVariableAnalyses.getFreeVariables(tree.body[0])
-            )
-
-    def test_function_context(self):
-        tree = ast.parse(
-            textwrap.dedent(
-                """
-                def fib(x):
-                    if x < 2:
-                        return 1
-                    else:
-                        return fib(x-1) + fib(x-2)
-                """
-                )
-            )
-
-        self.assertEqual(
-            set([]),
-            PyAstFreeVariableAnalyses.getFreeVariables(tree.body[0], isClassContext = False)
-            )
-
-        self.assertEqual(
-            set(['fib']),
-            PyAstFreeVariableAnalyses.getFreeVariables(tree.body[0], isClassContext = True)
-            )
-
-    def test_name_substring_bug(self):
-        tree = ast.parse(
-            textwrap.dedent(
-                """
-                al = 10
-                l
-                """
-                )
-            )
-        expectedResult = set(['l'])
-        self.assertEqual(
-            expectedResult,
-            PyAstFreeVariableAnalyses.getFreeVariables(tree)
-            )
 
 if __name__ == "__main__":
     unittest.main()

@@ -157,6 +157,24 @@ class GenericInScopeVisitor(NodeVisitorBase):
         with self._isInDefinitionMgr(False):
             self.visit(node.value)
 
+    def visit_ListComp(self, node):
+        self.visit(node.generators)
+        self.visit(node.elt)
+
+    def visit_SetComp(self, node):
+        self.visit(node.generators)
+        self.visit(node.elt)
+
+    def visit_GeneratorExp(self, node):
+        self.visit(node.generators)
+        self.visit(node.elt)
+
+    def visit_DictComp(self, node):
+        self.visit(node.generators)
+        self.visit(node.key)
+        self.visit(node.value)
+
+
     def visit_Global(self, _):
         raise Exceptions.PythonToForaConversionError(
             "Illegal 'global' statement: not supported in Python to Fora translation.")

@@ -378,6 +378,39 @@ class PyAstPossiblyUninitializedVariables_test(unittest.TestCase):
             PyAstUninstantiatedVariablesAnalysis.\
                 collectPossiblyUninitializedLocalVariables(tree.body[0])
 
+    def test_possiblyUninitializedVariables_CompsAndGenExp1(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                [elt1 for elt1 in container1]
+                {elt2 for elt2 in container2}
+                {elt3: elt4 for elt4 in container4 for elt3 in container3}
+                (x*y for x in range(10) for y in bar(x))
+                """
+                )
+            )
+        expectedResult = set([])
+        self.assertEqual(
+            expectedResult,
+            PyAstUninstantiatedVariablesAnalysis.collectPossiblyUninitializedLocalVariables(tree)
+        )
+
+    def test_possiblyUninitializedVariables_CompsAndGenExp2(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                [elt01 for elt1 in container1]
+                {elt02 for elt2 in container2}
+                {elt03: elt04 for elt4 in container4 for elt3 in container3}
+                (x0*y0 for x in range(10) for y in bar(x))
+                """
+                )
+            )
+        expectedResult = set([])
+        self.assertEqual(
+            expectedResult,
+            PyAstUninstantiatedVariablesAnalysis.collectPossiblyUninitializedLocalVariables(tree)
+        )
 
 if __name__ == "__main__":
     unittest.main()
