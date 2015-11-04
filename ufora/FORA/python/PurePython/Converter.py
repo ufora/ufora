@@ -88,8 +88,10 @@ class Converter(object):
 
         if purePythonModuleImplVal is None:
             self.pyObjectGeneratorFactoryIVC = ForaNative.makeSymbol("ConvertYieldToIter")
+            self.pyListTypeObjectIVC = ForaNative.ImplValContainer()
         else:
             self.pyObjectGeneratorFactoryIVC = purePythonModuleImplVal.getObjectMember("CreateGeneratorFromYield")
+            self.pyListTypeObjectIVC = purePythonModuleImplVal.getObjectMember("ListType")
 
     def extractWrappedForaConstant(self, value):
         """Convenience method for testing. If 'value' is an ImplVal, get @m out of it."""
@@ -652,6 +654,7 @@ class Converter(object):
                 self.nativeDictConverter,
                 self.pyObjectMixinBaseIVC,
                 self.pyObjectGeneratorFactoryIVC,
+                self.pyListTypeObjectIVC,
                 list(assignedVariables)
                 )
 
@@ -877,7 +880,8 @@ class Converter(object):
                     self.nativeTupleConverter,
                     self.nativeDictConverter,
                     self.pyObjectMixinBaseIVC,
-                    self.pyObjectGeneratorFactoryIVC
+                    self.pyObjectGeneratorFactoryIVC,
+                    self.pyListTypeObjectIVC
                     )
             else:
                 assert pyAst.isLambda()
@@ -890,7 +894,8 @@ class Converter(object):
                     self.nativeTupleConverter,
                     self.nativeDictConverter,
                     self.pyObjectMixinBaseIVC,
-                    self.pyObjectGeneratorFactoryIVC
+                    self.pyObjectGeneratorFactoryIVC,
+                    self.pyListTypeObjectIVC
                     )
 
         elif isinstance(classOrFunctionDefinition, TypeDescription.ClassDefinition):
@@ -903,7 +908,8 @@ class Converter(object):
                 self.nativeTupleConverter,
                 self.nativeDictConverter,
                 self.pyObjectMixinBaseIVC,
-                self.pyObjectGeneratorFactoryIVC
+                self.pyObjectGeneratorFactoryIVC,
+                self.pyListTypeObjectIVC
                 )
 
         else:
