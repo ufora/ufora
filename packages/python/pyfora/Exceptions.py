@@ -14,6 +14,9 @@
 
 from concurrent.futures._base import Error, TimeoutError, CancelledError
 
+import os
+import linecache
+
 class PyforaError(Error):
     '''Base class for all pyfora exceptions.'''
     pass
@@ -36,7 +39,42 @@ class ComputationError(PyforaError):
 
 class PythonToForaConversionError(PyforaError):
     '''Unable to convert the specified Python object.'''
-    pass
+    def __init__(self, message, trace=None):
+        """Initialize a conversion error.
+
+        message - a string containing the error message
+        trace - None, or a list of the form [
+            {'path':str, 'line': int},
+            ...
+            ]
+        """
+        self.message = message
+        self.trace = trace
+
+    def __str__(self):
+        if self.trace is None:
+            return self.message
+        else:
+            return "%s\n%s" % (self.message, PythonToForaConversionError.renderTraceback(self.trace))
+
+    @staticmethod
+    def renderTraceback(trace):
+        res = []
+
+        for tb in trace:
+            path = os.path.abspath(tb["path"])
+            lineNumber = tb["line"]
+
+            res.append('  File "%s", line %s' % (path, lineNumber))
+
+            lines = linecache.getlines(os.path.abspath(path))
+            if lines is not None and lineNumber >= 1 and lineNumber <= len(lines):
+                res.append("    " + lines[lineNumber-1].lstrip())
+
+        return "\n".join(res)
+
+    def __repr__(self):
+        return "PythonToForaConversionError(message=%s,trace=%s)" % (repr(self.message), repr(self.trace))
 
 class ForaToPythonConversionError(PyforaError):
     '''Unable to convert the specified object to Python.'''

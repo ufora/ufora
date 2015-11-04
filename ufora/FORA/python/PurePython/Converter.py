@@ -39,6 +39,17 @@ createInstanceImplVal = ForaNative.makeSymbol("CreateInstance")
 callImplVal = ForaNative.makeSymbol("Call")
 Symbol_uninitialized = ForaNative.makeSymbol("@uninitialized")
 
+def convertNativePythonToForaConversionError(err, path):
+    """Convert a ForaNative.PythonToForaConversionError to a python version of the exception"""
+    return pyfora.PythonToForaConversionError(
+        err.error,
+        trace=[{
+            'path': path,
+            'line': err.range.start.line
+            }]
+        )
+
+
 class Converter(object):
     def __init__(self,
                  nativeConstantConverter=None,
@@ -635,6 +646,12 @@ class Converter(object):
                 list(assignedVariables)
                 )
 
+        if isinstance(foraFunctionExpression, ForaNative.PythonToForaConversionError):
+            raise convertNativePythonToForaConversionError(
+                foraFunctionExpression,
+                objectIdToVarname[withBlockDescription.sourceFileId].path
+                )
+
         return foraFunctionExpression
 
     def _getNativePythonFunctionDefFromWithBlockDescription(
@@ -884,7 +901,10 @@ class Converter(object):
             assert False
 
         if isinstance(tr, ForaNative.PythonToForaConversionError):
-            raise pyfora.PythonToForaConversionError(tr)
+            raise convertNativePythonToForaConversionError(
+                tr,
+                sourcePath
+                )
 
         return tr
 

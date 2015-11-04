@@ -117,13 +117,11 @@ class PyforaObjectConverter(ComputedGraph.Location):
     @ComputedGraph.ExposedFunction(expandArgs=True)
     def convert(self, objectId, objectIdToObjectDefinition):
         import pyfora.TypeDescription as TypeDescription
+        import pyfora.Exceptions as PyforaExceptions
 
-        ivc = [None]
-        def onConverted(result):
-            if isinstance(result, Exception):
-                logging.error("Conversion failed: %s", result)
-                raise Exceptions.SubscribableWebObjectsException(result.message)
-            ivc[0] = result
+        result = [None]
+        def onConverted(r):
+            result[0] = r
 
         objectRegistry_[0].objectIdToObjectDefinition.update({
             int(k): TypeDescription.deserialize(v)
@@ -136,8 +134,15 @@ class PyforaObjectConverter(ComputedGraph.Location):
             logging.error("Converter raised an exception: %s", traceback.format_exc())
             raise Exceptions.InternalError("Unable to convert objectId %s" % objectId)
 
-        assert ivc[0] is not None
-        objectIdToIvc_[objectId] = ivc[0]
+        assert result[0] is not None
+
+        if isinstance(result[0], PyforaExceptions.PythonToForaConversionError):
+            return {'isException': True, 'message': result[0].message, 'trace': result[0].trace}
+        
+        if isinstance(result[0], Exception):
+            raise Exceptions.SubscribableWebObjectsException(result[0].message)
+        
+        objectIdToIvc_[objectId] = result[0]
         return {'objectId': objectId}
 
     @ComputedGraph.Function

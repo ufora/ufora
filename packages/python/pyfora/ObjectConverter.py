@@ -34,13 +34,19 @@ class ObjectConverter(object):
             for objId in dependencyGraph.iterkeys()
             }
 
+        def onSuccess(message):
+            if 'isException' not in message:
+                callback(objectId)
+            else:
+                callback(Exceptions.PythonToForaConversionError(str(message['message']), message['trace']))
+
         self.remoteConverter.convert(
             {
                 'objectId': objectId,
                 'objectIdToObjectDefinition': objectIdToObjectDefinition
             },
             {
-                'onSuccess': lambda x: callback(objectId),
+                'onSuccess': onSuccess,
                 'onFailure': lambda err: callback(Exceptions.PythonToForaConversionError(err))
             })
 

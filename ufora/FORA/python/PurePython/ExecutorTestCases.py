@@ -2347,3 +2347,15 @@ class ExecutorTestCases(
                 y = y + x
 
         self.equivalentEvaluationTest(f)
+
+    def test_setitem_exception_is_meaningful(self):
+        def f():
+            l = [1,2,3]
+            l[0] = 0
+
+        try:
+            self.evaluateWithExecutor(f)
+            self.assertTrue(False)
+        except Exceptions.PythonToForaConversionError as e:
+            self.assertIsInstance(e.message, str)
+            self.assertTrue(e.trace is not None)
