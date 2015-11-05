@@ -31,7 +31,7 @@ def read_package_version():
 
 version = read_package_version()
 
-install_requires = ['futures', 'socketIO-client>=0.6.5']
+install_requires = ['futures', 'socketIO-client>=0.6.5', 'numpy']
 
 
 setup(
