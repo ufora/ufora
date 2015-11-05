@@ -813,6 +813,16 @@ class Converter(object):
                 allAreIVC = False
 
         if allAreIVC:
+            missingVariableDefinitions = [x for x in foraExpression.freeVariables if x not in renamedVariableMapping]
+
+            if missingVariableDefinitions:
+                raise pyfora.PythonToForaConversionError(
+                    ("An internal error occurred: we didn't provide a " + 
+                        "definition for the following variables: %s" % missingVariableDefinitions + 
+                        ". Most likely, there is a mismatch between our analysis of the "
+                        "python code and the generated FORA code underneath. Please file a bug report."
+                    ))
+
             return ForaNative.evaluateRootLevelCreateObjectExpression(
                 foraExpression,
                 renamedVariableMapping

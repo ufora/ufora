@@ -91,7 +91,7 @@ class PythonToForaConversionError(PyforaError):
 
     def __str__(self):
         if self.trace is None:
-            return self.message
+            return str(self.message)
         else:
             return "%s\n%s" % (self.message, renderTraceback(self.trace))
 
