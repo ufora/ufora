@@ -119,17 +119,20 @@ class WithBlockExecutor(object):
         self.downloadPolicy = DownloadPolicy.DownloadNonePolicy()
 
     def downloadAll(self):
-        """Modify the executor to download all results into the local namespace and return 'self' allowing chaining."""
+        """Modify the executor to download all results into the local namespace
+        and return 'self' allowing chaining."""
         self.downloadPolicy = DownloadPolicy.DownloadAllPolicy()
         return self
 
     def remoteAll(self):
-        """Modify the executor to leave all results on the server and only return proxies (default)."""
+        """Modify the executor to leave all results on the server and only
+        return proxies (default)."""
         self.downloadPolicy = DownloadPolicy.DownloadNonePolicy()
         return self
 
     def downloadSmall(self, bytecount=10*1000):
-        """Modify the executor to download small results into the local namespace and return proxies for everything else."""
+        """Modify the executor to download small results into the local namespace
+        and return proxies for everything else."""
         self.downloadPolicy = DownloadPolicy.DownloadSmallPolicy(bytecount)
         return self
         
