@@ -38,6 +38,23 @@ class NodeVisitorBase(ast.NodeVisitor):
         self.visit(node.value)
         self.visit(node.target)
 
+    def visit_ListComp(self, node):
+        self.visit(node.generators)
+        self.visit(node.elt)
+
+    def visit_SetComp(self, node):
+        self.visit(node.generators)
+        self.visit(node.elt)
+
+    def visit_GeneratorExp(self, node):
+        self.visit(node.generators)
+        self.visit(node.elt)
+
+    def visit_DictComp(self, node):
+        self.visit(node.generators)
+        self.visit(node.key)
+        self.visit(node.value)
+
 
 class InScopeSaveRestoreValue(object):
     """Generic Context Manager for simple GenericInScopeVisitors."""
@@ -156,24 +173,6 @@ class GenericInScopeVisitor(NodeVisitorBase):
     def visit_Attribute(self, node):
         with self._isInDefinitionMgr(False):
             self.visit(node.value)
-
-    def visit_ListComp(self, node):
-        self.visit(node.generators)
-        self.visit(node.elt)
-
-    def visit_SetComp(self, node):
-        self.visit(node.generators)
-        self.visit(node.elt)
-
-    def visit_GeneratorExp(self, node):
-        self.visit(node.generators)
-        self.visit(node.elt)
-
-    def visit_DictComp(self, node):
-        self.visit(node.generators)
-        self.visit(node.key)
-        self.visit(node.value)
-
 
     def visit_Global(self, _):
         raise Exceptions.PythonToForaConversionError(
