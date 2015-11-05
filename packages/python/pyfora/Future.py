@@ -20,6 +20,8 @@ Wraps the result to an asynchronous computation
 
 import concurrent.futures._base as Futures
 
+KEYBOARD_INTERRUPT_WAKEUP_INTERVAL = 0.01
+
 class Future(Futures.Future):
     """
     This pyfora.Future object subclasses the standard Python
@@ -59,3 +61,10 @@ class Future(Futures.Future):
         ''' Should only be called by Executor '''
         self._executorState = state
 
+    def resultWithWakeup(self):
+        """Poll the future, but wake up frequently (to allow for keyboard interrupts)."""
+        while True:
+            try:
+                return self.result(timeout=KEYBOARD_INTERRUPT_WAKEUP_INTERVAL)
+            except Futures.TimeoutError:
+                pass

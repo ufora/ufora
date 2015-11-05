@@ -30,7 +30,6 @@ import sys
 import pyfora.PyforaWithBlock as PyforaWithBlock
 import ast
 
-
 INNER_FUNCTION_NAME = 'inner'
 
 class AugmentRaiseFunctionModificationVisitor(ast.NodeVisitor):
@@ -115,6 +114,7 @@ class WithBlockExecutor(object):
         self.stackFrame = None
         self.sourceFileName = None
         self.traceAndException = None
+        self.exceptionToPropagate = None
         self.frame = None
         self.downloadPolicy = DownloadPolicy.DownloadNonePolicy()
 
@@ -153,6 +153,8 @@ class WithBlockExecutor(object):
         self.frame.f_trace = self.trace
 
     def __exit__(self, excType, excValue, trace):
+        if self.exceptionToPropagate is not None:
+            raise self.exceptionToPropagate
         return True
 
     def blockOperation(self, frame):
@@ -167,21 +169,21 @@ class WithBlockExecutor(object):
             sourceFileName=self.sourceFileName
             )
 
-        f_proxy = self.executor.define(withBlock).result()
+        f_proxy = self.executor.define(withBlock).resultWithWakeup()
 
-        f_result_proxy = f_proxy().result()
+        f_result_proxy = f_proxy().resultWithWakeup()
 
-        tuple_of_proxies = f_result_proxy.toTupleOfProxies().result()
+        tuple_of_proxies = f_result_proxy.toTupleOfProxies().resultWithWakeup()
 
         proxy_trace = tuple_of_proxies[1]
-        trace = proxy_trace.toLocal().result()
+        trace = proxy_trace.toLocal().resultWithWakeup()
 
         if isinstance(trace, tuple):
-            self.traceAndException = (trace, tuple_of_proxies[2].toLocal().result())
+            self.traceAndException = (trace, tuple_of_proxies[2].toLocal().resultWithWakeup())
 
         proxy_dict = tuple_of_proxies[0]
 
-        dict_of_proxies = proxy_dict.toDictOfAssignedVarsToProxyValues().result()
+        dict_of_proxies = proxy_dict.toDictOfAssignedVarsToProxyValues().resultWithWakeup()
 
         return dict_of_proxies
 
@@ -212,6 +214,9 @@ class WithBlockExecutor(object):
         except Exceptions.ForaToPythonConversionError as err:
             frame.f_lineno = frame.f_lineno-1
             raise err
+        except KeyboardInterrupt as e:
+            self.exceptionToPropagate = e
+            raise WithBlockCompleted()
         except:
             logging.error("Exception in With-Block handler: %s", traceback.format_exc())
 
