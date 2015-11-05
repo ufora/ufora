@@ -41,6 +41,10 @@ class _PossiblyUninitializedLocalVariablesInScopeVisitor(NodeVisitorBases.Generi
         (self._possiblyUninitialized, self._definitelyInitialized) = \
             self._setsStash.pop()
 
+    def _peekRestoreSets(self):
+        self._possiblyUninitialized = self._setsStash[len(self._setsStash) - 1][0].copy()
+        self._definitelyInitialized = self._setsStash[len(self._setsStash) - 1][1].copy()
+
     def getPossiblyUninitializedLocalVariablesInScope(self):
         self._cachedCompute()
         return self._possiblyUninitialized
@@ -58,13 +62,13 @@ class _PossiblyUninitializedLocalVariablesInScopeVisitor(NodeVisitorBases.Generi
 
         self.visit(node.body)
         savedAfterIfMustBeInit = self._definitelyInitialized
-        savedAfterIfMayBeInit = self._possiblyUninitialized
+        savedAfterIfMayBeUninit = self._possiblyUninitialized
 
         self._popRestoreSets()
         self.visit(node.orelse)
 
         self._definitelyInitialized.intersection_update(savedAfterIfMustBeInit)
-        self._possiblyUninitialized.update(savedAfterIfMayBeInit)
+        self._possiblyUninitialized.update(savedAfterIfMayBeUninit)
 
     def visit_AugAssign(self, node):
         self.generic_visit(node)  # override base class method
@@ -75,14 +79,34 @@ class _PossiblyUninitializedLocalVariablesInScopeVisitor(NodeVisitorBases.Generi
         self._visitBodyOrelse(node)
 
     def visit_For(self, node):
+        self._pushSaveSets()
         with self._isInDefinitionMgr():
             self.visit(node.target)
         self.visit(node.iter)
-        self._visitBodyOrelse(node)
+        self.visit(node.body)
+        savedAfterForMayBeUninit = self._possiblyUninitialized
+
+        self._peekRestoreSets()
+        self.visit(node.orelse)
+        savedAfterElseMayBeUninit = self._possiblyUninitialized
+
+        self._popRestoreSets()
+        self._possiblyUninitialized.update(savedAfterForMayBeUninit)
+        self._possiblyUninitialized.update(savedAfterElseMayBeUninit)
 
     def visit_While(self, node):
+        self._pushSaveSets()
         self.visit(node.test)
-        self._visitBodyOrelse(node)
+        self.visit(node.body)
+        savedAfterWhileMayBeUninit = self._possiblyUninitialized
+
+        self._peekRestoreSets()
+        self.visit(node.orelse)
+        savedAfterElseMayBeUninit = self._possiblyUninitialized
+
+        self._popRestoreSets()
+        self._possiblyUninitialized.update(savedAfterWhileMayBeUninit)
+        self._possiblyUninitialized.update(savedAfterElseMayBeUninit)
 
     def visit_TryFinally(self, node):
         savedBeforeTryDefinitelyInit = self._definitelyInitialized.copy()
