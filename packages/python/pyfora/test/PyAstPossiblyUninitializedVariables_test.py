@@ -13,12 +13,41 @@
 #   limitations under the License.
 
 import pyfora.PyAstUninstantiatedVariablesAnalysis as PyAstUninstantiatedVariablesAnalysis
+import pyfora.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
 import pyfora.Exceptions as Exceptions
 import ast
 import textwrap
 import unittest
 
 class PyAstPossiblyUninitializedVariables_test(unittest.TestCase):
+    def test_member_acces_after_possible_assignment(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def f():
+                    if 0:
+                       x = 2
+                    x.y
+                """
+                )
+            )
+        expectedResult = set(['x'])
+        self.assertEqual(
+            expectedResult,
+            PyAstUninstantiatedVariablesAnalysis.
+                collectPossiblyUninitializedLocalVariables(tree)
+            )
+
+        self.assertEqual(
+            set(),
+            PyAstFreeVariableAnalyses.getFreeVariables(tree)
+            )
+
+        self.assertEqual(
+            set(),
+            PyAstFreeVariableAnalyses.getFreeVariableMemberAccessChains(tree)
+            )        
+
     def test_possiblyUninitializedVariables_assignToSelf(self):
         tree = ast.parse(
             textwrap.dedent(
