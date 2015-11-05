@@ -1,7 +1,7 @@
 ---
 layout: main
 title: Running python code
-tagline: How to use ufora.remote to execute code
+tagline: How to use ufora.remotely to execute code
 ---
 
 ## Connecting to a cluster
@@ -35,7 +35,7 @@ def isPrime(p):
 Now, we can use the executor to do something interesting with the function.
 
 ```python
-with ufora.remote.downloadAll():
+with ufora.remotely.downloadAll():
     result = sum(isPrime(x) for x in xrange(10 * 1000 * 1000))
 
 print result
@@ -46,18 +46,18 @@ with any dependent objects and code (like `isPrime`) you're referencing in the
 block. This code gets translated into Ufora bitcode, and executed by the Ufora
 VM. The resulting objects are returned over the `ufora` connection, which
 downloads them and copies them back into the local environment because we used
-`ufora.remote.downloadAll()`.
+`ufora.remotely.downloadAll()`.
 
 ## Working with proxies
 
 Now, imagine that we want to get a list of primes. We can then write
 
 ```python
-with ufora.remote.remoteAll():
+with ufora.remotely.remoteAll():
     primes = [x for x in xrange(10 * 1000 * 1000) if isPrime(x)]
 ```
 
-Now, because we used `ufora.remote.remoteAll()`, the variable `primes` is a
+Now, because we used `ufora.remotely.remoteAll()`, the variable `primes` is a
 _proxy_ to a list of primes (actually, it's a `RemotePythonObject`). Remote python
 objects can be used in two ways: they can be downloaded into the local python
 scope, or they can be passed to additional computations.  To download a proxy,
@@ -69,10 +69,10 @@ primes = primes.toLocal().result()
 
 If the list is very large, or our connection to the cluster is slow, however,
 that might be a bad idea.  In this case, we can interact with the proxy object
-again inside of another `with ufora.remote` block:
+again inside of another `with ufora.remotely` block:
 
 ```python
-with ufora.remote.downloadAll():
+with ufora.remotely.downloadAll():
     lastFewPrimes = primes[-100:]
 ```
 
@@ -83,7 +83,7 @@ python objects.
 For convenience, we may also write:
 
 ```python
-with ufora.remote.downloadSmall(bytecount=100*1024):
+with ufora.remotely.downloadSmall(bytecount=100*1024):
     ...
 ```
 

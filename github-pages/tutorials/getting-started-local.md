@@ -95,7 +95,7 @@ This is where Ufora writes all of its log files.
 You are now ready to connect `pyfora` to your running container and run some code.
 Create a new Python file called `tryfora.py` with the following content:
 
-{% highlight python linenos %}
+{% highlight python %}
 import pyfora
 
 ufora = pyfora.connect('http://localhost:30000')
@@ -110,14 +110,16 @@ def isPrime(p):
 
 print "Counting primes..."
 with ufora.remotely.downloadAll():
-    result = sum(isPrime(x) for x in xrange(100 * 1000 * 1000))
+    result = sum(isPrime(x) for x in xrange(10 * 1000 * 1000))
 
 print result
 {% endhighlight %}
 
-**Congratulations!** You just ran your first Ufora computations and counted the number of primes between
-0 and 10 million. The computation inside the `with` block (line 15) was shipped to Ufora, which then compiled it
-to efficient machine code and ran it parallel on all cores available on your machine.
+**Congratulations!** You just ran your first Ufora computations and counted
+the number of primes between 0 and 10 million. The computation inside the
+`with` block (line 15) was shipped to the Ufora worker running in the docker
+container, which then compiled it to efficient machine code and ran it
+parallel on all cores available on your machine.
 
 **Important:** At this point `pyfora` cannot be used interactively in the Python REPL. You MUST place your code in a .py file and run it from there.
 

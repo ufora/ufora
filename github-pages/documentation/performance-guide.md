@@ -66,7 +66,7 @@ the Ufora VM will notice that your program is spending a huge amount of time
 in the `while` loop and produce a fast machine-code version of it in which `x`
 and `result` are held in registers (as 64 bit integer and floats,
 respectively).  We generate machine code using the excellent and widely-used
-[llvm](http://llvm.org/ project. In simple numerical programs, you'll end up
+[llvm](http://llvm.org/) project. In simple numerical programs, you'll end up
 with the same exact code you'd get from a good C++ compiler. Today, these are
 table-stakes for all JIT compilers.
 
