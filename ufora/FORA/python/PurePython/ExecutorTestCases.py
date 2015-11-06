@@ -426,6 +426,46 @@ class ExecutorTestCases(
             return toReturn
         r = self.equivalentEvaluationTest(f)
 
+    eps = 1e-9
+
+    def assertMatricesAreEqual(self, m1, m2):
+        diff = m1 - m2
+        for v in numpy.nditer(diff):
+            self.assertTrue(v < ExecutorTestCases.eps)
+
+    def test_numpy_pinverse_2(self):
+        def f(array):
+            return numpy.linalg.pinv(array)
+
+        arr = numpy.random.rand(20, 10) * 1000
+        t1 = time.time()
+        r1 = self.evaluateWithExecutor(f, arr)
+        t2 = time.time()
+        r2 = f(arr)
+        t3 = time.time()
+        print t3 - t2, t2 - t1
+        self.assertMatricesAreEqual(r1, r2)
+
+    def test_numpy_pinverse_1(self):
+        def f(arr):
+            array = numpy.array(arr)
+            return numpy.linalg.pinv(array)
+
+        arr1 = [ [67.0, 63.0, 87.0],
+                [77.0, 69.0, 59.0], 
+                [85.0, 87.0, 99.0],
+                [15.0, 17.0, 19.0] ]
+
+        r1 = self.evaluateWithExecutor(f, arr1)
+        r2 = f(arr1)
+        self.assertMatricesAreEqual(r1, r2)
+
+        arr2 = [ [1.0, 1.0, 1.0, 1.0],
+            [5.0, 7.0, 7, 9] ]
+        r1 = self.evaluateWithExecutor(f, arr2)
+        r2 = f(arr2)
+        self.assertMatricesAreEqual(r1, r2)
+        
     def test_numpy_transpose(self):
         def f():
             array = numpy.array([ [67.0, 63.0, 87.0],

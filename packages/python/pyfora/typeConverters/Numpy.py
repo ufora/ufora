@@ -206,7 +206,21 @@ class NpDot:
             toReturn = toReturn + arr1[idx] * arr2[idx]
         return toReturn
 
-mappings_ = [(np.zeros, NpZeros), (np.array, NpArray), (np.dot, NpDot)]
+class NpPinv:
+    def __call__(self, matrix):
+        builtins = NpPinv.__pyfora_builtins__
+        result = builtins.pInv(matrix.values, matrix.shape)
+        flat = result[0]
+        shape = tuple(result[1])
+        return PurePythonNumpyArray(
+            "float64",
+            shape,
+            flat
+            )
+
+mappings_ = [(np.zeros, NpZeros), (np.array, NpArray), (np.dot, NpDot), (np.linalg.pinv, NpPinv)]
 
 def generateMappings():
     return [PureImplementationMapping.InstanceMapping(instance, pureType) for (instance, pureType) in mappings_]
+
+
