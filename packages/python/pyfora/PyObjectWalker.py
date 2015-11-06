@@ -169,24 +169,26 @@ class PyObjectWalker(object):
         return tr
 
     def _classInstanceDescriptionFromClassInstance(self, pyObject):
+        classObject = pyObject.__class__
+
         try:
-            classObject = pyObject.__class__
-
             dataMemberNames = PyAstUtil.computeDataMembers(classObject)
-            classMemberNameToMemberValue = {}
-
-            for dataMemberName in dataMemberNames:
-                memberValue = getattr(pyObject, dataMemberName)
-                classMemberNameToMemberValue[dataMemberName] = memberValue
-
-            return PyObjectNodes.ClassInstanceDescription(
-                    pyObject,
-                    classObject,
-                    classMemberNameToMemberValue
-                    )
+        except Exceptions.CantGetSourceTextError:
+            self._raiseConversionErrorForSourceTextError(pyObject)
         except:
             logging.error('Failed on %s (of type %s)', pyObject, type(pyObject))
             raise
+        classMemberNameToMemberValue = {}
+
+        for dataMemberName in dataMemberNames:
+            memberValue = getattr(pyObject, dataMemberName)
+            classMemberNameToMemberValue[dataMemberName] = memberValue
+
+        return PyObjectNodes.ClassInstanceDescription(
+                pyObject,
+                classObject,
+                classMemberNameToMemberValue
+                )
 
     def _pyObjectNodeForClass(self, pyObject):
         return self._pyObjectNodeForClassOrFunction(
@@ -240,15 +242,27 @@ class PyObjectWalker(object):
             classOrFunction=PyObjectNodes.FunctionDefinition
             )
 
+    def _raiseConversionErrorForSourceTextError(self, pyObject):
+        raise Exceptions.PythonToForaConversionError(
+            "can't convert %s (of type %s) since we can't get its source code" % (
+                pyObject, type(pyObject))
+            )
+
     def _pyObjectNodeForClassOrFunction(self, pyObject, classOrFunction):
         try:
             sourceFileText, sourceFileName = PyAstUtil.getSourceFilenameAndText(pyObject)
-        except Exceptions.CantGetSourceTextError as e:
-            raise Exceptions.PythonToForaConversionError(e.message)
+        except Exceptions.CantGetSourceTextError:
+            self._raiseConversionErrorForSourceTextError(pyObject)
+        except:
+            logging.error('Failed on %s (of type %s)', pyObject, type(pyObject))
+            raise
 
+        # TODO fixup: this getsourcelines call here shares a lot of the 
+        # work done by getSourceFilenameAndText called previously.
+        # we could DRY them up a little
         _, sourceLine = PyforaInspect.getsourcelines(pyObject)
 
-        sourceAst = PyAstUtil.getSourceFileAst(pyObject)
+        sourceAst = PyAstUtil.pyAstFromText(sourceFileText)
 
         if classOrFunction is PyObjectNodes.FunctionDefinition:
             pyAst = PyAstUtil.functionDefOrLambdaAtLineNumber(sourceAst, sourceLine)

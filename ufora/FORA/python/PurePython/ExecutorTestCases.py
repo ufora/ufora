@@ -2499,3 +2499,18 @@ class ExecutorTestCases(
             with self.assertRaises(Exceptions.PythonToForaConversionError):
                 with fora.remotely:
                     result = f()
+
+    def test_supported_builtin_member(self):
+        import math
+        def f(x):
+            return x + math.pi
+
+        self.equivalentEvaluationTest(f, 2)
+
+    def test_unsupported_builtin_member(self):
+        import math
+        def f(x):
+            return math.sin(x)
+
+        with self.assertRaises(Exceptions.PythonToForaConversionError):
+            self.equivalentEvaluationTest(f, 2)
