@@ -12,12 +12,14 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import pyfora.PyforaInspect as PyforaInspect
 import pyfora.Exceptions as Exceptions
+import pyfora.NodeVisitorBases as NodeVisitorBases
+import pyfora.PyforaInspect as PyforaInspect
 
 import ast
 import os
 import textwrap
+
 
 LINENO_ATTRIBUTE_NAME = 'lineno'
 
@@ -35,11 +37,8 @@ def getSourceText(pyObject):
         source, lineno = PyforaInspect.getsourcelines(pyObject)
     except TypeError as e:
         raise Exceptions.CantGetSourceTextError(e.message)
-    # Create a prefix of lineno-1 blank lines so we can keep track of line
-    # numbers for error reporting
-    blankLines = ""
-    for _ in xrange(1, lineno):
-        blankLines += os.linesep
+    # Create a prefix of (lineno-1) blank lines to keep track of line numbers for error reporting
+    blankLines = os.linesep * (lineno - 1)
     # We don't know how to avoid the use of `textwrap.dedent to get the code
     # though `ast.parse, which means that the computed column_numbers may be
     # off and we shouldn't report them.
@@ -66,6 +65,9 @@ def getSourceFileText(pyObject):
 @CachedByArgs
 def pyAstFromText(text):
     return ast.parse(text)
+
+def pyAstFor(pyObject):
+    return pyAstFromText(getSourceText(pyObject))
 
 def getSourceFileAst(pyObject):
     filename = PyforaInspect.getsourcefile(pyObject)
@@ -201,9 +203,7 @@ def functionDefOrLambdaAtLineNumber(sourceAst, lineNumber):
 
     return subnodesAtLineNumber[0]
 
-def pyAstFor(pyObject):
-    return pyAstFromText(getSourceText(pyObject))
- 
+
 def computeDataMembers(pyClassObject):
     assert PyforaInspect.isclass(pyClassObject)
 
@@ -291,7 +291,7 @@ def _assertOnlySimpleStatements(initAst):
 
 def _computeInitMethodAstOrNone(pyClassObject):
     pyAst = pyAstFor(pyClassObject)
-    
+
     assert len(pyAst.body) == 1
 
     classDef = pyAst.body[0]
@@ -308,14 +308,8 @@ def _computeInitMethodAstOrNone(pyClassObject):
 
     return tr
 
-def isScopeNode(pyAstNode):
-    if isinstance(pyAstNode, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.Lambda)):
-        return True
-    else:
-        return False
-
 def getRootInContext(pyAstNode, isClassContext):
-    if not isScopeNode(pyAstNode):
+    if not NodeVisitorBases.isScopeNode(pyAstNode):
         raise Exceptions.InternalError(
             "Unsupported type of root node in Analysis (%s)."
             % type(pyAstNode))
@@ -329,3 +323,70 @@ def getRootInContext(pyAstNode, isClassContext):
     return pyAstNode
 
 
+class _OuterScopeCountingVisitor(NodeVisitorBases.GenericInScopeVisitor):
+    """Scan the current scope and count various types of statements and expressions"""
+    def __init__(self, root):
+        super(_OuterScopeCountingVisitor, self).__init__(root)
+        self._returnCount = 0
+        self._yieldCount = 0
+        self._returnLocs = []
+        self._yieldLocs = []
+    def getHasReturn(self):
+        self._cachedCompute()
+        return self._returnCount > 0
+    def getReturnCount(self):
+        self._cachedCompute()
+        return self._returnCount
+    def getReturnLocs(self):
+        self._cachedCompute()
+        return self._returnLocs
+    def getHasYield(self):
+        self._cachedCompute()
+        return self._yieldCount > 0
+    def getYieldCount(self):
+        self._cachedCompute()
+        return self._yieldCount
+    def getYieldLocs(self):
+        self._cachedCompute()
+        return self._yieldLocs
+
+    def visit_Return(self, node):
+        self._returnCount += 1
+        self._returnLocs.append(node.lineno)
+
+    def visit_Yield(self, node):
+        self._yieldCount += 1
+        self._yieldLocs.append(node.lineno)
+
+
+@CachedByArgs
+def _outerScopeContingVisitorFactory(node):
+    return _OuterScopeCountingVisitor(node)
+
+def countReturnsInOuterScope(node):
+    vis = _outerScopeContingVisitorFactory(node)
+    return vis.getReturnCount()
+
+def countYieldsInOuterScope(node):
+    vis = _outerScopeContingVisitorFactory(node)
+    return vis.getYieldCount()
+
+def hasReturnInOuterScope(node):
+    vis = _outerScopeContingVisitorFactory(node)
+    return vis.getHasReturn()
+
+def hasYieldInOuterScope(node):
+    vis = _outerScopeContingVisitorFactory(node)
+    return vis.getHasYield()
+
+def hasReturnOrYieldInOuterScope(node):
+    vis = _outerScopeContingVisitorFactory(node)
+    return vis.getHasReturn() or vis.getHasYield()
+
+def getReturnLocationsInOuterScope(node):
+    vis = _outerScopeContingVisitorFactory(node)
+    return vis.getReturnLocs()
+
+def getYieldLocationsInOuterScope(node):
+    vis = _outerScopeContingVisitorFactory(node)
+    return vis.getYieldLocs()

@@ -168,10 +168,9 @@ class _PossiblyUninitializedScopedVisitor(NodeVisitorBases.NodeVisitorBase):
 
 def collectPossiblyUninitializedLocalVariables(pyAstNode):
     """Returns the possibly free local variables of the code rooted at `pyAstNode."""
-    # Context doesn't play a role below, but we reuse the code for checking `pyAstNode
-    if not PyAstUtil.isScopeNode(pyAstNode):
+    if not NodeVisitorBases.isScopeNode(pyAstNode):
         raise Exceptions.InternalError(
-            "Unsupported type of root node in Analysis (%s)"
+            "Unsupported type of root node in uninitialized local variable analysis: %s"
             % type(pyAstNode))
     possiblyUninitVisitor = _PossiblyUninitializedScopedVisitor()
     possiblyUninitVisitor.visit(pyAstNode)

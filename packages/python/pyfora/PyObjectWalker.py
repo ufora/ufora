@@ -208,6 +208,16 @@ class PyObjectWalker(object):
             decorator_list=[]
             )
 
+        if PyAstUtil.hasReturnInOuterScope(withBlockFun):
+            raise Exceptions.InvalidPyforaOperation(
+                "return statement not supported in pyfora with-block (line %s)" %
+                PyAstUtil.getReturnLocationsInOuterScope(withBlockFun)[0])
+
+        if PyAstUtil.hasYieldInOuterScope(withBlockFun):
+            raise Exceptions.InvalidPyforaOperation(
+                "yield expression not supported in pyfora with-block (line %s)" %
+                PyAstUtil.getYieldLocationsInOuterScope(withBlockFun)[0])
+
         freeVariableMemberAccessChains = \
             self._freeOrUninitializedMemberAccesChains(withBlockFun)
 

@@ -14,8 +14,52 @@
 
 import ast
 import pyfora.Exceptions as Exceptions
-import pyfora.PyAstUtil as PyAstUtil
 
+
+def isScopeNode(pyAstNode):
+    if isinstance(pyAstNode, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.Lambda)):
+        return True
+    else:
+        return False
+
+##########################################################################
+# Context Managers
+class InScopeSaveRestoreValue(object):
+    """Generic Context Manager for simple GenericInScopeVisitors."""
+    def __init__(self, valueGetter, valueSetter):
+        self._valueGetter = valueGetter
+        self._valueSetter = valueSetter
+        self._stash = []
+        self.newValue = None
+
+    def __enter__(self):
+        oldValue = self._valueGetter()
+        self._stash.append(oldValue)
+        self._valueSetter(self.newValue)
+    def __exit__(self, exc_type, exc_value, traceback):  # exit scope
+        savedValue = self._stash.pop()
+        self._valueSetter(savedValue)
+
+
+class ScopedSaveRestoreComputedValue(object):
+    """ Generic Context Manager for GenericScopedVisitors."""
+    def __init__(self, valueGetter, valueSetter, valueComputer):
+        self.valueGetter = valueGetter
+        self.valueSetter = valueSetter
+        self.valueComputer = valueComputer
+        self.root = None
+        self._stash = []
+    def __enter__(self):
+        oldValue = self.valueGetter()
+        self._stash.append(oldValue)
+        newValue = self.valueComputer(self.root, oldValue)
+        self.valueSetter(newValue)
+    def __exit__(self, exc_type, exc_value, traceback):  # exit scope
+        savedValue = self._stash.pop()
+        self.valueSetter(savedValue)
+
+##########################################################################
+# Visitor Base Classes
 class NodeVisitorBase(ast.NodeVisitor):
     """Extends ast.NodeVisitor.generic_visit to also visit lists of ast.Node."""
     def generic_visit(self, node):
@@ -56,40 +100,15 @@ class NodeVisitorBase(ast.NodeVisitor):
         self.visit(node.value)
 
 
-class InScopeSaveRestoreValue(object):
-    """Generic Context Manager for simple GenericInScopeVisitors."""
-    def __init__(self, valueGetter, valueSetter):
-        self._valueGetter = valueGetter
-        self._valueSetter = valueSetter
-        self._stash = []
-        self.newValue = None
-
-    def __enter__(self):
-        oldValue = self._valueGetter()
-        self._stash.append(oldValue)
-        self._valueSetter(self.newValue)
-    def __exit__(self, exc_type, exc_value, traceback):  # exit scope
-        savedValue = self._stash.pop()
-        self._valueSetter(savedValue)
-
-class ScopedSaveRestoreComputedValue(object):
-    """ Generic Context Manager for GenericScopedVisitors."""
-    def __init__(self, valueGetter, valueSetter, valueComputer):
-        self.valueGetter = valueGetter
-        self.valueSetter = valueSetter
-        self.valueComputer = valueComputer
-        self.root = None
-        self._stash = []
-    def __enter__(self):
-        oldValue = self.valueGetter()
-        self._stash.append(oldValue)
-        newValue = self.valueComputer(self.root, oldValue)
-        self.valueSetter(newValue)
-    def __exit__(self, exc_type, exc_value, traceback):  # exit scope
-        savedValue = self._stash.pop()
-        self.valueSetter(savedValue)
-
 class GenericInScopeVisitor(NodeVisitorBase):
+    """Shallow visitor that does not descend into sub-scopes.
+
+    It is initialized with the root of the AST to visit, which must be
+    a scoped node (Module, Class, FunctionDef, or Lambda), and it implements
+    `_cachedCompute` which ensures the visit is performed once.
+    This visitor also keeps track of whether we are visiting the left-hand-side
+    of an assignment, which can be used by visitors extending it.
+    """
     def __init__(self, node):
         self._root = node
         self._isInDefinition = False
@@ -110,7 +129,7 @@ class GenericInScopeVisitor(NodeVisitorBase):
 
     def _cachedCompute(self):
         if not self._isComputed:
-            if PyAstUtil.isScopeNode(self._root):
+            if isScopeNode(self._root):
                 self.generic_visit(self._root)
                 self._isComputed = True
             else:
@@ -241,4 +260,3 @@ class GenericScopedVisitor(NodeVisitorBase):
         # with _SetBoundVars(self, node):
         self.visit(node.body)
         self.visit(node.decorator_list)
-

@@ -114,7 +114,6 @@ class WithBlockExecutor(object):
         self.stackFrame = None
         self.sourceFileName = None
         self.traceAndException = None
-        self.exceptionToPropagate = None
         self.frame = None
         self.downloadPolicy = DownloadPolicy.DownloadNonePolicy()
 
@@ -153,9 +152,9 @@ class WithBlockExecutor(object):
         self.frame.f_trace = self.trace
 
     def __exit__(self, excType, excValue, trace):
-        if self.exceptionToPropagate is not None:
-            raise self.exceptionToPropagate
-        return True
+        # swallow WithBlockCompleted and let all other exceptions through
+        logging.info("excType: %s", excType)
+        return isinstance(excValue, WithBlockCompleted)
 
     def blockOperation(self, frame):
         boundVariables = {}
@@ -206,24 +205,19 @@ class WithBlockExecutor(object):
             for keyname in list(globalsToSet.keys()):
                 policyInstances[keyname] = self.downloadPolicy.initiatePolicyCheck(keyname, globalsToSet[keyname])
 
-            for k, v in globalsToSet.iteritems():
+            for k, _ in globalsToSet.iteritems():
                 f_locals[k] = self.downloadPolicy.resolveToFinalValue(policyInstances[k])
-        except Exceptions.PythonToForaConversionError as err:
-            frame.f_lineno = frame.f_lineno-1
-            raise err
-        except Exceptions.ForaToPythonConversionError as err:
-            frame.f_lineno = frame.f_lineno-1
-            raise err
-        except KeyboardInterrupt as e:
-            self.exceptionToPropagate = e
-            raise WithBlockCompleted()
-        except:
-            logging.error("Exception in With-Block handler: %s", traceback.format_exc())
+        except (Exceptions.PythonToForaConversionError, Exceptions.ForaToPythonConversionError) as err:
+            frame.f_lineno = frame.f_lineno - 1
+            raise err  # re-raise to hide from users the traceback into the internals of pyfora
+        except Exception:
+            frame.f_lineno = frame.f_lineno - 1
+            raise
 
         if self.traceAndException is not None:
             exceptionValue = self.traceAndException[1]
             tb = syntheticTraceback(self.traceAndException[0])
-            
+
             #setting the line number causes the trace to not call __exit__ and instead to
             #resume in the parent stackframe at the with block itself with the raised exception.
             #This causes the trace to contain two frames for the calling 'with' block, which is

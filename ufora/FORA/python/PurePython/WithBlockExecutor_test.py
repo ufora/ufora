@@ -315,6 +315,8 @@ class WithBlockExecutors_test(unittest.TestCase, EquivalentEvaluationTestCases.E
         with self.create_executor() as fora:
             with self.assertRaises(Exceptions.PythonToForaConversionError):
                 with fora.remotely:
+                    x = "this is ok"
+                    y = "this is still ok"
                     print "this shouldn't work"
 
     def test_list_append_throws_reasonable_exception(self):
@@ -322,6 +324,36 @@ class WithBlockExecutors_test(unittest.TestCase, EquivalentEvaluationTestCases.E
             with self.assertRaises(Exceptions.InvalidPyforaOperation):
                 with fora.remotely:
                     [].append(10)
+
+    def test_return_in_with_block_throws(self):
+        with self.create_executor() as fora:
+            with self.assertRaises(Exceptions.InvalidPyforaOperation):
+                with fora.remotely:
+                    x = 3
+                    y = 4
+                    return x + y
+
+    def with_block_generator(self):
+        with self.create_executor() as fora:
+            with fora.remotely:
+                x = 1
+                y = 2
+                yield x + y
+    def test_yield_in_with_block_throws(self):
+        with self.assertRaises(Exceptions.InvalidPyforaOperation):
+            for _ in self.with_block_generator():
+                pass
+
+    def test_return_and_yield_nested_in_with_block_dont_throw(self):
+        with self.create_executor() as fora:
+            with fora.remotely:
+                def zero():
+                    return 0
+                def zeroGen():
+                    yield 0
+                x = zero()
+                y = zeroGen()
+
 
     def test_reassignment_in_separate_with_block(self):
         with self.create_executor() as fora:

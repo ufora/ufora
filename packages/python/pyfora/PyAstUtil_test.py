@@ -12,9 +12,9 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import pyfora.PyAstUtil as PyAstUtil
 import pyfora.Exceptions as Exceptions
-import ast
+import pyfora.PyAstUtil as PyAstUtil
+
 import unittest
 
 
@@ -107,4 +107,76 @@ class PyAstUtilTest(unittest.TestCase):
 
         with self.assertRaises(Exceptions.PythonToForaConversionError):
             PyAstUtil.computeDataMembers(E4)
+
+    def test_hasReturnInOuterScope(self):
+        def f():
+            x = 0
+            return x
+            if x:
+                return x
+            else:
+                return
+            def f():
+                yield 4
+            class D1:
+                def f(self):
+                    return 0
+            for x in xrange(3):
+                while False:
+                    return x
+                else:
+                    return x
+            else:
+                return x
+            x = [f() for _ in xrange(1000) if f() > 0]
+            return None
+
+        ast = PyAstUtil.pyAstFor(f)
+        self.assertEqual(PyAstUtil.countReturnsInOuterScope(ast.body[0]), 7)
+        self.assertEqual(PyAstUtil.countYieldsInOuterScope(ast.body[0]), 0)
+        self.assertTrue(PyAstUtil.hasReturnInOuterScope(ast.body[0]))
+        self.assertFalse(PyAstUtil.hasYieldInOuterScope(ast.body[0]))
+        self.assertTrue(PyAstUtil.hasReturnOrYieldInOuterScope(ast.body[0]))
+        returnLocs = PyAstUtil.getReturnLocationsInOuterScope(ast.body[0])
+        yieldLocs = PyAstUtil.getYieldLocationsInOuterScope(ast.body[0])
+        returnLocs = map(lambda x: x - returnLocs[0] if len(returnLocs) > 0 else 0, returnLocs)
+        yieldLocs = map(lambda x: x - yieldLocs[0] if len(yieldLocs) > 0 else 0, yieldLocs)
+        self.assertEqual(returnLocs, [0, 2, 4, 12, 14, 16, 18])
+        self.assertEqual(yieldLocs, [])
+
+    def test_countYieldsInOuterScope(self):
+        def f():
+            x = 0
+            yield x
+            if x:
+                yield x
+            else:
+                yield
+            def f():
+                return 4
+            class D1:
+                def f(self):
+                    yield 0
+            for x in xrange(3):
+                while False:
+                    yield x
+                else:
+                    yield x
+            else:
+                yield x
+            x = [f() for _ in xrange(1000) if f() > 0]
+            yield None
+
+        ast = PyAstUtil.pyAstFor(f)
+        self.assertEqual(PyAstUtil.countReturnsInOuterScope(ast.body[0]), 0)
+        self.assertEqual(PyAstUtil.countYieldsInOuterScope(ast.body[0]), 7)
+        self.assertFalse(PyAstUtil.hasReturnInOuterScope(ast.body[0]))
+        self.assertTrue(PyAstUtil.hasYieldInOuterScope(ast.body[0]))
+        self.assertTrue(PyAstUtil.hasReturnOrYieldInOuterScope(ast.body[0]))
+        returnLocs = PyAstUtil.getReturnLocationsInOuterScope(ast.body[0])
+        yieldLocs = PyAstUtil.getYieldLocationsInOuterScope(ast.body[0])
+        returnLocs = map(lambda x: x - returnLocs[0] if len(returnLocs) > 0 else 0, returnLocs)
+        yieldLocs = map(lambda x: x - yieldLocs[0] if len(yieldLocs) > 0 else 0, yieldLocs)
+        self.assertEqual(returnLocs, [])
+        self.assertEqual(yieldLocs, [0, 2, 4, 12, 14, 16, 18])
 
