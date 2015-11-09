@@ -116,8 +116,69 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
             for idx1 in xrange(-l,l):
                 for idx2 in xrange(-l,l):
                     for idx3 in xrange(-l,l):
-                        result = result + [trySlice(idx1,idx2,idx3)]
+                        if idx3 != 0:
+                            result = result + [trySlice(idx1, idx2, idx3)]
             return result
 
         self.equivalentEvaluationTest(f)
 
+    def test_list_getitem_exhaustive_1(self):
+        sz = 3
+        def f():
+            x = range(sz)
+            def trySlice(start, stop, step):
+                try:
+                    return ("OK", x[start:stop:step])
+                except:
+                    return "FAIL"
+
+
+            values = range(-sz, sz) + [None]
+
+            res = []
+            for start in values:
+                for stop in values:
+                    for step in values:
+                        if step != 0:
+                            res = res + [trySlice(start, stop, step)]
+
+        self.equivalentEvaluationTest(f)
+
+    def test_list_getitem_exhaustive_2(self):
+        sz = 3
+        def f():
+            x = range(sz)
+            def trySlice(start, stop):
+                try:
+                    return ("OK", x[start:stop])
+                except:
+                    return "FAIL"
+
+            values = range(-sz, sz) + [None]
+
+            res = []
+            for start in values:
+                for stop in values:
+                    res = res + [trySlice(start, stop)]
+
+        self.equivalentEvaluationTest(f)
+
+    def test_tuple_getitem_exhaustive_1(self):
+        sz = 3
+        x = tuple(range(sz))
+
+        def f():
+            def trySlice(start, stop):
+                try:
+                    return ("OK", x[start:stop])
+                except:
+                    return "FAIL"
+
+            values = range(-sz, sz) + [None]
+
+            res = []
+            for start in values:
+                for stop in values:
+                    res = res + [trySlice(start, stop)]
+
+        self.equivalentEvaluationTest(f)

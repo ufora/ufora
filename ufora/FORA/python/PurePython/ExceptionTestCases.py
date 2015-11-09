@@ -230,3 +230,12 @@ class ExceptionTestCases(object):
                 with fora.remotely:
                     f()
 
+    def test_tuple_step(self):
+        t = (1,2,3)
+        def f():
+            return t[::200]
+
+        with self.create_executor() as fora:
+            with self.assertRaises(NotImplementedError):
+                with fora.remotely:
+                    f()

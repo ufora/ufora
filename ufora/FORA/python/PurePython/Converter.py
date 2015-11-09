@@ -88,9 +88,11 @@ class Converter(object):
 
         if purePythonModuleImplVal is None:
             self.pyObjectGeneratorFactoryIVC = ForaNative.makeSymbol("ConvertYieldToIter")
+            self.pyObjectSliceFactoryIVC = ForaNative.makeSymbol("Slice")
             self.pyListTypeObjectIVC = ForaNative.ImplValContainer()
         else:
             self.pyObjectGeneratorFactoryIVC = purePythonModuleImplVal.getObjectMember("CreateGeneratorFromYield")
+            self.pyObjectSliceFactoryIVC = purePythonModuleImplVal.getObjectMember("Slice")
             self.pyListTypeObjectIVC = purePythonModuleImplVal.getObjectMember("ListType")
 
     def extractWrappedForaConstant(self, value):
@@ -651,6 +653,7 @@ class Converter(object):
                 self.nativeDictConverter,
                 self.pyObjectMixinBaseIVC,
                 self.pyObjectGeneratorFactoryIVC,
+                self.pyObjectSliceFactoryIVC,
                 self.pyListTypeObjectIVC,
                 list(assignedVariablesNotBoundByClosure)
                 )
@@ -888,6 +891,7 @@ class Converter(object):
                     self.nativeDictConverter,
                     self.pyObjectMixinBaseIVC,
                     self.pyObjectGeneratorFactoryIVC,
+                    self.pyObjectSliceFactoryIVC,
                     self.pyListTypeObjectIVC
                     )
             else:
@@ -902,6 +906,7 @@ class Converter(object):
                     self.nativeDictConverter,
                     self.pyObjectMixinBaseIVC,
                     self.pyObjectGeneratorFactoryIVC,
+                    self.pyObjectSliceFactoryIVC,
                     self.pyListTypeObjectIVC
                     )
 
@@ -916,6 +921,7 @@ class Converter(object):
                 self.nativeDictConverter,
                 self.pyObjectMixinBaseIVC,
                 self.pyObjectGeneratorFactoryIVC,
+                self.pyObjectSliceFactoryIVC,
                 self.pyListTypeObjectIVC
                 )
 

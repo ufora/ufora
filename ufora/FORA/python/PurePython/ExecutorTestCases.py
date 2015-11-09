@@ -745,7 +745,7 @@ class ExecutorTestCases(
         
         for ix in range(-3, 3):
             self.equivalentEvaluationTest(f, ix)
-            
+
     def test_len(self):
         def f(x):
             return len(x)
@@ -2854,3 +2854,74 @@ class ExecutorTestCases(
         #this should take forever if compilation of tuple assignment
         #is not working correctly
         self.evaluateWithExecutor(func)
+
+    def test_custom_slicing_1(self):
+        class ListWrapper_1:
+            def __init__(self, m):
+                self.m = m
+            def __getitem__(self, maybeSlice):
+                if isinstance(maybeSlice, slice):
+                    return self.m[maybeSlice]
+                return -100000
+
+        def f():
+            l = ListWrapper_1(range(10))
+            return (l[1:4], l[:3], l[:], l[::], l[3:], l[4::2], l[4])
+
+        self.equivalentEvaluationTest(f)
+
+    def test_extended_slices(self):
+        # we're not supporting extended slices just yet
+        def f():
+            x = range(10)
+            return x[1:2, 3:4]
+
+        with self.assertRaises(pyfora.PythonToForaConversionError):
+            self.evaluateWithExecutor(f)
+        
+        
+    def test_ellipsis(self):
+        # we're not supporting Ellipsis yet in slicing
+        def f():
+            x = range(10)
+            return x[...]
+
+        with self.assertRaises(pyfora.PythonToForaConversionError):
+            self.evaluateWithExecutor(f)
+
+    def test_returning_slice_1(self):
+        def f1():
+            return slice
+
+        self.equivalentEvaluationTest(f1)
+
+    def test_returning_slice_2(self):
+        class C:
+            def __getitem__(self, key):
+                return key
+
+        def f2():
+            return C()[1:2:3]
+        
+        with self.assertRaises(pyfora.ForaToPythonConversionError):
+            self.evaluateWithExecutor(f2)
+
+    def test_inserting_slice_1(self):
+        def f():
+            s = slice(1,2,3)
+            x = range(10)
+            return x[s]
+
+        self.equivalentEvaluationTest(f)
+
+    def test_inserting_slice_2(self):
+        s = slice(1,2,3)
+        def f():
+            x = range(10)
+            return x[s]
+
+        with self.assertRaises(pyfora.PythonToForaConversionError):
+            self.equivalentEvaluationTest(f)
+
+
+        

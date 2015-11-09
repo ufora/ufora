@@ -27,9 +27,8 @@
 #include "../../../core/Logging.hpp"
 
 
-#define CALL_MEMBER_FUNCTION(object, ptrToMember)  ((object).*(ptrToMember))
-
 #define PYFORA_CONVERSION_ERROR_MESSAGE "Pyfora can't convert this code. See http://ufora.github.io/ufora/github-pages/documentation/python-restrictions.html."
+
 
 namespace {
 
@@ -356,12 +355,6 @@ PythonAstArguments dropFirstNormalArg(const PythonAstArguments& args)
 
 namespace Fora {
 
-std::map<std::string, PythonAstConverter::member_function_converter> 
-PythonAstConverter::magicMethodDispatchTable {
-        { "__init__", &PythonAstConverter::convertPythonInitDefToForaClassDefinitionTerms},
-        {"__getitem__", &PythonAstConverter::convertPythonGetItemDefToForaClassDefinitionTerms }
-    };
-
 PythonAstConverter::PythonAstConverter(
             PolymorphicSharedPtr<PythonConstantConverter> constantConverter,
             PolymorphicSharedPtr<PythonListConverter> listConverter,
@@ -369,6 +362,7 @@ PythonAstConverter::PythonAstConverter(
             PolymorphicSharedPtr<PythonDictConverter> dictConverter,
             ImplValContainer pyObjectBaseMixin,
             ImplValContainer pyGeneratorFactory,
+            ImplValContainer pySliceFactory,
             ImplValContainer pyListType
             )
         : mConstantConverter(constantConverter),
@@ -377,6 +371,7 @@ PythonAstConverter::PythonAstConverter(
           mPythonDictConverter(dictConverter),
           mPyObjectBaseMixin(pyObjectBaseMixin),
           mPyGeneratorFactory(pyGeneratorFactory),
+          mPySliceFactory(pySliceFactory),
           mPyListType(pyListType)
     {
     ImplValContainer falseValue = mConstantConverter->convertBoolean(false);
@@ -501,32 +496,6 @@ PythonAstConverter::convertPythonInitDefToForaClassDefinitionTerms(
     }
 
 
-// basic properties of functionDef.args() has already been vetted in 
-// convertPythonClassBodyFunctionDefToForaClassDefinitionTerms
-ImmutableTreeVector<ClassDefinitionTerm>
-PythonAstConverter::convertPythonGetItemDefToForaClassDefinitionTerms(
-        const PythonAstStatement_FunctionDefType& functionDef,
-        const std::string& className
-        ) const
-    {
-    std::pair<TuplePattern, Expression> tuplePatternAndFunctionBody = 
-        convertPythonMemberFunctionToPatternAndFunctionBody(
-            functionDef
-            );
-
-    return emptyTreeVec() +
-        ClassDefinitionTerm::ObjectTerm(
-            ObjectDefinitionTerm::GetItem(
-                Function::Term(
-                    tuplePatternAndFunctionBody.first,
-                    tuplePatternAndFunctionBody.second,
-                    Function::Empty()
-                    )
-                )
-            );
-    }
-
-
 std::pair<TuplePattern, Expression>
 PythonAstConverter::convertPythonMemberFunctionToPatternAndFunctionBody(
         const PythonAstStatement_FunctionDefType& functionDef
@@ -577,20 +546,16 @@ PythonAstConverter::convertPythonClassBodyFunctionDefToForaClassDefinitionTerms(
 
     ImmutableTreeVector<PythonAstExpr> decoratorList = functionDef.decorator_list();
 
-    if (magicMethodDispatchTable.find(functionName) != magicMethodDispatchTable.end())
+    if (functionName == "__init__")
         {
         // should assert that there are no decorators
         if (decoratorList.size() > 0)
             throw PythonToForaConversionError(
-                "don't know how to convert magic methods with decorators right now",
+                "don't know how to convert `__init__` methods with decorators right now",
                 extent
                 );
         
-        return CALL_MEMBER_FUNCTION(
-            *this,
-            magicMethodDispatchTable[functionName])(
-                functionDef, className
-                );
+        return convertPythonInitDefToForaClassDefinitionTerms(functionDef, className);
         }
 
     ImmutableTreeVector<PythonAstStatement> body = functionDef.body();
@@ -665,6 +630,73 @@ Expression PythonAstConverter::convertPythonAstLambdaToFora(
             ),
         extent
         );
+    }
+
+Expression PythonAstConverter::convertNullableExpressionToExpression(
+        const Nullable<PythonAstExpr>& expr
+        ) const
+    {
+    if (expr.isNull())
+        return Expression::Constant(mConstantConverter->noneValue());
+
+    return convertPythonAstExpressionToFora(*expr);
+    }
+
+ImmutableTreeVector<ApplyArgument> PythonAstConverter::convertPythonAstSliceToApplyArguments(
+        const PythonAstSlice& slice,
+        const SimpleParseRange& extent
+        ) const
+    {
+    @match PythonAstSlice(slice)
+        -| Ellipsis() ->> {
+            // not dealing with this just yet. we'll get to it
+            std::ostringstream oss;
+            oss << PYFORA_CONVERSION_ERROR_MESSAGE;
+            throw PythonToForaConversionError(
+                oss.str(),
+                extent
+                );
+            }
+        -| Slice(start, stop, step) ->> {
+            Expression sliceAsExpr = 
+                Expression::Apply(
+                    Expression::Constant(
+                        CSTValue(mPySliceFactory)
+                        ),
+                    emptyTreeVec() + 
+                        ApplyArgument::Normal(
+                            Expression::Constant(
+                                CSTValue(Symbol("Call"))
+                                )
+                            ) +
+                        ApplyArgument::Normal(
+                            convertNullableExpressionToExpression(start)
+                            ) +
+                        ApplyArgument::Normal(
+                            convertNullableExpressionToExpression(stop)
+                            ) +
+                        ApplyArgument::Normal(
+                            convertNullableExpressionToExpression(step)
+                            )
+                    );
+
+            return emptyTreeVec() + ApplyArgument::Normal(sliceAsExpr);
+            }
+        -| ExtSlice(slices) ->> {
+            // not dealing with this just yet. we'll get to it
+            std::ostringstream oss;
+            oss << PYFORA_CONVERSION_ERROR_MESSAGE;
+            throw PythonToForaConversionError(
+                oss.str(),
+                extent
+                );
+            }
+        -| Index(value) ->> {
+            return emptyTreeVec() + ApplyArgument::Normal(
+                convertPythonAstExpressionToFora(value)
+                );
+            }
+        ;
     }
 
 Expression PythonAstConverter::wrapExpressionInPyContinueCheck(Expression e) const
@@ -768,24 +800,20 @@ Expression PythonAstConverter::convertPythonAstExpressionToFora_inner(const Pyth
 
             return agent.member(Symbol(attribute));
             }
-        -| Subscript(value, Index(indexExpr), ctx) ->> {
-            Expression agent = convertPythonAstExpressionToFora(value);
-            Expression slice = convertPythonAstExpressionToFora(indexExpr);
+        -| Subscript(value, slice, ctx) ->> {
+            Expression valueGetItemMemberFunction = 
+                Expression::Member(
+                    convertPythonAstExpressionToFora(value),
+                    Symbol("__getitem__"),
+                    1
+                    );
 
-            return agent[slice];
-            }
-        -| Subscript(value, Slice(lower, upper, step), ctx) ->> {
-            Expression agentE = convertPythonAstExpressionToFora(value);
-            Expression lowerE = (lower ? convertPythonAstExpressionToFora(*lower) : Expression::Constant(CSTValue()));
-            Expression upperE = (upper ? convertPythonAstExpressionToFora(*upper) : Expression::Constant(CSTValue()));
-            Expression stepE = (step ? convertPythonAstExpressionToFora(*step) : Expression::Constant(CSTValue()));
+            ImmutableTreeVector<ApplyArgument> sliceArgs = 
+                convertPythonAstSliceToApplyArguments(slice, expr.extent());
 
-            return Expression::GetItem(
-                agentE, 
-                emptyTreeVec() + 
-                    ApplyArgument::Normal(lowerE) +
-                    ApplyArgument::Normal(upperE) +
-                    ApplyArgument::Normal(stepE)
+            return Expression::Call(
+                valueGetItemMemberFunction,
+                sliceArgs
                 );
             }
         -| GeneratorExp(expr, generators) ->> {

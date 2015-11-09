@@ -15,7 +15,6 @@
 """Pure Python Implementations of Python builtins (in alphabetical order)."""
 
 import pyfora.PureImplementationMapping as PureImplementationMapping
-import pyfora.PureImplementationMappings as PureImplementationMappings
 
 # List of Python 2.7 builtins:
 # 'abs', 'all', 'any', 'apply', 'basestring', 'bin', 'bool', 'buffer', 'bytearray',
