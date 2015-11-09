@@ -196,7 +196,7 @@ class NpArray:
             )
 
 class NpDot:
-    def __call__(self, arr1, arr2):
+    def _productOfTwoArrays(self, arr1, arr2):
         l1 = len(arr1)
         l2 = len(arr2)
         if l1 != l2:
@@ -205,6 +205,29 @@ class NpDot:
         for idx in range(l1):
             toReturn = toReturn + arr1[idx] * arr2[idx]
         return toReturn
+
+    def __call__(self, arr1, arr2):
+        if isinstance(arr1, PurePythonNumpyArray):
+            if len(arr1.shape) != len(arr2.shape):
+                raise ValueError("Matrix dimensions do not match")
+            if len(arr1.shape) == 1:
+                return self._productOfTwoArrays(arr1, arr2)
+            elif len(arr1.shape) == 2:
+                builtins = NpDot.__pyfora_builtins__
+                result = builtins.matrixMult(arr1.values, arr1.shape, arr2.values, arr2.shape)
+                flat = result[0]
+                shape = tuple(result[1])
+                return PurePythonNumpyArray(
+                    "float64",
+                    shape,
+                    flat
+                    )
+            else:
+                raise Exception("Dot product is not implemented for > 2 dimensions")
+
+        else:
+            # We can also call the dot product on two regular lists
+            return self._productOfTwoArrays(arr1, arr2)
 
 class NpPinv:
     def __call__(self, matrix):
