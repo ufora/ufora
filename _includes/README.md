@@ -3,15 +3,15 @@
 Ufora is a compiled, automatically parallel subset of python for data science
 and numerical computing.
 
-Any code you run with Ufora will work unmodified in python. But with Ufora, 
-it can run hundreds or thousands of times faster, and can operate 
+Any code you run with Ufora will work unmodified in python. But with Ufora,
+it can run hundreds or thousands of times faster, and can operate
 on datasets many times larger than the RAM of a single machine.
 
 # How do I get started?
 
-Client installation is through [pip](https://pip.readthedocs.org/en/stable/). 
-Workers can be booted in the [cloud](https://ufora.github.io/ufora/github-pages/tutorials/getting-started-aws.html), 
-or [locally](https://ufora.github.io/ufora/github-pages/tutorials/getting-started-local.html) using docker.
+Client installation is through [pip](https://pip.readthedocs.org/en/stable/).
+Workers can be booted in the [cloud](https://ufora.github.io/ufora/content/tutorials/02-getting-started-aws.html),
+or [locally](https://ufora.github.io/ufora/content/tutorials/01-getting-started-local.html) using docker.
 
 ```bash
 #install the pyfora front-end and boto.
@@ -22,7 +22,7 @@ export AWS_ACCESS_KEY_ID=<your aws access key id>
 export AWS_SECRET_ACCESS_KEY=<your aws secret key>
 
 #boot some workers in aws. This can take a couple of minutes.
-pyfora_aws start --ec2-region us-west-2 --num-instances 4 
+pyfora_aws start --ec2-region us-west-2 --num-instances 4
 ```
 
 Now we're ready to run some code:
@@ -34,7 +34,7 @@ import pyfora
 ufora = pyfora.connect('http://<ip_address>:30000')
 
 def isPrime(p):
-	if p < 2: return 0
+    if p < 2: return 0
     x = 2
     while x*x <= p:
         if p%x == 0: return 0
@@ -56,7 +56,7 @@ faster.
 
 The current release, `0.1`, is an early release of the Ufora python functionality.
 The core Ufora VM has been under development for years, but the python front-end
-is new. 
+is new.
 
 As of the `0.1` release, most core python language features and primitives are
 implemented, as are a few builtins (`sum`, `xrange`, `range`, etc.).
@@ -65,7 +65,7 @@ In the upcoming `0.2` release, we're planning on filling out some more of the
 python builtins, implementing the basic functionality present in `numpy` and
 `pandas`, and enabling a pathway to load data from amazon S3.
 
-After that, we're considering some of the following: 
+After that, we're considering some of the following:
 
 * Python 3 support
 * Coverage for some core `scikit` data science algorithms (gbm, regressions, etc.)
@@ -73,22 +73,22 @@ After that, we're considering some of the following:
 * More generic model for import/export of data from the cluster.
 * Enabling better feedback in the pyfora api for tracking progress of computations.
 
-Please [let us know](https://groups.google.com/forum/#!topic/ufora-user/FyT9oUhEa0w) 
+Please [let us know](https://groups.google.com/forum/#!topic/ufora-user/FyT9oUhEa0w)
 what you'd like to see next, or if you'd like to get involved.
 
 # Read more
 
-* A [more detailed tutorial on running python code](https://ufora.github.io/ufora/github-pages/tutorials/basic-execution.html)
-* Run Ufora on your [local machine](https://ufora.github.io/ufora/github-pages/tutorials/getting-started-local.html)
-* Configuring Ufora to run in [AWS](https://ufora.github.io/ufora/github-pages/tutorials/getting-started-aws.html)
-* The [restrictions](https://ufora.github.io/ufora/github-pages/documentation/python-restrictions.html) we place on python so that this can all work.
+* A [more detailed tutorial on running python code](https://ufora.github.io/ufora/content/tutorials/03-running-python-code.html)
+* Run Ufora on your [local machine](https://ufora.github.io/ufora/content/tutorials/01-getting-started-local.html)
+* Configuring Ufora to run in [AWS](https://ufora.github.io/ufora/content/tutorials/02-getting-started-aws.html)
+* The [restrictions](https://ufora.github.io/ufora/content/documentation/01-python-restrictions.html) we place on python so that this can all work.
 
 # Contact us.
 
 Users of the Ufora platform should visit [ufora-users](https://groups.google.com/forum/#!forum/ufora-user). Developers
 should visit [ufora-dev](https://groups.google.com/forum/#!forum/ufora-dev).
 
-The development of Ufora is ongoing, and led by [Ufora Inc.](http://www.ufora.com/). [Drop us
-a line](mailto:info@ufora.com) if you'd like to get involved or need enterprise support.
+The development of Ufora is ongoing, and led by [Ufora Inc.](http://www.ufora.com/).
+Don't hesitate to [Drop us a line](mailto:info@ufora.com) if you'd like to get involved or need enterprise support.
 
 
