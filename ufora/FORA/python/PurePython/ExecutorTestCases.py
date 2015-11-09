@@ -2232,8 +2232,7 @@ class ExecutorTestCases(
                     (self.x, self.y) = (x, x + 1)
             return A(2).x
 
-        with self.assertRaises(pyfora.Exceptions.PythonToForaConversionError):
-            self.equivalentEvaluationTest(f)
+        self.equivalentEvaluationTest(f)
 
     def test_initMethods_7(self):
         def f(arg):
@@ -2524,3 +2523,82 @@ class ExecutorTestCases(
             return x.__class__ is IsinstanceClassTest and isinstance(x, IsinstanceClassTest)
 
         self.equivalentEvaluationTest(f)
+
+    def test_tuple_assignment(self):
+        def f():
+            x,y = 1,2
+            return (x,y)
+
+        self.equivalentEvaluationTestThatHandlesExceptions(f)
+
+    def test_tuple_assignment_larger(self):
+        def f():
+            x,y = 1,2,3
+            return (x,y)
+
+        self.equivalentEvaluationTestThatHandlesExceptions(f)
+
+    def test_tuple_assignment_smaller(self):
+        def f():
+            x,y,z = 1,2
+            return (x,y)
+
+        self.equivalentEvaluationTestThatHandlesExceptions(f)
+
+    def test_tuple_assignment_from_yield(self):
+        def f():
+            def it():
+                yield 1
+                yield 2
+            x,y = it()
+            return (x,y)
+
+        self.equivalentEvaluationTestThatHandlesExceptions(f)
+
+    def test_tuple_assignment_from_yield_larger(self):
+        def f():
+            def it():
+                yield 1
+                yield 2
+                yield 3
+            x,y = it()
+            return (x,y)
+
+        self.equivalentEvaluationTestThatHandlesExceptions(f)
+
+    def test_tuple_assignment_from_yield_smaller(self):
+        def f():
+            def it():
+                yield 1
+            x,y = it()
+            return (x,y)
+
+        self.equivalentEvaluationTestThatHandlesExceptions(f)
+
+    def test_tuple_assignment_nested(self):
+        def f():
+            x,(y,z) = (1,(2,3))
+            return (x,y)
+
+        self.equivalentEvaluationTestThatHandlesExceptions(f)
+
+    def test_tuple_assignment_nested_2(self):
+        def f():
+            x,(y,z) = (1,[2,3])
+            return (x,y)
+
+        self.equivalentEvaluationTestThatHandlesExceptions(f)
+
+    def test_tuple_unpack_in_loop(self):
+        def func():
+            f = lambda x: x+1
+            g = lambda x: x+2
+            res = 0
+            for ct in xrange(1000000000):
+                res = res + f(ct)
+                f,g = g,f
+            return res
+
+        #this should take forever if compilation of tuple assignment
+        #is not working correctly
+        self.evaluateWithExecutor(func)
