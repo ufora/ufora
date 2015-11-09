@@ -2514,3 +2514,13 @@ class ExecutorTestCases(
 
         with self.assertRaises(Exceptions.PythonToForaConversionError):
             self.equivalentEvaluationTest(f, 2)
+
+    def test_isinstance_class(self):
+        class IsinstanceClassTest:
+            pass
+
+        def f():
+            x = IsinstanceClassTest()
+            return x.__class__ is IsinstanceClassTest and isinstance(x, IsinstanceClassTest)
+
+        self.equivalentEvaluationTest(f)
