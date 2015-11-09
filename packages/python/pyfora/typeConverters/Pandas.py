@@ -128,7 +128,10 @@ class PurePythonSeries:
         return len(self.values)
 
     def __getitem__(self, ix):
-        return PurePythonSeries(self.values[ix])
+        if isinstance(ix, slice):
+            return PurePythonSeries(self.values[ix])
+        else:
+            return self.values[ix]
 
     @property
     def iloc(self):

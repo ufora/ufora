@@ -15,9 +15,15 @@
 import ufora.FORA.python.PurePython.ExecutorTestCases as ExecutorTestCases
 
 import pyfora.pandas_util
+import pyfora.algorithms.LinearRegression as LinearRegression
+import pyfora.typeConverters.Pandas as PurePandas
 
+import logging
+import numpy
 import pandas
 import pandas.util.testing
+import random
+import time
 
 
 class InMemoryPandasTestCases(ExecutorTestCases.ExecutorTestCases):
@@ -165,9 +171,10 @@ A,B,C
             """
         with self.create_executor() as executor:
             s3 = self.getS3Interface(executor)
-            s3().setKeyValue("bucketname", "key", s)
+            key = "test_pandas_read_csv_from_s3_key"
+            s3().setKeyValue("bucketname", key, s)
 
-            remoteCsv = executor.importS3Dataset("bucketname", "key").result()
+            remoteCsv = executor.importS3Dataset("bucketname", key).result()
 
             with executor.remotely.downloadAll():
                 df = pyfora.pandas_util.readCsvFromString(remoteCsv)
@@ -184,3 +191,67 @@ A,B,C
                     )
                 )
 
+    def pyfora_linear_regression_test(self):
+        random.seed(42)
+
+        t0 = time.time()
+        nRows = 100
+        x_col_1 = []
+        x_col_2 = []
+        y_col = []
+        for _ in range(nRows):
+            x1 = random.uniform(-10, 10)
+            x2 = random.uniform(-10, 10)
+
+            noise = random.uniform(-1, 1)
+            y = x1 * 5 + x2 * 2 - 8 + noise
+
+            x_col_1.append(x1)
+            x_col_2.append(x2)
+            y_col.append(y)
+
+        def computeCoefficients():
+            predictors = PurePandas.PurePythonDataFrame([x_col_1, x_col_2], ["x1", "x2"])
+            responses = PurePandas.PurePythonDataFrame([y_col], ["y"])
+
+            return LinearRegression.linearRegression(predictors, responses)
+        
+        res_python = computeCoefficients()
+
+        res_pyfora = self.evaluateWithExecutor(computeCoefficients)
+
+        self.assertArraysAreAlmostEqual(res_python, res_pyfora)
+
+        df_x = pandas.DataFrame({
+            'x1': x_col_1,
+            'x2': x_col_2
+            })
+        df_y = pandas.DataFrame({
+            'y': y_col
+            })
+
+        t0 = time.time()        
+        res_pandas = LinearRegression.linearRegression(df_x, df_y)
+
+        self.assertArraysAreAlmostEqual(res_python, res_pandas)
+
+        # verified using sklearn.linear_model.LinearRegression, on nRows = 10
+        res_scikit = numpy.array([[4.96925412,  2.00279298, -7.98208391]])
+
+        self.assertArraysAreAlmostEqual(res_python, res_scikit, eps=1e-8)
+
+    def test_pyfora_linear_regression_1(self):
+        self.pyfora_linear_regression_test()
+
+    def test_pyfora_linear_regression_with_splitting(self):
+        # note: the right way to do this is to expose _splitLimit
+        # as an argument to LinearRegression.linearRegression, but a 
+        # lack of named arguments in pyfora means that the code 
+        # would be slightly more verbose than it should need be.
+
+        oldSplitLimit = LinearRegression._splitLimit
+        try:
+            LinearRegression._splitLimit = 10
+            self.pyfora_linear_regression_test()
+        finally:
+            LinearRegression._splitLimit = oldSplitLimit

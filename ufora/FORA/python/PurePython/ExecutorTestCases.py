@@ -20,6 +20,7 @@ import logging
 import traceback
 import time
 import ufora.FORA.python.PurePython.ExceptionTestCases as ExceptionTestCases
+
 import random as random
 
 class ExecutorTestCases(
@@ -427,10 +428,13 @@ class ExecutorTestCases(
 
     eps = 1e-9
 
-    def assertArraysAreAlmostEqual(self, m1, m2):
+    def assertArraysAreAlmostEqual(self, m1, m2, eps=None):
+        if eps is None:
+            eps = ExecutorTestCases.eps
+
         diff = m1 - m2
         for v in numpy.nditer(diff):
-            self.assertTrue(v < ExecutorTestCases.eps)
+            self.assertTrue(v < eps)
 
     def test_numpy_pinverse_2(self):
         def f(array):
