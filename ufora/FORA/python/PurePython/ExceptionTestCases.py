@@ -159,9 +159,17 @@ class ExceptionTestCases(object):
             with self.assertRaises(pyfora.ComputationError):
                 e = fora.submit(f).result().toLocal().result()
 
-    def test_invalid_call(self):
+    def test_invalid_call_1(self):
         def f():
             10(10)
+
+        with self.create_executor() as fora:
+            e = fora.submit(f).result().toLocal().exception()
+            self.assertIsInstance(e.exceptionValue, TypeError)
+
+    def test_invalid_call_2(self):
+        def f():
+            return [1,2].__getitem__(3,4)
 
         with self.create_executor() as fora:
             e = fora.submit(f).result().toLocal().exception()
