@@ -175,6 +175,14 @@ class ExceptionTestCases(object):
             e = fora.submit(f).result().toLocal().exception()
             self.assertIsInstance(e.exceptionValue, TypeError)
 
+    def test_invalid_call_3(self):
+        def f():
+            return [1,2][1,2]
+
+        with self.create_executor() as fora:
+            e = fora.submit(f).result().toLocal().exception()
+            self.assertIsInstance(e.exceptionValue, TypeError)
+
     def test_list_append_exception_is_InvalidPyforaOperation(self):
         def f():
             [].append(10)
