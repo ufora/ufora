@@ -1,7 +1,7 @@
 ---
 layout: main
 title: Getting Started Locally
-tagline: How to run Ufora on one machine using Docker
+tagline: How to Run Ufora on One Machine Using Docker
 category: tutorial
 ---
 
@@ -9,7 +9,7 @@ category: tutorial
 You can easily run the Ufora backend locally on your machine using [docker](http://www.docker.com/).
 Then you can connect pyfora to your local backend and start using it to speed up your python code.
 
-# What you need to get started
+# What You Need to Get Started
 ## OS
 You'll need an OS that can run docker. Currently this means:
 
@@ -33,13 +33,13 @@ This is what OS X and most Linux distributions include by default as their "nati
 $ [sudo] pip install pyfora [--upgrade]
 ```
 
-# Install docker
+# Install Docker
 Docker is available for Linux, OS X, or Windows. To install docker on your machine, visit [http://www.docker.com/](http://www.docker.com/), click the *Get Started* link, and follow the instructions.
 
 You can also, optionally, follow [these instructions](http://askubuntu.com/a/477554) to be able to run docker commands without `sudo`. Note, however, that the docker daemon still runs as `root` - it just saves you five keystrokes when running docker commands.
 
 
-# Pull the Ufora service image
+# Pull the Ufora Service Image
 Once docker is installed, you can pull the Ufora service image. You will need to use an image compatible with your version of pyfora.
 To find the version of pyfora you have installed you can run the following command from your terminal:
 
@@ -64,7 +64,7 @@ $ [sudo] docker pull ufora/service:`python -c "import pyfora; print pyfora.__ver
 ```
 
 
-# Start the Ufora container
+# Start the Ufora Container
 
 The command below starts an all-in-one docker container that runs all the Ufora backend services needed to support pyfora. To run a Ufora cluster on multiple machines in a local network, follow the instructions [here](getting-started-cluster.html).
 
@@ -92,7 +92,7 @@ This is where Ufora writes all of its log files.
 - `ufora/service:0.1` is the name (and version tag) of the Ufora service image to run.
 
 
-# Run some code
+# Run Some Code
 
 You are now ready to connect `pyfora` to your running container and run some code.
 Create a new Python file called `tryfora.py` with the following content:
@@ -126,7 +126,7 @@ parallel on all cores available on your machine.
 **Important:** At this point `pyfora` cannot be used interactively in the Python REPL. You MUST place your code in a .py file and run it from there.
 
 
-# Stop the Ufora container
+# Stop the Ufora Container
 
 When you are done and want to stop the Ufora service container, run:
 

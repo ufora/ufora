@@ -1,12 +1,12 @@
 ---
 layout: main
-title: Running python code
-tagline: How to use ufora.remotely to execute code
+title: Running Python Code
+tagline: How to Use pyfora to Execute Code Remotely
 category: tutorial
 ---
 
 
-# Connecting to a cluster
+# Connecting to a Cluster
 
 Once you've booted a ufora cluster (remotely or locally), you can connect to it
 and start executing code:
@@ -32,7 +32,7 @@ def isPrime(p):
     return 1
 ```
 
-# Calculating on the cluster
+# Calculating on the Cluster
 
 Now, we can use the executor to do something interesting with the function.
 
@@ -50,7 +50,7 @@ VM. The resulting objects are returned over the `ufora` connection, which
 downloads them and copies them back into the local environment because we used
 `ufora.remotely.downloadAll()`.
 
-# Working with proxies
+# Working With Proxies
 
 Now, imagine that we want to get a list of primes. We can then write
 

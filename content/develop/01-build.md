@@ -1,7 +1,7 @@
 ---
 layout: main
 title: Build
-tagline: How to build the Ufora repository
+tagline: How to Build the Ufora Repository
 category: develop
 ---
 
@@ -119,7 +119,7 @@ $ ls ~/volumes
 test.file test2.file
 ```
 
-# Clone the Ufora repo
+# Clone the Ufora Repo
 
 You will want to have a clone of the repo inside your volumes directory.
 The easiest way is to simply create a new clone:
@@ -161,7 +161,7 @@ Let's take a look at the arguments:
 You are now in a bash session inside your newly launched container and are ready to build.
 
 
-# Building the project
+# Building the Project
 
 To build the project run (replacing `/volumes/src` with the mount point of your repo):
 

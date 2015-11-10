@@ -1,7 +1,7 @@
 ---
 layout: main
 title: Getting Started on AWS
-tagline: How to boot Ufora instances on Amazon EC2
+tagline: How to Boot Ufora Instances on Amazon EC2
 category: tutorial
 ---
 
@@ -13,7 +13,7 @@ The `pyfora` package includes an auxiliary script called `pyfora_aws` that helps
 on AWS.
 
 
-# What you need to get started
+# What You Need to Get Started
 ## AWS Account
 You'll need an [AWS](https://aws.amazon.com/) account with an access key that has permission to launch EC2 instances. If don't yet have an access key, follow [these instructions](https://aws.amazon.com/developers/access-keys/) to create one.
 
@@ -47,7 +47,7 @@ $ export AWS_ACCESS_KEY_ID=<your aws access key id>
 $ export AWS_SECRET_ACCESS_KEY=<your aws secret key>
 ```
 
-## Start Ufora instance
+## Start Ufora Instance
 
 You are now ready to start some instances using `pyfora_aws`. In the same terminal window run:
 
@@ -67,7 +67,8 @@ The first two segments in the last line of output are the EC2 instance-id and th
 For a full description of `pyfora_aws` and its various options see [this page](../documentation/pyfora-aws.html).
 
 
-# Run some code
+# Run Some Code
+
 You are now ready to connect `pyfora` to your running instance and run some code.
 
 Create a new Python file called `tryfora.py` with the following content, replacing `<ip_address>`

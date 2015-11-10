@@ -1,12 +1,12 @@
 ---
 layout: main
-title: The pyfora package
+title: The pyfora Package
 tagline: Reference Manual
 ---
 
 The `pyfora` Python package is the library used to execute Python code on a Ufora cluster.
 
-# Installation
+# pyfora
 
 The `pyfora` package can be installed by running:
 

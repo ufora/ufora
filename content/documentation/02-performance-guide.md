@@ -1,12 +1,11 @@
 ---
 layout: main
 title: Performance
-tagline: What Ufora can optimize and what it can't
+tagline: What Ufora Can Optimize and What it Can't
 category: documentation
 ---
 
-
-# Compilation and parallelism
+# Compilation and Parallelism
 
 The Ufora VM performs two kinds of optimization: JIT compilation,
 which ensures that single-threaded code is fast, and automatic
@@ -46,9 +45,9 @@ For achieving maximum parallelism, know these principles:
 * Passing generator expressions into 'sum' or other parallelizable algorithms parallelizes.
 * Large lists have a strong performance preference for "cache local" access.
 
-# The Ufora JIT compiler
+# The Ufora JIT Compiler
 
-## The basic behavior of the JIT
+## The Basic Behavior of the JIT
 
 The Ufora JIT compiler optimizes the code your program spends the most time in.
 So, for instance, if you write
@@ -71,7 +70,7 @@ respectively).  We generate machine code using the excellent and widely-used
 with the same code you'd get from a good C++ compiler. Today, these are
 table-stakes for all JIT compilers.
 
-## Use higher-order functions, classes, and other language constructs
+## Use Higher-Order Functions, Classes, and other Language Constructs
 
 Unlike most JIT compilers applied to dynamically typed languages, Ufora is
 designed to work well with higher-order functions and classes. In general,
@@ -135,7 +134,7 @@ and because Ufora doesn't allow class methods to be
 modified, Ufora can reason about the code well enough
 to produce fast code.
 
-## Keep the total number of type combinations small
+## Keep the Total Number of Type Combinations Small
 
 The Ufora compiler operates by tracking all the distinct combinations of types
 it sees for all the variables in a given stackframe, and generating code for
@@ -162,7 +161,7 @@ isn't a problem, but if you keep adding variables, the total number of types
 grows exponentially - eventually, you'll wind up waiting forever for the
 compiler to finish generating code.
 
-## Tuples as structure
+## Tuples as Structure
 
 Speaking of 'types', Ufora considers function instances, class instances, and
 tuples to be "structural". This means that the compiler will agressively track
@@ -204,8 +203,8 @@ aTuple = (0.0, 1, "a string", lambda x:x)
 functionCount = floatCount = 0
 
 for ix in range(100):
-    #pull an element out of the tuple - the compiler can't tell what
-    #kind of element it is ahead of time
+    # pull an element out of the tuple - the compiler can't tell what
+    # kind of element it is ahead of time
     val = aTuple[ix % len(aTuple)]
 
     if isinstance(val, type(lambda: None)):
@@ -267,7 +266,7 @@ concatenating a large string to a small string.
 
 # Parallelism
 
-## The core model of parallelism in Ufora
+## The Core Model of Parallelism in Ufora
 
 Ufora exploits "dataflow" parallelism at the stack-frame level. Ufora operates
 by executing your code on a single thread and then periodically interrupting it
@@ -363,7 +362,7 @@ optimized for maximum performance sometimes has conditions to switch it out of a
 recursive "parallelizable" form and into a loop. This is a tradeoff between
 single-threaded performance and parallelism granularity.
 
-## List comprehensions and sum are parallel out of the box
+## List Comprehensions and Sum are Parallel out of the Box
 
 By default, list comprehensions like `[isPrime(x) for x in xrange(10000000)]` are
 parallel if the generator in the righthand side supports the `__pyfora_generator__`
@@ -390,7 +389,7 @@ floating point addition is not perfectly associative[^6]. As this
 is a deviation from standard python, we plan to make it an optional feature in the
 future.
 
-## Loops are sequential
+## Loops are Sequential
 
 Note that Ufora doesn't try to parallelize across loops. The `isPrime` example above
 runs sequentially. In the future, we plan to implement loop unrolling so that if you
@@ -407,7 +406,7 @@ in parallel and then execute the naturally sequential calls to `f` as they compl
 For the moment, however, assume that `while` and `for` loops are sequential (although
 functions inside them are all candidates for parallelism).
 
-## Lists prefer cache-local access
+## Lists Prefer Cache-Local Access
 
 Lists are the basic building-block for "big data" in Ufora. A list that's large enough
 will get split across multiple machines. Ufora organizes a list's data into chunks
@@ -453,12 +452,12 @@ space.[^7]
 
         print x.f()
 
-        #modify all instances of 'X'
+        # modify all instances of 'X'
         X.f = lambda self: return 1
 
         print x.f()
 
-        #now modify x itself
+        # now modify x itself
         x.f = lambda: return 2
 
         print x.f()

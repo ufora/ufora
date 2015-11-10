@@ -1,12 +1,12 @@
 ---
 layout: main
-title: The Ufora subset of python
-tagline: Python code that Ufora can execute.
+title: The Ufora Subset of Python
+tagline: Python Code That Ufora Can Execute
 category: documentation
 ---
 
 
-# So what's "Pure Python"?
+# So What's "Pure Python"?
 
 The Ufora VM executes a restricted, "purely functional" subset of python that we call
 "Pure python." This essentially means that it executes python code in which
@@ -39,7 +39,7 @@ writing, our dictionary implementation is quite slow, so use it sparingly. See t
 
 Do note, however, that regular variable assignment **does** work as expected.
 
-# What happens if I violate one of the constraints?
+# What Happens if I Violate one of the Constraints?
 
 Whenver you invoke Ufora on a block of python code, Ufora attempts to
 give you either  (a) an identical answer to what you would have received if

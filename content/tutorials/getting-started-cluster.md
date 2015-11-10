@@ -1,7 +1,7 @@
 ---
 layout: main
-title: Getting Started with a Ufora Cluster
-tagline: How to run a Ufora cluster on a local network
+title: Getting Started With a Ufora Cluster
+tagline: How to Run a Ufora Cluster on a Local Network
 ---
 
 What goes here?
