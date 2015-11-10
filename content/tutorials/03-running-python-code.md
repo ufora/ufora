@@ -72,8 +72,8 @@ primes = primes.toLocal().result()
 This will cause all the data in the remote primes variable to be downloaded 
 from the Ufora cluster to the client machine. If the list is very large, or the 
 connection to the cluster is slow, this can be a slow operation. Alternatively, 
-we can chose not to download our result, but comute with the result by using the 
-proxy object inside of another `with ufora.remote` block. For example:
+we can chose not to download our result, but compute with the result by using the 
+proxy object inside of another `with ufora.remotely` block. For example:
 
 ```python
 with ufora.remotely.downloadAll():
