@@ -24,7 +24,7 @@ optional arguments:
 ```
 
 
-# start
+## start
 
 ```
 usage: pyfora_aws start [-h] [--ec2-region EC2_REGION]
@@ -78,7 +78,7 @@ optional arguments:
 ```
 
 
-# list
+## list
 
 ```
 usage: pyfora_aws list [-h] [--ec2-region EC2_REGION]
@@ -93,7 +93,7 @@ optional arguments:
 ```
 
 
-# stop
+## stop
 
 ```
 usage: pyfora_aws stop [-h] [--ec2-region EC2_REGION] [--terminate]
