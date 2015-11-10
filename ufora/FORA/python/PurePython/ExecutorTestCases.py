@@ -2435,6 +2435,38 @@ class ExecutorTestCases(
                 e.message
                 )
 
+    def test_docstrings_convert(self):
+        def f1():
+            class c:
+                """docstring"""
+                def m(self):
+                    return 1
+
+            return c().m()
+
+        self.evaluateWithExecutor(f1)
+
+        def f2():
+            class c:
+                def m(self):
+                    """docstring"""
+                    return 1
+
+            return c().m()
+
+        self.evaluateWithExecutor(f2)
+
+    def test_only_convert_defs_and_string_constants_in_class_bodies(self):
+        def f():
+            class c:
+                {"a":3}
+                def m(self):
+                    return 1
+
+            return c().m()
+        with self.assertRaises(Exceptions.PythonToForaConversionError):
+            self.evaluateWithExecutor(f)
+
     def test_import(self):
         def f():
             import sys
