@@ -129,18 +129,21 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
             def trySlice(start, stop, step):
                 try:
                     return ("OK", x[start:stop:step])
-                except:
-                    return "FAIL"
+                except Exception as e:
+                    if isinstance(e, ValueError):
+                        return "ValueError"
+                    elif isinstance(e, IndexError):
+                        return "IndexError"
+                    elif isinstance(e, TypeError):
+                        return "TypeError"
 
-
-            values = range(-sz, sz) + [None]
+            values = range(-sz, sz) + [None, sz - 10, sz + 10]
 
             res = []
             for start in values:
                 for stop in values:
                     for step in values:
-                        if step != 0:
-                            res = res + [trySlice(start, stop, step)]
+                        res = res + [trySlice(start, stop, step)]
 
         self.equivalentEvaluationTest(f)
 
@@ -151,15 +154,47 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
             def trySlice(start, stop):
                 try:
                     return ("OK", x[start:stop])
-                except:
-                    return "FAIL"
+                except Exception as e:
+                    if isinstance(e, ValueError):
+                        return "ValueError"
+                    elif isinstance(e, IndexError):
+                        return "IndexError"
+                    elif isinstance(e, TypeError):
+                        return "TypeError"
 
-            values = range(-sz, sz) + [None]
+            values = range(-sz, sz) + [None, sz - 10, sz + 10]
 
             res = []
             for start in values:
                 for stop in values:
                     res = res + [trySlice(start, stop)]
+
+            return res
+
+        self.equivalentEvaluationTest(f)
+
+    def test_list_getitem_exhaustive_3(self):
+        sz = 3
+        def f():
+            x = range(sz)
+            def tryGetItem(ix):
+                try:
+                    return ("OK", x[ix])
+                except Exception as e:
+                    if isinstance(e, ValueError):
+                        return "ValueError"
+                    elif isinstance(e, IndexError):
+                        return "IndexError"
+                    elif isinstance(e, TypeError):
+                        return "TypeError"
+
+            indices = range(-sz, sz) + [sz - 10, sz + 10, 1.0, None]
+
+            res = []
+            for ix in indices:
+                res = res + [tryGetItem(ix)]
+
+            return res
 
         self.equivalentEvaluationTest(f)
 
