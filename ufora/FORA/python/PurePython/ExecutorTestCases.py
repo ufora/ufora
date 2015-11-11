@@ -618,6 +618,13 @@ class ExecutorTestCases(
         c = [[[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]], [[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]]]
         r = self.evaluateWithExecutor(f, c)
 
+    def test_map_builtin(self):
+        def addOne(x):
+            return x + 1
+        self.equivalentEvaluationTest(lambda: map(None, [1,2,3]))
+        self.equivalentEvaluationTest(lambda: map(addOne, [1,2,3]))
+        self.equivalentEvaluationTest(lambda: map(addOne, (x for x in [1,2,3])))
+
     def test_numpy_dot_product_1(self):
         listLength = 20
         def f(arr1, arr2):

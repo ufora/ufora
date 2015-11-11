@@ -92,6 +92,12 @@ class Reduce:
             idx = idx + 1
         return toReturn
 
+class Map:
+    def __call__(self, f, iterable):
+        if f is None:
+            f = lambda x:x
+        return [f(x) for x in iterable]
+
 class Reversed:
     def __call__(self, arr):
         l = len(arr)
@@ -248,7 +254,7 @@ mappings_ = [
     (help, None), (hex, None), (id, None), (input, None),
     (intern, None), (iter, None), (len, Len),
     (license, None), (locals, None),
-    (long, None), (map, None), (max, Max),
+    (long, None), (map, Map), (max, Max),
     (memoryview, None), (min, Min), (next, None),
     (oct, None), (open, None),
     (ord, Ord), (pow, None),
