@@ -136,6 +136,7 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
                         return "IndexError"
                     elif isinstance(e, TypeError):
                         return "TypeError"
+                    raise e
 
             values = range(-sz, sz) + [None, sz - 10, sz + 10]
 
@@ -161,6 +162,7 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
                         return "IndexError"
                     elif isinstance(e, TypeError):
                         return "TypeError"
+                    raise e
 
             values = range(-sz, sz) + [None, sz - 10, sz + 10]
 
@@ -187,6 +189,7 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
                         return "IndexError"
                     elif isinstance(e, TypeError):
                         return "TypeError"
+                    raise e
 
             indices = range(-sz, sz) + [sz - 10, sz + 10, 1.0, None]
 
@@ -214,6 +217,7 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
                         return "IndexError"
                     elif isinstance(e, TypeError):
                         return "TypeError"
+                    raise e
 
             indices = range(-sz, sz) + [sz - 10, sz + 10, 1.0, None]
 
@@ -239,6 +243,7 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
                         return "IndexError"
                     elif isinstance(e, TypeError):
                         return "TypeError"
+                    raise e
 
             values = range(-sz, sz) + [None, sz - 10, sz + 10]
 
@@ -250,3 +255,83 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
             return res
 
         self.equivalentEvaluationTest(f)
+
+    def test_string_getitem_exhaustive_1(self):
+        def f():
+            x = "asd"
+            def trySlice(start, stop, step):
+                try:
+                    return ("OK", x[start:stop:step])
+                except Exception as e:
+                    if isinstance(e, ValueError):
+                        return "ValueError"
+                    elif isinstance(e, IndexError):
+                        return "IndexError"
+                    elif isinstance(e, TypeError):
+                        return "TypeError"
+                    raise e
+
+            sz = len(x)
+            values = range(-sz, sz) + [None, sz - 10, sz + 10]
+
+            res = []
+            for start in values:
+                for stop in values:
+                    for step in values:
+                        res = res + [trySlice(start, stop, step)]
+
+        self.equivalentEvaluationTest(f)
+
+    def test_string_getitem_exhaustive_2(self):
+        def f():
+            x = "asd"
+            def trySlice(start, stop):
+                try:
+                    return ("OK", x[start:stop])
+                except Exception as e:
+                    if isinstance(e, ValueError):
+                        return "ValueError"
+                    elif isinstance(e, IndexError):
+                        return "IndexError"
+                    elif isinstance(e, TypeError):
+                        return "TypeError"
+                    raise e
+
+            sz = len(x)
+            values = range(-sz, sz) + [None, sz - 10, sz + 10]
+
+            res = []
+            for start in values:
+                for stop in values:
+                    res = res + [trySlice(start, stop)]
+
+            return res
+
+        self.equivalentEvaluationTest(f)
+
+    def test_string_getitem_exhaustive_3(self):
+        def f():
+            x = "asd"
+            def tryGetItem(ix):
+                try:
+                    return ("OK", x[ix])
+                except Exception as e:
+                    if isinstance(e, ValueError):
+                        return "ValueError"
+                    elif isinstance(e, IndexError):
+                        return "IndexError"
+                    elif isinstance(e, TypeError):
+                        return "TypeError"
+                    raise e
+
+            sz = len(x)
+            indices = range(-sz, sz) + [sz - 10, sz + 10, 1.0, None]
+
+            res = []
+            for ix in indices:
+                res = res + [tryGetItem(ix)]
+
+            return res
+
+        self.equivalentEvaluationTest(f)
+
