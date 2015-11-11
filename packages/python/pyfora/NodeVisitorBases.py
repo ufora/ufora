@@ -17,7 +17,7 @@ import pyfora.Exceptions as Exceptions
 
 
 def isScopeNode(pyAstNode):
-    if isinstance(pyAstNode, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.Lambda)):
+    if isinstance(pyAstNode, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.Lambda, ast.GeneratorExp)):
         return True
     else:
         return False
@@ -148,7 +148,7 @@ class GenericInScopeVisitor(NodeVisitorBase):
     #                for loop header,
     #                in the second position of an except clause header
     #                or after as in a with statement.
-    #                Comprehensions (Set,List,Dict) and generators
+    #                Comprehensions (Set,List,Dict)
     # TODO: The import statement of the form from ... import * binds all names
     #     defined in the imported module, except those beginning with an underscore.
     #     This form may only be used at the module level.
@@ -163,6 +163,9 @@ class GenericInScopeVisitor(NodeVisitorBase):
         return
 
     def visit_Lambda(self, _):
+        return
+
+    def visit_GeneratorExp(self, _):
         return
 
     def visit_Assign(self, node):
@@ -252,6 +255,10 @@ class GenericScopedVisitor(NodeVisitorBase):
         with self._getScopeMgr(node):
             self.visit(node.body)
 
+    def visit_GeneratorExp(self, node):
+        with self._getScopeMgr(node):
+            self.visit(node.generators)
+            self.visit(node.elt)
 
     def visit_ClassDef(self, node):
         self.visit(node.bases)

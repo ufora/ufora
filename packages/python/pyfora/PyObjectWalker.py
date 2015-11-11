@@ -14,7 +14,6 @@
 
 import pyfora.Exceptions as Exceptions
 import pyfora.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
-import pyfora.PyAstUninstantiatedVariablesAnalysis as PyAstUninstantiatedVariablesAnalysis
 import pyfora.PyAstUtil as PyAstUtil
 import pyfora.PureImplementationMappings as PureImplementationMappings
 import pyfora.RemotePythonObject as RemotePythonObject
@@ -219,7 +218,14 @@ class PyObjectWalker(object):
                 PyAstUtil.getYieldLocationsInOuterScope(withBlockFun)[0])
 
         freeVariableMemberAccessChains = \
-            self._freeOrUninitializedMemberAccesChains(withBlockFun)
+            self._freeMemberAccessChains(withBlockFun)
+
+        boundValuesInScope = PyAstFreeVariableAnalyses.collectBoundValuesInScope(withBlockFun)
+
+        for boundValue in boundValuesInScope:
+            if boundValue not in pyObject.unboundLocals and boundValue in pyObject.boundVariables:
+                freeVariableMemberAccessChains.add((boundValue,))
+
 
         freeVariableMemberAccessChainResolutions = \
             self._resolveFreeVariableMemberAccesChains(
@@ -369,7 +375,7 @@ class PyObjectWalker(object):
         resolutions = dict()
 
         freeVariableMemberAccessChains = \
-            self._freeOrUninitializedMemberAccesChains(pyAst)
+            self._freeMemberAccessChains(pyAst)
 
         for chain in freeVariableMemberAccessChains:
             if not chain or chain[0] not in ['staticmethod']:
@@ -378,7 +384,7 @@ class PyObjectWalker(object):
 
         return resolutions
 
-    def _freeOrUninitializedMemberAccesChains(self, pyAst):
+    def _freeMemberAccessChains(self, pyAst):
         # ATz: just added 'False' as a 2nd argument, but we may need to check
         # that whenever pyAst is a FunctionDef node, its context is not a class
         # (i.e., it is not an instance method). In that case, we need to pass
@@ -388,17 +394,7 @@ class PyObjectWalker(object):
                 pyAst, isClassContext=False
                 )
 
-        possiblyUninitializedVariables = \
-            PyAstUninstantiatedVariablesAnalysis\
-                .collectPossiblyUninitializedLocalVariablesInScope(
-                    pyAst
-                    )
-
-        possiblyUninitializedVariablesAsChains = [
-            (val,) for val in possiblyUninitializedVariables]
-
-        return freeVariableMemberAccessChains.union(
-            possiblyUninitializedVariablesAsChains)
+        return freeVariableMemberAccessChains
 
     def _resolveChainByDict(self, chain, boundVariables):
         freeVariable = chain[0]

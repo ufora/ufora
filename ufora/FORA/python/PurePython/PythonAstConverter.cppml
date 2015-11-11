@@ -25,7 +25,7 @@
 #include "../../../core/cppml/CPPMLVisit.hppml"
 #include "../../../core/cppml/CPPMLTransform.hppml"
 #include "../../../core/Logging.hpp"
-
+#include "../../Language/RebindFree.hppml"
 
 #define PYFORA_CONVERSION_ERROR_MESSAGE "Pyfora can't convert this code. See http://ufora.github.io/ufora/github-pages/documentation/python-restrictions.html."
 
@@ -40,28 +40,6 @@ using namespace Fora;
 std::string publicDataMemberNameToPrivate(std::string name)
     {
     return "@" + name;
-    }
-
-Expression initializeUnboundVariablesForFunction(
-        const TuplePattern& pattern,
-        Expression functionBody
-        )
-    {
-    //look at all the variables we assign to at the root scope. If they are not bound
-    //then they are 'free', but also assigned. We don't allow globals, so they'll all need
-    //null let bindings
-    ImmutableTreeSet<Symbol> bound = pattern.boundVariables();
-    ImmutableTreeSet<Symbol> assigned = functionBody.assignedVariables();
-    ImmutableTreeSet<Symbol> needingBindings = assigned - bound;
-
-    for (auto s: needingBindings)
-        functionBody = Expression::Let(
-            s,
-            Expression::Constant(CSTValue()),
-            functionBody
-            );
-
-    return functionBody;
     }
 
 ClassDefinitionTerm
@@ -419,6 +397,29 @@ PythonAstConverter::convertPythonClassBodyStatementToForaClassDefinitionTerms(
             }
     }
 
+Expression PythonAstConverter::initializeUnboundVariablesForFunction(
+        const TuplePattern& pattern,
+        Expression functionBody
+        ) const
+    {
+    //look at all the variables we assign to at the root scope. If they are not bound
+    //then they are 'free', but also assigned. We don't allow globals, so they'll all need
+    //null let bindings
+    ImmutableTreeSet<Symbol> bound = pattern.boundVariables();
+    ImmutableTreeSet<Symbol> assigned = functionBody.assignedVariables();
+    ImmutableTreeSet<Symbol> needingBindings = assigned - bound;
+
+    for (auto s: needingBindings)
+        functionBody = Expression::Let(
+            s, 
+            Expression::Constant(CSTValue(Symbol("PyforaUninitializedVariable"))),
+            rebindFreeAs(functionBody, emptyTreeMap() + s + checkVariableValidityExpression(s))
+            );
+
+    return functionBody;
+    }
+
+
 // should only be called from convertPythonClassBodyFunctionDefToForaClassDefinitionTerm
 // which does some preliminary verification 
 ImmutableTreeVector<ClassDefinitionTerm> 
@@ -520,7 +521,7 @@ PythonAstConverter::convertPythonMemberFunctionToPatternAndFunctionBody(
         functionBody,
         Expression::Return(Expression::Constant(mConstantConverter->noneValue()))
         );
-    
+
     return std::make_pair(pattern, functionBody);
     }
 
@@ -909,11 +910,27 @@ Expression PythonAstConverter::convertPythonAstExpressionToFora_inner(const Pyth
             return *accumulator;
             }
         -| ListComp(elt, generators) ->> {
-            return Expression::Constant(mPyListType)(
-                convertPythonAstExpressionToFora(
-                    PythonAstExpr::GeneratorExp(elt, generators)
-                    )
-                );
+            ImmutableTreeSet<Symbol> assigned;
+            for (auto gen: generators)
+                assigned = assigned + convertPythonAstExpressionToPattern(gen.target()).boundVariables();
+
+            auto res = 
+                Expression::Constant(mPyListType)(
+                    convertPythonAstExpressionToFora(
+                        PythonAstExpr::GeneratorExp(elt, generators)
+                        )
+                    );
+
+            for (auto var: assigned)
+                res = Expression::Sequence(
+                    Expression::Assign(
+                        PatternWithName::Anything(null() << var),
+                        Expression::Constant(CSTValue(Symbol("PyforaInvalidVariable")))
+                        ),
+                    res
+                    );
+
+            return res;
             }
         -| List(elts) ->> {
             return mPythonListConverter->convertPyList(
@@ -1120,6 +1137,9 @@ Expression PythonAstConverter::convertPythonAstExpressionToFora_inner(const Pyth
                 );
             }
         -| Name(identifier, Load()) ->> {
+            //when loading variables, we need to check whether they are specific symbols
+            //that we use to denote states like 'uninitialized' or 'invalid'. If so, we defer
+            //to a member of the PyObjectBase to figure out what to do
             return Expression::Variable(Symbol(identifier));
             }
         -| _ ->> {
@@ -1263,9 +1283,7 @@ Expression PythonAstConverter::convertPythonAstStatementToExpression_inner(
             if (type && !inst && !tback)
                 {   
                 return Expression::Throw(
-                    type ? 
-                        convertPythonAstExpressionToFora(*type)
-                    :     Expression::Constant(CSTValue()),
+                    convertPythonAstExpressionToFora(*type),
                     Nullable<Expression>()
                     ); 
                 }
@@ -1591,6 +1609,42 @@ Function PythonAstConverter::convertPythonAstExpressionToForaFunction(
         Function::Empty()
         );
     }
+
+Expression PythonAstConverter::checkVariableValidityExpression(Symbol s) const
+    {  
+    return Expression::Match(
+        emptyTreeVec() + ApplyArgument::Normal(Expression::Variable(Symbol(s))),
+        Function::Term(
+            TuplePattern(
+                emptyTreeVec() + 
+                    TuplePatternElement::Normal(
+                        PatternWithName(
+                            Pattern::MatchEither(
+                                Pattern::Constant(CSTValue(Symbol("PyforaUninitializedVariable"))),
+                                Pattern::Constant(CSTValue(Symbol("PyforaInvalidVariable")))
+                                ),
+                            null(),
+                            null(),
+                            ExpressionLocationMetadata::Empty()
+                            )
+                        )
+                ),
+            Expression::Constant(CSTValue(mPyObjectBaseMixin))
+                .member(Symbol("__pyfora_invalid_variable_access__"))(
+                    Expression::Variable(Symbol(s)), 
+                    Expression::Constant(CSTValue(Symbol(s)))
+                    ),
+            Function::Term(
+                TuplePattern(
+                    emptyTreeVec() + 
+                        TuplePatternElement::VarArgs(null())
+                    ),
+                Expression::Variable(Symbol(s)),
+                Function::Empty()
+                )
+            )
+        );
+    }
     
 Expression PythonAstConverter::introduceLetBindingsForUnboundVariables(
         const Expression& functionBody,
@@ -1608,7 +1662,14 @@ Expression PythonAstConverter::introduceLetBindingsForUnboundVariables(
     Expression tr = functionBody;
 
     for (auto s: needingBindings)
-        tr = Expression::Let(s, Expression::Constant(CSTValue()), tr);
+        tr = Expression::Let(
+                s, 
+                Expression::Constant(CSTValue(Symbol("PyforaUninitializedVariable"))), 
+                rebindFreeAs(
+                    tr,
+                    emptyTreeMap() + s + checkVariableValidityExpression(s)
+                    )
+                );
 
     return tr;
     }
@@ -1650,12 +1711,50 @@ PythonAstConverter::convertPythonAstExpressionToForaFunctionBodyAndPattern(
     return std::make_pair(functionBody, pattern);
     }    
 
-Expression PythonAstConverter::convertPythonAstFunctionDefToForaWrappingBodyInTryCatch(
+Expression PythonAstConverter::addWithBlockReturnStatement(
+                Expression expr, 
+                ImmutableTreeVector<std::string> assigned
+                ) const
+    {
+    return Expression::Sequence(
+        expr,
+        Expression::Return(
+            mPythonTupleConverter->createTupleExpression(
+                Expression::CreateTuple(
+                    emptyTreeVec() +
+                    ApplyArgument::Normal(
+                        null(),
+                        getDictOfAssignedVariables(assigned)
+                        ) +
+                    ApplyArgument::Normal(
+                        null(),
+                        constantExpressionForImplVal(
+                            constantConverter()->convertInt(0)
+                            )
+                        ) +
+                    ApplyArgument::Normal(
+                        null(),
+                        constantExpressionForImplVal(
+                            constantConverter()->convertInt(0)
+                            )
+                        )
+                    )
+                )
+            )
+        );
+    }
+
+Expression PythonAstConverter::convertPythonAstWithBlockFunctionDefToFora(
         const PythonAstStatement_FunctionDefType& functionDef,
         const SimpleParseRange& extent,
-        const ImmutableTreeVector<std::string>& assignedVariables
+        ImmutableTreeVector<std::string> varsToConsiderFree
         ) const
     {
+    ImmutableTreeSet<Symbol> varsToConsiderFreeSet;
+
+    for (auto v: varsToConsiderFree)
+        varsToConsiderFreeSet = varsToConsiderFreeSet + Symbol(v);
+
     const std::string& functionName = functionDef.name();
 
     std::pair<Expression, TuplePattern> functionBodyAndPattern = 
@@ -1664,15 +1763,41 @@ Expression PythonAstConverter::convertPythonAstFunctionDefToForaWrappingBodyInTr
             extent
             );
 
-    Expression functionBody = wrapWithBlockFunctionBodyInTryCatch(
-        functionBodyAndPattern.first,
-        assignedVariables
+    ImmutableTreeVector<std::string> assigned;
+    for (auto var: functionBodyAndPattern.first.assignedVariables())
+        if (var.toString()[0] != '@')
+            assigned = assigned + var.toString();
+
+    @match Expression(functionBodyAndPattern.first)
+        -| Sequence(inner, Return(Constant(shouldBeNone))) ->> {
+            lassert(shouldBeNone == CSTValue(mConstantConverter->noneValue()));
+
+            functionBodyAndPattern.first = inner;
+            }
+
+    Expression functionBody = functionBodyAndPattern.first;
+
+    ImmutableTreeSet<Symbol> freeVarsToCheck = functionBody.freeVariables();
+
+    for (auto s: freeVarsToCheck)
+        if (!varsToConsiderFreeSet.contains(s))
+            functionBody = rebindFreeAs(functionBody, emptyTreeMap() + s + checkVariableValidityExpression(s));
+
+    functionBody = wrapWithBlockFunctionBodyInTryCatch(
+        functionBody,
+        assigned
         );
 
-    functionBody = initializeAssignedVariablesForWithBlockFunction(
-        functionBody,
-        assignedVariables
-        );
+    functionBody = 
+        addWithBlockReturnStatement(functionBody, assigned);
+    
+    for (auto s: freeVarsToCheck)
+        if (!varsToConsiderFreeSet.contains(s))
+            functionBody = Expression::Let(
+                s, 
+                Expression::Constant(CSTValue(Symbol("PyforaUninitializedVariable"))),
+                functionBody
+                );
 
     Function function = Function::Term(
         functionBodyAndPattern.second,
@@ -1685,31 +1810,6 @@ Expression PythonAstConverter::convertPythonAstFunctionDefToForaWrappingBodyInTr
         functionName,
         null() << extent
         );
-    }
-
-Expression PythonAstConverter::initializeAssignedVariablesForWithBlockFunction(
-        const Expression& functionBody,
-        const ImmutableTreeVector<std::string>& namedVariables
-        ) const
-    {
-    Expression tr = functionBody;
-
-    for (const auto& name: namedVariables)
-        {
-        tr = Expression::Let(
-            Symbol(name),
-            Expression::Constant(
-                CSTValue(
-                    ImplValContainerUtilities::createSymbol(
-                        Symbol("@uninitialized")
-                        )
-                    )
-                ),
-            tr
-            );
-        }
-         
-    return tr;
     }
 
 Expression PythonAstConverter::getDictOfAssignedVariables(

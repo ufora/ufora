@@ -37,6 +37,7 @@ pythonSingletonToName = {
     TypeError: 'TypeError',
     NotImplementedError: 'NotImplementedError',
     UserWarning: 'UserWarning',
+    UnboundLocalError: 'UnboundLocalError',
     ValueError: 'ValueError',
     ZeroDivisionError: 'ZeroDivisionError'
     }
@@ -63,6 +64,7 @@ pythonNameToPyforaName = {
     'NotImplementedError': 'NotImplementedError',
     'TypeError': 'TypeError',
     'UserWarning': 'UserWarning',
+    'UnboundLocalError': 'UnboundLocalError',
     'ValueError': 'ValueError',
     'ZeroDivisionError': 'ZeroDivisionError'
     }

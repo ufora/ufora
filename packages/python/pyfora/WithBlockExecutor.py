@@ -162,11 +162,18 @@ class WithBlockExecutor(object):
         boundVariables.update(frame.f_globals)
         boundVariables.update(frame.f_locals)
 
+        unboundLocals = []
+        for var in frame.f_code.co_varnames:
+            if var not in frame.f_locals:
+                unboundLocals.append(var)
+        unboundLocals = sorted(unboundLocals)
+
         withBlock = PyforaWithBlock.PyforaWithBlock(
             lineNumber=self.lineNumber,
             sourceText=self.sourceText,
             boundVariables=boundVariables,
-            sourceFileName=self.sourceFileName
+            sourceFileName=self.sourceFileName,
+            unboundLocals=unboundLocals
             )
 
         f_proxy = self.executor.define(withBlock).resultWithWakeup()
@@ -210,7 +217,8 @@ class WithBlockExecutor(object):
                 f_locals[k] = self.downloadPolicy.resolveToFinalValue(policyInstances[k])
         except (Exceptions.PythonToForaConversionError, Exceptions.ForaToPythonConversionError) as err:
             frame.f_lineno = frame.f_lineno - 1
-            raise err  # re-raise to hide from users the traceback into the internals of pyfora
+            # re-raise to hide from users the traceback into the internals of pyfora
+            raise err  
         except Exception:
             frame.f_lineno = frame.f_lineno - 1
             raise

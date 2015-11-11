@@ -20,10 +20,12 @@ class PyforaWithBlock(object):
             lineNumber,
             sourceText,
             boundVariables,
-            sourceFileName
+            sourceFileName,
+            unboundLocals
             ):
         self.lineNumber = lineNumber
         self.sourceText = sourceText
         self.boundVariables = boundVariables
         self.sourceFileName = sourceFileName
+        self.unboundLocals = unboundLocals
 

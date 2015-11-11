@@ -37,6 +37,56 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
             PyAstFreeVariableAnalyses.getFreeVariables(tree)
             )
 
+    def test_variables_assigned_in_interior_scope(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def f():
+                    x = 10
+                    return y
+                return x
+                """
+                )
+            )
+        expectedResult = set(['x','y'])
+        self.assertEqual(
+            expectedResult,
+            PyAstFreeVariableAnalyses.getFreeVariables(tree)
+            )
+
+
+    def test_variables_assigned_by_list_comp_are_not_free(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                x = range(10)
+                if isinstance(x, slice):
+                    return [x[slice] for slice in x]
+                """
+                )
+            )
+        expectedResult = set(['range','isinstance'])
+        self.assertEqual(
+            expectedResult,
+            PyAstFreeVariableAnalyses.getFreeVariables(tree)
+            )
+
+    def test_variables_assigned_by_generator_comp_are_free(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                x = range(10)
+                if isinstance(x, slice):
+                    return list(x[slice] for slice in x)
+                """
+                )
+            )
+        expectedResult = set(['range','isinstance','slice','list'])
+        self.assertEqual(
+            expectedResult,
+            PyAstFreeVariableAnalyses.getFreeVariables(tree)
+            )
+
     def test_call_and_then_member(self):
         tree = ast.parse(
             textwrap.dedent(

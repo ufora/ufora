@@ -19,12 +19,10 @@ import numpy
 import logging
 import traceback
 import time
-import ufora.FORA.python.PurePython.EquivalentEvaluationTestCases as EquivalentEvaluationTestCases
 import ufora.FORA.python.PurePython.ExceptionTestCases as ExceptionTestCases
 import random as random
 
 class ExecutorTestCases(
-            EquivalentEvaluationTestCases.EquivalentEvaluationTestCases,
             ExceptionTestCases.ExceptionTestCases
             ):
     """ExecutorTestCases - mixin to define test cases for the pyfora Executor cass."""
@@ -2758,8 +2756,8 @@ class ExecutorTestCases(
         try:
             self.evaluateWithExecutor(f)
             self.assertTrue(False)
-        except Exceptions.PythonToForaConversionError as e:
-            self.assertIsInstance(e.message, str)
+        except Exceptions.ComputationError as e:
+            self.assertIsInstance(e.exceptionValue, UnboundLocalError)
 
     def test_uninitializedVars_2(self):
         x = 2
@@ -2770,8 +2768,8 @@ class ExecutorTestCases(
         try:
             self.evaluateWithExecutor(f)
             self.assertTrue(False)
-        except Exceptions.PythonToForaConversionError as e:
-            self.assertIsInstance(e.message, str)
+        except Exceptions.ComputationError as e:
+            self.assertIsInstance(e.exceptionValue, UnboundLocalError)
 
     def test_uninitializedVars_3(self):
         x = 2
@@ -2796,7 +2794,7 @@ class ExecutorTestCases(
             return x
 
         with self.create_executor() as fora:
-            with self.assertRaises(Exceptions.PythonToForaConversionError):
+            with self.assertRaises(UnboundLocalError):
                 with fora.remotely:
                     result = f()
 
@@ -2979,5 +2977,43 @@ class ExecutorTestCases(
         with self.assertRaises(pyfora.PythonToForaConversionError):
             self.equivalentEvaluationTest(f)
 
+    def test_unbound_variable_access_throws(self):
+        def f():
+            x = 10
+            try:
+                if x is asdf:
+                    return 10
 
-        
+                asdf = 100
+            except UnboundLocalError:
+                return True
+
+        self.equivalentEvaluationTest(f)
+
+    def test_unbound_variable_access_in_class_throws(self):
+        class UnboundVariableAccessInClass:
+            def f(self):
+                x = 10
+                try:
+                    if x is asdf:
+                        return 10
+
+                    asdf = 100
+                except UnboundLocalError:
+                    return True
+
+        self.equivalentEvaluationTest(lambda: UnboundVariableAccessInClass().f())
+
+    def test_access_list_comprehension_variable_fails(self):
+        def f():
+            try:
+                result = [x for x in range(10)]
+                return x
+            except Exception:
+                return "Exception"
+
+        try:
+            result = self.evaluateWithExecutor(f)
+            self.assertTrue(False, result)
+        except Exceptions.ComputationError as e:
+            self.assertIsInstance(e.exceptionValue, Exceptions.InvalidPyforaOperation)

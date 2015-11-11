@@ -37,7 +37,8 @@ empytObjectExpression = ForaNative.parseStringToExpression(
     )
 createInstanceImplVal = ForaNative.makeSymbol("CreateInstance")
 callImplVal = ForaNative.makeSymbol("Call")
-Symbol_uninitialized = ForaNative.makeSymbol("@uninitialized")
+Symbol_uninitialized = ForaNative.makeSymbol("PyforaUninitializedVariable")
+Symbol_invalid = ForaNative.makeSymbol("PyforaInvalidVariable")
 
 def convertNativePythonToForaConversionError(err, path):
     """Convert a ForaNative.PythonToForaConversionError to a python version of the exception"""
@@ -626,7 +627,7 @@ class Converter(object):
             withBlockDescription,
             objectIdToObjectDefinition
             ):
-        nativeWithBodyAst, assignedVariables = \
+        nativeWithBodyAst = \
             self._getNativePythonFunctionDefFromWithBlockDescription(
                 withBlockDescription,
                 objectIdToObjectDefinition
@@ -634,16 +635,8 @@ class Converter(object):
 
         sourcePath = objectIdToObjectDefinition[withBlockDescription.sourceFileId].path
 
-        freeBoundByClosure = []
-        for freeVariableMemberAccessChain in \
-            withBlockDescription.freeVariableMemberAccessChainsToId:
-            if len(freeVariableMemberAccessChain) == 1:
-                freeBoundByClosure.append(freeVariableMemberAccessChain[0])
-
-        assignedVariablesNotBoundByClosure = assignedVariables.difference(freeBoundByClosure)
-
         foraFunctionExpression = \
-            ForaNative.convertPythonAstFunctionDefToForaOrParseErrorWrappingBodyInTryCatch(
+            ForaNative.convertPythonAstWithBlockFunctionDefToForaOrParseError(
                 nativeWithBodyAst.asFunctionDef,
                 nativeWithBodyAst.extent,
                 ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath]),
@@ -655,9 +648,9 @@ class Converter(object):
                 self.pyObjectGeneratorFactoryIVC,
                 self.pyObjectSliceFactoryIVC,
                 self.pyListTypeObjectIVC,
-                list(assignedVariablesNotBoundByClosure)
+                [x.split(".")[0] for x in withBlockDescription.freeVariableMemberAccessChainsToId]
                 )
-
+        
         if isinstance(foraFunctionExpression, ForaNative.PythonToForaConversionError):
             raise convertNativePythonToForaConversionError(
                 foraFunctionExpression,
@@ -692,30 +685,12 @@ class Converter(object):
             decorator_list=[]
             )
 
-        assignedVariables = \
-            PyAstFreeVariableAnalyses.collectBoundValuesInScope(withBodyAsFunctionAst)
-
-        withBodyAsFunctionAst.body.append(
-            self._computeReturnStatementForWithBlockFun(assignedVariables)
-            )
-
         nativeWithBodyAst = PythonAstConverter.convertPythonAstToForaPythonAst(
             withBodyAsFunctionAst,
             sourceLineOffsets
             )
 
-        return nativeWithBodyAst, assignedVariables
-
-    def _computeReturnStatementForWithBlockFun(self, assignedVariables):
-        # it would be nice if we could return None here instead of 0 and 0.
-        # in this returnTuple, elt 0 is the assigned vars,
-        # elt 1 is the traceback (which is not a list so it's handled properly later)
-        # and elt 2 is the exception value
-
-        returnTuple = "({" + \
-            ",".join(("'%s': %s" % (var, var) for var in assignedVariables)) \
-            + "}, 0, 0)"
-        return ast.parse("return " + returnTuple).body[0]
+        return nativeWithBodyAst
 
     def convertFile(self, objectDefinition):
         return objectDefinition.text
@@ -962,7 +937,7 @@ class Converter(object):
         res = {}
 
         for pyforaKey, pyforaValue in pyforaDict.iteritems():
-            if pyforaValue != Symbol_uninitialized:
+            if pyforaValue != Symbol_uninitialized and pyforaValue != Symbol_invalid:
                 maybePyforaKeyString = self.constantConverter.invertForaConstant(pyforaKey)
                 if isinstance(maybePyforaKeyString, tuple) and isinstance(maybePyforaKeyString[0], str):
                     res[maybePyforaKeyString[0]] = pyforaValue
