@@ -12,7 +12,6 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import pyfora.PyObjectNodes as PyObjectNodes
 import pyfora.PureImplementationMapping as PureImplementationMapping
 import numpy as np
 import pyfora.BuiltinPureImplementationMappings as BuiltinPureImplementationMappings
