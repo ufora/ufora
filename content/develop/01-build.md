@@ -183,8 +183,8 @@ the code-generator (line 4) to produce the "real" code and then build again. The
 *much* faster.
 
 You only need to run `resetAxiomSearchFunction.py` when you build a clean repo for the first time,
-and you only need to run `rebuildAxiomSearchFunction.py` after pulling a new revision or if you
-makde changes to `AxiomSearch.cpp` or `AxiomSearch2.cpp` in `/ufora/Fora/Axioms/`.
+and you only need to run `rebuildAxiomSearchFunction.py` after pulling a new revision or after 
+making changes to `AxiomSearch.cpp` or `AxiomSearch2.cpp` in `/ufora/Fora/Axioms/`.
 
 
 # Running the Ufora Services
