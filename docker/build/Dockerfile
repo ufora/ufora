@@ -61,6 +61,7 @@ RUN pip install --allow-unverified pyodbc\
     nose \
     numpy \
     pyodbc \
+    pexpect \
     virtualenv
 
 

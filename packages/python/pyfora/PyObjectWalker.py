@@ -234,8 +234,7 @@ class PyObjectWalker(object):
         if pyObject.sourceFileName in self._fileTextCache:
             fileObject = self._fileTextCache[pyObject.sourceFileName]
         else:
-            with open(pyObject.sourceFileName, "r") as sourceFile:
-                sourceFileText = sourceFile.read()
+            sourceFileText = "".join(PyforaInspect.getlines(pyObject.sourceFileName))
             fileObject = PyObjectNodes.File(pyObject.sourceFileName, sourceFileText)
             self._fileTextCache[pyObject.sourceFileName] = fileObject
 

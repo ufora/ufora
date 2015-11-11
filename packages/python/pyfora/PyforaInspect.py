@@ -58,6 +58,8 @@ import imp
 import re
 import linecache
 import os
+import pyfora.StdinCache as StdinCache
+
 from collections import namedtuple
 
 # Importing the following functions so that this module can act as a drop-in
@@ -78,13 +80,41 @@ class PyforaInspectError(Exception):
 #cache to hold paths that we've determined are already present/not present in
 #the system. This prevents python from hitting os.path.exists over and over,
 #which can be slow.
-existingPathCache = {}
+pathExistsOnDiskCache_ = {}
+linesCache_ = {}
+
+def getlines(path):
+    """return a list of lines for a given path.
+
+    This override is also careful to map "<stdin>" to the full contents of
+    the readline buffer.
+    """
+    if path == "<stdin>":
+        return StdinCache.singleton().refreshFromReadline().getlines()
+
+    if path in linesCache_:
+        return linesCache_[path]
+
+    if path not in pathExistsOnDiskCache_:
+        pathExistsOnDiskCache_[path] = os.path.exists(path)
+
+    if pathExistsOnDiskCache_[path]:
+        with open(path, "r") as f:
+            linesCache_[path] = f.readlines()
+        return linesCache_[path]
+    else:
+        return None
+
 
 def getsourcefile(object):
     """Return the filename that can be used to locate an object's source.
     Return None if no way can be identified to get the source.
     """
     filename = getfile(object)
+    
+    if filename == "<stdin>":
+        return filename
+    
     if string.lower(filename[-4:]) in ('.pyc', '.pyo'):
         filename = filename[:-4] + '.py'
     for suffix, mode, kind in imp.get_suffixes():
@@ -92,10 +122,10 @@ def getsourcefile(object):
             # Looks like a binary file.  We want to only return a text file.
             return None
 
-    if filename not in existingPathCache:
-        existingPathCache[filename] = os.path.exists(filename)
+    if filename not in pathExistsOnDiskCache_:
+        pathExistsOnDiskCache_[filename] = os.path.exists(filename)
 
-    if existingPathCache[filename]:
+    if pathExistsOnDiskCache_[filename]:
         return filename
 
     # only return a non-existent filename if the module has a PEP 302 loader
@@ -115,15 +145,14 @@ def findsource(pyObject):
 
     pyFile = getfile(pyObject)
     sourcefile = getsourcefile(pyObject)
+
     if not sourcefile and pyFile[:1] + pyFile[-1:] != '<>':
         raise IOError('source code not available')
+
     pyFile = sourcefile if sourcefile else file
 
     module = getmodule(pyObject, pyFile)
-    if module:
-        lines = linecache.getlines(pyFile, module.__dict__)
-    else:
-        lines = linecache.getlines(pyFile)
+    lines = getlines(pyFile)
     if not lines:
         raise IOError('could not get source code')
 
@@ -157,9 +186,14 @@ def findsource(pyObject):
     if isframe(pyObject):
         pyObject = pyObject.f_code
     if iscode(pyObject):
-        if not hasattr(pyObject, 'co_firstlineno'):
-            raise IOError('could not find function definition')
-        lnum = pyObject.co_firstlineno - 1
+        if pyFile == "<stdin>":
+            #the "co_firstlineno" variable is wrong in this case.
+            #we need to find the actual line number
+            lnum = StdinCache.singleton().refreshFromReadline().findCodeLineNumberWithinStdin(pyObject)
+        else:
+            if not hasattr(pyObject, 'co_firstlineno'):
+                raise IOError('could not find function definition')
+            lnum = pyObject.co_firstlineno - 1
         pat = re.compile(r'^(\s*def\s)|(.*(?<!\w)lambda(:|\s))|^(\s*@)')
         while lnum > 0:
             if pat.match(lines[lnum]): break
@@ -250,16 +284,26 @@ def getframeinfo(frame, context=1):
         frame = frame.tb_frame
     else:
         lineno = frame.f_lineno
+
     if not isframe(frame):
         raise TypeError('{!r} is not a frame or traceback object'.format(frame))
 
     filename = getsourcefile(frame) or getfile(frame)
+
+    lines = None
+    if filename == "<stdin>":
+        lineno = StdinCache.singleton().refreshFromReadline().findCodeLineNumberWithinStdin(frame.f_code) + 1
+        lines = StdinCache.singleton().getlines()
+
+
     if context > 0:
         start = lineno - 1 - context//2
         try:
-            lines, _ = findsource(frame)
+            if lines is None:
+                lines, _ = findsource(frame)
         except IOError:
-            lines = index = None
+            if lines is None:
+                lines = index = None
         else:
             start = max(start, 1)
             start = max(0, min(start, len(lines) - context))

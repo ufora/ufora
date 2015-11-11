@@ -15,7 +15,7 @@
 from concurrent.futures._base import Error, TimeoutError, CancelledError
 
 import os
-import linecache
+import pyfora.PyforaInspect as PyforaInspect
 import logging
 import traceback
 
@@ -42,7 +42,7 @@ def renderTraceback(trace):
 
         res.append('  File "%s", line %s' % (path, lineNumber))
 
-        lines = linecache.getlines(os.path.abspath(path))
+        lines = PyforaInspect.getlines(os.path.abspath(path))
         if lines is not None and lineNumber >= 1 and lineNumber <= len(lines):
             res.append("    " + lines[lineNumber-1][:-1].lstrip())
 

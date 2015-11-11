@@ -53,11 +53,10 @@ def getSourceFilenameAndText(pyObject):
 
     if sourceFile in sourceFileCache_:
         return sourceFileCache_[sourceFile], sourceFile
-    with open(sourceFile, "r") as f:
-        tr = f.read()
-    sourceFileCache_[sourceFile] = tr
 
-    return tr, sourceFile
+    sourceFileCache_[sourceFile] = "".join(PyforaInspect.getlines(sourceFile))
+
+    return sourceFileCache_[sourceFile], sourceFile
 
 def getSourceFileText(pyObject):
     return getSourceFilenameAndText(pyObject)[0]
@@ -176,7 +175,7 @@ def withBlockAtLineNumber(sourceAst, lineNumber):
 
     if len(subnodesAtLineNumber) == 0:
         raise Exceptions.CantGetSourceTextError(
-            "can't find a WithBlock at line %s" % lineNumber
+            "can't find a WithBlock at line %s of %s" % lineNumber
             )
     if len(subnodesAtLineNumber) > 1:
         raise Exceptions.CantGetSourceTextError(

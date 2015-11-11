@@ -137,18 +137,19 @@ class WithBlockExecutor(object):
         
 
     def __enter__(self):
-        sourceFileName, lineNumber, _, _ = traceback.extract_stack(limit=2)[0]
+        self.frame = PyforaInspect.currentframe(1)
+
+        sourceFileName, lineNumber, _, _, _ = PyforaInspect.getframeinfo(self.frame)
+
         self.sourceFileName = sourceFileName
         self.lineNumber = lineNumber
-        with open(sourceFileName, "r") as sourceFile:
-            self.sourceText = sourceFile.read()
+        self.sourceText = "".join(PyforaInspect.getlines(self.sourceFileName))
 
         # Seems to "turn on" tracing, otherwise setting 
         # frame.f_trace seems to have no effect
         # doesn't seem to have any effects outside of this with context.
         sys.settrace(lambda *args, **keys: None)
 
-        self.frame = PyforaInspect.currentframe(1)
         self.frame.f_trace = self.trace
 
     def __exit__(self, excType, excValue, trace):
