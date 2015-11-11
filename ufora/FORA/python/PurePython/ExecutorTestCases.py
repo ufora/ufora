@@ -428,7 +428,7 @@ class ExecutorTestCases(
 
     eps = 1e-9
 
-    def assertMatricesAreAlmostEqual(self, m1, m2):
+    def assertArraysAreAlmostEqual(self, m1, m2):
         diff = m1 - m2
         for v in numpy.nditer(diff):
             self.assertTrue(v < ExecutorTestCases.eps)
@@ -444,7 +444,7 @@ class ExecutorTestCases(
         r2 = f(arr)
         t3 = time.time()
         print t3 - t2, t2 - t1
-        self.assertMatricesAreAlmostEqual(r1, r2)
+        self.assertArraysAreAlmostEqual(r1, r2)
 
     def test_numpy_pinverse_1(self):
         def f(arr):
@@ -458,13 +458,13 @@ class ExecutorTestCases(
 
         r1 = self.evaluateWithExecutor(f, arr1)
         r2 = f(arr1)
-        self.assertMatricesAreAlmostEqual(r1, r2)
+        self.assertArraysAreAlmostEqual(r1, r2)
 
         arr2 = [ [1.0, 1.0, 1.0, 1.0],
             [5.0, 7.0, 7, 9] ]
         r1 = self.evaluateWithExecutor(f, arr2)
         r2 = f(arr2)
-        self.assertMatricesAreAlmostEqual(r1, r2)
+        self.assertArraysAreAlmostEqual(r1, r2)
         
     def test_numpy_transpose(self):
         def f():
@@ -568,6 +568,56 @@ class ExecutorTestCases(
             return reduce(lambda x, y: x * y, toReduce)
         r = self.equivalentEvaluationTest(f)
 
+    def test_numpy_flatten(self):
+        def f(lists):
+            b = numpy.array(lists)
+            return b.flatten()
+        a = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        r = self.equivalentEvaluationTest(f, a)
+        
+        b = [[67.0, 63, 87],
+               [77, 69, 59],
+               [85, 87, 99],
+               [79, 72, 71],
+               [63, 89, 93],
+               [68, 92, 78]]
+        r = self.evaluateWithExecutor(f, b)
+
+        c = [[[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]], [[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]]]
+        r = self.evaluateWithExecutor(f, c)
+
+    def test_numpy_arrays_are_iterable(self):
+        def f():
+            array = numpy.array([[67.0, 63, 87],
+               [77, 69, 59],
+               [85, 87, 99],
+               [79, 72, 71],
+               [63, 89, 93],
+               [68, 92, 78]])
+            toReturn = []
+            for val in array:
+                toReturn = toReturn + [val]
+            return toReturn
+        self.equivalentEvaluationTest(f)
+
+    def test_numpy_tolist(self):
+        def f(lists):
+            b = numpy.array(lists)
+            return b.tolist()
+        a = [1, 2, 3, 4, 5, 6]
+        r = self.equivalentEvaluationTest(f, a)
+        
+        b = [[67.0, 63, 87],
+               [77, 69, 59],
+               [85, 87, 99],
+               [79, 72, 71],
+               [63, 89, 93],
+               [68, 92, 78]]
+        r = self.evaluateWithExecutor(f, b)
+
+        c = [[[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]], [[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]]]
+        r = self.evaluateWithExecutor(f, c)
+
     def test_numpy_dot_product_1(self):
         listLength = 20
         def f(arr1, arr2):
@@ -580,7 +630,7 @@ class ExecutorTestCases(
                 [random.uniform(-10, 10) for _ in range(0, listLength)],
                 comparisonFunction=ExecutorTestCases.compareButDontCheckTypes
                 )
-
+    
     def test_numpy_dot_product_2(self):
         listLength = 20
 
@@ -593,9 +643,31 @@ class ExecutorTestCases(
         r1 = self.evaluateWithExecutor(f)
         r2 = f()
         self.assertTrue(abs(r1 - r2) < ExecutorTestCases.eps)
-        
 
-    def test_numpy_matrix_multiplication(self):
+    def test_numpy_dot_product_3(self):
+        def f1():
+            m1 = numpy.array([1.0, 2, 3, 4, 5, 6])
+            m2 = numpy.array([[67.0, 63, 87],
+                       [77, 69, 59],
+                       [85, 87, 99],
+                       [79, 72, 71],
+                       [63, 89, 93],
+                       [68, 92, 78]])
+            return numpy.dot(m1, m2)
+        self.equivalentEvaluationTest(f1)
+
+        def f2():
+            m1 = numpy.array([1.0, 2, 3, 4, 5, 6])
+            m2 = numpy.array([[67.0, 63, 87],
+                       [77, 69, 59],
+                       [85, 87, 99],
+                       [79, 72, 71],
+                       [63, 89, 93],
+                       [68, 92, 78]])
+            return numpy.dot(m2, m1)
+        self.equivalentEvaluationTestThatHandlesExceptions(f2)
+
+    def test_numpy_matrix_multiplication_1(self):
         def f():
             m1 = numpy.array([ [67.0, 63, 87],
                        [77, 69, 59],
@@ -608,7 +680,7 @@ class ExecutorTestCases(
             return numpy.dot(m1, m2)
         r1 = self.evaluateWithExecutor(f)
         r2 = f()
-        self.assertMatricesAreAlmostEqual(r1, r2)
+        self.assertArraysAreAlmostEqual(r1, r2)
 
     def test_reshape(self):
         def f(newShape):

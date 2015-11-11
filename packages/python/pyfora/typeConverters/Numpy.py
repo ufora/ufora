@@ -49,6 +49,28 @@ class PurePythonNumpyArray:
             newVals
             )
 
+    def __iter__(self):
+        length = len(self)
+        for idx in range(length):
+            val = self[idx]
+            yield val
+
+    def flatten(self):
+        """Returns a 1-d numpy array"""
+        return PurePythonNumpyArray(self.dtype, (len(self.values),), self.values)
+
+    def tolist(self):
+        """Converts an n-dimensional numpy array to an n-dimensional list of lists"""
+        def walk(array):
+            if not isinstance(array, PurePythonNumpyArray):
+                return array
+            toReturn = []
+            for arr in array:
+                toReturn = toReturn + [walk(arr)]
+            return toReturn
+
+        return walk(self)
+
     def __len__(self):
         return self.shape[0]
 
@@ -160,7 +182,7 @@ class NpZeros:
             )
 
 class NpArray:
-    """This will only work for a well-formed (not jagged) two dimensional python lists"""
+    """This will only work for a well-formed (not jagged) n-dimensional python lists"""
     def __call__(self, array):
         def flattenAnNDimensionalArray(arr, shape):
             toReturn = []
@@ -208,6 +230,18 @@ class NpDot:
 
     def __call__(self, arr1, arr2):
         if isinstance(arr1, PurePythonNumpyArray):
+            # The numpy API allows us to multiply a 1D array by a 2D array 
+            # and numpy will automatically reshape the 1D array to 2D
+            if len(arr1.shape) == 1 and len(arr2.shape) == 2:
+                arr1 = arr1.reshape((arr1.shape[0], 1,)).transpose()
+                builtins = NpDot.__pyfora_builtins__
+                result = builtins.matrixMult(arr1.values, arr1.shape, arr2.values, arr2.shape)
+                flat = result[0]
+                return PurePythonNumpyArray(
+                    "float64",
+                    (len(flat),),
+                    flat
+                    )
             if len(arr1.shape) != len(arr2.shape):
                 raise ValueError("Matrix dimensions do not match")
             if len(arr1.shape) == 1:
