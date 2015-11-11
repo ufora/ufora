@@ -59,7 +59,7 @@ its behavior.
 
 ## Ports
 
-### Worker
+### Worker Ports
 Ufora workers communicate with each other over two consecutively numbered ports. One port is used
 to maintain a control channel over which they coordinate work, and the other is used as a data channel
 where large chunks of data can be transmitted.
@@ -69,7 +69,7 @@ The default ports are: `30009` and `30010`.
 They can be configured using the `UFORA_WORKER_BASE_PORT` environment variable.
 
 
-### Manager
+### Manager Ports
 The manager listens on two ports. One is the worker registry service to which workers connect, and
 the other is the HTTP server that clients connect to using the `pyfora` package.
 
@@ -115,7 +115,7 @@ their logs into it, and having it on the host machine can make accessing logs ea
 below assume this directory is `/home/user/ufora`, replace it with your own path when running the
 commands.
 
-## Manager
+## Run the Manager
 
 Pick a machine to run the manager service and run the following command to start the manager **and**
 a worker on it:
@@ -131,7 +131,7 @@ sudo docker run -d --name ufora_manager -e UFORA_NO_WORKER=1 -p 30000:30000 -p 3
 ```
 
 
-## Worker
+## Run Workers
 
 If your manager is running, for example, at `192.168.1.15`, start the Ufora worker using:
 
@@ -165,5 +165,3 @@ print result
 ```
 
 Run it to submit your first computation to the cluster!
-
-
