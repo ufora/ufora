@@ -2,19 +2,19 @@
 layout: main
 title: The pyfora Package
 tagline: Reference Manual
+sort_index: 03
 ---
 
-The `pyfora` Python package is the library used to execute Python code on a Ufora cluster.
 
-# pyfora
+# pyfora - The Ufora Client
 
-The `pyfora` package can be installed by running:
+Use the `pyfora` module to connect and submit computations to a Ufora cluster.
+The `pyfora` module exposes two programming models for interacting with a remote cluster:
 
-```bash
-$ pip install pyfora
-```
-You can also download the latest source package from [PyPi](https://pypi.python.org/pypi/pyfora).
+1. A low-level async interface based on [`concurrent.futures`](http://pythonhosted.org/futures/)
+2. A higher-level synchroneous API encapsulated in a Python `with` block
 
+In both cases 
 
-
+## connect
 

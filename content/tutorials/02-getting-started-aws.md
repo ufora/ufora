@@ -3,6 +3,7 @@ layout: main
 title: Getting Started on AWS
 tagline: How to Boot Ufora Instances on Amazon EC2
 category: tutorial
+sort_index: 02
 ---
 
 

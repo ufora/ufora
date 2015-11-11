@@ -3,6 +3,7 @@ layout: main
 title: Build
 tagline: How to Build the Ufora Repository
 category: develop
+sort_index: 01
 ---
 
 

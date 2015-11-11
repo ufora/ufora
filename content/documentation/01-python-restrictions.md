@@ -3,6 +3,7 @@ layout: main
 title: The Ufora Subset of Python
 tagline: Python Code That Ufora Can Execute
 category: documentation
+sort_index: 01
 ---
 
 

@@ -3,6 +3,7 @@ layout: main
 title: Getting Started Locally
 tagline: How to Run Ufora on One Machine Using Docker
 category: tutorial
+sort_index: 01
 ---
 
 

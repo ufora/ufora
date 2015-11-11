@@ -3,6 +3,7 @@ layout: main
 title: Setting up a Ufora Cluster
 tagline: How to Run a Ufora Cluster on a Local Network
 category: tutorial
+sort_index: 03
 ---
 
 

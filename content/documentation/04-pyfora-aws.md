@@ -3,6 +3,7 @@ layout: main
 title: pyfora_aws
 tagline: Launch Ufora instances in AWS
 category: documentation
+sort_index: 04
 ---
 
 A command-line utility for launching and managing Ufora workers on AWS.

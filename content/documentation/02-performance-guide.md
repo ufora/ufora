@@ -3,6 +3,7 @@ layout: main
 title: Performance
 tagline: What Ufora Can Optimize and What it Can't
 category: documentation
+sort_index: 02
 ---
 
 # Compilation and Parallelism
