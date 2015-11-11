@@ -77,8 +77,10 @@ $ mkdir ~/ufora
 From your terminal run:
 
 ```bash
-$ [sudo] docker run -d --name ufora -p 30000:30000 -v ~/ufora:/var/ufora ufora/service:0.1
+$ [sudo] docker run -d --name ufora -p 30000:30000 -v /home/user/ufora:/var/ufora ufora/service:0.1
 ```
+
+Replace the path `/home/user` with your own home directory path.
 
 **What does this do?**
 
@@ -87,7 +89,7 @@ $ [sudo] docker run -d --name ufora -p 30000:30000 -v ~/ufora:/var/ufora ufora/s
 - `--name ufora` names the new container `ufora` for easy reference in subsequent commands.
 - `-p 30000:30000` maps port 30000 - Ufora's default HTTP port - to the same port number in your host OS.
 This lets `pyfora` connect to the container using `http://localhost:30000`.
-- `-v ~/ufora:/var/ufora` mounts the local directory `~/ufora` into `/var/ufora` within the container.
+- `-v /home/user/ufora:/var/ufora` mounts the local directory `~/ufora` into `/var/ufora` within the container.
 This is where Ufora writes all of its log files.
 - `ufora/service:0.1` is the name (and version tag) of the Ufora service image to run.
 
