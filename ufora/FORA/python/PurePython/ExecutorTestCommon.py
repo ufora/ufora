@@ -128,6 +128,6 @@ class ExecutorTestCommon(object):
 
     def assertArraysAreAlmostEqual(self, m1, m2):
         self.assertTrue(
-            numpy.isclose(m1, m2).all()
+            numpy.allclose(m1, m2)
             )
 

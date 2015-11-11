@@ -178,14 +178,23 @@ class PurePythonNumpyArrayMapping(PureImplementationMapping.PureImplementationMa
 
 class NpZeros:
     def __call__(self, length):
-        vals = []
-        for _ in range(length):
-            vals = vals + [0.0]
+        def zerosFromCountAndShape(count, shape):
+            vals = []
+            for _ in range(count):
+                vals = vals + [0.0]
+            
+            return PurePythonNumpyArray(
+                shape,
+                vals
+                )
 
-        return PurePythonNumpyArray(
-            (length,),
-            vals
-            )
+        if isinstance(length, tuple):
+            # in this case, tuple is the shape of the array
+            count = reduce(lambda x, y: x*y, length)
+            return zerosFromCountAndShape(count, length)
+        else:
+            # in this case tuple is the length of the array
+            return zerosFromCountAndShape(length, (length,))
 
 
 class NpArray:

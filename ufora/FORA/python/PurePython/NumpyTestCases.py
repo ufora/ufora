@@ -396,3 +396,14 @@ class NumpyTestCases(object):
         r2 = f()
         self.assertArraysAreAlmostEqual(r1, r2)
 
+    def test_numpy_zeros_1(self):
+        def f():
+            return numpy.zeros((10, 2))
+
+        self.equivalentEvaluationTest(f)
+
+    def test_numpy_zeros_2(self):
+        def f():
+            return numpy.zeros(10)
+
+        self.equivalentEvaluationTest(f)
