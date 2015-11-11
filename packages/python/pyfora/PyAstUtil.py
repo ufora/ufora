@@ -193,11 +193,11 @@ def functionDefOrLambdaAtLineNumber(sourceAst, lineNumber):
 
     if len(subnodesAtLineNumber) == 0:
         raise Exceptions.CantGetSourceTextError(
-            "can't find a FunctionDef at line %s." % lineNumber
+            "can't find a function definition at line %s." % lineNumber
             )
     if len(subnodesAtLineNumber) > 1:
         raise Exceptions.CantGetSourceTextError(
-            "can't find a unique FunctionDef at line %s." % lineNumber
+            "can't find a unique function definition at line %s. Do you have two lambdas on the same line?" % lineNumber
             )
 
     return subnodesAtLineNumber[0]
