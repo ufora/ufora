@@ -192,6 +192,17 @@ class ExceptionTestCases(object):
             self.assertIsInstance(e, pyfora.ComputationError)
             self.assertIsInstance(e.exceptionValue, pyfora.InvalidPyforaOperation)
 
+    def test_extended_slices(self):
+        # we're not supporting extended slices just yet
+        def f():
+            x = range(10)
+            return x[1:2, 3:4]
+
+        with self.create_executor() as fora:
+            e = fora.submit(f).result().toLocal().exception()
+            self.assertIsInstance(e, pyfora.ComputationError)
+            self.assertIsInstance(e.exceptionValue, TypeError)
+
     def test_IndexError_lists_1(self):
         def f():
             return [][100]

@@ -785,6 +785,7 @@ class Converter(object):
                 objectIdToObjectDefinition
                 )
 
+        print foraExpression
         renamedVariableMapping = {}
 
         for freeVariableMemberAccessChain, dependentId in \

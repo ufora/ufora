@@ -642,7 +642,7 @@ Expression PythonAstConverter::convertNullableExpressionToExpression(
     return convertPythonAstExpressionToFora(*expr);
     }
 
-ImmutableTreeVector<ApplyArgument> PythonAstConverter::convertPythonAstSliceToApplyArguments(
+Expression PythonAstConverter::convertPythonAstSliceToExpression(
         const PythonAstSlice& slice,
         const SimpleParseRange& extent
         ) const
@@ -658,7 +658,7 @@ ImmutableTreeVector<ApplyArgument> PythonAstConverter::convertPythonAstSliceToAp
                 );
             }
         -| Slice(start, stop, step) ->> {
-            Expression sliceAsExpr = 
+            return
                 Expression::Apply(
                     Expression::Constant(
                         CSTValue(mPySliceFactory)
@@ -679,22 +679,23 @@ ImmutableTreeVector<ApplyArgument> PythonAstConverter::convertPythonAstSliceToAp
                             convertNullableExpressionToExpression(step)
                             )
                     );
-
-            return emptyTreeVec() + ApplyArgument::Normal(sliceAsExpr);
             }
         -| ExtSlice(slices) ->> {
-            // not dealing with this just yet. we'll get to it
-            std::ostringstream oss;
-            oss << PYFORA_CONVERSION_ERROR_MESSAGE;
-            throw PythonToForaConversionError(
-                oss.str(),
-                extent
+            ImmutableTreeVector<ApplyArgument> tupleArgs = mapITV(
+                slices,
+                [this, extent](PythonAstSlice slice) {
+                    return ApplyArgument::Normal(
+                        convertPythonAstSliceToExpression(slice, extent)
+                        );
+                    }
+                );
+
+            return mPythonTupleConverter->createTupleExpression(
+                Expression::CreateTuple(tupleArgs)
                 );
             }
         -| Index(value) ->> {
-            return emptyTreeVec() + ApplyArgument::Normal(
-                convertPythonAstExpressionToFora(value)
-                );
+            return convertPythonAstExpressionToFora(value);
             }
         ;
     }
@@ -808,12 +809,14 @@ Expression PythonAstConverter::convertPythonAstExpressionToFora_inner(const Pyth
                     1
                     );
 
-            ImmutableTreeVector<ApplyArgument> sliceArgs = 
-                convertPythonAstSliceToApplyArguments(slice, expr.extent());
+            auto sliceArg =
+                ApplyArgument::Normal(
+                    convertPythonAstSliceToExpression(slice, expr.extent())
+                    );
 
             return Expression::Call(
                 valueGetItemMemberFunction,
-                sliceArgs
+                emptyTreeVec() + sliceArg
                 );
             }
         -| GeneratorExp(expr, generators) ->> {

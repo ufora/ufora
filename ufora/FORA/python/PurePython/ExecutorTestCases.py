@@ -2870,16 +2870,23 @@ class ExecutorTestCases(
 
         self.equivalentEvaluationTest(f)
 
-    def test_extended_slices(self):
-        # we're not supporting extended slices just yet
-        def f():
-            x = range(10)
-            return x[1:2, 3:4]
+    def test_custom_slicing_2(self):
+        class ListWrapper_2:
+            def __init__(self, m):
+                self.m = m
+            def __getitem__(self, maybeSlice):
+                if isinstance(maybeSlice, slice):
+                    return self.m[maybeSlice]
+                if isinstance(maybeSlice, tuple):
+                    return [self.m[bla] for bla in maybeSlice]
+                return -100000
 
-        with self.assertRaises(pyfora.PythonToForaConversionError):
-            self.evaluateWithExecutor(f)
-        
-        
+        def f():
+            l = ListWrapper_2(range(10))
+            return l[:, 1:4, 3:9]
+
+        self.equivalentEvaluationTest(f)
+
     def test_ellipsis(self):
         # we're not supporting Ellipsis yet in slicing
         def f():
