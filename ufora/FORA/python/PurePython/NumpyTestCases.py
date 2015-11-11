@@ -388,3 +388,11 @@ class NumpyTestCases(object):
                 with fora.remotely:
                     f()
 
+    def test_numpy_arange(self):
+
+        def f():
+            return numpy.arange(-1,.9,.2)
+        r1 = self.evaluateWithExecutor(f)
+        r2 = f()
+        self.assertArraysAreAlmostEqual(r1, r2)
+

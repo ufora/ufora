@@ -290,9 +290,20 @@ class NpPinv:
             flat
             )
 
+
+class NpArange:
+    def __call__(self, start, end, step):
+        currentVal = start
+        toReturn = []
+        while currentVal < end:
+            toReturn = toReturn + [currentVal]
+            currentVal = currentVal + step
+        return NpArray()(toReturn)
+
+
 def generateMappings():
-    mappings_ = [(np.zeros, NpZeros), (np.array, NpArray),
-                 (np.dot, NpDot), (np.linalg.pinv, NpPinv)]
+    mappings_ = [(np.zeros, NpZeros), (np.array, NpArray), (np.dot, NpDot),
+                 (np.linalg.pinv, NpPinv), (np.arange, NpArange)]
 
     tr = [PureImplementationMapping.InstanceMapping(instance, pureType) for \
             (instance, pureType) in mappings_]
