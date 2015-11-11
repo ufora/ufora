@@ -123,3 +123,10 @@ class BuiltinTestCases(object):
 
         self.equivalentEvaluationTest(f, 2)
 
+
+    def test_enumerate(self):
+        def f(x):
+            return [_ for _ in x]
+
+        self.equivalentEvaluationTest(f, [1,2,3])
+        self.equivalentEvaluationTest(f, "asdf")
