@@ -1,1 +1,0 @@
-../../tutorials/getting-started-cluster.md
