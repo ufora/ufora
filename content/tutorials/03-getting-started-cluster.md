@@ -1,6 +1,6 @@
 ---
 layout: main
-title: Getting Started With a Ufora Cluster
+title: Setting up a Ufora Cluster
 tagline: How to Run a Ufora Cluster on a Local Network
 category: tutorial
 ---
