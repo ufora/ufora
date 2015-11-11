@@ -82,15 +82,64 @@ class Range:
     def __call__(self, first, second=None, increment=None):
         return list(xrange(first, second, increment))
 
+class Empty:
+    pass
+
 class Reduce:
-    def __call__(self, f, arr):
-        toReturn = arr[0]
-        idx = 0
-        for a in arr:
-            if idx != 0:
-                toReturn = f(toReturn, a)
-            idx = idx + 1
-        return toReturn
+    def __call__(self, f, sequence, start=Empty):
+        #get a generator
+        generator = sequence.__pyfora_generator__()
+
+        if not generator.canSplit():
+            result = start
+            for val in generator:
+                if result is Empty:
+                    result = val
+                else:
+                    result = f(result, val)
+            return result
+        else:
+            def sum(sumSubGenerator, depth):
+                if depth > 9 or not sumSubGenerator.canSplit():
+                    result = Empty
+
+                    if sumSubGenerator.isNestedGenerator():
+                        #the outer generator might not be splittable anymore, but
+                        #the inner ones might
+                        for childGenerator in sumSubGenerator.childGenerators():
+                            if result is Empty:
+                                result = sum(childGenerator, depth+1)
+                            else:
+                                result = f(result, sum(childGenerator, depth+1))
+                    else:
+                        for val in sumSubGenerator:
+                            if result is Empty:
+                                result = val
+                            else:
+                                result = f(result, val)
+                    return result
+                else:
+                    split = sumSubGenerator.split()
+                    left = sum(split[0], depth+1)
+                    right = sum(split[1], depth+1)
+
+                    if left is Empty:
+                        return right
+                    if right is Empty:
+                        return left
+                    return f(left, right)
+
+            result = sum(generator, 0)
+
+            if result is Empty:
+                if start is Empty:
+                    raise TypeError("reduce() of empty sequence with no initial value")
+                return start
+
+            if start is Empty:
+                return result
+
+            return f(start, result)
 
 class Map:
     def __call__(self, f, iterable):
@@ -101,54 +150,13 @@ class Map:
 class Reversed:
     def __call__(self, arr):
         l = len(arr)
-        for idx in range(l):
+        for idx in xrange(l):
             v = arr[l - idx - 1]
             yield v
 
 class Sum:
     def __call__(self, sequence, start=0):
-        #get a generator
-        generator = sequence.__pyfora_generator__()
-
-        class Empty:
-            pass
-
-        def sum(sumSubGenerator, depth):
-            if depth > 9 or not sumSubGenerator.canSplit():
-                result = Empty
-
-                if sumSubGenerator.isNestedGenerator():
-                    #the outer generator might not be splittable anymore, but
-                    #the inner ones might
-                    for childGenerator in sumSubGenerator.childGenerators():
-                        if result is Empty:
-                            result = sum(childGenerator, depth+1)
-                        else:
-                            result = result + sum(childGenerator, depth+1)
-                else:
-                    for val in sumSubGenerator:
-                        if result is Empty:
-                            result = val
-                        else:
-                            result = result + val
-                return result
-            else:
-                split = sumSubGenerator.split()
-                left = sum(split[0], depth+1)
-                right = sum(split[1], depth+1)
-
-                if left is Empty:
-                    return right
-                if right is Empty:
-                    return left
-                return left+right
-
-        result = sum(generator, 0)
-
-        if result is Empty:
-            return start
-
-        return start + result
+        return reduce(lambda x,y: x+y, sequence, start)
 
 class XRangeInstance:
     def __init__(self, start, count, increment):

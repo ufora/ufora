@@ -88,10 +88,10 @@ class ExecutorTestCases(
                     return False
             return True
         else:
-            sameType = x == y and type(x) is type(y)
-            if not sameType:
-                print "Different types", x, y, type(x), type(y)
-            return sameType
+            same = x == y and type(x) is type(y)
+            if not same:
+                print "Results differed: ", x, y, ". Types are ", type(x), " and ", type(y)
+            return same
 
     def equivalentEvaluationTest(self, func, *args, **kwds):
         comparisonFunction = ExecutorTestCases.defaultComparison
@@ -561,12 +561,17 @@ class ExecutorTestCases(
         r = self.equivalentEvaluationTest(f)
 
     def test_reduce_builtin(self):
-        toReduce = []
-        for _ in range(10):
-            toReduce.append(random.uniform(-10, 10))
-        def f():
-            return reduce(lambda x, y: x * y, toReduce)
-        r = self.equivalentEvaluationTest(f)
+        def mul(x,y): return x*y
+        def sub(x,y): return x-y
+        self.equivalentEvaluationTest(lambda: reduce(mul, [1,2,3,4,5]))
+        self.equivalentEvaluationTest(lambda: reduce(mul, [1,2,3,4,5], 0))
+
+        def nonparallel(x):
+            for v in x:
+                yield v
+
+        self.equivalentEvaluationTest(lambda: reduce(sub, nonparallel([1.0,2.0,3.0,4.0,5.0])))
+        self.equivalentEvaluationTest(lambda: reduce(sub, nonparallel([1.0,2.0,3.0,4.0,5.0]), 10))
 
     def test_numpy_flatten(self):
         def f(lists):
