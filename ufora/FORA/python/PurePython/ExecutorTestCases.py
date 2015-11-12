@@ -16,7 +16,6 @@ import pyfora
 import pyfora.pyAst.PyAstUtil as PyAstUtil
 import pyfora.Exceptions as Exceptions
 
-
 import numpy
 import time
 

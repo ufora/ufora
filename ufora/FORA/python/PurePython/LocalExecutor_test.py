@@ -23,6 +23,7 @@ import ufora.FORA.python.PurePython.NumpyTestCases as NumpyTestCases
 import ufora.FORA.python.PurePython.IteratorTestCases as IteratorTestCases
 import ufora.FORA.python.PurePython.BuiltinTestCases as BuiltinTestCases
 import ufora.FORA.python.PurePython.ExceptionTestCases as ExceptionTestCases
+import ufora.FORA.python.PurePython.MathTestCases as MathTestCases
 
 
 import unittest
@@ -36,7 +37,8 @@ class TestLocalExecutor(
         NumpyTestCases.NumpyTestCases,
         IteratorTestCases.IteratorTestCases,
         BuiltinTestCases.BuiltinTestCases,
-        ExceptionTestCases.ExceptionTestCases
+        ExceptionTestCases.ExceptionTestCases,
+        MathTestCases.MathTestCases
         ):
     @classmethod
     def setUpClass(cls):

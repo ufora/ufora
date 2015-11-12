@@ -20,10 +20,13 @@ import pyfora.typeConverters.PureComplex as PureComplex
 import pyfora.typeConverters.PureMath as PureMath
 import pyfora.typeConverters.PureScipy as PureScipy
 
+
 defaultMapping_ = None
+
 
 def getMappings():
     global defaultMapping_
+
     if defaultMapping_ is None:
         defaultMapping_ = PureImplementationMappings.PureImplementationMappings()
 
@@ -46,6 +49,7 @@ def getMappings():
             defaultMapping_.addMapping(_)
 
     return defaultMapping_
+
 
 def addMapping(mapping):
     """Register an instance of PureImplementationMapping with the default mapping model.

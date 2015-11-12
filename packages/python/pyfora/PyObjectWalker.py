@@ -21,16 +21,19 @@ import pyfora.PyforaWithBlock as PyforaWithBlock
 import pyfora.PyforaInspect as PyforaInspect
 import pyfora.pyAst.PyAstUtil as PyAstUtil
 
+
 import logging
 import traceback
 import __builtin__
 import ast
+
 
 class UnresolvedFreeVariableException(Exception):
     def __init__(self, freeVariable, contextName):
         super(UnresolvedFreeVariableException, self).__init__()
         self.freeVarChainWithPos = freeVariable
         self.contextNameOrNone = contextName
+
 
 class UnresolvedFreeVariableExceptionWithTrace(Exception):
     def __init__(self, message, trace=None):
@@ -44,7 +47,8 @@ class UnresolvedFreeVariableExceptionWithTrace(Exception):
         Exceptions.checkTraceElement(elmt)
         self.trace.insert(0, elmt)
 
-def _convertUnresolvedFreeVariableExceptionAndRaise(e, pyAst, sourceFileName):
+
+def _convertUnresolvedFreeVariableExceptionAndRaise(e, sourceFileName):
     logging.error(
         "Converter raised an UnresolvedFreeVariableException exception: %s",
         traceback.format_exc())
@@ -63,10 +67,14 @@ def isClassInstance(pyObject):
 
 NoneType = type(None)
 
-class AClassWithAMethod:
+
+class _AClassWithAMethod:
     def f(self):
         pass
-instancemethod = type(AClassWithAMethod().f)
+
+
+instancemethod = type(_AClassWithAMethod().f)
+
 
 def _isPrimitive(pyObject):
     return isinstance(pyObject, (NoneType, int, float, str, bool))
@@ -426,7 +434,7 @@ class PyObjectWalker(object):
                     freeVariableMemberAccessChainsWithPositions, pyObject.boundVariables
                     )
         except UnresolvedFreeVariableException as e:
-            _convertUnresolvedFreeVariableExceptionAndRaise(e, sourceTree, pyObject.sourceFileName)
+            _convertUnresolvedFreeVariableExceptionAndRaise(e, pyObject.sourceFileName)
 
         try:
             processedFreeVariableMemberAccessChainResolutions = {}
@@ -540,7 +548,7 @@ class PyObjectWalker(object):
                     pyObject, pyAst
                     )
         except UnresolvedFreeVariableException as e:
-            _convertUnresolvedFreeVariableExceptionAndRaise(e, pyAst, sourceFileName)
+            _convertUnresolvedFreeVariableExceptionAndRaise(e, sourceFileName)
 
         try:
             processedFreeVariableMemberAccessChainResolutions = {}

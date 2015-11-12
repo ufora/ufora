@@ -123,11 +123,3 @@ class BuiltinTestCases(object):
 
         self.equivalentEvaluationTest(f, 2)
 
-    def test_unsupported_builtin_member(self):
-        import math
-        def f(x):
-            return math.sin(x)
-
-        with self.assertRaises(pyfora.Exceptions.PythonToForaConversionError):
-            self.equivalentEvaluationTest(f, 2)
-
