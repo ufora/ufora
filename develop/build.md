@@ -152,7 +152,7 @@ Let's take a look at the arguments:
 
 * `-it` - runs the container interactively in the terminal (and creates a pseudo-tty)
 * `--volumes-from DATA` - mount all volumes mounted to the container named "DATA"
-* `-p 30000:30000` - map port 30000 in the container (the HTTP port of the Ufora GUI) to the same port in the host OS.
+* `-p 30000:30000` - map port 30000 in the container (the HTTP port of the ufora-web service) to the same port in the host OS.
   This lets you run Python code that uses the `pyfora` package on your host OS and connect to the Ufora
   backedn running in the container using `pyfora.connect('http://localhost:30000')`.
 * `--privileged=true` - run the container in privileged mode.
