@@ -12,13 +12,11 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import pyfora.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
 import pyfora.PureImplementationMappings as PureImplementationMappings
 import pyfora.PureImplementationMapping as PureImplementationMapping
 import pyfora.PyObjectWalker as PyObjectWalker
 import pyfora.NamedSingletons as NamedSingletons
-import ast
-import textwrap
+
 import unittest
 
 class SomeRandomInstance:
@@ -32,14 +30,22 @@ class PyObjectWalkerTest(unittest.TestCase):
         mappings = PureImplementationMappings.PureImplementationMappings()
 
         #empty mappings work
-        PyObjectWalker.PyObjectWalker(None, mappings)
+        PyObjectWalker.PyObjectWalker(
+            purePythonClassMapping=mappings,
+            objectRegistry=None
+            )
 
         mappings.addMapping(
-            PureImplementationMapping.InstanceMapping(SomeRandomInstance(), SomeRandomInstance)
+            PureImplementationMapping.InstanceMapping(
+                SomeRandomInstance(), SomeRandomInstance
+                )
             )
 
         #an instance mapping doesn't cause an exception
-        PyObjectWalker.PyObjectWalker(None, mappings)
+        PyObjectWalker.PyObjectWalker(
+            purePythonClassMapping=mappings,
+            objectRegistry=None
+            )
 
         self.assertTrue(UserWarning in NamedSingletons.pythonSingletonToName)
 
@@ -49,6 +55,9 @@ class PyObjectWalkerTest(unittest.TestCase):
 
         #but this mapping doesnt
         with self.assertRaises(Exception):
-            PyObjectWalker.PyObjectWalker(None, mappings)
+            PyObjectWalker.PyObjectWalker(
+                purePythonClassMapping=mappings,
+                objectRegistry=None
+                )
 
 

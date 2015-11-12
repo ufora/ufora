@@ -80,5 +80,5 @@ NamedSingleton = new_type_description(
     )
 BuiltinExceptionInstance = new_type_description(
     'BuiltinExceptionInstance',
-    'builtinExceptionTypeName, argId'
+    'builtinExceptionTypeName, argsId'
     )

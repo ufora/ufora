@@ -14,13 +14,12 @@
 
 import pyfora.Exceptions as Exceptions
 import pyfora.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
-import pyfora.PyAstUtil as PyAstUtil
 import pyfora.PureImplementationMappings as PureImplementationMappings
 import pyfora.RemotePythonObject as RemotePythonObject
-import pyfora.PyObjectNodes as PyObjectNodes
-import pyfora.PyforaInspect as PyforaInspect
-import pyfora.PyforaWithBlock as PyforaWithBlock
 import pyfora.NamedSingletons as NamedSingletons
+import pyfora.PyforaWithBlock as PyforaWithBlock
+import pyfora.PyforaInspect as PyforaInspect
+import pyfora.PyAstUtil as PyAstUtil
 
 import logging
 import __builtin__
@@ -38,29 +37,75 @@ def _isPrimitive(pyObject):
     return isinstance(pyObject, (NoneType, int, float, str, bool))
 
 
-class PyObjectWalker(object):
-    """
-    Generic class for walking a python object (in a way we like), and calling
-    a visitor on each node.
-
-    Instance Attributes:
-      walkedNodes: dictionary of nodes walked (id -> object)
-      visitor: visitor to be called on walked nodes
-      purePythonClassMapping: Instance of PureImplementationMappings.PureImplementationMappings
-      _convertedObjectCache: dictionary (id -> PyObjectNode?)
-      _fileTextCache: dictionary (? -> ?)
-    """
-
+class _FunctionDefinition(object):
     def __init__(
             self,
-            visitor,
-            purePythonClassMapping=None
+            sourceFileId,
+            lineNumber,
+            freeVariableMemberAccessChainsToId
             ):
-        self.walkedNodes = dict()
-        self.visitor = visitor
+        self.sourceFileId = sourceFileId
+        self.lineNumber = lineNumber
+        self.freeVariableMemberAccessChainsToId = \
+            freeVariableMemberAccessChainsToId
 
+
+class _ClassDefinition(object):
+    def __init__(
+            self,
+            sourceFileId,
+            lineNumber,
+            freeVariableMemberAccessChainsToId
+            ):
+        self.sourceFileId = sourceFileId
+        self.lineNumber = lineNumber
+        self.freeVariableMemberAccessChainsToId = \
+            freeVariableMemberAccessChainsToId
+
+
+class _FileDescription(object):
+    _fileTextCache = {}
+
+    def __init__(self, fileName, fileText):
+        self.fileName = fileName
+        self.fileText = fileText
+
+    @classmethod
+    def cachedFromArgs(cls, fileName, fileText=None):
+        if fileName in cls._fileTextCache:
+            return cls._fileTextCache[fileName]
+
+        if fileText is None:
+            fileText = "".join(PyforaInspect.getlines(fileName))
+
+        tr = cls(fileName, fileText)
+        cls._fileTextCache[fileName] = tr
+        return tr
+
+
+class PyObjectWalker(object):
+    """
+    `PyObjectWalker`: walk a live python object, registering its pieces with an 
+    `ObjectRegistry`
+
+    The main, and only publicly viewable function on this class is `walkPyObject`
+
+    Attributes:
+        _`purePythonClassMapping`: a `PureImplementationMapping` -- used to 
+            "replace" python objects in an python object graph by a "Pure" 
+            python class. For example, treat this `np.array` as a 
+        `PurePython.SomePureImplementationOfNumpyArray`.
+        `_convertedObjectCache`: a mapping from python id -> pure instance
+        `_pyObjectIdToObjectId`: mapping from python id -> id registered in
+            `self.objectRegistry`
+        `_objectRegistry`: an `ObjectRegistry` which holds an image of the 
+            objects we visit.
+        
+    """
+    def __init__(self, purePythonClassMapping, objectRegistry):
         if purePythonClassMapping is None:
-            purePythonClassMapping = PureImplementationMappings.PureImplementationMappings()
+            purePythonClassMapping = \
+                PureImplementationMappings.PureImplementationMappings()
 
         for singleton in NamedSingletons.pythonSingletonToName:
             if purePythonClassMapping.canMap(singleton):
@@ -68,141 +113,221 @@ class PyObjectWalker(object):
                     "You provided a mapping that applies to %s, which already has a direct mapping" % singleton
                     )
 
-        self.purePythonClassMapping = purePythonClassMapping
+        self._purePythonClassMapping = purePythonClassMapping
+        self._convertedObjectCache = {}
+        self._pyObjectIdToObjectId = {}
+        self._objectRegistry = objectRegistry
 
-        self._convertedObjectCache = dict()
+    def _allocateId(self, pyObject):
+        objectId = self._objectRegistry.allocateObject()
+        self._pyObjectIdToObjectId[id(pyObject)] = objectId
 
-        self._fileTextCache = dict()
-
-
-    def resetWalkedNodes(self):
-        self.walkedNodes = dict()
-
-    def setVisitor(self, visitor):
-        self.visitor = visitor
+        return objectId
 
     def walkPyObject(self, pyObject):
-        """Recursively walk pyObject and call visitor on it and return None.
-
-        May choose to walk a different node instead. Populates"""
-
-        if id(pyObject) in self.walkedNodes:
-            return
-
-        # Note: We add this to the walkedNodes dict before we possibly get an
-        # alternate object to walk below.
-        self.walkedNodes[id(pyObject)] = pyObject
-
-        objectToWalkInsteadOrNone = self._objectToWalkInsteadOrNone(pyObject)
-        if objectToWalkInsteadOrNone is not None:
-            self.walkPyObject(objectToWalkInsteadOrNone)
-            return
-
-        self.visitor.visit(pyObject)
-        
-        if isinstance(pyObject, PyObjectNodes.WithBlock):
-            self._walkWithBlock(pyObject)
-        elif isinstance(pyObject, PyObjectNodes.List):
-            self._walkList(pyObject)
-        elif isinstance(pyObject, PyObjectNodes.Tuple):
-            self._walkTuple(pyObject)
-        elif isinstance(pyObject, PyObjectNodes.Dict):
-            self._walkDict(pyObject)
-        elif isinstance(pyObject, PyObjectNodes.RemotePythonObject):
-            self._walkRemotePythonObject(pyObject)
-        elif isinstance(pyObject, PyObjectNodes.NamedSingleton):
-            self._walkNamedSingleton(pyObject)
-        elif isinstance(pyObject, PyObjectNodes.BuiltinExceptionInstance):
-            self._walkBuiltinExceptionInstance(pyObject)
-        elif isinstance(pyObject, PyObjectNodes.ClassInstanceDescription):
-            self._walkClassInstanceDescription(pyObject)
-        elif isinstance(pyObject, PyObjectNodes.FunctionDefinition):
-            self._walkFunctionDefinition(pyObject)
-        elif isinstance(pyObject, PyObjectNodes.ClassDefinition):
-            self._walkClassDefinition(pyObject)
-
-    def unwrapConvertedObject(self, pyObject):
-        if id(pyObject) in self._convertedObjectCache:
-            return self._convertedObjectCache[id(pyObject)][1]
-        else:
-            return pyObject
-        
-    def _objectToWalkInsteadOrNone(self, pyObject):
-        """Takes a python object and returns another python object or None.
-
-        If the given python object belongs to the PyObjectNode hierarchy,
-        return None, otherwise build or fetch from a cache the appropriate
-        PyObjectNode to walk, and return it.
         """
+        `walkPyObject`: recursively traverse a live python object, 
+        registering its "pieces" with an `ObjectRegistry` 
+        (`self.objectRegistry`).
 
-        tr = None
-        if isinstance(pyObject, PyObjectNodes.PyObjectNode):
-            return tr  # If this is the common path, we may want to pull it to the call-site(s)
+        Note that we use python `id`s for caching in this class, 
+        which means it cannot be used in cases where `id`s might get
+        reused (recall they are just memory addresses).
+
+        `objectId`s are assigned to all pieces of the python object.
+
+        Returns:
+            An `int`, the `objectId` of the root python object.
+        """
+        if id(pyObject) in self._pyObjectIdToObjectId:
+            return self._pyObjectIdToObjectId[id(pyObject)]
+
+        if id(pyObject) in self._convertedObjectCache:
+            pyObject = self._convertedObjectCache[id(pyObject)]
+        elif self._purePythonClassMapping.canMap(pyObject):
+            pureInstance = self._purePythonClassMapping.mappableInstanceToPure(
+                pyObject
+                )
+            self._convertedObjectCache[id(pyObject)] = pureInstance
+            pyObject = pureInstance
+
+        objectId = self._allocateId(pyObject)
 
         if isinstance(pyObject, RemotePythonObject.RemotePythonObject):
-            tr = PyObjectNodes.RemotePythonObject(pyObject)
-        elif isinstance(pyObject, Exception) and pyObject.__class__ in NamedSingletons.pythonSingletonToName:
-            tr = PyObjectNodes.BuiltinExceptionInstance(
-                pyObject, 
-                NamedSingletons.pythonSingletonToName[pyObject.__class__], 
-                pyObject.args
+            self._registerRemotePythonObject(objectId, pyObject)        
+        elif isinstance(pyObject, _FileDescription):
+            self._registerFileDescription(objectId, pyObject)
+        elif isinstance(pyObject, Exception) and pyObject.__class__ in \
+           NamedSingletons.pythonSingletonToName:
+            self._registerBuiltinExceptionInstance(objectId, pyObject)
+        elif isinstance(pyObject, (type, type(isinstance))) and \
+           pyObject in NamedSingletons.pythonSingletonToName:
+            self._registerNamedSingleton(
+                objectId, 
+                NamedSingletons.pythonSingletonToName[pyObject]
                 )
-        elif isinstance(pyObject, (type, type(isinstance))) and pyObject in NamedSingletons.pythonSingletonToName:
-            tr = PyObjectNodes.NamedSingleton(pyObject, NamedSingletons.pythonSingletonToName[pyObject])
         elif isinstance(pyObject, PyforaWithBlock.PyforaWithBlock):
-            tr = self._pyObjectNodeForWithBlock(pyObject)
-        elif id(pyObject) in self._convertedObjectCache:
-            tr = self._convertedObjectCache[id(pyObject)][1]
-        elif self.purePythonClassMapping.canMap(pyObject):
-            pureInstance = self.purePythonClassMapping.mappableInstanceToPure(pyObject)
-            self._convertedObjectCache[id(pyObject)] = (pyObject, pureInstance)
-            tr = pureInstance
+            self._registerWithBlock(objectId, pyObject)
         elif isinstance(pyObject, tuple):
-            tr = PyObjectNodes.Tuple(pyObject)
+            self._registerTuple(objectId, pyObject)
         elif isinstance(pyObject, list):
-            tr = PyObjectNodes.List(pyObject)
+            self._registerList(objectId, pyObject)
         elif isinstance(pyObject, dict):
-            tr = PyObjectNodes.Dict(pyObject)
+            self._registerDict(objectId, pyObject)
         elif _isPrimitive(pyObject):
-            tr = PyObjectNodes.Primitive(pyObject)
+            self._registerPrimitive(objectId, pyObject)
         elif PyforaInspect.isfunction(pyObject):
-            tr = self._pyObjectNodeForFunction(pyObject)
+            self._registerFunction(objectId, pyObject)
         elif PyforaInspect.isclass(pyObject):
-            tr = self._pyObjectNodeForClass(pyObject)
+            self._registerClass(objectId, pyObject)
         elif isClassInstance(pyObject):
-            tr = self._classInstanceDescriptionFromClassInstance(pyObject)
+            self._registerClassInstance(objectId, pyObject)
+        else:
+            assert False, "don't know what to do with %s" % pyObject
 
-        return tr
+        return objectId
 
-    def _classInstanceDescriptionFromClassInstance(self, pyObject):
-        classObject = pyObject.__class__
+    def _registerRemotePythonObject(self, objectId, remotePythonObject):
+        """
+        `_registerRemotePythonObject`: register a remotePythonObject
+        (a terminal node in a python object graph) with `self.objectRegistry`
+        """
+        self._objectRegistry.defineRemotePythonObject(
+            objectId,
+            remotePythonObject._pyforaComputedValueArg()
+            )
+
+    def _registerFileDescription(self, objectId, fileDescription):
+        """
+        `_registerFileDescription`: register a `_FileDescription`
+        (a terminal node in a python object graph) with `self.objectRegistry`
+        """
+        self._objectRegistry.defineFile(
+            objectId=objectId,
+            path=fileDescription.fileName,
+            text=fileDescription.fileText
+            )        
+
+    def _registerBuiltinExceptionInstance(
+            self, objectId, builtinExceptionInstance
+            ):
+        """
+        `_registerBuiltinExceptionInstance`: register a `builtinExceptionInstance`
+        with `self.objectRegistry`.
+
+        Recursively call `walkPyObject` on the args of the instance.
+        """
+        argsId = self.walkPyObject(builtinExceptionInstance.args)
+
+        self._objectRegistry.defineBuiltinExceptionInstance(
+            objectId,
+            NamedSingletons.pythonSingletonToName[
+                builtinExceptionInstance.__class__
+                ],
+            argsId
+            )
+
+    def _registerNamedSingleton(self, objectId, singletonName):
+        """
+        `_registerNamedSingleton`: register a `NamedSingleton`
+        (a terminal node in a python object graph) with `self.objectRegistry`
+        """
+        self._objectRegistry.defineNamedSingleton(objectId, singletonName)
+
+    def _registerTuple(self, objectId, tuple_):
+        """
+        `_registerTuple`: register a `tuple` instance
+        with `self.objectRegistry`.
+
+        Recursively call `walkPyObject` on the values in the tuple.
+        """
+        memberIds = [self.walkPyObject(val) for val in tuple_]
+        
+        self._objectRegistry.defineTuple(
+            objectId=objectId,
+            memberIds=memberIds
+            )            
+
+    def _registerList(self, objectId, list_):
+        """
+        `_registerList`: register a `list` instance
+        with `self.objectRegistry`.
+
+        Recursively call `walkPyObject` on the values in the list.
+        """
+        memberIds = [self.walkPyObject(val) for val in list_]
+        
+        self._objectRegistry.defineList(
+            objectId=objectId,
+            memberIds=memberIds
+            )            
+
+    def _registerPrimitive(self, objectId, primitive):
+        """
+        `_registerPrimitive`: register a primitive (defined by `isPrimitive`)
+        (a terminal node in a python object graph) with `self.objectRegistry`
+        """
+        self._objectRegistry.definePrimitive(
+            objectId,
+            primitive
+            )
+
+    def _registerDict(self, objectId, dict_):
+        """
+        `_registerDict`: register a `dict` instance
+        with `self.objectRegistry`.
+
+        Recursively call `walkPyObject` on the keys and values in the dict
+        """
+        keyIds, valueIds = [], []
+        for k, v in dict_.iteritems():
+            keyIds.append(self.walkPyObject(k))
+            valueIds.append(self.walkPyObject(v))
+        
+        self._objectRegistry.defineDict(
+            objectId=objectId,
+            keyIds=keyIds,
+            valueIds=valueIds
+            )
+
+    def _registerClassInstance(self, objectId, classInstance):
+        """
+        `_registerClassInstance`: register a `class` instance
+        with `self.objectRegistry`.
+
+        Recursively call `walkPyObject` on the class of the `classInstance`
+        and on the data members of the instance.
+        """
+        classObject = classInstance.__class__
+        classId = self.walkPyObject(classObject)
 
         try:
             dataMemberNames = PyAstUtil.computeDataMembers(classObject)
         except Exceptions.CantGetSourceTextError:
-            self._raiseConversionErrorForSourceTextError(pyObject)
+            self._raiseConversionErrorForSourceTextError(classInstance)
         except:
-            logging.error('Failed on %s (of type %s)', pyObject, type(pyObject))
+            logging.error('Failed on %s (of type %s)', classInstance, type(classInstance))
             raise
-        classMemberNameToMemberValue = {}
+        classMemberNameToClassMemberId = {}
 
         for dataMemberName in dataMemberNames:
-            memberValue = getattr(pyObject, dataMemberName)
-            classMemberNameToMemberValue[dataMemberName] = memberValue
+            memberId = self.walkPyObject(getattr(classInstance, dataMemberName))
+            classMemberNameToClassMemberId[dataMemberName] = memberId
 
-        return PyObjectNodes.ClassInstanceDescription(
-                pyObject,
-                classObject,
-                classMemberNameToMemberValue
-                )
-
-    def _pyObjectNodeForClass(self, pyObject):
-        return self._pyObjectNodeForClassOrFunction(
-            pyObject,
-            classOrFunction=PyObjectNodes.ClassDefinition
+        self._objectRegistry.defineClassInstance(
+            objectId=objectId,
+            classId=classId,
+            classMemberNameToClassMemberId=classMemberNameToClassMemberId
             )
 
-    def _pyObjectNodeForWithBlock(self, pyObject):
+    def _registerWithBlock(self, objectId, pyObject):
+        """
+        `_registerWithBlock`: register a `PyforaWithBlock.PyforaWithBlock`
+        with `self.objectRegistry`.
+
+        Recursively call `walkPyObject` on the resolvable free variable
+        member access chains in the block and on the file object.
+        """
         lineNumber = pyObject.lineNumber
         sourceTree = PyAstUtil.pyAstFromText(pyObject.sourceText)
         withBlockAst = PyAstUtil.withBlockAtLineNumber(sourceTree, lineNumber)
@@ -233,35 +358,66 @@ class PyObjectWalker(object):
             if boundValue not in pyObject.unboundLocals and boundValue in pyObject.boundVariables:
                 freeVariableMemberAccessChains.add((boundValue,))
 
-
         freeVariableMemberAccessChainResolutions = \
-            self._resolveFreeVariableMemberAccesChains(
+            self._resolveFreeVariableMemberAccessChains(
                 freeVariableMemberAccessChains, pyObject.boundVariables
                 )
 
         processedFreeVariableMemberAccessChainResolutions = { \
-            '.'.join(chain): resolution for chain, resolution in \
-            freeVariableMemberAccessChainResolutions.iteritems()
+            '.'.join(chain): self.walkPyObject(resolution) for \
+            chain, resolution in freeVariableMemberAccessChainResolutions.iteritems()
             }
 
-        if pyObject.sourceFileName in self._fileTextCache:
-            fileObject = self._fileTextCache[pyObject.sourceFileName]
-        else:
-            sourceFileText = "".join(PyforaInspect.getlines(pyObject.sourceFileName))
-            fileObject = PyObjectNodes.File(pyObject.sourceFileName, sourceFileText)
-            self._fileTextCache[pyObject.sourceFileName] = fileObject
-
-        return PyObjectNodes.WithBlock(
-            pyObject, 
-            fileObject,
-            lineNumber,
-            processedFreeVariableMemberAccessChainResolutions
+        sourceFileId = self.walkPyObject(
+            _FileDescription.cachedFromArgs(
+                fileName=pyObject.sourceFileName
+                )
             )
 
-    def _pyObjectNodeForFunction(self, pyObject):
-        return self._pyObjectNodeForClassOrFunction(
+        self._objectRegistry.defineWithBlock(
+            objectId=objectId,
+            freeVariableMemberAccessChainsToId=\
+                processedFreeVariableMemberAccessChainResolutions,
+            sourceFileId=sourceFileId,
+            lineNumber=lineNumber
+            )
+
+    def _registerFunction(self, objectId, function):
+        """
+        `_registerFunction`: register a python function with `self.objectRegistry.
+
+        Recursively call `walkPyObject` on the resolvable free variable member
+        access chains in the function, as well as on the source file object.
+        """
+        functionDescription = self._classOrFunctionDefinition(
+            function,
+            classOrFunction=_FunctionDefinition
+            )
+
+        self._objectRegistry.defineFunction(
+            objectId=objectId,
+            sourceFileId=functionDescription.sourceFileId,
+            lineNumber=functionDescription.lineNumber,
+            scopeIds=functionDescription.freeVariableMemberAccessChainsToId
+            )
+
+    def _registerClass(self, objectId, pyObject):
+        """
+        `_registerClass`: register a python class with `self.objectRegistry.
+
+        Recursively call `walkPyObject` on the resolvable free variable member
+        access chains in the class, as well as on the source file object.
+        """
+        fileDescription = self._classOrFunctionDefinition(
             pyObject,
-            classOrFunction=PyObjectNodes.FunctionDefinition
+            classOrFunction=_ClassDefinition
+            )
+
+        self._objectRegistry.defineClass(
+            objectId=objectId,
+            sourceFileId=fileDescription.sourceFileId,
+            lineNumber=fileDescription.lineNumber,
+            scopeIds=fileDescription.freeVariableMemberAccessChainsToId
             )
 
     def _raiseConversionErrorForSourceTextError(self, pyObject):
@@ -270,7 +426,22 @@ class PyObjectWalker(object):
                 pyObject, type(pyObject))
             )
 
-    def _pyObjectNodeForClassOrFunction(self, pyObject, classOrFunction):
+    def _classOrFunctionDefinition(self, pyObject, classOrFunction):
+        """
+        `_classOrFunctionDefinition: create a `_FunctionDefinition` or 
+        `_ClassDefinition` out of a python class or function, recursively visiting 
+        the resolvable free variable member access chains in `pyObject` as well
+        as the source file object.
+
+        Args:
+            `pyObject`: a python class or function.
+            `classOrFunction`: should either be `_FunctionDefinition` or 
+                `_ClassDefinition`.
+
+        Returns:
+            a `_FunctionDefinition` or `_ClassDefinition`.
+
+        """
         try:
             sourceFileText, sourceFileName = PyAstUtil.getSourceFilenameAndText(pyObject)
         except Exceptions.CantGetSourceTextError:
@@ -286,110 +457,35 @@ class PyObjectWalker(object):
 
         sourceAst = PyAstUtil.pyAstFromText(sourceFileText)
 
-        if classOrFunction is PyObjectNodes.FunctionDefinition:
+        if classOrFunction is _FunctionDefinition:
             pyAst = PyAstUtil.functionDefOrLambdaAtLineNumber(sourceAst, sourceLine)
         else:
-            assert classOrFunction is PyObjectNodes.ClassDefinition
+            assert classOrFunction is _ClassDefinition
             pyAst = PyAstUtil.classDefAtLineNumber(sourceAst, sourceLine)
 
         freeVariableMemberAccessChainResolutions = \
-            self._resolveFreeVariableMemberAccessChains(
+            self._computeAndResolveFreeVariableMemberAccessChainsInAst(
                 pyObject, pyAst
                 )
 
         processedFreeVariableMemberAccessChainResolutions = { \
-            '.'.join(chain): resolution for chain, resolution in \
-            freeVariableMemberAccessChainResolutions.iteritems()
+            '.'.join(chain): self.walkPyObject(resolution) for \
+            chain, resolution in freeVariableMemberAccessChainResolutions.iteritems()
             }
 
-        if sourceFileName in self._fileTextCache:
-            fileObject = self._fileTextCache[sourceFileName]
-        else:
-            fileObject = PyObjectNodes.File(sourceFileName, sourceFileText)
-            self._fileTextCache[sourceFileName] = fileObject
+        sourceFileId = self.walkPyObject(
+            _FileDescription.cachedFromArgs(
+                fileName=sourceFileName,
+                fileText=sourceFileText
+                )
+            )
         
         return classOrFunction(
-            pyObject,
-            fileObject,
-            sourceLine,
-            processedFreeVariableMemberAccessChainResolutions
+            sourceFileId=sourceFileId,
+            lineNumber=sourceLine,
+            freeVariableMemberAccessChainsToId=\
+                processedFreeVariableMemberAccessChainResolutions
             )
-
-    def _walkTuple(self, pyObject):
-        for val in pyObject.pyObject:
-            self.walkPyObject(val)
-
-    def _walkList(self, pyObject):
-        for val in pyObject.pyObject:
-            self.walkPyObject(val)
-
-    def _walkDict(self, pyObject):
-        for key, val in pyObject.pyObject.iteritems():
-            self.walkPyObject(key)
-            self.walkPyObject(val)        
-
-    def _walkRemotePythonObject(self, pyObject):
-        pass
-
-    def _walkNamedSingleton(self, pyObject):
-        pass
-
-    def _walkBuiltinExceptionInstance(self, pyObject):
-        self.walkPyObject(pyObject.args)
-            
-    def _walkFunctionDefinition(self, functionDefinition):
-        self._walkFunctionOrClassDefinition(functionDefinition)
-
-    def _walkClassDefinition(self, classDefinition):
-        self._walkFunctionOrClassDefinition(classDefinition)
-
-    def _walkFunctionOrClassDefinition(self, functionOrClassDefinition):
-        self.walkPyObject(functionOrClassDefinition.sourceFile)
-        for _, resolution in functionOrClassDefinition\
-            .freeVariableMemberAccessChainResolutions.iteritems():
-            self.walkPyObject(resolution)
-
-    def _walkWithBlock(self, withBlock):
-        self.walkPyObject(withBlock.sourceFile)
-        for v in withBlock.freeVariableMemberAccessChainResolutions.values():
-            self.walkPyObject(v)
-
-    def _walkClassInstanceDescription(self, classInstanceDescription):
-        self.walkPyObject(classInstanceDescription.klass)
-        for classMember in \
-            classInstanceDescription.classMemberNameToMemberValue.values():
-            self.walkPyObject(classMember)
-
-    def _resolveFreeVariableMemberAccesChains(
-            self, freeVariableMemberAccessChains, boundVariables
-            ):
-        resolutions = dict()
-
-        for chain in freeVariableMemberAccessChains:
-            subchain, resolution = self._resolveChainByDict(chain, boundVariables)
-
-            if id(resolution) in self._convertedObjectCache:
-                resolution = self._convertedObjectCache[id(resolution)][1]
-        
-            resolutions[subchain] = resolution
-
-        return resolutions
-
-    def _resolveFreeVariableMemberAccessChains(
-            self, pyObject, pyAst
-            ):
-
-        resolutions = dict()
-
-        freeVariableMemberAccessChains = \
-            self._freeMemberAccessChains(pyAst)
-
-        for chain in freeVariableMemberAccessChains:
-            if not chain or chain[0] not in ['staticmethod']:
-                subchain, resolution = self._resolveChainInPyObject(chain, pyObject)
-                resolutions[subchain] = resolution
-
-        return resolutions
 
     def _freeMemberAccessChains(self, pyAst):
         # ATz: just added 'False' as a 2nd argument, but we may need to check
@@ -404,6 +500,10 @@ class PyObjectWalker(object):
         return freeVariableMemberAccessChains
 
     def _resolveChainByDict(self, chain, boundVariables):
+        """
+        `_resolveChainByDict`: look up a free variable member access chain, `chain`,
+        in a dictionary of resolutions, `boundVariables`, or in `__builtin__`.
+        """
         freeVariable = chain[0]
 
         if freeVariable in boundVariables:
@@ -440,7 +540,7 @@ class PyObjectWalker(object):
         subchain, terminalValue = subchainAndResolutionOrNone
         
         if id(terminalValue) in self._convertedObjectCache:
-            terminalValue = self._convertedObjectCache[id(terminalValue)][1]
+            terminalValue = self._convertedObjectCache[id(terminalValue)]
 
         return subchain, terminalValue
 
@@ -528,4 +628,34 @@ class PyObjectWalker(object):
             subchain = chain[:ix]
 
         return subchain, terminalValue
+
+    def _resolveFreeVariableMemberAccessChains(
+            self, freeVariableMemberAccessChains, boundVariables
+            ):
+        resolutions = dict()
+
+        for chain in freeVariableMemberAccessChains:
+            subchain, resolution = self._resolveChainByDict(chain, boundVariables)
+
+            if id(resolution) in self._convertedObjectCache:
+                resolution = self._convertedObjectCache[id(resolution)][1]
+        
+            resolutions[subchain] = resolution
+
+        return resolutions
+
+    def _computeAndResolveFreeVariableMemberAccessChainsInAst(
+            self, pyObject, pyAst
+            ):
+        resolutions = {}
+
+        freeVariableMemberAccessChains = \
+            self._freeMemberAccessChains(pyAst)
+
+        for chain in freeVariableMemberAccessChains:
+            if not chain or chain[0] not in ['staticmethod']:
+                subchain, resolution = self._resolveChainInPyObject(chain, pyObject)
+                resolutions[subchain] = resolution
+
+        return resolutions
 

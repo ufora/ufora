@@ -12,9 +12,12 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+
 """Pure Python Implementations of Python builtins (in alphabetical order)."""
 
+
 import pyfora.PureImplementationMapping as PureImplementationMapping
+
 
 # List of Python 2.7 builtins:
 # 'abs', 'all', 'any', 'apply', 'basestring', 'bin', 'bool', 'buffer', 'bytearray',
@@ -28,9 +31,11 @@ import pyfora.PureImplementationMapping as PureImplementationMapping
 # 'reversed', 'round', 'set', 'setattr', 'slice', 'sorted', 'staticmethod', 'str',
 # 'sum', 'super', 'tuple', 'type', 'unichr', 'unicode', 'vars', 'xrange', 'zip'
 
+
 class Abs:
     def __call__(self, val):
         return val.__abs__()
+
 
 class All:
     def __call__(self, iterable):
@@ -41,6 +46,7 @@ class All:
                 return False
         return True
 
+
 class Any:
     def __call__(self, iterable):
         if len(iterable) == 0:
@@ -50,13 +56,16 @@ class Any:
                 return True
         return False
 
+
 class Chr:
     def __call__(self, asciiValue):
         return asciiValue.__pyfora_chr__()
 
+
 class Len:
     def __call__(self, other):
         return other.__len__()
+
 
 class Max:
     def __call__(self, a, b):
@@ -64,11 +73,13 @@ class Max:
             return b
         return a
 
+
 class Min:
     def __call__(self, a, b):
         if a < b:
             return a
         return b
+
 
 class Ord:
     def __call__(self, character):
@@ -78,12 +89,15 @@ class Ord:
 
         return character.__pyfora_ord__()
 
+
 class Range:
     def __call__(self, first, second=None, increment=None):
         return list(xrange(first, second, increment))
 
+
 class Empty:
     pass
+
 
 class Reduce:
     def __call__(self, f, sequence, start=Empty):
@@ -141,11 +155,13 @@ class Reduce:
 
             return f(start, result)
 
+
 class Map:
     def __call__(self, f, iterable):
         if f is None:
             f = lambda x:x
         return [f(x) for x in iterable]
+
 
 class Reversed:
     def __call__(self, arr):
@@ -154,9 +170,11 @@ class Reversed:
             v = arr[l - idx - 1]
             yield v
 
+
 class Sum:
     def __call__(self, sequence, start=0):
         return reduce(lambda x,y: x+y, sequence, start)
+
 
 class XRangeInstance:
     def __init__(self, start, count, increment):
@@ -246,11 +264,12 @@ class XRange:
 
         return XRangeInstance(start, count, increment)
 
+
 mappings_ = [
     (abs, Abs), (all, All), (any, Any),
     (apply, None), (basestring, None), (bin, None),
     (buffer, None), (bytearray, None),
-    #note that bytes in python2.7 is actuall the same object as 'str'
+    #note that bytes in python2.7 is actually the same object as 'str'
     #which is already implemented in the NamedSingletons
     #(bytes, None), 
     (callable, None), (chr, Chr),
@@ -280,6 +299,7 @@ mappings_ = [
     (unichr, None), (unicode, None),
     (vars, None), (xrange, XRange), (zip, None)
     ]
+
 
 def generateMappings():
     return [PureImplementationMapping.InstanceMapping(instance, pureType)

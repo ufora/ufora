@@ -46,8 +46,6 @@ class ExecutorTestCases(
 
             result = res_proxy.toLocal().result()
             return result
-        except Exception as ex:
-            raise ex
         finally:
             if shouldClose:
                 executor.__exit__(None, None, None)
@@ -109,7 +107,8 @@ class ExecutorTestCases(
 
             self.assertTrue(
                 comparisonFunction(pyforaResult, pythonResult), 
-                "Pyfora and python returned different results: %s != %s for %s(%s)" % (pyforaResult, pythonResult, func, args)
+                "Pyfora and python returned different results: %s != %s for %s(%s), respectively" % (
+                    pyforaResult, pythonResult, func, args)
                 )
 
             if t2 - t0 > 5.0:
@@ -204,7 +203,8 @@ class ExecutorTestCases(
                     logging.error("Python succeeded, but pyfora threw %s for %s%s", ex, func, args)
                 pyforaSucceeded = False
             except:
-                logging.error("General exception in pyfora for %s%s:\n%s", func, args, traceback.format_exc())
+                logging.error("General exception in pyfora for %s%s:\n%s", 
+                              func, args, traceback.format_exc())
                 return False
 
             self.assertEqual(pythonSucceeded, pyforaSucceeded,
@@ -212,7 +212,8 @@ class ExecutorTestCases(
                     )
             if pythonSucceeded:
                 self.assertTrue(comparisonFunction(pythonResult, pyforaResult),
-                    "Pyfora and python returned different results: %s != %s for %s%s" % (pyforaResult, pythonResult, func, args)
+                    "Pyfora and python returned different results: %s != %s for %s%s, respectively" % (
+                        pyforaResult, pythonResult, func, args)
                     )
                 return pythonResult
 
@@ -508,26 +509,32 @@ class ExecutorTestCases(
             arr = numpy.array([ 67.0, 63.0, 87.0, 77.0, 69.0, 59.0, 85.0, 87.0, 99.0 ])
             return (arr, arr[0], arr[1], arr[8])
 
-        r = self.equivalentEvaluationTest(f, comparisonFunction=ExecutorTestCases.compareButDontCheckTypes)
+        r = self.equivalentEvaluationTest(
+            f, comparisonFunction=ExecutorTestCases.compareButDontCheckTypes
+            )
 
 
     def test_numpy_indexing_3(self):
         def f():
             arr = numpy.array([[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]])
             return (arr, arr[0], arr[1], arr[1][0], arr[0][1][1])
-        r = self.equivalentEvaluationTest(f, comparisonFunction=ExecutorTestCases.compareButDontCheckTypes)
+        r = self.equivalentEvaluationTest(
+            f, comparisonFunction=ExecutorTestCases.compareButDontCheckTypes)
 
         def f2():
             arr = numpy.array([[[67.0], [87.0]], [[69.0], [85.0]], [[69.0], [15.0]]])
             return (arr, arr[0], arr[1], arr[1][0], arr[2][1][0])
 
-        r = self.equivalentEvaluationTest(f2, comparisonFunction=ExecutorTestCases.compareButDontCheckTypes)
+        r = self.equivalentEvaluationTest(
+            f2, comparisonFunction=ExecutorTestCases.compareButDontCheckTypes)
 
         def f3():
-            arr = numpy.array([[[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]], [[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]]])
+            arr = numpy.array([[[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]], \
+                               [[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]]])
             return (arr, arr[0], arr[1], arr[1][0], arr[0][1][1], arr[0][1][1][1])
 
-        r = self.equivalentEvaluationTest(f3, comparisonFunction=ExecutorTestCases.compareButDontCheckTypes)
+        r = self.equivalentEvaluationTest(
+            f3, comparisonFunction=ExecutorTestCases.compareButDontCheckTypes)
 
     def test_return_numpy(self):
         n = numpy.zeros(10)
@@ -586,7 +593,8 @@ class ExecutorTestCases(
                [68, 92, 78]]
         r = self.evaluateWithExecutor(f, b)
 
-        c = [[[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]], [[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]]]
+        c = [[[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]], \
+             [[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]]]
         r = self.evaluateWithExecutor(f, c)
 
     def test_numpy_arrays_are_iterable(self):
@@ -618,7 +626,8 @@ class ExecutorTestCases(
                [68, 92, 78]]
         r = self.evaluateWithExecutor(f, b)
 
-        c = [[[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]], [[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]]]
+        c = [[[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]], \
+             [[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]]]
         r = self.evaluateWithExecutor(f, c)
 
     def test_map_builtin(self):
@@ -828,7 +837,7 @@ class ExecutorTestCases(
         for ix in range(-3, 3):
             self.equivalentEvaluationTest(f, ix)
 
-    def test_len(self):
+    def test_len_0(self):
         def f(x):
             return len(x)
 
@@ -1068,7 +1077,9 @@ class ExecutorTestCases(
 
         self.assertEqual(shouldBeToReturn(10), toReturn(10))
         self.assertEqual(str(shouldBeToReturn.__name__), str(toReturn.__name__))
-        self.assertEqual(PyAstUtil.getSourceText(shouldBeToReturn), PyAstUtil.getSourceText(toReturn))
+        self.assertEqual(
+            PyAstUtil.getSourceText(shouldBeToReturn), PyAstUtil.getSourceText(toReturn)
+            )
 
     def test_returnClassObject(self):
         class ReturnedClass2:
@@ -3086,3 +3097,22 @@ class ExecutorTestCases(
                 return (y, x)
 
             self.equivalentEvaluationTest(f)
+
+    def test_holding_a_mappable(self):
+        x = [len]
+        def f():
+            return x
+
+        self.equivalentEvaluationTest(f)
+        
+    def test_mutual_recursion(self):
+        def f(n):
+            if n < 0:
+                return n
+            return g(n - 1)
+        def g(n):
+            if n < -1:
+                return n
+            return f(n - 2)
+
+        self.equivalentEvaluationTest(f, 4)

@@ -132,7 +132,7 @@ class ObjectRegistry(object):
     def _populateGraphOfIds(self, graphOfIds, objectId):
         dependentIds = self._computeDependentIds(objectId)
         graphOfIds[objectId] = dependentIds
-        
+
         for objectId in dependentIds:
             if objectId not in graphOfIds:
                 self._populateGraphOfIds(graphOfIds, objectId)
@@ -148,7 +148,7 @@ class ObjectRegistry(object):
                        )):
             return []
         elif isinstance(objectDefinition, (TypeDescription.BuiltinExceptionInstance)):
-            return [objectDefinition.argId]
+            return [objectDefinition.argsId]
         elif isinstance(objectDefinition, (TypeDescription.List, TypeDescription.Tuple)):
             return objectDefinition.memberIds
         elif isinstance(objectDefinition,

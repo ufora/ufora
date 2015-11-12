@@ -185,7 +185,7 @@ class Converter(object):
     def convertBuiltinExceptionInstance(self,
                 objectDefinition
                 ):
-        args = self.convertedValues[objectDefinition.argId]
+        args = self.convertedValues[objectDefinition.argsId]
 
         return self.singletonAndExceptionConverter.instantiateException(
             objectDefinition.builtinExceptionTypeName,

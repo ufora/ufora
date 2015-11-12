@@ -147,21 +147,35 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
 
         for c in callables:
             for i in instances:
-                self.equivalentEvaluationTestThatHandlesExceptions(c, i, comparisonFunction=lambda x, y: x == y)
+                self.equivalentEvaluationTestThatHandlesExceptions(
+                    c, i, comparisonFunction=lambda x, y: x == y
+                    )
 
 
     def test_filtered_generator_expression(self):
         for ct in [0,1,2,4,8,16,32,64,100,101,102,103]:
-            self.equivalentEvaluationTest(lambda: sum(x for x in xrange(ct) if x < ct / 2))
-            self.equivalentEvaluationTest(lambda: list(x for x in xrange(ct) if x < ct / 2))
-            self.equivalentEvaluationTest(lambda: [x for x in xrange(ct) if x < ct / 2])
+            self.equivalentEvaluationTest(
+                lambda: sum(x for x in xrange(ct) if x < ct / 2))
+            self.equivalentEvaluationTest(
+                lambda: list(x for x in xrange(ct) if x < ct / 2))
+            self.equivalentEvaluationTest(
+                lambda: [x for x in xrange(ct) if x < ct / 2])
 
     def test_filtered_nested_expression(self):
         for ct in [0, 1, 2, 4, 8, 16, 32, 64]:
-            self.equivalentEvaluationTest(lambda: sum((outer * 503 + inner for outer in xrange(ct) for inner in xrange(outer))))
-            self.equivalentEvaluationTest(lambda: sum((outer * 503 + inner for outer in xrange(ct) if outer % 2 == 0 for inner in xrange(outer))))
-            self.equivalentEvaluationTest(lambda: sum((outer * 503 + inner for outer in xrange(ct) if outer % 2 == 0 for inner in xrange(outer) if inner % 2 == 0)))
-            self.equivalentEvaluationTest(lambda: sum((outer * 503 + inner for outer in xrange(ct) for inner in xrange(outer) if inner % 2 == 0)))
+            self.equivalentEvaluationTest(
+                lambda: sum((outer * 503 + inner for outer in xrange(ct) \
+                             for inner in xrange(outer))))
+            self.equivalentEvaluationTest(
+                lambda: sum((outer * 503 + inner for outer in xrange(ct) \
+                             if outer % 2 == 0 for inner in xrange(outer))))
+            self.equivalentEvaluationTest(
+                lambda: sum((outer * 503 + inner for outer in xrange(ct) \
+                             if outer % 2 == 0 for inner in xrange(outer) \
+                             if inner % 2 == 0)))
+            self.equivalentEvaluationTest(
+                lambda: sum((outer * 503 + inner for outer in xrange(ct) \
+                             for inner in xrange(outer) if inner % 2 == 0)))
 
     def test_list_getitem_exhaustive_1(self):
         sz = 3

@@ -24,7 +24,7 @@ import pyfora.Exceptions as Exceptions
 import pyfora.RemotePythonObject as RemotePythonObject
 import pyfora.PythonObjectRehydrator as PythonObjectRehydrator
 import pyfora.ObjectRegistry as ObjectRegistry
-import pyfora.ObjectVisitors as ObjectVisitors
+import pyfora.PyObjectWalker as PyObjectWalker
 import pyfora.WithBlockExecutor as WithBlockExecutor
 import pyfora.DefaultPureImplementationMappings as DefaultPureImplementationMappings
 import traceback
@@ -94,11 +94,10 @@ class Executor(object):
         """
 
         self._raiseIfClosed()
-        objectId = ObjectVisitors.walkPythonObject(
-            obj,
-            self.objectRegistry,
-            self.pureImplementationMappings
-            )
+        objectId = PyObjectWalker.PyObjectWalker(
+            purePythonClassMapping=self.pureImplementationMappings,
+            objectRegistry=self.objectRegistry
+            ).walkPyObject(obj)
 
         future = Future.Future()
 
