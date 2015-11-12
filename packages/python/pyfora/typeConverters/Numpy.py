@@ -86,8 +86,8 @@ class PurePythonNumpyArray:
 
         newShape = shapeOfResultantArray(self.shape)
         stride = 1
-        for ix in range(1, len(self.shape)):
-            stride = stride * self.shape[ix]
+        for idx in range(1, len(self.shape)):
+            stride = stride * self.shape[idx]
         toReturn = []
         startIdx = ix * stride
         for idx in range(startIdx, startIdx + stride):

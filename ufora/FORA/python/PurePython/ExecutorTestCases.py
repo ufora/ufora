@@ -3017,3 +3017,14 @@ class ExecutorTestCases(
             self.assertTrue(False, result)
         except Exceptions.ComputationError as e:
             self.assertIsInstance(e.exceptionValue, Exceptions.InvalidPyforaOperation)
+
+    def test_for_loop_values_carry_over(self):
+        with self.create_executor() as executor:
+            def f():
+                y = 0
+                for x in [1, 2, 3, 4]:
+                    y = y + x
+
+                return (y, x)
+
+            self.equivalentEvaluationTest(f)

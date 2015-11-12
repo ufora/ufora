@@ -284,8 +284,7 @@ class WithBlockExecutors_test(unittest.TestCase):
             self.assertEqual(a.toLocal().result(), 0)
             self.assertEqual(b.toLocal().result(), 11)
 
-            # doesn't work
-            # self.assertEqual(ix.toLocal().result(), 0)
+            self.assertEqual(ix.toLocal().result(), 9)
 
             with self.assertRaises(UnboundLocalError):
                 c
