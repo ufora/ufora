@@ -1347,19 +1347,6 @@ class ExecutorTestCases(
 
             self.assertEqual(self.evaluateWithExecutor(f), arg*(arg-1)/2)
 
-    def test_xrange(self):
-        with self.create_executor() as executor:
-            low = 0
-            for high in [None] + range(-7,7):
-                for step in [-3,-2,-1,None,1,2,3]:
-                    if high is None:
-                        self.equivalentEvaluationTest(range, low)
-                    elif step is None:
-                        self.equivalentEvaluationTest(range, low, high)
-                    else:
-                        self.equivalentEvaluationTest(range, low, high, step)
-
-
     def test_jsonConversionError(self):
         with self.create_executor(allowCached=False) as executor:
             def f():
@@ -1601,28 +1588,6 @@ class ExecutorTestCases(
             self.equivalentEvaluationTest(lambda: sum(x for x in xrange(ct)))
             self.equivalentEvaluationTest(lambda: list(x for x in xrange(ct)))
             self.equivalentEvaluationTest(lambda: [x for x in xrange(ct)])
-
-    def test_filtered_generator_expression(self):
-        for ct in [0,1,2,4,8,16,32,64,100,101,102,103]:
-            self.equivalentEvaluationTest(lambda: sum(x for x in xrange(ct) if x < ct / 2))
-            self.equivalentEvaluationTest(lambda: list(x for x in xrange(ct) if x < ct / 2))
-            self.equivalentEvaluationTest(lambda: [x for x in xrange(ct) if x < ct / 2])
-
-    def test_filtered_nested_expression(self):
-        for ct in [0, 1, 2, 4, 8, 16, 32, 64]:
-            self.equivalentEvaluationTest(lambda: sum((outer * 503 + inner for outer in xrange(ct) for inner in xrange(outer))))
-            self.equivalentEvaluationTest(lambda: sum((outer * 503 + inner for outer in xrange(ct) if outer % 2 == 0 for inner in xrange(outer))))
-            self.equivalentEvaluationTest(lambda: sum((outer * 503 + inner for outer in xrange(ct) if outer % 2 == 0 for inner in xrange(outer) if inner % 2 == 0)))
-            self.equivalentEvaluationTest(lambda: sum((outer * 503 + inner for outer in xrange(ct) for inner in xrange(outer) if inner % 2 == 0)))
-        
-    def test_types_and_combos(self):
-        types = [bool, str, int, type, object, list, tuple, dict]
-        instances = [10, "10", 10.0, None, True, [], (), {}] + types
-        callables = types + [lambda x: x.__class__]
-
-        for c in callables:
-            for i in instances:
-                self.equivalentEvaluationTestThatHandlesExceptions(c, i, comparisonFunction=lambda x, y: x == y)
 
     def test_issubclass(self):
         test = self.equivalentEvaluationTestThatHandlesExceptions
