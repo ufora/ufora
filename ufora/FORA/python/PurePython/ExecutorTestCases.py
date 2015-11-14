@@ -2155,6 +2155,15 @@ class ExecutorTestCases(
                 self.assertTrue("cannot be mutually recursive" in e.message, e.message)
                 self.assertTrue(e.trace is not None)
 
+    def test_lists_plus_nonlists(self):
+        def f():
+            try:
+                return [] + 10
+            except TypeError:
+                return None
+
+        self.equivalentEvaluationTestThatHandlesExceptions(f)
+
     def test_lists_1(self):
         x = [1,2,3,4]
 
