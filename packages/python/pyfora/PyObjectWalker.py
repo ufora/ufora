@@ -61,6 +61,13 @@ class PyObjectWalker(object):
 
         if purePythonClassMapping is None:
             purePythonClassMapping = PureImplementationMappings.PureImplementationMappings()
+
+        for singleton in NamedSingletons.pythonSingletonToName:
+            if purePythonClassMapping.canMap(singleton):
+                raise UserWarning(
+                    "You provided a mapping that applies to %s, which already has a direct mapping" % singleton
+                    )
+
         self.purePythonClassMapping = purePythonClassMapping
 
         self._convertedObjectCache = dict()

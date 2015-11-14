@@ -250,7 +250,10 @@ mappings_ = [
     (abs, Abs), (all, All), (any, Any),
     (apply, None), (basestring, None), (bin, None),
     (buffer, None), (bytearray, None),
-    (bytes, None), (callable, None), (chr, Chr),
+    #note that bytes in python2.7 is actuall the same object as 'str'
+    #which is already implemented in the NamedSingletons
+    #(bytes, None), 
+    (callable, None), (chr, Chr),
     (classmethod, None), (cmp, None), (coerce, None),
     (compile, None), (complex, None), (copyright, None),
     (credits, None), (delattr, None),
@@ -271,7 +274,7 @@ mappings_ = [
     (property, None), (quit, None), (range, Range),
     (raw_input, None), (reduce, Reduce), (reload, None),
     (repr, None), (reversed, Reversed), (round, None),
-    (set, None), (setattr, None), (slice, None),
+    (set, None), (setattr, None),
     (sorted, None), (staticmethod, None),
     (sum, Sum), (super, None),
     (unichr, None), (unicode, None),
