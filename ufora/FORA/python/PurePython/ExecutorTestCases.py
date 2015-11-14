@@ -2200,6 +2200,19 @@ class ExecutorTestCases(
         self.assertTrue(self.evaluateWithExecutor(f))
     
 
+    def test_return_in_init_method(self):
+        def f():
+            class ClassReturnInInit:
+                def __init__(self):
+                    self.x = 10
+                    return
+
+            return ClassReturnInInit()
+
+        with self.assertRaises(Exceptions.PythonToForaConversionError):
+            self.evaluateWithExecutor(f)
+    
+
     def test_lists_1(self):
         x = [1,2,3,4]
 
