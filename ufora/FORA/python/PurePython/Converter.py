@@ -82,20 +82,6 @@ class Converter(object):
 
         self.purePythonModuleImplVal = purePythonModuleImplVal
 
-        if purePythonModuleImplVal is None:
-            self.pyObjectMixinBaseIVC = ForaNative.ImplValContainer()
-        else:
-            self.pyObjectMixinBaseIVC = purePythonModuleImplVal.getObjectMember("PyObjectBase")
-
-        if purePythonModuleImplVal is None:
-            self.pyObjectGeneratorFactoryIVC = ForaNative.makeSymbol("ConvertYieldToIter")
-            self.pyObjectSliceFactoryIVC = ForaNative.makeSymbol("Slice")
-            self.pyListTypeObjectIVC = ForaNative.ImplValContainer()
-        else:
-            self.pyObjectGeneratorFactoryIVC = purePythonModuleImplVal.getObjectMember("CreateGeneratorFromYield")
-            self.pyObjectSliceFactoryIVC = purePythonModuleImplVal.getObjectMember("Slice")
-            self.pyListTypeObjectIVC = purePythonModuleImplVal.getObjectMember("ListType")
-
     def extractWrappedForaConstant(self, value):
         """Convenience method for testing. If 'value' is an ImplVal, get @m out of it."""
         if isinstance(value, ForaValue.FORAValue):
@@ -644,10 +630,7 @@ class Converter(object):
                 self.nativeListConverter,
                 self.nativeTupleConverter,
                 self.nativeDictConverter,
-                self.pyObjectMixinBaseIVC,
-                self.pyObjectGeneratorFactoryIVC,
-                self.pyObjectSliceFactoryIVC,
-                self.pyListTypeObjectIVC,
+                self.purePythonModuleImplVal,
                 [x.split(".")[0] for x in withBlockDescription.freeVariableMemberAccessChainsToId]
                 )
         
@@ -864,10 +847,7 @@ class Converter(object):
                     self.nativeListConverter,
                     self.nativeTupleConverter,
                     self.nativeDictConverter,
-                    self.pyObjectMixinBaseIVC,
-                    self.pyObjectGeneratorFactoryIVC,
-                    self.pyObjectSliceFactoryIVC,
-                    self.pyListTypeObjectIVC
+                    self.purePythonModuleImplVal
                     )
             else:
                 assert pyAst.isLambda()
@@ -879,10 +859,7 @@ class Converter(object):
                     self.nativeListConverter,
                     self.nativeTupleConverter,
                     self.nativeDictConverter,
-                    self.pyObjectMixinBaseIVC,
-                    self.pyObjectGeneratorFactoryIVC,
-                    self.pyObjectSliceFactoryIVC,
-                    self.pyListTypeObjectIVC
+                    self.purePythonModuleImplVal
                     )
 
         elif isinstance(classOrFunctionDefinition, TypeDescription.ClassDefinition):
@@ -894,10 +871,7 @@ class Converter(object):
                 self.nativeListConverter,
                 self.nativeTupleConverter,
                 self.nativeDictConverter,
-                self.pyObjectMixinBaseIVC,
-                self.pyObjectGeneratorFactoryIVC,
-                self.pyObjectSliceFactoryIVC,
-                self.pyListTypeObjectIVC
+                self.purePythonModuleImplVal
                 )
 
         else:

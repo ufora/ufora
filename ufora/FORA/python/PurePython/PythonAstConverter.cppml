@@ -21,6 +21,7 @@
 #include "PythonConstantConverter.hppml"
 #include "../../Judgment/JudgmentOnValue.hppml"
 #include "../../Core/ImplValContainerUtilities.hppml"
+#include "../../Language/FunctionStage1Simulation.hppml"
 #include "../../Language/ExpressionLocationMetadata.hppml"
 #include "../../../core/cppml/CPPMLVisit.hppml"
 #include "../../../core/cppml/CPPMLTransform.hppml"
@@ -333,27 +334,47 @@ PythonAstArguments dropFirstNormalArg(const PythonAstArguments& args)
 
 namespace Fora {
 
+ImplValContainer getModuleMember(ImplValContainer module, std::string memberName)
+    {
+    FunctionStage1::Simulation simulation(100);
+
+    FunctionStage1::ExpressionEvaluationResult result = 
+        simulation.evaluateApply(
+            emptyTreeVec() + 
+                module + 
+                ImplValContainerUtilities::createSymbol(Symbol("Member")) + 
+                ImplValContainerUtilities::createSymbol(Symbol(memberName))
+            );
+
+    lassert(result.isResult());
+    
+    return result.getResult().val();
+    }
+
+
+
 PythonAstConverter::PythonAstConverter(
             PolymorphicSharedPtr<PythonConstantConverter> constantConverter,
             PolymorphicSharedPtr<PythonListConverter> listConverter,
             PolymorphicSharedPtr<PythonTupleConverter> tupleConverter,
             PolymorphicSharedPtr<PythonDictConverter> dictConverter,
-            ImplValContainer pyObjectBaseMixin,
-            ImplValContainer pyGeneratorFactory,
-            ImplValContainer pySliceFactory,
-            ImplValContainer pyListType
+            ImplValContainer pyforaBuiltins
             )
         : mConstantConverter(constantConverter),
           mPythonListConverter(listConverter),
           mPythonTupleConverter(tupleConverter),
           mPythonDictConverter(dictConverter),
-          mPyObjectBaseMixin(pyObjectBaseMixin),
-          mPyGeneratorFactory(pyGeneratorFactory),
-          mPySliceFactory(pySliceFactory),
-          mPyListType(pyListType)
+          mPyforaBuiltins(pyforaBuiltins)
     {
-    ImplValContainer falseValue = mConstantConverter->convertBoolean(false);
-    CSTValue falseTypeValue(JudgmentOnValue::OfType(falseValue.type()));
+    mPyBoundMethod = getModuleMember(pyforaBuiltins, "PyBoundMethod");
+
+    mPyObjectBaseMixin = getModuleMember(pyforaBuiltins, "PyObjectBase");
+        
+    mPyGeneratorFactory = getModuleMember(pyforaBuiltins, "CreateGeneratorFromYield");
+
+    mPySliceFactory = getModuleMember(pyforaBuiltins, "Slice");
+
+    mPyListType = getModuleMember(pyforaBuiltins, "ListType");
     }
 
 PolymorphicSharedPtr<PythonConstantConverter> PythonAstConverter::constantConverter() const
@@ -504,16 +525,11 @@ PythonAstConverter::convertPythonMemberFunctionToPatternAndFunctionBody(
     {
     std::pair<TuplePattern, Expression> tuplePatternAndExpression = 
         computeTuplePatternAndFunctionBody(
-            dropFirstNormalArg(functionDef.args()),
+            functionDef.args(),
             functionDef.body()
             );
     TuplePattern pattern = tuplePatternAndExpression.first;
     Expression functionBody = tuplePatternAndExpression.second;
-
-    functionBody = handleNonstandardSelfArgIfNecessary(
-        functionDef.args().args()[0],
-        functionBody
-        );
 
     functionBody = initializeUnboundVariablesForFunction(pattern, functionBody);
 
@@ -586,7 +602,7 @@ PythonAstConverter::convertPythonClassBodyFunctionDefToForaClassDefinitionTerms(
 
     //expose the function member as a ...(`Member, `f) { fun() {...} }
     //so that we don't capture 'f' in the class binding
-    return emptyTreeVec() + ClassDefinitionTerm::ObjectTerm(
+    auto res = emptyTreeVec() + ClassDefinitionTerm::ObjectTerm(
         ObjectDefinitionTerm::Anything(
             Function::Term(
                 TuplePattern(
@@ -594,19 +610,26 @@ PythonAstConverter::convertPythonClassBodyFunctionDefToForaClassDefinitionTerms(
                         TuplePatternElement::Normal(PatternWithName::Constant(CSTValue(Symbol("Member")))) + 
                         TuplePatternElement::Normal(PatternWithName::Constant(CSTValue(Symbol(functionName))))
                     ),
-                Expression::CreateFunction(
-                    functionName,
-                    Function::Term(
-                        tuplePatternAndFunctionBody.first,
-                        tuplePatternAndFunctionBody.second,
-                        Function::Empty()
-                        ),
-                    CSTValue()
+                Expression::Call(
+                    Expression::Constant(mPyBoundMethod),
+                    emptyTreeVec() + 
+                        Expression::Variable(Symbol("@self")).normalApplyArg() + 
+                        Expression::CreateFunction(
+                            functionName,
+                            Function::Term(
+                                tuplePatternAndFunctionBody.first,
+                                tuplePatternAndFunctionBody.second,
+                                Function::Empty()
+                                ),
+                            CSTValue()
+                            ).normalApplyArg()
                     ),
                 Function::Empty()
                 )
             )
-        );            
+        );
+    
+    return res;
     }
 
 namespace {
@@ -1592,7 +1615,7 @@ Expression PythonAstConverter::convertPythonAstClassDefToFora(
         ClassDefinition(
             classDefinitionBody,
             null() << Symbol(className),
-            null(),
+            null() << Symbol("@self"),
             ExpressionLocationMetadata::WithSimpleParseRange(extent)
             ),
         CSTValue()
@@ -2002,34 +2025,6 @@ PythonAstConverter::convertPythonClassBodyStaticMethodFunctionDefToForaClassDefi
             1
             )
         );
-    }
-
-Expression PythonAstConverter::handleNonstandardSelfArgIfNecessary(
-        const PythonAstExpr& selfArg,
-        Expression functionBody
-        ) const
-    {
-    TuplePatternElement foraSelfArg = TuplePatternElement::Normal(
-        null(),
-        convertPythonAstExpressionToPattern(selfArg),
-        null()
-        );
-
-    bool firstArgIsSelf = foraSelfArg.getNormal().match().name()->toString() == "self";
-
-    if (not firstArgIsSelf) {
-        functionBody = Expression::Let(
-            emptyTreeVec() + std::make_pair(
-                foraSelfArg.getNormal().match(),
-                Expression::Variable(
-                    Symbol("self")
-                    )
-                ),
-            functionBody
-            );
-        }
-
-    return functionBody;
     }
 
 ImmutableTreeVector<TuplePatternElement> PythonAstConverter::computeForaArgs(

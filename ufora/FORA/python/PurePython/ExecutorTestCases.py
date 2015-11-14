@@ -2164,6 +2164,42 @@ class ExecutorTestCases(
 
         self.equivalentEvaluationTestThatHandlesExceptions(f)
 
+    def test_class_member_functions_are_pyfora_objects_1(self):
+        class ClassMemberFunctionsArePyfora1:
+            def f(self):
+                return 10
+
+        def f():
+            return ClassMemberFunctionsArePyfora1().f.__is_pyfora__
+
+        self.assertTrue(self.evaluateWithExecutor(f))
+
+    def test_class_member_functions_are_pyfora_objects_2(self):
+        def f():
+            class ClassMemberFunctionsArePyfora2:
+                def f(self):
+                    return 10
+
+            return ClassMemberFunctionsArePyfora2().f.__is_pyfora__
+
+        self.assertTrue(self.evaluateWithExecutor(f))
+    
+
+    def test_class_member_functions_nonstandard_self(self):
+        def f():
+            self = "outerSelf"
+            class ClassMemberFunctionsNonstandardSelf:
+                def f(notSelf):
+                    return (notSelf.g(), self)
+
+                def g(self):
+                    return 'g'
+
+            return ClassMemberFunctionsNonstandardSelf().f()
+
+        self.assertTrue(self.evaluateWithExecutor(f))
+    
+
     def test_lists_1(self):
         x = [1,2,3,4]
 
