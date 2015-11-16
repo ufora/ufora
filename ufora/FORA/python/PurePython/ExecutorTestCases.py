@@ -3087,6 +3087,30 @@ class ExecutorTestCases(
         except Exceptions.ComputationError as e:
             self.assertIsInstance(e.remoteException, Exceptions.InvalidPyforaOperation)
 
+    def test_convert_instance_method_from_server(self):
+        def f(x):
+            class InstanceMethodFromServer:
+                def __init__(self, x):
+                    self.x = x
+                def f(self):
+                    return self.x + 1
+
+            return InstanceMethodFromServer(x).f
+
+        self.assertEqual(self.evaluateWithExecutor(f, 1)(), 2)
+
+    def test_convert_instance_method_from_client(self):
+        class InstanceMethodFromClient:
+            def __init__(self, x):
+                self.x = x
+            def f(self):
+                return self.x + 1
+
+        def f(x):
+            return InstanceMethodFromClient(x).f
+
+        self.assertEqual(self.evaluateWithExecutor(InstanceMethodFromClient(1).f), 2)
+
     def test_for_loop_values_carry_over(self):
         with self.create_executor() as executor:
             def f():

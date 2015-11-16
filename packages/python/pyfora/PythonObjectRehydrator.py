@@ -118,6 +118,15 @@ class PythonObjectRehydrator:
             members = {k:self.convertJsonResultToPythonObject(v) for k,v in jsonResult['members'].iteritems()}
             classObject = self.convertJsonResultToPythonObject(jsonResult['classInstance'])
             return self._invertPureClassInstanceIfNecessary(self._instantiateClass(classObject, members))
+        if 'boundMethodOn' in jsonResult:
+            instance = self.convertJsonResultToPythonObject(jsonResult['boundMethodOn'])
+            try:
+                return getattr(instance, jsonResult['methodName'])
+            except AttributeError:
+                raise Exceptions.ForaToPythonConversionError(
+                    "Expected %s to have a method of name %s which it didn't" % 
+                        (instance, jsonResult['methodName'])
+                    )
         if 'functionInstance' in jsonResult:
             members = {k:self.convertJsonResultToPythonObject(v) for k,v in jsonResult['members'].iteritems()}
             return self._instantiateFunction(jsonResult['functionInstance'][0], jsonResult['functionInstance'][1], members)

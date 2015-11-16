@@ -32,6 +32,10 @@ def isClassInstance(pyObject):
 
 NoneType = type(None)
 
+class AClassWithAMethod:
+    def f(self):
+        pass
+instancemethod = type(AClassWithAMethod().f)
 
 def _isPrimitive(pyObject):
     return isinstance(pyObject, (NoneType, int, float, str, bool))
@@ -180,6 +184,8 @@ class PyObjectWalker(object):
             self._registerFunction(objectId, pyObject)
         elif PyforaInspect.isclass(pyObject):
             self._registerClass(objectId, pyObject)
+        elif isinstance(pyObject, instancemethod):
+            self._registerInstanceMethod(objectId, pyObject)
         elif isClassInstance(pyObject):
             self._registerClassInstance(objectId, pyObject)
         else:
@@ -289,6 +295,26 @@ class PyObjectWalker(object):
             keyIds=keyIds,
             valueIds=valueIds
             )
+
+    def _registerInstanceMethod(self, objectId, pyObject):
+        """
+        `_registerInstanceMethod`: register an `instancemethod` instance
+        with `self.objectRegistry`.
+
+        Recursively call `walkPyObject` on the object to which the instance is
+        bound, and encode alongside the name of the method.
+        """
+        instance = pyObject.__self__
+        methodName = pyObject.__name__
+
+        instanceId = self.walkPyObject(instance)
+
+        self._objectRegistry.defineInstanceMethod(
+            objectId=objectId,
+            instanceId=instanceId,
+            methodName=methodName
+            )
+
 
     def _registerClassInstance(self, objectId, classInstance):
         """

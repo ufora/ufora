@@ -82,3 +82,7 @@ BuiltinExceptionInstance = new_type_description(
     'BuiltinExceptionInstance',
     'builtinExceptionTypeName, argsId'
     )
+InstanceMethod = new_type_description(
+    'InstanceMethod',
+    'instanceId, methodName'
+    )

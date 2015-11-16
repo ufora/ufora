@@ -71,6 +71,10 @@ class PyforaToJsonTransformer(object):
         self.accumulateObjects(1)
         return {'InvalidPyforaOperation': operationText}
 
+    def transformBoundMethod(self, instance, name):
+        self.accumulateObjects(1)
+        return {'boundMethodOn': instance, 'methodName': name}
+    
     def transformClassInstance(self, classObject, members):
         self.accumulateObjects(1)
         return {'classInstance': classObject, 'members': members}

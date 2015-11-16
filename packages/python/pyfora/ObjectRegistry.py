@@ -110,6 +110,13 @@ class ObjectRegistry(object):
                 classMemberNameToClassMemberId=classMemberNameToClassMemberId
                 )
 
+    def defineInstanceMethod(self, objectId, instanceId, methodName):
+        self.objectIdToObjectDefinition[objectId] = \
+            TypeDescription.InstanceMethod(
+                instanceId=instanceId,
+                methodName=methodName
+                )
+
     def defineWithBlock(
             self,
             objectId,
@@ -156,6 +163,8 @@ class ObjectRegistry(object):
             tr = objectDefinition.freeVariableMemberAccessChainsToId.values()
             tr.append(objectDefinition.sourceFileId)
             return tr
+        elif isinstance(objectDefinition, TypeDescription.InstanceMethod):
+            return [objectDefinition.instanceId]
         elif isinstance(objectDefinition, TypeDescription.ClassInstanceDescription):
             tr = [objectDefinition.classId]
             tr.extend(

@@ -82,6 +82,8 @@ class Converter(object):
 
         self.purePythonModuleImplVal = purePythonModuleImplVal
 
+        self.pyforaBoundMethodClass = purePythonModuleImplVal.getObjectMember("PyBoundMethod")
+
     def extractWrappedForaConstant(self, value):
         """Convenience method for testing. If 'value' is an ImplVal, get @m out of it."""
         if isinstance(value, ForaValue.FORAValue):
@@ -120,7 +122,8 @@ class Converter(object):
         elif isinstance(objectDefinition,
                         (TypeDescription.FunctionDefinition,
                          TypeDescription.ClassDefinition,
-                         TypeDescription.ClassInstanceDescription)
+                         TypeDescription.ClassInstanceDescription,
+                         TypeDescription.InstanceMethod)
                        ):
             return (
                 self.convertObjectWithDependencies(
@@ -495,6 +498,7 @@ class Converter(object):
             objectIdToObjectDefinition
             ):
         objectId = stronglyConnectedComponent[0]
+
         objectDefinition = objectIdToObjectDefinition[objectId]
 
         if isinstance(objectDefinition, TypeDescription.Primitive):
@@ -578,9 +582,34 @@ class Converter(object):
                     objectIdToObjectDefinition
                     )
 
+        elif isinstance(objectDefinition, TypeDescription.InstanceMethod):
+            self.convertedValues[objectId] = \
+                self.convertInstanceMethod(
+                    objectId,
+                    objectDefinition,
+                    objectIdToObjectDefinition
+                    )
+
         else:
             assert False, "haven't gotten to this yet %s" % type(objectDefinition)
 
+    def convertInstanceMethod(
+            self,
+            objectId,
+            dependencyGraph,
+            objectIdToObjectDefinition
+            ):
+        objectDef = objectIdToObjectDefinition[objectId]
+
+        instance = self.convertedValues[objectDef.instanceId]
+        
+        bound = instance.getObjectMember(objectDef.methodName)
+        
+        assert bound is not None
+
+        return bound
+
+    
     def convertWithBlock(
             self,
             objectId,
@@ -1000,9 +1029,27 @@ class Converter(object):
                 return stackTraceAsJsonOrNone
 
         if implval.isObject():
+            objectClass = implval.getObjectClass()
+
+            if objectClass == self.pyforaBoundMethodClass:
+                nameAsImplval = implval.getObjectLexicalMember("@name")[0]
+                if not nameAsImplval.isSymbol():
+                    raise pyfora.ForaToPythonConversionError(
+                        "PyBoundMethod found with name %s of type %s, which should be a symbol but is not."
+                            % (nameAsImplval, nameAsImplval.type)
+                        )
+
+                return transformer.transformBoundMethod(
+                    self.transformPyforaImplval(
+                        implval.getObjectLexicalMember("@self")[0],
+                        transformer,
+                        vectorContentsExtractor
+                        ),
+                    nameAsImplval.pyval[1:]
+                    )
+
             defPoint = implval.getObjectDefinitionPoint()
             if defPoint is not None:
-                objectClass = implval.getObjectClass()
                 if objectClass is not None:
                     classObject = self.transformPyforaImplval(objectClass, transformer, vectorContentsExtractor)
                     members = {}
