@@ -33,22 +33,38 @@ import threading
 
 
 class Executor(object):
-    """Main executor for Pyfora code. This is the component responible for sending
-    computations to the Ufora cluster and returning the result as a RemotePythonObject
-    future.
+    """Submits computations to a Ufora cluster and marshals data to/from the local Python.
 
-    Python objects are sent to the server using the define() method. A Future that 
-    resolves to a RemotePythonObject corresponding to the submitted object is returned.
+    The Executor is the main point of interaction with a Ufora cluster.
+    It is responible for sending computations to the Ufora cluster and returning
+    the result as a RemotePythonObject future.
 
-    Similarly, functions and their arguments can be submitted using the submit method which 
-    returns a Future that resolves to a RemotePythonObject of the evaluated expression or
-    thrown exception. 
+    It is modeled after the same-named abstraction in the `concurrent.futures`_ module
+    that is part of the Python3 standard library.
+
+    All interactions with the remote cluster are asynchronous and return :class:`~Future.Future`
+    objects that represent the in-progress operation.
+
+    Python objects are sent to the server using the :func:`~Executor.define` method, which returns
+    a :class:`~Future.Future` that resolves to a :class:`~RemotePythonObject.RemotePythonObject`
+    corresponding to the submitted object.
+
+    Similarly, functions and their arguments can be submitted using the :func:`~Executor.submit` method which
+    returns a :class:`~Future.Future` that resolves to a :class:`~RemotePythonObject.RemotePythonObject`
+    of the evaluated expression or raised exception.
+
+    .. _concurrent.futures: https://pythonhosted.org/futures/
+
+    Note:
+        This class is not intended to be constructed explicitly. Instances of it
+        are created by calling :func:`~pyfora.connect`.
+
+    Args:
+        connection (pyfora.Connection.Connection): an open connection to a Ufora cluster.
+        pureImplementationMappings (optional): a :class:`~PureImplementationMappings.PureImplementationMappings`
+            that defines mapping between Python libraries and their "pure" :mod:`pyfora` implementation.
     """
     def __init__(self, connection, pureImplementationMappings=None):
-        """Initialize a Pyfora executor.
-
-        connection - a pyfora.Connection.Connection, or something with similar interface.
-        """
         self.connection = connection
         self.stayOpenOnExit = False
         self.pureImplementationMappings = pureImplementationMappings or DefaultPureImplementationMappings.getMappings()
@@ -58,8 +74,17 @@ class Executor(object):
         self.lock = threading.Lock()
 
     def importS3Dataset(self, bucketname, keyname):
-        """Takes an S3 bucket and key and returns a RemotePythonObject representing the s3
-        dataset on the server"""
+        """Creates a :class:`~RemotePythonObject.RemotePythonObject` that represents the content of an S3 key as a string.
+
+        Args:
+            bucketname (str): The S3 bucket to read from.
+            keyname (str): The S3 key to read.
+
+
+        Returns:
+            Future.Future: A :class:`~Future.Future` that resolves to a :class:`~RemotePythonObject.RemotePythonObject`
+            representing the content of the S3 key.
+        """
         def importS3Dataset():
             builtins = bucketname.__pyfora_builtins__
             return builtins.loadS3Dataset(bucketname, keyname)
@@ -67,10 +92,16 @@ class Executor(object):
         return self.submit(importS3Dataset)
 
     def exportS3Dataset(self, valueAsString, bucketname, keyname):
-        """Write a ComputedRemotePythonObject representing a pyfora string to s3 and return a
-        Future representing the completion of the object.
+        """Write a ComputedRemotePythonObject representing a :mod:`pyfora` string to S3
 
-        The future will resolve either to None (success) or to a Exceptions.PyforaException.
+        Args:
+            valueAsString (RemotePythonObject.ComputedRemotePythonObject): a computed string.
+            bucketname (str): The name of the S3 bucket to write to.
+            keyname (str): The S3 key to write to.
+
+        Returns:
+            Future.Future: A :class:`~Future.Future` representing the completion of the export operation.
+            It resolves either to ``None`` (success) or to an instance of :class:`~Exceptions.PyforaError`.
         """
         assert isinstance(valueAsString, RemotePythonObject.ComputedRemotePythonObject)
         future = Future.Future()
@@ -86,11 +117,18 @@ class Executor(object):
         return future
 
     def define(self, obj):
-        """Send 'obj' to the server and return a Future that resolves to a RemotePythonObject
-        representing the object on the server.
+        """Create a remote representation of an object.
+
+        Sends the specified object to the server and return a Future that resolves
+        to a RemotePythonObject representing the object on the server.
+
+        Args:
+            obj: A python object to send
 
         Returns:
-            A Future object representing the PyFora object on the server
+            Future.Future: A :class:`~Future.Future` that resolves to a
+            :class:`~RemotePythonObject.RemotePythonObject` representing the object
+            on the server.
         """
 
         self._raiseIfClosed()
@@ -116,12 +154,18 @@ class Executor(object):
         return future
 
     def submit(self, fn, *args, **kwargs):
-        """Submits a callable to be executed on the server with the provided arguments 'args'.
-        kwargs are not currently supported.
+        """Submits a callable to be executed on the cluster with the provided arguments.
+
+        This function is shorthand for calling :func:`~Executor.define` on the callable and all
+        arguments and then invoking the remote callable with the remoted arguments.
+
+        Note:
+            Keyword arguments (`**kwargs`) are not currently supported.
 
         Returns:
-            A Future representing the given call. The future will eventually resolve to a
-            RemotePythonObject instance.
+            Future.Future: A :class:`~Future.Future` representing the given call.
+            The future eventually resolves to a :class:`~RemotePythonObject.RemotePythonObject`
+            instance or an exception.
         """
         self._raiseIfClosed()
         if len(kwargs) > 0:
@@ -135,26 +179,36 @@ class Executor(object):
 
 
     def close(self):
+        """Closes the connection to the Ufora cluster."""
         if not self.isClosed():
             self.connection.close()
             self.connection = None
 
     @property
     def remotely(self):
-        """
-        'with fora.remotely:' syntax allows you to automatically submit an entire block of 
-        python code for remote execution. All the code nested in the remotely with block is 
-        submitted.
+        """Returns a :class:`WithBlockExecutor.WithBlockExecutor` that can be used to enter a block of
+        "pure" Python code.
+
+        The ``with fora.remotely:`` syntax allows you to automatically submit an
+        entire block of python code for remote execution. All the code nested in
+        the remotely ``with`` block is submitted.
 
         Returns:
-            A WithBlockExecutor that will extract python code from a with block and submit 
-            that code to the ufora cluster for remote execution. Results of the remote execution
-            are returned as RemotePythonObject and are automatically reasigned to their
-            corresponding local variables in the with block.
+            WithBlockExecutor.WithBlockExecutor: A :class:`~WithBlockExecutor.WithBlockExecutor` that extracts
+            python code from a with block and submits it to the Ufora cluster for
+            remote execution.  Results of the remote execution are returned as
+            RemotePythonObject and are automatically reasigned to their corresponding
+            local variables in the with block.
             """
         return WithBlockExecutor.WithBlockExecutor(self)
 
     def isClosed(self):
+        """Determine if the :class:`~Executor.Executor` is connected to the cluster.
+
+        Returns:
+            bool: ``True`` if :func:`~Executor.close` has been called, ``False`` otherwise.
+        """
+
         return self.connection is None
 
 
@@ -212,12 +266,12 @@ class Executor(object):
                 # better than the experience without the wrapping
                 # (which is hanging)
                 logging.error(
-                    "Rehydration failed: %s\nResult was %s of type %s", 
-                    traceback.format_exc(), 
-                    jsonResult, 
+                    "Rehydration failed: %s\nResult was %s of type %s",
+                    traceback.format_exc(),
+                    jsonResult,
                     type(jsonResult)
                     )
-                
+
                 future.set_exception(
                     Exceptions.ForaToPythonConversionError(
                         e
@@ -289,8 +343,8 @@ class Executor(object):
 
         self.connection.expandComputedValueToTupleOfProxies(computedValue, onExpanded)
 
-        return future    
-        
+        return future
+
 
     def _downloadDefinedObject(self, objectId):
         future = Future.Future()
@@ -346,5 +400,3 @@ class Executor(object):
             del self.futures[computationId]
         self.connection.cancelComputation(computationId)
         return True
-
-

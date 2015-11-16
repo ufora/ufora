@@ -30,10 +30,10 @@ class Future(Futures.Future):
     https://pypi.python.org/pypi/futures
 
     Futures wrap the result to an asynchronous computation which can
-    be accessed by a blocking call to 'result()'.
+    be accessed by a blocking call to :func:`result`.
 
-    The pyfora Future object extends the concurrent.futures object by 
-    supporting cancellation with the 'cancel()' method.
+    The pyfora Future object extends the concurrent.futures object by
+    supporting cancellation with the :func:`cancel` method.
     """
     def __init__(self, executorState=None, onCancel=None):
         super(Future, self).__init__()

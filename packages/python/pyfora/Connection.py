@@ -23,8 +23,12 @@ import pyfora.Executor as Executor
 import pyfora.ObjectConverter as ObjectConverter
 import pyfora.RemotePythonObject as RemotePythonObject
 import pyfora.SocketIoJsonInterface as SocketIoJsonInterface
-import pyfora.SubscribableWebObjects as SubscribableWebObjects
 import pyfora.ModuleDirectoryStructure as ModuleDirectoryStructure
+
+# We defer importing SubscribableWebObjects.py to support auto doc generation
+# on readthedocs.org without running a full build.
+#import pyfora.SubscribableWebObjects as SubscribableWebObjects
+
 import pyfora
 import os
 
@@ -48,6 +52,8 @@ class Connection(object):
         if not isinstance(valueAsString, RemotePythonObject.ComputedRemotePythonObject):
             onCompletedCallback(Exceptions.PyforaError("The argument to triggerS3DatasetExport should be a ComputedRemotePythonObject"))
             return
+
+        import pyfora.SubscribableWebObjects as SubscribableWebObjects
         if not isinstance(valueAsString.computedValue, SubscribableWebObjects.PyforaComputedValue):
             onCompletedCallback(Exceptions.PyforaError("The object handle in the object passed to triggerS3DatasetExport should be a ComputedValue"))
             return
@@ -274,12 +280,14 @@ def createObjectConverter(webObjectFactory):
     return ObjectConverter.ObjectConverter(webObjectFactory, moduleTree.toJson())
 
 def connect(url):
-    """Connects to a Ufora cluster listening on the url and port provided by 'url'
+    """Opens a connection to a Ufora cluster
+
+    Args:
+        url (str): The HTTP URL of the ufora cluster (e.g. ``http://192.168.1.200:30000``)
 
     Returns:
-        An executor object responsibe for submitting python code to the cluster for 
-        execution returning RemotePythonObjects that can be used to download the 
-        results from the server.
+        Executor.Executor: an :class:`~pyfora.Executor.Executor` that can be used to submit work
+        to the cluster.
     """
     socketIoInterface = SocketIoJsonInterface.SocketIoJsonInterface(
         url,
@@ -287,10 +295,12 @@ def connect(url):
         )
     socketIoInterface.connect()
 
+    import pyfora.SubscribableWebObjects as SubscribableWebObjects
     webObjectFactory = SubscribableWebObjects.WebObjectFactory(socketIoInterface)
     return Executor.Executor(Connection(webObjectFactory, createObjectConverter(webObjectFactory)))
 
 def connectGivenSocketIo(socketIoInterface):
+    import pyfora.SubscribableWebObjects as SubscribableWebObjects
     webObjectFactory = SubscribableWebObjects.WebObjectFactory(socketIoInterface)
     return Executor.Executor(Connection(webObjectFactory, createObjectConverter(webObjectFactory)))
 

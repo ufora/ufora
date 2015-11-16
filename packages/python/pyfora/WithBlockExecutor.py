@@ -16,7 +16,7 @@
 """
 WithBlockExecutor
 
-Extracts the Python code nested in its code-block and automatically sends 
+Extracts the Python code nested in its code-block and automatically sends
 that code as a callable to the Ufora cluster
 """
 
@@ -96,16 +96,24 @@ def syntheticTraceback(trace):
         return sys.exc_info()[2].tb_next
 
 class WithBlockExecutor(object):
-    """
-    will extract python code from a with block and submit that code 
-    to the ufora cluster for remote execution. Results of the remote 
-    execution are returned as RemotePythonObject and are automatically 
-    reasigned to their corresponding local variables in the with block.
+    """A helper object used to synchronously run blocks of code on a Ufora cluster.
 
-    use downloadAll(), remoteAll() and downloadSmall() to modify the 
-    behavior of the executor and set which objects should be download 
-    from the server and which objects should be returned as 
-    RemotePythonObject futures.
+    When entering a ``with`` block using a :class:`WithBlockExecutor`, the body of
+    the block is extracted and submitted to the Ufora cluster for execution, along
+    with all its local dependencies. Variable assignments within the block are
+    returned as :class:`~RemotePythonObject.RemotePythonObject` and reassigned to
+    their corresponding local varialbes when exiting the block.
+
+    Use :func:`~WithBlockExecutor.downloadAll`, :func:`~WithBlockExecutor.remoteAll`,
+    and :func:`~WithBlockExecutor.downloadSmall` to modify the default behavior and
+    select which objects should be downloaded from the server and
+    which objects should be returned as :class:`~RemotePythonObject.RemotePythonObject`
+    futures.
+
+    Note:
+        Instances of :class:`WithBlockExecutor` are only intended to be created by
+        :class:`~pyfora.Executor.Executor`. User code typically uses :func:`~Executor.Executor.remotely`
+        to get a :class:`WithBlockExecutor`.
     """
     def __init__(self, executor):
         self.executor = executor
@@ -118,23 +126,33 @@ class WithBlockExecutor(object):
         self.downloadPolicy = DownloadPolicy.DownloadNonePolicy()
 
     def downloadAll(self):
-        """Modify the executor to download all results into the local namespace
-        and return 'self' allowing chaining."""
+        """Modify the executor to download all results into the local namespace.
+
+        Returns:
+            ``self`` to support chaining.
+        """
         self.downloadPolicy = DownloadPolicy.DownloadAllPolicy()
         return self
 
     def remoteAll(self):
-        """Modify the executor to leave all results on the server and only
-        return proxies (default)."""
+        """Modify the executor to leave all results on the server and only return proxies (default).
+
+        Returns:
+            ``self`` to support chaining.
+        """
         self.downloadPolicy = DownloadPolicy.DownloadNonePolicy()
         return self
 
     def downloadSmall(self, bytecount=10*1000):
         """Modify the executor to download small results into the local namespace
-        and return proxies for everything else."""
+        and return proxies for everything else.
+
+        Returns:
+            ``self`` to support chaining.
+        """
         self.downloadPolicy = DownloadPolicy.DownloadSmallPolicy(bytecount)
         return self
-        
+
 
     def __enter__(self):
         self.frame = PyforaInspect.currentframe(1)
@@ -145,7 +163,7 @@ class WithBlockExecutor(object):
         self.lineNumber = lineNumber
         self.sourceText = "".join(PyforaInspect.getlines(self.sourceFileName))
 
-        # Seems to "turn on" tracing, otherwise setting 
+        # Seems to "turn on" tracing, otherwise setting
         # frame.f_trace seems to have no effect
         # doesn't seem to have any effects outside of this with context.
         sys.settrace(lambda *args, **keys: None)
@@ -197,7 +215,7 @@ class WithBlockExecutor(object):
     def trace(self, frame, event, arg):
         try:
             # It's very important not to write to frame.f_locals directly.
-            # Apparently, each time we directly access the f_locals, member 
+            # Apparently, each time we directly access the f_locals, member
             # of a frame object, it calls some C code and syncs to its current
             # "internal" values. What we do instead is just read it out once,
             # at the beginning of the function, and then the writes will be seen later.

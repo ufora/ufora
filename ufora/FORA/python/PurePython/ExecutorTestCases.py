@@ -106,7 +106,7 @@ class ExecutorTestCases(
             t2 = time.time()
 
             self.assertTrue(
-                comparisonFunction(pyforaResult, pythonResult), 
+                comparisonFunction(pyforaResult, pythonResult),
                 "Pyfora and python returned different results: %s != %s for %s(%s), respectively" % (
                     pyforaResult, pythonResult, func, args)
                 )
@@ -203,7 +203,7 @@ class ExecutorTestCases(
                     logging.error("Python succeeded, but pyfora threw %s for %s%s", ex, func, args)
                 pyforaSucceeded = False
             except:
-                logging.error("General exception in pyfora for %s%s:\n%s", 
+                logging.error("General exception in pyfora for %s%s:\n%s",
                               func, args, traceback.format_exc())
                 return False
 
@@ -451,7 +451,7 @@ class ExecutorTestCases(
             return numpy.linalg.pinv(array)
 
         arr1 = [ [67.0, 63.0, 87.0],
-                [77.0, 69.0, 59.0], 
+                [77.0, 69.0, 59.0],
                 [85.0, 87.0, 99.0],
                 [15.0, 17.0, 19.0] ]
 
@@ -464,11 +464,11 @@ class ExecutorTestCases(
         r1 = self.evaluateWithExecutor(f, arr2)
         r2 = f(arr2)
         self.assertArraysAreAlmostEqual(r1, r2)
-        
+
     def test_numpy_transpose(self):
         def f():
             array = numpy.array([ [67.0, 63.0, 87.0],
-                [77.0, 69.0, 59.0], 
+                [77.0, 69.0, 59.0],
                 [85.0, 87.0, 99.0],
                 [15.0, 17.0, 19.0] ])
 
@@ -491,8 +491,8 @@ class ExecutorTestCases(
 
     def test_numpy_indexing_1(self):
         def f():
-            array = numpy.array([ [67.0, 63.0, 87.0], 
-                [77.0, 69.0, 59.0], 
+            array = numpy.array([ [67.0, 63.0, 87.0],
+                [77.0, 69.0, 59.0],
                 [85.0, 87.0, 99.0],
                 [15.0, 17.0, 19.0] ])
 
@@ -584,7 +584,7 @@ class ExecutorTestCases(
             return b.flatten()
         a = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
         r = self.equivalentEvaluationTest(f, a)
-        
+
         b = [[67.0, 63, 87],
                [77, 69, 59],
                [85, 87, 99],
@@ -617,7 +617,7 @@ class ExecutorTestCases(
             return b.tolist()
         a = [1, 2, 3, 4, 5, 6]
         r = self.equivalentEvaluationTest(f, a)
-        
+
         b = [[67.0, 63, 87],
                [77, 69, 59],
                [85, 87, 99],
@@ -644,12 +644,12 @@ class ExecutorTestCases(
 
         for _ in range(10):
             r = self.equivalentEvaluationTest(
-                f, 
+                f,
                 [random.uniform(-10, 10) for _ in range(0, listLength)],
                 [random.uniform(-10, 10) for _ in range(0, listLength)],
                 comparisonFunction=ExecutorTestCases.compareButDontCheckTypes
                 )
-    
+
     def test_numpy_dot_product_2(self):
         listLength = 20
 
@@ -833,7 +833,7 @@ class ExecutorTestCases(
 
         def f(ix):
             return tup[ix]
-        
+
         for ix in range(-3, 3):
             self.equivalentEvaluationTest(f, ix)
 
@@ -1185,10 +1185,10 @@ class ExecutorTestCases(
             pass
 
         candidates = [
-            0, 1, 
-            0.0, 1.0, 
-            "", "string", 
-            False, True, 
+            0, 1,
+            0.0, 1.0,
+            "", "string",
+            False, True,
             lambda x:x,
             HasBoolConversion(0),
             HasBoolConversion(1),
@@ -1221,9 +1221,9 @@ class ExecutorTestCases(
 
         candidates = [
             0, 1, -1,
-            0.0, 1.0, 
-            "string", 
-            False, True, 
+            0.0, 1.0,
+            "string",
+            False, True,
             lambda x:x,
             HasPos(),
             HasNeg(),
@@ -1620,7 +1620,7 @@ class ExecutorTestCases(
                 test(lambda: isinstance(inst, typ))
                 test(lambda: issubclass(type(inst), typ))
 
-        
+
     def test_sum_isPrime(self):
         def isPrime(p):
             x = 2
@@ -1790,7 +1790,7 @@ class ExecutorTestCases(
     def test_str_2(self):
         def f(x):
             return str(x)
-            
+
         self.equivalentEvaluationTest(f, 42)
         self.equivalentEvaluationTest(f, "foo")
         self.equivalentEvaluationTest(f, None)
@@ -1906,7 +1906,7 @@ class ExecutorTestCases(
         self.equivalentEvaluationTest(f, arg)
         self.equivalentEvaluationTest(g, arg)
         self.equivalentEvaluationTest(h, arg)
-        
+
     def test_classes_1(self):
         class C1:
             def __init__(self, x):
@@ -1962,7 +1962,7 @@ class ExecutorTestCases(
             return c.f(arg)
 
         self.equivalentEvaluationTest(f, 4)
-        
+
         def members():
             return (c.x, c.y, c.z)
 
@@ -2121,7 +2121,7 @@ class ExecutorTestCases(
 
         def f(arg):
             return c2.f(arg), c2.g(arg)
-        
+
         for ix in range(10):
             self.equivalentEvaluationTest(f, ix)
 
@@ -2194,7 +2194,7 @@ class ExecutorTestCases(
             return ClassMemberFunctionsArePyfora2().f.__is_pyfora__
 
         self.assertTrue(self.evaluateWithExecutor(f))
-    
+
 
     def test_class_member_functions_nonstandard_self(self):
         def f():
@@ -2209,7 +2209,7 @@ class ExecutorTestCases(
             return ClassMemberFunctionsNonstandardSelf().f()
 
         self.assertTrue(self.evaluateWithExecutor(f))
-    
+
 
     def test_return_in_init_method(self):
         def f():
@@ -2222,7 +2222,7 @@ class ExecutorTestCases(
 
         with self.assertRaises(Exceptions.PythonToForaConversionError):
             self.evaluateWithExecutor(f)
-    
+
 
     def test_lists_1(self):
         x = [1,2,3,4]
@@ -2261,7 +2261,7 @@ class ExecutorTestCases(
 
         def f(ix):
             return c[ix]
-        
+
         for ix in range(size):
             self.equivalentEvaluationTest(f, ix)
 
@@ -2315,7 +2315,7 @@ class ExecutorTestCases(
 
         for key in x:
             self.equivalentEvaluationTest(f, key)
-        
+
     def test_implicitReturnNone_1(self):
         def f():
             x = 2
@@ -2507,7 +2507,7 @@ class ExecutorTestCases(
         class A1():
             def __init__(self):
                 class B():
-                    pass                
+                    pass
 
         def f():
             a = A1()
@@ -2746,7 +2746,7 @@ class ExecutorTestCases(
     def test_list_containing_itself(self):
         evilList = []
         evilList.append(evilList)
-        
+
         try:
             self.equivalentEvaluationTest(lambda: len(evilList))
             self.assertTrue(False)
@@ -2826,7 +2826,7 @@ class ExecutorTestCases(
             self.evaluateWithExecutor(f)
             self.assertTrue(False)
         except Exceptions.ComputationError as e:
-            self.assertIsInstance(e.exceptionValue, UnboundLocalError)
+            self.assertIsInstance(e.remoteException, UnboundLocalError)
 
     def test_uninitializedVars_2(self):
         x = 2
@@ -2838,7 +2838,7 @@ class ExecutorTestCases(
             self.evaluateWithExecutor(f)
             self.assertTrue(False)
         except Exceptions.ComputationError as e:
-            self.assertIsInstance(e.exceptionValue, UnboundLocalError)
+            self.assertIsInstance(e.remoteException, UnboundLocalError)
 
     def test_uninitializedVars_3(self):
         x = 2
@@ -3025,7 +3025,7 @@ class ExecutorTestCases(
 
         def f2():
             return C()[1:2:3]
-        
+
         with self.assertRaises(pyfora.ForaToPythonConversionError):
             self.evaluateWithExecutor(f2)
 
@@ -3085,7 +3085,7 @@ class ExecutorTestCases(
             result = self.evaluateWithExecutor(f)
             self.assertTrue(False, result)
         except Exceptions.ComputationError as e:
-            self.assertIsInstance(e.exceptionValue, Exceptions.InvalidPyforaOperation)
+            self.assertIsInstance(e.remoteException, Exceptions.InvalidPyforaOperation)
 
     def test_for_loop_values_carry_over(self):
         with self.create_executor() as executor:
@@ -3104,7 +3104,7 @@ class ExecutorTestCases(
             return x
 
         self.equivalentEvaluationTest(f)
-        
+
     def test_mutual_recursion(self):
         def f(n):
             if n < 0:

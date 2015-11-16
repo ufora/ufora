@@ -12,38 +12,32 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 """
-RemotePythonObject
-
-A proxy to some object, data or callable that lives in memory on the Ufora
-cluster
+A proxy for some object, data or callable that lives in memory on a Ufora cluster
 """
 
 
 import pyfora.Exceptions as Exceptions
 
 class RemotePythonObject(object):
-    """RemotePythonObject exposes a python object which lives in memory on the Ufora
-    cluster, but is also referenced locally by proxy.
+    """A local proxy for a python object that lives in memory on a Ufora cluster.
 
-    There are two subclasses of RemotePythonObject corresponding to two different
-    types of remote objects:
+    This is an abstract class and should not be used directly, but through its two
+    subclasses: :class:`~pyfora.RemotePythonObject.DefinedRemotePythonObject` and
+    :class:`~pyfora.RemotePythonObject.ComputedRemotePythonObject`.
 
-        - DefinedRemotePythonObject - objects that were created locally and remoted
-            to the Ufora cluster
-        - ComputedRemotePythonObject - an object that is the result of a computation 
-            that ran on the Ufora cluster
+    Args:
+        executor (Executor.Executor): a :class:`~pyfora.Executor.Executor`
     """
-
     def __init__(self, executor):
-        """Initialize a RemotePythonObject
-
-        executor - a pyfora.Executor
-        """
         self.executor = executor
 
     def toLocal(self):
-        """Produce a Future that resolves to the actual python object
-        that this RemotePythonObject represents."""
+        """Downloads the remote object.
+
+        Returns:
+            Future.Future: a :class:`~Future.Future` that resolves to the python
+            object that this :class:`RemotePythonObject` represents.
+        """
         raise Exceptions.PyforaNotImplementedError(
             "'%s' not implemented yet for type '%s'"
             % (self.toLocal.__name__,
@@ -55,14 +49,33 @@ class RemotePythonObject(object):
         raise NotImplementedError()
 
     def __call__(self, *args):
+        """Invoke a remoted function or callable object.
+
+        Args:
+            *args (List[RemotePythonObject]): arguments to pass to the callable.
+                They must be instances of :class:`RemotePythonObject`.
+
+        Returns:
+            Future.Future: a :class:`~pyfora.Future.Future` that resolves to a
+                :class:`RemotePythonObject` that represents the return value of
+                the remote function call.
+        """
         assert all([isinstance(arg, RemotePythonObject) for arg in args])
         return self.executor._callRemoteObject(self, args)
 
 class DefinedRemotePythonObject(RemotePythonObject):
-    """A remote python object that we defined locally and uploaded.
+    """A proxy that represents a local object, which has been uploaded to a Ufora cluster.
 
-    objectId - an integer defining the object
-    executor - a pyfora.Executor
+    Note:
+        Only :class:`~Executor.Executor` is intended to create instances of
+        :class:`DefinedRemotePythonObject`. They are created by calling
+        :func:`~pyfora.Executor.Executor.define`.
+
+    Args:
+        objectId (int): a value that uniquely identifies the remote object that
+            this :class:`DefinedRemotePythonObject` represents.
+        executor (Executor.Executor): the :class:`~pyfora.Executor.Executor` that created this
+            :class:`DefinedRemotePythonObject`.
     """
     def __init__(self, objectId, executor):
         super(DefinedRemotePythonObject, self).__init__(executor)
@@ -76,10 +89,19 @@ class DefinedRemotePythonObject(RemotePythonObject):
         return self.executor._downloadDefinedObject(self.objectId)
 
 class ComputedRemotePythonObject(RemotePythonObject):
-    """A remote python object that we created by computing something on a Ufora cluster.
+    """A proxy that represents a remote object created on a Ufora cluster as a
+    result of some computation.
 
-    computedValue - a SubscribableWebObject computedValue that represents the computation
-    executor - a pyfora.Executor
+    Note:
+        Only :class:`~Executor.Executor` is intended to create instances of
+        :class:`ComputedRemotePythonObject`. They are created by calling
+        :func:`~pyfora.Executor.Executor.define`.
+
+    Args:
+        computedValue: an instance of a SubscribableWebObject computedValue representing
+            the computation that produced this :class:`ComputedRemotePythonObject`.
+        executor (Executor.Executor): the :class:`~pyfora.Executor.Executor` that created this
+            :class:`DefinedRemotePythonObject`.
     """
     def __init__(self, computedValue, executor):
         super(ComputedRemotePythonObject, self).__init__(executor)

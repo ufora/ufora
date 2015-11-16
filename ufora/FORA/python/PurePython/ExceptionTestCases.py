@@ -74,7 +74,7 @@ class ExceptionTestCases(object):
         with self.create_executor() as fora:
             e = fora.submit(f).result().toLocal().exception()
             self.assertTrue(isinstance(e, pyfora.ComputationError))
-            self.assertTrue(isinstance(e.exceptionValue, AttributeError))
+            self.assertTrue(isinstance(e.remoteException, AttributeError))
 
     def test_exceptions_attribute_error_class(self):
         def f():
@@ -87,7 +87,7 @@ class ExceptionTestCases(object):
         with self.create_executor() as fora:
             e = fora.submit(f).result().toLocal().exception()
             self.assertTrue(isinstance(e, pyfora.ComputationError))
-            self.assertTrue(isinstance(e.exceptionValue, AttributeError))
+            self.assertTrue(isinstance(e.remoteException, AttributeError))
 
     def test_exceptions_attribute_error_translated_class_instance(self):
         def f():
@@ -96,7 +96,7 @@ class ExceptionTestCases(object):
         with self.create_executor() as fora:
             e = fora.submit(f).result().toLocal().exception()
             self.assertTrue(isinstance(e, pyfora.ComputationError))
-            self.assertTrue(isinstance(e.exceptionValue, AttributeError))
+            self.assertTrue(isinstance(e.remoteException, AttributeError))
 
     def test_exceptions_can_call_Exception(self):
         def f():
@@ -123,8 +123,8 @@ class ExceptionTestCases(object):
         with self.create_executor() as fora:
             e = fora.submit(f).result().toLocal().exception()
             self.assertTrue(isinstance(e, pyfora.ComputationError))
-            self.assertTrue(isinstance(e.exceptionValue, Exception))
-            self.assertEqual(e.exceptionValue.message, "hi")
+            self.assertTrue(isinstance(e.remoteException, Exception))
+            self.assertEqual(e.remoteException.message, "hi")
 
     def test_exceptions_can_raise_UserWarning(self):
         def f():
@@ -133,8 +133,8 @@ class ExceptionTestCases(object):
         with self.create_executor() as fora:
             e = fora.submit(f).result().toLocal().exception()
             self.assertTrue(isinstance(e, pyfora.ComputationError))
-            self.assertTrue(isinstance(e.exceptionValue, UserWarning))
-            self.assertEqual(e.exceptionValue.message, "hi")
+            self.assertTrue(isinstance(e.remoteException, UserWarning))
+            self.assertEqual(e.remoteException.message, "hi")
 
     def test_exceptions_can_catch_UserWarning(self):
         def f():
@@ -165,7 +165,7 @@ class ExceptionTestCases(object):
 
         with self.create_executor() as fora:
             e = fora.submit(f).result().toLocal().exception()
-            self.assertIsInstance(e.exceptionValue, TypeError)
+            self.assertIsInstance(e.remoteException, TypeError)
 
     def test_invalid_call_2(self):
         def f():
@@ -173,7 +173,7 @@ class ExceptionTestCases(object):
 
         with self.create_executor() as fora:
             e = fora.submit(f).result().toLocal().exception()
-            self.assertIsInstance(e.exceptionValue, TypeError)
+            self.assertIsInstance(e.remoteException, TypeError)
 
     def test_invalid_call_3(self):
         def f():
@@ -181,7 +181,7 @@ class ExceptionTestCases(object):
 
         with self.create_executor() as fora:
             e = fora.submit(f).result().toLocal().exception()
-            self.assertIsInstance(e.exceptionValue, TypeError)
+            self.assertIsInstance(e.remoteException, TypeError)
 
     def test_list_append_exception_is_InvalidPyforaOperation(self):
         def f():
@@ -190,7 +190,7 @@ class ExceptionTestCases(object):
         with self.create_executor() as fora:
             e = fora.submit(f).result().toLocal().exception()
             self.assertIsInstance(e, pyfora.ComputationError)
-            self.assertIsInstance(e.exceptionValue, pyfora.InvalidPyforaOperation)
+            self.assertIsInstance(e.remoteException, pyfora.InvalidPyforaOperation)
 
     def test_extended_slices(self):
         # we're not supporting extended slices just yet
@@ -201,7 +201,7 @@ class ExceptionTestCases(object):
         with self.create_executor() as fora:
             e = fora.submit(f).result().toLocal().exception()
             self.assertIsInstance(e, pyfora.ComputationError)
-            self.assertIsInstance(e.exceptionValue, TypeError)
+            self.assertIsInstance(e.remoteException, TypeError)
 
     def test_IndexError_lists_1(self):
         def f():
@@ -210,7 +210,7 @@ class ExceptionTestCases(object):
         with self.create_executor() as fora:
             e = fora.submit(f).result().toLocal().exception()
             self.assertIsInstance(e, pyfora.ComputationError)
-            self.assertIsInstance(e.exceptionValue, IndexError)
+            self.assertIsInstance(e.remoteException, IndexError)
 
     def test_IndexError_lists_2(self):
         def f():
@@ -220,7 +220,7 @@ class ExceptionTestCases(object):
             with self.assertRaises(IndexError):
                 with fora.remotely:
                     f()
-                
+
     def test_IndexError_tuples_1(self):
         def f():
             return (1,2)[100]
@@ -228,7 +228,7 @@ class ExceptionTestCases(object):
         with self.create_executor() as fora:
             e = fora.submit(f).result().toLocal().exception()
             self.assertIsInstance(e, pyfora.ComputationError)
-            self.assertIsInstance(e.exceptionValue, IndexError)
+            self.assertIsInstance(e.remoteException, IndexError)
 
     def test_IndexError_tuples_2(self):
         def f():
@@ -246,7 +246,7 @@ class ExceptionTestCases(object):
         with self.create_executor() as fora:
             e = fora.submit(f).result().toLocal().exception()
             self.assertIsInstance(e, pyfora.ComputationError)
-            self.assertIsInstance(e.exceptionValue, IndexError)
+            self.assertIsInstance(e.remoteException, IndexError)
 
     def test_IndexError_strings_2(self):
         def f():

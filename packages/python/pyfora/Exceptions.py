@@ -53,39 +53,49 @@ class PyforaError(Error):
     pass
 
 class NotCallableError(PyforaError):
-    '''An attempt was made to call a non-callable object.'''
+    '''Raised when an attempt is made to call a non-callable object.'''
     pass
 
 class ComputationError(PyforaError):
-    '''A remote computation resulted in an exception.'''
-    def __init__(self, exceptionValue, trace):
-        self.exceptionValue = exceptionValue
+    '''Raised when a remote computation results in an exception.
+
+    Args:
+        remoteException (Exception): The exception raised by the remote computation.
+        trace (Optional[List]): A representation of the stack trace in which the exception was raised.
+            It takes the form: ``[{'path':str, 'line': int}, ...  ]``
+    '''
+    def __init__(self, remoteException, trace):
+        self.remoteException = remoteException
         self.trace = trace
 
     def __str__(self):
         if self.trace is None:
-            return "%s" % self.exceptionValue
+            return "%s" % self.remoteException
 
         try:
-            return "%s\n%s" % (str(self.exceptionValue), renderTraceback(self.trace))
+            return "%s\n%s" % (str(self.remoteException), renderTraceback(self.trace))
         except:
             logging.error("%s", traceback.format_exc())
             raise
 
     def __repr__(self):
-        return "ComputationError(exceptionValue=%s,trace=%s)" % (self.exceptionValue, self.trace)
+        return "ComputationError(remoteException=%s,trace=%s)" % (self.remoteException, self.trace)
 
 class PythonToForaConversionError(PyforaError):
-    '''Unable to convert the specified Python object.'''
-    def __init__(self, message, trace=None):
-        """Initialize a conversion error.
+    '''Raised when an attempt is made to use a Python object that cannot be remoted by ``pyfora``.
 
-        message - a string containing the error message
-        trace - None, or a list of the form [
-            {'path':str, 'line': int},
-            ...
-            ]
-        """
+    This may happen when, for example:
+
+       - A function attempts to mutate state or produce side-effect (i.e. it is not "purely functional").
+
+       - A call is made to a Python builtin that is not supported by ``pyfora`` (e.g. :func:`open`)
+
+    Args:
+        message (str): Error message.
+        trace (Optional[List]): A representation of the stack trace in which the exception was raised.
+            It takes the form: ``[{'path':str, 'line': int}, ...  ]``
+    '''
+    def __init__(self, message, trace=None):
         self.message = message
         self.trace = trace
 
@@ -99,7 +109,7 @@ class PythonToForaConversionError(PyforaError):
         return "PythonToForaConversionError(message=%s,trace=%s)" % (repr(self.message), repr(self.trace))
 
 class ForaToPythonConversionError(PyforaError):
-    '''Unable to convert the specified object to Python.'''
+    '''Raised when attempting to download a remote object that cannot be converted to Python.'''
     pass
 
 class InternalError(PyforaError):
@@ -107,16 +117,18 @@ class InternalError(PyforaError):
     pass
 
 class PyforaNotImplementedError(PyforaError):
-    '''Feature not yet implemented in Pyfora.'''
+    '''Feature not yet implemented in ``pyfora``.'''
     pass
 
 class InvalidPyforaOperation(PyforaError):
-    """Pyfora cannot faithfully execute this code."""
+    '''Raised when a running computation performs an operation that cannot be faithfully executed with ``pyfora``.'''
 
 class CantGetSourceTextError(PyforaError):
     pass
 
 class ResultExceededBytecountThreshold(PyforaError):
+    '''Raised when attempting to download a remote object whose size exceeds the specified maximum.'''
+
     pass
 
 
