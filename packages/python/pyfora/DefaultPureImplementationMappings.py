@@ -18,24 +18,22 @@ import pyfora.typeConverters.Numpy as Numpy
 
 defaultMapping_ = PureImplementationMappings.PureImplementationMappings()
 
-defaultMapping_.addMapping(Numpy.PurePythonNumpyArrayMapping())
+for _ in BuiltinPureImplementationMappings.generateMappings():
+    defaultMapping_.addMapping(_)
 
-for mapping in BuiltinPureImplementationMappings.generateMappings():
-    defaultMapping_.addMapping(mapping)
-
-for mapping in Numpy.generateMappings():
-    defaultMapping_.addMapping(mapping)
+for _ in Numpy.generateMappings():
+    defaultMapping_.addMapping(_)
 
 def getMappings():
-	return defaultMapping_
+    return defaultMapping_
 
 def addMapping(mapping):
-	"""Register an instance of PureImplementationMapping with the default mapping model.
+    """Register an instance of PureImplementationMapping with the default mapping model.
 
-	This is the primary way that users can register mappings for libraries that are not part
-	of the default pyfora mapping libraries.
-	"""
-	defaultMapping_.addMapping(mapping)
+    This is the primary way that users can register mappings for libraries that are not part
+    of the default pyfora mapping libraries.
+    """
+    defaultMapping_.addMapping(mapping)
 
 
 

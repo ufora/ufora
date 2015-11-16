@@ -274,9 +274,13 @@ class NpPinv:
             flat
             )
 
-mappings_ = [(np.zeros, NpZeros), (np.array, NpArray), (np.dot, NpDot), (np.linalg.pinv, NpPinv)]
+mappings_ = [(np.zeros, NpZeros), (np.array, NpArray), 
+             (np.dot, NpDot), (np.linalg.pinv, NpPinv)]
 
 def generateMappings():
-    return [PureImplementationMapping.InstanceMapping(instance, pureType) for (instance, pureType) in mappings_]
+    tr = [PureImplementationMapping.InstanceMapping(instance, pureType) for \
+            (instance, pureType) in mappings_]
+    tr.append(PurePythonNumpyArrayMapping())
+    return tr
 
 
