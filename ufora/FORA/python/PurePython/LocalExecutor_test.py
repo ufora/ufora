@@ -12,12 +12,20 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import ufora.FORA.python.PurePython.InMemorySimulationExecutorFactory as InMemorySimulationExecutorFactory
-import ufora.FORA.python.PurePython.InMemoryExecutorTestCases as InMemoryExecutorTestCases
+import ufora.FORA.python.PurePython.InMemorySimulationExecutorFactory as \
+    InMemorySimulationExecutorFactory
+import ufora.FORA.python.PurePython.InMemoryExecutorTestCases as \
+    InMemoryExecutorTestCases
+import ufora.FORA.python.PurePython.InMemoryPandasTestCases as \
+    InMemoryPandasTestCases
 
 import unittest
 
-class TestLocalExecutor(unittest.TestCase, InMemoryExecutorTestCases.InMemoryExecutorTestCases):
+class TestLocalExecutor(
+        unittest.TestCase,
+        InMemoryExecutorTestCases.InMemoryExecutorTestCases,
+        InMemoryPandasTestCases.InMemoryPandasTestCases
+        ):
     @classmethod
     def setUpClass(cls):
         cls.executor = None

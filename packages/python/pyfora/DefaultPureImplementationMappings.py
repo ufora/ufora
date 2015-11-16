@@ -15,6 +15,7 @@
 import pyfora.PureImplementationMappings as PureImplementationMappings
 import pyfora.BuiltinPureImplementationMappings as BuiltinPureImplementationMappings
 import pyfora.typeConverters.Numpy as Numpy
+import pyfora.typeConverters.Pandas as Pandas
 
 defaultMapping_ = PureImplementationMappings.PureImplementationMappings()
 
@@ -22,6 +23,9 @@ for _ in BuiltinPureImplementationMappings.generateMappings():
     defaultMapping_.addMapping(_)
 
 for _ in Numpy.generateMappings():
+    defaultMapping_.addMapping(_)
+
+for _ in Pandas.generateMappings():
     defaultMapping_.addMapping(_)
 
 def getMappings():

@@ -62,7 +62,7 @@ RUN pip install --allow-unverified pyodbc\
     numpy \
     pyodbc \
     pexpect \
-    virtualenv
+    pandas
 
 
 # NodeJS
