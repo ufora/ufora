@@ -615,18 +615,28 @@ PythonAstConverter::convertPythonClassBodyFunctionDefToForaClassDefinitionTerms(
 
     ImmutableTreeVector<PythonAstExpr> decoratorList = functionDef.decorator_list();
 
-    //check if it's staticmethod
+    //check if it's @staticmethod or @property
     ImmutableTreeVector<PythonAstStatement> body = functionDef.body();
-    if (decoratorList.size() > 0) 
-        {
+    if (decoratorList.size() > 0) {
         if (decoratorList.size() == 1 
-                and decoratorList[0].isName() 
-                and decoratorList[0].getName().id() == "staticmethod") 
+            and decoratorList[0].isName())
             {
-            return convertPythonClassBodyStaticMethodFunctionDefToForaClassDefinitionTerms(
-                    functionDef,
-                    extent
-                    );
+            const std::string& decoratorName = decoratorList[0].getName().id();
+
+            if (decoratorName == "staticmethod") {
+                return 
+                    convertPythonClassBodyStaticMethodFunctionDefToForaClassDefinitionTerms(
+                        functionDef,
+                        extent
+                        );
+                }
+            else if (decoratorName == "property") {
+                return emptyTreeVec() +
+                    convertPythonClassBodyPropertyToForaClassDefinitionTerm(
+                        functionDef,
+                        extent
+                        );
+                }                    
             }
 
         throw PythonToForaConversionError(
@@ -2035,6 +2045,60 @@ PythonAstConverter::convertPythonClassBodyStaticMethodFunctionDefToForaClassDefi
                 )
             );
     }
+
+/*
+Called from convertPythonClassBodyFunctionDefToForaClassDefinitionTerm which verifies
+expected properties on `args`
+*/
+ClassDefinitionTerm 
+PythonAstConverter::convertPythonClassBodyPropertyToForaClassDefinitionTerm(
+        const PythonAstStatement_FunctionDefType& functionDef,
+        const SimpleParseRange& extent
+        ) const
+    {
+    PythonAstStatement_FunctionDefType functionDefWithoutDecorators = functionDef;
+    functionDefWithoutDecorators.decorator_list() = emptyTreeVec();
+
+    Function function = 
+        convertFunctionDefToForaFunction(
+            functionDefWithoutDecorators,
+            extent
+            );
+
+    return ClassDefinitionTerm::ObjectTerm(
+        ObjectDefinitionTerm::Anything(
+            Function::Term(
+                TuplePattern(
+                    emptyTreeVec() + 
+                        TuplePatternElement::Normal(
+                            PatternWithName::Constant(CSTValue(Symbol("Member")))
+                            ) +
+                    TuplePatternElement::Normal(
+                        PatternWithName::Constant(CSTValue(Symbol(functionDef.name())))
+                        )
+                    ),
+                Expression::Call(
+                    Expression::Call(
+                        Expression::Constant(mPyBoundMethod),
+                        emptyTreeVec() +
+                        Expression::Variable(Symbol("@self")).normalApplyArg() +
+                        Expression::CreateFunction(
+                            "__property_fun",
+                            function,
+                            CSTValue()
+                            ).normalApplyArg() +
+                        Expression::Constant(
+                            CSTValue(Symbol(functionDef.name()))
+                            ).normalApplyArg()
+                        ),
+                    emptyTreeVec()
+                    ),                
+                Function::Empty()
+                )
+            )
+        );
+    }
+
 
 ImmutableTreeVector<TuplePatternElement> PythonAstConverter::computeForaArgs(
         const PythonAstArguments& pythonArgs

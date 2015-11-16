@@ -3227,3 +3227,31 @@ class ExecutorTestCases(
             self.equivalentEvaluationTest(lambda: list(sequence(count)))
             self.equivalentEvaluationTest(lambda: list(EmptyIterator.staticSequence(count)))
             self.equivalentEvaluationTest(lambda: list(EmptyIterator().sequence(count)))
+
+    def test_properties_1(self):
+        class C_with_properties_1:
+            def __init__(self, m):
+                self.m = m
+            def f(self, x):
+                return self.m + x
+            @property
+            def prop(self):
+                return self.f(self.m)
+
+        def f():
+            return C_with_properties_1(42).prop
+
+        self.equivalentEvaluationTest(f)
+
+    def test_properties_2(self):
+        class C_with_properties_2:
+            @property
+            def prop(self, x):
+                return x
+
+        with self.assertRaises(pyfora.ComputationError):
+            self.evaluateWithExecutor(lambda: C_with_properties_2().prop)
+        
+    def test_cant_convert_property_itself(self):
+        with self.assertRaises(pyfora.PythonToForaConversionError):
+            self.evaluateWithExecutor(lambda: property)

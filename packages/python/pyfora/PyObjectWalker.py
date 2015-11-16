@@ -679,7 +679,7 @@ class PyObjectWalker(object):
             self._freeMemberAccessChains(pyAst)
 
         for chain in freeVariableMemberAccessChains:
-            if not chain or chain[0] not in ['staticmethod']:
+            if not chain or chain[0] not in ['staticmethod', 'property']:
                 subchain, resolution = self._resolveChainInPyObject(chain, pyObject)
                 resolutions[subchain] = resolution
 
