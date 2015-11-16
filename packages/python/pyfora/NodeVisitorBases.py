@@ -13,14 +13,20 @@
 #   limitations under the License.
 
 import ast
+import collections
 import pyfora.Exceptions as Exceptions
 
+class VisitDone(Exception):
+    """Raise this exception to short-circuit the visitor once we're done searching."""
+    pass
 
 def isScopeNode(pyAstNode):
     if isinstance(pyAstNode, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.Lambda, ast.GeneratorExp)):
         return True
     else:
         return False
+
+PositionInFile = collections.namedtuple('PositionInFile', ['lineno', 'col_offset'])
 
 ##########################################################################
 # Context Managers
@@ -130,6 +136,9 @@ class GenericInScopeVisitor(NodeVisitorBase):
     def _cachedCompute(self):
         if not self._isComputed:
             if isScopeNode(self._root):
+                if isinstance(self._root, ast.FunctionDef) and hasattr(self._root, 'arguments'):
+                    self._root.arguments.lineno = self._root.lineno
+                    self._root.arguments.col_offset = self._root.col_offset
                 self.generic_visit(self._root)
                 self._isComputed = True
             else:
@@ -245,12 +254,16 @@ class GenericScopedVisitor(NodeVisitorBase):
             self.visit(node.body)
 
     def visit_FunctionDef(self, node):
+        node.args.lineno = node.lineno
+        node.args.col_offset = node.col_offset
         self.visit(node.args.defaults)
         with self._getScopeMgr(node):
             self.visit(node.body)
             self.visit(node.decorator_list)
 
     def visit_Lambda(self, node):
+        node.args.lineno = node.lineno
+        node.args.col_offset = node.col_offset
         self.visit(node.args.defaults)
         with self._getScopeMgr(node):
             self.visit(node.body)
@@ -263,7 +276,7 @@ class GenericScopedVisitor(NodeVisitorBase):
     def visit_ClassDef(self, node):
         self.visit(node.bases)
         # Because we don't currently distinguish between self.m and m,
-        # for now we skip collecting class member names
-        # with _SetBoundVars(self, node):
+        # for now we skip collecting class member names with the
+        # scoped visitor controlled by the context manager
         self.visit(node.body)
         self.visit(node.decorator_list)

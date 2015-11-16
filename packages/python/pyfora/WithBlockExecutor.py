@@ -66,9 +66,8 @@ def _augmentRaiseFunctionTempl(rf):
     return """ + INNER_FUNCTION_NAME
 
 def augmentRaiseFunction(raiseFunction, path, line, col):
-    enclosingFunctionVisitor = PyAstUtil.FindEnclosingFunctionVisitor(line)
     codeAst = PyAstUtil.getAstFromFilePath(path)
-    enclosingFunctionName = enclosingFunctionVisitor.find(codeAst)
+    enclosingFunctionName = PyAstUtil.findEnclosingFunctionName(codeAst, line)
     vis = AugmentRaiseFunctionModificationVisitor(line, col, enclosingFunctionName)
     module = ast.parse(augmentRaiseFunctionTemplate)
     vis.visit(module)
@@ -176,6 +175,7 @@ class WithBlockExecutor(object):
         return isinstance(excValue, WithBlockCompleted)
 
     def blockOperation(self, frame):
+        # variables bound in the enclosing context of the with-block frame.
         boundVariables = {}
         boundVariables.update(frame.f_globals)
         boundVariables.update(frame.f_locals)
@@ -236,9 +236,11 @@ class WithBlockExecutor(object):
         except (Exceptions.PythonToForaConversionError, Exceptions.ForaToPythonConversionError) as err:
             frame.f_lineno = frame.f_lineno - 1
             # re-raise to hide from users the traceback into the internals of pyfora
+            logging.error("Re-raising exception to partially hide traceback.\n%s", traceback.format_exc())
             raise err  
         except Exception:
             frame.f_lineno = frame.f_lineno - 1
+            logging.error("Re-raising exception after amending lineno.\n%s", traceback.format_exc())
             raise
 
         if self.traceAndException is not None:

@@ -395,7 +395,6 @@ class WithBlockExecutors_test(unittest.TestCase):
                 x = zero()
                 y = zeroGen()
 
-
     def test_with_block_reassignment_in_separate_with_block(self):
         with self.create_executor() as fora:
             ctx = fora.remotely.downloadAll()

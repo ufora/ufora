@@ -39,9 +39,12 @@ collectBoundNamesInScope(astNode)
     function or class declarations) .
 """
 import ast
+import collections
 import pyfora.NodeVisitorBases as NodeVisitorBases
 import pyfora.Exceptions as Exceptions
 import pyfora.PyAstUtil as PyAstUtil
+
+VarWithPosition = collections.namedtuple('VarWithPosition', ['var', 'pos'])
 
 class _CollectBoundValuesInScopeVisitor(NodeVisitorBases.GenericInScopeVisitor):
     """
@@ -53,37 +56,66 @@ class _CollectBoundValuesInScopeVisitor(NodeVisitorBases.GenericInScopeVisitor):
 
     def __init__(self, node):
         super(_CollectBoundValuesInScopeVisitor, self).__init__(node)
-        self._boundVars = set()
-        self._boundNames = set()
+        self._boundVarsWithPos = set()
+        self._boundNamesWithPos = set()
 
     def getBoundNames(self):
         self._cachedCompute()
-        return self._boundNames
+        return {var for (var, _) in self._boundNamesWithPos}
 
     def getBoundVariables(self):
         self._cachedCompute()
-        return self._boundVars
+        return {var for (var, _) in self._boundVarsWithPos}
 
-    def getBoundValues(self):
+    def getBoundValues(self, getPositions=False):
         self._cachedCompute()
-        return self._boundVars.union(self._boundNames)
+        if getPositions is True:
+            return self._boundVarsWithPos.union(self._boundNamesWithPos)
+        else:
+            return self.getBoundVariables().union(self.getBoundNames())
 
     def visit_Module(self, _):
         raise Exceptions.InternalError(
             "Unexpected call of 'visit_Module' in '%s'" % self.__class__.__name__)
 
     def visit_FunctionDef(self, node):
-        self._boundNames.add(node.name)
+        # exclude synthetic wrapper FunctionDef nodes
+        if node.name != '':
+            self._boundNamesWithPos.add(
+                VarWithPosition(
+                    var=node.name,
+                    pos=NodeVisitorBases.PositionInFile(
+                        lineno=node.lineno,
+                        col_offset=node.col_offset
+                        )
+                    )
+                )
 
     def visit_ClassDef(self, node):
-        self._boundNames.add(node.name)
+        self._boundNamesWithPos.add(
+            VarWithPosition(
+                var=node.name,
+                pos=NodeVisitorBases.PositionInFile(
+                    lineno=node.lineno,
+                    col_offset=node.col_offset
+                    )
+                )
+            )
 
     def visit_Lambda(self, _):
         return
 
     def visit_Name(self, node):
         if self._isInDefinition:
-            self._boundVars.add(node.id)
+            self._boundVarsWithPos.add(
+                VarWithPosition(
+                    var=node.id,
+                    pos=NodeVisitorBases.PositionInFile(
+                        lineno=node.lineno,
+                        col_offset=node.col_offset
+                        )
+                    )
+                )
 
     def visit_Attribute(self, _):
         return  # do not visit sub-tree
@@ -98,14 +130,30 @@ class _CollectBoundValuesInScopeVisitor(NodeVisitorBases.GenericInScopeVisitor):
         with self._isInDefinitionMgr(True):
             self.visit(node.args)
         if node.vararg is not None:
-            self._boundVars.add(node.vararg)
+            self._boundVarsWithPos.add(
+                VarWithPosition(
+                    var=node.vararg,
+                    pos=NodeVisitorBases.PositionInFile(
+                        lineno=node.lineno,
+                        col_offset=node.col_offset
+                        )
+                    )
+                )
         if node.kwarg is not None:
-            self._boundVars.add(node.kwarg)
+            self._boundVarsWithPos.add(
+                VarWithPosition(
+                    var=node.kwarg,
+                    pos=NodeVisitorBases.PositionInFile(
+                        lineno=node.lineno,
+                        col_offset=node.col_offset
+                        )
+                    )
+                )
 
 
-def collectBoundValuesInScope(pyAstNode):
+def collectBoundValuesInScope(pyAstNode, getPositions=False):
     vis = _CollectBoundValuesInScopeVisitor(pyAstNode)
-    return vis.getBoundValues()
+    return vis.getBoundValues(getPositions)
 
 
 def collectBoundVariablesInScope(pyAstNode):
@@ -148,10 +196,13 @@ class _FreeVarsVisitor(GenericBoundValuesScopedVisitor):
     """Collect the free variables in a block of code."""
     def __init__(self):
         super(_FreeVarsVisitor, self).__init__()
-        self._freeVars = set()
+        self._freeVarsWithPos = set()
 
-    def getFreeVars(self):
-        return self._freeVars
+    def getFreeVars(self, getPositions=False):
+        if getPositions:
+            return self._freeVarsWithPos
+        else:
+            return {var for (var, _) in self._freeVarsWithPos}
 
     # VISITORS
     def visit_Name(self, node):
@@ -160,27 +211,49 @@ class _FreeVarsVisitor(GenericBoundValuesScopedVisitor):
             self._boundInScopeSoFar.add(identifier)
         elif not self.isBoundSoFar(identifier) and \
            isinstance(node.ctx, ast.Load):
-            self._freeVars.add(identifier)
+            self._freeVarsWithPos.add(
+                VarWithPosition(
+                    var=identifier,
+                    pos=NodeVisitorBases.PositionInFile(
+                        lineno=node.lineno,
+                        col_offset=node.col_offset
+                        )
+                    )
+                )
 
 
-def getFreeVariables(pyAstNode, isClassContext=None):
+def getFreeVariables(pyAstNode, isClassContext=None, getPositions=False):
     pyAstNode = PyAstUtil.getRootInContext(pyAstNode, isClassContext)
     freeVarsVisitor = _FreeVarsVisitor()
     freeVarsVisitor.visit(pyAstNode)
-    return freeVarsVisitor.getFreeVars()
+    return freeVarsVisitor.getFreeVars(getPositions=getPositions)
 
 
 class _FreeVariableMemberAccessChainsVisitor(GenericBoundValuesScopedVisitor):
     """Collect the free variable member access chains in a block of code."""
     def __init__(self):
         super(_FreeVariableMemberAccessChainsVisitor, self).__init__()
-        self.freeVariableMemberAccessChains = set()
+        self._freeVariableMemberAccessChainsWithPos = set()
+
+    def getFreeVariablesMemeberAccessChains(self, getPositions=False):
+        if getPositions:
+            return self._freeVariableMemberAccessChainsWithPos
+        else:
+            return {chain for (chain, _) in self._freeVariableMemberAccessChainsWithPos}
 
     def visit_Attribute(self, node):
         chainOrNone = _memberAccessChainOrNone(node)
         if chainOrNone is not None:
             if chainOrNone[0] not in self._boundValues:
-                self.freeVariableMemberAccessChains.add(chainOrNone)
+                self._freeVariableMemberAccessChainsWithPos.add(
+                    VarWithPosition(
+                        var=chainOrNone,
+                        pos=NodeVisitorBases.PositionInFile(
+                            lineno=node.lineno,
+                            col_offset=node.col_offset
+                            )
+                        )
+                    )
         else:
             #required to recurse deeper into the AST, but only do it if
             #_freeVariableMemberAccessChain was None, indicating that it
@@ -193,7 +266,15 @@ class _FreeVariableMemberAccessChainsVisitor(GenericBoundValuesScopedVisitor):
             self._boundInScopeSoFar.add(identifier)
         elif not self.isBoundSoFar(identifier) and \
            isinstance(node.ctx, ast.Load):
-            self.freeVariableMemberAccessChains.add((identifier,))
+            self._freeVariableMemberAccessChainsWithPos.add(
+                VarWithPosition(
+                    var=(identifier,),
+                    pos=NodeVisitorBases.PositionInFile(
+                        lineno=node.lineno,
+                        col_offset=node.col_offset
+                        )
+                    )
+                )
 
 
 def _memberAccessChainOrNone(pyAstNode):
@@ -224,10 +305,9 @@ def _memberAccessChainOrNoneImpl(pyAstNode):
     return []  # how can this path be exercised?
 
 
-def getFreeVariableMemberAccessChains(pyAstNode, isClassContext=None):
+def getFreeVariableMemberAccessChains(pyAstNode, isClassContext=None, getPositions=False):
     pyAstNode = PyAstUtil.getRootInContext(pyAstNode, isClassContext)
-    freeVariableMemberAccessChainsVisitor = _FreeVariableMemberAccessChainsVisitor()
-    freeVariableMemberAccessChainsVisitor.visit(pyAstNode)
-
-    return freeVariableMemberAccessChainsVisitor.freeVariableMemberAccessChains
+    vis = _FreeVariableMemberAccessChainsVisitor()
+    vis.visit(pyAstNode)
+    return vis.getFreeVariablesMemeberAccessChains(getPositions)
 

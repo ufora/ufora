@@ -12,6 +12,7 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+import re
 import pyfora
 
 
@@ -266,3 +267,98 @@ class ExceptionTestCases(object):
             with self.assertRaises(NotImplementedError):
                 with fora.remotely:
                     f()
+
+    def test_free_vars_error_msg1(self):
+        def f():
+            return x
+        try:
+            self.equivalentEvaluationTest(f)
+        except pyfora.PythonToForaConversionError as e:
+            pattern = ".*free variable 'x'.*\n" \
+                    + ".*, in f\n" \
+                    + "\\s*return x"
+            self.assertTrue(re.match(pattern, str(e)) is not None)
+
+    def test_free_vars_error_msg2(self):
+        def f():
+            return x.y.z
+        try:
+            self.equivalentEvaluationTest(f)
+        except pyfora.PythonToForaConversionError as e:
+            pattern = ".*free variable 'x'.*\n" \
+                    + ".*, in f\n" \
+                    + "\\s*return x\\.y\\.z"
+            self.assertTrue(re.match(pattern, str(e)) is not None)
+
+    def test_free_vars_error_msg3(self):
+        class C20:
+            def f():
+                return x.y.z
+        try:
+            self.equivalentEvaluationTest(lambda: C20())
+        except pyfora.PythonToForaConversionError as e:
+            pattern = ".*free variable 'x'.*\n" \
+                    + ".*, in test_free_vars_error_msg3\n" \
+                    + "\\s*self\\.equivalentEvaluationTest.*\n" \
+                    + ".*, in f\n" \
+                    + "\\s*return x\\.y\\.z"
+            self.assertTrue(re.match(pattern, str(e)) is not None)
+
+    def test_free_vars_error_msg4(self):
+        class C21:
+            def f2():
+                x = 42
+                return x
+            def f3():
+                return x
+        try:
+            self.equivalentEvaluationTest(lambda: C21())
+        except pyfora.PythonToForaConversionError as e:
+            pattern = ".*free variable 'x'.*\n" \
+                    + ".*, in test_free_vars_error_msg4\n" \
+                    + "\\s*self\\.equivalentEvaluationTest.*\n" \
+                    + ".*, in f3\n" \
+                    + "\\s*return x"
+            self.assertTrue(re.match(pattern, str(e)) is not None)
+
+    def test_free_vars_error_msg5(self):
+        def f():
+            return g()
+        def g():
+            return x.y.z
+        try:
+            self.equivalentEvaluationTest(f)
+        except pyfora.PythonToForaConversionError as e:
+            pattern = ".*free variable 'x'.*\n" \
+                    + ".*, in f\n" \
+                    + "\\s*return g\\(\\)\n" \
+                    + ".*, in g\n" \
+                    + "\\s*return x\\.y\\.z"
+            self.assertTrue(re.match(pattern, str(e)) is not None)
+
+    def test_with_block_free_vars_error_msg1(self):
+        try:
+            with self.create_executor() as fora:
+                with fora.remotely.downloadAll():
+                    missing_function()
+        except pyfora.PythonToForaConversionError as e:
+            pattern = ".*free variable 'missing_function'.*\n" \
+                    + ".*, in test_with_block_free_vars_error_msg1\n" \
+                    + "\\s*missing_function\\(\\).*"
+            self.assertTrue(re.match(pattern, str(e)) is not None)
+
+    def test_with_block_free_vars_error_msg2(self):
+        def foo():
+            return z
+        try:
+            with self.create_executor() as fora:
+                with fora.remotely:
+                    foo()
+        except pyfora.PythonToForaConversionError as e:
+            pattern = ".*free variable 'z'.*\n" \
+                    + ".*, in test_with_block_free_vars_error_msg2\n" \
+                    + "\\s*foo\\(\\)\n" \
+                    + ".*, in foo\n" \
+                    + "\\s*return z"
+            self.assertTrue(re.match(pattern, str(e)) is not None)
+

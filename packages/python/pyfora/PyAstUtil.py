@@ -82,9 +82,6 @@ class FindEnclosingFunctionVisitor(ast.NodeVisitor):
     """"Visitor used to find the enclosing function at a given line of code.
 
     The class method 'find' is the preferred API entry point."""
-    class VisitDone(Exception):
-        """Raise this exception to short-circuit the visitor once we're done searching."""
-        pass
     def __init__(self, line):
         self.targetLine = line
         self.enclosingFunction = None
@@ -95,12 +92,12 @@ class FindEnclosingFunctionVisitor(ast.NodeVisitor):
         if hasattr(node, LINENO_ATTRIBUTE_NAME):
             if node.lineno >= self.targetLine:
                 self.enclosingFunction = self._currentFunction
-                raise FindEnclosingFunctionVisitor.VisitDone
+                raise NodeVisitorBases.VisitDone
         super(FindEnclosingFunctionVisitor, self).generic_visit(node)
 
     def visit_FunctionDef(self, node):
         if node.lineno > self.targetLine:
-            raise FindEnclosingFunctionVisitor.VisitDone
+            raise NodeVisitorBases.VisitDone
         self._stash.append(self._currentFunction)
         self._currentFunction = node.name
         self.generic_visit(node)
@@ -112,10 +109,14 @@ class FindEnclosingFunctionVisitor(ast.NodeVisitor):
                 return None
         try:
             self.visit(node)
-        except FindEnclosingFunctionVisitor.VisitDone:
-            pass
-        return self.enclosingFunction
+        except NodeVisitorBases.VisitDone:
+            return self.enclosingFunction
+        return None
 
+
+def findEnclosingFunctionName(astNode, lineno):
+    vis = FindEnclosingFunctionVisitor(lineno)
+    return vis.find(astNode)
 
 class _AtLineNumberVisitor(ast.NodeVisitor):
     """Collects various types of nodes occurring at a given line number."""
@@ -389,3 +390,4 @@ def getReturnLocationsInOuterScope(node):
 def getYieldLocationsInOuterScope(node):
     vis = _outerScopeContingVisitorFactory(node)
     return vis.getYieldLocs()
+

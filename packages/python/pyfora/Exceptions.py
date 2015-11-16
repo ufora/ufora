@@ -22,6 +22,15 @@ import traceback
 import pyfora
 _pyforaRoot = os.path.split(pyfora.__file__)[0]
 
+def checkTraceElement(elmt):
+    assert isinstance(elmt, dict)
+    assert 'path' in elmt
+    assert isinstance(elmt['path'], tuple) or isinstance(elmt['path'], str)
+    assert 'range' in elmt or 'line' in elmt
+
+def makeTraceElement(path, lineNumber):
+    return {'path': path, 'line': lineNumber}
+
 def renderTraceback(trace):
     res = []
 
@@ -40,7 +49,15 @@ def renderTraceback(trace):
         else:
             lineNumber = tb["line"]
 
-        res.append('  File "%s", line %s' % (path, lineNumber))
+        from pyfora.PyAstUtil import findEnclosingFunctionName, getAstFromFilePath
+        inFunction = findEnclosingFunctionName(
+            getAstFromFilePath(path),
+            lineNumber
+            ) if path.endswith(".py") else None
+        if inFunction is not None:
+            res.append('  File "%s", line %s, in %s' % (path, lineNumber, inFunction))
+        else:
+            res.append('  File "%s", line %s' % (path, lineNumber))
 
         lines = PyforaInspect.getlines(os.path.abspath(path))
         if lines is not None and lineNumber >= 1 and lineNumber <= len(lines):

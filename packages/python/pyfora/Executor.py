@@ -136,12 +136,18 @@ class Executor(object):
         """
 
         self._raiseIfClosed()
-        objectId = PyObjectWalker.PyObjectWalker(
-            purePythonClassMapping=self.pureImplementationMappings,
-            objectRegistry=self.objectRegistry
-            ).walkPyObject(obj)
-
+        try:
+            objectId = PyObjectWalker.PyObjectWalker(
+                purePythonClassMapping=self.pureImplementationMappings,
+                objectRegistry=self.objectRegistry
+                ).walkPyObject(obj)
+        except PyObjectWalker.UnresolvedFreeVariableExceptionWithTrace as e:
+            logging.error(
+                "Converting UnresolvedFreeVariableExceptionWithTrace to PythonToForaConversionError:\n%s",
+                traceback.format_exc())
+            raise Exceptions.PythonToForaConversionError(e.message, e.trace)
         future = self._create_future()
+
         def onConverted(result):
             if not isinstance(result, Exception):
                 result = RemotePythonObject.DefinedRemotePythonObject(objectId, self)
