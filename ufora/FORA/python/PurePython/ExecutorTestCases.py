@@ -3138,10 +3138,18 @@ class ExecutorTestCases(
 
             self.equivalentEvaluationTest(f)
 
-    def test_holding_a_mappable(self):
+    def test_holding_a_mappable_1(self):
         x = [len]
         def f():
             return x
+
+        self.equivalentEvaluationTest(f)
+        
+    def test_holding_a_mappable_2(self):
+        y = numpy.array(range(5))
+        x = [y]
+        def f():
+            return x[0]
 
         self.equivalentEvaluationTest(f)
 
