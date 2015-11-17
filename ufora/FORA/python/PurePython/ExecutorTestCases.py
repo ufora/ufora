@@ -2332,6 +2332,22 @@ class ExecutorTestCases(
         for key in x:
             self.equivalentEvaluationTest(f, key)
 
+    def test_dict_keys(self):
+        x = { 1: 2, 3: 4, 5: 6, 7: 8, 9: 10, 11: 12 }
+
+        self.equivalentEvaluationTest(
+            lambda: x.keys(),
+            comparisonFunction=lambda x, y: set(x) == set(y)
+            )
+
+    def test_dict_values(self):
+        x = { 1: 2, 3: 4, 5: 6, 7: 8, 9: 10, 11: 12 }
+
+        self.equivalentEvaluationTest(
+            lambda: x.values(),
+            comparisonFunction=lambda x, y: set(x) == set(y)
+            )
+
     def test_implicitReturnNone_1(self):
         def f():
             x = 2
