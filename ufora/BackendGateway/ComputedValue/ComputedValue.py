@@ -169,19 +169,32 @@ class ComputedValueVectorSlice(ComputedGraph.Location):
             self.highIndex
             )
 
-        if result is None:
-            logging.warn("CumulusClient: %s was marked loaded but returned None. reloading", self)
+        if result is None and not self.vdmThinksIsLoaded():
+            logging.info("CumulusClient: %s was marked loaded but returned None. reloading", self)
             self.isLoaded = False
             ComputedValueGateway.getGateway().reloadVector(self)
 
         return result
 
     @ComputedGraph.Function
+    def vdmThinksIsLoaded(self):
+        return ComputedValueGateway.getGateway().vectorDataIsLoaded(
+                self.computedValueVector,
+                self.lowIndex,
+                self.highIndex
+                )
+
+    @ComputedGraph.Function
+    def markLoaded(self, isLoaded):
+        self.isLoaded = isLoaded
+
+    @ComputedGraph.Function
     def extractVectorDataAsNumpyArray(self):
+        logging.info("Extract numpy data for %s: %s", self, self.vdmThinksIsLoaded())
         if self.computedValueVector.vectorImplVal is None:
             return None
         
-        if not self.isLoaded:
+        if len(self.vectorDataIds) > 0 and not self.isLoaded:
             return None
 
         result = ComputedValueGateway.getGateway().extractVectorDataAsNumpyArray(
@@ -190,8 +203,8 @@ class ComputedValueVectorSlice(ComputedGraph.Location):
             self.highIndex
             )
 
-        if result is None:
-            logging.warn("CumulusClient: %s was marked loaded but returned None", self)
+        if result is None and not self.vdmThinksIsLoaded():
+            logging.info("CumulusClient: %s was marked loaded but returned None", self)
             self.isLoaded = False
             ComputedValueGateway.getGateway().reloadVector(self)
 
@@ -202,7 +215,7 @@ class ComputedValueVectorSlice(ComputedGraph.Location):
         if self.computedValueVector.vectorImplVal is None:
             return None
         
-        if not self.isLoaded:
+        if len(self.vectorDataIds) > 0 and not self.isLoaded:
             return None
 
         result = ComputedValueGateway.getGateway().extractVectorItem(self.computedValueVector, ct)

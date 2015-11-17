@@ -102,7 +102,7 @@ class CacheLoader(object):
             self.collectOffloadedVectors_()
 
             for cgLocation in cgLocations:
-                BackgroundUpdateQueue.push(self.createSetIsLoadedFun(cgLocation, True))
+                BackgroundUpdateQueue.push(self.createSetIsLoadedFun(cgLocation, self.computeVectorSliceIsLoaded_(cgLocation)))
 
     def collectOffloadedVectors_(self):
         offloaded = self.ramCacheOffloadRecorder.extractDropped()
@@ -121,7 +121,7 @@ class CacheLoader(object):
 
     def createSetIsLoadedFun(self, cgLocation, newIsLoadedVal):
         def setLoadedFun():
-            cgLocation.isLoaded = newIsLoadedVal
+            cgLocation.markLoaded(newIsLoadedVal)
         return setLoadedFun
 
     def sendReloadRequests(self):
@@ -131,7 +131,7 @@ class CacheLoader(object):
     def setVectorLoadFlag_(self, vectorSlice):
         isLoaded = self.computeVectorSliceIsLoaded_(vectorSlice)
 
-        vectorSlice.isLoaded = isLoaded
+        vectorSlice.markLoaded(isLoaded)
 
     def computeVectorSliceIsLoaded_(self, vectorSlice):
         return self.vdm.vectorDataIsLoaded(

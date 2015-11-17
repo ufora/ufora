@@ -265,10 +265,14 @@ class Executor(object):
                 # Alexandros has some ideas here, but this is
                 # better than the experience without the wrapping
                 # (which is hanging)
+                def clip(s):
+                    if len(s) > 250:
+                        return s[:250] + "... (" + str(len(s) - 250) + " characters remaining)"
+                    return s
                 logging.error(
                     "Rehydration failed: %s\nResult was %s of type %s",
                     traceback.format_exc(),
-                    jsonResult,
+                    clip(repr(jsonResult)),
                     type(jsonResult)
                     )
 

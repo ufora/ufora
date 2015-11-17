@@ -224,23 +224,49 @@ class PyforaResultAsJson(ComputedGraph.Location):
         transformer = PyforaToJsonTransformer.PyforaToJsonTransformer(self.maxBytecount)
 
         try:
-            vectorSlicesNeedingLoad = []
-
             def extractVectorContents(vectorIVC):
                 if len(vectorIVC) == 0:
-                    return []
+                    return {'listContents': []}
                 vec = ComputedValue.ComputedValueVector(vectorImplVal=vectorIVC)
                 vecSlice = vec.entireSlice
 
+                res = None
+                preventPythonArrayExtraction = False
+
+                #see if it's a string. This is the only way to be holding a Vector of char
                 if vectorIVC.isVectorOfChar():
                     res = vecSlice.extractVectorDataAsNumpyArray()
                     if res is not None:
-                        res = res.tostring()
-                else:
+                        res = {'string': res.tostring()}
+
+                #see if it's simple enough to transmit as numpy data
+                if res is None and len(vectorIVC.getVectorElementsJOR()) == 1 and len(vectorIVC) > 1:
+                    res = vecSlice.extractVectorDataAsNumpyArray()
+
+                    if res is not None:
+                        firstElement = vecSlice.extractVectorItemAsIVC(0)
+                        if firstElement is None:
+                            #note we can't import this at the top of the file because this file gets imported
+                            #during the build process, which doesn't have pyfora installed.
+                            import pyfora.Exceptions as Exceptions
+                            raise Exceptions.ForaToPythonConversionError(
+                                "Shouldn't be possible to download data as numpy, and then not get the first value"
+                                )
+
+                        res = {'firstElement': firstElement, 'contentsAsNumpy': res}
+                    else:
+                        if not vecSlice.vdmThinksIsLoaded():
+                            #there's a race condition where the data could be loaded between now and
+                            #the call to 'extractVectorDataAsPythonArray'. This prevents it.
+                            preventPythonArrayExtraction = True
+
+                #see if we can extract the data as a regular pythonlist
+                if not preventPythonArrayExtraction and res is None:
                     res = vecSlice.extractVectorDataAsPythonArray()
+                    if res is not None:
+                        res = {'listContents': res}
 
                 if res is None:
-                    vectorSlicesNeedingLoad.append(vecSlice)
                     vecSlice.increaseRequestCount()
                     return None
 
