@@ -18,6 +18,7 @@ import unittest
 import ufora
 import ufora.config.Setup as Setup
 
+from pyfora.Exceptions import ConnectionError
 import pyfora.SocketIoJsonInterface as SocketIoJsonInterface
 import pyfora.SubscribableWebObjects as SubscribableWebObjects
 import ufora.test.ClusterSimulation as ClusterSimulation
@@ -71,23 +72,31 @@ class TestSubscribableWebObjects(unittest.TestCase):
 
 
     @classmethod
-    def createInterface(cls, events=None):
+    def createInterface(cls, events=None, version=None):
         return SocketIoJsonInterface.SocketIoJsonInterface(
             'http://localhost:30000',
             '/subscribableWebObjects',
-            events=events
+            events=events,
+            version=version
             )
 
 
-    def connect(self, events=None):
-        interface = self.createInterface(events)
+    def connect(self, events=None, version=None):
+        interface = self.createInterface(events, version)
         interface.connect()
         return interface
+
 
     def assertSuccessResponse(self, eventHandler):
         self.assertEqual(len(eventHandler.responses['Success']), 1, eventHandler.responses)
         self.assertEqual(len(eventHandler.responses['Failure']), 0, eventHandler.responses)
         self.assertEqual(len(eventHandler.responses['Changed']), 0, eventHandler.responses)
+
+
+    def test_version_mismatch(self):
+        interface = self.createInterface(version="0.0")
+        with self.assertRaises(ConnectionError):
+            interface.connect()
 
 
     def test_computed_graph_function_invocation_returns_its_argument(self):

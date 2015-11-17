@@ -34,13 +34,15 @@ class SocketIoJsonInterface(object):
     def __init__(self,
                  url,
                  socketIONamespace,
-                 events=None):
+                 events=None,
+                 version=None):
         if url.endswith('/'):
             # remove trailing slash
             url = url[:-1]
         self.url = url
         self.path = socketIONamespace
         self.events = events or {}
+        self.version = version or pyfora.__version__
 
         self.socketIO = None
         self.reactorThread = None
@@ -134,7 +136,7 @@ class SocketIoJsonInterface(object):
         namespace.on('disconnect', self._on_disconnect)
 
         namespace.on('handshake', self._on_handshake)
-        namespace.emit('handshake', {'version': pyfora.__version__})
+        namespace.emit('handshake', {'version': self.version})
 
 
     def _on_handshake(self, handshake_response):
