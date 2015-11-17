@@ -14,6 +14,7 @@
 
 import ufora.FORA.python.PurePython.ExecutorTestCases as ExecutorTestCases
 
+import pyfora.pandas_util
 
 import pandas
 import pandas.util.testing
@@ -123,3 +124,63 @@ class InMemoryPandasTestCases(ExecutorTestCases.ExecutorTestCases):
             lambda: pandas.DataFrame,
             comparisonFunction=lambda x, y: x == y
             )
+
+    def test_pandas_read_csv_1(self):
+        # there's some weirdness with whitspace that we have to deal 
+        # with, on the fora side. For example, after indenting all the 
+        # lines of s here, the read csv will miss the first line
+        # o_O
+
+        s = """
+A,B,C
+1,2,3
+4,5,6
+7,8,9
+10,11,12
+            """
+
+        res = self.evaluateWithExecutor(
+            lambda: pyfora.pandas_util.readCsvFromString(s)
+            )
+
+        self.checkFramesEqual(
+            res,
+            pandas.DataFrame(
+                {
+                    'A': [1,4,7,10],
+                    'B': [2,5,8,11],
+                    'C': [3,6,9,12]
+                },
+                dtype=float
+                )
+            )
+
+    def test_pandas_read_csv_from_s3(self):
+        s = """
+A,B,C
+1,2,3
+4,5,6
+7,8,9
+10,11,12
+            """
+        with self.create_executor() as executor:
+            s3 = self.getS3Interface(executor)
+            s3().setKeyValue("bucketname", "key", s)
+
+            remoteCsv = executor.importS3Dataset("bucketname", "key").result()
+
+            with executor.remotely.downloadAll():
+                df = pyfora.pandas_util.readCsvFromString(remoteCsv)
+
+            self.checkFramesEqual(
+                df,
+                pandas.DataFrame(
+                    {
+                        'A': [1,4,7,10],
+                        'B': [2,5,8,11],
+                        'C': [3,6,9,12]
+                    },
+                    dtype=float
+                    )
+                )
+
