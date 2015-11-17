@@ -23,7 +23,7 @@ if module?
       error: true
 
 class SocketIoJsonInterface
-    constructor: () ->
+    constructor: (@io, @version) ->
         @messageId = 0
         @socket = null
         @pendingCallbacks = {}
@@ -41,13 +41,21 @@ class SocketIoJsonInterface
             onError(msg) ->
             onConnected() ->
         """
-        @socket = args.socket
-        socket = args.socket
+        @socket = socket = @io.connect(args.url, {multiplex: false})
 
         # Socket.IO built-in events
         socket.on 'connect', =>
             logging.info "Socket connect"
-            args.onConnected()
+
+            socket.emit 'handshake', {version: @version}
+            socket.on 'handshake', (handshake_response) =>
+                logging.info "Handshake response:", handshake_response
+                unless handshake_response is 'ok'
+                    return args.onDisconnected("Error: #{handshake_response}")
+
+                args.onConnected()
+                # Message handlers
+                socket.on 'response', @handleMessageFromServer
 
         socket.on 'error', (data) =>
             logging.info "Socket error"
@@ -79,12 +87,6 @@ class SocketIoJsonInterface
 
         socket.on 'reconnect_failed', ->
             logging.log "Socket reconnect failed."
-
-
-        # Message handlers
-        socket.on 'response', @handleMessageFromServer
-
-
 
 
     handleMessageFromServer: (data) =>

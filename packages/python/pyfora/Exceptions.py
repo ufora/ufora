@@ -128,7 +128,10 @@ class CantGetSourceTextError(PyforaError):
 
 class ResultExceededBytecountThreshold(PyforaError):
     '''Raised when attempting to download a remote object whose size exceeds the specified maximum.'''
+    pass
 
+class ConnectionError(PyforaError):
+    '''Raised when a connection to the Ufora backend cannot be established.'''
     pass
 
 

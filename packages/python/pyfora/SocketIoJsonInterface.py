@@ -16,11 +16,18 @@ import json
 from socketIO_client import SocketIO, BaseNamespace
 import threading
 
-class SocketIoJsonInterfaceError(Exception):
-    pass
+import pyfora
 
-class LoginError(SocketIoJsonInterfaceError):
-    pass
+
+class ConnectionStatus(object):
+    not_connected = 0
+    connecting = 1
+    connected = 2
+    disconnected = 3
+
+    def __init__(self):
+        self.status = self.not_connected
+        self.message = None
 
 
 class SocketIoJsonInterface(object):
@@ -41,6 +48,8 @@ class SocketIoJsonInterface(object):
         self.nextMessageId = 0
         self.messageHandlers = {}
         self.lock = threading.Lock()
+        self.connection_cv = threading.Condition(self.lock)
+        self.connection_status = ConnectionStatus()
 
 
     def connect(self):
@@ -49,11 +58,19 @@ class SocketIoJsonInterface(object):
                 raise ValueError("'connect' called when already connected")
 
         with self.lock:
+            self.connection_status.status = ConnectionStatus.connecting
             self.socketIO = SocketIO(self.url)
             self.reactorThread = threading.Thread(target=self.socketIO.wait)
             self.reactorThread.daemon = True
             self.namespace = self.socketIO.define(self._namespaceFactory, self.path)
             self.reactorThread.start()
+
+            while self.connection_status.status == ConnectionStatus.connecting:
+                self.connection_cv.wait()
+
+        if not self.connection_status.status == ConnectionStatus.connected:
+            raise pyfora.ConnectionError(self.connection_status.message)
+
         return self
 
 
@@ -95,12 +112,14 @@ class SocketIoJsonInterface(object):
 
 
     def _isConnected(self):
-        return self.reactorThread is not None
+        return self.connection_status.status in [ConnectionStatus.connecting,
+                                                 ConnectionStatus.connected]
 
 
     def _raiseIfNotConnected(self):
         if not self._isConnected():
             raise ValueError('Performing I/O on disconnected socket')
+
 
     def _namespaceFactory(self, *args, **kwargs):
         return Namespace(self._onConnected, *args, **kwargs)
@@ -110,10 +129,25 @@ class SocketIoJsonInterface(object):
         if event in self.events:
             self.events[event](*args, **kwargs)
 
+
     def _onConnected(self, namespace):
-        self._triggerEvent('connect', None)
-        namespace.on('response', self._on_message)
         namespace.on('disconnect', self._on_disconnect)
+
+        namespace.on('handshake', self._on_handshake)
+        namespace.emit('handshake', {'version': pyfora.__version__})
+
+
+    def _on_handshake(self, handshake_response):
+        with self.lock:
+            if handshake_response == 'ok':
+                self.connection_status.status = ConnectionStatus.connected
+            else:
+                self.connection_status.status = ConnectionStatus.disconnected
+                self.connection_status.message = handshake_response
+            self.connection_cv.notify()
+
+        self.namespace.on('response', self._on_message)
+
 
     def _on_message(self, payload):
         try:
@@ -139,9 +173,10 @@ class SocketIoJsonInterface(object):
 
 
     def _on_disconnect(self):
+        with self.lock:
+            self.connection_status.status = ConnectionStatus.disconnected
+            self.connection_cv.notify()
         self._triggerEvent('disconnect')
-
-
 
 
 

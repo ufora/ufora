@@ -12,9 +12,17 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-console.info("server.coffee starting")
+fs = require 'fs'
+version_line = fs.readFileSync('../../../packages/python/pyfora/_version.py',
+                               'utf8'
+                              ).trim().split('\n').pop()
+console.info('Read version:', version_line)
+version = version_line.match(/__version__ = \'(\S+)\'/)[1]
 
-config = require('./server/arguments')()
+console.info("server.coffee starting. Version:", version)
+
+
+config = require('./server/arguments')(version)
 console.info("server.coffee parsed arguments")
 
 logger = require './server/logging'

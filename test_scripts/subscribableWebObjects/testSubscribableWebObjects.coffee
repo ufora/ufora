@@ -30,15 +30,19 @@ io = require('../../ufora/web/relay/node_modules/socket.io/node_modules/socket.i
 # nodejs doesn't like self-signed certs. This is a workaround for local testing
 require('https').globalAgent.options.rejectUnauthorized = false
 
-connect = (callback) ->
-    socketInterface = new SocketIoJsonInterface()
+get_pyfora_version = () ->
+    fs = require 'fs'
+    version_line = fs.readFileSync('../../packages/python/pyfora/_version.py',
+                                   'utf8'
+                                  ).trim().split('\n').pop()
+    version_line.match(/__version__ = \'(\S+)\'/)[1]
 
-    socket = io.connect "http://localhost:30000/subscribableWebObjects",
-        multiplex: false
+connect = (callback) ->
+    socketInterface = new SocketIoJsonInterface(io, get_pyfora_version())
 
     console.info "connection socket.io."
     socketInterface.connect
-        socket: socket
+        url: "http://localhost:30000/subscribableWebObjects"
         onConnected: ()->
             callback(null, socketInterface)
         onError: (msg)->

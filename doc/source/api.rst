@@ -35,6 +35,7 @@ prime numbers between zero and 100M::
 Exceptions
 ----------
 .. autoexception:: pyfora.PyforaError
+.. autoexception:: pyfora.ConnectionError
 .. autoexception:: pyfora.NotCallableError
 .. autoexception:: pyfora.ComputationError
 .. autoexception:: pyfora.PythonToForaConversionError

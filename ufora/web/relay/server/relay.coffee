@@ -30,6 +30,7 @@ class Relay
     @gatewayEndpoint =
       host: config.gatewayhost
       port: config.gatewayport
+    @version = config.version
     @logger.info 'Gateway Service endpoint:', @gatewayEndpoint
 
 
@@ -57,22 +58,35 @@ class Relay
 
   registerSubscribableWebObjectsHandlers: (socket) =>
     @setSession(socket, {})
-    socket.on 'message', (payload) =>
-      @logger.debug "Received message on subscribable socket:", payload
-      unless payload?.body?
-        @logger.error('Invalid data in "message": ', payload)
+    socket.on 'handshake', (handshake_message) =>
+      @logger.info "Performing handshake on subscribable socket:", handshake_message
+      unless handshake_message?.version?
+        @logger.error('Missing version in handshake message:', handshake_message)
         return socket.disconnect()
 
-      @handleIncomingSubscribableWebObjectsMessage socket,
-        content: payload.body
+      unless handshake_message.version == @version
+        @logger.warn("Rejecting connection due to version mismatch:", handshake_message.version)
+        socket.emit('handshake', "Version mismatch. Expected '#{@version}', received '#{handshake_message.version}'")
+        return socket.disconnect()
 
-    socket.on 'disconnect', =>
-      session =  @deleteSession(socket)
-      @logger.info "subscribableWebObjects socket disconnected."
-      if session.channel?
-        channel = session.channel
-        session.channel = null
-        channel.onDisconnect('socket.io connection to browser closed')
+      socket.emit('handshake', 'ok')
+
+      socket.on 'message', (payload) =>
+        @logger.debug "Received message on subscribable socket:", payload
+        unless payload?.body?
+          @logger.error('Invalid data in "message": ', payload)
+          return socket.disconnect()
+
+        @handleIncomingSubscribableWebObjectsMessage socket,
+          content: payload.body
+
+      socket.on 'disconnect', =>
+        session =  @deleteSession(socket)
+        @logger.info "subscribableWebObjects socket disconnected."
+        if session.channel?
+          channel = session.channel
+          session.channel = null
+          channel.onDisconnect('socket.io connection to browser closed')
 
   handleIncomingSubscribableWebObjectsMessage: (socket, message) =>
     session = @getSession(socket)

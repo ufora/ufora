@@ -60,60 +60,6 @@ load_config() {
 }
 
 
-create_config_file() {
-    CONFIG_TEMPLATE=$UFORA_PACKAGE_ROOT/ufora/scripts/init/config.template
-    if [ ! -f $CONFIG_TEMPLATE ]; then
-        echo "ERROR: Bad Ufora package. Missing config.template."
-        exit 1
-    fi
-    cp $CONFIG_TEMPLATE $CONFIG_FILE
-    if [ $? -ne 0 ]; then
-        echo "ERROR: Can't copy configuration template to $CONFIG_FILE."
-        exit 1
-    fi
-
-    echo "UFORA_PACKAGE_ROOT=$UFORA_PACKAGE_ROOT" >> $CONFIG_FILE
-    echo "UFORA_SERVICE_ACCOUNT=$UFORA_SERVICE_ACCOUNT" >> $CONFIG_FILE
-    echo "ROOT_DATA_DIR=$ROOT_DATA_DIR" >> $CONFIG_FILE
-    echo "UFORA_LOG_DIR=$ROOT_DATA_DIR/logs" >> $CONFIG_FILE
-    echo "UFORA_PID_DIR=$ROOT_DATA_DIR/services" >> $CONFIG_FILE
-    echo "UFORA_BIN_DIR=$ROOT_DATA_DIR/bin" >> $CONFIG_FILE
-    echo "UFORA_LOCAL_S3_DIR=$ROOT_DATA_DIR/s3_storage" >> $CONFIG_FILE
-    echo "UFORA_REDIS_DIR=$ROOT_DATA_DIR/redis" >> $CONFIG_FILE
-    echo "USE_REAL_S3=$USE_REAL_S3" >> $CONFIG_FILE
-    echo "USER_DATA_BUCKET=$USER_DATA_BUCKET" >> $CONFIG_FILE
-    echo "CUMULUS_TRACK_TCMALLOC=1" >> $CONFIG_FILE
-
-    if [ -z $FORA_MAX_MEM_MB ]; then
-      TOTAL_RAM=`free -m | grep Mem | awk '{print $2}'`
-      FORA_MAX_MEM_MB=$(( TOTAL_RAM - 1000 ))
-    fi
-    echo "FORA_MAX_MEM_MB=$FORA_MAX_MEM_MB" >> $CONFIG_FILE
-
-    if [ $FORA_MAX_MEM_MB -gt 7000 ]; then
-        echo "EXTERNAL_DATASET_LOADER_SERVICE_THREADS=8" >> $CONFIG_FILE
-    fi
-
-    echo "SHARED_STATE_CACHE=$ROOT_DATA_DIR/project_store" >> $CONFIG_FILE
-    echo "FORA_LOCAL_DATA_CACHE=$ROOT_DATA_DIR/fora_cache" >> $CONFIG_FILE
-    echo "FORA_COMPILER_DUMP_NATIVE_CODE=0" >> $CONFIG_FILE
-
-    if [ ! -z $UFORA_WORKER_CPUS ]; then
-      echo "MAX_LOCAL_THREADS=$UFORA_WORKER_CPUS" >> $CONFIG_FILE
-    fi
-
-    if [ -z $UFORA_CLUSTER_HOST ]; then
-      own_ip_address=`hostname -i`
-      if [ $? -eq 0 ]; then
-        UFORA_CLUSTER_HOST=`echo $own_ip_address | awk '{print $1}'`
-      else
-        echo "Unable to determine the local machine's IP address. Please open the configuration file $CONFIG_FILE and set UFORA_CLUSTER_HOST manually."
-      fi
-    fi
-    echo "UFORA_CLUSTER_HOST=$UFORA_CLUSTER_HOST" >> $CONFIG_FILE
-
-}
-
 create_data_dirs() {
   for dir in $UFORA_LOG_DIR $UFORA_PID_DIR $UFORA_BIN_DIR $UFORA_LOCAL_S3_DIR $UFORA_REDIS_DIR $UFORA_SSL_DIR; do
       if [ ! -d $dir ]; then
@@ -154,10 +100,12 @@ run_with_forever() {
     # the target use has access to them
     touch $PID_FILE
 
-    cd $SERVICE_DIR
-
     FOREVER_DIR=$UFORA_PID_DIR/forever
-    FOREVER_COMMAND="forever $FOREVER_ACTION $FOREVER_ARGS --minUptime 1000 --spinSleepTime 1000 -l $UFORA_LOG_DIR/$SERVICE_NAME.log -p $FOREVER_DIR --pidFile $PID_FILE -a -c $SERVICE_LAUNCHER $SERVICE_FILE $SERVICE_ARGS"
+    FOREVER_ARGS="$FOREVER_ARGS --minUptime 1000 --spinSleepTime 1000 --workingDir $SERVICE_DIR"
+    FOREVER_COMMAND="forever $FOREVER_ACTION $FOREVER_ARGS  \
+                     -l $UFORA_LOG_DIR/$SERVICE_NAME.log \
+                     -p $FOREVER_DIR --pidFile $PID_FILE \
+                     -a -c $SERVICE_LAUNCHER $SERVICE_FILE $SERVICE_ARGS"
     echo $FOREVER_COMMAND
     $FOREVER_COMMAND
     RETVAL=$?

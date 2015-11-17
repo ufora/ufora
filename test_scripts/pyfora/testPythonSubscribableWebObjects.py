@@ -89,20 +89,6 @@ class TestSubscribableWebObjects(unittest.TestCase):
         self.assertEqual(len(eventHandler.responses['Failure']), 0, eventHandler.responses)
         self.assertEqual(len(eventHandler.responses['Changed']), 0, eventHandler.responses)
 
-    def test_connect(self):
-        event = threading.Event()
-
-        def onConnection(error):
-            self.assertIsNone(error)
-            event.set()
-
-        eventHandlers = {
-            'connect': onConnection,
-            }
-
-        interface = self.connect(eventHandlers)
-        event.wait()
-        interface.close()
 
     def test_computed_graph_function_invocation_returns_its_argument(self):
         event = threading.Event()

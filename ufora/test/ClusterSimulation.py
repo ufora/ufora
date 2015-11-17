@@ -426,6 +426,7 @@ class Simulator(object):
 
         command = ['forever',
                    '-f', '-l', self.relayLogFile,
+                   '--workingDir', self.webPath,
                    'start',
                    '-c', coffeeCommand] + nodejsOptions + args
 

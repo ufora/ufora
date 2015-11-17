@@ -14,31 +14,36 @@
 
 argparser = require('argparse').ArgumentParser
 
-parser = new argparser
-    version: '0.1.8'
-    addHelp: true
-    description: 'Starts the FORA communication relay'
+create_parser = (version) ->
+    parser = new argparser
+        version: version
+        addHelp: true
+        description: 'Starts the FORA communication relay'
 
-parser.addArgument ['--port'],
-    help: 'The HTTP port to listen on.'
-    type: 'int'
-    defaultValue: 30000
+    parser.addArgument ['--port'],
+        help: 'The HTTP port to listen on.'
+        type: 'int'
+        defaultValue: 30000
 
-parser.addArgument ['--hostname'],
-    help: 'The host name used to access the relay'
-    defaultValue: 'localhost'
+    parser.addArgument ['--hostname'],
+        help: 'The host name used to access the relay'
+        defaultValue: 'localhost'
 
-parser.addArgument ['--gatewayhost'],
-    help: 'Ufora Gateway Service host name or address'
-    defaultValue: 'localhost'
+    parser.addArgument ['--gatewayhost'],
+        help: 'Ufora Gateway Service host name or address'
+        defaultValue: 'localhost'
 
-parser.addArgument ['--gatewayport'],
-    help: 'Ufora Gateway Service port'
-    type: 'int'
-    defaultValue: 30008
+    parser.addArgument ['--gatewayport'],
+        help: 'Ufora Gateway Service port'
+        type: 'int'
+        defaultValue: 30008
+
+    parser
 
 
-module.exports = ->
-    return parser.parseArgs()
+module.exports = (version) ->
+    config = create_parser(version).parseArgs()
+    config.version = version
+    return config
 
 
