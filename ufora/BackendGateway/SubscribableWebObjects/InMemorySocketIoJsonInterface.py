@@ -158,4 +158,28 @@ class InMemorySocketIoJsonInterface(object):
         callback(message)
 
 
+    def disconnect(self):
+        callbacks = []
+        with self.lock:
+            # respond to all pending messages with a failure
+            callbacks = [
+                (cb, self._disconnect_failure_message(messageId))
+                for messageId, cb in self.messageHandlers.iteritems()
+                ]
+            self.messageHandlers.clear()
+
+        self._triggerEvent('disconnect')
+
+        for callback, message in callbacks:
+            callback(message)
+
+
+    def _disconnect_failure_message(self, messageId):
+        return {
+            "messageId": messageId,
+            "responseType": "Failure",
+            "message": "Disconnected from server"
+            }
+
+
 

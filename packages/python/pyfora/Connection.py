@@ -33,37 +33,53 @@ import pyfora
 import os
 
 class Connection(object):
-    """Connection - a live connection to a Ufora cluster that can execute submitted
-    Python code.
+    """A live connection to a Ufora cluster that can execute submitted Python code.
 
-    This is an internal implementation class that is primarily used by Executor.Executor.
+    Note:
+        This is an internal implementation class that is primarily used by
+        :class:`~pyfora.Executor.Executor`.
+
+    Args:
+        webObjectFactory (SubscribableWebObjects.WebObjectFactory): A factory
+            for subscribable web objects.
+        converter (Optional ObjectConverter.ObjectConverter): an optional object
+            converter or None for the default converter.
     """
     def __init__(self, webObjectFactory, converter):
-        """Initialize a Connection object to a Ufora cluster.
-
-        webObjectFactory - an instance of SubscribableWebObjects.WebObjectFactory.
-        converter - object implementing ObjectConverter.ObjectConverter, or None for the default converter.
-        """
         self.objectConverter = converter
         self.webObjectFactory = webObjectFactory
         self.closed = False
 
-    def triggerS3DatasetExport(self, valueAsString, bucketname, keyname, onCompletedCallback):
+
+    def triggerS3DatasetExport(self,
+                               valueAsString,
+                               bucketname,
+                               keyname,
+                               onCompletedCallback):
         if not isinstance(valueAsString, RemotePythonObject.ComputedRemotePythonObject):
-            onCompletedCallback(Exceptions.PyforaError("The argument to triggerS3DatasetExport should be a ComputedRemotePythonObject"))
+            onCompletedCallback(
+                Exceptions.PyforaError(
+                    "The argument to triggerS3DatasetExport should be a ComputedRemotePythonObject"
+                    )
+                )
             return
 
         import pyfora.SubscribableWebObjects as SubscribableWebObjects
         if not isinstance(valueAsString.computedValue, SubscribableWebObjects.PyforaComputedValue):
-            onCompletedCallback(Exceptions.PyforaError("The object handle in the object passed to triggerS3DatasetExport should be a ComputedValue"))
+            onCompletedCallback(
+                Exceptions.PyforaError(
+                    "The object handle in the object passed to triggerS3DatasetExport should be a ComputedValue"
+                    )
+                )
             return
 
         #first, ensure that the value itself resolves
         computedValue = valueAsString.computedValue
         computedValueToCalculate = self.webObjectFactory.ComputedValueForMember(
-            {'baseComputedValue':computedValue,
-             'memberName': '@pyfora_string_as_paged_vec_of_char'}
-            )
+            {
+                'baseComputedValue': computedValue,
+                'memberName': '@pyfora_string_as_paged_vec_of_char'
+            })
 
         def onFailure(err):
             if not self.closed:
@@ -76,7 +92,6 @@ class Connection(object):
                     keyname,
                     onCompletedCallback
                     )
-
         def subscribeToFinished(result):
             computedValueToCalculate.subscribe_isFinished({
                 'onSuccess': isFinishedChanged,
@@ -84,13 +99,21 @@ class Connection(object):
                 'onChanged': isFinishedChanged
                 })
 
-        computedValueToCalculate.increaseRequestCount({}, {'onSuccess':subscribeToFinished, 'onFailure':onFailure})
+        computedValueToCalculate.increaseRequestCount(
+            {},
+            {'onSuccess':subscribeToFinished, 'onFailure':onFailure}
+            )
 
 
-    def triggerS3DatasetExportOnFinishedCalculation(self, computedValue, bucketname, keyname, onCompletedCallback):
+    def triggerS3DatasetExportOnFinishedCalculation(self,
+                                                    computedValue,
+                                                    bucketname,
+                                                    keyname,
+                                                    onCompletedCallback):
         def onSuccess(writeToS3TaskObject):
             #we have received a WriteToS3Task computed graph location
-            self.subscribeToWriteToS3TaskResultAndCallCallback(writeToS3TaskObject, onCompletedCallback)
+            self.subscribeToWriteToS3TaskResultAndCallCallback(writeToS3TaskObject,
+                                                               onCompletedCallback)
 
         def onFailure(err):
             onCompletedCallback(Exceptions.PyforaError(err['message']))
@@ -100,7 +123,10 @@ class Connection(object):
             {'onSuccess': onSuccess, 'onFailure': onFailure}
             )
 
-    def subscribeToWriteToS3TaskResultAndCallCallback(self, writeToS3TaskObject, onCompletedCallback):
+
+    def subscribeToWriteToS3TaskResultAndCallCallback(self,
+                                                      writeToS3TaskObject,
+                                                      onCompletedCallback):
         def onSuccess(result):
             if not self.closed and result is not None:
                 if result['success']:
@@ -118,12 +144,12 @@ class Connection(object):
             })
 
 
-
     def convertObject(self, objectId, objectRegistry, callback):
         def wrapper(*args, **kwargs):
             if not self.closed:
                 callback(*args, **kwargs)
         self.objectConverter.convert(objectId, objectRegistry, wrapper)
+
 
     def createComputation(self, fn, args, onCreatedCallback):
         """Create a computation representing fn(*args).
@@ -136,7 +162,9 @@ class Connection(object):
         assert all([isinstance(arg, RemotePythonObject.RemotePythonObject) for arg in args])
 
         computedValue = self.webObjectFactory.PyforaComputedValue({
-            'argIds': (fn._pyforaComputedValueArg(),) + tuple(arg._pyforaComputedValueArg() for arg in args)
+            'argIds': (fn._pyforaComputedValueArg(),) + tuple(
+                arg._pyforaComputedValueArg() for arg in args
+                )
             })
 
         def onFailure(err):
@@ -154,13 +182,19 @@ class Connection(object):
             'onChanged': onChanged
             })
 
-    def prioritizeComputation(self, computedValue, onPrioritizedCallback, onCompletedCallback, onFailedCallback):
+
+    def prioritizeComputation(self,
+                              computedValue,
+                              onPrioritizedCallback,
+                              onCompletedCallback,
+                              onFailedCallback):
         """Prioritize a given computation.
 
         computedValue - the callback result of creating a computation.
         onPrioritizedCallback - called with either an error or None on success of the prioritization
         onCompletedCallback - called with None if the computation finishes with a value
-        onFailedCallback - called with a pyfora exception if the computation fails or throws an exception for some reason
+        onFailedCallback - called with a pyfora exception if the computation fails
+            or throws an exception for some reason
         """
         def onFailure(err):
             if not self.closed:
@@ -168,15 +202,30 @@ class Connection(object):
         def onSuccess(result):
             if not self.closed:
                 onPrioritizedCallback(None)
-                self._subscribeToComputationStatus(computedValue, onCompletedCallback, onFailedCallback)
+                self._subscribeToComputationStatus(computedValue,
+                                                   onCompletedCallback,
+                                                   onFailedCallback)
 
         computedValue.increaseRequestCount({}, {
             'onSuccess': onSuccess,
             'onFailure': onFailure
             })
 
+
+    @staticmethod
+    def cancelComputation(computedValue):
+        """Cancel a computation."""
+        def completed(_):
+            pass
+        computedValue.cancel({}, {
+            'onSuccess': completed,
+            'onFailure': completed
+        })
+
+
     def expandComputedValueToDictOfAssignedVarsToProxyValues(self, computedValue, onExpanded):
-        """Given a computedValue that should represent a dictionary, expand it to a dictionary of ComputedValues.
+        """Given a computedValue that should represent a dictionary,
+        expand it to a dictionary of ComputedValues.
 
         If it's not a dictionary, or something else happens, this will resolve to a PyforaError.
         """
@@ -194,7 +243,10 @@ class Connection(object):
                         )
                     )
 
-        computedValue.increaseRequestCount({}, {'onSuccess': lambda *args: None, 'onFailure': lambda *args: None})
+        computedValue.increaseRequestCount(
+            {},
+            {'onSuccess': lambda *args: None, 'onFailure': lambda *args: None}
+            )
         computedValue.subscribe_pyforaDictToAssignedVarsToComputedValues({
             'onSuccess': onResult,
             'onFailure': onFailure,
@@ -217,7 +269,10 @@ class Connection(object):
                         )
                     )
 
-        computedValue.increaseRequestCount({}, {'onSuccess': lambda *args: None, 'onFailure': lambda *args: None})
+        computedValue.increaseRequestCount(
+            {},
+            {'onSuccess': lambda *args: None, 'onFailure': lambda *args: None}
+            )
         computedValue.subscribe_pyforaTupleToTupleOfComputedValues({
             'onSuccess': onResult,
             'onFailure': onFailure,
@@ -245,6 +300,7 @@ class Connection(object):
             'onChanged': statusChanged
             })
 
+
     def downloadComputation(self, computedValue, onResultCallback, maxBytecount=None):
         """download the result of a computation as json.
 
@@ -258,9 +314,14 @@ class Connection(object):
             if not self.closed and jsonStatus is not None:
                 onResultCallback(jsonStatus)
 
-        computedValue.increaseRequestCount({}, {'onSuccess': lambda *args: None, 'onFailure': lambda *args: None})
+        computedValue.increaseRequestCount(
+            {},
+            {'onSuccess': lambda *args: None, 'onFailure': lambda *args: None}
+            )
 
-        resultComputer = self.webObjectFactory.PyforaResultAsJson({'computedValue': computedValue, 'maxBytecount': maxBytecount})
+        resultComputer = self.webObjectFactory.PyforaResultAsJson(
+            {'computedValue': computedValue, 'maxBytecount': maxBytecount}
+            )
 
         resultComputer.subscribe_result({
             'onSuccess': resultChanged,
@@ -279,6 +340,7 @@ def createObjectConverter(webObjectFactory):
 
     return ObjectConverter.ObjectConverter(webObjectFactory, moduleTree.toJson())
 
+
 def connect(url):
     """Opens a connection to a Ufora cluster
 
@@ -294,10 +356,8 @@ def connect(url):
         '/subscribableWebObjects'
         )
     socketIoInterface.connect()
+    return connectGivenSocketIo(socketIoInterface)
 
-    import pyfora.SubscribableWebObjects as SubscribableWebObjects
-    webObjectFactory = SubscribableWebObjects.WebObjectFactory(socketIoInterface)
-    return Executor.Executor(Connection(webObjectFactory, createObjectConverter(webObjectFactory)))
 
 def connectGivenSocketIo(socketIoInterface):
     import pyfora.SubscribableWebObjects as SubscribableWebObjects

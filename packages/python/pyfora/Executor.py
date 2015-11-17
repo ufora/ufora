@@ -49,9 +49,10 @@ class Executor(object):
     a :class:`~Future.Future` that resolves to a :class:`~RemotePythonObject.RemotePythonObject`
     corresponding to the submitted object.
 
-    Similarly, functions and their arguments can be submitted using the :func:`~Executor.submit` method which
-    returns a :class:`~Future.Future` that resolves to a :class:`~RemotePythonObject.RemotePythonObject`
-    of the evaluated expression or raised exception.
+    Similarly, functions and their arguments can be submitted using the
+    :func:`~Executor.submit` method which returns a :class:`~Future.Future` that
+    resolves to a :class:`~RemotePythonObject.RemotePythonObject` of the evaluated
+    expression or raised exception.
 
     .. _concurrent.futures: https://pythonhosted.org/futures/
 
@@ -61,20 +62,25 @@ class Executor(object):
 
     Args:
         connection (pyfora.Connection.Connection): an open connection to a Ufora cluster.
-        pureImplementationMappings (optional): a :class:`~PureImplementationMappings.PureImplementationMappings`
-            that defines mapping between Python libraries and their "pure" :mod:`pyfora` implementation.
+        pureImplementationMappings (optional): a
+            :class:`~PureImplementationMappings.PureImplementationMappings`
+            that defines mapping between Python libraries and their "pure" :mod:`pyfora`
+            implementation.
     """
     def __init__(self, connection, pureImplementationMappings=None):
         self.connection = connection
         self.stayOpenOnExit = False
-        self.pureImplementationMappings = pureImplementationMappings or DefaultPureImplementationMappings.getMappings()
+        self.pureImplementationMappings = \
+            pureImplementationMappings or DefaultPureImplementationMappings.getMappings()
         self.objectRegistry = ObjectRegistry.ObjectRegistry()
-        self.objectRehydrator = PythonObjectRehydrator.PythonObjectRehydrator(self.pureImplementationMappings)
-        self.futures = {}
+        self.objectRehydrator = PythonObjectRehydrator.PythonObjectRehydrator(
+            self.pureImplementationMappings
+            )
         self.lock = threading.Lock()
 
     def importS3Dataset(self, bucketname, keyname):
-        """Creates a :class:`~RemotePythonObject.RemotePythonObject` that represents the content of an S3 key as a string.
+        """Creates a :class:`~RemotePythonObject.RemotePythonObject` that represents
+        the content of an S3 key as a string.
 
         Args:
             bucketname (str): The S3 bucket to read from.
@@ -82,8 +88,8 @@ class Executor(object):
 
 
         Returns:
-            Future.Future: A :class:`~Future.Future` that resolves to a :class:`~RemotePythonObject.RemotePythonObject`
-            representing the content of the S3 key.
+            Future.Future: A :class:`~Future.Future` that resolves to a
+            :class:`~RemotePythonObject.RemotePythonObject` representing the content of the S3 key.
         """
         def importS3Dataset():
             builtins = bucketname.__pyfora_builtins__
@@ -100,20 +106,18 @@ class Executor(object):
             keyname (str): The S3 key to write to.
 
         Returns:
-            Future.Future: A :class:`~Future.Future` representing the completion of the export operation.
-            It resolves either to ``None`` (success) or to an instance of :class:`~Exceptions.PyforaError`.
+            Future.Future: A :class:`~Future.Future` representing the completion
+            of the export operation.  It resolves either to ``None`` (success) or
+            to an instance of :class:`~Exceptions.PyforaError`.
         """
         assert isinstance(valueAsString, RemotePythonObject.ComputedRemotePythonObject)
-        future = Future.Future()
-
-        def onCompleted(result):
-            if isinstance(result, Exception):
-                future.set_exception(result)
-            else:
-                future.set_result(None)
-
-        self.connection.triggerS3DatasetExport(valueAsString, bucketname, keyname, onCompleted)
-
+        future = self._create_future()
+        def onComplete(result):
+            self._resolve_future(future, result)
+        self.connection.triggerS3DatasetExport(valueAsString,
+                                               bucketname,
+                                               keyname,
+                                               onComplete)
         return future
 
     def define(self, obj):
@@ -137,18 +141,11 @@ class Executor(object):
             objectRegistry=self.objectRegistry
             ).walkPyObject(obj)
 
-        future = Future.Future()
-
+        future = self._create_future()
         def onConverted(result):
-            if isinstance(result, Exception):
-                future.set_exception(result)
-            else:
-                future.set_result(
-                    RemotePythonObject.DefinedRemotePythonObject(
-                        objectId,
-                        self
-                        )
-                    )
+            if not isinstance(result, Exception):
+                result = RemotePythonObject.DefinedRemotePythonObject(objectId, self)
+            self._resolve_future(future, result)
 
         self.connection.convertObject(objectId, self.objectRegistry, onConverted)
         return future
@@ -184,23 +181,25 @@ class Executor(object):
             self.connection.close()
             self.connection = None
 
+
     @property
     def remotely(self):
-        """Returns a :class:`WithBlockExecutor.WithBlockExecutor` that can be used to enter a block of
-        "pure" Python code.
+        """Returns a :class:`WithBlockExecutor.WithBlockExecutor` that can be used
+        to enter a block of "pure" Python code.
 
         The ``with fora.remotely:`` syntax allows you to automatically submit an
         entire block of python code for remote execution. All the code nested in
         the remotely ``with`` block is submitted.
 
         Returns:
-            WithBlockExecutor.WithBlockExecutor: A :class:`~WithBlockExecutor.WithBlockExecutor` that extracts
-            python code from a with block and submits it to the Ufora cluster for
+            WithBlockExecutor.WithBlockExecutor: A :class:`~WithBlockExecutor.WithBlockExecutor`
+            that extracts python code from a with block and submits it to the Ufora cluster for
             remote execution.  Results of the remote execution are returned as
             RemotePythonObject and are automatically reasigned to their corresponding
             local variables in the with block.
             """
         return WithBlockExecutor.WithBlockExecutor(self)
+
 
     def isClosed(self):
         """Determine if the :class:`~Executor.Executor` is connected to the cluster.
@@ -208,7 +207,6 @@ class Executor(object):
         Returns:
             bool: ``True`` if :func:`~Executor.close` has been called, ``False`` otherwise.
         """
-
         return self.connection is None
 
 
@@ -226,40 +224,34 @@ class Executor(object):
             raise Exceptions.PyforaError('Attempted operation on a closed executor')
 
 
+    def _create_future(self, onCancel=None):
+        future = Future.Future(onCancel)
+        return future
+
+
+    def _resolve_future(self, future, result):
+        if isinstance(result, Exceptions.PyforaError):
+            future.set_exception(result)
+        else:
+            future.set_result(result)
+
+
     def _resolveFutureToComputedObject(self, future):
-        future.set_result(
-            RemotePythonObject.ComputedRemotePythonObject(
-                future._executorState,
-                self
-                )
+        self._resolve_future(
+            future,
+            RemotePythonObject.ComputedRemotePythonObject(future._executorState,
+                                                          self)
             )
 
 
     def _downloadComputedValueResult(self, computation, maxBytecount):
-        future = Future.Future()
+        future = self._create_future()
 
         def onResultCallback(jsonResult):
+            result = jsonResult
             try:
-                if isinstance(jsonResult, Exception):
-                    future.set_exception(jsonResult)
-                    return
-
-                if 'foraToPythonConversionError' in jsonResult:
-                    future.set_exception(
-                        Exceptions.ForaToPythonConversionError(
-                            str(jsonResult['foraToPythonConversionError'])
-                            )
-                        )
-                    return
-                if not jsonResult['isException']:
-                    if 'maxBytesExceeded' in jsonResult:
-                        future.set_exception(Exceptions.ResultExceededBytecountThreshold())
-                    else:
-                        result = self.objectRehydrator.convertJsonResultToPythonObject(jsonResult['result'])
-                        future.set_result(result)
-                else:
-                    result = self.objectRehydrator.convertJsonResultToPythonObject(jsonResult['result'])
-                    future.set_exception(Exceptions.ComputationError(result, jsonResult['trace']))
+                if not isinstance(jsonResult, Exception):
+                    result = self._translate_download_result(jsonResult)
             except Exception as e:
                 # TODO need a better way of wrapping exceptions.
                 # Alexandros has some ideas here, but this is
@@ -271,99 +263,95 @@ class Executor(object):
                     jsonResult,
                     type(jsonResult)
                     )
-
-                future.set_exception(
-                    Exceptions.ForaToPythonConversionError(
-                        e
-                        )
-                    )
+                result = Exceptions.ForaToPythonConversionError(e)
+            self._resolve_future(future, result)
 
         self.connection.downloadComputation(computation, onResultCallback, maxBytecount)
-
         return future
 
+
+    def _translate_download_result(self, jsonResult):
+        if 'foraToPythonConversionError' in jsonResult:
+            return Exceptions.ForaToPythonConversionError(
+                str(jsonResult['foraToPythonConversionError'])
+                )
+
+        if not jsonResult['isException']:
+            if 'maxBytesExceeded' in jsonResult:
+                return Exceptions.ResultExceededBytecountThreshold()
+            else:
+                return self.objectRehydrator.convertJsonResultToPythonObject(jsonResult['result'])
+
+        result = self.objectRehydrator.convertJsonResultToPythonObject(jsonResult['result'])
+        return Exceptions.ComputationError(result, jsonResult['trace'])
+
     def _expandComputedValueToDictOfAssignedVarsToProxyValues(self, computedValue):
-        future = Future.Future()
+        future = self._create_future()
 
         def onExpanded(jsonResult):
-            if isinstance(jsonResult, Exception):
-                future.set_exception(jsonResult)
-                return
-
-            if jsonResult['isException']:
-                result = self.objectRehydrator.convertJsonResultToPythonObject(
-                    jsonResult['result']
-                    )
-                future.set_exception(
-                    Exceptions.ComputationError(
-                        result,
+            result = jsonResult
+            if not isinstance(jsonResult, Exception):
+                if jsonResult['isException']:
+                    result = Exceptions.ComputationError(
+                        self.objectRehydrator.convertJsonResultToPythonObject(jsonResult['result']),
                         jsonResult['trace']
                         )
-                    )
-                return
+                else:
+                    assert isinstance(jsonResult['dictOfProxies'], dict)
+                    result = {
+                        k: RemotePythonObject.ComputedRemotePythonObject(v, self)
+                        for k, v in jsonResult['dictOfProxies'].iteritems()
+                        }
+            self._resolve_future(future, result)
 
-            assert isinstance(jsonResult['dictOfProxies'], dict)
-
-            dictOfProxies = {}
-            for k, v in jsonResult['dictOfProxies'].iteritems():
-                dictOfProxies[k] = RemotePythonObject.ComputedRemotePythonObject(v, self)
-
-            future.set_result(dictOfProxies)
-
-        self.connection.expandComputedValueToDictOfAssignedVarsToProxyValues(
-            computedValue,
-            onExpanded
-            )
+        self.connection.expandComputedValueToDictOfAssignedVarsToProxyValues(computedValue,
+                                                                             onExpanded)
 
         return future
 
 
     def _expandComputedValueToTupleOfProxies(self, computedValue):
-        future = Future.Future()
+        future = self._create_future()
 
         def onExpanded(jsonResult):
-            if isinstance(jsonResult, Exception):
-                future.set_exception(jsonResult)
-                return
+            result = jsonResult
+            if not isinstance(jsonResult, Exception):
+                if jsonResult['isException']:
+                    result = Exceptions.ComputationError(
+                        self.objectRehydrator.convertJsonResultToPythonObject(
+                            jsonResult['result']
+                            ),
+                        jsonResult['trace']
+                        )
+                else:
+                    assert isinstance(jsonResult['tupleOfComputedValues'], tuple)
+                    result = tuple(
+                        RemotePythonObject.ComputedRemotePythonObject(val, self)
+                        for val in jsonResult['tupleOfComputedValues']
+                        )
 
-            if jsonResult['isException']:
-                result = self.objectRehydrator.convertJsonResultToPythonObject(jsonResult['result'])
-                future.set_exception(Exceptions.ComputationError(result, jsonResult['trace']))
-                return
-
-            assert isinstance(jsonResult['tupleOfComputedValues'], tuple)
-
-            tupleOfProxies = \
-                tuple([
-                    RemotePythonObject.ComputedRemotePythonObject(val, self) \
-                    for val in jsonResult['tupleOfComputedValues']
-                    ])
-
-            future.set_result(tupleOfProxies)
+            self._resolve_future(future, result)
 
         self.connection.expandComputedValueToTupleOfProxies(computedValue, onExpanded)
-
         return future
 
 
     def _downloadDefinedObject(self, objectId):
-        future = Future.Future()
+        future = self._create_future()
         def onRetrieved(value):
-            future.set_result(value)
+            self._resolve_future(future, value)
         self.connection.retrieveConvertedObject(objectId, onRetrieved)
         return future
 
 
     def _callRemoteObject(self, fnHandle, argHandles):
-        future = Future.Future(onCancel=self._cancelComputation)
+        future = self._create_future(onCancel=self._cancelComputation)
         def onComputationCreated(result):
             if isinstance(result, Exception):
-                future.set_exception(result)
+                self._resolve_future(future, result)
                 return
             computation = result
             future.setExecutorState(computation)
-            with self.lock:
-                self.futures[computation] = future
             self._prioritizeComputation(future)
 
         self.connection.createComputation(fnHandle, argHandles, onComputationCreated)
@@ -373,16 +361,16 @@ class Executor(object):
         computation = future._executorState
         def onPrioritized(result):
             if isinstance(result, Exception):
-                future.set_exception(result)
+                self._resolve_future(future, result)
             else:
                 future.set_running_or_notify_cancel()
 
-        def onComputationCompleted(shouldBeNone):
+        def onComputationCompleted(none):
             self._resolveFutureToComputedObject(future)
 
         def onComputationFailed(exception):
             assert isinstance(exception, Exceptions.PyforaError)
-            future.set_exception(exception)
+            self._resolve_future(future, exception)
 
         self.connection.prioritizeComputation(
             computation,
@@ -391,12 +379,6 @@ class Executor(object):
             onComputationFailed
             )
 
-    def _cancelComputation(self, computationId):
-        with self.lock:
-            future = self.futures.get(computationId)
-            if future is None:
-                # the computation has already completed
-                return False
-            del self.futures[computationId]
-        self.connection.cancelComputation(computationId)
+    def _cancelComputation(self, computation):
+        self.connection.cancelComputation(computation)
         return True

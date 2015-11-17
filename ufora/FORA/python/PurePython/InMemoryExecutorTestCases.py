@@ -91,7 +91,7 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
                     return ("OK", a[idx1:idx2])
                 except:
                     return "FAIL"
-            
+
             for idx1 in range(-l - 1, l + 1):
                 for idx2 in range(-l - 1, l + 1):
                     results = results + [f(idx1, idx2)]
@@ -102,7 +102,7 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
 
     def test_slicing_operations_2(self):
         a = "abcdefg"
-        
+
         def f():
             l = len(a) + 1
 
@@ -364,6 +364,7 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
 
         self.equivalentEvaluationTest(f)
 
+
     def test_string_getitem_exhaustive_3(self):
         def f():
             x = "asd"
@@ -389,4 +390,24 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
             return res
 
         self.equivalentEvaluationTest(f)
+
+
+    def test_socket_io_disconnect(self):
+        def f():
+            s = 0
+            for i in xrange(100000000):
+                s = s + ((i-1)/(i+1))**2
+            return s
+
+        with self.create_executor() as executor:
+            future = executor.submit(f)
+            socketInterface = executor.connection.webObjectFactory.jsonInterface
+            socketInterface.disconnect()
+            with self.assertRaises(pyfora.PyforaError) as cm:
+                future.result()
+
+            error_content = cm.exception.message
+            self.assertEqual(error_content['responseType'], 'Failure')
+            self.assertEqual(error_content['message'], 'Disconnected from server')
+
 
