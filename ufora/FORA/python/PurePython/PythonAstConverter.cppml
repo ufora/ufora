@@ -443,9 +443,11 @@ PythonAstConverter::convertPythonClassBodyStatementToForaClassDefinitionTerms(
 
 Expression PythonAstConverter::initializeUnboundVariablesForFunction(
         const TuplePattern& pattern,
-        Expression functionBody
+        const Expression& inputFunctionBody
         ) const
     {
+    Expression functionBody = inputFunctionBody;
+    
     //look at all the variables we assign to at the root scope. If they are not bound
     //then they are 'free', but also assigned. We don't allow globals, so they'll all need
     //null let bindings
@@ -512,7 +514,8 @@ PythonAstConverter::convertPythonInitDefToForaClassDefinitionTerms(
 
     ImmutableTreeVector<ClassDefinitionTerm> tr;
 
-    for (const auto& p: transformedBodyAndSelfSetItemMap.second) {
+    for (const auto& p: transformedBodyAndSelfSetItemMap.second) 
+        {
         tr = tr + ClassDefinitionTerm::DataMember(
             Symbol(publicDataMemberNameToPrivate(p.first))
             );
@@ -533,29 +536,6 @@ PythonAstConverter::convertPythonInitDefToForaClassDefinitionTerms(
         );
     }
 
-
-std::pair<TuplePattern, Expression>
-PythonAstConverter::convertPythonMemberFunctionToPatternAndFunctionBody(
-        const PythonAstStatement_FunctionDefType& functionDef
-        ) const
-    {
-    std::pair<TuplePattern, Expression> tuplePatternAndExpression = 
-        computeTuplePatternAndFunctionBody(
-            functionDef.args(),
-            functionDef.body()
-            );
-    TuplePattern pattern = tuplePatternAndExpression.first;
-    Expression functionBody = tuplePatternAndExpression.second;
-
-    functionBody = initializeUnboundVariablesForFunction(pattern, functionBody);
-
-    functionBody = Expression::Sequence(
-        functionBody,
-        Expression::Return(Expression::Constant(mConstantConverter->noneValue()))
-        );
-
-    return std::make_pair(pattern, functionBody);
-    }
 
 ImmutableTreeVector<ClassDefinitionTerm>
 PythonAstConverter::convertPythonClassBodyFunctionDefToForaClassDefinitionTerms(
@@ -581,9 +561,8 @@ PythonAstConverter::convertPythonClassBodyFunctionDefToForaClassDefinitionTerms(
                 and decoratorList[0].getName().id() == "staticmethod") 
             {
             return convertPythonClassBodyStaticMethodFunctionDefToForaClassDefinitionTerms(
-                    functionName,
-                    args,
-                    body
+                    functionDef,
+                    extent
                     );
             }
 
@@ -614,9 +593,10 @@ PythonAstConverter::convertPythonClassBodyFunctionDefToForaClassDefinitionTerms(
         return convertPythonInitDefToForaClassDefinitionTerms(functionDef, className);
         }
 
-    std::pair<TuplePattern, Expression> tuplePatternAndFunctionBody = 
-        convertPythonMemberFunctionToPatternAndFunctionBody(
-            functionDef
+    Function function = 
+        convertFunctionDefToForaFunction(
+            functionDef,
+            extent
             );
 
     //expose the function member as a ...(`Member, `f) { fun() {...} }
@@ -630,11 +610,7 @@ PythonAstConverter::convertPythonClassBodyFunctionDefToForaClassDefinitionTerms(
                     Expression::Variable(Symbol("@self")).normalApplyArg() + 
                     Expression::CreateFunction(
                         functionName,
-                        Function::Term(
-                            tuplePatternAndFunctionBody.first,
-                            tuplePatternAndFunctionBody.second,
-                            Function::Empty()
-                            ),
+                        function,
                         CSTValue()
                         ).normalApplyArg() + 
                     Expression::Constant(CSTValue(Symbol(functionName))).normalApplyArg()
@@ -1509,42 +1485,6 @@ PatternWithName PythonAstConverter::convertPythonAstExpressionToPattern(
         );
     }
 
-std::pair<TuplePattern, Expression> PythonAstConverter::computeTuplePatternAndFunctionBody(
-        const PythonAstArguments& args,
-        const ImmutableTreeVector<PythonAstStatement>& body
-        ) const
-    {
-    ImmutableTreeVector<TuplePatternElement> foraArgs = 
-        computeForaArgs(args);
-
-    TuplePattern pattern = TuplePattern(foraArgs);
-    Expression functionBody = convertPythonAstStatementsToExpression(body);
-    
-    return std::make_pair(pattern, functionBody);
-    }
-
-std::pair<TuplePattern, Expression> 
-PythonAstConverter::computeTuplePatternAndFunctionBodyAndInitUnboundVars(
-        const std::string& name,
-        const PythonAstArguments& args,
-        const ImmutableTreeVector<PythonAstStatement>& body
-        ) const
-    {
-    std::pair<TuplePattern, Expression> patternAndFunctionBody = 
-        computeTuplePatternAndFunctionBody(args, body);
-
-    return std::make_pair(
-        patternAndFunctionBody.first,
-        Expression::Sequence(
-            initializeUnboundVariablesForFunction(
-                patternAndFunctionBody.first,
-                patternAndFunctionBody.second
-                ),
-            Expression::Return(Expression::Constant(mConstantConverter->noneValue()))
-            )
-        );
-    }
-
 Expression PythonAstConverter::convertPythonAstClassDefToFora(
         const PythonAstStatement_ClassDefType& classDef,
         const SimpleParseRange& extent
@@ -1638,20 +1578,20 @@ Expression PythonAstConverter::convertPythonAstClassDefToFora(
         );
     }
 
-Function PythonAstConverter::convertPythonAstExpressionToForaFunction(
+Function PythonAstConverter::convertFunctionDefToForaFunction(
         const PythonAstStatement_FunctionDefType& functionDef,
         const SimpleParseRange& extent
         ) const
     {
     std::pair<Expression, TuplePattern> functionBodyAndPattern = 
-        convertPythonAstExpressionToForaFunctionBodyAndPattern(
+        convertFunctionDefToForaFunctionBodyAndPattern(
             functionDef,
             extent
             );
 
-    Expression functionBody = introduceLetBindingsForUnboundVariables(
-        functionBodyAndPattern.first,
-        functionBodyAndPattern.second
+    Expression functionBody = initializeUnboundVariablesForFunction(
+        functionBodyAndPattern.second,
+        functionBodyAndPattern.first
         );
 
     return Function::Term(
@@ -1697,36 +1637,8 @@ Expression PythonAstConverter::checkVariableValidityExpression(Symbol s) const
         );
     }
     
-Expression PythonAstConverter::introduceLetBindingsForUnboundVariables(
-        const Expression& functionBody,
-        const TuplePattern& pattern
-        ) const
-    {
-    //look at all the variables we assign to at the root scope. If they are not bound
-    //then they are 'free', but also assigned. We don't allow globals, so they'll all need
-    //null let bindings
-    ImmutableTreeSet<Symbol> bound = pattern.boundVariables();
-    ImmutableTreeSet<Symbol> assigned = functionBody.assignedVariables();
-
-    ImmutableTreeSet<Symbol> needingBindings = assigned - bound;
-
-    Expression tr = functionBody;
-
-    for (auto s: needingBindings)
-        tr = Expression::Let(
-                s, 
-                Expression::Constant(CSTValue(Symbol("PyforaUninitializedVariable"))), 
-                rebindFreeAs(
-                    tr,
-                    emptyTreeMap() + s + checkVariableValidityExpression(s)
-                    )
-                );
-
-    return tr;
-    }
-
 std::pair<Expression, TuplePattern> 
-PythonAstConverter::convertPythonAstExpressionToForaFunctionBodyAndPattern(
+PythonAstConverter::convertFunctionDefToForaFunctionBodyAndPattern(
         const PythonAstStatement_FunctionDefType& functionDef,
         const SimpleParseRange& extent
         ) const
@@ -1760,7 +1672,7 @@ PythonAstConverter::convertPythonAstExpressionToForaFunctionBodyAndPattern(
         );
 
     return std::make_pair(functionBody, pattern);
-    }    
+    }
 
 Expression PythonAstConverter::addWithBlockReturnStatement(
                 Expression expr, 
@@ -1809,7 +1721,7 @@ Expression PythonAstConverter::convertPythonAstWithBlockFunctionDefToFora(
     const std::string& functionName = functionDef.name();
 
     std::pair<Expression, TuplePattern> functionBodyAndPattern = 
-        convertPythonAstExpressionToForaFunctionBodyAndPattern(
+        convertFunctionDefToForaFunctionBodyAndPattern(
             functionDef,
             extent
             );
@@ -1960,7 +1872,7 @@ Expression PythonAstConverter::convertPythonAstFunctionDefToFora(
     {
     const std::string& functionName = functionDef.name();
 
-    Function function = convertPythonAstExpressionToForaFunction(
+    Function function = convertFunctionDefToForaFunction(
         functionDef,
         extent
         );
@@ -2018,22 +1930,28 @@ expected properties on `args`
 */
 ImmutableTreeVector<ClassDefinitionTerm>
 PythonAstConverter::convertPythonClassBodyStaticMethodFunctionDefToForaClassDefinitionTerms(
-        const std::string& name,
-        const PythonAstArguments& args,
-        const ImmutableTreeVector<PythonAstStatement>& body
+        const PythonAstStatement_FunctionDefType& functionDef,
+        const SimpleParseRange& extent
         ) const
     {
-    std::pair<TuplePattern, Expression> patternAndFunctionBody = 
-        computeTuplePatternAndFunctionBodyAndInitUnboundVars(name, args, body);
+    PythonAstStatement_FunctionDefType functionDefWithoutDecorators = functionDef;
+    functionDefWithoutDecorators.decorator_list() = emptyTreeVec();
+
+    std::pair<Expression, TuplePattern> functionBodyAndPattern = 
+        convertFunctionDefToForaFunctionBodyAndPattern(
+            functionDefWithoutDecorators,
+            extent
+            );
 
     return emptyTreeVec() + 
         ClassDefinitionTerm::Static(
-            noncapturingObjectMember(name,
+            noncapturingObjectMember(
+                functionDef.name(),
                 Expression::CreateFunction(
-                    name,
+                    functionDef.name(),
                     Function::Term(
-                        patternAndFunctionBody.first,
-                        patternAndFunctionBody.second,
+                        functionBodyAndPattern.second,
+                        functionBodyAndPattern.first,
                         Function::Empty()
                         ),
                     CSTValue()
@@ -2041,12 +1959,13 @@ PythonAstConverter::convertPythonClassBodyStaticMethodFunctionDefToForaClassDefi
                 )
             ) + 
         ClassDefinitionTerm::ObjectTerm(
-            noncapturingObjectMember(name,
+            noncapturingObjectMember(
+                functionDef.name(),
                 Expression::CreateFunction(
-                    name,
+                    functionDef.name(),
                     Function::Term(
-                        patternAndFunctionBody.first,
-                        patternAndFunctionBody.second,
+                        functionBodyAndPattern.second,
+                        functionBodyAndPattern.first,
                         Function::Empty()
                         ),
                     CSTValue()
