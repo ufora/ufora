@@ -162,7 +162,6 @@ class TestScriptRunner(object):
 
         if sys.platform == 'linux2':
             directory, filename = os.path.split(script)
-            genCore = os.path.abspath('generateCore.gdb')
             args = [sys.executable, "-u", '-c', "print 'started'; execfile('%s')" % filename]
 
             with DirectoryScope(directory):

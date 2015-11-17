@@ -38,11 +38,10 @@ def options(opt):
     opt.load('compiler_c')
     opt.load('cxx')
     opt.load('compiler_fc')
-    opt.load('configure_cpp')
-    opt.load('gcov')
-    opt.load('bison_cppml')
-    opt.load('ocaml')
-    opt.load('cppml')
+    opt.load('configure_cpp', tooldir='build')
+    opt.load('bison_cppml', tooldir='build')
+    opt.load('ocaml', tooldir='build')
+    opt.load('cppml', tooldir='build')
     opt.load('python')
     opt.add_option(
         '--skip-runtime-dependencies',
@@ -86,7 +85,6 @@ def configure(conf):
     conf.check_python_module('numpy')
     conf.check_python_module('requests')
 
-    conf.load('gcov')
     conf.load('bison')
     conf.load('bison_cppml')
     conf.load('ocaml')
