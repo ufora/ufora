@@ -126,7 +126,7 @@ You will want to have a clone of the repo inside your volumes directory.
 The easiest way is to simply create a new clone:
 
 ```bash
-$ git clone git@github.com:ufora/main.git ~/volumes/src
+$ git clone git@github.com:ufora/ufora.git ~/volumes/src
 ```
 
 Note that you cannot create a symbolic link to an existing repo inside your volumes directory because
