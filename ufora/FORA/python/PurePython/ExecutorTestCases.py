@@ -3129,6 +3129,32 @@ class ExecutorTestCases(
 
         self.equivalentEvaluationTest(f)
 
+    def test_static_method_on_instance(self):
+        class StaticMethodInInstance:
+            @staticmethod
+            def f():
+                return 10
+
+        self.equivalentEvaluationTest(lambda: StaticMethodInInstance().f() is None)
+
+    def test_static_method_run_off_end_is_none(self):
+        class StaticMethodRunOffEndIsNone:
+            @staticmethod
+            def f():
+                return 10
+
+        self.equivalentEvaluationTest(lambda: StaticMethodRunOffEndIsNone.f() is None)
+
+    def test_static_method_name_is_noncapturing(self):
+        def f():
+            return 11
+        class StaticMethodNameNoncapturing:
+            @staticmethod
+            def f():
+                return 10
+
+        self.equivalentEvaluationTest(lambda: StaticMethodNameNoncapturing.f() is None)
+
     def test_mutual_recursion(self):
         def f(n):
             if n < 0:

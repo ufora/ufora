@@ -43,6 +43,22 @@ std::string publicDataMemberNameToPrivate(std::string name)
     return "@" + name;
     }
 
+ObjectDefinitionTerm noncapturingObjectMember(std::string name, Expression expr)    
+    {
+    return 
+        ObjectDefinitionTerm::Anything(
+            Function::Term(
+                TuplePattern(
+                    emptyTreeVec() + 
+                        TuplePatternElement::Normal(PatternWithName::Constant(CSTValue(Symbol("Member")))) + 
+                        TuplePatternElement::Normal(PatternWithName::Constant(CSTValue(Symbol(name))))
+                    ),
+                expr,
+                Function::Empty()
+                )
+            );    
+    }
+
 ClassDefinitionTerm
 createInvalidNumberOfArgumentsClassDefinitionTerm(const std::string& name) {
     return ClassDefinitionTerm::ObjectTerm(
@@ -106,7 +122,7 @@ public:
                 }
             }
         }
-    };
+};
 
 class ExtractVariablesReferencedInFunctionBodyVisitor {
 private:
@@ -130,8 +146,8 @@ public:
             -| _ ->> {}
             ;
         }
-    };
-        
+};
+
 class RewriteSelfSetAttrsTransformer {
 private:
     std::set<std::pair<std::string, std::string>>& mSelfSetItemMap;
@@ -201,7 +217,7 @@ private:
             }
         return tr;
         }
-    };
+};
 
 Expression makeCreateInstanceCall(
         const std::set<std::pair<std::string, std::string>>& selfSetItemMap,
@@ -501,16 +517,9 @@ PythonAstConverter::convertPythonInitDefToForaClassDefinitionTerms(
             Symbol(publicDataMemberNameToPrivate(p.first))
             );
         tr = tr + ClassDefinitionTerm::ObjectTerm(
-            ObjectDefinitionTerm::Anything(
-                Function::Term(
-                    TuplePattern(
-                        emptyTreeVec() + 
-                            TuplePatternElement::Normal(PatternWithName::Constant(CSTValue(Symbol("Member")))) + 
-                            TuplePatternElement::Normal(PatternWithName::Constant(CSTValue(Symbol(p.first))))
-                        ),
-                    Expression::Variable(publicDataMemberNameToPrivate(p.first)),
-                    Function::Empty()
-                    )
+            noncapturingObjectMember(
+                p.first,
+                Expression::Variable(publicDataMemberNameToPrivate(p.first))
                 )
             );
         }
@@ -559,36 +568,19 @@ PythonAstConverter::convertPythonClassBodyFunctionDefToForaClassDefinitionTerms(
 
     checkFunctionArgs(args, extent);
 
-    if (args.args().size() == 0) {
-        return emptyTreeVec() + 
-            createInvalidNumberOfArgumentsClassDefinitionTerm(
-                functionDef.name()
-                );
-        }
-
     const std::string& functionName = functionDef.name();
 
     ImmutableTreeVector<PythonAstExpr> decoratorList = functionDef.decorator_list();
 
-    if (functionName == "__init__")
-        {
-        // should assert that there are no decorators
-        if (decoratorList.size() > 0)
-            throw PythonToForaConversionError(
-                "don't know how to convert `__init__` methods with decorators right now",
-                extent
-                );
-        
-        return convertPythonInitDefToForaClassDefinitionTerms(functionDef, className);
-        }
-
+    //check if it's staticmethod
     ImmutableTreeVector<PythonAstStatement> body = functionDef.body();
-    if (decoratorList.size() > 0) {
+    if (decoratorList.size() > 0) 
+        {
         if (decoratorList.size() == 1 
-            and decoratorList[0].isName() 
-            and decoratorList[0].getName().id() == "staticmethod") {
-            return emptyTreeVec() +
-                convertPythonClassBodyStaticMethodFunctionDefToForaClassDefinitionTerm(
+                and decoratorList[0].isName() 
+                and decoratorList[0].getName().id() == "staticmethod") 
+            {
+            return convertPythonClassBodyStaticMethodFunctionDefToForaClassDefinitionTerms(
                     functionName,
                     args,
                     body
@@ -602,6 +594,26 @@ PythonAstConverter::convertPythonClassBodyFunctionDefToForaClassDefinitionTerms(
             );
         }
 
+    if (args.args().size() == 0)
+        {
+        return emptyTreeVec() + 
+            createInvalidNumberOfArgumentsClassDefinitionTerm(
+                functionDef.name()
+                );
+        }
+
+    if (functionName == "__init__")
+        {
+        // should assert that there are no decorators
+        if (decoratorList.size() > 0)
+            throw PythonToForaConversionError(
+                "don't know how to convert `__init__` methods with decorators right now",
+                extent
+                );
+        
+        return convertPythonInitDefToForaClassDefinitionTerms(functionDef, className);
+        }
+
     std::pair<TuplePattern, Expression> tuplePatternAndFunctionBody = 
         convertPythonMemberFunctionToPatternAndFunctionBody(
             functionDef
@@ -610,29 +622,22 @@ PythonAstConverter::convertPythonClassBodyFunctionDefToForaClassDefinitionTerms(
     //expose the function member as a ...(`Member, `f) { fun() {...} }
     //so that we don't capture 'f' in the class binding
     auto res = emptyTreeVec() + ClassDefinitionTerm::ObjectTerm(
-        ObjectDefinitionTerm::Anything(
-            Function::Term(
-                TuplePattern(
-                    emptyTreeVec() + 
-                        TuplePatternElement::Normal(PatternWithName::Constant(CSTValue(Symbol("Member")))) + 
-                        TuplePatternElement::Normal(PatternWithName::Constant(CSTValue(Symbol(functionName))))
-                    ),
-                Expression::Call(
-                    Expression::Constant(mPyBoundMethod),
-                    emptyTreeVec() + 
-                        Expression::Variable(Symbol("@self")).normalApplyArg() + 
-                        Expression::CreateFunction(
-                            functionName,
-                            Function::Term(
-                                tuplePatternAndFunctionBody.first,
-                                tuplePatternAndFunctionBody.second,
-                                Function::Empty()
-                                ),
-                            CSTValue()
-                            ).normalApplyArg() + 
-                        Expression::Constant(CSTValue(Symbol(functionName))).normalApplyArg()
-                    ),
-                Function::Empty()
+        noncapturingObjectMember(
+            functionName,
+            Expression::Call(
+                Expression::Constant(mPyBoundMethod),
+                emptyTreeVec() + 
+                    Expression::Variable(Symbol("@self")).normalApplyArg() + 
+                    Expression::CreateFunction(
+                        functionName,
+                        Function::Term(
+                            tuplePatternAndFunctionBody.first,
+                            tuplePatternAndFunctionBody.second,
+                            Function::Empty()
+                            ),
+                        CSTValue()
+                        ).normalApplyArg() + 
+                    Expression::Constant(CSTValue(Symbol(functionName))).normalApplyArg()
                 )
             )
         );
@@ -1530,9 +1535,12 @@ PythonAstConverter::computeTuplePatternAndFunctionBodyAndInitUnboundVars(
 
     return std::make_pair(
         patternAndFunctionBody.first,
-        initializeUnboundVariablesForFunction(
-            patternAndFunctionBody.first,
-            patternAndFunctionBody.second
+        Expression::Sequence(
+            initializeUnboundVariablesForFunction(
+                patternAndFunctionBody.first,
+                patternAndFunctionBody.second
+                ),
+            Expression::Return(Expression::Constant(mConstantConverter->noneValue()))
             )
         );
     }
@@ -2008,8 +2016,8 @@ Expression PythonAstConverter::createObjectImplementingCallOperatorForFunction(
 Called from convertPythonClassBodyFunctionDefToForaClassDefinitionTerm which verifies
 expected properties on `args`
 */
-ClassDefinitionTerm 
-PythonAstConverter::convertPythonClassBodyStaticMethodFunctionDefToForaClassDefinitionTerm(
+ImmutableTreeVector<ClassDefinitionTerm>
+PythonAstConverter::convertPythonClassBodyStaticMethodFunctionDefToForaClassDefinitionTerms(
         const std::string& name,
         const PythonAstArguments& args,
         const ImmutableTreeVector<PythonAstStatement>& body
@@ -2018,21 +2026,33 @@ PythonAstConverter::convertPythonClassBodyStaticMethodFunctionDefToForaClassDefi
     std::pair<TuplePattern, Expression> patternAndFunctionBody = 
         computeTuplePatternAndFunctionBodyAndInitUnboundVars(name, args, body);
 
-    return ClassDefinitionTerm::Static(
-        ObjectDefinitionTerm::Member(
-            Symbol(name),
-            Expression::CreateFunction(
-                name,
-                Function::Term(
-                    patternAndFunctionBody.first,
-                    patternAndFunctionBody.second,
-                    Function::Empty()
-                    ),
-                CSTValue()
-                ),
-            1
-            )
-        );
+    return emptyTreeVec() + 
+        ClassDefinitionTerm::Static(
+            noncapturingObjectMember(name,
+                Expression::CreateFunction(
+                    name,
+                    Function::Term(
+                        patternAndFunctionBody.first,
+                        patternAndFunctionBody.second,
+                        Function::Empty()
+                        ),
+                    CSTValue()
+                    )
+                )
+            ) + 
+        ClassDefinitionTerm::ObjectTerm(
+            noncapturingObjectMember(name,
+                Expression::CreateFunction(
+                    name,
+                    Function::Term(
+                        patternAndFunctionBody.first,
+                        patternAndFunctionBody.second,
+                        Function::Empty()
+                        ),
+                    CSTValue()
+                    )
+                )
+            );
     }
 
 ImmutableTreeVector<TuplePatternElement> PythonAstConverter::computeForaArgs(
