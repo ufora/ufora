@@ -12,6 +12,8 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+import base64
+
 class HaltTransformationException(Exception):
     """Exception to be raised if we wish to halt transformation for any reason."""
 
@@ -46,6 +48,18 @@ class PyforaToJsonTransformer(object):
     def transformList(self, listMembers):
         self.accumulateObjects(1)
         return {'list': listMembers}
+
+    def transformHomogenousList(self, firstElement, allElementsAsNumpy):
+        numpyAsString = base64.b64encode(allElementsAsNumpy.tostring())
+        numpyDtypeAsString = str(allElementsAsNumpy.dtype)
+
+        self.accumulateObjects(1, len(numpyAsString) + len(numpyDtypeAsString))
+        return {
+            'homogenousListNumpyData': numpyAsString,
+            'dtype': numpyDtypeAsString,
+            'firstElement': firstElement,
+            'length': len(allElementsAsNumpy)
+            }
 
     def transformDict(self, keys, values):
         self.accumulateObjects(1)

@@ -21,6 +21,8 @@ import os
 import ast
 import traceback
 import logging
+import base64
+import numpy
 
 moduleType = type(os)
 builtins = sys.modules['__builtin__']
@@ -109,6 +111,16 @@ class PythonObjectRehydrator:
             return NamedSingletons.singletonNameToObject[singletonName]
         if 'InvalidPyforaOperation' in jsonResult:
             return Exceptions.InvalidPyforaOperation(jsonResult['InvalidPyforaOperation'])
+        if 'homogenousListNumpyData' in jsonResult:
+            data = numpy.ndarray(shape=jsonResult['length'], dtype=jsonResult['dtype'], buffer=base64.b64decode(jsonResult['homogenousListNumpyData']))
+
+            #we use the first element as a prototype when decoding
+            firstElement = self.convertJsonResultToPythonObject(jsonResult['firstElement'])
+
+            data = data.tolist()
+            assert isinstance(data[0], type(firstElement)), "%s of type %s is not %s" % (data[0], type(data[0]), type(firstElement))
+            return data
+
         if 'builtinException' in jsonResult:
             builtinExceptionTypeName = jsonResult['builtinException']
             builtinExceptionType = NamedSingletons.singletonNameToObject[builtinExceptionTypeName]

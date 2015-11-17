@@ -979,10 +979,12 @@ class Converter(object):
                 assert value.isVectorOfChar()
 
                 contents = vectorContentsExtractor(value)
+
                 if contents is None:
                     return transformer.transformStringThatNeedsLoading(len(value))
                 else:
-                    return transformer.transformPrimitive(contents)
+                    assert 'string' in contents
+                    return transformer.transformPrimitive(contents['string'])
 
         if self.singletonAndExceptionConverter is not None:
             value = self.singletonAndExceptionConverter.convertInstanceToSingletonName(implval)
@@ -1016,11 +1018,21 @@ class Converter(object):
         listItemsAsVector = self.nativeListConverter.invertList(implval)
         if listItemsAsVector is not None:
             contents = vectorContentsExtractor(listItemsAsVector)
+
             if contents is None:
                 return transformer.transformListThatNeedsLoading(len(listItemsAsVector))
-            else:
+            elif 'listContents' in contents:
                 return transformer.transformList(
-                    [self.transformPyforaImplval(x,transformer, vectorContentsExtractor) for x in contents]
+                    [self.transformPyforaImplval(x,transformer, vectorContentsExtractor) for x in contents['listContents']]
+                    )
+            else:
+                assert 'firstElement' in contents
+                firstElement = contents['firstElement']
+                contentsAsNumpy = contents['contentsAsNumpy']
+
+                return transformer.transformHomogenousList(
+                    self.transformPyforaImplval(firstElement, transformer, vectorContentsExtractor),
+                    contentsAsNumpy
                     )
 
         if implval.isTuple():
