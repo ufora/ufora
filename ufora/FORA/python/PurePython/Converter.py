@@ -1098,7 +1098,7 @@ class Converter(object):
                     )
 
         logging.error("Failed to convert %s of type %s back to python", implval, str(implval.type))
-        
+
         raise pyfora.ForaToPythonConversionError(
             "Result cannot be translated back to python."
             )

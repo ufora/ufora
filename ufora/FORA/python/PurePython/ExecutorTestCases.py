@@ -3178,3 +3178,29 @@ class ExecutorTestCases(
             return f(n - 2)
 
         self.equivalentEvaluationTest(f, 4)
+
+    def test_empty_iterator(self):
+        def sequence(ct):
+            while ct > 0:
+                yield ct
+                ct = ct - 1
+
+        class EmptyIterator:
+            @staticmethod
+            def staticSequence(ct):
+                while ct > 0:
+                    yield ct
+                    ct = ct - 1
+
+            def sequence(self, ct):
+                while ct > 0:
+                    yield ct
+                    ct = ct - 1
+
+        self.equivalentEvaluationTest(lambda: list(sequence(1)))
+
+        for count in [0,1,2]:
+            self.equivalentEvaluationTest(lambda: list(sequence(count)))
+            self.equivalentEvaluationTest(lambda: list(EmptyIterator.staticSequence(count)))
+            self.equivalentEvaluationTest(lambda: list(EmptyIterator().sequence(count)))
+

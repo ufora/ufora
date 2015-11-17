@@ -133,6 +133,60 @@ public:
         }
 };
 
+class HasYieldFunctionBodyVisitor {
+private:
+    bool& mHasYield;
+public:
+    HasYieldFunctionBodyVisitor(
+                bool& inHasYield
+                ): 
+            mHasYield(inHasYield)
+        {
+        }
+
+    template<class T> void processDown(const T&, bool&) {}
+    template<class T> void processUp(const T&) {}
+
+    void processDown(const PythonAstExpr& expr, bool& outContinue)
+        {
+        @match PythonAstExpr(expr)
+            -| Yield(id, _) ->> {
+                mHasYield = true;
+                }
+            -| Lambda() ->> { outContinue = false; }
+            -| GeneratorExp() ->> { outContinue = false; }
+            -| _ ->> {}
+            ;
+        }
+
+    void processDown(const PythonAstStatement& expr, bool& outContinue)
+        {
+        @match PythonAstStatement(expr)
+            -| FunctionDef() ->> {
+                outContinue = false;
+                }
+            -| ClassDef() ->> {
+                outContinue = false;
+                }
+            -| _ ->> {}
+            ;
+        }
+
+};
+        
+template<class T>
+bool hasYield(const T& value)
+    {
+    bool result = false;
+
+    HasYieldFunctionBodyVisitor visitor(result);
+
+    visit(value, visitor);
+
+    return result;
+    }
+
+
 class ExtractVariablesReferencedInFunctionBodyVisitor {
 private:
     std::set<std::string>& mReferencedVariables;
@@ -402,7 +456,7 @@ PythonAstConverter::PythonAstConverter(
 
     mPyObjectBaseMixin = getModuleMember(pyforaBuiltins, "PyObjectBase");
         
-    mPyGeneratorFactory = getModuleMember(pyforaBuiltins, "CreateGeneratorFromYield");
+    mPyGeneratorFactory = getModuleMember(pyforaBuiltins, "Generator");
 
     mPySliceFactory = getModuleMember(pyforaBuiltins, "Slice");
 
@@ -1114,10 +1168,7 @@ Expression PythonAstConverter::convertPythonAstExpressionToFora_inner(const Pyth
                                 )
                             ),
                         Expression::Return(
-                            Expression::Apply(
-                                Expression::Constant(
-                                    CSTValue(mPyGeneratorFactory)
-                                    ),
+                            Expression::CreateTuple(
                                 emptyTreeVec() + 
                                     ApplyArgument::Normal(
                                         e ? convertPythonAstExpressionToFora(*e) : Expression()
@@ -1574,7 +1625,7 @@ Expression PythonAstConverter::convertPythonAstClassDefToFora(
                 ),
             classDefinitionBody
             );
-    
+
     return Expression::CreateClass(
         className, 
         ClassDefinition(
@@ -1602,6 +1653,18 @@ Function PythonAstConverter::convertFunctionDefToForaFunction(
         functionBodyAndPattern.second,
         functionBodyAndPattern.first
         );
+
+    if (hasYield(functionDef))
+        functionBody = 
+            Expression::Call(
+                Expression::Constant(mPyGeneratorFactory),
+                emptyTreeVec() + 
+                    Expression::CreateFunction(
+                        "<generator>",
+                        Function::Term(TuplePattern(), functionBody, Function::Empty()),
+                        CSTValue()
+                        ).normalApplyArg()
+                );
 
     return Function::Term(
         functionBodyAndPattern.second,
@@ -1864,8 +1927,6 @@ Expression PythonAstConverter::wrapWithBlockFunctionBodyInTryCatch(
             Function::Empty()
             );
 
-    // TODO not dealing wtih "stacktrace" member in ExpressionTry
-
     return Expression::Try(
         functionBody,
         catchFun,
@@ -1946,8 +2007,8 @@ PythonAstConverter::convertPythonClassBodyStaticMethodFunctionDefToForaClassDefi
     PythonAstStatement_FunctionDefType functionDefWithoutDecorators = functionDef;
     functionDefWithoutDecorators.decorator_list() = emptyTreeVec();
 
-    std::pair<Expression, TuplePattern> functionBodyAndPattern = 
-        convertFunctionDefToForaFunctionBodyAndPattern(
+    Function function = 
+        convertFunctionDefToForaFunction(
             functionDefWithoutDecorators,
             extent
             );
@@ -1958,11 +2019,7 @@ PythonAstConverter::convertPythonClassBodyStaticMethodFunctionDefToForaClassDefi
                 functionDef.name(),
                 Expression::CreateFunction(
                     functionDef.name(),
-                    Function::Term(
-                        functionBodyAndPattern.second,
-                        functionBodyAndPattern.first,
-                        Function::Empty()
-                        ),
+                    function,
                     CSTValue()
                     )
                 )
@@ -1972,11 +2029,7 @@ PythonAstConverter::convertPythonClassBodyStaticMethodFunctionDefToForaClassDefi
                 functionDef.name(),
                 Expression::CreateFunction(
                     functionDef.name(),
-                    Function::Term(
-                        functionBodyAndPattern.second,
-                        functionBodyAndPattern.first,
-                        Function::Empty()
-                        ),
+                    function,
                     CSTValue()
                     )
                 )
