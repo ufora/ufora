@@ -1016,6 +1016,22 @@ class ExecutorTestCases(
 
         self.assertTrue(self.evaluateWithExecutor(testFun))
 
+    def test_methods_are_pyfora(self):
+        class StaticMethodIsPyfora:
+            @staticmethod
+            def f(x):
+                return x+1
+
+            def g(self):
+                return None
+
+        self.assertTrue(self.evaluateWithExecutor(lambda: StaticMethodIsPyfora().g.__is_pyfora__))
+
+        self.assertTrue(self.evaluateWithExecutor(lambda: StaticMethodIsPyfora().f.__is_pyfora__))
+
+        self.assertTrue(self.evaluateWithExecutor(lambda: StaticMethodIsPyfora.f.__is_pyfora__))
+
+
     def test_class_member_semantics(self):
         def f():
             return 'free f'
@@ -3203,4 +3219,3 @@ class ExecutorTestCases(
             self.equivalentEvaluationTest(lambda: list(sequence(count)))
             self.equivalentEvaluationTest(lambda: list(EmptyIterator.staticSequence(count)))
             self.equivalentEvaluationTest(lambda: list(EmptyIterator().sequence(count)))
-
