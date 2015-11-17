@@ -3155,6 +3155,18 @@ class ExecutorTestCases(
 
         self.equivalentEvaluationTest(lambda: StaticMethodNameNoncapturing.f() is None)
 
+    def test_yield_in_init_throws(self):
+        class YieldInInit:
+            def __init__(self):
+                yield 10
+
+        def f():
+            YieldInInit()
+            return
+
+        with self.assertRaises(Exceptions.PythonToForaConversionError):
+            self.evaluateWithExecutor(f)
+
     def test_mutual_recursion(self):
         def f(n):
             if n < 0:
