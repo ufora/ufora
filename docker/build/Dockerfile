@@ -62,7 +62,8 @@ RUN pip install --allow-unverified pyodbc\
     numpy \
     pyodbc \
     pexpect \
-    pandas
+    pandas \
+    wsaccel
 
 
 # NodeJS
