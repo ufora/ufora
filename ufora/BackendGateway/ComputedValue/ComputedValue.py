@@ -221,7 +221,7 @@ class ComputedValueVectorSlice(ComputedGraph.Location):
         result = ComputedValueGateway.getGateway().extractVectorItem(self.computedValueVector, ct)
 
         if result is None:
-            logging.warn("CumulusClient: %s was marked loaded but returned None", self)
+            logging.info("CumulusClient: %s was marked loaded but returned None", self)
             self.isLoaded = False
             ComputedValueGateway.getGateway().reloadVector(self)
 
