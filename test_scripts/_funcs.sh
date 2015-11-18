@@ -100,6 +100,14 @@ if [ -z $NESTED_TESTS_GUARD ]; then
 calling_format = boto.s3.connection.OrdinaryCallingFormat
 EOM
 
+    echo "Currently running Python processes:"
+    ps aux | grep python
+    echo
+
+    echo "Currently open ports:"
+    netstat -anop | grep LISTEN
+    echo
+
     trap stop_tests_and_exit SIGTERM SIGINT SIGHUP SIGPIPE EXIT
 
     export NESTED_TESTS_GUARD=1

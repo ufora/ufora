@@ -142,6 +142,10 @@ function cleanup {
 # Ensure the container is not left running
 trap cleanup EXIT
 
+echo "Current docker containters:"
+docker ps -a
+echo
+
 docker run --rm --name $container_name \
     $container_env \
     $container_options \
