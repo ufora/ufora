@@ -24,6 +24,8 @@ def main(args):
     simulator = ClusterSimulation.Simulator.createGlobalSimulator()
     simulator.startService()
 
+    simulator.desirePublisher.desireNumberOfWorkers(1, True)
+
     def signal_handler(sig, _):
         signal_name = '(unknown)'
         if sig == signal.SIGINT:
