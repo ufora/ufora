@@ -202,7 +202,11 @@ class PyforaResultAsJson(ComputedGraph.Location):
     maxBytecount = object
 
     @ComputedGraph.ExposedProperty()
-    def result(self):
+    def resultIsPopulated(self):
+        return self.getResultAsJson() is not None
+
+    @ComputedGraph.ExposedFunction()
+    def getResultAsJson(self, *args):
         """If we are over the complexity limit, None, else the result encoded as json"""
         if self.computedValue.isFailure:
             return None

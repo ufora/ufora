@@ -310,6 +310,7 @@ class Connection(object):
         def onFailure(err):
             if not self.closed:
                 onResultCallback(Exceptions.PyforaError(err['message']))
+        
         def resultChanged(jsonStatus):
             if not self.closed and jsonStatus is not None:
                 onResultCallback(jsonStatus)
@@ -319,14 +320,21 @@ class Connection(object):
             {'onSuccess': lambda *args: None, 'onFailure': lambda *args: None}
             )
 
+        def resultStatusChanged(populated):
+            if not self.closed and populated:
+                resultComputer.getResultAsJson({}, {
+                    'onSuccess': resultChanged,
+                    'onFailure': onFailure
+                    })
+
         resultComputer = self.webObjectFactory.PyforaResultAsJson(
             {'computedValue': computedValue, 'maxBytecount': maxBytecount}
             )
 
-        resultComputer.subscribe_result({
-            'onSuccess': resultChanged,
+        resultComputer.subscribe_resultIsPopulated({
+            'onSuccess': resultStatusChanged,
             'onFailure': onFailure,
-            'onChanged': resultChanged
+            'onChanged': resultStatusChanged
             })
 
     def close(self):
