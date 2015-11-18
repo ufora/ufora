@@ -274,7 +274,7 @@ mappings_ = [
     #(bytes, None), 
     (callable, None), (chr, Chr),
     (classmethod, None), (cmp, None), (coerce, None),
-    (compile, None), (complex, None), (copyright, None),
+    (compile, None), (copyright, None),
     (credits, None), (delattr, None),
     (dir, None), (divmod, None), (enumerate, None),
     (eval, None), (execfile, None), (exit, None),

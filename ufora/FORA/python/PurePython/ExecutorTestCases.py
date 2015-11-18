@@ -3285,3 +3285,7 @@ class ExecutorTestCases(
             print (time.time() - t0), ct, ct / (time.time() - t0), " per second."
 
             ct = ct * 2
+
+    def test_complex(self):
+        self.equivalentEvaluationTest(lambda: abs(complex(1.0,0.0) * complex(1.0,0.0)))
+    
