@@ -260,7 +260,7 @@ class ExpressionVariableBindingTest(unittest.TestCase):
             'f(x_a) + g(x_y.z)'
             )
 
-    def testRebindingFreeVariableMemberAccessChains(self):
+    def test_rebindFreeVariableMemberAccessChains_1(self):
         e = self.parse('f(x.a) + g(x.y.z)')
 
         e2 = e.rebindFreeVariableMemberAccessChain(['x', 'y', 'z'], 'x_y_z')
@@ -272,3 +272,14 @@ class ExpressionVariableBindingTest(unittest.TestCase):
             str(self.parse('f2(x_a) + g(x_y_z)'))
             )
 
+    def test_rebindFreeVariableMemberAccessChains_2(self):
+        e = self.parse("f(x.y.z) + g(a.b.c.d)")
+
+        e2 = e.rebindFreeVariableMemberAccessChain(['x', 'y'], 'x_y')
+        e2 = e2.rebindFreeVariableMemberAccessChain(['a', 'b', 'c'], 'a_b_c')
+
+        self.assertEqual(
+            str(e2),
+            str(self.parse("f(x_y.z) + g(a_b_c.d)"))
+            )
+                

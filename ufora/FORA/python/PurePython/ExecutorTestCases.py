@@ -2728,6 +2728,11 @@ class ExecutorTestCases(
 
         self.equivalentEvaluationTest(MutuallyRecursiveModuleMembers1.f, 5)
 
+    def test_import_example(self):
+        import ufora.FORA.python.PurePython.testModules.import_example.B as B
+
+        self.equivalentEvaluationTest(lambda: B.f(2))
+
     def test_continue_in_while(self):
         def f():
             x = 0
