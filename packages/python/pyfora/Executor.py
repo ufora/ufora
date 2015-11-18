@@ -402,5 +402,5 @@ class Executor(object):
                 # the computation has already completed
                 return False
             del self.futures[computationId]
-        self.connection.cancelComputation(computationId)
+        self.connection.cancelComputation(future._executorState)
         return True

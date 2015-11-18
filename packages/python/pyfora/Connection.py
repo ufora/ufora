@@ -175,6 +175,18 @@ class Connection(object):
             'onFailure': onFailure
             })
 
+    def cancelComputation(self, computedValue):
+        def onFailure(err):
+            pass
+
+        def onSuccess(result):
+            pass
+
+        computedValue.cancel({}, {
+            'onSuccess': onSuccess,
+            'onFailure': onFailure
+            })
+
     def expandComputedValueToDictOfAssignedVarsToProxyValues(self, computedValue, onExpanded):
         """Given a computedValue that should represent a dictionary, expand it to a dictionary of ComputedValues.
 
