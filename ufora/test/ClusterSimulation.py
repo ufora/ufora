@@ -124,6 +124,7 @@ class WorkerProcesses(object):
 
                 env = dict(os.environ)
                 env['UFORA_WORKER_BASE_PORT'] = str(30009 + 2*self.num_ever_started)
+                self.num_ever_started += 1
                 proc = SubprocessRunner.SubprocessRunner(
                     [sys.executable, '-u', self.worker_path],
                     writeline,
