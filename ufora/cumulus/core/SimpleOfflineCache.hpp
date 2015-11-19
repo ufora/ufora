@@ -38,7 +38,8 @@ public:
 			OfflineCache(inCallbackScheduler),
 			mBytes(0),
 			mTotalReloads(0),
-			mMaxBytes(inMaxBytes)
+			mMaxBytes(inMaxBytes),
+			mEventId(0)
 		{
 		}
 
@@ -48,6 +49,8 @@ public:
 					)
 		{
 		boost::recursive_mutex::scoped_lock lock(mMutex);
+
+		mPageTouchSequence.set(page, mEventId++);
 		
 		PolymorphicSharedPtr<NoncontiguousByteBlock> stringData = 
 			SerializedObjectFlattener::flattenOnce(inData);
@@ -61,8 +64,15 @@ public:
 		
 		while (mBytes >= mMaxBytes)
 			{
-			lassert(mData.size());
-			drop(mData.begin()->first);
+			//drop oldest pages first, by checking in mPageTouchSequence
+			//nonsensical to have mBytes > 0 and nothing in mPageTouchSequence
+			lassert(mPageTouchSequence.size());
+
+			Fora::PageId dropCandidate = *mPageTouchSequence.getKeys(mPageTouchSequence.lowestValue()).begin();
+
+			lassert(mData.find(dropCandidate) != mData.end());
+
+			drop(dropCandidate);
 			}
 		}
 	
@@ -71,7 +81,10 @@ public:
 	bool	alreadyExists(const Fora::PageId& inPage)
 		{
 		boost::recursive_mutex::scoped_lock lock(mMutex);
-		
+
+		if (mData.find(inPage) != mData.end())
+			mPageTouchSequence.set(inPage, mEventId++);
+
 		return mData.find(inPage) != mData.end();
 		}
 	
@@ -79,9 +92,11 @@ public:
 	PolymorphicSharedPtr<SerializedObject> loadIfExists(const Fora::PageId& page)
 		{
 		boost::recursive_mutex::scoped_lock lock(mMutex);
-		
+
 		if (mData.find(page) != mData.end())
 			{
+			mPageTouchSequence.set(page, mEventId++);
+
 			mTotalReloads += mData[page]->totalByteCount();
 			
 			return SerializedObjectInflater::inflateOnce(mData[page]);
@@ -106,7 +121,7 @@ public:
 		{
 		return mTotalReloads;
 		}
-	static void		dropCacheTermStatic(
+	static void dropCacheTermStatic(
 						SimpleOfflineCache::pointer_type& self, 
 						const Fora::PageId& source
 						)
@@ -114,10 +129,12 @@ public:
 		self->drop(source);
 		}
 
-	void		drop(const Fora::PageId& page)
+	void drop(const Fora::PageId& page)
 		{
 		boost::recursive_mutex::scoped_lock lock(mMutex);
 		
+		mPageTouchSequence.discard(page);
+
 		if (!mData.size())
 			return;
 		
@@ -156,6 +173,10 @@ private:
 	boost::recursive_mutex mMutex;
 
 	map<Fora::PageId, PolymorphicSharedPtr<NoncontiguousByteBlock> >	mData;
+
+	MapWithIndex<Fora::PageId, int64_t> mPageTouchSequence;
+
+	int64_t mEventId;
 
 	uint64_t mBytes;
 	uint64_t mBytesDropped;
