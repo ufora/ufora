@@ -3,7 +3,7 @@ layout: main
 title: Repository Structure
 tagline: How Code is Organize in the Repo
 category: develop
-sort_index: 03
+sort_index: 02
 ---
 
 # Front-End and Auxiliaries

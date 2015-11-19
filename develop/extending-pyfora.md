@@ -3,7 +3,7 @@ layout: main
 title: Extending pyfora
 tagline: Adding new libraries
 category: develop
-sort_index: 05
+sort_index: 03
 ---
 
 # How Libraries Work
