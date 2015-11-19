@@ -15,7 +15,10 @@
 
 import pyfora.PureImplementationMapping as PureImplementationMapping
 
-import pandas as pd
+
+def pd():
+    import pandas
+    return pandas
 
 
 #######################################
@@ -42,7 +45,7 @@ class PurePythonDataFrame:
             self._columns = [PurePythonSeries(col) for col in data]
         else:
             raise Exception("haven't dealt with this case yet")
-        
+
         self._numColumns = len(self._columns)
 
         # TODO: some verification of numRows ...
@@ -104,7 +107,7 @@ class _PurePythonILocIndexer:
             return self.obj._columns[tup[1]][tup[0]]
         else:
             raise IndexError("don't know how to index with " + str(tup))
-        
+
 
 class PurePythonSeries:
     def __init__(self, data):
@@ -127,8 +130,8 @@ class PurePythonSeries:
 
 class PurePythonSeriesMapping(PureImplementationMapping.PureImplementationMapping):
     def getMappablePythonTypes(self):
-        return [pd.Series]
-    
+        return [pd().Series]
+
     def getMappableInstances(self):
         return []
 
@@ -139,12 +142,12 @@ class PurePythonSeriesMapping(PureImplementationMapping.PureImplementationMappin
         return PurePythonSeries(list(pandasSeries.values))
 
     def mapPyforaInstanceToPythonInstance(self, pureSeries):
-        return pd.Series(pureSeries.values)
+        return pd().Series(pureSeries.values)
 
 class PurePythonDataFrameMapping(PureImplementationMapping.PureImplementationMapping):
     def getMappablePythonTypes(self):
-        return [pd.DataFrame]
-    
+        return [pd().DataFrame]
+
     def getMappableInstances(self):
         return []
 
@@ -157,16 +160,16 @@ class PurePythonDataFrameMapping(PureImplementationMapping.PureImplementationMap
             })
 
     def mapPyforaInstanceToPythonInstance(self, pureDataFrame):
-        return pd.DataFrame({
+        return pd().DataFrame({
             name: pureDataFrame[name] for name in pureDataFrame._columnNames
             })
 
-
-mappings_ = [(pd.DataFrame, _DataframeFactory)]
+def mappings_():
+    return [(pd().DataFrame, _DataframeFactory)]
 
 
 def generateMappings():
     tr = [PureImplementationMapping.InstanceMapping(instance, pureType) for \
-          (instance, pureType) in mappings_]
+          (instance, pureType) in mappings_()]
     tr = tr + [PurePythonDataFrameMapping(), PurePythonSeriesMapping()]
     return tr
