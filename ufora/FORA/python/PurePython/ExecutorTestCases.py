@@ -599,7 +599,7 @@ class ExecutorTestCases(
 
     def test_numpy_arrays_are_iterable(self):
         def f():
-            array = numpy.array([[67.0, 63, 87],
+            array = numpy.array([[67, 63, 87],
                [77, 69, 59],
                [85, 87, 99],
                [79, 72, 71],

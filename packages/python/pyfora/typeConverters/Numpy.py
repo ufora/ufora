@@ -21,8 +21,7 @@ class PurePythonNumpyArray:
     This is this pyfora wrapper and implementation of the numpy array class
     Internally, the array is stored as a list of values and a tuple of the array dimensions
     """
-    def __init__(self, dtype, shape, values):
-        self.dtype = dtype
+    def __init__(self, shape, values):
         self.shape = shape
         self.values = values
 
@@ -43,7 +42,6 @@ class PurePythonNumpyArray:
         newShape = tuple(newShape)
 
         return PurePythonNumpyArray(
-            "float64",
             newShape,
             newVals
             )
@@ -56,7 +54,7 @@ class PurePythonNumpyArray:
 
     def flatten(self):
         """Returns a 1-d numpy array"""
-        return PurePythonNumpyArray(self.dtype, (len(self.values),), self.values)
+        return PurePythonNumpyArray((len(self.values),), self.values)
 
     def tolist(self):
         """Converts an n-dimensional numpy array to an n-dimensional list of lists"""
@@ -93,7 +91,7 @@ class PurePythonNumpyArray:
         for idx in range(startIdx, startIdx + stride):
             toReturn = toReturn + [self.values[idx]]
 
-        return PurePythonNumpyArray(self.dtype, newShape, toReturn)
+        return PurePythonNumpyArray(newShape, toReturn)
 
     def __mul__(self, v):
         def op(x, y):
@@ -121,7 +119,6 @@ class PurePythonNumpyArray:
             toReturn = toReturn + [op(v1, val)]
 
         return PurePythonNumpyArray(
-            "float64",
             self.shape,
             toReturn
             )
@@ -135,7 +132,6 @@ class PurePythonNumpyArray:
         if currentElementCount != newElementCount:
             raise ValueError("Total size of new array must be unchanged")
         return PurePythonNumpyArray(
-            "float64",
             newShape,
             self.values
             )
@@ -157,14 +153,12 @@ class PurePythonNumpyArrayMapping(PureImplementationMapping.PureImplementationMa
 
     def mapPythonInstanceToPyforaInstance(self, numpyArray):
         return PurePythonNumpyArray(
-            numpyArray.dtype.str,
             numpyArray.shape,
             numpyArray.flatten().tolist()
             )
 
     def mapPyforaInstanceToPythonInstance(self, pureNumpyArray):
-        """Given the converted members of the pyfora object as a dict, return an instance of the mappable type."""
-        array = np.fromiter(pureNumpyArray.values, pureNumpyArray.dtype)
+        array = np.array(pureNumpyArray.values)
         array.shape = pureNumpyArray.shape
         return array
 
@@ -175,7 +169,6 @@ class NpZeros:
             vals = vals + [0.0]
         
         return PurePythonNumpyArray(
-            "float64",
             (length,),
             vals
             )
@@ -211,7 +204,6 @@ class NpArray:
         flat = flattenAnNDimensionalArray(array, shape)
         shape = tuple(shape)
         return PurePythonNumpyArray(
-            "float64",
             shape,
             flat
             )
@@ -237,7 +229,6 @@ class NpDot:
                 result = builtins.matrixMult(arr1.values, arr1.shape, arr2.values, arr2.shape)
                 flat = result[0]
                 return PurePythonNumpyArray(
-                    "float64",
                     (len(flat),),
                     flat
                     )
@@ -251,7 +242,6 @@ class NpDot:
                 flat = result[0]
                 shape = tuple(result[1])
                 return PurePythonNumpyArray(
-                    "float64",
                     shape,
                     flat
                     )
@@ -269,7 +259,6 @@ class NpPinv:
         flat = result[0]
         shape = tuple(result[1])
         return PurePythonNumpyArray(
-            "float64",
             shape,
             flat
             )
