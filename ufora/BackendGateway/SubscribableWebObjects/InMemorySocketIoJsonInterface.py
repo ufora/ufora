@@ -136,8 +136,14 @@ class InMemorySocketIoJsonInterface(object):
             self.events[event](*args, **kwargs)
 
     def _on_message(self, payload):
+        def object_hook(obj):
+            for k in obj:
+                if isinstance(obj[k], unicode):
+                    obj[k] = obj[k].encode("utf8")
+            return obj
+
         try:
-            message = json.loads(payload)
+            message = json.loads(payload, object_hook=object_hook)
         except:
             self._triggerEvent('invalid_message', payload)
             return

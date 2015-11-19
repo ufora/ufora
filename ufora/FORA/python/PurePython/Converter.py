@@ -1028,7 +1028,7 @@ class Converter(object):
             else:
                 assert 'firstElement' in contents
                 firstElement = contents['firstElement']
-                contentsAsNumpy = contents['contentsAsNumpy']
+                contentsAsNumpy = contents['contentsAsNumpyArrays']
 
                 return transformer.transformHomogenousList(
                     self.transformPyforaImplval(firstElement, transformer, vectorContentsExtractor),

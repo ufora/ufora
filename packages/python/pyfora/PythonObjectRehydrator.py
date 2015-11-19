@@ -111,8 +111,16 @@ class PythonObjectRehydrator:
             return NamedSingletons.singletonNameToObject[singletonName]
         if 'InvalidPyforaOperation' in jsonResult:
             return Exceptions.InvalidPyforaOperation(jsonResult['InvalidPyforaOperation'])
-        if 'homogenousListNumpyData' in jsonResult:
-            data = numpy.ndarray(shape=jsonResult['length'], dtype=jsonResult['dtype'], buffer=base64.b64decode(jsonResult['homogenousListNumpyData']))
+        if 'homogenousListNumpyDataStringsAndSizes' in jsonResult:
+            stringsAndSizes = jsonResult['homogenousListNumpyDataStringsAndSizes']
+
+            data = numpy.zeros(shape=jsonResult['length'], dtype=jsonResult['dtype'])
+
+            curOffset = 0
+            for dataAndSize in stringsAndSizes:
+                arrayText = dataAndSize['data']
+                size = dataAndSize['length']
+                data[curOffset:curOffset+size] = numpy.ndarray(shape=size,dtype=jsonResult['dtype'], buffer=base64.b64decode(arrayText))
 
             #we use the first element as a prototype when decoding
             firstElement = self.convertJsonResultToPythonObject(jsonResult['firstElement'])

@@ -245,7 +245,7 @@ class PyforaResultAsJson(ComputedGraph.Location):
 
                 #see if it's simple enough to transmit as numpy data
                 if res is None and len(vectorIVC.getVectorElementsJOR()) == 1 and len(vectorIVC) > 1:
-                    res = vecSlice.extractVectorDataAsNumpyArray()
+                    res = vecSlice.extractVectorDataAsNumpyArrayInChunks()
 
                     if res is not None:
                         firstElement = vecSlice.extractVectorItemAsIVC(0)
@@ -257,7 +257,7 @@ class PyforaResultAsJson(ComputedGraph.Location):
                                 "Shouldn't be possible to download data as numpy, and then not get the first value"
                                 )
 
-                        res = {'firstElement': firstElement, 'contentsAsNumpy': res}
+                        res = {'firstElement': firstElement, 'contentsAsNumpyArrays': res}
                     else:
                         if not vecSlice.vdmThinksIsLoaded():
                             #there's a race condition where the data could be loaded between now and

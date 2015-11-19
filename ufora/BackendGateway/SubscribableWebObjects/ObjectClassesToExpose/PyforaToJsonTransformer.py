@@ -49,16 +49,17 @@ class PyforaToJsonTransformer(object):
         self.accumulateObjects(1)
         return {'list': listMembers}
 
-    def transformHomogenousList(self, firstElement, allElementsAsNumpy):
-        numpyAsString = base64.b64encode(allElementsAsNumpy.tostring())
-        numpyDtypeAsString = str(allElementsAsNumpy.dtype)
+    def transformHomogenousList(self, firstElement, allElementsAsNumpyArrays):
+        numpyAsStrings = [{'data':base64.b64encode(x.tostring()).encode("utf8"), 'length':len(x)} for x in allElementsAsNumpyArrays]
+        numpyDtypeAsString = str(allElementsAsNumpyArrays[0].dtype)
 
-        self.accumulateObjects(1, len(numpyAsString) + len(numpyDtypeAsString))
+        self.accumulateObjects(1, sum(len(x) for x in numpyAsStrings) + len(numpyDtypeAsString))
+
         return {
-            'homogenousListNumpyData': numpyAsString,
+            'homogenousListNumpyDataStringsAndSizes': numpyAsStrings,
             'dtype': numpyDtypeAsString,
             'firstElement': firstElement,
-            'length': len(allElementsAsNumpy)
+            'length': sum(len(x) for x in allElementsAsNumpyArrays)
             }
 
     def transformDict(self, keys, values):

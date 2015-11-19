@@ -32,7 +32,9 @@ def create_executor():
                     result = CumulusGatewayInProcess.InProcessGateway(
                         harness.callbackScheduler.getFactory(),
                         harness.callbackScheduler,
-                        vdm
+                        vdm,
+                        pageSizeOverride=10000000,
+                        useInMemoryCache=200
                         )
 
                     #pull out the inmemory s3 interface so that we can surface it

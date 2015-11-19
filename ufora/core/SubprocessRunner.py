@@ -112,6 +112,9 @@ class SubprocessRunner(object):
 
             subprocessEvent.wait(10.0)
 
+            if not subprocessEvent.isSet():
+                import ufora.native.TCMalloc as TCMallocNative
+                logging.error("Failed to start subprocess: Total MB used: %s", TCMallocNative.getBytesUsed() / 1024 / 1024.0)
             assert subprocessEvent.isSet(), "Failed to start the subprocess process."
 
             os.close(stdInRead)

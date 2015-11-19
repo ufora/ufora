@@ -211,6 +211,44 @@ class ComputedValueVectorSlice(ComputedGraph.Location):
         return result
 
     @ComputedGraph.Function
+    def extractVectorDataAsNumpyArrayInChunks(self, stepSize = 100000):
+        """Return the data as a sequence of numpy arrays each of which is no larger than 'stepSize'.
+
+        This is used to prevent us from creating memory fragmentation when we are loading
+        lots of arrays of different sizes.
+        """
+        logging.info("Extract numpy data for %s: %s", self, self.vdmThinksIsLoaded())
+        if self.computedValueVector.vectorImplVal is None:
+            return None
+        
+        if len(self.vectorDataIds) > 0 and not self.isLoaded:
+            return None
+
+        if not self.vdmThinksIsLoaded():
+            return None
+
+        result = []
+        index = self.lowIndex
+        while index < self.highIndex and result is not None:
+            tailResult = ComputedValueGateway.getGateway().extractVectorDataAsNumpyArray(
+                self.computedValueVector,
+                index,
+                min(self.highIndex, index+stepSize)
+                )
+            index += stepSize
+            if tailResult is not None:
+                result.append(tailResult)
+            else:
+                result = None
+
+        if result is None and not self.vdmThinksIsLoaded():
+            logging.info("CumulusClient: %s was marked loaded but returned None", self)
+            self.isLoaded = False
+            ComputedValueGateway.getGateway().reloadVector(self)
+
+        return result
+
+    @ComputedGraph.Function
     def extractVectorItemAsIVC(self, ct):
         if self.computedValueVector.vectorImplVal is None:
             return None
