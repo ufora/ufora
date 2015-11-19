@@ -75,7 +75,7 @@ class PurePythonDataFrame:
 
     @property
     def iloc(self):
-        return _PurePythonILocIndexer(self)
+        return _PurePythonDataFrameILocIndexer(self)
 
     def __getitem__(self, k):
         colIx = self._columnIndex(k)
@@ -89,7 +89,7 @@ class PurePythonDataFrame:
         raise ValueError("value " + str() + " is not a column name")
 
 
-class _PurePythonILocIndexer:
+class _PurePythonDataFrameILocIndexer:
     def __init__(self, obj):
         self.obj = obj
 
@@ -109,6 +109,14 @@ class _PurePythonILocIndexer:
             raise IndexError("don't know how to index with " + str(tup))
 
 
+class _PurePythonSeriesIlocIndexer:
+    def __init__(self, obj):
+        self.obj = obj
+
+    def __getitem__(self, k):
+        return self.obj[k]
+
+
 class PurePythonSeries:
     def __init__(self, data):
         if isinstance(data, PurePythonSeries):
@@ -121,6 +129,10 @@ class PurePythonSeries:
 
     def __getitem__(self, ix):
         return PurePythonSeries(self.values[ix])
+
+    @property
+    def iloc(self):
+        return _PurePythonSeriesIlocIndexer(self)
 
 
 #######################################

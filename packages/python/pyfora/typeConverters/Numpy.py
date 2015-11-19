@@ -38,8 +38,7 @@ class PurePythonNumpyArray:
             for ix1 in range(d1):
                 newVals = newVals + [self[ix1][ix2]]
 
-        newShape = BuiltinPureImplementationMappings.Reversed()(self.shape)
-        newShape = tuple(newShape)
+        newShape = tuple(reversed((self.shape)))
 
         return PurePythonNumpyArray(
             newShape,
@@ -51,6 +50,10 @@ class PurePythonNumpyArray:
         for idx in range(length):
             val = self[idx]
             yield val
+
+    @property
+    def size(self):
+        return reduce(lambda x, y: x * y, self.shape)
 
     def flatten(self):
         """Returns a 1-d numpy array"""
@@ -99,6 +102,9 @@ class PurePythonNumpyArray:
         return self.__applyOperatorToAllElements(op, v)
 
     def __add__(self, v):
+        if isinstance(v, PurePythonNumpyArray):
+            return self._addArray(v)
+
         def op(x, y):
             return x + y
         return self.__applyOperatorToAllElements(op, v)
@@ -113,6 +119,18 @@ class PurePythonNumpyArray:
             return x ** y
         return self.__applyOperatorToAllElements(op, v)
 
+    def _addArray(self, v):
+        if self.shape != v.shape:
+            raise ValueError(
+                "operands cannot be added with shapes " + str(self.shape) + \
+                " and " + str(v.shape)
+                )
+            
+        return PurePythonNumpyArray(
+            self.shape,
+            [self.values[ix] + v.values[ix] for ix in xrange(self.size)]
+            )
+
     def __applyOperatorToAllElements(self, op, val):
         toReturn = []
         for v1 in self.values:
@@ -123,13 +141,9 @@ class PurePythonNumpyArray:
             toReturn
             )
 
-    def __elementCount(self):
-        return reduce(lambda x, y: x * y, self.shape)
-
     def reshape(self, newShape):
-        currentElementCount = self.__elementCount()
-        newElementCount = reduce(lambda x, y: x * y, newShape)
-        if currentElementCount != newElementCount:
+        impliedElementCount = reduce(lambda x, y: x * y, newShape)
+        if self.size != impliedElementCount:
             raise ValueError("Total size of new array must be unchanged")
         return PurePythonNumpyArray(
             newShape,

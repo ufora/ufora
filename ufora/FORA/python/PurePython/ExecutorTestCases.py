@@ -752,6 +752,26 @@ class ExecutorTestCases(
 
         self.equivalentEvaluationTest(f)
 
+    def test_numpy_addition_1(self):
+        def f():
+            x1 = numpy.array([[1,2],[3,4]])
+            x2 = numpy.array([[8,7],[6,5]])
+            return x1 + x2
+
+        self.equivalentEvaluationTest(f)
+
+    def test_numpy_addition_2(self):
+        def f():
+            x1 = numpy.array([[1,2],[3,4]])
+            x2 = numpy.array([[8,7,5,6]])
+
+            return x1 + x2
+
+        with self.assertRaises(ValueError):
+            with self.create_executor() as fora:
+                with fora.remotely:
+                    f()
+
     def test_return_list(self):
         def f():
             return [1, 2, 3, 4, 5]
