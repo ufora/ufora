@@ -754,11 +754,19 @@ class Converter(object):
 
         applyArgs = [classImplVal, createInstanceImplVal] + classMemberImplVals
 
-        self.convertedValues[objectId] = ForaNative.simulateApply(
+        convertedValueOrNone = ForaNative.simulateApply(
             ForaNative.ImplValContainer(
                 tuple(applyArgs)
                 )
             )
+
+        if convertedValueOrNone is None:
+            raise pyfora.PythonToForaConversionError(
+                ("An internal error occurred: " + 
+                 "function stage 1 simulation unexpectedly returned None")
+                )
+
+        self.convertedValues[objectId] = convertedValueOrNone            
 
     def convertStronglyConnectedComponentWithOneFunctionOrClass(
             self,
@@ -784,7 +792,6 @@ class Converter(object):
                 foraExpression,
                 renamedVariableMapping
                 )
-
 
     def specializeFreeVariableMemberAccessChainsAndEvaluate(
             self,
