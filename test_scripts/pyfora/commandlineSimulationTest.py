@@ -46,10 +46,10 @@ class CommandlineSimulationTest(unittest.TestCase):
         cls.simulation.stopService()
 
     @classmethod
-    def waitUntilConnected(cls, timeout = 20.0):
+    def waitUntilConnected(cls, timeout = 30.0):
         t0 = time.time()
         while time.time() - t0 < timeout:
-            res = cls.execTest("import pyfora\nconnection = pyfora.connect('http://localhost:30000')\nassert connection is not None\n", 3.0)
+            res = cls.execTest("import pyfora\nconnection = pyfora.connect('http://localhost:30000')\nassert connection is not None\n", 10.0)
             if res == 0:
                 return
             else:

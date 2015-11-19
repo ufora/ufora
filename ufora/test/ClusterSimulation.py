@@ -35,6 +35,8 @@ import ufora.distributed.SharedState.Connections.ViewFactory as ViewFactory
 
 import ufora.FORA.VectorDataManager.VectorDataManager as VectorDataManager
 
+import ufora.util.OutOfProcessDownloader as OutOfProcessDownloader
+
 import ufora.util.CodeCoverage as CodeCoverage
 
 import ufora.native.CallbackScheduler as CallbackScheduler
@@ -138,7 +140,31 @@ class WorkerProcesses(object):
                 logging.info("Worker exited: %s", worker_id)
 
 
+class RunForeverCommand:
+    def __init__(self, foreverCommand, script, environ, timeout):
+        self.foreverCommand = foreverCommand
+        self.script = script
+        self.environ = environ
+        self.timeout = timeout
 
+    def __call__(self):
+        args = ['forever', self.foreverCommand, self.script]
+
+        response = []
+        def foreverStdOut(msg):
+            response.append("FOREVER(%s) OUT> %s" % (self.script, msg))
+        def foreverStdErr(msg):
+            response.append("FOREVER(%s) ERR> %s" % (self.script, msg))
+        
+        subprocess = SubprocessRunner.SubprocessRunner(args,
+                                                       foreverStdOut,
+                                                       foreverStdErr,
+                                                       self.environ)
+        subprocess.start()
+        subprocess.wait(self.timeout)
+        subprocess.stop()
+
+        return "\n".join(response)
 
 class Simulator(object):
     _globalSimulator = None
@@ -162,6 +188,10 @@ class Simulator(object):
         self.sharedStatePort = Setup.config().sharedStatePort
         self.restApiPort = Setup.config().restApiPort
         self.subscribableWebObjectsPort = Setup.config().subscribableWebObjectsPort
+
+        #create an OutOfProcessDownloader so we can execute commands like 'forever'
+        #from there, instead of forking from the main process (which can run out of memory)
+        self.processPool = OutOfProcessDownloader.OutOfProcessDownloaderPool(1)
 
 
         self.desirePublisher = None
@@ -359,20 +389,16 @@ class Simulator(object):
         logging.info("Stopping relay")
         self.stopForeverProcess(self.relayScript)
 
-    @staticmethod
-    def runForeverCommand(script, foreverCommand, timeout=60.0):
-        args = ['forever', foreverCommand, script]
-        def foreverStdOut(msg):
-            logging.info("FOREVER(%s) OUT> %s", script, msg)
-        def foreverStdErr(msg):
-            logging.info("FOREVER(%s) ERR> %s", script, msg)
-        subprocess = SubprocessRunner.SubprocessRunner(args,
-                                                       foreverStdOut,
-                                                       foreverStdErr,
-                                                       dict(os.environ))
-        subprocess.start()
-        subprocess.wait(timeout)
-        subprocess.stop()
+    def runForeverCommand(self, script, foreverCommand, timeout=60.0):
+        result = []
+        self.processPool.getDownloader().executeAndCallbackWithString(
+            RunForeverCommand(foreverCommand, script, dict(os.environ), timeout),
+            result.append
+            )
+
+        for line in result[0].split("\n"):
+            logging.info(line)
+        
 
     def stopForeverProcess(self, script, timeout=60.0):
         self.runForeverCommand(script, 'stop', timeout)
@@ -460,6 +486,8 @@ class Simulator(object):
 
         Simulator._globalSimulator = None
         Setup.config().fakeAwsBaseDir = Simulator._originalFakeAwsDir
+
+        self.processPool.teardown()
 
 
 
