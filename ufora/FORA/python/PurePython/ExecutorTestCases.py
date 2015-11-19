@@ -758,6 +758,34 @@ class ExecutorTestCases(
 
         self.equivalentEvaluationTest(f)
 
+    def test_tuple_eq_ne_1(self):
+        t1 = (2,2)
+        t2 = (1,4)
+        
+        self.equivalentEvaluationTest(
+            lambda: (t1 == t2, t1 != t2)
+            )
+
+    def test_tuple_eq_ne_2(self):
+        t1 = (2,2)
+        t2 = t1
+        
+        self.equivalentEvaluationTest(
+            lambda: (t1 == t2, t1 != t2)
+            )
+
+    def test_tuple_str(self):
+        t1 = (2,2)
+        self.equivalentEvaluationTest(
+            lambda: str(t1)
+            )
+
+    def test_list_str(self):
+        t1 = (2,2)
+        self.equivalentEvaluationTest(
+            lambda: str(t1)
+            )
+
     def test_list_in_loop(self):
         def f(ct):
             ix = 0
