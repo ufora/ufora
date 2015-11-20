@@ -48,14 +48,6 @@ NativeType continuationTypeForReturns(const ImmutableTreeVector<NativeType>& ret
 	return NativeType::Continuations(ts);
 	}
 	
-void LLVMFunctionBuilder::setSpillWeight(llvm_block_ptr block, double spillWeight)
-	{
-	#ifdef LLVM_BASIC_BLOCK_HAS_SPILL_WEIGHT_MODIFIER
-	if (mCompiler.mApplyWeights)
-		block->spillWeightModifier = spillWeight;
-	#endif
-	}
-
 void LLVMFunctionBuilder::initializeFunction(
 		llvm::Function*& ioFunPtr,
 		llvm::Module* inModule
@@ -96,11 +88,6 @@ void LLVMFunctionBuilder::initializeFunction(
 		llvm::BasicBlock::Create(mCompiler.getLLVMContext(), "function_new_slots", mFunction);
 	mExistingSlotsBlock =
 		llvm::BasicBlock::Create(mCompiler.getLLVMContext(), "function_existing_slots", mFunction);
-
-	setSpillWeight(mFunctionEntryBlock, 0.001);
-	setSpillWeight(mFunctionBranchPoint, 0.001);
-	setSpillWeight(mNewSlotsBlock, 0.001);
-	setSpillWeight(mExistingSlotsBlock, 0.001);
 
 	if (wantsArgumentTrace())
 		genTracer(
@@ -241,8 +228,6 @@ void LLVMFunctionBuilder::addPhiNodesToBlocks()
 					);
 			}
 
-		setSpillWeight(mBlockMap[id], flattenedNativeBlock.relativeFrequency());
-
 		map<NativeVariable, llvm_phinode_ptr>& livePhis(mBlockLiveVarPHIs[id]);
 
 		for (long k = 0; k < flattenedNativeBlock.liveOnInput().size(); k++)
@@ -255,8 +240,7 @@ void LLVMFunctionBuilder::createExitBlock()
 	{
 	mJumpBlock =
 		llvm::BasicBlock::Create(mCompiler.getLLVMContext(), "final_exit_block", mFunction);
-	setSpillWeight(mJumpBlock, .001);
-
+	
 	mFinalFunPtr = createPhi(mJumpBlock, NativeType::uint8().ptr());
 	mFinalCont = createPhi(mJumpBlock, NativeType::uword());
 	mFinalStackPtr = createPhi(mJumpBlock, NativeType::uint8().ptr());
@@ -391,8 +375,7 @@ void LLVMFunctionBuilder::createInitialSwitchBlock()
 	{
 	llvm_block_ptr failedBranchBlock =
 		llvm::BasicBlock::Create(mCompiler.getLLVMContext(), "bad_branch_block", mFunction);
-	setSpillWeight(failedBranchBlock, .001);
-
+	
 	genTracer(failedBranchBlock, "bad branch", mBranchIDVal);
 	bb(failedBranchBlock).CreateRetVoid();
 
@@ -416,11 +399,7 @@ llvm_block_ptr LLVMFunctionBuilder::createStagingBlock(
 				boost::lexical_cast<string>(index)).c_str(),
 			mFunction
 			);
-	setSpillWeight(
-		stagingBlock,
-		mFlatBlockMap[nativeBlockId].relativeFrequency()
-		);
-
+	
 	mInitialSwitchInst->addCase(
 		llvm::ConstantInt::get(
 			static_cast<llvm::IntegerType*>(toLLVM(NativeType::uword())),
@@ -807,9 +786,6 @@ void LLVMFunctionBuilder::createTerminalBranch(
 			//create some new blocks
 			llvm_block_ptr blockT = mBranchBlockMap[id].first;
 			llvm_block_ptr blockF = mBranchBlockMap[id].second;
-
-			setSpillWeight(blockT, nativeBlock.relativeFrequency() * trueFreq);
-			setSpillWeight(blockF, nativeBlock.relativeFrequency() * (1.0 - trueFreq));
 
 			lassert_dump(condV.t().isInteger() || condV.t().isPointer(),
 				prettyPrintString(condV.t()) << " isn't a valid type to branch on");
