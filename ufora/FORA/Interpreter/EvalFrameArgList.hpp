@@ -16,7 +16,8 @@
 #pragma once
 
 #include "InstructionPtr.hpp"
-#include "../Judgment/JudgmentOnValue.hppml"
+#include "../Core/ImplVal.hppml"
+#include "../Core/ApplyArgFrame.hppml"
 
 class MemBlockAllocator;
 
@@ -53,8 +54,6 @@ public:
 	void slice(uword_t ix);
 	
 	string toString() const;
-
-	bool isCoveredBy(const ImmutableTreeVector<JOV>& jovs) const;
 
 	static EvalFrameArgList* allocate(uword_t capacity, MemBlockAllocator& allocator);
 
