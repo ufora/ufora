@@ -425,17 +425,12 @@ class ExecutorTestCases(
                     toReturn = toReturn + [a <= b]
                     toReturn = toReturn + [a >= b]
             return toReturn
-        r = self.equivalentEvaluationTest(f)
+        self.equivalentEvaluationTest(f)
 
-    eps = 1e-9
-
-    def assertArraysAreAlmostEqual(self, m1, m2, eps=None):
-        if eps is None:
-            eps = ExecutorTestCases.eps
-
-        diff = m1 - m2
-        for v in numpy.nditer(diff):
-            self.assertTrue(v < eps)
+    def assertArraysAreAlmostEqual(self, m1, m2):
+        self.assertTrue(
+            numpy.isclose(m1, m2).all()
+            )
 
     def test_numpy_pinverse_2(self):
         numpy.random.seed(42)
@@ -655,11 +650,12 @@ class ExecutorTestCases(
             return numpy.dot(arr1, arr2)
 
         for _ in range(10):
+            x1 = [random.uniform(-10, 10) for _ in range(0, listLength)]
+            x2 = [random.uniform(-10, 10) for _ in range(0, listLength)]
+
             self.equivalentEvaluationTest(
-                f,
-                [random.uniform(-10, 10) for _ in range(0, listLength)],
-                [random.uniform(-10, 10) for _ in range(0, listLength)],
-                comparisonFunction=ExecutorTestCases.compareButDontCheckTypes
+                f, x1, x2,
+                comparisonFunction=lambda x, y: numpy.isclose(x, y)
                 )
 
     def test_numpy_dot_product_2(self):
@@ -669,13 +665,17 @@ class ExecutorTestCases(
 
         arr1 = [random.uniform(-10, 10) for _ in range(0, listLength)]
         arr2 = [random.uniform(-10, 10) for _ in range(0, listLength)]
+
         def f():
             a = numpy.array(arr1)
             b = numpy.array(arr2)
+
             return numpy.dot(a, b)
+
         r1 = self.evaluateWithExecutor(f)
         r2 = f()
-        self.assertTrue(abs(r1 - r2) < ExecutorTestCases.eps)
+
+        self.assertTrue(numpy.isclose(r1, r2))
 
     def test_numpy_dot_product_3(self):
         def f1():
@@ -1699,7 +1699,6 @@ class ExecutorTestCases(
             for typ in [float, object, int, bool]:
                 test(lambda: isinstance(inst, typ))
                 test(lambda: issubclass(type(inst), typ))
-
 
     def test_sum_isPrime(self):
         def isPrime(p):

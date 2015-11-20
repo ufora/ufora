@@ -234,7 +234,7 @@ A,B,C
         # verified using sklearn.linear_model.LinearRegression, on nRows = 100
         res_scikit = numpy.array([[4.96925412,  2.00279298, -7.98208391]])
 
-        self.assertArraysAreAlmostEqual(res_python, res_scikit, eps=1e-8)
+        self.assertArraysAreAlmostEqual(res_python, res_scikit)
 
     def test_pyfora_linear_regression_1(self):
         self.pyfora_linear_regression_test()

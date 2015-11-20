@@ -221,15 +221,13 @@ class NpArray:
 
 
 class NpDot:
-    def _productOfTwoArrays(self, arr1, arr2):
-        l1 = len(arr1)
-        l2 = len(arr2)
-        if l1 != l2:
+    def dotProduct(self, arr1, arr2):
+        len1 = len(arr1)
+
+        if len1 != len(arr2):
             raise ValueError("Vector dimensions do not match")
-        toReturn = 0
-        for idx in range(l1):
-            toReturn = toReturn + arr1[idx] * arr2[idx]
-        return toReturn
+
+        return sum(arr1[ix] * arr2[ix] for ix in xrange(len1))
 
     def __call__(self, arr1, arr2):
         if isinstance(arr1, PurePythonNumpyArray):
@@ -238,31 +236,44 @@ class NpDot:
             if len(arr1.shape) == 1 and len(arr2.shape) == 2:
                 arr1 = arr1.reshape((arr1.shape[0], 1,)).transpose()
                 builtins = NpDot.__pyfora_builtins__
-                result = builtins.matrixMult(arr1.values, arr1.shape, arr2.values, arr2.shape)
-                flat = result[0]
-                return PurePythonNumpyArray(
-                    (len(flat),),
-                    flat
+                result = builtins.matrixMult(
+                    arr1.values, arr1.shape, arr2.values, arr2.shape
                     )
+                flattenedValues = result[0]
+
+                return PurePythonNumpyArray(
+                    (len(flattenedValues),),
+                    flattenedValues
+                    )
+
             if len(arr1.shape) != len(arr2.shape):
                 raise ValueError("Matrix dimensions do not match")
+
+            # 1d dot 1d -> normal dot product
             if len(arr1.shape) == 1:
-                return self._productOfTwoArrays(arr1, arr2)
+                return self.dotProduct(arr1, arr2)
+
+            # 2d x 2d -> matrix multiplication
             elif len(arr1.shape) == 2:
                 builtins = NpDot.__pyfora_builtins__
-                result = builtins.matrixMult(arr1.values, arr1.shape, arr2.values, arr2.shape)
-                flat = result[0]
+                result = builtins.matrixMult(
+                    arr1.values, arr1.shape, arr2.values, arr2.shape
+                    )
+                flattenedValues = result[0]
                 shape = tuple(result[1])
+
                 return PurePythonNumpyArray(
                     shape,
-                    flat
+                    flattenedValues
                     )
+
             else:
-                raise Exception("Dot product is not implemented for > 2 dimensions")
+                raise Exception(
+                    "not currently implemented for > 2 dimensions"
+                    )
 
         else:
-            # We can also call the dot product on two regular lists
-            return self._productOfTwoArrays(arr1, arr2)
+            return self(np.array(arr1), np.array(arr2))
 
 
 class NpPinv:
