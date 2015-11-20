@@ -15,13 +15,15 @@
 import pyfora
 import pyfora.PyAstUtil as PyAstUtil
 import pyfora.Exceptions as Exceptions
+import ufora.FORA.python.PurePython.ExceptionTestCases as ExceptionTestCases
+
+
+import random
 import numpy
 import logging
 import traceback
 import time
-import ufora.FORA.python.PurePython.ExceptionTestCases as ExceptionTestCases
 
-import random as random
 
 class ExecutorTestCases(
             ExceptionTestCases.ExceptionTestCases
@@ -63,7 +65,6 @@ class ExecutorTestCases(
             if l1 != l2:
                 return False
             for idx in range(l1):
-                # print "x", x, y, type(x), type(y)
                 if not ExecutorTestCases.compareButDontCheckTypes(x[idx], y[idx]):
                     return False
             return True
@@ -225,7 +226,7 @@ class ExecutorTestCases(
         for f in localResults:
             try:
                 foraResults.append(f.result())
-            except Exception as e:
+            except:
                 pass
         return foraResults
 
@@ -235,7 +236,7 @@ class ExecutorTestCases(
             vals = [ord(val) for val in chars]
             return (chars, vals)
 
-        r = self.equivalentEvaluationTest(f)
+        self.equivalentEvaluationTest(f)
 
     def test_python_if_int(self):
         def f():
@@ -437,6 +438,8 @@ class ExecutorTestCases(
             self.assertTrue(v < eps)
 
     def test_numpy_pinverse_2(self):
+        numpy.random.seed(42)
+
         def f(array):
             return numpy.linalg.pinv(array)
 
@@ -477,21 +480,21 @@ class ExecutorTestCases(
                 [15.0, 17.0, 19.0] ])
 
             return array.transpose()
-        r = self.equivalentEvaluationTest(f)
+        self.equivalentEvaluationTest(f)
 
 
         def f2():
             arr = numpy.array([[[67.0], [87.0]], [[69.0], [85.0]], [[69.0], [15.0]]])
 
             return arr.transpose()
-        r = self.equivalentEvaluationTest(f2)
+        self.equivalentEvaluationTest(f2)
 
 
         def f3():
             arr = numpy.array([1.0, 2.0, 3.0, 4.0, 5.0])
 
             return arr.transpose()
-        r = self.equivalentEvaluationTest(f3)
+        self.equivalentEvaluationTest(f3)
 
     def test_numpy_indexing_1(self):
         def f():
@@ -513,7 +516,7 @@ class ExecutorTestCases(
             arr = numpy.array([ 67.0, 63.0, 87.0, 77.0, 69.0, 59.0, 85.0, 87.0, 99.0 ])
             return (arr, arr[0], arr[1], arr[8])
 
-        r = self.equivalentEvaluationTest(
+        self.equivalentEvaluationTest(
             f, comparisonFunction=ExecutorTestCases.compareButDontCheckTypes
             )
 
@@ -522,14 +525,14 @@ class ExecutorTestCases(
         def f():
             arr = numpy.array([[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]])
             return (arr, arr[0], arr[1], arr[1][0], arr[0][1][1])
-        r = self.equivalentEvaluationTest(
+        self.equivalentEvaluationTest(
             f, comparisonFunction=ExecutorTestCases.compareButDontCheckTypes)
 
         def f2():
             arr = numpy.array([[[67.0], [87.0]], [[69.0], [85.0]], [[69.0], [15.0]]])
             return (arr, arr[0], arr[1], arr[1][0], arr[2][1][0])
 
-        r = self.equivalentEvaluationTest(
+        self.equivalentEvaluationTest(
             f2, comparisonFunction=ExecutorTestCases.compareButDontCheckTypes)
 
         def f3():
@@ -556,7 +559,8 @@ class ExecutorTestCases(
             b = ()
             c = (1,2,4)
             return (len(a), len(b), len(c))
-        res = self.evaluateWithExecutor(f)
+
+        self.evaluateWithExecutor(f)
 
     def test_reversed_builtins(self):
         def f():
@@ -567,7 +571,7 @@ class ExecutorTestCases(
                 toReturn = toReturn + [v]
             return toReturn
 
-        r = self.equivalentEvaluationTest(f)
+        self.equivalentEvaluationTest(f)
 
     def test_reduce_builtin(self):
         def mul(x,y): return x*y
@@ -587,7 +591,7 @@ class ExecutorTestCases(
             b = numpy.array(lists)
             return b.flatten()
         a = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
-        r = self.equivalentEvaluationTest(f, a)
+        self.equivalentEvaluationTest(f, a)
 
         b = [[67.0, 63, 87],
                [77, 69, 59],
@@ -595,11 +599,12 @@ class ExecutorTestCases(
                [79, 72, 71],
                [63, 89, 93],
                [68, 92, 78]]
-        r = self.evaluateWithExecutor(f, b)
+        self.equivalentEvaluationTest(f, b)
 
         c = [[[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]], \
              [[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]]]
-        r = self.evaluateWithExecutor(f, c)
+
+        self.equivalentEvaluationTest(f, c)
 
     def test_numpy_arrays_are_iterable(self):
         def f():
@@ -613,6 +618,7 @@ class ExecutorTestCases(
             for val in array:
                 toReturn = toReturn + [val]
             return toReturn
+
         self.equivalentEvaluationTest(f)
 
     def test_numpy_tolist(self):
@@ -620,19 +626,19 @@ class ExecutorTestCases(
             b = numpy.array(lists)
             return b.tolist()
         a = [1, 2, 3, 4, 5, 6]
-        r = self.equivalentEvaluationTest(f, a)
+        self.equivalentEvaluationTest(f, a)
 
-        b = [[67.0, 63, 87],
-               [77, 69, 59],
-               [85, 87, 99],
-               [79, 72, 71],
-               [63, 89, 93],
-               [68, 92, 78]]
-        r = self.evaluateWithExecutor(f, b)
+        b = [[67, 63, 87],
+             [77, 69, 59],
+             [85, 87, 99],
+             [79, 72, 71],
+             [63, 89, 93],
+             [68, 92, 78]]
+        self.equivalentEvaluationTest(f, b)
 
         c = [[[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]], \
              [[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]]]
-        r = self.evaluateWithExecutor(f, c)
+        self.equivalentEvaluationTest(f, c)
 
     def test_map_builtin(self):
         def addOne(x):
@@ -642,12 +648,14 @@ class ExecutorTestCases(
         self.equivalentEvaluationTest(lambda: map(addOne, (x for x in [1,2,3])))
 
     def test_numpy_dot_product_1(self):
+        random.seed(43)
+
         listLength = 20
         def f(arr1, arr2):
             return numpy.dot(arr1, arr2)
 
         for _ in range(10):
-            r = self.equivalentEvaluationTest(
+            self.equivalentEvaluationTest(
                 f,
                 [random.uniform(-10, 10) for _ in range(0, listLength)],
                 [random.uniform(-10, 10) for _ in range(0, listLength)],
@@ -655,6 +663,8 @@ class ExecutorTestCases(
                 )
 
     def test_numpy_dot_product_2(self):
+        random.seed(44)
+
         listLength = 20
 
         arr1 = [random.uniform(-10, 10) for _ in range(0, listLength)]
@@ -721,6 +731,8 @@ class ExecutorTestCases(
         self.equivalentEvaluationTestThatHandlesExceptions(f, (1, 1))
 
     def test_numpy_matrix_division(self):
+        random.seed(44)
+
         matrix = numpy.array([ [67, 63, 87],
                        [77, 69, 59],
                        [85, 87, 99],
@@ -731,24 +743,23 @@ class ExecutorTestCases(
         for _ in range(10):
             def f(x):
                 return matrix / x
-            r = self.equivalentEvaluationTest(f, random.uniform(-10, 10))
+            self.equivalentEvaluationTest(f, random.uniform(-10, 10))
 
             def f2(x):
                 return matrix * x
-            r = self.equivalentEvaluationTest(f2, random.uniform(-10, 10))
+            self.equivalentEvaluationTest(f2, random.uniform(-10, 10))
 
             def f3(x):
                 return matrix + x
-            r = self.equivalentEvaluationTest(f3, random.uniform(-10, 10))
+            self.equivalentEvaluationTest(f3, random.uniform(-10, 10))
 
             def f4(x):
                 return matrix - x
-            r = self.equivalentEvaluationTest(f4, random.uniform(-10, 10))
+            self.equivalentEvaluationTest(f4, random.uniform(-10, 10))
 
             def f5(x):
                 return matrix ** x
-            r = self.equivalentEvaluationTest(f5, random.uniform(-10, 10))
-
+            self.equivalentEvaluationTest(f5, random.uniform(-10, 10))
 
     def test_numpy_make_array(self):
         def f():
@@ -760,6 +771,7 @@ class ExecutorTestCases(
         def f():
             x1 = numpy.array([[1,2],[3,4]])
             x2 = numpy.array([[8,7],[6,5]])
+
             return x1 + x2
 
         self.equivalentEvaluationTest(f)

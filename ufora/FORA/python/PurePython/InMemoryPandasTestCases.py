@@ -18,12 +18,10 @@ import pyfora.pandas_util
 import pyfora.algorithms.LinearRegression as LinearRegression
 import pyfora.typeConverters.Pandas as PurePandas
 
-import logging
 import numpy
 import pandas
 import pandas.util.testing
 import random
-import time
 
 
 class InMemoryPandasTestCases(ExecutorTestCases.ExecutorTestCases):
@@ -194,7 +192,6 @@ A,B,C
     def pyfora_linear_regression_test(self):
         random.seed(42)
 
-        t0 = time.time()
         nRows = 100
         x_col_1 = []
         x_col_2 = []
@@ -230,12 +227,11 @@ A,B,C
             'y': y_col
             })
 
-        t0 = time.time()        
         res_pandas = LinearRegression.linearRegression(df_x, df_y)
 
         self.assertArraysAreAlmostEqual(res_python, res_pandas)
 
-        # verified using sklearn.linear_model.LinearRegression, on nRows = 10
+        # verified using sklearn.linear_model.LinearRegression, on nRows = 100
         res_scikit = numpy.array([[4.96925412,  2.00279298, -7.98208391]])
 
         self.assertArraysAreAlmostEqual(res_python, res_scikit, eps=1e-8)

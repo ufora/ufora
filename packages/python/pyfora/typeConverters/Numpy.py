@@ -14,7 +14,7 @@
 
 import pyfora.PureImplementationMapping as PureImplementationMapping
 import numpy as np
-import pyfora.BuiltinPureImplementationMappings as BuiltinPureImplementationMappings
+
 
 class PurePythonNumpyArray:
     """
@@ -34,9 +34,7 @@ class PurePythonNumpyArray:
         d1 = self.shape[0]
         d2 = self.shape[1]
 
-        for ix2 in range(d2):
-            for ix1 in range(d1):
-                newVals = newVals + [self[ix1][ix2]]
+        newVals = [self[ix1][ix2] for ix2 in xrange(d2) for ix1 in xrange(d1)]
 
         newShape = tuple(reversed((self.shape)))
 
@@ -46,18 +44,16 @@ class PurePythonNumpyArray:
             )
 
     def __iter__(self):
-        length = len(self)
-        for idx in range(length):
-            val = self[idx]
-            yield val
+        for idx in range(len(self)):
+            yield self[idx]
 
     @property
     def size(self):
-        return reduce(lambda x, y: x * y, self.shape)
+        return len(self.values)
 
     def flatten(self):
         """Returns a 1-d numpy array"""
-        return PurePythonNumpyArray((len(self.values),), self.values)
+        return PurePythonNumpyArray((self.size,), self.values)
 
     def tolist(self):
         """Converts an n-dimensional numpy array to an n-dimensional list of lists"""
@@ -65,8 +61,9 @@ class PurePythonNumpyArray:
             if not isinstance(array, PurePythonNumpyArray):
                 return array
             toReturn = []
-            for arr in array:
-                toReturn = toReturn + [walk(arr)]
+            for val in array:
+                toReturn = toReturn + [walk(val)]
+
             return toReturn
 
         return walk(self)
@@ -99,7 +96,7 @@ class PurePythonNumpyArray:
     def __mul__(self, v):
         def op(x, y):
             return x * y
-        return self.__applyOperatorToAllElements(op, v)
+        return self._applyOperatorToAllElements(op, v)
 
     def __add__(self, v):
         if isinstance(v, PurePythonNumpyArray):
@@ -107,17 +104,22 @@ class PurePythonNumpyArray:
 
         def op(x, y):
             return x + y
-        return self.__applyOperatorToAllElements(op, v)
+        return self._applyOperatorToAllElements(op, v)
 
     def __sub__(self, v):
         def op(x, y):
             return x - y
-        return self.__applyOperatorToAllElements(op, v)
+        return self._applyOperatorToAllElements(op, v)
 
     def __pow__(self, v):
         def op(x, y):
             return x ** y
-        return self.__applyOperatorToAllElements(op, v)
+        return self._applyOperatorToAllElements(op, v)
+
+    def __div__(self, q):
+        def op(x, y):
+            return x / y
+        return self._applyOperatorToAllElements(op, q)
 
     def _addArray(self, v):
         if self.shape != v.shape:
@@ -131,29 +133,22 @@ class PurePythonNumpyArray:
             [self.values[ix] + v.values[ix] for ix in xrange(self.size)]
             )
 
-    def __applyOperatorToAllElements(self, op, val):
-        toReturn = []
-        for v1 in self.values:
-            toReturn = toReturn + [op(v1, val)]
-
+    def _applyOperatorToAllElements(self, op, val):
         return PurePythonNumpyArray(
             self.shape,
-            toReturn
+            [op(self.values[ix], val) for ix in xrange(self.size)]
             )
 
     def reshape(self, newShape):
         impliedElementCount = reduce(lambda x, y: x * y, newShape)
         if self.size != impliedElementCount:
             raise ValueError("Total size of new array must be unchanged")
+
         return PurePythonNumpyArray(
             newShape,
             self.values
             )
 
-    def __div__(self, q):
-        def op(x, y):
-            return x / y
-        return self.__applyOperatorToAllElements(op, q)
 
 class PurePythonNumpyArrayMapping(PureImplementationMapping.PureImplementationMapping):
     def getMappablePythonTypes(self):
@@ -176,6 +171,7 @@ class PurePythonNumpyArrayMapping(PureImplementationMapping.PureImplementationMa
         array.shape = pureNumpyArray.shape
         return array
 
+
 class NpZeros:
     def __call__(self, length):
         vals = []
@@ -186,6 +182,7 @@ class NpZeros:
             (length,),
             vals
             )
+
 
 class NpArray:
     """This will only work for a well-formed (not jagged) n-dimensional python lists"""
@@ -221,6 +218,7 @@ class NpArray:
             shape,
             flat
             )
+
 
 class NpDot:
     def _productOfTwoArrays(self, arr1, arr2):
@@ -266,6 +264,7 @@ class NpDot:
             # We can also call the dot product on two regular lists
             return self._productOfTwoArrays(arr1, arr2)
 
+
 class NpPinv:
     def __call__(self, matrix):
         builtins = NpPinv.__pyfora_builtins__
@@ -277,13 +276,14 @@ class NpPinv:
             flat
             )
 
-mappings_ = [(np.zeros, NpZeros), (np.array, NpArray), 
-             (np.dot, NpDot), (np.linalg.pinv, NpPinv)]
-
 def generateMappings():
+    mappings_ = [(np.zeros, NpZeros), (np.array, NpArray), 
+                 (np.dot, NpDot), (np.linalg.pinv, NpPinv)]
+
     tr = [PureImplementationMapping.InstanceMapping(instance, pureType) for \
             (instance, pureType) in mappings_]
     tr.append(PurePythonNumpyArrayMapping())
+
     return tr
 
 
