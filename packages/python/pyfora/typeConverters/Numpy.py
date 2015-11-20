@@ -235,16 +235,7 @@ class NpDot:
             # and numpy will automatically reshape the 1D array to 2D
             if len(arr1.shape) == 1 and len(arr2.shape) == 2:
                 arr1 = arr1.reshape((arr1.shape[0], 1,)).transpose()
-                builtins = NpDot.__pyfora_builtins__
-                result = builtins.matrixMult(
-                    arr1.values, arr1.shape, arr2.values, arr2.shape
-                    )
-                flattenedValues = result[0]
-
-                return PurePythonNumpyArray(
-                    (len(flattenedValues),),
-                    flattenedValues
-                    )
+                return self(arr1, arr2)[0]
 
             if len(arr1.shape) != len(arr2.shape):
                 raise ValueError("Matrix dimensions do not match")
@@ -255,6 +246,14 @@ class NpDot:
 
             # 2d x 2d -> matrix multiplication
             elif len(arr1.shape) == 2:
+                if arr1.shape[1] != arr2.shape[0]:
+                    raise ValueError(
+                        "shapes " + str(arr1.shape) + " and " + \
+                        str(arr2.shape) + " are not aligned: " + \
+                        str(arr1.shape[1]) + " (dim 1) != " + \
+                        str(arr2.shape[0]) + " (dim 0)"
+                        )
+
                 builtins = NpDot.__pyfora_builtins__
                 result = builtins.matrixMult(
                     arr1.values, arr1.shape, arr2.values, arr2.shape
