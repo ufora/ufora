@@ -21,6 +21,7 @@
 #include "NativeCodeCompiler.hppml"
 #include "../Interpreter/RuntimeConfig.hppml"
 #include "NativeCodeFlattened.hppml"
+#include "NativeCodeFlattenedUtil.hppml" 
 #include "NativeCodeSimplification.hppml"
 #include "FunctionPointerHandle.hpp"
 #include "../../core/ScopedProfiler.hppml"
@@ -36,16 +37,53 @@ using namespace std;
 typedef llvm::IRBuilder<> bb;
 @type BOpAndType = NativeBinaryOpcode opcode, NativeType t;
 
-
-
-NativeType continuationTypeForReturns(const ImmutableTreeVector<NativeType>& rets)
+LLVMFunctionBuilder::LLVMFunctionBuilder(
+		NativeCodeCompiler& inCompiler,
+		llvm::Function*& outFun,
+		NativeType& outSlotsType,
+		map<uword_t, ImmutableTreeVector<NativeContinuationMetadataSerialized> >& outMetadataMap,
+		map<uword_t, NativeIndividualContinuationMetadata>& outIndividualMetadataMap,
+		const string& inName,
+		const NativeCFG& inFun,
+		llvm::Module* inModule
+		)	:
+			mCompiler(inCompiler),
+			mOutMetadataMap(outMetadataMap),
+			mOutIndividualMetadataMap(outIndividualMetadataMap),
+			mConfig(inCompiler.getTypedForaCompiler().getConfig()),
+			mNativeFun(inFun),
+			mName(inName),
+			mTempVarSize(0)
 	{
-	ImmutableTreeVector<NativeType> ts;
+	initializeFunction(outFun, inModule);
+	createTempVarForBitcasting();
+	flattenAndSimplifyNativeFun();
+	computeEntryBlockIDs();	
+	addPhiNodesToBlocks();
+	computeSlots();	
+	createSlotsPtr(outSlotsType);	
+	createExitBlock();
+	translateNativeBlocks();
+	//first, we need to create the slots pointer.
+	finishSlotsPtr();
+	//for each block, we have to load relevant args. for block zero,
+	//we load from the argument and delete it. for the others, we only load the ones that are 'live'
+	//and jump in
+	createInitialSwitchBlock();
+	createStagingBlocksAndTheirJumps();
+	replaceTempVarForBitcastingWithAlloc();
+	
+    if (mConfig.traceDefinitions() && SHOULD_LOG_INFO())
+        {
+        std::string logMessage;
+        	
+        	{
+	        llvm::raw_string_ostream stream(logMessage);
+	        mFunction->print(stream);
+	    	}
 
-	for (long k = 0; k < rets.size(); k++)
-		ts = ts + rets[k];
-
-	return NativeType::Continuations(ts);
+        LOG_INFO << "LLVM definition for " << mName << ":\n" << logMessage;
+    	}
 	}
 	
 void LLVMFunctionBuilder::initializeFunction(
@@ -108,6 +146,7 @@ void LLVMFunctionBuilder::createTempVarForBitcasting()
 void LLVMFunctionBuilder::flattenAndSimplifyNativeFun()
 	{
 	flattenNativeFun();
+
 	simplifyFlattenedNativeFun();
 	}
 	
@@ -169,12 +208,14 @@ void LLVMFunctionBuilder::dumpFlattenedBlocksToFile(const string& inFilename) co
 	
 void LLVMFunctionBuilder::logFlattenedBlocks(const string& message, bool withNativeCFG) const
 	{
-	LOG_INFO << string(mFunction->getName()) << ":\n";
+	LOGGER_INFO_T log = LOGGER_INFO;
+
+	log << string(mFunction->getName()) << ":\n";
 	
 	if (withNativeCFG)
-		LOG_INFO << Ufora::indent(prettyPrintString(mNativeFun)) << "\n";
+		log << Ufora::indent(prettyPrintString(mNativeFun)) << "\n";
 	
-	LOG_INFO << message << Ufora::indent(prettyPrintString(mFlatBlockMap)) << "\n";
+	log << message << Ufora::indent(prettyPrintString(mFlatBlockMap)) << "\n";
 	}
 	
 void LLVMFunctionBuilder::simplifyFlattenedNativeFun()
@@ -198,7 +239,7 @@ void LLVMFunctionBuilder::simplifyFlattenedNativeFun()
 	
 void LLVMFunctionBuilder::addPhiNodesToBlocks()
 	{
-	ImmutableTreeVector<NativeBlockID> blockList = orderBlocks(mFlatBlockMap);
+	ImmutableTreeVector<NativeBlockID> blockList = NativeCodeFlattened::orderBlocks(mFlatBlockMap);
 
 	for (long j = 0; j < blockList.size(); j++)
 		{
@@ -287,6 +328,16 @@ void LLVMFunctionBuilder::computeEntryBlockIDs()
 			}
 	}
 	
+NativeType continuationTypeForReturns(const ImmutableTreeVector<NativeType>& rets)
+	{
+	ImmutableTreeVector<NativeType> ts;
+
+	for (long k = 0; k < rets.size(); k++)
+		ts = ts + rets[k];
+
+	return NativeType::Continuations(ts);
+	}
+
 void LLVMFunctionBuilder::computeSlots()
 	{
 	//make a list of slots
@@ -594,46 +645,6 @@ void LLVMFunctionBuilder::replaceTempVarForBitcastingWithAlloc()
 	mTempVarForBitcasting = 0;
 	}
 	
-LLVMFunctionBuilder::LLVMFunctionBuilder(
-		NativeCodeCompiler& inCompiler,
-		llvm::Function*& outFun,
-		NativeType& outSlotsType,
-		map<uword_t, ImmutableTreeVector<NativeContinuationMetadataSerialized> >& outMetadataMap,
-		map<uword_t, NativeIndividualContinuationMetadata>& outIndividualMetadataMap,
-		const string& inName,
-		const NativeCFG& inFun,
-		llvm::Module* inModule
-		)	:
-			mCompiler(inCompiler),
-			mOutMetadataMap(outMetadataMap),
-			mOutIndividualMetadataMap(outIndividualMetadataMap),
-			mConfig(inCompiler.getTypedForaCompiler().getConfig()),
-			mNativeFun(inFun),
-			mName(inName),
-			mTempVarSize(0)
-	{
-	initializeFunction(outFun, inModule);
-	createTempVarForBitcasting();
-	flattenAndSimplifyNativeFun();		
-	computeEntryBlockIDs();	
-	addPhiNodesToBlocks();
-	computeSlots();	
-	createSlotsPtr(outSlotsType);	
-	createExitBlock();
-	translateNativeBlocks();
-	//first, we need to create the slots pointer.
-	finishSlotsPtr();
-	//for each block, we have to load relevant args. for block zero,
-	//we load from the argument and delete it. for the others, we only load the ones that are 'live'
-	//and jump in
-	createInitialSwitchBlock();
-	createStagingBlocksAndTheirJumps();
-	replaceTempVarForBitcastingWithAlloc();
-	
-    if (mConfig.traceDefinitions())
-        mFunction->print(llvm::outs());
-	}
-
 bool LLVMFunctionBuilder::wantsSlotStorageTracers(void) const
 	{
 	return false;
