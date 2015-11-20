@@ -15,15 +15,21 @@
 #!/usr/bin/python
 
 import ufora.FORA.python.Runtime as Runtime
-import fora
+import ufora.config.Setup as Setup
+import time
 import sys
 
 def main(argv):
-	fora.init_local()
+	t0 = time.time()
+
+	Runtime.initialize(Setup.defaultSetup())
+	
 	runtime = Runtime.getMainRuntime()
 	handler = runtime.getInterpreterTraceHandler()
 
 	handler.replayTracesFromFile(argv[1])
+
+	print "took ", time.time() - t0
 
 if __name__ == "__main__":
 	main(sys.argv)
