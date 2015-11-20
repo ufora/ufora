@@ -109,15 +109,6 @@ void EvalFrameArgList::slice(uword_t ix)
 	mSize = ix;
 	}
 
-bool EvalFrameArgList::isCoveredBy(const ImmutableTreeVector<JOV>& jovs) const
-	{
-	for (long k = 0; k < jovs.size(); k++)
-		if (!jovs[k].covers(mImplVals[k]))
-			return false;
-
-	return true;
-	}
-
 EvalFrameArgList* EvalFrameArgList::allocate(uword_t capacity, MemBlockAllocator& allocator)
 	{
 	EvalFrameArgList* newEvalFrameArgListPtr =
