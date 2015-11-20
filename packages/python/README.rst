@@ -25,7 +25,7 @@ parallelism, and allows it to perform compile-time
 optimizations than would not be possible otherwise. For more on the subset of python
 that Ufora supports, see `python restrictions`_.
 
-.. _python restrictions: https://ufora.github.io/ufora/github-pages/documentation/python-restrictions.html
+.. _python restrictions: https://ufora.github.io/ufora/documentation/python-restrictions.html
 
 
 Installation
@@ -49,9 +49,9 @@ cluster of machines on a local network or in the cloud.
 - `Running Ufora on a local cluster`_
 
 
-.. _Getting started with local Ufora: https://ufora.github.io/ufora/github-pages/tutorials/getting-started-local.html
-.. _Getting started with Ufora on AWS: https://ufora.github.io/ufora/github-pages/tutorials/getting-started-aws.html
-.. _Running Ufora on a local cluster: https://ufora.github.io/ufora/github-pages/tutorials/getting-started-cluster.html
+.. _Getting started with local Ufora: https://ufora.github.io/ufora/tutorials/getting-started-local.html
+.. _Getting started with Ufora on AWS: https://ufora.github.io/ufora/tutorials/getting-started-aws.html
+.. _Running Ufora on a local cluster: https://ufora.github.io/ufora/tutorials/getting-started-cluster.html
 
 
 Credits
