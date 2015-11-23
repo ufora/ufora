@@ -3340,4 +3340,7 @@ class ExecutorTestCases(
 
     def test_complex(self):
         self.equivalentEvaluationTest(lambda: abs(complex(1.0,0.0) * complex(1.0,0.0)))
+
+    def test_simple_compile(self):
+        self.equivalentEvaluationTest(lambda: sum([x for x in xrange(1000)]))
     
