@@ -34,7 +34,7 @@ Release branches are always named: release-version. For example, the release bra
 
 ## Versioning Scheme
 
-Versioning is based on [PEP 0440](https://www.python.org/dev/peps/pep-0440/) and [Semantic Versioning[(http://semver.org/).
+Versioning is based on [PEP 0440](https://www.python.org/dev/peps/pep-0440/) and [Semantic Versioning](http://semver.org/).
 Version numbers are of the form `major.minor` or `major.minor.patch`, and pre/post release versions may also be used.
 
 - Major version increments represent substantial changes to the product and may not be compatible with prior major versions.
