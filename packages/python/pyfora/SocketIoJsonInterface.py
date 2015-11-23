@@ -14,6 +14,7 @@
 
 import json
 from socketIO_client import SocketIO, BaseNamespace
+import time
 import threading
 
 import pyfora
@@ -54,12 +55,13 @@ class SocketIoJsonInterface(object):
         self.connection_status = ConnectionStatus()
 
 
-    def connect(self):
+    def connect(self, timeout=None):
         with self.lock:
             if self._isConnected():
                 raise ValueError("'connect' called when already connected")
 
         with self.lock:
+            t0 = time.time()
             self.connection_status.status = ConnectionStatus.connecting
             self.socketIO = SocketIO(self.url)
             self.reactorThread = threading.Thread(target=self.socketIO.wait)
@@ -67,13 +69,18 @@ class SocketIoJsonInterface(object):
             self.namespace = self.socketIO.define(self._namespaceFactory, self.path)
             self.reactorThread.start()
 
-            while self.connection_status.status == ConnectionStatus.connecting:
-                self.connection_cv.wait()
+            while self.connection_status.status == ConnectionStatus.connecting and \
+                    (timeout is None or time.time() - t0 < timeout):
+                self.connection_cv.wait(timeout)
 
-        if not self.connection_status.status == ConnectionStatus.connected:
-            raise pyfora.ConnectionError(self.connection_status.message)
+        if self.connection_status.status == ConnectionStatus.connected:
+            return self
 
-        return self
+        if self.connection_status.status == ConnectionStatus.connecting:
+            message = "Connection timed out"
+        else:
+            message = self.connection_status.message
+        raise pyfora.ConnectionError(message)
 
 
     def close(self):

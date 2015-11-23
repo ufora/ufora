@@ -310,7 +310,7 @@ class Connection(object):
         def onFailure(err):
             if not self.closed:
                 onResultCallback(Exceptions.PyforaError(err['message']))
-        
+
         def resultChanged(jsonStatus):
             if not self.closed and jsonStatus is not None:
                 onResultCallback(jsonStatus)
@@ -349,11 +349,13 @@ def createObjectConverter(webObjectFactory):
     return ObjectConverter.ObjectConverter(webObjectFactory, moduleTree.toJson())
 
 
-def connect(url):
+def connect(url, timeout=30.0):
     """Opens a connection to a Ufora cluster
 
     Args:
         url (str): The HTTP URL of the ufora cluster (e.g. ``http://192.168.1.200:30000``)
+        timeout (Optional float): A timeout for the operation in seconds, or None
+            to wait indefinitely.
 
     Returns:
         Executor.Executor: an :class:`~pyfora.Executor.Executor` that can be used to submit work
@@ -363,7 +365,7 @@ def connect(url):
         url,
         '/subscribableWebObjects'
         )
-    socketIoInterface.connect()
+    socketIoInterface.connect(timeout=timeout)
     return connectGivenSocketIo(socketIoInterface)
 
 
