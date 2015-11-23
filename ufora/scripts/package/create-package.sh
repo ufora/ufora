@@ -86,7 +86,7 @@ if [ $? -ne 0 ]; then
   exit 2
 fi
 cp $REPO_ROOT/LICENSE $DEST_DIR
-rsync -a $REPO_ROOT/license/ $DEST_DIR/license
+rsync -a $REPO_ROOT/licenses/ $DEST_DIR/licenses
 cp $REPO_ROOT/docker/service/Dockerfile $DEST_DIR
 
 cd ${d}
