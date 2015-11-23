@@ -31,6 +31,8 @@ function run_test {
 
     TEST_LOG=$TEST_OUTPUT_DIR/$TEST_NAME.log
 
+    export FORA_MAX_MEM_MB=10000
+
     if [ -z "$TEST_TIMEOUT" ]; then
         TEST_TIMEOUT=720
     fi

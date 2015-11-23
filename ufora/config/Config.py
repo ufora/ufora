@@ -18,6 +18,7 @@
 import logging
 import json
 import sys
+import psutil
 import os
 import os.path
 import ufora.config.LogFormat as LogFormat
@@ -123,7 +124,9 @@ class Config(object):
             self.getConfigValue("PYTHON_GIL_LOOP_THREAD_INTERRUPTS", False)
             )
 
-        self.maxMemoryMB = long(self.getConfigValue("FORA_MAX_MEM_MB", 10000))
+        self.maxMemoryMB = long(self.getConfigValue("FORA_MAX_MEM_MB",
+                                                    (psutil.virtual_memory().total * 0.75) / (1024 ** 2),
+                                                    checkEnviron=True))
         self.cumulusTrackTcmalloc = parseBool(self.getConfigValue("CUMULUS_TRACK_TCMALLOC",
                                                                   default=True,
                                                                   checkEnviron=True))
