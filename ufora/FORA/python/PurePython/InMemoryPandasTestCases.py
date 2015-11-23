@@ -16,7 +16,7 @@ import ufora.FORA.python.PurePython.ExecutorTestCases as ExecutorTestCases
 
 import pyfora.pandas_util
 import pyfora.algorithms.LinearRegression as LinearRegression
-import pyfora.typeConverters.Pandas as PurePandas
+import pyfora.typeConverters.PurePandas as PurePandas
 
 import numpy
 import pandas

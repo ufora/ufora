@@ -14,9 +14,9 @@
 
 import pyfora.PureImplementationMappings as PureImplementationMappings
 import pyfora.BuiltinPureImplementationMappings as BuiltinPureImplementationMappings
-import pyfora.typeConverters.Numpy as Numpy
-import pyfora.typeConverters.Pandas as Pandas
-import pyfora.typeConverters.Complex as Complex
+import pyfora.typeConverters.PureNumpy as PureNumpy
+import pyfora.typeConverters.PurePandas as PurePandas
+import pyfora.typeConverters.PureComplex as PureComplex
 
 defaultMapping_ = None
 
@@ -28,13 +28,13 @@ def getMappings():
         for _ in BuiltinPureImplementationMappings.generateMappings():
             defaultMapping_.addMapping(_)
 
-        for _ in Numpy.generateMappings():
+        for _ in PureNumpy.generateMappings():
             defaultMapping_.addMapping(_)
 
-        for _ in Pandas.generateMappings():
+        for _ in PurePandas.generateMappings():
             defaultMapping_.addMapping(_)
 
-        for _ in Complex.generateMappings():
+        for _ in PureComplex.generateMappings():
             defaultMapping_.addMapping(_)
 
     return defaultMapping_
