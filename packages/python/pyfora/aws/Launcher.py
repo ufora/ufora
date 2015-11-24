@@ -342,6 +342,7 @@ def start_instances(args):
         print "To tunnel Ufora's HTTP port (30000) over ssh, run the following command:"
         print "    ssh -i <ssh_key_file> -L 30000:localhost:30000 ubuntu@%s\n" % manager.ip_address
 
+    workers = []
     if args.num_instances > 1:
         print "Launching workers..."
         workers = launcher.launch_workers(args.num_instances-1,
