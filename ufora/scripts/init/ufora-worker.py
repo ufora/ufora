@@ -23,8 +23,10 @@ import sys
 import ufora.config.Config as Config
 import ufora.config.Setup as Setup
 import ufora.cumulus.distributed.CumulusService as CumulusService
+import ufora.distributed.S3.ActualS3Interface as ActualS3Interface
 import ufora.distributed.SharedState.Connections.ViewFactory as ViewFactory
 import ufora.distributed.SharedState.Connections.TcpChannelFactory as TcpChannelFactory
+import ufora.distributed.Storage.NullObjectStore as NullObjectStore
 import ufora.native.CallbackScheduler as CallbackScheduler
 import ufora.native.Cumulus as CumulusNative
 from ufora.networking.MultiChannelListener import MultiChannelListener
@@ -104,7 +106,9 @@ def createService(args):
         callbackScheduler,
         diagnostics_dir,
         Setup.config(),
-        viewFactory=sharedStateViewFactory
+        viewFactory=sharedStateViewFactory,
+        s3InterfaceFactory=ActualS3Interface.ActualS3InterfaceFactory(),
+        objectStore=NullObjectStore.NullObjectStore()
         )
 
 def defaultSetup():

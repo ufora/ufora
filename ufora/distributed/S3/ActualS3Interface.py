@@ -92,14 +92,12 @@ class ActualS3Interface(S3Interface.S3Interface):
         az = os.getenv('AWS_AVAILABILITY_ZONE')
         logging.info('AZ variable is: %s', az)
 
-        credentials = self.credentials_
-        if credentials == S3Interface.S3Interface.publicCredentials:
-            credentials = (None, None)
-
-        boto_args = {
-            'aws_access_key_id': credentials[0],
-            'aws_secret_access_key': credentials[1]
-            }
+        boto_args = {}
+        if self.credentials_ != ('', ''):
+            boto_args = {
+                'aws_access_key_id': self.credentials_[0],
+                'aws_secret_access_key': self.credentials_[1]
+                }
         if az:
             return boto.s3.connect_to_region(az[:-1], **boto_args)
         else:

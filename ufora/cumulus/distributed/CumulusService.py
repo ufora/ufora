@@ -51,7 +51,9 @@ class CumulusService(Stoppable.Stoppable):
                  callbackScheduler,
                  diagnosticsDir,
                  config,
-                 viewFactory):
+                 viewFactory,
+                 s3InterfaceFactory=None,
+                 objectStore=None):
         Stoppable.Stoppable.__init__(self)
 
         #acquire a machineId randomly, using uuid
@@ -62,6 +64,8 @@ class CumulusService(Stoppable.Stoppable):
         self.ownAddress = ownAddress
         self.callbackScheduler = callbackScheduler
         self.viewFactory = viewFactory
+        self.s3InterfaceFactory = s3InterfaceFactory
+        self.objectStore = objectStore
         self.threadsStarted_ = False
         self.connectedMachines = set()
         self.connectingMachines = set()  # machines we are in the process of connecting to
@@ -161,18 +165,22 @@ class CumulusService(Stoppable.Stoppable):
             eventHandler
             )
 
-        #externalDatasetChannel = self.cumulusWorker.getExternalDatasetRequestChannel(
-            #callbackScheduler
-            #)
-        #self.datasetLoadService = PythonIoTaskService.PythonIoTaskService(
-            #settings.s3InterfaceFactory,
-            #settings.objectStore,
-            #self.vdm,
-            #externalDatasetChannel.makeQueuelike(callbackScheduler)
-            #)
+        self.datasetLoadService = None
+        if self.s3InterfaceFactory:
+            externalDatasetChannel = self.cumulusWorker.getExternalDatasetRequestChannel(
+                callbackScheduler
+                )
+            self.datasetLoadService = PythonIoTaskService.PythonIoTaskService(
+                self.s3InterfaceFactory,
+                self.objectStore,
+                self.vdm,
+                externalDatasetChannel.makeQueuelike(callbackScheduler)
+                )
 
         self.cumulusWorker.startComputations()
-        #self.datasetLoadService.startService()
+
+        if self.datasetLoadService:
+            self.datasetLoadService.startService()
 
     @staticmethod
     def constructCumlusWorker(*args):

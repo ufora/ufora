@@ -228,10 +228,10 @@ class S3MultipartUploadWriter(object):
 
     def __call__(self, dataAsString):
         self.s3Interface.setMultipartUploadPart(
-            self.bucketname, 
-            self.keyname, 
-            self.uploadId, 
-            self.partNumber, 
+            self.bucketname,
+            self.keyname,
+            self.uploadId,
+            self.partNumber,
             dataAsString
             )
         return "OK"
@@ -432,17 +432,7 @@ def parseS3Dataset(s3InterfaceFactory, s3Dataset):
 
     elif s3Dataset.isExternal():
         asE = s3Dataset.asExternal
-
-        if asE.awsAccessKey != "":
-            try:
-                interface = s3InterfaceFactory(
-                    asE.awsAccessKey,
-                    asE.awsSecretKey
-                    )
-            except:
-                raise InvalidDatasetException("Failed to log into S3 with given credentials")
-        else:
-            interface = s3InterfaceFactory()
+        interface = s3InterfaceFactory()
 
         return (interface, asE.bucket, asE.key)
     else:

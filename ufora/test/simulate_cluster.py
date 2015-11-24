@@ -23,6 +23,7 @@ def main(args):
     print "Starting cluster simulation..."
     simulator = ClusterSimulation.Simulator.createGlobalSimulator()
     simulator.startService()
+    simulator.desirePublisher.desireNumberOfWorkers(1)
 
     def signal_handler(sig, _):
         signal_name = '(unknown)'

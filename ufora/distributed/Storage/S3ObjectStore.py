@@ -14,7 +14,7 @@
 
 import ufora.distributed.S3.S3Interface as S3Interface
 
-class S3ObjectStore():
+class S3ObjectStore(object):
     def __init__(self, s3InterfaceFactory, bucketName, prefix=""):
         self.s3InterfaceFactory = s3InterfaceFactory
         self.bucketName = bucketName
