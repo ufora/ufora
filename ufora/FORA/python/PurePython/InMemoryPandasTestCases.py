@@ -159,6 +159,30 @@ A,B,C
                 )
             )
 
+    def test_pandas_read_csv_2(self):
+        # there's some weirdness with whitspace that we have to deal 
+        # with, on the fora side. For example, after indenting all the 
+        # lines of s here, the read csv will miss the first line
+        # o_O
+
+        s = """
+A,B,C
+1,2,3
+4,notAFloat,6
+7,8,9
+10,11,12
+            """
+
+        def f():
+            try:
+                return pyfora.pandas_util.readCsvFromString(s)
+            except Exception as e:
+                return e
+
+        res = self.evaluateWithExecutor(f)
+
+        self.assertIsInstance(res, Exception)
+
     def test_pandas_read_csv_from_s3(self):
         s = """
 A,B,C
