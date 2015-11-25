@@ -49,6 +49,7 @@ class Launcher(object):
     OWN_PRIVATE_IP=`curl -s http://169.254.169.254/latest/meta-data/local-ipv4`
     docker run -d --name {container_name} \
         -e UFORA_WORKER_OWN_ADDRESS=$OWN_PRIVATE_IP \
+        {aws_credentials} \
         {container_env} {container_ports} \
         -v /var/ufora:/var/ufora ufora/service:{image_version}
     '''
@@ -153,6 +154,7 @@ class Launcher(object):
 
     def user_data_for_manager(self):
         return self.user_data_template.format(
+            aws_credentials=get_aws_credentials(),
             container_name='ufora_manager',
             container_env='',
             container_ports='-p 30000:30000 -p 30002:30002 -p 30009:30009 -p 30010:30010',
@@ -162,6 +164,7 @@ class Launcher(object):
     def user_data_for_worker(self, manager_instance_id):
         manager_address = self.get_instance_internal_ip(manager_instance_id)
         return self.user_data_template.format(
+            aws_credentials=get_aws_credentials(),
             container_name='ufora_worker',
             container_env='-e UFORA_MANAGER_ADDRESS='+manager_address,
             container_ports='-p 30009:30009 -p 30010:30010',
@@ -320,6 +323,15 @@ def get_region(region):
 
 def get_ssh_keyname(keyname):
     return keyname or os.getenv('PYFORA_AWS_SSH_KEYNAME')
+
+
+def get_aws_credentials():
+    key = os.getenv('AWS_ACCESS_KEY_ID')
+    secret = os.getenv('AWS_SECRET_ACCESS_KEY')
+    if key and secret:
+        return '-e AWS_ACCESS_KEY_ID=%s -e AWS_SECRET_ACCESS_KEY=%s' % (key, secret)
+
+    return ''
 
 
 def start_instances(args):
