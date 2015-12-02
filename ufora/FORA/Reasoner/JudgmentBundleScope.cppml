@@ -1,0 +1,374 @@
+#include "JudgmentBundleScope.hppml"
+#include "../Judgment/ControlFlowGraphJudgmentUtil.hppml"
+
+namespace Fora {
+
+
+Fora::FilterVariable JudgmentBundleScope::newFilterVariable()
+	{
+	int64_t val = filterCount();
+	filterCount()++;
+
+	return Fora::FilterVariable(val);
+	}
+
+Fora::SelectorVariable JudgmentBundleScope::newSelectorVariable()
+	{
+	int64_t val = selectorCount();
+	selectorCount()++;
+
+	return Fora::SelectorVariable(val);
+	}
+
+JudgmentBundle JudgmentBundleScope::filtered(JudgmentOnValue ifFalse, JudgmentBundle ifTrue)
+	{
+	return JudgmentBundle::Filter(
+		emptyTreeVec() + newFilterVariable(),
+		ifFalse,
+		ifTrue
+		);
+	}
+
+JudgmentBundle JudgmentBundleScope::canonicalBundle(JudgmentOnValueAtom atom)
+	{
+	@match JudgmentOnValueAtom(atom)
+		-| Typed(t) ->> {
+			return filtered(JOV::Unknown(), JudgmentBundle::Constant(JOV::Atom(atom)));
+			}
+		-| Valued(v) ->> {
+			return filtered(
+				JOV::Unknown(), 
+				filtered(
+					JOV::Atom(JudgmentOnValueAtom::Typed(v.type())),
+					JudgmentBundle::Constant(JOV::Atom(atom))
+					)
+				);
+			}
+		-| _ ->> {
+			return JudgmentBundle::Constant(JOV::Atom(atom));
+			}
+	}
+
+JudgmentBundleTupleExtras JudgmentBundleScope::canonicalBundle(JudgmentOnValueTupleExtras extras)
+	{
+	@match JudgmentOnValueTupleExtras(extras)
+		-| Extras(j) ->> {
+			return JudgmentBundleTupleExtras::Extras(canonicalBundle(j));
+			}
+		-| NoExtras() ->> {
+			return JudgmentBundleTupleExtras::NoExtras();
+			}
+	}
+
+JudgmentBundleTuple JudgmentBundleScope::canonicalBundle(JudgmentOnValueTuple jovt)
+	{
+	@match JudgmentOnValueTuple(jovt)
+		-| (judgments, symbols, extras) ->> {
+				return JudgmentBundleTuple(
+					mapITV(judgments, 
+						[&](JOV subjov) { return canonicalBundle(subjov); }
+						),
+					symbols,
+					canonicalBundle(extras)
+					);
+				}
+	}
+
+JudgmentBundle JudgmentBundleScope::canonicalBundle(JudgmentOnValue jov)
+	{
+	@match JudgmentOnValue(jov)
+		-|	Unknown() ->> {
+			return JudgmentBundle::Constant(jov);
+			}
+		-|	UnknownCSTKnown() ->> {
+			return JudgmentBundle::Constant(jov);
+			}
+		-|	Union() ->> {
+			return JudgmentBundle::Constant(jov);
+			}
+		-|	JOVAsValue() ->> {
+			return filtered(JOV(), JudgmentBundle::Constant(jov));
+			}
+		-|	Atom(atom) ->> {
+			return canonicalBundle(atom);
+			}
+		-|	Alternative() ->> {
+			return JudgmentBundle::Constant(jov);
+			}
+		-|	Tuple(jovt) ->> {
+			return filtered(
+				JOV::Unknown(), 
+				JudgmentBundle::Tuple(
+					canonicalBundle(jovt)
+					)
+				);
+			}
+		-|	Class(Unknown()) ->> {
+			return JudgmentBundle::Constant(jov);
+			}
+		-|	Class(Class(judgments, classBody)) ->> {
+			return filtered(
+				JOV::Unknown(),
+				JudgmentBundle::Class(
+					classBody, 
+					mapITV(judgments, 
+						[&](JOV subjov) { return canonicalBundle(subjov); }
+						)
+					)
+				);
+			}
+		-|	Dictionary() ->> {
+			return JudgmentBundle::Constant(jov);
+			}
+		-|	Vector() ->> {
+			return JudgmentBundle::Constant(jov);
+			}
+		-|	MutableVector() ->> {
+			return JudgmentBundle::Constant(jov);
+			}
+	}
+
+ImmutableTreeVector<JudgmentBundle> JudgmentBundleScope::canonicalBundle(ImmutableTreeVector<JudgmentOnValue> jov)
+	{
+	return mapITV(jov, [&](JOV j) { return canonicalBundle(j); });
+	}
+
+JudgmentBundle JudgmentBundleScope::judgmentBundleForControlFlowArg(
+							const ControlFlowArg& arg, 
+							const ImmutableTreeVector<JudgmentBundle>& bundles
+							)
+	{
+	@match ControlFlowArg(arg)
+		-|	Arg(ix) ->> {
+			return bundles[ix];
+			}
+		-|	Constant(c) ->> {
+			return JudgmentBundle::Constant(JudgmentOnValue::Constant(c));
+			}
+		;
+	}
+
+ImmutableTreeVector<JudgmentBundle> JudgmentBundleScope::judgmentBundleForControlFlowArgs(
+                                const ImmutableTreeVector<ControlFlowArg>& args,
+                                const ImmutableTreeVector<JudgmentBundle>& jmts
+                                )
+	{
+	return mapITV(
+		args, 
+		[&](ControlFlowArg arg) { 
+			return judgmentBundleForControlFlowArg(arg, jmts); 
+			}
+		);
+	}
+
+JudgmentBundle JudgmentBundleScope::judgmentBundleForControlFlowContinuationArg(
+							const ControlFlowContinuationArg& arg, 
+							const ImmutableTreeVector<JudgmentBundle>& jmts,
+							const Nullable<JudgmentBundle>& result,
+							const Nullable<ControlFlowNodeBody>& node
+							)
+	{
+	@match ControlFlowContinuationArg(arg)
+		-|	Arg(Arg(ht)) ->> {
+			return jmts[ht];
+			}
+		-|	Arg(Constant(c)) ->> {
+			return JudgmentBundle::Constant(JudgmentOnValue::Constant(c));
+			}
+		-|	Result() ->> {
+			return *result;
+			}
+		-|	MakeTuple(makeTupleArgs) ->> {
+			JudgmentBundleTuple jbt;
+
+			for (long k = 0; k < makeTupleArgs.size(); k++)
+				jbt = JudgmentBundleTuple::concatenate(
+					jbt,
+					judgmentBundleForControlFlowContinuationTupleArg(
+						makeTupleArgs[k], 
+						jmts, 
+						result, 
+						node
+						)
+					);
+
+			return JudgmentBundle::Tuple(jbt);
+			}
+		-|	TupleElement(index) ->> {
+			ControlFlowGraphTupleExpandInfo info = getTupleExpandInfo(*node);
+
+			JudgmentBundle toExpand = jmts[info.argIndex()];
+
+			return judgmentBundleForTupleIndex(toExpand, index);
+			}
+		-|	TupleRemainingElements() ->> {
+			// ControlFlowGraphTupleExpandInfo info = getTupleExpandInfo(*node);
+
+			// JOV toExpand = jmts[info.argIndex()];
+
+			// if (!toExpand.isTuple())
+			// 	return JOV::Unknown();
+
+			// JOVT jovt = toExpand.getTuple().jov();
+
+			// return JOV::Tuple(jovt.slice(info.arity()));
+			lassert_dump(false, "not implemented");
+			}
+		;
+	}
+
+JOV JudgmentBundleScope::judgmentForTupleIndex(JOV c, long index)
+	{
+	if (!c.isTuple())
+		return JOV();
+
+	return c.getTuple().jov()[index];
+	}
+
+JudgmentBundle JudgmentBundleScope::judgmentBundleForTupleIndex(JudgmentBundle toExpand, long index)
+	{
+	@match JudgmentBundle(toExpand)
+		-| Constant(c) ->> {
+			return JudgmentBundle::Constant(judgmentForTupleIndex(c, index));
+			}
+		-| Class() ->> {
+			//this should never happen
+			lassert(false);
+			}
+		-| Tuple((jovs, names, NoExtras())) ->> {
+			return jovs[index];
+			}
+		-| Tuple((jovs, names, Extras(j))) ->> {
+			if (index < jovs.size())
+				return jovs[index];
+			return j;
+			}
+		-| Filter(variables, ifAnyFalse, ifAllTrue) ->> {
+			return JudgmentBundle::Filter(
+				variables, 
+				judgmentForTupleIndex(ifAnyFalse, index),
+				judgmentBundleForTupleIndex(ifAllTrue, index)
+				);
+			}
+		-| Selector(variable, ifTrue, ifFalse) ->> {
+			return JudgmentBundle::Selector(
+				variable, 
+				judgmentBundleForTupleIndex(ifTrue, index), 
+				judgmentBundleForTupleIndex(ifFalse, index)
+				);
+			}
+	}
+
+ImmutableTreeVector<JudgmentBundle> JudgmentBundleScope::judgmentBundleForControlFlowContinuationArgs(
+                     const ImmutableTreeVector<ControlFlowContinuationArg>& args,
+                     const ImmutableTreeVector<JudgmentBundle>& jmts,
+                     const Nullable<JudgmentBundle>& result,
+                     const Nullable<ControlFlowNodeBody>& node
+                     )
+	{
+	return mapITV(
+		args,
+		[&](ControlFlowContinuationArg arg) {
+			return judgmentBundleForControlFlowContinuationArg(arg, jmts, result, node);
+			}
+		);
+	}
+
+
+JudgmentBundleTuple JudgmentBundleScope::judgmentBundleForControlFlowContinuationTupleArg(
+                     const ControlFlowContinuationTupleArg& arg, 
+                     const ImmutableTreeVector<JudgmentBundle>& jmts,
+                     const Nullable<JudgmentBundle>& result,
+                     const Nullable<ControlFlowNodeBody>& node
+                     )
+	{
+	@match ControlFlowContinuationTupleArg(arg)
+		-| Normal(fieldName, arg) ->> {
+			return JudgmentBundleTuple(
+				emptyTreeVec() + judgmentBundleForControlFlowContinuationArg(arg, jmts, result, node),
+				emptyTreeVec() + fieldName,
+				JudgmentBundleTupleExtras::NoExtras()
+				);
+			}
+		-|	TupleCall(arg) ->> {
+			JudgmentBundle bundle = judgmentBundleForControlFlowContinuationArg(arg, jmts, result, node);
+
+			@match JudgmentBundle(bundle)
+				-| Tuple(t) ->> { return t; }
+				-| _ ->> { }
+
+			if (bundle.coverageJOV().isNotTuple())
+				return JudgmentBundleTuple(
+					emptyTreeVec() + bundle, 
+					emptyTreeVec() + Nullable<Symbol>(),
+					JudgmentBundleTupleExtras::NoExtras()
+					);
+
+			//this is not nearly as precise as we could be - it's the unknown tuple
+			return JudgmentBundleTuple(
+				emptyTreeVec(), 
+				emptyTreeVec(), 
+				JudgmentBundleTupleExtras::Extras(
+					JudgmentBundle::Constant(JOV())
+					)
+				);
+			}
+	}
+
+JudgmentBundleTuple JudgmentBundleScope::judgmentBundleForControlFlowApplyArg(
+					const ControlFlowApplyArg& arg, 
+					const ImmutableTreeVector<JudgmentBundle>& jmts,
+					const Nullable<ControlFlowNodeBody>& node
+					)
+	{
+	@match ControlFlowApplyArg(arg)
+		-| Normal(fieldName, arg) ->> {
+			return JudgmentBundleTuple(
+				emptyTreeVec() + judgmentBundleForControlFlowArg(arg, jmts),
+				emptyTreeVec() + fieldName,
+				JudgmentBundleTupleExtras::NoExtras()
+				);
+			}
+		-|	TupleCall(arg) ->> {
+			JudgmentBundle bundle = judgmentBundleForControlFlowArg(arg, jmts);
+
+			@match JudgmentBundle(bundle)
+				-| Tuple(t) ->> { return t; }
+				-| _ ->> { }
+
+			if (bundle.coverageJOV().isNotTuple())
+				return JudgmentBundleTuple(
+					emptyTreeVec() + bundle, 
+					emptyTreeVec() + Nullable<Symbol>(),
+					JudgmentBundleTupleExtras::NoExtras()
+					);
+
+			//this is not nearly as precise as we could be - it's the unknown tuple
+			return JudgmentBundleTuple(
+				emptyTreeVec(), 
+				emptyTreeVec(), 
+				JudgmentBundleTupleExtras::Extras(
+					JudgmentBundle::Constant(JOV())
+					)
+				);
+			}
+	}
+
+JudgmentBundleTuple JudgmentBundleScope::judgmentBundleForControlFlowApplyArgs(
+					const ImmutableTreeVector<ControlFlowApplyArg>& args,
+					const ImmutableTreeVector<JudgmentBundle>& jmts,
+					const Nullable<ControlFlowNodeBody>& node
+					)
+	{
+	JudgmentBundleTuple res;
+
+	for (auto arg: args)
+		res = JudgmentBundleTuple::concatenate(
+			res, 
+			judgmentBundleForControlFlowApplyArg(arg, jmts, node)
+			);
+
+	return res;
+	}
+
+}

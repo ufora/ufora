@@ -1,0 +1,321 @@
+#include "SimpleForwardReasoner.hppml"
+#include "../Judgment/ControlFlowGraphJudgmentUtil.hppml"
+#include "../../core/Logging.hpp"
+#include "../Axioms/Axiom.hppml"
+#include "../Axioms/AxiomGroup.hppml"
+#include "../../core/Clock.hpp"
+
+namespace Fora {
+
+SimpleForwardReasoner::SimpleForwardReasoner(
+			PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
+			PolymorphicSharedPtr<Axioms> inAxioms,
+			JudgmentOnValueTuple applyJov
+			) : 
+		mAxioms(inAxioms),
+		mCompiler(inCompiler)
+	{
+	mInitialApplyBundle = mScope.canonicalBundle(applyJov);
+
+	auto axiom = mAxioms->axiom(*mCompiler, applyJov);
+
+	lassert(axiom);
+	lassert(!applyJov.hasExtras());
+
+	//start by expanding the apply tuple
+	@match Axiom(*axiom)
+		-| Expands(jovt, generator) ->> {
+			double t0 = curClock();
+			
+			State initialState(
+				generator(ApplySignature(applyJov.jovs().size())),
+				mInitialApplyBundle.subBundles(),
+				emptyTreeSet(),
+				null()
+				);
+
+			mSimpleResult = propagateState(initialState);
+			}
+	}
+
+
+Nullable<SimpleForwardReasoner::Result> SimpleForwardReasoner::propagateState(State curState)
+	{
+	Nullable<Result> final;
+
+	while (true)
+		{
+		if (final)
+			return final;
+
+		ControlFlowNodeBody nodeBody = curState.graph()[curState.label()].body();
+
+		LOG_DEBUG << "label: " << curState.label() << "\n" 
+			<< "judgments: " << curState.judgments() << "\n"
+			<< "filters: " << curState.filtersActive() << "\n"
+			<< "nodeBody: " << nodeBody
+			;
+
+		auto followContinuation = [&](ControlFlowContinuation c, Nullable<JudgmentBundle> result = null()) {
+			@match ControlFlowContinuation(c)
+				-| Node(label, args) ->> {
+					curState = State(
+						curState.graph(),
+						mScope.judgmentBundleForControlFlowContinuationArgs(args, curState.judgments(), result, null() << nodeBody),
+						curState.filtersActive(),
+						null() << label
+						);
+					}
+				-| Return(arg, isException) ->> {
+					final = Result(
+						mScope.judgmentBundleForControlFlowContinuationArg(arg, curState.judgments(), result, null() << nodeBody), 
+						isException,
+						curState.filtersActive()
+						);
+					}
+			};
+
+		@match ControlFlowNodeBody(nodeBody)
+			-| Apply(args, normalCont, exceptionCont) ->> {
+				JudgmentBundleTuple jbt = mScope.judgmentBundleForControlFlowApplyArgs(args, curState.judgments(), null() << nodeBody);
+
+				ImmutableTreeMap<Fora::FilterVariable, bool> allTrue;
+				for (auto fv: jbt.filterVariables())
+					allTrue = allTrue + fv + true;
+
+				JOVT tightestPossible = jbt.resolve(allTrue, emptyTreeMap()).coverageJOVT();
+
+				auto axiomGroup = mAxioms->axiomGroup(tightestPossible);
+
+				if (!axiomGroup)
+					return null();
+
+				auto axiom = axiomGroup->bestAxiom(
+					*mCompiler, 
+					tightestPossible,
+					false
+					);
+
+				if (!axiom)
+					return null();
+
+				@match Axiom(*axiom)
+					-| Expands(_, generator) ->> {
+						//we could be much more precise in the case where we have *args,
+						//but for this particular use case, we don't see *args much and
+						//shouldn't worry about it
+						if (jbt.extras().isExtras())
+							return null();
+
+						//find the weakest axiom that expands
+						auto weakest = axiomGroup->weakestArgumentsProducingExpansion(*mCompiler, tightestPossible);
+						if (!weakest)
+							return null();
+
+						Nullable<ImmutableTreeSet<Fora::FilterVariable> > vars = 
+							jbt.minimumFilterRequiredToBeCoveredBy(*weakest);
+
+						if (!vars)
+							return null();
+
+						ImmutableTreeMap<Fora::FilterVariable, bool> allTrue;
+						for (auto v: *vars)
+							allTrue = allTrue + v + true;
+
+						auto res = propagateState(
+							State(
+								generator(ApplySignature(jbt.resolve(allTrue, emptyTreeMap()).subBundles().size())),
+								jbt.subBundles(),
+								curState.filtersActive() + *vars,
+								null()
+								)
+							);
+
+						if (!res)
+							return null();
+
+						//todo - return the filters active
+						curState.filtersActive() = curState.filtersActive() + res->filtersActive();
+
+						followContinuation(
+							res->isException() ? exceptionCont : normalCont,
+							null() << res->resultBundle()
+							);
+						}
+					-| Native(callSig, result, implementation) ->> {
+						if (result.size() > 1)
+							return null();
+
+						JudgmentOnAction tightestJOA = result;
+
+						JudgmentBundle bundle;
+
+						auto nWeakest = axiomGroup->weakestArgumentsProducingResultCoveredBy(*mCompiler, tightestPossible, result);
+						
+						if (!nWeakest)
+							return null();
+
+						JOVT weakest = *nWeakest;
+
+						auto nToGetWeakest = jbt.minimumFilterRequiredToBeCoveredBy(weakest);
+						if (!nToGetWeakest)
+							return null();
+
+						ImmutableTreeSet<Fora::FilterVariable> toGetWeakest = *nToGetWeakest;
+
+						if (tightestPossible.computeConstant())
+							{
+							JudgmentOnAction constantRes = mAxioms->resolveAxiomDirectly(*mCompiler, tightestPossible);
+
+							lassert(constantRes.size() == 1);
+
+							auto nToGetTightest = jbt.minimumFilterRequiredToBeCoveredBy(tightestPossible);
+							if (!nToGetTightest)
+								return null();
+
+							bundle = JudgmentBundle::FilterIfNonempty(
+								toGetWeakest,
+								JOV(),
+								JudgmentBundle::FilterIfNonempty(
+									*nToGetTightest,
+									result.jovAndIsExceptionByIndex(0).first,
+									JudgmentBundle::Constant(constantRes.jovAndIsExceptionByIndex(0).first)
+									)
+								);
+							}
+						else
+							{
+							bundle = JudgmentBundle::FilterIfNonempty(
+								toGetWeakest,
+								JOV(),
+								JudgmentBundle::Constant(result.jovAndIsExceptionByIndex(0).first)
+								);
+							}
+
+						followContinuation(
+							result.jovAndIsExceptionByIndex(0).second ? exceptionCont : normalCont,
+							null() << bundle
+							);
+						}
+				}
+			-| Cached() ->> {
+				return null();
+				}
+			-| Branch(Constant(c), ifTrue, ifFalse) ->> {
+				followContinuation(*JOV::Constant(c).convertToBoolean() ? ifTrue : ifFalse);
+				}
+			-| Branch(Arg(ix), ifTrue, ifFalse) ->> {
+				
+				JudgmentBundle bundle = curState.judgments()[ix];
+
+				Nullable<bool> which;
+
+				//in this model, we simply pick the path where 'arg' is a known constant.
+				//in more sophisticated reasoners, we'll need to track this more carefully
+				while (!which)
+					{
+					@match JudgmentBundle(bundle)
+						-| Constant(j) ->> {
+							if (!j.convertToBoolean())
+								return null();
+							followContinuation(*j.convertToBoolean() ? ifTrue : ifFalse);
+							}
+						-| Class() ->> {
+							followContinuation(ifFalse);
+							}
+						-| Tuple() ->> {
+							followContinuation(ifFalse);
+							}
+						-| Filter(variables, ifAnyFalse, ifAllTrue) ->> {
+							if (ifAnyFalse.convertToBoolean())
+								//this is specific enough that we can act
+								which = ifAnyFalse.convertToBoolean();
+							else
+								{
+								//we don't have enough information. Activate all these variables,
+								//and continue
+								curState.filtersActive() = curState.filtersActive() + variables;
+								curState.judgments() = mapITV(curState.judgments(), [&](JudgmentBundle b) { return b.resolveToTrue(variables); });
+
+								bundle = ifAllTrue;
+								}
+							}
+						-| Selector() ->> {
+							//we don't handle this yet
+							return null();
+							}
+					}
+
+				followContinuation(*which ? ifTrue : ifFalse);
+				}
+			-| TupleExpand(argIndex, (arity, exact, contIfMatch), ifNoMatch) ->> {
+				return null();
+				}
+			-| Switch(Constant(c), branches, otherwise) ->> {
+				if (branches.contains(c))
+					followContinuation(*branches[c]);
+				else
+					followContinuation(otherwise);
+				}
+			-| Switch(Arg(ix), branches, otherwise) ->> {
+				JudgmentBundle bundle = curState.judgments()[ix];
+
+				Nullable<CSTValue> which;
+
+				//in this model, we simply pick the path where 'arg' is a known constant.
+				//in more sophisticated reasoners, we'll need to track this more carefully
+				while (!which)
+					{
+					@match JudgmentBundle(bundle)
+						-| Constant(j) ->> {
+							if (j.constant())
+								which = *j.constant();
+							else
+								return null();
+							}
+						-| Class() ->> {
+							return null();
+							}
+						-| Tuple() ->> {
+							return null();
+							}
+						-| Filter(variables, ifAnyFalse, ifAllTrue) ->> {
+							//we don't have enough information. Activate all these variables,
+							//and continue
+							curState.judgments() = mapITV(curState.judgments(), [&](JudgmentBundle b) { return b.resolveToTrue(variables); });
+							curState.filtersActive() = curState.filtersActive() + variables;
+							bundle = ifAllTrue;
+							}
+						-| Selector() ->> {
+							//we don't handle this yet
+							return null();
+							}
+					}
+
+				if (!which || !branches.contains(*which))
+					followContinuation(otherwise);
+				else
+					followContinuation(*branches[*which]);
+				}
+			-| Jump(c) ->> {
+				followContinuation(c);
+				}
+		}
+	}
+
+bool SimpleForwardReasoner::isSimple() const
+	{
+	return mSimpleResult;
+	}
+
+Nullable<SimpleForwardReasoner::Result> SimpleForwardReasoner::simpleResult() const
+	{
+	return mSimpleResult;
+	}
+
+JudgmentBundleTuple SimpleForwardReasoner::initialApplyBundle() const
+	{
+	return mInitialApplyBundle;
+	}
+
+}

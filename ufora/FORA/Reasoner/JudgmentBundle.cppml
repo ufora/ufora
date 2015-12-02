@@ -1,0 +1,605 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+
+#include "JudgmentBundle.hppml"
+#include "../../core/Logging.hpp"
+
+using namespace Fora;
+
+ImmutableTreeSet<FilterVariable> JudgmentBundleTuple::filterVariables() const
+	{
+	return sumITV(subBundles(), [&](JudgmentBundle b) { return b.filterVariables(); }) 
+		+ extras().filterVariables();
+	}
+
+ImmutableTreeSet<SelectorVariable> JudgmentBundleTuple::selectorVariables() const
+	{
+	return sumITV(subBundles(), [&](JudgmentBundle b) { return b.selectorVariables(); }) 
+		+ extras().selectorVariables();
+	}
+
+ImmutableTreeSet<FilterVariable> JudgmentBundleTuple::immediateFilterVariables() const
+	{
+	return sumITV(subBundles(), [&](JudgmentBundle b) { return b.immediateFilterVariables(); }) 
+		+ extras().immediateFilterVariables();
+	}
+
+ImmutableTreeSet<SelectorVariable> JudgmentBundleTuple::immediateSelectorVariables() const
+	{
+	return sumITV(subBundles(), [&](JudgmentBundle b) { return b.immediateSelectorVariables(); }) 
+		+ extras().immediateSelectorVariables();
+	}
+
+JudgmentBundle JudgmentBundle::FilterIfNonempty(
+				const ImmutableTreeSet<FilterVariable>& variables, 
+				const JudgmentOnValue& ifAnyFalse,
+				const JudgmentBundle& ifAllTrue
+				)
+	{
+	if (variables.size())
+		return JudgmentBundle::Filter(variables, ifAnyFalse, ifAllTrue);
+	return ifAllTrue;
+	}
+
+JOV JudgmentBundle::computeCoverageJOV() const
+	{
+	@match JudgmentBundle(*this)
+		-| Constant(c) ->> { return c; }
+		-| Tuple(jbt) ->> {
+			return JOV::Tuple(jbt.coverageJOVT());
+			}
+		-| Class(classBody, subs) ->> {
+			return JOV::Class(
+				JudgmentOnValueClass::Class(
+					mapITV(
+						subs, 
+						[&](const JudgmentBundle& b) -> JOV { return b.coverageJOV(); }
+						),
+					classBody
+					)
+				);
+			}
+		-| Filter(_, ifFalse, ifTrue) ->> {
+			return ifFalse;
+			}
+		-| Selector(_, ifTrue, ifFalse) ->> {
+			return ifTrue.coverageJOV().smallestCovering(ifFalse.coverageJOV());
+			}
+	}
+
+JOVT JudgmentBundleTuple::coverageJOVT() const
+	{
+	@match JudgmentBundleTuple(*this)
+		-| (subs, names, extras) ->> {
+			return
+				JOVT(
+					mapITV(
+						subs, 
+						[&](const JudgmentBundle& b) -> JOV { return b.coverageJOV(); }
+						),
+					names,
+					extras.coverageJOV()
+					);
+			}			
+	}
+
+JudgmentOnValueTupleExtras JudgmentBundleTupleExtras::coverageJOV() const
+	{
+	@match JudgmentBundleTupleExtras(*this)
+		-| Extras(b) ->> {
+			return JudgmentOnValueTupleExtras::Extras(b.coverageJOV());
+			}
+		-| NoExtras() ->> {
+			return JudgmentOnValueTupleExtras::NoExtras();
+			}
+	}
+
+ImmutableTreeSet<FilterVariable> JudgmentBundleTupleExtras::filterVariables() const
+	{
+	@match JudgmentBundleTupleExtras(*this)
+		-| Extras(b) ->> {
+			return b.filterVariables();
+			}
+		-| NoExtras() ->> {
+			return emptyTreeSet();
+			}
+	}
+
+ImmutableTreeSet<SelectorVariable> JudgmentBundleTupleExtras::selectorVariables() const
+	{
+	@match JudgmentBundleTupleExtras(*this)
+		-| Extras(b) ->> {
+			return b.selectorVariables();
+			}
+		-| NoExtras() ->> {
+			return emptyTreeSet();
+			}
+	}
+
+ImmutableTreeSet<FilterVariable> JudgmentBundleTupleExtras::immediateFilterVariables() const
+	{
+	@match JudgmentBundleTupleExtras(*this)
+		-| Extras(b) ->> {
+			return b.immediateFilterVariables();
+			}
+		-| NoExtras() ->> {
+			return emptyTreeSet();
+			}
+	}
+
+ImmutableTreeSet<SelectorVariable> JudgmentBundleTupleExtras::immediateSelectorVariables() const
+	{
+	@match JudgmentBundleTupleExtras(*this)
+		-| Extras(b) ->> {
+			return b.immediateSelectorVariables();
+			}
+		-| NoExtras() ->> {
+			return emptyTreeSet();
+			}
+	}
+
+Nullable<ImmutableTreeSet<FilterVariable> > JudgmentBundle::minimumFilterRequiredToBeCoveredBy(JOV jov) const
+	{
+	@match JudgmentBundle(*this)
+		-| Constant(c) ->> {
+			if (jov.covers(c))
+				return null() << ImmutableTreeSet<FilterVariable>();
+			return null();
+			}
+		-| Tuple(jbt) ->> {
+			if (jov.covers(coverageJOV()))
+				return null() << ImmutableTreeSet<FilterVariable>();
+
+			if (jov.isTuple())
+				return jbt.minimumFilterRequiredToBeCoveredBy(jov.getTuple().jov());
+
+			return null();
+			}
+		-| Class(classBody, subs) ->> {
+			if (jov.covers(coverageJOV()))
+				return null() << ImmutableTreeSet<FilterVariable>();
+
+			@match JOV(jov)
+				-| Class(Class(elts, body)) ->> {
+					if (body != classBody || elts.size() != subs.size())
+						return null();
+
+					ImmutableTreeSet<FilterVariable> res;
+
+					for (long k = 0; k < elts.size(); k++)
+						{
+						auto merge = subs[k].minimumFilterRequiredToBeCoveredBy(elts[k]);
+						if (!merge)
+							return null();
+						res = res + *merge;
+						}
+
+					return null() << res;
+					}
+				-| _ ->> {
+					return null();
+					}
+
+			return null();
+			}
+		-| Filter(vars, ifAnyFalse, ifAllTrue) ->> {
+			if (jov.covers(ifAnyFalse))
+				return null() << ImmutableTreeSet<FilterVariable>();
+
+			auto res = ifAllTrue.minimumFilterRequiredToBeCoveredBy(jov);
+
+			if (!res)
+				return null();
+
+			return null() << (vars + *res);
+			}
+		-| Selector(_, ifTrue, ifFalse) ->> {
+			auto l = ifTrue.minimumFilterRequiredToBeCoveredBy(jov);
+			auto r = ifFalse.minimumFilterRequiredToBeCoveredBy(jov);
+
+			if (!l || !r)
+				return null();
+
+			return null() << (*l + *r);
+			}
+	}
+
+ImmutableTreeSet<FilterVariable> JudgmentBundle::computeFilterVariables() const
+	{
+	@match JudgmentBundle(*this)
+		-| Constant(c) ->> { return emptyTreeSet(); }
+		-| Tuple((subs, names, extras)) ->> {
+			return sumITV(
+				subs, 
+				[&](const JudgmentBundle& b) { return b.filterVariables(); }
+				) + extras.filterVariables();
+			}
+		-| Class(classBody, subs) ->> {
+			return sumITV(
+				subs, 
+				[&](const JudgmentBundle& b) { return b.filterVariables(); }
+				);
+			}
+		-| Filter(filterVariables, ifFalse, ifTrue) ->> {
+			return filterVariables + ifTrue.filterVariables();
+			}
+		-| Selector(_, ifTrue, ifFalse) ->> {
+			return ifTrue.filterVariables() + ifFalse.filterVariables();
+			}
+	}
+
+ImmutableTreeSet<SelectorVariable> JudgmentBundle::computeSelectorVariables() const
+	{
+	@match JudgmentBundle(*this)
+		-| Constant(c) ->> { return emptyTreeSet(); }
+		-| Tuple((subs, names, extras)) ->> {
+			return sumITV(
+				subs, 
+				[&](const JudgmentBundle& b) { return b.selectorVariables(); }
+				) + extras.selectorVariables();
+			}
+		-| Class(classBody, subs) ->> {
+			return sumITV(
+				subs, 
+				[&](const JudgmentBundle& b) { return b.selectorVariables(); }
+				);
+			}
+		-| Filter(filterVariables, ifFalse, ifTrue) ->> {
+			return ifTrue.selectorVariables();
+			}
+		-| Selector(selectorVar, ifTrue, ifFalse) ->> {
+			return selectorVar + ifTrue.selectorVariables() + ifFalse.selectorVariables();
+			}
+	}
+
+ImmutableTreeSet<FilterVariable> JudgmentBundle::immediateFilterVariables() const
+	{
+	@match JudgmentBundle(*this)
+		-| Constant(c) ->> { return emptyTreeSet(); }
+		-| Tuple((subs, names, extras)) ->> {
+			return sumITV(
+				subs, 
+				[&](const JudgmentBundle& b) { return b.immediateFilterVariables(); }
+				) + extras.immediateFilterVariables();
+			}
+		-| Class(classBody, subs) ->> {
+			return sumITV(
+				subs, 
+				[&](const JudgmentBundle& b) { return b.immediateFilterVariables(); }
+				);
+			}
+		-| Filter(filterVariables, ifFalse, ifTrue) ->> {
+			return filterVariables;
+			}
+		-| Selector(_, ifTrue, ifFalse) ->> {
+			return emptyTreeSet();
+			}
+	}
+
+ImmutableTreeSet<SelectorVariable> JudgmentBundle::immediateSelectorVariables() const
+	{
+	@match JudgmentBundle(*this)
+		-| Constant(c) ->> { return emptyTreeSet(); }
+		-| Tuple((subs, names, extras)) ->> {
+			return sumITV(
+				subs, 
+				[&](const JudgmentBundle& b) { return b.immediateSelectorVariables(); }
+				) + extras.immediateSelectorVariables();
+			}
+		-| Class(classBody, subs) ->> {
+			return sumITV(
+				subs, 
+				[&](const JudgmentBundle& b) { return b.immediateSelectorVariables(); }
+				);
+			}
+		-| Filter(filterVariables, ifFalse, ifTrue) ->> {
+			return emptyTreeSet();
+			}
+		-| Selector(selectorVar, ifTrue, ifFalse) ->> {
+			return emptyTreeSet() + selectorVar;
+			}
+	}
+
+
+JudgmentBundle JudgmentBundle::resolveToTrue(ImmutableTreeSet<FilterVariable> vars) const
+	{
+	ImmutableTreeMap<FilterVariable, bool> on;
+	for (auto v: vars)
+		on = on + v + true;
+	return resolve(on, emptyTreeMap());
+	}
+
+JudgmentBundleTupleExtras JudgmentBundleTupleExtras::resolve(
+					ImmutableTreeMap<FilterVariable, bool> filterVars, 
+					ImmutableTreeMap<SelectorVariable, bool> selectorVars
+					) const
+	{
+	@match JudgmentBundleTupleExtras(*this)
+		-| Extras(b) ->> {
+			return JudgmentBundleTupleExtras::Extras(b.resolve(filterVars, selectorVars));
+			}
+		-| NoExtras() ->> {
+			return *this;
+			}
+	}
+
+JudgmentBundleTuple JudgmentBundleTuple::resolve(
+					ImmutableTreeMap<FilterVariable, bool> filterVars, 
+					ImmutableTreeMap<SelectorVariable, bool> selectorVars
+					) const
+	{
+	@match JudgmentBundleTuple(*this)
+		-| (subs, names, extras) ->> {
+			auto newSubs = mapITV(subs, [&](const JudgmentBundle& b) { return b.resolve(filterVars, selectorVars); });
+
+			//otherwise its a passthrough
+			return JudgmentBundleTuple(
+					newSubs, 
+					names, 
+					extras.resolve(filterVars, selectorVars)
+					);
+			}
+	}
+
+JudgmentBundle JudgmentBundle::resolve(
+					ImmutableTreeMap<FilterVariable, bool> filterVars, 
+					ImmutableTreeMap<SelectorVariable, bool> selectorVars
+					) const
+	{
+	if (filterVars.size() == 0 && selectorVars.size() == 0)
+		return *this;
+
+	@match JudgmentBundle(*this)
+		-| Constant(c) ->> { return *this; }
+		-| Tuple((subs, names, extras)) ->> {
+			auto newSubs = mapITV(subs, [&](const JudgmentBundle& b) { return b.resolve(filterVars, selectorVars); });
+
+			//if they're all constant, then the tuple's a constant
+			if (sumITV(newSubs, [&](const JudgmentBundle& b) { return b.isConstant() ? 0 : 1; }) == 0 && extras.isNoExtras())
+				return JudgmentBundle::Constant(
+					JOV::Tuple(
+						JOVT(
+							mapITV(newSubs, [&](const JudgmentBundle& b) -> JOV { return b.getConstant().value(); }),
+							names
+							)
+						)
+					);
+
+			//otherwise its a passthrough
+			return JudgmentBundle::Tuple(
+				JudgmentBundleTuple(
+					newSubs, 
+					names, 
+					extras.resolve(filterVars, selectorVars)
+					)
+				);
+			}
+		-| Class(classBody, subs) ->> {
+			auto newSubs = mapITV(subs, [&](const JudgmentBundle& b) { return b.resolve(filterVars, selectorVars); });
+
+			//if they're all constant, then the tuple's a constant
+			if (sumITV(newSubs, [&](const JudgmentBundle& b) { return b.isConstant() ? 0 : 1; }) == 0)
+				return JudgmentBundle::Constant(
+					JOV::Class(
+						JudgmentOnValueClass::Class(
+							mapITV(newSubs, [&](const JudgmentBundle& b) -> JOV { return b.getConstant().value(); }),
+							classBody
+							)
+						)
+					);
+
+			//otherwise its a passthrough
+			return JudgmentBundle::Class(classBody, newSubs);
+			}
+		-| Filter(filterVariables, ifAnyFalse, ifAllTrue) ->> {
+			ImmutableTreeSet<FilterVariable> newFVs;
+			for (auto v: filterVariables)
+				{
+				Nullable<const bool&> val = filterVars[v];
+				if (val && !*val)
+					return JudgmentBundle::Constant(ifAnyFalse);
+					else
+				if (val && *val)
+					{
+					//it's true. do nothing
+					}
+				else
+					newFVs = newFVs + v;
+				}
+
+			if (newFVs.size())
+				return JudgmentBundle::FilterIfNonempty(newFVs, ifAnyFalse, ifAllTrue.resolve(filterVars, selectorVars));
+
+			return ifAllTrue.resolve(filterVars, selectorVars);
+			}
+		-| Selector(selectorVar, ifTrue, ifFalse) ->> {
+			Nullable<const bool&> val = selectorVars[selectorVar];
+			if (!val)
+				return JudgmentBundle::Selector(
+					selectorVar, 
+					ifTrue.resolve(filterVars, selectorVars),
+					ifFalse.resolve(filterVars, selectorVars)
+					);
+
+			return (*val ? ifTrue : ifFalse).resolve(filterVars, selectorVars);
+			}
+	}
+
+JudgmentBundle JudgmentBundle::resolve(FilterVariable var, bool value) const
+	{
+	return resolve(emptyTreeMap() + var + value, emptyTreeMap());
+	}
+
+JudgmentBundle JudgmentBundle::resolve(SelectorVariable var, bool value) const
+	{
+	return resolve(emptyTreeMap(), emptyTreeMap() + var + value);
+	}
+
+
+void CPPMLPrettyPrint<JudgmentBundle>::prettyPrint(
+				CPPMLPrettyPrintStream& s, 
+				const JudgmentBundle& t
+				)
+	{
+	@match JudgmentBundle(t)
+		-| Constant(j) ->> {
+			s << j;
+			}
+		-| Tuple((subBundles, names, extras)) ->> {
+			s << "(";
+
+			bool isFirst = true;
+
+			for (long ix = 0; ix < subBundles.size(); ix++)
+				{
+				if (isFirst)
+					isFirst = false;
+				else
+					s << ", ";
+
+				if (names[ix])
+					s << *names[ix] << ": ";
+
+				s << subBundles[ix];
+				}
+
+			if (extras.isExtras())
+				{
+				if (!isFirst)
+					s << ", ";
+
+				s << "... ";
+				s << extras.getExtras().judgment();
+				}
+
+			s << ")";
+			}
+		-| Class(classBody, subBundles) ->> {
+			s << classBody.mediator()->name();
+			s << "(";
+
+			bool isFirst = true;
+
+			for (auto b: subBundles)
+				{
+				if (isFirst)
+					isFirst = false;
+				else
+					s << ", ";
+
+				s << b;
+				}
+
+			s << ")";
+			}
+		-| Filter(variables, ifAnyFalse, ifAllTrue) ->> {
+			s << "if ";
+
+			if (variables.size() == 0)
+				s << "false";
+				else
+			if (variables.size() > 1)
+				s << "!" << variables;
+			else
+				s << "!" << variables[0];
+
+			s << " then " << ifAnyFalse << " else " << ifAllTrue;
+			}
+		-| Selector(variable, ifTrue, ifFalse) ->> {
+			s << "if " << variable << " then " << ifTrue << " else " << ifFalse;
+			}
+	}
+
+void CPPMLPrettyPrint<FilterVariable>::prettyPrint(
+				CPPMLPrettyPrintStream& s, 
+				const FilterVariable& t
+				)
+	{
+	s << "f" << t.index();
+	}
+
+void CPPMLPrettyPrint<SelectorVariable>::prettyPrint(
+				CPPMLPrettyPrintStream& s, 
+				const SelectorVariable& t
+				)
+	{
+	s << "s" << t.index();
+	}
+
+void CPPML::Validator<JudgmentBundle_FilterType, void>::operator()
+								(JudgmentBundle_FilterType& filter) const
+	{
+	//we need to maintain the invariant that if a judgment filter variable gets more specific,
+	//the judgment gets more specific. We do this by ensuring that the "ifAnyFalse" judgment
+	//covers the ifAllTrue judgment
+	lassert(filter.ifAnyFalse().covers(filter.ifAllTrue().coverageJOV()));
+	}
+
+JudgmentBundle JudgmentBundle::Tuple(
+				ImmutableTreeVector<JudgmentBundle> subBundles,
+				ImmutableTreeVector<Nullable<Symbol> > names
+				)
+	{
+	return JudgmentBundle::Tuple(
+		JudgmentBundleTuple(
+			subBundles,
+			names,
+			JudgmentBundleTupleExtras::NoExtras()
+			)
+		);
+	}
+
+JudgmentBundleTuple JudgmentBundleTuple::concatenate(
+				JudgmentBundleTuple left,
+				JudgmentBundleTuple right
+				)
+	{
+	//this is not nearly as precise as we could be
+	if (left.extras().isExtras())
+		return JudgmentBundleTuple(
+			left.subBundles(),
+			left.names(),
+			JudgmentBundleTupleExtras::Extras(
+				JudgmentBundle::Constant(JOV())
+				)
+			);
+
+	return JudgmentBundleTuple(
+		left.subBundles() + right.subBundles(),
+		left.names() + right.names(),
+		right.extras()
+		);
+	}
+
+Nullable<ImmutableTreeSet<FilterVariable> > JudgmentBundleTuple::minimumFilterRequiredToBeCoveredBy(JOVT jov) const
+	{
+	ImmutableTreeSet<FilterVariable> res;
+
+	for (long k = 0; k < subBundles().size(); k++)
+		if (k < jov.names().size() && jov.names()[k] != names()[k])
+			return null();
+
+	for (long k = 0; k < subBundles().size(); k++)
+		{
+		auto merge = subBundles()[k].minimumFilterRequiredToBeCoveredBy(jov[k]);
+		if (!merge)
+			return null();
+		res = res + *merge;
+		}
+	
+	return null() << res;
+	}
+
