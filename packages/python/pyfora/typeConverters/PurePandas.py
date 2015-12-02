@@ -77,6 +77,9 @@ class PurePythonDataFrame:
     def iloc(self):
         return _PurePythonDataFrameILocIndexer(self)
 
+    def __len__(self):
+        return self.shape[0]
+
     def __getitem__(self, k):
         colIx = self._columnIndex(k)
         return self._columns[colIx]
