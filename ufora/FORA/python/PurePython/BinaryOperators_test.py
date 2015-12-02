@@ -13,14 +13,21 @@
 #   limitations under the License.
 
 import pyfora
-import ufora.FORA.python.PurePython.OperationsToTest as OperationsToTest
-import unittest
 import pyfora.Connection as Connection
+
+
+import ufora.FORA.python.PurePython.OperationsToTest as OperationsToTest
 import ufora.BackendGateway.SubscribableWebObjects.InMemorySocketIoJsonInterface as InMemorySocketIoJsonInterface
 import ufora.BackendGateway.SubscribableWebObjects.MessageProcessor as MessageProcessor
 import ufora.cumulus.distributed.CumulusGatewayInProcess as CumulusGatewayInProcess
 import ufora.BackendGateway.ComputedValue.ComputedValueGateway as ComputedValueGateway
 import ufora.distributed.SharedState.tests.SharedStateTestHarness as SharedStateTestHarness
+
+
+import unittest
+import logging
+import traceback
+
 
 class TestAllBinaryOperators(unittest.TestCase):
     def evaluateWithExecutor(self, func, *args, **kwds):
@@ -85,22 +92,22 @@ class TestAllBinaryOperators(unittest.TestCase):
 
     def equivalentEvaluationTestThatHandlesExceptions(self, executor, func, *args):
         try:
-            r1 = func(*args)
+            py_res = func(*args)
             pythonSucceeded = True
         except Exception as ex:
             pythonSucceeded = False
 
         try:
-            r2 = self.evaluateWithExecutor(func, *args, executor=executor)
+            pyfora_res = self.evaluateWithExecutor(func, *args, executor=executor)
             pyforaSucceeded = True
         except pyfora.ComputationError as ex:
             pyforaSucceeded = False
 
         self.assertEqual(pythonSucceeded, pyforaSucceeded)
         if pythonSucceeded:
-            self.assertEqual(r1, r2)
-            self.assertTrue(type(r1) == type(r2), "%s - %s is not the same as %s" % (r1, type(r1), type(r2)))
-            return r1
+            self.assertEqual(py_res, pyfora_res)
+            self.assertEqual(type(py_res), type(pyfora_res))
+            return py_res
 
     def test_division_rounding(self):
         with self.create_executor() as executor:
@@ -126,4 +133,12 @@ class TestAllBinaryOperators(unittest.TestCase):
                     for op in operations:
                         def f():
                             return op(v1, v2)
-                        self.equivalentEvaluationTestThatHandlesExceptions(executor, f)
+
+                        try:
+                            self.equivalentEvaluationTestThatHandlesExceptions(executor, f)
+                        except:
+                            logging.critical(
+                                "incompatible python/pyfora behavior in call %s(%s, %s)",
+                                op.__name__, repr(v1), repr(v2)
+                                )
+                            raise
