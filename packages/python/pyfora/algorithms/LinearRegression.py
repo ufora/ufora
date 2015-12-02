@@ -74,7 +74,17 @@ def _computeXTX(df, start=0, end=None, splitLimit=_splitLimit, fitIntercept=True
         if fitIntercept:
             numColumns = numColumns + 1
 
-        def elementAt(row, col):
+        def unsymmetrizedElementAt(row, col):
+            """Fills out 'half' of the symmetric matrix XTX, filling in 
+            zeros above the main diagonal, to avoid computing dot products 
+            twice
+            
+            the full symmetric matrix XTX is filled out by reading the 
+            lower diagonal of this matrix.
+            """
+            if col < row:
+                return 0.0
+            
             if fitIntercept:
                 if row == numColumns - 1 and col == numColumns - 1:
                     return float(numRows)
@@ -90,9 +100,22 @@ def _computeXTX(df, start=0, end=None, splitLimit=_splitLimit, fitIntercept=True
 
             return _dotDontCheckLengths(right, left)
 
-        tr = numpy.array([
-            elementAt(row, col) for row in xrange(numColumns) for col in xrange(numColumns)
-            ])
+        unsymmetrizedValues = [
+            [unsymmetrizedElementAt(row, col) for col in xrange(numColumns)] \
+            for row in xrange(numColumns)
+            ]
+
+        symmetrizedValues = []
+        for row in xrange(numColumns):
+            for col in xrange(numColumns):
+                if row <= col:
+                    symmetrizedValues = symmetrizedValues + \
+                        [unsymmetrizedValues[row][col]]
+                else:
+                    symmetrizedValues = symmetrizedValues + \
+                        [unsymmetrizedValues[col][row]]
+
+        tr = numpy.array(symmetrizedValues)
 
         return tr.reshape((numColumns, numColumns))
         
