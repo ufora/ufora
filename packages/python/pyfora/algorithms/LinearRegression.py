@@ -77,7 +77,7 @@ def _computeXTX(df, start=0, end=None, splitLimit=_splitLimit, fitIntercept=True
         def elementAt(row, col):
             if fitIntercept:
                 if row == numColumns - 1 and col == numColumns - 1:
-                    return numRows
+                    return float(numRows)
 
                 if row == numColumns - 1:
                     return _loopSum(df.iloc[start:end, col])
