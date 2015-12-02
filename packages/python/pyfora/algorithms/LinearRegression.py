@@ -90,11 +90,11 @@ def _computeXTX(df, start=0, end=None, splitLimit=_splitLimit, fitIntercept=True
 
             return _dotDontCheckLengths(right, left)
 
-        return numpy.array([
-            [elementAt(row, col) for col in xrange(numColumns)] \
-            for row in xrange(numColumns)
+        tr = numpy.array([
+            elementAt(row, col) for row in xrange(numColumns) for col in xrange(numColumns)
             ])
 
+        return tr.reshape((numColumns, numColumns))
         
     mid = (start + end) / 2
 
@@ -128,7 +128,8 @@ def _computeXTy(
 
             return _dotDontCheckLengths(columnVec, y[start:end])
 
-        return numpy.array([[elementAt(ix) for ix in xrange(numPredictors)]])
+        tr = numpy.array([elementAt(ix) for ix in xrange(numPredictors)])
+        return tr.reshape((1, numPredictors))
 
     mid = (start + end) / 2
 
