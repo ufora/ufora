@@ -6,3 +6,4 @@ Tutorials
    :maxdepth: 1
 
    tutorials/intro
+   tutorials/s3
