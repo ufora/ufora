@@ -98,8 +98,8 @@ def _computeXTX(df, start=0, end=None, splitLimit=_splitLimit, fitIntercept=True
         
     mid = (start + end) / 2
 
-    return _computeXTX(df, start, mid, fitIntercept, splitLimit) + \
-        _computeXTX(df, mid, end, fitIntercept, splitLimit)
+    return _computeXTX(df, start, mid, splitLimit, fitIntercept) + \
+        _computeXTX(df, mid, end, splitLimit, fitIntercept)
 
 
 def _computeXTy(
