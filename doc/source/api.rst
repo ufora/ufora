@@ -64,15 +64,18 @@ RemotePythonObject
 .. autoclass:: pyfora.RemotePythonObject.RemotePythonObject
     :members:
 
+
 RemotePythonObject.DefinedRemotePythonObject
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 .. autoclass:: pyfora.RemotePythonObject.DefinedRemotePythonObject
     :members:
 
+
 RemotePythonObject.ComputedRemotePythonObject
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 .. autoclass:: pyfora.RemotePythonObject.ComputedRemotePythonObject
     :members:
+
 
 Future
 ------
@@ -80,3 +83,12 @@ Future
    :show-inheritance:
    :members: cancel
 
+
+Algorithms
+----------
+.. autofunction:: pyfora.algorithms.linearRegression
+
+
+Data Frames
+-----------
+.. autofunction:: pyfora.pandas_util.read_csv_from_string

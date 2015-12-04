@@ -46,7 +46,7 @@ class InMemoryPandasTestCases(ExecutorTestCases.ExecutorTestCases):
 
         def f():
             return df
-            
+
         self.equivalentEvaluationTest(
             f,
             comparisonFunction=self.checkFramesEqual
@@ -116,7 +116,7 @@ class InMemoryPandasTestCases(ExecutorTestCases.ExecutorTestCases):
         df = pandas.DataFrame({'A': [1,2,3,4], 'B': [5,6,7,8]})
 
         self.equivalentEvaluationTest(lambda: df.shape)
-            
+
     def test_pandas_dataframe_ctor_1(self):
         items = [('A', [1,2,3]), ('B', [4,5,6])]
 
@@ -131,7 +131,7 @@ class InMemoryPandasTestCases(ExecutorTestCases.ExecutorTestCases):
         col1 = [1,2,3]
         col2 = [4,5,6]
         data = [col1, col2]
-        
+
         res = self.evaluateWithExecutor(
             lambda: pandas.DataFrame(data)
             )
@@ -151,8 +151,8 @@ class InMemoryPandasTestCases(ExecutorTestCases.ExecutorTestCases):
             )
 
     def test_pandas_read_csv_1(self):
-        # there's some weirdness with whitspace that we have to deal 
-        # with, on the fora side. For example, after indenting all the 
+        # there's some weirdness with whitspace that we have to deal
+        # with, on the fora side. For example, after indenting all the
         # lines of s here, the read csv will miss the first line
         # o_O
 
@@ -165,7 +165,7 @@ A,B,C
             """
 
         res = self.evaluateWithExecutor(
-            lambda: pyfora.pandas_util.readCsvFromString(s)
+            lambda: pyfora.pandas_util.read_csv_from_string(s)
             )
 
         self.checkFramesEqual(
@@ -181,8 +181,8 @@ A,B,C
             )
 
     def test_pandas_read_csv_2(self):
-        # there's some weirdness with whitspace that we have to deal 
-        # with, on the fora side. For example, after indenting all the 
+        # there's some weirdness with whitspace that we have to deal
+        # with, on the fora side. For example, after indenting all the
         # lines of s here, the read csv will miss the first line
         # o_O
 
@@ -196,7 +196,7 @@ A,B,C
 
         def f():
             try:
-                return pyfora.pandas_util.readCsvFromString(s)
+                return pyfora.pandas_util.read_csv_from_string(s)
             except Exception as e:
                 return e
 
@@ -220,7 +220,7 @@ A,B,C
             remoteCsv = executor.importS3Dataset("bucketname", key).result()
 
             with executor.remotely.downloadAll():
-                df = pyfora.pandas_util.readCsvFromString(remoteCsv)
+                df = pyfora.pandas_util.read_csv_from_string(remoteCsv)
 
             self.checkFramesEqual(
                 df,
@@ -257,7 +257,7 @@ A,B,C
             responses = PurePandas.PurePythonDataFrame([y_col], ["y"])
 
             return LinearRegression.linearRegression(predictors, responses)
-        
+
         res_python = computeCoefficients()
 
         res_pyfora = self.evaluateWithExecutor(computeCoefficients)
@@ -286,8 +286,8 @@ A,B,C
 
     def test_pyfora_linear_regression_with_splitting(self):
         # note: the right way to do this is to expose _splitLimit
-        # as an argument to LinearRegression.linearRegression, but a 
-        # lack of named arguments in pyfora means that the code 
+        # as an argument to LinearRegression.linearRegression, but a
+        # lack of named arguments in pyfora means that the code
         # would be slightly more verbose than it should need be.
 
         oldSplitLimit = LinearRegression._splitLimit

@@ -7,3 +7,4 @@ Tutorials
 
    tutorials/intro
    tutorials/s3
+   tutorials/linear_regression

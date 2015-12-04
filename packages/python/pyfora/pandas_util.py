@@ -15,19 +15,23 @@
 import pyfora.typeConverters.PurePandas as PurePandas
 
 
-def readCsvFromString(data):
+def read_csv_from_string(data):
     """
-    `readCsvFromString`: read a python csv string into a `PurePythonDataFrame`
+    Reads a string in CSV format into a DataFrame. This function is similar to
+    :func:`pandas.read_csv` but it takes a string as input instead of a file.
 
-    Arguments:
-        `data`: a string of comma-separated values
+
+    Args:
+        data (str): a string of comma-separated values
 
     Returns:
-        a `PurePythonDataFrame`, which holds the parsed data.
+        A DataFrame object that holds the parsed data.
+        It can be thought of as an immutable :class:`pandas.DataFrame`.
 
-    NOTE: this currently assumes that all values are float (or floatifiable), 
-        and that the first row contains headers.
-        
+    Note:
+        This function currently assumes that all values are of type float (or floatifiable),
+        and that the first row contains column headers. This limitation will be
+        removed in the near future.
     """
     listOfColumns, columnNames = \
         PurePandas.PurePythonDataFrame.__pyfora_builtins__.readCsvFromString(
