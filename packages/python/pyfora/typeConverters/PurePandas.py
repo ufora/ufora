@@ -108,6 +108,11 @@ class _PurePythonDataFrameILocIndexer:
 
         if isinstance(tup[1], int) and isinstance(tup[0], (int, slice)):
             return self.obj._columns[tup[1]][tup[0]]
+        elif isinstance(tup[0], slice) and isinstance(tup[1], slice):
+            return PurePythonDataFrame(
+                [col[tup[0]] for col in self.obj._columns[tup[1]]],
+                self.obj._columnNames[tup[1]]
+                )
         else:
             raise IndexError("don't know how to index with " + str(tup))
 

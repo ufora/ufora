@@ -91,6 +91,27 @@ class InMemoryPandasTestCases(ExecutorTestCases.ExecutorTestCases):
                         comparisonFunction=lambda x, y: list(x) == list(y)
                         )
 
+    def test_pandas_dataframe_indexing_3(self):
+        # due to some hashing stuff, this test will fail if 
+        # key 'D' is replaced by 'C'. Ehh ...
+
+        df = pandas.DataFrame({'A': range(5), 'B': range(5,10), 'D': range(10,15)})
+
+        def f():
+            return df.iloc[:,:-1]
+
+        def g():
+            return df.iloc[:,-1:]
+
+        self.equivalentEvaluationTest(
+            f,
+            comparisonFunction=self.checkFramesEqual
+            )
+        self.equivalentEvaluationTest(
+            g,
+            comparisonFunction=self.checkFramesEqual
+            )
+
     def test_pandas_shape(self):
         df = pandas.DataFrame({'A': [1,2,3,4], 'B': [5,6,7,8]})
 

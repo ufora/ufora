@@ -18,16 +18,16 @@ import ufora.FORA.python.PurePython.ConstantConverter as ConstantConverter
 import ufora.FORA.python.ForaValue as ForaValue
 import ufora.BackendGateway.ComputedValue.ComputedValue as ComputedValue
 
-import logging
 import pyfora.TypeDescription as TypeDescription
 import pyfora.StronglyConnectedComponents as StronglyConnectedComponents
 import pyfora.PyAstUtil as PyAstUtil
-import pyfora.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
 import pyfora
 
 import ast
+import logging
 
 import ufora.native.FORA as ForaNative
+
 
 emptyCodeDefinitionPoint = ForaNative.CodeDefinitionPoint.ExternalFromStringList([])
 empytObjectExpression = ForaNative.parseStringToExpression(
@@ -428,8 +428,15 @@ class Converter(object):
             renamedObjectMapping
             ):
         for objectId, memberName in renamedObjectMapping.iteritems():
-            memberImplVal = objectImplVal.getObjectMember(memberName)
-            self.convertedValues[objectId] = memberImplVal
+            memberImplValOrNone = objectImplVal.getObjectMember(memberName)
+
+            if memberImplValOrNone is None:
+                raise pyfora.PythonToForaConversionError(
+                    ("An internal error occurred: " + 
+                     "getObjectMember unexpectedly returned None")
+                    )
+            
+            self.convertedValues[objectId] = memberImplValOrNone
 
     def bindDependentValuesToCreateObjectExpression(
             self,
