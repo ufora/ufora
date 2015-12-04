@@ -1,0 +1,1 @@
+from pyfora.algorithms.LinearRegression import linearRegression
