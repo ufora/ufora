@@ -17,6 +17,8 @@ import pyfora.BuiltinPureImplementationMappings as BuiltinPureImplementationMapp
 import pyfora.typeConverters.PureNumpy as PureNumpy
 import pyfora.typeConverters.PurePandas as PurePandas
 import pyfora.typeConverters.PureComplex as PureComplex
+import pyfora.typeConverters.PureMath as PureMath
+import pyfora.typeConverters.PureScipy as PureScipy
 
 defaultMapping_ = None
 
@@ -35,6 +37,12 @@ def getMappings():
             defaultMapping_.addMapping(_)
 
         for _ in PureComplex.generateMappings():
+            defaultMapping_.addMapping(_)
+
+        for _ in PureScipy.generateMappings():
+            defaultMapping_.addMapping(_)
+
+        for _ in PureMath.generateMappings():
             defaultMapping_.addMapping(_)
 
     return defaultMapping_

@@ -171,7 +171,7 @@ def findsource(pyObject):
                 # add to candidate list
                 candidates.append(i)
         if not candidates:
-            raise IOError('could not find class definition')
+            raise IOError('could not find class definition for %s' % pyObject)
         elif len(candidates) > 1:
             raise PyforaInspectError('could not find class unequivocally: class ' + name)
         else:
