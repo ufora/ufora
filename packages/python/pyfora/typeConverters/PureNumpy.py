@@ -51,6 +51,10 @@ class PurePythonNumpyArray:
     def size(self):
         return len(self.values)
 
+    @property
+    def ndim(self):
+        return len(self.shape)
+
     def flatten(self):
         """Returns a 1-d numpy array"""
         return PurePythonNumpyArray((self.size,), self.values)
@@ -127,7 +131,7 @@ class PurePythonNumpyArray:
                 "operands cannot be added with shapes " + str(self.shape) + \
                 " and " + str(v.shape)
                 )
-            
+
         return PurePythonNumpyArray(
             self.shape,
             [self.values[ix] + v.values[ix] for ix in xrange(self.size)]
@@ -156,7 +160,7 @@ class PurePythonNumpyArrayMapping(PureImplementationMapping.PureImplementationMa
 
     def getMappableInstances(self):
         return []
-        
+
     def getPurePythonTypes(self):
         return [PurePythonNumpyArray]
 
@@ -177,7 +181,7 @@ class NpZeros:
         vals = []
         for _ in range(length):
             vals = vals + [0.0]
-        
+
         return PurePythonNumpyArray(
             (length,),
             vals
@@ -231,7 +235,7 @@ class NpDot:
 
     def __call__(self, arr1, arr2):
         if isinstance(arr1, PurePythonNumpyArray):
-            # The numpy API allows us to multiply a 1D array by a 2D array 
+            # The numpy API allows us to multiply a 1D array by a 2D array
             # and numpy will automatically reshape the 1D array to 2D
             if len(arr1.shape) == 1 and len(arr2.shape) == 2:
                 arr1 = arr1.reshape((arr1.shape[0], 1,)).transpose()
@@ -287,7 +291,7 @@ class NpPinv:
             )
 
 def generateMappings():
-    mappings_ = [(np.zeros, NpZeros), (np.array, NpArray), 
+    mappings_ = [(np.zeros, NpZeros), (np.array, NpArray),
                  (np.dot, NpDot), (np.linalg.pinv, NpPinv)]
 
     tr = [PureImplementationMapping.InstanceMapping(instance, pureType) for \
