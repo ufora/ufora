@@ -45,13 +45,18 @@ class Launcher(object):
     apt-get update
     apt-get install -y docker.io
     docker pull ufora/service:{image_version}
-    mkdir /var/ufora
+    if [ -d /mnt ]; then
+        LOG_DIR=/mnt/ufora
+    else
+        LOG_DIR=/var/ufora
+    fi
+    mkdir $LOG_DIR
     OWN_PRIVATE_IP=`curl -s http://169.254.169.254/latest/meta-data/local-ipv4`
     docker run -d --name {container_name} \
         -e UFORA_WORKER_OWN_ADDRESS=$OWN_PRIVATE_IP \
         {aws_credentials} \
         {container_env} {container_ports} \
-        -v /var/ufora:/var/ufora ufora/service:{image_version}
+        -v $LOG_DIR:/var/ufora ufora/service:{image_version}
     '''
     def __init__(self,
                  region,
