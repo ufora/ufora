@@ -419,6 +419,7 @@ def print_instance(instance, tag=None):
 def add_region_argument(parser):
     parser.add_argument(
         '--ec2-region',
+        default='us-east-1',
         help=('The EC2 region in which instances are launched. '
               'Can also be set using the PYFORA_AWS_EC2_REGION environment variable. '
               'Default: us-east-1')
