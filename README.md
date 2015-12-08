@@ -52,18 +52,49 @@ takes about an hour to do this on a fast machine. With 4 `c3.8xlarge` boxes on
 amazon, pyfora takes about 10 seconds. It's the same exact code, hundreds of times
 faster.
 
+
+## Working with Data
+
+This example performs linear regression on a 64GB dataset loaded from a csv file in Amazon S3:
+
+```py
+import pyfora
+from pyfora.pandas_util import read_csv_from_string
+from pyfora.algorithms import linearRegression
+
+print "Connecting..."
+ufora = pyfora.connect('http://<ip_address>:30000')
+print "Importing data..."
+raw_data = ufora.importS3Dataset('ufora-test-data',
+                                 'iid-normal-floats-20GB-20-columns.csv').result()
+
+print "Parsing and regressing..."
+with ufora.remotely:
+    data_frame = read_csv_from_string(raw_data)
+    predictors = data_frame.iloc[:, :-1]
+    responses = data_frame.iloc[:, -1:]
+
+    regression_result = linearRegression(predictors, responses)
+    coefficients = regression_result[:-1]
+    intercept = regression_result[-1]
+
+
+print 'coefficients:', coefficients.toLocal().result()
+print 'intercept:', intercept.toLocal().result()
+```
+
 # Project Roadmap
 
 The current release, `0.1`, is an early release of the Ufora python functionality.
 The core Ufora VM has been under development for years, but the python front-end
 is new.
 
-As of the `0.1` release, most core python language features and primitives are
+In the `0.1` release, most core python language features and primitives were
 implemented, as are a few builtins (`sum`, `xrange`, `range`, etc.).
 
-In the upcoming `0.2` release, we're planning on filling out some more of the
-python builtins, implementing the basic functionality present in `numpy` and
-`pandas`, and enabling a pathway to load data from amazon S3.
+In the `0.2` release, we filled out some more of the
+python builtins, implemented the basic functionality present in `numpy` and
+`pandas`, and enabled a pathway to load and save data from/to amazon S3.
 
 After that, we're considering some of the following:
 
