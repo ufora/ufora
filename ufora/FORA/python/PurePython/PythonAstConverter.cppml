@@ -461,12 +461,211 @@ PythonAstConverter::PythonAstConverter(
     mPySliceFactory = getModuleMember(pyforaBuiltins, "Slice");
 
     mPyListType = getModuleMember(pyforaBuiltins, "ListType");
+
+    mTypeError = getModuleMember(pyforaBuiltins, "TypeError");
+
+    mPyString = getModuleMember(pyforaBuiltins, "PyString");
     }
 
 PolymorphicSharedPtr<PythonConstantConverter> PythonAstConverter::constantConverter() const
     {
     return mConstantConverter;
     }
+
+Function PythonAstConverter::invalidCallHandler(
+        const std::string& functionName,
+        const TuplePattern& patternForFunction
+        ) const
+    {
+    uint32_t nNormalArgs = 0;
+    uint32_t nDefaultArgs = 0;
+    
+    for (const auto& tuplePatternElement: patternForFunction.matchers())
+        {
+        @match TuplePatternElement(tuplePatternElement) 
+            -|  Normal(_, _, defaultValueOrNull) ->> {
+                nNormalArgs++;
+                if (defaultValueOrNull.isValue()) 
+                    nDefaultArgs++;
+                }
+            -|  VarArgs(_) ->> {
+                // the matchers for the original function will handle this, 
+                // and we'll never need to handle it here
+                return Function::Empty()
+                }
+            ;
+        }
+
+    Symbol argsSymbol = Symbol("args");
+    Expression argsVariable = Expression::Variable(argsSymbol);
+    Expression rawErrorString;
+
+    if (nDefaultArgs > 0)
+        rawErrorString = invalidCallHandlerWithDefaultArgsRawErrorString(
+            nNormalArgs,
+            nDefaultArgs,
+            functionName,
+            argsVariable
+            );
+    else
+        rawErrorString = invalidCallHandlerNoDefaultArgsRawErrorString(
+            nNormalArgs,
+            functionName,
+            argsVariable
+            );
+
+    Expression pyStringifiedErrorString =
+        Expression::Call(
+            Expression::Constant(
+                mPyString
+                ),
+            emptyTreeVec() + rawErrorString.normalApplyArg()
+            );
+
+    Expression functionBody = 
+        Expression::Throw(
+            Expression::Call(
+                Expression::Constant(
+                    mTypeError
+                    ),
+                emptyTreeVec() +
+                    pyStringifiedErrorString.normalApplyArg()
+                ),
+            null()
+            );
+
+    return Function::Term(
+        TuplePattern(
+            emptyTreeVec() +
+            TuplePatternElement::VarArgs(
+                null() << argsSymbol
+                )
+            ),
+        functionBody,
+        Function::Empty()
+        );
+    }
+
+Expression PythonAstConverter::invalidCallHandlerWithDefaultArgsRawErrorString(
+        uint32_t nNormalArgs,
+        uint32_t nDefaultArgs,
+        const std::string& functionName,
+        const Expression& argsVariable
+        ) const
+    {
+    uint32_t nNonDefaultArgs = nNormalArgs - nDefaultArgs;
+
+    std::ostringstream oss;
+    oss << functionName << "() takes at most " << nNormalArgs 
+        << (nNormalArgs == 1 ? " argument (" : " arguments (")
+        ;
+
+    Expression tooManyCallArgsPrefix = Expression::Constant(CSTValue(oss.str()));
+
+    oss.str("");
+    oss.clear();
+    oss << functionName << "() takes at least " << nNonDefaultArgs 
+        << (nNonDefaultArgs == 1 ? " argument (" : " arguments (")
+        ;
+
+    Expression tooFewCallArgsPrefix = Expression::Constant(CSTValue(oss.str()));
+
+    Symbol nCallArgsGivenSymbol = Symbol("nCallArgsGiven");
+    Expression nCallArgsGivenString = 
+        Expression::Call(
+            Expression::Constant(
+                CSTValue(JOV::OfType(Type::String()))
+                ),
+            emptyTreeVec() +
+                Expression::Variable(nCallArgsGivenSymbol).normalApplyArg()
+        );
+
+    Expression suffix = 
+        Expression::BinaryOperator(
+            nCallArgsGivenString,
+            Symbol("+"),
+            Expression::Constant(CSTValue(" given)"))
+            );
+
+    return Expression::Let(
+        nCallArgsGivenSymbol,
+        Expression::Call(
+            Expression::Constant(
+                CSTValue(Symbol("size"))
+                ),
+            emptyTreeVec() +
+                argsVariable.normalApplyArg()
+            ),
+        Expression::Branch(
+            Expression::BinaryOperator(
+                Expression::Variable(nCallArgsGivenSymbol),
+                Symbol("<"),
+                Expression::Constant(CSTValue(nNonDefaultArgs))
+                ),
+            Expression::BinaryOperator(
+                tooFewCallArgsPrefix,
+                Symbol("+"),
+                suffix
+                ),
+            null() << Expression::BinaryOperator(
+                tooManyCallArgsPrefix,
+                Symbol("+"),
+                suffix
+                )
+            )
+        );
+    }
+
+Expression PythonAstConverter::invalidCallHandlerNoDefaultArgsRawErrorString(
+        uint32_t nNormalArgs,
+        const std::string& functionName,
+        const Expression& argsVariable
+        ) const
+    {
+    std::ostringstream oss;
+    oss << functionName << "() takes ";
+
+    if (nNormalArgs == 0) {
+        oss << "no arguments";
+        }
+    else {
+        oss << "exactly " << nNormalArgs << " argument"
+            << (nNormalArgs == 1 ? "" : "s")
+        ;
+        }
+    oss << " (";
+
+    Expression prefixString = Expression::Constant(CSTValue(oss.str()));
+
+    Expression nCallArgsGivenString =
+        Expression::Call(
+            Expression::Constant(
+                CSTValue(JOV::OfType(Type::String()))
+                ),
+            emptyTreeVec() +
+                Expression::Call(
+                    Expression::Constant(
+                        CSTValue(Symbol("size"))
+                        ),
+                    emptyTreeVec() +
+                        argsVariable.normalApplyArg()
+                    ).normalApplyArg()
+        );
+
+    Expression suffixString = Expression::Constant(CSTValue(" given)"));
+
+    return
+        Expression::BinaryOperator(
+            prefixString,
+            Symbol("+"),
+            Expression::BinaryOperator(
+                nCallArgsGivenString,
+                Symbol("+"),
+                suffixString
+                )
+            );
+    }
+
 
 /*
 We've got an ITV<ClassDefinitionTerm> here because certain python class body statements produce
@@ -1679,7 +1878,10 @@ Function PythonAstConverter::convertFunctionDefToForaFunction(
     return Function::Term(
         functionBodyAndPattern.second,
         functionBody,
-        Function::Empty()
+        invalidCallHandler(
+            functionDef.name(),
+            functionBodyAndPattern.second
+            )
         );
     }
 

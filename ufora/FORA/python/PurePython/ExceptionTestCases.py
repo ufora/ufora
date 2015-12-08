@@ -184,6 +184,118 @@ class ExceptionTestCases(object):
             e = fora.submit(f).result().toLocal().exception()
             self.assertIsInstance(e.remoteException, TypeError)
 
+    def test_invalid_call_4(self):
+        def f():
+            pass
+            
+        try:
+            self.evaluateWithExecutor(f, 1)
+            self.assertTrue(False)
+        except pyfora.ComputationError as e:
+            self.assertIsInstance(e.remoteException, TypeError)
+            self.assertEqual(
+                e.remoteException.message,
+                "f() takes no arguments (1 given)"
+                )
+
+    def test_invalid_call_5(self):
+        def f(x):
+            pass
+            
+        try:
+            self.evaluateWithExecutor(f)
+            self.assertTrue(False)
+        except pyfora.ComputationError as e:
+            self.assertIsInstance(e.remoteException, TypeError)
+            self.assertEqual(
+                e.remoteException.message,
+                "f() takes exactly 1 argument (0 given)"
+                )
+
+    def test_invalid_call_6(self):
+        def f(x, y):
+            pass
+            
+        try:
+            self.evaluateWithExecutor(f, 1, 2, 3)
+            self.assertTrue(False)
+        except pyfora.ComputationError as e:
+            self.assertIsInstance(e.remoteException, TypeError)
+            self.assertEqual(
+                e.remoteException.message,
+                "f() takes exactly 2 arguments (3 given)"
+                )
+
+    def test_invalid_call_7(self):
+        def f(x, y=2):
+            pass
+            
+        try:
+            self.evaluateWithExecutor(f, 1, 2, 3)
+            self.assertTrue(False)
+        except pyfora.ComputationError as e:
+            self.assertIsInstance(e.remoteException, TypeError)
+            self.assertEqual(
+                e.remoteException.message,
+                "f() takes at most 2 arguments (3 given)"
+                )
+
+    def test_invalid_call_8(self):
+        def f(x, y=2):
+            pass
+            
+        try:
+            self.evaluateWithExecutor(f)
+            self.assertTrue(False)
+        except pyfora.ComputationError as e:
+            self.assertIsInstance(e.remoteException, TypeError)
+            self.assertEqual(
+                e.remoteException.message,
+                "f() takes at least 1 argument (0 given)"
+                )
+
+    def test_invalid_call_9(self):
+        def f(y=2):
+            pass
+            
+        try:
+            self.evaluateWithExecutor(f, 1, 2)
+            self.assertTrue(False)
+        except pyfora.ComputationError as e:
+            self.assertIsInstance(e.remoteException, TypeError)
+            self.assertEqual(
+                e.remoteException.message,
+                "f() takes at most 1 argument (2 given)"
+                )
+
+    def test_invalid_call_10(self):
+        def f(x,y,z=3):
+            pass
+            
+        try:
+            self.evaluateWithExecutor(f, 1, 2, 3, 4)
+            self.assertTrue(False)
+        except pyfora.ComputationError as e:
+            self.assertIsInstance(e.remoteException, TypeError)
+            self.assertEqual(
+                e.remoteException.message,
+                "f() takes at most 3 arguments (4 given)"
+                )
+
+    def test_invalid_call_11(self):
+        def f(x,y,z=3):
+            pass
+            
+        try:
+            self.evaluateWithExecutor(f, 1)
+            self.assertTrue(False)
+        except pyfora.ComputationError as e:
+            self.assertIsInstance(e.remoteException, TypeError)
+            self.assertEqual(
+                e.remoteException.message,
+                "f() takes at least 2 arguments (1 given)"
+                )
+
     def test_list_append_exception_is_InvalidPyforaOperation(self):
         def f():
             [].append(10)
