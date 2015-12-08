@@ -20,13 +20,16 @@ def read_csv_from_string(data):
     Reads a string in CSV format into a DataFrame. This function is similar to
     :func:`pandas.read_csv` but it takes a string as input instead of a file.
 
+    This function is intended to be used in :mod:`pyfora` code that runs
+    remotely in a Ufora cluster.
+
 
     Args:
         data (str): a string of comma-separated values
 
     Returns:
-        A DataFrame object that holds the parsed data.
-        It can be thought of as an immutable :class:`pandas.DataFrame`.
+        A :calss:`pandas.DataFrame` that holds the parsed data.
+
 
     Note:
         This function currently assumes that all values are of type float (or floatifiable),

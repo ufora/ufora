@@ -11,7 +11,7 @@ This tutorial demonstrates using :mod:`pyfora` to:
 .. important::
     The example below uses a **large** dataset. It is a 64GB csv file that parses into 20GB
     of normally-distributed, randomly generated floating point numbers.
-    It takes about 8 minutes to run on three c3.8xlarge instances in EC2.
+    It takes about 10 minutes to run on three c3.8xlarge instances in EC2.
 
     You can use the :py:data:`pyfora_aws` script installed with the :mod:`pyfora` package to easily
     set up a Ufora cluster in EC2 using either on-demand or spot instances.
@@ -29,7 +29,7 @@ This tutorial demonstrates using :mod:`pyfora` to:
 
     print "Connecting..."
     ufora = pyfora.connect('http://<ufora_cluster_manager>:30000')
-    print "Mapping data..."
+    print "Importing data..."
     raw_data = ufora.importS3Dataset('ufora-test-data',
                                      'iid-normal-floats-20GB-20-columns.csv').result()
 
@@ -37,7 +37,7 @@ This tutorial demonstrates using :mod:`pyfora` to:
     with ufora.remotely:
         data_frame = read_csv_from_string(raw_data)
         predictors = data_frame.iloc[:, :-1]
-        responses = data_frame.iloc[:, :-1:]
+        responses = data_frame.iloc[:, -1:]
 
         regression_result = linearRegression(predictors, responses)
         coefficients = regression_result[:-1]
