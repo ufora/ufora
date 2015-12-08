@@ -39,7 +39,7 @@ def linearRegression(predictors, responses):
     XTy = _computeXTy(predictors, responses.iloc[:, 0])
     XTXinv = numpy.linalg.pinv(XTX)
 
-    return numpy.dot(XTy, XTXinv)
+    return numpy.dot(XTy, XTXinv)[0]
 
 
 _splitLimit = 1000000
