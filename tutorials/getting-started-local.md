@@ -126,8 +126,6 @@ the number of primes between 0 and 10 million. The computation inside the
 container, which then compiled it to efficient machine code and ran it
 parallel on all cores available on your machine.
 
-**Important:** At this point `pyfora` cannot be used interactively in the Python REPL. You MUST place your code in a .py file and run it from there.
-
 
 # Stop the Ufora Container
 
