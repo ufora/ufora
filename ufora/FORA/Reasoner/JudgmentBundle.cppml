@@ -151,7 +151,7 @@ ImmutableTreeSet<SelectorVariable> JudgmentBundleTupleExtras::immediateSelectorV
 			}
 	}
 
-Nullable<ImmutableTreeSet<FilterVariable> > JudgmentBundle::minimumFilterRequiredToBeCoveredBy(JOV jov) const
+Nullable<ImmutableTreeSet<FilterVariable> > JudgmentBundle::minimumFilterRequiredToBeCoveredBy(const JOV& jov) const
 	{
 	@match JudgmentBundle(*this)
 		-| Constant(c) ->> {
@@ -208,9 +208,10 @@ Nullable<ImmutableTreeSet<FilterVariable> > JudgmentBundle::minimumFilterRequire
 			}
 		-| Selector(_, ifTrue, ifFalse) ->> {
 			auto l = ifTrue.minimumFilterRequiredToBeCoveredBy(jov);
+			if (!l)
+				return null();
 			auto r = ifFalse.minimumFilterRequiredToBeCoveredBy(jov);
-
-			if (!l || !r)
+			if (!r)
 				return null();
 
 			return null() << (*l + *r);
@@ -314,7 +315,7 @@ ImmutableTreeSet<SelectorVariable> JudgmentBundle::immediateSelectorVariables() 
 	}
 
 
-JudgmentBundle JudgmentBundle::resolveToTrue(ImmutableTreeSet<FilterVariable> vars) const
+JudgmentBundle JudgmentBundle::resolveToTrue(const ImmutableTreeSet<FilterVariable>& vars) const
 	{
 	ImmutableTreeMap<FilterVariable, bool> on;
 	for (auto v: vars)
@@ -323,8 +324,8 @@ JudgmentBundle JudgmentBundle::resolveToTrue(ImmutableTreeSet<FilterVariable> va
 	}
 
 JudgmentBundleTupleExtras JudgmentBundleTupleExtras::resolve(
-					ImmutableTreeMap<FilterVariable, bool> filterVars, 
-					ImmutableTreeMap<SelectorVariable, bool> selectorVars
+					const ImmutableTreeMap<FilterVariable, bool>& filterVars,
+					const ImmutableTreeMap<SelectorVariable, bool>& selectorVars
 					) const
 	{
 	@match JudgmentBundleTupleExtras(*this)
@@ -337,15 +338,14 @@ JudgmentBundleTupleExtras JudgmentBundleTupleExtras::resolve(
 	}
 
 JudgmentBundleTuple JudgmentBundleTuple::resolve(
-					ImmutableTreeMap<FilterVariable, bool> filterVars, 
-					ImmutableTreeMap<SelectorVariable, bool> selectorVars
+					const ImmutableTreeMap<FilterVariable, bool>& filterVars,
+					const ImmutableTreeMap<SelectorVariable, bool>& selectorVars
 					) const
 	{
 	@match JudgmentBundleTuple(*this)
 		-| (subs, names, extras) ->> {
 			auto newSubs = mapITV(subs, [&](const JudgmentBundle& b) { return b.resolve(filterVars, selectorVars); });
 
-			//otherwise its a passthrough
 			return JudgmentBundleTuple(
 					newSubs, 
 					names, 
@@ -355,8 +355,8 @@ JudgmentBundleTuple JudgmentBundleTuple::resolve(
 	}
 
 JudgmentBundle JudgmentBundle::resolve(
-					ImmutableTreeMap<FilterVariable, bool> filterVars, 
-					ImmutableTreeMap<SelectorVariable, bool> selectorVars
+					const ImmutableTreeMap<FilterVariable, bool>& filterVars,
+					const ImmutableTreeMap<SelectorVariable, bool>& selectorVars
 					) const
 	{
 	if (filterVars.size() == 0 && selectorVars.size() == 0)
@@ -368,7 +368,7 @@ JudgmentBundle JudgmentBundle::resolve(
 			auto newSubs = mapITV(subs, [&](const JudgmentBundle& b) { return b.resolve(filterVars, selectorVars); });
 
 			//if they're all constant, then the tuple's a constant
-			if (sumITV(newSubs, [&](const JudgmentBundle& b) { return b.isConstant() ? 0 : 1; }) == 0 && extras.isNoExtras())
+			if (selectITV(newSubs, [&](const JudgmentBundle& b) { return !b.isConstant(); }) == 0 && extras.isNoExtras())
 				return JudgmentBundle::Constant(
 					JOV::Tuple(
 						JOVT(
@@ -391,7 +391,7 @@ JudgmentBundle JudgmentBundle::resolve(
 			auto newSubs = mapITV(subs, [&](const JudgmentBundle& b) { return b.resolve(filterVars, selectorVars); });
 
 			//if they're all constant, then the tuple's a constant
-			if (sumITV(newSubs, [&](const JudgmentBundle& b) { return b.isConstant() ? 0 : 1; }) == 0)
+			if (selectITV(newSubs, [&](const JudgmentBundle& b) { return !b.isConstant(); }) == 0)
 				return JudgmentBundle::Constant(
 					JOV::Class(
 						JudgmentOnValueClass::Class(
@@ -409,12 +409,11 @@ JudgmentBundle JudgmentBundle::resolve(
 			for (auto v: filterVariables)
 				{
 				Nullable<const bool&> val = filterVars[v];
-				if (val && !*val)
-					return JudgmentBundle::Constant(ifAnyFalse);
-					else
-				if (val && *val)
+				if (val)
 					{
-					//it's true. do nothing
+					if (!*val)
+						return JudgmentBundle::Constant(ifAnyFalse);
+					// else it's true. do nothing
 					}
 				else
 					newFVs = newFVs + v;
@@ -440,12 +439,17 @@ JudgmentBundle JudgmentBundle::resolve(
 
 JudgmentBundle JudgmentBundle::resolve(FilterVariable var, bool value) const
 	{
-	return resolve(emptyTreeMap() + var + value, emptyTreeMap());
+	return resolve(
+			ImmutableTreeMap<FilterVariable, bool>(make_pair(var,value)),
+			emptyTreeMap());
 	}
 
 JudgmentBundle JudgmentBundle::resolve(SelectorVariable var, bool value) const
 	{
-	return resolve(emptyTreeMap(), emptyTreeMap() + var + value);
+	return resolve(
+			emptyTreeMap(),
+			ImmutableTreeMap<SelectorVariable, bool>(make_pair(var,value))
+			);
 	}
 
 
@@ -584,7 +588,7 @@ JudgmentBundleTuple JudgmentBundleTuple::concatenate(
 		);
 	}
 
-Nullable<ImmutableTreeSet<FilterVariable> > JudgmentBundleTuple::minimumFilterRequiredToBeCoveredBy(JOVT jov) const
+Nullable<ImmutableTreeSet<FilterVariable> > JudgmentBundleTuple::minimumFilterRequiredToBeCoveredBy(const JOVT& jov) const
 	{
 	ImmutableTreeSet<FilterVariable> res;
 
