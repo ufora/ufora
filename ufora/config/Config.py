@@ -66,9 +66,12 @@ def stringToLogLevel(levelStr):
 
     assert False, "%s is not a valid log level" % levelStr
 
-def maxLocalThreads():
+def cpu_count():
     import multiprocessing
-    localThreads = multiprocessing.cpu_count()
+    return multiprocessing.cpu_count()
+
+def maxLocalThreads():
+    localThreads = cpu_count()
     if localThreads > 8:
         # reserve 2 cores for the compiler
         localThreads -= 2
@@ -163,16 +166,20 @@ class Config(object):
             self.getConfigValue("CUMULUS_VECTOR_MAX_CHUNK_SIZE_BYES", 20 * 1024 * 1024)
             )
 
-        self.externalDatasetLoaderThreadcount = long(
-            self.getConfigValue("EXTERNAL_DATASET_LOADER_THREADS", 5)
+        self.externalDatasetLoaderThreadcount = int(
+            self.getConfigValue("EXTERNAL_DATASET_LOADER_THREADS",
+                                5,
+                                checkEnviron=True)
             )
-        self.externalDatasetLoaderServiceThreads = long(
-            self.getConfigValue("EXTERNAL_DATASET_LOADER_SERVICE_THREADS", 1)
+        self.externalDatasetLoaderServiceThreads = int(
+            self.getConfigValue("EXTERNAL_DATASET_LOADER_SERVICE_THREADS",
+                                max(2, int(cpu_count() * 0.25)),
+                                checkEnviron=True)
             )
 
         self.userDataS3Bucket = self.getConfigValue("USER_DATA_BUCKET", 'ufora.user.data')
 
-        self.foraCompilerThreads = long(
+        self.foraCompilerThreads = int(
             self.getConfigValue("FORA_COMPILER_THREADS",
                                 2 if self.maxLocalThreads < 4 else 4)
             )
