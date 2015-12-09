@@ -2342,3 +2342,41 @@ class ExecutorTestCases(object):
     def test_complex(self):
         self.equivalentEvaluationTest(lambda: abs(complex(1.0,0.0) * complex(1.0,0.0)))
     
+    def test_assert_1(self):
+        def f():
+            assert True
+
+        self.equivalentEvaluationTest(f)
+
+    def test_assert_2(self):
+        def f():
+            try:
+                assert False, "omg"
+            except AssertionError as e:
+                return e.message
+
+        self.equivalentEvaluationTest(f)
+
+    def test_assert_3(self):
+        def f():
+            try:
+                assert False
+            except AssertionError as e:
+                return e.message
+
+        self.equivalentEvaluationTest(f)
+
+    def test_assert_4(self):
+        def f():
+            try:
+                assert False, 42
+            except AssertionError as e:
+                return e.message
+
+        self.equivalentEvaluationTest(f)
+
+    def test_assert_5(self):
+        def f():
+            return type(AssertionError("asdf"))
+
+        self.equivalentEvaluationTest(f)

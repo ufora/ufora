@@ -23,6 +23,12 @@ class ExceptionTestCases(object):
 
         self.assertIs(self.evaluateWithExecutor(f), AttributeError)
 
+    def test_exceptions_can_translate_AssertionError(self):
+        def f():
+            return AssertionError
+
+        self.assertIs(self.evaluateWithExecutor(f), AssertionError)
+
     def test_exceptions_can_translate_UserWarning(self):
         def f():
             return UserWarning
@@ -807,3 +813,37 @@ class ExceptionTestCases(object):
         with self.assertRaises(pyfora.PythonToForaConversionError):
             self.evaluateWithExecutor(lambda: property)
 
+    def test_assert_raises_1(self):
+        msg = 1
+        def f():
+            assert False, msg
+
+        try:
+            self.evaluateWithExecutor(f)
+            self.assertTrue(False)
+        except pyfora.ComputationError as e:
+            self.assertIsInstance(e.remoteException, AssertionError)
+            self.assertEqual(e.remoteException.message, msg)
+
+    def test_assert_raises_2(self):
+        msg = "asdf"
+        def f():
+            assert False, msg
+
+        try:
+            self.evaluateWithExecutor(f)
+            self.assertTrue(False)
+        except pyfora.ComputationError as e:
+            self.assertIsInstance(e.remoteException, AssertionError)
+            self.assertEqual(e.remoteException.message, msg)
+
+    def test_assert_raises_1(self):
+        def f():
+            assert False
+
+        try:
+            self.evaluateWithExecutor(f)
+            self.assertTrue(False)
+        except pyfora.ComputationError as e:
+            self.assertIsInstance(e.remoteException, AssertionError)
+            self.assertEqual(e.remoteException.message, "")
