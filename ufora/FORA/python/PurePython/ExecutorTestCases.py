@@ -1544,6 +1544,26 @@ class ExecutorTestCases(object):
             comparisonFunction=lambda x, y: set(x) == set(y)
             )
 
+    def test_dict_creation_1(self):
+        x = [(1,2), (3,4)]
+
+        def f():
+            return dict(x)
+
+        self.equivalentEvaluationTest(
+            f,
+            comparisonFunction=lambda x, y: x == y
+            )
+
+    def test_dict_creation_2(self):
+        def f():
+            return { x: x**2 for x in range(10) if x % 2 != 0 }
+
+        self.equivalentEvaluationTest(
+            f,
+            comparisonFunction=lambda x, y: x == y
+            )
+
     def test_implicitReturnNone_1(self):
         def f():
             x = 2
