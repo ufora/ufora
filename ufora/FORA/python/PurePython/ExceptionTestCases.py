@@ -296,6 +296,62 @@ class ExceptionTestCases(object):
                 "f() takes at least 2 arguments (1 given)"
                 )
 
+    def test_dict_creation_error_1(self):
+        def f():
+            return dict([(1,2), (3,4,5)])
+
+        try:
+            self.evaluateWithExecutor(f)
+            self.assertTrue(False)
+        except pyfora.ComputationError as e:
+            self.assertIsInstance(e.remoteException, ValueError)
+            self.assertEqual(
+                e.remoteException.message,
+                "dictionary update value 1 has more than 2 elements"
+                )
+
+    def test_dict_creation_error_2(self):
+        def f():
+            return dict([(1,2), (3,4), (5,)])
+
+        try:
+            self.evaluateWithExecutor(f)
+            self.assertTrue(False)
+        except pyfora.ComputationError as e:
+            self.assertIsInstance(e.remoteException, ValueError)
+            self.assertEqual(
+                e.remoteException.message,
+                "dictionary update value 2 has fewer than 2 elements"
+                )
+
+    def test_dict_creation_error_3(self):
+        def f():
+            return dict([1])
+
+        try:
+            self.evaluateWithExecutor(f)
+            self.assertTrue(False)
+        except pyfora.ComputationError as e:
+            self.assertIsInstance(e.remoteException, ValueError)
+            self.assertEqual(
+                e.remoteException.message,
+                "dictionary update value 0 is not iterable"
+                )
+
+    def test_dict_creation_error_4(self):
+        def f():
+            return dict(1)
+
+        try:
+            self.evaluateWithExecutor(f)
+            self.assertTrue(False)
+        except pyfora.ComputationError as e:
+            self.assertIsInstance(e.remoteException, TypeError)
+            self.assertEqual(
+                e.remoteException.message,
+                "object is not iterable."
+                )
+
     def test_list_append_exception_is_InvalidPyforaOperation(self):
         def f():
             [].append(10)
