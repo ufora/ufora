@@ -385,6 +385,7 @@ class ExceptionTestCases(object):
             return x
         try:
             self.equivalentEvaluationTest(f)
+            self.assertTrue(False)
         except pyfora.PythonToForaConversionError as e:
             pattern = ".*free variable 'x'.*\n" \
                     + ".*, in f\n" \
@@ -396,6 +397,7 @@ class ExceptionTestCases(object):
             return x.y.z
         try:
             self.equivalentEvaluationTest(f)
+            self.assertTrue(False)
         except pyfora.PythonToForaConversionError as e:
             pattern = ".*free variable 'x'.*\n" \
                     + ".*, in f\n" \
@@ -408,6 +410,7 @@ class ExceptionTestCases(object):
                 return x.y.z
         try:
             self.equivalentEvaluationTest(lambda: C20())
+            self.assertTrue(False)
         except pyfora.PythonToForaConversionError as e:
             pattern = ".*free variable 'x'.*\n" \
                     + ".*, in test_free_vars_error_msg3\n" \
@@ -425,6 +428,7 @@ class ExceptionTestCases(object):
                 return x
         try:
             self.equivalentEvaluationTest(lambda: C21())
+            self.assertTrue(False)
         except pyfora.PythonToForaConversionError as e:
             pattern = ".*free variable 'x'.*\n" \
                     + ".*, in test_free_vars_error_msg4\n" \
@@ -440,6 +444,7 @@ class ExceptionTestCases(object):
             return x.y.z
         try:
             self.equivalentEvaluationTest(f)
+            self.assertTrue(False)
         except pyfora.PythonToForaConversionError as e:
             pattern = ".*free variable 'x'.*\n" \
                     + ".*, in f\n" \
@@ -453,6 +458,7 @@ class ExceptionTestCases(object):
             with self.create_executor() as fora:
                 with fora.remotely.downloadAll():
                     missing_function()
+            self.assertTrue(False)
         except pyfora.PythonToForaConversionError as e:
             pattern = ".*free variable 'missing_function'.*\n" \
                     + ".*, in test_with_block_free_vars_error_msg1\n" \
@@ -466,6 +472,7 @@ class ExceptionTestCases(object):
             with self.create_executor() as fora:
                 with fora.remotely:
                     foo()
+            self.assertTrue(False)
         except pyfora.PythonToForaConversionError as e:
             pattern = ".*free variable 'z'.*\n" \
                     + ".*, in test_with_block_free_vars_error_msg2\n" \
