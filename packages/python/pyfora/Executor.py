@@ -120,6 +120,33 @@ class Executor(object):
                                                onComplete)
         return future
 
+    def importRemoteFile(self, path):
+        """Loads the content of a file as a string
+
+        Note:
+            The file must be available to all machines in the Ufora cluster using
+            the specified path. If you run multiple workers you must either copy
+            the file to all machines, or if using a network file-system, mount
+            it into the same path on all machines.
+
+            In addition, Ufora may cache the content of the file. Changes to the
+            file's content made after it has been loaded may have no effect.
+
+        Args:
+            path (str): Full path to the file. This must be a valid path on **all**
+                Ufora worker machines.
+
+        Returns:
+            Future.Future: a :class:`~Future.Future` that resolves to a
+            :class:`~RemotePythonObject.RemotePythonObject` representing the
+            content of the file as a string.
+        """
+        def importFile():
+            builtins = path.__pyfora_builtins__
+            return builtins.loadFileDataset(path)
+
+        return self.submit(importFile)
+
     def define(self, obj):
         """Create a remote representation of an object.
 

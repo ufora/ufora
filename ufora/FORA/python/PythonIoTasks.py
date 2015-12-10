@@ -64,6 +64,10 @@ def loadExternalDataset(s3InterfaceFactory, vdid, vdm, outOfProcessDownloaderPoo
         loadHttpDataset(datasetDescriptor, vdid, vdm)
     elif datasetDescriptor.isOdbcRequestDataset():
         loadOdbcDataset(datasetDescriptor, vdid, vdm)
+    elif datasetDescriptor.isEntireFileDataset():
+        loadEntireFileDataset(datasetDescriptor, vdid, vdm)
+    elif datasetDescriptor.isFileSliceDataset():
+        loadFileSliceDataset(datasetDescriptor, vdid, vdm)
     else:
         raise DatasetLoadException("Unknown dataset type: %s" % datasetDescriptor)
 
@@ -349,6 +353,49 @@ def loadEntireS3Dataset(datasetDescriptor, s3InterfaceFactory, vdid, vdm):
             raise DatasetLoadException("Couldn't load dataset into VDM")
 
 
+def loadEntireFileDataset(datasetDescriptor, vdid, vdm):
+    try:
+        vectorSlices = produceVDIDSlicesForFile(
+            datasetDescriptor.asEntireFileDataset.file
+            )
+        vector = ForaNative.createFORAFreeBinaryVectorFromSlices(vectorSlices, vdm)
+        if not vdm.loadImplvalIntoUnloadedVectorHandle(vdid, vector):
+            raise DatasetLoadException("Couldn't load dataset into VDM")
+
+    except InvalidDatasetException as e:
+        logging.error("Failed to load dataset: %s", e.message)
+        if not vdm.loadImplvalIntoUnloadedVectorHandle(
+                vdid,
+                ForaNative.ImplValContainer(e.message)):
+            raise DatasetLoadException("Couldn't load dataset into VDM")
+
+
+def loadFileSliceDataset(datasetDescriptor, vdid, vdm):
+    fd = None
+    path = datasetDescriptor.asFileSliceDataset.file.path
+    lowIndex = datasetDescriptor.asFileSliceDataset.lowOffset
+    highIndex = datasetDescriptor.asFileSliceDataset.highOffset
+
+    try:
+        fd = os.open(path, os.O_RDONLY)
+        os.lseek(fd, lowIndex, os.SEEK_SET)
+        if not vdm.loadByteArrayIntoExternalDatasetPageFromFileDescriptor(
+                vdid,
+                fd,
+                highIndex - lowIndex):
+            raise DatasetLoadException("Coulnd't load file slice into VDM")
+    except os.error as e:
+        message = 'Error loading file slice dataset: %s, %d-%d:\n%s' % (
+            path,
+            lowIndex,
+            highIndex,
+            e)
+        logging.error(message)
+        raise DatasetLoadException(message)
+    finally:
+        if fd is not None:
+            os.close(fd)
+
 def loadHttpDataset(datasetDescriptor, vdid, vdm):
     try:
         data, statusCode = loadHttpRequestDataset(
@@ -514,6 +561,31 @@ def produceVDIDSlicesForSingleBucketKeyPair(s3Interface, bucketname, keyname, s3
             )
         logging.error(message)
         raise InvalidDatasetException(message)
+
+
+def produceVDIDSlicesForFile(fileDataset):
+    try:
+        logging.error("Getting file size: %s", fileDataset.path)
+        totalBytes = os.path.getsize(fileDataset.path)
+        chunks = getAppropriateChunksForSize(totalBytes, CHUNK_SIZE)
+
+        slices = []
+        for lowIndex, highIndex in chunks:
+            datasetDescriptor = ForaNative.ExternalDatasetDescriptor.FileSliceDataset(
+                fileDataset,
+                lowIndex,
+                highIndex
+                )
+            vectorDataId = ForaNative.VectorDataID.External(datasetDescriptor)
+            vectorDataIdSlice = ForaNative.createVectorDataIDSlice(vectorDataId,
+                                                                   0,
+                                                                   highIndex - lowIndex)
+            slices.append(vectorDataIdSlice)
+        return slices
+    except os.error as e:
+        message = 'Error loading file dataset: %s:\n%s' % (fileDataset.path, e)
+        logging.error(message)
+        raise DatasetLoadException(message)
 
 
 def getAppropriateChunksForSize(size, chunkSize):

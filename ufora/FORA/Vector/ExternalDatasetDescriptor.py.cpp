@@ -24,7 +24,7 @@
 class ExternalDatasetDescriptorWrapper :
 		public native::module::Exporter<ExternalDatasetDescriptorWrapper> {
 public:
-		std::string		getModuleName(void)
+		std::string getModuleName(void)
 			{
 			return "FORA";
 			}
@@ -42,6 +42,7 @@ public:
 			FORAPythonUtil::exposeValueLikeCppmlType<OdbcRequest>(false);
 			FORAPythonUtil::exposeValueLikeCppmlType<S3Dataset>(false);
 			FORAPythonUtil::exposeValueLikeCppmlType<HttpRequest>(false);
+			FORAPythonUtil::exposeValueLikeCppmlType<FileDataset>(false);
 			}
 };
 
