@@ -107,9 +107,6 @@ Now as long as your SSH session is open, you can connect to the manager using `l
 The instructions below assume you have already installed docker and pulled the `ufora/service` image
 on all machines in the cluster.
 
-**Reminder:** Be sure you pull the version of the `ufora/service` image that matches the version of
-    `pyfora` you are running on your client(s) (e.g. `docker pull ufora/service:0.1`).
-
 While not strictly necessary, it is recommended that you create a directory on all your machines
 which will be mounted to `/var/ufora` on all your Ufora containers. The Ufora services will write
 their logs into it, and having it on the host machine can make accessing logs easier. The instructions
@@ -122,13 +119,13 @@ Pick a machine to run the manager service and run the following command to start
 a worker on it:
 
 ```bash
-sudo docker run -d --name ufora_manager -p 30000:30000 -p 30002:30002 -v /home/user/ufora:/var/ufora ufora/service:0.1
+sudo docker run -d --name ufora_manager -p 30000:30000 -p 30002:30002 -v /home/user/ufora:/var/ufora ufora/service
 ```
 
 To run the manager service **without** a worker run:
 
 ```bash
-sudo docker run -d --name ufora_manager -e UFORA_NO_WORKER=1 -p 30000:30000 -p 30002:30002 -v /home/user/ufora:/var/ufora ufora/service:0.1
+sudo docker run -d --name ufora_manager -e UFORA_NO_WORKER=1 -p 30000:30000 -p 30002:30002 -v /home/user/ufora:/var/ufora ufora/service
 ```
 
 
@@ -137,7 +134,7 @@ sudo docker run -d --name ufora_manager -e UFORA_NO_WORKER=1 -p 30000:30000 -p 3
 If your manager is running, for example, at `192.168.1.15`, start the Ufora worker using:
 
 ```bash
-sudo docker run -d --name ufora_worker -e UFORA_MANAGER_ADDRESS=192.168.1.15 -p 30009:30009 -p 30010:30010 -v /home/user/ufora:/var/ufora ufora/service:0.1
+sudo docker run -d --name ufora_worker -e UFORA_MANAGER_ADDRESS=192.168.1.15 -p 30009:30009 -p 30010:30010 -v /home/user/ufora:/var/ufora ufora/service
 ```
 
 

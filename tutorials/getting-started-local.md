@@ -31,7 +31,7 @@ This is what OS X and most Linux distributions include by default as their "nati
 # Install pyfora
 
 ```bash
-$ [sudo] pip install pyfora [--upgrade]
+$ [sudo] pip install pyfora
 ```
 
 # Install Docker
@@ -41,33 +41,25 @@ You can also, optionally, follow [these instructions](http://askubuntu.com/a/477
 
 
 # Pull the Ufora Service Image
-Once docker is installed, you can pull the Ufora service image. You will need to use an image compatible with your version of pyfora.
-To find the version of pyfora you have installed you can run the following command from your terminal:
+Once docker is installed, you can pull the latest Ufora service image.
 
 ```bash
-$ python -c "import pyfora; print pyfora.__version__"
-0.1
+$ sudo docker pull ufora/service:latest
 ```
 
-Now pull the ufora service image with the same version number. For example, if you are using pyfora version `0.1`, run:
-
-```bash
-$ [sudo] docker pull ufora/service:0.1
-```
-
-**Note:** Depending on your docker setup, you may need to run the last command, and subsequent docker commands, as `root`, by using `sudo`, for example.
+**Note:** Depending on your docker setup, you may need to run the last command, and subsequent docker commands,
+as `root`, by using `sudo`, for example.
 
 
-You can also combine the last two commands into a one-liner:
-
-```bash
-$ [sudo] docker pull ufora/service:`python -c "import pyfora; print pyfora.__version__"`
-```
+**Important:** If you are not using the most recent pyfora release and don't want to upgrade, you
+will need to use a docker image compatible with your version. For example, if you are using pyfora
+version 0.2, you can pull and use the `ufora/service:0.2` image.
 
 
 # Start the Ufora Container
 
-The command below starts an all-in-one docker container that runs all the Ufora backend services needed to support pyfora. To run a Ufora cluster on multiple machines in a local network, follow the instructions [here](getting-started-cluster.html).
+The command below starts an all-in-one docker container that runs all the Ufora backend services needed to support pyfora.
+To run a Ufora cluster on multiple machines in a local network, follow the instructions [here](getting-started-cluster.html).
 
 Create a local directory for the Ufora service logs:
 
@@ -78,7 +70,7 @@ $ mkdir ~/ufora
 From your terminal run:
 
 ```bash
-$ [sudo] docker run -d --name ufora -p 30000:30000 -v /home/user/ufora:/var/ufora ufora/service:0.1
+$ sudo docker run -d --name ufora -p 30000:30000 -v /home/user/ufora:/var/ufora ufora/service
 ```
 
 Replace the path `/home/user` with your own home directory path.
@@ -92,7 +84,8 @@ Replace the path `/home/user` with your own home directory path.
 This lets `pyfora` connect to the container using `http://localhost:30000`.
 - `-v /home/user/ufora:/var/ufora` mounts the local directory `~/ufora` into `/var/ufora` within the container.
 This is where Ufora writes all of its log files.
-- `ufora/service:0.1` is the name (and version tag) of the Ufora service image to run.
+- `ufora/service` is the name of the Ufora service image to run. To use a version other than the latest,
+    specify a version tag (e.g. `ufora/service:0.2`).
 
 
 # Run Some Code
@@ -132,7 +125,7 @@ parallel on all cores available on your machine.
 When you are done and want to stop the Ufora service container, run:
 
 ```bash
-$ [sudo] docker stop ufora
+$ sudo docker stop ufora
 ```
 
 This stops the container but does preserves its state so it can be restarted at a later time.
@@ -140,7 +133,7 @@ This stops the container but does preserves its state so it can be restarted at 
 To permanently delete the container and all its state, run the following command after stopping the container:
 
 ```bash
-$ [sudo] docker rm ufora
+$ sudo docker rm ufora
 ```
 
 
@@ -149,5 +142,5 @@ $ [sudo] docker rm ufora
 To restart a stopped Ufora service container, run:
 
 ```bash
-$ [sudo] docker start ufora
+$ sudo docker start ufora
 ```

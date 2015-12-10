@@ -30,7 +30,7 @@ This is what OS X and most Linux distributions include by default as their "nati
 # Install pyfora
 
 ```bash
-$ [sudo] pip install pyfora [--upgrade]
+$ [sudo] pip install pyfora
 ```
 
 # Launch Ufora Instances

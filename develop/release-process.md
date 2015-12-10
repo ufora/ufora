@@ -107,16 +107,21 @@ Copy the package tarball to a new directory and unpack it. For example:
 
 Go into the unpacked directory and run:
 
-    $ [sudo] docker build -t ufora/service:<version> .
+    $ sudo docker build -t ufora/service:<version> .
 
 Where `<version>` is the release version. This will take a few seconds to complete.
 Once completed, you can upload the newly created image to Docker Hub by running:
 
-    $ [sudo] docker push ufora/service:<version>
+    $ sudo docker push ufora/service:<version>
 
 **Note:** The last command requires that you have a Docker Hub account and that your account has permission to push to the ufora/service repo.
 If you don't have an account, you can create one at https://hub.docker.com/.
 Contact ronen@ufora.com for push permissions.
+
+With each new release we also update the image tagged 'latest':
+
+    $ sudo docker build -t ufora/service:latest
+    $ sudo docker push ufora/service:latest
 
 
 ## Build and Upload the pyfora Package
@@ -155,5 +160,3 @@ Where `<version>` is the new release version.
 5. Create and push a new docker image
 6. Create and upload a new pyfora PyPi pakcage
 7. Create and push a git tag
-
-
