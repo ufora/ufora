@@ -51,10 +51,6 @@ def _convertUnresolvedFreeVariableExceptionAndRaise(e, pyAst, sourceFileName):
     chainWithPos = e.freeVarChainWithPos
     varLine = chainWithPos.pos.lineno
     varName = chainWithPos.var[0]
-    contextName = e.contextNameOrNone
-    if contextName is None:
-        contextName = PyAstUtil.findEnclosingFunctionName(pyAst, varLine)
-    assert contextName is not None
     raise UnresolvedFreeVariableExceptionWithTrace(
         '''unable to resolve free variable '%s' for pyfora conversion''' % varName,
         [Exceptions.makeTraceElement(sourceFileName, varLine)]
