@@ -13,7 +13,7 @@
 #   limitations under the License.
 
 import pyfora
-import pyfora.PyAstUtil as PyAstUtil
+import pyfora.pyAst.PyAstUtil as PyAstUtil
 import pyfora.Exceptions as Exceptions
 import ufora.FORA.python.PurePython.ExceptionTestCases as ExceptionTestCases
 

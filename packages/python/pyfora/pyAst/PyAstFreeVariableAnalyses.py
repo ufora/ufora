@@ -40,9 +40,9 @@ collectBoundNamesInScope(astNode)
 """
 import ast
 import collections
-import pyfora.NodeVisitorBases as NodeVisitorBases
+import pyfora.pyAst.NodeVisitorBases as NodeVisitorBases
 import pyfora.Exceptions as Exceptions
-import pyfora.PyAstUtil as PyAstUtil
+import pyfora.pyAst.PyAstUtil as PyAstUtil
 
 VarWithPosition = collections.namedtuple('VarWithPosition', ['var', 'pos'])
 

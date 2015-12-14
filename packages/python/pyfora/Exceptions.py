@@ -49,7 +49,7 @@ def renderTraceback(trace):
         else:
             lineNumber = tb["line"]
 
-        from pyfora.PyAstUtil import findEnclosingFunctionName, getAstFromFilePath
+        from pyfora.pyAst.PyAstUtil import findEnclosingFunctionName, getAstFromFilePath
         inFunction = findEnclosingFunctionName(
             getAstFromFilePath(path),
             lineNumber

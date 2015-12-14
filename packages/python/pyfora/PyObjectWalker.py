@@ -13,13 +13,13 @@
 #   limitations under the License.
 
 import pyfora.Exceptions as Exceptions
-import pyfora.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
+import pyfora.pyAst.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
 import pyfora.PureImplementationMappings as PureImplementationMappings
 import pyfora.RemotePythonObject as RemotePythonObject
 import pyfora.NamedSingletons as NamedSingletons
 import pyfora.PyforaWithBlock as PyforaWithBlock
 import pyfora.PyforaInspect as PyforaInspect
-import pyfora.PyAstUtil as PyAstUtil
+import pyfora.pyAst.PyAstUtil as PyAstUtil
 
 import logging
 import traceback
@@ -524,9 +524,6 @@ class PyObjectWalker(object):
             logging.error('Failed on %s (of type %s)', pyObject, type(pyObject))
             raise
 
-        # TODO fixup: this getsourcelines call here shares a lot of the 
-        # work done by getSourceFilenameAndText called previously.
-        # we could DRY them up a little
         _, sourceLine = PyforaInspect.getsourcelines(pyObject)
 
         sourceAst = PyAstUtil.pyAstFromText(sourceFileText)

@@ -24,7 +24,7 @@ import traceback
 import logging
 import pyfora.PyforaInspect as PyforaInspect
 import pyfora.Exceptions as Exceptions
-import pyfora.PyAstUtil as PyAstUtil
+import pyfora.pyAst.PyAstUtil as PyAstUtil
 import pyfora.DownloadPolicy as DownloadPolicy
 import sys
 import pyfora.PyforaWithBlock as PyforaWithBlock

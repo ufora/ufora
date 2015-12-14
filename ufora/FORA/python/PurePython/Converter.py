@@ -20,7 +20,7 @@ import ufora.BackendGateway.ComputedValue.ComputedValue as ComputedValue
 
 import pyfora.TypeDescription as TypeDescription
 import pyfora.StronglyConnectedComponents as StronglyConnectedComponents
-import pyfora.PyAstUtil as PyAstUtil
+import pyfora.pyAst.PyAstUtil as PyAstUtil
 import pyfora
 
 import ast

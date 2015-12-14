@@ -13,7 +13,7 @@
 #   limitations under the License.
 
 import pyfora.Exceptions as Exceptions
-import pyfora.NodeVisitorBases as NodeVisitorBases
+import pyfora.pyAst.NodeVisitorBases as NodeVisitorBases
 import pyfora.PyforaInspect as PyforaInspect
 
 import ast
@@ -51,15 +51,10 @@ def getSourceFilenameAndText(pyObject):
     except TypeError as e:
         raise Exceptions.CantGetSourceTextError(e.message)
 
-    if sourceFile in sourceFileCache_:
-        return sourceFileCache_[sourceFile], sourceFile
-
-    sourceFileCache_[sourceFile] = "".join(PyforaInspect.getlines(sourceFile))
+    if sourceFile not in sourceFileCache_:
+        sourceFileCache_[sourceFile] = "".join(PyforaInspect.getlines(sourceFile))
 
     return sourceFileCache_[sourceFile], sourceFile
-
-def getSourceFileText(pyObject):
-    return getSourceFilenameAndText(pyObject)[0]
 
 @CachedByArgs
 def pyAstFromText(text):
@@ -67,10 +62,6 @@ def pyAstFromText(text):
 
 def pyAstFor(pyObject):
     return pyAstFromText(getSourceText(pyObject))
-
-def getSourceFileAst(pyObject):
-    filename = PyforaInspect.getsourcefile(pyObject)
-    return getAstFromFilePath(filename)
 
 @CachedByArgs
 def getAstFromFilePath(filename):

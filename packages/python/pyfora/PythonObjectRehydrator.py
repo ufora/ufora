@@ -12,7 +12,7 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import pyfora.PyAstUtil as PyAstUtil
+import pyfora.pyAst.PyAstUtil as PyAstUtil
 import pyfora.PyforaInspect as PyforaInspect
 import pyfora.Exceptions as Exceptions
 import pyfora.NamedSingletons as NamedSingletons
