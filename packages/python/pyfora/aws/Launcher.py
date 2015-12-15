@@ -371,6 +371,40 @@ def start_instances(args):
         print_instance(worker, 'worker')
 
 
+def add_instances(args):
+    launcher = Launcher(region=get_region(args.ec2_region))
+    manager = [i for i in running_or_pending_instances(launcher.list_instances())
+               if 'Name' in i.tags and i.tags['Name'].startswith('ufora manager')]
+    if len(manager) > 1:
+        print "There is more than one Ufora Manager instance. Can't add workers.", \
+            "Managers:"
+        for m in manager:
+            print_instance(m)
+        return 1
+    elif len(manager) == 0:
+        print "No Ufora Manager instances are running. Can't add workers."
+        return 1
+
+    if args.num_instances < 1:
+        print "--num-instances must be greater or equal to 1."
+        return 1
+
+    manager = manager[0]
+    launcher.vpc_id = manager.vpc_id
+    launcher.subnet_id = manager.subnet_id
+    launcher.instance_type = manager.instance_type
+    launcher.security_group_id = manager.groups[0].id
+
+    print "Launching workers..."
+    workers = launcher.launch_workers(args.num_instances,
+                                      manager.key_name,
+                                      manager.id,
+                                      args.spot_price)
+    print "Workers started:"
+    for worker in workers:
+        print_instance(worker, 'worker')
+
+
 def list_instances(args):
     launcher = Launcher(region=get_region(args.ec2_region))
     reservations = launcher.list_instances()
@@ -385,11 +419,7 @@ def list_instances(args):
 
 def stop_instances(args):
     launcher = Launcher(region=get_region(args.ec2_region))
-    reservations = launcher.list_instances()
-    instances = [
-        i for r in reservations
-        for i in r.instances
-        if i.state == 'running' or i.state == 'pending']
+    instances = running_or_pending_instances(launcher.list_instances())
     count = len(instances)
     if count == 0:
         print "No running instances to stop"
@@ -403,6 +433,14 @@ def stop_instances(args):
             i.terminate()
         else:
             i.stop()
+
+
+def running_or_pending_instances(reservations):
+    return [
+        i for r in reservations
+        for i in r.instances
+        if i.state == 'running' or i.state == 'pending'
+        ]
 
 
 def print_instance(instance, tag=None):
@@ -479,6 +517,23 @@ def main():
               'Anyone will be able to connect to your cluster. '
               "As an alternative, considering tunneling Ufora's HTTP port (30000) "
               "over SSH using the -L argument.")
+        )
+
+    add_parser = subparsers.add_parser('add', help='Add workers to the existing cluster')
+    add_parser.set_defaults(func=add_instances)
+    add_region_argument(add_parser)
+    add_parser.add_argument(
+        '-n',
+        '--num-instances',
+        type=int,
+        default=1,
+        help='The number of new instances to add. Default: %(default)s'
+        )
+    add_parser.add_argument(
+        '--spot-price',
+        type=float,
+        help=('Launch spot instances with specified max bid price. '
+              'On-demand instances are launch if this argument is omitted.')
         )
 
     list_parser = subparsers.add_parser('list', help='List running ufora instances')
