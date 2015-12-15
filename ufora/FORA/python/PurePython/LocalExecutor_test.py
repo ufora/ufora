@@ -18,13 +18,25 @@ import ufora.FORA.python.PurePython.InMemoryExecutorTestCases as \
     InMemoryExecutorTestCases
 import ufora.FORA.python.PurePython.InMemoryPandasTestCases as \
     InMemoryPandasTestCases
+import ufora.FORA.python.PurePython.ExecutorTestCommon as ExecutorTestCommon
+import ufora.FORA.python.PurePython.NumpyTestCases as NumpyTestCases
+import ufora.FORA.python.PurePython.IteratorTestCases as IteratorTestCases
+import ufora.FORA.python.PurePython.BuiltinTestCases as BuiltinTestCases
+import ufora.FORA.python.PurePython.ExceptionTestCases as ExceptionTestCases
+
 
 import unittest
 
+
 class TestLocalExecutor(
         unittest.TestCase,
+        ExecutorTestCommon.ExecutorTestCommon,
         InMemoryExecutorTestCases.InMemoryExecutorTestCases,
-        InMemoryPandasTestCases.InMemoryPandasTestCases
+        InMemoryPandasTestCases.InMemoryPandasTestCases,
+        NumpyTestCases.NumpyTestCases,
+        IteratorTestCases.IteratorTestCases,
+        BuiltinTestCases.BuiltinTestCases,
+        ExceptionTestCases.ExceptionTestCases
         ):
     @classmethod
     def setUpClass(cls):

@@ -15,108 +15,14 @@
 import pyfora
 import pyfora.pyAst.PyAstUtil as PyAstUtil
 import pyfora.Exceptions as Exceptions
-import ufora.FORA.python.PurePython.ExceptionTestCases as ExceptionTestCases
 
 
-import random
 import numpy
-import logging
-import traceback
 import time
 
 
-class ExecutorTestCases(
-            ExceptionTestCases.ExceptionTestCases
-            ):
+class ExecutorTestCases(object):
     """ExecutorTestCases - mixin to define test cases for the pyfora Executor cass."""
-
-    def create_executor(self, allowCached=True):
-        """Subclasses of the test harness should implement"""
-        raise NotImplementedError()
-
-    def evaluateWithExecutor(self, func, *args, **kwds):
-        shouldClose = True
-        if 'executor' in kwds:
-            executor = kwds['executor']
-            shouldClose = False
-        else:
-            executor = self.create_executor()
-
-        try:
-            func_proxy = executor.define(func).result()
-            args_proxy = [executor.define(a).result() for a in args]
-            res_proxy = func_proxy(*args_proxy).result()
-
-            result = res_proxy.toLocal().result()
-            return result
-        finally:
-            if shouldClose:
-                executor.__exit__(None, None, None)
-
-
-    @staticmethod
-    def compareButDontCheckTypes(x, y):
-        if isinstance(x, basestring) and isinstance(y, basestring):
-            return x == y
-
-        if hasattr(x, '__len__') and hasattr(y, '__len__'):
-            l1 = len(x)
-            l2 = len(y)
-            if l1 != l2:
-                return False
-            for idx in range(l1):
-                if not ExecutorTestCases.compareButDontCheckTypes(x[idx], y[idx]):
-                    return False
-            return True
-        else:
-            return x == y
-
-    @staticmethod
-    def defaultComparison(x, y):
-        if isinstance(x, basestring) and isinstance(y, basestring):
-            return x == y
-
-        if hasattr(x, '__len__') and hasattr(y, '__len__'):
-            l1 = len(x)
-            l2 = len(y)
-            if l1 != l2:
-                return False
-            for idx in range(l1):
-                if not ExecutorTestCases.defaultComparison(x[idx], y[idx]):
-                    return False
-            return True
-        else:
-            same = x == y and type(x) is type(y)
-            if not same:
-                print "Results differed: ", x, y, ". Types are ", type(x), " and ", type(y)
-            return same
-
-    def equivalentEvaluationTest(self, func, *args, **kwds):
-        comparisonFunction = ExecutorTestCases.defaultComparison
-        if 'comparisonFunction' in kwds:
-            comparisonFunction = kwds['comparisonFunction']
-
-        with self.create_executor() as executor:
-            t0 = time.time()
-            func_proxy = executor.define(func).result()
-            args_proxy = [executor.define(a).result() for a in args]
-            res_proxy = func_proxy(*args_proxy).result()
-
-            pyforaResult = res_proxy.toLocal().result()
-            t1 = time.time()
-            pythonResult = func(*args)
-            t2 = time.time()
-
-            self.assertTrue(
-                comparisonFunction(pyforaResult, pythonResult),
-                "Pyfora and python returned different results: %s != %s for %s(%s), respectively" % (
-                    pyforaResult, pythonResult, func, args)
-                )
-
-            if t2 - t0 > 5.0:
-                print "Pyfora took ", t1 - t0, ". python took ", t2 - t1
-
-        return pythonResult
 
     def test_string_indexing(self):
         def f():
@@ -160,65 +66,6 @@ class ExecutorTestCases(
 
         self.equivalentEvaluationTest(f)
 
-    def test_range_builtin_simple(self):
-        def f(x):
-            return range(x)
-
-        self.equivalentEvaluationTest(f, 10)
-
-    def test_xrange_builtin_simple(self):
-        def f(x):
-            toReturn = 0
-            for ix in xrange(x):
-                toReturn = ix + toReturn
-            return toReturn
-        self.equivalentEvaluationTest(f, 10)
-
-    def test_range_builtin_overloads(self):
-        def f(start, stop, incr=1):
-            return range(start, stop, incr)
-
-        self.equivalentEvaluationTest(f, 1, 10)
-        self.equivalentEvaluationTest(f, 10, 5)
-        self.equivalentEvaluationTest(f, 5, 10)
-        self.equivalentEvaluationTest(f, 10, 1, 2)
-        self.equivalentEvaluationTest(f, 10, 5, 5)
-        self.equivalentEvaluationTest(f, 10, 10, 10)
-
-    def equivalentEvaluationTestThatHandlesExceptions(self, func, *args, **kwds):
-        comparisonFunction = ExecutorTestCases.defaultComparison
-        if 'comparisonFunction' in kwds:
-            comparisonFunction = kwds['comparisonFunction']
-
-        with self.create_executor() as executor:
-            try:
-                pythonResult = func(*args)
-                pythonSucceeded = True
-            except Exception as ex:
-                pythonSucceeded = False
-
-            try:
-                pyforaResult = self.evaluateWithExecutor(func, *args, executor=executor)
-                pyforaSucceeded = True
-            except pyfora.Exceptions.ComputationError as ex:
-                if pythonSucceeded:
-                    logging.error("Python succeeded, but pyfora threw %s for %s%s", ex, func, args)
-                pyforaSucceeded = False
-            except:
-                logging.error("General exception in pyfora for %s%s:\n%s",
-                              func, args, traceback.format_exc())
-                return False
-
-            self.assertEqual(pythonSucceeded, pyforaSucceeded,
-                    "Pyfora and python returned successes: %s%s" % (func, args)
-                    )
-            if pythonSucceeded:
-                self.assertTrue(comparisonFunction(pythonResult, pyforaResult),
-                    "Pyfora and python returned different results: %s != %s for %s%s, respectively" % (
-                        pyforaResult, pythonResult, func, args)
-                    )
-                return pythonResult
-
     def resolvedFutures(self, futures):
         results = [f.result() for f in futures]
         localResults = [r.toLocal() for r in results]
@@ -229,14 +76,6 @@ class ExecutorTestCases(
             except:
                 pass
         return foraResults
-
-    def test_ord_chr_builtins(self):
-        def f():
-            chars = [chr(val) for val in range(40, 125)]
-            vals = [ord(val) for val in chars]
-            return (chars, vals)
-
-        self.equivalentEvaluationTest(f)
 
     def test_python_if_int(self):
         def f():
@@ -326,74 +165,6 @@ class ExecutorTestCases(
             return []
         self.equivalentEvaluationTest(f)
 
-    def test_zero_division_should_throw(self):
-        def f1():
-            return 4 / 0
-
-        with self.assertRaises(pyfora.ComputationError):
-            self.evaluateWithExecutor(f1)
-
-        def f2():
-            return 4.0 / 0
-
-        with self.assertRaises(pyfora.ComputationError):
-            self.evaluateWithExecutor(f2)
-
-        def f3():
-            return 4 / 0.0
-
-        with self.assertRaises(pyfora.ComputationError):
-            self.evaluateWithExecutor(f3)
-
-        def f4():
-            return 4.0 / 0.0
-
-        with self.assertRaises(pyfora.ComputationError):
-            self.evaluateWithExecutor(f4)
-
-    def test_builtins_abs(self):
-        def f(x):
-            return abs(x)
-        for x in range(-10, 10):
-            self.equivalentEvaluationTest(f, x)
-
-        self.equivalentEvaluationTest(f, True)
-        self.equivalentEvaluationTest(f, False)
-        with self.assertRaises(pyfora.ComputationError):
-            self.evaluateWithExecutor(f, [])
-        with self.assertRaises(pyfora.ComputationError):
-            self.evaluateWithExecutor(f, ["test"])
-        with self.assertRaises(pyfora.ComputationError):
-            self.evaluateWithExecutor(f, "test")
-
-    def test_builtins_all(self):
-        def f(x):
-            return all(x)
-        self.equivalentEvaluationTest(f, [])
-        self.equivalentEvaluationTest(f, [True])
-        self.equivalentEvaluationTest(f, [False])
-        self.equivalentEvaluationTest(f, [True, True])
-        self.equivalentEvaluationTest(f, [True, False])
-        self.equivalentEvaluationTest(f, [False, True])
-        self.equivalentEvaluationTest(f, [False, False])
-
-    def test_builtins_any(self):
-        def f(x):
-            return any(x)
-        self.equivalentEvaluationTest(f, [])
-        self.equivalentEvaluationTest(f, [True])
-        self.equivalentEvaluationTest(f, [False])
-        self.equivalentEvaluationTest(f, [True, True])
-        self.equivalentEvaluationTest(f, [True, False])
-        self.equivalentEvaluationTest(f, [False, True])
-        self.equivalentEvaluationTest(f, [False, False])
-
-    def test_builtins_zip_not_implemented(self):
-        def f(x):
-            return zip(x)
-        with self.assertRaises(pyfora.Exceptions.PyforaNotImplementedError):
-            self.equivalentEvaluationTest(f, [])
-
     def test_large_strings(self):
         def f():
             a = "val1"
@@ -403,12 +174,6 @@ class ExecutorTestCases(
 
             return a
 
-        self.equivalentEvaluationTest(f)
-
-    def test_numpy(self):
-        n = numpy.zeros(10)
-        def f():
-            return n.shape
         self.equivalentEvaluationTest(f)
 
     def test_primitive_type_comparisons(self):
@@ -427,127 +192,6 @@ class ExecutorTestCases(
             return toReturn
         self.equivalentEvaluationTest(f)
 
-    def assertArraysAreAlmostEqual(self, m1, m2):
-        self.assertTrue(
-            numpy.isclose(m1, m2).all()
-            )
-
-    def test_numpy_pinverse_2(self):
-        numpy.random.seed(42)
-
-        def f(array):
-            return numpy.linalg.pinv(array)
-
-        arr = numpy.random.rand(20, 10) * 1000
-        t1 = time.time()
-        r1 = self.evaluateWithExecutor(f, arr)
-        t2 = time.time()
-        r2 = f(arr)
-        t3 = time.time()
-        print t3 - t2, t2 - t1
-        self.assertArraysAreAlmostEqual(r1, r2)
-
-    def test_numpy_pinverse_1(self):
-        def f(arr):
-            array = numpy.array(arr)
-            return numpy.linalg.pinv(array)
-
-        arr1 = [ [67.0, 63.0, 87.0],
-                [77.0, 69.0, 59.0],
-                [85.0, 87.0, 99.0],
-                [15.0, 17.0, 19.0] ]
-
-        r1 = self.evaluateWithExecutor(f, arr1)
-        r2 = f(arr1)
-        self.assertArraysAreAlmostEqual(r1, r2)
-
-        arr2 = [ [1.0, 1.0, 1.0, 1.0],
-            [5.0, 7.0, 7, 9] ]
-        r1 = self.evaluateWithExecutor(f, arr2)
-        r2 = f(arr2)
-        self.assertArraysAreAlmostEqual(r1, r2)
-
-    def test_numpy_transpose(self):
-        def f():
-            array = numpy.array([ [67.0, 63.0, 87.0],
-                [77.0, 69.0, 59.0],
-                [85.0, 87.0, 99.0],
-                [15.0, 17.0, 19.0] ])
-
-            return array.transpose()
-        self.equivalentEvaluationTest(f)
-
-
-        def f2():
-            arr = numpy.array([[[67.0], [87.0]], [[69.0], [85.0]], [[69.0], [15.0]]])
-
-            return arr.transpose()
-        self.equivalentEvaluationTest(f2)
-
-
-        def f3():
-            arr = numpy.array([1.0, 2.0, 3.0, 4.0, 5.0])
-
-            return arr.transpose()
-        self.equivalentEvaluationTest(f3)
-
-    def test_numpy_indexing_1(self):
-        def f():
-            array = numpy.array([ [67.0, 63.0, 87.0],
-                [77.0, 69.0, 59.0],
-                [85.0, 87.0, 99.0],
-                [15.0, 17.0, 19.0] ])
-
-            toReturn = []
-            l = len(array)
-            l2 = len(array[0])
-            for x in range(l):
-                for y in range(l2):
-                    toReturn = toReturn + [array[x][y]]
-            return toReturn
-
-    def test_numpy_indexing_2(self):
-        def f():
-            arr = numpy.array([ 67.0, 63.0, 87.0, 77.0, 69.0, 59.0, 85.0, 87.0, 99.0 ])
-            return (arr, arr[0], arr[1], arr[8])
-
-        self.equivalentEvaluationTest(
-            f, comparisonFunction=ExecutorTestCases.compareButDontCheckTypes
-            )
-
-
-    def test_numpy_indexing_3(self):
-        def f():
-            arr = numpy.array([[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]])
-            return (arr, arr[0], arr[1], arr[1][0], arr[0][1][1])
-        self.equivalentEvaluationTest(
-            f, comparisonFunction=ExecutorTestCases.compareButDontCheckTypes)
-
-        def f2():
-            arr = numpy.array([[[67.0], [87.0]], [[69.0], [85.0]], [[69.0], [15.0]]])
-            return (arr, arr[0], arr[1], arr[1][0], arr[2][1][0])
-
-        self.equivalentEvaluationTest(
-            f2, comparisonFunction=ExecutorTestCases.compareButDontCheckTypes)
-
-        def f3():
-            arr = numpy.array([[[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]], \
-                               [[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]]])
-            return (arr, arr[0], arr[1], arr[1][0], arr[0][1][1], arr[0][1][1][1])
-
-        self.equivalentEvaluationTest(
-            f3, comparisonFunction=ExecutorTestCases.compareButDontCheckTypes)
-
-    def test_return_numpy(self):
-        n = numpy.zeros(10)
-        def f():
-            return n
-        res = self.evaluateWithExecutor(f)
-
-        self.assertTrue(isinstance(res, numpy.ndarray), res)
-
-        self.equivalentEvaluationTest(f)
-
     def test_len_on_tuple(self):
         def f():
             a = (9,)
@@ -556,265 +200,6 @@ class ExecutorTestCases(
             return (len(a), len(b), len(c))
 
         self.evaluateWithExecutor(f)
-
-    def test_reversed_builtins(self):
-        def f():
-            a = [1, 2, 3, 4, 5, 6]
-            b = reversed(a)
-            toReturn = []
-            for v in b:
-                toReturn = toReturn + [v]
-            return toReturn
-
-        self.equivalentEvaluationTest(f)
-
-    def test_reduce_builtin(self):
-        def mul(x,y): return x*y
-        def sub(x,y): return x-y
-        self.equivalentEvaluationTest(lambda: reduce(mul, [1,2,3,4,5]))
-        self.equivalentEvaluationTest(lambda: reduce(mul, [1,2,3,4,5], 0))
-
-        def nonparallel(x):
-            for v in x:
-                yield v
-
-        self.equivalentEvaluationTest(lambda: reduce(sub, nonparallel([1.0,2.0,3.0,4.0,5.0])))
-        self.equivalentEvaluationTest(lambda: reduce(sub, nonparallel([1.0,2.0,3.0,4.0,5.0]), 10))
-
-    def test_numpy_flatten(self):
-        def f(lists):
-            b = numpy.array(lists)
-            return b.flatten()
-        a = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
-        self.equivalentEvaluationTest(f, a)
-
-        b = [[67.0, 63, 87],
-               [77, 69, 59],
-               [85, 87, 99],
-               [79, 72, 71],
-               [63, 89, 93],
-               [68, 92, 78]]
-        self.equivalentEvaluationTest(f, b)
-
-        c = [[[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]], \
-             [[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]]]
-
-        self.equivalentEvaluationTest(f, c)
-
-    def test_numpy_arrays_are_iterable(self):
-        def f():
-            array = numpy.array([[67, 63, 87],
-               [77, 69, 59],
-               [85, 87, 99],
-               [79, 72, 71],
-               [63, 89, 93],
-               [68, 92, 78]])
-            toReturn = []
-            for val in array:
-                toReturn = toReturn + [val]
-            return toReturn
-
-        self.equivalentEvaluationTest(f)
-
-    def test_numpy_tolist(self):
-        def f(lists):
-            b = numpy.array(lists)
-            return b.tolist()
-        a = [1, 2, 3, 4, 5, 6]
-        self.equivalentEvaluationTest(f, a)
-
-        b = [[67, 63, 87],
-             [77, 69, 59],
-             [85, 87, 99],
-             [79, 72, 71],
-             [63, 89, 93],
-             [68, 92, 78]]
-        self.equivalentEvaluationTest(f, b)
-
-        c = [[[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]], \
-             [[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]]]
-        self.equivalentEvaluationTest(f, c)
-
-    def test_map_builtin(self):
-        def addOne(x):
-            return x + 1
-        self.equivalentEvaluationTest(lambda: map(None, [1,2,3]))
-        self.equivalentEvaluationTest(lambda: map(addOne, [1,2,3]))
-        self.equivalentEvaluationTest(lambda: map(addOne, (x for x in [1,2,3])))
-
-    def test_numpy_dot_product_1(self):
-        random.seed(43)
-
-        listLength = 20
-        def f(arr1, arr2):
-            return numpy.dot(arr1, arr2)
-
-        for _ in range(10):
-            x1 = [random.uniform(-10, 10) for _ in range(0, listLength)]
-            x2 = [random.uniform(-10, 10) for _ in range(0, listLength)]
-
-            self.equivalentEvaluationTest(
-                f, x1, x2,
-                comparisonFunction=numpy.isclose
-                )
-
-    def test_numpy_dot_product_2(self):
-        random.seed(44)
-
-        listLength = 20
-
-        arr1 = [random.uniform(-10, 10) for _ in range(0, listLength)]
-        arr2 = [random.uniform(-10, 10) for _ in range(0, listLength)]
-
-        def f():
-            a = numpy.array(arr1)
-            b = numpy.array(arr2)
-
-            return numpy.dot(a, b)
-
-        r1 = self.evaluateWithExecutor(f)
-        r2 = f()
-
-        self.assertTrue(numpy.isclose(r1, r2))
-
-    def test_numpy_dot_product_3(self):
-        def f1():
-            m1 = numpy.array([1.0, 2, 3, 4, 5, 6])
-            m2 = numpy.array([[67.0, 63, 87],
-                       [77, 69, 59],
-                       [85, 87, 99],
-                       [79, 72, 71],
-                       [63, 89, 93],
-                       [68, 92, 78]])
-            return numpy.dot(m1, m2)
-        self.equivalentEvaluationTest(f1)
-
-        def f2():
-            m1 = numpy.array([1.0, 2, 3, 4, 5, 6])
-            m2 = numpy.array([[67.0, 63, 87],
-                       [77, 69, 59],
-                       [85, 87, 99],
-                       [79, 72, 71],
-                       [63, 89, 93],
-                       [68, 92, 78]])
-            return numpy.dot(m2, m1)
-        self.equivalentEvaluationTestThatHandlesExceptions(f2)
-
-    def test_numpy_dot_product_4(self):
-        x = numpy.array([[1,2],[3,4]])
-        y = numpy.array([1,2,3])
-        
-        with self.assertRaises(ValueError):
-            with self.create_executor() as fora:
-                with fora.remotely:
-                    numpy.dot(y, x)
-
-    def test_numpy_matrix_multiplication_1(self):
-        def f():
-            m1 = numpy.array([ [67.0, 63, 87],
-                       [77, 69, 59],
-                       [85, 87, 99],
-                       [79, 72, 71],
-                       [63, 89, 93],
-                       [68, 92, 78] ])
-            m2 = m1.transpose()
-
-            return numpy.dot(m1, m2)
-        r1 = self.evaluateWithExecutor(f)
-        r2 = f()
-        self.assertArraysAreAlmostEqual(r1, r2)
-
-    def test_numpy_matrix_multiplication_misaligned_1(self):
-        m1 = numpy.array([[1,2], [3,4]])
-        m2 = numpy.array([[1,2], [3,4], [5,6]])
-
-        with self.assertRaises(ValueError):
-            with self.create_executor() as fora:
-                with fora.remotely:
-                    numpy.dot(m1, m2)
-
-    def test_numpy_matrix_multiplication_misaligned_2(self):
-        m1 = numpy.array([1,2, 3,4])
-        m2 = numpy.array([[1,2], [3,4], [5,6]])
-
-        with self.assertRaises(ValueError):
-            with self.create_executor() as fora:
-                with fora.remotely:
-                    numpy.dot(m1, m2)
-
-    def test_reshape(self):
-        def f(newShape):
-            m1 = numpy.array([ 
-                [67.0, 63, 87],
-                [77, 69, 59],
-                [85, 87, 99],
-                [79, 72, 71],
-                [63, 89, 93],
-                [68, 92, 78] ])
-            return m1.reshape(newShape)
-
-        self.equivalentEvaluationTest(f, (1, 18))
-        self.equivalentEvaluationTest(f, (2, 9))
-        self.equivalentEvaluationTest(f, (3, 6))
-        self.equivalentEvaluationTestThatHandlesExceptions(f, (1, 1))
-
-    def test_numpy_matrix_division(self):
-        random.seed(44)
-
-        matrix = numpy.array([ [67, 63, 87],
-                       [77, 69, 59],
-                       [85, 87, 99],
-                       [79, 72, 71],
-                       [63, 89, 93],
-                       [68, 92, 78] ])
-
-        for _ in range(10):
-            def f(x):
-                return matrix / x
-            self.equivalentEvaluationTest(f, random.uniform(-10, 10))
-
-            def f2(x):
-                return matrix * x
-            self.equivalentEvaluationTest(f2, random.uniform(-10, 10))
-
-            def f3(x):
-                return matrix + x
-            self.equivalentEvaluationTest(f3, random.uniform(-10, 10))
-
-            def f4(x):
-                return matrix - x
-            self.equivalentEvaluationTest(f4, random.uniform(-10, 10))
-
-            def f5(x):
-                return matrix ** x
-            self.equivalentEvaluationTest(f5, random.uniform(-10, 10))
-
-    def test_numpy_make_array(self):
-        def f():
-            return numpy.zeros(10)
-
-        self.equivalentEvaluationTest(f)
-
-    def test_numpy_addition_1(self):
-        def f():
-            x1 = numpy.array([[1,2],[3,4]])
-            x2 = numpy.array([[8,7],[6,5]])
-
-            return x1 + x2
-
-        self.equivalentEvaluationTest(f)
-
-    def test_numpy_addition_2(self):
-        def f():
-            x1 = numpy.array([[1,2],[3,4]])
-            x2 = numpy.array([[8,7,5,6]])
-
-            return x1 + x2
-
-        with self.assertRaises(ValueError):
-            with self.create_executor() as fora:
-                with fora.remotely:
-                    f()
 
     def test_return_list(self):
         def f():
@@ -1262,17 +647,6 @@ class ExecutorTestCases(
             with self.assertRaises(pyfora.CancelledError):
                 future.result()
 
-
-    def test_divide_by_zero(self):
-        with self.create_executor() as executor:
-            def f(x):
-                return 1/x
-            arg = 0
-
-            future = executor.submit(f, arg)
-            with self.assertRaises(pyfora.PyforaError):
-                future.result().toLocal().result()
-
     def test_convertListOfTuple(self):
         x = [(3,4)]
 
@@ -1345,63 +719,6 @@ class ExecutorTestCases(
             self.equivalentEvaluationTestThatHandlesExceptions(lambda x: -x, c)
             self.equivalentEvaluationTestThatHandlesExceptions(lambda x: ~x, c)
 
-    def test_builtins_any(self):
-        self.equivalentEvaluationTest(any, [])
-        self.equivalentEvaluationTest(any, [True])
-        self.equivalentEvaluationTest(any, [True, False])
-        self.equivalentEvaluationTest(any, [False, False])
-
-    def test_builtins_all(self):
-        self.equivalentEvaluationTest(all, [])
-        self.equivalentEvaluationTest(all, [True])
-        self.equivalentEvaluationTest(all, [True, False])
-        self.equivalentEvaluationTest(all, [False, False])
-
-    def test_reference_module(self):
-        with self.create_executor() as executor:
-            import socket
-            def f():
-                return str(socket)
-
-            with self.assertRaises(pyfora.PythonToForaConversionError):
-                executor.submit(f)
-
-    def test_reference_nonexistent_module_member(self):
-        with self.create_executor() as executor:
-            import socket
-            def f():
-                return socket.this_doesnt_exist
-
-            with self.assertRaises(pyfora.PythonToForaConversionError):
-                executor.submit(f)
-
-
-    def test_invalid_apply(self):
-        with self.create_executor() as executor:
-            def f(x):
-                return x[0]
-            arg = 0
-
-            future = executor.submit(f, arg)
-            with self.assertRaises(pyfora.ComputationError):
-                try:
-                    print "result=",future.result()
-                    print future.result().toLocal().result()
-                except Exception as e:
-                    print e
-                    raise
-
-    def test_conversion_error(self):
-        with self.create_executor() as executor:
-            def f(x):
-                y = [1, 2, 3, 4]
-                y[1] = x
-                return y
-
-            future = executor.define(f)
-            with self.assertRaises(pyfora.PythonToForaConversionError):
-                future.result()
-
     def test_pass_returns_None(self):
         with self.create_executor() as executor:
             def f():
@@ -1461,14 +778,6 @@ class ExecutorTestCases(
             def f(): return -10
             self.equivalentEvaluationTest(f)
 
-    def test_sum_xrange(self):
-        with self.create_executor() as executor:
-            arg = 1000000000
-            def f():
-                return sum(xrange(arg))
-
-            self.assertEqual(self.evaluateWithExecutor(f), arg*(arg-1)/2)
-
     def test_jsonConversionError(self):
         with self.create_executor(allowCached=False) as executor:
             def f():
@@ -1522,21 +831,6 @@ class ExecutorTestCases(
 
         self.assertIs(self.evaluateWithExecutor(f), True)
 
-    def test_list_on_iterable(self):
-        def it(x):
-            while x > 0:
-                yield x
-                x = x - 1
-
-        def f1():
-            return list(xrange(10))
-
-        def f2():
-            return list(it(10))
-
-        self.equivalentEvaluationTest(f1)
-        self.equivalentEvaluationTest(f2)
-
     def test_member_access(self):
         def g():
             return 10
@@ -1568,148 +862,15 @@ class ExecutorTestCases(
 
         self.assertEqual(self.evaluateWithExecutor(f)(), 10)
 
-    def test_GeneratorExp_works(self):
-        self.equivalentEvaluationTest(lambda: list(x for x in xrange(10)))
-
     def test_is_returns_true(self):
         self.equivalentEvaluationTest(lambda x: x is 10, 10)
         self.equivalentEvaluationTest(lambda x: x is 10, 11)
-
-    def test_sum_on_generator(self):
-        class Generator1:
-            def __pyfora_generator__(self):
-                return self
-
-            def __init__(self, x, y, func):
-                self.x = x
-                self.y = y
-                self.func = func
-
-            def __iter__(self):
-                yield self.func(self.x)
-
-            def isNestedGenerator(self):
-                return False
-
-            def canSplit(self):
-                return self.x + 1 < self.y
-
-            def split(self):
-                if not self.canSplit():
-                    return None
-
-                return (
-                    Generator1(self.x, (self.x+self.y)/2, self.func),
-                    Generator1((self.x+self.y)/2, self.y, self.func)
-                    )
-
-            def map(self, mapFun):
-                newMapFun = lambda x: mapFun(self.func(x))
-                return Generator1(self.x, self.y, newMapFun)
-
-        def f():
-            return sum(Generator1(0, 100, lambda x:x))
-
-        self.assertEqual(f(), 0)
-        self.assertEqual(self.evaluateWithExecutor(f), sum(xrange(100)))
 
     def test_tuples_are_pyfora_objects(self):
         def f():
             return (1,2,3).__is_pyfora__
 
         self.assertTrue(self.evaluateWithExecutor(f))
-
-    def test_list_generators_splittable(self):
-        def f():
-            return [1,2,3].__pyfora_generator__().canSplit()
-
-        self.assertTrue(self.evaluateWithExecutor(f))
-
-    def test_list_generators_splittable(self):
-        def f():
-            return [1,2,3].__pyfora_generator__().canSplit()
-
-        self.assertTrue(self.evaluateWithExecutor(f))
-
-    def test_list_generators_mappable(self):
-        def f():
-            return list([1,2,3].__pyfora_generator__().map(lambda z:z*2)) == [2,4,6]
-
-        self.assertTrue(self.evaluateWithExecutor(f))
-
-    def test_iterate_split_xrange(self):
-        def f():
-            g = xrange(100).__pyfora_generator__().split()[0]
-            res = []
-            for x in g:
-                res = res + [x]
-
-            return res == range(50)
-
-        self.assertTrue(self.evaluateWithExecutor(f))
-
-    def test_iterate_split_mapped_xrange(self):
-        def f():
-            g = xrange(100).__pyfora_generator__().map(lambda x:x).split()[0]
-            res = []
-            for x in g:
-                res = res + [x]
-
-            return res == range(50)
-
-        self.assertTrue(self.evaluateWithExecutor(f))
-
-    def test_iterate_map_split_xrange(self):
-        for ix in range(10):
-            def f():
-                g = xrange(100).__pyfora_generator__().split()[0].map(lambda x:x)
-                res = []
-                for x in g:
-                    res = res + [x]
-
-                return res == range(50)
-
-            self.assertTrue(self.evaluateWithExecutor(f))
-
-
-    def test_iterate_xrange(self):
-        def f():
-            res = []
-
-            for x in xrange(50):
-                res = res + [x]
-
-            return res == range(50)
-
-        self.assertTrue(self.evaluateWithExecutor(f))
-
-    def test_iterate_xrange_generator(self):
-        def f():
-            res = []
-
-            for x in xrange(50).__pyfora_generator__().map(lambda x:x):
-                res = res + [x]
-
-            return res == range(50)
-
-        self.assertTrue(self.evaluateWithExecutor(f))
-
-    def test_iterate_xrange_empty(self):
-        def f():
-            res = []
-
-            for x in xrange(0):
-                res = res + [x]
-
-            return res == []
-
-        self.assertTrue(self.evaluateWithExecutor(f))
-
-    def test_list_on_xrange(self):
-        for ct in [0,1,2,4,8,16,32,64,100,101,102,103]:
-            self.equivalentEvaluationTest(lambda: sum(x for x in xrange(ct)))
-            self.equivalentEvaluationTest(lambda: list(x for x in xrange(ct)))
-            self.equivalentEvaluationTest(lambda: [x for x in xrange(ct)])
 
     def test_issubclass(self):
         test = self.equivalentEvaluationTestThatHandlesExceptions
@@ -2317,20 +1478,6 @@ class ExecutorTestCases(
 
         self.assertTrue(self.evaluateWithExecutor(f))
 
-
-    def test_return_in_init_method(self):
-        def f():
-            class ClassReturnInInit:
-                def __init__(self):
-                    self.x = 10
-                    return
-
-            return ClassReturnInInit()
-
-        with self.assertRaises(Exceptions.PythonToForaConversionError):
-            self.evaluateWithExecutor(f)
-
-
     def test_lists_1(self):
         x = [1,2,3,4]
 
@@ -2371,48 +1518,6 @@ class ExecutorTestCases(
 
         for ix in range(size):
             self.equivalentEvaluationTest(f, ix)
-
-    def test_lists_with_circular_references_1(self):
-        circularList = [1,2,3]
-        circularList.append(circularList)
-
-        def f():
-            return circularList
-
-        with self.assertRaises(pyfora.Exceptions.PythonToForaConversionError):
-            self.equivalentEvaluationTest(f)
-
-    def test_lists_with_circular_references_2(self):
-        circularList = [1,2,3]
-        class SomeClass1:
-            def __init__(self, val):
-                self.__m__ = val
-        circularList.append(SomeClass1(circularList))
-
-        def f():
-            return circularList
-
-        with self.assertRaises(pyfora.Exceptions.PythonToForaConversionError):
-            self.equivalentEvaluationTest(f)
-
-    def test_lists_with_circular_references_3(self):
-        circularList = [1,2,3]
-        class SomeClass2:
-            def __init__(self, val):
-                self.__m__ = val
-        circularList.append(
-            SomeClass2(
-                SomeClass2(
-                    [circularList, 2]
-                    )
-                )
-            )
-
-        def f():
-            return circularList
-
-        with self.assertRaises(pyfora.Exceptions.PythonToForaConversionError):
-            self.equivalentEvaluationTest(f)
 
     def test_dicts(self):
         x = { 1: 2, 3: 4, 5: 6, 7: 8, 9: 10, 11: 12 }
@@ -2626,32 +1731,6 @@ class ExecutorTestCases(
         for ix in range(5):
             self.equivalentEvaluationTest(fib, ix)
 
-    def test_initMethods_1(self):
-        class A1():
-            def __init__(self):
-                class B():
-                    pass
-
-        def f():
-            a = A1()
-            return None
-
-        with self.assertRaises(pyfora.Exceptions.PythonToForaConversionError):
-            self.equivalentEvaluationTest(f)
-
-    def test_initMethods_2(self):
-        class A2():
-            def __init__(self):
-                def foo():
-                    pass
-
-        def f():
-            a = A2()
-            return None
-
-        with self.assertRaises(pyfora.Exceptions.PythonToForaConversionError):
-            self.equivalentEvaluationTest(f)
-
     def test_initMethods_3(self):
         def f(arg):
             class A():
@@ -2672,17 +1751,6 @@ class ExecutorTestCases(
 
         for ix in range(4):
             self.equivalentEvaluationTest(f, ix)
-
-    def test_initMethods_5(self):
-        def f():
-            class A():
-                def __init__(self, x):
-                    self = 2
-                    self.x = x
-            return None
-
-        with self.assertRaises(pyfora.Exceptions.PythonToForaConversionError):
-            self.equivalentEvaluationTest(f)
 
     def test_initMethods_6(self):
         def f():
@@ -2774,21 +1842,6 @@ class ExecutorTestCases(
 
         self.equivalentEvaluationTest(f, 2)
 
-    def test_imports_3(self):
-        import ufora.FORA.python.PurePython.testModules.ModuleWithUnconvertableMember \
-            as ModuleWithUnconvertableMember
-
-        def f(x):
-            return ModuleWithUnconvertableMember.convertableMember(x)
-
-        def unconvertable(x):
-            return ModuleWithUnconvertableMember.unconvertableMember(x)
-
-        with self.assertRaises(pyfora.Exceptions.PythonToForaConversionError):
-            self.equivalentEvaluationTest(unconvertable, 2)
-
-        self.equivalentEvaluationTest(f, 2)
-
     def test_closures_1(self):
         import ufora.FORA.python.PurePython.testModules.ModuleWithClosures1 \
             as ModuleWithClosures1
@@ -2859,18 +1912,6 @@ class ExecutorTestCases(
             self.assertIsInstance(e.message, str)
             self.assertTrue(e.trace is not None)
 
-    def test_return_generator_object_throws_exception(self):
-        def f():
-            def yields(ct):
-                yield ct
-            return yields(10)
-
-        try:
-            self.evaluateWithExecutor(f)
-            self.assertTrue(False)
-        except Exceptions.ForaToPythonConversionError as e:
-            self.assertIsInstance(e.message, str)
-
     def test_list_containing_itself(self):
         evilList = []
         evilList.append(evilList)
@@ -2920,17 +1961,6 @@ class ExecutorTestCases(
 
         self.evaluateWithExecutor(f2)
 
-    def test_only_convert_defs_and_string_constants_in_class_bodies(self):
-        def f():
-            class c:
-                {"a":3}
-                def m(self):
-                    return 1
-
-            return c().m()
-        with self.assertRaises(Exceptions.PythonToForaConversionError):
-            self.evaluateWithExecutor(f)
-
     def test_import(self):
         def f():
             import sys
@@ -2975,40 +2005,6 @@ class ExecutorTestCases(
             return 0
 
         self.equivalentEvaluationTest(f, 2)
-
-    def test_free_variables_propagate_in_with_blocks(self):
-        def f():
-            return thisVariableDoesntExist
-
-        with self.create_executor() as fora:
-            with self.assertRaises(Exceptions.PythonToForaConversionError):
-                with fora.remotely:
-                    result = f()
-
-    def test_unbound_variables_propagate_in_with_blocks(self):
-        def f():
-            x = x
-            return x
-
-        with self.create_executor() as fora:
-            with self.assertRaises(UnboundLocalError):
-                with fora.remotely:
-                    result = f()
-
-    def test_supported_builtin_member(self):
-        import math
-        def f(x):
-            return x + math.pi
-
-        self.equivalentEvaluationTest(f, 2)
-
-    def test_unsupported_builtin_member(self):
-        import math
-        def f(x):
-            return math.sin(x)
-
-        with self.assertRaises(Exceptions.PythonToForaConversionError):
-            self.equivalentEvaluationTest(f, 2)
 
     def test_isinstance_class(self):
         class IsinstanceClassTest:
@@ -3131,31 +2127,11 @@ class ExecutorTestCases(
 
         self.equivalentEvaluationTest(f)
 
-    def test_ellipsis(self):
-        # we're not supporting Ellipsis yet in slicing
-        def f():
-            x = range(10)
-            return x[...]
-
-        with self.assertRaises(pyfora.PythonToForaConversionError):
-            self.evaluateWithExecutor(f)
-
     def test_returning_slice_1(self):
         def f1():
             return slice
 
         self.equivalentEvaluationTest(f1)
-
-    def test_returning_slice_2(self):
-        class C:
-            def __getitem__(self, key):
-                return key
-
-        def f2():
-            return C()[1:2:3]
-
-        with self.assertRaises(pyfora.ForaToPythonConversionError):
-            self.evaluateWithExecutor(f2)
 
     def test_inserting_slice_1(self):
         def f():
@@ -3164,15 +2140,6 @@ class ExecutorTestCases(
             return x[s]
 
         self.equivalentEvaluationTest(f)
-
-    def test_inserting_slice_2(self):
-        s = slice(1,2,3)
-        def f():
-            x = range(10)
-            return x[s]
-
-        with self.assertRaises(pyfora.PythonToForaConversionError):
-            self.equivalentEvaluationTest(f)
 
     def test_unbound_variable_access_throws(self):
         def f():
@@ -3291,18 +2258,6 @@ class ExecutorTestCases(
 
         self.equivalentEvaluationTest(lambda: StaticMethodNameNoncapturing.f() is None)
 
-    def test_yield_in_init_throws(self):
-        class YieldInInit:
-            def __init__(self):
-                yield 10
-
-        def f():
-            YieldInInit()
-            return
-
-        with self.assertRaises(Exceptions.PythonToForaConversionError):
-            self.evaluateWithExecutor(f)
-
     def test_mutual_recursion(self):
         def f(n):
             if n < 0:
@@ -3354,19 +2309,6 @@ class ExecutorTestCases(
             return C_with_properties_1(42).prop
 
         self.equivalentEvaluationTest(f)
-
-    def test_properties_2(self):
-        class C_with_properties_2:
-            @property
-            def prop(self, x):
-                return x
-
-        with self.assertRaises(pyfora.ComputationError):
-            self.evaluateWithExecutor(lambda: C_with_properties_2().prop)
-        
-    def test_cant_convert_property_itself(self):
-        with self.assertRaises(pyfora.PythonToForaConversionError):
-            self.evaluateWithExecutor(lambda: property)
 
     def test_range_perf(self):
         ct = 1000

@@ -15,7 +15,7 @@
 import unittest
 import pyfora
 import ufora.config.Setup as Setup
-import ufora.FORA.python.PurePython.ExecutorTestCases as ExecutorTestCases
+import ufora.FORA.python.PurePython.IteratorTestCases as IteratorTestCases
 import ufora.FORA.python.PurePython.ExecutorTestCommon as ExecutorTestCommon
 
 
@@ -25,7 +25,7 @@ import ufora.test.ClusterSimulation as ClusterSimulation
 class ExecutorSimulationTest(
         unittest.TestCase,
         ExecutorTestCommon.ExecutorTestCommon,
-        ExecutorTestCases.ExecutorTestCases):
+        IteratorTestCases.IteratorTestCases):
     @classmethod
     def setUpClass(cls):
         cls.config = Setup.config()

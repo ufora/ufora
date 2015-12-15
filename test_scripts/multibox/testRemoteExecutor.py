@@ -15,9 +15,13 @@
 import unittest
 import pyfora
 import ufora.FORA.python.PurePython.ExecutorTestCases as ExecutorTestCases
+import ufora.FORA.python.PurePython.ExecutorTestCommon as ExecutorTestCommon
 
 
-class TestRemoteExecutor(unittest.TestCase, ExecutorTestCases.ExecutorTestCases):
+class TestRemoteExecutor(
+        unittest.TestCase,
+        ExecutorTestCases.ExecutorTestCases,
+        ExecutorTestCommon.ExecutorTestCommon):
     @classmethod
     def setUpClass(cls):
         cls.executor = None
