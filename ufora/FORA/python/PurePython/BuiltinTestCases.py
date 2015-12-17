@@ -130,3 +130,35 @@ class BuiltinTestCases(object):
 
         self.equivalentEvaluationTest(f, [1,2,3])
         self.equivalentEvaluationTest(f, "asdf")
+
+    def test_sorted_1(self):
+        xs = [5, 2, 3, 1, 4]
+        def f():
+            return sorted(xs)
+
+        self.equivalentEvaluationTest(f)
+
+    def test_sorted_2(self):
+        def f():
+            return sorted(1)
+
+        try:
+            self.evaluateWithExecutor(f)
+            self.assertTrue(False)
+        except pyfora.ComputationError as e:
+            self.assertIsInstance(e.remoteException, TypeError)
+
+    def test_sorted_3(self):
+        xs = (5, 2, 3, 1, 4)
+        def f():
+            return sorted(xs)
+
+        self.equivalentEvaluationTest(f)
+
+    def test_sorted_4(self):
+        xs = { 1: 2, 3: 4, 5: 6, 7: 8, 9: 10 }
+        def f():
+            return sorted(xs)
+
+        self.equivalentEvaluationTest(f)
+
