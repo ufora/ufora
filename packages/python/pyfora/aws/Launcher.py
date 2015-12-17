@@ -453,15 +453,102 @@ def print_instance(instance, tag=None):
         output += " | " + tag
     print output
 
+all_arguments = {
+    'ec2-region': {
+        'args': ('--ec2-region',),
+        'kwargs': {
+            'default': 'us-east-1',
+            'help': ('The EC2 region in which instances are launched. '
+                     'Can also be set using the PYFORA_AWS_EC2_REGION environment variable. '
+                     'Default: us-east-1')
+            }
+        },
+    'num-instances': {
+        'args': ('-n', '--num-instances'),
+        'kwargs': {
+            'type': int,
+            'default': 1,
+            'help': 'The number of instances to launch. Default: %(default)s'
+            }
+        },
+    'ssh-keyname': {
+        'args': ('--ssh-keyname',),
+        'kwargs': {
+            'help': ('The name of the EC2 key-pair to use when launching instances. '
+                     'Can also be set using the PYFORA_AWS_SSH_KEYNAME environment variable.')
+            }
+        },
+    'spot-price': {
+        'args': ('--spot-price',),
+        'kwargs': {
+            'type': float,
+            'help': ('Launch spot instances with specified max bid price. '
+                     'On-demand instances are launch if this argument is omitted.')
+            }
+        },
+    'instance-type': {
+        'args': ('--instance-type',),
+        'kwargs': {
+            'default': 'c3.8xlarge',
+            'help': 'The EC2 instance type to launch. Default: %(default)s'
+            }
+        },
+    'vpc-id': {
+        'args': ('--vpc-id',),
+        'kwargs': {
+            'help': ('The id of the VPC to launch instances into. '
+                     'EC2 Classic is used if this argument is omitted.')
+            }
+        },
+    'subnet-id': {
+        'args': ('--subnet-id',),
+        'kwargs': {
+            'help': ('The id of the VPC subnet to launch instances into. '
+                     'This argument must be specified if --vpc-id is used and is '
+                     'ignored otherwise.')
+            }
+        },
+    'security-group-id': {
+        'args': ('--security-group-id',),
+        'kwargs': {
+            'help': ('The id of the EC2 security group to launch instances into. '
+                     'If omitted, a security group called "ufora" will be created and used.')
+            }
+        },
+    'open-public-port': {
+        'args': ('--open-public-port',),
+        'kwargs': {
+            'action': 'store_true',
+            'help': ('If specified, HTTP access to the manager machine will be open from '
+                     'anywhere (0.0.0.0/0). Use with care! '
+                     'Anyone will be able to connect to your cluster. '
+                     "As an alternative, considering tunneling Ufora's HTTP port (30000) "
+                     'over SSH using the -L argument.')
+            }
+        },
+    'terminate': {
+        'args': ('--terminate',),
+        'kwargs': {
+            'action': 'store_true',
+            'help': 'Terminate running instances.'
+            }
+        }
+    }
 
-def add_region_argument(parser):
-    parser.add_argument(
-        '--ec2-region',
-        default='us-east-1',
-        help=('The EC2 region in which instances are launched. '
-              'Can also be set using the PYFORA_AWS_EC2_REGION environment variable. '
-              'Default: us-east-1')
-        )
+start_args = ('ec2-region', 'num-instances', 'ssh-keyname', 'spot-price',
+              'instance-type', 'vpc-id', 'subnet-id', 'security-group-id',
+              'open-public-port')
+
+add_args = ('ec2-region', 'num-instances', 'spot-price')
+
+list_args = ('ec2-region',)
+
+stop_args = ('ec2-region', 'terminate')
+
+def add_arguments(parser, arg_names):
+    for name in arg_names:
+        arg = all_arguments[name]
+        parser.add_argument(*arg['args'], **arg['kwargs'])
 
 
 def main():
@@ -470,83 +557,19 @@ def main():
 
     launch_parser = subparsers.add_parser('start', help='Launch ufora instances')
     launch_parser.set_defaults(func=start_instances)
-    add_region_argument(launch_parser)
-    launch_parser.add_argument(
-        '-n',
-        '--num-instances',
-        type=int,
-        default=1,
-        help='The number of instances to launch. Default: %(default)s'
-        )
-    launch_parser.add_argument(
-        '--ssh-keyname',
-        help=('The name of the EC2 key-pair to use when launching instances. '
-              'Can also be set using the PYFORA_AWS_SSH_KEYNAME environment variable.')
-        )
-    launch_parser.add_argument(
-        '--spot-price',
-        type=float,
-        help=('Launch spot instances with specified max bid price. '
-              'On-demand instances are launch if this argument is omitted.')
-        )
-    launch_parser.add_argument(
-        '--instance-type',
-        default='c3.8xlarge',
-        help='The EC2 instance type to launch. Default: %(default)s'
-        )
-    launch_parser.add_argument(
-        '--vpc-id',
-        help=('The id of the VPC to launch instances into. '
-              'EC2 Classic is used if this argument is omitted.')
-        )
-    launch_parser.add_argument(
-        '--subnet-id',
-        help=('The id of the VPC subnet to launch instances into. '
-              'This argument must be specified if --vpc-id is used and is ignored otherwise.')
-        )
-    launch_parser.add_argument(
-        '--security-group-id',
-        help=('The id of the EC2 security group to launch instances into. '
-              'If omitted, a security group called "ufora" will be created and used.')
-        )
-    launch_parser.add_argument(
-        '--open-public-port',
-        action='store_true',
-        help=('If specified, HTTP access to the manager machine will be open from '
-              'anywhere (0.0.0.0/0). Use with care! '
-              'Anyone will be able to connect to your cluster. '
-              "As an alternative, considering tunneling Ufora's HTTP port (30000) "
-              "over SSH using the -L argument.")
-        )
+    add_arguments(launch_parser, start_args)
 
     add_parser = subparsers.add_parser('add', help='Add workers to the existing cluster')
     add_parser.set_defaults(func=add_instances)
-    add_region_argument(add_parser)
-    add_parser.add_argument(
-        '-n',
-        '--num-instances',
-        type=int,
-        default=1,
-        help='The number of new instances to add. Default: %(default)s'
-        )
-    add_parser.add_argument(
-        '--spot-price',
-        type=float,
-        help=('Launch spot instances with specified max bid price. '
-              'On-demand instances are launch if this argument is omitted.')
-        )
+    add_arguments(add_parser, add_args)
 
     list_parser = subparsers.add_parser('list', help='List running ufora instances')
     list_parser.set_defaults(func=list_instances)
-    add_region_argument(list_parser)
+    add_arguments(list_parser, list_args)
 
     stop_parser = subparsers.add_parser('stop', help='Stop all ufora instances')
     stop_parser.set_defaults(func=stop_instances)
-    add_region_argument(stop_parser)
-    stop_parser.add_argument(
-        '--terminate',
-        action='store_true',
-        help='Terminate running instances.')
+    add_arguments(stop_parser, stop_args)
 
     args = parser.parse_args()
     return args.func(args)
