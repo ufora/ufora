@@ -1563,6 +1563,13 @@ class ExecutorTestCases(object):
             comparisonFunction=lambda x, y: x == y
             )
 
+    def test_dict_iteration(self):
+        def f():
+            d = {1: 2}
+            return [val for val in d]
+
+        self.equivalentEvaluationTest(f)
+
     def test_implicitReturnNone_1(self):
         def f():
             x = 2
