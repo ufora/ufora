@@ -64,7 +64,7 @@ setup(
     install_requires=install_requires,
     entry_points={
         'console_scripts':
-            ['pyfora_aws=pyfora.aws.Launcher:main']
+            ['pyfora_aws=pyfora.aws.pyfora_aws:main']
     }
 )
 
