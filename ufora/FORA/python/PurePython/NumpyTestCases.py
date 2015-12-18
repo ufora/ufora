@@ -376,6 +376,15 @@ class NumpyTestCases(object):
 
         self.equivalentEvaluationTest(f)
 
+    def test_numpy_binary_ops(self):
+        def f():
+            x1 = numpy.array([[1,2],[3,4]])
+            x2 = numpy.array([[8,7],[6,5]])
+
+            return (x1 / x2) ** 2 - x2 ** x2
+
+        self.equivalentEvaluationTest(f)
+
     def test_numpy_addition_2(self):
         def f():
             x1 = numpy.array([[1,2],[3,4]])

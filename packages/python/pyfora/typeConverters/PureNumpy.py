@@ -100,32 +100,49 @@ class PurePythonNumpyArray:
     def __mul__(self, v):
         def op(x, y):
             return x * y
+
+        if isinstance(v, PurePythonNumpyArray):
+            return self._zipArraysWithOp(v, op)
+
         return self._applyOperatorToAllElements(op, v)
 
     def __add__(self, v):
-        if isinstance(v, PurePythonNumpyArray):
-            return self._addArray(v)
-
         def op(x, y):
             return x + y
+
+        if isinstance(v, PurePythonNumpyArray):
+            return self._zipArraysWithOp(v, op)
+
         return self._applyOperatorToAllElements(op, v)
 
     def __sub__(self, v):
         def op(x, y):
             return x - y
+
+        if isinstance(v, PurePythonNumpyArray):
+            return self._zipArraysWithOp(v, op)
+
         return self._applyOperatorToAllElements(op, v)
 
     def __pow__(self, v):
         def op(x, y):
             return x ** y
+
+        if isinstance(v, PurePythonNumpyArray):
+            return self._zipArraysWithOp(v, op)
+
         return self._applyOperatorToAllElements(op, v)
 
     def __div__(self, q):
         def op(x, y):
             return x / y
+
+        if isinstance(q, PurePythonNumpyArray):
+            return self._zipArraysWithOp(q, op)
+
         return self._applyOperatorToAllElements(op, q)
 
-    def _addArray(self, v):
+    def _zipArraysWithOp(self, v, op):
         if self.shape != v.shape:
             raise ValueError(
                 "operands cannot be added with shapes " + str(self.shape) + \
@@ -134,7 +151,7 @@ class PurePythonNumpyArray:
 
         return PurePythonNumpyArray(
             self.shape,
-            [self.values[ix] + v.values[ix] for ix in xrange(self.size)]
+            [op(self.values[ix], v.values[ix]) for ix in xrange(self.size)]
             )
 
     def _applyOperatorToAllElements(self, op, val):
