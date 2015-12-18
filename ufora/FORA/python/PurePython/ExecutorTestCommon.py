@@ -17,6 +17,7 @@ import pyfora.Exceptions
 
 import logging
 import numpy
+import pandas
 import time
 import traceback
 
@@ -130,4 +131,12 @@ class ExecutorTestCommon(object):
         self.assertTrue(
             numpy.allclose(m1, m2)
             )
+
+    def checkFramesEqual(self, df1, df2):
+        pandas.util.testing.assert_frame_equal(df1, df2)
+        return True
+
+    def checkSeriesEqual(self, series1, series2, **kwargs):
+        pandas.util.testing.assert_series_equal(series1, series2, **kwargs)
+        return True
 

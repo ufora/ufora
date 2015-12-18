@@ -40,11 +40,16 @@ def filterWithIndex(vec, f, lowIndex=0, highIndex=None, depth=0):
     return filterWithIndex(vec, f, lowIndex, mid, depth + 1) + \
         filterWithIndex(vec, f, mid, highIndex, depth + 1)
 
-def unique(vec):
+def unique(vec, isSorted=False):
     # pythonic way of getting unique elements in a container is `list(set(vec))`.
     # pyfora doesn't currently support `set`
+    if not isSorted:
+        sortedVec = sorted(vec)
+    else:
+        sortedVec = vec
+
     return filterWithIndex(
-        sorted(vec),
+        sortedVec,
         lambda sortedVec, ix: ix < 1 or sortedVec[ix - 1] < sortedVec[ix]
         )
     

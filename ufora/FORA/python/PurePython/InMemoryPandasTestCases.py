@@ -296,3 +296,24 @@ A,B,C
             self.pyfora_linear_regression_test()
         finally:
             LinearRegression._splitLimit = oldSplitLimit
+
+    def test_series_sort_values(self):
+        s = pandas.Series([5,5,2,2,1,2,3,4,2,3,1,5])
+        def f():
+            return list(s.sort_values().values)
+
+        self.equivalentEvaluationTest(
+            f,
+            comparisonFunction=lambda x, y: all(map(lambda v:v[0]==v[1], zip(x, y)))
+            )
+
+
+    def test_series_unique(self):
+        s = pandas.Series([5,5,2,2,1,2,3,4,2,3,1,5])
+        def f():
+            return sorted(list(s.unique()))
+
+        self.equivalentEvaluationTest(
+            f,
+            comparisonFunction=lambda x, y: all(map(lambda v:v[0]==v[1], zip(x, y)))
+            )

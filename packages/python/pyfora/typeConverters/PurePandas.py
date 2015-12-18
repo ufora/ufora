@@ -14,6 +14,7 @@
 
 
 import pyfora.PureImplementationMapping as PureImplementationMapping
+import pyfora.algorithms.util
 
 
 def pd():
@@ -140,6 +141,13 @@ class PurePythonSeries:
             return PurePythonSeries(self.values[ix])
         else:
             return self.values[ix]
+
+    def unique(self):
+        sortedSeries = self.sort_values()
+        return pyfora.algorithms.util.unique(sortedSeries.values, True)
+
+    def sort_values(self):
+        return PurePythonSeries(sorted(self.values))        
 
     @property
     def iloc(self):
