@@ -41,7 +41,8 @@ def get_aws_credentials_docker_env():
     return ''
 
 class Launcher(object):
-    ufora_security_group_name = 'ufora'
+    ufora_ssh_security_group_name = 'ufora ssh'
+    ufora_open_security_group_name = 'ufora open'
     ufora_security_group_description = 'ufora instances'
     ubuntu_images = {
         'ap-southeast-1': 'ami-e8f1c1ba',
@@ -391,11 +392,6 @@ class Launcher(object):
         security_group = self.find_ufora_security_group()
         if security_group is None:
             security_group = self.create_ufora_security_group()
-        if self.open_public_port:
-            security_group.authorize(cidr_ip='0.0.0.0/0',
-                                     ip_protocol='tcp',
-                                     from_port=30000,
-                                     to_port=30000)
         return security_group.id
 
 
@@ -405,7 +401,7 @@ class Launcher(object):
             filters = {'vpc-id': self.vpc_id}
         try:
             groups = self.ec2.get_all_security_groups(
-                groupnames=[self.ufora_security_group_name],
+                groupnames=[self.security_group_name],
                 filters=filters
                 )
         except boto.exception.EC2ResponseError as e:
@@ -421,9 +417,15 @@ class Launcher(object):
         return groups[0]
 
 
+    @property
+    def security_group_name(self):
+        return self.ufora_open_security_group_name if self.open_public_port \
+               else self.ufora_ssh_security_group_name
+
+
     def create_ufora_security_group(self):
         security_group = self.ec2.create_security_group(
-            name=self.ufora_security_group_name,
+            name=self.security_group_name,
             description=self.ufora_security_group_description,
             vpc_id=self.vpc_id
             )
@@ -435,4 +437,9 @@ class Launcher(object):
                                  ip_protocol='tcp',
                                  from_port=22,
                                  to_port=22)
+        if self.open_public_port:
+            security_group.authorize(cidr_ip='0.0.0.0/0',
+                                     ip_protocol='tcp',
+                                     from_port=30000,
+                                     to_port=30000)
         return security_group
