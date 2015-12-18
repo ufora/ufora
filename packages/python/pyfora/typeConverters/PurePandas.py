@@ -92,6 +92,14 @@ class PurePythonDataFrame:
 
         raise ValueError("value " + str() + " is not a column name")
 
+    def pyfora_addColumn(self, columnName, column):
+        assert not columnName in self._columnNames
+
+        return PurePythonDataFrame(
+            self._columns + [column],
+            self._columnNames + [columnName]
+            )            
+    
 
 class _PurePythonDataFrameILocIndexer:
     def __init__(self, obj):

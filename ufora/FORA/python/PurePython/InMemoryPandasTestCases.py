@@ -307,7 +307,6 @@ A,B,C
             comparisonFunction=lambda x, y: all(map(lambda v:v[0]==v[1], zip(x, y)))
             )
 
-
     def test_series_unique(self):
         s = pandas.Series([5,5,2,2,1,2,3,4,2,3,1,5])
         def f():
@@ -316,4 +315,21 @@ A,B,C
         self.equivalentEvaluationTest(
             f,
             comparisonFunction=lambda x, y: all(map(lambda v:v[0]==v[1], zip(x, y)))
+            )
+
+    def test_dataframe_pyfora_addColumn(self):
+        d = {'A': [1,2,3,4], 'B': [5,6,7,8]}
+        df = pandas.DataFrame(d)
+
+        c = range(8, 12)
+
+        def f():
+            return df.pyfora_addColumn('C', c)
+
+        newDict = d.copy()
+        newDict['C'] = c
+
+        self.checkFramesEqual(
+            self.evaluateWithExecutor(f),
+            pandas.DataFrame(newDict)
             )
