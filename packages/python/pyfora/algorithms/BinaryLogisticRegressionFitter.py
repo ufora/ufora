@@ -12,32 +12,31 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import pyfora.algorithms.util
+from pyfora.algorithms.TwoClassRidgeRegressionSolver import TwoClassRidgeRegressionSolver
 
 
 class BinaryLogisticRegressionFitter:
     def __init__(
             self,
-            regulizer,
+            regularizer,
             hasIntercept=True,
             strict=True,
             interceptScale=1,
             tol=1e-4,
             maxIter=1e5,
-            chunkSize=5000000):
+            splitLimit=1000000):
         assert tol > 0
         assert maxIter > 0
-        assert chunkSize > 0
 
-        self.regulizer = regulizer
+        self.regularizer = regularizer
         self.hasIntercept = hasIntercept
         self.strict = strict
         self.interceptScale = interceptScale
         self.tol = tol
         self.maxIter = maxIter
-        self.chunkSize = chunkSize
+        self.splitLimit = splitLimit
 
-    def fit(self, X, y, classZeroLabel=None, classOneLabel=None, classes=None):
+    def fit(self, X, y, classZeroLabel=None, classes=None):
         assert X.shape[0] == y.shape[0]
         assert y.shape[1] == 1
 
@@ -53,5 +52,19 @@ class BinaryLogisticRegressionFitter:
         if self.strict and nClasses != 2:
             assert False
 
-        return classes
+        classZeroLabel = classes[0]
+
+        res = TwoClassRidgeRegressionSolver(
+            X, y,
+            self.regularizer,
+            self.tol,
+            self.maxIter,
+            classes,
+            classZeroLabel,
+            self.splitLimit,
+            self.hasIntercept,
+            self.interceptScale
+            ).computeCoefficients()
+
+        return res
             

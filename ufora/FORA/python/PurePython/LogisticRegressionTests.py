@@ -12,7 +12,13 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+import pandas
+import numpy
+
+
+import pyfora.Exceptions
 import pyfora.algorithms.util
+from pyfora.algorithms.BinaryLogisticRegressionFitter import BinaryLogisticRegressionFitter
 
 
 class LogisticRegressionTests(object):
@@ -25,3 +31,26 @@ class LogisticRegressionTests(object):
             self.evaluateWithExecutor(f),
             list(set(x))
             )
+        
+    def test_binary_logistic_regression(self):
+        X = pandas.DataFrame({'A': [-1,0,1], 'B': [0,1,1]})
+        y = pandas.DataFrame({'C': [0,1,1]})
+
+        def f():
+            fit = BinaryLogisticRegressionFitter(1).fit(X, y)
+            return fit
+
+        res = self.evaluateWithExecutor(f)
+
+        expectedResult = numpy.array([0.26901034, 0.25372016, 0.10102151])
+        
+        self.assertTrue(
+            numpy.allclose(
+                res[0],
+                expectedResult,
+                rtol=0.1
+                )
+            )
+
+        
+
