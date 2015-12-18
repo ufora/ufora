@@ -285,7 +285,7 @@ class NpDot:
                         )
 
                 builtins = NpDot.__pyfora_builtins__
-                result = builtins.matrixMult(
+                result = builtins.linalg.matrixMult(
                     arr1.values, arr1.shape, arr2.values, arr2.shape
                     )
                 flattenedValues = result[0]
@@ -308,12 +308,32 @@ class NpDot:
 class NpPinv:
     def __call__(self, matrix):
         builtins = NpPinv.__pyfora_builtins__
-        result = builtins.pInv(matrix.values, matrix.shape)
+
+        shape = matrix.shape
+        assert len(shape) == 2
+
+        result = builtins.linalg.pInv(matrix.values, shape)
         flat = result[0]
-        shape = tuple(result[1])
+        shape = result[1]
         return PurePythonNumpyArray(
             shape,
             flat
+            )
+
+
+class LinSolve:
+    def __call__(self, a, b):
+        assert len(a.shape) == 2
+        assert a.shape[0] == a.shape[1]
+        assert len(b.shape) == 2
+        assert a.shape[0] == b.shape[0]
+
+        res = LinSolve.__pyfora_builtins__.linalg.linsolve(a, b)
+        flattendValues = res[0]
+        shape = res[1]
+        return PurePythonNumpyArray(
+            shape,
+            flattendValues
             )
 
 
@@ -329,7 +349,8 @@ class NpArange:
 
 def generateMappings():
     mappings_ = [(np.zeros, NpZeros), (np.array, NpArray), (np.dot, NpDot),
-                 (np.linalg.pinv, NpPinv), (np.arange, NpArange)]
+                 (np.linalg.pinv, NpPinv), (np.linalg.solve, LinSolve),
+                 (np.arange, NpArange)]
 
     tr = [PureImplementationMapping.InstanceMapping(instance, pureType) for \
             (instance, pureType) in mappings_]

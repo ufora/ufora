@@ -416,3 +416,29 @@ class NumpyTestCases(object):
             return numpy.zeros(10)
 
         self.equivalentEvaluationTest(f)
+
+    def test_numpy_linsolve_1(self):
+        a = numpy.array([[-2.0, 3.0], [4.0, 7.0]])
+        b = numpy.array([[1.0], [2.0]])
+
+        def f():
+            return numpy.linalg.solve(a, b)
+
+        self.equivalentEvaluationTest(f)
+        
+    def test_numpy_linsolve_2(self):
+        a = numpy.array([[-2.0, 3.0], [-2.0, 3.0]])
+        b = numpy.array([[1.0], [2.0]])
+
+        def f():
+            return numpy.linalg.solve(a, b)
+
+        try:
+            self.evaluateWithExecutor(f)
+            self.assertTrue(False)
+        except:
+            # just see that we get an exception here without dying.
+            # we're not wrapping the numpy linalg errors yet
+            pass
+        
+    
