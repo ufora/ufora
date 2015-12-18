@@ -1,6 +1,8 @@
 import argparse
 import os
+import sys
 from pyfora.aws.Launcher import Launcher
+
 
 def get_region(region):
     region = region or os.getenv('PYFORA_AWS_EC2_REGION')
@@ -11,6 +13,50 @@ def get_region(region):
 
 def get_ssh_keyname(keyname):
     return keyname or os.getenv('PYFORA_AWS_SSH_KEYNAME')
+
+
+
+class StatusPrinter(object):
+    spinner = ['|', '/', '-', '\\']
+
+    def __init__(self):
+        self.spinner_index = 0
+        self.last_message_len = 0
+
+    def on_status(self, status):
+        if len(status) == 1 and len(status.items()[0][1]) == 1:
+            message_body = self.single_status_message(status)
+        else:
+            message_body = self.status_summary_message(status)
+
+        message = " %s %s" % (message_body, self.spinner[self.spinner_index])
+        self.spinner_index = (self.spinner_index + 1) % len(self.spinner)
+
+        message_len = len(message)
+        if message_len < self.last_message_len:
+            message = message + ' '*(self.last_message_len - message_len)
+        self.last_message_len = message_len
+        print message, '\r',
+        sys.stdout.flush()
+
+    def done(self):
+        message = "Done" + ' '*self.last_message_len
+        print message
+        print ''
+        sys.stdout.flush()
+
+
+    @staticmethod
+    def single_status_message(status):
+        status_name, items = status.items()[0]
+        return "%s: %s" % (items[0], status_name)
+
+
+    @staticmethod
+    def status_summary_message(status):
+        return ', '.join(["%s (%d)" % (status_name, len(items))
+                          for status_name, items in status.iteritems()])
+
 
 
 def start_instances(args):
@@ -24,9 +70,15 @@ def start_instances(args):
                         security_group_id=args.security_group_id,
                         instance_type=args.instance_type,
                         open_public_port=open_public_port)
-    print "Launching ufora manager..."
-    manager = launcher.launch_manager(ssh_keyname, args.spot_price)
-    print "Ufora manager started:\n"
+
+    status_printer = StatusPrinter()
+    print "Launching ufora manager instance:"
+    manager = launcher.launch_manager(ssh_keyname,
+                                      args.spot_price,
+                                      callback=status_printer.on_status)
+    status_printer.done()
+
+    print "Ufora manager instance started:\n"
     print_instance(manager, 'manager')
     print ""
     if not args.open_public_port:
@@ -35,14 +87,21 @@ def start_instances(args):
 
     workers = []
     if args.num_instances > 1:
-        print "Launching workers..."
+        print "Launching worker instance(s):"
         workers = launcher.launch_workers(args.num_instances-1,
                                           ssh_keyname,
                                           manager.id,
-                                          args.spot_price)
-        print "Workers started:"
+                                          args.spot_price,
+                                          callback=status_printer.on_status)
+        status_printer.done()
+        print "Worker instance(s) started:"
+
     for worker in workers:
         print_instance(worker, 'worker')
+
+    print "Waiting for Ufora services:"
+    launcher.wait_for_services([manager] + workers, callback=status_printer.on_status)
+    status_printer.done()
 
 
 def add_instances(args):
@@ -69,14 +128,22 @@ def add_instances(args):
     launcher.instance_type = manager.instance_type
     launcher.security_group_id = manager.groups[0].id
 
-    print "Launching workers..."
+    print "Launching worker instance(s):"
+    status_printer = StatusPrinter()
     workers = launcher.launch_workers(args.num_instances,
                                       manager.key_name,
                                       manager.id,
-                                      args.spot_price)
+                                      args.spot_price,
+                                      callback=status_printer.on_status)
+    status_printer.done()
+
     print "Workers started:"
     for worker in workers:
         print_instance(worker, 'worker')
+
+    print "Waiting for Ufora services:"
+    launcher.wait_for_services(workers, callback=status_printer.on_status)
+    status_printer.done()
 
 
 def list_instances(args):

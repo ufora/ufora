@@ -15,6 +15,7 @@
 import boto.ec2
 import boto.exception
 import datetime
+import itertools
 import os
 import time
 
@@ -25,9 +26,15 @@ from pyfora import TimeoutError
 def timestamp():
     return datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
 
-def get_aws_credentials():
-    key = os.getenv('AWS_ACCESS_KEY_ID')
-    secret = os.getenv('AWS_SECRET_ACCESS_KEY')
+def get_aws_access_key_id():
+    return os.getenv('AWS_ACCESS_KEY_ID')
+
+def get_aws_secret_access_key():
+    return os.getenv('AWS_SECRET_ACCESS_KEY')
+
+def get_aws_credentials_docker_env():
+    key = get_aws_access_key_id()
+    secret = get_aws_secret_access_key()
     if key and secret:
         return '-e AWS_ACCESS_KEY_ID=%s -e AWS_SECRET_ACCESS_KEY=%s' % (key, secret)
 
@@ -48,21 +55,48 @@ class Launcher(object):
         'us-west-2': 'ami-6989a659'
         }
     user_data_template = '''#!/bin/bash
+    export AWS_ACCESS_KEY_ID={aws_access_key}
+    export AWS_SECRET_ACCESS_KEY={aws_secret_key}
+    export AWS_DEFAULT_REGION={aws_region}
+    OWN_INSTANCE_ID=`curl http://169.254.169.254/latest/meta-data/instance-id`
+    OWN_PRIVATE_IP=`curl -s http://169.254.169.254/latest/meta-data/local-ipv4`
+    SET_STATUS="aws ec2 create-tags --resources $OWN_INSTANCE_ID --tags Key=status,Value="
+
     apt-get update
-    apt-get install -y docker.io
+    apt-get install -y docker.io awscli
+    if [ $? -ne 0 ]; then
+        ${{SET_STATUS}}'install failed'
+        exit 1
+    else
+        ${{SET_STATUS}}'pulling docker image'
+    fi
+
     docker pull ufora/service:{image_version}
+    if [ $? -ne 0 ]; then
+        ${{SET_STATUS}}'pull failed'
+        exit 1
+    else
+        ${{SET_STATUS}}'launching ufora service'
+    fi
+
     if [ -d /mnt ]; then
         LOG_DIR=/mnt/ufora
     else
         LOG_DIR=/var/ufora
     fi
     mkdir $LOG_DIR
-    OWN_PRIVATE_IP=`curl -s http://169.254.169.254/latest/meta-data/local-ipv4`
+
     docker run -d --name {container_name} \
         -e UFORA_WORKER_OWN_ADDRESS=$OWN_PRIVATE_IP \
         {aws_credentials} \
         {container_env} {container_ports} \
         -v $LOG_DIR:/var/ufora ufora/service:{image_version}
+    if [ $? -ne 0 ]; then
+        ${{SET_STATUS}}'launch failed'
+        exit 1
+    else
+        ${{SET_STATUS}}'ready'
+    fi
     '''
     def __init__(self,
                  region,
@@ -81,14 +115,18 @@ class Launcher(object):
         self.ec2 = None
 
 
-    def launch_manager(self, ssh_key_name, spot_request_bid_price=None):
+    def launch_manager(self, ssh_key_name, spot_request_bid_price=None, callback=None):
+        if not self.connected:
+            self.connect()
+
         instances = self.launch_instances(1,
                                           ssh_key_name,
                                           self.user_data_for_manager(),
-                                          spot_request_bid_price)
+                                          spot_request_bid_price,
+                                          callback=callback)
         assert len(instances) == 1
 
-        self.wait_for_instances(instances, timeout=300)
+        self.wait_for_instances(instances, timeout=300, callback=callback)
 
         instance = instances[0]
         if instance.state == 'running':
@@ -102,15 +140,61 @@ class Launcher(object):
                        count,
                        ssh_key_name,
                        manager_instance_id,
-                       spot_request_bid_price=None):
+                       spot_request_bid_price=None,
+                       callback=None):
+        if not self.connected:
+            self.connect()
+
         instances = self.launch_instances(count,
                                           ssh_key_name,
                                           self.user_data_for_worker(manager_instance_id),
-                                          spot_request_bid_price)
-        self.wait_for_instances(instances)
+                                          spot_request_bid_price,
+                                          callback=callback)
+        self.wait_for_instances(instances, callback=callback)
         for instance in instances:
             self.tag_instance(instance, 'ufora worker')
         return instances
+
+
+    def wait_for_services(self, instances, callback=None):
+        assert self.connected
+        pending = set(instances)
+        ready = []
+        failed = []
+
+        while len(pending):
+            toRemove = []
+            for i in pending:
+                i.update()
+                if 'status' not in i.tags:
+                    continue
+
+                if i.tags['status'].endswith('failed'):
+                    toRemove.append(i)
+                    failed.append(i)
+                elif i.tags['status'] == 'ready':
+                    toRemove.append(i)
+                    ready.append(i)
+
+            for i in toRemove:
+                pending.remove(i)
+
+            status = {}
+            for i in itertools.chain(pending, ready, failed):
+                if 'status' not in i.tags:
+                    # there is no status while the instance installs the AWS cli
+                    status_name = 'installing dependencies'
+                else:
+                    status_name = i.tags['status']
+
+                if status_name not in status:
+                    status[status_name] = []
+                status[status_name].append(i)
+            if callback:
+                callback(status)
+
+            if len(pending):
+                time.sleep(1)
 
 
     def get_reservations(self):
@@ -126,10 +210,10 @@ class Launcher(object):
                          count,
                          ssh_key_name,
                          user_data,
-                         spot_request_bid_price=None):
+                         spot_request_bid_price=None,
+                         callback=None):
         assert self.instance_type is not None
-        if not self.connected:
-            self.connect()
+        assert self.connected
 
         network_interfaces = self.create_network_interfaces()
         classic_security_groups = None if self.vpc_id else [self.get_security_group_name()]
@@ -149,7 +233,8 @@ class Launcher(object):
                 availability_zone_group=ts,
                 launch_group=ts,
                 **request_args)
-            fulfilled, unfulfilled = self.wait_for_spot_instance_requests(spot_requests)
+            fulfilled, unfulfilled = self.wait_for_spot_instance_requests(spot_requests,
+                                                                          callback=callback)
             assert len(fulfilled) == count or len(unfulfilled) == count
             if len(fulfilled) == 0:
                 return []
@@ -163,37 +248,57 @@ class Launcher(object):
             return reservation.instances
 
 
+    def get_format_args(self, updates):
+        assert self.connected
+        args = {
+            'aws_access_key': self.ec2.provider.access_key,
+            'aws_secret_key': self.ec2.provider.secret_key,
+            'aws_region': self.region,
+            'aws_credentials': get_aws_credentials_docker_env(),
+            'container_env': '',
+            'image_version': pyfora_version
+            }
+        args.update(updates)
+        return args
+
+
     def user_data_for_manager(self):
-        return self.user_data_template.format(
-            aws_credentials=get_aws_credentials(),
-            container_name='ufora_manager',
-            container_env='',
-            container_ports='-p 30000:30000 -p 30002:30002 -p 30009:30009 -p 30010:30010',
-            image_version=pyfora_version)
+        format_args = self.get_format_args({
+            'container_name': 'ufora_manager',
+            'container_ports': '-p 30000:30000 -p 30002:30002 -p 30009:30009 -p 30010:30010',
+            })
+        return self.user_data_template.format(**format_args)
 
 
     def user_data_for_worker(self, manager_instance_id):
         manager_address = self.get_instance_internal_ip(manager_instance_id)
-        return self.user_data_template.format(
-            aws_credentials=get_aws_credentials(),
-            container_name='ufora_worker',
-            container_env='-e UFORA_MANAGER_ADDRESS='+manager_address,
-            container_ports='-p 30009:30009 -p 30010:30010',
-            image_version=pyfora_version)
+        format_args = self.get_format_args({
+            'container_name': 'ufora_worker',
+            'container_env': '-e UFORA_MANAGER_ADDRESS=' + manager_address,
+            'container_ports': '-p 30009:30009 -p 30010:30010'
+            })
+        return self.user_data_template.format(**format_args)
 
 
     @staticmethod
-    def wait_for_instances(instances, timeout=None):
+    def wait_for_instances(instances, timeout=None, callback=None):
         t0 = time.time()
         while any(i.state == 'pending' for i in instances):
             if timeout and time.time() > t0 + timeout:
                 raise TimeoutError(
                     "Timed out waiting for instances to start: " + [i.id for i in instances]
                     )
-            time.sleep(5)
+            time.sleep(1)
+            status = {}
             for i in instances:
+                if not i.state in status:
+                    status[i.state] = []
+                status[i.state].append(i.id)
+
                 if i.state == 'pending':
                     i.update()
+            if callback:
+                callback(status)
         return True
 
 
@@ -235,7 +340,7 @@ class Launcher(object):
         return groups[0].name
 
 
-    def wait_for_spot_instance_requests(self, requests, timeout=None):
+    def wait_for_spot_instance_requests(self, requests, timeout=None, callback=None):
         t0 = time.time()
         pending_states = ['pending-evaluation', 'pending-fulfillment']
         pending = {r.id: r for r in requests}
@@ -251,17 +356,25 @@ class Launcher(object):
                     pending=pending
                     )
 
-            time.sleep(5)
+            time.sleep(1)
             spot_requests = self.ec2.get_all_spot_instance_requests(
                 request_ids=pending.keys()
                 )
+            status = {}
             for request in spot_requests:
+                status_key = '%s - %s' % (request.state, request.status.code)
+                if status_key not in status:
+                    status[status_key] = []
+                status[status_key].append(request.id)
                 if request.state == 'active':
                     fulfilled[request.id] = request
                     del pending[request.id]
                 elif request.state != 'open' or request.status.code not in pending_states:
                     unfulfilled[request.id] = request
                     del pending[request.id]
+            if callback:
+                callback(status)
+
         return (fulfilled.values(), unfulfilled.values())
 
 
