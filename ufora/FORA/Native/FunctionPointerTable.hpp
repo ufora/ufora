@@ -17,7 +17,6 @@
 
 #include "FunctionPointerHandle.hpp"
 #include "NativeCode.hppml"
-#include <boost/lexical_cast.hpp>
 #include <boost/thread.hpp>
 #include <boost/utility.hpp>
 #include <map>

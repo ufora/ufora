@@ -15,11 +15,9 @@
 ****************************************************************************/
 #pragma once
 
-#include <stdexcept>
 #include <boost/thread.hpp>
 #include <boost/thread/condition.hpp>
 #include "../math/Nullable.hpp"
-#include "../Clock.hpp"
 
 //model for a value that gets initialized (once) by some
 //background process. Clients who try to access it will block if

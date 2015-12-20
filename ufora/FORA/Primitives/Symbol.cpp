@@ -19,12 +19,7 @@
 #include "../Core/Type.hppml"
 #include "../Core/ExecutionContext.hppml"
 #include "../../core/math/Hash.hpp"
-#include "../../core/STLOps.hpp"
-#include "../../core/SymbolExport.hpp"
-#include <map>
 #include <boost/unordered_map.hpp>
-
-#include <vector>
 #include <boost/thread.hpp>
 
 using namespace std;

@@ -16,6 +16,7 @@
 #include "EventBroadcaster.hpp"
 
 #include "UnitTest.hpp"
+#include "Clock.hpp"
 
 namespace {
 

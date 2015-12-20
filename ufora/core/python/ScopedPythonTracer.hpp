@@ -16,7 +16,6 @@
 #pragma once
 
 #include <boost/python.hpp>
-#include <boost/thread.hpp>
 #include <map>
 #include "../math/StatisticsAccumulator.hpp"
 

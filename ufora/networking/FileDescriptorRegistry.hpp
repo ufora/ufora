@@ -16,7 +16,6 @@
 #pragma once
 
 #include "../core/IntegerTypes.hpp"
-#include <string>
 #include <map>
 #include <boost/thread/recursive_mutex.hpp>
 
@@ -24,20 +23,20 @@
 class ScopedFileDescriptorRegisterer {
     class RegistrationInformation {
     public:
-        RegistrationInformation(uint32_t inMaxRegistrationCount, uint32_t inCurrentRegistrationCount) : 
-            mMaxRegistrationCount(inMaxRegistrationCount), 
+        RegistrationInformation(uint32_t inMaxRegistrationCount, uint32_t inCurrentRegistrationCount) :
+            mMaxRegistrationCount(inMaxRegistrationCount),
             mCurrentRegistrationCount(inCurrentRegistrationCount) {}
         uint32_t                mMaxRegistrationCount;
         uint32_t                mCurrentRegistrationCount;
     };
 
     class FileDescriptorRegistry {
-        public: 
+        public:
             bool acquireFd(uint32_t fd, uint32_t maxRegistrationCount);
             void releaseFd(uint32_t fd);
             static FileDescriptorRegistry& getRegistrySingleton(void);
             FileDescriptorRegistry();
-            
+
         private:
             // noncopyable
             const FileDescriptorRegistry& operator=(const FileDescriptorRegistry&);
@@ -45,7 +44,7 @@ class ScopedFileDescriptorRegisterer {
 
             boost::recursive_mutex                                   mMutex;
             std::map<uint32_t, RegistrationInformation>             mFdMap;
-        
+
     };
 
     public:
@@ -63,5 +62,3 @@ class ScopedFileDescriptorRegisterer {
         uint32_t                                mFileDescriptor;
         bool                                    mAcquired;
 };
-
-
