@@ -441,4 +441,12 @@ class NumpyTestCases(object):
             # we're not wrapping the numpy linalg errors yet
             pass
         
-    
+    def test_numpy_slicing_1(self):
+        size = 3
+        def f(lowIx, highIx):
+            x = numpy.array(range(size))
+            return x[lowIx:highIx]
+
+        for ix in range(size):
+            for jx in range(size):
+                self.equivalentEvaluationTest(f, ix, jx)

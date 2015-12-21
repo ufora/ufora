@@ -77,7 +77,11 @@ class PurePythonNumpyArray:
 
     def __getitem__(self, ix):
         if len(self.shape) == 1:
-            return self.values[ix]
+            if isinstance(ix, slice):
+                vals = self.values[ix]                
+                return PurePythonNumpyArray((len(vals),), vals)
+            else:
+                return self.values[ix]
 
         def shapeOfResultantArray(originalShape):
             newShape = []
@@ -189,8 +193,10 @@ class PurePythonNumpyArrayMapping(PureImplementationMapping.PureImplementationMa
 
     def mapPyforaInstanceToPythonInstance(self, pureNumpyArray):
         array = np.array(pureNumpyArray.values)
-        array.shape = pureNumpyArray.shape
-        return array
+        try:
+            return array.reshape(pureNumpyArray.shape)
+        except:
+            assert False, (pureNumpyArray.values, pureNumpyArray.shape)
 
 
 class NpZeros:
