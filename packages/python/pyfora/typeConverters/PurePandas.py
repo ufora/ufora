@@ -108,12 +108,14 @@ class _PurePythonDataFrameILocIndexer:
     def __getitem__(self, k):
         if isinstance(k, tuple):
             return self._getitem_tuple(k)
+        elif isinstance(k, slice):
+            return self._getitem_tuple((k, slice(None, None, None)))
         else:
-            raise NotImplementedError("only implementing getitems for tuples right now")
+            raise IndexError("don't know how to index with " + str(k))
 
     def _getitem_tuple(self, tup):
-        if len(tup) != 2:
-            raise IndexError("tuple indexing only supported for length-two tuples")
+        if len(tup) == 1 and isinstance(tup[0], slice):
+            tup = (tup[0], slice(None, None, None))
 
         if isinstance(tup[1], int) and isinstance(tup[0], (int, slice)):
             return self.obj._columns[tup[1]][tup[0]]

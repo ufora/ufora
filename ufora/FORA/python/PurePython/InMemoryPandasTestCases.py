@@ -112,6 +112,40 @@ class InMemoryPandasTestCases(ExecutorTestCases.ExecutorTestCases):
             comparisonFunction=self.checkFramesEqual
             )
 
+    def test_pandas_dataframe_indexing_4(self):
+        df = pandas.DataFrame({'A': range(5), 'B': range(5,10), 'D': range(10,15)})
+
+        def f():
+            return df.iloc[:,:]
+        
+        self.equivalentEvaluationTest(
+            f,
+            comparisonFunction=self.checkFramesEqual
+            )
+
+    def test_pandas_dataframe_indexing_5(self):
+        df = pandas.DataFrame({'A': range(5), 'B': range(5,10), 'D': range(10,15)})
+
+        def f():
+            return df.iloc[:,]
+        
+        self.equivalentEvaluationTest(
+            f,
+            comparisonFunction=self.checkFramesEqual
+            )
+
+    def test_pandas_dataframe_indexing_6(self):
+        df = pandas.DataFrame({'A': range(5), 'B': range(5,10), 'D': range(10,15)})
+
+        def f(jx):
+            return df.iloc[:jx]
+
+        for jx in xrange(2, 5, 2):
+            self.equivalentEvaluationTest(
+                f, jx,
+                comparisonFunction=self.checkFramesEqual
+                )
+
     def test_pandas_shape(self):
         df = pandas.DataFrame({'A': [1,2,3,4], 'B': [5,6,7,8]})
 
