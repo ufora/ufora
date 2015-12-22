@@ -375,7 +375,7 @@ A,B,C
 
         self.equivalentEvaluationTest(f)
 
-    def test_dataframe_to_matrix(self):
+    def test_dataframe_as_matrix(self):
         df = pandas.DataFrame({'A': [1,2,3,4], 'B': [5,6,7,8]})
         def f():
             return df.as_matrix()

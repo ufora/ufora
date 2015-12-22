@@ -12,7 +12,10 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-from pyfora.algorithms.TwoClassRidgeRegressionSolver import TwoClassRidgeRegressionSolver
+from pyfora.algorithms.TwoClassRidgeRegressionSolver import \
+    TwoClassRidgeRegressionSolver
+from pyfora.algorithms.BinaryLogisticRegressionModel import \
+    BinaryLogisticRegressionModel
 
 
 class BinaryLogisticRegressionFitter:
@@ -20,7 +23,6 @@ class BinaryLogisticRegressionFitter:
             self,
             regularizer,
             hasIntercept=True,
-            strict=True,
             interceptScale=1,
             tol=1e-4,
             maxIter=1e5,
@@ -30,7 +32,6 @@ class BinaryLogisticRegressionFitter:
 
         self.regularizer = regularizer
         self.hasIntercept = hasIntercept
-        self.strict = strict
         self.interceptScale = interceptScale
         self.tol = tol
         self.maxIter = maxIter
@@ -47,14 +48,12 @@ class BinaryLogisticRegressionFitter:
             # we should build implement  __pyfora_generator__  on Series
             classes = y.iloc[:,0].unique()
 
-        nClasses = len(classes)
-
-        if self.strict and nClasses != 2:
-            assert False
+        assert len(classes) == 2
 
         classZeroLabel = classes[0]
+        classOneLabel = classes[1]
 
-        res = TwoClassRidgeRegressionSolver(
+        coefficients, iters = TwoClassRidgeRegressionSolver(
             X, y,
             self.regularizer,
             self.tol,
@@ -66,5 +65,16 @@ class BinaryLogisticRegressionFitter:
             self.interceptScale
             ).computeCoefficients()
 
-        return res
+        intercept = None
+        if self.hasIntercept:
+            intercept = coefficients[-1]
+            coefficients = coefficients[:-1]
+
+        return BinaryLogisticRegressionModel(
+            coefficients,
+            classZeroLabel,
+            classOneLabel,
+            intercept,
+            self.interceptScale,
+            iters)
             

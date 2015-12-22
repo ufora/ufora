@@ -42,17 +42,59 @@ class LogisticRegressionTests(object):
 
         def f():
             fit = BinaryLogisticRegressionFitter(1).fit(X, y)
-            return fit
+            return fit.intercept, fit.coefficients
 
-        res = self.evaluateWithExecutor(f)
+        computedIntercept, computedCoefficients = self.evaluateWithExecutor(f)
 
-        expectedResult = numpy.array([0.26901034, 0.25372016, 0.10102151])
+        expectedIntercept = 0.10102151
+        expectedCoefficients = numpy.array([0.26901034, 0.25372016])
         
         self.assertTrue(
-            numpy.allclose(
-                res[0],
-                expectedResult,
+            numpy.isclose(
+                computedIntercept,
+                expectedIntercept,
                 rtol=0.1
                 )
             )
 
+        self.assertTrue(
+            numpy.allclose(
+                computedCoefficients,
+                expectedCoefficients,
+                rtol=0.1
+                )
+            )
+
+    def test_binary_logistic_regression_probabilities(self):
+        X, y = self.exampleData()
+
+        def f():
+            fit = BinaryLogisticRegressionFitter(1).fit(X, y)
+            return fit.predict_probability(X)
+
+        expectedPredictedProbabilities = [0.541898928, 0.4122333, 0.34892898]
+        computedProbabilities = self.evaluateWithExecutor(f)
+
+        self.assertTrue(
+            numpy.allclose(
+                computedProbabilities,
+                expectedPredictedProbabilities,
+                rtol=0.1
+                )
+            )
+
+    def test_binary_logistic_regression_predict(self):
+        X, y = self.exampleData()
+
+        def f():
+            fit = BinaryLogisticRegressionFitter(1).fit(X, y)
+            return fit.predict(X)
+
+        self.assertTrue(
+            numpy.array_equal(
+                self.evaluateWithExecutor(f),
+                numpy.array([0, 1, 1])
+                )
+            )
+
+        

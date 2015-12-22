@@ -24,7 +24,7 @@ def _addScaleColumn(df, scale):
 class TwoClassRidgeRegressionSolver:
     def __init__(
             self, X, y,
-            regularizer, tol, maxIter, classes,
+            regularizer, tol, maxIters, classes,
             classZeroLabel=None, splitLimit=1000000,
             hasIntercept=True, interceptScale=1):
         if classZeroLabel is None:
@@ -32,7 +32,7 @@ class TwoClassRidgeRegressionSolver:
         else:
             assert classZeroLabel in classes
 
-        # TODO: we don't need to hold onto an entire column of one, but it simplifies the code for now
+        # TODO: we don't need to hold onto an entire column of ones, but it simplifies the code for now
         if hasIntercept:
             X = _addScaleColumn(X, interceptScale)
 
@@ -41,7 +41,7 @@ class TwoClassRidgeRegressionSolver:
         self.X = X
         self.regularizer = float(regularizer)
         self.tol = tol
-        self.maxIter = maxIter
+        self.maxIters = maxIters
         self.classZeroLabel = classZeroLabel
         self.fSum = fSum
         self.nFeatures = X.shape[1]
@@ -70,7 +70,7 @@ class TwoClassRidgeRegressionSolver:
 
         iters = 1
         while sum((newTheta - oldTheta) ** 2) > self.tol * self.tol and \
-                  iters < self.maxIter:
+                  iters < self.maxIters:
             oldTheta = newTheta
             newTheta = self.updateTheta(oldTheta)
             iters = iters + 1
