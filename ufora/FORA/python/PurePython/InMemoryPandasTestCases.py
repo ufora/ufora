@@ -367,3 +367,11 @@ A,B,C
             self.evaluateWithExecutor(f),
             pandas.DataFrame(newDict)
             )
+
+    def test_series_isinstance(self):
+        s = pandas.Series([1,2,3,4])
+        def f():
+            return isinstance(s, list)
+
+        self.equivalentEvaluationTest(f)
+

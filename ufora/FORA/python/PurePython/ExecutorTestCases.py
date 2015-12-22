@@ -880,13 +880,34 @@ class ExecutorTestCases(object):
                 test(issubclass, t1, t2)
                 test(issubclass, t1, (t2,))
 
-    def test_isinstance(self):
+    def test_isinstance_1(self):
         test = self.equivalentEvaluationTestThatHandlesExceptions
 
         for inst in [10, 10.0, True]:
             for typ in [float, object, int, bool]:
                 test(lambda: isinstance(inst, typ))
                 test(lambda: issubclass(type(inst), typ))
+
+    def test_isinstance_2(self):
+        class IsInstanceClass:
+            pass
+
+        def f():
+            c = IsInstanceClass()
+            return c.__class__ is IsInstanceClass and \
+                not isinstance(c, list)
+
+        self.equivalentEvaluationTest(f)
+
+    def test_isinstance_3(self):
+        class IsinstanceClassTest:
+            pass
+
+        def f():
+            x = IsinstanceClassTest()
+            return x.__class__ is IsinstanceClassTest and isinstance(x, IsinstanceClassTest)
+
+        self.equivalentEvaluationTest(f)
 
     def test_sum_isPrime(self):
         def isPrime(p):
@@ -2032,16 +2053,6 @@ class ExecutorTestCases(object):
 
         self.equivalentEvaluationTest(f, 2)
 
-    def test_isinstance_class(self):
-        class IsinstanceClassTest:
-            pass
-
-        def f():
-            x = IsinstanceClassTest()
-            return x.__class__ is IsinstanceClassTest and isinstance(x, IsinstanceClassTest)
-
-        self.equivalentEvaluationTest(f)
-
     def test_tuple_assignment(self):
         def f():
             x,y = 1,2
@@ -2386,3 +2397,4 @@ class ExecutorTestCases(object):
             return type(AssertionError("asdf"))
 
         self.equivalentEvaluationTest(f)
+
