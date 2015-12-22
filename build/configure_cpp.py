@@ -16,46 +16,46 @@
 # encoding: utf-8
 
 import waflib
-import sys
 
 def cxx_compiler_options(cxx_opts):
     cxx_opts.add_option(
         '--cxx-warnings',
-            default = '-w',
-            dest = 'cxx_warnings',
-            help = 'extra warning flags to pass to C++ compiler')
+        default='-w',
+        dest='cxx_warnings',
+        help='extra warning flags to pass to C++ compiler')
 
     cxx_opts.add_option(
         '--cxx-compile-flags',
-            default = '-pthread -fPIC -std=c++0x -DBOOST_REGEX_RECURSIVE -DBOOST_NO_STD_LOCALE -DBOOST_LEXICAL_CAST_ASSUME_C_LOCALE ',
-            dest = 'cxx_compile_flags',
-            help = 'common flags to pass to C++ compiler')
+        default='-pthread -fPIC -std=c++0x',
+        dest='cxx_compile_flags',
+        help='common flags to pass to C++ compiler')
 
     cxx_opts.add_option(
         '--cxx-extra-compile-flags',
-            default = '',
-            dest = 'cxx_extra_compile_flags',
-            help = 'extra flags to pass to C++ compiler')
+        default='',
+        dest='cxx_extra_compile_flags',
+        help='extra flags to pass to C++ compiler')
 
     cxx_opts.add_option(
         '--cxx-optimize-flag',
-            default = '-O3 ',
-            dest = 'cxx_optimize_flag',
-            help = 'optimization flag to pass to compiler (-O[0-3])')
+        default='-O3 ',
+        dest='cxx_optimize_flag',
+        help='optimization flag to pass to compiler (-O[0-3])')
 
     cxx_opts.add_option(
         '--cxx-debug-info-flag',
-            default = '',
-            dest = 'cxx_debug_flag',
-            help = 'generate debug information? Off by default. Set to -g to add debug info.')
+        default='',
+        dest='cxx_debug_flag',
+        help='generate debug information? Off by default. Set to -g to add debug info.')
 
 
 def cxx_defines_options(cxx_opts):
     cxx_opts.add_option(
         '--cxx-user-defines',
-            default='__STDC_LIMIT_MACROS __STDC_CONSTANT_MACROS __STDC_FORMAT_MACROS DONT_GET_PLUGIN_LOADER_OPTION',
-            dest='cxx_user_defines',
-            help='Additional symbols defined by the user')
+        default='__STDC_LIMIT_MACROS __STDC_CONSTANT_MACROS __STDC_FORMAT_MACROS '
+                'DONT_GET_PLUGIN_LOADER_OPTION',
+        dest='cxx_user_defines',
+        help='Additional symbols defined by the user')
 
 
 def cxx_include_options(cxx_opts):
@@ -68,55 +68,52 @@ def cxx_include_options(cxx_opts):
 
     cxx_opts.add_option(
         '--numpy-include-dir',
-            default = find_numpy(),
-            dest = 'cxx_numpy_include',
-            help = 'directory containing numpy headers')
+        default=find_numpy(),
+        dest='cxx_numpy_include',
+        help='directory containing numpy headers')
 
     cxx_opts.add_option(
         '--add-system-include',
-            action = "append",
-            default = ['/usr/lib/llvm-3.5/include'],
-            dest = 'cxx_system_includes',
-            help = 'add a directory to the system include path')
+        action="append",
+        default=['/usr/lib/llvm-3.5/include'],
+        dest='cxx_system_includes',
+        help='add a directory to the system include path')
 
     cxx_opts.add_option(
         '--add-user-include',
-            action ='append',
-            default = ['ufora', 'cppml/include', 'third_party/', 'third_party/boost_1_53_0/',
-                'third_party/llvm-3.5.2.src/tools/clang/include',
-                'third_party/llvm-3.5.2.src/include'
-                ],
-            dest = 'cxx_user_includes',
-            help = 'add a directory to the user include path')
+        action='append',
+        default=['ufora', 'cppml/include', 'third_party/'],
+        dest='cxx_user_includes',
+        help='add a directory to the user include path')
 
 
 def cxx_link_flags_options(cxx_opts):
     cxx_opts.add_option(
         '--cxx-link-flags',
-            default = '-pthread',
-            dest = 'cxx_link_flags',
-            help = 'extra flags to pass to C++ linker')
+        default='-pthread',
+        dest='cxx_link_flags',
+        help='extra flags to pass to C++ linker')
     cxx_opts.add_option(
         '--cxx-rpath',
-            default = '$ORIGIN',
-            dest = 'cxx_rpath',
-            help = 'define a cxx rpath')
+        default='$ORIGIN',
+        dest='cxx_rpath',
+        help='define a cxx rpath')
 
 
 def cxx_libs_options(cxx_opts):
     cxx_opts.add_option(
         '--add-library-dir',
-            action = 'append',
-            default = ['/usr/lib/llvm-3.5/lib'],
-            dest = 'link_lib_dirs',
-            help = 'add a directory to the library path for linking')
+        action='append',
+        default=['/usr/lib/llvm-3.5/lib'],
+        dest='link_lib_dirs',
+        help='add a directory to the library path for linking')
 
     cxx_opts.add_option(
         '--add-library',
-            action='append',
-            default=[],
-            dest='link_libs',
-            help='add a library against which to link')
+        action='append',
+        default=[],
+        dest='link_libs',
+        help='add a library against which to link')
 
 
 def options(opt):
@@ -131,7 +128,8 @@ def options(opt):
 
 @waflib.Configure.conf
 def cxx_flags(conf):
-    conf.env.append_unique('CXXFLAGS',
+    conf.env.append_unique(
+        'CXXFLAGS',
         conf.options.cxx_warnings.split() + \
         conf.options.cxx_compile_flags.split() + \
         conf.options.cxx_extra_compile_flags.split() + \
@@ -144,26 +142,32 @@ def cxx_flags(conf):
 
 @waflib.Configure.conf
 def cxx_includes(conf):
-    conf.env.append_unique("SYS_INCLUDES",
+    conf.env.append_unique(
+        "SYS_INCLUDES",
         conf.options.cxx_system_includes + \
         conf.options.cxx_user_includes
         )
-    conf.env.SYS_INCLUDES.extend((getattr(conf.options, opt)
-                                for opt in dir(conf.options)
-                                if opt.endswith('_include') and getattr(conf.options, opt) is not None))
+    conf.env.SYS_INCLUDES.extend(
+        (getattr(conf.options, opt)
+         for opt in dir(conf.options)
+         if opt.endswith('_include') and getattr(conf.options, opt) is not None)
+        )
 
 @waflib.Configure.conf
 def cxx_libs(conf):
     conf.env.LIB_DIRS = conf.options.link_lib_dirs
     conf.env.LIBS = conf.options.link_libs
-    conf.env.LIBS.extend((getattr(conf.options, opt)
-                                    for opt in dir(conf.options)
-                                    if opt.endswith('_lib')))
+    conf.env.LIBS.extend(
+        (getattr(conf.options, opt)
+         for opt in dir(conf.options)
+         if opt.endswith('_lib'))
+        )
 
 
 @waflib.Configure.conf
 def cxx_common_defines(conf):
-    conf.env.append_unique('CXXDEFINES',
+    conf.env.append_unique(
+        'CXXDEFINES',
         conf.options.cxx_user_defines.split()
         )
 
@@ -180,4 +184,3 @@ def configure(conf):
     cxx_link(conf)
 
     conf.env.append_unique('RPATH', conf.options.cxx_rpath.split())
-
