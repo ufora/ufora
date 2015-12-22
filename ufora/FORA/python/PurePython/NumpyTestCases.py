@@ -441,6 +441,15 @@ class NumpyTestCases(object):
             # we're not wrapping the numpy linalg errors yet
             pass
         
+    def test_numpy_linsolve_3(self):
+        a = numpy.array([[-2.0, 3.0], [4.0, 7.0]])
+        b = numpy.array([1.0, 2.0])
+
+        def f():
+            return numpy.linalg.solve(a, b)
+
+        self.equivalentEvaluationTest(f)
+        
     def test_numpy_slicing_1(self):
         size = 3
         def f(lowIx, highIx):

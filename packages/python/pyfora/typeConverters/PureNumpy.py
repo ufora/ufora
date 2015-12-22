@@ -329,11 +329,19 @@ class NpPinv:
 
 class LinSolve:
     def __call__(self, a, b):
-        assert len(a.shape) == 2
-        assert a.shape[0] == a.shape[1]
-        assert len(b.shape) == 2
-        assert a.shape[0] == b.shape[0]
+        assert len(a.shape) == 2, "need len(a.shape) == 2"
+        assert a.shape[0] == a.shape[1], "need a.shape[0] == a.shape[1]"
+        assert a.shape[0] == b.shape[0], "need a.shape[0] == b.shape[0]"
 
+        if len(b.shape) == 2:
+            return self._linsolv_impl(a, b)
+        elif len(b.shape) == 1:
+            res = self._linsolv_impl(a, b.reshape((len(b),1)))
+            return res.reshape((len(res),))
+
+        assert False, "need len(b.shape) == 2 or len(b.shape) == 1"
+
+    def _linsolv_impl(self, a, b):
         res = LinSolve.__pyfora_builtins__.linalg.linsolve(a, b)
         flattendValues = res[0]
         shape = res[1]
