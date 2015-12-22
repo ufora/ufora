@@ -15,6 +15,7 @@
 
 import pyfora.PureImplementationMapping as PureImplementationMapping
 import pyfora.algorithms.util
+from pyfora.typeConverters.PureNumpy import PurePythonNumpyArray
 
 
 def pd():
@@ -99,6 +100,17 @@ class PurePythonDataFrame:
             self._columns + [column],
             self._columnNames + [columnName]
             )            
+
+    def as_matrix(self):
+        columnMajorData = []
+        for col in self._columns:
+            columnMajorData = columnMajorData + col.tolist()
+        
+        tr = PurePythonNumpyArray((len(columnMajorData),), columnMajorData)
+        # currently, PurePythonNumpyArrays are row-major, 
+        # so we form the transpose here
+        tr = tr.reshape((self.shape[1], self.shape[0]))
+        return tr.transpose()
     
 
 class _PurePythonDataFrameILocIndexer:
@@ -152,6 +164,19 @@ class PurePythonSeries:
         else:
             return self.values[ix]
 
+    def tolist(self):
+        try:
+            isinstance(self.values, list)
+        except:
+            raise Exception(type(self.values))
+
+        if isinstance(self.values, list):
+            return self.values
+        elif isinstance(self.values, PurePythonNumpyArray):
+            return self.values.tolist()
+        else:
+            return [self[ix] for ix in xrange(len(self))]
+
     def unique(self):
         sortedSeries = self.sort_values()
         return pyfora.algorithms.util.unique(sortedSeries.values, True)
@@ -180,7 +205,7 @@ class PurePythonSeriesMapping(PureImplementationMapping.PureImplementationMappin
         return [PurePythonSeries]
 
     def mapPythonInstanceToPyforaInstance(self, pandasSeries):
-        return PurePythonSeries(list(pandasSeries.values))
+        return PurePythonSeries(pandasSeries.tolist())
 
     def mapPyforaInstanceToPythonInstance(self, pureSeries):
         return pd().Series(pureSeries.values)

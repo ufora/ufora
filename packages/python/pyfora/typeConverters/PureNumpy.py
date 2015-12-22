@@ -19,7 +19,9 @@ import numpy as np
 class PurePythonNumpyArray:
     """
     This is this pyfora wrapper and implementation of the numpy array class
-    Internally, the array is stored as a list of values and a tuple of the array dimensions
+    Internally, the array is stored as a list of values and a tuple of the 
+    array dimensions. Currently, the values block is interpreted in a 
+    *row major* fashion.
     """
     def __init__(self, shape, values):
         self.shape = shape

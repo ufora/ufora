@@ -32,9 +32,13 @@ class LogisticRegressionTests(object):
             list(set(x))
             )
         
-    def test_binary_logistic_regression(self):
+    def exampleData(self):
         X = pandas.DataFrame({'A': [-1,0,1], 'B': [0,1,1]})
         y = pandas.DataFrame({'C': [0,1,1]})
+        return X, y
+
+    def test_binary_logistic_regression_coefficients(self):
+        X, y = self.exampleData()
 
         def f():
             fit = BinaryLogisticRegressionFitter(1).fit(X, y)
@@ -51,6 +55,4 @@ class LogisticRegressionTests(object):
                 rtol=0.1
                 )
             )
-
-        
 
