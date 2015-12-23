@@ -49,6 +49,15 @@ class PurePythonNumpyArray:
         for idx in range(len(self)):
             yield self[idx]
 
+    def __eq__(self, y):
+        if self.shape != y.shape:
+            raise ValueError(
+                "__eq__ only currently implemented for equal-sized arrays"
+                )
+            
+        tr = [self.values[ix] == y.values[ix] for ix in xrange(self.size)]
+        return PurePythonNumpyArray(self.shape, tr)
+
     @property
     def size(self):
         return len(self.values)

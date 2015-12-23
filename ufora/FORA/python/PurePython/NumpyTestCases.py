@@ -460,3 +460,11 @@ class NumpyTestCases(object):
         for ix in range(size):
             for jx in range(size):
                 self.equivalentEvaluationTest(f, ix, jx)
+
+    def test_numpy_eq(self):
+        x = numpy.array([1,2,3])
+        y = numpy.array([1,0,2])
+        def f():
+            return x == y
+
+        self.equivalentEvaluationTest(f)
