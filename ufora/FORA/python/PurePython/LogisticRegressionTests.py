@@ -97,4 +97,11 @@ class LogisticRegressionTests(object):
                 )
             )
 
-        
+    def test_binary_logistic_regression_score(self):
+        X, y = self.exampleData()
+
+        def f():
+            fit = BinaryLogisticRegressionFitter(1).fit(X, y)
+            return fit.score(X, y)
+
+        self.assertEqual(self.evaluateWithExecutor(f), 1.0)

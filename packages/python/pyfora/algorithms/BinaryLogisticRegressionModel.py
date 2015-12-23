@@ -38,7 +38,44 @@ class BinaryLogisticRegressionModel:
         self.interceptScale = interceptScale
         self.iters = iters
 
+    def score(self, X, y):
+        """
+        Returns the mean accuracy on the given test data and labels.
+
+        Args:
+            X: feature vectors
+            y: target labels, corresponding to the vectors in `X`.
+
+        Returns:
+            score: (float) the mean accuracy of `self.predict(X)` 
+                with respect to `y`.
+        """
+        assert len(X) == len(y), "arguments must have the same length"
+
+        if isinstance(y, (PurePandas.PurePythonSeries,
+                          PurePandas.PurePythonDataFrame)):
+            y = y.as_matrix()
+            y = y.reshape((len(y),))
+
+        predictions = self.predict(X)
+
+        def valAtIx(ix):
+            if y[ix] == predictions[ix]:
+                return 1.0
+            return 0.0
+
+        return sum(valAtIx(ix) for ix in xrange(len(predictions))) / len(y)
+
     def predict(self, X):
+        """
+        Predict the class labels of `X`.
+
+        Args:
+            X: (DataFrame, or numpy array) a set of feature vectors
+
+        Returns:
+            a numpy array containing the predicted class labels.
+        """
         probabilities = self.predict_probability(X)
 
         def classForProbability(probability):
@@ -51,6 +88,16 @@ class BinaryLogisticRegressionModel:
             ])
 
     def predict_probability(self, X):
+        """
+        Estimate the conditional class-one probability for the features in 
+        `X`.
+
+        Args:
+            X: (DataFrame, or numpy array) a set of feature vectors
+
+        Returns:
+            a numpy array containing the predicted probabilities.
+        """
         if isinstance(X, PurePandas.PurePythonDataFrame):
             X = X.as_matrix()
 

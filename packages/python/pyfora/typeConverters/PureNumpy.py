@@ -50,6 +50,10 @@ class PurePythonNumpyArray:
             yield self[idx]
 
     def __eq__(self, y):
+        # true numpy usese some "broadcasting" rules
+        # to decide the shape of the resultant array
+        # here we're restricting to the simpler case
+        # where both arrays have the same size
         if self.shape != y.shape:
             raise ValueError(
                 "__eq__ only currently implemented for equal-sized arrays"

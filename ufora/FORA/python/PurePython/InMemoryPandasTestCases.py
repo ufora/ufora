@@ -382,3 +382,9 @@ A,B,C
 
         self.equivalentEvaluationTest(f)
             
+    def test_series_as_matrix(self):
+        s = pandas.Series([1,2,3])
+        def f():
+            return s.as_matrix()
+
+        self.equivalentEvaluationTest(f)

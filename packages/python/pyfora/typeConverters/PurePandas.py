@@ -177,6 +177,9 @@ class PurePythonSeries:
         else:
             return [self[ix] for ix in xrange(len(self))]
 
+    def as_matrix(self):
+        return PurePythonNumpyArray((len(self),), self.tolist())
+
     def unique(self):
         sortedSeries = self.sort_values()
         return pyfora.algorithms.util.unique(sortedSeries.values, True)
