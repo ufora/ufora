@@ -272,8 +272,11 @@ class NpDot:
             # The numpy API allows us to multiply a 1D array by a 2D array
             # and numpy will automatically reshape the 1D array to 2D
             if len(arr1.shape) == 1 and len(arr2.shape) == 2:
-                arr1 = arr1.reshape((arr1.shape[0], 1,)).transpose()
+                arr1 = arr1.reshape((1, arr1.shape[0]))
                 return self(arr1, arr2)[0]
+
+            if len(arr1.shape) == 2 and len(arr2.shape) == 1:
+                return self(arr2, arr1.transpose())
 
             if len(arr1.shape) != len(arr2.shape):
                 raise ValueError("Matrix dimensions do not match")
@@ -306,7 +309,7 @@ class NpDot:
 
             else:
                 raise Exception(
-                    "not currently implemented for > 2 dimensions"
+                    "not currently implemented for > 2 dimensions: "
                     )
 
         else:

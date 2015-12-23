@@ -250,7 +250,7 @@ class NumpyTestCases(object):
         self.assertTrue(numpy.isclose(r1, r2))
 
     def test_numpy_dot_product_3(self):
-        def f1():
+        def f():
             m1 = numpy.array([1.0, 2, 3, 4, 5, 6])
             m2 = numpy.array([[67.0, 63, 87],
                        [77, 69, 59],
@@ -259,10 +259,11 @@ class NumpyTestCases(object):
                        [63, 89, 93],
                        [68, 92, 78]])
             return numpy.dot(m1, m2)
-        self.equivalentEvaluationTest(f1)
+        self.equivalentEvaluationTest(f)
 
-        def f2():
-            m1 = numpy.array([1.0, 2, 3, 4, 5, 6])
+    def test_numpy_dot_product_4(self):
+        def f():
+            m1 = numpy.array([1.0, 2, 3])
             m2 = numpy.array([[67.0, 63, 87],
                        [77, 69, 59],
                        [85, 87, 99],
@@ -270,9 +271,9 @@ class NumpyTestCases(object):
                        [63, 89, 93],
                        [68, 92, 78]])
             return numpy.dot(m2, m1)
-        self.equivalentEvaluationTestThatHandlesExceptions(f2)
+        self.equivalentEvaluationTest(f)
 
-    def test_numpy_dot_product_4(self):
+    def test_numpy_dot_product_5(self):
         x = numpy.array([[1,2],[3,4]])
         y = numpy.array([1,2,3])
         
