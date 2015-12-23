@@ -19,6 +19,33 @@ from pyfora.algorithms.BinaryLogisticRegressionModel import \
 
 
 class BinaryLogisticRegressionFitter:
+    """
+    BinaryLogisticRegressionFitter
+
+    A pure-python implementation of l2-regularized logistic regression using 
+    an approach from A. Choromanska and T. Jebara's paper
+    "Majorization for CRFs and Latent Likelihoods", 
+    Neural Information Processing Systems (NIPS), December 2012. 
+
+    A `BinaryLogisticRegressionFitter`, or "fitter", holds fitting parameters
+    which are used to fit logit models.
+
+    Args:
+        regularizer: (float) The "lambda" parameter in the referenced paper, the 
+            regularization strength.
+        hasIntercept: (bool) Should we include an intercept (aka bias) term in
+            the models we fit? 
+        interceptScale: (float) When `hasIntercept` is true, feature vectors 
+            become `[x, interceptScale]`, i.e. we add a "synthetic" feature 
+            with constant value `interceptScale` to all of the feature vectors.
+            This synthetic feature is subject to regularization as all other
+            features. To lessen the effect of regularization, users should 
+            increase this value.
+        tol: (float) Tolerance for stopping criteria. Currently we stop when 
+            the l2-norm of the parameters to update do not change more than `tol`.
+        maxIter: (int) A hard limit on the number of update cycles we allow.
+
+    """
     def __init__(
             self,
             regularizer,
@@ -37,16 +64,28 @@ class BinaryLogisticRegressionFitter:
         self.maxIter = maxIter
         self.splitLimit = splitLimit
 
-    def fit(self, X, y, classZeroLabel=None, classes=None):
+    def fit(self, X, y):
+        """
+        Using the fitting parameters held in `self`, fit a (regularized) 
+        logit model to the predictors `X` and responses `y`.
+
+        Args:
+            X: a dataframe of feature vectors.
+            y: a dataframe (with one column) which contains the "target" values,
+                corresponding to the feature vectors in `X`.
+            classZeroLabel
+
+        Returns:
+            A `BinaryLogisticRegressionModel` which represents the fit model.
+        """
         assert X.shape[0] == y.shape[0]
         assert y.shape[1] == 1
 
-        if classes is None:
-            # we need to be careful here:
-            # sorted is going to copy the 
-            # maybe we can avoid the copy, but at the very least
-            # we should build implement  __pyfora_generator__  on Series
-            classes = y.iloc[:,0].unique()
+        # we need to be careful here:
+        # sorted is going to copy the 
+        # maybe we can avoid the copy, but at the very least
+        # we should build implement  __pyfora_generator__  on Series
+        classes = y.iloc[:,0].unique()
 
         assert len(classes) == 2
 
