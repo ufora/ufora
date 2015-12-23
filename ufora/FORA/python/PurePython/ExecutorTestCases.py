@@ -920,12 +920,20 @@ class ExecutorTestCases(object):
 
         self.equivalentEvaluationTest(lambda: sum(isPrime(x) for x in xrange(1000000)))
 
-    def test_inStatement_1(self):
-        def f():
-            x = [0,1,2,3]
-            return 0 in x
+    def test_in_expr(self):
+        x = [0,1,2,3]
+        def f(arg):
+            return arg in x
 
-        self.equivalentEvaluationTest(f)
+        for arg in range(-len(x), len(x)):
+            self.equivalentEvaluationTest(f, arg)
+
+    def test_notin_expr(self):
+        def f(x):
+            return x not in [2,3]
+
+        for x in [2]:
+            self.equivalentEvaluationTest(f, x)
 
     def test_iteration_1(self):
         def iteration_1():
