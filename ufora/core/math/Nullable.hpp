@@ -75,7 +75,7 @@ public:
 
 		explicit operator bool() const
 			{
-			return mData;
+			return static_cast<bool>(mData);
 			}
 
 		inline const T*	operator->() const
