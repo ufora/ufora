@@ -153,7 +153,8 @@ class PyObjectWalker(object):
         for singleton in NamedSingletons.pythonSingletonToName:
             if purePythonClassMapping.canMap(singleton):
                 raise UserWarning(
-                    "You provided a mapping that applies to %s, which already has a direct mapping" % singleton
+                    "You provided a mapping that applies to %s, "
+                    "which already has a direct mapping" % singleton
                     )
 
         self._purePythonClassMapping = purePythonClassMapping
@@ -371,7 +372,8 @@ class PyObjectWalker(object):
         except Exceptions.CantGetSourceTextError:
             self._raiseConversionErrorForSourceTextError(classInstance)
         except:
-            logging.error('Failed on %s (of type %s)', classInstance, type(classInstance))
+            logging.error('Failed on %s (of type %s)', 
+                          classInstance, type(classInstance))
             raise
         classMemberNameToClassMemberId = {}
         for dataMemberName in dataMemberNames:
@@ -419,7 +421,8 @@ class PyObjectWalker(object):
             self._freeMemberAccessChainsWithPositions(withBlockFun)
 
         boundValuesInScopeWithPositions = \
-            PyAstFreeVariableAnalyses.collectBoundValuesInScope(withBlockFun, getPositions=True)
+            PyAstFreeVariableAnalyses.collectBoundValuesInScope(
+                withBlockFun, getPositions=True)
 
         for boundValueWithPosition in boundValuesInScopeWithPositions:
             val, pos = boundValueWithPosition
@@ -438,7 +441,8 @@ class PyObjectWalker(object):
 
         try:
             processedFreeVariableMemberAccessChainResolutions = {}
-            for chain, (resolution, position) in freeVariableMemberAccessChainResolutions.iteritems():
+            for chain, (resolution, position) in \
+                freeVariableMemberAccessChainResolutions.iteritems():
                 processedFreeVariableMemberAccessChainResolutions['.'.join(chain)] = \
                     self.walkPyObject(resolution)
         except UnresolvedFreeVariableExceptionWithTrace as e:
@@ -552,7 +556,8 @@ class PyObjectWalker(object):
 
         try:
             processedFreeVariableMemberAccessChainResolutions = {}
-            for chain, (resolution, location) in freeVariableMemberAccessChainResolutions.iteritems():
+            for chain, (resolution, location) in \
+                freeVariableMemberAccessChainResolutions.iteritems():
                 processedFreeVariableMemberAccessChainResolutions['.'.join(chain)] = \
                     self.walkPyObject(resolution)
         except UnresolvedFreeVariableExceptionWithTrace as e:
@@ -607,7 +612,8 @@ class PyObjectWalker(object):
         else:
             raise UnresolvedFreeVariableException(chainWithPosition, None)
 
-        return self._computeSubchainAndTerminalValueAlongModules(rootValue, chainWithPosition)
+        return self._computeSubchainAndTerminalValueAlongModules(
+            rootValue, chainWithPosition)
 
 
     def _resolveChainInPyObject(self, chainWithPosition, pyObject):
@@ -619,21 +625,22 @@ class PyObjectWalker(object):
         taking members only along modules (or "empty" modules)
 
         """
-        subchainAndResolution = self._subchainAndResolution(pyObject, chainWithPosition)
-        if subchainAndResolution is None:
+        subchainAndResolutionOrNone = \
+            self._subchainAndResolutionOrNone(pyObject, chainWithPosition)
+        if subchainAndResolutionOrNone is None:
             raise Exceptions.PythonToForaConversionError(
                 "don't know how to resolve %s in %s (line:%s)"
                 % (chainWithPosition.var, pyObject, chainWithPosition.pos.lineno)
                 )
 
-        subchain, terminalValue, location = subchainAndResolution
+        subchain, terminalValue, location = subchainAndResolutionOrNone
 
         if id(terminalValue) in self._convertedObjectCache:
             terminalValue = self._convertedObjectCache[id(terminalValue)]
 
         return subchain, terminalValue, location
 
-    def _subchainAndResolution(self, pyObject, chainWithPosition):
+    def _subchainAndResolutionOrNone(self, pyObject, chainWithPosition):
         if PyforaInspect.isfunction(pyObject):
             return self._lookupChainInFunction(pyObject, chainWithPosition)
 
@@ -685,7 +692,8 @@ class PyObjectWalker(object):
                 logging.error(
                     "Failed to get value for free variable %s\n%s",
                     freeVariable, traceback.format_exc())
-                raise UnresolvedFreeVariableException(chainWithPosition, pyFunction.func_name)
+                raise UnresolvedFreeVariableException(
+                    chainWithPosition, pyFunction.func_name)
 
         elif freeVariable in pyFunction.func_globals:
             rootValue = pyFunction.func_globals[freeVariable]
@@ -694,9 +702,11 @@ class PyObjectWalker(object):
             rootValue = getattr(__builtin__, freeVariable)
 
         else:
-            raise UnresolvedFreeVariableException(chainWithPosition, pyFunction.func_name)
+            raise UnresolvedFreeVariableException(
+                chainWithPosition, pyFunction.func_name)
 
-        return self._computeSubchainAndTerminalValueAlongModules(rootValue, chainWithPosition)
+        return self._computeSubchainAndTerminalValueAlongModules(
+            rootValue, chainWithPosition)
 
     def _computeSubchainAndTerminalValueAlongModules(self, rootValue, chainWithPosition):
         ix = 1
@@ -730,7 +740,8 @@ class PyObjectWalker(object):
         resolutions = dict()
 
         for chainWithPosition in freeVariableMemberAccessChainsWithPositions:
-            subchain, resolution, position = self._resolveChainByDict(chainWithPosition, boundVariables)
+            subchain, resolution, position = self._resolveChainByDict(
+                chainWithPosition, boundVariables)
 
             if id(resolution) in self._convertedObjectCache:
                 resolution = self._convertedObjectCache[id(resolution)][1]
@@ -748,8 +759,10 @@ class PyObjectWalker(object):
             self._freeMemberAccessChainsWithPositions(pyAst)
 
         for chainWithPosition in freeVariableMemberAccessChainsWithPositions:
-            if not chainWithPosition or chainWithPosition.var[0] not in ['staticmethod', 'property']:
-                subchain, resolution, position = self._resolveChainInPyObject(chainWithPosition, pyObject)
+            if not chainWithPosition or \
+               chainWithPosition.var[0] not in ['staticmethod', 'property']:
+                subchain, resolution, position = self._resolveChainInPyObject(
+                    chainWithPosition, pyObject)
                 resolutions[subchain] = (resolution, position)
 
         return resolutions

@@ -171,7 +171,6 @@ class WithBlockExecutor(object):
 
     def __exit__(self, excType, excValue, trace):
         # swallow WithBlockCompleted and let all other exceptions through
-        logging.info("excType: %s", excType)
         return isinstance(excValue, WithBlockCompleted)
 
     def blockOperation(self, frame):
