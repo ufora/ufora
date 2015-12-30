@@ -27,13 +27,32 @@
 #include "../../../core/cppml/CPPMLTransform.hppml"
 #include "../../../core/Logging.hpp"
 #include "../../Language/RebindFree.hppml"
+#include "../../Language/ParserExpressions.hppml"
+
 
 #define PYFORA_CONVERSION_ERROR_MESSAGE "Pyfora can't convert this code. See http://docs.pyfora.com/en/latest/tutorials/intro.html#pure-python"
+
+
+constexpr auto __inline_fora_string = "__inline_fora";
 
 
 namespace {
 
 using namespace Fora;
+
+void assertValidNameIdentifier(
+        const std::string& identifier,
+        const SimpleParseRange& extent
+        )
+    {
+    if (identifier == __inline_fora_string)
+        throw PythonToForaConversionError(
+            std::string("in pyfora, ") + __inline_fora_string +
+            " is a reserved word and expects a single argument "
+            "string which defines an \"inline\" fora function",
+            extent
+            );
+    }
 
 //take a member name (e.g. 'x') and return the private form of the name (the
 //name used by generated code) that refers to it. We use a space because it cannot
@@ -844,7 +863,7 @@ PythonAstConverter::convertPythonClassBodyFunctionDefToForaClassDefinitionTerms(
 
         throw PythonToForaConversionError(
             "don't know how to convert decorator lists for functions, "
-            "besides \"staticmethod\", right now",
+            "besides \"staticmethod\" and \"property\", right now",
             extent
             );
         }
@@ -1435,6 +1454,9 @@ Expression PythonAstConverter::convertPythonAstExpressionToFora_inner(const Pyth
                 );
             }
         -| Call(func, args, kwds, starArgs, kwargs) ->> {
+            if (func.isName() and func.getName().id() == __inline_fora_string)
+                return convertInlineFora(expr.getCall(), expr.extent());
+
             if (starArgs.isValue())
                 throw PythonToForaConversionError(
                     "don't know how to convert starArgs just yet.",
@@ -1466,6 +1488,8 @@ Expression PythonAstConverter::convertPythonAstExpressionToFora_inner(const Pyth
             //when loading variables, we need to check whether they are specific symbols
             //that we use to denote states like 'uninitialized' or 'invalid'. If so, we defer
             //to a member of the PyObjectBase to figure out what to do
+            assertValidNameIdentifier(identifier, expr.extent());
+
             return Expression::Variable(Symbol(identifier));
             }
         -| _ ->> {
@@ -1477,6 +1501,69 @@ Expression PythonAstConverter::convertPythonAstExpressionToFora_inner(const Pyth
         oss.str(),
         expr.extent()
         );
+    }
+
+Expression PythonAstConverter::convertInlineFora(
+        const PythonAstExpr_CallType& callExpr,
+        const SimpleParseRange& extent
+        ) const
+    {
+    if (callExpr.keywords().size() > 0)
+        throw PythonToForaConversionError(
+            "__inline_fora accepts no keyword args",
+            extent
+            );
+
+    if (callExpr.starargs().isValue() > 0)
+        throw PythonToForaConversionError(
+            "__inline_fora accepts no starargs",
+            extent
+            );
+
+    if (callExpr.kwargs().isValue() > 0)
+        throw PythonToForaConversionError(
+            "__inline_fora accepts no kwargs",
+            extent
+            );
+    
+    if (callExpr.args().size() != 1)
+        throw PythonToForaConversionError(
+            "__inline_fora accepts only one argument",
+            extent
+            );
+
+    const PythonAstExpr& arg = callExpr.args()[0];
+
+    if (!arg.isStr())
+        throw PythonToForaConversionError(
+            "__inline_fora accepts only string arguments",
+            extent
+            );
+
+    const std::string& inlineForaCode = arg.getStr().s();
+    const SimpleParseNode simpleParseNode = parseStringToSimpleParse(inlineForaCode);
+
+    ParserExpressions p(true, CodeDefinitionPoint(), "");
+
+    Expression tr = p.parseToExpression(simpleParseNode);
+
+    if (!tr.isCreateFunction())
+        throw PythonToForaConversionError(
+            std::string("only CreateFunction expressions are allowed in inline fora Code. got ") + tr.tagName(),
+            extent
+            );
+
+    auto freeVariables = tr.freeVariables();
+
+    if (freeVariables.size() > 0) 
+        throw PythonToForaConversionError(
+            std::string("inline fora function had free variables, ") + 
+            prettyPrintString(freeVariables) + 
+            " and this is forbidden",
+            extent
+            );
+
+    return tr;
     }
 
 Expression PythonAstConverter::convertExpressionToForaBoolean(const Expression& expr) const
@@ -1583,6 +1670,8 @@ Expression PythonAstConverter::convertPythonAstStatementToExpression_inner(
     {
     @match PythonAstStatement(statement)
         -| FunctionDef(name) ->> {
+            assertValidNameIdentifier(name, statement.extent());
+
             return Expression::Assign(
                 PatternWithName::Anything(null() << Symbol(name)),
                 convertPythonAstFunctionDefToFora(
@@ -1592,6 +1681,8 @@ Expression PythonAstConverter::convertPythonAstStatementToExpression_inner(
                 );
             }
         -| ClassDef(name, bases, body, decoratorList) ->> {
+            assertValidNameIdentifier(name, statement.extent());
+
             return Expression::Assign(
                 PatternWithName::Anything(null() << Symbol(name)),
                 convertPythonAstClassDefToFora(
@@ -1775,11 +1866,9 @@ PatternWithName PythonAstConverter::convertPythonAstExpressionToPattern_inner(
         ) const
     {
     @match PythonAstExpr(expr)
-        -| Name(n, Param()) ->> {
-            return PatternWithName::Anything(null() << Symbol(n));
-            }
-        -| Name(n, Store()) ->> {
-            return PatternWithName::Anything(null() << Symbol(n));
+        -| Name(identifier, _) ->> {
+            assertValidNameIdentifier(identifier, expr.extent());
+            return PatternWithName::Anything(null() << Symbol(identifier));
             }
         -| Tuple(elts, Store()) ->> {
             return PatternWithName(

@@ -528,6 +528,11 @@ class PyObjectWalker(object):
             a `_FunctionDefinition` or `_ClassDefinition`.
 
         """
+        if pyObject.__name__ == '__inline_fora':
+            raise Exceptions.PythonToForaConversionError(
+                "in pyfora, '__inline_fora' is a reserved word"
+                )
+
         try:
             sourceFileText, sourceFileName = PyAstUtil.getSourceFilenameAndText(pyObject)
         except Exceptions.CantGetSourceTextError:
@@ -760,7 +765,8 @@ class PyObjectWalker(object):
 
         for chainWithPosition in freeVariableMemberAccessChainsWithPositions:
             if not chainWithPosition or \
-               chainWithPosition.var[0] not in ['staticmethod', 'property']:
+               chainWithPosition.var[0] not in \
+               ['staticmethod', 'property', '__inline_fora']:
                 subchain, resolution, position = self._resolveChainInPyObject(
                     chainWithPosition, pyObject)
                 resolutions[subchain] = (resolution, position)

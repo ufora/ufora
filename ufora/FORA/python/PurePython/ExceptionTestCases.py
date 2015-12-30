@@ -847,3 +847,83 @@ class ExceptionTestCases(object):
         except pyfora.ComputationError as e:
             self.assertIsInstance(e.remoteException, AssertionError)
             self.assertEqual(e.remoteException.message, "")
+
+    def test_cant_assign_to__inline_fora_in_pyfora(self):
+        def f():
+            __inline_fora = 42
+            return __inline_fora
+
+        with self.assertRaises(pyfora.PythonToForaConversionError):
+            self.evaluateWithExecutor(f)
+
+    def test_free_vars_in_inline_fora_code_raise_exceptions(self):
+        def f():
+            x = 2
+            inlineFun = __inline_fora("fun() { return x }")
+            return inlineFun()
+
+        with self.assertRaises(pyfora.PythonToForaConversionError):
+            self.evaluateWithExecutor(f)
+
+    def test__inline_fora_in_non_call_expression_raises(self):
+        def f():
+            __inline_fora
+            return 0
+
+        with self.assertRaises(pyfora.PythonToForaConversionError):
+            self.evaluateWithExecutor(f)
+
+    def test_non_CreateFunction_expression_in__inline_fora_raises(self):
+        def f():
+            __inline_fora("1 + 1")
+            return 0
+
+        with self.assertRaises(pyfora.PythonToForaConversionError):
+            self.evaluateWithExecutor(f)
+
+    def test_non_string_arg_to__inline_fora_raises(self):
+        def f():
+            __inline_fora(1)
+            return 0
+
+        with self.assertRaises(pyfora.PythonToForaConversionError):
+            self.evaluateWithExecutor(f)
+
+    def test__inline_fora_as_function_arg_raises(self):
+        def f(__inline_fora):
+            return __inline_fora
+
+        with self.assertRaises(pyfora.PythonToForaConversionError):
+            self.evaluateWithExecutor(f, 0)
+
+    def test___inline_fora_as_classname_raises_1(self):
+        def f():
+            class __inline_fora:
+                pass
+            return 0
+
+        with self.assertRaises(pyfora.PythonToForaConversionError):
+            self.evaluateWithExecutor(f)
+
+    def test___inline_fora_as_classname_raises_2(self):
+        class __inline_fora:
+            pass
+
+        with self.assertRaises(pyfora.PythonToForaConversionError):
+            self.evaluateWithExecutor(__inline_fora)
+
+    def test___inline_fora_as_function_name_raises_1(self):
+        def f():
+            def __inline_fora():
+                pass
+            return 0
+
+        with self.assertRaises(pyfora.PythonToForaConversionError):
+            self.evaluateWithExecutor(f)
+
+    def test___inline_fora_as_function_name_raises_2(self):
+        def __inline_fora():
+            return 0
+
+        with self.assertRaises(pyfora.PythonToForaConversionError):
+            self.evaluateWithExecutor(__inline_fora)

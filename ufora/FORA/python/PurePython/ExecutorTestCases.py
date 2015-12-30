@@ -2406,3 +2406,67 @@ class ExecutorTestCases(object):
 
         self.equivalentEvaluationTest(f)
 
+    def test_inline_fora_1(self):
+        val = 42
+        def f():
+            x = [val]
+            ix = 0
+            inlineFun = __inline_fora(
+                "fun(x, ix) { let y = x.__getitem__(ix); y }"
+                )
+            x = inlineFun(x, ix)
+            return x
+
+        self.assertEqual(
+            self.evaluateWithExecutor(f),
+            val
+            )
+
+    def test_inline_fora_2(self):
+        val = 42
+        def f():
+            inlineFun1 = __inline_fora(
+                "fun() { return MutableVector.create(2, 0) }"
+                )
+            mutableVec = inlineFun1()
+
+            __inline_fora(
+                "fun(m, val) { m[0] = val }"
+                )(mutableVec, val)
+            
+            inlineFun3 = __inline_fora(
+                "fun(m) { return m[0] }"
+                )
+            return inlineFun3(mutableVec)
+
+        self.assertEqual(
+            self.evaluateWithExecutor(f),
+            val
+            )
+
+    def test_inline_fora_mutable_thing(self):
+        class C_inline:
+            def __init__(self, sz):
+                self.m = __inline_fora("fun(sz) { MutableVector.create(sz.@m, 0) }")(sz)
+
+            def setitem(self, val, ix):
+                __inline_fora(
+                    """fun(m, val, ix) {
+                        m[ix.@m] = val
+                        }"""
+                    )(self.m, val, ix)
+
+            def getitem(self, ix):
+                return __inline_fora("fun(m, ix) { m[ix.@m] }")(self.m, ix)
+
+        val = 42
+        def f():
+            c = C_inline(10)
+            ix = 5
+            c.setitem(val, ix)
+            return c.getitem(ix)
+
+        self.assertEqual(self.evaluateWithExecutor(f), val)
+
+
+                    
