@@ -10,8 +10,8 @@ on datasets many times larger than the RAM of a single machine.
 # How do I get started?
 
 Client installation is through [pip](https://pip.readthedocs.org/en/stable/).
-Workers can be booted in the [cloud](https://ufora.github.io/ufora/content/tutorials/02-getting-started-aws.html),
-or [locally](https://ufora.github.io/ufora/content/tutorials/01-getting-started-local.html) using docker.
+Workers can be booted in the [cloud](https://ufora.github.io/ufora/tutorials/getting-started-aws.html),
+or [locally](https://ufora.github.io/ufora/tutorials/getting-started-local.html) using docker.
 
 ```bash
 #install the pyfora front-end and boto.
@@ -109,10 +109,10 @@ what you'd like to see next, or if you'd like to get involved.
 
 # Read more
 
-* A [more detailed tutorial on running python code](https://ufora.github.io/ufora/content/tutorials/03-running-python-code.html)
-* Run Ufora on your [local machine](https://ufora.github.io/ufora/content/tutorials/01-getting-started-local.html)
-* Configuring Ufora to run in [AWS](https://ufora.github.io/ufora/content/tutorials/02-getting-started-aws.html)
-* The [restrictions](https://ufora.github.io/ufora/content/documentation/01-python-restrictions.html) we place on python so that this can all work.
+* A [more detailed tutorial on running python code](https://ufora.github.io/ufora/tutorials/running-python-code.html)
+* Run Ufora on your [local machine](https://ufora.github.io/ufora/tutorials/getting-started-local.html)
+* Configuring Ufora to run in [AWS](https://ufora.github.io/ufora/tutorials/getting-started-aws.html)
+* The [restrictions](https://ufora.github.io/ufora/documentation/python-restrictions.html) we place on python so that this can all work.
 
 # Contact us.
 
