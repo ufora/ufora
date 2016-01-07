@@ -1,0 +1,475 @@
+#include "SimpleForwardReasoner.hppml"
+#include "../Judgment/ControlFlowGraphJudgmentUtil.hppml"
+#include "../../core/Logging.hpp"
+#include "../Axioms/Axiom.hppml"
+#include "../Axioms/AxiomGroup.hppml"
+#include "../../core/Clock.hpp"
+
+namespace Fora {
+
+hash_type ReasonerEntrypoint::hashFrame(const ControlFlowGraph& inGraph, const ImmutableTreeVector<JOV>& jovs)
+	{
+	return inGraph.hash() + hashValue(jovs);
+	}
+
+ReasonerFrame::ReasonerFrame(const ReasonerEntrypoint& entrypoint) : 
+		mGraph(entrypoint.graph()),
+		mEntryJovs(entrypoint.jovs())
+	{
+	mDirtyNodes.insert(Nullable<string>());
+	mNodeJOVs[Nullable<string>()] = entrypoint.jovs();
+	}
+
+hash_type ReasonerFrame::hash() const
+	{
+	return mHash;
+	}
+
+JudgmentOnAction ReasonerFrame::exits() const
+	{
+	return mExits;
+	}
+
+ControlFlowGraph ReasonerFrame::graph() const 
+	{
+	return mGraph; 
+	}
+
+ImmutableTreeVector<JOV> ReasonerFrame::entryJOVs() const 
+	{
+	return mEntryJovs; 
+	}
+
+const MapWithIndex<Nullable<std::string>, ReasonerEntrypoint>& 
+				ReasonerFrame::getCalledFrames() const
+	{
+	return mCalledFrames;
+	}
+
+void ReasonerFrame::entrypointExitsChanged(const ReasonerEntrypoint& downstreamEntrypoint)
+	{
+	lassert(mCalledFrames.hasValue(downstreamEntrypoint));
+	for (auto label: mCalledFrames.getKeys(downstreamEntrypoint))
+		mDirtyNodes.insert(label);
+	}
+
+void ReasonerFrame::recalculate(SimpleForwardReasoner& ioReasoner)
+	{
+	while (mDirtyNodes.size())
+		{	
+		auto node = *mDirtyNodes.begin();
+		mDirtyNodes.erase(node);
+
+		processNode(node, ioReasoner);
+		}
+
+	mExits = JudgmentOnAction();
+
+	for (auto& nodeAndExit: mNodeExits)
+		mExits = mExits | nodeAndExit.second;
+
+	mExits = JudgmentOnAction(
+		mExits.resultPart().removeExtraneousJudgments(), 
+		mExits.throwPart().removeExtraneousJudgments()
+		);
+	}
+
+bool ReasonerFrame::recursedToSameGraph(SimpleForwardReasoner& ioReasoner, const ReasonerEntrypoint& downstreamEntrypoint)
+	{
+	ImmutableTreeVector<JOV> existingJOVs = mNodeJOVs[Nullable<std::string>()];
+	ImmutableTreeVector<JOV> mergingJOVs = 
+		ioReasoner.getFrameFor(downstreamEntrypoint)->mNodeJOVs[Nullable<std::string>()];
+
+	if (existingJOVs != mergingJOVs)
+		{
+		mDirtyNodes.insert(Nullable<std::string>());
+
+		ImmutableTreeVector<JOV> newJOVs;
+
+		for (long k = 0; k < existingJOVs.size(); k++)
+			newJOVs = newJOVs + existingJOVs[k].smallestCovering(mergingJOVs[k]);
+
+		mNodeJOVs[Nullable<std::string>()] = newJOVs;
+
+		return true;
+		}
+
+	return false;
+	}
+	
+void ReasonerFrame::processNode(
+		const Nullable<std::string>& label,
+		SimpleForwardReasoner& ioReasoner
+		)
+	{
+	ControlFlowNodeBody nodeBody = mGraph[label].body();
+	ImmutableTreeVector<JOV> jovs = mNodeJOVs[label];
+
+	LOG_DEBUG << label << " with " << jovs;
+
+	@match ControlFlowNodeBody(nodeBody)
+		-| Apply(args, normalCont, exceptionCont) ->> {
+			JOVT applyJOVt = getApplyTupleJudgment(args, jovs, null() << nodeBody);
+
+			auto axiom = ioReasoner.getAxioms()->axiom(ioReasoner.getCompiler(), applyJOVt);
+			
+			if (!axiom)
+				return;
+
+			JudgmentOnAction possibleResults;
+
+			mCalledFrames.discard(label);
+
+			@match Axiom(*axiom)
+				-| Expands(_, generator) ->> {
+					auto cfg = generator(ApplySignature(args));
+
+					ImmutableTreeVector<JOV> childJOVs = 
+						mapITV(
+							args, 
+							[&](ControlFlowApplyArg arg) -> JOV { 
+								return getApplyJovJudgment(arg, jovs, null() << nodeBody); 
+								}
+							);
+
+					ReasonerEntrypoint entrypoint(cfg, childJOVs);
+					mCalledFrames.set(label, entrypoint);
+
+					auto subframe = ioReasoner.getFrameFor(entrypoint);
+
+					if (!subframe)
+						return;
+
+					possibleResults = subframe->exits();
+					}
+				-| Native(callSig, result, implementation) ->> {
+					if (applyJOVt.computeConstant())
+						possibleResults = ioReasoner.getAxioms()->resolveAxiomDirectly(ioReasoner.getCompiler(), applyJOVt);
+					else
+						possibleResults = result;
+					}
+
+			for (auto normalResult: possibleResults.resultPart().vals())
+				followContinuation(label, normalCont, jovs, nodeBody, null() << normalResult);
+
+			for (auto exceptionResult: possibleResults.throwPart().vals())
+				followContinuation(label, exceptionCont, jovs, nodeBody, null() << exceptionResult);
+			}
+		-| Cached() ->> {
+			return;
+			}
+		-| Branch(Constant(c), ifTrue, ifFalse) ->> {
+			followContinuation(label, *JOV::Constant(c).convertToBoolean() ? ifTrue : ifFalse, jovs, nodeBody, null());
+			}
+		-| Branch(Arg(ix), ifTrue, ifFalse) ->> {
+			JOV branchOn = jovs[ix];
+
+			Nullable<bool> which = branchOn.convertToBoolean();
+			if (which)
+				followContinuation(label, *which ? ifTrue : ifFalse, jovs, nodeBody, null());
+			else
+				{
+				followContinuation(label, ifTrue, jovs, nodeBody, null());
+				followContinuation(label, ifFalse, jovs, nodeBody, null());
+				}
+			}
+		-| TupleExpand(argIndex, (arity, exact, contIfMatch), ifNoMatch) ->> {
+			JOV jov = jovs[argIndex];
+
+			Nullable<bool> isTuple = jovIsTupleOfArity(jovs[argIndex], arity, exact);
+
+			if (!isTuple || *isTuple)
+				followContinuation(label, contIfMatch, jovs, nodeBody, null());
+			
+			if (!isTuple || !*isTuple)
+				followContinuation(label, ifNoMatch, jovs, nodeBody, null());
+			}
+		-| Switch(Constant(c), branches, otherwise) ->> {
+			if (branches.contains(c))
+				followContinuation(label, *branches[c], jovs, nodeBody, null());
+			else
+				followContinuation(label, otherwise, jovs, nodeBody, null());
+			}
+		-| Switch(Arg(ix), branches, otherwise) ->> {
+			JOV switchOn = jovs[ix];
+
+			Nullable<CSTValue> which = switchOn.constant();
+
+			if (which)
+				followContinuation(label, branches.contains(*which) ? *branches[*which] : otherwise, jovs, nodeBody, null());
+			else
+				{	
+				for (auto branchAndCont: branches)
+					followContinuation(label, branchAndCont.second, jovs, nodeBody, null());
+				followContinuation(label, otherwise, jovs, nodeBody, null());
+				}
+			}
+		-| Jump(c) ->> {
+			followContinuation(label, c, jovs, nodeBody, null());
+			}
+	}
+
+void ReasonerFrame::followContinuation(
+				const Nullable<std::string>& label,
+				const ControlFlowContinuation& continuation, 
+				const ImmutableTreeVector<JOV>& jovs,
+				const ControlFlowNodeBody& nodeBody,
+				const Nullable<JOV>& result
+				)
+	{
+	@match ControlFlowContinuation(continuation)
+		-| Node(targetLabel, args) ->> {
+			ImmutableTreeVector<JOV> jovsToMerge = getJudgment(args, jovs, result, null() << nodeBody);
+
+			if (mNodeJOVs.find(null() << targetLabel) == mNodeJOVs.end())
+				{
+				mNodeJOVs[null() << targetLabel] = jovsToMerge;
+
+				mDirtyNodes.insert(null() << targetLabel);
+				}
+			else
+				{
+				ImmutableTreeVector<JOV> existingJOVs = mNodeJOVs[null() << targetLabel];
+
+				if (existingJOVs != jovsToMerge)
+					{
+					mDirtyNodes.insert(null() << targetLabel);
+
+					ImmutableTreeVector<JOV> newJOVs;
+
+					for (long k = 0; k < jovsToMerge.size(); k++)
+						newJOVs = newJOVs + jovsToMerge[k].smallestCovering(existingJOVs[k]);
+
+					mNodeJOVs[null() << targetLabel] = newJOVs;
+					}
+				}
+			}
+		-| Return(arg, isException) ->> {
+			JOV resultJOV = getJudgment(arg, jovs, result, null() << nodeBody);
+
+			mNodeExits[label] = isException ? 
+					JudgmentOnAction::Throws(resultJOV) : 
+					JudgmentOnAction::Value(resultJOV)
+					;
+			}
+	}
+
+SimpleForwardReasoner::SimpleForwardReasoner(
+			PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
+			PolymorphicSharedPtr<Axioms> inAxioms
+			) : 
+		mAxioms(inAxioms),
+		mCompiler(inCompiler),
+		mReachableFrames(
+			[=](const std::set<ReasonerEntrypoint>& entrypoints) -> bool {
+				for (auto e: entrypoints)
+					if (e == mRootEntrypoint)
+						return true;
+				return false;
+				},
+			[](bool b1, bool b2) { return b1 || b2; }
+			)
+	{
+	}
+
+PolymorphicSharedPtr<Axioms> SimpleForwardReasoner::getAxioms() const
+	{
+	return mAxioms;
+	}
+
+TypedFora::Compiler& SimpleForwardReasoner::getCompiler()
+	{
+	return *mCompiler;
+	}
+
+PolymorphicSharedPtr<ReasonerFrame> SimpleForwardReasoner::getFrameFor(const ReasonerEntrypoint& entrypoint)
+	{
+	auto& result = mFrames[entrypoint];
+
+	if (!result)
+		{
+		result.reset(new ReasonerFrame(entrypoint));
+		markEntrypointDirty(entrypoint);
+		}
+
+	return result;
+	}
+
+
+PolymorphicSharedPtr<ReasonerFrame> SimpleForwardReasoner::reason(JudgmentOnValueTuple applyJovt)
+	{
+	auto axiom = mAxioms->axiom(*mCompiler, applyJovt);
+
+	lassert(axiom);
+	lassert(!applyJovt.hasExtras());
+
+	//start by expanding the apply tuple
+	@match Axiom(*axiom)
+		-| Expands(jovt, generator) ->> {
+			auto cfg = generator(ApplySignature(applyJovt.jovs().size()));
+
+			ReasonerEntrypoint entrypoint = ReasonerEntrypoint(cfg, applyJovt.jovs());
+
+			mReachableFrames.addEdge(entrypoint, mRootEntrypoint);
+
+			updateReachabilityGraph();
+
+			auto frame = getFrameFor(entrypoint);
+
+			updateAll();
+
+			return frame;
+			}
+	}
+
+void SimpleForwardReasoner::updateAll()
+	{
+	while (mDirtyReachableFrames.size())
+		{
+		ReasonerEntrypoint entrypoint = *mDirtyReachableFrames.begin();
+		
+		lassert(isFrameReachable(entrypoint));
+
+		mDirtyReachableFrames.erase(entrypoint);
+		mDirtyFrames.erase(entrypoint);
+
+		updateFrame(entrypoint);
+		}
+	}
+
+void SimpleForwardReasoner::updateReachabilityGraph()
+	{
+	std::set<ReasonerEntrypoint> changed;
+
+	mReachableFrames.update(changed);
+
+	for (auto e: changed)
+		if (e != mRootEntrypoint)
+			{
+			bool isDirty = mDirtyFrames.find(e) != mDirtyFrames.end();
+
+			if (isFrameReachable(e) && isDirty)
+				mDirtyReachableFrames.insert(e);
+			else
+				mDirtyReachableFrames.erase(e);
+			}
+	}
+
+bool SimpleForwardReasoner::isFrameReachable(ReasonerEntrypoint entrypoint) const
+	{
+	Nullable<bool> result = mReachableFrames.propertyFor(entrypoint);
+
+	if (!result)
+		return false;
+	return *result;
+	}
+
+void SimpleForwardReasoner::markEntrypointDirty(ReasonerEntrypoint entrypoint)
+	{
+	if (mDirtyFrames.find(entrypoint) != mDirtyFrames.end())
+		return;
+	mDirtyFrames.insert(entrypoint);
+
+	if (isFrameReachable(entrypoint))
+		mDirtyReachableFrames.insert(entrypoint);
+	}
+
+void SimpleForwardReasoner::updateFrame(const ReasonerEntrypoint& entrypoint)
+	{
+	auto frame = getFrameFor(entrypoint);
+
+	JudgmentOnAction priorJOA = frame->exits();
+
+	MapWithIndex<Nullable<std::string>, ReasonerEntrypoint> calledFrames = frame->getCalledFrames();
+
+	frame->recalculate(*this);
+
+	MapWithIndex<Nullable<std::string>, ReasonerEntrypoint> newCalledFrames = frame->getCalledFrames();
+
+	bool changedGraph = false;
+
+	//note that we have to be careful not to put a link from entrypoint to itself
+	//into the reachability graph
+
+	for (auto& frameAndLabels: calledFrames.getValueToKeys())
+		{
+		if (frameAndLabels.first != entrypoint && !newCalledFrames.hasValue(frameAndLabels.first))
+			{
+			mReachableFrames.dropEdge(frameAndLabels.first, entrypoint);
+			changedGraph = true;
+			}
+		}
+
+	for (auto& frameAndLabels: newCalledFrames.getValueToKeys())
+		{
+		if (frameAndLabels.first != entrypoint && !calledFrames.hasValue(frameAndLabels.first))
+			{
+			mReachableFrames.addEdge(frameAndLabels.first, entrypoint);
+			changedGraph = true;
+			}
+		}
+
+	if (changedGraph)
+		{
+		updateReachabilityGraph();
+		checkEntrypointParents(entrypoint);
+		}
+
+	if (priorJOA != frame->exits())
+		{
+		//check if this is directly recursive. Note that the graph doesn't contain this
+		//because it doesn't allow nodes to point to themselves directly.
+		if (frame->getCalledFrames().hasValue(entrypoint))
+			{
+			frame->entrypointExitsChanged(entrypoint);
+			markEntrypointDirty(entrypoint);
+			}
+
+		for (auto callingFrame: callingFrames(entrypoint))
+			if (callingFrame != mRootEntrypoint)
+				{
+				LOG_DEBUG 
+					<< callingFrame << " marked dirty because it called " 
+					<< entrypoint 
+					<< " which now has JOA of " 
+					<< frame->exits()
+					;
+
+				getFrameFor(callingFrame)->entrypointExitsChanged(entrypoint);
+				markEntrypointDirty(callingFrame);
+				}
+		}
+	}
+
+void SimpleForwardReasoner::checkEntrypointParents(ReasonerEntrypoint entrypoint)
+	{
+	std::set<ReasonerEntrypoint> seen;
+
+	std::set<ReasonerEntrypoint> toCheck;
+	toCheck.insert(entrypoint);
+
+	while (toCheck.size())
+		{
+		ReasonerEntrypoint e = *toCheck.begin();
+		toCheck.erase(e);
+
+		if (seen.find(e) == seen.end() && e != mRootEntrypoint)
+			{
+			seen.insert(e);
+			for (auto caller: callingFrames(e))
+				toCheck.insert(caller);
+
+			if (e.graph() == entrypoint.graph() && e != entrypoint)
+				if (getFrameFor(e)->recursedToSameGraph(*this, entrypoint))
+					markEntrypointDirty(e);
+			}
+		}
+	}
+
+const std::set<ReasonerEntrypoint>& SimpleForwardReasoner::callingFrames(ReasonerEntrypoint entrypoint)
+	{
+	//note that the graph edges are reversed from what we might expect: they point from callee to caller
+	return mReachableFrames.graph().edges().getValues(entrypoint);
+	}
+
+}

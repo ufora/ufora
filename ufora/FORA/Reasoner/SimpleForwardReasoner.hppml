@@ -1,0 +1,164 @@
+#pragma once
+
+#include "../../core/PolymorphicSharedPtr.hpp"
+#include "../Axioms/Axioms.hppml"
+#include "../ControlFlowGraph/ControlFlowGraph.hppml"
+#include "../../core/math/GraphWithCalculatedProperty.hppml"
+#include "../../core/containers/MapWithIndex.hpp"
+#include "../Judgment/JudgmentOnAction.hppml"
+
+namespace TypedFora {
+
+class Compiler;
+
+}
+
+namespace Fora {
+
+class SimpleForwardReasoner;
+
+@type ReasonerEntrypoint = 
+		ControlFlowGraph graph,
+		ImmutableTreeVector<JOV> jovs,
+		hash_type hash
+{
+public:
+	static hash_type hashFrame(const ControlFlowGraph& inGraph, const ImmutableTreeVector<JOV>& jovs);
+
+	ReasonerEntrypoint(const ControlFlowGraph& inGraph, const ImmutableTreeVector<JOV>& inJOVs)
+		{
+		graph() = inGraph;
+		jovs() = inJOVs;
+		hash() = hashFrame(inGraph, inJOVs);
+		}
+
+	bool operator<(const ReasonerEntrypoint& other) const
+		{
+		return hash() < other.hash();
+		}
+
+	bool operator==(const ReasonerEntrypoint& other) const
+		{
+		return hash() == other.hash();
+		}
+
+	bool operator!=(const ReasonerEntrypoint& other) const
+		{
+		return hash() != other.hash();
+		}
+};
+
+class ReasonerFrame : public PolymorphicSharedPtrBase<ReasonerFrame> {
+public:
+	ReasonerFrame(const ReasonerEntrypoint& entrypoint);
+
+	hash_type hash() const;
+
+	void recalculate(SimpleForwardReasoner& ioReasoner);
+
+	JudgmentOnAction exits() const;
+
+	ControlFlowGraph graph() const;
+
+	ImmutableTreeVector<JOV> entryJOVs() const;
+
+	const MapWithIndex<Nullable<std::string>, ReasonerEntrypoint>& getCalledFrames() const;
+
+	//indicate that an entrypoint we previously 
+	void entrypointExitsChanged(const ReasonerEntrypoint& downstreamEntrypoint);
+
+	//called if we discover that we recurse. Should return whether this dirties us
+	bool recursedToSameGraph(SimpleForwardReasoner& ioReasoner, const ReasonerEntrypoint& downstreamEntrypoint);
+
+private:
+	void processNode(
+			const Nullable<std::string>& label,
+			SimpleForwardReasoner& ioReasoner
+			);
+
+	void followContinuation(
+			const Nullable<std::string>& label,
+			const ControlFlowContinuation& continuation, 
+			const ImmutableTreeVector<JOV>& jovs,
+			const ControlFlowNodeBody& nodeBody,
+			const Nullable<JOV>& result
+			);
+
+	ControlFlowGraph mGraph;
+
+	ImmutableTreeVector<JOV> mEntryJovs;
+
+	MapWithIndex<Nullable<std::string>, ReasonerEntrypoint> mCalledFrames;
+
+	map<Nullable<std::string>, ImmutableTreeVector<JOV> > mNodeJOVs;
+
+	map<Nullable<std::string>, JudgmentOnAction> mNodeExits;
+
+	std::set<Nullable<std::string> > mDirtyNodes;
+
+	JudgmentOnAction mExits;
+
+	hash_type mHash;
+};
+
+
+class SimpleForwardReasoner : public PolymorphicSharedPtrBase<SimpleForwardReasoner> {
+public:
+	SimpleForwardReasoner(
+			PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
+			PolymorphicSharedPtr<Axioms> inAxioms
+			);
+
+	PolymorphicSharedPtr<ReasonerFrame> reason(JudgmentOnValueTuple applyTuple);
+
+	PolymorphicSharedPtr<ReasonerFrame> getFrameFor(const ReasonerEntrypoint& entrypoint);
+
+	PolymorphicSharedPtr<Axioms> getAxioms() const;
+
+	TypedFora::Compiler& getCompiler();
+
+private:
+	void updateAll();
+
+	void updateReachabilityGraph();
+
+	void markEntrypointDirty(ReasonerEntrypoint entrypoint);
+
+	bool isFrameReachable(ReasonerEntrypoint entrypoint) const;
+
+	void updateFrame(const ReasonerEntrypoint& entrypoint);
+
+	void checkEntrypointParents(ReasonerEntrypoint entrypoint);
+
+	const std::set<ReasonerEntrypoint>& callingFrames(ReasonerEntrypoint entrypoint);
+
+	map<ReasonerEntrypoint, PolymorphicSharedPtr<ReasonerFrame> > mFrames;
+
+	Ufora::GraphWithCalculatedProperty<ReasonerEntrypoint, bool> mReachableFrames;
+
+	std::set<ReasonerEntrypoint> mDirtyFrames;
+
+	std::set<ReasonerEntrypoint> mDirtyReachableFrames;
+	
+	PolymorphicSharedPtr<TypedFora::Compiler> mCompiler;
+
+	PolymorphicSharedPtr<Axioms> mAxioms;
+
+	ReasonerEntrypoint mRootEntrypoint;
+};
+
+}
+
+
+
+template<>
+class CPPMLPrettyPrint<Fora::ReasonerEntrypoint> {
+public:
+		static void prettyPrint(
+							CPPMLPrettyPrintStream& stream,
+							const Fora::ReasonerEntrypoint& toPr
+							)
+			{
+			stream << "ReasonerEntrypoint(" << toPr.graph().graphName() << " with " << toPr.jovs() << ")";
+			}
+};
