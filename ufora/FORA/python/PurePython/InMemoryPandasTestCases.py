@@ -12,11 +12,10 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import ufora.FORA.python.PurePython.ExecutorTestCases as ExecutorTestCases
-
 import pyfora.pandas_util
 import pyfora.algorithms.LinearRegression as LinearRegression
 import pyfora.typeConverters.PurePandas as PurePandas
+
 
 import numpy
 import pandas
@@ -24,7 +23,8 @@ import pandas.util.testing
 import random
 
 
-class InMemoryPandasTestCases(ExecutorTestCases.ExecutorTestCases):
+
+class InMemoryPandasTestCases(object):
     def checkFramesEqual(self, df1, df2):
         pandas.util.testing.assert_frame_equal(df1, df2)
         return True
