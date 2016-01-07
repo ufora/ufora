@@ -91,7 +91,7 @@ class PurePythonDataFrame:
             if k == self._columnNames[colIx]:
                 return colIx
 
-        raise ValueError("value " + str() + " is not a column name")
+        raise ValueError("value " + str(k) + " is not a column name")
 
     def pyfora_addColumn(self, columnName, column):
         assert not columnName in self._columnNames
