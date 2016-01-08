@@ -238,6 +238,12 @@ class NpZeros:
 class NpArray:
     """This will only work for a well-formed (not jagged) n-dimensional python lists"""
     def __call__(self, array):
+        if not isinstance(array[0], list):
+            return PurePythonNumpyArray(
+                (len(array),),
+                array
+                )
+
         def flattenAnNDimensionalArray(arr, shape):
             toReturn = []
             if len(shape) == 0:
