@@ -32,7 +32,9 @@ class TwoClassRidgeRegressionSolver:
         else:
             assert classZeroLabel in classes
 
-        # TODO: we don't need to hold onto an entire column of ones, but it simplifies the code for now
+        # TODO: we don't need to hold onto an entire column of ones,
+        # but it simplifies the code for now.
+        # it's a simple exercise to not hold this explicitly.
         if hasIntercept:
             X = _addScaleColumn(X, interceptScale)
 
@@ -50,27 +52,28 @@ class TwoClassRidgeRegressionSolver:
 
     @staticmethod
     def computeFSum(X, y, classZeroLabel):
-        fSums = []
-        for colIx in xrange(X.shape[1]):
-            X_column = X.iloc[:,colIx]
+        nRows = X.shape[0]
 
+        def columnSum(column):
             def f(rowIx):
                 if y[rowIx] == classZeroLabel:
                     return 0.0
 
-                return float(X_column[rowIx])
+                return float(column[rowIx])
 
-            fSums = fSums + [sum([f(rowIx) for rowIx in xrange(X.shape[0])])]
+            return sum(f(rowIx) for rowIx in xrange(nRows))
 
-        return numpy.array(fSums)
-        
+        return numpy.array(
+            [columnSum(column) for column in X._columns]
+            )
+
     def computeCoefficients(self):
         oldTheta = numpy.zeros(self.nFeatures)
         newTheta = self.updateTheta(oldTheta)
 
         iters = 1
-        while sum((newTheta - oldTheta) ** 2) > self.tol * self.tol and \
-                  iters < self.maxIters:
+        while iters < self.maxIters and \
+              sum((newTheta - oldTheta) ** 2) > self.tol * self.tol:
             oldTheta = newTheta
             newTheta = self.updateTheta(oldTheta)
             iters = iters + 1
@@ -78,7 +81,7 @@ class TwoClassRidgeRegressionSolver:
         return newTheta, iters
 
     def updateTheta(self, theta):
-        thetaDotX = _dot(self.X, theta)
+        thetaDotX = _dot(self.X, theta, self.splitLimit, 0, len(self.X))
         sigma = self.computeSigma(thetaDotX)
         muSum = self.computeMuSum(thetaDotX)
 
@@ -87,7 +90,7 @@ class TwoClassRidgeRegressionSolver:
 
         return theta - numpy.linalg.solve(A, b)
 
-    def computeSigma(self, thetaDotX, start=0, end=None, depth=0):
+    def computeSigma(self, thetaDotX, start=0, end=None):
         # we have a few choices here: 
         # 1) We can precompute all of the outer products of the rows
         #    of X. This will require nCols * storage of X to hold,
@@ -100,69 +103,104 @@ class TwoClassRidgeRegressionSolver:
         #    regression, this time usin "weighted dot products" on the 
         #    columns of X. This is the choice we're using for now.
 
-        if end is None:
-            end = len(thetaDotX)
-
-        if depth >=3 or (end - start) < self.splitLimit:
-            numColumns = self.X.shape[1]
-
-            def unsymmetrizedElementAt(row, col):
-                if col < row:
-                    return 0.0
-
-                right = self.X.iloc[start:end, col]
-                left = self.X.iloc[start:end, row]
-                weights = thetaDotX[start:end]
-
-                return _weightedDotProduct(right, left, weights)
-
-            unsymmetrizedValues = [
-                [unsymmetrizedElementAt(row, col) for col in xrange(numColumns)] \
-                for row in xrange(numColumns)
-                ]
-
-            symmetrizedValues = []
-            for row in xrange(numColumns):
-                for col in xrange(numColumns):
-                    if row <= col:
-                        elt = unsymmetrizedValues[row][col]
-                    else:
-                        elt = unsymmetrizedValues[col][row]
-                    symmetrizedValues = symmetrizedValues + [elt]
-
-            tr = numpy.array(symmetrizedValues)
-            return tr.reshape((numColumns, numColumns))
-
-        mid = (start + end) / 2
-        return self.computeSigma(thetaDotX, start, mid, depth + 1) + \
-            self.computeSigma(thetaDotX, mid, end, depth + 1)
+        return _computeSigma(thetaDotX, self.X._columns, self.splitLimit, start, end)
 
     def computeMuSum(self, thetaDotX):
-        # we could compute this as needed, instead of making a new vector
-        # each time, but we need this multiple for each column
-        rowWiseScalarMultipliers = [
-            1.0 / (1.0 + math.exp(-val)) for val in thetaDotX
-            ]
+        # we could also stash these values in a vector, since they're common
+        # to all columns. which is better?
+        def rowWiseScalarMultiplier(ix):
+            return 1.0 / (1.0 + math.exp(-thetaDotX[ix]))
 
+        columns = self.X._columns
         def computeWeightedColumnSum(columnIx):
-            column = self.X.iloc[:,columnIx]
-            return sum([
-                rowWiseScalarMultipliers[ix] * column[ix] \
+            column = columns[columnIx]
+            return sum(
+                rowWiseScalarMultiplier(ix) * column[ix] \
                 for ix in xrange(self.X.shape[0])
-                ])
+                )
 
         return numpy.array([
             computeWeightedColumnSum(columnIx) for columnIx in xrange(self.X.shape[1])
             ])
 
+def _computeSigma(thetaDotX, columns, splitLimit, start=0, end=None):
+    if end is None:
+        end = len(thetaDotX)
 
-def _dot(X, theta):
-    tr = numpy.array(X.iloc[:,0].values)
-    tr = tr * theta[0]
-    for ix in xrange(1, len(theta)):
-        tr = tr + numpy.array(X.iloc[:,ix].values) * theta[ix]
+    if (end - start) < splitLimit:
+        numColumns = len(columns)
+
+        def unsymmetrizedElementAt(row, col):
+            if col < row:
+                return 0.0
+
+            right = columns[col][start:end]
+            left = columns[row][start:end]
+            weights = thetaDotX[start:end]
+
+            return _weightedDotProduct(right, left, weights)
+
+        unsymmetrizedValues = [
+            [unsymmetrizedElementAt(row, col) for col in xrange(numColumns)] \
+            for row in xrange(numColumns)
+            ]
+
+        symmetrizedValues = []
+        for row in xrange(numColumns):
+            for col in xrange(numColumns):
+                if row <= col:
+                    elt = unsymmetrizedValues[row][col]
+                else:
+                    elt = unsymmetrizedValues[col][row]
+                symmetrizedValues = symmetrizedValues + [elt]
+
+        tr = numpy.array(symmetrizedValues)
+        return tr.reshape((numColumns, numColumns))
+
+    mid = (start + end) / 2
+    return _computeSigma(thetaDotX, columns, splitLimit, start, mid) + \
+        _computeSigma(thetaDotX, columns, splitLimit, mid, end)
+
+
+def _dot(X, theta, splitLimit, low, high):
+    sz = high - low
+    if sz < splitLimit:
+        return _dot_on_chunk(X._columns, theta, low, high)
+
+    mid = (high + low) / 2
+    return _dot(X, theta, splitLimit, low, mid) + _dot(X, theta, splitLimit, mid, high)
+
+
+def _dot_on_chunk(columns, theta, low, high):
+    tr = scaleVecOnRange(columns[0], theta[0], low, high)
+
+    colIx = 1
+    nColumns = len(columns)
+    while colIx < nColumns:
+        tr = addVecsOnRange(tr, columns[colIx], theta[colIx], low, high)
+        colIx = colIx + 1
+
+    return tr
+
+
+def scaleVecOnRange(vec, multiplier, lowIx, highIx):
+    tr = []
+    ix = lowIx
+    while ix < highIx:
+        tr = tr + [multiplier * vec[ix]]
+        ix = ix + 1
+
     return tr
     
+
+def addVecsOnRange(vec1, vec2, vec2Multiplier, lowIx, highIx):
+    tr = []
+    ix = lowIx
+    while ix < highIx:
+        tr = tr + [vec1[ix - lowIx] + vec2Multiplier * vec2[ix]]
+        ix = ix + 1
+
+    return tr
 
 def _weightedDotProduct(x1, x2, x3):
     res = 0
