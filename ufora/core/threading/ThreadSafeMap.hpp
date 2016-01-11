@@ -37,8 +37,8 @@ public:
 		return null();
 		}
 
-	//get the value associated with K. returns null if its not
-	//in the map.
+	//get the value associated with K. returns a default value constructed
+	// by the provided factory if its not in the map.
 	template<class factory_type>
 	V getOrCreate(const K& in, const factory_type& inFactory)
 		{
