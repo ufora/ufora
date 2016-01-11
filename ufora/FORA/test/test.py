@@ -194,9 +194,9 @@ def dumpReasonerSummary(reasoner, frame):
 
     print "Reaching %s of %s frames with %s bad nodes." % (reachableFrames, allFrameCount, badApplyNodes)
 
-    #for f in allFrames:
-    #    for n in f.unknownApplyNodes():
-    #        print "\t", f.graph().graphName, n, " with ", f.jovsForLabel(n)
+    for f in allFrames:
+        for n in f.unknownApplyNodes():
+            print "\t", f.graph().graphName, f.entryJOVs(), n
 
 
 reasoner = [None]

@@ -1,7 +1,24 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+
 #pragma once
 
 #include "../../core/PolymorphicSharedPtr.hpp"
 #include "../../core/containers/MapWithIndex.hpp"
+#include "ControlFlowGraphLoopPoints.hppml"
 #include "../Judgment/JudgmentOnAction.hppml"
 #include "ReasonerEntrypoint.hppml"
 
@@ -17,11 +34,32 @@ class SimpleForwardReasoner;
 
 class ReasonerFrame : public PolymorphicSharedPtrBase<ReasonerFrame> {
 public:
-	ReasonerFrame(const ReasonerEntrypoint& entrypoint);
+	@type NodeRoot = ControlFlowGraphLabel label, ImmutableTreeVector<JOV> jovs {
+	public:
+		bool covers(const NodeRoot& root) const;
+
+		NodeRoot rootUnion(const NodeRoot& root) const;
+
+		bool isTyped() const;
+
+		bool hasNoUnknowns() const;
+	};
+
+	@type Node = NodeRoot root, ControlFlowGraphLabel label, ImmutableTreeVector<JOV> jovs {
+	public:
+		Node(const NodeRoot& inRoot)
+			{
+			root() = inRoot;
+			label() = inRoot.label();
+			jovs() = inRoot.jovs();
+			}
+	};
+
+	ReasonerFrame(const ReasonerEntrypoint& entrypoint, SimpleForwardReasoner& inReasoner);
 
 	hash_type hash() const;
 
-	void recalculate(SimpleForwardReasoner& ioReasoner);
+	void recalculate();
 
 	JudgmentOnAction exits() const;
 
@@ -29,50 +67,67 @@ public:
 
 	ImmutableTreeVector<JOV> entryJOVs() const;
 
-	const MapWithIndex<Nullable<std::string>, ReasonerEntrypoint>& getCalledFrames() const;
+	const MapWithIndex<Node, ReasonerEntrypoint>& getCalledFrames() const;
 
 	//indicate that the exits from an entrypoint in 'getCalledFrames' has changed its exit types
 	void entrypointExitsChanged(const ReasonerEntrypoint& downstreamEntrypoint);
 
-	//called if we discover that we recurse. Should return whether this dirties us.
-	bool recursedToSameGraph(SimpleForwardReasoner& ioReasoner, const ReasonerEntrypoint& downstreamEntrypoint);
+	void incomingRecursion(ImmutableTreeVector<JOV> entryJOVs);
 
-	ImmutableTreeVector<JOV> jovsFor(Nullable<std::string> label) const;
+	const std::set<Node>& unknownApplyNodes() const;
 
-	const std::set<Nullable<std::string> >& unknownApplyNodes() const;
+	bool isRecursive() const;
+
+	void markRecursive();
 
 private:
-	void processNode(
-			const Nullable<std::string>& label,
-			SimpleForwardReasoner& ioReasoner
-			);
+	void addRoot(NodeRoot root);
+
+	void insertRoot(NodeRoot root);
+
+	void propagateNode(const Node& label);
+
+	void recalculateNodeRoot(NodeRoot root);
+
+	void clearNodeRoot(NodeRoot root);
 
 	void followContinuation(
-			const Nullable<std::string>& label,
+			const Node& label,
 			const ControlFlowContinuation& continuation, 
 			const ImmutableTreeVector<JOV>& jovs,
 			const ControlFlowNodeBody& nodeBody,
 			const Nullable<JOV>& result
 			);
 
-	ControlFlowGraph mGraph;
+	bool mIsRecursive;
 
-	ImmutableTreeVector<JOV> mEntryJovs;
+	SimpleForwardReasoner& mReasoner;
 
-	MapWithIndex<Nullable<std::string>, ReasonerEntrypoint> mCalledFrames;
+	ReasonerEntrypoint mEntrypoint;
 
-	map<Nullable<std::string>, ImmutableTreeVector<JOV> > mNodeJOVs;
+	TwoWaySetMap<ControlFlowGraphLabel, NodeRoot> mNodeRoots;
 
-	map<Nullable<std::string>, JudgmentOnAction> mNodeExits;
+	TwoWaySetMap<NodeRoot, Node> mNodes;
 
-	std::set<Nullable<std::string> > mDirtyNodes;
+	MapWithIndex<Node, ReasonerEntrypoint> mCalledFrames;
 
-	std::set<Nullable<std::string> > mUnknownApplyNodes;
+	std::set<NodeRoot> mDirtyNodes;
+
+	std::set<NodeRoot> mPendingRecursiveNodes;
+
+	std::set<Node> mUnknownApplyNodes;
+
+	std::map<NodeRoot, JudgmentOnAction> mNodeExits;
+
+	ControlFlowGraphLoopPoints mGraphLoopPoints;
 
 	JudgmentOnAction mExits;
 
 	hash_type mHash;
 };
+
+macro_defineCppmlComparisonOperators(ReasonerFrame::Node);
+macro_defineCppmlComparisonOperators(ReasonerFrame::NodeRoot);
 
 }
 

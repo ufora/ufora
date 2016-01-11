@@ -1,3 +1,19 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+
 #include "SimpleForwardReasoner.hppml"
 #include "../Judgment/ControlFlowGraphJudgmentUtil.hppml"
 #include "../../core/Logging.hpp"
@@ -34,7 +50,7 @@ PolymorphicSharedPtr<ReasonerFrame> SimpleForwardReasoner::getFrameFor(const Rea
 		{
 		LOG_DEBUG << "Created a new frame at " << entrypoint;
 
-		result.reset(new ReasonerFrame(entrypoint));
+		result.reset(new ReasonerFrame(entrypoint, *this));
 		mGraph.markDirty(entrypoint);
 		}
 
@@ -78,19 +94,24 @@ void SimpleForwardReasoner::updateFrame(const ReasonerEntrypoint& entrypoint)
 
 	JudgmentOnAction priorJOA = frame->exits();
 
-	MapWithIndex<Nullable<std::string>, ReasonerEntrypoint> calledFrames = frame->getCalledFrames();
+	MapWithIndex<ReasonerFrame::Node, ReasonerEntrypoint> calledFrames = frame->getCalledFrames();
 
-	frame->recalculate(*this);
+	frame->recalculate();
 
-	MapWithIndex<Nullable<std::string>, ReasonerEntrypoint> newCalledFrames = frame->getCalledFrames();
+	MapWithIndex<ReasonerFrame::Node, ReasonerEntrypoint> newCalledFrames = frame->getCalledFrames();
 
 	std::set<ReasonerEntrypoint> newCalled;
 
 	for (auto& frameAndLabels: newCalledFrames.getValueToKeys())
 		newCalled.insert(frameAndLabels.first);
 
-	if (mGraph.setEdges(entrypoint, newCalled))
-		checkEntrypointParents(entrypoint);
+	mGraph.setEdges(entrypoint, newCalled);
+
+	if (!frame->isRecursive() && isRecursive(entrypoint))
+		{
+		frame->markRecursive();
+		mGraph.markDirty(entrypoint);
+		}
 
 	if (priorJOA != frame->exits())
 		for (auto callingFrame: mGraph.getCallers(entrypoint))
@@ -108,33 +129,80 @@ void SimpleForwardReasoner::updateFrame(const ReasonerEntrypoint& entrypoint)
 			}
 	}
 
-void SimpleForwardReasoner::checkEntrypointParents(ReasonerEntrypoint entrypoint)
+bool SimpleForwardReasoner::isRecursive(ReasonerEntrypoint entrypoint)
 	{
 	std::set<ReasonerEntrypoint> seen;
 
 	std::set<ReasonerEntrypoint> toCheck;
-	toCheck.insert(entrypoint);
+
+	for (auto c: mGraph.getCallers(entrypoint))
+		toCheck.insert(c);
 
 	while (toCheck.size())
 		{
-		ReasonerEntrypoint e = *toCheck.begin();
-		toCheck.erase(e);
+		ReasonerEntrypoint c = *toCheck.begin();
+		toCheck.erase(c);
 
-		if (seen.find(e) == seen.end())
+		if (seen.find(c) == seen.end())
 			{
-			seen.insert(e);
-			for (auto caller: mGraph.getCallers(e))
-				toCheck.insert(caller);
+			seen.insert(c);
 
-			if (e.graph() == entrypoint.graph() && e != entrypoint)
+			for (auto c2: mGraph.getCallers(c))
+				toCheck.insert(c2);
+			}
+
+		if (c == entrypoint)
+			return true;
+		}
+
+	return false;
+	}
+
+ReasonerEntrypoint SimpleForwardReasoner::getRecursionRelaxationFor(
+									const ReasonerEntrypoint& caller,
+									Nullable<std::string> callLocation,
+									const ReasonerEntrypoint& callee
+									)
+	{
+	//in looking for recursion, we're trying to find paths that look like
+	//
+	//	A -> B-> ... A -> B
+	//
+	//where the call in "A" is at the same CFG location.
+
+	std::set<ReasonerEntrypoint> seen;
+
+	std::set<ReasonerEntrypoint> toCheck;
+	toCheck.insert(caller);
+
+	while (toCheck.size())
+		{
+		ReasonerEntrypoint calleeCandidate = *toCheck.begin();
+		toCheck.erase(calleeCandidate);
+
+		if (seen.find(calleeCandidate) == seen.end())
+			{
+			seen.insert(calleeCandidate);
+
+			for (auto callerCandidate: mGraph.getCallers(calleeCandidate))
 				{
-				if (getFrameFor(e)->recursedToSameGraph(*this, entrypoint))
-					mGraph.markDirty(e);
-				if (getFrameFor(entrypoint)->recursedToSameGraph(*this, e))
-					mGraph.markDirty(entrypoint);
+				toCheck.insert(callerCandidate);
+
+				if (calleeCandidate.graph() == callee.graph() && calleeCandidate != callee && 
+							callerCandidate.graph() == caller.graph() && callerCandidate != caller)
+					{
+					for (const auto& node: getFrameFor(callerCandidate)->getCalledFrames().getKeys(calleeCandidate))
+						if (node.label() == callLocation)
+							{
+							LOG_DEBUG << calleeCandidate << " recurses to " << callee;
+							return calleeCandidate;
+							}
+					}
 				}
 			}
 		}
+
+	return callee;
 	}
 
 int64_t SimpleForwardReasoner::totalFrameCount() const
@@ -142,4 +210,9 @@ int64_t SimpleForwardReasoner::totalFrameCount() const
 	return mFrames.size();
 	}
 
+void SimpleForwardReasoner::markFrameDirty(const ReasonerEntrypoint& caller)
+	{
+	mGraph.markDirty(caller);
+	}
 }
+
