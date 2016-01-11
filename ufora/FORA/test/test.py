@@ -32,6 +32,7 @@ members marked with metadata `test, or with tuple metadata (holding `test) are c
 
 import ufora.FORA.python.FORA as FORA
 import ufora.native.FORA as ForaNative
+import ufora.FORA.python.Runtime as Runtime
 from ufora.FORA.python.ForaValue import FORAValue, FORAException
 import ufora.FORA.python.ModuleImporter as ModuleImporter
 import ufora.FORA.python.ParseException as ParseException
@@ -93,7 +94,7 @@ def sanitizeErrString(errString):
         errString = errString[:250] + " ... " + errString[-250:]
     return errString
     
-def printTestResults(moduleName, testName, testResultWithTimes, printSuccesses = False):
+def printTestResults(moduleName, testName, testResultWithTimes, verbose = False):
     failct = 0
     passct = 0
 
@@ -113,23 +114,23 @@ def printTestResults(moduleName, testName, testResultWithTimes, printSuccesses =
             
     else:
         passct += 1
-        if printSuccesses:
+        if verbose:
             print moduleName, testName, ": SUCC in %2.4f" % timeElapsed
             
     return (passct, failct)
 
-def executeFORATest(foraModule, testname, printSuccesses = False):
+def executeFORATest(foraModule, testname, verbose, testFunction):
     try:
-        if printSuccesses:
+        if verbose:
             print "running ", testname
         
-        return getattr(foraModule, testname)
+        return testFunction(foraModule, testname)
 
 
     except FORAException as e:
         return e
     
-def testModuleStr(modulePath, printSuccesses, delay, testFilter):
+def testModuleStr(modulePath, verbose, delay, testFilter, testFunction):
     """parse text in moduleText into a FORA module and execute tests within"""
     try:
         foraModule = FORA.importModule(modulePath)
@@ -150,13 +151,13 @@ def testModuleStr(modulePath, printSuccesses, delay, testFilter):
             t0 = time.time()
             testResults = []
 
-            testResultWithTimes = (executeFORATest(foraModule, testName, printSuccesses), time.time() - t0)
+            testResultWithTimes = (executeFORATest(foraModule, testName, verbose, testFunction), time.time() - t0)
 
             passed, failed = printTestResults(
                 moduleName,
                 testName,
                 testResultWithTimes,
-                printSuccesses
+                verbose
                 )
 
             allPassed += passed
@@ -164,48 +165,56 @@ def testModuleStr(modulePath, printSuccesses, delay, testFilter):
 
     return (allPassed, allFailed)
 
-def main(argv = None):     
-    if argv is None:
-        argv = sys.argv
+def executeForaCode(module, testName):
+    return getattr(module, testName)
 
-    if '--logging' in argv:
-        import logging
-        Setup.config().setLoggingLevel("debug")
+def makeJovt(*args):
+    return ForaNative.JOVListToJOVT(list(args))
 
-    Setup.config().configureLoggingForUserProgram()
+def symbolJov(sym):
+    return ForaNative.parseStringToJOV("`" + sym)
 
-    allPassed = 0
-    allFailed = 0
-    
-    t0 = time.time()
-    
-    repeat = '-repeat' in argv
-    printSuccesses = '-v' in argv
-    
-    delay = 0.0
-    if '-d' in argv:
-        delay = .05
-    
-    done = False
-    while not done:
-        for filename in [x for x in argv[1:] if not x.startswith("-") and x not in ('0','1')]:
-            passed, failed = testModuleStr(filename, printSuccesses, delay, None)
-            allPassed += passed
-            allFailed += failed
-            print filename, ": ", passed, " passed, ", failed, " failed."
-        if not repeat:
-            done = True
+def dumpReasonerSummary(reasoner, frame):
+    allFrames = set()
+    toCheck = [frame]
+    while toCheck:
+        frameToCheck = toCheck.pop()
+        if frameToCheck not in allFrames:
+            allFrames.add(frameToCheck)
+            for subframe in reasoner.subframesFor(frameToCheck).values():
+                toCheck.append(subframe)
 
-    print "ALL TESTS EXECUTED. %d passed, %d failed." % (allPassed, allFailed),
-    print " in ", time.time() - t0
-    
-    time.sleep(.5)
-    
-    if allFailed > 0:
-        return 1
-    return 0
+    reachableFrames = len(allFrames)
+    allFrameCount = reasoner.totalFrameCount()
+    badApplyNodes = 0
 
-def test(verbose = False, testFilter=None):
+    for f in allFrames:
+        for n in f.unknownApplyNodes():
+            badApplyNodes += 1
+
+    print "Reaching %s of %s frames with %s bad nodes." % (reachableFrames, allFrameCount, badApplyNodes)
+
+    #for f in allFrames:
+    #    for n in f.unknownApplyNodes():
+    #        print "\t", f.graph().graphName, n, " with ", f.jovsForLabel(n)
+
+
+reasoner = [None]
+def reasonAboutForaCode(module, testName):
+    if reasoner[0] is None:
+        runtime = Runtime.getMainRuntime()
+        axioms = runtime.getAxioms()
+        compiler = runtime.getTypedForaCompiler()
+        reasoner[0] = ForaNative.SimpleForwardReasoner(compiler, axioms)
+
+    moduleJOV = ForaNative.JudgmentOnValue.Constant(module.implVal_)
+    frame = reasoner[0].reason(makeJovt(moduleJOV, symbolJov("Member"), symbolJov(testName)))
+
+    dumpReasonerSummary(reasoner[0], frame)
+
+    return True
+
+def test(verbose = False, testFilter=None, reasoning=False):
     """use all .fora files in this directory to generate a single unit test.
     
     returns 1 on failure, 0 on success
@@ -220,7 +229,14 @@ def test(verbose = False, testFilter=None):
     
     for f in sorted(os.listdir(curdir)):
         if f.endswith(".fora"):
-            passed, failed = testModuleStr(os.path.join(curdir, f), verbose, 0.0, testFilter)
+            passed, failed = testModuleStr(
+                os.path.join(curdir, f), 
+                verbose, 
+                0.0, 
+                testFilter, 
+                executeForaCode if not reasoning else reasonAboutForaCode
+                )
+
             numPassed += passed
             numFailed += failed
             
@@ -233,18 +249,3 @@ def test(verbose = False, testFilter=None):
         return 1
     return 0
     
-if __name__ == "__main__":
-    setup = Setup.defaultSetup()
-    with Setup.PushSetup(setup):
-        Setup.config().configureLoggingForUserProgram()
-
-        FORA.initialize()
-        
-        try:
-            result = main()
-        except:
-            logging.critical(traceback.format_exc())
-            result = 1
-
-        sys.exit(result)
-

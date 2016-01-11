@@ -94,6 +94,10 @@ class UnitTestArgumentParser(argparse.ArgumentParser):
                     action = 'store_true',
                     help = 'run the FORA language unit tests',
                     default = False)
+        self.subsetsGroup.add_argument('-reasoning',
+                    action = 'store_true',
+                    help = 'run the FORA language unit tests',
+                    default = False)
         self.subsetsGroup.add_argument('-py',
                     action = 'store_true',
                     help = 'run the python unit tests',
@@ -391,7 +395,7 @@ def executeTests(args):
         print
         print
 
-    if args.py or args.lang or args.native or args.localperf:
+    if args.py or args.lang or args.reasoning or args.native or args.localperf:
         FORA.initialize()
 
     if args.native and not args.list:
@@ -441,7 +445,13 @@ def executeTests(args):
 
     if args.lang:
         print "Running FORA language semantics unit tests:"
-        if FORASemanticsTest.test(args.testHarnessVerbose, makeSemanticsTestFilter(args)):
+        if FORASemanticsTest.test(args.testHarnessVerbose, makeSemanticsTestFilter(args), False):
+            anyFailed = True
+        print "\n\n\n"
+
+    if args.reasoning:
+        print "Reasoning about FORA language semantics unit tests:"
+        if FORASemanticsTest.test(args.testHarnessVerbose, makeSemanticsTestFilter(args), True):
             anyFailed = True
         print "\n\n\n"
 
@@ -498,7 +508,7 @@ def executeTests(args):
 
 
 def noTestsSelected(args):
-    return not (args.lang or args.native or args.scripts or args.py or \
+    return not (args.lang or args.reasoning or args.native or args.scripts or args.py or \
                     args.node or args.browser or args.localperf or args.multibox)
 
 def main(args):

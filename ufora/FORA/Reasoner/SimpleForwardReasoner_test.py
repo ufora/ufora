@@ -23,6 +23,7 @@ import ufora.FORA.python.Runtime as Runtime
 import ufora.native.FORA as FORANative
 import ufora.native.Cumulus as CumulusNative
 import ufora.native.CallbackScheduler as CallbackScheduler
+import logging
 
 def makeJovt(*args):
     return FORANative.JOVListToJOVT(list(args))
@@ -37,6 +38,26 @@ class TestSimpleForwardReasoner(unittest.TestCase):
         self.axioms = self.runtime.getAxioms()
         self.compiler = self.runtime.getTypedForaCompiler()
         self.builtinsAsJOV = FORANative.JudgmentOnValue.Constant(FORA.builtin().implVal_)
+
+    def dumpReasonerSummary(self, reasoner, frame):
+        allFrames = set()
+        toCheck = [frame]
+        while toCheck:
+            frameToCheck = toCheck.pop()
+            if frameToCheck not in allFrames:
+                allFrames.add(frameToCheck)
+                for subframe in reasoner.subframesFor(frameToCheck).values():
+                    toCheck.append(subframe)
+
+        reachableFrames = len(allFrames)
+        allFrameCount = reasoner.totalFrameCount()
+        badApplyNodes = 0
+
+        for f in allFrames:
+            for n in f.unknownApplyNodes():
+                badApplyNodes += 1
+
+        logging.info("Reaching %s of %s frames with %s bad nodes.", reachableFrames, allFrameCount, badApplyNodes)
 
     def test_builtin_math_isSimple(self):
         reasoner = FORANative.SimpleForwardReasoner(self.compiler, self.axioms)
@@ -57,6 +78,8 @@ class TestSimpleForwardReasoner(unittest.TestCase):
                 *[FORANative.parseStringToJOV(variableJudgments[k]) for k in keys]
                 )
             )
+
+        self.dumpReasonerSummary(reasoner, frame)
 
         return frame
 
@@ -158,6 +181,23 @@ class TestSimpleForwardReasoner(unittest.TestCase):
             )
 
         self.assertFrameHasResultJOV(frame, "{Int64}")
+
+    def test_recursion_on_tuples(self):
+        frame = self.reasonAboutExpression(
+            """
+            let f = fun(x, res=()) 
+                {
+                if (x == 0)
+                    return res
+                else
+                    return f(x-1,(x,res))
+                };
+
+            f(1000)
+            """
+            )
+
+        self.assertFrameHasResultJOV(frame, "({Int64}, (...*))")
 
     def test_two_layer_recursion(self):
         frame = self.reasonAboutExpression(

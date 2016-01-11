@@ -1,0 +1,154 @@
+#include "ReasonerEntrypointGraph.hppml"
+#include "../../core/Logging.hpp"
+#include "../../core/Clock.hpp"
+
+namespace Fora {
+
+void ReasonerEntrypointGraph::addRoot(ReasonerEntrypoint root)
+	{
+	ensure(root);
+
+	if (mRootFrames.find(root) != mRootFrames.end())
+		return;
+
+	mRootFrames.insert(root);
+
+	markReachable(root);
+	}
+
+void ReasonerEntrypointGraph::markDirty(ReasonerEntrypoint entrypoint)
+	{
+	if (isDirty(entrypoint))
+		return;
+
+	mDirtyFrames.insert(entrypoint);
+
+	if (isReachable(entrypoint))
+		mDirtyReachableFrames.insert(entrypoint);
+	}
+
+void ReasonerEntrypointGraph::markReachable(ReasonerEntrypoint entrypoint)
+	{
+	if (isReachable(entrypoint))
+		return;
+
+	mReachableFrames.insert(entrypoint);
+
+	if (isDirty(entrypoint))
+		mDirtyReachableFrames.insert(entrypoint);
+
+	for (auto child: getCalledFrames(entrypoint))
+		markReachable(child);
+	}
+
+Nullable<ReasonerEntrypoint> ReasonerEntrypointGraph::popDirtyReachableFrame()
+	{
+	while (true)
+		{
+		if (mDirtyReachableFrames.size() == 0)
+			return null();
+
+		ReasonerEntrypoint entrypoint = *mDirtyReachableFrames.begin();
+
+		//check that it's reachable (since we don't update the reachability graph when we drop nodes)
+		//if it still is, we can return it.
+		verifyIsReachable(entrypoint);
+
+		if (isReachable(entrypoint))
+			{
+			mDirtyReachableFrames.erase(entrypoint);
+			mDirtyFrames.erase(entrypoint);
+			return null() << entrypoint;
+			}
+		}
+	}
+
+void ReasonerEntrypointGraph::verifyIsReachable(ReasonerEntrypoint entrypoint)
+	{
+	std::set<ReasonerEntrypoint> seen;
+	std::vector<ReasonerEntrypoint> stack;
+
+	stack.push_back(entrypoint);
+
+	//walk up the transitive closure of the parents marked reachable.
+	//if we find a root, we're set.
+	while (stack.size())
+		{
+		ReasonerEntrypoint e = stack.back();
+		stack.pop_back();
+
+		if (seen.find(e) == seen.end() && isReachable(e))
+			{
+			seen.insert(e);
+
+			if (mRootFrames.find(e) != mRootFrames.end())
+				return;
+
+			for (auto parent: getCallers(e))
+				stack.push_back(parent);
+			}
+		}
+
+	//otherwise, all of these nodes should be marked unreachable
+	for (auto n: seen)
+		{
+		mDirtyReachableFrames.erase(n);
+		mReachableFrames.erase(n);
+		}
+	}
+
+bool ReasonerEntrypointGraph::setEdges(ReasonerEntrypoint frame, const std::set<ReasonerEntrypoint>& called)
+	{
+	std::set<ReasonerEntrypoint> toAdd, toDrop;
+
+	for (auto e: called)
+		if (!mFrameGraph.contains(frame, e))
+			toAdd.insert(e);
+	for (auto e: getCalledFrames(frame))
+		if (called.find(e) == called.end())
+			toDrop.insert(e);
+
+	for (auto e: toAdd)
+		{
+		mFrameGraph.insert(frame, e);
+
+		if (isReachable(frame) && !isReachable(e))
+			markReachable(e);
+		}
+
+	for (auto e: toDrop)
+		mFrameGraph.drop(frame, e);
+
+	return toDrop.size() || toAdd.size();
+	}
+
+const std::set<ReasonerEntrypoint>& ReasonerEntrypointGraph::getCalledFrames(ReasonerEntrypoint frame) const
+	{
+	return mFrameGraph.getValues(frame);
+	}
+
+const std::set<ReasonerEntrypoint>& ReasonerEntrypointGraph::getCallers(ReasonerEntrypoint frame) const
+	{
+	return mFrameGraph.getKeys(frame);
+	}
+
+void ReasonerEntrypointGraph::ensure(ReasonerEntrypoint entrypoint)
+	{
+	if (mFrames.find(entrypoint) != mFrames.end())
+		return;
+
+	mFrames.insert(entrypoint);
+	mDirtyFrames.insert(entrypoint);
+	}
+
+bool ReasonerEntrypointGraph::isDirty(ReasonerEntrypoint frame) const
+	{
+	return mDirtyFrames.find(frame) != mDirtyFrames.end();
+	}
+
+bool ReasonerEntrypointGraph::isReachable(ReasonerEntrypoint frame) const
+	{
+	return mReachableFrames.find(frame) != mReachableFrames.end();
+	}
+
+}
