@@ -31,43 +31,43 @@ assume that the data is retained perfectly.
 
 class OfflineCache : public PolymorphicSharedPtrBase<OfflineCache> {
 public:
-		typedef PolymorphicSharedPtr<OfflineCache> pointer_type;
-                OfflineCache(PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler) : 
-                    mOnPageDropped(inCallbackScheduler)
-                    {}
-		
-		virtual ~OfflineCache() {};
+	typedef PolymorphicSharedPtr<OfflineCache> pointer_type;
+	OfflineCache(PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler) :
+			mOnPageDropped(inCallbackScheduler)
+		{}
 
-		//stores a value in the cache.
-		virtual void	store(	const Fora::PageId& inDataID,
-								const PolymorphicSharedPtr<SerializedObject>& inData
-								) = 0;
+	virtual ~OfflineCache() {};
 
-		//drop a value from the cache
-		virtual void drop(const Fora::PageId& inDataID) = 0;
-		
-		//checks whether a value for the given cache key definitely already
-		//exists.
-		virtual bool	alreadyExists(const Fora::PageId& inDataID) = 0;
-		
-		//checks whether a value for the given cache key definitely already
-		//exists.
-		virtual PolymorphicSharedPtr<SerializedObject>
-						loadIfExists(const Fora::PageId& inDataID) = 0;
-		
-		
-		virtual uint64_t getCacheSizeUsedBytes(void) const = 0;
-		virtual uint64_t getCacheItemCount(void) const = 0;
-		virtual uint64_t getCacheBytesDropped(void) const = 0;
-		virtual uint64_t getCacheItemsDropped(void) const = 0;
+	//stores a value in the cache.
+	virtual void	store(	const Fora::PageId& inDataID,
+							const PolymorphicSharedPtr<SerializedObject>& inData
+							) = 0;
 
-		EventBroadcaster<Fora::PageId>& onPageDropped()
-			{
-			return mOnPageDropped;
-			}
+	//drop a value from the cache
+	virtual void drop(const Fora::PageId& inDataID) = 0;
+
+	//checks whether a value for the given cache key definitely already
+	//exists.
+	virtual bool	alreadyExists(const Fora::PageId& inDataID) = 0;
+
+	//checks whether a value for the given cache key definitely already
+	//exists.
+	virtual PolymorphicSharedPtr<SerializedObject>
+			loadIfExists(const Fora::PageId& inDataID) = 0;
+
+
+	virtual uint64_t getCacheSizeUsedBytes(void) const = 0;
+	virtual uint64_t getCacheItemCount(void) const = 0;
+	virtual uint64_t getCacheBytesDropped(void) const = 0;
+	virtual uint64_t getCacheItemsDropped(void) const = 0;
+
+	EventBroadcaster<Fora::PageId>& onPageDropped()
+		{
+		return mOnPageDropped;
+		}
 
 private:
-		EventBroadcaster<Fora::PageId> mOnPageDropped;
+	EventBroadcaster<Fora::PageId> mOnPageDropped;
 
 };
 
