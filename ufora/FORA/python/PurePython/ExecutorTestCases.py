@@ -18,6 +18,7 @@ import pyfora.Exceptions as Exceptions
 
 import numpy
 import time
+import math
 
 
 class ExecutorTestCases(object):
@@ -2479,4 +2480,19 @@ class ExecutorTestCases(object):
         self.assertEqual(
             self.evaluateWithExecutor(f),
             3
+            )
+
+    def test_inline_fora_access_fora_builtins_1(self):
+        def f(x):
+            sinFunc = __inline_fora(
+                """fun(x) {
+                       PyFloat(math.sin(x.@m))
+                       }"""
+                )
+            return sinFunc(x)
+
+        arg = 0.0
+        self.assertEqual(
+            self.evaluateWithExecutor(f, arg),
+            math.sin(arg)
             )

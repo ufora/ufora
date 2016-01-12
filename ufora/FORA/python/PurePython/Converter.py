@@ -59,7 +59,8 @@ class Converter(object):
                  nativeDictConverter=None,
                  singletonAndExceptionConverter=None,
                  vdmOverride=None,
-                 purePythonModuleImplVal=None
+                 purePythonModuleImplVal=None,
+                 foraBuiltinsImplVal=None
                  ):
         self.convertedValues = {}
 
@@ -84,8 +85,18 @@ class Converter(object):
 
         self.pyforaBoundMethodClass = purePythonModuleImplVal.getObjectMember("PyBoundMethod")
 
-        self.purePythonMemberMapping = Converter._computeMemberMapping(
-            self.purePythonModuleImplVal
+        self.foraBuiltinMemberMapping = {}
+
+        self.foraBuiltinMemberMapping.update(
+            Converter._computeMemberMapping(
+                self.purePythonModuleImplVal
+                )
+            )
+
+        self.foraBuiltinMemberMapping.update(
+            Converter._computeMemberMapping(
+                foraBuiltinsImplVal
+                )
             )
 
     @staticmethod
@@ -93,7 +104,13 @@ class Converter(object):
         objectMembers = purePythonImplVal.objectMembers
         tr = {}
         for memberName in objectMembers:
-            tr[memberName] = purePythonImplVal.getObjectMember(memberName)
+            objectMember = purePythonImplVal.getObjectMember(memberName)
+
+            # TODO anybody: we're missing `builtin.Exception` here, since
+            # it is from a computation which FS1 simulator can't handle
+            # (from the source: `Exception: `Exception`();`)
+            if objectMember is not None:
+                tr[memberName] = objectMember
 
         return tr
 
@@ -681,7 +698,7 @@ class Converter(object):
                 self.nativeDictConverter,
                 self.purePythonModuleImplVal,
                 [x.split(".")[0] for x in withBlockDescription.freeVariableMemberAccessChainsToId],
-                self.purePythonMemberMapping
+                self.foraBuiltinMemberMapping
                 )
         
         if isinstance(foraFunctionExpression, ForaNative.PythonToForaConversionError):
@@ -905,7 +922,7 @@ class Converter(object):
                     self.nativeTupleConverter,
                     self.nativeDictConverter,
                     self.purePythonModuleImplVal,
-                    self.purePythonMemberMapping
+                    self.foraBuiltinMemberMapping
                     )
             else:
                 assert pyAst.isLambda()
@@ -918,7 +935,7 @@ class Converter(object):
                     self.nativeTupleConverter,
                     self.nativeDictConverter,
                     self.purePythonModuleImplVal,
-                    self.purePythonMemberMapping
+                    self.foraBuiltinMemberMapping
                     )
 
         elif isinstance(classOrFunctionDefinition, TypeDescription.ClassDefinition):
@@ -931,7 +948,7 @@ class Converter(object):
                 self.nativeTupleConverter,
                 self.nativeDictConverter,
                 self.purePythonModuleImplVal,
-                self.purePythonMemberMapping
+                self.foraBuiltinMemberMapping
                 )
 
         else:

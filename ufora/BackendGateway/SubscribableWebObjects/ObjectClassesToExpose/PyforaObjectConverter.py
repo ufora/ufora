@@ -38,7 +38,6 @@ class PyforaObjectConverter(ComputedGraph.Location):
             import ufora.FORA.python.ModuleImporter as ModuleImporter
 
 
-            # convert object Ids to int
             logging.info("Initializing the PyforaObjectConverter")
 
             objectRegistry_[0] = ObjectRegistry.ObjectRegistry()
@@ -83,6 +82,8 @@ class PyforaObjectConverter(ComputedGraph.Location):
                     purePythonModuleImplval.getObjectMember("PyDict")
                     )
 
+                foraBuiltinsImplVal = ModuleImporter.builtinModuleImplVal()
+
                 converter_[0] = Converter.Converter(
                     nativeListConverter=nativeListConverter,
                     nativeTupleConverter=nativeTupleConverter,
@@ -90,7 +91,8 @@ class PyforaObjectConverter(ComputedGraph.Location):
                     nativeConstantConverter=nativeConstantConverter,
                     singletonAndExceptionConverter=singletonAndExceptionConverter,
                     vdmOverride=ComputedValueGateway.getGateway().vdm,
-                    purePythonModuleImplVal=purePythonModuleImplval
+                    purePythonModuleImplVal=purePythonModuleImplval,
+                    foraBuiltinsImplVal=foraBuiltinsImplVal
                     )
         except:
             logging.critical("Failed to initialize the PyforaObjectConverter: %s", traceback.format_exc())
