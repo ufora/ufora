@@ -28,7 +28,7 @@
 #include "../../../core/Logging.hpp"
 #include "../../Language/RebindFree.hppml"
 #include "../../Language/ParserExpressions.hppml"
-
+#include "../../Language/ClassMediatorBindings.hppml"
 
 #define PYFORA_CONVERSION_ERROR_MESSAGE "Pyfora can't convert this code. See http://docs.pyfora.com/en/latest/tutorials/intro.html#pure-python"
 
@@ -463,13 +463,18 @@ PythonAstConverter::PythonAstConverter(
             PolymorphicSharedPtr<PythonListConverter> listConverter,
             PolymorphicSharedPtr<PythonTupleConverter> tupleConverter,
             PolymorphicSharedPtr<PythonDictConverter> dictConverter,
-            ImplValContainer pyforaBuiltins
+            ImplValContainer pyforaBuiltins,
+            const ImmutableTreeMap<
+                Symbol,
+                pair<ImplValContainer, Nullable<Symbol>>
+                >& builtinMemberMapping
             )
         : mConstantConverter(constantConverter),
           mPythonListConverter(listConverter),
           mPythonTupleConverter(tupleConverter),
           mPythonDictConverter(dictConverter),
-          mPyforaBuiltins(pyforaBuiltins)
+          mPyforaBuiltins(pyforaBuiltins),
+          mBuiltinMemberMapping(builtinMemberMapping)
     {
     mPyBoundMethod = getModuleMember(pyforaBuiltins, "PyBoundMethod");
 
@@ -1545,25 +1550,52 @@ Expression PythonAstConverter::convertInlineFora(
 
     ParserExpressions p(true, CodeDefinitionPoint(), "");
 
-    Expression tr = p.parseToExpression(simpleParseNode);
+    Expression inlineForaExpr = p.parseToExpression(simpleParseNode);
 
-    if (!tr.isCreateFunction())
+    if (!inlineForaExpr.isCreateFunction())
         throw PythonToForaConversionError(
-            std::string("only CreateFunction expressions are allowed in inline fora Code. got ") + tr.tagName(),
+            std::string(
+                "only CreateFunction expressions are allowed in inline fora Code. got "
+                ) + inlineForaExpr.tagName(),
             extent
             );
 
-    auto freeVariables = tr.freeVariables();
-
-    if (freeVariables.size() > 0) 
-        throw PythonToForaConversionError(
-            std::string("inline fora function had free variables, ") + 
-            prettyPrintString(freeVariables) + 
-            " and this is forbidden",
+    return Expression::Constant(
+        bindFreeVariablesInInlineForaExpressionToConstantUsingBuiltins(
+            inlineForaExpr.getCreateFunction(),
+            inlineForaExpr.freeVariables(),
             extent
-            );
+            )
+        );
+    }
 
-    return tr;
+CSTValue PythonAstConverter::bindFreeVariablesInInlineForaExpressionToConstantUsingBuiltins(
+        const Expression_CreateFunctionType& createFunctionExpression,
+        const ImmutableTreeSet<Symbol>& freeVariables,
+        const SimpleParseRange& extent
+        ) const
+    {
+    for (const auto& freeVar: freeVariables)
+        {
+        if (!mBuiltinMemberMapping.contains(freeVar))
+            throw PythonToForaConversionError(
+             std::string("inline fora function had free variables, ") + 
+             prettyPrintString(freeVariables) + 
+             " and this is forbidden",
+             extent
+             );
+        }
+
+    return Fora::Language::bindFunctionWithValues(
+        ClassMediator::Function(
+            createFunctionExpression.name(),
+            createFunctionExpression.predicate(),
+            LexicalBindingMap(),
+            CSTValue()
+            ),
+        mBuiltinMemberMapping,
+        createFunctionExpression.objectMetadata()
+        );
     }
 
 Expression PythonAstConverter::convertExpressionToForaBoolean(const Expression& expr) const

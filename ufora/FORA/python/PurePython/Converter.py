@@ -35,8 +35,8 @@ empytObjectExpression = ForaNative.parseStringToExpression(
     emptyCodeDefinitionPoint,
     ""
     )
-createInstanceImplVal = ForaNative.makeSymbol("CreateInstance")
-callImplVal = ForaNative.makeSymbol("Call")
+Symbol_CreateInstance = ForaNative.makeSymbol("CreateInstance")
+Symbol_Call = ForaNative.makeSymbol("Call")
 Symbol_uninitialized = ForaNative.makeSymbol("PyforaUninitializedVariable")
 Symbol_invalid = ForaNative.makeSymbol("PyforaInvalidVariable")
 
@@ -83,6 +83,19 @@ class Converter(object):
         self.purePythonModuleImplVal = purePythonModuleImplVal
 
         self.pyforaBoundMethodClass = purePythonModuleImplVal.getObjectMember("PyBoundMethod")
+
+        self.purePythonMemberMapping = Converter._computeMemberMapping(
+            self.purePythonModuleImplVal
+            )
+
+    @staticmethod
+    def _computeMemberMapping(purePythonImplVal):
+        objectMembers = purePythonImplVal.objectMembers
+        tr = {}
+        for memberName in objectMembers:
+            tr[memberName] = purePythonImplVal.getObjectMember(memberName)
+
+        return tr
 
     def extractWrappedForaConstant(self, value):
         """Convenience method for testing. If 'value' is an ImplVal, get @m out of it."""
@@ -667,7 +680,8 @@ class Converter(object):
                 self.nativeTupleConverter,
                 self.nativeDictConverter,
                 self.purePythonModuleImplVal,
-                [x.split(".")[0] for x in withBlockDescription.freeVariableMemberAccessChainsToId]
+                [x.split(".")[0] for x in withBlockDescription.freeVariableMemberAccessChainsToId],
+                self.purePythonMemberMapping
                 )
         
         if isinstance(foraFunctionExpression, ForaNative.PythonToForaConversionError):
@@ -759,7 +773,7 @@ class Converter(object):
             ivc = classMemberNameToImplVal[classMemberName]
             classMemberImplVals.append(ivc)
 
-        applyArgs = [classImplVal, createInstanceImplVal] + classMemberImplVals
+        applyArgs = [classImplVal, Symbol_CreateInstance] + classMemberImplVals
 
         convertedValueOrNone = ForaNative.simulateApply(
             ForaNative.ImplValContainer(
@@ -812,7 +826,7 @@ class Converter(object):
                 )
 
         allAreIVC = True
-        for k, v in renamedVariableMapping.iteritems():
+        for _, v in renamedVariableMapping.iteritems():
             if not isinstance(v, ForaNative.ImplValContainer):
                 allAreIVC = False
 
@@ -839,7 +853,7 @@ class Converter(object):
             for f in foraExpression.freeVariables:
                 args.append(renamedVariableMapping[f])
 
-            res = ComputedValue.ComputedValue(args=(expressionAsIVC, callImplVal) + tuple(args))
+            res = ComputedValue.ComputedValue(args=(expressionAsIVC, Symbol_Call) + tuple(args))
 
             return res
 
@@ -890,7 +904,8 @@ class Converter(object):
                     self.nativeListConverter,
                     self.nativeTupleConverter,
                     self.nativeDictConverter,
-                    self.purePythonModuleImplVal
+                    self.purePythonModuleImplVal,
+                    self.purePythonMemberMapping
                     )
             else:
                 assert pyAst.isLambda()
@@ -902,7 +917,8 @@ class Converter(object):
                     self.nativeListConverter,
                     self.nativeTupleConverter,
                     self.nativeDictConverter,
-                    self.purePythonModuleImplVal
+                    self.purePythonModuleImplVal,
+                    self.purePythonMemberMapping
                     )
 
         elif isinstance(classOrFunctionDefinition, TypeDescription.ClassDefinition):
@@ -914,7 +930,8 @@ class Converter(object):
                 self.nativeListConverter,
                 self.nativeTupleConverter,
                 self.nativeDictConverter,
-                self.purePythonModuleImplVal
+                self.purePythonModuleImplVal,
+                self.purePythonMemberMapping
                 )
 
         else:

@@ -2468,5 +2468,15 @@ class ExecutorTestCases(object):
 
         self.assertEqual(self.evaluateWithExecutor(f), val)
 
-
-                    
+    def test_inline_fora_access_pyfora_builtins(self):
+        def f():
+            return __inline_fora(
+                """fun(ix) {
+                       return PyInt(1) + ix
+                       }"""
+                )(2)
+            
+        self.assertEqual(
+            self.evaluateWithExecutor(f),
+            3
+            )
