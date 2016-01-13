@@ -15,6 +15,7 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+import itertools
 import os
 from waflib import Build, Utils, TaskGen
 import sys
@@ -130,14 +131,19 @@ def configure(conf):
         mandatory=False
         )
 
-def configure_boost(conf):
-    conf.check(lib='boost_date_time', mandatory=True)
-    conf.check(lib='boost_filesystem', mandatory=True)
-    conf.check(lib='boost_python', use='PYTHON', mandatory=True)
-    conf.check(lib='boost_regex', mandatory=True)
-    conf.check(lib='boost_thread', mandatory=True)
-    conf.check(lib='boost_unit_test_framework', mandatory=True)
+boost_libs = [
+    'boost_date_time',
+    'boost_filesystem',
+    'boost_python',
+    'boost_regex',
+    'boost_thread',
+    'boost_unit_test_framework'
+    ]
 
+def configure_boost(conf):
+    for boost_lib in boost_libs:
+        use = 'PYTHON' if boost_lib == 'boost_python' else ''
+        conf.check(lib=boost_lib, use=use, mandatory=True)
 
 clang_libs = [
     'clangFrontend',
@@ -213,15 +219,13 @@ def build(bld):
 
     def shouldExclude(x):
         abspath = x.abspath()
-        for exclude in excludes:
-            if exclude in abspath:
-                return True
-        return False
+        return any(exclude in abspath for exclude in excludes)
 
     thirdparty_sources = []
     fora_sources = []
     native_sources = []
     test_sources = []
+    core_sources = []
 
     for extension in extensions:
         for folder in folders:
@@ -235,16 +239,16 @@ def build(bld):
                     thirdparty_sources.append(source)
                     continue
 
+                if '.py.' in relpath or relpath.startswith('ufora/native/'):
+                    native_sources.append(source)
+                    continue
+
+                if relpath.startswith('ufora/core/'):
+                    core_sources.append(source)
+                    continue
+
                 if 'test.' in relpath:
                     test_sources.append(source)
-                    continue
-
-                if relpath.startswith('ufora/native/tests'):
-                    test_sources.append(source)
-                    continue
-
-                if '.py.' in relpath:
-                    native_sources.append(source)
                     continue
 
                 fora_sources.append(source)
@@ -329,9 +333,9 @@ def build(bld):
         **defaultBuildArgs
         )
 
-    nativeDependencies = [lib.upper() for lib in clang_libs] + [
+
+    nativeDependencies = [lib.upper() for lib in itertools.chain(clang_libs, boost_libs)] + [
         'BLAS',
-        'CRYPTO',
         'GFORTRAN',
         'LAPACK',
         'PROFILER',
@@ -341,25 +345,34 @@ def build(bld):
         'TCMALLOC',
         'LLVM',
         'fortran',
-
-        'BOOST_DATE_TIME',
-        'BOOST_FILESYSTEM',
-        'BOOST_PYTHON',
-        'BOOST_REGEX',
-        'BOOST_SYSTEM',
-        'BOOST_THREAD',
-        'BOOST_UNIT_TEST_FRAMEWORK',
-        'fora_thirdparty',
+        'fora_thirdparty'
         ]
 
     bld.shlib(
-        source=fora_sources + native_sources + test_sources,
+        source=core_sources,
+        target='ufora-core',
+        features='cxx',
+        use=[lib.upper() for lib in boost_libs] + ['PYTHON', 'fora_thirdparty', 'CRYPTO'],
+        **defaultBuildArgs
+        )
+
+    bld.shlib(
+        source=fora_sources + test_sources,
+        target='ufora',
+        features='cxx',
+        use=nativeDependencies + ['fora_thirdparty', 'ufora-core'],
+        **defaultBuildArgs
+        )
+
+    bld.shlib(
+        source=native_sources,
         target='native',
         features='cxx pyext',
-        use=nativeDependencies,
+        use=nativeDependencies + ['ufora-core', 'ufora'],
         name='native',
         **defaultBuildArgs
         )
+
 
     bld.add_post_fun(post_build)
 

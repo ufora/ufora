@@ -13,7 +13,6 @@
 #   limitations under the License.
 
 import unittest
-import pyfora
 import sys
 import textwrap
 import time
@@ -23,7 +22,7 @@ import pexpect
 import ufora.test.ClusterSimulation as ClusterSimulation
 
 class CommandlineSimulationTest(unittest.TestCase):
-    """Executes 'commandline' tests against python. 
+    """Executes 'commandline' tests against python.
 
     We run python code, and verify we don't see 'Traceback' in the output.
 
@@ -46,10 +45,13 @@ class CommandlineSimulationTest(unittest.TestCase):
         cls.simulation.stopService()
 
     @classmethod
-    def waitUntilConnected(cls, timeout = 30.0):
+    def waitUntilConnected(cls, timeout=30.0):
         t0 = time.time()
         while time.time() - t0 < timeout:
-            res = cls.execTest("import pyfora\nconnection = pyfora.connect('http://localhost:30000')\nassert connection is not None\n", 10.0)
+            res = cls.execTest(
+                "import pyfora\nconnection = pyfora.connect('http://localhost:30000')\nassert connection is not None\n",
+                10.0
+                )
             if res == 0:
                 return
             else:
@@ -68,7 +70,7 @@ class CommandlineSimulationTest(unittest.TestCase):
         """
         child = pexpect.spawn(sys.executable + " -i")
         if disableOutput:
-            child.logfile=None
+            child.logfile = None
         child.send(content + "\nexit(0)\n")
 
         out = []
@@ -106,7 +108,7 @@ class CommandlineSimulationTest(unittest.TestCase):
             self.execTest(
                 textwrap.dedent("""
                     assert 10 == 11
-                    """), 
+                    """),
                 60.0
                 ),
             1
@@ -124,24 +126,7 @@ class CommandlineSimulationTest(unittest.TestCase):
                         x = 10
 
                     assert x == 10
-                    """), 
-                60.0
-                ),
-            0)
-
-
-    def testCanConnect(self):
-        self.assertEqual(
-            self.execTest(
-                textwrap.dedent("""
-                    import pyfora
-                    ufora = pyfora.connect('http://localhost:30000')
-
-                    with ufora.remotely.downloadAll():
-                        x = 10
-
-                    assert x == 10
-                    """), 
+                    """),
                 60.0
                 ),
             0)
@@ -168,7 +153,7 @@ class CommandlineSimulationTest(unittest.TestCase):
                         x = f(100) + g(1)
 
                     assert x == 1111, x
-                    """), 
+                    """),
                 60.0
                 ),
             0)
