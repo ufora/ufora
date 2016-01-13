@@ -19,19 +19,33 @@ class Sqrt:
     def __call__(self, val):
         if val < 0.0:
             raise ValueError("math domain error")
-        return Sqrt.__pyfora_builtins__.math.sqrt(val)
+
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.sqrt(val.@m))
+                   }"""
+            )(val)
 
 
 class Hypot:
     def __call__(self, val1, val2):
-        return Hypot.__pyfora_builtins__.math.hypot(val1, val2)
+        return __inline_fora(
+            """fun(val1, val2) {
+                   PyFloat(math.hypot(val1.@m, val2.@m))
+                   }"""
+            )(val1, val2)
 
 
 class Log:
     def __call__(self, val):
         if val <= 0.0:
             raise ValueError("math domain error")
-        return Log.__pyfora_builtins__.math.log(val)
+
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.log(val.@m))
+                   }"""
+            )(val)
 
 
 class Acos:
@@ -39,7 +53,11 @@ class Acos:
         if val > 1.0 or val < -1.0:
             raise ValueError("math domain error")
 
-        return Acos.__pyfora_builtins__.math.acos(val)
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.acos(val.@m))
+                   }"""
+            )(val)
 
 
 class Acosh:
@@ -47,17 +65,29 @@ class Acosh:
         if val < 1.0:
             raise ValueError("math domain error")
 
-        return Acosh.__pyfora_builtins__.math.acosh(val)
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.acosh(val.@m))
+                   }"""
+            )(val)
 
 
 class Cos:
     def __call__(self, val):
-        return Cos.__pyfora_builtins__.math.cos(val)
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.cos(val.@m))
+                   }"""
+            )(val)
 
 
 class Cosh:
     def __call__(self, val):
-        return Cosh.__pyfora_builtins__.math.cosh(val)
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.cosh(val.@m))
+                   }"""
+            )(val)
 
 
 class Asin:
@@ -65,7 +95,11 @@ class Asin:
         if val > 1.0 or val < -1.0:
             raise ValueError("math domain error")
 
-        return Asin.__pyfora_builtins__.math.asin(val)
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.asin(val.@m))
+                   }"""
+            )(val)
 
 
 class Asinh:
@@ -73,102 +107,179 @@ class Asinh:
         if val < 1.0:
             raise ValueError("math domain error")
 
-        return Asinh.__pyfora_builtins__.math.asinh(val)
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.asinh(val.@m))
+                   }"""
+            )(val)
 
 
 class Sin:
     def __call__(self, val):
-        return Sin.__pyfora_builtins__.math.sin(val)
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.sin(val.@m))
+                   }"""
+            )(val)
 
 
 class Sinh:
     def __call__(self, val):
-        return Cosh.__pyfora_builtins__.math.sinh(val)
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.sinh(val.@m))
+                   }"""
+            )(val)
 
 
 class Atan:
     def __call__(self, val):
-        return Atan.__pyfora_builtins__.math.atan(val)
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.atan(val.@m))
+                   }"""
+            )(val)
 
 
 class Atan2:
     def __call__(self, val1, val2):
-        return Atan2.__pyfora_builtins__.math.atan2(val1, val2)
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.atan2(val1.@m, val2.@m))
+                   }"""
+            )(val1, val2)
 
 
 class Atanh:
     def __call__(self, val):
         if val >= 1:
             raise ValueError("math domain error")
-        return Atanh.__pyfora_builtins__.math.atanh(val)
+
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.atanh(val.@m))
+                   }"""
+            )(val)
 
 
 class Tan:
     def __call__(self, val):
-        return Tan.__pyfora_builtins__.math.tan(val)
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.tan(val.@m))
+                   }"""
+            )(val)
 
 
 class Tanh:
     def __call__(self, val):
-        return Tanh.__pyfora_builtins__.math.tanh(val)
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.tanh(val.@m))
+                   }"""
+            )(val)
 
 
 class Ceil:
     def __call__(self, val):
-        return Ceil.__pyfora_builtins__.math.ceil(val)
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.ceil(val.@m))
+                   }"""
+            )(val)
 
 
 class Erf:
     def __call__(self, val):
-        return Erf.__pyfora_builtins__.math.erf(val)
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.erf(val.@m))
+                   }"""
+            )(val)
 
 
 class Erfc:
     def __call__(self, val):
-        return Erfc.__pyfora_builtins__.math.erfc(val)
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.erfc(val.@m))
+                   }"""
+            )(val)
 
 
 class Exp:
     def __call__(self, val):
-        return Exp.__pyfora_builtins__.math.exp(val)
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.exp(val.@m))
+                   }"""
+            )(val)
 
 
 class Expm1:
     def __call__(self, val):
-        return Expm1.__pyfora_builtins__.math.expm1(val)
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.expm1(val.@m))
+                   }"""
+            )(val)
 
 
 class Factorial:
     def __call__(self, val):
         if Floor()(val) != val or val < 0:
             raise ValueError("math domain error")
-        return Factorial.__pyfora_builtins__.math.factorial(val)
+
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.factorial(val.@m))
+                   }"""
+            )(val)
 
 
 class Floor:
     def __call__(self, val):
-        return Floor.__pyfora_builtins__.math.floor(val)
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.floor(val.@m))
+                   }"""
+            )(val)
 
 
 class Lgamma:
     def __call__(self, val):
         if val <= -1 or val == 0:
             raise ValueError("math domain error")
-        return Lgamma.__pyfora_builtins__.math.lgamma(val)
+
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.lgamma(val.@m))
+                   }"""
+            )(val)
 
 
 class Log10:
     def __call__(self, val):
         if val <= 0.0:
             raise ValueError("math domain error")
-        return Log10.__pyfora_builtins__.math.log10(val)
+
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.log_10(val.@m))
+                   }"""
+            )(val)
 
 
 class Log1p:
     def __call__(self, val):
         if val < -1:
             raise ValueError("math domain error")
-        return Log1p.__pyfora_builtins__.math.log1p(val)
+
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.log1p(val.@m))
+                   }"""
+            )(val)
 
 
 def generateMappings():
