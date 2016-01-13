@@ -2496,3 +2496,11 @@ class ExecutorTestCases(object):
             self.evaluateWithExecutor(f, arg),
             math.sin(arg)
             )
+
+    def test_inline_fora_access_fora_builtins_2(self):
+        def f(x):
+            return __inline_fora(
+                "fun(x) { purePython.PyFloat(builtin.math.sin(x.@m)) }"
+                )(x)
+
+        self.evaluateWithExecutor(f, 0)

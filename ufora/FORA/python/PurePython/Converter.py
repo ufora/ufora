@@ -80,18 +80,9 @@ class Converter(object):
 
         self.pyforaBoundMethodClass = purePythonModuleImplVal.getObjectMember("PyBoundMethod")
 
-        builtinMemberMapping = {}
-
-        builtinMemberMapping.update(
-            Converter._computeMemberMapping(
-                purePythonModuleImplVal
-                )
-            )
-
-        builtinMemberMapping.update(
-            Converter._computeMemberMapping(
-                foraBuiltinsImplVal
-                )
+        builtinMemberMapping = Converter.computeBuiltinMemberMapping(
+            purePythonModuleImplVal=purePythonModuleImplVal,
+            foraBuiltinsImplVal=foraBuiltinsImplVal
             )
 
         self.nativeConverter = ForaNative.makePythonAstConverter(
@@ -104,7 +95,28 @@ class Converter(object):
             )
 
     @staticmethod
-    def _computeMemberMapping(purePythonImplVal):
+    def computeBuiltinMemberMapping(purePythonModuleImplVal, foraBuiltinsImplVal):
+        builtinMemberMapping = {}
+
+        builtinMemberMapping.update(
+            Converter.computeMemberMapping(
+                purePythonModuleImplVal
+                )
+            )
+
+        builtinMemberMapping.update(
+            Converter.computeMemberMapping(
+                foraBuiltinsImplVal
+                )
+            )
+
+        builtinMemberMapping['purePython'] = purePythonModuleImplVal
+        builtinMemberMapping['builtin'] = foraBuiltinsImplVal
+
+        return builtinMemberMapping
+
+    @staticmethod
+    def computeMemberMapping(purePythonImplVal):
         objectMembers = purePythonImplVal.objectMembers
         tr = {}
         for memberName in objectMembers:
