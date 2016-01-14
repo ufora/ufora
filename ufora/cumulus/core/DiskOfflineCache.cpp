@@ -36,29 +36,13 @@ DiskOfflineCache::DiskOfflineCache(
 			uint64_t maxCacheSize, 
 			uint64_t maxCacheItemCount
 			) :
-		OfflineCache(inCallbackScheduler),
-		mCacheSize(0), 
-		mCacheItemCount(0),
-		mMaxCacheSize(maxCacheSize),
-		mMaxCacheItemCount(maxCacheItemCount),
-		mCurRandomHash(1),
-		mTotalBytesDumped(0),
-		mTotalFilesDumped(0),
-		mTotalBytesLoaded(0)
-	{
-	lassert(mMaxCacheItemCount > 0);
-	lassert(mMaxCacheSize > 0);
-
-	mBasePath = boost::filesystem::path(basePath);
-	if (!boost::filesystem::exists(mBasePath))
-		boost::filesystem::create_directories(mBasePath);
-
-	for (boost::filesystem::directory_iterator dIt(mBasePath); 
-			dIt != boost::filesystem::directory_iterator(); ++dIt) 
-		{
-		lassert_dump(false, "Expected DiskOfflineCache to be empty.");
-		}
-	}
+		DiskOfflineCache::DiskOfflineCache(
+				inCallbackScheduler,
+				boost::filesystem::path(basePath),
+				maxCacheSize,
+				maxCacheItemCount
+				)
+	{}
 
 DiskOfflineCache::DiskOfflineCache(
 			PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
