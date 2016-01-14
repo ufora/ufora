@@ -64,14 +64,14 @@ class TestSimpleForwardReasoner(unittest.TestCase):
         logging.info("Reaching %s of %s frames with %s bad nodes.", reachableFrames, allFrameCount, badApplyNodes)
 
     def test_builtin_math_isSimple(self):
-        reasoner = FORANative.SimpleForwardReasoner(self.compiler, self.axioms)
+        reasoner = FORANative.SimpleForwardReasoner(self.compiler, self.axioms, False)
 
         frame = reasoner.reason(makeJovt(self.builtinsAsJOV, symbolJov("Member"), symbolJov("math")))
 
         self.assertFrameHasConstantResult(frame)
 
     def reasonAboutExpression(self, expression, **variableJudgments):
-        reasoner = FORANative.SimpleForwardReasoner(self.compiler, self.axioms)
+        reasoner = FORANative.SimpleForwardReasoner(self.compiler, self.axioms, False)
         keys = sorted(list(variableJudgments.keys()))
 
         functionText = "fun(" + ",".join(['_'] + keys) + ") { " + expression + " }"

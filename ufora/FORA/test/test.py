@@ -205,7 +205,7 @@ def reasonAboutForaCode(module, testName):
         runtime = Runtime.getMainRuntime()
         axioms = runtime.getAxioms()
         compiler = runtime.getTypedForaCompiler()
-        reasoner[0] = ForaNative.SimpleForwardReasoner(compiler, axioms)
+        reasoner[0] = ForaNative.SimpleForwardReasoner(compiler, axioms, False)
 
     moduleJOV = ForaNative.JudgmentOnValue.Constant(module.implVal_)
     frame = reasoner[0].reason(makeJovt(moduleJOV, symbolJov("Member"), symbolJov(testName)))
