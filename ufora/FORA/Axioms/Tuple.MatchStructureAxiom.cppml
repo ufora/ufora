@@ -707,6 +707,36 @@ pair<JOVT, bool>	msareListToJOVT(
 	bool hasAnyUnknown = false;
 	ImmutableTreeVector<JudgmentOnValue> matchElements;
 	ImmutableTreeVector<Nullable<Symbol> > matchElementNames;
+
+	JOV jovForUnknown;
+
+	std::set<int> definitelyMatchedIndices;
+
+	for (long k = 0; k < matches.size(); k++)
+		{
+		@match MatchStructureAxiomResultElement(matches[k])
+			-|	Field(fieldIndex, asTuple) ->> {
+				definitelyMatchedIndices.insert(fieldIndex);
+				}
+			-| _ ->> {}
+			;
+		}
+
+	if (inSignature.jovs().size() > definitelyMatchedIndices.size() || inSignature.hasExtras())
+		{
+		Nullable<JOV> forUnknown;
+
+		auto merge = [](Nullable<JOV> j1, JOV j2) { if (j1) return j1->smallestCovering(j2); return j2; };
+
+		for (long k = 0; k < inSignature.jovs().size();k++)
+			if (definitelyMatchedIndices.find(k) == definitelyMatchedIndices.end())
+				forUnknown = merge(forUnknown, inSignature.jovs()[k]);
+
+		if (inSignature.hasExtras())
+			forUnknown = merge(forUnknown, inSignature.extras().getExtras().jov());
+
+		jovForUnknown = *forUnknown;
+		}
 	
 	for (long k = 0; k < matches.size(); k++)
 		{
@@ -757,8 +787,6 @@ pair<JOVT, bool>	msareListToJOVT(
 				
 				hasAnyUnknown = true;
 				
-				Nullable<bool> matchIsCST = inSignature.computeIsCST();
-
 				ImmutableTreeVector<JOV> tupleJOVs;
 				ImmutableTreeVector<Nullable<Symbol> > names;
 
@@ -773,7 +801,7 @@ pair<JOVT, bool>	msareListToJOVT(
 						tupleJOVs,
 						names,
 						JOVTE::Extras(
-							matchIsCST ? JOV::UnknownCSTKnown(*matchIsCST) : JOV::Unknown()
+							jovForUnknown
 							)
 						)
 					);
@@ -785,16 +813,7 @@ pair<JOVT, bool>	msareListToJOVT(
 				
 				hasAnyUnknown = true;
 				
-				Nullable<bool> matchIsCST = inSignature.computeIsCST();
-
-				JudgmentOnValue matchRes;
-
-				if (!matchIsCST)
-					matchRes = JOV::Unknown();
-					else
-					matchRes = JOV::UnknownCSTKnown(*matchIsCST);
-				
-				matchElements = matchElements + matchRes;
+				matchElements = matchElements + jovForUnknown;
 				matchElementNames = matchElementNames + symbolIfMatched;
 				}
 			;
@@ -976,7 +995,7 @@ Nullable<Axiom> TupleMatchStructureAxiom::axiom(
 				);
 		
 		if (!result)
-			return null() << AxiomGroup::throwsAxiom(s, CSTValue());
+			return null() << AxiomGroup::returnsAxiom(s, CSTValue());
 		
 		pair<JOVT, bool> resJOVTAndDefiniteMatch = msareListToJOVT(*result, jovt);
 		
@@ -1030,8 +1049,8 @@ Nullable<Axiom> TupleMatchStructureAxiom::axiom(
 	return null() << LibcallAxiomGroup::createAxiom(
 		signature(),
 		ReturnSlots() +
-			ReturnSlot::Normal(JOV()) +
-			ReturnSlot::Exception(JOV::Constant(CSTValue())),
+			ReturnSlot::Normal(jovTuple()) +
+			ReturnSlot::Normal(JOV::Constant(CSTValue())),
 		&FORA_clib_tupleStructureMatch,
 		ImmutableTreeVector<uword_t>() + 0 + 2
 		);
@@ -1058,7 +1077,7 @@ Nullable<AxiomJOA> TupleMatchStructureAxiom::axiomJOA(const JudgmentOnValueTuple
 		
 		if (!result)
 			return null() << AxiomJOA::Native(
-				JudgmentOnAction::Throws(
+				JudgmentOnAction::Value(
 						JOV::Constant(CSTValue())
 						)
 				);
@@ -1074,7 +1093,7 @@ Nullable<AxiomJOA> TupleMatchStructureAxiom::axiomJOA(const JudgmentOnValueTuple
 		if (resJOVTAndDefiniteMatch.second)
 			return null() << AxiomJOA::Native(
 				resultJOA | 
-				JudgmentOnAction::Throws(
+				JudgmentOnAction::Value(
 						JOV::Constant(CSTValue())
 						)
 				);
@@ -1083,8 +1102,8 @@ Nullable<AxiomJOA> TupleMatchStructureAxiom::axiomJOA(const JudgmentOnValueTuple
 		}
 		
 	return null() << AxiomJOA::Native(
-			JudgmentOnAction::Value(JOV())
-		|	JudgmentOnAction::Throws(
+			JudgmentOnAction::Value(jovTuple())
+		|	JudgmentOnAction::Value(
 					JOV::Constant(CSTValue())
 					)
 		);
@@ -1175,7 +1194,7 @@ Nullable<JudgmentOnValueTuple>	TupleMatchStructureAxiom::weakestArgumentsProduci
 	if (!matchResult)
 		{
 		//we failed. if this is expected, return the empty tuple matching this structure
-		if (result.covers(JudgmentOnAction::Throws(JOV::Constant(CSTValue()))))
+		if (result.covers(JudgmentOnAction::Value(JOV::Constant(CSTValue()))))
 			{
 			return null() << 
 				JOVT::Unnamed(

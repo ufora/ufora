@@ -47,7 +47,7 @@ class TestTupleMatchStructureAxiom(unittest.TestCase):
 
         axiom = axioms.getAxiomByJOVT(runtime.getTypedForaCompiler(), jov.asTuple.jov)
 
-        self.assertTrue(len(axiom.asNative.resultSignature.resultPart().vals) == 0)
+        self.assertTrue(list(axiom.asNative.resultSignature.resultPart().vals) == [FORANative.parseStringToJOV("nothing")])
 
 
     def test_addition_working(self):

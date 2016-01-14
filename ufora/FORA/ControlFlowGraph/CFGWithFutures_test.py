@@ -860,9 +860,11 @@ class CFGWithFuturesTest(unittest.TestCase):
         cfgWithFutures.continueSimulation()
 
         submittableArgs = cfgWithFutures.submittableArgs(1)
+
         cfgWithFutures.slotCompleted(
             1, evalSubmittableArgs(submittableArgs)
             )
+        cfgWithFutures.continueSimulation()
         cfgWithFutures.continueSimulation()
         self.assertEqual(cfgWithFutures.indicesOfSubmittableFutures(), [2])
 
@@ -896,6 +898,8 @@ class CFGWithFuturesTest(unittest.TestCase):
         cfgWithFutures.slotCompleted(
             0, evalSubmittableArgs(cfgWithFutures.submittableArgs(0))
             )
+
+        cfgWithFutures.continueSimulation()
 
         finalResult = cfgWithFutures.getFinalResult()
 
