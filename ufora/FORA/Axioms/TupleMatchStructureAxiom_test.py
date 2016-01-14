@@ -24,6 +24,7 @@ if __name__ == "__main__":
 import ufora.native.FORA as FORANative
 import ufora.FORA.python.ExecutionContext as ExecutionContext
 import ufora.native.CallbackScheduler as CallbackScheduler
+import ufora.FORA.python.Runtime as Runtime
 
 callbackScheduler = CallbackScheduler.singletonForTesting()
 
@@ -38,6 +39,17 @@ def simpleEval(*args, **kwargs):
 
 
 class TestTupleMatchStructureAxiom(unittest.TestCase):
+    def testMatchStructureCantMatchTooSmallTuple(self):
+        runtime = Runtime.getMainRuntime()
+        axioms = runtime.getAxioms()
+
+        jov = FORANative.parseStringToJOV("((1,2,3),`StructureMatch,((nothing, false), (nothing, false), (nothing, false), (nothing, false)))")
+
+        axiom = axioms.getAxiomByJOVT(runtime.getTypedForaCompiler(), jov.asTuple.jov)
+
+        self.assertTrue(len(axiom.asNative.resultSignature.resultPart().vals) == 0)
+
+
     def test_addition_working(self):
         self.assertEqual(simpleEval(1, sym("Operator"), sym("+"), 2), 3)
 
