@@ -14,6 +14,7 @@
    limitations under the License.
 ****************************************************************************/
 #include "ControlFlowGraphUtil.hppml"
+#include "../Language/ApplySignature.hppml"
 #include "../../core/cppml/CPPMLVisit.hppml"
 #include <boost/lexical_cast.hpp>
 
@@ -344,17 +345,32 @@ void  removeIndicesOfArgsUsedInContinuation(const ControlFlowContinuationArg& in
 
 ControlFlowGraph canonicalApplyGraph(int argCount)
 	{
+	return canonicalApplyGraph(ApplySignature(argCount));
+	}
+
+ControlFlowGraph canonicalApplyGraph(const ApplySignature& args)
+	{
 	static boost::recursive_mutex mutex;
 	boost::recursive_mutex::scoped_lock lock(mutex);
 
-	static map<int, ControlFlowGraph> graphs;
-	if (graphs.find(argCount) == graphs.end())
+	static map<hash_type, ControlFlowGraph> graphs;
+	if (graphs.find(args.hash()) == graphs.end())
 		{
-		graphs[argCount] = ControlFlowGraph(
+		graphs[args.hash()] = ControlFlowGraph(
 			ControlFlowNode(
-				argCount,
-				ApplyNodeBody(
-					arglist(0, argCount),
+				args.terms().size(),
+				ControlFlowNodeBody::Apply(
+					mapITVWithIndices(args.terms(), 
+						[&](ApplyArgumentSignature sig, long index) {
+							@match ApplyArgumentSignature(sig)
+								-| Normal(sym) ->> {
+									return ControlFlowApplyArg::Normal(sym, ControlFlowArg::Arg(index));
+									}
+								-| TupleCall() ->> {
+									return ControlFlowApplyArg::TupleCall(ControlFlowArg::Arg(index));
+									}
+							}
+						),
 					ControlFlowContinuation::Return(
 						Result(),
 						0
@@ -365,11 +381,11 @@ ControlFlowGraph canonicalApplyGraph(int argCount)
 						)
 					)
 				),
-			"CanonicalApply(" + boost::lexical_cast<string>(argCount) + ")"
+			"CanonicalApply(" + prettyPrintStringWithoutWrapping(args) + ")"
 			);
 		}
 
-	return graphs[argCount];
+	return graphs[args.hash()];
 	}
 
 ControlFlowGraph canonicalReturnGraph(bool isException)
