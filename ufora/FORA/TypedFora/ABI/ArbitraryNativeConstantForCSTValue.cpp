@@ -36,7 +36,7 @@ public:
 
 		inflater.inflate(
 			PolymorphicSharedPtr<NoncontiguousByteBlock>(
-				new NoncontiguousByteBlock(s)
+				new NoncontiguousByteBlock(std::move(s))
 				),
 			p
 			);

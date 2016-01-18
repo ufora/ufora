@@ -23,8 +23,8 @@
 
 //protocol that holds data in chunks of memory, and can push them into a string. avoids big reallocs
 class ONoncontiguousByteBlockProtocol : public OProtocol {
-	ONoncontiguousByteBlockProtocol(ONoncontiguousByteBlockProtocol& in);
-	ONoncontiguousByteBlockProtocol& operator=(const ONoncontiguousByteBlockProtocol& in);
+	ONoncontiguousByteBlockProtocol(ONoncontiguousByteBlockProtocol& in) = delete;
+	ONoncontiguousByteBlockProtocol& operator=(const ONoncontiguousByteBlockProtocol& in) = delete;
 public:
 	ONoncontiguousByteBlockProtocol();
 
@@ -34,7 +34,7 @@ public:
 
 	uword_t position(void);
 
-	//return the current Protocol's data as a vector of vector<char> and clear it
+	/// \brief Return the current Protocol's and clear it.
 	PolymorphicSharedPtr<NoncontiguousByteBlock> getData(void);
 	
 private:

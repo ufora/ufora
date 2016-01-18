@@ -35,7 +35,7 @@ public:
 		constructNoncontiguousByteBlock(std::string inString)
 			{
 			return new PolymorphicSharedPtr<NoncontiguousByteBlock>(
-				new NoncontiguousByteBlock(inString)
+				new NoncontiguousByteBlock(std::move(inString))
 				);
 			}
 

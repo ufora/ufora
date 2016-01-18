@@ -107,7 +107,7 @@ ArbitraryNativeConstantForValueType<T>::deserialize(std::string s)
 
 	inflater.inflate(
 		PolymorphicSharedPtr<NoncontiguousByteBlock>(
-			new NoncontiguousByteBlock(s)
+			new NoncontiguousByteBlock(std::move(s))
 			),
 		t
 		);

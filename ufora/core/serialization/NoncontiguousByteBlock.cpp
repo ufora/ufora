@@ -22,30 +22,31 @@ NoncontiguousByteBlock::NoncontiguousByteBlock() :
 	{
 	}
 
-NoncontiguousByteBlock::NoncontiguousByteBlock(const std::string& inString)	:
+NoncontiguousByteBlock::NoncontiguousByteBlock(std::string&& inString)	:
 		mTotalBytes(0)
 	{
-	push_back(inString);
+	push_back(std::move(inString));
 	}
 
-void NoncontiguousByteBlock::push_back(const std::string& inString)
+void NoncontiguousByteBlock::push_back(std::string&& inString)
 	{
+	constexpr auto STRING_SIZE_LIMIT = 1024 * 1024;
 	mHash = null();
 
-	if (inString.size() > 1024 * 1024)
+	if (inString.size() > STRING_SIZE_LIMIT)
 		{
 		//break the string up into slices
 		size_t low = 0;
 
 		while (low < inString.size())
 			{
-			uword_t sliceSize = std::min<size_t>(1024 * 1024, inString.size() - low);
+			uword_t sliceSize = std::min<size_t>(STRING_SIZE_LIMIT, inString.size() - low);
 
 			std::string slice = inString.substr(low, sliceSize);
 
-			low += 1024 * 1024;
+			low += sliceSize;
 
-			push_back(slice);
+			push_back(std::move(slice));
 			}
 		}
 	else
@@ -86,10 +87,10 @@ std::string NoncontiguousByteBlock::toString(void) const
 	tr.resize(mTotalBytes);
 	
 	char* offset = &tr[0];
-	for (auto it = mStrings.begin(); it != mStrings.end(); ++it)
+	for (const auto& str : mStrings)
 		{
-		memcpy(offset, &(*it)[0], it->size());
-		offset += it->size();
+		memcpy(offset, &(str)[0], str.size());
+		offset += str.size();
 		}
 	
 	return tr;
