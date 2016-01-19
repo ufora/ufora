@@ -186,3 +186,62 @@ class IteratorTestCases(object):
         self.equivalentEvaluationTest(f1)
         self.equivalentEvaluationTest(f2)
 
+
+    def test_iterable_is_pyfora_object(self):
+        def it(x):
+            while x > 0:
+                yield x
+                x = x - 1
+
+        def f():
+            return it(10).__is_pyfora__
+
+        self.assertIs(self.evaluateWithExecutor(f), True)
+
+
+    def test_iteration_1(self):
+        def iteration_1():
+            x = [0,1,2,3]
+            tr = 0
+            for val in x:
+                tr = tr + val
+            return tr
+
+        self.equivalentEvaluationTest(iteration_1)
+
+
+    def test_iteration_2(self):
+        def iteration_1():
+            x = [0,1,2,3]
+            tr = 0
+            for val in x:
+                tr = tr + val
+            return tr
+
+        self.equivalentEvaluationTest(iteration_1)
+
+
+    def test_empty_iterator(self):
+        def sequence(ct):
+            while ct > 0:
+                yield ct
+                ct = ct - 1
+
+        class EmptyIterator:
+            @staticmethod
+            def staticSequence(ct):
+                while ct > 0:
+                    yield ct
+                    ct = ct - 1
+
+            def sequence(self, ct):
+                while ct > 0:
+                    yield ct
+                    ct = ct - 1
+
+        self.equivalentEvaluationTest(lambda: list(sequence(1)))
+
+        for count in [0,1,2]:
+            self.equivalentEvaluationTest(lambda: list(sequence(count)))
+            self.equivalentEvaluationTest(lambda: list(EmptyIterator.staticSequence(count)))
+            self.equivalentEvaluationTest(lambda: list(EmptyIterator().sequence(count)))

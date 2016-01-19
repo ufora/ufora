@@ -13,7 +13,9 @@
 #   limitations under the License.
 
 import pyfora
-import pyfora.Exceptions
+import pyfora.Exceptions as Exceptions
+
+import time
 
 
 class BuiltinTestCases(object):
@@ -162,3 +164,399 @@ class BuiltinTestCases(object):
 
         self.equivalentEvaluationTest(f)
 
+    def test_python_if_int(self):
+        def f():
+            if 1:
+                return True
+            else:
+                return False
+        self.equivalentEvaluationTest(f)
+
+    def test_python_if_int_2(self):
+        def f2():
+            if 0:
+                return True
+            else:
+                return False
+        self.equivalentEvaluationTest(f2)
+
+    def test_python_and_or(self):
+        def f():
+            return (
+                0 or 1,
+                1 or 2,
+                1 or 0,
+                0 or False,
+                1 or 2 or 3,
+                0 or 1,
+                0 or 1 or 2,
+                1 and 2,
+                0 and 1,
+                1 and 0,
+                0 and False,
+                1 and 2 and 3,
+                0 and 1 and 2,
+                1 and 2 and 0,
+                1 and 0 and 2,
+                0 and False and 2
+                )
+
+        self.equivalentEvaluationTest(f)
+
+    def test_primitive_type_comparisons(self):
+        def f():
+            toReturn = []
+            toCompare = [True, False, 0, 1, 2, 0.0, 1.0, 2.0, -1, -1.1, "test", []]
+            l = len(toCompare)
+            for idx1 in range(l):
+                for idx2 in range(l):
+                    a = toCompare[idx1]
+                    b = toCompare[idx2]
+                    toReturn = toReturn + [a < b]
+                    toReturn = toReturn + [a > b]
+                    toReturn = toReturn + [a <= b]
+                    toReturn = toReturn + [a >= b]
+            return toReturn
+        self.equivalentEvaluationTest(f)
+
+
+    def test_len_0(self):
+        def f(x):
+            return len(x)
+
+        self.equivalentEvaluationTest(f, "asdf")
+
+    def test_TrueFalseNone(self):
+        def f():
+            return (True, False, None)
+
+        self.equivalentEvaluationTest(f)
+
+    def test_returns_len(self):
+        def f():
+            return len
+
+        res = self.evaluateWithExecutor(f)
+        self.assertIs(res, f())
+
+    def test_returns_str(self):
+        def f():
+            return str
+
+        res = self.evaluateWithExecutor(f)
+        self.assertIs(str, res)
+
+
+    def test_pass_returns_None(self):
+        with self.create_executor() as executor:
+            def f():
+                pass
+
+            self.assertIs(self.evaluateWithExecutor(f), None)
+
+
+    def test_issubclass(self):
+        test = self.equivalentEvaluationTestThatHandlesExceptions
+        types = [float, int, bool, object, Exception]
+
+        for t1 in types:
+            for t2 in types:
+                test(issubclass, t1, t2)
+                test(issubclass, t1, (t2,))
+
+    def test_isinstance_1(self):
+        test = self.equivalentEvaluationTestThatHandlesExceptions
+
+        for inst in [10, 10.0, True]:
+            for typ in [float, object, int, bool]:
+                test(lambda: isinstance(inst, typ))
+                test(lambda: issubclass(type(inst), typ))
+
+    def test_isinstance_2(self):
+        class IsInstanceClass:
+            pass
+
+        def f():
+            c = IsInstanceClass()
+            return c.__class__ is IsInstanceClass and \
+                not isinstance(c, list)
+
+        self.equivalentEvaluationTest(f)
+
+    def test_isinstance_3(self):
+        class IsinstanceClassTest:
+            pass
+
+        def f():
+            x = IsinstanceClassTest()
+            return x.__class__ is IsinstanceClassTest and isinstance(x, IsinstanceClassTest)
+
+        self.equivalentEvaluationTest(f)
+
+    def test_sum_isPrime(self):
+        def isPrime(p):
+            x = 2
+            while x*x <= p:
+                if p%x == 0:
+                    return 0
+                x = x + 1
+            return x
+
+        self.equivalentEvaluationTest(lambda: sum(isPrime(x) for x in xrange(1000000)))
+
+    def test_in_expr(self):
+        x = [0,1,2,3]
+        def f(arg):
+            return arg in x
+
+        for arg in range(-len(x), len(x)):
+            self.equivalentEvaluationTest(f, arg)
+
+    def test_notin_expr(self):
+        def f(x):
+            return x not in [2,3]
+
+        for x in [2]:
+            self.equivalentEvaluationTest(f, x)
+
+
+    def test_len_1(self):
+        class ThingWithLen:
+            def __init__(self, len):
+                self.len = len
+            def __len__(self):
+                return self.len
+
+        def f(x):
+            return len(ThingWithLen(x))
+
+        self.equivalentEvaluationTest(f, 2)
+
+    def test_len_2(self):
+        def f():
+            return len([1,2,3])
+
+        self.equivalentEvaluationTest(f)
+
+    def test_len_3(self):
+        def f():
+            return len("asdf")
+
+        self.equivalentEvaluationTest(f)
+
+    def test_str_1(self):
+        class ThingWithStr:
+            def __init__(self, str):
+                self.str = str
+            def __str__(self):
+                return self.str
+
+        def f(x):
+            return str(ThingWithStr(x))
+
+        self.equivalentEvaluationTest(f, "2")
+
+    def test_str_2(self):
+        def f(x):
+            return str(x)
+
+        self.equivalentEvaluationTest(f, 42)
+        self.equivalentEvaluationTest(f, "foo")
+        self.equivalentEvaluationTest(f, None)
+
+
+    def test_implicitReturnNone_1(self):
+        def f():
+            x = 2
+
+        self.equivalentEvaluationTest(f)
+
+    def test_implicitReturnNone_2(self):
+        def f(x):
+            x
+
+        self.equivalentEvaluationTest(f, 2)
+
+    def test_implicitReturnNone_3(self):
+        def f(x):
+            if x > 0:
+                return
+            else:
+                return 1
+
+        self.equivalentEvaluationTest(f, 1)
+        self.equivalentEvaluationTest(f, -1)
+
+
+    def test_whileLoop(self):
+        def whileLoop(x):
+            y = 0
+            while x < 100:
+                y = y + x
+                x = x + 1
+            return y
+
+        for ix in range(4):
+            self.equivalentEvaluationTest(whileLoop, ix)
+
+    def test_variableAssignment(self):
+        def variableAssignment(x):
+            y = x + 1
+            return x+y
+
+        for ix in range(3):
+            self.equivalentEvaluationTest(variableAssignment, ix)
+
+
+    def test_argumentAssignment(self):
+        def argumentAssignment(x):
+            x = x + 1
+            return x
+
+        self.equivalentEvaluationTest(argumentAssignment, 100)
+
+    def test_basicAddition(self):
+        def basicAddition(x):
+            return x + 1
+
+        self.equivalentEvaluationTest(basicAddition, 4)
+
+
+    def test_pass(self):
+        def passStatement():
+            def f():
+                pass
+
+            x = f()
+            return x
+
+        self.equivalentEvaluationTest(passStatement)
+
+
+    def test_inStatement_2(self):
+        def inStatement():
+            x = [0,1,2,3]
+            return 0 in x
+
+        self.equivalentEvaluationTest(inStatement)
+
+
+    def test_continue_in_while(self):
+        def f():
+            x = 0
+            y = 0
+            while x < 100:
+                x = x + 1
+                if x % 2:
+                    continue
+                y = y + x
+
+        self.equivalentEvaluationTest(f)
+
+    def test_continue_in_for(self):
+        def f():
+            x = 0
+            y = 0
+            for x in xrange(100):
+                if x % 2:
+                    continue
+                y = y + x
+
+        self.equivalentEvaluationTest(f)
+
+
+    def test_print(self):
+        def f():
+            print "hello world"
+
+        try:
+            self.evaluateWithExecutor(f)
+            self.assertTrue(False)
+        except Exceptions.PythonToForaConversionError as e:
+            self.assertIsInstance(e.message, str)
+            self.assertIn(
+                "Pyfora can't convert this code",
+                e.message
+                )
+
+
+    def test_import(self):
+        def f():
+            import sys
+
+        try:
+            self.evaluateWithExecutor(f)
+            self.assertTrue(False)
+        except Exceptions.PythonToForaConversionError as e:
+            self.assertIsInstance(e.message, str)
+            self.assertIn(
+                "Pyfora can't convert this code",
+                e.message
+                )
+
+
+    def test_for_loop_values_carry_over(self):
+        with self.create_executor() as executor:
+            def f():
+                y = 0
+                for x in [1, 2, 3, 4]:
+                    y = y + x
+
+                return (y, x)
+
+            self.equivalentEvaluationTest(f)
+
+
+    def test_is_returns_true(self):
+        self.equivalentEvaluationTest(lambda x: x is 10, 10)
+        self.equivalentEvaluationTest(lambda x: x is 10, 11)
+
+
+    def test_assert_1(self):
+        def f():
+            assert True
+
+        self.equivalentEvaluationTest(f)
+
+    def test_assert_2(self):
+        def f():
+            try:
+                assert False, "omg"
+            except AssertionError as e:
+                return e.message
+
+        self.equivalentEvaluationTest(f)
+
+    def test_assert_3(self):
+        def f():
+            try:
+                assert False
+            except AssertionError as e:
+                return e.message
+
+        self.equivalentEvaluationTest(f)
+
+    def test_assert_4(self):
+        def f():
+            try:
+                assert False, 42
+            except AssertionError as e:
+                return e.message
+
+        self.equivalentEvaluationTest(f)
+
+    def test_assert_5(self):
+        def f():
+            return type(AssertionError("asdf"))
+
+        self.equivalentEvaluationTest(f)
+
+
+    def test_range_perf(self):
+        ct = 1000
+        while ct < 10000000:
+            t0 = time.time()
+            x = self.evaluateWithExecutor(range, ct)
+            print (time.time() - t0), ct, ct / (time.time() - t0), " per second."
+
+            ct = ct * 2
