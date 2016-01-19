@@ -554,7 +554,7 @@ class BuiltinTestCases(object):
 
     def test_range_perf(self):
         ct = 1000
-        while ct < 10000000:
+        while ct < 5000000:
             t0 = time.time()
             x = self.evaluateWithExecutor(range, ct)
             print (time.time() - t0), ct, ct / (time.time() - t0), " per second."
