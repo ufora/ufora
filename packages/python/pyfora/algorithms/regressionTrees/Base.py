@@ -139,6 +139,21 @@ class SampleSummaryHistogram:
             [s for s in self.samples]
             )
 
+    def __add__(self, other):
+        assert self.x0 == other.x0 and self.x1 == other.x1
+
+        newSamples = []
+        for ix in xrange(len(self.samples)):
+            newSamples = newSamples + [self.samples[ix] + other.samples[ix]]
+
+        return SampleSummaryHistogram(
+            self.x0,
+            self.x1,
+            newSamples,
+            True
+            )
+
+
 class _MutableVector:
     def __init__(self, count, defaultValue):
         self.samples = __inline_fora(
