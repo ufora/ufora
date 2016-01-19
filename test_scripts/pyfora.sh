@@ -19,7 +19,7 @@ if [ -z "$WORKSPACE" ]; then
 fi
 . $WORKSPACE/test_scripts/_funcs.sh
 
-TEST_NAME=pyfora2
-TEST_ARGS="-scripts --scriptPath test_scripts/pyfora2 -timeout 960"
+TEST_NAME=pyfora1
+TEST_ARGS="-scripts --scriptPath test_scripts/$1 -timeout 960"
 
 run_test

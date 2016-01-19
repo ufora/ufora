@@ -17,15 +17,26 @@ import pyfora
 import ufora.config.Setup as Setup
 import ufora.FORA.python.PurePython.ExecutorTestCommon as ExecutorTestCommon
 import ufora.FORA.python.PurePython.BuiltinTestCases as BuiltinTestCases
+import ufora.FORA.python.PurePython.ClassTestCases as ClassTestCases
+import ufora.FORA.python.PurePython.FunctionTestCases as FunctionTestCases
+import ufora.FORA.python.PurePython.ModuleTestCases as ModuleTestCases
+import ufora.FORA.python.PurePython.PrimitiveTestCases as PrimitiveTestCases
+import ufora.FORA.python.PurePython.SlicingTestCases as SlicingTestCases
+import ufora.FORA.python.PurePython.StringTestCases as StringTestCases
 
 
 import ufora.test.ClusterSimulation as ClusterSimulation
 
 
-class ExecutorSimulationTest(
-        unittest.TestCase,
-        ExecutorTestCommon.ExecutorTestCommon,
-        BuiltinTestCases.BuiltinTestCases):
+class ExecutorSimulationTest(unittest.TestCase,
+                             ExecutorTestCommon.ExecutorTestCommon,
+                             BuiltinTestCases.BuiltinTestCases,
+                             ClassTestCases.ClassTestCases,
+                             FunctionTestCases.FunctionTestCases,
+                             ModuleTestCases.ModuleTestCases,
+                             PrimitiveTestCases.PrimitiveTestCases,
+                             SlicingTestCases.SlicingTestCases,
+                             StringTestCases.StringTestCases):
     @classmethod
     def setUpClass(cls):
         cls.config = Setup.config()
