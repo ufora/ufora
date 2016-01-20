@@ -113,6 +113,16 @@ class PurePythonDataFrame:
         tr = tr.reshape((self.shape[1], self.shape[0]))
         return tr.transpose()
 
+    def apply(self, func, axis):
+        if axis == 0:
+            raise NotImplementedError()
+        elif axis == 1:
+            return PurePythonSeries(
+                [func(self.iloc[ix]) for ix in xrange(len(self))]
+                )
+        else:
+            raise TypeError("no axis " + str(axis))
+    
 
 class _PurePythonDataFrameILocIndexer:
     def __init__(self, obj):
@@ -120,14 +130,16 @@ class _PurePythonDataFrameILocIndexer:
 
     def __getitem__(self, k):
         if isinstance(k, tuple):
-            return self._getitem_tuple(k)
+            return self.getitem_tuple(k)
         elif isinstance(k, slice):
-            return self._getitem_tuple((k, slice(None, None, None)))
+            return self.getitem_tuple((k, slice(None, None, None)))
+        elif isinstance(k, int):
+            return self.get_ix(k)
         else:
             raise IndexError("don't know how to index with " + str(k))
 
-    def _getitem_tuple(self, tup):
-        if len(tup) == 1 and isinstance(tup[0], slice):
+    def getitem_tuple(self, tup):
+        if len(tup) == 1:
             tup = (tup[0], slice(None, None, None))
 
         if isinstance(tup[1], int) and isinstance(tup[0], (int, slice)):
@@ -140,6 +152,47 @@ class _PurePythonDataFrameILocIndexer:
         else:
             raise IndexError("don't know how to index with " + str(tup))
 
+    def get_ix(self, ix):
+        return PurePythonSeries(
+            _DataFrameRow(self.obj, ix)
+            )
+
+
+class _DataFrameRow:
+    def __init__(self, df, rowIx, startColumnIx=0, size=None, stride=1):
+        self.df = df
+        self.rowIx = rowIx
+        self.startColumnIx = startColumnIx
+        if size is None:
+            size = df.shape[1]
+        self.size = size
+        self.stride = stride
+
+    def __len__(self):
+        return self.size
+
+    def __getitem__(self, ix):
+        if isinstance(ix, int):
+            return self._get_int_ix(ix)
+        elif isinstance(ix, slice):
+            raise NotImplementedError()
+        else:
+            raise TypeError("don't know how to __getitem__ with " + str(ix))
+
+    def _get_int_ix(self, ix):
+        if ix >= 0:
+            assert ix < self.size
+            columnIx = self.startColumnIx + ix * self.stride
+        else:
+            assert ix > -self.size
+            columnIx = self.startColumnIx + (self.size + ix) * self.stride
+
+        return self.df.iloc[self.rowIx, columnIx]
+
+    def __iter__(self):
+        for ix in xrange(len(self)):
+            yield self._get_int_ix(ix)
+            
 
 class _PurePythonSeriesIlocIndexer:
     def __init__(self, obj):
@@ -198,6 +251,11 @@ class PurePythonSeries:
 
     def __pyfora_generator__(self):
         return self.values.__pyfora_generator__()
+
+    def apply(self, func):
+        return PurePythonSeries(
+            [func(elt) for elt in self]
+            )
             
 
 #######################################

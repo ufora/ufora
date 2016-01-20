@@ -388,3 +388,13 @@ A,B,C
             return s.as_matrix()
 
         self.equivalentEvaluationTest(f)
+
+    def test_DataFrameRow_1(self):
+        df = pandas.DataFrame({'A': [1,2,3,4], 'B': [5,6,7,8]})
+        def f():
+            row = df.iloc[0]
+
+            assert len(row) == df.shape[1]
+            assert list(row) == [1,5]
+
+        self.evaluateWithExecutor(f)
