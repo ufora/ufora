@@ -192,6 +192,13 @@ class PurePythonSeries:
     def iloc(self):
         return _PurePythonSeriesIlocIndexer(self)
 
+    def __iter__(self):
+        for ix in xrange(len(self)):
+            yield self[ix]
+
+    def __pyfora_generator__(self):
+        return self.values.__pyfora_generator__()
+            
 
 #######################################
 # PureImplementationMappings:
