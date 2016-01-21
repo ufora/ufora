@@ -259,9 +259,9 @@ class Rule:
 class ImpurityPair:
     def __init__(self, leftImpurity=None, rightImpurity=None):
         if leftImpurity is None:
-            leftImpurity = 0
+            leftImpurity = 0.0
         if rightImpurity is None:
-            rightImpurity = 0
+            rightImpurity = 0.0
 
         self.leftImpurity = leftImpurity
         self.rightImpurity = rightImpurity

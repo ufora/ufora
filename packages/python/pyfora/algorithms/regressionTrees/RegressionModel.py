@@ -35,7 +35,7 @@ class RegressionModel:
         self.regressionTreeBuilder = regressionTreeBuilder
         self.learningRate = learningRate
 
-    def score(self):
+    def score(self, X, yTrue):
         raise NotImplementedError()
 
     def predict(self, df, nEstimators=None):

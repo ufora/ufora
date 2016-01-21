@@ -21,6 +21,9 @@ import pyfora.typeConverters.PureNumpy as PureNumpy
 import pyfora.typeConverters.PurePandas as PurePandas
 
 
+import math
+
+
 class L2_loss:
     def __init__(self):
         self.needsTargetColumn = True
@@ -102,3 +105,77 @@ class Absoluteloss:
         return f
 
 
+class BinomialLoss:
+    def __init__(self):
+        self.needsTargetColumn = True
+        self.needsPredictedValues = False
+        self.needsOriginalYValues = False
+
+    def transformY(self, y, classZero):
+        if y == classZero:
+            return -1.0
+        return 1.0
+
+    def initialModel(self, yAsSeries, classes):
+        classZero = classes[0]
+        yBar = sum(self.transformY(elt, classZero) for elt in yAsSeries)
+
+        return AdditiveRegressionTree([
+            RegressionTree(
+                [RegressionLeafRule(
+                    0.5 * math.log((1.0 + yBar) / (1.0 - yBar))
+                 )])
+            ])
+
+    def negativeGradient(self, yAsSeries, regressionTreeValues, classes):
+        classZero = classes[0]
+
+        def valFun(ix):
+            yTransformed = self.transformY(yAsSeries[ix], classZero)
+            return 2.0 * yTransformed / \
+                (1.0 + math.exp(2.0 * yTransformed * regressionTreeValues[ix]))
+
+        return PurePandas.PurePythonSeries(
+            [valFun(ix) for ix in xrange(len(yAsSeries))]
+            )
+
+    def leafValueFun(self, learningRate):
+        def f(leafValues, activeIndices):
+            residuals = OnDemandSelectedVector(
+                leafValues.iloc[:, -1],
+                activeIndices
+                )
+            
+            def valFun(ix):
+                residual = residuals[ix]
+                absResidual = abs(residual)
+                return _BinomialLoss_NumeratorDenominatorPair(
+                    residual,
+                    absResidual * (2.0 - absResidual)
+                    )
+
+            numeratorDenominatorPair = sum(
+                (valFun(ix) for ix in xrange(len(residuals))),
+                _BinomialLoss_NumeratorDenominatorPair()
+                )
+
+            return learningRate * numeratorDenominatorPair.numerator / \
+                numeratorDenominatorPair.denominator
+
+        return f
+
+class _BinomialLoss_NumeratorDenominatorPair:
+    def __init__(self, numerator=None, denominator=None):
+        if numerator is None:
+            numerator = 0.0
+        if denominator is None:
+            denominator = 0.0
+
+        self.numerator = numerator
+        self.denominator = denominator
+
+    def __add__(self, other):
+        return _BinomialLoss_NumeratorDenominatorPair(
+            self.numerator + other.numerator,
+            self.denominator + other.denominator
+            )

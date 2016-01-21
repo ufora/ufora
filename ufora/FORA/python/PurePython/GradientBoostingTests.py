@@ -15,6 +15,8 @@
 
 from pyfora.algorithms.regressionTrees.GradientBoostedRegressorBuilder \
     import GradientBoostedRegressorBuilder
+from pyfora.algorithms.regressionTrees.GradientBoostedClassifierBuilder \
+    import GradientBoostedClassifierBuilder
 import pyfora.typeConverters.PurePandas as PurePandas
 import pyfora.algorithms.regressionTrees.RegressionTree as RegressionTree
 
@@ -22,7 +24,7 @@ import pyfora.algorithms.regressionTrees.RegressionTree as RegressionTree
 import numpy
 
 
-def generateData(mbOfData, nColumns):
+def generateRegressionData(mbOfData, nColumns):
     nRows = mbOfData * 1024 * 1024 / 8 / (nColumns + 1)
     nRows = int(nRows)
     
@@ -36,12 +38,85 @@ def generateData(mbOfData, nColumns):
     return predictors, responses
 
 
+def generateClassificationData(mbOfData, nColumns):
+    nRows = mbOfData * 1024 * 1024 / 8 / (nColumns + 1)
+    nRows = int(nRows)
+    
+    dataVectors = [
+        [float(rowIx % (colIx + 2)) for rowIx in xrange(nRows)] \
+        for colIx in xrange(nColumns)]
+
+    predictors = PurePandas.PurePythonDataFrame(dataVectors[:-1])
+
+    responses = [float(int(elt) % 2) for elt in dataVectors[-1]]
+    responses = PurePandas.PurePythonDataFrame([responses])
+
+    return predictors, responses
+
+
 class GradientBoostingTests(object):
+    def test_gradient_boosting_classification_1(self):
+        # verified against old fora implementation
+
+        def f():
+            x, y = generateClassificationData(0.1, 10)
+            
+            builder = GradientBoostedClassifierBuilder(1, 1, 1.0)
+            fit = builder.fit(x, y)
+            return fit.additiveRegressionTree.trees
+            
+
+        trees = self.evaluateWithExecutor(f)
+
+        self.assertEqual(len(trees), 2)
+
+        self.assertEqual(len(trees[0].rules), 1)
+        node_0_0 = trees[0].rules[0]
+        self.assertIsInstance(node_0_0, RegressionTree.RegressionLeafRule)
+        self.assertTrue(numpy.isclose(node_0_0.leafValue, 0.0))
+        
+        self.assertEqual(len(trees[1].rules), 3)
+        node_1_0 = trees[1].rules[0]
+        self.assertEqual(node_1_0.jumpIfLess, 1)
+        self.assertEqual(node_1_0.jumpIfHigher, 2)
+        self.assertTrue(
+            numpy.isclose(node_1_0.leafValue, -0.09151973131822)
+            )
+        self.assertEqual(node_1_0.rule.dimension, 8)        
+        self.assertTrue(
+            numpy.isclose(node_1_0.rule.splitPoint, 8.00024176403741),
+            (node_1_0.rule.splitPoint, 3.00115009354123)
+            )
+        self.assertTrue(
+            numpy.isclose(
+                node_1_0.rule.impurityImprovement,
+                2.80266701735421e-05
+                )
+            )
+
+        node_1_1 = trees[1].rules[1]
+        self.assertIsInstance(
+            node_1_1,
+            RegressionTree.RegressionLeafRule
+            )
+        self.assertTrue(
+            numpy.isclose(node_1_1.leafValue, -0.0932835820895522)
+            )
+         
+        node_1_2 = trees[1].rules[2]
+        self.assertIsInstance(
+            node_1_2,
+            RegressionTree.RegressionLeafRule
+            )
+        self.assertTrue(
+            numpy.isclose(node_1_2.leafValue, -0.0756302521008403)
+            )
+
     def test_gradient_boosting_regression_1(self):
         # verified against old fora implementation
 
         def f():
-            x, y = generateData(0.1, 10)
+            x, y = generateRegressionData(0.1, 10)
             
             builder = GradientBoostedRegressorBuilder(1, 1, 1.0)
             fit = builder.fit(x, y)
@@ -53,43 +128,45 @@ class GradientBoostingTests(object):
         self.assertEqual(len(trees), 2)
 
         self.assertEqual(len(trees[0].rules), 1)
-        self.assertIsInstance(trees[0].rules[0], RegressionTree.RegressionLeafRule)
-        self.assertTrue(numpy.isclose(trees[0].rules[0].leafValue, 4.98992443325))
+        node_0_0 = trees[0].rules[0]
+        self.assertIsInstance(node_0_0, RegressionTree.RegressionLeafRule)
+        self.assertTrue(numpy.isclose(node_0_0.leafValue, 4.98992443325))
         
         self.assertEqual(len(trees[1].rules), 3)
-
-        self.assertEqual(trees[1].rules[0].jumpIfLess, 1)
-        self.assertEqual(trees[1].rules[0].jumpIfHigher, 2)
+        node_1_0 = trees[1].rules[0]
+        self.assertEqual(node_1_0.jumpIfLess, 1)
+        self.assertEqual(node_1_0.jumpIfHigher, 2)
         self.assertTrue(
-            numpy.isclose(trees[1].rules[0].leafValue, -1.99858787976183e-16)
+            numpy.isclose(node_1_0.leafValue, -1.99858787976183e-16)
             )
-        self.assertEqual(trees[1].rules[0].rule.dimension, 8)
+        self.assertEqual(node_1_0.rule.dimension, 8)
 
-        # (3.013221028930496, 3.00115009354123)
         self.assertTrue(
-            numpy.isclose(trees[1].rules[0].rule.splitPoint, 3.00115009354123),
-            (trees[1].rules[0].rule.splitPoint, 3.00115009354123)
+            numpy.isclose(node_1_0.rule.splitPoint, 3.00115009354123),
+            (node_1_0.rule.splitPoint, 3.00115009354123)
             )
         self.assertTrue(
             numpy.isclose(
-                trees[1].rules[0].rule.impurityImprovement,
+                node_1_0.rule.impurityImprovement,
                 0.00093093285723711
                 )
             )
-        self.assertEqual(trees[1].rules[0].rule.numSamples, 1191)
+        self.assertEqual(node_1_0.rule.numSamples, 1191)
 
+        node_1_1 = trees[1].rules[1]
         self.assertIsInstance(
-            trees[1].rules[1],
+            node_1_1,
             RegressionTree.RegressionLeafRule
             )
         self.assertTrue(
-            numpy.isclose(trees[1].rules[1].leafValue, 0.0373292355137323)
+            numpy.isclose(node_1_1.leafValue, 0.0373292355137323)
             )
          
+        node_1_2 = trees[1].rules[2]
         self.assertIsInstance(
-            trees[1].rules[2],
+            node_1_2,
             RegressionTree.RegressionLeafRule
             )
         self.assertTrue(
-            numpy.isclose(trees[1].rules[2].leafValue, -0.0249384388516114)
+            numpy.isclose(node_1_2.leafValue, -0.0249384388516114)
             )

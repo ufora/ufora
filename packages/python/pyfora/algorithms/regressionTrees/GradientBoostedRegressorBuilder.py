@@ -26,6 +26,7 @@ class _IterativeFitter:
     def next(self):
         pseudoResiduals, newPredictions = \
             self.model.pseudoResidualsAndPredictions(self.predictions)
+
         newModel = self.model.boost(newPredictions, pseudoResiduals)
 
         return _IterativeFitter(newModel, newPredictions)
@@ -61,7 +62,7 @@ class GradientBoostedRegressorBuilder:
         self.treeBuilderArgs = treeBuilderArgs
 
     def iterativeFitter(self, X, y):
-        yAsSeries = y.iloc[:,0]
+        yAsSeries = y.iloc[:, 0]
         model = self._getInitialModel(X, yAsSeries)
 
         return _IterativeFitter(model, None)
