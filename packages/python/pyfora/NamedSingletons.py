@@ -43,7 +43,7 @@ pythonSingletonToName = {
     ZeroDivisionError: 'ZeroDivisionError'
     }
 
-singletonNameToObject = {v:k for k,v in pythonSingletonToName.iteritems()}
+singletonNameToObject = {v:k for k, v in pythonSingletonToName.items()}
 
 pythonNameToPyforaName = {
     'AssertionError': 'AssertionError',

@@ -70,6 +70,7 @@ class ModuleDirectoryStructure(object):
             names). Submodules must be other ModuleDirectoryStructure
             objects.
         """
+        assert not ownText.startswith('b'), ownText
         self.ownText = ownText
         self.subnodes = subnodes
         self.extensionOverride = None
@@ -133,7 +134,7 @@ class ModuleDirectoryStructure(object):
         # If "A.fora" exists, open it.
         if extension is not None:
             if os.path.exists(subdirName + "." + extension):
-                with open(subdirName + "." + extension, "rb") as f:
+                with open(subdirName + "." + extension, "r") as f:
                     newModuleText = f.read()
         else:
             matches = glob.glob(subdirName + ".*")
@@ -142,7 +143,7 @@ class ModuleDirectoryStructure(object):
                 _, extensionOverride = os.path.splitext(fileToOpen)
                 extensionOverride = extensionOverride[1:]
 
-                with open(fileToOpen, "rb") as f:
+                with open(fileToOpen, "r") as f:
                     newModuleText = f.read()
 
 
@@ -173,7 +174,7 @@ class ModuleDirectoryStructure(object):
                             ModuleDirectoryStructure.read(subdirName, subname, extension)
                             )
 
-        mod = ModuleDirectoryStructure(newModuleText, newModuleSubmodules)
+        mod = ModuleDirectoryStructure(str(newModuleText), newModuleSubmodules)
         if extension is None:
             mod.extensionOverride = extensionOverride
         return mod

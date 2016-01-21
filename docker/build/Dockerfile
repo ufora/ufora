@@ -46,17 +46,19 @@ RUN apt-get update && apt-get install -y \
     unixodbc-dev \
     wget
 
+RUN apt-get install -y python
 
-# Python 2.7.9 - built from source to link against libtcmalloc
-RUN apt-get build-dep -y python2.7 && \
+
+# Python 3.5.1 - built from source to link against libtcmalloc
+RUN apt-get build-dep -y python3 && \
     cd /tmp && \
-    wget -nv https://www.python.org/ftp/python/2.7.9/Python-2.7.9.tar.xz && \
-    tar xf Python-2.7.9.tar.xz
-RUN cd /tmp/Python-2.7.9 && \
-    CC=clang-3.5 CXX=clang++-3.5 ./configure --prefix=/usr/local --enable-shared --with-libs='-ltcmalloc' --with-system-ffi --enable-ipv6 --enable-unicode=ucs4 --with-ensurepip=upgrade && \
+    wget -nv https://www.python.org/ftp/python/3.5.1/Python-3.5.1.tar.xz && \
+    tar xf Python-3.5.1.tar.xz
+RUN cd /tmp/Python-3.5.1 && \
+    CC=clang-3.5 CXX=clang++-3.5 ./configure --prefix=/usr/local --enable-shared --with-libs='-ltcmalloc' --with-system-ffi --enable-ipv6 --with-ensurepip=upgrade && \
     make && make install && ldconfig && \
     /usr/local/bin/python -m ensurepip && \
-    rm -rf /tmp/Python-2.7.9*
+    rm -rf /tmp/Python-3.5.1*
 
 
 # Required python modules

@@ -26,7 +26,7 @@ class PyAstUtilTest(unittest.TestCase):
                 self.y = x ** 2.0
 
         dataMembers = PyAstUtil.computeDataMembers(C)
-            
+
         self.assertEqual(
             dataMembers,
             set(['x', 'y'])
@@ -37,10 +37,10 @@ class PyAstUtilTest(unittest.TestCase):
             def __init__(self, x):
                 if x > 0:
                     self.x = x
-                
+
 
         dataMembers = PyAstUtil.computeDataMembers(C2)
-        
+
         # in our translation, we're _always_ producing an x member
         self.assertEqual(
             dataMembers,
@@ -180,3 +180,5 @@ class PyAstUtilTest(unittest.TestCase):
         self.assertEqual(returnLocs, [])
         self.assertEqual(yieldLocs, [0, 2, 4, 12, 14, 16, 18])
 
+if __name__ == "__main__":
+    unittest.main()

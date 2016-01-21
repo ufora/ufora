@@ -24,7 +24,11 @@ import pyfora.pyAst.PyAstUtil as PyAstUtil
 
 import logging
 import traceback
-import __builtin__
+import sys
+if sys.version_info[0] > 2:
+    import builtins
+else:
+    import __builtin__ as builtins
 import ast
 
 
@@ -128,22 +132,22 @@ class _FileDescription(object):
 
 class PyObjectWalker(object):
     """
-    `PyObjectWalker`: walk a live python object, registering its pieces with an 
+    `PyObjectWalker`: walk a live python object, registering its pieces with an
     `ObjectRegistry`
 
     The main, and only publicly viewable function on this class is `walkPyObject`
 
     Attributes:
-        _`purePythonClassMapping`: a `PureImplementationMapping` -- used to 
-            "replace" python objects in an python object graph by a "Pure" 
-            python class. For example, treat this `np.array` as a 
+        _`purePythonClassMapping`: a `PureImplementationMapping` -- used to
+            "replace" python objects in an python object graph by a "Pure"
+            python class. For example, treat this `np.array` as a
         `PurePython.SomePureImplementationOfNumpyArray`.
         `_convertedObjectCache`: a mapping from python id -> pure instance
         `_pyObjectIdToObjectId`: mapping from python id -> id registered in
             `self.objectRegistry`
-        `_objectRegistry`: an `ObjectRegistry` which holds an image of the 
+        `_objectRegistry`: an `ObjectRegistry` which holds an image of the
             objects we visit.
-        
+
     """
     def __init__(self, purePythonClassMapping, objectRegistry):
         if purePythonClassMapping is None:
@@ -170,11 +174,11 @@ class PyObjectWalker(object):
 
     def walkPyObject(self, pyObject):
         """
-        `walkPyObject`: recursively traverse a live python object, 
-        registering its "pieces" with an `ObjectRegistry` 
+        `walkPyObject`: recursively traverse a live python object,
+        registering its "pieces" with an `ObjectRegistry`
         (`self.objectRegistry`).
 
-        Note that we use python `id`s for caching in this class, 
+        Note that we use python `id`s for caching in this class,
         which means it cannot be used in cases where `id`s might get
         reused (recall they are just memory addresses).
 
@@ -252,7 +256,7 @@ class PyObjectWalker(object):
             objectId=objectId,
             path=fileDescription.fileName,
             text=fileDescription.fileText
-            )        
+            )
 
     def _registerBuiltinExceptionInstance(
             self, objectId, builtinExceptionInstance
@@ -288,11 +292,11 @@ class PyObjectWalker(object):
         Recursively call `walkPyObject` on the values in the tuple.
         """
         memberIds = [self.walkPyObject(val) for val in tuple_]
-        
+
         self._objectRegistry.defineTuple(
             objectId=objectId,
             memberIds=memberIds
-            )            
+            )
 
     def _registerList(self, objectId, list_):
         """
@@ -302,11 +306,11 @@ class PyObjectWalker(object):
         Recursively call `walkPyObject` on the values in the list.
         """
         memberIds = [self.walkPyObject(val) for val in list_]
-        
+
         self._objectRegistry.defineList(
             objectId=objectId,
             memberIds=memberIds
-            )            
+            )
 
     def _registerPrimitive(self, objectId, primitive):
         """
@@ -329,7 +333,7 @@ class PyObjectWalker(object):
         for k, v in dict_.iteritems():
             keyIds.append(self.walkPyObject(k))
             valueIds.append(self.walkPyObject(v))
-        
+
         self._objectRegistry.defineDict(
             objectId=objectId,
             keyIds=keyIds,
@@ -372,7 +376,7 @@ class PyObjectWalker(object):
         except Exceptions.CantGetSourceTextError:
             self._raiseConversionErrorForSourceTextError(classInstance)
         except:
-            logging.error('Failed on %s (of type %s)', 
+            logging.error('Failed on %s (of type %s)',
                           classInstance, type(classInstance))
             raise
         classMemberNameToClassMemberId = {}
@@ -514,14 +518,14 @@ class PyObjectWalker(object):
 
     def _classOrFunctionDefinition(self, pyObject, classOrFunction):
         """
-        `_classOrFunctionDefinition: create a `_FunctionDefinition` or 
-        `_ClassDefinition` out of a python class or function, recursively visiting 
+        `_classOrFunctionDefinition: create a `_FunctionDefinition` or
+        `_ClassDefinition` out of a python class or function, recursively visiting
         the resolvable free variable member access chains in `pyObject` as well
         as the source file object.
 
         Args:
             `pyObject`: a python class or function.
-            `classOrFunction`: should either be `_FunctionDefinition` or 
+            `classOrFunction`: should either be `_FunctionDefinition` or
                 `_ClassDefinition`.
 
         Returns:
@@ -580,7 +584,7 @@ class PyObjectWalker(object):
                 fileText=sourceFileText
                 )
             )
-        
+
         return classOrFunction(
             sourceFileId=sourceFileId,
             lineNumber=sourceLine,
@@ -603,7 +607,7 @@ class PyObjectWalker(object):
     def _resolveChainByDict(self, chainWithPosition, boundVariables):
         """
         `_resolveChainByDict`: look up a free variable member access chain, `chain`,
-        in a dictionary of resolutions, `boundVariables`, or in `__builtin__` and
+        in a dictionary of resolutions, `boundVariables`, or in `builtin` and
         return a tuple (subchain, resolution, location).
         """
         freeVariable = chainWithPosition.var[0]
@@ -611,8 +615,8 @@ class PyObjectWalker(object):
         if freeVariable in boundVariables:
             rootValue = boundVariables[freeVariable]
 
-        elif hasattr(__builtin__, freeVariable):
-            rootValue = getattr(__builtin__, freeVariable)
+        elif hasattr(builtins, freeVariable):
+            rootValue = getattr(builtins, freeVariable)
 
         else:
             raise UnresolvedFreeVariableException(chainWithPosition, None)
@@ -671,7 +675,7 @@ class PyObjectWalker(object):
         memberFunctions = self._classMemberFunctions(pyClass)
 
         for _, func in memberFunctions:
-            # lookup should be indpendent of which function we 
+            # lookup should be indpendent of which function we
             # actually choose. However, the unbound chain may not
             # appear in every member function
             try:
@@ -688,7 +692,7 @@ class PyObjectWalker(object):
         """
         freeVariable = chainWithPosition.var[0]
 
-        if freeVariable in pyFunction.func_code.co_freevars:
+        if freeVariable in pyFunction.__code__.co_freevars:
             index = pyFunction.func_code.co_freevars.index(freeVariable)
             try:
                 rootValue = pyFunction.__closure__[index].cell_contents
@@ -700,15 +704,16 @@ class PyObjectWalker(object):
                 raise UnresolvedFreeVariableException(
                     chainWithPosition, pyFunction.func_name)
 
-        elif freeVariable in pyFunction.func_globals:
-            rootValue = pyFunction.func_globals[freeVariable]
+        elif freeVariable in pyFunction.__globals__:
+            rootValue = pyFunction.__globals__[freeVariable]
 
-        elif hasattr(__builtin__, freeVariable):
-            rootValue = getattr(__builtin__, freeVariable)
+        elif hasattr(builtins, freeVariable):
+            rootValue = getattr(builtins, freeVariable)
 
         else:
+            print("freeVariable:", freeVariable, ", freevars:", dir(pyFunction.__code__))
             raise UnresolvedFreeVariableException(
-                chainWithPosition, pyFunction.func_name)
+                chainWithPosition, pyFunction.__name__)
 
         return self._computeSubchainAndTerminalValueAlongModules(
             rootValue, chainWithPosition)
@@ -726,7 +731,7 @@ class PyObjectWalker(object):
                 raise Exceptions.PythonToForaConversionError(
                     "Can't convert the module %s" % str(terminalValue)
                     )
-            
+
             if not hasattr(terminalValue, chain[ix]):
                 raise Exceptions.PythonToForaConversionError(
                     "Module %s has no member %s" % (str(terminalValue), chain[ix])

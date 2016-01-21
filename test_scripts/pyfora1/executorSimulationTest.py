@@ -14,37 +14,37 @@
 
 import unittest
 import pyfora
-import ufora.config.Setup as Setup
+#import ufora.config.Setup as Setup
 import ufora.FORA.python.PurePython.ExecutorTestCases as ExecutorTestCases
 import ufora.FORA.python.PurePython.ExecutorTestCommon as ExecutorTestCommon
 
 
-import ufora.test.ClusterSimulation as ClusterSimulation
+#import ufora.test.ClusterSimulation as ClusterSimulation
 
 
 class ExecutorSimulationTest(
         unittest.TestCase,
         ExecutorTestCommon.ExecutorTestCommon,
         ExecutorTestCases.ExecutorTestCases):
-    @classmethod
-    def setUpClass(cls):
-        cls.config = Setup.config()
-        cls.executor = None
-        cls.simulation = ClusterSimulation.Simulator.createGlobalSimulator()
-        cls.simulation.startService()
-        cls.simulation.getDesirePublisher().desireNumberOfWorkers(1)
+    #@classmethod
+    #def setUpClass(cls):
+        #cls.config = Setup.config()
+        #cls.executor = None
+        #cls.simulation = ClusterSimulation.Simulator.createGlobalSimulator()
+        #cls.simulation.startService()
+        #cls.simulation.getDesirePublisher().desireNumberOfWorkers(1)
 
-    @classmethod
-    def tearDownClass(cls):
-        cls.simulation.stopService()
+    #@classmethod
+    #def tearDownClass(cls):
+        #cls.simulation.stopService()
 
     @classmethod
     def create_executor(cls, allowCached=True):
         if not allowCached:
-            return pyfora.connect('http://localhost:30000')
+            return pyfora.connect('http://ufora:30000')
 
         if cls.executor is None:
-            cls.executor = pyfora.connect('http://localhost:30000')
+            cls.executor = pyfora.connect('http://ufora:30000')
             cls.executor.stayOpenOnExit = True
         return cls.executor
 

@@ -78,6 +78,19 @@ class _CollectBoundValuesInScopeVisitor(NodeVisitorBases.GenericInScopeVisitor):
         raise Exceptions.InternalError(
             "Unexpected call of 'visit_Module' in '%s'" % self.__class__.__name__)
 
+
+    def visit_ExceptHandler(self, node):
+        if node.name is not None and isinstance(node.name, str):
+            self._boundVarsWithPos.add(
+                VarWithPosition(
+                    var=node.name,
+                    pos=NodeVisitorBases.PositionInFile(
+                        lineno=node.lineno,
+                        col_offset=node.col_offset
+                        )
+                    )
+                )
+
     def visit_FunctionDef(self, node):
         # exclude synthetic wrapper FunctionDef nodes
         if node.name != '':

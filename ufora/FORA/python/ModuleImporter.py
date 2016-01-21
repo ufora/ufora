@@ -191,6 +191,7 @@ def convertMDSToCreateObjectExpression(mds, path, allowPrivate, name, pathToCode
 
     parser = ForaNative.ModuleParser()
 
+    logging.info("Parsing module: %s", name)
     result = parser.parse(
         tree,
         allowPrivate,
@@ -203,6 +204,9 @@ def convertMDSToCreateObjectExpression(mds, path, allowPrivate, name, pathToCode
         return result, symbol_package
 
     error = result.errors[0]
+
+    logging.error("Failed to parse module %s. Error: %s. Location: %s",
+                  name, error.error, error.location.range)
 
     raise ParseException.ParseException(
         ForaNative.FunctionParseError(

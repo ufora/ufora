@@ -63,7 +63,7 @@ class ExecutorTestCommon(object):
         else:
             same = x == y and type(x) is type(y)
             if not same:
-                print "Results differed: ", x, y, ". Types are ", type(x), " and ", type(y)
+                print( "Results differed: ", x, y, ". Types are ", type(x), " and ", type(y))
             return same
 
     def equivalentEvaluationTest(self, func, *args, **kwds):
@@ -89,7 +89,7 @@ class ExecutorTestCommon(object):
                 )
 
             if t2 - t0 > 5.0:
-                print "Pyfora took ", t1 - t0, ". python took ", t2 - t1
+                print("Pyfora took ", t1 - t0, ". python took ", t2 - t1)
 
         return pythonResult
 

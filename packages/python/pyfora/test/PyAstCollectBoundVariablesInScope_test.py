@@ -98,9 +98,9 @@ class PyAstCollectBoundVariablesInScope_test(unittest.TestCase):
                     with y as z:
                         x += 1
                 except Exception as e:
-                    print e.message
+                    logging.error(e.message)
                 except ValueError:
-                    print "Wrong Value"
+                    logging.error("Wrong Value")
                 """
                 )
             )

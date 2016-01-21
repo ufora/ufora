@@ -15,6 +15,7 @@
 import ast
 import collections
 import pyfora.Exceptions as Exceptions
+import sys
 
 class VisitDone(Exception):
     """Raise this exception to short-circuit the visitor once we're done searching."""
@@ -196,9 +197,15 @@ class GenericInScopeVisitor(NodeVisitorBase):
 
     # With(expr context_expr, expr? optional_vars, stmt* body)
     def visit_With(self, node):
-        self.visit(node.context_expr)
-        with self._isInDefinitionMgr():
-            self.visit(node.optional_vars)
+        if sys.version_info[0] > 2:
+            for with_item in node.items:
+                self.visit(with_item.context_expr)
+                with self._isInDefinitionMgr():
+                    self.visit(with_item.optional_vars)
+        else:
+            self.visit(node.context_expr)
+            with self._isInDefinitionMgr():
+                self.visit(node.optional_vars)
         self.visit(node.body)
 
     def visit_Attribute(self, node):
@@ -209,11 +216,14 @@ class GenericInScopeVisitor(NodeVisitorBase):
         raise Exceptions.PythonToForaConversionError(
             "Illegal 'global' statement: not supported in Python to Fora translation.")
 
-    # ExceptHandler(expr? type, expr? name, stmt* body)
+    # ExceptHandler(expr? type, expr? name, stmt* body)  # python2
+    # ExceptHandler(expr? type, identifier? name, stmt* body)  # python3
     def visit_ExceptHandler(self, node):
         if node.type is not None:
             self.visit(node.type)  # we probably don't need to visit it
-        if node.name is not None:
+
+        # in Python3 node.name is just a string - not and expr
+        if node.name is not None and not isinstance(node.name, str):
             with self._isInDefinitionMgr():
                 self.visit(node.name)
         self.visit(node.body)
@@ -234,11 +244,11 @@ class GenericInScopeVisitor(NodeVisitorBase):
 
 class GenericScopedVisitor(NodeVisitorBase):
     """
-    Base class for two-pass visitors. 
-    
-    Before entering a new scope, update a value (e.g., bound values) by running a 
+    Base class for two-pass visitors.
+
+    Before entering a new scope, update a value (e.g., bound values) by running a
     visitor on the new scope and possibly taking account of the old value. Upon
-    returning back to the outer scope, restore the value. All of this happens 
+    returning back to the outer scope, restore the value. All of this happens
     through a context manager, for example the class ScopedSaveRestoreComputedValue
     provided above.
     """

@@ -73,7 +73,7 @@ def augmentRaiseFunction(raiseFunction, path, line, col):
     vis.visit(module)
 
     code = compile(module, path, 'exec')
-    exec code in globals(), locals()
+    exec(code, globals(), locals())
 
     return _augmentRaiseFunctionTempl(raiseFunction)
 
@@ -236,7 +236,7 @@ class WithBlockExecutor(object):
             frame.f_lineno = frame.f_lineno - 1
             # re-raise to hide from users the traceback into the internals of pyfora
             logging.error("Re-raising exception to partially hide traceback.\n%s", traceback.format_exc())
-            raise err  
+            raise err
         except Exception:
             frame.f_lineno = frame.f_lineno - 1
             logging.error("Re-raising exception after amending lineno.\n%s", traceback.format_exc())
@@ -252,7 +252,8 @@ class WithBlockExecutor(object):
             #not optimal, but it's better than the alternative which is to have the line-number
             #at the end of the 'with' block, which is just confusing.
             frame.f_lineno = frame.f_lineno-1
-            raise exceptionValue, None, tb
+            exceptionValue.__traceback__ = tb
+            raise exceptionValue
 
         raise WithBlockCompleted()
 

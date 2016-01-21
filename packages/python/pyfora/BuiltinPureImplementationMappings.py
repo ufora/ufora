@@ -285,37 +285,36 @@ class Sorted:
 
 mappings_ = [
     (abs, Abs), (all, All), (any, Any),
-    (apply, None), (basestring, None), (bin, None),
-    (buffer, None), (bytearray, None),
+    (bin, None),
+    (bytearray, None),
     #note that bytes in python2.7 is actually the same object as 'str'
     #which is already implemented in the NamedSingletons
-    #(bytes, None), 
+    #(bytes, None),
     (callable, None), (chr, Chr),
-    (classmethod, None), (cmp, None), (coerce, None),
+    (classmethod, None),
     (compile, None), (copyright, None),
     (credits, None), (delattr, None),
     (dir, None), (divmod, None), (enumerate, Enumerate),
-    (eval, None), (execfile, None), (exit, None),
-    (file, None), (filter, None),
+    (eval, None), (exit, None),
+    (filter, None),
     (format, None), (frozenset, None), (getattr, None),
     (globals, None), (hasattr, None), (hash, None),
     (help, None), (hex, None), (id, None), (input, None),
-    (intern, None), (iter, None), (len, Len),
+    (iter, None), (len, Len),
     (license, None), (locals, None),
-    (long, None), (map, Map), (max, Max),
+    (map, Map), (max, Max),
     (memoryview, None), (min, Min), (next, None),
     (oct, None), (open, None),
     (ord, Ord), (pow, None),
     # (print, None), This syntax doesn't work for builtin print
     # because it isn't called with parens
     (property, None), (quit, None), (range, Range),
-    (raw_input, None), (reduce, Reduce), (reload, None),
+    (input, None),
     (repr, None), (reversed, Reversed), (round, None),
     (set, None), (setattr, None),
     (sorted, Sorted), (staticmethod, None),
     (sum, Sum), (super, None),
-    (unichr, None), (unicode, None),
-    (vars, None), (xrange, XRange), (zip, None)
+    (vars, None), (zip, None)
     ]
 
 

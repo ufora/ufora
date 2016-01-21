@@ -242,7 +242,7 @@ class WebObjectFactory(object):
         self.sessionState = SessionState(maxObjectIds, useObjectIds, jsonInterface)
 
         self.jsonInterface.on('special_message', self.onSpecialMessage)
-        self.__dict__.update({cls: self.constructor(cls) for cls in classes.iterkeys()})
+        self.__dict__.update({cls: self.constructor(cls) for cls in classes.keys()})
 
     def onSpecialMessage(self, msg):
         if msg["responseType"] == 'ClientFlushObjectIdsBelow':

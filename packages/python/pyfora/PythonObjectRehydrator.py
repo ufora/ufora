@@ -25,7 +25,7 @@ import base64
 import numpy
 
 moduleType = type(os)
-builtins = sys.modules['__builtin__']
+builtins = sys.modules['builtins'] if sys.version_info[0] > 2 else sys.modules['__builtin__']
 
 def sanitizeModulePath(pathToModule):
     res = os.path.abspath(pathToModule)
@@ -40,7 +40,7 @@ class PythonObjectRehydrator:
         self.pathsToModules = {}
         self.purePythonClassMapping = purePythonClassMapping
 
-        for moduleName, module in list(sys.modules.iteritems()):
+        for moduleName, module in list(sys.modules.items()):
             if module is not None:
                 if hasattr(module, '__file__'):
                     self.pathsToModules[sanitizeModulePath(module.__file__)] = module
@@ -144,7 +144,7 @@ class PythonObjectRehydrator:
                 return getattr(instance, jsonResult['methodName'])
             except AttributeError:
                 raise Exceptions.ForaToPythonConversionError(
-                    "Expected %s to have a method of name %s which it didn't" % 
+                    "Expected %s to have a method of name %s which it didn't" %
                         (instance, jsonResult['methodName'])
                     )
         if 'functionInstance' in jsonResult:
@@ -155,7 +155,7 @@ class PythonObjectRehydrator:
             return self._classObjectFromFilenameAndLine(jsonResult['classObject'][0], jsonResult['classObject'][1], members)
         if 'stacktrace' in jsonResult:
             return jsonResult['stacktrace']
-        
+
         raise Exceptions.ForaToPythonConversionError("not implemented: cant convert %s" % jsonResult)
 
     def _invertPureClassInstanceIfNecessary(self, instance):
@@ -181,7 +181,7 @@ class PythonObjectRehydrator:
         try:
             code = compile(ast.Module([classAst]), filename, 'exec')
 
-            exec code in globalScope, outputLocals
+            exec(code, globalScope, outputLocals)
         except:
             logging.error("Failed to instantiate class at %s:%s\n%s", filename, lineNumber, traceback.format_exc())
             raise Exceptions.PyforaError("Failed to instantiate class at %s:%s" % (filename, lineNumber))
@@ -189,7 +189,7 @@ class PythonObjectRehydrator:
         assert len(outputLocals) == 1
 
         return list(outputLocals.values())[0]
-        
+
 
     def _instantiateClass(self, classObject, memberDictionary):
         """Instantiate a class given its defined methods."""
@@ -234,10 +234,10 @@ class PythonObjectRehydrator:
         else:
             code = compile(ast.Module([functionAst]), filename, 'exec')
 
-            exec code in globalScope, outputLocals
+            exec(code, globalScope, outputLocals)
 
             assert len(outputLocals) == 1
 
             return list(outputLocals.values())[0]
-            
+
 

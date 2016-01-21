@@ -208,7 +208,7 @@ def computeDataMembers(pyClassObject):
 
 def _computeDataMembersFromInitAst(initAst):
     _assertOnlySimpleStatements(initAst)
-    
+
     if len(initAst.args.args) == 0:
         raise Exceptions.PythonToForaConversionError(
             "the `__init__ method is missing a first, positional, " \
@@ -218,16 +218,16 @@ def _computeDataMembersFromInitAst(initAst):
 
     selfArg = initAst.args.args[0]
 
-    if not  isinstance(selfArg, ast.Name):
+    if not isinstance(selfArg, ast.Name) and not isinstance(selfArg, ast.arg):
         raise Exceptions.InternalError(
             "the `self argument to the `__init__ method" \
-            " is not of type `ast.Name (line %s)."
+            " is not of type `ast.Name or `ast.arg (line %s)."
             % (initAst.lineno)
             )
 
     return _extractSimpleSelfMemberAssignments(
-        initFunctionDef = initAst,
-        selfName = selfArg.id
+        initFunctionDef=initAst,
+        selfName=selfArg.id if isinstance(selfArg, ast.Name) else id(selfArg)
         )
 
 

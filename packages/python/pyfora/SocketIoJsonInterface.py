@@ -108,7 +108,7 @@ class SocketIoJsonInterface(object):
             def encoder(obj):
                 if not isinstance(obj, dict) and hasattr(obj, 'toMemoizedJSON'):
                     return obj.toMemoizedJSON()
-                return obj
+                return str(obj) if isinstance(obj, bytes) else obj
 
             message['messageId'] = messageId
             self.namespace.emit('message', {'body': json.dumps(message, default=encoder)})
