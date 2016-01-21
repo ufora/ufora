@@ -385,6 +385,16 @@ class NpArange:
         return NpArray()(toReturn)
 
 
+class Mean:
+    def __call__(self, x):
+        return sum(x) / len(x)
+
+
+class Median:
+    def __call__(self, x):
+        raise NotImplementedError("fill this out, bro")
+
+
 def generateMappings():
     mappings_ = [(np.zeros, NpZeros), (np.array, NpArray), (np.dot, NpDot),
                  (np.linalg.pinv, NpPinv), (np.linalg.solve, LinSolve),

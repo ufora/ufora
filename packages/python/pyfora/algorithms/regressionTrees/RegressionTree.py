@@ -55,7 +55,7 @@ class RegressionTree:
                 else:
                     ix = ix + rule.jumpIfHigher
             else: # rule must be a leaf value
-                return rule.predictionValue
+                return rule.leafValue
 
     def score(self, x, y):
         raise NotImplementedError()
@@ -79,8 +79,8 @@ class RegressionTreeBuilder:
             maxDepth,
             impurityMeasure=treeBase.SampleSummary,
             minSamplesSplit=2,
-            minSplitThresh=1000000,
-            numBuckets=10000
+            numBuckets=10000,
+            minSplitThresh=1000000
             ):
         self.maxDepth = maxDepth
         self.impurityMeasure = impurityMeasure
@@ -115,13 +115,14 @@ class RegressionTreeBuilder:
             )
 
     def bestRuleForXDimension(self, df, yDim, xDim, activeIndices):
-        xColumn = _OnDemandSelectedVector(df.iloc[:, xDim], activeIndices)
-        yColumn = _OnDemandSelectedVector(df.iloc[:, yDim], activeIndices)
+        xColumn = OnDemandSelectedVector(df.iloc[:, xDim], activeIndices)
+        yColumn = OnDemandSelectedVector(df.iloc[:, yDim], activeIndices)
 
         xColumnSampleSummary = RegressionTreeBuilder.sampleSummary(xColumn)
 
         bucketedSampleSummaries = self.computeBucketedSampleSummaries(
-            xColumn, yColumn,
+            xColumn,
+            yColumn,
             xColumnSampleSummary.mean - xColumnSampleSummary.stdev * 3.0,
             xColumnSampleSummary.mean + xColumnSampleSummary.stdev * 3.0,
             self.numBuckets
@@ -169,7 +170,13 @@ class RegressionTreeBuilder:
             range(x.shape[1])
             )
 
-    def fit_(self, df, yDim, maxDepth=None, xDimensions=None, leafValueFun=None, activeIndices=None):
+    def fit_(self,
+             df,
+             yDim,
+             maxDepth=None,
+             xDimensions=None,
+             leafValueFun=None,
+             activeIndices=None):
         if maxDepth is None:
             maxDepth = self.maxDepth
 
@@ -183,9 +190,10 @@ class RegressionTreeBuilder:
             activeIndices = range(len(df))
 
         if len(activeIndices) < self.minSamplesSplit or maxDepth == 0:
+            leafValue = leafValueFun(df, activeIndices)
             return RegressionTree(
                 [RegressionLeafRule(
-                    leafValueFun(df, activeIndices)
+                    leafValue
                     )],
                 len(xDimensions)
                 )
@@ -235,8 +243,8 @@ class RegressionTreeBuilder:
     
     @staticmethod
     def defaultLeafValueFun(yDim):
-        def f(values, activeIndices):
-            selectedValues = _OnDemandSelectedVector(values.iloc[:, yDim], activeIndices)
+        def tr(values, activeIndices):
+            selectedValues = OnDemandSelectedVector(values.iloc[:, yDim], activeIndices)
             
             sz = len(selectedValues)
 
@@ -245,7 +253,7 @@ class RegressionTreeBuilder:
 
             return sum(selectedValues) / float(sz)
 
-        return f
+        return tr
 
     @staticmethod
     def buildTree(x, y, minSamplesSplit, maxDepth, impurityMeasure):
@@ -256,8 +264,11 @@ class RegressionTreeBuilder:
             ).fit(x, y)            
 
 
-class _OnDemandSelectedVector:
+class OnDemandSelectedVector:
     def __init__(self, vectorToSelectFrom, selectingIndices):
+        if len(vectorToSelectFrom) < len(selectingIndices):
+            assert False, "something went wrong"
+
         self.vectorToSelectFrom = vectorToSelectFrom
         self.selectingIndices = selectingIndices
 
