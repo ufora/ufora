@@ -66,7 +66,7 @@ class Relay
 
       unless handshake_message.version == @version
         @logger.warn("Rejecting connection due to version mismatch:", handshake_message.version)
-        socket.emit('handshake', "Version mismatch. Expected '#{@version}', received '#{handshake_message.version}'")
+        socket.emit('handshake', "Version mismatch. Server: '#{@version}', Client: '#{handshake_message.version}'")
         return socket.disconnect()
 
       socket.emit('handshake', 'ok')
