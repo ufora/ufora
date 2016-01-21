@@ -253,11 +253,7 @@ public:
 
 		void deserialize(boost::shared_ptr<Fora::Pagelet>& in);
 
-		template<class T>
-		void deserialize(T& out)
-			{
-			Deserializer<T, ForaValueDeserializationStream>::deserialize(*this, out);
-			}
+		using Fora::ForaValueDeserializationStream::deserialize;
 
 		SerializedObjectInflater& getInflater()
 			{
