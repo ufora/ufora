@@ -335,7 +335,7 @@ class InMemoryCumulusSimulation(object):
                 .makeQueuelike(self.callbackScheduler),
             threadCount=self.ioTaskThreadOverride,
             maxObjectStoreAttempts=1,
-            objectStoreFailureInterval=0
+            objectStoreFailureIntervalSeconds=0
             )
 
         loadingService.startService()
