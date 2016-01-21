@@ -183,14 +183,11 @@ class Executor(object):
         self.connection.convertObject(objectId, self.objectRegistry, onConverted)
         return future
 
-    def submit(self, fn, *args, **kwargs):
+    def submit(self, fn, *args):
         """Submits a callable to be executed on the cluster with the provided arguments.
 
         This function is shorthand for calling :func:`~Executor.define` on the callable and all
         arguments and then invoking the remote callable with the remoted arguments.
-
-        Note:
-            Keyword arguments (`**kwargs`) are not currently supported.
 
         Returns:
             Future.Future: A :class:`~Future.Future` representing the given call.
@@ -198,8 +195,6 @@ class Executor(object):
             instance or an exception.
         """
         self._raiseIfClosed()
-        if len(kwargs) > 0:
-            raise Exceptions.PyforaNotImplementedError("Keyword arguments not supported yet")
 
         # TODO: make this truly async
         #       don't block on the 'define' calls
