@@ -1,1 +1,3 @@
 from pyfora.algorithms.LinearRegression import linearRegression
+from pyfora.algorithms.BinaryLogisticRegressionFitter import BinaryLogisticRegressionFitter
+

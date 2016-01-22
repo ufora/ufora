@@ -1,4 +1,4 @@
-#   Copyright 2015 Ufora Inc.
+#   Copyright 2015-2016 Ufora Inc.
 #
 #   Licensed under the Apache License, Version 2.0 (the "License");
 #   you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 def filterWithIndex(vec, f, lowIndex=0, highIndex=None, depth=0):
     if highIndex is None:
         highIndex = len(vec)
-        
+
     if highIndex < 0:
         highIndex = highIndex + len(vec)
 
@@ -36,7 +36,7 @@ def filterWithIndex(vec, f, lowIndex=0, highIndex=None, depth=0):
         return tr
 
     mid = (lowIndex + highIndex) / 2
-    
+
     return filterWithIndex(vec, f, lowIndex, mid, depth + 1) + \
         filterWithIndex(vec, f, mid, highIndex, depth + 1)
 
@@ -52,5 +52,4 @@ def unique(vec, isSorted=False):
         sortedVec,
         lambda sortedVec, ix: ix < 1 or sortedVec[ix - 1] < sortedVec[ix]
         )
-    
-        
+

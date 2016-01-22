@@ -17,21 +17,21 @@ import numpy
 
 
 import pyfora.Exceptions
-import pyfora.algorithms.util
-from pyfora.algorithms.BinaryLogisticRegressionFitter import BinaryLogisticRegressionFitter
+from pyfora.unique import unique
+from pyfora.algorithms import BinaryLogisticRegressionFitter
 
 
 class LogisticRegressionTests(object):
     def test_unique(self):
         x = [5,5,4,2,4,2,1,3,3,5,6]
         def f():
-            return pyfora.algorithms.util.unique(x)
+            return unique(x)
 
         self.assertEqual(
             self.evaluateWithExecutor(f),
             list(set(x))
             )
-        
+
     def exampleData(self):
         X = pandas.DataFrame({'A': [-1,0,1], 'B': [0,1,1]})
         y = pandas.DataFrame({'C': [0,1,1]})
@@ -48,7 +48,7 @@ class LogisticRegressionTests(object):
 
         expectedIntercept = 0.10102151
         expectedCoefficients = numpy.array([0.26901034, 0.25372016])
-        
+
         self.assertTrue(
             numpy.isclose(
                 computedIntercept,

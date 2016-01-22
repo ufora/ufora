@@ -14,8 +14,9 @@
 
 
 import pyfora.PureImplementationMapping as PureImplementationMapping
-import pyfora.algorithms.util
 from pyfora.typeConverters.PureNumpy import PurePythonNumpyArray
+
+from pyfora.unique import unique
 
 
 def pd():
@@ -99,19 +100,19 @@ class PurePythonDataFrame:
         return PurePythonDataFrame(
             self._columns + [column],
             self._columnNames + [columnName]
-            )            
+            )
 
     def as_matrix(self):
         columnMajorData = []
         for col in self._columns:
             columnMajorData = columnMajorData + col.tolist()
-        
+
         tr = PurePythonNumpyArray((len(columnMajorData),), columnMajorData)
-        # currently, PurePythonNumpyArrays are row-major, 
+        # currently, PurePythonNumpyArrays are row-major,
         # so we form the transpose here
         tr = tr.reshape((self.shape[1], self.shape[0]))
         return tr.transpose()
-    
+
 
 class _PurePythonDataFrameILocIndexer:
     def __init__(self, obj):
@@ -182,10 +183,10 @@ class PurePythonSeries:
 
     def unique(self):
         sortedSeries = self.sort_values()
-        return pyfora.algorithms.util.unique(sortedSeries.values, True)
+        return unique(sortedSeries.values, True)
 
     def sort_values(self):
-        return PurePythonSeries(sorted(self.values))        
+        return PurePythonSeries(sorted(self.values))
 
     @property
     def iloc(self):
