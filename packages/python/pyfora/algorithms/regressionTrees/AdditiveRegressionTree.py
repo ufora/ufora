@@ -47,6 +47,21 @@ class AdditiveRegressionTree:
 
         return sum(tree.predict(row) for tree in self.trees[:nEstimators])
 
-    def score(self, x, y):
-        raise NotImplementedError()
-    
+    def score(self, x, yTrue):
+        sz = len(x)
+        assert sz == len(yTrue)
+
+        if isinstance(yTrue, PurePandas.PurePythonDataFrame):
+            yTrue = yTrue.iloc[:, 0]
+
+        yPredicted = self.predict(x)
+
+        u = sum(
+            (yTrue[ix] - yPredicted[ix]) ** 2.0 for ix in xrange(sz)
+            )
+        mean = sum(yTrue) / sz
+        v = sum(
+            (yTrue[ix] - mean) ** 2.0 for ix in xrange(sz)
+            )
+
+        return 1.0 - u / v

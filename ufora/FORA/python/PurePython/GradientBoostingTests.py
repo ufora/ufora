@@ -22,6 +22,7 @@ import pyfora.algorithms.regressionTrees.RegressionTree as RegressionTree
 
 
 import numpy
+import pandas
 
 
 def generateRegressionData(mbOfData, nColumns):
@@ -112,6 +113,44 @@ class GradientBoostingTests(object):
             numpy.isclose(node_1_2.leafValue, -0.0756302521008403)
             )
 
+    def test_gradient_boosting_classification_2(self):
+        x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
+        y = pandas.DataFrame({'y': [0,1,1]})
+
+        def f():
+            model = GradientBoostedClassifierBuilder(1, 1, 1.0).fit(x, y)
+            return model.score(x, y)
+
+        self.assertEqual(
+            self.evaluateWithExecutor(f),
+            1.0
+            )
+
+    def test_gradient_boosting_classification_3(self):
+        x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
+        y = pandas.DataFrame({'y': [0,1,1]})
+
+        def f():
+            model = GradientBoostedClassifierBuilder(1, 1, 1.0).fit(x, y)
+            return model.predict(x)
+
+        self.assertEqual(
+            [elt for elt in self.evaluateWithExecutor(f)],
+            [elt for elt in y.iloc[:,0]]
+            )
+
+    def test_gradient_boosting_classification_4(self):
+        x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
+        y = pandas.DataFrame({'y': [0,1,1]})
+
+        def f():
+            model = GradientBoostedClassifierBuilder(1, 1, 1.0).fit(x, y)
+            return model.deviance(x, y)
+
+        self.assertTrue(
+            numpy.isclose(self.evaluateWithExecutor(f), 0.126928011043)
+            )
+ 
     def test_gradient_boosting_regression_1(self):
         # verified against old fora implementation
 
@@ -169,4 +208,27 @@ class GradientBoostingTests(object):
             )
         self.assertTrue(
             numpy.isclose(node_1_2.leafValue, -0.0249384388516114)
+            )
+
+    def test_gradient_boosting_regression_2(self):
+        x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
+        y = pandas.DataFrame({'y': [0,1,1]})
+
+        def f():
+            model = GradientBoostedRegressorBuilder(1, 1, 1.0).fit(x, y)
+            return model.score(x, y)
+
+        self.assertEqual(self.evaluateWithExecutor(f), 1.0)
+
+    def test_gradient_boosting_regression_3(self):
+        x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
+        y = pandas.DataFrame({'y': [0,1,1]})
+
+        def f():
+            model = GradientBoostedRegressorBuilder(1, 1, 1.0).fit(x, y)
+            return model.predict(x)
+
+        self.assertEqual(
+            [elt for elt in self.evaluateWithExecutor(f)],
+            [elt for elt in y.iloc[:,0]]
             )

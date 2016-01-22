@@ -15,6 +15,7 @@
 
 import pyfora.algorithms.regressionTrees.losses as losses
 import pyfora.algorithms.regressionTrees.RegressionTree as RegressionTree
+import pyfora.typeConverters.PurePandas as PurePandas
 
 
 import math
@@ -77,11 +78,8 @@ class BinaryClassificationModel:
             learningRate
             )
             
-    def deviance(self, X, yTrue):
-        raise NotImplementedError()
-
     def predictionFunction_(self, row):
-        if self.predictionFunction_(row) >= 0.5:
+        if self.predictProbaFun_(row) >= 0.5:
             return self.classes[0]
 
         return self.classes[1]
@@ -134,6 +132,53 @@ class BinaryClassificationModel:
             self.baseModelBuilder,
             self.learningRate
             )
+
+    def predict(self, df):
+        """
+        Use the classifier `self` to predict the class labels of the rows 
+        of `df`
+        """
+        return df.apply(self.predictionFunction_, 1)
+
+    def score(self, x, yTrue):
+        """
+        Compute the mean accuracy of the classifier `self` in predicting `x` 
+        with respect to `yTrue`.
+        """
+        assert len(x) == len(yTrue)
+
+        if isinstance(yTrue, PurePandas.PurePythonDataFrame):
+            yTrue = yTrue.iloc[:, 0]
+
+        def eltAt(ix):
+            prediction = self.predictionFunction_(x.iloc[ix])
+            if prediction == yTrue[ix]:
+                return 1.0
+            return 0.0
+
+        return sum(eltAt(ix) for ix in xrange(len(x))) / len(x)
+
+    def deviance(self, x, yTrue):
+        """
+        Compute the binomial deviance (average negative log-likihood) of the 
+        instances in predictors `X` with responses `y`.
+        """
+        assert len(x) == len(yTrue)
+
+        if isinstance(yTrue, PurePandas.PurePythonDataFrame):
+            yTrue = yTrue.iloc[:, 0]
+
+        probabilities = self.predictProbability(x)
+        classZero = self.classes[0]
+        
+        def eltAt(ix):
+            p = probabilities[ix]
+            if yTrue[ix] == classZero:
+                return math.log(p)
+            else:
+                return math.log(1.0 - p)
+
+        return -sum(eltAt(ix) for ix in xrange(len(x))) / len(x)
 
     def featureImportances(self):
         raise NotImplementedError()

@@ -40,7 +40,15 @@ class RegressionModel:
         self.learningRate = learningRate
 
     def score(self, X, yTrue):
-        raise NotImplementedError()
+        """
+        Return the coefficient of determination (R^2) of the prediction.
+
+        The coefficient R^2 is defined as (1 - u / v), where u is the regression sum of 
+        squares ((yTrue - yPredicted) ** 2).sum() and v is the residual sum of squares 
+        ((yTrue - yTrue.mean()) ** 2).sum(). Best possible score is 1.0, lower 
+        values are worse.
+        """
+        return self.additiveRegressionTree.score(X, yTrue)
 
     def predict(self, df, nEstimators=None):
         """Use the `RegressionModel` `self` to predict on the 
