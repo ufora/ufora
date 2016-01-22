@@ -63,6 +63,15 @@ def start_instances(args):
     assert args.num_instances > 0
     ssh_keyname = get_ssh_keyname(args.ssh_keyname)
     open_public_port = args.open_public_port or ssh_keyname is None
+    if ssh_keyname is None and not args.yes_all:
+        response = raw_input(
+            "You are launching instances without specifying an ssh key-pair name.\n"
+            "You will not be able to log into the launched instances.\n"
+            "You can specify a key-pair using the --ssh-keyname option.\n"
+            "Do you want to continue without a keypair (Y/n)? "
+            )
+        if response not in ('Y', 'y'):
+            return
 
     launcher = Launcher(region=get_region(args.ec2_region),
                         vpc_id=args.vpc_id,
@@ -195,6 +204,13 @@ def print_instance(instance, tag=None):
     print output
 
 all_arguments = {
+    'yes-all': {
+        'args': ('-y', '--yes-all'),
+        'kwargs': {
+            'action': 'store_true',
+            'help': 'Do not prompt user input. Answer "yes" to all prompts.'
+            }
+        },
     'ec2-region': {
         'args': ('--ec2-region',),
         'kwargs': {
@@ -276,7 +292,7 @@ all_arguments = {
         }
     }
 
-start_args = ('ec2-region', 'num-instances', 'ssh-keyname', 'spot-price',
+start_args = ('yes-all', 'ec2-region', 'num-instances', 'ssh-keyname', 'spot-price',
               'instance-type', 'vpc-id', 'subnet-id', 'security-group-id',
               'open-public-port')
 add_args = ('ec2-region', 'num-instances', 'spot-price')
