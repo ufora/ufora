@@ -74,7 +74,6 @@ class RegressionModel:
         XDimensions = range(X.shape[1])
         baseModelBuilder = RegressionTree.RegressionTreeBuilder(
             treeBuilderArgs.maxDepth,
-            treeBuilderArgs.impurityMeasure,
             treeBuilderArgs.minSamplesSplit,
             treeBuilderArgs.numBuckets
             )

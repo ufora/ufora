@@ -272,10 +272,9 @@ class ImpurityPair:
 
 
 class TreeBuilderArgs:
-    def __init__(self, minSamplesSplit, maxDepth, impurityMeasure, numBuckets):
+    def __init__(self, minSamplesSplit, maxDepth, numBuckets):
         self.minSamplesSplit = minSamplesSplit
         self.maxDepth = maxDepth
-        self.impurityMeasure = impurityMeasure
         self.numBuckets = numBuckets
 
 

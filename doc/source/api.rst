@@ -98,6 +98,17 @@ Logistic Regression
 .. autoclass:: pyfora.algorithms.BinaryLogisticRegressionModel.BinaryLogisticRegressionModel
     :members:
 
+Regression Trees
+~~~~~~~~~~~~~~~~
+.. autoclass:: pyfora.algorithms.regressionTrees.RegressionTree.RegressionTreeBuilder
+  :members:
+
+Gradient Boosting
+~~~~~~~~~~~~~~~~
+.. autoclass:: pyfora.algorithms.regressionTrees.GradientBoostedRegressorBuilder.GradientBoostedRegressorBuilder
+  :members:
+.. autoclass:: pyfora.algorithms.regressionTrees.GradientBoostedClassifierBuilder.GradientBoostedClassifierBuilder
+  :members:
 
 Data Frames
 -----------

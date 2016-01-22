@@ -18,11 +18,10 @@ import pyfora.algorithms.regressionTrees.Base as treeBase
 
 
 class RegressionTree:
-    """
-    A class representing a regression tree.
+    """A class representing a regression tree.
 
-    A regression tree is represented, essentially, as a list of "rules", 
-    which are either `pyfora.algorithms.regressionTrees.Base.SplitRule`s, giving 
+    A regression tree is represented, essentially, as a list of "rules",
+    which are either `pyfora.algorithms.regressionTrees.Base.SplitRule`s, giving
     "split" nodes, which divide the domain by a hyperplane, or `RegressionLeafRule`s,
     which just hold a prediction value.
     """
@@ -89,16 +88,14 @@ class RegressionTreeBuilder:
     """Fits regression trees to data using specified tree parameters.
     
     Args:
-        maxDepth: The maximum depth of a fit tree
-        impurityMeasure: The criterion for splitting, defaults to 
-            `pyfora.algorithms.regressionTrees.Base.SampleSummary`
-        minSamplesSplit: The minimum number of samples required to split  a node
-        numBuckets: The number of buckets used in the estimation of optimal
+        maxDepth (int): The maximum depth of a fit tree
+        minSamplesSplit (int): The minimum number of samples required to split  a node
+        numBuckets (int): The number of buckets used in the estimation of optimal
             column splits.
-        minSplitThresh: an "internal" argument, not generally of interest to 
+        minSplitThresh (int): an "internal" argument, not generally of interest to
             casual users, giving the splitting rule in `computeBucketedSampleSummaries`
 
-    Examples:
+    Examples::
         
         builder = pyfora.algorithms.regressionTrees.RegressionTree.RegressionTreeBuilder(2)
         x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
@@ -109,13 +106,12 @@ class RegressionTreeBuilder:
     def __init__(
             self,
             maxDepth,
-            impurityMeasure=treeBase.SampleSummary,
             minSamplesSplit=2,
             numBuckets=10000,
             minSplitThresh=1000000
             ):
         self.maxDepth = maxDepth
-        self.impurityMeasure = impurityMeasure
+        self.impurityMeasure = treeBase.SampleSummary
         self.minSamplesSplit = minSamplesSplit
         self.minSplitThresh = minSplitThresh
         self.numBuckets = numBuckets
@@ -191,23 +187,22 @@ class RegressionTreeBuilder:
                 xCol, yCol, x0, x1, count, mid, high)
 
     def fit(self, x, y):
-        """
-        Using a `RegressionTreeBuilder`, fit a regression tree to 
-        predictors `x` and responses `y`y.
+        """Using a :class:`~pyfora.algorithms.regressionTrees.RegressionTree.RegressionTreeBuilder`, 
+        fit a regression tree to predictors `x` and responses `y`.
 
         Args:
-            x: a `pandas.DataFrame` of the predictors.
-            y: a `pandas.DataFrame` giving the responses.
+            x (:class:`pandas.DataFrame`): of the predictors.
+            y (:class:`pandas.DataFrame`): giving the responses.
 
-
-        Returns: a `RegressionTree` instance.
+        Returns: a :class:`~pyfora.algorithms.regressionTrees.RegressionTree.RegressionTree`
+        instance.
       
-        Examples:
+        Examples::
         
-            builder = pyfora.algorithms.regressionTrees.RegressionTreeBuilder(2)
+            builder = pyfora.algorithms.regressionTrees.RegressionTree.RegressionTreeBuilder(2)
             x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
             y = pandas.DataFrame({'y': [0,1,1]})
-            regressionTree = builder.fit(x, y)    
+            regressionTree = builder.fit(x, y)
         
         """
         if isinstance(y, PurePandas.PurePythonDataFrame):
@@ -307,31 +302,25 @@ class RegressionTreeBuilder:
         return tr
 
     @staticmethod
-    def buildTree(x, y, minSamplesSplit, maxDepth, impurityMeasure):
-        """
-        Fit a regression tree to predictors `x` and responses `y` using
-        parameters `minSamplesSplit`, `maxDepth`, and `impurityMeasure`.
+    def buildTree(x, y, minSamplesSplit, maxDepth):
+        """Fit a regression tree to predictors `x` and responses `y` using
+        parameters `minSamplesSplit` and `maxDepth`.
 
         Args:
-            x: a `pandas.DataFrame` of the predictors.
-            y: a `pandas.DataFrame` giving the responses.
+            x (:class:`pandas.DataFrame`): of the predictors.
+            y (:class:`pandas.DataFrame`): giving the responses.
             maxDepth: The maximum depth of a fit tree
-            impurityMeasure: The criterion for splitting, defaults to 
-                `pyfora.algorithms.regressionTrees.Base.SampleSummary`
             minSamplesSplit: The minimum number of samples required to split  a node
         """
         return RegressionTreeBuilder(
             maxDepth,
-            impurityMeasure,
+            treeBase.SampleSummary,
             minSamplesSplit,
             ).fit(x, y)            
 
 
 class OnDemandSelectedVector:
     def __init__(self, vectorToSelectFrom, selectingIndices):
-        if len(vectorToSelectFrom) < len(selectingIndices):
-            assert False, "something went wrong"
-
         self.vectorToSelectFrom = vectorToSelectFrom
         self.selectingIndices = selectingIndices
 

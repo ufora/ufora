@@ -58,14 +58,14 @@ class GradientBoostedClassifierBuilder:
     trees to form classification models. These parameters are 
 
     Args:
-        maxDepth: The max depth allowed of each constituent regression tree.
-        nBoosts: The number of "boosting iterations" used.
-        learningRate: The learning rate of the model, used for regularization.
+        maxDepth (int): The max depth allowed of each constituent regression tree.
+        nBoosts (int): The number of "boosting iterations" used.
+        learningRate (float): The learning rate of the model, used for regularization.
             Each successive tree from boosting stages are added with multiplier
             `learningRate`.
-        minSamplesSplit: The minimum number of samples required to split a 
+        minSamplesSplit (int): The minimum number of samples required to split a 
             regression tree node.
-        numBuckets: The number of buckets used in the estimation of optimal
+        numBuckets (int): The number of buckets used in the estimation of optimal
            column splits for building regression trees.
         loss: the loss used when forming gradients. Defaults to "l2", for 
             least-squares loss. The only other allowed value currently is 
@@ -78,20 +78,20 @@ class GradientBoostedClassifierBuilder:
         self.treeBuilderArgs = treeBase.TreeBuilderArgs(
             minSamplesSplit,
             maxDepth,
-            treeBase.SampleSummary,
             numBuckets
             )
 
     def iterativeFitter(self, X, y):
         """
-        Create an `IterativeFitter` instance which can iteratively 
+        Create an :class:`~IterativeFitter` instance which can iteratively 
         fit boosting models.
 
         Args:
-            X: a `pandas.DataFrame` giving the predictors.
-            y: a `pandas.DataFrame` giving the responses.
+            X (:class:`~pandas.DataFrame`): giving the predictors.
+            y (:class:`~pandas.DataFrame`): giving the responses.
 
-        Examples:
+        Examples::
+
             builder = pyfora.algorithms.regressionTrees\
                 .GradientBoostedClassifierBuilder\
                 .GradientBoostedClassifierBuilder(1, 1, 1.0)
@@ -128,13 +128,12 @@ class GradientBoostedClassifierBuilder:
         `X` to responses `y`.
 
         Args:
-            X: a `pandas.DataFrame` giving the predictors.
-            y: a `pandas.DataFrame` giving the responses.
+            X (:class:`pandas.DataFrame`): giving the predictors.
+            y (:class:`pandas.DataFrame`): giving the responses.
 
-        Examples:
-            builder = pyfora.algorithms.regressionTrees\
-                .GradientBoostedClassifierBuilder\
-                .GradientBoostedClassifierBuilder(1, 1, 1.0)
+        Examples::
+
+            builder = pyfora.algorithms.regressionTrees.GradientBoostedClassifierBuilder.GradientBoostedClassifierBuilder(1, 1, 1.0)
             x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
             y = pandas.DataFrame({'y': [0,1,1]})
 

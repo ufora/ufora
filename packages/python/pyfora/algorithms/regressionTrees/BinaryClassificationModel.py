@@ -62,7 +62,6 @@ class BinaryClassificationModel:
         
         baseModelBuilder = RegressionTree.RegressionTreeBuilder(
             treeBuilderArgs.maxDepth,
-            treeBuilderArgs.impurityMeasure,
             treeBuilderArgs.minSamplesSplit,
             treeBuilderArgs.numBuckets
             )
