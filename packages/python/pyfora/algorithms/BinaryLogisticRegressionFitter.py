@@ -75,6 +75,19 @@ class BinaryLogisticRegressionFitter:
         Returns:
             A :class:`~pyfora.algorithms.BinaryLogisticRegressionModel.BinaryLogisticRegressionModel`
             which represents the fit model.
+
+        Examples::
+
+            # fit a logit model without intercept using regularizer 1.0
+
+            from pyfora.algorithms import BinaryLogisticRegressionFitter
+
+            fitter = BinaryLogisticRegressionFitter(1.0, False)
+            x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
+            y = pandas.DataFrame({'y': [0,1,1]})
+
+            model = fitter.fit(x, y)
+
         """
         assert X.shape[0] == y.shape[0]
         assert y.shape[1] == 1
