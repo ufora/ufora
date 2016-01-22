@@ -13,7 +13,7 @@
 #   limitations under the License.
 
 
-import pyfora.algorithms.regressionTrees.RegressionTree as RegressionTree
+import RegressionTree
 
 
 class RegressionModel:

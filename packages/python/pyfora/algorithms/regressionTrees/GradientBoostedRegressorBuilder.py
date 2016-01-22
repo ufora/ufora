@@ -13,9 +13,9 @@
 #   limitations under the License.
 
 
-import pyfora.algorithms.regressionTrees.losses as losses
-import pyfora.algorithms.regressionTrees.Base as treeBase
-import pyfora.algorithms.regressionTrees.RegressionModel as RegressionModel
+import losses
+import Base
+import RegressionModel
 
 
 class IterativeFitter:
@@ -81,7 +81,7 @@ class GradientBoostedRegressorBuilder:
         else:
             assert False, "invalid `loss` argument: " + str(loss)
 
-        treeBuilderArgs = treeBase.TreeBuilderArgs(
+        treeBuilderArgs = Base.TreeBuilderArgs(
             minSamplesSplit, maxDepth, numBuckets
             )
 
@@ -101,7 +101,9 @@ class GradientBoostedRegressorBuilder:
 
         Examples::
 
-            builder = pyfora.algorithms.regressionTrees.GradientBoostedRegressorBuilder.GradientBoostedRegressorBuilder(1, 1, 1.0)
+            from pyfora.algoritms import GradientBoostedRegressorBuilder
+
+            builder = GradientBoostedRegressorBuilder(1, 1, 1.0)
             x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
             y = pandas.DataFrame({'y': [0,1,1]})
 
@@ -136,7 +138,9 @@ class GradientBoostedRegressorBuilder:
 
         Examples::
 
-            builder = pyfora.algorithms.regressionTrees.GradientBoostedRegressorBuilder.GradientBoostedRegressorBuilder(1, 1, 1.0)
+            from pyfora.algorithms import GradientBoostedRegressorBuilder
+
+            builder = GradientBoostedRegressorBuilder(1, 1, 1.0)
             x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
             y = pandas.DataFrame({'y': [0,1,1]})
 

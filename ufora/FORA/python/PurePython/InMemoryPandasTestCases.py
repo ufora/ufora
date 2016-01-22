@@ -13,6 +13,7 @@
 #   limitations under the License.
 
 import pyfora.pandas_util
+import pyfora.algorithms
 import pyfora.algorithms.LinearRegression as LinearRegression
 import pyfora.typeConverters.PurePandas as PurePandas
 

@@ -13,7 +13,7 @@
 #   limitations under the License.
 
 
-import pyfora.algorithms.regressionTrees.Base as treeBase
+import Base
 from pyfora.algorithms.regressionTrees.BinaryClassificationModel \
     import BinaryClassificationModel
 
@@ -75,7 +75,7 @@ class GradientBoostedClassifierBuilder:
                  minSamplesSplit=2, numBuckets=10000):
         self.nBoostingIterations = nBoosts
         self.learningRate = learningRate
-        self.treeBuilderArgs = treeBase.TreeBuilderArgs(
+        self.treeBuilderArgs = Base.TreeBuilderArgs(
             minSamplesSplit,
             maxDepth,
             numBuckets
@@ -92,9 +92,9 @@ class GradientBoostedClassifierBuilder:
 
         Examples::
 
-            builder = pyfora.algorithms.regressionTrees\
-                .GradientBoostedClassifierBuilder\
-                .GradientBoostedClassifierBuilder(1, 1, 1.0)
+            from pyfora.algorithms import GradientBoostedClassifierBuilder
+
+            builder = GradientBoostedClassifierBuilder(1, 1, 1.0)
             x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
             y = pandas.DataFrame({'y': [0,1,1]})
 
@@ -133,7 +133,9 @@ class GradientBoostedClassifierBuilder:
 
         Examples::
 
-            builder = pyfora.algorithms.regressionTrees.GradientBoostedClassifierBuilder.GradientBoostedClassifierBuilder(1, 1, 1.0)
+            from pyfora.algorithms import GradientBoostedClassifierBuilder
+
+            builder = GradientBoostedClassifierBuilder(1, 1, 1.0)
             x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
             y = pandas.DataFrame({'y': [0,1,1]})
 

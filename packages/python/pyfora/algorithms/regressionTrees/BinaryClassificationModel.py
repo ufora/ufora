@@ -13,8 +13,8 @@
 #   limitations under the License.
 
 
-import pyfora.algorithms.regressionTrees.losses as losses
-import pyfora.algorithms.regressionTrees.RegressionTree as RegressionTree
+import losses
+import RegressionTree
 import pyfora.typeConverters.PurePandas as PurePandas
 
 

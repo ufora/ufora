@@ -1,3 +1,5 @@
 from pyfora.algorithms.LinearRegression import linearRegression
 from pyfora.algorithms.BinaryLogisticRegressionFitter import BinaryLogisticRegressionFitter
-
+from pyfora.algorithms.regressionTrees.RegressionTree import RegressionTreeBuilder
+from pyfora.algorithms.regressionTrees.GradientBoostedClassifierBuilder import GradientBoostedClassifierBuilder
+from pyfora.algorithms.regressionTrees.GradientBoostedRegressorBuilder import GradientBoostedRegressorBuilder

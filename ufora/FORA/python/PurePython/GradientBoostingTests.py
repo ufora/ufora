@@ -13,10 +13,8 @@
 #   limitations under the License.
 
 
-from pyfora.algorithms.regressionTrees.GradientBoostedRegressorBuilder \
-    import GradientBoostedRegressorBuilder
-from pyfora.algorithms.regressionTrees.GradientBoostedClassifierBuilder \
-    import GradientBoostedClassifierBuilder
+from pyfora.algorithms import GradientBoostedRegressorBuilder
+from pyfora.algorithms import GradientBoostedClassifierBuilder
 import pyfora.typeConverters.PurePandas as PurePandas
 import pyfora.algorithms.regressionTrees.RegressionTree as RegressionTree
 

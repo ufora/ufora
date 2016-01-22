@@ -14,7 +14,7 @@
 
 
 import pyfora.typeConverters.PurePandas as PurePandas
-import pyfora.algorithms.regressionTrees.Base as treeBase
+import Base as treeBase
 
 
 class RegressionTree:
@@ -97,7 +97,9 @@ class RegressionTreeBuilder:
 
     Examples::
         
-        builder = pyfora.algorithms.regressionTrees.RegressionTree.RegressionTreeBuilder(2)
+        from pyfora.algorithms import RegressionTreeBuilder
+
+        builder = RegressionTreeBuilder(2)
         x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
         y = pandas.DataFrame({'y': [0,1,1]})
         regressionTree = builder.fit(x, y)
