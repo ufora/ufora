@@ -17,6 +17,10 @@ import pyfora.algorithms.regressionTrees.RegressionTree as RegressionTree
 
 
 class RegressionModel:
+    """A class representing a gradient-boosted regression tree model 
+    fit to data.
+
+    """
     def __init__(
             self,
             additiveRegressionTree,
@@ -39,6 +43,10 @@ class RegressionModel:
         raise NotImplementedError()
 
     def predict(self, df, nEstimators=None):
+        """Use the `RegressionModel` `self` to predict on the 
+        `pandas.DataFrame` `df`.
+        
+        """
         return self.additiveRegressionTree.predict(df, nEstimators)
 
     def predictWithPreviousResult(self, previousPredictions, df):

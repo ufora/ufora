@@ -14,8 +14,7 @@
 
 
 class SampleSummary:
-    # An additive class to track statistics of samplesets (mean, std-dev, count)
-
+    """An additive class to track statistics of samplesets (mean, std-dev, count)"""
     def __init__(self, xSum=None, weight=None, xxSum=None):
         if xSum is None:
             self.weight = 0.0
@@ -81,8 +80,7 @@ class SampleSummary:
             
 
 class SampleSummaryHistogram:
-    # A class which maintains xValue-bucketed `SampleSummary`s of y-values
-
+    """A class which maintains xValue-bucketed `SampleSummary`s of y-values"""
     def __init__(self, x0, x1, samplesOrCount, isSamples=True):
         if isSamples:
             self.count = len(samplesOrCount)

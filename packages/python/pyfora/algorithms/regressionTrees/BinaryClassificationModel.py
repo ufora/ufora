@@ -21,6 +21,10 @@ import math
 
 
 class BinaryClassificationModel:
+    """
+    A class representing a gradient-boosted binary classification tree 
+    model fit to data.
+    """
     def __init__(
             self,
             additiveRegressionTree,
@@ -86,6 +90,9 @@ class BinaryClassificationModel:
         return 1.0 / (1.0 + math.exp(2.0 * self.additiveRegressionTree.predict(row)))
 
     def predictProbability(self, df):
+        """
+        Return class-zero probability estimates of the rows of a dataframe `df`. 
+        """
         return df.apply(self.predictProbaFun_, 1)
 
     def pseudoResidualsAndRegressionValues(self, previousRegressionValues=None):
