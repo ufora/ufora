@@ -23,6 +23,17 @@ def logit_complement(x):
 
 
 class BinaryLogisticRegressionModel:
+    """
+    Represents a fit logit model.
+
+    Attributes:
+        coefficients (numpy.array): The regressions coefficients.
+        intercept (float): The fitted model's intercept
+
+    Note:
+        This class is not intended to be constructed directly. Instances of it are
+        returned by :func:`~pyfora.algorithms.BinaryLogisticRegressionFitter.BinaryLogisticRegressionFitter.fit`.
+    """
     def __init__(
             self,
             coefficients,
@@ -43,12 +54,14 @@ class BinaryLogisticRegressionModel:
         Returns the mean accuracy on the given test data and labels.
 
         Args:
-            X: feature vectors
-            y: target labels, corresponding to the vectors in `X`.
+            X (DataFrame): Feature vectors
+            y (DataFrame): Target labels, corresponding to the vectors in
+                :py:obj:`X`.
 
         Returns:
-            score: (float) the mean accuracy of `self.predict(X)` 
-                with respect to `y`.
+            float: The mean accuracy of
+            :func:`~pyfora.algorithms.BinaryLogisticRegressionModel.BinaryLogisticRegressionModel.predict`
+            with respect to :py:obj:`y`.
         """
         assert len(X) == len(y), "arguments must have the same length"
 
@@ -68,13 +81,13 @@ class BinaryLogisticRegressionModel:
 
     def predict(self, X):
         """
-        Predict the class labels of `X`.
+        Predict the class labels of :py:obj:`X`.
 
         Args:
-            X: (DataFrame, or numpy array) a set of feature vectors
+            X (DataFrame, or numpy.array): a set of feature vectors
 
         Returns:
-            a numpy array containing the predicted class labels.
+            numpy.array: array containing the predicted class labels.
         """
         probabilities = self.predict_probability(X)
 
@@ -89,14 +102,14 @@ class BinaryLogisticRegressionModel:
 
     def predict_probability(self, X):
         """
-        Estimate the conditional class-one probability for the features in 
-        `X`.
+        Estimate the conditional class-one probability for the features in
+        :py:obj:`X`.
 
         Args:
-            X: (DataFrame, or numpy array) a set of feature vectors
+            X (DataFrame, or numpy.array): a set of feature vectors
 
         Returns:
-            a numpy array containing the predicted probabilities.
+            numpy.array: array containing the predicted probabilities.
         """
         if isinstance(X, PurePandas.PurePythonDataFrame):
             X = X.as_matrix()
@@ -109,4 +122,4 @@ class BinaryLogisticRegressionModel:
         return numpy.array([
             logit_complement(val) for val in res
             ])
-            
+

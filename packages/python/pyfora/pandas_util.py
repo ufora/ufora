@@ -28,7 +28,7 @@ def read_csv_from_string(data):
         data (str): a string of comma-separated values
 
     Returns:
-        A :calss:`pandas.DataFrame` that holds the parsed data.
+        A :class:`pandas.DataFrame` that holds the parsed data.
 
 
     Note:

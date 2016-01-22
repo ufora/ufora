@@ -86,7 +86,17 @@ Future
 
 Algorithms
 ----------
+
+Linear Regression
+~~~~~~~~~~~~~~~~~
 .. autofunction:: pyfora.algorithms.linearRegression
+
+Logistic Regression
+~~~~~~~~~~~~~~~~~~~
+.. autoclass:: pyfora.algorithms.BinaryLogisticRegressionFitter
+   :members: fit
+.. autoclass:: pyfora.algorithms.BinaryLogisticRegressionModel.BinaryLogisticRegressionModel
+    :members:
 
 
 Data Frames
