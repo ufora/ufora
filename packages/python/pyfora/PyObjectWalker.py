@@ -368,7 +368,7 @@ class PyObjectWalker(object):
         classId = self.walkPyObject(classObject)
 
         try:
-            dataMemberNames = PyAstUtil.computeDataMembers(classObject)
+            dataMemberNames = PyAstUtil.collectDataMembersSetInInit(classObject)
         except Exceptions.CantGetSourceTextError:
             self._raiseConversionErrorForSourceTextError(classInstance)
         except:

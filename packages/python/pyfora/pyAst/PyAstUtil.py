@@ -195,7 +195,8 @@ def functionDefOrLambdaAtLineNumber(sourceAst, lineNumber):
     return subnodesAtLineNumber[0]
 
 
-def computeDataMembers(pyClassObject):
+def collectDataMembersSetInInit(pyClassObject):
+    # Return a list of data members set in the '__init__' method.
     assert PyforaInspect.isclass(pyClassObject)
 
     initAstOrNone = _computeInitMethodAstOrNone(pyClassObject)
@@ -203,10 +204,10 @@ def computeDataMembers(pyClassObject):
     if initAstOrNone is None:
         return []
 
-    return _computeDataMembersFromInitAst(initAstOrNone)
+    return _collectDataMembersSetInInitAst(initAstOrNone)
 
 
-def _computeDataMembersFromInitAst(initAst):
+def _collectDataMembersSetInInitAst(initAst):
     _assertOnlySimpleStatements(initAst)
     
     if len(initAst.args.args) == 0:

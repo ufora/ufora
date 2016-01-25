@@ -19,27 +19,27 @@ import unittest
 
 
 class PyAstUtilTest(unittest.TestCase):
-    def test_computeDataMembers_1(self):
+    def test_collectDataMembersSetInInit_1(self):
         class C:
             def __init__(self, x):
                 self.x = x
                 self.y = x ** 2.0
 
-        dataMembers = PyAstUtil.computeDataMembers(C)
+        dataMembers = PyAstUtil.collectDataMembersSetInInit(C)
             
         self.assertEqual(
             dataMembers,
             set(['x', 'y'])
             )
 
-    def test_computeDataMembers_2(self):
+    def test_collectDataMembersSetInInit_2(self):
         class C2:
             def __init__(self, x):
                 if x > 0:
                     self.x = x
                 
 
-        dataMembers = PyAstUtil.computeDataMembers(C2)
+        dataMembers = PyAstUtil.collectDataMembersSetInInit(C2)
         
         # in our translation, we're _always_ producing an x member
         self.assertEqual(
@@ -47,47 +47,47 @@ class PyAstUtilTest(unittest.TestCase):
             set(['x'])
             )
 
-    def test_computeDataMembers_3(self):
+    def test_collectDataMembersSetInInit_3(self):
         class C3:
             def __init__(self):
                 self.x = self.y = 0
 
-        dataMembers = PyAstUtil.computeDataMembers(C3)
+        dataMembers = PyAstUtil.collectDataMembersSetInInit(C3)
 
         self.assertEqual(
             dataMembers,
             set(['x', 'y'])
             )
 
-    def test_computeDataMembers_4(self):
+    def test_collectDataMembersSetInInit_4(self):
         class C4:
             def __init__(self, arg):
                 (self.x, self.y), self.z = arg
 
-        dataMembers = PyAstUtil.computeDataMembers(C4)
+        dataMembers = PyAstUtil.collectDataMembersSetInInit(C4)
 
         self.assertEqual(
             dataMembers,
             set(['x', 'y', 'z'])
             )
 
-    def test_computeDataMembers_error_1(self):
+    def test_collectDataMembersSetInInit_error_1(self):
         class E1:
             def __init__():
                 self.x = 0
 
         with self.assertRaises(Exceptions.PythonToForaConversionError):
-            PyAstUtil.computeDataMembers(E1)
+            PyAstUtil.collectDataMembersSetInInit(E1)
 
-    def test_computeDataMembers_error_2(self):
+    def test_collectDataMembersSetInInit_error_2(self):
         class E2:
             def __init__(*args):
                 self.x = 0
 
         with self.assertRaises(Exceptions.PythonToForaConversionError):
-            PyAstUtil.computeDataMembers(E2)
+            PyAstUtil.collectDataMembersSetInInit(E2)
 
-    def test_computeDataMembers_error_3(self):
+    def test_collectDataMembersSetInInit_error_3(self):
         class E3:
             def __init__(self):
                 self.x = 0
@@ -95,9 +95,9 @@ class PyAstUtilTest(unittest.TestCase):
                     return x
 
         with self.assertRaises(Exceptions.PythonToForaConversionError):
-            PyAstUtil.computeDataMembers(E3)
+            PyAstUtil.collectDataMembersSetInInit(E3)
 
-    def test_computeDataMembers_error_4(self):
+    def test_collectDataMembersSetInInit_error_4(self):
         class E4:
             def __init__(self):
                 self.x = 0
@@ -106,7 +106,7 @@ class PyAstUtilTest(unittest.TestCase):
                         self.z = 0
 
         with self.assertRaises(Exceptions.PythonToForaConversionError):
-            PyAstUtil.computeDataMembers(E4)
+            PyAstUtil.collectDataMembersSetInInit(E4)
 
     def test_hasReturnInOuterScope(self):
         def f():
