@@ -446,19 +446,20 @@ def executeTests(args):
         print "\n\n\n"
 
     if args.multibox:
-        print "Running multibox tests"
+        print "Running multibox tests:"
         testRunner = MultiMachineTestRunner.createTestRunner(
             testDir=args.scriptPath or 'test_scripts/multibox',
-            timeout=args.timeout[0]
+            timeout=args.timeout[0] if args.timeout else None
             )
         if not testRunner.run():
             anyFailed = True
         print "\n\n\n"
 
     if args.scripts:
-        print "Running script unit tests:", args.timeout[0]
+        defaultTimeout = args.timeout[0] if args.timeout else None
+        print "Running script unit tests (timeout: %s sec):" % defaultTimeout
         scriptRunner = TestScriptRunner(testRoot=args.scriptPath or "test_scripts",
-                                        defaultTimeout=args.timeout[0])
+                                        defaultTimeout=defaultTimeout)
         if CodeCoverage.is_enabled():
             print 'With code coverage'
             if not scriptRunner.runWithCodeCoverage():

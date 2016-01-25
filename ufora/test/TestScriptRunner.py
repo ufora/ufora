@@ -158,7 +158,7 @@ class TestScriptRunner(object):
     def runScript_(self, script):
         print
         print "Running %s" % script
-        print "with a timeout of ", self.getTimeout(script)
+        print "with a timeout of %s sec"% self.getTimeout(script)
 
         if sys.platform == 'linux2':
             directory, filename = os.path.split(script)
