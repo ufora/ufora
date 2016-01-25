@@ -45,6 +45,12 @@ class StatusPrinter(object):
         print ''
         sys.stdout.flush()
 
+    def failed(self):
+        print ''
+        print 'Failed'
+        sys.stdout.flush()
+
+
 
     @staticmethod
     def single_status_message(status):
@@ -109,8 +115,10 @@ def start_instances(args):
         print_instance(worker, 'worker')
 
     print "Waiting for Ufora services:"
-    launcher.wait_for_services([manager] + workers, callback=status_printer.on_status)
-    status_printer.done()
+    if launcher.wait_for_services([manager] + workers, callback=status_printer.on_status):
+        status_printer.done()
+    else:
+        status_printer.failed()
 
 
 def add_instances(args):
@@ -151,8 +159,10 @@ def add_instances(args):
         print_instance(worker, 'worker')
 
     print "Waiting for Ufora services:"
-    launcher.wait_for_services(workers, callback=status_printer.on_status)
-    status_printer.done()
+    if launcher.wait_for_services(workers, callback=status_printer.on_status):
+        status_printer.done()
+    else:
+        status_printer.failed()
 
 
 def list_instances(args):

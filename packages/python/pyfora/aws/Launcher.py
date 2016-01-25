@@ -197,6 +197,8 @@ class Launcher(object):
             if len(pending):
                 time.sleep(1)
 
+        return len(failed) == 0
+
 
     def get_reservations(self):
         if not self.connected:
