@@ -927,3 +927,23 @@ class ExceptionTestCases(object):
 
         with self.assertRaises(pyfora.PythonToForaConversionError):
             self.evaluateWithExecutor(__inline_fora)
+
+    def test_stray_self_in_init(self):
+        class C_access_self_in_init:
+            def __init__(self):
+                str(self)
+
+        def f():
+            return C_access_self_in_init()
+
+        try:
+            self.evaluateWithExecutor(f)
+            self.assertTrue(False)
+        except pyfora.PythonToForaConversionError as e:
+            self.assertTrue(
+                e.message.startswith(
+                    ("in pyfora __init__ methods, the self arg can "
+                     "only appear in setattr or getattr expressions.")
+                    )
+                )
+            

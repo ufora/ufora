@@ -152,6 +152,49 @@ public:
         }
 };
 
+class AssertNoStraySelfArgsInTransformedInitBodyVisitor {
+private:
+    const std::string& mSelfName;
+public:
+    AssertNoStraySelfArgsInTransformedInitBodyVisitor(
+            const std::string& inSelfName
+            ) :
+        mSelfName(inSelfName)
+    {
+    }
+
+    template<class T> void processDown(const T&, bool&) {}
+    template<class T> void processUp(const T&) {}
+        
+    void processDown(const PythonAstExpr& expr, bool& outContinue)
+        {
+        @match PythonAstExpr(expr)
+            -|  Name(id, ctx) ->> {
+                if (id == mSelfName)
+                    throw PythonToForaConversionError(
+                        "in pyfora __init__ methods, the self arg can "
+                        "only appear in setattr or getattr expressions.",
+                        expr.extent()
+                        );
+                }
+            -| _ ->> {}
+            ;
+        }
+    };
+
+
+template<class T>
+void assertNoStraySelfArgsInTransformedInitBody(
+        const T& t,
+        const std::string& selfName
+        )
+    {
+    AssertNoStraySelfArgsInTransformedInitBodyVisitor visitor(selfName);
+
+    visit(t, visitor);
+    }
+        
+
 class HasYieldFunctionBodyVisitor {
 private:
     bool& mHasYield;
@@ -359,20 +402,10 @@ std::pair<
     ImmutableTreeVector<PythonAstStatement>, 
     std::set<std::pair<std::string, std::string>>
     > rewriteSelfSetAttrs(
-        const TuplePatternElement& selfArg,
+        const std::string& selfName,
         const ImmutableTreeVector<PythonAstStatement>& body        
         )
     {
-    std::string selfName;
-        {
-        lassert(selfArg.isNormal());
-
-        auto nullableName = selfArg.getNormal().match().name();
-
-        lassert(nullableName.isValue());
-        selfName = nullableName->toString();
-        }
-
     assertOnlySimpleInitStatements(body, selfName);
 
     std::set<std::string> referencedVariables = 
@@ -772,6 +805,16 @@ PythonAstConverter::convertPythonInitDefToForaClassDefinitionTerms(
         null()
         );
 
+    std::string selfName;
+        {
+        lassert(selfArg.isNormal());
+
+        auto nullableName = selfArg.getNormal().match().name();
+
+        lassert(nullableName.isValue());
+        selfName = nullableName->toString();
+        }
+
     ImmutableTreeVector<TuplePatternElement> foraArgs = 
         computeForaArgs(dropFirstNormalArg(args));
 
@@ -779,9 +822,14 @@ PythonAstConverter::convertPythonInitDefToForaClassDefinitionTerms(
         ImmutableTreeVector<PythonAstStatement>,
         std::set<std::pair<std::string, std::string>>
         > transformedBodyAndSelfSetItemMap = rewriteSelfSetAttrs(
-            selfArg,
+            selfName,
             functionDef.body()
             );
+
+    assertNoStraySelfArgsInTransformedInitBody(
+        transformedBodyAndSelfSetItemMap.first,
+        selfName
+        );
 
     TuplePattern pattern = TuplePattern(foraArgs);
     Expression functionBody = 
