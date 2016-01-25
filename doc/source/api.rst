@@ -102,12 +102,22 @@ Regression Trees
 ~~~~~~~~~~~~~~~~
 .. autoclass:: pyfora.algorithms.regressionTrees.RegressionTree.RegressionTreeBuilder
   :members:
+.. autoclass:: pyfora.algorithms.regressionTrees.RegressionTree.RegressionTree
+  :members:
 
 Gradient Boosting
 ~~~~~~~~~~~~~~~~
 .. autoclass:: pyfora.algorithms.regressionTrees.GradientBoostedRegressorBuilder.GradientBoostedRegressorBuilder
   :members:
+.. autoclass:: pyfora.algorithms.regressionTrees.RegressionModel.RegressionModel
+  :members:
+.. autoclass:: pyfora.algorithms.regressionTrees.GradientBoostedRegressorBuilder.IterativeFitter
+  :members:
 .. autoclass:: pyfora.algorithms.regressionTrees.GradientBoostedClassifierBuilder.GradientBoostedClassifierBuilder
+  :members:
+.. autoclass:: pyfora.algorithms.regressionTrees.BinaryClassificationModel.BinaryClassificationModel
+  :members:
+.. autoclass:: pyfora.algorithms.regressionTrees.GradientBoostedClassifierBuilder.IterativeFitter
   :members:
 
 Data Frames

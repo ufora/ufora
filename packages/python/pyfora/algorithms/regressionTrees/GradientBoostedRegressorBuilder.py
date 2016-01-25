@@ -22,13 +22,16 @@ class IterativeFitter:
     """A sort of iterator class which is capable of fitting subsequent
     boosting models.
 
-    Typically not instantiated directy: instead these classes are
-    returned from `GradientBoostedRegressorBuilder.iterativeFitter`.
-
-    Args/Attributes:
+    Attributes:
         model: the current regression model.
         predictions: the current predictions of the regression model
             (with respect to the training set implicit in `model`).
+
+    Note:
+        This class is typically not instantiated directy. Instead these
+        classes are returned from
+        :func:`~pyfora.algorithms.regressionTrees.GradientBoostedRegressorBuilder.GradientBoostedRegressorBuilder.iterativeFitter`.
+
     """
     def __init__(self, model, predictions):
         self.model = model
@@ -36,10 +39,29 @@ class IterativeFitter:
 
     def next(self):
         """
-        Fit one boosting stage to `self`, returning a new 
-        :class:`~pyfora.algorithms.regressionTrees.GradientBoostedRegressorBuilder.Iterativefitter`
-        object, holding the next
-        regression model and predictions.
+        Fit one boosting stage to `self`, returning a new
+        :class:`~pyfora.algorithms.regressionTrees.GradientBoostedRegressorBuilder.IterativeFitter`
+        object, holding the next regression model and predictions.
+
+        Args: None.
+
+        Examples::
+
+            from pyfora.algorithms import GradientBoostedRegressorBuilder
+
+            builder = GradientBoostedRegressorBuilder(1, 1, 1.0)
+            x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
+            y = pandas.DataFrame({'y': [0,1,1]})
+
+            fitter = builder.iterativeFitter(x, y)
+
+            # compute scores vs number of boosts
+            numBoosts = 5
+            scores = []
+            for ix in xrange(numBoosts):
+                fitter = fitter.next()
+                scores = scores + [fitter.model.score(x, y)]
+
         """
         pseudoResiduals, newPredictions = \
             self.model.pseudoResidualsAndPredictions(self.predictions)
@@ -92,7 +114,7 @@ class GradientBoostedRegressorBuilder:
 
     def iterativeFitter(self, X, y):
         """
-        Create an :class:`~pyfora.algorithms.regressionTrees.GradientBoostedRegressorBuilder.Iterativefitter`
+        Create an :class:`~pyfora.algorithms.regressionTrees.GradientBoostedRegressorBuilder.IterativeFitter`
         instance which can iteratively fit boosting models.
 
         Args:
@@ -101,7 +123,7 @@ class GradientBoostedRegressorBuilder:
 
         Examples::
 
-            from pyfora.algoritms import GradientBoostedRegressorBuilder
+            from pyfora.algorithms import GradientBoostedRegressorBuilder
 
             builder = GradientBoostedRegressorBuilder(1, 1, 1.0)
             x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
@@ -109,10 +131,12 @@ class GradientBoostedRegressorBuilder:
 
             fitter = builder.iterativeFitter(x, y)
 
+            # compute scores vs number of boosts
             numBoosts = 5
+            scores = []
             for ix in xrange(numBoosts):
                 fitter = fitter.next()
-            fitter.score(x, y)
+                scores = scores + [fitter.model.score(x, y)]
         """
         yAsSeries = y.iloc[:, 0]
         model = self._getInitialModel(X, yAsSeries)

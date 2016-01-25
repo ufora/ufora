@@ -25,6 +25,12 @@ class BinaryClassificationModel:
     """
     A class representing a gradient-boosted binary classification tree 
     model fit to data.
+
+    Note:
+        These classes are not normally instantiated directly. Instead,
+        they are typically returned by
+        :class:`~pyfora.algorithms.regressionTrees.GradientBoostedClassifierBuilder.GradientBoostedClassifierBuilder`
+        instances.
     """
     def __init__(
             self,
@@ -89,6 +95,24 @@ class BinaryClassificationModel:
     def predictProbability(self, df):
         """
         Return class-zero probability estimates of the rows of a dataframe `df`. 
+
+        Args:
+            A `pandas.DataFrame` `df.
+
+        Returns:
+            A `pandas.Series` giving the row-wise estimated class-zero probability estimates
+
+        Examples::
+
+            builder = GradientBoostedClassifierBuilder(1, 1, 1.0)
+            x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
+            y = pandas.DataFrame({'y': [0,1,1]})
+
+            model = builder.fit(x, y)
+            
+            # use the fit model to predict `x` itself:
+            model.predictProbability(x)
+     
         """
         return df.apply(self.predictProbaFun_, 1)
 
@@ -135,7 +159,25 @@ class BinaryClassificationModel:
     def predict(self, df):
         """
         Use the classifier `self` to predict the class labels of the rows 
-        of `df`
+        of `df`.
+
+        Args:
+            A `pandas.DataFrame` `df.
+
+        Returns:
+            A `pandas.Series` giving the row-wise predictions.
+
+        Examples::
+
+            builder = GradientBoostedClassifierBuilder(1, 1, 1.0)
+            x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
+            y = pandas.DataFrame({'y': [0,1,1]})
+
+            model = builder.fit(x, y)
+            
+            # use the fit model to predict `x` itself:
+            model.predict(x)
+     
         """
         return df.apply(self.predictionFunction_, 1)
 
@@ -143,6 +185,22 @@ class BinaryClassificationModel:
         """
         Compute the mean accuracy of the classifier `self` in predicting `x` 
         with respect to `yTrue`.
+
+        Args:
+            x: the predictor DataFrame.
+            yTrue: the (true) responses DataFrame.
+
+        Examples::
+
+            builder = GradientBoostedClassifierBuilder(1, 1, 1.0)
+            x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
+            y = pandas.DataFrame({'y': [0,1,1]})
+
+            model = builder.fit(x, y)
+            
+            # use the fit model to predict `x` itself:
+            model.score(x, y)
+
         """
         assert len(x) == len(yTrue)
 
@@ -161,6 +219,22 @@ class BinaryClassificationModel:
         """
         Compute the binomial deviance (average negative log-likihood) of the 
         instances in predictors `X` with responses `y`.
+
+        Args:
+            x: the predictor DataFrame.
+            yTrue: the (true) responses DataFrame.
+
+        Examples::
+
+            builder = GradientBoostedClassifierBuilder(1, 1, 1.0)
+            x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
+            y = pandas.DataFrame({'y': [0,1,1]})
+
+            model = builder.fit(x, y)
+
+            # compute the deviance:
+            model.deviance(x, y)
+            
         """
         assert len(x) == len(yTrue)
 

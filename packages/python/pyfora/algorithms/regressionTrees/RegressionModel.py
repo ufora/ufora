@@ -20,6 +20,12 @@ class RegressionModel:
     """A class representing a gradient-boosted regression tree model 
     fit to data.
 
+
+    Note:
+        These classes are not normally instantiated directly. Instead,
+        they are typically returned by
+        :class:`~pyfora.algorithms.regressionTrees.GradientBoostedRegressorBuilder.GradientBoostedRegressorBuilder`
+        instances.
     """
     def __init__(
             self,
@@ -47,12 +53,46 @@ class RegressionModel:
         squares ((yTrue - yPredicted) ** 2).sum() and v is the residual sum of squares 
         ((yTrue - yTrue.mean()) ** 2).sum(). Best possible score is 1.0, lower 
         values are worse.
+
+        Args:
+            X: the predictor DataFrame.
+            yTrue: the (true) responses DataFrame.
+
+        Returns: 
+            (float) the R^2 value.
+
+        Examples::
+
+            from pyfora.algorithms import GradientBoostedRegressorBuilder
+
+            builder = GradientBoostedRegressorBuilder(1, 1, 1.0)
+            x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
+            y = pandas.DataFrame({'y': [0,1,1]})
+
+            model = builder.fit(x, y)
+            
+            # compute the score of the fit model:
+            model.score(x, y)        
+        
         """
         return self.additiveRegressionTree.score(X, yTrue)
 
     def predict(self, df, nEstimators=None):
         """Use the `RegressionModel` `self` to predict on the 
         `pandas.DataFrame` `df`.
+
+        Returns:
+            
+            from pyfora.algorithms import GradientBoostedRegressorBuilder
+
+            builder = GradientBoostedRegressorBuilder(1, 1, 1.0)
+            x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
+            y = pandas.DataFrame({'y': [0,1,1]})
+
+            model = builder.fit(x, y)
+            
+            # predict `x` using the model `model`:
+            model.score(x, y)                
         
         """
         return self.additiveRegressionTree.predict(df, nEstimators)

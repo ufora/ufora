@@ -14,7 +14,7 @@
 
 
 import pyfora.typeConverters.PurePandas as PurePandas
-import Base as treeBase
+import Base
 
 
 class RegressionTree:
@@ -24,6 +24,11 @@ class RegressionTree:
     which are either `pyfora.algorithms.regressionTrees.Base.SplitRule`s, giving
     "split" nodes, which divide the domain by a hyperplane, or `RegressionLeafRule`s,
     which just hold a prediction value.
+
+    Note:
+        This class is not generally instantiated directly by users. Instead,
+        they are normally returned by
+        :class:`~pyfora.algorithms.regressionTrees.RegressionTree.RegressionTreeBuilder`.
     """
     def __init__(self, rules, numDimensions=None, columnNames=None):
         self.rules = rules
@@ -38,8 +43,23 @@ class RegressionTree:
 
     def predict(self, x, depth=None):
         """
-        Using the regression tree `self`, use it to predict the responses
-        corresponding to dataframe `x`.
+        Using the regression tree `self`, predict the responses
+        corresponding to :class:`pandas.DataFrame` `x`.
+
+        Returns: a `pandas.Series` giving the predictions of the rows of `x`.
+
+        Examples::
+        
+            from pyfora.algorithms import RegressionTreeBuilder
+
+            builder = RegressionTreeBuilder(2)
+            x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
+            y = pandas.DataFrame({'y': [0,1,1]})
+            regressionTree = builder.fit(x, y)
+
+            # predict `regressionTree` on `x` itself
+            regressionTree.predict(x)
+        
         """
         if isinstance(x, PurePandas.PurePythonDataFrame):
             return x.apply(
@@ -57,7 +77,7 @@ class RegressionTree:
         currentDepth = 0
         while True:
             rule = self.rules[ix]
-            if isinstance(rule, treeBase.SplitRule):
+            if isinstance(rule, Base.SplitRule):
                 if currentDepth == depth:
                     return rule.leafValue
                 
@@ -68,8 +88,48 @@ class RegressionTree:
             else: # rule must be a leaf value
                 return rule.leafValue
 
-    def score(self, x, y):
-        raise NotImplementedError()
+    def score(self, x, yTrue):
+        """
+        Returns the coefficient of determination R^2 of the prediction.
+
+        The coefficient R^2 is defined as (1 - u / v), where u is the regression sum of
+        squares ((yTrue - yPredicted) ** 2).sum() and v is the residual sum of squares
+        ((yTrue - yTrue.mean()) ** 2).sum(). Best possible score is 1.0, lower
+        values are worse.
+
+        Returns: 
+            (float) the R^2 value
+
+        Examples::
+
+            from pyfora.algorithms import RegressionTreeBuilder
+
+            builder = RegressionTreeBuilder(2)
+            x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
+            y = pandas.DataFrame({'y': [0,1,1]})
+            regressionTree = builder.fit(x, y)
+
+            # predict `regressionTree` on `x` itself
+            regressionTree.score(x, y)
+        
+        """
+        sz = len(x)
+        assert sz == len(yTrue)
+
+        if isinstance(yTrue, PurePandas.PurePythonDataFrame):
+            yTrue = yTrue.iloc[:, 0]
+
+        yPredicted = self.predict(x)
+
+        u = sum(
+            (yTrue[ix] - yPredicted[ix]) ** 2.0 for ix in xrange(sz)
+            )
+        mean = sum(yTrue) / sz
+        v = sum(
+            (yTrue[ix] - mean) ** 2.0 for ix in xrange(sz)
+            )
+
+        return 1.0 - u / v
 
 
 class RegressionLeafRule:
@@ -95,6 +155,10 @@ class RegressionTreeBuilder:
         minSplitThresh (int): an "internal" argument, not generally of interest to
             casual users, giving the splitting rule in `computeBucketedSampleSummaries`
 
+    Returns:
+        A :class:`~pyfora.algorithms.regressionTrees.RegressionTree.RegressionTree`
+        instance.
+
     Examples::
         
         from pyfora.algorithms import RegressionTreeBuilder
@@ -113,7 +177,7 @@ class RegressionTreeBuilder:
             minSplitThresh=1000000
             ):
         self.maxDepth = maxDepth
-        self.impurityMeasure = treeBase.SampleSummary
+        self.impurityMeasure = Base.SampleSummary
         self.minSamplesSplit = minSamplesSplit
         self.minSplitThresh = minSplitThresh
         self.numBuckets = numBuckets
@@ -121,8 +185,8 @@ class RegressionTreeBuilder:
     @staticmethod
     def samplesummary(xVec):
         return sum(
-            (treeBase.SampleSummary(xVec[ix]) for ix in xrange(len(xVec))),
-            treeBase.SampleSummary()
+            (Base.SampleSummary(xVec[ix]) for ix in xrange(len(xVec))),
+            Base.SampleSummary()
             )
 
     def bestRule(self, df, yDim, xDimensions, activeIndices):
@@ -140,8 +204,8 @@ class RegressionTreeBuilder:
     @staticmethod
     def sampleSummary(xVec):
         return sum(
-            (treeBase.SampleSummary(xVec[ix]) for ix in xrange(len(xVec))),
-            treeBase.SampleSummary()
+            (Base.SampleSummary(xVec[ix]) for ix in xrange(len(xVec))),
+            Base.SampleSummary()
             )
 
     def bestRuleForXDimension(self, df, yDim, xDim, activeIndices):
@@ -161,7 +225,7 @@ class RegressionTreeBuilder:
         splitPoint, impurityImprovement = \
             bucketedSampleSummaries.bestSplitPointAndImpurityImprovement()
 
-        return treeBase.Rule(
+        return Base.Rule(
             xDim,
             splitPoint,
             impurityImprovement,
@@ -174,10 +238,10 @@ class RegressionTreeBuilder:
             high = len(xCol)
 
         if high - low < self.minSplitThresh:
-            hist = treeBase.SampleSummaryHistogram(x0, x1, count, False)
+            hist = Base.SampleSummaryHistogram(x0, x1, count, False)
 
             for ix in xrange(low, high):
-                hist.observe(xCol[ix], treeBase.SampleSummary(yCol[ix]))
+                hist.observe(xCol[ix], Base.SampleSummary(yCol[ix]))
 
             return hist.freeze()
 
@@ -189,15 +253,16 @@ class RegressionTreeBuilder:
                 xCol, yCol, x0, x1, count, mid, high)
 
     def fit(self, x, y):
-        """Using a :class:`~pyfora.algorithms.regressionTrees.RegressionTree.RegressionTreeBuilder`, 
+        """Using a :class:`~pyfora.algorithms.regressionTrees.RegressionTree.RegressionTreeBuilder`,
         fit a regression tree to predictors `x` and responses `y`.
 
         Args:
             x (:class:`pandas.DataFrame`): of the predictors.
             y (:class:`pandas.DataFrame`): giving the responses.
 
-        Returns: a :class:`~pyfora.algorithms.regressionTrees.RegressionTree.RegressionTree`
-        instance.
+        Returns: 
+            a :class:`~pyfora.algorithms.regressionTrees.RegressionTree.RegressionTree`
+            instance.
       
         Examples::
         
@@ -280,7 +345,7 @@ class RegressionTreeBuilder:
             (len(leftIndices) + len(rightIndices))
 
         return RegressionTree(
-            [treeBase.SplitRule(
+            [Base.SplitRule(
                 bestRule,
                 1,
                 1 + len(treeLeft),
@@ -316,7 +381,7 @@ class RegressionTreeBuilder:
         """
         return RegressionTreeBuilder(
             maxDepth,
-            treeBase.SampleSummary,
+            Base.SampleSummary,
             minSamplesSplit,
             ).fit(x, y)            
 
