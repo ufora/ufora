@@ -22,7 +22,11 @@ class BetaFunction:
         if not isinstance(b, float):
             b = float(b)
         
-        return BetaFunction.__pyfora_builtins__.betaFunction(a,b)
+        return __inline_fora(
+            """fun(PyFloat(...) a, PyFloat(...) b) { 
+                   return PyFloat(`beta(a.@m, b.@m))
+                   }"""
+            )(a, b)
 
 def generateMappings():
     tr = []

@@ -18,8 +18,6 @@
 #include "../../Native/NativeCode.hppml"
 #include "../../Native/ArbitraryNativeConstant.hpp"
 #include "../../Core/CSTValue.hppml"
-#include <boost/thread.hpp>
-#include <map>
 
 namespace TypedFora {
 namespace Abi {

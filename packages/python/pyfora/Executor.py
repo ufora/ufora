@@ -120,6 +120,33 @@ class Executor(object):
                                                onComplete)
         return future
 
+    def importRemoteFile(self, path):
+        """Loads the content of a file as a string
+
+        Note:
+            The file must be available to all machines in the Ufora cluster using
+            the specified path. If you run multiple workers you must either copy
+            the file to all machines, or if using a network file-system, mount
+            it into the same path on all machines.
+
+            In addition, Ufora may cache the content of the file. Changes to the
+            file's content made after it has been loaded may have no effect.
+
+        Args:
+            path (str): Full path to the file. This must be a valid path on **all**
+                Ufora worker machines.
+
+        Returns:
+            Future.Future: a :class:`~Future.Future` that resolves to a
+            :class:`~RemotePythonObject.RemotePythonObject` representing the
+            content of the file as a string.
+        """
+        def importFile():
+            builtins = path.__pyfora_builtins__
+            return builtins.loadFileDataset(path)
+
+        return self.submit(importFile)
+
     def define(self, obj):
         """Create a remote representation of an object.
 
@@ -156,14 +183,11 @@ class Executor(object):
         self.connection.convertObject(objectId, self.objectRegistry, onConverted)
         return future
 
-    def submit(self, fn, *args, **kwargs):
+    def submit(self, fn, *args):
         """Submits a callable to be executed on the cluster with the provided arguments.
 
         This function is shorthand for calling :func:`~Executor.define` on the callable and all
         arguments and then invoking the remote callable with the remoted arguments.
-
-        Note:
-            Keyword arguments (`**kwargs`) are not currently supported.
 
         Returns:
             Future.Future: A :class:`~Future.Future` representing the given call.
@@ -171,8 +195,6 @@ class Executor(object):
             instance or an exception.
         """
         self._raiseIfClosed()
-        if len(kwargs) > 0:
-            raise Exceptions.PyforaNotImplementedError("Keyword arguments not supported yet")
 
         # TODO: make this truly async
         #       don't block on the 'define' calls

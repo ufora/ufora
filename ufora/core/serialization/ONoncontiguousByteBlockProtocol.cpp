@@ -35,7 +35,7 @@ void ONoncontiguousByteBlockProtocol::write(uword_t inByteCount, void *inData)
 	data.resize(inByteCount);
 	memcpy(&data[0], inData, inByteCount);
 
-	mData->push_back(data);
+	mData->push_back(std::move(data));
 
 	mPosition += inByteCount;
 	}

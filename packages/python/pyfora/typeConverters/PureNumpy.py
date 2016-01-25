@@ -19,7 +19,9 @@ import numpy as np
 class PurePythonNumpyArray:
     """
     This is this pyfora wrapper and implementation of the numpy array class
-    Internally, the array is stored as a list of values and a tuple of the array dimensions
+    Internally, the array is stored as a list of values and a tuple of the 
+    array dimensions. Currently, the values block is interpreted in a 
+    *row major* fashion.
     """
     def __init__(self, shape, values):
         self.shape = shape
@@ -46,6 +48,19 @@ class PurePythonNumpyArray:
     def __iter__(self):
         for idx in range(len(self)):
             yield self[idx]
+
+    def __eq__(self, y):
+        # true numpy usese some "broadcasting" rules
+        # to decide the shape of the resultant array
+        # here we're restricting to the simpler case
+        # where both arrays have the same size
+        if self.shape != y.shape:
+            raise ValueError(
+                "__eq__ only currently implemented for equal-sized arrays"
+                )
+            
+        tr = [self.values[ix] == y.values[ix] for ix in xrange(self.size)]
+        return PurePythonNumpyArray(self.shape, tr)
 
     @property
     def size(self):
@@ -77,7 +92,11 @@ class PurePythonNumpyArray:
 
     def __getitem__(self, ix):
         if len(self.shape) == 1:
-            return self.values[ix]
+            if isinstance(ix, slice):
+                vals = self.values[ix]                
+                return PurePythonNumpyArray((len(vals),), vals)
+            else:
+                return self.values[ix]
 
         def shapeOfResultantArray(originalShape):
             newShape = []
@@ -100,32 +119,49 @@ class PurePythonNumpyArray:
     def __mul__(self, v):
         def op(x, y):
             return x * y
+
+        if isinstance(v, PurePythonNumpyArray):
+            return self._zipArraysWithOp(v, op)
+
         return self._applyOperatorToAllElements(op, v)
 
     def __add__(self, v):
-        if isinstance(v, PurePythonNumpyArray):
-            return self._addArray(v)
-
         def op(x, y):
             return x + y
+
+        if isinstance(v, PurePythonNumpyArray):
+            return self._zipArraysWithOp(v, op)
+
         return self._applyOperatorToAllElements(op, v)
 
     def __sub__(self, v):
         def op(x, y):
             return x - y
+
+        if isinstance(v, PurePythonNumpyArray):
+            return self._zipArraysWithOp(v, op)
+
         return self._applyOperatorToAllElements(op, v)
 
     def __pow__(self, v):
         def op(x, y):
             return x ** y
+
+        if isinstance(v, PurePythonNumpyArray):
+            return self._zipArraysWithOp(v, op)
+
         return self._applyOperatorToAllElements(op, v)
 
     def __div__(self, q):
         def op(x, y):
             return x / y
+
+        if isinstance(q, PurePythonNumpyArray):
+            return self._zipArraysWithOp(q, op)
+
         return self._applyOperatorToAllElements(op, q)
 
-    def _addArray(self, v):
+    def _zipArraysWithOp(self, v, op):
         if self.shape != v.shape:
             raise ValueError(
                 "operands cannot be added with shapes " + str(self.shape) + \
@@ -134,7 +170,7 @@ class PurePythonNumpyArray:
 
         return PurePythonNumpyArray(
             self.shape,
-            [self.values[ix] + v.values[ix] for ix in xrange(self.size)]
+            [op(self.values[ix], v.values[ix]) for ix in xrange(self.size)]
             )
 
     def _applyOperatorToAllElements(self, op, val):
@@ -172,25 +208,42 @@ class PurePythonNumpyArrayMapping(PureImplementationMapping.PureImplementationMa
 
     def mapPyforaInstanceToPythonInstance(self, pureNumpyArray):
         array = np.array(pureNumpyArray.values)
-        array.shape = pureNumpyArray.shape
-        return array
+        try:
+            return array.reshape(pureNumpyArray.shape)
+        except:
+            assert False, (pureNumpyArray.values, pureNumpyArray.shape)
 
 
 class NpZeros:
     def __call__(self, length):
-        vals = []
-        for _ in range(length):
-            vals = vals + [0.0]
+        def zerosFromCountAndShape(count, shape):
+            vals = []
+            for _ in range(count):
+                vals = vals + [0.0]
+            
+            return PurePythonNumpyArray(
+                shape,
+                vals
+                )
 
-        return PurePythonNumpyArray(
-            (length,),
-            vals
-            )
+        if isinstance(length, tuple):
+            # in this case, tuple is the shape of the array
+            count = reduce(lambda x, y: x*y, length)
+            return zerosFromCountAndShape(count, length)
+        else:
+            # in this case tuple is the length of the array
+            return zerosFromCountAndShape(length, (length,))
 
 
 class NpArray:
     """This will only work for a well-formed (not jagged) n-dimensional python lists"""
     def __call__(self, array):
+        if not isinstance(array[0], list):
+            return PurePythonNumpyArray(
+                (len(array),),
+                array
+                )
+
         def flattenAnNDimensionalArray(arr, shape):
             toReturn = []
             if len(shape) == 0:
@@ -238,8 +291,11 @@ class NpDot:
             # The numpy API allows us to multiply a 1D array by a 2D array
             # and numpy will automatically reshape the 1D array to 2D
             if len(arr1.shape) == 1 and len(arr2.shape) == 2:
-                arr1 = arr1.reshape((arr1.shape[0], 1,)).transpose()
+                arr1 = arr1.reshape((1, arr1.shape[0]))
                 return self(arr1, arr2)[0]
+
+            if len(arr1.shape) == 2 and len(arr2.shape) == 1:
+                return self(arr2, arr1.transpose())
 
             if len(arr1.shape) != len(arr2.shape):
                 raise ValueError("Matrix dimensions do not match")
@@ -259,7 +315,7 @@ class NpDot:
                         )
 
                 builtins = NpDot.__pyfora_builtins__
-                result = builtins.matrixMult(
+                result = builtins.linalg.matrixMult(
                     arr1.values, arr1.shape, arr2.values, arr2.shape
                     )
                 flattenedValues = result[0]
@@ -272,7 +328,7 @@ class NpDot:
 
             else:
                 raise Exception(
-                    "not currently implemented for > 2 dimensions"
+                    "not currently implemented for > 2 dimensions: "
                     )
 
         else:
@@ -282,17 +338,67 @@ class NpDot:
 class NpPinv:
     def __call__(self, matrix):
         builtins = NpPinv.__pyfora_builtins__
-        result = builtins.pInv(matrix.values, matrix.shape)
+
+        shape = matrix.shape
+        assert len(shape) == 2
+
+        result = builtins.linalg.pInv(matrix.values, shape)
         flat = result[0]
-        shape = tuple(result[1])
+        shape = result[1]
         return PurePythonNumpyArray(
             shape,
             flat
             )
 
+
+class LinSolve:
+    def __call__(self, a, b):
+        assert len(a.shape) == 2, "need len(a.shape) == 2"
+        assert a.shape[0] == a.shape[1], "need a.shape[0] == a.shape[1]"
+        assert a.shape[0] == b.shape[0], "need a.shape[0] == b.shape[0]"
+
+        if len(b.shape) == 2:
+            return self._linsolv_impl(a, b)
+        elif len(b.shape) == 1:
+            res = self._linsolv_impl(a, b.reshape((len(b),1)))
+            return res.reshape((len(res),))
+
+        assert False, "need len(b.shape) == 2 or len(b.shape) == 1"
+
+    def _linsolv_impl(self, a, b):
+        res = LinSolve.__pyfora_builtins__.linalg.linsolve(a, b)
+        flattendValues = res[0]
+        shape = res[1]
+        return PurePythonNumpyArray(
+            shape,
+            flattendValues
+            )
+
+
+class NpArange:
+    def __call__(self, start, end, step):
+        currentVal = start
+        toReturn = []
+        while currentVal < end:
+            toReturn = toReturn + [currentVal]
+            currentVal = currentVal + step
+        return NpArray()(toReturn)
+
+
+class Mean:
+    def __call__(self, x):
+        return sum(x) / len(x)
+
+
+class Median:
+    def __call__(self, x):
+        raise NotImplementedError("fill this out, bro")
+
+
 def generateMappings():
-    mappings_ = [(np.zeros, NpZeros), (np.array, NpArray),
-                 (np.dot, NpDot), (np.linalg.pinv, NpPinv)]
+    mappings_ = [(np.zeros, NpZeros), (np.array, NpArray), (np.dot, NpDot),
+                 (np.linalg.pinv, NpPinv), (np.linalg.solve, LinSolve),
+                 (np.arange, NpArange)]
 
     tr = [PureImplementationMapping.InstanceMapping(instance, pureType) for \
             (instance, pureType) in mappings_]

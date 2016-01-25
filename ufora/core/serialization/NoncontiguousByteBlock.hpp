@@ -29,9 +29,9 @@ class NoncontiguousByteBlock : public PolymorphicSharedPtrBase<NoncontiguousByte
 public:
 	NoncontiguousByteBlock();
 
-	explicit NoncontiguousByteBlock(const std::string& inString);
+	explicit NoncontiguousByteBlock(std::string&& inString);
 
-	void push_back(const std::string& inString);
+	void push_back(std::string&& inString);
 
 	uint32_t totalByteCount(void) const;
 
@@ -87,7 +87,7 @@ public:
 				
 				s.deserialize(aString);
 				
-				t.push_back(aString);
+				t.push_back(std::move(aString));
 
 				sz--;
 				}

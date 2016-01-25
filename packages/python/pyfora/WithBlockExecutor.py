@@ -24,7 +24,7 @@ import traceback
 import logging
 import pyfora.PyforaInspect as PyforaInspect
 import pyfora.Exceptions as Exceptions
-import pyfora.PyAstUtil as PyAstUtil
+import pyfora.pyAst.PyAstUtil as PyAstUtil
 import pyfora.DownloadPolicy as DownloadPolicy
 import sys
 import pyfora.PyforaWithBlock as PyforaWithBlock
@@ -171,7 +171,6 @@ class WithBlockExecutor(object):
 
     def __exit__(self, excType, excValue, trace):
         # swallow WithBlockCompleted and let all other exceptions through
-        logging.info("excType: %s", excType)
         return isinstance(excValue, WithBlockCompleted)
 
     def blockOperation(self, frame):

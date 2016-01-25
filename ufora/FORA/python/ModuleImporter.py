@@ -224,7 +224,7 @@ def importModuleByName(modulename, moduleImportParentList = None):
         return None
 
 
-def importModuleAndMemberByName(modulename, moduleImportParentList = None):
+def importModuleAndMemberByName(modulename, moduleImportParentList=None):
     """search for a globally named object 'modulename' and return it.
 
     First, we search the builtin module. If it's not found there, we then

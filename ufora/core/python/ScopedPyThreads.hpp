@@ -16,8 +16,6 @@
 #ifndef ScopedPyThreads_hpp
 #define ScopedPyThreads_hpp
 
-#include <stdint.h>
-#include <boost/python.hpp>
 #include <boost/thread.hpp>
 
 
@@ -30,17 +28,16 @@ public:
 private:
         PyThreadState *mState;
 
-		friend class ScopedPyThreadsReacquire;
+        friend class ScopedPyThreadsReacquire;
 
-		static boost::thread_specific_ptr<PyThreadState*>* getPtr(void);
+        static boost::thread_specific_ptr<PyThreadState*>* getPtr(void);
 };
 
 class ScopedPyThreadsReacquire {
 public:
-		ScopedPyThreadsReacquire();
-		~ScopedPyThreadsReacquire();
+        ScopedPyThreadsReacquire();
+        ~ScopedPyThreadsReacquire();
 private:
-		bool mAcquired;
+        bool mAcquired;
 };
 #endif
-

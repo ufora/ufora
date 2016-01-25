@@ -21,6 +21,7 @@
 #include "NativeCodeCompiler.hppml"
 #include "../Interpreter/RuntimeConfig.hppml"
 #include "NativeCodeFlattened.hppml"
+#include "NativeCodeFlattenedUtil.hppml" 
 #include "NativeCodeSimplification.hppml"
 #include "FunctionPointerHandle.hpp"
 #include "../../core/ScopedProfiler.hppml"
@@ -36,8 +37,6 @@ using namespace std;
 typedef llvm::IRBuilder<> bb;
 @type BOpAndType = NativeBinaryOpcode opcode, NativeType t;
 
-
-
 NativeType continuationTypeForReturns(const ImmutableTreeVector<NativeType>& rets)
 	{
 	ImmutableTreeVector<NativeType> ts;
@@ -47,15 +46,60 @@ NativeType continuationTypeForReturns(const ImmutableTreeVector<NativeType>& ret
 
 	return NativeType::Continuations(ts);
 	}
-	
-void LLVMFunctionBuilder::setSpillWeight(llvm_block_ptr block, double spillWeight)
-	{
-	#ifdef LLVM_BASIC_BLOCK_HAS_SPILL_WEIGHT_MODIFIER
-	if (mCompiler.mApplyWeights)
-		block->spillWeightModifier = spillWeight;
-	#endif
-	}
 
+
+LLVMFunctionBuilder::LLVMFunctionBuilder(
+		NativeCodeCompiler& inCompiler,
+		llvm::Function*& outFun,
+		NativeType& outSlotsType,
+		map<uword_t, ImmutableTreeVector<NativeContinuationMetadataSerialized> >& outMetadataMap,
+		map<uword_t, NativeIndividualContinuationMetadata>& outIndividualMetadataMap,
+		const string& inName,
+		const NativeCFG& inFun,
+		llvm::Module* inModule
+		)	:
+			mCompiler(inCompiler),
+			mOutMetadataMap(outMetadataMap),
+			mOutIndividualMetadataMap(outIndividualMetadataMap),
+			mConfig(inCompiler.getTypedForaCompiler().getConfig()),
+			mNativeFun(inFun),
+			mName(inName),
+			mTempVarSize(0),
+			mIsSimpleFunction(false),
+			mContinuationsValue(0)
+	{
+	flattenAndSimplifyNativeFun();
+	
+	initializeFunction(outFun, inModule);
+	createTempVarForBitcasting();
+	computeEntryBlockIDs();	
+	addPhiNodesToBlocks();
+	computeSlots();	
+	createSlotsPtr(outSlotsType);	
+	createExitBlock();
+	translateNativeBlocks();
+	//first, we need to create the slots pointer.
+	finishSlotsPtr();
+	//for each block, we have to load relevant args. for block zero,
+	//we load from the argument and delete it. for the others, we only load the ones that are 'live'
+	//and jump in
+	createInitialSwitchBlock();
+	createStagingBlocksAndTheirJumps();
+	replaceTempVarForBitcastingWithAlloc();
+	
+    if (mConfig.traceDefinitions() && SHOULD_LOG_INFO())
+        {
+        std::string logMessage;
+        	
+        	{
+	        llvm::raw_string_ostream stream(logMessage);
+	        mFunction->print(stream);
+	    	}
+
+        LOG_INFO << "LLVM definition for " << mName << ":\n" << logMessage;
+    	}
+	}
+	
 void LLVMFunctionBuilder::initializeFunction(
 		llvm::Function*& ioFunPtr,
 		llvm::Module* inModule
@@ -92,15 +136,29 @@ void LLVMFunctionBuilder::initializeFunction(
 		llvm::BasicBlock::Create(mCompiler.getLLVMContext(), "function_entrypoint", mFunction);
 	mFunctionBranchPoint =
 		llvm::BasicBlock::Create(mCompiler.getLLVMContext(), "function_branch_point", mFunction);
-	mNewSlotsBlock =
-		llvm::BasicBlock::Create(mCompiler.getLLVMContext(), "function_new_slots", mFunction);
-	mExistingSlotsBlock =
-		llvm::BasicBlock::Create(mCompiler.getLLVMContext(), "function_existing_slots", mFunction);
 
-	setSpillWeight(mFunctionEntryBlock, 0.001);
-	setSpillWeight(mFunctionBranchPoint, 0.001);
-	setSpillWeight(mNewSlotsBlock, 0.001);
-	setSpillWeight(mExistingSlotsBlock, 0.001);
+	auto contType = continuationTypeForReturns(mNativeFun.returnTypes());
+
+	//add back the implicit continuation type
+	auto initialContPtr =
+		bb(mFunctionEntryBlock).CreatePointerCast(
+			mArgPtrVal,
+			toLLVM(contType.ptr())
+			);
+
+	mContinuationsValue =
+		LLVMValue(
+			bb(mFunctionEntryBlock).CreateLoad(bb(mFunctionEntryBlock).CreateConstGEP1_32(initialContPtr,0)),
+			contType
+			);
+
+	if (!mIsSimpleFunction)
+		{
+		mNewSlotsBlock =
+			llvm::BasicBlock::Create(mCompiler.getLLVMContext(), "function_new_slots", mFunction);
+		mExistingSlotsBlock =
+			llvm::BasicBlock::Create(mCompiler.getLLVMContext(), "function_existing_slots", mFunction);
+		}
 
 	if (wantsArgumentTrace())
 		genTracer(
@@ -111,7 +169,11 @@ void LLVMFunctionBuilder::initializeFunction(
 				mBranchIDVal
 			);
 	}
-	
+
+bool LLVMFunctionBuilder::useInlineMemoryManagement()
+	{
+	return mConfig.useInlineMemoryManagement() && !mIsSimpleFunction;
+	}	
 
 void LLVMFunctionBuilder::createTempVarForBitcasting()
 	{
@@ -121,7 +183,10 @@ void LLVMFunctionBuilder::createTempVarForBitcasting()
 void LLVMFunctionBuilder::flattenAndSimplifyNativeFun()
 	{
 	flattenNativeFun();
+
 	simplifyFlattenedNativeFun();
+
+	mIsSimpleFunction = NativeCodeFlattened::isSimpleFlatFunction(mFlatBlockMap);
 	}
 	
 void LLVMFunctionBuilder::flattenNativeFun()
@@ -182,12 +247,14 @@ void LLVMFunctionBuilder::dumpFlattenedBlocksToFile(const string& inFilename) co
 	
 void LLVMFunctionBuilder::logFlattenedBlocks(const string& message, bool withNativeCFG) const
 	{
-	LOG_INFO << string(mFunction->getName()) << ":\n";
+	LOGGER_INFO_T log = LOGGER_INFO;
+
+	log << string(mFunction->getName()) << ":\n";
 	
 	if (withNativeCFG)
-		LOG_INFO << Ufora::indent(prettyPrintString(mNativeFun)) << "\n";
+		log << Ufora::indent(prettyPrintString(mNativeFun)) << "\n";
 	
-	LOG_INFO << message << Ufora::indent(prettyPrintString(mFlatBlockMap)) << "\n";
+	log << message << Ufora::indent(prettyPrintString(mFlatBlockMap)) << "\n";
 	}
 	
 void LLVMFunctionBuilder::simplifyFlattenedNativeFun()
@@ -196,11 +263,11 @@ void LLVMFunctionBuilder::simplifyFlattenedNativeFun()
 	
 	Ufora::ScopedProfiler<std::string> profiler("LLVMFunctionBuilder::Simplify");
 
-	simplifyFlattenedCode(mFlatBlockMap, mConfig, mFunction->getName());
+	simplifyFlattenedCode(mFlatBlockMap, mConfig, mName);
 	
 	if (curClock() - t0 > .1)
 		LOG_INFO << "SIMPLIFY CFG of complexity " << mNativeFun.complexity()
-			<< ", " << string(mFunction->getName()) << " TOOK " << curClock() - t0;
+			<< ", " << mName << " TOOK " << curClock() - t0;
 			
 	if (mConfig.compilerDefinitionDumpDir() != "")
 		dumpFlattenedBlocksToFile(mName);
@@ -211,7 +278,7 @@ void LLVMFunctionBuilder::simplifyFlattenedNativeFun()
 	
 void LLVMFunctionBuilder::addPhiNodesToBlocks()
 	{
-	ImmutableTreeVector<NativeBlockID> blockList = orderBlocks(mFlatBlockMap);
+	ImmutableTreeVector<NativeBlockID> blockList = NativeCodeFlattened::orderBlocks(mFlatBlockMap);
 
 	for (long j = 0; j < blockList.size(); j++)
 		{
@@ -241,8 +308,6 @@ void LLVMFunctionBuilder::addPhiNodesToBlocks()
 					);
 			}
 
-		setSpillWeight(mBlockMap[id], flattenedNativeBlock.relativeFrequency());
-
 		map<NativeVariable, llvm_phinode_ptr>& livePhis(mBlockLiveVarPHIs[id]);
 
 		for (long k = 0; k < flattenedNativeBlock.liveOnInput().size(); k++)
@@ -255,8 +320,7 @@ void LLVMFunctionBuilder::createExitBlock()
 	{
 	mJumpBlock =
 		llvm::BasicBlock::Create(mCompiler.getLLVMContext(), "final_exit_block", mFunction);
-	setSpillWeight(mJumpBlock, .001);
-
+	
 	mFinalFunPtr = createPhi(mJumpBlock, NativeType::uint8().ptr());
 	mFinalCont = createPhi(mJumpBlock, NativeType::uword());
 	mFinalStackPtr = createPhi(mJumpBlock, NativeType::uint8().ptr());
@@ -264,12 +328,13 @@ void LLVMFunctionBuilder::createExitBlock()
 		{
 		llvm_block_ptr block = mJumpBlock;
 
-		callFree(
-			block,
-			mBaseMemBlockPtr,
-			toVoidPointer(block,mSlotsPtr),
-			mConfig.useInlineMemoryManagement()
-			);
+		if (!mIsSimpleFunction)
+			callFree(
+				block,
+				mBaseMemBlockPtr,
+				toVoidPointer(block, mSlotsPtr),
+				useInlineMemoryManagement()
+				);
 
 		llvm_value_ptr functionPointer =
 			bb(block).CreatePointerCast(
@@ -330,6 +395,9 @@ void LLVMFunctionBuilder::computeSlots()
 	
 void LLVMFunctionBuilder::createSlotsPtr(NativeType& outSlotsType)
 	{
+	if (mIsSimpleFunction)
+		return;
+
 	mSlotsType = NativeType::Composite(varsToTypes(mSlots));
 	mSlotsPhi = createPhi(mFunctionBranchPoint, mSlotsType.ptr());
 	
@@ -346,6 +414,12 @@ void LLVMFunctionBuilder::translateNativeBlocks()
 	
 void LLVMFunctionBuilder::finishSlotsPtr()
 	{
+	if (mIsSimpleFunction)
+		{
+		bb(mFunctionEntryBlock).CreateBr(mFunctionBranchPoint);
+		return;
+		}
+
 	llvm::SwitchInst* createSlotsSwitchInst =
 		llvm::IRBuilder<>(mFunctionEntryBlock).CreateSwitch(
 			mBranchIDVal,
@@ -369,7 +443,7 @@ void LLVMFunctionBuilder::finishSlotsPtr()
 			mNewSlotsBlock,
 			mBaseMemBlockPtr,
 			mSlotsType.packedSize(),
-			mConfig.useInlineMemoryManagement()
+			useInlineMemoryManagement()
 			);
 	slotsPointer = bb(mNewSlotsBlock).CreatePointerCast(slotsPointer, toLLVM(mSlotsPtr.t()));
 
@@ -391,8 +465,7 @@ void LLVMFunctionBuilder::createInitialSwitchBlock()
 	{
 	llvm_block_ptr failedBranchBlock =
 		llvm::BasicBlock::Create(mCompiler.getLLVMContext(), "bad_branch_block", mFunction);
-	setSpillWeight(failedBranchBlock, .001);
-
+	
 	genTracer(failedBranchBlock, "bad branch", mBranchIDVal);
 	bb(failedBranchBlock).CreateRetVoid();
 
@@ -416,11 +489,7 @@ llvm_block_ptr LLVMFunctionBuilder::createStagingBlock(
 				boost::lexical_cast<string>(index)).c_str(),
 			mFunction
 			);
-	setSpillWeight(
-		stagingBlock,
-		mFlatBlockMap[nativeBlockId].relativeFrequency()
-		);
-
+	
 	mInitialSwitchInst->addCase(
 		llvm::ConstantInt::get(
 			static_cast<llvm::IntegerType*>(toLLVM(NativeType::uword())),
@@ -436,8 +505,7 @@ void LLVMFunctionBuilder::completeStagingBlocks(
 		llvm_block_ptr& ioBlockPtr,
 		const NativeCodeFlattened::Block& inFlattenedNativeBlock,
 		ImmutableTreeVector<LLVMValue>& ioValues,
-		llvm_value_ptr inArgsPtrCast,
-		llvm_value_ptr& ioContValue
+		llvm_value_ptr inArgsPtrCast
 		)
 	{
 	ImmutableTreeVector<NativeType> types = varsToTypes(inFlattenedNativeBlock.args());
@@ -463,14 +531,8 @@ void LLVMFunctionBuilder::completeStagingBlocks(
 					types[k+1]
 					);
 
-	ioContValue =
-		LLVMValue(
-			bb(ioBlockPtr).CreateLoad(bb(ioBlockPtr).CreateConstGEP2_32(inArgsPtrCast,0,0)),
-			types[0]
-			);
-
 	//now free the block
-	callFree(ioBlockPtr, mBaseMemBlockPtr, mArgPtrVal, mConfig.useInlineMemoryManagement());
+	callFree(ioBlockPtr, mBaseMemBlockPtr, mArgPtrVal, useInlineMemoryManagement());
 	}
 	
 void LLVMFunctionBuilder::createJumpFromStagingBlockToBlockById(
@@ -478,8 +540,7 @@ void LLVMFunctionBuilder::createJumpFromStagingBlockToBlockById(
 		const NativeBlockID& inToBlockId,
 		const NativeCodeFlattened::Block& inFlattenedNativeBlock,
 		const ImmutableTreeVector<LLVMValue>& inLLVMValues,
-		llvm_value_ptr inArgsPtrCast,
-		llvm_value_ptr inContValue
+		llvm_value_ptr inArgsPtrCast
 		)
 	{
 	//We can assume that all "live" variables are arguments to the block,
@@ -491,6 +552,7 @@ void LLVMFunctionBuilder::createJumpFromStagingBlockToBlockById(
 					inFlattenedNativeBlock.args()[k])
 					)
 				{
+				lassert(!mIsSimpleFunction);
 				lassert(inFlattenedNativeBlock.args()[k] == mVarsToSlots);
 
 				llvm_value_ptr slotPtr =
@@ -513,10 +575,12 @@ void LLVMFunctionBuilder::createJumpFromStagingBlockToBlockById(
 			}
 
 	//slot zero is always the continuation
-	bb(inFromStagingBlock).CreateStore(
-		inContValue,
-		bb(inFromStagingBlock).CreateConstGEP2_32(mSlotsPtr,0,0)
-		);
+	if (!mIsSimpleFunction)
+		bb(inFromStagingBlock).CreateStore(
+			mContinuationsValue,
+			bb(inFromStagingBlock).CreateConstGEP2_32(mSlotsPtr,0,0)
+			);
+
 	bb(inFromStagingBlock).CreateBr(mBlockMap[inToBlockId]);
 	}
 	
@@ -529,21 +593,20 @@ void LLVMFunctionBuilder::completeStagingBlocksAndJumpToBlockById(
 	ImmutableTreeVector<LLVMValue> values;
 	const NativeCodeFlattened::Block& flattenedNativeBlock(mFlatBlockMap[inToId]);
 	llvm_value_ptr argsPtrCast;
-	llvm_value_ptr contValue;
-
+	
 	completeStagingBlocks(
 		inFromStagingBlock,
 		flattenedNativeBlock,
 		values,
-		argsPtrCast,
-		contValue);
+		argsPtrCast
+		);
+
 	createJumpFromStagingBlockToBlockById(
 		inFromStagingBlock,
 		inToId,
 		flattenedNativeBlock,
 		values,
-		argsPtrCast,
-		contValue
+		argsPtrCast
 		);
 	}
 	
@@ -615,46 +678,6 @@ void LLVMFunctionBuilder::replaceTempVarForBitcastingWithAlloc()
 	mTempVarForBitcasting = 0;
 	}
 	
-LLVMFunctionBuilder::LLVMFunctionBuilder(
-		NativeCodeCompiler& inCompiler,
-		llvm::Function*& outFun,
-		NativeType& outSlotsType,
-		map<uword_t, ImmutableTreeVector<NativeContinuationMetadataSerialized> >& outMetadataMap,
-		map<uword_t, NativeIndividualContinuationMetadata>& outIndividualMetadataMap,
-		const string& inName,
-		const NativeCFG& inFun,
-		llvm::Module* inModule
-		)	:
-			mCompiler(inCompiler),
-			mOutMetadataMap(outMetadataMap),
-			mOutIndividualMetadataMap(outIndividualMetadataMap),
-			mConfig(inCompiler.getTypedForaCompiler().getConfig()),
-			mNativeFun(inFun),
-			mName(inName),
-			mTempVarSize(0)
-	{
-	initializeFunction(outFun, inModule);
-	createTempVarForBitcasting();
-	flattenAndSimplifyNativeFun();		
-	computeEntryBlockIDs();	
-	addPhiNodesToBlocks();
-	computeSlots();	
-	createSlotsPtr(outSlotsType);	
-	createExitBlock();
-	translateNativeBlocks();
-	//first, we need to create the slots pointer.
-	finishSlotsPtr();
-	//for each block, we have to load relevant args. for block zero,
-	//we load from the argument and delete it. for the others, we only load the ones that are 'live'
-	//and jump in
-	createInitialSwitchBlock();
-	createStagingBlocksAndTheirJumps();
-	replaceTempVarForBitcastingWithAlloc();
-	
-    if (mConfig.traceDefinitions())
-        mFunction->print(llvm::outs());
-	}
-
 bool LLVMFunctionBuilder::wantsSlotStorageTracers(void) const
 	{
 	return false;
@@ -807,9 +830,6 @@ void LLVMFunctionBuilder::createTerminalBranch(
 			//create some new blocks
 			llvm_block_ptr blockT = mBranchBlockMap[id].first;
 			llvm_block_ptr blockF = mBranchBlockMap[id].second;
-
-			setSpillWeight(blockT, nativeBlock.relativeFrequency() * trueFreq);
-			setSpillWeight(blockF, nativeBlock.relativeFrequency() * (1.0 - trueFreq));
 
 			lassert_dump(condV.t().isInteger() || condV.t().isPointer(),
 				prettyPrintString(condV.t()) << " isn't a valid type to branch on");
@@ -966,7 +986,7 @@ LLVMValue LLVMFunctionBuilder::evaluate(
 			return evaluate(blockPtr, c, ioVals);
 			}
 		-|	ReturnContinuation(indexAndTypes) ->> {
-
+			lassert(!mIsSimpleFunction);
 			llvm::Value* incomingContinuationsPtr = bb(blockPtr).CreateConstGEP2_32(mSlotsPtr,0,0);
 
 			LLVMValue incomingFunctionPtr(
@@ -1038,6 +1058,8 @@ LLVMValue LLVMFunctionBuilder::evaluate(
 				return ioVals[var];
 
 			//it's not - load it from a slot
+			lassert(!mIsSimpleFunction);
+
 			lassert_dump(var == mVarsToSlots,
 				"don't have slot for variable " << prettyPrintString(var) << ".\n\n"
 				<< prettyPrintString(mFlatBlockMap) << "\n");
@@ -1966,6 +1988,7 @@ LLVMValue LLVMFunctionBuilder::evaluate(
 							);
 				}
 		-|	Continuations(conts, data, contMetas) ->> {
+				lassert(!mIsSimpleFunction);
 				ImmutableTreeVector<LLVMValue> tupVals;
 
 				//store some block-independent metadata for the continuation
@@ -2042,10 +2065,19 @@ void LLVMFunctionBuilder::terminate(
 	if (term.isExit()) //if this is an exit / "return" terminator instruction
 		{
 		//write the return value into the right slot and branch to the jump block
-		llvm_value_ptr contPtr = 
-			bb(blockPtr).CreateConstGEP2_32(mSlotsPtr,0,0);
+		llvm_value_ptr cont;
 
-		llvm_value_ptr cont = bb(blockPtr).CreateLoad(contPtr);
+		if (mIsSimpleFunction)
+			{
+			lassert(mContinuationsValue);
+			cont = mContinuationsValue;
+			}
+		else
+			{
+			auto contPtr = bb(blockPtr).CreateConstGEP2_32(mSlotsPtr,0,0);
+			cont = bb(blockPtr).CreateLoad(contPtr);
+			}
+
 		llvm_value_ptr continuationSlot = 
 			bb(blockPtr).CreateExtractValue(
 				bb(blockPtr).CreateExtractValue(cont, 3),
@@ -2161,6 +2193,8 @@ void LLVMFunctionBuilder::terminate(
 	for (long k = 0; k < toWrite.size(); k++)
 		if (!toWrite[k].type().isEmpty())
 			{
+			lassert(!mIsSimpleFunction);
+
 			lassert_dump(
 				toWrite[k] == ioVals,
 				"can't write variable " << prettyPrintString(toWrite[k])
@@ -2191,6 +2225,7 @@ void LLVMFunctionBuilder::terminate(
 
 	@match NativeCodeFlattened::Term(term)
 		-|	Jump((b,a)) ->> {
+				lassert(!mIsSimpleFunction);
 
 				lassert_dump(
 					mFlatBlockMap[b].args().size() == vals.size(),
@@ -2211,7 +2246,7 @@ void LLVMFunctionBuilder::terminate(
 						addIncoming(mBlockLiveVarPHIs[b][v], vals[k], blockPtr);
 						live = live - v;
 						}
-						else
+					else
 						{
 						//write the value to a slot
 						if (!v.type().isEmpty())
@@ -2280,17 +2315,19 @@ void LLVMFunctionBuilder::terminate(
 					mBaseMemBlockPtr,
 					blockPtr,
 					vals,
-					mConfig.useInlineMemoryManagement(),
+					useInlineMemoryManagement(),
 					true
 					);
 				}
 		-|	Transfer(target, blockID, _, _) ->> {
+				lassert(!mIsSimpleFunction);
+
 				//destroy the local call frame
 				callFree(
 					blockPtr,
 					mBaseMemBlockPtr,
 					toVoidPointer(blockPtr,mSlotsPtr),
-					mConfig.useInlineMemoryManagement()
+					useInlineMemoryManagement()
 					);
 				
 				FunctionPointerHandle slot = 
@@ -2305,12 +2342,12 @@ void LLVMFunctionBuilder::terminate(
 					mBaseMemBlockPtr,
 					blockPtr,
 					vals,
-					mConfig.useInlineMemoryManagement(),
+					useInlineMemoryManagement(),
 					true
 					);
 				}
 		-|	CallGeneric(_, _, _, destroyLocalCallFrame, isInternal) ->> {
-
+				lassert(!mIsSimpleFunction);
 				LLVMValue pVal = vals[0];
 
 				if (destroyLocalCallFrame)
@@ -2318,7 +2355,7 @@ void LLVMFunctionBuilder::terminate(
 						blockPtr,
 						mBaseMemBlockPtr,
 						toVoidPointer(blockPtr, mSlotsPtr),
-						mConfig.useInlineMemoryManagement()
+						useInlineMemoryManagement()
 						);
 
 				longJump(
@@ -2326,11 +2363,12 @@ void LLVMFunctionBuilder::terminate(
 					mBaseMemBlockPtr,
 					blockPtr,
 					vals.slice(1),
-					mConfig.useInlineMemoryManagement(),
+					useInlineMemoryManagement(),
 					isInternal
 					);
 				}
 		-|	Follow(_,_,_, index, destroyLocalCallFrame) ->> {
+				lassert(!mIsSimpleFunction);
 
 				LLVMValue cont = vals[0];
 
@@ -2389,7 +2427,7 @@ void LLVMFunctionBuilder::terminate(
 						blockPtr,
 						mBaseMemBlockPtr,
 						toVoidPointer(blockPtr, mSlotsPtr),
-						mConfig.useInlineMemoryManagement()
+						useInlineMemoryManagement()
 						);
 
 				llvm::CallInst* callInst =

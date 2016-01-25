@@ -85,7 +85,7 @@ print 'intercept:', intercept.toLocal().result()
 
 # Project Roadmap
 
-The current release, `0.1`, is an early release of the Ufora python functionality.
+The first release, `0.1`, was an early release of the Ufora python functionality.
 The core Ufora VM has been under development for years, but the python front-end
 is new.
 
@@ -96,10 +96,13 @@ In the `0.2` release, we filled out some more of the
 python builtins, implemented the basic functionality present in `numpy` and
 `pandas`, and enabled a pathway to load and save data from/to amazon S3.
 
+The `0.3` release introduces additinal data science algorithms such as logistic regression and 
+GBM.
+
 After that, we're considering some of the following:
 
 * Python 3 support
-* Coverage for some core `scikit` data science algorithms (gbm, regressions, etc.)
+* Coverage for additional `scikit` data science algorithms
 * Execution of arbitrary python code out-of-process (for non-pure code we don't want to port)
 * More generic model for import/export of data from the cluster.
 * Enabling better feedback in the pyfora api for tracking progress of computations.
@@ -113,6 +116,7 @@ what you'd like to see next, or if you'd like to get involved.
 * Run Ufora on your [local machine](https://ufora.github.io/ufora/tutorials/getting-started-local.html)
 * Configuring Ufora to run in [AWS](https://ufora.github.io/ufora/tutorials/getting-started-aws.html)
 * The [restrictions](https://ufora.github.io/ufora/documentation/python-restrictions.html) we place on python so that this can all work.
+* `pyfora` Library [documentation](http://docs.pyfora.com/)
 
 # Contact us.
 

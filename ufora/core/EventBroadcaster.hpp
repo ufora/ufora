@@ -17,13 +17,9 @@
 
 #include <boost/bind.hpp>
 #include <boost/thread.hpp>
-#include <set>
 #include "debug/StackTrace.hpp"
 #include "threading/CallbackScheduler.hppml"
-#include "Clock.hpp"
 #include "PolymorphicSharedPtr.hpp"
-#include <iostream>
-#include "cppml/CPPMLPrettyPrinter.hppml"
 #include <deque>
 #include "AtomicOps.hpp"
 

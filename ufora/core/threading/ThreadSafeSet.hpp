@@ -17,66 +17,62 @@
 
 #include "../math/Nullable.hpp"
 #include <boost/thread.hpp>
-#include <map>
 
 //a thread-safe set
 
 template<class T>
 class ThreadSafeSet {
 public:
-		//returns true if the map contains key 'in'
-		bool contains(const T& in) const
-			{
-			boost::recursive_mutex::scoped_lock lock(mMutex);
-			return mSet.find(in) != mSet.end();
-			}
-		
-		void	insert(const T& in)
-			{
-			boost::recursive_mutex::scoped_lock lock(mMutex);
-			mSet.insert(in);
-			}
-		
-		void	erase(const T& in)
-			{
-			boost::recursive_mutex::scoped_lock lock(mMutex);
-			mSet.erase(in);
-			}
+    //returns true if the map contains key 'in'
+    bool contains(const T& in) const
+        {
+        boost::recursive_mutex::scoped_lock lock(mMutex);
+        return mSet.find(in) != mSet.end();
+        }
 
-		//remove the first element from the set and return if present, or return null() if set is
-		//empty
-		Nullable<T> popFirst()
-			{
-			Nullable<T> tr;
+    void insert(const T& in)
+        {
+        boost::recursive_mutex::scoped_lock lock(mMutex);
+        mSet.insert(in);
+        }
 
-				{
-				boost::recursive_mutex::scoped_lock lock(mMutex);
-				if (mSet.size())
-					{
-					tr = *mSet.begin();
-					mSet.erase(mSet.begin());
-					}
-				}
+    void erase(const T& in)
+        {
+        boost::recursive_mutex::scoped_lock lock(mMutex);
+        mSet.erase(in);
+        }
 
-			return tr;
-			}
-		
-		size_t size() const
-			{
-			boost::recursive_mutex::scoped_lock lock(mMutex);
-			return mSet.size();
-			}
+    //remove the first element from the set and return if present, or return null() if set is
+    //empty
+    Nullable<T> popFirst()
+        {
+        Nullable<T> tr;
 
-		std::set<T> getSet() const
-			{
-			boost::recursive_mutex::scoped_lock lock(mMutex);
-			return mSet;
-			}
+            {
+            boost::recursive_mutex::scoped_lock lock(mMutex);
+            if (mSet.size())
+                {
+                tr = *mSet.begin();
+                mSet.erase(mSet.begin());
+                }
+            }
+
+        return tr;
+        }
+
+    size_t size() const
+        {
+        boost::recursive_mutex::scoped_lock lock(mMutex);
+        return mSet.size();
+        }
+
+    std::set<T> getSet() const
+        {
+        boost::recursive_mutex::scoped_lock lock(mMutex);
+        return mSet;
+        }
 
 private:
-		std::set<T> mSet;
-		mutable boost::recursive_mutex mMutex;
+    std::set<T> mSet;
+    mutable boost::recursive_mutex mMutex;
 };
-
-
-

@@ -18,6 +18,7 @@ A manifest of python objects that have explicit FORA implementations in the pure
 """
 
 pythonSingletonToName = {
+    AssertionError: 'AssertionError',
     bool: 'bool',
     dict: 'dict',
     float: 'float',
@@ -45,6 +46,7 @@ pythonSingletonToName = {
 singletonNameToObject = {v:k for k,v in pythonSingletonToName.iteritems()}
 
 pythonNameToPyforaName = {
+    'AssertionError': 'AssertionError',
     'bool': 'BoolType',
     'dict': 'DictType',
     'float': 'FloatType',

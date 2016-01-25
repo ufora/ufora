@@ -277,8 +277,9 @@ class Config(object):
         self.objectStore = self.getConfigValue('OBJECT_STORE', 's3')
         self.objectStoreMaxAttempts = int(self.getConfigValue('OBJECT_STORE_MAX_ATTEMPTS',
                                                               100))
-        self.objectStoreFailureInterval = float(self.getConfigValue('OBJECT_STORE_FAILURE_INTERVAL',
-                                                                    20))
+        self.objectStoreFailureIntervalSeconds = long(
+            self.getConfigValue('OBJECT_STORE_FAILURE_INTERVAL_SEC', 20)
+            )
         self.hdfsNameNodeHost = self.getConfigValue('OBJECT_STORE_HDFS_NAME_NODE_HOST',
                                                     'hdfs')
         self.hdfsNameNodePort = self.getConfigValue('OBJECT_STORE_HDFS_NAME_NODE_PORT',
@@ -290,19 +291,29 @@ class Config(object):
         self.fakeAwsBaseDir = self.getConfigValue("FAKE_AWS_DIR",
                                                   os.path.join(self.rootDataDir, 'fakeAws'))
 
-        self.sharedStateLogPruneFrequency = int(self.getConfigValue(
-            "SHARED_STATE_LOG_PRUNE_FREQUENCY",
-            60 * 60))
-
-        self.sharedStateCache = str(self.getConfigValue("SHARED_STATE_CACHE",
-                                                        os.path.join(self.rootDataDir, "ss_cache")))
-
-        self.cumulusDiskCacheStorageDir = self.getConfigValue(
-            "CUMULUS_DISK_STORAGE_DIR",
-            self.rootDataDir + os.sep + "cumulus_disk_storage"
+        self.sharedStateLogPruneIntervalSeconds = long(
+            self.getConfigValue("SHARED_STATE_LOG_PRUNE_INTERVAL_SEC", 60 * 60)
             )
 
+        self.sharedStateCache = expandConfigPath(
+            self.getConfigValue("SHARED_STATE_CACHE_DIR",
+                                os.path.join(self.rootDataDir, "ss_cache")))
+
+        self.cumulusDiskCacheStorageDir = expandConfigPath(
+            self.getConfigValue("CUMULUS_DISK_STORAGE_DIR",
+                                os.path.join(self.rootDataDir, "cumulus_disk_storage")))
+
         self.cumulusEventsPath = os.path.join(self.rootDataDir, "cumulus_events")
+
+        self.compilerDiskCacheDir = expandConfigPath(
+            self.getConfigValue("COMPILER_DISK_CACHE_DIR",
+                                default=os.path.join(self.rootDataDir, 'jit_cache'),
+                                checkEnviron=True)
+            )
+
+        self.compilerDiskCacheSizeMB = int(
+            self.getConfigValue("COMPILER_DISK_CACHE_SIZE_MB",
+                              default=1024))
 
 
     def setLoggingLevel(self, foregroundLevel, backgroundLevel=None):

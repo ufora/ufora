@@ -28,7 +28,7 @@ def read_csv_from_string(data):
         data (str): a string of comma-separated values
 
     Returns:
-        A :calss:`pandas.DataFrame` that holds the parsed data.
+        A :class:`pandas.DataFrame` that holds the parsed data.
 
 
     Note:
@@ -37,9 +37,32 @@ def read_csv_from_string(data):
         removed in the near future.
     """
     listOfColumns, columnNames = \
-        PurePandas.PurePythonDataFrame.__pyfora_builtins__.readCsvFromString(
-            data
-            )
+        __inline_fora(
+            """fun(data) {
+                   let df = try {
+                       parsing.csv(
+                           data.@m,
+                           defaultColumnType: { PyFloat(Float64(_)) }
+                           );
+                       } catch (e) {
+                       throw Exception(PyString(String(e)))
+                       }
+
+                   let listOfColumns = PyList(
+                       df.columns.apply(
+                           fun(series) {
+                               PyList(series.dataVec)
+                               }
+                           )
+                       );
+
+                  let columnNames = PyList(
+                      df.columnNames ~~ { PyString(_) }
+                      )
+
+                  return PyTuple((listOfColumns, columnNames))
+                  }"""
+            )(data)
 
     return PurePandas.PurePythonDataFrame(
         listOfColumns, columnNames

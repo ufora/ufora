@@ -76,6 +76,7 @@ public:
 private:
 	boost::recursive_mutex			mMutex;
 	
+	// dropItemByName_ must be called with mMutex held
 	void dropItemByName_(std::string cacheItemToDelete);
 
 	boost::filesystem::path pathFor(const Fora::PageId& inID);

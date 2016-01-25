@@ -122,7 +122,7 @@ class SharedStateService(CloudService.Service):
                               traceback.format_exc())
             t = time.time()
             while not self.stoppedFlag.is_set() and \
-                    time.time() - t < Setup.config().sharedStateLogPruneFrequency:
+                    time.time() - t < Setup.config().sharedStateLogPruneIntervalSeconds:
                 time.sleep(1)
 
     def compressOrphandLogFiles(self):

@@ -61,6 +61,12 @@ class Chr:
     def __call__(self, asciiValue):
         return asciiValue.__pyfora_chr__()
 
+class Enumerate:
+    def __call__(self, iterable):
+        count = 0
+        for val in iterable:
+            yield (count, val)
+            count = count + 1
 
 class Len:
     def __call__(self, other):
@@ -265,6 +271,18 @@ class XRange:
         return XRangeInstance(start, count, increment)
 
 
+class Sorted:
+    def __call__(self, iterable):
+        if isinstance(iterable, list):
+            return Sorted._sortList(iterable)
+        else:
+            return Sorted._sortList([val for val in iterable])
+
+    @staticmethod
+    def _sortList(xs):
+        return Sorted.__pyfora_builtins__.sorted(xs)
+
+
 mappings_ = [
     (abs, Abs), (all, All), (any, Any),
     (apply, None), (basestring, None), (bin, None),
@@ -276,7 +294,7 @@ mappings_ = [
     (classmethod, None), (cmp, None), (coerce, None),
     (compile, None), (copyright, None),
     (credits, None), (delattr, None),
-    (dir, None), (divmod, None), (enumerate, None),
+    (dir, None), (divmod, None), (enumerate, Enumerate),
     (eval, None), (execfile, None), (exit, None),
     (file, None), (filter, None),
     (format, None), (frozenset, None), (getattr, None),
@@ -294,7 +312,7 @@ mappings_ = [
     (raw_input, None), (reduce, Reduce), (reload, None),
     (repr, None), (reversed, Reversed), (round, None),
     (set, None), (setattr, None),
-    (sorted, None), (staticmethod, None),
+    (sorted, Sorted), (staticmethod, None),
     (sum, Sum), (super, None),
     (unichr, None), (unicode, None),
     (vars, None), (xrange, XRange), (zip, None)

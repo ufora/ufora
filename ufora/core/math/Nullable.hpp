@@ -73,9 +73,9 @@ public:
 			return *this;
 			}
 
-		operator bool() const
+		explicit operator bool() const
 			{
-			return mData;
+			return static_cast<bool>(mData);
 			}
 
 		inline const T*	operator->() const
@@ -167,7 +167,7 @@ class Serializer<Nullable<T>, storage_type> {
 public:
 		static void serialize(storage_type& s, const Nullable<T>& in)
 			{
-			bool is = in;
+			bool is = in.isValue();
 			s.serialize(is);
 			if (is)
 				s.serialize(*in);
@@ -226,7 +226,7 @@ public:
 			return *this;
 			}
 
-		operator bool() const
+		explicit operator bool() const
 			{
 			return mData;
 			}

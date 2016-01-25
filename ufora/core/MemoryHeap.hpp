@@ -15,11 +15,8 @@
 ****************************************************************************/
 #pragma once
 
-#include <boost/thread/shared_mutex.hpp>
 #include <boost/tr1/functional.hpp>
 #include <boost/unordered_map.hpp>
-#include <cstdlib>
-#include <vector>
 
 #include "IntegerTypes.hpp"
 #include "lassert.hpp"

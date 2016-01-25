@@ -20,7 +20,7 @@ import ufora.BackendGateway.ComputedValue.ComputedValue as ComputedValue
 
 import pyfora.TypeDescription as TypeDescription
 import pyfora.StronglyConnectedComponents as StronglyConnectedComponents
-import pyfora.PyAstUtil as PyAstUtil
+import pyfora.pyAst.PyAstUtil as PyAstUtil
 import pyfora
 
 import ast
@@ -35,8 +35,8 @@ empytObjectExpression = ForaNative.parseStringToExpression(
     emptyCodeDefinitionPoint,
     ""
     )
-createInstanceImplVal = ForaNative.makeSymbol("CreateInstance")
-callImplVal = ForaNative.makeSymbol("Call")
+Symbol_CreateInstance = ForaNative.makeSymbol("CreateInstance")
+Symbol_Call = ForaNative.makeSymbol("Call")
 Symbol_uninitialized = ForaNative.makeSymbol("PyforaUninitializedVariable")
 Symbol_invalid = ForaNative.makeSymbol("PyforaInvalidVariable")
 
@@ -59,7 +59,8 @@ class Converter(object):
                  nativeDictConverter=None,
                  singletonAndExceptionConverter=None,
                  vdmOverride=None,
-                 purePythonModuleImplVal=None
+                 purePythonModuleImplVal=None,
+                 foraBuiltinsImplVal=None
                  ):
         self.convertedValues = {}
 
@@ -69,9 +70,6 @@ class Converter(object):
 
         self.singletonAndExceptionConverter = singletonAndExceptionConverter
 
-        self.nativeConstantConverter = \
-            self.constantConverter.nativeConstantConverter
-
         self.nativeListConverter = nativeListConverter
 
         self.nativeTupleConverter = nativeTupleConverter
@@ -80,9 +78,57 @@ class Converter(object):
 
         self.vdm_ = vdmOverride
 
-        self.purePythonModuleImplVal = purePythonModuleImplVal
-
         self.pyforaBoundMethodClass = purePythonModuleImplVal.getObjectMember("PyBoundMethod")
+
+        builtinMemberMapping = Converter.computeBuiltinMemberMapping(
+            purePythonModuleImplVal=purePythonModuleImplVal,
+            foraBuiltinsImplVal=foraBuiltinsImplVal
+            )
+
+        self.nativeConverter = ForaNative.makePythonAstConverter(
+            nativeConstantConverter,
+            self.nativeListConverter,
+            self.nativeTupleConverter,
+            self.nativeDictConverter,
+            purePythonModuleImplVal,
+            builtinMemberMapping
+            )
+
+    @staticmethod
+    def computeBuiltinMemberMapping(purePythonModuleImplVal, foraBuiltinsImplVal):
+        builtinMemberMapping = {}
+
+        builtinMemberMapping.update(
+            Converter.computeMemberMapping(
+                purePythonModuleImplVal
+                )
+            )
+
+        builtinMemberMapping.update(
+            Converter.computeMemberMapping(
+                foraBuiltinsImplVal
+                )
+            )
+
+        builtinMemberMapping['purePython'] = purePythonModuleImplVal
+        builtinMemberMapping['builtin'] = foraBuiltinsImplVal
+
+        return builtinMemberMapping
+
+    @staticmethod
+    def computeMemberMapping(purePythonImplVal):
+        objectMembers = purePythonImplVal.objectMembers
+        tr = {}
+        for memberName in objectMembers:
+            objectMember = purePythonImplVal.getObjectMember(memberName)
+
+            # TODO anybody: we're missing `builtin.Exception` here, since
+            # it is from a computation which FS1 simulator can't handle
+            # (from the source: `Exception: `Exception`();`)
+            if objectMember is not None:
+                tr[memberName] = objectMember
+
+        return tr
 
     def extractWrappedForaConstant(self, value):
         """Convenience method for testing. If 'value' is an ImplVal, get @m out of it."""
@@ -658,15 +704,10 @@ class Converter(object):
         sourcePath = objectIdToObjectDefinition[withBlockDescription.sourceFileId].path
 
         foraFunctionExpression = \
-            ForaNative.convertPythonAstWithBlockFunctionDefToForaOrParseError(
+            self.nativeConverter.convertPythonAstWithBlockFunctionDefToForaOrParseError(
                 nativeWithBodyAst.asFunctionDef,
                 nativeWithBodyAst.extent,
                 ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath]),
-                self.nativeConstantConverter,
-                self.nativeListConverter,
-                self.nativeTupleConverter,
-                self.nativeDictConverter,
-                self.purePythonModuleImplVal,
                 [x.split(".")[0] for x in withBlockDescription.freeVariableMemberAccessChainsToId]
                 )
         
@@ -759,7 +800,7 @@ class Converter(object):
             ivc = classMemberNameToImplVal[classMemberName]
             classMemberImplVals.append(ivc)
 
-        applyArgs = [classImplVal, createInstanceImplVal] + classMemberImplVals
+        applyArgs = [classImplVal, Symbol_CreateInstance] + classMemberImplVals
 
         convertedValueOrNone = ForaNative.simulateApply(
             ForaNative.ImplValContainer(
@@ -812,7 +853,7 @@ class Converter(object):
                 )
 
         allAreIVC = True
-        for k, v in renamedVariableMapping.iteritems():
+        for _, v in renamedVariableMapping.iteritems():
             if not isinstance(v, ForaNative.ImplValContainer):
                 allAreIVC = False
 
@@ -839,7 +880,7 @@ class Converter(object):
             for f in foraExpression.freeVariables:
                 args.append(renamedVariableMapping[f])
 
-            res = ComputedValue.ComputedValue(args=(expressionAsIVC, callImplVal) + tuple(args))
+            res = ComputedValue.ComputedValue(args=(expressionAsIVC, Symbol_Call) + tuple(args))
 
             return res
 
@@ -882,39 +923,24 @@ class Converter(object):
         tr = None
         if isinstance(classOrFunctionDefinition, TypeDescription.FunctionDefinition):
             if isinstance(pyAst, ForaNative.PythonAstStatement) and pyAst.isFunctionDef():
-                tr = ForaNative.convertPythonAstFunctionDefToForaOrParseError(
+                tr = self.nativeConverter.convertPythonAstFunctionDefToForaOrParseError(
                     pyAst.asFunctionDef,
                     pyAst.extent,
-                    ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath]),
-                    self.nativeConstantConverter,
-                    self.nativeListConverter,
-                    self.nativeTupleConverter,
-                    self.nativeDictConverter,
-                    self.purePythonModuleImplVal
+                    ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath])
                     )
             else:
                 assert pyAst.isLambda()
-                tr = ForaNative.convertPythonAstLambdaToForaOrParseError(
+                tr = self.nativeConverter.convertPythonAstLambdaToForaOrParseError(
                     pyAst.asLambda,
                     pyAst.extent,
-                    ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath]),
-                    self.nativeConstantConverter,
-                    self.nativeListConverter,
-                    self.nativeTupleConverter,
-                    self.nativeDictConverter,
-                    self.purePythonModuleImplVal
+                    ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath])
                     )
 
         elif isinstance(classOrFunctionDefinition, TypeDescription.ClassDefinition):
-            tr = ForaNative.convertPythonAstClassDefToForaOrParseError(
+            tr = self.nativeConverter.convertPythonAstClassDefToForaOrParseError(
                 pyAst.asClassDef,
                 pyAst.extent,
-                ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath]),
-                self.nativeConstantConverter,
-                self.nativeListConverter,
-                self.nativeTupleConverter,
-                self.nativeDictConverter,
-                self.purePythonModuleImplVal
+                ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath])
                 )
 
         else:

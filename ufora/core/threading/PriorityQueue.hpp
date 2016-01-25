@@ -17,7 +17,6 @@
 #define PriorityQueue_hpp_
 
 #include <boost/thread.hpp>
-#include <deque>
 #include "../math/Nullable.hpp"
 
 /********

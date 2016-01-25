@@ -15,19 +15,13 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import copy
+import itertools
 import os
 from waflib import Build, Utils, TaskGen
 import sys
 
 ENABLE_FORTRAN = (sys.platform != "darwin")
 
-APPNAME = 'fora'
-VERSION = '0.0.1a'
-
-MODULE_NAME = 'native'
-
-top = '.'
 out = '.build' if 'WAF_OUT' not in os.environ else os.environ['WAF_OUT']
 
 import waflib.Tools.c_preproc as c_preproc
@@ -43,52 +37,41 @@ def options(opt):
     opt.load('ocaml', tooldir='build')
     opt.load('cppml', tooldir='build')
     opt.load('python')
-    opt.add_option(
-        '--skip-runtime-dependencies',
-            action='store_true',
-            default=False,
-            dest='skip_runtime_dependencies',
-            help='Skip checks for dependencies that are not needed to build.')
 
 
-def configure(conf):
+def configure_cpp_compiler(conf):
     # use clang/clang++ if available
     conf.find_program('clang', var='CC')
     conf.find_program('clang++', var='CXX')
     ccache = conf.find_program('ccache', var='CCACHE', mandatory=False)
     if ccache:
-        print "CC=", conf.env['CC']
         conf.env['CC'] = ccache + ' ' + conf.env['CC']
         conf.env['CXX'] = ccache + ' ' + conf.env['CXX']
 
     conf.load('compiler_cxx')
     conf.load('compiler_c')
     conf.load('cxx')
-
-    if ENABLE_FORTRAN:
-        conf.load('compiler_fc')
-        conf.env.append_unique('FCFLAGS', ['-ffixed-form', '-fPIC', '-frecursive'])
-        conf.check_fortran()
-        conf.check_fortran_verbose_flag()
-        conf.check_fortran_clib()
-        conf.check_fortran_dummy_main()
-
     conf.load('configure_cpp')
 
+
+def configure_fortran(conf):
+    conf.load('compiler_fc')
+    conf.env.append_unique('FCFLAGS', ['-ffixed-form', '-fPIC', '-frecursive'])
+    conf.check_fortran()
+    conf.check_fortran_verbose_flag()
+    conf.check_fortran_clib()
+    conf.check_fortran_dummy_main()
+
+
+def configure_python(conf):
     conf.load('python')
     conf.check_python_version((2, 7, 0))
     conf.check_python_headers()
 
-    conf.check_python_module('argparse')
     conf.check_python_module('boto')
     conf.check_python_module('nose')
     conf.check_python_module('numpy')
     conf.check_python_module('requests')
-
-    conf.load('bison')
-    conf.load('bison_cppml')
-    conf.load('ocaml')
-    conf.load('cppml')
 
     conf.check_cfg(
         package='python-2.7',
@@ -97,106 +80,88 @@ def configure(conf):
         mandatory=True,
         )
 
-    conf.check(
-        lib='blas',
-        uselib_store='BLAS',
-        mandatory=True,
-        )
 
-    cpplib = "c++" if sys.platform == "darwin" else "stdc++"
+def configure_ocaml(conf):
+    conf.load('bison')
+    conf.load('bison_cppml')
+    conf.load('ocaml')
+
+
+def configure(conf):
+    configure_cpp_compiler(conf)
+
+    if ENABLE_FORTRAN:
+        configure_fortran(conf)
+
+    configure_python(conf)
+
+    configure_ocaml(conf)
+    conf.load('cppml')
+
+    conf.check(lib='blas', mandatory=True)
+
     conf.check(
-        lib=cpplib,
+        lib="c++" if sys.platform == "darwin" else "stdc++",
         uselib_store='STDC++',
-        mandatory=True,
+        mandatory=True
         )
 
-    conf.check(
-        lib='crypto',
-        uselib_store='CRYPTO',
-        mandatory=True,
-        )
+    conf.check(lib='crypto', mandatory=True)
+    conf.check(lib='lapack', mandatory=True)
+    conf.check(lib='rt', mandatory=False)
+    conf.check(lib='tcmalloc', mandatory=True)
 
-    conf.check(
-        lib='lapack',
-        uselib_store='LAPACK',
-        mandatory=True,
-        )
-
-    conf.check(
-        lib='rt',
-        uselib_store='RT',
-        mandatory=False,
-        )
-
-    conf.check(
-        lib='tcmalloc',
-        uselib_store='TCMALLOC',
-        mandatory=True,
-        )
-
-    conf.check(
-        lib='LLVM-3.5',
-        uselib_store='LLVM',
-        mandatory=True,
-        )
+    conf.check(lib='LLVM-3.5', uselib_store='LLVM', mandatory=True)
 
     configure_clang(conf)
 
-    conf.env.CFLAGS_TCMALLOC += [
+    configure_boost(conf)
+
+    tcmalloc_flags = [
         '-fno-builtin-malloc', '-fno-builtin-calloc', '-fno-builtin-realloc',
         '-fno-builtin-free'
         ]
-    conf.env.CXXFLAGS_TCMALLOC += [
-        '-fno-builtin-malloc', '-fno-builtin-calloc', '-fno-builtin-realloc',
-        '-fno-builtin-free'
-        ]
+    conf.env.CFLAGS_TCMALLOC += tcmalloc_flags
+    conf.env.CXXFLAGS_TCMALLOC += tcmalloc_flags
 
     conf.check_cfg(
         package='libprofiler',
         args='--cflags --libs',
         uselib_store='PROFILER',
-        mandatory=False,
+        mandatory=False
         )
 
-    if not conf.options.skip_runtime_dependencies:
-        # coretools
-        conf.find_program("find", var="FIND")
-        conf.find_program("killall", var="KILLALL")
-        conf.find_program("tar", var="TAR")
-        conf.find_program("xz", var="XZ")
+boost_libs = [
+    'boost_date_time',
+    'boost_filesystem',
+    'boost_python',
+    'boost_regex',
+    'boost_thread',
+    'boost_unit_test_framework'
+    ]
 
-        # needed to run
-        conf.find_program("coffee", var="COFFEE")
-        conf.find_program("node", var="NODE")
-
-        # needed to test
-        conf.find_program("mocha", var="MOCHA")
+def configure_boost(conf):
+    for boost_lib in boost_libs:
+        use = 'PYTHON' if boost_lib == 'boost_python' else ''
+        conf.check(lib=boost_lib, use=use, mandatory=True)
 
 clang_libs = [
-             'clangFrontend',
-             'clangDriver',
-             'clangSerialization',
-             'clangCodeGen',
-             'clangParse',
-             'clangSema',
-             'clangAnalysis',
-             'clangEdit',
-             'clangAST',
-             'clangLex',
-             'clangBasic',
-             ]
+    'clangFrontend',
+    'clangDriver',
+    'clangSerialization',
+    'clangCodeGen',
+    'clangParse',
+    'clangSema',
+    'clangAnalysis',
+    'clangEdit',
+    'clangAST',
+    'clangLex',
+    'clangBasic',
+    ]
 
 def configure_clang(conf):
     for lib in clang_libs:
-        conf.check(
-            stlib=lib,
-            mandatory=True,
-            )
-
-def addArg(args, **kwargs):
-    tr = dict(args)
-    tr.update(kwargs)
-    return tr
+        conf.check(stlib=lib, mandatory=True)
 
 def getInstallRoot(bld):
     if bld.options.destdir == '':
@@ -250,42 +215,17 @@ def build(bld):
 
     extensions = ('cpp', 'hpp', 'cppml', 'hppml', 'ypp', 'h', 'c', 'cc', 'inc', 'inl', 'gen', 'def')
     folders = ('ufora/', 'third_party/', 'test_scripts/', 'perf_tests')
-    excludes = ('ufora/web/', 'third_party/boost_1_53_0/boost')
-    boost_libs_root = 'third_party/boost_1_53_0/libs'
+    excludes = ('ufora/web/',)
 
     def shouldExclude(x):
         abspath = x.abspath()
-        for exclude in excludes:
-            if exclude in abspath:
-                return True
-
-        return False
-
-    def getLibNameForBoostSourceFile(x):
-        splitPath = os.path.relpath(x, boost_libs_root).split(os.path.sep)
-        libname = splitPath[0]
-        subdir = splitPath[1]
-        if libname in boost_sources and \
-                subdir == 'src' and \
-                splitPath[-1] != 'cpp_main.cpp' and \
-                splitPath[-1] != 'test_main.cpp' and \
-                x.find('win32') == -1:
-            return libname
-        return None
+        return any(exclude in abspath for exclude in excludes)
 
     thirdparty_sources = []
     fora_sources = []
     native_sources = []
     test_sources = []
-    boost_sources = {
-            'date_time': [],
-            'filesystem': [],
-            'python': [],
-            'regex': [],
-            'system': [],
-            'thread': [],
-            'test': []
-            }
+    core_sources = []
 
     for extension in extensions:
         for folder in folders:
@@ -295,29 +235,24 @@ def build(bld):
 
                 relpath = source.relpath()
 
-                if relpath.startswith(boost_libs_root):
-                    libname = getLibNameForBoostSourceFile(relpath)
-                    if libname is not None:
-                        boost_sources[libname].append(source)
-                    continue
-
                 if relpath.startswith('third_party/'):
                     thirdparty_sources.append(source)
+                    continue
+
+                if '.py.' in relpath or relpath.startswith('ufora/native/'):
+                    native_sources.append(source)
+                    continue
+
+                if relpath.startswith('ufora/core/'):
+                    core_sources.append(source)
                     continue
 
                 if 'test.' in relpath:
                     test_sources.append(source)
                     continue
 
-                if relpath.startswith('ufora/native/tests'):
-                    test_sources.append(source)
-                    continue
-
-                if '.py.' in relpath:
-                    native_sources.append(source)
-                    continue
-
                 fora_sources.append(source)
+
 
     defaultBuildArgs = {
         "cxxflags": bld.env.CXXFLAGS,
@@ -389,64 +324,6 @@ def build(bld):
             )
 
     bld.shlib(
-        source=boost_sources['date_time'],
-        target='fora_boost_date_time',
-        features='cxx',
-        use=['STDC++'],
-        **defaultBuildArgs
-        )
-
-    bld.shlib(
-        source=boost_sources['filesystem'],
-        target='fora_boost_filesystem',
-        features='cxx',
-        use=['STDC++', 'fora_boost_system'],
-        **defaultBuildArgs
-        )
-
-    bld.shlib(
-        source=boost_sources['python'],
-        target='fora_boost_python',
-        features='cxx',
-        use=['STDC++', 'PYTHON'],
-        **defaultBuildArgs
-        )
-
-    bld.shlib(
-        source=boost_sources['system'],
-        target='fora_boost_system',
-        features='cxx',
-        use=['STDC++'],
-        **defaultBuildArgs
-        )
-
-    bld.shlib(
-        source=boost_sources['regex'],
-        target='fora_boost_regex',
-        features='cxx',
-        use=['STDC++', 'fora_boost_system'],
-        **defaultBuildArgs
-        )
-
-    bld.shlib(
-        source=boost_sources['thread'],
-        target='fora_boost_thread',
-        features='cxx',
-        use=['STDC++', 'fora_boost_system'],
-        **defaultBuildArgs
-        )
-
-    boost_test_buidArgs = copy.deepcopy(defaultBuildArgs)
-    boost_test_buidArgs['defines'].append('BOOST_TEST_DYN_LINK=1')
-    bld.shlib(
-        source=boost_sources['test'],
-        target='fora_boost_unit_test_framework',
-        features='cxx',
-        use=['STDC++'],
-        **boost_test_buidArgs
-        )
-
-    bld.shlib(
         source=thirdparty_sources,
         target='fora_thirdparty',
         features='cxx',
@@ -456,63 +333,54 @@ def build(bld):
         **defaultBuildArgs
         )
 
-    if sys.platform == "darwin":
-        # Exclude fortran, tcmalloc, gfortran until suitable libraries can be found that link
-        # properly. william 2013-07-07
-        nativeDependencies = [
-            'BLAS',
-            'CRYPTO',
-            'LAPACK',
-            'PROFILER',
-            'PYTHON',
-            'RT',
-            'STDC++',
 
-            'fora_boost_date_time',
-            'fora_boost_filesystem',
-            'fora_boost_python',
-            'fora_boost_regex',
-            'fora_boost_system',
-            'fora_boost_thread',
-            'fora_boost_unit_test_framework',
-            'fora_thirdparty',
-            ]
-    else:
-        nativeDependencies = [lib.upper() for lib in clang_libs] + [
-            'BLAS',
-            'CRYPTO',
-            'GFORTRAN',
-            'LAPACK',
-            'PROFILER',
-            'PYTHON',
-            'RT',
-            'STDC++',
-            'TCMALLOC',
-            'LLVM',
-            'fortran',
-
-            'fora_boost_date_time',
-            'fora_boost_filesystem',
-            'fora_boost_python',
-            'fora_boost_regex',
-            'fora_boost_system',
-            'fora_boost_thread',
-            'fora_boost_unit_test_framework',
-            'fora_thirdparty',
-            ]
+    nativeDependencies = [lib.upper() for lib in itertools.chain(clang_libs, boost_libs)] + [
+        'BLAS',
+        'GFORTRAN',
+        'LAPACK',
+        'PROFILER',
+        'PYTHON',
+        'RT',
+        'STDC++',
+        'TCMALLOC',
+        'LLVM',
+        'fortran',
+        'fora_thirdparty'
+        ]
 
     bld.shlib(
-        source=fora_sources + native_sources + test_sources,
+        source=core_sources,
+        target='ufora-core',
+        features='cxx',
+        use=[lib.upper() for lib in boost_libs] + ['PYTHON', 'fora_thirdparty', 'CRYPTO'],
+        **defaultBuildArgs
+        )
+
+    bld.shlib(
+        source=fora_sources + test_sources,
+        target='ufora',
+        features='cxx',
+        use=nativeDependencies + ['fora_thirdparty', 'ufora-core'],
+        **defaultBuildArgs
+        )
+
+    bld.shlib(
+        source=native_sources,
         target='native',
         features='cxx pyext',
-        use=nativeDependencies,
+        use=nativeDependencies + ['ufora-core', 'ufora'],
         name='native',
         **defaultBuildArgs
         )
 
-    bld.add_post_fun(rebuildSubscribableWebObjectsWrapper)
 
+    bld.add_post_fun(post_build)
+
+
+def post_build(bld):
+    rebuildSubscribableWebObjectsWrapper(bld)
     installSourceFiles(bld)
+
 
 def installSourceFiles(bld):
     if bld.cmd != 'install' or bld.options.destdir == '':
@@ -531,7 +399,3 @@ def installSourceFiles(bld):
         bld.install_files(
             os.path.join(getInstallRoot(bld), os.path.split(relpath)[0]), fileToInstall
             )
-
-def analyze(ctx):
-    ctx.load('gcov')
-

@@ -30,6 +30,12 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
 
             assert s3 is not None
 
+    def test_pyfora_s3_read_bad_key(self):
+        with self.create_executor() as executor:
+            with self.assertRaises(pyfora.PyforaError):
+                executor.importS3Dataset("no_such_bucket", "key").result()
+
+
     def test_pyfora_s3_write_badKey(self):
         with self.create_executor() as executor:
             s3 = self.getS3Interface(executor)
@@ -410,4 +416,16 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
             self.assertEqual(error_content['responseType'], 'Failure')
             self.assertEqual(error_content['message'], 'Disconnected from server')
 
+
+    def test_file_read(self):
+        with self.create_executor() as executor:
+            remote = executor.importRemoteFile('/etc/hosts').result()
+            local = remote.toLocal().result()
+            self.assertIn('127.0.0.1', local)
+
+
+    def test_file_read_bad_path(self):
+        with self.create_executor() as executor:
+            with self.assertRaises(pyfora.PyforaError):
+                executor.importRemoteFile('/foo/bar.baz').result()
 

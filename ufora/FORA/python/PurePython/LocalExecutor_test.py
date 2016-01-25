@@ -18,13 +18,34 @@ import ufora.FORA.python.PurePython.InMemoryExecutorTestCases as \
     InMemoryExecutorTestCases
 import ufora.FORA.python.PurePython.InMemoryPandasTestCases as \
     InMemoryPandasTestCases
+import ufora.FORA.python.PurePython.ExecutorTestCommon as ExecutorTestCommon
+import ufora.FORA.python.PurePython.NumpyTestCases as NumpyTestCases
+import ufora.FORA.python.PurePython.IteratorTestCases as IteratorTestCases
+import ufora.FORA.python.PurePython.BuiltinTestCases as BuiltinTestCases
+import ufora.FORA.python.PurePython.ExceptionTestCases as ExceptionTestCases
+import ufora.FORA.python.PurePython.MathTestCases as MathTestCases
+import ufora.FORA.python.PurePython.LogisticRegressionTests as \
+    LogisticRegressionTests
+import ufora.FORA.python.PurePython.RegressionTreeTests as RegressionTreeTests
+import ufora.FORA.python.PurePython.GradientBoostingTests as GradientBoostingTests
+
 
 import unittest
 
+
 class TestLocalExecutor(
         unittest.TestCase,
+        ExecutorTestCommon.ExecutorTestCommon,
         InMemoryExecutorTestCases.InMemoryExecutorTestCases,
-        InMemoryPandasTestCases.InMemoryPandasTestCases
+        InMemoryPandasTestCases.InMemoryPandasTestCases,
+        NumpyTestCases.NumpyTestCases,
+        IteratorTestCases.IteratorTestCases,
+        BuiltinTestCases.BuiltinTestCases,
+        ExceptionTestCases.ExceptionTestCases,
+        MathTestCases.MathTestCases,
+        LogisticRegressionTests.LogisticRegressionTests,
+        RegressionTreeTests.RegressionTreeTests,
+        GradientBoostingTests.GradientBoostingTests
         ):
     @classmethod
     def setUpClass(cls):

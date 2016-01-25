@@ -19,8 +19,6 @@
 #include "../../Native/NativeCode.hppml"
 #include "../../Native/ArbitraryNativeConstant.hpp"
 #include "../../Core/CSTValue.hppml"
-#include <boost/thread.hpp>
-#include <map>
 
 namespace TypedFora {
 namespace Abi {
@@ -109,7 +107,7 @@ ArbitraryNativeConstantForValueType<T>::deserialize(std::string s)
 
 	inflater.inflate(
 		PolymorphicSharedPtr<NoncontiguousByteBlock>(
-			new NoncontiguousByteBlock(s)
+			new NoncontiguousByteBlock(std::move(s))
 			),
 		t
 		);

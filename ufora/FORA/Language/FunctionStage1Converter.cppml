@@ -15,11 +15,13 @@
 ****************************************************************************/
 #include "FunctionStage1Converter.hppml"
 #include <boost/lexical_cast.hpp>
+#include <boost/range/adaptor/reversed.hpp>
 #include "../Core/Type.hppml"
 #include "../../core/Logging.hpp"
 #include "LexicalBindingSelector.hppml"
 #include "ClassDefinitionExpansion.hppml"
 #include "ExtractMixinExpressions.hppml"
+#include <type_traits>
 
 namespace FunctionStage1 {
 
@@ -66,7 +68,7 @@ Symbol memberDepthSymbol(int depth)
 		return Symbol("Member");
 	return Symbol("Member" + boost::lexical_cast<string>(depth));
 	}
-	
+
 bool needsMoveOutOfApply(const Expression& inExpr)
 	{
 	return !inExpr.isConstant();
@@ -1437,14 +1439,15 @@ target::Expression	Converter::convertInner(
 			//etc.
 			using namespace boost;
 			if (!disallowStackTraceAugmentation())
+				{
 				tr = modifyApplyOperationOnly(
 					tr, 
 					bind(&Converter::wrapExpressionInStackTraceAugment, this, _1, _2),
 					allocator(),
 					inExpr.codeLocationIdOrNull()
 					);
+				}
 			}
-						
 		return tr;
 		}
 	catch(target::InvalidConversion& conv)
@@ -1695,7 +1698,7 @@ Converter::convert(const source::TuplePatternElement& in) const
 		-|	Normal(name, match, defaultVal) ->> {
 				pair<target::Pattern, symbol_map_type> p =
 						convert(match);
-				
+
 				return make_pair(
 					target::TuplePatternElement::Normal(
 						name,
@@ -2518,8 +2521,7 @@ target::Expression Converter::bindFunction(
 						)
 					)
 				);
-	
-	
+
 	//bind the local variables to it as well
 	tr = bindFreeTo(tr, expressionsToBind);
 	
@@ -2571,15 +2573,22 @@ target::Function	Converter::prependTerm(
 		);
 	}
 
-target::Function	Converter::prependTerm(
-						const target::Function& inFun,
-						const target::TuplePatternElement& inPat) const
+template<class T>
+target::Function Converter::prependTerm_(
+								const target::Function& inFun,
+								const T& inPat
+								) const
 	{
+	static_assert(
+		std::is_same<T, target::TuplePatternElement>::value ||
+		std::is_same<T, ImmutableTreeVector<target::TuplePatternElement> >::value,
+		"FunctionStage1: unexpected type in Converter::prependTerm_ "
+		);
 	@match target::Function(inFun)
 		-|	Empty(e) ->> {
 			return  inFun;
 			}
-		-|	Term(pats, e,r) ->> {
+		-|	Term(pats, e, r) ->> {
 			return target::Function::Term(
 				target::TuplePattern(inPat + pats.matchers()),
 				e,
@@ -2591,21 +2600,17 @@ target::Function	Converter::prependTerm(
 
 target::Function	Converter::prependTerm(
 						const target::Function& inFun,
+						const target::TuplePatternElement& inPat) const
+	{
+	return prependTerm_(inFun, inPat);
+	}
+
+target::Function	Converter::prependTerm(
+						const target::Function& inFun,
 						const ImmutableTreeVector<
 								target::TuplePatternElement>& inPat) const
 	{
-	@match target::Function(inFun)
-		-|	Empty(e) ->> {
-			return  inFun;
-			}
-		-|	Term(pats, e,r) ->> {
-			return target::Function::Term(
-				target::TuplePattern(inPat + pats.matchers()),
-				e,
-				prependTerm(r, inPat)
-				);
-			}
-			;
+	return prependTerm_(inFun, inPat);
 	}
 
 target::Expression Converter::convertMultipleMembers(
@@ -2618,17 +2623,16 @@ target::Expression Converter::convertMultipleMembers(
 			allocator().get(), 
 			target::Expression::Skip()
 			);
-
 	for (long j = ((long)inMembers.size())-1; j >= 0; j--)
+		{
 		matchFun = target::Function::Term(
 			target::TuplePattern(emptyTreeVec() + symPat(inMembers[j].first)),
 			convert(inMembers[j].second),
 			matchFun
 			);
-
+		}
 	return target::Expression::Match(
-		emptyTreeVec() + 
-			applyArg(inToMatch),
+		emptyTreeVec() + applyArg(inToMatch),
 		matchFun
 		);
 	}
@@ -2640,19 +2644,17 @@ target::Function 	Converter::convertMemberObjectDefinitionTerm(
 	vector<pair<Symbol, source::Expression> > membersInARow;
 
 	ObjectDefinitionBody def = inDef;
+
 	uword_t targetDepth;
-
-
 	@match ObjectDefinitionBody(def)
-		-|	Term((Member(membername, expr, depth),_), tail) ->> {
+		-|	Term((Member(membername, expr, depth), _meta), tail) ->> {
 				targetDepth = depth;
 			};
-			
 
 	bool done = false;
 	while (!done)
 		@match ObjectDefinitionBody(def)
-			-|	Term((Member(membername, expr, depth),_), tail) ->> {
+			-|	Term((Member(membername, expr, depth), _meta), tail) ->> {
 				if (depth == targetDepth)
 					{
 					membersInARow.push_back(make_pair(membername, expr));
@@ -2668,13 +2670,96 @@ target::Function 	Converter::convertMemberObjectDefinitionTerm(
 
 	variable_index_type membernameVar = allocator().get();
 
-	return 
+	return
 		target::Function::Term(
 			target::TuplePattern(emptyTreeVec() +
 				symPat(memberDepthSymbol(targetDepth)) +
 				target::Pattern::Anything(membernameVar)
 				),
 			convertMultipleMembers(membersInARow, membernameVar),
+			convert(def)
+			);
+
+	}
+
+target::Function appendFunction(
+									const target::Function& head,
+									const target::Function& tail
+									)
+	{
+	@match target::Function(head)
+		-| Empty() ->> {
+			return tail;
+			}
+		-| Term(pattern, expr, otherwise) ->> {
+			return target::Function::Term(
+										pattern,
+										expr,
+										appendFunction(otherwise, tail)
+										);
+			}
+	}
+
+target::Expression Converter::convertMultipleOperators(
+									const vector<pair<Symbol, source::Function> >& inOperators,
+									variable_index_type opToMatch,
+									variable_index_type argToMatch
+									) const
+	{
+	target::Function matchFun =
+		target::Function::Empty(
+			allocator().get(),
+			target::Expression::Skip()
+			);
+	for (long j = ((long)inOperators.size())-1; j >= 0; j--)
+		{
+		const Symbol& op = inOperators[j].first;
+		const source::Function& fun = inOperators[j].second;
+
+		matchFun =
+			appendFunction(
+				prependTerm(convert(fun), op),
+				matchFun
+				);
+		}
+	return target::Expression::Match(
+		emptyTreeVec() + applyArg(opToMatch) + applyArg(argToMatch),
+		matchFun
+		);
+	}
+
+target::Function 	Converter::convertOperatorObjectDefinitionTerm(
+						const source::ObjectDefinitionBody& inDef
+						) const
+	{
+	vector<pair<Symbol, source::Function> > operatorsInARow;
+
+	ObjectDefinitionBody def = inDef;
+
+
+	bool done = false;
+	while (!done)
+		@match ObjectDefinitionBody(def)
+			-|	Term((Operator(opSymbol, fun), _meta), tail) ->> {
+				operatorsInARow.push_back(make_pair(opSymbol, fun));
+				def = tail;
+				}
+			-| _ ->> { done = true; }
+			;
+
+	lassert(operatorsInARow.size());
+
+	variable_index_type operatorNameVar = allocator().get();
+	variable_index_type operatorArgVar = allocator().get();
+
+	return 
+		target::Function::Term(
+			target::TuplePattern(emptyTreeVec() +
+				symPat(Symbol("Operator")) +
+				target::Pattern::Anything(operatorNameVar) +
+				target::Pattern::Anything(operatorArgVar)
+				),
+			convertMultipleOperators(operatorsInARow, operatorNameVar, operatorArgVar),
 			convert(def)
 			);
 
@@ -2718,16 +2803,8 @@ target::Function	Converter::convert(
 			return convertMemberObjectDefinitionTerm(inDef);
 			}
 		-|	Term((Operator(op, fun), meta), tail) ->> {
+			return convertOperatorObjectDefinitionTerm(inDef);
 			//TODO BUG brax: LeftOperator and RightOperator should show warnings if 'fun' has args
-			return 
-				prependTerm(
-					prependTerm(
-						convert(fun),
-						op
-						),
-					Symbol("Operator")
-					) +
-				convert(tail);
 			}
 		-|	Term((Mixin(), meta), tail) ->> {
 			return convert(tail);
@@ -2823,56 +2900,98 @@ target::Function	Converter::convert(
 
 namespace {
 
-pair<ImmutableTreeVector<ObjectDefinitionTermWithMetadata>, ObjectDefinitionBody>
-extractObjectDefinitionTermMembers(const ObjectDefinitionBody& in);
-
-ObjectDefinitionBody
-pullMembersToTopOfObjectDefinition(const ObjectDefinitionBody& in);
-
-ObjectDefinitionBody
-pullMembersToTopOfObjectDefinition(const ObjectDefinitionBody& in)
+bool memberDepthComparator(
+		const ObjectDefinitionTermWithMetadata& l,
+		const ObjectDefinitionTermWithMetadata& r)
 	{
-	pair<ImmutableTreeVector<ObjectDefinitionTermWithMetadata>, ObjectDefinitionBody>
-		remainder = extractObjectDefinitionTermMembers(in);
-
-	while (remainder.first.size())
-		{
-		remainder.second = ObjectDefinitionBody::Term(remainder.first.back(), remainder.second);
-
-		remainder.first = remainder.first.slice(0, remainder.first.size() - 1);
-		}
-
-	return remainder.second;
+	return l.objectDefinitionTerm().getMember().depth() <
+				r.objectDefinitionTerm().getMember().depth();
 	}
 
-pair<ImmutableTreeVector<ObjectDefinitionTermWithMetadata>, ObjectDefinitionBody>
-extractObjectDefinitionTermMembers(const ObjectDefinitionBody& in)
+ObjectDefinitionBody extractObjectDefinitionTermMembersAndOperators(
+		const ObjectDefinitionBody& in,
+		vector<ObjectDefinitionTermWithMetadata>& members,
+		vector<ObjectDefinitionTermWithMetadata>& operators
+		);
+
+ObjectDefinitionBody
+pullMembersAndOperatorsToTopOfObjectDefinition(const ObjectDefinitionBody& in)
+	{
+	vector<ObjectDefinitionTermWithMetadata> members;
+	vector<ObjectDefinitionTermWithMetadata> operators;
+	ObjectDefinitionBody result =
+			extractObjectDefinitionTermMembersAndOperators(in, members, operators);
+
+	for (const auto& term: operators)
+		{
+		result = ObjectDefinitionBody::Term(term, result);
+		}
+
+	ImmutableTreeSet<pair<Symbol, uint32_t> > membersAddedSoFar;
+	vector<ObjectDefinitionTermWithMetadata> filteredMembers;
+	for (const auto& term: boost::adaptors::reverse(members))
+		{
+		@match ObjectDefinitionTerm(term.objectDefinitionTerm())
+		-|	Member(name, _expr, depth) ->>
+			{
+			pair<Symbol, uint32_t> p = make_pair(name, depth);
+			if (!membersAddedSoFar.contains(p))
+				{
+				membersAddedSoFar = membersAddedSoFar + p;
+				filteredMembers.push_back(term);
+				}
+			}
+		}
+
+	sort(
+		filteredMembers.begin(),
+		filteredMembers.end(),
+		memberDepthComparator);
+
+	for (const auto& term: boost::adaptors::reverse(filteredMembers))
+		{
+		result = ObjectDefinitionBody::Term(term, result);
+		}
+
+	return result;
+	}
+
+ObjectDefinitionBody extractObjectDefinitionTermMembersAndOperators(
+		const ObjectDefinitionBody& in,
+		vector<ObjectDefinitionTermWithMetadata>& members,
+		vector<ObjectDefinitionTermWithMetadata>& operators
+		)
 	{
 	@match ObjectDefinitionBody(in)
 		-| Term(t, tail) ->> {
-			if (t.objectDefinitionTerm().isAnything() || t.objectDefinitionTerm().isMixin())
-				return make_pair(
-					emptyTreeVec(), 
-					ObjectDefinitionBody::Term(
-						t, 
-						pullMembersToTopOfObjectDefinition(tail)
-						)
-					);
-
-			pair<ImmutableTreeVector<ObjectDefinitionTermWithMetadata>, ObjectDefinitionBody>
-				remainder = extractObjectDefinitionTermMembers(tail);
-
+			if (t.objectDefinitionTerm().isAnything())
+				{
+				return ObjectDefinitionBody::Term(
+								t,
+								pullMembersAndOperatorsToTopOfObjectDefinition(tail)
+								);
+				}
+			ObjectDefinitionBody remainder =
+					extractObjectDefinitionTermMembersAndOperators(tail, members, operators);
 			if (t.objectDefinitionTerm().isMember())
-				return make_pair(t + remainder.first, remainder.second);
+				{
+				members.push_back(t);
+				return remainder;
+				}
+			else if (t.objectDefinitionTerm().isOperator())
+				{
+				operators.push_back(t);
+				return remainder;
+				}
 			else
-				return make_pair(remainder.first, ObjectDefinitionBody::Term(t, remainder.second));
+				{
+				return ObjectDefinitionBody::Term(t, remainder);
+				}
 			}
 		-| Empty() ->> {
-			return make_pair(emptyTreeVec(), in);
+			return in;
 			}
 	}
-
-
 
 }
 
@@ -2904,7 +3023,7 @@ Converter::convertObjectBodyEntry(const source::ObjectDefinitionBody& inDef) con
 		);
 	
 	return prependTerm(
-		convert(pullMembersToTopOfObjectDefinition(inDef)),
+		convert(pullMembersAndOperatorsToTopOfObjectDefinition(inDef)),
 		toPrepend
 		);
 	}

@@ -88,7 +88,7 @@ std::string substitute(const std::string& inString,
 
 std::string blockify(const std::string& inText)
 	{
-	return "\t{\n\t" + Ufora::substitute(inText, "\n", "\n\t") + "\n\t}\n";
+	return "    {\n    " + Ufora::substitute(inText, "\n", "\n    ") + "\n    }\n";
 	}
 	
 std::string indent(const std::string& inText, int32_t times)
@@ -96,7 +96,10 @@ std::string indent(const std::string& inText, int32_t times)
 	if (times <= 0)
 		return inText;
 
-	return indent("\t" + Ufora::substitute(inText, "\n", "\n\t"), times-1);
+	std::string indentation;
+	indentation.resize(times*4, ' ');
+
+	return indentation + Ufora::substitute(inText, "\n", "\n" + indentation);
 	}
 
 std::string indent(const std::string& inText,

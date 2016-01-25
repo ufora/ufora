@@ -10,7 +10,7 @@ rule
     ("\n# " ((['0' - '9']+) as line_no) " " (('"' [^ '"']* '"') as s) (([^ '\n']* ) )) as z
 			{
 			Lexing.new_line(lexbuf);
-             if String.length(s) > 5 & (String.sub s (String.length(s) - 5) 4) = "ppml" then
+             if String.length(s) > 5 && (String.sub s (String.length(s) - 5) 4) = "ppml" then
 				 let _ = end_line := (lexbuf.Lexing.lex_curr_p).Lexing.pos_lnum - int_of_string(line_no) + 2 in
                  let _ = h_file := s in
               WHITESPACE(z)
@@ -19,7 +19,7 @@ rule
 			}
   | ("# " ((['0' - '9']+) as line_no) " " (('"' [^ '"']* '"') as s) (([^ '\n']* ) )) as z
 			{
-			if String.length(s) > 5 & (String.sub s (String.length(s) - 5) 4) = "ppml" then
+			if String.length(s) > 5 && (String.sub s (String.length(s) - 5) 4) = "ppml" then
 				 let _ = end_line := (lexbuf.Lexing.lex_curr_p).Lexing.pos_lnum - int_of_string(line_no) + 2 in
                  let _ = h_file := s in
 				WHITESPACE(z)
@@ -93,7 +93,7 @@ and
     ("\n# " ((['0' - '9']+) as line_no) ' ' (('"' [^ '"']* '"') as s) (([^ '\n']* ) )) as z
 			{
              Lexing.new_line (lexbuf);
-             if String.length(s) > 5 & (String.sub s (String.length(s) - 5) 4) = "ppml" then
+             if String.length(s) > 5 && (String.sub s (String.length(s) - 5) 4) = "ppml" then
 				 let _ = end_line := (lexbuf.Lexing.lex_curr_p).Lexing.pos_lnum - int_of_string(line_no) + 2 in
                  let _ = h_file := s in
                  z :: []
@@ -102,7 +102,7 @@ and
 			   }
     | ("# " ((['0' - '9']+) as line_no) ' ' (('"' [^ '"']* '"') as s) (([^ '\n']* ) )) as z
 			{
-             if String.length(s) > 5 & (String.sub s (String.length(s) - 5) 4) = "ppml" then
+             if String.length(s) > 5 && (String.sub s (String.length(s) - 5) 4) = "ppml" then
 				 let _ = end_line := (lexbuf.Lexing.lex_curr_p).Lexing.pos_lnum - int_of_string(line_no) + 2 in
                  let _ = h_file := s in
                  z :: []

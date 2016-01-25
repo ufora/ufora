@@ -19,7 +19,6 @@
 #include <boost/thread.hpp>
 #include <deque>
 #include "../math/Nullable.hpp"
-#include "../Clock.hpp"
 
 template<class T>
 class Queue {

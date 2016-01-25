@@ -94,7 +94,7 @@ public:
 		{
 		return SerializedObjectInflater::inflateOnce(
 			PolymorphicSharedPtr<NoncontiguousByteBlock>(
-				new NoncontiguousByteBlock(dataStr)
+				new NoncontiguousByteBlock(std::move(dataStr))
 				)
 			);
 		}

@@ -170,11 +170,7 @@ public:
 			{
 			}
 
-		template<class T>
-		void serialize(const T& in)
-			{
-			Serializer<T, ForaValueSerializationStream>::serialize(*this, in);
-			}
+		using Fora::ForaValueSerializationStream::serialize;
 
 		template<class T>
 		void serializeToMemoStorage(const T& in)

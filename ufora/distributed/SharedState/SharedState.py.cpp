@@ -14,6 +14,7 @@
    limitations under the License.
 ****************************************************************************/
 #include "SharedState.py.hpp"
+#include "KeyType.hppml"
 #include "KeyspaceCache.hppml"
 #include <stdint.h>
 #include <boost/python.hpp>

@@ -20,18 +20,12 @@
 
 #include <sstream>
 #include <iostream> // for std::cerr
-#include <algorithm>
-#include <vector>
 #include <stdio.h>
 #include <string>
-#include <sstream>
-//#include <regex>
 
 #include "Clock.hpp"
 #include <boost/thread.hpp>
-#include <boost/regex.hpp>
 #include <boost/algorithm/string.hpp>
-#include <boost/lambda/construct.hpp>
 
 namespace {
     const char* filenameFromPath(const char* path)

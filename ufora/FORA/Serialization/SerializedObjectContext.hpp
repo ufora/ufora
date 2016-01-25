@@ -157,12 +157,7 @@ public:
 			{
 			return mContext;
 			}
-	
-		template<class T>
-		void serialize(const T& in)
-			{
-			Serializer<T, ForaValueSerializationStream>::serialize(*this, in);
-			}
+		using Fora::ForaValueSerializationStream::serialize;
 
 private:
 		SerializedObjectContext& mContext;

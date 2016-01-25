@@ -12,11 +12,11 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import ufora.FORA.python.PurePython.ExecutorTestCases as ExecutorTestCases
-
 import pyfora.pandas_util
+import pyfora.algorithms
 import pyfora.algorithms.LinearRegression as LinearRegression
 import pyfora.typeConverters.PurePandas as PurePandas
+
 
 import numpy
 import pandas
@@ -24,7 +24,8 @@ import pandas.util.testing
 import random
 
 
-class InMemoryPandasTestCases(ExecutorTestCases.ExecutorTestCases):
+
+class InMemoryPandasTestCases(object):
     def checkFramesEqual(self, df1, df2):
         pandas.util.testing.assert_frame_equal(df1, df2)
         return True
@@ -111,6 +112,40 @@ class InMemoryPandasTestCases(ExecutorTestCases.ExecutorTestCases):
             g,
             comparisonFunction=self.checkFramesEqual
             )
+
+    def test_pandas_dataframe_indexing_4(self):
+        df = pandas.DataFrame({'A': range(5), 'B': range(5,10), 'D': range(10,15)})
+
+        def f():
+            return df.iloc[:,:]
+        
+        self.equivalentEvaluationTest(
+            f,
+            comparisonFunction=self.checkFramesEqual
+            )
+
+    def test_pandas_dataframe_indexing_5(self):
+        df = pandas.DataFrame({'A': range(5), 'B': range(5,10), 'D': range(10,15)})
+
+        def f():
+            return df.iloc[:,]
+        
+        self.equivalentEvaluationTest(
+            f,
+            comparisonFunction=self.checkFramesEqual
+            )
+
+    def test_pandas_dataframe_indexing_6(self):
+        df = pandas.DataFrame({'A': range(5), 'B': range(5,10), 'D': range(10,15)})
+
+        def f(jx):
+            return df.iloc[:jx]
+
+        for jx in xrange(2, 5, 2):
+            self.equivalentEvaluationTest(
+                f, jx,
+                comparisonFunction=self.checkFramesEqual
+                )
 
     def test_pandas_shape(self):
         df = pandas.DataFrame({'A': [1,2,3,4], 'B': [5,6,7,8]})
@@ -296,3 +331,71 @@ A,B,C
             self.pyfora_linear_regression_test()
         finally:
             LinearRegression._splitLimit = oldSplitLimit
+
+    def test_series_sort_values(self):
+        s = pandas.Series([5,5,2,2,1,2,3,4,2,3,1,5])
+        def f():
+            return list(s.sort_values().values)
+
+        self.equivalentEvaluationTest(
+            f,
+            comparisonFunction=lambda x, y: all(map(lambda v:v[0]==v[1], zip(x, y)))
+            )
+
+    def test_series_unique(self):
+        s = pandas.Series([5,5,2,2,1,2,3,4,2,3,1,5])
+        def f():
+            return sorted(list(s.unique()))
+
+        self.equivalentEvaluationTest(
+            f,
+            comparisonFunction=lambda x, y: all(map(lambda v:v[0]==v[1], zip(x, y)))
+            )
+
+    def test_dataframe_pyfora_addColumn(self):
+        d = {'A': [1,2,3,4], 'B': [5,6,7,8]}
+        df = pandas.DataFrame(d)
+
+        c = range(8, 12)
+
+        def f():
+            return df.pyfora_addColumn('C', c)
+
+        newDict = d.copy()
+        newDict['C'] = c
+
+        self.checkFramesEqual(
+            self.evaluateWithExecutor(f),
+            pandas.DataFrame(newDict)
+            )
+
+    def test_series_isinstance(self):
+        s = pandas.Series([1,2,3,4])
+        def f():
+            return isinstance(s, list)
+
+        self.equivalentEvaluationTest(f)
+
+    def test_dataframe_as_matrix(self):
+        df = pandas.DataFrame({'A': [1,2,3,4], 'B': [5,6,7,8]})
+        def f():
+            return df.as_matrix()
+
+        self.equivalentEvaluationTest(f)
+            
+    def test_series_as_matrix(self):
+        s = pandas.Series([1,2,3])
+        def f():
+            return s.as_matrix()
+
+        self.equivalentEvaluationTest(f)
+
+    def test_DataFrameRow_1(self):
+        df = pandas.DataFrame({'A': [1,2,3,4], 'B': [5,6,7,8]})
+        def f():
+            row = df.iloc[0]
+
+            assert len(row) == df.shape[1]
+            assert list(row) == [1,5]
+
+        self.evaluateWithExecutor(f)

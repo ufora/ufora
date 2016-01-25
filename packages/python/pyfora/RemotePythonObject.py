@@ -95,7 +95,7 @@ class ComputedRemotePythonObject(RemotePythonObject):
     Note:
         Only :class:`~Executor.Executor` is intended to create instances of
         :class:`ComputedRemotePythonObject`. They are created by calling
-        :func:`~pyfora.Executor.Executor.define`.
+        :func:`~pyfora.Executor.Executor.submit`.
 
     Args:
         computedValue: an instance of a SubscribableWebObject computedValue representing

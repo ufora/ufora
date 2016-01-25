@@ -27,13 +27,32 @@
 #include "../../../core/cppml/CPPMLTransform.hppml"
 #include "../../../core/Logging.hpp"
 #include "../../Language/RebindFree.hppml"
+#include "../../Language/ParserExpressions.hppml"
+#include "../../Language/ClassMediatorBindings.hppml"
 
 #define PYFORA_CONVERSION_ERROR_MESSAGE "Pyfora can't convert this code. See http://docs.pyfora.com/en/latest/tutorials/intro.html#pure-python"
+
+
+constexpr auto __inline_fora_string = "__inline_fora";
 
 
 namespace {
 
 using namespace Fora;
+
+void assertValidNameIdentifier(
+        const std::string& identifier,
+        const SimpleParseRange& extent
+        )
+    {
+    if (identifier == __inline_fora_string)
+        throw PythonToForaConversionError(
+            std::string("in pyfora, ") + __inline_fora_string +
+            " is a reserved word and expects a single argument "
+            "string which defines an \"inline\" fora function",
+            extent
+            );
+    }
 
 //take a member name (e.g. 'x') and return the private form of the name (the
 //name used by generated code) that refers to it. We use a space because it cannot
@@ -444,13 +463,18 @@ PythonAstConverter::PythonAstConverter(
             PolymorphicSharedPtr<PythonListConverter> listConverter,
             PolymorphicSharedPtr<PythonTupleConverter> tupleConverter,
             PolymorphicSharedPtr<PythonDictConverter> dictConverter,
-            ImplValContainer pyforaBuiltins
+            ImplValContainer pyforaBuiltins,
+            const ImmutableTreeMap<
+                Symbol,
+                pair<ImplValContainer, Nullable<Symbol>>
+                >& builtinMemberMapping
             )
         : mConstantConverter(constantConverter),
           mPythonListConverter(listConverter),
           mPythonTupleConverter(tupleConverter),
           mPythonDictConverter(dictConverter),
-          mPyforaBuiltins(pyforaBuiltins)
+          mPyforaBuiltins(pyforaBuiltins),
+          mBuiltinMemberMapping(builtinMemberMapping)
     {
     mPyBoundMethod = getModuleMember(pyforaBuiltins, "PyBoundMethod");
 
@@ -461,12 +485,215 @@ PythonAstConverter::PythonAstConverter(
     mPySliceFactory = getModuleMember(pyforaBuiltins, "Slice");
 
     mPyListType = getModuleMember(pyforaBuiltins, "ListType");
+
+    mTypeError = getModuleMember(pyforaBuiltins, "TypeError");
+
+    mPyString = getModuleMember(pyforaBuiltins, "PyString");
+
+    mPyDictType = getModuleMember(pyforaBuiltins, "DictType");
+
+    mAssertionError = getModuleMember(pyforaBuiltins, "AssertionError");
     }
 
 PolymorphicSharedPtr<PythonConstantConverter> PythonAstConverter::constantConverter() const
     {
     return mConstantConverter;
     }
+
+Function PythonAstConverter::invalidCallHandler(
+        const std::string& functionName,
+        const TuplePattern& patternForFunction
+        ) const
+    {
+    uint32_t nNormalArgs = 0;
+    uint32_t nDefaultArgs = 0;
+    
+    for (const auto& tuplePatternElement: patternForFunction.matchers())
+        {
+        @match TuplePatternElement(tuplePatternElement) 
+            -|  Normal(_, _, defaultValueOrNull) ->> {
+                nNormalArgs++;
+                if (defaultValueOrNull.isValue()) 
+                    nDefaultArgs++;
+                }
+            -|  VarArgs(_) ->> {
+                // the matchers for the original function will handle this, 
+                // and we'll never need to handle it here
+                return Function::Empty()
+                }
+            ;
+        }
+
+    Symbol argsSymbol = Symbol("args");
+    Expression argsVariable = Expression::Variable(argsSymbol);
+    Expression rawErrorString;
+
+    if (nDefaultArgs > 0)
+        rawErrorString = invalidCallHandlerWithDefaultArgsRawErrorString(
+            nNormalArgs,
+            nDefaultArgs,
+            functionName,
+            argsVariable
+            );
+    else
+        rawErrorString = invalidCallHandlerNoDefaultArgsRawErrorString(
+            nNormalArgs,
+            functionName,
+            argsVariable
+            );
+
+    Expression pyStringifiedErrorString =
+        Expression::Call(
+            Expression::Constant(
+                mPyString
+                ),
+            emptyTreeVec() + rawErrorString.normalApplyArg()
+            );
+
+    Expression functionBody = 
+        Expression::Throw(
+            Expression::Call(
+                Expression::Constant(
+                    mTypeError
+                    ),
+                emptyTreeVec() +
+                    pyStringifiedErrorString.normalApplyArg()
+                ),
+            null()
+            );
+
+    return Function::Term(
+        TuplePattern(
+            emptyTreeVec() +
+            TuplePatternElement::VarArgs(
+                null() << argsSymbol
+                )
+            ),
+        functionBody,
+        Function::Empty()
+        );
+    }
+
+Expression PythonAstConverter::invalidCallHandlerWithDefaultArgsRawErrorString(
+        uint32_t nNormalArgs,
+        uint32_t nDefaultArgs,
+        const std::string& functionName,
+        const Expression& argsVariable
+        ) const
+    {
+    uint32_t nNonDefaultArgs = nNormalArgs - nDefaultArgs;
+
+    std::ostringstream oss;
+    oss << functionName << "() takes at most " << nNormalArgs 
+        << (nNormalArgs == 1 ? " argument (" : " arguments (")
+        ;
+
+    Expression tooManyCallArgsPrefix = Expression::Constant(CSTValue(oss.str()));
+
+    oss.str("");
+    oss.clear();
+    oss << functionName << "() takes at least " << nNonDefaultArgs 
+        << (nNonDefaultArgs == 1 ? " argument (" : " arguments (")
+        ;
+
+    Expression tooFewCallArgsPrefix = Expression::Constant(CSTValue(oss.str()));
+
+    Symbol nCallArgsGivenSymbol = Symbol("nCallArgsGiven");
+    Expression nCallArgsGivenString = 
+        Expression::Call(
+            Expression::Constant(
+                CSTValue(JOV::OfType(Type::String()))
+                ),
+            emptyTreeVec() +
+                Expression::Variable(nCallArgsGivenSymbol).normalApplyArg()
+        );
+
+    Expression suffix = 
+        Expression::BinaryOperator(
+            nCallArgsGivenString,
+            Symbol("+"),
+            Expression::Constant(CSTValue(" given)"))
+            );
+
+    return Expression::Let(
+        nCallArgsGivenSymbol,
+        Expression::Call(
+            Expression::Constant(
+                CSTValue(Symbol("size"))
+                ),
+            emptyTreeVec() +
+                argsVariable.normalApplyArg()
+            ),
+        Expression::Branch(
+            Expression::BinaryOperator(
+                Expression::Variable(nCallArgsGivenSymbol),
+                Symbol("<"),
+                Expression::Constant(CSTValue(nNonDefaultArgs))
+                ),
+            Expression::BinaryOperator(
+                tooFewCallArgsPrefix,
+                Symbol("+"),
+                suffix
+                ),
+            null() << Expression::BinaryOperator(
+                tooManyCallArgsPrefix,
+                Symbol("+"),
+                suffix
+                )
+            )
+        );
+    }
+
+Expression PythonAstConverter::invalidCallHandlerNoDefaultArgsRawErrorString(
+        uint32_t nNormalArgs,
+        const std::string& functionName,
+        const Expression& argsVariable
+        ) const
+    {
+    std::ostringstream oss;
+    oss << functionName << "() takes ";
+
+    if (nNormalArgs == 0) {
+        oss << "no arguments";
+        }
+    else {
+        oss << "exactly " << nNormalArgs << " argument"
+            << (nNormalArgs == 1 ? "" : "s")
+        ;
+        }
+    oss << " (";
+
+    Expression prefixString = Expression::Constant(CSTValue(oss.str()));
+
+    Expression nCallArgsGivenString =
+        Expression::Call(
+            Expression::Constant(
+                CSTValue(JOV::OfType(Type::String()))
+                ),
+            emptyTreeVec() +
+                Expression::Call(
+                    Expression::Constant(
+                        CSTValue(Symbol("size"))
+                        ),
+                    emptyTreeVec() +
+                        argsVariable.normalApplyArg()
+                    ).normalApplyArg()
+        );
+
+    Expression suffixString = Expression::Constant(CSTValue(" given)"));
+
+    return
+        Expression::BinaryOperator(
+            prefixString,
+            Symbol("+"),
+            Expression::BinaryOperator(
+                nCallArgsGivenString,
+                Symbol("+"),
+                suffixString
+                )
+            );
+    }
+
 
 /*
 We've got an ITV<ClassDefinitionTerm> here because certain python class body statements produce
@@ -641,7 +868,7 @@ PythonAstConverter::convertPythonClassBodyFunctionDefToForaClassDefinitionTerms(
 
         throw PythonToForaConversionError(
             "don't know how to convert decorator lists for functions, "
-            "besides \"staticmethod\", right now",
+            "besides \"staticmethod\" and \"property\", right now",
             extent
             );
         }
@@ -851,7 +1078,9 @@ Expression PythonAstConverter::convertPythonAstExpressionToFora_inner(const Pyth
                     conditional, 
                     convertPythonAstExpressionToFora(exprs[k]), 
                     Expression::Branch(
-                        convertPythonAstExpressionToForaConditional(Expression::Variable(conditional)),
+                        convertExpressionToForaBoolean(
+                            Expression::Variable(conditional)
+                            ),
                         res,
                         null() << Expression::Variable(conditional)
                         )
@@ -873,7 +1102,9 @@ Expression PythonAstConverter::convertPythonAstExpressionToFora_inner(const Pyth
                     conditional, 
                     convertPythonAstExpressionToFora(exprs[k]), 
                     Expression::Branch(
-                        convertPythonAstExpressionToForaConditional(Expression::Variable(conditional)),
+                        convertExpressionToForaBoolean(
+                            Expression::Variable(conditional)
+                            ),
                         Expression::Variable(conditional),
                         null() << res
                         )
@@ -997,7 +1228,9 @@ Expression PythonAstConverter::convertPythonAstExpressionToFora_inner(const Pyth
         -| ListComp(elt, generators) ->> {
             ImmutableTreeSet<Symbol> assigned;
             for (auto gen: generators)
-                assigned = assigned + convertPythonAstExpressionToPattern(gen.target()).boundVariables();
+                assigned = assigned + convertPythonAstExpressionToPattern(
+                    gen.target()
+                    ).boundVariables();
 
             auto res = 
                 Expression::Constant(mPyListType)(
@@ -1035,6 +1268,29 @@ Expression PythonAstConverter::convertPythonAstExpressionToFora_inner(const Pyth
                     this, 
                     _1
                     )
+                );
+            }
+        -| DictComp(key, value, generators) ->> {
+            PythonAstExpr pyUpdateSequence = 
+                PythonAstExpr::ListComp(
+                    PythonAstExpr::Tuple(
+                        emptyTreeVec() + key + value,
+                        PythonAstExprContext::Load()
+                        ),
+                    generators
+                    );
+
+            Expression foraUpdateSequence =
+                convertPythonAstExpressionToFora(
+                    pyUpdateSequence
+                    );
+        
+            return Expression::Call(
+                Expression::Constant(
+                    mPyDictType
+                    ),
+                emptyTreeVec() +
+                foraUpdateSequence.normalApplyArg()
                 );
             }
         -| Tuple(elts) ->> {
@@ -1099,7 +1355,7 @@ Expression PythonAstConverter::convertPythonAstExpressionToFora_inner(const Pyth
             }
         -| IfExp(cond, ifTrue, ifFalse) ->> {
             return Expression::Branch(
-                convertPythonAstExpressionToForaConditional(cond),
+                convertPythonAstExpressionToForaBoolean(cond),
                 convertPythonAstExpressionToFora(ifTrue),
                 null() << convertPythonAstExpressionToFora(ifFalse)
                 );
@@ -1157,7 +1413,19 @@ Expression PythonAstConverter::convertPythonAstExpressionToFora_inner(const Pyth
                             ); 
                         }
                     -| In() ->> { toAdd = Expression::In(curExpr, curRhs); }
-                    -| NotIn() ->> { toAdd = Expression::NotIn(curExpr, curRhs); }
+                    -| NotIn() ->> { 
+                        toAdd = Expression::Branch(
+                            convertExpressionToForaBoolean(
+                                Expression::In(curExpr, curRhs)
+                                ),
+                            Expression::Constant(
+                                mConstantConverter->convertBoolean(false)
+                                ),
+                            null() << Expression::Constant(
+                                mConstantConverter->convertBoolean(true)
+                                )
+                            );
+                        }
                     ;
 
                 if (k == 0)
@@ -1191,6 +1459,9 @@ Expression PythonAstConverter::convertPythonAstExpressionToFora_inner(const Pyth
                 );
             }
         -| Call(func, args, kwds, starArgs, kwargs) ->> {
+            if (func.isName() and func.getName().id() == __inline_fora_string)
+                return convertInlineFora(expr.getCall(), expr.extent());
+
             if (starArgs.isValue())
                 throw PythonToForaConversionError(
                     "don't know how to convert starArgs just yet.",
@@ -1222,6 +1493,8 @@ Expression PythonAstConverter::convertPythonAstExpressionToFora_inner(const Pyth
             //when loading variables, we need to check whether they are specific symbols
             //that we use to denote states like 'uninitialized' or 'invalid'. If so, we defer
             //to a member of the PyObjectBase to figure out what to do
+            assertValidNameIdentifier(identifier, expr.extent());
+
             return Expression::Variable(Symbol(identifier));
             }
         -| _ ->> {
@@ -1235,22 +1508,116 @@ Expression PythonAstConverter::convertPythonAstExpressionToFora_inner(const Pyth
         );
     }
 
-Expression PythonAstConverter::convertPythonAstExpressionToForaConditional(const Expression& expr) const
+Expression PythonAstConverter::convertInlineFora(
+        const PythonAstExpr_CallType& callExpr,
+        const SimpleParseRange& extent
+        ) const
+    {
+    if (callExpr.keywords().size() > 0)
+        throw PythonToForaConversionError(
+            "__inline_fora accepts no keyword args",
+            extent
+            );
+
+    if (callExpr.starargs().isValue() > 0)
+        throw PythonToForaConversionError(
+            "__inline_fora accepts no starargs",
+            extent
+            );
+
+    if (callExpr.kwargs().isValue() > 0)
+        throw PythonToForaConversionError(
+            "__inline_fora accepts no kwargs",
+            extent
+            );
+    
+    if (callExpr.args().size() != 1)
+        throw PythonToForaConversionError(
+            "__inline_fora accepts only one argument",
+            extent
+            );
+
+    const PythonAstExpr& arg = callExpr.args()[0];
+
+    if (!arg.isStr())
+        throw PythonToForaConversionError(
+            "__inline_fora accepts only string arguments",
+            extent
+            );
+
+    const std::string& inlineForaCode = arg.getStr().s();
+    const SimpleParseNode simpleParseNode = parseStringToSimpleParse(inlineForaCode);
+
+    ParserExpressions p(true, CodeDefinitionPoint(), "");
+
+    Expression inlineForaExpr = p.parseToExpression(simpleParseNode);
+
+    if (!inlineForaExpr.isCreateFunction())
+        throw PythonToForaConversionError(
+            std::string(
+                "only CreateFunction expressions are allowed in inline fora Code. got "
+                ) + inlineForaExpr.tagName(),
+            extent
+            );
+
+    return Expression::Constant(
+        bindFreeVariablesInInlineForaExpressionToConstantUsingBuiltins(
+            inlineForaExpr.getCreateFunction(),
+            inlineForaExpr.freeVariables(),
+            extent
+            )
+        );
+    }
+
+CSTValue PythonAstConverter::bindFreeVariablesInInlineForaExpressionToConstantUsingBuiltins(
+        const Expression_CreateFunctionType& createFunctionExpression,
+        const ImmutableTreeSet<Symbol>& freeVariables,
+        const SimpleParseRange& extent
+        ) const
+    {
+    // oh, STL-ops ...
+    auto unboundFree = freeVariables - mBuiltinMemberMapping.keySet();
+
+    if (unboundFree.size() > 0)
+        throw PythonToForaConversionError(
+            std::string("inline fora function had free variables,  ") + 
+            prettyPrintString(unboundFree) + 
+            " and this is forbidden",
+            extent
+            );
+
+    return Fora::Language::bindFunctionWithValues(
+        ClassMediator::Function(
+            createFunctionExpression.name(),
+            createFunctionExpression.predicate(),
+            LexicalBindingMap(),
+            CSTValue()
+            ),
+        mBuiltinMemberMapping,
+        createFunctionExpression.objectMetadata()
+        );
+    }
+
+Expression PythonAstConverter::convertExpressionToForaBoolean(const Expression& expr) const
     {
     //we need to convert this to a bool, which we do by calling PyBool (or equivalent as given)
     //and then calling 'Bool' on that
     return Expression::Apply(expr, 
             emptyTreeVec() 
-                + ApplyArgument::Normal(Expression::Constant(CSTValue(Symbol("Convert"))))
-                + ApplyArgument::Normal(Expression::Constant(CSTValue(JOV::OfType(Type::Integer(1,false)))))
+                + Expression::Constant(
+                    CSTValue(Symbol("Convert"))
+                    ).normalApplyArg()
+                + Expression::Constant(
+                    CSTValue(JOV::OfType(Type::Integer(1,false)))
+                    ).normalApplyArg()
             );
     }
 
-Expression PythonAstConverter::convertPythonAstExpressionToForaConditional(const PythonAstExpr& expr) const
+Expression PythonAstConverter::convertPythonAstExpressionToForaBoolean(const PythonAstExpr& expr) const
     {
     Expression tr = convertPythonAstExpressionToFora(expr);
 
-    return convertPythonAstExpressionToForaConditional(tr);
+    return convertExpressionToForaBoolean(tr);
     }
 
 
@@ -1335,6 +1702,8 @@ Expression PythonAstConverter::convertPythonAstStatementToExpression_inner(
     {
     @match PythonAstStatement(statement)
         -| FunctionDef(name) ->> {
+            assertValidNameIdentifier(name, statement.extent());
+
             return Expression::Assign(
                 PatternWithName::Anything(null() << Symbol(name)),
                 convertPythonAstFunctionDefToFora(
@@ -1344,6 +1713,8 @@ Expression PythonAstConverter::convertPythonAstStatementToExpression_inner(
                 );
             }
         -| ClassDef(name, bases, body, decoratorList) ->> {
+            assertValidNameIdentifier(name, statement.extent());
+
             return Expression::Assign(
                 PatternWithName::Anything(null() << Symbol(name)),
                 convertPythonAstClassDefToFora(
@@ -1410,7 +1781,7 @@ Expression PythonAstConverter::convertPythonAstStatementToExpression_inner(
         -| While(cond, ifTrue, ifFalse) ->> {
             return Expression::Sequence(
                 Expression::While(
-                    convertPythonAstExpressionToForaConditional(cond),
+                    convertPythonAstExpressionToForaBoolean(cond),
                     wrapExpressionInPyContinueCheck(convertPythonAstStatementsToExpression(ifTrue))
                     ),
                 convertPythonAstStatementsToExpression(ifFalse)
@@ -1418,7 +1789,7 @@ Expression PythonAstConverter::convertPythonAstStatementToExpression_inner(
             }
         -| If(cond, ifTrue, ifFalse) ->> {
             return Expression::Branch(
-                convertPythonAstExpressionToForaConditional(cond),
+                convertPythonAstExpressionToForaBoolean(cond),
                 convertPythonAstStatementsToExpression(ifTrue),
                 null() << convertPythonAstStatementsToExpression(ifFalse)
                 );
@@ -1471,6 +1842,33 @@ Expression PythonAstConverter::convertPythonAstStatementToExpression_inner(
                     convertPythonAstExpressionToFora(expression)
                     );
             }
+        -| Assert(test, msg) ->> {
+            return Expression::Branch(
+                convertPythonAstExpressionToForaBoolean(test),
+                Expression::Constant(
+                    mConstantConverter->noneValue()
+                    ),
+                null() << Expression::Throw(
+                    Expression::Call(
+                        Expression::Constant(
+                            mAssertionError
+                            ),
+                        emptyTreeVec() + 
+                            (msg.isNull() ? 
+                                Expression::Call(
+                                    Expression::Constant(
+                                        mPyString
+                                        ),
+                                    emptyTreeVec() +
+                                        Expression::Constant(CSTValue(""))
+                                        .normalApplyArg()
+                                ).normalApplyArg() :
+                            convertPythonAstExpressionToFora(*msg).normalApplyArg())
+                        ),
+                    null()
+                    )
+                );
+            }
         -| _ ->> {
             std::ostringstream oss;
             oss << PYFORA_CONVERSION_ERROR_MESSAGE;
@@ -1500,11 +1898,9 @@ PatternWithName PythonAstConverter::convertPythonAstExpressionToPattern_inner(
         ) const
     {
     @match PythonAstExpr(expr)
-        -| Name(n, Param()) ->> {
-            return PatternWithName::Anything(null() << Symbol(n));
-            }
-        -| Name(n, Store()) ->> {
-            return PatternWithName::Anything(null() << Symbol(n));
+        -| Name(identifier, _) ->> {
+            assertValidNameIdentifier(identifier, expr.extent());
+            return PatternWithName::Anything(null() << Symbol(identifier));
             }
         -| Tuple(elts, Store()) ->> {
             return PatternWithName(
@@ -1598,6 +1994,21 @@ Expression PythonAstConverter::convertPythonAstClassDefToFora(
                 )
             );
 
+    // TODO when we support base classes, we should fill this out properly.
+    lassert(bases.size() == 0);
+    classDefinitionTerms = classDefinitionTerms +
+        ClassDefinitionTerm::Static(
+            ObjectDefinitionTerm::Member(
+                Symbol("__bases__"),
+                mPythonTupleConverter->createTupleExpression(
+                    Expression::CreateTuple(
+                        ImmutableTreeVector<ApplyArgument>()
+                        )
+                    ),
+                1
+                )
+            );    
+
     if (mPyObjectBaseMixin.type().isClass())
         {
         classDefinitionTerms = classDefinitionTerms + 
@@ -1679,7 +2090,10 @@ Function PythonAstConverter::convertFunctionDefToForaFunction(
     return Function::Term(
         functionBodyAndPattern.second,
         functionBody,
-        Function::Empty()
+        invalidCallHandler(
+            functionDef.name(),
+            functionBodyAndPattern.second
+            )
         );
     }
 

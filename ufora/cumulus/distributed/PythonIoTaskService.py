@@ -34,7 +34,7 @@ class PythonIoTaskService(object):
                  datasetRequestChannel,
                  threadCount=None,
                  maxObjectStoreAttempts=None,
-                 objectStoreFailureInterval=None):
+                 objectStoreFailureIntervalSeconds=None):
         object.__init__(self)
 
         self.s3Interface = s3Interface
@@ -42,9 +42,9 @@ class PythonIoTaskService(object):
         self.maxObjectStoreAttempts = Setup.config().objectStoreMaxAttempts \
             if maxObjectStoreAttempts is None \
             else max(1, maxObjectStoreAttempts)
-        self.objectStoreFailureInterval = Setup.config().objectStoreFailureInterval \
-            if objectStoreFailureInterval is None \
-            else objectStoreFailureInterval
+        self.objectStoreFailureIntervalSeconds = Setup.config().objectStoreFailureIntervalSeconds \
+            if objectStoreFailureIntervalSeconds is None \
+            else objectStoreFailureIntervalSeconds
         self.objectStoreFailureCount = 0
         self.lastSuccessfulObjectStoreAttempt = 0.0
         self.vdm_ = vdm
@@ -453,7 +453,7 @@ class PythonIoTaskService(object):
         with self.lock_:
             self.objectStoreFailureCount += 1
             if self.objectStoreFailureCount >= self.maxObjectStoreAttempts and \
-                    self.lastSuccessfulObjectStoreAttempt + self.objectStoreFailureInterval < time.time():
+                    self.lastSuccessfulObjectStoreAttempt + self.objectStoreFailureIntervalSeconds < time.time():
                 return True
         # add some delay before retrying
         time.sleep(0.2)
