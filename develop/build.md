@@ -226,6 +226,40 @@ data:    [3] QEGg python  /volumes/src/ufora/scripts/init/ufora-worker.py       
 
 The service logs are placed in the `logs` directory of `ROOT_DATA_DIR`.
 
+
+## Ufora Services
+
+The Ufora platform consists of several services that work in concert.
+
+
+### ufora-worker
+
+This is the workhorse of the platform and is the *only* service that runs on *all* machines in a cluster
+(although it doesn't have to run on the cluster manager machine).
+The ufora-worker is the service that runs computations and loads data.
+
+
+### ufora-web
+
+The *ufora-web* service is the HTTP front-end that runs on the cluster-manager machine. Clients use
+the `pyfora` python package to connect to a cluster using socket.io over HTTP, and this is the service
+that handles their connections.
+
+
+### ufora-gateway
+
+This service runs on the cluster-manager machine and acts as an intermediate between the web front-end
+and the worker nodes. It maintains connections to the workers, submits computations, tracks their
+progress, and sends results back to users.
+
+
+### ufora-store
+
+This is a simple in-memory key-value store with publish-subscribe capabilities. It is mainly used by
+workers to discover each other. The *ufora-store* service runs on the cluster-manager machine.
+
+
+
 # Stopping the Ufora Services
 
 To stop all Ufora services run:
