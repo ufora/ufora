@@ -90,7 +90,9 @@ if [ -z $NESTED_TESTS_GUARD ]; then
 
     echo "ROOT_DATA_DIR: $ROOT_DATA_DIR"
 
-    rm -rf $CORE_DUMP_DIR/* > /dev/null
+    if [ ! -z $CORE_DUMP_DIR ]; then
+        rm -rf $CORE_DUMP_DIR/* > /dev/null
+    fi
 
     mkdir $ARTIFACT_DIR
 
