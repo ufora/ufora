@@ -26,7 +26,7 @@ class TwoClassRidgeRegressionSolver:
             self, X, y,
             regularizer, tol, maxIters, classes,
             classZeroLabel=None, splitLimit=1000000,
-            hasIntercept=True, interceptScale=1):
+            hasIntercept=True, interceptScale=1.0):
         if classZeroLabel is None:
             classZeroLabel = classes[0]
         else:
@@ -203,7 +203,7 @@ def addVecsOnRange(vec1, vec2, vec2Multiplier, lowIx, highIx):
     return tr
 
 def _weightedDotProduct(x1, x2, x3):
-    res = 0
+    res = 0.0
     ix = 0
     top = len(x1)
     while ix < top:
