@@ -29,7 +29,7 @@ import ufora.FORA.python.PurePython.LogisticRegressionTests as \
     LogisticRegressionTests
 import ufora.FORA.python.PurePython.RegressionTreeTests as RegressionTreeTests
 import ufora.FORA.python.PurePython.GradientBoostingTests as GradientBoostingTests
-
+import ufora.FORA.python.PurePython.FunctionTestCases as FunctionTestCases
 
 import unittest
 

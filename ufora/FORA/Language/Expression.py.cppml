@@ -20,6 +20,8 @@
 #include "RebindFree.hppml"
 #include "../Core/Type.hppml"
 #include "../Core/ClassMediator.hppml"
+#include "../TypedFora/ABI/ContainsNonemptyVectorsVisitor.hppml"
+#include "../TypedFora/ABI/ImplValVisitor.hppml"
 #include "../Judgment/JudgmentOnValue.hppml"
 #include "ClassMediatorBindings.hppml"
 #include "FreeVariableListFromPython.hpp"
@@ -384,32 +386,45 @@ public:
 			return rebindFreeAs(e, toBind);
 			}
 
-		static ImplValContainer bindExpressionToFunctionWithNoArguments(
-															Expression e,
-															boost::python::dict freeVariables
-															)
-			{
-			ImmutableTreeMap<Symbol, pair<ImplValContainer, Nullable<Symbol> > > freeVars = 
-				Fora::freeVariableListFromPython(freeVariables);
-
-			return Fora::Language::bindFunctionWithValues(
-				ClassMediator::Function(
-					Function::SingleTermFunction(emptyTreeVec(), null(), e),
-					LexicalBindingMap(),
-					CSTValue()
-					),
-				freeVars, 
-				CSTValue()
-				);
-			}
-
 		static ImplValContainer evaluateRootLevelCreateObjectExpression(
 															Expression expr,
-															boost::python::dict freeVariables
+															boost::python::dict freeVariables,
+															bool bindCSTValuesDirectlyInCode
 															)
 			{
 			ImmutableTreeMap<Symbol, pair<ImplValContainer, Nullable<Symbol> > > freeVars = 
 				Fora::freeVariableListFromPython(freeVariables);
+
+			ImmutableTreeMap<Symbol, pair<ImplValContainer, Nullable<Symbol> > > freeVarsToBind;
+
+			ImmutableTreeMap<Symbol, LexicalBinding> constantLexicalBindings;
+
+			for (long k = 0; k < freeVars.size(); k++)
+				{
+				pair<ImplValContainer, Nullable<Symbol> > p = freeVars.pairAtPosition(k).second;
+
+				if (p.first.isCST() && !p.second)
+					{
+					//verify that there are no vectors within this object
+					ContainsNonemptyVectorsVisitor visitor;
+
+					ImplValVisitor<ContainsNonemptyVectorsVisitor> ivVisitor(visitor);
+
+					ivVisitor.visit(p.first.type(), (uint8_t*)p.first.data(), 1, 0);
+
+					if (!visitor.contains() && bindCSTValuesDirectlyInCode)
+						{
+						constantLexicalBindings = constantLexicalBindings + 
+							freeVars.pairAtPosition(k).first + 
+							LexicalBinding::Constant(CSTValue(p.first))
+							;
+						}
+					else
+						freeVarsToBind = freeVarsToBind + freeVars.pairAtPosition(k);
+					}
+				else
+					freeVarsToBind = freeVarsToBind + freeVars.pairAtPosition(k);
+				}
 
 			expr = expr.unwrapCodeLocationTags();
 
@@ -419,10 +434,10 @@ public:
 					ClassMediator::Object(
 						expr.getCreateObject().name(),
 						expr.getCreateObject().body(),
-						LexicalBindingMap(),
+						LexicalBindingMap(constantLexicalBindings),
 						CSTValue()
 						),
-					freeVars, 
+					freeVarsToBind,
 					expr.getCreateObject().objectMetadata()
 					);
 				}
@@ -433,10 +448,10 @@ public:
 					ClassMediator::Function(
 						expr.getCreateFunction().name(),
 						expr.getCreateFunction().predicate(),
-						LexicalBindingMap(),
+						LexicalBindingMap(constantLexicalBindings),
 						CSTValue()
 						),
-					freeVars, 
+					freeVarsToBind, 
 					expr.getCreateFunction().objectMetadata()
 					);
 				}
@@ -447,10 +462,10 @@ public:
 					ClassMediator::Class(
 						expr.getCreateClass().name(),
 						expr.getCreateClass().body(),
-						LexicalBindingMap(),
+						LexicalBindingMap(constantLexicalBindings),
 						CSTValue()
 						),
-					freeVars,
+					freeVarsToBind,
 					expr.getCreateClass().classMetadata()
 					);
 				}
@@ -592,7 +607,6 @@ public:
 					)
 				.def("getParseLocation", &getParseLocation)
 				.def("willAlwaysEvaluateToNothing", &willAlwaysEvaluateToNothing)
-				.def("bindExpressionToFunctionWithNoArguments", &bindExpressionToFunctionWithNoArguments)			
 				.enable_pickling()
 				;
 				

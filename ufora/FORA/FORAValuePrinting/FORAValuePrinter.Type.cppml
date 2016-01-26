@@ -344,6 +344,60 @@ void boundTypeClassPrinter(FORAValuePrinter printer,
 //varswap of oldName to newName which the printer will then use to make
 //replacements later if necessary
 ImmutableTreeMap<symbol_type,symbol_type> boundVariablePrinter(FORAValuePrinter printer,
+																pair<Type, char*> typeWithData,
+																ImmutableTreeSet<symbol_type> usedNames,
+																symbol_type symbol)
+	{
+	ImmutableTreeMap<symbol_type,symbol_type> variableSwap;
+
+	//only print if it found a valid type object
+	if (typeWithData.second)
+		{
+		symbol_type newSymbol = symbol;
+		for (int j = 1; usedNames.contains(newSymbol); j++)
+			{
+			newSymbol = symbol_type(newSymbol.toString()
+									+ boost::lexical_cast<std::string>(j));
+			}
+
+		//if it is a type::class, it's bound variables must be printed first
+		if (typeWithData.first.isClass()
+		   && typeWithData.first.getClass().classBody().mediator()
+		   && (typeWithData.first.getClass().classBody().mediator().get().isObject()
+		   		|| typeWithData.first.getClass().classBody().mediator().get().isFunction()))
+			{
+			//also check that it is not on the list of blocked ImplVal's
+			if (printer.shouldPrint(ImplVal(typeWithData.first,typeWithData.second)))
+				{
+				//add this type::class's name to the usedList (necessary in case
+				//its name got changed into one conflicting with one of its bound vars)
+				//update the printer to reflect this...				
+				variableSwap = variableSwap + make_pair(symbol,newSymbol);
+				usedNames = usedNames + newSymbol;
+				FORAValuePrinter updated = printer.withMap(printer.variableSwap()
+															+ make_pair(symbol,newSymbol));
+				boundTypeClassPrinter(updated,
+									typeWithData.second,
+									typeWithData.first.getClass().elements(),
+									typeWithData.first.getClass().classBody().mediator(),
+									usedNames,
+									newSymbol.toString());
+				}
+			}
+		else
+			{
+			//add new pair to varSwap
+			variableSwap = variableSwap + make_pair(symbol,newSymbol);
+			printer.stream() << "let " << newSymbol << " = ";
+			printer.toString(typeWithData.first,typeWithData.second);
+			printer.stream() << ";\n";
+			}
+		}
+
+	return variableSwap;
+	}
+
+ImmutableTreeMap<symbol_type,symbol_type> boundVariablePrinter(FORAValuePrinter printer,
 																ImmutableTreeVector<uint32_t> unbindIndexSequence,
 																ImmutableTreeVector<Type> types,
 																ImmutableTreeVector<char*> dataPointers,
@@ -360,50 +414,10 @@ ImmutableTreeMap<symbol_type,symbol_type> boundVariablePrinter(FORAValuePrinter 
 		typeWithData = boundTypeUnbinder(typeWithData,
 										unbindIndexSequence.begin(),
 										unbindIndexSequence.end());
-		//only print if it found a valid type object
-		if (typeWithData.second)
-			{
-			symbol_type newSymbol = symbol;
-			for (int j = 1; usedNames.contains(newSymbol); j++)
-				{
-				newSymbol = symbol_type(newSymbol.toString()
-										+ boost::lexical_cast<std::string>(j));
-				}
 
-			//if it is a type::class, it's bound variables must be printed first
-			if (typeWithData.first.isClass()
-			   && typeWithData.first.getClass().classBody().mediator()
-			   && (typeWithData.first.getClass().classBody().mediator().get().isObject()
-			   		|| typeWithData.first.getClass().classBody().mediator().get().isFunction()))
-				{
-				//also check that it is not on the list of blocked ImplVal's
-				if (printer.shouldPrint(ImplVal(typeWithData.first,typeWithData.second)))
-					{
-					//add this type::class's name to the usedList (necessary in case
-					//its name got changed into one conflicting with one of its bound vars)
-					//update the printer to reflect this...				
-					variableSwap = variableSwap + make_pair(symbol,newSymbol);
-					usedNames = usedNames + newSymbol;
-					FORAValuePrinter updated = printer.withMap(printer.variableSwap()
-																+ make_pair(symbol,newSymbol));
-					boundTypeClassPrinter(updated,
-										typeWithData.second,
-										typeWithData.first.getClass().elements(),
-										typeWithData.first.getClass().classBody().mediator(),
-										usedNames,
-										newSymbol.toString());
-					}
-				}
-			else
-				{
-				//add new pair to varSwap
-				variableSwap = variableSwap + make_pair(symbol,newSymbol);
-				printer.stream() << "let " << newSymbol << " = ";
-				printer.toString(typeWithData.first,typeWithData.second);
-				printer.stream() << ";\n";
-				}
-			}
+		return boundVariablePrinter(printer, typeWithData, usedNames, symbol);
 		}
+
 	return variableSwap;
 	}
 
@@ -422,26 +436,92 @@ ImmutableTreeMap<symbol_type,symbol_type> boundVariablesToString(FORAValuePrinte
 	for (long k = 0; k < lexicalSurroundings.boundVariables().size(); k++)
 		{
 		symbol_type symbol = lexicalSurroundings.boundVariables()[k];
-		ImmutableTreeVector<uint32_t> unbindIndexSequence
-			= (*bindingMap[symbol]).unbindIndexSequence();
 
-		//if its zero, don't need to go print it
-		if (unbindIndexSequence.size() != 0)
-			{
-			ImmutableTreeMap<symbol_type,symbol_type> toAdd
-				= boundVariablePrinter(printer,
-										unbindIndexSequence,
-										types,
-										dataPointers,
-										usedNames,
-										symbol);
-			//want to add to used names to avoid rebinding downstream
-			//don't really care if symbol gets in there 2x
-			usedNames = usedNames + symbol + toAdd.keySet();
-			variableSwap = variableSwap + toAdd;
-			}
+		@match LexicalBinding(*bindingMap[symbol])
+			-| Member(unbindIndexSequence, member) ->> {
+				//if its zero, don't need to go print it
+				if (unbindIndexSequence.size() != 0)
+					{
+					ImmutableTreeMap<symbol_type,symbol_type> toAdd
+						= boundVariablePrinter(printer,
+												unbindIndexSequence,
+												types,
+												dataPointers,
+												usedNames,
+												symbol);
+					//want to add to used names to avoid rebinding downstream
+					//don't really care if symbol gets in there 2x
+					usedNames = usedNames + symbol + toAdd.keySet();
+					variableSwap = variableSwap + toAdd;
+					}
+				}
+			-| Constant(c) ->> {
+				ImmutableTreeMap<symbol_type,symbol_type> toAdd
+					= boundVariablePrinter(printer,
+											make_pair(c.type(), (char*)c.getData()),
+											usedNames,
+											symbol);
+				//want to add to used names to avoid rebinding downstream
+				//don't really care if symbol gets in there 2x
+				usedNames = usedNames + symbol + toAdd.keySet();
+				variableSwap = variableSwap + toAdd;
+				}
 		}
 	return variableSwap;
+	}
+
+bool memberOfObjectBoundVariablesToString(FORAValuePrinter printer,
+											pair<Type,char*> typeWithData,
+											ImmutableTreeSet<symbol_type> usedNames,
+											string& name)
+	{
+	//lets caller know that this would have printed, but it was blocked
+	bool blocked = false;
+
+	//only print if it found a valid Type::Class
+	if (typeWithData.second && typeWithData.first.isClass())
+		{
+		if (printer.shouldPrint(ImplVal(typeWithData.first, typeWithData.second)))
+			{
+			//need to check inside Type::Class for conflicts as well
+			@match ClassMediator(typeWithData.first.getClass().classBody().mediator().get())
+				-| Object(obj) ->> {
+				   usedNames = usedNames + variablesInObject(obj);
+				   }
+				-| Class(obj) ->> {
+				   usedNames = usedNames + variablesInClass(obj);
+				   }
+				-| _ ->> { 
+				   //do we need a similar method call here??
+				   lassert(false); 
+				   }
+				;				
+				
+			name = "o";
+			symbol_type objectSymbol = symbol_type(name);
+			for (int j = 1; usedNames.contains(objectSymbol); j++)
+				{
+				name = "o" + boost::lexical_cast<std::string>(j);
+				objectSymbol = symbol_type(name);
+				}
+
+			//now that the name for this object doesnt conflict with
+			//the member originally being printed, usedNames should
+			//only reflect this object's name and the printer's map
+			usedNames = printer.reservedNames() + objectSymbol;
+			//it is an typeclass, so print bound variables first
+			boundTypeClassPrinter(printer,
+								typeWithData.second,
+								typeWithData.first.getClass().elements(),
+								typeWithData.first.getClass().classBody().mediator(),
+								usedNames,
+								name);
+			}
+		else
+			blocked = true;
+		}
+
+	return blocked;
 	}
 
 bool memberOfObjectBoundVariablesToString(FORAValuePrinter printer,
@@ -452,8 +532,6 @@ bool memberOfObjectBoundVariablesToString(FORAValuePrinter printer,
 											string& name)
 	{
 	//lets caller know that this would have printed, but it was blocked
-	bool blocked = false;
-
 	int unbindIndex = unbindIndexSequence[0];
 	if (unbindIndex < types.size()
 	   && unbindIndex < dataPointers.size())
@@ -466,50 +544,10 @@ bool memberOfObjectBoundVariablesToString(FORAValuePrinter printer,
 										unbindIndexSequence.begin(),
 										unbindIndexSequence.end());
 
-		//only print if it found a valid Type::Class
-		if (typeWithData.second && typeWithData.first.isClass())
-			{
-			if (printer.shouldPrint(ImplVal(typeWithData.first, typeWithData.second)))
-				{
-				//need to check inside Type::Class for conflicts as well
-				@match ClassMediator(typeWithData.first.getClass().classBody().mediator().get())
-					-| Object(obj) ->> {
-					   usedNames = usedNames + variablesInObject(obj);
-					   }
-					-| Class(obj) ->> {
-					   usedNames = usedNames + variablesInClass(obj);
-					   }
-					-| _ ->> { 
-					   //do we need a similar method call here??
-					   lassert(false); 
-					   }
-					;				
-					
-				name = "o";
-				symbol_type objectSymbol = symbol_type(name);
-				for (int j = 1; usedNames.contains(objectSymbol); j++)
-					{
-					name = "o" + boost::lexical_cast<std::string>(j);
-					objectSymbol = symbol_type(name);
-					}
-
-				//now that the name for this object doesnt conflict with
-				//the member originally being printed, usedNames should
-				//only reflect this object's name and the printer's map
-				usedNames = printer.reservedNames() + objectSymbol;
-				//it is an typeclass, so print bound variables first
-				boundTypeClassPrinter(printer,
-									typeWithData.second,
-									typeWithData.first.getClass().elements(),
-									typeWithData.first.getClass().classBody().mediator(),
-									usedNames,
-									name);
-				}
-			else
-				blocked = true;
-			}
+		return memberOfObjectBoundVariablesToString(printer, typeWithData, usedNames, name);
 		}
-	return blocked;
+	else
+		return false;
 	}
 
 //called first by classToString to determine if what was being printed is in fact
@@ -533,33 +571,53 @@ ImmutableTreeMap<symbol_type,symbol_type> checkIfMemberOfObject(FORAValuePrinter
 	for (long k = 0; k < lexicalSurroundings.boundVariables().size(); k++)
 		{
 		symbol_type symbol = lexicalSurroundings.boundVariables()[k];
-		ImmutableTreeVector<uint32_t> unbindIndexSequence
-			= (*bindingMap[symbol]).unbindIndexSequence();
-		
-		if ( unbindIndexSequence.size() != 0
-			&& (*bindingMap[symbol]).member()
-			&& printer.printBoundClasses())
-			{
-			//need to name object and rename vars bound to it
-			string name = "";
-			bool blocked = false;
-			blocked = memberOfObjectBoundVariablesToString(printer,
-															unbindIndexSequence,
-															types,
-															dataPointers,
-															usedNames,
-															name);
-			if (name != "")
-				{
-				//actually a member of a valid object, the proper bound vars have been printed
-				memberOfObject = true;
-				variableSwap = variableSwap + make_pair(symbol_type(symbol.toString()),
-														symbol_type(name+"."+symbol.toString()));
-				}
 
-			if (blocked)
-				memberOfObject = true;
-			}
+		@match LexicalBinding(*bindingMap[symbol])
+			-| Member(unbindIndexSequence, member) ->> {				
+				if ( unbindIndexSequence.size() != 0
+						&& member
+						&& printer.printBoundClasses())
+					{
+					//need to name object and rename vars bound to it
+					string name = "";
+					bool blocked = false;
+					blocked = memberOfObjectBoundVariablesToString(printer,
+																	unbindIndexSequence,
+																	types,
+																	dataPointers,
+																	usedNames,
+																	name);
+					if (name != "")
+						{
+						//actually a member of a valid object, the proper bound vars have been printed
+						memberOfObject = true;
+						variableSwap = variableSwap + make_pair(symbol_type(symbol.toString()),
+																symbol_type(name+"."+symbol.toString()));
+						}
+
+					if (blocked)
+						memberOfObject = true;
+					}
+				}
+			-| Constant(c) ->> {
+				//need to name object and rename vars bound to it
+				string name = "";
+				bool blocked = false;
+				blocked = memberOfObjectBoundVariablesToString(printer,
+																make_pair(c.type(), (char*)c.getData()),
+																usedNames,
+																name);
+				if (name != "")
+					{
+					//actually a member of a valid object, the proper bound vars have been printed
+					memberOfObject = true;
+					variableSwap = variableSwap + make_pair(symbol_type(symbol.toString()),
+															symbol_type(name+"."+symbol.toString()));
+					}
+
+				if (blocked)
+					memberOfObject = true;
+				}
 		}
 	if (!memberOfObject)
 		{

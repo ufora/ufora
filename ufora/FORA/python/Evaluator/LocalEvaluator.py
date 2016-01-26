@@ -593,7 +593,7 @@ callAndReturnExpr = FORANative.parseStringToExpression(
     "cdp"
     )
 
-callAndReturn = FORANative.evaluateRootLevelCreateObjectExpression(callAndReturnExpr, {})
+callAndReturn = FORANative.evaluateRootLevelCreateObjectExpression(callAndReturnExpr, {}, True)
 
 def areAllArgumentsConst(*args):
     """Returns True if all ImplValContainer arguments in the specified list are const."""

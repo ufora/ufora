@@ -64,6 +64,8 @@ class Converter(object):
                  foraBuiltinsImplVal=None):
         self.convertedValues = {}
 
+        self.boundExpressions = {}
+
         self.constantConverter = ConstantConverter.ConstantConverter(
             nativeConstantConverter=nativeConstantConverter
             )
@@ -774,9 +776,27 @@ class Converter(object):
                      "python code and the generated FORA code underneath. Please file a bug report."
                     ))
 
+            #we need to determine whether we should bind the free variables in this expression as constants
+            #inline in the code, or as class members. Binding them as constants speeds up the compiler,
+            #but if we have the same function bound repeatedly with many constants, we'll end up
+            #producing far too much code. This algorithm binds as constants the _First_ time we bind
+            #a given expression with given arguments, and as members any future set of times. This 
+            #should cause it to bind modules and classes that don't have any data flowing through them
+            #as constants, and closures and functions we're calling repeatedly using class members.
+            shouldMapArgsAsConstants = True
+
+            boundValues = tuple(renamedVariableMapping[k].hash for k in sorted(renamedVariableMapping))
+            if foraExpression.hash() not in self.boundExpressions:
+                self.boundExpressions[foraExpression.hash()] = boundValues
+            else:
+                bound = self.boundExpressions[foraExpression.hash()]
+                if boundValues != bound:
+                    shouldMapArgsAsConstants = False
+
             return ForaNative.evaluateRootLevelCreateObjectExpression(
                 foraExpression,
-                renamedVariableMapping
+                renamedVariableMapping,
+                shouldMapArgsAsConstants
                 )
         else:
             #function that evaluates the CreateObject. Args are the free variables, in lexical order
@@ -1036,7 +1056,7 @@ class Converter(object):
                     lexicalMembers = implval.objectLexicalMembers
                     for memberAndBindingSequence in lexicalMembers.iteritems():
                         #if the binding sequence is empty, then this binding refers to 'self'
-                        if memberAndBindingSequence[1][0]:
+                        if isinstance(memberAndBindingSequence[1], ForaNative.ImplValContainer) or memberAndBindingSequence[1][0]:
                             memberName = memberAndBindingSequence[0]
                             member = implval.getObjectLexicalMember(memberName)
                             if member is not None and member[1] is None:
@@ -1059,7 +1079,7 @@ class Converter(object):
             lexicalMembers = implval.objectLexicalMembers
             for memberAndBindingSequence in lexicalMembers.iteritems():
                 #if the binding sequence is empty, then this binding refers to 'self'
-                if memberAndBindingSequence[1][0]:
+                if isinstance(memberAndBindingSequence[1], ForaNative.ImplValContainer) or memberAndBindingSequence[1][0]:
                     memberName = memberAndBindingSequence[0]
                     member = implval.getObjectLexicalMember(memberName)
                     if member is not None and member[1] is None:

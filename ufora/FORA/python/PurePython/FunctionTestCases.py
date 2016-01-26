@@ -15,7 +15,7 @@
 
 import pyfora.pyAst.PyAstUtil as PyAstUtil
 
-class FunctionTestCases(object):
+class FunctionTestCases:
     """Test cases for pyfora functions"""
 
     def test_nested_function_arguments(self):
