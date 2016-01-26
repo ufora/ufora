@@ -69,6 +69,7 @@ RUN pip install --allow-unverified pyodbc\
     pyodbc \
     pexpect \
     pandas \
+    scipy \
     wsaccel \
     psutil
 

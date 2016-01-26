@@ -12,6 +12,7 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+
 import pyfora.PureImplementationMapping as PureImplementationMapping
 
 
@@ -28,11 +29,35 @@ class BetaFunction:
                    }"""
             )(a, b)
 
+
+class GammaFunction:
+    def __call__(self, x):
+        if not isinstance(x, float):
+            x = float(x)
+
+        return __inline_fora(
+            """fun(x) {
+                   return PyFloat(`tgamma(x.@m))
+                   }"""
+            )(x)
+
+
 def generateMappings():
     tr = []
     try:
         import scipy.special
-        tr.append(PureImplementationMapping.InstanceMapping(scipy.special.beta, BetaFunction))
+        tr.append(
+            PureImplementationMapping.InstanceMapping(
+                scipy.special.beta,
+                BetaFunction
+                )
+            )
+        tr.append(
+            PureImplementationMapping.InstanceMapping(
+                scipy.special.gamma,
+                GammaFunction
+                )
+            )
     except ImportError:
         pass
 
