@@ -42,3 +42,15 @@ class ScipySpecialTestCases(object):
                     self.evaluateWithExecutor(f, val)
                     )
                 )
+
+    def test_hyp2f1(self):
+        def f(a, b, c, z):
+            return scipy.special.hyp2f1(a, b, c, z)
+
+        a, b, c, z = 1, 1, 2, -1
+        self.assertTrue(
+            numpy.isclose(
+                f(a, b, c, z),
+                self.evaluateWithExecutor(f, a, b, c, z)
+                )
+            )

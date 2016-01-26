@@ -42,6 +42,24 @@ class GammaFunction:
             )(x)
 
 
+class Hyp2f1:
+    def __call__(self, a, b, c, z):
+        if not isinstance(a, float):
+            a = float(a)
+        if not isinstance(b, float):
+            b = float(b)
+        if not isinstance(c, float):
+            c = float(c)
+        if not isinstance(z, float):
+            z = float(z)
+        
+        return __inline_fora(
+            """fun(a, b, c, z) {
+                   return PyFloat(`hyp2f1(a.@m, b.@m, c.@m, z.@m))
+                   }"""
+            )(a, b, c, z)
+
+
 def generateMappings():
     tr = []
     try:
@@ -56,6 +74,12 @@ def generateMappings():
             PureImplementationMapping.InstanceMapping(
                 scipy.special.gamma,
                 GammaFunction
+                )
+            )
+        tr.append(
+            PureImplementationMapping.InstanceMapping(
+                scipy.special.hyp2f1,
+                Hyp2f1
                 )
             )
     except ImportError:
