@@ -16,7 +16,6 @@ import pyfora.PureImplementationMappings as PureImplementationMappings
 import pyfora.BuiltinPureImplementationMappings as BuiltinPureImplementationMappings
 import pyfora.typeConverters.PureNumpy as PureNumpy
 import pyfora.typeConverters.PureComplex as PureComplex
-import pyfora.typeConverters.PureScipy
 import pyfora.typeConverters.PureMath as PureMath
 
 
