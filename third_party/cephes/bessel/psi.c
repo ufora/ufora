@@ -59,6 +59,8 @@ Copyright 1984, 1987, 1992, 2000 by Stephen L. Moshier
 #include <math.h>
 #include "../consts.h"
 
+extern double polevl(double x, double coef[], int N);
+
 static unsigned short A[] = {
 0x5555,0x5555,0x5555,0x3fb5,
 0x5996,0x9599,0x9959,0xbf95,
