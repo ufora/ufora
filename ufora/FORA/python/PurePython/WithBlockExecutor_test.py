@@ -305,7 +305,7 @@ class WithBlockExecutors_test(unittest.TestCase):
             with self.assertRaises(UnboundLocalError):
                 b
 
-    def test_with_block_conditionally_assign_to_already_assigned_var(self):
+    def test_with_block_conditionally_assign_to_already_assigned_var_1(self):
         with self.create_executor() as fora:
             x = 10
             y = 10
@@ -319,7 +319,7 @@ class WithBlockExecutors_test(unittest.TestCase):
             self.assertEqual(x, 110)
             self.assertEqual(y, 10)
 
-    def test_with_block_conditionally_assign_to_already_assigned_var(self):
+    def test_with_block_conditionally_assign_to_already_assigned_var_2(self):
         with self.create_executor() as fora:
             x = 10
             z = 100
