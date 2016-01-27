@@ -18,7 +18,6 @@
 #include "AtomicOps.hpp"
 #include "Clock.hpp"
 #include "Logging.hpp"
-#include "lassert.hpp"
 
 template<class T>
 class InstanceCounter {

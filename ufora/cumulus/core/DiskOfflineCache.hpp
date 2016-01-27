@@ -18,7 +18,6 @@
 
 #include "../../core/math/Hash.hpp"
 #include "../../core/IntegerTypes.hpp"
-#include "../../core/Logging.hpp"
 #include "../../core/threading/Queue.hpp"
 #include "../../FORA/Serialization/SerializedObjectFlattener.hpp"
 

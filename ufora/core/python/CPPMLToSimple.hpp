@@ -15,7 +15,6 @@
 ****************************************************************************/
 #pragma once
 
-#include "../Logging.hpp"
 #include "../Common.hppml"
 #include "utilities.hpp"
 #include "../math/Hash.hpp"

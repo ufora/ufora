@@ -18,8 +18,6 @@
 #include <vector>
 #include <deque>
 #include "../Common.hppml"
-#include "../Clock.hpp"
-#include "../Logging.hpp"
 #include "IProtocol.hpp"
 #include <stdio.h>
 

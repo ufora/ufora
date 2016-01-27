@@ -17,7 +17,6 @@
 
 #include "NativeTypeFor.hpp"
 #include "../../core/lassert.hpp"
-#include "../../core/Logging.hpp"
 
 template<class T, class meta>
 class NativeTypeForCppmlTupleImpl {

@@ -19,7 +19,6 @@
 #include "NativeType.hppml"
 #include "../../core/containers/ImmutableTreeSet.hppml"
 #include "../../core/containers/ImmutableTreeMap.hppml"
-#include "../../core/Logging.hpp"
 #include <type_traits>
 #include <set>
 #include <map>

@@ -17,7 +17,6 @@
 
 #include <boost/thread.hpp>
 #include "../../../core/lassert.hpp"
-#include "../../../core/Logging.hpp"
 #include "../../../core/Clock.hpp"
 #include "../../../core/threading/CallbackScheduler.hppml"
 

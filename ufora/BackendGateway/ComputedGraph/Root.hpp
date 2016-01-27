@@ -16,6 +16,7 @@
 #pragma once
 
 #include "Typedefs.hpp"
+#include "Graph.hpp"
 
 namespace ComputedGraph {
 

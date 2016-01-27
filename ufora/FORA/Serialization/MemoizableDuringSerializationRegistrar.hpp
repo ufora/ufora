@@ -17,7 +17,6 @@
 
 #include "MemoizableDuringSerialization.hpp"
 #include "ForaValueSerializationStream.hppml"
-#include "../../core/Logging.hpp"
 #include "../../core/InstanceCounter.hpp"
 
 namespace Fora {

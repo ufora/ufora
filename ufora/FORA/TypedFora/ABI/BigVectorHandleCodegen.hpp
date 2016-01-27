@@ -26,7 +26,6 @@
 #include "ForaValueArrayCodegen.hpp"
 #include "BigVectorPageLayoutCodegen.hppml"
 #include "NativeLayoutType.hppml"
-#include "../../../core/Logging.hpp"
 #include "../../Native/NativeTypeFor.hpp"
 #include "../../Native/NativeTypeForCppml.hpp"
 #include "../../Native/TypedNativeLibraryFunction.hpp"

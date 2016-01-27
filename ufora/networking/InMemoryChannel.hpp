@@ -16,7 +16,6 @@
 #pragma once
 
 #include <vector>
-#include "../core/Logging.hpp"
 #include "../core/threading/Queue.hpp"
 #include "../core/threading/CallbackScheduler.hppml"
 #include "Channel.hpp"
