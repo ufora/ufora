@@ -947,3 +947,28 @@ class ExceptionTestCases(object):
                     )
                 )
             
+    def test_xrange_error_1(self):
+        def f():
+            return range(1.0)
+
+        with self.create_executor() as fora:
+            e = fora.submit(f).result().toLocal().exception()
+            self.assertIsInstance(e.remoteException, TypeError)
+                        
+    def test_xrange_error_2(self):
+        def f():
+            return range(1, 1.0)
+
+        with self.create_executor() as fora:
+            e = fora.submit(f).result().toLocal().exception()
+            self.assertIsInstance(e.remoteException, TypeError)
+                        
+    def test_xrange_error_3(self):
+        def f():
+            return range(1, 1, 1.0)
+
+        with self.create_executor() as fora:
+            e = fora.submit(f).result().toLocal().exception()
+            self.assertIsInstance(e.remoteException, TypeError)
+                        
+            

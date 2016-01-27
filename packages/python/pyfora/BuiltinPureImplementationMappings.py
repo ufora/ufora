@@ -252,16 +252,28 @@ class XRangeInstance:
 
 class XRange:
     def __call__(self, first, second=None, increment=None):
+        if not isinstance(first, int):
+            raise TypeError("range() first argument must be an integer")
+
         start = 0
         stop = 0
         if second is None:
             stop = first
         else:
+            if not isinstance(second, int):
+                raise TypeError(
+                    "range() second argument must be an integer (or None)"
+                    )
+
             start = first
             stop = second
 
         if increment is None:
             increment = 1
+        elif not isinstance(increment, int):
+            raise TypeError(
+                "range() third argument must be an integer (or None)"
+                )
 
         if increment == 0:
             raise ValueError("xrange() arg 3 must not be zero")
