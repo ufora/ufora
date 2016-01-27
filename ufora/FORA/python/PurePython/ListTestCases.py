@@ -12,6 +12,7 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+import time
 import numpy
 import pyfora.Exceptions as Exceptions
 
@@ -85,6 +86,16 @@ class ListTestCases(object):
             return (len(l), len(l) == 3, len(l) is 3)
 
         self.equivalentEvaluationTest(f)
+
+
+    def test_long_list(self):
+        t0 = time.time()
+
+        l = [1, 2, 3] * 100000
+        def f(x):
+            return len(x)
+        self.equivalentEvaluationTest(f, l)
+        print "test_long_list took:", time.time() - t0, "seconds."
 
     def test_lists_3(self):
         def f(elt):
