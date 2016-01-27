@@ -14,6 +14,7 @@
 
 import logging
 import pyfora.Exceptions as Exceptions
+import pyfora.TypeDescription as TypeDescription
 
 class ObjectConverter(object):
     def __init__(self, webObjectFactory, purePythonMDSAsJson):
@@ -24,13 +25,13 @@ class ObjectConverter(object):
             pass
         def onFailure(x):
             logging.error("ObjectConverter failed to initialize: %s", x)
-        
+
         self.remoteConverter.initialize({'purePythonMDSAsJson': purePythonMDSAsJson}, {'onSuccess':onSuccess, 'onFailure':onFailure})
 
     def convert(self, objectId, objectRegistry, callback):
         dependencyGraph = objectRegistry.computeDependencyGraph(objectId)
         objectIdToObjectDefinition = {
-            objId: objectRegistry.getDefinition(objId)._asdict()
+            objId: TypeDescription.serialize(objectRegistry.getDefinition(objId))
             for objId in dependencyGraph.iterkeys()
             }
 

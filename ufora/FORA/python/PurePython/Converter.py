@@ -155,8 +155,8 @@ class Converter(object):
     def _convert(self, objectId, dependencyGraph, objectIdToObjectDefinition):
         objectDefinition = objectIdToObjectDefinition[objectId]
 
-        if isinstance(objectDefinition, TypeDescription.Primitive):
-            return self.convertPrimitive(objectDefinition.value)
+        if TypeDescription.isPrimitive(objectDefinition):
+            return self.convertPrimitive(objectDefinition)
         elif isinstance(objectDefinition, TypeDescription.RemotePythonObject):
             return self.convertRemotePythonObject(objectDefinition)
         elif isinstance(objectDefinition, TypeDescription.NamedSingleton):
@@ -436,8 +436,8 @@ class Converter(object):
                     )
 
             assert isinstance(
-                objectDefinition, 
-                (TypeDescription.FunctionDefinition, 
+                objectDefinition,
+                (TypeDescription.FunctionDefinition,
                  TypeDescription.ClassDefinition)), type(objectDefinition)
 
             naiveConvertedFunctions[objectId] = \
@@ -478,10 +478,10 @@ class Converter(object):
 
             if memberImplValOrNone is None:
                 raise pyfora.PythonToForaConversionError(
-                    ("An internal error occurred: " + 
+                    ("An internal error occurred: " +
                      "getObjectMember unexpectedly returned None")
                     )
-            
+
             self.convertedValues[objectId] = memberImplValOrNone
 
     def bindDependentValuesToCreateObjectExpression(
@@ -544,19 +544,16 @@ class Converter(object):
 
         return renamedObjectMapping
 
-    def convertStronglyConnectedComponentWithOneNode(
-            self,
-            dependencyGraph,
-            stronglyConnectedComponent,
-            objectIdToObjectDefinition
-            ):
+    def convertStronglyConnectedComponentWithOneNode(self,
+                                                     dependencyGraph,
+                                                     stronglyConnectedComponent,
+                                                     objectIdToObjectDefinition):
         objectId = stronglyConnectedComponent[0]
 
         objectDefinition = objectIdToObjectDefinition[objectId]
 
-        if isinstance(objectDefinition, TypeDescription.Primitive):
-            self.convertedValues[objectId] = \
-                self.convertPrimitive(objectDefinition.value)
+        if TypeDescription.isPrimitive(objectDefinition):
+            self.convertedValues[objectId] = self.convertPrimitive(objectDefinition)
 
         elif isinstance(objectDefinition, (TypeDescription.FunctionDefinition,
                                            TypeDescription.ClassDefinition)):
@@ -655,14 +652,14 @@ class Converter(object):
         objectDef = objectIdToObjectDefinition[objectId]
 
         instance = self.convertedValues[objectDef.instanceId]
-        
+
         bound = instance.getObjectMember(objectDef.methodName)
-        
+
         assert bound is not None
 
         return bound
 
-    
+
     def convertWithBlock(
             self,
             objectId,
@@ -710,7 +707,7 @@ class Converter(object):
                 ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath]),
                 [x.split(".")[0] for x in withBlockDescription.freeVariableMemberAccessChainsToId]
                 )
-        
+
         if isinstance(foraFunctionExpression, ForaNative.PythonToForaConversionError):
             raise convertNativePythonToForaConversionError(
                 foraFunctionExpression,
@@ -810,11 +807,11 @@ class Converter(object):
 
         if convertedValueOrNone is None:
             raise pyfora.PythonToForaConversionError(
-                ("An internal error occurred: " + 
+                ("An internal error occurred: " +
                  "function stage 1 simulation unexpectedly returned None")
                 )
 
-        self.convertedValues[objectId] = convertedValueOrNone            
+        self.convertedValues[objectId] = convertedValueOrNone
 
     def convertStronglyConnectedComponentWithOneFunctionOrClass(
             self,
@@ -862,8 +859,8 @@ class Converter(object):
 
             if missingVariableDefinitions:
                 raise pyfora.PythonToForaConversionError(
-                    ("An internal error occurred: we didn't provide a " + 
-                        "definition for the following variables: %s" % missingVariableDefinitions + 
+                    ("An internal error occurred: we didn't provide a " +
+                        "definition for the following variables: %s" % missingVariableDefinitions +
                         ". Most likely, there is a mismatch between our analysis of the "
                         "python code and the generated FORA code underneath. Please file a bug report."
                     ))

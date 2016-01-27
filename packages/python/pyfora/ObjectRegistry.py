@@ -30,7 +30,7 @@ class ObjectRegistry(object):
         return objectId
 
     def definePrimitive(self, objectId, primitive):
-        self.objectIdToObjectDefinition[objectId] = TypeDescription.Primitive(primitive)
+        self.objectIdToObjectDefinition[objectId] = primitive
 
     def defineTuple(self, objectId, memberIds):
         self.objectIdToObjectDefinition[objectId] = TypeDescription.Tuple(memberIds)
@@ -65,7 +65,7 @@ class ObjectRegistry(object):
             self._processFreeVariableMemberAccessChainResolution(
                 scopeIds
                 )
-        
+
         self.objectIdToObjectDefinition[objectId] = \
             TypeDescription.FunctionDefinition(
                 sourceFileId=sourceFileId,
@@ -147,12 +147,10 @@ class ObjectRegistry(object):
     def _computeDependentIds(self, objectId):
         objectDefinition = self.objectIdToObjectDefinition[objectId]
 
-        if isinstance(objectDefinition,
-                      (TypeDescription.Primitive,
-                       TypeDescription.File,
-                       TypeDescription.RemotePythonObject,
-                       TypeDescription.NamedSingleton
-                       )):
+        if TypeDescription.isPrimitive(objectDefinition) or \
+                isinstance(objectDefinition,
+                           (TypeDescription.File, TypeDescription.RemotePythonObject,
+                            TypeDescription.NamedSingleton)):
             return []
         elif isinstance(objectDefinition, (TypeDescription.BuiltinExceptionInstance)):
             return [objectDefinition.argsId]
@@ -178,7 +176,7 @@ class ObjectRegistry(object):
 
             return tr
         elif isinstance(objectDefinition, TypeDescription.Dict):
-            return objectDefinition.keyIds + objectDefinition.valueIds            
+            return objectDefinition.keyIds + objectDefinition.valueIds
         elif isinstance(objectDefinition, TypeDescription.WithBlockDescription):
             tr = objectDefinition.freeVariableMemberAccessChainsToId.values()
             tr.append(objectDefinition.sourceFileId)

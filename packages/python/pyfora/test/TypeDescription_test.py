@@ -17,19 +17,10 @@ import json
 import pyfora.TypeDescription as TypeDescription
 
 class TypeDescriptionTest(unittest.TestCase):
-    def test_simple_serialization_and_deserialization(self):
-        typeDescription = TypeDescription.Primitive(23.4)
-        self.assertDeserializationSerializationSucceeded(typeDescription)
-
-        typeDescription = TypeDescription.Tuple([1, 2, 3, 4, 5])
-        self.assertDeserializationSerializationSucceeded(typeDescription)
-
-        typeDescription = TypeDescription.ClassDefinition("source text here", ['test'])
-        self.assertDeserializationSerializationSucceeded(typeDescription)
 
     def test_nested_type_serialization_and_deserialization(self):
-        dict1 = { "a": 1, "b": 2, "c": 3}
-        dict2 = { "a": 4, "b": 5, "c": 6}
+        dict1 = {"a": 1, "b": 2, "c": 3}
+        dict2 = {"a": 4, "b": 5, "c": 6}
 
         typeDescription = TypeDescription.ClassDefinition("source text here", [dict1, dict2])
         self.assertDeserializationSerializationSucceeded(typeDescription)
@@ -38,7 +29,7 @@ class TypeDescriptionTest(unittest.TestCase):
         jsonString = json.dumps(typeDescription)
         jobject = json.loads(jsonString)
 
-        deserializationResult = TypeDescription.fromList(jobject)
+        deserializationResult = TypeDescription.deserialize(jobject)
         self.assertNamedTuplesAreTheSame(deserializationResult, typeDescription)
 
     def assertNamedTuplesAreTheSame(self, t1, t2):

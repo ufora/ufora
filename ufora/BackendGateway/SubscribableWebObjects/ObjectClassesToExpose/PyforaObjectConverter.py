@@ -110,12 +110,12 @@ class PyforaObjectConverter(ComputedGraph.Location):
     def unwrapPyforaDictToDictOfAssignedVars(self, dictIVC):
         """Take a Pyfora dictionary, and return a dict {string->IVC}. Returns None if not possible."""
         return converter_[0].unwrapPyforaDictToDictOfAssignedVars(dictIVC)
-    
+
     @ComputedGraph.Function
     def unwrapPyforaTupleToTuple(self, tupleIVC):
         """Take a Pyfora tuple, and return a tuple {IVC}. Returns None if not possible."""
         return converter_[0].unwrapPyforaTupleToTuple(tupleIVC)
-    
+
     @ComputedGraph.ExposedFunction(expandArgs=True)
     def convert(self, objectId, objectIdToObjectDefinition):
         import pyfora.TypeDescription as TypeDescription
@@ -140,10 +140,10 @@ class PyforaObjectConverter(ComputedGraph.Location):
 
         if isinstance(result[0], PyforaExceptions.PythonToForaConversionError):
             return {'isException': True, 'message': result[0].message, 'trace': result[0].trace}
-        
+
         if isinstance(result[0], Exception):
             raise Exceptions.SubscribableWebObjectsException(result[0].message)
-        
+
         objectIdToIvc_[objectId] = result[0]
         return {'objectId': objectId}
 

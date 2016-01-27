@@ -14,75 +14,89 @@
 
 import collections as collections
 
-def new_type_description(typename, field_names):
+
+NoneType = type(None)
+
+def isPrimitive(pyObject):
+    return isinstance(pyObject, (NoneType, int, float, str, bool))
+
+
+def type_description(typename, field_names):
     T = collections.namedtuple(typename, field_names + " typeName")
     T.__new__.__defaults__ = (None,) * len(T._fields)
     prototype = T(typeName=typename)
     T.__new__.__defaults__ = tuple(prototype)
     return T
 
+
 def fromDict(value_dict):
     return globals()[value_dict["typeName"]](**value_dict)
+
 
 def fromList(values):
     typeName = values[-1]
     return globals()[typeName](*values)
 
-def deserialize(value_dict):
-    if isinstance(value_dict, collections.Mapping):
-        return fromDict(value_dict)
-    else:
-        return fromList(value_dict)
 
-Primitive = new_type_description(
-    'Primitive',
-    'value'
-    )
-Tuple = new_type_description(
+def serialize(object_definition):
+    if isPrimitive(object_definition):
+        return object_definition
+    return object_definition._asdict()
+
+
+def deserialize(value):
+    if isPrimitive(value):
+        return value
+    if isinstance(value, collections.Mapping):
+        return fromDict(value)
+    return fromList(value)
+
+
+Tuple = type_description(
     'Tuple',
     'memberIds'
     )
-Dict = new_type_description(
+Dict = type_description(
     'Dict',
     'keyIds, valueIds'
     )
-List = new_type_description(
+List = type_description(
     'List',
     'memberIds'
     )
-File = new_type_description(
+File = type_description(
     'File',
     'path, text'
     )
-FunctionDefinition = new_type_description(
+FunctionDefinition = type_description(
     'FunctionDefinition',
     'sourceFileId, lineNumber, freeVariableMemberAccessChainsToId'
     )
-ClassDefinition = new_type_description(
+ClassDefinition = type_description(
     'ClassDefinition',
     'sourceFileId, lineNumber, freeVariableMemberAccessChainsToId'
     )
-ClassInstanceDescription = new_type_description(
+ClassInstanceDescription = type_description(
     'ClassInstanceDescription',
     'classId, classMemberNameToClassMemberId'
     )
-WithBlockDescription = new_type_description(
+WithBlockDescription = type_description(
     'WithBlockDescription',
     'freeVariableMemberAccessChainsToId, sourceFileId, lineNumber'
     )
-RemotePythonObject = new_type_description(
+RemotePythonObject = type_description(
     'RemotePythonObject',
     'computedValueArgument'
     )
-NamedSingleton = new_type_description(
+NamedSingleton = type_description(
     'NamedSingleton',
     'singletonName'
     )
-BuiltinExceptionInstance = new_type_description(
+BuiltinExceptionInstance = type_description(
     'BuiltinExceptionInstance',
     'builtinExceptionTypeName, argsId'
     )
-InstanceMethod = new_type_description(
+InstanceMethod = type_description(
     'InstanceMethod',
     'instanceId, methodName'
     )

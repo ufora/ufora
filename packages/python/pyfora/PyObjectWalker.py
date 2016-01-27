@@ -20,6 +20,7 @@ import pyfora.NamedSingletons as NamedSingletons
 import pyfora.PyforaWithBlock as PyforaWithBlock
 import pyfora.PyforaInspect as PyforaInspect
 import pyfora.pyAst.PyAstUtil as PyAstUtil
+from pyfora.TypeDescription import isPrimitive
 
 
 import logging
@@ -65,19 +66,12 @@ def isClassInstance(pyObject):
     return hasattr(pyObject, "__class__")
 
 
-NoneType = type(None)
-
-
 class _AClassWithAMethod:
     def f(self):
         pass
 
 
 instancemethod = type(_AClassWithAMethod().f)
-
-
-def _isPrimitive(pyObject):
-    return isinstance(pyObject, (NoneType, int, float, str, bool))
 
 
 class _FunctionDefinition(object):
@@ -128,22 +122,22 @@ class _FileDescription(object):
 
 class PyObjectWalker(object):
     """
-    `PyObjectWalker`: walk a live python object, registering its pieces with an 
+    `PyObjectWalker`: walk a live python object, registering its pieces with an
     `ObjectRegistry`
 
     The main, and only publicly viewable function on this class is `walkPyObject`
 
     Attributes:
-        _`purePythonClassMapping`: a `PureImplementationMapping` -- used to 
-            "replace" python objects in an python object graph by a "Pure" 
-            python class. For example, treat this `np.array` as a 
+        _`purePythonClassMapping`: a `PureImplementationMapping` -- used to
+            "replace" python objects in an python object graph by a "Pure"
+            python class. For example, treat this `np.array` as a
         `PurePython.SomePureImplementationOfNumpyArray`.
         `_convertedObjectCache`: a mapping from python id -> pure instance
         `_pyObjectIdToObjectId`: mapping from python id -> id registered in
             `self.objectRegistry`
-        `_objectRegistry`: an `ObjectRegistry` which holds an image of the 
+        `_objectRegistry`: an `ObjectRegistry` which holds an image of the
             objects we visit.
-        
+
     """
     def __init__(self, purePythonClassMapping, objectRegistry):
         if purePythonClassMapping is None:
@@ -170,11 +164,11 @@ class PyObjectWalker(object):
 
     def walkPyObject(self, pyObject):
         """
-        `walkPyObject`: recursively traverse a live python object, 
-        registering its "pieces" with an `ObjectRegistry` 
+        `walkPyObject`: recursively traverse a live python object,
+        registering its "pieces" with an `ObjectRegistry`
         (`self.objectRegistry`).
 
-        Note that we use python `id`s for caching in this class, 
+        Note that we use python `id`s for caching in this class,
         which means it cannot be used in cases where `id`s might get
         reused (recall they are just memory addresses).
 
@@ -218,7 +212,7 @@ class PyObjectWalker(object):
             self._registerList(objectId, pyObject)
         elif isinstance(pyObject, dict):
             self._registerDict(objectId, pyObject)
-        elif _isPrimitive(pyObject):
+        elif isPrimitive(pyObject):
             self._registerPrimitive(objectId, pyObject)
         elif PyforaInspect.isfunction(pyObject):
             self._registerFunction(objectId, pyObject)
@@ -252,7 +246,7 @@ class PyObjectWalker(object):
             objectId=objectId,
             path=fileDescription.fileName,
             text=fileDescription.fileText
-            )        
+            )
 
     def _registerBuiltinExceptionInstance(
             self, objectId, builtinExceptionInstance
@@ -288,11 +282,11 @@ class PyObjectWalker(object):
         Recursively call `walkPyObject` on the values in the tuple.
         """
         memberIds = [self.walkPyObject(val) for val in tuple_]
-        
+
         self._objectRegistry.defineTuple(
             objectId=objectId,
             memberIds=memberIds
-            )            
+            )
 
     def _registerList(self, objectId, list_):
         """
@@ -302,11 +296,11 @@ class PyObjectWalker(object):
         Recursively call `walkPyObject` on the values in the list.
         """
         memberIds = [self.walkPyObject(val) for val in list_]
-        
+
         self._objectRegistry.defineList(
             objectId=objectId,
             memberIds=memberIds
-            )            
+            )
 
     def _registerPrimitive(self, objectId, primitive):
         """
@@ -329,7 +323,7 @@ class PyObjectWalker(object):
         for k, v in dict_.iteritems():
             keyIds.append(self.walkPyObject(k))
             valueIds.append(self.walkPyObject(v))
-        
+
         self._objectRegistry.defineDict(
             objectId=objectId,
             keyIds=keyIds,
@@ -372,7 +366,7 @@ class PyObjectWalker(object):
         except Exceptions.CantGetSourceTextError:
             self._raiseConversionErrorForSourceTextError(classInstance)
         except:
-            logging.error('Failed on %s (of type %s)', 
+            logging.error('Failed on %s (of type %s)',
                           classInstance, type(classInstance))
             raise
         classMemberNameToClassMemberId = {}
@@ -514,14 +508,14 @@ class PyObjectWalker(object):
 
     def _classOrFunctionDefinition(self, pyObject, classOrFunction):
         """
-        `_classOrFunctionDefinition: create a `_FunctionDefinition` or 
-        `_ClassDefinition` out of a python class or function, recursively visiting 
+        `_classOrFunctionDefinition: create a `_FunctionDefinition` or
+        `_ClassDefinition` out of a python class or function, recursively visiting
         the resolvable free variable member access chains in `pyObject` as well
         as the source file object.
 
         Args:
             `pyObject`: a python class or function.
-            `classOrFunction`: should either be `_FunctionDefinition` or 
+            `classOrFunction`: should either be `_FunctionDefinition` or
                 `_ClassDefinition`.
 
         Returns:
@@ -580,7 +574,7 @@ class PyObjectWalker(object):
                 fileText=sourceFileText
                 )
             )
-        
+
         return classOrFunction(
             sourceFileId=sourceFileId,
             lineNumber=sourceLine,
@@ -671,7 +665,7 @@ class PyObjectWalker(object):
         memberFunctions = self._classMemberFunctions(pyClass)
 
         for _, func in memberFunctions:
-            # lookup should be indpendent of which function we 
+            # lookup should be indpendent of which function we
             # actually choose. However, the unbound chain may not
             # appear in every member function
             try:
@@ -726,7 +720,7 @@ class PyObjectWalker(object):
                 raise Exceptions.PythonToForaConversionError(
                     "Can't convert the module %s" % str(terminalValue)
                     )
-            
+
             if not hasattr(terminalValue, chain[ix]):
                 raise Exceptions.PythonToForaConversionError(
                     "Module %s has no member %s" % (str(terminalValue), chain[ix])
