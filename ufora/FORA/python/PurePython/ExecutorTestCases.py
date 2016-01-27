@@ -303,4 +303,9 @@ class ExecutorTestCases(object):
                 "fun(x) { purePython.PyFloat(builtin.math.sin(x.@m)) }"
                 )(x)
 
-        self.evaluateWithExecutor(f, 0)
+        arg = 0.0
+        self.assertEqual(
+            self.evaluateWithExecutor(f, arg),
+            math.sin(arg)
+            )
+
