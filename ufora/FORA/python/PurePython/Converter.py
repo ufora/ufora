@@ -60,8 +60,7 @@ class Converter(object):
                  singletonAndExceptionConverter=None,
                  vdmOverride=None,
                  purePythonModuleImplVal=None,
-                 foraBuiltinsImplVal=None
-                 ):
+                 foraBuiltinsImplVal=None):
         self.convertedValues = {}
 
         self.constantConverter = ConstantConverter.ConstantConverter(
@@ -227,13 +226,13 @@ class Converter(object):
             )
 
         if singleton is None:
-            raise pyfora.PythonToForaConversionError("No singleton named %s" % objectDefinition.singletonName)
+            raise pyfora.PythonToForaConversionError(
+                "No singleton named %s" % objectDefinition.singletonName
+                )
 
         return singleton
 
-    def convertBuiltinExceptionInstance(self,
-                objectDefinition
-                ):
+    def convertBuiltinExceptionInstance(self, objectDefinition):
         args = self.convertedValues[objectDefinition.argsId]
 
         return self.singletonAndExceptionConverter.instantiateException(
@@ -241,10 +240,7 @@ class Converter(object):
             args
             )
 
-    def convertRemotePythonObject(
-            self,
-            objectDefinition
-            ):
+    def convertRemotePythonObject(self, objectDefinition):
         computedValueArg = objectDefinition.computedValueArgument
 
         if isinstance(computedValueArg, int):
@@ -256,23 +252,11 @@ class Converter(object):
         else:
             return computedValueArg
 
-    def convertDict(
-            self,
-            dictId,
-            objectDefinition,
-            dependencyGraph,
-            objectIdToObjectDefinition
-            ):
-        self._convertListMembers(
-            dictId,
-            dependencyGraph,
-            objectIdToObjectDefinition
-            )
-
+    def convertDict(self, dictId, objectDefinition, dependencyGraph, objectIdToObjectDefinition):
+        self._convertListMembers(dictId, dependencyGraph, objectIdToObjectDefinition)
         convertedKeysAndVals = {
-            self.convertedValues[keyId]: self.convertedValues[valId] for \
-            keyId, valId in \
-            zip(objectDefinition.keyIds, objectDefinition.valueIds)
+            self.convertedValues[keyId]: self.convertedValues[valId]
+            for keyId, valId in zip(objectDefinition.keyIds, objectDefinition.valueIds)
             }
 
         return self.nativeDictConverter.createDict(convertedKeysAndVals)
@@ -280,12 +264,10 @@ class Converter(object):
     def convertPrimitive(self, value):
         return self.constantConverter.convert(value)
 
-    def _assertContainerDoesNotReferenceItself(
-            self,
-            containerId,
-            dependencyGraph,
-            stronglyConnectedComponents
-            ):
+    def _assertContainerDoesNotReferenceItself(self,
+                                               containerId,
+                                               dependencyGraph,
+                                               stronglyConnectedComponents):
         assert containerId in stronglyConnectedComponents[-1]
 
         if len(stronglyConnectedComponents[-1]) > 1 or \
@@ -294,18 +276,8 @@ class Converter(object):
                 "don't know how to convert lists or tuples which reference themselves"
                 )
 
-    def convertList(
-            self,
-            listId,
-            dependencyGraph,
-            objectIdToObjectDefinition
-            ):
-        self._convertListMembers(
-            listId,
-            dependencyGraph,
-            objectIdToObjectDefinition
-            )
-
+    def convertList(self, listId, dependencyGraph, objectIdToObjectDefinition):
+        self._convertListMembers(listId, dependencyGraph, objectIdToObjectDefinition)
         memberIds = objectIdToObjectDefinition[listId].memberIds
 
         return self.nativeListConverter.createList(
@@ -313,18 +285,8 @@ class Converter(object):
             self.vdm_
             )
 
-    def convertTuple(
-            self,
-            tupleId,
-            dependencyGraph,
-            objectIdToObjectDefinition
-            ):
-        self._convertListMembers(
-            tupleId,
-            dependencyGraph,
-            objectIdToObjectDefinition
-            )
-
+    def convertTuple(self, tupleId, dependencyGraph, objectIdToObjectDefinition):
+        self._convertListMembers(tupleId, dependencyGraph, objectIdToObjectDefinition)
         memberIds = objectIdToObjectDefinition[tupleId].memberIds
 
         return self.nativeTupleConverter.createTuple(
@@ -332,12 +294,7 @@ class Converter(object):
             )
 
 
-    def _convertListMembers(
-            self,
-            listId,
-            dependencyGraph,
-            objectIdToObjectDefinition
-            ):
+    def _convertListMembers(self, listId, dependencyGraph, objectIdToObjectDefinition):
         stronglyConnectedComponents = \
             StronglyConnectedComponents.stronglyConnectedComponents(
                 dependencyGraph
@@ -356,12 +313,7 @@ class Converter(object):
                 objectIdToObjectDefinition
                 )
 
-    def convertObjectWithDependencies(
-            self,
-            objectId,
-            dependencyGraph,
-            objectIdToObjectDefinition
-            ):
+    def convertObjectWithDependencies(self, objectId, dependencyGraph, objectIdToObjectDefinition):
         stronglyConnectedComponents = \
             StronglyConnectedComponents.stronglyConnectedComponents(
                 dependencyGraph
@@ -376,12 +328,10 @@ class Converter(object):
 
         return self.convertedValues[objectId]
 
-    def convertStronglyConnectedComponent(
-            self,
-            dependencyGraph,
-            stronglyConnectedComponent,
-            objectIdToObjectDefinition
-            ):
+    def convertStronglyConnectedComponent(self,
+                                          dependencyGraph,
+                                          stronglyConnectedComponent,
+                                          objectIdToObjectDefinition):
         if len(stronglyConnectedComponent) == 1:
             self.convertStronglyConnectedComponentWithOneNode(
                 dependencyGraph,
@@ -395,11 +345,9 @@ class Converter(object):
                 stronglyConnectedComponent
                 )
 
-    def convertStronglyConnectedComponentWithMoreThanOneNode(
-            self,
-            objectIdToObjectDefinition,
-            stronglyConnectedComponent
-            ):
+    def convertStronglyConnectedComponentWithMoreThanOneNode(self,
+                                                             objectIdToObjectDefinition,
+                                                             stronglyConnectedComponent):
         (createObjectExpression, memberToObjectIdMap) = \
             self.getCreateObjectExpressionAndMemberToObjectIdMap(
                 objectIdToObjectDefinition,
@@ -417,11 +365,9 @@ class Converter(object):
             memberToObjectIdMap
             )
 
-    def getCreateObjectExpressionAndMemberToObjectIdMap(
-            self,
-            objectIdToObjectDefinition,
-            stronglyConnectedComponent
-            ):
+    def getCreateObjectExpressionAndMemberToObjectIdMap(self,
+                                                        objectIdToObjectDefinition,
+                                                        stronglyConnectedComponent):
         naiveConvertedFunctions = dict()
         for objectId in stronglyConnectedComponent:
             objectDefinition = objectIdToObjectDefinition[objectId]
@@ -468,11 +414,7 @@ class Converter(object):
 
         return createObjectExpression, renamedObjectMapping
 
-    def registerObjectMembers(
-            self,
-            objectImplVal,
-            renamedObjectMapping
-            ):
+    def registerObjectMembers(self, objectImplVal, renamedObjectMapping):
         for objectId, memberName in renamedObjectMapping.iteritems():
             memberImplValOrNone = objectImplVal.getObjectMember(memberName)
 
@@ -484,12 +426,10 @@ class Converter(object):
 
             self.convertedValues[objectId] = memberImplValOrNone
 
-    def bindDependentValuesToCreateObjectExpression(
-            self,
-            createObjectExpression,
-            renamedObjectMapping,
-            objectIdToObjectDefinition
-            ):
+    def bindDependentValuesToCreateObjectExpression(self,
+                                                    createObjectExpression,
+                                                    renamedObjectMapping,
+                                                    objectIdToObjectDefinition):
         stronglyConnectedComponent = renamedObjectMapping.keys()
 
         renamedVariableMapping = dict()
@@ -506,13 +446,11 @@ class Converter(object):
             renamedVariableMapping
             )
 
-    def transformFunctions(
-            self,
-            objectIdToForaFunctionExpression,
-            objectIdToVarname,
-            objectIdToObjectDefinition,
-            stronglyConnectedComponent
-            ):
+    def transformFunctions(self,
+                           objectIdToForaFunctionExpression,
+                           objectIdToVarname,
+                           objectIdToObjectDefinition,
+                           stronglyConnectedComponent):
         tr = dict()
         for objectId in stronglyConnectedComponent:
             objectDefinition = objectIdToObjectDefinition[objectId]
@@ -601,71 +539,39 @@ class Converter(object):
                 )
 
         elif isinstance(objectDefinition, TypeDescription.File):
-            self.convertedValues[objectId] = \
-                self.convertFile(
-                    objectDefinition
-                    )
+            self.convertedValues[objectId] = self.convertFile(objectDefinition)
 
         elif isinstance(objectDefinition, TypeDescription.RemotePythonObject):
-            self.convertedValues[objectId] = \
-                self.convertRemotePythonObject(
-                    objectDefinition
-                    )
+            self.convertedValues[objectId] = self.convertRemotePythonObject(objectDefinition)
 
         elif isinstance(objectDefinition, TypeDescription.BuiltinExceptionInstance):
-            self.convertedValues[objectId] = \
-                self.convertBuiltinExceptionInstance(
-                    objectDefinition
-                    )
+            self.convertedValues[objectId] = self.convertBuiltinExceptionInstance(objectDefinition)
 
         elif isinstance(objectDefinition, TypeDescription.NamedSingleton):
-            self.convertedValues[objectId] = \
-                self.convertNamedSingleton(
-                    objectDefinition
-                    )
+            self.convertedValues[objectId] = self.convertNamedSingleton(objectDefinition)
 
         elif isinstance(objectDefinition, TypeDescription.WithBlockDescription):
-            self.convertedValues[objectId] = \
-                self.convertWithBlock(
-                    objectId,
-                    objectDefinition,
-                    objectIdToObjectDefinition
-                    )
+            self.convertedValues[objectId] = self.convertWithBlock(objectId,
+                                                                   objectDefinition,
+                                                                   objectIdToObjectDefinition)
 
         elif isinstance(objectDefinition, TypeDescription.InstanceMethod):
-            self.convertedValues[objectId] = \
-                self.convertInstanceMethod(
-                    objectId,
-                    objectDefinition,
-                    objectIdToObjectDefinition
-                    )
+            self.convertedValues[objectId] = self.convertInstanceMethod(objectId,
+                                                                        objectDefinition,
+                                                                        objectIdToObjectDefinition)
 
         else:
             assert False, "haven't gotten to this yet %s" % type(objectDefinition)
 
-    def convertInstanceMethod(
-            self,
-            objectId,
-            dependencyGraph,
-            objectIdToObjectDefinition
-            ):
+    def convertInstanceMethod(self, objectId, dependencyGraph, objectIdToObjectDefinition):
         objectDef = objectIdToObjectDefinition[objectId]
-
         instance = self.convertedValues[objectDef.instanceId]
-
         bound = instance.getObjectMember(objectDef.methodName)
-
         assert bound is not None
-
         return bound
 
 
-    def convertWithBlock(
-            self,
-            objectId,
-            withBlockDescription,
-            objectIdToObjectDefinition
-            ):
+    def convertWithBlock(self, objectId, withBlockDescription, objectIdToObjectDefinition):
         foraFunctionExpression = self.getFunctionExpressionFromWithBlockDescription(
             withBlockDescription,
             objectIdToObjectDefinition
@@ -687,16 +593,13 @@ class Converter(object):
 
         return tr
 
-    def getFunctionExpressionFromWithBlockDescription(
-            self,
+    def getFunctionExpressionFromWithBlockDescription(self,
+                                                      withBlockDescription,
+                                                      objectIdToObjectDefinition):
+        nativeWithBodyAst = self._getNativePythonFunctionDefFromWithBlockDescription(
             withBlockDescription,
             objectIdToObjectDefinition
-            ):
-        nativeWithBodyAst = \
-            self._getNativePythonFunctionDefFromWithBlockDescription(
-                withBlockDescription,
-                objectIdToObjectDefinition
-                )
+            )
 
         sourcePath = objectIdToObjectDefinition[withBlockDescription.sourceFileId].path
 
@@ -716,11 +619,9 @@ class Converter(object):
 
         return foraFunctionExpression
 
-    def _getNativePythonFunctionDefFromWithBlockDescription(
-            self,
-            withBlockDescription,
-            objectIdToObjectDefinition
-            ):
+    def _getNativePythonFunctionDefFromWithBlockDescription(self,
+                                                            withBlockDescription,
+                                                            objectIdToObjectDefinition):
         sourceText = objectIdToObjectDefinition[withBlockDescription.sourceFileId].text
         sourceLineOffsets = PythonAstConverter.computeLineOffsets(sourceText)
         sourceTree = ast.parse(sourceText)
@@ -768,14 +669,10 @@ class Converter(object):
 
         return tr
 
-    def convertClassInstanceDescription(
-            self,
-            objectId,
-            classInstanceDescription
-            ):
+    def convertClassInstanceDescription(self, objectId, classInstanceDescription):
         classMemberNameToImplVal = {
-            classMemberName: self.convertedValues[memberId] for \
-            classMemberName, memberId in \
+            classMemberName: self.convertedValues[memberId]
+            for classMemberName, memberId in
             classInstanceDescription.classMemberNameToClassMemberId.iteritems()
             }
         classImplVal = self.convertedValues[classInstanceDescription.classId]
@@ -813,17 +710,14 @@ class Converter(object):
 
         self.convertedValues[objectId] = convertedValueOrNone
 
-    def convertStronglyConnectedComponentWithOneFunctionOrClass(
-            self,
-            objectId,
+    def convertStronglyConnectedComponentWithOneFunctionOrClass(self,
+                                                                objectId,
+                                                                classOrFunctionDefinition,
+                                                                objectIdToObjectDefinition):
+        foraExpression = self.convertPyClassOrFunctionDefinitionToForaFunctionExpression(
             classOrFunctionDefinition,
             objectIdToObjectDefinition
-            ):
-        foraExpression = \
-            self.convertPyClassOrFunctionDefinitionToForaFunctionExpression(
-                classOrFunctionDefinition,
-                objectIdToObjectDefinition
-                )
+            )
 
         renamedVariableMapping = {}
 
@@ -838,11 +732,9 @@ class Converter(object):
                 renamedVariableMapping
                 )
 
-    def specializeFreeVariableMemberAccessChainsAndEvaluate(
-            self,
-            foraExpression,
-            renamedVariableMapping
-            ):
+    def specializeFreeVariableMemberAccessChainsAndEvaluate(self,
+                                                            foraExpression,
+                                                            renamedVariableMapping):
         foraExpression, renamedVariableMapping = \
             self.specializeFreeVariableMemberAccessChains(
                 foraExpression,
@@ -855,14 +747,16 @@ class Converter(object):
                 allAreIVC = False
 
         if allAreIVC:
-            missingVariableDefinitions = [x for x in foraExpression.freeVariables if x not in renamedVariableMapping]
+            missingVariableDefinitions = [
+                x for x in foraExpression.freeVariables if x not in renamedVariableMapping
+                ]
 
             if missingVariableDefinitions:
                 raise pyfora.PythonToForaConversionError(
                     ("An internal error occurred: we didn't provide a " +
-                        "definition for the following variables: %s" % missingVariableDefinitions +
-                        ". Most likely, there is a mismatch between our analysis of the "
-                        "python code and the generated FORA code underneath. Please file a bug report."
+                     "definition for the following variables: %s" % missingVariableDefinitions +
+                     ". Most likely, there is a mismatch between our analysis of the "
+                     "python code and the generated FORA code underneath. Please file a bug report."
                     ))
 
             return ForaNative.evaluateRootLevelCreateObjectExpression(
@@ -881,9 +775,9 @@ class Converter(object):
 
             return res
 
-    def specializeFreeVariableMemberAccessChains(
-            self, expr, freeVariableMemberAccessChainToImplValMap
-            ):
+    def specializeFreeVariableMemberAccessChains(self,
+                                                 expr,
+                                                 freeVariableMemberAccessChainToImplValMap):
         renamedVariableMapping = {}
         for chain, implval in freeVariableMemberAccessChainToImplValMap.iteritems():
             assert isinstance(chain, str)
@@ -903,11 +797,9 @@ class Converter(object):
         return expr, renamedVariableMapping
 
 
-    def convertPyClassOrFunctionDefinitionToForaFunctionExpression(
-            self,
-            classOrFunctionDefinition,
-            objectIdToObjectDefinition
-            ):
+    def convertPyClassOrFunctionDefinitionToForaFunctionExpression(self,
+                                                                   classOrFunctionDefinition,
+                                                                   objectIdToObjectDefinition):
         pyAst = self.convertClassOrFunctionDefinitionToNativePyAst(
             classOrFunctionDefinition,
             objectIdToObjectDefinition
@@ -951,11 +843,9 @@ class Converter(object):
 
         return tr
 
-    def convertClassOrFunctionDefinitionToNativePyAst(
-            self,
-            classOrFunctionDefinition,
-            objectIdToObjectDefinition
-            ):
+    def convertClassOrFunctionDefinitionToNativePyAst(self,
+                                                      classOrFunctionDefinition,
+                                                      objectIdToObjectDefinition):
         sourceText = objectIdToObjectDefinition[classOrFunctionDefinition.sourceFileId].text
 
         pyAst = PythonAstConverter.parseStringToPythonAst(sourceText)
@@ -1035,21 +925,30 @@ class Converter(object):
                     self.transformPyforaImplval(value[1], transformer, vectorContentsExtractor)
                     )
 
-            value = self.singletonAndExceptionConverter.convertInvalidPyforaOperationInstance(implval)
+            value = self.singletonAndExceptionConverter.convertInvalidPyforaOperationInstance(
+                implval
+                )
             if value is not None:
                 return transformer.transformInvalidPythonOperationException(value)
 
         value = self.nativeTupleConverter.invertTuple(implval)
         if value is not None:
-            return transformer.transformTuple(
-                [self.transformPyforaImplval(x, transformer, vectorContentsExtractor) for x in value]
-                )
+            return transformer.transformTuple([
+                self.transformPyforaImplval(x, transformer, vectorContentsExtractor)
+                for x in value
+                ])
 
         value = self.nativeDictConverter.invertDict(implval)
         if value is not None:
             return transformer.transformDict(
-                keys=[self.transformPyforaImplval(k, transformer, vectorContentsExtractor) for k in value.keys()],
-                values=[self.transformPyforaImplval(v, transformer, vectorContentsExtractor) for v in value.values()]
+                keys=[
+                    self.transformPyforaImplval(k, transformer, vectorContentsExtractor)
+                    for k in value.keys()
+                    ],
+                values=[
+                    self.transformPyforaImplval(v, transformer, vectorContentsExtractor)
+                    for v in value.values()
+                    ]
                 )
 
         listItemsAsVector = self.nativeListConverter.invertList(implval)
@@ -1060,7 +959,8 @@ class Converter(object):
                 return transformer.transformListThatNeedsLoading(len(listItemsAsVector))
             elif 'listContents' in contents:
                 return transformer.transformList(
-                    [self.transformPyforaImplval(x,transformer, vectorContentsExtractor) for x in contents['listContents']]
+                    [self.transformPyforaImplval(x, transformer, vectorContentsExtractor)
+                     for x in contents['listContents']]
                     )
             else:
                 assert 'firstElement' in contents
@@ -1100,14 +1000,20 @@ class Converter(object):
             defPoint = implval.getObjectDefinitionPoint()
             if defPoint is not None:
                 if objectClass is not None:
-                    classObject = self.transformPyforaImplval(objectClass, transformer, vectorContentsExtractor)
+                    classObject = self.transformPyforaImplval(objectClass,
+                                                              transformer,
+                                                              vectorContentsExtractor)
                     members = {}
 
                     for memberName in objectClass.objectMembers:
                         if memberName is not None:
                             member = implval.getObjectLexicalMember(memberName)
                             if member is not None and member[1] is None:
-                                members[str(memberName)[1:]] = self.transformPyforaImplval(member[0], transformer, vectorContentsExtractor)
+                                members[str(memberName)[1:]] = self.transformPyforaImplval(
+                                    member[0],
+                                    transformer,
+                                    vectorContentsExtractor
+                                    )
 
                     return transformer.transformClassInstance(classObject, members)
                 else:
@@ -1119,7 +1025,11 @@ class Converter(object):
                             memberName = memberAndBindingSequence[0]
                             member = implval.getObjectLexicalMember(memberName)
                             if member is not None and member[1] is None:
-                                members[str(memberName)] = self.transformPyforaImplval(member[0], transformer, vectorContentsExtractor)
+                                members[str(memberName)] = self.transformPyforaImplval(
+                                    member[0],
+                                    transformer,
+                                    vectorContentsExtractor
+                                    )
 
                     return transformer.transformFunctionInstance(
                         defPoint.defPoint.asExternal.paths[0],
@@ -1138,13 +1048,15 @@ class Converter(object):
                     memberName = memberAndBindingSequence[0]
                     member = implval.getObjectLexicalMember(memberName)
                     if member is not None and member[1] is None:
-                        members[str(memberName)] = self.transformPyforaImplval(member[0], transformer, vectorContentsExtractor)
+                        members[str(memberName)] = self.transformPyforaImplval(
+                            member[0],
+                            transformer,
+                            vectorContentsExtractor
+                            )
 
-            return transformer.transformClassObject(
-                    defPoint.defPoint.asExternal.paths[0],
-                    defPoint.range.start.line,
-                    members
-                    )
+            return transformer.transformClassObject(defPoint.defPoint.asExternal.paths[0],
+                                                    defPoint.range.start.line,
+                                                    members)
 
         logging.error("Failed to convert %s of type %s back to python", implval, str(implval.type))
 
@@ -1187,6 +1099,7 @@ class Converter(object):
                 }
 
         return {
-            'stacktrace': [x for x in [formatCodeLocation(c) for c in codeLocations] if x is not None]
+            'stacktrace': [
+                x for x in [formatCodeLocation(c) for c in codeLocations] if x is not None
+                ]
             }
-
