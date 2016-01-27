@@ -12,29 +12,35 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+
 import pyfora.PureImplementationMapping as PureImplementationMapping
+
+
+import math
 
 
 class Sqrt:
     def __call__(self, val):
         if val < 0.0:
             raise ValueError("math domain error")
-
-        return __inline_fora(
-            """fun(val) {
-                   PyFloat(math.sqrt(val.@m))
-                   }"""
-            )(val)
-
+            
+        return val ** 0.5
 
 class Hypot:
-    def __call__(self, val1, val2):
-        return __inline_fora(
-            """fun(val1, val2) {
-                   PyFloat(math.hypot(val1.@m, val2.@m))
-                   }"""
-            )(val1, val2)
+    def __call__(self, x, y):
+        x = abs(float(x))
+        y = abs(float(y))
 
+        if x == 0:
+            return y
+        if y == 0:
+            return x
+
+        t = min(x, y)
+        x = max(x, y)
+        y = t
+
+        return x * (1.0 + (y / x) * (y / x)) ** 0.5
 
 class Log:
     def __call__(self, val):
@@ -217,33 +223,60 @@ class Exp:
 
 
 class Expm1:
-    def __call__(self, val):
-        return __inline_fora(
-            """fun(val) {
-                   PyFloat(math.expm1(val.@m))
-                   }"""
-            )(val)
+    def __call__(self, x):
+        # if very small, return first three terms of taylor expansion
+        if abs(x) < 1e-5:
+            return x + 0.5 * x * x
+
+        return math.exp(x) - 1.0
 
 
 class Factorial:
     def __call__(self, val):
-        if Floor()(val) != val or val < 0:
-            raise ValueError("math domain error")
+        if not math.floor(val) == val:
+            raise ValueError(
+                "factorial() only accepts integral values"
+                )
 
-        return __inline_fora(
-            """fun(val) {
-                   PyFloat(math.factorial(val.@m))
-                   }"""
-            )(val)
+        if val < 0:
+            raise ValueError(
+                "factorial() not defined for negative values"
+                )
+
+        ix = 1
+        res = 1
+        while ix <= val:
+            res = res * ix
+            ix = ix + 1
+
+        return res
 
 
 class Floor:
-    def __call__(self, val):
+    def __call__(self, x):
+        remainder = math.fmod(x, 1)
+
+        if x >= 0:
+            return float(x - remainder)
+
+        if remainder == 0:
+            return float(x)
+
+        return float(x - remainder - 1)
+
+
+class Fmod:
+    def __call__(self, x, y):
+        if not isinstance(x, float):
+            x = float(x)
+        if not isinstance(y, float):
+            y = float(y)
+
         return __inline_fora(
-            """fun(val) {
-                   PyFloat(math.floor(val.@m))
+            """fun(x, y) {
+                   return PyFloat(`fmod(x.@m, y.@m))
                    }"""
-            )(val)
+            )(x, y)
 
 
 class Lgamma:
@@ -271,20 +304,19 @@ class Log10:
 
 
 class Log1p:
-    def __call__(self, val):
-        if val < -1:
+    def __call__(self, x):
+        if x <= -1:
             raise ValueError("math domain error")
 
-        return __inline_fora(
-            """fun(val) {
-                   PyFloat(math.log1p(val.@m))
-                   }"""
-            )(val)
+        t = float(1.0 + x)
+        # if very small, x serves as good approximation
+        if t == 1.0:
+            return x
+
+        return math.log(t) * (x / (t - 1.0))
 
 
 def generateMappings():
-    import math
-    
     mappings_ = [
         (math.sqrt, Sqrt), (math.hypot, Hypot), (math.log, Log), (math.cos, Cos),
         (math.sin, Sin), (math.tan, Tan), (math.cosh, Cosh), (math.sinh, Sinh),
@@ -293,7 +325,8 @@ def generateMappings():
         (math.atan, Atan), (math.atan2, Atan2), (math.ceil, Ceil), (math.erf, Erf),
         (math.erfc, Erfc), (math.exp, Exp), (math.expm1, Expm1),
         (math.factorial, Factorial), (math.floor, Floor), (math.lgamma, Lgamma),
-        (math.log, Log), (math.log10, Log10), (math.log1p, Log1p)
+        (math.log, Log), (math.log10, Log10), (math.log1p, Log1p),
+        (math.fmod, Fmod)
     ]
 
     tr = [PureImplementationMapping.InstanceMapping(instance, pureType) for \

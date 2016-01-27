@@ -19,6 +19,9 @@
 import pyfora.PureImplementationMapping as PureImplementationMapping
 
 
+import math
+
+
 # List of Python 2.7 builtins:
 # 'abs', 'all', 'any', 'apply', 'basestring', 'bin', 'bool', 'buffer', 'bytearray',
 # 'bytes', 'callable', 'chr', 'classmethod', 'cmp', 'coerce', 'compile', 'complex',
@@ -283,6 +286,16 @@ class Sorted:
         return Sorted.__pyfora_builtins__.sorted(xs)
 
 
+class Round:
+    def __call__(self, x):
+        f = math.floor(x)
+
+        if abs(x - f) < 0.5:
+            return f
+
+        return f + 1
+
+
 mappings_ = [
     (abs, Abs), (all, All), (any, Any),
     (apply, None), (basestring, None), (bin, None),
@@ -310,7 +323,7 @@ mappings_ = [
     # because it isn't called with parens
     (property, None), (quit, None), (range, Range),
     (raw_input, None), (reduce, Reduce), (reload, None),
-    (repr, None), (reversed, Reversed), (round, None),
+    (repr, None), (reversed, Reversed), (round, Round),
     (set, None), (setattr, None),
     (sorted, Sorted), (staticmethod, None),
     (sum, Sum), (super, None),

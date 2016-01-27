@@ -12,7 +12,13 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+
 import pyfora.PureImplementationMapping as PureImplementationMapping
+import pyfora.typeConverters.PureMath as PureMath
+import pyfora.BuiltinPureImplementationMappings as BuiltinPureImplementationMappings
+
+
+import math
 import numpy as np
 
 
@@ -395,13 +401,102 @@ class Median:
         raise NotImplementedError("fill this out, bro")
 
 
+class Sign:
+    def __call__(self, x):
+        if x < 0.0:
+            return -1.0
+        elif x == 0.0:
+            return 0.0
+        return 1.0            
+
+
+class IsNan:
+    def __call__(self, x):
+        if not isinstance(x, float):
+            x = float(x)
+
+        return __inline_fora(
+            """fun(PyFloat(...) x) {
+                   PyBool(x.@m.isNan)
+                   }"""
+            )(x)
+
+
+class Log:
+    def __call__(self, val):
+        if val < 0:
+            return np.nan
+
+        if val == 0:
+            return -np.inf
+
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.log(val.@m))
+                   }"""
+            )(val)
+
+
+class Log10:
+    def __call__(self, val):
+        if val < 0:
+            return np.nan
+
+        if val == 0:
+            return -np.inf
+
+        return __inline_fora(
+            """fun(val) {
+                   PyFloat(math.log_10(val.@m))
+                   }"""
+            )(val)
+
+
+class Log1p:
+    def __call__(self, x):
+        if x < -1:
+            return np.nan
+
+        if x == -1:
+            return -np.inf
+
+        t = float(1.0 + x)
+        # if very small, x serves as good approximation
+        if t == 1.0:
+            return x
+
+        return math.log(t) * (x / (t - 1.0))
+
+
+class Sqrt:
+    def __call__(self, val):
+        if val < 0.0:
+            return np.nan
+
+        return val ** 0.5
+
+
 def generateMappings():
     mappings_ = [(np.zeros, NpZeros), (np.array, NpArray), (np.dot, NpDot),
                  (np.linalg.pinv, NpPinv), (np.linalg.solve, LinSolve),
                  (np.arange, NpArange)]
 
+    # these will need their own implementations in PureNumpy since in true numpy
+    # they admit "vectorized" forms
+    mappings_ = mappings_ + [
+        (np.cos, PureMath.Cos), (np.sin, PureMath.Sin), (np.tan, PureMath.Tan),
+        (np.cosh, PureMath.Cosh), (np.sinh, PureMath.Sinh), (np.tanh, PureMath.Tanh),
+        (np.sqrt, Sqrt), (np.hypot, PureMath.Hypot), (np.log, Log),
+        (np.exp, PureMath.Exp), (np.expm1, PureMath.Expm1), (np.floor, PureMath.Floor),
+        (np.isnan, IsNan), (np.sign, Sign), (np.log1p, Log1p),
+        (np.log10, Log10),
+        (np.round, BuiltinPureImplementationMappings.Round)
+        ]
+
+
     tr = [PureImplementationMapping.InstanceMapping(instance, pureType) for \
             (instance, pureType) in mappings_]
+
     tr.append(PurePythonNumpyArrayMapping())
 
     return tr
