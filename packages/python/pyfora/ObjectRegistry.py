@@ -42,17 +42,16 @@ class ObjectRegistry(object):
         self.objectIdToObjectDefinition[objectId] = TypeDescription.File(path, text)
 
     def defineDict(self, objectId, keyIds, valueIds):
-        self.objectIdToObjectDefinition[objectId] = \
-            TypeDescription.Dict(
-                keyIds=keyIds,
-                valueIds=valueIds
-                )
+        self.objectIdToObjectDefinition[objectId] = TypeDescription.Dict(keyIds=keyIds,
+                                                                         valueIds=valueIds)
 
     def defineRemotePythonObject(self, objectId, computedValueArg):
-        self.objectIdToObjectDefinition[objectId] = TypeDescription.RemotePythonObject(computedValueArg)
+        self.objectIdToObjectDefinition[objectId] = \
+            TypeDescription.RemotePythonObject(computedValueArg)
 
     def defineBuiltinExceptionInstance(self, objectId, typename, argsId):
-        self.objectIdToObjectDefinition[objectId] = TypeDescription.BuiltinExceptionInstance(typename, argsId)
+        self.objectIdToObjectDefinition[objectId] = \
+            TypeDescription.BuiltinExceptionInstance(typename, argsId)
 
     def defineNamedSingleton(self, objectId, singletonName):
         self.objectIdToObjectDefinition[objectId] = TypeDescription.NamedSingleton(singletonName)
@@ -62,16 +61,13 @@ class ObjectRegistry(object):
         scopeIds: a dict freeVariableMemberAccessChain -> id
         """
         freeVariableMemberAccessChainsToId = \
-            self._processFreeVariableMemberAccessChainResolution(
-                scopeIds
-                )
+            self._processFreeVariableMemberAccessChainResolution(scopeIds)
 
-        self.objectIdToObjectDefinition[objectId] = \
-            TypeDescription.FunctionDefinition(
-                sourceFileId=sourceFileId,
-                lineNumber=lineNumber,
-                freeVariableMemberAccessChainsToId=freeVariableMemberAccessChainsToId
-                )
+        self.objectIdToObjectDefinition[objectId] = TypeDescription.FunctionDefinition(
+            sourceFileId=sourceFileId,
+            lineNumber=lineNumber,
+            freeVariableMemberAccessChainsToId=freeVariableMemberAccessChainsToId
+            )
 
     def defineClass(self, objectId, sourceFileId, lineNumber, scopeIds):
         """
@@ -89,21 +85,13 @@ class ObjectRegistry(object):
                 freeVariableMemberAccessChainsToId=freeVariableMemberAccessChainsToId
                 )
 
-    def _processFreeVariableMemberAccessChainResolution(
-            self,
-            freeVariableMemberAccessChainsToId
-            ):
+    def _processFreeVariableMemberAccessChainResolution(self, freeVariableMemberAccessChainsToId):
         return {
             chainAsString: resolutionId
             for chainAsString, resolutionId in freeVariableMemberAccessChainsToId.iteritems()
             }
 
-    def defineClassInstance(
-            self,
-            objectId,
-            classId,
-            classMemberNameToClassMemberId
-            ):
+    def defineClassInstance(self, objectId, classId, classMemberNameToClassMemberId):
         self.objectIdToObjectDefinition[objectId] = \
             TypeDescription.ClassInstanceDescription(
                 classId=classId,
@@ -117,13 +105,11 @@ class ObjectRegistry(object):
                 methodName=methodName
                 )
 
-    def defineWithBlock(
-            self,
-            objectId,
-            freeVariableMemberAccessChainsToId,
-            sourceFileId,
-            lineNumber
-            ):
+    def defineWithBlock(self,
+                        objectId,
+                        freeVariableMemberAccessChainsToId,
+                        sourceFileId,
+                        lineNumber):
         self.objectIdToObjectDefinition[objectId] = \
             TypeDescription.WithBlockDescription(
                 freeVariableMemberAccessChainsToId,
@@ -150,7 +136,7 @@ class ObjectRegistry(object):
         if TypeDescription.isPrimitive(objectDefinition) or \
                 isinstance(objectDefinition,
                            (TypeDescription.File, TypeDescription.RemotePythonObject,
-                            TypeDescription.NamedSingleton)):
+                            TypeDescription.NamedSingleton, list)):
             return []
         elif isinstance(objectDefinition, (TypeDescription.BuiltinExceptionInstance)):
             return [objectDefinition.argsId]

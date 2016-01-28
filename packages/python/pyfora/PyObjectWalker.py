@@ -290,17 +290,18 @@ class PyObjectWalker(object):
 
     def _registerList(self, objectId, list_):
         """
-        `_registerList`: register a `list` instance
-        with `self.objectRegistry`.
-
+        `_registerList`: register a `list` instance with `self.objectRegistry`.
         Recursively call `walkPyObject` on the values in the list.
         """
-        memberIds = [self.walkPyObject(val) for val in list_]
+        if all(isPrimitive(val) for val in list_):
+            self._registerPrimitive(objectId, list_)
+        else:
+            memberIds = [self.walkPyObject(val) for val in list_]
 
-        self._objectRegistry.defineList(
-            objectId=objectId,
-            memberIds=memberIds
-            )
+            self._objectRegistry.defineList(
+                objectId=objectId,
+                memberIds=memberIds
+                )
 
     def _registerPrimitive(self, objectId, primitive):
         """

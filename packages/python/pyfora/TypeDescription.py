@@ -39,13 +39,13 @@ def fromList(values):
 
 
 def serialize(object_definition):
-    if isPrimitive(object_definition):
+    if isPrimitive(object_definition) or isinstance(object_definition, list):
         return object_definition
     return object_definition._asdict()
 
 
 def deserialize(value):
-    if isPrimitive(value):
+    if isPrimitive(value) or isinstance(value, list):
         return value
     if isinstance(value, collections.Mapping):
         return fromDict(value)

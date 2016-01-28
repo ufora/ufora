@@ -14,6 +14,7 @@
    limitations under the License.
 ****************************************************************************/
 #include "PythonListConverter.hppml"
+#include "PythonConstantConverter.hppml"
 
 #include "../../../native/Registrar.hpp"
 #include "../../../core/python/CPPMLWrapper.hpp"
@@ -39,7 +40,7 @@ public:
         for (long ix = 0; ix < boost::python::len(elements); ++ix)
             {
             boost::python::extract<ImplValContainer> extractor(elements[ix]);
-            
+
             lassert(extractor.check());
 
             listElements = listElements + extractor();
@@ -47,6 +48,61 @@ public:
 
         return converter->createList(listElements, vdm);
         }
+
+    static ImplValContainer createListOfPrimitives(
+            PolymorphicSharedPtr<Fora::PythonListConverter> converter,
+            boost::python::list elements,
+            PolymorphicSharedPtr<Fora::PythonConstantConverter>& constantConverter,
+            PolymorphicSharedPtr<VectorDataManager> vdm
+            )
+        {
+        ImmutableTreeVector<ImplValContainer> listElements;
+        for (long ix = 0; ix < boost::python::len(elements); ++ix)
+            {
+            boost::python::object element = elements[ix];
+            const PyObject* pyObj = element.ptr();
+
+            listElements = listElements + convertPrimitive(pyObj, constantConverter);
+            }
+
+        return converter->createList(listElements, vdm);
+        }
+
+    static ImplValContainer convertPrimitive(
+            const PyObject* pyObj,
+            PolymorphicSharedPtr<Fora::PythonConstantConverter>& constantConverter
+            )
+        {
+        if (PyLong_Check(pyObj))
+            throw std::logic_error("Conversion of Python 'long' is not supported");
+
+        if (PyInt_Check(pyObj))
+            return constantConverter->convertInt(PyInt_AS_LONG(pyObj));
+
+        if (PyBool_Check(pyObj))
+            return constantConverter->convertBoolean(PyObject_IsTrue(const_cast<PyObject*>(pyObj)) == 1);
+
+        if (PyFloat_Check(pyObj))
+            return constantConverter->convertFloat(PyFloat_AS_DOUBLE(pyObj));
+
+        if (PyString_Check(pyObj))
+            return constantConverter->convertString(PyString_AS_STRING(pyObj));
+
+        if (pyObj == Py_None)
+            return constantConverter->noneValue();
+
+        // Unexpected type - log it
+        // The code below is equivalent to: str(type(o))
+        PyObject* pyType = PyObject_Type(const_cast<PyObject*>(pyObj));
+        PyObject* pyTypeName = PyObject_Str(pyType);
+        Py_DECREF(pyType);
+        LOG_ERROR << "Unexpected python type in convertPrimitive" << PyString_AsString(pyTypeName);
+        Py_DECREF(pyTypeName);
+
+        throw std::logic_error("Unexpected Python object type in list of primitives");
+        }
+
+
 
     static PolymorphicSharedPtr<Fora::PythonListConverter>
     makePythonListConverter(ImplValContainer& pyListClass)
@@ -80,12 +136,13 @@ public:
             "PythonListConverter", no_init)
             .def("createList", createList)
             .def("invertList", invertList)
+            .def("createListOfPrimitives", createListOfPrimitives)
             ;
 
         def("makePythonListConverter", makePythonListConverter);
         }
 };
-        
+
 template<>
 char native::module::Exporter<PythonListConverterWrapper>::mEnforceRegistration = 
     native::module::ExportRegistrar<PythonListConverterWrapper>::registerWrapper();

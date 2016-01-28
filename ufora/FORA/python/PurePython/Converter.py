@@ -25,6 +25,7 @@ import pyfora
 
 import ast
 import logging
+import time
 
 import ufora.native.FORA as ForaNative
 
@@ -140,12 +141,18 @@ class Converter(object):
 
     def convert(self, objectId, objectRegistry, callback):
         try:
+            t0 = time.time()
             dependencyGraph = objectRegistry.computeDependencyGraph(objectId)
+            logging.info("Computed dependency graph in %s seconds", time.time() - t0)
+            t0 = time.time()
             objectIdToObjectDefinition = {
                 objId: objectRegistry.getDefinition(objId)
                 for objId in dependencyGraph.iterkeys()
                 }
+            logging.info("Built object map in %s seconds", time.time() - t0)
+            t0 = time.time()
             convertedValue = self._convert(objectId, dependencyGraph, objectIdToObjectDefinition)
+            logging.info("Converted code in %s seconds", time.time() - t0)
             self.convertedValues[objectId] = convertedValue
             callback(convertedValue)
         except pyfora.PythonToForaConversionError as e:
@@ -153,8 +160,9 @@ class Converter(object):
 
     def _convert(self, objectId, dependencyGraph, objectIdToObjectDefinition):
         objectDefinition = objectIdToObjectDefinition[objectId]
+        logging.info("ObjectDefinition: %s", objectDefinition)
 
-        if TypeDescription.isPrimitive(objectDefinition):
+        if TypeDescription.isPrimitive(objectDefinition) or isinstance(objectDefinition, list):
             return self.convertPrimitive(objectDefinition)
         elif isinstance(objectDefinition, TypeDescription.RemotePythonObject):
             return self.convertRemotePythonObject(objectDefinition)
@@ -262,6 +270,13 @@ class Converter(object):
         return self.nativeDictConverter.createDict(convertedKeysAndVals)
 
     def convertPrimitive(self, value):
+        if isinstance(value, list):
+            return self.nativeListConverter.createListOfPrimitives(
+                value,
+                self.constantConverter.nativeConstantConverter,
+                self.vdm_
+                )
+
         return self.constantConverter.convert(value)
 
     def _assertContainerDoesNotReferenceItself(self,
@@ -490,7 +505,7 @@ class Converter(object):
 
         objectDefinition = objectIdToObjectDefinition[objectId]
 
-        if TypeDescription.isPrimitive(objectDefinition):
+        if TypeDescription.isPrimitive(objectDefinition) or isinstance(objectDefinition, list):
             self.convertedValues[objectId] = self.convertPrimitive(objectDefinition)
 
         elif isinstance(objectDefinition, (TypeDescription.FunctionDefinition,

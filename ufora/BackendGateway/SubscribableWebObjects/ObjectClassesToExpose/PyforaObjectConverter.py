@@ -13,6 +13,7 @@
 #   limitations under the License.
 
 import logging
+import time
 import traceback
 
 import ufora.BackendGateway.SubscribableWebObjects.Exceptions as Exceptions
@@ -125,16 +126,23 @@ class PyforaObjectConverter(ComputedGraph.Location):
         def onConverted(r):
             result[0] = r
 
+        t0 = time.time()
+
         objectRegistry_[0].objectIdToObjectDefinition.update({
             int(k): TypeDescription.deserialize(v)
             for k, v in objectIdToObjectDefinition.iteritems()
             })
+
+        logging.info("Updated object registry in %s seconds.", time.time() - t0)
+        t0 = time.time()
 
         try:
             converter_[0].convert(objectId, objectRegistry_[0], onConverted)
         except Exception as e:
             logging.error("Converter raised an exception: %s", traceback.format_exc())
             raise Exceptions.InternalError("Unable to convert objectId %s" % objectId)
+
+        logging.info("Converted to fora in %s seconds", time.time() - t0)
 
         assert result[0] is not None
 
