@@ -368,7 +368,7 @@ class WithBlockExecutors_test(unittest.TestCase):
 
     def test_with_block_return_in_with_block_throws(self):
         with self.create_executor() as fora:
-            with self.assertRaises(Exceptions.InvalidPyforaOperation):
+            with self.assertRaises(Exceptions.BadWithBlockError):
                 with fora.remotely:
                     x = 3
                     y = 4
@@ -380,8 +380,9 @@ class WithBlockExecutors_test(unittest.TestCase):
                 x = 1
                 y = 2
                 yield x + y
+
     def test_with_block_yield_in_with_block_throws(self):
-        with self.assertRaises(Exceptions.InvalidPyforaOperation):
+        with self.assertRaises(Exceptions.BadWithBlockError):
             for _ in self.with_block_generator():
                 pass
 

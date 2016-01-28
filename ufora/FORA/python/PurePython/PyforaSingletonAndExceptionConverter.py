@@ -21,11 +21,13 @@ We need to implement these types directly in pure FORA because our primitives (l
 PyInt) need them to throw appropriate exceptions.
 """
 import pyfora
+import pyfora.NamedSingletons as NamedSingletons
+
 import ufora.native.FORA as ForaNative
 import ufora.FORA.python.FORA as FORA
-import pyfora.NamedSingletons as NamedSingletons
+
 import logging
-import traceback
+
 
 class PyforaSingletonAndExceptionConverter:
     def __init__(self, pyforaBuiltinsModule):

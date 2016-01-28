@@ -84,6 +84,7 @@ class BuiltinTestCases(object):
     def test_builtins_zip_not_implemented(self):
         def f(x):
             return zip(x)
+
         with self.assertRaises(pyfora.Exceptions.PyforaNotImplementedError):
             self.equivalentEvaluationTest(f, [])
 

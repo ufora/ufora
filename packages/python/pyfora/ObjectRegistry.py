@@ -85,7 +85,14 @@ class ObjectRegistry(object):
                 freeVariableMemberAccessChainsToId=freeVariableMemberAccessChainsToId
                 )
 
-    def _processFreeVariableMemberAccessChainResolution(self, freeVariableMemberAccessChainsToId):
+    def defineUnconvertible(self, objectId):
+        self.objectIdToObjectDefinition[objectId] = \
+            TypeDescription.Unconvertible()
+
+    def _processFreeVariableMemberAccessChainResolution(
+            self,
+            freeVariableMemberAccessChainsToId
+            ):
         return {
             chainAsString: resolutionId
             for chainAsString, resolutionId in freeVariableMemberAccessChainsToId.iteritems()
@@ -136,7 +143,8 @@ class ObjectRegistry(object):
         if TypeDescription.isPrimitive(objectDefinition) or \
                 isinstance(objectDefinition,
                            (TypeDescription.File, TypeDescription.RemotePythonObject,
-                            TypeDescription.NamedSingleton, list)):
+                            TypeDescription.NamedSingleton, list,
+                            TypeDescription.Unconvertible)):
             return []
         elif isinstance(objectDefinition, (TypeDescription.BuiltinExceptionInstance)):
             return [objectDefinition.argsId]
@@ -166,6 +174,7 @@ class ObjectRegistry(object):
         elif isinstance(objectDefinition, TypeDescription.WithBlockDescription):
             tr = objectDefinition.freeVariableMemberAccessChainsToId.values()
             tr.append(objectDefinition.sourceFileId)
+
             return tr
         else:
             assert False, "don't know what to do with %s" % type(objectDefinition)

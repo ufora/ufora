@@ -309,3 +309,83 @@ class ExecutorTestCases(object):
             math.sin(arg)
             )
 
+    def test_typeWeCantTranslateYet_1(self):
+        # we're not touching the bad value here, so we're still OK
+        x = type(lambda x:x)
+        def f():
+            if False:
+                return x
+            return 0
+
+        self.equivalentEvaluationTest(f)
+            
+    def test_typeWeCantTranslateYet_2(self):
+        # we're not touching the bad value here, so we're still OK
+        import numpy
+        def f():
+            if False:
+                return numpy
+            return 0
+
+        self.equivalentEvaluationTest(f)
+
+    def test_typeWeCantTranslateYet_3(self):
+        # we're not touching the bad value here, so we're still OK
+        import scipy
+        def f():
+            if False:
+                return scipy.special
+            return 0
+
+        self.equivalentEvaluationTest(f)
+
+    def test_typeWeCantTranslateYet_4(self):
+        # we're not touching the bad value here, so we're still OK
+        import scipy
+        def f():
+            if False:
+                return scipy.special.airy(0)
+            return 0
+
+        self.equivalentEvaluationTest(f)
+
+    def test_typeWeCantTranslateYet_class_1(self):
+        import socket
+        class C_test_typeWeCantTranslateYet_class_1:
+            def wontCall(self):
+                return socket
+            def willCall(self):
+                return 0
+
+        c = C_test_typeWeCantTranslateYet_class_1()
+        def f():
+            return c.willCall()
+
+        self.equivalentEvaluationTest(f)
+
+    def test_typeWeCantTranslateYet_class_2(self):
+        import socket
+        class C_test_typeWeCantTranslateYet_class_2:
+            def wontCall(self):
+                return socket
+            def willCall(self):
+                return 0
+
+        def f():
+            return C_test_typeWeCantTranslateYet_class_2().willCall()
+
+        self.equivalentEvaluationTest(f)
+
+
+    def test_typeWeCantTranslateYet_class_3(self):
+        import scipy.special
+        class C_test_typeWeCantTranslateYet_class_3:
+            def wontCall(self):
+                return scipy.special.airy(0)
+            def willCall(self):
+                return 0
+
+        def f():
+            return C_test_typeWeCantTranslateYet_class_3().willCall()
+
+        self.equivalentEvaluationTest(f)

@@ -151,4 +151,7 @@ class ConnectionError(PyforaError):
     '''Raised when a connection to the Ufora backend cannot be established.'''
     pass
 
-
+class BadWithBlockError(PyforaError):
+    '''Raised when a pyfora with block has an illegal construct,
+    such as a yield or return statement'''
+    pass

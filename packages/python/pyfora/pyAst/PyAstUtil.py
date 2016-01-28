@@ -18,6 +18,7 @@ import pyfora.PyforaInspect as PyforaInspect
 
 import ast
 import os
+import sys
 import textwrap
 
 
@@ -33,11 +34,8 @@ def CachedByArgs(f):
     return inner
 
 def getSourceText(pyObject):
-    try:
-        source, lineno = PyforaInspect.getsourcelines(pyObject)
-    except TypeError as e:
-        raise Exceptions.CantGetSourceTextError(e.message)
-    # Create a prefix of (lineno-1) blank lines to keep track of line numbers for error reporting
+    source, lineno = getSourceLines(pyObject)
+    # Create a prefix of (lineno - 1) blank lines to keep track of line numbers for error reporting
     blankLines = os.linesep * (lineno - 1)
     # We don't know how to avoid the use of `textwrap.dedent to get the code
     # though `ast.parse, which means that the computed column_numbers may be
@@ -55,6 +53,13 @@ def getSourceFilenameAndText(pyObject):
         sourceFileCache_[sourceFile] = "".join(PyforaInspect.getlines(sourceFile))
 
     return sourceFileCache_[sourceFile], sourceFile
+
+def getSourceLines(pyObject):
+    try:
+        tr = PyforaInspect.getsourcelines(pyObject)
+    except (TypeError, IOError) as e:
+        raise Exceptions.CantGetSourceTextError(e.message), None, sys.exc_info()[2]
+    return tr
 
 @CachedByArgs
 def pyAstFromText(text):

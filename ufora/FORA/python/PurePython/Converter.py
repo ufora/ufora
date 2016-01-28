@@ -39,6 +39,9 @@ Symbol_CreateInstance = ForaNative.makeSymbol("CreateInstance")
 Symbol_Call = ForaNative.makeSymbol("Call")
 Symbol_uninitialized = ForaNative.makeSymbol("PyforaUninitializedVariable")
 Symbol_invalid = ForaNative.makeSymbol("PyforaInvalidVariable")
+Symbol_unconvertible = ForaNative.makeSymbol("PyforaUnconvertibleValue")
+
+
 
 def convertNativePythonToForaConversionError(err, path):
     """Convert a ForaNative.PythonToForaConversionError to a python version of the exception"""
@@ -211,6 +214,8 @@ class Converter(object):
                     objectIdToObjectDefinition
                     )
                 )
+        elif isinstance(objectDefinition, TypeDescription.Unconvertible):
+            return self.convertUnconvertibleValue(objectId)
         else:
             raise pyfora.PythonToForaConversionError(
                 "don't know how to convert %s of type %s" % (
@@ -261,6 +266,13 @@ class Converter(object):
             }
 
         return self.nativeDictConverter.createDict(convertedKeysAndVals)
+
+    def convertUnconvertibleValue(self, objectId):
+        # uh, yeah ... this guy probably needs a better name. Sorry.
+
+        tr = Symbol_unconvertible
+        self.convertedValues[objectId] = tr
+        return tr
 
     def convertPrimitive(self, value):
         if isinstance(value, list):
@@ -567,6 +579,9 @@ class Converter(object):
             self.convertedValues[objectId] = self.convertInstanceMethod(objectId,
                                                                         objectIdToObjectDefinition)
 
+        elif isinstance(objectDefinition, TypeDescription.Unconvertible):
+            self.convertedValues[objectId] = Symbol_unconvertible
+
         else:
             assert False, "haven't gotten to this yet %s" % type(objectDefinition)
 
@@ -747,10 +762,32 @@ class Converter(object):
                 renamedVariableMapping
                 )
 
+        foraExpression = self.handleUnconvertibleValuesInExpression(
+            foraExpression,
+            renamedVariableMapping
+            )
+
         return self.specializeFreeVariablesAndEvaluate(
             foraExpression,
             renamedVariableMapping
             )
+
+    def handleUnconvertibleValuesInExpression(
+            self,
+            foraExpression,
+            renamedVariableMapping
+            ):
+        unconvertibles = [
+            k for k, v in renamedVariableMapping.iteritems() \
+            if v == Symbol_unconvertible
+            ]        
+
+        foraExpression = self.nativeConverter.replaceUnconvertiblesWithThrowExprs(
+            foraExpression,
+            unconvertibles
+            )
+
+        return foraExpression
 
     def specializeFreeVariablesAndEvaluate(
             self,

@@ -74,6 +74,10 @@ class _AClassWithAMethod:
 instancemethod = type(_AClassWithAMethod().f)
 
 
+class _Unconvertible(object):
+    pass
+
+
 class _FunctionDefinition(object):
     def __init__(
             self,
@@ -191,6 +195,14 @@ class PyObjectWalker(object):
 
         objectId = self._allocateId(pyObject)
 
+        try:
+            self._walkPyObject(pyObject, objectId)
+        except Exceptions.CantGetSourceTextError:
+            self._registerUnconvertible(objectId)
+
+        return objectId
+
+    def _walkPyObject(self, pyObject, objectId):
         if isinstance(pyObject, RemotePythonObject.RemotePythonObject):
             self._registerRemotePythonObject(objectId, pyObject)
         elif isinstance(pyObject, _FileDescription):
@@ -206,6 +218,8 @@ class PyObjectWalker(object):
                 )
         elif isinstance(pyObject, PyforaWithBlock.PyforaWithBlock):
             self._registerWithBlock(objectId, pyObject)
+        elif isinstance(pyObject, _Unconvertible):
+            self._registerUnconvertible(objectId)
         elif isinstance(pyObject, tuple):
             self._registerTuple(objectId, pyObject)
         elif isinstance(pyObject, list):
@@ -224,8 +238,6 @@ class PyObjectWalker(object):
             self._registerClassInstance(objectId, pyObject)
         else:
             assert False, "don't know what to do with %s" % pyObject
-
-        return objectId
 
     def _registerRemotePythonObject(self, objectId, remotePythonObject):
         """
@@ -362,14 +374,7 @@ class PyObjectWalker(object):
         classObject = classInstance.__class__
         classId = self.walkPyObject(classObject)
 
-        try:
-            dataMemberNames = PyAstUtil.collectDataMembersSetInInit(classObject)
-        except Exceptions.CantGetSourceTextError:
-            self._raiseConversionErrorForSourceTextError(classInstance)
-        except:
-            logging.error('Failed on %s (of type %s)',
-                          classInstance, type(classInstance))
-            raise
+        dataMemberNames = PyAstUtil.collectDataMembersSetInInit(classObject)
         classMemberNameToClassMemberId = {}
         for dataMemberName in dataMemberNames:
             memberId = self.walkPyObject(getattr(classInstance, dataMemberName))
@@ -403,12 +408,12 @@ class PyObjectWalker(object):
             )
 
         if PyAstUtil.hasReturnInOuterScope(withBlockFun):
-            raise Exceptions.InvalidPyforaOperation(
+            raise Exceptions.BadWithBlockError(
                 "return statement not supported in pyfora with-block (line %s)" %
                 PyAstUtil.getReturnLocationsInOuterScope(withBlockFun)[0])
 
         if PyAstUtil.hasYieldInOuterScope(withBlockFun):
-            raise Exceptions.InvalidPyforaOperation(
+            raise Exceptions.BadWithBlockError(
                 "yield expression not supported in pyfora with-block (line %s)" %
                 PyAstUtil.getYieldLocationsInOuterScope(withBlockFun)[0])
 
@@ -501,11 +506,8 @@ class PyObjectWalker(object):
             scopeIds=fileDescription.freeVariableMemberAccessChainsToId
             )
 
-    def _raiseConversionErrorForSourceTextError(self, pyObject):
-        raise Exceptions.PythonToForaConversionError(
-            "can't convert %s (of type %s) since we can't get its source code" % (
-                pyObject, type(pyObject))
-            )
+    def _registerUnconvertible(self, objectId):
+        self._objectRegistry.defineUnconvertible(objectId)
 
     def _classOrFunctionDefinition(self, pyObject, classOrFunction):
         """
@@ -528,15 +530,9 @@ class PyObjectWalker(object):
                 "in pyfora, '__inline_fora' is a reserved word"
                 )
 
-        try:
-            sourceFileText, sourceFileName = PyAstUtil.getSourceFilenameAndText(pyObject)
-        except Exceptions.CantGetSourceTextError:
-            self._raiseConversionErrorForSourceTextError(pyObject)
-        except:
-            logging.error('Failed on %s (of type %s)', pyObject, type(pyObject))
-            raise
+        sourceFileText, sourceFileName = PyAstUtil.getSourceFilenameAndText(pyObject)
 
-        _, sourceLine = PyforaInspect.getsourcelines(pyObject)
+        _, sourceLine = PyAstUtil.getSourceLines(pyObject)
 
         sourceAst = PyAstUtil.pyAstFromText(sourceFileText)
 
@@ -718,9 +714,8 @@ class PyObjectWalker(object):
         while PyforaInspect.ismodule(terminalValue):
             if ix >= len(chain):
                 #we're terminating at a module
-                raise Exceptions.PythonToForaConversionError(
-                    "Can't convert the module %s" % str(terminalValue)
-                    )
+                terminalValue = _Unconvertible()
+                break
 
             if not hasattr(terminalValue, chain[ix]):
                 raise Exceptions.PythonToForaConversionError(

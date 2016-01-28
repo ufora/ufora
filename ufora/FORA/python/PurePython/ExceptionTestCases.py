@@ -470,6 +470,7 @@ class ExceptionTestCases(object):
         class C20:
             def f():
                 return x.y.z
+                
         try:
             self.equivalentEvaluationTest(lambda: C20())
             self.assertTrue(False)
@@ -584,8 +585,11 @@ class ExceptionTestCases(object):
             def f():
                 return str(socket)
 
-            with self.assertRaises(pyfora.PythonToForaConversionError):
-                executor.submit(f)
+            try:
+                self.evaluateWithExecutor(f)
+                self.assertTrue(False)
+            except pyfora.ComputationError as e:
+                pass
 
     def test_reference_nonexistent_module_member(self):
         with self.create_executor() as executor:
@@ -784,9 +788,12 @@ class ExceptionTestCases(object):
         def f():
             x = range(10)
             return x[s]
-
-        with self.assertRaises(pyfora.PythonToForaConversionError):
-            self.equivalentEvaluationTest(f)
+            
+        try:
+            self.evaluateWithExecutor(f)
+            self.assertTrue(False)
+        except pyfora.ComputationError as e:
+            pass
 
     def test_yield_in_init_throws(self):
         class YieldInInit:
@@ -972,3 +979,88 @@ class ExceptionTestCases(object):
             self.assertIsInstance(e.remoteException, TypeError)
                         
             
+    def test_typeWeCantTranslateYet_raise_1(self):
+        # note that this is different than trying to evaluate,
+        # in pyfora code, type(lambda x:x).
+        # that will give a completely different type of 
+        # error (an unhelpful runtime error). This test case
+        # concerns errors that happen in PyObjectWalker
+        with self.create_executor() as fora:
+            x = type(lambda x:x)
+
+            try:
+                with fora.remotely:
+                    y = x
+
+            except Exception as e:
+                self.assertEqual("Pyfora didn't know how to convert x", str(e))
+                return
+
+            self.assertTrue(False)
+
+    def test_typeWeCantTranslateYet_raise_2(self):
+        # note that this is different than trying to evaluate,
+        # in pyfora code, type(lambda x:x).
+        # that will give a completely different type of 
+        # error (an unhelpful runtime error). This test case
+        # concerns errors that happen in PyObjectWalker
+        x = type(lambda x:x)
+        def f():
+            return x
+
+        try:
+            self.evaluateWithExecutor(f)
+        except Exception as e:
+            self.assertTrue(
+                str(e).startswith("Pyfora didn't know how to convert x")
+                )
+            return
+
+        self.assertTrue(False)
+            
+    def test_typeWeCantTranslateYet_raise_3(self):
+        import numpy
+        x = numpy
+        def f():
+            return x
+
+        try:
+            self.evaluateWithExecutor(f)
+        except Exception as e:
+            self.assertTrue(
+                str(e).startswith("Pyfora didn't know how to convert x")
+                )
+            return
+
+        self.assertTrue(False)
+
+    def test_typeWeCantTranslateYet_raise_4(self):
+        import scipy
+        def f():
+            x = scipy.special
+            return 0
+
+        try:
+            self.evaluateWithExecutor(f)
+        except Exception as e:
+            self.assertTrue(
+                str(e).startswith("Pyfora didn't know how to convert scipy.special")
+                )
+            return
+
+        self.assertTrue(False)
+
+    def test_typeWeCantTranslateYet_raise_5(self):
+        import scipy.special
+        def f():
+            return scipy.special.airy(0)
+
+        try:
+            self.evaluateWithExecutor(f)
+        except Exception as e:
+            self.assertTrue(
+                str(e).startswith("Pyfora didn't know how to convert scipy.special.airy")
+                )
+            return
+
+        self.assertTrue(False)

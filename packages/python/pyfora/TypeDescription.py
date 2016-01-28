@@ -12,7 +12,9 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import collections as collections
+
+import collections
+
 
 
 NoneType = type(None)
@@ -99,4 +101,8 @@ BuiltinExceptionInstance = type_description(
 InstanceMethod = type_description(
     'InstanceMethod',
     'instanceId, methodName'
+    )
+Unconvertible = type_description(
+    'Unconvertible',
+    ''
     )
