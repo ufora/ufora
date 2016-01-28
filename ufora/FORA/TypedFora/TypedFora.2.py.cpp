@@ -44,7 +44,6 @@ public:
 			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::Continuation>(false);
 			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::MakeTupleArgument>(false);
 			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::MetadataInstruction>(false);
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::MetadataVariableLayout>(false);
 			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::MetadataVariable>(false);
 			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::MetadataStackFrame>(false);
 			}

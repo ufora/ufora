@@ -29,7 +29,6 @@ Block = getattr(ForaNative, "TypedFora::Block")
 Continuation = getattr(ForaNative, "TypedFora::Continuation")
 MakeTupleArgument = getattr(ForaNative, "TypedFora::MakeTupleArgument")
 MetadataInstruction = getattr(ForaNative, "TypedFora::MetadataInstruction")
-MetadataVariableLayout = getattr(ForaNative, "TypedFora::MetadataVariableLayout")
 MetadataVariable = getattr(ForaNative, "TypedFora::MetadataVariable")
 MetadataStackFrame = getattr(ForaNative, "TypedFora::MetadataStackFrame")
 
