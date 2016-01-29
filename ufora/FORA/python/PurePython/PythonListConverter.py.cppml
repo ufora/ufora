@@ -61,7 +61,7 @@ public:
             return createList(converter, elements, vdm);
 
         boost::python::object first = elements[0];
-        if (!isHomogenousList(elements) || !PyInt_Check(first.ptr()))
+        if (!isHomegeneousList(elements) || PyString_Check(first.ptr()) || first.ptr() == Py_None)
             {
             ImmutableTreeVector<ImplValContainer> listElements;
             for (long ix = 0; ix < boost::python::len(elements); ++ix)
@@ -75,33 +75,58 @@ public:
             return converter->createList(listElements, vdm);
             }
 
-        std::vector<int64_t> values;
+        if (PyBool_Check(first.ptr()))
+            {
+            std::function<Type(bool)> typeConverter =
+                [&] (bool val) { return constantConverter->convertBoolean(val).type(); };
+            return convertHomegeneousListOfPrimitives<bool, uint8_t>(converter, elements, typeConverter);
+            }
+        if (PyInt_Check(first.ptr()))
+            {
+            std::function<Type(int64_t)> typeConverter =
+                [&] (int64_t val) { return constantConverter->convertInt(val).type(); };
+            return convertHomegeneousListOfPrimitives(converter, elements, typeConverter);
+            }
+        if (PyFloat_Check(first.ptr()))
+            {
+            std::function<Type(double)> typeConverter =
+                [&] (double val) { return constantConverter->convertFloat(val).type(); };
+            return convertHomegeneousListOfPrimitives(converter, elements, typeConverter);
+            }
+        }
+
+    template <class LogicalType, class StorageType = LogicalType>
+    static ImplValContainer convertHomegeneousListOfPrimitives(
+            PolymorphicSharedPtr<Fora::PythonListConverter> converter,
+            boost::python::list elements,
+            std::function<Type(LogicalType)>& computeType)
+        {
+        std::vector<StorageType> values;
         values.reserve(boost::python::len(elements));
         for (long ix = 0, len = boost::python::len(elements); ix < len; ++ix)
             {
-                values.push_back(boost::python::extract<int64_t>(elements[ix]));
+                values.push_back(boost::python::extract<LogicalType>(elements[ix]));
             }
 
-        auto type = constantConverter->convertInt(values[0]).type();
         return converter->createListOfPrimitives(
                 reinterpret_cast<const uint8_t*>(&values[0]),
                 values.size(),
-                type
+                computeType(static_cast<LogicalType>(values[0]))
                 );
         }
 
-    static bool isHomogenousList(boost::python::list list)
+    static bool isHomegeneousList(boost::python::list list)
         {
-        bool isHomogenous = true;
+        bool isHomegeneous = true;
         PyObject* firstType = getType(list[0]);
-        for (long ix = 1, len = boost::python::len(list); ix < len && isHomogenous; ++ix)
+        for (long ix = 1, len = boost::python::len(list); ix < len && isHomegeneous; ++ix)
             {
                 PyObject* curType = getType(list[ix]);
-                isHomogenous = (PyObject_Compare(curType, firstType) == 0);
+                isHomegeneous = (PyObject_Compare(curType, firstType) == 0);
                 Py_DECREF(curType);
             }
         Py_DECREF(firstType);
-        return isHomogenous;
+        return isHomegeneous;
         }
 
     static PyObject* getType(const boost::python::object& obj)
