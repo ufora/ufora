@@ -753,11 +753,21 @@ class Converter(object):
                                                             foraExpression,
                                                             renamedVariableMapping):
         foraExpression, renamedVariableMapping = \
-            self.specializeFreeVariableMemberAccessChains(
+            self.reduceFreeVariableMemberAccessChains(
                 foraExpression,
                 renamedVariableMapping
                 )
 
+        return self.specializeFreeVariablesAndEvaluate(
+            foraExpression,
+            renamedVariableMapping
+            )
+
+    def specializeFreeVariablesAndEvaluate(
+            self,
+            foraExpression,
+            renamedVariableMapping
+            ):
         allAreIVC = True
         for _, v in renamedVariableMapping.iteritems():
             if not isinstance(v, ForaNative.ImplValContainer):
@@ -799,20 +809,32 @@ class Converter(object):
                 shouldMapArgsAsConstants
                 )
         else:
-            #function that evaluates the CreateObject. Args are the free variables, in lexical order
+            #function that evaluates the CreateObject. 
+            #Args are the free variables, in lexical order
             expressionAsIVC = foraExpression.toFunctionImplval(False)
 
             args = []
             for f in foraExpression.freeVariables:
                 args.append(renamedVariableMapping[f])
 
-            res = ComputedValue.ComputedValue(args=(expressionAsIVC, Symbol_Call) + tuple(args))
+            res = ComputedValue.ComputedValue(
+                args=(expressionAsIVC, Symbol_Call) + tuple(args)
+                )
 
             return res
 
-    def specializeFreeVariableMemberAccessChains(self,
-                                                 expr,
-                                                 freeVariableMemberAccessChainToImplValMap):
+    def reduceFreeVariableMemberAccessChains(self,
+                                             expr,
+                                             freeVariableMemberAccessChainToImplValMap):
+        """
+        given an expression `expr` and mapping
+        `freeVariableMemberAccessChainToImplValMap`,
+        replace the occurences of the keys of the mapping in expr
+        with fresh variable names. 
+
+        Returns the new expression, and a mapping from the replacing
+        variables to their corresponding (implval) values.
+        """
         renamedVariableMapping = {}
         for chain, implval in freeVariableMemberAccessChainToImplValMap.iteritems():
             assert isinstance(chain, str)
@@ -822,7 +844,10 @@ class Converter(object):
                 renamedVariableMapping[chain[0]] = implval
 
             else:
-                newName = Expression.freshVarname('_'.join(chain), set(expr.mentionedVariables))
+                newName = Expression.freshVarname(
+                    '_'.join(chain),
+                    set(expr.mentionedVariables)
+                    )
                 renamedVariableMapping[newName] = implval
                 expr = expr.rebindFreeVariableMemberAccessChain(
                     chain,
