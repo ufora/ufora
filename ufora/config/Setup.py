@@ -79,6 +79,13 @@ def addLoggingParser(parser):
             required=False,
             help = "log stacktraces in the background"
             )
+    parser.add_argument(
+            "--memory-logfile-path",
+            dest='memoryLogfile',
+            required=False,
+            help = "log memory usage of process in the background"
+            )
+
 
 def addSystemResourcesParser(parser):
     '''
@@ -141,6 +148,9 @@ class Setup(object):
 
         if 'stackLogfile' in parsed and parsed.stackLogfile:
             self.config.backgroundStackTraceLoopFilename = parsed.stackLogfile
+
+        if 'memoryLogfile' in parsed and parsed.memoryLogfile:
+            self.config.backgroundMemoryUsageLoopFilename = parsed.memoryLogfile
 
         if 'logging' in parsed and parsed.logging:
             self.config.setLoggingLevel(parsed.logging, parsed.background_logging)

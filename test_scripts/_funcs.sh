@@ -37,7 +37,7 @@ function run_test {
         TEST_TIMEOUT=720
     fi
 
-    python -u $WORKSPACE/test.py --baseport=$BASEPORT -timeout=$TEST_TIMEOUT $TEST_ARGS &> $TEST_LOG
+    python -u $WORKSPACE/test.py --memory-logfile-path=$TEST_OUTPUT_DIR/memory-usage.log --baseport=$BASEPORT -timeout=$TEST_TIMEOUT $TEST_ARGS &> $TEST_LOG
     if [ $? -ne 0 ]; then
         cat $TEST_LOG
         exit 1

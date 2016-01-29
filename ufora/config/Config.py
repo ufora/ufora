@@ -23,6 +23,7 @@ import os
 import os.path
 import ufora.config.LogFormat as LogFormat
 import ufora.util.StackTraceLoop as StackTraceLoop
+import ufora.util.MemoryUsageLoop as MemoryUsageLoop
 
 
 def parseBool(arg):
@@ -193,6 +194,7 @@ class Config(object):
         self.backgroundLoggingLevel = logging.INFO
 
         self.backgroundStackTraceLoopFilename = None
+        self.backgroundMemoryUsageLoopFilename = None
 
         # LOGGING_OVERRIDES may be empty, or may contain a list of tuples.
         # Each tuple should look like (scopeRegex, fileRegex, logLevel)
@@ -353,12 +355,14 @@ class Config(object):
             for scopeRegex, fileRegex, level in self.scopedLoggingLevelOverrides:
                 NativeLogging.setScopedLoggingLevel(scopeRegex, fileRegex, level)
 
-    def startBackgroundStackTraceLoop(self):
+    def startBackgroundLoops(self):
         if self.backgroundStackTraceLoopFilename is not None:
             StackTraceLoop.startLoop(self.backgroundStackTraceLoopFilename, timeout=2.0)
+        if self.backgroundMemoryUsageLoopFilename is not None:
+            MemoryUsageLoop.startLoop(self.backgroundMemoryUsageLoopFilename, interval=2.0)
 
     def configureLoggingForUserProgram(self):
-        self.startBackgroundStackTraceLoop()
+        self.startBackgroundLoops()
         self.configureLogging(self.foregroundLoggingLevel)
 
     def configureLoggingForBackgroundProgram(self):
