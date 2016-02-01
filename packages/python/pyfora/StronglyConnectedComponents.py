@@ -46,14 +46,13 @@ def stronglyConnectedComponents(graph):
         except:
             successors = []
         for successor in successors:
-            if successor in successors:
-                if successor not in lowLinks:
-                    # Successor has not yet been visited; recurse on it
-                    strongConnect(successor)
-                    lowLinks[node] = min(lowLinks[node], lowLinks[successor])
-                elif successor in stack:
-                    # the successor is in the stack and hence in the current SCC
-                    lowLinks[node] = min(lowLinks[node], index[successor])
+            if successor not in lowLinks:
+                # Successor has not yet been visited; recurse on it
+                strongConnect(successor)
+                lowLinks[node] = min(lowLinks[node], lowLinks[successor])
+            elif successor in stack:
+                # the successor is in the stack and hence in the current SCC
+                lowLinks[node] = min(lowLinks[node], index[successor])
 
         # If `node` is a root node, pop the stack and generate an SCC
         if lowLinks[node] == index[node]:
