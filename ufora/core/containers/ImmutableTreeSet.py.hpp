@@ -92,74 +92,6 @@ public:
 
 			return in.slice(start, stop);
 			}
-		static uint32_t test(uint32_t m)
-			{
-			ImmutableTreeMap<uint32_t, uint32_t> x;
-
-			x = x + (uint32_t)0 + (uint32_t)1;
-			x = x + (uint32_t)1 + (uint32_t)1;
-
-			for (uint32_t ix = 2; ix <= m; ix++)
-				x = x + ix + ix; //(*x[ix-2] + *x[ix-1]);
-
-			return x.height();
-			}
-		static uint32_t test2(uint32_t m)
-			{
-			ImmutableTreeVector<uint32_t> x;
-
-			for (uint32_t ix = 0; ix <= m; ix++)
-				x = x + ix;
-
-			return x.height();
-			}
-		static uint32_t test3(uint32_t m)
-			{
-			ImmutableTreeSet<uint32_t> x;
-
-			for (uint32_t ix = 0; ix <= m; ix++)
-				x = x + ix;
-
-			return x.height();
-			}
-		static uint32_t test4(uint32_t m)
-			{
-			ImmutableTreeSet<uint32_t> x;
-
-			for (uint32_t ix = 0; ix <= m; ix++)
-				x = x + (uint32_t)rand();
-
-			return x.height();
-			}
-		static void test5(uint32_t m)
-			{
-			for (long k = 0; k < m; k++)
-				{
-				ImmutableTreeMap<uint32_t, uint32_t> x;
-
-				for (uint32_t ix = 0; ix <= 10; ix++)
-					x = x + (uint32_t)rand() + (uint32_t)0;
-				}
-			for (long k = 0; k < m; k++)
-				{
-				ImmutableTreeSet<uint32_t> x;
-
-				for (uint32_t ix = 0; ix <= 10; ix++)
-					x = x + (uint32_t)rand();
-				}
-			for (long k = 0; k < m; k++)
-				{
-				ImmutableTreeVector<uint32_t> x;
-				x = x + (uint32_t)1;
-
-				for (uint32_t ix = 0; ix <= 10; ix++)
-					{
-					uint32_t ix2 = (rand() / (float)RAND_MAX) * x.size();
-					x = x.slice(0,ix2) + (uint32_t)0 + x.slice(ix2);
-					}
-
-				}
-			}
 		static void exportPythonInterface(const std::string& inTypename)
 			{
 			using namespace Ufora::python;
@@ -181,12 +113,6 @@ public:
 				.def("lowerBound", &lowerBound)
 				.add_property("height", getHeight)
 				;
-
-			def("test", &test);
-			def("test2", &test2);
-			def("test3", &test3);
-			def("test4", &test4);
-			def("test5", &test5);
 			}
 };
 

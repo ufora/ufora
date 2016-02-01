@@ -90,10 +90,6 @@ public:
 			{
 			return in.size();
 			}
-		static uint32_t getHeight(ImmutableTreeVector<T>& in)
-			{
-			return in.height();
-			}
 		static ImmutableTreeVector<T> slice(ImmutableTreeVector<T>& in, boost::python::slice s)
 			{
 			int32_t start = boost::python::extract<int32_t>(s.start());
@@ -133,7 +129,6 @@ public:
 				.def("__add__", &addTree)
 				.def("__str__", prettyPrintString<ImmutableTreeVector<T> >)
 				.def("__cmp__", cmpTrees)
-				.add_property("height", getHeight)
 				;
 			}
 };
