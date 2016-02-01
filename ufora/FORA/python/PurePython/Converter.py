@@ -25,7 +25,6 @@ import pyfora
 
 import ast
 import logging
-import time
 
 import ufora.native.FORA as ForaNative
 
@@ -143,18 +142,12 @@ class Converter(object):
 
     def convert(self, objectId, objectRegistry, callback):
         try:
-            t0 = time.time()
             dependencyGraph = objectRegistry.computeDependencyGraph(objectId)
-            logging.info("Computed dependency graph in %s seconds", time.time() - t0)
-            t0 = time.time()
             objectIdToObjectDefinition = {
                 objId: objectRegistry.getDefinition(objId)
                 for objId in dependencyGraph.iterkeys()
                 }
-            logging.info("Built object map in %s seconds", time.time() - t0)
-            t0 = time.time()
             convertedValue = self._convert(objectId, dependencyGraph, objectIdToObjectDefinition)
-            logging.info("Converted code in %s seconds", time.time() - t0)
             self.convertedValues[objectId] = convertedValue
             callback(convertedValue)
         except pyfora.PythonToForaConversionError as e:
@@ -162,8 +155,6 @@ class Converter(object):
 
     def _convert(self, objectId, dependencyGraph, objectIdToObjectDefinition):
         objectDefinition = objectIdToObjectDefinition[objectId]
-        logging.info("ObjectDefinition: %s", objectDefinition)
-
         if TypeDescription.isPrimitive(objectDefinition) or isinstance(objectDefinition, list):
             return self.convertPrimitive(objectDefinition)
         elif isinstance(objectDefinition, TypeDescription.RemotePythonObject):
@@ -568,9 +559,9 @@ class Converter(object):
             self.convertedValues[objectId] = self.convertNamedSingleton(objectDefinition)
 
         elif isinstance(objectDefinition, TypeDescription.WithBlockDescription):
-            self.convertedValues[objectId] = self.convertWithBlock(objectId,
-                                                                   objectDefinition,
-                                                                   objectIdToObjectDefinition)
+            self.convertWithBlock(objectId,
+                                  objectDefinition,
+                                  objectIdToObjectDefinition)
 
         elif isinstance(objectDefinition, TypeDescription.InstanceMethod):
             self.convertedValues[objectId] = self.convertInstanceMethod(objectId,
@@ -585,7 +576,6 @@ class Converter(object):
         bound = instance.getObjectMember(objectDef.methodName)
         assert bound is not None
         return bound
-
 
     def convertWithBlock(self, objectId, withBlockDescription, objectIdToObjectDefinition):
         foraFunctionExpression = self.getFunctionExpressionFromWithBlockDescription(
