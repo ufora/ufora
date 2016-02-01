@@ -574,13 +574,12 @@ class Converter(object):
 
         elif isinstance(objectDefinition, TypeDescription.InstanceMethod):
             self.convertedValues[objectId] = self.convertInstanceMethod(objectId,
-                                                                        objectDefinition,
                                                                         objectIdToObjectDefinition)
 
         else:
             assert False, "haven't gotten to this yet %s" % type(objectDefinition)
 
-    def convertInstanceMethod(self, objectId, dependencyGraph, objectIdToObjectDefinition):
+    def convertInstanceMethod(self, objectId, objectIdToObjectDefinition):
         objectDef = objectIdToObjectDefinition[objectId]
         instance = self.convertedValues[objectDef.instanceId]
         bound = instance.getObjectMember(objectDef.methodName)
