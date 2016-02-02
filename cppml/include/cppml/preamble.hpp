@@ -82,41 +82,68 @@ public:
 			}
 		};
 
-template<class self_type, class default_t>
-class Memovalid {
+/************************************
+Basic prototype for a "Memo" object.
+
+Clients who write
+
+	@type AType = 
+		-| ...
+	with 
+		T x = (expr)
+
+will implement an instance of MemoStorage<AType, T, void> to
+control how the memo is calculated.
+************************************/
+
+template<class self_type, class held_type, class default_t>
+class MemoStorage {
 public:
-	typedef char memovalid_type;
-	
-	static bool valid(memovalid_type& ioR)
+	MemoStorage() :
+			mMemoizedValue(0),
+			mStatus(0)
 		{
-		return ioR == 1;
-		};
-	
-	class lock_type {
-	public:
-		lock_type(memovalid_type& in) : m(in)
+		}
+
+	~MemoStorage()
+		{
+		if (mMemoizedValue)
+			delete mMemoizedValue;
+		}
+
+	const static char kValid = 1;
+	const static char kComputing = 2;
+	const static char kCircular = 3;
+
+	template<class getter_type>
+	const held_type& get(const getter_type& getter)
+		{
+		if (mStatus == kValid)
+			return *mMemoizedValue;
+
+		if (mStatus == kComputing || mStatus == kCircular)
+			throw CircularMemoError();
+
+		mStatus = kComputing;
+
+		try {
+			mMemoizedValue = new held_type(getter());
+			}
+		catch(CircularMemoError& circularMemo)
 			{
-			valid = false;
-			if (in == 2)
-				throw CircularMemoError();
-			in = 2;
-			valid = true;
-			};
-		~lock_type()
-			{
-			m = (valid ? 1 : 0);
-			};
-		bool needsCompute(void)
-			{
-			return true;
-			};
-		void invalidate(void)
-			{
-			valid = false;
-			};
-		memovalid_type& m;
-		bool valid;
-		};
+			mStatus = kCircular;
+			throw circularMemo;
+			}
+
+		mStatus = kValid;
+
+		return *mMemoizedValue;
+		}
+
+private:
+	char mStatus;
+
+	held_type* mMemoizedValue;
 };
 
 template<class tagged_union_type, class common_type, class data_type, class default_t = void>

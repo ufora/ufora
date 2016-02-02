@@ -365,55 +365,69 @@ public:
 			}
 };
 
-template<class self_type>
-class Memovalid<self_type, void> {
+template<class self_type, class held_type>
+class MemoStorage<self_type, held_type, void> {
 public:
-		typedef AO_t memovalid_type;
-		
-		static bool valid(memovalid_type& ioR)
+	const static char kUninitialized = 0;
+	const static char kComputing = 1;
+
+	MemoStorage() :
+			mMemoizedValuePtr(kUninitialized)
+		{
+		static_assert(sizeof(held_type*) == sizeof(AO_t));
+		}
+
+	~MemoStorage()
+		{
+		if (mMemoizedValuePtr > kComputing)
+			delete valueAsPtr();
+		}
+
+	held_type* valueAsPtr()
+		{
+		return reinterpret_cast<held_type*>(mMemoizedValuePtr);
+		}
+
+	template<class getter_type>
+	const held_type& get(const getter_type& getter)
+		{
+		if (mMemoizedValuePtr > kComputing)
+			return *valueAsPtr();
+
+		//we have a state machine held by the values in mMemoizedValuePtr
+		//0 - uninitialized
+		//1 - computing
+		//any other number - a pointer to the actual value
+		//we do this to preserve as much space as possible, since it is wasteful
+		//to hold both a pointer and also the atomic counter
+		while (true)
 			{
-			return ioR == 1;
+			AO_t currentValue = AO_load(&mMemoizedValuePtr);
+
+			if (currentValue > kComputing)
+				return *valueAsPtr();
+
+			if (AO_compare_and_swap_full(&mMemoizedValuePtr,kUninitialized,kComputing))
+				{
+				try {
+					AO_store(
+						&mMemoizedValuePtr, 
+						reinterpret_cast<AO_t>(new held_type(getter()))
+						);
+					}
+				catch(...)
+					{
+					AO_store(&mMemoizedValuePtr, kUninitialized);
+					throw;
+					}
+				}
 			}
-		
-		class lock_type {
-		public:
-				lock_type(memovalid_type& in) : m(in)
-					{
-					mNeedsLock = true;
-					mValid = true;
-					//if the lock is held, throw an exception
-					while (!AO_compare_and_swap_full(&m,0,2))
-						{
-						if (AO_load(&m) == 1)
-							{
-							mNeedsLock = 0;
-							return;
-							}
-							else
-							boost::thread::yield();
-						}
-					}
-				~lock_type()
-					{
-					//we're done - mark the value and exit
-					if (mNeedsLock)
-						AO_store(&m, mValid ? 1 : 0);
-					}
-				bool needsCompute(void)
-					{
-					return mNeedsLock;
-					}
-				void invalidate(void)
-					{
-					mValid = false;
-					}
-					
-		private:
-				memovalid_type& m;
-				bool			mNeedsLock;
-				bool			mValid;
-		};
+		}
+
+private:
+	AO_t mMemoizedValuePtr;
 };
+
 
 }
 

@@ -540,15 +540,9 @@ let rec
 							),
 						[],
 
-						let ptr = "(mReference.getCommonData().memodata_m_" ^ string_of_int(ix) ^ ")" in
-						let valid = "(mReference.getCommonData().memovalid_m_" ^ string_of_int(ix) ^ ")" in
-
-						Text("if (! ::CPPML::Memovalid< " ^ fullyQualifiedNamer(name) ^ " , void>::valid(" ^ valid ^ ")) { " ^ newline) ::
-						CPPType("::CPPML::Memovalid< " ^ fullyQualifiedNamer(name) ^ " , void>::lock_type") :: Text(" lock(" ^ valid ^ "); " ^ newline) ::
-						Text("if (lock.needsCompute()) try { " ^ ptr ^ " = new memo_member_" ^ string_of_int(ix) ^ "_type(")
-							:: (code_to_cpp_output scope def) @
-						Text("); } catch(...) { lock.invalidate(); throw; };" ^ newline ^ "}" ^ newline ^ "return *(" ^ ptr ^ ");") :: []
-						)
+						(Text("return mReference.getCommonData().memodata_m_" ^ string_of_int(ix) ^ ".get([&](){ return ") :: [])
+						@ (code_to_cpp_output scope def) @ (Text("; });") :: [])
+							)
 						  )
 						commonMemos)
 					)
@@ -926,9 +920,12 @@ let rec
 			classmaker(name ^ "_common_data",
                 Public(
                         Text("typedef ") :: CPPType(fullyQualifiedNamer(name)) :: Text(" holding_type;" ^ newline)
-                    ::  Text("typedef ") :: CPPType("::CPPML::Memovalid<holding_type, void>::memovalid_type") :: Text(" memovalid_type;" ^ newline)
                     ::  (map_with_indices (function((c,nm,w), ix)-> Text("typedef " ^ c ^ " member_" ^ string_of_int(ix) ^ "_type;" ^ w ^ newline)) commonTypes) @
                         (map_with_indices (function((c,nm,w,def), ix)-> SeveralCPPEleements(Text("typedef ") :: CPPType(c) :: Text(" memo_member_" ^ string_of_int(ix) ^ "_type;" ^ w ^ newline) :: [])) commonMemos) @
+                        (map_with_indices (function((c,nm,w,def), ix)-> 
+                        		SeveralCPPEleements(Text("typedef ") :: CPPType("::CPPML::MemoStorage<holding_type, memo_member_" ^ string_of_int(ix) ^ "_type, void>") :: 
+                        			Text(" memo_member_storage_" ^ string_of_int(ix) ^ "_type;" ^ w ^ newline) :: [])) commonMemos
+                    		) @
 						FunctionDef(
 								MemberFunction(
 									false,
@@ -939,8 +936,7 @@ let rec
 									),
 								Text(commonConstructorInitializers) :: [],
 								(* initialize the memovalues *)
-									(map_with_indices (function((c,nm,w,def), ix)-> Text("memovalid_m_" ^ string_of_int(ix) ^ " = 0;" ^ newline)) commonMemos)
-								@	(map_with_indices (function((c,nm,w,def), ix)-> Text("memodata_m_" ^ string_of_int(ix) ^ " = 0;" ^ newline)) commonMemos)
+								[]
 								)
 							::
                         FunctionDef(
@@ -953,18 +949,12 @@ let rec
 									),
 								Text(commonConstructorInitializersFromCopyConstructorArg) :: [],
 								(* initialize the memovalues *)
-									(map_with_indices (function((c,nm,w,def), ix)-> Text("memovalid_m_" ^ string_of_int(ix) ^ " = 0;" ^ newline)) commonMemos)
-								@	(map_with_indices (function((c,nm,w,def), ix)-> Text("memodata_m_" ^ string_of_int(ix) ^ " = 0;" ^ newline)) commonMemos)
+								[]
 								)
 							:: 
 						FunctionDef(MemberFunction(false, false, Text(" /* common_data destructor */"),
                                         ownFullName, "~" ^ name ^ "_common_data()"), [],
-								
-							(* destroy the memo objects *)
-								(map_with_indices (function((c,nm,w,def), ix)->
-									Text("if (::CPPML::Memovalid< " ^ fullyQualifiedNamer(name) ^ " , void>::valid(memovalid_m_" ^ string_of_int(ix) ^ ") " ^
-										") delete memodata_m_" ^ string_of_int(ix) ^ ";" ^ newline)) commonMemos)
-	
+							[]
 							)
 						::[]
                     )
@@ -977,11 +967,10 @@ let rec
                     )
 				:: Public(
                     map_with_indices (
+						(* define the typedefs for the various memo objects *)
                         function((c,nm,w,def), ix)->
-                            Text("mutable memo_member_" ^ string_of_int(ix) ^ "_type* memodata_m_" ^ string_of_int(ix) ^ ";" ^ newline
-								 ^ "mutable memovalid_type memovalid_m_" ^ string_of_int(ix) ^ ";" ^ newline
-									)
-								)
+                            Text("mutable memo_member_storage_" ^ string_of_int(ix) ^ "_type memodata_m_" ^ string_of_int(ix) ^ ";" ^ newline)
+							)
                         commonMemos
                     )
                 ::[]
