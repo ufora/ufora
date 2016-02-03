@@ -44,7 +44,7 @@ class ScipySpecialTestCases(object):
                     )
                 )
 
-    def test_hyp2f1(self):
+    def test_hyp2f1_1(self):
         def f(a, b, c, z):
             return scipy.special.hyp2f1(a, b, c, z)
 
@@ -54,6 +54,25 @@ class ScipySpecialTestCases(object):
                 f(a, b, c, z),
                 self.evaluateWithExecutor(f, a, b, c, z)
                 )
+            )
+
+    def test_hyp2f1_2(self):
+        def f(a, b, c, z):
+            return scipy.special.hyp2f1(a, b, c, z)
+
+        a,b,c,z = 2.8346157367796936, 0.0102, 3.8346157367796936, 0.9988460588541513
+
+        res1 = self.evaluateWithExecutor(f, a, b, c, z)
+        res2 = f(a, b, c, z)
+
+        numpy.testing.assert_almost_equal(
+            res1,
+            res2
+            )
+
+        numpy.testing.assert_almost_equal(
+            res1,
+            1.0182383750413575
             )
 
     def test_gammaln_1(self):
