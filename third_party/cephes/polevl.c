@@ -52,7 +52,7 @@ Direct inquiries to 30 Frost Street, Cambridge, MA 02140
 
 double polevl( x, coef, N )
 double x;
-double coef[];
+const double coef[];
 int N;
 {
 double ans;
@@ -78,7 +78,7 @@ return( ans );
 
 double p1evl( x, coef, N )
 double x;
-double coef[];
+const double coef[];
 int N;
 {
 double ans;
