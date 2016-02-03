@@ -82,3 +82,32 @@ class ScipySpecialTestCases(object):
 
         numpy.testing.assert_almost_equal(gamln, gamln2)
         numpy.testing.assert_almost_equal(lngam, lngam2)
+
+    def test_betaln_1(self):
+        def f(a, b):
+            return scipy.special.betaln(a, b)
+
+        numpy.testing.assert_equal(
+            self.evaluateWithExecutor(f, 1, 1),
+            0.0
+            )
+        numpy.testing.assert_allclose(
+            self.evaluateWithExecutor(f, -100.3, 1e-200),
+            scipy.special.gammaln(1e-200)
+            )
+        # note: we're not quite as accurate as scipy here.
+        # scipy can get this to rtol=1e-13
+        numpy.testing.assert_allclose(
+            self.evaluateWithExecutor(f, 0.0342, 170),
+            3.1811881124242447,
+            rtol=1e-13, atol=0
+            )
+
+    def test_betaln_2(self):
+        def f(a, b):
+            return scipy.special.betaln(a, b)
+
+        res1 = self.evaluateWithExecutor(f, 2, 4)
+        res2 = numpy.log(abs(scipy.special.beta(2,4)))
+        
+        numpy.testing.assert_almost_equal(res1, res2, 8)

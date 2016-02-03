@@ -152,6 +152,17 @@ class GammaLn:
             )(x)
 
 
+class BetaLn:
+    # Scipy uses a special fortran implementation for this function
+    # We decided not to use it since it uses DATA segments, which
+    # can lead to non-thread safe code. We didn't explore whether
+    # these functions are indeed thread safe, but this implementation
+    # here is hopefully close enough for most purposes.
+    def __call__(self, a, b):
+        gammaln = GammaLn()
+        return gammaln(a) + gammaln(b) - gammaln(a + b) 
+
+
 class Kn:
     """Modified Bessel function of the second kind of integer order n
        Returns the modified Bessel function of the second kind for 
@@ -246,6 +257,7 @@ def generateMappings():
         (scipy.special.erfc, PureMath.Erfc), (scipy.special.erfcinv, Erfcinv),
         (scipy.special.erfinv, Erfinv), (scipy.special.betainc, Betainc),
         (scipy.special.gammaln, GammaLn),
+        (scipy.special.betaln, BetaLn),
         (scipy.special.log1p, PureNumpy.Log1p),
         (scipy.special.kn, Kn), (scipy.special.iv, Iv),
         (scipy.special.comb, Comb), (scipy.special.factorial, PureMath.Factorial),
