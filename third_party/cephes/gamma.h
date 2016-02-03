@@ -1,0 +1,15 @@
+/*
+Cephes Math Library Release 2.3:  December, 1988
+Copyright 1984, 1987, 1988 by Stephen L. Moshier
+Direct inquiries to 30 Frost Street, Cambridge, MA 02140
+*/
+
+#ifndef CEPHES_GAMMA_H
+#define CEPHES_GAMMA_H
+
+double Gamma(double x);
+double lgam(double x);
+double lgam_sgn(double x, int *sign);
+
+#endif
+

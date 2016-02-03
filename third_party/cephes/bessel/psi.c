@@ -58,8 +58,8 @@ Copyright 1984, 1987, 1992, 2000 by Stephen L. Moshier
 
 #include <math.h>
 #include "../consts.h"
-
-extern double polevl(double x, const double coef[], int N);
+#include "../polevl.h"
+#include "psi.h"
 
 static const unsigned short A[] = {
 0x5555,0x5555,0x5555,0x3fb5,
@@ -71,8 +71,7 @@ static const unsigned short A[] = {
 0x5555,0x5555,0x5555,0x3fb5
 };
 
-double psi(x)
-double x;
+double psi(double x)
 {
 double p, q, nz, s, w, y, z;
 int i, n, negative;
@@ -87,7 +86,7 @@ if( x <= 0.0 )
 	p = floor(q);
 	if( p == q )
 		{
-		return( MAXNUM );
+		return( INFINITY );
 		}
 /* Remove the zeros of tan(PI x)
  * by subtracting the nearest integer from x
@@ -134,12 +133,12 @@ while( s < 10.0 )
 if( s < 1.0e17 )
 	{
 	z = 1.0/(s * s);
-	y = z * polevl( z, A, 6 );
+	y = z * polevl( z, (double*)A, 6 );
 	}
 else
 	y = 0.0;
 
-y = log(s)  -  (0.5/s)  -  y  -  w;
+y = log(s) - (0.5/s) - y - w;
 
 done:
 

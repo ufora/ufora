@@ -44,16 +44,14 @@
 
 
 /*
-Cephes Math Library Release 2.1:  December, 1988
+Cephes Math Library Release 2.3:  December, 1988
 Copyright 1984, 1987, 1988 by Stephen L. Moshier
 Direct inquiries to 30 Frost Street, Cambridge, MA 02140
 */
 
+#include "polevl.h"
 
-double polevl( x, coef, N )
-double x;
-const double coef[];
-int N;
+double polevl(double x, const double* coef, int N)
 {
 double ans;
 int i;
@@ -76,10 +74,7 @@ return( ans );
  * Otherwise same as polevl.
  */
 
-double p1evl( x, coef, N )
-double x;
-const double coef[];
-int N;
+double p1evl(double x, const double* coef, int N)
 {
 double ans;
 double *p;
