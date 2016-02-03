@@ -422,6 +422,18 @@ class IsNan:
             )(x)
 
 
+class IsInf:
+    def __call__(self, x):
+        if not isinstance(x, float):
+            x = float(x)
+
+        return __inline_fora(
+            """fun(PyFloat(...) x) {
+                   PyBool(x.@m.isInfinite)
+                   }"""
+            )(x)
+
+
 class Log:
     def __call__(self, val):
         if val < 0:
@@ -489,6 +501,7 @@ def generateMappings():
         (np.sqrt, Sqrt), (np.hypot, PureMath.Hypot), (np.log, Log),
         (np.exp, PureMath.Exp), (np.expm1, PureMath.Expm1), (np.floor, PureMath.Floor),
         (np.isnan, IsNan), (np.sign, Sign), (np.log1p, Log1p),
+        (np.isinf, IsInf),
         (np.log10, Log10),
         (np.round, BuiltinPureImplementationMappings.Round)
         ]

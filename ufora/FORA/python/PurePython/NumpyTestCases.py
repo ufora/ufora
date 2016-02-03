@@ -480,5 +480,15 @@ class NumpyTestCases(object):
             self.evaluateWithExecutor(f, vals)
             )
             
+    def test_numpy_isinf(self):
+        def f(x):
+            return [numpy.isnan(elt) for elt in x]
+
+        vals = [1, 2.0, numpy.nan, numpy.inf, -numpy.nan]
+        numpy.testing.assert_allclose(
+            f(vals),
+            self.evaluateWithExecutor(f, vals)
+            )
+            
 
             
