@@ -13,6 +13,7 @@
 #   limitations under the License.
 
 import numpy
+import numpy.testing
 import random
 import time
 
@@ -468,3 +469,16 @@ class NumpyTestCases(object):
             return x == y
 
         self.equivalentEvaluationTest(f)
+
+    def test_numpy_isnan(self):
+        def f(x):
+            return [numpy.isnan(elt) for elt in x]
+
+        vals = [1, 2.0, numpy.nan, numpy.inf, -numpy.nan]
+        numpy.testing.assert_allclose(
+            f(vals),
+            self.evaluateWithExecutor(f, vals)
+            )
+            
+
+            
