@@ -26,7 +26,7 @@
 
 A Protocol object that writes directly to a file descriptor. 
 
-If 'alignment' is nonzero, writes are aligned to 'alignment' byte boundaries
+If 'alignment' is greater than one, writes are aligned to 'alignment' byte boundaries
 and the file is padded with zeros. this allows us to write using O_DIRECT.
 
 ******************/
@@ -51,7 +51,7 @@ public:
 			mBufferBytesUsed(0),
 			mBufPtr(0)
 		{
-		lassert(mBufferSize % mAlignment == 0);
+		lassert(mAlignment > 0 && mBufferSize % mAlignment == 0);
 
 		mBufferHolder.resize(mAlignment * 2 + mBufferSize);
 		uword_t bufptr = (uword_t)&mBufferHolder[0];
