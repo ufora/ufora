@@ -14,6 +14,7 @@
 
 
 import numpy
+import numpy.testing
 import scipy.special
 
 
@@ -54,3 +55,30 @@ class ScipySpecialTestCases(object):
                 self.evaluateWithExecutor(f, a, b, c, z)
                 )
             )
+
+    def test_gammaln_1(self):
+        def f(x):
+            return scipy.special.gammaln(x)
+
+        for val in [-2, -1.3, -1, -0.5, 0.0, 0.5, 1, 2.1, 3]:
+            self.assertTrue(
+                numpy.isclose(
+                    f(val),
+                    self.evaluateWithExecutor(f, val)
+                    )
+                )
+
+    def test_gammaln_2(self):
+        def f():
+            gamln = scipy.special.gammaln(3)
+            lngam = numpy.log(scipy.special.gamma(3))
+            return gamln, lngam
+        
+        gamln, lngam = self.evaluateWithExecutor(f)
+
+        numpy.testing.assert_almost_equal(gamln,lngam,8)
+
+        gamln2, lngam2 = f()
+
+        numpy.testing.assert_almost_equal(gamln, gamln2)
+        numpy.testing.assert_almost_equal(lngam, lngam2)

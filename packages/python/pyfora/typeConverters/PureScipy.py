@@ -19,6 +19,8 @@ import pyfora.typeConverters.PureNumpy as PureNumpy
 import pyfora.BuiltinPureImplementationMappings as BuiltinPureImplementationMappings
 
 
+import math
+import numpy
 import scipy
 import scipy.special
 
@@ -135,18 +137,19 @@ class Betaincinv:
             )(a, b, y)
 
 
-class Betaln:
-    def __call__(self, a, b):       
-        if not isinstance(a, float):
-            a = float(a)
-        if not isinstance(b, float):
-            b = float(b)
+class GammaLn:
+    def __call__(self, x):
+        if not isinstance(x, float):
+            x = float(x)
+
+        if x <= 0 and math.ceil(x) == x:
+            return numpy.inf
 
         return __inline_fora(
-            """fun(a, b) {
-                   return PyFloat(`lgamma(a.@m, b.@m))
+            """fun(x) {
+                   return PyFloat(`lgamma(x.@m))
                    }"""
-            )(a, b)
+            )(x)
 
 
 class Kn:
@@ -242,7 +245,7 @@ def generateMappings():
         (scipy.special.psi, Digamma),
         (scipy.special.erfc, PureMath.Erfc), (scipy.special.erfcinv, Erfcinv),
         (scipy.special.erfinv, Erfinv), (scipy.special.betainc, Betainc),
-        (scipy.special.betaln, Betaln),
+        (scipy.special.gammaln, GammaLn),
         (scipy.special.log1p, PureNumpy.Log1p),
         (scipy.special.kn, Kn), (scipy.special.iv, Iv),
         (scipy.special.comb, Comb), (scipy.special.factorial, PureMath.Factorial),
