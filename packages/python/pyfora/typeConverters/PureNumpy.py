@@ -25,8 +25,8 @@ import numpy as np
 class PurePythonNumpyArray:
     """
     This is this pyfora wrapper and implementation of the numpy array class
-    Internally, the array is stored as a list of values and a tuple of the 
-    array dimensions. Currently, the values block is interpreted in a 
+    Internally, the array is stored as a list of values and a tuple of the
+    array dimensions. Currently, the values block is interpreted in a
     *row major* fashion.
     """
     def __init__(self, shape, values):
@@ -52,7 +52,7 @@ class PurePythonNumpyArray:
             )
 
     def __iter__(self):
-        for idx in range(len(self)):
+        for idx in xrange(len(self)):
             yield self[idx]
 
     def __eq__(self, y):
@@ -64,7 +64,7 @@ class PurePythonNumpyArray:
             raise ValueError(
                 "__eq__ only currently implemented for equal-sized arrays"
                 )
-            
+
         tr = [self.values[ix] == y.values[ix] for ix in xrange(self.size)]
         return PurePythonNumpyArray(self.shape, tr)
 
@@ -99,25 +99,25 @@ class PurePythonNumpyArray:
     def __getitem__(self, ix):
         if len(self.shape) == 1:
             if isinstance(ix, slice):
-                vals = self.values[ix]                
+                vals = self.values[ix]
                 return PurePythonNumpyArray((len(vals),), vals)
             else:
                 return self.values[ix]
 
         def shapeOfResultantArray(originalShape):
             newShape = []
-            for idx in range(len(originalShape)):
+            for idx in xrange(len(originalShape)):
                 if idx != 0:
                     newShape = newShape + [originalShape[idx]]
             return newShape
 
         newShape = shapeOfResultantArray(self.shape)
         stride = 1
-        for idx in range(1, len(self.shape)):
+        for idx in xrange(1, len(self.shape)):
             stride = stride * self.shape[idx]
         toReturn = []
         startIdx = ix * stride
-        for idx in range(startIdx, startIdx + stride):
+        for idx in xrange(startIdx, startIdx + stride):
             toReturn = toReturn + [self.values[idx]]
 
         return PurePythonNumpyArray(newShape, toReturn)
@@ -223,10 +223,7 @@ class PurePythonNumpyArrayMapping(PureImplementationMapping.PureImplementationMa
 class NpZeros:
     def __call__(self, length):
         def zerosFromCountAndShape(count, shape):
-            vals = []
-            for _ in range(count):
-                vals = vals + [0.0]
-            
+            vals = [0.0 for _ in xrange(count)]
             return PurePythonNumpyArray(
                 shape,
                 vals
@@ -256,7 +253,7 @@ class NpArray:
                 return arr
             else:
                 newShape = []
-                for idx in range(len(shape)):
+                for idx in xrange(len(shape)):
                     if idx != 0:
                         newShape = newShape + [shape[idx]]
 
@@ -382,10 +379,13 @@ class LinSolve:
 
 
 class NpArange:
-    def __call__(self, start, end, step):
+    def __call__(self, start, stop=None, step=1):
+        if stop is None:
+            stop = start
+            start = 0 if isinstance(stop, int) else 0.0
         currentVal = start
         toReturn = []
-        while currentVal < end:
+        while currentVal < stop:
             toReturn = toReturn + [currentVal]
             currentVal = currentVal + step
         return NpArray()(toReturn)
@@ -407,7 +407,7 @@ class Sign:
             return -1.0
         elif x == 0.0:
             return 0.0
-        return 1.0            
+        return 1.0
 
 
 class IsNan:
