@@ -34,18 +34,23 @@ def isCurrentlyTesting():
 
 def recordTest(testName, elapsedTime, metadata, **kwargs):
     if not (isinstance(elapsedTime, float) or elapsedTime is None):
-        raise UserWarning("We may only record a float, or None (in case of failure) for elapsed time")
+        raise UserWarning(
+            "We may only record a float, or None (in case of failure) for elapsed time"
+            )
 
     if not isCurrentlyTesting():
-        raise UserWarning("We are not currently testing, so we can't record test results. " +
-                "Set the environment variable " + TEST_DATA_LOCATION_ENVIRONMENT_VARIABLE
-                + " to point to a valid path.")
+        raise UserWarning(
+            "We are not currently testing, so we can't record test results. "
+            "Set the environment variable " + TEST_DATA_LOCATION_ENVIRONMENT_VARIABLE +
+            " to point to a valid path.")
 
     targetPath = os.getenv(TEST_DATA_LOCATION_ENVIRONMENT_VARIABLE)
 
-    perfLogEntry = {"name": str(testName),
-              "time": elapsedTime if isinstance(elapsedTime, float) else None,
-              "metadata": metadata}
+    perfLogEntry = {
+        "name": str(testName),
+        "time": elapsedTime if isinstance(elapsedTime, float) else None,
+        "metadata": metadata
+        }
     perfLogEntry.update(kwargs)
 
     if targetPath == '-':
@@ -55,12 +60,21 @@ def recordTest(testName, elapsedTime, metadata, **kwargs):
             f.write(json.dumps(perfLogEntry) + "\n")
 
 def recordThroughputTest(testName, runtime, n, baseMultiplier, metadata):
-    recordTest(testName, runtime / n * baseMultiplier, metadata, n = n,
-               baseMultiplier = baseMultiplier, actualTime = runtime)
+    recordTest(testName,
+               runtime / n * baseMultiplier,
+               metadata,
+               n=n,
+               baseMultiplier=baseMultiplier,
+               actualTime=runtime)
 
-def testThroughput(testName, testFunOfN, setupFunOfN = None, transformOfN = None,
-                   metadata = None, maxNToSearch = 1000000, baseMultiplier = 1,
-                   timeoutInSec = 30.0):
+def testThroughput(testName,
+                   testFunOfN,
+                   setupFunOfN=None,
+                   transformOfN=None,
+                   metadata=None,
+                   maxNToSearch=1000000,
+                   baseMultiplier=1,
+                   timeoutInSec=30.0):
     counter = 0
     unitOfWork = counter
     unitsOfWorkCompleted = 0
@@ -131,12 +145,12 @@ def PerfTest(testName):
     return decorator
 
 def getCurrentStackframeFileAndLine(framesAbove):
-	curStack = inspect.currentframe()
-	above = inspect.getouterframes(curStack)
-	twoAbove = above[framesAbove][0]
+    curStack = inspect.currentframe()
+    above = inspect.getouterframes(curStack)
+    twoAbove = above[framesAbove][0]
 
-	return {
-		'file': "/".join(inspect.getmodule(twoAbove).__name__.split(".")) + ".py",
+    return {
+        'file': "/".join(inspect.getmodule(twoAbove).__name__.split(".")) + ".py",
         'line': inspect.getsourcelines(twoAbove)[1]
-	    }
+        }
 
