@@ -49,44 +49,47 @@ Copyright 1984, 1987, 1988 by Stephen L. Moshier
 Direct inquiries to 30 Frost Street, Cambridge, MA 02140
 */
 
-#include "polevl.h"
+#include "polevl.hpp"
+
+namespace cephes {
 
 double polevl(double x, const double* coef, int N)
-{
-double ans;
-int i;
-double *p;
+    {
+    double ans;
+    int i;
+    const double* p;
 
-p = coef;
-ans = *p++;
-i = N;
+    p = coef;
+    ans = *p++;
+    i = N;
 
-do
-	ans = ans * x  +  *p++;
-while( --i );
+    do
+        ans = ans * x  +  *p++;
+    while( --i );
 
-return( ans );
-}
+    return( ans );
+    }
 
 /*							p1evl()	*/
 /*                                          N
  * Evaluate polynomial when coefficient of x  is 1.0.
  * Otherwise same as polevl.
  */
-
 double p1evl(double x, const double* coef, int N)
-{
-double ans;
-double *p;
-int i;
+    {
+    double ans;
+    const double* p;
+    int i;
 
-p = coef;
-ans = x + *p++;
-i = N-1;
+    p = coef;
+    ans = x + *p++;
+    i = N-1;
 
-do
-	ans = ans * x  + *p++;
-while( --i );
+    do
+        ans = ans * x  + *p++;
+    while( --i );
 
-return( ans );
+    return( ans );
+    }
+
 }

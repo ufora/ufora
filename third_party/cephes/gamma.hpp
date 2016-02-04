@@ -4,12 +4,12 @@ Copyright 1984, 1987, 1988 by Stephen L. Moshier
 Direct inquiries to 30 Frost Street, Cambridge, MA 02140
 */
 
-#ifndef CEPHES_GAMMA_H
-#define CEPHES_GAMMA_H
+#pragma once
+
+namespace cephes {
 
 double Gamma(double x);
 double lgam(double x);
 double lgam_sgn(double x, int *sign);
 
-#endif
-
+}

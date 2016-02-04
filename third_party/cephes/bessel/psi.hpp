@@ -4,9 +4,10 @@ Copyright 1984, 1987, 1988 by Stephen L. Moshier
 Direct inquiries to 30 Frost Street, Cambridge, MA 02140
 */
 
-#ifndef CEPHES_PSI_H
-#define CEPHES_PSI_H
+#pragma once
+
+namespace cephes {
 
 double psi(double x);
 
-#endif
+}
