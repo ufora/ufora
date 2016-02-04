@@ -42,10 +42,6 @@ class NumpyThroughputTest(unittest.TestCase):
         self.ufora.close()
 
 
-    def test_connection(self):
-        self.assertIsNotNone(self.ufora)
-
-
     def test_matrix_dot_product(self):
         dimension = 1000.0
         with self.ufora.remotely:
@@ -60,8 +56,27 @@ class NumpyThroughputTest(unittest.TestCase):
         PerformanceTestReporter.testThroughput(
             "pyfora.numpy.matrix_dot_product_1000x1000",
             f,
-            maxNToSearch=10,
-            timeoutInSec=30.0
+            maxNToSearch=20,
+            timeoutInSec=20.0
+            )
+
+    def test_vector_dot_product(self):
+        dimension = 1000000.0
+        with self.ufora.remotely:
+            a = np.arange(dimension)
+            b = np.arange(0.0, 10000.0, 10000.0/dimension)
+
+        def f(n):
+            print "n =", n
+            with self.ufora.remotely:
+                for _ in xrange(n):
+                    np.dot(a, b)
+
+        PerformanceTestReporter.testThroughput(
+            "pyfora.numpy.vector_dot_product_1000000",
+            f,
+            maxNToSearch=20,
+            timeoutInSec=20.0
             )
 
 if __name__ == '__main__':
