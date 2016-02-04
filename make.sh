@@ -108,15 +108,17 @@ repo_dir=$(cd $(dirname "$0"); pwd) # make.sh is at the root of the repo
 echo "OUTPUT_DIR: $OUTPUT_DIR"
 
 src_volume="-v $repo_dir:/volumes/src"
+
 if [ ! -z $OUTPUT_DIR ]; then
-    output_volume="-v $OUTPUT_DIR:/volumes/output"
+    container_output_path="/volumes/output/"
+    output_volume="-v $OUTPUT_DIR:$container_output_path"
 fi
 if [ ! -z $CCACHE_DIR ]; then
     ccache_volume="-v $CCACHE_DIR:/volumes/ccache"
 fi
 
 
-container_env="-e UFORA_PERFORMANCE_TEST_RESULTS_FILE=$UFORA_PERFORMANCE_TEST_RESULTS_FILE \
+container_env="-e UFORA_PERFORMANCE_TEST_RESULTS_FILE=$container_output_path$UFORA_PERFORMANCE_TEST_RESULTS_FILE \
                -e AWS_AVAILABILITY_ZONE=$AWS_AVAILABILITY_ZONE \
                -e TEST_LOOPER_TEST_ID=$TEST_LOOPER_TEST_ID \
                -e TEST_LOOPER_MULTIBOX_IP_LIST=${TEST_LOOPER_MULTIBOX_IP_LIST// /,} \

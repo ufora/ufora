@@ -45,13 +45,16 @@ def recordTest(testName, elapsedTime, metadata, **kwargs):
             " to point to a valid path.")
 
     targetPath = os.getenv(TEST_DATA_LOCATION_ENVIRONMENT_VARIABLE)
+    if metadata is None:
+        metadata = {}
+    if kwargs is not None:
+        metadata.update(kwargs)
 
     perfLogEntry = {
         "name": str(testName),
         "time": elapsedTime if isinstance(elapsedTime, float) else None,
         "metadata": metadata
         }
-    perfLogEntry.update(kwargs)
 
     if targetPath == '-':
         print "%2.2f  --  %s" % (elapsedTime, testName)
