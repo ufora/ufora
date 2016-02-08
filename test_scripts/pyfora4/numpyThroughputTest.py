@@ -30,50 +30,120 @@ class NumpyThroughputTest(unittest.TestCase):
         cls.simulation = ClusterSimulation.Simulator.createGlobalSimulator()
         cls.simulation.startService()
         cls.simulation.getDesirePublisher().desireNumberOfWorkers(1)
+        cls.ufora = pyfora.connect('http://localhost:30000')
 
     @classmethod
     def tearDownClass(cls):
+        cls.ufora.close()
         cls.simulation.stopService()
 
-    def setUp(self):
-        self.ufora = pyfora.connect('http://localhost:30000')
 
-    def tearDown(self):
-        self.ufora.close()
+    def test_array_subtraction_large(self):
+        def subtract(a, b):
+            return a - b
+
+        self.array_binary_operation(1000000.0, subtract, "vector_subtract")
 
 
-    def test_matrix_dot_product(self):
-        dimension = 1000.0
+    def test_array_subtraction_small(self):
+        def subtract(a, b):
+            return a - b
+
+        self.array_binary_operation(1000.0, subtract, "vector_subtract")
+
+
+    def test_array_addition_large(self):
+        def add(a, b):
+            return a + b
+
+        self.array_binary_operation(1000000.0, add, "vector_add")
+
+
+    def test_array_addition_small(self):
+        def add(a, b):
+            return a + b
+
+        self.array_binary_operation(1000.0, add, "vector_add")
+
+
+    def test_array_multiplication_large(self):
+        def multiply(a, b):
+            return a * b
+
+        self.array_binary_operation(1000000.0, multiply, "vector_multiply")
+
+
+    def test_array_multiplication_small(self):
+        def multiply(a, b):
+            return a * b
+
+        self.array_binary_operation(1000.0, multiply, "vector_multiply")
+
+
+    def array_binary_operation(self, dimension, op, test_name):
         with self.ufora.remotely:
-            a = np.arange(dimension**2).reshape((dimension, dimension))
-            b = np.arange(0.0, 10000.0, 10000.0/(dimension**2)).reshape((dimension, dimension))
+            a = np.arange(dimension)
+            b = np.arange(dimension)
 
         def f(n):
             with self.ufora.remotely:
                 for _ in xrange(n):
-                    np.dot(a, b)
+                    op(a, b)
 
         PerformanceTestReporter.testThroughput(
-            "pyfora.numpy.matrix_dot_product_1000x1000",
+            "pyfora.numpy.%s_%d" % (test_name, dimension),
             f,
             maxNToSearch=20,
             timeoutInSec=20.0
             )
 
-    def test_vector_dot_product(self):
-        dimension = 1000000.0
+
+    def test_matrix_dot_product_large(self):
+        self.matrix_dot_product(1000.0)
+
+
+    def test_matrix_dot_product_small(self):
+        self.matrix_dot_product(100.0)
+
+
+    def matrix_dot_product(self, dimension):
         with self.ufora.remotely:
-            a = np.arange(dimension)
-            b = np.arange(0.0, 10000.0, 10000.0/dimension)
+            a = np.arange(dimension**2).reshape((dimension, dimension))
+            b = np.arange(dimension**2).reshape((dimension, dimension))
 
         def f(n):
-            print "n =", n
             with self.ufora.remotely:
                 for _ in xrange(n):
                     np.dot(a, b)
 
         PerformanceTestReporter.testThroughput(
-            "pyfora.numpy.vector_dot_product_1000000",
+            "pyfora.numpy.matrix_dot_product_%dx%d" % (dimension, dimension),
+            f,
+            maxNToSearch=20,
+            timeoutInSec=20.0
+            )
+
+
+    def test_vector_dot_product_large(self):
+        self.vector_dot_product(1000000.0)
+
+
+    def test_vector_dot_product_small(self):
+        self.vector_dot_product(1000.0)
+
+
+    def vector_dot_product(self, dimension):
+        with self.ufora.remotely:
+            a = np.arange(dimension)
+            b = np.arange(dimension)
+
+        def f(n):
+            with self.ufora.remotely:
+                for _ in xrange(n):
+                    np.dot(a, b)
+
+        PerformanceTestReporter.testThroughput(
+            "pyfora.numpy.vector_dot_product_%d" % dimension,
             f,
             maxNToSearch=20,
             timeoutInSec=20.0
