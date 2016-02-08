@@ -140,9 +140,6 @@ class PyforaNotImplementedError(PyforaError):
 class InvalidPyforaOperation(PyforaError):
     '''Raised when a running computation performs an operation that cannot be faithfully executed with ``pyfora``.'''
 
-class UnconvertibleValueError(PyforaError):
-    pass
-
 class CantGetSourceTextError(PyforaError):
     pass
 
@@ -158,3 +155,9 @@ class BadWithBlockError(PyforaError):
     '''Raised when a pyfora with block has an illegal construct,
     such as a yield or return statement'''
     pass
+
+class UnconvertibleValueError(Exception):
+    # it's important for the way WithBlock tracebacks are rendered that
+    # this class NOT be a PyforaError
+    pass
+

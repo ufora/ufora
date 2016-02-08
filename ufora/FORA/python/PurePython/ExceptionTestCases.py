@@ -13,6 +13,7 @@
 #   limitations under the License.
 
 import re
+import traceback
 import pyfora
 import pyfora.Exceptions as Exceptions
 
@@ -995,6 +996,12 @@ class ExceptionTestCases(object):
                 self.assertTrue(False)
 
             except Exceptions.UnconvertibleValueError as e:
+                tracebackString = traceback.format_exc()
+                pattern = ".*, in test_typeWeCantTranslateYet_raise_1" \
+                          + "\\s*y = x\n" \
+                          + "UnconvertibleValueError: " \
+                          + "Pyfora didn't know how to convert x"
+                self.assertIsNotNone(re.match(pattern, tracebackString, re.DOTALL))
                 self.assertEqual("Pyfora didn't know how to convert x", str(e))
 
     def test_typeWeCantTranslateYet_raise_2(self):
@@ -1011,9 +1018,11 @@ class ExceptionTestCases(object):
             self.evaluateWithExecutor(f)
             self.assertTrue(False)
         except pyfora.ComputationError as e:
-            self.assertTrue(
-                str(e).startswith("Pyfora didn't know how to convert x")
-                )
+            pattern = "Pyfora didn't know how to convert x.*\n" \
+                      + ".*\\s*throw UnconvertibleValueError\\(\n" \
+                      + ".*, in f\n" \
+                      + "\\s*return x"
+            self.assertIsNotNone(re.match(pattern, str(e)))
             self.assertIsInstance(
                 e.remoteException,
                 Exceptions.UnconvertibleValueError
