@@ -30,6 +30,7 @@ import ufora.FORA.python.PurePython.LogisticRegressionTests as \
 import ufora.FORA.python.PurePython.RegressionTreeTests as RegressionTreeTests
 import ufora.FORA.python.PurePython.GradientBoostingTests as GradientBoostingTests
 import ufora.FORA.python.PurePython.FunctionTestCases as FunctionTestCases
+import ufora.FORA.python.PurePython.ListTestCases as ListTestCases
 
 import unittest
 
@@ -47,7 +48,9 @@ class TestLocalExecutor(
         LogisticRegressionTests.LogisticRegressionTests,
         RegressionTreeTests.RegressionTreeTests,
         GradientBoostingTests.GradientBoostingTests,
-        ScipySpecialTestCases.ScipySpecialTestCases
+        ScipySpecialTestCases.ScipySpecialTestCases,
+        FunctionTestCases.FunctionTestCases,
+        ListTestCases.ListTestCases
         ):
     @classmethod
     def setUpClass(cls):
