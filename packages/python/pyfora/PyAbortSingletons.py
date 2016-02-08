@@ -15,11 +15,13 @@
 import pyfora.Exceptions as Exceptions
 
 pythonSingletonToName = {
-    Exceptions.InvalidPyforaOperation: 'InvalidPyforaOperation'
+    Exceptions.InvalidPyforaOperation: 'InvalidPyforaOperation',
+    Exceptions.UnconvertibleValueError: 'UnconvertibleValueError'
 }
 
 singletonNameToObject = {v:k for k,v in pythonSingletonToName.iteritems()}
 
 pythonNameToPyforaName = {
-    'InvalidPyforaOperation': 'InvalidPyforaOperation'
+    'InvalidPyforaOperation': 'InvalidPyforaOperation',
+    'UnconvertibleValueError': 'UnconvertibleValueError'
     }

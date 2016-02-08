@@ -140,6 +140,9 @@ class PyforaNotImplementedError(PyforaError):
 class InvalidPyforaOperation(PyforaError):
     '''Raised when a running computation performs an operation that cannot be faithfully executed with ``pyfora``.'''
 
+class UnconvertibleValueError(PyforaError):
+    pass
+
 class CantGetSourceTextError(PyforaError):
     pass
 

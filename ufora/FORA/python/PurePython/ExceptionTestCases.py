@@ -14,6 +14,7 @@
 
 import re
 import pyfora
+import pyfora.Exceptions as Exceptions
 
 
 class ExceptionTestCases(object):
@@ -991,12 +992,10 @@ class ExceptionTestCases(object):
             try:
                 with fora.remotely:
                     y = x
+                self.assertTrue(False)
 
-            except Exception as e:
+            except Exceptions.UnconvertibleValueError as e:
                 self.assertEqual("Pyfora didn't know how to convert x", str(e))
-                return
-
-            self.assertTrue(False)
 
     def test_typeWeCantTranslateYet_raise_2(self):
         # note that this is different than trying to evaluate,
@@ -1010,13 +1009,15 @@ class ExceptionTestCases(object):
 
         try:
             self.evaluateWithExecutor(f)
-        except Exception as e:
+            self.assertTrue(False)
+        except pyfora.ComputationError as e:
             self.assertTrue(
                 str(e).startswith("Pyfora didn't know how to convert x")
                 )
-            return
-
-        self.assertTrue(False)
+            self.assertIsInstance(
+                e.remoteException,
+                Exceptions.UnconvertibleValueError
+                )
             
     def test_typeWeCantTranslateYet_raise_3(self):
         import numpy
@@ -1026,13 +1027,15 @@ class ExceptionTestCases(object):
 
         try:
             self.evaluateWithExecutor(f)
-        except Exception as e:
+            self.assertTrue(False)
+        except pyfora.ComputationError as e:
             self.assertTrue(
                 str(e).startswith("Pyfora didn't know how to convert x")
                 )
-            return
-
-        self.assertTrue(False)
+            self.assertIsInstance(
+                e.remoteException,
+                Exceptions.UnconvertibleValueError
+                )
 
     def test_typeWeCantTranslateYet_raise_4(self):
         import scipy
@@ -1042,13 +1045,15 @@ class ExceptionTestCases(object):
 
         try:
             self.evaluateWithExecutor(f)
-        except Exception as e:
+            self.assertTrue(False)
+        except pyfora.ComputationError as e:
             self.assertTrue(
                 str(e).startswith("Pyfora didn't know how to convert scipy.special")
                 )
-            return
-
-        self.assertTrue(False)
+            self.assertIsInstance(
+                e.remoteException,
+                Exceptions.UnconvertibleValueError
+                )
 
     def test_typeWeCantTranslateYet_raise_5(self):
         import scipy.special
@@ -1057,10 +1062,29 @@ class ExceptionTestCases(object):
 
         try:
             self.evaluateWithExecutor(f)
-        except Exception as e:
+            self.assertTrue(False)
+        except pyfora.ComputationError as e:
             self.assertTrue(
                 str(e).startswith("Pyfora didn't know how to convert scipy.special.airy")
                 )
-            return
+            self.assertIsInstance(
+                e.remoteException,
+                Exceptions.UnconvertibleValueError
+                )
 
-        self.assertTrue(False)
+    def test_UnconvertibleValueErrorIsUncatchable(self):
+        import scipy.special
+        def f():
+            try:
+                return scipy.special.airy(0)
+            except:
+                return 0
+
+        try:
+            self.evaluateWithExecutor(f)
+            self.assertTrue(False)
+        except pyfora.ComputationError as e:
+            self.assertIsInstance(
+                e.remoteException,
+                Exceptions.UnconvertibleValueError
+                )
