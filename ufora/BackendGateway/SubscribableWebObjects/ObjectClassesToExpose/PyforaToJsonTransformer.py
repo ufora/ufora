@@ -82,6 +82,13 @@ class PyforaToJsonTransformer(object):
             'args': argsTuple
             }
 
+    def transformPyAbortException(self, pyAbortExceptionTypeName, argsTuple):
+        self.accumulateObjects(1)
+        return {
+            'pyAbortException': pyAbortExceptionTypeName,
+            'args': argsTuple
+            }
+
     def transformInvalidPythonOperationException(self, operationText):
         self.accumulateObjects(1)
         return {'InvalidPyforaOperation': operationText}

@@ -1011,11 +1011,14 @@ class Converter(object):
                     self.transformPyforaImplval(value[1], transformer, vectorContentsExtractor)
                     )
 
-            value = self.singletonAndExceptionConverter.convertInvalidPyforaOperationInstance(
+            value = self.singletonAndExceptionConverter.convertPyAbortExceptionInstance(
                 implval
                 )
             if value is not None:
-                return transformer.transformInvalidPythonOperationException(value)
+                return transformer.transformPyAbortException(
+                    value[0],
+                    self.transformPyforaImplval(value[1], transformer, vectorContentsExtractor)
+                    )
 
         value = self.nativeTupleConverter.invertTuple(implval)
         if value is not None:

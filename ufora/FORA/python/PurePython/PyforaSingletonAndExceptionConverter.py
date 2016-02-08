@@ -20,8 +20,8 @@ and builtin objects like 'type', 'object', 'Exception', etc.
 We need to implement these types directly in pure FORA because our primitives (like
 PyInt) need them to throw appropriate exceptions.
 """
-import pyfora
 import pyfora.NamedSingletons as NamedSingletons
+import pyfora.PyAbortSingletons as PyAbortSingletons
 
 import ufora.native.FORA as ForaNative
 import ufora.FORA.python.FORA as FORA
@@ -36,7 +36,7 @@ class PyforaSingletonAndExceptionConverter:
         self.instanceToPythonName = {}
 
         self.pyExceptionClass = pyforaBuiltinsModule.getObjectMember("PyException")
-        self.invalidPyforaOperationClass = pyforaBuiltinsModule.getObjectMember("InvalidPyforaOperation")
+        self.pyAbortExceptionClass = pyforaBuiltinsModule.getObjectMember("PyAbortException")
 
         self.pyExceptionClassInstanceName = ForaNative.simulateApply(
             ForaNative.ImplValContainer(
@@ -48,16 +48,23 @@ class PyforaSingletonAndExceptionConverter:
                 )
             ).getClassName()
 
-        self.invalidPyforaOperationClassInstanceName = ForaNative.simulateApply(
+        self.pyAbortExceptionClassInstanceName = ForaNative.simulateApply(
             ForaNative.ImplValContainer(
-                (self.invalidPyforaOperationClass,
-                    ForaNative.makeSymbol("CreateInstance"),
-                    ForaNative.ImplValContainer()
-                    )
+                (self.pyAbortExceptionClass,
+                 ForaNative.makeSymbol("CreateInstance"),
+                 ForaNative.ImplValContainer(),
+                 ForaNative.ImplValContainer()
+                 )
                 )
             ).getClassName()
 
-        self.pythonNameToPyforaName = NamedSingletons.pythonNameToPyforaName
+        self.pythonNameToPyforaName = {}
+        self.pythonNameToPyforaName.update(
+            NamedSingletons.pythonNameToPyforaName
+            )
+        self.pythonNameToPyforaName.update(
+            PyAbortSingletons.pythonNameToPyforaName
+            )
 
         for pyName, pyforaName in self.pythonNameToPyforaName.iteritems():
             try:
@@ -86,7 +93,7 @@ class PyforaSingletonAndExceptionConverter:
         return self.instanceToPythonName[instance]
 
     def convertExceptionInstance(self, exceptionInstance):
-        instanceClassName = exceptionInstance.getClassName()
+        instanceClassName = exceptionInstance.getClassName()        
         if instanceClassName == self.pyExceptionClassInstanceName:
             typeInstance = exceptionInstance.getObjectLexicalMember("@class")[0]
             typeInstanceName = self.convertInstanceToSingletonName(typeInstance)
@@ -95,8 +102,22 @@ class PyforaSingletonAndExceptionConverter:
             args = exceptionInstance.getObjectLexicalMember("@args")[0]
 
             return (typeInstanceName, args)
+
         return None
 
+    def convertPyAbortExceptionInstance(self, exceptionInstance):
+        instanceClassName = exceptionInstance.getClassName()
+        if instanceClassName == self.pyAbortExceptionClassInstanceName:
+            typeInstance = exceptionInstance.getObjectLexicalMember("@class")[0]
+            typeInstanceName = self.convertInstanceToSingletonName(typeInstance)
+
+            assert typeInstanceName is not None
+            args = exceptionInstance.getObjectLexicalMember("@args")[0]
+
+            return (typeInstanceName, args)
+
+        return None
+        
     def convertInvalidPyforaOperationInstance(self, instance):
         if instance.getClassName() == self.invalidPyforaOperationClassInstanceName:
             result = instance.getObjectLexicalMember("@message")[0]

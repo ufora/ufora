@@ -16,6 +16,7 @@ import pyfora.pyAst.PyAstUtil as PyAstUtil
 import pyfora.PyforaInspect as PyforaInspect
 import pyfora.Exceptions as Exceptions
 import pyfora.NamedSingletons as NamedSingletons
+import pyfora.PyAbortSingletons as PyAbortSingletons
 import sys
 import os
 import ast
@@ -138,6 +139,12 @@ class PythonObjectRehydrator:
             members = {k:self.convertJsonResultToPythonObject(v) for k,v in jsonResult['members'].iteritems()}
             classObject = self.convertJsonResultToPythonObject(jsonResult['classInstance'])
             return self._invertPureClassInstanceIfNecessary(self._instantiateClass(classObject, members))
+        if 'pyAbortException' in jsonResult:
+            pyAbortExceptionTypeName = jsonResult['pyAbortException']
+            pyAbortExceptionType = PyAbortSingletons.singletonNameToObject[
+                pyAbortExceptionTypeName]
+            args = self.convertJsonResultToPythonObject(jsonResult['args'])
+            return pyAbortExceptionType(*args)
         if 'boundMethodOn' in jsonResult:
             instance = self.convertJsonResultToPythonObject(jsonResult['boundMethodOn'])
             try:
