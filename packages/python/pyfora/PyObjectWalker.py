@@ -612,7 +612,7 @@ class PyObjectWalker(object):
             rootValue, chainWithPosition)
 
 
-    def _resolveChainInPyObject(self, chainWithPosition, pyObject):
+    def _resolveChainInPyObject(self, chainWithPosition, pyObject, pyAst):
         """
         This name could be improved.
 
@@ -622,7 +622,7 @@ class PyObjectWalker(object):
 
         """
         subchainAndResolutionOrNone = \
-            self._subchainAndResolutionOrNone(pyObject, chainWithPosition)
+            self._subchainAndResolutionOrNone(pyObject, pyAst, chainWithPosition)
         if subchainAndResolutionOrNone is None:
             raise Exceptions.PythonToForaConversionError(
                 "don't know how to resolve %s in %s (line:%s)"
@@ -636,12 +636,12 @@ class PyObjectWalker(object):
 
         return subchain, terminalValue, location
 
-    def _subchainAndResolutionOrNone(self, pyObject, chainWithPosition):
+    def _subchainAndResolutionOrNone(self, pyObject, pyAst, chainWithPosition):
         if PyforaInspect.isfunction(pyObject):
             return self._lookupChainInFunction(pyObject, chainWithPosition)
 
         if PyforaInspect.isclass(pyObject):
-            return self._lookupChainInClass(pyObject, chainWithPosition)
+            return self._lookupChainInClass(pyObject, pyAst, chainWithPosition)
 
         return None
 
@@ -651,7 +651,7 @@ class PyObjectWalker(object):
             lambda elt: PyforaInspect.ismethod(elt) or PyforaInspect.isfunction(elt)
             )
 
-    def _lookupChainInClass(self, pyClass, chainWithPosition):
+    def _lookupChainInClass(self, pyClass, pyAst, chainWithPosition):
         """
         return a pair `(subchain, subchainResolution)`
         where subchain resolves to subchainResolution in pyClass
@@ -667,7 +667,30 @@ class PyObjectWalker(object):
             except UnresolvedFreeVariableException:
                 pass
 
+        baseClassResolutionOrNone = self._lookupChainInBaseClasses(
+            pyClass, pyAst, chainWithPosition
+            )
+        if baseClassResolutionOrNone is not None:
+            return baseClassResolutionOrNone
+
         raise UnresolvedFreeVariableException(chainWithPosition, None)
+
+    def _lookupChainInBaseClasses(self, pyClass, pyAst, chainWithPosition):
+        chain = chainWithPosition.var
+        position = chainWithPosition.pos
+
+        rootSubChain = chain[:1]
+        rootVar = rootSubChain[0]
+        
+        baseClassNames = [name.id for name in pyAst.bases]
+        if rootVar in baseClassNames:
+            resolution = pyClass.__bases__[baseClassNames.index(rootVar)]
+            return rootSubChain, resolution, position
+
+        # note: we could do better here. we could search the class
+        # variables of the base class as well
+
+        return None
 
     def _lookupChainInFunction(self, pyFunction, chainWithPosition):
         """
@@ -755,7 +778,7 @@ class PyObjectWalker(object):
                chainWithPosition.var[0] not in \
                ['staticmethod', 'property', '__inline_fora']:
                 subchain, resolution, position = self._resolveChainInPyObject(
-                    chainWithPosition, pyObject)
+                    chainWithPosition, pyObject, pyAst)
                 resolutions[subchain] = (resolution, position)
 
         return resolutions

@@ -1122,3 +1122,44 @@ class ExceptionTestCases(object):
                 e.remoteException,
                 Exceptions.UnconvertibleValueError
                 )
+
+    def test_typeWithBaseClass_1(self):
+        class A_id1234567:
+            pass
+        class B_id5423545(A_id1234567):
+            pass
+
+        def f():
+            B_id5423545()
+            return 0
+
+        try:
+            self.evaluateWithExecutor(f)
+            self.assertTrue(False)
+        except Exceptions.PythonToForaConversionError as e:
+            pattern = "don't know how to deal with base classes right now\n" \
+                      + ".*, in test_typeWithBaseClass_1\n" \
+                      + "\\s*class B_id5423545\\(A_id1234567\\)"
+            self.assertIsNotNone(re.match(pattern, str(e), re.DOTALL))
+                
+
+    def test_typeWithBaseClass_2(self):
+        class A_id12347:
+            pass
+        class B_id54545(A_id12347):
+            pass
+
+        def f():
+            B_id54545()
+            return 0
+
+        with self.create_executor() as fora:
+            try:
+                with fora.remotely:
+                    f()
+            except Exceptions.PythonToForaConversionError as e:
+                tracebackString = traceback.format_exc()
+                pattern = ".*don't know how to deal with base classes right now\n" \
+                          + ".*, in test_typeWithBaseClass_2\n" \
+                          + "\\s*class B_id54545\\(A_id12347\\)"
+            self.assertIsNotNone(re.match(pattern, tracebackString, re.DOTALL))
