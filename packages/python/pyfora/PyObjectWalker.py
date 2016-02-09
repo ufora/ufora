@@ -370,7 +370,7 @@ class PyObjectWalker(object):
 
         Recursively call `walkPyObject` on the class of the `classInstance`
         and on the data members of the instance.
-        """
+        """        
         classObject = classInstance.__class__
         classId = self.walkPyObject(classObject)
 
@@ -643,10 +643,7 @@ class PyObjectWalker(object):
         if PyforaInspect.isclass(pyObject):
             return self._lookupChainInClass(pyObject, chainWithPosition)
 
-        raise Exceptions.PythonToForaConversionError(
-            "don't know how to resolve %s in %s (line:%s)"
-            % (chainWithPosition.var, pyObject, chainWithPosition.pos.lineno)
-            )
+        return None
 
     def _classMemberFunctions(self, pyObject):
         return PyforaInspect.getmembers(
