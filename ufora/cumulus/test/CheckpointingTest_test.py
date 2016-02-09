@@ -1035,12 +1035,13 @@ class CheckpointingTest(unittest.TestCase):
 
     def validateSingleIncreasingComputationTimestamp(self, checkpointRegimes):
         #we should see a single computation with its timestamp steadily increasing
-        checkpointedTimeElapsed = []
+        index = 0
         for regime in checkpointRegimes:
-            lastSample = regime[-1]
-            comps = [lastSample[c] for c in lastSample if lastSample[c] > .1]
-            self.assertTrue(len(comps) == 1)
-            checkpointedTimeElapsed = comps[0]
+            if index > 0:
+                lastSample = regime[-1]
+                comps = [lastSample[c] for c in lastSample if lastSample[c] > .1]
+                self.assertTrue(len(comps) == 1, "Expected 1 comp. Had %s at index %s" % (len(comps), index))
+            index += 1
 
         for ix in range(len(comps)-1):
             self.assertTrue(comps[ix+1] > comps[ix])
