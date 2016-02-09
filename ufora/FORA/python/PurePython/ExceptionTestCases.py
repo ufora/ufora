@@ -360,7 +360,7 @@ class ExceptionTestCases(object):
                 "object is not iterable."
                 )
 
-    def test_list_append_exception_is_InvalidPyforaOperation(self):
+    def test_list_append_exception_is_InvalidPyforaOperation_1(self):
         def f():
             [].append(10)
 
@@ -368,6 +368,31 @@ class ExceptionTestCases(object):
             e = fora.submit(f).result().toLocal().exception()
             self.assertIsInstance(e, pyfora.ComputationError)
             self.assertIsInstance(e.remoteException, pyfora.InvalidPyforaOperation)
+
+            pattern = "Appending to a list is a mutating operation, " \
+                      + "which pyfora doesn't support\.\n" \
+                      + ".*throw InvalidPyforaOperation\\(\n" \
+                      + ".*, in f\n" \
+                      + "\\s*\\[\\]\.append\\(10\\)"
+            self.assertIsNotNone(re.match(pattern, str(e), re.DOTALL))
+
+    def test_list_append_exception_is_InvalidPyforaOperation_in_WithBlock(self):
+        with self.create_executor() as fora:
+            try:
+                with fora.remotely:
+                    x = []
+                    x.append(42)
+            except Exceptions.InvalidPyforaOperation as e:
+                tracebackString = traceback.format_exc()
+                pattern = ".* in test_list_append_exception_is_InvalidPyforaOperation_in_WithBlock\n" \
+                          + "\\s*x\\.append\\(42\\)\n" \
+                          + "InvalidPyforaOperation: Appending to a list is a " \
+                          + "mutating operation, which pyfora doesn't support\\."
+                self.assertIsNotNone(re.match(pattern, tracebackString, re.DOTALL))
+                self.assertEqual(
+                    str(e),
+                    "Appending to a list is a mutating operation, which pyfora doesn't support."
+                    )
 
     def test_extended_slices(self):
         # we're not supporting extended slices just yet

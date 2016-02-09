@@ -137,9 +137,6 @@ class PyforaNotImplementedError(PyforaError):
     '''Feature not yet implemented in ``pyfora``.'''
     pass
 
-class InvalidPyforaOperation(PyforaError):
-    '''Raised when a running computation performs an operation that cannot be faithfully executed with ``pyfora``.'''
-
 class CantGetSourceTextError(PyforaError):
     pass
 
@@ -160,4 +157,9 @@ class UnconvertibleValueError(Exception):
     # it's important for the way WithBlock tracebacks are rendered that
     # this class NOT be a PyforaError
     pass
+
+class InvalidPyforaOperation(Exception):
+    # it's important for the way WithBlock tracebacks are rendered that
+    # this class NOT be a PyforaError
+    '''Raised when a running computation performs an operation that cannot be faithfully executed with ``pyfora``.'''
 
