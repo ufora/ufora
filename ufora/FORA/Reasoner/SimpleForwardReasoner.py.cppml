@@ -23,6 +23,8 @@
 #include "../../core/python/ScopedPyThreads.hpp"
 #include "../../core/PolymorphicSharedPtrFuncFromMemberFunc.hpp"
 #include "../python/FORAPythonUtil.hppml"
+#include "../../cumulus/ComputationDefinition.hppml"
+#include "../Language/ClassMediatorBindings.hppml"
 
 using Fora::ControlFlowGraphLoopPoints;
 using Fora::SimpleForwardReasoner;
@@ -38,15 +40,15 @@ public:
 
 		static PolymorphicSharedPtr<SimpleForwardReasoner>* ConstructSimpleForwardReasoner(
 							PolymorphicSharedPtr<TypedFora::Compiler> compiler,
-							PolymorphicSharedPtr<Axioms> axioms,
-							bool allowExceptions
+							PolymorphicSharedPtr<Fora::Interpreter::InstructionGraph> instructionGraph,
+							PolymorphicSharedPtr<Axioms> axioms
 							)
 			{
 			return new PolymorphicSharedPtr<SimpleForwardReasoner>(
 				new SimpleForwardReasoner(
 					compiler,
-					axioms,
-					allowExceptions
+					instructionGraph,
+					axioms
 					)
 				);
 			}
@@ -81,6 +83,104 @@ public:
 			return lhs->hash()[0];
 			}
 
+		static pair<Expression, Nullable<Symbol> > computationDefinitionToExpression(
+						Cumulus::ComputationDefinitionTerm term,
+						ImmutableTreeMap<Symbol, ImplValContainer>& ioArgs
+						)
+			{
+			@match Cumulus::ComputationDefinitionTerm(term)
+				-| Subcomputation(terms) ->> {
+					return make_pair(computationDefinitionToExpression(terms, ioArgs), Nullable<Symbol>());
+					}
+				-| Value(value, symbol) ->> {
+					Symbol var = Symbol("var_" + boost::lexical_cast<std::string>(ioArgs.size()));
+					ioArgs = ioArgs + var + value;
+
+					return make_pair(Expression::Variable(var), symbol);
+					}
+			}
+
+		static Expression computationDefinitionToExpression(
+						ImmutableTreeVector<Cumulus::ComputationDefinitionTerm> terms,
+						ImmutableTreeMap<Symbol, ImplValContainer>& ioArgs
+						)
+			{
+			auto exprsAndSymbols = mapITV(terms, [&](Cumulus::ComputationDefinitionTerm term) {
+				return computationDefinitionToExpression(term, ioArgs);
+				});
+
+			lassert(!exprsAndSymbols[0].second);
+
+			return Expression::Apply(
+				exprsAndSymbols[0].first,
+				mapITV(exprsAndSymbols.slice(1), 
+					[&](pair<Expression, Nullable<Symbol> > e) { 
+						return ApplyArgument::Normal(e.second, e.first); 
+						}
+					)
+				);
+			}
+
+		static Expression computationDefinitionToExpression(
+						Cumulus::ComputationDefinition def,
+						ImmutableTreeMap<Symbol, ImplValContainer>& ioArgs
+						)
+			{
+			@match Cumulus::ComputationDefinition(def)
+				-| Root(terms) ->> {
+					return computationDefinitionToExpression(terms, ioArgs);
+					}
+			}
+
+		static boost::python::object reasonAboutApply(
+						PolymorphicSharedPtr<SimpleForwardReasoner> reasoner, 
+						JOVT jov
+						)
+			{
+			PolymorphicSharedPtr<ReasonerFrame> res;
+
+				{
+				ScopedPyThreads releaseTheGil;
+				res = reasoner->reasonAboutApply(jov);
+				}
+			
+			return boost::python::object(res);
+			}
+
+		static boost::python::object reasonAboutComputationDefinition(
+						PolymorphicSharedPtr<SimpleForwardReasoner> reasoner, 
+						Cumulus::ComputationDefinition compDef
+						)
+			{
+			ScopedPyThreads releaseTheGil;
+
+			ImmutableTreeMap<Symbol, ImplValContainer> args;
+
+			Expression expr = computationDefinitionToExpression(compDef, args);
+
+			Function toEvaluate = Function::SingleTermFunction(emptyTreeVec(), null(), expr);
+
+			ImplValContainer value = 
+				Fora::Language::bindFunctionWithValues(
+					ClassMediator::Function(
+						"",
+						toEvaluate,
+						LexicalBindingMap(),
+						CSTValue()
+						),
+					args,
+					CSTValue()
+					);
+
+			auto rf = reasoner->reasonAboutApply(
+					JOVT() + JOV::Constant(value) + JOV::Constant(CSTValue(Symbol("Call")))
+					);
+
+			reasoner->compile(rf);
+
+			return boost::python::object(rf);
+			}
+
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
@@ -88,8 +188,10 @@ public:
 			class_<PolymorphicSharedPtr<SimpleForwardReasoner> >(
 							"SimpleForwardReasoner", no_init)
 				.def("__init__", boost::python::make_constructor(ConstructSimpleForwardReasoner))
-				.def("reason", 
-					macro_polymorphicSharedPtrFuncFromMemberFunc(SimpleForwardReasoner::reason))
+				.def("reasonAboutApply", reasonAboutApply)
+				.def("reasonAboutComputationDefinition", reasonAboutComputationDefinition)
+				.def("compile", 
+					macro_polymorphicSharedPtrFuncFromMemberFunc(SimpleForwardReasoner::compile))
 				.def("subframesFor", &subframesFor)
 				.def("totalFrameCount", 
 					macro_polymorphicSharedPtrFuncFromMemberFunc(SimpleForwardReasoner::totalFrameCount))

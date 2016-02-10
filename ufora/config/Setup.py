@@ -110,14 +110,6 @@ def addSystemResourcesParser(parser):
             type=int
             )
 
-    parser.add_argument(
-            "--interpreterTraceDumpFile",
-            dest='interpreterTraceDumpFile',
-            required=False,
-            help = "dump interpreter traces to this file if provided.",
-            type=str
-            )
-
 def defaultParser(minimalParser=False, **kwds):
     """Create a parser that has basic overrides for Config.py
 
@@ -142,9 +134,6 @@ class Setup(object):
         parsedArguments - the result of an argparse parse action.
         """
         parsed = parsedArguments
-
-        if 'interpreterTraceDumpFile' in parsed and parsed.interpreterTraceDumpFile:
-            self.config.interpreterTraceDumpFile = parsed.interpreterTraceDumpFile
 
         if 'stackLogfile' in parsed and parsed.stackLogfile:
             self.config.backgroundStackTraceLoopFilename = parsed.stackLogfile

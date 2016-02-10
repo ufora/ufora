@@ -15,6 +15,7 @@
 import unittest
 import os
 import re
+import time
 
 import ufora.FORA.python.FORA as FORA
 import ufora.FORA.python.Evaluator.Evaluator as Evaluator
@@ -24,6 +25,8 @@ import ufora.native.FORA as FORANative
 import ufora.native.Cumulus as CumulusNative
 import ufora.native.CallbackScheduler as CallbackScheduler
 import logging
+import ufora.native.TCMalloc as TCMallocNative
+import pyfora
 
 def makeJovt(*args):
     return FORANative.JOVListToJOVT(list(args))
@@ -38,6 +41,13 @@ class TestSimpleForwardReasoner(unittest.TestCase):
         self.axioms = self.runtime.getAxioms()
         self.compiler = self.runtime.getTypedForaCompiler()
         self.builtinsAsJOV = FORANative.JudgmentOnValue.Constant(FORA.builtin().implVal_)
+
+        pyforaPath = os.path.join(os.path.split(pyfora.__file__)[0], "fora/purePython")
+        self.purePythonAsJOV = FORANative.JudgmentOnValue.Constant(FORA.importModule(pyforaPath).implVal_)
+        
+        self.instructionGraph = self.runtime.getInstructionGraph()
+        self.reasoner = FORANative.SimpleForwardReasoner(self.compiler, self.instructionGraph, self.axioms)
+        
 
     def nodeAndFrameCounts(self, reasoner, frame):
         allFrames = set()
@@ -64,28 +74,89 @@ class TestSimpleForwardReasoner(unittest.TestCase):
         logging.info("Reaching %s of %s frames with %s bad nodes.", reachableFrames, allFrameCount, badApplyNodes)
 
     def test_builtin_math_isSimple(self):
-        reasoner = FORANative.SimpleForwardReasoner(self.compiler, self.axioms, False)
-
-        frame = reasoner.reason(makeJovt(self.builtinsAsJOV, symbolJov("Member"), symbolJov("math")))
+        frame = self.reasoner.reasonAboutApply(makeJovt(self.builtinsAsJOV, symbolJov("Member"), symbolJov("math")))
 
         self.assertFrameHasConstantResult(frame)
 
     def reasonAboutExpression(self, expression, **variableJudgments):
-        reasoner = FORANative.SimpleForwardReasoner(self.compiler, self.axioms, False)
         keys = sorted(list(variableJudgments.keys()))
 
         functionText = "fun(" + ",".join(['_'] + keys) + ") { " + expression + " }"
 
-        frame = reasoner.reason(
+        frame = self.reasoner.reasonAboutApply(
             makeJovt(
                 FORANative.parseStringToJOV(functionText), 
-                *[FORANative.parseStringToJOV(variableJudgments[k]) for k in keys]
+                *[FORANative.parseStringToJOV(variableJudgments[k]) 
+                    if isinstance(variableJudgments[k],str) else variableJudgments[k] for k in keys]
                 )
             )
 
-        self.dumpReasonerSummary(reasoner, frame)
+        self.dumpReasonerSummary(self.reasoner, frame)
+
+        #self.reasoner.compile(frame)
+
+        #while self.compiler.anyCompilingOrPending():
+        #    time.sleep(0.001)
 
         return frame
+
+    def test_nested_iterators(self):
+        frame = self.reasonAboutExpression(
+            """
+            let f = fun() {
+                let ix = 0
+                while (ix < 10)
+                    {
+                    ix = ix + 1
+                    if (ix % 5)
+                        yield ix
+                    else
+                        yield ix + 1
+                    }
+                };
+            let g = fun() {
+                for ix in f() {
+                    if (ix % 5)
+                        yield ix
+                    else
+                        yield ix + 1
+                    }
+                };
+            let h = fun() {
+                for ix in g() {
+                    yield ix
+                    }
+                }
+            let i = fun() {
+                for ix in h() {
+                    yield ix
+                    }
+                }
+
+            let res = 0
+            for ix in i()
+                res = res + ix
+            return res
+            """
+            )
+
+        self.assertFrameHasResultJOV(frame, "{Int64}")
+
+    def test_pure_python_lt(self):
+        frame = self.reasonAboutExpression(
+            "purePython.PyFloat(x).__lt__(purePython.PyFloat(x+1.0)).@m",
+            purePython = self.purePythonAsJOV,
+            x="{Float64}"
+            )
+        self.assertFrameHasResultJOV(frame, "{Bool}")
+
+    def test_pure_python_isinstance(self):
+        frame = self.reasonAboutExpression(
+            "purePython.IsInstance(purePython.PyFloat(1.0), purePython.PyTuple((purePython.IntType,purePython.BoolType,purePython.BoolType,purePython.BoolType,purePython.FloatType))).@m",
+            purePython = self.purePythonAsJOV
+            )
+        self.assertFrameHasResultJOV(frame, "true")
+        self.assertFrameHasConstantResult(frame)
 
     def test_loop_resolves(self):
         frame = self.reasonAboutExpression(
@@ -237,7 +308,7 @@ class TestSimpleForwardReasoner(unittest.TestCase):
 
         self.assertFrameHasResultJOV(frame, "2")
 
-    def test_recursion(self):
+    def test_simple_recursion(self):
         frame = self.reasonAboutExpression(
             """
             let f = fun(x, res = 0) 
@@ -248,6 +319,41 @@ class TestSimpleForwardReasoner(unittest.TestCase):
                 };
 
             f(1000)
+            """
+            )
+
+        self.assertFrameHasResultJOV(frame, "{Int64}")
+
+    def test_simple_dual_recursion(self):
+        frame = self.reasonAboutExpression(
+            """
+            let f = fun(x1, x2, res = 0) 
+                {
+                if (x1 == 0 or x2 == 0) 
+                    return res; 
+                return f(x1-1,x2,res+x1) + f(x1, x2 - 1, res+x2)
+                };
+
+            f(1000, 1000)
+            """
+            )
+
+        self.assertFrameHasResultJOV(frame, "{Int64}")
+
+    def test_simple_mutual_recursion(self):
+        frame = self.reasonAboutExpression(
+            """
+            let f = fun(x1, res = 0) 
+                {
+                if (x1 == 0) 
+                    return res; 
+                return g(x1-1,res+x1)
+                },
+            g = fun(x2, res) {
+                f(x2, res) + 2
+                };
+
+            f(1000, 1000)
             """
             )
 
@@ -283,7 +389,28 @@ class TestSimpleForwardReasoner(unittest.TestCase):
             """
             )
 
-        self.assertFrameHasResultJOV(frame, "({Int64}, ({Int64}, (...*)))")
+        self.assertFrameHasResultJOV(frame, "({Int64}, (...*))")
+
+    def DISABLEDtest_memory_load(self):
+        b0 = TCMallocNative.getBytesUsed()
+        b1 = b0
+        for ix in range(10000):
+            self.reasonAboutExpression(
+                """
+                let g = fun(t) { size(t) }
+                let f = fun(t) { let c = g; c((1,) + t) + c((2,) + t) + c((3,) + t) };
+                let f2 = fun(t) { let c = f; c((1,) + t) + c((2,) + t) + c((3,) + t) };
+                let f3 = fun(t) { let c = f2; c((1,) + t) + c((2,) + t) + c((3,) + t) };
+                let f4 = fun(t) { let c = f3; c((1,) + t) + c((2,) + t) + c((3,) + t) };
+                
+                f4((x,))
+                """, x = str(ix)
+                )
+
+            print (b1 - b0) / (ix+1) / 1024 / 1024.0, " MB per for a total of ",\
+                (TCMallocNative.getBytesUsed() - b0) / 1024 / 1024.0, " MB allocated."
+
+            b1 = TCMallocNative.getBytesUsed()
 
     def test_recursion_on_tuples_2(self):
         frame = self.reasonAboutExpression(
@@ -295,7 +422,7 @@ class TestSimpleForwardReasoner(unittest.TestCase):
             """
             )
 
-        self.assertFrameHasResultJOV(frame,"(1, ... {Int64})")
+        self.assertFrameHasResultJOVs(frame,"(... {Int64})")
 
     def test_two_layer_recursion(self):
         frame = self.reasonAboutExpression(
@@ -364,6 +491,26 @@ class TestSimpleForwardReasoner(unittest.TestCase):
 
         self.assertFrameHasResultJOVs(frame, "{Vector([{Int64}])}")
 
+    def test_switch_is_exclusive_and_disjoint(self):
+        frame = self.reasonAboutExpression(
+            """
+            match (x) with (1) { 1 } ("2") { 2 }
+            """,
+            x="{Int64}"
+            )
+
+        self.assertFrameHasResultJOVs(frame, "1")
+
+    def test_alternativesWork(self):
+        frame = self.reasonAboutExpression(
+            """
+            match (#ASDF(z:x)) with (#ASDF(z:x)) { x }
+            """,
+            x="{Int64}"
+            )
+
+        self.assertFrameHasResultJOVs(frame, "{Int64}")
+
     def test_heterogeneous_vec_of_vec_function_apply(self):
         frame = self.reasonAboutExpression(
             """
@@ -382,8 +529,52 @@ class TestSimpleForwardReasoner(unittest.TestCase):
 
         self.assertFrameHasResultJOVs(frame, "{Vector([{Vector([{Int64}])}, {Vector([{String}])}])}")
 
+    def test_tuple_function_iteration(self):
+        frame = self.reasonAboutExpression(
+            """
+            let f1 = {_+1};
+            let f2 = {_+2};
+            let f3 = {_+3};
+            let f4 = {_+4};
+            
+            let fs = (f1, f2, f3, f4);
+
+            let res = 0
+
+            for f in fs
+                res = res + f(1)
+
+            res
+            """
+            )
+
+        self.assertFrameHasResultJOVs(frame, "14")
+
+    def test_tuple_function_iteration2(self):
+        frame = self.reasonAboutExpression(
+            """
+            let f1 = {_+1};
+            let f2 = {_+2};
+            let f3 = {_+3};
+            let f4 = {_+4};
+            
+            let fs = (f1, f2, f3, f4);
+
+            let res = 0
+
+            for f in fs
+                for f2 in fs
+                    res = res + f(1) + f2(1)
+
+            res
+            """
+            )
+
+        self.assertTrue(len(frame.unknownApplyNodes()) > 0)
+
     def assertFrameHasConstantResult(self, frame):
-        self.assertTrue(len(frame.exits().resultPart().vals) == 1)
+        self.assertTrue(len(frame.exits().resultPart().vals) == 1, frame.exits())
+        self.assertTrue(len(frame.exits().throwPart().vals) == 0, frame.exits())
         self.assertTrue(frame.exits().resultPart()[0].constant())
         
     def assertFrameHasResultJOV(self, frame, resultJOV):

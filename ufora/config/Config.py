@@ -185,6 +185,10 @@ class Config(object):
                                 2 if self.maxLocalThreads < 4 else 4)
             )
 
+        self.useReasoningCompiler = parseBool(self.getConfigValue("FORA_COMPILER_USE_REASONER", True))
+
+        self.compilerDisableSplitting = parseBool(self.getConfigValue("FORA_COMPILER_DISABLE_SPLITTING", False))
+
         if sys.platform == "linux2":
             import resource
             resource.setrlimit(resource.RLIMIT_AS, (self.maxMemoryMB * 1024 * 1024, -1))
@@ -199,6 +203,7 @@ class Config(object):
         # LOGGING_OVERRIDES may be empty, or may contain a list of tuples.
         # Each tuple should look like (scopeRegex, fileRegex, logLevel)
         loggingLevelOverridesString = self.getConfigValue("LOGGING_OVERRIDES", None)
+        loggingLevelOverridesString = '[[".*",".*Compiler.*", "INFO"],[".*", ".*ReasoningInterpreter.*","DEBUG"]]'
         if loggingLevelOverridesString:
             overrides = json.loads(loggingLevelOverridesString)
             self.scopedLoggingLevelOverrides = []
@@ -269,12 +274,6 @@ class Config(object):
             self.instructionDefinitionDumpDir = os.path.join(self.rootDataDir, "dumps")
         else:
             self.instructionDefinitionDumpDir = ""
-
-        if parseBool(self.getConfigValue("FORA_COMPILER_DUMP_TRACES", False)):
-            self.interpreterTraceDumpFile = os.path.join(self.rootDataDir, "dumps", "traces")
-        else:
-            self.interpreterTraceDumpFile = ""
-
 
         self.objectStore = self.getConfigValue('OBJECT_STORE', 's3')
         self.objectStoreMaxAttempts = int(self.getConfigValue('OBJECT_STORE_MAX_ATTEMPTS',

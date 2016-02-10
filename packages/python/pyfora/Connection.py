@@ -211,6 +211,24 @@ class Connection(object):
             'onFailure': onFailure
             })
 
+    def triggerCompilationOnComputation(self, computedValue, onCompleted):
+        """Trigger compilation of the code underlying a computation.
+
+        This is exclusively used for testing purposes, as it only works when
+        there is a single in-process cumulus node.
+
+        Returns True on success, False on failure.
+        """
+        def onFailure(err):
+            onCompleted()
+
+        def onSuccess(result):
+            onCompleted()
+
+        computedValue.triggerCompilation({}, {
+            'onSuccess': onSuccess,
+            'onFailure': onFailure
+            })
 
     @staticmethod
     def cancelComputation(computedValue):

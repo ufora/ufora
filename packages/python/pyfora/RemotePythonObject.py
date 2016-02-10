@@ -63,6 +63,10 @@ class RemotePythonObject(object):
         assert all([isinstance(arg, RemotePythonObject) for arg in args])
         return self.executor._callRemoteObject(self, args)
 
+    def triggerCompilation(self, *args):
+        assert all([isinstance(arg, RemotePythonObject) for arg in args])
+        return self.executor._triggerCompilation(self, args)
+
 class DefinedRemotePythonObject(RemotePythonObject):
     """A proxy that represents a local object, which has been uploaded to a Ufora cluster.
 

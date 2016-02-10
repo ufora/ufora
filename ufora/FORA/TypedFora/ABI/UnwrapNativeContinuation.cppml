@@ -1,0 +1,93 @@
+#include "UnwrapNativeContinuation.hppml"
+#include "../TypedForaUtil.hppml"
+#include "../JitCompiler/TypedJumpTarget.hppml"
+#include "../../Core/PrintStacktraceStackFrameVisitor.hppml"
+
+#include "NativeStackFrameWrapper.hppml"
+
+namespace TypedFora {
+namespace Abi {
+
+std::string continuationToString(NativeRuntimeContinuationBase continuation, bool printValues)
+	{
+	std::ostringstream s;
+	PrintStacktraceStackFrameVisitor vis(s, printValues, 1000000);
+
+	TypedFora::Abi::StackFrameVisitor::visitStackFrame(
+		continuation,
+		vis
+		);
+
+	return s.str();
+	}
+
+Nullable<NativeContinuationMetadataSerialized> getTopInstructionMeta(
+							const ImmutableTreeVector<NativeContinuationMetadataSerialized>& in,
+							NativeRuntimeContinuationBase continuation
+							)
+	{
+	lassert(in.size());
+
+	for (long k = in.size()-1;k>=0;k--)
+		if (in[k].node().isTypedForaInstruction())
+			return null() << in[k];
+
+	return null();
+	}
+
+bool unwrapNativeContinuationData(
+				const NativeRuntimeContinuationBase& continuation,
+				ImmutableTreeVector<JOV>& ioJovsOfData,
+				ImmutableTreeVector<JOV>& ioJovsOfInstruction,
+				ControlFlowGraphJumpPoint& ioTargetGraphPoint,
+				Nullable<bool>& ioIsException,
+				std::string& ioFname
+				)
+	{
+	auto compiler = Runtime::getRuntime().getTypedForaCompiler();
+
+	NativeFunctionPointer funcPtr = continuation.jumpPtr();
+
+	lassert_dump(
+		compiler->isNativeFunctionPointer(funcPtr),
+		continuationToString(continuation, true)
+		);
+
+	ioFname = compiler->nameForFunctionPointer(funcPtr);
+
+	ImmutableTreeVector<NativeContinuationMetadataSerialized> stackMeta = 
+		compiler->slotMetadataForFuncPtr(funcPtr, continuation.metadataEntryId());
+
+	lassert(stackMeta.size());
+
+	Nullable<NativeContinuationMetadataSerialized> instruction = getTopInstructionMeta(stackMeta, continuation);
+
+	if (!instruction)
+		return false;
+
+	@match NativeContinuationMetadataInstruction(instruction->node())
+		-| TypedForaInstruction(tfMetadata) ->> {
+			@match TypedFora::MetadataInstruction(*tfMetadata)
+				-| Node(jumpPoint, jovs) ->> {
+					ioTargetGraphPoint = jumpPoint;
+					ioJovsOfInstruction = jovs;
+					}
+				-| NodeWithResult(jumpPoint, index, jovs, finalJov) ->> {
+					ioTargetGraphPoint = jumpPoint;
+					ioIsException = (index != 0);
+					ioJovsOfInstruction = jovs;
+					}
+			}
+
+	for (long k = 0; k < instruction->vars().size(); k++)
+		{
+		lassert(instruction->vars()[k].layout());
+
+		ioJovsOfData = ioJovsOfData + (*instruction->vars()[k].layout())->jov();
+		}
+
+	return true;
+	}
+
+}
+}

@@ -30,6 +30,7 @@ members marked with metadata `test, or with tuple metadata (holding `test) are c
 #triggered before FORA is imported. So, we set FORA to None,
 #and all entrypoints are responsible for setting it when importing
 
+import ufora.native.TCMalloc as TCMallocNative
 import ufora.FORA.python.FORA as FORA
 import ufora.native.FORA as ForaNative
 import ufora.FORA.python.Runtime as Runtime
@@ -105,26 +106,27 @@ def printTestResults(moduleName, testName, testResultWithTimes, verbose = False)
             
         print moduleName, ": ", testName,
 
-        print "FAIL ", testName, ":",
+        print time.strftime("%Y-%m-%d %H:%M:%S"), "--", "TEST FAILED:", moduleName, testName, ":",
+
         if isinstance(result, FORAException):
             print "throw", sanitizeErrString(str(result.foraVal))
         else:
             print result,
-        print " is not True "
+        print "is not True"
             
     else:
         passct += 1
         if verbose:
-            print moduleName, testName, ": SUCC in %2.4f" % timeElapsed
+            print time.strftime("%Y-%m-%d %H:%M:%S"), "--", moduleName, testName, ": TEST SUCCEEDED in %2.4f" % timeElapsed, ". memory usage is ", TCMallocNative.getBytesUsed() / 1024 / 1024.0, " MB"
             
     return (passct, failct)
 
-def executeFORATest(foraModule, testname, verbose, testFunction):
+def executeFORATest(foraModule, moduleName, testname, verbose, testFunction):
     try:
         if verbose:
-            print "running ", testname
+            print time.strftime("%Y-%m-%d %H:%M:%S"), "--", moduleName, testname, ": TEST STARTING"
         
-        return testFunction(foraModule, testname)
+        return testFunction(foraModule, moduleName, testname)
 
 
     except FORAException as e:
@@ -151,7 +153,7 @@ def testModuleStr(modulePath, verbose, delay, testFilter, testFunction):
             t0 = time.time()
             testResults = []
 
-            testResultWithTimes = (executeFORATest(foraModule, testName, verbose, testFunction), time.time() - t0)
+            testResultWithTimes = (executeFORATest(foraModule, moduleName, testName, verbose, testFunction), time.time() - t0)
 
             passed, failed = printTestResults(
                 moduleName,
@@ -165,7 +167,7 @@ def testModuleStr(modulePath, verbose, delay, testFilter, testFunction):
 
     return (allPassed, allFailed)
 
-def executeForaCode(module, testName):
+def executeForaCode(module, moduleName, testName):
     return getattr(module, testName)
 
 def makeJovt(*args):
@@ -174,43 +176,64 @@ def makeJovt(*args):
 def symbolJov(sym):
     return ForaNative.parseStringToJOV("`" + sym)
 
-def dumpReasonerSummary(reasoner, frame):
+def dumpReasonerSummary(moduleName, testName, reasoner, frame):
     allFrames = set()
-    toCheck = [frame]
-    while toCheck:
-        frameToCheck = toCheck.pop()
-        if frameToCheck not in allFrames:
-            allFrames.add(frameToCheck)
-            for subframe in reasoner.subframesFor(frameToCheck).values():
-                toCheck.append(subframe)
+    unknownWithStacks = []
+    
+    def checkFrame(frame, curStack=()):
+        if frame in allFrames:
+            return
+        allFrames.add(frame)
+        if len(frame.unknownApplyNodes()) > 0:
+            unknownWithStacks.append({'frame':frame,'stack':curStack})
+
+        for subframe in reasoner.subframesFor(frame).values():
+            checkFrame(subframe, curStack + (frame,))
+
+    checkFrame(frame)
 
     reachableFrames = len(allFrames)
     allFrameCount = reasoner.totalFrameCount()
     badApplyNodes = 0
 
-    for f in allFrames:
-        for n in f.unknownApplyNodes():
-            badApplyNodes += 1
+    def replaceWhitespace(s):
+        s = s.replace('\t',' ').replace('\n',' ')
+        while True:
+            s2 = s.replace('  ', ' ')
+            if s == s2:
+                return s
+            s = s2
 
-    print "Reaching %s of %s frames with %s bad nodes." % (reachableFrames, allFrameCount, badApplyNodes)
 
-    for f in allFrames:
-        for n in f.unknownApplyNodes():
-            print "\t", f.graph().graphName, f.entryJOVs(), n
+    for frameAndStack in unknownWithStacks:
+        frame = frameAndStack['frame']
+        stack = frameAndStack['stack']
+        badApplyNodes += len(frame.unknownApplyNodes()) 
+        print "Found ", len(frame.unknownApplyNodes()), " in "
+        for f in stack + (frame,):
+            print "\t", replaceWhitespace(f.graph().graphName + " " + str(f.entryJOVs()))
+
+    if badApplyNodes:
+        print "%s.%s reaching %s of %s frames with %s bad nodes." % (moduleName, testName, reachableFrames, allFrameCount, badApplyNodes)
 
 
 reasoner = [None]
-def reasonAboutForaCode(module, testName):
+compiler = [None]
+def reasonAboutForaCode(module, moduleName, testName):
     if reasoner[0] is None:
         runtime = Runtime.getMainRuntime()
         axioms = runtime.getAxioms()
-        compiler = runtime.getTypedForaCompiler()
-        reasoner[0] = ForaNative.SimpleForwardReasoner(compiler, axioms, False)
+        compiler[0] = runtime.getTypedForaCompiler()
+        instructionGraph = runtime.getInstructionGraph()
+        reasoner[0] = ForaNative.SimpleForwardReasoner(compiler[0], instructionGraph, axioms)
 
     moduleJOV = ForaNative.JudgmentOnValue.Constant(module.implVal_)
-    frame = reasoner[0].reason(makeJovt(moduleJOV, symbolJov("Member"), symbolJov(testName)))
 
-    dumpReasonerSummary(reasoner[0], frame)
+    t0 = time.time()
+    frame = reasoner[0].reasonAboutApply(makeJovt(moduleJOV, symbolJov("Member"), symbolJov(testName)))
+    print "reasoning ", moduleName + "." + testName, " took ", time.time() - t0
+
+    dumpReasonerSummary(moduleName, testName, reasoner[0], frame)
 
     return True
 

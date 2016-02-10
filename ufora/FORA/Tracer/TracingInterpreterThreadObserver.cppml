@@ -13,30 +13,34 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 ****************************************************************************/
-#include "InterpreterHistoryImpl.hppml"
+#include "TracingInterpreterThreadObserver.hppml"
 #include "../Core/ExecutionContextConfiguration.hppml"
-#include "TransferNativeStackframeIntoInterpreter.hppml"
-#include "EvalFrame.hpp"
+#include "../Interpreter/TransferNativeStackframeIntoInterpreter.hppml"
+#include "../Interpreter/EvalFrame.hpp"
 #include "../TypedFora/TypedForaUtil.hppml"
 #include "../TypedFora/JitCompiler/TypedJumpTarget.hppml"
 #include "../TypedFora/ABI/NativeStackFrameWrapper.hppml"
+#include "../TypedFora/ABI/UnwrapNativeContinuation.hppml"
 #include "../../core/Logging.hpp"
 #include "../../core/Clock.hpp"
+#include "TracingInterpreterObserver.hppml"
 
 using namespace Fora::Interpreter;
+using namespace TypedFora::Abi;
 
 namespace Fora {
 namespace Interpreter {
 
-InterpreterHistoryImpl::InterpreterHistoryImpl(
-			boost::shared_ptr<ExecutionContextConfiguration> inConfig
+TracingInterpreterThreadObserver::TracingInterpreterThreadObserver(
+			boost::shared_ptr<ExecutionContextConfiguration> inConfig,
+			Fora::Compiler::TracingInterpreterObserver* inTraceHandler
 			) : 
 		mHistory100(100),
 		mHistory1000(1000),
 		mHistory10000(10000),
 		mHistory100000(100000),
 		mCurrentTraceStackDepth(0),
-		mInterpreterTraceHandler(&*Runtime::getRuntime().getInterpreterTraceHandler()),
+		mInterpreterTraceHandler(inTraceHandler),
 		mHasSentInitializeTraceToExternalHandler(false),
 		mJustTransferredFromMachineCode(false),
 		mIsReturningToInterpreter(false),
@@ -45,12 +49,12 @@ InterpreterHistoryImpl::InterpreterHistoryImpl(
 	{
 	}
 
-bool InterpreterHistoryImpl::isTracing() const
+bool TracingInterpreterThreadObserver::isTracing() const
 	{
 	return shouldCollectInterpreterTraces();
 	}
 
-double InterpreterHistoryImpl::timeOfLastTraceEvent()
+double TracingInterpreterThreadObserver::timeOfLastTraceEvent()
 	{
 	if (mTraceCollector)
 		return mTraceCollector->timeOfLastTraceTerm();
@@ -59,7 +63,7 @@ double InterpreterHistoryImpl::timeOfLastTraceEvent()
 	}
 
 
-void InterpreterHistoryImpl::clear()
+void TracingInterpreterThreadObserver::clear()
 	{
 	mHistory100.clear();
 	mHistory1000.clear();
@@ -79,29 +83,21 @@ void InterpreterHistoryImpl::clear()
 	mTraceCollector.reset();
 	}
 
-void InterpreterHistoryImpl::pause()
+void TracingInterpreterThreadObserver::pause()
 	{
 	if (mTraceCollector)
 		mTraceCollector->pauseTracing();
 	}
 
-void InterpreterHistoryImpl::resume()
+void TracingInterpreterThreadObserver::resume()
 	{
 	if (mTraceCollector)
 		mTraceCollector->resumeTracing();
 	}
 
-void InterpreterHistoryImpl::onInterpreterStep(EvalFrame* inFrame)
+void TracingInterpreterThreadObserver::onInterpreterStep(EvalFrame* inFrame)
 	{
 	Instruction* instructionPtr = inFrame->instructionPtr.get();
-
-	if (mExternalTraceHandler && !mHasSentInitializeTraceToExternalHandler)
-		{
-		mExternalTraceHandler(
-			getInitializeInterpreterTrace(inFrame)
-			);
-		mHasSentInitializeTraceToExternalHandler = true;
-		}
 
 	mHistory100.push_back(instructionPtr);
 	mHistory1000.push_back(instructionPtr);
@@ -111,7 +107,7 @@ void InterpreterHistoryImpl::onInterpreterStep(EvalFrame* inFrame)
 	askTraceHandlerWhetherToCollect(inFrame);
 	}
 
-void InterpreterHistoryImpl::onInterpreterInterrupted(EvalFrame* inFrame)
+void TracingInterpreterThreadObserver::onInterpreterInterrupted(EvalFrame* inFrame)
 	{
 	if (shouldCollectInterpreterTraces())
 		{
@@ -122,7 +118,7 @@ void InterpreterHistoryImpl::onInterpreterInterrupted(EvalFrame* inFrame)
 		}
 	}
 
-void InterpreterHistoryImpl::onInterpreterInterruptedForVectorLoad(EvalFrame* inFrame)
+void TracingInterpreterThreadObserver::onInterpreterInterruptedForVectorLoad(EvalFrame* inFrame)
 	{
 	if (shouldCollectInterpreterTraces())
 		{
@@ -133,79 +129,7 @@ void InterpreterHistoryImpl::onInterpreterInterruptedForVectorLoad(EvalFrame* in
 		}
 	}
 
-namespace {
-
-Nullable<NativeContinuationMetadataSerialized> getTopInstructionMeta(
-							const ImmutableTreeVector<NativeContinuationMetadataSerialized>& in,
-							NativeRuntimeContinuationBase continuation
-							)
-	{
-	lassert(in.size());
-
-	for (long k = in.size()-1;k>=0;k--)
-		if (in[k].node().isTypedForaInstruction())
-			return null() << in[k];
-
-	return null();
-	}
-
-bool unwrapNativeContinuationData(
-				const NativeRuntimeContinuationBase& continuation,
-				ImmutableTreeVector<JOV>& ioJovsOfData,
-				ImmutableTreeVector<JOV>& ioJovsOfInstruction,
-				ControlFlowGraphJumpPoint& ioTargetGraphPoint,
-				Nullable<bool>& ioIsException,
-				std::string& ioFname
-				)
-	{
-	auto compiler = Runtime::getRuntime().getTypedForaCompiler();
-
-	NativeFunctionPointer funcPtr = continuation.jumpPtr();
-
-	lassert_dump(
-		compiler->isNativeFunctionPointer(funcPtr),
-		continuationToString(continuation, true)
-		);
-
-	ioFname = compiler->nameForFunctionPointer(funcPtr);
-
-	ImmutableTreeVector<NativeContinuationMetadataSerialized> stackMeta = 
-		compiler->slotMetadataForFuncPtr(funcPtr, continuation.metadataEntryId());
-
-	lassert(stackMeta.size());
-
-	Nullable<NativeContinuationMetadataSerialized> instruction = getTopInstructionMeta(stackMeta, continuation);
-
-	if (!instruction)
-		return false;
-
-	@match NativeContinuationMetadataInstruction(instruction->node())
-		-| TypedForaInstruction(tfMetadata) ->> {
-			@match TypedFora::MetadataInstruction(*tfMetadata)
-				-| Node(jumpPoint, jovs) ->> {
-					ioTargetGraphPoint = jumpPoint;
-					ioJovsOfInstruction = jovs;
-					}
-				-| NodeWithResult(jumpPoint, index, jovs, finalJov) ->> {
-					ioTargetGraphPoint = jumpPoint;
-					ioIsException = (index != 0);
-					ioJovsOfInstruction = jovs;
-					}
-			}
-
-	for (long k = 0; k < instruction->vars().size(); k++)
-		{
-		lassert(instruction->vars()[k].layout());
-
-		ioJovsOfData = ioJovsOfData + (*instruction->vars()[k].layout())->jov();
-		}
-
-	return true;
-	}
-
-}
-
-void InterpreterHistoryImpl::onTransferToInterpreterFromNativeCode(
+void TracingInterpreterThreadObserver::onTransferToInterpreterFromNativeCode(
 						const NativeRuntimeContinuationBase& continuation
 						)
 	{
@@ -255,7 +179,7 @@ void InterpreterHistoryImpl::onTransferToInterpreterFromNativeCode(
 	}
 
 
-void InterpreterHistoryImpl::onInterpreterResumedWithoutValue(EvalFrame* inEvalFrame)
+void TracingInterpreterThreadObserver::onInterpreterResumedWithoutValue(EvalFrame* inEvalFrame)
 	{
 	if (shouldCollectInterpreterTraces())
 		{
@@ -296,7 +220,7 @@ void InterpreterHistoryImpl::onInterpreterResumedWithoutValue(EvalFrame* inEvalF
 		}
 	}
 
-void InterpreterHistoryImpl::onInterpreterResumedWithValue(EvalFrame* inEvalFrame, bool isException)
+void TracingInterpreterThreadObserver::onInterpreterResumedWithValue(EvalFrame* inEvalFrame, bool isException)
 	{
 	if (shouldCollectInterpreterTraces())
 		{
@@ -317,7 +241,7 @@ void InterpreterHistoryImpl::onInterpreterResumedWithValue(EvalFrame* inEvalFram
 		}
 	}
 
-void InterpreterHistoryImpl::onArbitraryInterpreterLogging(std::string msg)
+void TracingInterpreterThreadObserver::onArbitraryInterpreterLogging(std::string msg)
 	{
 	if (shouldCollectInterpreterTraces())
 		collectInterpreterTrace(
@@ -326,7 +250,7 @@ void InterpreterHistoryImpl::onArbitraryInterpreterLogging(std::string msg)
 	}
 
 
-void InterpreterHistoryImpl::onReturnToNativeCodeButImmediatelyTransferToInterpreter()
+void TracingInterpreterThreadObserver::onReturnToNativeCodeButImmediatelyTransferToInterpreter()
 	{
 	collectInterpreterTrace(
 		Fora::InterpreterTraceTerm::ArbitraryInterpreterLogging(
@@ -337,7 +261,7 @@ void InterpreterHistoryImpl::onReturnToNativeCodeButImmediatelyTransferToInterpr
 	mIsReturningToInterpreter = true;
 	}
 
-void InterpreterHistoryImpl::onFollowingTypedNativeContinuation(
+void TracingInterpreterThreadObserver::onFollowingTypedNativeContinuation(
 					const NativeRuntimeContinuationValue<1>& continuation,
 					const JOV& inResultJOV,
 					bool inIsException
@@ -346,7 +270,7 @@ void InterpreterHistoryImpl::onFollowingTypedNativeContinuation(
 	onFollowingTypedNativeContinuation(continuation.base(), inResultJOV, inIsException);
 	}
 
-void InterpreterHistoryImpl::continuationAdapterFollowed(bool isException, TypedFora::Type type, bool isTargetNative)
+void TracingInterpreterThreadObserver::continuationAdapterFollowed(bool isException, TypedFora::Type type, bool isTargetNative)
 	{
 	if (shouldCollectInterpreterTraces())
 		collectInterpreterTrace(
@@ -358,7 +282,7 @@ void InterpreterHistoryImpl::continuationAdapterFollowed(bool isException, Typed
 			);
 	}
 
-void InterpreterHistoryImpl::onFollowingTypedNativeContinuation(
+void TracingInterpreterThreadObserver::onFollowingTypedNativeContinuation(
 					const NativeRuntimeContinuationBase& continuation,
 					const JOV& inResultJOV,
 					bool inIsException
@@ -415,7 +339,7 @@ void InterpreterHistoryImpl::onFollowingTypedNativeContinuation(
 		}
 	}
 
-void InterpreterHistoryImpl::onTransferToNativeCode(
+void TracingInterpreterThreadObserver::onTransferToNativeCode(
 									EvalFrame* inEvalFrame,
 									const TypedFora::TypedJumpTarget& inTarget
 									)
@@ -435,7 +359,7 @@ void InterpreterHistoryImpl::onTransferToNativeCode(
 		}
 	}
 
-void InterpreterHistoryImpl::onAxiomResult(EvalFrame* inEvalFrame, bool isException)
+void TracingInterpreterThreadObserver::onAxiomResult(EvalFrame* inEvalFrame, bool isException)
 	{
 	if (shouldCollectInterpreterTraces())
 		collectInterpreterTrace(
@@ -447,7 +371,7 @@ void InterpreterHistoryImpl::onAxiomResult(EvalFrame* inEvalFrame, bool isExcept
 			);
 	}
 
-void InterpreterHistoryImpl::onNewStackframe(EvalFrame* inEvalFrame)
+void TracingInterpreterThreadObserver::onNewStackframe(EvalFrame* inEvalFrame)
 	{
 	if (shouldCollectInterpreterTraces())
 		{
@@ -465,7 +389,7 @@ void InterpreterHistoryImpl::onNewStackframe(EvalFrame* inEvalFrame)
 		}
 	}
 
-void InterpreterHistoryImpl::onReturnedToInterpreter(EvalFrame* inEvalFrame, bool isException)
+void TracingInterpreterThreadObserver::onReturnedToInterpreter(EvalFrame* inEvalFrame, bool isException)
 	{
 	if (shouldCollectInterpreterTraces())
 		{
@@ -502,13 +426,13 @@ void InterpreterHistoryImpl::onReturnedToInterpreter(EvalFrame* inEvalFrame, boo
 		}
 	}
 
-void InterpreterHistoryImpl::onCachecall()
+void TracingInterpreterThreadObserver::onCachecall()
 	{
 	if (shouldCollectInterpreterTraces())
 		clear();
 	}
 
-void InterpreterHistoryImpl::onBranch(EvalFrame* inEvalFrame, long whichBranch)
+void TracingInterpreterThreadObserver::onBranch(EvalFrame* inEvalFrame, long whichBranch)
 	{
 	collectInterpreterTrace(
 		Fora::InterpreterTraceTerm::Branch(
@@ -518,7 +442,7 @@ void InterpreterHistoryImpl::onBranch(EvalFrame* inEvalFrame, long whichBranch)
 		);
 	}
 
-Nullable<size_t> InterpreterHistoryImpl::hasTrippedLoopTrigger(size_t minExpectedCycles)
+Nullable<size_t> TracingInterpreterThreadObserver::hasTrippedLoopTrigger(size_t minExpectedCycles)
 	{
 	if (mHistory100.fullAndAverageDensityExceeds(minExpectedCycles))
 		return null() << mHistory100.distinctItemCount();
@@ -535,23 +459,8 @@ Nullable<size_t> InterpreterHistoryImpl::hasTrippedLoopTrigger(size_t minExpecte
 	return null();
 	}
 
-void InterpreterHistoryImpl::setExternalTraceHandler(
-							boost::function1<void, const Fora::InterpreterTraceTerm&> handler
-							)
-	{
-	mExternalTraceHandler = handler;
-
-	mHasSentInitializeTraceToExternalHandler = false;
-	}
-
-boost::function1<void, const Fora::InterpreterTraceTerm&> 
-								InterpreterHistoryImpl::getExternalTraceHandler()
-	{
-	return mExternalTraceHandler;
-	}
-
 Fora::InterpreterTraceTerm 
-				InterpreterHistoryImpl::getInitializeInterpreterTrace(EvalFrame* evalFramePtr)
+				TracingInterpreterThreadObserver::getInitializeInterpreterTrace(EvalFrame* evalFramePtr)
 	{
 	ImmutableTreeVector<JudgmentOnValue> jovs;
 	for (uword_t k = 0; k < evalFramePtr->evalFrameArgList().size(); k++)
@@ -575,7 +484,7 @@ Fora::InterpreterTraceTerm
 	}
 
 Fora::InterpreterTraceTerm 
-		InterpreterHistoryImpl::getInitializeInterpreterTrace(
+		TracingInterpreterThreadObserver::getInitializeInterpreterTrace(
 					EvalFrame* evalFramePtr, 
 					bool isException
 					)
@@ -604,16 +513,13 @@ Fora::InterpreterTraceTerm
 			);
 	}
 
-bool InterpreterHistoryImpl::shouldCollectInterpreterTraces() const
+bool TracingInterpreterThreadObserver::shouldCollectInterpreterTraces() const
 	{
-	return mExternalTraceHandler || mTraceCollector;
+	return (bool)mTraceCollector;
 	}
 
-void InterpreterHistoryImpl::collectInterpreterTrace(const Fora::InterpreterTraceTerm& term)
+void TracingInterpreterThreadObserver::collectInterpreterTrace(const Fora::InterpreterTraceTerm& term)
 	{
-	if (mExternalTraceHandler)
-		mExternalTraceHandler(term);
-
 	if (mTraceCollector)
 		{
 		mTraceCollector->addTraceTerm(term);
@@ -623,9 +529,9 @@ void InterpreterHistoryImpl::collectInterpreterTrace(const Fora::InterpreterTrac
 		}
 	}
 
-void InterpreterHistoryImpl::askTraceHandlerWhetherToCollect(EvalFrame* inFrame)
+void TracingInterpreterThreadObserver::askTraceHandlerWhetherToCollect(EvalFrame* inFrame)
 	{
-	if (mTraceCollector || mExternalTraceHandler)
+	if (mTraceCollector)
 		return;
 
 	if (hasTrippedLoopTrigger(10))

@@ -15,13 +15,15 @@
 ****************************************************************************/
 #pragma once
 
-#include "InterpreterTraceHandlerImpl.hppml"
+#include "TracingInterpreterObserver.hppml"
+#include "TracingInterpreterThreadObserver.hppml"
 #include "InterpreterTraceVisitor.hppml"
-#include "CompilerInstructionGraph/InstructionGraph.hppml"
-#include "CompilerInstructionGraph/Instruction.hppml"
+#include "../Compiler/CompilerInstructionGraph/InstructionGraph.hppml"
+#include "../Compiler/CompilerInstructionGraph/Instruction.hppml"
 #include "../TypedFora/JitCompiler/CompilerThreadCount.hppml"
 #include "../../core/StringUtil.hpp"
 #include "../../core/Logging.hpp"
+#include "InterpreterTraceVisitor.hppml"
 
 using Fora::Compiler::CompilerInstructionGraph::InstructionPtr;
 
@@ -46,7 +48,7 @@ bool instructionFlowIsValid(InstructionPtr i1, InstructionPtr i2)
 
 }
 
-InterpreterTraceHandlerImpl::InterpreterTraceHandlerImpl(
+TracingInterpreterObserver::TracingInterpreterObserver(
 			PolymorphicSharedPtr<Fora::Interpreter::InstructionGraph> inInstructionGraph,
 			PolymorphicSharedPtr<Fora::Compiler::CompilerInstructionGraph::InstructionGraph> inCompilerInstructionGraph,
 			PolymorphicSharedPtr<Axioms> inAxioms
@@ -58,22 +60,34 @@ InterpreterTraceHandlerImpl::InterpreterTraceHandlerImpl(
 	mProcessIncomingTracesThread.reset(
 		new boost::thread(
 			boost::bind(
-				&InterpreterTraceHandlerImpl::processIncomingTracesLoop,
+				&TracingInterpreterObserver::processIncomingTracesLoop,
 				this
 				)
 			)
 		);
 	}
 
+boost::shared_ptr<Fora::Interpreter::InterpreterThreadObserver> TracingInterpreterObserver::allocateInterpreterHistory(
+			boost::shared_ptr<Fora::Interpreter::ExecutionContextConfiguration> config
+			)
+	{
+	return boost::shared_ptr<Fora::Interpreter::InterpreterThreadObserver>(
+		new Fora::Interpreter::TracingInterpreterThreadObserver(
+			config,
+			this
+			)
+		);
+	}
 
-void InterpreterTraceHandlerImpl::setTraceLoggerFunction(
+
+void TracingInterpreterObserver::setTraceLoggerFunction(
 			boost::function1<void, ImmutableTreeVector<InterpreterTraceTerm> > inHandler
 			)
 	{
 	mTraceLogger = inHandler;
 	}
 
-void InterpreterTraceHandlerImpl::addTrace(
+void TracingInterpreterObserver::addTrace(
 		boost::shared_ptr<Fora::JudgmentOnInterpreterTrace::Trace> inTrace,
 		bool blockUntilConsumed
 		)
@@ -101,7 +115,7 @@ void InterpreterTraceHandlerImpl::addTrace(
 		}
 	}
 
-bool InterpreterTraceHandlerImpl::shouldStopTracing(InterpreterTraceVisitor* visitor)
+bool TracingInterpreterObserver::shouldStopTracing(InterpreterTraceVisitor* visitor)
 	{
 	boost::mutex::scoped_lock lock(mMutex);
 
@@ -111,7 +125,7 @@ bool InterpreterTraceHandlerImpl::shouldStopTracing(InterpreterTraceVisitor* vis
 	return false;
 	}
 
-void InterpreterTraceHandlerImpl::processIncomingTracesLoop()
+void TracingInterpreterObserver::processIncomingTracesLoop()
 	{
 	Fora::CompilerThreadCount::Scope compiling;
 
@@ -157,7 +171,7 @@ bool jovIsMoreSpecificThanAnyInJOR(JudgmentOnResult jor, JOV jov)
 	return true;
 	}
 
-CompilerInstructionGraph::InstructionPtr  InterpreterTraceHandlerImpl::instructionFor(
+CompilerInstructionGraph::InstructionPtr  TracingInterpreterObserver::instructionFor(
 					const Fora::JudgmentOnInterpreterTrace::Term* term
 					)
 	{
@@ -168,7 +182,7 @@ CompilerInstructionGraph::InstructionPtr  InterpreterTraceHandlerImpl::instructi
 		);
 	}
 
-void InterpreterTraceHandlerImpl::processTrace(
+void TracingInterpreterObserver::processTrace(
 		const Fora::JudgmentOnInterpreterTrace::Term* inStart, 
 		const Fora::JudgmentOnInterpreterTrace::Term* inStop
 		)
@@ -306,14 +320,14 @@ void InterpreterTraceHandlerImpl::processTrace(
 	LOG_INFO << "trace added in " << curClock() - t0 << " seconds total.";
 	}
 
-boost::shared_ptr<InterpreterTraceVisitor> InterpreterTraceHandlerImpl::allocateTraceVisitor()
+boost::shared_ptr<InterpreterTraceVisitor> TracingInterpreterObserver::allocateTraceVisitor()
 	{
 	boost::mutex::scoped_lock lock(mMutex);
 
 	if (mTraceVisitorsActive.size() > 0 || mUnconsumedTrace)
 		return boost::shared_ptr<InterpreterTraceVisitor>();
 
-	InterpreterTraceVisitor* visitor = new InterpreterTraceVisitor(this->shared_from_this());
+	InterpreterTraceVisitor* visitor = new InterpreterTraceVisitor(this);
 
 	mTraceVisitorsAllocated.insert(visitor);
 	mTraceVisitorsActive.insert(visitor);
@@ -321,7 +335,7 @@ boost::shared_ptr<InterpreterTraceVisitor> InterpreterTraceHandlerImpl::allocate
 	return boost::shared_ptr<InterpreterTraceVisitor>(visitor);
 	}
 
-void InterpreterTraceHandlerImpl::traceVisitorDestroyed(InterpreterTraceVisitor* visitor)
+void TracingInterpreterObserver::traceVisitorDestroyed(InterpreterTraceVisitor* visitor)
 	{
 	boost::mutex::scoped_lock lock(mMutex);
 
@@ -329,21 +343,21 @@ void InterpreterTraceHandlerImpl::traceVisitorDestroyed(InterpreterTraceVisitor*
 	mTraceVisitorsActive.erase(visitor);
 	}
 
-void InterpreterTraceHandlerImpl::traceVisitorPaused(InterpreterTraceVisitor* visitor)
+void TracingInterpreterObserver::traceVisitorPaused(InterpreterTraceVisitor* visitor)
 	{
 	boost::mutex::scoped_lock lock(mMutex);
 
 	mTraceVisitorsActive.erase(visitor);
 	}
 
-void InterpreterTraceHandlerImpl::traceVisitorResumed(InterpreterTraceVisitor* visitor)
+void TracingInterpreterObserver::traceVisitorResumed(InterpreterTraceVisitor* visitor)
 	{
 	boost::mutex::scoped_lock lock(mMutex);
 
 	mTraceVisitorsActive.insert(visitor);
 	}
 
-void InterpreterTraceHandlerImpl::updatedChangedInstructions_()
+void TracingInterpreterObserver::updatedChangedInstructions_()
 	{
 	mCompilerInstructionGraph->updateJoasAndResultJoasForAllChangedNodes();
 

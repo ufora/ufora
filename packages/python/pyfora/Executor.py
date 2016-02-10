@@ -376,6 +376,19 @@ class Executor(object):
         return future
 
 
+    def _triggerCompilation(self, functionHandle, argHandles):
+        future = self._create_future()
+
+        def onCompleted():
+            self._resolve_future(future, True)
+
+        def onComputationCreated(result):
+            self.connection.triggerCompilationOnComputation(result, onCompleted)
+
+        self.connection.createComputation(functionHandle, argHandles, onComputationCreated)
+
+        return future
+
     def _callRemoteObject(self, fnHandle, argHandles):
         future = self._create_future(onCancel=self._cancelComputation)
         def onComputationCreated(result):

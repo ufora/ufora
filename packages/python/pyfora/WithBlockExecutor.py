@@ -122,7 +122,12 @@ class WithBlockExecutor(object):
         self.sourceFileName = None
         self.traceAndException = None
         self.frame = None
+        self.compileOnly = False
         self.downloadPolicy = DownloadPolicy.DownloadNonePolicy()
+
+    def asCompileOnly(self):
+        self.compileOnly = True
+        return self
 
     def downloadAll(self):
         """Modify the executor to download all results into the local namespace.
@@ -194,6 +199,10 @@ class WithBlockExecutor(object):
             )
 
         f_proxy = self.executor.define(withBlock).resultWithWakeup()
+
+        if self.compileOnly:
+            f_proxy.triggerCompilation().resultWithWakeup()
+            return {}
 
         f_result_proxy = f_proxy().resultWithWakeup()
 

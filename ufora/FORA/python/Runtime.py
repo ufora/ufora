@@ -58,6 +58,8 @@ def initialize(setupObjectToUse = None):
             cfg.mediumPriorityCodeComplexityThreshold = 50
             cfg.useLLVMOptimization = True
             cfg.kickIntoInterpreterOnInline = True
+            cfg.useReasoningCompiler = configObjectToUse.useReasoningCompiler
+            cfg.disableSplitting = configObjectToUse.compilerDisableSplitting
 
             cfg.applyRefcountOptimization = True
 
@@ -71,8 +73,8 @@ def initialize(setupObjectToUse = None):
             cfg.compilerDefinitionDumpDir = configObjectToUse.compilerDefinitionDumpDir
             cfg.instructionDefinitionDumpDir = configObjectToUse.instructionDefinitionDumpDir
 
-            cfg.dynamicInlineCallThreshold = 1000
-            cfg.dynamicInlineCallThresholdSecondary = 500
+            cfg.dynamicInlineCallThreshold = 10000
+            cfg.dynamicInlineCallThresholdSecondary = 5000
 
             cfg.maxDynamicInlineComplexity = 5000
 
@@ -96,12 +98,6 @@ def initialize(setupObjectToUse = None):
                 axioms,
                 cfg,
                 )
-
-            if configObjectToUse.interpreterTraceDumpFile != "":
-                logging.info("Logging traces to %s", configObjectToUse.interpreterTraceDumpFile)
-                _mainRuntime[0].getInterpreterTraceHandler().logTracesToFile(
-                    configObjectToUse.interpreterTraceDumpFile
-                    )
 
             if configObjectToUse.wantsPythonGilLoopChecker:
                 ManagedThread.ManagedThread(

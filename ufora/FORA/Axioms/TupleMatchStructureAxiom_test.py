@@ -49,7 +49,6 @@ class TestTupleMatchStructureAxiom(unittest.TestCase):
 
         self.assertTrue(list(axiom.asNative.resultSignature.resultPart().vals) == [FORANative.parseStringToJOV("nothing")])
 
-
     def test_addition_working(self):
         self.assertEqual(simpleEval(1, sym("Operator"), sym("+"), 2), 3)
 

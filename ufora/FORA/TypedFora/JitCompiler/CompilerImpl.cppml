@@ -34,18 +34,6 @@ namespace {
 
 const float kCompileThreadStartDelay = .01;
 
-/****
-these define the priority levels
-
-we have 1 thread that only takes 'high' priority items
-we have 1 thread that takes items of all priorities
-all other threads take items of priority_medium or higher, taking highest
-	priority items first
-
-*****/
-const int priority_low = 0;
-const int priority_medium = 1;
-const int priority_high = 1000;
 }
 
 //CompilerImpl is the actual implementation of TypedFora::Compiler, all of whose
@@ -73,7 +61,10 @@ CompilerImpl::CompilerImpl(
 					}
 				)
 			),
-		mThreadPool(inConfiguration.compilerThreadCount())
+		mThreadPool(inConfiguration.compilerThreadCount()),
+		mTimeElapsedDumping(0),
+		mTimeElapsedConverting(0),
+		mTimeElapsedCompiling(0)
 	{
 	}
 
@@ -154,12 +145,54 @@ void CompilerImpl::scheduleTask(
 
 void CompilerImpl::executeTask(CompilationTask task)
 	{
+	double t0 = curClock();
+			
 	@match CompilationTask(task)
+		-| DumpTypedForaTextToDisk(name) ->> {
+			ofstream outfile;
+			ostringstream namestr;
+			namestr << name;
+			namestr << ".tcfg.txt";
+			
+			using boost::filesystem::path;
+
+			Nullable<TypedFora::Callable> callable = mTypedForaDefinitions.get(name);
+
+			lassert_dump(callable, "Expected a Callable for " << name);
+
+			path fname =
+				  path(getConfig().compilerDefinitionDumpDir())
+				/ path(namestr.str());
+			
+			outfile.open(fname.string().c_str(), ios_base::trunc);
+			
+			outfile
+				<< "ResultSignature: " << prettyPrintString(callable->resultSignature()) << "\n\n"
+				<< prettyPrintString(*callable)
+				<< "\n\n\n";
+
+			outfile.close();
+
+			boost::mutex::scoped_lock lock(mTimeElapsedMutex);
+			mTimeElapsedDumping += curClock() - t0;
+			LOG_INFO_SCOPED("TypedFora::Compiler/Timing") << "Spent " << curClock() - t0 
+				<< " dumping " << name << ". total=" << mTimeElapsedDumping;
+			}
 		-| TranslateTypedForaToNativeCode(name) ->> {
 			translateTypedForaToNativeCode_(name);
+
+			boost::mutex::scoped_lock lock(mTimeElapsedMutex);
+			mTimeElapsedConverting += curClock() - t0;
+			LOG_INFO_SCOPED("TypedFora::Compiler/Timing") << "Spent " << curClock() - t0 
+				<< " converting " << name << ". total=" << mTimeElapsedConverting;
 			}
 		-| Compile(name) ->> {
 			compileFunction_(name);
+
+			boost::mutex::scoped_lock lock(mTimeElapsedMutex);
+			mTimeElapsedCompiling += curClock() - t0;
+			LOG_INFO_SCOPED("TypedFora::Compiler/Timing") << "Spent " << curClock() - t0 
+				<< " compiling " << name << ". total=" << mTimeElapsedCompiling;
 			}
 		-| Link(names) ->> {
 			linkFunctions_(names);
@@ -211,7 +244,7 @@ void CompilerImpl::define(const std::string& name, const NativeCFG& code)
 	//function pointer slots according to the callgroups
 	//inside of them
 	set<string> newlyDefined;
-	
+
 	NativeCFG newCode = 
 		NativeCFGTransforms::cleanupAndSimplify(
 			NativeCFGTransforms::renameVariables(code)
@@ -222,7 +255,7 @@ void CompilerImpl::define(const std::string& name, const NativeCFG& code)
 		newCode,
 		newlyDefined
 		);
-	
+
 	for (auto it = newlyDefined.begin(); it != newlyDefined.end(); ++it)
 		LOG_INFO << "Now able to define " << *it << " which has group " 
 			<< prettyPrintString(mStaticInliner.getCallGroup(*it));
@@ -460,6 +493,14 @@ void 	CompilerImpl::define(const std::string& name, const TypedFora::Callable& c
 		0,
 		ImmutableTreeVector<CompilationTask>()
 		);
+
+
+	if (getConfig().compilerDefinitionDumpDir() != "")
+		scheduleTask(
+			CompilationTask::DumpTypedForaTextToDisk(name),
+			0,
+			ImmutableTreeVector<CompilationTask>()
+			);
 	}
 
 void CompilerImpl::scheduleCompilationForNewFunctions(const std::set<std::string>& inNewlyDefined)

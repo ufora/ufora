@@ -24,6 +24,8 @@
 #include "ReasonerEntrypoint.hppml"
 #include "ReasonerFrame.hppml"
 #include "ReasonerEntrypointGraph.hppml"
+#include "../Interpreter/InstructionGraph.hppml"
+#include "../Compiler/CompilerInstructionGraph/InstructionGraph.hppml"
 
 namespace TypedFora {
 
@@ -33,29 +35,41 @@ class Compiler;
 
 namespace Fora {
 
+@type CfgTransition = 
+	ReasonerFrameId sourceGraph,
+	ReasonerFrameId destGraph,
+	ControlFlowGraphLabel sourceLabel
+{
+public:
+	bool matches(const CfgTransition& other) const
+		{
+		return sourceGraph().entrypoint().graph() == other.sourceGraph().entrypoint().graph() && 
+			destGraph().entrypoint().graph() == other.destGraph().entrypoint().graph() && 
+			sourceLabel() == other.sourceLabel()
+			;
+		}
+};
+
 
 class SimpleForwardReasoner : public PolymorphicSharedPtrBase<SimpleForwardReasoner> {
 public:
 	SimpleForwardReasoner(
 			PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
-			PolymorphicSharedPtr<Axioms> inAxioms,
-			bool allowExceptions
+			PolymorphicSharedPtr<Fora::Interpreter::InstructionGraph> inInstructionGraph,
+			PolymorphicSharedPtr<Axioms> inAxioms
 			);
 
-	PolymorphicSharedPtr<ReasonerFrame> reason(JudgmentOnValueTuple applyTuple);
+	PolymorphicSharedPtr<ReasonerFrame> reasonAboutApply(JudgmentOnValueTuple applyTuple);
 
-	PolymorphicSharedPtr<ReasonerFrame> getFrameFor(const ReasonerEntrypoint& entrypoint);
+	PolymorphicSharedPtr<ReasonerFrame> reason(ReasonerEntrypoint entrypoint);
 
-	//determine what actual entrypoint we want to use when 'caller' is calling 'callee' at 'callLocation'
-	//if there is no recursion, then this is callLocation. But it might be a stackframe above "caller"
-	//if we detect recursion
-	ReasonerEntrypoint getRecursionRelaxationFor(
-							const ReasonerEntrypoint& caller,
-							Nullable<std::string> callLocation,
-							const ReasonerEntrypoint& callee
-							);
+	PolymorphicSharedPtr<ReasonerFrame> reasonForTimePeriod(ReasonerEntrypoint entrypoint, double period);
 
-	void markFrameDirty(const ReasonerEntrypoint& caller);
+	void compile(PolymorphicSharedPtr<ReasonerFrame> frame);
+
+	PolymorphicSharedPtr<ReasonerFrame> getFrameFor(const ReasonerFrameId& entrypoint);
+
+	void markFrameDirty(const ReasonerFrameId& caller);
 
 	PolymorphicSharedPtr<Axioms> getAxioms() const;
 
@@ -63,24 +77,48 @@ public:
 
 	int64_t totalFrameCount() const;
 
-	bool allowExceptions() const;
+	int64_t maxOutputJudgments() const;
 	
+	PolymorphicSharedPtr<ReasonerFrame> hasEntrypointAlreadyBeenCovered(ReasonerEntrypoint entrypoint);
+
 private:
-	bool mAllowExceptions;
+	void computeReachableUnaddedFrames(ReasonerFrameId frameId, std::set<ReasonerFrameId>& outFrames);
+
+	void relaxUnnecessaryFrames(const std::set<ReasonerFrameId>& frames);
+
+	ImmutableTreeVector<CfgTransition> checkIfTransitionIsRecursive(
+											const ReasonerFrameId& caller,
+											ControlFlowGraphLabel callLocation,
+											const ReasonerFrameId& callee
+											);
+
+	void createRecursion(const ImmutableTreeVector<CfgTransition>& transitions);
+	
+	void addAllDependentNodesToGraph(ReasonerFrameId frame);
 
 	void updateAll();
 
-	void updateFrame(const ReasonerEntrypoint& entrypoint);
+	bool updateAllForPeriod(double elapsed);
 
-	bool isRecursive(ReasonerEntrypoint entrypoint);
-	
-	map<ReasonerEntrypoint, PolymorphicSharedPtr<ReasonerFrame> > mFrames;
+	bool updateFrame(const ReasonerFrameId& entrypoint);
+
+	std::set<ReasonerFrameId> mUnlinkedEntrypoints;
+
+	map<ReasonerFrameId, PolymorphicSharedPtr<ReasonerFrame> > mFrames;
+
+	MapWithIndex<PolymorphicSharedPtr<ReasonerFrame>, ControlFlowGraph> mFramesByGraph;
+
+	MapWithIndex<PolymorphicSharedPtr<ReasonerFrame>, ControlFlowGraph> mRecursiveFramesByGraph; 
+
+	std::set<ReasonerFrameId> mFramesAddedToGraph;
 
 	ReasonerEntrypointGraph mGraph;
 
 	PolymorphicSharedPtr<TypedFora::Compiler> mCompiler;
 
 	PolymorphicSharedPtr<Axioms> mAxioms;
+
+	PolymorphicSharedPtr<Fora::Interpreter::InstructionGraph> mInterpreterInstructionGraph;
 };
 
 }

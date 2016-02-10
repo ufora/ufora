@@ -686,85 +686,91 @@ JudgmentOnAction Axioms::resolveAxiomDirectly(
 							const JudgmentOnValueTuple& jovt
 							)
 	{
-	hash_type h = jovt.hash();
+	try {
+		hash_type h = jovt.hash();
 
-		{
-		boost::recursive_mutex::scoped_lock lock(mMutex);
+			{
+			boost::recursive_mutex::scoped_lock lock(mMutex);
 
-		auto it = mResolvedJOACache.find(h);
+			auto it = mResolvedJOACache.find(h);
 
-		if (it != mResolvedJOACache.end())
-			return it->second;
-		}
+			if (it != mResolvedJOACache.end())
+				return it->second;
+			}
 
-	JOV tupJOV = JOV::Tuple(jovt);
+		JOV tupJOV = JOV::Tuple(jovt);
 
-	static PolymorphicSharedPtr<CallbackSchedulerFactory> factory(
-		new SimpleCallbackSchedulerFactory()
-		);
-
-	static PolymorphicSharedPtr<CallbackScheduler> scheduler(
-		factory->createScheduler("Axioms::resolveAxiomDirectly", 1)
-		);
-
-	static PolymorphicSharedPtr<VectorDataManager> vdm(
-			new VectorDataManager(scheduler, 32 * 1024)
+		static PolymorphicSharedPtr<CallbackSchedulerFactory> factory(
+			new SimpleCallbackSchedulerFactory()
 			);
-	vdm->dontIncludeInCounts();
 
-	Fora::Interpreter::ExecutionContext interp(
-		vdm,
-		32 * 1024,
-		0x20000 /* 128 KB */
-		);
+		static PolymorphicSharedPtr<CallbackScheduler> scheduler(
+			factory->createScheduler("Axioms::resolveAxiomDirectly", 1)
+			);
 
-	const static long maxInterpreterCycles = 100;
+		static PolymorphicSharedPtr<VectorDataManager> vdm(
+				new VectorDataManager(scheduler, 32 * 1024)
+				);
+		vdm->dontIncludeInCounts();
 
-	interp.interruptAfterCycleCount(maxInterpreterCycles);
+		Fora::Interpreter::ExecutionContext interp(
+			vdm,
+			32 * 1024,
+			0x20000 /* 128 KB */
+			);
 
-	interp.getConfiguration()->allowInterpreterTracing() = false;
-	interp.getConfiguration()->preventBranchIntoCompiledCode() = false;
+		const static long maxInterpreterCycles = 100;
 
-	interp.evaluate(*tupJOV.constant());
+		interp.interruptAfterCycleCount(maxInterpreterCycles);
 
-	bool isException = false;
-	JudgmentOnValue resJOV;
+		interp.getConfiguration()->allowInterpreterTracing() = false;
+		interp.getConfiguration()->preventBranchIntoCompiledCode() = false;
 
-	JudgmentOnAction valueToStore;
+		interp.evaluate(*tupJOV.constant());
 
-	if (interp.isFinished())
-		{
-		Fora::Interpreter::ComputationResult res = interp.getFinishedResult();
+		bool isException = false;
+		JudgmentOnValue resJOV;
 
-		isException = res.isException();
-		
-		@match Fora::Interpreter::ComputationResult(res)
-			-| Exception(val) ->> {
-				valueToStore = JudgmentOnAction::Throws(
-					JudgmentOnValue::FromLiveValue(val.getReference())
-					);
-				}
-			-| Result(val) ->> {
-				valueToStore = JudgmentOnAction::Value(
-					JudgmentOnValue::FromLiveValue(val.getReference())
-					);
-				}
-			-| Failure(err) ->> {
-				valueToStore = JudgmentOnAction::Unknown();
-				}
+		JudgmentOnAction valueToStore;
+
+		if (interp.isFinished())
+			{
+			Fora::Interpreter::ComputationResult res = interp.getFinishedResult();
+
+			isException = res.isException();
+			
+			@match Fora::Interpreter::ComputationResult(res)
+				-| Exception(val) ->> {
+					valueToStore = JudgmentOnAction::Throws(
+						JudgmentOnValue::FromLiveValue(val.getReference())
+						);
+					}
+				-| Result(val) ->> {
+					valueToStore = JudgmentOnAction::Value(
+						JudgmentOnValue::FromLiveValue(val.getReference())
+						);
+					}
+				-| Failure(err) ->> {
+					valueToStore = JudgmentOnAction::Unknown();
+					}
+			}
+		else
+			{
+			valueToStore = JudgmentOnAction::Unknown();
+			}
+			{
+			boost::recursive_mutex::scoped_lock lock(mMutex);
+
+			mResolvedJOACache[h] = valueToStore;
+			}
+
+		return valueToStore;
 		}
-	else
+	catch(...)
 		{
-		valueToStore = JudgmentOnAction::Unknown();
+		LOG_CRITICAL << "Evaluating " << jovt;
+		throw;
 		}
-
-		{
-		boost::recursive_mutex::scoped_lock lock(mMutex);
-
-		mResolvedJOACache[h] = valueToStore;
-		}
-
-	return valueToStore;
 	}
 
 pair<std::string, std::string> Axioms::getCppWrapperCode()

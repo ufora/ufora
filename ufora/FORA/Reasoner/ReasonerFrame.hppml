@@ -20,7 +20,7 @@
 #include "../../core/containers/MapWithIndex.hpp"
 #include "ControlFlowGraphLoopPoints.hppml"
 #include "../Judgment/JudgmentOnAction.hppml"
-#include "ReasonerEntrypoint.hppml"
+#include "ReasonerFrameId.hppml"
 
 namespace TypedFora {
 
@@ -55,9 +55,17 @@ public:
 			}
 	};
 
-	ReasonerFrame(const ReasonerEntrypoint& entrypoint, SimpleForwardReasoner& inReasoner);
+	ReasonerFrame(const ReasonerFrameId& frameId, SimpleForwardReasoner& inReasoner);
 
 	hash_type hash() const;
+
+	const ReasonerEntrypoint& entrypoint() const;
+
+	const ReasonerFrameId& frameId() const;
+
+	Nullable<NodeRoot> entrypointRootFor(ImmutableTreeVector<JOV> jovs);
+
+	bool hasNodeCovering(ControlFlowGraphLabel label, ImmutableTreeVector<JOV> jovs);
 
 	void recalculate();
 
@@ -67,25 +75,67 @@ public:
 
 	ImmutableTreeVector<JOV> entryJOVs() const;
 
-	const MapWithIndex<Node, ReasonerEntrypoint>& getCalledFrames() const;
+	const TwoWaySetMap<ControlFlowGraphLabel, NodeRoot>& getNodeRoots() const
+		{
+		return mNodeRoots;
+		}
+
+	Nullable<NodeRoot> bestRootFor(ControlFlowGraphLabel label, ImmutableTreeVector<JOV> jovs);
+
+	bool isMergeNode(ControlFlowGraphLabel label) const;
+
+	const MapWithIndex<Node, ReasonerFrameId>& getCalledFrames() const;
+
+	const MapWithIndex<pair<Node, ReasonerFrameId>, JudgmentOnAction>& getCalledFrameJOAs() const { return mCalledFrameJOAs; };
 
 	//indicate that the exits from an entrypoint in 'getCalledFrames' has changed its exit types
-	void entrypointExitsChanged(const ReasonerEntrypoint& downstreamEntrypoint);
+	void entrypointExitsChanged(const ReasonerFrameId& downstreamEntrypoint);
 
 	void incomingRecursion(ImmutableTreeVector<JOV> entryJOVs);
 
 	const std::set<Node>& unknownApplyNodes() const;
 
-	bool isRecursive() const;
+	const TwoWaySetMap<NodeRoot, Node>& getNodeRootToNodeMap() const;
 
-	void markRecursive();
+	void dirtyAll();
+
+	//indicate that we should completely replace this frame with 'parentFrame'
+	void markRelaxesTo(ReasonerFrameId parentFrame);
+
+	Nullable<ReasonerFrameId> relaxesTo() const;
+
+	bool exitsAreConstants() const;
+
+	bool coversEntry(const ReasonerFrame& other) const;
+
+	int64_t indexOfNodeRoot(const NodeRoot& root);
+
+	int64_t indexOfNode(const Node& root);
+
+	void clearUnnecessaryStructuresAfterCompilation();
+
+	bool recalculationDisabled() const;
+
+	void markIsRecursive();
+
+	bool isMarkedRecursive() const;
+
+	const TwoWaySetMap<Node, Node>& getNodeFlows() const;
 
 private:
+	//determine what actual entrypoint we want to use when 'caller' is calling 'callee' at 'callLocation'
+	//if there is no recursion, then this is 'callee', but it might be a parent frame in 'caller'.
+	static ReasonerFrameId getFrameTransition(
+							const ReasonerFrameId& caller,
+							Nullable<std::string> callLocation,
+							const ReasonerEntrypoint& callee
+							);
+
 	void addRoot(NodeRoot root);
 
 	void insertRoot(NodeRoot root);
 
-	void propagateNode(const Node& label);
+	void propagateNode(const Node& label, long pathLength = 0);
 
 	void recalculateNodeRoot(NodeRoot root);
 
@@ -96,20 +146,37 @@ private:
 			const ControlFlowContinuation& continuation, 
 			const ImmutableTreeVector<JOV>& jovs,
 			const ControlFlowNodeBody& nodeBody,
-			const Nullable<JOV>& result
+			const Nullable<JOV>& result,
+			long pathLength
 			);
 
-	bool mIsRecursive;
+	bool mHasExceptions;
+
+	bool mDisableRecalculation;
+
+	bool mIsMarkedRecursive;
 
 	SimpleForwardReasoner& mReasoner;
 
-	ReasonerEntrypoint mEntrypoint;
+	ReasonerFrameId mFrameId;
 
 	TwoWaySetMap<ControlFlowGraphLabel, NodeRoot> mNodeRoots;
 
 	TwoWaySetMap<NodeRoot, Node> mNodes;
 
-	MapWithIndex<Node, ReasonerEntrypoint> mCalledFrames;
+	std::set<Node> mNodesWithNonconstAxioms;
+
+	TwoWaySetMap<Node, Node> mNodeFlows;
+
+	std::set<Node> mNodesExiting;
+
+	map<NodeRoot, int64_t> mNodeRootIndices;
+
+	map<Node, int64_t> mNodeIndices;
+
+	MapWithIndex<Node, ReasonerFrameId> mCalledFrames;
+
+	MapWithIndex<pair<Node, ReasonerFrameId>, JudgmentOnAction> mCalledFrameJOAs;
 
 	std::set<NodeRoot> mDirtyNodes;
 
@@ -124,6 +191,8 @@ private:
 	JudgmentOnAction mExits;
 
 	hash_type mHash;
+
+	Nullable<ReasonerFrameId> mRelaxesTo;
 };
 
 macro_defineCppmlComparisonOperators(ReasonerFrame::Node);

@@ -20,7 +20,7 @@
 
 namespace Fora {
 
-void ReasonerEntrypointGraph::addRoot(ReasonerEntrypoint root)
+void ReasonerEntrypointGraph::addRoot(ReasonerFrameId root)
 	{
 	ensure(root);
 
@@ -32,7 +32,17 @@ void ReasonerEntrypointGraph::addRoot(ReasonerEntrypoint root)
 	markReachable(root);
 	}
 
-void ReasonerEntrypointGraph::markDirty(ReasonerEntrypoint entrypoint)
+void ReasonerEntrypointGraph::removeRoot(ReasonerFrameId root)
+	{
+	mRootFrames.erase(root);
+	}
+
+bool ReasonerEntrypointGraph::isRoot(ReasonerFrameId root) const
+	{
+	return mReachableFrames.find(root) != mReachableFrames.end();
+	}
+
+void ReasonerEntrypointGraph::markDirty(ReasonerFrameId entrypoint)
 	{
 	if (isDirty(entrypoint))
 		return;
@@ -43,7 +53,7 @@ void ReasonerEntrypointGraph::markDirty(ReasonerEntrypoint entrypoint)
 		mDirtyReachableFrames.insert(entrypoint);
 	}
 
-void ReasonerEntrypointGraph::markReachable(ReasonerEntrypoint entrypoint)
+void ReasonerEntrypointGraph::markReachable(ReasonerFrameId entrypoint)
 	{
 	if (isReachable(entrypoint))
 		return;
@@ -57,14 +67,14 @@ void ReasonerEntrypointGraph::markReachable(ReasonerEntrypoint entrypoint)
 		markReachable(child);
 	}
 
-Nullable<ReasonerEntrypoint> ReasonerEntrypointGraph::popDirtyReachableFrame()
+Nullable<ReasonerFrameId> ReasonerEntrypointGraph::popDirtyReachableFrame()
 	{
 	while (true)
 		{
 		if (mDirtyReachableFrames.size() == 0)
 			return null();
 
-		ReasonerEntrypoint entrypoint = *mDirtyReachableFrames.begin();
+		ReasonerFrameId entrypoint = *mDirtyReachableFrames.begin();
 
 		//check that it's reachable (since we don't update the reachability graph when we drop nodes)
 		//if it still is, we can return it.
@@ -79,10 +89,10 @@ Nullable<ReasonerEntrypoint> ReasonerEntrypointGraph::popDirtyReachableFrame()
 		}
 	}
 
-void ReasonerEntrypointGraph::verifyIsReachable(ReasonerEntrypoint entrypoint)
+bool ReasonerEntrypointGraph::computeIsReachable(ReasonerFrameId entrypoint) const
 	{
-	std::set<ReasonerEntrypoint> seen;
-	std::vector<ReasonerEntrypoint> stack;
+	std::set<ReasonerFrameId> seen;
+	std::vector<ReasonerFrameId> stack;
 
 	stack.push_back(entrypoint);
 
@@ -90,7 +100,36 @@ void ReasonerEntrypointGraph::verifyIsReachable(ReasonerEntrypoint entrypoint)
 	//if we find a root, we're set.
 	while (stack.size())
 		{
-		ReasonerEntrypoint e = stack.back();
+		ReasonerFrameId e = stack.back();
+		stack.pop_back();
+
+		if (seen.find(e) == seen.end() && isReachable(e))
+			{
+			seen.insert(e);
+
+			if (mRootFrames.find(e) != mRootFrames.end())
+				return true;
+
+			for (auto parent: getCallers(e))
+				stack.push_back(parent);
+			}
+		}
+
+	return false;
+	}
+
+void ReasonerEntrypointGraph::verifyIsReachable(ReasonerFrameId entrypoint)
+	{
+	std::set<ReasonerFrameId> seen;
+	std::vector<ReasonerFrameId> stack;
+
+	stack.push_back(entrypoint);
+
+	//walk up the transitive closure of the parents marked reachable.
+	//if we find a root, we're set.
+	while (stack.size())
+		{
+		ReasonerFrameId e = stack.back();
 		stack.pop_back();
 
 		if (seen.find(e) == seen.end() && isReachable(e))
@@ -113,9 +152,9 @@ void ReasonerEntrypointGraph::verifyIsReachable(ReasonerEntrypoint entrypoint)
 		}
 	}
 
-bool ReasonerEntrypointGraph::setEdges(ReasonerEntrypoint frame, const std::set<ReasonerEntrypoint>& called)
+bool ReasonerEntrypointGraph::setEdges(ReasonerFrameId frame, const std::set<ReasonerFrameId>& called)
 	{
-	std::set<ReasonerEntrypoint> toAdd, toDrop;
+	std::set<ReasonerFrameId> toAdd, toDrop;
 
 	for (auto e: called)
 		if (!mFrameGraph.contains(frame, e))
@@ -138,17 +177,17 @@ bool ReasonerEntrypointGraph::setEdges(ReasonerEntrypoint frame, const std::set<
 	return toDrop.size() || toAdd.size();
 	}
 
-const std::set<ReasonerEntrypoint>& ReasonerEntrypointGraph::getCalledFrames(ReasonerEntrypoint frame) const
+const std::set<ReasonerFrameId>& ReasonerEntrypointGraph::getCalledFrames(ReasonerFrameId frame) const
 	{
 	return mFrameGraph.getValues(frame);
 	}
 
-const std::set<ReasonerEntrypoint>& ReasonerEntrypointGraph::getCallers(ReasonerEntrypoint frame) const
+const std::set<ReasonerFrameId>& ReasonerEntrypointGraph::getCallers(ReasonerFrameId frame) const
 	{
 	return mFrameGraph.getKeys(frame);
 	}
 
-void ReasonerEntrypointGraph::ensure(ReasonerEntrypoint entrypoint)
+void ReasonerEntrypointGraph::ensure(ReasonerFrameId entrypoint)
 	{
 	if (mFrames.find(entrypoint) != mFrames.end())
 		return;
@@ -157,12 +196,12 @@ void ReasonerEntrypointGraph::ensure(ReasonerEntrypoint entrypoint)
 	mDirtyFrames.insert(entrypoint);
 	}
 
-bool ReasonerEntrypointGraph::isDirty(ReasonerEntrypoint frame) const
+bool ReasonerEntrypointGraph::isDirty(ReasonerFrameId frame) const
 	{
 	return mDirtyFrames.find(frame) != mDirtyFrames.end();
 	}
 
-bool ReasonerEntrypointGraph::isReachable(ReasonerEntrypoint frame) const
+bool ReasonerEntrypointGraph::isReachable(ReasonerFrameId frame) const
 	{
 	return mReachableFrames.find(frame) != mReachableFrames.end();
 	}

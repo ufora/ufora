@@ -27,6 +27,50 @@ namespace Fora {
 
 class JudgmentMerger {
 public:
+	JudgmentOnResult collapseJORToComplexity(JudgmentOnResult jor, int maxTerms)
+		{
+		std::set<JOV> jovs;
+
+		auto insertJOV = [&](JOV newJOV) {
+			std::set<JOV> toRemove;
+			for (auto j: jovs)
+				if (newJOV.covers(j))
+					toRemove.insert(j);
+			for (auto j: toRemove)
+				jovs.erase(j);
+			jovs.insert(newJOV);
+			};
+
+		auto addJOV = [&](JOV newJOV) {
+			for (auto j: jovs)
+				{
+				JOV merged = mergeJudgments(j, newJOV);
+
+				if (!classMediatorCount(merged).unknownJudgmentsSeen() || 
+						classMediatorCount(j).unknownJudgmentsSeen())
+					{
+					insertJOV(merged);
+					return;
+					}
+				}
+
+			insertJOV(newJOV);
+
+			if (jovs.size() > maxTerms)
+				{
+				JOV finalMerge = newJOV;
+				for (auto j: jovs)
+					finalMerge = mergeJudgments(finalMerge, j);
+				insertJOV(finalMerge);
+				}
+			};
+
+		for (auto j: jor.vals())
+			addJOV(j);
+
+		return JudgmentOnResult(jovs);
+		}
+
 	JudgmentOnResult collapseJOR(JudgmentOnResult jor) const
 		{
 		if (jor.vals().size() == 0)
@@ -73,7 +117,8 @@ public:
 		}
 
 	@type ClassMediatorCounterVisitor = 
-		int classMediatorsSeen, 
+		int classMediatorsSeen,
+		ImmutableTreeSet<ClassBody> allClassMediators,
 		int unknownJudgmentsSeen
 
 	{
@@ -89,8 +134,14 @@ public:
 						 bool& outKeepProcessing
 						 )
 			{
-			if (in.isUnknown())
-				unknownJudgmentsSeen()++;
+			@match JudgmentOnValueAtom(in)
+				-| Unknown() ->> {
+					unknownJudgmentsSeen()++;
+					}
+				-| Typed(Symbol()) ->> {
+					unknownJudgmentsSeen()++;
+					}
+				-| _ ->> {}
 			}
 
 		void processDown(const JudgmentOnValue& in,
@@ -101,12 +152,23 @@ public:
 				unknownJudgmentsSeen()++;
 			}
 
+		void processDown(const JudgmentOnValueTupleExtras& in,
+						 bool& outKeepProcessing
+						 )
+			{
+			if (in.isExtras())
+				unknownJudgmentsSeen()++;
+			}
+
 		void processDown(const JudgmentOnValueClass& in,
 						 bool& outKeepProcessing
 						 )
 			{
-			if (!in.isUnknown())
+			if (in.isClass())
+				{
 				classMediatorsSeen()++;
+				allClassMediators() = allClassMediators() + in.getClass().classBody();
+				}
 			else
 				unknownJudgmentsSeen()++;
 			}
@@ -117,11 +179,12 @@ public:
 			}
 	};
 
-	ClassMediatorCounterVisitor classMediatorCount(JOV jov) const
+	template<class T>
+	ClassMediatorCounterVisitor classMediatorCount(T value) const
 		{
-		ClassMediatorCounterVisitor vis(0,0);
+		ClassMediatorCounterVisitor vis(0, emptyTreeSet(), 0);
 
-		::visit(jov, vis);
+		::visit(value, vis);
 
 		return vis;
 		}
@@ -295,25 +358,22 @@ public:
 		return null() << jov2;
 		}
 	    
-	Nullable<Symbol> mergeNames(Nullable<Symbol> l, Nullable<Symbol> r) const
-		{
-		if (l == r)
-			return l;
-		return null();
-		}
-
 	JudgmentOnValue		mergeJudgments(JudgmentOnValueTuple lhs, const JudgmentOnValueTuple& rhs) const
 		{
 		//the elements we have in common we can just use the mergeJudgments function recursively
 		uword_t pairwiseElementCount = std::min(lhs.jovs().size(), rhs.jovs().size());
 		
+		for (long k = 0; k < pairwiseElementCount; k++)
+			if (lhs.names()[k] != rhs.names()[k])
+				pairwiseElementCount = k;
+
 		ImmutableTreeVector<JudgmentOnValue> subjovs;
 		ImmutableTreeVector<Nullable<Symbol> > subnames;
 		
 		for (long k = 0; k < pairwiseElementCount; k++)
 			{
 			subjovs = subjovs + mergeJudgments(lhs.jovs()[k], rhs.jovs()[k]);
-			subnames = subnames + mergeNames(lhs.names()[k], rhs.names()[k]);
+			subnames = subnames + lhs.names()[k];
 			}
 		
 		Nullable<JudgmentOnValue> extraJOV;
@@ -332,7 +392,7 @@ public:
 		
 		if (!extraJOV)
 			return JOV::Tuple(JOVT(subjovs, subnames, JOVTE::NoExtras()));
-			else
+		else
 			return JOV::Tuple(JOVT(subjovs, subnames, JOVTE::Extras(*extraJOV)));
 		}
 
@@ -362,7 +422,7 @@ public:
 				)
 			);
 
-		if (vectorDepth(val) > 2)
+		if (vectorDepth(val) > 3)
 			return jovAnyVector();
 
 		return val;
@@ -409,21 +469,73 @@ bool ReasonerFrame::NodeRoot::hasNoUnknowns() const
 	return true;
 	}
 
-ReasonerFrame::ReasonerFrame(const ReasonerEntrypoint& entrypoint, SimpleForwardReasoner& reasoner) : 
-		mEntrypoint(entrypoint),
-		mGraphLoopPoints(entrypoint.graph()),
-		mIsRecursive(false),
-		mReasoner(reasoner)
+ReasonerFrame::ReasonerFrame(const ReasonerFrameId& frameId, SimpleForwardReasoner& reasoner) : 
+		mFrameId(frameId),
+		mGraphLoopPoints(frameId.entrypoint().graph()),
+		mHasExceptions(false),
+		mReasoner(reasoner),
+		mDisableRecalculation(false),
+		mIsMarkedRecursive(false)
 	{
-	LOG_DEBUG << "Creating new entrypoint " << mEntrypoint;
+	LOG_DEBUG << "Creating new entrypoint " << entrypoint();
 
-	NodeRoot root(ControlFlowGraphLabel(), entrypoint.jovs());
+	mHash = mFrameId.hash();
 
-	mDirtyNodes.insert(root);
+	ReasonerEntrypoint entrypoint = frameId.entrypoint();
 
-	mNodeRoots.insert(root.label(), root);
+	if (!entrypoint.applyJOA())
+		addRoot(NodeRoot(entrypoint.label(), entrypoint.jovs()));
+	else
+		{
+		//we are an apply node with an incoming value
+		auto nodeBody = entrypoint.graph()[entrypoint.label()].body();
+		@match ControlFlowNodeBody(nodeBody)
+			-| Apply(_, normalCont, exceptionCont) ->> {
+				@match ControlFlowContinuation(normalCont)
+					-| Node(targetLabel, args) ->> {
+						for (auto resJOV: entrypoint.applyJOA()->resultPart().vals())
+							{
+							ImmutableTreeVector<JOV> jovsToMerge = getJudgment(args, entrypoint.jovs(), null() << resJOV, null() << nodeBody);
 
-	mHash = entrypoint.hash();
+							addRoot(NodeRoot(ControlFlowGraphLabel(targetLabel), jovsToMerge));
+							}
+						}
+					-| Return(arg, isException) ->> {
+						for (auto resJOV: entrypoint.applyJOA()->resultPart().vals())
+							{
+							JOV resultJOV = getJudgment(arg, entrypoint.jovs(), null() << resJOV, null() << nodeBody);
+
+							mExits = mExits | (
+								isException ? 
+									JudgmentOnAction::Throws(resultJOV) : 
+									JudgmentOnAction::Value(resultJOV)
+								);
+							}
+						mDisableRecalculation = true;
+						}
+				}
+			-| _ ->> {
+				lassert_dump(
+					false,
+					"If an entrypoint has an applyJOA, it should have been created from an apply node."
+					);
+				}
+		}
+	}
+
+void ReasonerFrame::markIsRecursive()
+	{
+	mIsMarkedRecursive = true;
+	}
+
+bool ReasonerFrame::isMarkedRecursive() const
+	{
+	return mIsMarkedRecursive;
+	}
+
+bool ReasonerFrame::recalculationDisabled() const
+	{
+	return mDisableRecalculation;
 	}
 
 hash_type ReasonerFrame::hash() const
@@ -438,32 +550,102 @@ JudgmentOnAction ReasonerFrame::exits() const
 
 ControlFlowGraph ReasonerFrame::graph() const 
 	{
-	return mEntrypoint.graph(); 
+	return mFrameId.entrypoint().graph(); 
 	}
 
 ImmutableTreeVector<JOV> ReasonerFrame::entryJOVs() const 
 	{
-	return mEntrypoint.jovs(); 
+	return mFrameId.entrypoint().jovs(); 
 	}
 
-const MapWithIndex<ReasonerFrame::Node, ReasonerEntrypoint>& 
+const MapWithIndex<ReasonerFrame::Node, ReasonerFrameId>& 
 				ReasonerFrame::getCalledFrames() const
 	{
 	return mCalledFrames;
 	}
 
-void ReasonerFrame::entrypointExitsChanged(const ReasonerEntrypoint& downstreamEntrypoint)
+void ReasonerFrame::entrypointExitsChanged(const ReasonerFrameId& downstreamEntrypoint)
 	{
 	lassert(mCalledFrames.hasValue(downstreamEntrypoint));
 	for (auto node: mCalledFrames.getKeys(downstreamEntrypoint))
 		mDirtyNodes.insert(node.root());
 	}
 
+void ReasonerFrame::dirtyAll()
+	{
+	for (auto& node: mNodes.getKeysToValues())
+		mDirtyNodes.insert(node.first);
+	}
+
+Nullable<ReasonerFrameId> ReasonerFrame::relaxesTo() const
+	{
+	return mRelaxesTo;
+	}
+
+void ReasonerFrame::markRelaxesTo(ReasonerFrameId frame)
+	{
+	lassert(!mRelaxesTo);
+	lassert(!mDisableRecalculation);
+	mRelaxesTo = frame;
+	}
+
+void ReasonerFrame::clearUnnecessaryStructuresAfterCompilation()
+	{
+	mNodes = TwoWaySetMap<NodeRoot, Node>();
+	mNodeFlows = TwoWaySetMap<Node, Node>();
+	mNodesExiting.clear();
+	mNodesWithNonconstAxioms.clear();		
+
+	for (auto rootAndLabel: mNodeRoots.getValuesToKeys())
+		mNodes.insert(rootAndLabel.first, Node(rootAndLabel.first));
+	}
+
 void ReasonerFrame::recalculate()
 	{
-	LOG_DEBUG << "Calculating " << mEntrypoint << " with " 
+	mNodeRootIndices.clear();
+	mNodeIndices.clear();
+
+	if (mDisableRecalculation)
+		{
+		mDirtyNodes.clear();
+		mPendingRecursiveNodes.clear();
+		return;
+		}
+
+	if (mRelaxesTo)
+		{
+		//we're just a passthrough to another node. Clear all of our state
+		//and just copy that node's behavior into ourselves
+
+		mDirtyNodes.clear();
+		mPendingRecursiveNodes.clear();
+		mNodeRoots = TwoWaySetMap<ControlFlowGraphLabel, NodeRoot>();
+		mNodes = TwoWaySetMap<NodeRoot, Node>();
+		mNodeFlows = TwoWaySetMap<Node, Node>();
+		mNodesExiting.clear();
+		mCalledFrames.clear();
+		mCalledFrameJOAs.clear();
+		mNodeExits.clear();
+		mNodesWithNonconstAxioms.clear();
+
+		NodeRoot singleRoot(entrypoint().label(), entrypoint().jovs());
+		Node singleNode(singleRoot);
+
+		mNodeRoots.insert(singleRoot.label(), singleRoot);
+		mNodes.insert(singleRoot, singleNode);
+		
+		mCalledFrames.set(singleNode, *mRelaxesTo);
+		JudgmentOnAction result = mReasoner.getFrameFor(*mRelaxesTo)->exits();
+
+		mCalledFrameJOAs.set(make_pair(singleNode, *mRelaxesTo), result);
+		mNodeExits[singleRoot] = result;
+		mExits = result;
+
+		return;
+		}
+	
+	LOG_DEBUG << "Calculating " << mFrameId << " with " 
 		<< mPendingRecursiveNodes.size() << " pending and " << mDirtyNodes.size() << " dirty."
-		<< (isRecursive() ? "recursive":"not recursive")
 		<< ". exits=" << mExits;
 
 	for (auto pending: mPendingRecursiveNodes)
@@ -486,47 +668,51 @@ void ReasonerFrame::recalculate()
 
 	JudgmentOnResult exc = merger.collapseJOR(exitJOA.throwPart());
 
-	if (isRecursive())
+	if (mHasExceptions)
+		exc = JudgmentOnResult(JOV());
+
+	if (exitJOA.resultPart().size() > mReasoner.maxOutputJudgments() || 
+				merger.classMediatorCount(exitJOA.resultPart()).unknownJudgmentsSeen())
 		{
-		//if the judgment is recursive, we need to collapse it - this is because
-		//outgoing judgments are like a loop just like outgoing ones, and could grow
-		//overly large if we don't do this
-		JudgmentOnResult res = merger.collapseJOR(exitJOA.resultPart());
-		
+		JudgmentOnResult res = merger.collapseJORToComplexity(exitJOA.resultPart(), mReasoner.maxOutputJudgments());
+
+			{
+			LOGGER_DEBUG_T log = LOGGER_DEBUG;
+			log << "Collapsing " << 
+				exitJOA.resultPart().size() << " output judgments in\n\t" << mFrameId << "\nfrom\n";
+
+			for (auto e: exitJOA.resultPart().vals())
+				log << "\t" << prettyPrintStringWithoutWrapping(e) << "\n";
+
+			log << "to " << res;
+			}
+
 		mExits = JudgmentOnAction(
 			res, 
-			!mReasoner.allowExceptions() ? JudgmentOnResult() : exc
+			exc
 			);
 		}
 	else
+		{
 		mExits = JudgmentOnAction(
 			exitJOA.resultPart().removeExtraneousJudgments(), 
-			!mReasoner.allowExceptions() ? JudgmentOnResult() : exc
+			exc
 			);
-	}
-
-void ReasonerFrame::markRecursive()
-	{
-	mIsRecursive = true;
-	}
-
-bool ReasonerFrame::isRecursive() const
-	{
-	return mIsRecursive;
+		}
 	}
 
 void ReasonerFrame::incomingRecursion(ImmutableTreeVector<JOV> entryJOVs)
 	{
-	mIsRecursive = true;
-
+	lassert(mFrameId.entrypoint().label() == ControlFlowGraphLabel());
+	
 	//add a node root
 	for (auto& nodeRoot: mNodeRoots.getValues(ControlFlowGraphLabel()))
 		if (::covers(nodeRoot.jovs(), entryJOVs))
 			return;
 
-	mReasoner.markFrameDirty(mEntrypoint);
+	mReasoner.markFrameDirty(mFrameId);
 
-	LOG_DEBUG << "Frame " << mEntrypoint << " has incoming recursion of " << entryJOVs;
+	LOG_DEBUG << "Frame " << mFrameId << " has incoming recursion of " << entryJOVs;
 
 	mPendingRecursiveNodes.insert(NodeRoot(ControlFlowGraphLabel(), entryJOVs));
 	}
@@ -537,6 +723,16 @@ void ReasonerFrame::addRoot(NodeRoot root)
 	for (auto existingRoot: mNodeRoots.getValues(root.label()))
 		if (existingRoot.covers(root))
 			return;
+		else
+			{
+			lassert(root != existingRoot);
+			}
+
+
+	bool anyHadUnknowns = false;
+	for (auto existingRoot: mNodeRoots.getValues(root.label()))
+		if (!existingRoot.hasNoUnknowns())
+			anyHadUnknowns = true;
 
 	//see if there's a root we can collapse with that preserves type info
 	for (auto existingRoot: mNodeRoots.getValues(root.label()))
@@ -544,54 +740,81 @@ void ReasonerFrame::addRoot(NodeRoot root)
 		auto candidate = existingRoot.rootUnion(root);
 		if (candidate.hasNoUnknowns())
 			{
+			lassert(candidate.covers(existingRoot));
+			lassert_dump(
+				candidate.covers(root), 
+				"Union of \n" << prettyPrintStringWithoutWrapping(root) 
+				<< "\nand\n" << prettyPrintStringWithoutWrapping(existingRoot) << "\nis\n" 
+				<< prettyPrintStringWithoutWrapping(candidate) << "\nwhich doesn't cover the first one");
+
 			insertRoot(candidate);
 			return;
 			}
 		}
 
+	insertRoot(root);
 
-	//check if we need to add a node root. Currently, we allow up to two typed roots, or one untyped root.
-	if (mNodeRoots.getValues(root.label()).size() == 0)
+	JudgmentMerger merger;
+
+	long totalComplexity = merger.classMediatorCount(mNodeRoots.getValues(root.label())).allClassMediators().size();
+
+	long rootCount = mNodeRoots.getValues(root.label()).size();
+
+	//collapse if we have too much complexity
+	if ((rootCount > (totalComplexity * 2 + 2) || anyHadUnknowns) && rootCount > 1)
 		{
-		insertRoot(root);
-		return;
+		Nullable<NodeRoot> merged;
+
+		for (auto r: mNodeRoots.getValues(root.label()))
+			{
+			if (!merged)
+				merged = r;
+			else
+				merged = r.rootUnion(*merged);
+			}
+
+		if (SHOULD_LOG_WARN())
+			{
+			LOGGER_DEBUG_T log = LOGGER_DEBUG;
+
+			log << "Collapsing roots for "
+				<< mFrameId << ": " << root.label() << ":\n";
+			for (auto r: mNodeRoots.getValues(root.label()))
+				log << "\t" << prettyPrintStringWithoutWrapping(r) << "\n";
+			log << "\n" << "into\n\t" << prettyPrintStringWithoutWrapping(*merged);
+			}
+
+		insertRoot(*merged);
 		}
-
-	long maxRootCount = (root.label() == ControlFlowGraphLabel() ? 1 : 3);
-
-	bool allAreTyped = true;
-	for (auto existingRoot: mNodeRoots.getValues(root.label()))
-		if (!existingRoot.hasNoUnknowns())
-			allAreTyped = false;
-
-	if (mNodeRoots.getValues(root.label()).size() < maxRootCount && allAreTyped && root.hasNoUnknowns())
+		else
+	if (rootCount % 10 == 0)
 		{
-		insertRoot(root);
-		return;
-		}
+		Nullable<NodeRoot> merged;
 
-	NodeRoot newRoot = root;
-	for (auto existingRoot: mNodeRoots.getValues(root.label()))
-		newRoot = newRoot.rootUnion(existingRoot);
+		for (auto r: mNodeRoots.getValues(root.label()))
+			{
+			if (!merged)
+				merged = r;
+			else
+				merged = r.rootUnion(*merged);
+			}
 
-	if (allAreTyped)
-		{
 		LOGGER_DEBUG_T log = LOGGER_DEBUG;
 
-		log << "Collapsing roots:\n";
-		for (auto root: mNodeRoots.getValues(root.label()))
-			log << "\t" << prettyPrintStringWithoutWrapping(root) << "\n";
-		log << "\t" << prettyPrintStringWithoutWrapping(root) << "\n";
-		log << "\n" << "into\n\t" << prettyPrintStringWithoutWrapping(newRoot);
+		log << "Lots of roots (" << rootCount << ") are within complexity of " << totalComplexity << ": "
+			<< mFrameId << ": " << root.label() << ":\n";
+		for (auto r: mNodeRoots.getValues(root.label()))
+			log << "\t" << prettyPrintStringWithoutWrapping(r) << "\n";
+		log << "\n" << "merged would be\n\t" << prettyPrintStringWithoutWrapping(*merged);
+		if (merged->hasNoUnknowns())
+			log << "\nmerge had no unknowns.";
 		}
-
-	insertRoot(newRoot);
-
-	lassert(mNodeRoots.getValues(root.label()).size() <= 3);
 	}
 
 void ReasonerFrame::insertRoot(ReasonerFrame::NodeRoot newRoot)
 	{
+	lassert(!mNodeRoots.hasValue(newRoot));
+
 	//first, remove any roots this covers
 	std::set<NodeRoot> existing = mNodeRoots.getValues(newRoot.label());
 
@@ -607,7 +830,7 @@ void ReasonerFrame::insertRoot(ReasonerFrame::NodeRoot newRoot)
 	mNodeRoots.insert(newRoot.label(), newRoot);
 	mDirtyNodes.insert(newRoot);
 
-	LOG_DEBUG << "Relaxed JOVS of " << mEntrypoint << " to " << mNodeRoots.getValues(ControlFlowGraphLabel());
+	LOG_DEBUG << "Relaxed JOVS of " << mFrameId << ": " << newRoot.label() << " to " << mNodeRoots.getValues(newRoot.label());
 	}
 
 const std::set<ReasonerFrame::Node>& ReasonerFrame::unknownApplyNodes() const
@@ -625,34 +848,103 @@ void ReasonerFrame::clearNodeRoot(ReasonerFrame::NodeRoot root)
 	{	
 	for (auto node: mNodes.getValues(root))
 		{
+		if (mCalledFrames.hasKey(node))
+			{
+			auto rp = mCalledFrames.getValue(node);
+			mCalledFrameJOAs.discard(make_pair(node, rp));
+			}
+
 		mCalledFrames.discard(node);
 		mUnknownApplyNodes.erase(node);
+		mNodeFlows.dropKey(node);
+		mNodesExiting.erase(node);
+		mNodesWithNonconstAxioms.erase(node);
 		}
 
 	mNodes.dropKey(root);
 	mDirtyNodes.erase(root);
 	}
 
+ReasonerFrameId ReasonerFrame::getFrameTransition(
+									const ReasonerFrameId& caller,
+									Nullable<std::string> callLocation,
+									const ReasonerEntrypoint& callee
+									)
+	{
+	if (caller.recursion().isNone())
+		return ReasonerFrameId(callee, ReasonerRecursionFrame::None());
+
+	@match ReasonerRecursionFrame(caller.recursion())
+		-| None() ->> {
+			return ReasonerFrameId(callee, ReasonerRecursionFrame::None());
+			}
+		-| Recursive(recurseBackTo, paths, pathSoFar) ->> {
+			auto newPath = pathSoFar + make_pair(callLocation, callee.graph());
+
+			bool anyAreSubstrings = false;
+			for (long k = 0; k < paths.size() && !anyAreSubstrings; k++)
+				if (paths[k] == newPath)
+					{
+					//we recursed
+					return ReasonerFrameId(
+						recurseBackTo,
+						ReasonerRecursionFrame::Recursive(recurseBackTo, paths, emptyTreeVec())
+						);
+					}
+					else
+				if (paths[k].size() > newPath.size() && newPath == paths[k].slice(0, newPath.size()))
+					anyAreSubstrings = true;
+
+			if (anyAreSubstrings)
+				return ReasonerFrameId(
+					callee, 
+					ReasonerRecursionFrame::Recursive(recurseBackTo, paths, newPath)
+					);
+
+			//we're off the recursion
+			return ReasonerFrameId(callee, ReasonerRecursionFrame::None());
+			}
+	}
+
+const TwoWaySetMap<ReasonerFrame::Node, ReasonerFrame::Node>& ReasonerFrame::getNodeFlows() const
+	{
+	return mNodeFlows;
+	}
+
 void ReasonerFrame::propagateNode(
-		const Node& node
+		const Node& node,
+		long pathLength
 		)
 	{
 	if (mNodes.hasValue(node))
 		return;
+	
+	if (!mNodeRoots.hasValue(node.root()))
+		//it's possible that we removed our own root higher up in the propagation
+		//code
+		return;
+
 	mNodes.insert(node.root(), node);
 
-	ControlFlowNodeBody nodeBody = mEntrypoint.graph()[node.label()].body();
+	if (mNodes.getValues(node.root()).size() % 100 == 0 && 
+			mNodes.getValues(node.root()).size() / pathLength > 20)
+		LOG_WARN << mFrameId << " with root "
+			<< node.root() << " has total of " << mNodes.getValues(node.root()).size() << " in path of length " << pathLength;
+
+	ControlFlowNodeBody nodeBody = mFrameId.entrypoint().graph()[node.label()].body();
 	ImmutableTreeVector<JOV> jovs = node.jovs();
 
 	@match ControlFlowNodeBody(nodeBody)
 		-| Apply(args, normalCont, exceptionCont) ->> {
 			JOVT applyJOVt = getApplyTupleJudgment(args, jovs, null() << nodeBody);
 
-			auto axiom = mReasoner.getAxioms()->axiom(mReasoner.getCompiler(), applyJOVt);
-			
-			if (!axiom)
+			auto axiomJOA = mReasoner.getAxioms()->axiomJOA(applyJOVt);
+
+			if (!axiomJOA)
 				{
+				LOG_WARN << "Couldn't find an axiom for " << applyJOVt;
 				mUnknownApplyNodes.insert(node);
+				mHasExceptions = true;
 				return;
 				}
 			else
@@ -660,11 +952,19 @@ void ReasonerFrame::propagateNode(
 
 			JudgmentOnAction possibleResults;
 
+			if (mCalledFrames.hasKey(node))
+				{
+				auto rp = mCalledFrames.getValue(node);
+				mCalledFrameJOAs.discard(make_pair(node, rp));
+				}
+
 			mCalledFrames.discard(node);
 
-			@match Axiom(*axiom)
-				-| Expands(_, generator) ->> {
-					auto cfg = generator(ApplySignature(args));
+			@match AxiomJOA(*axiomJOA)
+				-| Expands() ->> {
+					auto axiom = mReasoner.getAxioms()->axiom(mReasoner.getCompiler(), applyJOVt);
+
+					auto cfg = axiom->getExpands().graphGeneratorFunction()(ApplySignature(args));
 
 					ImmutableTreeVector<JOV> childJOVs = 
 						mapITV(
@@ -674,13 +974,13 @@ void ReasonerFrame::propagateNode(
 								}
 							);
 
-					ReasonerEntrypoint entrypoint(cfg, childJOVs);
-
-					ReasonerEntrypoint relaxedEntrypoint = mReasoner.getRecursionRelaxationFor(
-						mEntrypoint,
+					ReasonerFrameId relaxedEntrypoint = getFrameTransition(
+						mFrameId,
 						node.label(),
-						entrypoint
+						ReasonerEntrypoint(cfg, ControlFlowGraphLabel(), childJOVs)
 						);
+
+					lassert(relaxedEntrypoint.entrypoint().graph() == cfg);
 
 					mCalledFrames.set(node, relaxedEntrypoint);
 
@@ -689,24 +989,36 @@ void ReasonerFrame::propagateNode(
 					if (!subframe)
 						return;
 
-					if (relaxedEntrypoint != entrypoint)
+					if (mFrameId.recursion().flowIsRecursion(relaxedEntrypoint.recursion()))
+						{
 						subframe->incomingRecursion(childJOVs);
+						}
 
 					possibleResults = subframe->exits();
+
+					mCalledFrameJOAs.set(make_pair(node, relaxedEntrypoint), possibleResults);
 					}
-				-| Native(callSig, result, implementation) ->> {
+				-| Native(result) ->> {
 					if (applyJOVt.computeConstant())
-						possibleResults = mReasoner.getAxioms()->resolveAxiomDirectly(mReasoner.getCompiler(), applyJOVt);
+						{
+						JudgmentOnAction constantResult = mReasoner.getAxioms()->resolveAxiomDirectly(mReasoner.getCompiler(), applyJOVt);
+						if (constantResult.size() == 1 && constantResult.jovAndIsExceptionByIndex(0).first.constant())
+							possibleResults = constantResult;
+						else
+							possibleResults = result;
+						}
 					else
+						{
+						mNodesWithNonconstAxioms.insert(node);
 						possibleResults = result;
+						}
 					}
 
 			for (auto normalResult: possibleResults.resultPart().vals())
-				followContinuation(node, normalCont, jovs, nodeBody, null() << normalResult);
+				followContinuation(node, normalCont, jovs, nodeBody, null() << normalResult, pathLength);
 
-			if (mReasoner.allowExceptions())
-				for (auto exceptionResult: possibleResults.throwPart().vals())
-					followContinuation(node, exceptionCont, jovs, nodeBody, null() << exceptionResult);
+			if (possibleResults.throwPart().vals().size())
+				mHasExceptions = true;
 			}
 		-| Cached() ->> {
 			return;
@@ -717,7 +1029,8 @@ void ReasonerFrame::propagateNode(
 				*JOV::Constant(c).convertToBoolean() ? ifTrue : ifFalse, 
 				jovs, 
 				nodeBody, 
-				null()
+				null(), 
+				pathLength
 				);
 			}
 		-| Branch(Arg(ix), ifTrue, ifFalse) ->> {
@@ -725,11 +1038,11 @@ void ReasonerFrame::propagateNode(
 
 			Nullable<bool> which = branchOn.convertToBoolean();
 			if (which)
-				followContinuation(node, *which ? ifTrue : ifFalse, jovs, nodeBody, null());
+				followContinuation(node, *which ? ifTrue : ifFalse, jovs, nodeBody, null(), pathLength);
 			else
 				{
-				followContinuation(node, ifTrue, jovs, nodeBody, null());
-				followContinuation(node, ifFalse, jovs, nodeBody, null());
+				followContinuation(node, ifTrue, jovs, nodeBody, null(), pathLength);
+				followContinuation(node, ifFalse, jovs, nodeBody, null(), pathLength);
 				}
 			}
 		-| TupleExpand(argIndex, (arity, exact, contIfMatch), ifNoMatch) ->> {
@@ -738,16 +1051,16 @@ void ReasonerFrame::propagateNode(
 			Nullable<bool> isTuple = jovIsTupleOfArity(jovs[argIndex], arity, exact);
 
 			if (!isTuple || *isTuple)
-				followContinuation(node, contIfMatch, jovs, nodeBody, null());
+				followContinuation(node, contIfMatch, jovs, nodeBody, null(), pathLength);
 			
 			if (!isTuple || !*isTuple)
-				followContinuation(node, ifNoMatch, jovs, nodeBody, null());
+				followContinuation(node, ifNoMatch, jovs, nodeBody, null(), pathLength);
 			}
 		-| Switch(Constant(c), branches, otherwise) ->> {
 			if (branches.contains(c))
-				followContinuation(node, *branches[c], jovs, nodeBody, null());
+				followContinuation(node, *branches[c], jovs, nodeBody, null(), pathLength);
 			else
-				followContinuation(node, otherwise, jovs, nodeBody, null());
+				followContinuation(node, otherwise, jovs, nodeBody, null(), pathLength);
 			}
 		-| Switch(Arg(ix), branches, otherwise) ->> {
 			JOV switchOn = jovs[ix];
@@ -760,25 +1073,42 @@ void ReasonerFrame::propagateNode(
 					branches.contains(*which) ? *branches[*which] : otherwise, 
 					jovs, 
 					nodeBody, 
-					null()
+					null(), 
+					pathLength
 					);
 			else
-				{	
+				{
 				for (auto branchAndCont: branches)
-					followContinuation(
-						node, 
-						branchAndCont.second, 
-						jovs, 
-						nodeBody, 
-						null()
-						);
+					if (!switchOn.disjoint(JOV::Constant(branchAndCont.first)))
+						followContinuation(
+							node, 
+							branchAndCont.second, 
+							jovs, 
+							nodeBody, 
+							null(), 
+							pathLength
+							);
 
-				followContinuation(node, otherwise, jovs, nodeBody, null());
+				followContinuation(node, otherwise, jovs, nodeBody, null(), pathLength);
 				}
 			}
 		-| Jump(c) ->> {
-			followContinuation(node, c, jovs, nodeBody, null());
+			followContinuation(node, c, jovs, nodeBody, null(), pathLength);
 			}
+	}
+
+Nullable<ReasonerFrame::NodeRoot> ReasonerFrame::bestRootFor(ControlFlowGraphLabel label, ImmutableTreeVector<JOV> jovs)
+	{
+	for (auto nr: mNodeRoots.getValues(label))
+		if (::covers(nr.jovs(), jovs))
+			return null() << nr;
+
+	return null();
+	}
+
+bool ReasonerFrame::isMergeNode(ControlFlowGraphLabel label) const
+	{
+	return mGraphLoopPoints.shouldCollapseJudgmentsAtNode(label);
 	}
 
 void ReasonerFrame::followContinuation(
@@ -786,29 +1116,46 @@ void ReasonerFrame::followContinuation(
 				const ControlFlowContinuation& continuation, 
 				const ImmutableTreeVector<JOV>& jovs,
 				const ControlFlowNodeBody& nodeBody,
-				const Nullable<JOV>& result
+				const Nullable<JOV>& result,
+				long pathLength
 				)
 	{
 	@match ControlFlowContinuation(continuation)
 		-| Node(targetLabel, args) ->> {
 			ImmutableTreeVector<JOV> jovsToMerge = getJudgment(args, jovs, result, null() << nodeBody);
 
-			LOG_DEBUG << mEntrypoint.hash() << ": " << path << " with body = " << nodeBody << ", cont= "
+			LOG_DEBUG << mFrameId.hash() << ": " << path << " with body = " << nodeBody << ", cont= "
 				<< continuation 
 				<< ", and res=" << result
-				<< " -> " << Node(path.root(), ControlFlowGraphLabel(targetLabel), jovsToMerge);
+				<< " -> " 
+				<< (mGraphLoopPoints.shouldCollapseJudgmentsAtNode(null() << targetLabel) ? "root ":"subnode ")
+				<< Node(path.root(), ControlFlowGraphLabel(targetLabel), jovsToMerge)
+				;
 
 			if (mGraphLoopPoints.shouldCollapseJudgmentsAtNode(null() << targetLabel))
+				{
+				NodeRoot root(ControlFlowGraphLabel(targetLabel), jovsToMerge);
+
 				addRoot(NodeRoot(ControlFlowGraphLabel(targetLabel), jovsToMerge));
+				mNodeFlows.insert(path, Node(root));
+				}
 			else
-				propagateNode(Node(path.root(), ControlFlowGraphLabel(targetLabel), jovsToMerge));
+				{
+				Node node(path.root(), ControlFlowGraphLabel(targetLabel), jovsToMerge);
+
+				propagateNode(node, pathLength+1);
+				mNodeFlows.insert(path, node);
+				}
 			}
 		-| Return(arg, isException) ->> {
-			if (isException && !mReasoner.allowExceptions())
+			if (isException)
+				{
+				mHasExceptions = true;
 				return;
+				}
 			
 			JOV resultJOV = getJudgment(arg, jovs, result, null() << nodeBody);
-			
+
 			JudgmentOnAction resJOA = 
 				isException ? 
 					JudgmentOnAction::Throws(resultJOV) : 
@@ -816,7 +1163,104 @@ void ReasonerFrame::followContinuation(
 					;
 
 			mNodeExits[path.root()] = mNodeExits[path.root()] | resJOA;
+
+			mNodesExiting.insert(path);
 			}
+	}
+
+const TwoWaySetMap<ReasonerFrame::NodeRoot, ReasonerFrame::Node>& ReasonerFrame::getNodeRootToNodeMap() const
+	{
+	return mNodes;
+	}
+
+const ReasonerEntrypoint& ReasonerFrame::entrypoint() const
+	{
+	return mFrameId.entrypoint();
+	}
+
+const ReasonerFrameId& ReasonerFrame::frameId() const
+	{
+	return mFrameId;
+	}
+
+bool ReasonerFrame::coversEntry(const ReasonerFrame& other) const
+	{
+	if (mFrameId.entrypoint().label() != ControlFlowGraphLabel() || 
+			other.entrypoint().label() != ControlFlowGraphLabel())
+		return false;
+	
+	if (other.exits() != exits())
+		return false;
+
+	if (getNodeRoots().getValues(ControlFlowGraphLabel()) == other.getNodeRoots().getValues(ControlFlowGraphLabel()))
+		return frameId() > other.frameId();
+
+	for (auto otherRoot: other.getNodeRoots().getValues(ControlFlowGraphLabel()))
+		{
+		bool otherHas = false;
+		for (auto ownRoot: mNodeRoots.getValues(ControlFlowGraphLabel()))
+			if (ownRoot.covers(otherRoot))
+				otherHas = true;
+		if (!otherHas)
+			return false;
+		}
+
+	return true;
+	}
+
+bool ReasonerFrame::exitsAreConstants() const
+	{
+	return mExits.throwPart().vals().size() == 0 && mExits.resultPart().vals().size() == 1 && 
+		mExits.resultPart().vals()[0].constant();
+	}
+
+Nullable<ReasonerFrame::NodeRoot> ReasonerFrame::entrypointRootFor(ImmutableTreeVector<JOV> jovs)
+	{
+	for (auto& root: mNodeRoots.getValues(ControlFlowGraphLabel()))
+		if (::covers(root.jovs(), jovs))
+			return null() << root;
+
+	return null();
+	}
+
+bool ReasonerFrame::hasNodeCovering(ControlFlowGraphLabel label, ImmutableTreeVector<JOV> jovs)
+	{
+	for (auto& nodeAndRoots: mNodes.getValuesToKeys())
+		{
+		Node node = nodeAndRoots.first;
+		if (node.label() == label && ::covers(node.jovs(), jovs))
+			return true;
+		}
+
+	return false;
+	}
+
+int64_t ReasonerFrame::indexOfNodeRoot(const NodeRoot& root)
+	{
+	if (mNodeRootIndices.size() == 0)
+		{
+		for (auto& rootAndNodes: mNodes.getKeysToValues())
+			{
+			int64_t index = mNodeRootIndices.size();
+			mNodeRootIndices[rootAndNodes.first] = index;
+			}
+		}
+
+	return mNodeRootIndices[root];
+	}
+
+int64_t ReasonerFrame::indexOfNode(const Node& root)
+	{
+	if (mNodeIndices.size() == 0)
+		{
+		for (auto& nodeAndRoots: mNodes.getValuesToKeys())
+			{
+			int64_t index = mNodeIndices.size() + mNodes.keyCount();
+			mNodeIndices[nodeAndRoots.first] = index;
+			}
+		}
+
+	return mNodeIndices[root];
 	}
 
 }

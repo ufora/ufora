@@ -22,6 +22,7 @@ Every node in this graph is either a terminal FORA value or it's an apply of ano
 import logging
 import ctypes
 
+import ufora.FORA.python.Runtime as Runtime
 import ufora.native.FORA as ForaNative
 import ufora.native.Hash as Hash
 import ufora.BackendGateway.ComputedGraph.ComputedGraph as ComputedGraph
@@ -399,6 +400,20 @@ class ComputedValue(ComputedGraph.Location):
     @ComputedGraph.ExposedFunction()
     def increaseRequestCount(self, *args):
         ComputedValueGateway.getGateway().increaseRequestCount(self, self.cumulusComputationDefinition)
+
+    @ComputedGraph.ExposedFunction()
+    def triggerCompilation(self, *args):
+        runtime = Runtime.getMainRuntime()
+        axioms = runtime.getAxioms()
+        compiler = runtime.getTypedForaCompiler()
+        instructionGraph = runtime.getInstructionGraph()
+        
+        reasoner = ForaNative.SimpleForwardReasoner(compiler, instructionGraph, axioms)
+        
+        frame = reasoner.reasonAboutComputationDefinition(self.cumulusComputationDefinition)
+
+        logging.critical("Result was %s", frame.exits())
+
 
     @ComputedGraph.ExposedFunction()
     def decreaseRequestCount(self, *args):
