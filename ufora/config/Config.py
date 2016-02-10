@@ -203,7 +203,7 @@ class Config(object):
         # LOGGING_OVERRIDES may be empty, or may contain a list of tuples.
         # Each tuple should look like (scopeRegex, fileRegex, logLevel)
         loggingLevelOverridesString = self.getConfigValue("LOGGING_OVERRIDES", None)
-        loggingLevelOverridesString = '[[".*",".*Compiler.*", "INFO"],[".*", ".*ReasoningInterpreter.*","DEBUG"]]'
+        
         if loggingLevelOverridesString:
             overrides = json.loads(loggingLevelOverridesString)
             self.scopedLoggingLevelOverrides = []
