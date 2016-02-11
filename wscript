@@ -131,6 +131,8 @@ def configure(conf):
         mandatory=False
         )
 
+    conf.check(lib='cuda', uselib_store='CUDA', mandatory=True)
+    
 boost_libs = [
     'boost_date_time',
     'boost_filesystem',
@@ -345,7 +347,8 @@ def build(bld):
         'TCMALLOC',
         'LLVM',
         'fortran',
-        'fora_thirdparty'
+        'fora_thirdparty',
+        'CUDA'
         ]
 
     bld.shlib(

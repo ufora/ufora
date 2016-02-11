@@ -38,6 +38,8 @@
 #include "../TypedFora/ABI/NativeLayoutType.hppml"
 #include "../TypedFora/ABI/TestTypedForaValuesIdentical.hppml"
 #include "../TypedFora/TypedFora.hppml"
+#include "../CUDA/CUDAExecutionContext.hppml"
+#include "../CUDA/NativeCFGToPTX.hppml"
 
 #include <boost/algorithm/string.hpp>
 
@@ -46,6 +48,7 @@ using namespace Fora;
 using TypedFora::Abi::nativeLayoutType;
 
 extern "C" {
+
 
 ReturnValue<ForaStackTrace> FORA_clib_addStackTraces(
 	const ForaStackTrace& left, const ForaStackTrace& right
@@ -438,6 +441,58 @@ def_FORA_clib_arith_from_string(float, Float32)
 
 //def_FORA_clib_arith_from_string(double, Float64)
 
+ReturnValue<ImplValContainer, string_type> FORA_clib_CUDAVectorApply(
+            const ImplValContainer& fun,
+            const ImplValContainer& vec
+            )
+    {
+    static CUDAExecutionContext* c = 0;
+    
+    try {
+	    if (!c)
+	    	c = new CUDAExecutionContext();
+		}
+	catch (UnableToConvertToPTX& e)
+		{
+	    return slot1(
+	        string_type(
+		        e.reason(), 
+		        Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+		        )
+	        );
+		}
+    
+    if (!vec.type().isVector())
+	    {
+	    return slot1(
+	        string_type(
+		        "CUDA call needs a Vector", 
+		        Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+		        )
+	        );
+	    }
+	    
+    try {
+	    ImplValContainer result =
+	        c->executeKernel(
+		        ImplValContainer(fun),
+		        ImplValContainer(vec)
+		        );
+	        
+	    return slot0(ImplValContainer(result));
+	    }
+    catch (UnableToConvertToPTX e)
+	    {
+	    return slot1(
+	        string_type(
+		        e.reason(), 
+		        Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool()
+		        )
+	        );
+	    }
+    }
+
+
 } // extern "C"
 
 Type upcastArithmeticTypes(const Type& ty1, const Type& ty2)
@@ -587,6 +642,19 @@ public:
 	
 		void dumpAxioms()
 			{
+	        AxiomGroups("Atom") += 
+	        	LibcallAxiomGroup::create(
+	                JOVT() +
+	                    "CUDAVectorApply" +
+	                    "Call" +
+	                    JOV() +
+	                    JOV(),
+	                ReturnSlots() + 
+	                    ReturnSlot::Normal(JOV()) +
+	                    ReturnSlot::Exception(JOV::OfType(Type::String())),
+	                &FORA_clib_CUDAVectorApply,
+	                emptyTreeVec() + (uword_t)2 + (uword_t)3);
+
 			AxiomGroups("Atom") +=
 				LibcallAxiomGroup::create(
 					JOVT() +
@@ -647,22 +715,22 @@ public:
 				nameMap = nameMap + string("isNormal") + string("FORA_clib_floatXXIsNormal");
 				nameMap = nameMap + string("isFinite") + string("FORA_clib_floatXXIsFinite");
 				nameMap = nameMap + string("isInfinite") + string("FORA_clib_floatXXIsInfinite");
-                
-                ImmutableTreeMap<string, string> descriptionMap;
-                descriptionMap = descriptionMap + string("isNan") + 
-                    string("Return whether or not a float value is NaN (\"not a number\")");
-                descriptionMap = descriptionMap + string("isNormal") +
-                    string("Return whether or not a float is a \"normal\" value "
-                        "(ie, not infinite, or not NaN).");
-                descriptionMap = descriptionMap + string("isFinite") + 
-                    string("Return whether or not a float is finite");
-                descriptionMap = descriptionMap + string("isInfinite") + 
-                    string("Return whether or not a string is infinite "
-                        "(either positive or negative infinity)");
+    
+    ImmutableTreeMap<string, string> descriptionMap;
+    descriptionMap = descriptionMap + string("isNan") + 
+        string("Return whether or not a float value is NaN (\"not a number\")");
+    descriptionMap = descriptionMap + string("isNormal") +
+        string("Return whether or not a float is a \"normal\" value "
+        "(ie, not infinite, or not NaN).");
+    descriptionMap = descriptionMap + string("isFinite") + 
+        string("Return whether or not a float is finite");
+    descriptionMap = descriptionMap + string("isInfinite") + 
+        string("Return whether or not a string is infinite "
+        "(either positive or negative infinity)");
 
 				for (long k = 0; k < nameMap.size();k++)
 					{
-                    auto axiomPtr = AxiomGroup::libcallAxiomGroup(
+        auto axiomPtr = AxiomGroup::libcallAxiomGroup(
 						JOVT() +
 							JOV::OfType(Type::Float(bitness)) + 
 							"Member" +
@@ -677,15 +745,15 @@ public:
 						emptyTreeVec() + (uword_t)0
 						);
 
-                    axiomPtr->setMetadata(
-                        AxiomMetadataUtil::createMarkdownAlternative(
-                            "#### Usage\n\n"
-                            "    floatValue." + nameMap.pairAtPosition(k).first + "\n\n"
-                            "#### Description\n\n" + descriptionMap.pairAtPosition(k).second + "\n\n"
-                            "#### Examples\n\n"
-                            "    (1.0)." + nameMap.pairAtPosition(k).first + "\n\n"
-                            )
-                        );
+        axiomPtr->setMetadata(
+        AxiomMetadataUtil::createMarkdownAlternative(
+        "#### Usage\n\n"
+        "    floatValue." + nameMap.pairAtPosition(k).first + "\n\n"
+        "#### Description\n\n" + descriptionMap.pairAtPosition(k).second + "\n\n"
+        "#### Examples\n\n"
+        "    (1.0)." + nameMap.pairAtPosition(k).first + "\n\n"
+        )
+        );
 
 					AxiomGroups("Atom") += axiomPtr;
 					}

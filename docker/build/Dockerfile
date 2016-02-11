@@ -88,3 +88,19 @@ ENV CCACHE_COMPILERCHECK content
 RUN ln -s /usr/bin/clang-3.5 /usr/bin/clang
 RUN ln -s /usr/bin/clang++-3.5 /usr/bin/clang++
 RUN mkdir /var/core
+
+#install CUDA
+RUN wget http://developer.download.nvidia.com/compute/cuda/repos/ubuntu1404/x86_64/cuda-repo-ubuntu1404_7.5-18_amd64.deb
+
+RUN dpkg -i cuda-repo-ubuntu1404_7.5-18_amd64.deb
+
+RUN apt-get update
+
+RUN apt-get install -y --no-install-recommends --force-yes cuda-nvrtc-7-5 \
+    cuda-cudart-7-5 cuda-drivers libcuda1-352 cuda-core-7-5 cuda-driver-dev-7-5
+
+# ensure that we have cuda libraries where we need them
+RUN cd /usr/lib && ln -s /usr/local/cuda/lib64/stubs/libcuda.so && ldconfig
+
+RUN echo "/usr/local/cuda/lib64/stubs" >> /etc/ld.so.conf.d/cuda.conf && ldconfig
+
