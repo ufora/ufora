@@ -512,7 +512,9 @@ PythonAstConverter::PythonAstConverter(
     mPyBoundMethod = getModuleMember(pyforaBuiltins, "PyBoundMethod");
 
     mPyObjectBaseMixin = getModuleMember(pyforaBuiltins, "PyObjectBase");
-        
+    lassert_dump(mPyObjectBaseMixin.type().isClass() || mPyObjectBaseMixin.type().isNothing(),
+                 "pyObjectBaseMixin must be 'noting' or an object");
+
     mPyGeneratorFactory = getModuleMember(pyforaBuiltins, "Generator");
 
     mPySliceFactory = getModuleMember(pyforaBuiltins, "Slice");
@@ -893,13 +895,13 @@ PythonAstConverter::convertPythonClassBodyFunctionDefToForaClassDefinitionTerms(
     //check if it's @staticmethod or @property
     ImmutableTreeVector<PythonAstStatement> body = functionDef.body();
     if (decoratorList.size() > 0) {
-        if (decoratorList.size() == 1 
+        if (decoratorList.size() == 1
             and decoratorList[0].isName())
             {
             const std::string& decoratorName = decoratorList[0].getName().id();
 
             if (decoratorName == "staticmethod") {
-                return 
+                return
                     convertPythonClassBodyStaticMethodFunctionDefToForaClassDefinitionTerms(
                         functionDef,
                         extent
@@ -911,7 +913,7 @@ PythonAstConverter::convertPythonClassBodyFunctionDefToForaClassDefinitionTerms(
                         functionDef,
                         extent
                         );
-                }                    
+                }
             }
 
         throw PythonToForaConversionError(
@@ -937,7 +939,7 @@ PythonAstConverter::convertPythonClassBodyFunctionDefToForaClassDefinitionTerms(
                 "don't know how to convert `__init__` methods with decorators right now",
                 extent
                 );
-        
+
         return convertPythonInitDefToForaClassDefinitionTerms(functionDef, className);
         }
 
@@ -1767,7 +1769,8 @@ Expression PythonAstConverter::convertPythonAstStatementToExpression_inner(
                 PatternWithName::Anything(null() << Symbol(name)),
                 convertPythonAstClassDefToFora(
                     statement.getClassDef(),
-                    statement.extent()
+                    statement.extent(),
+                    std::vector<std::string>()
                     )
                 );
             }
@@ -2001,7 +2004,8 @@ PatternWithName PythonAstConverter::convertPythonAstExpressionToPattern(
 
 Expression PythonAstConverter::convertPythonAstClassDefToFora(
         const PythonAstStatement_ClassDefType& classDef,
-        const SimpleParseRange& extent
+        const SimpleParseRange& extent,
+        const ImmutableTreeVector<std::string>& baseClasses
         ) const
     {
     const std::string& className = classDef.name();
@@ -2016,9 +2020,9 @@ Expression PythonAstConverter::convertPythonAstClassDefToFora(
             );
         }
 
-    if (bases.size() > 0) {
+    if (bases.size() > 0 && baseClasses.size() != bases.size()) {
         throw PythonToForaConversionError(
-            "don't know how to deal with base classes right now",
+            "don't know how to deal with base classes in nested class definitions right now",
             extent
             );
         }
@@ -2032,8 +2036,8 @@ Expression PythonAstConverter::convertPythonAstClassDefToFora(
                 className
                 );
         }
-        
-    classDefinitionTerms = classDefinitionTerms + 
+
+    classDefinitionTerms = classDefinitionTerms +
         ClassDefinitionTerm::ObjectTerm(
             ObjectDefinitionTerm::Member(
                 Symbol("__class__"),
@@ -2042,47 +2046,62 @@ Expression PythonAstConverter::convertPythonAstClassDefToFora(
                 )
             );
 
-    // TODO when we support base classes, we should fill this out properly.
-    lassert(bases.size() == 0);
+
+    ImmutableTreeVector<ApplyArgument> basesMember;
+    for (const std::string& baseClass: baseClasses)
+        basesMember = basesMember + ApplyArgument::Normal(null(),
+                                                          Expression::Variable(Symbol(baseClass)));
     classDefinitionTerms = classDefinitionTerms +
         ClassDefinitionTerm::Static(
             ObjectDefinitionTerm::Member(
                 Symbol("__bases__"),
                 mPythonTupleConverter->createTupleExpression(
                     Expression::CreateTuple(
-                        ImmutableTreeVector<ApplyArgument>()
+                        basesMember
                         )
                     ),
                 1
                 )
-            );    
-
-    if (mPyObjectBaseMixin.type().isClass())
-        {
-        classDefinitionTerms = classDefinitionTerms + 
-            ClassDefinitionTerm::ObjectTerm(
-                ObjectDefinitionTerm::Mixin(
-                    Expression::Constant(
-                        CSTValue(mPyObjectBaseMixin)
-                        )
-                    )
-                );
-
-        //the class object itself is also a PyObject
-        classDefinitionTerms = classDefinitionTerms + 
-            ClassDefinitionTerm::Static(
-                ObjectDefinitionTerm::Mixin(
-                    Expression::Constant(
-                        CSTValue(mPyObjectBaseMixin)
-                        )
-                    )
-                );
-        }
-    else
-        lassert_dump(
-            mPyObjectBaseMixin.type().isNothing(), 
-            "pyObjectBaseMixin must be 'nothing' or an object"
             );
+
+    auto mixins =
+        (baseClasses.size() == 0 && mPyObjectBaseMixin.type().isClass()) ?
+        baseClasses + std::string("object") :
+        baseClasses;
+
+    for (const std::string& baseClass: mixins)
+        {
+        if (baseClass == "object")
+            {
+            classDefinitionTerms = classDefinitionTerms +
+                ClassDefinitionTerm::ObjectTerm(
+                    ObjectDefinitionTerm::Mixin(
+                        Expression::Constant(
+                            CSTValue(mPyObjectBaseMixin)
+                            )
+                        )
+                    );
+
+            //the class object itself is also a PyObject
+            classDefinitionTerms = classDefinitionTerms +
+                ClassDefinitionTerm::Static(
+                    ObjectDefinitionTerm::Mixin(
+                        Expression::Constant(
+                            CSTValue(mPyObjectBaseMixin)
+                            )
+                        )
+                    );
+            }
+        else
+            {
+            classDefinitionTerms = classDefinitionTerms +
+                ClassDefinitionTerm::Static(
+                    ObjectDefinitionTerm::Mixin(
+                        Expression::Variable(Symbol(baseClass))
+                        )
+                    );
+            }
+        }
 
     ClassDefinitionBody classDefinitionBody = ClassDefinitionBody::Empty();
 
@@ -2096,7 +2115,7 @@ Expression PythonAstConverter::convertPythonAstClassDefToFora(
             );
 
     return Expression::CreateClass(
-        className, 
+        className,
         ClassDefinition(
             classDefinitionBody,
             null() << Symbol(className),

@@ -266,6 +266,21 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
             PyAstFreeVariableAnalyses.getFreeVariables(tree)
             )
 
+    def test_freeVariables_classDef_4(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                class A: pass
+                class B(A, C, D): pass
+                """
+                )
+            )
+
+        self.assertEqual(
+            set(('C', 'D')),
+            PyAstFreeVariableAnalyses.getFreeVariables(tree)
+            )
+
     def test_freeVariables_classDef_decorator(self):
         tree = ast.parse(
             textwrap.dedent(
@@ -313,7 +328,7 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
             set(['w']),
             PyAstFreeVariableAnalyses.getFreeVariables(tree)
             )
-        
+
     def test_freeVariables_Sequence_1(self):
         # this might seem a little strange,
         # but ast parses this as a module
@@ -467,7 +482,7 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
             set(['x', 'free']),
             PyAstFreeVariableAnalyses.getFreeVariables(tree)
             )
-        
+
     def test_freeVariables_ListComp_2(self):
         tree = ast.parse(
             textwrap.dedent(
@@ -481,7 +496,7 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
             set(['free', 'x']),
             PyAstFreeVariableAnalyses.getFreeVariables(tree)
             )
-        
+
     def test_freeVariables_ListComp_3(self):
         tree = ast.parse(
             textwrap.dedent(
@@ -505,7 +520,7 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
                 """
                 )
             )
-        
+
         self.assertEqual(
             set(),
             PyAstFreeVariableAnalyses.getFreeVariables(tree)
@@ -567,7 +582,7 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
             set(['f', 'y', 'args', 'kwargs', 'free']),
             PyAstFreeVariableAnalyses.getFreeVariables(tree)
             )
-    
+
     def test_freeVariables_nestedScopes_1(self):
         tree = ast.parse(
             textwrap.dedent(
@@ -756,7 +771,7 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
                 """
                 def f(x):
                     try:
-                        x += 1 
+                        x += 1
                     except Exception as e:
                         print e.message
                     except ValueError:
@@ -957,9 +972,6 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
             )
 
 
+
 if __name__ == "__main__":
     unittest.main()
-
-
-
-

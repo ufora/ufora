@@ -74,9 +74,16 @@ FunctionDefinition = type_description(
     'FunctionDefinition',
     'sourceFileId, lineNumber, freeVariableMemberAccessChainsToId'
     )
+
+# ClassDefinition:
+#  sourceFileId: id of the File instance in which this class is defined
+#  lineNumber: the line number in which the class definition appears
+#  freeVariableMemberAccessChainToId: a dict freeVariableMemberAccessChain -> id
+#  baseClassIds: a list of (name, id) tuples of the immediate base classes of
+#                this class.
 ClassDefinition = type_description(
     'ClassDefinition',
-    'sourceFileId, lineNumber, freeVariableMemberAccessChainsToId'
+    'sourceFileId, lineNumber, freeVariableMemberAccessChainsToId, baseClassIds'
     )
 ClassInstanceDescription = type_description(
     'ClassInstanceDescription',

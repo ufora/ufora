@@ -26,7 +26,7 @@ class PyAstUtilTest(unittest.TestCase):
                 self.y = x ** 2.0
 
         dataMembers = PyAstUtil.collectDataMembersSetInInit(C)
-            
+
         self.assertEqual(
             dataMembers,
             set(['x', 'y'])
@@ -37,10 +37,10 @@ class PyAstUtilTest(unittest.TestCase):
             def __init__(self, x):
                 if x > 0:
                     self.x = x
-                
+
 
         dataMembers = PyAstUtil.collectDataMembersSetInInit(C2)
-        
+
         # in our translation, we're _always_ producing an x member
         self.assertEqual(
             dataMembers,
@@ -139,8 +139,8 @@ class PyAstUtilTest(unittest.TestCase):
         self.assertTrue(PyAstUtil.hasReturnOrYieldInOuterScope(ast.body[0]))
         returnLocs = PyAstUtil.getReturnLocationsInOuterScope(ast.body[0])
         yieldLocs = PyAstUtil.getYieldLocationsInOuterScope(ast.body[0])
-        returnLocs = map(lambda x: x - returnLocs[0] if len(returnLocs) > 0 else 0, returnLocs)
-        yieldLocs = map(lambda x: x - yieldLocs[0] if len(yieldLocs) > 0 else 0, yieldLocs)
+        returnLocs = [x - returnLocs[0] for x in returnLocs]
+        yieldLocs = [x - yieldLocs[0] for x in yieldLocs]
         self.assertEqual(returnLocs, [0, 2, 4, 12, 14, 16, 18])
         self.assertEqual(yieldLocs, [])
 
@@ -175,8 +175,10 @@ class PyAstUtilTest(unittest.TestCase):
         self.assertTrue(PyAstUtil.hasReturnOrYieldInOuterScope(ast.body[0]))
         returnLocs = PyAstUtil.getReturnLocationsInOuterScope(ast.body[0])
         yieldLocs = PyAstUtil.getYieldLocationsInOuterScope(ast.body[0])
-        returnLocs = map(lambda x: x - returnLocs[0] if len(returnLocs) > 0 else 0, returnLocs)
-        yieldLocs = map(lambda x: x - yieldLocs[0] if len(yieldLocs) > 0 else 0, yieldLocs)
+        returnLocs = [x - returnLocs[0] for x in returnLocs]
+        yieldLocs = [x - yieldLocs[0] for x in  yieldLocs]
         self.assertEqual(returnLocs, [])
         self.assertEqual(yieldLocs, [0, 2, 4, 12, 14, 16, 18])
 
+if __name__ == "__main__":
+    unittest.main()

@@ -515,6 +515,13 @@ class Converter(object):
 
         elif isinstance(objectDefinition, (TypeDescription.FunctionDefinition,
                                            TypeDescription.ClassDefinition)):
+            if isinstance(objectDefinition, TypeDescription.ClassDefinition):
+                for name, baseId in objectDefinition.baseClassIds:
+                    if baseId not in self.convertedValues:
+                        self._convert(baseId,
+                                      dependencyGraph,
+                                      objectIdToObjectDefinition)
+                    assert baseId in self.convertedValues
             self.convertStronglyConnectedComponentWithOneFunctionOrClass(
                 objectId,
                 objectDefinition,
@@ -780,7 +787,7 @@ class Converter(object):
         unconvertibles = [
             k for k, v in renamedVariableMapping.iteritems() \
             if v == Symbol_unconvertible
-            ]        
+            ]
 
         foraExpression = self.nativeConverter.replaceUnconvertiblesWithThrowExprs(
             foraExpression,
@@ -816,7 +823,7 @@ class Converter(object):
             #inline in the code, or as class members. Binding them as constants speeds up the compiler,
             #but if we have the same function bound repeatedly with many constants, we'll end up
             #producing far too much code. This algorithm binds as constants the _First_ time we bind
-            #a given expression with given arguments, and as members any future set of times. This 
+            #a given expression with given arguments, and as members any future set of times. This
             #should cause it to bind modules and classes that don't have any data flowing through them
             #as constants, and closures and functions we're calling repeatedly using class members.
             shouldMapArgsAsConstants = True
@@ -835,7 +842,7 @@ class Converter(object):
                 shouldMapArgsAsConstants
                 )
         else:
-            #function that evaluates the CreateObject. 
+            #function that evaluates the CreateObject.
             #Args are the free variables, in lexical order
             expressionAsIVC = foraExpression.toFunctionImplval(False)
 
@@ -856,7 +863,7 @@ class Converter(object):
         given an expression `expr` and mapping
         `freeVariableMemberAccessChainToImplValMap`,
         replace the occurences of the keys of the mapping in expr
-        with fresh variable names. 
+        with fresh variable names.
 
         Returns the new expression, and a mapping from the replacing
         variables to their corresponding (implval) values.
@@ -912,10 +919,12 @@ class Converter(object):
                     )
 
         elif isinstance(classOrFunctionDefinition, TypeDescription.ClassDefinition):
+            baseClassNames = [b[0] for b in classOrFunctionDefinition.baseClassIds]
             tr = self.nativeConverter.convertPythonAstClassDefToForaOrParseError(
                 pyAst.asClassDef,
                 pyAst.extent,
-                ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath])
+                ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath]),
+                baseClassNames
                 )
 
         else:

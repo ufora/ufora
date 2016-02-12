@@ -69,9 +69,10 @@ class ObjectRegistry(object):
             freeVariableMemberAccessChainsToId=freeVariableMemberAccessChainsToId
             )
 
-    def defineClass(self, objectId, sourceFileId, lineNumber, scopeIds):
+    def defineClass(self, objectId, sourceFileId, lineNumber, scopeIds, baseClassIds):
         """
         scopeIds: a dict freeVariableMemberAccessChain -> id
+        baseClassIds: a list of (name, id) tuples representing (immediate) base classes
         """
         freeVariableMemberAccessChainsToId = \
             self._processFreeVariableMemberAccessChainResolution(
@@ -82,7 +83,8 @@ class ObjectRegistry(object):
             TypeDescription.ClassDefinition(
                 sourceFileId=sourceFileId,
                 lineNumber=lineNumber,
-                freeVariableMemberAccessChainsToId=freeVariableMemberAccessChainsToId
+                freeVariableMemberAccessChainsToId=freeVariableMemberAccessChainsToId,
+                baseClassIds=baseClassIds
                 )
 
     def defineUnconvertible(self, objectId):

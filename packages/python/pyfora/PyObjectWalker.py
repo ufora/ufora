@@ -370,7 +370,7 @@ class PyObjectWalker(object):
 
         Recursively call `walkPyObject` on the class of the `classInstance`
         and on the data members of the instance.
-        """        
+        """
         classObject = classInstance.__class__
         classId = self.walkPyObject(classObject)
 
@@ -494,16 +494,21 @@ class PyObjectWalker(object):
         Recursively call `walkPyObject` on the resolvable free variable member
         access chains in the class, as well as on the source file object.
         """
-        fileDescription = self._classOrFunctionDefinition(
+        classDescription = self._classOrFunctionDefinition(
             pyObject,
             classOrFunction=_ClassDefinition
             )
+        assert all(id(base) in self._pyObjectIdToObjectId for base in pyObject.__bases__)
 
         self._objectRegistry.defineClass(
             objectId=objectId,
-            sourceFileId=fileDescription.sourceFileId,
-            lineNumber=fileDescription.lineNumber,
-            scopeIds=fileDescription.freeVariableMemberAccessChainsToId
+            sourceFileId=classDescription.sourceFileId,
+            lineNumber=classDescription.lineNumber,
+            scopeIds=classDescription.freeVariableMemberAccessChainsToId,
+            baseClassIds=[
+                (base.__name__, self._pyObjectIdToObjectId[id(base)])
+                for base in pyObject.__bases__
+                ]
             )
 
     def _registerUnconvertible(self, objectId):
@@ -681,7 +686,7 @@ class PyObjectWalker(object):
 
         rootSubChain = chain[:1]
         rootVar = rootSubChain[0]
-        
+
         baseClassNames = [name.id for name in pyAst.bases]
         if rootVar in baseClassNames:
             resolution = pyClass.__bases__[baseClassNames.index(rootVar)]
@@ -765,21 +770,18 @@ class PyObjectWalker(object):
 
         return resolutions
 
-    def _computeAndResolveFreeVariableMemberAccessChainsInAst(
-            self, pyObject, pyAst
-            ):
+    def _computeAndResolveFreeVariableMemberAccessChainsInAst(self, pyObject, pyAst):
         resolutions = {}
 
-        freeVariableMemberAccessChainsWithPositions = \
-            self._freeMemberAccessChainsWithPositions(pyAst)
+        for chainWithPosition in self._freeMemberAccessChainsWithPositions(pyAst):
+            if chainWithPosition and \
+               chainWithPosition.var[0] in ['staticmethod', 'property', '__inline_fora']:
+                continue
 
-        for chainWithPosition in freeVariableMemberAccessChainsWithPositions:
-            if not chainWithPosition or \
-               chainWithPosition.var[0] not in \
-               ['staticmethod', 'property', '__inline_fora']:
-                subchain, resolution, position = self._resolveChainInPyObject(
-                    chainWithPosition, pyObject, pyAst)
-                resolutions[subchain] = (resolution, position)
+            subchain, resolution, position = self._resolveChainInPyObject(
+                chainWithPosition, pyObject, pyAst
+                )
+            resolutions[subchain] = (resolution, position)
 
         return resolutions
 

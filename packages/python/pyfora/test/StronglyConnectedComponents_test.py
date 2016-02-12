@@ -19,8 +19,8 @@ import unittest
 class StronglyConnecteComponentsTest(unittest.TestCase):
     def test_stronglyConnectedComponents_1(self):
         graph = {
-            0: [1,2],
-            1: [0,2],
+            0: [1, 2],
+            1: [0, 2],
             2: []
             }
         scc = StronglyConnectedComponents.stronglyConnectedComponents(graph)
@@ -36,7 +36,7 @@ class StronglyConnecteComponentsTest(unittest.TestCase):
             2: [1, 3],
             3: [2],
             4: [1],
-            5: [4,1,6],
+            5: [4, 1, 6],
             6: [5, 2],
             7: [6, 7]
             }

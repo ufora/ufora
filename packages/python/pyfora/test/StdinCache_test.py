@@ -146,3 +146,5 @@ class StdinCache_test(unittest.TestCase):
         self.assertEqual(stdinCache.findCodeLineNumberWithinStdin(g.func_code), 5)
 
 
+if __name__ == "__main__":
+    unittest.main()

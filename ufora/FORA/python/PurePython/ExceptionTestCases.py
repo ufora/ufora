@@ -195,7 +195,7 @@ class ExceptionTestCases(object):
     def test_invalid_call_4(self):
         def f():
             pass
-            
+
         try:
             self.evaluateWithExecutor(f, 1)
             self.assertTrue(False)
@@ -209,7 +209,7 @@ class ExceptionTestCases(object):
     def test_invalid_call_5(self):
         def f(x):
             pass
-            
+
         try:
             self.evaluateWithExecutor(f)
             self.assertTrue(False)
@@ -223,7 +223,7 @@ class ExceptionTestCases(object):
     def test_invalid_call_6(self):
         def f(x, y):
             pass
-            
+
         try:
             self.evaluateWithExecutor(f, 1, 2, 3)
             self.assertTrue(False)
@@ -237,7 +237,7 @@ class ExceptionTestCases(object):
     def test_invalid_call_7(self):
         def f(x, y=2):
             pass
-            
+
         try:
             self.evaluateWithExecutor(f, 1, 2, 3)
             self.assertTrue(False)
@@ -251,7 +251,7 @@ class ExceptionTestCases(object):
     def test_invalid_call_8(self):
         def f(x, y=2):
             pass
-            
+
         try:
             self.evaluateWithExecutor(f)
             self.assertTrue(False)
@@ -265,7 +265,7 @@ class ExceptionTestCases(object):
     def test_invalid_call_9(self):
         def f(y=2):
             pass
-            
+
         try:
             self.evaluateWithExecutor(f, 1, 2)
             self.assertTrue(False)
@@ -279,7 +279,7 @@ class ExceptionTestCases(object):
     def test_invalid_call_10(self):
         def f(x,y,z=3):
             pass
-            
+
         try:
             self.evaluateWithExecutor(f, 1, 2, 3, 4)
             self.assertTrue(False)
@@ -293,7 +293,7 @@ class ExceptionTestCases(object):
     def test_invalid_call_11(self):
         def f(x,y,z=3):
             pass
-            
+
         try:
             self.evaluateWithExecutor(f, 1)
             self.assertTrue(False)
@@ -497,7 +497,7 @@ class ExceptionTestCases(object):
         class C20:
             def f():
                 return x.y.z
-                
+
         try:
             self.equivalentEvaluationTest(lambda: C20())
             self.assertTrue(False)
@@ -815,7 +815,7 @@ class ExceptionTestCases(object):
         def f():
             x = range(10)
             return x[s]
-            
+
         try:
             self.evaluateWithExecutor(f)
             self.assertTrue(False)
@@ -842,7 +842,7 @@ class ExceptionTestCases(object):
 
         with self.assertRaises(pyfora.ComputationError):
             self.evaluateWithExecutor(lambda: C_with_properties_2().prop)
-        
+
     def test_cant_convert_property_itself(self):
         with self.assertRaises(pyfora.PythonToForaConversionError):
             self.evaluateWithExecutor(lambda: property)
@@ -980,7 +980,7 @@ class ExceptionTestCases(object):
                      "only appear in setattr or getattr expressions.")
                     )
                 )
-            
+
     def test_xrange_error_1(self):
         def f():
             return range(1.0)
@@ -988,7 +988,7 @@ class ExceptionTestCases(object):
         with self.create_executor() as fora:
             e = fora.submit(f).result().toLocal().exception()
             self.assertIsInstance(e.remoteException, TypeError)
-                        
+
     def test_xrange_error_2(self):
         def f():
             return range(1, 1.0)
@@ -996,7 +996,7 @@ class ExceptionTestCases(object):
         with self.create_executor() as fora:
             e = fora.submit(f).result().toLocal().exception()
             self.assertIsInstance(e.remoteException, TypeError)
-                        
+
     def test_xrange_error_3(self):
         def f():
             return range(1, 1, 1.0)
@@ -1004,12 +1004,12 @@ class ExceptionTestCases(object):
         with self.create_executor() as fora:
             e = fora.submit(f).result().toLocal().exception()
             self.assertIsInstance(e.remoteException, TypeError)
-                        
-            
+
+
     def test_typeWeCantTranslateYet_raise_1(self):
         # note that this is different than trying to evaluate,
         # in pyfora code, type(lambda x:x).
-        # that will give a completely different type of 
+        # that will give a completely different type of
         # error (an unhelpful runtime error). This test case
         # concerns errors that happen in PyObjectWalker
         with self.create_executor() as fora:
@@ -1032,7 +1032,7 @@ class ExceptionTestCases(object):
     def test_typeWeCantTranslateYet_raise_2(self):
         # note that this is different than trying to evaluate,
         # in pyfora code, type(lambda x:x).
-        # that will give a completely different type of 
+        # that will give a completely different type of
         # error (an unhelpful runtime error). This test case
         # concerns errors that happen in PyObjectWalker
         x = type(lambda x:x)
@@ -1052,7 +1052,7 @@ class ExceptionTestCases(object):
                 e.remoteException,
                 Exceptions.UnconvertibleValueError
                 )
-            
+
     def test_typeWeCantTranslateYet_raise_3(self):
         import numpy
         x = numpy
@@ -1123,43 +1123,3 @@ class ExceptionTestCases(object):
                 Exceptions.UnconvertibleValueError
                 )
 
-    def test_typeWithBaseClass_1(self):
-        class A_id1234567:
-            pass
-        class B_id5423545(A_id1234567):
-            pass
-
-        def f():
-            B_id5423545()
-            return 0
-
-        try:
-            self.evaluateWithExecutor(f)
-            self.assertTrue(False)
-        except Exceptions.PythonToForaConversionError as e:
-            pattern = "don't know how to deal with base classes right now\n" \
-                      + ".*, in test_typeWithBaseClass_1\n" \
-                      + "\\s*class B_id5423545\\(A_id1234567\\)"
-            self.assertIsNotNone(re.match(pattern, str(e), re.DOTALL))
-                
-
-    def test_typeWithBaseClass_2(self):
-        class A_id12347:
-            pass
-        class B_id54545(A_id12347):
-            pass
-
-        def f():
-            B_id54545()
-            return 0
-
-        with self.create_executor() as fora:
-            try:
-                with fora.remotely:
-                    f()
-            except Exceptions.PythonToForaConversionError as e:
-                tracebackString = traceback.format_exc()
-                pattern = ".*don't know how to deal with base classes right now\n" \
-                          + ".*, in test_typeWithBaseClass_2\n" \
-                          + "\\s*class B_id54545\\(A_id12347\\)"
-            self.assertIsNotNone(re.match(pattern, tracebackString, re.DOTALL))

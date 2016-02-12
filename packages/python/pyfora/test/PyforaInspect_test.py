@@ -31,7 +31,7 @@ class PyforaInspectTest(unittest.TestCase):
 
         with self.assertRaises(PyforaInspect.PyforaInspectError) :
             PyforaInspect.getsourcelines(f1()().__class__)
-        
+
     def test_pyforaInspect_twoClassesOneName(self):
         class C2:
             def fC1(self):
@@ -65,4 +65,5 @@ class PyforaInspectTest(unittest.TestCase):
             )
 
 
-
+if __name__ == "__main__":
+    unittest.main()

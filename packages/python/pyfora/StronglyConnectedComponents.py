@@ -15,14 +15,14 @@
 # adapted from http://www.logarithmic.net/pfh-files/blog/01208083168/tarjan.py
 # implements Tarjan's strongly connected components algorithm.
 
-# Recall: two nodes in a (directed) graph are called _strongly connected_ 
-# if there exists a (directed) path from each node to the other node. 
-# This forms an equivalence relation on a graph, and the equivalence 
-# classes are the _strongly connected components_ (SCC) of the graph. Note 
-# that SCC are not quite the same thing as cycles, as cycles can only 
+# Recall: two nodes in a (directed) graph are called _strongly connected_
+# if there exists a (directed) path from each node to the other node.
+# This forms an equivalence relation on a graph, and the equivalence
+# classes are the _strongly connected components_ (SCC) of the graph. Note
+# that SCC are not quite the same thing as cycles, as cycles can only
 # hit individual nodes at most once.
 
-# also note that the list of SCC returned by Tarjan's algorithm give a 
+# also note that the list of SCC returned by Tarjan's algorithm give a
 # reverse topological sort of the DAG of SCC.
 
 def stronglyConnectedComponents(graph):
@@ -57,7 +57,7 @@ def stronglyConnectedComponents(graph):
         # If `node` is a root node, pop the stack and generate an SCC
         if lowLinks[node] == index[node]:
             connectedComponent = []
-            
+
             while True:
                 successor = stack.pop()
                 connectedComponent.append(successor)
