@@ -667,3 +667,162 @@ class ClassTestCases(object):
                 return X3().f()
 
             self.assertIs(self.evaluateWithExecutor(f), None)
+
+
+    def test_basic_inheritance_old_style(self):
+        class Base_1:
+            def method(self, i):
+                return i + 1
+
+        class Child_1(Base_1): pass
+
+        def f(i):
+            c = Child_1()
+            c.method(i)
+
+        self.equivalentEvaluationTest(f, 2)
+
+
+    def test_basic_inheritance_new_style(self):
+        class Base_2(object):
+            def method(self, i):
+                return i + 1
+
+        class Child_2(Base_2): pass
+
+        def f(i):
+            c = Child_2()
+            c.method(i)
+
+        self.equivalentEvaluationTest(f, 2)
+
+
+    def test_basic_overriding_old_style(self):
+        class Base_3:
+            def method(self, i):
+                return i + 1
+
+        class Child_3(Base_3):
+            def method(self, i):
+                return i + 2
+
+        def f(i):
+            c = Child_3()
+            c.method(i)
+
+        self.equivalentEvaluationTest(f, 2)
+
+
+    def test_basic_overriding_new_style(self):
+        class Base_4(object):
+            def method(self, i):
+                return i + 1
+
+        class Child_4(Base_4):
+            def method(self, i):
+                return i + 2
+
+        def f(i):
+            c = Child_4()
+            c.method(i)
+
+        self.equivalentEvaluationTest(f, 2)
+
+
+    def test_basic_mro_old_style(self):
+        class Base1_5:
+            def method(self, i):
+                return i + 1
+
+        class Base2_5:
+            def method(self, i):
+                return i + 2
+
+        class Child_5(Base1_5, Base2_5): pass
+
+        def f(i):
+            c = Child_5()
+            c.method(i)
+
+        self.equivalentEvaluationTest(f, 2)
+
+
+    def test_basic_mro_new_style(self):
+        class Base1_6(object):
+            def method(self, i):
+                return i + 1
+
+        class Base2_6(object):
+            def method(self, i):
+                return i + 2
+
+        class Child_6(Base1_6, Base2_6): pass
+
+        def f(i):
+            c = Child_6()
+            c.method(i)
+
+        self.equivalentEvaluationTest(f, 2)
+
+
+    def test_distant_mro_old_style(self):
+        class Base1_7:
+            def method(self, i):
+                return i + 1
+
+        class Base2_7:
+            def method(self, i):
+                return i + 2
+
+        class Base3_7(Base1_7): pass
+
+        class Child_7(Base3_7, Base2_7): pass
+
+        def f(i):
+            c = Child_7()
+            c.method(i)
+
+        self.equivalentEvaluationTest(f, 2)
+
+
+    def test_distant_mro_new_style(self):
+        class Base1_8(object):
+            def method(self, i):
+                return i + 1
+
+        class Base2_8(object):
+            def method(self, i):
+                return i + 2
+
+        class Base3_8(Base1_8): pass
+
+        class Child_8(Base3_8, Base2_8): pass
+
+        def f(i):
+            c = Child_8()
+            c.method(i)
+
+        self.equivalentEvaluationTest(f, 2)
+
+
+    def test_child_isinstance(self):
+        class Base_9(object): pass
+        class Child_9(Base_9): pass
+
+        def f():
+            c = Child_9()
+            return isinstance(c, Base_9)
+
+        self.equivalentEvaluationTest(f)
+
+
+    def test_removed_isinstance(self):
+        class Base1_10(object): pass
+        class Base2_10(object): pass
+        class Child_10(Base2_10): pass
+
+        def f():
+            c = Child_10()
+            return isinstance(c, Base1_10)
+
+        self.equivalentEvaluationTest(f)
