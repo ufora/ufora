@@ -32,10 +32,11 @@ and the file is padded with zeros. this allows us to write using O_DIRECT.
 ******************/
 
 class OFileDescriptorProtocol : public OProtocol {
-	OFileDescriptorProtocol(const OFileDescriptorProtocol& in);
-	OFileDescriptorProtocol& operator=(const OFileDescriptorProtocol& in);
 public:
 	enum class CloseOnDestroy { True, False };
+
+	OFileDescriptorProtocol(const OFileDescriptorProtocol& in) = delete;
+	OFileDescriptorProtocol& operator=(const OFileDescriptorProtocol& in) = delete;
 
 	OFileDescriptorProtocol(
 				int fd, 

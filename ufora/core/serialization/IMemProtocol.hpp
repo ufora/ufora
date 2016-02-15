@@ -22,9 +22,9 @@
 #include "../Common.hppml"
 
 class IMemProtocol : public IProtocol {
-	IMemProtocol(const IMemProtocol& in);
-	IMemProtocol& operator=(const IMemProtocol& in);
 public:
+	IMemProtocol(const IMemProtocol& in) = delete;
+	IMemProtocol& operator=(const IMemProtocol& in) = delete;
 	//note that 'inData' must remain alive for the duration of the operation. we don't copy it.
 	IMemProtocol(const char* inData, uword_t inSize, uword_t inPosition = 0);
 

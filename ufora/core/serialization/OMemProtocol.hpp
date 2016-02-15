@@ -22,10 +22,9 @@
 #include "OProtocol.hpp"
 
 class OMemProtocol : public OProtocol {
-	//not implemented
-	OMemProtocol(const OMemProtocol& in);
-	OMemProtocol& operator=(const OMemProtocol& in);
 public:
+	OMemProtocol(const OMemProtocol& in) = delete;
+	OMemProtocol& operator=(const OMemProtocol& in) = delete;
 	OMemProtocol(std::vector<char>& inData);
 
 	void write(uword_t inByteCount, void *inData);

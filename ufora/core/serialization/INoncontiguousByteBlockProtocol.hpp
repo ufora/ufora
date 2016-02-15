@@ -23,11 +23,10 @@
 #include "../PolymorphicSharedPtr.hpp"
 
 class INoncontiguousByteBlockProtocol : public IProtocol {
-	INoncontiguousByteBlockProtocol(const INoncontiguousByteBlockProtocol& in);	
-	INoncontiguousByteBlockProtocol& operator=(const INoncontiguousByteBlockProtocol& in);
-
 public:
 	INoncontiguousByteBlockProtocol(PolymorphicSharedPtr<NoncontiguousByteBlock> inData);
+	INoncontiguousByteBlockProtocol(const INoncontiguousByteBlockProtocol& in) = delete;
+	INoncontiguousByteBlockProtocol& operator=(const INoncontiguousByteBlockProtocol& in) = delete;
 	
 	uword_t read(uword_t inByteCount, void *inData, bool inBlock);
 
@@ -44,5 +43,3 @@ private:
 
 	uword_t mPosition;
 };
-
-

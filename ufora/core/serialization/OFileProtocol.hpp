@@ -22,10 +22,11 @@
 #include <stdio.h>
 
 class OFileProtocol : public OProtocol {
-	OFileProtocol(const OFileProtocol& in);
-	OFileProtocol& operator=(const OFileProtocol& in);
 public:
 	enum class CloseOnDestroy { True, False };
+
+	OFileProtocol(const OFileProtocol& in) = delete;
+	OFileProtocol& operator=(const OFileProtocol& in) = delete;
 
 	OFileProtocol(FILE* inFile, CloseOnDestroy closeOnDestroy = CloseOnDestroy::False) :
 			mFile(inFile),

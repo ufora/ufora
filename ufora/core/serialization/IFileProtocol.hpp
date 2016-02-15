@@ -22,13 +22,14 @@
 #include <stdio.h>
 
 class IFileProtocol : public IProtocol {
-	IFileProtocol(const IFileProtocol& in);
-	IFileProtocol& operator=(const IFileProtocol& in);
 public:
 	IFileProtocol(FILE* inFile) : mFile(inFile)
 		{
 		mPosition = 0;
 		}
+
+	IFileProtocol(const IFileProtocol& in) = delete;
+	IFileProtocol& operator=(const IFileProtocol& in) = delete;
 
 	uword_t read(uword_t inByteCount, void *inData, bool inBlock)
 		{

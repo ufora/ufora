@@ -31,8 +31,6 @@ and the file is padded with zeros. this allows us to write using O_DIRECT.
 ******************/
 
 class IFileDescriptorProtocol : public IProtocol {
-	IFileDescriptorProtocol(const IFileDescriptorProtocol& in);
-	IFileDescriptorProtocol& operator=(const IFileDescriptorProtocol& in);
 public:
 	enum class CloseOnDestroy { True, False };
 
@@ -68,6 +66,9 @@ public:
 		if (mCloseOnDestroy == CloseOnDestroy::True)
 			close(mFD);
 		}
+
+	IFileDescriptorProtocol(const IFileDescriptorProtocol& in) = delete;
+	IFileDescriptorProtocol& operator=(const IFileDescriptorProtocol& in) = delete;
 
 	uword_t position(void)
 		{

@@ -23,10 +23,10 @@
 
 //protocol that holds data in chunks of memory, and can push them into a string. avoids big reallocs
 class ONoncontiguousByteBlockProtocol : public OProtocol {
-	ONoncontiguousByteBlockProtocol(ONoncontiguousByteBlockProtocol& in) = delete;
-	ONoncontiguousByteBlockProtocol& operator=(const ONoncontiguousByteBlockProtocol& in) = delete;
 public:
 	ONoncontiguousByteBlockProtocol();
+	ONoncontiguousByteBlockProtocol(ONoncontiguousByteBlockProtocol& in) = delete;
+	ONoncontiguousByteBlockProtocol& operator=(const ONoncontiguousByteBlockProtocol& in) = delete;
 
 	~ONoncontiguousByteBlockProtocol();
 
