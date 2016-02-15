@@ -816,7 +816,7 @@ class ClassTestCases(object):
         self.equivalentEvaluationTest(f)
 
 
-    def test_removed_isinstance(self):
+    def test_distant_isinstance(self):
         class Base1_10(object): pass
         class Base2_10(object): pass
         class Child_10(Base2_10): pass
@@ -826,3 +826,33 @@ class ClassTestCases(object):
             return isinstance(c, Base1_10)
 
         self.equivalentEvaluationTest(f)
+
+
+    def test_issubclass(self):
+        class Base_11(object): pass
+        class Child_11(Base_11): pass
+
+        def f():
+            return issubclass(Child_11, Base_11)
+
+        self.equivalentEvaluationTest(f)
+
+    def test_issubclass_false(self):
+        class Base_12(object): pass
+        class Child_12(object): pass
+
+        def f():
+            return issubclass(Child_12, Base_12)
+
+        self.equivalentEvaluationTest(f)
+
+
+    def test_issubclass_on_instance(self):
+        class Base_13(object): pass
+        class Child_13(Base_13): pass
+
+        def f():
+            c = Child_13()
+            return issubclass(c, Base_13)
+
+        self. equivalentEvaluationTestThatHandlesExceptions(f)
