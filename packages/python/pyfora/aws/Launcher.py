@@ -44,7 +44,7 @@ class Launcher(object):
     ufora_ssh_security_group_name = 'ufora ssh'
     ufora_open_security_group_name = 'ufora open'
     ufora_security_group_description = 'ufora instances'
-    ubuntu_images = {
+    ubuntu_images_paravirtual_ssd = {
         'ap-southeast-1': 'ami-e8f1c1ba',
         'ap-southeast-2': 'ami-7163104b',
         'ap-northeast-1': 'ami-8d6d9d8d',
@@ -55,6 +55,18 @@ class Launcher(object):
         'us-west-1': 'ami-d16a8b95',
         'us-west-2': 'ami-6989a659'
         }
+    ubuntu_images_hvm_ssd = {
+        'ap-northeast-1': 'ami-2f615b41',
+        'ap-southeast-1': 'ami-d6509fb5',
+        'ap-southeast-2': 'ami-93dafef0',
+        'eu-central-1': 'ami-56f4ec3a',
+        'eu-west-1': 'ami-9c77c1ef',
+        'sa-east-1': 'ami-051b9b69',
+        'us-east-1': 'ami-35d6f95f',
+        'us-west-1': 'ami-06235566',
+        'us-west-2': 'ami-abc620cb'    
+        }
+
     user_data_template = '''#!/bin/bash
     export AWS_ACCESS_KEY_ID={aws_access_key}
     export AWS_SECRET_ACCESS_KEY={aws_secret_key}
@@ -220,13 +232,26 @@ class Launcher(object):
 
         network_interfaces = self.create_network_interfaces()
         classic_security_groups = None if self.vpc_id else [self.get_security_group_name()]
+
+        if self.instance_type[:2] in ("c3", "m3"):
+            image_id = self.ubuntu_images_paravirtual_ssd[self.region]
+        else:
+            image_id = self.ubuntu_images_hvm_ssd[self.region]
+
+        #ensure that we allocate enough space to install everything
+        dev_sda1 = boto.ec2.blockdevicemapping.BlockDeviceType()
+        dev_sda1.size = 15
+        bdm = boto.ec2.blockdevicemapping.BlockDeviceMapping()
+        bdm['/dev/sda1'] = dev_sda1
+        
         request_args = {
-            'image_id': self.ubuntu_images[self.region],
+            'image_id': image_id,
             'instance_type': self.instance_type,
             'key_name': ssh_key_name,
             'user_data': user_data,
             'security_groups': classic_security_groups,
-            'network_interfaces': network_interfaces
+            'network_interfaces': network_interfaces,
+            'block_device_map': bdm
             }
         if spot_request_bid_price:
             ts = timestamp()
