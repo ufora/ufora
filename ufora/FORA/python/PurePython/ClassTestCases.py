@@ -678,7 +678,7 @@ class ClassTestCases(object):
 
         def f(i):
             c = Child_1()
-            c.method(i)
+            return c.method(i)
 
         self.equivalentEvaluationTest(f, 2)
 
@@ -692,7 +692,7 @@ class ClassTestCases(object):
 
         def f(i):
             c = Child_2()
-            c.method(i)
+            return c.method(i)
 
         self.equivalentEvaluationTest(f, 2)
 
@@ -708,7 +708,7 @@ class ClassTestCases(object):
 
         def f(i):
             c = Child_3()
-            c.method(i)
+            return c.method(i)
 
         self.equivalentEvaluationTest(f, 2)
 
@@ -724,7 +724,7 @@ class ClassTestCases(object):
 
         def f(i):
             c = Child_4()
-            c.method(i)
+            return c.method(i)
 
         self.equivalentEvaluationTest(f, 2)
 
@@ -742,7 +742,7 @@ class ClassTestCases(object):
 
         def f(i):
             c = Child_5()
-            c.method(i)
+            return c.method(i)
 
         self.equivalentEvaluationTest(f, 2)
 
@@ -760,7 +760,7 @@ class ClassTestCases(object):
 
         def f(i):
             c = Child_6()
-            c.method(i)
+            return c.method(i)
 
         self.equivalentEvaluationTest(f, 2)
 
@@ -780,7 +780,7 @@ class ClassTestCases(object):
 
         def f(i):
             c = Child_7()
-            c.method(i)
+            return c.method(i)
 
         self.equivalentEvaluationTest(f, 2)
 
@@ -800,7 +800,7 @@ class ClassTestCases(object):
 
         def f(i):
             c = Child_8()
-            c.method(i)
+            return c.method(i)
 
         self.equivalentEvaluationTest(f, 2)
 
