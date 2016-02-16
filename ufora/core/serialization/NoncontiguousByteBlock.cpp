@@ -14,7 +14,6 @@
    limitations under the License.
 ****************************************************************************/
 #include "NoncontiguousByteBlock.hpp"
-
 #include "../lassert.hpp"
 
 NoncontiguousByteBlock::NoncontiguousByteBlock() : 
@@ -130,3 +129,10 @@ void Serializer<PolymorphicSharedPtr<NoncontiguousByteBlock>, HashingStreamSeria
 		}
 	}
 
+
+ostream& operator<< (ostream& os, const NoncontiguousByteBlock& data)
+	{
+	for (int i = 0; i < data.size(); ++i)
+		os << data[i];
+	return os;
+	}

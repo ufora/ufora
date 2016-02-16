@@ -191,7 +191,4 @@ public:
 		static void serialize(HashingStreamSerializer& s, const PolymorphicSharedPtr<NoncontiguousByteBlock>& in);
 };
 
-
-
-
-
+ostream& operator<< (ostream& os, const NoncontiguousByteBlock& data);
