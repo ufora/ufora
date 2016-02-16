@@ -37,7 +37,11 @@
 #include "../Native/TypedNativeLibraryFunction.hpp"
 #include "../TypedFora/ABI/NativeLayoutType.hppml"
 #include "../TypedFora/ABI/TestTypedForaValuesIdentical.hppml"
+#include "../TypedFora/ABI/VectorRecord.hpp"
+#include "../TypedFora/ABI/VectorLoadRequest.hppml"
 #include "../TypedFora/TypedFora.hppml"
+#include "../TypedFora/ABI/VectorLoadRequestCodegen.hppml"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
 #include "../CUDA/CUDAExecutionContext.hppml"
 #include "../CUDA/NativeCFGToPTX.hppml"
 
@@ -441,16 +445,25 @@ def_FORA_clib_arith_from_string(float, Float32)
 
 //def_FORA_clib_arith_from_string(double, Float64)
 
-ReturnValue<ImplValContainer, string_type> FORA_clib_CUDAVectorApply(
+CUDAExecutionContext& allocateGlobalCUDAContext()
+	{
+	static CUDAExecutionContext context;
+
+	return context;
+	}
+	 
+ReturnValue<ImplValContainer, string_type, TypedFora::Abi::VectorLoadRequest> FORA_clib_CUDAVectorApply(
             const ImplValContainer& fun,
             const ImplValContainer& vec
             )
     {
+    using namespace TypedFora::Abi;
+
     static CUDAExecutionContext* c = 0;
-    
+
     try {
 	    if (!c)
-	    	c = new CUDAExecutionContext();
+	    	c = &allocateGlobalCUDAContext();
 		}
 	catch (UnableToConvertToPTX& e)
 		{
@@ -471,12 +484,20 @@ ReturnValue<ImplValContainer, string_type> FORA_clib_CUDAVectorApply(
 		        )
 	        );
 	    }
+
+	Fora::ReturnValue<VectorRecord, VectorLoadRequest> loadedVec = vec.cast<VectorRecord>().deepcopiedAndContiguous(
+		Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool(),
+		&Fora::Interpreter::ExecutionContext::currentExecutionContext()->currentVDM()
+		);
 	    
+	if (loadedVec.getIndex() == 1)
+		return slot2(loadedVec.get1());
+
     try {
 	    ImplValContainer result =
 	        c->executeKernel(
 		        ImplValContainer(fun),
-		        ImplValContainer(vec)
+		        ImplValContainer(loadedVec.get0())
 		        );
 	        
 	    return slot0(ImplValContainer(result));

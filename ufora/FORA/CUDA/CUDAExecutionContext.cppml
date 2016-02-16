@@ -21,7 +21,7 @@
 #include "../Core/ImplValContainerUtilities.hppml"
 #include "../Native/NativeCFGTransforms/Transforms.hppml"
 #include <cuda.h>
-#include "../../core/STLOps.hpp"
+#include "../../core/threading/Queue.hpp"
 #include "../Runtime.hppml"
 #include "../TypedFora/JitCompiler/StaticInliner.hppml"
 #include "../TypedFora/Converter.hppml"
@@ -39,7 +39,7 @@ using Fora::Interpreter::ExecutionContext;
 class CUDAExecutionContextInternalState {
 public:
 	
-	CUDAExecutionContextInternalState()
+	CUDAExecutionContextInternalState() : mDeviceCount(0)
 		{
 		cudaDriverInitializer();
 		cudaDeviceInitializer();
@@ -76,36 +76,40 @@ public:
 	
 	void	cudaDeviceInitializer()
 		{
-		// Get number of devices supporting CUDA
-		int deviceCount = 0;
-		
-		CUresult error = cuDeviceGetCount(&deviceCount);
+		CUresult error = cuDeviceGetCount(&mDeviceCount);
 		throwError("Get a device count", error);
 
-		lassert_dump(deviceCount, "there are no CUDA-enabled devices");
+		lassert_dump(mDeviceCount, "there are no CUDA-enabled devices");
 		
 		//take the first device
-		int devID = 0;
+		mCuDevices.resize(mDeviceCount);
+		mCuContexts.resize(mDeviceCount);
+
+		for (long devID = 0; devID < mDeviceCount; devID++)
+			{
+			int major, minor;
+			char deviceName[100];
+			cuDeviceComputeCapability(&major, &minor, devID);
+			cuDeviceGetName(deviceName, 256, devID);
+			
+			LOG_INFO 	<< "CUDA Using Device " << devID
+						<< ": \"" << deviceName
+						<< "\" with Compute " << major << "." << minor
+						<< "capability.\n"
+						;
+			
+			// pick up device with zero ordinal (default, or devID)
+			error = cuDeviceGet(&mCuDevices[devID], devID);
+			
+			lassert(error == CUDA_SUCCESS);
 		
-		int major, minor;
-		char deviceName[100];
-		cuDeviceComputeCapability(&major, &minor, devID);
-		cuDeviceGetName(deviceName, 256, devID);
-		
-		LOG_INFO 	<< "CUDA Using Device " << devID
-					<< ": \"" << deviceName
-					<< "\" with Compute " << major << "." << minor
-					<< "capability.\n"
-					;
-		
-		// pick up device with zero ordinal (default, or devID)
-		error = cuDeviceGet(&mCuDevice, devID);
-		
-		lassert(error == CUDA_SUCCESS);
-	
-		// Create context
-		error = cuCtxCreate(&mCuContext, 0, mCuDevice);
-		lassert(error == CUDA_SUCCESS);
+			// Create context
+			error = cuCtxCreate(&mCuContexts[devID], 0, mCuDevices[devID]);
+			lassert(error == CUDA_SUCCESS);
+			}
+
+		for (auto c: mCuContexts)
+			mUnusedContexts.write(c);
 		}
 
 	string addLineNumbers(const string& str)
@@ -131,60 +135,76 @@ public:
 						const string& inFunctionName,
 						const string& inPTXCode)
 		{
-		const unsigned int jitNumOptions = 5;
-		CUjit_option *jitOptions = new CUjit_option[jitNumOptions];
-		void **jitOptVals = new void*[jitNumOptions];
-
-		int bufferSize = 1024;
-		char	jitLogBuffer[1024];
-		char	jitErrorBuffer[1024];
-		
-		jitOptions[0] = CU_JIT_INFO_LOG_BUFFER_SIZE_BYTES;
-		jitOptVals[0] = (void *)(size_t)bufferSize;
-		jitOptions[1] = CU_JIT_INFO_LOG_BUFFER;
-		jitOptVals[1] = jitLogBuffer;
-
-		jitOptions[2] = CU_JIT_ERROR_LOG_BUFFER_SIZE_BYTES;
-		jitOptVals[2] = (void*)(size_t)bufferSize;
-		jitOptions[3] = CU_JIT_ERROR_LOG_BUFFER;
-		jitOptVals[3] = jitErrorBuffer;
-
-		jitOptions[4] = CU_JIT_MAX_REGISTERS;
-		int jitRegCount = 32;
-		jitOptVals[4] = (void *)(size_t)jitRegCount;
-		
-		CUmodule	cuModule;
-		CUresult error = cuModuleLoadDataEx(&cuModule, inPTXCode.c_str(),
-						jitNumOptions, jitOptions, (void **)jitOptVals);
-		
-		if (error != CUDA_SUCCESS)
+		for (auto context: mCuContexts)
 			{
-			LOG_WARN << "CUDA FAILED TO COMPILE: " +
-											string(jitLogBuffer) + "\n" +
-											string(jitErrorBuffer) + "\n" +
-											"\n\nPTX code = \n\n" +
-											addLineNumbers(inPTXCode);
+			cuCtxSetCurrent(context);
+
+			const unsigned int jitNumOptions = 5;
+			CUjit_option *jitOptions = new CUjit_option[jitNumOptions];
+			void **jitOptVals = new void*[jitNumOptions];
+
+			int bufferSize = 1024;
+			char	jitLogBuffer[1024];
+			char	jitErrorBuffer[1024];
 			
-			lassert_dump(false, "CUDA FAILED TO COMPILE: " +
-											string(jitLogBuffer) + "\n" +
-											string(jitErrorBuffer) + "\n" +
-											"\n\nPTX code = \n\n" +
-											addLineNumbers(inPTXCode)
-											);
+			jitOptions[0] = CU_JIT_INFO_LOG_BUFFER_SIZE_BYTES;
+			jitOptVals[0] = (void *)(size_t)bufferSize;
+			jitOptions[1] = CU_JIT_INFO_LOG_BUFFER;
+			jitOptVals[1] = jitLogBuffer;
+
+			jitOptions[2] = CU_JIT_ERROR_LOG_BUFFER_SIZE_BYTES;
+			jitOptVals[2] = (void*)(size_t)bufferSize;
+			jitOptions[3] = CU_JIT_ERROR_LOG_BUFFER;
+			jitOptVals[3] = jitErrorBuffer;
+
+			jitOptions[4] = CU_JIT_MAX_REGISTERS;
+			int jitRegCount = 32;
+			jitOptVals[4] = (void *)(size_t)jitRegCount;
+			
+			CUmodule	cuModule;
+			CUresult error = cuModuleLoadDataEx(&cuModule, inPTXCode.c_str(),
+							jitNumOptions, jitOptions, (void **)jitOptVals);
+			
+			if (error != CUDA_SUCCESS)
+				{
+				LOG_WARN << "CUDA FAILED TO COMPILE: " +
+												string(jitLogBuffer) + "\n" +
+												string(jitErrorBuffer) + "\n" +
+												"\n\nPTX code = \n\n" +
+												addLineNumbers(inPTXCode);
+				
+				lassert_dump(false, "CUDA FAILED TO COMPILE: " +
+												string(jitLogBuffer) + "\n" +
+												string(jitErrorBuffer) + "\n" +
+												"\n\nPTX code = \n\n" +
+												addLineNumbers(inPTXCode)
+												);
+				}
+				
+			CUfunction cuFun;
+			
+			// Get function handle from module
+			error = cuModuleGetFunction(&cuFun, cuModule,
+												inFunctionName.c_str());
+			if (error != CUDA_SUCCESS)
+				lassert_dump(false, "PTX code didn't define function " <<
+											inFunctionName);
+		
+				{
+				boost::mutex::scoped_lock lock(mMutex);
+				mCuFunctionsByName[make_pair(context, inModuleName)] = cuFun;
+				}
 			}
-			
-		CUfunction cuFun;
 		
-		// Get function handle from module
-		error = cuModuleGetFunction(&cuFun, cuModule,
-											inFunctionName.c_str());
-		if (error != CUDA_SUCCESS)
-			lassert_dump(false, "PTX code didn't define function " <<
-										inFunctionName);
-		
-		mCuModulesByName[inModuleName] = cuModule;
-		mCuFunctionsByName[inModuleName] = cuFun;
 		}
+
+
+	CUfunction functionNameForModule(CUcontext context, std::string inModuleName)
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+		return mCuFunctionsByName[make_pair(context, inModuleName)];
+		}
+
 	void executeFunction(	std::string inModuleName,
 							void* inSourceData,
 							void* inDestData,
@@ -193,51 +213,71 @@ public:
 							uword_t inDestElementSize
 							)
 		{
-		CUdeviceptr d_sourceData;
-		CUdeviceptr d_destData;
+		CUcontext contextToUse = mUnusedContexts.get();
+		
+		try {
+			cuCtxSetCurrent(contextToUse);
 
-		CUresult error = cuMemAlloc(&d_sourceData, inSourceElementSize * inN);
-		lassert_dump(error == CUDA_SUCCESS, "failed to allocate CUDA RAM");
-		
-		error = cuMemAlloc(&d_destData, inDestElementSize * inN);
-		lassert_dump(error == CUDA_SUCCESS, "failed to allocate CUDA RAM");
-		
-		// Copy data from hostMemory to deviceMemory
-		error = cuMemcpyHtoD(d_sourceData, inSourceData,
-				inSourceElementSize * inN);
-		lassert_dump(error == CUDA_SUCCESS, "failed to copy data to GPU");
-		
+			CUdeviceptr d_sourceData;
+			CUdeviceptr d_destData;
+
+			CUresult error = cuMemAlloc(&d_sourceData, inSourceElementSize * inN);
+			throwError("Allocate Source Memory", error);
 			
-		// Grid/Block configuration
-		int threadsPerBlock = 1024;
-		int blocksPerGrid   = (inN + threadsPerBlock - 1) / threadsPerBlock;
+			error = cuMemAlloc(&d_destData, inDestElementSize * inN);
+			throwError("Allocate Dest Memory", error);
+			
+			// Copy data from hostMemory to deviceMemory
+			error = cuMemcpyHtoD(d_sourceData, inSourceData,
+					inSourceElementSize * inN);
+			throwError("Copy CUDA memory from source to host", error);
+			
+				
+			// Grid/Block configuration
+			int threadsPerBlock = 1024;
+			int blocksPerGrid   = (inN + threadsPerBlock - 1) / threadsPerBlock;
 
-		void *args[] = { &d_sourceData, &d_destData, &inN };
+			void *args[] = { &d_sourceData, &d_destData, &inN };
 
-		// Launch the CUDA kernel
-		error = cuLaunchKernel( mCuFunctionsByName[inModuleName],
-								blocksPerGrid, 1, 1, 
-								threadsPerBlock, 1, 1,
-								0, 
-								NULL, args, NULL);
+			// Launch the CUDA kernel
+			error = cuLaunchKernel( functionNameForModule(contextToUse, inModuleName),
+									blocksPerGrid, 1, 1, 
+									threadsPerBlock, 1, 1,
+									0, 
+									NULL, args, NULL);
 
-		lassert_dump(error == CUDA_SUCCESS, "UNKNOWN CUDA ERROR");
-		
-		//copy to target
-		error = cuMemcpyDtoH(	inDestData,
-								d_destData,
-								inDestElementSize * inN
-								);
-		
-		//free cuda memory
-		cuMemFree(d_sourceData);
-		cuMemFree(d_destData);
+			lassert_dump(error == CUDA_SUCCESS, "UNKNOWN CUDA ERROR");
+			
+			//copy to target
+			error = cuMemcpyDtoH(	inDestData,
+									d_destData,
+									inDestElementSize * inN
+									);
+			
+			//free cuda memory
+			cuMemFree(d_sourceData);
+			cuMemFree(d_destData);
+
+			mUnusedContexts.write(contextToUse);
+			}
+		catch(...)
+			{
+			mUnusedContexts.write(contextToUse);
+			throw;
+			}
 		}
 private:
-	CUdevice 					mCuDevice;
-	CUcontext 					mCuContext;
-	map<string, CUmodule>		mCuModulesByName;
-	map<string, CUfunction>		mCuFunctionsByName;		
+	int mDeviceCount;
+
+	Queue<CUcontext> mUnusedContexts;
+
+	std::vector<CUdevice> mCuDevices;
+	
+	std::vector<CUcontext> mCuContexts;
+
+	boost::mutex mMutex;
+	
+	map<pair<CUcontext, string>, CUfunction> mCuFunctionsByName;
 };
 
 CUDAExecutionContext::CUDAExecutionContext() :
@@ -323,15 +363,20 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 						ImplValContainer	inSourceVector
 						)
 	{
-	boost::recursive_mutex::scoped_lock lock(mMutex);
+	Type outputElementType;
+	Type inputElementType;
+
+		{
+		boost::recursive_mutex::scoped_lock lock(mMutex);
 	
-	//verify that this kernel exists
-	lassert_dump(inKernelName == mInputOutputTypesByName, "used kernel " <<
-			inKernelName << " without definining it.");
-	
-	Type outputElementType = mInputOutputTypesByName[inKernelName].second;
-	Type inputElementType = mInputOutputTypesByName[inKernelName].first;
-	
+		//verify that this kernel exists
+		lassert_dump(mInputOutputTypesByName.find(inKernelName) != mInputOutputTypesByName.end(), "used kernel " <<
+				inKernelName << " without definining it.");
+		
+		outputElementType = mInputOutputTypesByName[inKernelName].second;
+		inputElementType = mInputOutputTypesByName[inKernelName].first;
+		}
+
 	lassert(inSourceVector.type().isVector());
 
 	TypedFora::Abi::VectorRecord sourceVectorHandle = inSourceVector.cast<TypedFora::Abi::VectorRecord>();
@@ -355,6 +400,8 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 	
 	uword_t elementCount = sourceVectorHandle.size();
 	
+	lassert(ExecutionContext::currentExecutionContext());
+
 	MemoryPool* pool = ExecutionContext::currentExecutionContext()->getMemoryPool();
 
 	if (!pool->permitAllocation(
@@ -372,7 +419,9 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 	uint8_t* rawVecData = pool->allocate(outputElementType.size() * elementCount);
 
 	try	{
+		lassert(sourceVectorHandle.dataPtr()->unpagedValues());
 		lassert(sourceVectorHandle.dataPtr()->unpagedValues()->size() == elementCount);
+
 		mCUDAState->executeFunction(
 			inKernelName,
 			sourceVectorHandle.dataPtr()->unpagedValues()->offsetFor(0),
@@ -438,10 +487,8 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 						ImplValContainer	inSourceVector
 						)
 	{
-	boost::recursive_mutex::scoped_lock lock(mMutex);
-	
 	Type vecElementType = *inSourceVector.cast<VectorRecord>().jor()[0].type();
-	
+		
 	if (!vecElementType.isPOD())
 		{
 		throw UnableToConvertToPTX(
@@ -450,6 +497,7 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 	
 	JudgmentOnValue	funJOV =
 		JudgmentOnValue::Constant(inApplyObject.getReference());
+
 	if (!funJOV.constant())
 		{
 		throw UnableToConvertToPTX(
@@ -457,98 +505,101 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 				+ " can't be converted to a constant JOV.");
 		}
 	
-	ImmutableTreeVector<JudgmentOnValue> signatureJOVs =
-		emptyTreeVec() +
-			funJOV +
-			JudgmentOnValue::Constant(CSTValue(Symbol::Call())) +
-			JudgmentOnValue::OfType(vecElementType)
-		;
-
-	PolymorphicSharedPtr<Fora::SimpleForwardReasoner> reasoner(
-		new Fora::SimpleForwardReasoner(
-			Runtime::getRuntime().getTypedForaCompiler(),
-            Runtime::getRuntime().getInstructionGraph(),
-            Runtime::getRuntime().getAxioms()
-            )
-		);
-
-	auto frame = reasoner->reasonAboutApply(JOVT::Unnamed(signatureJOVs));
-
-	if (frame->exits().size() != 1)
-		throw UnableToConvertToPTX("Code returns multiple types.");
-
-	if (frame->exits().jovAndIsExceptionByIndex(0).second)
-		throw UnableToConvertToPTX("Code throws exceptions.");
-
-	auto res = reasoner->compileEntrypointForApply(JOVT::Unnamed(signatureJOVs));
-
-	if (!res)
-		throw UnableToConvertToPTX(
-			"Reasoning failed to converge."
-			);
-
-	//the target instruction might have different JOVS
-	//than the signature, because the axiom might be
-	//a 'class apply' in which case the instruction
-	//will have all of the class object's members
-	//as arguments as well. These will all be constants
-	//in this case, and will be removed
-	//from the NativeCFG because they're all passed as
-	//'none'
-	ImmutableTreeVector<JudgmentOnValue>
-		targetInstructionJOVs = signatureJOVs;
-
-	//if the joa() has multiple exit points that are compatible,
-	//we need to wrap them up into a single typed value
-	bool	needsReturnTypeModification = false;		
 	
-	string kernelName =
-		"CUDA_" + hashToString(funJOV.hash() + vecElementType.hash());
-	
-	TypedFora::Converter converter;
-
-	if (mNativeKernelsByName.find(kernelName) == mNativeKernelsByName.end())
+	string kernelName = "CUDA_" + hashToString(funJOV.hash() + vecElementType.hash());
+		
 		{
-		NativeCFG cfg = converter.convertCallable(Runtime::getRuntime().getTypedForaCompiler()->getDefinition(res->second));
-
-		lassert(res->first == TypedFora::BlockID::entry());
-
-		cfg = transform(cfg, StripCallbackDataTransformer());
-				
-		while (cfg.externalBranches().size())
+		boost::recursive_mutex::scoped_lock lock(mMutex);
+		
+		if (mNativeKernelsByName.find(kernelName) == mNativeKernelsByName.end())
 			{
-			string nameOfSubbranch = cfg.externalBranches()[0];
-			if (Runtime::getRuntime().getTypedForaCompiler()->
-					getMutuallyRecursiveFunctions(nameOfSubbranch).size())
-				{
-				throw UnableToConvertToPTX("contains recursion");
-				}
-			
-			cfg = NativeCFGTransforms::inlineCFG(cfg,
-				transform(
-					converter.convertCallable(
-						Runtime::getRuntime().getTypedForaCompiler()
-							->getDefinition(nameOfSubbranch)
-						),
-					StripCallbackDataTransformer()
-					),
-				nameOfSubbranch
+			ImmutableTreeVector<JudgmentOnValue> signatureJOVs =
+				emptyTreeVec() +
+					funJOV +
+					JudgmentOnValue::Constant(CSTValue(Symbol::Call())) +
+					JudgmentOnValue::OfType(vecElementType)
+				;
+
+			PolymorphicSharedPtr<Fora::SimpleForwardReasoner> reasoner(
+				new Fora::SimpleForwardReasoner(
+					Runtime::getRuntime().getTypedForaCompiler(),
+		            Runtime::getRuntime().getInstructionGraph(),
+		            Runtime::getRuntime().getAxioms()
+		            )
 				);
-			}
 
-		try {
-			//a lot simpler when all variables are unique
-			cfg = NativeCFGTransforms::optimize(cfg, Runtime::getRuntime().getConfig());
-			cfg = NativeCFGTransforms::renameVariables(cfg);
-			
-			define(kernelName, cfg, vecElementType, *frame->exits().jovAndIsExceptionByIndex(0).first.type());
-			}
-		catch(std::logic_error e)
-			{
-			throw UnableToConvertToPTX("internal error: " +
-				string(e.what()));
+			auto frame = reasoner->reasonAboutApply(JOVT::Unnamed(signatureJOVs));
+
+			if (frame->exits().size() != 1)
+				throw UnableToConvertToPTX("Code returns multiple types.");
+
+			if (frame->exits().jovAndIsExceptionByIndex(0).second)
+				throw UnableToConvertToPTX("Code throws exceptions.");
+
+			auto res = reasoner->compileEntrypointForApply(JOVT::Unnamed(signatureJOVs));
+
+			if (!res)
+				throw UnableToConvertToPTX(
+					"Reasoning failed to converge."
+					);
+
+			//the target instruction might have different JOVS
+			//than the signature, because the axiom might be
+			//a 'class apply' in which case the instruction
+			//will have all of the class object's members
+			//as arguments as well. These will all be constants
+			//in this case, and will be removed
+			//from the NativeCFG because they're all passed as
+			//'none'
+			ImmutableTreeVector<JudgmentOnValue>
+				targetInstructionJOVs = signatureJOVs;
+
+			//if the joa() has multiple exit points that are compatible,
+			//we need to wrap them up into a single typed value
+			bool	needsReturnTypeModification = false;		
+			TypedFora::Converter converter;
+
+			NativeCFG cfg = converter.convertCallable(Runtime::getRuntime().getTypedForaCompiler()->getDefinition(res->second));
+
+			lassert(res->first == TypedFora::BlockID::entry());
+
+			cfg = transform(cfg, StripCallbackDataTransformer());
+					
+			while (cfg.externalBranches().size())
+				{
+				string nameOfSubbranch = cfg.externalBranches()[0];
+				if (Runtime::getRuntime().getTypedForaCompiler()->
+						getMutuallyRecursiveFunctions(nameOfSubbranch).size())
+					{
+					throw UnableToConvertToPTX("contains recursion");
+					}
+				
+				cfg = NativeCFGTransforms::inlineCFG(cfg,
+					transform(
+						converter.convertCallable(
+							Runtime::getRuntime().getTypedForaCompiler()
+								->getDefinition(nameOfSubbranch)
+							),
+						StripCallbackDataTransformer()
+						),
+					nameOfSubbranch
+					);
+				}
+
+			try {
+				//a lot simpler when all variables are unique
+				cfg = NativeCFGTransforms::optimize(cfg, Runtime::getRuntime().getConfig());
+				cfg = NativeCFGTransforms::renameVariables(cfg);
+				
+				define(kernelName, cfg, vecElementType, *frame->exits().jovAndIsExceptionByIndex(0).first.type());
+				}
+			catch(std::logic_error e)
+				{
+				throw UnableToConvertToPTX("internal error: " +
+					string(e.what()));
+				}
 			}
 		}
-	
+
 	return executeKernel(kernelName, inSourceVector);
 	}
