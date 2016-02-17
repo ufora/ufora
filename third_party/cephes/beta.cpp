@@ -2,12 +2,10 @@
 #include "gamma.hpp"
 
 #include <math.h>
+#include <limits>
 #include <boost/numeric/conversion/cast.hpp>
 
-
 namespace cephes {
-
-constexpr double MAXGAM = 171.624376956302725;
 
 constexpr double ASYMP_FACTOR = 1e6;
 
@@ -85,7 +83,7 @@ double beta(double a, double b)
     return (y);
 
 overflow:
-    return (sign * INFINITY);
+    return (sign * std::numeric_limits<double>::infinity());
 }
 
 
@@ -147,7 +145,7 @@ double lbeta(double a, double b)
     b = Gamma(b);
     if (y == 0.0) {
       over:
-        return (sign * INFINITY);
+        return (sign * std::numeric_limits<double>::infinity());
     }
 
     if (std::fabs(std::fabs(a) - std::fabs(y)) > std::fabs(std::fabs(b) - std::fabs(y))) {
@@ -194,7 +192,7 @@ double beta_negint(int a, double b)
         return sgn * beta(1 - a - b, b);
     }
     else {
-        return INFINITY;
+        return std::numeric_limits<double>::infinity();
     }
 }
 
@@ -206,7 +204,7 @@ double lbeta_negint(int a, double b)
         return r;
     }
     else {
-        return INFINITY;
+        return std::numeric_limits<double>::infinity();
     }
 }
 

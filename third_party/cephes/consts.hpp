@@ -23,4 +23,9 @@ constexpr double EPS2 = 1.0e-10;
 
 constexpr double ETHRESH = 1.0e-12;
 
+constexpr double MAXGAM = 171.624376956302725;
+
+constexpr double LOGPI = 1.14472988584940017414;
+
+constexpr double SQTPI = 2.50662827463100050242E0;
 }

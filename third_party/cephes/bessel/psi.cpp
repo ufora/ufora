@@ -56,10 +56,12 @@ Cephes Math Library Release 2.8:  June, 2000
 Copyright 1984, 1987, 1992, 2000 by Stephen L. Moshier
 */
 
-#include <cmath>
 #include "../consts.hpp"
 #include "../polevl.hpp"
 #include "psi.hpp"
+
+#include <cmath>
+#include <limits>
 
 namespace cephes {
 
@@ -88,7 +90,7 @@ double psi(double x)
         p = std::floor(q);
         if( p == q )
             {
-            return( INFINITY );
+            return std::numeric_limits<double>::infinity();
             }
 /* Remove the zeros of tan(PI x)
  * by subtracting the nearest integer from x

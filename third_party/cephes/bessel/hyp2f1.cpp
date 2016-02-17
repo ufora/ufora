@@ -68,6 +68,7 @@ Copyright 1984, 1987, 1992, 2000 by Stephen L. Moshier
 #include <cmath>
 #include <cassert>
 #include <cstdlib>
+#include <limits>
 
 #include "psi.hpp"
 #include "../consts.hpp"
@@ -253,7 +254,7 @@ double hyp2f1(double a, double b, double c, double x)
 
     /* The alarm exit */
     hypdiv:
-    return INFINITY;
+    return std::numeric_limits<double>::infinity();
     }
 
 
@@ -376,7 +377,7 @@ double hyt2f1(double a, double b, double c, double x, double* loss)
                 t += 1.0;
                 if (t > MAX_ITERATIONS) {	/* should never happen */
                     *loss = 1.0;
-                    return NAN;
+                    return std::numeric_limits<double>::quiet_NaN();
                     }
                 }
             while (y == 0 || std::fabs(q / y) > EPS);
@@ -478,7 +479,7 @@ double hys2f1(double a, double b, double c, double x, double* loss)
     do {
         if (std::fabs(h) < EPS) {
             *loss = 1.0;
-            return INFINITY;
+            return std::numeric_limits<double>::infinity();
             }
         m = k + 1.0;
         u = u * ((f + k) * (g + k) * x / ((h + k) * m));
@@ -533,7 +534,7 @@ double hyp2f1ra(double a, double b, double c, double x,
     if (std::abs(da) > MAX_ITERATIONS) {
         /* Too expensive to compute this value, so give up */
         *loss = 1.0;
-        return NAN;
+        return std::numeric_limits<double>::quiet_NaN();
         }
 
     if (da < 0) {

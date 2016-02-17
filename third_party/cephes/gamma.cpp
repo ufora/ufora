@@ -4,10 +4,12 @@ Copyright 1984, 1987, 1988 by Stephen L. Moshier
 Direct inquiries to 30 Frost Street, Cambridge, MA 02140
 */
 
-#include <cmath>
 #include "consts.hpp"
 #include "polevl.hpp"
 #include "gamma.hpp"
+
+#include <cmath>
+#include <limits>
 
 namespace cephes {
 
@@ -32,9 +34,6 @@ static const double Q[] = {
     1.00000000000000000320E0
 };
 
-constexpr double MAXGAM = 171.624376956302725;
-constexpr double LOGPI = 1.14472988584940017414;
-
 /* Stirling's formula for the Gamma function */
 static const double STIR[5] = {
     7.87311395793093628397E-4,
@@ -45,7 +44,6 @@ static const double STIR[5] = {
 };
 
 constexpr double MAXSTIR = 143.01608;
-constexpr double SQTPI = 2.50662827463100050242E0;
 
 /* Gamma function computed by Stirling's formula.
  * The polynomial STIR is valid for 33 <= x <= 172.
@@ -55,7 +53,7 @@ double stirf(double x)
     double y, w, v;
 
     if (x >= MAXGAM) {
-        return (INFINITY);
+        return std::numeric_limits<double>::infinity();
         }
     w = 1.0 / x;
     w = 1.0 + w * polevl(w, STIR, 4);
@@ -85,10 +83,10 @@ double Gamma(double x)
 
     if (q > 33.0) {
         if (x < 0.0) {
-            p = floor(q);
+            p = std::floor(q);
             if (p == q) {
             gamnan:
-                return (INFINITY);
+                return std::numeric_limits<double>::infinity();
                 }
             i = p;
             if ((i & 1) == 0)
@@ -100,7 +98,7 @@ double Gamma(double x)
                 }
             z = q * std::sin(PI * z);
             if (z == 0.0) {
-                return (sgngam * INFINITY);
+                return sgngam * std::numeric_limits<double>::infinity();
                 }
             z = std::fabs(z);
             z = PI / (z * stirf(q));
@@ -205,10 +203,10 @@ double lgam_sgn(double x, int *sign)
     if (x < -34.0) {
         q = -x;
         w = lgam_sgn(q, sign);
-        p = floor(q);
+        p = std::floor(q);
         if (p == q) {
         lgsing:
-            return (INFINITY);
+            return std::numeric_limits<double>::infinity();
             }
         i = p;
         if ((i & 1) == 0)
@@ -259,7 +257,7 @@ double lgam_sgn(double x, int *sign)
         }
 
     if (x > MAXLGM) {
-        return (*sign * INFINITY);
+        return *sign * std::numeric_limits<double>::infinity();
         }
 
     q = (x - 0.5) * std::log(x) - x + LS2PI;
