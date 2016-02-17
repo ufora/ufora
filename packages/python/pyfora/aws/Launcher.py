@@ -73,17 +73,21 @@ class Launcher(object):
     export AWS_DEFAULT_REGION={aws_region}
     OWN_INSTANCE_ID=`curl http://169.254.169.254/latest/meta-data/instance-id`
     OWN_PRIVATE_IP=`curl -s http://169.254.169.254/latest/meta-data/local-ipv4`
+    NVIDIA_DEVICES=
     SET_STATUS="aws ec2 create-tags --resources $OWN_INSTANCE_ID --tags Key=status,Value="
+
+
 
     apt-get update
     apt-get install -y docker.io awscli
     if [ $? -ne 0 ]; then
         ${{SET_STATUS}}'install failed'
         exit 1
-    else
-        ${{SET_STATUS}}'pulling docker image'
     fi
 
+    {cuda_installation_script}
+
+    ${{SET_STATUS}}'pulling docker image'
     docker pull ufora/service:{image_version}
     if [ $? -ne 0 ]; then
         ${{SET_STATUS}}'pull failed'
@@ -103,6 +107,7 @@ class Launcher(object):
         -e UFORA_WORKER_OWN_ADDRESS=$OWN_PRIVATE_IP \
         {aws_credentials} \
         {container_env} {container_ports} \
+        $NVIDIA_DEVICES \
         -v $LOG_DIR:/var/ufora ufora/service:{image_version}
     if [ $? -ne 0 ]; then
         ${{SET_STATUS}}'launch failed'
@@ -111,6 +116,23 @@ class Launcher(object):
         ${{SET_STATUS}}'ready'
     fi
     '''
+
+    cuda_installation_script = '''
+    ${{SET_STATUS}}'installing CUDA'
+    NVIDIA_DEVICES=--device /dev/nvidia0:/dev/nvidia0 \
+        --device /dev/nvidia1:/dev/nvidia1 \
+        --device /dev/nvidia2:/dev/nvidia2 \
+        --device /dev/nvidia3:/dev/nvidia3 \
+        --device /dev/nvidiactl:/dev/nvidiactl
+
+    wget http://developer.download.nvidia.com/compute/cuda/repos/ubuntu1404/x86_64/cuda-repo-ubuntu1404_7.0-28_amd64.deb
+    dpkg -i cuda-repo-ubuntu1404_7.0-28_amd64.deb
+    apt-get update
+    apt-get upgrade -y
+    apt-get install -y linux-image-extra-`uname -r` linux-headers-`uname -r` linux-image-`uname -r`
+    apt-get install -y --no-install-recommends --force-yes cuda-nvrtc-7-5 cuda-cudart-7-5 cuda-drivers libcuda1-352 cuda-core-7-5 cuda-driver-dev-7-5
+    '''
+
     def __init__(self,
                  region,
                  vpc_id=None,
@@ -284,7 +306,8 @@ class Launcher(object):
             'aws_region': self.region,
             'aws_credentials': get_aws_credentials_docker_env(),
             'container_env': '',
-            'image_version': pyfora_version
+            'image_version': pyfora_version,
+            'cuda_installation_script': self.cuda_installation_script if self.instance_type[:2] == "g2" else ""
             }
         args.update(updates)
         return args
