@@ -61,6 +61,8 @@ private:
 
 	shared_ptr<vector<char> > loadAndValidateFile(const fs::path& file);
 
+	void checksumAndStore(const NoncontiguousByteBlock& data, fs::path file);
+
 	void initializeStoreIndexes();
 
 	void initializeStoreIndex(const fs::path& rootDir, const fs::path& file);

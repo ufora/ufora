@@ -131,29 +131,54 @@ shared_ptr<vector<char> > OnDiskCompilerStore::loadAndValidateFile(const fs::pat
 	if (!fin.is_open())
 		return shared_ptr<vector<char> >();
 
-	constexpr auto hashSize = 0; // TODO sizeof(Hash);
-	const uword_t bufferSize = fs::file_size(file) - hashSize;
+	hash_type storedChecksum;
+	constexpr auto checksumSize = sizeof(hash_type);
+	vector<char> checksumBuffer(checksumSize);
+	char* checksumPtr = &checksumBuffer[0];
+	fin.read(checksumPtr, checksumSize);
+	if (!fin)
+		{
+		fin.close();
+		return shared_ptr<vector<char> >();
+		}
+
+	IMemProtocol protocol(checksumPtr, checksumBuffer.size());
+		{
+		IBinaryStream stream(protocol);
+		CompilerCacheDuplicatingDeserializer deserializer(
+				stream,
+				MemoryPool::getFreeStorePool(),
+				PolymorphicSharedPtr<VectorDataMemoryManager>()
+				);
+		deserializer.deserialize(storedChecksum);
+		}
+
+	const uword_t bufferSize = fs::file_size(file) - checksumSize;
 	shared_ptr<vector<char> > result(new vector<char>(bufferSize));
 	char* bufPtr = &(*result)[0];
-	// 1. TODO read and validate checksum
 
 	// 2. read rest
 	double t0 = curClock();
 	fin.read(bufPtr, bufferSize);
 	mPerformanceCounters.addDiskLookupTime(curClock()-t0);
-	if (fin)
-		{
-		fin.close();
-		mStoreFilesRead.insert(file);
-		LOG_DEBUG_SCOPED("Deserialization") << "Adding file to set of files read:"
-				<< file.string();
-		return result;
-		}
-	else
+	if (!fin)
 		{
 		fin.close();
 		return shared_ptr<vector<char> >();
 		}
+	// else
+	fin.close();
+
+	hash_type computedChecksum = hashValue(*result);
+
+	if (computedChecksum != storedChecksum)
+		{
+
+		return shared_ptr<vector<char> >();
+		}
+
+	mStoreFilesRead.insert(file);
+	return result;
 	}
 
 void getFilesWithExtension(const fs::path& rootDir, const string& ext, vector<fs::path>& outFiles)
@@ -215,7 +240,6 @@ void OnDiskCompilerStore::initializeStoreIndexes()
 		{
 		initializeStoreIndex(mBasePath, indexFile);
 		}
-
 	}
 
 pair<fs::path, fs::path> OnDiskCompilerStore::getFreshStoreFilePair()
@@ -288,10 +312,32 @@ bool OnDiskCompilerStore::loadDataFromDisk(fs::path file)
 	return true;
 	}
 
+void OnDiskCompilerStore::checksumAndStore(const NoncontiguousByteBlock& data, fs::path file)
+	{
+	ofstream ofs(file.string(), ios::out | ios::binary | ios::trunc);
+	lassert(ofs.is_open());
+
+	hash_type checksum = data.hash();
+
+	ONoncontiguousByteBlockProtocol protocol;
+		{
+		OBinaryStream stream(protocol);
+		CompilerCacheDuplicatingSerializer serializer(stream);
+		serializer.serialize(checksum);
+		}
+	auto serializedChecksum = protocol.getData();
+	lassert(serializedChecksum);
+
+	double t0 = curClock();
+	ofs << *serializedChecksum;
+	ofs << data;
+	mPerformanceCounters.addDiskStoreTime(curClock()-t0);
+
+	ofs.close();
+	}
+
 void OnDiskCompilerStore::flushToDisk()
 	{
-	// update store file
-	LOG_DEBUG << "flushing to disk";
 	auto pair = getFreshStoreFilePair();
 	const fs::path& dataFile = mBasePath / pair.first;
 	const fs::path& indexFile = mBasePath / pair.second;
@@ -299,95 +345,48 @@ void OnDiskCompilerStore::flushToDisk()
 	// serialize mUnsavedObjectMap
 	shared_ptr<map<ObjectIdentifier, MemoizableObject> > storedObjects;
 
-	if (fs::exists(dataFile))
-		fs::remove(dataFile);
-	lassert_dump(!fs::exists(dataFile), dataFile);
-
-	int fd = open(dataFile.string().c_str(),  O_CREAT| O_WRONLY, S_IRUSR|S_IWUSR);
-	lassert_dump(fd != -1, "failed to open " << dataFile.string() << ": " << strerror(errno));
-
 		{
-//		ONoncontiguousByteBlockProtocol protocol;
-		// FIXME :: the performance benefit of serializing directy to disk is minimal (but measurable)
-		OFileDescriptorProtocol protocol(
-			fd,
-			1,
-			1024 * 1024 * 20,
-			OFileDescriptorProtocol::CloseOnDestroy::True
-			);
+		ONoncontiguousByteBlockProtocol protocol;
 
 			{
 			OBinaryStream stream(protocol);
 			CompilerCacheMemoizingBufferedSerializer serializer(stream, *this);
 
-			uword_t entryCount = mUnsavedObjectMap.size();
-			LOG_DEBUG << entryCount << " entries";
-
 			double t0 = curClock();
-			serializer.serialize(entryCount);
+			serializer.serialize(mUnsavedObjectMap.size());
 
 			for (auto pair: mUnsavedObjectMap)
 				{
 				const ObjectIdentifier& curId = pair.first;
 				const MemoizableObject& curObj = pair.second;
-				LOG_DEBUG << "objID: " << curId;
-				LOG_DEBUG << "obj: " << curObj;
 				serializer.serialize(curId);
 				serializer.serialize(curObj);
-				LOG_DEBUG << "1 entry done. Posotion: " << protocol.position()
-						<< ". Objects so-far: " << serializer.getStoredObjectMap()->size();
 				}
 			double time = curClock() - t0;
 			mPerformanceCounters.addSerializationTime(time);
-			mPerformanceCounters.addDiskStoreTime(time);
-
 			mUnsavedObjectMap.clear();
+
 			storedObjects = serializer.getStoredObjectMap();
 			if (storedObjects)
 				{
-				LOG_DEBUG << storedObjects->size() << " objects memo-serialized";
 				mSavedObjectMap.insert(storedObjects->begin(), storedObjects->end());
-				for (auto term : *storedObjects)
-					if (term.second.isMemoizableExpression())
-					{
-					auto& expr = term.second.extract<Expression>();
-					string type;
-					if (expr.isCreateFunction())
-						type += "CreateFunction";
-					if (expr.isCreateLambda())
-						type += "CreateLambda";
-					if (expr.isCreateObject())
-						type += "CreateObject";
-					if (expr.isCreateClass())
-						type += "CreateClass";
-					LOG_DEBUG << "MemoizableExpression type: " << type;
-					LOG_DEBUG << prettyPrintString(term.second);
-					}
 				}
 			}
 
-//		// write .dat file
-//		ofstream ofs(dataFile.string(), ios::out | ios::binary | ios::trunc);
-//		lassert(ofs.is_open());
-//		// TODO: compute and store checksum
-//		double t0 = curClock();
-//		LOG_DEBUG << "Protocol position: " << protocol.position();
-//		auto serializedData = protocol.getData();
-//		if (serializedData)
-//			ofs << *serializedData;
-//		mPerformanceCounters.addDiskStoreTime(curClock()-t0);
-//		ofs.close();
-		}
-	LOG_DEBUG << "Flushed .dat file";
+		// write .dat file
+		auto serializedData = protocol.getData();
+		lassert(serializedData);
+		checksumAndStore(*serializedData, dataFile);
 
-		{
+		}
+
+		{ // write .idx file
 		ONoncontiguousByteBlockProtocol protocol;
 			{
 			OBinaryStream stream(protocol);
 			CompilerCacheDuplicatingSerializer serializer(stream);
 			lassert(storedObjects);
 			uword_t entryCount = storedObjects->size();
-			LOG_DEBUG << "Storing index file " << indexFile.string() << " with " << entryCount << " entries.";
 
 			double t0 = curClock();
 			serializer.serialize(entryCount);
@@ -398,21 +397,12 @@ void OnDiskCompilerStore::flushToDisk()
 				}
 			mPerformanceCounters.addSerializationTime(curClock()-t0);
 			}
-		// write .idx file
-		ofstream ofs(indexFile.string(), ios::out | ios::binary | ios::trunc);
-		lassert(ofs.is_open());
-		// TODO: compute and store checksum
 		auto serializedData = protocol.getData();
-		double t0 = curClock();
-		if (serializedData)
-			ofs << *serializedData;
-		mPerformanceCounters.addDiskStoreTime(curClock()-t0);
-		ofs.close();
+		lassert(serializedData);
+		checksumAndStore(*serializedData, indexFile);
 		}
-	LOG_DEBUG << "Flushed .idx file";
 
 	saveIndexToDisk(mMapFile, mMap);
-	LOG_DEBUG << "Flushed .map file";
 	}
 
 OnDiskCompilerStore::OnDiskCompilerStore(fs::path inBasePath) :
