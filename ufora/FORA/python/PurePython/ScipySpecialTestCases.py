@@ -25,11 +25,9 @@ class ScipySpecialTestCases(object):
 
         a = 1.0
         b = 2.0
-        self.assertTrue(
-            numpy.isclose(
-                f(a, b),
-                self.evaluateWithExecutor(f, a, b)
-                )
+        numpy.testing.assert_almost_equal(
+            f(a, b),
+            self.evaluateWithExecutor(f, a, b)
             )
         
     def test_gamma(self):

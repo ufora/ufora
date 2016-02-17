@@ -34,7 +34,7 @@ class BetaFunction:
         
         return __inline_fora(
             """fun(PyFloat(...) a, PyFloat(...) b) { 
-                   return PyFloat(`beta(a.@m, b.@m))
+                   return PyFloat(`cephes_beta(a.@m, b.@m))
                    }"""
             )(a, b)
 
@@ -153,14 +153,17 @@ class GammaLn:
 
 
 class BetaLn:
-    # Scipy uses a special fortran implementation for this function
-    # We decided not to use it since it uses DATA segments, which
-    # can lead to non-thread safe code. We didn't explore whether
-    # these functions are indeed thread safe, but this implementation
-    # here is hopefully close enough for most purposes.
     def __call__(self, a, b):
-        gammaln = GammaLn()
-        return gammaln(a) + gammaln(b) - gammaln(a + b) 
+        if not isinstance(a, float):
+            a = float(a)
+        if not isinstance(b, float):
+            b = float(b)
+        
+        return __inline_fora(
+            """fun(PyFloat(...) a, PyFloat(...) b) { 
+                   return PyFloat(`cephes_lbeta(a.@m, b.@m))
+                   }"""
+            )(a, b)
 
 
 class Kn:
