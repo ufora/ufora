@@ -99,6 +99,8 @@ python builtins, implemented the basic functionality present in `numpy` and
 The `0.3` release introduces additinal data science algorithms such as logistic regression and 
 GBM.
 
+`0.4` improves our compiler implementation.
+
 After that, we're considering some of the following:
 
 * Python 3 support
