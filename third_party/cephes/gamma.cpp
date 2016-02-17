@@ -78,7 +78,7 @@ double Gamma(double x)
     int i;
     int sgngam = 1;
 
-    if (std::isfinite(x)) {
+    if (!std::isfinite(x)) {
         return x;
         }
     q = std::fabs(x);
