@@ -92,7 +92,8 @@ public:
 
 		static ControlFlowGraph functionToCFGBasic(Function f, int argCount)
 			{
-			Fora::Language::FunctionToCFG converter;
+			Fora::Language::FunctionToCFG& converter =
+					Runtime::getRuntime().getFunctionToCFGConverter();
 
 			return converter.functionToCFG(
 					CPPMLOpaqueHandle<Function>(new Function(f)),

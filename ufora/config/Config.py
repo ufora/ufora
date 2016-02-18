@@ -312,10 +312,6 @@ class Config(object):
                                 checkEnviron=True)
             )
 
-        self.compilerDiskCacheSizeMB = int(
-            self.getConfigValue("COMPILER_DISK_CACHE_SIZE_MB",
-                              default=1024))
-
 
     def setLoggingLevel(self, foregroundLevel, backgroundLevel=None):
         if backgroundLevel is not None:

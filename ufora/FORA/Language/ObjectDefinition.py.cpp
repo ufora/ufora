@@ -40,7 +40,8 @@ public:
 										int argCount
 										)
 			{
-			Fora::Language::FunctionToCFG converter;
+			Fora::Language::FunctionToCFG& converter
+					= Runtime::getRuntime().getFunctionToCFGConverter();
 
 			return converter.functionToCFG(
 					ClassMediator::Object("", objectDefinition, LexicalBindingMap(), CSTValue()),

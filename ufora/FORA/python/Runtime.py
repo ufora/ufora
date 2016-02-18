@@ -80,6 +80,8 @@ def initialize(setupObjectToUse = None):
 
             cfg.useDynamicInlining = True
 
+            cfg.compilerDiskCacheDir = configObjectToUse.compilerDiskCacheDir
+
             if cfg.compilerDefinitionDumpDir != "":
                 logging.info("dumping CFGs to %s", cfg.compilerDefinitionDumpDir)
                 try:

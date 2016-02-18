@@ -13,32 +13,35 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 ****************************************************************************/
+#include "ExpressionToCFG.hppml"
 #include "FunctionToCFG.hppml"
-#include "../ControlFlowGraph/ControlFlowGraph.hppml"
-#include "../../core/Logging.hpp"
-#include "../../core/Clock.hpp"
-#include "../Core/Type.hppml"
 #include "Function.hppml"
 #include "FunctionStage1.hppml"
+#include "FunctionStage2Converter.hppml"
 #include "FunctionStage2.hppml"
 #include "FunctionStage3.hppml"
-#include "../Core/ClassMediator.hppml"
+#include "ProcessedCFG.hppml"
+
 #include "../ControlFlowGraph/ControlFlowGraph.hppml"
+#include "../Core/ClassMediator.hppml"
 #include "../ControlFlowGraph/ControlFlowGraphOptimizer.hppml"
 #include "../ControlFlowGraph/ControlFlowGraphUtil.hppml"
+#include "../ControlFlowGraph/ControlFlowGraph.hppml"
+#include "../Core/Type.hppml"
+
+#include "../../core/Clock.hpp"
+#include "../../core/Logging.hpp"
 #include "../../core/threading/ThreadSafeMap.hpp"
-#include "FunctionStage2Converter.hppml"
-#include "ExpressionToCFG.hppml"
-#include "ProcessedCFG.hppml"
+
+#include "../Runtime.hppml"
+#include "../CompilerCache/CompilerCache.hpp"
 
 namespace Fora {
 namespace Language {
 
 ThreadSafeMap<pair<hash_type, hash_type>, ProcessedCFG> FunctionToCFG::mProcessedCFGCache;
 
-ThreadSafeMap<tuple<hash_type, hash_type, hash_type>, ControlFlowGraph> FunctionToCFG::mCfgCache;
-
-FunctionToCFG::FunctionToCFG()
+FunctionToCFG::FunctionToCFG(CompilerCache& inCompilerCache) : mCompilerCache(inCompilerCache)
 	{
 	}
 
@@ -359,17 +362,17 @@ ControlFlowGraph FunctionToCFG::functionToCFG(
 					const ApplySignature& args
 					) const
 	{
-	tuple<hash_type, hash_type, hash_type> hashes =
-		make_tuple(resumption.hash(), code.hash(), args.hash());
+	CompilerMapKey hashes(resumption.hash(), code.hash(), args.hash());
 	
-	
-	//check the main cache
+	//check the in-memory cache
+	Nullable<ControlFlowGraph> graph = mCompilerCache.get(hashes);
+	if (graph)
 		{
-		Nullable<ControlFlowGraph> graph = mCfgCache.get(hashes);
-		if (graph)
-			return *graph;
+//		LOG_DEBUG_SCOPED("CompilerCache") << "Retrieved CFG.\n"
+//				<< prettyPrintString(*graph);
+
+		return *graph;
 		}
-	
 	//not there. decide which version of this CFG we are expanding
 	ApplySignature sigToUse = signatureToUseFor(resumption, args);
 
@@ -399,8 +402,16 @@ ControlFlowGraph FunctionToCFG::functionToCFG(
 		"invalid cfg: \n" << prettyPrintString(finalCFG)
 		);
 
-	mCfgCache.set(hashes, finalCFG);
+	mCompilerCache.set(hashes, finalCFG);
 	
+	auto result = mCompilerCache.get(hashes);
+	lassert(result);
+//	LOG_DEBUG_SCOPED("CompilerCache") << "Inserted CFG.\n"
+//			<< prettyPrintString(finalCFG);
+	LOG_DEBUG_SCOPED("CompilerCache") << "Retrieved CFG.\n"
+			<< prettyPrintString(*result);
+	lassert_dump(finalCFG==*result, "retrieved CFG differs from inserted CFG.");
+	LOG_DEBUG_SCOPED("CompilerCache") << "Retrieved CFG matches inserted CFG.";
 	return finalCFG;
 	}
 
