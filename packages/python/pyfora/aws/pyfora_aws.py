@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+import time
 from pyfora.aws.Launcher import Launcher
 
 
@@ -22,6 +23,7 @@ class StatusPrinter(object):
     def __init__(self):
         self.spinner_index = 0
         self.last_message_len = 0
+        self.last_message = ""
 
     def on_status(self, status):
         if len(status) == 1 and len(status.items()[0][1]) == 1:
@@ -29,23 +31,34 @@ class StatusPrinter(object):
         else:
             message_body = self.status_summary_message(status)
 
-        message = " %s %s" % (message_body, self.spinner[self.spinner_index])
+        isDifferent = (message_body != self.last_message)
+        self.last_message = message_body
+
+        message = time.asctime() + " -- " + message_body + ("" if isDifferent else " " + self.spinner[self.spinner_index])
+        
+        if isDifferent:
+            print ''
+        else:
+            print '\r',
+
         self.spinner_index = (self.spinner_index + 1) % len(self.spinner)
 
         message_len = len(message)
         if message_len < self.last_message_len:
             message = message + ' '*(self.last_message_len - message_len)
         self.last_message_len = message_len
-        print message, '\r',
+        print message, 
         sys.stdout.flush()
 
     def done(self):
         message = "Done" + ' '*self.last_message_len
+        print ''
         print message
         print ''
         sys.stdout.flush()
 
     def failed(self):
+        print ''
         print ''
         print 'Failed'
         sys.stdout.flush()
@@ -84,7 +97,9 @@ def start_instances(args):
                         subnet_id=args.subnet_id,
                         security_group_id=args.security_group_id,
                         instance_type=args.instance_type,
-                        open_public_port=open_public_port)
+                        open_public_port=open_public_port,
+                        commit_to_build=args.commit
+                        )
 
     status_printer = StatusPrinter()
     print "Launching ufora manager instance:"
@@ -293,6 +308,12 @@ all_arguments = {
                      'over SSH using the -L argument.')
             }
         },
+    'commit': {
+        'args': ('--commit',),
+        'kwargs': {
+            'help': ('If specified, a commit to build from scratch')
+            }
+        },
     'terminate': {
         'args': ('--terminate',),
         'kwargs': {
@@ -304,7 +325,7 @@ all_arguments = {
 
 start_args = ('yes-all', 'ec2-region', 'num-instances', 'ssh-keyname', 'spot-price',
               'instance-type', 'vpc-id', 'subnet-id', 'security-group-id',
-              'open-public-port')
+              'open-public-port', 'commit')
 add_args = ('ec2-region', 'num-instances', 'spot-price')
 list_args = ('ec2-region',)
 stop_args = ('ec2-region', 'terminate')

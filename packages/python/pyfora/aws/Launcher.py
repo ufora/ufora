@@ -36,9 +36,220 @@ def get_aws_credentials_docker_env():
     key = get_aws_access_key_id()
     secret = get_aws_secret_access_key()
     if key and secret:
-        return '-e AWS_ACCESS_KEY_ID=%s -e AWS_SECRET_ACCESS_KEY=%s' % (key, secret)
+        return '--env AWS_ACCESS_KEY_ID=%s --env AWS_SECRET_ACCESS_KEY=%s' % (key, secret)
 
     return ''
+
+user_data_file = '''#!/bin/bash
+export AWS_ACCESS_KEY_ID={aws_access_key}
+export AWS_SECRET_ACCESS_KEY={aws_secret_key}
+export AWS_DEFAULT_REGION={aws_region}
+export OWN_INSTANCE_ID=`curl http://169.254.169.254/latest/meta-data/instance-id`
+export OWN_PRIVATE_IP=`curl -s http://169.254.169.254/latest/meta-data/local-ipv4`
+export SET_STATUS="aws ec2 create-tags --resources $OWN_INSTANCE_ID --tags Key=status,Value="
+export COMMIT_TO_BUILD={commit_to_build}
+export NEEDS_CUDA={needs_cuda}
+
+if [[ $NEEDS_CUDA ]]
+then
+    export DOCKER=nvidia-docker
+else
+    export DOCKER=docker
+fi
+
+if [ -d /mnt ]; then
+    LOG_DIR=/mnt/ufora
+else
+    LOG_DIR=/var/ufora
+fi
+mkdir -p $LOG_DIR
+
+BUILD_DIR=/home/ubuntu/build
+mkdir -p $BUILD_DIR
+
+function install_docker_and_prerequisites {{
+    #docker installation for docker 1.9
+    ${{SET_STATUS}}'installing docker 1.9'
+
+    apt-get install -y awscli git apt-transport-https ca-certificates
+    apt-get update
+
+    apt-get upgrade -y
+    apt-get install -y --force-yes linux-image-extra-`uname -r` linux-headers-`uname -r` linux-image-`uname -r`
+
+    apt-get install apparmor
+    
+    sudo apt-key adv --keyserver hkp://p80.pool.sks-keyservers.net:80 --recv-keys 58118E89F3A912897C070ADBF76221572C52609D
+    echo "deb https://apt.dockerproject.org/repo ubuntu-trusty main" > /etc/apt/sources.list.d/docker.list
+    apt-get update
+
+    apt-get install -y docker-engine
+    service docker start
+    
+    #verify we have docker
+    docker run hello-world
+    if [ $? -ne 0 ]; then
+        ${{SET_STATUS}}'install failed'
+        exit 1
+    fi
+
+
+    }}
+
+
+function docker_run_build {{
+    FLAGS=
+    ARGS=
+    for var in "$@"
+    do
+        if [[ $var == -* ]]
+        then
+            FLAGS="$FLAGS $var"
+        else
+            ARGS="$ARGS $var"
+        fi
+    done
+
+    BUILD_IMAGE_VERSION=`md5sum $BUILD_DIR/ufora/docker/build/Dockerfile|awk '{{print $1}}'`
+
+    $DOCKER run $FLAGS \\
+        --env UFORA_WORKER_OWN_ADDRESS=$OWN_PRIVATE_IP \\
+        --workdir=/volumes/ufora \\
+        {aws_credentials} \\
+        {container_env} {container_ports} \\
+        --privileged=true \\
+        --volume $LOG_DIR:/var/ufora \\
+        --volume $BUILD_DIR:/volumes \\
+        --env PYTHONPATH=/volumes/ufora \\
+        --env ROOT_DATA_DIR=$LOG_DIR \\
+        ufora/build:$BUILD_IMAGE_VERSION \\
+        $ARGS
+    if [ $? -ne 0 ]; then
+        ${{SET_STATUS}}'launch failed'
+        exit 1
+    fi
+    }}
+
+function run_ufora_service {{
+    ${{SET_STATUS}}'pulling docker image'
+    $DOCKER pull ufora/service:{image_version}
+    if [ $? -ne 0 ]; then
+        ${{SET_STATUS}}'pull failed'
+        exit 1
+    fi
+
+    ${{SET_STATUS}}'launching ufora service'
+
+    $DOCKER run --detach --name {container_name} \\
+        --env UFORA_WORKER_OWN_ADDRESS=$OWN_PRIVATE_IP \\
+        --privileged=true \\
+        {aws_credentials} \\
+        {container_env} {container_ports} \\
+        --volume $LOG_DIR:/var/ufora ufora/service:{image_version}
+    if [ $? -ne 0 ]; then
+        ${{SET_STATUS}}'launch failed'
+        exit 1
+    fi
+    }}
+
+function install_cuda {{
+    ${{SET_STATUS}}'installing CUDA'
+
+    wget http://developer.download.nvidia.com/compute/cuda/repos/ubuntu1404/x86_64/cuda-repo-ubuntu1404_7.5-18_amd64.deb
+    dpkg -i cuda-repo-ubuntu1404_7.5-18_amd64.deb
+    
+    apt-get update
+    apt-get upgrade -y
+    apt-get install -y --no-install-recommends --force-yes cuda-nvrtc-7-5 cuda-cudart-7-5 cuda-drivers cuda-core-7-5 cuda-driver-dev-7-5
+
+    curl -fsSL https://github.com/NVIDIA/nvidia-docker/releases/download/v1.0.0-beta/nvidia-docker_1.0.0.beta-1_amd64.deb -o /tmp/nvidia-docker.deb
+    dpkg -i /tmp/nvidia-docker.deb
+    }}
+
+function build_ufora {{
+    ${{SET_STATUS}}'cloning git repo'
+    cd $BUILD_DIR
+    git clone https://github.com/ufora/ufora.git
+
+    cd $BUILD_DIR/ufora
+    git checkout {commit_to_build}
+    if [ $? -ne 0 ]; then
+        ${{SET_STATUS}}'checking out {commit_to_build} failed'
+        exit 1
+    fi
+    
+    BUILD_IMAGE_VERSION=`md5sum $BUILD_DIR/ufora/docker/build/Dockerfile|awk '{{print $1}}'`
+
+    ${{SET_STATUS}}'pulling docker image'
+    $DOCKER pull ufora/build:$BUILD_IMAGE_VERSION
+    if [ $? -ne 0 ]; then
+        ${{SET_STATUS}}'pull failed'
+        exit 1
+    fi
+
+    ${{SET_STATUS}}'building UFORA codebase'
+    docker_run_build --rm ./waf configure
+    docker_run_build --rm python ufora/scripts/resetAxiomSearchFunction.py
+    docker_run_build --rm ./waf install
+    docker_run_build --rm python ufora/scripts/rebuildAxiomSearchFunction.py
+    docker_run_build --rm ./waf install
+
+    run_built_service
+    }}
+
+function run_built_service {{
+    ${{SET_STATUS}}'starting UFORA services'
+
+    echo "#!/bin/bash" > $BUILD_DIR/ufora/start.sh
+    echo "ufora/scripts/init/start" >> $BUILD_DIR/ufora/start.sh
+    echo "ufora/scripts/init/ufora-worker start" >> $BUILD_DIR/ufora/start.sh
+    echo "sleep infinity" >> $BUILD_DIR/ufora/start.sh
+    chmod +x $BUILD_DIR/ufora/start.sh
+
+    docker_run_build --detach --name=ufora_manager ./start.sh
+}}
+
+function post_reboot {{
+    echo "UFORA post-reboot script running."
+
+    ${{SET_STATUS}}'finished rebooting. checking nvidia cards'
+
+    #verify we can see the graphics card.
+    nvidia-smi
+
+    if [[ $COMMIT_TO_BUILD == "" ]]
+    then
+        run_ufora_service
+    else
+        build_ufora
+    fi
+
+    ${{SET_STATUS}}'ready'
+}}
+
+#this is the main entrypoint, called when the instance is booted
+#we check whether we need to install CUDA, in which case we have to 
+#write a bootscript into /etc/rc.local to continue the installation process.
+function on_cloud_init {{
+    install_docker_and_prerequisites
+
+    if [[ $NEEDS_CUDA ]]
+    then
+        install_cuda
+
+        echo "#!/bin/bash" > /etc/rc.local
+        echo "#autogenerated boot script for UFORA instance" >> /etc/rc.local
+        echo "source /root/ufora_setup.sh" >> /etc/rc.local
+        echo "post_reboot" >> /etc/rc.local
+        echo "exit 0" >> /etc/rc.local
+
+        ${{SET_STATUS}}'REBOOTING'
+        reboot
+    else
+        post_reboot
+    fi
+}}
+'''
 
 class Launcher(object):
     ufora_ssh_security_group_name = 'ufora ssh'
@@ -67,71 +278,17 @@ class Launcher(object):
         'us-west-2': 'ami-abc620cb'    
         }
 
-    user_data_template = '''#!/bin/bash
-    export AWS_ACCESS_KEY_ID={aws_access_key}
-    export AWS_SECRET_ACCESS_KEY={aws_secret_key}
-    export AWS_DEFAULT_REGION={aws_region}
-    OWN_INSTANCE_ID=`curl http://169.254.169.254/latest/meta-data/instance-id`
-    OWN_PRIVATE_IP=`curl -s http://169.254.169.254/latest/meta-data/local-ipv4`
-    NVIDIA_DEVICES=
-    SET_STATUS="aws ec2 create-tags --resources $OWN_INSTANCE_ID --tags Key=status,Value="
+    def getUserDataTemplate(self):
+        user_data_template = (
+            "#!/bin/bash\n" + 
+            "cat >/root/ufora_setup.sh <<'EOL'\n" +
+            user_data_file + "\nEOL\n"
+            )
 
+        user_data_template += "source /root/ufora_setup.sh\n"
+        user_data_template += "on_cloud_init\n"
 
-
-    apt-get update
-    apt-get install -y docker.io awscli
-    if [ $? -ne 0 ]; then
-        ${{SET_STATUS}}'install failed'
-        exit 1
-    fi
-
-    {cuda_installation_script}
-
-    ${{SET_STATUS}}'pulling docker image'
-    docker pull ufora/service:{image_version}
-    if [ $? -ne 0 ]; then
-        ${{SET_STATUS}}'pull failed'
-        exit 1
-    else
-        ${{SET_STATUS}}'launching ufora service'
-    fi
-
-    if [ -d /mnt ]; then
-        LOG_DIR=/mnt/ufora
-    else
-        LOG_DIR=/var/ufora
-    fi
-    mkdir $LOG_DIR
-
-    docker run -d --name {container_name} \
-        -e UFORA_WORKER_OWN_ADDRESS=$OWN_PRIVATE_IP \
-        {aws_credentials} \
-        {container_env} {container_ports} \
-        $NVIDIA_DEVICES \
-        -v $LOG_DIR:/var/ufora ufora/service:{image_version}
-    if [ $? -ne 0 ]; then
-        ${{SET_STATUS}}'launch failed'
-        exit 1
-    else
-        ${{SET_STATUS}}'ready'
-    fi
-    '''
-
-    cuda_installation_script = '''
-    ${{SET_STATUS}}'installing CUDA'
-    NVIDIA_DEVICES=--device /dev/nvidia0:/dev/nvidia0 \
-        --device /dev/nvidia1:/dev/nvidia1 \
-        --device /dev/nvidia2:/dev/nvidia2 \
-        --device /dev/nvidia3:/dev/nvidia3 \
-        --device /dev/nvidiactl:/dev/nvidiactl
-
-    wget http://developer.download.nvidia.com/compute/cuda/repos/ubuntu1404/x86_64/cuda-repo-ubuntu1404_7.0-28_amd64.deb
-    dpkg -i cuda-repo-ubuntu1404_7.0-28_amd64.deb
-    apt-get update
-    apt-get upgrade -y
-    apt-get install -y linux-image-extra-`uname -r` linux-headers-`uname -r` linux-image-`uname -r`
-    apt-get install -y --no-install-recommends --force-yes cuda-nvrtc-7-5 cuda-cudart-7-5 cuda-drivers libcuda1-352 cuda-core-7-5 cuda-driver-dev-7-5
-    '''
+        return user_data_template
 
     def __init__(self,
                  region,
@@ -139,7 +296,8 @@ class Launcher(object):
                  subnet_id=None,
                  security_group_id=None,
                  instance_type=None,
-                 open_public_port=False):
+                 open_public_port=False,
+                 commit_to_build=None):
         assert vpc_id is None or subnet_id is not None
         self.region = region
         self.vpc_id = vpc_id
@@ -148,15 +306,17 @@ class Launcher(object):
         self.instance_type = instance_type
         self.open_public_port = open_public_port
         self.ec2 = None
-
+        self.commit_to_build = commit_to_build
 
     def launch_manager(self, ssh_key_name, spot_request_bid_price=None, callback=None):
         if not self.connected:
             self.connect()
 
+        user_data = self.user_data_for_manager()
+
         instances = self.launch_instances(1,
                                           ssh_key_name,
-                                          self.user_data_for_manager(),
+                                          user_data,
                                           spot_request_bid_price,
                                           callback=callback)
         assert len(instances) == 1
@@ -300,6 +460,17 @@ class Launcher(object):
 
     def get_format_args(self, updates):
         assert self.connected
+        if self.instance_type == "g2.8xlarge":
+            devices = "--device /dev/nvidia0:/dev/nvidia0 \
+                    --device /dev/nvidia1:/dev/nvidia1 \
+                    --device /dev/nvidia2:/dev/nvidia2 \
+                    --device /dev/nvidia3:/dev/nvidia3 \
+                    --device /dev/nvidiactl:/dev/nvidiactl"
+        elif self.instance_type == "g2.2xlarge":
+            devices = "--device /dev/nvidia0:/dev/nvidia0 --device /dev/nvidiactl:/dev/nvidiactl"
+        else:
+            devices = ""
+
         args = {
             'aws_access_key': self.ec2.provider.access_key,
             'aws_secret_key': self.ec2.provider.secret_key,
@@ -307,8 +478,10 @@ class Launcher(object):
             'aws_credentials': get_aws_credentials_docker_env(),
             'container_env': '',
             'image_version': pyfora_version,
-            'cuda_installation_script': self.cuda_installation_script if self.instance_type[:2] == "g2" else ""
+            'commit_to_build': str(self.commit_to_build) if self.commit_to_build is not None else "",
+            "needs_cuda": self.instance_type[:2] == "g2"
             }
+
         args.update(updates)
         return args
 
@@ -316,19 +489,19 @@ class Launcher(object):
     def user_data_for_manager(self):
         format_args = self.get_format_args({
             'container_name': 'ufora_manager',
-            'container_ports': '-p 30000:30000 -p 30002:30002 -p 30009:30009 -p 30010:30010',
+            'container_ports': '--publish 30000:30000 --publish 30002:30002 --publish 30009:30009 --publish 30010:30010',
             })
-        return self.user_data_template.format(**format_args)
+        return self.getUserDataTemplate().format(**format_args)
 
 
     def user_data_for_worker(self, manager_instance_id):
         manager_address = self.get_instance_internal_ip(manager_instance_id)
         format_args = self.get_format_args({
             'container_name': 'ufora_worker',
-            'container_env': '-e UFORA_MANAGER_ADDRESS=' + manager_address,
-            'container_ports': '-p 30009:30009 -p 30010:30010'
+            'container_env': '--env UFORA_MANAGER_ADDRESS=' + manager_address,
+            'container_ports': '--publish 30009:30009 --publish 30010:30010'
             })
-        return self.user_data_template.format(**format_args)
+        return self.getUserDataTemplate().format(**format_args)
 
 
     @staticmethod
