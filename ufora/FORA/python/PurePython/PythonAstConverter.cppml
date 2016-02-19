@@ -13,6 +13,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 ****************************************************************************/
+#include <unordered_map>
 #include "PythonAstConverter.hppml"
 #include "PythonListConverter.hppml"
 #include "PythonTupleConverter.hppml"
@@ -40,6 +41,10 @@ namespace {
 
 using namespace Fora;
 
+using SetOfStringPairs = std::set<std::pair<std::string, std::string>>;
+
+constexpr char MEMBERS_TUPLE_NAME[] = "@m";
+
 void assertValidNameIdentifier(
         const std::string& identifier,
         const SimpleParseRange& extent
@@ -62,20 +67,20 @@ std::string publicDataMemberNameToPrivate(std::string name)
     return "@" + name;
     }
 
-ObjectDefinitionTerm noncapturingObjectMember(std::string name, Expression expr)    
+ObjectDefinitionTerm noncapturingObjectMember(std::string name, Expression expr)
     {
-    return 
+    return
         ObjectDefinitionTerm::Anything(
             Function::Term(
                 TuplePattern(
-                    emptyTreeVec() + 
-                        TuplePatternElement::Normal(PatternWithName::Constant(CSTValue(Symbol("Member")))) + 
+                    emptyTreeVec() +
+                        TuplePatternElement::Normal(PatternWithName::Constant(CSTValue(Symbol("Member")))) +
                         TuplePatternElement::Normal(PatternWithName::Constant(CSTValue(Symbol(name))))
                     ),
                 expr,
                 Function::Empty()
                 )
-            );    
+            );
     }
 
 ClassDefinitionTerm
@@ -87,11 +92,11 @@ createInvalidNumberOfArgumentsClassDefinitionTerm(const std::string& name) {
                 Expression::Constant(
                     CSTValue(name + "() takes no arguments; more than one given")
                     ),
-                null()                    
+                null()
                 ),
             1
             )
-        );        
+        );
     }
 
 class AssertOnlySimpleInitStatementsVisitor {
@@ -165,17 +170,27 @@ public:
 
     template<class T> void processDown(const T&, bool&) {}
     template<class T> void processUp(const T&) {}
-        
+
     void processDown(const PythonAstExpr& expr, bool& outContinue)
         {
         @match PythonAstExpr(expr)
-            -|  Name(id, ctx) ->> {
+            -| Name(id, ctx) ->> {
                 if (id == mSelfName)
                     throw PythonToForaConversionError(
                         "in pyfora __init__ methods, the self arg can "
                         "only appear in setattr or getattr expressions.",
                         expr.extent()
                         );
+                }
+            -| Call(func, args, keywords, starargs, kwargs) ->> {
+                // The ONLY place we allow 'self' to appear is as the first argument
+                // to __init__ calls
+                @match PythonAstExpr(func)
+                    -| Attribute(value, attr, ctx) ->> {
+                        outContinue = (attr != "__init__") || (args.size() == 0) ||
+                            !args[0].isName() || (args[0].getName().id() != mSelfName);
+                        }
+                    -| _ ->> {}
                 }
             -| _ ->> {}
             ;
@@ -193,7 +208,7 @@ void assertNoStraySelfArgsInTransformedInitBody(
 
     visit(t, visitor);
     }
-        
+
 
 class HasYieldFunctionBodyVisitor {
 private:
@@ -273,14 +288,15 @@ public:
         }
 };
 
+
 class RewriteSelfSetAttrsTransformer {
 private:
-    std::set<std::pair<std::string, std::string>>& mSelfSetItemMap;
+    SetOfStringPairs& mSelfSetItemMap;
     const std::set<std::string>& mReferencedVariables;
     const std::string& mSelfName;
 public:
     RewriteSelfSetAttrsTransformer(
-            std::set<std::pair<std::string, std::string>>& inSelfSetItemMap,
+            SetOfStringPairs& inSelfSetItemMap,
             const std::set<std::string>& inReferencedVariables,
             const std::string& selfName
             ):
@@ -288,7 +304,7 @@ public:
         mReferencedVariables(inReferencedVariables),
         mSelfName(selfName)
         {
-        }    
+        }
 
     template<class T>
     Nullable<T> processDown(const T& t, bool& b) const
@@ -326,12 +342,12 @@ public:
                 return null() << 
                     PythonAstExpr::Name(
                         replacingName,
-                        ctx                        
+                        ctx
                         );
                 }
             -| _ ->> { return null(); }
         }
-    
+
 private:
     std::string getReplacingName(const std::string& attrName) const 
         {
@@ -345,13 +361,13 @@ private:
 };
 
 Expression makeCreateInstanceCall(
-        const std::set<std::pair<std::string, std::string>>& selfSetItemMap,
+        const std::string& membersTupleName,
         const std::string& className
         )
     {
     ImmutableTreeVector<ApplyArgument> arguments;
 
-    arguments = arguments + 
+    arguments = arguments +
         ApplyArgument::Normal(
             null(),
             Expression::Constant(
@@ -361,15 +377,10 @@ Expression makeCreateInstanceCall(
                 )
             );
 
-    for (const auto& p: selfSetItemMap) {
-        arguments = arguments + 
-            ApplyArgument::Normal(
-                null() << Symbol(publicDataMemberNameToPrivate(p.first)),
-                Expression::Variable(
-                    Symbol(p.second)
-                    )
-                );
-        }
+    arguments = arguments + ApplyArgument::Normal(
+            null() << Symbol(MEMBERS_TUPLE_NAME),
+            Expression::Variable(Symbol(membersTupleName))
+            );
 
     return Expression::Apply(
         Expression::Variable(
@@ -398,13 +409,9 @@ std::set<std::string> extractVariablesReferencedInFunctionBody(
     return referencedVariables;
     }
 
-std::pair<
-    ImmutableTreeVector<PythonAstStatement>, 
-    std::set<std::pair<std::string, std::string>>
-    > rewriteSelfSetAttrs(
-        const std::string& selfName,
-        const ImmutableTreeVector<PythonAstStatement>& body        
-        )
+std::pair<ImmutableTreeVector<PythonAstStatement>, SetOfStringPairs>
+rewriteSelfSetAttrs(const std::string& selfName,
+                    const ImmutableTreeVector<PythonAstStatement>& body)
     {
     assertOnlySimpleInitStatements(body, selfName);
 
@@ -413,7 +420,7 @@ std::pair<
             body
             );
 
-    std::set<std::pair<std::string, std::string>> selfSetItemMap;
+    SetOfStringPairs selfSetItemMap;
 
     RewriteSelfSetAttrsTransformer transformer(
         selfSetItemMap,
@@ -459,13 +466,179 @@ PythonAstArguments dropFirstNormalArg(const PythonAstArguments& args)
         }
 
     lassert(args.defaults().size() == args.args().size());
-        
+
     return PythonAstArguments(
         args.args().slice(1),
         args.vararg(),
         args.kwarg(),
         args.defaults().slice(1)
         );
+    }
+
+class MembersTupleTranformer {
+private:
+    const std::unordered_map<std::string, std::string>& mNewNamesToOriginal;
+    const std::string& mSelfName;
+    const std::string& mMembersTupleName;
+public:
+    MembersTupleTranformer(
+            const std::unordered_map<std::string, std::string>& newNamesToOriginal,
+            const std::string& selfName,
+            const std::string& membersTupleName
+            ):
+        mNewNamesToOriginal(newNamesToOriginal),
+        mSelfName(selfName),
+        mMembersTupleName(membersTupleName)
+        {
+        }
+
+    template<class T>
+    Nullable<T> processDown(const T& t, bool& b) const
+        {
+        return null();
+        }
+
+    template<class T>
+    Nullable<T> processUp(const T& t) const
+        {
+        return null();
+        }
+
+    Nullable<Expression> processUp(const Expression& expr) const
+        {
+        @match Expression(expr)
+            -| Assign (toAssign, value) ->> {
+                Nullable<Expression> memberTupleAssignment = processAssign(toAssign, value);
+                return memberTupleAssignment.isValue() ?
+                    null() << Expression::Sequence(expr, *memberTupleAssignment) :
+                    null();
+                }
+            -| Call (agent, arguments) ->> {
+                if (!isFirstArgSelf(arguments) || !isInitMember(agent))
+                    return null();
+
+                return null() << Expression::Assign(
+                        PatternWithName::Anything(null() << Symbol(mMembersTupleName)),
+                        Expression::CreateTuple(emptyTreeVec() +
+                            ApplyArgument::TupleCall(
+                                Expression::Member(
+                                    Expression::Call(
+                                        agent.getMember().agent(),
+                                        arguments.slice(1)
+                                        ),
+                                    Symbol(MEMBERS_TUPLE_NAME), 1
+                                    )
+                                ) +
+                            ApplyArgument::TupleCall(
+                                Expression::Variable(Symbol(mMembersTupleName))
+                                )
+                            )
+                        );
+                }
+
+            -| _ ->> { return null(); }
+        }
+private:
+    Nullable<Expression> processAssign(const PatternWithName& toAssign,
+                                       const Expression& value) const
+        {
+        ImmutableTreeSet<Symbol> selfAttributes;
+
+        @match Pattern(toAssign.pattern())
+            -| Anything() ->> {
+                auto name = toAssign.name();
+                lassert(name.isValue());
+                if (mNewNamesToOriginal.find(name->toString()) != mNewNamesToOriginal.end())
+                    selfAttributes = selfAttributes + *name;
+                }
+            -| ExpressionMatch(expr, pattern) ->> {
+                if (isTupleAssign(expr))
+                    {
+                    for (const TuplePatternElement& el: pattern.matchers())
+                        {
+                        lassert_dump(el.isNormal(), "varargs not allowed in assignments");
+                        auto symbol = el.getNormal().match().name();
+                        if (symbol.isValue() &&
+                                mNewNamesToOriginal.find(symbol->toString()) != mNewNamesToOriginal.end())
+                            selfAttributes = selfAttributes + *symbol;
+                        }
+                    }
+                }
+            -| _ ->> {
+                LOG_ERROR << "Unexpected Pattern type: " << toAssign.pattern();
+                }
+
+        if (selfAttributes.size() == 0)
+            return null();
+
+        ImmutableTreeVector<ApplyArgument> assignValues = mapITV(
+                selfAttributes,
+                [&](Symbol newName) {
+                    return ApplyArgument::Normal(
+                        null() << Symbol(mNewNamesToOriginal.at(newName.toString())),
+                        Expression::Variable(newName)
+                        );
+                });
+        assignValues = assignValues + ApplyArgument::TupleCall(
+                Expression::Variable(Symbol(mMembersTupleName))
+                );
+        return null() << Expression::Assign(
+                            PatternWithName::Anything(null() << Symbol(mMembersTupleName)),
+                            Expression::CreateTuple(assignValues)
+                            );
+        }
+
+    bool isFirstArgSelf(const ImmutableTreeVector<ApplyArgument> arguments) const
+        {
+        if (arguments.size() == 0)
+            return false;
+
+        @match ApplyArgument(arguments[0])
+            -| Normal (name, expr) ->> {
+                return expr.isVariable() && expr.getVariable().variable().toString() == mSelfName;
+                }
+            -| _ ->> { return false; }
+        }
+
+    bool isInitMember(const Expression& agent) const
+        {
+        @match Expression(agent)
+            -| Member (agent, member, depth) ->> {
+                return member.toString() == "__init__";
+                }
+            -| _ ->> { return false; }
+        }
+
+    bool isTupleAssign(const Expression& expr) const
+        {
+        @match Expression(expr)
+            -| Constant(val) ->> {
+                return val.type().isTuple() &&
+                    *val.tupleGetSize() == 2 &&
+                    *val.tupleGetItem(0) == CSTValue::Tag(Symbol("TupleAssign"));
+                }
+            -| _ ->> { return false; }
+        }
+};
+
+
+Expression populateMembersTuple(const Expression& expr,
+                                const SetOfStringPairs& selfSetItemMap,
+                                const std::string& selfName,
+                                const std::string& membersTupleName)
+    {
+    if (selfSetItemMap.size() == 0)
+        return expr;
+
+    std::unordered_map<std::string, std::string> newNamesToOriginal;
+    for (const auto& p: selfSetItemMap)
+          newNamesToOriginal[p.second] = p.first;
+
+    MembersTupleTranformer transformer(
+            newNamesToOriginal,
+            selfName,
+            membersTupleName);
+    return transform(expr, transformer);
     }
 
 } // anonymous namespace
@@ -790,7 +963,6 @@ Expression PythonAstConverter::initializeUnboundVariablesForFunction(
     return functionBody;
     }
 
-
 // should only be called from convertPythonClassBodyFunctionDefToForaClassDefinitionTerm
 // which does some preliminary verification 
 ImmutableTreeVector<ClassDefinitionTerm> 
@@ -820,10 +992,8 @@ PythonAstConverter::convertPythonInitDefToForaClassDefinitionTerms(
     ImmutableTreeVector<TuplePatternElement> foraArgs = 
         computeForaArgs(dropFirstNormalArg(args));
 
-    std::pair<
-        ImmutableTreeVector<PythonAstStatement>,
-        std::set<std::pair<std::string, std::string>>
-        > transformedBodyAndSelfSetItemMap = rewriteSelfSetAttrs(
+    std::pair<ImmutableTreeVector<PythonAstStatement>, SetOfStringPairs>
+        transformedBodyAndSelfSetItemMap = rewriteSelfSetAttrs(
             selfName,
             functionDef.body()
             );
@@ -839,30 +1009,43 @@ PythonAstConverter::convertPythonInitDefToForaClassDefinitionTerms(
             transformedBodyAndSelfSetItemMap.first
             );
 
-    Expression createInstanceCall = 
-        makeCreateInstanceCall(
+    functionBody = populateMembersTuple(
+            functionBody,
             transformedBodyAndSelfSetItemMap.second,
-            className
-            );
+            selfName,
+            "@members");
 
-    functionBody = Expression::Sequence(
-        functionBody,
-        createInstanceCall
-        );
+
+    Expression createInstanceCall = makeCreateInstanceCall("@members", className);
+
+    functionBody = Expression::Let(
+            emptyTreeVec() + std::make_pair(
+                PatternWithName::Anything(null() << Symbol("@members")),
+                Expression::CreateTuple(ImmutableTreeVector<ApplyArgument>())
+                ),
+            Expression::Sequence(functionBody, createInstanceCall)
+            );
 
     functionBody = initializeUnboundVariablesForFunction(pattern, functionBody);
 
-    ImmutableTreeVector<ClassDefinitionTerm> tr;
-
-    for (const auto& p: transformedBodyAndSelfSetItemMap.second) 
-        {
-        tr = tr + ClassDefinitionTerm::DataMember(
-            Symbol(publicDataMemberNameToPrivate(p.first))
+    ImmutableTreeVector<ClassDefinitionTerm> tr = emptyTreeVec() +
+        ClassDefinitionTerm::DataMember(Symbol(MEMBERS_TUPLE_NAME)) +
+        ClassDefinitionTerm::ObjectTerm(
+            noncapturingObjectMember(
+                MEMBERS_TUPLE_NAME,
+                Expression::Variable(Symbol(MEMBERS_TUPLE_NAME))
+                )
             );
+
+    for (const auto& p: transformedBodyAndSelfSetItemMap.second)
+        {
         tr = tr + ClassDefinitionTerm::ObjectTerm(
             noncapturingObjectMember(
                 p.first,
-                Expression::Variable(publicDataMemberNameToPrivate(p.first))
+                Expression::Member(
+                    Expression::Variable(Symbol(MEMBERS_TUPLE_NAME)),
+                    Symbol(p.first),
+                    1)
                 )
             );
         }
@@ -875,6 +1058,8 @@ PythonAstConverter::convertPythonInitDefToForaClassDefinitionTerms(
             )
         );
     }
+
+
 
 
 ImmutableTreeVector<ClassDefinitionTerm>

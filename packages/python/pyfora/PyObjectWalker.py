@@ -374,7 +374,8 @@ class PyObjectWalker(object):
         classObject = classInstance.__class__
         classId = self.walkPyObject(classObject)
 
-        dataMemberNames = PyAstUtil.collectDataMembersSetInInit(classObject)
+        dataMemberNames = classInstance.__dict__.keys() if hasattr(classInstance, '__dict__') \
+            else PyAstUtil.collectDataMembersSetInInit(classObject)
         classMemberNameToClassMemberId = {}
         for dataMemberName in dataMemberNames:
             memberId = self.walkPyObject(getattr(classInstance, dataMemberName))

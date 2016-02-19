@@ -705,28 +705,13 @@ class Converter(object):
             }
         classImplVal = self.convertedValues[classInstanceDescription.classId]
 
-        #note that we need to strip off the first character of membernames defined in the
-        #class implval because the object holds 'x' as '@x' so that it doesn't capture
-        #all references to 'x'
-        classMembersInForaDeclarationOrder = \
-            [str(val)[1:] for val in classImplVal.getDataMembers]
-
-        assert set(classMembersInForaDeclarationOrder) == \
-            set(classMemberNameToImplVal.keys()), "%s vs %s" % (
-                set(classMembersInForaDeclarationOrder),
-                set(classMemberNameToImplVal.keys())
-                )
-
-        classMemberImplVals = []
-        for classMemberName in classMembersInForaDeclarationOrder:
-            ivc = classMemberNameToImplVal[classMemberName]
-            classMemberImplVals.append(ivc)
-
-        applyArgs = [classImplVal, Symbol_CreateInstance] + classMemberImplVals
-
+        memberNames = tuple(name for name in classMemberNameToImplVal.iterkeys())
+        memberValues = tuple(classMemberNameToImplVal[name] for name in memberNames)
         convertedValueOrNone = ForaNative.simulateApply(
             ForaNative.ImplValContainer(
-                tuple(applyArgs)
+                (classImplVal,
+                 Symbol_CreateInstance,
+                 ForaNative.CreateNamedTuple(memberValues, memberNames))
                 )
             )
 
@@ -1095,6 +1080,7 @@ class Converter(object):
                     nameAsImplval.pyval[1:]
                     )
 
+
             defPoint = implval.getObjectDefinitionPoint()
             if defPoint is not None:
                 if objectClass is not None:
@@ -1107,11 +1093,17 @@ class Converter(object):
                         if memberName is not None:
                             member = implval.getObjectLexicalMember(memberName)
                             if member is not None and member[1] is None:
-                                members[str(memberName)[1:]] = self.transformPyforaImplval(
-                                    member[0],
-                                    transformer,
-                                    vectorContentsExtractor
-                                    )
+                                assert memberName == "@m"
+                                assert member[0].isTuple()
+
+                                membersTuple = member[0]
+                                memberNames = membersTuple.getTupleNames()
+                                for i, name in enumerate(memberNames):
+                                    members[str(name)] = self.transformPyforaImplval(
+                                        membersTuple[i],
+                                        transformer,
+                                        vectorContentsExtractor
+                                        )
 
                     return transformer.transformClassInstance(classObject, members)
                 else:

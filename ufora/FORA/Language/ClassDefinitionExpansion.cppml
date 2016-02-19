@@ -14,6 +14,8 @@
    limitations under the License.
 ****************************************************************************/
 #include "ClassDefinitionExpansion.hppml"
+#include "../../core/cppml/CPPMLTransform.hppml"
+#include "../../core/Logging.hpp"
 #include "../Core/ClassMediator.hppml"
 #include "../Core/Type.hppml"
 #include "Function.hppml"
@@ -338,6 +340,37 @@ ObjectDefinitionTerm createClassInstanceTerm(
 
 	return ObjectDefinitionTerm::Anything(fun);
 	}
+
+
+	class RemoveDataMemberTransformer {
+	public:
+		template<class T>
+		Nullable<T> processDown(const T& t, bool& b) const
+			{
+			return null();
+			}
+
+		template<class T>
+		Nullable<T> processUp(const T& t) const
+			{
+			return null();
+			}
+
+		Nullable<ClassDefinitionBody>
+		processDown(const ClassDefinitionBody& body, bool& outContinue) const
+			{
+			@match ClassDefinitionBody(body)
+				-| Term((DataMember(), _), otherwise) ->> {
+					return null() << otherwise;
+					}
+				-| _ ->> { return null(); }
+			}
+		};
+
+	ClassDefinitionBody removeAllDataMembers(const ClassDefinitionBody& body)
+		{
+		return transform(body, RemoveDataMemberTransformer());
+		}
 }
 
 
@@ -605,24 +638,6 @@ upgradeObjectDefinitionBodyToClassDefinitionBody(const ObjectDefinitionBody& in)
 			}
 	}
 
-bool hasMembersOrConstructors(const ClassDefinitionBody& body)
-	{
-	@match ClassDefinitionBody(body)
-		-| Term((DataMember(),_), tail) ->> {
-			return true;
-			}
-		-| Term((Constructor(),_), tail) ->> {
-			return true;
-			}
-		-| Term(_, tail) ->> {
-			return hasMembersOrConstructors(tail);
-			}
-		-| Empty() ->> {
-			}
-
-	return false;
-	}
-
 ClassMediator upgradeObjectToClass(const ClassMediator& inMediator)
 	{
 	@match ClassMediator(inMediator)
@@ -692,12 +707,10 @@ Nullable<ClassMediator> processClassMediatorMixin(
 
 					}
 				-| Class(mixinDef, mixinBindings, mixinMeta) ->> {
-
-					if (hasMembersOrConstructors(mixinDef.body()))
-						return null();
-
 					pair<LexicalBindingMap, ClassDefinitionBody> updatedBindingsAndMediator = 
 						mergeLexicalBindings(bindings, mixinBindings, mixinDef.body(), inBaseBoundItemCount);
+
+					updatedBindingsAndMediator.second = removeAllDataMembers(updatedBindingsAndMediator.second);
 
 					return null() << ClassMediator::Class(
 						className,

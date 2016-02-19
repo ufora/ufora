@@ -158,6 +158,90 @@ class ExecutorTestCases(object):
 
         self.evaluateWithExecutor(f2)
 
+    def test_class_with_init(self):
+        class HasInit(object):
+            def __init__(self, x):
+                self.x = x
+
+            def get_x(self):
+                return self.x
+
+        def f(i):
+            c = HasInit(i)
+            return c.get_x()
+
+        self.equivalentEvaluationTest(f, 1)
+
+    def test_base_class_with_init(self):
+        class HasInitBase(object):
+            def __init__(self, x):
+                self.x = x
+
+            def get_x(self):
+                return self.x
+
+        class HasInitChild(HasInitBase):
+            def __init__(self, x, y):
+                HasInitBase.__init__(self, x)
+                self.y = y
+
+            def get_y(self):
+                return self.y
+
+        def f(i):
+            c = HasInitChild(i, i+1)
+            return (c.get_x(), c.get_y(), c.x, c.y)
+
+        self.equivalentEvaluationTest(f, 1)
+
+
+    def test_class_instance_with_init(self):
+        class HasInit_1(object):
+            def __init__(self, x):
+                self.x = x
+
+            def get_x(self):
+                return self.x
+
+        c = HasInit_1(1)
+        def f():
+            return c.get_x()
+
+        self.equivalentEvaluationTest(f)
+
+    def test_class_instance_with_init_to_python(self):
+        class HasInit_2(object):
+            def __init__(self, x):
+                self.x = x
+
+            def get_x(self):
+                return self.x
+
+        c = HasInit_2(1)
+        def f():
+            return c
+
+        self.equivalentEvaluationTest(f, comparisonFunction=lambda a, b: a.x == b.x)
+
+
+    def test_base_class_instance_with_init_to_python(self):
+        class HasInitBase_3(object):
+            def __init__(self, x):
+                self.x = x
+
+        class HasInitChild_3(HasInitBase_3):
+            def __init__(self, x, y):
+                HasInitBase_3.__init__(self, x)
+                self.y = y
+
+        c = HasInitChild_3(1, 'hello')
+        def f():
+            return c
+
+        self.equivalentEvaluationTest(
+            f,
+            comparisonFunction=lambda a, b: a.x == b.x and a.y == b.y
+            )
 
     def test_uninitializedVars_1(self):
         def f():
