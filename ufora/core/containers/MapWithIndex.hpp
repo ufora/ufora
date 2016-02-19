@@ -20,6 +20,7 @@
 #include <set>
 #include <stdint.h>
 #include "../lassert.hpp"
+#include "../math/Nullable.hpp"
 #include "../serialization/Serialization.fwd.hpp"
 
 template<class key_type, class value_type, class key_compare = std::less<key_type>, class value_compare = std::less<value_type> >
@@ -62,6 +63,15 @@ public:
 			return mValueToKeys.find(inValue) != mValueToKeys.end();
 			}
 
+		Nullable<value_type> tryGetValue(const key_type& inKey) const
+			{
+			auto it = mKeyToValue.find(inKey);
+			if (it == mKeyToValue.end())
+				return null();
+			else
+				return null() << it->second;
+			}
+
 		const value_type getValue(const key_type& inKey) const
 			{
 			lassert(hasKey(inKey));
@@ -78,8 +88,10 @@ public:
 
 		void dropValue(const value_type& inValue)
 			{
-			while (hasValue(inValue))
-				drop(*getKeys(inValue).begin());
+			for (auto key: getKeys(inValue))
+				mKeyToValue.erase(key);
+
+			mValueToKeys.erase(inValue);
 			}
 
 		void discard(key_type inKey)
@@ -88,6 +100,14 @@ public:
 				drop(inKey);
 			}
 		
+		bool tryDrop(key_type inKey)
+			{
+			if (!hasKey(inKey))
+				return false;
+			drop(inKey);
+			return true;
+			}
+
 		void drop(key_type inKey)
 			{
 			lassert(hasKey(inKey));
@@ -106,6 +126,15 @@ public:
 			if (hasKey(inKey))
 				drop(inKey);
 			insert(inKey, inValue);
+			}
+
+		bool tryInsert(const key_type& inKey, const value_type& inValue)
+			{
+			if(hasKey(inKey))
+				return false;
+
+			insert(inKey, inValue);
+			return true;
 			}
 
 		void insert(const key_type& inKey, const value_type& inValue)
