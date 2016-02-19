@@ -18,8 +18,8 @@
 #include "CompilerMapKey.hppml"
 #include "MemoizableObject.hppml"
 #include "ObjectIdentifier.hppml"
-#include "OnDiskLocation.hppml"
 #include "PerformanceCounters.hpp"
+#include "../../core/containers/MapWithIndex.hpp"
 
 #define BOOST_FILESYSTEM_NO_DEPRECATED
 #include <boost/filesystem.hpp>
@@ -57,7 +57,7 @@ public:
 private:
 	pair<fs::path, fs::path> getFreshStoreFilePair();
 
-	bool loadDataFromDisk(fs::path file);
+	bool loadDataFromDisk(const fs::path& file);
 
 	shared_ptr<vector<char> > loadAndValidateFile(const fs::path& file);
 
@@ -65,7 +65,12 @@ private:
 
 	void initializeStoreIndexes();
 
-	void initializeStoreIndex(const fs::path& rootDir, const fs::path& file);
+	bool initializeStoreIndex(const fs::path& rootDir, const fs::path& file);
+
+	bool tryRebuildIndexFromData(
+			const fs::path& rootDir,
+			const fs::path& indexFile,
+			const fs::path& dataFile);
 
 	void validateIndex();
 
@@ -75,6 +80,7 @@ private:
 	template<class T>
 	void initializeIndex(const fs::path& file, T& index);
 
+	void cleanUpLocationIndex(const fs::path& problematicDataFile);
 
 private:
 	// We currently rely on the lock held by the CompilerCache Object which holds
@@ -93,15 +99,21 @@ private:
 
 	unordered_map<ObjectIdentifier, MemoizableObject> mUnsavedObjectMap;
 
-	unordered_map<ObjectIdentifier, OnDiskLocation> mLocationIndex;
+	/// \brief Maps Object Identifiers to relative paths (relative to mBasePath)
+	MapWithIndex<ObjectIdentifier, fs::path> mLocationIndex;
 
+	/// \brief This set allows us to detect and break recursive load cycles, which shouldn't exist.
 	std::set<fs::path> mStoreFilesRead;
 
 	mutable PerformanceCounters mPerformanceCounters;
-	////////////////////////////////////////////////////////////
 
+	////////////////////////////////////////////////////////////
 	// CONSTANTS
 	static const string INDEX_EXTENSION;
 	static const string DATA_EXTENSION;
 	static const string STORE_FILE_PREFIX;
+
+public:
+	static Nullable<fs::path> getDataFileFromIndexFile(const fs::path& indexFile);
+	static Nullable<fs::path> getIndexFileFromDataFile(const fs::path& indexFile);
 };

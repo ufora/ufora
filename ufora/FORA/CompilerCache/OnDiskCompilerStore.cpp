@@ -32,14 +32,50 @@ const string OnDiskCompilerStore::INDEX_EXTENSION = ".idx";
 const string OnDiskCompilerStore::DATA_EXTENSION = ".dat";
 const string OnDiskCompilerStore::STORE_FILE_PREFIX = "CompilerStore";
 
+void removeIfExists(const fs::path& file)
+	{
+	if (fs::exists(file))
+		fs::remove(file);
+	}
+
+inline
+Nullable<fs::path> getFileWithNewExtension(
+		const fs::path& file,
+		const string& currentExtension,
+		const string& newExtension)
+	{
+	const string& fileStr = file.string();
+	const string suffix = fileStr.substr(
+			fileStr.size()- currentExtension.size(),
+			currentExtension.size());
+	if (suffix.compare(currentExtension))
+		return null();
+
+	string newFileStr =
+				fileStr.substr(
+						0,
+						fileStr.size() - currentExtension.size()
+						)
+				+ newExtension;
+	return null() << fs::path(newFileStr);
+	}
+
+Nullable<fs::path> OnDiskCompilerStore::getDataFileFromIndexFile(const fs::path& indexFile)
+	{
+	return getFileWithNewExtension(indexFile, INDEX_EXTENSION, DATA_EXTENSION);
+	}
+
+Nullable<fs::path> OnDiskCompilerStore::getIndexFileFromDataFile(const fs::path& dataFile)
+	{
+	return getFileWithNewExtension(dataFile, DATA_EXTENSION, INDEX_EXTENSION);
+	}
+
 template<class T>
 void OnDiskCompilerStore::saveIndexToDisk(const fs::path& file, const T& index) const
 	{
 	double t0 = curClock();
-	LOG_DEBUG << "Trying to save index to Disk";
 
-	if (fs::exists(file))
-		fs::remove(file);
+	removeIfExists(file);
 	lassert_dump(!fs::exists(file), file);
 
 	int fd = open(file.string().c_str(),  O_CREAT| O_WRONLY, S_IRUSR|S_IWUSR);
@@ -60,11 +96,6 @@ void OnDiskCompilerStore::saveIndexToDisk(const fs::path& file, const T& index) 
 			serializer.serialize(index);
 			}
 
-		LOG_DEBUG << "Disk cache index stored: "
-			<< protocol.position() /*/ 1024 / 1024.0 << " MB. " */ << " bytes. "
-			<< " path = " << file.string()
-			;
-
 		}
 		mPerformanceCounters.addDiskStoreTime(curClock() - t0);
 	}
@@ -72,11 +103,8 @@ void OnDiskCompilerStore::saveIndexToDisk(const fs::path& file, const T& index) 
 template<class T>
 void OnDiskCompilerStore::initializeIndex(const fs::path& file, T& index)
 	{
-	LOG_DEBUG << "Trying to initialize index from Disk";
-	// open file if present.
 	if (!fs::exists(file))
 		{
-		LOG_DEBUG << "Index File not found: " << file.string();
 		return;
 		}
 
@@ -104,8 +132,6 @@ void OnDiskCompilerStore::initializeIndex(const fs::path& file, T& index)
 		mPerformanceCounters.addDiskLookupTime(time);
 		mPerformanceCounters.addDeserializationTime(time);
 		}
-
-	LOG_DEBUG << "Initialized index: size=" << index.size();
 	}
 
 template<class T>
@@ -197,19 +223,45 @@ void getFilesWithExtension(const fs::path& rootDir, const string& ext, vector<fs
 		}
 	}
 
-void OnDiskCompilerStore::initializeStoreIndex(const fs::path& rootDir, const fs::path& indexFile)
+bool OnDiskCompilerStore::tryRebuildIndexFromData(
+		const fs::path& rootDir,
+		const fs::path& indexFile,
+		const fs::path& dataFile)
 	{
-	shared_ptr<vector<char> > dataBuffer = loadAndValidateFile(rootDir/indexFile);
-	lassert(dataBuffer);
+	return false;
+	}
 
-	const string& indexFileStr = indexFile.string();
-	string dataFileStr =
-			indexFileStr.substr(
-					0,
-					indexFileStr.size() - INDEX_EXTENSION.size()
-					)
-			+ DATA_EXTENSION;
-	OnDiskLocation loc(dataFileStr, 0);
+bool OnDiskCompilerStore::initializeStoreIndex(const fs::path& rootDir, const fs::path& indexFile)
+	{
+	auto dataFile = getDataFileFromIndexFile(indexFile);
+	if (!dataFile)
+		{
+		// Do *not* remove indexFile. It could be a useful non-index file.
+		return false;
+		}
+
+	if (!fs::exists(rootDir/ *dataFile))
+		{
+		LOG_WARN << "Removing index file '" << indexFile.string()
+				<< "' because the corresponding data file could not be found.";
+		removeIfExists(rootDir / indexFile);
+		return false;
+		}
+
+	shared_ptr<vector<char> > dataBuffer = loadAndValidateFile(rootDir/indexFile);
+	if (!dataBuffer)
+		{
+		bool res = tryRebuildIndexFromData(rootDir, indexFile, *dataFile);
+		if (!res)
+			{
+			LOG_WARN << "Failed to load compiler cache index file: " << indexFile.string();
+
+			removeIfExists(rootDir / indexFile);
+			removeIfExists(rootDir / *dataFile);
+			}
+		return res;
+		}
+
 	char* dataPtr = &(*dataBuffer)[0];
 	IMemProtocol protocol(dataPtr, dataBuffer->size());
 
@@ -226,9 +278,10 @@ void OnDiskCompilerStore::initializeStoreIndex(const fs::path& rootDir, const fs
 			{
 			ObjectIdentifier objId;
 			deserializer.deserialize(objId);
-			mLocationIndex.insert(make_pair(objId, loc));
+			mLocationIndex.tryInsert(objId, *dataFile);
 			}
 		}
+	return true;
 	}
 
 void OnDiskCompilerStore::initializeStoreIndexes()
@@ -268,13 +321,34 @@ pair<fs::path, fs::path> OnDiskCompilerStore::getFreshStoreFilePair()
 		}
 	}
 
-bool OnDiskCompilerStore::loadDataFromDisk(fs::path file)
+void OnDiskCompilerStore::cleanUpLocationIndex(const fs::path& problematicDataFile)
 	{
-	if (!fs::exists(file) || !fs::is_regular_file(file))
-		return false;
-	shared_ptr<vector<char> > dataBuffer = loadAndValidateFile(file);
-	lassert(dataBuffer);
+	LOG_DEBUG << "Cleaning up Index from problematic data file: "
+			<< problematicDataFile.string();
+	mLocationIndex.dropValue(problematicDataFile);
+	removeIfExists(mBasePath / problematicDataFile);
+	auto indexFile = getIndexFileFromDataFile(problematicDataFile);
+	if (indexFile)
+		removeIfExists(mBasePath / *indexFile);
+	}
 
+bool OnDiskCompilerStore::loadDataFromDisk(const fs::path& relativePathToFile)
+	{
+	fs::path absolutePathToFile = mBasePath / relativePathToFile;
+	if (!fs::exists(absolutePathToFile) || !fs::is_regular_file(absolutePathToFile))
+		{
+		cleanUpLocationIndex(relativePathToFile);
+		return false;
+		}
+
+	shared_ptr<vector<char> > dataBuffer = loadAndValidateFile(absolutePathToFile);
+	if (!dataBuffer)
+		{
+		cleanUpLocationIndex(relativePathToFile);
+		return false;
+		}
+
+	lassert(dataBuffer);
 	char* dataPtr = &(*dataBuffer)[0];
 	IMemProtocol protocol(dataPtr, dataBuffer->size());
 		{
@@ -289,16 +363,13 @@ bool OnDiskCompilerStore::loadDataFromDisk(fs::path file)
 		uword_t entryCount;
 		double t0 = curClock();
 		deserializer.deserialize(entryCount);
-		LOG_DEBUG_SCOPED("Deserialization") << "gonna deserialize " << entryCount << " entries.";
 		for (int i = 0; i < entryCount; ++i)
 			{
 			ObjectIdentifier objId;
 			MemoizableObject obj;
 			deserializer.deserialize(objId);
-			LOG_DEBUG_SCOPED("Deserialization") << "gonna deserialize " << prettyPrintString(objId);
 			deserializer.deserialize(obj);
-			LOG_DEBUG_SCOPED("Deserialization") << "1 entry deserialized: " << prettyPrintString(objId);
-			mSavedObjectMap.insert(make_pair(objId, obj)); // FIXME
+			mSavedObjectMap.insert(make_pair(objId, obj));
 			}
 		mPerformanceCounters.addDeserializationTime(curClock()-t0);
 
@@ -414,21 +485,15 @@ OnDiskCompilerStore::OnDiskCompilerStore(fs::path inBasePath) :
 	mMapFile = mBasePath / "CmToCfgMap.map";
 
 	initializeStoreIndexes();
-//	logDebugMap(mLocationIndex);
 	initializeIndex(mMapFile, mMap);
-//	logDebugMap(mMap);
 
 	validateIndex();
-
-	LOG_DEBUG_SCOPED("CompilerCachePerf") <<
-			mPerformanceCounters.printStats();
-
 	}
 
 bool OnDiskCompilerStore::containsOnDisk(const ObjectIdentifier& inKey) const
 	{
 	if (mSavedObjectMap.find(inKey) != mSavedObjectMap.end() ||
-			mLocationIndex.find(inKey) != mLocationIndex.end())
+			mLocationIndex.hasKey(inKey))
 		return true;
 	else
 		return false;
@@ -436,40 +501,17 @@ bool OnDiskCompilerStore::containsOnDisk(const ObjectIdentifier& inKey) const
 
 void OnDiskCompilerStore::validateIndex()
 	{
-	map<fs::path, uintmax_t> fileSizeMap;
-	for(auto idxIt = mLocationIndex.begin(); idxIt != mLocationIndex.end();)
+	std::set<fs::path> valuesToDrop;
+	for (auto term : mLocationIndex.getValueToKeys())
 		{
-		auto& term = *idxIt;
-		const fs::path file(mBasePath / term.second.filePath());
-
-		uintmax_t size = 0;
-		auto it = fileSizeMap.find(file);
-		if (it == fileSizeMap.end())
-			{
-			if (fs::exists(file))
-				size = fs::file_size(file);
-			else
-				size = 0;
-			auto res = fileSizeMap.insert(make_pair(file, size));
-			lassert(res.second==true)
-			}
-		else
-			{
-			size = (*it).second;
-			}
-
-		if (term.second.fileOffset() >= size)
-			{
-			LOG_WARN << "Dropping Compiler Store Index pair: ("
-					<< prettyPrintString(term.first) << ") -> ("
-					<< prettyPrintString(term.second) << ")"
-					;
-			idxIt = mLocationIndex.erase(idxIt);
-			}
-		else
-			{
-			++idxIt;
-			}
+		if (!fs::exists(mBasePath / term.first))
+			valuesToDrop.insert(term.first);
+		}
+	for (auto value : valuesToDrop)
+		{
+		mLocationIndex.dropValue(value);
+		LOG_WARN << "Dropping Compiler Store object IDs to file '"
+				<< value.string() << "'";
 		}
 	}
 
@@ -495,15 +537,14 @@ Nullable<T> OnDiskCompilerStore::lookup(const ObjectIdentifier& inKey)
 	if (res)
 		return res;
 
-	auto locIt = mLocationIndex.find(inKey);
-	if (locIt == mLocationIndex.end())
+	auto file = mLocationIndex.tryGetValue(inKey);
+	if (!file)
 		return null();
 
-	fs::path file((*locIt).second.filePath());
-	if (!loadDataFromDisk(mBasePath / file))
+	if (!loadDataFromDisk(*file))
 		{
 		LOG_WARN << "Unable to load Compiler Cache data from file '"
-				<< (mBasePath/file).string() << "'";
+				<< (mBasePath / *file).string() << "'";
 		return null();
 		}
 
@@ -533,7 +574,7 @@ void OnDiskCompilerStore::store(const ObjectIdentifier& inKey, const T& inValue)
 		// don't return, proceed to check if (key, value) pair exists on disk as well
 		}
 
-	if (mLocationIndex.find(inKey) != mLocationIndex.end())
+	if (mLocationIndex.hasKey(inKey))
 		{
 		if (!inSavedMap)
 			mSavedObjectMap.insert(
@@ -543,6 +584,7 @@ void OnDiskCompilerStore::store(const ObjectIdentifier& inKey, const T& inValue)
 		}
 	auto value = make_pair(inKey, MemoizableObject::makeMemoizableObject(inValue));
 	auto insRes = mUnsavedObjectMap.insert(value);
+
 	// TEMP SOLUTION TO FLUSHING
 	if(mUnsavedObjectMap.size() > 5)
 		flushToDisk();
@@ -555,12 +597,10 @@ void OnDiskCompilerStore::store<MemoizableObject>(const ObjectIdentifier& inKey,
 Nullable<ControlFlowGraph> OnDiskCompilerStore::get(const CompilerMapKey& inKey)
 	{
 	ControlFlowGraph tr;
-//	LOG_DEBUG << "CompilerStore::get " << inKey;
 
 	auto objIt = mMap.find(inKey);
 	if (objIt == mMap.end())
 		{
-		LOG_DEBUG << "key not found in compiler cache MAP: " << prettyPrintString(inKey);
 		return null();
 		}
 
@@ -573,13 +613,9 @@ Nullable<ControlFlowGraph> OnDiskCompilerStore::get(const CompilerMapKey& inKey)
 
 void OnDiskCompilerStore::set(const CompilerMapKey& inKey, const ControlFlowGraph& inCFG)
 	{
-//	LOG_DEBUG << "CompilerStore::set " << inKey;
 	ObjectIdentifier objId(makeObjectIdentifier(inCFG));
 
 	mMap.insert(make_pair(inKey, objId));
 	store(objId, inCFG);
-
-	LOG_DEBUG_SCOPED("CompilerCachePerf") <<
-			mPerformanceCounters.printStats();
 
 	}
