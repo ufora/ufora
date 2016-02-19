@@ -99,8 +99,6 @@ public:
             const std::vector<std::string>& elements, 
             std::map<SharedState::Key, SharedState::KeyState>& out)
 		{
-		1+1;
-
 		return deserializeType<BinaryStreamDeserializer>(elements, out);
 		}
 
