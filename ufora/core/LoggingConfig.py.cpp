@@ -51,7 +51,7 @@ public:
 			case LOG_LEVEL_CRITICAL:
 				return SHOULD_LOG_CRITICAL();
 			default:
-				assert(false);
+				lassert_dump(false, "Invalid log level:" << logLevel);
 			}
 		}
 	static void logPy(int logLevel, std::string message)
