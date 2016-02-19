@@ -21,6 +21,7 @@ def cxx_compiler_options(cxx_opts):
     cxx_opts.add_option(
         '--cxx-warnings',
         default='''
+                   -Werror
                    -Qunused-arguments
                    -Wno-return-type-c-linkage
                    -Wno-tautological-compare
@@ -28,13 +29,11 @@ def cxx_compiler_options(cxx_opts):
                    -Wno-logical-op-parentheses
                    -Wno-deprecated-declarations
                    -Wno-parentheses
-                   -Wno-return-type
                    -Wno-redeclared-class-member
                    -Wno-parentheses-equality
                    -Wno-tautological-undefined-compare
                    -Wno-c++1z-extensions
                    -Wno-#warnings
-                   -Wno-return-stack-address
                    -Wno-unused-value
                    -Wno-tautological-constant-out-of-range-compare
                    -Wno-switch
@@ -149,7 +148,6 @@ def options(opt):
 
 @waflib.Configure.conf
 def cxx_flags(conf):
-    print "WARNING OPTION:" + conf.options.cxx_warnings
     conf.env.append_unique(
         'CXXFLAGS',
         conf.options.cxx_warnings.split() + \
