@@ -13,7 +13,8 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 ****************************************************************************/
-#pragma once
+#ifndef __UFORA_COMMON_HEADERS_HPP__
+#define __UFORA_COMMON_HEADERS_HPP__
 
 #include "core/Platform.hpp"
 
@@ -32,4 +33,4 @@
 #include <boost/shared_ptr.hpp>
 #endif
 
-
+#endif
