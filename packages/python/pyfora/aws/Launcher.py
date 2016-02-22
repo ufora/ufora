@@ -68,10 +68,13 @@ BUILD_DIR=/home/ubuntu/build
 mkdir -p $BUILD_DIR
 
 function install_docker_and_prerequisites {{
+    apt-get update
+    apt-get install -y awscli
+
     #docker installation for docker 1.9
     ${{SET_STATUS}}'installing docker 1.9'
 
-    apt-get install -y awscli git apt-transport-https ca-certificates
+    apt-get install -y git apt-transport-https ca-certificates
     apt-get update
 
     apt-get upgrade -y
@@ -211,11 +214,6 @@ function run_built_service {{
 
 function post_reboot {{
     echo "UFORA post-reboot script running."
-
-    ${{SET_STATUS}}'finished rebooting. checking nvidia cards'
-
-    #verify we can see the graphics card.
-    nvidia-smi
 
     if [[ $COMMIT_TO_BUILD == "" ]]
     then
@@ -460,16 +458,6 @@ class Launcher(object):
 
     def get_format_args(self, updates):
         assert self.connected
-        if self.instance_type == "g2.8xlarge":
-            devices = "--device /dev/nvidia0:/dev/nvidia0 \
-                    --device /dev/nvidia1:/dev/nvidia1 \
-                    --device /dev/nvidia2:/dev/nvidia2 \
-                    --device /dev/nvidia3:/dev/nvidia3 \
-                    --device /dev/nvidiactl:/dev/nvidiactl"
-        elif self.instance_type == "g2.2xlarge":
-            devices = "--device /dev/nvidia0:/dev/nvidia0 --device /dev/nvidiactl:/dev/nvidiactl"
-        else:
-            devices = ""
 
         args = {
             'aws_access_key': self.ec2.provider.access_key,
@@ -479,7 +467,7 @@ class Launcher(object):
             'container_env': '',
             'image_version': pyfora_version,
             'commit_to_build': str(self.commit_to_build) if self.commit_to_build is not None else "",
-            "needs_cuda": self.instance_type[:2] == "g2"
+            "needs_cuda": "1" if self.instance_type[:2] == "g2" else ""
             }
 
         args.update(updates)

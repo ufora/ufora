@@ -32,10 +32,15 @@ class StatusPrinter(object):
             message_body = self.status_summary_message(status)
 
         isDifferent = (message_body != self.last_message)
+        isFirst = self.last_message == ""
+
         self.last_message = message_body
 
         message = time.asctime() + " -- " + message_body + ("" if isDifferent else " " + self.spinner[self.spinner_index])
         
+        if isFirst:
+            print message,
+
         if isDifferent:
             print ''
         else:
