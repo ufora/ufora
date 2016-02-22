@@ -28,10 +28,8 @@ def cxx_compiler_options(cxx_opts):
                    -Wno-dangling-else
                    -Wno-logical-op-parentheses
                    -Wno-deprecated-declarations
-                   -Wno-parentheses
                    -Wno-redeclared-class-member
                    -Wno-parentheses-equality
-                   -Wno-tautological-undefined-compare
                    -Wno-#warnings
                    ''',
         dest='cxx_warnings',

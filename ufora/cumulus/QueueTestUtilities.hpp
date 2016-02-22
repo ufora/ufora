@@ -96,10 +96,10 @@ void assertQueueContains(Queue<T>& queue, T in, PolymorphicSharedPtr<CallbackSch
 	Queue<T> otherQueue;
 	otherQueue.write(*elt);
 
-	while (elt = queue.getNonblock())
+	while ((elt = queue.getNonblock()))
 		otherQueue.write(*elt);
 
-	while (elt = otherQueue.getNonblock())
+	while ((elt = otherQueue.getNonblock()))
 		queue.write(*elt);
 	}
 

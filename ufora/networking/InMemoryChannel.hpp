@@ -55,7 +55,7 @@ public:
 
 		Nullable<T> val;
 
-		while (val = mUnconsumedMessages.getNonblock())
+		while ((val = mUnconsumedMessages.getNonblock()))
 			mCallbackScheduler->scheduleImmediately(
 				boost::bind(
 					mOnMessageReceived,
