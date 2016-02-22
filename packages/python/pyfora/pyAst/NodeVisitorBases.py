@@ -198,7 +198,8 @@ class GenericInScopeVisitor(NodeVisitorBase):
     def visit_With(self, node):
         self.visit(node.context_expr)
         with self._isInDefinitionMgr():
-            self.visit(node.optional_vars)
+            if node.optional_vars is not None:
+                self.visit(node.optional_vars)
         self.visit(node.body)
 
     def visit_Attribute(self, node):
