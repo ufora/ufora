@@ -16,6 +16,7 @@ import pyfora.Exceptions as Exceptions
 import pyfora.pyAst.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
 import pyfora.PureImplementationMappings as PureImplementationMappings
 import pyfora.RemotePythonObject as RemotePythonObject
+import pyfora.Future as Future
 import pyfora.NamedSingletons as NamedSingletons
 import pyfora.PyforaWithBlock as PyforaWithBlock
 import pyfora.PyforaInspect as PyforaInspect
@@ -205,6 +206,9 @@ class PyObjectWalker(object):
     def _walkPyObject(self, pyObject, objectId):
         if isinstance(pyObject, RemotePythonObject.RemotePythonObject):
             self._registerRemotePythonObject(objectId, pyObject)
+        elif isinstance(pyObject, Future.Future):
+            #it would be better to register the future and do a second pass of walking
+            self._walkPyObject(pyObject.result(), objectId)
         elif isinstance(pyObject, _FileDescription):
             self._registerFileDescription(objectId, pyObject)
         elif isinstance(pyObject, Exception) and pyObject.__class__ in \
