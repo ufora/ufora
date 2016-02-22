@@ -140,6 +140,13 @@ public:
 			uint32_t inCount
 			);
 
+		static Hash SHA1Scattered(
+			const void** data, 
+			uint32_t inBlockSize, 
+			uint32_t inBlockNudge, 
+			uint32_t inCount
+			);
+
 private:
 		uint32_t mData[5];
 };

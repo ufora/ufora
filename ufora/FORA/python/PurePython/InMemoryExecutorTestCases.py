@@ -18,6 +18,51 @@ import ufora.FORA.python.PurePython.ExecutorTestCases as ExecutorTestCases
 
 
 class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
+    def test_list_hashing(self):
+        def f(x):
+            x = x[0]
+            res = 0
+            while x > 0:
+                x = x - 1
+                res = res + x
+            return res
+
+        t0 = time.time()
+        self.evaluateWithExecutor(f, [1000000000])
+        t1 = time.time()
+        self.evaluateWithExecutor(f, [1000000001])
+        t2 = time.time()
+        self.evaluateWithExecutor(f, [1000000000])
+        t3 = time.time()
+
+        firstPass = t1 - t0
+        secondPass = t2 - t1
+        thirdPass = t3 - t2
+
+        #the third pass should be _way_ faster.
+        self.assertTrue(thirdPass / firstPass < .1)
+        self.assertTrue(thirdPass / secondPass < .1)
+
+    def test_with_blocks_inside_converted_code(self):
+        with self.assertRaises(pyfora.PythonToForaConversionError):
+            with self.create_executor() as executor:
+                with executor.remotely:
+                    with 10:
+                        X = 10
+
+    def test_pyfora_pass_future_into_with_block_works(self):
+        with self.create_executor() as executor:
+            s3 = self.getS3Interface(executor)
+            payload = "this is some data"
+            s3().setKeyValue("bucketname", "key", payload)
+
+            remote = executor.importS3Dataset("bucketname", "key")
+
+            with executor.remotely.downloadAll():
+                res = len(remote)
+
+            assert res == len(payload)
+
     def test_pyfora_s3_read(self):
         with self.create_executor() as executor:
             s3 = self.getS3Interface(executor)

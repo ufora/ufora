@@ -54,6 +54,27 @@ Hash Hash::SHA1Strided(
 	return tr;
 	}
 
+Hash Hash::SHA1Scattered(
+			const void** data, 
+			uint32_t inBlockSize, 
+			uint32_t inBlockNudge, 
+			uint32_t inCount
+			)
+	{
+	SHA_CTX ctx;
+
+	SHA1_Init(&ctx);
+
+	for (long k = 0; k < inCount;k++)
+		SHA1_Update(&ctx, (uint8_t*)data[k] + inBlockNudge, inBlockSize);
+
+	hash_type tr;
+
+	SHA1_Final((unsigned char*)&tr, &ctx);
+
+	return tr;
+	}
+
 Hash operator+(const Hash& l, const Hash& r)
 	{
 	char data[sizeof(Hash) * 2];

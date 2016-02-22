@@ -43,6 +43,12 @@ using TypedFora::Abi::VectorRecord;
 namespace {
 
 template<class T>
+T* nudge(T* in, long offset)
+	{
+	return (T*)((char*)in + offset);
+	}
+
+template<class T>
 hash_type hashValuesWithHashMemberFunction(void* data, long ct, size_t inStride)
 	{
 	uint8_t* dataAsInt = (uint8_t*)data;
@@ -69,9 +75,25 @@ hash_type hashValuesUsingGlobalHashValueFunction(void* data, long ct, size_t inS
 	}
 
 template<class T>
-T* nudge(T* in, long offset)
+hash_type hashValuesScatteredWithHashMemberFunction(void** data, long ct, size_t inNudge)
 	{
-	return (T*)((char*)in + offset);
+	hash_type tr;
+
+	for (long k = 0; k < ct; k++)
+		tr = tr + nudge((T*)data[k], inNudge)->hash();
+
+	return tr;
+	}
+
+template<class T>
+hash_type hashValuesScatteredUsingGlobalHashValueFunction(void** data, long ct, size_t inNudge)
+	{
+	hash_type tr;
+
+	for (long k = 0; k < ct; k++)
+		tr = tr + hashValue(*nudge((T*)data[k], inNudge));
+
+	return tr;
 	}
 
 template<class T>
@@ -1175,6 +1197,92 @@ hash_type Type::hashObject(void* data, size_t inCount, size_t inStride) const
 			}
 		-|	Dictionary(isCST) ->> {
 			return hashValuesWithHashMemberFunction<dict_type>(data, inCount, inStride);
+			}
+	}
+
+hash_type Type::hashValuesScattered(void** data, size_t inCount, size_t inNudge) const
+	{
+	if (inCount == 0)
+		return hash_type();
+
+	if (this->isDirectlySerializable())
+		return Hash::SHA1Scattered((const void**)data, this->size(), inNudge, inCount);
+
+	@match Type(*this)
+		-|	Symbol() ->> {
+			return hashValuesScatteredWithHashMemberFunction<symbol_type>(data, inCount, inNudge);
+			}
+		-|	Tag() ->> {
+			return hashValuesScatteredWithHashMemberFunction<symbol_type>(data, inCount, inNudge);
+			}
+		-|	String() ->> {
+			return hashValuesScatteredWithHashMemberFunction<string_type>(data, inCount, inNudge);
+			}
+		-|	ExternalFunction() ->> {
+			return hashValuesScatteredUsingGlobalHashValueFunction<ExternalFunctionDescriptor>(data, inCount, inNudge);
+			}
+		-|	JOVAsValue() ->> {
+			return hashValuesScatteredWithHashMemberFunction<JOV>(data, inCount, inNudge);
+			}
+		-|	StackTrace() ->> {
+			return hashValuesScatteredUsingGlobalHashValueFunction<ForaStackTrace>(data, inCount, inNudge);
+			}
+		-|	Integer(bits, isSigned) ->> {
+
+			//this is the only legal integer type that's not also 'directly serialiazable'
+			if (bits == 1 && !isSigned)
+				return hashValuesScatteredUsingGlobalHashValueFunction<bool>(data, inCount, inNudge);
+
+			ostringstream str;
+			throw standardLogicErrorWithStacktrace("bad integer type: " + this->toString());
+			}
+		-|	DateTime() ->> {
+			return hashValuesScatteredWithHashMemberFunction<date_time_type>(data, inCount, inNudge);
+			}
+		-|	TimeDuration() ->> {
+			return hashValuesScatteredWithHashMemberFunction<time_duration_type>(data, inCount, inNudge);
+			}
+		-|	Class(types) ->> {
+			hash_type tr;
+
+			uword_t offset = 0;
+			for (long k = 0; k < types.size(); k++)
+				{
+				tr = tr + types[k].hashValuesScattered(data, inCount, inNudge + offset);
+				offset += types[k].size();
+				}
+
+			return tr;
+			}
+		-|	Alternative(t) ->> {
+			hash_type tr = hashValuesScatteredWithHashMemberFunction<symbol_type>(data, inCount, inNudge);
+
+			return tr + t.hashValuesScattered(data, inCount, inNudge + sizeof(symbol_type));
+			}
+		-|	Tuple(types) ->> {
+			hash_type tr;
+
+			uword_t offset = 0;
+			for (long k = 0; k < types.size(); k++)
+				{
+				tr = tr + types[k].hashValuesScattered(data, inCount, inNudge + offset);
+				offset += types[k].size();
+				}
+
+			return tr;
+			}
+		-|	Vector() ->> {
+			return hashValuesScatteredWithHashMemberFunction<VectorRecord>(data, inCount, inNudge);
+			}
+		-|	MutableVector() ->> {
+			return hashValuesScatteredWithHashMemberFunction<MutableVectorRecord>(
+				data, 
+				inCount, 
+				inNudge
+				);
+			}
+		-|	Dictionary(isCST) ->> {
+			return hashValuesScatteredWithHashMemberFunction<dict_type>(data, inCount, inNudge);
 			}
 	}
 
