@@ -354,6 +354,28 @@ class NpPinv:
             )
 
 
+class Svd:
+    def __call__(self, a):
+        assert len(a.shape) == 2, "need len(a.shape) == 2"
+        
+        res = Svd.__pyfora_builtins__.linalg.svd(a)
+
+        return (
+            PurePythonNumpyArray(
+                res[0][1],
+                res[0][0]
+                ),
+            PurePythonNumpyArray(
+                (len(res[1]),),
+                res[1]
+                ),
+            PurePythonNumpyArray(
+                res[2][1],
+                res[2][0]
+                )
+            )
+
+
 class LinSolve:
     def __call__(self, a, b):
         assert len(a.shape) == 2, "need len(a.shape) == 2"
@@ -491,6 +513,7 @@ class Sqrt:
 def generateMappings():
     mappings_ = [(np.zeros, NpZeros), (np.array, NpArray), (np.dot, NpDot),
                  (np.linalg.pinv, NpPinv), (np.linalg.solve, LinSolve),
+                 (np.linalg.svd, Svd),
                  (np.arange, NpArange)]
 
     # these will need their own implementations in PureNumpy since in true numpy

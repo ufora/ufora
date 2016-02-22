@@ -490,5 +490,20 @@ class NumpyTestCases(object):
             self.evaluateWithExecutor(f, vals)
             )
             
+    def check_svd(self, x):
+        def svd(a):
+            return numpy.linalg.svd(a)
 
-            
+        pyforaRes = self.evaluateWithExecutor(svd, x)
+        numpyRes = svd(x)
+
+        self.assertEqual(len(pyforaRes), len(numpyRes))
+
+        for ix in xrange(len(pyforaRes)):
+            numpy.testing.assert_allclose(
+                pyforaRes[ix],
+                numpyRes[ix]
+                )
+        
+    def test_svd_1(self):
+        self.check_svd(numpy.array([[1,3],[2,4]]))
