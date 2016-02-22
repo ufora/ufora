@@ -172,7 +172,7 @@ def withBlockAtLineNumber(sourceAst, lineNumber):
 
     if len(subnodesAtLineNumber) == 0:
         raise Exceptions.CantGetSourceTextError(
-            "can't find a WithBlock at line %s of %s" % lineNumber
+            "can't find a WithBlock at line %s" % lineNumber
             )
     if len(subnodesAtLineNumber) > 1:
         raise Exceptions.CantGetSourceTextError(
