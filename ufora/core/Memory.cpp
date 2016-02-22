@@ -30,7 +30,7 @@ size_t getMemoryStat(std::string inName)
 	{
 	size_t out = 0;
 
-	if (MallocExtension::instance()->GetNumericProperty(inName.c_str(), &out));
+	if (MallocExtension::instance()->GetNumericProperty(inName.c_str(), &out))
 		return out;
 
 	return 0;

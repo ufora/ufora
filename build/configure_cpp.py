@@ -32,14 +32,7 @@ def cxx_compiler_options(cxx_opts):
                    -Wno-redeclared-class-member
                    -Wno-parentheses-equality
                    -Wno-tautological-undefined-compare
-                   -Wno-c++1z-extensions
                    -Wno-#warnings
-                   -Wno-unused-value
-                   -Wno-tautological-constant-out-of-range-compare
-                   -Wno-switch
-                   -Wno-string-plus-int
-                   -Wno-format
-                   -Wno-empty-body
                    ''',
         dest='cxx_warnings',
         help='extra warning flags to pass to C++ compiler')

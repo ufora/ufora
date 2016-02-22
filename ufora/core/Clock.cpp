@@ -108,7 +108,7 @@ std::string currentTimeAsString()
             timeinfo->tm_hour,
             timeinfo->tm_min,
             timeinfo->tm_sec,
-            tv.tv_usec/1000
+            (int)tv.tv_usec/1000
            );
     return std::string(buffer);
     }
