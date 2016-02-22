@@ -75,10 +75,21 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
 
             assert s3 is not None
 
+    def test_pyfora_s3_read_bad_bucket(self):
+        with self.create_executor() as executor:
+            result = executor.importS3Dataset("no_such_bucket", "key").result()
+            with self.assertRaises(pyfora.ComputationError):
+                result.toLocal().result()
+
     def test_pyfora_s3_read_bad_key(self):
         with self.create_executor() as executor:
-            with self.assertRaises(pyfora.PyforaError):
-                executor.importS3Dataset("no_such_bucket", "key").result()
+            s3 = self.getS3Interface(executor)
+            payload = "this is some data"
+            s3().setKeyValue("bucketname", "key", payload)
+
+            result = executor.importS3Dataset("bucketname", "no such key").result()
+            with self.assertRaises(pyfora.ComputationError):
+                result.toLocal().result()
 
 
     def test_pyfora_s3_write_badKey(self):

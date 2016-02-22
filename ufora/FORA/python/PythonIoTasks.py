@@ -351,6 +351,8 @@ def loadEntireS3Dataset(datasetDescriptor, s3InterfaceFactory, vdid, vdm):
                 vdid,
                 ForaNative.ImplValContainer(e.message)):
             raise DatasetLoadException("Couldn't load dataset into VDM")
+    except:
+        logging.error("WTF: %s", traceback.format_exc())
 
 
 def loadEntireFileDataset(datasetDescriptor, vdid, vdm):
@@ -489,7 +491,7 @@ def parseS3Dataset(s3InterfaceFactory, s3Dataset):
 def produceVDIDSlicesForEntireS3Dataset(s3InterfaceFactory, s3Dataset, vdm):
     s3Interface, bucketname, keyPrefix = parseS3Dataset(s3InterfaceFactory, s3Dataset)
 
-    if s3Interface.keyExists(bucketname, keyPrefix):
+    if s3Interface.bucketExists(bucketname) and s3Interface.keyExists(bucketname, keyPrefix):
         return produceVDIDSlicesForSingleBucketKeyPair(s3Interface,
                                                        bucketname,
                                                        keyPrefix,
