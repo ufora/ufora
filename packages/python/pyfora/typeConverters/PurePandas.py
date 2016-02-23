@@ -134,6 +134,10 @@ class PurePythonDataFrame(object):
 
         return PurePythonSeries(self._dot(other, _splitLimit, 0, self.shape[0]))
 
+    def columns(self):
+        # NOTE: this is not pandas-API compatible.
+        return self._columns
+
     def _dot(self, other, splitLimit, low, high):
         sz = high - low
         if sz <= splitLimit:

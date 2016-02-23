@@ -122,6 +122,12 @@ class PurePythonNumpyArray(object):
 
         return PurePythonNumpyArray(newShape, toReturn)
 
+    def __neg__(self):
+        return PurePythonNumpyArray(
+            self.shape,
+            [-val for val in self.values]
+            )
+
     def __mul__(self, v):
         def op(x, y):
             return x * y

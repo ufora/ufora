@@ -16,7 +16,6 @@ import pandas
 import numpy
 
 
-import pyfora.Exceptions
 from pyfora.unique import unique
 from pyfora.algorithms import BinaryLogisticRegressionFitter
 

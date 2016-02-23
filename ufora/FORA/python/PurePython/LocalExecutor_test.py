@@ -33,6 +33,7 @@ import ufora.FORA.python.PurePython.FunctionTestCases as FunctionTestCases
 import ufora.FORA.python.PurePython.ListTestCases as ListTestCases
 import ufora.FORA.python.PurePython.UnimplementedValuesTestCases as \
     UnimplementedValuesTestCases
+import ufora.FORA.python.PurePython.TrustRegionTests as TrustRegionTests
 
 
 import unittest
@@ -54,7 +55,8 @@ class TestLocalExecutor(
         ScipySpecialTestCases.ScipySpecialTestCases,
         FunctionTestCases.FunctionTestCases,
         ListTestCases.ListTestCases,
-        UnimplementedValuesTestCases.UnimplementedValuesTestCases
+        UnimplementedValuesTestCases.UnimplementedValuesTestCases,
+        TrustRegionTests.TrustRegionTests
         ):
     @classmethod
     def setUpClass(cls):
