@@ -33,6 +33,12 @@
 #   CCACHE_DIR -   [optional] Location of ccache directory
 ##########################################################
 
+docker="docker"
+nvidia-smi
+if [ $? -eq 0 ]; then
+    docker="nvidia-docker"
+fi
+
 dockerfile_hash=`md5sum docker/build/Dockerfile`
 if [ $? -ne 0 ]; then
     echo "Unable to hash Dockerfile. Aborting."
@@ -41,15 +47,15 @@ fi
 dockerfile_hash=`echo $dockerfile_hash | awk '{print $1}'`
 
 docker_image="ufora/build:$dockerfile_hash"
-docker pull $docker_image
+$docker pull $docker_image
 if [ $? -ne 0 ]; then
     echo "Failed to pull docker image $docker_image. Building new image."
-    docker build -t $docker_image docker/build
+    $docker build -t $docker_image docker/build
     if [ $? -ne 0 ]; then
         echo "ERROR: Failed to build docker image. Exiting."
         exit 1
     fi
-    docker push $docker_image
+    $docker push $docker_image
 fi
 
 clean_command="rm -rf .waf-*-* ; ./waf clean > /dev/null ; rm -rf .build > /dev/null"
@@ -107,48 +113,57 @@ echo "Running command: $command_to_run"
 repo_dir=$(cd $(dirname "$0"); pwd) # make.sh is at the root of the repo
 echo "OUTPUT_DIR: $OUTPUT_DIR"
 
-src_volume="-v $repo_dir:/volumes/src"
+src_volume="--volume $repo_dir:/volumes/src"
 
 if [ ! -z $OUTPUT_DIR ]; then
     container_output_path="/volumes/output/"
-    output_volume="-v $OUTPUT_DIR:$container_output_path"
+    output_volume="--volume $OUTPUT_DIR:$container_output_path"
 fi
 if [ ! -z $CCACHE_DIR ]; then
-    ccache_volume="-v $CCACHE_DIR:/volumes/ccache"
+    ccache_volume="--volume $CCACHE_DIR:/volumes/ccache"
 fi
 
 
-container_env="-e UFORA_PERFORMANCE_TEST_RESULTS_FILE=$container_output_path$UFORA_PERFORMANCE_TEST_RESULTS_FILE \
-               -e AWS_AVAILABILITY_ZONE=$AWS_AVAILABILITY_ZONE \
-               -e TEST_LOOPER_TEST_ID=$TEST_LOOPER_TEST_ID \
-               -e TEST_LOOPER_MULTIBOX_IP_LIST=${TEST_LOOPER_MULTIBOX_IP_LIST// /,} \
-               -e TEST_LOOPER_MULTIBOX_OWN_IP=$TEST_LOOPER_MULTIBOX_OWN_IP \
-               -e TEST_OUTPUT_DIR=/volumes/output \
-               -e CORE_DUMP_DIR=$CORE_DUMP_DIR \
-               -e REVISION=$REVISION"
+container_env="--env UFORA_PERFORMANCE_TEST_RESULTS_FILE=$container_output_path$UFORA_PERFORMANCE_TEST_RESULTS_FILE \
+               --env AWS_AVAILABILITY_ZONE=$AWS_AVAILABILITY_ZONE \
+               --env TEST_LOOPER_TEST_ID=$TEST_LOOPER_TEST_ID \
+               --env TEST_LOOPER_MULTIBOX_IP_LIST=${TEST_LOOPER_MULTIBOX_IP_LIST// /,} \
+               --env TEST_LOOPER_MULTIBOX_OWN_IP=$TEST_LOOPER_MULTIBOX_OWN_IP \
+               --env TEST_OUTPUT_DIR=/volumes/output \
+               --env CORE_DUMP_DIR=$CORE_DUMP_DIR \
+               --env REVISION=$REVISION"
 
 
 container_name=`uuidgen`
 
-container_options="--ulimit core=-1"
+container_options='--ulimit="core=-1"'
 
 if [ ! -z "$TEST_LOOPER_MULTIBOX_IP_LIST" ]; then
     network_settings="--net=host"
 fi
 
 function cleanup {
-    docker stop $container_name &> /dev/null
-    docker rm $container_name &> /dev/null
+    $docker stop $container_name &> /dev/null
+    $docker rm $container_name &> /dev/null
 }
 
 # Ensure the container is not left running
 trap cleanup EXIT
 
 echo "Current docker containters:"
-docker ps -a
+$docker ps -a
 echo
 
-docker run --rm --name $container_name \
+echo $docker run --rm --name=$container_name --privileged=true \
+    $container_env \
+    $container_options \
+    $network_settings \
+    $src_volume \
+    $output_volume \
+    $ccache_volume \
+    $docker_image bash -c "cd /volumes/src; $command_to_run"
+
+$docker run --rm --name=$container_name --privileged=true \
     $container_env \
     $container_options \
     $network_settings \
