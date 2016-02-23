@@ -90,8 +90,7 @@ class ActualS3Interface(S3Interface.S3Interface):
         boto.config.set('Boto', 'metadata_service_num_attempts', '10')
 
         az = os.getenv('AWS_AVAILABILITY_ZONE')
-        logging.info('AZ variable is: %s', az)
-
+        
         boto_args = {}
         if self.credentials_ != ('', ''):
             boto_args = {
