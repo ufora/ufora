@@ -107,9 +107,10 @@ class ComputedRemotePythonObject(RemotePythonObject):
         executor (Executor.Executor): the :class:`~pyfora.Executor.Executor` that created this
             :class:`DefinedRemotePythonObject`.
     """
-    def __init__(self, computedValue, executor):
+    def __init__(self, computedValue, executor, isException):
         super(ComputedRemotePythonObject, self).__init__(executor)
         self.computedValue = computedValue
+        self.isException = isException
 
     def _pyforaComputedValueArg(self):
         """Argument to be passed to PyforaComputedValue to represent this object."""

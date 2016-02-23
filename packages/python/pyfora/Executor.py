@@ -78,13 +78,14 @@ class Executor(object):
             )
         self.lock = threading.Lock()
 
-    def importS3Dataset(self, bucketname, keyname):
+    def importS3Dataset(self, bucketname, keyname, verify=True):
         """Creates a :class:`~RemotePythonObject.RemotePythonObject` that represents
         the content of an S3 key as a string.
 
         Args:
             bucketname (str): The S3 bucket to read from.
             keyname (str): The S3 key to read.
+            verify: Throw an exception immediately if the key or bucket cannot be read.
 
 
         Returns:
@@ -95,7 +96,17 @@ class Executor(object):
             builtins = bucketname.__pyfora_builtins__
             return builtins.loadS3Dataset(bucketname, keyname)
 
-        return self.submit(importS3Dataset)
+        future = self.submit(importS3Dataset)
+
+        if verify:
+            result = future.result()
+            if result.isException:
+                try:
+                    result.toLocal().result()
+                except Exception as e:
+                    raise e
+
+        return future
 
     def exportS3Dataset(self, valueAsString, bucketname, keyname):
         """Write a ComputedRemotePythonObject representing a :mod:`pyfora` string to S3
@@ -264,11 +275,13 @@ class Executor(object):
             future.set_result(result)
 
 
-    def _resolveFutureToComputedObject(self, future):
+    def _resolveFutureToComputedObject(self, future, jsonResult):
         self._resolve_future(
             future,
             RemotePythonObject.ComputedRemotePythonObject(future._executorState,
-                                                          self)
+                                                          self,
+                                                          'status' in jsonResult and jsonResult['status'] == "exception"
+                                                          )
             )
 
 
@@ -331,7 +344,7 @@ class Executor(object):
                 else:
                     assert isinstance(jsonResult['dictOfProxies'], dict)
                     result = {
-                        k: RemotePythonObject.ComputedRemotePythonObject(v, self)
+                        k: RemotePythonObject.ComputedRemotePythonObject(v, self, False)
                         for k, v in jsonResult['dictOfProxies'].iteritems()
                         }
             self._resolve_future(future, result)
@@ -358,7 +371,7 @@ class Executor(object):
                 else:
                     assert isinstance(jsonResult['tupleOfComputedValues'], tuple)
                     result = tuple(
-                        RemotePythonObject.ComputedRemotePythonObject(val, self)
+                        RemotePythonObject.ComputedRemotePythonObject(val, self, False)
                         for val in jsonResult['tupleOfComputedValues']
                         )
 
@@ -410,8 +423,8 @@ class Executor(object):
             else:
                 future.set_running_or_notify_cancel()
 
-        def onComputationCompleted(none):
-            self._resolveFutureToComputedObject(future)
+        def onComputationCompleted(jsonResult):
+            self._resolveFutureToComputedObject(future, jsonResult)
 
         def onComputationFailed(exception):
             assert isinstance(exception, Exceptions.PyforaError)

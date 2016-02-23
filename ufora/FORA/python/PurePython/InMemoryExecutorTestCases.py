@@ -77,8 +77,8 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
 
     def test_pyfora_s3_read_bad_bucket(self):
         with self.create_executor() as executor:
-            result = executor.importS3Dataset("no_such_bucket", "key").result()
             with self.assertRaises(pyfora.ComputationError):
+                result = executor.importS3Dataset("no_such_bucket", "key").result()
                 result.toLocal().result()
 
     def test_pyfora_s3_read_bad_key(self):
@@ -87,8 +87,8 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
             payload = "this is some data"
             s3().setKeyValue("bucketname", "key", payload)
 
-            result = executor.importS3Dataset("bucketname", "no such key").result()
             with self.assertRaises(pyfora.ComputationError):
+                result = executor.importS3Dataset("bucketname", "no such key").result()
                 result.toLocal().result()
 
 

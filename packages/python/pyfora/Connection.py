@@ -192,7 +192,7 @@ class Connection(object):
 
         computedValue - the callback result of creating a computation.
         onPrioritizedCallback - called with either an error or None on success of the prioritization
-        onCompletedCallback - called with None if the computation finishes with a value
+        onCompletedCallback - called with the "jsonStatus" if the computation finishes with a value
         onFailedCallback - called with a pyfora exception if the computation fails
             or throws an exception for some reason
         """
@@ -306,7 +306,7 @@ class Connection(object):
                     if jsonStatus['status'] == 'failure':
                         onFailedCallback(Exceptions.PyforaError(jsonStatus['message']))
                     else:
-                        onCompletedCallback(None)
+                        onCompletedCallback(jsonStatus)
 
         def onFailure(err):
             if not self.closed:
