@@ -116,7 +116,10 @@ def defaultSetup():
 
 def main(args):
     print "ufora-worker starting"
-    with Setup.PushSetup(defaultSetup()):
+    setup = defaultSetup()
+    with Setup.PushSetup(setup):
+        setup.config.configureLoggingForBackgroundProgram()
+        
         worker = createService(args)
         worker.startService(None)
 
