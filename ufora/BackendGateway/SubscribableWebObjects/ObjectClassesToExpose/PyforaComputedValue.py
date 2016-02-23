@@ -132,7 +132,7 @@ class PyforaComputedValue(ComputedValue.ComputedValue):
 
     @ComputedGraph.ExposedProperty()
     def jsonValueRepresentation(self):
-        return PyforaResultAsJson(computedValue=self, maxBytecount=None).result
+        return PyforaResultAsJson(computedValue=self, maxBytecount=None).getResultAsJson()
 
     def exceptionValueAsString(self):
         if not self.isException:

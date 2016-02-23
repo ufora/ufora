@@ -206,7 +206,11 @@ class WithBlockExecutor(object):
 
         f_result_proxy = f_proxy().resultWithWakeup()
 
-        tuple_of_proxies = f_result_proxy.toTupleOfProxies().resultWithWakeup()
+        try:
+            tuple_of_proxies = f_result_proxy.toTupleOfProxies().resultWithWakeup()
+        except Exceptions.ComputationError as e:
+            self.traceAndException = (e.trace, e.remoteException)
+            return {}
 
         proxy_trace = tuple_of_proxies[1]
         trace = proxy_trace.toLocal().resultWithWakeup()
