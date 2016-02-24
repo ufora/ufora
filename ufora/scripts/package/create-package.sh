@@ -16,15 +16,18 @@
 
 REPO_ROOT=$(cd $(dirname "$0")/../../..; pwd)
 
-usage() { echo "Usage: $0 -v <version> -d <dest_dir>" 1>&2; exit 1; }
+usage() { echo "Usage: $0 -v <version> -d <dest_dir> [-f]" 1>&2; exit 1; }
 
-while getopts "v:d:p:" o; do
+while getopts "v:d:f" o; do
   case "${o}" in
     v)
-      v=${OPTARG}
+      version=${OPTARG}
       ;;
     d)
       d=${OPTARG}
+      ;;
+    f)
+      force=1
       ;;
     *)
       usage
@@ -34,22 +37,31 @@ done
 
 shift $((OPTIND-1))
 
-if [ -z "${v}" ] || [ -z "${d}" ] ; then
+if [ -z $version ] || [ -z $d ] ; then
     usage
 fi
 
-if [ ! -d "${d}" ] ; then
-    echo "Error: Target directory ${d} does not exist"
+if [ ! -d "$d" ] ; then
+    echo "Error: Target directory $d does not exist"
     usage
 fi
 
-TARGET="${d}/ufora-${v}.tar.gz"
+TARGET="$d/ufora-${version}.tar.gz"
 if [ -f "$TARGET" ]; then
-    echo "Error: Destination file $TARGET already exists."
-    usage
+    if [ $force ]; then
+      echo "Deleting existing package: $TARGET"
+      rm -f $TARGET
+      if [ $? -ne 0 ]; then
+        echo "Error: Unable to delete existing package - $TARGET"
+        exit 1
+      fi
+    else
+      echo "Error: Destination file $TARGET already exists."
+      usage
+    fi
 fi
 
-echo "Packaging ufora version ${v} into ${TARGET}"
+echo "Packaging ufora version ${version} into ${TARGET}"
 
 cd $REPO_ROOT/ufora/web/relay
 rm -rf node_modules/ > /dev/null
@@ -61,7 +73,7 @@ if [ $? -ne 0 ]; then
 fi
 
 cd $REPO_ROOT
-DEST_DIR=${d}/ufora-${v}
+DEST_DIR=$d/ufora-${version}
 rm -rf $DEST_DIR
 mkdir -p $DEST_DIR
 echo "Copying ufora source code"
@@ -89,7 +101,7 @@ cp $REPO_ROOT/LICENSE $DEST_DIR
 rsync -a $REPO_ROOT/licenses/ $DEST_DIR/licenses
 cp $REPO_ROOT/docker/service/Dockerfile $DEST_DIR
 
-cd ${d}
-tar cfz $TARGET ufora-${v}
+cd $d
+tar cfz $TARGET ufora-${version}
 rm -rf $DEST_DIR
 echo "Packaging complete"
