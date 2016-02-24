@@ -423,3 +423,19 @@ A,B,C
             assert list(row) == [1,5]
 
         self.evaluateWithExecutor(f)
+
+    def test_pandas_series_dot_1(self):
+        s1 = pandas.Series(range(10))
+        s2 = pandas.Series(range(10,20))
+        def f():
+            return float(s1.dot(s2))
+
+        self.equivalentEvaluationTest(f)
+
+    def test_pandas_series_dot_2(self):
+        def f():
+            s1 = pandas.Series(range(10))
+            s2 = range(10,20)
+            return float(s1.dot(s2))
+
+        self.equivalentEvaluationTest(f)

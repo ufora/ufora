@@ -17,6 +17,7 @@ import pyfora.PureImplementationMapping as PureImplementationMapping
 from pyfora.typeConverters.PureNumpy import PurePythonNumpyArray
 
 from pyfora.unique import unique
+import numpy
 
 
 def pd():
@@ -265,6 +266,9 @@ class PurePythonSeries(object):
             [func(elt) for elt in self]
             )
             
+    def dot(self, other):
+        return numpy.dot(self, other)
+        
 
 #######################################
 # PureImplementationMappings:
