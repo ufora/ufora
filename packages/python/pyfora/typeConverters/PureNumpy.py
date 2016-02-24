@@ -238,9 +238,12 @@ class NpZeros:
             return zerosFromCountAndShape(length, (length,))
 
 
-class NpArray:
+class NpArray(object):
     """This will only work for a well-formed (not jagged) n-dimensional python lists"""
     def __call__(self, array):
+        if isinstance(array, PurePythonNumpyArray):
+            return array
+
         if not isinstance(array[0], list):
             return PurePythonNumpyArray(
                 (len(array),),

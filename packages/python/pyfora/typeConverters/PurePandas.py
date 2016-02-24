@@ -28,14 +28,17 @@ def pd():
 # PurePython implementations:
 #######################################
 
-class _DataframeFactory:
+class _PureDataFrameFactory:
     def __call__(self, data):
         return PurePythonDataFrame(data)
 
 
 class PurePythonDataFrame:
     def __init__(self, data, columns=None):
-        if isinstance(data, dict):
+        if columns is None and isinstance(data, PurePythonDataFrame):
+            self._columnNames = data._columnNames
+            self._columns = data._columns
+        elif isinstance(data, dict):
             self._columnNames = data.keys()
             self._columns = [PurePythonSeries(val) for val in data.values()]
         elif isinstance(data, list):
@@ -202,6 +205,11 @@ class _PurePythonSeriesIlocIndexer:
         return self.obj[k]
 
 
+class _PurePythonSeriesFactory:
+    def __call__(self, arg):
+        return PurePythonSeries(arg)
+
+
 class PurePythonSeries:
     def __init__(self, data):
         if isinstance(data, PurePythonSeries):
@@ -300,7 +308,8 @@ class PurePythonDataFrameMapping(PureImplementationMapping.PureImplementationMap
             })
 
 def mappings_():
-    return [(pd().DataFrame, _DataframeFactory)]
+    return [(pd().DataFrame, _PureDataFrameFactory),
+            (pd().Series, _PurePythonSeriesFactory)]
 
 
 def generateMappings():

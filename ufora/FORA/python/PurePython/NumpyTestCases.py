@@ -42,6 +42,13 @@ class NumpyTestCases(object):
             return n.shape
         self.equivalentEvaluationTest(f)
 
+    def test_repeated_array_ctor(self):
+        x = numpy.array([[1,2],[3,4]])
+        def f():
+            return numpy.array(x)
+
+        self.equivalentEvaluationTest(f)
+
     def test_numpy_pinverse_2(self):
         numpy.random.seed(42)
 

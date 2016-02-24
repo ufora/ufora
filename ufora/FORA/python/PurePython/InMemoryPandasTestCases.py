@@ -42,6 +42,26 @@ class InMemoryPandasTestCases(object):
 
         self.equivalentEvaluationTest(f)
 
+    def test_repeated_dataframe_ctor(self):
+        df = pandas.DataFrame({'A': [1,2,3,4], 'B': [5,6,7,8]})
+        def f():
+            return pandas.DataFrame(df)
+        
+        self.equivalentEvaluationTest(
+            f,
+            comparisonFunction=self.checkFramesEqual
+            )
+
+    def test_repeated_series_ctor(self):
+        s = pandas.Series([1,2,3])
+        def f():
+            return pandas.Series(s)
+        
+        self.equivalentEvaluationTest(
+            f,
+            comparisonFunction=self.checkSeriesEqual
+            )
+
     def test_pandas_dataframes_basic(self):
         df = pandas.DataFrame({'A': [1,2,3,4], 'B': [5,6,7,8]})
 
@@ -57,10 +77,14 @@ class InMemoryPandasTestCases(object):
         s = pandas.Series(4)
 
         def f(ix):
-            return ix
+            return s.iloc[ix]
 
         for ix in range(-len(s), len(s)):
-            self.equivalentEvaluationTest(f, ix)
+            self.equivalentEvaluationTest(
+                f,
+                ix,
+                comparisonFunction=lambda x, y: x == y
+                )
 
     def test_pandas_dataframe_indexing_1(self):
         df = pandas.DataFrame({'A': [1,2,3,4], 'B': [5,6,7,8]})
