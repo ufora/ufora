@@ -195,6 +195,9 @@ class PurePythonNumpyArray:
             self.values
             )
 
+    def dot(self, other):
+        return _dot(self, other)
+
 
 class PurePythonNumpyArrayMapping(PureImplementationMapping.PureImplementationMapping):
     def getMappablePythonTypes(self):
@@ -283,62 +286,72 @@ class NpArray(object):
             )
 
 
-class NpDot:
-    def dotProduct(self, arr1, arr2):
-        len1 = len(arr1)
+def _dotProduct(arr1, arr2):
+    len1 = len(arr1)
 
-        if len1 != len(arr2):
-            raise ValueError("Vector dimensions do not match")
+    if len1 != len(arr2):
+        raise ValueError("Vector dimensions do not match")
 
-        return sum(arr1[ix] * arr2[ix] for ix in xrange(len1))
+    return sum(arr1[ix] * arr2[ix] for ix in xrange(len1))
 
-    def __call__(self, arr1, arr2):
-        if isinstance(arr1, PurePythonNumpyArray):
-            # The numpy API allows us to multiply a 1D array by a 2D array
-            # and numpy will automatically reshape the 1D array to 2D
-            if len(arr1.shape) == 1 and len(arr2.shape) == 2:
-                arr1 = arr1.reshape((1, arr1.shape[0]))
-                return self(arr1, arr2)[0]
 
-            if len(arr1.shape) == 2 and len(arr2.shape) == 1:
-                return self(arr2, arr1.transpose())
+def _dot(arr1, arr2):
+    if isinstance(arr1, PurePythonNumpyArray) and \
+       isinstance(arr2, PurePythonNumpyArray):
+        # The numpy API allows us to multiply a 1D array by a 2D array
+        # and numpy will automatically reshape the 1D array to 2D
+        if len(arr1.shape) == 1 and len(arr2.shape) == 2:
+            arr1 = arr1.reshape((1, arr1.shape[0]))
+            return _dot(arr1, arr2)[0]
 
-            if len(arr1.shape) != len(arr2.shape):
-                raise ValueError("Matrix dimensions do not match")
+        if len(arr1.shape) == 2 and len(arr2.shape) == 1:
+            return _dot(arr2, arr1.transpose())
 
-            # 1d dot 1d -> normal dot product
-            if len(arr1.shape) == 1:
-                return self.dotProduct(arr1, arr2)
+        if len(arr1.shape) != len(arr2.shape):
+            raise ValueError("Matrix dimensions do not match")
 
-            # 2d x 2d -> matrix multiplication
-            elif len(arr1.shape) == 2:
-                if arr1.shape[1] != arr2.shape[0]:
-                    raise ValueError(
-                        "shapes " + str(arr1.shape) + " and " + \
-                        str(arr2.shape) + " are not aligned: " + \
-                        str(arr1.shape[1]) + " (dim 1) != " + \
-                        str(arr2.shape[0]) + " (dim 0)"
-                        )
+        # 1d dot 1d -> normal dot product
+        if len(arr1.shape) == 1:
+            return _dotProduct(arr1, arr2)
 
-                builtins = NpDot.__pyfora_builtins__
-                result = builtins.linalg.matrixMult(
-                    arr1.values, arr1.shape, arr2.values, arr2.shape
-                    )
-                flattenedValues = result[0]
-                shape = tuple(result[1])
-
-                return PurePythonNumpyArray(
-                    shape,
-                    flattenedValues
+        # 2d x 2d -> matrix multiplication
+        elif len(arr1.shape) == 2:
+            if arr1.shape[1] != arr2.shape[0]:
+                raise ValueError(
+                    "shapes " + str(arr1.shape) + " and " + \
+                    str(arr2.shape) + " are not aligned: " + \
+                    str(arr1.shape[1]) + " (dim 1) != " + \
+                    str(arr2.shape[0]) + " (dim 0)"
                     )
 
-            else:
-                raise Exception(
-                    "not currently implemented for > 2 dimensions: "
-                    )
+            result = __inline_fora(
+                """fun(values1, shape1, values2, shape2) {
+                       return purePython.linalgModule.matrixMult(
+                           values1, shape1, values2, shape2
+                           )
+                       }"""
+                )(arr1.values, arr1.shape, arr2.values, arr2.shape)
+
+            flattenedValues = result[0]
+            shape = tuple(result[1])
+
+            return PurePythonNumpyArray(
+                shape,
+                flattenedValues
+                )
 
         else:
-            return self(np.array(arr1), np.array(arr2))
+            raise Exception(
+                "not currently implemented for > 2 dimensions: "
+                )
+
+    else:
+        return _dot(NpArray()(arr1), NpArray()(arr2))
+
+
+class NpDot:
+    def __call__(self, a, b):
+        return _dot(a, b)
 
 
 class NpPinv:

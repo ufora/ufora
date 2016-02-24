@@ -222,7 +222,7 @@ class NumpyTestCases(object):
              [[[67.0, 63.0], [87.0, 77.0]], [[69.0, 59.0], [85.0, 87.0]]]]
         self.equivalentEvaluationTest(f, c)
 
-    def test_numpy_dot_product_1(self):
+    def test_numpy_dot_product_1a(self):
         random.seed(43)
 
         listLength = 20
@@ -238,7 +238,24 @@ class NumpyTestCases(object):
                 comparisonFunction=numpy.isclose
                 )
 
-    def test_numpy_dot_product_2(self):
+    def test_numpy_dot_product_1b(self):
+        random.seed(43)
+
+        listLength = 20
+        def f(arr1, arr2):
+            return arr1.dot(arr2)
+
+        for _ in range(10):
+            x1 = numpy.array([
+                random.uniform(-10, 10) for _ in range(0, listLength)])
+            x2 = [random.uniform(-10, 10) for _ in range(0, listLength)]
+
+            self.equivalentEvaluationTest(
+                f, x1, x2,
+                comparisonFunction=numpy.isclose
+                )
+
+    def test_numpy_dot_product_2a(self):
         random.seed(44)
 
         listLength = 20
@@ -255,9 +272,28 @@ class NumpyTestCases(object):
         r1 = self.evaluateWithExecutor(f)
         r2 = f()
 
-        self.assertTrue(numpy.isclose(r1, r2))
+        numpy.testing.assert_allclose(r1, r2)
 
-    def test_numpy_dot_product_3(self):
+    def test_numpy_dot_product_2b(self):
+        random.seed(44)
+
+        listLength = 20
+
+        arr1 = [random.uniform(-10, 10) for _ in range(0, listLength)]
+        arr2 = [random.uniform(-10, 10) for _ in range(0, listLength)]
+
+        def f():
+            a = numpy.array(arr1)
+            b = numpy.array(arr2)
+
+            return a.dot(b)
+
+        r1 = self.evaluateWithExecutor(f)
+        r2 = f()
+
+        numpy.testing.assert_allclose(r1, r2)
+
+    def test_numpy_dot_product_3a(self):
         def f():
             m1 = numpy.array([1.0, 2, 3, 4, 5, 6])
             m2 = numpy.array([[67.0, 63, 87],
@@ -269,7 +305,19 @@ class NumpyTestCases(object):
             return numpy.dot(m1, m2)
         self.equivalentEvaluationTest(f)
 
-    def test_numpy_dot_product_4(self):
+    def test_numpy_dot_product_3b(self):
+        def f():
+            m1 = numpy.array([1.0, 2, 3, 4, 5, 6])
+            m2 = numpy.array([[67.0, 63, 87],
+                       [77, 69, 59],
+                       [85, 87, 99],
+                       [79, 72, 71],
+                       [63, 89, 93],
+                       [68, 92, 78]])
+            return m1.dot(m2)
+        self.equivalentEvaluationTest(f)
+
+    def test_numpy_dot_product_4a(self):
         def f():
             m1 = numpy.array([1.0, 2, 3])
             m2 = numpy.array([[67.0, 63, 87],
@@ -281,7 +329,31 @@ class NumpyTestCases(object):
             return numpy.dot(m2, m1)
         self.equivalentEvaluationTest(f)
 
-    def test_numpy_dot_product_5(self):
+    def test_numpy_dot_product_4b(self):
+        def f():
+            m1 = numpy.array([1.0, 2, 3])
+            m2 = numpy.array([[67.0, 63, 87],
+                       [77, 69, 59],
+                       [85, 87, 99],
+                       [79, 72, 71],
+                       [63, 89, 93],
+                       [68, 92, 78]])
+            return numpy.dot(m2, m1)
+        self.equivalentEvaluationTest(f)
+
+    def test_numpy_dot_product_4c(self):
+        def f():
+            m1 = [1.0, 2, 3]
+            m2 = numpy.array([[67.0, 63, 87],
+                       [77, 69, 59],
+                       [85, 87, 99],
+                       [79, 72, 71],
+                       [63, 89, 93],
+                       [68, 92, 78]])
+            return numpy.dot(m2, m1)
+        self.equivalentEvaluationTest(f)
+
+    def test_numpy_dot_product_5a(self):
         x = numpy.array([[1,2],[3,4]])
         y = numpy.array([1,2,3])
         
@@ -290,7 +362,40 @@ class NumpyTestCases(object):
                 with fora.remotely:
                     numpy.dot(y, x)
 
-    def test_numpy_matrix_multiplication_1(self):
+    def test_numpy_dot_product_5a(self):
+        x = numpy.array([[1,2],[3,4]])
+        y = numpy.array([1,2,3])
+        
+        with self.assertRaises(ValueError):
+            with self.create_executor() as fora:
+                with fora.remotely:
+                    numpy.dot(y, x)
+
+    def test_numpy_dot_product_5b(self):
+        x = numpy.array([[1,2],[3,4]])
+        y = numpy.array([1,2,3])
+        
+        with self.assertRaises(ValueError):
+            with self.create_executor() as fora:
+                with fora.remotely:
+                    y.dot(x)
+
+    def test_numpy_matrix_multiplication_1a(self):
+        def f():
+            m1 = numpy.array([ [67.0, 63, 87],
+                       [77, 69, 59],
+                       [85, 87, 99],
+                       [79, 72, 71],
+                       [63, 89, 93],
+                       [68, 92, 78] ])
+            m2 = m1.transpose()
+
+            return numpy.dot(m1, m2)
+        r1 = self.evaluateWithExecutor(f)
+        r2 = f()
+        self.assertArraysAreAlmostEqual(r1, r2)
+
+    def test_numpy_matrix_multiplication_1b(self):
         def f():
             m1 = numpy.array([ [67.0, 63, 87],
                        [77, 69, 59],

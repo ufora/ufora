@@ -108,8 +108,10 @@ class NumpyThroughputTest(unittest.TestCase):
 
     def matrix_dot_product(self, dimension):
         with self.ufora.remotely:
-            a = np.arange(dimension**2).reshape((dimension, dimension))
-            b = np.arange(dimension**2).reshape((dimension, dimension))
+            a = np.arange(dimension**2).reshape(
+                (int(dimension), int(dimension)))
+            b = np.arange(dimension**2).reshape(
+                (int(dimension), int(dimension)))
 
         def f(n):
             with self.ufora.remotely:
