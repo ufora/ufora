@@ -67,6 +67,28 @@ class FunctionStage1SimulationTest(unittest.TestCase):
 
         self.assertEqual(len(res), 4)
 
+    def test_pattern_matching(self):
+        ivc = FORA.eval(
+            """let o = object { 
+                   ...(`Member, `x) { 1 };
+                   y: 2;
+                   ...(`Member, `z) { 3 };
+                   }; 
+               o"""
+            ).implVal_
+
+        def sim(memberName):
+            return ForaNative.simulateApply(
+                ForaNative.ImplValContainer(
+                    (ivc, makeSymbolIvc("Member"),
+                        makeSymbolIvc(memberName))
+                    )
+                ).pyval
+
+        self.assertEqual(sim("x"), 1)
+        self.assertEqual(sim("y"), 2)
+        self.assertEqual(sim("z"), 3)
+
     def test_createInstance_1(self):
         classIvc = FORA.eval(
             """let C = class {
