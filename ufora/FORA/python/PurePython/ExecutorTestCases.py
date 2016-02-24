@@ -243,6 +243,25 @@ class ExecutorTestCases(object):
             comparisonFunction=lambda a, b: a.x == b.x and a.y == b.y
             )
 
+
+    def test_bound_method_from_base_class(self):
+        class Base_1(object):
+            def f(self, i):
+                return i + 1
+
+        class Child_1(Base_1):
+            def g(self, i):
+                return i
+
+        b = Child_1()
+        bound_method = b.f
+        def f(i):
+            return bound_method(i)
+
+        self.equivalentEvaluationTest(f, 1)
+
+
+
     def test_uninitializedVars_1(self):
         def f():
             x = x
