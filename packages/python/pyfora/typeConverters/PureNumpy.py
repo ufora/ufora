@@ -22,7 +22,7 @@ import math
 import numpy as np
 
 
-class PurePythonNumpyArray:
+class PurePythonNumpyArray(object):
     """
     This is this pyfora wrapper and implementation of the numpy array class
     Internally, the array is stored as a list of values and a tuple of the
@@ -223,7 +223,7 @@ class PurePythonNumpyArrayMapping(PureImplementationMapping.PureImplementationMa
             assert False, (pureNumpyArray.values, pureNumpyArray.shape)
 
 
-class NpZeros:
+class NpZeros(object):
     def __call__(self, length):
         def zerosFromCountAndShape(count, shape):
             vals = [0.0 for _ in xrange(count)]
@@ -349,12 +349,12 @@ def _dot(arr1, arr2):
         return _dot(NpArray()(arr1), NpArray()(arr2))
 
 
-class NpDot:
+class NpDot(object):
     def __call__(self, a, b):
         return _dot(a, b)
 
 
-class NpPinv:
+class NpPinv(object):
     def __call__(self, matrix):
         builtins = NpPinv.__pyfora_builtins__
 
@@ -370,7 +370,7 @@ class NpPinv:
             )
 
 
-class Svd:
+class Svd(object):
     def __call__(self, a):
         assert len(a.shape) == 2, "need len(a.shape) == 2"
         
@@ -392,7 +392,7 @@ class Svd:
             )
 
 
-class LinSolve:
+class LinSolve(object):
     def __call__(self, a, b):
         assert len(a.shape) == 2, "need len(a.shape) == 2"
         assert a.shape[0] == a.shape[1], "need a.shape[0] == a.shape[1]"
@@ -416,7 +416,7 @@ class LinSolve:
             )
 
 
-class NpArange:
+class NpArange(object):
     def __call__(self, start, stop=None, step=1):
         if stop is None:
             stop = start
@@ -429,17 +429,17 @@ class NpArange:
         return NpArray()(toReturn)
 
 
-class Mean:
+class Mean(object):
     def __call__(self, x):
         return sum(x) / len(x)
 
 
-class Median:
+class Median(object):
     def __call__(self, x):
         raise NotImplementedError("fill this out, bro")
 
 
-class Sign:
+class Sign(object):
     def __call__(self, x):
         if x < 0.0:
             return -1.0
@@ -448,7 +448,7 @@ class Sign:
         return 1.0
 
 
-class IsNan:
+class IsNan(object):
     def __call__(self, x):
         if not isinstance(x, float):
             x = float(x)
@@ -460,7 +460,7 @@ class IsNan:
             )(x)
 
 
-class IsInf:
+class IsInf(object):
     def __call__(self, x):
         if not isinstance(x, float):
             x = float(x)
@@ -472,7 +472,7 @@ class IsInf:
             )(x)
 
 
-class Log:
+class Log(object):
     def __call__(self, val):
         if val < 0:
             return np.nan
@@ -487,7 +487,7 @@ class Log:
             )(val)
 
 
-class Log10:
+class Log10(object):
     def __call__(self, val):
         if val < 0:
             return np.nan
@@ -502,7 +502,7 @@ class Log10:
             )(val)
 
 
-class Log1p:
+class Log1p(object):
     def __call__(self, x):
         if x < -1:
             return np.nan
@@ -518,7 +518,7 @@ class Log1p:
         return math.log(t) * (x / (t - 1.0))
 
 
-class Sqrt:
+class Sqrt(object):
     def __call__(self, val):
         if val < 0.0:
             return np.nan

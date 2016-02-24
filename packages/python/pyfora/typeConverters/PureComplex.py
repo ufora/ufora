@@ -14,7 +14,7 @@
 
 import pyfora.PureImplementationMapping as PureImplementationMapping
 
-class PurePythonComplex:
+class PurePythonComplex(object):
     def __init__(self, real, imag=0.0):
         if isinstance(real, str):
             PurePythonComplex.__pyfora_builtins__.raiseInvalidPyforaOperation(
@@ -95,9 +95,6 @@ class PurePythonComplex:
     def __ne__(self, other):
         raise TypeError("no ordering relation is defined for complex numbers")
 
-    def __ne__(self, other):
-        raise TypeError("no ordering relation is defined for complex numbers")
-
     def __str__(self):
         if self.real == 0.0:
             return str(self.imag) + "j"
@@ -119,7 +116,7 @@ class PurePythonComplex:
         else:
             return PurePythonComplex(self.real % other, self.imag)
 
-class PurePythonComplexCls:
+class PurePythonComplexCls(object):
     def __call__(self, real, imag=0.0):
         return PurePythonComplex(real, imag)
 

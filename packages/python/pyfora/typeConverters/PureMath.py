@@ -19,14 +19,14 @@ import pyfora.PureImplementationMapping as PureImplementationMapping
 import math
 
 
-class Sqrt:
+class Sqrt(object):
     def __call__(self, val):
         if val < 0.0:
             raise ValueError("math domain error")
             
         return val ** 0.5
 
-class Hypot:
+class Hypot(object):
     def __call__(self, x, y):
         x = abs(float(x))
         y = abs(float(y))
@@ -42,7 +42,7 @@ class Hypot:
 
         return x * (1.0 + (y / x) * (y / x)) ** 0.5
 
-class Log:
+class Log(object):
     def __call__(self, val):
         if val <= 0.0:
             raise ValueError("math domain error")
@@ -54,7 +54,7 @@ class Log:
             )(val)
 
 
-class Acos:
+class Acos(object):
     def __call__(self, val):
         if val > 1.0 or val < -1.0:
             raise ValueError("math domain error")
@@ -66,7 +66,7 @@ class Acos:
             )(val)
 
 
-class Acosh:
+class Acosh(object):
     def __call__(self, val):
         if val < 1.0:
             raise ValueError("math domain error")
@@ -78,7 +78,7 @@ class Acosh:
             )(val)
 
 
-class Cos:
+class Cos(object):
     def __call__(self, val):
         return __inline_fora(
             """fun(val) {
@@ -87,7 +87,7 @@ class Cos:
             )(val)
 
 
-class Cosh:
+class Cosh(object):
     def __call__(self, val):
         return __inline_fora(
             """fun(val) {
@@ -96,7 +96,7 @@ class Cosh:
             )(val)
 
 
-class Asin:
+class Asin(object):
     def __call__(self, val):
         if val > 1.0 or val < -1.0:
             raise ValueError("math domain error")
@@ -108,7 +108,7 @@ class Asin:
             )(val)
 
 
-class Asinh:
+class Asinh(object):
     def __call__(self, val):
         if val < 1.0:
             raise ValueError("math domain error")
@@ -120,7 +120,7 @@ class Asinh:
             )(val)
 
 
-class Sin:
+class Sin(object):
     def __call__(self, val):
         return __inline_fora(
             """fun(val) {
@@ -129,7 +129,7 @@ class Sin:
             )(val)
 
 
-class Sinh:
+class Sinh(object):
     def __call__(self, val):
         return __inline_fora(
             """fun(val) {
@@ -138,7 +138,7 @@ class Sinh:
             )(val)
 
 
-class Atan:
+class Atan(object):
     def __call__(self, val):
         return __inline_fora(
             """fun(val) {
@@ -147,7 +147,7 @@ class Atan:
             )(val)
 
 
-class Atan2:
+class Atan2(object):
     def __call__(self, val1, val2):
         return __inline_fora(
             """fun(val) {
@@ -156,7 +156,7 @@ class Atan2:
             )(val1, val2)
 
 
-class Atanh:
+class Atanh(object):
     def __call__(self, val):
         if val >= 1:
             raise ValueError("math domain error")
@@ -168,7 +168,7 @@ class Atanh:
             )(val)
 
 
-class Tan:
+class Tan(object):
     def __call__(self, val):
         return __inline_fora(
             """fun(val) {
@@ -177,7 +177,7 @@ class Tan:
             )(val)
 
 
-class Tanh:
+class Tanh(object):
     def __call__(self, val):
         return __inline_fora(
             """fun(val) {
@@ -186,7 +186,7 @@ class Tanh:
             )(val)
 
 
-class Ceil:
+class Ceil(object):
     def __call__(self, val):
         return __inline_fora(
             """fun(val) {
@@ -195,7 +195,7 @@ class Ceil:
             )(val)
 
 
-class Erf:
+class Erf(object):
     def __call__(self, val):
         return __inline_fora(
             """fun(val) {
@@ -204,7 +204,7 @@ class Erf:
             )(val)
 
 
-class Erfc:
+class Erfc(object):
     def __call__(self, val):
         return __inline_fora(
             """fun(val) {
@@ -213,7 +213,7 @@ class Erfc:
             )(val)
 
 
-class Exp:
+class Exp(object):
     def __call__(self, val):
         return __inline_fora(
             """fun(val) {
@@ -222,7 +222,7 @@ class Exp:
             )(val)
 
 
-class Expm1:
+class Expm1(object):
     def __call__(self, x):
         # if very small, return first three terms of taylor expansion
         if abs(x) < 1e-5:
@@ -231,7 +231,7 @@ class Expm1:
         return math.exp(x) - 1.0
 
 
-class Factorial:
+class Factorial(object):
     def __call__(self, val):
         if not math.floor(val) == val:
             raise ValueError(
@@ -252,7 +252,7 @@ class Factorial:
         return res
 
 
-class Floor:
+class Floor(object):
     def __call__(self, x):
         remainder = math.fmod(x, 1)
 
@@ -265,7 +265,7 @@ class Floor:
         return float(x - remainder - 1)
 
 
-class Fmod:
+class Fmod(object):
     def __call__(self, x, y):
         if not isinstance(x, float):
             x = float(x)
@@ -279,7 +279,7 @@ class Fmod:
             )(x, y)
 
 
-class Lgamma:
+class Lgamma(object):
     def __call__(self, val):
         if val <= -1 or val == 0:
             raise ValueError("math domain error")
@@ -291,7 +291,7 @@ class Lgamma:
             )(val)
 
 
-class Log10:
+class Log10(object):
     def __call__(self, val):
         if val <= 0.0:
             raise ValueError("math domain error")
@@ -303,7 +303,7 @@ class Log10:
             )(val)
 
 
-class Log1p:
+class Log1p(object):
     def __call__(self, x):
         if x <= -1:
             raise ValueError("math domain error")

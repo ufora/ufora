@@ -25,7 +25,7 @@ import scipy
 import scipy.special
 
 
-class BetaFunction:
+class BetaFunction(object):
     def __call__(self, a, b):
         if not isinstance(a, float):
             a = float(a)
@@ -39,7 +39,7 @@ class BetaFunction:
             )(a, b)
 
 
-class GammaFunction:
+class GammaFunction(object):
     def __call__(self, x):
         if not isinstance(x, float):
             x = float(x)
@@ -51,7 +51,7 @@ class GammaFunction:
             )(x)
 
 
-class Hyp2f1:
+class Hyp2f1(object):
     def __call__(self, a, b, c, z):
         if not isinstance(a, float):
             a = float(a)
@@ -69,7 +69,7 @@ class Hyp2f1:
             )(a, b, c, z)
 
 
-class Digamma:
+class Digamma(object):
     def __call__(self, z):
         if not isinstance(z, float):
             z = float(z)
@@ -81,7 +81,7 @@ class Digamma:
             )(z)
 
 
-class Erfcinv:
+class Erfcinv(object):
     def __call__(self, x):
         if not isinstance(x, float):
             x = float(x)
@@ -93,7 +93,7 @@ class Erfcinv:
             )(x)
 
 
-class Erfinv:
+class Erfinv(object):
     def __call__(self, x):
         if not isinstance(x, float):
             x = float(x)
@@ -105,7 +105,7 @@ class Erfinv:
             )(x)
 
 
-class Betainc:
+class Betainc(object):
     def __call__(self, a, b, x):
         if not isinstance(a, float):
             a = float(a)
@@ -121,7 +121,7 @@ class Betainc:
             )(a, b, x)
             
 
-class Betaincinv:
+class Betaincinv(object):
     def __call__(self, a, b, y):
         if not isinstance(a, float):
             a = float(a)
@@ -137,7 +137,7 @@ class Betaincinv:
             )(a, b, y)
 
 
-class GammaLn:
+class GammaLn(object):
     def __call__(self, x):
         if not isinstance(x, float):
             x = float(x)
@@ -152,7 +152,7 @@ class GammaLn:
             )(x)
 
 
-class BetaLn:
+class BetaLn(object):
     def __call__(self, a, b):
         if not isinstance(a, float):
             a = float(a)
@@ -166,7 +166,7 @@ class BetaLn:
             )(a, b)
 
 
-class Kn:
+class Kn(object):
     """Modified Bessel function of the second kind of integer order n
        Returns the modified Bessel function of the second kind for 
        integer order n at real x."""
@@ -183,7 +183,7 @@ class Kn:
             )(n, x)
 
 
-class Iv:
+class Iv(object):
     "Modified Bessel function of the first kind of real order v"
     def __call__(self, v, z):
         if not isinstance(v, int):
@@ -198,7 +198,7 @@ class Iv:
             )(v, z)
 
 
-class Comb:
+class Comb(object):
     def __call__(self, n, k):
         if not isinstance(n, int):
             n = int(n)
@@ -221,7 +221,7 @@ class Comb:
         return res
 
 
-class Logit:
+class Logit(object):
     def __call__(self, p):
         if not isinstance(p, float):
             p = float(p)
@@ -238,7 +238,7 @@ class Logit:
         return scipy.log(p / (1.0 - p))
 
 
-class Expit:
+class Expit(object):
     def __call__(self, x):
         if not isinstance(x, float):
             x = float(x)

@@ -28,12 +28,12 @@ def pd():
 # PurePython implementations:
 #######################################
 
-class _PureDataFrameFactory:
+class _PureDataFrameFactory(object):
     def __call__(self, data):
         return PurePythonDataFrame(data)
 
 
-class PurePythonDataFrame:
+class PurePythonDataFrame(object):
     def __init__(self, data, columns=None):
         if columns is None and isinstance(data, PurePythonDataFrame):
             self._columnNames = data._columnNames
@@ -127,7 +127,7 @@ class PurePythonDataFrame:
             raise TypeError("no axis " + str(axis))
     
 
-class _PurePythonDataFrameILocIndexer:
+class _PurePythonDataFrameILocIndexer(object):
     def __init__(self, obj):
         self.obj = obj
 
@@ -161,7 +161,7 @@ class _PurePythonDataFrameILocIndexer:
             )
 
 
-class _DataFrameRow:
+class _DataFrameRow(object):
     def __init__(self, df, rowIx, startColumnIx=0, size=None, stride=1):
         self.df = df
         self.rowIx = rowIx
@@ -197,7 +197,7 @@ class _DataFrameRow:
             yield self._get_int_ix(ix)
             
 
-class _PurePythonSeriesIlocIndexer:
+class _PurePythonSeriesIlocIndexer(object):
     def __init__(self, obj):
         self.obj = obj
 
@@ -205,12 +205,12 @@ class _PurePythonSeriesIlocIndexer:
         return self.obj[k]
 
 
-class _PurePythonSeriesFactory:
+class _PurePythonSeriesFactory(object):
     def __call__(self, arg):
         return PurePythonSeries(arg)
 
 
-class PurePythonSeries:
+class PurePythonSeries(object):
     def __init__(self, data):
         if isinstance(data, PurePythonSeries):
             self.values = data.values
