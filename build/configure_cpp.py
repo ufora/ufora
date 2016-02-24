@@ -18,9 +18,7 @@
 import waflib
 
 def cxx_compiler_options(cxx_opts):
-    cxx_opts.add_option(
-        '--cxx-warnings',
-        default='''
+    clang_warnings = '''
                    -Werror
                    -Qunused-arguments
                    -Wno-return-type-c-linkage
@@ -31,13 +29,16 @@ def cxx_compiler_options(cxx_opts):
                    -Wno-redeclared-class-member
                    -Wno-parentheses-equality
                    -Wno-#warnings
-                   ''',
+                   '''
+    cxx_opts.add_option(
+        '--cxx-warnings',
+        default=clang_warnings,
         dest='cxx_warnings',
         help='extra warning flags to pass to C++ compiler')
 
     cxx_opts.add_option(
         '--cxx-compile-flags',
-        default='-pthread -fPIC -std=c++0x',
+        default='-pthread -fPIC -std=c++11',
         dest='cxx_compile_flags',
         help='common flags to pass to C++ compiler')
 

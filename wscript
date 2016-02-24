@@ -40,7 +40,6 @@ def options(opt):
 
 
 def configure_cpp_compiler(conf):
-    # use clang/clang++ if available
     conf.find_program('clang', var='CC')
     conf.find_program('clang++', var='CXX')
     ccache = conf.find_program('ccache', var='CCACHE', mandatory=False)
@@ -48,6 +47,7 @@ def configure_cpp_compiler(conf):
         conf.env['CC'] = ccache + ' ' + conf.env['CC']
         conf.env['CXX'] = ccache + ' ' + conf.env['CXX']
 
+    conf.env.append_unique('LINKFLAGS', ['-L/usr/lib/llvm-3.5/lib'])
     conf.load('compiler_cxx')
     conf.load('compiler_c')
     conf.load('cxx')
@@ -138,7 +138,6 @@ boost_libs = [
     'boost_date_time',
     'boost_filesystem',
     'boost_python',
-    'boost_regex',
     'boost_thread',
     'boost_unit_test_framework'
     ]
@@ -357,7 +356,7 @@ def build(bld):
         source=core_sources,
         target='ufora-core',
         features='cxx',
-        use=[lib.upper() for lib in boost_libs] + ['PYTHON', 'fora_thirdparty', 'CRYPTO'],
+        use=[lib.upper() for lib in boost_libs] + ['PYTHON', 'fora_thirdparty', 'CRYPTO', 'TCMALLOC'],
         **defaultBuildArgs
         )
 
