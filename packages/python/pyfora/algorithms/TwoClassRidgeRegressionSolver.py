@@ -81,7 +81,7 @@ class TwoClassRidgeRegressionSolver:
         return newTheta, iters
 
     def updateTheta(self, theta):
-        thetaDotX = _dot(self.X, theta, self.splitLimit, 0, len(self.X))
+        thetaDotX = self.X.dot(theta, self.splitLimit)
         sigma = self.computeSigma(thetaDotX)
         muSum = self.computeMuSum(thetaDotX)
 
@@ -162,45 +162,6 @@ def _computeSigma(thetaDotX, columns, splitLimit, start=0, end=None):
         _computeSigma(thetaDotX, columns, splitLimit, mid, end)
 
 
-def _dot(X, theta, splitLimit, low, high):
-    sz = high - low
-    if sz < splitLimit:
-        return _dot_on_chunk(X._columns, theta, low, high)
-
-    mid = (high + low) / 2
-    return _dot(X, theta, splitLimit, low, mid) + _dot(X, theta, splitLimit, mid, high)
-
-
-def _dot_on_chunk(columns, theta, low, high):
-    tr = scaleVecOnRange(columns[0], theta[0], low, high)
-
-    colIx = 1
-    nColumns = len(columns)
-    while colIx < nColumns:
-        tr = addVecsOnRange(tr, columns[colIx], theta[colIx], low, high)
-        colIx = colIx + 1
-
-    return tr
-
-
-def scaleVecOnRange(vec, multiplier, lowIx, highIx):
-    tr = []
-    ix = lowIx
-    while ix < highIx:
-        tr = tr + [multiplier * vec[ix]]
-        ix = ix + 1
-
-    return tr
-    
-
-def addVecsOnRange(vec1, vec2, vec2Multiplier, lowIx, highIx):
-    tr = []
-    ix = lowIx
-    while ix < highIx:
-        tr = tr + [vec1[ix - lowIx] + vec2Multiplier * vec2[ix]]
-        ix = ix + 1
-
-    return tr
 
 def _weightedDotProduct(x1, x2, x3):
     res = 0.0

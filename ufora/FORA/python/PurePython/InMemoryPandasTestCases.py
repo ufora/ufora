@@ -439,3 +439,40 @@ A,B,C
             return float(s1.dot(s2))
 
         self.equivalentEvaluationTest(f)
+
+    def test_pandas_series_to_numpy(self):
+        s = pandas.Series(range(10))
+        def f():
+            return numpy.array(s)
+
+        self.equivalentEvaluationTest(f)
+
+    def test_pandas_dataframe_dot_1(self):
+        df = pandas.DataFrame({'A': [1,2,3], 'B': [4,5,6]})
+        s = [7,8]
+        def f():
+            return [float(val) for val in df.dot(s)]
+
+        self.equivalentEvaluationTest(f)
+        
+    def test_pandas_dataframe_dot_2(self):
+        ncol = 4
+        nrow = 32
+
+        s = numpy.array(range(ncol))
+        x = numpy.array([s + ix for ix in range(nrow)])
+
+        df = pandas.DataFrame(x)
+
+        def f1():
+            return [float(val) for val in df.dot(s)]
+
+        def f2(splitLimit):
+            return [float(val) for val in df.dot(s, splitLimit)]
+
+        python_res = f1()
+        for splitLimit in [4,10,16,20]:
+            self.assertEqual(
+                python_res,
+                self.evaluateWithExecutor(f2, splitLimit)
+                )
