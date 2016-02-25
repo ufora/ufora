@@ -84,6 +84,15 @@ class StatusPrinter(object):
                           for status_name, items in status.iteritems()])
 
 
+def launcher_args(parsed_args):
+    return {
+        'region': get_region(parsed_args.ec2_region),
+        'vpc_id': parsed_args.vpc_id,
+        'subnet_id': parsed_args.subnet_id,
+        'security_group_id': parsed_args.security_group_id
+        }
+
+
 
 def start_instances(args):
     assert args.num_instances > 0
@@ -99,13 +108,10 @@ def start_instances(args):
         if response not in ('Y', 'y'):
             return
 
-    launcher = Launcher(region=get_region(args.ec2_region),
-                        vpc_id=args.vpc_id,
-                        subnet_id=args.subnet_id,
-                        security_group_id=args.security_group_id,
-                        instance_type=args.instance_type,
+    launcher = Launcher(instance_type=args.instance_type,
                         open_public_port=open_public_port,
-                        commit_to_build=args.commit)
+                        commit_to_build=args.commit,
+                        **launcher_args(args))
 
     status_printer = StatusPrinter()
     print "Launching ufora manager instance:"
@@ -143,7 +149,7 @@ def start_instances(args):
 
 
 def add_instances(args):
-    launcher = Launcher(region=get_region(args.ec2_region))
+    launcher = Launcher(**launcher_args(args))
     manager = [i for i in running_or_pending_instances(launcher.get_reservations())
                if 'Name' in i.tags and i.tags['Name'].startswith('ufora manager')]
     if len(manager) > 1:
@@ -187,7 +193,7 @@ def add_instances(args):
 
 
 def list_instances(args):
-    launcher = Launcher(region=get_region(args.ec2_region))
+    launcher = Launcher(**launcher_args(args))
     reservations = launcher.get_reservations()
     count = sum(len(r.instances) for r in reservations)
     print "%d instance%s%s" % (
@@ -199,7 +205,7 @@ def list_instances(args):
 
 
 def stop_instances(args):
-    launcher = Launcher(region=get_region(args.ec2_region))
+    launcher = Launcher(**launcher_args(args))
     instances = running_or_pending_instances(launcher.get_reservations())
     count = len(instances)
     if count == 0:
@@ -329,12 +335,17 @@ all_arguments = {
         }
     }
 
-start_args = ('yes-all', 'ec2-region', 'num-instances', 'ssh-keyname', 'spot-price',
-              'instance-type', 'vpc-id', 'subnet-id', 'security-group-id',
+start_args = ('yes-all', 'ec2-region', 'vpc-id', 'subnet-id', 'security-group-id',
+              'num-instances', 'ssh-keyname', 'spot-price', 'instance-type',
               'open-public-port', 'commit')
-add_args = ('ec2-region', 'num-instances', 'spot-price')
-list_args = ('ec2-region',)
-stop_args = ('ec2-region', 'terminate')
+add_args = ('ec2-region', 'vpc-id', 'subnet-id', 'security-group-id', 'num-instances',
+            'spot-price')
+list_args = ('ec2-region', 'vpc-id', 'subnet-id', 'security-group-id')
+stop_args = ('ec2-region', 'vpc-id', 'subnet-id', 'security-group-id',
+             'terminate')
+push_args = ('ec2-region', 'vpc-id', 'subnet-id', 'security-group-id',
+             'identity-file', 'package')
+
 
 
 def add_arguments(parser, arg_names):
