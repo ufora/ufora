@@ -1,6 +1,8 @@
 import argparse
 import os
+import subprocess
 import sys
+import threading
 import time
 from pyfora.aws.Launcher import Launcher
 
@@ -222,11 +224,113 @@ def stop_instances(args):
             i.stop()
 
 
+def scp(local_path, remote_path, host, identity_file):
+    try:
+        command = "scp -i %s %s ubuntu@%s:%s" % (
+            identity_file,
+            local_path,
+            host,
+            remote_path)
+        subprocess.check_output(command, shell=True)
+        return 0
+    except subprocess.CalledProcessError as e:
+        return e.output
+
+
+def ssh(identity_file, host, command):
+    try:
+        subprocess.check_output("ssh -i %s ubuntu@%s %s" % (identity_file, host, command),
+                                shell=True)
+        return 0
+    except subprocess.CalledProcessError as e:
+        return e.output
+
+
+def upload_package(package, instances, identity_file):
+    def upload_to_instance(instance):
+        return scp(package, '/home/ubuntu', instance.ip_address, identity_file)
+
+    return parallel_for(instances, upload_to_instance)
+
+
+def update_ufora_service(instances, identity_file):
+    def build_on_instance(instance):
+        command = '"source ufora_setup.sh; export IMAGE_VERSION=local; ' + \
+            'stop_ufora_service; build_local_docker_image; run_ufora_service"'
+        return ssh(identity_file, instance.ip_address, command)
+
+    return parallel_for(instances, build_on_instance)
+
+
+def parallel_for(collection, command):
+    results = [None] * len(collection)
+    def run_command(ix):
+        results[ix] = command(collection[ix])
+
+    threads = [threading.Thread(target=run_command, args=(i,))
+               for i in xrange(len(collection))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    return results
+
+
+def deploy_package(args):
+    launcher = Launcher(**launcher_args(args))
+    instances = running_instances(launcher.get_reservations())
+    if len(instances) == 0:
+        print "No running instances"
+        return
+
+    print "Running instances:"
+    for i in instances:
+        print_instance(i)
+    print ''
+
+    def is_failure(result):
+        return isinstance(result, basestring)
+
+    def any_failures(results):
+        return any(is_failure(x) for x in results)
+
+    def print_failures(results):
+        for ix in xrange(len(results)):
+            if is_failure(results[ix]):
+                print instances[ix].id, "|", instances[ix].ip_address, ':', results[ix]
+
+    print "Uploading package..."
+    results = upload_package(args.package, instances, args.identity_file)
+    if any_failures(results):
+        print "Failed to upload package:"
+        print_failures(results)
+        return
+    print "Package uploaded successfully"
+    print ''
+
+    print "Updating ufora service..."
+    results = update_ufora_service(instances, args.identity_file)
+    if any_failures(results):
+        print "Failed to update service:"
+        print_failures(results)
+        return
+    print "Ufora service updated successfully"
+
+
+def running_instances(reservations):
+    return instances_in_state(reservations, ('running',))
+
+
 def running_or_pending_instances(reservations):
+    return instances_in_state(reservations, ('running', 'pending'))
+
+
+def instances_in_state(reservations, states):
     return [
         i for r in reservations
         for i in r.instances
-        if i.state == 'running' or i.state == 'pending'
+        if i.state in states
         ]
 
 
@@ -332,6 +436,20 @@ all_arguments = {
             'action': 'store_true',
             'help': 'Terminate running instances.'
             }
+        },
+    'identity-file': {
+        'args': ('-i', '--identity-file'),
+        'kwargs': {
+            'required': True,
+            'help': 'The file from which the private SSH key is read.'
+            }
+        },
+    'package': {
+        'args': ('-p', '--package'),
+        'kwargs': {
+            'required': True,
+            'help': 'Path to the ufora package to deploy.'
+            }
         }
     }
 
@@ -343,8 +461,8 @@ add_args = ('ec2-region', 'vpc-id', 'subnet-id', 'security-group-id', 'num-insta
 list_args = ('ec2-region', 'vpc-id', 'subnet-id', 'security-group-id')
 stop_args = ('ec2-region', 'vpc-id', 'subnet-id', 'security-group-id',
              'terminate')
-push_args = ('ec2-region', 'vpc-id', 'subnet-id', 'security-group-id',
-             'identity-file', 'package')
+deploy_args = ('ec2-region', 'vpc-id', 'subnet-id', 'security-group-id',
+               'identity-file', 'package')
 
 
 
@@ -377,6 +495,11 @@ def main():
                                         help='Stop all ufora instances')
     stop_parser.set_defaults(func=stop_instances)
     add_arguments(stop_parser, stop_args)
+
+    deploy_parser = subparsers.add_parser('deploy',
+                                          help='deploy a build to all ufora instances')
+    deploy_parser.set_defaults(func=deploy_package)
+    add_arguments(deploy_parser, deploy_args)
 
     args = parser.parse_args()
     return args.func(args)
