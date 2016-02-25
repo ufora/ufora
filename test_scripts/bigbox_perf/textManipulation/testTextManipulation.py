@@ -55,7 +55,7 @@ class TextManipulationTest(unittest.TestCase):
     def test_splitToRowMajor(self):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
 
-        nRows = 1000000
+        nRows = 100000
         nColumns = 50
 
         result, simulation = InMemoryCumulusSimulation.computeUsingSeveralWorkers(
@@ -63,8 +63,8 @@ class TextManipulationTest(unittest.TestCase):
             s3,
             1,
             timeout = 30,
-            memoryLimitMb = 45 * 1024,
-            threadCount = 30,
+            memoryLimitMb = 8 * 1024,
+            threadCount = 4,
             returnSimulation = True,
             useInMemoryCache = False
             )
@@ -90,64 +90,6 @@ class TextManipulationTest(unittest.TestCase):
 
         finally:
             simulation.teardown()
-
-    def test_transposeToColumnMajor(self):
-        s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
-
-        nRows = 100000
-        nColumns = 50
-
-        result, simulation = InMemoryCumulusSimulation.computeUsingSeveralWorkers(
-            self.transposeSetupScript(nRows, nColumns),
-            s3, 1, timeout = 300, memoryLimitMb = 45 * 1024, threadCount = 30,
-            returnSimulation = True, useInMemoryCache = False)
-
-        try:
-            self.assertTrue(result.isResult())
-
-            rowMajor = result.asResult.result
-
-            t0 = time.time()
-            result = simulation.compute(
-                self.transposeRowMajorToColumnMajorScript(nRows, nColumns),
-                timeout = 500,
-                rowMajor = rowMajor
-                )
-            totalTimeToReturnResult = time.time() - t0
-
-            self.assertTrue(result.isResult())
-
-            PerformanceTestReporter.recordTest(
-                "algorithms.text.transposeRowMajorToColumnMajor.%srows_%scolumns" % (nRows, nColumns),
-                totalTimeToReturnResult, None)
-
-        finally:
-            simulation.teardown()
-
-    def transposeRowMajorToColumnMajorScript(self, nRows, nColumns):
-        return """Vector.range(
-                      %s,
-                      fun(colIx) {
-                          Vector.range(
-                              %s,
-                              fun(rowIx) {
-                                  rowMajor[rowIx][colIx]
-                                  }
-                              )
-                          }
-                      )""" % (nColumns, nRows)
-
-    def transposeSetupScript(self, nRows, nColumns):
-        return """
-            Vector.range(%s, fun(rowIx) {
-                Vector.range(
-                    %s,
-                    fun(colIx) {
-                        String(colIx)
-                        }
-                    )
-                })""" % (nRows, nColumns)
-
 
 if __name__ == "__main__":
     import ufora.config.Mainline as Mainline

@@ -18,6 +18,7 @@
 #include <iostream>
 #include "../TypedFora/ABI/NativeLayoutType.hppml"
 #include "../TypedFora/ABI/VectorRecord.hpp"
+#include "../TypedFora/ABI/ScatteredForaValues.hppml"
 #include "../Judgment/JudgmentUtil.hppml"
 #include "ValueDeepcopier.hppml"
 
@@ -111,7 +112,123 @@ public:
 			jorMightHaveVectorsWithin(handle->jor());
 		}
 
-	Nullable<VectorRecord> updateVectorHandle(VectorHandle* handle)
+	bool shouldMoveUnpagedValuesIntoPagelet(ForaValueArray* array)
+		{
+		const static int kMinSizeOfPODToMakePagelet = 4096 * 16;
+
+		int64_t bytes = array->bytesUsed();
+
+		if (bytes > kMinSizeOfPODToMakePagelet)
+			return true;
+
+		if (!array->isHomogenousPodArray())
+			{
+			bool anyNonPOD = false;
+			for (auto jov: array->currentJor().vals())
+				if (!jov.type()->isPOD())
+					anyNonPOD = true;
+
+			if (anyNonPOD)
+				{
+				boost::function1<void, TypedFora::Abi::ScatteredForaValues> visitScattered = [&](TypedFora::Abi::ScatteredForaValues values) {
+					if (bytes > kMinSizeOfPODToMakePagelet)
+						return;
+
+					if (values.elementJOV().type()->isPOD())
+						return;
+
+					@match Type(*values.elementJOV().type())
+						-|	String() ->> {
+								for (int k = 0; k < values.count(); k++)
+									{
+									String* sourceString = values.pointerToElement<String>(k);
+									if (!sourceString->isEmptyOrPackedIntoPointer())
+										bytes += sourceString->size();
+									if (bytes > kMinSizeOfPODToMakePagelet)
+										return;
+									}
+								}
+						-|	Vector() ->> {
+								for (int64_t k = 0; k < values.count();k++)
+									{
+									VectorRecord* sourceVD = values.pointerToElement<VectorRecord>(k);
+									if (sourceVD->dataPtr())
+										{
+										bytes += sizeof(VectorHandle);
+										if (sourceVD->dataPtr()->unpagedValues())
+											{
+											bytes += sourceVD->dataPtr()->unpagedValues()->bytesUsed();
+											if (bytes > kMinSizeOfPODToMakePagelet)
+												return;
+											sourceVD->dataPtr()->unpagedValues()->visitScatteredValues(visitScattered);
+											}
+										}
+									}
+								}
+						-|	Alternative(t) ->> {
+								visitScattered(values.nudged(t, sizeof(symbol_type)));
+								}
+						-|	Class(types) ->> {
+								uword_t offset = 0;
+
+								for (int64_t k = 0; k < types.size(); k++)
+									{
+									visitScattered(values.nudged(types[k], offset));
+									offset += types[k].size();
+
+									if (bytes > kMinSizeOfPODToMakePagelet)
+										return;
+									}
+								}
+						-|	Tuple(types) ->> {
+								uword_t offset = 0;
+
+								for (int64_t k = 0; k < types.size(); k++)
+									{
+									visitScattered(values.nudged(types[k], offset));
+									offset += types[k].size();
+
+									if (bytes > kMinSizeOfPODToMakePagelet)
+										return;
+									}
+								}
+						-|	Dictionary(isCST) ->> {
+								for (int64_t k = 0; k < values.count(); k++)
+									{
+									Dictionary* sourceDictPtr = values.pointerToElement<Dictionary>(k);
+
+									for (int64_t k = 0; k < sourceDictPtr->size(); k++)
+										{
+										ImplValContainer sourceDictValue = sourceDictPtr->pairAtPosition(k).second;
+
+										void* data[1];
+										data[0] = sourceDictValue.data();
+
+										visitScattered(
+											TypedFora::Abi::ScatteredForaValues(
+												JOV::OfType(sourceDictValue.type()),
+												data,
+												1,
+												0
+												)
+											);
+
+										if (bytes > kMinSizeOfPODToMakePagelet)
+											return;
+										}
+									}
+								}
+						-| _ ->> {}
+					};
+
+				array->visitScatteredValues(visitScattered);
+				}
+			}
+
+		return bytes > kMinSizeOfPODToMakePagelet;
+		}
+
+	Nullable<VectorRecord> updateVectorHandleAfterVistingChildren(VectorHandle* handle)
 		{
 		if (handle->owningMemoryPool() != mState.mMemoryPool)
 			//this is not a vector owned by us, so we shouldn't try to page anything
@@ -120,11 +237,8 @@ public:
 
 		if (handle->unpagedAndPageletTreeValueCount())
 			{
-			const static int kMinSizeOfPODToMakePagelet = 4096 * 8;
-			
-			//don't bother with obviously small pages
-			if (handle->isWriteable() && handle->unpagedValues() && (!handle->unpagedValues()->isHomogenousPodArray() ||
-						handle->unpagedValues()->bytesUsed() >= kMinSizeOfPODToMakePagelet))
+			//check if the page is big enough to be its own pagelet.
+			if (handle->isWriteable() && handle->unpagedValues() && shouldMoveUnpagedValuesIntoPagelet(handle->unpagedValues()))
 				handle->moveUnpagedValueArrayIntoPagelet(&*mState.mVectorDataManager);
 
 			size_t bytecount = (handle->pageletTree().isEmpty() ? 0 : handle->pageletTree()->bytecountIncludingHeldPagelets());
