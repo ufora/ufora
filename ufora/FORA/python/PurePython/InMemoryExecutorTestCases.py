@@ -43,6 +43,41 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
         self.assertTrue(thirdPass / firstPass < .1)
         self.assertTrue(thirdPass / secondPass < .1)
 
+    def test_class_identities(self):
+        class IdentClass:
+            def __init__(self, a,b,e,c,d):
+                self.a=a
+                self.d=d
+                self.e=e
+                self.e=e+1.0
+                self.b=b
+                self.c=c
+
+        inst = IdentClass(1,2,3,4,5)
+
+        def getMembers(inst):
+            return __inline_fora("""fun(x) { PyString(String(x.@m)) }""")(inst)
+
+        with self.create_executor() as ufora:
+            with ufora.remotely.downloadAll():
+                inst2 = IdentClass(1,2,3,4,5)
+                shouldBeTrue = type(inst) is type(IdentClass(1,2,3,4,5))
+                shouldBeTrue2 = type(inst2) is type(IdentClass(1,2,3,4,5))
+                shouldBeTrue3 = type(inst) is IdentClass
+                shouldBeTrue4 = type(inst2) is IdentClass
+                shouldBeTrue5 = inst is inst2
+
+                instMembs = getMembers(inst)
+                instMembs2 = getMembers(inst2)
+
+        self.assertEqual(instMembs, instMembs2)
+
+        self.assertTrue(shouldBeTrue)
+        self.assertTrue(shouldBeTrue2)
+        self.assertTrue(shouldBeTrue3)
+        self.assertTrue(shouldBeTrue4)
+        self.assertTrue(shouldBeTrue5)
+
     def test_with_blocks_inside_converted_code(self):
         with self.assertRaises(pyfora.PythonToForaConversionError):
             with self.create_executor() as executor:

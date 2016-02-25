@@ -705,7 +705,7 @@ class Converter(object):
             }
         classImplVal = self.convertedValues[classInstanceDescription.classId]
 
-        memberNames = tuple(name for name in classMemberNameToImplVal.iterkeys())
+        memberNames = tuple(sorted(name for name in classMemberNameToImplVal.iterkeys()))
         memberValues = tuple(classMemberNameToImplVal[name] for name in memberNames)
         convertedValueOrNone = ForaNative.simulateApply(
             ForaNative.ImplValContainer(
