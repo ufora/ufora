@@ -80,12 +80,7 @@ class _Unconvertible(object):
 
 
 class _FunctionDefinition(object):
-    def __init__(
-            self,
-            sourceFileId,
-            lineNumber,
-            freeVariableMemberAccessChainsToId
-            ):
+    def __init__(self, sourceFileId, lineNumber, freeVariableMemberAccessChainsToId):
         self.sourceFileId = sourceFileId
         self.lineNumber = lineNumber
         self.freeVariableMemberAccessChainsToId = \
@@ -93,12 +88,7 @@ class _FunctionDefinition(object):
 
 
 class _ClassDefinition(object):
-    def __init__(
-            self,
-            sourceFileId,
-            lineNumber,
-            freeVariableMemberAccessChainsToId
-            ):
+    def __init__(self, sourceFileId, lineNumber, freeVariableMemberAccessChainsToId):
         self.sourceFileId = sourceFileId
         self.lineNumber = lineNumber
         self.freeVariableMemberAccessChainsToId = \
@@ -264,9 +254,7 @@ class PyObjectWalker(object):
             text=fileDescription.fileText
             )
 
-    def _registerBuiltinExceptionInstance(
-            self, objectId, builtinExceptionInstance
-            ):
+    def _registerBuiltinExceptionInstance(self, objectId, builtinExceptionInstance):
         """
         `_registerBuiltinExceptionInstance`: register a `builtinExceptionInstance`
         with `self.objectRegistry`.
@@ -589,7 +577,8 @@ class PyObjectWalker(object):
                 processedFreeVariableMemberAccessChainResolutions
             )
 
-    def _freeMemberAccessChainsWithPositions(self, pyAst):
+    @staticmethod
+    def _freeMemberAccessChainsWithPositions(pyAst):
         # ATz: just added 'False' as a 2nd argument, but we may need to check
         # that whenever pyAst is a FunctionDef node, its context is not a class
         # (i.e., it is not an instance method). In that case, we need to pass
@@ -631,8 +620,9 @@ class PyObjectWalker(object):
         taking members only along modules (or "empty" modules)
 
         """
-        subchainAndResolutionOrNone = \
-            self._subchainAndResolutionOrNone(pyObject, pyAst, chainWithPosition)
+        subchainAndResolutionOrNone = self._subchainAndResolutionOrNone(pyObject,
+                                                                        pyAst,
+                                                                        chainWithPosition)
         if subchainAndResolutionOrNone is None:
             raise Exceptions.PythonToForaConversionError(
                 "don't know how to resolve %s in %s (line:%s)"
@@ -655,7 +645,8 @@ class PyObjectWalker(object):
 
         return None
 
-    def _classMemberFunctions(self, pyObject):
+    @staticmethod
+    def _classMemberFunctions(pyObject):
         return PyforaInspect.getmembers(
             pyObject,
             lambda elt: PyforaInspect.ismethod(elt) or PyforaInspect.isfunction(elt)
@@ -685,7 +676,8 @@ class PyObjectWalker(object):
 
         raise UnresolvedFreeVariableException(chainWithPosition, None)
 
-    def _lookupChainInBaseClasses(self, pyClass, pyAst, chainWithPosition):
+    @staticmethod
+    def _lookupChainInBaseClasses(pyClass, pyAst, chainWithPosition):
         chain = chainWithPosition.var
         position = chainWithPosition.pos
 
@@ -734,7 +726,8 @@ class PyObjectWalker(object):
         return self._computeSubchainAndTerminalValueAlongModules(
             rootValue, chainWithPosition)
 
-    def _computeSubchainAndTerminalValueAlongModules(self, rootValue, chainWithPosition):
+    @staticmethod
+    def _computeSubchainAndTerminalValueAlongModules(rootValue, chainWithPosition):
         ix = 1
         chain = chainWithPosition.var
         position = chainWithPosition.pos
@@ -758,9 +751,9 @@ class PyObjectWalker(object):
 
         return subchain, terminalValue, position
 
-    def _resolveFreeVariableMemberAccessChains(
-            self, freeVariableMemberAccessChainsWithPositions, boundVariables
-            ):
+    def _resolveFreeVariableMemberAccessChains(self,
+                                               freeVariableMemberAccessChainsWithPositions,
+                                               boundVariables):
         """ Return a dictionary mapping subchains to resolved ids."""
         resolutions = dict()
 

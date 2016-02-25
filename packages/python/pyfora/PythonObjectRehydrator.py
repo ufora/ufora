@@ -35,14 +35,15 @@ def sanitizeModulePath(pathToModule):
         res = res[:-1]
     return res
 
-class PythonObjectRehydrator:
-    """PythonObjectRehydrator - responsible for building local copies of objects produced by the server."""
+class PythonObjectRehydrator(object):
+    """PythonObjectRehydrator - responsible for building local copies of objects
+                                produced by the server."""
     def __init__(self, purePythonClassMapping):
         self.moduleClassesAndFunctionsByPath = {}
         self.pathsToModules = {}
         self.purePythonClassMapping = purePythonClassMapping
 
-        for moduleName, module in list(sys.modules.iteritems()):
+        for module in list(sys.modules.itervalues()):
             if module is not None:
                 if hasattr(module, '__file__'):
                     self.pathsToModules[sanitizeModulePath(module.__file__)] = module
@@ -79,7 +80,8 @@ class PythonObjectRehydrator:
             return self.pathsToModules[path]
 
     def importModuleMagicVariables(self, targetDict, path):
-        """Find the module at 'path' and set 'targetDict' to have the same magic vars (e.g. module path etc.)"""
+        """Find the module at 'path' and set 'targetDict' to have the same magic
+           vars (e.g. module path etc.)"""
         actualModule = self.moduleForFile(path)
         if actualModule is not None:
             for magicVar in ['__file__', '__path__', '__name__', '__package__']:
@@ -101,7 +103,7 @@ class PythonObjectRehydrator:
             return [self.convertJsonResultToPythonObject(x) for x in jsonResult['list']]
         if 'dict' in jsonResult:
             return {
-                self.convertJsonResultToPythonObject(key): self.convertJsonResultToPythonObject(val) \
+                self.convertJsonResultToPythonObject(key): self.convertJsonResultToPythonObject(val)
                 for key, val in zip(jsonResult['dict']['keys'], jsonResult['dict']['values'])
                 }
         if 'untranslatableException' in jsonResult:
@@ -123,14 +125,18 @@ class PythonObjectRehydrator:
             for dataAndSize in stringsAndSizes:
                 arrayText = dataAndSize['data']
                 size = dataAndSize['length']
-                data[curOffset:curOffset+size] = numpy.ndarray(shape=size,dtype=dtype, buffer=base64.b64decode(arrayText))
+                data[curOffset:curOffset+size] = numpy.ndarray(shape=size,
+                                                               dtype=dtype,
+                                                               buffer=base64.b64decode(arrayText))
                 curOffset += size
 
             #we use the first element as a prototype when decoding
             firstElement = self.convertJsonResultToPythonObject(jsonResult['firstElement'])
 
             data = data.tolist()
-            assert isinstance(data[0], type(firstElement)), "%s of type %s is not %s" % (data[0], type(data[0]), type(firstElement))
+            assert isinstance(data[0], type(firstElement)), "%s of type %s is not %s" % (
+                data[0], type(data[0]), type(firstElement)
+                )
             return data
 
         if 'builtinException' in jsonResult:
@@ -139,9 +145,14 @@ class PythonObjectRehydrator:
             args = self.convertJsonResultToPythonObject(jsonResult['args'])
             return builtinExceptionType(*args)
         if 'classInstance' in jsonResult:
-            members = {k:self.convertJsonResultToPythonObject(v) for k,v in jsonResult['members'].iteritems()}
+            members = {
+                k: self.convertJsonResultToPythonObject(v)
+                for k, v in jsonResult['members'].iteritems()
+                }
             classObject = self.convertJsonResultToPythonObject(jsonResult['classInstance'])
-            return self._invertPureClassInstanceIfNecessary(self._instantiateClass(classObject, members))
+            return self._invertPureClassInstanceIfNecessary(
+                self._instantiateClass(classObject, members)
+                )
         if 'pyAbortException' in jsonResult:
             pyAbortExceptionTypeName = jsonResult['pyAbortException']
             pyAbortExceptionType = PyAbortSingletons.singletonNameToObject[
@@ -154,19 +165,32 @@ class PythonObjectRehydrator:
                 return getattr(instance, jsonResult['methodName'])
             except AttributeError:
                 raise Exceptions.ForaToPythonConversionError(
-                    "Expected %s to have a method of name %s which it didn't" % 
-                        (instance, jsonResult['methodName'])
+                    "Expected %s to have a method of name %s which it didn't" % (
+                        instance,
+                        jsonResult['methodName'])
                     )
         if 'functionInstance' in jsonResult:
-            members = {k:self.convertJsonResultToPythonObject(v) for k,v in jsonResult['members'].iteritems()}
-            return self._instantiateFunction(jsonResult['functionInstance'][0], jsonResult['functionInstance'][1], members)
+            members = {
+                k: self.convertJsonResultToPythonObject(v)
+                for k, v in jsonResult['members'].iteritems()
+                }
+            return self._instantiateFunction(jsonResult['functionInstance'][0],
+                                             jsonResult['functionInstance'][1],
+                                             members)
         if 'classObject' in jsonResult:
-            members = {k:self.convertJsonResultToPythonObject(v) for k,v in jsonResult['members'].iteritems()}
-            return self._classObjectFromFilenameAndLine(jsonResult['classObject'][0], jsonResult['classObject'][1], members)
+            members = {
+                k: self.convertJsonResultToPythonObject(v)
+                for k, v in jsonResult['members'].iteritems()
+                }
+            return self._classObjectFromFilenameAndLine(jsonResult['classObject'][0],
+                                                        jsonResult['classObject'][1],
+                                                        members)
         if 'stacktrace' in jsonResult:
             return jsonResult['stacktrace']
-        
-        raise Exceptions.ForaToPythonConversionError("not implemented: cant convert %s" % jsonResult)
+
+        raise Exceptions.ForaToPythonConversionError(
+            "not implemented: cant convert %s" % jsonResult
+            )
 
     def _invertPureClassInstanceIfNecessary(self, instance):
         if self.purePythonClassMapping.canInvert(instance):
@@ -193,13 +217,18 @@ class PythonObjectRehydrator:
 
             exec code in globalScope, outputLocals
         except:
-            logging.error("Failed to instantiate class at %s:%s\n%s", filename, lineNumber, traceback.format_exc())
-            raise Exceptions.PyforaError("Failed to instantiate class at %s:%s" % (filename, lineNumber))
+            logging.error("Failed to instantiate class at %s:%s\n%s",
+                          filename,
+                          lineNumber,
+                          traceback.format_exc())
+            raise Exceptions.PyforaError(
+                "Failed to instantiate class at %s:%s" % (filename, lineNumber)
+                )
 
         assert len(outputLocals) == 1
 
         return list(outputLocals.values())[0]
-        
+
 
     def _instantiateClass(self, classObject, memberDictionary):
         """Instantiate a class given its defined methods."""
@@ -243,11 +272,6 @@ class PythonObjectRehydrator:
             return eval(code, globalScope, outputLocals)
         else:
             code = compile(ast.Module([functionAst]), filename, 'exec')
-
             exec code in globalScope, outputLocals
-
             assert len(outputLocals) == 1
-
             return list(outputLocals.values())[0]
-            
-
