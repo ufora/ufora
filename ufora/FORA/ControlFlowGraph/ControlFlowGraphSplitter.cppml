@@ -19,6 +19,7 @@
 #include "../Core/ImplValContainerUtilities.hppml"
 #include "../Core/Type.hppml"
 #include "../TypedFora/ABI/UpdateFreeStoreValues.hppml"
+#include "../../core/Logging.hpp"
 #include <boost/thread.hpp>
 
 typedef ControlFlowGraphSplitter::Step Step;
@@ -255,6 +256,46 @@ ImmutableTreeVector<Step> traceArg(
 					const ControlFlowGraph& inGraph, 
 					std::string inLabel,
 					long inArgIndex
+					);
+
+ImmutableTreeVector<Step> followContinuation(
+					const ControlFlowGraph& inGraph, 
+					std::string inLabel,
+					long inArgIndex,
+					ControlFlowContinuation cont
+					)
+	{
+	@match ControlFlowContinuation(cont)
+		-| Node(label, args) ->> {
+			Nullable<long> argWithin;
+
+			try {
+				argWithin = singleArgSlot(args, inArgIndex);
+				}
+			catch(UsedInUntraceableWay& in)
+				{
+				}
+
+			if (!argWithin)
+				return emptyTreeVec() + rejoinStep(inGraph, inLabel, inArgIndex);
+
+			ImmutableTreeVector<Step> substeps = 
+				traceArg(inGraph, label, *argWithin);
+
+			return Step::Jump(
+				inGraph[inLabel].argCount(),
+				args
+				) + substeps;
+			}
+		-| _ ->> {
+			return emptyTreeVec() + rejoinStep(inGraph, inLabel, inArgIndex);
+			}
+	}
+
+ImmutableTreeVector<Step> traceArg(
+					const ControlFlowGraph& inGraph, 
+					std::string inLabel,
+					long inArgIndex
 					)
 	{
 	@match ControlFlowNodeBody(inGraph[inLabel].body())
@@ -323,26 +364,11 @@ ImmutableTreeVector<Step> traceArg(
 					ControlFlowContinuation::Return(arg, isException)
 					);
 			}
-		-| Jump(Node(label, args)) ->> {
-			Nullable<long> argWithin;
-
-			try {
-				argWithin = singleArgSlot(args, inArgIndex);
-				}
-			catch(UsedInUntraceableWay& in)
-				{
-				}
-
-			if (!argWithin)
-				return emptyTreeVec() + rejoinStep(inGraph, inLabel, inArgIndex);
-
-			ImmutableTreeVector<Step> substeps = 
-				traceArg(inGraph, label, *argWithin);
-
-			return Step::Jump(
-				inGraph[inLabel].argCount(),
-				args
-				) + substeps;
+		-| Jump(cont) ->> {
+			return followContinuation(inGraph, inLabel, inArgIndex, cont);
+			}
+		-| Branch(Constant(ifIsSplit), ifTrue, ifFalse) ->> { 
+			return followContinuation(inGraph, inLabel, inArgIndex, ifIsSplit == CSTValue(Symbol("split")) ? ifTrue : ifFalse);
 			}
 		-| _ ->> { 
 			return emptyTreeVec() + rejoinStep(inGraph, inLabel, inArgIndex);
@@ -519,6 +545,7 @@ ImmutableTreeVector<Step> ControlFlowGraphSplitter::extractApplySteps(
 				return emptyTreeVec();
 
 			ImmutableTreeVector<Step> substeps = traceArg(inGraph, label, *argWithin);
+
 			lassert_dump(
 				substeps.size() && substeps.back().isRejoin(),
 				prettyPrintString(substeps) << "\nfrom label " << prettyPrintString(label) << "\n" 
