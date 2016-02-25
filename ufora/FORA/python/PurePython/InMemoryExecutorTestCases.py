@@ -79,7 +79,7 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
         self.assertTrue(shouldBeTrue5)
 
     def test_with_blocks_inside_converted_code(self):
-        with self.assertRaises(pyfora.PythonToForaConversionError):
+        with self.assertRaises(pyfora.InvalidPyforaOperation):
             with self.create_executor() as executor:
                 with executor.remotely:
                     with 10:

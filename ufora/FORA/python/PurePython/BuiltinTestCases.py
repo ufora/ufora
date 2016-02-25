@@ -466,29 +466,22 @@ class BuiltinTestCases(object):
         self.equivalentEvaluationTest(f)
 
 
-    def test_print(self):
+    def test_print_is_noop(self):
         def f():
             print "hello world"
+            return 10
 
-        try:
-            self.evaluateWithExecutor(f)
-            self.assertTrue(False)
-        except Exceptions.PythonToForaConversionError as e:
-            self.assertIsInstance(e.message, str)
-            self.assertIn(
-                "Pyfora can't convert this code",
-                e.message
-                )
+        self.assertEqual(self.evaluateWithExecutor(f), 10)
 
 
-    def test_import(self):
+    def test_import_sys(self):
         def f():
             import sys
 
         try:
             self.evaluateWithExecutor(f)
             self.assertTrue(False)
-        except Exceptions.PythonToForaConversionError as e:
+        except Exceptions.ComputationError as e:
             self.assertIsInstance(e.message, str)
             self.assertIn(
                 "Pyfora can't convert this code",

@@ -98,6 +98,10 @@ class ComputationError(PyforaError):
     def __repr__(self):
         return "ComputationError(remoteException=%s,trace=%s)" % (self.remoteException, self.trace)
 
+    @property
+    def message(self):
+        return repr(self)
+
 class PythonToForaConversionError(PyforaError):
     '''Raised when an attempt is made to use a Python object that cannot be remoted by ``pyfora``.
 

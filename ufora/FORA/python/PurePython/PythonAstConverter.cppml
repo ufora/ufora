@@ -708,6 +708,15 @@ PythonAstConverter::PythonAstConverter(
     mAssertionError = getModuleMember(pyforaBuiltins, "AssertionError");
     }
 
+Expression PythonAstConverter::invalidPyforaCodeExpression(SimpleParseRange extent) const
+    {
+    return CPPML::replaceCommonData(
+            Expression::Constant(CSTValue(mPyObjectBaseMixin))
+                .member(Symbol("__pyfora_unconvertible_code__"))(),
+            ExpressionLocationMetadata::WithSimpleParseRange(extent)
+            );
+    }
+
 PolymorphicSharedPtr<PythonConstantConverter> PythonAstConverter::constantConverter() const
     {
     return mConstantConverter;
@@ -932,6 +941,9 @@ PythonAstConverter::convertPythonClassBodyStatementToForaClassDefinitionTerms(
             }
         -| Expr(Str(s)) ->> {
             ///This swallows doc strings
+            return emptyTreeVec();
+            }
+        -| Print() ->> {
             return emptyTreeVec();
             }
         -| _ ->> {
@@ -1203,12 +1215,7 @@ Expression PythonAstConverter::convertPythonAstSliceToExpression(
     @match PythonAstSlice(slice)
         -| Ellipsis() ->> {
             // not dealing with this just yet. we'll get to it
-            std::ostringstream oss;
-            oss << PYFORA_CONVERSION_ERROR_MESSAGE;
-            throw PythonToForaConversionError(
-                oss.str(),
-                extent
-                );
+            return invalidPyforaCodeExpression(extent);
             }
         -| Slice(start, stop, step) ->> {
             return
@@ -1740,12 +1747,7 @@ Expression PythonAstConverter::convertPythonAstExpressionToFora_inner(const Pyth
         -| _ ->> {
             }
 
-    std::ostringstream oss;
-    oss << PYFORA_CONVERSION_ERROR_MESSAGE;
-    throw PythonToForaConversionError(
-        oss.str(),
-        expr.extent()
-        );
+    return invalidPyforaCodeExpression(expr.extent());
     }
 
 Expression PythonAstConverter::convertInlineFora(
@@ -2110,13 +2112,21 @@ Expression PythonAstConverter::convertPythonAstStatementToExpression_inner(
                     )
                 );
             }
+        -| Print(file, values) ->> {
+            auto res = Expression::Constant(mConstantConverter->noneValue());
+            if (file)
+                res = convertPythonAstExpressionToFora(*file);
+
+            for (auto v: values)
+                res = Expression::Sequence(
+                    res,
+                    convertPythonAstExpressionToFora(v)
+                    );
+
+            return res;
+            }
         -| _ ->> {
-            std::ostringstream oss;
-            oss << PYFORA_CONVERSION_ERROR_MESSAGE;
-            throw PythonToForaConversionError(
-                oss.str(),
-                statement.extent()
-                );
+            return invalidPyforaCodeExpression(statement.extent());
             }
     }
 
@@ -2167,11 +2177,14 @@ PatternWithName PythonAstConverter::convertPythonAstExpressionToPattern_inner(
                 );
             }
         -| _ ->> {
-            std::ostringstream oss;
-            oss << PYFORA_CONVERSION_ERROR_MESSAGE;
-            throw PythonToForaConversionError(
-                oss.str(),
-                expr.extent()
+            return PatternWithName(
+                Pattern::ExpressionMatch(
+                    invalidPyforaCodeExpression(expr.extent()),
+                    TuplePattern()
+                    ),
+                null(),
+                null(),
+                ExpressionLocationMetadata::WithSimpleParseRange(expr.extent())
                 );
             }
     }

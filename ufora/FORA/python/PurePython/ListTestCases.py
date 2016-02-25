@@ -287,7 +287,7 @@ class ListTestCases(object):
         try:
             self.evaluateWithExecutor(f)
             self.assertTrue(False)
-        except Exceptions.PythonToForaConversionError as e:
+        except Exceptions.ComputationError as e:
             self.assertIsInstance(e.message, str)
             self.assertTrue(e.trace is not None)
 

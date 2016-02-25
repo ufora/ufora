@@ -352,13 +352,22 @@ class WithBlockExecutors_test(unittest.TestCase):
                 with fora.remotely:
                     x = 1 / 0
 
+    def test_with_block_swallows_print_statement(self):
+        with self.create_executor() as fora:
+            with fora.remotely:
+                x = "this is ok"
+                y = "this is still ok"
+                print "this shouldn't work"
+
+        
     def test_with_block_invalid_conversion_throws(self):
         with self.create_executor() as fora:
-            with self.assertRaises(Exceptions.PythonToForaConversionError):
+            with self.assertRaises(Exceptions.InvalidPyforaOperation):
                 with fora.remotely:
                     x = "this is ok"
                     y = "this is still ok"
-                    print "this shouldn't work"
+                    #this will blow up
+                    y[0] = 10
 
     def test_with_block_list_append_throws_reasonable_exception(self):
         with self.create_executor() as fora:

@@ -650,10 +650,16 @@ class ExceptionTestCases(object):
                 y[1] = x
                 return y
 
-            future = executor.define(f)
-            with self.assertRaises(pyfora.PythonToForaConversionError):
-                future.result()
+            def g(x):
+                return 1+f(x)
 
+            try:
+                self.evaluateWithExecutor(g,1)
+                self.assertTrue(False)
+            except pyfora.ComputationError as e:
+                self.assertTrue(isinstance(e.remoteException, pyfora.InvalidPyforaOperation))
+
+            
     def test_return_in_init_method(self):
         def f():
             class ClassReturnInInit:
@@ -755,8 +761,10 @@ class ExceptionTestCases(object):
         def unconvertable(x):
             return ModuleWithUnconvertableMember.unconvertableMember(x)
 
-        with self.assertRaises(pyfora.Exceptions.PythonToForaConversionError):
+        with self.assertRaises(pyfora.Exceptions.ComputationError) as raised:
             self.equivalentEvaluationTest(unconvertable, 2)
+
+        self.assertTrue(isinstance(raised.exception.remoteException, pyfora.Exceptions.InvalidPyforaOperation))
 
         self.equivalentEvaluationTest(f, 2)
 
@@ -796,8 +804,10 @@ class ExceptionTestCases(object):
             x = range(10)
             return x[...]
 
-        with self.assertRaises(pyfora.PythonToForaConversionError):
+        with self.assertRaises(pyfora.ComputationError) as raised:
             self.evaluateWithExecutor(f)
+            
+        self.assertTrue(isinstance(raised.exception.remoteException, pyfora.Exceptions.InvalidPyforaOperation))
 
     def test_returning_slice_2(self):
         class C:
