@@ -44,7 +44,7 @@ user_data_file = '''#!/bin/bash
 export AWS_ACCESS_KEY_ID={aws_access_key}
 export AWS_SECRET_ACCESS_KEY={aws_secret_key}
 export AWS_DEFAULT_REGION={aws_region}
-export OWN_INSTANCE_ID=`curl http://169.254.169.254/latest/meta-data/instance-id`
+export OWN_INSTANCE_ID=`curl -s http://169.254.169.254/latest/meta-data/instance-id`
 export OWN_PRIVATE_IP=`curl -s http://169.254.169.254/latest/meta-data/local-ipv4`
 export SET_STATUS="aws ec2 create-tags --resources $OWN_INSTANCE_ID --tags Key=status,Value="
 export COMMIT_TO_BUILD={commit_to_build}
@@ -81,14 +81,14 @@ function install_docker_and_prerequisites {{
     apt-get install -y --force-yes linux-image-extra-`uname -r` linux-headers-`uname -r` linux-image-`uname -r`
 
     apt-get install apparmor
-    
+
     sudo apt-key adv --keyserver hkp://p80.pool.sks-keyservers.net:80 --recv-keys 58118E89F3A912897C070ADBF76221572C52609D
     echo "deb https://apt.dockerproject.org/repo ubuntu-trusty main" > /etc/apt/sources.list.d/docker.list
     apt-get update
 
     apt-get install -y docker-engine
     service docker start
-    
+
     #verify we have docker
     docker run hello-world
     if [ $? -ne 0 ]; then
@@ -160,7 +160,7 @@ function install_cuda {{
 
     wget http://developer.download.nvidia.com/compute/cuda/repos/ubuntu1404/x86_64/cuda-repo-ubuntu1404_7.5-18_amd64.deb
     dpkg -i cuda-repo-ubuntu1404_7.5-18_amd64.deb
-    
+
     apt-get update
     apt-get upgrade -y
     apt-get install -y --no-install-recommends --force-yes cuda-nvrtc-7-5 cuda-cudart-7-5 cuda-drivers cuda-core-7-5 cuda-driver-dev-7-5
@@ -180,7 +180,7 @@ function build_ufora {{
         ${{SET_STATUS}}'checking out {commit_to_build} failed'
         exit 1
     fi
-    
+
     BUILD_IMAGE_VERSION=`md5sum $BUILD_DIR/ufora/docker/build/Dockerfile|awk '{{print $1}}'`
 
     ${{SET_STATUS}}'pulling docker image'
@@ -226,7 +226,7 @@ function post_reboot {{
 }}
 
 #this is the main entrypoint, called when the instance is booted
-#we check whether we need to install CUDA, in which case we have to 
+#we check whether we need to install CUDA, in which case we have to
 #write a bootscript into /etc/rc.local to continue the installation process.
 function on_cloud_init {{
     install_docker_and_prerequisites
@@ -273,12 +273,12 @@ class Launcher(object):
         'sa-east-1': 'ami-051b9b69',
         'us-east-1': 'ami-35d6f95f',
         'us-west-1': 'ami-06235566',
-        'us-west-2': 'ami-abc620cb'    
+        'us-west-2': 'ami-abc620cb'
         }
 
     def getUserDataTemplate(self):
         user_data_template = (
-            "#!/bin/bash\n" + 
+            "#!/bin/bash\n" +
             "cat >/root/ufora_setup.sh <<'EOL'\n" +
             user_data_file + "\nEOL\n"
             )
@@ -423,7 +423,7 @@ class Launcher(object):
         dev_sda1.size = 15
         bdm = boto.ec2.blockdevicemapping.BlockDeviceMapping()
         bdm['/dev/sda1'] = dev_sda1
-        
+
         request_args = {
             'image_id': image_id,
             'instance_type': self.instance_type,
@@ -529,6 +529,8 @@ class Launcher(object):
             self.ec2 = boto.connect_ec2()
         else:
             self.ec2 = boto.ec2.connect_to_region(self.region)
+
+        assert self.ec2 is not None
 
         if self.security_group_id is None:
             self.security_group_id = self.find_or_create_ufora_security_group()
