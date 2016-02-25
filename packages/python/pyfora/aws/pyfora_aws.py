@@ -36,8 +36,9 @@ class StatusPrinter(object):
 
         self.last_message = message_body
 
-        message = time.asctime() + " -- " + message_body + ("" if isDifferent else " " + self.spinner[self.spinner_index])
-        
+        message = time.asctime() + " -- " + message_body + \
+            ("" if isDifferent else " " + self.spinner[self.spinner_index])
+
         if isFirst:
             print message,
 
@@ -52,7 +53,7 @@ class StatusPrinter(object):
         if message_len < self.last_message_len:
             message = message + ' '*(self.last_message_len - message_len)
         self.last_message_len = message_len
-        print message, 
+        print message,
         sys.stdout.flush()
 
     def done(self):
@@ -62,7 +63,8 @@ class StatusPrinter(object):
         print ''
         sys.stdout.flush()
 
-    def failed(self):
+    @staticmethod
+    def failed():
         print ''
         print ''
         print 'Failed'
@@ -103,8 +105,7 @@ def start_instances(args):
                         security_group_id=args.security_group_id,
                         instance_type=args.instance_type,
                         open_public_port=open_public_port,
-                        commit_to_build=args.commit
-                        )
+                        commit_to_build=args.commit)
 
     status_printer = StatusPrinter()
     print "Launching ufora manager instance:"
