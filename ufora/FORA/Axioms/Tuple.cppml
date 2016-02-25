@@ -76,6 +76,25 @@ string	tupleErrorString(
 
 namespace {
 
+//return a list of indices that give the sorted order of the items in 'names'. Nulls
+//are dropped. These indices are the order of the tuple elements we should use.
+ImmutableTreeVector<uint32_t> indicesForNames(ImmutableTreeVector<Nullable<Symbol> > names)
+	{
+	ImmutableTreeVector<uint32_t> res;
+
+	map<std::string, uint32_t> indices;
+
+	//we count in reverse order. we want the _front_ tuple element for any given name
+	for (long k = ((long)names.size())-1; k >= 0; k--)
+		if (names[k])
+			indices[names[k]->toString()] = k;
+
+	for (auto symbolAndPos: indices)
+		res = res + symbolAndPos.second;
+
+	return res;
+	}
+
 std::string createTupleApplyAxiomString(
 		const ImmutableTreeVector<Nullable<Symbol>>& names,
 		uword_t nTupleElementArgs,
@@ -219,6 +238,21 @@ ReturnValue<ImplValContainer, String> createTupleApplyWithIndexFun(
 }
 
 extern "C" {
+
+BSA_DLLEXPORT
+ReturnValue<ImplValContainer> FORA_clib_tupleSortAndDedupNames(
+		const ImplValContainer& tuple
+		)
+	{
+	ImmutableTreeVector<std::pair<ImplValContainer, Nullable<Symbol>>> components;
+
+	auto names = tuple.type().getTuple().names();
+
+	for (auto ix: indicesForNames(names))
+		components = components + make_pair(*tuple.tupleGetItem(ix), names[ix]);
+
+	return slot0(ImplValContainer(components));
+	}
 
 BSA_DLLEXPORT
 ReturnValue<ImplValContainer, String> FORA_clib_tupleNamify(
@@ -733,7 +767,95 @@ private:
 		return null() << tr;
 		}
 
-	};
+};
+
+class TupleSortAndDedupNamesAxiom : public AxiomGroup {
+public:
+	TupleSortAndDedupNamesAxiom() :
+		AxiomGroup(
+			JOVT() +
+			"tupleSortAndDedupNames" +
+			"Call" +
+			jovTuple() + 
+			JOVTE::NoExtras()
+			)
+		{
+		}
+
+	Nullable<Axiom> axiom(TypedFora::Compiler& c, const JudgmentOnValueTuple& s)
+		{
+		JOV outJov = outJovFor(s.jovs()[2].getTuple().jov());
+
+		if (outJov.constant()) // we're not hard-coding the exception string here
+			return null() << AxiomGroup::returnsAxiom(s, *outJov.constant());
+
+		if (outJov.isTuple() && !outJov.getTuple().jov().hasExtras())
+			{
+			ImmutableTreeVector<Nullable<Symbol> > names = s.jovs()[2].getTuple().jov().names();
+
+			TypedFora::TypedForaAxiomBuilder 
+				builder(s, TypedFora::RefcountStyle::Pooled());
+
+			ImmutableTreeVector<TypedFora::MakeTupleArgument> tupleArgs;
+
+			for (auto ix: indicesForNames(names))
+				{
+				tupleArgs = tupleArgs +
+					TypedFora::MakeTupleArgument::Normal(
+						names[ix],
+						TypedFora::Expression::GetItem(builder.var(2).expr(), ix)
+						);
+				}
+
+			return null() <<
+				builder.axiomForExpression(
+					TypedFora::Expression::MakeTuple(tupleArgs),
+					TypedFora::RefcountStyle::Pooled(),
+					outJov,
+					false
+					);
+			}
+
+		return null() <<
+			LibcallAxiomGroup::createAxiom(
+				signature(),
+				ReturnSlots() + 
+					ReturnSlot::Normal(
+						jovTuple()
+						),
+				&FORA_clib_tupleSortAndDedupNames,
+				ImmutableTreeVector<uword_t>() + 2
+				);
+		}
+
+	Nullable<AxiomJOA> axiomJOA(const JudgmentOnValueTuple& s)
+		{
+		JOV outJov = outJovFor(s.jovs()[2].getTuple().jov());
+
+		return null() << AxiomJOA::Native(
+			JudgmentOnAction::Value(
+				outJov
+				)
+			);
+		}
+
+private:
+	JOV outJovFor(const JudgmentOnValueTuple& s)
+		{
+		if (s.hasExtras())
+			return jovTuple();
+
+		ImmutableTreeVector<Nullable<Symbol> > names = s.names();
+		ImmutableTreeVector<JOV> jovs = s.jovs();
+
+		ImmutableTreeVector<uint32_t> indices = indicesForNames(names);
+
+		return JOV::Tuple(
+			JudgmentOnValueTuple(jovs[indices], names[indices], JOVTE::NoExtras())
+			);
+		}
+};
+
 
 class MakeNamedTupleFromPairAxiom : public AxiomGroup {
 public:
@@ -1593,8 +1715,8 @@ public:
 			
 			AxiomGroups("Tuple") += (new TupleMemberAxiom());
 			AxiomGroups("Tuple") += (new TupleMatchStructureAxiom());
-
 			AxiomGroups("Tuple") += (new TupleNamifyAxiom());
+			AxiomGroups("Tuple") += (new TupleSortAndDedupNamesAxiom());
 
 			AxiomGroups("Tuple") +=
 				LibcallAxiomGroup::create(
