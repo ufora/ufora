@@ -18,7 +18,7 @@ from pyfora.algorithms.BinaryLogisticRegressionModel import \
     BinaryLogisticRegressionModel
 
 
-class BinaryLogisticRegressionFitter:
+class BinaryLogisticRegressionFitter(object):
     """
     BinaryLogisticRegressionFitter
 

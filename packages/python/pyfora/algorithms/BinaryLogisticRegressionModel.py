@@ -13,16 +13,12 @@
 #   limitations under the License.
 
 
-import math
 import numpy
+import scipy.special
 import pyfora.typeConverters.PurePandas as PurePandas
 
 
-def logit_complement(x):
-    return 1.0 / (1.0 + math.exp(x))
-
-
-class BinaryLogisticRegressionModel:
+class BinaryLogisticRegressionModel(object):
     """
     Represents a fit logit model.
 
@@ -120,6 +116,6 @@ class BinaryLogisticRegressionModel:
             res = res + self.intercept * self.interceptScale
 
         return numpy.array([
-            logit_complement(val) for val in res
+            scipy.special.expit(-val) for val in res
             ])
 

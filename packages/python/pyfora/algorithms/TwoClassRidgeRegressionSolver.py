@@ -21,7 +21,7 @@ def _addScaleColumn(df, scale):
     return df.pyfora_addColumn("intercept", [scale for _ in xrange(len(df))])
 
 
-class TwoClassRidgeRegressionSolver:
+class TwoClassRidgeRegressionSolver(object):
     def __init__(
             self, X, y,
             regularizer, tol, maxIters, classes,
@@ -64,7 +64,7 @@ class TwoClassRidgeRegressionSolver:
             return sum(f(rowIx) for rowIx in xrange(nRows))
 
         return numpy.array(
-            [columnSum(column) for column in X._columns]
+            [columnSum(column) for column in X.columns()]
             )
 
     def computeCoefficients(self):
@@ -111,7 +111,7 @@ class TwoClassRidgeRegressionSolver:
         def rowWiseScalarMultiplier(ix):
             return 1.0 / (1.0 + math.exp(-thetaDotX[ix]))
 
-        columns = self.X._columns
+        columns = self.X.columns()
         def computeWeightedColumnSum(columnIx):
             column = columns[columnIx]
             return sum(
@@ -185,6 +185,7 @@ def _weightFun(x):
 
 
 def _diagonal(n, value):
+    # TODO this should be replaced by a proper numpy call
     value = float(value)
 
     def eltAtIx(ix):
