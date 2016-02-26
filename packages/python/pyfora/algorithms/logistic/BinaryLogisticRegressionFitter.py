@@ -12,8 +12,8 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-from pyfora.algorithms.logistic.TwoClassRidgeRegressionSolver import \
-    TwoClassRidgeRegressionSolver
+from pyfora.algorithms.logistic.FullRankMajorizationSolver import \
+    FullRankMajorizationSolver
 from pyfora.algorithms.logistic.BinaryLogisticRegressionModel import \
     BinaryLogisticRegressionModel
 
@@ -21,11 +21,6 @@ from pyfora.algorithms.logistic.BinaryLogisticRegressionModel import \
 class BinaryLogisticRegressionFitter(object):
     """
     BinaryLogisticRegressionFitter
-
-    A pure-python implementation of l2-regularized logistic regression using
-    an approach from A. Choromanska and T. Jebara's paper
-    "Majorization for CRFs and Latent Likelihoods",
-    Neural Information Processing Systems (NIPS), December 2012.
 
     A :class:`~BinaryLogisticRegressionFitter`, or "fitter", holds fitting parameters
     which are used to fit logit models.
@@ -103,7 +98,7 @@ class BinaryLogisticRegressionFitter(object):
         classZeroLabel = classes[0]
         classOneLabel = classes[1]
 
-        coefficients, iters = TwoClassRidgeRegressionSolver(
+        coefficients, iters = FullRankMajorizationSolver(
             X, y,
             self.regularizer,
             self.tol,

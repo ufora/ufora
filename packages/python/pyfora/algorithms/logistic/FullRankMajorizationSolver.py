@@ -21,7 +21,13 @@ def _addScaleColumn(df, scale):
     return df.pyfora_addColumn("intercept", [scale for _ in xrange(len(df))])
 
 
-class TwoClassRidgeRegressionSolver(object):
+class FullRankMajorizationSolver(object):
+    """
+    A pure-python implementation of l2-regularized logistic regression using
+    an Algorithm 2 of T. Jebara and A. Choromanska's paper
+    "Majorization for CRFs and Latent Likelihoods",
+    Neural Information Processing Systems (NIPS), December 2012.
+    """
     def __init__(
             self, X, y,
             regularizer, tol, maxIters,
@@ -33,7 +39,8 @@ class TwoClassRidgeRegressionSolver(object):
         if hasIntercept:
             X = _addScaleColumn(X, interceptScale)
 
-        fSum = TwoClassRidgeRegressionSolver.computeFSum(X, y.iloc[:,0], classZeroLabel)
+        fSum = FullRankMajorizationSolver.computeFSum(
+            X, y.iloc[:,0], classZeroLabel)
 
         self.X = X
         self.regularizer = float(regularizer)
