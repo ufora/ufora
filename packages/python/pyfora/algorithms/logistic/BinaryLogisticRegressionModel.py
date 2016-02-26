@@ -88,7 +88,7 @@ class BinaryLogisticRegressionModel(object):
         probabilities = self.predict_probability(X)
 
         def classForProbability(probability):
-            if probability <= 0.5:
+            if probability > 0.5:
                 return self.classOneLabel
             return self.classZeroLabel
 
@@ -98,7 +98,7 @@ class BinaryLogisticRegressionModel(object):
 
     def predict_probability(self, X):
         """
-        Estimate the conditional class-one probability for the features in
+        Estimate the conditional class-zero probability for the features in
         :py:obj:`X`.
 
         Args:
@@ -107,10 +107,7 @@ class BinaryLogisticRegressionModel(object):
         Returns:
             numpy.array: array containing the predicted probabilities.
         """
-        if isinstance(X, PurePandas.PurePythonDataFrame):
-            X = X.as_matrix()
-
-        res = numpy.dot(X, self.coefficients)
+        res = X.dot(self.coefficients)
 
         if self.intercept is not None:
             res = res + self.intercept * self.interceptScale

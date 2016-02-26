@@ -17,22 +17,30 @@ import numpy
 import math
 
 
-class TrustRegionCongugateGradientSolver(object):
-    # Implementing http://www.machinelearning.org/proceedings/icml2007/papers/114.pdf
-    # assumes classes is [-1, 1]. should be handled at some point
+from Solver import Solver, ReturnValue
+
+
+class TrustRegionConjugateGradientSolver(Solver):
+    """
+    Implements "Trust Region Newton Methods for Large-Scale Logistic Regression"
+    of C. Lin, R. Weng, and S. Keerthi 
+    (http://www.machinelearning.org/proceedings/icml2007/papers/114.pdf)
+
+    This is the same algorithm used in the liblinear library.
+    """
     def __init__(
             self, X, y,
             classZeroLabel,
-            C=1.0, eps=0.001, maxIters=1000,
-            splitLimit=1000000, hasIntercept=False):
-        if hasIntercept:
-            assert False, "not implemented"
-
+            C=1.0,
+            eps=0.001,
+            maxIters=1000,
+            splitLimit=1000000):
         self.X = X
         self.y = y
         self.classZeroLabel = classZeroLabel
         self.C = float(C)
-        self.eps = TrustRegionCongugateGradientSolver.computeEps(eps, y)
+        self.eps = TrustRegionConjugateGradientSolver.computeEps(
+            eps, y, classZeroLabel)
         self.maxIters = maxIters
         self.nFeatures = X.shape[1]
         self.nSamples = X.shape[0]
@@ -49,14 +57,14 @@ class TrustRegionCongugateGradientSolver(object):
         self.xi = 0.1
 
     @staticmethod
-    def computeEps(eps, y):
+    def computeEps(eps, y, classZeroLabel):
         def signFunc(elt):
-            if elt > 0.0:
-                return 1
-            return 0
-        numPositiveY = sum(signFunc(elt) for elt in y)
-        numNegativeY = len(y) - numPositiveY
-        return eps * max(min(numPositiveY, numNegativeY), 1) / float(len(y))
+            if elt == classZeroLabel:
+                return 1.0
+            return 0.0
+        numClassZeros = sum(signFunc(elt) for elt in y)
+        numClassOnes = len(y) - numClassZeros
+        return eps * max(min(numClassZeros, numClassOnes), 1.0) / float(len(y))
 
     def normalized_y_value(self, ix):
         if self.y[ix] == self.classZeroLabel:
@@ -235,12 +243,6 @@ class TrustRegionCongugateGradientSolver(object):
 
     def norm(self, vec):
         return math.sqrt(vec.dot(vec))
-
-
-class ReturnValue(object):
-    def __init__(self, weights, iterations):
-        self.weights = weights
-        self.iterations = iterations
 
 
 class SolverState(object):

@@ -17,11 +17,10 @@ import numpy
 import math
 
 
-def _addScaleColumn(df, scale):
-    return df.pyfora_addColumn("intercept", [scale for _ in xrange(len(df))])
+from Solver import Solver, ReturnValue
 
 
-class FullRankMajorizationSolver(object):
+class FullRankMajorizationSolver(Solver):
     """
     A pure-python implementation of l2-regularized logistic regression using
     an Algorithm 2 of T. Jebara and A. Choromanska's paper
@@ -30,17 +29,13 @@ class FullRankMajorizationSolver(object):
     """
     def __init__(
             self, X, y,
-            regularizer, tol, maxIters,
-            classZeroLabel, splitLimit=1000000,
-            hasIntercept=True, interceptScale=1.0):
-        # TODO: we don't need to hold onto an entire column of ones,
-        # but it simplifies the code for now.
-        # it's a simple exercise to not hold this explicitly.
-        if hasIntercept:
-            X = _addScaleColumn(X, interceptScale)
-
+            classZeroLabel,
+            regularizer,
+            tol,
+            maxIters,
+            splitLimit=1000000):
         fSum = FullRankMajorizationSolver.computeFSum(
-            X, y.iloc[:,0], classZeroLabel)
+            X, y, classZeroLabel)
 
         self.X = X
         self.regularizer = float(regularizer)
@@ -59,9 +54,9 @@ class FullRankMajorizationSolver(object):
         def columnSum(column):
             def f(rowIx):
                 if y[rowIx] == classZeroLabel:
-                    return 0.0
+                    return float(column[rowIx])
 
-                return float(column[rowIx])
+                return 0.0
 
             return sum(f(rowIx) for rowIx in xrange(nRows))
 
@@ -69,8 +64,12 @@ class FullRankMajorizationSolver(object):
             [columnSum(column) for column in X.columns()]
             )
 
-    def computeCoefficients(self):
-        oldTheta = numpy.zeros(self.nFeatures)
+    def solve(self, theta=None):
+        if theta is None:
+            oldTheta = numpy.zeros(self.nFeatures)
+        else:
+            oldTheta = theta
+
         newTheta = self.updateTheta(oldTheta)
 
         iters = 1
@@ -80,14 +79,15 @@ class FullRankMajorizationSolver(object):
             newTheta = self.updateTheta(oldTheta)
             iters = iters + 1
 
-        return newTheta, iters
+        return ReturnValue(newTheta, iters)
 
     def updateTheta(self, theta):
         thetaDotX = self.X.dot(theta, self.splitLimit)
         sigma = self.computeSigma(thetaDotX)
         muSum = self.computeMuSum(thetaDotX)
 
-        A = sigma + _diagonal(sigma.shape[0], self.X.shape[0] * self.regularizer)
+        A = sigma + _diagonal(
+            sigma.shape[0], self.X.shape[0] * self.regularizer)
         b = muSum - self.fSum + theta * (self.regularizer * self.X.shape[0])
 
         return theta - numpy.linalg.solve(A, b)
@@ -105,7 +105,8 @@ class FullRankMajorizationSolver(object):
         #    regression, this time usin "weighted dot products" on the 
         #    columns of X. This is the choice we're using for now.
 
-        return _computeSigma(thetaDotX, self.X._columns, self.splitLimit, start, end)
+        return _computeSigma(
+            thetaDotX, self.X._columns, self.splitLimit, start, end)
 
     def computeMuSum(self, thetaDotX):
         # we could also stash these values in a vector, since they're common
@@ -122,7 +123,8 @@ class FullRankMajorizationSolver(object):
                 )
 
         return numpy.array([
-            computeWeightedColumnSum(columnIx) for columnIx in xrange(self.X.shape[1])
+            computeWeightedColumnSum(columnIx) for \
+            columnIx in xrange(self.X.shape[1])
             ])
 
 def _computeSigma(thetaDotX, columns, splitLimit, start=0, end=None):
@@ -162,7 +164,6 @@ def _computeSigma(thetaDotX, columns, splitLimit, start=0, end=None):
     mid = (start + end) / 2
     return _computeSigma(thetaDotX, columns, splitLimit, start, mid) + \
         _computeSigma(thetaDotX, columns, splitLimit, mid, end)
-
 
 
 def _weightedDotProduct(x1, x2, x3):

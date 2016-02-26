@@ -14,8 +14,11 @@
 
 from pyfora.algorithms.logistic.FullRankMajorizationSolver import \
     FullRankMajorizationSolver
+from pyfora.algorithms.logistic.TrustRegionConjugateGradientSolver import \
+    TrustRegionConjugateGradientSolver
 from pyfora.algorithms.logistic.BinaryLogisticRegressionModel import \
     BinaryLogisticRegressionModel
+import pyfora.typeConverters.PurePandas as PurePandas
 
 
 class BinaryLogisticRegressionFitter(object):
@@ -30,6 +33,7 @@ class BinaryLogisticRegressionFitter(object):
             regularization strength.
         hasIntercept (bool): If True, include an intercept (aka bias) term in
             the fitted models.
+        method (string): one of 'newton-cg' (default) or 'majorization'
         interceptScale (float): When :py:obj:`hasIntercept` is true, feature vectors
             become `[x, interceptScale]`, i.e. we add a "synthetic" feature
             with constant value :py:obj:`interceptScale` to all of the feature vectors.
@@ -44,7 +48,8 @@ class BinaryLogisticRegressionFitter(object):
             self,
             regularizer,
             hasIntercept=True,
-            interceptScale=1,
+            method='majorization',
+            interceptScale=1.0,
             tol=1e-4,
             maxIter=1e5,
             splitLimit=1000000):
@@ -53,10 +58,15 @@ class BinaryLogisticRegressionFitter(object):
 
         self.regularizer = regularizer
         self.hasIntercept = hasIntercept
+        self.method = method
         self.interceptScale = interceptScale
         self.tol = tol
         self.maxIter = maxIter
         self.splitLimit = splitLimit
+
+    def _addScaleColumn(self, df):
+        return df.pyfora_addColumn(
+            "intercept", [self.interceptScale for _ in xrange(len(df))])
 
     def fit(self, X, y):
         """
@@ -85,40 +95,56 @@ class BinaryLogisticRegressionFitter(object):
 
         """
         assert X.shape[0] == y.shape[0]
-        assert y.shape[1] == 1
+
+        if isinstance(y, PurePandas.PurePythonDataFrame):
+            assert y.shape[1] == 1
+            y = y.iloc[:,0]
 
         # we need to be careful here:
         # sorted is going to copy the
         # maybe we can avoid the copy, but at the very least
         # we should build implement  __pyfora_generator__  on Series
-        classes = y.iloc[:,0].unique()
+        classes = y.unique()
 
         assert len(classes) == 2
 
         classZeroLabel = classes[0]
         classOneLabel = classes[1]
 
-        coefficients, iters = FullRankMajorizationSolver(
+        # TODO: we don't need to hold onto an entire column of ones,
+        # but it simplifies the code for now.
+        # this logic should move into the subclasses of Solver.Solver
+        if self.hasIntercept:
+            X = self._addScaleColumn(X)
+
+        if self.method == 'newton-cg':
+            solver = TrustRegionConjugateGradientSolver
+            regularizer = 1.0 / len(X) / self.regularizer
+        elif self.method == 'majorization':
+            solver = FullRankMajorizationSolver
+            regularizer = self.regularizer
+        else:
+            raise Exception("bad method argument passed in: " + self.method)
+
+        returnValue = solver(
             X, y,
-            self.regularizer,
+            classZeroLabel,
+            regularizer,
             self.tol,
             self.maxIter,
-            classZeroLabel,
-            self.splitLimit,
-            self.hasIntercept,
-            self.interceptScale
-            ).computeCoefficients()
+            self.splitLimit
+            ).solve()
 
         intercept = None
         if self.hasIntercept:
-            intercept = coefficients[-1]
-            coefficients = coefficients[:-1]
+            intercept = returnValue.weights[-1]
+            weights = returnValue.weights[:-1]
 
         return BinaryLogisticRegressionModel(
-            coefficients,
+            weights,
             classZeroLabel,
             classOneLabel,
             intercept,
             self.interceptScale,
-            iters)
+            returnValue.iterations)
 

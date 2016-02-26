@@ -14,6 +14,7 @@
 
 import pandas
 import numpy
+import numpy.testing
 
 
 from pyfora.unique import unique
@@ -21,6 +22,8 @@ from pyfora.algorithms import BinaryLogisticRegressionFitter
 
 
 class LogisticRegressionTests(object):
+    methods = ['majorization', 'newton-cg']
+
     def test_unique(self):
         x = [5,5,4,2,4,2,1,3,3,5,6]
         def f():
@@ -37,70 +40,78 @@ class LogisticRegressionTests(object):
         return X, y
 
     def test_binary_logistic_regression_coefficients(self):
+        for method in LogisticRegressionTests.methods:
+            self.binary_logistic_regression_coefficients(method)
+
+    def binary_logistic_regression_coefficients(self, method):
         X, y = self.exampleData()
 
         def f():
-            fit = BinaryLogisticRegressionFitter(1).fit(X, y)
+            fit = BinaryLogisticRegressionFitter(1, True, method).fit(X, y)
             return fit.intercept, fit.coefficients
 
         computedIntercept, computedCoefficients = self.evaluateWithExecutor(f)
 
-        expectedIntercept = 0.10102151
-        expectedCoefficients = numpy.array([0.26901034, 0.25372016])
+        expectedIntercept = -0.10102151
+        expectedCoefficients = numpy.array([-0.26901034, -0.25372016])
 
-        self.assertTrue(
-            numpy.isclose(
-                computedIntercept,
-                expectedIntercept,
-                rtol=0.1
-                )
+        numpy.testing.assert_almost_equal(
+            computedIntercept,
+            expectedIntercept,
+            decimal=4
             )
 
-        self.assertTrue(
-            numpy.allclose(
-                computedCoefficients,
-                expectedCoefficients,
-                rtol=0.1
-                )
+        numpy.testing.assert_allclose(
+            computedCoefficients,
+            expectedCoefficients,
+            rtol=0.1
             )
 
     def test_binary_logistic_regression_probabilities(self):
+        for method in LogisticRegressionTests.methods:
+            self.binary_logistic_regression_probabilities(method)
+
+    def binary_logistic_regression_probabilities(self, method):
         X, y = self.exampleData()
 
         def f():
-            fit = BinaryLogisticRegressionFitter(1).fit(X, y)
+            fit = BinaryLogisticRegressionFitter(1, True, method).fit(X, y)
             return fit.predict_probability(X)
 
-        expectedPredictedProbabilities = [0.541898928, 0.4122333, 0.34892898]
+        expectedPredictedProbabilities = [0.45810128, 0.58776695, 0.6510714]
         computedProbabilities = self.evaluateWithExecutor(f)
 
-        self.assertTrue(
-            numpy.allclose(
-                computedProbabilities,
-                expectedPredictedProbabilities,
-                rtol=0.1
-                )
+        numpy.testing.assert_allclose(
+            computedProbabilities,
+            expectedPredictedProbabilities,
+            rtol=0.1
             )
 
     def test_binary_logistic_regression_predict(self):
+        for method in LogisticRegressionTests.methods:
+            self.binary_logistic_regression_probabilities(method)
+
+    def binary_logistic_regression_predict(self, method):
         X, y = self.exampleData()
 
         def f():
-            fit = BinaryLogisticRegressionFitter(1).fit(X, y)
+            fit = BinaryLogisticRegressionFitter(1, True, method).fit(X, y)
             return fit.predict(X)
 
-        self.assertTrue(
-            numpy.array_equal(
-                self.evaluateWithExecutor(f),
-                numpy.array([0, 1, 1])
-                )
+        numpy.testing.assert_array_equal(
+            self.evaluateWithExecutor(f),
+            numpy.array([0, 1, 1])
             )
 
     def test_binary_logistic_regression_score(self):
+        for method in LogisticRegressionTests.methods:
+            self.binary_logistic_regression_score(method)
+
+    def binary_logistic_regression_score(self, method):
         X, y = self.exampleData()
 
         def f():
-            fit = BinaryLogisticRegressionFitter(1).fit(X, y)
+            fit = BinaryLogisticRegressionFitter(1, True, method).fit(X, y)
             return fit.score(X, y)
 
         self.assertEqual(self.evaluateWithExecutor(f), 1.0)

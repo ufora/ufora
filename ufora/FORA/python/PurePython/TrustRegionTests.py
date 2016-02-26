@@ -17,7 +17,7 @@ import numpy.testing
 
 
 from pyfora.algorithms.logistic.TrustRegionConjugateGradientSolver \
-    import TrustRegionCongugateGradientSolver
+    import TrustRegionConjugateGradientSolver
 
 
 class TrustRegionTests(object):
@@ -28,7 +28,7 @@ class TrustRegionTests(object):
 
     def solve(self, X, y, classZeroLabel, C=1):
         def f(X, y, C):
-            return TrustRegionCongugateGradientSolver(
+            return TrustRegionConjugateGradientSolver(
                 X, y, classZeroLabel, C).solve()
 
         return self.evaluateWithExecutor(f, X, y, C)

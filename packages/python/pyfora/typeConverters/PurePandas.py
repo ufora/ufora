@@ -307,6 +307,18 @@ class PurePythonSeries(object):
     def iloc(self):
         return _PurePythonSeriesIlocIndexer(self)
 
+    def __add__(self, other):
+        if isinstance(other, PurePythonSeries):
+            assert len(self) == len(other)
+
+            return PurePythonSeries(
+                [ self[ix] + other[ix] for ix in xrange(len(self))]
+                )
+
+        return PurePythonSeries(
+            [elt + other for elt in self]
+            )
+        
     def __iter__(self):
         for ix in xrange(len(self)):
             yield self[ix]
