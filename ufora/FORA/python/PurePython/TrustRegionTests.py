@@ -26,16 +26,17 @@ class TrustRegionTests(object):
         y = pandas.Series([1,-1,-1])
         return X, y
 
-    def solve(self, X, y, C=1):
+    def solve(self, X, y, classZeroLabel, C=1):
         def f(X, y, C):
-            return TrustRegionCongugateGradientSolver(X, y, C).solve()
+            return TrustRegionCongugateGradientSolver(
+                X, y, classZeroLabel, C).solve()
 
         return self.evaluateWithExecutor(f, X, y, C)
 
     def test_trust_region_1(self):
         X, y = self.trustRegionData()
 
-        res = self.solve(X, y)
+        res = self.solve(X, y, 1)
 
         # results checked against liblinear, scikit themselves.
         scikit_weights = [-0.59106183, -0.59106183]
@@ -49,7 +50,7 @@ class TrustRegionTests(object):
         C = 1.0 / len(y)
 
         # results close, but not exact with scikit
-        res = self.solve(X, y, C)
+        res = self.solve(X, y, 1, C)
         numpy.testing.assert_allclose(
             res.weights,
             [-0.26756433, -0.26756433]
@@ -70,7 +71,7 @@ class TrustRegionTests(object):
 
         C = 1.0 / len(X) / 0.01
 
-        res = self.solve(X, y, C)
+        res = self.solve(X, y, 1, C)
 
         numpy.testing.assert_allclose(
             res.weights, [1.5530473, 1.28470756]
@@ -87,7 +88,7 @@ class TrustRegionTests(object):
 
         C = 1.0 / len(X) / 0.01
 
-        res = self.solve(X, y, C)
+        res = self.solve(X, y, 1, C)
 
         numpy.testing.assert_allclose(
             res.weights,
@@ -113,7 +114,7 @@ class TrustRegionTests(object):
 
         C = 1.0 / len(X) / 0.01
 
-        res = self.solve(X, y, C)
+        res = self.solve(X, y, 1, C)
 
         numpy.testing.assert_allclose(
             res.weights,

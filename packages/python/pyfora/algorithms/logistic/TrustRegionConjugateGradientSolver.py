@@ -22,6 +22,7 @@ class TrustRegionCongugateGradientSolver(object):
     # assumes classes is [-1, 1]. should be handled at some point
     def __init__(
             self, X, y,
+            classZeroLabel,
             C=1.0, eps=0.001, maxIters=1000,
             splitLimit=1000000, hasIntercept=False):
         if hasIntercept:
@@ -29,6 +30,7 @@ class TrustRegionCongugateGradientSolver(object):
 
         self.X = X
         self.y = y
+        self.classZeroLabel = classZeroLabel
         self.C = float(C)
         self.eps = TrustRegionCongugateGradientSolver.computeEps(eps, y)
         self.maxIters = maxIters
@@ -56,6 +58,11 @@ class TrustRegionCongugateGradientSolver(object):
         numNegativeY = len(y) - numPositiveY
         return eps * max(min(numPositiveY, numNegativeY), 1) / float(len(y))
 
+    def normalized_y_value(self, ix):
+        if self.y[ix] == self.classZeroLabel:
+            return 1.0
+        return -1.0
+
     def solve(self, weights=None):
         if weights is None:
             weights = numpy.zeros(self.X.shape[1])
@@ -64,7 +71,7 @@ class TrustRegionCongugateGradientSolver(object):
 
         objectiveFun = ObjectiveFunctionAtWeights(
             self.X,
-            self.y,
+            self.normalized_y_value,
             self.C,
             weights)
 
@@ -133,7 +140,7 @@ class TrustRegionCongugateGradientSolver(object):
         return math.sqrt(
             sum(
                 (-0.5 * self.C * \
-                 sum(self.y[ix] * column[ix] for \
+                 sum(self.normalized_y_value(ix) * column[ix] for \
                      ix in xrange(nSamples))) ** 2.0 \
                 for column in self.X.columns()
                 )
@@ -252,9 +259,9 @@ class SolverState(object):
 
 
 class ObjectiveFunctionAtWeights(object):
-    def __init__(self, X, y, regularlizer, weights):
+    def __init__(self, X, normalized_y_value, regularlizer, weights):
         self.X = X
-        self.y = y
+        self.normalized_y_value = normalized_y_value
         self.C = regularlizer
         self.w = numpy.array(weights)
         self.Xw = X.dot(weights)
@@ -262,14 +269,14 @@ class ObjectiveFunctionAtWeights(object):
     def withWeights(self, newWeights):
         return ObjectiveFunctionAtWeights(
             self.X,
-            self.y,
+            self.normalized_y_value,
             self.C,
             newWeights
             )
 
     def value(self):
         return 0.5 * self.w.dot(self.w) + self.C * sum(
-            math.log(1.0 + math.exp(-self.y[ix] * self.Xw[ix])) \
+            math.log(1.0 + math.exp(-self.normalized_y_value(ix) * self.Xw[ix])) \
             for ix in xrange(len(self.Xw))
             )
 
@@ -278,7 +285,7 @@ class ObjectiveFunctionAtWeights(object):
 
     def gradient(self):
         def rowMultiplier(rowIx):
-            y_rowIx = self.y[rowIx]
+            y_rowIx = self.normalized_y_value(rowIx)
             return (self.sigma(y_rowIx * self.Xw[rowIx]) - 1) * y_rowIx
 
         rowMultipliers = [rowMultiplier(ix) for ix in xrange(len(self.X))]
@@ -296,7 +303,7 @@ class ObjectiveFunctionAtWeights(object):
         Xv = self.X.dot(v)
 
         def D_fun(ix):
-            sigma = self.sigma(self.y[ix] * self.Xw[ix])
+            sigma = self.sigma(self.normalized_y_value(ix) * self.Xw[ix])
             return sigma * (1 - sigma)
 
         DXv = [Xv[ix] * D_fun(ix) for ix in xrange(len(Xv))]
