@@ -24,14 +24,9 @@ def _addScaleColumn(df, scale):
 class TwoClassRidgeRegressionSolver(object):
     def __init__(
             self, X, y,
-            regularizer, tol, maxIters, classes,
-            classZeroLabel=None, splitLimit=1000000,
+            regularizer, tol, maxIters,
+            classZeroLabel, splitLimit=1000000,
             hasIntercept=True, interceptScale=1.0):
-        if classZeroLabel is None:
-            classZeroLabel = classes[0]
-        else:
-            assert classZeroLabel in classes
-
         # TODO: we don't need to hold onto an entire column of ones,
         # but it simplifies the code for now.
         # it's a simple exercise to not hold this explicitly.

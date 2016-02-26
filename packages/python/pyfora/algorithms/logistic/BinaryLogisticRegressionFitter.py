@@ -108,7 +108,6 @@ class BinaryLogisticRegressionFitter(object):
             self.regularizer,
             self.tol,
             self.maxIter,
-            classes,
             classZeroLabel,
             self.splitLimit,
             self.hasIntercept,
