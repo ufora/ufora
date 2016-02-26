@@ -78,6 +78,27 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
         self.assertTrue(shouldBeTrue4)
         self.assertTrue(shouldBeTrue5)
 
+    def test_classInstIsInstance(self):
+        class X:
+            def dot(self, other):
+                return dot_(self, other)
+
+        def dot_(self, other):
+            return X
+
+        with self.create_executor() as ufora:
+            with ufora.remotely:
+                a = X()
+
+            b = X()
+
+            with ufora.remotely.downloadAll():
+                c = X()
+
+                res = (isinstance(a, X), isinstance(b, X), isinstance(c, X))
+
+            self.assertEqual(res, (True,True,True))
+
     def test_with_blocks_inside_converted_code(self):
         with self.assertRaises(pyfora.InvalidPyforaOperation):
             with self.create_executor() as executor:

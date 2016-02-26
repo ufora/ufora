@@ -425,7 +425,7 @@ class Converter(object):
 
         createObjectExpression = empytObjectExpression
 
-        for objectId, functionExpression in convertedFunctions.iteritems():
+        for objectId, functionExpression in sorted(list(convertedFunctions.iteritems())):
             createObjectExpression = ForaNative.prependMemberToCreateObjectExpression(
                 createObjectExpression,
                 renamedObjectMapping[objectId],
@@ -493,10 +493,11 @@ class Converter(object):
         renamedObjectMapping = dict()
 
         mentionedVariables = set()
+
         for objectId, foraFunctionExpression in objectIdToForaFunctionExpression.iteritems():
             mentionedVariables.update(foraFunctionExpression.mentionedVariables)
             renamedObjectMapping[objectId] = Expression.freshVarname(
-                "_%s_" % objectId,
+                "_%s_" % foraFunctionExpression.hash(),
                 mentionedVariables
                 )
 
