@@ -17,7 +17,7 @@ import numpy
 import math
 
 
-class Solver(object):
+class TrustRegionCongugateGradientSolver(object):
     # Implementing http://www.machinelearning.org/proceedings/icml2007/papers/114.pdf
     # assumes classes is [-1, 1]. should be handled at some point
     def __init__(
@@ -30,7 +30,7 @@ class Solver(object):
         self.X = X
         self.y = y
         self.C = float(C)
-        self.eps = Solver.computeEps(eps, y)
+        self.eps = TrustRegionCongugateGradientSolver.computeEps(eps, y)
         self.maxIters = maxIters
         self.nFeatures = X.shape[1]
         self.nSamples = X.shape[0]

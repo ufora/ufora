@@ -12,9 +12,9 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-from pyfora.algorithms.TwoClassRidgeRegressionSolver import \
+from pyfora.algorithms.logistic.TwoClassRidgeRegressionSolver import \
     TwoClassRidgeRegressionSolver
-from pyfora.algorithms.BinaryLogisticRegressionModel import \
+from pyfora.algorithms.logistic.BinaryLogisticRegressionModel import \
     BinaryLogisticRegressionModel
 
 
