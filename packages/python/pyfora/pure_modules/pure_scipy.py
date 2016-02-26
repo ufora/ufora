@@ -14,9 +14,9 @@
 
 
 import pyfora.PureImplementationMapping as PureImplementationMapping
-import pyfora.typeConverters.PureMath as PureMath
-import pyfora.typeConverters.PureNumpy as PureNumpy
-import pyfora.BuiltinPureImplementationMappings as BuiltinPureImplementationMappings
+import pyfora.pure_modules.pure_math as PureMath
+import pyfora.pure_modules.pure_numpy as PureNumpy
+from pyfora.pure_modules.pure___builtin__ import Round
 
 
 import math
@@ -31,9 +31,9 @@ class BetaFunction(object):
             a = float(a)
         if not isinstance(b, float):
             b = float(b)
-        
+
         return __inline_fora(
-            """fun(PyFloat(...) a, PyFloat(...) b) { 
+            """fun(PyFloat(...) a, PyFloat(...) b) {
                    return PyFloat(`cephes_beta(a.@m, b.@m))
                    }"""
             )(a, b)
@@ -61,7 +61,7 @@ class Hyp2f1(object):
             c = float(c)
         if not isinstance(z, float):
             z = float(z)
-        
+
         return __inline_fora(
             """fun(a, b, c, z) {
                    return PyFloat(`hyp2f1(a.@m, b.@m, c.@m, z.@m))
@@ -119,7 +119,7 @@ class Betainc(object):
                    return PyFloat(`ibeta(a.@m, b.@m, x.@m))
                    }"""
             )(a, b, x)
-            
+
 
 class Betaincinv(object):
     def __call__(self, a, b, y):
@@ -158,9 +158,9 @@ class BetaLn(object):
             a = float(a)
         if not isinstance(b, float):
             b = float(b)
-        
+
         return __inline_fora(
-            """fun(PyFloat(...) a, PyFloat(...) b) { 
+            """fun(PyFloat(...) a, PyFloat(...) b) {
                    return PyFloat(`cephes_lbeta(a.@m, b.@m))
                    }"""
             )(a, b)
@@ -168,7 +168,7 @@ class BetaLn(object):
 
 class Kn(object):
     """Modified Bessel function of the second kind of integer order n
-       Returns the modified Bessel function of the second kind for 
+       Returns the modified Bessel function of the second kind for
        integer order n at real x."""
     def __call__(self, n, x):
         if not isinstance(n, int):
@@ -225,7 +225,7 @@ class Logit(object):
     def __call__(self, p):
         if not isinstance(p, float):
             p = float(p)
-        
+
         if p < 0 or p > 1:
             return scipy.nan
 
@@ -249,7 +249,7 @@ class Expit(object):
 def generateMappings():
     tr = []
 
-    # some of these creatures need "vectorized" forms, as in scipy they're 
+    # some of these creatures need "vectorized" forms, as in scipy they're
     # really "ufunc"s
     mappings_ = [
         (scipy.special.beta, BetaFunction), (scipy.special.gamma, GammaFunction),
@@ -265,7 +265,7 @@ def generateMappings():
         (scipy.special.kn, Kn), (scipy.special.iv, Iv),
         (scipy.special.comb, Comb), (scipy.special.factorial, PureMath.Factorial),
         (scipy.special.logit, Logit), (scipy.special.expit, Expit),
-        (scipy.special.round, BuiltinPureImplementationMappings.Round),
+        (scipy.special.round, Round),
         (scipy.floor, PureMath.Floor),
         (scipy.log, PureNumpy.Log),
         (scipy.log1p, PureNumpy.Log1p),
@@ -280,5 +280,5 @@ def generateMappings():
           (instance, pureType) in mappings_]
 
     return tr
-    
-    
+
+

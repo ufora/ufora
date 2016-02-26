@@ -12,15 +12,21 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+import importlib
+import sys
+
+
 def typeOfInstance(i):
     try:
         return i.__class__
-    except:
+    except AttributeError:
         return type(i)
 
-class PureImplementationMappings:
+class PureImplementationMappings(object):
     """Collection of PureImplementationMapping objects"""
     def __init__(self):
+        self.last_seen_sys_modules_len = 0
+        self.already_loaded = set()
         self.mappings = []
         self.pythonTypeToMapping = {}
         self.pyforaTypeToMapping = {}
@@ -36,6 +42,7 @@ class PureImplementationMappings:
             self.pythonInstanceIdsToMappingAndId[id(instance)] = (mapping, instance)
 
     def canMap(self, instance):
+        self.load_pure_modules()
         return (
             typeOfInstance(instance) in self.pythonTypeToMapping or
             id(instance) in self.pythonInstanceIdsToMappingAndId
@@ -56,3 +63,24 @@ class PureImplementationMappings:
         return mapper.mapPyforaInstanceToPythonInstance(instance)
 
 
+    def load_pure_modules(self):
+        if len(sys.modules) <= self.last_seen_sys_modules_len:
+            return
+
+        loaded_modules = sys.modules.keys()
+        loaded_root_modules = set(m.split('.')[0] for m in loaded_modules)
+        for root in loaded_root_modules:
+            if root in self.already_loaded or root == 'pyfora':
+                continue
+
+            try:
+                pure_module = importlib.import_module("pyfora.pure_modules.pure_%s" % root)
+                self.load_pure_module(pure_module)
+                self.already_loaded.add(root)
+            except ImportError:
+                pass
+        self.last_seen_sys_modules_len = len(sys.modules)
+
+    def load_pure_module(self, module):
+        for mapping in module.generateMappings():
+            self.addMapping(mapping)

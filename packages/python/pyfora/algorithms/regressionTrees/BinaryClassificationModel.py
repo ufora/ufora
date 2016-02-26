@@ -15,7 +15,7 @@
 
 import losses
 import RegressionTree
-import pyfora.typeConverters.PurePandas as PurePandas
+import pyfora.pure_modules.pure_pandas as PurePandas
 
 
 import math
@@ -23,7 +23,7 @@ import math
 
 class BinaryClassificationModel:
     """
-    A class representing a gradient-boosted binary classification tree 
+    A class representing a gradient-boosted binary classification tree
     model fit to data.
 
     Note:
@@ -65,7 +65,7 @@ class BinaryClassificationModel:
         additiveRegressionTree = loss.initialModel(classes, yAsSeries)
 
         XDimensions = range(X.shape[1])
-        
+
         baseModelBuilder = RegressionTree.RegressionTreeBuilder(
             treeBuilderArgs.maxDepth,
             treeBuilderArgs.minSamplesSplit,
@@ -82,7 +82,7 @@ class BinaryClassificationModel:
             baseModelBuilder,
             learningRate
             )
-            
+
     def predictionFunction_(self, row):
         if self.predictProbaFun_(row) >= 0.5:
             return self.classes[0]
@@ -94,7 +94,7 @@ class BinaryClassificationModel:
 
     def predictProbability(self, df):
         """
-        Return class-zero probability estimates of the rows of a dataframe `df`. 
+        Return class-zero probability estimates of the rows of a dataframe `df`.
 
         Args:
             A `pandas.DataFrame` `df.
@@ -109,10 +109,10 @@ class BinaryClassificationModel:
             y = pandas.DataFrame({'y': [0,1,1]})
 
             model = builder.fit(x, y)
-            
+
             # use the fit model to predict `x` itself:
             model.predictProbability(x)
-     
+
         """
         return df.apply(self.predictProbaFun_, 1)
 
@@ -144,7 +144,7 @@ class BinaryClassificationModel:
             self.loss.leafValueFun(self.learningRate),
             None
             )
-        
+
         return BinaryClassificationModel(
             self.additiveRegressionTree + nextRegressionTree,
             self.X,
@@ -158,7 +158,7 @@ class BinaryClassificationModel:
 
     def predict(self, df):
         """
-        Use the classifier `self` to predict the class labels of the rows 
+        Use the classifier `self` to predict the class labels of the rows
         of `df`.
 
         Args:
@@ -174,16 +174,16 @@ class BinaryClassificationModel:
             y = pandas.DataFrame({'y': [0,1,1]})
 
             model = builder.fit(x, y)
-            
+
             # use the fit model to predict `x` itself:
             model.predict(x)
-     
+
         """
         return df.apply(self.predictionFunction_, 1)
 
     def score(self, x, yTrue):
         """
-        Compute the mean accuracy of the classifier `self` in predicting `x` 
+        Compute the mean accuracy of the classifier `self` in predicting `x`
         with respect to `yTrue`.
 
         Args:
@@ -197,7 +197,7 @@ class BinaryClassificationModel:
             y = pandas.DataFrame({'y': [0,1,1]})
 
             model = builder.fit(x, y)
-            
+
             # use the fit model to predict `x` itself:
             model.score(x, y)
 
@@ -217,7 +217,7 @@ class BinaryClassificationModel:
 
     def deviance(self, x, yTrue):
         """
-        Compute the binomial deviance (average negative log-likihood) of the 
+        Compute the binomial deviance (average negative log-likihood) of the
         instances in predictors `X` with responses `y`.
 
         Args:
@@ -234,7 +234,7 @@ class BinaryClassificationModel:
 
             # compute the deviance:
             model.deviance(x, y)
-            
+
         """
         assert len(x) == len(yTrue)
 
@@ -243,7 +243,7 @@ class BinaryClassificationModel:
 
         probabilities = self.predictProbability(x)
         classZero = self.classes[0]
-        
+
         def eltAt(ix):
             p = probabilities[ix]
             if yTrue[ix] == classZero:
@@ -256,4 +256,4 @@ class BinaryClassificationModel:
     def featureImportances(self):
         raise NotImplementedError()
 
-    
+

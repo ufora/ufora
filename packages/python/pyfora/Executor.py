@@ -26,7 +26,7 @@ import pyfora.PythonObjectRehydrator as PythonObjectRehydrator
 import pyfora.ObjectRegistry as ObjectRegistry
 import pyfora.PyObjectWalker as PyObjectWalker
 import pyfora.WithBlockExecutor as WithBlockExecutor
-import pyfora.DefaultPureImplementationMappings as DefaultPureImplementationMappings
+import pyfora.PureImplementationMappings as PureImplementationMappings
 import traceback
 import logging
 import threading
@@ -71,7 +71,7 @@ class Executor(object):
         self.connection = connection
         self.stayOpenOnExit = False
         self.pureImplementationMappings = \
-            pureImplementationMappings or DefaultPureImplementationMappings.getMappings()
+            pureImplementationMappings or PureImplementationMappings.PureImplementationMappings()
         self.objectRegistry = ObjectRegistry.ObjectRegistry()
         self.objectRehydrator = PythonObjectRehydrator.PythonObjectRehydrator(
             self.pureImplementationMappings

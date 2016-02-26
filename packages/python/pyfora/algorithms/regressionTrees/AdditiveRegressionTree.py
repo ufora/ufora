@@ -13,7 +13,7 @@
 #   limitations under the License.
 
 
-import pyfora.typeConverters.PurePandas as PurePandas
+import pyfora.pure_modules.pure_pandas as PurePandas
 
 
 class AdditiveRegressionTree:
@@ -22,7 +22,7 @@ class AdditiveRegressionTree:
             trees = []
 
         self.trees = trees
-    
+
     def numTrees(self):
         return len(self.trees)
 

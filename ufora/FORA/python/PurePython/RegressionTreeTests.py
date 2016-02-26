@@ -14,7 +14,7 @@
 
 import pyfora.algorithms.regressionTrees.Base as regressionTreeBase
 import pyfora.algorithms.regressionTrees.RegressionTree as RegressionTree
-import pyfora.typeConverters.PurePandas as PurePandas
+import pyfora.pure_modules.pure_pandas as PurePandas
 
 
 import numpy
@@ -23,7 +23,7 @@ import numpy
 def generateData(mbOfData, nColumns):
     nRows = mbOfData * 1024 * 1024 / 8 / (nColumns + 1)
     nRows = int(nRows)
-    
+
     dataVectors = [
         [float(rowIx % (colIx + 2)) for rowIx in xrange(nRows)] \
         for colIx in xrange(nColumns)]
@@ -53,7 +53,7 @@ class RegressionTreeTests(object):
             return regressionTreeBase.SampleSummary.impurityImprovement(s, s)
 
         self.equivalentEvaluationTest(f)
-    
+
     def test_MutableVector_1(self):
         sz = 5
         def f():
@@ -110,7 +110,7 @@ class RegressionTreeTests(object):
             return regressionTree
 
         res = self.evaluateWithExecutor(f)
-        
+
         self.assertEqual(len(res.rules), 3)
 
         self.assertTrue(
@@ -129,7 +129,7 @@ class RegressionTreeTests(object):
             return regressionTree
 
         res = self.evaluateWithExecutor(f)
-        
+
         self.assertEqual(len(res.rules), 31)
 
         rule_0 = res.rules[0]
@@ -143,4 +143,4 @@ class RegressionTreeTests(object):
         self.assertEqual(rule_0.jumpIfLess, 1)
         self.assertEqual(rule_0.jumpIfHigher, 16)
         self.assertTrue(numpy.isclose(rule_0.leafValue, 4.9992446496))
-            
+

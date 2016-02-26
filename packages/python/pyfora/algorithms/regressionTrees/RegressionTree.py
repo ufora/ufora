@@ -13,7 +13,7 @@
 #   limitations under the License.
 
 
-import pyfora.typeConverters.PurePandas as PurePandas
+import pyfora.pure_modules.pure_pandas as PurePandas
 import Base
 
 
@@ -49,7 +49,7 @@ class RegressionTree:
         Returns: a `pandas.Series` giving the predictions of the rows of `x`.
 
         Examples::
-        
+
             from pyfora.algorithms import RegressionTreeBuilder
 
             builder = RegressionTreeBuilder(2)
@@ -59,7 +59,7 @@ class RegressionTree:
 
             # predict `regressionTree` on `x` itself
             regressionTree.predict(x)
-        
+
         """
         if isinstance(x, PurePandas.PurePythonDataFrame):
             return x.apply(
@@ -80,7 +80,7 @@ class RegressionTree:
             if isinstance(rule, Base.SplitRule):
                 if currentDepth == depth:
                     return rule.leafValue
-                
+
                 if rule.rule.isLess(row):
                     ix = ix + rule.jumpIfLess
                 else:
@@ -97,7 +97,7 @@ class RegressionTree:
         ((yTrue - yTrue.mean()) ** 2).sum(). Best possible score is 1.0, lower
         values are worse.
 
-        Returns: 
+        Returns:
             (float) the R^2 value
 
         Examples::
@@ -111,7 +111,7 @@ class RegressionTree:
 
             # predict `regressionTree` on `x` itself
             regressionTree.score(x, y)
-        
+
         """
         sz = len(x)
         assert sz == len(yTrue)
@@ -146,7 +146,7 @@ class RegressionLeafRule:
 
 class RegressionTreeBuilder:
     """Fits regression trees to data using specified tree parameters.
-    
+
     Args:
         maxDepth (int): The maximum depth of a fit tree
         minSamplesSplit (int): The minimum number of samples required to split  a node
@@ -160,14 +160,14 @@ class RegressionTreeBuilder:
         instance.
 
     Examples::
-        
+
         from pyfora.algorithms import RegressionTreeBuilder
 
         builder = RegressionTreeBuilder(2)
         x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
         y = pandas.DataFrame({'y': [0,1,1]})
         regressionTree = builder.fit(x, y)
-    
+
     """
     def __init__(
             self,
@@ -260,17 +260,17 @@ class RegressionTreeBuilder:
             x (:class:`pandas.DataFrame`): of the predictors.
             y (:class:`pandas.DataFrame`): giving the responses.
 
-        Returns: 
+        Returns:
             a :class:`~pyfora.algorithms.regressionTrees.RegressionTree.RegressionTree`
             instance.
-      
+
         Examples::
-        
+
             builder = pyfora.algorithms.regressionTrees.RegressionTree.RegressionTreeBuilder(2)
             x = pandas.DataFrame({'x0': [-1,0,1], 'x1': [0,1,1]})
             y = pandas.DataFrame({'y': [0,1,1]})
             regressionTree = builder.fit(x, y)
-        
+
         """
         if isinstance(y, PurePandas.PurePythonDataFrame):
             assert y.shape[1] == 1
@@ -352,13 +352,13 @@ class RegressionTreeBuilder:
                 leafValue
                 )] + treeLeft + treeRight,
             len(xDimensions)
-            )            
-    
+            )
+
     @staticmethod
     def defaultLeafValueFun(yDim):
         def tr(values, activeIndices):
             selectedValues = OnDemandSelectedVector(values.iloc[:, yDim], activeIndices)
-            
+
             sz = len(selectedValues)
 
             if sz == 0:
@@ -383,7 +383,7 @@ class RegressionTreeBuilder:
             maxDepth,
             Base.SampleSummary,
             minSamplesSplit,
-            ).fit(x, y)            
+            ).fit(x, y)
 
 
 class OnDemandSelectedVector:

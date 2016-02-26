@@ -15,7 +15,7 @@
 
 from pyfora.algorithms import GradientBoostedRegressorBuilder
 from pyfora.algorithms import GradientBoostedClassifierBuilder
-import pyfora.typeConverters.PurePandas as PurePandas
+import pyfora.pure_modules.pure_pandas as PurePandas
 import pyfora.algorithms.regressionTrees.RegressionTree as RegressionTree
 
 
@@ -26,7 +26,7 @@ import pandas
 def generateRegressionData(mbOfData, nColumns):
     nRows = mbOfData * 1024 * 1024 / 8 / (nColumns + 1)
     nRows = int(nRows)
-    
+
     dataVectors = [
         [float(rowIx % (colIx + 2)) for rowIx in xrange(nRows)] \
         for colIx in xrange(nColumns)]
@@ -40,7 +40,7 @@ def generateRegressionData(mbOfData, nColumns):
 def generateClassificationData(mbOfData, nColumns):
     nRows = mbOfData * 1024 * 1024 / 8 / (nColumns + 1)
     nRows = int(nRows)
-    
+
     dataVectors = [
         [float(rowIx % (colIx + 2)) for rowIx in xrange(nRows)] \
         for colIx in xrange(nColumns)]
@@ -59,11 +59,11 @@ class GradientBoostingTests(object):
 
         def f():
             x, y = generateClassificationData(0.1, 10)
-            
+
             builder = GradientBoostedClassifierBuilder(1, 1, 1.0)
             fit = builder.fit(x, y)
             return fit.additiveRegressionTree.trees
-            
+
 
         trees = self.evaluateWithExecutor(f)
 
@@ -73,7 +73,7 @@ class GradientBoostingTests(object):
         node_0_0 = trees[0].rules[0]
         self.assertIsInstance(node_0_0, RegressionTree.RegressionLeafRule)
         self.assertTrue(numpy.isclose(node_0_0.leafValue, 0.0))
-        
+
         self.assertEqual(len(trees[1].rules), 3)
         node_1_0 = trees[1].rules[0]
         self.assertEqual(node_1_0.jumpIfLess, 1)
@@ -81,7 +81,7 @@ class GradientBoostingTests(object):
         self.assertTrue(
             numpy.isclose(node_1_0.leafValue, -0.09151973131822)
             )
-        self.assertEqual(node_1_0.rule.dimension, 8)        
+        self.assertEqual(node_1_0.rule.dimension, 8)
         self.assertTrue(
             numpy.isclose(node_1_0.rule.splitPoint, 8.00024176403741),
             (node_1_0.rule.splitPoint, 3.00115009354123)
@@ -101,7 +101,7 @@ class GradientBoostingTests(object):
         self.assertTrue(
             numpy.isclose(node_1_1.leafValue, -0.0932835820895522)
             )
-         
+
         node_1_2 = trees[1].rules[2]
         self.assertIsInstance(
             node_1_2,
@@ -148,17 +148,17 @@ class GradientBoostingTests(object):
         self.assertTrue(
             numpy.isclose(self.evaluateWithExecutor(f), 0.126928011043)
             )
- 
+
     def test_gradient_boosting_regression_1(self):
         # verified against old fora implementation
 
         def f():
             x, y = generateRegressionData(0.1, 10)
-            
+
             builder = GradientBoostedRegressorBuilder(1, 1, 1.0)
             fit = builder.fit(x, y)
             return fit.additiveRegressionTree.trees
-            
+
 
         trees = self.evaluateWithExecutor(f)
 
@@ -168,7 +168,7 @@ class GradientBoostingTests(object):
         node_0_0 = trees[0].rules[0]
         self.assertIsInstance(node_0_0, RegressionTree.RegressionLeafRule)
         self.assertTrue(numpy.isclose(node_0_0.leafValue, 4.98992443325))
-        
+
         self.assertEqual(len(trees[1].rules), 3)
         node_1_0 = trees[1].rules[0]
         self.assertEqual(node_1_0.jumpIfLess, 1)
@@ -198,7 +198,7 @@ class GradientBoostingTests(object):
         self.assertTrue(
             numpy.isclose(node_1_1.leafValue, 0.0373292355137323)
             )
-         
+
         node_1_2 = trees[1].rules[2]
         self.assertIsInstance(
             node_1_2,

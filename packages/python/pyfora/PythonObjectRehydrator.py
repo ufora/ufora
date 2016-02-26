@@ -26,8 +26,6 @@ import base64
 import numpy
 import cPickle
 
-moduleType = type(os)
-builtins = sys.modules['__builtin__']
 
 def sanitizeModulePath(pathToModule):
     res = os.path.abspath(pathToModule)
@@ -42,7 +40,9 @@ class PythonObjectRehydrator(object):
         self.moduleClassesAndFunctionsByPath = {}
         self.pathsToModules = {}
         self.purePythonClassMapping = purePythonClassMapping
+        self.loadPathsToModules()
 
+    def loadPathsToModules(self):
         for module in list(sys.modules.itervalues()):
             if module is not None:
                 if hasattr(module, '__file__'):
@@ -76,8 +76,10 @@ class PythonObjectRehydrator(object):
 
     def moduleForFile(self, path):
         path = sanitizeModulePath(path)
-        if path in self.pathsToModules:
-            return self.pathsToModules[path]
+        if path not in self.pathsToModules:
+            self.loadPathsToModules()
+
+        return self.pathsToModules.get(path)
 
     def importModuleMagicVariables(self, targetDict, path):
         """Find the module at 'path' and set 'targetDict' to have the same magic

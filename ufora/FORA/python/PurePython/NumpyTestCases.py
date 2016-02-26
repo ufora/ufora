@@ -125,7 +125,7 @@ class NumpyTestCases(object):
 
         self.equivalentEvaluationTest(
             f, comparisonFunction=NumpyTestCases.compareButDontCheckTypes
-            )        
+            )
 
     def test_numpy_indexing_2(self):
         def f():
@@ -356,7 +356,7 @@ class NumpyTestCases(object):
     def test_numpy_dot_product_5a(self):
         x = numpy.array([[1,2],[3,4]])
         y = numpy.array([1,2,3])
-        
+
         with self.assertRaises(ValueError):
             with self.create_executor() as fora:
                 with fora.remotely:
@@ -365,7 +365,7 @@ class NumpyTestCases(object):
     def test_numpy_dot_product_5a(self):
         x = numpy.array([[1,2],[3,4]])
         y = numpy.array([1,2,3])
-        
+
         with self.assertRaises(ValueError):
             with self.create_executor() as fora:
                 with fora.remotely:
@@ -374,7 +374,7 @@ class NumpyTestCases(object):
     def test_numpy_dot_product_5b(self):
         x = numpy.array([[1,2],[3,4]])
         y = numpy.array([1,2,3])
-        
+
         with self.assertRaises(ValueError):
             with self.create_executor() as fora:
                 with fora.remotely:
@@ -430,7 +430,7 @@ class NumpyTestCases(object):
 
     def test_numpy_reshape(self):
         def f(newShape):
-            m1 = numpy.array([ 
+            m1 = numpy.array([
                 [67.0, 63, 87],
                 [77, 69, 59],
                 [85, 87, 99],
@@ -539,7 +539,7 @@ class NumpyTestCases(object):
             return numpy.linalg.solve(a, b)
 
         self.equivalentEvaluationTest(f)
-        
+
     def test_numpy_linsolve_2(self):
         a = numpy.array([[-2.0, 3.0], [-2.0, 3.0]])
         b = numpy.array([[1.0], [2.0]])
@@ -554,7 +554,7 @@ class NumpyTestCases(object):
             # just see that we get an exception here without dying.
             # we're not wrapping the numpy linalg errors yet
             pass
-        
+
     def test_numpy_linsolve_3(self):
         a = numpy.array([[-2.0, 3.0], [4.0, 7.0]])
         b = numpy.array([1.0, 2.0])
@@ -563,7 +563,7 @@ class NumpyTestCases(object):
             return numpy.linalg.solve(a, b)
 
         self.equivalentEvaluationTest(f)
-        
+
     def test_numpy_slicing_1(self):
         size = 3
         def f(lowIx, highIx):
@@ -591,7 +591,7 @@ class NumpyTestCases(object):
             f(vals),
             self.evaluateWithExecutor(f, vals)
             )
-            
+
     def test_numpy_isinf(self):
         def f(x):
             return [numpy.isnan(elt) for elt in x]
@@ -601,7 +601,7 @@ class NumpyTestCases(object):
             f(vals),
             self.evaluateWithExecutor(f, vals)
             )
-            
+
     def check_svd(self, x):
         def svd(a):
             return numpy.linalg.svd(a)
@@ -616,12 +616,12 @@ class NumpyTestCases(object):
                 pyforaRes[ix],
                 numpyRes[ix]
                 )
-        
+
     def test_svd_1(self):
         self.check_svd(numpy.array([[1,3],[2,4]]))
 
     def test_isinstance_on_remote(self):
-        from pyfora.typeConverters.PureNumpy import PurePythonNumpyArray
+        from pyfora.pure_modules.pure_numpy import PurePythonNumpyArray
 
         with self.create_executor() as ufora:
             with ufora.remotely:
@@ -631,4 +631,4 @@ class NumpyTestCases(object):
                 res = isinstance(a, PurePythonNumpyArray)
 
             self.assertTrue(res)
-            
+

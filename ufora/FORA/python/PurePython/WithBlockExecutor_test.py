@@ -12,10 +12,11 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import ufora.FORA.python.PurePython.InMemorySimulationExecutorFactory as InMemorySimulationExecutorFactory
+import ufora.FORA.python.PurePython.InMemorySimulationExecutorFactory as \
+    InMemorySimulationExecutorFactory
 import pyfora.RemotePythonObject as RemotePythonObject
 import pyfora.Exceptions as Exceptions
-import pyfora.typeConverters.PurePandas as PurePandas
+import pyfora.pure_modules.pure_pandas as PurePandas
 
 
 import unittest
@@ -332,7 +333,7 @@ class WithBlockExecutors_test(unittest.TestCase):
                     y = y + z
 
             self.assertEqual(x, 110)
-            
+
             with self.assertRaises(UnboundLocalError):
                 y
 
@@ -361,7 +362,7 @@ class WithBlockExecutors_test(unittest.TestCase):
                 y = "this is still ok"
                 print "this shouldn't work"
 
-        
+
     def test_with_block_invalid_conversion_throws(self):
         with self.create_executor() as fora:
             with self.assertRaises(Exceptions.InvalidPyforaOperation):
@@ -417,7 +418,7 @@ class WithBlockExecutors_test(unittest.TestCase):
 
             with ctx:
                 x = x + 1
-                
+
             self.assertEqual(x, 2)
 
     def test_repeated_instance(self):

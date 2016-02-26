@@ -14,7 +14,7 @@
 
 
 import pyfora.PureImplementationMapping as PureImplementationMapping
-from pyfora.typeConverters.PureNumpy import PurePythonNumpyArray
+from pyfora.pure_modules.pure_numpy import PurePythonNumpyArray
 
 from pyfora.unique import unique
 import numpy
@@ -154,7 +154,7 @@ class PurePythonDataFrame(object):
         while colIx < self.shape[1]:
             tr = _addVecsOnRange(
                 tr, self._columns[colIx], other[colIx], low, high)
-            colIx = colIx + 1        
+            colIx = colIx + 1
 
         return tr
 
@@ -167,19 +167,18 @@ def _scaleVecOnRange(vec, multiplier, lowIx, highIx):
         ix = ix + 1
 
     return tr
-    
 
 def _addVecsOnRange(vec1, vec2, vec2Multiplier, lowIx, highIx):
     tr = []
     ix = lowIx
-    
+
     while ix < highIx:
         tr = tr + [vec1[ix - lowIx] + vec2Multiplier * vec2[ix]]
         ix = ix + 1
 
     return tr
 
-        
+
 
 class _PurePythonDataFrameILocIndexer(object):
     def __init__(self, obj):
@@ -249,7 +248,7 @@ class _DataFrameRow(object):
     def __iter__(self):
         for ix in xrange(len(self)):
             yield self._get_int_ix(ix)
-            
+
 
 class _PurePythonSeriesIlocIndexer(object):
     def __init__(self, obj):
@@ -318,7 +317,7 @@ class PurePythonSeries(object):
         return PurePythonSeries(
             [elt + other for elt in self]
             )
-        
+
     def __iter__(self):
         for ix in xrange(len(self)):
             yield self[ix]
@@ -330,10 +329,9 @@ class PurePythonSeries(object):
         return PurePythonSeries(
             [func(elt) for elt in self]
             )
-            
+
     def dot(self, other):
         return numpy.dot(self, other)
-        
 
 #######################################
 # PureImplementationMappings:

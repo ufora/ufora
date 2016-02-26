@@ -15,7 +15,7 @@
 
 import numpy
 import scipy.special
-import pyfora.typeConverters.PurePandas as PurePandas
+import pyfora.pure_modules.pure_pandas as PurePandas
 
 
 class BinaryLogisticRegressionModel(object):

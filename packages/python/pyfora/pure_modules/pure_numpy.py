@@ -14,8 +14,8 @@
 
 
 import pyfora.PureImplementationMapping as PureImplementationMapping
-import pyfora.typeConverters.PureMath as PureMath
-import pyfora.BuiltinPureImplementationMappings as BuiltinPureImplementationMappings
+import pyfora.pure_modules.pure_math as PureMath
+from pyfora.pure_modules.pure___builtin__ import Round
 
 
 import math
@@ -547,7 +547,7 @@ def generateMappings():
         (np.isnan, IsNan), (np.sign, Sign), (np.log1p, Log1p),
         (np.isinf, IsInf),
         (np.log10, Log10),
-        (np.round, BuiltinPureImplementationMappings.Round)
+        (np.round, Round)
         ]
 
 

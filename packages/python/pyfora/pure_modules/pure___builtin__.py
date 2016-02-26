@@ -329,13 +329,140 @@ class Round:
         return f + 1
 
 
+class PurePythonComplex:
+    def __init__(self, real, imag=0.0):
+        if isinstance(real, str):
+            PurePythonComplex.__pyfora_builtins__.raiseInvalidPyforaOperation(
+                "Complex initialization from string not implemented"
+                )
+
+        if not isinstance(real, float) or not isinstance(imag, float):
+            raise TypeError("complex() argument must be a string or a number")
+
+        self.real = float(real)
+        self.imag = float(imag)
+
+    def __abs__(self):
+        return (self.real * self.real + self.imag * self.imag) ** .5
+
+    def conjugate(self):
+        return PurePythonComplex(self.real, -self.imag)
+
+    def __mul__(self, other):
+        if isinstance(other, PurePythonComplex):
+            return PurePythonComplex(
+                self.real * other.real - self.imag * other.imag,
+                self.real * other.imag + self.imag * other.real
+                )
+        return PurePythonComplex(self.real * other, self.imag * other)
+
+    def __add__(self, other):
+        if isinstance(other, PurePythonComplex):
+            return PurePythonComplex(
+                self.real + other.real,
+                self.imag + other.imag
+                )
+        return PurePythonComplex(self.real + other, self.imag)
+
+    def __sub__(self, other):
+        if isinstance(other, PurePythonComplex):
+            return PurePythonComplex(
+                self.real - other.real,
+                self.imag - other.imag
+                )
+        return PurePythonComplex(self.real - other, self.imag)
+
+    def __pos__(self):
+        return self
+
+    def __neg__(self):
+        return PurePythonComplex(-self.real, -self.imag)
+
+    def __nonzero__(self):
+        return self.real != 0.0 or self.imag != 0.0
+
+    def __pow__(self, other):
+        PurePythonComplex.__pyfora_builtins__.raiseInvalidPyforaOperation(
+            "__pow__ not yet implemented on complex"
+            )
+
+    def __float__(self):
+        raise TypeError("can't convert complex to float")
+
+    def __long__(self):
+        raise TypeError("can't convert complex to long")
+
+    def __gt__(self, other):
+        raise TypeError("no ordering relation is defined for complex numbers")
+
+    def __ge__(self, other):
+        raise TypeError("no ordering relation is defined for complex numbers")
+
+    def __lt__(self, other):
+        raise TypeError("no ordering relation is defined for complex numbers")
+
+    def __le__(self, other):
+        raise TypeError("no ordering relation is defined for complex numbers")
+
+    def __eq__(self, other):
+        raise TypeError("no ordering relation is defined for complex numbers")
+
+    def __ne__(self, other):
+        raise TypeError("no ordering relation is defined for complex numbers")
+
+    def __ne__(self, other):
+        raise TypeError("no ordering relation is defined for complex numbers")
+
+    def __str__(self):
+        if self.real == 0.0:
+            return str(self.imag) + "j"
+        return ("(" + str(self.real) +
+            ("+" + str(self.imag) if self.imag > 0 else "-" + str(-self.imag)) +
+            "j)")
+
+    def __sizeof__(self):
+        return 32
+
+    def __setattr__(self, val):
+        PurePythonComplex.__pyfora_builtins__.raiseInvalidPyforaOperation(
+            "__setattr__ not valid in pure python"
+            )
+
+    def __mod__(self, other):
+        if isinstance(other, PurePythonComplex):
+            return PurePythonComplex(self.real % other.real, self.imag % other.imag)
+        else:
+            return PurePythonComplex(self.real % other, self.imag)
+
+class PurePythonComplexCls:
+    def __call__(self, real, imag=0.0):
+        return PurePythonComplex(real, imag)
+
+
+class PurePythonComplexMapping(PureImplementationMapping.PureImplementationMapping):
+    def getMappablePythonTypes(self):
+        return [complex]
+
+    def getMappableInstances(self):
+        return []
+
+    def getPurePythonTypes(self):
+        return [PurePythonComplex]
+
+    def mapPythonInstanceToPyforaInstance(self, c):
+        return PurePythonComplex(c.real, c.imag)
+
+    def mapPyforaInstanceToPythonInstance(self, pureComplex):
+        return complex(pureComplex.real, pureComplex.imag)
+
+
 mappings_ = [
     (abs, Abs), (all, All), (any, Any),
     (apply, None), (basestring, None), (bin, None),
     (buffer, None), (bytearray, None),
     #note that bytes in python2.7 is actually the same object as 'str'
     #which is already implemented in the NamedSingletons
-    #(bytes, None), 
+    #(bytes, None),
     (callable, None), (chr, Chr),
     (classmethod, None), (cmp, None), (coerce, None),
     (compile, None), (copyright, None),
@@ -367,5 +494,8 @@ mappings_ = [
 
 def generateMappings():
     return [PureImplementationMapping.InstanceMapping(instance, pureType)
-            for (instance, pureType) in mappings_]
+            for (instance, pureType) in mappings_] + \
+            [PurePythonComplexMapping(),
+             PureImplementationMapping.InstanceMapping(complex, PurePythonComplexCls)]
+
 

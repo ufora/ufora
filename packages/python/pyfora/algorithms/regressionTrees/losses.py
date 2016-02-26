@@ -17,8 +17,8 @@ from pyfora.algorithms.regressionTrees.AdditiveRegressionTree \
     import AdditiveRegressionTree
 from pyfora.algorithms.regressionTrees.RegressionTree \
     import RegressionTree, OnDemandSelectedVector, RegressionLeafRule
-import pyfora.typeConverters.PureNumpy as PureNumpy
-import pyfora.typeConverters.PurePandas as PurePandas
+import pyfora.pure_modules.pure_numpy as PureNumpy
+import pyfora.pure_modules.pure_pandas as PurePandas
 
 
 import math
@@ -96,12 +96,12 @@ class Absoluteloss:
                 leafValuesDf.iloc[:, -1],
                 activeIndices
                 )
-                
+
             return learningRate * PureNumpy.Median()(
                 [originalYInRegion[ix] - predictedYInRegion[ix] for \
                  ix in xrange(len(originalYInRegion))]
                 )
-                
+
         return f
 
 
@@ -145,7 +145,7 @@ class BinomialLoss:
                 leafValues.iloc[:, -1],
                 activeIndices
                 )
-            
+
             def valFun(ix):
                 residual = residuals[ix]
                 absResidual = abs(residual)

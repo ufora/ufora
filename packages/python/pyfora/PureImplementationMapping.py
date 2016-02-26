@@ -31,8 +31,8 @@ class PureImplementationMapping(object):
         This should return a list of python types and classes. Any time the
         converter sees an instance of one of these types, Pyfora will invoke
         this class to provide an alternate, translatable form of the instance.
-        """ 
-        #subclasses should implement 
+        """
+        #subclasses should implement
         raise Exceptions.PyforaNotImplementedError(
             "'%s' not implemented yet for type '%s'"
             % (self.getMappablePythonTypes.__name__,
@@ -41,7 +41,7 @@ class PureImplementationMapping(object):
 
     def getMappableInstances(self):
         """Return a list of specific instances this mapper knows how to convert."""
-        #subclasses should implement 
+        #subclasses should implement
         raise Exceptions.PyforaNotImplementedError(
             "'%s' not implemented yet for type '%s'"
             % (self.getMappableInstances.__name__,
@@ -82,7 +82,7 @@ class InstanceMapping(PureImplementationMapping):
     """Mapping infrastructure to convert singleton instances to PurePython class instances.
 
     This mapping is primarily used to map builtins like 'len' to instances of pure-python classes like
-    pyfora.BuiltinPureImplementationMappings.Len.
+    pyfora.pure_modules.pure___builtin__.Len.
     """
     def __init__(self, instance, pureClass):
         self.instance = instance

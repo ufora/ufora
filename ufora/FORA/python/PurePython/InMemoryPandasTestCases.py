@@ -15,7 +15,7 @@
 import pyfora.pandas_util
 import pyfora.algorithms
 import pyfora.algorithms.LinearRegression as LinearRegression
-import pyfora.typeConverters.PurePandas as PurePandas
+import pyfora.pure_modules.pure_pandas as PurePandas
 
 
 import numpy
@@ -117,7 +117,7 @@ class InMemoryPandasTestCases(object):
                         )
 
     def test_pandas_dataframe_indexing_3(self):
-        # due to some hashing stuff, this test will fail if 
+        # due to some hashing stuff, this test will fail if
         # key 'D' is replaced by 'C'. Ehh ...
 
         df = pandas.DataFrame({'A': range(5), 'B': range(5,10), 'D': range(10,15)})
@@ -142,7 +142,7 @@ class InMemoryPandasTestCases(object):
 
         def f():
             return df.iloc[:,:]
-        
+
         self.equivalentEvaluationTest(
             f,
             comparisonFunction=self.checkFramesEqual
@@ -153,7 +153,7 @@ class InMemoryPandasTestCases(object):
 
         def f():
             return df.iloc[:,]
-        
+
         self.equivalentEvaluationTest(
             f,
             comparisonFunction=self.checkFramesEqual
@@ -406,7 +406,7 @@ A,B,C
             return df.as_matrix()
 
         self.equivalentEvaluationTest(f)
-            
+
     def test_series_as_matrix(self):
         s = pandas.Series([1,2,3])
         def f():

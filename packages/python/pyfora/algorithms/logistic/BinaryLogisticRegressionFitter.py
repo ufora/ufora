@@ -18,7 +18,7 @@ from pyfora.algorithms.logistic.TrustRegionConjugateGradientSolver import \
     TrustRegionConjugateGradientSolver
 from pyfora.algorithms.logistic.BinaryLogisticRegressionModel import \
     BinaryLogisticRegressionModel
-import pyfora.typeConverters.PurePandas as PurePandas
+import pyfora.pure_modules.pure_pandas as PurePandas
 
 
 class BinaryLogisticRegressionFitter(object):

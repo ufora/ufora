@@ -23,7 +23,7 @@ class Sqrt(object):
     def __call__(self, val):
         if val < 0.0:
             raise ValueError("math domain error")
-            
+
         return val ** 0.5
 
 class Hypot(object):

@@ -135,9 +135,7 @@ class PyObjectWalker(object):
 
     """
     def __init__(self, purePythonClassMapping, objectRegistry):
-        if purePythonClassMapping is None:
-            purePythonClassMapping = \
-                PureImplementationMappings.PureImplementationMappings()
+        assert purePythonClassMapping is not None
 
         for singleton in NamedSingletons.pythonSingletonToName:
             if purePythonClassMapping.canMap(singleton):
