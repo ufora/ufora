@@ -507,3 +507,16 @@ class NumpyTestCases(object):
         
     def test_svd_1(self):
         self.check_svd(numpy.array([[1,3],[2,4]]))
+
+    def test_isinstance_on_remote(self):
+        from pyfora.typeConverters.PureNumpy import PurePythonNumpyArray
+
+        with self.create_executor() as ufora:
+            with ufora.remotely:
+                a = numpy.array([[1,2],[3,4]])
+
+            with ufora.remotely.downloadAll():
+                res = isinstance(a, PurePythonNumpyArray)
+
+            self.assertTrue(res)
+            

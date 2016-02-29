@@ -411,12 +411,17 @@ class Converter(object):
                     objectDefinition,
                     objectIdToObjectDefinition
                     )
+        # at this point, naiveConvertedFunctions is a map: objectId -> functionExpr
 
+        # renamedObjectMapping is a map: objectId -> varname,
+        # where varname is (essentially) just the hash of the corresponding functionExpr
         renamedObjectMapping = self.computeRenamedObjectMapping(
             naiveConvertedFunctions
             )
 
-        convertedFunctions = self.transformFunctions(
+        # replace the known free var chains in the strongly connected component
+        # with the varnames coming from the renamedObjectMapping
+        convertedFunctions = self.replaceKnownMemberChainsWithRenamedVariables(
             naiveConvertedFunctions,
             renamedObjectMapping,
             objectIdToObjectDefinition,
@@ -425,11 +430,11 @@ class Converter(object):
 
         createObjectExpression = empytObjectExpression
 
-        for objectId, functionExpression in sorted(list(convertedFunctions.iteritems())):
+        for objectId, varname in sorted(renamedObjectMapping.items(), key=lambda p: p[1]):
             createObjectExpression = ForaNative.prependMemberToCreateObjectExpression(
                 createObjectExpression,
-                renamedObjectMapping[objectId],
-                functionExpression
+                varname,
+                convertedFunctions[objectId]
                 )
 
         return createObjectExpression, renamedObjectMapping
@@ -466,11 +471,16 @@ class Converter(object):
             renamedVariableMapping
             )
 
-    def transformFunctions(self,
-                           objectIdToForaFunctionExpression,
-                           objectIdToVarname,
-                           objectIdToObjectDefinition,
-                           stronglyConnectedComponent):
+    def replaceKnownMemberChainsWithRenamedVariables(self,
+                                                     objectIdToForaFunctionExpression,
+                                                     renamedVariableMapping,
+                                                     objectIdToObjectDefinition,
+                                                     stronglyConnectedComponent):
+        """
+        Given a strongly connected component of functions, and a renamed object mapping
+        replace known free variable access chains in the function expressions with the
+        renamed variables
+        """
         tr = dict()
         for objectId in stronglyConnectedComponent:
             objectDefinition = objectIdToObjectDefinition[objectId]
@@ -482,7 +492,7 @@ class Converter(object):
                 if dependentObjectId in stronglyConnectedComponent:
                     transformedFunction = transformedFunction.rebindFreeVariableMemberAccessChain(
                         tuple(freeVariableMemberAccessChain.split('.')),
-                        objectIdToVarname[dependentObjectId]
+                        renamedVariableMapping[dependentObjectId]
                         )
 
             tr[objectId] = transformedFunction
@@ -490,6 +500,11 @@ class Converter(object):
         return tr
 
     def computeRenamedObjectMapping(self, objectIdToForaFunctionExpression):
+        """
+        Given a map: objectId -> functionExpression,
+        return a map: objectId -> varName
+        where each varName is essentially the hash of the corresponding functionExpression
+        """
         renamedObjectMapping = dict()
 
         mentionedVariables = set()
@@ -517,7 +532,7 @@ class Converter(object):
         elif isinstance(objectDefinition, (TypeDescription.FunctionDefinition,
                                            TypeDescription.ClassDefinition)):
             if isinstance(objectDefinition, TypeDescription.ClassDefinition):
-                for name, baseId in objectDefinition.baseClassIds:
+                for _, baseId in objectDefinition.baseClassIds:
                     if baseId not in self.convertedValues:
                         self._convert(baseId,
                                       dependencyGraph,
