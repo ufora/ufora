@@ -13,6 +13,7 @@
 #   limitations under the License.
 
 import base64
+import cPickle
 
 class HaltTransformationException(Exception):
     """Exception to be raised if we wish to halt transformation for any reason."""
@@ -51,7 +52,7 @@ class PyforaToJsonTransformer(object):
 
     def transformHomogenousList(self, firstElement, allElementsAsNumpyArrays):
         numpyAsStrings = [{'data':base64.b64encode(x.tostring()).encode("utf8"), 'length':len(x)} for x in allElementsAsNumpyArrays]
-        numpyDtypeAsString = str(allElementsAsNumpyArrays[0].dtype)
+        numpyDtypeAsString = base64.b64encode(cPickle.dumps(allElementsAsNumpyArrays[0].dtype))
 
         self.accumulateObjects(1, sum(len(x) for x in numpyAsStrings) + len(numpyDtypeAsString))
 

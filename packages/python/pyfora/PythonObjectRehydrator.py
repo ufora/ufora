@@ -24,6 +24,7 @@ import traceback
 import logging
 import base64
 import numpy
+import cPickle
 
 moduleType = type(os)
 builtins = sys.modules['__builtin__']
@@ -115,13 +116,15 @@ class PythonObjectRehydrator:
         if 'homogenousListNumpyDataStringsAndSizes' in jsonResult:
             stringsAndSizes = jsonResult['homogenousListNumpyDataStringsAndSizes']
 
-            data = numpy.zeros(shape=jsonResult['length'], dtype=jsonResult['dtype'])
+            dtype = cPickle.loads(base64.b64decode(jsonResult['dtype']))
+            data = numpy.zeros(shape=jsonResult['length'], dtype=dtype)
 
             curOffset = 0
             for dataAndSize in stringsAndSizes:
                 arrayText = dataAndSize['data']
                 size = dataAndSize['length']
-                data[curOffset:curOffset+size] = numpy.ndarray(shape=size,dtype=jsonResult['dtype'], buffer=base64.b64decode(arrayText))
+                data[curOffset:curOffset+size] = numpy.ndarray(shape=size,dtype=dtype, buffer=base64.b64decode(arrayText))
+                curOffset += size
 
             #we use the first element as a prototype when decoding
             firstElement = self.convertJsonResultToPythonObject(jsonResult['firstElement'])

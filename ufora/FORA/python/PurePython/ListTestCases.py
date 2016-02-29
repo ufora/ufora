@@ -306,3 +306,9 @@ class ListTestCases(object):
             return x[0]
 
         self.equivalentEvaluationTest(f)
+
+    def test_large_lists_of_tuples_correct(self):
+        def f():
+            return [(x,x+1) for x in xrange(1000000)]
+
+        self.equivalentEvaluationTest(f)
