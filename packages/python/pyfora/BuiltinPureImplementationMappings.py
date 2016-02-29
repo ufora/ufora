@@ -246,6 +246,27 @@ class XRangeInstance:
             def nest(self, subgeneratorFun):
                 return Generator.__pyfora_builtins__.NestedGenerator(self, subgeneratorFun)
 
+            def associativeReduce(self, initValSoFar, add, merge, empty):
+                """__without_stacktrace_augmentation"""
+
+                return __inline_fora("""
+                    fun(initValSoFar, start, increment, add, merge, empty, count) {
+                        __without_stacktrace_augmentation {
+                            AssociativeReduce.associativeReduceIntegers(
+                                initValSoFar,
+                                fun(lst, ix) { 
+                                    __without_stacktrace_augmentation {
+                                        add(lst, PyInt(start.@m + ix * increment.@m))
+                                        }
+                                    },
+                                merge,
+                                empty,
+                                0,
+                                count.@m
+                                )
+                            }
+                        }
+                    """)(initValSoFar, self.start, self.increment, add, merge, empty, self.count)
 
         return Generator(self.start, self.count, self.increment)
 

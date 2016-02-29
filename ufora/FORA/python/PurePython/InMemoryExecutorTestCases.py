@@ -14,6 +14,7 @@
 
 import time
 import pyfora
+import os
 import ufora.FORA.python.PurePython.ExecutorTestCases as ExecutorTestCases
 import ufora.test.PerformanceTestReporter as PerformanceTestReporter
 
@@ -283,6 +284,34 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
                     c, i, comparisonFunction=lambda x, y: x == y
                     )
 
+    def test_exceptions_in_list_comprehensions_stable(self):
+        def isPrime(p):
+            if p == 900001:
+                raise UserWarning("This is an exception")
+            x = 2
+            while x*x <= p:
+                if p%x == 0:
+                    return 0
+                x=x+1
+            return 1
+
+        def f(ct):
+            return sum([isPrime(x) for x in xrange(ct)])
+
+        def getATrace(ct):
+            with self.create_executor() as fora:
+                try:
+                    c = fora.submit(f, ct).result().toLocal().result()
+                except Exception as e:
+                    return e.trace
+
+        t1 = getATrace(1000000)
+
+        for x in t1:
+            self.assertEqual(x['path'][0], os.path.abspath(__file__))
+        self.assertEqual(t1, getATrace(1000001))
+        self.assertEqual(t1, getATrace(1000002))
+        self.assertEqual(t1, getATrace(1000003))
 
     def test_filtered_generator_expression(self):
         for ct in [0,1,2,4,8,16,32,64,100,101,102,103]:
