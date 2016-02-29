@@ -15,7 +15,7 @@
 import time
 import pyfora
 import ufora.FORA.python.PurePython.ExecutorTestCases as ExecutorTestCases
-
+import ufora.test.PerformanceTestReporter as PerformanceTestReporter
 
 class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
     def test_list_hashing(self):
@@ -42,6 +42,20 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
         #the third pass should be _way_ faster.
         self.assertTrue(thirdPass / firstPass < .1)
         self.assertTrue(thirdPass / secondPass < .1)
+
+    def test_list_comprehension_perf(self):
+        def f(totalCt):
+            return sum([sum([x for x in xrange(ct)]) for ct in xrange(totalCt)])
+
+        self.evaluateWithExecutor(f, 3000)
+
+        @PerformanceTestReporter.PerfTest("pyfora.NestedListComprehension")
+        def runTest():
+            self.evaluateWithExecutor(f, 3001)
+
+        runTest()
+        
+
 
     def test_class_identities(self):
         class IdentClass:

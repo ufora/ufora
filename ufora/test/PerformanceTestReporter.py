@@ -127,11 +127,11 @@ def PerfTest(testName):
             'line': inspect.getsourcelines(f)[1]
             }
 
-        def innerTestFun(self):
+        def innerTestFun(*args, **kwds):
             t0 = time.time()
 
             try:
-                result = f(self)
+                result = f(*args, **kwds)
             except:
                 if isCurrentlyTesting():
                     recordTest(testName, None, meta)
