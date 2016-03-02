@@ -76,7 +76,7 @@ def initialize(setupObjectToUse = None):
             cfg.dynamicInlineCallThreshold = 10000
             cfg.dynamicInlineCallThresholdSecondary = 5000
 
-            cfg.maxDynamicInlineComplexity = 5000
+            cfg.maxDynamicInlineComplexity = 10000
 
             cfg.useDynamicInlining = True
 
