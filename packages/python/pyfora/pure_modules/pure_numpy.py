@@ -13,7 +13,7 @@
 #   limitations under the License.
 
 
-import pyfora.PureImplementationMapping as PureImplementationMapping
+from pyfora.PureImplementationMapping import PureImplementationMapping, pureMapping
 import pyfora.pure_modules.pure_math as PureMath
 from pyfora.pure_modules.pure___builtin__ import Round
 
@@ -205,7 +205,8 @@ class PurePythonNumpyArray(object):
         return _dot(self, other)
 
 
-class PurePythonNumpyArrayMapping(PureImplementationMapping.PureImplementationMapping):
+@pureMapping
+class PurePythonNumpyArrayMapping(PureImplementationMapping):
     def getMappablePythonTypes(self):
         return [np.ndarray]
 
@@ -229,6 +230,7 @@ class PurePythonNumpyArrayMapping(PureImplementationMapping.PureImplementationMa
             assert False, (pureNumpyArray.values, pureNumpyArray.shape)
 
 
+@pureMapping(np.zeros)
 class NpZeros(object):
     def __call__(self, length):
         def zerosFromCountAndShape(count, shape):
@@ -247,6 +249,7 @@ class NpZeros(object):
             return zerosFromCountAndShape(length, (length,))
 
 
+@pureMapping(np.array)
 class NpArray(object):
     """This will only work for a well-formed (not jagged) n-dimensional python lists"""
     def __call__(self, array):
@@ -296,7 +299,6 @@ def _dotProduct(arr1, arr2):
     len1 = len(arr1)
     if len1 != len(arr2):
         raise ValueError("Vector dimensions do not match")
-
     return sum(arr1[ix] * arr2[ix] for ix in xrange(len1))
 
 
@@ -354,11 +356,13 @@ def _dot(arr1, arr2):
         return _dot(NpArray()(arr1), NpArray()(arr2))
 
 
+@pureMapping(np.dot)
 class NpDot(object):
     def __call__(self, a, b):
         return _dot(a, b)
 
 
+@pureMapping(np.linalg.pinv)
 class NpPinv(object):
     def __call__(self, matrix):
         builtins = NpPinv.__pyfora_builtins__
@@ -375,6 +379,7 @@ class NpPinv(object):
             )
 
 
+@pureMapping(np.linalg.svd)
 class Svd(object):
     def __call__(self, a):
         assert len(a.shape) == 2, "need len(a.shape) == 2"
@@ -397,6 +402,7 @@ class Svd(object):
             )
 
 
+@pureMapping(np.linalg.solve)
 class LinSolve(object):
     def __call__(self, a, b):
         assert len(a.shape) == 2, "need len(a.shape) == 2"
@@ -421,6 +427,7 @@ class LinSolve(object):
             )
 
 
+@pureMapping(np.arange)
 class NpArange(object):
     def __call__(self, start, stop=None, step=1):
         if stop is None:
@@ -434,16 +441,18 @@ class NpArange(object):
         return NpArray()(toReturn)
 
 
+@pureMapping(np.mean)
 class Mean(object):
     def __call__(self, x):
         return sum(x) / len(x)
 
 
-class Median:
+class Median(object):
     def __call__(self, x):
         raise NotImplementedError("fill this out, bro")
 
 
+@pureMapping(np.sign)
 class Sign(object):
     def __call__(self, x):
         if x < 0.0:
@@ -453,6 +462,7 @@ class Sign(object):
         return 1.0
 
 
+@pureMapping(np.isnan)
 class IsNan(object):
     def __call__(self, x):
         if not isinstance(x, float):
@@ -465,6 +475,7 @@ class IsNan(object):
             )(x)
 
 
+@pureMapping(np.isinf)
 class IsInf(object):
     def __call__(self, x):
         if not isinstance(x, float):
@@ -477,6 +488,7 @@ class IsInf(object):
             )(x)
 
 
+@pureMapping(np.log)
 class Log(object):
     def __call__(self, val):
         if val < 0:
@@ -492,6 +504,7 @@ class Log(object):
             )(val)
 
 
+@pureMapping(np.log10)
 class Log10(object):
     def __call__(self, val):
         if val < 0:
@@ -507,6 +520,7 @@ class Log10(object):
             )(val)
 
 
+@pureMapping(np.log1p)
 class Log1p(object):
     def __call__(self, x):
         if x < -1:
@@ -523,6 +537,7 @@ class Log1p(object):
         return math.log(t) * (x / (t - 1.0))
 
 
+@pureMapping(np.sqrt)
 class Sqrt(object):
     def __call__(self, val):
         if val < 0.0:
@@ -531,31 +546,44 @@ class Sqrt(object):
         return val ** 0.5
 
 
-def generateMappings():
-    mappings_ = [(np.zeros, NpZeros), (np.array, NpArray), (np.dot, NpDot),
-                 (np.linalg.pinv, NpPinv), (np.linalg.solve, LinSolve),
-                 (np.linalg.svd, Svd),
-                 (np.arange, NpArange)]
+@pureMapping(np.round)
+class NpRound(object):
+    def __call__(self, x):
+        return Round()(x)
 
-    # these will need their own implementations in PureNumpy since in true numpy
-    # they admit "vectorized" forms
-    mappings_ = mappings_ + [
-        (np.cos, PureMath.Cos), (np.sin, PureMath.Sin), (np.tan, PureMath.Tan),
-        (np.cosh, PureMath.Cosh), (np.sinh, PureMath.Sinh), (np.tanh, PureMath.Tanh),
-        (np.sqrt, Sqrt), (np.hypot, PureMath.Hypot), (np.log, Log),
-        (np.exp, PureMath.Exp), (np.expm1, PureMath.Expm1), (np.floor, PureMath.Floor),
-        (np.isnan, IsNan), (np.sign, Sign), (np.log1p, Log1p),
-        (np.isinf, IsInf),
-        (np.log10, Log10),
-        (np.round, Round)
-        ]
+@pureMapping(np.cos)
+class NpCos(object):
+    def __call__(self, x):
+        return PureMath.Cos()(x)
 
+@pureMapping(np.sin)
+class NpSin(object):
+    def __call__(self, x):
+        return PureMath.Sin()(x)
 
-    tr = [PureImplementationMapping.InstanceMapping(instance, pureType) for \
-            (instance, pureType) in mappings_]
+@pureMapping(np.tan)
+class NpTan(object):
+    def __call__(self, x):
+        return PureMath.Tan()(x)
 
-    tr.append(PurePythonNumpyArrayMapping())
+@pureMapping(np.hypot)
+class NpHypot(object):
+    def __call__(self, x):
+        return PureMath.Hypot()(x)
 
-    return tr
+@pureMapping(np.exp)
+class NpExp(object):
+    def __call__(self, x):
+        return PureMath.Exp()(x)
+
+@pureMapping(np.expm1)
+class NpExpm1(object):
+    def  __call__(self, x):
+        return PureMath.Expm1()(x)
+
+@pureMapping(np.floor)
+class NpFloor(object):
+    def __call__(self, x):
+        return PureMath.Floor()(x)
 
 

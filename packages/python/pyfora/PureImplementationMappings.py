@@ -15,6 +15,8 @@
 import importlib
 import sys
 
+from pyfora.PureImplementationMapping import PureMappingRegistry
+
 
 def typeOfInstance(i):
     try:
@@ -74,13 +76,14 @@ class PureImplementationMappings(object):
                 continue
 
             try:
-                pure_module = importlib.import_module("pyfora.pure_modules.pure_%s" % root)
-                self.load_pure_module(pure_module)
-                self.already_loaded.add(root)
+                importlib.import_module("pyfora.pure_modules.pure_%s" % root)
+                self.addMappingsForModule(root)
             except ImportError:
                 pass
         self.last_seen_sys_modules_len = len(sys.modules)
 
-    def load_pure_module(self, module):
-        for mapping in module.generateMappings():
+    def addMappingsForModule(self, module_name):
+        for mapping in PureMappingRegistry.mappingsForRootModule(module_name):
             self.addMapping(mapping)
+        self.already_loaded.add(module_name)
+

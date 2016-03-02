@@ -14,7 +14,6 @@
 
 import pyfora.Exceptions as Exceptions
 import pyfora.pyAst.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
-import pyfora.PureImplementationMappings as PureImplementationMappings
 import pyfora.RemotePythonObject as RemotePythonObject
 import pyfora.Future as Future
 import pyfora.NamedSingletons as NamedSingletons
@@ -535,6 +534,8 @@ class PyObjectWalker(object):
             assert classOrFunction is _ClassDefinition
             pyAst = PyAstUtil.classDefAtLineNumber(sourceAst, sourceLine)
 
+        assert sourceLine == pyAst.lineno
+
         try:
             freeVariableMemberAccessChainResolutions = \
                 self._computeAndResolveFreeVariableMemberAccessChainsInAst(
@@ -578,9 +579,18 @@ class PyObjectWalker(object):
         # that whenever pyAst is a FunctionDef node, its context is not a class
         # (i.e., it is not an instance method). In that case, we need to pass
         # 'True' as the 2nd argument.
+
+        def is_pureMapping_call(node):
+            return isinstance(node, ast.Call) and \
+                isinstance(node.func, ast.Name) and \
+                node.func.id == 'pureMapping'
+
         freeVariableMemberAccessChains = \
             PyAstFreeVariableAnalyses.getFreeVariableMemberAccessChains(
-                pyAst, isClassContext=False, getPositions=True
+                pyAst,
+                isClassContext=False,
+                getPositions=True,
+                exclude_predicate=is_pureMapping_call
                 )
 
         return freeVariableMemberAccessChains

@@ -13,23 +13,21 @@
 #   limitations under the License.
 
 
-import pyfora.PureImplementationMapping as PureImplementationMapping
+from pyfora.PureImplementationMapping import PureImplementationMapping, pureMapping
 from pyfora.pure_modules.pure_numpy import PurePythonNumpyArray
 
 from pyfora.unique import unique
 import numpy
 
-
-def pd():
-    import pandas
-    return pandas
+import pandas
 
 
 #######################################
 # PurePython implementations:
 #######################################
 
-class _PureDataFrameFactory(object):
+@pureMapping(pandas.DataFrame)
+class _DataframeFactory(object):
     def __call__(self, data):
         return PurePythonDataFrame(data)
 
@@ -258,6 +256,7 @@ class _PurePythonSeriesIlocIndexer(object):
         return self.obj[k]
 
 
+@pureMapping(pandas.Series)
 class _PurePythonSeriesFactory(object):
     def __call__(self, arg):
         return PurePythonSeries(arg)
@@ -337,10 +336,10 @@ class PurePythonSeries(object):
 # PureImplementationMappings:
 #######################################
 
-
-class PurePythonSeriesMapping(PureImplementationMapping.PureImplementationMapping):
+@pureMapping
+class PurePythonSeriesMapping(PureImplementationMapping):
     def getMappablePythonTypes(self):
-        return [pd().Series]
+        return [pandas.Series]
 
     def getMappableInstances(self):
         return []
@@ -352,11 +351,13 @@ class PurePythonSeriesMapping(PureImplementationMapping.PureImplementationMappin
         return PurePythonSeries(pandasSeries.tolist())
 
     def mapPyforaInstanceToPythonInstance(self, pureSeries):
-        return pd().Series(pureSeries.values)
+        return pandas.Series(pureSeries.values)
 
-class PurePythonDataFrameMapping(PureImplementationMapping.PureImplementationMapping):
+
+@pureMapping
+class PurePythonDataFrameMapping(PureImplementationMapping):
     def getMappablePythonTypes(self):
-        return [pd().DataFrame]
+        return [pandas.DataFrame]
 
     def getMappableInstances(self):
         return []
@@ -370,17 +371,7 @@ class PurePythonDataFrameMapping(PureImplementationMapping.PureImplementationMap
             })
 
     def mapPyforaInstanceToPythonInstance(self, pureDataFrame):
-        return pd().DataFrame({
+        return pandas.DataFrame({
             name: pureDataFrame[name] for name in pureDataFrame._columnNames
             })
 
-def mappings_():
-    return [(pd().DataFrame, _PureDataFrameFactory),
-            (pd().Series, _PurePythonSeriesFactory)]
-
-
-def generateMappings():
-    tr = [PureImplementationMapping.InstanceMapping(instance, pureType) for \
-          (instance, pureType) in mappings_()]
-    tr = tr + [PurePythonDataFrameMapping(), PurePythonSeriesMapping()]
-    return tr

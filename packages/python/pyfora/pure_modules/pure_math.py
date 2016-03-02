@@ -12,21 +12,21 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-
-import pyfora.PureImplementationMapping as PureImplementationMapping
-
-
 import math
+from pyfora.PureImplementationMapping import pureMapping
 
 
-class Sqrt(object):
+@pureMapping(math.sqrt)
+class Sqrt:
     def __call__(self, val):
         if val < 0.0:
             raise ValueError("math domain error")
 
         return val ** 0.5
 
-class Hypot(object):
+
+@pureMapping(math.hypot)
+class Hypot:
     def __call__(self, x, y):
         x = abs(float(x))
         y = abs(float(y))
@@ -42,7 +42,9 @@ class Hypot(object):
 
         return x * (1.0 + (y / x) * (y / x)) ** 0.5
 
-class Log(object):
+
+@pureMapping(math.log)
+class Log:
     def __call__(self, val):
         if val <= 0.0:
             raise ValueError("math domain error")
@@ -54,7 +56,8 @@ class Log(object):
             )(val)
 
 
-class Acos(object):
+@pureMapping(math.acos)
+class Acos:
     def __call__(self, val):
         if val > 1.0 or val < -1.0:
             raise ValueError("math domain error")
@@ -66,7 +69,8 @@ class Acos(object):
             )(val)
 
 
-class Acosh(object):
+@pureMapping(math.acosh)
+class Acosh:
     def __call__(self, val):
         if val < 1.0:
             raise ValueError("math domain error")
@@ -78,7 +82,8 @@ class Acosh(object):
             )(val)
 
 
-class Cos(object):
+@pureMapping(math.cos)
+class Cos:
     def __call__(self, val):
         return __inline_fora(
             """fun(val) {
@@ -87,7 +92,8 @@ class Cos(object):
             )(val)
 
 
-class Cosh(object):
+@pureMapping(math.cosh)
+class Cosh:
     def __call__(self, val):
         return __inline_fora(
             """fun(val) {
@@ -96,7 +102,8 @@ class Cosh(object):
             )(val)
 
 
-class Asin(object):
+@pureMapping(math.asin)
+class Asin:
     def __call__(self, val):
         if val > 1.0 or val < -1.0:
             raise ValueError("math domain error")
@@ -108,7 +115,8 @@ class Asin(object):
             )(val)
 
 
-class Asinh(object):
+@pureMapping(math.asinh)
+class Asinh:
     def __call__(self, val):
         if val < 1.0:
             raise ValueError("math domain error")
@@ -120,7 +128,8 @@ class Asinh(object):
             )(val)
 
 
-class Sin(object):
+@pureMapping(math.sin)
+class Sin:
     def __call__(self, val):
         return __inline_fora(
             """fun(val) {
@@ -129,7 +138,8 @@ class Sin(object):
             )(val)
 
 
-class Sinh(object):
+@pureMapping(math.sinh)
+class Sinh:
     def __call__(self, val):
         return __inline_fora(
             """fun(val) {
@@ -138,7 +148,8 @@ class Sinh(object):
             )(val)
 
 
-class Atan(object):
+@pureMapping(math.atan)
+class Atan:
     def __call__(self, val):
         return __inline_fora(
             """fun(val) {
@@ -147,7 +158,8 @@ class Atan(object):
             )(val)
 
 
-class Atan2(object):
+@pureMapping(math.atan2)
+class Atan2:
     def __call__(self, val1, val2):
         return __inline_fora(
             """fun(val) {
@@ -156,7 +168,8 @@ class Atan2(object):
             )(val1, val2)
 
 
-class Atanh(object):
+@pureMapping(math.atanh)
+class Atanh:
     def __call__(self, val):
         if val >= 1:
             raise ValueError("math domain error")
@@ -168,7 +181,8 @@ class Atanh(object):
             )(val)
 
 
-class Tan(object):
+@pureMapping(math.tan)
+class Tan:
     def __call__(self, val):
         return __inline_fora(
             """fun(val) {
@@ -177,7 +191,8 @@ class Tan(object):
             )(val)
 
 
-class Tanh(object):
+@pureMapping(math.tanh)
+class Tanh:
     def __call__(self, val):
         return __inline_fora(
             """fun(val) {
@@ -186,7 +201,8 @@ class Tanh(object):
             )(val)
 
 
-class Ceil(object):
+@pureMapping(math.ceil)
+class Ceil:
     def __call__(self, val):
         return __inline_fora(
             """fun(val) {
@@ -195,7 +211,8 @@ class Ceil(object):
             )(val)
 
 
-class Erf(object):
+@pureMapping(math.erf)
+class Erf:
     def __call__(self, val):
         return __inline_fora(
             """fun(val) {
@@ -204,7 +221,8 @@ class Erf(object):
             )(val)
 
 
-class Erfc(object):
+@pureMapping(math.erfc)
+class Erfc:
     def __call__(self, val):
         return __inline_fora(
             """fun(val) {
@@ -213,7 +231,8 @@ class Erfc(object):
             )(val)
 
 
-class Exp(object):
+@pureMapping(math.exp)
+class Exp:
     def __call__(self, val):
         return __inline_fora(
             """fun(val) {
@@ -222,7 +241,8 @@ class Exp(object):
             )(val)
 
 
-class Expm1(object):
+@pureMapping(math.expm1)
+class Expm1:
     def __call__(self, x):
         # if very small, return first three terms of taylor expansion
         if abs(x) < 1e-5:
@@ -231,7 +251,8 @@ class Expm1(object):
         return math.exp(x) - 1.0
 
 
-class Factorial(object):
+@pureMapping(math.factorial)
+class Factorial:
     def __call__(self, val):
         if not math.floor(val) == val:
             raise ValueError(
@@ -252,7 +273,8 @@ class Factorial(object):
         return res
 
 
-class Floor(object):
+@pureMapping(math.floor)
+class Floor:
     def __call__(self, x):
         remainder = math.fmod(x, 1)
 
@@ -265,7 +287,8 @@ class Floor(object):
         return float(x - remainder - 1)
 
 
-class Fmod(object):
+@pureMapping(math.fmod)
+class Fmod:
     def __call__(self, x, y):
         if not isinstance(x, float):
             x = float(x)
@@ -279,7 +302,8 @@ class Fmod(object):
             )(x, y)
 
 
-class Lgamma(object):
+@pureMapping(math.lgamma)
+class Lgamma:
     def __call__(self, val):
         if val <= -1 or val == 0:
             raise ValueError("math domain error")
@@ -291,7 +315,8 @@ class Lgamma(object):
             )(val)
 
 
-class Log10(object):
+@pureMapping(math.log10)
+class Log10:
     def __call__(self, val):
         if val <= 0.0:
             raise ValueError("math domain error")
@@ -303,7 +328,8 @@ class Log10(object):
             )(val)
 
 
-class Log1p(object):
+@pureMapping(math.log1p)
+class Log1p:
     def __call__(self, x):
         if x <= -1:
             raise ValueError("math domain error")
@@ -314,24 +340,4 @@ class Log1p(object):
             return x
 
         return math.log(t) * (x / (t - 1.0))
-
-
-def generateMappings():
-    mappings_ = [
-        (math.sqrt, Sqrt), (math.hypot, Hypot), (math.log, Log), (math.cos, Cos),
-        (math.sin, Sin), (math.tan, Tan), (math.cosh, Cosh), (math.sinh, Sinh),
-        (math.tanh, Tanh), (math.acosh, Acosh), (math.asinh, Asinh),
-        (math.atanh, Atanh), (math.acos, Acos), (math.asin, Asin),
-        (math.atan, Atan), (math.atan2, Atan2), (math.ceil, Ceil), (math.erf, Erf),
-        (math.erfc, Erfc), (math.exp, Exp), (math.expm1, Expm1),
-        (math.factorial, Factorial), (math.floor, Floor), (math.lgamma, Lgamma),
-        (math.log, Log), (math.log10, Log10), (math.log1p, Log1p),
-        (math.fmod, Fmod)
-    ]
-
-    tr = [PureImplementationMapping.InstanceMapping(instance, pureType) for \
-          (instance, pureType) in mappings_]
-
-    return tr
-
 

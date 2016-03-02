@@ -193,9 +193,10 @@ astCache_ = {}
 def parseStringToPythonAst(text):
     lineOffsets = computeLineOffsets(text)
     try:
-        if text not in astCache_:
-            astCache_[text] = convertPythonAstToForaPythonAst(ast.parse(text), lineOffsets)
-        return astCache_[text]
+        pyAst = astCache_.get(text)
+        if pyAst is None:
+            pyAst = astCache_[text] = convertPythonAstToForaPythonAst(ast.parse(text), lineOffsets)
+        return pyAst
     except SyntaxError as e:
         return ForaNative.PythonParseError(e.msg,
                                            e.filename,

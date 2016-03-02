@@ -13,7 +13,7 @@
 #   limitations under the License.
 
 
-import pyfora.PureImplementationMapping as PureImplementationMapping
+from pyfora.PureImplementationMapping import pureMapping
 import pyfora.pure_modules.pure_math as PureMath
 import pyfora.pure_modules.pure_numpy as PureNumpy
 from pyfora.pure_modules.pure___builtin__ import Round
@@ -25,7 +25,8 @@ import scipy
 import scipy.special
 
 
-class BetaFunction(object):
+@pureMapping(scipy.special.beta)
+class BetaFunction:
     def __call__(self, a, b):
         if not isinstance(a, float):
             a = float(a)
@@ -39,7 +40,8 @@ class BetaFunction(object):
             )(a, b)
 
 
-class GammaFunction(object):
+@pureMapping(scipy.special.gamma)
+class GammaFunction:
     def __call__(self, x):
         if not isinstance(x, float):
             x = float(x)
@@ -51,7 +53,8 @@ class GammaFunction(object):
             )(x)
 
 
-class Hyp2f1(object):
+@pureMapping(scipy.special.hyp2f1)
+class Hyp2f1:
     def __call__(self, a, b, c, z):
         if not isinstance(a, float):
             a = float(a)
@@ -69,7 +72,9 @@ class Hyp2f1(object):
             )(a, b, c, z)
 
 
-class Digamma(object):
+@pureMapping(scipy.special.digamma)
+@pureMapping(scipy.special.psi)
+class Digamma:
     def __call__(self, z):
         if not isinstance(z, float):
             z = float(z)
@@ -81,7 +86,8 @@ class Digamma(object):
             )(z)
 
 
-class Erfcinv(object):
+@pureMapping(scipy.special.erfcinv)
+class Erfcinv:
     def __call__(self, x):
         if not isinstance(x, float):
             x = float(x)
@@ -93,7 +99,8 @@ class Erfcinv(object):
             )(x)
 
 
-class Erfinv(object):
+@pureMapping(scipy.special.erfinv)
+class Erfinv:
     def __call__(self, x):
         if not isinstance(x, float):
             x = float(x)
@@ -105,7 +112,8 @@ class Erfinv(object):
             )(x)
 
 
-class Betainc(object):
+@pureMapping(scipy.special.betainc)
+class Betainc:
     def __call__(self, a, b, x):
         if not isinstance(a, float):
             a = float(a)
@@ -121,7 +129,8 @@ class Betainc(object):
             )(a, b, x)
 
 
-class Betaincinv(object):
+@pureMapping(scipy.special.betaincinv)
+class Betaincinv:
     def __call__(self, a, b, y):
         if not isinstance(a, float):
             a = float(a)
@@ -137,7 +146,8 @@ class Betaincinv(object):
             )(a, b, y)
 
 
-class GammaLn(object):
+@pureMapping(scipy.special.gammaln)
+class GammaLn:
     def __call__(self, x):
         if not isinstance(x, float):
             x = float(x)
@@ -152,7 +162,8 @@ class GammaLn(object):
             )(x)
 
 
-class BetaLn(object):
+@pureMapping(scipy.special.betaln)
+class BetaLn:
     def __call__(self, a, b):
         if not isinstance(a, float):
             a = float(a)
@@ -166,7 +177,8 @@ class BetaLn(object):
             )(a, b)
 
 
-class Kn(object):
+@pureMapping(scipy.special.kn)
+class Kn:
     """Modified Bessel function of the second kind of integer order n
        Returns the modified Bessel function of the second kind for
        integer order n at real x."""
@@ -183,7 +195,8 @@ class Kn(object):
             )(n, x)
 
 
-class Iv(object):
+@pureMapping(scipy.special.iv)
+class Iv:
     "Modified Bessel function of the first kind of real order v"
     def __call__(self, v, z):
         if not isinstance(v, int):
@@ -198,7 +211,8 @@ class Iv(object):
             )(v, z)
 
 
-class Comb(object):
+@pureMapping(scipy.special.comb)
+class Comb:
     def __call__(self, n, k):
         if not isinstance(n, int):
             n = int(n)
@@ -221,7 +235,8 @@ class Comb(object):
         return res
 
 
-class Logit(object):
+@pureMapping(scipy.special.logit)
+class Logit:
     def __call__(self, p):
         if not isinstance(p, float):
             p = float(p)
@@ -238,47 +253,95 @@ class Logit(object):
         return scipy.log(p / (1.0 - p))
 
 
-class Expit(object):
+@pureMapping(scipy.special.expit)
+class Expit:
     def __call__(self, x):
         if not isinstance(x, float):
             x = float(x)
 
         return 1.0 / (1.0 + scipy.exp(-x))
 
-
-def generateMappings():
-    tr = []
-
-    # some of these creatures need "vectorized" forms, as in scipy they're
-    # really "ufunc"s
-    mappings_ = [
-        (scipy.special.beta, BetaFunction), (scipy.special.gamma, GammaFunction),
-        (scipy.special.hyp2f1, Hyp2f1), (scipy.special.erf, PureMath.Erf),
-        (scipy.special.expm1, PureMath.Expm1),
-        (scipy.special.digamma, Digamma),
-        (scipy.special.psi, Digamma),
-        (scipy.special.erfc, PureMath.Erfc), (scipy.special.erfcinv, Erfcinv),
-        (scipy.special.erfinv, Erfinv), (scipy.special.betainc, Betainc),
-        (scipy.special.gammaln, GammaLn),
-        (scipy.special.betaln, BetaLn),
-        (scipy.special.log1p, PureNumpy.Log1p),
-        (scipy.special.kn, Kn), (scipy.special.iv, Iv),
-        (scipy.special.comb, Comb), (scipy.special.factorial, PureMath.Factorial),
-        (scipy.special.logit, Logit), (scipy.special.expit, Expit),
-        (scipy.special.round, Round),
-        (scipy.floor, PureMath.Floor),
-        (scipy.log, PureNumpy.Log),
-        (scipy.log1p, PureNumpy.Log1p),
-        (scipy.exp, PureMath.Exp), (scipy.expm1, PureMath.Expm1),
-        (scipy.sqrt, PureMath.Sqrt), (scipy.hypot, PureMath.Hypot),
-        (scipy.cos, PureMath.Cos), (scipy.sin, PureMath.Sin), (scipy.tan, PureMath.Tan),
-        (scipy.cosh, PureMath.Cosh), (scipy.sinh, PureMath.Sinh), (scipy.tan, PureMath.Tanh),
-        (scipy.isnan, PureNumpy.IsNan)
-        ]
-
-    tr = [PureImplementationMapping.InstanceMapping(instance, pureType) for \
-          (instance, pureType) in mappings_]
-
-    return tr
+@pureMapping(scipy.special.erf)
+class ScipyErf:
+    def __call__(self, x):
+        return PureMath.Erf()(x)
 
 
+@pureMapping(scipy.special.erfc)
+class ScipyErfc:
+    def __call__(self, x):
+        return PureMath.Erfx()(x)
+
+
+@pureMapping(scipy.special.expm1)
+class ScipyExpm1:
+    def __call__(self, x):
+        return PureMath.Expm1()(x)
+
+
+@pureMapping(scipy.special.log1p)
+class ScipyLog1p(PureNumpy.Log1p): pass
+
+
+@pureMapping(scipy.special.factorial)
+class ScipyFactorial(PureMath.Factorial): pass
+
+
+@pureMapping(scipy.special.round)
+class ScipyRound(Round): pass
+
+
+@pureMapping(scipy.floor)
+class ScipyFloor(PureMath.Floor): pass
+
+
+@pureMapping(scipy.log)
+class ScipyLog(PureNumpy.Log): pass
+
+
+@pureMapping(scipy.log1p)
+class ScipyLog1p(PureNumpy.Log1p): pass
+
+
+@pureMapping(scipy.exp)
+class ScipyExp(PureMath.Exp): pass
+
+
+@pureMapping(scipy.expm1)
+class ScipyExpm1(PureMath.Expm1): pass
+
+
+@pureMapping(scipy.sqrt)
+class ScipySqrt(PureMath.Sqrt): pass
+
+
+@pureMapping(scipy.hypot)
+class ScipytHypot(PureMath.Hypot): pass
+
+
+@pureMapping(scipy.cos)
+class ScipyCos(PureMath.Cos): pass
+
+
+@pureMapping(scipy.sin)
+class ScipySin(PureMath.Sin): pass
+
+
+@pureMapping(scipy.tan)
+class ScipyTan(PureMath.Tan): pass
+
+
+@pureMapping(scipy.cosh)
+class ScipytCosh(PureMath.Cosh): pass
+
+
+@pureMapping(scipy.sinh)
+class ScipySinh(PureMath.Sinh): pass
+
+
+@pureMapping(scipy.tanh)
+class ScipyTanh(PureMath.Tanh): pass
+
+
+@pureMapping(scipy.isnan)
+class ScipyIsNan(PureNumpy.IsNan): pass

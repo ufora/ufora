@@ -12,6 +12,7 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+import inspect
 import pyfora.Exceptions as Exceptions
 
 class PureImplementationMapping(object):
@@ -110,3 +111,40 @@ class InstanceMapping(PureImplementationMapping):
         return self.instance
 
 
+class PureMappingRegistry(object):
+    mappings = {}
+
+    @classmethod
+    def mappingsForRootModule(cls, root):
+        return cls.mappings.get(root, [])
+
+
+def pureMapping(instance_or_mapping):
+    def registerMapping(root_module, mapping):
+        mappings = PureMappingRegistry.mappings.get(root_module)
+        if mappings is None:
+            mappings = []
+            PureMappingRegistry.mappings[root_module] = mappings
+        mappings.append(mapping)
+
+    if inspect.isclass(instance_or_mapping) and issubclass(instance_or_mapping,
+                                                           PureImplementationMapping):
+        root_module = instance_or_mapping.__module__.split('.')[-1]
+        if root_module.startswith('pure_'):
+            root_module = root_module[len('pure_'):]
+        registerMapping(root_module, instance_or_mapping())
+        return instance_or_mapping
+
+    def wrap(cls):
+        module = None
+        if hasattr(instance_or_mapping, '__module__'):
+            module = instance_or_mapping.__module__
+        elif hasattr(instance_or_mapping, '__class__'):
+            module = instance_or_mapping.__class__.__module__
+
+        assert module is not None, "Using @pureMapping with unsupported object %s" % (
+            instance_or_mapping,)
+        root_module = module.split('.')[0]
+        registerMapping(root_module, InstanceMapping(instance_or_mapping, cls))
+        return cls
+    return wrap

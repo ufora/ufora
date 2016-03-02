@@ -948,8 +948,8 @@ class Converter(object):
 
         return tr
 
-    def convertClassOrFunctionDefinitionToNativePyAst(self,
-                                                      classOrFunctionDefinition,
+    @staticmethod
+    def convertClassOrFunctionDefinitionToNativePyAst(classOrFunctionDefinition,
                                                       objectIdToObjectDefinition):
         sourceText = objectIdToObjectDefinition[classOrFunctionDefinition.sourceFileId].text
 

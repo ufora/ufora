@@ -15,11 +15,9 @@
 
 """Pure Python Implementations of Python builtins (in alphabetical order)."""
 
-
-import pyfora.PureImplementationMapping as PureImplementationMapping
-
-
 import math
+import pyfora.PureImplementationMapping as PureImplementationMapping
+from pyfora.PureImplementationMapping import pureMapping
 
 
 # List of Python 2.7 builtins:
@@ -34,12 +32,13 @@ import math
 # 'reversed', 'round', 'set', 'setattr', 'slice', 'sorted', 'staticmethod', 'str',
 # 'sum', 'super', 'tuple', 'type', 'unichr', 'unicode', 'vars', 'xrange', 'zip'
 
-
+@pureMapping(abs)
 class Abs:
     def __call__(self, val):
         return val.__abs__()
 
 
+@pureMapping(all)
 class All:
     def __call__(self, iterable):
         if len(iterable) == 0:
@@ -50,6 +49,7 @@ class All:
         return True
 
 
+@pureMapping(any)
 class Any:
     def __call__(self, iterable):
         if len(iterable) == 0:
@@ -60,10 +60,13 @@ class Any:
         return False
 
 
+@pureMapping(chr)
 class Chr:
     def __call__(self, asciiValue):
         return asciiValue.__pyfora_chr__()
 
+
+@pureMapping(enumerate)
 class Enumerate:
     def __call__(self, iterable):
         count = 0
@@ -71,11 +74,14 @@ class Enumerate:
             yield (count, val)
             count = count + 1
 
+
+@pureMapping(len)
 class Len:
     def __call__(self, other):
         return other.__len__()
 
 
+@pureMapping(max)
 class Max:
     def __call__(self, a, b):
         if a < b:
@@ -83,6 +89,7 @@ class Max:
         return a
 
 
+@pureMapping(min)
 class Min:
     def __call__(self, a, b):
         if a < b:
@@ -90,6 +97,7 @@ class Min:
         return b
 
 
+@pureMapping(ord)
 class Ord:
     def __call__(self, character):
         # assert we're getting a character of length 1
@@ -99,15 +107,17 @@ class Ord:
         return character.__pyfora_ord__()
 
 
+@pureMapping(range)
 class Range:
     def __call__(self, first, second=None, increment=None):
         return list(xrange(first, second, increment))
 
 
+
 class Empty:
     pass
 
-
+@pureMapping(reduce)
 class Reduce:
     def __call__(self, f, sequence, start=Empty):
         #get a generator
@@ -165,6 +175,7 @@ class Reduce:
             return f(start, result)
 
 
+@pureMapping(map)
 class Map:
     def __call__(self, f, iterable):
         if f is None:
@@ -172,6 +183,7 @@ class Map:
         return [f(x) for x in iterable]
 
 
+@pureMapping(reversed)
 class Reversed:
     def __call__(self, arr):
         l = len(arr)
@@ -180,6 +192,7 @@ class Reversed:
             yield v
 
 
+@pureMapping(sum)
 class Sum:
     def __call__(self, sequence, start=0):
         return reduce(lambda x,y: x+y, sequence, start)
@@ -271,6 +284,7 @@ class XRangeInstance:
         return Generator(self.start, self.count, self.increment)
 
 
+@pureMapping(xrange)
 class XRange:
     def __call__(self, first, second=None, increment=None):
         if not isinstance(first, int):
@@ -307,6 +321,7 @@ class XRange:
         return XRangeInstance(start, count, increment)
 
 
+@pureMapping(sorted)
 class Sorted:
     def __call__(self, iterable):
         if isinstance(iterable, list):
@@ -319,6 +334,7 @@ class Sorted:
         return Sorted.__pyfora_builtins__.sorted(xs)
 
 
+@pureMapping(round)
 class Round:
     def __call__(self, x):
         f = math.floor(x)
@@ -329,7 +345,26 @@ class Round:
         return f + 1
 
 
-class PurePythonComplex:
+@pureMapping
+class PurePythonComplexMapping(PureImplementationMapping.PureImplementationMapping):
+    def getMappablePythonTypes(self):
+        return [complex]
+
+    def getMappableInstances(self):
+        return []
+
+    def getPurePythonTypes(self):
+        return [PurePythonComplex]
+
+    def mapPythonInstanceToPyforaInstance(self, c):
+        return PurePythonComplex(c.real, c.imag)
+
+    def mapPyforaInstanceToPythonInstance(self, pureComplex):
+        return complex(pureComplex.real, pureComplex.imag)
+
+
+@pureMapping(complex)
+class PurePythonComplex(object):
     def __init__(self, real, imag=0.0):
         if isinstance(real, str):
             PurePythonComplex.__pyfora_builtins__.raiseInvalidPyforaOperation(
@@ -434,68 +469,8 @@ class PurePythonComplex:
         else:
             return PurePythonComplex(self.real % other, self.imag)
 
+@pureMapping(complex)
 class PurePythonComplexCls:
     def __call__(self, real, imag=0.0):
         return PurePythonComplex(real, imag)
-
-
-class PurePythonComplexMapping(PureImplementationMapping.PureImplementationMapping):
-    def getMappablePythonTypes(self):
-        return [complex]
-
-    def getMappableInstances(self):
-        return []
-
-    def getPurePythonTypes(self):
-        return [PurePythonComplex]
-
-    def mapPythonInstanceToPyforaInstance(self, c):
-        return PurePythonComplex(c.real, c.imag)
-
-    def mapPyforaInstanceToPythonInstance(self, pureComplex):
-        return complex(pureComplex.real, pureComplex.imag)
-
-
-mappings_ = [
-    (abs, Abs), (all, All), (any, Any),
-    (apply, None), (basestring, None), (bin, None),
-    (buffer, None), (bytearray, None),
-    #note that bytes in python2.7 is actually the same object as 'str'
-    #which is already implemented in the NamedSingletons
-    #(bytes, None),
-    (callable, None), (chr, Chr),
-    (classmethod, None), (cmp, None), (coerce, None),
-    (compile, None), (copyright, None),
-    (credits, None), (delattr, None),
-    (dir, None), (divmod, None), (enumerate, Enumerate),
-    (eval, None), (execfile, None), (exit, None),
-    (file, None), (filter, None),
-    (format, None), (frozenset, None), (getattr, None),
-    (globals, None), (hasattr, None), (hash, None),
-    (help, None), (hex, None), (id, None), (input, None),
-    (intern, None), (iter, None), (len, Len),
-    (license, None), (locals, None),
-    (long, None), (map, Map), (max, Max),
-    (memoryview, None), (min, Min), (next, None),
-    (oct, None), (open, None),
-    (ord, Ord), (pow, None),
-    # (print, None), This syntax doesn't work for builtin print
-    # because it isn't called with parens
-    (property, None), (quit, None), (range, Range),
-    (raw_input, None), (reduce, Reduce), (reload, None),
-    (repr, None), (reversed, Reversed), (round, Round),
-    (set, None), (setattr, None),
-    (sorted, Sorted), (staticmethod, None),
-    (sum, Sum), (super, None),
-    (unichr, None), (unicode, None),
-    (vars, None), (xrange, XRange), (zip, None)
-    ]
-
-
-def generateMappings():
-    return [PureImplementationMapping.InstanceMapping(instance, pureType)
-            for (instance, pureType) in mappings_] + \
-            [PurePythonComplexMapping(),
-             PureImplementationMapping.InstanceMapping(complex, PurePythonComplexCls)]
-
 

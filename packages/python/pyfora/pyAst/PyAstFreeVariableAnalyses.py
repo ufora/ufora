@@ -231,9 +231,10 @@ def getFreeVariables(pyAstNode, isClassContext=None, getPositions=False):
 
 class _FreeVariableMemberAccessChainsVisitor(GenericBoundValuesScopedVisitor):
     """Collect the free variable member access chains in a block of code."""
-    def __init__(self):
+    def __init__(self, exclude_predicate=None):
         super(_FreeVariableMemberAccessChainsVisitor, self).__init__()
         self._freeVariableMemberAccessChainsWithPos = set()
+        self.exclude_predicate = exclude_predicate
 
     def getFreeVariablesMemeberAccessChains(self, getPositions=False):
         if getPositions:
@@ -276,6 +277,10 @@ class _FreeVariableMemberAccessChainsVisitor(GenericBoundValuesScopedVisitor):
                     )
                 )
 
+    def generic_visit(self, node):
+        if self.exclude_predicate is None or not self.exclude_predicate(node):
+            super(_FreeVariableMemberAccessChainsVisitor, self).generic_visit(node)
+
 
 def _memberAccessChainOrNone(pyAstNode):
     res = _memberAccessChainOrNoneImpl(pyAstNode)
@@ -305,9 +310,12 @@ def _memberAccessChainOrNoneImpl(pyAstNode):
     return []  # how can this path be exercised?
 
 
-def getFreeVariableMemberAccessChains(pyAstNode, isClassContext=None, getPositions=False):
+def getFreeVariableMemberAccessChains(pyAstNode,
+                                      isClassContext=None,
+                                      getPositions=False,
+                                      exclude_predicate=None):
     pyAstNode = PyAstUtil.getRootInContext(pyAstNode, isClassContext)
-    vis = _FreeVariableMemberAccessChainsVisitor()
+    vis = _FreeVariableMemberAccessChainsVisitor(exclude_predicate)
     vis.visit(pyAstNode)
     return vis.getFreeVariablesMemeberAccessChains(getPositions)
 

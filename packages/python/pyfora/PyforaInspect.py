@@ -14,22 +14,22 @@
 
 # This is a copy of inspect.py from python 2.7 with a mod in findsource
 # to throw when there are multiple candidates when looking for a class
-# which was implemented as a best-effort. 
+# which was implemented as a best-effort.
 # -*- coding: iso-8859-1 -*-
 """Get useful information from live Python objects.
 
 This module slightly modifies the behavior of the inspect.py module,
 which takes a best-effort approach to returning the source or sourcelines
-of objects that represent classes. Our approach is to raise a 
+of objects that represent classes. Our approach is to raise a
 PyforaInspectError exception if we cannot determine unequivocally which
 source corresponds to the queried object.
 
-This module implements a modified version of the 'findsource' function 
-provided by inspect, and it provides the entry points that can reach this 
-function unmodified. These are: getcomments, getsourcelines, getsource, 
+This module implements a modified version of the 'findsource' function
+provided by inspect, and it provides the entry points that can reach this
+function unmodified. These are: getcomments, getsourcelines, getsource,
 getframeinfo, getouterframes, getinnerframes, stack, and trace.
-  
-Here are some of the useful functions provided by this module which are 
+
+Here are some of the useful functions provided by this module which are
 directly imported from the inspect module:
 
     ismodule(), isclass(), ismethod(), isfunction(), isgeneratorfunction(),
@@ -111,10 +111,10 @@ def getsourcefile(object):
     Return None if no way can be identified to get the source.
     """
     filename = getfile(object)
-    
+
     if filename == "<stdin>":
         return filename
-    
+
     if string.lower(filename[-4:]) in ('.pyc', '.pyo'):
         filename = filename[:-4] + '.py'
     for suffix, mode, kind in imp.get_suffixes():
@@ -175,7 +175,13 @@ def findsource(pyObject):
         elif len(candidates) > 1:
             raise PyforaInspectError('could not find class unequivocally: class ' + name)
         else:
-            return lines, candidates[0]
+            # classes may have decorators and the decorator is considered part
+            # of the class definition
+            lnum = candidates[0]
+            pat = re.compile(r'^(\s*)@\w+')
+            while lnum > 0 and pat.match(lines[lnum-1]):
+                lnum -= 1
+            return lines, lnum
 
     if ismethod(pyObject):
         pyObject = pyObject.im_func

@@ -85,8 +85,14 @@ class BuiltinTestCases(object):
         def f(x):
             return zip(x)
 
-        with self.assertRaises(pyfora.Exceptions.PyforaNotImplementedError):
+        with self.assertRaises(pyfora.Exceptions.ComputationError) as ctx:
             self.equivalentEvaluationTest(f, [])
+
+        exception = ctx.exception
+        self.assertIsInstance(exception.remoteException, pyfora.Exceptions.UnconvertibleValueError)
+        self.assertEqual(exception.remoteException.message, "Pyfora didn't know how to convert zip")
+
+
 
     def test_reversed_builtins(self):
         def f():

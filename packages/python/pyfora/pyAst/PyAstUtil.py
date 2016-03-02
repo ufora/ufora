@@ -27,10 +27,12 @@ LINENO_ATTRIBUTE_NAME = 'lineno'
 def CachedByArgs(f):
     """Function decorator that adds a simple memo to 'f' on its arguments"""
     cache = {}
-    def inner(*args):
-        if args not in cache:
-            cache[args] = f(*args)
-        return cache[args]
+    def inner(*args, **kwargs):
+        keys = sorted(kwargs.iterkeys())
+        all_args = args + tuple((k, kwargs[k]) for k in keys)
+        if (all_args) not in cache:
+            cache[all_args] = f(*args, **kwargs)
+        return cache[all_args]
     return inner
 
 def getSourceText(pyObject):
@@ -214,7 +216,7 @@ def collectDataMembersSetInInit(pyClassObject):
 
 def _collectDataMembersSetInInitAst(initAst):
     _assertOnlySimpleStatements(initAst)
-    
+
     if len(initAst.args.args) == 0:
         raise Exceptions.PythonToForaConversionError(
             "the `__init__ method is missing a first, positional, " \
