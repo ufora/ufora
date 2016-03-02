@@ -54,7 +54,7 @@ class CPPMLPrettyPrint<CallSite> {
 public:
 	static void prettyPrint(CPPMLPrettyPrintStream& stream,
 							const CallSite& cs) {
-		stream << "CallSite(" << cs.callerName << ", " << cs.siteId << ")";
+		stream << "CallSite(" << cs.callerName << "->" << cs.calleeName << ", " << cs.siteId << ")";
 	}
 };
 
