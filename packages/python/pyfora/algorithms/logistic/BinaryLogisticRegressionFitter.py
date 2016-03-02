@@ -78,7 +78,7 @@ class BinaryLogisticRegressionFitter(object):
                 corresponding to the feature vectors in `X`.
 
         Returns:
-            A :class:`~pyfora.algorithms.BinaryLogisticRegressionModel.BinaryLogisticRegressionModel`
+            A :class:`~pyfora.algorithms.logistic.BinaryLogisticRegressionModel.BinaryLogisticRegressionModel`
             which represents the fit model.
 
         Examples::
@@ -94,7 +94,7 @@ class BinaryLogisticRegressionFitter(object):
             model = fitter.fit(x, y)
 
         """
-        assert X.shape[0] == y.shape[0]
+        assert len(X) == len(y)
 
         if isinstance(y, PurePandas.PurePythonDataFrame):
             assert y.shape[1] == 1
@@ -139,6 +139,8 @@ class BinaryLogisticRegressionFitter(object):
         if self.hasIntercept:
             intercept = returnValue.weights[-1]
             weights = returnValue.weights[:-1]
+        else:
+            weights = returnValue.weights
 
         return BinaryLogisticRegressionModel(
             weights,
