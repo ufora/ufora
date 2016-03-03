@@ -14,6 +14,8 @@
 
 import json
 from socketIO_client import SocketIO, BaseNamespace
+from socketIO_client.transports import WebsocketTransport
+
 import time
 import threading
 
@@ -65,6 +67,10 @@ class SocketIoJsonInterface(object):
             self.connection_status.status = ConnectionStatus.connecting
             self.socketIO = SocketIO(self.url)
             self.reactorThread = threading.Thread(target=self.socketIO.wait)
+            
+            if isinstance(self.socketIO._transport_instance, WebsocketTransport):
+                self.socketIO._transport_instance._connection.lock = threading.Lock()
+
             self.reactorThread.daemon = True
             self.namespace = self.socketIO.define(self._namespaceFactory, self.path)
             self.reactorThread.start()
