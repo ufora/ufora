@@ -312,7 +312,7 @@ class ObjectiveFunctionAtWeights(object):
 
         # this part doesn't seem so natural. What if we had a row major self.X?
         tr = numpy.array(
-            [column.dot(DXv) for column in self.X.columns()]
+            [self.C * column.dot(DXv) for column in self.X.columns()]
             )
 
         tr = tr + v

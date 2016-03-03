@@ -49,16 +49,15 @@ class TrustRegionTests(object):
 
         C = 1.0 / len(y)
 
-        # results close, but not exact with scikit
         res = self.solve(X, y, 1, C)
         numpy.testing.assert_allclose(
             res.weights,
-            [-0.26756433, -0.26756433]
+            [-0.26760031, -0.26760031]
             )
-        self.assertEqual(res.iterations, 7)
+        self.assertEqual(res.iterations, 2)
 
     def test_trust_region_3(self):
-        # corresponts to the fora test: logisticregressionTests.basic_2
+        # corresponds to the fora test: logisticregressionTests.basic_2
 
         X = pandas.DataFrame(
             [[-0.25091976,  0.90142861],
@@ -72,13 +71,13 @@ class TrustRegionTests(object):
         C = 1.0 / len(X) / 0.01
 
         res = self.solve(X, y, 1, C)
-
         numpy.testing.assert_allclose(
-            res.weights, [1.5530473, 1.28470756]
+            res.weights,
+            [1.55340616, 1.28486523]
             )
 
     def test_trust_region_4(self):
-        # corresponts to the fora test: logisticregressionTests.basic_3
+        # corresponds to the fora test: logisticregressionTests.basic_3
 
         X = pandas.DataFrame(
             {'A': [-0.25091976, 0.46398788, -0.68796272],
@@ -92,11 +91,11 @@ class TrustRegionTests(object):
 
         numpy.testing.assert_allclose(
             res.weights,
-            [-1.78147235, 3.42028558]
+            [-1.78096818,  3.42088899]
             )
         
     def test_trust_region_5(self):
-        # corresponts to the fora test: logisticregressionTests.basic_4
+        # corresponds to the fora test: logisticregressionTests.basic_4
 
         X = pandas.DataFrame(
             [[-0.25091976,  0.90142861],
@@ -118,5 +117,5 @@ class TrustRegionTests(object):
 
         numpy.testing.assert_allclose(
             res.weights,
-            [-2.42791166, 2.69727845]
+            [-2.42814882,  2.69715838]
             )
