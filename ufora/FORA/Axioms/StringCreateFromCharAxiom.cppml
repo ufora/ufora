@@ -1,0 +1,85 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "StringCreateFromCharAxiom.hppml"
+#include "Axiom.hppml"
+#include "TypedForaAxiomBuilder.hppml"
+#include "../Native/TypedNativeExpression.hppml"
+#include "../TypedFora/ABI/StringCodegen.hppml"
+
+StringCreateFromCharAxiom::StringCreateFromCharAxiom() :
+    AxiomGroup(
+        JOVT() + 
+        "UInt8ToString" + 
+        "Call" +
+        JOV::OfType(Type::Integer(8, false))
+        )
+    {
+    }
+
+Nullable<Axiom> StringCreateFromCharAxiom::axiom(
+        TypedFora::Compiler&, const JudgmentOnValueTuple& inSignature
+        )
+    {
+    using namespace TypedNativeExpressionHelpers;
+
+    TypedFora::TypedForaAxiomBuilder axiomBuilder(
+        signature(),
+        TypedFora::RefcountStyle::Pooled()
+        );
+
+    Nullable<AxiomJOA> joa = axiomJOA(inSignature);
+
+    lassert(!joa.isNull() and joa->isNative());
+
+    ImmutableTreeVector<NativeExpression> exprs;
+
+    exprs = exprs + 
+        NativeExpression::BinaryOp(
+            NativeBinaryOpcode::Add(),
+            //the first byte needs to be "3" - a 1 to indicate it's a packed string, and the remaining
+            //bytes encode the size
+            NativeExpression::ConstantULong(3),
+            //the next byte after that is the byte we were given, and then zeros
+            NativeExpression::BinaryOp(
+                NativeBinaryOpcode::Mul(),
+                NativeExpression::ConstantULong(256),
+                axiomBuilder.nativeVar(2).expr().cast(NativeType::uword(), false)
+                )
+            );
+
+    while (exprs.size() < sizeof(String) / sizeof(uword_t))
+        exprs = exprs + NativeExpression::Zero(NativeType::uword());
+
+    return null() << axiomBuilder.axiomForNativeExpression(
+        NativeExpression::CreateComposite(exprs),
+        TypedFora::RefcountStyle::Pooled(),
+        joa->getNative().joa().resultPart(),
+        joa->getNative().joa().throwPart()
+        );
+    }
+
+Nullable<AxiomJOA> StringCreateFromCharAxiom::axiomJOA(const JudgmentOnValueTuple&)
+    {
+    return null() <<
+        AxiomJOA::Native(
+            JudgmentOnAction::Value(
+                JOV::OfType(
+                    Type::String()
+                    )
+                )
+            );
+    }
+
