@@ -139,7 +139,7 @@ class Ord(object):
         if len(character) != 1:
             raise TypeError("ord() expected a character")
 
-        return character.__pyfora_ord__()
+        return __inline_fora("""fun(s) { PyInt(Int64(s.@m[0])) }""")(character)
 
 
 @pureMapping(range)
