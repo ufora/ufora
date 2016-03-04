@@ -15,10 +15,12 @@
 import ufora.FORA.python.PurePython.InMemorySimulationExecutorFactory as InMemorySimulationExecutorFactory
 import pyfora.RemotePythonObject as RemotePythonObject
 import pyfora.Exceptions as Exceptions
+import pyfora.typeConverters.PurePandas as PurePandas
 
 
 import unittest
 import traceback
+import pandas
 
 
 class WithBlockExecutors_test(unittest.TestCase):
@@ -417,6 +419,25 @@ class WithBlockExecutors_test(unittest.TestCase):
                 x = x + 1
                 
             self.assertEqual(x, 2)
+
+    def test_repeated_instance(self):
+        with self.create_executor() as fora:
+            with fora.remotely:
+                df = PurePandas.PurePythonDataFrame([[1,2,3], [4,5,6]])
+                res1 = isinstance(df, PurePandas.PurePythonDataFrame)
+                res2 = isinstance(df, pandas.DataFrame)
+
+            self.assertEqual(res1.toLocal().result(), True)
+            self.assertEqual(res2.toLocal().result(), False)
+            self.assertIsInstance(df.toLocal().result(), pandas.DataFrame)
+
+            with fora.remotely:
+                res3 = isinstance(df, PurePandas.PurePythonDataFrame)
+                res4 = isinstance(df, pandas.DataFrame)
+                type_ = type(df)
+
+            self.assertEqual(res4.toLocal().result(), False)
+            self.assertEqual(res3.toLocal().result(), True, type_.toLocal().result())
 
 if __name__ == "__main__":
     import ufora.config.Mainline as Mainline
