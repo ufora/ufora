@@ -12,6 +12,8 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+import time
+import ufora.test.PerformanceTestReporter as PerformanceTestReporter
 
 class StringTestCases(object):
     """Test cases for pyfora strings"""
@@ -21,6 +23,30 @@ class StringTestCases(object):
             a = "abc"
             return (a[0], a[1], a[2], a[-1], a[-2])
         self.equivalentEvaluationTest(f)
+
+    def test_large_string_indexing_perf(self):
+        def f(ct, passCt):
+            x = "asdfasdf" * (ct / 8)
+            res = 0
+            for _ in xrange(passCt):
+                for ix in xrange(len(x)):
+                    res = res + len(x[ix])
+            return res
+
+        self.evaluateWithExecutor(f, 1000000, 1)
+        self.evaluateWithExecutor(f, 10000, 1)
+        
+
+        @PerformanceTestReporter.PerfTest("pyfora.string_indexing.large_string")
+        def test1():
+            self.evaluateWithExecutor(f, 1000000, 100)
+        
+        @PerformanceTestReporter.PerfTest("pyfora.string_indexing.small_string")
+        def test2():
+            self.evaluateWithExecutor(f, 10000, 10000)
+        
+        test1()
+        test2()
 
 
     def test_string_indexing_2(self):
