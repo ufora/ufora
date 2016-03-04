@@ -646,6 +646,20 @@ Expression populateMembersTuple(const Expression& expr,
     return transform(expr, transformer);
     }
 
+
+    Expression makeMemberChain(ImmutableTreeVector<std::string> names)
+        {
+        if (names.size() == 1)
+            return Expression::Variable(Symbol(names[0]));
+
+        return Expression::Member(
+                makeMemberChain(names.slice(0, names.size() - 1)),
+                Symbol(names[names.size() - 1]),
+                1
+                );
+
+        }
+
 } // anonymous namespace
 
 namespace Fora {
@@ -1978,7 +1992,7 @@ Expression PythonAstConverter::convertPythonAstStatementToExpression_inner(
                 convertPythonAstClassDefToFora(
                     statement.getClassDef(),
                     statement.extent(),
-                    std::vector<std::string>()
+                    emptyTreeVec()
                     )
                 );
             }
@@ -2224,7 +2238,7 @@ PatternWithName PythonAstConverter::convertPythonAstExpressionToPattern(
 Expression PythonAstConverter::convertPythonAstClassDefToFora(
         const PythonAstStatement_ClassDefType& classDef,
         const SimpleParseRange& extent,
-        const ImmutableTreeVector<std::string>& baseClasses
+        ImmutableTreeVector<ImmutableTreeVector<std::string>> baseClassChains
         ) const
     {
     const std::string& className = classDef.name();
@@ -2239,7 +2253,7 @@ Expression PythonAstConverter::convertPythonAstClassDefToFora(
             );
         }
 
-    if (bases.size() > 0 && baseClasses.size() != bases.size()) {
+    if (bases.size() != baseClassChains.size()) {
         throw PythonToForaConversionError(
             "don't know how to deal with base classes in nested class definitions right now",
             extent
@@ -2265,11 +2279,20 @@ Expression PythonAstConverter::convertPythonAstClassDefToFora(
                 )
             );
 
+    std::vector<Expression> baseClassExpressions;
+    for (auto& chain: baseClassChains)
+        {
+        auto expr = makeMemberChain(chain);
+        baseClassExpressions.push_back(expr);
+        }
 
     ImmutableTreeVector<ApplyArgument> basesMember;
-    for (const std::string& baseClass: baseClasses)
-        basesMember = basesMember + ApplyArgument::Normal(null(),
-                                                          Expression::Variable(Symbol(baseClass)));
+    for (auto base: baseClassExpressions)
+        {
+        basesMember = basesMember + ApplyArgument::Normal(null(), base);
+        }
+
+
     classDefinitionTerms = classDefinitionTerms +
         ClassDefinitionTerm::Static(
             ObjectDefinitionTerm::Member(
@@ -2283,14 +2306,16 @@ Expression PythonAstConverter::convertPythonAstClassDefToFora(
                 )
             );
 
-    auto mixins =
-        (baseClasses.size() == 0 && mPyObjectBaseMixin.type().isClass()) ?
-        baseClasses + std::string("object") :
-        baseClasses;
-
-    for (const std::string& baseClass: mixins)
+    if (baseClassExpressions.size() == 0 && mPyObjectBaseMixin.type().isClass())
         {
-        if (baseClass == "object")
+        baseClassExpressions.push_back(
+            Expression::Variable(Symbol("object"))
+            );
+        }
+
+    for (auto& baseExp: baseClassExpressions)
+        {
+        if (baseExp.isVariable() && baseExp.getVariable().variable().toString() == "object")
             {
             classDefinitionTerms = classDefinitionTerms +
                 ClassDefinitionTerm::ObjectTerm(
@@ -2315,9 +2340,7 @@ Expression PythonAstConverter::convertPythonAstClassDefToFora(
             {
             classDefinitionTerms = classDefinitionTerms +
                 ClassDefinitionTerm::Static(
-                    ObjectDefinitionTerm::Mixin(
-                        Expression::Variable(Symbol(baseClass))
-                        )
+                    ObjectDefinitionTerm::Mixin(baseExp)
                     );
             }
         }

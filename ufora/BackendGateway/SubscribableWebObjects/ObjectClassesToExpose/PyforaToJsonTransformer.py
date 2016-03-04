@@ -35,11 +35,11 @@ class PyforaToJsonTransformer(object):
     def transformStringThatNeedsLoading(self, length):
         self.accumulateObjects(1, length)
         self.anyListsThatNeedLoading = True
-        
+
         return {}
 
     def transformPrimitive(self, primitive):
-        self.accumulateObjects(1, len(primitive) if isinstance(primitive, str) else 0)        
+        self.accumulateObjects(1, len(primitive) if isinstance(primitive, str) else 0)
         return {'primitive': primitive}
 
     def transformTuple(self, tupleMembers):
@@ -68,7 +68,7 @@ class PyforaToJsonTransformer(object):
         return {
             'dict': {
                 'keys': keys,
-                'values': values 
+                'values': values
                 }
             }
 
@@ -97,7 +97,7 @@ class PyforaToJsonTransformer(object):
     def transformBoundMethod(self, instance, name):
         self.accumulateObjects(1)
         return {'boundMethodOn': instance, 'methodName': name}
-    
+
     def transformClassInstance(self, classObject, members):
         self.accumulateObjects(1)
         return {'classInstance': classObject, 'members': members}

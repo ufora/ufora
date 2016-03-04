@@ -29,7 +29,7 @@ class ScipySpecialTestCases(object):
             f(a, b),
             self.evaluateWithExecutor(f, a, b)
             )
-        
+
     def test_gamma(self):
         def f(x):
             return scipy.special.gamma(x)
@@ -90,7 +90,7 @@ class ScipySpecialTestCases(object):
             gamln = scipy.special.gammaln(3)
             lngam = numpy.log(scipy.special.gamma(3))
             return gamln, lngam
-        
+
         gamln, lngam = self.evaluateWithExecutor(f)
 
         numpy.testing.assert_almost_equal(gamln,lngam,8)
@@ -126,5 +126,15 @@ class ScipySpecialTestCases(object):
 
         res1 = self.evaluateWithExecutor(f, 2, 4)
         res2 = numpy.log(abs(scipy.special.beta(2,4)))
-        
+
+        numpy.testing.assert_almost_equal(res1, res2, 8)
+
+
+    def test_scipy_floor(self):
+        def f(x):
+            return scipy.floor(x)
+
+        res1 = self.evaluateWithExecutor(f, 1.43)
+        res2 = f(1.43)
+
         numpy.testing.assert_almost_equal(res1, res2, 8)

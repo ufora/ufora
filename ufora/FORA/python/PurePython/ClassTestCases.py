@@ -855,4 +855,20 @@ class ClassTestCases(object):
             c = Child_13()
             return issubclass(c, Base_13)
 
-        self. equivalentEvaluationTestThatHandlesExceptions(f)
+        self.equivalentEvaluationTestThatHandlesExceptions(f)
+
+    def test_baseclass_in_another_module(self):
+        import ufora.FORA.python.PurePython.testModules.ModuleWithClass \
+            as ModuleWithClass
+
+        class Child_14(ModuleWithClass.A): pass
+
+        local = Child_14()
+        def f():
+            remote = Child_14()
+            return (local.add(1, 2), remote.add(3, 4))
+
+        self.equivalentEvaluationTest(f)
+
+
+

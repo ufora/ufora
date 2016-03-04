@@ -72,7 +72,7 @@ class ObjectRegistry(object):
     def defineClass(self, objectId, sourceFileId, lineNumber, scopeIds, baseClassIds):
         """
         scopeIds: a dict freeVariableMemberAccessChain -> id
-        baseClassIds: a list of (name, id) tuples representing (immediate) base classes
+        baseClassIds: a list of ids representing (immediate) base classes
         """
         freeVariableMemberAccessChainsToId = \
             self._processFreeVariableMemberAccessChainResolution(

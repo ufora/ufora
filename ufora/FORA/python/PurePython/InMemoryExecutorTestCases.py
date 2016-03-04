@@ -55,7 +55,7 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
             self.evaluateWithExecutor(f, 3001)
 
         runTest()
-        
+
 
 
     def test_class_identities(self):

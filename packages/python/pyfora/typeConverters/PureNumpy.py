@@ -294,7 +294,6 @@ class NpArray(object):
 
 def _dotProduct(arr1, arr2):
     len1 = len(arr1)
-
     if len1 != len(arr2):
         raise ValueError("Vector dimensions do not match")
 
@@ -379,7 +378,7 @@ class NpPinv(object):
 class Svd(object):
     def __call__(self, a):
         assert len(a.shape) == 2, "need len(a.shape) == 2"
-        
+
         res = Svd.__pyfora_builtins__.linalg.svd(a)
 
         return (
@@ -440,7 +439,7 @@ class Mean(object):
         return sum(x) / len(x)
 
 
-class Median(object):
+class Median:
     def __call__(self, x):
         raise NotImplementedError("fill this out, bro")
 

@@ -498,10 +498,7 @@ class PyObjectWalker(object):
             sourceFileId=classDescription.sourceFileId,
             lineNumber=classDescription.lineNumber,
             scopeIds=classDescription.freeVariableMemberAccessChainsToId,
-            baseClassIds=[
-                (base.__name__, self._pyObjectIdToObjectId[id(base)])
-                for base in pyObject.__bases__
-                ]
+            baseClassIds=[self._pyObjectIdToObjectId[id(base)] for base in pyObject.__bases__]
             )
 
     def _registerUnconvertible(self, objectId):
@@ -668,7 +665,7 @@ class PyObjectWalker(object):
             except UnresolvedFreeVariableException:
                 pass
 
-        baseClassResolutionOrNone = self._lookupChainInBaseClasses(
+        baseClassResolutionOrNone = self._resolveChainByBaseClasses(
             pyClass, pyAst, chainWithPosition
             )
         if baseClassResolutionOrNone is not None:
@@ -676,23 +673,25 @@ class PyObjectWalker(object):
 
         raise UnresolvedFreeVariableException(chainWithPosition, None)
 
-    @staticmethod
-    def _lookupChainInBaseClasses(pyClass, pyAst, chainWithPosition):
+    def _resolveChainByBaseClasses(self, pyClass, pyAst, chainWithPosition):
         chain = chainWithPosition.var
         position = chainWithPosition.pos
 
-        rootSubChain = chain[:1]
-        rootVar = rootSubChain[0]
+        baseClassChains = [self._getBaseClassChain(base) for base in pyAst.bases]
 
-        baseClassNames = [name.id for name in pyAst.bases]
-        if rootVar in baseClassNames:
-            resolution = pyClass.__bases__[baseClassNames.index(rootVar)]
-            return rootSubChain, resolution, position
+        if chain in baseClassChains:
+            resolution = pyClass.__bases__[baseClassChains.index(chain)]
+            return chain, resolution, position
 
         # note: we could do better here. we could search the class
         # variables of the base class as well
-
         return None
+
+    def _getBaseClassChain(self, baseAst):
+        if isinstance(baseAst, ast.Name):
+            return (baseAst.id,)
+        if isinstance(baseAst, ast.Attribute):
+            return self._getBaseClassChain(baseAst.value) + (baseAst.attr,)
 
     def _lookupChainInFunction(self, pyFunction, chainWithPosition):
         """

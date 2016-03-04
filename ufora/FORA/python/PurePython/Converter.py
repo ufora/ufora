@@ -358,7 +358,6 @@ class Converter(object):
                 stronglyConnectedComponent,
                 objectIdToObjectDefinition
                 )
-
         else:
             self.convertStronglyConnectedComponentWithMoreThanOneNode(
                 objectIdToObjectDefinition,
@@ -532,7 +531,7 @@ class Converter(object):
         elif isinstance(objectDefinition, (TypeDescription.FunctionDefinition,
                                            TypeDescription.ClassDefinition)):
             if isinstance(objectDefinition, TypeDescription.ClassDefinition):
-                for _, baseId in objectDefinition.baseClassIds:
+                for baseId in objectDefinition.baseClassIds:
                     if baseId not in self.convertedValues:
                         self._convert(baseId,
                                       dependencyGraph,
@@ -755,6 +754,10 @@ class Converter(object):
             renamedVariableMapping[freeVariableMemberAccessChain] = \
                 self.convertedValues[dependentId]
 
+        if isinstance(classOrFunctionDefinition, TypeDescription.ClassDefinition):
+            for i, baseId in enumerate(classOrFunctionDefinition.baseClassIds):
+                renamedVariableMapping["baseClass%d" % i] = self.convertedValues[baseId]
+
         self.convertedValues[objectId] = \
             self.specializeFreeVariableMemberAccessChainsAndEvaluate(
                 foraExpression,
@@ -876,7 +879,6 @@ class Converter(object):
 
             if len(chain) == 1:
                 renamedVariableMapping[chain[0]] = implval
-
             else:
                 newName = Expression.freshVarname(
                     '_'.join(chain),
@@ -920,12 +922,19 @@ class Converter(object):
                     )
 
         elif isinstance(classOrFunctionDefinition, TypeDescription.ClassDefinition):
-            baseClassNames = [b[0] for b in classOrFunctionDefinition.baseClassIds]
+            objectIdToFreeVar = {
+                v: k
+                for k, v in classOrFunctionDefinition.freeVariableMemberAccessChainsToId.iteritems()
+                }
+            baseClasses = [
+                objectIdToFreeVar[baseId].split('.')
+                for baseId in classOrFunctionDefinition.baseClassIds
+                ]
             tr = self.nativeConverter.convertPythonAstClassDefToForaOrParseError(
                 pyAst.asClassDef,
                 pyAst.extent,
                 ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath]),
-                baseClassNames
+                baseClasses
                 )
 
         else:
