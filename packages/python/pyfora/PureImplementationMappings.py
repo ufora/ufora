@@ -12,7 +12,9 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+import imp
 import importlib
+import os
 import sys
 
 from pyfora.PureImplementationMapping import PureMappingRegistry
@@ -75,15 +77,34 @@ class PureImplementationMappings(object):
             if root in self.already_loaded or root == 'pyfora':
                 continue
 
-            try:
-                importlib.import_module("pyfora.pure_modules.pure_%s" % root)
-                self.addMappingsForModule(root)
-            except ImportError:
-                pass
+            self.try_load_pure_module(root)
         self.last_seen_sys_modules_len = len(sys.modules)
 
     def addMappingsForModule(self, module_name):
         for mapping in PureMappingRegistry.mappingsForRootModule(module_name):
             self.addMapping(mapping)
         self.already_loaded.add(module_name)
+
+
+    def try_load_pure_module(self, module_name):
+        try:
+            # first try to load a pyfora pure module, if one exists
+            importlib.import_module("pyfora.pure_modules.pure_" + module_name)
+            self.addMappingsForModule(module_name)
+        except ImportError:
+            pass
+
+        pyfora_path = os.getenv('PYFORAPATH')
+        if pyfora_path is None:
+            return
+
+        for mod in [module_name, "pure_" + module_name]:
+            path = os.path.join(pyfora_path, mod)
+            if os.path.exists(path) or os.path.exists(path + '.py'):
+                try:
+                    load_args = imp.find_module(mod, pyfora_path)
+                    imp.load_module("pyfora.user_pure_modules.pure_" + mod, *load_args)
+                    self.addMappingsForModule(module_name)
+                except ImportError:
+                    pass
 
