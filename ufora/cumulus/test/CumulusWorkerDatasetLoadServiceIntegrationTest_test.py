@@ -593,7 +593,6 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
 
     @PerformanceTestReporter.PerfTest("python.InMemoryCumulus.fanout")
     def test_fanout(self):
-        #verify that the compiler doesn't crap out during many runs.
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
 
         self.computeUsingSeveralWorkers("""

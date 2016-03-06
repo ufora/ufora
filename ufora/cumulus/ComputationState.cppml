@@ -31,6 +31,8 @@
 #include "../FORA/VectorDataManager/BigVectorSliceSet.hppml"
 #include "../FORA/Serialization/ForaValueSerializationStream.hppml"
 #include "../core/PolymorphicSharedPtrBinder.hpp"
+#include "SystemwideComputationScheduler/RuntimePrediction/RuntimePredictionValue.hppml"
+#include "SystemwideComputationScheduler/RuntimePrediction/RuntimePredictionSignature.hppml"
 
 using Fora::Interpreter::ExecutionContext;
 using Fora::Interpreter::PausedComputation;
@@ -890,6 +892,14 @@ public:
 							-| Result(r, logs) ->> {
 								mExecutionContext->placeInEvaluationState(r);
 
+								mInitialRuntimePredictionSignature = 
+									RuntimePredictionSignature::Root(
+										RuntimePredictionValue::FromValue(
+											r, 
+											mExecutionContext->getVDM().polymorphicSharedPtrFromThis()
+											)
+										);
+
 								if (actuallyCalculate)
 									wantsCalculate = true;
 								}
@@ -912,6 +922,18 @@ public:
 						}
 					}	
 				-| Split(parentId, pausedComputation) ->> {
+					if (pausedComputation.frames().size() == 1 && 
+							!pausedComputation.pendingResult())
+						mInitialRuntimePredictionSignature = 
+							RuntimePredictionSignature::Split(
+								hashValue(pausedComputation.frames()[0].graph()),
+								pausedComputation.frames()[0].label(),
+								RuntimePredictionValue::FromValue(
+									pausedComputation.frames()[0].values(),
+									mExecutionContext->getVDM().polymorphicSharedPtrFromThis()
+									)
+								);
+
 					mExecutionContext->resumePausedComputation(pausedComputation);
 					
 					mBlockingComputationsInOrder.clear();
@@ -1984,6 +2006,7 @@ public:
 			mOutsideEcValues.serialize(valueStream);
 			
 			valueStream.serialize(mBlockingComputationsInOrder);
+			valueStream.serialize(mInitialRuntimePredictionSignature);
 			valueStream.serialize(mPassthroughTo);
 			valueStream.serialize(mWasPassthroughTo);
 			valueStream.serialize(mIsTemporary);
@@ -2049,6 +2072,7 @@ public:
 		mOutsideEcValues.deserialize(valueStream);
 
 		valueStream.deserialize(mBlockingComputationsInOrder);
+		valueStream.deserialize(mInitialRuntimePredictionSignature);
 		valueStream.deserialize(mPassthroughTo);
 		valueStream.deserialize(mWasPassthroughTo);
 		valueStream.deserialize(mIsTemporary);
@@ -2145,13 +2169,15 @@ public:
 				mComputationStatisticsOutsideOfEC,
 				computationStatisticsForEC(),
 				true
-				).withTimesReset(mTimesReset);
+				).withTimesReset(mTimesReset)
+				.withInitialRuntimePrediction(mInitialRuntimePredictionSignature);
 		}
 
 	//this function is not safe to be called from another thread while we are computing
 	ComputationStatistics computationStatisticsForEC() const
 		{
 		return ComputationStatistics(
+			mInitialRuntimePredictionSignature,
 			mExecutionContext->getTimeSpentInInterpreter(),
 			mExecutionContext->getTimeSpentInCompiledCode(),
 			mExecutionContext->getTimeSpentGarbageCollecting(),
@@ -2237,6 +2263,11 @@ public:
 			;
 		}
 
+	Nullable<RuntimePredictionSignature> getRuntimePredictionSignature()
+		{
+		return mInitialRuntimePredictionSignature;
+		}
+
 private:
 	Nullable<double> mLastPersistedCheckpointTimestamp;
 
@@ -2259,6 +2290,8 @@ private:
 	ComputationId mOwnComputationId;
 
 	ComputationStatus mComputationStatus;
+
+	Nullable<RuntimePredictionSignature> mInitialRuntimePredictionSignature;
 
 	ComputationStateValuesOutsideOfExecutionContext mOutsideEcValues;
 
@@ -2526,5 +2559,9 @@ void ComputationState::resetStateForAddDrop()
 	mImpl->resetStateForAddDrop();
 	}
 
+Nullable<RuntimePredictionSignature> ComputationState::getRuntimePredictionSignature()
+	{
+	return mImpl->getRuntimePredictionSignature();
+	}
 }
 

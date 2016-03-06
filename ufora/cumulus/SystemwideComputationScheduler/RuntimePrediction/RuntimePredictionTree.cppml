@@ -1,0 +1,195 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+#include "RuntimePredictionTree.hppml"
+#include "../../../core/math/StatisticsAccumulator.hpp"
+
+namespace Cumulus {
+
+Nullable<double> RuntimePredictionTree::predict(RuntimePredictionValue value) const
+    {
+    @match RuntimePredictionTree(*this)
+        -| Leaf(result) ->> {
+            return result.evaluate(value);
+            }
+        -| Filter(f, match, noMatch) ->> {
+            if (f.matches(value))
+                return match.predict(value);
+            return noMatch.predict(value);
+            }
+        -| Comparison(predicate, threshold, lower, higher, ifNull) ->> {
+            Nullable<double> result = predicate.evaluate(value);
+            if (!result)
+                return ifNull.predict(value);
+
+            if (*result < threshold)
+                return lower.predict(value);
+            return higher.predict(value);
+            }
+        -| Sum(lhs, rhs) ->> {
+            Nullable<double> r1 = lhs.predict(value);
+
+            if (!r1)
+                return null();
+
+            Nullable<double> r2 = rhs.predict(value);
+            if (!r2)
+                return null();
+
+            return null() << (*r1 + *r2);
+            }
+    }
+
+class LeafAndVariance {
+public:
+    void addSample(RuntimePredictionValue value, double sample)
+        {
+        mStatsSoFar.observe(sample, 1.0);
+        }
+
+    void removeSample(RuntimePredictionValue value, double sample)
+        {
+        mStatsSoFar.observe(sample, -1.0);
+        }
+    
+    double impurity()
+        {
+        return mStatsSoFar.variance() * mStatsSoFar.weight();
+        }
+
+    RuntimePredictionTree curRule()
+        {
+        return RuntimePredictionTree::Leaf(RuntimePredictionPredicate::Constant(mStatsSoFar.mean()));
+        }
+
+private:
+    StatisticsAccumulator<double, double> mStatsSoFar;
+};
+
+RuntimePredictionTree RuntimePredictionTree::train(
+                            ImmutableTreeVector<pair<RuntimePredictionValue, double> > samples,
+                            long curDepth
+                            )
+    {
+    if (curDepth > 3)
+        {
+        LeafAndVariance leaf;
+
+        for (auto vAndVal: samples)
+            leaf.addSample(vAndVal.first, vAndVal.second);
+
+        return leaf.curRule();
+        }
+
+    //get a list of filters and predicates
+    std::set<RuntimePredictionFilter> filters;
+    std::set<RuntimePredictionPredicate> predicates;
+
+    boost::function3<void, RuntimePredictionValue, RuntimePredictionFilter, ImmutableTreeVector<int64_t> > walkRPV(
+        [&](RuntimePredictionValue value, RuntimePredictionFilter curFilter, ImmutableTreeVector<int64_t> path) {
+            @match RuntimePredictionValue(value)
+                -| Leaf(eltTypeHash) ->> {
+                    filters.insert(curFilter.withTail(RuntimePredictionFilterTerm::IsLeaf(null())));
+                    filters.insert(curFilter.withTail(RuntimePredictionFilterTerm::IsLeaf(null() << eltTypeHash)));
+                    }
+                -| Integer() ->> {
+                    filters.insert(curFilter.withTail(RuntimePredictionFilterTerm::IsInteger()));
+                    predicates.insert(RuntimePredictionPredicate::Integer(path));
+                    }
+                -| Float() ->> {
+                    filters.insert(curFilter.withTail(RuntimePredictionFilterTerm::IsFloat()));
+                    predicates.insert(RuntimePredictionPredicate::Float(path));
+                    }
+                -| String() ->> {
+                    filters.insert(curFilter.withTail(RuntimePredictionFilterTerm::IsString()));
+                    predicates.insert(RuntimePredictionPredicate::StringLength(path));
+                    }
+                -| Vector(value) ->> {
+                    filters.insert(curFilter.withTail(RuntimePredictionFilterTerm::IsVector(null())));
+                    filters.insert(curFilter.withTail(RuntimePredictionFilterTerm::IsVector(null() << value)));
+
+                    predicates.insert(RuntimePredictionPredicate::VectorLength(path));
+                    predicates.insert(RuntimePredictionPredicate::VectorBytecount(path));
+                    }
+                -| Tuple(subs) ->> {
+                    filters.insert(curFilter.withTail(RuntimePredictionFilterTerm::IsTuple(null())));
+                    filters.insert(curFilter.withTail(RuntimePredictionFilterTerm::IsTuple(Nullable<int64_t>(subs.size()))));
+
+                    for (long k = 0; k < subs.size(); k++)
+                        walkRPV(subs[k], curFilter.withPathElement(k), path + k);
+                    }
+                -| Class(name, classBodyHash, subs) ->> {
+                    filters.insert(curFilter.withTail(RuntimePredictionFilterTerm::IsClass(null())));
+                    filters.insert(curFilter.withTail(RuntimePredictionFilterTerm::IsClass(null() << classBodyHash)));
+
+                    for (long k = 0; k < subs.size(); k++)
+                        walkRPV(subs[k], curFilter.withPathElement(k), path + k);
+                    }
+            }
+        );
+
+    for (auto predAndVal: samples)
+        walkRPV(predAndVal.first, RuntimePredictionFilter(), emptyTreeVec());
+
+    Nullable<pair<double, RuntimePredictionFilter> > bestFilter;
+
+    for (auto filter: filters)
+        {
+        LeafAndVariance match, noMatch;
+
+        for (auto sample: samples)
+            if (filter.matches(sample.first))
+                match.addSample(sample.first, sample.second);
+            else
+                noMatch.addSample(sample.first, sample.second);
+
+        double finalImpurity = match.impurity() + noMatch.impurity();
+
+        if (!bestFilter || finalImpurity < bestFilter->first)
+            bestFilter = make_pair(finalImpurity, filter);
+        }
+
+    /*
+    Nullable<pair<double, pair<RuntimePredictionPredicate, double> > > bestPredicate;
+    for (auto predicate: predicates)
+        {
+        std::vector<pair<double, long> > vals;
+        
+        for (long k = 0; k < samples.size(); k++)
+            vals.push_back(make_pair(predicate.evaluate(samples[k].first, k)));
+        
+        std::sort(vals.begin(), vals.end());
+
+        LeafAndVariance below, above;
+        for (long k = 0; k < samples.size();k++)
+            above.addSample(samples[k].first, samples[k].second);
+
+        for (long k = 0; k < vals.size() - 1; k++)
+            {
+            double splitPoint = (vals[k].first + vals[k+1].first) / 2.0;
+            long index = vals[k].second;
+            below.addSample(samples[index].first, samples[index].second);
+            above.removeSample(samples[index].first, samples[index].second);
+            double impurity = below.impurity() + above.impurity();
+
+            if (!bestPredicate || bestPredicate->first > )
+            }
+        }*/
+
+    return RuntimePredictionTree();
+    }
+
+}
+
