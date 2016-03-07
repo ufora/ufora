@@ -17,8 +17,30 @@ import pickle
 import ufora.distributed.S3.InMemoryS3Interface as InMemoryS3Interface
 import ufora.cumulus.test.InMemoryCumulusSimulation as InMemoryCumulusSimulation
 import ufora.test.PerformanceTestReporter as PerformanceTestReporter
+import math
 
 class GpuTestCases:
+    def check_precision_of_log_function_on_GPU(self, input):
+        s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
+        text = """
+            let f = fun(x) {
+                `log(x)
+                }
+            `CUDAVectorApply(f, [""" + str(input) + """])[0]
+            """
+        res = InMemoryCumulusSimulation.computeUsingSeveralWorkers(text, s3, 1, timeout = 120, threadCount=4)
+        self.assertIsNotNone(res)
+        self.assertTrue(res.isResult(), res)
+        gpuValue = res.asResult.result.pyval
+        pythonValue = math.log(input)
+        self.assertTrue(abs(gpuValue - pythonValue) < 1e-10)
+
+
+    def test_log_values(self):
+        for x in [0.001, 0.01, 0.1, 0.5, 0.8, 0.9, 0.99, 0.9999, 1.0, 1.0001, 1.01, 1.1, 10, 1000, 1000000, 1000000000]:
+            self.check_precision_of_log_function_on_GPU(x)
+
+
     @PerformanceTestReporter.PerfTest("python.InMemoryCumulus.GPU.LotsOfLogsUsingGPU")
     def test_basic_gpu_works_1(self):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()

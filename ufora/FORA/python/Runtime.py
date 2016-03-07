@@ -80,6 +80,7 @@ def initialize(setupObjectToUse = None):
 
             cfg.useDynamicInlining = True
 
+            cfg.ptxLibraryPath = os.path.join(_curDir, "../CUDA/PTX/lib.ptx")
             cfg.compilerDiskCacheDir = configObjectToUse.compilerDiskCacheDir
 
             if cfg.compilerDefinitionDumpDir != "":
