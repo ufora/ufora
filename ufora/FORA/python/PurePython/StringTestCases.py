@@ -49,6 +49,18 @@ class StringTestCases(object):
         test2()
 
 
+    def test_string_float_conversion(self):
+        #test a wide variety of strings with combinations of different separators
+        for f in [0.0, 0.1, 10.0, 2.0, 10e10, -1.2, 10.e-10, -1e-10]:
+            self.equivalentEvaluationTest(float,str(f))
+            self.equivalentEvaluationTest(str,f)
+
+    def test_string_int_conversion(self):
+        #test a wide variety of strings with combinations of different separators
+        for i in [0, 1, 2, 10, -1, -2]:
+            self.equivalentEvaluationTest(int,str(i))
+            self.equivalentEvaluationTest(str,i)
+
     def test_string_indexing_2(self):
         def f(idx):
             x = "asdfasdfasdfasdfasdfasdfasdfasdfasdfasdfasdfasdfasdfasdfasdf"
