@@ -23,6 +23,30 @@ import math
 import numpy
 import scipy
 import scipy.special
+import scipy.linalg
+
+
+@pureMapping(scipy.linalg.expm)
+class Expm:
+    def __call__(self, A):
+        errString = "can only call scipy.linalg.expm on square arrays"
+        if not isinstance(A, PureNumpy.PurePythonNumpyArray):
+            raise TypeError(errString)
+        if A.shape[0] != A.shape[1]:
+            raise TypeError(errString)
+            
+        result = __inline_fora(
+            """fun(matrix) {
+                   return purePython.linalgModule.expm(
+                       matrix
+                       )
+                   }"""
+            )(A)
+
+        return PureNumpy.PurePythonNumpyArray(
+            tuple(result[1]),
+            result[0]
+            )
 
 
 @pureMapping(scipy.special.beta)

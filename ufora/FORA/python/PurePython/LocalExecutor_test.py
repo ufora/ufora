@@ -25,6 +25,7 @@ import ufora.FORA.python.PurePython.BuiltinTestCases as BuiltinTestCases
 import ufora.FORA.python.PurePython.ExceptionTestCases as ExceptionTestCases
 import ufora.FORA.python.PurePython.MathTestCases as MathTestCases
 import ufora.FORA.python.PurePython.ScipySpecialTestCases as ScipySpecialTestCases
+import ufora.FORA.python.PurePython.ScipyLinalgTestCases as ScipyLinalgTestCases
 import ufora.FORA.python.PurePython.LogisticRegressionTests as \
     LogisticRegressionTests
 import ufora.FORA.python.PurePython.RegressionTreeTests as RegressionTreeTests
@@ -53,6 +54,7 @@ class TestLocalExecutor(
         RegressionTreeTests.RegressionTreeTests,
         GradientBoostingTests.GradientBoostingTests,
         ScipySpecialTestCases.ScipySpecialTestCases,
+        ScipyLinalgTestCases.ScipyLinalgTestCases,
         FunctionTestCases.FunctionTestCases,
         ListTestCases.ListTestCases,
         UnimplementedValuesTestCases.UnimplementedValuesTestCases,
