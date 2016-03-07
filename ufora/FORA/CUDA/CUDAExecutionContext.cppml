@@ -20,17 +20,18 @@
 #include "../Core/MemoryPool.hpp"
 #include "../Core/ImplValContainerUtilities.hppml"
 #include "../Native/NativeCFGTransforms/Transforms.hppml"
-#include <cuda.h>
-#include "../../core/threading/Queue.hpp"
 #include "../Runtime.hppml"
 #include "../TypedFora/JitCompiler/StaticInliner.hppml"
 #include "../TypedFora/Converter.hppml"
 #include "../TypedFora/ABI/VectorRecord.hpp"
 #include "../TypedFora/ABI/VectorHandle.hpp"
 #include "../TypedFora/TypedFora.hppml"
-#include "../../core/Logging.hpp"
 #include "../Reasoner/SimpleForwardReasoner.hppml"
 #include "../VectorDataManager/PageletTree.hppml"
+#include "../../core/Logging.hpp"
+#include "../../core/threading/Queue.hpp"
+
+#include <cuda.h>
 
 using TypedFora::Abi::VectorHandle;
 using TypedFora::Abi::VectorRecord;
@@ -51,19 +52,21 @@ public:
 		{
 		static boost::recursive_mutex	mMutex;
 		
-		boost::recursive_mutex::scoped_lock	lock(mMutex);
-		
 		static bool isInitialized = false;
 		
 		if (!isInitialized)
 			{
-			//initialize the driver
-			throwError("Initialize cuda", cuInit(0));
-			isInitialized = true;
+			boost::recursive_mutex::scoped_lock	lock(mMutex);
+			if (!isInitialized)
+				{
+				//initialize the driver
+				throwOnError("Initialize cuda", cuInit(0));
+				isInitialized = true;
+				}
 			}
 		}
 
-	static void throwError(std::string op, CUresult error)
+	static void throwOnError(std::string op, CUresult error)
 		{
 		if (error != CUDA_SUCCESS)
 			{
@@ -77,7 +80,7 @@ public:
 	void	cudaDeviceInitializer()
 		{
 		CUresult error = cuDeviceGetCount(&mDeviceCount);
-		throwError("Get a device count", error);
+		throwOnError("Get a device count", error);
 
 		lassert_dump(mDeviceCount, "there are no CUDA-enabled devices");
 		
@@ -88,9 +91,11 @@ public:
 		for (long devID = 0; devID < mDeviceCount; devID++)
 			{
 			int major, minor;
-			char deviceName[100];
+			constexpr int DEVICE_NAME_MAX_LENGTH = 256;
+			char deviceName[DEVICE_NAME_MAX_LENGTH];
+
 			cuDeviceComputeCapability(&major, &minor, devID);
-			cuDeviceGetName(deviceName, 256, devID);
+			cuDeviceGetName(deviceName, DEVICE_NAME_MAX_LENGTH, devID);
 			
 			LOG_INFO 	<< "CUDA Using Device " << devID
 						<< ": \"" << deviceName
@@ -222,15 +227,15 @@ public:
 			CUdeviceptr d_destData;
 
 			CUresult error = cuMemAlloc(&d_sourceData, inSourceElementSize * inN);
-			throwError("Allocate Source Memory", error);
+			throwOnError("Allocate Source Memory", error);
 			
 			error = cuMemAlloc(&d_destData, inDestElementSize * inN);
-			throwError("Allocate Dest Memory", error);
+			throwOnError("Allocate Dest Memory", error);
 			
 			// Copy data from hostMemory to deviceMemory
 			error = cuMemcpyHtoD(d_sourceData, inSourceData,
 					inSourceElementSize * inN);
-			throwError("Copy CUDA memory from source to host", error);
+			throwOnError("Copy CUDA memory from source to host", error);
 			
 				
 			// Grid/Block configuration
