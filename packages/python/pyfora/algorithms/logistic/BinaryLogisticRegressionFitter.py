@@ -53,8 +53,8 @@ class BinaryLogisticRegressionFitter(object):
             tol=1e-4,
             maxIter=1e5,
             splitLimit=1000000):
-        assert tol > 0
-        assert maxIter > 0
+        assert tol > 0, "tol must be > 0"
+        assert maxIter > 0, "maxIter must be > 0"
 
         self.regularizer = regularizer
         self.hasIntercept = hasIntercept
@@ -94,10 +94,10 @@ class BinaryLogisticRegressionFitter(object):
             model = fitter.fit(x, y)
 
         """
-        assert len(X) == len(y)
+        assert len(X) == len(y), "len(X) doesn't match len(y)"
 
         if isinstance(y, PurePandas.PurePythonDataFrame):
-            assert y.shape[1] == 1
+            assert y.shape[1] == 1, "for dataframe y, need y.shape[1] == 1"
             y = y.iloc[:,0]
 
         # we need to be careful here:
@@ -106,7 +106,7 @@ class BinaryLogisticRegressionFitter(object):
         # we should build implement  __pyfora_generator__  on Series
         classes = y.unique()
 
-        assert len(classes) == 2
+        assert len(classes) == 2, "need len(classes) == 2"
 
         classZeroLabel = classes[0]
         classOneLabel = classes[1]
