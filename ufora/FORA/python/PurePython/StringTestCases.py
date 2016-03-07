@@ -48,6 +48,38 @@ class StringTestCases(object):
         test1()
         test2()
 
+    def test_string_splitlines(self):
+        #test a wide variety of strings with combinations of different separators
+        stringsToTest = []
+        for char1 in ["","a"]:
+            stringsToTest.append(char1)
+            for sep1 in ["\n","\r","\n\r", "\r\n", "\r\r", "\n\n", "\r\n\r"]:
+                stringsToTest.append(char1 + sep1)
+                for char2 in ["","b"]:
+                    stringsToTest.append(char1 + sep1 + char2)
+                    for sep2 in ["\n","\r","\n\r", "\r\n", "\r\r", "\n\n", "\r\n\r"]:
+                        stringsToTest.append(char1 + sep1 + char2 + sep2)
+
+        def f():
+            res = []
+            for shouldSplit in [True, False]:
+                for candidate in stringsToTest:
+                    res = res + [(candidate, candidate.splitlines(shouldSplit))]
+
+        self.equivalentEvaluationTest(f)
+
+    def test_string_split(self):
+        #test a wide variety of strings with combinations of different separators
+        stringsToTest = ["", "a", "aa", "ab", "aba", "aaa", "bbb", "abab", "abc"]
+        sepsToTest = ["a","b"]
+
+        def f():
+            res = []
+            for s in stringsToTest:
+                for sep in sepsToTest:
+                    res = res + [(s,sep, s.split(sep))]
+
+        self.equivalentEvaluationTest(f)
 
     def test_string_indexing_2(self):
         def f(idx):
