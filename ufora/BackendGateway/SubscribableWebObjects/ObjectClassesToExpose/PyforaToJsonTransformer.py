@@ -39,7 +39,10 @@ class PyforaToJsonTransformer(object):
         return {}
 
     def transformPrimitive(self, primitive):
-        self.accumulateObjects(1, len(primitive) if isinstance(primitive, str) else 0)
+        if isinstance(primitive, str):
+            primitive = base64.b64encode(primitive).encode("utf8")
+
+        self.accumulateObjects(1, len(primitive) if isinstance(primitive, str) else 0)        
         return {'primitive': primitive}
 
     def transformTuple(self, tupleMembers):

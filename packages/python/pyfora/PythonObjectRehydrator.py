@@ -94,8 +94,8 @@ class PythonObjectRehydrator(object):
     def convertJsonResultToPythonObject(self, jsonResult):
         if 'primitive' in jsonResult:
             res = jsonResult['primitive']
-            if isinstance(res, unicode):
-                return intern(str(res))
+            if isinstance(res, str):
+                return intern(str(base64.b64decode(res)))
             else:
                 return res
 

@@ -13,7 +13,7 @@
 #   limitations under the License.
 
 import pyfora.TypeDescription as TypeDescription
-
+import base64
 
 class ObjectRegistry(object):
     def __init__(self):
@@ -30,6 +30,8 @@ class ObjectRegistry(object):
         return objectId
 
     def definePrimitive(self, objectId, primitive):
+        if isinstance(primitive, str):
+            primitive = base64.b64encode(primitive)
         self.objectIdToObjectDefinition[objectId] = primitive
 
     def defineTuple(self, objectId, memberIds):
