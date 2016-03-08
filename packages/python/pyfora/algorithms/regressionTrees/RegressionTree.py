@@ -21,8 +21,8 @@ class RegressionTree:
     """A class representing a regression tree.
 
     A regression tree is represented, essentially, as a list of "rules",
-    which are either `pyfora.algorithms.regressionTrees.Base.SplitRule`s, giving
-    "split" nodes, which divide the domain by a hyperplane, or `RegressionLeafRule`s,
+    which are either `pyfora.algorithms.regressionTrees.Base.SplitRule`, giving
+    "split" nodes, which divide the domain by a hyperplane, or `RegressionLeafRule`,
     which just hold a prediction value.
 
     Note:

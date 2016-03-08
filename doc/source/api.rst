@@ -106,7 +106,7 @@ Regression Trees
   :members:
 
 Gradient Boosting
-~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~
 .. autoclass:: pyfora.algorithms.regressionTrees.GradientBoostedRegressorBuilder.GradientBoostedRegressorBuilder
   :members:
 .. autoclass:: pyfora.algorithms.regressionTrees.RegressionModel.RegressionModel

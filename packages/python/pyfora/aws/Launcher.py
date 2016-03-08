@@ -142,7 +142,7 @@ function run_ufora_service {{
         fi
     fi
 
-    ${{SET_STATUS}}'launching ufora service'
+    ${{SET_STATUS}}'launching service'
 
     $DOCKER run --detach --name {container_name} \\
         --env UFORA_WORKER_OWN_ADDRESS=$OWN_PRIVATE_IP \\
@@ -213,7 +213,7 @@ function build_ufora {{
         exit 1
     fi
 
-    ${{SET_STATUS}}'building UFORA codebase'
+    ${{SET_STATUS}}'building codebase'
     docker_run_build --rm ./waf configure
     docker_run_build --rm python ufora/scripts/resetAxiomSearchFunction.py
     docker_run_build --rm ./waf install
@@ -224,7 +224,7 @@ function build_ufora {{
     }}
 
 function run_built_service {{
-    ${{SET_STATUS}}'starting UFORA services'
+    ${{SET_STATUS}}'starting services'
 
     echo "#!/bin/bash" > $BUILD_DIR/ufora/start.sh
     echo "ufora/scripts/init/start" >> $BUILD_DIR/ufora/start.sh
@@ -271,9 +271,9 @@ function on_cloud_init {{
 '''
 
 class Launcher(object):
-    ufora_ssh_security_group_name = 'ufora ssh'
-    ufora_open_security_group_name = 'ufora open'
-    ufora_security_group_description = 'ufora instances'
+    ufora_ssh_security_group_name = 'pyfora ssh'
+    ufora_open_security_group_name = 'pyfora open'
+    ufora_security_group_description = 'pyfora instances'
     ubuntu_images_paravirtual_ssd = {
         'ap-southeast-1': 'ami-e8f1c1ba',
         'ap-southeast-2': 'ami-7163104b',
@@ -345,7 +345,7 @@ class Launcher(object):
 
         instance = instances[0]
         if instance.state == 'running':
-            self.tag_instance(instance, "ufora manager")
+            self.tag_instance(instance, "pyfora manager")
         else:
             raise Exception("Instance failed to start: " + instance.id)
         return instance
@@ -367,7 +367,7 @@ class Launcher(object):
                                           callback=callback)
         self.wait_for_instances(instances, callback=callback)
         for instance in instances:
-            self.tag_instance(instance, 'ufora worker')
+            self.tag_instance(instance, 'pyfora worker')
         return instances
 
 
@@ -418,7 +418,7 @@ class Launcher(object):
         if not self.connected:
             self.connect()
 
-        filters = {'tag:Name': 'ufora*'}
+        filters = {'tag:Name': 'pyfora*'}
         reservations = self.ec2.get_all_reservations(filters=filters)
         return reservations
 
@@ -644,7 +644,7 @@ class Launcher(object):
                 return None
             raise
 
-        assert len(groups) < 2, "More than one ufora security groups exist"
+        assert len(groups) < 2, "More than one pyfora security groups exist"
 
         if len(groups) == 0:
             return None

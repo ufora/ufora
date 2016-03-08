@@ -97,7 +97,7 @@ class BinaryClassificationModel:
         Return class-zero probability estimates of the rows of a dataframe `df`.
 
         Args:
-            A `pandas.DataFrame` `df.
+            A `pandas.DataFrame` `df`.
 
         Returns:
             A `pandas.Series` giving the row-wise estimated class-zero probability estimates
@@ -162,7 +162,7 @@ class BinaryClassificationModel:
         of `df`.
 
         Args:
-            A `pandas.DataFrame` `df.
+            A `pandas.DataFrame` `df`.
 
         Returns:
             A `pandas.Series` giving the row-wise predictions.
