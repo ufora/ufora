@@ -116,17 +116,17 @@ def start_instances(args):
                         **launcher_args(args))
 
     status_printer = StatusPrinter()
-    print "Launching ufora manager instance:"
+    print "Launching manager instance:"
     manager = launcher.launch_manager(ssh_keyname,
                                       args.spot_price,
                                       callback=status_printer.on_status)
     status_printer.done()
 
-    print "Ufora manager instance started:\n"
+    print "Manager instance started:\n"
     print_instance(manager, 'manager')
     print ""
     if not args.open_public_port:
-        print "To tunnel Ufora's HTTP port (30000) over ssh, run the following command:"
+        print "To tunnel the pyfora HTTP port (30000) over ssh, run the following command:"
         print "    ssh -i <ssh_key_file> -L 30000:localhost:30000 ubuntu@%s\n" % manager.ip_address
 
     workers = []
@@ -143,7 +143,7 @@ def start_instances(args):
     for worker in workers:
         print_instance(worker, 'worker')
 
-    print "Waiting for Ufora services:"
+    print "Waiting for services:"
     if launcher.wait_for_services([manager] + workers, callback=status_printer.on_status):
         status_printer.done()
     else:
@@ -155,13 +155,13 @@ def add_instances(args):
     manager = [i for i in running_or_pending_instances(launcher.get_reservations())
                if 'Name' in i.tags and i.tags['Name'].startswith('ufora manager')]
     if len(manager) > 1:
-        print "There is more than one Ufora Manager instance. Can't add workers.", \
+        print "There is more than one Manager instance. Can't add workers.", \
             "Managers:"
         for m in manager:
             print_instance(m)
         return 1
     elif len(manager) == 0:
-        print "No Ufora Manager instances are running. Can't add workers."
+        print "No manager instances are running. Can't add workers."
         return 1
 
     if args.num_instances < 1:
@@ -187,7 +187,8 @@ def add_instances(args):
     for worker in workers:
         print_instance(worker, 'worker')
 
-    print "Waiting for Ufora services:"
+    print ""
+    print "Waiting for services:"
     if launcher.wait_for_services(workers, callback=status_printer.on_status):
         status_printer.done()
     else:
@@ -309,13 +310,13 @@ def deploy_package(args):
     print "Package uploaded successfully"
     print ''
 
-    print "Updating ufora service..."
+    print "Updating service..."
     results = update_ufora_service(instances, args.identity_file)
     if any_failures(results):
         print "Failed to update service:"
         print_failures(results)
         return
-    print "Ufora service updated successfully"
+    print "Service updated successfully"
 
 
 def running_instances(reservations):
@@ -394,14 +395,14 @@ all_arguments = {
     'vpc-id': {
         'args': ('--vpc-id',),
         'kwargs': {
-            'help': ('The id of the VPC to launch instances into. '
+            'help': ('The id of the VPC into which instances are launched. '
                      'EC2 Classic is used if this argument is omitted.')
             }
         },
     'subnet-id': {
         'args': ('--subnet-id',),
         'kwargs': {
-            'help': ('The id of the VPC subnet to launch instances into. '
+            'help': ('The id of the VPC subnet into which instances are launched. '
                      'This argument must be specified if --vpc-id is used and is '
                      'ignored otherwise.')
             }
@@ -409,8 +410,10 @@ all_arguments = {
     'security-group-id': {
         'args': ('--security-group-id',),
         'kwargs': {
-            'help': ('The id of the EC2 security group to launch instances into. '
-                     'If omitted, a security group called "ufora" will be created and used.')
+            'help': ('The id of the EC2 security group into which instances are launched. '
+                     'If omitted, a security group called "pyfora ssh" (or "pyfora open" '
+                     'if --open-public-port is specified) is created. If a security group '
+                     'with that name already exists, it is used as-is.')
             }
         },
     'open-public-port': {
@@ -420,14 +423,15 @@ all_arguments = {
             'help': ('If specified, HTTP access to the manager machine will be open from '
                      'anywhere (0.0.0.0/0). Use with care! '
                      'Anyone will be able to connect to your cluster. '
-                     "As an alternative, considering tunneling Ufora's HTTP port (30000) "
-                     'over SSH using the -L argument.')
+                     "As an alternative, considering tunneling pyfora's HTTP port (30000) "
+                     'over SSH using the -L argument to the `ssh` command.')
             }
         },
     'commit': {
         'args': ('--commit',),
         'kwargs': {
-            'help': ('If specified, a commit to build from scratch')
+            'help': ('Run the backend services from a specified commit in the ufora/ufora '
+                     'GitHub repository.')
             }
         },
     'terminate': {
@@ -448,7 +452,7 @@ all_arguments = {
         'args': ('-p', '--package'),
         'kwargs': {
             'required': True,
-            'help': 'Path to the ufora package to deploy.'
+            'help': 'Path to the backend package to deploy.'
             }
         }
     }
@@ -477,7 +481,7 @@ def main():
     subparsers = parser.add_subparsers()
 
     launch_parser = subparsers.add_parser('start',
-                                          help='Launch ufora instances')
+                                          help='Launch one or more backend instances')
     launch_parser.set_defaults(func=start_instances)
     add_arguments(launch_parser, start_args)
 
@@ -487,17 +491,17 @@ def main():
     add_arguments(add_parser, add_args)
 
     list_parser = subparsers.add_parser('list',
-                                        help='List running ufora instances')
+                                        help='List running backend instances')
     list_parser.set_defaults(func=list_instances)
     add_arguments(list_parser, list_args)
 
     stop_parser = subparsers.add_parser('stop',
-                                        help='Stop all ufora instances')
+                                        help='Stop all backend instances')
     stop_parser.set_defaults(func=stop_instances)
     add_arguments(stop_parser, stop_args)
 
     deploy_parser = subparsers.add_parser('deploy',
-                                          help='deploy a build to all ufora instances')
+                                          help='deploy a build to all backend instances')
     deploy_parser.set_defaults(func=deploy_package)
     add_arguments(deploy_parser, deploy_args)
 
