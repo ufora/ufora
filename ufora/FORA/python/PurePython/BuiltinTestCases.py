@@ -70,6 +70,14 @@ class BuiltinTestCases(object):
         x = [1,2,0,4,4,5,9]
         self.equivalentEvaluationTest(f, x)
 
+    def test_issue_200(self):
+        def f():
+            if False:
+                return eval
+            return 0
+
+        self.equivalentEvaluationTest(f)
+
     def test_builtins_min_2(self):
         def f():
             return min(xrange(5))
