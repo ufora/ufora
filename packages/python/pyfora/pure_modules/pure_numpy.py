@@ -408,6 +408,28 @@ class Svd(object):
             )
 
 
+@pureMapping(np.linalg.lstsq)
+class Lstsq(object):
+    def __call__(self, a, b, rcond=-1):
+        assert len(a.shape) == 2, "need len(a.shape) == 2"
+        assert len(b.shape) == 1, "need len(b.shape) == 1"
+        assert b.shape[0] == a.shape[0]
+
+        x, singular_values, rank = \
+            Lstsq.__pyfora_builtins__.linalg.lstsq(a, b, rcond)
+
+        x = PurePythonNumpyArray((len(x),), x)
+
+        if rank < a.shape[1] or a.shape[0] < a.shape[1]:
+            residuals = np.array([])
+        else:
+            residuals = np.array([NpNorm()(NpDot()(a, x) - b) ** 2.0])
+        
+        return x, residuals, rank, PurePythonNumpyArray(
+            (len(singular_values),),
+            singular_values)
+
+
 @pureMapping(np.linalg.norm)
 class NpNorm(object):
     def __call__(self, a, ord=None):

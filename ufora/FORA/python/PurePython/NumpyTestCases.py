@@ -655,3 +655,31 @@ class NumpyTestCases(object):
             f(x),
             self.evaluateWithExecutor(f, x)
             )
+
+    def check_lstsq(self, a, b):
+        def f():
+            return numpy.linalg.lstsq(a, b)
+
+        x1, resid1, rank1, sing1 = f()
+
+        print f()
+
+        x2, resid2, rank2, sing2 = self.evaluateWithExecutor(f)
+
+        numpy.testing.assert_allclose(x1, x2)
+        numpy.testing.assert_almost_equal(resid1, resid2)
+        numpy.testing.assert_allclose(rank1, rank2)
+        numpy.testing.assert_allclose(sing1, sing2)
+
+    def test_lstsq_1(self):
+        a = numpy.array([[1., 2.], [3., 4.], [5., 6.]])
+        b = numpy.array([2., 1., 3.])
+
+        self.check_lstsq(a, b)
+
+    def test_lstsq_2(self):
+        a = numpy.array([[1., 2., 3.], [3., 4., 6.]])
+        b = numpy.array([2., 1.])
+
+        self.check_lstsq(a, b)
+
