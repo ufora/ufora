@@ -77,6 +77,37 @@ class StringTestCases(object):
         
         sys.setcheckinterval(100)
 
+    def test_string_slicing_into_vector(self):
+        def testFunction(ct, passCt,chars):
+            x = "asdfasdf" * (ct / 8)
+            res = 0
+            for _ in xrange(passCt):
+                v = [x[ix*chars:ix*chars+chars] for ix in xrange(len(x) / chars)]
+                for e in v:
+                    res = res + len(e)
+            return res
+        f = testFunction
+
+        self.evaluateWithExecutor(f, 1000000, 1, 2)
+        self.evaluateWithExecutor(f, 10000, 1, 2)
+        
+        def runTest(func, name):
+            PerformanceTestReporter.PerfTest(name)(func)()
+
+        runTest(lambda: self.evaluateWithExecutor(f, 1000000, 10, 2), "pyfora.string_slicing_into_vector_10mm.2_char_large_string.pyfora")
+        runTest(lambda: self.evaluateWithExecutor(f, 1000000, 1000, 200), "pyfora.string_slicing_into_vector_10mm.200_char_large_string.pyfora")
+        runTest(lambda: self.evaluateWithExecutor(f, 10000, 1000, 2), "pyfora.string_slicing_into_vector_10mm.2_char_small_string.pyfora")
+        runTest(lambda: self.evaluateWithExecutor(f, 10000, 100000, 200), "pyfora.string_slicing_into_vector_10mm.200_char_small_string.pyfora")
+        
+        sys.setcheckinterval(100000)
+
+        runTest(lambda: f(1000000, 10, 2), "pyfora.string_slicing_into_vector_10mm.2_char_large_string.native")
+        runTest(lambda: f(1000000, 1000, 200), "pyfora.string_slicing_into_vector_10mm.200_char_large_string.native")
+        runTest(lambda: f(10000, 1000, 2), "pyfora.string_slicing_into_vector_10mm.2_char_small_string.native")
+        runTest(lambda: f(10000, 100000, 200), "pyfora.string_slicing_into_vector_10mm.200_char_small_string.native")
+        
+        sys.setcheckinterval(100)
+
     def test_string_splitlines(self):
         #test a wide variety of strings with combinations of different separators
         stringsToTest = []
