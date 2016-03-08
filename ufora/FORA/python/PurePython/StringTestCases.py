@@ -25,6 +25,12 @@ class StringTestCases(object):
             return (a[0], a[1], a[2], a[-1], a[-2])
         self.equivalentEvaluationTest(f)
 
+    def test_strings_with_weird_characters(self):
+        x = "\xb0"
+        def f():
+            return (x,"\xb0")
+        self.equivalentEvaluationTest(f)
+
     def test_large_string_indexing_perf(self):
         def f(ct, passCt):
             x = "asdfasdf" * (ct / 8)

@@ -22,6 +22,7 @@ import pyfora.TypeDescription as TypeDescription
 import pyfora.StronglyConnectedComponents as StronglyConnectedComponents
 import pyfora.pyAst.PyAstUtil as PyAstUtil
 import pyfora
+import base64
 
 import ast
 import logging
@@ -281,6 +282,8 @@ class Converter(object):
                 self.constantConverter.nativeConstantConverter,
                 self.vdm_
                 )
+        if isinstance(value, str):
+            value = base64.b64decode(value)
 
         return self.constantConverter.convert(value)
 
