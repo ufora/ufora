@@ -84,19 +84,53 @@ class Len(object):
 
 @pureMapping(max)
 class Max(object):
-    def __call__(self, a, b):
-        if a < b:
-            return b
-        return a
+    def __call__(self, a, b=None):
+        if b is not None:
+            if a < b:
+                return b
+            return a
+        else:
+            a = list(a)
+
+            if len(a) == 0:
+                raise ValueError("arg is an empty sequence")
+                
+            tr = a[0]
+
+            ix = 1
+            while ix < len(a):
+                val = a[ix]
+                if val > tr:
+                    tr = val
+                ix = ix + 1
+                
+            return tr
 
 
 @pureMapping(min)
 class Min(object):
-    def __call__(self, a, b):
-        if a < b:
-            return a
-        return b
+    def __call__(self, a, b=None):
+        if b is not None:
+            if a < b:
+                return a
+            return b
+        else:
+            a = list(a)
 
+            if len(a) == 0:
+                raise ValueError("arg is an empty sequence")
+                
+            tr = a[0]
+
+            ix = 1
+            while ix < len(a):
+                val = a[ix]
+                if val < tr:
+                    tr = val
+                ix = ix + 1
+                
+            return tr
+            
 
 @pureMapping(ord)
 class Ord(object):

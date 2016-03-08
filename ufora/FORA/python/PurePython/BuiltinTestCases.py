@@ -44,6 +44,44 @@ class BuiltinTestCases(object):
 
         self.equivalentEvaluationTest(f)
 
+    def test_builtins_max_1(self):
+        def f(arg):
+            return max(arg)
+
+        x = [1,2,0,4,4,5,9]
+        self.equivalentEvaluationTest(f, x)
+
+    def test_builtins_max_2(self):
+        def f():
+            return max(xrange(5))
+            
+        self.equivalentEvaluationTest(f)
+
+    def test_builtins_max_3(self):
+        def f():
+            return max(1,2)
+
+        self.equivalentEvaluationTest(f)
+
+    def test_builtins_min_1(self):
+        def f(arg):
+            return min(arg)
+
+        x = [1,2,0,4,4,5,9]
+        self.equivalentEvaluationTest(f, x)
+
+    def test_builtins_min_2(self):
+        def f():
+            return min(xrange(5))
+            
+        self.equivalentEvaluationTest(f)
+
+    def test_builtins_min_3(self):
+        def f():
+            return min(1,2)
+
+        self.equivalentEvaluationTest(f)
+
     def test_builtins_abs(self):
         def f(x):
             return abs(x)
