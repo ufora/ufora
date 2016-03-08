@@ -71,15 +71,19 @@ Nullable<fs::path> OnDiskCompilerStore::getIndexFileFromDataFile(const fs::path&
 	}
 
 template<class T>
-void OnDiskCompilerStore::saveIndexToDisk(const fs::path& file, const T& index) const
+bool OnDiskCompilerStore::saveIndexToDisk(const fs::path& file, const T& index) const
 	{
 	double t0 = curClock();
 
 	removeIfExists(file);
-	lassert_dump(!fs::exists(file), file);
 
 	int fd = open(file.string().c_str(),  O_CREAT| O_WRONLY, S_IRUSR|S_IWUSR);
-	lassert_dump(fd != -1, "failed to open " << file.string() << ": " << strerror(errno));
+	if (fd == -1)
+		{
+		LOG_ERROR << "Failed to open " << file.string() << ": " << strerror(errno);
+		return false;
+		}
+
 		{
 		OFileDescriptorProtocol protocol(
 			fd,
@@ -98,18 +102,24 @@ void OnDiskCompilerStore::saveIndexToDisk(const fs::path& file, const T& index) 
 
 		}
 		mPerformanceCounters.addDiskStoreTime(curClock() - t0);
+		return true;
 	}
 
 template<class T>
-void OnDiskCompilerStore::initializeIndex(const fs::path& file, T& index)
+bool OnDiskCompilerStore::initializeIndex(const fs::path& file, T& index)
 	{
 	if (!fs::exists(file))
 		{
-		return;
+		LOG_ERROR << "file does not exist: " << file.string();
+		return false;
 		}
 
 	int fd = open(file.string().c_str(), O_RDONLY, S_IRWXU);
-	lassert_dump(fd != -1, "failed to open " << file.string() << ": " << strerror(errno));
+	if (fd == -1)
+		{
+	    LOG_ERROR << "failed to open " << file.string() << ": " << strerror(errno);
+	    return false;
+		}
 
 	IFileDescriptorProtocol protocol(
 		fd,
@@ -132,6 +142,7 @@ void OnDiskCompilerStore::initializeIndex(const fs::path& file, T& index)
 		mPerformanceCounters.addDiskLookupTime(time);
 		mPerformanceCounters.addDeserializationTime(time);
 		}
+	return true;
 	}
 
 template<class T>
@@ -143,15 +154,17 @@ void logDebugMap(T& map) {
 				<< " -> " << prettyPrintString(term.second);
 		}
 }
+
 shared_ptr<vector<char> > OnDiskCompilerStore::loadAndValidateFile(const fs::path& file)
 	{
 	if (!fs::exists(file) || !fs::is_regular_file(file))
 		return shared_ptr<vector<char> >();
 
-	lassert_dump(
-			mStoreFilesRead.find(file) == mStoreFilesRead.end(),
-			"File already loaded: " << file.string()
-			);
+	if (mStoreFilesRead.find(file) == mStoreFilesRead.end())
+		{
+		LOG_ERROR << "File already loaded: " << file.string();
+		return shared_ptr<vector<char> >();
+		}
 
 	ifstream fin(file.string(), ios::in | ios::binary);
 	if (!fin.is_open())
@@ -228,6 +241,7 @@ bool OnDiskCompilerStore::tryRebuildIndexFromData(
 		const fs::path& indexFile,
 		const fs::path& dataFile)
 	{
+	// TODO: implement
 	return false;
 	}
 
@@ -240,7 +254,7 @@ bool OnDiskCompilerStore::initializeStoreIndex(const fs::path& rootDir, const fs
 		return false;
 		}
 
-	if (!fs::exists(rootDir/ *dataFile))
+	if (!fs::exists(rootDir / *dataFile))
 		{
 		LOG_WARN << "Removing index file '" << indexFile.string()
 				<< "' because the corresponding data file could not be found.";
@@ -351,6 +365,7 @@ bool OnDiskCompilerStore::loadDataFromDisk(const fs::path& relativePathToFile)
 	lassert(dataBuffer);
 	char* dataPtr = &(*dataBuffer)[0];
 	IMemProtocol protocol(dataPtr, dataBuffer->size());
+	try
 		{
 		IBinaryStream stream(protocol);
 		CompilerCacheMemoizingBufferedDeserializer deserializer(
@@ -378,15 +393,23 @@ bool OnDiskCompilerStore::loadDataFromDisk(const fs::path& relativePathToFile)
 			mSavedObjectMap.insert(
 					memoizedRestoredObjects->begin(),
 					memoizedRestoredObjects->end());
-	}
-
+		}
+	catch (std::logic_error& e)
+		{
+		LOG_ERROR << e.what();
+		return false;
+		}
 	return true;
 	}
 
-void OnDiskCompilerStore::checksumAndStore(const NoncontiguousByteBlock& data, fs::path file)
+bool OnDiskCompilerStore::checksumAndStore(const NoncontiguousByteBlock& data, fs::path file)
 	{
 	ofstream ofs(file.string(), ios::out | ios::binary | ios::trunc);
-	lassert(ofs.is_open());
+	if (!ofs.is_open())
+		{
+		LOG_ERROR << "Failed to open file for writing: " << file.string();
+		return false;
+		}
 
 	hash_type checksum = data.hash();
 
@@ -397,7 +420,11 @@ void OnDiskCompilerStore::checksumAndStore(const NoncontiguousByteBlock& data, f
 		serializer.serialize(checksum);
 		}
 	auto serializedChecksum = protocol.getData();
-	lassert(serializedChecksum);
+	if (!serializedChecksum)
+		{
+		LOG_ERROR << "Failed to serialize checksum";
+		return false;
+		}
 
 	double t0 = curClock();
 	ofs << *serializedChecksum;
@@ -405,10 +432,13 @@ void OnDiskCompilerStore::checksumAndStore(const NoncontiguousByteBlock& data, f
 	mPerformanceCounters.addDiskStoreTime(curClock()-t0);
 
 	ofs.close();
+	return true;
 	}
 
-void OnDiskCompilerStore::flushToDisk()
+bool OnDiskCompilerStore::flushToDisk()
 	{
+	bool noErrorSoFar = true;
+
 	auto pair = getFreshStoreFilePair();
 	const fs::path& dataFile = mBasePath / pair.first;
 	const fs::path& indexFile = mBasePath / pair.second;
@@ -446,17 +476,20 @@ void OnDiskCompilerStore::flushToDisk()
 
 		// write .dat file
 		auto serializedData = protocol.getData();
-		lassert(serializedData);
-		checksumAndStore(*serializedData, dataFile);
+		if (!serializedData)
+			{
+			LOG_ERROR << "Failed to serialize Compiler-Cache data";
+			return false;
+			}
+		noErrorSoFar &= checksumAndStore(*serializedData, dataFile);
 
 		}
-
+	if (storedObjects)
 		{ // write .idx file
 		ONoncontiguousByteBlockProtocol protocol;
 			{
 			OBinaryStream stream(protocol);
 			CompilerCacheDuplicatingSerializer serializer(stream);
-			lassert(storedObjects);
 			uword_t entryCount = storedObjects->size();
 
 			double t0 = curClock();
@@ -469,11 +502,15 @@ void OnDiskCompilerStore::flushToDisk()
 			mPerformanceCounters.addSerializationTime(curClock()-t0);
 			}
 		auto serializedData = protocol.getData();
-		lassert(serializedData);
-		checksumAndStore(*serializedData, indexFile);
+		if (!serializedData)
+			{
+			LOG_ERROR << "Failed to serialize Compiler-Cache index";
+			return false;
+			}
+		noErrorSoFar &= checksumAndStore(*serializedData, indexFile);
 		}
 
-	saveIndexToDisk(mMapFile, mMap);
+	return noErrorSoFar & saveIndexToDisk(mMapFile, mMap);
 	}
 
 OnDiskCompilerStore::OnDiskCompilerStore(fs::path inBasePath) :
@@ -569,9 +606,23 @@ void OnDiskCompilerStore::store(const ObjectIdentifier& inKey, const T& inValue)
 	bool inSavedMap = false;
 	if (findIt != mSavedObjectMap.end())
 		{
-		lassert((*findIt).second.extract<T>() == inValue);
-		inSavedMap = true;
-		// don't return, proceed to check if (key, value) pair exists on disk as well
+		auto& existingValue =(*findIt).second.extract<T>();
+		if(existingValue == inValue)
+			{
+			inSavedMap = true;
+			// don't return, proceed to check if (key, value) pair exists on disk as well
+			}
+		else
+			{
+			// found key that maps to different values
+			LOG_ERROR << "Compiler-Cache key maps to different values:\n"
+					<< "Key in Compiler-Cache: " << prettyPrintString(inKey)
+					<< "Value in Compiler-Cache:\n" << prettyPrintString(existingValue)
+					<< "Value to be inserted (which has identical key):\n"
+					<< prettyPrintString(inValue)
+					;
+			lassert(false);
+			}
 		}
 
 	if (mLocationIndex.hasKey(inKey))

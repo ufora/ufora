@@ -52,7 +52,7 @@ public:
 
 	std::string getPerformanceStats() { return mPerformanceCounters.printStats(); }
 
-	void flushToDisk();
+	bool flushToDisk();
 
 private:
 	pair<fs::path, fs::path> getFreshStoreFilePair();
@@ -61,7 +61,7 @@ private:
 
 	shared_ptr<vector<char> > loadAndValidateFile(const fs::path& file);
 
-	void checksumAndStore(const NoncontiguousByteBlock& data, fs::path file);
+	bool checksumAndStore(const NoncontiguousByteBlock& data, fs::path file);
 
 	void initializeStoreIndexes();
 
@@ -75,10 +75,10 @@ private:
 	void validateIndex();
 
 	template<class T>
-	void saveIndexToDisk(const fs::path& file, const T& index) const;
+	bool saveIndexToDisk(const fs::path& file, const T& index) const;
 
 	template<class T>
-	void initializeIndex(const fs::path& file, T& index);
+	bool initializeIndex(const fs::path& file, T& index);
 
 	void cleanUpLocationIndex(const fs::path& problematicDataFile);
 
