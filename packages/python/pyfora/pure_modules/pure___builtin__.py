@@ -32,14 +32,15 @@ from pyfora.PureImplementationMapping import pureMapping
 # 'reversed', 'round', 'set', 'setattr', 'slice', 'sorted', 'staticmethod', 'str',
 # 'sum', 'super', 'tuple', 'type', 'unichr', 'unicode', 'vars', 'xrange', 'zip'
 
+
 @pureMapping(abs)
-class Abs:
+class Abs(object):
     def __call__(self, val):
         return val.__abs__()
 
 
 @pureMapping(all)
-class All:
+class All(object):
     def __call__(self, iterable):
         if len(iterable) == 0:
             return True
@@ -50,7 +51,7 @@ class All:
 
 
 @pureMapping(any)
-class Any:
+class Any(object):
     def __call__(self, iterable):
         if len(iterable) == 0:
             return False
@@ -61,13 +62,13 @@ class Any:
 
 
 @pureMapping(chr)
-class Chr:
+class Chr(object):
     def __call__(self, asciiValue):
         return asciiValue.__pyfora_chr__()
 
 
 @pureMapping(enumerate)
-class Enumerate:
+class Enumerate(object):
     def __call__(self, iterable):
         count = 0
         for val in iterable:
@@ -76,13 +77,13 @@ class Enumerate:
 
 
 @pureMapping(len)
-class Len:
+class Len(object):
     def __call__(self, other):
         return other.__len__()
 
 
 @pureMapping(max)
-class Max:
+class Max(object):
     def __call__(self, a, b):
         if a < b:
             return b
@@ -90,7 +91,7 @@ class Max:
 
 
 @pureMapping(min)
-class Min:
+class Min(object):
     def __call__(self, a, b):
         if a < b:
             return a
@@ -98,7 +99,7 @@ class Min:
 
 
 @pureMapping(ord)
-class Ord:
+class Ord(object):
     def __call__(self, character):
         # assert we're getting a character of length 1
         if len(character) != 1:
@@ -108,17 +109,17 @@ class Ord:
 
 
 @pureMapping(range)
-class Range:
+class Range(object):
     def __call__(self, first, second=None, increment=None):
         return list(xrange(first, second, increment))
 
 
 
-class Empty:
+class Empty(object):
     pass
 
 @pureMapping(reduce)
-class Reduce:
+class Reduce(object):
     def __call__(self, f, sequence, start=Empty):
         #get a generator
         generator = sequence.__pyfora_generator__()
@@ -132,7 +133,7 @@ class Reduce:
                     result = f(result, val)
             return result
         else:
-            def sum(sumSubGenerator, depth):
+            def sum_(sumSubGenerator, depth):
                 if depth > 9 or not sumSubGenerator.canSplit():
                     result = Empty
 
@@ -141,9 +142,9 @@ class Reduce:
                         #the inner ones might
                         for childGenerator in sumSubGenerator.childGenerators():
                             if result is Empty:
-                                result = sum(childGenerator, depth+1)
+                                result = sum_(childGenerator, depth+1)
                             else:
-                                result = f(result, sum(childGenerator, depth+1))
+                                result = f(result, sum_(childGenerator, depth+1))
                     else:
                         for val in sumSubGenerator:
                             if result is Empty:
@@ -153,8 +154,8 @@ class Reduce:
                     return result
                 else:
                     split = sumSubGenerator.split()
-                    left = sum(split[0], depth+1)
-                    right = sum(split[1], depth+1)
+                    left = sum_(split[0], depth+1)
+                    right = sum_(split[1], depth+1)
 
                     if left is Empty:
                         return right
@@ -162,7 +163,7 @@ class Reduce:
                         return left
                     return f(left, right)
 
-            result = sum(generator, 0)
+            result = sum_(generator, 0)
 
             if result is Empty:
                 if start is Empty:
@@ -176,7 +177,7 @@ class Reduce:
 
 
 @pureMapping(map)
-class Map:
+class Map(object):
     def __call__(self, f, iterable):
         if f is None:
             f = lambda x:x
@@ -184,7 +185,7 @@ class Map:
 
 
 @pureMapping(reversed)
-class Reversed:
+class Reversed(object):
     def __call__(self, arr):
         l = len(arr)
         for idx in xrange(l):
@@ -193,12 +194,12 @@ class Reversed:
 
 
 @pureMapping(sum)
-class Sum:
+class Sum(object):
     def __call__(self, sequence, start=0):
         return reduce(lambda x,y: x+y, sequence, start)
 
 
-class XRangeInstance:
+class XRangeInstance(object):
     def __init__(self, start, count, increment):
         self.start = start
         self.count = count
@@ -285,7 +286,7 @@ class XRangeInstance:
 
 
 @pureMapping(xrange)
-class XRange:
+class XRange(object):
     def __call__(self, first, second=None, increment=None):
         if not isinstance(first, int):
             raise TypeError("range() first argument must be an integer")
@@ -322,7 +323,7 @@ class XRange:
 
 
 @pureMapping(sorted)
-class Sorted:
+class Sorted(object):
     def __call__(self, iterable):
         if isinstance(iterable, list):
             return Sorted._sortList(iterable)
@@ -335,7 +336,7 @@ class Sorted:
 
 
 @pureMapping(round)
-class Round:
+class Round(object):
     def __call__(self, x):
         f = math.floor(x)
 
@@ -440,9 +441,6 @@ class PurePythonComplex(object):
         raise TypeError("no ordering relation is defined for complex numbers")
 
     def __eq__(self, other):
-        raise TypeError("no ordering relation is defined for complex numbers")
-
-    def __ne__(self, other):
         raise TypeError("no ordering relation is defined for complex numbers")
 
     def __ne__(self, other):

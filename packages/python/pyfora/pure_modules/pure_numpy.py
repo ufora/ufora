@@ -551,35 +551,42 @@ class NpRound(object):
     def __call__(self, x):
         return Round()(x)
 
+
 @pureMapping(np.cos)
 class NpCos(object):
     def __call__(self, x):
         return PureMath.Cos()(x)
+
 
 @pureMapping(np.sin)
 class NpSin(object):
     def __call__(self, x):
         return PureMath.Sin()(x)
 
+
 @pureMapping(np.tan)
 class NpTan(object):
     def __call__(self, x):
         return PureMath.Tan()(x)
+
 
 @pureMapping(np.hypot)
 class NpHypot(object):
     def __call__(self, x):
         return PureMath.Hypot()(x)
 
+
 @pureMapping(np.exp)
 class NpExp(object):
     def __call__(self, x):
         return PureMath.Exp()(x)
 
+
 @pureMapping(np.expm1)
 class NpExpm1(object):
     def  __call__(self, x):
         return PureMath.Expm1()(x)
+
 
 @pureMapping(np.floor)
 class NpFloor(object):

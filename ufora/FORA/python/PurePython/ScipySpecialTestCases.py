@@ -138,3 +138,39 @@ class ScipySpecialTestCases(object):
         res2 = f(1.43)
 
         numpy.testing.assert_almost_equal(res1, res2, 8)
+
+    def test_scipy_special_expm1_1(self):
+        def f(x):
+            return scipy.special.expm1(x)
+
+        numpy.testing.assert_almost_equal(
+            f(42),
+            self.evaluateWithExecutor(f, 42)
+            )
+
+    def test_scipy_special_expm1_2(self):
+        def f(x):
+            return scipy.expm1(x)
+
+        numpy.testing.assert_almost_equal(
+            f(42),
+            self.evaluateWithExecutor(f, 42)
+            )
+
+    def test_scipy_special_log1p_1(self):
+        def f(x):
+            return scipy.special.log1p(x)
+
+        numpy.testing.assert_almost_equal(
+            f(42),
+            self.evaluateWithExecutor(f, 42)
+            )
+
+    def test_scipy_special_log1p_2(self):
+        def f(x):
+            return scipy.log1p(x)
+
+        numpy.testing.assert_almost_equal(
+            f(42),
+            self.evaluateWithExecutor(f, 42)
+            )

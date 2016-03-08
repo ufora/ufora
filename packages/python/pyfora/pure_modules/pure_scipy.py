@@ -50,7 +50,7 @@ class Expm:
 
 
 @pureMapping(scipy.special.beta)
-class BetaFunction:
+class BetaFunction(object):
     def __call__(self, a, b):
         if not isinstance(a, float):
             a = float(a)
@@ -65,7 +65,7 @@ class BetaFunction:
 
 
 @pureMapping(scipy.special.gamma)
-class GammaFunction:
+class GammaFunction(object):
     def __call__(self, x):
         if not isinstance(x, float):
             x = float(x)
@@ -78,7 +78,7 @@ class GammaFunction:
 
 
 @pureMapping(scipy.special.hyp2f1)
-class Hyp2f1:
+class Hyp2f1(object):
     def __call__(self, a, b, c, z):
         if not isinstance(a, float):
             a = float(a)
@@ -98,7 +98,7 @@ class Hyp2f1:
 
 @pureMapping(scipy.special.digamma)
 @pureMapping(scipy.special.psi)
-class Digamma:
+class Digamma(object):
     def __call__(self, z):
         if not isinstance(z, float):
             z = float(z)
@@ -111,7 +111,7 @@ class Digamma:
 
 
 @pureMapping(scipy.special.erfcinv)
-class Erfcinv:
+class Erfcinv(object):
     def __call__(self, x):
         if not isinstance(x, float):
             x = float(x)
@@ -124,7 +124,7 @@ class Erfcinv:
 
 
 @pureMapping(scipy.special.erfinv)
-class Erfinv:
+class Erfinv(object):
     def __call__(self, x):
         if not isinstance(x, float):
             x = float(x)
@@ -137,7 +137,7 @@ class Erfinv:
 
 
 @pureMapping(scipy.special.betainc)
-class Betainc:
+class Betainc(object):
     def __call__(self, a, b, x):
         if not isinstance(a, float):
             a = float(a)
@@ -154,7 +154,7 @@ class Betainc:
 
 
 @pureMapping(scipy.special.betaincinv)
-class Betaincinv:
+class Betaincinv(object):
     def __call__(self, a, b, y):
         if not isinstance(a, float):
             a = float(a)
@@ -171,7 +171,7 @@ class Betaincinv:
 
 
 @pureMapping(scipy.special.gammaln)
-class GammaLn:
+class GammaLn(object):
     def __call__(self, x):
         if not isinstance(x, float):
             x = float(x)
@@ -187,7 +187,7 @@ class GammaLn:
 
 
 @pureMapping(scipy.special.betaln)
-class BetaLn:
+class BetaLn(object):
     def __call__(self, a, b):
         if not isinstance(a, float):
             a = float(a)
@@ -202,7 +202,7 @@ class BetaLn:
 
 
 @pureMapping(scipy.special.kn)
-class Kn:
+class Kn(object):
     """Modified Bessel function of the second kind of integer order n
        Returns the modified Bessel function of the second kind for
        integer order n at real x."""
@@ -220,7 +220,7 @@ class Kn:
 
 
 @pureMapping(scipy.special.iv)
-class Iv:
+class Iv(object):
     "Modified Bessel function of the first kind of real order v"
     def __call__(self, v, z):
         if not isinstance(v, int):
@@ -236,7 +236,7 @@ class Iv:
 
 
 @pureMapping(scipy.special.comb)
-class Comb:
+class Comb(object):
     def __call__(self, n, k):
         if not isinstance(n, int):
             n = int(n)
@@ -260,7 +260,7 @@ class Comb:
 
 
 @pureMapping(scipy.special.logit)
-class Logit:
+class Logit(object):
     def __call__(self, p):
         if not isinstance(p, float):
             p = float(p)
@@ -278,7 +278,7 @@ class Logit:
 
 
 @pureMapping(scipy.special.expit)
-class Expit:
+class Expit(object):
     def __call__(self, x):
         if not isinstance(x, float):
             x = float(x)
@@ -286,25 +286,25 @@ class Expit:
         return 1.0 / (1.0 + scipy.exp(-x))
 
 @pureMapping(scipy.special.erf)
-class ScipyErf:
+class ScipyErf(object):
     def __call__(self, x):
         return PureMath.Erf()(x)
 
 
 @pureMapping(scipy.special.erfc)
-class ScipyErfc:
+class ScipyErfc(object):
     def __call__(self, x):
-        return PureMath.Erfx()(x)
+        return PureMath.Erfc()(x)
 
 
 @pureMapping(scipy.special.expm1)
-class ScipyExpm1:
+class ScipySpecialExpm1(object):
     def __call__(self, x):
         return PureMath.Expm1()(x)
 
 
 @pureMapping(scipy.special.log1p)
-class ScipyLog1p(PureNumpy.Log1p): pass
+class ScipySpecialLog1p(PureNumpy.Log1p): pass
 
 
 @pureMapping(scipy.special.factorial)
