@@ -256,6 +256,12 @@ class NpArray(object):
         if isinstance(array, PurePythonNumpyArray):
             return array
 
+        if len(array) == 0:
+            return PurePythonNumpyArray(
+                (0,),
+                []
+                )
+
         if not isinstance(array[0], list):
             return PurePythonNumpyArray(
                 (len(array),),

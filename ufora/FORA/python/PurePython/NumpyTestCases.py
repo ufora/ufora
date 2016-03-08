@@ -42,6 +42,12 @@ class NumpyTestCases(object):
             return n.shape
         self.equivalentEvaluationTest(f)
 
+    def test_empty_array_ctor(self):
+        def f():
+            return numpy.array([])
+
+        self.equivalentEvaluationTest(f)
+
     def test_repeated_array_ctor(self):
         x = numpy.array([[1,2],[3,4]])
         def f():
