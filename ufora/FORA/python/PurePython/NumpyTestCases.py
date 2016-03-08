@@ -632,3 +632,20 @@ class NumpyTestCases(object):
 
             self.assertTrue(res)
 
+    def test_norm_1(self):
+        def f(x):
+            return numpy.linalg.norm(x)
+
+        x = numpy.array([1,2,3,4])
+
+        self.assertEqual(
+            f(x),
+            self.evaluateWithExecutor(f, x)
+            )
+
+        x = x.reshape((2,2))
+
+        self.assertEqual(
+            f(x),
+            self.evaluateWithExecutor(f, x)
+            )

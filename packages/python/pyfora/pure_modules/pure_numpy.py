@@ -402,6 +402,88 @@ class Svd(object):
             )
 
 
+@pureMapping(np.linalg.norm)
+class NpNorm(object):
+    def __call__(self, a, ord=None):
+        if isinstance(a, list):
+            a = np.array(a)
+
+        if len(a.shape) > 2:
+            raise ValueError("input array must be 1-d or 2-d")
+        
+        if ord is None or ord == 'fro':
+            return self.frobenius_norm(a)
+        elif ord == 'nuc':
+            return self.nuclear_norm(a)
+        elif ord == np.inf:
+            return self.inf_norm(a)
+        elif ord == -np.inf:
+            return self.minus_inf_norm(a)
+        elif ord == 0:
+            return self.zero_norm(a)
+        elif ord == 1:
+            return self.one_norm(a)
+        elif ord == -1:
+            return self.minus_one_norm(a)
+        elif ord == 2:
+            return self.two_norm(a)
+        elif ord == -2:
+            return self.minus_two_norm(a)
+        else:
+            return sum(abs(elt)**ord for elt in a.values) ** (1.0 / ord)
+        
+    def frobenius_norm(self, a):
+        return sum(elt ** 2.0 for elt in a.values) ** 0.5
+
+    def nuclear_norm(self, a):
+        # return sum of singular values
+        raise NotImplementedError
+
+    def inf_norm(self, a):
+        if len(a.shape) == 1:
+            return max(abs(elt) for elt in a.values)
+        elif len(a.shape) == 2:
+            # max(sum(abs(x), axis=1))
+            raise NotImplementedError
+
+        assert False, "shouldn't get here"
+
+    def minus_inf_norm(self, a):
+        if len(a.shape) == 1:
+            return min(abs(elt) for elt in a.values)
+        elif len(a.shape) == 2:
+            # min(sum(abs(x), axis=1))
+            raise NotImplementedError
+
+        assert False, "shouldn't get here"
+
+    def zero_norm(self, a):
+        raise NotImplementedError
+
+    def one_norm(self, a):
+        if len(a.shape) == 1:
+            return sum(abs(elt) for elt in a.values)
+        elif len(a.shape) == 2:
+            raise NotImplementedError
+
+        assert False, "shouldn't get here"
+
+    def minus_one_norm(self, a):
+        raise NotImplementedError
+
+    def two_norm(self, a):
+        if len(a.shape) == 1:
+            return self.frobenius_norm(a)
+        elif len(a.shape) == 2:
+            # 2-norm (largest sing. value)
+            raise NotImplementedError
+
+        assert False, "shouldn't get here"
+
+    def minus_two_norm(self, a):
+        raise NotImplementedError
+
+
 @pureMapping(np.linalg.solve)
 class LinSolve(object):
     def __call__(self, a, b):
