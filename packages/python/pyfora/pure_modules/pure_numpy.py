@@ -109,7 +109,7 @@ class PurePythonNumpyArray(object):
             for idx in xrange(len(originalShape)):
                 if idx != 0:
                     newShape = newShape + [originalShape[idx]]
-            return newShape
+            return tuple(newShape)
 
         newShape = shapeOfResultantArray(self.shape)
         stride = 1
@@ -176,7 +176,7 @@ class PurePythonNumpyArray(object):
     def _zipArraysWithOp(self, v, op):
         if self.shape != v.shape:
             raise ValueError(
-                "operands cannot be added with shapes " + str(self.shape) + \
+                "operands cannot be zipped with shapes " + str(self.shape) + \
                 " and " + str(v.shape)
                 )
 
