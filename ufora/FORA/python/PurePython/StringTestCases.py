@@ -14,6 +14,7 @@
 
 import time
 import ufora.test.PerformanceTestReporter as PerformanceTestReporter
+import sys
 
 class StringTestCases(object):
     """Test cases for pyfora strings"""
@@ -36,7 +37,6 @@ class StringTestCases(object):
         self.evaluateWithExecutor(f, 1000000, 1)
         self.evaluateWithExecutor(f, 10000, 1)
         
-
         @PerformanceTestReporter.PerfTest("pyfora.string_indexing.large_string")
         def test1():
             self.evaluateWithExecutor(f, 1000000, 100)
@@ -47,6 +47,35 @@ class StringTestCases(object):
         
         test1()
         test2()
+
+    def test_string_slicing(self):
+        def f(ct, passCt,chars):
+            x = "asdfasdf" * (ct / 8)
+            res = 0
+            for _ in xrange(passCt):
+                for ix in xrange(len(x)):
+                    res = res + len(x[ix:ix+chars])
+            return res
+
+        self.evaluateWithExecutor(f, 1000000, 1, 2)
+        self.evaluateWithExecutor(f, 10000, 1, 2)
+        
+        def runTest(func, name):
+            PerformanceTestReporter.PerfTest(name)(func)()
+
+        runTest(lambda: self.evaluateWithExecutor(f, 1000000, 10, 2), "pyfora.string_slicing_10mm.2_char_large_string.pyfora")
+        runTest(lambda: self.evaluateWithExecutor(f, 1000000, 10, 200), "pyfora.string_slicing_10mm.200_char_large_string.pyfora")
+        runTest(lambda: self.evaluateWithExecutor(f, 10000, 1000, 2), "pyfora.string_slicing_10mm.2_char_small_string.pyfora")
+        runTest(lambda: self.evaluateWithExecutor(f, 10000, 1000, 200), "pyfora.string_slicing_10mm.200_char_small_string.pyfora")
+        
+        sys.setcheckinterval(100000)
+
+        runTest(lambda: f(1000000, 10, 2), "pyfora.string_slicing_10mm.2_char_large_string.native")
+        runTest(lambda: f(1000000, 10, 200), "pyfora.string_slicing_10mm.200_char_large_string.native")
+        runTest(lambda: f(10000, 1000, 2), "pyfora.string_slicing_10mm.2_char_small_string.native")
+        runTest(lambda: f(10000, 1000, 200), "pyfora.string_slicing_10mm.200_char_small_string.native")
+        
+        sys.setcheckinterval(100)
 
     def test_string_splitlines(self):
         #test a wide variety of strings with combinations of different separators
