@@ -130,31 +130,76 @@ class PurePythonDataFrame(object):
 
         assert self.shape[1] == len(other)
 
-        return PurePythonSeries(self._dot(other, _splitLimit, 0, self.shape[0]))
+        return PurePythonSeries(self._dotOnRowRange(other, _splitLimit, 0, self.shape[0]))
 
     def columns(self):
         # NOTE: this is not pandas-API compatible.
         return self._columns
 
-    def _dot(self, other, splitLimit, low, high):
+    def _dotOnRowRange(self, other, splitLimit, low, high):
         sz = high - low
         if sz <= splitLimit:
             return self._dot_on_chunk(other, low, high)
 
         mid = (high + low) / 2
-        return self._dot(other, splitLimit, low, mid) + \
-            self._dot(other, splitLimit, mid, high)
+        return self._dotOnRowRange(other, splitLimit, low, mid) + \
+            self._dotOnRowRange(other, splitLimit, mid, high)
 
     def _dot_on_chunk(self, other, low, high):
-        tr = _scaleVecOnRange(self._columns[0], other[0], low, high)
+        mutableArray = _MutableFloatArray(high - low)
 
-        colIx = 1
+        colIx = 0
         while colIx < self.shape[1]:
-            tr = _addVecsOnRange(
-                tr, self._columns[colIx], other[colIx], low, high)
+            rowIx = 0
+            column =  self._columns[colIx]
+            scale = other[colIx]
+            while rowIx < mutableArray.sz:
+                mutableArray.augmentitem(rowIx, column[rowIx + low] * scale)
+                rowIx = rowIx + 1
             colIx = colIx + 1
 
-        return tr
+        return mutableArray.tolist()
+
+
+class _MutableFloatArray(object):
+    def __init__(self, sz):
+        self.sz = sz
+        self.mutableVec = __inline_fora(
+            """fun(sz) {
+                   MutableVector(Float64).create(sz.@m, 0.0)
+                   }"""
+            )(sz)
+        
+    def setitem(self, ix, val):
+        __inline_fora(
+            """fun(mutableVec, ix, val) {
+                   mutableVec[ix.@m] = Float64(val.@m)
+                   }"""
+            )(self.mutableVec, ix, val)
+
+    def augmentitem(self, ix, val):
+        __inline_fora(
+            """fun(mutableVec, ix, val) {
+                   mutableVec[ix.@m] = mutableVec[ix.@m] + Float64(val.@m)
+                   }"""
+            )(self.mutableVec, ix, val)        
+
+    def __len__(self):
+        return self.sz
+
+    def __getitem__(self, ix):
+        return __inline_fora(
+            """fun(mutableVec, ix) {
+                   PyFloat(mutableVec[ix.@m])
+                   }"""
+            )(self.mutableVec, ix)
+
+    def tolist(self):
+        return __inline_fora(
+            """fun(mutableVec) {
+                   PyList([PyFloat(val) for val in mutableVec])
+                   }"""
+            )(self.mutableVec)
 
 
 def _scaleVecOnRange(vec, multiplier, lowIx, highIx):
