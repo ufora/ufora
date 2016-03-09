@@ -44,7 +44,13 @@ class GpuTestCases:
         self.compareCudaToCPU("fun((a,b)) { b + a }", "(1,2)")
         self.compareCudaToCPU("fun((a,b)) { b + a }", "(1s32,2s32)")
         self.compareCudaToCPU("fun(b) { b + 1s32 }", "2")
+
         self.compareCudaToCPU("math.log", "2")
+
+    def test_cuda_tuple_alignment(self):
+        # this test fails because the middle argument is not correctly aligned in our current model.
+        self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "(1s32,2,2s32)")
+
 
     def check_precision_of_function_on_GPU(self, function, input):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
