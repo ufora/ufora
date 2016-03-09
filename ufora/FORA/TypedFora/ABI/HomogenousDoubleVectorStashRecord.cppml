@@ -1,0 +1,192 @@
+/***************************************************************************
+    Copyright 2015 Ufora Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
+#include "HomogenousDoubleVectorStashRecord.hppml"
+#include "ForaValueArraySlice.hppml"
+#include "VectorHandle.hpp"
+#include "../../../core/Logging.hpp"
+
+
+namespace TypedFora {
+namespace Abi {
+
+HomogenousDoubleVectorStashRecord::HomogenousDoubleVectorStashRecord(
+                                        MemoryPool* inPool,
+                                        const VectorRecord& vector,
+                                        int64_t offsetWithinFirstVector
+                                        ) :
+        mPool(inPool),
+        mPointers(nullptr),
+        mValidRanges(nullptr),
+        mVector(vector),
+        mOffsetWithinFirstVector(offsetWithinFirstVector)
+    {
+    mStash.stashRecord() = this;
+    }
+
+HomogenousDoubleVectorStashRecord::~HomogenousDoubleVectorStashRecord()
+    {
+    if (mPointers)
+        mPool->free((uint8_t*)mPointers);
+    if (mValidRanges)
+        mPool->free((uint8_t*)mValidRanges);
+    }
+
+void HomogenousDoubleVectorStashRecord::updateStashForOffsets(int64_t offset1, int64_t offset2)
+    {
+    if (offset1 >= mStash.offset1Start() && offset1 < mStash.offset1Stop() && 
+            offset2 >= mStash.offset2Start() && offset2 < mStash.offset2Stop())
+        return;
+
+    int64_t vectorSize = mVector.size();
+
+    if (!mPointers)
+        {
+        mPointers = (std::pair<uint8_t*, int64_t>*)mPool->allocate(sizeof(std::pair<uint8_t*, int64_t>) * vectorSize * 2);
+        mValidRanges = (std::pair<int64_t, int64_t>*)mPool->allocate(sizeof(std::pair<int64_t, int64_t>) * vectorSize * 2);
+
+        for (long k = 0; k < vectorSize * 2; k++)
+            {
+            mPointers[k] = std::pair<uint8_t*, int64_t>();
+            mValidRanges[k] = std::pair<int64_t, int64_t>();
+            }
+
+        mStash.pointerAndStrideTable() = mPointers + vectorSize;
+        }
+
+    pair<int64_t, int64_t> validDim2 = mValidRanges[offset1 + vectorSize];
+
+    if (offset2 < validDim2.first || offset2 >= validDim2.second)
+        {
+        mapColumn(offset1, offset2);
+        validDim2 = mValidRanges[offset1 + vectorSize];
+        }
+
+    //now update the stash to take into account what we have at 'mPointers' and 'mValidRanges'
+    if (offset1 == mStash.offset1Stop() && offset2 >= mStash.offset2Start() && offset2 < mStash.offset2Stop())
+        {
+        mStash.offset1Stop()++;
+        mStash.offset2Start() = std::max<int64_t>(mStash.offset2Start(), validDim2.first);
+        mStash.offset2Stop() = std::min<int64_t>(mStash.offset2Stop(), validDim2.second);
+        }
+        else
+    if (offset1 + 1 == mStash.offset1Start() && offset2 >= mStash.offset2Start() && offset2 <= mStash.offset2Stop())
+        {
+        mStash.offset1Start()--;
+        mStash.offset2Start() = std::max<int64_t>(mStash.offset2Start(), validDim2.first);
+        mStash.offset2Stop() = std::min<int64_t>(mStash.offset2Stop(), validDim2.second);
+        }
+        else
+        {
+        mStash.offset1Start() = offset1;
+        mStash.offset1Stop() = offset1+1;
+        mStash.offset2Start() = validDim2.first;
+        mStash.offset2Stop() = validDim2.second;
+        }
+    }
+
+void HomogenousDoubleVectorStashRecord::mapColumn(int64_t offset1, int64_t offset2)
+    {
+    int64_t vectorSize = mVector.size();
+    
+    int64_t realOffset1 = (offset1 < 0 ? offset1 + vectorSize : offset1);
+
+    lassert_dump(realOffset1 >= 0 && realOffset1 < vectorSize, offset1);
+
+    TypedFora::Abi::ForaValueArraySlice slice = mVector.sliceForOffset(realOffset1);
+
+    auto offset1Ptr = slice.offsetFor(realOffset1);
+    lassert(offset1Ptr);
+
+    const VectorRecord* innerVector = (const VectorRecord*)(offset1Ptr + mOffsetWithinFirstVector);
+
+    if (innerVector->dataPtr() && innerVector->dataPtr()->unpagedValues() && innerVector->dataPtr()->pagedAndPageletTreeValueCount() == 0)
+        {
+        for (long k = 0; k < 8 && realOffset1 + k < slice.mapping().highIndex(); k++)
+            {
+            const VectorRecord* kth_innerVector = (const VectorRecord*)(slice.offsetFor(realOffset1 + k) + mOffsetWithinFirstVector);
+
+            auto unpagedValues = kth_innerVector->dataPtr()->unpagedValues();
+
+            if (unpagedValues && innerVector->dataPtr()->pagedAndPageletTreeValueCount() == 0)
+                {
+                //this vector is completely unpaged, so we can do the mapping directly
+                auto firstPtr = unpagedValues->offsetFor(kth_innerVector->offset());
+                auto secondPtr = unpagedValues->offsetFor(kth_innerVector->offset() + kth_innerVector->stride());
+
+                int64_t innerVecSize = kth_innerVector->size();
+                int64_t stride = secondPtr - firstPtr;
+
+                if (offset2 < 0)
+                    {
+                    mValidRanges[offset1 + vectorSize + k] = make_pair(-innerVecSize, 0);
+                    mPointers[offset1 + vectorSize + k] = make_pair(firstPtr + stride * innerVecSize, stride);
+                    }
+                else
+                    {
+                    mValidRanges[offset1 + vectorSize + k] = make_pair(0, innerVecSize);
+                    mPointers[offset1 + vectorSize + k] = make_pair(firstPtr, stride);
+                    }
+                }
+            }
+        }
+    else
+        {
+        int64_t realOffset2 = (offset2 < 0 ? offset2 + innerVector->size() : offset2);
+
+        TypedFora::Abi::ForaValueArraySlice innerSlice = innerVector->sliceForOffset(realOffset2);
+
+        lassert(innerSlice.mapping().indexIsValid(realOffset2));
+
+        int64_t minOffset2 = innerSlice.mapping().lowIndex();
+        int64_t maxOffset2 = innerSlice.mapping().highIndex();
+
+        if (offset2 < 0)
+            {
+            minOffset2 -= innerVector->size();
+            maxOffset2 -= innerVector->size();
+            }
+
+        uint8_t* basePtr = innerSlice.offsetFor(realOffset2);
+
+        //should be true because we checked that 'realOffset2' was a valid index
+        lassert(basePtr);
+
+        int64_t stride = 0;
+
+        if (innerSlice.mapping().indexIsValid(realOffset2 + 1))
+            stride = innerSlice.offsetFor(realOffset2 + 1) - basePtr;
+            else
+        if (innerSlice.mapping().indexIsValid(realOffset2 - 1))
+            stride = basePtr - innerSlice.offsetFor(realOffset2 - 1);
+
+        lassert_dump(minOffset2 < maxOffset2, minOffset2 << " vs. " << maxOffset2);
+
+        mValidRanges[offset1 + vectorSize] = make_pair(minOffset2, maxOffset2);
+        mPointers[offset1 + vectorSize] = make_pair(basePtr - stride * offset2, stride);
+        }
+    }
+
+HomogenousDoubleVectorStash HomogenousDoubleVectorStashRecord::getStash() const
+    {
+    lassert(!mStash.dim1IsOutOfBounds());
+    lassert(!mStash.dim2IsOutOfBounds());
+
+    return mStash;
+    }
+
+}
+}
