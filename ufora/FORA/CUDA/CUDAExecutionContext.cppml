@@ -16,6 +16,7 @@
 
 #include "CUDAExecutionContext.hppml"
 #include "NativeCFGToPTX.hppml"
+#include "../Core/Alignment.hpp"
 #include "../Core/ExecutionContext.hppml"
 #include "../Core/MemoryPool.hpp"
 #include "../Core/ImplValContainerUtilities.hppml"
@@ -319,7 +320,7 @@ void	CUDAExecutionContext::define(
 
 ImplValContainer    createFORAVector(
                         JOV objectType,
-                        void* data,
+                        uint8_t* alignedData,
                         uint64_t count,
                         MemoryPool* inPool
 						)
@@ -334,7 +335,18 @@ ImplValContainer    createFORAVector(
 
 	TypedFora::Abi::PackedForaValues vals = array->appendUninitialized(objectType, count);
 
-	memcpy(vals.data(), data, objectType.type()->size() * count);
+	if (objectType.type()->alignedSize() != objectType.type()->size())
+		{
+		uint8_t* packedData  = vals.data();
+		for (int i = 0; i < count; ++i)
+			{
+			copyAlignedToPacked(*objectType.type(), (uint8_t*)alignedData, packedData);
+//			alignedData = (char*)alignedData + objectType.type()->alignedSize();
+//			packedData  = (char*)packedData  + objectType.type()->size();
+			}
+		}
+	else
+		memcpy(vals.data(), alignedData, objectType.type()->size() * count);
 
 	VectorRecord vector(
 		inPool->construct<VectorHandle>(
@@ -407,8 +419,25 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 			);
 
 
-	//create a vector
-	uint8_t* rawVecData = pool->allocate(outputElementType.size() * elementCount);
+	//create a aligned vectors
+	uint8_t* rawInVecData;
+	uint8_t* rawOutVecData = pool->allocate(outputElementType.alignedSize() * elementCount);
+
+	if (inputElementType.alignedSize() != inputElementType.size())
+		{
+		rawInVecData = pool->allocate(inputElementType.alignedSize() * elementCount);
+		uint8_t* alignedData = rawInVecData;
+		uint8_t* packedData  = sourceVectorHandle.dataPtr()->unpagedValues()->offsetFor(0);
+		for (long k = 0; k < elementCount; ++k)
+			{
+			copyPackedToAligned(
+					inputElementType,
+					packedData,
+					alignedData);
+			}
+		}
+	else
+		rawInVecData = sourceVectorHandle.dataPtr()->unpagedValues()->offsetFor(0);
 
 	try	{
 		lassert(sourceVectorHandle.dataPtr()->unpagedValues());
@@ -416,23 +445,23 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 
 		mCUDAState->executeFunction(
 			inKernelName,
-			sourceVectorHandle.dataPtr()->unpagedValues()->offsetFor(0),
-			rawVecData,
+			rawInVecData,
+			rawOutVecData,
 			elementCount,
-			inputElementType.size(),
-			outputElementType.size()
+			inputElementType.alignedSize(),
+			outputElementType.alignedSize()
 			);
 		}
 	catch(...)
 		{
 		//cleanup the vector and propagate the exception
-		pool->free(rawVecData);
+		pool->free(rawOutVecData);
 		throw;
 		}
 
-	auto res = createFORAVector(JOV::OfType(outputElementType), rawVecData, elementCount, pool);
+	auto res = createFORAVector(JOV::OfType(outputElementType), rawOutVecData, elementCount, pool);
 
-	pool->free(rawVecData);
+	pool->free(rawOutVecData);
 
 	return res;
 	}
