@@ -1,0 +1,134 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "HomogenousDoubleVectorStash.hppml"
+#include "HomogenousDoubleVectorStashRecord.hppml"
+#include "BigVectorHandle.hppml"
+#include "ForaValueArraySlice.hppml"
+#include "VectorHandle.hpp"
+#include "VectorLoadRequest.hppml"
+#include "../../Core/ExecutionContext.hppml"
+#include "../../Core/ExecutionContextImpl.hppml"
+#include "../../../core/Logging.hpp"
+#include "../../../core/Clock.hpp"
+
+namespace TypedFora {
+namespace Abi {
+
+HomogenousDoubleVectorStash HomogenousDoubleVectorStash::updateStash(
+				HomogenousDoubleVectorStash currentStash,
+				TypedFora::Abi::VectorRecord handle,
+				int64_t offset1,
+				int64_t offset2,
+				int64_t offsetWithinRecord1
+				)
+	{
+	int64_t h1Size = handle.size();
+
+	if (offset1 < -h1Size || offset1 >= h1Size)
+		return HomogenousDoubleVectorStash::canonicalOutOfBoundsDim1();
+
+	int64_t realOffset1 = (offset1 < 0 ? offset1 + h1Size : offset1);
+
+	//this point is in-bounds and loaded
+	HomogenousDoubleVectorStashRecord* record = currentStash.stashRecord();
+
+	if (record && record->isAlreadyInBounds(offset1, offset2))
+		{
+		record->updateStashForOffsets(offset1, offset2);
+
+		return record->getStash();
+		}
+
+	//we may have to map something
+	TypedFora::Abi::ForaValueArraySlice slice = handle.sliceForOffset(realOffset1);
+
+	auto vecRecordPtr = slice.offsetFor(realOffset1);
+
+	if (!vecRecordPtr)
+		//we need to load this page
+		return HomogenousDoubleVectorStash::withStashRecord(currentStash.stashRecord());
+
+	const VectorRecord& innerVector = *(VectorRecord*)(vecRecordPtr + offsetWithinRecord1);
+
+	int64_t realOffset2 = (offset2 < 0 ? offset2 + innerVector.size() : offset2);
+
+	if (realOffset2 < 0 || realOffset2 >= innerVector.size())
+		return HomogenousDoubleVectorStash::canonicalOutOfBoundsDim2();
+	
+	//everything is in bounds. Check if it's also loaded.
+	auto slice2 = innerVector.sliceForOffset(realOffset2);
+
+	if (!slice2.offsetFor(realOffset2))
+		return HomogenousDoubleVectorStash::withStashRecord(currentStash.stashRecord());
+
+	if (!record)
+		record = Fora::Interpreter::ExecutionContext::currentExecutionContext()
+			->getImpl()->getDoubleVectorStashAllocator().allocateRecord(handle, offsetWithinRecord1);
+
+	record->updateStashForOffsets(offset1, offset2);
+
+	auto stash = record->getStash();
+
+	lassert_dump(
+		offset1 >= stash.offset1Start() 
+			&& offset1 < stash.offset1Stop()
+			&& offset2 >= stash.offset2Start() 
+			&& offset2 < stash.offset2Stop(), 
+		offset1 << " and " << offset2 << " not in " 
+			<< "[" << stash.offset1Start() << ", " << stash.offset1Stop() << ")"
+			<< ", [" << stash.offset2Start() << ", " << stash.offset2Stop() << ")"
+		);
+
+	return stash;
+	}
+
+
+VectorLoadRequest HomogenousDoubleVectorStash::getLoadRequest(
+					HomogenousDoubleVectorStash stash,
+					TypedFora::Abi::VectorRecord handle,
+					int64_t offset1,
+					int64_t offset2,
+					int64_t offsetWithinRecord1
+					)
+	{
+	if (offset1 < 0)
+		offset1 += handle.size();
+
+	lassert(offset1 >= 0 && offset1 < handle.size());
+
+	TypedFora::Abi::ForaValueArraySlice slice = handle.sliceForOffset(offset1);
+
+	auto vecRecordPtr = slice.offsetFor(offset1);
+	if (!vecRecordPtr)
+		return VectorLoadRequest(handle, offset1);
+
+	const VectorRecord& innerVector = *(VectorRecord*)(vecRecordPtr + offsetWithinRecord1);
+
+	int64_t actualOffset2 = offset2 < 0 ? offset2 + innerVector.size() : offset2;
+
+	lassert(actualOffset2 >= 0 && actualOffset2 < innerVector.size());
+
+	auto innerSlice = innerVector.sliceForOffset(actualOffset2);
+
+	if (!innerSlice.offsetFor(actualOffset2))
+		return VectorLoadRequest(innerVector, actualOffset2);
+
+	//everything looked loaded
+	return VectorLoadRequest();
+	}
+}
+}
+

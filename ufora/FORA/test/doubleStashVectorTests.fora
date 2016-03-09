@@ -20,6 +20,28 @@ block: fun(outer, inner) {
 	Vector.range(outer, fun(o) { Vector.range(inner, fun(i) { 1 }) })
 	};
 
+tripleLoopSum: fun(passes, (outer_start, outer_stop, outer_step), (inner_start, inner_stop, inner_step), f) {
+	let res = 0
+
+	let passIx = 0;
+	while (passIx < passes) {
+		let ix1 = outer_start
+		while (ix1 < outer_stop) {
+			let ix2 = inner_start
+			while (ix2 < inner_stop) {
+				res = res + f(passIx, ix1, ix2)
+
+				ix2 = ix2 + inner_step
+				};
+
+			ix1 = ix1 + outer_step
+			}
+		passIx = passIx + 1
+		}
+
+	res
+	};
+	
 read: fun(cols) { 
 	let mb = 128
 	let cols = 20
@@ -28,23 +50,7 @@ read: fun(cols) {
 	let passes = total_reads / cols / rows;
 
 	fun() {
-		let res = 0
-
-		let passIx = 0;
-		while (passIx < passes) {
-			let ix1 = 0
-			while (ix1 < rows) {
-				let ix2 = 0
-				while (ix2 < cols) {
-					res = res + data[ix2][ix1]
-
-					ix2 = ix2 + 1
-					};
-
-				ix1 = ix1 + 1
-				}
-			passIx = passIx + 1
-			}
+		let res = tripleLoopSum(passes, (0,rows,1), (0,cols,1), fun(_, ix1, ix2) { data[ix2][ix1] })
 
 		return res == passes * cols * rows
 		}
@@ -53,6 +59,12 @@ read: fun(cols) {
 (`perf, `callResult) read_1bb_column_major_values_20_columns: read(20);
 (`perf, `callResult) read_1bb_column_major_values_100_columns: read(100);
 (`perf, `callResult) read_1bb_column_major_values_400_columns: read(400);
+
+`test column_perf: (
+	let data = block(100000, 20)
+
+	tripleLoopSum(50, (0,20,1), (0,100000,1), fun(_, ix1, ix2) { data[ix2][ix1] }) > 0
+	);
 
 
 block_with_tuple: fun(outer, inner) {
@@ -67,23 +79,7 @@ read_with_tuple: fun(cols) {
 	let passes = total_reads / cols / rows;
 
 	fun() {
-		let res = 0
-
-		let passIx = 0;
-		while (passIx < passes) {
-			let ix1 = 0
-			while (ix1 < rows) {
-				let ix2 = 0
-				while (ix2 < cols) {
-					res = res + data[ix2][1][ix1]
-
-					ix2 = ix2 + 1
-					};
-
-				ix1 = ix1 + 1
-				}
-			passIx = passIx + 1
-			}
+		let res = tripleLoopSum(passes, (0,rows,1), (0,cols,1), fun(_, ix1, ix2) { data[ix2][1][ix1] })
 
 		return res == passes * cols * rows
 		}
@@ -91,5 +87,80 @@ read_with_tuple: fun(cols) {
 
 (`perf, `callResult) read_1bb_column_major_values_20_columns_with_tuple: read_with_tuple(20);
 
-//`test read_1bb_column_major_values_20_columns_with_tuple: read_with_tuple(20)();
+`test check_read_1bb_column_major_values_20_columns_with_tuple: read_with_tuple(20)();
 
+`test check_read_column_major_values_negative_indices: (
+	let data = block(20, 1000000)
+
+	let res1 = tripleLoopSum(50, (0,1000000,1), (0,20,1), fun(_, ix1, ix2) { data[ix2][ix1] })
+	let res2 = tripleLoopSum(50, (-1000000,0,1), (0,20,1), fun(_, ix1, ix2) { data[ix2][ix1] })
+	let res3 = tripleLoopSum(50, (-1000000,0,1), (-20,0,1), fun(_, ix1, ix2) { data[ix2][ix1] })
+	let res4 = tripleLoopSum(50, (0,1000000,1), (-20,0,1), fun(_, ix1, ix2) { data[ix2][ix1] })
+
+	res1 == res2 and res1 == res3 and res1 == res4
+	);
+
+`test check_read_column_major_values_strided_indices: (
+	let data = block(20, 1000000)
+
+	let res1 = tripleLoopSum(50, (0,1000000,2), (0,20,2), fun(_, ix1, ix2) { data[ix2][ix1] })
+
+	res1 > 0
+	);
+
+`test check_read_column_major_values_overflow: (
+	let data = block(20, 1000000)
+
+	let res1 = tripleLoopSum(50, (0,1000000,1), (0,20,1), fun(_, ix1, ix2) { data[ix2][ix1] })
+	try {
+		tripleLoopSum(50, (0,2000000,1), (0,20,1), fun(_, ix1, ix2) { data[ix2][ix1] })
+		}
+	catch(...)
+		{
+		res1 > 0
+		}
+	);
+
+check_read_column_major_values_inner_blocking_test: fun(ct) {
+	let data = sum([block(ct, 1000000 / ct) + [x.paged for x in block(ct, 1000000 / ct)] for _ in sequence(8)])
+
+	return tripleLoopSum(50, (0,size(data[0]),1), (0,size(data),1), fun(_, ix1, ix2) { data[ix2][ix1] }) > 0
+	};
+
+`test check_read_column_major_values_inner_blocking_2: check_read_column_major_values_inner_blocking_test(2);
+`test check_read_column_major_values_inner_blocking_3: check_read_column_major_values_inner_blocking_test(3);
+`test check_read_column_major_values_inner_blocking_5: check_read_column_major_values_inner_blocking_test(5);
+`test check_read_column_major_values_inner_blocking_10: check_read_column_major_values_inner_blocking_test(10);
+`test check_read_column_major_values_inner_blocking_20: check_read_column_major_values_inner_blocking_test(20);
+`test check_read_column_major_values_inner_blocking_40: check_read_column_major_values_inner_blocking_test(40);
+
+//these two tests should take roughly the same amount of time.
+(`perf, `callResult) check_count_loopsum_with_size: (
+	let data = block(20, 1000000);
+
+	fun() {
+		let res = 0; 
+
+		for passIx in sequence(50)
+			for ix1 in sequence(1000000)
+				for ix2 in sequence(size(data))
+					res = res + data[ix2][ix1]
+
+		res > 0
+		}
+	);
+
+(`perf, `callResult) check_count_loopsum_without_size: (
+	let data = block(20, 1000000);
+
+	fun() {
+		let res = 0; 
+
+		for passIx in sequence(50)
+			for ix1 in sequence(1000000)
+				for ix2 in sequence(20)
+					res = res + data[ix2][ix1]
+
+		res > 0
+		}
+	);
