@@ -149,7 +149,7 @@ class ResultExceededBytecountThreshold(PyforaError):
     pass
 
 class ConnectionError(PyforaError):
-    '''Raised when a connection to the Ufora backend cannot be established.'''
+    '''Raised when a connection to the pyfora backend cannot be established.'''
     pass
 
 class BadWithBlockError(PyforaError):

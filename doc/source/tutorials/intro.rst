@@ -212,8 +212,8 @@ time the following constraints are enforced:
        v = v + [12]
 
 
-Violation of constraints
-~~~~~~~~~~~~~~~~~~~~~~~~
+Violation of Constraints
+------------------------
 
 Whenever you invoke pyfora on a block of python code, the runtime attempts to give you either (a) the exact same
 answer you would have received had you run the same code in your python interpreter locally,

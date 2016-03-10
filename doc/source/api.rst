@@ -69,7 +69,7 @@ Logistic Regression
 ~~~~~~~~~~~~~~~~~~~
 .. autoclass:: pyfora.algorithms.BinaryLogisticRegressionFitter
    :members: fit
-.. autoclass:: pyfora.algorithms.BinaryLogisticRegressionModel.BinaryLogisticRegressionModel
+.. autoclass:: pyfora.algorithms.logistic.BinaryLogisticRegressionModel.BinaryLogisticRegressionModel
     :members:
 
 Regression Trees

@@ -15,7 +15,7 @@
 """
 Connection
 
-Manages a connection to a Ufora cluster
+Manages a connection to a pyfora cluster
 """
 
 import pyfora.Exceptions as Exceptions
@@ -33,7 +33,7 @@ import pyfora
 import os
 
 class Connection(object):
-    """A live connection to a Ufora cluster that can execute submitted Python code.
+    """A live connection to a pyfora cluster that can execute submitted Python code.
 
     Note:
         This is an internal implementation class that is primarily used by
@@ -368,15 +368,15 @@ def createObjectConverter(webObjectFactory):
 
 
 def connect(url, timeout=30.0):
-    """Opens a connection to a Ufora cluster
+    """Opens a connection to a pyfora cluster
 
     Args:
-        url (str): The HTTP URL of the ufora cluster (e.g. ``http://192.168.1.200:30000``)
+        url (str): The HTTP URL of the cluster's manager (e.g. ``http://192.168.1.200:30000``)
         timeout (Optional float): A timeout for the operation in seconds, or None
             to wait indefinitely.
 
     Returns:
-        Executor.Executor: an :class:`~pyfora.Executor.Executor` that can be used to submit work
+        An :class:`~pyfora.Executor.Executor` that can be used to submit work
         to the cluster.
     """
     socketIoInterface = SocketIoJsonInterface.SocketIoJsonInterface(

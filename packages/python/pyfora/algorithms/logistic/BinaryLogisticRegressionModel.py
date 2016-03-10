@@ -28,7 +28,7 @@ class BinaryLogisticRegressionModel(object):
 
     Note:
         This class is not intended to be constructed directly. Instances of it are
-        returned by :func:`~pyfora.algorithms.BinaryLogisticRegressionFitter.BinaryLogisticRegressionFitter.fit`.
+        returned by :func:`~pyfora.algorithms.BinaryLogisticRegressionFitter.fit`.
     """
     def __init__(
             self,
@@ -51,13 +51,12 @@ class BinaryLogisticRegressionModel(object):
 
         Args:
             X (DataFrame): Feature vectors
-            y (DataFrame): Target labels, corresponding to the vectors in
-                :py:obj:`X`.
+            y (DataFrame): Target labels, corresponding to the vectors in ``X``.
 
         Returns:
             float: The mean accuracy of
-            :func:`~pyfora.algorithms.BinaryLogisticRegressionModel.BinaryLogisticRegressionModel.predict`
-            with respect to :py:obj:`y`.
+            :func:`~pyfora.algorithms.logistic.BinaryLogisticRegressionModel.BinaryLogisticRegressionModel.predict`
+            with respect to ``y``.
         """
         assert len(X) == len(y), "arguments must have the same length"
 
@@ -77,7 +76,7 @@ class BinaryLogisticRegressionModel(object):
 
     def predict(self, X):
         """
-        Predict the class labels of :py:obj:`X`.
+        Predict the class labels of ``X``.
 
         Args:
             X (DataFrame, or numpy.array): a set of feature vectors
@@ -98,8 +97,7 @@ class BinaryLogisticRegressionModel(object):
 
     def predict_probability(self, X):
         """
-        Estimate the conditional class-zero probability for the features in
-        :py:obj:`X`.
+        Estimate the conditional class-zero probability for the features in ``X``.
 
         Args:
             X (DataFrame, or numpy.array): a set of feature vectors

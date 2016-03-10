@@ -25,8 +25,7 @@ class BinaryLogisticRegressionFitter(object):
     """
     BinaryLogisticRegressionFitter
 
-    A :class:`~BinaryLogisticRegressionFitter`, or "fitter", holds fitting parameters
-    which are used to fit logit models.
+    A logistic regression "fitter" ithat holds fitting parameters used to fit logit models.
 
     Args:
         regularizer (float): The "lambda" parameter in the referenced paper, the
@@ -34,14 +33,14 @@ class BinaryLogisticRegressionFitter(object):
         hasIntercept (bool): If True, include an intercept (aka bias) term in
             the fitted models.
         method (string): one of 'newton-cg' (default) or 'majorization'
-        interceptScale (float): When :py:obj:`hasIntercept` is true, feature vectors
-            become `[x, interceptScale]`, i.e. we add a "synthetic" feature
-            with constant value :py:obj:`interceptScale` to all of the feature vectors.
+        interceptScale (float): When ``hasIntercept`` is True, feature vectors
+            become ``[x, interceptScale]``, i.e. we add a "synthetic" feature
+            with constant value ``interceptScale`` to all of the feature vectors.
             This synthetic feature is subject to regularization as all other
             features. To lessen the effect of regularization, users should
             increase this value.
         tol (float): Tolerance for stopping criteria. Fitting stops when
-            the l2-norm of the parameters to update do not change more than `tol`.
+            the l2-norm of the parameters to update do not change more than ``tol``.
         maxIter (int): A hard limit on the number of update cycles allowed.
     """
     def __init__(
@@ -70,18 +69,18 @@ class BinaryLogisticRegressionFitter(object):
 
     def fit(self, X, y):
         """
-         fit a (regularized) logit model to the predictors `X` and responses `y`.
+         fit a (regularized) logit model to the predictors ``X`` and responses ``y``.
 
         Args:
             X: a dataframe of feature vectors.
             y: a dataframe (with one column) which contains the "target" values,
-                corresponding to the feature vectors in `X`.
+                corresponding to the feature vectors in ``X``.
 
         Returns:
-            A :class:`~pyfora.algorithms.logistic.BinaryLogisticRegressionModel.BinaryLogisticRegressionModel`
+            A :class:`~pyfora.algorithms.BinaryLogisticRegressionModel.BinaryLogisticRegressionModel`
             which represents the fit model.
 
-        Examples::
+        Example::
 
             # fit a logit model without intercept using regularizer 1.0
 

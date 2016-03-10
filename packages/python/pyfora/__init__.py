@@ -12,22 +12,6 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-"""A Python client for Ufora
-
-The ``pyfora`` package makes it easy to connect to a Ufora cluster, submit
-arbitrary computations to the cluster in the form of "Pure Python" code the result
-back into Python.
-
-
-Pure (for "purely functional") Python, is a subset of python in which:
-
-- All data structures are immutable (e.g. no modification of lists)
-- Operations have no side-effects (e.g. no access to files or print functions)
-- Operations are deterministic  (e.g. no access to system time)
-
-"""
-
-
 
 from pyfora._version import __version__
 

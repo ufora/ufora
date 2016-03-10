@@ -17,7 +17,7 @@
 WithBlockExecutor
 
 Extracts the Python code nested in its code-block and automatically sends
-that code as a callable to the Ufora cluster
+that code as a callable to the pyfora cluster
 """
 
 import traceback
@@ -95,10 +95,10 @@ def syntheticTraceback(trace):
         return sys.exc_info()[2].tb_next
 
 class WithBlockExecutor(object):
-    """A helper object used to synchronously run blocks of code on a Ufora cluster.
+    """A helper object used to synchronously run blocks of code on a cluster.
 
     When entering a ``with`` block using a :class:`WithBlockExecutor`, the body of
-    the block is extracted and submitted to the Ufora cluster for execution, along
+    the block is extracted and submitted to the pyfora cluster for execution, along
     with all its local dependencies. Variable assignments within the block are
     returned as :class:`~RemotePythonObject.RemotePythonObject` and reassigned to
     their corresponding local varialbes when exiting the block.
@@ -111,7 +111,7 @@ class WithBlockExecutor(object):
 
     Note:
         Instances of :class:`WithBlockExecutor` are only intended to be created by
-        :class:`~pyfora.Executor.Executor`. User code typically uses :func:`~Executor.Executor.remotely`
+        :class:`~pyfora.Executor.Executor`. User code typically uses :attr:`~Executor.Executor.remotely`
         to get a :class:`WithBlockExecutor`.
     """
     def __init__(self, executor):
@@ -249,7 +249,7 @@ class WithBlockExecutor(object):
             frame.f_lineno = frame.f_lineno - 1
             # re-raise to hide from users the traceback into the internals of pyfora
             logging.error("Re-raising exception to partially hide traceback.\n%s", traceback.format_exc())
-            raise err  
+            raise err
         except Exception:
             frame.f_lineno = frame.f_lineno - 1
             logging.error("Re-raising exception after amending lineno.\n%s", traceback.format_exc())
