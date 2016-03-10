@@ -21,6 +21,10 @@ from pyfora.algorithms.logistic.BinaryLogisticRegressionModel import \
 import pyfora.pure_modules.pure_pandas as PurePandas
 
 
+def to_row_major_flat(X):
+    return [X.iloc[rowIx, colIx] for rowIx in X.shape[0] for colIx in X.shape[1]]
+
+
 class BinaryLogisticRegressionFitter(object):
     """
     BinaryLogisticRegressionFitter
@@ -68,7 +72,7 @@ class BinaryLogisticRegressionFitter(object):
         return df.pyfora_addColumn(
             "intercept", [self.interceptScale for _ in xrange(len(df))])
 
-    def fit(self, X, y):
+    def fit(self, X, y, X_row_major_flat=None):
         """
          fit a (regularized) logit model to the predictors `X` and responses `y`.
 
@@ -94,6 +98,9 @@ class BinaryLogisticRegressionFitter(object):
             model = fitter.fit(x, y)
 
         """
+        if X_row_major_flat is None:
+            X_row_major_flat = to_row_major_flat(X)
+
         assert len(X) == len(y), "len(X) doesn't match len(y)"
 
         if isinstance(y, PurePandas.PurePythonDataFrame):
@@ -130,6 +137,7 @@ class BinaryLogisticRegressionFitter(object):
             X, y,
             classZeroLabel,
             regularizer,
+            X_row_major_flat,
             self.tol,
             self.maxIter,
             self.splitLimit

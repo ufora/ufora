@@ -20,6 +20,35 @@ import math
 from Solver import Solver, ReturnValue
 
 
+def to_row_major_flat(X):
+    return [X.iloc[rowIx, colIx] for rowIx in xrange(X.shape[0]) \
+            for colIx in xrange(X.shape[1])]
+
+
+class _RowMajorMatrix(object):
+    def __init__(self, X_row_major_flat, shape):
+        self.X_row_major_flat = X_row_major_flat
+        self.shape = shape
+
+    def dot(self, vec):
+        vec_sz = len(vec)
+        assert self.shape[1] == vec_sz
+        
+        tr = []
+        X_ix = 0
+        while X_ix < len(self.X_row_major_flat):
+            row_dot_product = 0.0
+            vec_ix = 0
+            while vec_ix < vec_sz:
+                row_dot_product = row_dot_product + \
+                    self.X_row_major_flat[X_ix] * vec[vec_ix]
+                vec_ix = vec_ix + 1
+                X_ix = X_ix + 1
+            tr = tr + [row_dot_product]
+
+        return tr
+
+
 class TrustRegionConjugateGradientSolver(Solver):
     """
     Implements "Trust Region Newton Methods for Large-Scale Logistic Regression"
@@ -32,10 +61,15 @@ class TrustRegionConjugateGradientSolver(Solver):
             self, X, y,
             classZeroLabel,
             C=1.0,
+            X_row_major_flat=None,
             eps=0.001,
             maxIters=1000,
             splitLimit=1000000):
         self.X = X
+        if X_row_major_flat is None:
+            X_row_major_flat = to_row_major_flat(X)
+
+        self.X_row_major = _RowMajorMatrix(X_row_major_flat, X.shape)
         self.y = y
         self.classZeroLabel = classZeroLabel
         self.C = float(C)
@@ -79,6 +113,7 @@ class TrustRegionConjugateGradientSolver(Solver):
 
         objectiveFun = ObjectiveFunctionAtWeights(
             self.X,
+            self.X_row_major,
             self.normalized_y_value,
             self.C,
             weights)
@@ -261,16 +296,18 @@ class SolverState(object):
 
 
 class ObjectiveFunctionAtWeights(object):
-    def __init__(self, X, normalized_y_value, regularlizer, weights):
+    def __init__(self, X, X_row_major, normalized_y_value, regularlizer, weights):
         self.X = X
         self.normalized_y_value = normalized_y_value
         self.C = regularlizer
         self.w = numpy.array(weights)
-        self.Xw = X.dot(weights)
+        self.X_row_major = X_row_major
+        self.Xw = X_row_major.dot(weights)
 
     def withWeights(self, newWeights):
         return ObjectiveFunctionAtWeights(
             self.X,
+            self.X_row_major,
             self.normalized_y_value,
             self.C,
             newWeights
@@ -302,7 +339,7 @@ class ObjectiveFunctionAtWeights(object):
 
     def hessian_dot_vec(self, v):
         # Hess = I + C * X^t * D * X
-        Xv = self.X.dot(v)
+        Xv = self.X_row_major.dot(v)
 
         def D_fun(ix):
             sigma = self.sigma(self.normalized_y_value(ix) * self.Xw[ix])
