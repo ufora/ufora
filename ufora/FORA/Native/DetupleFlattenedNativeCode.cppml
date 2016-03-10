@@ -1,0 +1,924 @@
+/***************************************************************************
+    Copyright 2015 Ufora Inc.
+ 
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+#include "DetupleFlattenedNativeCode.hppml"
+#include "../../core/Logging.hpp"
+#include "../../core/Clock.hpp"
+#include "../../core/cppml/CPPMLVisit.hppml"
+#include "../../core/containers/TwoWaySetMap.hpp"
+#include "../TypedFora/TypedFora.hppml"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include "../TypedFora/ABI/VectorRecord.hpp"
+#include "../TypedFora/ABI/VectorHandleCodegen.hppml"
+#include "../TypedFora/ABI/VectorRecordCodegen.hppml"
+#include "../TypedFora/ABI/HomogenousVectorStashCodegen.hppml"
+#include "../Vector/MutableVectorRecord.hppml"
+
+
+class DetupleFlattenedNativeCode {
+public:
+	//mapping to describe how a single variable was blown apart
+	@type VariableTree = 
+		-| Leaf of NativeVariable variable
+		-| Nothing of ()
+		-| Composite of ImmutableTreeVector<VariableTree> var, NativeType type
+		;
+
+	@type ExtractVarsMentioned = std::set<NativeVariable> vars {
+	public:
+		template<class T>
+		void processDown(const T& t, bool& b)
+			{
+			}
+		
+		template<class T>
+		void processUp(const T& t)
+			{
+			}
+
+		void processDown(const NativeVariable& in, bool& b)
+			{
+			vars().insert(in);
+			}
+	};
+
+	class RenameAllVariables {
+	public:
+		RenameAllVariables(const std::map<NativeVariable, NativeVariable>& inMapping) : 
+				mMapping(inMapping)
+			{
+			}
+
+		template<class T>
+		Nullable<T>	processDown(const T& in, bool& outContinue) const
+			{
+			return null();
+			}
+
+		template<class T>
+		Nullable<T>	processUp(const T& in) const
+			{
+			return null();
+			}
+
+		Nullable<NativeVariable>	processDown(const NativeVariable& in, bool& outContinue) const
+			{
+			auto it = mMapping.find(in);
+			if (it == mMapping.end())
+				return null();
+			return null() << it->second;
+			}
+
+	private:
+		const std::map<NativeVariable, NativeVariable>& mMapping;
+	};
+
+	class UpdateAllMetadatas {
+	public:
+		UpdateAllMetadatas(const std::map<NativeVariable, VariableTree>& inMapping) : 
+				mMapping(inMapping)
+			{
+			}
+
+		template<class T>
+		Nullable<T>	processDown(const T& in, bool& outContinue) const
+			{
+			return null();
+			}
+
+		template<class T>
+		Nullable<T>	processUp(const T& in) const
+			{
+			return null();
+			}
+
+		Nullable<NativeCodeFlattened::CompositeInput>	processDown(const NativeCodeFlattened::CompositeInput& in, bool& outContinue) const
+			{
+			@match NativeCodeFlattened::CompositeInput(in)
+				-| Leaf(Variable(v)) ->> {
+					auto it = mMapping.find(v);
+					if (it != mMapping.end())
+						return null() << treeToCompositeInput(it->second);
+					}
+				-| _ ->> {}
+
+			return null();
+			}
+
+		static NativeCodeFlattened::CompositeInput treeToCompositeInput(VariableTree tree)
+			{
+			@match VariableTree(tree)
+				-| Nothing() ->> {
+					return NativeCodeFlattened::CompositeInput::Leaf(
+						NativeCodeFlattened::Input::Constant(NativeConstant::Nothing())
+						);
+					}
+				-| Leaf(v) ->> {
+					return NativeCodeFlattened::CompositeInput::Leaf(
+						NativeCodeFlattened::Input::Variable(v)
+						);
+					}
+				-| Composite(subs) ->> {
+					return NativeCodeFlattened::CompositeInput::Node(
+						mapITV(subs, [&](VariableTree t) { return treeToCompositeInput(t); })
+						);
+					}
+			}
+
+	private:
+		const std::map<NativeVariable, VariableTree>& mMapping;
+	};
+
+	@type ExtractBlocksTargetedByContinuations = ImmutableTreeSet<NativeBlockID> blocks {
+	public:
+		template<class T>
+		void processDown(const T& t, bool& b)
+			{
+			}
+		
+		template<class T>
+		void processUp(const T& t)
+			{
+			}
+
+		void processDown(const NativeCodeFlattened::Cont& in, bool& b)
+			{
+			blocks() = blocks() + in.block();
+			}
+
+		template<class container_type>
+		static ImmutableTreeSet<NativeBlockID> extract(const container_type& c)
+			{
+			ExtractBlocksTargetedByContinuations visitor;
+
+			::visit(c, visitor);
+
+			return visitor.blocks();
+			}
+	};
+	static const ImmutableTreeSet<NativeType>& typesToExclude()
+		{
+		static ImmutableTreeSet<NativeType> res = 
+			ImmutableTreeSet<NativeType>() + 
+				TypedFora::Abi::nativeTypeForImplVal() + 
+				cppmlAlternative() + 
+				NativeTypeFor<TypedFora::Abi::VectorRecord>::get() + 
+				NativeTypeFor<MutableVectorRecord>::get() + 
+				NativeTypeFor<TypedFora::Abi::VectorHandle>::get() + 
+				NativeTypeFor<TypedFora::Abi::HomogenousVectorStash>::get()
+				;
+
+		return res;
+		}
+
+
+	DetupleFlattenedNativeCode(
+					map<NativeBlockID, NativeCodeFlattened::Block>& inBlocks, 
+					std::string funcName
+					) :
+			mBlocks(inBlocks),
+			mFunctionName(funcName)
+		{
+		mContTargetedBlocks = ExtractBlocksTargetedByContinuations::extract(mBlocks);
+		}
+
+	bool shouldRewriteBlock(NativeBlockID block)
+		{
+		return block.isInternal() && !mContTargetedBlocks.contains(block);
+		}
+
+	void apply()
+		{
+		for (auto& blockIdAndBlock: mBlocks)
+			{
+			auto& block = blockIdAndBlock.second;
+
+			ImmutableTreeVector<NativeVariable> newArgs;
+			ImmutableTreeVector<pair<NativeVariable, NativeCodeFlattened::Expression> > backExprs;
+
+			for (auto var: block.args())
+				{
+				Nullable<VariableTree> tree = expandArgToTree(var);
+				if (tree)
+					{
+					newArgs = newArgs + extractArgsFromTree(*tree);
+					mRewrittenVariableDefs[var] = defsToBuildTreeVar(*tree, var);
+					mRewrittenVariableTrees[var] = *tree;
+					}
+				else
+					newArgs = newArgs + var;
+				}
+
+			block.term() = expandTerm(block.term(), backExprs);
+
+			block.args() = newArgs;
+			block.defs() = block.defs() + backExprs;
+			}
+
+		//first, ensure that any metadata uses of the old variables are replaced with new variables
+		for (auto& blockIdAndBlock: mBlocks)
+			blockIdAndBlock.second = ::transform(blockIdAndBlock.second, UpdateAllMetadatas(mRewrittenVariableTrees));
+
+		for (auto& blockIdAndBlock: mBlocks)
+			{
+			//anybody who uses a rewritten var needs to have the variable redefined at the top of its block
+			ExtractVarsMentioned mentioned;
+			::visit(blockIdAndBlock, mentioned);
+
+			std::map<NativeVariable, NativeVariable> toRename;
+
+			for (auto var: mentioned.vars())
+				{
+				auto it = mRewrittenVariableDefs.find(var);
+
+				if (it != mRewrittenVariableDefs.end())
+					{
+					blockIdAndBlock.second.defs() = it->second + blockIdAndBlock.second.defs();
+					for (auto varAndDef: it->second)
+						toRename[varAndDef.first] = NativeVariable::Temp(varAndDef.first.type());
+					}
+				}
+
+			blockIdAndBlock.second = ::transform(blockIdAndBlock.second, RenameAllVariables(toRename));
+			}
+		}
+
+	ImmutableTreeVector<NativeVariable> extractArgsFromTree(VariableTree tree)
+		{
+		@match VariableTree(tree)
+			-| Nothing() ->> { return emptyTreeVec(); }
+			-| Leaf(l) ->> { return emptyTreeVec() + l; }
+			-| Composite(subs) ->> { 
+				ImmutableTreeVector<NativeVariable> res;
+
+				for (auto s: subs)
+					res = res + extractArgsFromTree(s);
+
+				return res;
+				}
+		}
+
+
+	ImmutableTreeVector<NativeCodeFlattened::Input> expandInputForJumpToExpandedBlock(
+					NativeCodeFlattened::Input term,
+					ImmutableTreeVector<pair<NativeVariable, NativeCodeFlattened::Expression> >& ioBackExpressions
+					)
+		{
+		if (term.type().isNothing())
+			return emptyTreeVec();
+
+		if (!term.type().isComposite() || typesToExclude().contains(term.type()))
+			return emptyTreeVec() + term;
+
+		NativeVariable varToRepresentTerm;
+
+		@match NativeCodeFlattened::Input(term)
+			-| Variable(v) ->> {
+				varToRepresentTerm = v;
+				}
+			-| _ ->> {
+				varToRepresentTerm = NativeVariable::Temp(term.type());
+				ioBackExpressions = ioBackExpressions + 
+					make_pair(
+						varToRepresentTerm, 
+						NativeCodeFlattened::Expression::Var(term)
+						);
+				}
+
+		ImmutableTreeVector<NativeCodeFlattened::Input> inputs;
+
+		for (auto k = 0; k < term.type().getComposite().elements().size(); k++)
+			{
+			NativeType subtype = term.type().getComposite().elements()[k];
+			if (!subtype.isNothing())
+				{
+				NativeVariable subInput = NativeVariable::Temp(subtype);
+				ioBackExpressions = ioBackExpressions + 
+					make_pair(
+						subInput,
+						NativeCodeFlattened::Expression::ValueExtract(emptyTreeVec() + uword_t(k), term)
+						);
+				inputs = inputs + expandInputForJumpToExpandedBlock(NativeCodeFlattened::Input::Variable(subInput), ioBackExpressions);
+				}
+			}
+
+		return inputs;
+		}
+
+	NativeCodeFlattened::JumpPoint expandJumpPoint(
+					NativeCodeFlattened::JumpPoint term,
+					ImmutableTreeVector<pair<NativeVariable, NativeCodeFlattened::Expression> >& ioBackExpressions
+					)
+		{
+		ImmutableTreeVector<NativeCodeFlattened::Input> args;
+
+		for (auto a: term.args())
+			args = args + expandInputForJumpToExpandedBlock(a, ioBackExpressions);
+
+		return NativeCodeFlattened::JumpPoint(term.block(), args, term.dumpToSlots());
+		}
+
+	NativeCodeFlattened::Input expandCallOrTransferArg(
+					NativeCodeFlattened::Input term,
+					ImmutableTreeVector<pair<NativeVariable, NativeCodeFlattened::Expression> >& ioBackExpressions
+					)
+		{
+		//if 'term' has type (A,B), we need to deconstruct 'term' and then reconstruct it. E.g.
+		//if 'x' has type (A,B), we need
+		//xA = x[0]
+		//xB = x[1]
+		//newX = (xA,xB)
+		//this will allow the source 'x' to be deconstructed into components, and the 'newX' to be
+		//reconstructed where it's being used
+		if (!term.type().isComposite() || term.type().isNothing() || typesToExclude().contains(term.type()))
+			return term;
+
+		ImmutableTreeVector<NativeCodeFlattened::Input> children;
+		for (long k = 0; k < term.type().getComposite().elements().size(); k++)
+			{
+			NativeVariable t = NativeVariable::Temp(term.type().getComposite().elements()[k]);
+			
+			ioBackExpressions = ioBackExpressions + (
+				make_pair(
+					t, 
+					NativeCodeFlattened::Expression::ValueExtract(
+						emptyTreeVec() + uword_t(k), 
+						term
+						)
+					)
+				);
+
+			children = children + expandCallOrTransferArg(NativeCodeFlattened::Input::Variable(t), ioBackExpressions);
+			}
+
+		NativeVariable final = NativeVariable::Temp(term.type());
+
+		ioBackExpressions = ioBackExpressions + (
+			make_pair(
+				final,
+				NativeCodeFlattened::Expression::CreateComposite(children)
+				)
+			);
+
+		return NativeCodeFlattened::Input::Variable(final);
+		}
+
+	ImmutableTreeVector<NativeCodeFlattened::Input> expandCallOrTransferArgs(
+					ImmutableTreeVector<NativeCodeFlattened::Input> term,
+					ImmutableTreeVector<pair<NativeVariable, NativeCodeFlattened::Expression> >& ioBackExpressions
+					)
+		{
+		ImmutableTreeVector<NativeCodeFlattened::Input> args;
+
+		for (auto a: term)
+			args = args + expandCallOrTransferArg(a, ioBackExpressions);
+
+		return args;
+		}
+
+	NativeCodeFlattened::Term expandTerm(
+					NativeCodeFlattened::Term term,
+					ImmutableTreeVector<pair<NativeVariable, NativeCodeFlattened::Expression> >& ioBackExpressions
+					)
+		{
+		@match NativeCodeFlattened::Term(term)
+			-| Jump(jp) ->> {
+				return NativeCodeFlattened::Term::Jump(expandJumpPoint(jp, ioBackExpressions));
+				}
+			-| Branch(i, jp1, jp2, fracTrue) ->> {
+				return NativeCodeFlattened::Term::Branch(
+					i,
+					expandJumpPoint(jp1, ioBackExpressions),
+					expandJumpPoint(jp2, ioBackExpressions),
+					fracTrue
+					);
+				}
+			-| InterruptOrKickCheck(jp1, jp2) ->> {
+				return NativeCodeFlattened::Term::InterruptOrKickCheck(
+					expandJumpPoint(jp1, ioBackExpressions),
+					expandJumpPoint(jp2, ioBackExpressions)
+					);
+				}
+			-| Call(targetName, blockID, continuation, contMetas, metaData, args, dumps) ->> {
+				auto newArgs = expandCallOrTransferArgs(args, ioBackExpressions);
+				return NativeCodeFlattened::Term::Call(targetName, blockID, continuation, contMetas, metaData, newArgs, dumps);
+				}
+			-| Transfer(target, blockID, continuation, args) ->> {
+				auto newArgs = expandCallOrTransferArgs(args, ioBackExpressions);
+				return NativeCodeFlattened::Term::Transfer(target, blockID, continuation, newArgs);
+				}
+			-| CallGeneric(target, args, dumpToSlots, destroyLocal, isInternal) ->> {
+				auto newArgs = expandCallOrTransferArgs(args, ioBackExpressions);
+				return NativeCodeFlattened::Term::CallGeneric(target, newArgs, dumpToSlots, destroyLocal, isInternal);
+				}
+			-| Follow(cont, result, dumpToSlots, indexInCont, destroy) ->> {
+				auto newResult = expandCallOrTransferArg(result, ioBackExpressions);
+				return NativeCodeFlattened::Term::Follow(cont, newResult, dumpToSlots, indexInCont, destroy);
+				}
+			-| _ ->> {
+				return term;
+				}
+		}
+
+	Nullable<VariableTree> expandArgToTree(NativeVariable var)
+		{
+		if (!var.type().isComposite() || typesToExclude().contains(var.type()))
+			return null();
+
+		return null() << expandTypeToTree(var.type());
+		}
+
+	VariableTree expandTypeToTree(NativeType type)
+		{
+		if (type.isNothing())
+			return VariableTree::Nothing();
+
+		if (!type.isComposite() || typesToExclude().contains(type))
+			return VariableTree::Leaf(NativeVariable::Temp(type));
+
+		return VariableTree::Composite(
+			mapITV(
+				type.getComposite().elements(),
+				[&](NativeType type) { return expandTypeToTree(type); }
+				),
+			type
+			);
+		}
+
+	ImmutableTreeVector<pair<NativeVariable, NativeCodeFlattened::Expression> > defsToBuildTreeVar(VariableTree tree, NativeVariable toDef)
+		{
+		@match VariableTree(tree)
+			-| Nothing() ->> {
+				return emptyTreeVec() + 
+					make_pair(
+						toDef, 
+						NativeCodeFlattened::Expression::Var(
+							NativeCodeFlattened::Input::Constant(NativeConstant::Nothing())
+							)
+						);
+				}
+			-| Leaf(v) ->> {
+				return emptyTreeVec() + 
+					make_pair(
+						toDef, 
+						NativeCodeFlattened::Expression::Var(
+							NativeCodeFlattened::Input::Variable(v)
+							)
+						);
+				}
+			-| Composite(subs, outType) ->> {
+				ImmutableTreeVector<pair<NativeVariable, NativeCodeFlattened::Expression> > exprs;
+				ImmutableTreeVector<NativeCodeFlattened::Input> compositeInputs;
+
+				for (auto s: subs)
+					{
+					@match VariableTree(s)
+						-| Nothing() ->> {
+							compositeInputs = compositeInputs + 
+								NativeCodeFlattened::Input::Constant(NativeConstant::Nothing());
+							}
+						-| Leaf(v) ->> {
+							compositeInputs = compositeInputs + 
+								NativeCodeFlattened::Input::Variable(v);
+							}
+						-| Composite(_, type) ->> {
+							NativeVariable var = NativeVariable::Temp(type);
+							exprs = exprs + defsToBuildTreeVar(s, var);
+
+							compositeInputs = compositeInputs + 
+								NativeCodeFlattened::Input::Variable(var);
+							}
+					}
+
+				return exprs +
+					make_pair(
+						toDef, 
+						NativeCodeFlattened::Expression::CreateComposite(compositeInputs)
+						);
+				}
+		}
+
+private:
+	map<NativeBlockID, NativeCodeFlattened::Block>& mBlocks;
+
+	std::string mFunctionName;
+
+	ImmutableTreeSet<NativeBlockID> mContTargetedBlocks;
+
+	map<NativeVariable, ImmutableTreeVector<pair<NativeVariable, NativeCodeFlattened::Expression> > > mRewrittenVariableDefs;
+
+	map<NativeVariable, VariableTree> mRewrittenVariableTrees;
+};
+
+
+class RemoveUnnecessaryComposites {
+	@type Def = 
+		-| Var of NativeVariable var
+		-| Const of NativeConstant c
+		-| Zero of NativeType t
+		-| Composite of ImmutableTreeVector<Def> elts
+		-| SomethingElse of ()
+		;
+
+public:
+	@type ExtractVarsUsedInInputs = std::set<NativeVariable> vars {
+	public:
+		bool contains(NativeVariable v) const
+			{
+			return vars().find(v) != vars().end();
+			}
+
+		template<class T>
+		void processDown(const T& t, bool& b)
+			{
+			}
+		
+		template<class T>
+		void processUp(const T& t)
+			{
+			}
+
+		void processDown(const NativeCodeFlattened::Block& in, bool& b)
+			{
+			for (auto a: in.args())
+				vars().insert(a);
+			}
+
+		void processDown(const NativeCodeFlattened::Input& in, bool& b)
+			{
+			@match NativeCodeFlattened::Input(in)
+				-| Variable(v) ->> {
+					vars().insert(v);
+					}
+				-| _ ->> {}
+			}
+	};
+
+	@type RemoveUnused = std::set<NativeVariable> unused {
+	public:
+		template<class T>
+		Nullable<T> processDown(const T& t, bool& b) const
+			{
+			return null();
+			}
+		
+		template<class T>
+		Nullable<T> processUp(const T& t) const
+			{
+			return null();
+			}
+		
+		Nullable<ImmutableTreeVector<pair<NativeVariable, NativeCodeFlattened::Expression> > >
+				processDown(const ImmutableTreeVector<pair<NativeVariable, NativeCodeFlattened::Expression> >& t, bool& b) const
+			{
+			return null() << filterITV(t, [&](pair<NativeVariable, NativeCodeFlattened::Expression> p) { 
+				return unused().find(p.first) == unused().end();
+				});
+			}
+
+		Nullable<ImmutableTreeSet<NativeVariable> > processDown(const ImmutableTreeSet<NativeVariable>& t, bool& b) const
+			{
+			if (t.size() < unused().size())
+				{
+				ImmutableTreeSet<NativeVariable> tr;
+				for (auto v: t)
+					if (unused().find(v) == unused().end())
+						tr = tr + v;
+
+				return null() << tr;
+				}
+			else
+				{
+				ImmutableTreeSet<NativeVariable> tr = t;
+				for (auto u: unused())
+					tr = tr - u;
+				return null() << tr;
+				}
+			}
+	};
+
+	RemoveUnnecessaryComposites(
+					NativeCodeFlattened::Block& inBlock,
+					std::string funcName
+					) :
+			mBlock(inBlock),
+			mFunctionName(funcName)
+		{
+		}
+
+	template<class T>
+	Nullable<T> processDown(const T& t, bool& b) const
+		{
+		return null();
+		}
+	
+	template<class T>
+	Nullable<T> processUp(const T& t) const
+		{
+		return null();
+		}
+
+	Nullable<NativeCodeFlattened::Input> defToInput(Def d) const
+		{
+		@match Def(d)
+			-| Var(v2) ->> {
+				return null() << NativeCodeFlattened::Input::Variable(v2);
+				}
+			-| Const(c) ->> {
+				return null() << NativeCodeFlattened::Input::Constant(c);
+				}
+			-| Zero(t) ->> {
+				return null() << NativeCodeFlattened::Input::Zero(t);
+				}
+			-| _ ->> {
+				return null();
+				}
+		}
+
+	Nullable<NativeCodeFlattened::Input> processDown(const NativeCodeFlattened::Input& t, bool& b) const
+		{
+		@match NativeCodeFlattened::Input(t)
+			-| Variable(v) ->> {
+				Def d = resolveIfPossible(v);
+				return defToInput(d);
+				}
+			-| _ ->> {
+				return null();
+				}
+			;
+		}
+
+	Nullable<NativeCodeFlattened::Expression> processDown(const NativeCodeFlattened::Expression& e, bool& b) const
+		{
+		@match NativeCodeFlattened::Expression(e)
+			-| ValueExtract(args, Variable(v)) ->> {
+				Def d = resolveIfPossible(v);
+
+				long k = 0;
+				while (k < args.size())
+					{
+					if (d.isComposite() && args[k] < d.getComposite().elts().size())
+						{
+						d = d.getComposite().elts()[args[k]];
+						k++;
+						}
+					else
+						{
+						auto inp = defToInput(d);
+						if (!inp)
+							return null();
+
+						return null() << NativeCodeFlattened::Expression::ValueExtract(
+							args.slice(k),
+							*inp
+							);
+						}
+					}
+
+				auto inp = defToInput(d);
+				if (!inp)
+					return null();
+
+				return null() << NativeCodeFlattened::Expression::Var(*inp);
+				}
+			-| _ ->> {}
+			;
+		return null();
+		}
+
+	Nullable<NativeCodeFlattened::CompositeInput> defToCompositeInput(Def d) const
+		{
+		@match Def(d)
+			-| Var(v) ->> {
+				return null() << NativeCodeFlattened::CompositeInput::Leaf(
+					NativeCodeFlattened::Input::Variable(v)
+					);
+				}
+			-| Const(c) ->> {
+				return null() << NativeCodeFlattened::CompositeInput::Leaf(
+					NativeCodeFlattened::Input::Constant(c)
+					);
+				}
+			-| Zero(t) ->> {
+				return null() << NativeCodeFlattened::CompositeInput::Leaf(
+					NativeCodeFlattened::Input::Zero(t)
+					);
+				}
+			-| Composite(subdefs) ->> {
+				ImmutableTreeVector<NativeCodeFlattened::CompositeInput> subs;
+				for (auto s: subdefs)
+					{
+					auto subCI = defToCompositeInput(s);
+					if (!subCI)
+						return null();
+					subs = subs + *subCI;
+					}
+				return null() << NativeCodeFlattened::CompositeInput::Node(subs);
+				}
+			-| _ ->> {
+				return null();
+				}
+		}
+
+	Nullable<NativeCodeFlattened::CompositeInput> processDown(const NativeCodeFlattened::CompositeInput& t, bool& b) const
+		{
+		@match NativeCodeFlattened::CompositeInput(t)
+			-| Leaf(Variable(v)) ->> {
+				Def d = resolveIfPossible(v);
+				return defToCompositeInput(d);
+				}
+			-| _ ->> {}
+			;
+		return null();
+		}
+
+	void apply()
+		{
+		for (auto varAndDef: mBlock.defs())
+			{
+			lassert_dump(mExprs.find(varAndDef.first) == mExprs.end(), "Multiple definitions for " << prettyPrintString(varAndDef.first));
+			mExprs[varAndDef.first] = varAndDef.second;
+			}
+
+		mBlock = ::transform(mBlock, *this);
+
+		removeAnyUnusedVariables();
+		}
+
+	bool removeAnyUnusedVariables()
+		{
+		//vars we can't prune
+		std::set<NativeVariable> leafVars;
+
+		for (auto var: mBlock.args())
+			leafVars.insert(var);
+		ExtractVarsUsedInInputs used;
+		::visit(mBlock.term(), used);
+		for (auto v: used.vars())
+			leafVars.insert(v);
+
+		std::set<NativeVariable> deffedVars;
+		TwoWaySetMap<NativeVariable, NativeVariable> varUses;
+
+		for (auto varAndE: mBlock.defs())
+			{
+			if (hasSideffects(varAndE.second))
+				leafVars.insert(varAndE.first);
+
+			deffedVars.insert(varAndE.first);
+			ExtractVarsUsedInInputs used;
+			::visit(varAndE.second, used);
+			varUses.insert(varAndE.first, used.vars());
+			}
+
+		std::set<NativeVariable> toCheck = deffedVars;
+
+
+		std::set<NativeVariable> removed;
+
+		while (toCheck.size())
+			{
+			NativeVariable c = *toCheck.begin();
+			toCheck.erase(c);
+
+			if (leafVars.find(c) == leafVars.end() && !varUses.hasValue(c))
+				{
+				removed.insert(c);
+				for (auto thisOneUses: varUses.getValues(c))
+					toCheck.insert(thisOneUses);
+				varUses.dropKey(c);
+				}
+			}
+
+		RemoveUnused remover(removed);
+
+		mBlock = ::transform(mBlock, remover);
+
+		return removed.size() > 0;
+		}
+
+	bool hasSideffects(const NativeCodeFlattened::Expression& e) const
+		{
+		@match NativeCodeFlattened::Expression(e)
+			-| Store() ->> { return true; }
+			-| CallLibraryFunction() ->> { return true; }
+			-| Alloc() ->> { return true; }
+			-| _ ->> { return false; }
+			;
+		}
+
+	Def resolveIfPossible(NativeVariable inp) const
+		{
+		auto it = mResolvedDefs.find(inp);
+		if (it != mResolvedDefs.end())
+			return it->second;
+
+		mResolvedDefs[inp] = resolveIfPossible_(inp);
+
+		return mResolvedDefs[inp];
+		}
+
+	Def resolveIfPossible_(NativeVariable var) const
+		{
+		auto it = mExprs.find(var);
+		if (it == mExprs.end())
+			return Def::Var(var);
+
+		if (DetupleFlattenedNativeCode::typesToExclude().contains(var.type()))
+			return Def::Var(var);
+
+		@match NativeCodeFlattened::Expression(it->second)
+			-| Var(Variable(i)) ->> {
+				return resolveIfPossible(i);
+				}
+			-| Var(Constant(c)) ->> {
+				return Def::Const(c);
+				}
+			-| Var(Zero(t)) ->> {
+				return Def::Zero(t);
+				}
+			-| CreateComposite(terms) ->> {
+				return Def::Composite(
+					mapITV(
+						terms,
+						[&](NativeCodeFlattened::Input inp) {
+							@match NativeCodeFlattened::Input(inp)
+								-| Constant(c) ->> { return Def::Const(c); }
+								-| Variable(v) ->> { return resolveIfPossible(v); }
+								-| Zero(t) ->> { return Def::Zero(t); }
+								-| _ ->> { return Def::SomethingElse(); }
+							}
+						)
+					);
+				}
+			-| ValueExtract(args, Variable(sourceV)) ->> {
+				auto def = resolveIfPossible(sourceV);
+				for (auto ix: args)
+					if (def.isComposite() && ix < def.getComposite().elts().size())
+						def = def.getComposite().elts()[ix];
+					else
+						return Def::Var(var);
+				return def;
+				}
+			-| _ ->> {
+				return Def::Var(var);
+				}
+		}
+
+private:
+	NativeCodeFlattened::Block& mBlock;
+
+	std::string mFunctionName;
+
+	ImmutableTreeSet<NativeBlockID> mContTargetedBlocks;
+
+	map<NativeVariable, NativeCodeFlattened::Expression> mExprs;
+
+	mutable map<NativeVariable, Def> mResolvedDefs;
+};
+
+void detupleFlattenedNativeCode(map<NativeBlockID, NativeCodeFlattened::Block>& outBlocks, std::string funcName)
+	{
+	static boost::mutex m;
+	boost::mutex::scoped_lock lock(m);
+
+	DetupleFlattenedNativeCode detupler(outBlocks, funcName);
+
+	try {
+		detupler.apply();
+		}
+	catch(...)
+		{
+		LOG_ERROR << "failed in " << outBlocks;
+		throw;
+		}
+
+	for (auto blockIdAndBlock: outBlocks)
+		{
+		RemoveUnnecessaryComposites remover(blockIdAndBlock.second, funcName);
+
+		try {
+			remover.apply();
+			}
+		catch(...)
+			{
+			LOG_ERROR << "failed in " << blockIdAndBlock.first << " of " << outBlocks;
+			throw;
+			}
+		}
+	}
+
+
