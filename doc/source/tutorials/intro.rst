@@ -4,9 +4,9 @@
 Introduction to pyfora
 ======================
 
-:mod:`pyfora` sends your Python code to a local or remote cluster, where it is compiled and can be
+pyfora sends your Python code to a local or remote cluster, where it is compiled and can be
 automatically run in parallel on many machines.
-With :mod:`pyfora` you can run distributed computations on a cluster without having to modify your code.
+With pyfora you can run distributed computations on a cluster without having to modify your code.
 You can speed up your computations by running them on hundreds of CPU cores,
 and you can operate on datasets many times larger than the RAM of a single machine.
 
@@ -36,9 +36,9 @@ Connecting to a Cluster
 Once you have a running cluster, you can connect to it and start executing code::
 
     import pyfora
-    cluster = pyfora.connect('http://localhost:30000')
+    executor = pyfora.connect('http://localhost:30000')
 
-The variable ``cluster`` is now bound to a pyfora :class:`~pyfora.Executor.Executor` that can be used
+The variable ``executor`` is now bound to a pyfora :class:`~pyfora.Executor.Executor` that can be used
 to submit and execute code on the cluster.
 There are two ways to run code with an :class:`~pyfora.Executor.Executor`:
 
@@ -64,7 +64,7 @@ Computing Remotely
 Now we can use the :class:`~pyfora.Executor.Executor` to run some remote computations with the function
 we defined::
 
-    with cluster.remotely.downloadAll():
+    with executor.remotely.downloadAll():
         result = sum(isPrime(x) for x in xrange(10 * 1000 * 1000))
 
     print result
@@ -76,10 +76,10 @@ What just happened?
 The code in the body of the :keyword:`with` block was shipped to the cluster, along with any dependent
 objects and code (like ``isPrime()`` in this case) that it refers to, directly or indirectly.
 
-The python code was translated into ``pyfora`` bitcode and executed on the cluster. The resulting
+The python code was translated into pyfora bitcode and executed on the cluster. The resulting
 objects (``result`` in the example above) were downloaded from the cluster and copied back
 back into the local python environment because we used
-:func:`cluster.remotely.downloadAll() <pyfora.WithBlockExecutor.WithBlockExecutor.downloadAll>`.
+:func:`executor.remotely.downloadAll() <pyfora.WithBlockExecutor.WithBlockExecutor.downloadAll>`.
 
 Depending on the code you are running, and the number of CPU cores available in your cluster, the
 runtime looks for opportunities to parallelize the execution of your code.
@@ -113,12 +113,12 @@ the local python environment.
 
 Now consider this variation of the code::
 
-    with cluster.remotely.remoteAll():
+    with executor.remotely.remoteAll():
         primes = [x for x in xrange(10 * 1000 * 1000) if isPrime(x)]
 
 This time the result of the computation, the variable ``primes``,
 is a ``list`` of all prime numbers in the range.  But because we used
-:func:`cluster.remotely.remoteAll() <pyfora.WithBlockExecutor.WithBlockExecutor.remoteAll>`,
+:func:`executor.remotely.remoteAll() <pyfora.WithBlockExecutor.WithBlockExecutor.remoteAll>`,
 the variable ``primes`` is a *proxy* to a list of primes that lives in-memory on the
 cluster (it is actually an instance of :class:`~pyfora.RemotePythonObject.RemotePythonObject`).
 
@@ -140,9 +140,9 @@ Furthermore, the size of the list may be greater than the amount of memory avail
 machine, in which case it is impossible to download it this way.
 
 As an alternative to downloading the entire result, we may choose to compute with it inside of 
-another ``with cluster.remotely`` block. For example::
+another ``with executor.remotely`` block. For example::
 
-    with cluster.remotely.downloadAll():
+    with executor.remotely.downloadAll():
         lastFewPrimes = primes[-100:]
 
 The backend recognizes that ``primes`` is a proxy to data that lives remotely in the cluster,
@@ -151,7 +151,7 @@ python objects.
 
 For convenience, it also possible to write::
 
-    with cluster.remotely.downloadSmall(bytecount=100*1024):
+    with executor.remotely.downloadSmall(bytecount=100*1024):
         ...
 
 In this case, objects larger than ``bytecount`` are left in the cluster and returned as proxies,
@@ -220,7 +220,7 @@ answer you would have received had you run the same code in your python interpre
 or (b) an exception [#integer_arithmetic]_.
 
 Constraint checking happens in two places. Some of the constraints are enforced at parse-time.
-As soon as you enter a ``with cluster.remotely`` block, pyfora tries to determine all the code your
+As soon as you enter a ``with executor.remotely`` block, pyfora tries to determine all the code your
 invocation can touch. If any of that code contains syntatic elements that pyfora knows are invalid
 (such as ``print()`` statements), it will generate an exception.
 

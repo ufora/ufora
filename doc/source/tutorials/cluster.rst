@@ -13,16 +13,16 @@ familiarize yourself with it before continuing with the multi-machine setup.
 pyfora Cluster Topology
 -----------------------
 
-A ``pyfora`` cluster consists of a single *manager* and one or more *workers*.
+A pyfora cluster consists of a single *manager* and one or more *workers*.
 Workers contribute CPU and memory resources to the cluster and are where all computations take place.
 Workers connect to the manager and register themselves with it.
 They use the manager to discover each other's network addresses and port configuration and to find
 out when new workers join the cluster.
 
 The manager, in addition to acting as a registry of workers, also acts as the cluster's front end.
-Client machines that use the ``pyfora`` package to submit computations to a cluster only ever talks
+Client machines that use the pyfora package to submit computations to a cluster only ever talks
 to the cluster's manager. Workers only communicate with each other and with their manager.
-The ``pyfora`` package connects to the manager over HTTP using socket.io_ to support real-time
+The pyfora package connects to the manager over HTTP using socket.io_ to support real-time
 notifications from the cluster.
 
 .. _socket.io: http://socket.io/
@@ -40,7 +40,7 @@ run the manager without a worker.
 Environment Variables
 ^^^^^^^^^^^^^^^^^^^^^
 
-There are several environment variable that can be set when launching a ``pyfora`` container to configure its behavior.
+There are several environment variable that can be set when launching a pyfora container to configure its behavior.
 
 * :envvar:`UFORA_MANAGER_ADDRESS`: the host-name or IP address of the manager.
   Setting this variable causes the container to only run the worker service.
@@ -68,7 +68,7 @@ Ports
 Worker Ports
 """"""""""""
 
-``pyfora`` workers communicate with each other over two consecutively numbered ports.
+pyfora workers communicate with each other over two consecutively numbered ports.
 One port is used to maintain a control channel over which they coordinate work,
 and the other is used as a data channel where large chunks of data can be transmitted.
 
@@ -95,13 +95,13 @@ Security
 If you run the cluster on a local, trusted network you may not need to worry about this and can skip to the next section.
 If, however, you run your cluster in the cloud or a shared network, you may want to read on.
 
-The ``pyfora`` services do not have any build-in authentication mechanisms.
+The pyfora services do not have any build-in authentication mechanisms.
 There is no notion of accounts, credentials, logging-in, etc.  If you have network access to the services, you can submit work.
 It is therefore recommended that you configure firewall rules (or a security group on AWS) such that only
 machines in the cluster can connect to your workers on their ports (``30009``, and ``30010`` by default),
 and to your manager on the worker-registry port (``30002``).
 
-To connect your ``pyfora`` client in a secure way, it is recommended that you tunnel your HTTP traffic
+To connect your pyfora client in a secure way, it is recommended that you tunnel your HTTP traffic
 over SSH using the ``-L port:host:hostport`` option.
 For example, if your manager is running at ``54.144.209.248`` you can map your local port ``30000``
 to the same port on the manager using:
@@ -158,13 +158,13 @@ Repeat this on every machine you want to use as a worker in your cluster.
 Verify
 ------
 
-You can now verify that ``pyfora`` is able to connect to the manager and run computations.
+You can now verify that pyfora is able to connect to the manager and run computations.
 Create a local file called ``testpyfora.py`` with the following conent::
 
     import pyfora, math
 
-    cluster = pyfora.connect('http://<your_manager_address>:30000')
-    with cluster.remotely.donwloadAll():
+    executor = pyfora.connect('http://<your_manager_address>:30000')
+    with executor.remotely.donwloadAll():
         x = sum(math.sin(i) for i in xrange(10**9))
 
     print x
@@ -179,4 +179,4 @@ Run it from your terminal:
 
 
 This may be a good point to jump over to the :doc:`/tutorials/intro` tutorial and learn more about
-coding with ``pyfora``.
+coding with pyfora.
