@@ -160,7 +160,7 @@ shared_ptr<vector<char> > OnDiskCompilerStore::loadAndValidateFile(const fs::pat
 	if (!fs::exists(file) || !fs::is_regular_file(file))
 		return shared_ptr<vector<char> >();
 
-	if (mStoreFilesRead.find(file) == mStoreFilesRead.end())
+	if (mStoreFilesRead.find(file) != mStoreFilesRead.end())
 		{
 		LOG_ERROR << "File already loaded: " << file.string();
 		return shared_ptr<vector<char> >();
@@ -272,6 +272,7 @@ bool OnDiskCompilerStore::initializeStoreIndex(const fs::path& rootDir, const fs
 
 			removeIfExists(rootDir / indexFile);
 			removeIfExists(rootDir / *dataFile);
+			mStoreFilesRead.erase(*dataFile);
 			}
 		return res;
 		}
@@ -341,6 +342,7 @@ void OnDiskCompilerStore::cleanUpLocationIndex(const fs::path& problematicDataFi
 			<< problematicDataFile.string();
 	mLocationIndex.dropValue(problematicDataFile);
 	removeIfExists(mBasePath / problematicDataFile);
+	mStoreFilesRead.erase(mBasePath / problematicDataFile);
 	auto indexFile = getIndexFileFromDataFile(problematicDataFile);
 	if (indexFile)
 		removeIfExists(mBasePath / *indexFile);

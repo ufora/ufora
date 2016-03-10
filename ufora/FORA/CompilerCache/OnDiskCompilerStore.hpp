@@ -102,7 +102,7 @@ private:
 	/// \brief Maps Object Identifiers to relative paths (relative to mBasePath)
 	MapWithIndex<ObjectIdentifier, fs::path> mLocationIndex;
 
-	/// \brief This set allows us to detect and break recursive load cycles, which shouldn't exist.
+	/// \brief Detects and breaks recursive load cycles, which shouldn't exist. Stores absolute paths.
 	std::set<fs::path> mStoreFilesRead;
 
 	mutable PerformanceCounters mPerformanceCounters;
