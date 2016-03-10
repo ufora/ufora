@@ -21,8 +21,9 @@ class RegressionTree:
     """A class representing a regression tree.
 
     A regression tree is represented, essentially, as a list of "rules",
-    which are either `pyfora.algorithms.regressionTrees.Base.SplitRule`, giving
-    "split" nodes, which divide the domain by a hyperplane, or `RegressionLeafRule`,
+    which are either :class:`~pyfora.algorithms.regressionTrees.Base.SplitRule`, giving
+    "split" nodes, which divide the domain by a hyperplane, or
+    :class:`~pyfora.algorithms.regressionTrees.RegressionTree.RegressionLeafRule`,
     which just hold a prediction value.
 
     Note:
@@ -43,10 +44,10 @@ class RegressionTree:
 
     def predict(self, x, depth=None):
         """
-        Using the regression tree `self`, predict the responses
-        corresponding to :class:`pandas.DataFrame` `x`.
+        Predicts the responses corresponding to :class:`pandas.DataFrame` ``x``.
 
-        Returns: a `pandas.Series` giving the predictions of the rows of `x`.
+        Returns:
+            A :class:`pandas.Series` giving the predictions of the rows of ``x``.
 
         Examples::
 
@@ -90,15 +91,15 @@ class RegressionTree:
 
     def score(self, x, yTrue):
         """
-        Returns the coefficient of determination R^2 of the prediction.
+        Returns the coefficient of determination R\ :sup:`2` of the prediction.
 
-        The coefficient R^2 is defined as (1 - u / v), where u is the regression sum of
-        squares ((yTrue - yPredicted) ** 2).sum() and v is the residual sum of squares
-        ((yTrue - yTrue.mean()) ** 2).sum(). Best possible score is 1.0, lower
-        values are worse.
+        The coefficient R\ :sup:`2` is defined as ``(1 - u / v)``, where ``u`` is
+        the regression sum of squares ``((yTrue - yPredicted) ** 2).sum()`` and ``v``
+        is the residual sum of squares ``((yTrue - yTrue.mean()) ** 2).sum()``.
+        Best possible score is ``1.0``, lower values are worse.
 
         Returns:
-            (float) the R^2 value
+            (float) the R\ :sup:`2` value
 
         Examples::
 
@@ -153,7 +154,7 @@ class RegressionTreeBuilder:
         numBuckets (int): The number of buckets used in the estimation of optimal
             column splits.
         minSplitThresh (int): an "internal" argument, not generally of interest to
-            casual users, giving the splitting rule in `computeBucketedSampleSummaries`
+            casual users, giving the splitting rule in ``computeBucketedSampleSummaries``.
 
     Returns:
         A :class:`~pyfora.algorithms.regressionTrees.RegressionTree.RegressionTree`

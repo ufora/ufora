@@ -14,7 +14,7 @@
 """
 Executor
 
-Responsible for sending python computations to a Ufora cluster and returns
+Responsible for sending python computations to a pyfora cluster and returns
 their result
 """
 
@@ -33,10 +33,10 @@ import threading
 
 
 class Executor(object):
-    """Submits computations to a Ufora cluster and marshals data to/from the local Python.
+    """Submits computations to a pyfora cluster and marshals data to/from the local Python.
 
-    The Executor is the main point of interaction with a Ufora cluster.
-    It is responible for sending computations to the Ufora cluster and returning
+    The Executor is the main point of interaction with a pyfora cluster.
+    It is responible for sending computations to the cluster and returning
     the result as a RemotePythonObject future.
 
     It is modeled after the same-named abstraction in the `concurrent.futures`_ module
@@ -61,7 +61,7 @@ class Executor(object):
         are created by calling :func:`~pyfora.connect`.
 
     Args:
-        connection (pyfora.Connection.Connection): an open connection to a Ufora cluster.
+        connection (pyfora.Connection.Connection): an open connection to a cluster.
         pureImplementationMappings (optional): a
             :class:`~PureImplementationMappings.PureImplementationMappings`
             that defines mapping between Python libraries and their "pure" :mod:`pyfora`
@@ -89,8 +89,8 @@ class Executor(object):
 
 
         Returns:
-            Future.Future: A :class:`~Future.Future` that resolves to a
-            :class:`~RemotePythonObject.RemotePythonObject` representing the content of the S3 key.
+            A :class:`~Future.Future` that resolves to a :class:`~RemotePythonObject.RemotePythonObject`
+            representing the content of the S3 key.
         """
         def importS3Dataset():
             builtins = bucketname.__pyfora_builtins__
@@ -117,9 +117,8 @@ class Executor(object):
             keyname (str): The S3 key to write to.
 
         Returns:
-            Future.Future: A :class:`~Future.Future` representing the completion
-            of the export operation.  It resolves either to ``None`` (success) or
-            to an instance of :class:`~Exceptions.PyforaError`.
+            A :class:`~Future.Future` representing the completion of the export operation.
+            It resolves either to ``None`` (success) or to an instance of :class:`~pyfora.PyforaError`.
         """
         assert isinstance(valueAsString, RemotePythonObject.ComputedRemotePythonObject)
         future = self._create_future()
@@ -135,22 +134,21 @@ class Executor(object):
         """Loads the content of a file as a string
 
         Note:
-            The file must be available to all machines in the Ufora cluster using
+            The file must be available to all machines in the cluster using
             the specified path. If you run multiple workers you must either copy
             the file to all machines, or if using a network file-system, mount
             it into the same path on all machines.
 
-            In addition, Ufora may cache the content of the file. Changes to the
+            In addition, pyfora may cache the content of the file. Changes to the
             file's content made after it has been loaded may have no effect.
 
         Args:
             path (str): Full path to the file. This must be a valid path on **all**
-                Ufora worker machines.
+                worker machines in the cluster.
 
         Returns:
-            Future.Future: a :class:`~Future.Future` that resolves to a
-            :class:`~RemotePythonObject.RemotePythonObject` representing the
-            content of the file as a string.
+            A :class:`~Future.Future` that resolves to a :class:`~RemotePythonObject.RemotePythonObject`
+            representing the content of the file as a string.
         """
         def importFile():
             builtins = path.__pyfora_builtins__
@@ -168,9 +166,8 @@ class Executor(object):
             obj: A python object to send
 
         Returns:
-            Future.Future: A :class:`~Future.Future` that resolves to a
-            :class:`~RemotePythonObject.RemotePythonObject` representing the object
-            on the server.
+            A :class:`~Future.Future` that resolves to a :class:`~RemotePythonObject.RemotePythonObject`
+            representing the object on the server.
         """
 
         self._raiseIfClosed()
@@ -201,7 +198,7 @@ class Executor(object):
         arguments and then invoking the remote callable with the remoted arguments.
 
         Returns:
-            Future.Future: A :class:`~Future.Future` representing the given call.
+            A :class:`~Future.Future` representing the given call.
             The future eventually resolves to a :class:`~RemotePythonObject.RemotePythonObject`
             instance or an exception.
         """
@@ -215,7 +212,7 @@ class Executor(object):
 
 
     def close(self):
-        """Closes the connection to the Ufora cluster."""
+        """Closes the connection to the pyfora cluster."""
         if not self.isClosed():
             self.connection.close()
             self.connection = None
@@ -226,13 +223,13 @@ class Executor(object):
         """Returns a :class:`WithBlockExecutor.WithBlockExecutor` that can be used
         to enter a block of "pure" Python code.
 
-        The ``with fora.remotely:`` syntax allows you to automatically submit an
+        The ``with executor.remotely:`` syntax allows you to automatically submit an
         entire block of python code for remote execution. All the code nested in
         the remotely ``with`` block is submitted.
 
         Returns:
-            WithBlockExecutor.WithBlockExecutor: A :class:`~WithBlockExecutor.WithBlockExecutor`
-            that extracts python code from a with block and submits it to the Ufora cluster for
+            A :class:`~WithBlockExecutor.WithBlockExecutor` that extracts python
+            code from a with block and submits it to the pyfora cluster for
             remote execution.  Results of the remote execution are returned as
             RemotePythonObject and are automatically reasigned to their corresponding
             local variables in the with block.

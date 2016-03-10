@@ -25,7 +25,7 @@ class IterativeFitter:
     Attributes:
         model: the current regression model.
         predictions: the current predictions of the regression model
-            (with respect to the training set implicit in `model`).
+            (with respect to the training set implicit in ``model``).
 
     Note:
         This class is typically not instantiated directy. Instead these
@@ -39,11 +39,9 @@ class IterativeFitter:
 
     def next(self):
         """
-        Fit one boosting stage to `self`, returning a new
+        Fit one boosting stage, returning a new
         :class:`~pyfora.algorithms.regressionTrees.GradientBoostedRegressorBuilder.IterativeFitter`
-        object, holding the next regression model and predictions.
-
-        Args: None.
+        object that holds the next regression model and predictions.
 
         Examples::
 
@@ -85,16 +83,16 @@ class GradientBoostedRegressorBuilder:
         nBoosts (int): The number of "boosting iterations" used.
         learningRate (float): The learning rate of the model, used for regularization.
             Each successive tree from boosting stages are added with multiplier
-            `learningRate`.
+            ``learningRate``.
         minSamplesSplit (int): The minimum number of samples required to split a
             regression tree node.
         numBuckets (int): The number of buckets used in the estimation of optimal
            column splits for building regression trees.
-        loss: the loss used when forming gradients. Defaults to "l2", for
+        loss: the loss used when forming gradients. Defaults to ``l2``, for
             least-squares loss. The only other allowed value currently is
-            "lad", for "least absolute deviation" (aka l1-loss).
+            ``lad``, for "least absolute deviation" (aka l1-loss).
     """
-    def __init__(self, maxDepth=3, nBoosts=100, learningRate=1.0, 
+    def __init__(self, maxDepth=3, nBoosts=100, learningRate=1.0,
                   minSamplesSplit=2, numBuckets=10000, loss="l2"):
         if loss == 'l2':
             loss = losses.L2_loss()
@@ -114,12 +112,12 @@ class GradientBoostedRegressorBuilder:
 
     def iterativeFitter(self, X, y):
         """
-        Create an :class:`~pyfora.algorithms.regressionTrees.GradientBoostedRegressorBuilder.IterativeFitter`
+        Returns an :class:`~pyfora.algorithms.regressionTrees.GradientBoostedRegressorBuilder.IterativeFitter`
         instance which can iteratively fit boosting models.
 
         Args:
-            X (:class:`pandas.DataFrame`): giving the predictors.
-            y (:class:`pandas.DataFrame`) giving the responses.
+            X (:class:`pandas.DataFrame`): predictors.
+            y (:class:`pandas.DataFrame`): responses.
 
         Examples::
 
@@ -149,12 +147,11 @@ class GradientBoostedRegressorBuilder:
             )
 
     def fit(self, X, y):
-        """Use the :class:`~pyfora.algorithms.regressionTrees.GradientBoostedRegressorBuilder.GradientBoostedRegressorBuilder`
-        `self` to fit predictors `X` to responses `y`.
+        """ Fits predictors ``X`` to responses ``y``.
 
         Args:
-            X (:class:`pandas.DataFrame`): giving the predictors.
-            y (:class:`pandas.DataFrame`): giving the responses.
+            X (:class:`pandas.DataFrame`): predictors.
+            y (:class:`pandas.DataFrame`): responses.
 
         Returns:
             A :class:`~pyfora.algorithms.regressionTrees.RegressionModel.RegressionModel`
@@ -178,4 +175,4 @@ class GradientBoostedRegressorBuilder:
             boostingIx = boostingIx + 1
 
         return iterativeFitter.model
-        
+

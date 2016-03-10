@@ -94,13 +94,13 @@ class BinaryClassificationModel:
 
     def predictProbability(self, df):
         """
-        Return class-zero probability estimates of the rows of a dataframe `df`.
+        Return class-zero probability estimates of the rows of a DataFrame ``df``.
 
         Args:
-            A `pandas.DataFrame` `df`.
+            df (:class:`pandas.DataFrame`): input DataFrame.
 
         Returns:
-            A `pandas.Series` giving the row-wise estimated class-zero probability estimates
+            A :class:`pandas.Series` giving the row-wise estimated class-zero probability estimates
 
         Examples::
 
@@ -158,14 +158,13 @@ class BinaryClassificationModel:
 
     def predict(self, df):
         """
-        Use the classifier `self` to predict the class labels of the rows
-        of `df`.
+        Predict the class labels of the rows of ``df``.
 
         Args:
-            A `pandas.DataFrame` `df`.
+            df (:class:`pandas.DataFrame`): input DataFrame.
 
         Returns:
-            A `pandas.Series` giving the row-wise predictions.
+            A :class:`pandas.Series` giving the row-wise predictions.
 
         Examples::
 
@@ -183,8 +182,7 @@ class BinaryClassificationModel:
 
     def score(self, x, yTrue):
         """
-        Compute the mean accuracy of the classifier `self` in predicting `x`
-        with respect to `yTrue`.
+        Compute the mean accuracy in predicting ``x`` with respect to ``yTrue``.
 
         Args:
             x: the predictor DataFrame.
@@ -218,7 +216,7 @@ class BinaryClassificationModel:
     def deviance(self, x, yTrue):
         """
         Compute the binomial deviance (average negative log-likihood) of the
-        instances in predictors `X` with responses `y`.
+        instances in predictors ``X`` with responses ``y``.
 
         Args:
             x: the predictor DataFrame.
