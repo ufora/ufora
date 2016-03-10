@@ -1,6 +1,6 @@
 
-pyfora_aws
-==========
+pyfora_aws: Run pyfora on AWS
+==============================
 
 ``pyfora_aws`` is a command-line tool that makes it easy to launch and manage :mod:`pyfora` compute clusters
 on AWS_. It is installed as part of the :mod:`pyfora` package.

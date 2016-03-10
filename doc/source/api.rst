@@ -1,10 +1,7 @@
 
-Library Reference
-=================
-
-
 pyfora
-------
+======
+
 .. automodule:: pyfora
 
 

@@ -1,25 +1,19 @@
-Getting Started on AWS
+Running pyfora on AWS
 ======================
 
 If you have an `Amazon Web Services`_ account you can get :mod:`pyfora` running at scale within minutes.
-The :mod:`pyfora` package includes an auxiliary script called :doc:`../reference/pyfora_aws`, which helps
+The :mod:`pyfora` package includes an auxiliary script called :doc:`pyfora_aws </reference/pyfora_aws>`, which helps
 get you started on AWS.
 
 
 What You Need to Get Started
 ----------------------------
 
-pyfora
-^^^^^^
-You'll need to install :mod:`pyfora`, if you haven't done so already::
-
-    pip install pyfora
-
 
 AWS Account
 ^^^^^^^^^^^
 You'll need an AWS_ account with an access key that has permission to launch EC2 instances.
-If don't yet have an access key, follow `these instructions`_ to create one.
+If you don't yet have an access key, follow `these instructions`_ to create one.
 
 
 .. _these instructions: https://aws.amazon.com/developers/access-keys/
@@ -28,7 +22,7 @@ If don't yet have an access key, follow `these instructions`_ to create one.
 boto
 ^^^^^^
 
-The :mod:`pyfora_aws` tool uses boto_ to communicate with AWS_::
+The :doc:`pyfora_aws </reference/pyfora_aws>` tool uses boto_ to communicate with AWS::
 
     pip install boto
 
@@ -39,7 +33,7 @@ Launch the Backend
 Credentials
 ^^^^^^^^^^^
 
-:doc:`../reference/pyfora_aws` uses boto_ to interact with EC2 on your behalf.
+:doc:`pyfora_aws </reference/pyfora_aws>` uses boto_ to interact with EC2 on your behalf.
 If you already have a `Boto configuration file`_ with your credentials then no additional configuration in needed.
 Otherwise, you can set your credentials using the environment variables AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.
 
@@ -61,13 +55,13 @@ instances for diagnostics and troubleshooting.  See `Amazon EC2 Key Pairs`_ for 
 .. note::
     This tutorial assumes that you **are** providing an SSH key and uses SSH to tunnel traffic to/from
     launched instances. If you do not wish to use an SSH key, or tunnel HTTP traffic over SSH, please the
-    the reference documentation for :doc:`../reference/pyfora_aws`.
+    the reference documentation for :doc:`pyfora_aws </reference/pyfora_aws>`.
 
 
 Start a Backend Instance
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
-You are now ready to start some instances using :doc:`../reference/pyfora_aws`.
+You are now ready to start some instances using :doc:`pyfora_aws </reference/pyfora_aws>`.
 The following command will launch and configure a single c3.8xlarge on-demand instance in the
 us-east-1 region. It takes about 5-6 minutes to complete:
 
@@ -103,7 +97,7 @@ Where ``<name_of_your_SSH_keypair>`` is the name you gave your SSH key-pair in E
 SSH Tunnelling
 ^^^^^^^^^^^^^^
 
-By default, to keep things secure, :doc:`../reference/pyfora_aws` keeps all ports on launched instances
+By default, to keep things secure, :doc:`pyfora_aws </reference/pyfora_aws>` keeps all ports on launched instances
 inaccessible to incoming connections, with the exception of port 22 for SSH connections.
 The easiest secure way to connect to the launched instance from your machine is by tunnelling ``pyfora``'s
 HTTP port - 30000 - over SSH. This means that all traffic between your machine and the instance is
@@ -130,9 +124,9 @@ To verify your connection, copy the code below to a new ``test_pyfora.py`` file:
 
 
     import pyfora
-    connection = pyfora.connect('http://localhost:30000')
+    cluster = pyfora.connect('http://localhost:30000')
 
-    with connection.remotely.downloadAll():
+    with cluster.remotely.downloadAll():
         x = sum(xrange(10**9))
 
     print x
