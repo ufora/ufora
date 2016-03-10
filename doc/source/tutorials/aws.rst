@@ -1,8 +1,8 @@
 Running pyfora on AWS
 ======================
 
-If you have an `Amazon Web Services`_ account you can get :mod:`pyfora` running at scale within minutes.
-The :mod:`pyfora` package includes an auxiliary script called :doc:`pyfora_aws </reference/pyfora_aws>`, which helps
+If you have an `Amazon Web Services`_ account you can get pyfora running at scale within minutes.
+The pyfora package includes an auxiliary script called :doc:`pyfora_aws </reference/pyfora_aws>`, which helps
 get you started on AWS.
 
 
@@ -99,7 +99,7 @@ SSH Tunnelling
 
 By default, to keep things secure, :doc:`pyfora_aws </reference/pyfora_aws>` keeps all ports on launched instances
 inaccessible to incoming connections, with the exception of port 22 for SSH connections.
-The easiest secure way to connect to the launched instance from your machine is by tunnelling ``pyfora``'s
+The easiest secure way to connect to the launched instance from your machine is by tunnelling pyfora's
 HTTP port - 30000 - over SSH. This means that all traffic between your machine and the instance is
 secured by SSH.
 
@@ -124,9 +124,9 @@ To verify your connection, copy the code below to a new ``test_pyfora.py`` file:
 
 
     import pyfora
-    cluster = pyfora.connect('http://localhost:30000')
+    executor = pyfora.connect('http://localhost:30000')
 
-    with cluster.remotely.downloadAll():
+    with executor.remotely.downloadAll():
         x = sum(xrange(10**9))
 
     print x

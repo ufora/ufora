@@ -3,29 +3,6 @@ pyfora
 ======
 
 .. automodule:: pyfora
-
-
-**Example:**
-The following code connects to a Ufora cluster and counts the number of
-prime numbers between zero and 100M::
-
-    import pyfora
-
-    ufora = pyfora.connect('http://<ip_address>:30000')
-
-    def isPrime(p):
-        if p < 2: return 0
-        x = 2
-        while x*x <= p:
-            if p%x == 0: return 0
-            x = x + 1
-        return 1
-
-    with ufora.remotely.downloadAll():
-        result = sum(isPrime(x) for x in xrange(100 * 1000 * 1000))
-
-    print "found ", result, " primes between 0 and 100 million"
-
 .. autofunction:: pyfora.connect
 
 

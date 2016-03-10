@@ -2,7 +2,7 @@
 Running pyfora on a Single Box
 ==============================
 
-You can easily run the :mod:`pyfora` backend locally on your machine using docker_.
+You can easily run the pyfora backend locally on your machine using docker_.
 Then you can connect pyfora to your local backend and start using it to speed up your python code.
 
 
@@ -56,7 +56,7 @@ Once docker is installed you can pull the latest backend service image.
 
     If you are not using the most recent pyfora release and don't want to upgrade,
     you will need to use a docker image compatible with your version.
-    For example, if you are using pyfora version 0.3.1, you can pull and use the ``ufora/service:0.2``
+    For example, if you are using pyfora version 0.3.1, you can pull and use the ``ufora/service:0.3.1``
     image.
 
 
@@ -66,7 +66,7 @@ Start the Backend Container
 The command below starts an all-in-one docker container that runs all the backend services needed to support pyfora.
 To run a cluster on multiple machines in a local network, follow the :doc:`instructions here </tutorials/cluster>`.
 
-Create a local directory for the Ufora service logs:
+Create a local directory for the backend services logs:
 
 .. code-block:: bash
 
@@ -95,7 +95,7 @@ What does this do?
 Verify
 ------
 
-With your backend container running, you can now verify that ``pyfora`` is able to connect to it.
+With your backend container running, you can now verify that pyfora is able to connect to it.
 Open ``python`` in your terminal and run::
 
     >>> import pyfora
@@ -105,7 +105,7 @@ Open ``python`` in your terminal and run::
 If no exceptions are thrown, you have a working pyfora cluster running on your machine!
 
 This would be a good point to jump over to the :doc:`/tutorials/intro` tutorial and learn more about
-coding with ``pyfora``.
+coding with pyfora.
 
 
 Stopping the pyfora Container
