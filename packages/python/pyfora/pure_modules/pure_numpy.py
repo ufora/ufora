@@ -596,7 +596,7 @@ class IsInf(object):
             return self.isinf_array(x)
         except:
             raise TypeError(
-                "argument could not be coerced to float"
+                "argument could not be coerced to float or array"
                 )
 
     def isinf_float(self, x):
@@ -615,6 +615,39 @@ class IsInf(object):
         return PurePythonNumpyArray(
             x_asarray.shape,
             [self.isinf_float(val) for val in x_asarray.values]
+            )
+
+
+@pureMapping(np.isfinite)
+class IsFinite(object):
+    def __call__(self, x):
+        try:
+            return self.isfinite_float(x)
+        except:
+            pass
+        try:
+            return self.isfinite_array(x)
+        except:
+            raise TypeError(
+                "argument could not be coerced to float or array"
+                )
+
+    def isfinite_float(self, x):
+        if not isinstance(x, float):
+            x = float(x)
+
+        return __inline_fora(
+            """fun(PyFloat(...) x) {
+                   PyBool(x.@m.isFinite)
+                   }"""
+            )(x)
+
+    def isfinite_array(self, x):
+        x_asarray = np.array(x)
+        
+        return PurePythonNumpyArray(
+            x_asarray.shape,
+            [self.isfinite_float(val) for val in x_asarray.values]
             )
 
 

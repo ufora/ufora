@@ -621,6 +621,29 @@ class NumpyTestCases(object):
                 self.evaluateWithExecutor(f, array)
                 )
 
+    def test_numpy_isfinite_1(self):
+        def f(x):
+            return [numpy.isnan(elt) for elt in x]
+
+        vals = [1, 2.0, numpy.nan, numpy.inf, -numpy.nan]
+        numpy.testing.assert_allclose(
+            f(vals),
+            self.evaluateWithExecutor(f, vals)
+            )
+
+    def test_numpy_isfinite_2(self):
+        def f(x):
+            return numpy.isfinite(x)
+
+        arrays = [numpy.array([1.0, 2.0]),
+                  numpy.array([[1.0,2.0],[numpy.inf,3.0]])]
+
+        for array in arrays:
+            numpy.testing.assert_array_equal(
+                f(array),
+                self.evaluateWithExecutor(f, array)
+                )
+
     def check_svd(self, x):
         def svd(a):
             return numpy.linalg.svd(a)
