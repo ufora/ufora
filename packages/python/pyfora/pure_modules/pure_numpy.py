@@ -588,6 +588,18 @@ class IsNan(object):
 @pureMapping(np.isinf)
 class IsInf(object):
     def __call__(self, x):
+        try:
+            return self.isinf_float(x)
+        except:
+            pass
+        try:
+            return self.isinf_array(x)
+        except:
+            raise TypeError(
+                "argument could not be coerced to float"
+                )
+
+    def isinf_float(self, x):
         if not isinstance(x, float):
             x = float(x)
 
@@ -596,6 +608,14 @@ class IsInf(object):
                    PyBool(x.@m.isInfinite)
                    }"""
             )(x)
+
+    def isinf_array(self, x):
+        x_asarray = np.array(x)
+        
+        return PurePythonNumpyArray(
+            x_asarray.shape,
+            [self.isinf_float(val) for val in x_asarray.values]
+            )
 
 
 @pureMapping(np.log)
