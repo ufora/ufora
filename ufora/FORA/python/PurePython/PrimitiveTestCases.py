@@ -145,3 +145,60 @@ class PrimitiveTestCases(object):
 
     def test_complex(self):
         self.equivalentEvaluationTest(lambda: abs(complex(1.0,0.0) * complex(1.0,0.0)))
+
+    def test_conversion_to_float_1(self):
+        class C_with_float_conversion_1(object):
+            def __float__(self):
+                return 0.0
+
+        def f():
+            return float(C_with_float_conversion_1())
+
+        self.equivalentEvaluationTest(f)
+
+    def test_conversion_to_float_2(self):
+        class C_with_float_conversion_2(object):
+            def __float__(self):
+                return 0
+
+        def f():
+            try:
+                float(C_with_float_conversion_2())
+                return False
+            except TypeError:
+                return True
+
+        self.equivalentEvaluationTest(f)
+
+    def test_conversion_to_int_1(self):
+        class C_with_int_conversion_1(object):
+            def __int__(self):
+                return 0
+
+        def f():
+            return int(C_with_int_conversion_1())
+
+        self.equivalentEvaluationTest(f)
+
+    def test_conversion_to_int_2(self):
+        class C_with_int_conversion_2(object):
+            def __int__(self):
+                return 0
+
+        def f():
+            try:
+                int(C_with_int_conversion_2())
+                return False
+            except TypeError:
+                return True
+
+        self.equivalentEvaluationTest(f)
+
+    def test_conversion_to_bool(self):
+        class C_bool:
+            pass
+
+        def f():
+            return bool(C_bool())
+
+        self.equivalentEvaluationTest(f)
