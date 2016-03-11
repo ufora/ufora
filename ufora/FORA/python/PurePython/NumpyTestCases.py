@@ -644,6 +644,32 @@ class NumpyTestCases(object):
                 self.evaluateWithExecutor(f, array)
                 )
 
+    def test_numpy_all_1(self):
+        def f(x):
+            return numpy.all(x)
+
+        array = [1, 2.0, 0.0, True, False, numpy.nan, numpy.inf, -numpy.inf]
+
+        for val in array:
+            self.assertEqual(
+                f(val),
+                self.evaluateWithExecutor(f, val)
+                )
+
+    def test_numpy_all_2(self):
+        def f(x):
+            return numpy.all(x)
+
+        array = [1, 2.0, 0.0, True, False, numpy.nan, numpy.inf, -numpy.inf]
+
+        for ix in range(len(array)):
+            sliced_array = array[:ix]
+            self.assertEqual(
+                f(sliced_array),
+                self.evaluateWithExecutor(f, sliced_array),
+                msg=str(sliced_array)
+                )
+        
     def check_svd(self, x):
         def svd(a):
             return numpy.linalg.svd(a)
