@@ -651,6 +651,32 @@ class IsFinite(object):
             )
 
 
+@pureMapping(np.all)
+class All(object):
+    def __call__(self, x):
+        try:
+            return self.all_primitive(x)
+        except:
+            pass
+        try:
+            return self.all_array(x)
+        except:
+            raise TypeError(
+                "argument " + str(x) + " could not be coerced to bool or array"
+                )
+
+    def all_primitive(self, x):
+        # this next call might raise an exception, but that's ok
+        x_as_float = float(x)
+
+        return bool(x_as_float)
+
+    def all_array(self, x):
+        x_asarray = np.array(x)
+        
+        return all([self.all_primitive(val) for val in x_asarray.values])
+
+
 @pureMapping(np.log)
 class Log(object):
     def __call__(self, val):
