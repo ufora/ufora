@@ -598,7 +598,7 @@ class NumpyTestCases(object):
             self.evaluateWithExecutor(f, vals)
             )
 
-    def test_numpy_isinf(self):
+    def test_numpy_isinf_1(self):
         def f(x):
             return [numpy.isnan(elt) for elt in x]
 
@@ -607,6 +607,19 @@ class NumpyTestCases(object):
             f(vals),
             self.evaluateWithExecutor(f, vals)
             )
+
+    def test_numpy_isinf_2(self):
+        def f(x):
+            return numpy.isinf(x)
+
+        arrays = [numpy.array([1.0, 2.0]),
+                  numpy.array([[1.0,2.0],[numpy.inf,3.0]])]
+
+        for array in arrays:
+            numpy.testing.assert_array_equal(
+                f(array),
+                self.evaluateWithExecutor(f, array)
+                )
 
     def check_svd(self, x):
         def svd(a):
