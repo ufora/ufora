@@ -425,7 +425,7 @@ public:
 		return false;
 		}
 
-	bool isStable(const NativeCodeFlattened::Input& inp, bool forceSimple = false)
+	bool isStable(const NativeCodeFlattened::Input& inp)
 		{
 		@match NativeCodeFlattened::Input(inp)
 			-| Variable(v) ->> {
@@ -521,10 +521,15 @@ public:
 	static Nullable<ImmutableTreeVector<Comparison> > flattenComparisonToSimpleBinary(Comparison c)
 		{
 		@match Comparison(c)
+			-| StableVariable(sv) ->> {
+				return null() << (emptyTreeVec() + c);
+				}
 			-| Binary(opcode, c1, c2) ->> {
 				if ((c1.isStableVariable() || c1.isConstant()) && c2.isIncrementingVariable())
 					return null() << (emptyTreeVec() + c);
 				if ((c2.isStableVariable() || c2.isConstant()) && c1.isIncrementingVariable())
+					return null() << (emptyTreeVec() + c);
+				if (c1.isStableVariable() && c2.isStableVariable())
 					return null() << (emptyTreeVec() + c);
 				}
 			-| And(items) ->> {
@@ -589,6 +594,14 @@ public:
 		NativeBinaryOpcode opcode;
 
 		@match Comparison(c)
+			-| StableVariable(v) ->> {
+				addSimpleStableVariable(v);
+				return;
+				}
+			-| Binary(o, StableVariable(sv1), StableVariable(sv2)) ->> {
+				addStableComparison(o, sv1, sv2);
+				return;
+				}
 			-| Binary(o, StableVariable(sv), IncrementingVariable(iv)) ->> {
 				incrementingVar = iv;
 				stableVar = sv.expr();
@@ -663,6 +676,24 @@ public:
 			lhs,
 			NativeExpression::Constant(NativeConstant::Int64(rhs))
 			);
+		}
+
+	void addStableComparison(
+			NativeBinaryOpcode opcode,
+			NativeVariable stableVar1, 
+			NativeVariable stableVar2
+			)
+		{
+		mLoopIsValidConditions.push_back(
+			NativeExpression::BinaryOp(opcode, stableVar1.expr(), stableVar2.expr())
+			);
+		}
+
+	void addSimpleStableVariable(
+			NativeVariable stableVar
+			)
+		{
+		mLoopIsValidConditions.push_back(stableVar.expr());
 		}
 
 	void addValidComparison(
@@ -1502,6 +1533,7 @@ private:
 				log << "Root stable variables are " << stableVariables << "\n";
 				log << "Dependent stable variables are " << allTouchingStable << "\n";
 				log << "Stable comparison variables are " << comparisons.stableComparisons() << "\n";
+				log << "Branch vars are " << branchVars << "\n";
 
 				for (auto varAndWantsTrue: branchVars)
 					{
@@ -1514,6 +1546,8 @@ private:
 						else
 					if (nComparison && calculator.factorableComparisons().find(var) == calculator.factorableComparisons().end())
 						log << "not factorable: " << *nComparison << "\n";
+					else
+						log << "Factorable: " << *nComparison << "\n";
 					}
 
 				log << "\n\nblocks = \n";
