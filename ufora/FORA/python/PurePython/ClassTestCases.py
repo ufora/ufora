@@ -870,5 +870,21 @@ class ClassTestCases(object):
 
         self.equivalentEvaluationTest(f)
 
+    def test_conditional_member_initialization(self):
+        class C_conditional_member_initialization(object):
+            def __init__(self, x):
+                if x > 0:
+                    self.x = x
+            def __str__(self):
+                return "C_conditional_member_initialization(x=%s)" % self.x
 
+        def f(x):
+            return C_conditional_member_initialization(x)
 
+        c0 = f(1)
+        c1 = self.evaluateWithExecutor(f, 1)
+        c2 = f(-1)
+        c3 = self.evaluateWithExecutor(f, -1)
+        
+        self.assertEqual(c0.__dict__, c1.__dict__)
+        self.assertEqual(c2.__dict__, c3.__dict__)
