@@ -792,3 +792,11 @@ class NumpyTestCases(object):
         
         numpy.testing.assert_allclose(res1[0], res2[0])
         numpy.testing.assert_allclose(res1[1], res1[1])
+
+    def test_numpy_abs(self):
+        def f(x):
+            return numpy.abs(x)
+
+        x = numpy.array([[-2.0,1.0],[-3.0,0.0]])
+
+        self.equivalentEvaluationTest(f, x)
