@@ -706,6 +706,35 @@ class IsFinite(object):
             )
 
 
+@pureMapping(np.abs)
+class NpAbs(object):
+    def __call__(self, x):
+        try:
+            return self.abs_primitive(x)
+        except:
+            pass
+        try:
+            return self.abs_array(x)
+        except:
+            raise TypeError(
+                "argument " + str(x) + " could not be coerced to bool or array"
+                )
+
+    def abs_primitive(self, x):
+        # this next call might raise an exception, but that's ok
+        x_as_float = float(x)
+
+        return abs(x_as_float)
+
+    def abs_array(self, x):
+        x_asarray = np.array(x)
+        
+        return PurePythonNumpyArray(
+            x_asarray.shape,
+            [self.abs_primitive(val) for val in x_asarray.values]
+            )
+
+
 @pureMapping(np.all)
 class All(object):
     def __call__(self, x):
