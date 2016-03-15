@@ -22,6 +22,7 @@
 #include "../../core/ScopedProfiler.hppml"
 #include "../../core/Clock.hpp"
 #include "../../core/Logging.hpp"
+#include "../../core/cppml/ExtractAllVariablesOfGivenTypeVisitor.hppml"
 #include "BlockDuplicator.hppml"
 #include "AllocateVariableDumpsAndUnrollHotpathLoops.hppml"
 #include "UnrollHotLoopsWithComparisons.hppml"
@@ -598,6 +599,59 @@ void clearLiveVariables(map<NativeBlockID, NativeCodeFlattened::Block>& outBlock
 		}
 	}
 
+bool hasSideEffects(const NativeCodeFlattened::Expression& e)
+	{
+	@match NativeCodeFlattened::Expression(e)
+		-| Store() ->> { return true; }
+		-| CallLibraryFunction() ->> { return true; }
+		-| _ ->> { return false; }
+	}
+
+void removeUnnecessaryDefs(map<NativeBlockID, NativeCodeFlattened::Block>& blocks)
+	{
+	BlockFlowVisitor vis;
+	visit(blocks, vis);
+	
+	for (auto& idAndBlock: blocks)
+		{
+		//get vars live in downstream blocks
+		std::set<NativeVariable> varsUsed;
+		for (auto block: vis.edges().getValues(idAndBlock.first))
+			for (auto v: blocks[block].liveOnInput())
+				varsUsed.insert(v);
+
+		//get vars mentioned in the terminator
+		for (auto var: ExtractAllVariablesOfGivenTypeVisitor<NativeVariable>::extract(idAndBlock.second.term()))
+			varsUsed.insert(var);
+
+		auto defs = idAndBlock.second.defs();
+		std::set<long> toDrop;
+
+		for (long k = ((long)defs.size()) - 1; k >= 0; k--)
+			if (varsUsed.find(defs[k].first) != varsUsed.end() || 
+					hasSideEffects(defs[k].second))
+				{
+				//it's used
+				varsUsed.insert(defs[k].first);
+
+				//implicitly we also use any variables that this expression uses.
+				for (auto subVar: ExtractAllVariablesOfGivenTypeVisitor<NativeVariable>::extract(defs[k].second))
+					varsUsed.insert(subVar);
+				}
+			else
+				toDrop.insert(k);
+
+		if (toDrop.size())
+			{	
+			auto oldBlock = idAndBlock.second;
+			idAndBlock.second.defs() = emptyTreeVec();
+			for (long k = 0; k < oldBlock.defs().size();k++)
+				if (toDrop.find(k) == toDrop.end())
+					idAndBlock.second.defs() = idAndBlock.second.defs() + oldBlock.defs()[k];
+			}
+		}
+	}
+
 //TODO CLEANUP brax: Remove extraneous NativeCodeSimplification operations in the native code.
 void	simplifyFlattenedCode(	map<NativeBlockID, NativeCodeFlattened::Block>& outBlocks,
 								const RuntimeConfig& inConfig,
@@ -637,6 +691,7 @@ void	simplifyFlattenedCode(	map<NativeBlockID, NativeCodeFlattened::Block>& outB
 
 	auto oldBlocks = outBlocks;
 
+	if (inConfig.unrollHotLoopsWithComparisons())
 		{
 		Ufora::ScopedProfiler<std::string> profiler("LLVMFunctionBuilder::Simplify::09::UnrollHotLoopsWithComparisons");
 		detupleFlattenedNativeCode(outBlocks, funcName);
@@ -654,6 +709,9 @@ void	simplifyFlattenedCode(	map<NativeBlockID, NativeCodeFlattened::Block>& outB
 		Ufora::ScopedProfiler<std::string> profiler("LLVMFunctionBuilder::Simplify::10::EnlivenAllVariables");
 		allocateVariableDumpsAndUnrollHotpathLoops(outBlocks);
 		}
+
+
+	removeUnnecessaryDefs(outBlocks);
 
 	//get rid of interrupt check nodes that we don't need
 		{
