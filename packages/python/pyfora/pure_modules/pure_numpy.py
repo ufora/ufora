@@ -230,6 +230,21 @@ class PurePythonNumpyArrayMapping(PureImplementationMapping):
             assert False, (pureNumpyArray.values, pureNumpyArray.shape)
 
 
+@pureMapping(np.eye)
+class NpEye(object):
+    def __call__(self, N, M=None):
+        if M is None:
+            M = N
+
+        vals = [1.0 if colIx == rowIx else 0.0 for rowIx in xrange(N) \
+             for colIx in xrange(M)]
+
+        return  PurePythonNumpyArray(
+            (N, M),
+            vals
+            )
+
+
 @pureMapping(np.zeros)
 class NpZeros(object):
     def __call__(self, length):

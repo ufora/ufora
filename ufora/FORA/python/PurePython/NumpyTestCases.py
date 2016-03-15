@@ -745,3 +745,10 @@ class NumpyTestCases(object):
 
         self.check_lstsq(a, b)
 
+    def test_numpy_eye(self):
+        def f(nRows, nColumns):
+            return numpy.eye(nRows, nColumns)
+
+        self.equivalentEvaluationTest(f, 2, 2)
+        self.equivalentEvaluationTest(f, 2, 4)
+        self.equivalentEvaluationTest(f, 5, 3)
