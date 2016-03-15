@@ -420,6 +420,26 @@ class NpInv(object):
             )
 
 
+@pureMapping(np.linalg.eigh)
+class NpEigH(object):
+    def __call__(self, a, UPLO='L'):
+        assert len(a.shape) == 2, "need len(a.shape) == 2"
+
+        res = NpEigH.__pyfora_builtins__.linalg.eigh(a, UPLO)
+
+        return (
+            PurePythonNumpyArray(
+                (a.shape[0],),
+                res[1]
+                ),
+            PurePythonNumpyArray(
+                a.shape,
+                res[0]
+                )
+            )
+        
+
+
 @pureMapping(np.linalg.svd)
 class Svd(object):
     def __call__(self, a):

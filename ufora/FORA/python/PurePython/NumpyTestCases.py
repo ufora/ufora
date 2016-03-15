@@ -780,4 +780,15 @@ class NumpyTestCases(object):
             return
 
         self.assertTrue(False)
-            
+
+    def test_numpy_eigh_1(self):
+        def f(x, uplo='L'):
+            return numpy.linalg.eigh(x)
+
+        x = numpy.array([[2,1],[1,1]])
+
+        res1 = f(x)
+        res2 = self.evaluateWithExecutor(f, x)
+        
+        numpy.testing.assert_allclose(res1[0], res2[0])
+        numpy.testing.assert_allclose(res1[1], res1[1])
