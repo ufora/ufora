@@ -752,3 +752,32 @@ class NumpyTestCases(object):
         self.equivalentEvaluationTest(f, 2, 2)
         self.equivalentEvaluationTest(f, 2, 4)
         self.equivalentEvaluationTest(f, 5, 3)
+
+    def test_numpy_inv_1(self):
+        def f(x):
+            return numpy.linalg.inv(x)
+
+        x = numpy.array([[1,2],[3,4]])
+
+        numpy.testing.assert_allclose(
+            f(x),
+            self.evaluateWithExecutor(f, x)
+            )
+
+    def test_numpy_inv_2(self):
+        def f(x):
+            return numpy.linalg.inv(x)
+            
+        x = numpy.array([[1,1],[1,1]])
+
+        try:
+            self.evaluateWithExecutor(f, x)
+        except Exception as e:
+            self.assertEqual(
+                e.remoteException.message,
+                "matrix was singular"
+                )
+            return
+
+        self.assertTrue(False)
+            

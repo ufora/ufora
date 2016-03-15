@@ -400,6 +400,26 @@ class NpPinv(object):
             )
 
 
+@pureMapping(np.linalg.inv)
+class NpInv(object):
+    def __call__(self, x):
+        builtins = NpInv.__pyfora_builtins__
+
+        shape = x.shape
+        assert len(shape) == 2
+
+        # linalgModule throws a TypeError if x is singular
+        # we should really be throwing a numpy.linalg.LinAlgError
+        result = builtins.linalg.inv(x.values, shape)
+        flat = result[0]
+        shape = result[1]
+        
+        return PurePythonNumpyArray(
+            shape,
+            flat
+            )
+
+
 @pureMapping(np.linalg.svd)
 class Svd(object):
     def __call__(self, a):
