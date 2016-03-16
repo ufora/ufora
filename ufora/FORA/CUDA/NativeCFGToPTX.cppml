@@ -14,8 +14,10 @@
     limitations under the License.
 ****************************************************************************/
 
+
 #include "NativeCFGToPTX.hppml"
 #include "../Interpreter/RuntimeConfig.hppml"
+#include "../Native/NativeCode.hppml"
 #include "../Runtime.hppml"
 #include "../../core/containers/ImmutableTreeVector.hppml"
 #include "../../core/math/Alternative.hpp"
@@ -294,10 +296,8 @@ private:
 				<<	".reg		.u64		i64;\n"
 				<<	".reg		.u64		inputPtrOffset;\n"
 				<<	".reg		.u64		inputPtrIndividual;\n"
-				<<	".reg		.f32		inputVal;\n"
 				<<	".reg		.u64		outputPtrOffset;\n"
 				<<	".reg		.u64		outputPtrIndividual;\n"
-				<<	".reg		.f32		outputVal;\n"
 
 
 				//load the relevant environment values into registers
@@ -320,7 +320,7 @@ private:
 				//this is a valid 'i', so we should execute the client code
 				//so now we need to load the value from inputPtr
 				<<	"mul.lo.s64		inputPtrOffset, i64, "
-													<< inputType.packedSize()
+													<< inputType.alignedSize()
 													<< ";\n"
 				<<	"add.u64		inputPtrIndividual, " <<
 											" inputPtrOffset, reg_inputPtr;\n"
@@ -344,7 +344,7 @@ private:
 
 		//write the value back to the output pointer
 		result	<<	"mul.lo.s64		outputPtrOffset, i64, "
-													<< outputType.packedSize()
+													<< outputType.alignedSize()
 													<< ";\n"
 				<<	"add.u64		outputPtrIndividual, " <<
 											" outputPtrOffset, reg_outputPtr;\n"
@@ -382,26 +382,24 @@ private:
 					//	ld.global.f32	regname, [ptrname+offset];
 					"ld.global." + ptxType + " " + regName + ", " +
 						"[" + inPointerName + "+" +
-								boost::lexical_cast<string>(offset) + "];\n"
+								boost::lexical_cast<string>(
+										alignedOffset(nativeType, offset)
+										) + "];\n"
 					;
 				}
 			-| Tuple(nativeType, registers) ->> {
 				string tr;
-				uword_t localOffset = 0;
 
-				for (long k = 0; k < registers.size();k++)
+				for (long k = 0; k < registers.size(); k++)
 					{
 					tr = tr + loadValueFromPointerIntoRegisters(
 									inPointerName,
 									registers[k],
-									offset + localOffset
+									offset
 									);
-					//note - we are assuming that everything
-					//is fully packed (which is true in NativeCode
-					//right now), so that we don't have to
-					//think about alignment
-					localOffset +=
-						nativeType.getComposite().elements()[k].packedSize();
+					offset =
+							alignedOffset(nativeType.getComposite().elements()[k], offset) +
+							nativeType.getComposite().elements()[k].alignedSize();
 					}
 				return tr;
 				}
@@ -426,7 +424,9 @@ private:
 					"st.global." + ptxType +
 						//generate the pointer offset
 						"[" + inPointerName + "+" +
-								boost::lexical_cast<string>(offset) + "]" +
+								boost::lexical_cast<string>(
+										alignedOffset(nativeType, offset)
+										) + "]" +
 							", " +
 						//the register
 						regName +
@@ -435,21 +435,17 @@ private:
 				}
 			-| Tuple(nativeType, registers) ->> {
 				string tr;
-				uword_t localOffset = 0;
 
 				for (long k = 0; k < registers.size();k++)
 					{
 					tr = tr + writeValueToPointerFromRegisters(
 									inPointerName,
 									registers[k],
-									offset + localOffset
+									offset
 									);
-					//note - we are assuming that everything
-					//is fully packed (which is true in NativeCode
-					//right now), so that we don't have to
-					//think about alignment
-					localOffset +=
-						nativeType.getComposite().elements()[k].packedSize();
+					offset =
+							alignedOffset(nativeType.getComposite().elements()[k], offset) +
+							nativeType.getComposite().elements()[k].alignedSize();
 					}
 				return tr;
 				}
@@ -1519,7 +1515,7 @@ private:
 
 string						computePTXVectorApplyKernelFromNativeCFG(
 									const NativeCFG& inCFG,
-									string entryFunctionName
+									const string& entryFunctionName
 									)
 	{
 	//static variables for the conversion cache
