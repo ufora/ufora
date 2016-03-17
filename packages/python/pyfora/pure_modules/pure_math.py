@@ -50,7 +50,7 @@ class Log(object):
             raise ValueError("math domain error")
 
         return __inline_fora(
-            """fun(val) {
+            """fun(@unnamed_args:(val), *args) {
                    PyFloat(math.log(val.@m))
                    }"""
             )(val)
@@ -63,7 +63,7 @@ class Acos(object):
             raise ValueError("math domain error")
 
         return __inline_fora(
-            """fun(val) {
+            """fun(@unnamed_args:(val), *args) {
                    PyFloat(math.acos(val.@m))
                    }"""
             )(val)
@@ -76,7 +76,7 @@ class Acosh(object):
             raise ValueError("math domain error")
 
         return __inline_fora(
-            """fun(val) {
+            """fun(@unnamed_args:(val), *args) {
                    PyFloat(math.acosh(val.@m))
                    }"""
             )(val)
@@ -86,7 +86,7 @@ class Acosh(object):
 class Cos(object):
     def __call__(self, val):
         return __inline_fora(
-            """fun(val) {
+            """fun(@unnamed_args:(val), *args) {
                    PyFloat(math.cos(val.@m))
                    }"""
             )(val)
@@ -96,7 +96,7 @@ class Cos(object):
 class Cosh(object):
     def __call__(self, val):
         return __inline_fora(
-            """fun(val) {
+            """fun(@unnamed_args:(val), *args) {
                    PyFloat(math.cosh(val.@m))
                    }"""
             )(val)
@@ -109,7 +109,7 @@ class Asin(object):
             raise ValueError("math domain error")
 
         return __inline_fora(
-            """fun(val) {
+            """fun(@unnamed_args:(val), *args) {
                    PyFloat(math.asin(val.@m))
                    }"""
             )(val)
@@ -122,7 +122,7 @@ class Asinh(object):
             raise ValueError("math domain error")
 
         return __inline_fora(
-            """fun(val) {
+            """fun(@unnamed_args:(val), *args) {
                    PyFloat(math.asinh(val.@m))
                    }"""
             )(val)
@@ -132,7 +132,7 @@ class Asinh(object):
 class Sin(object):
     def __call__(self, val):
         return __inline_fora(
-            """fun(val) {
+            """fun(@unnamed_args:(val), *args) {
                    PyFloat(math.sin(val.@m))
                    }"""
             )(val)
@@ -142,7 +142,7 @@ class Sin(object):
 class Sinh(object):
     def __call__(self, val):
         return __inline_fora(
-            """fun(val) {
+            """fun(@unnamed_args:(val), *args) {
                    PyFloat(math.sinh(val.@m))
                    }"""
             )(val)
@@ -152,7 +152,7 @@ class Sinh(object):
 class Atan(object):
     def __call__(self, val):
         return __inline_fora(
-            """fun(val) {
+            """fun(@unnamed_args:(val), *args) {
                    PyFloat(math.atan(val.@m))
                    }"""
             )(val)
@@ -162,7 +162,7 @@ class Atan(object):
 class Atan2(object):
     def __call__(self, val1, val2):
         return __inline_fora(
-            """fun(val) {
+            """fun(@unnamed_args:(val), *args) {
                    PyFloat(math.atan2(val1.@m, val2.@m))
                    }"""
             )(val1, val2)
@@ -175,7 +175,7 @@ class Atanh(object):
             raise ValueError("math domain error")
 
         return __inline_fora(
-            """fun(val) {
+            """fun(@unnamed_args:(val), *args) {
                    PyFloat(math.atanh(val.@m))
                    }"""
             )(val)
@@ -185,7 +185,7 @@ class Atanh(object):
 class Tan(object):
     def __call__(self, val):
         return __inline_fora(
-            """fun(val) {
+            """fun(@unnamed_args:(val), *args) {
                    PyFloat(math.tan(val.@m))
                    }"""
             )(val)
@@ -195,7 +195,7 @@ class Tan(object):
 class Tanh(object):
     def __call__(self, val):
         return __inline_fora(
-            """fun(val) {
+            """fun(@unnamed_args:(val), *args) {
                    PyFloat(math.tanh(val.@m))
                    }"""
             )(val)
@@ -205,7 +205,7 @@ class Tanh(object):
 class Ceil(object):
     def __call__(self, val):
         return __inline_fora(
-            """fun(val) {
+            """fun(@unnamed_args:(val), *args) {
                    PyFloat(math.ceil(val.@m))
                    }"""
             )(val)
@@ -215,7 +215,7 @@ class Ceil(object):
 class Erf(object):
     def __call__(self, val):
         return __inline_fora(
-            """fun(val) {
+            """fun(@unnamed_args:(val), *args) {
                    PyFloat(math.erf(val.@m))
                    }"""
             )(val)
@@ -225,7 +225,7 @@ class Erf(object):
 class Erfc(object):
     def __call__(self, val):
         return __inline_fora(
-            """fun(val) {
+            """fun(@unnamed_args:(val), *args) {
                    PyFloat(math.erfc(val.@m))
                    }"""
             )(val)
@@ -235,7 +235,7 @@ class Erfc(object):
 class Exp(object):
     def __call__(self, val):
         return __inline_fora(
-            """fun(val) {
+            """fun(@unnamed_args:(val), *args) {
                    PyFloat(math.exp(val.@m))
                    }"""
             )(val)
@@ -296,7 +296,7 @@ class Fmod(object):
             y = float(y)
 
         return __inline_fora(
-            """fun(x, y) {
+            """fun(@unnamed_args:(x, y), *args) {
                    return PyFloat(`fmod(x.@m, y.@m))
                    }"""
             )(x, y)
@@ -309,7 +309,7 @@ class Lgamma(object):
             raise ValueError("math domain error")
 
         return __inline_fora(
-            """fun(val) {
+            """fun(@unnamed_args:(val), *args) {
                    PyFloat(math.lgamma(val.@m))
                    }"""
             )(val)
@@ -322,7 +322,7 @@ class Log10(object):
             raise ValueError("math domain error")
 
         return __inline_fora(
-            """fun(val) {
+            """fun(@unnamed_args:(val), *args) {
                    PyFloat(math.log_10(val.@m))
                    }"""
             )(val)

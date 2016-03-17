@@ -93,8 +93,11 @@ class Executor(object):
             representing the content of the S3 key.
         """
         def importS3Dataset():
-            builtins = bucketname.__pyfora_builtins__
-            return builtins.loadS3Dataset(bucketname, keyname)
+            return __inline_fora(
+                """fun(@unnamed_args:(bucketname, keyname), *args) {
+                       purePython.PyforaBuiltins.loadS3Dataset(bucketname, keyname)
+                       }"""
+                )(bucketname, keyname)
 
         future = self.submit(importS3Dataset)
 
@@ -151,8 +154,11 @@ class Executor(object):
             representing the content of the file as a string.
         """
         def importFile():
-            builtins = path.__pyfora_builtins__
-            return builtins.loadFileDataset(path)
+            return __inline_fora(
+                """fun(@unnamed_args:(path), *args) {
+                       purePython.PyforaBuiltins.loadFileDataset(path)
+                       }"""
+                )(path)
 
         return self.submit(importFile)
 

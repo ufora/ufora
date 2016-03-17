@@ -71,7 +71,11 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
         inst = IdentClass(1,2,3,4,5)
 
         def getMembers(inst):
-            return __inline_fora("""fun(x) { PyString(String(x.@m)) }""")(inst)
+            return __inline_fora(
+                """fun(@unnamed_args:(x), *args) {
+                       PyString(String(x.@m))
+                       }"""
+                )(inst)
 
         with self.create_executor() as ufora:
             with ufora.remotely.downloadAll():
@@ -307,8 +311,12 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
 
         t1 = getATrace(1000000)
 
+        file_ = __file__
+        if file_[-4:] == ".pyc":
+            file_ = __file__[:-1]
+
         for x in t1:
-            self.assertEqual(x['path'][0], os.path.abspath(__file__))
+            self.assertEqual(x['path'][0], os.path.abspath(file_))
         self.assertEqual(t1, getATrace(1000001))
         self.assertEqual(t1, getATrace(1000002))
         self.assertEqual(t1, getATrace(1000003))

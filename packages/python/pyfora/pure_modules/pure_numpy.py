@@ -353,7 +353,7 @@ def _dot(arr1, arr2):
                     )
 
             result = __inline_fora(
-                """fun(values1, shape1, values2, shape2) {
+                """fun(@unnamed_args:(values1, shape1, values2, shape2), *args) {
                        return purePython.linalgModule.matrixMult(
                            values1, shape1, values2, shape2
                            )
@@ -386,12 +386,15 @@ class NpDot(object):
 @pureMapping(np.linalg.pinv)
 class NpPinv(object):
     def __call__(self, matrix):
-        builtins = NpPinv.__pyfora_builtins__
-
         shape = matrix.shape
         assert len(shape) == 2
 
-        result = builtins.linalg.pInv(matrix.values, shape)
+        result = __inline_fora(
+            """fun(@unnamed_args:(rowMajorValues, shape), *args) {
+                   purePython.linalgModule.pInv(rowMajorValues, shape)
+                   }"""
+            )(matrix.values, shape)
+
         flat = result[0]
         shape = result[1]
         return PurePythonNumpyArray(
@@ -403,14 +406,17 @@ class NpPinv(object):
 @pureMapping(np.linalg.inv)
 class NpInv(object):
     def __call__(self, x):
-        builtins = NpInv.__pyfora_builtins__
-
         shape = x.shape
         assert len(shape) == 2
 
         # linalgModule throws a TypeError if x is singular
         # we should really be throwing a numpy.linalg.LinAlgError
-        result = builtins.linalg.inv(x.values, shape)
+        result = __inline_fora(
+            """fun(@unnamed_args:(rowMajorValues, shape), *args) {
+                   purePython.linalgModule.inv(rowMajorValues, shape)
+                   }"""
+            )(x.values, shape)
+
         flat = result[0]
         shape = result[1]
         
@@ -425,7 +431,11 @@ class NpEigH(object):
     def __call__(self, a, UPLO='L'):
         assert len(a.shape) == 2, "need len(a.shape) == 2"
 
-        res = NpEigH.__pyfora_builtins__.linalg.eigh(a, UPLO)
+        res = __inline_fora(
+            """fun(@unnamed_args:(a, uplo), *args) {
+                   return purePython.linalgModule.eigh(a, uplo)
+                   }"""
+            )(a, UPLO)
 
         return (
             PurePythonNumpyArray(
@@ -445,7 +455,11 @@ class Svd(object):
     def __call__(self, a):
         assert len(a.shape) == 2, "need len(a.shape) == 2"
 
-        res = Svd.__pyfora_builtins__.linalg.svd(a)
+        res = __inline_fora(
+            """fun(@unnamed_args:(a), *args) {
+                   purePython.linalgModule.svd(a)
+                   }"""
+            )(a)
 
         return (
             PurePythonNumpyArray(
@@ -470,8 +484,11 @@ class Lstsq(object):
         assert len(b.shape) == 1, "need len(b.shape) == 1"
         assert b.shape[0] == a.shape[0]
 
-        x, singular_values, rank = \
-            Lstsq.__pyfora_builtins__.linalg.lstsq(a, b, rcond)
+        x, singular_values, rank = __inline_fora(
+            """fun(@unnamed_args:(a, b, rcond), *args) {
+                   purePython.linalgModule.lstsq(a, b, rcond)
+                   }"""
+            )(a, b, rcond)
 
         x = PurePythonNumpyArray((len(x),), x)
 
@@ -583,7 +600,11 @@ class LinSolve(object):
         assert False, "need len(b.shape) == 2 or len(b.shape) == 1"
 
     def _linsolv_impl(self, a, b):
-        res = LinSolve.__pyfora_builtins__.linalg.linsolve(a, b)
+        res = __inline_fora(
+            """fun(@unnamed_args:(a,b), *args) {
+                   purePython.linalgModule.linsolve(a, b)
+                   }"""
+            )(a, b)
         flattendValues = res[0]
         shape = res[1]
         return PurePythonNumpyArray(
@@ -634,7 +655,7 @@ class IsNan(object):
             x = float(x)
 
         return __inline_fora(
-            """fun(PyFloat(...) x) {
+            """fun(@unnamed_args:(PyFloat(...) x), *args) {
                    PyBool(x.@m.isNan)
                    }"""
             )(x)
@@ -659,7 +680,7 @@ class IsInf(object):
             x = float(x)
 
         return __inline_fora(
-            """fun(PyFloat(...) x) {
+            """fun(@unnamed_args:(PyFloat(...) x), *args) {
                    PyBool(x.@m.isInfinite)
                    }"""
             )(x)
@@ -692,7 +713,7 @@ class IsFinite(object):
             x = float(x)
 
         return __inline_fora(
-            """fun(PyFloat(...) x) {
+            """fun(@unnamed_args:(PyFloat(...) x), *args) {
                    PyBool(x.@m.isFinite)
                    }"""
             )(x)
@@ -771,7 +792,7 @@ class Log(object):
             return -np.inf
 
         return __inline_fora(
-            """fun(val) {
+            """fun(@unnamed_args:(val), *args) {
                    PyFloat(math.log(val.@m))
                    }"""
             )(val)
@@ -787,7 +808,7 @@ class Log10(object):
             return -np.inf
 
         return __inline_fora(
-            """fun(val) {
+            """fun(@unnamed_args:(val), *args) {
                    PyFloat(math.log_10(val.@m))
                    }"""
             )(val)
