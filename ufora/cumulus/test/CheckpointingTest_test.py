@@ -564,7 +564,7 @@ class CheckpointingTest(unittest.TestCase):
 
 
 
-    def test_checkpointingAlwaysSuccessful(self):
+    def DISABLEDtest_checkpointingAlwaysSuccessful(self):
         simulation = self.createSimulation()
         self.assertTrue(len(simulation.objectStore.listValues()) == 0)
 
@@ -1094,7 +1094,7 @@ class CheckpointingTest(unittest.TestCase):
         return statuses
 
 
-    def test_canTriggerCheckpointOfCompleted(self):
+    def DISABLEDtest_canTriggerCheckpointOfCompleted(self):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
 
         simulation = InMemoryCumulusSimulation.InMemoryCumulusSimulation(
