@@ -36,7 +36,7 @@ class Expm:
             raise TypeError(errString)
             
         result = __inline_fora(
-            """fun(matrix) {
+            """fun(@unnamed_args:(matrix), *args) {
                    return purePython.linalgModule.expm(
                        matrix
                        )
@@ -58,7 +58,7 @@ class BetaFunction(object):
             b = float(b)
 
         return __inline_fora(
-            """fun(PyFloat(...) a, PyFloat(...) b) {
+            """fun(@unnamed_args:(PyFloat(...) a, PyFloat(...) b), *args) {
                    return PyFloat(`cephes_beta(a.@m, b.@m))
                    }"""
             )(a, b)
@@ -71,7 +71,7 @@ class GammaFunction(object):
             x = float(x)
 
         return __inline_fora(
-            """fun(x) {
+            """fun(@unnamed_args:(x), *args) {
                    return PyFloat(`tgamma(x.@m))
                    }"""
             )(x)
@@ -90,7 +90,7 @@ class Hyp2f1(object):
             z = float(z)
 
         return __inline_fora(
-            """fun(a, b, c, z) {
+            """fun(@unnamed_args:(a, b, c, z), *args) {
                    return PyFloat(`hyp2f1(a.@m, b.@m, c.@m, z.@m))
                    }"""
             )(a, b, c, z)
@@ -104,7 +104,7 @@ class Digamma(object):
             z = float(z)
 
         return __inline_fora(
-            """fun(z) {
+            """fun(@unnamed_args:(z), *args) {
                    return PyFloat(`digamm(z.@m));
                    }"""
             )(z)
@@ -117,7 +117,7 @@ class Erfcinv(object):
             x = float(x)
 
         return __inline_fora(
-            """fun(x) {
+            """fun(@unnamed_args(x), *args) {
                    return PyFloat(math.erfcinv(x.@m))
                    }"""
             )(x)
@@ -130,7 +130,7 @@ class Erfinv(object):
             x = float(x)
 
         return __inline_fora(
-            """fun(x) {
+            """fun(@unnamed_args:(x), *args) {
                    return PyFloat(math.erfinv(x.@m))
                    }"""
             )(x)
@@ -164,7 +164,7 @@ class Betaincinv(object):
             y = float(y)
 
         return __inline_fora(
-            """fun(a, b, y) {
+            """fun(@unnamed_args:(a, b, y), *args) {
                    return PyFloat(`ibeta(a.@m, b.@m, y.@m))
                    }"""
             )(a, b, y)
@@ -180,7 +180,7 @@ class GammaLn(object):
             return numpy.inf
 
         return __inline_fora(
-            """fun(x) {
+            """fun(@unnamed_args:(x), *args) {
                    return PyFloat(`lgamma(x.@m))
                    }"""
             )(x)
@@ -195,7 +195,7 @@ class BetaLn(object):
             b = float(b)
 
         return __inline_fora(
-            """fun(PyFloat(...) a, PyFloat(...) b) {
+            """fun(@unnamed_args:(PyFloat(...) a, PyFloat(...) b), *args) {
                    return PyFloat(`cephes_lbeta(a.@m, b.@m))
                    }"""
             )(a, b)
@@ -213,7 +213,7 @@ class Kn(object):
             x = float(x)
 
         return __inline_fora(
-            """fun(n, x) {
+            """fun(@unnamed_args:(n, x), *args) {
                    return PyFloat(`cyl_bessel_k(n.@m, x.@m))
                    }"""
             )(n, x)
@@ -229,7 +229,7 @@ class Iv(object):
             z = float(z)
 
         return __inline_fora(
-            """fun(v, z) {
+            """fun(@unnamed_args:(v, z), *args) {
                    return PyFloat(`cyl_bessel_i(v.@m, z.@m))
                    }"""
             )(v, z)

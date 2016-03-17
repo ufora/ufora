@@ -316,7 +316,10 @@ class ExecutorTestCases(object):
             x = [val]
             ix = 0
             inlineFun = __inline_fora(
-                "fun(x, ix) { let y = x.__getitem__(ix); y }"
+                """fun(@unnamed_args:(x, ix), *args) {
+                       let y = x.__getitem__(ix);
+                       y
+                       }"""
                 )
             x = inlineFun(x, ix)
             return x
@@ -330,16 +333,16 @@ class ExecutorTestCases(object):
         val = 42
         def f():
             inlineFun1 = __inline_fora(
-                "fun() { return MutableVector.create(2, 0) }"
+                "fun(*args) { return MutableVector.create(2, 0) }"
                 )
             mutableVec = inlineFun1()
 
             __inline_fora(
-                "fun(m, val) { m[0] = val }"
+                "fun(@unnamed_args:(m, val), *args) { m[0] = val }"
                 )(mutableVec, val)
 
             inlineFun3 = __inline_fora(
-                "fun(m) { return m[0] }"
+                "fun(@unnamed_args:(m), *args) { return m[0] }"
                 )
             return inlineFun3(mutableVec)
 
@@ -351,17 +354,25 @@ class ExecutorTestCases(object):
     def test_inline_fora_mutable_thing(self):
         class C_inline:
             def __init__(self, sz):
-                self.m = __inline_fora("fun(sz) { MutableVector.create(sz.@m, 0) }")(sz)
+                self.m = __inline_fora(
+                    """fun(@unnamed_args:(sz), *args) {
+                           MutableVector.create(sz.@m, 0)
+                           }"""
+                   )(sz)
 
             def setitem(self, val, ix):
                 __inline_fora(
-                    """fun(m, val, ix) {
+                    """fun(@unnamed_args:(m, val, ix), *args) {
                         m[ix.@m] = val
                         }"""
                     )(self.m, val, ix)
 
             def getitem(self, ix):
-                return __inline_fora("fun(m, ix) { m[ix.@m] }")(self.m, ix)
+                return __inline_fora(
+                    """fun(@unnamed_args:(m, ix), *args) {
+                           m[ix.@m]
+                           }"""
+                    )(self.m, ix)
 
         val = 42
         def f():
@@ -375,7 +386,7 @@ class ExecutorTestCases(object):
     def test_inline_fora_access_pyfora_builtins(self):
         def f():
             return __inline_fora(
-                """fun(ix) {
+                """fun(@unnamed_args:(ix), *args) {
                        return PyInt(1) + ix
                        }"""
                 )(2)
@@ -388,7 +399,7 @@ class ExecutorTestCases(object):
     def test_inline_fora_access_fora_builtins_1(self):
         def f(x):
             sinFunc = __inline_fora(
-                """fun(x) {
+                """fun(@unnamed_args:(x), *args) {
                        PyFloat(math.sin(x.@m))
                        }"""
                 )
@@ -403,7 +414,9 @@ class ExecutorTestCases(object):
     def test_inline_fora_access_fora_builtins_2(self):
         def f(x):
             return __inline_fora(
-                "fun(x) { purePython.PyFloat(builtin.math.sin(x.@m)) }"
+                """fun(@unnamed_args:(x), *args) {
+                       purePython.PyFloat(builtin.math.sin(x.@m))
+                       }"""
                 )(x)
 
         arg = 0.0

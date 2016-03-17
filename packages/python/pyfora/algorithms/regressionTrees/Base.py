@@ -155,7 +155,7 @@ class SampleSummaryHistogram:
 class _MutableVector:
     def __init__(self, count, defaultValue):
         self.samples = __inline_fora(
-            """fun(count, defaultValue) {
+            """fun(@unnamed_args:(count, defaultValue), *args) {
                    MutableVector(`TypeJOV(defaultValue))
                        .create(count.@m, defaultValue)
                    }"""
@@ -163,21 +163,21 @@ class _MutableVector:
 
     def setitem(self, ix, val):
         __inline_fora(
-            """fun(samples, ix, val) {
+            """fun(@unnamed_args:(samples, ix, val), *args) {
                    samples[ix.@m] = val
                    }"""
             )(self.samples, ix, val)
 
     def __getitem__(self, ix):
        return  __inline_fora(
-            """fun(samples, ix) {
+            """fun(@unnamed_args:(samples, ix), *args) {
                    samples[ix.@m]
                    }"""
             )(self.samples, ix)
 
     def augmentItem(self, ix, val):
         __inline_fora(
-            """fun(samples, ix, val) {
+            """fun(@unnamed_args:(samples, ix, val), *args) {
                    let foraIx = ix.@m;
                    samples[foraIx] = samples[foraIx] + val
                    }"""
@@ -185,7 +185,7 @@ class _MutableVector:
 
     def __len__(self):
         return __inline_fora(
-            """fun(samples) {
+            """fun(@unnamed_args:(samples), *args) {
                    PyInt(size(samples))
                    }"""
             )(self.samples)

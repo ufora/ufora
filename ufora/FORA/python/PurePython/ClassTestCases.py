@@ -203,6 +203,7 @@ class ClassTestCases(object):
                 self.y = y
                 self.z = x + y
             def f(self, arg):
+                return arg
                 return arg + self.x + self.y + self.z
 
         c = C4(100, 200)
@@ -245,6 +246,8 @@ class ClassTestCases(object):
 
         def f():
             return (c.x, c.y)
+
+        self.equivalentEvaluationTest(f)
 
     def test_class_instances_5(self):
         class C8:
@@ -888,3 +891,15 @@ class ClassTestCases(object):
         
         self.assertEqual(c0.__dict__, c1.__dict__)
         self.assertEqual(c2.__dict__, c3.__dict__)
+
+    def test_wtf(self):
+        class C_wtf(object):
+            def g(self, arg):
+                return arg
+
+        c = C_wtf()
+
+        def f(x):
+            return c.g(2)
+
+        self.equivalentEvaluationTest(f, 2)

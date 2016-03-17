@@ -203,7 +203,7 @@ class ExceptionTestCases(object):
             self.assertIsInstance(e.remoteException, TypeError)
             self.assertEqual(
                 e.remoteException.message,
-                "f() takes no arguments (1 given)"
+                "call expression to function f() had too many unnamed arguments"
                 )
 
     def test_invalid_call_5(self):
@@ -217,35 +217,35 @@ class ExceptionTestCases(object):
             self.assertIsInstance(e.remoteException, TypeError)
             self.assertEqual(
                 e.remoteException.message,
-                "f() takes exactly 1 argument (0 given)"
+                "couldn't match argument x in call to function f()"
                 )
 
     def test_invalid_call_6(self):
-        def f(x, y):
+        def g(x, y):
             pass
 
         try:
-            self.evaluateWithExecutor(f, 1, 2, 3)
+            self.evaluateWithExecutor(g, 1, 2, 3)
             self.assertTrue(False)
         except pyfora.ComputationError as e:
             self.assertIsInstance(e.remoteException, TypeError)
             self.assertEqual(
                 e.remoteException.message,
-                "f() takes exactly 2 arguments (3 given)"
+                "call expression to function g() had too many unnamed arguments"
                 )
 
     def test_invalid_call_7(self):
-        def f(x, y=2):
+        def func(x, y=2):
             pass
 
         try:
-            self.evaluateWithExecutor(f, 1, 2, 3)
+            self.evaluateWithExecutor(func, 1, 2, 3)
             self.assertTrue(False)
         except pyfora.ComputationError as e:
             self.assertIsInstance(e.remoteException, TypeError)
             self.assertEqual(
                 e.remoteException.message,
-                "f() takes at most 2 arguments (3 given)"
+                "call expression to function func() had too many unnamed arguments"
                 )
 
     def test_invalid_call_8(self):
@@ -259,7 +259,7 @@ class ExceptionTestCases(object):
             self.assertIsInstance(e.remoteException, TypeError)
             self.assertEqual(
                 e.remoteException.message,
-                "f() takes at least 1 argument (0 given)"
+                "couldn't match argument x in call to function f()"
                 )
 
     def test_invalid_call_9(self):
@@ -273,7 +273,7 @@ class ExceptionTestCases(object):
             self.assertIsInstance(e.remoteException, TypeError)
             self.assertEqual(
                 e.remoteException.message,
-                "f() takes at most 1 argument (2 given)"
+                "call expression to function f() had too many unnamed arguments"
                 )
 
     def test_invalid_call_10(self):
@@ -287,7 +287,7 @@ class ExceptionTestCases(object):
             self.assertIsInstance(e.remoteException, TypeError)
             self.assertEqual(
                 e.remoteException.message,
-                "f() takes at most 3 arguments (4 given)"
+                "call expression to function f() had too many unnamed arguments"
                 )
 
     def test_invalid_call_11(self):
@@ -301,7 +301,37 @@ class ExceptionTestCases(object):
             self.assertIsInstance(e.remoteException, TypeError)
             self.assertEqual(
                 e.remoteException.message,
-                "f() takes at least 2 arguments (1 given)"
+                "couldn't match argument y in call to function f()"
+                )
+
+    def test_invalid_call_12(self):
+        def f(x, y):
+            return x + y
+
+        try:
+            with self.create_executor() as executor:
+                with executor.remotely:
+                    f(x=2, y=3, z=4)
+            self.assertTrue(False)
+        except TypeError as e:
+            self.assertEqual(
+                e.message,
+                "call expression to function f() had too many named arguments"
+                )
+
+    def test_invalid_call_13(self):
+        def f(x, y):
+            return x + y
+
+        try:
+            with self.create_executor() as executor:
+                with executor.remotely:
+                    f(2, y=3, z=4)
+            self.assertTrue(False)
+        except TypeError as e:
+            self.assertEqual(
+                e.message,
+                "call expression to function f() had too many named arguments"
                 )
 
     def test_dict_creation_error_1(self):

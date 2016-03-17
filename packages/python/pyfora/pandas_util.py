@@ -38,7 +38,7 @@ def read_csv_from_string(data):
     """
     listOfColumns, columnNames = \
         __inline_fora(
-            """fun(data) {
+            """fun(@unnamed_args:(data), *args) {
                    let df = try {
                        parsing.csv(
                            data.@m,
