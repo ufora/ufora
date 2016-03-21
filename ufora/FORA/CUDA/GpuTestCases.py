@@ -52,9 +52,27 @@ class GpuTestCases:
     def test_cuda_tuple_alignment(self):
         self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "(1s32,2,2s32)")
         self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "(1u32,2,2s32)")
-        self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "(1u8,2s32,2)")
+        self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "(1u16,2s32,2)")
 
         self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "(10.0f32, 2.0, 2)")
+        self.compareCudaToCPU(
+                "fun((a,b,c,d,e,f)) { a+b+c+d+e+f }",
+                "(2u16, 3s32, 4s64, 5.0f16, 6.0f32, 7.0f64)"
+                )
+
+
+    def test_cuda_conversions(self):
+        s_integers = ["2s16", "3s32", "4s64", "5"]
+        u_integers = ["2u16", "3u32", "4u64", "5"]
+        floats = ["2.2f32", "3.3f64", "4.4"]
+
+        numbers = s_integers + u_integers + floats
+        for n1 in numbers:
+            for n2 in numbers:
+                self.compareCudaToCPU(
+                        "fun((a,b)) { a + b }",
+                        "(" + n1 + ", " + n2 + ")"
+                        )
 
 
     def check_precision_of_function_on_GPU(self, function, input):
@@ -65,7 +83,7 @@ class GpuTestCases:
                 }
             `CUDAVectorApply(f, [""" + str(input) + """])[0]
             """
-        res = InMemoryCumulusSimulation.computeUsingSeveralWorkers(text, s3, 1, timeout = 120, threadCount=4)
+        res = InMemoryCumulusSimulation.computeUsingSeveralWorkers(text, s3, 1, timeout=120, threadCount=4)
         self.assertIsNotNone(res)
         self.assertTrue(res.isResult(), res)
         gpuValue = res.asResult.result.pyval
