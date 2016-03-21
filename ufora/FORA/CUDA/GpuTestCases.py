@@ -69,10 +69,11 @@ class GpuTestCases:
         numbers = s_integers + u_integers + floats
         for n1 in numbers:
             for n2 in numbers:
-                self.compareCudaToCPU(
-                        "fun((a,b)) { a + b }",
-                        "(" + n1 + ", " + n2 + ")"
-                        )
+                for op in ["+", "-", "*" ]:    # TODO: add division, currently broken
+                    self.compareCudaToCPU(
+                            "fun((a,b)) { a " + op + " b }",
+                            "(" + n1 + ", " + n2 + ")"
+                            )
 
 
     def check_precision_of_function_on_GPU(self, function, input):
