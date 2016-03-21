@@ -39,6 +39,7 @@ class GpuTestCases:
         self.assertIsNotNone(res)
         self.assertTrue(res.isResult(), "Failed with %s on %s: %s" % (funcExpr, vecExpr, res))
 
+
     def test_cuda_read_tuples(self):
         self.compareCudaToCPU("fun((a,b)) { (b,a) }", "(1,2)")
         self.compareCudaToCPU("fun((a,b)) { b + a }", "(1,2)")
@@ -47,9 +48,13 @@ class GpuTestCases:
 
         self.compareCudaToCPU("math.log", "2")
 
+
     def test_cuda_tuple_alignment(self):
-        # this test fails because the middle argument is not correctly aligned in our current model.
         self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "(1s32,2,2s32)")
+        self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "(1u32,2,2s32)")
+        self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "(1u8,2s32,2)")
+
+        self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "(10.0f32, 2.0, 2)")
 
 
     def check_precision_of_function_on_GPU(self, function, input):
