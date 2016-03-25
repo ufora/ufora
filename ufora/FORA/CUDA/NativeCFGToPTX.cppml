@@ -33,10 +33,10 @@ using namespace std;
 //representation of a FORA value in PTX registers
 @type	PTXValueRepresentation =
 			Atom of NativeType t, string ptxType, string registerName
-		-| Tuple of NativeType t,
+		-|	Tuple of NativeType t,
 							ImmutableTreeVector<PTXValueRepresentation> elts
-		-| Constant of string ptxExpr
-		-| Nothing of ()
+		-|	Constant of string ptxExpr
+		-|	Nothing of ()
 {
 public:
 		string	 toString() const;
@@ -73,7 +73,7 @@ string	PTXValueRepresentation::toString() const
 //into which the continuation value should be placed
 @type	PTXContinuationRepresentation =
 				PTXValueRepresentation	targetRegisters,
-				string						targetBlock
+				string					targetBlock
 				;
 
 //representation of an 'entrypoint' in PTX
@@ -144,11 +144,14 @@ string	nativeTypeToPTXType(
 				return (isByteInstruction ? "b" : "f")
 					+ boost::lexical_cast<string>(bits);
 				}
+		-| Pointer(t) ->> {
+				return "u64";
+				}
 		-| _ ->> {
-			throw UnableToConvertToPTX(
-				"used an invalid type " + prettyPrintString(inType)
-				);
-			}
+				throw UnableToConvertToPTX(
+						"used an invalid type " + prettyPrintString(inType)
+						);
+				}
 		;
 	}
 
@@ -198,6 +201,19 @@ public:
 
 					return PTXValueRepresentation::Tuple(inType, result);
 					}
+			-| Pointer(t) ->> {
+				string ptxType = nativeTypeToPTXType(inType);
+				return PTXValueRepresentation::Atom(
+						inType,
+						ptxType,
+						newRegisterName(ptxType)
+						);
+				}
+			-| _ ->> {
+				throw UnableToConvertToPTX(
+						"don't know how to register allocate type: " + prettyPrintString(inType)
+						);
+				}
 			;
 		}
 
@@ -248,6 +264,7 @@ private:
 			sizeof(v)
 			);
 		}
+
 	void buildResult(const NativeCFG& inCFG, string inEntryFunctionName)
 		{
 		if (inCFG.returnTypes().size() != 1)
@@ -257,8 +274,8 @@ private:
 
 		//exactly one of the inputs should be not "Nothing"
 		Nullable<uint32_t> inputIndex;
-
-		for (long k = 0; k < inCFG[NativeBlockID::entry()].args().size(); k++)
+		uint32_t inCFGArgsSize = inCFG[NativeBlockID::entry()].args().size();
+		for (long k = 0; k < inCFGArgsSize; k++)
 			if (!inCFG[NativeBlockID::entry()].args()[k].type().isNothing())
 				{
 				if (inputIndex)
@@ -280,13 +297,73 @@ private:
 		string	exitBlockName = allocateBlockName("exit_");
 
 		PTXContinuationRepresentation	terminalContinuation(
-					mRegisters.allocateValue(inCFG.returnTypes()[0]),
+					PTXValueRepresentation::Nothing(),
 					exitBlockName
 					);
 
-		//transform the native CFG
+		NativeType offsetType = NativeType::uint64();
+		NativeVariable inputVar = NativeVariable::Temp(inputType);
+		NativeVariable outputVar = NativeVariable::Temp(outputType);
+		NativeVariable inputPtr = NativeVariable::Temp(inputType.ptr());
+		NativeVariable outputPtr = NativeVariable::Temp(outputType.ptr());
+		NativeVariable offset = NativeVariable::Temp(offsetType);
+
+		ImmutableTreeVector<NativeExpression> args = emptyTreeVec();
+		for (long k = 0; k < inCFGArgsSize; k++)
+			{
+			if (k == *inputIndex)
+				args = args + inputVar.expr();
+			else
+				args = args + inCFG[NativeBlockID::entry()].args()[k].expr();
+			}
+
+		ImmutableTreeVector<NativeContinuation> conts = emptyTreeVec();
+		conts = conts + NativeContinuation(outputVar, outputVar.expr());
+
+		NativeExpression nexp =
+			NativeExpression::DiscardFirst(
+				NativeExpression::Let(
+					inputVar,
+					NativeExpression::Load(
+							NativeExpression::BinaryOp(
+									NativeBinaryOpcode::Add(),
+									inputPtr.expr(),
+									offset.expr()
+									)
+							, false
+							),
+					NativeExpression::Let(
+						outputVar,
+						NativeExpression::Call(
+								NativeCallTarget::Inline(inCFG, NativeBlockID::entry()),
+								conts,
+								args,
+								emptyTreeVec() /*+ NativeContinuationMetadata meta*/
+								),
+						NativeExpression::Store(
+								NativeExpression::BinaryOp(
+										NativeBinaryOpcode::Add(),
+										outputPtr.expr(),
+										offset.expr()
+										),
+								outputVar.expr()
+								)
+					)
+				),
+				NativeExpression::Return(0, NativeConstant::Nothing().expr())
+			);
+
+		NativeCFG wrappedCFG =
+				NativeCFG(
+						emptyTreeVec(),
+						inCFG[NativeBlockID::entry()].args() + inputPtr + outputPtr + offset,
+						nexp,
+						"wrappedCUDANativeCFG"
+						);
+
+
 		pair<string, PTXEntrypointRepresentation>
-				body = computeBody(	inCFG,
+				body = computeBody(	wrappedCFG,
 									NativeBlockID::entry(),
 									emptyTreeVec() + terminalContinuation
 									);
@@ -334,50 +411,42 @@ private:
 				<<	"ld.param.u64	reg_outputPtr, [outputPtr];\n"
 
 				//compute 'i', the particular position we're in
-				<<	"mul.lo.u32		i_temp,		numthreads,	blockX;\n"
-				<<	"add.u32		i,			i_temp,		threadID;\n"
+				<<	"mul.lo.u32		i_temp,	numthreads,	blockX;\n"
+				<<	"add.u32		i, i_temp, threadID;\n"
 
 				//check whether 'i' is less than 'N' and exit if not
-				<<	"cvt.u64.u32	i64,		i;\n"
-				<<	"setp.ge.u32	validApplyPredicate,			i,			reg_N;\n"
-				<<	"@validApplyPredicate				bra			done;\n"
+				<<	"cvt.u64.u32		i64,		i;\n"
+				<<	"setp.ge.u32		validApplyPredicate, i, reg_N;\n"
+				<<	"@validApplyPredicate	bra	done;\n"
 
 				//this is a valid 'i', so we should execute the client code
-				//so now we need to load the value from inputPtr
-				<<	"mul.lo.s64		inputPtrOffset, i64, "
-													<< inputType.alignedSize()
-													<< ";\n"
-				<<	"add.u64		inputPtrIndividual, " <<
-											" inputPtrOffset, reg_inputPtr;\n"
 				;
-
-		//now that we have the inputPtrIndividual, we need to load each
-		//element of it into the register specified in the target location
-		result << loadValueFromPointerIntoRegisters("inputPtrIndividual",
-							body.second.inputRegisters()[*inputIndex]
-							);
+		copyFromPTXToPTX(
+				PTXValueRepresentation::Atom(inputType.ptr(), "u64", "reg_inputPtr"),
+				body.second.inputRegisters()[inCFGArgsSize],
+				result
+				);
+		copyFromPTXToPTX(
+				PTXValueRepresentation::Atom(outputType.ptr(), "u64", "reg_outputPtr"),
+				body.second.inputRegisters()[inCFGArgsSize+1],
+				result
+				);
+		copyFromPTXToPTX(
+				PTXValueRepresentation::Atom(offsetType, "u64", "i64"),
+				body.second.inputRegisters()[inCFGArgsSize+2],
+				result
+				);
 		//now branch into the continuation. this is unnecessary (Because
 		//we'll flow right into it) but we leave it in so that when
 		//we expand the code generator it'll be consistent
-		result << "bra				" << body.second.targetBlock() << ";\n";
+		result << "bra		" << body.second.targetBlock() << ";\n";
 
 		//write the body itself
 		result << body.first;
 
 		//generate the output continuation
+		result << "// generate the output continuation\n";
 		result << terminalContinuation.targetBlock() + ":\n";
-
-		//write the value back to the output pointer
-		result	<<	"mul.lo.s64		outputPtrOffset, i64, "
-													<< outputType.alignedSize()
-													<< ";\n"
-				<<	"add.u64		outputPtrIndividual, " <<
-											" outputPtrOffset, reg_outputPtr;\n"
-				;
-
-		result << writeValueToPointerFromRegisters("outputPtrIndividual",
-						terminalContinuation.targetRegisters()
-						);
 
 		//write the "done" block
 		result << "done:\n";
@@ -392,9 +461,28 @@ private:
 	//generates a string of 'ld.global' instructions
 	//that load pointer offset values from 'inPointerName' into
 	//the registers specified in "ptxRegisters"
-	string	loadValueFromPointerIntoRegisters(string inPointerName,
-							PTXValueRepresentation	ptxRegisters,
-							uword_t	offset = 0
+	string	loadValueFromPointerIntoRegisters(
+							const PTXValueRepresentation&	inPointer,
+							const PTXValueRepresentation&	ptxRegisters,
+							uword_t							offset = 0
+							)
+		{
+		@match PTXValueRepresentation(inPointer)
+			-|	Nothing() ->> {
+				return "";
+				}
+			-|	Atom(nativeType, ptxType, regName) ->> {
+				return loadValueFromPointerIntoRegisters(regName, ptxRegisters, offset);
+				}
+			-| 	_ ->> {
+				return "";
+				}
+			;
+		}
+	string	loadValueFromPointerIntoRegisters(
+							const string&					inPointerName,
+							const PTXValueRepresentation&	ptxRegisters,
+							uword_t							offset = 0
 							)
 		{
 		@match	PTXValueRepresentation(ptxRegisters)
@@ -405,7 +493,7 @@ private:
 				return
 					//something like
 					//	ld.global.f32	regname, [ptrname+offset];
-					"ld.global." + ptxType + " " + regName + ", " +
+					"ld.global." + ptxType + "\t" + regName + ", " +
 						"[" + inPointerName + "+" +
 								boost::lexical_cast<string>(
 										alignedOffset(nativeType, offset)
@@ -430,12 +518,31 @@ private:
 				}
 			;
 		}
+	string	writeValueToPointerFromRegisters(
+							const PTXValueRepresentation&	inPointer,
+							const PTXValueRepresentation&	inValue,
+							uword_t							offset = 0
+							)
+		{
+		@match PTXValueRepresentation(inPointer)
+			-|	Nothing() ->> {
+				return "";
+				}
+			-|	Atom(nativeType, ptxType, regName) ->> {
+				return writeValueToPointerFromRegisters(regName, inValue, offset);
+				}
+			-| 	_ ->> {
+				return "";
+				}
+			;
+		}
+
 	//generates a string of 'st.global' instructions
 	//that store register values into a pointer given by "inPointerName"
 	string	writeValueToPointerFromRegisters(
-							string						 inPointerName,
-							PTXValueRepresentation		ptxRegisters,
-							uword_t						offset = 0
+							const string&					inPointerName,
+							const PTXValueRepresentation&	ptxRegisters,
+							uword_t							offset = 0
 							)
 		{
 		@match	PTXValueRepresentation(ptxRegisters)
@@ -444,11 +551,11 @@ private:
 				}
 			-| Atom(nativeType, ptxType, regName) ->> {
 					//something like
-					//	ld.global.f32	regname, [ptrname+offset];
+					//	st.global.f32	regname, [ptrname+offset];
 				return
 					"st.global." + ptxType +
 						//generate the pointer offset
-						"[" + inPointerName + "+" +
+						"\t[" + inPointerName + "+" +
 								boost::lexical_cast<string>(
 										alignedOffset(nativeType, offset)
 										) + "]" +
@@ -498,10 +605,12 @@ private:
 			NativeBlock	block = inCFG.blocks().pairAtPosition(k).second;
 
 			for (long j = 0; j < block.args().size(); j++)
+				{
 				arguments = arguments +
 					mRegisters.allocateValue(
 						block.args()[j].type()
 						);
+				}
 
 			PTXEntrypointRepresentation	input(
 						arguments,
@@ -511,7 +620,7 @@ private:
 			entrypoints = entrypoints + blockID + input;
 			}
 
-		for (long k = 0; k < inCFG.blocks().size();k++)
+		for (long k = 0; k < inCFG.blocks().size(); k++)
 			{
 			NativeBlockID blockID = inCFG.blocks().pairAtPosition(k).first;
 			NativeBlock	block = inCFG.blocks().pairAtPosition(k).second;
@@ -530,21 +639,22 @@ private:
 
 			lassert(arguments.size() == block.args().size());
 
-			for (long k = 0; k < block.args().size();k++)
+			for (long k = 0; k < block.args().size(); k++)
 				localVariables = localVariables +
 					block.args()[k] +
 					arguments[k]
 					;
 
-			lassert_dump(
-				!computeExpression(
-						block.expression(),
-						inContinuations,
-						entrypoints,
-						localVariables,
-						body
-						),
-				"root CFG expression returned a value, which makes no sense"
+			Nullable<PTXValueRepresentation> bodyVR =
+				computeExpression(
+					block.expression(),
+					inContinuations,
+					entrypoints,
+					localVariables,
+					body
+					);
+			lassert_dump(bodyVR && bodyVR->isNothing(),
+				"root CFG expression returned a value other than Nothing, which makes no sense"
 				);
 
 			}
@@ -555,6 +665,58 @@ private:
 				*entrypoints[inToCall]
 				);
 		}
+	Nullable<PTXValueRepresentation>
+		computeBinaryOpWithPointerArithmetic(
+				const NativeBinaryOpcode& opcode,
+				const NativeExpression& ptr,
+				const NativeExpression& offset,
+				const PTXValueRepresentation& ptrVal,
+				const PTXValueRepresentation& offsetVal,
+				ostringstream&	ioSideEffectStream
+				)
+	{
+	lassert(ptr.type()->isPointer());
+	const NativeType& pointedType = ptr.type()->getPointer().element();
+	string ptxInstruction;
+	@match NativeBinaryOpcode(opcode)
+			-| Add() ->> {
+				ptxInstruction =  "mad.lo";
+				}
+			-| _ ->> {
+				throw UnableToConvertToPTX(
+						"cannot perform pointer arithmetic with operator "
+						+ prettyPrintString(opcode));
+				}
+	PTXValueRepresentation outReg =
+		mRegisters.allocateValue(*ptr.type());
+	//write a comment so we can tell what is
+	//going on in the PTX string
+	ioSideEffectStream << "// "
+		<< prettyPrintString(opcode) << " on "
+		<< prettyPrintString(*ptr.type()) << " and "
+		<< prettyPrintString(*offset.type()) << "\n"
+		;
+	//write an instruction pushing this into the new value
+	ioSideEffectStream
+		<< ptxInstruction << "."
+		<< nativeTypeToPTXType(
+				*ptr.type(),
+				isByteInstruction(opcode)
+				)
+		<< "\t"
+		//write the target register
+		<< outReg.getAtom().registerName() << ", "
+		<< offsetVal.toString() << ", "
+		<< pointedType.alignedSize() << "U" << ", "
+		<< ptrVal.toString()
+		<< ";\n"
+		;
+
+	//the output register is the relevant one
+	return null() << outReg;
+
+	}
+
 	//compute the PTX text representation of an expression
 	//given the environment in which the expression is being
 	//evaluated.  Returns 'null()' if the expression doesn't
@@ -659,6 +821,10 @@ private:
 						);
 					}
 			-| Variable(v) ->> {
+					Nullable<const PTXValueRepresentation&> varRep = inLocalVariables[v];
+					if (!varRep)
+						throw UnableToConvertToPTX(
+								"unknown variable :" + prettyPrintString(v));
 					return null() << *inLocalVariables[v];
 					}
 			-| DiscardFirst(e1, e2) ->> {
@@ -697,9 +863,9 @@ private:
 						"no sense.");
 
 					return null() << PTXValueRepresentation::Tuple(
-						*inNativeExpression.type(),
-						vals
-						);
+							*inNativeExpression.type(),
+							vals
+							);
 					}
 			-| Zero(Nothing()) ->> {
 					return null() << PTXValueRepresentation::Nothing();
@@ -815,9 +981,16 @@ private:
 					lassert(false);
 					}
 
-				//not a constant expression. allocate a register for the
-				//output
+				// detect and deal with pointer arithmetic
+				if (lhs.type()->isPointer() && rhs.type()->isInteger())
+					return computeBinaryOpWithPointerArithmetic(
+							opcode, lhs, rhs, *lhsVal, *rhsVal, ioSideEffectStream);
+				else if (rhs.type()->isPointer() && lhs.type()->isInteger())
+					return computeBinaryOpWithPointerArithmetic(
+							opcode, rhs, lhs, *rhsVal, *lhsVal, ioSideEffectStream);
 
+				//not a constant expression nor pointer arithmetic.
+				// allocate a register for the output
 				PTXValueRepresentation outReg =
 					mRegisters.allocateValue(*inNativeExpression.type());
 
@@ -919,7 +1092,7 @@ private:
 
 				ioSideEffectStream
 					//write the target register
-					<< " " << outReg.getAtom().registerName()
+					<< "\t" << outReg.getAtom().registerName()
 					//write the lhs value
 					<< ", " << lhsVal->toString()
 					<< ", " << rhsVal->toString()
@@ -1139,7 +1312,7 @@ private:
 					return sourceVal;
 
 				PTXValueRepresentation result = *sourceVal;
-				for (long k = 0; k < args.size();k++)
+				for (long k = 0; k < args.size(); k++)
 					@match PTXValueRepresentation(result)
 						-| Tuple(nt, vals) ->> {
 							result = vals[args[k]];
@@ -1280,13 +1453,15 @@ private:
 
 				//for each handler, allocate a value and a block
 				ImmutableTreeVector<PTXContinuationRepresentation> conts;
-				for (long k = 0; k < handlers.size();k++)
+				for (long k = 0; k < handlers.size(); k++)
+					{
+					auto varP = inLocalVariables[handlers[k].var()];
 					conts = conts +
 						PTXContinuationRepresentation(
-							mRegisters.allocateValue(subCFG.returnTypes()[k]),
+							(varP) ? *varP : mRegisters.allocateValue(subCFG.returnTypes()[k]),
 							allocateBlockName("exit_")
 							);
-
+					}
 				//evalue the body
 				pair<string, PTXEntrypointRepresentation>
 					body = computeBody(
@@ -1296,7 +1471,7 @@ private:
 									);
 
 				//copy our args into the target
-				for (long k = 0; k < args.size();k++)
+				for (long k = 0; k < args.size(); k++)
 					copyFromPTXToPTX(argVals[k], body.second.inputRegisters()[k],
 						ioSideEffectStream);
 
@@ -1327,7 +1502,7 @@ private:
 							);
 						}
 
-					return null();
+					return null() << PTXValueRepresentation::Nothing();
 					}
 					else
 					{
@@ -1338,7 +1513,7 @@ private:
 
 					string	rejoinBlockName = allocateBlockName("rejoin");
 
-					for (long k = 0; k < conts.size();k++)
+					for (long k = 0; k < conts.size(); k++)
 						{
 						ioSideEffectStream << conts[k].targetBlock() << ":\n";
 
@@ -1347,11 +1522,14 @@ private:
 								handlers[k].expression(),
 								inContinuations,
 								inEntrypoints,
-								inLocalVariables +
-									handlers[k].var() +
-									conts[k].targetRegisters(),
+								inLocalVariables[handlers[k].var()] ?
+										inLocalVariables :
+										inLocalVariables +
+											handlers[k].var() +
+											conts[k].targetRegisters(),
 								ioSideEffectStream
 								);
+
 						if (resVal)
 							{
 							copyFromPTXToPTX(*resVal, outReg,
@@ -1397,10 +1575,9 @@ private:
 					<< inEntrypoints[loc]->targetBlock()
 					<< ";\n";
 
-				return null();
+				return null() << PTXValueRepresentation::Nothing();
 				}
 			-| Return(exit, val) ->> {
-
 				Nullable<PTXValueRepresentation> res =
 					computeExpression(val,
 						inContinuations,
@@ -1424,7 +1601,48 @@ private:
 					<< ";\n"
 					;
 
-				return null();
+				return null() << PTXValueRepresentation::Nothing();
+				}
+			-| Store(address, value) ->> {
+				Nullable<PTXValueRepresentation> addrRep =
+					computeExpression(address,
+						inContinuations,
+						inEntrypoints,
+						inLocalVariables,
+						ioSideEffectStream
+						);
+				if (!addrRep)
+					return addrRep;
+
+				Nullable<PTXValueRepresentation> valRep =
+					computeExpression(value,
+						inContinuations,
+						inEntrypoints,
+						inLocalVariables,
+						ioSideEffectStream
+						);
+				if (!valRep)
+					return valRep;
+
+				auto stores = writeValueToPointerFromRegisters(*addrRep, *valRep);
+				ioSideEffectStream << stores;
+				return null() << PTXValueRepresentation::Nothing();
+				}
+			-| Load(address, isVolatile) ->> {
+				PTXValueRepresentation valRep =
+						mRegisters.allocateValue(*inNativeExpression.type());
+
+				Nullable<PTXValueRepresentation> addrRep =
+					computeExpression(address,
+						inContinuations,
+						inEntrypoints,
+						inLocalVariables,
+						ioSideEffectStream
+						);
+
+				auto loads = loadValueFromPointerIntoRegisters(*addrRep, valRep);
+				ioSideEffectStream << loads;
+				return null() << valRep;
 				}
 			-| _ ->> {
 				throw UnableToConvertToPTX("Invalid native expression: " +
@@ -1451,7 +1669,7 @@ private:
 					lassert(destVal.isAtom());
 
 					ioSideEffectStream
-						<< "mov." << destVal.getAtom().ptxType() << " "
+						<< "mov." << destVal.getAtom().ptxType() << "\t\t"
 						<< destVal.toString() << ", "
 						<< sourceVal.toString()
 						<< ";\n";
@@ -1472,7 +1690,7 @@ private:
 					if (destAtom.registerName().compare(sourceAtom.registerName()))
 						{
 						ioSideEffectStream
-							<< "mov." << destAtom.ptxType() << " "
+							<< "mov." << destAtom.ptxType() << "\t\t"
 							<< destAtom.registerName() << ", "
 							<< sourceAtom.registerName()
 							<< ";\n";
