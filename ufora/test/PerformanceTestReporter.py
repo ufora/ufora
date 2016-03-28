@@ -157,3 +157,15 @@ def getCurrentStackframeFileAndLine(framesAbove):
         'line': inspect.getsourcelines(twoAbove)[1]
         }
 
+class RecordAsPerfTest:
+    def __init__(self, name):
+        self.name = name
+        self.t0 = None
+
+    def __enter__(self, *args, **kwds):
+        self.t0 = time.time()
+
+    def __exit__(self, type, value, traceback):
+        if type is None:
+            recordTest(self.name, time.time() - self.t0, {})
+
