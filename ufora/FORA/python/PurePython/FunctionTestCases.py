@@ -431,4 +431,20 @@ class FunctionTestCases(object):
 
             self.assertEqual(res, (3,2,1))
 
+    def test_new_calling_convention_7(self):
+        def f(x, y):
+            return x + y
 
+        def h():
+            return f(y=3,x=1)
+
+        self.equivalentEvaluationTest(h)
+
+    def test_new_calling_convention_8(self):
+        def f(x, y=1):
+            return x + y
+
+        def h():
+            return f(y=3,x=1)
+
+        self.equivalentEvaluationTest(h)
