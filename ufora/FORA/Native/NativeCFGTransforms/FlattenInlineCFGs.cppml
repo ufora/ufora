@@ -1,0 +1,283 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "FlattenInlineCFGs.hppml"
+#include "../NativeCode.hppml"
+#include "RenameVariables.hppml"
+#include "../../../core/cppml/CPPMLTransform.hppml"
+#include "../../../core/Logging.hpp"
+
+namespace NativeCFGTransforms {
+
+class MapInnerBlockBody {
+public:
+	MapInnerBlockBody(
+				const std::map<NativeBlockID, NativeBlockID>& blockMap,
+				ImmutableTreeVector<NativeVariable> variablesToPassAround,
+				const std::vector<NativeBlockID>& blocksForContinuations,
+				ImmutableTreeVector<NativeContinuationMetadata> meta
+				) : 
+			mBlockMap(blockMap),
+			mVariablesToPassAround(variablesToPassAround),
+			mBlocksForContinuations(blocksForContinuations),
+			mMetadata(meta)
+		{
+		}
+
+	template<class T>
+	Nullable<T> processDown(const T& t, bool& ioContinue) const
+		{
+		return null();
+		}
+
+	Nullable<NativeExpression> processDown(const NativeExpression& t, bool& ioContinue) const
+		{
+		@match NativeExpression(t)
+			-|	Continuations(conts, metas) ->> {
+				ioContinue = false;
+				return null() << NativeExpression::Continuations(
+					::transform(conts, *this),
+					mMetadata + metas
+					);
+				}
+			-|	Call(callTarget, returnConts, args, metas) ->> {
+				ioContinue = false;
+				return null() << NativeExpression::Call(
+					callTarget,
+					transform(returnConts, *this),
+					transform(args, *this),
+					mMetadata + metas
+					);
+				}
+			-| Return(exitNo, expr) ->> {
+				ioContinue = false;
+				return null() << NativeExpression::Jump(
+					mBlocksForContinuations[exitNo],
+					mapITV(mVariablesToPassAround, [&](NativeVariable v) { return v.expr(); }) + 
+						transform(expr, *this)
+					);
+				}
+			-| Jump(otherBlock, exprs) ->> {
+				ioContinue = false;
+				auto it = mBlockMap.find(otherBlock);
+				lassert(it != mBlockMap.end());
+
+				NativeBlockID target = it->second;
+
+				return null() << NativeExpression::Jump(
+					target,
+					mapITV(mVariablesToPassAround, [&](NativeVariable v) { return v.expr(); }) + 
+						transform(exprs, *this)
+					);
+				}
+			-| _ ->> {
+				}
+				
+		return null();
+		}
+	
+	template<class T>
+	Nullable<T> processUp(const T& t) const
+		{
+		return null();
+		}
+
+
+private:
+	const std::map<NativeBlockID, NativeBlockID>& mBlockMap;
+
+	ImmutableTreeVector<NativeVariable> mVariablesToPassAround;
+	
+	const std::vector<NativeBlockID>& mBlocksForContinuations;
+
+	ImmutableTreeVector<NativeContinuationMetadata> mMetadata;
+};
+
+class FlattenInlineChildCFGsTransformer {
+public:
+	template<class T>
+	Nullable<T> processDown(const T& t, bool& ioContinue) const
+		{
+		return null();
+		}
+	
+	template<class T>
+	Nullable<T> processUp(const T& t) const
+		{
+		return null();
+		}
+
+	Nullable<NativeExpression> processDown(const NativeExpression& e, bool& ioContinue) const
+		{
+		@match NativeExpression(e)
+			-| Call(Inline(subCFG, block), handlers, args, meta) ->> {
+				return null() << NativeExpression::Call(
+					NativeCallTarget::Inline(
+						flattenInlineCFGs(subCFG),
+						block
+						),
+					::transform(handlers, *this),
+					::transform(args, *this),
+					::transform(meta, *this)
+					);
+				}
+			-| _ ->> {
+				return null();
+				}
+		}
+};
+
+class FlattenInlineCFGs {
+	map<NativeBlockID, NativeBlock> mBlocks;
+	mutable map<NativeBlockID, NativeBlock> mNewBlocks;
+public:
+	FlattenInlineCFGs(const NativeCFG& inCFG) : mCFG(inCFG)
+		{
+		//first transform any child CFGs so that they are completely flat
+		for (auto blockIdAndBlock: mCFG.blocks())
+			mBlocks[blockIdAndBlock.first] = ::transform(blockIdAndBlock.second, FlattenInlineChildCFGsTransformer());
+
+		//then inline any call sites as needed
+		for (auto& blockIdAndBlock: mBlocks)
+			blockIdAndBlock.second = ::transform(blockIdAndBlock.second, *this);
+
+		mCFG.blocks() = 
+			ImmutableTreeMap<NativeBlockID, NativeBlock>(mBlocks.begin(), mBlocks.end()) + 
+			ImmutableTreeMap<NativeBlockID, NativeBlock>(mNewBlocks.begin(), mNewBlocks.end())
+			;
+		}
+
+	NativeCFG result()
+		{
+		return mCFG;
+		}
+
+	template<class T>
+	Nullable<T> processDown(const T& t, bool& ioContinue) const
+		{
+		return null();
+		}
+	
+	template<class T>
+	Nullable<T> processUp(const T& t) const
+		{
+		return null();
+		}
+
+	Nullable<NativeType> processDown(const NativeType& t, bool& b) const 
+		{
+		b = false;
+		return null(); 
+		}
+		
+	Nullable<NativeExpression> processDown(
+							const NativeExpression& t,
+							bool& ioContinue
+							) const
+		{
+		@match NativeExpression(t)
+			-|	Call(Inline(subCFG, block), continuations, args, meta) ->> {
+				if (t.type())
+					{
+					//there's no simple way to deconstruct these and it's not really necessary
+					//the problem is that we would have to be able to bundle up the code in the
+					//expressions around this one as a continuation that we could jump to, which 
+					//requires a complex transformation.
+					ioContinue = false;
+					return null();
+					}
+
+				//make a block map
+				map<NativeBlockID, NativeBlockID> blockMap;
+
+				for (auto blockAndDef: subCFG.blocks())
+					blockMap[blockAndDef.first] = NativeBlockID::internal();
+
+				std::vector<NativeBlockID> blockForContinuation;
+				for (auto c: continuations)
+					blockForContinuation.push_back(NativeBlockID::internal());
+
+				//every variable that's free in subCFG needs to be passed around through 
+				//all the blocks
+				//as does every variable in the current frame that's used by each continuation
+				std::set<NativeVariable> variablesToPassAround;
+				for (auto v: subCFG.freeVariables())
+					variablesToPassAround.insert(v);
+
+				for (auto c: continuations)
+					for (auto v: c.freeVariables())
+						variablesToPassAround.insert(v);
+
+				ImmutableTreeVector<NativeVariable> variablesToPassAroundVec;
+				for (auto v: variablesToPassAround)
+					variablesToPassAroundVec = variablesToPassAroundVec + v;
+
+				for (long contIx = 0; contIx < continuations.size(); contIx++)
+					{
+					auto c = continuations[contIx];
+
+					//each continuation becomes a block of its own
+					mNewBlocks[blockForContinuation[contIx]] = 
+						renameVariables(
+							NativeBlock(
+								variablesToPassAroundVec + c.var(),
+								c.expression()
+								)
+							);
+					}
+
+				for (auto blockAndDef: subCFG.blocks())
+					{
+					mNewBlocks[blockMap[blockAndDef.first]] = 
+						renameVariables(
+							NativeBlock(
+								variablesToPassAroundVec + blockAndDef.second.args(),
+								::transform(
+									blockAndDef.second.expression(), 
+									MapInnerBlockBody(
+										blockMap,
+										variablesToPassAroundVec,
+										blockForContinuation, 
+										meta
+										)
+									)
+								)
+							);
+					}
+
+				return null() << NativeExpression::Jump(
+					blockMap[block],
+					mapITV(variablesToPassAround, [&](NativeVariable v) { return v.expr(); }) + args
+					);
+				}
+			-|	_ ->> {
+				return null();
+				}
+			;
+		}
+private:
+	NativeCFG mCFG;
+};
+
+
+NativeCFG flattenInlineCFGs(const NativeCFG& inCFG)
+	{
+	FlattenInlineCFGs flattener(inCFG);
+
+	return flattener.result();
+	}
+
+}
+
