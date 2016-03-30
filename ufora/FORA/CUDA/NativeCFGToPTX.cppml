@@ -273,16 +273,26 @@ private:
 				);
 
 		//exactly one of the inputs should be not "Nothing"
-		Nullable<uint32_t> inputIndex;
+		Nullable<uint32_t> inputIndex, closureIndex;
 		uint32_t inCFGArgsSize = inCFG[NativeBlockID::entry()].args().size();
 		for (long k = 0; k < inCFGArgsSize; k++)
 			if (!inCFG[NativeBlockID::entry()].args()[k].type().isNothing())
 				{
 				if (inputIndex)
-					throw UnableToConvertToPTX(
-						"function has multiple arguments"
-						);
+					{
+					if (closureIndex)
+						{
+						throw UnableToConvertToPTX(
+							"function has multiple arguments"
+							);
+						}
 					else
+						{
+						closureIndex = inputIndex;
+						inputIndex = k;
+						}
+					}
+				else
 					inputIndex = k;
 				}
 		if (!inputIndex)
@@ -301,18 +311,26 @@ private:
 					exitBlockName
 					);
 
+		NativeType	closureType = (closureIndex) ?
+					inCFG[NativeBlockID::entry()].args()[*closureIndex].type() :
+					NativeType::Nothing();
+		NativeVariable closureVar = NativeVariable::Temp(closureType);
+		NativeVariable closurePtr = NativeVariable::Temp(closureType.ptr());
+
 		NativeType offsetType = NativeType::uint64();
 		NativeVariable inputVar = NativeVariable::Temp(inputType);
 		NativeVariable outputVar = NativeVariable::Temp(outputType);
 		NativeVariable inputPtr = NativeVariable::Temp(inputType.ptr());
 		NativeVariable outputPtr = NativeVariable::Temp(outputType.ptr());
-		NativeVariable offset = NativeVariable::Temp(offsetType);
+		NativeVariable offsetVar = NativeVariable::Temp(offsetType);
 
 		ImmutableTreeVector<NativeExpression> args = emptyTreeVec();
 		for (long k = 0; k < inCFGArgsSize; k++)
 			{
 			if (k == *inputIndex)
 				args = args + inputVar.expr();
+			else if (closureIndex && k == *closureIndex)
+				args = args + closureVar.expr();
 			else
 				args = args + inCFG[NativeBlockID::entry()].args()[k].expr();
 			}
@@ -328,7 +346,7 @@ private:
 							NativeExpression::BinaryOp(
 									NativeBinaryOpcode::Add(),
 									inputPtr.expr(),
-									offset.expr()
+									offsetVar.expr()
 									)
 							, false
 							),
@@ -344,7 +362,7 @@ private:
 								NativeExpression::BinaryOp(
 										NativeBinaryOpcode::Add(),
 										outputPtr.expr(),
-										offset.expr()
+										offsetVar.expr()
 										),
 								outputVar.expr()
 								)
@@ -353,15 +371,26 @@ private:
 				NativeExpression::Return(0, NativeConstant::Nothing().expr())
 			);
 
+		auto wrappedCFGArgs = inCFG[NativeBlockID::entry()].args() + inputPtr + outputPtr + offsetVar;
+		if (closureIndex)
+			{
+			nexp =
+					NativeExpression::Let(
+						closureVar,
+						NativeExpression::Load(closurePtr.expr(), false),
+						nexp
+						);
+			wrappedCFGArgs = wrappedCFGArgs + closurePtr;
+			}
 		NativeCFG wrappedCFG =
 				NativeCFG(
 						emptyTreeVec(),
-						inCFG[NativeBlockID::entry()].args() + inputPtr + outputPtr + offset,
+						wrappedCFGArgs,
 						nexp,
 						"wrappedCUDANativeCFG"
 						);
 
-
+		LOG_DEBUG << "wrappedCFG::\n\n" << prettyPrintString(wrappedCFG);
 		pair<string, PTXEntrypointRepresentation>
 				body = computeBody(	wrappedCFG,
 									NativeBlockID::entry(),
@@ -379,12 +408,18 @@ private:
 
 		result
 				<<	".entry " << inEntryFunctionName << " (\n"
-				<<	"\t\t.param .u64 inputPtr,\n"
+				;
+//		if (closureIndex)
+			result << "\t\t.param .u64 closurePtr,\n";
+
+		result  <<	"\t\t.param .u64 inputPtr,\n"
 				<<	"\t\t.param .u64 outputPtr,\n"
 				<<	"\t\t.param .u32 N)\n"
 				<<	"{\n";
 
 		result << mRegisters.registerAllocationString();
+		if (closureIndex)
+			result << ".reg		.u64		reg_closurePtr;\n";
 
 		result	<<	".reg		.u64		reg_inputPtr;\n"
 				<<	".reg		.u64		reg_outputPtr;\n"
@@ -396,24 +431,21 @@ private:
 				<<	".reg		.u32		i;\n"
 				<<	".reg		.u32		i_temp;\n"
 				<<	".reg		.u64		i64;\n"
-				<<	".reg		.u64		inputPtrOffset;\n"
-				<<	".reg		.u64		inputPtrIndividual;\n"
-				<<	".reg		.u64		outputPtrOffset;\n"
-				<<	".reg		.u64		outputPtrIndividual;\n"
-
 
 				//load the relevant environment values into registers
 				<<	"mov.u32		numthreads, %ntid.x;\n"
 				<<	"mov.u32		blockX, %ctaid.x;\n"
 				<<	"mov.u32		threadID, %tid.x;\n"
-				<<	"ld.param.u32	reg_N, [N];\n"
-				<<	"ld.param.u64	reg_inputPtr, [inputPtr];\n"
-				<<	"ld.param.u64	reg_outputPtr, [outputPtr];\n"
-
+				;
+		if (closureIndex)
+			result << "ld.param.u64		reg_closurePtr, [closurePtr];\n";
+		result
+				<<	"ld.param.u32		reg_N, [N];\n"
+				<<	"ld.param.u64		reg_inputPtr, [inputPtr];\n"
+				<<	"ld.param.u64		reg_outputPtr, [outputPtr];\n"
 				//compute 'i', the particular position we're in
 				<<	"mul.lo.u32		i_temp,	numthreads,	blockX;\n"
 				<<	"add.u32		i, i_temp, threadID;\n"
-
 				//check whether 'i' is less than 'N' and exit if not
 				<<	"cvt.u64.u32		i64,		i;\n"
 				<<	"setp.ge.u32		validApplyPredicate, i, reg_N;\n"
@@ -421,6 +453,7 @@ private:
 
 				//this is a valid 'i', so we should execute the client code
 				;
+
 		copyFromPTXToPTX(
 				PTXValueRepresentation::Atom(inputType.ptr(), "u64", "reg_inputPtr"),
 				body.second.inputRegisters()[inCFGArgsSize],
@@ -436,6 +469,14 @@ private:
 				body.second.inputRegisters()[inCFGArgsSize+2],
 				result
 				);
+		if (closureIndex)
+			{
+			copyFromPTXToPTX(
+					PTXValueRepresentation::Atom(closureType.ptr(), "u64", "reg_closurePtr"),
+					body.second.inputRegisters()[inCFGArgsSize+3],
+					result
+					);
+			}
 		//now branch into the continuation. this is unnecessary (Because
 		//we'll flow right into it) but we leave it in so that when
 		//we expand the code generator it'll be consistent
@@ -454,6 +495,7 @@ private:
 
 		//finish it off
 		result << "}\n";
+		LOG_DEBUG << "PTX:\n\n" << result.str();
 
 		mResult = result.str();
 		}

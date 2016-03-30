@@ -19,11 +19,12 @@ import ufora.cumulus.test.InMemoryCumulusSimulation as InMemoryCumulusSimulation
 import ufora.test.PerformanceTestReporter as PerformanceTestReporter
 import math
 
+
 class GpuTestCases:
-    def compareCudaToCPU(self, funcExpr, vecExpr):
+    def compareCudaToCPU(self, funcExpr, vecExpr, captureExpr=""):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
 
-        text = """
+        text = captureExpr + """
             let f = __funcExpr__;
             let i = __vecExpr__;
             let cuda = `CUDAVectorApply(f, [i])[0];
@@ -39,27 +40,22 @@ class GpuTestCases:
         self.assertIsNotNone(res)
         self.assertTrue(res.isResult(), "Failed with %s on %s: %s" % (funcExpr, vecExpr, res))
 
-
     def test_cuda_read_tuples(self):
         self.compareCudaToCPU("fun((a,b)) { (b,a) }", "(1,2)")
         self.compareCudaToCPU("fun((a,b)) { b + a }", "(1,2)")
         self.compareCudaToCPU("fun((a,b)) { b + a }", "(1s32,2s32)")
         self.compareCudaToCPU("fun(b) { b + 1s32 }", "2")
-
         self.compareCudaToCPU("math.log", "2")
-
 
     def test_cuda_tuple_alignment(self):
         self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "(1s32,2,2s32)")
         self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "(1u32,2,2s32)")
         self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "(1u16,2s32,2)")
-
         self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "(10.0f32, 2.0, 2)")
         self.compareCudaToCPU(
                 "fun((a,b,c,d,e,f)) { a+b+c+d+e+f }",
                 "(2u16, 3s32, 4s64, 5.0f16, 6.0f32, 7.0f64)"
                 )
-
 
     def test_cuda_conversions(self):
         s_integers = ["2s16", "3s32", "4s64", "5"]
@@ -75,6 +71,22 @@ class GpuTestCases:
                             "(" + n1 + ", " + n2 + ")"
                             )
 
+    def test_closure(self):
+        captureExpr = """
+                let capT = (3s32, 4s64, 5s32);
+                let cap64 = 9s64;"""
+        functionExpr = """
+                fun(ct) {
+                let res = 0
+                let x = 0
+                while (x < ct)
+                    {
+                    x = x + 1
+                    res = res + x + cap64 + capT[0] + capT[1] + capT[2]
+                    }
+                res
+                }"""
+        self.compareCudaToCPU(functionExpr, "1", captureExpr)
 
     def check_precision_of_function_on_GPU(self, function, input):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()

@@ -1,5 +1,5 @@
 /***************************************************************************
-    Copyright 2015 Ufora Inc.
+    Copyright 2015,2016 Ufora Inc.
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -15,12 +15,22 @@
 ****************************************************************************/
 #pragma once
 
+#include "../../core/containers/ImmutableTreeSet.hppml"
 #include "../../core/IntegerTypes.hpp"
-class Type;
 
-uword_t alignedOffset(const Type& t, uword_t unalignedOffset);
+class ImplValContainer;
+class MemoryPool;
 
-void copyAlignedToPacked(const Type& typ, uint8_t* alignedData, uint8_t* packedData);
 
-void copyPackedToAligned(const Type& typ, uint8_t* packedData, uint8_t* alignedData);
+class AlignmentManager {
+public:
+	AlignmentManager(bool freeAllocatedMemoryOnDestroy=true);
+	~AlignmentManager();
 
+	uint8_t* getHandleToAlignedData(const ImplValContainer& value);
+
+private:
+	ImmutableTreeSet<uint8_t*> mManagedMemory;
+	MemoryPool *mPool;
+	bool mFreeOnDestroy;
+};

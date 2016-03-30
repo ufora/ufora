@@ -17,6 +17,7 @@
 #include "CUDAExecutionContext.hppml"
 #include "NativeCFGToPTX.hppml"
 #include "../Core/Alignment.hpp"
+#include "../Core/AlignmentManager.hpp"
 #include "../Core/ExecutionContext.hppml"
 #include "../Core/MemoryPool.hpp"
 #include "../Core/ImplValContainerUtilities.hppml"
@@ -213,6 +214,8 @@ public:
 		}
 
 	void executeFunction(	std::string inModuleName,
+							void* inClosureData,
+							uword_t inClosureSize,
 							void* inSourceData,
 							void* inDestData,
 							uword_t inN,
@@ -221,14 +224,23 @@ public:
 							)
 		{
 		CUcontext contextToUse = mUnusedContexts.get();
-
 		try {
 			cuCtxSetCurrent(contextToUse);
 
+			CUdeviceptr d_closureData;
 			CUdeviceptr d_sourceData;
 			CUdeviceptr d_destData;
 
-			CUresult error = cuMemAlloc(&d_sourceData, inSourceElementSize * inN);
+			CUresult error;
+			if (inClosureSize > 0)
+				{
+				error = cuMemAlloc(&d_closureData, inClosureSize);
+				throwOnError("Allocate Closure Memory", error);
+				error = cuMemcpyHtoD(d_closureData, inClosureData, inClosureSize);
+				throwOnError("Copy CUDA memory from source to host", error);
+				}
+
+			error = cuMemAlloc(&d_sourceData, inSourceElementSize * inN);
 			throwOnError("Allocate Source Memory", error);
 
 			error = cuMemAlloc(&d_destData, inDestElementSize * inN);
@@ -244,7 +256,7 @@ public:
 			int threadsPerBlock = 1024;
 			int blocksPerGrid   = (inN + threadsPerBlock - 1) / threadsPerBlock;
 
-			void *args[] = { &d_sourceData, &d_destData, &inN };
+			void *args[] = { &d_closureData, &d_sourceData, &d_destData, &inN };
 
 			// Launch the CUDA kernel
 			error = cuLaunchKernel( functionNameForModule(contextToUse, inModuleName),
@@ -254,7 +266,6 @@ public:
 									NULL, args, NULL);
 
 			lassert_dump(error == CUDA_SUCCESS, "UNKNOWN CUDA ERROR");
-
 			//copy to target
 			error = cuMemcpyDtoH(	inDestData,
 									d_destData,
@@ -262,6 +273,8 @@ public:
 									);
 
 			//free cuda memory
+			if (inClosureSize > 0)
+				cuMemFree(d_closureData);
 			cuMemFree(d_sourceData);
 			cuMemFree(d_destData);
 
@@ -364,9 +377,12 @@ ImplValContainer    createFORAVector(
 
 ImplValContainer	CUDAExecutionContext::executeKernel(
 						const std::string&	inKernelName,
+						ImplValContainer	inApplyObject,
 						ImplValContainer	inSourceVector
 						)
 	{
+
+	Type closureType = inApplyObject.type();
 	Type outputElementType;
 	Type inputElementType;
 
@@ -374,13 +390,16 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 		boost::recursive_mutex::scoped_lock lock(mMutex);
 
 		//verify that this kernel exists
-		lassert_dump(mInputOutputTypesByName.find(inKernelName) != mInputOutputTypesByName.end(), "used kernel " <<
-				inKernelName << " without definining it.");
+		lassert_dump(
+				mInputOutputTypesByName.find(inKernelName) != mInputOutputTypesByName.end(),
+				"used kernel " << inKernelName << " without definining it."
+				);
 
 		outputElementType = mInputOutputTypesByName[inKernelName].second;
 		inputElementType = mInputOutputTypesByName[inKernelName].first;
 		}
 
+	lassert(inApplyObject.type().isClass());
 	lassert(inSourceVector.type().isVector());
 
 	TypedFora::Abi::VectorRecord sourceVectorHandle = inSourceVector.cast<TypedFora::Abi::VectorRecord>();
@@ -409,7 +428,7 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 	MemoryPool* pool = ExecutionContext::currentExecutionContext()->getMemoryPool();
 
 	if (!pool->permitAllocation(
-				outputElementType.size() * elementCount
+				outputElementType.alignedSize() * elementCount
 				)
 			)
 		return ImplValContainer(
@@ -420,24 +439,18 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 
 
 	//create a aligned vectors
-	uint8_t* rawInVecData;
+	AlignmentManager alignMgr;
+	uint8_t* rawClosureData = alignMgr.getHandleToAlignedData(inApplyObject);
+	uint8_t* rawInVecData   = alignMgr.getHandleToAlignedData(inSourceVector);
+
 	uint8_t* rawOutVecData = pool->allocate(outputElementType.alignedSize() * elementCount);
 
-	if (inputElementType.alignedSize() != inputElementType.size())
-		{
-		rawInVecData = pool->allocate(inputElementType.alignedSize() * elementCount);
-		uint8_t* alignedData = rawInVecData;
-		uint8_t* packedData  = sourceVectorHandle.dataPtr()->unpagedValues()->offsetFor(0);
-		for (long k = 0; k < elementCount; ++k)
-			{
-			copyPackedToAligned(
-					inputElementType,
-					packedData,
-					alignedData);
-			}
-		}
-	else
-		rawInVecData = sourceVectorHandle.dataPtr()->unpagedValues()->offsetFor(0);
+	if (!rawOutVecData || !rawInVecData || (!rawClosureData && inApplyObject.type().size() > 0))
+		return ImplValContainer(
+			CSTValue::blankOf(
+				Type::Vector()
+				)
+			);
 
 	try	{
 		lassert(sourceVectorHandle.dataPtr()->unpagedValues());
@@ -445,6 +458,8 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 
 		mCUDAState->executeFunction(
 			inKernelName,
+			rawClosureData,
+			closureType.alignedSize(),
 			rawInVecData,
 			rawOutVecData,
 			elementCount,
@@ -517,15 +532,7 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 		}
 
 	JudgmentOnValue	funJOV =
-		JudgmentOnValue::Constant(inApplyObject.getReference());
-
-	if (!funJOV.constant())
-		{
-		throw UnableToConvertToPTX(
-			prettyPrintString(inApplyObject)
-				+ " can't be converted to a constant JOV.");
-		}
-
+		JudgmentOnValue::Constant(inApplyObject.getReference()).relaxedJOV();
 
 	string kernelName = "CUDA_" + hashToString(funJOV.hash() + vecElementType.hash());
 
@@ -622,5 +629,5 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 			}
 		}
 
-	return executeKernel(kernelName, inSourceVector);
+	return executeKernel(kernelName, inApplyObject, inSourceVector);
 	}
