@@ -55,17 +55,24 @@ public:
 	bool flushToDisk();
 
 private:
+	fs::path getFreshMapFile();
 	pair<fs::path, fs::path> getFreshStoreFilePair();
 
 	bool loadDataFromDisk(const fs::path& file);
 
 	shared_ptr<vector<char> > loadAndValidateFile(const fs::path& file);
 
+	template<class Key, class Value>
+	bool serializeAndStoreMap(	const map<Key, Value>& map,
+								const fs::path& file,
+								bool justTheIndex=false);
+
 	bool checksumAndStore(const NoncontiguousByteBlock& data, fs::path file);
 
-	void initializeStoreIndexes();
-
+	void initializeStoreIndex();
 	bool initializeStoreIndex(const fs::path& rootDir, const fs::path& file);
+	bool initializeMap(const fs::path& rootDir, const fs::path& mapFile);
+	bool initializeMap();
 
 	bool tryRebuildIndexFromData(
 			const fs::path& rootDir,
@@ -73,12 +80,6 @@ private:
 			const fs::path& dataFile);
 
 	void validateIndex();
-
-	template<class T>
-	bool saveIndexToDisk(const fs::path& file, const T& index) const;
-
-	template<class T>
-	bool initializeIndex(const fs::path& file, T& index);
 
 	void cleanUpLocationIndex(const fs::path& problematicDataFile);
 
@@ -89,7 +90,6 @@ private:
 
 	// Paths
 	const fs::path mBasePath;
-	fs::path mMapFile;
 
 	// Maps. FIXME: switch to using hash-maps
 	// \brief (CompilerMapKey -> ControlFlowGraph_ObjectIdentifier) map
@@ -109,9 +109,11 @@ private:
 
 	////////////////////////////////////////////////////////////
 	// CONSTANTS
-	static const string INDEX_EXTENSION;
-	static const string DATA_EXTENSION;
+	static const string INDEX_FILE_EXTENSION;
+	static const string DATA_FILE_EXTENSION;
 	static const string STORE_FILE_PREFIX;
+	static const string MAP_FILE_PREFIX;
+	static const string MAP_FILE_EXTENSION;
 
 public:
 	static Nullable<fs::path> getDataFileFromIndexFile(const fs::path& indexFile);

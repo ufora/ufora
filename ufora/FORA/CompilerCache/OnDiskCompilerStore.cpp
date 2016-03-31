@@ -28,9 +28,11 @@
 #include <fcntl.h>
 
 
-const string OnDiskCompilerStore::INDEX_EXTENSION = ".idx";
-const string OnDiskCompilerStore::DATA_EXTENSION = ".dat";
+const string OnDiskCompilerStore::INDEX_FILE_EXTENSION = ".idx";
+const string OnDiskCompilerStore::DATA_FILE_EXTENSION = ".dat";
 const string OnDiskCompilerStore::STORE_FILE_PREFIX = "CompilerStore";
+const string OnDiskCompilerStore::MAP_FILE_PREFIX = "ClassMediatorToCFG";
+const string OnDiskCompilerStore::MAP_FILE_EXTENSION = ".map";
 
 void removeIfExists(const fs::path& file)
 	{
@@ -62,87 +64,12 @@ Nullable<fs::path> getFileWithNewExtension(
 
 Nullable<fs::path> OnDiskCompilerStore::getDataFileFromIndexFile(const fs::path& indexFile)
 	{
-	return getFileWithNewExtension(indexFile, INDEX_EXTENSION, DATA_EXTENSION);
+	return getFileWithNewExtension(indexFile, INDEX_FILE_EXTENSION, DATA_FILE_EXTENSION);
 	}
 
 Nullable<fs::path> OnDiskCompilerStore::getIndexFileFromDataFile(const fs::path& dataFile)
 	{
-	return getFileWithNewExtension(dataFile, DATA_EXTENSION, INDEX_EXTENSION);
-	}
-
-template<class T>
-bool OnDiskCompilerStore::saveIndexToDisk(const fs::path& file, const T& index) const
-	{
-	double t0 = curClock();
-
-	removeIfExists(file);
-
-	int fd = open(file.string().c_str(),  O_CREAT| O_WRONLY, S_IRUSR|S_IWUSR);
-	if (fd == -1)
-		{
-		LOG_ERROR << "Failed to open " << file.string() << ": " << strerror(errno);
-		return false;
-		}
-
-		{
-		OFileDescriptorProtocol protocol(
-			fd,
-			1,
-			1024 * 1024 * 20,
-			OFileDescriptorProtocol::CloseOnDestroy::True
-			);
-
-			{
-			OBinaryStream stream(protocol);
-
-			CompilerCacheDuplicatingSerializer serializer(stream);
-
-			serializer.serialize(index);
-			}
-
-		}
-		mPerformanceCounters.addDiskStoreTime(curClock() - t0);
-		return true;
-	}
-
-template<class T>
-bool OnDiskCompilerStore::initializeIndex(const fs::path& file, T& index)
-	{
-	if (!fs::exists(file))
-		{
-		LOG_ERROR << "file does not exist: " << file.string();
-		return false;
-		}
-
-	int fd = open(file.string().c_str(), O_RDONLY, S_IRWXU);
-	if (fd == -1)
-		{
-	    LOG_ERROR << "failed to open " << file.string() << ": " << strerror(errno);
-	    return false;
-		}
-
-	IFileDescriptorProtocol protocol(
-		fd,
-		1,
-		20 * 1024 * 1024,
-		IFileDescriptorProtocol::CloseOnDestroy::True
-		);
-		{
-		IBinaryStream stream(protocol);
-
-		CompilerCacheDuplicatingDeserializer deserializer(
-				stream,
-				MemoryPool::getFreeStorePool(),
-				PolymorphicSharedPtr<VectorDataMemoryManager>()
-				);
-
-		double t0 = curClock();
-		deserializer.deserialize(index);
-		double time = curClock() - t0;
-		mPerformanceCounters.addDiskLookupTime(time);
-		mPerformanceCounters.addDeserializationTime(time);
-		}
-	return true;
+	return getFileWithNewExtension(dataFile, DATA_FILE_EXTENSION, INDEX_FILE_EXTENSION);
 	}
 
 template<class T>
@@ -247,6 +174,9 @@ bool OnDiskCompilerStore::tryRebuildIndexFromData(
 
 bool OnDiskCompilerStore::initializeStoreIndex(const fs::path& rootDir, const fs::path& indexFile)
 	{
+	if (!fs::exists(rootDir / indexFile))
+		return false;
+
 	auto dataFile = getDataFileFromIndexFile(indexFile);
 	if (!dataFile)
 		{
@@ -299,14 +229,77 @@ bool OnDiskCompilerStore::initializeStoreIndex(const fs::path& rootDir, const fs
 	return true;
 	}
 
-void OnDiskCompilerStore::initializeStoreIndexes()
+void OnDiskCompilerStore::initializeStoreIndex()
 	{
 	vector<fs::path> indexFiles;
-	getFilesWithExtension(mBasePath, INDEX_EXTENSION, indexFiles);
+	getFilesWithExtension(mBasePath, INDEX_FILE_EXTENSION, indexFiles);
 
 	for (auto& indexFile: indexFiles)
 		{
 		initializeStoreIndex(mBasePath, indexFile);
+		}
+	}
+
+bool OnDiskCompilerStore::initializeMap(const fs::path& rootDir, const fs::path& mapFile)
+	{
+	if (!fs::exists(rootDir / mapFile))
+		return false;
+	shared_ptr<vector<char> > dataBuffer = loadAndValidateFile(rootDir/mapFile);
+	if (!dataBuffer)
+		{
+		LOG_WARN << "Failed to load compiler cache map file: " << mapFile.string();
+		removeIfExists(rootDir / mapFile);
+		return false;
+		}
+
+	char* dataPtr = &(*dataBuffer)[0];
+	IMemProtocol protocol(dataPtr, dataBuffer->size());
+
+		{
+		IBinaryStream stream(protocol);
+		CompilerCacheDuplicatingDeserializer deserializer(
+				stream,
+				MemoryPool::getFreeStorePool(),
+				PolymorphicSharedPtr<VectorDataMemoryManager>()
+				);
+		uword_t entryCount = 0;
+		deserializer.deserialize(entryCount);
+		for(int i = 0; i < entryCount; ++i)
+			{
+			CompilerMapKey key;
+			deserializer.deserialize(key);
+			ObjectIdentifier objId;
+			deserializer.deserialize(objId);
+			mMap[key] = objId;
+			}
+		}
+	return true;
+	}
+
+bool OnDiskCompilerStore::initializeMap()
+	{
+	vector<fs::path> files;
+	getFilesWithExtension(mBasePath, MAP_FILE_EXTENSION, files);
+	bool atLeastOneSucceded = false;
+	for (auto& file: files)
+		atLeastOneSucceded |= initializeMap(mBasePath, file);
+
+	return atLeastOneSucceded;
+	}
+
+fs::path OnDiskCompilerStore::getFreshMapFile()
+	{
+	static uint64_t index = 0;
+	for (; true; ++index)
+		{
+		stringstream mapSS;
+		mapSS << MAP_FILE_PREFIX << index << MAP_FILE_EXTENSION;
+		string mapFileStr;
+		mapSS >> mapFileStr;
+		fs::path mapFile(mapFileStr);
+		if (fs::exists(mBasePath / mapFile))
+			continue;
+		return mapFile;
 		}
 	}
 
@@ -316,7 +309,7 @@ pair<fs::path, fs::path> OnDiskCompilerStore::getFreshStoreFilePair()
 	for(; true; ++index)
 		{
 		stringstream dataSS;
-		dataSS << STORE_FILE_PREFIX << index << DATA_EXTENSION;
+		dataSS << STORE_FILE_PREFIX << index << DATA_FILE_EXTENSION;
 		string dataFileStr;
 		dataSS >> dataFileStr;
 		fs::path dataFile(dataFileStr);
@@ -324,14 +317,13 @@ pair<fs::path, fs::path> OnDiskCompilerStore::getFreshStoreFilePair()
 			continue;
 
 		stringstream indexSS;
-		indexSS << STORE_FILE_PREFIX << index << INDEX_EXTENSION;
+		indexSS << STORE_FILE_PREFIX << index << INDEX_FILE_EXTENSION;
 		string indexFileStr;
 		indexSS >> indexFileStr;
 		fs::path indexFile(indexFileStr);
 		if (fs::exists(mBasePath / indexFile))
 			continue;
 
-		++index;
 		return make_pair(dataFile, indexFile);
 		}
 	}
@@ -437,6 +429,37 @@ bool OnDiskCompilerStore::checksumAndStore(const NoncontiguousByteBlock& data, f
 	return true;
 	}
 
+template<class Key, class Value>
+bool OnDiskCompilerStore::serializeAndStoreMap(
+		const map<Key, Value>& map,
+		const fs::path& file,
+		bool justTheIndex)
+	{
+	ONoncontiguousByteBlockProtocol protocol;
+		{
+		OBinaryStream stream(protocol);
+		CompilerCacheDuplicatingSerializer serializer(stream);
+		uword_t entryCount = map.size();
+
+		double t0 = curClock();
+		serializer.serialize(entryCount);
+		for(auto& pair: map)
+			{
+			serializer.serialize(pair.first);
+			if (!justTheIndex)
+				serializer.serialize(pair.second);
+			}
+		mPerformanceCounters.addSerializationTime(curClock()-t0);
+		}
+	auto serializedData = protocol.getData();
+	if (!serializedData)
+		{
+		LOG_ERROR << "Failed to serialize Compiler-Cache index";
+		return false;
+		}
+	return checksumAndStore(*serializedData, file);
+	}
+
 bool OnDiskCompilerStore::flushToDisk()
 	{
 	bool noErrorSoFar = true;
@@ -458,7 +481,7 @@ bool OnDiskCompilerStore::flushToDisk()
 			double t0 = curClock();
 			serializer.serialize(mUnsavedObjectMap.size());
 
-			for (auto pair: mUnsavedObjectMap)
+			for (auto& pair: mUnsavedObjectMap)
 				{
 				const ObjectIdentifier& curId = pair.first;
 				const MemoizableObject& curObj = pair.second;
@@ -486,33 +509,23 @@ bool OnDiskCompilerStore::flushToDisk()
 		noErrorSoFar &= checksumAndStore(*serializedData, dataFile);
 
 		}
+
 	if (storedObjects)
-		{ // write .idx file
-		ONoncontiguousByteBlockProtocol protocol;
-			{
-			OBinaryStream stream(protocol);
-			CompilerCacheDuplicatingSerializer serializer(stream);
-			uword_t entryCount = storedObjects->size();
+		noErrorSoFar &= serializeAndStoreMap(*storedObjects, indexFile, true);
 
-			double t0 = curClock();
-			serializer.serialize(entryCount);
-			for(auto pair: *storedObjects)
-				{
-				const ObjectIdentifier& objId = pair.first;
-				serializer.serialize(objId);
-				}
-			mPerformanceCounters.addSerializationTime(curClock()-t0);
-			}
-		auto serializedData = protocol.getData();
-		if (!serializedData)
-			{
-			LOG_ERROR << "Failed to serialize Compiler-Cache index";
-			return false;
-			}
-		noErrorSoFar &= checksumAndStore(*serializedData, indexFile);
+	// write .map file
+	fs::path newMapFile = getFreshMapFile();
+	bool res = serializeAndStoreMap(mMap, mBasePath / newMapFile);
+	if (res)
+		{ // find and delete all other .map files
+		vector<fs::path> mapFiles;
+		getFilesWithExtension(mBasePath, MAP_FILE_EXTENSION, mapFiles);
+		for (auto& mapFile: mapFiles)
+			if (mapFile != newMapFile)
+				removeIfExists(mBasePath / mapFile);
 		}
-
-	return noErrorSoFar & saveIndexToDisk(mMapFile, mMap);
+	noErrorSoFar &= res;
+	return noErrorSoFar;
 	}
 
 OnDiskCompilerStore::OnDiskCompilerStore(fs::path inBasePath) :
@@ -521,10 +534,8 @@ OnDiskCompilerStore::OnDiskCompilerStore(fs::path inBasePath) :
 	if (!fs::exists(mBasePath))
 		fs::create_directories(mBasePath);
 
-	mMapFile = mBasePath / "CmToCfgMap.map";
-
-	initializeStoreIndexes();
-	initializeIndex(mMapFile, mMap);
+	initializeStoreIndex();
+	initializeMap();
 
 	validateIndex();
 	}
