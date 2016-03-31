@@ -94,7 +94,7 @@ class LargeDatasetBigLMTest(unittest.TestCase):
 
     def test_LargeDatasetBigLM(self):
         for mb in [10, 100, 1000, 2000, 4000, 8000, 16000, 32000]:
-            for cols in [2, 5, 10, 20, 50]:
+            for cols in [2, 10, 50]:
                 #a single thread can do a few (e.g. 6) gb/sec of dotproduct on my box
                 totalExpectedComputeSeconds = mb * cols * cols / 2 / 6
                 if totalExpectedComputeSeconds > 100:
