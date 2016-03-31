@@ -73,7 +73,7 @@ class BigboxStringPerformanceTest(unittest.TestCase):
 
         #we wish we could actually test that we achieve saturation here but we can't yet.
         text = """
-            let s = "2013-01-01 15:18:10";
+            let s = ["2013-01-01 15:18:10"][0];
 
             let doALoop = fun(x) {
                 let res = 0
@@ -129,7 +129,7 @@ class BigboxStringPerformanceTest(unittest.TestCase):
 
         #we wish we could actually test that we achieve saturation here but we can't yet.
         text = """
-            let s = "2013-01-01 15:18:10";
+            let s = ["2013-01-01 15:18:10"][0];
 
             let doALoop = fun(x) {
                 let res = 0
@@ -185,9 +185,10 @@ class BigboxStringPerformanceTest(unittest.TestCase):
 
         #we wish we could actually test that we achieve saturation here but we can't yet.
         text = """
-            let s = "2013.0";
-
             let doALoop = fun(x) {
+                //pass 's' through a vector so that the compiler can't tell what it is
+                let s = ["2013.0"][0];
+
                 let res = 0
                 for ix in sequence(x) {
                     res = res + Float64(s) + ix
@@ -197,6 +198,18 @@ class BigboxStringPerformanceTest(unittest.TestCase):
 
             Vector.range(__thread_count__) ~~ {doALoop(20000000 + _)}
             """.replace("__thread_count__", str(threads))
+
+        _, simulation = \
+            self.computeUsingSeveralWorkers(
+                "1+1",
+                s3,
+                1,
+                timeout = 240,
+                memoryLimitMb = 55 * 1024,
+                threadCount = 30,
+                returnSimulation = True,
+                useInMemoryCache = False
+                )
 
         t0 = time.time()
 
@@ -221,6 +234,79 @@ class BigboxStringPerformanceTest(unittest.TestCase):
         finally:
             simulation.teardown()
 
+
+    def stringToInt64ParsingTest(self, threads, testName):
+        s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
+
+        #we wish we could actually test that we achieve saturation here but we can't yet.
+        text = """
+            let doALoop = fun(x) {
+                //pass 's' through a vector so that the compiler can't tell what it is
+                let s = ["2013"][0];
+
+                let res = 0
+                for ix in sequence(x) {
+                    if (ix == 0)
+                        s = s + String(ix)
+
+                    res = res + Int64(s) + ix
+                    }
+                res
+                };
+
+            Vector.range(__thread_count__) ~~ {doALoop(20000000 + _)}
+            """.replace("__thread_count__", str(threads))
+
+        _, simulation = \
+            self.computeUsingSeveralWorkers(
+                "1+1",
+                s3,
+                1,
+                timeout = 240,
+                memoryLimitMb = 55 * 1024,
+                threadCount = 30,
+                returnSimulation = True,
+                useInMemoryCache = False
+                )
+
+        t0 = time.time()
+
+        _, simulation = \
+            self.computeUsingSeveralWorkers(
+                "1+1",
+                s3,
+                1,
+                timeout = 240,
+                memoryLimitMb = 55 * 1024,
+                threadCount = 30,
+                returnSimulation = True,
+                useInMemoryCache = False
+                )
+
+        try:
+            t0 = time.time()
+            result = simulation.compute(text, timeout=240)
+            totalTimeToReturnResult = time.time() - t0
+
+            PerformanceTestReporter.recordTest(testName, totalTimeToReturnResult, None)
+        finally:
+            simulation.teardown()
+
+    def test_parseStringToInt64_1(self):
+        self.stringToInt64ParsingTest(1, "python.BigBox.StringToInt64Parse.01Threads")
+
+    def test_parseStringToInt64_2(self):
+        self.stringToInt64ParsingTest(2, "python.BigBox.StringToInt64Parse.02Threads")
+
+    def test_parseStringToInt64_5(self):
+        self.stringToInt64ParsingTest(5, "python.BigBox.StringToInt64Parse.05Threads")
+
+    def test_parseStringToInt64_10(self):
+        self.stringToInt64ParsingTest(10, "python.BigBox.StringToInt64Parse.10Threads")
+
+    def test_parseStringToInt64_30(self):
+        self.stringToInt64ParsingTest(30, "python.BigBox.StringToInt64Parse.30Threads")
+
     def test_parseStringToFloat64_1(self):
         self.stringToFloat64ParsingTest(1, "python.BigBox.StringToFloat64Parse.01Threads")
 
@@ -241,7 +327,7 @@ class BigboxStringPerformanceTest(unittest.TestCase):
 
         #we wish we could actually test that we achieve saturation here but we can't yet.
         text = """
-            let s = 2013.0;
+            let s = [2013.0][0];
 
             let doALoop = fun(x) {
                 let res = 0
