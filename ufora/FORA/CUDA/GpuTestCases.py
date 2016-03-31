@@ -21,7 +21,7 @@ import math
 
 
 class GpuTestCases:
-    def compareCudaToCPU(self, funcExpr, vecExpr, captureExpr=""):
+    def compareCudaToCPUnoCheck(self, funcExpr, vecExpr, captureExpr=""):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
 
         text = captureExpr + """
@@ -36,9 +36,18 @@ class GpuTestCases:
                 throw String(cuda) + " != " + String(cpu)
             """.replace("__funcExpr__", funcExpr).replace("__vecExpr__", vecExpr)
 
+        print text
         res = InMemoryCumulusSimulation.computeUsingSeveralWorkers(text, s3, 1, timeout=120, threadCount=4)
         self.assertIsNotNone(res)
+        return res
+
+    def compareCudaToCPU(self, funcExpr, vecExpr, captureExpr=""):
+        res = self.compareCudaToCPUnoCheck(funcExpr, vecExpr, captureExpr)
         self.assertTrue(res.isResult(), "Failed with %s on %s: %s" % (funcExpr, vecExpr, res))
+
+    def checkCudaRaises(self, funcExpr, vecExpr, captureExpr=""):
+        res = self.compareCudaToCPUnoCheck(funcExpr, vecExpr, captureExpr)
+        self.assertTrue(res.isException(), "Expected exception with %s on %s: %s" % (funcExpr, vecExpr, res))
 
     def test_cuda_read_tuples(self):
         self.compareCudaToCPU("fun((a,b)) { (b,a) }", "(1,2)")
@@ -71,10 +80,85 @@ class GpuTestCases:
                             "(" + n1 + ", " + n2 + ")"
                             )
 
+    @unittest.skip
+    def test_two_return_types(self):
+        functionExpr = """
+            fun(x) {
+                if (x > 0)
+                    return 1
+                else
+                    return 1.0
+            }
+            """
+        self.compareCudaToCPU(functionExpr, "0", "")
+        self.compareCudaToCPU(functionExpr, "1", "")
+
+    @unittest.skip
+    def test_two_return_types(self):
+        functionExpr = """
+            fun(x) {
+                let r = if (x > 0) 1.0*x
+                else 1 * x;
+                r
+            }
+            """
+        self.compareCudaToCPU(functionExpr, "0", "")
+        self.compareCudaToCPU(functionExpr, "1", "")
+
+    def test_return_or_throw(self):
+        functionExpr = """
+            fun(x) {
+                if (x>0)
+                    x
+                else
+                    throw "x <= 0"
+            }
+            """
+        self.checkCudaRaises(functionExpr, "0", "")
+        self.checkCudaRaises(functionExpr, "1", "")
+
+    def test_throw(self):
+        functionExpr = """
+            fun(x) {
+                throw "x <= 0"
+            }
+            """
+        self.checkCudaRaises(functionExpr, "0", "")
+        self.checkCudaRaises(functionExpr, "1", "")
+
+
+    @unittest.skip
+    def test_return_constant(self):
+        functionExpr = """
+            fun(x) {
+                0
+            }
+            """
+        self.compareCudaToCPU(functionExpr, "0", "")
+        self.compareCudaToCPU(functionExpr, "1", "")
+        self.compareCudaToCPU(functionExpr, "11", "")
+        self.compareCudaToCPU(functionExpr, "101", "")
+
+    @unittest.skip
+    def test_division(self):
+        functionExpr = """
+            fun(x) {
+                if (x > 0.0)
+                    1.0 / x
+                else
+                    0
+            }
+            """
+        self.compareCudaToCPU(functionExpr, "0.0", "")
+        self.compareCudaToCPU(functionExpr, "1.0", "")
+
+
     def test_closure(self):
         captureExpr = """
                 let capT = (3s32, 4s64, 5s32);
-                let cap64 = 9s64;"""
+                let cap64 = 9s64;
+                let vec = [1, 2, 3]
+                """
         functionExpr = """
                 fun(ct) {
                 let res = 0

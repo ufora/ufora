@@ -104,8 +104,8 @@ bool isByteInstruction(const NativeBinaryOpcode& opcode)
 				isByteInstruction = true;
 				}
 			-| _ ->> {
-			isByteInstruction = false;
-			}
+				isByteInstruction = false;
+				}
 			;
 	return isByteInstruction;
 	}
@@ -118,12 +118,15 @@ bool isByteInstruction(const NativeBinaryOpcode& opcode)
 //	fXX, sXX or uXX, in case we are using this in bit instructions
 string	nativeTypeToPTXType(
 			const NativeType& inType,
-			bool isByteInstruction = false
+			bool isByteInstruction = false,
+			bool allowSmallestSize = false
 			)
 	{
 	@match NativeType(inType)
 		-| Integer(bits, sign) ->> {
-				if (bits != 32 && bits != 64 && bits != 16 && bits != 1)
+				if (bits != 32 && bits != 64 &&
+					bits != 16 && bits != 1 &&
+					(!allowSmallestSize || bits != 8))
 					throw UnableToConvertToPTX(
 						"used an invalid integer type " +
 							prettyPrintString(inType)
@@ -136,7 +139,8 @@ string	nativeTypeToPTXType(
 							+ boost::lexical_cast<string>(bits);
 				}
 		-| Float(bits) ->> {
-				if (bits != 32 && bits != 64)
+				if (bits != 32 && bits != 64 &&
+					(!allowSmallestSize || bits != 16))
 					throw UnableToConvertToPTX(
 						"used an invalid float type " + prettyPrintString(inType)
 						);
@@ -267,12 +271,11 @@ private:
 
 	void buildResult(const NativeCFG& inCFG, string inEntryFunctionName)
 		{
-		if (inCFG.returnTypes().size() != 1)
-			throw UnableToConvertToPTX(
-				"function has multiple return paths"
-				);
+		auto returnTypesCount = inCFG.returnTypes().size();
+		bool hasMultipleReturnTypes = returnTypesCount > 1 ? true : false;
 
-		//exactly one of the inputs should be not "Nothing"
+		// at least one and at most two of the inputs should be not "Nothing",
+		// the first is the input data
 		Nullable<uint32_t> inputIndex, closureIndex;
 		uint32_t inCFGArgsSize = inCFG[NativeBlockID::entry()].args().size();
 		for (long k = 0; k < inCFGArgsSize; k++)
@@ -301,8 +304,6 @@ private:
 		NativeType	inputType =
 			inCFG[NativeBlockID::entry()].args()[*inputIndex].type();
 
-		NativeType	outputType = inCFG.returnTypes()[0];
-
 		//get the terminal continuation
 		string	exitBlockName = allocateBlockName("exit_");
 
@@ -318,11 +319,11 @@ private:
 		NativeVariable closurePtr = NativeVariable::Temp(closureType.ptr());
 
 		NativeType offsetType = NativeType::uint64();
+		NativeType indexType  = NativeType::uint8();
 		NativeVariable inputVar = NativeVariable::Temp(inputType);
-		NativeVariable outputVar = NativeVariable::Temp(outputType);
 		NativeVariable inputPtr = NativeVariable::Temp(inputType.ptr());
-		NativeVariable outputPtr = NativeVariable::Temp(outputType.ptr());
 		NativeVariable offsetVar = NativeVariable::Temp(offsetType);
+		NativeVariable indexPtr = NativeVariable::Temp(indexType.ptr());
 
 		ImmutableTreeVector<NativeExpression> args = emptyTreeVec();
 		for (long k = 0; k < inCFGArgsSize; k++)
@@ -336,7 +337,45 @@ private:
 			}
 
 		ImmutableTreeVector<NativeContinuation> conts = emptyTreeVec();
-		conts = conts + NativeContinuation(outputVar, outputVar.expr());
+		ImmutableTreeVector<NativeVariable> outputPointers = emptyTreeVec();
+		long idx = 0;
+		for (auto& outputType : inCFG.returnTypes())
+			{
+			LOG_DEBUG << "outputType = " << prettyPrintString(outputType);
+			NativeVariable outputVar = NativeVariable::Temp(outputType);
+			NativeVariable outputPtr = NativeVariable::Temp(outputType.ptr());
+			outputPointers = outputPointers + outputPtr;
+			NativeExpression storeVecExpr =
+					NativeExpression::Store(
+							NativeExpression::BinaryOp(
+									NativeBinaryOpcode::Add(),
+									outputPtr.expr(),
+									offsetVar.expr()
+									),
+							outputVar.expr()
+							);
+			if (hasMultipleReturnTypes)
+				{
+				NativeExpression storeIdxExpr =
+						NativeExpression::Store(
+								NativeExpression::BinaryOp(
+										NativeBinaryOpcode::Add(),
+										indexPtr.expr(),
+										offsetVar.expr()
+										),
+								NativeExpression::ConstantUInt8(idx)
+								);
+				conts = conts +
+						NativeContinuation(
+								outputVar,
+								NativeExpression::DiscardFirst(storeVecExpr, storeIdxExpr)
+								);
+				}
+			else
+				conts = conts + NativeContinuation(outputVar, storeVecExpr);
+			++idx;
+			}
+
 
 		NativeExpression nexp =
 			NativeExpression::DiscardFirst(
@@ -350,28 +389,17 @@ private:
 									)
 							, false
 							),
-					NativeExpression::Let(
-						outputVar,
-						NativeExpression::Call(
-								NativeCallTarget::Inline(inCFG, NativeBlockID::entry()),
-								conts,
-								args,
-								emptyTreeVec() /*+ NativeContinuationMetadata meta*/
-								),
-						NativeExpression::Store(
-								NativeExpression::BinaryOp(
-										NativeBinaryOpcode::Add(),
-										outputPtr.expr(),
-										offsetVar.expr()
-										),
-								outputVar.expr()
-								)
-					)
+					NativeExpression::Call(
+							NativeCallTarget::Inline(inCFG, NativeBlockID::entry()),
+							conts,
+							args,
+							emptyTreeVec() /*+ NativeContinuationMetadata meta*/
+							)
 				),
 				NativeExpression::Return(0, NativeConstant::Nothing().expr())
 			);
 
-		auto wrappedCFGArgs = inCFG[NativeBlockID::entry()].args() + inputPtr + outputPtr + offsetVar;
+		auto wrappedCFGArgs = inCFG[NativeBlockID::entry()].args() + offsetVar + inputPtr + outputPointers;
 		if (closureIndex)
 			{
 			nexp =
@@ -382,6 +410,9 @@ private:
 						);
 			wrappedCFGArgs = wrappedCFGArgs + closurePtr;
 			}
+		if (hasMultipleReturnTypes)
+			wrappedCFGArgs = wrappedCFGArgs + indexPtr;
+
 		NativeCFG wrappedCFG =
 				NativeCFG(
 						emptyTreeVec(),
@@ -398,6 +429,19 @@ private:
 									);
 
 
+		std::vector<std::string>  paramOutputPtrNames(returnTypesCount);
+		std::vector<std::string>  regOutputPtrNames(returnTypesCount);
+		for (long k=0; k < returnTypesCount; ++k)
+			{
+			std::ostringstream s1;
+			s1 << "reg_outputPtr_" << k;
+			regOutputPtrNames[k] = s1.str();
+
+			std::ostringstream s2;
+			s2 << "paramOutputPtr" << k;
+			paramOutputPtrNames[k] = s2.str();
+			}
+
 		ostringstream result;
 
 		std::ifstream libFile(mPtxLibPath);
@@ -406,74 +450,95 @@ private:
 			result << libFile.rdbuf();
 			}
 
+		result 		<<	".entry " << inEntryFunctionName << " (\n";
+		if (closureIndex)
+			result 	<<	"\t\t.param .u64 closurePtr,\n";
 		result
-				<<	".entry " << inEntryFunctionName << " (\n"
-				;
-//		if (closureIndex)
-			result << "\t\t.param .u64 closurePtr,\n";
+					<<	"\t\t.param .u32 N,\n"
+					<<	"\t\t.param .u64 inputPtr,\n";
+		if (hasMultipleReturnTypes)
+			result	<<	"\t\t.param .u64 indexPtr,\n";
+		for (long k=0; k < returnTypesCount - 1; ++k)
+			result	<<	"\t\t.param .u64 " << paramOutputPtrNames[k] << ",\n";
+		result 		<<	"\t\t.param .u64 " << paramOutputPtrNames[returnTypesCount-1] << ")\n";
 
-		result  <<	"\t\t.param .u64 inputPtr,\n"
-				<<	"\t\t.param .u64 outputPtr,\n"
-				<<	"\t\t.param .u32 N)\n"
-				<<	"{\n";
-
+		result	<<	"{\n";
 		result << mRegisters.registerAllocationString();
 		if (closureIndex)
-			result << ".reg		.u64		reg_closurePtr;\n";
-
-		result	<<	".reg		.u64		reg_inputPtr;\n"
-				<<	".reg		.u64		reg_outputPtr;\n"
+			result 	<< 	".reg		.u64		reg_closurePtr;\n";
+		if (hasMultipleReturnTypes)
+			result	<<	".reg		.u64		reg_indexPtr;\n";
+		result
 				<<	".reg		.u32		reg_N;\n"
+				<<	".reg		.u64		reg_inputPtr;\n"
 				<<	".reg		.pred		validApplyPredicate;\n"
 				<<	".reg		.u32		numthreads;\n"
 				<<	".reg		.u32		blockX;\n"
 				<<	".reg		.u32		threadID;\n"
 				<<	".reg		.u32		i;\n"
 				<<	".reg		.u32		i_temp;\n"
-				<<	".reg		.u64		i64;\n"
+				<<	".reg		.u64		i64;\n";
+
+		for (long k=0; k < returnTypesCount; ++k)
+			result <<	".reg		.u64		" << regOutputPtrNames[k] <<";\n";
 
 				//load the relevant environment values into registers
-				<<	"mov.u32		numthreads, %ntid.x;\n"
+		result	<<	"mov.u32		numthreads, %ntid.x;\n"
 				<<	"mov.u32		blockX, %ctaid.x;\n"
 				<<	"mov.u32		threadID, %tid.x;\n"
 				;
 		if (closureIndex)
 			result << "ld.param.u64		reg_closurePtr, [closurePtr];\n";
+		if (hasMultipleReturnTypes)
+			result	<<	"ld.param.u64	reg_indexPtr, [indexPtr];\n";
 		result
 				<<	"ld.param.u32		reg_N, [N];\n"
 				<<	"ld.param.u64		reg_inputPtr, [inputPtr];\n"
-				<<	"ld.param.u64		reg_outputPtr, [outputPtr];\n"
+				;
+		for (long k=0; k < returnTypesCount; ++k)
+			result	<<	"ld.param.u64		" << regOutputPtrNames[k] << ", ["
+					<< paramOutputPtrNames[k] << "];\n";
 				//compute 'i', the particular position we're in
+		result
 				<<	"mul.lo.u32		i_temp,	numthreads,	blockX;\n"
 				<<	"add.u32		i, i_temp, threadID;\n"
 				//check whether 'i' is less than 'N' and exit if not
 				<<	"cvt.u64.u32		i64,		i;\n"
 				<<	"setp.ge.u32		validApplyPredicate, i, reg_N;\n"
 				<<	"@validApplyPredicate	bra	done;\n"
-
 				//this is a valid 'i', so we should execute the client code
 				;
 
-		copyFromPTXToPTX(
-				PTXValueRepresentation::Atom(inputType.ptr(), "u64", "reg_inputPtr"),
-				body.second.inputRegisters()[inCFGArgsSize],
-				result
-				);
-		copyFromPTXToPTX(
-				PTXValueRepresentation::Atom(outputType.ptr(), "u64", "reg_outputPtr"),
-				body.second.inputRegisters()[inCFGArgsSize+1],
-				result
-				);
+		uint32_t argOffset = inCFGArgsSize;
 		copyFromPTXToPTX(
 				PTXValueRepresentation::Atom(offsetType, "u64", "i64"),
-				body.second.inputRegisters()[inCFGArgsSize+2],
+				body.second.inputRegisters()[argOffset++],
 				result
 				);
+		copyFromPTXToPTX(
+				PTXValueRepresentation::Atom(inputType.ptr(), "u64", "reg_inputPtr"),
+				body.second.inputRegisters()[argOffset++],
+				result
+				);
+		for (long k=0; k < returnTypesCount; ++k)
+			copyFromPTXToPTX(
+					PTXValueRepresentation::Atom(inCFG.returnTypes()[k].ptr(), "u64", regOutputPtrNames[k]),
+					body.second.inputRegisters()[argOffset++],
+					result
+					);
 		if (closureIndex)
 			{
 			copyFromPTXToPTX(
 					PTXValueRepresentation::Atom(closureType.ptr(), "u64", "reg_closurePtr"),
-					body.second.inputRegisters()[inCFGArgsSize+3],
+					body.second.inputRegisters()[argOffset++],
+					result
+					);
+			}
+		if (hasMultipleReturnTypes)
+			{
+			copyFromPTXToPTX(
+					PTXValueRepresentation::Atom(indexType, "u8", "reg_indexPtr"),
+					body.second.inputRegisters()[argOffset++],
 					result
 					);
 			}
@@ -560,7 +625,7 @@ private:
 				}
 			;
 		}
-	string	writeValueToPointerFromRegisters(
+	string	writeValueToPointer(
 							const PTXValueRepresentation&	inPointer,
 							const PTXValueRepresentation&	inValue,
 							uword_t							offset = 0
@@ -571,7 +636,8 @@ private:
 				return "";
 				}
 			-|	Atom(nativeType, ptxType, regName) ->> {
-				return writeValueToPointerFromRegisters(regName, inValue, offset);
+				auto pointedType = nativeType.deref();
+				return writeValueToPointer(regName, pointedType, inValue, offset);
 				}
 			-| 	_ ->> {
 				return "";
@@ -581,8 +647,9 @@ private:
 
 	//generates a string of 'st.global' instructions
 	//that store register values into a pointer given by "inPointerName"
-	string	writeValueToPointerFromRegisters(
+	string	writeValueToPointer(
 							const string&					inPointerName,
+							const NativeType&				pointedType,
 							const PTXValueRepresentation&	ptxRegisters,
 							uword_t							offset = 0
 							)
@@ -592,8 +659,12 @@ private:
 				return  "";
 				}
 			-| Atom(nativeType, ptxType, regName) ->> {
+				string pointedPtxType = nativeTypeToPTXType(pointedType, false, true);
+				lassert_dump( pointedPtxType == ptxType,
+							"incompatible value ptx-type '" << ptxType << "' for pointer to '"
+							<< pointedPtxType);
 					//something like
-					//	st.global.f32	regname, [ptrname+offset];
+					//	st.global.f32	[ptrname+offset], regname;
 				return
 					"st.global." + ptxType +
 						//generate the pointer offset
@@ -603,17 +674,17 @@ private:
 										) + "]" +
 							", " +
 						//the register
-						regName +
-						";\n"
-						;
+						regName + ";\n";
 				}
 			-| Tuple(nativeType, registers) ->> {
-				string tr;
-
+				ostringstream tr;
+				lassert(nativeType.isComposite());
+				auto nativeTypes = nativeType.getComposite().elements();
 				for (long k = 0; k < registers.size();k++)
 					{
-					tr = tr + writeValueToPointerFromRegisters(
+					tr << writeValueToPointer(
 									inPointerName,
+									nativeTypes[k],
 									registers[k],
 									offset
 									);
@@ -621,7 +692,22 @@ private:
 							alignedOffset(nativeType.getComposite().elements()[k], offset) +
 							nativeType.getComposite().elements()[k].alignedSize();
 					}
-				return tr;
+				return tr.str();
+				}
+			-|	Constant(expr) ->> {
+				string ptxType = nativeTypeToPTXType(pointedType, false, true);
+				return
+					"st.global." + ptxType +
+						"\t[" + inPointerName + "+" +
+								boost::lexical_cast<string>(
+										alignedOffset(pointedType, offset)
+										) + "]" +
+						", " +
+						//the register
+						expr + ";\n";
+				}
+			-|	Nothing() ->> {
+				lassert_dump(false, "'Nothing' found in writeValueToPointer");
 				}
 			;
 		}
@@ -808,7 +894,7 @@ private:
 								}
 							-| UInt8(v) ->> {
 								s =   (
-									boost::lexical_cast<string>(v) + "U"
+									boost::lexical_cast<string>((unsigned int)v) + "U"
 									);
 								}
 							-| UInt16(v) ->> {
@@ -1666,7 +1752,7 @@ private:
 				if (!valRep)
 					return valRep;
 
-				auto stores = writeValueToPointerFromRegisters(*addrRep, *valRep);
+				auto stores = writeValueToPointer(*addrRep, *valRep);
 				ioSideEffectStream << stores;
 				return null() << PTXValueRepresentation::Nothing();
 				}

@@ -26,6 +26,7 @@
 #include "../Runtime.hppml"
 #include "../TypedFora/JitCompiler/StaticInliner.hppml"
 #include "../TypedFora/Converter.hppml"
+#include "../TypedFora/ABI/SlottedForaValueArrayAppend.hppml"
 #include "../TypedFora/ABI/VectorRecord.hpp"
 #include "../TypedFora/ABI/VectorHandle.hpp"
 #include "../TypedFora/TypedFora.hppml"
@@ -197,7 +198,6 @@ public:
 			if (error != CUDA_SUCCESS)
 				lassert_dump(false, "PTX code didn't define function " <<
 											inFunctionName);
-
 				{
 				boost::mutex::scoped_lock lock(mMutex);
 				mCuFunctionsByName[make_pair(context, inModuleName)] = cuFun;
@@ -213,50 +213,90 @@ public:
 		return mCuFunctionsByName[make_pair(context, inModuleName)];
 		}
 
-	void executeFunction(	std::string inModuleName,
-							void* inClosureData,
-							uword_t inClosureSize,
-							void* inSourceData,
-							void* inDestData,
-							uword_t inN,
-							uword_t inSourceElementSize,
-							uword_t inDestElementSize
+	void executeFunction(	const std::string&				inModuleName,
+							void* 							inClosureData,
+							uword_t							inClosureSize,
+							uword_t							inN,
+							void*							inSourceData,
+							uword_t							inSourceElementSize,
+							const std::vector<uint8_t*>&	outDestDataVectors,
+							const std::vector<uword_t>&		inDestElementSize,
+							void* 							outIndexData,
+							uword_t							inIndexElementSize
 							)
 		{
+		lassert(outDestDataVectors.size() > 0);
+		lassert(inDestElementSize.size() > 0);
+		lassert(outDestDataVectors.size() == inDestElementSize.size());
+
+		uword_t outputTypesCount = outDestDataVectors.size();
+
 		CUcontext contextToUse = mUnusedContexts.get();
+
 		try {
 			cuCtxSetCurrent(contextToUse);
-
-			CUdeviceptr d_closureData;
-			CUdeviceptr d_sourceData;
-			CUdeviceptr d_destData;
+			CUdeviceptr d_closureData, d_sourceData, d_indexData;
+			std::vector<CUdeviceptr> d_destData(outputTypesCount);
 
 			CUresult error;
+			// Allocate and initialize device memory for closure data
 			if (inClosureSize > 0)
 				{
+				lassert(inClosureData);
 				error = cuMemAlloc(&d_closureData, inClosureSize);
 				throwOnError("Allocate Closure Memory", error);
 				error = cuMemcpyHtoD(d_closureData, inClosureData, inClosureSize);
 				throwOnError("Copy CUDA memory from source to host", error);
 				}
 
+			// Allocate and initialize device memory for type-index data (output)
+			if (outIndexData)
+				{
+				error = cuMemAlloc(&d_indexData, inIndexElementSize * inN);
+				throwOnError("Allocate Source Memory", error);
+
+				error = cuMemsetD8(d_indexData, 0xff, inIndexElementSize * inN);
+				throwOnError("Set Memory to Zero", error);
+				}
+
+			// Allocate and initialize device memory for input data
 			error = cuMemAlloc(&d_sourceData, inSourceElementSize * inN);
 			throwOnError("Allocate Source Memory", error);
 
-			error = cuMemAlloc(&d_destData, inDestElementSize * inN);
-			throwOnError("Allocate Dest Memory", error);
-
-			// Copy data from hostMemory to deviceMemory
-			error = cuMemcpyHtoD(d_sourceData, inSourceData,
-					inSourceElementSize * inN);
+			error = cuMemcpyHtoD(d_sourceData, inSourceData, inSourceElementSize * inN);
 			throwOnError("Copy CUDA memory from source to host", error);
 
+			// Allocate device memory for output data
+			for (uword_t k = 0; k < outputTypesCount; ++k)
+				{
+				error = cuMemAlloc(&d_destData[k], inDestElementSize[k] * inN);
+				throwOnError("Allocate Destination Memory", error);
+				}
 
 			// Grid/Block configuration
 			int threadsPerBlock = 1024;
 			int blocksPerGrid   = (inN + threadsPerBlock - 1) / threadsPerBlock;
 
-			void *args[] = { &d_closureData, &d_sourceData, &d_destData, &inN };
+			uword_t kk = 0;
+			uword_t extraArgs = 2; // inN and sourceDataPtr
+			if (inClosureSize >0)
+				++extraArgs;
+			if (outIndexData)
+				++extraArgs;
+			uword_t argCount = outputTypesCount + extraArgs;
+			void **args = (void**) malloc(sizeof(void*) * (argCount));
+			if (inClosureSize > 0)
+				args[kk++] = &d_closureData;
+			args[kk++] = &inN;
+			args[kk++] = &d_sourceData;
+			if (outIndexData)
+				args[kk++] = &d_indexData;
+			for (uword_t k = 0; k < outputTypesCount; ++k)
+				{
+				lassert(kk < argCount);
+				args[kk++] = &d_destData[k];
+				}
+			lassert(kk == argCount);
 
 			// Launch the CUDA kernel
 			error = cuLaunchKernel( functionNameForModule(contextToUse, inModuleName),
@@ -267,22 +307,35 @@ public:
 
 			lassert_dump(error == CUDA_SUCCESS, "UNKNOWN CUDA ERROR");
 			//copy to target
-			error = cuMemcpyDtoH(	inDestData,
-									d_destData,
-									inDestElementSize * inN
-									);
-
+			if (outIndexData)
+				{
+				error = cuMemcpyDtoH(outIndexData, d_indexData, inIndexElementSize * inN);
+				throwOnError("Copy Index to Destination Memory", error);
+				}
+			for (uword_t k = 0; k < outputTypesCount; ++k)
+				{
+				error = cuMemcpyDtoH(	outDestDataVectors[k],
+										d_destData[k],
+										inDestElementSize[k] * inN
+										);
+				throwOnError("Copy output to Destination Memory", error);
+				}
 			//free cuda memory
 			if (inClosureSize > 0)
 				cuMemFree(d_closureData);
+			if (outIndexData)
+				cuMemFree(d_indexData);
 			cuMemFree(d_sourceData);
-			cuMemFree(d_destData);
+			for (uword_t k = 0; k < outputTypesCount; ++k)
+				cuMemFree(d_destData[k]);
+			free(args);
 
 			mUnusedContexts.write(contextToUse);
 			}
 		catch(...)
 			{
 			mUnusedContexts.write(contextToUse);
+			// FIXME: we are not freeing the cuda allocated memory properly
 			throw;
 			}
 		}
@@ -314,12 +367,12 @@ void	CUDAExecutionContext::define(
 						const std::string& inKernelName,
 						const NativeCFG& inCFG,
 						const Type& inInputType,
-						const Type& inOutputType
+						const std::vector<Type>& inOutputTypes
 						)
 	{
 	boost::recursive_mutex::scoped_lock lock(mMutex);
 
-	//do nothing
+	// TODO:: assert that inCFG.returnTypes() match inOutputTypes
 	string 	ptxDefinition =
 		computePTXVectorApplyKernelFromNativeCFG(inCFG, inKernelName);
 
@@ -328,17 +381,19 @@ void	CUDAExecutionContext::define(
 	mNativeKernelsByName[inKernelName] = inCFG;
 	mPTXKernelFunctionNames[inKernelName] = inKernelName;
 	mPTXKernelsByName[inKernelName] = ptxDefinition;
-	mInputOutputTypesByName[inKernelName] = make_pair(inInputType, inOutputType);
+	mInputOutputTypesByName[inKernelName] = make_pair(inInputType, inOutputTypes);
 	}
 
 ImplValContainer    createFORAVector(
-                        JOV objectType,
-                        uint8_t* alignedData,
-                        uint64_t count,
-                        MemoryPool* inPool
+						uint8_t* indexData,
+						uword_t  indexAlignedSize, // we can also pass the Type if necessary
+						const std::vector<Type>& outputElementTypes,
+						const std::vector<uint8_t*> alignedDataVectors,
+						uint64_t count,
+						MemoryPool* inPool
 						)
 	{
-	if (!count)
+	if (!count || outputElementTypes.size() == 0 || alignedDataVectors.size() == 0)
 		return ImplValContainerUtilities::createVector(VectorRecord());
 
 	lassert(inPool);
@@ -346,20 +401,47 @@ ImplValContainer    createFORAVector(
 	TypedFora::Abi::ForaValueArray* array =
 		TypedFora::Abi::ForaValueArray::Empty(inPool);
 
-	TypedFora::Abi::PackedForaValues vals = array->appendUninitialized(objectType, count);
-
-	if (objectType.type()->alignedSize() != objectType.type()->size())
+	std::set<JOV> jovSet;
+	std::vector<uint8_t*> slots(count);
+	std::vector<JOV> jovs(count);
+	if (indexData)
 		{
-		uint8_t* packedData  = vals.data();
-		for (int i = 0; i < count; ++i)
+		for (uword_t k = 0; k < count; ++k)
 			{
-			copyAlignedToPacked(*objectType.type(), (uint8_t*)alignedData, packedData);
-//			alignedData = (char*)alignedData + objectType.type()->alignedSize();
-//			packedData  = (char*)packedData  + objectType.type()->size();
+			uint8_t index = indexData[k];
+			lassert(index < outputElementTypes.size());
+			const Type& t = outputElementTypes[index];
+			slots[k] = alignedDataVectors[index] + (k * t.alignedSize());
+			jovs[k] = JOV::OfType(t);
+			jovSet.insert(jovs[k]);
 			}
 		}
 	else
-		memcpy(vals.data(), alignedData, objectType.type()->size() * count);
+		jovSet.insert(JOV::OfType(outputElementTypes[0]));
+
+	lassert(jovSet.size() > 0);
+	if (jovSet.size() == 1)
+		{
+		const JOV& objectType = *jovSet.begin();
+		uint8_t* alignedData;
+		if (indexData)
+			alignedData = alignedDataVectors[indexData[0]];
+		else
+			alignedData = alignedDataVectors[0];
+		TypedFora::Abi::PackedForaValues vals = array->appendUninitialized(objectType, count);
+		if (objectType.type()->alignedSize() != objectType.type()->size())
+			{
+			uint8_t* packedData  = vals.data();
+			for (int i = 0; i < count; ++i)
+				copyAlignedToPacked(*objectType.type(), (uint8_t*)alignedData, packedData);
+			}
+		else
+			memcpy(vals.data(), alignedData, objectType.type()->size() * count);
+		}
+	else
+		{
+		TypedFora::Abi::slottedAppend(slots, jovs, jovSet, array);
+		}
 
 	VectorRecord vector(
 		inPool->construct<VectorHandle>(
@@ -370,7 +452,6 @@ ImplValContainer    createFORAVector(
 			ExecutionContext::currentExecutionContext()->newVectorHash()
 			)
 		);
-
 	return ImplValContainerUtilities::createVector(vector);
 	}
 
@@ -378,13 +459,16 @@ ImplValContainer    createFORAVector(
 ImplValContainer	CUDAExecutionContext::executeKernel(
 						const std::string&	inKernelName,
 						ImplValContainer	inApplyObject,
-						ImplValContainer	inSourceVector
+						ImplValContainer	inSourceVector,
+						uint64_t			outputTypesCount
 						)
 	{
-
 	Type closureType = inApplyObject.type();
-	Type outputElementType;
 	Type inputElementType;
+	const std::vector<Type>* outputElementTypes;
+
+	lassert_dump(outputTypesCount < 255, "Too many output types for 8bit unsigned integer to encode");
+	Type indexElementType = Type::Integer(8, false);
 
 		{
 		boost::recursive_mutex::scoped_lock lock(mMutex);
@@ -395,8 +479,9 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 				"used kernel " << inKernelName << " without definining it."
 				);
 
-		outputElementType = mInputOutputTypesByName[inKernelName].second;
 		inputElementType = mInputOutputTypesByName[inKernelName].first;
+		outputElementTypes = &mInputOutputTypesByName[inKernelName].second;
+		lassert(outputElementTypes);
 		}
 
 	lassert(inApplyObject.type().isClass());
@@ -404,13 +489,15 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 
 	TypedFora::Abi::VectorRecord sourceVectorHandle = inSourceVector.cast<TypedFora::Abi::VectorRecord>();
 
-	lassert(sourceVectorHandle.size() && sourceVectorHandle.jor().size() == 1 && sourceVectorHandle.jor()[0].type());
+	lassert(sourceVectorHandle.size() &&
+			sourceVectorHandle.jor().size() == 1 &&
+			sourceVectorHandle.jor()[0].type());
 
 	lassert_dump(
 		*sourceVectorHandle.jor()[0].type() == inputElementType,
-		"passed kernel " << inKernelName << " vector with elements"
-		<< " of type " << prettyPrintString(*sourceVectorHandle.jor()[0].type()) << " but expected"
-		<< prettyPrintString(inputElementType)
+		"passed kernel " << inKernelName << " vector with elements of type "
+				<< prettyPrintString(*sourceVectorHandle.jor()[0].type())
+				<< " but expected" << prettyPrintString(inputElementType)
 		);
 
 	//bail if there are no elements
@@ -422,61 +509,55 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 			);
 
 	uword_t elementCount = sourceVectorHandle.size();
-
 	lassert(ExecutionContext::currentExecutionContext());
-
 	MemoryPool* pool = ExecutionContext::currentExecutionContext()->getMemoryPool();
-
-	if (!pool->permitAllocation(
-				outputElementType.alignedSize() * elementCount
-				)
-			)
-		return ImplValContainer(
-			CSTValue::blankOf(
-				Type::Vector()
-				)
-			);
-
 
 	//create a aligned vectors
 	AlignmentManager alignMgr;
 	uint8_t* rawClosureData = alignMgr.getHandleToAlignedData(inApplyObject);
 	uint8_t* rawInVecData   = alignMgr.getHandleToAlignedData(inSourceVector);
+	if (!rawInVecData || (!rawClosureData && inApplyObject.type().size() > 0))
+		return ImplValContainer(CSTValue::blankOf(Type::Vector()));
 
-	uint8_t* rawOutVecData = pool->allocate(outputElementType.alignedSize() * elementCount);
+	uword_t outputElementTypesCount = outputElementTypes->size();
+	uint8_t* rawOutVecIndex = nullptr;
+	if (outputElementTypesCount > 1)
+		rawOutVecIndex = alignMgr.allocateAlignedData(indexElementType, elementCount);
 
-	if (!rawOutVecData || !rawInVecData || (!rawClosureData && inApplyObject.type().size() > 0))
-		return ImplValContainer(
-			CSTValue::blankOf(
-				Type::Vector()
-				)
-			);
-
-	try	{
-		lassert(sourceVectorHandle.dataPtr()->unpagedValues());
-		lassert(sourceVectorHandle.dataPtr()->unpagedValues()->size() == elementCount);
-
-		mCUDAState->executeFunction(
-			inKernelName,
-			rawClosureData,
-			closureType.alignedSize(),
-			rawInVecData,
-			rawOutVecData,
-			elementCount,
-			inputElementType.alignedSize(),
-			outputElementType.alignedSize()
-			);
-		}
-	catch(...)
+	std::vector<uint8_t*> rawOutVecDataVectors(outputElementTypesCount);
+	std::vector<uword_t> outputElementTypeSizes(outputElementTypesCount);
+	for (uword_t k = 0; k < outputElementTypesCount; ++k)
 		{
-		//cleanup the vector and propagate the exception
-		pool->free(rawOutVecData);
-		throw;
+		const Type& t = (*outputElementTypes)[k];
+		uint8_t* ptr = alignMgr.allocateAlignedData(t, elementCount);
+		if (!ptr)
+			return ImplValContainer(CSTValue::blankOf(Type::Vector()));
+		rawOutVecDataVectors[k] = ptr;
+		outputElementTypeSizes[k] = t.alignedSize();
 		}
 
-	auto res = createFORAVector(JOV::OfType(outputElementType), rawOutVecData, elementCount, pool);
+	lassert(sourceVectorHandle.dataPtr()->unpagedValues());
+	lassert(sourceVectorHandle.dataPtr()->unpagedValues()->size() == elementCount);
 
-	pool->free(rawOutVecData);
+	mCUDAState->executeFunction(
+		inKernelName,
+		rawClosureData,
+		closureType.alignedSize(),
+		elementCount,
+		rawInVecData,
+		inputElementType.alignedSize(),
+		rawOutVecDataVectors,
+		outputElementTypeSizes,
+		rawOutVecIndex,
+		indexElementType.alignedSize()
+		);
+	auto res = createFORAVector(
+					rawOutVecIndex,
+					indexElementType.alignedSize(),
+					*outputElementTypes,
+					rawOutVecDataVectors,
+					elementCount,
+					pool);
 
 	return res;
 	}
@@ -558,10 +639,15 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 
 			auto frame = reasoner->reasonAboutApply(JOVT::Unnamed(signatureJOVs));
 
-			if (frame->exits().size() != 1)
-				throw UnableToConvertToPTX("Code returns multiple types.");
+			if (frame->exits().size() != 1 && frame->exits().size() != 2)
+				{
+				ostringstream msg;
+				msg << "Code returns more than two types (" << frame->exits().size() << ").";
+				throw UnableToConvertToPTX(msg.str());
+				}
+			for (auto& jov : frame->exits().resultPart().vals())
 
-			if (frame->exits().jovAndIsExceptionByIndex(0).second)
+			if (frame->exits().throwPart().size() > 0)
 				throw UnableToConvertToPTX("Code throws exceptions.");
 
 			auto res = reasoner->compileEntrypointForApply(JOVT::Unnamed(signatureJOVs));
@@ -619,7 +705,22 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 				cfg = NativeCFGTransforms::optimize(cfg, Runtime::getRuntime().getConfig());
 				cfg = NativeCFGTransforms::renameVariables(cfg);
 
-				define(kernelName, cfg, vecElementType, *frame->exits().jovAndIsExceptionByIndex(0).first.type());
+				std::vector<Type> outputTypes(frame->exits().resultPart().size());
+					{
+					long k = 0;
+					for (auto& jov : frame->exits().resultPart().vals())
+						{
+						Nullable<Type> t = jov.type();
+						lassert_dump(
+								t,
+								"return type at index " << k << " of CUDA kernel '"
+									<< kernelName << "' is missing");
+						outputTypes[k] = *t;
+						++k;
+						}
+					}
+
+				define(kernelName, cfg, vecElementType, outputTypes);
 				}
 			catch(std::logic_error e)
 				{
@@ -628,6 +729,5 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 				}
 			}
 		}
-
 	return executeKernel(kernelName, inApplyObject, inSourceVector);
 	}
