@@ -788,7 +788,75 @@ Nullable<Input> flatten(
 					return sVal;
 				return null() << outBlock->add(Expression::ValueExtract(elts, *sVal), *expr.type());
 				}
-		-|	CallLibraryFunction(name, ret, elts) ->> {
+		-|	CallLibraryFunction(name, ret, elts, passArgumentsAsPointers, resultPassedByPtr) ->> {
+				bool anyNull = false;
+				for (long k = 0; k < elts.size(); k++)
+					if (!elts[k].type())
+						anyNull = true;
+
+				if (!anyNull && resultPassedByPtr)
+					{
+					NativeVariable var = NativeVariable::Temp(ret.ptr());
+		
+					NativeExpression subexpr = NativeExpression::Let(
+						var,
+						NativeExpression::Alloc(ret, 1, false),
+						NativeExpression::CallLibraryFunction(
+							name,
+							NativeType::Nothing(),
+							var.expr() + elts,
+							false + passArgumentsAsPointers,
+							false
+							) >> var.expr().load()
+						);
+
+					return flatten(
+						outBlock,
+						subexpr,
+						exitBlocks,
+						inSimpleExits,
+						blockNameMap,
+						outBlocks,
+						varMap,
+						exteriorMetadata
+						);
+					}
+				for (long k = ((long)passArgumentsAsPointers.size()) - 1; k >= 0 && !anyNull; k--)
+					if (passArgumentsAsPointers[k])
+						{
+						NativeVariable pointerVar = NativeVariable::Temp(elts[k].type()->ptr());
+						NativeExpression subexpr = 
+							NativeExpression::CallLibraryFunction(
+								name,
+								ret,
+								elts.withElementReplaced(k, pointerVar.expr()),
+								passArgumentsAsPointers.withElementReplaced(k, false),
+								resultPassedByPtr
+								);
+
+						subexpr = NativeExpression::Let(
+							pointerVar,
+							NativeExpression::Alloc(
+								*elts[k].type(),
+								1,
+								false
+								),
+							NativeExpression::Store(pointerVar.expr(), elts[k]) >> 
+								subexpr
+							);
+
+						return flatten(
+							outBlock,
+							subexpr,
+							exitBlocks,
+							inSimpleExits,
+							blockNameMap,
+							outBlocks,
+							varMap,
+							exteriorMetadata
+							);
+						}
+
 				ImmutableTreeVector<Input> i;
 				for (long k = 0; k < elts.size(); k++)
 					{
@@ -804,10 +872,20 @@ Nullable<Input> flatten(
 												);
 
 					if (!res)
+						{
+						//flattening not producing a result should be the same
+						//as the native expression not having a type.
+						lassert(anyNull);
 						return null();
+						}
 
 					i = i + *res;
 					}
+
+				//flattening not producing a result should be the same
+				//as the native expression not having a type.
+				lassert(!anyNull);
+
 				return null() << outBlock->add(
 									Expression::CallLibraryFunction(name, ret, i),
 									*expr.type()
