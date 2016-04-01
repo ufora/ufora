@@ -74,7 +74,6 @@ bool isValidPassByValueJmt(const JudgmentOnValue& inJOV)
 }
 
 pair<NativeExpression, bool> LibcallAxiomGroup::prepareArgumentToPass(
-						NativeExpressionBuilder& builder, 
 						long argumentIndex, 
 						const NativeExpression& expression
 						)
@@ -224,9 +223,6 @@ Axiom LibcallAxiomGroup::buildAxiom()
 
 	uword_t maxOutputSize = computeMaxOutputSize(possibleOutputTypes);
 
-	//now prepare each argument
-	NativeExpressionBuilder builder;
-
 	ImmutableTreeVector<TypedFora::Type> inputVariableTypes;
 
 	ImmutableTreeVector<JudgmentOnValue> inputJudgments = 
@@ -268,7 +264,6 @@ Axiom LibcallAxiomGroup::buildAxiom()
 		{
 		auto argAndPassByPtr = 
 			prepareArgumentToPass(
-				builder, 
 				k, 
 				axiomBuilder.nativeVar(mInputsToArguments[k]).expr()
 				);
@@ -278,6 +273,7 @@ Axiom LibcallAxiomGroup::buildAxiom()
 		}
 
 	NativeExpression expr;
+	NativeExpression preload = (mPreloadExpression ? *mPreloadExpression : NativeExpression::Nothing());
 		
 	if (mFunctionUsesReturnValue)
 		{
@@ -290,30 +286,58 @@ Axiom LibcallAxiomGroup::buildAxiom()
 					)
 				);
 
-		NativeVariable res("res", resultType);
+		NativeVariable res = NativeVariable::Temp(resultType);
 
-		expr = NativeExpression::Halt("Bad exit value");
+		NativeExpression libcallExpr = 
+			preload >> 
+			NativeExpression::CallLibraryFunction(
+				NativeLibraryFunctionTarget::ByPointer((uword_t)mFunctionPointer),
+				res.type(), 
+				libcallArgs,
+				libcallArgsPassByPointer,
+				false
+				);
 
 		if (needsVectorLoad())
 			{
 			NativeBlockID block = NativeBlockID::entry();
 
-			expr = 
+			NativeVariable innerRes = NativeVariable::Temp(resultType);
+
+			NativeExpression innerCheckExpr = 
 				NativeExpression::If(
-					res.expr()["index"] == 
+					innerRes.expr()["index"] == 
 					NativeExpression::ConstantULong(
 						*mVectorLoadSlot
 						),
 					TypedNativeExpression<TypedFora::Abi::VectorLoadRequest>(
-						res.expr()["data"].cast(
+						innerRes.expr()["data"].cast(
 							NativeTypeFor<TypedFora::Abi::VectorLoadRequest>::get(), 
 							true
 							)
 						).loadCheck().getExpression(),
-					expr
+					innerRes.expr()
+					);
+			
+			libcallExpr = NativeCFG(
+				emptyTreeVec(), 
+				NativeExpression::Let(
+					innerRes,
+					libcallExpr,
+					innerCheckExpr
+					)
+				)().taggedWith(
+					NativeExpressionTag::Generic(
+						"LibcallWithVectorLoadcheck",
+						emptyTreeMap() + 
+							std::string("libcallExpr") + 
+							libcallExpr
+						)
 					);
 			}
-		
+
+		expr = NativeExpression::Halt("Bad exit value");
+
 		for (long k = ((long)mReturnSlots.size()) - 1; k >= 0; k--)
 			{
 			lassert_dump(
@@ -340,18 +364,14 @@ Axiom LibcallAxiomGroup::buildAxiom()
 		expr = 
 			NativeExpression::Let(
 				res, 
-				NativeExpression::CallLibraryFunction(
-					NativeLibraryFunctionTarget::ByPointer((uword_t)mFunctionPointer),
-					res.type(), 
-					libcallArgs,
-					libcallArgsPassByPointer,
-					false
-					),
+				libcallExpr,
 				expr
 				);
 		}
 	else
 		{
+		lassert(!needsVectorLoad());
+
 		lassert(mFunctionReturnTypes.size() == 1);
 
 		lassert_dump(
@@ -366,7 +386,7 @@ Axiom LibcallAxiomGroup::buildAxiom()
 		expr = 
 			NativeExpression::Return(
 				outExitpoints[0],
-				NativeExpression::CallLibraryFunction(
+				preload >> NativeExpression::CallLibraryFunction(
 					NativeLibraryFunctionTarget::ByPointer((uword_t)mFunctionPointer),
 					mFunctionReturnTypes[0].type(),
 					libcallArgs,
@@ -376,14 +396,6 @@ Axiom LibcallAxiomGroup::buildAxiom()
 				);
 		}
 	
-	expr = builder(expr);
-	
-	if (mPreloadExpression)
-		expr = *mPreloadExpression >> expr;
-
-	if (needsVectorLoad())
-		expr = NativeCFG(emptyTreeVec(), expr)();
-
 	bool anyPooled = false;
 	bool anyNotPooled = false;
 
