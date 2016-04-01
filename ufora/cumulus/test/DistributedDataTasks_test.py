@@ -25,6 +25,42 @@ callbackScheduler = CallbackScheduler.singletonForTesting()
 TIMEOUT=120
 
 class DistributedDataTasksTests(unittest.TestCase):
+    def test_sortHeterogeneous(self):
+        s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
+
+        text = """
+            let values = []
+            let ct = 1000000
+            for ix in sequence(ct)
+                values = values :: ix :: Float64(ix)
+
+            let sortedVals = cached`(#ExternalIoTask(#DistributedDataOperation(#Sort(values.paged))))
+
+            let sortedAndHomogenous = fun(v) {
+                for ix in sequence(size(v)-1)
+                    if (v[ix] >= v[ix+1] or `TypeJOV(v[ix]) is not `TypeJOV(v[ix+1]))
+                        throw (ix, v[ix], v[ix+1])
+                return true;
+                }
+            
+            if (size(sortedVals) != size(values))
+                throw "expected " + String(size(values)) + ", not " + String(size(sortedVals))
+            sortedAndHomogenous(sortedVals[,ct]) and 
+                sortedAndHomogenous(sortedVals[ct,])
+            """
+
+        result = InMemoryCumulusSimulation.computeUsingSeveralWorkers(
+            text,
+            s3,
+            1,
+            timeout=TIMEOUT,
+            memoryLimitMb=1000
+            )
+
+        self.assertTrue(result is not None)
+        self.assertTrue(result.isResult(), result)
+        self.assertTrue(result.asResult.result.pyval == True, result)
+
     def basicTaskPathwayTest(self, sz, machines=1, memory=1000):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
 
