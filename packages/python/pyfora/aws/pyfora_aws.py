@@ -153,7 +153,7 @@ def start_instances(args):
 def add_instances(args):
     launcher = Launcher(**launcher_args(args))
     manager = [i for i in running_or_pending_instances(launcher.get_reservations())
-               if 'Name' in i.tags and i.tags['Name'].startswith('ufora manager')]
+               if 'manager' in i.tags.get('Name', '')]
     if len(manager) > 1:
         print "There is more than one Manager instance. Can't add workers.", \
             "Managers:"
@@ -338,7 +338,7 @@ def instances_in_state(reservations, states):
 def print_instance(instance, tag=None):
     output = "    %s | %s | %s" % (instance.id, instance.ip_address, instance.state)
     if tag is None and 'Name' in instance.tags:
-        tag = 'manager' if instance.tags['Name'].startswith('ufora manager') else 'worker'
+        tag = 'manager' if 'manager' in instance.tags['Name'] else 'worker'
 
     tag = tag or ''
     if tag:
