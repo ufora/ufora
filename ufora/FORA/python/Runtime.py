@@ -62,6 +62,7 @@ def initialize(setupObjectToUse = None):
             cfg.kickIntoInterpreterOnInline = True
             cfg.useReasoningCompiler = configObjectToUse.useReasoningCompiler
             cfg.disableSplitting = configObjectToUse.compilerDisableSplitting
+            cfg.enableCodeExpansionRewriteRules = True
 
             cfg.applyRefcountOptimization = True
 

@@ -26,6 +26,7 @@
 #include "../Runtime.hppml"
 #include "../Core/Integers.hppml"
 #include "../Native/NativeExpressionBuilder.hppml"
+#include "../Native/NativeCFGTransforms/NativeCodeExpansionRewriteRules.hppml"
 #include "../Native/TypedNativeExpression.hppml"
 #include "../TypedFora/ABI/DestructorsAndConstructors.hppml"
 #include "../TypedFora/ABI/ForaValueArray.hppml"
@@ -337,13 +338,13 @@ extern "C" {
 		}
 
 
+	const static int kMaxStringSizeForVector = 1024 * 1024 * 10;
+
 	BSA_DLLEXPORT
 	ReturnValue<PooledString, PooledString, VectorLoadRequest> FORA_clib_vectorDataToString(
 				const VectorRecord& vec
 				)
 		{
-		const static int kMaxStringSizeForVector = 1024 * 1024 * 10;
-
 		int64_t stringSize = vec.size();
 
 		if (stringSize == 0)
@@ -429,25 +430,168 @@ extern "C" {
 	ReturnValue<PooledString, PooledString, VectorLoadRequest> FORA_clib_vectorDataToStringSliced(
 				const VectorRecord& vec,
 				int64_t low,
-				int64_t high,
-				int64_t offsetStart,
-				int64_t offsetStop,
-				int64_t stride,
-				uint8_t* pointer
+				int64_t high
 				)
 		{
-		if (low >= 0 && high >= 0 && low >= offsetStart && high < offsetStop && stride == 1
-				&& high >= low
-				&& high - low < String::maxBytesPackedIntoStringPtr)
+		int64_t vecsize = vec.size();
+		if (low < 0)
+			low += vecsize;
+		if (high < 0)
+			high += vecsize;
+		if (low < 0)
+			low = 0;
+		if (high >= vecsize)
+			high = vecsize;
+		if (high < low)
+			high = low = 0;
+		
+		int64_t stringSize = high - low;
+
+		if (stringSize == 0)
+			return slot0(String());
+
+		if (stringSize > kMaxStringSizeForVector)
 			{
-			return slot0(
-				PooledString(
-					String((const char*)(pointer + low), high - low, nullptr)
+			std::string msg;
+
+			MemoryPool* pool = ExecutionContext::currentExecutionContext()->getMemoryPool();
+
+			msg = "Can't allocate a string from a vector larger than 10 MB. This vector has " +
+					boost::lexical_cast<std::string>(stringSize) + " values";
+
+			return slot1(
+				ExecutionContext::currentExecutionContext()->getRefcountPool()->add(
+					String(
+						msg,
+						pool
+						)
 					)
 				);
 			}
 
-		return FORA_clib_vectorDataToString(vec.slice(null() << low,null() << high,null()));
+		String tr = String::empty(
+			stringSize,
+			stringSize <= String::maxBytesPackedIntoStringPtr ?
+				nullptr :
+				ExecutionContext::currentExecutionContext()->getMemoryPool(),
+			false
+			);
+
+		uint8_t* stringBase = (uint8_t*)tr.base();
+
+		int64_t curOffset = low;
+
+		TypedFora::Abi::ForaValueArraySlice slice = vec.sliceForOffset(curOffset);
+		
+		while (curOffset < high)
+			{
+			if (slice.array() && slice.array()->isHomogenous() && slice.mapping().indexIsValid(curOffset) && slice.mapping().stride() == 1)
+				{
+				long validFor = std::min<long>(high, slice.mapping().highIndex()) - curOffset;
+				uint8_t* index = slice.offsetFor(curOffset);
+
+				if (!index)
+					return slot2(VectorLoadRequest(vec, low, high));
+
+				if (validFor < 4)
+					for (long k = 0; k < validFor; k++)
+						stringBase[curOffset+k - low] = index[k];
+				else
+					memcpy(stringBase, index, validFor);
+
+				curOffset += validFor;
+				}
+			else
+				{
+				if (!slice.mapping().indexIsValid(curOffset) || !slice.offsetFor(curOffset))
+					slice = vec.sliceForOffset(curOffset);
+
+				uint8_t* index = slice.offsetFor(curOffset);
+
+				if (!index)
+					return slot2(VectorLoadRequest(vec, low, high));
+
+				stringBase[curOffset - low] = *index;
+
+				curOffset++;
+				}
+			}
+
+		if (stringSize <= String::maxBytesPackedIntoStringPtr)
+			return slot0(PooledString(tr));
+		else
+			return slot0(
+				ExecutionContext::currentExecutionContext()->getRefcountPool()->add(tr)
+				);
+		}
+
+	BSA_DLLEXPORT
+	ReturnValue<double, PooledString, PooledString, VectorLoadRequest> FORA_clib_vectorDataToFloat64Sliced(
+				const VectorRecord& vec,
+				int64_t low,
+				int64_t high
+				)
+		{
+		int64_t vecsize = vec.size();
+		if (low < 0)
+			low += vecsize;
+		if (high < 0)
+			high += vecsize;
+		if (low < 0)
+			low = 0;
+		if (high >= vecsize)
+			high = vecsize;
+		if (high < low)
+			high = low = 0;
+		
+		if (high - low > kMaxStringSizeForVector)
+			{
+			std::string msg;
+
+			MemoryPool* pool = ExecutionContext::currentExecutionContext()->getMemoryPool();
+
+			msg = "Can't allocate a string from a vector larger than 10 MB. This vector has " +
+					boost::lexical_cast<std::string>(vec.size()) + " values";
+
+			return slot2(
+				ExecutionContext::currentExecutionContext()->getRefcountPool()->add(
+					String(
+						msg,
+						pool
+						)
+					)
+				);
+			}
+
+		TypedFora::Abi::ForaValueArraySlice slice = vec.sliceForOffset(low);
+		if (slice.array() && low >= slice.mapping().lowIndex() && high <= slice.mapping().highIndex())
+			{
+			uint8_t* base = slice.offsetFor(low);
+			long stride = slice.offsetFor(low+1) - base;
+			
+			char array[high+1-low];
+
+			for (long k = 0; k < high-low; k++)
+				array[k] = (base + stride * k)[0];
+			array[high-low] = 0;
+
+			char* final;
+			double out = strtod(array, &final);
+
+			if (final != array + high-low)
+				return slot1(
+					Fora::Interpreter::ExecutionContext::currentExecutionContext()->getRefcountPool()->add(
+						string_type(
+							"can't convert to value of type Float64", 
+							Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool() 
+							)
+						)
+					);
+
+			return slot0(out);
+			}
+		else
+			return slot3(VectorLoadRequest(vec, low, high));
 		}
 
 	BSA_DLLEXPORT
@@ -829,6 +973,54 @@ public:
 						&FORA_clib_vectorDataToString,
 						ImmutableTreeVector<uword_t>() + 0
 						)->setExpansionName("VectorDataToString");
+
+				//this is a merging of the VectorSlice axiom and the vectordatatostring axiom
+				NativeCFGTransforms::NativeCodeExpansionRewriteRules::singleton()
+					.registerChainedRewriteRule(
+						"VectorSlice2",
+						"VectorDataToString",
+						LibcallAxiomGroup::create(
+							JOVT() + 
+								jovVector(JOV::OfType(Type::Integer(8, false))) + 
+								"GetItem" + 
+								JOV::OfType(Type::Integer(64, true)) + 
+								JOV::OfType(Type::Integer(64, true)) +
+								"Member" + 
+								"dataAsString",
+							ReturnSlots() +
+								ReturnSlot::Normal(JOV::OfType(Type::String())) +
+								ReturnSlot::Exception(JOV::OfType(Type::String())),
+							&FORA_clib_vectorDataToStringSliced,
+							ImmutableTreeVector<uword_t>() + 0 + 2 + 3
+							)->setExpansionName("VectorSlice2DataToString")
+							->getExpansion()
+						);
+
+				//this is a merging of the VectorSlice axiom and the vectordatatostring axiom
+				NativeCFGTransforms::NativeCodeExpansionRewriteRules::singleton()
+					.registerChainedRewriteRule(
+						"VectorSlice2DataToString",
+						"Float64FromString",
+						LibcallAxiomGroup::create(
+							JOVT() + 
+								jovVector(JOV::OfType(Type::Integer(8, false))) + 
+								"GetItem" + 
+								JOV::OfType(Type::Integer(64, true)) + 
+								JOV::OfType(Type::Integer(64, true)) +
+								"Member" + 
+								"dataAsString" + 
+								"Convert" + 
+								CSTValue(JOV::OfType(Type::Float(64)))
+								,
+							ReturnSlots() +
+								ReturnSlot::Normal(JOV::OfType(Type::Float(64))) +
+								ReturnSlot::Exception(JOV::OfType(Type::String())) +
+								ReturnSlot::Exception(JOV::OfType(Type::String())),
+							&FORA_clib_vectorDataToFloat64Sliced,
+							ImmutableTreeVector<uword_t>() + 0 + 2 + 3
+							)->setExpansionName("VectorSlice2DataToFloat64")
+							->getExpansion()
+						);
 				}
 
 				{
