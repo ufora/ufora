@@ -116,11 +116,47 @@ public:
 					const NativeExpression& inNativeExpression, 
 					const RefcountStyle& outRefcountStyle,
 					const JudgmentOnResult& outNormalJOR,
-					const JudgmentOnResult& outExceptionJOR
+					const JudgmentOnResult& outExceptionJOR,
+					Nullable<std::string> inlineExpansionName
 					) const
 		{
 		JudgmentOnAction joa = JudgmentOnAction::Throws(outExceptionJOR) | 
 										JudgmentOnAction::Value(outNormalJOR);
+
+
+		ImmutableTreeVector<NativeVariable> varsToUse = 
+			NativeVariable("callbacks", NativeTypeFor<NativeRuntimeCallbacks>::get().ptr()) + 
+				mNativeVariables;
+
+		NativeExpression expressionToUse = inNativeExpression;
+
+		if (inlineExpansionName)
+			{
+			//put a second CFG wrapper around this one with a passthrough
+			ImmutableTreeVector<NativeVariable> newVars = 
+				mapITV(
+					varsToUse, 
+					[&](NativeVariable var) { return NativeVariable::Temp(var.type()); }
+					);
+
+			NativeCFG innerCfg = NativeCFG(varsToUse, inNativeExpression);
+
+			expressionToUse = NativeExpression::Call(
+				NativeCallTarget::Expansion(NativeCFGExpansion(*inlineExpansionName, innerCfg, inNativeExpression.hasSideEffects())),
+				mapITVWithIndices(innerCfg.returnTypes(), [&](NativeType t, int64_t ix) { 
+					NativeVariable v = NativeVariable::Temp(t);
+
+					return NativeContinuation(
+						v,
+						NativeExpression::Return(ix, v.expr())
+						);
+					}),
+				mapITV(newVars, [&](NativeVariable var) { return var.expr(); }),
+				emptyTreeVec()
+				);
+
+			varsToUse = newVars;
+			}
 
 		return 
 			Axiom::Native(
@@ -131,9 +167,8 @@ public:
 					joa, 
 					outRefcountStyle, 
 					NativeCFG(
-						NativeVariable("callbacks", NativeTypeFor<NativeRuntimeCallbacks>::get().ptr()) + 
-							mNativeVariables,
-						inNativeExpression
+						varsToUse,
+						expressionToUse
 						)
 					)
 				);
@@ -148,9 +183,19 @@ public:
 					const NativeExpression& inNativeExpression, 
 					const RefcountStyle& outRefcountStyle,
 					const JudgmentOnValue& outputJov,
-					bool isException
+					bool isException,
+					Nullable<std::string> inlineExpansionName
 					) const
 		{
+		if (inlineExpansionName)
+			return axiomForNativeExpression(
+				inNativeExpression, 
+				outRefcountStyle, 
+				isException ? JudgmentOnResult() : JudgmentOnResult(outputJov),
+				isException ? JudgmentOnResult(outputJov) : JudgmentOnResult(),
+				inlineExpansionName
+				);
+
 		ImmutableTreeVector<InlineNativeOperationArg> varmap;
 
 		ImmutableTreeSet<NativeVariable> nativeVarSet;
@@ -244,14 +289,16 @@ Axiom TypedForaAxiomBuilder::axiomForNativeExpression(
 			const NativeExpression& inNativeExpression, 
 			const RefcountStyle& outRefcountStyle,
 			const JudgmentOnValue& outputJov,
-			bool isException
+			bool isException,
+			Nullable<std::string> inlineExpansionName
 			) const
 	{
 	return mImpl->axiomForNativeExpression(
 		inNativeExpression, 
 		outRefcountStyle, 
 		outputJov, 
-		isException
+		isException,
+		inlineExpansionName
 		);
 	}
 
@@ -259,14 +306,16 @@ Axiom TypedForaAxiomBuilder::axiomForNativeExpression(
 			const NativeExpression& inNativeExpression, 
 			const RefcountStyle& outRefcountStyle,
 			const JudgmentOnResult& outNormalJOR,
-			const JudgmentOnResult& outExceptionJOR
+			const JudgmentOnResult& outExceptionJOR,
+			Nullable<std::string> inlineExpansionName
 			) const
 	{
 	return mImpl->axiomForNativeExpression(
 		inNativeExpression,
 		outRefcountStyle,
 		outNormalJOR,
-		outExceptionJOR
+		outExceptionJOR,
+		inlineExpansionName
 		);
 	}
 
