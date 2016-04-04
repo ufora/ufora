@@ -17,7 +17,9 @@
 #include "../TypedFora/TypedFora.hppml"
 #include "../TypedFora/TypedForaUtil.hppml"
 #include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include "../TypedFora/ABI/HomogenousVectorStashCodegen.hppml"
 #include "../Native/NativeCode.hppml"
+#include "../../core/Logging.hpp"
 
 namespace TypedFora {
 
@@ -123,25 +125,49 @@ public:
 		JudgmentOnAction joa = JudgmentOnAction::Throws(outExceptionJOR) | 
 										JudgmentOnAction::Value(outNormalJOR);
 
+		ImmutableTreeVector<NativeVariable> incomingVariables;
 
-		ImmutableTreeVector<NativeVariable> varsToUse = 
-			NativeVariable("callbacks", NativeTypeFor<NativeRuntimeCallbacks>::get().ptr()) + 
-				mNativeVariables;
+		NativeExpression axiomExpression = inNativeExpression;
 
-		NativeExpression expressionToUse = inNativeExpression;
+		NativeVariable callbackVar("callbacks", NativeTypeFor<NativeRuntimeCallbacks>::get().ptr());
 
 		if (inlineExpansionName)
 			{
+			//the argument variables in the new expansion CFG
+			ImmutableTreeVector<NativeVariable> innerCfgArgs;
+			innerCfgArgs = innerCfgArgs + callbackVar;
+
+			//the new variables that will be passed in at the axiom root level
+			incomingVariables = incomingVariables + NativeVariable::Temp(callbackVar.type());
+
+			ImmutableTreeVector<NativeExpression> exprsToCallInner;
+			exprsToCallInner = exprsToCallInner + incomingVariables[0].expr();
+
+			long stashVarsUsed = 0;
+			for (long k = 0; k < mNativeVariables.size();k++)
+				{
+				innerCfgArgs = innerCfgArgs + 
+					mNativeVariables[k];
+				
+				NativeVariable newVar = NativeVariable::Temp(mNativeVariables[k].type());
+				incomingVariables = incomingVariables + newVar;
+				exprsToCallInner = exprsToCallInner + newVar.expr();
+
+				auto it = mNativeStashVars.find(k);
+				if (it != mNativeStashVars.end())
+					{
+					innerCfgArgs = innerCfgArgs + it->second;
+					exprsToCallInner = exprsToCallInner + NativeExpression::Zero(it->second.type());
+					stashVarsUsed++;
+					}
+				}
+
+			lassert_dump(stashVarsUsed == mNativeStashVars.size(), prettyPrintString(mNativeStashVars));
+
 			//put a second CFG wrapper around this one with a passthrough
-			ImmutableTreeVector<NativeVariable> newVars = 
-				mapITV(
-					varsToUse, 
-					[&](NativeVariable var) { return NativeVariable::Temp(var.type()); }
-					);
+			NativeCFG innerCfg = NativeCFG( innerCfgArgs, inNativeExpression);
 
-			NativeCFG innerCfg = NativeCFG(varsToUse, inNativeExpression);
-
-			expressionToUse = NativeExpression::Call(
+			axiomExpression = NativeExpression::Call(
 				NativeCallTarget::Expansion(NativeCFGExpansion(*inlineExpansionName, innerCfg, inNativeExpression.hasSideEffects())),
 				mapITVWithIndices(innerCfg.returnTypes(), [&](NativeType t, int64_t ix) { 
 					NativeVariable v = NativeVariable::Temp(t);
@@ -151,11 +177,23 @@ public:
 						NativeExpression::Return(ix, v.expr())
 						);
 					}),
-				mapITV(newVars, [&](NativeVariable var) { return var.expr(); }),
+				exprsToCallInner,
 				emptyTreeVec()
 				);
 
-			varsToUse = newVars;
+			lassert(exprsToCallInner.size() == innerCfgArgs.size());
+			}
+		else
+			{
+			incomingVariables = callbackVar + mNativeVariables;
+
+			//just set all the stash variables to zero
+			for (auto ixAndVar: mNativeStashVars)
+				axiomExpression = NativeExpression::Let(
+					ixAndVar.second, 
+					NativeExpression::Zero(ixAndVar.second.type()),
+					axiomExpression
+					);
 			}
 
 		return 
@@ -167,8 +205,8 @@ public:
 					joa, 
 					outRefcountStyle, 
 					NativeCFG(
-						varsToUse,
-						expressionToUse
+						incomingVariables,
+						axiomExpression
 						)
 					)
 				);
@@ -177,6 +215,17 @@ public:
 	NativeVariable nativeVar(uword_t inIndex) const
 		{
 		return mNativeVariables[inIndex];
+		}
+
+	NativeVariable nativeStashVar(uword_t inIndex) const
+		{
+		auto it = mNativeStashVars.find(inIndex);
+		if (it != mNativeStashVars.end())
+			return it->second;
+
+		mNativeStashVars[inIndex] = 
+			NativeVariable::Temp(NativeTypeFor<TypedFora::Abi::HomogenousVectorStash>::get());
+		return mNativeStashVars[inIndex];
 		}
 
 	Axiom axiomForNativeExpression(
@@ -249,6 +298,8 @@ private:
 	ImmutableTreeVector<TypedFora::Variable> mVariables;
 
 	ImmutableTreeVector<NativeVariable> mNativeVariables;
+
+	mutable std::map<long, NativeVariable> mNativeStashVars;
 };
 
 
@@ -283,6 +334,11 @@ TypedFora::Variable TypedForaAxiomBuilder::var(uword_t inIndex) const
 NativeVariable TypedForaAxiomBuilder::nativeVar(uword_t inIndex) const
 	{
 	return mImpl->nativeVar(inIndex);
+	}
+
+NativeVariable TypedForaAxiomBuilder::nativeStashVar(uword_t inIndex) const
+	{
+	return mImpl->nativeStashVar(inIndex);
 	}
 
 Axiom TypedForaAxiomBuilder::axiomForNativeExpression(
