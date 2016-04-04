@@ -306,101 +306,55 @@ public:
 			return res;
 			}
 	};
+	Nullable<ImmutableTreeVector<NativeExpression> > transformExpansionArgs(ImmutableTreeVector<NativeExpression> args) const
+		{
+		bool didAnything = false;
+		ImmutableTreeVector<NativeExpression> transformed;
 
+		//check each arg - if it's an argument and the next arg is a vector stash, we should attempt to line them up
+		for (long k = 0; k < args.size(); k++)
+			{
+			Nullable<VectorArgument> vectorRead = mFlow.valueForExpression(args[k]).getSingleVectorArg();
+			
+			if (k + 1 < args.size() && vectorRead && args[k + 1].isZero() 
+					&& *args[k + 1].type() == NativeTypeFor<TypedFora::Abi::HomogenousVectorStash>::get() && 
+					mCurrentSingleStashes.find(*vectorRead) != mCurrentSingleStashes.end())
+				{
+				auto stashVar = mCurrentSingleStashes.find(*vectorRead)->second;
 
+				transformed = transformed + args[k] + stashVar.expr();
+				k++;
+				didAnything = true;
+				}
+			else
+				transformed = transformed + args[k];
+			}
+
+		if (!didAnything)
+			return null();
+
+		lassert(args.size() == transformed.size());
+
+		return null() << transformed;
+		}
 
 	Nullable<NativeExpression> processDown(const NativeExpression& t, bool& outContinue) const
 		{
 		@match NativeExpression(t)
-			-| Let(var, Tagged(taggedExpr, Generic(genericTagName, genericTagExprs)), within) ->> {
-				if (genericTagName == "VectorSlice2")
+			-| Call(Expansion(expansion), handlers, args, meta) ->> {
+				auto newArgs = transformExpansionArgs(args);
+				if (newArgs)
 					{
-					Nullable<VectorArgument> vectorRead = mFlow.valueForExpression(*genericTagExprs["vec"]).getSingleVectorArg();
-					
-					if (!vectorRead)
-						return null();
-
-					auto it2 = mCurrentSingleStashes.find(*vectorRead);
-					if (it2 == mCurrentSingleStashes.end())
-						return null();
-
-					NativeVariable stashVar = it2->second;
-
-					@match NativeExpression(within)
-						-| Let(var2, Tagged(Call(Inline(cfg, block), returnH, cfgArgs, metadt), 
-												Generic(genericTagName2, genericTagExprs2)), within2) ->> {
-							if (genericTagName2 == "LibcallWithVectorLoadcheck")
-								{
-								lassert(cfgArgs.size() == 0);
-
-								@match NativeExpression(*genericTagExprs2[std::string("libcallExpr")])
-									-| CallLibraryFunction(ByPointer(ptr), retType, args, byPtr, retByPtr) ->> {
-										if (ptr == (uword_t)&FORA_clib_vectorDataToString)
-											{
-											@match NativeExpression(args[0])
-												-| Variable(shouldBeVar1) ->> {
-													if (shouldBeVar1 != var)
-														return null();
-													}
-												-| _ ->> { return null(); }
-
-											auto slicedVecExpr = NativeExpression::Tagged(taggedExpr, NativeExpressionTag::Generic(genericTagName, genericTagExprs));
-											
-											auto newCfg = pushMetadataOntoCallExpressions(cfg, metadt);
-
-											TypedNativeExpression<HomogenousVectorStash> stash(stashVar.expr());
-
-											auto newLibcallExpr = 
-												NativeExpression::CallLibraryFunction(
-													NativeLibraryFunctionTarget::ByPointer((uword_t)&FORA_clib_vectorDataToStringSliced),
-													retType,
-													emptyTreeVec() + 
-														*genericTagExprs["vec"] + 
-														*genericTagExprs["lowSlice"] + 
-														*genericTagExprs["highSlice"] + 
-														stash.offsetStart().getExpression() + 
-														stash.offsetStop().getExpression() + 
-														stash.stride().getExpression() + 
-														stash.pointer().getExpression(),
-													byPtr + false + false + false+ false + false + false,
-													retByPtr
-													);
-
-											newCfg = ::transform(newCfg, ReplaceNativeExpression([&](NativeExpression e) -> Nullable<NativeExpression> {
-												@match NativeExpression(e)
-													-| CallLibraryFunction() ->> {
-														return null() << newLibcallExpr;
-														}
-													-| FollowContinuation() ->> {
-														return null() << 
-															NativeExpression::Let(var, slicedVecExpr, e);
-														}
-													-| _ ->> {
-														return null();
-														}
-												}));
-
-											return null() << NativeExpression::Let(
-												var2,
-												NativeExpression::Call(
-													NativeCallTarget::Inline(
-														newCfg,
-														block
-														),
-													returnH,
-													emptyTreeVec(),
-													emptyTreeVec()
-													),
-												pushdownWhereNeeded(var, slicedVecExpr, within2)
-												);
-											}
-										}
-									-| _ ->> {}
-								}
-							}
-						-| _ ->> {
-							}
+					outContinue = false;
+					return null() << NativeExpression::Call(
+						NativeCallTarget::Expansion(expansion),
+						::transform(handlers, *this),
+						*newArgs,
+						::transform(meta, *this)
+						);
 					}
+
+				return null();
 				}
 			-| Jump(target, expressions) ->> {
 				long jumpIndex = mJumpsVisited;

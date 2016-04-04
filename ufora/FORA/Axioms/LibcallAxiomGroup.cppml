@@ -19,6 +19,7 @@
 #include "../TypedFora/ABI/VectorHandleCodegen.hppml"
 #include "../TypedFora/ABI/VectorLoadRequest.hppml"
 #include "../TypedFora/ABI/VectorLoadRequestCodegen.hppml"
+#include "../TypedFora/ABI/HomogenousVectorStashCodegen.hppml"
 #include "../TypedFora/TypedFora.hppml"
 #include "TypedForaAxiomBuilder.hppml"
 #include "../../core/cppml/ExtractAllObjectsMatchingPredicate.hppml"
@@ -73,18 +74,23 @@ bool isValidPassByValueJmt(const JudgmentOnValue& inJOV)
 
 }
 
-pair<NativeExpression, bool> LibcallAxiomGroup::prepareArgumentToPass(
+pair<ImmutableTreeVector<NativeExpression>, ImmutableTreeVector<bool> > 
+			LibcallAxiomGroup::prepareArgumentToPass(
 						long argumentIndex, 
-						const NativeExpression& expression
+						long inputIndex,
+						const NativeExpression& expression,
+						const TypedFora::TypedForaAxiomBuilder& axiomBuilder
 						)
 	{
 	NativeType expectingType = mArgumentTypes[argumentIndex].type();
 
 	lassert(expression.type());
 
+	pair<ImmutableTreeVector<NativeExpression>, ImmutableTreeVector<bool> > res;
+
 	if (expectingType == *expression.type())
 		{
-		JudgmentOnValue argumentJov = mInputJudgments[mInputsToArguments[argumentIndex]];
+		JudgmentOnValue argumentJov = mInputJudgments[mInputsToArguments[inputIndex]];
 
 		lassert_dump(
 			isValidPassByValueJmt(argumentJov),
@@ -96,21 +102,43 @@ pair<NativeExpression, bool> LibcallAxiomGroup::prepareArgumentToPass(
 				<< ". use a reference for non POD data like this"
 			);
 
-		return make_pair(expression, false);
+		res.first = res.first + expression;
+		res.second = res.second + false;
+		}
+		else
+	if (expectingType == expression.type()->ptr())
+		{
+		res.first = res.first + expression;
+		res.second = res.second + true;
+		}
+	else
+		{
+		lassert_dump(
+			false,
+			"Can't adapt argument of type " << prettyPrintString(*expression.type()) << " to slot "
+				<< argumentIndex << " = " << prettyPrintString(mArgumentTypes[argumentIndex]) 
+				<< " of axiom with signature " << prettyPrintString(mInputJudgments)
+				<< " accepting native arguments of type "
+				<< prettyPrintString(mArgumentTypes) << " and returning native types "
+				<< prettyPrintString(mFunctionReturnTypes)
+			);
 		}
 
-	if (expectingType == expression.type()->ptr())
-		return make_pair(expression, true);
+	if (argumentIndex + 1 < mArgumentTypes.size() && mArgumentTypes[argumentIndex+1].type() == 
+			NativeTypeFor<TypedFora::Abi::HomogenousVectorStash>::get())
+		{
+		res.first = res.first + axiomBuilder.nativeStashVar(mInputsToArguments[inputIndex]).expr();
+		res.second = res.second + false;
+		}
+		else
+	if (argumentIndex + 1 < mArgumentTypes.size() && mArgumentTypes[argumentIndex+1].type() == 
+			NativeTypeFor<TypedFora::Abi::HomogenousVectorStash>::get().ptr())
+		{
+		res.first = res.first + axiomBuilder.nativeStashVar(mInputsToArguments[inputIndex]).expr();
+		res.second = res.second + true;
+		}
 
-	lassert_dump(
-		false,
-		"Can't adapt argument of type " << prettyPrintString(*expression.type()) << " to slot "
-			<< argumentIndex << " = " << prettyPrintString(mArgumentTypes[argumentIndex]) 
-			<< " of axiom with signature " << prettyPrintString(mInputJudgments)
-			<< " accepting native arguments of type "
-			<< prettyPrintString(mArgumentTypes) << " and returning native types "
-			<< prettyPrintString(mFunctionReturnTypes)
-		);
+	return res;
 	}
 
 ImmutableTreeVector<uword_t> LibcallAxiomGroup::computeExitPoints() const
@@ -151,17 +179,6 @@ void LibcallAxiomGroup::verifyInputs() const
 			<< prettyPrintString(mFunctionReturnTypes)
 		);
 	
-	lassert_dump(
-		mArgumentTypes.size() == mInputsToArguments.size(),
-
-		"Input count mismatch in axiom with signature " 
-			<< prettyPrintString(mInputJudgments)
-			<< " returning " << prettyPrintString(mReturnSlots)
-			<< ", accepting native arguments of type "
-			<< prettyPrintString(mArgumentTypes) << " and returning native types "
-			<< prettyPrintString(mFunctionReturnTypes)
-		);
-
 	lassert(mReturnSlots.size());
 	
 	if (needsVectorLoad())
@@ -228,17 +245,29 @@ Axiom LibcallAxiomGroup::buildAxiom()
 	ImmutableTreeVector<JudgmentOnValue> inputJudgments = 
 		mInputJudgments.toJOVListWithExtrasAsTrailingElement();
 
+	ImmutableTreeVector<int64_t> indicesOfNonStashArguments;
+	for (long k = 0; k < mArgumentTypes.size(); k++)
+		if (mArgumentTypes[k].type() != NativeTypeFor<TypedFora::Abi::HomogenousVectorStash>::get() && 
+				mArgumentTypes[k].type() != NativeTypeFor<TypedFora::Abi::HomogenousVectorStash*>::get())
+			indicesOfNonStashArguments = indicesOfNonStashArguments + k;
+
 	std::vector<bool> isInputMarkedPooled;
 	std::vector<bool> isInputMarkedNotPooled;
 
 	isInputMarkedPooled.resize(inputJudgments.size());
 	isInputMarkedNotPooled.resize(inputJudgments.size());
 
-	for (long k = 0; k < mArgumentTypes.size(); k++)
-		if (mArgumentTypes[k].isPooled())
-			isInputMarkedPooled[mInputsToArguments[k]] = true;
+	for (long k = 0; k < mInputsToArguments.size(); k++)
+		{
+		int64_t input = mInputsToArguments[k];
+
+		long correspondingArgument = indicesOfNonStashArguments[k];
+
+		if (mArgumentTypes[correspondingArgument].isPooled())
+			isInputMarkedPooled[input] = true;
 		else
-			isInputMarkedNotPooled[mInputsToArguments[k]] = true;
+			isInputMarkedNotPooled[input] = true;
+		}
 
 	for (long k = 0; k < inputJudgments.size(); k++)
 		lassert_dump(
@@ -264,13 +293,26 @@ Axiom LibcallAxiomGroup::buildAxiom()
 		{
 		auto argAndPassByPtr = 
 			prepareArgumentToPass(
-				k, 
-				axiomBuilder.nativeVar(mInputsToArguments[k]).expr()
+				libcallArgs.size(), 
+				k,
+				axiomBuilder.nativeVar(mInputsToArguments[k]).expr(),
+				axiomBuilder
 				);
 
 		libcallArgs = libcallArgs + argAndPassByPtr.first;
 		libcallArgsPassByPointer = libcallArgsPassByPointer + argAndPassByPtr.second;
 		}
+
+	lassert_dump(
+		mArgumentTypes.size() == libcallArgs.size(),
+
+		"Input count mismatch in axiom with signature " 
+			<< prettyPrintString(mInputJudgments)
+			<< " returning " << prettyPrintString(mReturnSlots)
+			<< ", accepting native arguments of type "
+			<< prettyPrintString(mArgumentTypes) << " and returning native types "
+			<< prettyPrintString(mFunctionReturnTypes)
+		);
 
 	NativeExpression expr;
 	NativeExpression preload = (mPreloadExpression ? *mPreloadExpression : NativeExpression::Nothing());
