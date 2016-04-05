@@ -56,8 +56,6 @@ public:
 
 	static void free(EvalFrame* frame, MemBlockAllocator& allocator);
 
-	void zeroOutUnusedContinuationArgs();
-
 	void copyApplyArgsIntoArgSlots(const Fora::ApplyArgFrame& args, RefcountPool* inPool);
 
 	void copyPooledImplValsIntoFrame(const vector<ImplVal>& args);

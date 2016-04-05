@@ -67,14 +67,6 @@ void EvalFrame::setInstructionPtr(InstructionPtr newInstructionPtr)
 		wasEverMachineCodeFrame->second++;
 	}
 
-void EvalFrame::zeroOutUnusedContinuationArgs()
-	{
-	ImplVal nothing;
-
-	for (auto index: instructionPtr->getVariablesUnusedInContinuations())
-		(*mEvalFrameArgList)[index] = nothing;
-	}
-
 void EvalFrame::free(EvalFrame* frame, MemBlockAllocator& allocator)
 	{
 	EvalFrameArgList::free(frame->mEvalFrameArgList, allocator);
