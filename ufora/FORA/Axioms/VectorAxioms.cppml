@@ -630,6 +630,102 @@ extern "C" {
 		}
 
 	BSA_DLLEXPORT
+	ReturnValue<int64_t, PooledString, PooledString, VectorLoadRequest> FORA_clib_vectorDataToInt64Sliced(
+				const VectorRecord& vec,
+				const TypedFora::Abi::HomogenousVectorStash& stash,
+				int64_t low,
+				int64_t high
+				)
+		{
+		int64_t vecsize = vec.size();
+		if (low < 0)
+			low += vecsize;
+		if (high < 0)
+			high += vecsize;
+		if (low < 0)
+			low = 0;
+		if (high >= vecsize)
+			high = vecsize;
+		if (high < low)
+			high = low = 0;
+		
+		if (high - low > kMaxStringSizeForVector)
+			{
+			std::string msg;
+
+			MemoryPool* pool = ExecutionContext::currentExecutionContext()->getMemoryPool();
+
+			msg = "Can't allocate a string from a vector larger than 10 MB. This vector has " +
+					boost::lexical_cast<std::string>(vec.size()) + " values";
+
+			return slot2(
+				ExecutionContext::currentExecutionContext()->getRefcountPool()->add(
+					String(
+						msg,
+						pool
+						)
+					)
+				);
+			}
+
+		if (low >= stash.offsetStart() && high <= stash.offsetStop() && stash.stride() == 1)
+			{
+			unsigned char* base = stash.pointer() + low;
+
+			char array[high+1-low];
+
+			for (long k = 0; k < high-low; k++)
+				array[k] = base[k];
+			array[high-low] = 0;
+
+			char* final;
+			int64_t out = strtol(array, &final, 10);
+
+			if (final != array + high-low)
+				return slot1(
+					Fora::Interpreter::ExecutionContext::currentExecutionContext()->getRefcountPool()->add(
+						string_type(
+							"can't convert to value of type Int64", 
+							Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool() 
+							)
+						)
+					);
+
+			return slot0(out);
+			}
+
+		TypedFora::Abi::ForaValueArraySlice slice = vec.sliceForOffset(low);
+		if (slice.array() && low >= slice.mapping().lowIndex() && high <= slice.mapping().highIndex())
+			{
+			uint8_t* base = slice.offsetFor(low);
+			long stride = slice.offsetFor(low+1) - base;
+			
+			char array[high+1-low];
+
+			for (long k = 0; k < high-low; k++)
+				array[k] = (base + stride * k)[0];
+			array[high-low] = 0;
+
+			char* final;
+			double out = strtol(array, &final, 10);
+
+			if (final != array + high-low)
+				return slot1(
+					Fora::Interpreter::ExecutionContext::currentExecutionContext()->getRefcountPool()->add(
+						string_type(
+							"can't convert to value of type Int64", 
+							Fora::Interpreter::ExecutionContext::currentExecutionContext()->getMemoryPool() 
+							)
+						)
+					);
+
+			return slot0(out);
+			}
+		else
+			return slot3(VectorLoadRequest(vec, low, high));
+		}
+
+	BSA_DLLEXPORT
 	ReturnValue<VectorRecord, String, VectorLoadRequest> FORA_clib_concatenateVector(
 				const VectorRecord& vec,
 				const VectorRecord& vec2
@@ -1054,6 +1150,32 @@ public:
 							&FORA_clib_vectorDataToFloat64Sliced,
 							ImmutableTreeVector<uword_t>() + 0 + 2 + 3
 							)->setExpansionName("VectorSlice2DataToFloat64")
+							->getExpansion()
+						);
+
+				//this is a merging of the VectorSlice axiom and the vectordatatostring axiom
+				NativeCFGTransforms::NativeCodeExpansionRewriteRules::singleton()
+					.registerChainedRewriteRule(
+						"VectorSlice2DataToString",
+						"Int64FromString",
+						LibcallAxiomGroup::create(
+							JOVT() + 
+								jovVector(JOV::OfType(Type::Integer(8, false))) + 
+								"GetItem" + 
+								JOV::OfType(Type::Integer(64, true)) + 
+								JOV::OfType(Type::Integer(64, true)) +
+								"Member" + 
+								"dataAsString" + 
+								"Convert" + 
+								CSTValue(JOV::OfType(Type::Integer(64, true)))
+								,
+							ReturnSlots() +
+								ReturnSlot::Normal(JOV::OfType(Type::Integer(64, true))) +
+								ReturnSlot::Exception(JOV::OfType(Type::String())) +
+								ReturnSlot::Exception(JOV::OfType(Type::String())),
+							&FORA_clib_vectorDataToInt64Sliced,
+							ImmutableTreeVector<uword_t>() + 0 + 2 + 3
+							)->setExpansionName("VectorSlice2DataToInt64")
 							->getExpansion()
 						);
 				}
