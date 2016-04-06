@@ -95,6 +95,22 @@ def launcher_args(parsed_args):
         }
 
 
+def worker_logs(args):
+    launcher = Launcher(**launcher_args(args))
+    instances = running_or_pending_instances(launcher.get_reservations())
+    identity_file = args.identity_file
+
+    def grep(instance):
+        #note that we have to swap "A" and "B" because tac has reversed the order of the lines.
+        command = '"source ufora_setup.sh; tac \\$LOG_DIR/logs/ufora-worker.log | grep -m %s -B %s -A %s -e %s" | tac' % (args.N, args.A, args.B, args.expression)
+        
+        return (pad(instance.ip_address + "> ", 25), ssh_output(identity_file, instance.ip_address, command))
+
+    for ip, res in parallel_for(instances, grep):
+        for line in res.split("\n"):
+            print ip, line
+
+
 
 def start_instances(args):
     assert args.num_instances > 0
@@ -515,6 +531,15 @@ def main():
                                           help='Reboot all ufora_manager and ufora_worker processes')
     restart_all_parser.set_defaults(func=restart_instances)
     add_arguments(restart_all_parser, command_args)
+
+    worker_logs_parser = subparsers.add_parser('worker_logs',
+                                          help='Return the last N lines of logs matching a particular regex')
+    worker_logs_parser.set_defaults(func=worker_logs)
+    add_arguments(worker_logs_parser, command_args)
+    worker_logs_parser.add_argument('N', type=int, default=1, help="Number of matches to return")
+    worker_logs_parser.add_argument('-e', '--expression', type=str, required=True, help="Regular expression to search for")
+    worker_logs_parser.add_argument('-A', type=int, required=False, default=0, help="Lines of context after the expression")
+    worker_logs_parser.add_argument('-B', type=int, required=False, default=0, help="Lines of context before the expression")
 
     launch_parser = subparsers.add_parser('start',
                                           help='Launch one or more backend instances')
