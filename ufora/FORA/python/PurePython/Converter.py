@@ -992,7 +992,13 @@ class Converter(object):
         res = tuple([pyforaValue for pyforaValue in pyforaTuple])
         return res
 
-    def transformPyforaImplval(self, implval, transformer, vectorContentsExtractor):
+    def transformPyforaImplval(self, implval, transformer, vectorContentsExtractor, seenAlready):
+        if implval.hash in seenAlready:
+            return seenAlready[implval.hash]
+        seenAlready[implval.hash] = self.transformPyforaImplvalInner(implval, transformer, vectorContentsExtractor, seenAlready)
+        return seenAlready[implval.hash]
+
+    def transformPyforaImplvalInner(self, implval, transformer, vectorContentsExtractor, seenAlready):
         """Walk an implval that represents a pyfora value and unwrap it, passing data to the transformer.
 
         implval - the pyfora value we want to visit
@@ -1030,7 +1036,7 @@ class Converter(object):
             if value is not None:
                 return transformer.transformBuiltinException(
                     value[0],
-                    self.transformPyforaImplval(value[1], transformer, vectorContentsExtractor)
+                    self.transformPyforaImplval(value[1], transformer, vectorContentsExtractor, seenAlready)
                     )
 
             value = self.singletonAndExceptionConverter.convertPyAbortExceptionInstance(
@@ -1039,13 +1045,13 @@ class Converter(object):
             if value is not None:
                 return transformer.transformPyAbortException(
                     value[0],
-                    self.transformPyforaImplval(value[1], transformer, vectorContentsExtractor)
+                    self.transformPyforaImplval(value[1], transformer, vectorContentsExtractor, seenAlready)
                     )
 
         value = self.nativeTupleConverter.invertTuple(implval)
         if value is not None:
             return transformer.transformTuple([
-                self.transformPyforaImplval(x, transformer, vectorContentsExtractor)
+                self.transformPyforaImplval(x, transformer, vectorContentsExtractor, seenAlready)
                 for x in value
                 ])
 
@@ -1053,11 +1059,11 @@ class Converter(object):
         if value is not None:
             return transformer.transformDict(
                 keys=[
-                    self.transformPyforaImplval(k, transformer, vectorContentsExtractor)
+                    self.transformPyforaImplval(k, transformer, vectorContentsExtractor, seenAlready)
                     for k in value.keys()
                     ],
                 values=[
-                    self.transformPyforaImplval(v, transformer, vectorContentsExtractor)
+                    self.transformPyforaImplval(v, transformer, vectorContentsExtractor, seenAlready)
                     for v in value.values()
                     ]
                 )
@@ -1070,7 +1076,7 @@ class Converter(object):
                 return transformer.transformListThatNeedsLoading(len(listItemsAsVector))
             elif 'listContents' in contents:
                 return transformer.transformList(
-                    [self.transformPyforaImplval(x, transformer, vectorContentsExtractor)
+                    [self.transformPyforaImplval(x, transformer, vectorContentsExtractor, seenAlready)
                      for x in contents['listContents']]
                     )
             else:
@@ -1079,7 +1085,7 @@ class Converter(object):
                 contentsAsNumpy = contents['contentsAsNumpyArrays']
 
                 return transformer.transformHomogenousList(
-                    self.transformPyforaImplval(firstElement, transformer, vectorContentsExtractor),
+                    self.transformPyforaImplval(firstElement, transformer, vectorContentsExtractor, seenAlready),
                     contentsAsNumpy
                     )
 
@@ -1103,7 +1109,8 @@ class Converter(object):
                     self.transformPyforaImplval(
                         implval.getObjectLexicalMember("@self")[0],
                         transformer,
-                        vectorContentsExtractor
+                        vectorContentsExtractor,
+                        seenAlready
                         ),
                     nameAsImplval.pyval[1:]
                     )
@@ -1114,7 +1121,9 @@ class Converter(object):
                 if objectClass is not None:
                     classObject = self.transformPyforaImplval(objectClass,
                                                               transformer,
-                                                              vectorContentsExtractor)
+                                                              vectorContentsExtractor,
+                                                              seenAlready
+                                                              )
                     members = {}
 
                     for memberName in objectClass.objectMembers:
@@ -1130,7 +1139,8 @@ class Converter(object):
                                     members[str(name)] = self.transformPyforaImplval(
                                         membersTuple[i],
                                         transformer,
-                                        vectorContentsExtractor
+                                        vectorContentsExtractor,
+                                        seenAlready
                                         )
 
                     return transformer.transformClassInstance(classObject, members)
@@ -1146,7 +1156,8 @@ class Converter(object):
                                 members[str(memberName)] = self.transformPyforaImplval(
                                     member[0],
                                     transformer,
-                                    vectorContentsExtractor
+                                    vectorContentsExtractor,
+                                    seenAlready
                                     )
 
                     return transformer.transformFunctionInstance(
@@ -1169,7 +1180,8 @@ class Converter(object):
                         members[str(memberName)] = self.transformPyforaImplval(
                             member[0],
                             transformer,
-                            vectorContentsExtractor
+                            vectorContentsExtractor,
+                            seenAlready
                             )
 
             return transformer.transformClassObject(defPoint.defPoint.asExternal.paths[0],
