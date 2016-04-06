@@ -20,6 +20,77 @@
 
 namespace NativeCFGTransforms {
 
+//remove unnecessary "LocalVariable" metadata
+//Because of codegen upstream, it's possible to have variables marked as "local"
+//even if we're never going to use them again. We want to remove these from the metadata
+//so that we don't need to preserve them
+class RemoveUnnecessaryLocalVariables {
+public:
+    RemoveUnnecessaryLocalVariables()
+        {
+        }
+
+    template<class T>
+    Nullable<T>    processDown(const T& in, bool& outContinue) const
+        {
+        return null();
+        }
+
+    template<class T>
+    Nullable<T>    processUp(const T& in) const
+        {
+        return null();
+        }
+
+    static bool disjoint(ImmutableTreeSet<NativeVariable> s1, ImmutableTreeSet<NativeVariable> s2)
+        {
+        if (s1.size() > s2.size())
+            return disjoint(s2, s1);
+
+        for (auto v: s1)
+            if (s2.contains(v))
+                return false;
+        
+        return true;
+        }
+
+    Nullable<NativeExpression>    processUp(const NativeExpression& in) const
+        {
+        @match NativeExpression(in)
+            -| Call(target, conts, args, meta) ->> {
+                //only a valid analysis if all continuations exit.
+                if (in.type())
+                    return null();
+
+                ImmutableTreeSet<NativeVariable> usedVariables;
+                
+                for (auto m: meta)
+                    if (!m.node().isLocalVariables())
+                        usedVariables = usedVariables + m.freeVariables();
+
+                for (auto c: conts)
+                    usedVariables = usedVariables + c.freeVariables();
+
+                auto newMetas = mapITV(meta, [&](NativeContinuationMetadata m) {
+                    if (m.node().isLocalVariables())
+                        m.vars() =
+                            filterITV(m.vars(), [&](NativeContinuationVarMetadata v) {
+                                return !disjoint(v.dataVar().freeVariables(), usedVariables);
+                                });
+                            
+                    return m;
+                    });
+
+                return null() << NativeExpression::Call(target, conts, args, newMetas);
+                }
+            -| _ ->> {
+                return null();
+                }
+        }
+
+};
+
+
 class Rewriter {
 public:
     Rewriter(const ThreadSafeMap<pair<std::string, std::string>, NativeCFGExpansion>* inExpansions) : 
@@ -212,7 +283,10 @@ void NativeCodeExpansionRewriteRules::registerChainedRewriteRule(
 
 NativeCFG NativeCodeExpansionRewriteRules::applyRewriteRules(const NativeCFG& in) const
     {
-    return ::transform(in, Rewriter(&mChainedRules));
+    return ::transform(
+        ::transform(in, RemoveUnnecessaryLocalVariables()),
+        Rewriter(&mChainedRules)
+        );
     }
 
 NativeCodeExpansionRewriteRules& NativeCodeExpansionRewriteRules::singleton()
