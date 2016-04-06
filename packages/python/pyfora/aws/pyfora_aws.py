@@ -149,6 +149,29 @@ def start_instances(args):
     else:
         status_printer.failed()
 
+def pad(s, ct):
+    return s + " " * max(ct - len(s), 0)
+
+def restart_instances(args):
+    launcher = Launcher(**launcher_args(args))
+    instances = running_or_pending_instances(launcher.get_reservations())
+    identity_file = args.identity_file
+
+    def restart_instance(instance):
+        is_manager = 'manager' in instance.tags.get('Name', '')
+
+        if is_manager:
+            command = '"source ufora_setup.sh; \\$DOCKER stop ufora_manager; sudo rm -rf \\$LOG_DIR/*; \\$DOCKER start ufora_manager"'
+        else:
+            command = '"source ufora_setup.sh; \\$DOCKER stop ufora_worker; sudo rm -rf \\$LOG_DIR/*; \\$DOCKER start ufora_worker"'
+
+        return (pad(instance.ip_address + "> ", 25), ssh_output(identity_file, instance.ip_address, command))
+
+    for ip, res in parallel_for(instances, restart_instance):
+        for line in res.split("\n"):
+            print ip, line
+
+
 
 def add_instances(args):
     launcher = Launcher(**launcher_args(args))
@@ -243,6 +266,13 @@ def ssh(identity_file, host, command):
         subprocess.check_output("ssh -i %s ubuntu@%s %s" % (identity_file, host, command),
                                 shell=True)
         return 0
+    except subprocess.CalledProcessError as e:
+        return e.output
+
+def ssh_output(identity_file, host, command):
+    try:
+        return subprocess.check_output("ssh -i %s ubuntu@%s %s" % (identity_file, host, command),
+                                shell=True)
     except subprocess.CalledProcessError as e:
         return e.output
 
@@ -463,6 +493,7 @@ start_args = ('yes-all', 'ec2-region', 'vpc-id', 'subnet-id', 'security-group-id
 add_args = ('ec2-region', 'vpc-id', 'subnet-id', 'security-group-id', 'num-instances',
             'spot-price')
 list_args = ('ec2-region', 'vpc-id', 'subnet-id', 'security-group-id')
+command_args = ('ec2-region', 'vpc-id', 'subnet-id', 'security-group-id', 'identity-file')
 stop_args = ('ec2-region', 'vpc-id', 'subnet-id', 'security-group-id',
              'terminate')
 deploy_args = ('ec2-region', 'vpc-id', 'subnet-id', 'security-group-id',
@@ -479,6 +510,11 @@ def add_arguments(parser, arg_names):
 def main():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers()
+
+    restart_all_parser = subparsers.add_parser('restart',
+                                          help='Reboot all ufora_manager and ufora_worker processes')
+    restart_all_parser.set_defaults(func=restart_instances)
+    add_arguments(restart_all_parser, command_args)
 
     launch_parser = subparsers.add_parser('start',
                                           help='Launch one or more backend instances')
