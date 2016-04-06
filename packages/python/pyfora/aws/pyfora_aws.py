@@ -111,6 +111,45 @@ def worker_logs(args):
             print ip, line
 
 
+def worker_load(args):
+    cmd_to_run = 'tail -f /mnt/ufora/logs/ufora-worker.log' if args.logs else 'htop'
+    launcher = Launcher(**launcher_args(args))
+    instances = running_or_pending_instances(launcher.get_reservations())
+    identity_file = args.identity_file
+
+    import os
+    session = os.getenv("USER")
+    def sh(cmd, **kwargs):
+        try:
+            print "CMD =", cmd.format(SESSION=session, **kwargs)
+            subprocess.check_output(cmd.format(SESSION=session, **kwargs), shell=True)
+        except:
+            import traceback
+            traceback.print_exc()
+
+    sh("tmux -2 kill-session -t {SESSION}")
+
+    sh("tmux -2 new-session -d -s {SESSION}")
+
+    # Setup a window for tailing log files
+    sh("tmux new-window -t {SESSION}:1 -n 'pyfora_htop'")
+    isFirst = True
+    count = 0
+
+    for ix in xrange(len(instances)-1):
+        sh("tmux split-window -v -t 0 -l 10")
+
+    # for ix in xrange(len(instances)-1,0,-1):
+    #     sh('tmux resize-pane -t {ix} -y 20', ix=ix)
+
+    for ix in xrange(len(instances)):
+        sh('tmux send-keys -t {ix} "ssh ubuntu@%s -t -i %s %s" C-m' % (instances[ix].ip_address, identity_file, cmd_to_run),ix=ix)
+
+
+    # Attach to session
+    sh('tmux -2 attach-session -t {SESSION}')
+
+
 
 def start_instances(args):
     assert args.num_instances > 0
@@ -541,6 +580,14 @@ def main():
     worker_logs_parser.add_argument('-A', type=int, required=False, default=0, help="Lines of context after the expression")
     worker_logs_parser.add_argument('-B', type=int, required=False, default=0, help="Lines of context before the expression")
 
+    worker_load_parser = subparsers.add_parser('worker_load',
+                                          help='Run htop in tmux for all workers')
+    worker_load_parser.set_defaults(func=worker_load)
+    worker_load_parser.add_argument('-l', '--logs', action='store_true', default=False, help="Instead of htop, tail the logs")
+
+    add_arguments(worker_load_parser, command_args)
+
+    
     launch_parser = subparsers.add_parser('start',
                                           help='Launch one or more backend instances')
     launch_parser.set_defaults(func=start_instances)
