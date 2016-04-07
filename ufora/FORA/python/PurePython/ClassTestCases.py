@@ -903,3 +903,53 @@ class ClassTestCases(object):
             return c.g(2)
 
         self.equivalentEvaluationTest(f, 2)
+
+    def test_named_args_to_ctor_1(self):
+        class A_lots_o_args_1(object):
+            def __init__(self, arg):
+                self.arg = arg
+
+        with self.create_executor() as executor:
+            with executor.remotely.downloadAll():
+                a = A_lots_o_args_1(arg=42)
+
+            self.assertEqual(a.arg, 42)
+
+    def test_named_args_to_ctor_2(self):
+        class A_lots_o_args_2(object):
+            def __init__(self, arg=None):
+                self.arg = arg
+
+        with self.create_executor() as executor:
+            with executor.remotely.downloadAll():
+                a = A_lots_o_args_2(arg=42)
+
+            self.assertEqual(a.arg, 42)
+
+    def test_named_args_to_ctor_3(self):
+        class A_lots_o_args_3(object):
+            def __init__(self,
+                         x1,
+                         x2,
+                         x3,
+                         x4=None,
+                         x5=None):
+                self.x1 = x1
+                self.x2 = x2
+                self.x3 = x3
+                self.x4 = x4
+                self.x5 = x5
+
+            def vals(self):
+                return (
+                    self.x1,
+                    self.x2,
+                    self.x3,
+                    self.x4,
+                    self.x5
+                    )
+            
+        def f():
+            return A_lots_o_args_3(1, x3=3, x4=4, x2=2).vals()
+
+        self.equivalentEvaluationTest(f)

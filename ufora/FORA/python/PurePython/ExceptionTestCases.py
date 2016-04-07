@@ -334,6 +334,21 @@ class ExceptionTestCases(object):
                 "call expression to function f() had too many named arguments"
                 )
 
+    def test_invalid_call_14(self):
+        class A_4324(object):
+            def __init__(self, arg):
+                self.arg = arg
+
+        try:
+            with self.create_executor() as executor:
+                with executor.remotely:
+                    A_4324(not_arg=42)
+        except TypeError as e:
+            self.assertEqual(
+                e.message,
+                "couldn't match argument arg in call to function A_4324()"
+                )
+
     def test_dict_creation_error_1(self):
         def f():
             return dict([(1,2), (3,4,5)])
