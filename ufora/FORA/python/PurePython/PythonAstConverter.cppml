@@ -876,11 +876,11 @@ PythonAstConverter::convertPythonInitDefToForaClassDefinitionTerms(
         const std::string& className
         ) const
     {
-    PythonAstArguments args = functionDef.args();
+    PythonAstArguments nonSelfArgs = dropFirstNormalArg(functionDef.args());
 
     TuplePatternElement selfArg = TuplePatternElement::Normal(
         null(),
-        convertPythonAstExpressionToPattern(args.args()[0]),
+        convertPythonAstExpressionToPattern(functionDef.args().args()[0]),
         null()
         );
 
@@ -894,8 +894,8 @@ PythonAstConverter::convertPythonInitDefToForaClassDefinitionTerms(
         selfName = nullableName->toString();
         }
 
-    ImmutableTreeVector<TuplePatternElement> foraArgs = 
-        computeForaArgs(dropFirstNormalArg(args));
+    ImmutableTreeVector<TuplePatternElement> foraArgs =
+        computeForaArgs(nonSelfArgs);
 
     std::pair<ImmutableTreeVector<PythonAstStatement>, SetOfStringPairs>
         transformedBodyAndSelfSetItemMap = rewriteSelfSetAttrs(
@@ -955,9 +955,9 @@ PythonAstConverter::convertPythonInitDefToForaClassDefinitionTerms(
         }
 
     // For generated operator news, we need two function signatures:
-    // one of the form (@unnamed_args: tup, *rest), and the "old" form,
-    // just tup. The reason we need the old form is that in other parts
-    // of or framework, we instantiate by using FunctionStage1Simulator,
+    // one of the form (@unnamed_args:, @named_args:), and the "old" form.
+    // The reason we need the old form is that in other parts
+    // of our framework we instantiate by using FunctionStage1Simulator,
     // and that's easier with the old form.
 
     return tr + ClassDefinitionTerm::Constructor(
@@ -966,6 +966,7 @@ PythonAstConverter::convertPythonInitDefToForaClassDefinitionTerms(
             functionBody,
             adaptedArgumentsClauseForInit(
                 className,
+                nonSelfArgs,
                 foraArgs,
                 SimpleParseRange()
                 )
@@ -976,33 +977,48 @@ PythonAstConverter::convertPythonInitDefToForaClassDefinitionTerms(
 
 Function PythonAstConverter::adaptedArgumentsClauseForInit(
         const std::string& className,
+        const PythonAstArguments& nonSelfArgs,
         const ImmutableTreeVector<TuplePatternElement>& foraArgs,
         const SimpleParseRange& extent
         ) const
     {
     // add a function clause which matches the "new" calling convention,
-    // (@unnamed_args: tup, *rest) into the old form (this just forwards the args)
+    // (@unnamed_args:, @named_args:) into the old form (this just forwards the args)
+
+    auto unpackedArguments =
+        unpackArguments(
+            nonSelfArgs,
+            extent,
+            className
+            );
+
+    // I'm concerned about the consistency of foraArgs and unpackedArguments
+    // but that will generate an invalid call if they don't match up
 
     return Function::Term(
         TuplePattern(
             emptyTreeVec() +
             TuplePatternElement::Normal(
                 null() << Symbol("@unnamed_args"),
-                PatternWithName(
-                    Pattern::Tuple(
-                        foraArgs
-                        ),
-                    null(),
-                    null(),
-                    ExpressionLocationMetadata::Empty()
+                PatternWithName::Anything(
+                    null() << Symbol("@unnamed_args")
                     ),
                 null()
                 ) +
-            TuplePatternElement::VarArgs(null() << Symbol("otherArgs"))
+            TuplePatternElement::Normal(
+                null() << Symbol("@named_args"),
+                PatternWithName::Anything(
+                    null() << Symbol("@named_args")
+                    ),
+                null()
+                )
             ),
-        Expression::Call(
-            Expression::Variable(className),
-            initApplyArgsFromForaArgs(foraArgs, extent)
+        Expression::Let(
+            unpackedArguments,
+            Expression::Call(
+                Expression::Variable(className),
+                initApplyArgsFromForaArgs(foraArgs, extent)
+                )
             ),
         Function::Empty()
         );
