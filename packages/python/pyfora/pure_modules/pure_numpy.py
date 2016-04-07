@@ -37,19 +37,38 @@ class PurePythonNumpyArray(object):
         if len(self.shape) == 1:
             return self
 
-        newVals = []
+        if len(self.shape) == 2:
+            newVals = []
 
-        d1 = self.shape[0]
-        d2 = self.shape[1]
+            d1 = self.shape[0]
+            d2 = self.shape[1]
 
-        newVals = [self[ix1][ix2] for ix2 in xrange(d2) for ix1 in xrange(d1)]
+            newVals = [self[ix1][ix2] for ix2 in xrange(d2) for ix1 in xrange(d1)]
 
-        newShape = tuple(reversed((self.shape)))
+            newShape = (d2, d1)
 
-        return PurePythonNumpyArray(
-            newShape,
-            newVals
-            )
+            return PurePythonNumpyArray(
+                newShape,
+                newVals
+                )
+
+        if len(self.shape) == 3:
+            newVals = []
+
+            d1 = self.shape[0]
+            d2 = self.shape[1]
+            d3 = self.shape[2]
+
+            newVals = [self[ix1][ix2][ix3] for ix3 in xrange(d3) for ix2 in xrange(d2) for ix1 in xrange(d1)]
+
+            newShape = (d3, d2, d1)
+
+            return PurePythonNumpyArray(
+                newShape,
+                newVals
+                )
+
+        raise NotImplementedError("Not implemented for dim > 3")
 
     def __iter__(self):
         for idx in xrange(len(self)):
@@ -104,14 +123,8 @@ class PurePythonNumpyArray(object):
             else:
                 return self.values[ix]
 
-        def shapeOfResultantArray(originalShape):
-            newShape = []
-            for idx in xrange(len(originalShape)):
-                if idx != 0:
-                    newShape = newShape + [originalShape[idx]]
-            return tuple(newShape)
+        newShape = self.shape[1:]
 
-        newShape = shapeOfResultantArray(self.shape)
         stride = 1
         for idx in xrange(1, len(self.shape)):
             stride = stride * self.shape[idx]
@@ -283,38 +296,26 @@ class NpArray(object):
                 array
                 )
 
-        def flattenAnNDimensionalArray(arr, shape):
-            toReturn = []
-            if len(shape) == 0:
-                return arr
-            else:
-                newShape = []
-                for idx in xrange(len(shape)):
-                    if idx != 0:
-                        newShape = newShape + [shape[idx]]
+        if not isinstance(array[0][0], list):
+            return PurePythonNumpyArray(
+                (len(array),len(array[0])),
+                sum(array, [])
+                )
 
-                for subArr in arr:
-                    v = flattenAnNDimensionalArray(subArr, newShape)
-                    if not isinstance(v, list):
-                        toReturn = toReturn + [v]
-                    else:
-                        for v2 in v:
-                            toReturn = toReturn + [v2]
-                return toReturn
+        if not isinstance(array[0][0][0], list):
+            return PurePythonNumpyArray(
+                (len(array),len(array[0]),len(array[0][0])),
+                sum(sum(array, []), [])
+                )
 
-        shape = []
-        inspection = array
-        while isinstance(inspection, list):
-            shape = shape + [len(inspection)]
-            inspection = inspection[0]
 
-        flat = flattenAnNDimensionalArray(array, shape)
-        shape = tuple(shape)
-        return PurePythonNumpyArray(
-            shape,
-            flat
-            )
+        if not isinstance(array[0][0][0][0], list):
+            return PurePythonNumpyArray(
+                (len(array),len(array[0]),len(array[0][0]), len(array[0][0][0])),
+                sum(sum(sum(array, []), []), [])
+                )
 
+        raise NotImplementedError("Not implemented for > 4D arrays")
 
 def _dotProduct(arr1, arr2):
     len1 = len(arr1)
@@ -697,10 +698,17 @@ class IsInf(object):
 @pureMapping(np.isfinite)
 class IsFinite(object):
     def __call__(self, x):
+        if isinstance(x, list):
+            return self.isfinite_array(x)
+
+        if isinstance(x, PurePythonNumpyArray):
+            return self.isfinite_array(x)
+        
         try:
             return self.isfinite_float(x)
         except:
             pass
+
         try:
             return self.isfinite_array(x)
         except:
@@ -759,10 +767,14 @@ class NpAbs(object):
 @pureMapping(np.all)
 class All(object):
     def __call__(self, x):
+        if isinstance(x, list) or isinstance(x, PurePythonNumpyArray):
+            return self.all_array(x)
+        
         try:
             return self.all_primitive(x)
         except:
             pass
+
         try:
             return self.all_array(x)
         except:
