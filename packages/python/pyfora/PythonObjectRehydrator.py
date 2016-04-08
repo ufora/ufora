@@ -91,108 +91,121 @@ class PythonObjectRehydrator(object):
                     targetDict[magicVar] = getattr(actualModule, magicVar)
 
 
-    def convertJsonResultToPythonObject(self, jsonResult):
-        if 'primitive' in jsonResult:
-            res = jsonResult['primitive']
-            if isinstance(res, str):
-                return intern(str(base64.b64decode(res)))
-            else:
-                return res
+    def convertJsonResultToPythonObject(self, json):
+        root_id = json['root_id']
+        definitions = json['obj_definitions']
+        converted = {}
 
-        if 'tuple' in jsonResult:
-            return tuple([self.convertJsonResultToPythonObject(x) for x in jsonResult['tuple']])
-        if 'list' in jsonResult:
-            return [self.convertJsonResultToPythonObject(x) for x in jsonResult['list']]
-        if 'dict' in jsonResult:
-            return {
-                self.convertJsonResultToPythonObject(key): self.convertJsonResultToPythonObject(val)
-                for key, val in zip(jsonResult['dict']['keys'], jsonResult['dict']['values'])
-                }
-        if 'untranslatableException' in jsonResult:
-            return Exceptions.ForaToPythonConversionError(
-                "untranslatable FORA exception: %s" % jsonResult['untranslatableException']
-                )
-        if 'singleton' in jsonResult:
-            singletonName = jsonResult['singleton']
-            return NamedSingletons.singletonNameToObject[singletonName]
-        if 'InvalidPyforaOperation' in jsonResult:
-            return Exceptions.InvalidPyforaOperation(jsonResult['InvalidPyforaOperation'])
-        if 'homogenousListNumpyDataStringsAndSizes' in jsonResult:
-            stringsAndSizes = jsonResult['homogenousListNumpyDataStringsAndSizes']
+        def convert(objectId):
+            if objectId in converted:
+                return converted[objectId]
+            converted[objectId] = convertInner(definitions[objectId])
+            return converted[objectId]
 
-            dtype = cPickle.loads(base64.b64decode(jsonResult['dtype']))
-            data = numpy.zeros(shape=jsonResult['length'], dtype=dtype)
+        def convertInner(objectDef):
+            if 'primitive' in objectDef:
+                res = objectDef['primitive']
+                if isinstance(res, str):
+                    return intern(str(base64.b64decode(res)))
+                else:
+                    return res
 
-            curOffset = 0
-            for dataAndSize in stringsAndSizes:
-                arrayText = dataAndSize['data']
-                size = dataAndSize['length']
-                data[curOffset:curOffset+size] = numpy.ndarray(shape=size,
-                                                               dtype=dtype,
-                                                               buffer=base64.b64decode(arrayText))
-                curOffset += size
-
-            #we use the first element as a prototype when decoding
-            firstElement = self.convertJsonResultToPythonObject(jsonResult['firstElement'])
-
-            data = data.tolist()
-            assert isinstance(data[0], type(firstElement)), "%s of type %s is not %s" % (
-                data[0], type(data[0]), type(firstElement)
-                )
-            return data
-
-        if 'builtinException' in jsonResult:
-            builtinExceptionTypeName = jsonResult['builtinException']
-            builtinExceptionType = NamedSingletons.singletonNameToObject[builtinExceptionTypeName]
-            args = self.convertJsonResultToPythonObject(jsonResult['args'])
-            return builtinExceptionType(*args)
-        if 'classInstance' in jsonResult:
-            members = {
-                k: self.convertJsonResultToPythonObject(v)
-                for k, v in jsonResult['members'].iteritems()
-                }
-            classObject = self.convertJsonResultToPythonObject(jsonResult['classInstance'])
-            return self._invertPureClassInstanceIfNecessary(
-                self._instantiateClass(classObject, members)
-                )
-        if 'pyAbortException' in jsonResult:
-            pyAbortExceptionTypeName = jsonResult['pyAbortException']
-            pyAbortExceptionType = PyAbortSingletons.singletonNameToObject[
-                pyAbortExceptionTypeName]
-            args = self.convertJsonResultToPythonObject(jsonResult['args'])
-            return pyAbortExceptionType(*args)
-        if 'boundMethodOn' in jsonResult:
-            instance = self.convertJsonResultToPythonObject(jsonResult['boundMethodOn'])
-            try:
-                return getattr(instance, jsonResult['methodName'])
-            except AttributeError:
-                raise Exceptions.ForaToPythonConversionError(
-                    "Expected %s to have a method of name %s which it didn't" % (
-                        instance,
-                        jsonResult['methodName'])
+            if 'tuple' in objectDef:
+                return tuple([convert(x) for x in objectDef['tuple']])
+            if 'list' in objectDef:
+                return [convert(x) for x in objectDef['list']]
+            if 'dict' in objectDef:
+                return {
+                    convert(key): convert(val)
+                    for key, val in zip(objectDef['dict']['keys'], objectDef['dict']['values'])
+                    }
+            if 'untranslatableException' in objectDef:
+                return Exceptions.ForaToPythonConversionError(
+                    "untranslatable FORA exception: %s" % objectDef['untranslatableException']
                     )
-        if 'functionInstance' in jsonResult:
-            members = {
-                k: self.convertJsonResultToPythonObject(v)
-                for k, v in jsonResult['members'].iteritems()
-                }
-            return self._instantiateFunction(jsonResult['functionInstance'][0],
-                                             jsonResult['functionInstance'][1],
-                                             members)
-        if 'classObject' in jsonResult:
-            members = {
-                k: self.convertJsonResultToPythonObject(v)
-                for k, v in jsonResult['members'].iteritems()
-                }
-            return self._classObjectFromFilenameAndLine(jsonResult['classObject'][0],
-                                                        jsonResult['classObject'][1],
-                                                        members)
-        if 'stacktrace' in jsonResult:
-            return jsonResult['stacktrace']
+            if 'singleton' in objectDef:
+                singletonName = objectDef['singleton']
+                return NamedSingletons.singletonNameToObject[singletonName]
+            if 'InvalidPyforaOperation' in objectDef:
+                return Exceptions.InvalidPyforaOperation(objectDef['InvalidPyforaOperation'])
+            if 'homogenousListNumpyDataStringsAndSizes' in objectDef:
+                stringsAndSizes = objectDef['homogenousListNumpyDataStringsAndSizes']
 
-        raise Exceptions.ForaToPythonConversionError(
-            "not implemented: cant convert %s" % jsonResult
-            )
+                dtype = cPickle.loads(base64.b64decode(objectDef['dtype']))
+                data = numpy.zeros(shape=objectDef['length'], dtype=dtype)
+
+                curOffset = 0
+                for dataAndSize in stringsAndSizes:
+                    arrayText = dataAndSize['data']
+                    size = dataAndSize['length']
+                    data[curOffset:curOffset+size] = numpy.ndarray(shape=size,
+                                                                   dtype=dtype,
+                                                                   buffer=base64.b64decode(arrayText))
+                    curOffset += size
+
+                #we use the first element as a prototype when decoding
+                firstElement = convert(objectDef['firstElement'])
+
+                data = data.tolist()
+                assert isinstance(data[0], type(firstElement)), "%s of type %s is not %s" % (
+                    data[0], type(data[0]), type(firstElement)
+                    )
+                return data
+
+            if 'builtinException' in objectDef:
+                builtinExceptionTypeName = objectDef['builtinException']
+                builtinExceptionType = NamedSingletons.singletonNameToObject[builtinExceptionTypeName]
+                args = convert(objectDef['args'])
+                return builtinExceptionType(*args)
+            if 'classInstance' in objectDef:
+                members = {
+                    k: convert(v)
+                    for k, v in objectDef['members'].iteritems()
+                    }
+                classObject = convert(objectDef['classInstance'])
+                return self._invertPureClassInstanceIfNecessary(
+                    self._instantiateClass(classObject, members)
+                    )
+            if 'pyAbortException' in objectDef:
+                pyAbortExceptionTypeName = objectDef['pyAbortException']
+                pyAbortExceptionType = PyAbortSingletons.singletonNameToObject[
+                    pyAbortExceptionTypeName]
+                args = convert(objectDef['args'])
+                return pyAbortExceptionType(*args)
+            if 'boundMethodOn' in objectDef:
+                instance = convert(objectDef['boundMethodOn'])
+                try:
+                    return getattr(instance, objectDef['methodName'])
+                except AttributeError:
+                    raise Exceptions.ForaToPythonConversionError(
+                        "Expected %s to have a method of name %s which it didn't" % (
+                            instance,
+                            objectDef['methodName'])
+                        )
+            if 'functionInstance' in objectDef:
+                members = {
+                    k: convert(v)
+                    for k, v in objectDef['members'].iteritems()
+                    }
+                return self._instantiateFunction(objectDef['functionInstance'][0],
+                                                 objectDef['functionInstance'][1],
+                                                 members)
+            if 'classObject' in objectDef:
+                members = {
+                    k: convert(v)
+                    for k, v in objectDef['members'].iteritems()
+                    }
+                return self._classObjectFromFilenameAndLine(objectDef['classObject'][0],
+                                                            objectDef['classObject'][1],
+                                                            members)
+            if 'stacktrace' in objectDef:
+                return objectDef['stacktrace']
+
+            raise Exceptions.ForaToPythonConversionError(
+                "not implemented: cant convert %s" % objectDef
+                )
+
+        return convert(root_id)
 
     def _invertPureClassInstanceIfNecessary(self, instance):
         if self.purePythonClassMapping.canInvert(instance):
