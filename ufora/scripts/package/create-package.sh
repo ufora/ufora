@@ -77,7 +77,7 @@ DEST_DIR=$d/ufora-${version}
 rm -rf $DEST_DIR
 mkdir -p $DEST_DIR
 echo "Copying ufora source code"
-rsync -a --exclude '*.cppml' --exclude '*.cpp' --exclude '*.hppml' --exclude '*.hpp' --exclude '*.pyc' $REPO_ROOT/ufora $DEST_DIR/lib
+rsync -a --exclude '*.cppml' --exclude '*.cpp' --exclude '*.hppml' --exclude '*.hpp' --exclude '*.pyc' --exclude '*.cfg' $REPO_ROOT/ufora $DEST_DIR/lib
 if [ $? -ne 0 ]; then
   echo "Error: Failed to rsync /ufora directory"
   exit 2
