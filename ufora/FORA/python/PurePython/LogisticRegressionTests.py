@@ -47,7 +47,11 @@ class LogisticRegressionTests(object):
         X, y = self.exampleData()
 
         def f():
-            fit = BinaryLogisticRegressionFitter(1, True, method).fit(X, y)
+            fit = BinaryLogisticRegressionFitter(
+                C=1.0/len(X),
+                hasIntercept=True,
+                method=method
+                ).fit(X, y)
             return fit.intercept, fit.coefficients
 
         computedIntercept, computedCoefficients = self.evaluateWithExecutor(f)
@@ -75,7 +79,11 @@ class LogisticRegressionTests(object):
         X, y = self.exampleData()
 
         def f():
-            fit = BinaryLogisticRegressionFitter(1, True, method).fit(X, y)
+            fit = BinaryLogisticRegressionFitter(
+                C=1.0/len(X),
+                hasIntercept=True,
+                method=method
+                ).fit(X, y)
             return fit.predict_probability(X)
 
         expectedPredictedProbabilities = [0.45810128, 0.58776695, 0.6510714]
@@ -95,7 +103,11 @@ class LogisticRegressionTests(object):
         X, y = self.exampleData()
 
         def f():
-            fit = BinaryLogisticRegressionFitter(1, True, method).fit(X, y)
+            fit = BinaryLogisticRegressionFitter(
+                C=1.0/len(X),
+                hasIntercept=True,
+                method=method
+                ).fit(X, y)
             return fit.predict(X)
 
         numpy.testing.assert_array_equal(
@@ -111,7 +123,11 @@ class LogisticRegressionTests(object):
         X, y = self.exampleData()
 
         def f():
-            fit = BinaryLogisticRegressionFitter(1, True, method).fit(X, y)
+            fit = BinaryLogisticRegressionFitter(
+                C=1.0/len(X),
+                hasIntercept=True,
+                method=method
+                ).fit(X, y)
             return fit.score(X, y)
 
         self.assertEqual(self.evaluateWithExecutor(f), 1.0)
