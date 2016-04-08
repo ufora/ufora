@@ -93,10 +93,10 @@ def linearInRange(minX, minY, maxX, maxY, x):
 class Config(object):
     def getConfigValue(self, s, default=None, checkEnviron=False):
         """return configuration string for 's'. returns 'default' if not there"""
-        if s in self._configData:
-            return self._configData[s]
-        elif checkEnviron and s in os.environ:
+        if checkEnviron and s in os.environ:
             return os.environ[s]
+        elif s in self._configData:
+            return self._configData[s]
         else:
             return default
 
@@ -263,7 +263,11 @@ class Config(object):
 
         if ensureExists:
             if not os.path.exists(rootDataDir):
-                os.makedirs(rootDataDir)
+                try:
+                    os.makedirs(rootDataDir)
+                except:
+                    if not os.path.exists(rootDataDir):
+                        raise
 
         if parseBool(self.getConfigValue("FORA_COMPILER_DUMP_NATIVE_CODE", False)):
             self.compilerDefinitionDumpDir = os.path.join(self.rootDataDir, "dumps")
