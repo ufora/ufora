@@ -112,7 +112,7 @@ def worker_logs(args):
 
 
 def worker_load(args):
-    cmd_to_run = 'tail -f /mnt/ufora/logs/ufora-worker.log' if args.logs else 'htop'
+    cmd_to_run = 'tail -f /mnt/ufora/logs/ufora-worker.log' if args.logs else 'sudo apt-get install htop\\; htop'
     launcher = Launcher(**launcher_args(args))
     instances = running_or_pending_instances(launcher.get_reservations())
     identity_file = args.identity_file
@@ -136,8 +136,12 @@ def worker_load(args):
     isFirst = True
     count = 0
 
-    for ix in xrange(len(instances)-1):
-        sh("tmux split-window -v -t 0 -l 10")
+    
+    for ix in xrange((len(instances)-1)/2):
+        sh("tmux split-window -v -t 0 -l 20")
+
+    for ix in xrange(len(instances)/2):
+        sh("tmux split-window -h -t {ix}",ix=ix)
 
     # for ix in xrange(len(instances)-1,0,-1):
     #     sh('tmux resize-pane -t {ix} -y 20', ix=ix)
