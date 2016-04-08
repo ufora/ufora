@@ -302,12 +302,10 @@ class PyforaResultAsJson(ComputedGraph.Location):
                 return res
 
             try:
-                seenAlready = {}
                 res = c.transformPyforaImplval(
                     value,
                     transformer,
-                    extractVectorContents,
-                    seenAlready
+                    extractVectorContents
                     )
             except Exception as e:
                 import pyfora

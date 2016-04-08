@@ -32,6 +32,7 @@ class InMemorySocketIoJsonInterface(object):
         self.reactorThread = None
         self.nextMessageId = 0
         self.messageHandlers = {}
+        self.testMessageVisitor = None
 
         self.lock = threading.Lock()
         self.messageQueue = Queue.Queue()
@@ -117,7 +118,10 @@ class InMemorySocketIoJsonInterface(object):
                     return obj.toMemoizedJSON()
                 return obj
 
-            self.messageQueue.put(json.dumps(message, default=encoder))
+            msg = json.dumps(message, default=encoder)
+            if self.testMessageVisitor is not None:
+                self.testMessageVisitor("send", msg)
+            self.messageQueue.put(msg)
 
     def on(self, event, callback):
         if event in self.events:
@@ -142,11 +146,16 @@ class InMemorySocketIoJsonInterface(object):
                     obj[k] = obj[k].encode("utf8")
             return obj
 
+
+        if self.testMessageVisitor is not None:
+            self.testMessageVisitor("recv", payload)
+
         try:
             message = json.loads(payload, object_hook=object_hook)
         except:
             self._triggerEvent('invalid_message', payload)
             return
+
 
         messageId = message.get('messageId')
         if messageId is None:

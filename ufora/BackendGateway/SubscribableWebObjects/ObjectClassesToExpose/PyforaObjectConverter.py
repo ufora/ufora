@@ -156,7 +156,7 @@ class PyforaObjectConverter(ComputedGraph.Location):
         return {'objectId': objectId}
 
     @ComputedGraph.Function
-    def transformPyforaImplval(self, result, transformer, vectorContentsExtractor, seenAlready):
-        return converter_[0].transformPyforaImplval(result, transformer, vectorContentsExtractor, seenAlready)
+    def transformPyforaImplval(self, result, transformer, vectorContentsExtractor):
+        return converter_[0].transformPyforaImplval(result, transformer, vectorContentsExtractor)
 
 

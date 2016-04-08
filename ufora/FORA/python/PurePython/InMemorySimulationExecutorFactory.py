@@ -60,5 +60,6 @@ def create_executor():
         )
     connection = Connection.connectGivenSocketIo(socketIoToJsonInterface)
     connection.__dict__['s3Interface'] = s3[0]
+    connection.__dict__['socketIoToJsonInterface'] = socketIoToJsonInterface
     return connection
 
