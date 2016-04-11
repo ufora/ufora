@@ -13,11 +13,11 @@ def get_region(region):
         raise ValueError('EC2 region not specified')
     return region
 
-
 def get_ssh_keyname(keyname):
     return keyname or os.getenv('PYFORA_AWS_SSH_KEYNAME')
 
-
+def get_identity_file(filename):
+    return filename or os.getenv('PYFORA_AWS_IDENTITY_FILE')
 
 class StatusPrinter(object):
     spinner = ['|', '/', '-', '\\']
@@ -98,7 +98,7 @@ def launcher_args(parsed_args):
 def worker_logs(args):
     launcher = Launcher(**launcher_args(args))
     instances = running_or_pending_instances(launcher.get_reservations())
-    identity_file = args.identity_file
+    identity_file = get_identity_file(args.identity_file)
 
     def grep(instance):
         #note that we have to swap "A" and "B" because tac has reversed the order of the lines.
@@ -115,7 +115,7 @@ def worker_load(args):
     cmd_to_run = 'tail -f /mnt/ufora/logs/ufora-worker.log' if args.logs else 'sudo apt-get install htop\\; htop'
     launcher = Launcher(**launcher_args(args))
     instances = running_or_pending_instances(launcher.get_reservations())
-    identity_file = args.identity_file
+    identity_file = get_identity_file(args.identity_file)
 
     import os
     session = os.getenv("USER")
@@ -214,7 +214,7 @@ def pad(s, ct):
 def restart_instances(args):
     launcher = Launcher(**launcher_args(args))
     instances = running_or_pending_instances(launcher.get_reservations())
-    identity_file = args.identity_file
+    identity_file = get_identity_file(args.identity_file)
 
     def restart_instance(instance):
         is_manager = 'manager' in instance.tags.get('Name', '')
@@ -391,7 +391,7 @@ def deploy_package(args):
                 print instances[ix].id, "|", instances[ix].ip_address, ':', results[ix]
 
     print "Uploading package..."
-    results = upload_package(args.package, instances, args.identity_file)
+    results = upload_package(args.package, instances, get_identity_file(args.identity_file))
     if any_failures(results):
         print "Failed to upload package:"
         print_failures(results)
@@ -400,7 +400,7 @@ def deploy_package(args):
     print ''
 
     print "Updating service..."
-    results = update_ufora_service(instances, args.identity_file)
+    results = update_ufora_service(instances, get_identity_file(args.identity_file))
     if any_failures(results):
         print "Failed to update service:"
         print_failures(results)
@@ -445,7 +445,7 @@ all_arguments = {
     'ec2-region': {
         'args': ('--ec2-region',),
         'kwargs': {
-            'default': 'us-east-1',
+            'default':  os.getenv('PYFORA_AWS_EC2_REGION') or 'us-east-1',
             'help': ('The EC2 region in which instances are launched. '
                      'Can also be set using the PYFORA_AWS_EC2_REGION environment variable. '
                      'Default: us-east-1')
@@ -533,8 +533,10 @@ all_arguments = {
     'identity-file': {
         'args': ('-i', '--identity-file'),
         'kwargs': {
-            'required': True,
+            'required': os.getenv('PYFORA_AWS_IDENTITY_FILE') is None,
+            'default': os.getenv('PYFORA_AWS_IDENTITY_FILE'),
             'help': 'The file from which the private SSH key is read.'
+                     'Can also be set using the PYFORA_AWS_IDENTITY_FILE environment variable.'
             }
         },
     'package': {
