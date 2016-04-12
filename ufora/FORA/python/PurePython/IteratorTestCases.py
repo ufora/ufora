@@ -245,3 +245,55 @@ class IteratorTestCases(object):
             self.equivalentEvaluationTest(lambda: list(sequence(count)))
             self.equivalentEvaluationTest(lambda: list(EmptyIterator.staticSequence(count)))
             self.equivalentEvaluationTest(lambda: list(EmptyIterator().sequence(count)))
+
+    def test_custom_iterators_1(self):
+        class C_5771(object):
+            def __init__(self, m):
+                self.m = m
+            def __getitem__(self, ix):
+                return self.m[ix]
+            def __iter__(self):
+                for val in self.m:
+                    yield val ** 2.0
+
+        def f(c):
+            return [val for val in c]
+
+        self.equivalentEvaluationTest(f, C_5771(range(5)))
+
+    def test_custom_iterators_2(self):
+        class C_5772(object):
+            def __init__(self, m):
+                self.m = m
+            def __getitem__(self, ix):
+                return self.m[ix]
+
+        def f(c):
+            return [val for val in c]
+
+        self.equivalentEvaluationTest(f, C_5772(range(5)))
+
+    def test_custom_iterators_3(self):
+        class C_5773(object):
+            def __getitem__(self, ix):
+                if ix < 10:
+                    return ix * 2
+                raise IndexError
+
+        def f(c):
+            return [val for val in c]
+
+        self.equivalentEvaluationTest(f, C_5773())
+        
+    def test_custom_iterators_4(self):
+        class C_5774(object):
+            def __getitem__(self, ix):
+                if ix < 10:
+                    return ix * 2
+                raise IndexError()
+
+        def f(c):
+            return [val for val in c]
+
+        self.equivalentEvaluationTest(f, C_5774())
+        
