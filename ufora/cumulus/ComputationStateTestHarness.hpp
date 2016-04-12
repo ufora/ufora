@@ -66,7 +66,7 @@ public:
 	static ComputationId newComputation(map<ComputationId, ComputationDefinition>* outComputations, ComputationDefinition threadDef)
 		{
 		ComputationId newComputation = 
-			ComputationId::CreateIdOnWorker(
+			ComputationId::CreateIdForRootOnWorker(
 				threadDef,
 				RandomHashGenerator::singleton().generateRandomHash()
 				);
@@ -94,7 +94,7 @@ public:
 		{
 		PolymorphicSharedPtr<ComputationState> state(
 			new ComputationState(
-				ComputationId::CreateIdOnWorker(
+				ComputationId::CreateIdForRootOnWorker(
 					def,
 					RandomHashGenerator::singleton().generateRandomHash()
 					),
@@ -155,7 +155,7 @@ public:
 		{
 		PolymorphicSharedPtr<ComputationState> state(
 			new ComputationState(
-				ComputationId::CreateIdOnWorker(
+				ComputationId::CreateIdForRootOnWorker(
 					def,
 					RandomHashGenerator::singleton().generateRandomHash()
 					),
@@ -246,7 +246,7 @@ public:
 		{
 		PolymorphicSharedPtr<ComputationState> state(
 			new ComputationState(
-				ComputationId::CreateIdOnWorker(def, RandomHashGenerator::singleton().generateRandomHash()),
+				ComputationId::CreateIdForRootOnWorker(def, RandomHashGenerator::singleton().generateRandomHash()),
 				mVdm,
 				Fora::Interpreter::ExecutionContextConfiguration::defaultConfig(),
 				mCallbackScheduler
