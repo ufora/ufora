@@ -16,6 +16,9 @@ import numpy
 import numpy.testing
 import random
 import time
+import pandas
+import pyfora.pure_modules.pure_pandas as pure_pandas
+import ufora.test.PerformanceTestReporter as PerformanceTestReporter
 
 
 class NumpyTestCases(object):
@@ -800,3 +803,150 @@ class NumpyTestCases(object):
         x = numpy.array([[-2.0,1.0],[-3.0,0.0]])
 
         self.equivalentEvaluationTest(f, x)
+
+    def test_dataframe_dot_perf_1(self):
+        with self.create_executor() as executor:
+            nrow, ncol = 200000, 100
+
+            with executor.remotely:
+                df, vec = generate_data(nrow, ncol)
+
+            numpy.random.seed(42)
+            df_local = pandas.DataFrame(
+                numpy.random.randn(nrow, ncol)
+                )
+            vec_local = range(ncol)
+                
+            def loop(ct):
+                res = 0
+                for ix in xrange(ct):
+                    res = res + df.dot(vec)[ix % len(df)]
+
+                return res
+
+            def loop_local(ct):
+                res = 0
+                for ix in xrange(ct):
+                    res = res + df_local.dot(vec_local)[ix % len(df_local)]
+
+                return res
+
+            loopCt = 50
+
+            # burn in run
+            self.evaluateWithExecutor(loop, loopCt - 1)
+
+            with PerformanceTestReporter.RecordAsPerfTest("pyfora.pure_pandas.dot_perf.pyfora"):
+                self.evaluateWithExecutor(loop, loopCt)
+
+            with PerformanceTestReporter.RecordAsPerfTest("pyfora.pure_pandas.dot_perf.native"):
+                loop_local(loopCt)
+
+    def test_dataframe_dot_new_perf_1(self):
+        with self.create_executor() as executor:
+            with executor.remotely:
+                df, vec = generate_data(200000, 100)
+
+            print "Generating locally."
+
+            df_local, vec_local = generate_data_local(200000, 100)
+
+            print "Starting."
+                
+            def loop(ct):
+                res = 0
+                for ix in xrange(ct):
+                    res = res + dot_new(df, vec)[ix % len(df)]
+
+                return res
+
+            def loop_local(ct):
+                res = 0
+                for _ in xrange(ct):
+                    res = res + df_local.dot(vec_local)[0]
+
+                return res
+
+            # burn in run
+            self.evaluateWithExecutor(loop, 49)
+
+            with PerformanceTestReporter.RecordAsPerfTest("pyfora.pure_pandas.dot_perf_unrolled.pyfora"):
+                self.evaluateWithExecutor(loop, 50)
+
+            with PerformanceTestReporter.RecordAsPerfTest("pyfora.pure_pandas.dot_perf_unrolled.native"):
+                loop_local(50)
+
+            
+def dot_new(df, vec):
+    assert df.shape[1] == len(vec)
+
+    res = []
+    jx = 0
+    jx2 = 1
+    jx3 = 2
+    jx4 = 3
+    jx5 = 4
+    jx6 = 5
+    jx7 = 6
+    jx8 = 7
+    jx_max = len(df)
+    while jx8 < jx_max:
+        acc = 0.0
+        acc2 = 0.0
+        acc3 = 0.0
+        acc4 = 0.0
+        acc5 = 0.0
+        acc6 = 0.0
+        acc7 = 0.0
+        acc8 = 0.0
+        ix = 0
+        ix_max = len(vec)
+        while ix < ix_max:
+            v = vec[ix]
+            acc = acc + df._columns[ix][jx] * v
+            acc2 = acc2 + df._columns[ix][jx2] * v
+            acc3 = acc3 + df._columns[ix][jx3] * v
+            acc4 = acc4 + df._columns[ix][jx4] * v
+            acc5 = acc5 + df._columns[ix][jx5] * v
+            acc6 = acc6 + df._columns[ix][jx6] * v
+            acc7 = acc7 + df._columns[ix][jx7] * v
+            acc8 = acc8 + df._columns[ix][jx8] * v
+            ix = ix + 1
+        res = res + [acc] + [acc2] + [acc3] + [acc4] + [acc5] + [acc6] + [acc7] + [acc8]
+        jx = jx + 8
+        jx2 = jx2 + 8
+        jx3 = jx3 + 8
+        jx4 = jx4 + 8
+        jx5 = jx5 + 8
+        jx6 = jx6 + 8
+        jx7 = jx7 + 8
+        jx8 = jx8 + 8
+
+    return res
+
+    return pure_pandas.PurePythonSeries([
+        sum(df._columns[ix][jx] * vec[ix] + 12341234.0 for ix in xrange(len(vec))) \
+        for jx in xrange(len(df))
+        ])
+
+
+def generate_data(nRows, nColumns):
+    df = pure_pandas.PurePythonDataFrame(
+        [[float(rowIx % (colIx + 2)) for rowIx in xrange(nRows)] \
+         for colIx in xrange(nColumns)]
+        )
+
+    vec = [float(rowIx) for rowIx in xrange(nColumns)]
+
+    return df, vec
+
+def generate_data_local(nRows, nColumns):
+    df = pandas.DataFrame(
+        [[float(rowIx % (colIx + 2)) for colIx in xrange(nColumns)]
+          for rowIx in xrange(nRows)]
+        )
+
+    vec = [float(rowIx) for rowIx in xrange(nColumns)]
+
+    return df, vec
+

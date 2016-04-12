@@ -12,9 +12,9 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import time
 import ufora.test.PerformanceTestReporter as PerformanceTestReporter
 import sys
+
 
 class StringTestCases(object):
     """Test cases for pyfora strings"""
