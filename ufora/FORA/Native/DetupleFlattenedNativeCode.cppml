@@ -536,6 +536,29 @@ class RemoveUnnecessaryComposites {
 		;
 
 public:
+	@type ExtractVarsMentioned = std::set<NativeVariable> vars {
+	public:
+		bool contains(NativeVariable v) const
+			{
+			return vars().find(v) != vars().end();
+			}
+
+		template<class T>
+		void processDown(const T& t, bool& b)
+			{
+			}
+		
+		template<class T>
+		void processUp(const T& t)
+			{
+			}
+
+		void processDown(const NativeVariable& in, bool& b)
+			{
+			vars().insert(in);
+			}
+	};
+
 	@type ExtractVarsUsedInInputs = std::set<NativeVariable> vars {
 	public:
 		bool contains(NativeVariable v) const
@@ -614,10 +637,12 @@ public:
 
 	RemoveUnnecessaryComposites(
 					NativeCodeFlattened::Block& inBlock,
-					std::string funcName
+					std::string funcName,
+					const TwoWaySetMap<NativeBlockID, NativeVariable>& varsUsedInBlocks
 					) :
 			mBlock(inBlock),
-			mFunctionName(funcName)
+			mFunctionName(funcName),
+			mVarsUsedInBlocks(varsUsedInBlocks)
 		{
 		}
 
@@ -767,6 +792,7 @@ public:
 
 		for (auto var: mBlock.args())
 			leafVars.insert(var);
+
 		ExtractVarsUsedInInputs used;
 		::visit(mBlock.term(), used);
 		for (auto v: used.vars())
@@ -796,7 +822,9 @@ public:
 			NativeVariable c = *toCheck.begin();
 			toCheck.erase(c);
 
-			if (leafVars.find(c) == leafVars.end() && !varUses.hasValue(c))
+			//we can't remove vars used in more than one block
+			if (leafVars.find(c) == leafVars.end() && !varUses.hasValue(c) && 
+					mVarsUsedInBlocks.getKeys(c).size() < 2)
 				{
 				removed.insert(c);
 				for (auto thisOneUses: varUses.getValues(c))
@@ -890,6 +918,8 @@ private:
 	map<NativeVariable, NativeCodeFlattened::Expression> mExprs;
 
 	mutable map<NativeVariable, Def> mResolvedDefs;
+
+	const TwoWaySetMap<NativeBlockID, NativeVariable>& mVarsUsedInBlocks;
 };
 
 void detupleFlattenedNativeCode(map<NativeBlockID, NativeCodeFlattened::Block>& outBlocks, std::string funcName)
@@ -908,9 +938,18 @@ void detupleFlattenedNativeCode(map<NativeBlockID, NativeCodeFlattened::Block>& 
 		throw;
 		}
 
-	for (auto blockIdAndBlock: outBlocks)
+	//find all the defs that are only used within a single block
+	TwoWaySetMap<NativeBlockID, NativeVariable> allVars;
+	for (auto& blockIdAndBlock: outBlocks)
 		{
-		RemoveUnnecessaryComposites remover(blockIdAndBlock.second, funcName);
+		RemoveUnnecessaryComposites::ExtractVarsMentioned mentioned;
+		::visit(blockIdAndBlock.second, mentioned);
+		allVars.insert(blockIdAndBlock.first, mentioned.vars());
+		}
+
+	for (auto& blockIdAndBlock: outBlocks)
+		{
+		RemoveUnnecessaryComposites remover(blockIdAndBlock.second, funcName, allVars);
 
 		try {
 			remover.apply();
