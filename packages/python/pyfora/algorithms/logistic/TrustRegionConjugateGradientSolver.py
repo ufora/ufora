@@ -33,8 +33,7 @@ class TrustRegionConjugateGradientSolver(Solver):
             classZeroLabel,
             C=1.0,
             eps=0.001,
-            maxIters=1000,
-            splitLimit=1000000):
+            maxIters=1000):
         self.X = X
         self.y = y
         self.classZeroLabel = classZeroLabel
@@ -44,7 +43,6 @@ class TrustRegionConjugateGradientSolver(Solver):
         self.maxIters = maxIters
         self.nFeatures = X.shape[1]
         self.nSamples = X.shape[0]
-        self.splitLimit = splitLimit
 
         self.eta0 = 1e-4
         self.eta1 = 0.25

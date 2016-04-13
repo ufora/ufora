@@ -125,57 +125,25 @@ class PurePythonDataFrame(object):
         else:
             raise TypeError("no axis " + str(axis))
 
-    def dot(self, other, _splitLimit=1000000):
+    def dot(self, other):
         # we're currently only imagining 1-dimensional `other`s
 
-        assert self.shape[1] == len(other)
+        len_other = len(other)
+        assert self.shape[1] == len_other
 
-        return PurePythonSeries(self._dot(other, _splitLimit, 0, self.shape[0]))
+        def rowSum(rowIx):
+            res = 0.0
+            ix = 0
+            while ix < len_other:
+                res = res + self._columns[ix][rowIx] * other[ix]
+                ix = ix + 1
+            return res
+
+        return PurePythonSeries([rowSum(rowIx) for rowIx in xrange(len(self))])
 
     def columns(self):
         # NOTE: this is not pandas-API compatible.
         return self._columns
-
-    def _dot(self, other, splitLimit, low, high):
-        sz = high - low
-        if sz <= splitLimit:
-            return self._dot_on_chunk(other, low, high)
-
-        mid = (high + low) / 2
-        return self._dot(other, splitLimit, low, mid) + \
-            self._dot(other, splitLimit, mid, high)
-
-    def _dot_on_chunk(self, other, low, high):
-        tr = _scaleVecOnRange(self._columns[0], other[0], low, high)
-
-        colIx = 1
-        while colIx < self.shape[1]:
-            tr = _addVecsOnRange(
-                tr, self._columns[colIx], other[colIx], low, high)
-            colIx = colIx + 1
-
-        return tr
-
-
-def _scaleVecOnRange(vec, multiplier, lowIx, highIx):
-    tr = []
-    ix = lowIx
-    while ix < highIx:
-        tr = tr + [multiplier * vec[ix]]
-        ix = ix + 1
-
-    return tr
-
-def _addVecsOnRange(vec1, vec2, vec2Multiplier, lowIx, highIx):
-    tr = []
-    ix = lowIx
-
-    while ix < highIx:
-        tr = tr + [vec1[ix - lowIx] + vec2Multiplier * vec2[ix]]
-        ix = ix + 1
-
-    return tr
-
 
 
 class _PurePythonDataFrameILocIndexer(object):

@@ -122,8 +122,7 @@ class BinaryLogisticRegressionFitter(object):
                 classZeroLabel=classZeroLabel,
                 C=self.regularizer,
                 eps=self.tol,
-                maxIters=self.maxIter,
-                splitLimit=self.splitLimit
+                maxIters=self.maxIter
                 ).solve()
         elif self.method == 'majorization':
             returnValue = FullRankMajorizationSolver(

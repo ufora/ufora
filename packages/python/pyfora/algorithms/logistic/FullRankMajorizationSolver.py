@@ -82,7 +82,7 @@ class FullRankMajorizationSolver(Solver):
         return ReturnValue(newTheta, iters)
 
     def updateTheta(self, theta):
-        thetaDotX = self.X.dot(theta, self.splitLimit)
+        thetaDotX = self.X.dot(theta)
         sigma = self.computeSigma(thetaDotX)
         muSum = self.computeMuSum(thetaDotX)
 

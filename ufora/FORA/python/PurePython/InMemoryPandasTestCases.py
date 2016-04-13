@@ -464,15 +464,7 @@ A,B,C
 
         df = pandas.DataFrame(x)
 
-        def f1():
+        def f():
             return [float(val) for val in df.dot(s)]
 
-        def f2(splitLimit):
-            return [float(val) for val in df.dot(s, splitLimit)]
-
-        python_res = f1()
-        for splitLimit in [4,10,16,20]:
-            self.assertEqual(
-                python_res,
-                self.evaluateWithExecutor(f2, splitLimit)
-                )
+        self.equivalentEvaluationTest(f)
