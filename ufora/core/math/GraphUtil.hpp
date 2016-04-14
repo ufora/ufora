@@ -58,16 +58,11 @@ void	computeReachableNodes(
 		{
 		outReachable.insert(inNode);
 		
-		typename std::map<T, std::set<T> >::const_iterator map_it =
-				inEdges.find(inNode);
+		auto map_it = inEdges.find(inNode);
 		
 		if (map_it != inEdges.end())
-			for (typename std::set<T>::const_iterator
-					edge_it = map_it->second.begin(),
-					edge_it_end = map_it->second.end();
-					edge_it != edge_it_end;
-					++edge_it)
-				computeReachableEdges(inEdges, outReachable, *edge_it);
+			for (auto edge: map_it->second)
+				computeReachableNodes(inEdges, outReachable, edge);
 		}
 	}
 
@@ -78,7 +73,7 @@ void	computeReachableNodes(
 					const T& inNode
 					)
 	{
-	computeReachableEdges(inEdges.getKeysToValues(), outReachable, inNode);
+	computeReachableNodes(inEdges.getKeysToValues(), outReachable, inNode);
 	}
 
 /*****

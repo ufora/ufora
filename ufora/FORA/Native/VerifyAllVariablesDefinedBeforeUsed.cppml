@@ -16,21 +16,34 @@
 #include "VerifyAllVariablesDefinedBeforeUsed.hppml"
 #include "../../core/containers/TwoWaySetMap.hpp"
 #include "../../core/cppml/ExtractAllVariablesOfGivenTypeVisitor.hppml"
+#include "../../core/math/GraphUtil.hpp"
+#include "../../core/Logging.hpp"
 
-	// boost::function2<void, NativeBlockID, NativeBlockID> add = 
-	// 	[&](NativeBlockID source, NativeBlockID sink) {
-	// 		if (blocksReachable.contains(source, sink))
-	// 			return;
+typedef pair<ImmutableTreeVector<NativeCodeFlattened::Cont>, ImmutableTreeVector<NativeCodeFlattened::Metadata> > 
+		conts_and_metadata;
 
-	// 		blocksReachable.insert(source, sink);
+@type ExtractContinuationsAndMetadata = std::vector<conts_and_metadata> contsAndMetadatas {
+public:
+	template<class T>
+	void processDown(const T& t, bool& b)
+		{
+		}
+	
+	template<class T>
+	void processUp(const T& t)
+		{
+		}
 
-	// 		std::set<NativeBlockID> keys = blocksReachable.getKeys(source);
-	// 		std::set<NativeBlockID> vals = blocksReachable.getValues(sink);
+	void processDown(const NativeCodeFlattened::Expression_ContinuationsType& in, bool& b)
+		{
+		contsAndMetadatas().push_back(make_pair(in.continuation(), in.metaData()));
+		}
 
-	// 		for (auto k: keys)
-	// 			for (auto v: vals)
-	// 				add(k,v);
-	// 		};
+	void processDown(const NativeCodeFlattened::Term_CallType& in, bool& b)
+		{
+		contsAndMetadatas().push_back(make_pair(in.continuation(), in.metaData()));
+		}
+};
 
 bool validateUseCoverage(
 			const std::set<NativeBlockID>& defPoints,
@@ -66,7 +79,120 @@ bool validateUseCoverage(
 	return true;
 	}
 
-void verifyAllVariablesDefinedBeforeUsed(map<NativeBlockID, NativeCodeFlattened::Block>& outBlocks)
+bool validateUseCoverageWithinSubset(
+			const std::set<NativeBlockID>& defPoints,
+			const std::set<NativeBlockID>& usePoints,
+			const TwoWaySetMap<NativeBlockID, NativeBlockID>& flow,
+			const std::set<NativeBlockID>& subsetOfBlocks,
+			NativeBlockID sourceBlock
+			)
+	{
+	std::set<NativeBlockID> allUsePoints;
+	std::set<NativeBlockID> dirty = usePoints;
+
+	while (dirty.size())
+		{
+		NativeBlockID block = *dirty.begin();
+		dirty.erase(block);
+		if (subsetOfBlocks.find(block) != subsetOfBlocks.end())
+			if (defPoints.find(block) == defPoints.end())
+				{
+				if (block == sourceBlock)
+					return false;
+
+				if (allUsePoints.find(block) == allUsePoints.end())
+					{
+					//this is a new block
+					for (auto source: flow.getKeys(block))
+						dirty.insert(source);
+
+					allUsePoints.insert(block);
+					}
+				}
+		}
+
+	return true;
+	}
+
+const std::set<NativeBlockID>& getOrNullSet(
+			const std::map<NativeVariable, std::set<NativeBlockID> >& defPoints,
+			NativeVariable var
+			)
+	{
+	static const std::set<NativeBlockID> empty;
+
+	auto it = defPoints.find(var);
+	if (it == defPoints.end())
+		return empty;
+	
+	return it->second;
+	}
+
+bool intersects(const std::set<NativeBlockID>& l, const std::set<NativeBlockID>& r)
+	{
+	if (l.size() > r.size())
+		return intersects(r,l);
+
+	for (auto b: l)
+		if (r.find(b) != r.end())
+			return true;
+	
+	return false;
+	}
+
+bool validateVariablesUsedPostContinuation(
+			ImmutableTreeVector<NativeCodeFlattened::Cont> conts,
+			ImmutableTreeVector<NativeCodeFlattened::Metadata> metas,
+			const std::map<NativeVariable, std::set<NativeBlockID> >& defPoints,
+			const std::map<NativeVariable, std::set<NativeBlockID> >& usePoints,
+			const TwoWaySetMap<NativeBlockID, NativeBlockID>& blockFlow
+			)
+	{
+	for (auto cont: conts)
+		{
+		auto validVariables = ExtractAllVariablesOfGivenTypeVisitor<NativeVariable>::extract(metas);
+
+		NativeBlockID sourceBlock = cont.block();
+
+		//find all downstream blocks
+		std::set<NativeBlockID> downstream;
+
+		GraphUtil::computeReachableNodes(blockFlow, downstream, sourceBlock);
+
+		//for every variable that's defined in these blocks
+		for (auto& varAndBlocks: usePoints)
+			if (intersects(varAndBlocks.second, downstream))
+				//that's not a 'valid variable'
+				if (!validVariables.contains(varAndBlocks.first) && !isRuntimeCallbackType(varAndBlocks.first.type()) && !varAndBlocks.first.type().isNothing())
+					{
+					NativeVariable var = varAndBlocks.first;
+
+					//check that that variable (in the image of upstream values)
+					//is deffed before use
+					if (!validateUseCoverageWithinSubset(
+								getOrNullSet(defPoints, var),
+								getOrNullSet(usePoints, var),
+								blockFlow,
+								downstream,
+								sourceBlock
+								)
+							)
+						{
+						LOG_WARN << 
+							"Variable " << prettyPrintString(varAndBlocks.first) 
+								<< " of type " << prettyPrintString(varAndBlocks.first.type())
+								<< " is used without being defined after "
+								<< prettyPrintString(cont)
+								;
+						return false;
+						}
+					}
+		}
+
+	return true;
+	}
+
+void verifyAllVariablesDefinedBeforeUsed(map<NativeBlockID, NativeCodeFlattened::Block>& outBlocks, bool checkMetadataVariablesAreAccurate)
 	{
 	TwoWaySetMap<NativeBlockID, NativeBlockID> blockFlow;
 
@@ -139,4 +265,32 @@ void verifyAllVariablesDefinedBeforeUsed(map<NativeBlockID, NativeCodeFlattened:
 						<< prettyPrintString(outBlocks)
 					);
 				}
-	}
+
+	if (checkMetadataVariablesAreAccurate)
+		{
+		ExtractContinuationsAndMetadata contsAndMetadatasExtractor;
+		::visit(outBlocks, contsAndMetadatasExtractor);
+
+		//verify that all variables used in the resumption of continuations before they are deffed
+		//are listed in metadatas
+		try{
+			for (auto contAndMeta: contsAndMetadatasExtractor.contsAndMetadatas())
+				if (!validateVariablesUsedPostContinuation(
+						contAndMeta.first,
+						contAndMeta.second,
+						defPoints,
+						usePoints,
+						blockFlow
+						))
+					{
+					LOG_ERROR << outBlocks;
+					return;
+					}
+			}
+		catch(...)
+			{
+			LOG_ERROR << "failed with " << outBlocks;
+			throw;
+			}
+		}
+ 	}

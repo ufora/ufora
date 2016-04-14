@@ -19,9 +19,10 @@
 #include "../TypedFora/ABI/VectorHandleCodegen.hppml"
 #include "../TypedFora/ABI/VectorLoadRequest.hppml"
 #include "../TypedFora/ABI/VectorLoadRequestCodegen.hppml"
+#include "../TypedFora/ABI/HomogenousVectorStashCodegen.hppml"
 #include "../TypedFora/TypedFora.hppml"
 #include "TypedForaAxiomBuilder.hppml"
-
+#include "../../core/cppml/ExtractAllObjectsMatchingPredicate.hppml"
 #include "../Native/NativeExpressionBuilder.hppml"
 
 using TypedFora::Abi::VectorHandle;
@@ -73,19 +74,23 @@ bool isValidPassByValueJmt(const JudgmentOnValue& inJOV)
 
 }
 
-NativeExpression LibcallAxiomGroup::prepareArgumentToPass(
-						NativeExpressionBuilder& builder, 
+pair<ImmutableTreeVector<NativeExpression>, ImmutableTreeVector<bool> > 
+			LibcallAxiomGroup::prepareArgumentToPass(
 						long argumentIndex, 
-						const NativeExpression& expression
+						long inputIndex,
+						const NativeExpression& expression,
+						const TypedFora::TypedForaAxiomBuilder& axiomBuilder
 						)
 	{
 	NativeType expectingType = mArgumentTypes[argumentIndex].type();
 
 	lassert(expression.type());
 
+	pair<ImmutableTreeVector<NativeExpression>, ImmutableTreeVector<bool> > res;
+
 	if (expectingType == *expression.type())
 		{
-		JudgmentOnValue argumentJov = mInputJudgments[mInputsToArguments[argumentIndex]];
+		JudgmentOnValue argumentJov = mInputJudgments[mInputsToArguments[inputIndex]];
 
 		lassert_dump(
 			isValidPassByValueJmt(argumentJov),
@@ -97,23 +102,43 @@ NativeExpression LibcallAxiomGroup::prepareArgumentToPass(
 				<< ". use a reference for non POD data like this"
 			);
 
-		return expression;
+		res.first = res.first + expression;
+		res.second = res.second + false;
 		}
-
+		else
 	if (expectingType == expression.type()->ptr())
 		{
-		return builder.getPointerExprToCopyOnStack(expression);
+		res.first = res.first + expression;
+		res.second = res.second + true;
+		}
+	else
+		{
+		lassert_dump(
+			false,
+			"Can't adapt argument of type " << prettyPrintString(*expression.type()) << " to slot "
+				<< argumentIndex << " = " << prettyPrintString(mArgumentTypes[argumentIndex]) 
+				<< " of axiom with signature " << prettyPrintString(mInputJudgments)
+				<< " accepting native arguments of type "
+				<< prettyPrintString(mArgumentTypes) << " and returning native types "
+				<< prettyPrintString(mFunctionReturnTypes)
+			);
 		}
 
-	lassert_dump(
-		false,
-		"Can't adapt argument of type " << prettyPrintString(*expression.type()) << " to slot "
-			<< argumentIndex << " = " << prettyPrintString(mArgumentTypes[argumentIndex]) 
-			<< " of axiom with signature " << prettyPrintString(mInputJudgments)
-			<< " accepting native arguments of type "
-			<< prettyPrintString(mArgumentTypes) << " and returning native types "
-			<< prettyPrintString(mFunctionReturnTypes)
-		);
+	if (argumentIndex + 1 < mArgumentTypes.size() && mArgumentTypes[argumentIndex+1].type() == 
+			NativeTypeFor<TypedFora::Abi::HomogenousVectorStash>::get())
+		{
+		res.first = res.first + axiomBuilder.nativeStashVar(mInputsToArguments[inputIndex]).expr();
+		res.second = res.second + false;
+		}
+		else
+	if (argumentIndex + 1 < mArgumentTypes.size() && mArgumentTypes[argumentIndex+1].type() == 
+			NativeTypeFor<TypedFora::Abi::HomogenousVectorStash>::get().ptr())
+		{
+		res.first = res.first + axiomBuilder.nativeStashVar(mInputsToArguments[inputIndex]).expr();
+		res.second = res.second + true;
+		}
+
+	return res;
 	}
 
 ImmutableTreeVector<uword_t> LibcallAxiomGroup::computeExitPoints() const
@@ -154,17 +179,6 @@ void LibcallAxiomGroup::verifyInputs() const
 			<< prettyPrintString(mFunctionReturnTypes)
 		);
 	
-	lassert_dump(
-		mArgumentTypes.size() == mInputsToArguments.size(),
-
-		"Input count mismatch in axiom with signature " 
-			<< prettyPrintString(mInputJudgments)
-			<< " returning " << prettyPrintString(mReturnSlots)
-			<< ", accepting native arguments of type "
-			<< prettyPrintString(mArgumentTypes) << " and returning native types "
-			<< prettyPrintString(mFunctionReturnTypes)
-		);
-
 	lassert(mReturnSlots.size());
 	
 	if (needsVectorLoad())
@@ -226,13 +240,16 @@ Axiom LibcallAxiomGroup::buildAxiom()
 
 	uword_t maxOutputSize = computeMaxOutputSize(possibleOutputTypes);
 
-	//now prepare each argument
-	NativeExpressionBuilder builder;
-
 	ImmutableTreeVector<TypedFora::Type> inputVariableTypes;
 
 	ImmutableTreeVector<JudgmentOnValue> inputJudgments = 
 		mInputJudgments.toJOVListWithExtrasAsTrailingElement();
+
+	ImmutableTreeVector<int64_t> indicesOfNonStashArguments;
+	for (long k = 0; k < mArgumentTypes.size(); k++)
+		if (mArgumentTypes[k].type() != NativeTypeFor<TypedFora::Abi::HomogenousVectorStash>::get() && 
+				mArgumentTypes[k].type() != NativeTypeFor<TypedFora::Abi::HomogenousVectorStash*>::get())
+			indicesOfNonStashArguments = indicesOfNonStashArguments + k;
 
 	std::vector<bool> isInputMarkedPooled;
 	std::vector<bool> isInputMarkedNotPooled;
@@ -240,11 +257,17 @@ Axiom LibcallAxiomGroup::buildAxiom()
 	isInputMarkedPooled.resize(inputJudgments.size());
 	isInputMarkedNotPooled.resize(inputJudgments.size());
 
-	for (long k = 0; k < mArgumentTypes.size(); k++)
-		if (mArgumentTypes[k].isPooled())
-			isInputMarkedPooled[mInputsToArguments[k]] = true;
+	for (long k = 0; k < mInputsToArguments.size(); k++)
+		{
+		int64_t input = mInputsToArguments[k];
+
+		long correspondingArgument = indicesOfNonStashArguments[k];
+
+		if (mArgumentTypes[correspondingArgument].isPooled())
+			isInputMarkedPooled[input] = true;
 		else
-			isInputMarkedNotPooled[mInputsToArguments[k]] = true;
+			isInputMarkedNotPooled[input] = true;
+		}
 
 	for (long k = 0; k < inputJudgments.size(); k++)
 		lassert_dump(
@@ -264,16 +287,35 @@ Axiom LibcallAxiomGroup::buildAxiom()
 	TypedFora::TypedForaAxiomBuilder axiomBuilder(mInputJudgments, inputVariableTypes);
 
 	ImmutableTreeVector<NativeExpression> libcallArgs;
+	ImmutableTreeVector<bool> libcallArgsPassByPointer;
 
 	for (long k = 0; k < mInputsToArguments.size(); k++)
-		libcallArgs = libcallArgs + 
+		{
+		auto argAndPassByPtr = 
 			prepareArgumentToPass(
-				builder, 
-				k, 
-				axiomBuilder.nativeVar(mInputsToArguments[k]).expr()
+				libcallArgs.size(), 
+				k,
+				axiomBuilder.nativeVar(mInputsToArguments[k]).expr(),
+				axiomBuilder
 				);
 
+		libcallArgs = libcallArgs + argAndPassByPtr.first;
+		libcallArgsPassByPointer = libcallArgsPassByPointer + argAndPassByPtr.second;
+		}
+
+	lassert_dump(
+		mArgumentTypes.size() == libcallArgs.size(),
+
+		"Input count mismatch in axiom with signature " 
+			<< prettyPrintString(mInputJudgments)
+			<< " returning " << prettyPrintString(mReturnSlots)
+			<< ", accepting native arguments of type "
+			<< prettyPrintString(mArgumentTypes) << " and returning native types "
+			<< prettyPrintString(mFunctionReturnTypes)
+		);
+
 	NativeExpression expr;
+	NativeExpression preload = (mPreloadExpression ? *mPreloadExpression : NativeExpression::Nothing());
 		
 	if (mFunctionUsesReturnValue)
 		{
@@ -286,11 +328,60 @@ Axiom LibcallAxiomGroup::buildAxiom()
 					)
 				);
 
-		NativeVariable res("res", resultType);
+		NativeVariable res = NativeVariable::Temp(resultType);
+
+		NativeExpression libcallExpr = 
+			preload >> 
+			NativeExpression::CallLibraryFunction(
+				NativeLibraryFunctionTarget::ByPointer((uword_t)mFunctionPointer),
+				res.type(), 
+				libcallArgs,
+				libcallArgsPassByPointer,
+				false
+				);
+
+		if (needsVectorLoad())
+			{
+			NativeBlockID block = NativeBlockID::entry();
+
+			NativeVariable innerRes = NativeVariable::Temp(resultType);
+
+			NativeExpression innerCheckExpr = 
+				NativeExpression::If(
+					innerRes.expr()["index"] == 
+					NativeExpression::ConstantULong(
+						*mVectorLoadSlot
+						),
+					TypedNativeExpression<TypedFora::Abi::VectorLoadRequest>(
+						innerRes.expr()["data"].cast(
+							NativeTypeFor<TypedFora::Abi::VectorLoadRequest>::get(), 
+							true
+							)
+						).loadCheck().getExpression(),
+					innerRes.expr(),
+					0.0000001
+					);
+			
+			libcallExpr = NativeCFG(
+				emptyTreeVec(), 
+				NativeExpression::Let(
+					innerRes,
+					libcallExpr,
+					innerCheckExpr
+					)
+				)().taggedWith(
+					NativeExpressionTag::Generic(
+						"LibcallWithVectorLoadcheck",
+						emptyTreeMap() + 
+							std::string("libcallExpr") + 
+							libcallExpr
+						)
+					);
+			}
 
 		expr = NativeExpression::Halt("Bad exit value");
 
-		for (long k = 0; k < mReturnSlots.size(); k++)
+		for (long k = ((long)mReturnSlots.size()) - 1; k >= 0; k--)
 			{
 			lassert_dump(
 				possibleOutputTypes[k] == mFunctionReturnTypes[k].type(),
@@ -307,43 +398,23 @@ Axiom LibcallAxiomGroup::buildAxiom()
 					outExitpoints[k],
 					res.expr()["data"].cast(possibleOutputTypes[k], true)
 					),
-				expr
+				expr,
+				.9999999
 				);
 			}
 
-		if (needsVectorLoad())
-			{
-			NativeBlockID block = NativeBlockID::entry();
-
-			expr = 
-				NativeExpression::If(
-					res.expr()["index"] == 
-					NativeExpression::ConstantULong(
-						*mVectorLoadSlot
-						),
-					TypedNativeExpression<TypedFora::Abi::VectorLoadRequest>(
-						res.expr()["data"].cast(
-							NativeTypeFor<TypedFora::Abi::VectorLoadRequest>::get(), 
-							true
-							)
-						).loadCheck().getExpression(),
-					expr
-					);
-			}
 
 		expr = 
 			NativeExpression::Let(
 				res, 
-				NativeExpression::CallLibraryFunction(
-					mFunctionPointer,
-					res.type(), 
-					libcallArgs
-					),
+				libcallExpr,
 				expr
 				);
 		}
 	else
 		{
+		lassert(!needsVectorLoad());
+
 		lassert(mFunctionReturnTypes.size() == 1);
 
 		lassert_dump(
@@ -358,22 +429,16 @@ Axiom LibcallAxiomGroup::buildAxiom()
 		expr = 
 			NativeExpression::Return(
 				outExitpoints[0],
-				NativeExpression::CallLibraryFunction(
-					mFunctionPointer,
+				preload >> NativeExpression::CallLibraryFunction(
+					NativeLibraryFunctionTarget::ByPointer((uword_t)mFunctionPointer),
 					mFunctionReturnTypes[0].type(),
-					libcallArgs
+					libcallArgs,
+					libcallArgsPassByPointer,
+					false
 					)
 				);
 		}
 	
-	expr = builder(expr);
-	
-	if (mPreloadExpression)
-		expr = *mPreloadExpression >> expr;
-
-	if (needsVectorLoad())
-		expr = NativeCFG(emptyTreeVec(), expr)();
-
 	bool anyPooled = false;
 	bool anyNotPooled = false;
 
@@ -393,7 +458,8 @@ Axiom LibcallAxiomGroup::buildAxiom()
 		anyPooled ? TypedFora::RefcountStyle::Pooled() : 
 			TypedFora::RefcountStyle::AsValueOwned(),
 		joa.resultPart(),
-		joa.throwPart()
+		joa.throwPart(),
+		mInlineExpansionName
 		);
 	}
 
@@ -409,6 +475,31 @@ Nullable<AxiomJOA>	LibcallAxiomGroup::axiomJOA(const JudgmentOnValueTuple& s)
 		return (*mSpecializer)(s);
 	else
 		return null() << AxiomJOA::Native(mAxiom.getNative().resultSignature());
+	}
+
+NativeCFGExpansion LibcallAxiomGroup::getExpansion() const
+	{
+	//this is a hacky way of getting the "NativeCFGExpansion" out of our Axiom without having
+	//to rewrite everything.
+
+	lassert(mAxiom.isNative());
+
+	@match Axiom(mAxiom)
+		-| Native(_, _, target) ->> {
+			@match TypedFora::Callable(*target)
+				-| NativeOperation(_, _, nativeTarget) ->> {
+					auto results = 
+						extractAllObjectsMatchingPredicate(*nativeTarget, 
+							boost::function1<bool, NativeCFGExpansion>([](NativeCFGExpansion e) { return true; })
+							);
+
+					lassert_dump(results.size() == 1, 
+							results.size() << " != 1\n\n" 
+								<< prettyPrintString(*nativeTarget));
+
+					return results[0];
+					}
+			}
 	}
 
 }

@@ -174,7 +174,7 @@ class CumulusTestCases(object):
     
 
     @Teardown.Teardown
-    def test_repeatedCalculationOfSomethingComplex(self):
+    def DISABLEDtest_repeatedCalculationOfSomethingComplex(self):
         self.desirePublisher.desireNumberOfWorkers(1, blocking=True)
         
         expr = FORA.extractImplValContainer(FORA.eval(expensiveCalculationText))

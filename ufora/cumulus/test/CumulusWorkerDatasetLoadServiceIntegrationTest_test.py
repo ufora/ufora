@@ -397,11 +397,11 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
         pythonTime = time.time() - t0
 
         t0 = time.time()
-        res = self.computeUsingSeveralWorkers(text, s3, 4, memoryLimitMb = 800, timeout=30)
+        res = self.computeUsingSeveralWorkers(text, s3, 4, memoryLimitMb = 800, timeout=60)
         foraTime = time.time() - t0
 
         t0 = time.time()
-        res = self.computeUsingSeveralWorkers(text, s3, 4, memoryLimitMb = 800, timeout=30)
+        res = self.computeUsingSeveralWorkers(text, s3, 4, memoryLimitMb = 800, timeout=60)
         foraTime2 = time.time() - t0
 
         self.assertTrue(res.isResult(), res)

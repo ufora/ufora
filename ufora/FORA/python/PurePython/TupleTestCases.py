@@ -13,6 +13,9 @@
 #   limitations under the License.
 
 
+import numpy.testing
+
+
 class TupleTestCases(object):
     """Test cases for pyfora tuples"""
 
@@ -179,3 +182,33 @@ class TupleTestCases(object):
         #this should take forever if compilation of tuple assignment
         #is not working correctly
         self.evaluateWithExecutor(func)
+
+    def test_tuple_lt(self):
+        tups = [
+            (), (1,), (2,), (0,), (1,2), (1,3), (1,1), (2,2), (0,2),
+            (1,2,3), (2,1,4)
+            ]
+
+        def compare_some_tuples():
+            return [(t1, t2, t1 < t2) for t1 in tups for t2 in tups]
+
+        numpy.testing.assert_array_equal(
+            compare_some_tuples(),
+            self.evaluateWithExecutor(compare_some_tuples)
+            )
+
+    def test_tuple_gt(self):
+        tups = [
+            (), (1,), (2,), (0,), (1,2), (1,3), (1,1), (2,2), (0,2),
+            (1,2,3), (2,1,4)
+            ]
+
+        def compare_some_tuples():
+            return [(t1, t2, t1 > t2) for t1 in tups for t2 in tups]
+
+        numpy.testing.assert_array_equal(
+            compare_some_tuples(),
+            self.evaluateWithExecutor(compare_some_tuples)
+            )
+
+        

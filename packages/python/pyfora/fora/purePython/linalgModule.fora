@@ -35,6 +35,18 @@ object {
         return self.serializeMatrix(result);
         };
 
+    inv: fun(matrixRowMajorFlat, matrixShape) {
+        let matrix = self.toMatrix(matrixRowMajorFlat, matrixShape);
+        let result = try {
+            matrix.inverse();
+            }
+        catch (...) {
+            // we should really throw a LinAlgError 
+            throw TypeError(PyString("matrix was singular"))
+            }
+        return self.serializeMatrix(result);
+        };
+
     serializeMatrix: fun(matrix) {
         let data = matrix.rowMajorData().apply(fun(r) { PyFloat(r) });
         let shape = PyTuple(
@@ -96,31 +108,36 @@ object {
         };
 
     lstsq: fun(a, b, rcond) {
-        let a_shape = (a.shape[0].@m, a.shape[1].@m)
-        let a_values = math.Matrix(
-            [val.@m for val in a.values], a_shape, `row)
-            .columnMajorData();
-        let b_values = [val.@m for val in b.values]
+        try {
+            let a_shape = (a.shape[0].@m, a.shape[1].@m)
+            let a_values = math.Matrix(
+                [val.@m for val in a.values], a_shape, `row)
+                .columnMajorData();
+            let b_values = [val.@m for val in b.values]
 
-        // we should already have verified that a and b have valid shapes
+            // we should already have verified that a and b have valid shapes
 
-        let (x, singular_values, rank) =
-            builtin.math.blasWrappers.gelsd(
-                a_shape[0],
-                a_shape[1],
-                1,
-                a_values,
-                b_values,
-                rcond.@m
-                );
+            let (x, singular_values, rank) =
+                builtin.math.blasWrappers.gelsd(
+                    a_shape[0],
+                    a_shape[1],
+                    1,
+                    a_values,
+                    b_values,
+                    rcond.@m
+                    );
 
-        x = x[, a_shape[1]]
+            x = x[, a_shape[1]]
 
-        return PyTuple(
-            (PyList([PyFloat(val) for val in x]),
-             PyList([PyFloat(s) for s in singular_values]),
-             PyInt(Int64(rank)))
-            )
+            return PyTuple(
+                (PyList([PyFloat(val) for val in x]),
+                 PyList([PyFloat(s) for s in singular_values]),
+                 PyInt(Int64(rank)))
+                )
+            }
+        catch(e) {
+            throw ValueError(PyString(String(e)))
+            }
         };
 
     _svd: fun(columnMajorValues, shape) {
@@ -132,6 +149,40 @@ object {
         return (singularValues, UData, VTData)
         };
 
+    eigh: fun(a, uplo) {
+        try {
+            let foraMatrix = self.toMatrix(a.values, a.shape);
+            
+            let (rawEig, rawVData) = 
+                _eigh(foraMatrix.columnMajorData(), foraMatrix.dim[0], uplo.@m)
+
+            return PyTuple(
+                (PyList([PyFloat(eig) for eig in rawEig]),
+                 PyList([PyFloat(v) for v in rawVData])))
+            }
+        catch(e)
+            {
+            throw ValueError(PyString(String(e)))
+            }
+        };
+
+    _eigh: fun(columnMajorValues, n, uplo) {
+        if (uplo != 'L' and uplo != 'U')
+            throw Exception(
+                PyString("bad uplo argument passed: " + String(uplo))
+                )
+
+        let (eigenvalues, VData) = 
+            math.blasWrappers.syev(
+                'V',
+                uplo,
+			    n, 
+			    columnMajorValues
+			    );
+
+        return (eigenvalues, VData)
+        };
+
     expm: fun(a) {
         let foraMatrix = self.toMatrix(a.values, a.shape);
         let exped_matrix = 
@@ -140,7 +191,10 @@ object {
                 }
             catch (builtin.math.LinAlgError(msg)) {
                 throw ValueError(PyString(String(msg)))
-                };
+                }
+                (e) {
+                throw ValueError(PyString(String(e)))
+                }
         return self.serializeMatrix(exped_matrix);
         };
 

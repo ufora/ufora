@@ -14,8 +14,10 @@
     limitations under the License.
 ****************************************************************************/
 
+
 #include "NativeCFGToPTX.hppml"
 #include "../Interpreter/RuntimeConfig.hppml"
+#include "../Native/NativeCode.hppml"
 #include "../Runtime.hppml"
 #include "../../core/containers/ImmutableTreeVector.hppml"
 #include "../../core/math/Alternative.hpp"
@@ -82,9 +84,35 @@ string	PTXValueRepresentation::toString() const
 				string										targetBlock
 				;
 
+bool isByteInstruction(const NativeBinaryOpcode& opcode)
+	{
+	bool isByteInstruction = false;
+	@match NativeBinaryOpcode(opcode)
+			-| And() ->> {
+				isByteInstruction = true;
+				}
+			-| Or() ->> {
+				isByteInstruction = true;
+				}
+			-| Xor() ->> {
+				isByteInstruction = true;
+				}
+			-| ShiftLeft() ->> {
+				isByteInstruction = true;
+				}
+			-| ShiftRight() ->> {
+				isByteInstruction = true;
+				}
+			-| _ ->> {
+			isByteInstruction = false;
+			}
+			;
+	return isByteInstruction;
+	}
+
 //takes a NativeType and returns a PTX type string representing it
 //UInt1 is represented as a u32
-//8,16,32,64 byte integers and 32/64 byte floats are supported
+//16,32,64 byte integers and 32,64 byte floats are supported
 //any other type will cause it to throw UnableToConvertToPTX()
 //isByteInstruction = true will cause us to write 'bXX' rather than
 //	fXX, sXX or uXX, in case we are using this in bit instructions
@@ -95,8 +123,7 @@ string	nativeTypeToPTXType(
 	{
 	@match NativeType(inType)
 		-| Integer(bits, sign) ->> {
-				if (bits != 32 && bits != 64 && bits != 16
-					&& bits != 8 && bits != 1)
+				if (bits != 32 && bits != 64 && bits != 16 && bits != 1)
 					throw UnableToConvertToPTX(
 						"used an invalid integer type " +
 							prettyPrintString(inType)
@@ -294,10 +321,8 @@ private:
 				<<	".reg		.u64		i64;\n"
 				<<	".reg		.u64		inputPtrOffset;\n"
 				<<	".reg		.u64		inputPtrIndividual;\n"
-				<<	".reg		.f32		inputVal;\n"
 				<<	".reg		.u64		outputPtrOffset;\n"
 				<<	".reg		.u64		outputPtrIndividual;\n"
-				<<	".reg		.f32		outputVal;\n"
 
 
 				//load the relevant environment values into registers
@@ -320,7 +345,7 @@ private:
 				//this is a valid 'i', so we should execute the client code
 				//so now we need to load the value from inputPtr
 				<<	"mul.lo.s64		inputPtrOffset, i64, "
-													<< inputType.packedSize()
+													<< inputType.alignedSize()
 													<< ";\n"
 				<<	"add.u64		inputPtrIndividual, " <<
 											" inputPtrOffset, reg_inputPtr;\n"
@@ -344,7 +369,7 @@ private:
 
 		//write the value back to the output pointer
 		result	<<	"mul.lo.s64		outputPtrOffset, i64, "
-													<< outputType.packedSize()
+													<< outputType.alignedSize()
 													<< ";\n"
 				<<	"add.u64		outputPtrIndividual, " <<
 											" outputPtrOffset, reg_outputPtr;\n"
@@ -382,26 +407,24 @@ private:
 					//	ld.global.f32	regname, [ptrname+offset];
 					"ld.global." + ptxType + " " + regName + ", " +
 						"[" + inPointerName + "+" +
-								boost::lexical_cast<string>(offset) + "];\n"
+								boost::lexical_cast<string>(
+										alignedOffset(nativeType, offset)
+										) + "];\n"
 					;
 				}
 			-| Tuple(nativeType, registers) ->> {
 				string tr;
-				uword_t localOffset = 0;
 
-				for (long k = 0; k < registers.size();k++)
+				for (long k = 0; k < registers.size(); k++)
 					{
 					tr = tr + loadValueFromPointerIntoRegisters(
 									inPointerName,
 									registers[k],
-									offset + localOffset
+									offset
 									);
-					//note - we are assuming that everything
-					//is fully packed (which is true in NativeCode
-					//right now), so that we don't have to
-					//think about alignment
-					localOffset +=
-						nativeType.getComposite().elements()[k].packedSize();
+					offset =
+							alignedOffset(nativeType.getComposite().elements()[k], offset) +
+							nativeType.getComposite().elements()[k].alignedSize();
 					}
 				return tr;
 				}
@@ -426,7 +449,9 @@ private:
 					"st.global." + ptxType +
 						//generate the pointer offset
 						"[" + inPointerName + "+" +
-								boost::lexical_cast<string>(offset) + "]" +
+								boost::lexical_cast<string>(
+										alignedOffset(nativeType, offset)
+										) + "]" +
 							", " +
 						//the register
 						regName +
@@ -435,21 +460,17 @@ private:
 				}
 			-| Tuple(nativeType, registers) ->> {
 				string tr;
-				uword_t localOffset = 0;
 
 				for (long k = 0; k < registers.size();k++)
 					{
 					tr = tr + writeValueToPointerFromRegisters(
 									inPointerName,
 									registers[k],
-									offset + localOffset
+									offset
 									);
-					//note - we are assuming that everything
-					//is fully packed (which is true in NativeCode
-					//right now), so that we don't have to
-					//think about alignment
-					localOffset +=
-						nativeType.getComposite().elements()[k].packedSize();
+					offset =
+							alignedOffset(nativeType.getComposite().elements()[k], offset) +
+							nativeType.getComposite().elements()[k].alignedSize();
 					}
 				return tr;
 				}
@@ -800,8 +821,6 @@ private:
 				PTXValueRepresentation outReg =
 					mRegisters.allocateValue(*inNativeExpression.type());
 
-				string ptxInstruction;
-
 				lassert_dump(*lhs.type() == *rhs.type(), "can't use differing types"
 					<< " for operations in PTX. "
 					<< prettyPrintString(*lhs.type())
@@ -809,6 +828,7 @@ private:
 					<< ". op = " << prettyPrintString(opcode)
 					);
 
+				string ptxInstruction;
 				@match NativeBinaryOpcode(opcode)
 						-| Add() ->> {
 							ptxInstruction =  "add";
@@ -882,33 +902,12 @@ private:
 					<< ptxInstruction
 					;
 
-				bool isByteInstruction;
-				@match NativeBinaryOpcode(opcode)
-						-| And() ->> {
-							isByteInstruction=  true;
-							}
-						-| Or() ->> {
-							isByteInstruction=  true;
-							}
-						-| Xor() ->> {
-							isByteInstruction=  true;
-							}
-						-| ShiftRight() ->> {
-							isByteInstruction=  true;
-							}
-						-| ShiftLeft() ->> {
-							isByteInstruction=  true;
-							}
-						-| _ ->> {
-							isByteInstruction=  false;
-							}
-						;
-
 				//write the dest type
 				ioSideEffectStream << "."
-					<< nativeTypeToPTXType(*inNativeExpression.type(),
-						isByteInstruction);
-
+					<< nativeTypeToPTXType(
+							*inNativeExpression.type(),
+							isByteInstruction(opcode)
+							);
 				if (opcode.isComparison())
 					{
 					//write the arg type as well
@@ -1106,7 +1105,9 @@ private:
 					ioSideEffectStream << ".rzi";
 
 				//round the mantissa to nearest even
-				if (destType.isFloat())
+				if (destType.isFloat() &&
+						(sourceExpression.type()->isInteger()
+								|| sourceExpression.type()->alignedSize() > destType.alignedSize()))
 					ioSideEffectStream << ".rn";
 
 				ioSideEffectStream
@@ -1519,7 +1520,7 @@ private:
 
 string						computePTXVectorApplyKernelFromNativeCFG(
 									const NativeCFG& inCFG,
-									string entryFunctionName
+									const string& entryFunctionName
 									)
 	{
 	//static variables for the conversion cache

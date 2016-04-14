@@ -218,7 +218,6 @@ class ComputedValueVectorSlice(ComputedGraph.Location):
         This is used to prevent us from creating memory fragmentation when we are loading
         lots of arrays of different sizes.
         """
-        logging.info("Extract numpy data for %s: %s", self, self.vdmThinksIsLoaded())
         if self.computedValueVector.vectorImplVal is None:
             return None
         

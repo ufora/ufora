@@ -17,10 +17,120 @@
 
 #include "DistributedDataTaskMessages.hppml"
 #include "ForaValueLexicalComparison.hppml"
+#include "ForaValueLexicalComparisonForSingleJOV.hppml"
 
 #include "../../FORA/Core/ValueDeepcopier.hppml"
 
 namespace Cumulus {
+
+//this is a weird hack that caches a predicate function for its JOV by default. This
+//makes comparisons much faster.
+class SortingSpineBin {
+public:
+	SortingSpineBin(uint8_t* ptr, JOV jov) : 
+			mPtr(ptr),
+			mJov(jov),
+			mComparator(new LexicalUforaValueComparisonPredicateForSingleJOV(jov))
+		{
+		}
+
+	SortingSpineBin(uint8_t* ptr, JOV jov, LexicalUforaValueComparisonPredicateForSingleJOV* comparator) : 
+			mPtr(ptr),
+			mJov(jov),
+			mComparator(comparator ? new LexicalUforaValueComparisonPredicateForSingleJOV(jov) : nullptr)
+		{
+		}
+
+	SortingSpineBin(const SortingSpineBin& other)
+		{
+		mPtr = other.mPtr;
+		mJov = other.mJov;
+		if (other.mComparator)
+			mComparator = new LexicalUforaValueComparisonPredicateForSingleJOV(mJov);
+		else
+			mComparator = nullptr;
+		}
+
+	~SortingSpineBin()
+		{
+		if (mComparator)
+			delete mComparator;
+		}
+
+	SortingSpineBin& operator=(const SortingSpineBin& other)
+		{
+		mPtr = other.mPtr;
+		mJov = other.mJov;
+		if (other.mComparator)
+			mComparator = new LexicalUforaValueComparisonPredicateForSingleJOV(mJov);
+		else
+			mComparator = nullptr;
+
+		return *this;
+		}
+
+	friend bool operator<(const SortingSpineBin& bin, const SortingSpineBin& bin2)
+		{
+		typedef MemoizedAlternativePointer<JOV> RawJOV;
+
+		RawJOV leftJov(bin.mJov);
+		RawJOV rightJov(bin2.mJov);
+		
+		if (leftJov != rightJov)
+			return bin.mJov.type()->hash() < bin2.mJov.type()->hash();
+
+		if (bin.mComparator)
+			return (*bin.mComparator)(bin.mPtr, bin2.mPtr);
+			else
+		if (bin2.mComparator)
+			return (*bin2.mComparator)(bin.mPtr, bin2.mPtr);
+
+		lassert(false);
+		}
+
+	friend bool operator<(const SortingSpineBin& bin, const pair<uint8_t*, JOV>& data)
+		{
+		typedef MemoizedAlternativePointer<JOV> RawJOV;
+
+		RawJOV leftJov(bin.mJov);
+		RawJOV rightJov(data.second);
+		
+		if (leftJov != rightJov)
+			return bin.mJov.type()->hash() < data.second.type()->hash();
+
+		return (*bin.mComparator)(bin.mPtr, data.first);
+		}
+
+	friend bool operator<(const pair<uint8_t*, JOV>& data, const SortingSpineBin& bin)
+		{
+		typedef MemoizedAlternativePointer<JOV> RawJOV;
+
+		RawJOV leftJov(data.second);
+		RawJOV rightJov(bin.mJov);
+		
+		if (leftJov != rightJov)
+			return data.second.type()->hash() < bin.mJov.type()->hash();
+
+		return (*bin.mComparator)(data.first, bin.mPtr);
+		}
+
+	uint8_t* ptr() const
+		{
+		return mPtr;
+		}
+
+	JOV jov() const
+		{
+		return mJov;
+		}
+
+private:
+	uint8_t* mPtr;
+
+	JOV mJov;
+
+	LexicalUforaValueComparisonPredicateForSingleJOV* mComparator;
+};
 
 /************************
 
@@ -72,16 +182,16 @@ public:
 				);
 			}
 
-		pair<uint8_t*, JOV> newPair((uint8_t*)mSplitValues.back()->data(), JOV::OfType(mSplitValues.back()->type()));
+		SortingSpineBin newBin((uint8_t*)mSplitValues.back()->data(), JOV::OfType(mSplitValues.back()->type()));
 
 		//find the insertion point
-		auto it = mSplits.find(newPair);
+		auto it = mSplits.find(newBin);
 		lassert(it == mSplits.end());
 
-		mSplits[newPair] = leftSplitBin;
+		mSplits[newBin] = leftSplitBin;
 		mBinCounts[leftSplitBin]++;
 
-		it = mSplits.find(newPair);
+		it = mSplits.find(newBin);
 		it++;
 
 		if (it == mSplits.end())
@@ -120,31 +230,52 @@ public:
 
 		long curIndex = 0;
 
-		while (curSplitIt != mSplits.end() && curIndex < outBins.size())
+		if (array->isHomogenous() && array->size())
 			{
-			pair<uint8_t*, JOV> curValue(array->offsetFor(curIndex), array->jovFor(curIndex));
+			JOV singleJov = array->jovFor(0);
 
-			if (LexicalUforaValueComparisonPredicate()(curValue, curSplitIt->first))
+			LexicalUforaValueComparisonPredicateForSingleJOV predicate(singleJov);
+
+			while (curSplitIt != mSplits.end() && curIndex < outBins.size())
 				{
-				outBins[curIndex] = curSplitIt->second;
-				curIndex++;
+				pair<uint8_t*, JOV> curValue(array->offsetFor(curIndex), singleJov);
+
+				if (predicate(curValue.first, curSplitIt->first.ptr()))
+					{
+					outBins[curIndex] = curSplitIt->second;
+					curIndex++;
+					}
+				else
+					curSplitIt++;
 				}
-			else
-				curSplitIt++;
+			}
+		else
+			{
+			while (curSplitIt != mSplits.end() && curIndex < outBins.size())
+				{
+				pair<uint8_t*, JOV> curValue(array->offsetFor(curIndex), array->jovFor(curIndex));
+
+				if (LexicalUforaValueComparisonPredicate()(curValue, make_pair(curSplitIt->first.ptr(), curSplitIt->first.jov())))
+					{
+					outBins[curIndex] = curSplitIt->second;
+					curIndex++;
+					}
+				else
+					curSplitIt++;
+				}
 			}
 
 		while (curIndex < outBins.size())
 			outBins[curIndex++] = mTopBin;
 		}
 
-	//assign bins assuming that 'array' is sorted
 	void assignBinsToUnsortedArray(TypedFora::Abi::ForaValueArray* array, std::vector<bin_index_type>& outBins) const
 		{
 		outBins.resize(array->size());
 
 		for (long k = 0; k < array->size(); k++)
 			{
-			pair<uint8_t*, JOV> curValue(array->offsetFor(k), array->jovFor(k));
+			SortingSpineBin curValue(array->offsetFor(k), array->jovFor(k), nullptr);
 
 			auto it = mSplits.upper_bound(curValue);
 
@@ -155,12 +286,11 @@ public:
 			}
 		}
 
-	//assign bins assuming that 'array' is sorted
 	void assignBinsToUnsortedArray(TypedFora::Abi::ForaValueArray* array, std::map<bin_index_type, std::vector<long> >& outBins) const
 		{
 		for (long k = 0; k < array->size(); k++)
 			{
-			pair<uint8_t*, JOV> curValue(array->offsetFor(k), array->jovFor(k));
+			SortingSpineBin curValue(array->offsetFor(k), array->jovFor(k), nullptr);
 
 			auto it = mSplits.upper_bound(curValue);
 
@@ -203,7 +333,7 @@ public:
 	void logStateToStream(stream_type& s)
 		{
 		for (auto split: mSplits)
-			s << "\t" << ImplValContainer(*split.first.second.type(), split.first.first) << ": " << split.second << "\n";
+			s << "\t" << ImplValContainer(*split.first.jov().type(), split.first.ptr()) << ": " << split.second << "\n";
 		}
 
 private:
@@ -211,7 +341,7 @@ private:
 
 	std::vector<boost::shared_ptr<ImplValContainer> > mSplitValues;
 
-	std::map<pair<uint8_t*, JOV>, bin_index_type, LexicalUforaValueComparisonPredicate> mSplits;
+	std::map<SortingSpineBin, bin_index_type> mSplits;
 
 	std::map<bin_index_type, long> mBinCounts;
 

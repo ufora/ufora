@@ -37,19 +37,38 @@ class PurePythonNumpyArray(object):
         if len(self.shape) == 1:
             return self
 
-        newVals = []
+        if len(self.shape) == 2:
+            newVals = []
 
-        d1 = self.shape[0]
-        d2 = self.shape[1]
+            d1 = self.shape[0]
+            d2 = self.shape[1]
 
-        newVals = [self[ix1][ix2] for ix2 in xrange(d2) for ix1 in xrange(d1)]
+            newVals = [self[ix1][ix2] for ix2 in xrange(d2) for ix1 in xrange(d1)]
 
-        newShape = tuple(reversed((self.shape)))
+            newShape = (d2, d1)
 
-        return PurePythonNumpyArray(
-            newShape,
-            newVals
-            )
+            return PurePythonNumpyArray(
+                newShape,
+                newVals
+                )
+
+        if len(self.shape) == 3:
+            newVals = []
+
+            d1 = self.shape[0]
+            d2 = self.shape[1]
+            d3 = self.shape[2]
+
+            newVals = [self[ix1][ix2][ix3] for ix3 in xrange(d3) for ix2 in xrange(d2) for ix1 in xrange(d1)]
+
+            newShape = (d3, d2, d1)
+
+            return PurePythonNumpyArray(
+                newShape,
+                newVals
+                )
+
+        raise NotImplementedError("Not implemented for dim > 3")
 
     def __iter__(self):
         for idx in xrange(len(self)):
@@ -104,14 +123,8 @@ class PurePythonNumpyArray(object):
             else:
                 return self.values[ix]
 
-        def shapeOfResultantArray(originalShape):
-            newShape = []
-            for idx in xrange(len(originalShape)):
-                if idx != 0:
-                    newShape = newShape + [originalShape[idx]]
-            return tuple(newShape)
+        newShape = self.shape[1:]
 
-        newShape = shapeOfResultantArray(self.shape)
         stride = 1
         for idx in xrange(1, len(self.shape)):
             stride = stride * self.shape[idx]
@@ -230,6 +243,21 @@ class PurePythonNumpyArrayMapping(PureImplementationMapping):
             assert False, (pureNumpyArray.values, pureNumpyArray.shape)
 
 
+@pureMapping(np.eye)
+class NpEye(object):
+    def __call__(self, N, M=None):
+        if M is None:
+            M = N
+
+        vals = [1.0 if colIx == rowIx else 0.0 for rowIx in xrange(N) \
+             for colIx in xrange(M)]
+
+        return  PurePythonNumpyArray(
+            (N, M),
+            vals
+            )
+
+
 @pureMapping(np.zeros)
 class NpZeros(object):
     def __call__(self, length):
@@ -268,38 +296,26 @@ class NpArray(object):
                 array
                 )
 
-        def flattenAnNDimensionalArray(arr, shape):
-            toReturn = []
-            if len(shape) == 0:
-                return arr
-            else:
-                newShape = []
-                for idx in xrange(len(shape)):
-                    if idx != 0:
-                        newShape = newShape + [shape[idx]]
+        if not isinstance(array[0][0], list):
+            return PurePythonNumpyArray(
+                (len(array),len(array[0])),
+                sum(array, [])
+                )
 
-                for subArr in arr:
-                    v = flattenAnNDimensionalArray(subArr, newShape)
-                    if not isinstance(v, list):
-                        toReturn = toReturn + [v]
-                    else:
-                        for v2 in v:
-                            toReturn = toReturn + [v2]
-                return toReturn
+        if not isinstance(array[0][0][0], list):
+            return PurePythonNumpyArray(
+                (len(array),len(array[0]),len(array[0][0])),
+                sum(sum(array, []), [])
+                )
 
-        shape = []
-        inspection = array
-        while isinstance(inspection, list):
-            shape = shape + [len(inspection)]
-            inspection = inspection[0]
 
-        flat = flattenAnNDimensionalArray(array, shape)
-        shape = tuple(shape)
-        return PurePythonNumpyArray(
-            shape,
-            flat
-            )
+        if not isinstance(array[0][0][0][0], list):
+            return PurePythonNumpyArray(
+                (len(array),len(array[0]),len(array[0][0]), len(array[0][0][0])),
+                sum(sum(sum(array, []), []), [])
+                )
 
+        raise NotImplementedError("Not implemented for > 4D arrays")
 
 def _dotProduct(arr1, arr2):
     len1 = len(arr1)
@@ -338,7 +354,7 @@ def _dot(arr1, arr2):
                     )
 
             result = __inline_fora(
-                """fun(values1, shape1, values2, shape2) {
+                """fun(@unnamed_args:(values1, shape1, values2, shape2), *args) {
                        return purePython.linalgModule.matrixMult(
                            values1, shape1, values2, shape2
                            )
@@ -371,12 +387,15 @@ class NpDot(object):
 @pureMapping(np.linalg.pinv)
 class NpPinv(object):
     def __call__(self, matrix):
-        builtins = NpPinv.__pyfora_builtins__
-
         shape = matrix.shape
         assert len(shape) == 2
 
-        result = builtins.linalg.pInv(matrix.values, shape)
+        result = __inline_fora(
+            """fun(@unnamed_args:(rowMajorValues, shape), *args) {
+                   purePython.linalgModule.pInv(rowMajorValues, shape)
+                   }"""
+            )(matrix.values, shape)
+
         flat = result[0]
         shape = result[1]
         return PurePythonNumpyArray(
@@ -385,12 +404,63 @@ class NpPinv(object):
             )
 
 
+@pureMapping(np.linalg.inv)
+class NpInv(object):
+    def __call__(self, x):
+        shape = x.shape
+        assert len(shape) == 2
+
+        # linalgModule throws a TypeError if x is singular
+        # we should really be throwing a numpy.linalg.LinAlgError
+        result = __inline_fora(
+            """fun(@unnamed_args:(rowMajorValues, shape), *args) {
+                   purePython.linalgModule.inv(rowMajorValues, shape)
+                   }"""
+            )(x.values, shape)
+
+        flat = result[0]
+        shape = result[1]
+        
+        return PurePythonNumpyArray(
+            shape,
+            flat
+            )
+
+
+@pureMapping(np.linalg.eigh)
+class NpEigH(object):
+    def __call__(self, a, UPLO='L'):
+        assert len(a.shape) == 2, "need len(a.shape) == 2"
+
+        res = __inline_fora(
+            """fun(@unnamed_args:(a, uplo), *args) {
+                   return purePython.linalgModule.eigh(a, uplo)
+                   }"""
+            )(a, UPLO)
+
+        return (
+            PurePythonNumpyArray(
+                (a.shape[0],),
+                res[1]
+                ),
+            PurePythonNumpyArray(
+                a.shape,
+                res[0]
+                )
+            )
+        
+
+
 @pureMapping(np.linalg.svd)
 class Svd(object):
     def __call__(self, a):
         assert len(a.shape) == 2, "need len(a.shape) == 2"
 
-        res = Svd.__pyfora_builtins__.linalg.svd(a)
+        res = __inline_fora(
+            """fun(@unnamed_args:(a), *args) {
+                   purePython.linalgModule.svd(a)
+                   }"""
+            )(a)
 
         return (
             PurePythonNumpyArray(
@@ -415,8 +485,11 @@ class Lstsq(object):
         assert len(b.shape) == 1, "need len(b.shape) == 1"
         assert b.shape[0] == a.shape[0]
 
-        x, singular_values, rank = \
-            Lstsq.__pyfora_builtins__.linalg.lstsq(a, b, rcond)
+        x, singular_values, rank = __inline_fora(
+            """fun(@unnamed_args:(a, b, rcond), *args) {
+                   purePython.linalgModule.lstsq(a, b, rcond)
+                   }"""
+            )(a, b, rcond)
 
         x = PurePythonNumpyArray((len(x),), x)
 
@@ -528,7 +601,11 @@ class LinSolve(object):
         assert False, "need len(b.shape) == 2 or len(b.shape) == 1"
 
     def _linsolv_impl(self, a, b):
-        res = LinSolve.__pyfora_builtins__.linalg.linsolve(a, b)
+        res = __inline_fora(
+            """fun(@unnamed_args:(a,b), *args) {
+                   purePython.linalgModule.linsolve(a, b)
+                   }"""
+            )(a, b)
         flattendValues = res[0]
         shape = res[1]
         return PurePythonNumpyArray(
@@ -579,7 +656,7 @@ class IsNan(object):
             x = float(x)
 
         return __inline_fora(
-            """fun(PyFloat(...) x) {
+            """fun(@unnamed_args:(PyFloat(...) x), *args) {
                    PyBool(x.@m.isNan)
                    }"""
             )(x)
@@ -604,7 +681,7 @@ class IsInf(object):
             x = float(x)
 
         return __inline_fora(
-            """fun(PyFloat(...) x) {
+            """fun(@unnamed_args:(PyFloat(...) x), *args) {
                    PyBool(x.@m.isInfinite)
                    }"""
             )(x)
@@ -621,10 +698,17 @@ class IsInf(object):
 @pureMapping(np.isfinite)
 class IsFinite(object):
     def __call__(self, x):
+        if isinstance(x, list):
+            return self.isfinite_array(x)
+
+        if isinstance(x, PurePythonNumpyArray):
+            return self.isfinite_array(x)
+        
         try:
             return self.isfinite_float(x)
         except:
             pass
+
         try:
             return self.isfinite_array(x)
         except:
@@ -637,7 +721,7 @@ class IsFinite(object):
             x = float(x)
 
         return __inline_fora(
-            """fun(PyFloat(...) x) {
+            """fun(@unnamed_args:(PyFloat(...) x), *args) {
                    PyBool(x.@m.isFinite)
                    }"""
             )(x)
@@ -651,13 +735,46 @@ class IsFinite(object):
             )
 
 
+@pureMapping(np.abs)
+class NpAbs(object):
+    def __call__(self, x):
+        try:
+            return self.abs_primitive(x)
+        except:
+            pass
+        try:
+            return self.abs_array(x)
+        except:
+            raise TypeError(
+                "argument " + str(x) + " could not be coerced to bool or array"
+                )
+
+    def abs_primitive(self, x):
+        # this next call might raise an exception, but that's ok
+        x_as_float = float(x)
+
+        return abs(x_as_float)
+
+    def abs_array(self, x):
+        x_asarray = np.array(x)
+        
+        return PurePythonNumpyArray(
+            x_asarray.shape,
+            [self.abs_primitive(val) for val in x_asarray.values]
+            )
+
+
 @pureMapping(np.all)
 class All(object):
     def __call__(self, x):
+        if isinstance(x, list) or isinstance(x, PurePythonNumpyArray):
+            return self.all_array(x)
+        
         try:
             return self.all_primitive(x)
         except:
             pass
+
         try:
             return self.all_array(x)
         except:
@@ -687,7 +804,7 @@ class Log(object):
             return -np.inf
 
         return __inline_fora(
-            """fun(val) {
+            """fun(@unnamed_args:(val), *args) {
                    PyFloat(math.log(val.@m))
                    }"""
             )(val)
@@ -703,7 +820,7 @@ class Log10(object):
             return -np.inf
 
         return __inline_fora(
-            """fun(val) {
+            """fun(@unnamed_args:(val), *args) {
                    PyFloat(math.log_10(val.@m))
                    }"""
             )(val)

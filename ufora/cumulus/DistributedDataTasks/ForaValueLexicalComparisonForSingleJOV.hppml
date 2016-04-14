@@ -1,0 +1,212 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+namespace Cumulus {
+
+class LexicalUforaValueComparisonPredicateForSingleJOV {
+public:
+	template<class T>
+	static char comparison(uint8_t* lhs, uint8_t* rhs) 
+		{
+		if (*(T*)lhs < *(T*)rhs)
+			return -1;
+		if (*(T*)lhs > *(T*)rhs)
+			return 1;
+		return 0;
+		}
+
+	enum class ComparisonType {
+		Int64,
+		Int32,
+		Int16,
+		Int8,
+		UInt64,
+		UInt32,
+		UInt16,
+		UInt8,
+		UInt1,
+		Float32,
+		Float64,
+		String,
+		DateTime,
+		TimeDuration
+	};
+
+	LexicalUforaValueComparisonPredicateForSingleJOV(JOV jov)
+		{
+		buildComparisonTable(*jov.type(), 0);
+
+		mOffsetsAndComparison = &mOffsetAndComparisonTypes[0];
+		mOffsetsAndComparisonCount = mOffsetAndComparisonTypes.size();
+
+		lassert(mOffsetsAndComparisonCount);
+		}
+
+	LexicalUforaValueComparisonPredicateForSingleJOV& operator=(const LexicalUforaValueComparisonPredicateForSingleJOV& in)
+		{
+		mOffsetAndComparisonTypes = in.mOffsetAndComparisonTypes;
+
+		mOffsetsAndComparison = &mOffsetAndComparisonTypes[0];
+		mOffsetsAndComparisonCount = mOffsetAndComparisonTypes.size();
+
+		return *this;
+		}
+
+	void buildComparisonTable(Type type, int64_t inOffset)
+		{
+		ComparisonType ctype;
+
+		@match Type(type)
+			-| Integer(bitcount, isSigned) ->> {
+				if (bitcount == 64 && isSigned)
+					ctype = ComparisonType::Int64;
+				if (bitcount == 64 && !isSigned)
+					ctype = ComparisonType::UInt64;
+				if (bitcount == 32 && isSigned)
+					ctype = ComparisonType::Int32;
+				if (bitcount == 32 && !isSigned)
+					ctype = ComparisonType::UInt32;
+				if (bitcount == 16 && isSigned)
+					ctype = ComparisonType::Int16;
+				if (bitcount == 16 && !isSigned)
+					ctype = ComparisonType::UInt16;
+				if (bitcount == 8 && isSigned)
+					ctype = ComparisonType::Int8;
+				if (bitcount == 8 && !isSigned)
+					ctype = ComparisonType::UInt8;
+				if (bitcount == 1)
+					ctype = ComparisonType::UInt64;
+				}
+			-| Float(bitcount) ->> {
+				if (bitcount == 64)
+					ctype = ComparisonType::Float64;
+				if (bitcount == 32)
+					ctype = ComparisonType::Float32;
+				}
+			-| String() ->> {
+				ctype = ComparisonType::String;
+				}
+			-| DateTime() ->> {
+				ctype = ComparisonType::DateTime;
+				}
+			-| TimeDuration() ->> {
+				ctype = ComparisonType::TimeDuration;
+				}
+			-| Tuple(subtypes) ->> {
+				int64_t offset = inOffset;
+				for (auto eltType: subtypes)
+					{
+					buildComparisonTable(eltType, offset);
+					offset += eltType.size();
+					}
+				return;
+				}
+			-| Class(subtypes) ->> {
+				int64_t offset = inOffset;
+				for (auto eltType: subtypes)
+					{
+					buildComparisonTable(eltType, offset);
+					offset += eltType.size();
+					}
+				return;
+				}
+			-| Nothing() ->> {
+				return;
+				}
+			-| _ ->> {
+				return;
+				}
+
+		mOffsetAndComparisonTypes.push_back(make_pair(inOffset, ctype));
+		}
+
+	char compare(ComparisonType type, uint8_t* l, uint8_t* r) const
+		{
+		if (type == ComparisonType::Int64)
+			return comparison<int64_t>(l,r);
+		if (type == ComparisonType::Float64)
+			return comparison<double>(l,r);
+		if (type == ComparisonType::String)
+			{
+			String& lhsString(*(String*)l);
+			String& rhsString(*(String*)r);
+
+			return strcmp(lhsString.c_str(), rhsString.c_str());
+			}
+		if (type == ComparisonType::DateTime)
+			return comparison<DateTime>(l,r);
+		if (type == ComparisonType::TimeDuration)
+			return comparison<TimeDuration>(l,r);
+		if (type == ComparisonType::Float32)
+			return comparison<float>(l,r);
+		if (type == ComparisonType::Int32)
+			return comparison<int32_t>(l,r);
+		if (type == ComparisonType::Int16)
+			return comparison<int16_t>(l,r);
+		if (type == ComparisonType::Int8)
+			return comparison<int8_t>(l,r);
+		if (type == ComparisonType::UInt64)
+			return comparison<uint64_t>(l,r);
+		if (type == ComparisonType::UInt32)
+			return comparison<uint32_t>(l,r);
+		if (type == ComparisonType::UInt16)
+			return comparison<uint16_t>(l,r);
+		if (type == ComparisonType::UInt8)
+			return comparison<uint8_t>(l,r);
+		if (type == ComparisonType::UInt1)
+			return comparison<bool>(l,r);
+
+		lassert(false);
+		}
+
+
+	bool operator()(pair<uint8_t*, JOV> l, pair<uint8_t*, JOV> r) const
+		{
+		return (*this)(l.first, r.first);
+		}
+
+	bool operator()(uint8_t* l, uint8_t* r) const
+		{
+		for (long k = 0; k < mOffsetsAndComparisonCount; k++)
+			{
+			pair<int64_t, ComparisonType> offsetAndComparison = mOffsetsAndComparison[k];
+
+			char cmp = compare(
+				offsetAndComparison.second, 
+				l + offsetAndComparison.first,
+				r + offsetAndComparison.first
+				);
+
+			if (cmp < 0)
+				return true;
+			if (cmp > 0)
+				return false;
+			}
+
+		return false;
+		}
+
+	std::vector<pair<int64_t, ComparisonType> > mOffsetAndComparisonTypes;
+
+	pair<int64_t, ComparisonType>* mOffsetsAndComparison;
+
+	int64_t mOffsetsAndComparisonCount;
+
+};
+
+}
+

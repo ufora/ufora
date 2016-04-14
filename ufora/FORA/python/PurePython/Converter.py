@@ -993,194 +993,184 @@ class Converter(object):
         return res
 
     def transformPyforaImplval(self, implval, transformer, vectorContentsExtractor):
-        """Walk an implval that represents a pyfora value and unwrap it, passing data to the transformer.
+        objectDefinitions = {}
+        hashToObjectId = {}
 
-        implval - the pyfora value we want to visit
-        transformer - an instance of PyforaToJsonTransformer that receives data and builds the relevant
-            representation that we will return.
-        """
-        value = self.constantConverter.invertForaConstant(implval)
-        if value is not None:
-            if isinstance(value, tuple):
-                #this is a simple constant
-                return transformer.transformPrimitive(value[0])
-            else:
-                #this is a vector
-                assert isinstance(value, ForaNative.ImplValContainer)
+        def transform(implval):
+            """Walk an implval that represents a pyfora value and unwrap it, passing data to the transformer.
 
-                if len(value) == 0:
-                    return transformer.transformPrimitive("")
+            implval - the pyfora value we want to visit
+            transformer - an instance of PyforaToJsonTransformer that receives data and builds the relevant
+                representation that we will return.
+            """
+            if implval.hash in hashToObjectId:
+                return hashToObjectId[implval.hash]
 
-                assert value.isVectorOfChar()
+            newId = str(len(objectDefinitions))
+            objectDefinitions[newId] = None
+            
+            hashToObjectId[implval.hash] = newId
 
-                contents = vectorContentsExtractor(value)
+            objectDefinitions[newId] = transformBody(implval)
+
+            return newId
+
+        def transformBody(implval):
+            value = self.constantConverter.invertForaConstant(implval)
+            if value is not None:
+                if isinstance(value, tuple):
+                    #this is a simple constant
+                    return transformer.transformPrimitive(value[0])
+                else:
+                    #this is a vector
+                    assert isinstance(value, ForaNative.ImplValContainer)
+
+                    if len(value) == 0:
+                        return transformer.transformPrimitive("")
+
+                    assert value.isVectorOfChar()
+
+                    contents = vectorContentsExtractor(value)
+
+                    if contents is None:
+                        return transformer.transformStringThatNeedsLoading(len(value))
+                    else:
+                        assert 'string' in contents
+                        return transformer.transformPrimitive(contents['string'])
+
+            if self.singletonAndExceptionConverter is not None:
+                value = self.singletonAndExceptionConverter.convertInstanceToSingletonName(implval)
+                if value is not None:
+                    return transformer.transformSingleton(value)
+
+                value = self.singletonAndExceptionConverter.convertExceptionInstance(implval)
+                if value is not None:
+                    return transformer.transformBuiltinException(
+                        value[0],
+                        transform(value[1])
+                        )
+
+                value = self.singletonAndExceptionConverter.convertPyAbortExceptionInstance(
+                    implval
+                    )
+                if value is not None:
+                    return transformer.transformPyAbortException(
+                        value[0],
+                        transform(value[1])
+                        )
+
+            value = self.nativeTupleConverter.invertTuple(implval)
+            if value is not None:
+                return transformer.transformTuple([transform(x) for x in value])
+
+            value = self.nativeDictConverter.invertDict(implval)
+            if value is not None:
+                return transformer.transformDict(
+                    keys=[transform(k) for k in value.keys()],
+                    values=[transform(v) for v in value.values()]
+                    )
+
+            listItemsAsVector = self.nativeListConverter.invertList(implval)
+            if listItemsAsVector is not None:
+                contents = vectorContentsExtractor(listItemsAsVector)
 
                 if contents is None:
-                    return transformer.transformStringThatNeedsLoading(len(value))
+                    return transformer.transformListThatNeedsLoading(len(listItemsAsVector))
+                elif 'listContents' in contents:
+                    return transformer.transformList([transform(x) for x in contents['listContents']])
                 else:
-                    assert 'string' in contents
-                    return transformer.transformPrimitive(contents['string'])
+                    assert 'firstElement' in contents
+                    firstElement = contents['firstElement']
+                    contentsAsNumpy = contents['contentsAsNumpyArrays']
 
-        if self.singletonAndExceptionConverter is not None:
-            value = self.singletonAndExceptionConverter.convertInstanceToSingletonName(implval)
-            if value is not None:
-                return transformer.transformSingleton(value)
+                    return transformer.transformHomogenousList(transform(firstElement), contentsAsNumpy)
 
-            value = self.singletonAndExceptionConverter.convertExceptionInstance(implval)
-            if value is not None:
-                return transformer.transformBuiltinException(
-                    value[0],
-                    self.transformPyforaImplval(value[1], transformer, vectorContentsExtractor)
-                    )
+            if implval.isTuple():
+                stackTraceAsJsonOrNone = self.getStackTraceAsJsonOrNone(implval)
+                if stackTraceAsJsonOrNone is not None:
+                    return stackTraceAsJsonOrNone
 
-            value = self.singletonAndExceptionConverter.convertPyAbortExceptionInstance(
-                implval
-                )
-            if value is not None:
-                return transformer.transformPyAbortException(
-                    value[0],
-                    self.transformPyforaImplval(value[1], transformer, vectorContentsExtractor)
-                    )
+            if implval.isObject():
+                objectClass = implval.getObjectClass()
 
-        value = self.nativeTupleConverter.invertTuple(implval)
-        if value is not None:
-            return transformer.transformTuple([
-                self.transformPyforaImplval(x, transformer, vectorContentsExtractor)
-                for x in value
-                ])
-
-        value = self.nativeDictConverter.invertDict(implval)
-        if value is not None:
-            return transformer.transformDict(
-                keys=[
-                    self.transformPyforaImplval(k, transformer, vectorContentsExtractor)
-                    for k in value.keys()
-                    ],
-                values=[
-                    self.transformPyforaImplval(v, transformer, vectorContentsExtractor)
-                    for v in value.values()
-                    ]
-                )
-
-        listItemsAsVector = self.nativeListConverter.invertList(implval)
-        if listItemsAsVector is not None:
-            contents = vectorContentsExtractor(listItemsAsVector)
-
-            if contents is None:
-                return transformer.transformListThatNeedsLoading(len(listItemsAsVector))
-            elif 'listContents' in contents:
-                return transformer.transformList(
-                    [self.transformPyforaImplval(x, transformer, vectorContentsExtractor)
-                     for x in contents['listContents']]
-                    )
-            else:
-                assert 'firstElement' in contents
-                firstElement = contents['firstElement']
-                contentsAsNumpy = contents['contentsAsNumpyArrays']
-
-                return transformer.transformHomogenousList(
-                    self.transformPyforaImplval(firstElement, transformer, vectorContentsExtractor),
-                    contentsAsNumpy
-                    )
-
-        if implval.isTuple():
-            stackTraceAsJsonOrNone = self.getStackTraceAsJsonOrNone(implval)
-            if stackTraceAsJsonOrNone is not None:
-                return stackTraceAsJsonOrNone
-
-        if implval.isObject():
-            objectClass = implval.getObjectClass()
-
-            if objectClass == self.pyforaBoundMethodClass:
-                nameAsImplval = implval.getObjectLexicalMember("@name")[0]
-                if not nameAsImplval.isSymbol():
-                    raise pyfora.ForaToPythonConversionError(
-                        "PyBoundMethod found with name %s of type %s, which should be a symbol but is not."
-                            % (nameAsImplval, nameAsImplval.type)
-                        )
-
-                return transformer.transformBoundMethod(
-                    self.transformPyforaImplval(
-                        implval.getObjectLexicalMember("@self")[0],
-                        transformer,
-                        vectorContentsExtractor
-                        ),
-                    nameAsImplval.pyval[1:]
-                    )
-
-
-            defPoint = implval.getObjectDefinitionPoint()
-            if defPoint is not None:
-                if objectClass is not None:
-                    classObject = self.transformPyforaImplval(objectClass,
-                                                              transformer,
-                                                              vectorContentsExtractor)
-                    members = {}
-
-                    for memberName in objectClass.objectMembers:
-                        if memberName is not None:
-                            member = implval.getObjectLexicalMember(memberName)
-                            if member is not None and member[1] is None:
-                                assert memberName == "@m"
-                                assert member[0].isTuple()
-
-                                membersTuple = member[0]
-                                memberNames = membersTuple.getTupleNames()
-                                for i, name in enumerate(memberNames):
-                                    members[str(name)] = self.transformPyforaImplval(
-                                        membersTuple[i],
-                                        transformer,
-                                        vectorContentsExtractor
-                                        )
-
-                    return transformer.transformClassInstance(classObject, members)
-                else:
-                    members = {}
-                    lexicalMembers = implval.objectLexicalMembers
-                    for memberAndBindingSequence in lexicalMembers.iteritems():
-                        #if the binding sequence is empty, then this binding refers to 'self'
-                        if isinstance(memberAndBindingSequence[1], ForaNative.ImplValContainer) or memberAndBindingSequence[1][0]:
-                            memberName = memberAndBindingSequence[0]
-                            member = implval.getObjectLexicalMember(memberName)
-                            if member is not None and member[1] is None:
-                                members[str(memberName)] = self.transformPyforaImplval(
-                                    member[0],
-                                    transformer,
-                                    vectorContentsExtractor
-                                    )
-
-                    return transformer.transformFunctionInstance(
-                        defPoint.defPoint.asExternal.paths[0],
-                        defPoint.range.start.line,
-                        members
-                        )
-
-        elif implval.isClass():
-            members = {}
-            defPoint = implval.getObjectDefinitionPoint()
-
-            lexicalMembers = implval.objectLexicalMembers
-            for memberAndBindingSequence in lexicalMembers.iteritems():
-                #if the binding sequence is empty, then this binding refers to 'self'
-                if isinstance(memberAndBindingSequence[1], ForaNative.ImplValContainer) or memberAndBindingSequence[1][0]:
-                    memberName = memberAndBindingSequence[0]
-                    member = implval.getObjectLexicalMember(memberName)
-                    if member is not None and member[1] is None:
-                        members[str(memberName)] = self.transformPyforaImplval(
-                            member[0],
-                            transformer,
-                            vectorContentsExtractor
+                if objectClass == self.pyforaBoundMethodClass:
+                    nameAsImplval = implval.getObjectLexicalMember("@name")[0]
+                    if not nameAsImplval.isSymbol():
+                        raise pyfora.ForaToPythonConversionError(
+                            "PyBoundMethod found with name %s of type %s, which should be a symbol but is not."
+                                % (nameAsImplval, nameAsImplval.type)
                             )
 
-            return transformer.transformClassObject(defPoint.defPoint.asExternal.paths[0],
-                                                    defPoint.range.start.line,
-                                                    members)
+                    return transformer.transformBoundMethod(
+                        transform(implval.getObjectLexicalMember("@self")[0]),
+                        nameAsImplval.pyval[1:]
+                        )
 
-        logging.error("Failed to convert %s of type %s back to python", implval, str(implval.type))
 
-        raise pyfora.ForaToPythonConversionError(
-            "Result cannot be translated back to python."
-            )
+                defPoint = implval.getObjectDefinitionPoint()
+                if defPoint is not None:
+                    if objectClass is not None:
+                        classObject = transform(objectClass)
+                        members = {}
+
+                        for memberName in objectClass.objectMembers:
+                            if memberName is not None:
+                                member = implval.getObjectLexicalMember(memberName)
+                                if member is not None and member[1] is None:
+                                    assert memberName == "@m"
+                                    assert member[0].isTuple()
+
+                                    membersTuple = member[0]
+                                    memberNames = membersTuple.getTupleNames()
+                                    for i, name in enumerate(memberNames):
+                                        members[str(name)] = transform(membersTuple[i])
+
+                        return transformer.transformClassInstance(classObject, members)
+                    else:
+                        members = {}
+                        lexicalMembers = implval.objectLexicalMembers
+                        for memberAndBindingSequence in lexicalMembers.iteritems():
+                            #if the binding sequence is empty, then this binding refers to 'self'
+                            if isinstance(memberAndBindingSequence[1], ForaNative.ImplValContainer) or memberAndBindingSequence[1][0]:
+                                memberName = memberAndBindingSequence[0]
+                                member = implval.getObjectLexicalMember(memberName)
+                                if member is not None and member[1] is None:
+                                    members[str(memberName)] = transform(member[0])
+
+                        return transformer.transformFunctionInstance(
+                            defPoint.defPoint.asExternal.paths[0],
+                            defPoint.range.start.line,
+                            members
+                            )
+
+            elif implval.isClass():
+                members = {}
+                defPoint = implval.getObjectDefinitionPoint()
+
+                lexicalMembers = implval.objectLexicalMembers
+                for memberAndBindingSequence in lexicalMembers.iteritems():
+                    #if the binding sequence is empty, then this binding refers to 'self'
+                    if isinstance(memberAndBindingSequence[1], ForaNative.ImplValContainer) or memberAndBindingSequence[1][0]:
+                        memberName = memberAndBindingSequence[0]
+                        member = implval.getObjectLexicalMember(memberName)
+                        if member is not None and member[1] is None:
+                            members[str(memberName)] = transform(member[0])
+
+                return transformer.transformClassObject(defPoint.defPoint.asExternal.paths[0],
+                                                        defPoint.range.start.line,
+                                                        members)
+
+            logging.error("Failed to convert %s of type %s back to python", implval, str(implval.type))
+
+            raise pyfora.ForaToPythonConversionError(
+                "Result cannot be translated back to python."
+                )
+
+
+        root_id = transform(implval)
+
+        return {'obj_definitions': objectDefinitions, 'root_id': root_id}
+
 
     def getStackTraceAsJsonOrNone(self, implval):
         tup = implval.getTuple()

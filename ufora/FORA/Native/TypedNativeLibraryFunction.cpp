@@ -49,54 +49,21 @@ NativeExpression callLibraryFunctionContainingCPPTypes(
 			return e;
 			}
 
-	if (resultTypeIsPOD && allAreTrue(inArgumentTypesArePOD))
-		return NativeExpression::CallLibraryFunction(
-			target,
-			resultType,
-			inArguments
-			);
-
-	if (!resultTypeIsPOD)
-		//this will be passed back to us on the stack, so we need to allocate a pointer to it
-		//and pass that instead
-		{
-		NativeVariable var = NativeVariable::Temp(resultType.ptr());
-		
-		return NativeExpression::Let(
-			var,
-			NativeExpression::Alloc(resultType, 1, false),
-			callLibraryFunctionContainingCPPTypes(
-				target,
-				NativeType::Nothing(),
-				true,
-				var.expr() + inArguments,
-				true + inArgumentTypesArePOD
-				) >> var.expr().load()
-			);
-		}
-
 	//OK, our return type is OK. For each argument that isn't POD, we need to place a copy of it
 	//on the stack and pass that instead
+	ImmutableTreeVector<bool> passByPtr;
 	for (long k = 0; k < inArgumentTypesArePOD.size(); k++)
 		if (!inArgumentTypesArePOD[k])
-			{
-			NativeVariable var = NativeVariable::Temp(inArguments[k].type()->ptr());
-			
-			return NativeExpression::Let(
-				var,
-				NativeExpression::Alloc(*inArguments[k].type(), 1, false),
-				var.expr().store(inArguments[k]) >> 
-				callLibraryFunctionContainingCPPTypes(
-					target,
-					resultType,
-					resultTypeIsPOD,
-					inArguments.slice(0, k) + var.expr() + inArguments.slice(k+1),
-					inArgumentTypesArePOD.slice(0, k) + true + inArgumentTypesArePOD.slice(k+1)
-					)
-				);
-			}
+			passByPtr = passByPtr + true;
+		else
+			passByPtr = passByPtr + false;
 
-	//this case should be handled by the allAreTrue(inArgumentTypesArePOD) condition above
-	lassert(false);
+	return NativeExpression::CallLibraryFunction(
+		target,
+		resultType,
+		inArguments,
+		passByPtr,
+		!resultTypeIsPOD
+		);
 	}
 

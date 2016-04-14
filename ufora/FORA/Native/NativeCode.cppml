@@ -764,6 +764,9 @@ ImmutableTreeSet<NativeBlockID>	NativeCallTarget::jumpTargets(void) const
 		-|	Inline(f) ->> {
 			return  emptyTreeSet();
 			}
+		-| 	Expansion() ->> {
+			return emptyTreeSet();
+			}
 		-|	External(t,b) ->> {
 			return  emptyTreeSet();
 			}
@@ -882,6 +885,9 @@ ImmutableTreeSet<string>	NativeCallTarget::externalBranches(void) const
 		-|	Inline(f) ->> {
 			return f.blocks().sumValues(getExternalBranchesFromBlock);
 			}
+		-|	Expansion() ->> {
+			return emptyTreeSet();
+			}
 		-|	External(t,b) ->> {
 			return  emptyTreeSet() + t;
 			}
@@ -895,6 +901,9 @@ ImmutableTreeSet<uword_t>	NativeCallTarget::exits(void) const
 	@match NativeCallTarget(*this)
 		-|	Inline() ->> {
 			return  emptyTreeSet();
+			}
+		-|	Expansion() ->> { 
+			return emptyTreeSet(); 
 			}
 		-|	External(t,b) ->> {
 			return  emptyTreeSet();
@@ -932,6 +941,9 @@ ImmutableTreeSet<NativeVariable>	freeVariables(const ImmutableTreeVector<T>& inE
 ImmutableTreeSet<NativeVariable>	NativeCallTarget::freeVariables(void) const
 	{
 	@match NativeCallTarget(*this)
+		-|  Expansion() ->> {
+			return emptyTreeSet();
+			}
 		-|	Inline(f) ->> {
 			return  f.freeVariables();
 			}
@@ -947,6 +959,9 @@ ImmutableTreeSet<NativeVariable>	NativeCallTarget::freeVariables(void) const
 bool	NativeCallTarget::hasSideEffects(void) const
 	{
 	@match NativeCallTarget(*this)
+		-| 	Expansion((_, _, hasSideEffects)) ->> {
+			return hasSideEffects;
+			}
 		-|	Inline(f) ->> {
 			return  f.hasSideEffects();
 			}
@@ -1384,12 +1399,12 @@ ImmutableTreeSet<uword_t>			NativeExpression::computeExits(void) const
 	}
 NativeBlockID NativeBlockID::internal(void)
 	{
-	static AO_t ix = 1;
+	static AO_t ix = 1000000000000;
 	return NativeBlockID(true, AO_fetch_and_add_full(&ix, 1));
 	}
 NativeBlockID NativeBlockID::external(void)
 	{
-	static AO_t ix = 0x8FFFFFFF;	//start "halfway" up (at around 2 billion)
+	static AO_t ix = 1000000000000;
 	return NativeBlockID(false, AO_fetch_and_add_full(&ix, 1));
 	}
 NativeBlockID NativeBlockID::external(uword_t branch)
@@ -1623,6 +1638,9 @@ NativeContinuation NativeContinuation::addTeardown(NativeExpression e) const
 uint64_t NativeCallTarget::complexity(void) const
 	{
 	@match NativeCallTarget(*this)
+		-| 	Expansion() ->> {
+			return 30;
+			}
 		-|	Inline(f) ->> {
 			return  f.complexity() + 1;
 			}
@@ -1637,6 +1655,9 @@ uint64_t NativeCallTarget::complexity(void) const
 uint64_t NativeCallTarget::height(void) const
 	{
 	@match NativeCallTarget(*this)
+		-|  Expansion() ->> {
+			return 1;
+			}
 		-|	Inline(f) ->> {
 			return  f.height() + 1;
 			}
@@ -2069,6 +2090,53 @@ namespace CPPML {
 void Validator<NativeExpression_CallType, void>::operator()(NativeExpression_CallType& in) const
 	{
 	@match NativeCallTarget(in.f())
+		-|	Expansion((name, nativeCfg)) ->> {
+			NativeBlockID blockID = NativeBlockID::entry();
+
+			//this is the empty NativeExpression::Call being produced by a serializer
+			if (nativeCfg.size() == 0 && nativeCfg.returnTypes().size() == 0)
+				return;
+
+			const ImmutableTreeVector<NativeContinuation>& returnHandlers(in.returnHandlers());
+			const ImmutableTreeVector<NativeType>& cfgReturnTypes(nativeCfg.returnTypes());
+			const ImmutableTreeVector<NativeExpression>& args(in.args());
+
+			lassert_dump(returnHandlers.size() >= nativeCfg.returnTypes().size(),
+				"wrong number of return control flow paths for expansion call " << name << ": have "
+					<< returnHandlers.size() << " continuations in the call, but the CFG returns "
+					<< nativeCfg.returnTypes().size() << " paths."
+				);
+
+			for (long k = 0; k < nativeCfg.returnTypes().size();k++)
+				lassert_dump(returnHandlers[k].var().type() == cfgReturnTypes[k],
+					"cfg return slot " << k << " had type " << 
+						prettyPrintString(cfgReturnTypes[k]) << " but handed continuation of type " 
+					<< prettyPrintString(returnHandlers[k].var().type()) << " in call of :\n" << 
+					prettyPrintString(nativeCfg)
+					);
+
+			const NativeBlock& block = nativeCfg[blockID];
+			
+			bool valid = args.size() == block.args().size();
+			for (long k = 0; k < args.size() && valid;k++)
+				if (args[k].type() && block.args()[k].type() != *args[k].type())
+					valid = false;
+
+			if (!valid)
+				{
+				ostringstream str;
+				str << "Invalid call operation. Block args are\n";
+				for (long k = 0; k < block.args().size();k++)
+					str << "\t" << prettyPrintString(block.args()[k].type()) << "\n";
+				
+				str << "\nwhile args are\n";
+
+				for (long k = 0; k < args.size();k++)
+					str << "\t" << prettyPrintString(args[k].type()) << " -- " << prettyPrintString(args[k]) << "\n";
+				
+				throw standardLogicErrorWithStacktrace("bad call for " + name + ": " + str.str());
+				}
+			}
 		-|	Inline(nativeCfg, blockID) ->> {
 
 			//this is the empty NativeExpression::Call being produced by a serializer
@@ -2197,7 +2265,9 @@ NativeExpression NativeExpression::CallLibraryFunction(
 	return CallLibraryFunction(
 				NativeLibraryFunctionTarget::ByName(functionName),
 				retType,
-				expressions
+				expressions,
+				(emptyTreeVec() + false) * expressions.size(),
+				false
 				);
 	}
 
@@ -2210,7 +2280,9 @@ NativeExpression NativeExpression::CallLibraryFunction(
 	return CallLibraryFunction(
 				NativeLibraryFunctionTarget::ByPointer((uword_t)functionPointer),
 				retType,
-				expressions
+				expressions,
+				(emptyTreeVec() + false) * expressions.size(),
+				false
 				);
 	}
 

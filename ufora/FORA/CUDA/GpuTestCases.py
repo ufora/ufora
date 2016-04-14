@@ -20,6 +20,62 @@ import ufora.test.PerformanceTestReporter as PerformanceTestReporter
 import math
 
 class GpuTestCases:
+    def compareCudaToCPU(self, funcExpr, vecExpr):
+        s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
+
+        text = """
+            let f = __funcExpr__;
+            let i = __vecExpr__;
+            let cuda = `CUDAVectorApply(f, [i])[0];
+            let cpu = f(i)
+
+            if (cuda == cpu)
+                true
+            else
+                throw String(cuda) + " != " + String(cpu)
+            """.replace("__funcExpr__", funcExpr).replace("__vecExpr__", vecExpr)
+
+        res = InMemoryCumulusSimulation.computeUsingSeveralWorkers(text, s3, 1, timeout=120, threadCount=4)
+        self.assertIsNotNone(res)
+        self.assertTrue(res.isResult(), "Failed with %s on %s: %s" % (funcExpr, vecExpr, res))
+
+
+    def test_cuda_read_tuples(self):
+        self.compareCudaToCPU("fun((a,b)) { (b,a) }", "(1,2)")
+        self.compareCudaToCPU("fun((a,b)) { b + a }", "(1,2)")
+        self.compareCudaToCPU("fun((a,b)) { b + a }", "(1s32,2s32)")
+        self.compareCudaToCPU("fun(b) { b + 1s32 }", "2")
+
+        self.compareCudaToCPU("math.log", "2")
+
+
+    def test_cuda_tuple_alignment(self):
+        self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "(1s32,2,2s32)")
+        self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "(1u32,2,2s32)")
+        self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "(1u16,2s32,2)")
+
+        self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "(10.0f32, 2.0, 2)")
+        self.compareCudaToCPU(
+                "fun((a,b,c,d,e,f)) { a+b+c+d+e+f }",
+                "(2u16, 3s32, 4s64, 5.0f16, 6.0f32, 7.0f64)"
+                )
+
+
+    def test_cuda_conversions(self):
+        s_integers = ["2s16", "3s32", "4s64", "5"]
+        u_integers = ["2u16", "3u32", "4u64", "5"]
+        floats = ["2.2f32", "3.3f64", "4.4"]
+
+        numbers = s_integers + u_integers + floats
+        for n1 in numbers:
+            for n2 in numbers:
+                for op in ["+", "-", "*" ]:    # TODO: add division, currently broken
+                    self.compareCudaToCPU(
+                            "fun((a,b)) { a " + op + " b }",
+                            "(" + n1 + ", " + n2 + ")"
+                            )
+
+
     def check_precision_of_function_on_GPU(self, function, input):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
         text = """
@@ -28,14 +84,13 @@ class GpuTestCases:
                 }
             `CUDAVectorApply(f, [""" + str(input) + """])[0]
             """
-        res = InMemoryCumulusSimulation.computeUsingSeveralWorkers(text, s3, 1, timeout = 120, threadCount=4)
+        res = InMemoryCumulusSimulation.computeUsingSeveralWorkers(text, s3, 1, timeout=120, threadCount=4)
         self.assertIsNotNone(res)
         self.assertTrue(res.isResult(), res)
         gpuValue = res.asResult.result.pyval
         methodToCall = getattr(math, function)
         pythonValue = methodToCall(input)
         self.assertTrue(abs(gpuValue - pythonValue) < 1e-10)
-
 
     def test_precision_of_exp(self):
         for x in xrange(-10000, 10000, 10000):

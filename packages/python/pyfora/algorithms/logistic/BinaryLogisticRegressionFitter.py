@@ -28,8 +28,7 @@ class BinaryLogisticRegressionFitter(object):
     A logistic regression "fitter" ithat holds fitting parameters used to fit logit models.
 
     Args:
-        regularizer (float): The "lambda" parameter in the referenced paper, the
-            regularization strength.
+        C (float): Inverse of regularization strength; must be a positive float.
         hasIntercept (bool): If True, include an intercept (aka bias) term in
             the fitted models.
         method (string): one of 'newton-cg' (default) or 'majorization'
@@ -45,17 +44,18 @@ class BinaryLogisticRegressionFitter(object):
     """
     def __init__(
             self,
-            regularizer,
+            C,
             hasIntercept=True,
-            method='majorization',
+            method='newton-cg',
             interceptScale=1.0,
             tol=1e-4,
             maxIter=1e5,
             splitLimit=1000000):
         assert tol > 0, "tol must be > 0"
         assert maxIter > 0, "maxIter must be > 0"
+        assert C > 0, "C must be > 0"
 
-        self.regularizer = regularizer
+        self.regularizer = float(C)
         self.hasIntercept = hasIntercept
         self.method = method
         self.interceptScale = interceptScale
@@ -117,22 +117,25 @@ class BinaryLogisticRegressionFitter(object):
             X = self._addScaleColumn(X)
 
         if self.method == 'newton-cg':
-            solver = TrustRegionConjugateGradientSolver
-            regularizer = 1.0 / len(X) / self.regularizer
+            returnValue = TrustRegionConjugateGradientSolver(
+                X, y,
+                classZeroLabel=classZeroLabel,
+                C=self.regularizer,
+                eps=self.tol,
+                maxIters=self.maxIter,
+                splitLimit=self.splitLimit
+                ).solve()
         elif self.method == 'majorization':
-            solver = FullRankMajorizationSolver
-            regularizer = self.regularizer
+            returnValue = FullRankMajorizationSolver(
+                X, y,
+                classZeroLabel=classZeroLabel,
+                regularizer=1.0 / len(X) / self.regularizer,
+                tol=self.tol,
+                maxIters=self.maxIter,
+                splitLimit=self.splitLimit
+                ).solve()
         else:
             raise Exception("bad method argument passed in: " + self.method)
-
-        returnValue = solver(
-            X, y,
-            classZeroLabel,
-            regularizer,
-            self.tol,
-            self.maxIter,
-            self.splitLimit
-            ).solve()
 
         intercept = None
         if self.hasIntercept:

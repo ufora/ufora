@@ -139,7 +139,9 @@ class Ord(object):
         if len(character) != 1:
             raise TypeError("ord() expected a character")
 
-        return __inline_fora("""fun(s) { PyInt(Int64(s.@m[0])) }""")(character)
+        return __inline_fora(
+            """fun(@unnamed_args:(s), *args) { PyInt(Int64(s.@m[0])) }"""
+            )(character)
 
 
 @pureMapping(range)
@@ -286,19 +288,39 @@ class XRangeInstance(object):
                     )
 
             def map(self, f):
-                return Generator.__pyfora_builtins__.MappingGenerator(self, f)
+                return __inline_fora(
+                    """fun(@unnamed_args:(self, f), *args) {
+                           return purePython.MappingGenerator(self, f)
+                           }"""
+                    )(self, f)
 
             def filter(self, f):
-                return Generator.__pyfora_builtins__.FilteringGenerator(self, f)
+                return __inline_fora(
+                    """fun(@unnamed_args:(self, f), *args) {
+                           return purePython.FilteringGenerator(self, f)
+                           }"""
+                    )(self, f)
 
             def nest(self, subgeneratorFun):
-                return Generator.__pyfora_builtins__.NestedGenerator(self, subgeneratorFun)
+                return __inline_fora(
+                    """fun(@unnamed_args:(self, f), *args) {
+                           return purePython.NestedGenerator(self, f)
+                           }"""
+                    )(self, subgeneratorFun)
 
             def associativeReduce(self, initValSoFar, add, merge, empty):
                 """__without_stacktrace_augmentation"""
 
                 return __inline_fora("""
-                    fun(initValSoFar, start, increment, add, merge, empty, count) {
+                    fun(@unnamed_args:(initValSoFar,
+                                       start,
+                                       increment,
+                                       add,
+                                       merge,
+                                       empty,
+                                       count),
+                        *args)
+                        {
                         __without_stacktrace_augmentation {
                             AssociativeReduce.associativeReduceIntegers(
                                 initValSoFar,
@@ -366,7 +388,11 @@ class Sorted(object):
 
     @staticmethod
     def _sortList(xs):
-        return Sorted.__pyfora_builtins__.sorted(xs)
+        return __inline_fora(
+            """fun(@unnamed_args:(xs), *args) {
+                   return purePython.PyforaBuiltins.sorted(xs)
+                   }"""
+            )(xs)
 
 
 @pureMapping(round)
@@ -402,9 +428,13 @@ class PurePythonComplexMapping(PureImplementationMapping.PureImplementationMappi
 class PurePythonComplex(object):
     def __init__(self, real, imag=0.0):
         if isinstance(real, str):
-            PurePythonComplex.__pyfora_builtins__.raiseInvalidPyforaOperation(
-                "Complex initialization from string not implemented"
-                )
+            __inline_fora(
+                """fun(@unnamed_args:(msg), *args) {
+                       purePython.PyforaBuiltins.raiseInvalidPyforaOperation(
+                           msg
+                           )
+                       }"""
+                )("Complex initialization from string not implemented")
 
         if not isinstance(real, float) or not isinstance(imag, float):
             raise TypeError("complex() argument must be a string or a number")
@@ -452,9 +482,13 @@ class PurePythonComplex(object):
         return self.real != 0.0 or self.imag != 0.0
 
     def __pow__(self, other):
-        PurePythonComplex.__pyfora_builtins__.raiseInvalidPyforaOperation(
-            "__pow__ not yet implemented on complex"
-            )
+        __inline_fora(
+            """fun(@unnamed_args:(msg), *args) {
+                       purePython.PyforaBuiltins.raiseInvalidPyforaOperation(
+                           msg
+                           )
+                       }"""
+                )("__pow__ not yet implemented on complex")
 
     def __float__(self):
         raise TypeError("can't convert complex to float")
@@ -491,9 +525,13 @@ class PurePythonComplex(object):
         return 32
 
     def __setattr__(self, val):
-        PurePythonComplex.__pyfora_builtins__.raiseInvalidPyforaOperation(
-            "__setattr__ not valid in pure python"
-            )
+        __inline_fora(
+            """fun(@unnamed_args:(msg), *args) {
+                       purePython.PyforaBuiltins.raiseInvalidPyforaOperation(
+                           msg
+                           )
+                       }"""
+                )("__setattr__ not valid in pure python")
 
     def __mod__(self, other):
         if isinstance(other, PurePythonComplex):

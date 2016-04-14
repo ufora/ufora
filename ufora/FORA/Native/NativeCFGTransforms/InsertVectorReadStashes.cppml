@@ -17,15 +17,36 @@
 #include "BlockVariableFlow.hppml"
 #include "VectorVariableFlow.hppml"
 #include "Transforms.hppml"
+#include "../../Interpreter/RuntimeConfig.hppml"
 #include "../NativeTypeFor.hpp"
 #include "../../Axioms/Vector.GetItem.hppml"
 #include "../../TypedFora/ABI/HomogenousVectorStashCodegen.hppml"
+#include "../../TypedFora/ABI/HomogenousDoubleVectorStashCodegen.hppml"
 #include "../../TypedFora/ABI/VectorRecordCodegen.hppml"
 #include "../../TypedFora/TypedFora.hppml"
 #include "../../../core/cppml/CPPMLTransform.hppml"
 #include "../../../core/cppml/CPPMLVisit.hppml"
 #include "../../../core/Logging.hpp"
 
+using namespace TypedFora::Abi;
+
+extern "C" {
+
+Fora::ReturnValue<PooledString, PooledString, TypedFora::Abi::VectorLoadRequest> FORA_clib_vectorDataToString(
+				const TypedFora::Abi::VectorRecord& vec
+				);
+
+Fora::ReturnValue<PooledString, PooledString, VectorLoadRequest> FORA_clib_vectorDataToStringSliced(
+				const VectorRecord& vec,
+				int64_t low,
+				int64_t high,
+				int64_t offsetStart,
+				int64_t offsetStop,
+				int64_t stride,
+				uint8_t* pointer
+				);
+
+}
 
 namespace NativeCFGTransforms {
 
@@ -196,7 +217,8 @@ public:
 
 		//if we're already in a NativeBlock, this would be populated, and that shouldn't
 		//happen
-		lassert(mCurrentStashes.size() == 0);
+		lassert(mCurrentSingleStashes.size() == 0);
+		lassert(mCurrentDoubleStashes.size() == 0);
 
 		ImmutableTreeVector<NativeVariable> variables = t.args();
 
@@ -208,19 +230,97 @@ public:
 					);
 
 			variables = variables + newStashVar;
-			mCurrentStashes[vecArg] = newStashVar;
+			mCurrentSingleStashes[vecArg] = newStashVar;
+			
+			NativeVariable newStashVar2 = 
+				NativeVariable::Temp(
+					NativeTypeFor<TypedFora::Abi::HomogenousDoubleVectorStash>::get()
+					);
+
+			variables = variables + newStashVar2;
+			mCurrentDoubleStashes[vecArg] = newStashVar2;
 			}
 
 		NativeExpression newExpression = transform(t.expression(), *this);
 
-		mCurrentStashes.clear();
+		mCurrentSingleStashes.clear();
+		mCurrentDoubleStashes.clear();
 
 		return null() << NativeBlock(variables, newExpression, t.relativeFrequency());
+		}
+
+	@type ReplaceNativeExpression = boost::function1<Nullable<NativeExpression>, NativeExpression> func {
+	public:
+		template<class T>
+		Nullable<T> processUp(const T& t) const
+			{
+			return null();
+			}
+
+		template<class T>
+		Nullable<T> processDown(const T& t, bool& outContinue) const
+			{
+			return null();
+			}
+
+		Nullable<NativeExpression> processDown(const NativeExpression& t, bool& outContinue) const
+			{
+			auto res = func()(t);
+			if (res)
+				outContinue = false;
+			return res;
+			}
+	};
+	Nullable<ImmutableTreeVector<NativeExpression> > transformExpansionArgs(ImmutableTreeVector<NativeExpression> args) const
+		{
+		bool didAnything = false;
+		ImmutableTreeVector<NativeExpression> transformed;
+
+		//check each arg - if it's an argument and the next arg is a vector stash, we should attempt to line them up
+		for (long k = 0; k < args.size(); k++)
+			{
+			Nullable<VectorArgument> vectorRead = mFlow.valueForExpression(args[k]).getSingleVectorArg();
+			
+			if (k + 1 < args.size() && vectorRead && args[k + 1].isZero() 
+					&& *args[k + 1].type() == NativeTypeFor<TypedFora::Abi::HomogenousVectorStash>::get() && 
+					mCurrentSingleStashes.find(*vectorRead) != mCurrentSingleStashes.end())
+				{
+				auto stashVar = mCurrentSingleStashes.find(*vectorRead)->second;
+
+				transformed = transformed + args[k] + stashVar.expr();
+				k++;
+				didAnything = true;
+				}
+			else
+				transformed = transformed + args[k];
+			}
+
+		if (!didAnything)
+			return null();
+
+		lassert(args.size() == transformed.size());
+
+		return null() << transformed;
 		}
 
 	Nullable<NativeExpression> processDown(const NativeExpression& t, bool& outContinue) const
 		{
 		@match NativeExpression(t)
+			-| Call(Expansion(expansion), handlers, args, meta) ->> {
+				auto newArgs = transformExpansionArgs(args);
+				if (newArgs)
+					{
+					outContinue = false;
+					return null() << NativeExpression::Call(
+						NativeCallTarget::Expansion(expansion),
+						::transform(handlers, *this),
+						*newArgs,
+						::transform(meta, *this)
+						);
+					}
+
+				return null();
+				}
 			-| Jump(target, expressions) ->> {
 				long jumpIndex = mJumpsVisited;
 				mJumpsVisited++;
@@ -240,22 +340,45 @@ public:
 
 				for (VectorArgument var: it->second)
 					{
-					Nullable<NativeVariable> stashVar;
-
-					if (jumpMap.vectorArgumentMapping().contains(var))
+					//for single stash
 						{
-						VectorArgument mappedVar = *jumpMap.vectorArgumentMapping()[var];
+						Nullable<NativeVariable> stashVar;
 
-						auto it2 = mCurrentStashes.find(mappedVar);
-						if (it2 != mCurrentStashes.end())
-							stashVar = it2->second;
+						if (jumpMap.vectorArgumentMapping().contains(var))
+							{
+							VectorArgument mappedVar = *jumpMap.vectorArgumentMapping()[var];
+
+							auto it2 = mCurrentSingleStashes.find(mappedVar);
+							if (it2 != mCurrentSingleStashes.end())
+								stashVar = it2->second;
+							}
+						
+						if (stashVar)
+							newExpressions = newExpressions + stashVar->expr();
+						else
+							newExpressions = newExpressions + 
+								NativeExpression::Zero(NativeTypeFor<TypedFora::Abi::HomogenousVectorStash>::get());
 						}
-					
-					if (stashVar)
-						newExpressions = newExpressions + stashVar->expr();
-					else
-						newExpressions = newExpressions + 
-							NativeExpression::Zero(NativeTypeFor<TypedFora::Abi::HomogenousVectorStash>::get());
+
+					//for double stash
+						{
+						Nullable<NativeVariable> stashVar;
+
+						if (jumpMap.vectorArgumentMapping().contains(var))
+							{
+							VectorArgument mappedVar = *jumpMap.vectorArgumentMapping()[var];
+
+							auto it2 = mCurrentDoubleStashes.find(mappedVar);
+							if (it2 != mCurrentDoubleStashes.end())
+								stashVar = it2->second;
+							}
+						
+						if (stashVar)
+							newExpressions = newExpressions + stashVar->expr();
+						else
+							newExpressions = newExpressions + 
+								NativeExpression::Zero(NativeTypeFor<TypedFora::Abi::HomogenousDoubleVectorStash>::get());
+						}
 					}
 
 				return null() << NativeExpression::Jump(target, newExpressions);
@@ -267,58 +390,55 @@ public:
 
 				Nullable<VectorArgument> vectorRead = mFlow.valueForExpression(vecExpr).getSingleVectorArg();
 				
-				if (vectorRead && mCurrentStashes.find(*vectorRead) != mCurrentStashes.end())
+				if (!vectorRead)
+					return null();
+
+				@match NativeExpression(within)
+					-| Let(pointerVar2, Load(Tagged(taggedExpr2, HomogenousVectorLookup(vecExpr2, indexExpr2, nativeType2))), within2) ->> {
+						ImmutableTreeVector<uword_t> lookups;
+						bool isLookup = false;
+
+						@match NativeExpression(vecExpr2)
+							-| Variable(maybePointerVar) ->> {
+								if (maybePointerVar == pointerVar)
+									isLookup = true;
+								}
+							-| ValueExtract(sequence, Variable(maybePointerVar)) ->> {
+								lookups = sequence;
+
+								if (maybePointerVar == pointerVar)
+									isLookup = true;
+								}
+							-| _ ->> {
+								}
+
+						if (Runtime::getRuntime().getConfig().enableDoubleVectorStashing() && 
+								isLookup && !within2.freeVariables().contains(pointerVar) && mCurrentDoubleStashes.find(*vectorRead) != mCurrentDoubleStashes.end())
+							{
+							outContinue = false;
+							return null() << createDoubleVectorStashLookupExpr(
+								pointerVar, 
+								pointerVar2,
+								*vectorRead, 
+								vecExpr, 
+								taggedExpr, 
+								taggedExpr2, 
+								indexExpr, 
+								indexExpr2, 
+								within2,
+								nativeType,
+								lookups,
+								nativeType2
+								);
+							}
+						}
+					-| _ ->> {}
+					;
+
+				if (mCurrentSingleStashes.find(*vectorRead) != mCurrentSingleStashes.end())
 					{
 					outContinue = false;
-
-					NativeExpression onFailure = DiscoverBoundsCheckFailures::getBoundsCheckFailureExpression(taggedExpr);
-
-					NativeVariable currentStashVar = mCurrentStashes[*vectorRead];
-
-					NativeExpression updatedExpr = 
-						homogenousGetItemExpressionAndStashUpdate(
-							mCurrentStashes[*vectorRead].expr(),
-							vecExpr,
-							indexExpr, 
-							nativeType,
-							onFailure
-							);
-
-					NativeVariable updatedPointerAndStash = NativeVariable::Temp(*updatedExpr.type());
-
-					NativeVariable updatedStashVar = NativeVariable::Temp(
-						NativeTypeFor<TypedFora::Abi::HomogenousVectorStash>::get()
-						);
-
-					//extract any metadata that's already been pushed down onto any vector load continuations we might
-					//have floating around in here
-					auto metadatas = DiscoverContinuationMetadata::getMetadatas(taggedExpr);
-
-					lassert_dump(metadatas.size() == 1, metadatas.size() << " != 1\n" << prettyPrintString(metadatas)
-						<< "Expr = " << prettyPrintString(taggedExpr)
-						);
-
-					updatedExpr = pushMetadataOntoCallExpressions(updatedExpr, metadatas[0]);
-
-					mCurrentStashes[*vectorRead] = updatedStashVar;
-
-					updatedExpr = NativeExpression::Let(
-						updatedPointerAndStash,
-						updatedExpr,
-						NativeExpression::Let(
-							updatedStashVar,
-							updatedPointerAndStash.expr()[1],
-							NativeExpression::Let(
-								pointerVar,
-								updatedPointerAndStash.expr()[0].load(),
-								::transform(within, *this)
-								)
-							)
-						);
-
-					mCurrentStashes[*vectorRead] = currentStashVar;
-
-					return null() << updatedExpr;
+					return null() << createSingleVectorStashLookupExpr(pointerVar, *vectorRead, vecExpr, taggedExpr, indexExpr, within, nativeType);
 					}
 				}
 			-| _ ->> {}
@@ -326,8 +446,144 @@ public:
 		return null();
 		}
 
-	
-	
+	NativeExpression createDoubleVectorStashLookupExpr(
+								NativeVariable pointerVar,
+								NativeVariable pointerVar2,
+								VectorArgument vectorRead,
+								NativeExpression vecExpr, 
+								NativeExpression taggedExpr,
+								NativeExpression taggedExpr2,
+								NativeExpression indexExpr,
+								NativeExpression indexExpr2,
+								NativeExpression within2,
+								NativeType nativeType,
+								ImmutableTreeVector<uword_t> tupleGetItemSeq,
+								NativeType nativeType2
+								) const
+		{
+		NativeExpression onFailure1 = DiscoverBoundsCheckFailures::getBoundsCheckFailureExpression(taggedExpr);
+		NativeExpression onFailure2 = 
+			NativeExpression::Let(pointerVar, NativeExpression::Load(taggedExpr, false),
+				DiscoverBoundsCheckFailures::getBoundsCheckFailureExpression(taggedExpr2)
+				);
+
+		NativeVariable currentStashVar = mCurrentDoubleStashes[vectorRead];
+
+		NativeExpression updatedExpr = 
+			homogenousDoubleGetItemExpressionAndStashUpdate(
+				currentStashVar.expr(),
+				vecExpr,
+				indexExpr,
+				indexExpr2,
+				nativeType,
+				tupleGetItemSeq,
+				nativeType2,
+				onFailure1,
+				onFailure2
+				);
+
+		NativeVariable updatedPointerAndStash = NativeVariable::Temp(*updatedExpr.type());
+
+		NativeVariable updatedStashVar = NativeVariable::Temp(
+			NativeTypeFor<TypedFora::Abi::HomogenousDoubleVectorStash>::get()
+			);
+
+		//extract any metadata that's already been pushed down onto any vector load continuations we might
+		//have floating around in here
+		auto metadatas1 = DiscoverContinuationMetadata::getMetadatas(taggedExpr);
+		auto metadatas2 = DiscoverContinuationMetadata::getMetadatas(taggedExpr2);
+
+		lassert_dump(metadatas1.size() == 1, metadatas1.size() << " != 1\n" << prettyPrintString(metadatas1)
+			<< "Expr = " << prettyPrintString(taggedExpr)
+			);
+		//lassert_dump(metadatas2.size() == 1, metadatas2.size() << " != 1\n" << prettyPrintString(metadatas2)
+		//	<< "Expr = " << prettyPrintString(taggedExpr2)
+		//	);
+
+		//updatedExpr = pushMetadataOntoCallExpressions(updatedExpr, metadatas2[0]);
+		updatedExpr = pushMetadataOntoCallExpressions(updatedExpr, metadatas1[0]);
+
+		mCurrentDoubleStashes[vectorRead] = updatedStashVar;
+
+		updatedExpr = NativeExpression::Let(
+			updatedPointerAndStash,
+			updatedExpr,
+			NativeExpression::Let(
+				updatedStashVar,
+				updatedPointerAndStash.expr()[1],
+				NativeExpression::Let(
+					pointerVar2,
+					updatedPointerAndStash.expr()[0].load(),
+					::transform(within2, *this)
+					)
+				)
+			);
+
+		mCurrentDoubleStashes[vectorRead] = currentStashVar;
+
+		return updatedExpr;
+		}
+
+
+	NativeExpression createSingleVectorStashLookupExpr(
+								NativeVariable pointerVar,
+								VectorArgument vectorRead, 
+								NativeExpression vecExpr, 
+								NativeExpression taggedExpr, 
+								NativeExpression indexExpr, 
+								NativeExpression within,
+								NativeType nativeType
+								) const
+		{
+		NativeExpression onFailure = DiscoverBoundsCheckFailures::getBoundsCheckFailureExpression(taggedExpr);
+
+		NativeVariable currentStashVar = mCurrentSingleStashes[vectorRead];
+
+		NativeExpression updatedExpr = 
+			homogenousGetItemExpressionAndStashUpdate(
+				mCurrentSingleStashes[vectorRead].expr(),
+				vecExpr,
+				indexExpr, 
+				nativeType,
+				onFailure
+				);
+
+		NativeVariable updatedPointerAndStash = NativeVariable::Temp(*updatedExpr.type());
+
+		NativeVariable updatedStashVar = NativeVariable::Temp(
+			NativeTypeFor<TypedFora::Abi::HomogenousVectorStash>::get()
+			);
+
+		//extract any metadata that's already been pushed down onto any vector load continuations we might
+		//have floating around in here
+		auto metadatas = DiscoverContinuationMetadata::getMetadatas(taggedExpr);
+
+		lassert_dump(metadatas.size() == 1, metadatas.size() << " != 1\n" << prettyPrintString(metadatas)
+			<< "Expr = " << prettyPrintString(taggedExpr)
+			);
+
+		updatedExpr = pushMetadataOntoCallExpressions(updatedExpr, metadatas[0]);
+
+		mCurrentSingleStashes[vectorRead] = updatedStashVar;
+
+		updatedExpr = NativeExpression::Let(
+			updatedPointerAndStash,
+			updatedExpr,
+			NativeExpression::Let(
+				updatedStashVar,
+				updatedPointerAndStash.expr()[1],
+				NativeExpression::Let(
+					pointerVar,
+					updatedPointerAndStash.expr()[0].load(),
+					::transform(within, *this)
+					)
+				)
+			);
+
+		mCurrentSingleStashes[vectorRead] = currentStashVar;
+
+		return updatedExpr;
+		}	
 
 	template<class T>
 	Nullable<T> processDown(const T& t, bool& outContinue) const 
@@ -354,7 +610,9 @@ private:
 
 	mutable Nullable<NativeBlockID> mCurBlock;
 
-	mutable map<VectorArgument, NativeVariable> mCurrentStashes;
+	mutable map<VectorArgument, NativeVariable> mCurrentSingleStashes;
+
+	mutable map<VectorArgument, NativeVariable> mCurrentDoubleStashes;
 
 	mutable long mJumpsVisited;
 };

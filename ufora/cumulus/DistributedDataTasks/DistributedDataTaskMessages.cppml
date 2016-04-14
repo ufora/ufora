@@ -25,6 +25,8 @@
 #include "../../FORA/Serialization/SerializedObject.hpp"
 #include "../../FORA/Serialization/ForaValueSerializationStream.hppml"
 #include "ForaValueLexicalComparison.hppml"
+#include "ForaValueLexicalComparisonForSingleJOV.hppml"
+
 #include "SlottedForaValueArrayAppend.hppml"
 
 namespace Cumulus {
@@ -197,6 +199,7 @@ void DistributedDataTaskMessages::sortLexically()
 
 	if (mValueArray->isHomogenous() && mValueArray->currentJor()[0] == JOV::OfType(Type::Integer(64, true)))
 		{
+		double t0 = curClock();
 		std::sort((int64_t*)mValueArray->offsetFor(0), (int64_t*)mValueArray->offsetFor(mValueArray->size()));
 		return;
 		}
@@ -209,10 +212,49 @@ void DistributedDataTaskMessages::sortLexically()
 
 	std::vector<pair<uint8_t*, JOV> > values;
 
-	for (long k = 0; k < mValueArray->size();k++)
-		values.push_back(make_pair(mValueArray->offsetFor(k), mValueArray->jovFor(k)));
+	bool allSame = true;
 
-	std::sort(values.begin(), values.end(), LexicalUforaValueComparisonPredicate());
+	JOV firstJOV = mValueArray->jovFor(0);
+
+	for (long k = 0; k < mValueArray->size();k++)
+		{
+		JOV jov = mValueArray->jovFor(k);
+
+		values.push_back(make_pair(mValueArray->offsetFor(k), jov));
+		
+		if (allSame && k >= 1 && jov != firstJOV)
+			allSame = false;
+		}
+
+	if (!allSame)
+		{
+		std::sort(
+			values.begin(), 
+			values.end(), 
+			[&](pair<uint8_t*, JOV> l, pair<uint8_t*, JOV> r) { 
+				return l.second.type()->hash() < r.second.type()->hash();
+				}
+			);
+
+		//now sort each contiguous block of values.
+		long start = 0;
+		for (long stop = 0; stop <= values.size(); stop++)
+			{
+			if (stop == values.size() || values[start].second != values[stop].second)
+				{
+				LexicalUforaValueComparisonPredicateForSingleJOV predicate(values[start].second);
+
+				std::sort(values.begin() + start, values.begin() + stop, predicate);
+				start = stop;
+				}
+			}
+		}
+	else
+		{
+		LexicalUforaValueComparisonPredicateForSingleJOV predicate(values[0].second);
+
+		std::sort(values.begin(), values.end(), predicate);
+		}
 
 	auto newValueArray = TypedFora::Abi::ForaValueArray::Empty(mMemoryPool);
 

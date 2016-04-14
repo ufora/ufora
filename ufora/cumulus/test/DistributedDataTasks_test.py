@@ -14,6 +14,7 @@
 
 import unittest
 import logging
+import time
 import ufora.cumulus.test.InMemoryCumulusSimulation as InMemoryCumulusSimulation
 import ufora.distributed.S3.InMemoryS3Interface as InMemoryS3Interface
 import ufora.native.CallbackScheduler as CallbackScheduler
@@ -24,6 +25,42 @@ callbackScheduler = CallbackScheduler.singletonForTesting()
 TIMEOUT=120
 
 class DistributedDataTasksTests(unittest.TestCase):
+    def test_sortHeterogeneous(self):
+        s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
+
+        text = """
+            let values = []
+            let ct = 1000000
+            for ix in sequence(ct)
+                values = values :: ix :: Float64(ix)
+
+            let sortedVals = cached`(#ExternalIoTask(#DistributedDataOperation(#Sort(values.paged))))
+
+            let sortedAndHomogenous = fun(v) {
+                for ix in sequence(size(v)-1)
+                    if (v[ix] >= v[ix+1] or `TypeJOV(v[ix]) is not `TypeJOV(v[ix+1]))
+                        throw (ix, v[ix], v[ix+1])
+                return true;
+                }
+            
+            if (size(sortedVals) != size(values))
+                throw "expected " + String(size(values)) + ", not " + String(size(sortedVals))
+            sortedAndHomogenous(sortedVals[,ct]) and 
+                sortedAndHomogenous(sortedVals[ct,])
+            """
+
+        result = InMemoryCumulusSimulation.computeUsingSeveralWorkers(
+            text,
+            s3,
+            1,
+            timeout=TIMEOUT,
+            memoryLimitMb=1000
+            )
+
+        self.assertTrue(result is not None)
+        self.assertTrue(result.isResult(), result)
+        self.assertTrue(result.asResult.result.pyval == True, result)
+
     def basicTaskPathwayTest(self, sz, machines=1, memory=1000):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
 
@@ -102,6 +139,60 @@ class DistributedDataTasksTests(unittest.TestCase):
 
     def test_weirdStringSort_2(self):
         self.weirdStringSort(10000, 4, 250)
+
+    def classSortingTest(self, sz, useClass = True, machines=1, memory=1000):
+        s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
+
+        text = """
+            let N = __size__;
+
+            let C = if (__use_class__) { class { member x; } } else { Int64 }
+
+            let values = Vector.range(N, C).paged;
+
+            let s1 = cached`(#ExternalIoTask(#DistributedDataOperation(#Sort(values))))
+            
+            return size(s1) == N
+            """.replace("__size__", str(sz)).replace("__use_class__", '1' if useClass else '0')
+
+        result = InMemoryCumulusSimulation.computeUsingSeveralWorkers(
+            text,
+            s3,
+            machines,
+            timeout=TIMEOUT,
+            memoryLimitMb=memory
+            )
+
+        self.assertTrue(result is not None)
+        self.assertTrue(result.isResult(), result)
+        self.assertTrue(result.asResult.result.pyval == True, result)
+
+    def test_class_sorting_is_fast(self):
+        sz = 10000000
+        
+        #burn the calculation in.
+        self.classSortingTest(sz, useClass=True)
+        self.classSortingTest(sz, useClass=False)
+        
+        t0 = time.time()
+
+        with PerformanceTestReporter.RecordAsPerfTest("python.datatasks.sort_class_instances"):
+            self.classSortingTest(sz, useClass=True)
+
+        t1 = time.time()
+
+        with PerformanceTestReporter.RecordAsPerfTest("python.datatasks.sort_integers"):
+            self.classSortingTest(sz, useClass=False)
+
+        t2 = time.time()
+
+        intTime = t2 - t1
+        classTime = t1 - t0
+
+        self.assertTrue(classTime < intTime * 5, "Times (ints) %s and (classes) %s were not very close." % (intTime, classTime))
+
+        print intTime, " to sort ints"
+        print classTime, " to sort class instances"
 
 class DISABLED:
     def test_takeLookupSemantics(self):

@@ -203,6 +203,7 @@ class ClassTestCases(object):
                 self.y = y
                 self.z = x + y
             def f(self, arg):
+                return arg
                 return arg + self.x + self.y + self.z
 
         c = C4(100, 200)
@@ -245,6 +246,8 @@ class ClassTestCases(object):
 
         def f():
             return (c.x, c.y)
+
+        self.equivalentEvaluationTest(f)
 
     def test_class_instances_5(self):
         class C8:
@@ -870,5 +873,83 @@ class ClassTestCases(object):
 
         self.equivalentEvaluationTest(f)
 
+    def test_conditional_member_initialization(self):
+        class C_conditional_member_initialization(object):
+            def __init__(self, x):
+                if x > 0:
+                    self.x = x
+            def __str__(self):
+                return "C_conditional_member_initialization(x=%s)" % self.x
 
+        def f(x):
+            return C_conditional_member_initialization(x)
 
+        c0 = f(1)
+        c1 = self.evaluateWithExecutor(f, 1)
+        c2 = f(-1)
+        c3 = self.evaluateWithExecutor(f, -1)
+        
+        self.assertEqual(c0.__dict__, c1.__dict__)
+        self.assertEqual(c2.__dict__, c3.__dict__)
+
+    def test_wtf(self):
+        class C_wtf(object):
+            def g(self, arg):
+                return arg
+
+        c = C_wtf()
+
+        def f(x):
+            return c.g(2)
+
+        self.equivalentEvaluationTest(f, 2)
+
+    def test_named_args_to_ctor_1(self):
+        class A_lots_o_args_1(object):
+            def __init__(self, arg):
+                self.arg = arg
+
+        with self.create_executor() as executor:
+            with executor.remotely.downloadAll():
+                a = A_lots_o_args_1(arg=42)
+
+            self.assertEqual(a.arg, 42)
+
+    def test_named_args_to_ctor_2(self):
+        class A_lots_o_args_2(object):
+            def __init__(self, arg=None):
+                self.arg = arg
+
+        with self.create_executor() as executor:
+            with executor.remotely.downloadAll():
+                a = A_lots_o_args_2(arg=42)
+
+            self.assertEqual(a.arg, 42)
+
+    def test_named_args_to_ctor_3(self):
+        class A_lots_o_args_3(object):
+            def __init__(self,
+                         x1,
+                         x2,
+                         x3,
+                         x4=None,
+                         x5=None):
+                self.x1 = x1
+                self.x2 = x2
+                self.x3 = x3
+                self.x4 = x4
+                self.x5 = x5
+
+            def vals(self):
+                return (
+                    self.x1,
+                    self.x2,
+                    self.x3,
+                    self.x4,
+                    self.x5
+                    )
+            
+        def f():
+            return A_lots_o_args_3(1, x3=3, x4=4, x2=2).vals()
+
+        self.equivalentEvaluationTest(f)

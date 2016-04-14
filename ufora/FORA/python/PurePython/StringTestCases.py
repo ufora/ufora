@@ -54,6 +54,23 @@ class StringTestCases(object):
         test1()
         test2()
 
+    def test_large_string_parsing_perf(self):
+        def f(ct, passCt):
+            x = "1,2,3,4," * ct
+            res = 0
+            for _ in xrange(passCt):
+                ix = 0
+                while ix < len(x):
+                    res = res + int(x[ix:ix+1]) + 12341234
+                    ix = ix + 2
+            return res
+
+        self.evaluateWithExecutor(f, 1000000, 1)
+        
+        with PerformanceTestReporter.RecordAsPerfTest("pyfora.string_to_int"):
+            self.evaluateWithExecutor(f, 1000000, 10)
+        
+
     def test_string_slicing(self):
         def f(ct, passCt,chars):
             x = "asdfasdf" * (ct / 8)

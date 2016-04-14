@@ -14,6 +14,7 @@
 
 import unittest
 import ufora.util.OutOfProcessDownloader as OutOfProcessDownloader
+import ufora.config.Mainline as Mainline
 import ufora.distributed.util.common as common
 import Queue
 import time
@@ -37,7 +38,7 @@ class DoublesString:
     def __call__(self):
         return self.x + self.x
 
-class OutOfProcessDownloaderTest(unittest.TestCase):
+class OutOfProcessDownloaderTestCases:
     def test_basic(self):
         pool = OutOfProcessDownloader.OutOfProcessDownloaderPool(1)
         pool.teardown()

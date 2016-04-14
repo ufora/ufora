@@ -31,10 +31,100 @@
 #include "../Native/NativeCFGTransforms/Transforms.hppml"
 #include "../Native/NativeExpressionBuilder.hppml"
 #include "../Judgment/JudgmentOnValue.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../../core/Logging.hpp"
 
 using TypedFora::Abi::VectorRecord;
 
 using TypedFora::Abi::nativeLayoutType;
+
+class ExternalFunctionErrors {
+public:
+	void setErrorContext(Fora::Interpreter::ExecutionContext* context, std::string error)
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		lassert(context);
+
+		mErrors[context] = error;
+		}
+
+	void clearError(Fora::Interpreter::ExecutionContext* context)
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		mErrors.erase(context);
+		}
+
+	bool hasError(Fora::Interpreter::ExecutionContext* context)
+		{
+		auto it = mErrors.find(context);
+
+		return it != mErrors.end();
+		}
+
+	Nullable<std::string> getError(Fora::Interpreter::ExecutionContext* context)
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		auto it = mErrors.find(context);
+		if (it != mErrors.end())
+			return null() << it->second;
+
+		return null() << it->second;
+		}
+
+	static ExternalFunctionErrors& singleton()
+		{
+		static ExternalFunctionErrors errs;
+
+		return errs;
+		}
+
+	static bool currentContextHasError()
+		{
+		return singleton().hasError(Fora::Interpreter::ExecutionContext::currentExecutionContext());
+		}
+
+	static String currentContextGetAndClearError()
+		{
+		auto context = Fora::Interpreter::ExecutionContext::currentExecutionContext();
+
+		std::string err = *singleton().getError(context);
+		singleton().clearError(context);
+
+		return String(err, context->getMemoryPool());
+		}
+
+private:
+	std::map<Fora::Interpreter::ExecutionContext*, std::string> mErrors;
+
+	boost::mutex mMutex;
+};
+
+extern "C" {
+
+int xerbla_(char *subroutineName, int *info)
+	{
+    int len = 0;
+    while (subroutineName[len] && len < 6)
+		len++;
+    while (subroutineName[len-1]==' ' && len > 0)
+        len--;
+
+	std::string error = "On entry to " + std::string(subroutineName, len) + 
+		" parameter number " + boost::lexical_cast<std::string>(*info) + " had an illegal value."
+		;
+
+	ExternalFunctionErrors::singleton().setErrorContext(
+		Fora::Interpreter::ExecutionContext::currentExecutionContext(),
+		error
+		);
+
+    return 0;
+	}
+
+}
 
 namespace {
 
@@ -166,7 +256,8 @@ JudgmentOnAction computeFortranJOA(
 	@match FortranReturnType(returnType)
 		-|	Normal(retType) ->> {
 				outLibcallReturnType = nativeLayoutType(retType);
-				return JudgmentOnAction::Value(JOV::OfType(retType));
+				return JudgmentOnAction::Value(JOV::OfType(retType)) | 
+					JudgmentOnAction::Throws(JOV::OfType(Type::String()));
 				}
 		-|	ModifiesArgumentsInPlace(argumentIndices) ->> {
 				ImmutableTreeSet<uword_t> indicesOfMutatingArguments = 
@@ -185,7 +276,8 @@ JudgmentOnAction computeFortranJOA(
 									returnJovs
 									)
 								)
-							);
+							) | 
+					JudgmentOnAction::Throws(JOV::OfType(Type::String()));
 				}
 		;
 	}
@@ -279,13 +371,32 @@ TypedFora::Callable getFORTRANCallTarget(
 			}
 			;
 	
-	NativeExpression finalExpression = builder(libcallExpr);
+	NativeExpression resultExpr = builder.add(libcallExpr);
+
+	builder.add(
+		NativeExpression::If(
+			makeTypedNativeLibraryFunction(&ExternalFunctionErrors::currentContextHasError)().getExpression(),
+			NativeExpression::Return(1, 
+				makeTypedNativeLibraryFunction(&ExternalFunctionErrors::currentContextGetAndClearError)().getExpression()
+				),
+			NativeExpression(),
+			0.000001
+			)
+		);
+
+	NativeExpression finalExpression = builder(NativeExpression::Return(0, resultExpr));
 
 	//need to put this into a native cfg
 	NativeCFG toInline(
-		NativeVariable::Temp(NativeTypeFor<NativeRuntimeCallbacks>::get().ptr()) + 
-			axiomVars.vars(), 
-		finalExpression
+		emptyTreeVec() + *resultExpr.type() + NativeTypeFor<String>::get(),
+		emptyTreeMap() + NativeBlockID::entry() + 
+			NativeBlock(
+				NativeVariable::Temp(NativeTypeFor<NativeRuntimeCallbacks>::get().ptr()) + 
+					axiomVars.vars(),
+				finalExpression
+				),
+		"",
+		false
 		);
 	
 	//rename the variables in here so that when we use the target signature

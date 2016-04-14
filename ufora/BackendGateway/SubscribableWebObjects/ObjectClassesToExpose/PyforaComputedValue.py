@@ -23,6 +23,7 @@ import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.PyforaT
 import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.PyforaObjectConverter \
     as PyforaObjectConverter
 import ufora.native.FORA as ForaNative
+import ufora.BackendGateway.ComputedValue.ComputedValueGateway as ComputedValueGateway
 
 def validateObjectIds(ids):
     converter = PyforaObjectConverter.PyforaObjectConverter()
@@ -231,6 +232,30 @@ class PyforaResultAsJson(ComputedGraph.Location):
             def extractVectorContents(vectorIVC):
                 if len(vectorIVC) == 0:
                     return {'listContents': []}
+
+                #if this is an unpaged vector we can handle it without callback
+                vdm = ComputedValueGateway.getGateway().vdm
+                if vdm.vectorDataIsLoaded(vectorIVC, 0, len(vectorIVC)) and vectorIVC.isVectorEntirelyUnpaged():
+                    #see if it's a string. This is the only way to be holding a Vector of char
+                    if vectorIVC.isVectorOfChar():
+                        res = vdm.extractVectorContentsAsNumpyArray(vectorIVC, 0, len(vectorIVC))
+                        assert res is not None
+                        return {'string': res.tostring()}
+
+                    #see if it's simple enough to transmit as numpy data
+                    if len(vectorIVC.getVectorElementsJOR()) == 1 and len(vectorIVC) > 1:
+                        res = vdm.extractVectorContentsAsNumpyArray(vectorIVC, 0, len(vectorIVC))
+
+                        if res is not None:
+                            assert len(res) == len(vectorIVC)
+                            firstElement = vdm.extractVectorItem(vectorIVC, 0)
+                            return {'firstElement': firstElement, 'contentsAsNumpyArrays': [res]}
+
+                    #see if we can extract the data as a regular pythonlist
+                    res = vdm.extractVectorContentsAsPythonArray(vectorIVC, 0, len(vectorIVC)) 
+                    assert res is not None
+                    return {'listContents': res}
+
                 vec = ComputedValue.ComputedValueVector(vectorImplVal=vectorIVC)
                 vecSlice = vec.entireSlice
 

@@ -15,7 +15,7 @@
 
 import pyfora.pyAst.PyAstUtil as PyAstUtil
 
-class FunctionTestCases:
+class FunctionTestCases(object):
     """Test cases for pyfora functions"""
 
     def test_nested_function_arguments(self):
@@ -371,3 +371,80 @@ class FunctionTestCases:
         for ix in range(3):
             self.equivalentEvaluationTest(loopSum, ix)
 
+    def test_new_calling_convention_1(self):
+        def f(x):
+            return x + 1
+
+        with self.create_executor() as ufora:
+            with ufora.remotely.downloadAll():
+                res = f(2)
+
+            self.assertEqual(res, 3)
+
+    def test_new_calling_convention_2(self):
+        def f(x):
+            return x + 1
+
+        with self.create_executor() as ufora:
+            with ufora.remotely.downloadAll():
+                res = f(x=2)
+
+            self.assertEqual(res, 3)
+
+    def test_new_calling_convention_3(self):
+        def f(x, y, z):
+            return (x, y, z)
+
+        with self.create_executor() as ufora:
+            with ufora.remotely.downloadAll():
+                res = f(z=1, y=2, x=3)
+
+            self.assertEqual(res, (3,2,1))
+
+    def test_new_calling_convention_4(self):
+        def f(x, y, z):
+            return (x, y, z)
+
+        with self.create_executor() as ufora:
+            with ufora.remotely.downloadAll():
+                res = f(3, z=1, y=2)
+
+            self.assertEqual(res, (3,2,1))
+
+    def test_new_calling_convention_5(self):
+        def f(x, y, z=1):
+            return (x, y, z)
+
+        with self.create_executor() as ufora:
+            with ufora.remotely.downloadAll():
+                res = f(y=2, x=3)
+
+            self.assertEqual(res, (3,2,1))
+
+    def test_new_calling_convention_6(self):
+        def f(x, (y, z)):
+            return (x, y, z)
+
+        with self.create_executor() as ufora:
+            with ufora.remotely.downloadAll():
+                res = f(3, (2, 1))
+
+            self.assertEqual(res, (3,2,1))
+
+    def test_new_calling_convention_7(self):
+        def f(x, y):
+            return x + y
+
+        def h():
+            return f(y=3,x=1)
+
+        self.equivalentEvaluationTest(h)
+
+    def test_new_calling_convention_8(self):
+        def f(x, y=1):
+            return x + y
+
+        def h():
+            return f(y=3,x=1)
+
+        self.equivalentEvaluationTest(h)

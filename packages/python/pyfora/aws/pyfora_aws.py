@@ -13,11 +13,11 @@ def get_region(region):
         raise ValueError('EC2 region not specified')
     return region
 
-
 def get_ssh_keyname(keyname):
     return keyname or os.getenv('PYFORA_AWS_SSH_KEYNAME')
 
-
+def get_identity_file(filename):
+    return filename or os.getenv('PYFORA_AWS_IDENTITY_FILE')
 
 class StatusPrinter(object):
     spinner = ['|', '/', '-', '\\']
@@ -95,6 +95,65 @@ def launcher_args(parsed_args):
         }
 
 
+def worker_logs(args):
+    launcher = Launcher(**launcher_args(args))
+    instances = running_or_pending_instances(launcher.get_reservations())
+    identity_file = get_identity_file(args.identity_file)
+
+    def grep(instance):
+        #note that we have to swap "A" and "B" because tac has reversed the order of the lines.
+        command = '"source ufora_setup.sh; tac \\$LOG_DIR/logs/ufora-worker.log | grep -m %s -B %s -A %s -e %s" | tac' % (args.N, args.A, args.B, args.expression)
+        
+        return (pad(instance.ip_address + "> ", 25), ssh_output(identity_file, instance.ip_address, command))
+
+    for ip, res in parallel_for(instances, grep):
+        for line in res.split("\n"):
+            print ip, line
+
+
+def worker_load(args):
+    cmd_to_run = 'tail -f /mnt/ufora/logs/ufora-worker.log' if args.logs else 'sudo apt-get install htop\\; htop'
+    launcher = Launcher(**launcher_args(args))
+    instances = running_or_pending_instances(launcher.get_reservations())
+    identity_file = get_identity_file(args.identity_file)
+
+    import os
+    session = os.getenv("USER")
+    def sh(cmd, **kwargs):
+        try:
+            print "CMD =", cmd.format(SESSION=session, **kwargs)
+            subprocess.check_output(cmd.format(SESSION=session, **kwargs), shell=True)
+        except:
+            import traceback
+            traceback.print_exc()
+
+    sh("tmux -2 kill-session -t {SESSION}")
+
+    sh("tmux -2 new-session -d -s {SESSION}")
+
+    # Setup a window for tailing log files
+    sh("tmux new-window -t {SESSION}:1 -n 'pyfora_htop'")
+    isFirst = True
+    count = 0
+
+    
+    for ix in xrange((len(instances)-1)/2):
+        sh("tmux split-window -v -t 0 -l 20")
+
+    for ix in xrange(len(instances)/2):
+        sh("tmux split-window -h -t {ix}",ix=ix)
+
+    # for ix in xrange(len(instances)-1,0,-1):
+    #     sh('tmux resize-pane -t {ix} -y 20', ix=ix)
+
+    for ix in xrange(len(instances)):
+        sh('tmux send-keys -t {ix} "ssh ubuntu@%s -t -i %s %s" C-m' % (instances[ix].ip_address, identity_file, cmd_to_run),ix=ix)
+
+
+    # Attach to session
+    sh('tmux -2 attach-session -t {SESSION}')
+
+
 
 def start_instances(args):
     assert args.num_instances > 0
@@ -149,11 +208,34 @@ def start_instances(args):
     else:
         status_printer.failed()
 
+def pad(s, ct):
+    return s + " " * max(ct - len(s), 0)
+
+def restart_instances(args):
+    launcher = Launcher(**launcher_args(args))
+    instances = running_or_pending_instances(launcher.get_reservations())
+    identity_file = get_identity_file(args.identity_file)
+
+    def restart_instance(instance):
+        is_manager = 'manager' in instance.tags.get('Name', '')
+
+        if is_manager:
+            command = '"source ufora_setup.sh; \\$DOCKER stop ufora_manager; sudo rm -rf \\$LOG_DIR/*; \\$DOCKER start ufora_manager"'
+        else:
+            command = '"source ufora_setup.sh; \\$DOCKER stop ufora_worker; sudo rm -rf \\$LOG_DIR/*; \\$DOCKER start ufora_worker"'
+
+        return (pad(instance.ip_address + "> ", 25), ssh_output(identity_file, instance.ip_address, command))
+
+    for ip, res in parallel_for(instances, restart_instance):
+        for line in res.split("\n"):
+            print ip, line
+
+
 
 def add_instances(args):
     launcher = Launcher(**launcher_args(args))
     manager = [i for i in running_or_pending_instances(launcher.get_reservations())
-               if 'Name' in i.tags and i.tags['Name'].startswith('ufora manager')]
+               if 'manager' in i.tags.get('Name', '')]
     if len(manager) > 1:
         print "There is more than one Manager instance. Can't add workers.", \
             "Managers:"
@@ -246,6 +328,13 @@ def ssh(identity_file, host, command):
     except subprocess.CalledProcessError as e:
         return e.output
 
+def ssh_output(identity_file, host, command):
+    try:
+        return subprocess.check_output("ssh -i %s ubuntu@%s %s" % (identity_file, host, command),
+                                shell=True)
+    except subprocess.CalledProcessError as e:
+        return e.output
+
 
 def upload_package(package, instances, identity_file):
     def upload_to_instance(instance):
@@ -302,7 +391,7 @@ def deploy_package(args):
                 print instances[ix].id, "|", instances[ix].ip_address, ':', results[ix]
 
     print "Uploading package..."
-    results = upload_package(args.package, instances, args.identity_file)
+    results = upload_package(args.package, instances, get_identity_file(args.identity_file))
     if any_failures(results):
         print "Failed to upload package:"
         print_failures(results)
@@ -311,7 +400,7 @@ def deploy_package(args):
     print ''
 
     print "Updating service..."
-    results = update_ufora_service(instances, args.identity_file)
+    results = update_ufora_service(instances, get_identity_file(args.identity_file))
     if any_failures(results):
         print "Failed to update service:"
         print_failures(results)
@@ -338,7 +427,7 @@ def instances_in_state(reservations, states):
 def print_instance(instance, tag=None):
     output = "    %s | %s | %s" % (instance.id, instance.ip_address, instance.state)
     if tag is None and 'Name' in instance.tags:
-        tag = 'manager' if instance.tags['Name'].startswith('ufora manager') else 'worker'
+        tag = 'manager' if 'manager' in instance.tags['Name'] else 'worker'
 
     tag = tag or ''
     if tag:
@@ -356,7 +445,7 @@ all_arguments = {
     'ec2-region': {
         'args': ('--ec2-region',),
         'kwargs': {
-            'default': 'us-east-1',
+            'default':  os.getenv('PYFORA_AWS_EC2_REGION') or 'us-east-1',
             'help': ('The EC2 region in which instances are launched. '
                      'Can also be set using the PYFORA_AWS_EC2_REGION environment variable. '
                      'Default: us-east-1')
@@ -444,8 +533,10 @@ all_arguments = {
     'identity-file': {
         'args': ('-i', '--identity-file'),
         'kwargs': {
-            'required': True,
+            'required': os.getenv('PYFORA_AWS_IDENTITY_FILE') is None,
+            'default': os.getenv('PYFORA_AWS_IDENTITY_FILE'),
             'help': 'The file from which the private SSH key is read.'
+                     'Can also be set using the PYFORA_AWS_IDENTITY_FILE environment variable.'
             }
         },
     'package': {
@@ -463,6 +554,7 @@ start_args = ('yes-all', 'ec2-region', 'vpc-id', 'subnet-id', 'security-group-id
 add_args = ('ec2-region', 'vpc-id', 'subnet-id', 'security-group-id', 'num-instances',
             'spot-price')
 list_args = ('ec2-region', 'vpc-id', 'subnet-id', 'security-group-id')
+command_args = ('ec2-region', 'vpc-id', 'subnet-id', 'security-group-id', 'identity-file')
 stop_args = ('ec2-region', 'vpc-id', 'subnet-id', 'security-group-id',
              'terminate')
 deploy_args = ('ec2-region', 'vpc-id', 'subnet-id', 'security-group-id',
@@ -480,6 +572,28 @@ def main():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers()
 
+    restart_all_parser = subparsers.add_parser('restart',
+                                          help='Reboot all ufora_manager and ufora_worker processes')
+    restart_all_parser.set_defaults(func=restart_instances)
+    add_arguments(restart_all_parser, command_args)
+
+    worker_logs_parser = subparsers.add_parser('worker_logs',
+                                          help='Return the last N lines of logs matching a particular regex')
+    worker_logs_parser.set_defaults(func=worker_logs)
+    add_arguments(worker_logs_parser, command_args)
+    worker_logs_parser.add_argument('N', type=int, default=1, help="Number of matches to return")
+    worker_logs_parser.add_argument('-e', '--expression', type=str, required=True, help="Regular expression to search for")
+    worker_logs_parser.add_argument('-A', type=int, required=False, default=0, help="Lines of context after the expression")
+    worker_logs_parser.add_argument('-B', type=int, required=False, default=0, help="Lines of context before the expression")
+
+    worker_load_parser = subparsers.add_parser('worker_load',
+                                          help='Run htop in tmux for all workers')
+    worker_load_parser.set_defaults(func=worker_load)
+    worker_load_parser.add_argument('-l', '--logs', action='store_true', default=False, help="Instead of htop, tail the logs")
+
+    add_arguments(worker_load_parser, command_args)
+
+    
     launch_parser = subparsers.add_parser('start',
                                           help='Launch one or more backend instances')
     launch_parser.set_defaults(func=start_instances)

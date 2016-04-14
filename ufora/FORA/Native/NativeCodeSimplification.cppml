@@ -22,9 +22,11 @@
 #include "../../core/ScopedProfiler.hppml"
 #include "../../core/Clock.hpp"
 #include "../../core/Logging.hpp"
+#include "../../core/cppml/ExtractAllVariablesOfGivenTypeVisitor.hppml"
 #include "BlockDuplicator.hppml"
 #include "AllocateVariableDumpsAndUnrollHotpathLoops.hppml"
 #include "UnrollHotLoopsWithComparisons.hppml"
+#include "DetupleFlattenedNativeCode.hppml"
 #include "VerifyAllVariablesDefinedBeforeUsed.hppml"
 
 @type RewriteVariables = map<NativeVariable, NativeVariable>* rewrites {
@@ -185,8 +187,9 @@ public:
 			@match Input(in)
 				-|	Variable(v) ->> {
 					used()[v].insert(cur);
-					;}
-				-|	_ ->> {;}
+					}
+				-|	_ ->> {
+					}
 				;
 			}
 
@@ -385,68 +388,82 @@ void promoteInBlockUseVariables(map<NativeBlockID, NativeCodeFlattened::Block>& 
 			|| vis.used()[it->first].size() == 0)
 			outBlocks[it->second].dontWriteVariable(it->first);
 	}
+
 void	collapseLinearBlocks(map<NativeBlockID, NativeCodeFlattened::Block>& outBlocks)
 	{
-	BlockFlowVisitor vis;
-	visit(outBlocks, vis);
+	try {
+		BlockFlowVisitor vis;
+		visit(outBlocks, vis);
 
-	set<NativeBlockID> collapse;
-	for (map<NativeBlockID, set<NativeBlockID> >::const_iterator it = vis.edges().getKeysToValues().begin(), it_end = vis.edges().getKeysToValues().end(); it != it_end; ++it)
-		if (it->second.size() == 1)
-			{
-			NativeBlockID b = *it->second.begin();
-			if (b != it->first)
+		set<NativeBlockID> collapse;
+		for (map<NativeBlockID, set<NativeBlockID> >::const_iterator it = vis.edges().getKeysToValues().begin(), it_end = vis.edges().getKeysToValues().end(); it != it_end; ++it)
+			if (it->second.size() == 1)
 				{
-				if (vis.edges().getKeys(b).size() == 1 && b.isInternal())
-					collapse.insert(b);
+				NativeBlockID b = *it->second.begin();
+				if (b != it->first)
+					{
+					if (vis.edges().getKeys(b).size() == 1 && b.isInternal())
+						collapse.insert(b);
+					}
 				}
-			}
 
-	for (set<NativeBlockID>::iterator it = collapse.begin(), it_end = collapse.end(); it != it_end; ++it)
+		for (set<NativeBlockID>::iterator it = collapse.begin(), it_end = collapse.end(); it != it_end; ++it)
+			{
+			//merge this block back into its prior block
+			NativeBlockID targID = *it;
+			NativeBlockID sourceID = *vis.edges().getKeys(targID).begin();
+
+			NativeCodeFlattened::Block sourceB = outBlocks[sourceID];
+			NativeCodeFlattened::Block targB = outBlocks[targID];
+
+			//make 'let' operations for each arg
+			NativeCodeFlattened::JumpPoint j = sourceB.term().getJump().target();
+			sourceB.term() = targB.term();
+
+			lassert_dump(
+				j.args().size() == targB.args().size(),
+				"Flow from blocks " << prettyPrintString(sourceID) 
+					<< " to " << prettyPrintString(targID) << " is incorrectly sized."
+				);
+
+			//for each argument, create a "let" and make sure we dump it (we can remove unnecessary variable dumps later)
+			for (long k = 0; k < targB.args().size();k++)
+				{
+				bool shouldDump;
+
+				@match NativeCodeFlattened::Input(j.args()[k])
+					-|	Variable(v) ->> {
+						shouldDump =  v != targB.args()[k];
+						}
+					-|	_ ->> {
+						shouldDump = true;
+						}
+					;
+				if (shouldDump)
+					{
+					sourceB.defs() = sourceB.defs() + make_pair(targB.args()[k], NativeCodeFlattened::Expression::Var(j.args()[k]));
+					sourceB.writeVariable(targB.args()[k]);
+					}
+				}
+
+			sourceB.defs() = sourceB.defs() + targB.defs();
+
+			for (long k = 0; k < j.dumpToSlots().dumpToSlots().size(); k++)
+				sourceB.writeVariable(j.dumpToSlots().dumpToSlots()[k]);
+
+			outBlocks[sourceID] = sourceB;
+			outBlocks.erase(targID);
+
+			set<NativeBlockID> outs = vis.edges().getValues(targID);
+			vis.edges().update(sourceID, outs);
+			vis.edges().dropKey(targID);
+			vis.edges().dropValue(targID);
+			}
+		}
+	catch(...)
 		{
-		//merge this block back into its prior block
-		NativeBlockID targID = *it;
-		NativeBlockID sourceID = *vis.edges().getKeys(targID).begin();
-
-		NativeCodeFlattened::Block sourceB = outBlocks[sourceID];
-		NativeCodeFlattened::Block targB = outBlocks[targID];
-
-		//make 'let' operations for each arg
-		NativeCodeFlattened::JumpPoint j = sourceB.term().getJump().target();
-		sourceB.term() = targB.term();
-
-		//for each argument, create a "let" and make sure we dump it (we can remove unnecessary variable dumps later)
-		for (long k = 0; k < targB.args().size();k++)
-			{
-			bool shouldDump;
-
-			@match NativeCodeFlattened::Input(j.args()[k])
-				-|	Variable(v) ->> {
-					shouldDump =  v != targB.args()[k];
-					}
-				-|	_ ->> {
-					shouldDump = true;
-					}
-				;
-			if (shouldDump)
-				{
-				sourceB.defs() = sourceB.defs() + make_pair(targB.args()[k], NativeCodeFlattened::Expression::Var(j.args()[k]));
-				sourceB.writeVariable(targB.args()[k]);
-				}
-			}
-
-		sourceB.defs() = sourceB.defs() + targB.defs();
-
-		for (long k = 0; k < j.dumpToSlots().dumpToSlots().size(); k++)
-			sourceB.writeVariable(j.dumpToSlots().dumpToSlots()[k]);
-
-		outBlocks[sourceID] = sourceB;
-		outBlocks.erase(targID);
-
-		set<NativeBlockID> outs = vis.edges().getValues(targID);
-		vis.edges().update(sourceID, outs);
-		vis.edges().dropKey(targID);
-		vis.edges().dropValue(targID);
+		LOG_TEST << "Blocks: " << outBlocks;
+		throw;
 		}
 	}
 
@@ -584,7 +601,6 @@ void duplicateEntrypoints(map<NativeBlockID, NativeCodeFlattened::Block>& outBlo
 		}
 	}
 
-
 void clearLiveVariables(map<NativeBlockID, NativeCodeFlattened::Block>& outBlocks)
 	{
 	for (map<NativeBlockID, NativeCodeFlattened::Block>::iterator it = outBlocks.begin(), it_end = outBlocks.end(); it != it_end; ++it)
@@ -596,10 +612,60 @@ void clearLiveVariables(map<NativeBlockID, NativeCodeFlattened::Block>& outBlock
 			it->second.writeVariable(it->second.defs()[k].first);
 		}
 	}
-void pruneUnnecessaryVariableDumps(map<NativeBlockID, NativeCodeFlattened::Block>& outBlocks)
+
+bool hasSideEffects(const NativeCodeFlattened::Expression& e)
 	{
-	outBlocks = transform(outBlocks, UnnecessaryVariableDumpsTransformer(outBlocks));
+	@match NativeCodeFlattened::Expression(e)
+		-| Store() ->> { return true; }
+		-| CallLibraryFunction() ->> { return true; }
+		-| _ ->> { return false; }
 	}
+
+void removeUnnecessaryDefs(map<NativeBlockID, NativeCodeFlattened::Block>& blocks)
+	{
+	BlockFlowVisitor vis;
+	visit(blocks, vis);
+	
+	for (auto& idAndBlock: blocks)
+		{
+		//get vars live in downstream blocks
+		std::set<NativeVariable> varsUsed;
+		for (auto block: vis.edges().getValues(idAndBlock.first))
+			for (auto v: blocks[block].liveOnInput())
+				varsUsed.insert(v);
+
+		//get vars mentioned in the terminator
+		for (auto var: ExtractAllVariablesOfGivenTypeVisitor<NativeVariable>::extract(idAndBlock.second.term()))
+			varsUsed.insert(var);
+
+		auto defs = idAndBlock.second.defs();
+		std::set<long> toDrop;
+
+		for (long k = ((long)defs.size()) - 1; k >= 0; k--)
+			if (varsUsed.find(defs[k].first) != varsUsed.end() || 
+					hasSideEffects(defs[k].second))
+				{
+				//it's used
+				varsUsed.insert(defs[k].first);
+
+				//implicitly we also use any variables that this expression uses.
+				for (auto subVar: ExtractAllVariablesOfGivenTypeVisitor<NativeVariable>::extract(defs[k].second))
+					varsUsed.insert(subVar);
+				}
+			else
+				toDrop.insert(k);
+
+		if (toDrop.size())
+			{	
+			auto oldBlock = idAndBlock.second;
+			idAndBlock.second.defs() = emptyTreeVec();
+			for (long k = 0; k < oldBlock.defs().size();k++)
+				if (toDrop.find(k) == toDrop.end())
+					idAndBlock.second.defs() = idAndBlock.second.defs() + oldBlock.defs()[k];
+			}
+		}
+	}
+
 //TODO CLEANUP brax: Remove extraneous NativeCodeSimplification operations in the native code.
 void	simplifyFlattenedCode(	map<NativeBlockID, NativeCodeFlattened::Block>& outBlocks,
 								const RuntimeConfig& inConfig,
@@ -636,8 +702,13 @@ void	simplifyFlattenedCode(	map<NativeBlockID, NativeCodeFlattened::Block>& outB
 		duplicateEntrypoints(outBlocks);
 		}
 		
+
+	auto oldBlocks = outBlocks;
+
+	if (inConfig.unrollHotLoopsWithComparisons())
 		{
 		Ufora::ScopedProfiler<std::string> profiler("LLVMFunctionBuilder::Simplify::09::UnrollHotLoopsWithComparisons");
+		detupleFlattenedNativeCode(outBlocks, funcName);
 		unrollHotLoopsWithComparisons(outBlocks, funcName);
 		}
 
@@ -652,6 +723,9 @@ void	simplifyFlattenedCode(	map<NativeBlockID, NativeCodeFlattened::Block>& outB
 		Ufora::ScopedProfiler<std::string> profiler("LLVMFunctionBuilder::Simplify::10::EnlivenAllVariables");
 		allocateVariableDumpsAndUnrollHotpathLoops(outBlocks);
 		}
+
+
+	removeUnnecessaryDefs(outBlocks);
 
 	//get rid of interrupt check nodes that we don't need
 		{

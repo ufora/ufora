@@ -745,3 +745,58 @@ class NumpyTestCases(object):
 
         self.check_lstsq(a, b)
 
+    def test_numpy_eye(self):
+        def f(nRows, nColumns):
+            return numpy.eye(nRows, nColumns)
+
+        self.equivalentEvaluationTest(f, 2, 2)
+        self.equivalentEvaluationTest(f, 2, 4)
+        self.equivalentEvaluationTest(f, 5, 3)
+
+    def test_numpy_inv_1(self):
+        def f(x):
+            return numpy.linalg.inv(x)
+
+        x = numpy.array([[1,2],[3,4]])
+
+        numpy.testing.assert_allclose(
+            f(x),
+            self.evaluateWithExecutor(f, x)
+            )
+
+    def test_numpy_inv_2(self):
+        def f(x):
+            return numpy.linalg.inv(x)
+            
+        x = numpy.array([[1,1],[1,1]])
+
+        try:
+            self.evaluateWithExecutor(f, x)
+        except Exception as e:
+            self.assertEqual(
+                e.remoteException.message,
+                "matrix was singular"
+                )
+            return
+
+        self.assertTrue(False)
+
+    def test_numpy_eigh_1(self):
+        def f(x, uplo='L'):
+            return numpy.linalg.eigh(x)
+
+        x = numpy.array([[2,1],[1,1]])
+
+        res1 = f(x)
+        res2 = self.evaluateWithExecutor(f, x)
+        
+        numpy.testing.assert_allclose(res1[0], res2[0])
+        numpy.testing.assert_allclose(res1[1], res1[1])
+
+    def test_numpy_abs(self):
+        def f(x):
+            return numpy.abs(x)
+
+        x = numpy.array([[-2.0,1.0],[-3.0,0.0]])
+
+        self.equivalentEvaluationTest(f, x)

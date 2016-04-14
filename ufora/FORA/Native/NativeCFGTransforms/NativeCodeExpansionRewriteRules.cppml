@@ -1,0 +1,298 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "NativeCodeExpansionRewriteRules.hppml"
+#include "../../../core/Logging.hpp"
+#include "../NativeTypeFor.hpp"
+#include "../../TypedFora/ABI/HomogenousVectorStashCodegen.hppml"
+
+namespace NativeCFGTransforms {
+
+//remove unnecessary "LocalVariable" metadata
+//Because of codegen upstream, it's possible to have variables marked as "local"
+//even if we're never going to use them again. We want to remove these from the metadata
+//so that we don't need to preserve them
+class RemoveUnnecessaryLocalVariables {
+public:
+    RemoveUnnecessaryLocalVariables()
+        {
+        }
+
+    template<class T>
+    Nullable<T>    processDown(const T& in, bool& outContinue) const
+        {
+        return null();
+        }
+
+    template<class T>
+    Nullable<T>    processUp(const T& in) const
+        {
+        return null();
+        }
+
+    static bool disjoint(ImmutableTreeSet<NativeVariable> s1, ImmutableTreeSet<NativeVariable> s2)
+        {
+        if (s1.size() > s2.size())
+            return disjoint(s2, s1);
+
+        for (auto v: s1)
+            if (s2.contains(v))
+                return false;
+        
+        return true;
+        }
+
+    Nullable<NativeExpression>    processUp(const NativeExpression& in) const
+        {
+        @match NativeExpression(in)
+            -| Call(target, conts, args, meta) ->> {
+                //only a valid analysis if all continuations exit.
+                if (in.type())
+                    return null();
+
+                ImmutableTreeSet<NativeVariable> usedVariables;
+                
+                for (auto m: meta)
+                    if (!m.node().isLocalVariables())
+                        usedVariables = usedVariables + m.freeVariables();
+
+                for (auto c: conts)
+                    usedVariables = usedVariables + c.freeVariables();
+
+                auto newMetas = mapITV(meta, [&](NativeContinuationMetadata m) {
+                    if (m.node().isLocalVariables())
+                        m.vars() =
+                            filterITV(m.vars(), [&](NativeContinuationVarMetadata v) {
+                                return !disjoint(v.dataVar().freeVariables(), usedVariables);
+                                });
+                            
+                    return m;
+                    });
+
+                return null() << NativeExpression::Call(target, conts, args, newMetas);
+                }
+            -| _ ->> {
+                return null();
+                }
+        }
+
+};
+
+
+class Rewriter {
+public:
+    Rewriter(const ThreadSafeMap<pair<std::string, std::string>, NativeCFGExpansion>* inExpansions) : 
+            mExpansions(inExpansions)
+        {
+
+        }
+
+    template<class T>
+    Nullable<T>    processDown(const T& in, bool& outContinue) const
+        {
+        return null();
+        }
+    template<class T>
+    Nullable<T>    processUp(const T& in) const
+        {
+        return null();
+        }
+    
+    Nullable<NativeExpression> processDown(const NativeExpression& in, bool& outContinue) const
+        {
+        @match NativeExpression(in)
+            -| Call(Expansion((expansionName1, expansion1)), conts, args, meta) ->> {
+                if (conts.size() > 0)
+                    @match NativeContinuation(conts[0])
+                        -| (firstRes, Call(Expansion((expansionName2, expansion2)), conts2, args2, meta2)) ->> {
+                            if (args2.size() > 1)
+                                @match NativeExpression(args2[1])
+                                    -| Variable(shouldBeFirstResVar) ->> {
+                                        auto expansion = mExpansions->get(make_pair(expansionName1, expansionName2));
+
+                                        if (shouldBeFirstResVar == firstRes && expansion)
+                                            {
+                                            //we don't want to recurse
+                                            outContinue = false;
+
+                                            auto newCall = expand(
+                                                    firstRes,
+                                                    conts.slice(1), 
+                                                    conts2, 
+                                                    args[0],
+                                                    args.slice(1),
+                                                    args2.slice(2), 
+                                                    meta, 
+                                                    meta2,
+                                                    NativeCFGExpansion(expansionName1, expansion1, false),
+                                                    NativeCFGExpansion(expansionName2, expansion2, false),
+                                                    *expansion
+                                                    );
+
+                                            //but we do want to try to transform again, because there might be a second
+                                            //collapse to do after the first one applies.
+                                            return null() << ::transform(
+                                                newCall,
+                                                *this
+                                                );
+                                            }
+                                    }
+                                    -| _ ->> {}
+                            }
+                        -| _ ->> {}
+                }
+            -| _ ->> {}
+
+        return null();
+        }
+
+    NativeExpression expand(
+                NativeVariable firstExpansionBoundAs,
+                ImmutableTreeVector<NativeContinuation> conts1, //remaining continuations for the first expansion
+                ImmutableTreeVector<NativeContinuation> conts2, //continuations of the second expansion
+                NativeExpression arg0,
+                ImmutableTreeVector<NativeExpression> args1, //original args
+                ImmutableTreeVector<NativeExpression> args2, //all args but the removed one
+                ImmutableTreeVector<NativeContinuationMetadata> meta1,
+                ImmutableTreeVector<NativeContinuationMetadata> meta2,
+                NativeCFGExpansion expansion1,
+                NativeCFGExpansion expansion2,
+                NativeCFGExpansion mergedExpansion
+                ) const
+        {
+        /*****************************************
+        we have an expression of the form
+
+            call(A) with (a1, a2, ...)
+                (AR0) ->> {
+                    call (B) with (AR0, b1, b2, ...)
+                        (BR0) ->> {}
+                        (BR1) ->> {}
+                    }
+                (AR1) ->> {
+    
+                    }
+            
+        and we have a compound form for B(A(x)) in the form of 'mergedExpansion'
+
+        We'll turn this into
+
+            call(mergedExpansion) with (a1, a2, ..., b1, b2, ...)
+                (BR0) ->> {}
+                (BR1) ->> {}
+                (AR1) ->> {}
+
+        We expect that 'mergedExpansion' can be called exactly in this manner. Furthermore, we also
+        expect that if it returns in one of the BR continuations, that we can call A if we need to and
+        definitely get the A0 continuation. This is because the BR continuations may in fact rely upon
+        the value 'AR0' and we may need to create it for them.
+        *****************************************/
+        return NativeExpression::Call(
+            NativeCallTarget::Expansion(mergedExpansion),
+            mapITV(conts2, [&](NativeContinuation c) { 
+                //if the continuation refers to 'firstExpansionBoundAs' then we need to replicate the original expression
+                if (!c.expression().freeVariables().contains(firstExpansionBoundAs))
+                    return c;
+
+                return NativeContinuation(
+                    c.var(),
+                    NativeExpression::Call(
+                        NativeCallTarget::Expansion(expansion1),
+                        emptyTreeVec()
+                            + NativeContinuation(
+                                firstExpansionBoundAs,
+                                c.expression()
+                                )
+                            + mapITV(conts1, [&](NativeContinuation c2) {
+                                return NativeContinuation(
+                                    NativeVariable::Temp(c2.var().type()),
+                                    NativeExpression::Halt("This should never happen")
+                                    );
+                                })
+                            ,
+                        insertOrRemoveStashArgumentsAsNecessary(arg0 + args1, expansion1),
+                        meta1
+                        )
+                    );
+                }) + conts1,
+            insertOrRemoveStashArgumentsAsNecessary(arg0 + args1 + args2, mergedExpansion),
+            meta1
+            );
+        }
+
+    ImmutableTreeVector<NativeExpression> insertOrRemoveStashArgumentsAsNecessary(
+                        ImmutableTreeVector<NativeExpression> exprs,
+                        NativeCFGExpansion expansion
+                        ) const
+            {
+            return insertOrRemoveStashArgumentsAsNecessary(exprs, expansion.cfg()[NativeBlockID::entry()].args());
+            }
+
+    ImmutableTreeVector<NativeExpression> insertOrRemoveStashArgumentsAsNecessary(
+                        ImmutableTreeVector<NativeExpression> exprs,
+                        ImmutableTreeVector<NativeVariable> args
+                        ) const
+            {
+            ImmutableTreeVector<NativeExpression> finalExprs;
+            long curExpr = 0;
+ 
+            while (finalExprs.size() < args.size())
+                {
+                if (args[finalExprs.size()].type() == NativeTypeFor<TypedFora::Abi::HomogenousVectorStash>::get())
+                    finalExprs = finalExprs + 
+                        NativeExpression::Zero(
+                            NativeTypeFor<TypedFora::Abi::HomogenousVectorStash>::get()
+                            );
+                    else
+                if (exprs[curExpr].type() && *exprs[curExpr].type() == NativeTypeFor<TypedFora::Abi::HomogenousVectorStash>::get())
+                    curExpr++;
+                else
+                    finalExprs = finalExprs + exprs[curExpr++];
+                }
+
+            return finalExprs;
+            }
+
+private:
+    const ThreadSafeMap<pair<std::string, std::string>, NativeCFGExpansion>* mExpansions;
+};
+
+void NativeCodeExpansionRewriteRules::registerChainedRewriteRule(
+              std::string firstExpansionName,
+              std::string secondExpansionName,
+              NativeCFGExpansion cfgExpansion
+              )
+    {
+    mChainedRules.set(
+        make_pair(firstExpansionName, secondExpansionName), 
+        null() << cfgExpansion
+        );
+    }
+
+NativeCFG NativeCodeExpansionRewriteRules::applyRewriteRules(const NativeCFG& in) const
+    {
+    return ::transform(
+        ::transform(in, RemoveUnnecessaryLocalVariables()),
+        Rewriter(&mChainedRules)
+        );
+    }
+
+NativeCodeExpansionRewriteRules& NativeCodeExpansionRewriteRules::singleton()
+    {
+    static NativeCodeExpansionRewriteRules s;
+    return s;
+    }
+
+}

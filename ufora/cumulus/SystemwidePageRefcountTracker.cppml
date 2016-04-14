@@ -497,10 +497,10 @@ std::string SystemwidePageRefcountTracker::getViewOfSystem(
 
 	std::ostringstream stream;
 
-	stream << "                 ";
+	stream << "GlobalPageLayoutView:\n";
 
 	for (auto machine: getAllMachineIds())
-		stream << prettyPrintString(machine).substr(0,3) << " | ";
+		stream << prettyPrintString(machine).substr(0,3) << "|";
 
 	stream << "\n";
 
@@ -528,34 +528,6 @@ std::string SystemwidePageRefcountTracker::getViewOfSystem(
 
 	std::sort(bigvecs.rbegin(), bigvecs.rend());
 
-	auto drawPage = [&](Fora::PageId pageId) {
-		stream << "|";
-		
-		for (auto machine: getAllMachineIds())
-			{
-			if (pageIsInRamAndPinned(pageId, machine))
-				stream << "P";
-				else
-			if (pageIsInRam(pageId, machine))
-				stream << "U";
-				else
-			if (pageIsOnDisk(pageId, machine))
-				stream << "D";
-			else
-				stream << " ";
-
-			stream << additional(pageId, machine);
-
-			stream << "|";
-			}
-		
-		stream << perPageAdditional(pageId);
-
-		stream << " -- " << prettyPrintString(pageId.guid()).substr(0,6) << " " 
-			<< std::fixed << std::setprecision(2)
-			<< pageId.bytecount() / 1024 / 1024.0 
-			<< " MB\n";
-		};
 
 	uint64_t totalBigvecBytes = 0;
 
@@ -567,44 +539,35 @@ std::string SystemwidePageRefcountTracker::getViewOfSystem(
 		TypedFora::Abi::BigVectorPageLayout layout = 
 			mBigVectorLayouts->getLayoutForId(vec);
 
-		stream << "Bigvec " << prettyPrintString(layout.identity()) 
-			<< " -- " << std::fixed << std::setprecision(2) << 
-				(int64_t(bytecount / 1024 / 1024.0 * 100) / 100.0) << " MB. ";
-		stream << " over " << layout.vectorIdentities().size() << " pages\n";
-
 		totalBigvecBytes += bytecount;
+
+		std::map<Cumulus::MachineId, int64_t> bytesOnMachine;
 
 		for (long k = 0; k < layout.vectorIdentities().size();k++)
 			{
 			Fora::PageId pageId = layout.vectorIdentities()[k].vector().getPage();
 
-			allPagesDrawn.insert(pageId);
-
-			drawPage(pageId);
+			boost::recursive_mutex::scoped_lock lock(mMutex);
+			for (auto m: mPagesOnMachines.getMachinesHoldingPageInRam(pageId))
+				bytesOnMachine[m] += pageId.bytecount();
 			}
-		}
 
-	uint64_t allPageBytes = 0;
-	for (auto page: allPagesDrawn)
-		allPageBytes += page.bytecount();
-
-	bool hasDrawn = false;
-	for (auto page: pagesThatAppearOrphaned())
-		if (allPagesDrawn.find(page) == allPagesDrawn.end() && 
-				(isPageAnywhereInRam(page) || isPageAnywhereOnDisk(page)))
+		for (auto m: mPagesOnMachines.getAllMachineIds())
 			{
-			if (!hasDrawn)
-				{
-				stream << "Orphaned:\n";
-				hasDrawn = true;
-				}
-
-			drawPage(page);
+			if (bytesOnMachine[m])
+				stream << std::fixed << setw(3) << (int64_t)(bytesOnMachine[m] * 100 / bytecount);
+			else
+				stream << "   ";
+			stream << "|";
 			}
 
-	stream << "\n\nstreaming took " << curClock() - t0 << "\n"; 
-	stream << "total bigvec bytes: " << totalBigvecBytes / 1024 / 1024.0 / 1024.0 << " GB\n";
-	stream << "total bytes over all nonorphaned pages: " << allPageBytes / 1024 / 1024.0 / 1024.0 << " GB\n";
+		stream
+			<< " -- " << std::fixed << std::setprecision(2) << (int64_t(bytecount / 1024 / 1024.0 * 100) / 100.0) 
+			<< " MB over " << layout.vectorIdentities().size() << " pages: "
+			<< prettyPrintStringWithoutWrapping(layout.identity())
+			<< "\n"
+			;
+		}
 
 	return stream.str();
 	}

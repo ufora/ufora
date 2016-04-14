@@ -57,9 +57,12 @@ def initialize(setupObjectToUse = None):
             cfg.dynamicInlinerSleepTimeMilliseconds = 50
             cfg.mediumPriorityCodeComplexityThreshold = 50
             cfg.useLLVMOptimization = True
+            cfg.unrollHotLoopsWithComparisons = True
+            cfg.enableDoubleVectorStashing = True
             cfg.kickIntoInterpreterOnInline = True
             cfg.useReasoningCompiler = configObjectToUse.useReasoningCompiler
             cfg.disableSplitting = configObjectToUse.compilerDisableSplitting
+            cfg.enableCodeExpansionRewriteRules = True
 
             cfg.applyRefcountOptimization = True
 
