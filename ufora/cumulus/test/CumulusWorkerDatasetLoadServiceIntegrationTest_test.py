@@ -592,7 +592,7 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
             simulation.teardown()
 
     @PerformanceTestReporter.PerfTest("python.InMemoryCumulus.fanout")
-    def test_fanout(self):
+    def test_fanout_1(self):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
 
         self.computeUsingSeveralWorkers("""

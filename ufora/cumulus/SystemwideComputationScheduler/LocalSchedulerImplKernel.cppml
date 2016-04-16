@@ -76,10 +76,17 @@ LocalSchedulerImplKernel::LocalSchedulerImplKernel(
 			),
 		mTotalMoveAttempts(0),
 		mTotalSplitAttempts(0),
-		mCalculationsCompleted(0)
+		mCalculationsCompleted(0),
+		mThreadGroupStatusTracker(
+			boost::bind(&LocalSchedulerImplKernel::sendLocalToLocalSchedulerMessage, this, boost::arg<1>()),
+			mMachineHashTable,
+			inOwnMachineId
+			)
 	{
 	mCurrentMachines.insert(mOwnMachineId);
 	mComputationPageDependencies.addMachine(mOwnMachineId);
+	mMachineHashTable.addMachine(mOwnMachineId);
+
 	mSystemwidePageRefcountTracker.reset(
 		new SystemwidePageRefcountTracker(
 			mBigVectorLayouts,
@@ -108,6 +115,17 @@ void LocalSchedulerImplKernel::sendLocalToGlobalSchedulerMessage(LocalToGlobalSc
 			CumulusComponentMessage::LocalToGlobalScheduler(msg),
 			CumulusComponentEndpointSet::LeaderMachine(),
 			CumulusComponentType::GlobalScheduler()
+			)
+		);
+	}
+
+void LocalSchedulerImplKernel::sendLocalToLocalSchedulerMessage(LocalToLocalSchedulerMessage msg)
+	{
+	mOnCumulusComponentMessageCreated(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::LocalToLocalScheduler(msg),
+			CumulusComponentEndpointSet::SpecificWorker(msg.destMachine()),
+			CumulusComponentType::LocalScheduler()
 			)
 		);
 	}
@@ -174,6 +192,8 @@ void LocalSchedulerImplKernel::pageNoLongerReferencedAcrossSystem(Fora::PageId p
 		<< ", page " << prettyPrintString(page) << " no longer referenced across system.";
 
 	mComputationPageDependencies.pageDroppedAcrossEntireSystem(page);
+
+	mThreadGroupStatusTracker.pageNoLongerReferencedAcrossSystem(page);
 	}
 
 bool LocalSchedulerImplKernel::hasPageBeenDroppedAcrossEntireSystem_(Fora::PageId page)
@@ -185,7 +205,9 @@ bool LocalSchedulerImplKernel::hasPageBeenDroppedAcrossEntireSystem_(Fora::PageI
 void LocalSchedulerImplKernel::addMachine(MachineId inMachine)
 	{
 	mCurrentMachines.insert(inMachine);
-
+	
+	mMachineHashTable.addMachine(inMachine);
+	
 	mComputationPageDependencies.addMachine(inMachine);
 
 	mSystemwidePageRefcountTracker->addMachine(inMachine);
@@ -209,6 +231,8 @@ void LocalSchedulerImplKernel::computationStatusChanged(
 								double curTime
 								)
 	{
+	mThreadGroupStatusTracker.handleStatusChanged(change);
+
 	mComputationPageDependencies.dropComputation(change.computation());
 
 	mComputationBehaviorPredictor.computationStatusChanged(change);
@@ -637,6 +661,9 @@ void LocalSchedulerImplKernel::handleCumulusComponentMessage(
 		-| LocalToLocalSchedulerBroadcast(msg) ->> {
 			handleLocalToLocalSchedulerBroadcastMessage(msg);
 			}
+		-| LocalToLocalScheduler(msg) ->> {
+			handleLocalToLocalSchedulerMessage(msg);
+			}
 		-| LocalComputationPriorityAndStatus(msg) ->> {
 			computationStatusChanged(msg, curTime);
 			}
@@ -979,6 +1006,13 @@ void LocalSchedulerImplKernel::handleLocalToLocalSchedulerBroadcastMessage(
 
 			mMostRecentBroadcasts[sourceMachine] = message.getCurrentLoad();
 			}
+	}
+
+void LocalSchedulerImplKernel::handleLocalToLocalSchedulerMessage(
+										LocalToLocalSchedulerMessage message
+										)
+	{
+	mThreadGroupStatusTracker.handleLocalToLocalSchedulerMessage(message);
 	}
 
 void LocalSchedulerImplKernel::updateCurrentProcessorLoadAndBroadcast_(double curTime)
