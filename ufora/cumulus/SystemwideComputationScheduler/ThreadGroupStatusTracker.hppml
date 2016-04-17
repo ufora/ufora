@@ -16,6 +16,7 @@
 #pragma once
 
 #include "ThreadGroup.hppml"
+#include "../ComputationEvent.hppml"
 #include "../LocalToLocalSchedulerMessage.hppml"
 #include "../DistributedDataTasks/MachineHashTable.hppml"
 
@@ -69,6 +70,24 @@ public:
                         }
                     }
                 -| _ ->> {}
+            }
+
+        void handleEvents(
+                    ImmutableTreeVector<ComputationEvent> event,
+                    const std::set<Fora::PageId>& pagesDroppedAcrossEntireSystem
+                    )
+            {
+            for (auto e: event)
+                @match ComputationEvent(e)
+                    -| PageCreated(p) ->> {
+                        if (pagesDroppedAcrossEntireSystem.find(p) == pagesDroppedAcrossEntireSystem.end())
+                            pageTouchedBySelf(p);
+                        }
+                    -| Load(pages) ->> {
+                        for (auto p: pages)
+                            if (pagesDroppedAcrossEntireSystem.find(p) == pagesDroppedAcrossEntireSystem.end())
+                                pageTouchedBySelf(p);
+                        }
             }
 
         bool isFinished() const
@@ -245,6 +264,25 @@ public:
         {
         }
 
+    void handleComputationEvents(ComputationId id, ImmutableTreeVector<ComputationEvent> events)
+        {
+        ThreadGroup group = ThreadGroup::groupFor(id);
+
+        auto targetMachine = machineFor(group);
+
+        if (targetMachine == mOwnMachine)
+            handleComputationEventsLocally(group, events);
+        else
+            mOnSend(
+                LocalToLocalSchedulerMessage::ThreadGroupEvents(
+                    mOwnMachine,
+                    targetMachine,
+                    group,
+                    events
+                    )
+                );
+        }
+
     void handleLocalToLocalSchedulerMessage(const LocalToLocalSchedulerMessage& in)
         {
         @match LocalToLocalSchedulerMessage(in)
@@ -254,6 +292,18 @@ public:
             -| ThreadGroupChildChanged(group, newPages, timeElapsed, isFinished) ->> {
                 handleChildGroupChanged(group, newPages, timeElapsed, isFinished);
                 }
+            -| ThreadGroupEvents(group, events) ->> {
+                handleComputationEventsLocally(group, events);
+                }
+        }
+
+    void handleComputationEventsLocally(ThreadGroup group, ImmutableTreeVector<ComputationEvent> events)
+        {
+        if (mStates.find(group) == mStates.end())
+            mStates[group].reset(new ThreadGroupState(group));
+
+        mStates[group]->handleEvents(events, mPagesDropped);
+        groupChanged(group);
         }
 
     //the status of this computation changed, and we are the owning machine for this threadgroup.
