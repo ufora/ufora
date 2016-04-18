@@ -824,6 +824,101 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
             PyAstFreeVariableAnalyses.getFreeVariables(tree)
         )
 
+    def test_freeVariables_defaultArgs1(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def f(arg=x):
+                    y = x
+                    return y
+                """
+                )
+            )
+        self.assertEqual(
+            set(['x']),
+            PyAstFreeVariableAnalyses.getFreeVariables(tree)
+            )
+
+    def test_freeVariables_defaultArgs2(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def g():
+                    x = 2
+                    def f(arg=x):
+                        y = x
+                        return y
+                    return f()
+                """
+                )
+            )
+        self.assertEqual(
+            set([]),
+            PyAstFreeVariableAnalyses.getFreeVariables(tree)
+            )
+
+    def test_freeVariables_defaultArgs3(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def g(x=(y,3)):
+                    return x
+                """
+                )
+            )
+        self.assertEqual(
+            set(['y']),
+            PyAstFreeVariableAnalyses.getFreeVariables(tree)
+            )
+
+    def test_freeVariables_defaultArgs4(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def f():
+                    y = 2
+                    def g(x=(y,3)):
+                        pass
+                    return g
+                """
+                )
+            )
+        self.assertEqual(
+            set([]),
+            PyAstFreeVariableAnalyses.getFreeVariables(tree)
+            )
+
+    def test_freeVariables_defaultArgs5(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                class C:
+                    def f(self, x=(y,3)): pass
+                """
+                )
+            )
+        self.assertEqual(
+            set(['y']),
+            PyAstFreeVariableAnalyses.getFreeVariables(tree)
+            )
+
+    def test_freeVariables_defaultArgs6(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def f():
+                    y = 2
+                    class C:
+                        def f(self, x=(y,3)): pass
+                    return C
+                """
+                )
+            )
+        self.assertEqual(
+            set([]),
+            PyAstFreeVariableAnalyses.getFreeVariables(tree)
+            )
+
     def test_freeVariables_class_context(self):
         tree = ast.parse(
             textwrap.dedent(
