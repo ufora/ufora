@@ -614,6 +614,29 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
             """, s3, 4, timeout=240
             )
 
+    @PerformanceTestReporter.PerfTest("python.InMemoryCumulus.fanout")
+    def test_fanout_2(self):
+        s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
+
+        self.computeUsingSeveralWorkers("""
+            let v = Vector.range(20000000)
+
+            v.sum()
+
+            let isPrime = fun(p) {
+                let x = 2;
+                while (x*x <= p) {
+                    if (p%x == 0)
+                        return 0
+                    x = x + 1
+                    }
+                return 1
+                }
+
+            v.sum(isPrime)
+            """, s3, 4, timeout=240,memoryLimitMb=100
+            )
+
     @PerformanceTestReporter.PerfTest("python.InMemoryCumulus.vector_string_apply")
     def test_vector_string_apply(self):
         #verify that the compiler doesn't crap out during many runs.

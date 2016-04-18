@@ -229,6 +229,47 @@ void GlobalSchedulerImplKernel::handleLocalToGlobalSchedulerMessage(const LocalT
 		-| TriggerPageLayoutRecompute() ->> {
 			mTriggerRecomputePageLayoutIfNecessary();
 			}
+		-| ThreadGroupChanged(update) ->> {
+			mThreadGroupLastUpdate[update.group()] = update;
+
+			if (!update.isFinished())
+				{
+				for (auto page: update.newPages())
+					mThreadGroupPages[update.group()].insert(page);
+				for (auto page: update.droppedPages())
+					mThreadGroupPages[update.group()].erase(page);
+				mThreadGroupSeconds[update.group()] = update.timeElapsed();
+				}
+			else
+				{
+				mThreadGroupPages.erase(update.group());
+				mThreadGroupSeconds.erase(update.group());
+				}
+
+			if (abs(curClock() - mLastTotalSecondsDumped) > 1.0)
+				{
+				mLastTotalSecondsDumped = curClock();
+
+				std::map<std::string, ThreadGroup> groupsByPrefix;
+				for (auto grp: mThreadGroupPages)
+					groupsByPrefix[grp.first.prefix()] = grp.first;
+
+				LOGGER_TEST_T log = LOGGER_TEST;
+				for (auto prefixAndGrp: groupsByPrefix)
+					{
+					ThreadGroup group = prefixAndGrp.second;
+					int64_t bytes = 0;
+					for (auto p: mThreadGroupPages[group])
+						bytes += p.bytecount();
+					log << prefixAndGrp.first << ": " << bytes / 1024 / 1024.0 << " MB and " << mThreadGroupSeconds[group] << " seconds.";
+					log << mThreadGroupLastUpdate[group].childBytes() / 1024 / 1024.0 << " MB";
+
+					if (mThreadGroupLastUpdate[group].isActive())
+						log << " ACTIVE";
+					log << "\n";
+					}
+				}
+			}
 	}
 	
 void GlobalSchedulerImplKernel::consumePageEvent(

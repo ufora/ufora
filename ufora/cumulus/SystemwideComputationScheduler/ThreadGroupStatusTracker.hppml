@@ -18,6 +18,7 @@
 #include "ThreadGroup.hppml"
 #include "../ComputationEvent.hppml"
 #include "../LocalToLocalSchedulerMessage.hppml"
+#include "../LocalToGlobalSchedulerMessage.hppml"
 #include "../DistributedDataTasks/MachineHashTable.hppml"
 
 namespace Cumulus {
@@ -26,14 +27,132 @@ namespace SystemwideComputationScheduler {
 
 class ThreadGroupStatusTracker {
 public:
+    class ChildPages {
+    public:
+        ChildPages() : 
+                mTotalBytes(0),
+                mDuplicatedBytes(0),
+                mMaxBytesPerThread(0)
+            {
+            }
+
+        void add(ThreadGroup group, Fora::PageId page)
+            {
+            if (mPages.contains(group, page))
+                return;
+
+            if (!mPages.hasValue(page))
+                mTotalBytes += page.bytecount();
+
+            mPages.insert(group, page);
+
+            if (mPages.getKeys(page).size() == 2)
+                mDuplicatedBytes += page.bytecount();
+
+            mBytesPerThread[group] += page.bytecount();
+
+            mMaxBytesPerThread = std::max<int64_t>(mMaxBytesPerThread, mBytesPerThread[group]);
+            }
+
+        void drop(ThreadGroup group, Fora::PageId page)
+            {
+            if (!mPages.contains(group, page))
+                return;
+
+            if (mPages.getKeys(page).size() == 2)
+                mDuplicatedBytes -= page.bytecount();
+
+            mPages.drop(group, page);
+
+            if (!mPages.hasValue(page))
+                mTotalBytes -= page.bytecount();
+
+            mBytesPerThread[group] -= page.bytecount();
+
+            if (mBytesPerThread[group] <= 0)
+                {
+                lassert(mBytesPerThread[group] == 0);
+                mBytesPerThread.erase(group);
+                }
+
+            if (mMaxBytesPerThread == mBytesPerThread[group] + page.bytecount())
+                {
+                mMaxBytesPerThread = 0;
+                for (auto threadAndBytes: mBytesPerThread)
+                    mMaxBytesPerThread = std::max<int64_t>(mMaxBytesPerThread, threadAndBytes.second);
+                }
+            }
+
+        int64_t totalBytes() const
+            {
+            return mTotalBytes;
+            }
+
+        int64_t maxBytesPerThread() const
+            {
+            return mMaxBytesPerThread;
+            }
+
+        void dropPage(Fora::PageId page)
+            {
+            std::set<ThreadGroup> threads = getThreads(page);
+            for (auto t: threads)
+                drop(t, page);
+            }
+
+        void dropThread(ThreadGroup thread)
+            {
+            std::set<Fora::PageId> pages = getPages(thread);
+            for (auto p: pages)
+                drop(thread, p);
+            }
+
+        const std::set<Fora::PageId>& getPages(ThreadGroup thread) const
+            {
+            return mPages.getValues(thread);
+            }
+
+        const std::set<ThreadGroup>& getThreads(Fora::PageId thread) const
+            {
+            return mPages.getKeys(thread);
+            }
+
+        ImmutableTreeMap<std::string, double> childrenSizes() const
+            {
+            ImmutableTreeMap<std::string, double> res;
+
+            for (auto p: mBytesPerThread)
+                res = res + p.first.prefix() + p.second / 1024 / 1024.0;
+
+            return res;
+            }
+
+    private:
+        TwoWaySetMap<ThreadGroup, Fora::PageId> mPages;
+
+        map<ThreadGroup, int64_t> mBytesPerThread;
+
+        int64_t mMaxBytesPerThread;
+
+        int64_t mTotalBytes;
+
+        int64_t mDuplicatedBytes;
+    };
+
     class ThreadGroupState {
     public:
-        ThreadGroupState(ThreadGroup group) : 
+        ThreadGroupState(
+                    ThreadGroup group,
+                    TwoWaySetMap<ThreadGroup, Fora::PageId>& inPagesUsedByThreadGroups
+                    ) : 
                 mGroup(group),
                 mOwnTimeElapsed(0),
                 mChildrenTimeElapsed(0),
                 mTimeAtLastBroadcast(0),
-                mIsFinished(false)
+                mIsFinished(false),
+                mIsActive(false),
+                mWasActiveAtLastBroadcast(false),
+                mPagesUsedByThreadGroups(inPagesUsedByThreadGroups)
             {
             }
 
@@ -72,6 +191,26 @@ public:
                 -| _ ->> {}
             }
 
+        void markActive()
+            {
+            mIsActive = true;
+            }
+
+        void markInactive()
+            {
+            mIsActive = false;
+            }
+
+        bool isActive() const
+            {
+            return mIsActive;
+            }
+
+        int64_t totalChildBytes() const
+            {
+            return mChildPages.totalBytes();
+            }
+
         void handleEvents(
                     ImmutableTreeVector<ComputationEvent> event,
                     const std::set<Fora::PageId>& pagesDroppedAcrossEntireSystem
@@ -107,36 +246,39 @@ public:
 
         bool wantsBroadcast() const
             {
-            lassert_dump(mNewPages.size() == 0, "should have collected new page references before "
-                    "interacting with the object again.");
-
             const static double kMinTimeElapsedToBroadcast = 1.0;
     
             if (totalTimeElapsed() * 2.0 > mTimeAtLastBroadcast && 
                     totalTimeElapsed() - mTimeAtLastBroadcast > kMinTimeElapsedToBroadcast)
                 return true;
+
+            if (mWasActiveAtLastBroadcast != mIsActive)
+                return true;
+
             if (mNewPagesSinceLastBroadcast.size())
                 return true;
 
             return false;
             }
 
-        void extractNewPageReferences(std::set<Fora::PageId>& outPages)
+        void extractPageChangesAndMarkBroadcast(
+                        std::set<Fora::PageId>& outNewPages,
+                        std::set<Fora::PageId>& outDroppedPages
+                        )
             {
-            outPages.clear();
-            std::swap(outPages, mNewPages);
-            }
+            outNewPages.clear();
+            outDroppedPages.clear();
 
-        void extractNewPageReferencesAndMarkBroadcast(std::set<Fora::PageId>& outPages)
-            {
-            outPages.clear();
-            std::swap(outPages, mNewPagesSinceLastBroadcast);
+            std::swap(outNewPages, mNewPagesSinceLastBroadcast);
+            std::swap(outDroppedPages, mDroppedPagesSinceLastBroadcast);
+
             mTimeAtLastBroadcast = totalTimeElapsed();
+            mWasActiveAtLastBroadcast = mIsActive;
             }
 
         void pageNoLongerReferencedAcrossSystem(Fora::PageId page)
             {
-            mPagesUsedByChildren.dropValue(page);
+            mChildPages.dropPage(page);
             mPagesUsed.erase(page);
             mPagesUsedBySelf.erase(page);
             mNewPagesSinceLastBroadcast.erase(page);
@@ -153,20 +295,32 @@ public:
             }
 
         void handleChildGroupChanged(
-                        ThreadGroup group, 
-                        ImmutableTreeVector<Fora::PageId> newPages,
-                        double timeElapsed, 
-                        bool isFinished,
+                        ThreadGroupStateUpdate update,
                         const std::set<Fora::PageId>& pagesDroppedAcrossEntireSystem
                         )
             {
+            ThreadGroup group = update.group();
+            ImmutableTreeVector<Fora::PageId> newPages = update.newPages();
+            ImmutableTreeVector<Fora::PageId> droppedPages = update.droppedPages();
+            double timeElapsed = update.timeElapsed();
+            bool isFinished = update.isFinished();
+            bool isActive = update.isActive();
+
             if (isFinished)
                 {
                 mFinishedChildren.insert(group);
                 mUnfinishedChildren.erase(group);
+                isActive = false;
                 }
 
-            if (isFinished)
+            bool wasActive = mActiveChildren.find(group) != mActiveChildren.end();
+
+            if (isActive)
+                mActiveChildren.insert(group);
+            else
+                mActiveChildren.erase(group);
+
+            if (isFinished) // || isActive)
                 //we'll expect the time to be incorporated into the parent
                 timeElapsed = 0.0;
 
@@ -179,21 +333,50 @@ public:
             else
                 mChildTimes[group] = timeElapsed;
 
+            for (auto p: newPages)
+                if (pagesDroppedAcrossEntireSystem.find(p) == pagesDroppedAcrossEntireSystem.end())
+                    {
+                    pageTouched(p);
+                    mChildPages.add(group, p);
+                    }
+
+            for (auto p: droppedPages)
+                if (pagesDroppedAcrossEntireSystem.find(p) == pagesDroppedAcrossEntireSystem.end())
+                    {
+                    mChildPages.drop(group, p);
+                    if (mPagesUsedBySelf.find(p) == mPagesUsedBySelf.end() && !pageIsUsedByInactiveChild(p))
+                        pageUntouched(p);
+                    }
+            
             if (isFinished)
                 {
-                for (auto p: newPages)
-                    if (pagesDroppedAcrossEntireSystem.find(p) == pagesDroppedAcrossEntireSystem.end())
-                        pageTouchedBySelf(p);
+                if (!isActive)
+                    {
+                    for (auto p: mChildPages.getPages(group))
+                        if (pagesDroppedAcrossEntireSystem.find(p) == pagesDroppedAcrossEntireSystem.end())
+                            pageTouchedBySelf(p);
+                    }
 
-                mPagesUsedByChildren.dropKey(group);
+                mChildPages.dropThread(group);
                 }
-            else
-                for (auto p: newPages)
-                    if (pagesDroppedAcrossEntireSystem.find(p) == pagesDroppedAcrossEntireSystem.end())
-                        {
-                        pageTouched(p);
-                        mPagesUsedByChildren.insert(group, p);
-                        }
+
+            if (!wasActive && isActive && !isFinished)
+                {
+                //any pages that are used by this child, we need to remove unless they are used by
+                //another active child
+                for (auto page: mChildPages.getPages(group))
+                    if (mPagesUsedBySelf.find(page) == mPagesUsedBySelf.end() && 
+                            !pageIsUsedByInactiveChild(page))
+                        pageUntouched(page);
+                }
+            }
+
+        bool pageIsUsedByInactiveChild(Fora::PageId page) const
+            {
+            for (auto child: mChildPages.getThreads(page))
+                if (mActiveChildren.find(child) == mActiveChildren.end())
+                    return true;
+            return false;
             }
 
         int64_t totalBytes() const
@@ -202,6 +385,29 @@ public:
             for (auto p: mPagesUsed)
                 res += p.bytecount();
             return res;
+            }
+
+        ImmutableTreeVector<ThreadGroup> extractChildrenToActivate(int64_t maxGroupSize)
+            {
+            ImmutableTreeVector<ThreadGroup> toActivate;
+
+            if (mChildPages.totalBytes() > maxGroupSize)
+                {
+                for (auto child: mUnfinishedChildren)
+                    if (mChildrenActivated.find(child) == mChildrenActivated.end())
+                        {
+                        toActivate = toActivate + child;
+                        mChildrenActivated.insert(child);
+                        }
+                }
+
+            return toActivate;
+            }
+
+
+        ImmutableTreeVector<Fora::PageId> getAllPages() const
+            {
+            return ImmutableTreeVector<Fora::PageId>(mPagesUsed.begin(), mPagesUsed.end());
             }
 
     private:   
@@ -215,9 +421,27 @@ public:
             {
             if (mPagesUsed.find(page) == mPagesUsed.end())
                 {
-                mNewPages.insert(page);
                 mPagesUsed.insert(page);
-                mNewPagesSinceLastBroadcast.insert(page);
+                mPagesUsedByThreadGroups.insert(mGroup, page);
+
+                if (mDroppedPagesSinceLastBroadcast.find(page) != mDroppedPagesSinceLastBroadcast.end())
+                    mDroppedPagesSinceLastBroadcast.erase(page);
+                else
+                    mNewPagesSinceLastBroadcast.insert(page);
+                }
+            }
+
+        void pageUntouched(Fora::PageId page)
+            {
+            if (mPagesUsed.find(page) != mPagesUsed.end())
+                {
+                mPagesUsed.erase(page);
+                mPagesUsedByThreadGroups.drop(mGroup, page);
+
+                if (mNewPagesSinceLastBroadcast.find(page) != mNewPagesSinceLastBroadcast.end())
+                    mNewPagesSinceLastBroadcast.erase(page);
+                else
+                    mDroppedPagesSinceLastBroadcast.insert(page);
                 }
             }
 
@@ -237,30 +461,44 @@ public:
 
         std::set<Fora::PageId> mPagesUsed;
 
-        TwoWaySetMap<ThreadGroup, Fora::PageId> mPagesUsedByChildren;
+        ChildPages mChildPages;
 
         std::set<Fora::PageId> mPagesUsedBySelf;
 
-        std::set<Fora::PageId> mNewPages;
+        TwoWaySetMap<ThreadGroup, Fora::PageId>& mPagesUsedByThreadGroups;
 
         std::set<Fora::PageId> mNewPagesSinceLastBroadcast;
+
+        std::set<Fora::PageId> mDroppedPagesSinceLastBroadcast;
 
         map<ThreadGroup, double> mChildTimes;
 
         std::set<ThreadGroup> mFinishedChildren;
 
         std::set<ThreadGroup> mUnfinishedChildren;
+
+        std::set<ThreadGroup> mActiveChildren;
+
+        std::set<ThreadGroup> mChildrenActivated;
+
+        bool mIsActive;
+
+        bool mWasActiveAtLastBroadcast;
     };
 
 
     ThreadGroupStatusTracker(
-                boost::function1<void, LocalToLocalSchedulerMessage> inOnSend,
+                boost::function1<void, LocalToLocalSchedulerMessage> inOnSendLocal,
+                boost::function1<void, LocalToGlobalSchedulerMessage> inOnSendGlobal,
                 MachineHashTable& inMachineTable,
-                MachineId ownMachine
+                MachineId ownMachine,
+                int64_t maxGroupSize
                 ) :
-            mOnSend(inOnSend),
+            mOnSendLocal(inOnSendLocal),
+            mOnSendGlobal(inOnSendGlobal),
             mMachineTable(inMachineTable),
-            mOwnMachine(ownMachine)
+            mOwnMachine(ownMachine),
+            mMaxGroupSize(maxGroupSize)
         {
         }
 
@@ -273,7 +511,7 @@ public:
         if (targetMachine == mOwnMachine)
             handleComputationEventsLocally(group, events);
         else
-            mOnSend(
+            mOnSendLocal(
                 LocalToLocalSchedulerMessage::ThreadGroupEvents(
                     mOwnMachine,
                     targetMachine,
@@ -289,18 +527,20 @@ public:
             -| ThreadGroupStatusChanged(change) ->> {
                 handleStatusChangedLocally(change);
                 }
-            -| ThreadGroupChildChanged(group, newPages, timeElapsed, isFinished) ->> {
-                handleChildGroupChanged(group, newPages, timeElapsed, isFinished);
+            -| ThreadGroupChildChanged(update) ->> {
+                handleChildGroupChanged(update);
                 }
             -| ThreadGroupEvents(group, events) ->> {
                 handleComputationEventsLocally(group, events);
+                }
+            -| ThreadGroupActivatedByParent(group) ->> {
+                activateThreadGroup(group);
                 }
         }
 
     void handleComputationEventsLocally(ThreadGroup group, ImmutableTreeVector<ComputationEvent> events)
         {
-        if (mStates.find(group) == mStates.end())
-            mStates[group].reset(new ThreadGroupState(group));
+        ensureThreadGroup(group);
 
         mStates[group]->handleEvents(events, mPagesDropped);
         groupChanged(group);
@@ -318,8 +558,7 @@ public:
                 if (mFinishedGroups.find(group) != mFinishedGroups.end())
                     return;
 
-                if (mStates.find(group) == mStates.end())
-                    mStates[group].reset(new ThreadGroupState(group));
+                ensureThreadGroup(group);
 
                 mStates[group]->handleUpdateToSelf(newStatus, stats, mPagesDropped);
                 groupChanged(group);
@@ -334,10 +573,6 @@ public:
         if (it == mStates.end())
             return;
 
-        std::set<Fora::PageId> newPages;
-        it->second->extractNewPageReferences(newPages);
-        mPageReferencesTracked.insert(group, newPages);
-
         if (mStates[group]->isFinished() || mStates[group]->wantsBroadcast())
             broadcastGroup(group);
 
@@ -345,71 +580,126 @@ public:
             {
             mFinishedGroups.insert(group);
             mStates.erase(group);
-            mPageReferencesTracked.dropKey(group);
+            mPagesUsedByThreadGroups.dropKey(group);
+            }
+        else
+            {
+            for (auto child: mStates[group]->extractChildrenToActivate(mMaxGroupSize))
+                {
+                if (machineFor(child) == mOwnMachine)
+                    activateThreadGroup(child);
+                else
+                    mOnSendLocal(
+                        LocalToLocalSchedulerMessage::ThreadGroupActivatedByParent(
+                            mOwnMachine,
+                            machineFor(child),
+                            child
+                            )
+                        );
+                }
             }
         }
 
     void broadcastGroup(ThreadGroup group)
         {
-        auto nParent = group.parent();
-        if (!nParent)
-            return;
-        auto parent = *nParent;
-
-        MachineId targetMachine = machineFor(parent);
-
         std::set<Fora::PageId> newPagesSinceLastBroadcast;
-        mStates[group]->extractNewPageReferencesAndMarkBroadcast(newPagesSinceLastBroadcast);
+        std::set<Fora::PageId> droppedPagesSinceLastBroadcast;
 
-        if (targetMachine == mOwnMachine)
-            handleChildGroupChanged(
-                group, 
-                ImmutableTreeVector<Fora::PageId>(newPagesSinceLastBroadcast), 
-                mStates[group]->totalTimeElapsed(),
-                mStates[group]->isFinished()
-                );
-        else
-            mOnSend(
-                LocalToLocalSchedulerMessage::ThreadGroupChildChanged(
-                    mOwnMachine,
-                    targetMachine,
-                    group,
-                    ImmutableTreeVector<Fora::PageId>(newPagesSinceLastBroadcast),
-                    mStates[group]->totalTimeElapsed(),
-                    mStates[group]->isFinished()
-                    )
-                );
+        mStates[group]->extractPageChangesAndMarkBroadcast(
+                            newPagesSinceLastBroadcast, 
+                            droppedPagesSinceLastBroadcast
+                            );
+
+        ThreadGroupStateUpdate update(
+            group, 
+            ImmutableTreeVector<Fora::PageId>(newPagesSinceLastBroadcast), 
+            ImmutableTreeVector<Fora::PageId>(droppedPagesSinceLastBroadcast), 
+            mStates[group]->totalChildBytes(),
+            mStates[group]->totalTimeElapsed(),
+            mStates[group]->isFinished(),
+            mStates[group]->isActive()
+            );
+
+        //first, send locally
+        auto nParent = group.parent();
+        if (nParent)
+            {
+            auto parent = *nParent;
+
+            MachineId targetMachine = machineFor(parent);
+
+            if (targetMachine == mOwnMachine)
+                handleChildGroupChanged(update);
+            else
+                mOnSendLocal(
+                    LocalToLocalSchedulerMessage::ThreadGroupChildChanged(
+                        mOwnMachine,
+                        targetMachine,
+                        update
+                        )
+                    );
+            }
+
+        if (!update.isActive() && mGroupsSentToGlobalScheduler.find(group) != mGroupsSentToGlobalScheduler.end() || 
+                update.isActive())
+            {
+            if (mGroupsSentToGlobalScheduler.find(group) != mGroupsSentToGlobalScheduler.end())
+                //this is the first time we're sending the update
+                {
+                update.droppedPages() = emptyTreeVec();
+                update.newPages() = mStates[group]->getAllPages();
+                }
+
+            mOnSendGlobal(LocalToGlobalSchedulerMessage::ThreadGroupChanged(update));
+
+            if (update.isActive() && !update.isFinished())
+                mGroupsSentToGlobalScheduler.insert(group);
+            else
+                mGroupsSentToGlobalScheduler.erase(group);
+            }
         }
 
-    void handleChildGroupChanged(
-                    ThreadGroup group, 
-                    const ImmutableTreeVector<Fora::PageId>& newPages, 
-                    double timeElapsed, 
-                    bool isFinished
-                    )
+    void ensureThreadGroup(ThreadGroup group)
         {
-        ThreadGroup parent = *group.parent();
+        if (mStates.find(group) == mStates.end())
+            {
+            mStates[group].reset(new ThreadGroupState(group, mPagesUsedByThreadGroups));
+            if (group.isRoot())
+                mStates[group]->markActive();
+            }
+        }
+
+    void activateThreadGroup(ThreadGroup group)
+        {
+        ensureThreadGroup(group);
+        mStates[group]->markActive();
+        groupChanged(group);
+        }
+
+
+    void handleChildGroupChanged(ThreadGroupStateUpdate update)
+        {
+        ThreadGroup parent = *update.group().parent();
 
         lassert(machineFor(parent) == mOwnMachine);
 
         if (mFinishedGroups.find(parent) != mFinishedGroups.end())
             return;
 
-        if (mStates.find(parent) == mStates.end())
-            mStates[parent].reset(new ThreadGroupState(parent));
+        ensureThreadGroup(parent);
 
-        mStates[parent]->handleChildGroupChanged(group, newPages, timeElapsed, isFinished, mPagesDropped);
+        mStates[parent]->handleChildGroupChanged(update, mPagesDropped);
         groupChanged(parent);
         }
 
     void pageNoLongerReferencedAcrossSystem(Fora::PageId page)
         {
         mPagesDropped.insert(page);
-        for (auto group: mPageReferencesTracked.getKeys(page))
+        for (auto group: mPagesUsedByThreadGroups.getKeys(page))
             if (mStates.find(group) != mStates.end())
                 mStates[group]->pageNoLongerReferencedAcrossSystem(page);
 
-        mPageReferencesTracked.dropValue(page);
+        mPagesUsedByThreadGroups.dropValue(page);
         }
 
     //the status of the computation changed on this machine. If the owning machine
@@ -423,7 +713,7 @@ public:
         if (targetMachine == mOwnMachine)
             handleStatusChangedLocally(change);
         else
-            mOnSend(
+            mOnSendLocal(
                 LocalToLocalSchedulerMessage::ThreadGroupStatusChanged(
                     mOwnMachine,
                     targetMachine,
@@ -443,15 +733,21 @@ public:
         }
 
 private:
-    boost::function1<void, LocalToLocalSchedulerMessage> mOnSend;
+    boost::function1<void, LocalToLocalSchedulerMessage> mOnSendLocal;
+
+    boost::function1<void, LocalToGlobalSchedulerMessage> mOnSendGlobal;
+
+    int64_t mMaxGroupSize;
     
     MachineId mOwnMachine;
 
     MachineHashTable& mMachineTable;
 
-    TwoWaySetMap<ThreadGroup, Fora::PageId> mPageReferencesTracked;
+    TwoWaySetMap<ThreadGroup, Fora::PageId> mPagesUsedByThreadGroups;
 
     std::set<Fora::PageId> mPagesDropped;
+
+    std::set<ThreadGroup> mGroupsSentToGlobalScheduler;
 
     std::map<ThreadGroup, boost::shared_ptr<ThreadGroupState> > mStates;
 
