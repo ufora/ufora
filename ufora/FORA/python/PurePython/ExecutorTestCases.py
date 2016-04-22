@@ -172,7 +172,7 @@ class ExecutorTestCases(object):
 
         self.equivalentEvaluationTest(f, 1)
 
-    def test_base_class_with_init(self):
+    def test_base_class_with_init_1(self):
         class HasInitBase(object):
             def __init__(self, x):
                 self.x = x
@@ -194,6 +194,24 @@ class ExecutorTestCases(object):
 
         self.equivalentEvaluationTest(f, 1)
 
+    def test_base_class_with_init_2(self):
+        class HasInitBase_2(object):
+            def __init__(self, x):
+                self.x = x
+
+            def get_x(self):
+                return self.x
+
+        class HasInitChild_2(HasInitBase_2):
+            def __init__(self, x):
+                #self.y = 2
+                HasInitBase_2.__init__(self, x)
+
+        def f(i):
+            c = HasInitChild_2(i)
+            return c.get_x()
+
+        self.equivalentEvaluationTest(f, 1)
 
     def test_class_instance_with_init(self):
         class HasInit_1(object):
