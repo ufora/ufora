@@ -21,7 +21,7 @@ import pyfora.PyforaWithBlock as PyforaWithBlock
 import pyfora.PyforaInspect as PyforaInspect
 import pyfora.pyAst.PyAstUtil as PyAstUtil
 from pyfora.TypeDescription import isPrimitive
-
+from pyfora.PyforaInspect import PyforaInspectError
 
 import logging
 import traceback
@@ -190,6 +190,8 @@ class PyObjectWalker(object):
         try:
             self._walkPyObject(pyObject, objectId)
         except Exceptions.CantGetSourceTextError:
+            self._registerUnconvertible(objectId)
+        except PyforaInspectError:
             self._registerUnconvertible(objectId)
 
         return objectId

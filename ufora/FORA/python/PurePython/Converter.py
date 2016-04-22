@@ -723,6 +723,10 @@ class Converter(object):
             }
         classImplVal = self.convertedValues[classInstanceDescription.classId]
 
+        if classImplVal.isSymbol():
+            self.convertedValues[objectId] = classImplVal
+            return
+
         memberNames = tuple(sorted(name for name in classMemberNameToImplVal.iterkeys()))
         memberValues = tuple(classMemberNameToImplVal[name] for name in memberNames)
         convertedValueOrNone = ForaNative.simulateApply(
