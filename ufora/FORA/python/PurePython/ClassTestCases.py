@@ -12,6 +12,7 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+import pyfora
 import pyfora.Exceptions as Exceptions
 
 class ClassTestCases(object):
@@ -953,3 +954,18 @@ class ClassTestCases(object):
             return A_lots_o_args_3(1, x3=3, x4=4, x2=2).vals()
 
         self.equivalentEvaluationTest(f)
+
+    def test_class_with_pure_and_impure_methods_1(self):
+        class C_979898(object):
+            def pure_method(self):
+                return 1 + 1
+
+            def impure_method(self, host_and_port):
+                return pyfora.connect(host_and_port)
+
+        def f():
+            c = C_979898()
+            return c.pure_method()
+
+        self.equivalentEvaluationTest(f)
+                

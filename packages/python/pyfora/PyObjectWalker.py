@@ -11,7 +11,7 @@
 #   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
-
+import pyfora
 import pyfora.Exceptions as Exceptions
 import pyfora.pyAst.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
 import pyfora.RemotePythonObject as RemotePythonObject
@@ -182,6 +182,10 @@ class PyObjectWalker(object):
             pyObject = pureInstance
 
         objectId = self._allocateId(pyObject)
+
+        if pyObject is pyfora.connect:
+            self._registerUnconvertible(objectId)
+            return objectId
 
         try:
             self._walkPyObject(pyObject, objectId)
