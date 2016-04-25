@@ -102,6 +102,8 @@ def getlines(path):
         with open(path, "r") as f:
             linesCache_[path] = f.readlines()
         return linesCache_[path]
+    elif path in linecache.cache:
+        return linecache.cache[path][2]
     else:
         return None
 

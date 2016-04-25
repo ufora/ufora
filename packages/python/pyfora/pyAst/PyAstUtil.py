@@ -51,8 +51,15 @@ def getSourceFilenameAndText(pyObject):
     except TypeError as e:
         raise Exceptions.CantGetSourceTextError(e.message)
 
+    linesOrNone = PyforaInspect.getlines(sourceFile)
+
+    if linesOrNone is None:
+        raise Exceptions.CantGetSourceTextError(
+            "can't get source lines for file %s" % sourceFile
+            )
+
     if sourceFile not in sourceFileCache_:
-        sourceFileCache_[sourceFile] = "".join(PyforaInspect.getlines(sourceFile))
+        sourceFileCache_[sourceFile] = "".join(linesOrNone)
 
     return sourceFileCache_[sourceFile], sourceFile
 
