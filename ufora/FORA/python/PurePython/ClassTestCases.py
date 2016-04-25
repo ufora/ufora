@@ -12,6 +12,7 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+import pyfora
 import pyfora.Exceptions as Exceptions
 
 class ClassTestCases(object):
@@ -953,3 +954,98 @@ class ClassTestCases(object):
             return A_lots_o_args_3(1, x3=3, x4=4, x2=2).vals()
 
         self.equivalentEvaluationTest(f)
+
+    def test_class_with_pure_and_impure_methods_1(self):
+        class C_979898(object):
+            def pure_method(self):
+                return 1 + 1
+
+            def impure_method(self, host_and_port):
+                return pyfora.connect(host_and_port)
+
+        def f():
+            c = C_979898()
+            return c.pure_method()
+
+        self.equivalentEvaluationTest(f)
+                
+    def test_class_with_pure_and_impure_methods_2(self):
+        import multiprocessing
+
+        class C_342348(object):
+            def pure_method(self):
+                return 1 + 1
+
+            def impure_method(self):
+                return multiprocessing.cpu_count()
+
+        def f():
+            c = C_342348()
+            return c.pure_method()
+
+        self.equivalentEvaluationTest(f)
+                
+    def test_class_with_pure_and_impure_methods_3(self):
+        import os
+
+        class C_348(object):
+            def pure_method(self):
+                return 1 + 1
+
+            def impure_method(self):
+                return os.getcwd()
+
+        def f():
+            c = C_348()
+            return c.pure_method()
+
+        self.equivalentEvaluationTest(f)
+                
+    def test_class_with_pure_and_impure_methods_4(self):
+        import sys
+
+        class C_111348(object):
+            def pure_method(self):
+                return 1 + 1
+
+            def impure_method(self):
+                return sys.getrecursionlimit()
+
+        def f():
+            c = C_111348()
+            return c.pure_method()
+
+        self.equivalentEvaluationTest(f)
+                
+    def test_class_with_pure_and_impure_methods_5(self):
+        import time
+
+        class C_14311348(object):
+            def pure_method(self):
+                return 1 + 1
+
+            def impure_method(self):
+                return time.time()
+
+        def f():
+            c = C_14311348()
+            return c.pure_method()
+
+        self.equivalentEvaluationTest(f)
+                
+    def test_class_with_pure_and_impure_methods_6(self):
+        import hashlib
+
+        class C_432423(object):
+            def pure_method(self):
+                return 1 + 1
+
+            def impure_method(self, arg):
+                return hashlib.sha1(arg)
+
+        def f():
+            c = C_432423()
+            return c.pure_method()
+
+        self.equivalentEvaluationTest(f)
+                

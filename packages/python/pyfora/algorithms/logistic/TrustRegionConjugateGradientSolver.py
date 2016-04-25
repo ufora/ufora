@@ -89,18 +89,18 @@ class TrustRegionConjugateGradientSolver(Solver):
         delta = normGradient
 
         solverState = SolverState(
-            objectiveFun,
-            gradient,
-            normGradient,
-            delta)
+            objectiveFun=objectiveFun,
+            gradient=gradient,
+            normGradient=normGradient,
+            delta=delta)
 
         while solverState.iterationIx < self.maxIters and \
               solverState.normGradient > self.eps * normGradientAtZeroWeights:
             solverState = self.update(solverState)
 
         return ReturnValue(
-            solverState.objectiveFun.w,
-            solverState.iterationIx - 1
+            weights=solverState.objectiveFun.w,
+            iterations=solverState.iterationIx - 1
             )
         
     def update(self, solverState):
@@ -137,11 +137,11 @@ class TrustRegionConjugateGradientSolver(Solver):
             )
 
         return SolverState(
-            newObjectiveFun,
-            newGradient,
-            newNormGradient,
-            newDelta,
-            solverState.iterationIx + 1)
+            objectiveFun=newObjectiveFun,
+            gradient=newGradient,
+            normGradient=newNormGradient,
+            delta=newDelta,
+            iterationIx=solverState.iterationIx + 1)
 
     def normGradientAtZeroWeights(self):
         nSamples = len(self.X)
