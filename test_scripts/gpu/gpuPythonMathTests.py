@@ -15,12 +15,14 @@
 import unittest
 import pyfora
 import ufora.config.Setup as Setup
-import ufora.FORA.CUDA.GpuTestCases as GpuTestCases
+import ufora.FORA.CUDA.GpuMathTestCases as GpuMathTestCases
+import ufora.FORA.CUDA.GpuTestUtil as GpuTestUtil
 import ufora.FORA.python.FORA as FORA
 
-class GpuPythonTests(
+class GpuPythonMathTests(
         unittest.TestCase,
-        GpuTestCases.GpuTestCases
+        GpuTestUtil.GpuTestUtil,
+        GpuMathTestCases.GpuMathTestCases
         ):
     pass
 
