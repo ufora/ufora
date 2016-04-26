@@ -25,9 +25,11 @@ class MemoryPool;
 class AlignmentManager {
 public:
 	AlignmentManager(bool freeAllocatedMemoryOnDestroy=true);
+	AlignmentManager(MemoryPool* pool, bool freeAllocatedMemoryOnDestroy=true);
 	~AlignmentManager();
 
 	uint8_t* getHandleToAlignedData(const ImplValContainer& value);
+	uint8_t* allocateAlignedData(const Type& type, uword_t count);
 
 private:
 	ImmutableTreeSet<uint8_t*> mManagedMemory;
