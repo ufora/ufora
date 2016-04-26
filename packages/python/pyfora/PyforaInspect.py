@@ -52,15 +52,13 @@ directly imported from the inspect module:
 __author__ = 'Alexandros Tzannes <atzannes@gmail.com>'
 __date__ = '8 Oct 2015'
 
-import sys
-import string
 import imp
-import re
 import linecache
 import os
 import pyfora.StdinCache as StdinCache
-
-from collections import namedtuple
+import re
+import string
+import sys
 
 # Importing the following functions so that this module can act as a drop-in
 # replacement for inspect, which it modifies
@@ -72,6 +70,8 @@ from inspect import ismodule, isclass, ismethod, ismethoddescriptor, \
     getabsfile, getmodule, getblock, walktree, getclasstree, \
     getargs, getargspec, getargvalues, joinseq, strseq, formatargspec, \
     formatargvalues, getcallargs, getlineno
+
+from collections import namedtuple
 
 class PyforaInspectError(Exception):
     pass
@@ -108,18 +108,18 @@ def getlines(path):
         return None
 
 
-def getsourcefile(object):
+def getsourcefile(pyObject):
     """Return the filename that can be used to locate an object's source.
     Return None if no way can be identified to get the source.
     """
-    filename = getfile(object)
+    filename = getfile(pyObject)
 
     if filename == "<stdin>":
         return filename
 
     if string.lower(filename[-4:]) in ('.pyc', '.pyo'):
         filename = filename[:-4] + '.py'
-    for suffix, mode, kind in imp.get_suffixes():
+    for suffix, mode, _ in imp.get_suffixes():
         if 'b' in mode and string.lower(filename[-len(suffix):]) == suffix:
             # Looks like a binary file.  We want to only return a text file.
             return None
@@ -131,7 +131,7 @@ def getsourcefile(object):
         return filename
 
     # only return a non-existent filename if the module has a PEP 302 loader
-    if hasattr(getmodule(object, filename), '__loader__'):
+    if hasattr(getmodule(pyObject, filename), '__loader__'):
         return filename
     # or it is in the linecache
     if filename in linecache.cache:
@@ -153,7 +153,6 @@ def findsource(pyObject):
 
     pyFile = sourcefile if sourcefile else file
 
-    module = getmodule(pyObject, pyFile)
     lines = getlines(pyFile)
     if not lines:
         raise IOError('could not get source code')
