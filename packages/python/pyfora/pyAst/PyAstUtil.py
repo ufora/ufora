@@ -79,9 +79,11 @@ def pyAstFor(pyObject):
 
 @CachedByArgs
 def getAstFromFilePath(filename):
-    with open(filename, "r") as f:
-        return pyAstFromText(f.read())
+    linesOrNone = PyforaInspect.getlines(filename)
+    if linesOrNone is not None:
+        return pyAstFromText("".join(linesOrNone))
 
+    return None
 
 class FindEnclosingFunctionVisitor(ast.NodeVisitor):
     """"Visitor used to find the enclosing function at a given line of code.
