@@ -53,6 +53,7 @@ __author__ = 'Alexandros Tzannes <atzannes@gmail.com>'
 __date__ = '8 Oct 2015'
 
 import imp
+import inspect
 import linecache
 import os
 import pyfora.StdinCache as StdinCache
@@ -66,7 +67,7 @@ from inspect import ismodule, isclass, ismethod, ismethoddescriptor, \
     isdatadescriptor, ismemberdescriptor, isgetsetdescriptor, isfunction, \
     isgeneratorfunction, isgenerator, istraceback, isframe, iscode, isbuiltin, \
     isroutine, isabstract, getmembers, classify_class_attrs, getmro,\
-    indentsize, getdoc, cleandoc, getfile, getmoduleinfo, getmodulename, \
+    indentsize, getdoc, cleandoc, getmoduleinfo, getmodulename, \
     getabsfile, getmodule, getblock, walktree, getclasstree, \
     getargs, getargspec, getargvalues, joinseq, strseq, formatargspec, \
     formatargvalues, getcallargs, getlineno
@@ -107,7 +108,36 @@ def getlines(path):
     else:
         return None
 
+def getfile(pyObject):
+    try:
+        return inspect.getfile(pyObject)
+    except TypeError:
+        if isclass(pyObject):
+            return _try_getfile_class(pyObject)
+        raise
 
+def _try_getfile_class(pyObject):
+    members = getmembers(
+        pyObject,
+        lambda _: ismethod(_) or isfunction(_)
+        )
+
+    if len(members) == 0:
+        raise PyforaInspectError(
+            "can't get source code for class %s" % pyObject
+            )
+
+    # members is a list of tuples: (name, func)
+    elt0 = members[0][1]
+
+    if isfunction(elt0):
+        func = elt0
+    else:
+        # must be a method
+        func = elt0.im_func
+
+    return inspect.getfile(func)
+        
 def getsourcefile(pyObject):
     """Return the filename that can be used to locate an object's source.
     Return None if no way can be identified to get the source.
