@@ -13,6 +13,7 @@
 #   limitations under the License.
 
 import os
+import re
 import unittest
 import ufora.config.Setup as Setup
 import ufora.core.SubprocessRunner as SubprocessRunner
@@ -73,6 +74,44 @@ class PyforaInJupyterTest(unittest.TestCase):
             errString
             )
         self.assertIn("ZeroDivisionError", errString)
+
+    def test_tracebacks(self):
+        traceback_test_notebook_path = \
+            os.path.join(self.cur_dir, "traceback_test.ipynb")
+
+        returnCode, output, _ = SubprocessRunner.callAndReturnResultAndOutput(
+            ['jupyter', 'nbconvert', '--stdout', '--to=markdown',
+             '--ExecutePreprocessor.enabled=True', '--allow-errors',
+             traceback_test_notebook_path])
+
+        outputString = "".join(output)
+
+        self.assertEqual(returnCode, 0)
+
+        pattern = ".*ValueError\\s*Traceback \\(most recent call last\\)" \
+                  ".*<ipython-input-4-[a-f0-9]{12}> in inner\\(\\)" \
+                  "\\s*1 with e\\.remotely\\.downloadAll\\(\\):" \
+                  "\\s*2\\s* 1\\+2\\+3" \
+                  "\\s*----> 3\\s*res = f\\(0\\)" \
+                  "\\s*<ipython-input-3-[a-f0-9]{12}> in f\\(\\)" \
+                  "\\s*1 def f\\(x\\):" \
+                  "\\s*----> 2\\s*return g\\(x\\) \\+ 1" \
+                  "\\s*<ipython-input-2-[a-f0-9]{12}> in g\\(\\)" \
+                  "\\s*1 def g\\(x\\):" \
+                  "\\s*----> 2\\s* return 1 / math\\.sqrt\\(x - 1\\)" \
+                  "\\s*/volumes/src/packages/python/pyfora/pure_modules/pure_math.py" \
+                  " in __call__\\(\\)" \
+                  "\\s*21\\s*def __call__\\(self, val\\):" \
+                  "\\s*22\\s*if val < 0\\.0:" \
+                  "\\s*---> 23\\s*raise ValueError\\(\"math domain error\"\\)" \
+                  "\\s*24" \
+                  "\\s*25\\s* return val \\*\\* 0.5" \
+                  "\\s*ValueError: math domain error"        
+        
+        match = re.match(pattern, outputString, re.DOTALL)
+        self.assertIsNotNone(match)
+
+        
 
 if __name__ == '__main__':
     import ufora.config.Mainline as Mainline

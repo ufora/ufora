@@ -73,7 +73,9 @@ def augmentRaiseFunction(raiseFunction, path, line, col):
     vis.visit(module)
 
     code = compile(module, path, 'exec')
-    exec code in globals(), locals()
+    g = dict(globals())
+    g['__file__'] = path
+    exec code in g, locals()
 
     return _augmentRaiseFunctionTempl(raiseFunction)
 
@@ -81,10 +83,14 @@ def syntheticTraceback(trace):
     raiseFunction = None
 
     for elt in trace:
-        if len(elt['path']) == 1 and (elt['path'][0].endswith(".py") or elt['path'][0].endswith(".pyc")):
+        path = elt['path']
+        if len(path) == 1 and \
+           (path[0].endswith(".py") or \
+            path[0].endswith(".pyc") or \
+            path[0].startswith("<ipython-input-")):
             raiseFunction = augmentRaiseFunction(
                 raiseFunction,
-                elt['path'][0],
+                path[0],
                 elt['range']['start']['line'],
                 elt['range']['start']['col']
                 )
