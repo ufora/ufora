@@ -22,9 +22,9 @@ class GpuTestUtil:
 
         text = captureExpr + """
             let f = __funcExpr__;
-            let i = __vecExpr__;
-            let cuda = `CUDAVectorApply(f, [i])[0];
-            let cpu = f(i)
+            let vec = __vecExpr__;
+            let cuda = `CUDAVectorApply(f, vec);
+            let cpu = [f(x) for x in vec]
 
             if (cuda == cpu)
                 true
@@ -32,7 +32,6 @@ class GpuTestUtil:
                 throw String(cuda) + " != " + String(cpu)
             """.replace("__funcExpr__", funcExpr).replace("__vecExpr__", vecExpr)
 
-        print text
         res = InMemoryCumulusSimulation.computeUsingSeveralWorkers(text, s3, 1, timeout=120, threadCount=4)
         self.assertIsNotNone(res)
         return res

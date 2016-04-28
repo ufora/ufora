@@ -33,23 +33,23 @@ class GpuFeatureTestCases:
                     }
                 res
                 }"""
-        self.compareCudaToCPU(functionExpr, "1", captureExpr)
+        self.compareCudaToCPU(functionExpr, "[1]", captureExpr)
 
     def test_read_tuples(self):
-        self.compareCudaToCPU("fun((a,b)) { (b,a) }", "(1,2)")
-        self.compareCudaToCPU("fun((a,b)) { b + a }", "(1,2)")
-        self.compareCudaToCPU("fun((a,b)) { b + a }", "(1s32,2s32)")
-        self.compareCudaToCPU("fun(b) { b + 1s32 }", "2")
-        self.compareCudaToCPU("math.log", "2")
+        self.compareCudaToCPU("fun((a,b)) { (b,a) }", "[(1,2)]")
+        self.compareCudaToCPU("fun((a,b)) { b + a }", "[(1,2)]")
+        self.compareCudaToCPU("fun((a,b)) { b + a }", "[(1s32,2s32)]")
+        self.compareCudaToCPU("fun(b) { b + 1s32 }", "[2]")
+        self.compareCudaToCPU("math.log", "[2]")
 
     def test_tuple_alignment(self):
-        self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "(1s32,2,2s32)")
-        self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "(1u32,2,2s32)")
-        self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "(1u16,2s32,2)")
-        self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "(10.0f32, 2.0, 2)")
+        self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "[(1s32,2,2s32)]")
+        self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "[(1u32,2,2s32)]")
+        self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "[(1u16,2s32,2)]")
+        self.compareCudaToCPU("fun((a,b,c)) { a+b+c }", "[(10.0f32, 2.0, 2)]")
         self.compareCudaToCPU(
                 "fun((a,b,c,d,e,f)) { a+b+c+d+e+f }",
-                "(2u16, 3s32, 4s64, 5.0f16, 6.0f32, 7.0f64)"
+                "[(2u16, 3s32, 4s64, 5.0f16, 6.0f32, 7.0f64)]"
                 )
 
     def test_return_or_throw(self):
@@ -61,8 +61,8 @@ class GpuFeatureTestCases:
                     throw "x <= 0"
             }
             """
-        self.checkCudaRaises(functionExpr, "0", "")
-        self.checkCudaRaises(functionExpr, "1", "")
+        self.checkCudaRaises(functionExpr, "[0]", "")
+        self.checkCudaRaises(functionExpr, "[1]", "")
 
     def test_throw(self):
         functionExpr = """
@@ -70,13 +70,12 @@ class GpuFeatureTestCases:
                 throw "x <= 0"
             }
             """
-        self.checkCudaRaises(functionExpr, "0", "")
-        self.checkCudaRaises(functionExpr, "1", "")
-
+        self.checkCudaRaises(functionExpr, "[0]", "")
+        self.checkCudaRaises(functionExpr, "[1]", "")
 
     def test_conversions(self):
         s_integers = ["2s16", "3s32", "4s64", "5"]
-        u_integers = ["2u16", "3u32", "4u64", "5"]
+        u_integers = ["2u16", "3u32", "4u64"]
         floats = ["2.2f32", "3.3f64", "4.4"]
 
         numbers = s_integers + u_integers + floats
@@ -85,8 +84,20 @@ class GpuFeatureTestCases:
                 for op in ["+", "-", "*" ]:    # TODO: add division, currently broken
                     self.compareCudaToCPU(
                             "fun((a,b)) { a " + op + " b }",
-                            "(" + n1 + ", " + n2 + ")"
+                            "[(" + n1 + ", " + n2 + ")]"
                             )
+
+    def test_two_return_types(self):
+        functionExpr = """
+            fun(x) {
+                let r = if (x < 5) 1.0*x
+                else 1 * x;
+                r
+            }
+            """
+        self.compareCudaToCPU(functionExpr, "[0]", "")
+        self.compareCudaToCPU(functionExpr, "[5]", "")
+        self.compareCudaToCPU(functionExpr, "[0, 5, 1, 6, 2, 7, 3, 8, 4, 9]", "")
 
     @unittest.skip
     def test_two_return_types_1(self):
@@ -98,20 +109,8 @@ class GpuFeatureTestCases:
                     return 1.0
             }
             """
-        self.compareCudaToCPU(functionExpr, "0", "")
-        self.compareCudaToCPU(functionExpr, "1", "")
-
-    @unittest.skip
-    def test_two_return_types_2(self):
-        functionExpr = """
-            fun(x) {
-                let r = if (x > 0) 1.0*x
-                else 1 * x;
-                r
-            }
-            """
-        self.compareCudaToCPU(functionExpr, "0", "")
-        self.compareCudaToCPU(functionExpr, "1", "")
+        self.compareCudaToCPU(functionExpr, "[0]", "")
+        self.compareCudaToCPU(functionExpr, "[1]", "")
 
     @unittest.skip
     def test_return_constant(self):
@@ -120,10 +119,10 @@ class GpuFeatureTestCases:
                 0
             }
             """
-        self.compareCudaToCPU(functionExpr, "0", "")
-        self.compareCudaToCPU(functionExpr, "1", "")
-        self.compareCudaToCPU(functionExpr, "11", "")
-        self.compareCudaToCPU(functionExpr, "101", "")
+        self.compareCudaToCPU(functionExpr, "[0]", "")
+        self.compareCudaToCPU(functionExpr, "[1]", "")
+        self.compareCudaToCPU(functionExpr, "[11]", "")
+        self.compareCudaToCPU(functionExpr, "[101]", "")
 
     @unittest.skip
     def test_division(self):
@@ -135,7 +134,7 @@ class GpuFeatureTestCases:
                     0
             }
             """
-        self.compareCudaToCPU(functionExpr, "0.0", "")
-        self.compareCudaToCPU(functionExpr, "1.0", "")
+        self.compareCudaToCPU(functionExpr, "[0.0]", "")
+        self.compareCudaToCPU(functionExpr, "[1.0]", "")
 
 

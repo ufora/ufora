@@ -13,7 +13,6 @@
 #   limitations under the License.
 
 import ufora.test.PerformanceTestReporter as PerformanceTestReporter
-import math
 
 class GpuMathTestCases:
 
