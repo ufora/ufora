@@ -13,13 +13,14 @@
 #   limitations under the License.
 import pyfora
 import pyfora.Exceptions as Exceptions
-import pyfora.pyAst.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
-import pyfora.RemotePythonObject as RemotePythonObject
 import pyfora.Future as Future
 import pyfora.NamedSingletons as NamedSingletons
-import pyfora.PyforaWithBlock as PyforaWithBlock
-import pyfora.PyforaInspect as PyforaInspect
+import pyfora.pyAst.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
 import pyfora.pyAst.PyAstUtil as PyAstUtil
+import pyfora.PyforaInspect as PyforaInspect
+import pyfora.PyforaWithBlock as PyforaWithBlock
+import pyfora.RemotePythonObject as RemotePythonObject
+
 from pyfora.TypeDescription import isPrimitive
 from pyfora.PyforaInspect import PyforaInspectError
 
@@ -66,12 +67,15 @@ def isClassInstance(pyObject):
     return hasattr(pyObject, "__class__")
 
 
-class _AClassWithAMethod:
+class _AClassWithAMethod(object):
     def f(self):
         pass
 
 
 instancemethod = type(_AClassWithAMethod().f)
+
+
+builtin_function_or_method = type(isinstance)
 
 
 class _Unconvertible(object):
@@ -207,7 +211,7 @@ class PyObjectWalker(object):
         elif isinstance(pyObject, Exception) and pyObject.__class__ in \
            NamedSingletons.pythonSingletonToName:
             self._registerBuiltinExceptionInstance(objectId, pyObject)
-        elif isinstance(pyObject, (type, type(isinstance))) and \
+        elif isinstance(pyObject, (type, builtin_function_or_method)) and \
            pyObject in NamedSingletons.pythonSingletonToName:
             self._registerNamedSingleton(
                 objectId,

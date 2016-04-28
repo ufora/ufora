@@ -281,10 +281,11 @@ class Executor(object):
     def _resolveFutureToComputedObject(self, future, jsonResult):
         self._resolve_future(
             future,
-            RemotePythonObject.ComputedRemotePythonObject(future._computedValue,
-                                                          self,
-                                                          'status' in jsonResult and jsonResult['status'] == "exception"
-                                                          )
+            RemotePythonObject.ComputedRemotePythonObject(
+                future._computedValue,
+                self,
+                'status' in jsonResult and jsonResult['status'] == "exception"
+                )
             )
 
 

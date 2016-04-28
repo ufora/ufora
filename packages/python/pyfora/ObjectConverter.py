@@ -21,12 +21,14 @@ class ObjectConverter(object):
         self.webObjectFactory = webObjectFactory
         self.remoteConverter = webObjectFactory.PyforaObjectConverter()
 
-        def onSuccess(x):
+        def onSuccess(_):
             pass
         def onFailure(x):
             logging.error("ObjectConverter failed to initialize: %s", x)
 
-        self.remoteConverter.initialize({'purePythonMDSAsJson': purePythonMDSAsJson}, {'onSuccess':onSuccess, 'onFailure':onFailure})
+        self.remoteConverter.initialize(
+            {'purePythonMDSAsJson': purePythonMDSAsJson},
+            {'onSuccess': onSuccess, 'onFailure': onFailure})
 
     def convert(self, objectId, objectRegistry, callback):
         dependencyGraph = objectRegistry.computeDependencyGraph(objectId)
@@ -39,7 +41,8 @@ class ObjectConverter(object):
             if 'isException' not in message:
                 callback(objectId)
             else:
-                callback(Exceptions.PythonToForaConversionError(str(message['message']), message['trace']))
+                callback(Exceptions.PythonToForaConversionError(
+                    str(message['message']), message['trace']))
 
         self.remoteConverter.convert(
             {
@@ -48,7 +51,8 @@ class ObjectConverter(object):
             },
             {
                 'onSuccess': onSuccess,
-                'onFailure': lambda err: callback(Exceptions.PythonToForaConversionError(err))
+                'onFailure': lambda err: callback(
+                    Exceptions.PythonToForaConversionError(err))
             })
 
 
