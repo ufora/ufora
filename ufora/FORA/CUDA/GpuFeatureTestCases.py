@@ -99,6 +99,55 @@ class GpuFeatureTestCases:
         self.compareCudaToCPU(functionExpr, "[5]", "")
         self.compareCudaToCPU(functionExpr, "[0, 5, 1, 6, 2, 7, 3, 8, 4, 9]", "")
 
+    def test_three_return_types(self):
+        functionExpr = """
+            fun(x) {
+                let r = if (x < 5) 1.0*x
+                else 1 * x;
+                if (x > 0) r
+                else (0, x)
+            }
+            """
+        self.compareCudaToCPU(functionExpr, "[0]", "")
+        self.compareCudaToCPU(functionExpr, "[5]", "")
+        self.compareCudaToCPU(functionExpr, "[0, 5, 1, 6, 2, 7, 3, 8, 4, 9]", "")
+
+    def test_too_many_return_types(self):
+        functionExpr = """
+            fun(x) {
+                let r = x;
+                for i in sequence (0, x) {
+                    r = (0, r)
+                    }
+                r
+            }
+            """
+        self.checkCudaRaises(functionExpr, "[5]", "")
+        self.checkCudaRaises(functionExpr, "[0, 5, 1, 6, 2, 7, 3, 8, 4, 9]", "")
+
+    @unittest.skip
+    def test_many_return_types(self):
+        functionExpr = """
+            fun(0) {(0)}
+               (1) {(0,1)}
+               (2) {(0,1,2)}
+               (3) {(0,1,2,3)}
+               (...) { (0,1,2,3,4)}
+            """
+        self.compareCudaToCPU(functionExpr, "[0]", "")
+        self.compareCudaToCPU(functionExpr, "[2]", "")
+        self.compareCudaToCPU(functionExpr, "[3]", "")
+        self.compareCudaToCPU(functionExpr, "[4]", "")
+        self.compareCudaToCPU(functionExpr, "[0, 5, 1, 6, 2, 7, 3, 8, 4, 9]", "")
+
+    @unittest.skip
+    def test_return_nothing(self):
+        functionExpr = """
+            fun(x) {()}
+            """
+        self.compareCudaToCPU(functionExpr, "[5]", "")
+        self.compareCudaToCPU(functionExpr, "[0, 5, 1, 6, 2, 7, 3, 8, 4, 9]", "")
+
     @unittest.skip
     def test_two_return_types_1(self):
         functionExpr = """
