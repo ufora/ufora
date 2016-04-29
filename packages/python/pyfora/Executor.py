@@ -187,14 +187,24 @@ class Executor(object):
                 "Converting UnresolvedFreeVariableExceptionWithTrace to PythonToForaConversionError:\n%s",
                 traceback.format_exc())
             raise Exceptions.PythonToForaConversionError(e.message, e.trace)
+
+        dependencyGraph = self.objectRegistry.computeDependencyGraph(objectId)
+
         future = self._create_future()
 
         def onConverted(result):
+            self.objectRegistry.onConverted(
+                objectId=objectId,
+                dependencyGraph=dependencyGraph)
             if not isinstance(result, Exception):
                 result = RemotePythonObject.DefinedRemotePythonObject(objectId, self)
             self._resolve_future(future, result)
 
-        self.connection.convertObject(objectId, self.objectRegistry, onConverted)
+        # basically just forwards to ObjectConverter.convert(
+        self.connection.convertObject(objectId,
+                                      dependencyGraph,
+                                      self.objectRegistry,
+                                      onConverted)
         return future
 
     def submit(self, fn, *args):

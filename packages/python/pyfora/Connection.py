@@ -144,11 +144,11 @@ class Connection(object):
             })
 
 
-    def convertObject(self, objectId, objectRegistry, callback):
+    def convertObject(self, objectId, depenencyGraph, objectRegistry, callback):
         def wrapper(*args, **kwargs):
             if not self.closed:
                 callback(*args, **kwargs)
-        self.objectConverter.convert(objectId, objectRegistry, wrapper)
+        self.objectConverter.convert(objectId, depenencyGraph, objectRegistry, wrapper)
 
 
     def createComputation(self, fn, args, onCreatedCallback):

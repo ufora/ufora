@@ -526,8 +526,9 @@ class NumpyTestCases(object):
         self.assertArraysAreAlmostEqual(r1, r2)
 
     def test_numpy_zeros_1(self):
+        x = numpy.zeros((10, 2))
         def f():
-            return numpy.zeros((10, 2))
+            return numpy.zeros((10, 2)) + x
 
         self.equivalentEvaluationTest(f)
 

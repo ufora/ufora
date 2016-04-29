@@ -12,16 +12,80 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+import pyfora.LongTermObjectRegistry as LongTermObjectRegistry
+import pyfora.LongTermObjectRegistryIncrement as LongTermObjectRegistryIncrement
 import pyfora.TypeDescription as TypeDescription
 import base64
 
+
+class PathWrapper(object):
+    def __init__(self, path):
+        self.path = path
+
+    def __hash__(self):
+        return hash(self.path)
+
+
+def isHashable(pyObject):
+    try:
+        hash(pyObject)
+        return True
+    except:
+        return False
+
+
 class ObjectRegistry(object):
-    def __init__(self):
+    def __init__(self, longTermObjectRegistry=None):
         self._nextObjectID = 0
-        self.objectIdToObjectDefinition = {}
+
+        # contains objects already defined on the server, which
+        # we assume don't change, like files and class definitions
+        if longTermObjectRegistry is None:
+            longTermObjectRegistry = \
+                LongTermObjectRegistry.LongTermObjectRegistry()
+        self.longTermObjectRegistry = longTermObjectRegistry
+
+        # essentially a dict { objectId: ObjectDefinition } of objects eventually
+        # to be merged into self.longTermObjectRegistry. gets merged on calls to 
+        # self.onConverted
+        self.longTermObjectRegistryIncrement = \
+            LongTermObjectRegistryIncrement.LongTermObjectRegistryIncrement()
+
+        # holds objects which are not in the longTermObjectRegistry
+        # gets (at least partially) purged on calls to self.onConverted()
+        self.shortTermObjectIdToObjectDefinition = {}
+
+    def onConverted(self, objectId, dependencyGraph):
+        self.longTermObjectRegistry.mergeIncrement(
+            self.longTermObjectRegistryIncrement)
+
+        # if objectId (or any of its dependencies) is short term, drop it.
+        # you might think that another object out there could depend
+        # on this dropped one, but we don't allow this.
+        # other objects can only depend on *new* object ids
+        # for the same short term python object (which means more than one walk 
+        # for a python object could happen)
+        for objId in dependencyGraph:
+            self.shortTermObjectIdToObjectDefinition.pop(objId, None)
+
+    def longTermObjectId(self, pyObject):
+        try:
+            if self.longTermObjectRegistry.hasObject(pyObject):
+                return self.longTermObjectRegistry.getObject(pyObject).objectId
+            elif self.longTermObjectRegistryIncrement.hasObject(pyObject):
+                return self.longTermObjectRegistryIncrement.getObject(pyObject).objectId
+        except TypeError: # unhashable type
+            return None
 
     def getDefinition(self, objectId):
-        return self.objectIdToObjectDefinition[objectId]
+        if self.longTermObjectRegistry.hasObjectId(objectId):
+            return self.longTermObjectRegistry\
+                       .getObjectDefinitionByObjectId(objectId)
+        elif self.longTermObjectRegistryIncrement.hasObjectId(objectId):
+            return self.longTermObjectRegistryIncrement\
+                       .getObjectDefinitionByObjectId(objectId)
+
+        return self.shortTermObjectIdToObjectDefinition[objectId]
 
     def allocateObject(self):
         "get a unique id for an object to be inserted later in the registry"
@@ -29,99 +93,181 @@ class ObjectRegistry(object):
         self._nextObjectID += 1
         return objectId
 
-    def definePrimitive(self, objectId, primitive):
+    def idForFileAndText(self, path, text):
+        pathWrapper = PathWrapper(path)
+
+        longTermObjectIdOrNone = self.longTermObjectId(pathWrapper)
+        if longTermObjectIdOrNone is not None:
+            return longTermObjectIdOrNone
+
+        objectId = self.allocateObject()
+        objectDefinition = TypeDescription.File(path, text)
+
+        self.longTermObjectRegistryIncrement.pushIncrementEntry(
+            pathWrapper, objectId, objectDefinition)
+
+        return objectId
+
+    def definePrimitive(self, objectId, primitive, isLongTerm):
         if isinstance(primitive, str):
             primitive = base64.b64encode(primitive)
-        self.objectIdToObjectDefinition[objectId] = primitive
 
-    def defineTuple(self, objectId, memberIds):
-        self.objectIdToObjectDefinition[objectId] = TypeDescription.Tuple(memberIds)
+        self._pushToLongOrShortTermStorage(
+            pyObject=primitive,
+            objectId=objectId,
+            objectDefinition=primitive,
+            isLongTerm=isLongTerm or isinstance(primitive, (type(None), bool))
+            )
+
+    def defineTuple(self, pyObject, objectId, memberIds, isLongTerm):
+        objectDefinition = TypeDescription.Tuple(memberIds)
+
+        self._pushToLongOrShortTermStorage(
+            pyObject=pyObject,
+            objectId=objectId,
+            objectDefinition=objectDefinition,
+            isLongTerm=isLongTerm
+            )
 
     def defineList(self, objectId, memberIds):
-        self.objectIdToObjectDefinition[objectId] = TypeDescription.List(memberIds)
-
-    def defineFile(self, objectId, text, path):
-        self.objectIdToObjectDefinition[objectId] = TypeDescription.File(path, text)
+        self.shortTermObjectIdToObjectDefinition[objectId] = \
+            TypeDescription.List(memberIds)
 
     def defineDict(self, objectId, keyIds, valueIds):
-        self.objectIdToObjectDefinition[objectId] = TypeDescription.Dict(keyIds=keyIds,
-                                                                         valueIds=valueIds)
+        self.shortTermObjectIdToObjectDefinition[objectId] = \
+            TypeDescription.Dict(keyIds=keyIds,
+                                 valueIds=valueIds)
 
-    def defineRemotePythonObject(self, objectId, computedValueArg):
-        self.objectIdToObjectDefinition[objectId] = \
-            TypeDescription.RemotePythonObject(computedValueArg)
+    def defineRemotePythonObject(self, objectId, computedValueArg, isLongTerm=False):
+        objectDefinition = TypeDescription.RemotePythonObject(computedValueArg)
 
-    def defineBuiltinExceptionInstance(self, objectId, typename, argsId):
-        self.objectIdToObjectDefinition[objectId] = \
-            TypeDescription.BuiltinExceptionInstance(typename, argsId)
+        self._pushToLongOrShortTermStorage(
+            pyObject=computedValueArg,
+            objectId=objectId,
+            objectDefinition=objectDefinition,
+            isLongTerm=isLongTerm
+            )
 
-    def defineNamedSingleton(self, objectId, singletonName):
-        self.objectIdToObjectDefinition[objectId] = TypeDescription.NamedSingleton(singletonName)
+    def defineBuiltinExceptionInstance(self,
+                                       objectId,
+                                       builtinExceptionInstance,
+                                       typename,
+                                       argsId,
+                                       isLongTerm):
+        objectDefinition = TypeDescription.BuiltinExceptionInstance(typename, argsId)
 
-    def defineFunction(self, objectId, sourceFileId, lineNumber, scopeIds):
+        self._pushToLongOrShortTermStorage(
+            pyObject=builtinExceptionInstance,
+            objectId=objectId,
+            objectDefinition=objectDefinition,
+            isLongTerm=isLongTerm
+            )
+
+    def defineNamedSingleton(self, objectId, singletonName, pyObject, isLongTerm):
+        objectDefinition = TypeDescription.NamedSingleton(singletonName)
+
+        self._pushToLongOrShortTermStorage(
+            pyObject=pyObject,
+            objectId=objectId,
+            objectDefinition=objectDefinition,
+            isLongTerm=isLongTerm
+            )
+
+    def defineFunction(self,
+                       function,
+                       objectId,
+                       sourceFileId,
+                       lineNumber,
+                       scopeIds,
+                       isLongTerm):
         """
         scopeIds: a dict freeVariableMemberAccessChain -> id
         """
-        freeVariableMemberAccessChainsToId = \
-            self._processFreeVariableMemberAccessChainResolution(scopeIds)
-
-        self.objectIdToObjectDefinition[objectId] = TypeDescription.FunctionDefinition(
+        objectDefinition = TypeDescription.FunctionDefinition(
             sourceFileId=sourceFileId,
             lineNumber=lineNumber,
-            freeVariableMemberAccessChainsToId=freeVariableMemberAccessChainsToId
+            freeVariableMemberAccessChainsToId=scopeIds
             )
 
-    def defineClass(self, objectId, sourceFileId, lineNumber, scopeIds, baseClassIds):
+        self._pushToLongOrShortTermStorage(
+            pyObject=function,
+            objectId=objectId,
+            objectDefinition=objectDefinition,
+            isLongTerm=isLongTerm
+            )
+
+    def defineClass(self,
+                    cls,
+                    objectId,
+                    sourceFileId,
+                    lineNumber,
+                    scopeIds,
+                    baseClassIds,
+                    isLongTerm):
         """
         scopeIds: a dict freeVariableMemberAccessChain -> id
         baseClassIds: a list of ids representing (immediate) base classes
         """
-        freeVariableMemberAccessChainsToId = \
-            self._processFreeVariableMemberAccessChainResolution(
-                scopeIds
-                )
+        objectDefinition = TypeDescription.ClassDefinition(
+            sourceFileId=sourceFileId,
+            lineNumber=lineNumber,
+            freeVariableMemberAccessChainsToId=scopeIds,
+            baseClassIds=baseClassIds
+            )
 
-        self.objectIdToObjectDefinition[objectId] = \
-            TypeDescription.ClassDefinition(
-                sourceFileId=sourceFileId,
-                lineNumber=lineNumber,
-                freeVariableMemberAccessChainsToId=freeVariableMemberAccessChainsToId,
-                baseClassIds=baseClassIds
-                )
+        self._pushToLongOrShortTermStorage(
+            pyObject=cls,
+            objectId=objectId,
+            objectDefinition=objectDefinition,
+            isLongTerm=isLongTerm
+            )
 
     def defineUnconvertible(self, objectId):
-        self.objectIdToObjectDefinition[objectId] = \
+        self.shortTermObjectIdToObjectDefinition[objectId] = \
             TypeDescription.Unconvertible()
 
-    def _processFreeVariableMemberAccessChainResolution(
-            self,
-            freeVariableMemberAccessChainsToId
-            ):
-        return {
-            chainAsString: resolutionId
-            for chainAsString, resolutionId in freeVariableMemberAccessChainsToId.iteritems()
-            }
+    def defineClassInstance(self,
+                            pyObject,
+                            objectId,
+                            classId,
+                            classMemberNameToClassMemberId,
+                            isLongTerm):
+        objectDefinition = TypeDescription.ClassInstanceDescription(
+            classId=classId,
+            classMemberNameToClassMemberId=classMemberNameToClassMemberId
+            )
 
-    def defineClassInstance(self, objectId, classId, classMemberNameToClassMemberId):
-        self.objectIdToObjectDefinition[objectId] = \
-            TypeDescription.ClassInstanceDescription(
-                classId=classId,
-                classMemberNameToClassMemberId=classMemberNameToClassMemberId
-                )
+        self._pushToLongOrShortTermStorage(
+            pyObject=pyObject,
+            objectId=objectId,
+            objectDefinition=objectDefinition,
+            isLongTerm=isLongTerm and isHashable(pyObject)
+            )
 
-    def defineInstanceMethod(self, objectId, instanceId, methodName):
-        self.objectIdToObjectDefinition[objectId] = \
-            TypeDescription.InstanceMethod(
-                instanceId=instanceId,
-                methodName=methodName
-                )
+    def defineInstanceMethod(self,
+                             pyObject,
+                             objectId,
+                             instanceId,
+                             methodName,
+                             isLongTerm):
+        objectDefinition = TypeDescription.InstanceMethod(
+            instanceId=instanceId,
+            methodName=methodName
+            )
+        
+        self._pushToLongOrShortTermStorage(
+            pyObject=pyObject,
+            objectId=objectId,
+            objectDefinition=objectDefinition,
+            isLongTerm=isLongTerm and isHashable(pyObject)
+            )
 
     def defineWithBlock(self,
                         objectId,
                         freeVariableMemberAccessChainsToId,
                         sourceFileId,
                         lineNumber):
-        self.objectIdToObjectDefinition[objectId] = \
+        self.shortTermObjectIdToObjectDefinition[objectId] = \
             TypeDescription.WithBlockDescription(
                 freeVariableMemberAccessChainsToId,
                 sourceFileId,
@@ -133,6 +279,21 @@ class ObjectRegistry(object):
         self._populateGraphOfIds(graphOfIds, objectId)
         return graphOfIds
 
+    def _pushToLongOrShortTermStorage(self,
+                                      pyObject,
+                                      objectId,
+                                      objectDefinition,
+                                      isLongTerm):
+        if isLongTerm:
+            self.longTermObjectRegistryIncrement.pushIncrementEntry(
+                pyObject,
+                objectId,
+                objectDefinition
+                )
+        else:
+            self.shortTermObjectIdToObjectDefinition[objectId] = \
+                objectDefinition                
+
     def _populateGraphOfIds(self, graphOfIds, objectId):
         dependentIds = self._computeDependentIds(objectId)
         graphOfIds[objectId] = dependentIds
@@ -142,7 +303,7 @@ class ObjectRegistry(object):
                 self._populateGraphOfIds(graphOfIds, objectId)
 
     def _computeDependentIds(self, objectId):
-        objectDefinition = self.objectIdToObjectDefinition[objectId]
+        objectDefinition = self.getDefinition(objectId)
 
         if TypeDescription.isPrimitive(objectDefinition) or \
                 isinstance(objectDefinition,

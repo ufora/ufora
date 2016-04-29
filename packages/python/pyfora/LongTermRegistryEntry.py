@@ -13,5 +13,7 @@
 #   limitations under the License.
 
 
-class PyforaConversionContext(object):
-    pass
+class LongTermRegistryEntry(object):
+    def __init__(self, contents, objectId):
+        self.contents = contents
+        self.objectId = objectId

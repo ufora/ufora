@@ -28,7 +28,7 @@ def typeOfInstance(i):
 
 class PureImplementationMappings(object):
     """Collection of PureImplementationMapping objects"""
-    def __init__(self):
+    def __init__(self, objectRegistry=None):
         self.last_seen_sys_modules_len = 0
         self.already_loaded = set()
         self.mappings = []
@@ -45,12 +45,16 @@ class PureImplementationMappings(object):
         for instance in mapping.getMappableInstances():
             self.pythonInstanceIdsToMappingAndId[id(instance)] = (mapping, instance)
 
+
     def canMap(self, instance):
         self.load_pure_modules()
-        return (
-            typeOfInstance(instance) in self.pythonTypeToMapping or
-            id(instance) in self.pythonInstanceIdsToMappingAndId
-            )
+        return self.isMappableType(instance) or self.isMappableInstance(instance)
+
+    def isMappableType(self, instance):
+        return typeOfInstance(instance) in self.pythonTypeToMapping
+
+    def isMappableInstance(self, instance):
+        return id(instance) in self.pythonInstanceIdsToMappingAndId
 
     def canInvert(self, instance):
         return typeOfInstance(instance) in self.pyforaTypeToMapping

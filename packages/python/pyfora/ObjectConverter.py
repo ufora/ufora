@@ -30,8 +30,7 @@ class ObjectConverter(object):
             {'purePythonMDSAsJson': purePythonMDSAsJson},
             {'onSuccess': onSuccess, 'onFailure': onFailure})
 
-    def convert(self, objectId, objectRegistry, callback):
-        dependencyGraph = objectRegistry.computeDependencyGraph(objectId)
+    def convert(self, objectId, dependencyGraph, objectRegistry, callback):
         objectIdToObjectDefinition = {
             objId: TypeDescription.serialize(objectRegistry.getDefinition(objId))
             for objId in dependencyGraph.iterkeys()

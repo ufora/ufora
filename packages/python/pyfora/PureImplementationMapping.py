@@ -88,6 +88,7 @@ class InstanceMapping(PureImplementationMapping):
     def __init__(self, instance, pureClass):
         self.instance = instance
         self.pureClass = pureClass
+        self.pureInstance = pureClass()
 
     def getMappablePythonTypes(self):
         return []
@@ -104,7 +105,8 @@ class InstanceMapping(PureImplementationMapping):
             raise Exceptions.PyforaNotImplementedError(
                 "conversion of '%s' not yet implemented" %
                 (instance.__name__ if hasattr(instance, "__name__") else instance))
-        return self.pureClass()
+
+        return self.pureInstance
 
     def mapPyforaInstanceToPythonInstance(self, instance):
         assert instance.__class__ is self.pureClass

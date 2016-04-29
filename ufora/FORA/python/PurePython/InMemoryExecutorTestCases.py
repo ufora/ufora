@@ -210,13 +210,40 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
         def add(x, y):
             return x+y
 
-        with fora:
-            t0 = time.time()
-            ct = 0
-            while ct < 100:
-                fora.submit(add, 1, 2).result().toLocal().result()
-                ct += 1
+        t0 = time.time()
+        ct = 0
+        while ct < 100:
+            fora.submit(add, 1, 2).result().toLocal().result()
+            ct += 1
         self.assertTrue(time.time() - t0 < 4.0)
+
+    def test_repeated_evaluation_1(self):
+        with self.create_executor() as executor:
+            def add(x, y):
+                return x + y
+
+            res = executor.submit(add, 1, 2).result().toLocal().result()
+            res = executor.submit(add, 1, 2).result().toLocal().result()
+
+            self.assertEqual(res, add(1,2))
+        
+    def test_repeated_evaluation_2(self):
+        with self.create_executor() as executor:
+            def f(arg, func1, func2):
+                return func1(func2(arg))
+
+            def h(x):
+                return x + 1
+            def g(x):
+                return h(x)
+
+            y = 1
+
+            res = executor.submit(f, y, h, g).result().toLocal().result()
+            res = executor.submit(f, y, h, g).result().toLocal().result()
+            res = executor.submit(f, y, h, g).result().toLocal().result()
+            
+            self.assertEqual(res, f(y, h, g))
 
     def test_slicing_operations_1(self):
         a = "testing"
