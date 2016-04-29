@@ -67,13 +67,19 @@ class EffectiveParallelismTest(unittest.TestCase):
         totalTime = stats.timeSpentInInterpreter + stats.timeSpentInCompiler
         effParallelism = totalTime / timeElapsed
 
-        self.assertTrue(effParallelism > 2.5, effParallelism)
-
         PerformanceTestReporter.recordTest(
-            "python.cumulus.EffectiveParallelismTest",
+            "python.cumulus.EffectiveParallelism.elapsed",
             timeElapsed,
             None
             )
+
+        PerformanceTestReporter.recordTest(
+            "python.cumulus.EffectiveParallelism.effectiveCores",
+            effParallelism,
+            {},
+            units='count'
+            )
+
 
 
 if __name__ == "__main__":
