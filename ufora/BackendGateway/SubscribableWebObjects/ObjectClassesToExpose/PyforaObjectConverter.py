@@ -25,14 +25,13 @@ import ufora.FORA.python.ModuleDirectoryStructure as ModuleDirectoryStructure
 #the PyforaObjectConverter is a singleton
 objectIdToIvc_ = {}
 converter_ = [None]
-objectRegistry_ = [None]
+
 
 class PyforaObjectConverter(ComputedGraph.Location):
     @ComputedGraph.ExposedFunction(expandArgs=True)
     def initialize(self, purePythonMDSAsJson):
         """Initialize the converter assuming a set of pyfora builtins"""
         try:
-            import pyfora.ObjectRegistry as ObjectRegistry
             import ufora.FORA.python.PurePython.Converter as Converter
             import ufora.FORA.python.PurePython.PyforaSingletonAndExceptionConverter as PyforaSingletonAndExceptionConverter
             import ufora.native.FORA as ForaNative
@@ -40,8 +39,6 @@ class PyforaObjectConverter(ComputedGraph.Location):
 
 
             logging.info("Initializing the PyforaObjectConverter")
-
-            objectRegistry_[0] = ObjectRegistry.ObjectRegistry()
 
             if purePythonMDSAsJson is None:
                 converter_[0] = Converter.Converter()
@@ -118,7 +115,7 @@ class PyforaObjectConverter(ComputedGraph.Location):
         return converter_[0].unwrapPyforaTupleToTuple(tupleIVC)
 
     @ComputedGraph.ExposedFunction(expandArgs=True)
-    def convert(self, objectId, objectIdToObjectDefinition):
+    def convert(self, objectId, dependencyGraph, objectIdToObjectDefinition):
         import pyfora.TypeDescription as TypeDescription
         import pyfora.Exceptions as PyforaExceptions
 
@@ -128,17 +125,25 @@ class PyforaObjectConverter(ComputedGraph.Location):
 
         t0 = time.time()
 
-        objectRegistry_[0].objectIdToObjectDefinition.update({
+        dependencyGraph = {
+            int(k): [int(val) for val in v]
+            for k, v in dependencyGraph.iteritems()
+            }
+
+        objectIdToObjectDefinition = {
             int(k): TypeDescription.deserialize(v)
             for k, v in objectIdToObjectDefinition.iteritems()
-            })
+            }
 
-        logging.info("Updated object registry in %s seconds.", time.time() - t0)
         t0 = time.time()
 
         try:
-            converter_[0].convert(objectId, objectRegistry_[0], onConverted)
-        except Exception as e:
+            converter_[0].convert(
+                objectId=objectId,
+                dependencyGraph=dependencyGraph,
+                objectIdToObjectDefinition=objectIdToObjectDefinition,
+                callback=onConverted)
+        except:
             logging.error("Converter raised an exception: %s", traceback.format_exc())
             raise Exceptions.InternalError("Unable to convert objectId %s" % objectId)
 

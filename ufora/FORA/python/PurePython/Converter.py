@@ -118,14 +118,11 @@ class Converter(object):
 
         return value.getObjectLexicalMember("@m")[0].pyval
 
-    def convert(self, objectId, objectRegistry, callback):
+    def convert(self, objectId, dependencyGraph, objectIdToObjectDefinition, callback):
         try:
-            dependencyGraph = objectRegistry.computeDependencyGraph(objectId)
-            objectIdToObjectDefinition = {
-                objId: objectRegistry.getDefinition(objId)
-                for objId in dependencyGraph.iterkeys()
-                }
-            convertedValue = self._convert(objectId, dependencyGraph, objectIdToObjectDefinition)
+            convertedValue = self._convert(objectId,
+                                           dependencyGraph,
+                                           objectIdToObjectDefinition)
             self.convertedValues[objectId] = convertedValue
             callback(convertedValue)
         except pyfora.PythonToForaConversionError as e:

@@ -47,6 +47,7 @@ class ObjectConverter(object):
         self.remoteConverter.convert(
             {
                 'objectId': objectId,
+                'dependencyGraph': dependencyGraph,
                 'objectIdToObjectDefinition': objectIdToObjectDefinition
             },
             {
