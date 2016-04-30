@@ -25,6 +25,7 @@ callbackScheduler = CallbackScheduler.singletonForTesting()
 TIMEOUT=120
 
 class DistributedDataTasksTests(unittest.TestCase):
+    @PerformanceTestReporter.PerfTest("python.datatasks.heterogeneous")
     def test_sortHeterogeneous(self):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
 
@@ -96,9 +97,11 @@ class DistributedDataTasksTests(unittest.TestCase):
     def test_basicTaskPathwaySmall(self):
         self.basicTaskPathwayTest(100)
 
+    @PerformanceTestReporter.PerfTest("python.datatasks.singlebox_80mb")
     def test_basicTaskPathwayBig(self):
         self.basicTaskPathwayTest(10000000)
 
+    @PerformanceTestReporter.PerfTest("python.datatasks.multibox_80mb")
     def test_basicTaskPathwayMultibox(self):
         self.basicTaskPathwayTest(10000000, 4, 250)
 
@@ -134,9 +137,11 @@ class DistributedDataTasksTests(unittest.TestCase):
         self.assertTrue(result.isResult(), result)
         self.assertTrue(result.asResult.result.pyval == True, result)
 
+    @PerformanceTestReporter.PerfTest("python.datatasks.weird_string_sort_1")
     def test_weirdStringSort_1(self):
         self.weirdStringSort(10000, 1, 1000)
 
+    @PerformanceTestReporter.PerfTest("python.datatasks.weird_string_sort_2")
     def test_weirdStringSort_2(self):
         self.weirdStringSort(10000, 4, 250)
 
