@@ -1046,7 +1046,7 @@ class CheckpointingTest(unittest.TestCase):
         for ix in range(len(comps)-1):
             self.assertTrue(comps[ix+1] > comps[ix])
 
-    def loadCheckpointFromFreshSimulationTest(self, calculationText, timestampsPerPassList, clientCount=1, timestep = .5):
+    def loadCheckpointFromFreshSimulationTest(self, calculationText, timestampsPerPassList, clientCount=1, timestep = 1.0):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
 
         statuses = []
