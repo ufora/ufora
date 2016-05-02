@@ -1,0 +1,116 @@
+#include "ConvertForGPUExecution.hppml"
+#include "../NativeCode.hppml"
+#include "../../../core/cppml/CPPMLTransform.hppml"
+
+namespace NativeCFGTransforms {
+
+class IncrementReturnIndexTransformer {
+public:
+	IncrementReturnIndexTransformer(uword_t maxIdx) : mMaxIdx(maxIdx) {}
+
+	template<class T>
+	Nullable<T> processDown(const T& in, bool& out) const
+		{
+		return null();
+		}
+	template<class T>
+	Nullable<T> processUp(const T& in) const
+		{
+		return null();
+		}
+
+	NativeExpression	processDown(const NativeExpression& t, bool& cont) const
+		{
+		@match NativeExpression(t)
+			-|	Return(idx, val) ->> {
+				if (idx < mMaxIdx)
+					return NativeExpression::Return(idx+1, val);
+				else
+					return NativeExpression::Return(0, val);
+				}
+			-|	_ ->> {
+				return t;
+				}
+			;
+		}
+private:
+	uword_t mMaxIdx;
+};
+
+class StripIncompatibleForGpuTransformer {
+public:
+	template<class T>
+	Nullable<T> processDown(const T& in, bool& out) const
+		{
+		return null();
+		}
+	template<class T>
+	Nullable<T> processUp(const T& in) const
+		{
+		return null();
+		}
+
+	NativeExpression	processUp(const NativeExpression& t) const
+		{
+		@match NativeExpression(t)
+			-|	Let(v, exp, within) ->> {
+				if (exp.type())
+					return t;
+				else
+					return NativeExpression::Return(0, NativeConstant::Nothing().expr());
+				}
+			-|	_ ->> {
+				return t;
+				}
+			;
+		}
+
+	NativeExpression	processDown(const NativeExpression& t, bool& cont) const
+		{
+		@match NativeExpression(t)
+			-|	Alloc(_) ->> {
+				return mUnsupported;
+				}
+			-|	Selector(_) ->> {
+				return mUnsupported;
+				}
+			-|	ElementAddress(_) ->> {
+				return mUnsupported;
+				}
+			-|	CallLibraryFunction(_) ->> {
+				return mUnsupported;
+				}
+			-|	Continuations(_) ->> {
+				return mUnsupported;
+				}
+			-|	FollowContinuation(_) ->> {
+				return mUnsupported;
+				}
+			-|	Halt()	->> {
+				return mUnsupported;
+				}
+			-|	_ ->> {
+				return t;
+				}
+			;
+		}
+
+	StripIncompatibleForGpuTransformer()
+		{
+		mUnsupported = NativeExpression::Return(0, NativeConstant::Nothing().expr());
+		}
+private:
+	NativeExpression mUnsupported;
+};
+
+NativeCFG convertForGpuExecution(const NativeCFG& in, unsigned int resultPartSize)
+	{
+	NativeCFG cfg(in);
+	cfg.returnTypes() =
+			emptyTreeVec() + NativeType::Nothing() +
+			cfg.returnTypes().slice(0, resultPartSize);
+	cfg = transform(cfg, IncrementReturnIndexTransformer(resultPartSize));
+	return transform(cfg, StripIncompatibleForGpuTransformer());
+	} ///
+
+}

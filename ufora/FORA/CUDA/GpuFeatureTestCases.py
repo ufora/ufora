@@ -61,8 +61,8 @@ class GpuFeatureTestCases:
                     throw "x <= 0"
             }
             """
+        self.compareCudaToCPU(functionExpr, "[1]", "")
         self.checkCudaRaises(functionExpr, "[0]", "")
-        self.checkCudaRaises(functionExpr, "[1]", "")
 
     def test_throw(self):
         functionExpr = """
@@ -173,17 +173,15 @@ class GpuFeatureTestCases:
         self.compareCudaToCPU(functionExpr, "[11]", "")
         self.compareCudaToCPU(functionExpr, "[101]", "")
 
-    @unittest.skip
     def test_division(self):
         functionExpr = """
             fun(x) {
                 if (x > 0.0)
                     1.0 / x
                 else
-                    0
+                    0 * x
             }
             """
+        self.compareCudaToCPU(functionExpr, "[0.0, 1.0, 2.0]", "")
         self.compareCudaToCPU(functionExpr, "[0.0]", "")
         self.compareCudaToCPU(functionExpr, "[1.0]", "")
-
-

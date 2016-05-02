@@ -271,9 +271,17 @@ private:
 
 	void buildResult(const NativeCFG& inCFG, string inEntryFunctionName)
 		{
+		bool mayThrowException = false;
 		auto returnTypesCount = inCFG.returnTypes().size();
-		bool hasMultipleReturnTypes = returnTypesCount > 1 ? true : false;
-
+		uword_t firstReturnTypeIdx = 0;
+		if (inCFG.returnTypes()[0] == NativeType::Nothing())
+			{
+			firstReturnTypeIdx++;
+			returnTypesCount--;
+			mayThrowException = true;
+			}
+		bool hasReturnIndex = (mayThrowException || returnTypesCount > 1) ? true : false;
+		LOG_DEBUG << "hasReturnIndex = " << hasReturnIndex;
 		// at least one and at most two of the inputs should be not "Nothing",
 		// the first is the input data
 		Nullable<uint32_t> inputIndex, closureIndex;
@@ -336,11 +344,19 @@ private:
 				args = args + inCFG[NativeBlockID::entry()].args()[k].expr();
 			}
 
-		ImmutableTreeVector<NativeContinuation> conts = emptyTreeVec();
+		ImmutableTreeVector<NativeContinuation> conts =	emptyTreeVec();
+		if (mayThrowException)
+			{
+			conts = conts +
+					NativeContinuation(
+							NativeVariable::Temp(inCFG.returnTypes()[0]),
+							NativeExpression::Return(0, NativeConstant::Nothing().expr()));
+			}
 		ImmutableTreeVector<NativeVariable> outputPointers = emptyTreeVec();
 		long idx = 0;
-		for (auto& outputType : inCFG.returnTypes())
+		for (long k = firstReturnTypeIdx; k < firstReturnTypeIdx+returnTypesCount; ++k)
 			{
+			auto& outputType = inCFG.returnTypes()[k];
 			LOG_DEBUG << "outputType = " << prettyPrintString(outputType);
 			NativeVariable outputVar = NativeVariable::Temp(outputType);
 			NativeVariable outputPtr = NativeVariable::Temp(outputType.ptr());
@@ -354,7 +370,7 @@ private:
 									),
 							outputVar.expr()
 							);
-			if (hasMultipleReturnTypes)
+			if (hasReturnIndex)
 				{
 				NativeExpression storeIdxExpr =
 						NativeExpression::Store(
@@ -399,7 +415,8 @@ private:
 				NativeExpression::Return(0, NativeConstant::Nothing().expr())
 			);
 
-		auto wrappedCFGArgs = inCFG[NativeBlockID::entry()].args() + offsetVar + inputPtr + outputPointers;
+		auto wrappedCFGArgs = inCFG[NativeBlockID::entry()].args()
+							+ offsetVar + inputPtr + outputPointers;
 		if (closureIndex)
 			{
 			nexp =
@@ -410,7 +427,7 @@ private:
 						);
 			wrappedCFGArgs = wrappedCFGArgs + closurePtr;
 			}
-		if (hasMultipleReturnTypes)
+		if (hasReturnIndex)
 			wrappedCFGArgs = wrappedCFGArgs + indexPtr;
 
 		NativeCFG wrappedCFG =
@@ -428,7 +445,7 @@ private:
 									emptyTreeVec() + terminalContinuation
 									);
 
-
+		LOG_DEBUG << "computed body in PTX";
 		std::vector<std::string>  paramOutputPtrNames(returnTypesCount);
 		std::vector<std::string>  regOutputPtrNames(returnTypesCount);
 		for (long k=0; k < returnTypesCount; ++k)
@@ -438,7 +455,7 @@ private:
 			regOutputPtrNames[k] = s1.str();
 
 			std::ostringstream s2;
-			s2 << "paramOutputPtr" << k;
+			s2 << "paramOutputPtr_" << k;
 			paramOutputPtrNames[k] = s2.str();
 			}
 
@@ -456,7 +473,7 @@ private:
 		result
 					<<	"\t\t.param .u32 N,\n"
 					<<	"\t\t.param .u64 inputPtr,\n";
-		if (hasMultipleReturnTypes)
+		if (hasReturnIndex)
 			result	<<	"\t\t.param .u64 indexPtr,\n";
 		for (long k=0; k < returnTypesCount - 1; ++k)
 			result	<<	"\t\t.param .u64 " << paramOutputPtrNames[k] << ",\n";
@@ -466,7 +483,7 @@ private:
 		result << mRegisters.registerAllocationString();
 		if (closureIndex)
 			result 	<< 	".reg		.u64		reg_closurePtr;\n";
-		if (hasMultipleReturnTypes)
+		if (hasReturnIndex)
 			result	<<	".reg		.u64		reg_indexPtr;\n";
 		result
 				<<	".reg		.u32		reg_N;\n"
@@ -479,6 +496,7 @@ private:
 				<<	".reg		.u32		i_temp;\n"
 				<<	".reg		.u64		i64;\n";
 
+		// TODO: replace with ".reg .u64 regOutputPtrNamesPrefix<returnTypesCount>;\n"
 		for (long k=0; k < returnTypesCount; ++k)
 			result <<	".reg		.u64		" << regOutputPtrNames[k] <<";\n";
 
@@ -489,7 +507,7 @@ private:
 				;
 		if (closureIndex)
 			result << "ld.param.u64		reg_closurePtr, [closurePtr];\n";
-		if (hasMultipleReturnTypes)
+		if (hasReturnIndex)
 			result	<<	"ld.param.u64	reg_indexPtr, [indexPtr];\n";
 		result
 				<<	"ld.param.u32		reg_N, [N];\n"
@@ -520,9 +538,9 @@ private:
 				body.second.inputRegisters()[argOffset++],
 				result
 				);
-		for (long k=0; k < returnTypesCount; ++k)
+		for (long k=firstReturnTypeIdx; k < firstReturnTypeIdx+returnTypesCount; ++k)
 			copyFromPTXToPTX(
-					PTXValueRepresentation::Atom(inCFG.returnTypes()[k].ptr(), "u64", regOutputPtrNames[k]),
+					PTXValueRepresentation::Atom(inCFG.returnTypes()[k].ptr(), "u64", regOutputPtrNames[k-firstReturnTypeIdx]),
 					body.second.inputRegisters()[argOffset++],
 					result
 					);
@@ -534,7 +552,7 @@ private:
 					result
 					);
 			}
-		if (hasMultipleReturnTypes)
+		if (hasReturnIndex)
 			{
 			copyFromPTXToPTX(
 					PTXValueRepresentation::Atom(indexType, "u8", "reg_indexPtr"),
