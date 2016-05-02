@@ -17,6 +17,8 @@ MAINTAINER Ronen Hilewicz <ronen@ufora.com>
 # This image is used to run Ufora services on Ubuntu 14.04
 #
 COPY lib /opt/ufora
+COPY logrotate /etc/logrotate.d/ufora
+RUN mv /etc/cron.daily/logrotate /etc/cron.hourly/
 
 RUN pip install -e /opt/ufora/packages/python
 RUN mkdir /var/ufora

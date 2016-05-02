@@ -99,7 +99,7 @@ if [ $? -ne 0 ]; then
 fi
 cp $REPO_ROOT/LICENSE $DEST_DIR
 rsync -a $REPO_ROOT/licenses/ $DEST_DIR/licenses
-cp $REPO_ROOT/docker/service/Dockerfile $DEST_DIR
+cp $REPO_ROOT/docker/service/* $DEST_DIR
 
 cd $d
 tar cfz $TARGET ufora-${version}
