@@ -23,6 +23,8 @@
 #include <boost/thread.hpp>
 #include "../../core/lassert.hpp"
 
+#include "../../core/threading/Trigger.hppml"
+
 //A simple malloc wrapper for the free store.
 class TrackingFreeStoreMallocPool : public MemoryPool {
 public:
