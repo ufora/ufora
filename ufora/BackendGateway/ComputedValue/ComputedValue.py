@@ -482,6 +482,11 @@ class ComputedValue(ComputedGraph.Location):
                     ((" (%s cpus)" % self.totalWorkerCount) if self.totalWorkerCount > 0 else ""),
                 "units" : ""
                 },
+            "cpus": {
+                "title" : "Total CPUs",
+                "value" : self.totalWorkerCount,
+                "units" : ""
+                },
             "timeSpentInCompiler": {
                 "title" : "Time in compiled code (across all cores)",
                 "value" : stats.timeSpentInCompiler,

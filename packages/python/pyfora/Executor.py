@@ -267,7 +267,7 @@ class Executor(object):
 
 
     def _create_future(self, onCancel=None):
-        future = Future.Future(onCancel)
+        future = Future.Future(onCancel=onCancel)
         return future
 
 
@@ -281,7 +281,7 @@ class Executor(object):
     def _resolveFutureToComputedObject(self, future, jsonResult):
         self._resolve_future(
             future,
-            RemotePythonObject.ComputedRemotePythonObject(future._executorState,
+            RemotePythonObject.ComputedRemotePythonObject(future._computedValue,
                                                           self,
                                                           'status' in jsonResult and jsonResult['status'] == "exception"
                                                           )
@@ -412,14 +412,15 @@ class Executor(object):
                 self._resolve_future(future, result)
                 return
             computation = result
-            future.setExecutorState(computation)
+            
+            future.setComputedValue(computation)
             self._prioritizeComputation(future)
 
         self.connection.createComputation(fnHandle, argHandles, onComputationCreated)
         return future
 
     def _prioritizeComputation(self, future):
-        computation = future._executorState
+        computation = future._computedValue
         def onPrioritized(result):
             if isinstance(result, Exception):
                 self._resolve_future(future, result)

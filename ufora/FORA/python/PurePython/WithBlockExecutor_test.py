@@ -440,6 +440,17 @@ class WithBlockExecutors_test(unittest.TestCase):
             self.assertEqual(res4.toLocal().result(), False)
             self.assertEqual(res3.toLocal().result(), True, type_.toLocal().result())
 
+    def test_with_block_executor_corecounts(self):
+        maxCores = [0]
+        def setMaxCores(cores):
+            maxCores[0] = max(maxCores[0], cores)
+
+        with self.create_executor() as fora:
+            with fora.remotely.withStatusCallback(setMaxCores):
+                res = sum(float(x) for x in xrange(10000000000))
+
+            self.assertTrue(maxCores[0] > 1)
+
 if __name__ == "__main__":
     import ufora.config.Mainline as Mainline
     Mainline.UnitTestMainline([])
