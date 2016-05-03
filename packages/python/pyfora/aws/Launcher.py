@@ -341,15 +341,16 @@ class Launcher(object):
                                           user_data,
                                           spot_request_bid_price,
                                           callback=callback)
-        assert len(instances) == 1
+        instance = None
+        if instances:
+            self.wait_for_instances(instances, timeout=300, callback=callback)
 
-        self.wait_for_instances(instances, timeout=300, callback=callback)
+            instance = instances[0]
+            if instance.state == 'running':
+                self.tag_instance(instance, "pyfora manager")
+            else:
+                raise Exception("Instance failed to start: " + instance.id)
 
-        instance = instances[0]
-        if instance.state == 'running':
-            self.tag_instance(instance, "pyfora manager")
-        else:
-            raise Exception("Instance failed to start: " + instance.id)
         return instance
 
 
@@ -424,7 +425,10 @@ class Launcher(object):
         reservations = self.ec2.get_all_reservations(filters=filters)
         instances = {i.id: i for r in reservations for i in r.instances}
 
-        spot_requests = self.ec2.get_all_spot_instance_requests(filters=filters)
+        spot_requests = [
+            r for r in self.ec2.get_all_spot_instance_requests(filters=filters)
+            if r.state != 'cancelled'
+            ]
         spot_instance_ids = [r.instance_id for r in spot_requests
                              if r.instance_id and r.instance_id not in instances]
         unfulfilled_spot_requests = [r for r in spot_requests if not r.instance_id]
@@ -472,7 +476,7 @@ class Launcher(object):
             'block_device_map': bdm
             }
         if spot_request_bid_price:
-            ts = timestamp()
+            ts = timestamp() if count > 1 else None
             spot_requests = self.ec2.request_spot_instances(
                 price=spot_request_bid_price,
                 count=count,

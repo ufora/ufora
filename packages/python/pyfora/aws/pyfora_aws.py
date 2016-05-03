@@ -193,6 +193,10 @@ def start_instances(args):
     manager = launcher.launch_manager(ssh_keyname,
                                       args.spot_price,
                                       callback=status_printer.on_status)
+    if not manager:
+        status_printer.failed()
+        list_instances(args)
+        return
     status_printer.done()
 
     print "Manager instance started:\n"
@@ -210,11 +214,16 @@ def start_instances(args):
                                           manager.id,
                                           args.spot_price,
                                           callback=status_printer.on_status)
-        status_printer.done()
-        print "Worker instance(s) started:"
+        if not workers:
+            status_printer.failed()
+            print "Workers could not be launched."
+            list_instances(args)
+        else:
+            status_printer.done()
+            print "Worker instance(s) started:"
 
-    for worker in workers:
-        print_instance(worker, 'worker')
+            for worker in workers:
+                print_instance(worker, 'worker')
 
     print "Waiting for services:"
     if launcher.wait_for_services([manager] + workers, callback=status_printer.on_status):
@@ -297,9 +306,10 @@ def add_instances(args):
 def list_instances(args):
     launcher = Launcher(**launcher_args(args))
     reservations = launcher.get_reservations()
-    count = len(reservations['instances'])
-    print "%d instance%s:" % (count, 's' if count != 1 else '')
-    for i in reservations['instances']:
+    instances = running_or_pending_instances(reservations)
+    count = len(instances)
+    print "%d instance%s%s" % (count, 's' if count != 1 else '', ':' if count > 0 else '')
+    for i in instances:
         print_instance(i)
 
     if reservations['unfulfilled_spot_requests']:
@@ -312,20 +322,27 @@ def list_instances(args):
 
 def stop_instances(args):
     launcher = Launcher(**launcher_args(args))
-    instances = running_or_pending_instances(launcher.get_reservations())
+    reservations = launcher.get_reservations()
+    instances = running_or_pending_instances(reservations)
     count = len(instances)
     if count == 0:
         print "No running instances to stop"
-        return
+    else:
+        verb = 'Terminating' if args.terminate else 'Stopping'
+        print '%s %d instances:' % (verb, count)
+        for i in instances:
+            print_instance(i)
+            if args.terminate:
+                i.terminate()
+            else:
+                i.stop()
 
-    verb = 'Terminating' if args.terminate else 'Stopping'
-    print '%s %d instances:' % (verb, count)
-    for i in instances:
-        print_instance(i)
-        if args.terminate:
-            i.terminate()
-        else:
-            i.stop()
+    spot_requests = reservations['unfulfilled_spot_requests']
+    if spot_requests:
+        print "Cancelling %d unfulfilled spot instance requests:" % len(spot_requests)
+        for r in spot_requests:
+            print_spot_request(r)
+            r.cancel()
 
 
 def scp(local_path, remote_path, host, identity_file):
