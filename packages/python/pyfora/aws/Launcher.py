@@ -311,7 +311,8 @@ class Launcher(object):
         return user_data_template
 
     def __init__(self,
-                 region,
+                 name,
+                 region=None,
                  vpc_id=None,
                  subnet_id=None,
                  security_group_id=None,
@@ -319,6 +320,7 @@ class Launcher(object):
                  open_public_port=False,
                  commit_to_build=None):
         assert vpc_id is None or subnet_id is not None
+        self.cluster_name = name
         self.region = region
         self.vpc_id = vpc_id
         self.subnet_id = subnet_id
@@ -418,9 +420,23 @@ class Launcher(object):
         if not self.connected:
             self.connect()
 
-        filters = {'tag:Name': 'pyfora*'}
+        filters = {'tag:pyfora_cluster': self.cluster_name}
         reservations = self.ec2.get_all_reservations(filters=filters)
-        return reservations
+        instances = {i.id: i for r in reservations for i in r.instances}
+
+        spot_requests = self.ec2.get_all_spot_instance_requests(filters=filters)
+        spot_instance_ids = [r.instance_id for r in spot_requests
+                             if r.instance_id and r.instance_id not in instances]
+        unfulfilled_spot_requests = [r for r in spot_requests if not r.instance_id]
+
+        all_instances = instances.values() + \
+                        self.ec2.get_only_instances(
+                            instance_ids=spot_instance_ids
+                            ) if spot_instance_ids else []
+        return {
+            'instances': all_instances,
+            'unfulfilled_spot_requests': unfulfilled_spot_requests
+            }
 
 
     def launch_instances(self,
@@ -465,9 +481,12 @@ class Launcher(object):
                 **request_args)
             fulfilled, unfulfilled = self.wait_for_spot_instance_requests(spot_requests,
                                                                           callback=callback)
-            assert len(fulfilled) == count or len(unfulfilled) == count
+            self.create_tags(list(r.id for r in itertools.chain(fulfilled, unfulfilled)),
+                             'pyfora_cluster',
+                             self.cluster_name)
             if len(fulfilled) == 0:
                 return []
+
             return self.ec2.get_only_instances(instance_ids=[r.instance_id for r in fulfilled])
         else:
             reservation = self.ec2.run_instances(
@@ -475,6 +494,9 @@ class Launcher(object):
                 max_count=count,
                 **request_args
                 )
+            self.create_tags([i.id for i in reservation.instances],
+                             'pyfora_cluster',
+                             self.cluster_name)
             return reservation.instances
 
 
@@ -536,9 +558,12 @@ class Launcher(object):
         return True
 
 
-    @staticmethod
-    def tag_instance(instance, tag_prefix):
-        instance.add_tag('Name', "%s - %s" % (tag_prefix, timestamp()))
+    def tag_instance(self, instance, tag_prefix):
+        self.create_tags(instance.id, 'Name', "%s - %s" % (tag_prefix, timestamp()))
+
+
+    def create_tags(self, object_ids, tag_name, tag_value):
+        self.ec2.create_tags(object_ids, {tag_name: tag_value})
 
 
     @property
