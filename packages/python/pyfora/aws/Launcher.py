@@ -461,8 +461,9 @@ class Launcher(object):
             image_id = self.ubuntu_images_hvm_ssd[self.region]
 
         #ensure that we allocate enough space to install everything
-        dev_sda1 = boto.ec2.blockdevicemapping.BlockDeviceType()
-        dev_sda1.size = 15
+        dev_sda1 = boto.ec2.blockdevicemapping.BlockDeviceType(
+            size=15,
+            delete_on_termination=True)
         bdm = boto.ec2.blockdevicemapping.BlockDeviceMapping()
         bdm['/dev/sda1'] = dev_sda1
 
