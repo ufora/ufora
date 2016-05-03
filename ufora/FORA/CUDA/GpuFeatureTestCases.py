@@ -64,6 +64,18 @@ class GpuFeatureTestCases:
         self.compareCudaToCPU(functionExpr, "[1]", "")
         self.checkCudaRaises(functionExpr, "[0]", "")
 
+    def test_return_or_unsupported(self):
+        functionExpr = """
+            fun(x) {
+                if (x>0)
+                    x
+                else
+                    String(x) + "a"
+            }
+            """
+        self.compareCudaToCPU(functionExpr, "[1]", "")
+        self.checkCudaRaises(functionExpr, "[0]", "")
+
     def test_throw(self):
         functionExpr = """
             fun(x) {
