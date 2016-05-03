@@ -143,8 +143,15 @@ class PrimitiveTestCases(object):
 
         self.equivalentEvaluationTest(f)
 
-    def test_complex(self):
+    def test_complex_1(self):
         self.equivalentEvaluationTest(lambda: abs(complex(1.0,0.0) * complex(1.0,0.0)))
+
+    def test_complex_2(self):
+        c = complex(3,4)
+        
+        f = lambda: complex(1,2) + c
+
+        self.equivalentEvaluationTest(f)
 
     def test_conversion_to_float_1(self):
         class C_with_float_conversion_1(object):

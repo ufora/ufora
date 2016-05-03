@@ -424,7 +424,6 @@ class PurePythonComplexMapping(PureImplementationMapping.PureImplementationMappi
         return complex(pureComplex.real, pureComplex.imag)
 
 
-@pureMapping(complex)
 class PurePythonComplex(object):
     def __init__(self, real, imag=0.0):
         if isinstance(real, str):
@@ -436,7 +435,7 @@ class PurePythonComplex(object):
                        }"""
                 )("Complex initialization from string not implemented")
 
-        if not isinstance(real, float) or not isinstance(imag, float):
+        if not isinstance(real, (int, float)) or not isinstance(imag, (int, float)):
             raise TypeError("complex() argument must be a string or a number")
 
         self.real = float(real)
@@ -523,15 +522,6 @@ class PurePythonComplex(object):
 
     def __sizeof__(self):
         return 32
-
-    def __setattr__(self, val):
-        __inline_fora(
-            """fun(@unnamed_args:(msg), *args) {
-                       purePython.PyforaBuiltins.raiseInvalidPyforaOperation(
-                           msg
-                           )
-                       }"""
-                )("__setattr__ not valid in pure python")
 
     def __mod__(self, other):
         if isinstance(other, PurePythonComplex):
