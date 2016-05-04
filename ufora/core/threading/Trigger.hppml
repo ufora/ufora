@@ -37,13 +37,18 @@ The callback, if fired, always runs from the triggering thread.
 class Trigger {
 public:
 	Trigger() : 
-			mTriggered(false)
+			mTriggered(false),
+			mTriggersRunning(0)
 		{
 		}
 	
 	void triggerIfNotTriggered()
 		{
 		trigger_(false);
+
+		boost::mutex::scoped_lock lock(mMutex);
+		while (mTriggersRunning)
+			mHasNoRunningTriggers.wait(lock);
 		}
 
 	void trigger()
@@ -95,15 +100,29 @@ private:
 			toCall = mTriggerFun;
 
 			mTriggered = true;
+
+			mTriggersRunning++;
 			}
 
 		if (toCall)
 			toCall();
+
+			{
+			boost::mutex::scoped_lock lock(mMutex);
+
+			mTriggersRunning--;
+
+			mHasNoRunningTriggers.notify_all();
+			}
 		}
 
 	mutable boost::mutex mMutex;
 
+	boost::condition_variable mHasNoRunningTriggers;
+
 	bool mTriggered;
+
+	int64_t mTriggersRunning;
 
 	boost::function0<void> mTriggerFun;
 };
