@@ -21,7 +21,7 @@ import ufora.distributed.SharedState.Connections.ViewFactory as ViewFactory
 import ufora.native.Json as NativeJson
 import ufora.native.CallbackScheduler as CallbackScheduler
 
-IN_MEMORY_HARNESS_PING_INTERVAL = 1.0
+IN_MEMORY_HARNESS_PING_INTERVAL = 10.0
 
 class SharedStateTestHarness(object):
     def __init__(self,
