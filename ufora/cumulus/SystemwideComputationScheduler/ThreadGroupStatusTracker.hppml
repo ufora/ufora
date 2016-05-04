@@ -20,6 +20,7 @@
 #include "../ComputationEvent.hppml"
 #include "../LocalToLocalSchedulerMessage.hppml"
 #include "../LocalToGlobalSchedulerMessage.hppml"
+#include "../GlobalToLocalSchedulerMessage.hppml"
 #include "../DistributedDataTasks/MachineHashTable.hppml"
 
 namespace Cumulus {
@@ -32,14 +33,12 @@ public:
                 boost::function1<void, LocalToLocalSchedulerMessage> inOnSendLocal,
                 boost::function1<void, LocalToGlobalSchedulerMessage> inOnSendGlobal,
                 MachineHashTable& inMachineTable,
-                MachineId ownMachine,
-                int64_t maxGroupSize
+                MachineId ownMachine
                 ) :
             mOnSendLocal(inOnSendLocal),
             mOnSendGlobal(inOnSendGlobal),
             mMachineTable(inMachineTable),
-            mOwnMachine(ownMachine),
-            mMaxGroupSize(maxGroupSize)
+            mOwnMachine(ownMachine)
         {
         }
 
@@ -62,185 +61,61 @@ public:
                 );
         }
 
+    void handleGlobalToLocalSchedulerMessage(const GlobalSchedulerToThreadGroupMessage& m)
+        {
+        ThreadGroup grp = m.targetGroup();
+
+        if (mFinishedGroups.find(grp) != mFinishedGroups.end())
+            return;
+
+        ensureThreadGroup(grp);
+
+        mStates[grp]->handleGlobalSchedulerToThreadGroupMessage(m);
+
+        removeGroupIfFinished(grp);
+
+        drainPendingMessages();
+        }
+
     void handleLocalToLocalSchedulerMessage(const LocalToLocalSchedulerMessage& in)
         {
         @match LocalToLocalSchedulerMessage(in)
             -| ThreadGroupStatusChanged(change) ->> {
                 handleStatusChangedLocally(change);
                 }
-            -| ThreadGroupChildChanged(update) ->> {
-                handleChildGroupChanged(update);
-                }
             -| ThreadGroupEvents(group, events) ->> {
                 handleComputationEventsLocally(group, events);
                 }
-            -| ThreadGroupActivatedByParent(group) ->> {
-                activateThreadGroup(group);
+            -| ThreadGroupPageUsedInFuture(group, page) ->> {
+                handlePageUsedInFutureLocally(group, page);
                 }
-        }
-
-    void handleComputationEventsLocally(ThreadGroup group, ImmutableTreeVector<ComputationEvent> events)
-        {
-        ensureThreadGroup(group);
-
-        mStates[group]->handleEvents(events, mPagesDropped);
-        groupChanged(group);
-        }
-
-    //the status of this computation changed, and we are the owning machine for this threadgroup.
-    void handleStatusChangedLocally(const LocalComputationPriorityAndStatusChanged& change)
-        {
-        lassert(machineFor(change.computation()) == mOwnMachine);
-
-        @match LocalComputationPriorityAndStatusChanged(change)
-            -| Active(c, _, newStatus, stats) ->> {
-                ThreadGroup group = ThreadGroup::groupFor(c);
-
-                if (mFinishedGroups.find(group) != mFinishedGroups.end())
+            -| CrossThreadGroup(msg) ->> {
+                if (mFinishedGroups.find(msg.destinationGroup()) != mFinishedGroups.end())
                     return;
 
-                ensureThreadGroup(group);
+                ensureThreadGroup(msg.destinationGroup());
+                
+                mStates[msg.destinationGroup()]->handleMessageFromThreadGroup(msg);
+                
+                removeGroupIfFinished(msg.destinationGroup());
 
-                mStates[group]->handleUpdateToSelf(newStatus, stats, mPagesDropped);
-                groupChanged(group);
+                drainPendingMessages();
                 }
-            -| _ ->> {}
-        }
-
-    void groupChanged(ThreadGroup group)
-        {
-        auto it = mStates.find(group);
-
-        if (it == mStates.end())
-            return;
-
-        if (mStates[group]->isFinished() || mStates[group]->wantsBroadcast())
-            broadcastGroup(group);
-
-        if (mStates[group]->isFinished())
-            {
-            mFinishedGroups.insert(group);
-            mStates.erase(group);
-            mPagesUsedByThreadGroups.dropKey(group);
-            }
-        else
-            {
-            for (auto child: mStates[group]->extractChildrenToActivate(mMaxGroupSize))
-                {
-                if (machineFor(child) == mOwnMachine)
-                    activateThreadGroup(child);
-                else
-                    mOnSendLocal(
-                        LocalToLocalSchedulerMessage::ThreadGroupActivatedByParent(
-                            mOwnMachine,
-                            machineFor(child),
-                            child
-                            )
-                        );
-                }
-            }
-        }
-
-    void broadcastGroup(ThreadGroup group)
-        {
-        std::set<Fora::PageId> newPagesSinceLastBroadcast;
-        std::set<Fora::PageId> droppedPagesSinceLastBroadcast;
-
-        mStates[group]->extractPageChangesAndMarkBroadcast(
-                            newPagesSinceLastBroadcast, 
-                            droppedPagesSinceLastBroadcast
-                            );
-
-        ThreadGroupStateUpdate update(
-            group, 
-            ImmutableTreeVector<Fora::PageId>(newPagesSinceLastBroadcast), 
-            ImmutableTreeVector<Fora::PageId>(droppedPagesSinceLastBroadcast), 
-            mStates[group]->totalChildBytes(),
-            mStates[group]->totalTimeElapsed(),
-            mStates[group]->isFinished(),
-            mStates[group]->isActive()
-            );
-
-        //first, send locally
-        auto nParent = group.parent();
-        if (nParent)
-            {
-            auto parent = *nParent;
-
-            MachineId targetMachine = machineFor(parent);
-
-            if (targetMachine == mOwnMachine)
-                handleChildGroupChanged(update);
-            else
-                mOnSendLocal(
-                    LocalToLocalSchedulerMessage::ThreadGroupChildChanged(
-                        mOwnMachine,
-                        targetMachine,
-                        update
-                        )
-                    );
-            }
-
-        if (!update.isActive() && mGroupsSentToGlobalScheduler.find(group) != mGroupsSentToGlobalScheduler.end() || 
-                update.isActive())
-            {
-            if (mGroupsSentToGlobalScheduler.find(group) != mGroupsSentToGlobalScheduler.end())
-                //this is the first time we're sending the update
-                {
-                update.droppedPages() = emptyTreeVec();
-                update.newPages() = mStates[group]->getAllPages();
-                }
-
-            mOnSendGlobal(LocalToGlobalSchedulerMessage::ThreadGroupChanged(update));
-
-            if (update.isActive() && !update.isFinished())
-                mGroupsSentToGlobalScheduler.insert(group);
-            else
-                mGroupsSentToGlobalScheduler.erase(group);
-            }
-        }
-
-    void ensureThreadGroup(ThreadGroup group)
-        {
-        if (mStates.find(group) == mStates.end())
-            {
-            mStates[group].reset(new ThreadGroupState(group, mPagesUsedByThreadGroups));
-            if (group.isRoot())
-                mStates[group]->markActive();
-            }
-        }
-
-    void activateThreadGroup(ThreadGroup group)
-        {
-        ensureThreadGroup(group);
-        mStates[group]->markActive();
-        groupChanged(group);
-        }
-
-
-    void handleChildGroupChanged(ThreadGroupStateUpdate update)
-        {
-        ThreadGroup parent = *update.group().parent();
-
-        lassert(machineFor(parent) == mOwnMachine);
-
-        if (mFinishedGroups.find(parent) != mFinishedGroups.end())
-            return;
-
-        ensureThreadGroup(parent);
-
-        mStates[parent]->handleChildGroupChanged(update, mPagesDropped);
-        groupChanged(parent);
         }
 
     void pageNoLongerReferencedAcrossSystem(Fora::PageId page)
         {
         mPagesDropped.insert(page);
+        std::set<ThreadGroup> groupsToWalk;
+
         for (auto group: mPagesUsedByThreadGroups.getKeys(page))
+            groupsToWalk.insert(group);
+
+        for (auto group: groupsToWalk)
             if (mStates.find(group) != mStates.end())
                 mStates[group]->pageNoLongerReferencedAcrossSystem(page);
 
-        mPagesUsedByThreadGroups.dropValue(page);
+        lassert(!mPagesUsedByThreadGroups.hasValue(page));
         }
 
     //the status of the computation changed on this machine. If the owning machine
@@ -263,6 +138,96 @@ public:
                 );
         }
 
+    void pageUsedInFuture(ComputationId computation, Fora::PageId page)
+        {
+        ThreadGroup group = ThreadGroup::groupFor(computation);
+
+        MachineId targetMachine = machineFor(group);
+
+        if (targetMachine == mOwnMachine)
+            handlePageUsedInFutureLocally(group, page);
+        else
+            mOnSendLocal(
+                LocalToLocalSchedulerMessage::ThreadGroupPageUsedInFuture(
+                    mOwnMachine, 
+                    targetMachine, 
+                    group, 
+                    page
+                    )
+                );
+        }
+
+private:
+    void handlePageUsedInFutureLocally(ThreadGroup group, Fora::PageId page)
+        {
+        if (mFinishedGroups.find(group) != mFinishedGroups.end())
+            return;
+
+        ensureThreadGroup(group);
+    
+        mStates[group]->handlePageUsedInFuture(page);
+        
+        removeGroupIfFinished(group);
+
+        drainPendingMessages();        
+        }
+
+    void removeGroupIfFinished(ThreadGroup group)
+        {
+        auto it = mStates.find(group);
+
+        if (it == mStates.end())
+            return;
+
+        if (mStates[group]->isFinishedAndChildrenFinished())
+            {
+            mFinishedGroups.insert(group);
+            mStates.erase(group);
+            mPagesUsedByThreadGroups.dropKey(group);
+            }
+        }
+
+    void drainPendingMessages()
+        {
+        while (mPendingCrossGroupMessages.size())
+            {
+            std::vector<CrossThreadGroupMessage> messages;
+            std::swap(mPendingCrossGroupMessages, messages);
+
+            for (auto msg: messages)
+                {
+                if (mFinishedGroups.find(msg.destinationGroup()) == mFinishedGroups.end())
+                    {
+                    ensureThreadGroup(msg.destinationGroup());
+                    mStates[msg.destinationGroup()]->handleMessageFromThreadGroup(msg);
+                    removeGroupIfFinished(msg.destinationGroup());
+                    }
+                }
+            }
+        }
+
+    void ensureThreadGroup(ThreadGroup group)
+        {
+        lassert_dump(
+            machineFor(group) == mOwnMachine,
+            "machine " << prettyPrintString(mOwnMachine) 
+                << " shouldn't have been handed a message for " 
+                << prettyPrintString(machineFor(group))
+                << " for group with prefix " << group.prefix()
+            );
+
+        if (mStates.find(group) == mStates.end())
+            mStates[group].reset(
+                new ThreadGroupState(
+                    group, 
+                    mPagesUsedByThreadGroups, 
+                    mPagesDropped,
+                    boost::bind(&ThreadGroupStatusTracker::onSendCrossGroupMessage, this, boost::arg<1>()),
+                    boost::bind(&ThreadGroupStatusTracker::onSendGroupToGlobalSchedulerMessage, this, boost::arg<1>())
+                    )
+                );
+        }
+
     MachineId machineFor(const ComputationId& computationId)
         {
         return mMachineTable.lookup(ThreadGroup::groupFor(computationId).hash());
@@ -273,12 +238,69 @@ public:
         return mMachineTable.lookup(group.hash());
         }
 
-private:
+    //the status of this computation changed, and we are the owning machine for this threadgroup.
+    void handleStatusChangedLocally(const LocalComputationPriorityAndStatusChanged& change)
+        {
+        @match LocalComputationPriorityAndStatusChanged(change)
+            -| Active(c, _, newStatus, stats) ->> {
+                ThreadGroup group = ThreadGroup::groupFor(c);
+
+                if (mFinishedGroups.find(group) != mFinishedGroups.end())
+                    return;
+
+                ensureThreadGroup(group);
+
+                mStates[group]->handleNewStatistics(newStatus, stats);
+                
+                removeGroupIfFinished(group);
+
+                drainPendingMessages();
+                }
+            -| _ ->> {}
+        }
+
+    void handleComputationEventsLocally(ThreadGroup group, ImmutableTreeVector<ComputationEvent> events)
+        {
+        if (mFinishedGroups.find(group) != mFinishedGroups.end())
+            return;
+
+        ensureThreadGroup(group);
+
+        mStates[group]->handleEvents(events);
+
+        removeGroupIfFinished(group);
+
+        drainPendingMessages();
+        }
+
+    void onSendGroupToGlobalSchedulerMessage(ThreadGroupToGlobalSchedulerMessage msg)
+        {
+        mOnSendGlobal(
+            LocalToGlobalSchedulerMessage::ThreadGroup(msg, mOwnMachine)
+            );
+        }
+
+    void onSendCrossGroupMessage(CrossThreadGroupMessage msg)
+        {
+        auto targetMachine = machineFor(msg.destinationGroup());
+
+        if (targetMachine == mOwnMachine)
+            mPendingCrossGroupMessages.push_back(msg);
+        else
+            mOnSendLocal(
+                LocalToLocalSchedulerMessage::CrossThreadGroup(
+                    mOwnMachine,
+                    targetMachine,
+                    msg
+                    )
+                );
+        }
+
+    std::vector<CrossThreadGroupMessage> mPendingCrossGroupMessages;
+
     boost::function1<void, LocalToLocalSchedulerMessage> mOnSendLocal;
 
     boost::function1<void, LocalToGlobalSchedulerMessage> mOnSendGlobal;
-
-    int64_t mMaxGroupSize;
     
     MachineId mOwnMachine;
 

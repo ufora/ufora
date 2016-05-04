@@ -49,10 +49,14 @@ WriteCharPageToS3Tasks::WriteCharPageToS3Tasks(
 
 void WriteCharPageToS3Tasks::handleExternalIoTaskCompleted(ExternalIoTaskCompleted completed)
 	{
+	LOG_INFO << mOwnMachineId << ": task " << completed.taskId() << " completed";
+
 	if (mTasksPendingOnOtherMachines.hasValue(completed.taskId()))
 		{
 		std::set<ExternalIoTaskId> tasks = mTasksPendingOnOtherMachines.getKeys(completed.taskId());
 
+		LOG_INFO << mOwnMachineId << ": task " << completed.taskId() << " has dependent tasks: " << tasks;
+	
 		mTasksPendingOnOtherMachines.dropValue(completed.taskId());
 
 		for (auto taskId: tasks)
@@ -87,9 +91,14 @@ void WriteCharPageToS3Tasks::checkDeferredTasks()
 		if (anyMachineContainsAllPages(p.first))
 			awake.insert(p.first);
 
+	LOG_INFO << mOwnMachineId << " found " << awake.size() << " of " << mTasksDeferredUntilPagesLoaded.size() << " tasks awake: " << awake;
+
 	for (auto task: awake)
 		{
 		hash_type guid = mTasksDeferredUntilPagesLoaded[task];
+
+		LOG_INFO << mOwnMachineId << " waking task " << task << " which completes TempPageGroup " << guid;
+
 		mTasksDeferredUntilPagesLoaded.erase(task);
 
 		mCumulusComponentMessageCreated(
@@ -116,6 +125,8 @@ void WriteCharPageToS3Tasks::handlePythonIoTaskResponse(PythonIoTaskResponse res
 		return;
 
 	WriteCharPageToS3Task task = mPythonIoTaskGuidToWriteTask[requestGuid];
+
+	LOG_INFO << mOwnMachineId << " python completed " << task;
 	
 	mPythonIoTaskGuidToWriteTask.erase(requestGuid);
 
@@ -158,6 +169,8 @@ void WriteCharPageToS3Tasks::scheduleExtractDataAndWrite_(WriteCharPageToS3Task 
 
 	if (allExist)
 		{
+		LOG_INFO << mOwnMachineId << " All data exists for " << task;
+
 		//make sure we hold onto the page data for the duration of the action
 		mLockedVectorPages[task] = pages;
 		extractDataAndScheduleWrite(task);
@@ -168,10 +181,14 @@ void WriteCharPageToS3Tasks::scheduleExtractDataAndWrite_(WriteCharPageToS3Task 
 
 void WriteCharPageToS3Tasks::schedulePageDumpOnAppropriateMachine(WriteCharPageToS3Task task)
 	{
+	LOG_INFO << mOwnMachineId << " Scheduling task " << task << " for dump somewhere";
+
 	Nullable<Cumulus::MachineId> idealMachine = pickRemoteMachineForTask(task);
 
 	if (idealMachine)
 		{
+		LOG_INFO << mOwnMachineId << " Scheduling task for slot " << task << " on " << *idealMachine;
+
 		ExternalIoTaskId newTaskId(mCreateNewHash());
 
 		mCreateNewRemoteIoTask(
@@ -202,7 +219,7 @@ void WriteCharPageToS3Tasks::schedulePageDumpOnAppropriateMachine(WriteCharPageT
 				return;
 				}
 
-		LOG_INFO << "Deferring page load for " << task.pages();
+		LOG_INFO << mOwnMachineId << " Deferring page " << task;
 
 		deferTaskUntilPageLoaded(task);
 		}
@@ -266,12 +283,19 @@ Nullable<Cumulus::MachineId> WriteCharPageToS3Tasks::pickRemoteMachineForTask(Wr
 
 void WriteCharPageToS3Tasks::deferTaskUntilPageLoaded(WriteCharPageToS3Task task)
 	{
+	LOG_INFO << mOwnMachineId << " Deferring task " << task << " until all pages loaded";
+
 	if (mTasksDeferredUntilPagesLoaded.find(task) != mTasksDeferredUntilPagesLoaded.end())
+		{
+		LOG_INFO << mOwnMachineId << " Task " << task << " already has pages loaded.";
 		return;
+		}
 
 	hash_type guid = mCreateNewHash();
 
 	mTasksDeferredUntilPagesLoaded[task] = guid;
+
+	LOG_INFO << mOwnMachineId << " deferring until TempPageGroup " << task << " is realized. " << mTasksDeferredUntilPagesLoaded.size() << " tasks deferred.";
 
 	mCumulusComponentMessageCreated(
 		CumulusComponentMessageCreated(
@@ -299,8 +323,6 @@ namespace {
 
 void WriteCharPageToS3Tasks::extractDataAndScheduleWrite(WriteCharPageToS3Task task)
 	{
-	bool allExist = true;
-
 	ImmutableTreeVector<pair<boost::shared_ptr<VectorPage>, IntegerSequence> > pages;
 	std::vector<boost::shared_ptr<Ufora::threading::Trigger> > triggers;
 

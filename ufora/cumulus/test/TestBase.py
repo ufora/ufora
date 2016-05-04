@@ -109,7 +109,7 @@ class CumulusTestCases(object):
         computationId = self.gateway.requestComputation(computationDefinition)
 
         try:
-            return self.gateway.finalResponses.get(timeout=240.0)
+            return self.gateway.finalResponses.get(timeout=timeout)
         finally:
             self.gateway.deprioritizeComputation(computationId)
 

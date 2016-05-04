@@ -439,24 +439,19 @@ bool Task::isTopSplittable() const
         mFrames.size() > 1;
     }    
 
-ImmutableTreeVector<ImmutableTreeSet<Fora::PageId> > Task::cliques() const
+ImmutableTreeVector<Fora::PageId> Task::pages() const
     {
     if (!mPageCache)
-        mPageCache = CliqueFinder::extractCliques(extractAllEvents());
+        mPageCache = CliqueFinder::extractPages(extractAllEvents());
 
     return *mPageCache;
-    }
-
-ImmutableTreeSet<Fora::PageId> Task::pages() const
-    {
-    return CliqueFinder::extractPages(extractAllEvents());
     }
 
 long Task::rollForwardUntilACliqueIsProduced(long cliqueTarget, long maxEvents)
     {
     long totalSteps = 0;
 
-    while (cliques().size() < cliqueTarget)
+    while (pages().size() < cliqueTarget)
         {
         long steps = rollForwardAndReturnStepCount(10);
 
@@ -594,7 +589,7 @@ pair<long, long> Task::rollForwardAtTopOfTreeReturningStepsAndCliquesCreated(dou
     if (curClock() > maxTimestamp && maxTimestamp > 0)
         return res;
 
-    if (!cliques().size())
+    if (!pages().size())
         { 
         lassert(res.second == 0);
 
@@ -605,7 +600,7 @@ pair<long, long> Task::rollForwardAtTopOfTreeReturningStepsAndCliquesCreated(dou
         recordStepsTakenInThisTask(steps);
         res.first += steps;
 
-        if (cliques().size())
+        if (pages().size())
             res.second += 1;
         }
 
@@ -940,8 +935,8 @@ void Task::toStringStream(std::ostringstream& stream, long depth, long maxDepth)
             !allUnfinishedStackframesAreImmediateReturns())
         stream << "[Unfinished]";
     
-    if (cliques().size())
-        stream << "[cliques: " << cliques().size() << "]";
+    if (pages().size())
+        stream << "[pages: " << pages().size() << "]";
 
     stream << "\n";
 
@@ -1043,114 +1038,10 @@ Event CliqueFinder::extractEvents()
     return mTask->extractAllEvents();
     }
 
-ImmutableTreeVector<ImmutableTreeSet<Fora::PageId> > CliqueFinder::cliques()
+ImmutableTreeVector<Fora::PageId> CliqueFinder::pages()
     {
-    return mTask->cliques();
+    return mTask->pages();
     }
-
-class CliqueExtractor {
-public:
-    void walkEvent(Event e)
-        {
-        @match Event(e)
-            -| Stackframe(events) ->> {
-                for (auto subEvent: events)
-                    walkEvent(subEvent);
-                }
-            -| Load(pages) ->> {
-                loadPage(Neighborhood(pages));
-                }
-            -| Result() ->> {}
-            -| DidntFinish() ->> {
-                didntFinish();
-                }
-        }
-
-    void loadPage(Neighborhood page)
-        {
-        mPages.insert(page);
-
-        if (mLastPageLoaded && mPagesInCurrentBlock.size())
-            {
-            if (page == *mLastPageLoaded)
-                //nothing to do
-                return;
-
-            mPagesInCurrentBlock.push_back(page);
-
-            mLastPageLoaded = page;
-            }
-            else
-        if (mLastPageLoaded && !mPagesInCurrentBlock.size())
-            {
-            mPagesInCurrentBlock.push_back(page);
-
-            if (page == *mLastPageLoaded)
-                return;
-            }
-        else
-            {
-            mLastPageLoaded = page;
-            mPagesInCurrentBlock.push_back(page);
-            }
-        }
-
-    void didntFinish()
-        {
-        map<Neighborhood, long> totalCount;
-
-        for (auto p: mPagesInCurrentBlock)
-            totalCount[p]++;
-
-        while (mPagesInCurrentBlock.size() && totalCount[mPagesInCurrentBlock.back()] == 1)
-            mPagesInCurrentBlock.pop_back();
-
-        long index = 0;
-        while (index < mPagesInCurrentBlock.size() && totalCount[mPagesInCurrentBlock[index]] == 1)
-            index++;
-
-        if (index < mPagesInCurrentBlock.size())
-            {
-            ImmutableTreeSet<Neighborhood> clique(
-                mPagesInCurrentBlock.begin() + index, 
-                mPagesInCurrentBlock.end()
-                );
-
-            if (clique.size() > 1)
-                mCycleCount[clique]++;
-            }
-
-        mPagesInCurrentBlock.clear();
-        mLastPageLoaded = null();
-        }
-
-    ImmutableTreeVector<ImmutableTreeSet<Fora::PageId> > extractCliques()
-        {
-        std::set<ImmutableTreeSet<Fora::PageId> > result;
-        
-        for (auto cycle: mCycleCount)
-            {
-            ImmutableTreeSet<Fora::PageId> pages;
-            for (auto n: cycle.first)
-                pages = pages + n.pages();
-
-            result.insert(pages);
-            }
-
-        return ImmutableTreeVector<ImmutableTreeSet<Fora::PageId> >(result.begin(), result.end());
-        }
-
-private:
-    std::map<ImmutableTreeSet<Neighborhood>, long> mCycleCount;
-
-    std::set<Neighborhood> mPages;
-
-    std::vector<Neighborhood> mPagesInCurrentBlock;
-
-    Nullable<Neighborhood> mLastPageLoaded;
-};
-
-
 
 class PageExtractor {
 public:
@@ -1169,27 +1060,16 @@ public:
             -| DidntFinish() ->> {}
         }
 
-    ImmutableTreeSet<Fora::PageId> pages() const
+    ImmutableTreeVector<Fora::PageId> pages() const
         {
-        return ImmutableTreeSet<Fora::PageId>(mPages);
+        return ImmutableTreeVector<Fora::PageId>(mPages);
         }
 
 private:
     std::set<Fora::PageId> mPages;
 };
 
-ImmutableTreeVector<ImmutableTreeSet<Fora::PageId> > CliqueFinder::extractCliques(Event e)
-    {
-    CliqueExtractor extractor;
-    
-    extractor.walkEvent(e);
-
-    auto res = extractor.extractCliques();
-
-    return res;
-    }
-
-ImmutableTreeSet<Fora::PageId> CliqueFinder::extractPages(Event e)
+ImmutableTreeVector<Fora::PageId> CliqueFinder::extractPages(Event e)
     {
     PageExtractor extractor;
     
@@ -1219,9 +1099,9 @@ long CliqueFinder::searchFromTopOfTreeReturningCliquesCreated(
 
         while (curClock() < maxTimestamp && timesNoneCreated < 3)
             {
-            long cliques = mTask->rollForwardAtTopOfTree(maxTimestamp, ioRand);
-            created += cliques;
-            if (cliques == 0)
+            long pages = mTask->rollForwardAtTopOfTree(maxTimestamp, ioRand);
+            created += pages;
+            if (pages == 0)
                 timesNoneCreated++;
             else
                 timesNoneCreated = 0;

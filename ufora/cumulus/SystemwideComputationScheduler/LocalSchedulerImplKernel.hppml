@@ -17,12 +17,10 @@
 
 #include <boost/shared_ptr.hpp>
 
-#include "ComputationBehaviorPredictor.hppml"
-#include "ComputationPageDependencyTracker.hppml"
-#include "LocalToGlobalSchedulerMessageThrottler.hppml"
 #include "MachineLoads.hppml"
 #include "SchedulerInitializationParameters.hppml"
 #include "ThreadGroupStatusTracker.hppml"
+#include "ThreadGroupTree.hppml"
 
 #include "../ComputationId.hppml"
 #include "../CumulusClientOrMachine.hppml"
@@ -56,14 +54,6 @@ class LocalComputationPriorityAndStatusChanged;
 
 namespace SystemwideComputationScheduler {
 
-@type ComputationLoad = 
-	PageLayoutCalculator::Neighborhood pages,
-	double timeElapsed,
-	bool isRepresentedAnywhere
-	;
-
-macro_defineCppmlComparisonOperators(ComputationLoad)
-
 /************
 
 LocalSchedulerImplKernel
@@ -83,11 +73,11 @@ public:
 			boost::function1<void, CumulusComponentMessageCreated> onCumulusComponentMessageCreated
 			);
 
+	~LocalSchedulerImplKernel();
+
 	void addMachine(MachineId inMachine);
 
-    void consumePageEvent(const Fora::PageRefcountEvent& inEvent, Cumulus::MachineId onMachineId);
-
-	void computationComputeStatusChanged(const ComputationComputeStatusChanged& change);
+    void computationComputeStatusChanged(const ComputationComputeStatusChanged& change);
 
 	void computationStatusChanged(
 				const LocalComputationPriorityAndStatusChanged& change,
@@ -96,7 +86,7 @@ public:
 
 	void handleComputationBlocked_(
 				const ComputationId& computation, 
-				const Fora::BigVectorSlice& slice
+				ImmutableTreeSet<Fora::PageId> pages
 				);
 
 	void handleCumulusComponentMessage(
@@ -129,9 +119,11 @@ public:
 
 	void tryToSplitSomething_();
 
-	bool tryToCalculateCliquesForSomething_();
+	bool tryToCalculateFuturePagesForSomething_();
 
 	bool tryToMoveSomething_();
+
+	void logCurrentState_();
 
 	Nullable<MachineId> pickMachineWithLeastLoad_(ImmutableTreeSet<MachineId> machines);
 
@@ -147,9 +139,7 @@ public:
 
 	long mActiveThreadCount;
 
-	ImmutableTreeSet<VectorDataID> convertBigVectorSliceToVDIDs_(Fora::BigVectorSlice slice);
-	
-    boost::function1<void, InitiateComputationMove> mOnInitiateComputationMoved;
+	boost::function1<void, InitiateComputationMove> mOnInitiateComputationMoved;
 
 	boost::function1<void, CumulusComponentMessageCreated> mOnCumulusComponentMessageCreated;
 
@@ -161,7 +151,9 @@ public:
 										LocalToLocalSchedulerMessage message
 										);
 
-	PolymorphicSharedPtr<SystemwidePageRefcountTracker> mSystemwidePageRefcountTracker;
+	void handleGlobalToLocalSchedulerMessage(
+										GlobalToLocalSchedulerMessage message
+										);
 
 	//for each computable computation, 0 or -1 indicating whether we've tried to split it
 	//and the computation priority. We always try to split the 'highest' item in the list that's.
@@ -185,58 +177,27 @@ public:
 
 	std::map<ComputationId, ComputationPriority> mLocalComputationPriorities;
 
-	ComputationLoad calculateCurrentLoadForComputation(ComputationId computation);
-
-	std::map<ComputationId, ComputationLoad> mComputationLoadsBroadcast;
-
 	void tryToSplitComputation_(ComputationId toSplit);
 
 	bool wantsToSplit_();
 
 	void resetPageDataIfNecessary_(double curTime);
 
-	std::set<MachineId> mCurrentMachines;
+	void moveIncorrectlyScheduledTasks_();
 
-	ComputationBehaviorPredictor mComputationBehaviorPredictor;
+	bool computationBelongsOnAnotherMachine_(ComputationId comp);
+
+	const std::set<MachineId>& validMachinesForComputation_(ComputationId comp);
+
+	bool tryToMoveComputationToOneOf_(ComputationId comp, const std::set<MachineId>& activeOn, bool moveEvenIfOtherMachineIsLoaded);
+
+	std::set<MachineId> mCurrentMachines;
 
 	MachineHashTable mMachineHashTable;
 
 	MachineId mOwnMachineId;
 
-	ComputationPageDependencyTracker mComputationPageDependencies; 
-
-	void checkComputationsBlockedOnNonexistantPages_(ComputationId computation);
-
-	void updatePageLoadForComputation_(const ComputationId& computation, double curTime);
-
-	Nullable<VectorDataID> pageToVectorDataId_(Fora::PageId inPage);
-
-	map<Fora::PageId, VectorDataID> mPageToVectorDataIdMap;
-
 	Ufora::math::Random::Uniform<double> mRandomGenerator;
-
-	ImmutableTreeSet<Fora::PageId> 
-			filterOutPagesDroppedAcrossSystem_(ImmutableTreeSet<Fora::PageId> pages);
-
-	PageLayoutCalculator::Neighborhood 
-			filterOutPagesDroppedAcrossSystem_(
-					PageLayoutCalculator::Neighborhood n
-					);
-
-	ImmutableTreeMap<Fora::PageId, double> 
-			filterOutPagesDroppedAcrossSystem_(ImmutableTreeMap<Fora::PageId, double> pages);
-
-	ImmutableTreeMap<Fora::PageId, double> convertBigVectorSliceToPageIds(
-											ImmutableTreeMap<Fora::BigVectorSlice, double> slice
-											);
-
-	std::map<Fora::BigVectorId, long> mBigVectorRefcounts;
-
-	std::map<Fora::BigVectorId, TypedFora::Abi::BigVectorPageLayout> mBigVectorLayoutMap;
-
-	std::map<MachineId, int64_t> mBytesAddedByMachine;
-
-	std::map<MachineId, int64_t> mBytesSentToDiskByMachine;
 
 	std::set<ComputationId> mComputationsBlockedOnVectorsLocally;
 
@@ -244,15 +205,11 @@ public:
 
 	std::set<ComputationId> mComputationsBlockedOnComputationsLocally;
 
-	MapWithIndex<ComputationId, hash_type> mBlockedAndWaitingForCliques;
+	MapWithIndex<ComputationId, hash_type> mBlockedAndWaitingForFuturePages;
 
-	hash_type mCliqueRequestGuid;
+	hash_type mFuturePagesRequestGuid;
 
-	std::set<PageLayoutCalculator::Neighborhood> mCliquesObservedAlready;
-
-	std::set<ComputationId> mRecentlyCalculatedForCliques;
-
-	bool hasPageBeenDroppedAcrossEntireSystem_(Fora::PageId page);
+	std::set<ComputationId> mRecentlyCalculatedForFuturePages;
 
 	map<MachineId, LocalToLocalSchedulerBroadcastMessage_CurrentLoadType> mMostRecentBroadcasts;
 
@@ -261,8 +218,6 @@ public:
 	ThreadGroupStatusTracker mThreadGroupStatusTracker;
 
 	SchedulerInitializationParameters mInitializationParameters;
-
-	LocalToGlobalSchedulerMessageThrottler mLocalToGlobalMessageThrottler;
 
 	double mLastDumpTime;
 
@@ -279,6 +234,12 @@ public:
 	long mCalculationsCompleted;
 
 	MachineLoads mMachineLoads;
+
+	ThreadGroupTree mAllThreadGroups;
+
+	TwoWaySetMap<ThreadGroup, MachineId> mAllThreadGroupsActiveOn;
+
+	std::set<pair<ThreadGroup, Fora::PageId> > mSplitPages;
 };
 }
 }

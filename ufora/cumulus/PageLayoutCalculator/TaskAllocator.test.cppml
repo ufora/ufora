@@ -1,0 +1,388 @@
+/***************************************************************************
+    Copyright 2015 Ufora Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+#include "TaskAllocator.hppml"
+
+#include "../../core/UnitTest.hpp"
+#include "../../core/Logging.hpp"
+#include "../../core/Clock.hpp"
+
+using namespace Cumulus;
+
+using namespace Cumulus::PageLayoutCalculator;
+
+namespace {
+
+const int64_t mb = 1024 * 1024;
+const int64_t gb = mb * 1024;
+
+MachineId machine(int64_t ix) 
+	{
+	return MachineId(hash_type(ix));
+	}
+
+Fora::PageId page(int64_t ix)
+	{
+	return Fora::PageId(hash_type(ix), 50 * mb, 50 * mb);
+	}
+
+TaskAllocatorId threadGroupId(int64_t ix)
+	{
+	return TaskAllocatorId::ForThreadGroup(hash_type(ix));
+	}
+
+TaskAllocatorId accumulatorTaskId(int64_t ix)
+	{
+	return TaskAllocatorId::ForDataTask(hash_type(ix));
+	}
+
+int64_t stabilize(TaskAllocator& allocator)
+	{
+	allocator.rebalance();
+
+	long passes = 0;
+	while (true)
+		{
+		std::set<pair<MachineId, Fora::PageId> > adds, drops;
+		allocator.getPageAllocation().extractNewAddsAndDrops(adds, drops);
+
+		if (adds.size() == 0 && drops.size() == 0)
+			return passes;
+
+		for (auto a: adds)
+			lassert(
+				!allocator.getPageAllocation().getPages().contains(a.first, a.second) &&
+				allocator.getPageAllocation().getTargetPages().contains(a.first, a.second)
+				);
+
+		for (auto a: drops)
+			lassert(
+				allocator.getPageAllocation().getPages().contains(a.first, a.second) &&
+				!allocator.getPageAllocation().getTargetPages().contains(a.first, a.second)
+				);
+		
+		for (auto a: adds)
+			allocator.pageAdded(a.first, a.second);
+		
+		for (auto d: drops)
+			allocator.pageDropped(d.first, d.second);
+
+		allocator.rebalance();
+
+		passes++;
+
+		lassert(passes < 1000);
+		}
+	}
+
+}
+
+BOOST_AUTO_TEST_CASE( test_TaskAllocator_spreads_aws_loads )
+{
+	TaskAllocator allocator(gb);
+
+	for (int ix = 0; ix < 4; ix++)
+		allocator.setMachineStats(machine(ix), 100 * gb, 30);
+
+	for (int ix = 0; ix < 4; ix++)
+		allocator.addToWorkingSet(page(ix));
+
+	allocator.rebalance();
+
+	const MachinePageAllocation& alloc(allocator.getPageAllocation());
+
+	for (int ix = 0; ix < 4; ix++)
+		BOOST_CHECK(alloc.getTargetPages().getValues(machine(ix)).size() == 1);
+}
+
+BOOST_AUTO_TEST_CASE( test_TaskAllocator_migrates_aws_pages )
+{
+	TaskAllocator allocator(100 * mb);
+
+	for (int ix = 0; ix < 4; ix++)
+		allocator.setMachineStats(machine(ix), 800 * mb, 30);
+
+	for (int ix = 0; ix < 20; ix++)
+		{
+		allocator.addToWorkingSet(page(ix));
+		allocator.pageAdded(machine(0), page(ix));
+		}
+
+	allocator.rebalance();
+
+	const MachinePageAllocation& alloc(allocator.getPageAllocation());
+
+	for (int ix = 1; ix < 4; ix++)
+		BOOST_CHECK(alloc.bytesAddedToMachine(machine(ix)) / mb == 100);
+
+	stabilize(allocator);
+
+	for (int ix = 0; ix < 4; ix++)
+		BOOST_CHECK(alloc.bytesOnMachine(machine(ix)) <= 800 * mb);
+
+	for (int ix = 0; ix < 20; ix++)
+		BOOST_CHECK(alloc.getPages().hasValue(page(ix)));
+}
+
+
+BOOST_AUTO_TEST_CASE( test_TaskAllocator_places_pages_together_for_running_task )
+{
+	TaskAllocator allocator(50 * mb);
+
+	for (int ix = 0; ix < 8; ix++)
+		allocator.setMachineStats(machine(ix), gb, 30);
+
+	for (int ix = 0; ix < 8; ix++)
+		{
+		allocator.addToWorkingSet(page(ix));
+		allocator.pageAdded(machine(ix), page(ix));
+		}
+
+	std::set<Fora::PageId> pages;
+	for (int ix = 0; ix < 8; ix++)
+		pages.insert(page(ix));
+	
+	allocator.setTaskProperties(threadGroupId(0), 1, pages);
+	allocator.rebalance();
+
+	BOOST_CHECK_EQUAL(allocator.loadingTasks().getValues(threadGroupId(0)).size(), 1);
+	BOOST_CHECK_EQUAL(allocator.runningTasks().getValues(threadGroupId(0)).size(), 0);
+
+	lassert(stabilize(allocator) > 1);
+
+	BOOST_CHECK_EQUAL(allocator.loadingTasks().getValues(threadGroupId(0)).size(), 0);
+	BOOST_CHECK_EQUAL(allocator.runningTasks().getValues(threadGroupId(0)).size(), 1);
+}
+
+BOOST_AUTO_TEST_CASE( test_TaskAllocator_fans_out_large_calculations )
+{
+	TaskAllocator allocator(50 * mb);
+
+	for (int ix = 0; ix < 8; ix++)
+		allocator.setMachineStats(machine(ix), 10 * gb, 30);
+
+	for (int ix = 0; ix < 8; ix++)
+		{
+		allocator.addToWorkingSet(page(ix));
+		allocator.pageAdded(machine(ix), page(ix));
+		}
+
+	std::set<Fora::PageId> pages;
+	for (int ix = 0; ix < 8; ix++)
+		pages.insert(page(ix));
+	
+	allocator.setTaskProperties(threadGroupId(0), 320, pages);
+	allocator.rebalance();
+
+	BOOST_CHECK_EQUAL(allocator.loadingTasks().getValues(threadGroupId(0)).size(), 8);
+	BOOST_CHECK_EQUAL(allocator.runningTasks().getValues(threadGroupId(0)).size(), 0);
+
+	lassert(stabilize(allocator) > 1);
+
+	BOOST_CHECK_EQUAL(allocator.loadingTasks().getValues(threadGroupId(0)).size(), 0);
+	BOOST_CHECK_EQUAL(allocator.runningTasks().getValues(threadGroupId(0)).size(),  8);
+}
+
+
+BOOST_AUTO_TEST_CASE( test_TaskAllocator_small_data_task )
+{
+	TaskAllocator allocator(50 * mb);
+
+	for (int ix = 0; ix < 8; ix++)
+		allocator.setMachineStats(machine(ix), 10 * gb, 30);
+
+	allocator.setAccumulatorProperties(accumulatorTaskId(0), 100 * mb, machine(0));
+
+	allocator.rebalance();
+
+	BOOST_CHECK_EQUAL(
+		allocator.bytesAllocatedToAccumulatorTaskOnMachine(accumulatorTaskId(0), machine(0)),
+		100 * mb
+		);
+}
+
+BOOST_AUTO_TEST_CASE( test_TaskAllocator_large_data_task )
+{
+	TaskAllocator allocator(50 * mb);
+
+	for (int ix = 0; ix < 8; ix++)
+		allocator.setMachineStats(machine(ix), 10 * gb, 30);
+
+	allocator.setAccumulatorProperties(accumulatorTaskId(0), 20 * gb, machine(0));
+
+	allocator.rebalance();
+}
+
+BOOST_AUTO_TEST_CASE( test_TaskAllocator_data_task_makes_space )
+{
+	TaskAllocator allocator(50 * mb);
+
+	for (int ix = 0; ix < 8; ix++)
+		allocator.setMachineStats(machine(ix), 10 * gb, 30);
+
+	//add slightly less than 40 GB of pages to the working set
+	for (int ix = 0; ix < 799; ix++)
+		{
+		allocator.addToWorkingSet(page(ix));
+		allocator.pageAdded(machine(ix % 8), page(ix));
+		}
+
+	stabilize(allocator);
+
+	//each box should have close to 4 gb on it
+	for (int ix = 0; ix < 8; ix++)
+		BOOST_CHECK(allocator.getPageAllocation().bytesOnMachine(machine(ix)) > 3.5 * gb);
+
+
+	//start using ~ 4 GB in a big task
+	std::set<Fora::PageId> pages;
+	for (int ix = 0; ix < 79; ix++)
+		pages.insert(page(ix * 10));
+	
+	allocator.setTaskProperties(threadGroupId(0), 320, pages);
+	stabilize(allocator);
+
+	BOOST_CHECK_EQUAL(allocator.runningTasks().valueCount(), 8);
+
+	//all boxes should have loaded all data in that task, plus have some working-set bytes
+	//so we should have at least 7 gb total on every box
+	for (int ix = 0; ix < 8; ix++)
+		BOOST_CHECK(allocator.getPageAllocation().bytesOnMachine(machine(ix)) > 7 * gb);
+
+	//add a big sort task
+	allocator.setAccumulatorProperties(accumulatorTaskId(0), 30 * gb, machine(0));
+
+	stabilize(allocator);
+
+	//we shouldn't have active tasks anymore
+	BOOST_CHECK(allocator.runningTasks().keyCount() == 0);
+
+	//but we should still have all the pages have active tasks anymore
+	BOOST_CHECK(allocator.runningTasks().keyCount() == 0);
+
+	//and we should see that there's enough space on each box to run the accumulator.
+	for (int ix = 0; ix < 8; ix++)
+		BOOST_CHECK(allocator.getPageAllocation().bytesOnMachine(machine(ix)) < 6.8 * gb);
+}
+
+
+BOOST_AUTO_TEST_CASE( test_TaskAllocator_increasing_data_tasks_works )
+{
+	TaskAllocator allocator(50 * mb);
+
+	for (int ix = 0; ix < 8; ix++)
+		allocator.setMachineStats(machine(ix), 10 * gb, 30);
+
+	for (int sz = 1; sz <= 32; sz *= 2)
+		{
+		//add a big sort task
+		allocator.setAccumulatorProperties(accumulatorTaskId(0), sz * gb, machine(0));
+
+		allocator.rebalance();
+
+		BOOST_CHECK(allocator.bytesAllocatedToAccumulatorTask(accumulatorTaskId(0)) >= sz * gb);
+
+		for (int ix = 0; ix < 8; ix++)
+			BOOST_CHECK(
+				allocator.bytesAllocatedToAccumulatorTaskOnMachine(
+					accumulatorTaskId(0), 
+					machine(ix)
+					) <= 4 * gb
+				);
+		}
+}
+
+BOOST_AUTO_TEST_CASE( test_TaskAllocator_allocating_working_set )
+{
+	for (int machineCount = 2; machineCount <= 16; machineCount *= 2)
+		{
+		TaskAllocator allocator(1 * gb);
+
+		for (int ix = 0; ix < machineCount; ix++)
+			allocator.setMachineStats(machine(ix), 150 * gb, 30);
+
+		//put pages on the first half of machines
+		for (int ix = 0; ix * 2 < machineCount; ix++)
+			for (int pix = 0; pix < 2000; pix++)
+				{
+				allocator.addToWorkingSet(page(pix + ix * 2000));
+				allocator.pageAdded(machine(ix), page(pix + ix * 2000));
+				}
+
+		double t0 = curClock();
+		stabilize(allocator);
+
+		for (int ix = 0; ix < machineCount; ix++)
+			BOOST_CHECK(allocator.wspRatio(machine(ix)) > .25 && allocator.wspRatio(machine(ix)) < .6);
+
+		LOG_INFO << "with " << machineCount << " took " << curClock() - t0;
+
+		t0 = curClock();
+		allocator.rebalance();
+
+		LOG_INFO << "Second time took " << curClock() - t0;
+		}
+}
+
+
+
+BOOST_AUTO_TEST_CASE( test_TaskAllocator_perf_with_lots_of_tasks )
+{
+	for (int machineCount = 2; machineCount <= 64; machineCount *= 2)
+		{
+		double t0 = curClock();
+
+		TaskAllocator allocator(1 * gb);
+
+		for (int ix = 0; ix < machineCount; ix++)
+			allocator.setMachineStats(machine(ix), 150 * gb, 30);
+
+		//put pages on the first half of machines
+		for (int ix = 0; ix * 2 < machineCount; ix++)
+			{
+			std::set<Fora::PageId> pages;
+			for (int pix = 0; pix < 2000; pix++)
+				{
+				pages.insert(page(pix + ix * 2000));
+
+				allocator.addToWorkingSet(page(pix + ix * 2000));
+				allocator.pageAdded(machine(ix), page(pix + ix * 2000));
+
+				if (pix % 10 == 9)
+					{
+					allocator.setTaskProperties(threadGroupId(pix + ix * 2000), 1, pages);
+					pages.clear();
+					}
+				}
+			}
+
+		LOG_INFO << "with " << machineCount << " took " << curClock() - t0 << " to set up.";
+
+		stabilize(allocator);
+
+		for (int ix = 0; ix < machineCount; ix++)
+			BOOST_CHECK(allocator.wspRatio(machine(ix)) > .25 && allocator.wspRatio(machine(ix)) < .6);
+
+		t0 = curClock();
+		allocator.rebalance();
+
+		LOG_INFO << "took " << curClock() - t0 << " to rebalance";
+		}
+}
+
+
+
+
+

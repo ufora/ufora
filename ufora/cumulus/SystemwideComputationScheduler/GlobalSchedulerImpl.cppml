@@ -38,8 +38,7 @@ namespace Cumulus {
 namespace SystemwideComputationScheduler {
 
 const double kMaxSplitFrequency = 400;
-const double kRecomputePageLayoutInterval = 1.0;
-const double kRecomputeLongTermLayoutInterval = 1.0;
+const double kRecomputePageLayoutInterval = .2;
 const double kDefaultCheckpointUpdateInterval = 1.0;
 
 GlobalSchedulerImpl::GlobalSchedulerImpl(
@@ -119,16 +118,6 @@ void GlobalSchedulerImpl::polymorphicSharedPtrBaseInitialized()
 			polymorphicSharedWeakPtrFromThis()
 			),
 		"checkCheckpointsAndStatusesAndReschedule"
-		);
-
-	mRebalanceCallbackScheduler->scheduleImmediately(
-		boost::bind(
-			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
-				&GlobalSchedulerImpl::recomputePageNeighborhoods
-				),
-			polymorphicSharedWeakPtrFromThis()
-			),
-		"recomputePageNeighborhoods"
 		);
 	}
 
@@ -328,66 +317,6 @@ bool GlobalSchedulerImpl::shouldRecomputePageLayoutNow_(bool rescheduleIfTooEarl
 		return false;
 		}
 	return true;
-	}
-
-void GlobalSchedulerImpl::recomputePageNeighborhoods()
-	{
-	TimedLock lock(mMutex, "GlobalSchedulerImpl");
-
-	if (mIsTornDown)
-		return;
-
-	double t0 = curClock();
-
-	PolymorphicSharedPtr<PageLayoutCalculator::LongTermPageLayoutCalculation> problem = 
-		mKernel.checkOutLongTermPageLayoutCalculation();
-
-	if (problem)
-		{
-		if (mEventHandler)
-			mEventHandler(GlobalSchedulerEvent::OptimizeBegin());
-
-		lock.unlock();
-
-		problem->updateLayout();
-
-		lock.lock();
-
-		if (mEventHandler)
-			mEventHandler(GlobalSchedulerEvent::OptimizeEnd());
-		
-		mKernel.checkInUpdatedLongTermPageLayoutCalculation(problem);
-
-		if (mLogfilePath)
-			{
-			std::ofstream outfile;
-			
-			outfile.open(mLogfilePath->c_str(), std::ofstream::out | std::ofstream::app);
-			
-			outfile << mKernel.currentLayoutAsString() << "\n\n";
-
-			outfile.close();			
-			}
-		else
-			{
-			LOG_INFO
-				<< mKernel.currentLayoutAsString() << "\n\n"
-				;
-			}
-		}
-
-	double timeElapsed = curClock() - t0;
-
-	mRebalanceCallbackScheduler->schedule(
-		boost::bind(
-			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
-				&GlobalSchedulerImpl::recomputePageNeighborhoods
-				),
-			polymorphicSharedWeakPtrFromThis()
-			),
-		curClock() + kRecomputeLongTermLayoutInterval + timeElapsed,
-		"recomputePageNeighborhoods"
-		);
 	}
 
 void GlobalSchedulerImpl::recomputePageLayoutIfNecessary(

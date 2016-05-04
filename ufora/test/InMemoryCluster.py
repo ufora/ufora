@@ -322,8 +322,9 @@ class InMemoryCluster(object):
 
     def createServiceAndServiceThread(self):
         config = Setup.config()
-        config.cumulusMaxRamCacheMB = self.cumulusMaxRamCacheSizeOverride
-        config.cumulusVectorRamCacheMB = self.cumulusVectorRamCacheSizeOverride
+        config.cumulusMaxRamCacheMB = self.cumulusMaxRamCacheSizeOverride / 1024 / 1024
+        config.cumulusVectorRamCacheMB = self.cumulusVectorRamCacheSizeOverride / 1024 / 1024
+        config.cumulusTrackTcmalloc = False
         config.cumulusServiceThreadCount = self.cumulusThreadCountOverride
         config.cumulusDiskCacheStorageSubdirectory = str(uuid.uuid4())
 

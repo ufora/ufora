@@ -1,0 +1,179 @@
+/***************************************************************************
+    Copyright 2015 Ufora Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+#include "TaskCosts.hppml"
+
+#include "../../core/UnitTest.hpp"
+#include "../../core/Logging.hpp"
+#include "../../core/Clock.hpp"
+#include "../../core/math/Random.hpp"
+
+using namespace Cumulus;
+
+using namespace Cumulus::PageLayoutCalculator;
+
+namespace {
+
+const int64_t mb = 1024 * 1024;
+const int64_t gb = mb * 1024;
+
+MachineId machine(int64_t ix) 
+	{
+	return MachineId(hash_type(ix));
+	}
+
+Fora::PageId page(int64_t ix)
+	{
+	return Fora::PageId(hash_type(ix), 50 * mb, 50 * mb);
+	}
+
+TaskAllocatorId threadGroupId(int64_t ix)
+	{
+	return TaskAllocatorId::ForThreadGroup(hash_type(ix));
+	}
+
+
+}
+
+BOOST_AUTO_TEST_CASE( test_TaskCost_validator )
+{
+	for (long seed = 1; seed < 100; seed++)
+		{
+		Ufora::math::Random::Uniform<float> rnd(seed);
+
+		long machines = 1 + rnd() * 5;
+		long tasks = 1 + rnd() * 25;
+		long pages = 1 + rnd() * 75;
+
+		TaskCosts costs;
+		for (long k = 0; k < machines; k++)
+			costs.touch(machine(k));
+		for (long k = 0; k < tasks; k++)
+			costs.touch(threadGroupId(k));
+
+		LOG_DEBUG << seed << " with " << machines << " machines, " 
+			<< tasks << " tasks, " << pages << " pages";
+
+		for (long action = 0; action < 1000; action++)
+			{
+			int pageIx = rnd() * pages;
+			int taskIx = rnd() * tasks;
+			int machineIx = rnd() * machines;
+			
+			auto aPage = page(pageIx);
+			auto aTask = threadGroupId(taskIx);
+			auto aMachine = machine(machineIx);
+
+			double which = rnd();
+
+			if (which < .2)
+				{
+				//add/drop a page to a task
+				if (costs.taskPages().contains(aTask, aPage))
+					{
+					LOG_DEBUG << "Task " << taskIx << " drops " << pageIx;
+					costs.taskDropPage(aTask, aPage);
+					}
+				else
+					{
+					LOG_DEBUG << "Task " << taskIx << " adds " << pageIx;
+					costs.taskAddPage(aTask, aPage);
+					}
+				}
+				else
+			if (which < .4)
+				{
+				//add/drop a loading task from a machine
+				if (costs.loadingTasks().contains(aTask, aMachine))
+					{
+					LOG_DEBUG << "Machine " << machineIx << " drops loading task " << taskIx;
+
+					costs.dropTaskLoading(aTask, aMachine);
+					}
+				else
+					{
+					LOG_DEBUG << "Machine " << machineIx << " adds loading task " << taskIx;
+
+					costs.addTaskLoading(aTask, aMachine);
+					}
+				}
+				else
+			if (which < .5)
+				{
+				//add/drop a running task from a machine
+				if (costs.runningTasks().contains(aTask, aMachine))
+					{
+					LOG_DEBUG << "Machine " << machineIx << " drops running task " << taskIx;
+
+					costs.dropTaskRunning(aTask, aMachine);
+					}
+				else
+					{
+					LOG_DEBUG << "Machine " << machineIx << " adds running task " << taskIx;
+
+					costs.addTaskRunning(aTask, aMachine);
+					}
+				}
+				else
+			if (which < .6)
+				{
+				LOG_DEBUG << "Dropping task " << taskIx;
+				//totally drop a task
+				costs.dropTask(aTask);
+				costs.touch(aTask);
+				}
+				else
+			if (which < .7)
+				{
+				if (costs.taskIsUnderallocated(aTask))
+					{
+					LOG_DEBUG << "Marking fully allocated task " << taskIx;
+					costs.markTaskFullyAllocated(aTask);
+					}
+				else
+					{
+					LOG_DEBUG << "Marking underallocated task " << taskIx;
+					costs.markTaskUnderallocated(aTask);
+					}
+				}
+			else
+				{
+				if (costs.machinePages().contains(aMachine, aPage))
+					{
+					LOG_DEBUG << "Machine " << machineIx << " dropping page " << pageIx;
+					
+					costs.machineDropPage(aMachine, aPage);
+					}
+				else
+					{
+					LOG_DEBUG << "Machine " << machineIx << " adding page " << pageIx;
+
+					costs.machineAddPage(aMachine, aPage);
+					}
+				}
+
+			if (rnd() < .01)
+				costs.validateState();
+			}
+
+		costs.validateState();
+		}
+
+}
+
+
+
+
+
