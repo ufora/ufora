@@ -80,7 +80,7 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
 
         self.assertIsNotNone(self.computeUsingSeveralWorkers(text, s3, 1))
 
-    def test_PythonIoTaskService3(self):
+    def DISABLEDtest_PythonIoTaskService3(self):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
 
         s3.setThroughputPerMachine(1024 * 1024 * 20)

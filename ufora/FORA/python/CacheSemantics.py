@@ -27,20 +27,6 @@ class InvalidCacheCall(Exception):
     def __init__(self, message):
         Exception.__init__(self, message)
 
-class NearnessIndicator:
-    """NearnessIndicator - a representation of 'nearness' coming out of the language.
-    """
-
-    def __init__(self, foraValueKey):
-        self.foraValueKey = foraValueKey
-
-    @staticmethod
-    def fromForaArg(implValContainer):
-        """Compute a nearness from an ImplValContainer, or throw an
-        InvalidCacheCall"""
-
-        return NearnessIndicator(implValContainer)
-
 class CacheCallEntry(object):
     """represents a 'CacheCall' lookup in FORA.
 
@@ -70,10 +56,7 @@ class CacheCallEntry(object):
         if cacheCallTupleElement[1].getTuple() is None:
             raise InvalidCacheCall("Cache-call arguments must be a tuple")
 
-        if len(cacheCallTupleElement) == 3:
-            nearness = NearnessIndicator.fromForaArg(cacheCallTupleElement[2])
-        else:
-            nearness = None
+        nearness = None
 
         return CacheCallEntry(agent, args, nearness)
 
@@ -87,13 +70,6 @@ def processCacheCall(cacheCallElement):
     """process a tuple of cache-call arguments passed as an ImplValContainer"""
     assert isinstance(cacheCallElement, ForaNative.ImplValContainer)
     return [CacheCallEntry.fromCacheCallTupleEntry(x) for x in cacheCallElement]
-
-
-def isVectorCacheLoadRequest(cacheCallElement):
-    assert isinstance(cacheCallElement, ForaNative.ImplValContainer)
-    return len(cacheCallElement) == 2 and \
-        cacheCallElement[0] == ForaNative.makeSymbol("LoadAllVectorLeaves")
-
 
 
 def getCurrentS3Interface():

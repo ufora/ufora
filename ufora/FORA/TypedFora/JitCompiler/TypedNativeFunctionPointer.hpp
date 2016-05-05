@@ -20,7 +20,7 @@
 #include "../../Native/NativeRuntimeCallTarget.hppml"
 
 #include "../../Axioms/ReturnValue.hpp"
-#include "../../Core/MemBlockAllocator.hpp"
+#include "../../Core/StackFrameAllocator.hpp"
 #include "../../Core/MemoryPool.hpp"
 #include "../../../core/math/Hash.hpp"
 #include "Compiler.hppml"
@@ -88,7 +88,7 @@ public:
 		{
 		lassert(!mPtr.isEmpty());
 
-		MemBlockAllocator allocator(4 * 1024);
+		StackFrameAllocator allocator(4 * 1024, MemoryPool::getFreeStorePool());
 
 		R1 toReturn;
 		toReturn.~R1();
@@ -206,7 +206,7 @@ public:
 		{
 		lassert(!mPtr.isEmpty());
 
-		MemBlockAllocator allocator(4 * 1024);
+		StackFrameAllocator allocator(4 * 1024, MemoryPool::getFreeStorePool());
 
 		R1 toReturn;
 		toReturn.~R1();
@@ -327,7 +327,7 @@ public:
 		{
 		lassert(!mPtr.isEmpty());
 
-		MemBlockAllocator allocator(4 * 1024);
+		StackFrameAllocator allocator(4 * 1024, MemoryPool::getFreeStorePool());
 
 		R1 toReturn;
 		toReturn.~R1();
@@ -452,7 +452,7 @@ public:
 		{
 		lassert(!mPtr.isEmpty());
 
-		MemBlockAllocator allocator(4 * 1024);
+		StackFrameAllocator allocator(4 * 1024, MemoryPool::getFreeStorePool());
 
 		R1 toReturn;
 		toReturn.~R1();
@@ -608,7 +608,7 @@ public:
 		{
 		lassert(!mPtr.isEmpty());
 
-		MemBlockAllocator allocator(4 * 1024);
+		StackFrameAllocator allocator(4 * 1024, MemoryPool::getFreeStorePool());
 
 		uword_t whichContinuationWasFollowed = -1;
 
@@ -725,7 +725,7 @@ public:
 		{
 		lassert(!mPtr.isEmpty());
 
-		MemBlockAllocator allocator(4 * 1024);
+		StackFrameAllocator allocator(4 * 1024, MemoryPool::getFreeStorePool());
 
 		char toReturn;
 
@@ -847,7 +847,7 @@ public:
 		{
 		lassert(!mPtr.isEmpty());
 
-		MemBlockAllocator allocator(4 * 1024);
+		StackFrameAllocator allocator(4 * 1024, MemoryPool::getFreeStorePool());
 
 		char toReturn;
 

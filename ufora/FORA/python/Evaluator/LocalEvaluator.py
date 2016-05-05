@@ -50,12 +50,15 @@ DISABLE_SPLITTING = False
 freestoreLock = threading.Lock()
 
 class SplitResult(object):
-    def __init__(self, inFuturesSplitResult, inComputationsToSlotIndices):
-        self.futuresSplitResult = inFuturesSplitResult
-        self.computationsToSlotIndices = inComputationsToSlotIndices
+    def __init__(self, node, splits, childComputations, context):
+        self.node = node
+        self.splits = splits
+        self.context = context
+        self.childComputations = childComputations
 
-    def submittedComputations(self):
-        return self.computationsToSlotIndices.keys()
+class SplitSubcomputation(object):
+    def __init__(self, pausedComputationTree):
+        self.pausedComputationTree = pausedComputationTree
 
 def getCurrentS3Interface():
     return ActualS3Interface.ActualS3InterfaceFactory()
@@ -66,7 +69,7 @@ class ComputationCache(Stoppable.Stoppable):
         self.dependencies_ = TwoWaySetMap.TwoWaySetMap()
         self.vdm_ = vdm
         self.offlineCache_ = offlineCache
-        self.finishedValues_ = {}
+        self.finishedValuesAndTimeElapsed_ = {}
         self.intermediates_ = {}
         self.lock_ = threading.RLock()
         self.completable_ = Queue.Queue()
@@ -94,7 +97,7 @@ class ComputationCache(Stoppable.Stoppable):
 
 
     def flush(self):
-        self.finishedValues_ = {}
+        self.finishedValuesAndTimeElapsed_ = {}
         self.contexts_ = []
 
     def teardown(self):
@@ -107,7 +110,7 @@ class ComputationCache(Stoppable.Stoppable):
         self.isActive = False
         self.vdm_ = None
         self.contexts_ = []
-        self.finishedValues_ = {}
+        self.finishedValuesAndTimeElapsed_ = {}
         self.intermediates_ = {}
         self.computingContexts_ = {}
         self.computingContexts_t0_ = {}
@@ -149,19 +152,19 @@ class ComputationCache(Stoppable.Stoppable):
         with self.lock_:
             notAlreadyInCache = [
                 comp for comp in computationsToCall
-                    if comp not in self.finishedValues_ and comp not in self.intermediates_
+                    if comp not in self.finishedValuesAndTimeElapsed_ and comp not in self.intermediates_
                 ]
 
             for comp in computationsToCall:
                 #put it in the cache if its not there already
-                if comp not in self.finishedValues_ and comp not in self.intermediates_:
+                if comp not in self.finishedValuesAndTimeElapsed_ and comp not in self.intermediates_:
                     self.intermediates_[comp] = None
                     self.completable_.put(comp)
                     self.watchers_[comp] = threading.Event()
 
             allDone = True
             for comp in computationsToCall:
-                if comp not in self.finishedValues_:
+                if comp not in self.finishedValuesAndTimeElapsed_:
                     allDone = False
 
         #wait until the event is set. at this point the value should
@@ -172,11 +175,11 @@ class ComputationCache(Stoppable.Stoppable):
             allDone = True
 
         if allDone:
-            result = [self.finishedValues_[comp] for comp in computationsToCall]
+            result = [self.finishedValuesAndTimeElapsed_[comp][0] for comp in computationsToCall]
 
             if not leaveInCache:
                 for c in notAlreadyInCache:
-                    del self.finishedValues_[c]
+                    del self.finishedValuesAndTimeElapsed_[c]
 
             return result
         else:
@@ -219,7 +222,8 @@ class ComputationCache(Stoppable.Stoppable):
                                         self.dependencies_[l] = set()
 
                                     for l in loop:
-                                        self.finishNode_(l,
+                                        self.finishNode_(
+                                            l,
                                             ComputationResult_.Exception(
                                                 ImplValContainer_(
                                                     ("cyclic cachecall detected",
@@ -227,7 +231,8 @@ class ComputationCache(Stoppable.Stoppable):
                                                         )
                                                     ),
                                                 ImplValContainer_()
-                                                )
+                                                ),
+                                            FORANative.TimeElapsed()
                                             )
                                     curNode = None
                                 else:
@@ -238,21 +243,21 @@ class ComputationCache(Stoppable.Stoppable):
                         try:
                             if ((time.time() - self.computingContexts_t0_[x]) >
                                                 kMinSplitTimeInterval and not DISABLE_SPLITTING):
-                                if not self.computingContexts_[x].isTracing():
-                                    self.isSplit_.add(x)
-                                    self.computingContexts_[x].interrupt()
-                                    self.computingContexts_t0_[x] = time.time()
+                                self.isSplit_.add(x)
+                                self.computingContexts_[x].interrupt()
+                                self.computingContexts_t0_[x] = time.time()
                         except:
                             traceback.print_exc()
             except:
                 traceback.print_exc()
 
     def timeElapsedForContext(self, c):
-        return c.getTimeSpentInInterpreter() + c.getTimeSpentInCompiledCode()
+        te = c.getTotalTimeElapsed()
+        return te.timeSpentInInterpreter + te.timeSpentInCompiledCode
 
-    def finishNode_(self, node, result):
+    def finishNode_(self, node, result, timeElapsed):
         with self.lock_:
-            self.finishedValues_[node] = result
+            self.finishedValuesAndTimeElapsed_[node] = (result, timeElapsed)
             del self.intermediates_[node]
 
             depsOnMe = list(self.dependencies_.keysFor(node))
@@ -273,79 +278,25 @@ class ComputationCache(Stoppable.Stoppable):
 
         return False
 
-    def findMeatyPausedComputations(self, futuresSplitResult):
-        submittableFutures = futuresSplitResult.indicesOfSubmittableFutures()
-        pausedComputationsWithIndicesToInspect = set(map(
-            lambda ix: (futuresSplitResult.pausedComputationForSlot(ix), ix),
-            submittableFutures))
-
-        meatyPausedComputationsAndIndices = []
-        inspectedIndices = set()
-
-        loopCt = 0
-        while len(pausedComputationsWithIndicesToInspect) > 0:
-            loopCt += 1
-
-            pausedComputationAndIx = pausedComputationsWithIndicesToInspect.pop()
-
-            slotIx = pausedComputationAndIx[1]
-
-            quickContext = self.grabContext()
-            quickContext.resumePausedComputation(pausedComputationAndIx[0])
-            quickContext.resetInterruptState()
-            quickContext.interruptAfterCycleCount(1000)
-            quickContext.resume()
-
-            nIter = 0
-            while True:
-                nIter += 1
-                if quickContext.isInterrupted() or quickContext.isVectorLoad() or quickContext.isCacheRequest():
-                    meatyPausedComputationsAndIndices.append(pausedComputationAndIx)
-                    inspectedIndices.add(slotIx)
-
-                    self.checkContextBackIn(quickContext)
-                    break
-                elif quickContext.isFinished():
-                    result = quickContext.getFinishedResult()
-
-                    futuresSplitResult.slotCompleted(slotIx, result)
-                    futuresSplitResult.continueSimulation()
-                    inspectedIndices.add(slotIx)
-
-                    currentSubmittableFutures = futuresSplitResult.indicesOfSubmittableFutures()
-                    for newIx in set(currentSubmittableFutures).difference(inspectedIndices):
-                        #print "found new work at ix = %s" % newIx
-                        pausedComputationsWithIndicesToInspect.add(
-                            (futuresSplitResult.pausedComputationForSlot(newIx), newIx))
-
-                    self.checkContextBackIn(quickContext)
-                    break
-                if nIter > 10000:
-                    assert False, "spun too many times!"
-
-        if len(meatyPausedComputationsAndIndices) > 0:
-            return False, meatyPausedComputationsAndIndices
-        else:
-            return True, futuresSplitResult.getFinalResult()
-
-    def computeIntermediatesForSplitResult(
-            self, node, futuresSplitResult, meatyPausedComputationsAndIndices):
+    def computeIntermediatesForSplitResult(self, node, splits, context):
         deps = set()
-        computationsToSlotIndices = dict()
 
-        for pausedComputationAndIx in meatyPausedComputationsAndIndices:
-            pausedComputation = pausedComputationAndIx[0]
-            ix = pausedComputationAndIx[1]
+        childComputations = []
 
-            self.intermediates_[pausedComputation] = None
-            self.completable_.put(pausedComputation)
-            self.watchers_[pausedComputation] = threading.Event()
-            deps.add(pausedComputation)
-            computationsToSlotIndices[pausedComputation] = ix
+        for split in splits:
+            pausedComputation = split.childComputation
+
+            child = SplitSubcomputation(pausedComputation)
+
+            self.intermediates_[child] = None
+            self.completable_.put(child)
+            self.watchers_[child] = threading.Event()
+            deps.add(child)
+            childComputations.append(child)
 
         self.dependencies_[node] = deps
 
-        return SplitResult(futuresSplitResult, computationsToSlotIndices)
+        return SplitResult(node, splits, childComputations, context)
 
     def computeOneNode(self, node):
         """push 'node' one step further in its computation requirements
@@ -367,13 +318,15 @@ class ComputationCache(Stoppable.Stoppable):
                     with freestoreLock:
                         #this operation may be copying values in the freestore as we're
                         #updating them, so we need to do it under a lock
-                        context.placeInEvaluationStateWithoutRenamingMutableVectors(*node)
-                    context.resume()
+                        context.placeInEvaluationStateWithoutRenamingMutableVectors(
+                            ImplValContainer_(tuple(node))
+                            )
+                    context.compute()
 
-                elif isinstance(node, FORANative.PausedComputation):
-                    context.resumePausedComputation(node)
+                elif isinstance(node, SplitSubcomputation):
+                    context.resumePausedComputation(node.pausedComputationTree)
                     context.resetInterruptState()
-                    context.resume()
+                    context.compute()
                 else:
                     assert False, "don't know what to do with node of type %s" % node
 
@@ -386,109 +339,83 @@ class ComputationCache(Stoppable.Stoppable):
 
             req = context.getCacheRequest()
 
-            if CacheSemantics.isVectorCacheLoadRequest(req):
-                with self.contextEnterer(context):
-                    context.resetInterruptState()
-                    context.resume(
-                        ComputationResult_.Result(
-                            ImplValContainer_(),
-                            ImplValContainer_()
-                            )
-                        )
-            elif CacheSemantics.isCacheRequestWithResult(req):
+            if CacheSemantics.isCacheRequestWithResult(req):
                 result = CacheSemantics.getCacheRequestComputationResult(req)
 
                 with self.contextEnterer(context):
                     context.resetInterruptState()
-                    context.resume(result)
+                    context.addCachecallResult(result)
+                    context.compute()
             else:
                 cacheCalls = [x.extractApplyTuple() for x in CacheSemantics.processCacheCall(req)]
 
                 res = []
                 exception = None
                 for t in cacheCalls:
-                    assert t in self.finishedValues_, (
+                    assert t in self.finishedValuesAndTimeElapsed_, (
                         "Couldn't find result for: %s in %s" %
-                            (t,"\n".join([str(x) for x in self.finishedValues_.keys()]))
+                            (t,"\n".join([str(x) for x in self.finishedValuesAndTimeElapsed_.keys()]))
                         )
-                    if self.finishedValues_[t].isException():
+                    if self.finishedValuesAndTimeElapsed_[t][0].isException():
                         if exception is None:
-                            exception = self.finishedValues_[t]
+                            exception = self.finishedValuesAndTimeElapsed_[t][0]
                     else:
-                        res.append(self.finishedValues_[t].asResult.result)
+                        res.append(self.finishedValuesAndTimeElapsed_[t][0].asResult.result)
 
                 with self.contextEnterer(context):
                     if exception:
                         context.resetInterruptState()
-                        context.resume(exception)
+                        context.addCachecallResult(exception)
+                        context.compute()
                     else:
                         context.resetInterruptState()
-                        context.resume(
+                        context.addCachecallResult(
                             ComputationResult_.Result(
                                 ImplValContainer_(tuple(res)),
                                 ImplValContainer_()
                                 )
                             )
+                        context.compute()
         else:
             #this was a split request
-            splitResult, splitComputationLog = self.intermediates_[node]
+            splitResult = self.intermediates_[node]
 
-            for slotComputation in splitResult.submittedComputations():
-                assert slotComputation in self.finishedValues_
+            for ix in range(len(splitResult.splits)):
+                child = splitResult.childComputations[ix]
 
-                value = self.finishedValues_[slotComputation]
+                assert child in self.finishedValuesAndTimeElapsed_
+
+                value = self.finishedValuesAndTimeElapsed_[child][0]
+                timeElapsed = self.finishedValuesAndTimeElapsed_[child][1]
+                del self.finishedValuesAndTimeElapsed_[child]
 
                 if value.isFailure():
                     self.finishNode_(node, value)
+                    self.checkContextBackIn(splitResult.context)
                     return
                 else:
-                    splitResult.futuresSplitResult.slotCompleted(
-                        splitResult.computationsToSlotIndices[slotComputation],
-                        value)
-                    del splitResult.computationsToSlotIndices[slotComputation]
+                    splitResult.context.absorbSplitResult(
+                        splitResult.splits[ix].computationHash, 
+                        value,
+                        timeElapsed
+                        )
 
-            submittableFutures = splitResult.futuresSplitResult.indicesOfSubmittableFutures()
-
-            if len(submittableFutures) == 0:
-                context = self.grabContext()
-
-                toResumeWith = splitResult.futuresSplitResult.getFinalResult()
-                context.resumePausedComputation(toResumeWith)
+            with self.lock_:
+                context = splitResult.context
                 context.resetInterruptState()
                 self.intermediates_[node] = context
                 with self.contextEnterer(context):
-                    context.resume()
-
-            else:
-                with self.lock_:
-                    futuresSplitResult = splitResult.futuresSplitResult
-
-                    isFinished, result = self.findMeatyPausedComputations(futuresSplitResult)
-
-                    if not isFinished:
-                        splitResult = self.computeIntermediatesForSplitResult(
-                            node, futuresSplitResult, result)
-
-                        self.intermediates_[node] = (splitResult, [])
-
-                        return
-
-                    else:
-                        toResume = result
-                        context = self.grabContext()
-                        context.resumePausedComputation(toResume)
-                        context.resetInterruptState()
-                        self.intermediates_[node] = context
-                        with self.contextEnterer(context):
-                            context.resume()
+                    context.compute()
 
         while True:
             if context.isFinished():
                 result = context.getFinishedResult()
+                timeElapsed = context.getTotalTimeElapsed()
+
                 self.checkContextBackIn(context)
 
                 #now, wake up any dependencies
-                self.finishNode_(node, result)
+                self.finishNode_(node, result, timeElapsed)
                 return
 
             elif context.isVectorLoad():
@@ -516,30 +443,19 @@ class ComputationCache(Stoppable.Stoppable):
 
                 with self.contextEnterer(context):
                     context.resetInterruptState()
-                    context.resume()
+                    context.compute()
                 #go back around and try again
 
             elif context.isInterrupted():
                 toResume = None
                 if self.checkShouldSplit(context):
-                    futuresSplitResult = context.splitWithFutures()
+                    splits = context.splitComputation()
 
-                    if futuresSplitResult is not None:
+                    if splits is not None:
                         with self.lock_:
-                            futuresSplitResult.disallowRepeatNodes()
-
-                            isFinished, result = self.findMeatyPausedComputations(futuresSplitResult)
-
-                            if not isFinished:
-                                splitResult = self.computeIntermediatesForSplitResult(
-                                    node, futuresSplitResult, result)
-
-                                self.intermediates_[node] = (splitResult, context.getComputationLog())
-
-                                self.checkContextBackIn(context)
-                                return
-                            else:
-                                toResume = result
+                            splitResult = self.computeIntermediatesForSplitResult(node, splits, context)
+                            self.intermediates_[node] = splitResult
+                            return
 
                 #if we're here, then we didn't split
                 #go back around and try again
@@ -547,8 +463,8 @@ class ComputationCache(Stoppable.Stoppable):
                     if toResume is not None:
                         context.resumePausedComputation(toResume)
                     context.resetInterruptState()
-                    context.resume()
-
+                    context.compute()
+                    
 
             elif context.isCacheRequest():
                 #these are thew new dependencies
@@ -556,9 +472,7 @@ class ComputationCache(Stoppable.Stoppable):
 
                 deps = set()
 
-                if CacheSemantics.isVectorCacheLoadRequest(req):
-                    pass
-                elif CacheSemantics.isCacheRequestWithResult(req):
+                if CacheSemantics.isCacheRequestWithResult(req):
                     pass
                 else:
                     cacheCalls = [x.extractApplyTuple() for x in CacheSemantics.processCacheCall(req)]
@@ -566,12 +480,12 @@ class ComputationCache(Stoppable.Stoppable):
                     with self.lock_:
                         #register any dependencies
                         for t in cacheCalls:
-                            if t not in self.finishedValues_ and t not in self.intermediates_:
+                            if t not in self.finishedValuesAndTimeElapsed_ and t not in self.intermediates_:
                                 #its a new request
                                 self.intermediates_[t] = None
                                 self.completable_.put(t)
                                 self.watchers_[t] = threading.Event()
-                            if t not in self.finishedValues_:
+                            if t not in self.finishedValuesAndTimeElapsed_:
                                 deps.add(t)
                         self.dependencies_[node] = deps
 
@@ -591,12 +505,13 @@ def areAllArgumentsConst(*args):
 
 class LocalEvaluator(EvaluatorBase.EvaluatorBase):
     def __init__(self,
-                 offlineCacheFunction,
-                 newMemLimit,
-                 remoteEvaluator=None,
-                 newLoadRatio=.5,
-                 maxPageSizeInBytes=None,
-                 vdmOverride=None):
+                    offlineCacheFunction,
+                    newMemLimit,
+                    remoteEvaluator = None,
+                    newLoadRatio = .5,
+                    maxPageSizeInBytes = None,
+                    vdmOverride = None
+                    ):
         if maxPageSizeInBytes is None:
             maxPageSizeInBytes = Setup.config().maxPageSizeInBytes
 
@@ -625,7 +540,10 @@ class LocalEvaluator(EvaluatorBase.EvaluatorBase):
 
         self.remoteEvaluator_ = remoteEvaluator
 
-        self.cache_ = ComputationCache(self.vdm_, self.offlineCache_)
+        self.cache_ = ComputationCache(
+                self.vdm_,
+                self.offlineCache_,
+                )
 
     def flush(self):
         self.cache_.flush()
@@ -659,7 +577,7 @@ class LocalEvaluator(EvaluatorBase.EvaluatorBase):
         args = self.expandIfListOrTuple(*args)
         #at this point, args is the list of things to compute
 
-        if self.hasRemoteEvaluator() and areAllArgumentsConst(*args):
+        if (self.hasRemoteEvaluator() and self.areAllArgumentsConst(*args)):
             return self.remoteEvaluator_.evaluate(*args)
 
 

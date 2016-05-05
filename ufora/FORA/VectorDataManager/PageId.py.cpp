@@ -20,6 +20,8 @@
 #include "../../core/python/ValueLikeCPPMLWrapper.hppml"
 #include "../../native/Registrar.hpp"
 #include "../../core/python/CPPMLWrapper.hpp"
+#include "../../core/containers/ImmutableTreeVector.py.hpp"
+#include "../../core/containers/ImmutableTreeSet.py.hpp"
 
 class PageIdWrapper :
 		public native::module::Exporter<PageIdWrapper> {
@@ -32,6 +34,9 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
+
+			PythonWrapper<ImmutableTreeSet<Fora::PageId> >::exportPythonInterface("PageId");
+			PythonWrapper<ImmutableTreeVector<Fora::PageId> >::exportPythonInterface("PageId");
 
 			object cls =
 				ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<Fora::PageId>().class_()

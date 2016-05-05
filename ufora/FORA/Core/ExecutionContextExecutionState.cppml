@@ -59,6 +59,30 @@ ExecutionContextExecutionState::~ExecutionContextExecutionState()
 	{
 	}
 
+std::string ExecutionContextExecutionState::stateAsString() const
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	std::ostringstream str;
+
+	if (mIsDestroyed)
+		str << "destroyed;";
+
+	if (mIsCurrentlyExecuting)
+		str << "executing;";
+
+	if (mIsGcPending)
+		str << "gc pending;";
+
+	if (mGcScheduled)
+		str << "gc pending;";
+
+	if (*mInterruptFlagPtr)
+		str << "interrupted;";
+
+	return str.str();
+	}
+	
 void ExecutionContextExecutionState::markDestroyed()
 	{
 	boost::mutex::scoped_lock lock(mMutex);
@@ -98,6 +122,52 @@ bool ExecutionContextExecutionState::isGcPending()
 	boost::mutex::scoped_lock lock(mMutex);
 
 	return mIsGcPending;
+	}
+
+void ExecutionContextExecutionState::triggerInternalInterruptAtTime(double timestamp)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	mTargetWakeupTimestamp = timestamp;
+
+	mContext->getVDM().getImpl()->getVdmCheckCallbackScheduler()->schedule(
+		boost::bind(
+			&ExecutionContextExecutionState::triggerInternalInterrupt,
+			this,
+			//make sure we get a lock on the ExecutionContext so that it's guaranteed
+			//to exist for the lifetime of the object
+			mContext->polymorphicSharedWeakPtrFromThis(),
+			//wake up at this timestamp
+			timestamp
+			),
+		timestamp,
+		"ExecutionContextExecutionState::triggerInternalInterruptAtTime"
+		);
+	}
+
+void ExecutionContextExecutionState::disableScheduledInternalInterruptTrigger()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	//ensure that if a background internal trigger wakes up, it doesn't actually do anything
+	mTargetWakeupTimestamp = -1;
+	}
+
+void ExecutionContextExecutionState::triggerInternalInterrupt(
+			PolymorphicSharedWeakPtr<ExecutionContextImpl> inContext,
+			double targetTimestamp
+			)
+	{
+	//we need to make sure this thing continues to exist
+	PolymorphicSharedPtr<ExecutionContextImpl> context = inContext.lock();
+
+	if (!context)
+		return;
+
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (mTargetWakeupTimestamp == targetTimestamp)
+		interrupt_(false);
 	}
 
 void ExecutionContextExecutionState::scheduleVdmCheck()
@@ -288,6 +358,20 @@ bool ExecutionContextExecutionState::resetInterruptStateIfOnlyTriggeredInternall
 	return false;
 	}
 
+bool ExecutionContextExecutionState::resetInterruptStateIfOnlyTriggeredInternallyAndNoGcPending()
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (!mInterruptIsExternal && !mIsGcPending && !mGcScheduled)
+		{
+		*mInterruptFlagPtr = 0;
+		mInterruptIsExternal = false;
+		return true;
+		}
+
+	return false;
+	}
+
 void ExecutionContextExecutionState::releaseCurrentLock()
 	{
 	boost::mutex::scoped_lock lock(mMutex);
@@ -402,6 +486,7 @@ ExecutionContextInterruptAndLockScope::ExecutionContextInterruptAndLockScope(
 
 ExecutionContextInterruptAndLockScope::~ExecutionContextInterruptAndLockScope()
 	{
+	mContext.mContext->updateLastEventMemoryLevels_();
 	mContext.releaseCurrentLock();
 	}
 

@@ -19,7 +19,7 @@
 #include "../Core/ImplVal.hppml"
 #include "../Core/ApplyArgFrame.hppml"
 
-class MemBlockAllocator;
+class StackFrameAllocator;
 
 namespace Fora {
 namespace Interpreter {
@@ -55,9 +55,9 @@ public:
 
 	string toString() const;
 
-	static EvalFrameArgList* allocate(uword_t capacity, MemBlockAllocator& allocator);
+	static EvalFrameArgList* allocate(uword_t capacity, StackFrameAllocator& allocator);
 
-	static void free(EvalFrameArgList* list, MemBlockAllocator& allocator);
+	static void free(EvalFrameArgList* list, StackFrameAllocator& allocator);
 
 	void addImplvalsToRefcountPool(RefcountPool* inPool);
 
