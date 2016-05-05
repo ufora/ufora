@@ -16,6 +16,8 @@ import unittest
 import threading
 import time
 import random
+import re
+import ufora.FORA.python.Evaluator.Evaluator as Evaluator
 import ufora.FORA.python.ExecutionContext as ExecutionContext
 import ufora.FORA.python.FORA as FORA
 import ufora.FORA.python.Runtime as Runtime
@@ -35,6 +37,10 @@ def triggerAfter(f, timeout):
 
 def enum(**enums):
     return type('Enum', (), enums)
+
+def evaluate(context, *args):
+    context.placeInEvaluationState(FORANative.ImplValContainer(args))
+    context.compute()
 
 #ExecutionMode = enum(Interpreted=0, SampledSpecializations=1, Compiled=2)
 #InterruptAction = enum(Noop=0, SpecializeOnCurrent=1, DrainAllPendingCompilations=2)
@@ -175,7 +181,7 @@ class TestExecutionContext(unittest.TestCase):
     #     if previousTrace != None:
     #         context.setExpectedSteps(previousTrace)
     #     context.interruptAfterCycleCount(self.interruptRate)
-    #     context.evaluate(func, FORANative.symbol_Call)
+    #     evaluate(context, func, FORANative.symbol_Call)
 
     #     traces = []
     #     while context.isInterrupted():
@@ -218,7 +224,8 @@ class TestExecutionContext(unittest.TestCase):
         context = ExecutionContext.ExecutionContext(
             dataManager = vdm,
             allowInterpreterTracing = True,
-            blockUntilTracesAreCompiled = True
+            blockUntilTracesAreCompiled = True,
+            allowInternalSplitting = False
             )
 
         text = """fun(){
@@ -233,7 +240,7 @@ class TestExecutionContext(unittest.TestCase):
         f([1,2,3,4,5], 0)
         }"""
 
-        context.evaluate(
+        evaluate(context, 
             FORA.extractImplValContainer(FORA.eval(text)),
             FORANative.symbol_Call
             )
@@ -247,17 +254,24 @@ class TestExecutionContext(unittest.TestCase):
 
         context = ExecutionContext.ExecutionContext(
             dataManager = vdm,
-            allowInterpreterTracing = False
+            allowInterpreterTracing = False,
+            allowInternalSplitting = False
             )
 
         context.configuration.agressivelyValidateRefcountsAndPageReachability = True
 
+        context.placeInEvaluationState(
+                FORANative.ImplValContainer(
+                    (
+                    FORA.extractImplValContainer(FORA.eval(text)),
+                    FORANative.symbol_Call
+                    )
+                )
+            )
         context.interruptAfterCycleCount(cycleCount)
 
-        context.evaluate(
-            FORA.extractImplValContainer(FORA.eval(text)),
-            FORANative.symbol_Call
-            )
+        context.compute()
+
         if expectsToHavePages:
             self.assertTrue(context.pageLargeVectorHandles(0))
             self.assertFalse(context.pageLargeVectorHandles(0))
@@ -285,7 +299,7 @@ class TestExecutionContext(unittest.TestCase):
                     )
 
         context.resetInterruptState()
-        context.resume()
+        context.compute()
 
         self.assertEqual(context.getFinishedResult().asResult.result.pyval, 1580)
 
@@ -393,10 +407,9 @@ class TestExecutionContext(unittest.TestCase):
         vdm = FORANative.VectorDataManager(callbackScheduler, Setup.config().maxPageSizeInBytes)
 
         context = ExecutionContext.ExecutionContext(
-            dataManager = vdm
+            dataManager = vdm,
+            allowInternalSplitting = False
             )
-
-        context.interruptAfterCycleCount(100000)
 
         text = """
         fun() {
@@ -411,40 +424,47 @@ class TestExecutionContext(unittest.TestCase):
             res
             }"""
 
-        context.evaluate(
+        context.placeInEvaluationState(FORANative.ImplValContainer((
             FORA.extractImplValContainer(FORA.eval(text)),
             FORANative.symbol_Call
-            )
+            )))
+        context.interruptAfterCycleCount(100000)
+
+        context.compute()
 
         paused1 = context.extractPausedComputation()
 
         while not context.isVectorLoad():
             context.copyValuesOutOfVectorPages()
             vdm.unloadAllPossible()
+            context.resetInterruptState()
             context.interruptAfterCycleCount(100000)
-            context.resume()
+            context.compute()
 
         paused2 = context.extractPausedComputation()
 
-        self.assertTrue(len(paused1.frames) == len(paused2.frames))
-
+        self.assertTrue(len(paused1.asThread.computation.frames) == len(paused2.asThread.computation.frames))
+            
     def copyDataOutOfPagesTest(self, text, cycleCount, expectsToHaveCopies):
         vdm = FORANative.VectorDataManager(callbackScheduler, Setup.config().maxPageSizeInBytes)
 
         context = ExecutionContext.ExecutionContext(
             dataManager = vdm,
-            allowInterpreterTracing = False
+            allowInterpreterTracing = False,
+            allowInternalSplitting = False
             )
 
         context.configuration.agressivelyValidateRefcountsAndPageReachability = True
         context.configuration.releaseVectorHandlesImmediatelyAfterExecution = False
 
-        context.interruptAfterCycleCount(cycleCount)
-
-        context.evaluate(
+        context.placeInEvaluationState(FORANative.ImplValContainer((
             FORA.extractImplValContainer(FORA.eval(text)),
             FORANative.symbol_Call
-            )
+            )))
+        
+        context.interruptAfterCycleCount(cycleCount)
+
+        context.compute()
 
         if expectsToHaveCopies:
             self.assertTrue(context.copyValuesOutOfVectorPages())
@@ -602,13 +622,14 @@ class TestExecutionContext(unittest.TestCase):
             }"""
 
         vdm = FORANative.VectorDataManager(callbackScheduler, Setup.config().maxPageSizeInBytes)
-
+        
         context = ExecutionContext.ExecutionContext(
             dataManager = vdm,
-            allowInterpreterTracing = False
+            allowInterpreterTracing = False,
+            allowInternalSplitting = False
             )
-
-        context.evaluate(
+        
+        evaluate(context, 
             FORA.extractImplValContainer(FORA.eval(text)),
             FORANative.symbol_Call
             )
@@ -617,11 +638,12 @@ class TestExecutionContext(unittest.TestCase):
 
         context2 = ExecutionContext.ExecutionContext(
             dataManager = vdm,
-            allowInterpreterTracing = False
+            allowInterpreterTracing = False,
+            allowInternalSplitting = False
             )
 
         context2.resumePausedComputation(computation)
-
+        
         self.assertTrue(
             context2.totalBytesUsed < 2 * context.totalBytesUsed
             )
@@ -641,29 +663,27 @@ class TestExecutionContext(unittest.TestCase):
         vdm = FORANative.VectorDataManager(callbackScheduler, Setup.config().maxPageSizeInBytes)
         context = ExecutionContext.ExecutionContext(
             dataManager = vdm,
-            allowInterpreterTracing = False
+            allowInterpreterTracing = False,
+            allowInternalSplitting = False
             )
-
+        
         context.interruptAfterCycleCount(1010)
 
-        context.evaluate(
+        evaluate(context, 
             FORA.extractImplValContainer(FORA.eval(text)),
             FORANative.symbol_Call
             )
 
         computation = context.extractPausedComputation()
-
-        self.assertEqual(len(computation.frames), 2)
-
-        self.assertEqual(computation.frames[1].values[0].pyval, 335)
-
+        
         context2 = ExecutionContext.ExecutionContext(
             dataManager = vdm,
-            allowInterpreterTracing = False
+            allowInterpreterTracing = False,
+            allowInternalSplitting = False
             )
 
         context2.resumePausedComputation(computation)
-        context2.resume()
+        context2.compute()
 
         self.assertEqual(context2.getFinishedResult().asResult.result.pyval, 100000)
 
@@ -678,15 +698,18 @@ class TestExecutionContext(unittest.TestCase):
 
         context = ExecutionContext.ExecutionContext(
             dataManager = vdm,
-            allowInterpreterTracing = False
+            allowInterpreterTracing = False,
+            allowInternalSplitting = False
             )
 
-        context.evaluate(
+        evaluate(context, 
             FORA.extractImplValContainer(FORA.eval("fun() { [1,2,3].paged }")),
             FORANative.ImplValContainer(FORANative.makeSymbol("Call"))
             )
 
         pagedVec = context.getFinishedResult().asResult.result
+        
+        vdm.unloadAllPossible()
 
         context.placeInEvaluationState(
             FORANative.ImplValContainer(
@@ -696,15 +719,13 @@ class TestExecutionContext(unittest.TestCase):
                 )
             )
 
-        vdm.unloadAllPossible()
+        context.compute()
 
-        context.resume()
-
-        self.assertTrue(context.isVectorLoad())
+        self.assertTrue(context.isVectorLoad(), context.extractCurrentTextStacktrace())
 
         computation = context.extractPausedComputation()
 
-        self.assertEqual(len(computation.frames),1)
+        self.assertEqual(len(computation.asThread.computation.frames),1)
 
     def test_resumePausedComputationWithResult(self):
         self.runtime = Runtime.getMainRuntime()
@@ -714,7 +735,8 @@ class TestExecutionContext(unittest.TestCase):
 
         context = ExecutionContext.ExecutionContext(
             dataManager = vdm,
-            allowInterpreterTracing = False
+            allowInterpreterTracing = False,
+            allowInternalSplitting = False
             )
 
         text = """
@@ -733,7 +755,7 @@ class TestExecutionContext(unittest.TestCase):
         f([1], 10)
         """
 
-        context.evaluate(
+        evaluate(context, 
             FORA.extractImplValContainer(FORA.eval("fun() { " + text + " }")),
             FORANative.ImplValContainer(FORANative.makeSymbol("Call"))
             )
@@ -742,12 +764,14 @@ class TestExecutionContext(unittest.TestCase):
 
         pausedComp = context.extractPausedComputation()
 
-        framesToUse = pausedComp.frames[0:5]
+        framesToUse = pausedComp.asThread.computation.frames[0:5]
 
-        pausedComp2 = FORANative.PausedComputation(
-            framesToUse,
-            FORA.extractImplValContainer(FORA.eval("([2], 0)", keepAsForaValue=True)),
-            False
+        pausedComp2 = FORANative.PausedComputationTree(
+            FORANative.PausedComputation(
+                framesToUse,
+                FORA.extractImplValContainer(FORA.eval("([2], 0)", keepAsForaValue=True)),
+                False
+                )
             )
 
         context.resumePausedComputation(pausedComp2)
@@ -756,7 +780,7 @@ class TestExecutionContext(unittest.TestCase):
         context.pageLargeVectorHandles(0)
 
         context.resetInterruptState()
-        context.resume()
+        context.compute()
 
         self.assertTrue( context.isFinished() )
 
@@ -765,57 +789,15 @@ class TestExecutionContext(unittest.TestCase):
         self.assertTrue(result.asResult.result[1].pyval == 6)
 
 
-    def test_extractStacktrace(self):
-        text = """fun() {
-            let x = 0;
-            let v = [1,2,3]
-            while (x < 100000) {
-                x = x + 1
-                }
-            (x,v)
-            }"""
-
-        self.runtime = Runtime.getMainRuntime()
-        #self.dynamicOptimizer = self.runtime.dynamicOptimizer
-
-        vdm = FORANative.VectorDataManager(callbackScheduler, Setup.config().maxPageSizeInBytes)
-        context = ExecutionContext.ExecutionContext(
-            dataManager = vdm,
-            allowInterpreterTracing = False
-            )
-
-        context.interruptAfterCycleCount(1000)
-
-        context.evaluate(
-            FORA.extractImplValContainer(FORA.eval(text)),
-            FORANative.symbol_Call
-            )
-
-        trace = context.extractStacktrace(True)
-
-        self.assertTrue(len(trace) == 1)
-
-        stacktrace = trace[0][0]
-        frameData = trace[0][1]
-
-        codeLocation = FORANative.getCodeLocation(stacktrace.getIDs()[0])
-        self.assertTrue(codeLocation is not None)
-
-
-        self.assertTrue(frameData.wasCompiled is False)
-        
-        context.teardown()
-
-
     def test_interrupt_works(self):
         vdm = FORANative.VectorDataManager(callbackScheduler, Setup.config().maxPageSizeInBytes)
-        context = ExecutionContext.ExecutionContext(dataManager = vdm)
+        context = ExecutionContext.ExecutionContext(dataManager = vdm, allowInternalSplitting = False)
 
         triggerAfter(context.interrupt, .03)
 
         t0 = time.time()
 
-        context.evaluate(self.loopFun, FORANative.symbol_Call)
+        evaluate(context, self.loopFun, FORANative.symbol_Call)
         #make sure we actually looped!
         self.assertTrue(time.time() - t0 > .02)
 
@@ -828,13 +810,13 @@ class TestExecutionContext(unittest.TestCase):
 
     def test_serialize_while_holding_interior_vector(self):
         vdm = FORANative.VectorDataManager(callbackScheduler, Setup.config().maxPageSizeInBytes)
-        context = ExecutionContext.ExecutionContext(dataManager = vdm, allowInterpreterTracing=False)
+        context = ExecutionContext.ExecutionContext(dataManager = vdm, allowInterpreterTracing=False, allowInternalSplitting=False)
 
-        context.evaluate(
+        evaluate(context, 
             FORA.extractImplValContainer(
                 FORA.eval("""
                     fun() {
-                        let v = [[1].paged].paged;
+                        let v = [[1].paged].paged; 
                         let v2 = v[0]
 
                         `TriggerInterruptForTesting()
@@ -856,9 +838,9 @@ class TestExecutionContext(unittest.TestCase):
 
     def test_serialize_during_vector_load(self):
         vdm = FORANative.VectorDataManager(callbackScheduler, Setup.config().maxPageSizeInBytes)
-        context = ExecutionContext.ExecutionContext(dataManager = vdm)
+        context = ExecutionContext.ExecutionContext(dataManager = vdm, allowInternalSplitting=False)
 
-        context.evaluate(
+        evaluate(context, 
             FORA.extractImplValContainer(
                 FORA.eval("fun(){ datasets.s3('a','b')[0] }")
                 ),
@@ -869,7 +851,7 @@ class TestExecutionContext(unittest.TestCase):
 
         serialized = context.serialize()
 
-        context2 = ExecutionContext.ExecutionContext(dataManager = vdm)
+        context2 = ExecutionContext.ExecutionContext(dataManager = vdm, allowInternalSplitting=False)
         context2.deserialize(serialized)
 
         self.assertTrue(context2.isVectorLoad())
@@ -877,9 +859,12 @@ class TestExecutionContext(unittest.TestCase):
 
     def test_teardown_during_vector_load(self):
         vdm = FORANative.VectorDataManager(callbackScheduler, Setup.config().maxPageSizeInBytes)
-        context = ExecutionContext.ExecutionContext(dataManager = vdm)
+        context = ExecutionContext.ExecutionContext(
+            dataManager = vdm,
+            allowInternalSplitting = False
+            )
 
-        context.evaluate(
+        evaluate(context, 
                 FORA.extractImplValContainer(
                     FORA.eval("fun() { let v = [1,2,3].paged; fun() { v[1] } }")
                     ),
@@ -891,7 +876,7 @@ class TestExecutionContext(unittest.TestCase):
 
         context.teardown()
 
-        context.evaluate(
+        evaluate(context, 
             pagedVecAccessFun,
             FORANative.symbol_Call
             )
@@ -901,12 +886,28 @@ class TestExecutionContext(unittest.TestCase):
 
         context.teardown()
 
+    def extractPagedUnloadedVector(self, vdm, count):
+        context = ExecutionContext.ExecutionContext(
+            dataManager = vdm,
+            allowInternalSplitting = False
+            )
+
+        evaluate(context, 
+            FORA.extractImplValContainer(FORA.eval("fun() { Vector.range(%s).paged }" % count)),
+            FORANative.ImplValContainer(FORANative.makeSymbol("Call"))
+            )
+
+        pagedVec = context.getFinishedResult().asResult.result
+        
+        vdm.unloadAllPossible()
+
+        return pagedVec
 
     def test_teardown_simple(self):
         vdm = FORANative.VectorDataManager(callbackScheduler, Setup.config().maxPageSizeInBytes)
-        context = ExecutionContext.ExecutionContext(dataManager = vdm)
+        context = ExecutionContext.ExecutionContext(dataManager = vdm, allowInternalSplitting=False)
 
-        context.evaluate(
+        evaluate(context, 
             FORA.extractImplValContainer(
                 FORA.eval("fun(){nothing}")
                 ),
@@ -925,11 +926,30 @@ class TestExecutionContext(unittest.TestCase):
                 )
             )
 
-        context.evaluate(toEval, FORANative.symbol_Call)
+        evaluate(context, toEval, FORANative.symbol_Call)
+
         while not context.isCacheRequest():
-            context.resume()
+            context.compute()
 
         context.teardown(True)
+
+
+    def test_teardown_simple_2(self):
+        vdm = FORANative.VectorDataManager(callbackScheduler, Setup.config().maxPageSizeInBytes)
+        context = ExecutionContext.ExecutionContext(
+            dataManager = vdm,
+            allowInternalSplitting = False
+            )
+
+        context.placeInEvaluationState(FORANative.ImplValContainer((
+            FORA.extractImplValContainer(
+                FORA.eval("fun(){ let f = fun() { throw 1 }; try { f() } catch(...) { throw 2 } }")
+                ),
+            FORANative.symbol_Call
+            )))
+
+        context.compute()
+        self.assertTrue(context.getFinishedResult().isException())
 
     def stringAllocShouldFailFun(self, ct):
         return FORA.extractImplValContainer(
@@ -951,3 +971,6 @@ class TestExecutionContext(unittest.TestCase):
             val = ForaValue.FORAValue(self.stringAllocShouldFailFun(ix))
             self.assertRaises(ForaValue.FORAFailure, val)
 
+if __name__ == "__main__":
+    import ufora.config.Mainline as Mainline
+    Mainline.UnitTestMainline([ExecutionContext, Evaluator])

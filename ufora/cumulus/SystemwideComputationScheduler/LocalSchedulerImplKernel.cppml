@@ -56,7 +56,6 @@ LocalSchedulerImplKernel::LocalSchedulerImplKernel(
 			inOwnMachineId,
 			inActiveThreadCount
 			),
-		mFuturePagesRequestGuid(inOwnMachineId.guid() + hash_type(1)),
 		mComputationsMoved(0),
 		mLastDumpTime(0),
 		mMachineLoads(inOwnMachineId, inActiveThreadCount),
@@ -185,10 +184,7 @@ void LocalSchedulerImplKernel::computationStatusChanged(
 			if (status.isBlockedOnVectorLoad())
 				mComputationsBlockedOnVectorsLocally.insert(change.computation());
 			else
-				{
 				mComputationsBlockedOnVectorsLocally.erase(change.computation());
-				mRecentlyCalculatedForFuturePages.erase(change.computation());
-				}
 
 			if (status.isBlockedOnComputations())
 				mComputationsBlockedOnComputationsLocally.insert(change.computation());
@@ -208,12 +204,9 @@ void LocalSchedulerImplKernel::computationStatusChanged(
 					mTryingToSplit.erase(computation);
 					}
 				-| BlockedOnVectorLoad(pages) ->> {
-					bool blocked = false;
-
-					if (blocked)
-						sendLocalToGlobalSchedulerMessage(
-							LocalToGlobalSchedulerMessage::TriggerPageLayoutRecompute()
-							);
+					sendLocalToGlobalSchedulerMessage(
+						LocalToGlobalSchedulerMessage::TriggerPageLayoutRecompute()
+						);
 
 					handleComputationBlocked_(computation, statistics.pagesCurrentlyBeingUsed());
 					}
@@ -223,6 +216,18 @@ void LocalSchedulerImplKernel::computationStatusChanged(
 				computationIsComputable_(computation, priority);
 			else
 				computationNotComputable_(computation);
+
+
+			if (statistics.pagesCurrentlyBeingUsed().size() > 10)
+				sendSchedulerToComputationMessage(
+					SchedulerToComputationMessage::Split(
+						computation,
+						hash_type(),
+						mOwnMachineId,
+						mOwnMachineId,
+						0
+						)
+					);			
 			}
 		-| Inactive(computation) ->> {
 			mLocalComputationStatuses.erase(computation);
@@ -377,28 +382,6 @@ void LocalSchedulerImplKernel::handleComputationToSchedulerMessage(
 
 	if (response.guid() == hash_type())
 		mTryingToSplit.erase(response.computation());
-
-	if (response.isFuturePageReads())
-		{
-		auto pages = response.getFuturePageReads().futurePageReads();
-
-		if (pages.size() > 10)
-			sendSchedulerToComputationMessage(
-				SchedulerToComputationMessage::Split(
-					response.computation(),
-					hash_type(),
-					mOwnMachineId,
-					mOwnMachineId,
-					0
-					)
-				);
-
-		for (auto p: pages)
-			mThreadGroupStatusTracker.pageUsedInFuture(response.computation(), p);
-		}
-
-	if (mBlockedAndWaitingForFuturePages.hasValue(response.guid()))
-		mBlockedAndWaitingForFuturePages.dropValue(response.guid());
 	}
 
 Nullable<ComputationId> LocalSchedulerImplKernel::searchForSplittableComputation_()
@@ -478,15 +461,6 @@ void LocalSchedulerImplKernel::splitOrMoveIfNeeded(double curTime)
 	if (wantsToSplit_())
 		tryToSplitSomething_();
 
-	//this is not a very good way to determine whether we should issue 'SearchForFuturePageReads',
-	//because it doesn't track how many computations are blocked or active on a per machine basis
-	if (mCurrentlyComputableComputations.size() + mBlockedAndWaitingForFuturePages.size() <
-				mActiveThreadCount &&
-			mBlockedAndWaitingForFuturePages.size() < mComputationsBlockedOnVectorsLocally.size())
-		while (mBlockedAndWaitingForFuturePages.size() < mComputationsBlockedOnVectorsLocally.size())
-			if (!tryToCalculateFuturePagesForSomething_())
-				break;
-
 	updateCurrentProcessorLoadAndBroadcast_(curTime);
 
 	moveIncorrectlyScheduledTasks_();
@@ -509,42 +483,6 @@ void LocalSchedulerImplKernel::splitOrMoveIfNeeded(double curTime)
 
 		mLastDumpTime = curClock();
 		}
-	}
-
-bool LocalSchedulerImplKernel::tryToCalculateFuturePagesForSomething_()
-	{
-	for (auto id: mComputationsBlockedOnVectorsLocally)
-		if (mRecentlyCalculatedForFuturePages.find(id) ==
-				mRecentlyCalculatedForFuturePages.end() &&
-				!mBlockedAndWaitingForFuturePages.hasKey(id))
-			{
-			if (mBlockedAndWaitingForFuturePages.size() < mActiveThreadCount)
-				{
-				hash_type guid = mFuturePagesRequestGuid;
-				mFuturePagesRequestGuid = mFuturePagesRequestGuid + hash_type(1);
-
-				mBlockedAndWaitingForFuturePages.set(id, guid);
-				mRecentlyCalculatedForFuturePages.insert(id);
-
-				LOG_INFO << "Requesting FuturePages for " << id.guid() << " on " << mOwnMachineId
-					<< ". Total computing FuturePages: " << mBlockedAndWaitingForFuturePages.size()
-					<< "/" << mComputationsBlockedOnVectorsLocally.size();
-
-				sendSchedulerToComputationMessage(
-					SchedulerToComputationMessage::SearchForFuturePageReads(
-						id,
-						guid,
-						mOwnMachineId,
-						mOwnMachineId,
-						.25
-						)
-					);
-
-				return true;
-				}
-			}
-
-	return false;
 	}
 
 void LocalSchedulerImplKernel::logCurrentState_()

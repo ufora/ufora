@@ -14,10 +14,11 @@
    limitations under the License.
 ****************************************************************************/
 #include "SimulationState.hppml"
-
+#include "../Serialization/ForaValueSerializationStream.hppml"
 #include "ControlFlowGraphUtil.hppml"
 #include "../../core/cppml/CPPMLVisit.hppml"
 #include "../../core/Logging.hpp"
+#include "../../core/cppml/FunctionTransformer.hppml"
 
 namespace {
 
@@ -79,6 +80,17 @@ void computeDependentSlotIndices(
 const std::vector<FutureSlot>& SimulationState::getSlots() const
     {
     return mSlots;
+    }
+
+long SimulationState::countOfUnfinishedSlots() const
+    {
+    long result = 0;
+
+    for (const auto& slot: mSlots)
+        if (slot.isFuture())
+            result++;
+
+    return result;
     }
 
 const TwoWaySetMap<uint64_t, uint64_t>& SimulationState::getDependencies() const
@@ -299,6 +311,10 @@ bool SimulationState::isSubmittable(uint64_t inSlotIndex) const
         mIndicesOfSubmittableFutures.end();
     }
 
+SimulationState::SimulationState()
+    {
+    }
+
 SimulationState::SimulationState(
         const SimulationHead& inSimulationHead
         )
@@ -456,3 +472,70 @@ bool SimulationState::canInsertIntoSubmittableSet(uint64_t inSlotIndex) const
     }
 
 
+hash_type SimulationState::hash() const
+    {
+    return 
+        hashValue(mSlots) + 
+        hashValue(mSlotRefcounts) + 
+        hashValue(mIndicesOfSubmittableFutures) + 
+        hashValue(mSlotDependencies) + 
+        hashValue(mSimulationHead) + 
+        hashValue(mSlotDependenciesAtSimulationHead) + 
+        hashValue(mSlotsToDecrefOnResult)
+        ;
+    }
+
+
+void SimulationState::serialize(Fora::ForaValueSerializationStream& stream) const
+    {
+    stream.serialize(mSlots);
+    stream.serialize(mSlotRefcounts);
+    stream.serialize(mIndicesOfSubmittableFutures);
+    stream.serialize(mSlotDependencies);
+    stream.serialize(mSimulationHead);
+    stream.serialize(mSlotDependenciesAtSimulationHead);
+    stream.serialize(mSlotsToDecrefOnResult);
+    }
+
+void SimulationState::deserialize(Fora::ForaValueDeserializationStream& stream)
+    {
+    stream.deserialize(mSlots);
+    stream.deserialize(mSlotRefcounts);
+    stream.deserialize(mIndicesOfSubmittableFutures);
+    stream.deserialize(mSlotDependencies);
+    stream.deserialize(mSimulationHead);
+    stream.deserialize(mSlotDependenciesAtSimulationHead);
+    stream.deserialize(mSlotsToDecrefOnResult);
+    }
+
+PolymorphicSharedPtr<SimulationState> SimulationState::deepcopy(
+            boost::function1<ImplValContainer, ImplValContainer> duplicator
+            )
+    {
+    PolymorphicSharedPtr<SimulationState> res(new SimulationState());
+
+    res->mSlots = applyFunctionToObjectGraph(duplicator, mSlots);
+    res->mSlotRefcounts = mSlotRefcounts;
+    res->mIndicesOfSubmittableFutures = mIndicesOfSubmittableFutures;
+    res->mSlotDependencies = mSlotDependencies;
+    res->mSimulationHead = mSimulationHead;
+    res->mSimulationHead.values() = applyFunctionToObjectGraph(duplicator, mSimulationHead.values());
+    res->mSlotDependenciesAtSimulationHead = mSlotDependenciesAtSimulationHead;
+    res->mSlotsToDecrefOnResult = mSlotsToDecrefOnResult;
+
+    return res;
+    }
+
+void SimulationState::visitValues(boost::function1<void, ImplValContainer&> visitor)
+    {
+    boost::function1<ImplValContainer, ImplValContainer> modifyInPlace(
+        [&](const ImplValContainer& in) { 
+            ImplValContainer copy = in;
+            visitor(copy);
+            return copy;
+            }
+        );
+
+    mSlots = applyFunctionToObjectGraph(modifyInPlace, mSlots);
+    mSimulationHead.values() = applyFunctionToObjectGraph(modifyInPlace, mSimulationHead.values());
+    }

@@ -1,0 +1,175 @@
+#pragma once
+
+
+#include "ExecutionContextThreadState.hppml"
+#include "PausedComputationTree.hppml"
+#include "ParallelismMeasurement.hppml"
+#include "../../core/PolymorphicSharedPtr.hpp"
+#include <map>
+#include <deque>
+
+namespace Fora {
+namespace Interpreter {
+
+/************* 
+
+ExecutionContextThreadStateTree
+
+Models a set of linear FORA threads executing out of order.
+
+Every node in the tree is either a CFGWithFutures or 
+a single ExecutionContextThreadState, but not both.
+
+Every node in the tree may have child trees, each of which
+is indexed by an integer.
+
+If a computation is an ExecutionContextThreadState and it has
+child computations, it must have no more than one child computation,
+whose result is the result of the 'apply' node at the tail of the
+current ExecutionContextThreadState.
+
+If a computation is a CFGWithFutures, it must have at least one child.
+
+*************/
+
+class ExecutionContextThreadStateTree : public PolymorphicSharedPtrBase<ExecutionContextThreadStateTree> {
+public:
+	typedef map<int64_t, PolymorphicSharedPtr<ExecutionContextThreadStateTree> > child_map_type;
+
+	ExecutionContextThreadStateTree(ExecutionContextImpl* inContext);
+
+	ExecutionContextThreadStateTree(
+			ExecutionContextImpl* inContext, 
+			hash_type computationHash
+			);
+
+	void placeInEvaluationState(
+						const ImplValContainer& inArgs, 
+						boost::function1<ImplValContainer, ImplValContainer> valueImportFunction
+						);
+
+	void evaluateFunctionPointer(
+						const TypedFora::TypedJumpTarget& toCall, 
+						const ImplValContainer& inArgs
+						);
+
+	void compute();
+
+	std::string treeStateToString() const;
+
+	ImmutableTreeVector<PausedComputationTreeSplit> 
+					splitComputation(
+						boost::function1<ImplValContainer, ImplValContainer> inExportFunction,
+						double minSecondsElapsed
+						);
+	
+	bool absorbSplitResult(
+				hash_type computationHash,
+				ImplValContainer result,
+				bool isException,
+				TimeElapsed totalTimeElapsed
+				);
+
+	void addCachecallResult(
+				const ImplValContainer& inValue,
+				bool isException
+				);
+
+	void splitThreadAtFrameIndex_(const PausedComputation& comp, long ix);
+
+	void visitStackFramesAndValues(TypedFora::Abi::StackFrameVisitor& visitor);
+
+	bool isFinished() const;
+
+	ErrorState getErrorState() const;
+
+	ImplVal getResult() const;
+
+	bool isExceptionResult() const;
+
+	void setErrorState(const ErrorState& inErrorState);
+
+	void setResult(const ImplValContainer& inValue, bool isException);
+
+	bool isEmpty() const;
+
+	bool isSplitHole() const;
+
+	bool splitHoleIsDirty() const;
+
+	bool containsAnySplitHoles() const;
+
+	hash_type splitHoleComputationHash() const;
+
+	PolymorphicSharedPtr<ExecutionContextThreadStateTree> getLeftmostTree();
+
+	boost::shared_ptr<ExecutionContextThreadState> getLeftmostThread() const;
+
+	boost::shared_ptr<ExecutionContextThreadState> getCurrentThread() const;
+
+	PolymorphicSharedPtr<CFGWithFutures> getSimulation() const;
+
+	PausedComputationTree extractPausedComputationTree(
+				boost::function1<ImplValContainer, ImplValContainer> inExportFunction
+				) const;
+
+	void placeInEvaluationState(
+				const PausedComputationTree& computation,
+				boost::function1<ImplValContainer, ImplValContainer> valueImportFunction
+				);
+
+	const child_map_type& getChildren() const;
+
+	TimeElapsed getTotalTimeElapsed() const;
+
+	const PausedComputationTreeStats& treeStats() const
+		{
+		return mTreeStats;
+		}
+
+private:
+	bool tryToSplitHigh_();
+
+	bool tryToSplitHigh_(std::deque<PolymorphicSharedPtr<ExecutionContextThreadStateTree> >& ioToCheck);
+
+	bool wantsToSplitHigh_();
+
+	void updateTreeStats_();
+
+	bool tryToSplitSelf_(bool fromTop, PausedComputation comp);
+
+	void computeSimulation_(bool assumeExistingChildrenComputed);
+	
+	void createChildComputationsForNewSubmittableFutures_();
+
+	void computeSingleStep_();
+
+	void computeThread_();
+
+	void tryToMergeChildren_();
+
+	void validateTreeState_(std::string reason = "");
+
+	void reset_();
+
+	ExecutionContextImpl* mExecutionContextImpl;
+
+	boost::shared_ptr<ExecutionContextThreadState> mThread;
+
+	PolymorphicSharedPtr<CFGWithFutures> mSimulation;
+
+	Nullable<hash_type> mSplitHoleHash;
+
+	TimeElapsed mTimeElapsed;
+
+	child_map_type mChildren;
+
+	ParallelismMeasurement mSimulationParallelismMeasurement;
+
+	long mPoorSplitsInARow;
+
+	PausedComputationTreeStats mTreeStats;
+};
+
+}
+}

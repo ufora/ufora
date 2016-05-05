@@ -691,23 +691,6 @@ void ActiveComputationsKernel::handleSchedulerToComputationMessage(const Schedul
 		return;
 		}
 
-	@match SchedulerToComputationMessage(message)
-		-| Split(threshold) ->> {
-			if (!mExternalInterface->hasEnoughComputeTimeElapsedToSplit(computation, threshold))
-				{
-				sendComputationToSchedulerMessage(
-					ComputationToSchedulerMessage::OK(
-						computation,
-						message.guid(),
-						message.schedulerMachine()
-						)
-					);
-				return;
-				}
-			}
-		-| _ ->> {}
-		;
-
 	if (isCurrentlyComputing(computation))
 		{
 		mExternalInterface->interruptComputation(computation);
@@ -752,16 +735,6 @@ void ActiveComputationsKernel::handleSchedulerToComputationMessage(const Schedul
 				ComputationBackgroundAction::HandleSchedulerMessage(message)
 				);
 			}
-		-| SearchForFuturePageReads() ->> {
-			mComputationsCurrentlyHandlingBackgroundActions.insert(computation);
-
-			mExternalInterface->notifyThreadsWaitingForSplits();
-
-			mExternalInterface->scheduleComputationToHandleBackgroundAction(
-				computation,
-				ComputationBackgroundAction::HandleSchedulerMessage(message)
-				);
-			}
 		-| MarkSelfCircular() ->> {
 			sendComputationToSchedulerMessage(
 				ComputationToSchedulerMessage::OK(
@@ -779,11 +752,7 @@ void ActiveComputationsKernel::handleSchedulerToComputationMessage(const Schedul
 				removeAllPendingAddResultPendingActions(computation);
 				}
 			}
-		-| PassthroughToOtherComputation(otherComputation) ->> {
-			if (computationIsLocalAndUnfinished(computation))
-				passthroughToOtherComputation(computation, otherComputation);
-			}
-
+		
 	checkAndAssertInternalStateIfNecessary();
 
 	cleanupAfterStateChange();
@@ -973,11 +942,6 @@ void ActiveComputationsKernel::handleInitiateComputationMove(InitiateComputation
 	checkAndAssertInternalStateIfNecessary();
 
 	cleanupAfterStateChange();
-	}
-
-bool ActiveComputationsKernel::isPassthrough(const ComputationId& computation) const
-	{
-	return mExternalInterface->isPassthrough(computation);
 	}
 
 void ActiveComputationsKernel::setComputationParentMachine(const ComputationId& comp, MachineId machine)
@@ -1437,7 +1401,7 @@ void ActiveComputationsKernel::moveComputationToMachine(
 			}
 		}
 
-	if (!computationIsLocalAndUnfinished(inId) || isPassthrough(inId) ||
+	if (!computationIsLocalAndUnfinished(inId) ||
 				mExternalInterface->currentComputationStatusForId(inId)
 													.isBlockedOnExternalIoTask()
 			||	mExternalInterface->currentComputationStatusForId(inId)
@@ -2084,37 +2048,6 @@ bool ActiveComputationsKernel::checkInternalStateRemoteLoadsMatchCurrentDependen
 	return isValid;
 	}
 
-void ActiveComputationsKernel::passthroughToOtherComputation(
-									ComputationId ourComputation,
-									ComputationId otherComputation
-									)
-	{
-	if (isCurrentlyHandlingActionInBackgroundThread(ourComputation))
-		{
-		scheduleComputationPendingAction(
-			ourComputation,
-			ComputationPendingAction::PassthroughTo(otherComputation)
-			);
-		return;
-		}
-
-	LOG_INFO << prettyPrintString(ourComputation)
-			<< " becoming passthrough to "
-			<< prettyPrintString(otherComputation)
-			<< " with deps of " << mDependencyGraph.getDependencies().getValues(ourComputation)
-			;
-
-	//'ourComputation' should become a passthrough to 'otherComputation'
-	lassert(!isCurrentlyComputing(ourComputation));
-	lassert(mDependencyGraph.isLocalComputation(ourComputation));
-	if (mVectorLoadBlockedComputations.hasKey(ourComputation))
-		mVectorLoadBlockedComputations.dropKey(ourComputation);
-
-	mExternalInterface->becomePassthroughTo(ourComputation, otherComputation);
-
-	handleComputationStatusChange(ourComputation);
-	}
-
 void ActiveComputationsKernel::checkAndAssertInternalStateIfNecessary()
 	{
 	if (mCheckInternalStateAfterAllOperations)
@@ -2447,11 +2380,6 @@ void ActiveComputationsKernel::handleComputationMoveRequest(
 		inPtr
 		);
 
-	// We should never be moving passthrough computations around
-	lassert_dump(inRequest.sourceComponent().isLiveCheckpointLoader() ||
-			!mExternalInterface->isPassthrough(inRequest.computation()),
-		"received a passthrough computation from someone other than the LiveCheckpointLoader"
-		);
 	auto status = mExternalInterface->currentComputationStatusForId(inRequest.computation());
 
 	bool anyAreMissing = false;
@@ -2804,31 +2732,6 @@ bool ActiveComputationsKernel::startComputation(ComputationId computation)
 	return true;
 	}
 
-void ActiveComputationsKernel::searchForFuturePageReadsCompleted(
-										ComputationId computation,
-										hash_type guid,
-										MachineId schedulerMachine,
-										ImmutableTreeVector<Fora::PageId> newPages
-										)
-	{
-	mComputationsCurrentlyHandlingBackgroundActions.erase(computation);
-
-	sendComputationToSchedulerMessage(
-		ComputationToSchedulerMessage::FuturePageReads(
-			computation,
-			guid,
-			schedulerMachine,
-			newPages
-			)
-		);
-
-	fireOffPendingActions(computation);
-
-	mExternalInterface->notifyThreadsWaitingForSplits();
-
-	cleanupAfterStateChange();
-	}
-
 void ActiveComputationsKernel::resetPageDataAndBroadcastCompleted(
 											ComputationId computation,
 											hash_type guid,
@@ -2992,9 +2895,6 @@ void ActiveComputationsKernel::executePendingActionForComputation(
 			}
 		-| DropComputation() ->> {
 			dropComputation(inId);
-			}
-		-| PassthroughTo(otherComputation) ->> {
-			passthroughToOtherComputation(inId, otherComputation);
 			}
 		-| HandleRequestComputationResultFromMachineWithToken(request, token) ->> {
 			handleRequestComputationResultFromMachineWithToken(request, token);

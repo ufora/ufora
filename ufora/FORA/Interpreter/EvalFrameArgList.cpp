@@ -109,7 +109,7 @@ void EvalFrameArgList::slice(uword_t ix)
 	mSize = ix;
 	}
 
-EvalFrameArgList* EvalFrameArgList::allocate(uword_t capacity, MemBlockAllocator& allocator)
+EvalFrameArgList* EvalFrameArgList::allocate(uword_t capacity, StackFrameAllocator& allocator)
 	{
 	EvalFrameArgList* newEvalFrameArgListPtr =
 		(EvalFrameArgList*) allocator.allocate(
@@ -121,7 +121,7 @@ EvalFrameArgList* EvalFrameArgList::allocate(uword_t capacity, MemBlockAllocator
 	return newEvalFrameArgListPtr;
 	}
 
-void EvalFrameArgList::free(EvalFrameArgList* list, MemBlockAllocator& allocator)
+void EvalFrameArgList::free(EvalFrameArgList* list, StackFrameAllocator& allocator)
 	{
 	allocator.free(list);
 	}

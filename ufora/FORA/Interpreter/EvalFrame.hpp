@@ -20,13 +20,15 @@
 
 using std::vector;
 
-class MemBlockAllocator;
+class StackFrameAllocator;
 
 namespace TypedFora {
 
 class MetadataInstruction;
 
 }
+
+class ControlFlowGraph;
 
 namespace Fora {
 namespace Interpreter {
@@ -41,6 +43,8 @@ public:
 
 	uint64_t uniqueId;
 
+	static uint64_t allocateNewUniqueEvalFrameID();
+
 	//if we were ever a machine code term, what were we, and how many instructions ago?
 	pair<TypedFora::MetadataInstruction, long>* wasEverMachineCodeFrame;
 
@@ -49,12 +53,12 @@ public:
 	static EvalFrame* allocate(
 						const ControlFlowGraph& controlFlowGraph,
 						Nullable<string> label,
-						MemBlockAllocator& executionContext,
+						StackFrameAllocator& executionContext,
 						uint64_t inUniqueId,
 						const Nullable<TypedFora::MetadataInstruction>& inWasEverMachineCodeFrame
 						);
 
-	static void free(EvalFrame* frame, MemBlockAllocator& allocator);
+	static void free(EvalFrame* frame, StackFrameAllocator& allocator);
 
 	void copyApplyArgsIntoArgSlots(const Fora::ApplyArgFrame& args, RefcountPool* inPool);
 

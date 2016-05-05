@@ -1,0 +1,138 @@
+#include "PausedComputationTree.hppml"
+#include "../../core/Logging.hpp"
+#include "../ControlFlowGraph/ControlFlowGraphToCodeLocation.hppml"
+
+namespace Fora {
+namespace Interpreter {
+
+
+PausedComputationTreeStats& PausedComputationTreeStats::operator+=(const PausedComputationTreeStats& other)
+	{
+	countOfActiveThreads() += other.countOfActiveThreads();
+	countOfBlockingThreads() += other.countOfBlockingThreads();
+	pagesBlockedOn() = pagesBlockedOn() + other.pagesBlockedOn();
+	totalBranchCount() += other.totalBranchCount();
+	
+	return *this;
+	}
+
+hash_type PausedComputationTree::hashSelf() const
+	{
+	@match PausedComputationTree(*this)
+		-| Thread(children, computation, timeElapsed, treeStats) ->> {
+			return hash_type(0) + hashValue(children) + hashValue(computation) + 
+				hashValue(timeElapsed) + hashValue(treeStats);
+			}
+		-| Simulation(children, sim, timeElapsed, treeStats) ->> {
+			return hash_type(1) + hashValue(children) + hashValue(sim) + 
+				hashValue(timeElapsed) + hashValue(treeStats);
+			}
+		-| Hole(c) ->> {
+			return hash_type(2) + hashValue(c);
+			}
+	}
+
+std::string nullOrEmpty(Nullable<std::string> s)
+	{
+	if (!s)
+		return "";
+	return *s;
+	}
+
+void PausedComputationTree::treeStateToString(std::ostringstream& stream, long depth) const
+	{
+	for (long k = 0; k < depth;k++)
+		stream << " ";
+
+	@match PausedComputationTree(*this)
+		-| Thread(children, computation, timeElapsed, treeStats) ->> {
+			auto frames = computation.frames();
+
+			stream << "Thread with " 
+				<< frames.size() 
+				<< " frames. "
+				<< " time=" << timeElapsed.total() 
+				<< " sec. "
+				;
+			
+			stream << "(a=" << treeStats.countOfActiveThreads() << ",";
+			stream << "bl=" << treeStats.pagesBlockedOn().size() << ",";
+			stream << "subs=" << treeStats.totalBranchCount() << ")";
+
+			stream << "\n";
+
+			for (auto frame: frames)
+				{
+				for (long k = 0; k < depth+2;k++)
+					stream << " ";
+				stream << "@"
+					<< nullOrEmpty(
+						ControlFlowGraphToCodeLocation::graphAndLabelToDisplayString(
+							frame.graph(),
+							frame.label()
+							)
+						)
+					<< "\n";
+				}	
+				
+			@match PausedComputationTail(computation.tail())
+				-| None() ->> {}
+				-| VectorLoad(ivc, low, high) ->> { 
+					for (long k = 0; k < depth+2;k++)
+						stream << " ";
+					stream << "VectorLoad[" << low << "," << high << "]\n";
+					}
+				-| PendingResult() ->> {
+					for (long k = 0; k < depth+2;k++)
+						stream << " ";
+					stream << "PendingResult()\n";
+					}
+				-| Cachecall() ->> {
+					for (long k = 0; k < depth+2;k++)
+						stream << " ";
+					stream << "Cachecall()\n";
+					}
+
+			for (auto& child: children)
+				child.second.treeStateToString(stream, depth+1);
+			}
+		-| Simulation(children, simulation, timeElapsed, treeStats) ->> {
+			stream << "Simulation over "
+				<< simulation->getSlots().size()
+				<< ". time=" << timeElapsed.total()
+				<< ". @"
+				<< nullOrEmpty(
+					ControlFlowGraphToCodeLocation::graphAndLabelToDisplayString(
+						simulation->graph(),
+						simulation->currentLabel()
+						)
+					)
+				<< ". "
+				;
+
+			stream << "(a=" << treeStats.countOfActiveThreads() << ",";
+			stream << "bl=" << treeStats.pagesBlockedOn().size() << ",";
+			stream << "subs=" << treeStats.totalBranchCount() << ")";
+
+			stream << "\n";
+			
+			for (auto& child: children)
+				child.second.treeStateToString(stream, depth+1);
+			}
+		-| Hole(guid) ->> {
+			stream << "Hole(" << prettyPrintString(guid) << ")";
+			}
+	}
+
+}
+}
+
+void CPPMLPrettyPrint<Fora::Interpreter::PausedComputationTree>::prettyPrint(
+												CPPMLPrettyPrintStream& s, 
+												const Fora::Interpreter::PausedComputationTree& t
+												)
+	{
+	std::ostringstream str;
+	t.treeStateToString(str, 0);
+	s << str.str();
+	}

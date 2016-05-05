@@ -800,6 +800,31 @@ class CheckpointingTest(unittest.TestCase):
         finally:
             simulation.teardown()
 
+    def test_checkpointingTimestampOnlyIncreases(self):
+        simulation = self.createSimulation()
+        
+        try:
+            #give the simulation a couple of seconds to pick a scheduler
+            self.assertTrue(simulation.waitForGlobalScheduler(timeout=2.0))
+
+            simulation.submitComputation(sumInLoopText)
+
+            simulation.waitForGlobalScheduler()
+            time.sleep(1.0)
+
+            priorTotalTime = 0.0
+            t0 = time.time()
+
+            simulation.getGlobalScheduler().setCheckpointStatusInterval(0.01)
+            while time.time() - t0 < 10.0:
+                totalTime = self.totalTimeElapsedOfMostRecentCheckpoints(simulation)
+                time.sleep(.1)
+
+                self.assertTrue(totalTime >= priorTotalTime, (totalTime, priorTotalTime))
+                priorTotalTime = totalTime
+        finally:
+            simulation.teardown()
+
     def test_checkpointingWithFaultyWrites(self):
         for injectionType in ["page","bigvec","checkpoint_slice","checkpoint_summary"]:
             print "starting test for injection type ", injectionType

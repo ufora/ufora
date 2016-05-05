@@ -350,7 +350,8 @@ Fora::PageletTreePtr moveUnpagedValuesIntoPageletTree(
 													MemoryPool* owningMemoryPool,
 													ForaValueArray* array,
 													long low,
-													long high
+													long high,
+													int64_t bytesInParentArray = -1
 													)
 	{
 	if (low >= high)
@@ -358,29 +359,36 @@ Fora::PageletTreePtr moveUnpagedValuesIntoPageletTree(
 
 	boost::shared_ptr<Fora::Pagelet> pagelet(new Pagelet(inVDM->getMemoryManager()));
 
-	pagelet->append(array, low, high);
+	pagelet->append(array, low, high, true);
 
 	pagelet->freeze();
 
+	auto bytecount = pagelet->totalBytesAllocatedFromOSIncludingHeldPagelets();
+
 	//if the pagelet is too large and we're able to split the range in half,
 	//do so and return a more finely-grained pagelet tree
-	if (pagelet->totalBytesAllocatedFromOSIncludingHeldPagelets() >
-			inVDM->maxPageSizeInBytes() / 2 && low + 1 < high)
+	if (bytecount > inVDM->maxPageSizeInBytes() / 2 && low + 1 < high)
 		{
-		//it's too big - subdivide it
-		pagelet.reset();
+		//don't split if 
+		if (bytecount > inVDM->maxPageSizeInBytes() || 
+				bytesInParentArray == -1 ||
+				bytecount < bytesInParentArray * .75)
+			{
+			//it's too big - subdivide it
+			pagelet.reset();
 
-		Fora::PageletTreePtr p1 =
-			moveUnpagedValuesIntoPageletTree(inVDM, owningMemoryPool, array, low, (high+low)/2);
+			Fora::PageletTreePtr p1 = 
+				moveUnpagedValuesIntoPageletTree(inVDM, owningMemoryPool, array, low, (high+low)/2, bytecount);
 
-		Fora::PageletTreePtr p2 =
-			moveUnpagedValuesIntoPageletTree(inVDM, owningMemoryPool, array, (high+low)/2, high);
+			Fora::PageletTreePtr p2 = 
+				moveUnpagedValuesIntoPageletTree(inVDM, owningMemoryPool, array, (high+low)/2, high, bytecount);
 
-		return Fora::PageletTree::concatenateAndBalance(
-			owningMemoryPool,
-			p1,
-			p2
-			);
+			return Fora::PageletTree::concatenateAndBalance(
+				owningMemoryPool,
+				p1,
+				p2
+				);
+			}
 		}
 
 	//if the pagelet is fragmented, pull it together

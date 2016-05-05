@@ -1,33 +1,19 @@
-/***************************************************************************
-   Copyright 2015 Ufora Inc.
-
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
-
-       http://www.apache.org/licenses/LICENSE-2.0
-
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
-****************************************************************************/
-#include "MemBlock.hpp"
+#include "StackFrame.hpp"
+#include "StackFrameAllocator.hpp"
 #include "../../core/lassert.hpp"
 #include "../../core/Memory.hpp"
 
-namespace {
-uword_t gTotalSlabsAllocated = 0;
-}
-
+StackFrameAllocator* StackFrame::allocator()
+	{
+	return rootSlab->allocator;
+	}
 
 //statistics and a check of validity of the pointer chain
-uword_t	MemSlab::used(void)
+uword_t	StackFrameSlab::used(void)
 	{
 	uword_t tr = 0;
 
-	MemBlock* b = &baseBlock;
+	StackFrame* b = &baseBlock;
 
 	lassert(b->prevBlock == 0);
 	while (b->nextBlock)
@@ -36,17 +22,18 @@ uword_t	MemSlab::used(void)
 		tr += b->blockSize;
 		b = b->nextBlock;
 		}
+
 	lassert(b == topBlock);
 	lassert(b->nextBlock == 0);
 
 	return tr;
 	}
 
-void	MemSlab::validate(void)
+void	StackFrameSlab::validate(void)
 	{
 	using namespace std;
 
-	MemBlock* b = &baseBlock;
+	StackFrame* b = &baseBlock;
 
 	lassert(b->prevBlock == 0);
 	uword_t blockIx = 0;
@@ -73,62 +60,26 @@ void	MemSlab::validate(void)
 	lassert(b->nextBlock == 0);
 	}
 
+bool StackFrameSlab::isEmpty() const
+	{
+	return baseBlock.nextBlock == topBlock;
+	}
+
 extern "C" {
 
 BSA_DLLEXPORT
-MemSlab* FORA_clib_allocNewEmptySlab(uword_t maxBytes)
+void* FORA_clib_allocateStackFrame(StackFrame** curBlock, uword_t ct)
 	{
-	MemSlab* slab = (MemSlab*)Ufora::Memory::bsa_malloc(maxBytes + sizeof(MemSlab) + sizeof(MemBlock));
-
-	slab->priorSlab = 0;
-	slab->nextSlab = 0;
-	slab->topBlock = (MemBlock*)(((unsigned char*)slab) + maxBytes + sizeof(MemSlab));
-	slab->slabSize = maxBytes;
-
-	slab->topBlock->rootSlab = slab;
-	slab->topBlock->prevBlock = &slab->baseBlock;
-	slab->topBlock->nextBlock = 0;
-	slab->topBlock->blockSize = 0;
-
-	slab->baseBlock.rootSlab = slab;
-	slab->baseBlock.prevBlock = 0;
-	slab->baseBlock.nextBlock = slab->topBlock;
-	slab->baseBlock.blockSize = 0;
-
-	gTotalSlabsAllocated += maxBytes;
-	//LOG_INFO << "total slab bytes: " << gTotalSlabsAllocated;
-	return slab;
-	}
-
-BSA_DLLEXPORT
-void FORA_clib_freeSlab(MemSlab* slab)
-	{
-	do {
-		gTotalSlabsAllocated -= slab->slabSize;
-
-		MemSlab* next = slab->nextSlab;
-
-		Ufora::Memory::bsa_free(slab);
-
-		slab = next;
-		} while (slab);
-
-	//LOG_INFO << "total slab bytes: " << gTotalSlabsAllocated;
-	}
-
-BSA_DLLEXPORT
-void* FORA_clib_allocMem(MemBlock** curBlock, uword_t ct)
-	{
-	MemBlock* b = *curBlock;
+	StackFrame* b = *curBlock;
 
 	//first see if we're the top block
 	unsigned char* topAvail = (unsigned char*)b->nextBlock;
-	unsigned char* req = b->data + b->blockSize + ct + sizeof(MemBlock);
+	unsigned char* req = b->data + b->blockSize + ct + sizeof(StackFrame);
 
 	if (req <= topAvail)
 		{
-		MemBlock* oldNext = b->nextBlock;
-		MemBlock* newBlock = (MemBlock*)(b->data + b->blockSize);
+		StackFrame* oldNext = b->nextBlock;
+		StackFrame* newBlock = (StackFrame*)(b->data + b->blockSize);
 
 		oldNext->prevBlock = newBlock;
 		b->nextBlock = newBlock;
@@ -148,24 +99,24 @@ void* FORA_clib_allocMem(MemBlock** curBlock, uword_t ct)
 	if (b != b->rootSlab->topBlock->prevBlock)
 		{
 		*curBlock = b->rootSlab->topBlock->prevBlock;
-		return FORA_clib_allocMem(curBlock, ct);
+		return FORA_clib_allocateStackFrame(curBlock, ct);
 		}
 
 	//we have to allocate elsewhere. go one slab "right" and try there. if not possible, new slab!
 	if (!b->rootSlab->nextSlab)
 		{
-		b->rootSlab->nextSlab = FORA_clib_allocNewEmptySlab(std::max(b->rootSlab->slabSize, ct * 2));
+		b->rootSlab->nextSlab = b->rootSlab->allocator->allocateSlab(std::max(b->rootSlab->slabSize, ct * 2));
 		b->rootSlab->nextSlab->priorSlab = b->rootSlab;
 		}
 
 	*curBlock = b->rootSlab->nextSlab->topBlock->prevBlock;
-	return FORA_clib_allocMem(curBlock, ct);
+	return FORA_clib_allocateStackFrame(curBlock, ct);
 	}
 
 BSA_DLLEXPORT
-void FORA_clib_freeMem(MemBlock** curBlock, void* data)
+void FORA_clib_freeStackFrame(StackFrame** curBlock, void* data)
 	{
-	MemBlock* toFree = (MemBlock*)(((unsigned char*)data) - sizeof(MemBlock));
+	StackFrame* toFree = (StackFrame*)(((unsigned char*)data) - sizeof(StackFrame));
 
 	toFree->prevBlock->nextBlock = toFree->nextBlock;
 	toFree->nextBlock->prevBlock = toFree->prevBlock;
@@ -175,9 +126,7 @@ void FORA_clib_freeMem(MemBlock** curBlock, void* data)
 	//back up along empty slabs
 	while (*curBlock == &(*curBlock)->rootSlab->baseBlock && (*curBlock)->rootSlab->priorSlab)
 		*curBlock = (*curBlock)->rootSlab->priorSlab->topBlock->prevBlock;
-
 	}
 
 }
-
 

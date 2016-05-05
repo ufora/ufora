@@ -23,8 +23,6 @@
 #include <boost/unordered_map.hpp>
 #include <boost/unordered_set.hpp>
 #include "ComputationResult.hppml"
-#include "../ControlFlowGraph/ControlFlowGraphSplitter.hppml"
-#include "../ControlFlowGraph/FuturesSplitResult.hppml"
 
 #include "../Vector/VectorDataID.hppml"
 #include "../VectorDataManager/BigVectorId.hppml"
@@ -34,7 +32,7 @@
 #include "../Native/NativeRuntimeContinuationValue.hppml"
 #include "../Interpreter/InterpreterScratchSpace.hpp"
 #include "../Interpreter/InstructionPtr.hpp"
-#include "MemBlockAllocator.hpp"
+#include "StackFrameAllocator.hpp"
 #include "StackframeMetadata.hppml"
 
 namespace TypedFora {
@@ -67,13 +65,14 @@ class TypedJumpTarget;
 namespace Fora {
 namespace Interpreter {
 
-class PausedComputation;
+class TimeElapsed;
+class PausedComputationTree;
+class PausedComputationTreeSplit;
 class ContinuationElement;
 class Compiler;
 class ExecutionContextConfiguration;
 class InterpreterFrame;
 class EvalFrame;
-class ExecutionContextScope;
 class RefcountPool;
 class InterpreterScratchSpace;
 class ExecutionContextImpl;
@@ -89,7 +88,6 @@ class ExecutionContext : public PolymorphicSharedPtrBase<ExecutionContext> {
 public:
 	ExecutionContext(
 		PolymorphicSharedPtr<VectorDataManager> inVectorDataManager,
-		uword_t inStackIncrement = 32 * 1024,
 		uint64_t memoryQuota = 0x6400000 /* 100 MB */
 		);
 
@@ -107,9 +105,6 @@ public:
 	void interruptAfterCycleCount(sword_t checks);
 
 	sword_t remainingCycleCount();
-
-	//return how many bytes of stack space we have allocated
-	uword_t totalStackMemoryUsed();
 
 	//get the current ExecutionContext containing
 	static ExecutionContext*	currentExecutionContext();
@@ -163,8 +158,6 @@ public:
 
 	void setFinishedResult(const ComputationResult& inResult);
 
-	MemBlockAllocator& getStackAllocator();
-
 	ImmutableTreeSet<Fora::BigVectorId> getReferencedBigVectors();
 
 	void visitStackFramesAndValues(TypedFora::Abi::StackFrameVisitor& visitor);
@@ -180,13 +173,13 @@ public:
 	//it with content deserialized from 'serializer'
 	void deserialize(Fora::ForaValueDeserializationStream& serializer);
 
-	PausedComputation extractPausedComputation() const;
+	PausedComputationTree extractPausedComputation() const;
 
 	pair<uint64_t, uint64_t> getCurrentMemoryUsage();
 
 	pair<uint64_t, uint64_t> getMemoryUsageAtLastEvent();
 
-	void resumePausedComputation(const PausedComputation& computation);
+	void resumePausedComputation(const PausedComputationTree& computation);
 
 	bool copyValuesOutOfVectorPages();
 
@@ -197,9 +190,6 @@ public:
 	void resetMemoryPoolPageSize();
 
 	bool pageLargeVectorHandles(uword_t inBytecountThreshold);
-
-	//puts state in 'Empty' and then attempts to evaluate the values
-	void evaluate(const ImplValContainer& args);
 
 	void placeInEvaluationStateWithoutRenamingMutableVectors(const ImplValContainer& args);
 
@@ -213,30 +203,30 @@ public:
 					const ImplValContainer& args
 					);
 
-	Nullable<ControlFlowGraphSplitter::SplitPausedComputation>
-				splitComputation(bool disableVectorPagingIfSplit = false);
+	ImmutableTreeVector<PausedComputationTreeSplit> 
+				splitComputation(bool disableVectorPagingIfSplit = false, double minSecondsElapsed = 0.01);
 
-    PolymorphicSharedPtr<FuturesSplitResult> splitWithFutures();
+	void absorbSplitResult(
+			hash_type computationHash,
+			const ComputationResult& result, 
+			TimeElapsed totalTimeElapsed
+			);
 
 	Nullable<long> getCurrentBigvecSlotIndex() const;
 
 	//resume the computation from an interrupted state
-	void resumeComputation();
+	void compute();
 
 	//resumes the computation from a cachecall state
-	void resumeComputation(const ComputationResult& val);
+	void addCachecallResult(const ComputationResult& val);
 
 	//put the ExecutionContext back into the 'empty' state
 	void teardown(bool assertEmpty = false);
 
 	boost::shared_ptr<ExecutionContextConfiguration> getConfiguration() const;
 
-	double getTimeSpentInInterpreter() const;
-
-	double getTimeSpentInCompiledCode() const;
-
-	double getTimeSpentGarbageCollecting() const;
-
+	TimeElapsed getTotalTimeElapsed() const;
+	
 	RefcountPool* getRefcountPool();
 
 	//reset the interrupt state
@@ -270,8 +260,6 @@ public:
 	hash_type newVectorHash();
 
 	void setOnPageCreated(boost::function1<void, Fora::PageId> function);
-
-	void setOnCurrentActivePageGroupChanged(boost::function2<void, ImmutableTreeSet<Fora::PageId>, double> function);
 
 private:
 	PolymorphicSharedPtr<ExecutionContextImpl> mImpl;

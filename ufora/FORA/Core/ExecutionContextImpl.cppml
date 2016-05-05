@@ -15,17 +15,7 @@
 ****************************************************************************/
 #include "../../core/Platform.hpp"
 
-#ifdef BSA_PLATFORM_WINDOWS
-//we need to prevent windows from seeing <boost/python.hpp> which is included
-//by ValueDeepcopier.
-
-//TODO BUG brax: move <boost/python.hpp> dependency out of serialization code so that we don't have a dependency on it throughout the code.
-
-#define FORA_ValueDeepcopier_hppml_
-#endif
-
 #include "ExecutionContextImpl.hppml"
-#include "ExecutionContextScope.hppml"
 #include "ExecutionContextMemoryPool.hppml"
 #include "ExecutionContextConfiguration.hppml"
 #include "../TypedFora/ABI/BigVectorHandleArraySlotManager.hppml"
@@ -33,17 +23,16 @@
 #include <boost/uuid/uuid_generators.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include "../../core/math/RandomHashGenerator.hpp"
-#include "IsSplittable.hppml"
 
 #include "../Serialization/SerializedObject.hpp"
 #include "../Serialization/ForaValueSerializationStream.hppml"
 #include "RefcountPool.hppml"
-#include "MemBlock.hpp"
-#include "MemBlockAllocator.hpp"
+#include "StackFrame.hpp"
+#include "StackFrameAllocator.hpp"
 #include "../VectorDataManager/VectorDataManager.hppml"
 #include "../VectorDataManager/VectorDataManagerImpl.hppml"
 #include "../TypedFora/ABI/VectorHandle.hpp"
-#include "../../core/ScopedProfiler.hppml"
+#include "../TypedFora/ABI/StackFrameVisitor.hppml"
 #include "../../core/cppml/CPPMLPrettyPrinter.hppml"
 #include "../../core/threading/ScopedThreadLocalContext.hpp"
 #include "../../core/Memory.hpp"
@@ -56,7 +45,11 @@
 #include "../VectorDataManager/PageRefcountTracker.hppml"
 #include "../../cumulus/SystemwidePageRefcountTracker.hppml"
 #include "ValueDeepcopier.hppml"
+#include "ExecutionContextThreadState.hppml"
+#include "ExecutionContextThreadStateTree.hppml"
+#include "RefcountPool.hppml"
 
+#include "PausedComputationTree.hppml"
 #include "CreatePausedComputationStackFrameVisitor.hppml"
 #include "ExtractCodeLocationsStackFrameVisitor.hppml"
 #include "CopyDataOutOfVectorPages.hppml"
@@ -89,7 +82,6 @@ namespace Interpreter {
 
 ExecutionContextImpl::ExecutionContextImpl(
 			PolymorphicSharedPtr<VectorDataManager> inVDM,
-			uword_t inStackIncrement,
 			uint64_t memoryQuota,
 			ExecutionContext* inActualContextPtr
 			) :
@@ -101,22 +93,16 @@ ExecutionContextImpl::ExecutionContextImpl(
 				ExecutionContextConfiguration::defaultConfig()
 				)
 			),
-		mStackIncrement(inStackIncrement),
-		mStackAllocator(inStackIncrement),
-		mTimeSpentInInterpreter(0),
-		mTimeSpentInCompiledCode(0),
-		mTimeSpentGarbageCollecting(0),
 		mCurrentExecutionContextScope(0),
 		mRefcountPool(0),
-		mThreadState(inActualContextPtr, mStackAllocator, inVDM),
 		mBigVectorReferences(
 			inVDM,
 			this
 			),
 		mExecutionState(
 			this,
-			&mThreadState.getRuntimeCallbacks().interruptFlag,
-			&mThreadState.getRuntimeCallbacks().interruptCounter
+			&mRuntimeCallbacks.interruptFlag,
+			&mRuntimeCallbacks.interruptCounter
 			),
 		mIsGarbageCollectingNow(false),
 		mBytesAllocatedAfterLastEvent(0),
@@ -124,7 +110,8 @@ ExecutionContextImpl::ExecutionContextImpl(
 		mIsDestroyed(false),
 		mIsMemoryPoolDefragmentDisabled(false),
 		mVectorPagingDisabled(false),
-		mDoubleVectorStashAllocator(this)
+		mDoubleVectorStashAllocator(this),
+		mCurrentlyExecutingThread(nullptr)
 	{
 	mInterpreterHistory =
 		Runtime::getRuntime().getInterpreterTraceHandler()->allocateInterpreterHistory(mConfig);
@@ -140,7 +127,7 @@ ExecutionContextImpl::ExecutionContextImpl(
 
 	lassert(mVectorDataManager);
 
-	mThreadState.getRuntimeCallbacks().resetNativeRuntimeState();
+	mRuntimeCallbacks.resetNativeRuntimeState();
 
 	if (SHOULD_LOG_DEBUG())
         LOG_DEBUG << "creating an EC. total mem = "
@@ -160,21 +147,9 @@ void ExecutionContextImpl::disableMemoryPoolDefragment()
 	mIsMemoryPoolDefragmentDisabled = true;
 	}
 
-uint64_t ExecutionContextImpl::allocateNewUniqueEvalFrameID()
-	{
-	static AO_t curEvalFrameUniqueID = 0;
-
-	return AO_fetch_and_add_full(&curEvalFrameUniqueID, 1);
-	}
-
 NativeRuntimeCallbacks& ExecutionContextImpl::getRuntimeCallbacks()
 	{
-	return mThreadState.getRuntimeCallbacks();
-	}
-
-MemBlockAllocator& ExecutionContextImpl::getStackAllocator(void)
-	{
-	return mStackAllocator;
+	return mRuntimeCallbacks;
 	}
 
 VectorDataManager& ExecutionContextImpl::getVDM()
@@ -191,7 +166,7 @@ void ExecutionContextImpl::initialize()
 
 void ExecutionContextImpl::initialize_()
 	{
-	mThreadState.initialize();
+	mThreadState.reset(new ExecutionContextThreadStateTree(this));
 	}
 
 ExecutionContextImpl::~ExecutionContextImpl()
@@ -259,20 +234,18 @@ void ExecutionContextImpl::setOnPageCreated(boost::function1<void, Fora::PageId>
 	mOnPageCreated = function;
 	}
 
-void ExecutionContextImpl::setOnCurrentActivePageGroupChanged(boost::function2<void, ImmutableTreeSet<Fora::PageId>, double> function)
+PausedComputationTreeStats ExecutionContextImpl::getStats() const
 	{
-	mOnCurrentActivePageGroupChanged = function;
+	if (!mThreadState)
+		return PausedComputationTreeStats();
+	
+	return mThreadState->treeStats();
 	}
 
 void ExecutionContextImpl::onPageCreated(Fora::PageId page)
 	{
 	if (mOnPageCreated)
 		mOnPageCreated(page);
-	}
-
-uword_t	ExecutionContextImpl::totalStackMemoryUsed()
-	{
-	return mStackAllocator.totalBytesReserved();
 	}
 
 ExecutionContext* ExecutionContextImpl::currentExecutionContext()
@@ -333,59 +306,15 @@ bool ExecutionContextImpl::acquireMemoryPoolLocksAndMarkExecuting_()
 	return true;
 	}
 
-void ExecutionContextImpl::evaluate(const ImplValContainer& inArgs)
-	{
-		{
-		ExecutionContextMarkExecutingScope lock(mExecutionState);
-
-		initialize_();
-
-		ImplValContainer value;
-
-			{
-			ValueDeepcopierState state;
-
-			value = importIntoExecutionContext_(inArgs, state);
-			}
-
-		if (mConfig->agressivelyValidateRefcountsAndPageReachability())
-			validateVectorHandleRefcounts_("After importing values for Evaluation");
-
-		if (!mVectorDataManager->isTornDown())
-			{
-			mInterpreterHistory->clear();
-
-			if (acquireMemoryPoolLocksAndMarkExecuting_())
-				mThreadState.evaluate(value);
-			else
-				mThreadState.placeInEvaluationState(
-					value,
-					[](ImplValContainer in) { return in; }
-					);
-
-			mInterpreterHistory->pause();
-			}
-		}
-
-	ExecutionContextInterruptAndLockScope scope(mExecutionState);
-
-	if (mConfig->releaseVectorHandlesImmediatelyAfterExecution())
-		copyValuesOutOfVectorPages_(true, true);
-
-	mBytesAllocatedAfterLastEvent = mMemoryPool->totalBytesAllocated();
-	mBytesAllocatedFromOSAfterLastEvent = mMemoryPool->totalBytesAllocatedFromOS();
-	}
-
 void ExecutionContextImpl::placeInEvaluationStateWithoutRenamingMutableVectors(const ImplValContainer& args)
 	{
 	ExecutionContextInterruptAndLockScope lock(mExecutionState);
 
-	initialize_();
 	teardown_(false, true);
 
 	ValueDeepcopierState state;
 
-	mThreadState.placeInEvaluationState(
+	mThreadState->placeInEvaluationState(
 		args,
 		boost::bind(
 			&ExecutionContextImpl::importIntoExecutionContextFromStatePtr_,
@@ -399,9 +328,6 @@ void ExecutionContextImpl::placeInEvaluationStateWithoutRenamingMutableVectors(c
 
 	if (mConfig->agressivelyValidateRefcountsAndPageReachability())
 		validateVectorHandleRefcounts_("After placeInEvaluationState", state);
-
-	mBytesAllocatedAfterLastEvent = mMemoryPool->totalBytesAllocated();
-	mBytesAllocatedFromOSAfterLastEvent = mMemoryPool->totalBytesAllocatedFromOS();
 	}
 
 
@@ -424,17 +350,13 @@ void ExecutionContextImpl::evaluateFunctionPointer(
 
 		if (!mVectorDataManager->isTornDown())
 			{
-			mInterpreterHistory->clear();
-
 			lassert_dump(
 				acquireMemoryPoolLocksAndMarkExecuting_(),
 				"we couldn't acquire locks, but we don't have a way to leave behind the "
 					"context in a consistent state without running native FORA code."
 				);
 
-			mThreadState.evaluateFunctionPointer(toCall, value, mRefcountPool);
-
-			mInterpreterHistory->pause();
+			mThreadState->evaluateFunctionPointer(toCall, value);
 			}
 		}
 
@@ -442,119 +364,81 @@ void ExecutionContextImpl::evaluateFunctionPointer(
 
 	if (mConfig->releaseVectorHandlesImmediatelyAfterExecution())
 		copyValuesOutOfVectorPages_(true, true);
-
-	mBytesAllocatedAfterLastEvent = mMemoryPool->totalBytesAllocated();
-	mBytesAllocatedFromOSAfterLastEvent = mMemoryPool->totalBytesAllocatedFromOS();
 	}
 
-void ExecutionContextImpl::resumeComputation(const ComputationResult& val)
+void ExecutionContextImpl::addCachecallResult(const ComputationResult& val)
 	{
-		{
-		ExecutionContextMarkExecutingScope lock(mExecutionState);
+	ExecutionContextMarkExecutingScope lock(mExecutionState);
 
-		initialize_();
+	lassert(isCacheRequest());
+	
+	ImplValContainer innerVal;
 
-		ImplValContainer innerVal;
-
-		@match ComputationResult(val)
-			-| Result(inner, logs) ->> {
-				innerVal = inner;
-				}
-			-| Exception(inner, logs) ->> {
-				innerVal = inner;
-				}
-			-| Failure() ->> {
-				throwLogicErrorWithStacktrace("Can't resume a computation with a failure: " +
-					prettyPrintString(val)
-					);
-				}
-
-		ValueDeepcopierState state;
-
-		ImplValContainer imported = importIntoExecutionContext_(innerVal, state);
-
-		if (!mVectorDataManager->isTornDown())
-			{
-			mInterpreterHistory->resume();
-
-			if (acquireMemoryPoolLocksAndMarkExecuting_())
-				mThreadState.resumeComputation(imported, val.isException());
-			else
-				{
-				ValueDeepcopierState state2;
-
-				PausedComputation comp = extractPausedComputation(state2, false);
-
-				lassert(!comp.pendingResult());
-
-				comp.pendingResult() = make_pair(imported, val.isException());
-
-				resumePausedComputation(comp);
-				}
-
-			mInterpreterHistory->pause();
+	@match ComputationResult(val)
+		-| Result(inner) ->> { 
+			innerVal = inner;  
 			}
-		}
+		-| Exception(inner) ->> { 
+			innerVal = inner;
+			}
+		-| Failure() ->> {
+			throwLogicErrorWithStacktrace("Can't resume a computation with a failure: " + 
+				prettyPrintString(val)
+				);
+			}
 
-	ExecutionContextInterruptAndLockScope scope(mExecutionState);
-
-	if (mConfig->releaseVectorHandlesImmediatelyAfterExecution())
-		copyValuesOutOfVectorPages_(true, true);
-
-	mBytesAllocatedAfterLastEvent = mMemoryPool->totalBytesAllocated();
-	mBytesAllocatedFromOSAfterLastEvent = mMemoryPool->totalBytesAllocatedFromOS();
-	}
-
-void ExecutionContextImpl::kickAllStackframesIntoInterpreter_()
-	{
 	ValueDeepcopierState state;
 
-	if (isInterrupted() || isVectorLoad())
-		resumePausedComputation(state, extractPausedComputation(state, false), false);
-		else
-	if (isCacheRequest())
-		{
-		ImplValContainer cacheRequestTuple = mThreadState.getCacheRequestTuple();
+	ImplValContainer imported = importIntoExecutionContext_(innerVal, state);
 
-		resumePausedComputationAsCacheRequest(
-			extractPausedComputation(state, false),
-			cacheRequestTuple,
-			false
-			);
-		}
-
-	recycleRefcountPool_();
+	mThreadState->addCachecallResult(imported, val.isException());
 	}
 
-void ExecutionContextImpl::resumeComputation()
+void ExecutionContextImpl::updateLastEventMemoryLevels_()
+	{
+	if (mMemoryPool)
+		{
+		mBytesAllocatedAfterLastEvent = mMemoryPool->totalBytesAllocated();
+		mBytesAllocatedFromOSAfterLastEvent = mMemoryPool->totalBytesAllocatedFromOS();
+		}
+	}
+
+void ExecutionContextImpl::compute()
 	{
 		{
 		ExecutionContextMarkExecutingScope lock(mExecutionState);
-
-		initialize_();
 
 		if (mConfig->agressivelyValidateRefcountsAndPageReachability())
 			validateVectorHandleRefcounts_("Resuming computation");
 
-		if (!mVectorDataManager->isTornDown())
+		if (!mVectorDataManager->isTornDown() && !(isFinished() || isCacheRequest()))
 			{
-			mInterpreterHistory->resume();
-
 			if (acquireMemoryPoolLocksAndMarkExecuting_())
-				mThreadState.resumeComputation();
-
-			mInterpreterHistory->pause();
+				mThreadState->compute();
 			}
-
+		
+		if (mConfig->agressivelyValidateRefcountsAndPageReachability())
+			validateVectorHandleRefcounts_("After computing");
 		}
 
 	ExecutionContextInterruptAndLockScope scope(mExecutionState);
 
 	if (mConfig->releaseVectorHandlesImmediatelyAfterExecution())
+		{
+		pageLargeVectorHandles();
 		copyValuesOutOfVectorPages_(true, true);
+		}
+	}
 
-	mBytesAllocatedAfterLastEvent = mMemoryPool->totalBytesAllocated();
-	mBytesAllocatedFromOSAfterLastEvent = mMemoryPool->totalBytesAllocatedFromOS();
+
+void ExecutionContextImpl::triggerInternalInterruptAtTime(double timestamp)
+	{
+	mExecutionState.triggerInternalInterruptAtTime(timestamp);
+	}
+
+void ExecutionContextImpl::disableScheduledInternalInterruptTrigger()
+	{
+	mExecutionState.disableScheduledInternalInterruptTrigger();
 	}
 
 void ExecutionContextImpl::interruptAfterCycleCount(sword_t checks)
@@ -577,6 +461,11 @@ bool ExecutionContextImpl::resetInterruptStateIfOnlyTriggeredInternally()
 	return mExecutionState.resetInterruptStateIfOnlyTriggeredInternally();
 	}
 
+bool ExecutionContextImpl::resetInterruptStateIfOnlyTriggeredInternallyAndNoGcPending()
+	{
+	return mExecutionState.resetInterruptStateIfOnlyTriggeredInternallyAndNoGcPending();
+	}
+
 void ExecutionContextImpl::interrupt()
 	{
 	mExecutionState.interrupt();
@@ -590,6 +479,11 @@ bool ExecutionContextImpl::shouldInterrupt()
 bool ExecutionContextImpl::isGcScheduled()
 	{
 	return mExecutionState.isGcScheduled();
+	}
+
+bool ExecutionContextImpl::isInterruptTriggerSet()
+	{
+	return mExecutionState.isInterrupted();
 	}
 
 bool ExecutionContextImpl::isGcPending()
@@ -612,6 +506,16 @@ void ExecutionContextImpl::unloadAllVectorHandlesFromPool()
 	copyValuesOutOfVectorPages_(false, true);
 	}
 
+std::string ExecutionContextImpl::stateAsString()
+	{
+	ExecutionContextInterruptAndLockScope scope(mExecutionState);
+
+	if (!mThreadState)
+		return "<empty>";
+
+	return mThreadState->treeStateToString();
+	}
+
 void ExecutionContextImpl::checkGcStatusWithVdm_()
 	{
 	if (mIsDestroyed)
@@ -620,9 +524,12 @@ void ExecutionContextImpl::checkGcStatusWithVdm_()
 		return;
 		}
 
-	mIsGarbageCollectingNow = true;
-
 	mOnCheckGcStatusWithVdm.broadcast(curClock());
+
+	if (!mThreadState)
+		return;
+
+	mIsGarbageCollectingNow = true;
 
 	double t0 = curClock();
 
@@ -687,7 +594,8 @@ void ExecutionContextImpl::checkGcStatusWithVdm_()
 					<< mMemoryPool->totalBytesAllocated() / 1024 / 1024.0
 					<< " MB. total bytes from OS is "
 					<< mMemoryPool->totalBytesAllocatedFromOS() / 1024 / 1024.0
-					<< " MB."
+					<< " MB.\n"
+					<< mThreadState->treeStats()
 					;
 				}
 			else
@@ -704,10 +612,7 @@ void ExecutionContextImpl::checkGcStatusWithVdm_()
 			}
 
 		if (wantPageLargeVectors || wantGc)
-			{
-			mBytesAllocatedAfterLastEvent = mMemoryPool->totalBytesAllocated();
-			mBytesAllocatedFromOSAfterLastEvent = mMemoryPool->totalBytesAllocatedFromOS();
-			}
+			updateLastEventMemoryLevels_();
 
 		if (!mVectorDataManager->mImpl->shouldEcCleanupRetry(this))
 			done = true;
@@ -721,16 +626,9 @@ void ExecutionContextImpl::checkGcStatusWithVdm_()
 		<< "\n"
 		;
 
-	mTimeSpentGarbageCollecting += curClock() - t0;
+	mTimeElapsed.timeSpentGarbageCollecting() += curClock() - t0;
 
 	mIsGarbageCollectingNow = false;
-	}
-
-void ExecutionContextImpl::defragmentMemoryUsage()
-	{
-	ExecutionContextInterruptAndLockScope lock(mExecutionState);
-
-	defragmentMemoryUsage_();
 	}
 
 void ExecutionContextImpl::setMemoryPoolPageSize(size_t newPageSize)
@@ -760,80 +658,19 @@ void ExecutionContextImpl::defragmentMemoryUsage_()
 		validateVectorHandleRefcounts_("Before defragmentMemoryUsage");
 
 	if (isEmpty())
+		return;
+
+	PausedComputationTree computation;
+
+	double t0 = curClock();
+
 		{
+		ValueDeepcopierState state;
+
+		computation = extractPausedComputation(state, true);
 		}
-		else
-	if (isInterrupted() || isVectorLoad())
-		{
-		PausedComputation computation;
 
-		Nullable<TypedFora::Abi::VectorRecord> vectorLoad;
-		Nullable<pair<int64_t, int64_t> > vectorLoadIndices;
-
-			{
-			ValueDeepcopierState state;
-
-			computation = extractPausedComputation(state, true);
-
-			if (isVectorLoad())
-				{
-				//first, we need to copy the load request into the free store. We must be careful
-				//to use the same deepcopier state as we did in the extraction because the vector
-				//might be in both, and we only want a single instance of the handle.
-				ValueDeepcopier extractor(state, false, MemoryPool::getFreeStorePool(), true, false);
-
-				auto request = mThreadState.getVectorLoadRequest();
-
-				vectorLoad = extractor.duplicate(TypedFora::Abi::VectorRecord(request.getHandle()));
-				vectorLoadIndices = make_pair(request.getIndexLow(), request.getIndexHigh());
-				}
-			}
-
-		if (vectorLoad)
-			{
-			ValueDeepcopierState state;
-
-			resumePausedComputation(state, computation, true);
-
-			//now we need to copy the loadrequest handle back into the context, making sure to
-			//keep the same ValueDeepcopierState we used to pull it in.
-			ValueDeepcopier extractor(state, false, getMemoryPool(), true, false);
-
-			TypedFora::Abi::VectorRecord newlyImportedVector = extractor.duplicate(*vectorLoad);
-
-			mRefcountPool->add(newlyImportedVector);
-
-			TypedFora::Abi::VectorLoadRequest newLoadReq(
-				newlyImportedVector,
-				vectorLoadIndices->first,
-				vectorLoadIndices->second
-				);
-
-			mThreadState.setVectorLoadRequest(newLoadReq);
-			}
-		else
-			resumePausedComputation(computation);
-		}
-		else
-	if (isCacheRequest())
-		{
-		PausedComputation computation;
-		ImplValContainer cacheRequest;
-
-			{
-			ValueDeepcopierState state;
-
-			computation = extractPausedComputation(state, true);
-			cacheRequest = exportImplval_(mThreadState.getCacheRequestTuple(), state);
-			}
-
-		resumePausedComputationAsCacheRequest(computation, cacheRequest, true);
-		}
-		else
-	if (isFinished())
-		{
-		setFinishedResult(getFinishedResult());
-		}
+	resumePausedComputation(computation);
 	}
 
 std::string ExecutionContextImpl::extractCurrentTextStacktrace(long maxBytes)
@@ -844,7 +681,7 @@ std::string ExecutionContextImpl::extractCurrentTextStacktrace(long maxBytes)
 
 	PrintStacktraceStackFrameVisitor visitor(stream, false, maxBytes);
 
-	mThreadState.visitStackFramesAndValues(visitor);
+	mThreadState->visitStackFramesAndValues(visitor);
 
 	return stream.str();
 	}
@@ -882,7 +719,7 @@ void ExecutionContextImpl::validateReachablePages_(std::string msg)
 
 	ValidateVectorRefcountsValueUpdater updater(state);
 
-	mThreadState.visitStackFramesAndValues(visitor);
+	mThreadState->visitStackFramesAndValues(visitor);
 	}
 
 void ExecutionContextImpl::validateVectorHandleRefcounts_(
@@ -930,7 +767,7 @@ void ExecutionContextImpl::validateVectorHandleRefcounts_(
 		lassert_dump(false, "IOU THIS METHOID");
 		//updater.visitMutableVectorInRefcountPool(it->second.getRecord());
 
-	mThreadState.visitStackFramesAndValues(visitor);
+	mThreadState->visitStackFramesAndValues(visitor);
 
 	try {
 		state.validate();
@@ -942,45 +779,6 @@ void ExecutionContextImpl::validateVectorHandleRefcounts_(
 		else
 			validateVectorHandleRefcounts_(inCallingContext, ioState, assertNoOutsideMemoryPools, true);
 		}
-	}
-
-void ExecutionContextImpl::extractPageableVectors(
-							uword_t inBytecountThreshold,
-							std::set<TypedFora::Abi::VectorHandle*> &outHandles,
-							const Fora::Interpreter::PausedComputation& computation
-							)
-	{
-	ExecutionContextInterruptAndLockScope scope(mExecutionState);
-
-	PageUnpagedVectorsValueUpdater::state_type pagerState(
-		mMemoryPool.get(),
-		&*mVectorDataManager,
-		inBytecountThreshold,
-		false
-		);
-
-	ExecutionContextThreadValueUpdater<PageUnpagedVectorsValueUpdater>::state_type
-		state(
-			mVectorDataManager,
-			*mRefcountPool,
-			mMemoryPool.get(),
-			pagerState
-			);
-
-	StackValueModifyingStackFrameVisitor<
-			ExecutionContextThreadValueUpdater<
-				PageUnpagedVectorsValueUpdater
-				>
-			>
-		visitor(state, false);
-
-	for (auto frame: computation.frames())
-		for (auto value: frame.values())
-			visitor.visitFreeValue(value);
-
-	state.cleanup();
-
-	std::swap(outHandles, pagerState.mVectorsExceedingThreshold);
 	}
 
 void ExecutionContextImpl::pageLargeVectorHandles(
@@ -995,7 +793,7 @@ void ExecutionContextImpl::pageLargeVectorHandles(
 	PageUnpagedVectorsValueUpdater::state_type pagerState(
 		mMemoryPool.get(),
 		&*mVectorDataManager,
-		1024 * 1024 * 1024,
+		0,
 		false
 		);
 
@@ -1016,7 +814,7 @@ void ExecutionContextImpl::pageLargeVectorHandles(
 			>
 		visitor(state, false);
 
-	mThreadState.visitStackFramesAndValues(visitor);
+	mThreadState->visitStackFramesAndValues(visitor);
 
 	recycleRefcountPool_();
 
@@ -1063,7 +861,7 @@ bool ExecutionContextImpl::pageLargeVectorHandles(uword_t inBytecountThreshold)
 				mConfig->agressivelyValidateRefcountsAndPageReachability()
 				);
 
-		mThreadState.visitStackFramesAndValues(visitor);
+		mThreadState->visitStackFramesAndValues(visitor);
 
 		recycleRefcountPool_();
 
@@ -1121,7 +919,7 @@ bool ExecutionContextImpl::copyValuesOutOfVectorPages_(bool releaseBigvecSlot, b
 
 		double t0 = curClock();
 
-		mThreadState.visitStackFramesAndValues(visitor);
+		mThreadState->visitStackFramesAndValues(visitor);
 
 		if (curClock() - t0 > .05)
 			LOG_WARN << "copyValuesOutOfVectorPages took " << curClock() - t0;
@@ -1148,7 +946,7 @@ bool ExecutionContextImpl::copyValuesOutOfVectorPages_(bool releaseBigvecSlot, b
 		TypedFora::Abi::BigVectorHandleArraySlotManager::singleton()
 			.release(*mCurrentBigvecSlotIndex);
 		mCurrentBigvecSlotIndex = null();
-		mThreadState.getRuntimeCallbacks().bigVectorSlotIndex = -1;
+		mRuntimeCallbacks.bigVectorSlotIndex = -1;
 		}
 
 	if (releaseBigvecSlot && cleanMemoryPool)
@@ -1185,12 +983,10 @@ void ExecutionContextImpl::teardown_(bool assertEmpty, bool tearDownVectorPageSl
 	{
 	mCurrentVectorHash = null();
 
-	mThreadState.teardown();
+	mThreadState.reset();
 
 	//always do this before recycling the refcount pool
 	mDoubleVectorStashAllocator.clear();
-
-	TypedFora::Abi::VectorLoadRequest req = mThreadState.getVectorLoadRequest();
 
 	mRefcountPool->clear();
 
@@ -1207,7 +1003,7 @@ void ExecutionContextImpl::teardown_(bool assertEmpty, bool tearDownVectorPageSl
 		TypedFora::Abi::BigVectorHandleArraySlotManager::singleton()
 			.release(*mCurrentBigvecSlotIndex);
 		mCurrentBigvecSlotIndex = null();
-		mThreadState.getRuntimeCallbacks().bigVectorSlotIndex = -1;
+		mRuntimeCallbacks.bigVectorSlotIndex = -1;
 		}
 
 	delete mRefcountPool;
@@ -1223,12 +1019,6 @@ void ExecutionContextImpl::teardown_(bool assertEmpty, bool tearDownVectorPageSl
 		mMemoryPool->setPageSize(*mMemoryPoolPageSizeOverride);
 
 	mRefcountPool = new RefcountPool(mMemoryPool.get());
-
-	if (mStackAllocator.totalBytesReserved())
-		LOG_DEBUG << "mStackAllocator still has " << mStackAllocator.totalBytesReserved()
-			<< " bytes allocated at teardown time.";
-
-	mStackAllocator.releaseAll();
 
 	if (mMemoryPool->totalBytesAllocated() != 0)
 		{
@@ -1249,48 +1039,81 @@ void ExecutionContextImpl::teardown_(bool assertEmpty, bool tearDownVectorPageSl
 
 		mBigVectorReferences.teardown();
 		}
+
+	initialize_();
 	}
 
 bool ExecutionContextImpl::isEmpty(void) const
 	{
 	ExecutionContextInterruptAndLockScope scope(mExecutionState);
 
-	return mThreadState.isEmpty();
+	if (!mThreadState)
+		return true;
+
+	return mThreadState->isEmpty();
 	}
 
 bool ExecutionContextImpl::isError(void) const
 	{
 	ExecutionContextInterruptAndLockScope scope(mExecutionState);
 
-	return mThreadState.isError();
+	if (!mThreadState)
+		return false;
+	
+	auto leftmost = mThreadState->getLeftmostThread();
+	if (!leftmost)
+		return false;
+	return leftmost->isError();
 	}
 
 bool ExecutionContextImpl::isInterrupted(void) const
 	{
 	ExecutionContextInterruptAndLockScope scope(mExecutionState);
+	if (!mThreadState)
+		return false;
 
-	return mThreadState.isInterrupted();
+	auto leftmost = mThreadState->getLeftmostThread();
+	if (!leftmost)
+		return false;
+	return leftmost->isInterrupted();
 	}
 
 bool ExecutionContextImpl::isVectorLoad(void) const
 	{
 	ExecutionContextInterruptAndLockScope scope(mExecutionState);
 
-	return mThreadState.isVectorLoad();
+	if (!mThreadState)
+		return false;
+
+	lassert(!mThreadState->isEmpty());
+
+	auto leftmost = mThreadState->getLeftmostThread();
+	if (!leftmost)
+		return false;
+	return leftmost->isVectorLoad();
 	}
 
 Fora::BigVectorSlice ExecutionContextImpl::getVectorLoad(void) const
 	{
 	ExecutionContextInterruptAndLockScope scope(mExecutionState);
 
-	return mThreadState.getVectorLoad();
+	lassert(isVectorLoad());
+
+	return mThreadState->getLeftmostThread()->getVectorLoad();
 	}
 
 bool ExecutionContextImpl::isCacheRequest(void) const
 	{
 	ExecutionContextInterruptAndLockScope scope(mExecutionState);
 
-	return mThreadState.isCacheRequest();
+	if (!mThreadState)
+		return false;
+
+	auto leftmost = mThreadState->getLeftmostThread();
+	if (!leftmost)
+		return false;
+	
+	return leftmost->isCacheRequest();
 	}
 
 ImplValContainer ExecutionContextImpl::getCacheRequest(void)
@@ -1302,7 +1125,7 @@ ImplValContainer ExecutionContextImpl::getCacheRequest(void)
 	ValueDeepcopierState state;
 
 	return exportFromExecutionContext_(
-			ImplValContainer(mThreadState.getCacheRequestTuple()),
+			ImplValContainer(mThreadState->getLeftmostThread()->getCacheRequestTuple()),
 			state
 			);
 	}
@@ -1311,7 +1134,10 @@ bool ExecutionContextImpl::isFinished(void) const
 	{
 	ExecutionContextInterruptAndLockScope scope(mExecutionState);
 
-	return mThreadState.isFinished();
+	if (!mThreadState)
+		return false;
+
+	return mThreadState->isFinished();
 	}
 
 ComputationResult ExecutionContextImpl::getFinishedResult(void)
@@ -1320,25 +1146,22 @@ ComputationResult ExecutionContextImpl::getFinishedResult(void)
 
 	lassert(isFinished());
 
-	if (!mThreadState.getErrorState().isNone())
-		return ComputationResult::Failure(mThreadState.getErrorState());
+	if (!mThreadState->getErrorState().isNone())
+		return ComputationResult::Failure(mThreadState->getErrorState());
+
+	pageLargeVectorHandles();
 
 	ValueDeepcopierState state;
 
 	ImplValContainer exportedValue = exportFromExecutionContext_(
-		ImplValContainer(mThreadState.getResult()),
+		ImplValContainer(mThreadState->getResult()),
 		state
 		);
 
-	ImplValContainer exportedLog = exportFromExecutionContext_(
-		mThreadState.getComputationLog(),
-		state
-		);
+	if (mThreadState->isExceptionResult())
+		return ComputationResult::Exception(exportedValue, ImplValContainer());
 
-	if (mThreadState.isExceptionResult())
-		return ComputationResult::Exception(exportedValue, exportedLog);
-
-	return ComputationResult::Result(exportedValue, exportedLog);
+	return ComputationResult::Result(exportedValue, ImplValContainer());
 	}
 
 void ExecutionContextImpl::setFinishedResult(const ComputationResult& result)
@@ -1351,13 +1174,12 @@ void ExecutionContextImpl::setFinishedResult(const ComputationResult& result)
 	for (long k = 0; k < referenced.size();k++)
 		incrementBigVectorRefcount(referenced[k]);
 
-	initialize_();
 	teardown_(true, false);
 
 	if (result.isFailure())
 		{
 		lassert(!result.getFailure().error().isNone());
-		mThreadState.setErrorState(result.getFailure().error());
+		mThreadState->setErrorState(result.getFailure().error());
 
 		//keep all of our living page references alive until after the import is finished
 		for (long k = 0; k < referenced.size();k++)
@@ -1366,26 +1188,23 @@ void ExecutionContextImpl::setFinishedResult(const ComputationResult& result)
 		return;
 		}
 	else
-		mThreadState.setErrorState(ErrorState::None());
+		mThreadState->setErrorState(ErrorState::None());
 
 	ImplValContainer toPlace;
-	ImplValContainer logMessage;
 	bool isException;
 
 	@match ComputationResult(result)
-		-| Result(val, log) ->> {
+		-| Result(val) ->> {
 			toPlace = val;
 			isException = false;
-			logMessage = log;
 			}
-		-| Exception(val, log) ->> {
+		-| Exception(val) ->> {
 			toPlace = val;
 			isException = true;
-			logMessage = log;
 			}
 
 		{
-		ImplValContainer finalValue, finalLog;
+		ImplValContainer finalValue;
 
 			{
 			ValueDeepcopierState state;
@@ -1394,15 +1213,9 @@ void ExecutionContextImpl::setFinishedResult(const ComputationResult& result)
 				toPlace,
 				state
 				);
-
-			finalLog = importIntoExecutionContext_(
-				logMessage,
-				state
-				);
 			}
 
-		mThreadState.setResult(finalValue, isException);
-		mThreadState.setComputationLog(finalLog);
+		mThreadState->setResult(finalValue, isException);
 		}
 
 	//keep all of our living page references alive until after the import is finished
@@ -1411,12 +1224,6 @@ void ExecutionContextImpl::setFinishedResult(const ComputationResult& result)
 
 	if (mConfig->agressivelyValidateRefcountsAndPageReachability())
 		validateVectorHandleRefcounts_("Inside setFinishedResult");
-
-	mBytesAllocatedAfterLastEvent = mMemoryPool->totalBytesAllocated();
-	mBytesAllocatedFromOSAfterLastEvent = mMemoryPool->totalBytesAllocatedFromOS();
-
-	enableVectorDecrements();
-	disableVectorDecrements();
 	}
 
 void ExecutionContextImpl::recycleRefcountPool_()
@@ -1425,24 +1232,21 @@ void ExecutionContextImpl::recycleRefcountPool_()
 
 	RefcountPoolAddingStackFrameVisitor visitor(*newRefcountPool);
 
-	mThreadState.visitStackFramesAndValues(visitor);
+	mThreadState->visitStackFramesAndValues(visitor);
 
 	setRefcountPool_(newRefcountPool);
 	}
 
-double ExecutionContextImpl::getTimeSpentInInterpreter() const
+TimeElapsed ExecutionContextImpl::getTotalTimeElapsed() const
 	{
-	return mTimeSpentInInterpreter;
-	}
+	ExecutionContextInterruptAndLockScope scope(mExecutionState);
 
-double ExecutionContextImpl::getTimeSpentInCompiledCode() const
-	{
-	return mTimeSpentInCompiledCode;
-	}
+	TimeElapsed res = mTimeElapsed;
 
-double ExecutionContextImpl::getTimeSpentGarbageCollecting() const
-	{
-	return mTimeSpentGarbageCollecting;
+	if (mThreadState)
+		res = res + mThreadState->getTotalTimeElapsed();
+
+	return res;
 	}
 
 RefcountPool* ExecutionContextImpl::getRefcountPool(void)
@@ -1495,7 +1299,7 @@ void ExecutionContextImpl::memoryAllocationFailed(size_t desiredBytes, size_t al
 		<< "\n\nGC log = \n" << mGcLog.str()
 		;
 
-	mThreadState.setErrorState(
+	mCurrentlyExecutingThread->setErrorState(
 		ErrorState::MemoryQuotaExceeded(
 			uuid,
 			desiredBytes,
@@ -1566,16 +1370,7 @@ ImplValContainer	ExecutionContextImpl::importIntoExecutionContext_(
 	{
 	ValueDeepcopier extractor(ioState, renameMutableVectors, getMemoryPool(), true, false);
 
-	ImplVal newVal = ImplVal::introduce(container.type());
-
-	extractor.duplicate(
-		container.type(),
-		(uint8_t*)newVal.data(),
-		(uint8_t*)container.data(),
-		1
-		);
-
-	return ImplValContainer::assumeOwnershipOf(newVal);
+	return extractor.duplicate(container);
 	}
 
 void ExecutionContextImpl::executionIsStarting_()
@@ -1597,7 +1392,7 @@ void ExecutionContextImpl::executionIsStarting_()
 		if (curClock() - t0 > 0.001)
 			LOG_WARN << "Spent " << curClock() - t0 << " waiting for a bigvec slot.";
 
-		mThreadState.getRuntimeCallbacks().bigVectorSlotIndex = *mCurrentBigvecSlotIndex;
+		mRuntimeCallbacks.bigVectorSlotIndex = *mCurrentBigvecSlotIndex;
 		}
 	}
 
@@ -1638,28 +1433,20 @@ ImplValContainer	ExecutionContextImpl::exportFromExecutionContext_(
 		false
 		);
 
-	ImplVal newVal = ImplVal::introduce(container.type());
-
-	extractor.duplicate(
-		container.type(),
-		(uint8_t*)newVal.data(),
-		(uint8_t*)container.data(),
-		1
-		);
-
-	return ImplValContainer::assumeOwnershipOf(newVal);
+	return extractor.duplicate(container);
 	}
 
 void ExecutionContextImpl::placeInEvaluationState(const ImplValContainer& args)
 	{
 	ExecutionContextInterruptAndLockScope lock(mExecutionState);
 
-	initialize_();
 	teardown_(false, true);
 
 	ValueDeepcopierState state;
 
-	mThreadState.placeInEvaluationState(
+	mExecutionState.resetInterruptState();
+
+	mThreadState->placeInEvaluationState(
 		args,
 		boost::bind(
 			&ExecutionContextImpl::importIntoExecutionContextFromStatePtr_,
@@ -1677,35 +1464,33 @@ void ExecutionContextImpl::placeInEvaluationState(const ImplValContainer& args)
 
 
 ImmutableTreeVector<pair<ForaStackTrace, Fora::Interpreter::StackframeMetadata> >
-ExecutionContextImpl::extractStacktrace(bool inExportValues)
+		ExecutionContextImpl::extractStacktrace(bool inExportValues)
 	{
-	ExecutionContextInterruptAndLockScope lock(mExecutionState);
-
-	ValueDeepcopierState state;
-
-	ExtractCodeLocationsStackFrameVisitor visitor(mActualContextPtr, state, true, inExportValues);
-
-	mThreadState.visitStackFramesAndValues(visitor);
-
-	return visitor.getTraces();
+	return emptyTreeVec();
 	}
 
-PausedComputation
-ExecutionContextImpl::extractPausedComputation(ValueDeepcopierState& state, bool exportImplvals)
+PausedComputationTree ExecutionContextImpl::extractPausedComputation(
+									ValueDeepcopierState& state, 
+									bool exportImplvals
+									)
 	{
-	ExecutionContextInterruptAndLockScope lock(mExecutionState);
+	if (!mThreadState)
+		return PausedComputationTree();
 
 	pageLargeVectorHandles();
 
-	CreatePausedComputationStackFrameVisitor visitor(mActualContextPtr, state, exportImplvals);
-
-	mThreadState.visitStackFramesAndValues(visitor);
-
-	return PausedComputation(visitor.getFrames(), visitor.getPendingResultValue());
+	return mThreadState->extractPausedComputationTree(
+		boost::function1<ImplValContainer,ImplValContainer>(
+			[&](ImplValContainer ivc) {
+				if (exportImplvals)
+					return exportFromExecutionContext_(ivc, state);
+				else
+					return ivc;
+			})
+		);
 	}
 
-PausedComputation
-ExecutionContextImpl::extractPausedComputation()
+PausedComputationTree ExecutionContextImpl::extractPausedComputation()
 	{
 	ExecutionContextInterruptAndLockScope lock(mExecutionState);
 
@@ -1715,27 +1500,23 @@ ExecutionContextImpl::extractPausedComputation()
 	}
 
 
-void ExecutionContextImpl::resumePausedComputation(const PausedComputation& computation)
+void ExecutionContextImpl::resumePausedComputation(const PausedComputationTree& computation)
 	{
-		{
-		ExecutionContextInterruptAndLockScope lock(mExecutionState);
+	ExecutionContextInterruptAndLockScope lock(mExecutionState);
 
-		ValueDeepcopierState state;
+	ValueDeepcopierState state;
 
-		resumePausedComputation(state, computation, true);
-		}
+	resumePausedComputation(state, computation, true);
 	}
 
 void ExecutionContextImpl::resumePausedComputation(
 									ValueDeepcopierState& state,
-									const PausedComputation& computation,
+									const PausedComputationTree& computation,
 									bool importImplvals
 									)
 	{
 	ExecutionContextInterruptAndLockScope lock(mExecutionState);
 
-	initialize_();
-
 	ImmutableTreeSet<Fora::BigVectorId> referenced = getReferencedBigVectors();
 
 	//keep all of our living page references alive until after the import is finished
@@ -1745,9 +1526,9 @@ void ExecutionContextImpl::resumePausedComputation(
 	if (importImplvals)
 		teardown_(false, false);
 	else
-		mThreadState.teardown();
+		initialize_();
 
-	mThreadState.resumePausedComputation(
+	mThreadState->placeInEvaluationState(
 		computation,
 		boost::bind(
 			&ExecutionContextImpl::importIntoExecutionContextFromStatePtr_,
@@ -1759,64 +1540,14 @@ void ExecutionContextImpl::resumePausedComputation(
 			)
 		);
 
-	for (long k = 0; k < referenced.size();k++)
-		decrementBigVectorRefcount(referenced[k]);
-
-	if (mConfig->agressivelyValidateRefcountsAndPageReachability())
-		validateVectorHandleRefcounts_("After resumePausedComputation", state);
-
-	mBytesAllocatedAfterLastEvent = mMemoryPool->totalBytesAllocated();
-	mBytesAllocatedFromOSAfterLastEvent = mMemoryPool->totalBytesAllocatedFromOS();
-	}
-
-void ExecutionContextImpl::resumePausedComputationAsCacheRequest(
-										const PausedComputation& computation,
-										const ImplValContainer& cacheRequestTuple,
-										bool importImplvals
-										)
-	{
-	ExecutionContextInterruptAndLockScope lock(mExecutionState);
-
-	initialize_();
-
-	ImmutableTreeSet<Fora::BigVectorId> referenced = getReferencedBigVectors();
-
-	//keep all of our living page references alive until after the import is finished
-	for (long k = 0; k < referenced.size();k++)
-		incrementBigVectorRefcount(referenced[k]);
-
-	if (importImplvals)
-		teardown_(false, false);
-	else
-		mThreadState.teardown();
-
-	ValueDeepcopierState state;
-
-	mInterpreterHistory->clear();
-
-	mThreadState.resumePausedComputationAsCacheRequest(
-		computation,
-		cacheRequestTuple,
-		boost::bind(
-			&ExecutionContextImpl::importIntoExecutionContextFromStatePtr_,
-			this,
-			boost::arg<1>(),
-			&state,
-			importImplvals,
-			false
-			)
-		);
+	mExecutionState.resetInterruptState();
 
 	for (long k = 0; k < referenced.size();k++)
 		decrementBigVectorRefcount(referenced[k]);
 
 	if (mConfig->agressivelyValidateRefcountsAndPageReachability())
-		validateVectorHandleRefcounts_("After resumePausedComputation", state);
-
-	mBytesAllocatedAfterLastEvent = mMemoryPool->totalBytesAllocated();
-	mBytesAllocatedFromOSAfterLastEvent = mMemoryPool->totalBytesAllocatedFromOS();
+		validateVectorHandleRefcounts_("After placeInEvaluationState", state);
 	}
-
 
 void ExecutionContextImpl::serialize(Fora::ForaValueSerializationStream& stream)
 	{
@@ -1828,87 +1559,30 @@ void ExecutionContextImpl::serialize(Fora::ForaValueSerializationStream& stream)
 	copyValuesOutOfVectorPages();
 
 	stream.serialize(*getConfiguration());
-	stream.serialize(mTimeSpentInInterpreter);
-	stream.serialize(mTimeSpentInCompiledCode);
-	stream.serialize(mTimeSpentGarbageCollecting);
-	stream.serialize(mPageLoadSequence);
+	stream.serialize(mTimeElapsed);
 	stream.serialize(mBigVectorReferences.getPendingVectorDecrements());
 
 	if (isEmpty())
+		{
 		stream.serialize((char)0);
+		}
 		else
-	if (isInterrupted() || isVectorLoad())
+		{
 		stream.serialize((char)1);
-		else
-	if (isCacheRequest())
-		stream.serialize((char)2);
-		else
-	if (isFinished())
-		stream.serialize((char)3);
-	else
-		{
-		lassert(false);
-		}
-
-
-	ValueDeepcopierState state;
-
-	if (isEmpty())
-		{
-		}
-		else
-	if (isInterrupted() || isVectorLoad())
-		{
+		ValueDeepcopierState state;
 		stream.serialize(extractPausedComputation(state, true));
-
-		if (isVectorLoad())
-			{
-			ValueDeepcopier extractor(state, false, MemoryPool::getFreeStorePool(), true, false);
-
-			stream.serialize((bool)true);
-			stream.serialize(
-				extractor.duplicate(
-					TypedFora::Abi::VectorRecord(mThreadState.getVectorLoadRequest().getHandle())
-					)
-				);
-			stream.serialize(mThreadState.getVectorLoadRequest().getIndexLow());
-			stream.serialize(mThreadState.getVectorLoadRequest().getIndexHigh());
-			}
-		else
-			stream.serialize((bool)false);
 		}
-		else
-	if (isCacheRequest())
-		{
-		stream.serialize(extractPausedComputation(state, true));
-
-		stream.serialize(exportImplval_(mThreadState.getCacheRequestTuple(), state));
-		}
-		else
-	if (isFinished())
-		{
-		stream.serialize(getFinishedResult());
-		}
-
-	stream.serialize(exportFromExecutionContext_(mThreadState.getComputationLog(), state));
 	}
 
 void	ExecutionContextImpl::deserialize(Fora::ForaValueDeserializationStream& stream)
 	{
 	ExecutionContextInterruptAndLockScope lock(mExecutionState);
 
-	ValueDeepcopierState state;
-
-	initialize_();
-
 	teardown_(false, true);
 
 	stream.deserialize(*getConfiguration());
-	stream.deserialize(mTimeSpentInInterpreter);
-	stream.deserialize(mTimeSpentInCompiledCode);
-	stream.deserialize(mTimeSpentGarbageCollecting);
-	stream.deserialize(mPageLoadSequence);
-
+	stream.deserialize(mTimeElapsed);
+	
 	//get a list of bigvec ids that need to be incremented. These
 	//are bigvecs that had been decreffed outside of the compute loop
 	//and need to be kept alive until we next compute.
@@ -1920,80 +1594,20 @@ void	ExecutionContextImpl::deserialize(Fora::ForaValueDeserializationStream& str
 		decrementBigVectorRefcount(bigvec);
 		}
 
-	char kind;
-	stream.deserialize(kind);
+	char hasPausedComputation;
+	stream.deserialize(hasPausedComputation);
 
-	if (kind == 0)
+	if (hasPausedComputation)
 		{
-		}
-		else
-	if (kind == 1)
-		{
-		//interrupt or vector load
-		PausedComputation computation;
+		PausedComputationTree computation;
 		stream.deserialize(computation);
 
+		ValueDeepcopierState state;
 		resumePausedComputation(state, computation, true);
 
-		bool hasVec = false;
-		stream.deserialize(hasVec);
-
-		if (hasVec)
-			{
-			TypedFora::Abi::VectorRecord vec;
-			int64_t low, high;
-
-			stream.deserialize(vec);
-			stream.deserialize(low);
-			stream.deserialize(high);
-
-			ValueDeepcopier extractor(state, false, getMemoryPool(), true, false);
-
-			TypedFora::Abi::VectorRecord interior = extractor.duplicate(vec);
-
-			mRefcountPool->add(interior);
-
-			mThreadState.setVectorLoadRequest(
-				TypedFora::Abi::VectorLoadRequest(
-					interior,
-					low,
-					high
-					)
-				);
-			}
+		if (mConfig->agressivelyValidateRefcountsAndPageReachability())
+			validateVectorHandleRefcounts_("After deserialization", state);
 		}
-		else
-	if (kind == 2)
-		{
-		PausedComputation computation;
-		ImplValContainer cacheRequestTuple;
-
-		stream.deserialize(computation);
-		stream.deserialize(cacheRequestTuple);
-
-		resumePausedComputationAsCacheRequest(computation, cacheRequestTuple, true);
-		}
-		else
-	if (kind == 3)
-		{
-		ComputationResult result;
-		stream.deserialize(result);
-
-		setFinishedResult(result);
-		}
-
-	ImplValContainer log;
-	stream.deserialize(log);
-
-	mThreadState.setComputationLog(
-		importIntoExecutionContext_(log, state)
-		);
-
-	if (mConfig->agressivelyValidateRefcountsAndPageReachability())
-		validateVectorHandleRefcounts_("After deserialization", state);
-
-	mBytesAllocatedAfterLastEvent = mMemoryPool->totalBytesAllocated();
-	mBytesAllocatedFromOSAfterLastEvent = mMemoryPool->totalBytesAllocatedFromOS();
 	}
 
 hash_type ExecutionContextImpl::newVectorHash()
@@ -2004,31 +1618,6 @@ hash_type ExecutionContextImpl::newVectorHash()
 	mCurrentVectorHash = *mCurrentVectorHash + hash_type(1);
 
 	return *mCurrentVectorHash;
-	}
-
-void ExecutionContextImpl::logAMessage(const ImplValContainer& inMessage)
-	{
-	ExecutionContextInterruptAndLockScope lock(mExecutionState);
-
-	mThreadState.logAMessage(inMessage, mMemoryPool.get());
-	}
-
-void ExecutionContextImpl::logSomeMessages(const ImplValContainer& inMessage)
-	{
-	ExecutionContextInterruptAndLockScope lock(mExecutionState);
-
-	ValueDeepcopierState state;
-
-	mThreadState.logSomeMessages(importIntoExecutionContext_(inMessage, state), mMemoryPool.get());
-	}
-
-ImplValContainer ExecutionContextImpl::getComputationLog() const
-	{
-	ExecutionContextInterruptAndLockScope lock(mExecutionState);
-
-	ValueDeepcopierState state;
-
-	return exportFromExecutionContext_(mThreadState.getComputationLog(), state);
 	}
 
 void ExecutionContextImpl::blockedOnMemoryAllocation()
@@ -2065,124 +1654,9 @@ void ExecutionContextImpl::visitStackFramesAndValues(TypedFora::Abi::StackFrameV
 	{
 	ExecutionContextInterruptAndLockScope scope(mExecutionState);
 
-	mThreadState.visitStackFramesAndValues(visitor);
+	if (mThreadState)
+		mThreadState->visitStackFramesAndValues(visitor);
 	}
-
-Nullable<ControlFlowGraphSplitter::SplitPausedComputation>
-						ExecutionContextImpl::splitComputation(bool disableVectorPagingIfSplit)
-	{
-	ExecutionContextInterruptAndLockScope scope(mExecutionState);
-
-	//first see if there's anything to split
-	Fora::IsSplittable isSplittable;
-
-	visitStackFramesAndValues(isSplittable);
-
-	if (!isSplittable.mSplittableFrameIndex || *isSplittable.mSplittableFrameIndex == 0)
-		return null();
-
-	Fora::Interpreter::PausedComputation pausedComputation;
-
-		{
-		ValueDeepcopierState state;
-		pausedComputation = extractPausedComputation(state, false);
-		}
-
-	for (int i = 0, len = pausedComputation.frames().size(); i < len - 1; ++i)
-		{
-		if (!pausedComputation.frames()[i].areAllValuesConst())
-			return null();
-
-		Nullable<ControlFlowGraphSplitter::SplitPausedComputation> split =
-				ControlFlowGraphSplitter::splitAtFrame(pausedComputation, i);
-
-		if (split)
-			{
-			std::set<TypedFora::Abi::VectorHandle*> handlesInApply;
-			std::set<TypedFora::Abi::VectorHandle*> handlesInSplit;
-			std::set<TypedFora::Abi::VectorHandle*> handlesAbove;
-
-			int64_t slabSize = mVectorDataManager->getMemoryManager()->getSlabSize();
-
-			extractPageableVectors(slabSize, handlesInApply, split->applyComputation());
-			extractPageableVectors(slabSize, handlesInSplit, split->splitComputation());
-			extractPageableVectors(slabSize, handlesAbove, split->toResumeCaller());
-
-
-			std::set<TypedFora::Abi::VectorHandle*> inAny;
-
-			for (auto v: handlesInApply)
-				inAny.insert(v);
-
-			for (auto v: handlesInSplit)
-				inAny.insert(v);
-
-			for (auto v: handlesAbove)
-				inAny.insert(v);
-
-			std::set<TypedFora::Abi::VectorHandle*> inTwo;
-
-			for (auto h: inAny)
-				{
-				long ct = 0;
-				if (handlesInApply.find(h) != handlesInApply.end())
-					ct++;
-				if (handlesInSplit.find(h) != handlesInSplit.end())
-					ct++;
-				if (handlesAbove.find(h) != handlesAbove.end())
-					ct++;
-
-				if (ct > 1)
-					inTwo.insert(h);
-				}
-
-			pausedComputation = Fora::Interpreter::PausedComputation();
-			split = null();
-
-			//page the common handles and re-split
-			pageLargeVectorHandles(inTwo);
-
-			if (disableVectorPagingIfSplit)
-				disableVectorPaging();
-
-			return ControlFlowGraphSplitter::splitAtFrame(extractPausedComputation(), i);
-			}
-		}
-
-	return null();
-	}
-
-PolymorphicSharedPtr<FuturesSplitResult> ExecutionContextImpl::splitWithFutures()
-    {
-	ExecutionContextInterruptAndLockScope scope(mExecutionState);
-
-	//first see if there's anything to split
-	Fora::IsSplittable isSplittable;
-
-	visitStackFramesAndValues(isSplittable);
-
-	if (!isSplittable.mSplittableFrameIndex || *isSplittable.mSplittableFrameIndex == 0)
-        return PolymorphicSharedPtr<FuturesSplitResult>();
-
-	Fora::Interpreter::PausedComputation pausedComputation;
-
-	pausedComputation = extractPausedComputation();
-
-	for (int i = 0, len = pausedComputation.frames().size(); i < len - 1; ++i)
-		{
-		if (!pausedComputation.frames()[i].areAllValuesConst())
-            return PolymorphicSharedPtr<FuturesSplitResult>();
-
-		PolymorphicSharedPtr<FuturesSplitResult> splitResult =
-			FuturesSplitResult::splitAtFrame(pausedComputation, i);
-
-		if (splitResult)
-			return splitResult;
-		}
-
-	return PolymorphicSharedPtr<FuturesSplitResult>();
-	}
-
 Nullable<long> ExecutionContextImpl::getCurrentBigvecSlotIndex() const
 	{
 	return mCurrentBigvecSlotIndex;
@@ -2216,22 +1690,9 @@ void ExecutionContextImpl::unreportAllSlots()
 
 void ExecutionContextImpl::reportPageReferenced(Fora::PageId pageId)
 	{
-	double timeElapsed = mTimeSpentInInterpreter + mTimeSpentInCompiledCode;
-
-	bool reset = mPageLoadSequence.observeAndReturnWantsReset(
-		emptyTreeSet() + pageId,
-		timeElapsed,
-		mVectorDataManager->getMemoryManager()->getMaxTotalBytes() / 10.0
-		);
-
-	if (reset)
-		unreportAllSlots();
-
-	if (mOnCurrentActivePageGroupChanged)
-		mOnCurrentActivePageGroupChanged(
-			mPageLoadSequence.currentActivePages(),
-			timeElapsed
-			);
+	lassert(mCurrentlyExecutingThread);
+	
+	mCurrentlyExecutingThread->pageUsed(pageId);
 	}
 
 void ExecutionContextImpl::observeLoadOfVectorPages(const ImmutableTreeSet<Fora::PageId>& pages)
@@ -2239,22 +1700,9 @@ void ExecutionContextImpl::observeLoadOfVectorPages(const ImmutableTreeSet<Fora:
 	if (!pages.size())
 		return;
 
-	double timeElapsed = mTimeSpentInInterpreter + mTimeSpentInCompiledCode;
-
-	bool reset = mPageLoadSequence.observeAndReturnWantsReset(
-		pages,
-		timeElapsed,
-		mVectorDataManager->getMemoryManager()->getMaxTotalBytes() / 10.0
-		);
-
-	if (reset)
-		unreportAllSlots();
-
-	if (mOnCurrentActivePageGroupChanged)
-		mOnCurrentActivePageGroupChanged(
-			mPageLoadSequence.currentActivePages(),
-			timeElapsed
-			);
+	if (mCurrentlyExecutingThread)
+		for (auto pageId: pages)
+			mCurrentlyExecutingThread->pageUsed(pageId);
 	}
 
 void ExecutionContextImpl::onDestroyVectorHandle(TypedFora::Abi::VectorHandle* handle)
@@ -2270,7 +1718,64 @@ void ExecutionContextImpl::setBigvectorSlotForTesting()
 	{
 	mCurrentBigvecSlotIndex =
 		TypedFora::Abi::BigVectorHandleArraySlotManager::singleton().acquire();
-	mThreadState.getRuntimeCallbacks().bigVectorSlotIndex = *mCurrentBigvecSlotIndex;
+	mRuntimeCallbacks.bigVectorSlotIndex = *mCurrentBigvecSlotIndex;
+	}
+
+void ExecutionContextImpl::extractPagesTouched(std::set<Fora::PageId>& outPages)
+	{
+	outPages.clear();
+	std::swap(outPages, mPagesTouched);
+	}
+
+void ExecutionContextImpl::pageTouched(Fora::PageId inPage)
+	{
+	mPagesTouched.insert(inPage);
+	}
+
+ImmutableTreeVector<PausedComputationTreeSplit> 
+			ExecutionContextImpl::splitComputation(bool disableVectorPagingIfSplit, double minSecondsElapsed)
+	{
+	ExecutionContextInterruptAndLockScope scope(mExecutionState);
+
+	ValueDeepcopierState state;
+
+	auto res = mThreadState->splitComputation(
+				[&](ImplValContainer ivc) {
+					return exportFromExecutionContext_(ivc, state);
+					},
+				minSecondsElapsed
+				);
+
+	if (res.size() && disableVectorPagingIfSplit)
+		disableVectorPaging();
+
+	return res;
+	}
+
+void ExecutionContextImpl::absorbSplitResult(
+		hash_type computationHash,
+		const ComputationResult& result,
+		TimeElapsed totalTimeElapsed
+		)
+	{
+	ExecutionContextInterruptAndLockScope scope(mExecutionState);
+
+	ValueDeepcopierState state;
+
+	@match ComputationResult(result)
+		-| Result(ivc) ->> {
+			ImplValContainer imported = importIntoExecutionContext_(ivc, state);
+
+			mThreadState->absorbSplitResult(computationHash, imported, false, totalTimeElapsed);
+			}
+		-| Exception(ivc) ->> {
+			ImplValContainer imported = importIntoExecutionContext_(ivc, state);
+
+			mThreadState->absorbSplitResult(computationHash, imported, true, totalTimeElapsed);
+			}
+		-| Failure(errorState) ->> {
+			mThreadState->setErrorState(errorState);
+			}
 	}
 
 };
