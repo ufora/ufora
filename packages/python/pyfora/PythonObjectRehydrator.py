@@ -55,27 +55,29 @@ class PythonObjectRehydrator(object):
 
         if lineNumber in self.moduleClassesAndFunctionsByPath[path]:
             return self.moduleClassesAndFunctionsByPath[path][lineNumber]
+
         return None
 
     def populateModuleMembers(self, path):
         res = {}
         module = self.moduleForFile(path)
 
-        for leafItemName in module.__dict__:
-            leafItemValue = module.__dict__[leafItemName]
+        if module is not None:
+            for leafItemName in module.__dict__:
+                leafItemValue = module.__dict__[leafItemName]
 
-            if PyforaInspect.isclass(leafItemValue) or PyforaInspect.isfunction(leafItemValue):
-                try:
-                    _, lineNumber = PyforaInspect.findsource(leafItemValue)
-                    res[lineNumber+1] = leafItemValue
-                except:
-                    pass
+                if PyforaInspect.isclass(leafItemValue) or PyforaInspect.isfunction(leafItemValue):
+                    try:
+                        _, lineNumber = PyforaInspect.findsource(leafItemValue)
+                        res[lineNumber+1] = leafItemValue
+                    except:
+                        pass
 
         self.moduleClassesAndFunctionsByPath[path] = res
 
-
     def moduleForFile(self, path):
         path = sanitizeModulePath(path)
+        
         if path not in self.pathsToModules:
             self.loadPathsToModules()
 
@@ -213,8 +215,9 @@ class PythonObjectRehydrator(object):
         return instance
 
     def _classObjectFromFilenameAndLine(self, filename, lineNumber, members):
-        """Construct a class object given its textual definition."""
+        """Construct a class object given its textual definition."""        
         objectOrNone = self.moduleLevelObject(filename, lineNumber)
+        
         if objectOrNone is not None:
             return objectOrNone
 

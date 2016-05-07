@@ -87,11 +87,13 @@ class StatusPrinter(object):
 
 
 def launcher_args(parsed_args):
+    if not parsed_args.name:
+        print "You did not specify a cluster name (--name). Using default name 'pyfora'."
+        parsed_args.name = 'pyfora'
+
     return {
-        'region': get_region(parsed_args.ec2_region),
-        'vpc_id': parsed_args.vpc_id,
-        'subnet_id': parsed_args.subnet_id,
-        'security_group_id': parsed_args.security_group_id
+        'name': parsed_args.name,
+        'region': get_region(parsed_args.ec2_region)
         }
 
 
@@ -102,9 +104,14 @@ def worker_logs(args):
 
     def grep(instance):
         #note that we have to swap "A" and "B" because tac has reversed the order of the lines.
-        command = '"source ufora_setup.sh; tac \\$LOG_DIR/logs/ufora-worker.log | grep -m %s -B %s -A %s -e %s" | tac' % (args.N, args.A, args.B, args.expression)
-        
-        return (pad(instance.ip_address + "> ", 25), ssh_output(identity_file, instance.ip_address, command))
+        command = ('"source ufora_setup.sh; tac \\$LOG_DIR/logs/ufora-worker.log '
+                   '| grep -m %s -B %s -A %s -e %s" | tac') % (args.N,
+                                                               args.A,
+                                                               args.B,
+                                                               args.expression)
+
+        return (pad(instance.ip_address + "> ", 25),
+                ssh_output(identity_file, instance.ip_address, command))
 
     for ip, res in parallel_for(instances, grep):
         for line in res.split("\n"):
@@ -112,18 +119,18 @@ def worker_logs(args):
 
 
 def worker_load(args):
-    cmd_to_run = 'tail -f /mnt/ufora/logs/ufora-worker.log' if args.logs else 'sudo apt-get install htop\\; htop'
+    cmd_to_run = 'tail -f /mnt/ufora/logs/ufora-worker.log' if args.logs else \
+        'sudo apt-get install htop\\; htop'
     launcher = Launcher(**launcher_args(args))
     instances = running_or_pending_instances(launcher.get_reservations())
     identity_file = get_identity_file(args.identity_file)
 
-    import os
     session = os.getenv("USER")
     def sh(cmd, **kwargs):
         try:
             print "CMD =", cmd.format(SESSION=session, **kwargs)
             subprocess.check_output(cmd.format(SESSION=session, **kwargs), shell=True)
-        except:
+        except subprocess.CalledProcessError:
             import traceback
             traceback.print_exc()
 
@@ -133,21 +140,21 @@ def worker_load(args):
 
     # Setup a window for tailing log files
     sh("tmux new-window -t {SESSION}:1 -n 'pyfora_htop'")
-    isFirst = True
-    count = 0
 
-    
     for ix in xrange((len(instances)-1)/2):
         sh("tmux split-window -v -t 0 -l 20")
 
     for ix in xrange(len(instances)/2):
-        sh("tmux split-window -h -t {ix}",ix=ix)
+        sh("tmux split-window -h -t {ix}", ix=ix)
 
     # for ix in xrange(len(instances)-1,0,-1):
     #     sh('tmux resize-pane -t {ix} -y 20', ix=ix)
 
     for ix in xrange(len(instances)):
-        sh('tmux send-keys -t {ix} "ssh ubuntu@%s -t -i %s %s" C-m' % (instances[ix].ip_address, identity_file, cmd_to_run),ix=ix)
+        sh('tmux send-keys -t {ix} "ssh ubuntu@%s -t -i %s %s" C-m' % (instances[ix].ip_address,
+                                                                       identity_file,
+                                                                       cmd_to_run),
+           ix=ix)
 
 
     # Attach to session
@@ -169,9 +176,16 @@ def start_instances(args):
         if response not in ('Y', 'y'):
             return
 
+    if args.name is None:
+        args.name = 'pyfora'
+        print '--name argument was not specified. Using default name: ' + args.name
+
     launcher = Launcher(instance_type=args.instance_type,
                         open_public_port=open_public_port,
                         commit_to_build=args.commit,
+                        vpc_id=args.vpc_id,
+                        subnet_id=args.subnet_id,
+                        security_group_id=args.security_group_id,
                         **launcher_args(args))
 
     status_printer = StatusPrinter()
@@ -179,6 +193,10 @@ def start_instances(args):
     manager = launcher.launch_manager(ssh_keyname,
                                       args.spot_price,
                                       callback=status_printer.on_status)
+    if not manager:
+        status_printer.failed()
+        list_instances(args)
+        return
     status_printer.done()
 
     print "Manager instance started:\n"
@@ -196,11 +214,16 @@ def start_instances(args):
                                           manager.id,
                                           args.spot_price,
                                           callback=status_printer.on_status)
-        status_printer.done()
-        print "Worker instance(s) started:"
+        if not workers:
+            status_printer.failed()
+            print "Workers could not be launched."
+            list_instances(args)
+        else:
+            status_printer.done()
+            print "Worker instance(s) started:"
 
-    for worker in workers:
-        print_instance(worker, 'worker')
+            for worker in workers:
+                print_instance(worker, 'worker')
 
     print "Waiting for services:"
     if launcher.wait_for_services([manager] + workers, callback=status_printer.on_status):
@@ -220,11 +243,14 @@ def restart_instances(args):
         is_manager = 'manager' in instance.tags.get('Name', '')
 
         if is_manager:
-            command = '"source ufora_setup.sh; \\$DOCKER stop ufora_manager; sudo rm -rf \\$LOG_DIR/*; \\$DOCKER start ufora_manager"'
+            command = ('"source ufora_setup.sh; \\$DOCKER stop ufora_manager; '
+                       'sudo rm -rf \\$LOG_DIR/*; \\$DOCKER start ufora_manager"')
         else:
-            command = '"source ufora_setup.sh; \\$DOCKER stop ufora_worker; sudo rm -rf \\$LOG_DIR/*; \\$DOCKER start ufora_worker"'
+            command = ('"source ufora_setup.sh; \\$DOCKER stop ufora_worker; '
+                       'sudo rm -rf \\$LOG_DIR/*; \\$DOCKER start ufora_worker"')
 
-        return (pad(instance.ip_address + "> ", 25), ssh_output(identity_file, instance.ip_address, command))
+        return (pad(instance.ip_address + "> ", 25),
+                ssh_output(identity_file, instance.ip_address, command))
 
     for ip, res in parallel_for(instances, restart_instance):
         for line in res.split("\n"):
@@ -280,31 +306,43 @@ def add_instances(args):
 def list_instances(args):
     launcher = Launcher(**launcher_args(args))
     reservations = launcher.get_reservations()
-    count = sum(len(r.instances) for r in reservations)
-    print "%d instance%s%s" % (
-        count, 's' if count != 1 else '', ':' if count > 0 else ''
-        )
-    for r in reservations:
-        for i in r.instances:
-            print_instance(i)
+    instances = running_or_pending_instances(reservations)
+    count = len(instances)
+    print "%d instance%s%s" % (count, 's' if count != 1 else '', ':' if count > 0 else '')
+    for i in instances:
+        print_instance(i)
+
+    if reservations['unfulfilled_spot_requests']:
+        print ""
+        count = len(reservations['unfulfilled_spot_requests'])
+        print "%d unfulfilled spot instance request%s:" % (count, 's' if count != 1 else '')
+        for r in reservations['unfulfilled_spot_requests']:
+            print_spot_request(r)
 
 
 def stop_instances(args):
     launcher = Launcher(**launcher_args(args))
-    instances = running_or_pending_instances(launcher.get_reservations())
+    reservations = launcher.get_reservations()
+    instances = running_or_pending_instances(reservations)
     count = len(instances)
     if count == 0:
         print "No running instances to stop"
-        return
+    else:
+        verb = 'Terminating' if args.terminate else 'Stopping'
+        print '%s %d instances:' % (verb, count)
+        for i in instances:
+            print_instance(i)
+            if args.terminate:
+                i.terminate()
+            else:
+                i.stop()
 
-    verb = 'Terminating' if args.terminate else 'Stopping'
-    print '%s %d instances:' % (verb, count)
-    for i in instances:
-        print_instance(i)
-        if args.terminate:
-            i.terminate()
-        else:
-            i.stop()
+    spot_requests = reservations['unfulfilled_spot_requests']
+    if spot_requests:
+        print "Cancelling %d unfulfilled spot instance requests:" % len(spot_requests)
+        for r in spot_requests:
+            print_spot_request(r)
+            r.cancel()
 
 
 def scp(local_path, remote_path, host, identity_file):
@@ -331,7 +369,7 @@ def ssh(identity_file, host, command):
 def ssh_output(identity_file, host, command):
     try:
         return subprocess.check_output("ssh -i %s ubuntu@%s %s" % (identity_file, host, command),
-                                shell=True)
+                                       shell=True)
     except subprocess.CalledProcessError as e:
         return e.output
 
@@ -417,11 +455,7 @@ def running_or_pending_instances(reservations):
 
 
 def instances_in_state(reservations, states):
-    return [
-        i for r in reservations
-        for i in r.instances
-        if i.state in states
-        ]
+    return [i for i in reservations['instances'] if i.state in states]
 
 
 def print_instance(instance, tag=None):
@@ -434,12 +468,23 @@ def print_instance(instance, tag=None):
         output += " | " + tag
     print output
 
+
+def print_spot_request(request):
+    print "    %s | %s | %s" % (request.id, request.state, request.status.code)
+
+
 all_arguments = {
     'yes-all': {
         'args': ('-y', '--yes-all'),
         'kwargs': {
             'action': 'store_true',
             'help': 'Do not prompt user input. Answer "yes" to all prompts.'
+            }
+        },
+    'name': {
+        'args': ('--name',),
+        'kwargs': {
+            'help': 'The name of the cluster. Default: "pyfora"'
             }
         },
     'ec2-region': {
@@ -523,42 +568,24 @@ all_arguments = {
                      'GitHub repository.')
             }
         },
-    'terminate': {
-        'args': ('--terminate',),
-        'kwargs': {
-            'action': 'store_true',
-            'help': 'Terminate running instances.'
-            }
-        },
     'identity-file': {
         'args': ('-i', '--identity-file'),
         'kwargs': {
             'required': os.getenv('PYFORA_AWS_IDENTITY_FILE') is None,
             'default': os.getenv('PYFORA_AWS_IDENTITY_FILE'),
-            'help': 'The file from which the private SSH key is read.'
-                     'Can also be set using the PYFORA_AWS_IDENTITY_FILE environment variable.'
-            }
-        },
-    'package': {
-        'args': ('-p', '--package'),
-        'kwargs': {
-            'required': True,
-            'help': 'Path to the backend package to deploy.'
+            'help': 'The file from which the private SSH key is read. '
+                    'Can also be set using the PYFORA_AWS_IDENTITY_FILE environment variable.'
             }
         }
     }
 
-start_args = ('yes-all', 'ec2-region', 'vpc-id', 'subnet-id', 'security-group-id',
-              'num-instances', 'ssh-keyname', 'spot-price', 'instance-type',
-              'open-public-port', 'commit')
-add_args = ('ec2-region', 'vpc-id', 'subnet-id', 'security-group-id', 'num-instances',
-            'spot-price')
-list_args = ('ec2-region', 'vpc-id', 'subnet-id', 'security-group-id')
-command_args = ('ec2-region', 'vpc-id', 'subnet-id', 'security-group-id', 'identity-file')
-stop_args = ('ec2-region', 'vpc-id', 'subnet-id', 'security-group-id',
-             'terminate')
-deploy_args = ('ec2-region', 'vpc-id', 'subnet-id', 'security-group-id',
-               'identity-file', 'package')
+common_args = ('name', 'ec2-region')
+launch_args = common_args + ('num-instances', 'spot-price')
+start_args = launch_args + ('yes-all', 'vpc-id', 'subnet-id', 'security-group-id',
+                            'ssh-keyname', 'instance-type', 'open-public-port', 'commit')
+add_args = launch_args
+list_args = common_args
+command_args = common_args + ('identity-file',)
 
 
 
@@ -572,28 +599,47 @@ def main():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers()
 
-    restart_all_parser = subparsers.add_parser('restart',
-                                          help='Reboot all ufora_manager and ufora_worker processes')
+    restart_all_parser = subparsers.add_parser(
+        'restart',
+        help='Reboot all ufora_manager and ufora_worker processes'
+        )
     restart_all_parser.set_defaults(func=restart_instances)
     add_arguments(restart_all_parser, command_args)
 
-    worker_logs_parser = subparsers.add_parser('worker_logs',
-                                          help='Return the last N lines of logs matching a particular regex')
+    worker_logs_parser = subparsers.add_parser(
+        'worker_logs',
+        help='Return the last N lines of logs matching a particular regex')
     worker_logs_parser.set_defaults(func=worker_logs)
     add_arguments(worker_logs_parser, command_args)
     worker_logs_parser.add_argument('N', type=int, default=1, help="Number of matches to return")
-    worker_logs_parser.add_argument('-e', '--expression', type=str, required=True, help="Regular expression to search for")
-    worker_logs_parser.add_argument('-A', type=int, required=False, default=0, help="Lines of context after the expression")
-    worker_logs_parser.add_argument('-B', type=int, required=False, default=0, help="Lines of context before the expression")
+    worker_logs_parser.add_argument('-e',
+                                    '--expression',
+                                    type=str,
+                                    required=True,
+                                    help="Regular expression to search for")
+    worker_logs_parser.add_argument('-A',
+                                    type=int,
+                                    required=False,
+                                    default=0,
+                                    help="Lines of context after the expression")
+    worker_logs_parser.add_argument('-B',
+                                    type=int,
+                                    required=False,
+                                    default=0,
+                                    help="Lines of context before the expression")
 
     worker_load_parser = subparsers.add_parser('worker_load',
-                                          help='Run htop in tmux for all workers')
+                                               help='Run htop in tmux for all workers')
     worker_load_parser.set_defaults(func=worker_load)
-    worker_load_parser.add_argument('-l', '--logs', action='store_true', default=False, help="Instead of htop, tail the logs")
+    worker_load_parser.add_argument('-l',
+                                    '--logs',
+                                    action='store_true',
+                                    default=False,
+                                    help="Instead of htop, tail the logs")
 
     add_arguments(worker_load_parser, command_args)
 
-    
+
     launch_parser = subparsers.add_parser('start',
                                           help='Launch one or more backend instances')
     launch_parser.set_defaults(func=start_instances)
@@ -612,12 +658,18 @@ def main():
     stop_parser = subparsers.add_parser('stop',
                                         help='Stop all backend instances')
     stop_parser.set_defaults(func=stop_instances)
-    add_arguments(stop_parser, stop_args)
+    add_arguments(stop_parser, common_args)
+    stop_parser.add_argument('--terminate',
+                             action='store_true',
+                             help=('Terminate instances instead of stopping them. '
+                                   'Spot instances cannot be stopped, only terminated.'))
 
     deploy_parser = subparsers.add_parser('deploy',
                                           help='deploy a build to all backend instances')
     deploy_parser.set_defaults(func=deploy_package)
-    add_arguments(deploy_parser, deploy_args)
+    add_arguments(deploy_parser, command_args)
+    deploy_parser.add_argument('-p', '--package', required=True,
+                               help='Path to the backend pagacke to deploy.')
 
     args = parser.parse_args()
     return args.func(args)

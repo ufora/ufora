@@ -13,7 +13,7 @@
 #   limitations under the License.
 
 import json
-from socketIO_client import SocketIO, BaseNamespace
+from socketIO_client import SocketIO, BaseNamespace, TimeoutError, ConnectionError
 from socketIO_client.transports import WebsocketTransport
 
 import time
@@ -58,6 +58,7 @@ class SocketIoJsonInterface(object):
 
 
     def connect(self, timeout=None):
+        timeout = timeout or 30.0
         with self.lock:
             if self._isConnected():
                 raise ValueError("'connect' called when already connected")
@@ -65,9 +66,17 @@ class SocketIoJsonInterface(object):
         with self.lock:
             t0 = time.time()
             self.connection_status.status = ConnectionStatus.connecting
-            self.socketIO = SocketIO(self.url)
+            while True:
+                try:
+                    self.socketIO = SocketIO(self.url, wait_for_connection=False)
+                    break
+                except (TimeoutError, ConnectionError):
+                    if time.time() - t0 > timeout:
+                        raise
+                    time.sleep(0.5)
+
             self.reactorThread = threading.Thread(target=self.socketIO.wait)
-            
+
             if isinstance(self.socketIO._transport_instance, WebsocketTransport):
                 self.socketIO._transport_instance._connection.lock = threading.Lock()
 
@@ -76,7 +85,7 @@ class SocketIoJsonInterface(object):
             self.reactorThread.start()
 
             while self.connection_status.status == ConnectionStatus.connecting and \
-                    (timeout is None or time.time() - t0 < timeout):
+                    (time.time() - t0 < timeout):
                 self.connection_cv.wait(timeout)
 
         if self.connection_status.status == ConnectionStatus.connected:

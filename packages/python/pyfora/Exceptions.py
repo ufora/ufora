@@ -59,7 +59,7 @@ def renderTraceback(trace):
         else:
             res.append('  File "%s", line %s' % (path, lineNumber))
 
-        lines = PyforaInspect.getlines(os.path.abspath(path))
+        lines = PyforaInspect.getlines(path)
         if lines is not None and lineNumber >= 1 and lineNumber <= len(lines):
             res.append("    " + lines[lineNumber-1][:-1].lstrip())
 

@@ -23,7 +23,7 @@ import logging
 import inspect
 import traceback
 import ast
-import dis
+
 
 singleton_ = []
 def singleton():

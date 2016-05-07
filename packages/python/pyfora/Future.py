@@ -18,6 +18,9 @@ Future
 Wraps the result to an asynchronous computation
 """
 
+import time
+import logging
+import traceback
 import concurrent.futures._base as Futures
 
 KEYBOARD_INTERRUPT_WAKEUP_INTERVAL = 0.01
@@ -35,9 +38,9 @@ class Future(Futures.Future):
     The pyfora Future object extends the concurrent.futures object by
     supporting cancellation with the :func:`~pyfora.Future.Future.cancel` method.
     """
-    def __init__(self, executorState=None, onCancel=None):
+    def __init__(self, onCancel=None):
         super(Future, self).__init__()
-        self._executorState = executorState
+        self._computedValue = None
         self._onCancel = onCancel
 
 
@@ -50,21 +53,53 @@ class Future(Futures.Future):
             if self._state is not Futures.RUNNING or self._onCancel is None:
                 # can't cancel
                 return False
-            if self._onCancel(self._executorState):
+            if self._onCancel(self._computedValue):
                 self._state = Futures.CANCELLED
                 self._condition.notify_all()
 
         self._invoke_callbacks()
         return True
 
-    def setExecutorState(self, state):
+    def setComputedValue(self, computedValue):
         ''' Should only be called by Executor '''
-        self._executorState = state
+        self._computedValue = computedValue
 
-    def resultWithWakeup(self):
+    def resultWithWakeup(self, statusUpdateFunction=None):
         """Poll the future, but wake up frequently (to allow for keyboard interrupts)."""
-        while True:
-            try:
-                return self.result(timeout=KEYBOARD_INTERRUPT_WAKEUP_INTERVAL)
-            except Futures.TimeoutError:
-                pass
+        hasSubscribed = [False]
+        timeOfLastSubscription = [time.time()]
+        isComplete = [False]
+
+        try:
+            while True:
+                try:
+                    if (statusUpdateFunction is not None and 
+                            self._computedValue is not None and 
+                            hasSubscribed[0] == False and 
+                            time.time() > timeOfLastSubscription[0] + 1.0):
+                        hasSubscribed[0] = True
+                        def onSuccess(result):
+                            hasSubscribed[0] = False
+                            timeOfLastSubscription[0] = time.time()
+                            if not isComplete[0]:
+                                try:
+                                    statusUpdateFunction(result)
+                                except:
+                                    logging.error("statusUpdateFunction threw an unexpected exception:\n%s", traceback.format_exc())
+
+                        def onFailure(result):
+                            logging.error("subscribing to computation statistics produced unexpected error: %s", result)
+                            hasSubscribed[0] = False
+                            timeOfLastSubscription[0] = time.time()
+
+                        self._computedValue.get_stats({'onSuccess': onSuccess, 'onFailure': onFailure})
+                        timeOfLastSubscription[0] = time.time()
+
+                    return self.result(timeout=KEYBOARD_INTERRUPT_WAKEUP_INTERVAL)
+                except Futures.TimeoutError:
+                    pass
+        finally:
+            isComplete[0] = True
+            if statusUpdateFunction is not None:
+                statusUpdateFunction(None)
+

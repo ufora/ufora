@@ -30,6 +30,16 @@ import sys
 import pyfora.PyforaWithBlock as PyforaWithBlock
 import ast
 
+haveIPythonNotebook = False
+try:
+    import IPython
+    if IPython.get_ipython() is not None:
+        import IPython.core.display
+        haveIPythonNotebook = True
+except ImportError:
+    pass
+
+
 INNER_FUNCTION_NAME = 'inner'
 
 class AugmentRaiseFunctionModificationVisitor(ast.NodeVisitor):
@@ -73,7 +83,9 @@ def augmentRaiseFunction(raiseFunction, path, line, col):
     vis.visit(module)
 
     code = compile(module, path, 'exec')
-    exec code in globals(), locals()
+    g = dict(globals())
+    g['__file__'] = path
+    exec code in g, locals()
 
     return _augmentRaiseFunctionTempl(raiseFunction)
 
@@ -81,10 +93,14 @@ def syntheticTraceback(trace):
     raiseFunction = None
 
     for elt in trace:
-        if len(elt['path']) == 1 and (elt['path'][0].endswith(".py") or elt['path'][0].endswith(".pyc")):
+        path = elt['path']
+        if len(path) == 1 and \
+           (path[0].endswith(".py") or \
+            path[0].endswith(".pyc") or \
+            path[0].startswith("<ipython-input-")):
             raiseFunction = augmentRaiseFunction(
                 raiseFunction,
-                elt['path'][0],
+                path[0],
                 elt['range']['start']['line'],
                 elt['range']['start']['col']
                 )
@@ -124,9 +140,20 @@ class WithBlockExecutor(object):
         self.frame = None
         self.compileOnly = False
         self.downloadPolicy = DownloadPolicy.DownloadNonePolicy()
+        self.customComputationStatusCallback = None
 
     def asCompileOnly(self):
         self.compileOnly = True
+        return self
+
+    def withStatusCallback(self, callback):
+        """Modify the executor to call 'callback' while computations are blocked with status updates.
+
+        'callback' will receive a json package from the server containing information about the
+        current computation. This will override the default callback, which attempts to determine
+        whether we're in a jupyter notebook.
+        """
+        self.customComputationStatusCallback = callback
         return self
 
     def downloadAll(self):
@@ -178,6 +205,17 @@ class WithBlockExecutor(object):
         # swallow WithBlockCompleted and let all other exceptions through
         return isinstance(excValue, WithBlockCompleted)
 
+    def onComputationStatus(self, status):
+        if self.customComputationStatusCallback is not None:
+            self.customComputationStatusCallback(status)
+        elif haveIPythonNotebook and IPython.get_ipython() is not None:
+            IPython.core.display.clear_output(status is not None)
+            if status is not None:
+                IPython.core.display.display(
+                    IPython.core.display.HTML("<div>Active Cores: %s</div>" % status['cpus']['value'])
+                    )
+
+
     def blockOperation(self, frame):
         # variables bound in the enclosing context of the with-block frame.
         boundVariables = {}
@@ -204,7 +242,7 @@ class WithBlockExecutor(object):
             f_proxy.triggerCompilation().resultWithWakeup()
             return {}
 
-        f_result_proxy = f_proxy().resultWithWakeup()
+        f_result_proxy = f_proxy().resultWithWakeup(self.onComputationStatus)
 
         try:
             tuple_of_proxies = f_result_proxy.toTupleOfProxies().resultWithWakeup()

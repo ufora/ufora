@@ -51,8 +51,15 @@ def getSourceFilenameAndText(pyObject):
     except TypeError as e:
         raise Exceptions.CantGetSourceTextError(e.message)
 
+    linesOrNone = PyforaInspect.getlines(sourceFile)
+
+    if linesOrNone is None:
+        raise Exceptions.CantGetSourceTextError(
+            "can't get source lines for file %s" % sourceFile
+            )
+
     if sourceFile not in sourceFileCache_:
-        sourceFileCache_[sourceFile] = "".join(PyforaInspect.getlines(sourceFile))
+        sourceFileCache_[sourceFile] = "".join(linesOrNone)
 
     return sourceFileCache_[sourceFile], sourceFile
 
@@ -72,9 +79,11 @@ def pyAstFor(pyObject):
 
 @CachedByArgs
 def getAstFromFilePath(filename):
-    with open(filename, "r") as f:
-        return pyAstFromText(f.read())
+    linesOrNone = PyforaInspect.getlines(filename)
+    if linesOrNone is not None:
+        return pyAstFromText("".join(linesOrNone))
 
+    return None
 
 class FindEnclosingFunctionVisitor(ast.NodeVisitor):
     """"Visitor used to find the enclosing function at a given line of code.

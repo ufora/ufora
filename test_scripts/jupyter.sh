@@ -1,4 +1,6 @@
-#   Copyright 2015 Ufora Inc.
+#!/bin/bash
+
+#   Copyright 2016 Ufora Inc.
 #
 #   Licensed under the Apache License, Version 2.0 (the "License");
 #   you may not use this file except in compliance with the License.
@@ -12,23 +14,12 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-FROM ufora/build
-MAINTAINER Ronen Hilewicz <ronen@ufora.com>
-# This image is used to run Ufora services on Ubuntu 14.04
-#
-COPY lib /opt/ufora
-COPY logrotate /etc/logrotate.d/ufora
-RUN mv /etc/cron.daily/logrotate /etc/cron.hourly/
+if [ -z "$WORKSPACE" ]; then
+	export WORKSPACE=.
+fi
+. $WORKSPACE/test_scripts/_funcs.sh
 
-RUN pip install -e /opt/ufora/packages/python
-RUN mkdir /var/ufora
+TEST_NAME=jupyter
+TEST_ARGS="-scripts --scriptPath test_scripts/$1 -timeout 960"
 
-ENV PYTHONPATH=/opt/ufora
-ENV ROOT_DATA_DIR=/var/ufora
-
-VOLUME /var/ufora
-
-ENTRYPOINT /opt/ufora/ufora/scripts/init/launcher
-
-EXPOSE 30000 30002 30009 30010
-
+run_test

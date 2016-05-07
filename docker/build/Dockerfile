@@ -71,7 +71,8 @@ RUN pip install --allow-unverified pyodbc\
     pandas \
     scipy \
     wsaccel \
-    psutil
+    psutil \
+    jupyter
 
 
 # NodeJS
