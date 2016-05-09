@@ -2,6 +2,8 @@
 #include "../NativeCode.hppml"
 #include "../../../core/cppml/CPPMLTransform.hppml"
 
+#include "../../../core/Logging.hpp"
+
 namespace NativeCFGTransforms {
 
 class IncrementReturnIndexTransformer {
@@ -19,20 +21,75 @@ public:
 		return null();
 		}
 
-	NativeExpression	processDown(const NativeExpression& t, bool& cont) const
+	NativeExpression	processUp(const NativeExpression& inExp) const
 		{
-		@match NativeExpression(t)
+		LOG_DEBUG << "IncrementReturnIndexTr::processUp::NativeExpression:"
+				<< prettyPrintString(inExp);
+		@match NativeExpression(inExp)
 			-|	Return(idx, val) ->> {
 				if (idx < mMaxIdx)
 					return NativeExpression::Return(idx+1, val);
 				else
 					return NativeExpression::Return(0, val);
 				}
+			-|	Call(f, continuations, args, meta) ->> {
+				LOG_DEBUG << "Updating continuations of Call expr";
+				NativeContinuation nullCont =
+						NativeContinuation(
+								NativeVariable::Temp(NativeType::Nothing()),
+								NativeExpression::Return(0, NativeConstant::Nothing().expr()));
+				@match NativeCallTarget(f)
+				-|	Inline(fun, block) ->> {
+					NativeCFG cfg(fun);
+					cfg.returnTypes() =
+							emptyTreeVec() + NativeType::Nothing() + cfg.returnTypes();
+					LOG_DEBUG << "Added a Nothing as first return type of CFG " << cfg.name()
+							<<". returnTypes.size = "
+							<< cfg.returnTypes().size();
+					for (auto t : cfg.returnTypes())
+						LOG_DEBUG << "retTyp: " << prettyPrintString(t);
+					return NativeExpression::Call(
+							NativeCallTarget::Inline(cfg, block),
+							emptyTreeVec() + nullCont + continuations,
+							args,
+							meta);
+					}
+				-|	_ ->> {
+					return NativeExpression::Call(
+							f,
+							emptyTreeVec() + nullCont + continuations,
+							args,
+							meta);
+					}
+				}
+			-|	Tagged(e, t) ->> {
+				@match NativeExpressionTag(t)
+					-|	HomogenousVectorLookup(vectorRecord, index, type) ->> {
+						LOG_DEBUG << "unwrapping HomogenousVectorLookup tagged exp";
+						LOG_DEBUG << "inExp::" << prettyPrintString(inExp);
+//						LOG_DEBUG << "e::" << prettyPrintString(e);
+						LOG_DEBUG << "t::" << prettyPrintString(t);
+						LOG_DEBUG << "type: " << prettyPrintString(type);
+						LOG_DEBUG << "vectorRecord.type(): " << prettyPrintString(vectorRecord.type());
+						NativeExpression exp = NativeExpression::BinaryOp(
+										NativeBinaryOpcode::Add(),
+										vectorRecord,
+										index
+										);
+						LOG_DEBUG << "resulting expression:" << prettyPrintString(exp);
+						LOG_DEBUG << "resulting expression type:" << prettyPrintString(exp.type());
+						return exp;
+						}
+					-| _ ->> {
+						return inExp;
+						}
+				}
 			-|	_ ->> {
-				return t;
+				return inExp;
 				}
 			;
 		}
+
 private:
 	uword_t mMaxIdx;
 };
@@ -65,9 +122,9 @@ public:
 			;
 		}
 
-	NativeExpression	processDown(const NativeExpression& t, bool& cont) const
+	NativeExpression	processDown(const NativeExpression& inExp, bool& ioCont) const
 		{
-		@match NativeExpression(t)
+		@match NativeExpression(inExp)
 			-|	Alloc(_) ->> {
 				return mUnsupported;
 				}
@@ -90,7 +147,7 @@ public:
 				return mUnsupported;
 				}
 			-|	_ ->> {
-				return t;
+				return inExp;
 				}
 			;
 		}
@@ -110,7 +167,8 @@ NativeCFG convertForGpuExecution(const NativeCFG& in, unsigned int resultPartSiz
 			emptyTreeVec() + NativeType::Nothing() +
 			cfg.returnTypes().slice(0, resultPartSize);
 	cfg = transform(cfg, IncrementReturnIndexTransformer(resultPartSize));
-	return transform(cfg, StripIncompatibleForGpuTransformer());
-	} ///
+	cfg = transform(cfg, StripIncompatibleForGpuTransformer());
+	return cfg;
+	}
 
 }
