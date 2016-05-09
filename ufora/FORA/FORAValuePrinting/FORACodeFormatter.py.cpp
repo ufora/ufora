@@ -41,7 +41,7 @@ class FORACodeFormatter : public native::module::Exporter<FORACodeFormatter>
 		//allow empty expression
 		Expression stage2 = parser.parseToExpression(stage1, true);
 
-		std::ostringstream s;	
+		std::ostringstream s;
 			{
 			CPPMLPrettyPrintStream st(s);
 			FORAValuePrinting::FORAValuePrinter printer(st);
@@ -54,7 +54,7 @@ class FORACodeFormatter : public native::module::Exporter<FORACodeFormatter>
 	void exportPythonWrapper()
 		{
 		using namespace boost::python;
-	
+
 		def("formatTextAsCode", &formatTextAsCode);
 		}
 	};

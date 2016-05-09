@@ -25,25 +25,25 @@ public:
 
 template<class T, class member_type_in, class accessor_in, const int32_t ix, class TailChain>
 class NativeTypeForCppmlTupleImpl<
-		T, 
+		T,
 		::CPPML::Chain<
-			::CPPML::TupleMember<T, member_type_in, accessor_in, ix>, 
+			::CPPML::TupleMember<T, member_type_in, accessor_in, ix>,
 			TailChain
-			> 
+			>
 		> {
 public:
 	static ImmutableTreeVector<pair<NativeType, uword_t> > get()
 		{
 		T* tPointer = (T*)0;
 
-		return 
+		return
 			make_pair(
 				NativeType::Composite(
 					accessor_in::name(),
 					NativeTypeForImpl<member_type_in>::get()
 					),
 				(uint8_t*)&accessor_in::get(*tPointer) - (uint8_t*)tPointer
-				) + 
+				) +
 			NativeTypeForCppmlTupleImpl<T, TailChain>::get()
 			;
 		}
@@ -63,7 +63,7 @@ template<class T>
 NativeType nativeTypeForCppmlTuple()
 	{
 	//get a list of types and offsets into the tuple
-	ImmutableTreeVector<pair<NativeType, uword_t> > offsets = 
+	ImmutableTreeVector<pair<NativeType, uword_t> > offsets =
 		NativeTypeForCppmlTupleImpl<T, typename T::metadata>::get();
 
 	NativeType resultType = NativeType::Composite();
@@ -83,7 +83,7 @@ NativeType nativeTypeForCppmlTuple()
 			{
 			//add enough padding to compensate for the extra bytes that C++ places in between
 			//members to get alignment
-			resultType = resultType + 
+			resultType = resultType +
 				NativeType::Composite(
 					NativeType::Array(
 						NativeType::Integer(8,false),
@@ -98,7 +98,7 @@ NativeType nativeTypeForCppmlTuple()
 	lassert(resultType.packedSize() <= sizeof(T));
 
 	if (resultType.packedSize() < sizeof(T))
-		resultType = resultType + 
+		resultType = resultType +
 			NativeType::Composite(
 				NativeType::Array(
 					NativeType::Integer(8,false),

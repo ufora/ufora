@@ -46,7 +46,7 @@ class InMemoryPandasTestCases(object):
         df = pandas.DataFrame({'A': [1,2,3,4], 'B': [5,6,7,8]})
         def f():
             return pandas.DataFrame(df)
-        
+
         self.equivalentEvaluationTest(
             f,
             comparisonFunction=self.checkFramesEqual
@@ -56,7 +56,7 @@ class InMemoryPandasTestCases(object):
         s = pandas.Series([1,2,3])
         def f():
             return pandas.Series(s)
-        
+
         self.equivalentEvaluationTest(
             f,
             comparisonFunction=self.checkSeriesEqual
@@ -454,7 +454,7 @@ A,B,C
             return [float(val) for val in df.dot(s)]
 
         self.equivalentEvaluationTest(f)
-        
+
     def test_pandas_dataframe_dot_2(self):
         ncol = 4
         nrow = 32

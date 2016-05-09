@@ -36,7 +36,7 @@ ForaValueArray* ForaValueArray::Empty(MemoryPool* inOwningMemoryPool)
 	}
 
 void CPPMLPrettyPrint<const TypedFora::Abi::ForaValueArray*>::prettyPrint(
-							CPPMLPrettyPrintStream& s, 
+							CPPMLPrettyPrintStream& s,
 							const TypedFora::Abi::ForaValueArray* t
 							)
 	{

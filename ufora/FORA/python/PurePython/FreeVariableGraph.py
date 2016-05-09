@@ -13,7 +13,7 @@
 #   limitations under the License.
 
 class FreeVariableGraph(object):
-    """Within this class, a 'chain' is a free variable member acces chain, representing something like 
+    """Within this class, a 'chain' is a free variable member acces chain, representing something like
     var.member1.member2. ..., held as a tuple of strings of names
 
     and all of these expressionId's, I believe, are from function expressions

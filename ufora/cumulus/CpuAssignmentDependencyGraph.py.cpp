@@ -49,10 +49,10 @@ public:
 				);
 			}
 
-		class CpuAssignmentDependencyGraphListener : 
+		class CpuAssignmentDependencyGraphListener :
 				public PolymorphicSharedPtrBase<CpuAssignmentDependencyGraphListener> {
 		public:
-			CpuAssignmentDependencyGraphListener(PolymorphicSharedPtr<CpuAssignmentDependencyGraph> inGraph) : 
+			CpuAssignmentDependencyGraphListener(PolymorphicSharedPtr<CpuAssignmentDependencyGraph> inGraph) :
 					mGraph(inGraph)
 				{
 				}
@@ -71,7 +71,7 @@ public:
 
 					{
 					ScopedPyThreads releaseTheGil;
-				
+
 					e = mAssignments.get();
 					}
 
@@ -98,10 +98,10 @@ public:
 			boost::python::object getTimeout(double t)
 				{
 				ComputationSystemwideCpuAssignment e;
-					
+
 					{
 					ScopedPyThreads releaseTheGil;
-					
+
 					if (!mAssignments.getTimeout(e, t))
 						return boost::python::object();
 					}
@@ -133,7 +133,7 @@ public:
 		static void updateDependencyGraph(PolymorphicSharedPtr<CpuAssignmentDependencyGraph> graph)
 			{
 			ScopedPyThreads releaseTheGil;
-			
+
 			graph->updateDependencyGraph();
 			}
 
@@ -146,12 +146,12 @@ public:
 				graph->polymorphicSharedWeakPtrFromThis(),
 				&CpuAssignmentDependencyGraph::handleRootToRootDependencyCreated
 				);
-			
+
 			client->onRootComputationComputeStatusChanged().subscribe(
 				graph->polymorphicSharedWeakPtrFromThis(),
 				&CpuAssignmentDependencyGraph::handleRootComputationComputeStatusChanged
 				);
-			
+
 			client->onCheckpointStatusUpdateMessage().subscribe(
 				graph->polymorphicSharedWeakPtrFromThis(),
 				&CpuAssignmentDependencyGraph::handleCheckpointStatusUpdateMessage
@@ -161,7 +161,7 @@ public:
 				graph->polymorphicSharedWeakPtrFromThis(),
 				&CpuAssignmentDependencyGraph::addMachine
 				);
-			
+
 			client->onWorkerDrop().subscribe(
 				graph->polymorphicSharedWeakPtrFromThis(),
 				&CpuAssignmentDependencyGraph::dropMachine
@@ -179,42 +179,42 @@ public:
 								)
 			{
 			ScopedPyThreads releaseTheGil;
-						
+
 			return graph->computeBytecountForHashes(hashes);
 			}
 
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
+
 			class_<PolymorphicSharedPtr<CpuAssignmentDependencyGraphListener> >("CpuAssignmentDependencyGraphListener", no_init)
-				.def("get", 
+				.def("get",
 						macro_polymorphicSharedPtrFuncFromMemberFunc(CpuAssignmentDependencyGraphListener::get)
 						)
-				.def("getNonblock", 
+				.def("getNonblock",
 						macro_polymorphicSharedPtrFuncFromMemberFunc(CpuAssignmentDependencyGraphListener::getNonblock)
 						)
-				.def("getTimeout", 
+				.def("getTimeout",
 						macro_polymorphicSharedPtrFuncFromMemberFunc(CpuAssignmentDependencyGraphListener::getTimeout)
 						)
 				;
 
 			class_<PolymorphicSharedPtr<CpuAssignmentDependencyGraph> >("CpuAssignmentDependencyGraph", no_init)
 				.def("__init__", make_constructor(constructCpuAssignmentDependencyGraph))
-				.def("subscribeToCumulusClient", 
+				.def("subscribeToCumulusClient",
 						subscribeToCumulusClient
 						)
 				.def("updateDependencyGraph", updateDependencyGraph)
-				.def("markRootComputation", 
+				.def("markRootComputation",
 						macro_polymorphicSharedPtrFuncFromMemberFunc(CpuAssignmentDependencyGraph::markRootComputation)
 						)
-				.def("markNonrootComputation", 
+				.def("markNonrootComputation",
 						macro_polymorphicSharedPtrFuncFromMemberFunc(CpuAssignmentDependencyGraph::markNonrootComputation)
 						)
-				.def("createListener", 
+				.def("createListener",
 						createListener
 						)
-				.def("computeBytecountForHashes", 
+				.def("computeBytecountForHashes",
 						computeBytecountForHashes
 						)
 				;

@@ -31,7 +31,7 @@ BOOST_AUTO_TEST_CASE( test_ReturnValue )
 	returnValue = slot1(1);
 	BOOST_CHECK(returnValue.getIndex() == 1);
 	BOOST_CHECK(returnValue.get1() == 1.0);
-	
+
 	returnValue = slot2(std::string("hello"));
 	BOOST_CHECK(returnValue.getIndex() == 2);
 	BOOST_CHECK(returnValue.get2() == "hello");
@@ -67,16 +67,16 @@ public:
 
 BOOST_AUTO_TEST_CASE( test_ReturnValueSize )
 	{
-	BOOST_CHECK(sizeof(Fora::ReturnValue<SomethingLarge>) 
+	BOOST_CHECK(sizeof(Fora::ReturnValue<SomethingLarge>)
 		== sizeof(SomethingLarge) + sizeof(uword_t)
 		);
-	BOOST_CHECK(sizeof(Fora::ReturnValue<SomethingSmall, SomethingLarge>) 
+	BOOST_CHECK(sizeof(Fora::ReturnValue<SomethingSmall, SomethingLarge>)
 		== sizeof(SomethingLarge) + sizeof(uword_t)
 		);
-	BOOST_CHECK(sizeof(Fora::ReturnValue<SomethingLarge, SomethingSmall>) 
+	BOOST_CHECK(sizeof(Fora::ReturnValue<SomethingLarge, SomethingSmall>)
 		== sizeof(SomethingLarge) + sizeof(uword_t)
 		);
-	BOOST_CHECK(sizeof(Fora::ReturnValue<SomethingSmall, SomethingSmall, SomethingSmall, SomethingLarge>) 
+	BOOST_CHECK(sizeof(Fora::ReturnValue<SomethingSmall, SomethingSmall, SomethingSmall, SomethingLarge>)
 		== sizeof(SomethingLarge) + sizeof(uword_t)
 		);
 	}

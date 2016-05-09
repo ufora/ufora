@@ -18,8 +18,8 @@
 #include "Registrar.hpp"
 
 
-BOOST_PYTHON_MODULE(native) 
-{	
+BOOST_PYTHON_MODULE(native)
+{
     using native::module::createModule;
 	boost::python::object thePackage = boost::python::scope();
 	thePackage.attr("__path__") = "ufora.native";

@@ -16,7 +16,7 @@
 #pragma once
 
 namespace Fora {
-	
+
 class Nothing {};
 
 }

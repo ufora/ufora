@@ -113,16 +113,16 @@ void LocationType::update(Graph* inGraph, boost::python::object inClass)
 		if (pyIsProperty(attrVal))
 			{
 			mProperties[attrID] = attrVal.attr("cacheFunc");
-			
+
 			boost::python::object setter = attrVal.attr("setter");
-			
+
 			//if the setter is 'None', there's no setter
 			if (setter.ptr() != boost::python::object().ptr())
 				mPropertySetters[attrID] = setter;
 
 			//is the property lazy?
 			mIsLazyProperty[attrID] = boost::python::extract<bool>(attrVal.attr("isLazy"))();
-			
+
 			mAttrTypes[attrID] = attrProperty;
 			}
 			else

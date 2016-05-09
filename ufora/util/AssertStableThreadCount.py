@@ -37,7 +37,7 @@ class AssertStableThreadCount(object):
         """Prints a stack trace for any thread in 'lookIn' that doesn't exit in 'lookFor'
         """
         origThreadIds = set([id(x) for x in originalThreads])
-        
+
         stacktraces = StackInfo.getTraces()
 
         for thread in finalThreads:
@@ -49,5 +49,5 @@ class AssertStableThreadCount(object):
                 if managedThread is not None:
                     print "Thread Spawned From:"
                     print ''.join(managedThread.creatorStacktrace)
-                print 
+                print
 

@@ -23,7 +23,7 @@ namespace {
 const static int kSmallMemAmount = 8;
 const static int kLargerMemAmount = 128;
 
-}	
+}
 
 
 BOOST_AUTO_TEST_CASE( test_MemoryPool_FreeStore )
@@ -49,7 +49,7 @@ BOOST_AUTO_TEST_CASE( test_MemoryPool_FreeStore )
 
 class TestMallocPool : public MemoryPool {
 public:
-	TestMallocPool() : 
+	TestMallocPool() :
 			MemoryPool(MemoryPool::MemoryPoolType::FreeStore)
 		{
 		}
@@ -74,7 +74,7 @@ public:
 		return (uint8_t*)malloc(inBytes);
 		}
 
-	virtual void free(uint8_t* inBytes) 
+	virtual void free(uint8_t* inBytes)
 		{
 		::free(inBytes);
 		}
@@ -89,7 +89,7 @@ public:
 		return 0;
 		}
 
-	virtual size_t totalBytesAllocatedFromOSExcludingPagelets() const 
+	virtual size_t totalBytesAllocatedFromOSExcludingPagelets() const
 		{
 		return 0;
 		}
@@ -134,17 +134,17 @@ BOOST_AUTO_TEST_CASE( test_MemoryPool_FreeStore_performance )
 	for (long trial = 0; trial < 20; trial++)
 		{
 		uint8_t* pointers[1000];
-		
+
 		MemoryPool* pool = new TestMallocPool();
 
 		long countMallocAndFree = 0;
 
 		while (curClock() - t0 < .10)
 			{
-			for (long k = 0; k < 1000; k++)	
+			for (long k = 0; k < 1000; k++)
 				pointers[k] = pool->allocate(k+1);
 
-			for (long k = 0; k < 1000; k++)	
+			for (long k = 0; k < 1000; k++)
 				pool->free(pointers[k]);
 
 			countMallocAndFree++;
@@ -156,13 +156,13 @@ BOOST_AUTO_TEST_CASE( test_MemoryPool_FreeStore_performance )
 		t0 = curClock();
 
 		long countFreeStorePool = 0;
-		
+
 		while (curClock() - t0 < .10)
 			{
-			for (long k = 0; k < 1000; k++)	
+			for (long k = 0; k < 1000; k++)
 				pointers[k] = pool->allocate(k+1);
 
-			for (long k = 0; k < 1000; k++)	
+			for (long k = 0; k < 1000; k++)
 				pool->free(pointers[k]);
 
 			countFreeStorePool++;

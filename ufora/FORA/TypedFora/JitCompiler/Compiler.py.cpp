@@ -34,7 +34,7 @@ public:
 			{
 			return "FORA";
 			}
-		
+
 		static TypedFora::TypedJumpTarget compile(
 							PolymorphicSharedPtr<TypedFora::Compiler>& r,
 							const TypedFora::Callable& inGraph,
@@ -43,7 +43,7 @@ public:
 			{
 			return r->compile(inGraph, axiomName);
 			}
-		
+
 		static bool anyCompilingOrPending(PolymorphicSharedPtr<TypedFora::Compiler>& c)
 			{
 			return c->anyCompilingOrPending();

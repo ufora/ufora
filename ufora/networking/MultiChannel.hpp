@@ -72,7 +72,7 @@ public:
 		}
 
 	~MultiChannel() {}
-	
+
 	virtual std::string channelType()
 		{
 		return "MultiChannel";
@@ -182,9 +182,9 @@ private:
 
 			{
 			boost::mutex::scoped_lock lock(mMutex);
-			
+
 			Ufora::ScopedProfiler<std::string> unpackTokenProfiler("multiChannelIncomingMessage");
-			
+
 			if (shouldDelayMessage_(channelIndex, ordinal))
 				{
 				mDelayedMessages.push(make_tuple(ordinal, channelIndex, message.message()));
@@ -200,7 +200,7 @@ private:
 	void scheduleMessageCallback(TIn message)
 		{
 		mCallbackScheduler->scheduleImmediately(
-			boost::bind(mOnMessage, message), 
+			boost::bind(mOnMessage, message),
 			"MultiChannel::mOnMessage"
 			);
 		}
@@ -226,15 +226,15 @@ private:
 		while (shouldDispatchNextDelayedMessage(lastOrdinal))
 			{
 			const delayed_message_tuple& delayedMessage = mDelayedMessages.top();
-			
-			LOG_DEBUG << "MultiChannel " << this << " dispatching delayed message. Channel: " 
+
+			LOG_DEBUG << "MultiChannel " << this << " dispatching delayed message. Channel: "
 				<< std::get<1>(delayedMessage)
 				<< ". Ordinal: " << std::get<0>(delayedMessage);
 
 			message_ordinal_type delayedOrdinal = getOrdinal(delayedMessage);
 
 			lastOrdinal = std::max(lastOrdinal, delayedOrdinal);
-			
+
 			mMaxDispatchedMessageOrdinal = std::max(mMaxDispatchedMessageOrdinal, delayedOrdinal);
 			scheduleMessageCallback(getMessage(delayedMessage));
 			mDelayedMessages.pop();
@@ -306,7 +306,7 @@ private:
 	uint32_t 													mLastOutboundMessageOrdinal;
 	uint32_t 													mMaxDispatchedMessageOrdinal;
 	boost::mutex 												mMutex;
-		
+
 };
 
 

@@ -72,13 +72,13 @@ public:
 class VectorRecord : protected VectorRecordStorage {
 public:
 	VectorRecord(VectorHandle* inPtr, uint64_t count, uint64_t offset, int64_t stride);
-	
+
 	VectorRecord(VectorHandle* inPtr);
 
 	VectorRecord(VectorHandlePtr inPtr, uint64_t count, uint64_t offset, int64_t stride);
-	
+
 	VectorRecord(VectorHandlePtr inPtr);
-	
+
 	VectorRecord(const VectorRecord& in);
 
 	~VectorRecord();
@@ -107,28 +107,28 @@ public:
 
 	bool entirelyCoveredByJOV(const JudgmentOnValue& inJOV) const;
 
-	Fora::ReturnValue<VectorRecord, VectorLoadRequest> 
+	Fora::ReturnValue<VectorRecord, VectorLoadRequest>
 			deepcopiedAndContiguous(MemoryPool* inPool, VectorDataManager* inVDM) const;
 
-	Fora::ReturnValue<VectorRecord, VectorLoadRequest> 
+	Fora::ReturnValue<VectorRecord, VectorLoadRequest>
 			appropriateForConcatenation(MemoryPool* inPool, VectorDataManager* inVDM) const;
 
 	static VectorRecord concatenate(
-							const VectorRecord& inLHS, 
-							const VectorRecord& inRHS, 
+							const VectorRecord& inLHS,
+							const VectorRecord& inRHS,
 							MemoryPool* inPool,
 							VectorDataManager* inVDM,
 							hash_type inVectorHash
 							);
 
 	VectorRecord slice(
-					Nullable<int64_t> low, 
-					Nullable<int64_t> high, 
+					Nullable<int64_t> low,
+					Nullable<int64_t> high,
 					Nullable<int64_t> stride
 					) const;
 
 	bool isCanonicallySliced() const;
-	
+
 	int64_t indexWithinHandle(int64_t ix) const
 		{
 		return offset() + stride() * ix;
@@ -150,7 +150,7 @@ public:
 	//pair field if it's empty
 	TypedFora::Abi::ForaValueArraySlice sliceForOffset(int64_t index) const;
 
-	VectorRecord append(MemoryPool* inPool, 
+	VectorRecord append(MemoryPool* inPool,
 						ImplValContainer toAppend,
 						VectorDataManager* inVDM,
 						const boost::function0<hash_type>& hashCreatorFun
@@ -159,7 +159,7 @@ public:
 	//if jovToAppend is untyped, dataToAppend should point to an ImplValContainer.
 	//if jovToAppend is a constant or typed, dataToAppend should point to a value of the appropriate
 	//type
-	VectorRecord append(MemoryPool* inPool, 
+	VectorRecord append(MemoryPool* inPool,
 						void* dataToAppend,
 						JudgmentOnValue jovToAppend,
 						VectorDataManager* inVDM,
@@ -209,34 +209,34 @@ public:
 		{
 		if (mDataPtr < in.mDataPtr)
 			return true;
-		
+
 		if (in.mDataPtr < mDataPtr)
 			return false;
-		
+
 		if (mSize < in.mSize)
 			return true;
-		
+
 		if (in.mSize < mSize)
 			return false;
-		
+
 		if (mOffset < in.mOffset)
 			return true;
-		
+
 		if (in.mOffset < mOffset)
 			return false;
-		
+
 		if (mStride < in.mStride)
 			return true;
-		
+
 		if (in.mStride < mStride)
 			return false;
-		
+
 		return false;
 		}
 
 	bool operator== (const VectorRecord& in) const
 		{
-		return mDataPtr == in.mDataPtr && mSize == in.mSize && 
+		return mDataPtr == in.mDataPtr && mSize == in.mSize &&
 			mOffset == in.mOffset && mStride == in.mStride;
 		}
 
@@ -269,7 +269,7 @@ public:
 	Fora::PageletTreePtr pageletTree() const;
 
 	Fora::BigVectorId pagedValuesIdentity() const;
-	
+
 	int64_t pagedValueCount() const;
 
 	int64_t unpagedValueCount() const;
@@ -292,7 +292,7 @@ public:
 		mOffset = 0;
 		mStride = 0;
 		}
-		
+
 	PooledVectorRecord(VectorHandle* inPtr, uint64_t count, uint64_t offset, int64_t stride)
 		{
 		mDataPtr = inPtr;
@@ -315,13 +315,13 @@ public:
 		mStride = in.mStride;
 		mOffset = in.mOffset;
 		mSize = in.mSize;
-		
+
 		return *this;
 		}
 
 	PooledVectorRecord slice(
-					Nullable<int64_t> low, 
-					Nullable<int64_t> high, 
+					Nullable<int64_t> low,
+					Nullable<int64_t> high,
 					Nullable<int64_t> stride
 					) const;
 
@@ -337,8 +337,8 @@ public:
 
 namespace boost {
 
-template<> 
-class hash<TypedFora::Abi::VectorRecord> : 
+template<>
+class hash<TypedFora::Abi::VectorRecord> :
 		public std::unary_function<TypedFora::Abi::VectorRecord, std::size_t> {
 public:
 		std::size_t operator()(const TypedFora::Abi::VectorRecord& in) const

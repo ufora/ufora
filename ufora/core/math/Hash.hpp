@@ -107,7 +107,7 @@ public:
 			{
 			return cmp(in) >= 0;
 			}
-			
+
 		int32_t cmp(const Hash& in) const
 			{
 			for (int32_t k = 0; k < 5;k ++)
@@ -132,18 +132,18 @@ public:
 			}
 
 		static Hash CityHash(const void* data, uint32_t sz);
-		
+
 		static Hash SHA1Strided(
-			const void* data, 
-			uint32_t inBlockSize, 
-			uint32_t inBlockStride, 
+			const void* data,
+			uint32_t inBlockSize,
+			uint32_t inBlockStride,
 			uint32_t inCount
 			);
 
 		static Hash SHA1Scattered(
-			const void** data, 
-			uint32_t inBlockSize, 
-			uint32_t inBlockNudge, 
+			const void** data,
+			uint32_t inBlockSize,
+			uint32_t inBlockNudge,
 			uint32_t inCount
 			);
 
@@ -240,7 +240,7 @@ class OHashProtocol : public OProtocol {
 public:
 		OHashProtocol(Hash& outHash);
 		~OHashProtocol();
-		
+
 		void write(uword_t inByteCount, void *inData);
 		uword_t position(void);
 private:
@@ -292,7 +292,7 @@ inline Hash hashValue(const T& in)
 	Hash tr;
 		{
 		HashingStreamSerializer s(tr);
-		
+
 		Serializer<T, HashingStreamSerializer>::serialize(s, in);
 		}
 
@@ -303,10 +303,10 @@ template<class T>
 inline Hash hashCPPMLDirect(const T& in)
 	{
 	Hash tr;
-	
+
 		{
 		HashingStreamSerializer s(tr);
-		
+
 		HashingStreamSerializerDirect s2(s);
 		Serializer<T, HashingStreamSerializerDirect>::serialize(s2, in);
 		}
@@ -345,7 +345,7 @@ void Serializer<T, HashingStreamSerializer>::serialize(HashingStreamSerializer& 
 typedef Hash hash_type;
 
 namespace boost {
-template<> 
+template<>
 class hash<Hash> : public std::unary_function<Hash, std::size_t> {
 public:
 		std::size_t operator()(Hash const& in) const

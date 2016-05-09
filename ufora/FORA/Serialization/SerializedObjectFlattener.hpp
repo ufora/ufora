@@ -26,7 +26,7 @@
 /*************
 SerializedObjectFlattener
 
-An object that "flattens" SerializedObject records into strings, 
+An object that "flattens" SerializedObject records into strings,
 along with another object that 'inflates' them back to SerializedObjects.
 
 Objects must be passed to an inflater in the same order that they were passed
@@ -39,7 +39,7 @@ class SerializedObjectFlattenerSerializer;
 class SerializedObjectInflaterDeserializer;
 class VectorDataMemoryManager;
 
-class SerializedObjectFlattener : 
+class SerializedObjectFlattener :
 		public PolymorphicSharedPtrBase<SerializedObjectFlattener>
 {
 public:
@@ -47,7 +47,7 @@ public:
 				mMemoizedSize(0)
 			{
 			}
-		
+
 		template<class T>
 		static PolymorphicSharedPtr<NoncontiguousByteBlock> serializeEntireObjectGraph(const T& in)
 			{
@@ -66,7 +66,7 @@ public:
 		static PolymorphicSharedPtr<NoncontiguousByteBlock> flattenOnce(const PolymorphicSharedPtr<SerializedObject>& inSPO);
 
 		static void flattenOnce(OBinaryStream& stream, const PolymorphicSharedPtr<SerializedObject>& inSerializedObject);
-		
+
 		void flatten(OBinaryStream& stream, const PolymorphicSharedPtr<SerializedObject>& inSerializedObject);
 
 		uint32_t getMemoizedSize(void) const;
@@ -103,22 +103,22 @@ public:
 					T& out
 					)
 			{
-			PolymorphicSharedPtr<SerializedObject> serializedObject = 
+			PolymorphicSharedPtr<SerializedObject> serializedObject =
 							SerializedObjectInflater::inflateOnce(inData);
 
 			SerializedObject::deserialize(
-				serializedObject, 
-				PolymorphicSharedPtr<VectorDataMemoryManager>(), 
+				serializedObject,
+				PolymorphicSharedPtr<VectorDataMemoryManager>(),
 				out
 				);
 			}
-		
+
 		template<class T>
 		void inflate(PolymorphicSharedPtr<NoncontiguousByteBlock> data, T& out)
 			{
 			return SerializedObject::deserialize(
-				inflate(data), 
-				PolymorphicSharedPtr<VectorDataMemoryManager>(), 
+				inflate(data),
+				PolymorphicSharedPtr<VectorDataMemoryManager>(),
 				out
 				);
 			}
@@ -132,7 +132,7 @@ public:
 					PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM
 					);
 
-		//deflate an entire object graph by creating a fresh inflator. 
+		//deflate an entire object graph by creating a fresh inflator.
 		static PolymorphicSharedPtr<SerializedObject> inflateOnce(
 					const PolymorphicSharedPtr<NoncontiguousByteBlock>& inFlattened
 					);
@@ -153,7 +153,7 @@ private:
 		MapWithIndex<JOV, uint32_t> mJovsReferenced;
 
 		MapWithIndex<Expression, uint32_t> mExpressionsReferenced;
-		
+
 		MapWithIndex<ControlFlowGraph, uint32_t> mControlFlowGraphsReferenced;
 
 		Fora::MemoizableDuringSerialization::MemoStorage mMemoStorage;
@@ -164,7 +164,7 @@ public:
 		SerializedObjectFlattenerSerializer(
 					SerializedObjectFlattener& in,
 					OBinaryStream& stream
-					) : 
+					) :
 				Fora::ForaValueSerializationStream(stream),
 				mFlattener(in)
 			{
@@ -209,10 +209,10 @@ public:
 						IBinaryStream& stream,
 						PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM,
 						MemoryPool* targetPool = nullptr
-						) : 
+						) :
 				Fora::ForaValueDeserializationStream(
-					stream, 
-					targetPool ? targetPool : MemoryPool::getFreeStorePool(), 
+					stream,
+					targetPool ? targetPool : MemoryPool::getFreeStorePool(),
 					inVDMM
 					),
 				mInflater(in),
@@ -231,8 +231,8 @@ public:
 		void deserializeFromMemoStorage(T& out)
 			{
 			mInflater.mMemoStorage.deserialize(
-				*(Fora::ForaValueDeserializationStream*)this, 
-				out, 
+				*(Fora::ForaValueDeserializationStream*)this,
+				out,
 				true
 				);
 			}

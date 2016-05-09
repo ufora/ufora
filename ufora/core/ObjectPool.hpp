@@ -57,7 +57,7 @@ public:
 			{
 			}
 
-		Handle(boost::shared_ptr<CallOnDestroy> destroy, boost::shared_ptr<T> object) : 
+		Handle(boost::shared_ptr<CallOnDestroy> destroy, boost::shared_ptr<T> object) :
 				mObjectPtr(object),
 				mDestroyer(destroy)
 			{
@@ -84,7 +84,7 @@ public:
 		boost::shared_ptr<T> mObjectPtr;
 	};
 
-	ObjectPool(boost::function0<boost::shared_ptr<T> > inConstructor) : 
+	ObjectPool(boost::function0<boost::shared_ptr<T> > inConstructor) :
 			mConstructor(inConstructor),
 			mObjects(new Queue<boost::shared_ptr<T> >())
 		{

@@ -29,9 +29,9 @@ ThreadPoolWithDependencies
 
 A threadpool whose tasks may have dependencies on each other. Each task consists of an id, a
 definition, and a set of dependencies (represented as task ids). Tasks do not execute until all
-their dependent tasks have executed. 
+their dependent tasks have executed.
 
-This object remembers all task ids it executes, so that it's legal to define a task that 
+This object remembers all task ids it executes, so that it's legal to define a task that
 depends on a task that has already completed.
 
 It is also legal to depend on a task that has not been defined yet. In this case, the task
@@ -40,13 +40,13 @@ will block forever if the subtask is never defined.
 ************/
 
 template<
-	typename task_identifier_type = std::string, 
+	typename task_identifier_type = std::string,
 	typename task_definition_type = boost::function0<void>,
 	typename priority_type = long
 	>
 class ThreadPoolWithDependencies {
 public:
-	ThreadPoolWithDependencies(long inInitialThreadcount) : 
+	ThreadPoolWithDependencies(long inInitialThreadcount) :
 			mIsStillValid(true)
 		{
 		for (long k = 0; k < inInitialThreadcount; k++)
@@ -143,7 +143,7 @@ public:
 private:
 	bool hasEverSeenTask_(task_identifier_type id)
 		{
-		return mTaskDefinitions.find(id) != mTaskDefinitions.end() || 
+		return mTaskDefinitions.find(id) != mTaskDefinitions.end() ||
 				mCompletedTasks.find(id) != mCompletedTasks.end();
 		}
 
@@ -231,7 +231,7 @@ private:
 	mutable boost::mutex mMutex;
 
 	bool mIsStillValid;
-	
+
 	std::vector<boost::shared_ptr<boost::thread> > mThreads;
 
 	//tasks that are executing. definitions are no longer populated

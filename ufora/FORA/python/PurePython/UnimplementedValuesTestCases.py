@@ -31,7 +31,7 @@ class UnimplementedValuesTestCases(object):
             return 0
 
         self.equivalentEvaluationTest(f)
-            
+
     def test_typeWeCantTranslateYet_2(self):
         # we're not touching the bad value here, so we're still OK
         import numpy
@@ -102,7 +102,7 @@ class UnimplementedValuesTestCases(object):
             return C_test_typeWeCantTranslateYet_class_3().willCall()
 
         self.equivalentEvaluationTest(f)
-            
+
     def test_typeWeCantTranslateYet_raise_1(self):
         # note that this is different than trying to evaluate,
         # in pyfora code, type(lambda x:x).

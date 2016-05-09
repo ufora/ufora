@@ -31,7 +31,7 @@ public:
 
 private:
 
-    std::string mCurrentString; 
+    std::string mCurrentString;
 
     size_t mBytesReadFromCurrentString;
 

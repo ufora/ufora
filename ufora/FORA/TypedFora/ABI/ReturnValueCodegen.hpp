@@ -29,7 +29,7 @@ class NativeTypeForImpl<Fora::ReturnValue<A0, A1, A2, A3, A4, A5> > {
 public:
 	static NativeType get(void)
 		{
-		return NativeType::Composite(NativeTypeFor<uint64_t>::get()) + 
+		return NativeType::Composite(NativeTypeFor<uint64_t>::get()) +
 			NativeType::Composite(
 				NativeType::Array(
 					NativeTypeFor<uint8_t>::get(),

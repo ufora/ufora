@@ -34,9 +34,9 @@ public:
 	uword_t read(uword_t inByteCount, void *inData, bool inBlock)
 		{
 		uword_t bytesRead = ::fread(inData, 1, inByteCount, mFile);
-		
+
 		mPosition += bytesRead;
-		
+
 		return bytesRead;
 		}
 

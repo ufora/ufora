@@ -43,7 +43,7 @@ public:
 		}
 };
 
-template<class T, class index_type, 
+template<class T, class index_type,
 	class behavior = typename TypedNativeExpressionBehaviorCategories<index_type>::result_type>
 class TypedNativePointerIndexExpression;
 
@@ -58,7 +58,7 @@ public:
 		}
 };
 
-template<class T, class index_type, 
+template<class T, class index_type,
 	class behavior = typename TypedNativeExpressionBehaviorCategories<index_type>::result_type>
 class TypedNativePointerArithmeticExpression;
 
@@ -84,7 +84,7 @@ TypedNativeExpressionBuiltinBehaviors<T*, TypedNativeExpressionBehaviorPointerCa
 
 template<class T>
 template<class target_type>
-TypedNativeExpression<target_type> 
+TypedNativeExpression<target_type>
 		TypedNativeExpressionBuiltinBehaviors<T*, TypedNativeExpressionBehaviorPointerCategory>::cast() const
 	{
 	return TypedNativePointerCastExpression<target_type>::call(mExpression);
@@ -99,7 +99,7 @@ TypedNativeExpressionBuiltinBehaviors<T*, TypedNativeExpressionBehaviorPointerCa
 
 template<class T>
 template<class index_type>
-TypedNativeExpression<T> 
+TypedNativeExpression<T>
 TypedNativeExpressionBuiltinBehaviors<T*, TypedNativeExpressionBehaviorPointerCategory>::
 		operator[](const TypedNativeExpression<index_type>& e) const
 	{
@@ -107,7 +107,7 @@ TypedNativeExpressionBuiltinBehaviors<T*, TypedNativeExpressionBehaviorPointerCa
 	}
 
 template<class T>
-TypedNativeExpression<T> 
+TypedNativeExpression<T>
 TypedNativeExpressionBuiltinBehaviors<T*, TypedNativeExpressionBehaviorPointerCategory>::
 		operator[](sword_t index) const
 	{
@@ -116,7 +116,7 @@ TypedNativeExpressionBuiltinBehaviors<T*, TypedNativeExpressionBehaviorPointerCa
 
 template<class T>
 template<class index_type>
-TypedNativeExpression<T*> 
+TypedNativeExpression<T*>
 TypedNativeExpressionBuiltinBehaviors<T*, TypedNativeExpressionBehaviorPointerCategory>::
 		operator+(TypedNativeExpression<index_type> e) const
 	{
@@ -124,7 +124,7 @@ TypedNativeExpressionBuiltinBehaviors<T*, TypedNativeExpressionBehaviorPointerCa
 	}
 
 template<class T>
-TypedNativeExpression<T*> 
+TypedNativeExpression<T*>
 TypedNativeExpressionBuiltinBehaviors<T*, TypedNativeExpressionBehaviorPointerCategory>::
 		operator+(sword_t index) const
 	{
@@ -132,7 +132,7 @@ TypedNativeExpressionBuiltinBehaviors<T*, TypedNativeExpressionBehaviorPointerCa
 	}
 
 template<class T>
-TypedNativeExpression<void> 
+TypedNativeExpression<void>
 TypedNativeExpressionBuiltinBehaviors<T*, TypedNativeExpressionBehaviorPointerCategory>::
 		store(TypedNativeExpression<T> toStore) const
 	{

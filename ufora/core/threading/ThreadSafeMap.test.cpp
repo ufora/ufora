@@ -30,7 +30,7 @@ BOOST_AUTO_TEST_CASE( test_ThreadSafeMap )
     BOOST_CHECK(m.testAndSet("key", null(), null() << 0) == true);
     BOOST_CHECK(m.contains("key"));
     BOOST_CHECK(*m.get("key") == 0);
-    
+
     //verify we can't update with the wrong value
     BOOST_CHECK(m.testAndSet("key", null() << 1, null() << 0) == false);
     BOOST_CHECK(m.contains("key"));

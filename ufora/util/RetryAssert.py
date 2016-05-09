@@ -35,13 +35,13 @@ def retryAssert(assertion, args, numRetries=10, sleepInterval=.1, verbose=False)
             if verbose:
                 logging.debug('trying to assert %s on %s', assertion, evaluatedArgs)
             assertion(*evaluatedArgs)
-            return 
+            return
         except Exception as e:
             if retries == numRetries:
                 for x in evaluatedArgs:
                     print x
                 print "Failed with assertion after %s tries" % numRetries
-                raise 
+                raise
             if verbose:
                 logging.debug('retryAssert found exception %s', traceback.format_exc(e))
             retries += 1
@@ -56,7 +56,7 @@ def waitUntilTrue(functionToCheck, timeout, sleepInterval = 0.01):
     sleepInterval - how long to sleep between checks
     """
     t0 = time.time()
-    
+
     while time.time() - t0 < timeout:
         if functionToCheck():
             return True

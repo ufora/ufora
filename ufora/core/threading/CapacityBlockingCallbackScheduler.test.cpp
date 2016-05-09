@@ -25,7 +25,7 @@
 namespace {
 
 void scheduleSomeThings(
-			CapacityBlockingCallbackScheduler* blockingScheduler, 
+			CapacityBlockingCallbackScheduler* blockingScheduler,
 			std::vector<boost::function0<void> >* thingsToSchedule,
 			boost::function0<void> somethingWasScheduled
 			)
@@ -97,7 +97,7 @@ BOOST_AUTO_TEST_CASE( test_capacityBlockingCallbackScheduler )
 				boost::bind(doSomething, &toReadFrom, &toWriteTo)
 				);
 
-		boost::function0<void> writeToScheduledQueue = 
+		boost::function0<void> writeToScheduledQueue =
 				boost::bind(
 					&Queue<long>::write,
 					&thingsScheduled,
@@ -107,18 +107,18 @@ BOOST_AUTO_TEST_CASE( test_capacityBlockingCallbackScheduler )
 
 		boost::thread t1(
 			boost::bind(
-				scheduleSomeThings, 
-				&blockingScheduler, 
-				&thingsToDo1, 
+				scheduleSomeThings,
+				&blockingScheduler,
+				&thingsToDo1,
 				writeToScheduledQueue
 				)
 			);
 
 		boost::thread t2(
 			boost::bind(
-				scheduleSomeThings, 
-				&blockingScheduler, 
-				&thingsToDo2, 
+				scheduleSomeThings,
+				&blockingScheduler,
+				&thingsToDo2,
 				writeToScheduledQueue
 				)
 			);
@@ -129,16 +129,16 @@ BOOST_AUTO_TEST_CASE( test_capacityBlockingCallbackScheduler )
 		for (long k = 0; k < capacity * 2; k++)
 			{
 			waitForQueueToHaveExactlyNItems(
-				thingsScheduled, 
-				std::min(capacity + k, capacity * 2), 
+				thingsScheduled,
+				std::min(capacity + k, capacity * 2),
 				failed
 				);
 
 			toReadFrom.write(k);
 
 			waitForQueueToHaveExactlyNItems(
-				thingsScheduled, 
-				std::min(capacity + k + 1, capacity * 2), 
+				thingsScheduled,
+				std::min(capacity + k + 1, capacity * 2),
 				failed
 				);
 

@@ -35,7 +35,7 @@ is nonblocking.
 template<class event_type>
 class EventBroadcaster {
 public:
-	EventBroadcaster(PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler, std::string inName = "") : 
+	EventBroadcaster(PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler, std::string inName = "") :
 			mScheduler(inCallbackScheduler),
 			mBroadcasterName(inName),
 			mIsSuspended(false),
@@ -125,7 +125,7 @@ public:
 
 	template<class T, class base_type>
 	void subscribe(
-				PolymorphicSharedWeakPtr<T, base_type> inWeakPtr, 
+				PolymorphicSharedWeakPtr<T, base_type> inWeakPtr,
 				void (T::* callbackPtr)(event_type)
 				)
 		{
@@ -135,10 +135,10 @@ public:
 
 		subscribe(
 			boost::bind(
-				&scheduleForPtrMemberFcn<T, weak_ptr_type>, 
+				&scheduleForPtrMemberFcn<T, weak_ptr_type>,
 				mScheduler,
-				inWeakPtr, 
-				callbackPtr, 
+				inWeakPtr,
+				callbackPtr,
 				mBroadcasterName,
 				_1
 				)
@@ -147,7 +147,7 @@ public:
 
 	template<class T, class base_type, class arg_type>
 	void subscribe(
-				PolymorphicSharedWeakPtr<T, base_type> inWeakPtr, 
+				PolymorphicSharedWeakPtr<T, base_type> inWeakPtr,
 				void (T::* callbackPtr)(arg_type, event_type),
 				arg_type arg
 				)
@@ -158,10 +158,10 @@ public:
 
 		subscribe(
 			boost::bind(
-				&scheduleForPtrMemberFcn2<T, weak_ptr_type, arg_type>, 
+				&scheduleForPtrMemberFcn2<T, weak_ptr_type, arg_type>,
 				mScheduler,
-				inWeakPtr, 
-				callbackPtr, 
+				inWeakPtr,
+				callbackPtr,
 				mBroadcasterName,
 				arg,
 				_1
@@ -171,7 +171,7 @@ public:
 
 	template<class T, class base_type>
 	void subscribe(
-				PolymorphicSharedWeakPtr<T, base_type> inWeakPtr, 
+				PolymorphicSharedWeakPtr<T, base_type> inWeakPtr,
 				boost::function2<void, T*, event_type> inCallback
 				)
 		{
@@ -181,11 +181,11 @@ public:
 
 		subscribe(
 			boost::bind(
-				&scheduleForPtrBoostFcn<T, weak_ptr_type>, 
+				&scheduleForPtrBoostFcn<T, weak_ptr_type>,
 				mScheduler,
-				inWeakPtr, 
+				inWeakPtr,
 				inCallback,
-				mBroadcasterName, 
+				mBroadcasterName,
 				_1
 				)
 			);
@@ -193,7 +193,7 @@ public:
 
 	template<class T, class base_type>
 	void subscribe(
-				PolymorphicSharedPtr<T, base_type> inPtr, 
+				PolymorphicSharedPtr<T, base_type> inPtr,
 				void (T::* callbackPtr)(event_type)
 				)
 		{
@@ -204,7 +204,7 @@ public:
 
 	template<class T, class base_type>
 	void subscribe(
-				PolymorphicSharedPtr<T, base_type> inPtr, 
+				PolymorphicSharedPtr<T, base_type> inPtr,
 				boost::function2<void, T*, event_type> inCallback
 				)
 		{
@@ -258,7 +258,7 @@ private:
 		typedef typename weak_ptr_type::strong_ptr_type strong_ptr_type;
 
 		strong_ptr_type ptr = inPtr.lock();
-		
+
 		if (!ptr)
 			return;
 
@@ -276,7 +276,7 @@ private:
 		typedef typename weak_ptr_type::strong_ptr_type strong_ptr_type;
 
 		strong_ptr_type ptr = inPtr.lock();
-		
+
 		if (!ptr)
 			return;
 

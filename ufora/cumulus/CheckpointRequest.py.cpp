@@ -34,12 +34,12 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
-			object cls = 
+
+			object cls =
 				FORAPythonUtil::exposeValueLikeCppmlTypeSimpleSerializers<CheckpointRequest>()
 					.class_()
 				;
-			
+
 			def("CheckpointRequest", cls);
 			}
 };

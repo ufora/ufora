@@ -23,7 +23,7 @@
 
 class MapWithIndexWrapper :
 	public native::module::Exporter<
-			MapWithIndex<boost::python::object, boost::python::object> 
+			MapWithIndex<boost::python::object, boost::python::object>
 			> {
 public:
 	std::string		getModuleName(void)
@@ -33,12 +33,12 @@ public:
 	void exportPythonWrapper()
 		{
 		using namespace boost::python;
-		
+
 		PythonWrapper<MapWithIndex<boost::python::object, boost::python::object> >
 			::exportPythonInterface("MapWithIndex")
 			;
 		}
-	
+
 };
 
 //explicitly instantiating the registration element causes the linker to need

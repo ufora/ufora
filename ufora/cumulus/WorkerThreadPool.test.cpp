@@ -110,7 +110,7 @@ namespace {
         }
 
 
-    //check that the dependencies of the computation at 'computationIndex' are all of 
+    //check that the dependencies of the computation at 'computationIndex' are all of
     //larger index, so that the graph is a DAG and has no cycles.
     bool verifyOrder(
             long computationIndex,
@@ -120,11 +120,11 @@ namespace {
         lassert(computationIndex >= 0 && computationIndex < ordering.size());
         const TestComputation& computation = ordering[computationIndex];
 
-        for (int i = 0; i < computation.dependents.size(); i++) 
+        for (int i = 0; i < computation.dependents.size(); i++)
             {
             int dependentIndex;
 
-            for (dependentIndex = 0; dependentIndex < ordering.size(); dependentIndex++) 
+            for (dependentIndex = 0; dependentIndex < ordering.size(); dependentIndex++)
                 {
                 if (ordering[dependentIndex].computationId == computation.dependents[i].computationId)
                     break;
@@ -217,7 +217,7 @@ public:
     void interrupt()
         {
         boost::mutex::scoped_lock lock(mMutex);
-        
+
         mIsInterrupted = true;
 
         mCondition.notify_all();
@@ -226,9 +226,9 @@ public:
     void finish()
         {
         boost::mutex::scoped_lock lock(mMutex);
-        
+
         mIsComputed = true;
-        
+
         mCondition.notify_all();
         }
 
@@ -277,15 +277,15 @@ public:
 
 private:
     bool mIsComputed;
-    
+
     bool mIsComputing;
 
     bool mIsInterrupted;
-    
+
     uint mSleepTime;
-    
+
     mutable boost::mutex mMutex;
-    
+
     mutable boost::condition_variable mCondition;
 };
 
@@ -324,7 +324,7 @@ public:
             }
 
         mComputationCountChanged.notify_all();
-        
+
         return make_pair(iter->second, hash_type());
         }
 
@@ -469,7 +469,7 @@ BOOST_AUTO_TEST_CASE( test_priority_queue )
             null_checkin,
             MachineId()
             );
-    
+
     pool.onComputationStatusChanged(create_computation(1UL));
     pool.onComputationStatusChanged(create_computation(2UL));
     pool.onComputationStatusChanged(create_computation(0UL));
@@ -478,7 +478,7 @@ BOOST_AUTO_TEST_CASE( test_priority_queue )
 
     BOOST_CHECK(pool.mComputablePriorities.size() == 3);
 
-    WorkerThreadPoolImpl<MockComputationState::ptr_type>::InProgressComputationPtr 
+    WorkerThreadPoolImpl<MockComputationState::ptr_type>::InProgressComputationPtr
             computation = pool.selectNextComputation();
 
     BOOST_CHECK(computation);
@@ -507,7 +507,7 @@ public:
             << *computable.priority().priorityLevel() << "\n";
 
         boost::mutex::scoped_lock lock(mMutex);
-        
+
         if (mActualCount >= mExpectedOrder.size())
             {
             mAllAreValid = false;
@@ -516,7 +516,7 @@ public:
 
         if (mExpectedOrder[mActualCount].computation() != computable.computationId())
             mAllAreValid = false;
-        
+
         if (mExpectedOrder[mActualCount].newPriority() != computable.priority())
             mAllAreValid = false;
 
@@ -529,14 +529,14 @@ public:
     bool isFinished()
         {
         boost::mutex::scoped_lock lock(mMutex);
-        
+
         return mFinished;
         }
 
     bool allAreValid()
         {
         boost::mutex::scoped_lock lock(mMutex);
-        
+
         return mAllAreValid;
         }
 
@@ -544,7 +544,7 @@ private:
     boost::mutex mMutex;
 
     uint mActualCount;
-    
+
     std::vector<LocalComputationPriorityAndStatusChanged> mExpectedOrder;
 
     bool mAllAreValid;
@@ -579,19 +579,19 @@ BOOST_AUTO_TEST_CASE( test_worker_priority )
             );
 
     std::vector<LocalComputationPriorityAndStatusChanged> expectedExecutionOrder;
-    
+
     expectedExecutionOrder.push_back(create_computation(2UL));
-    
+
     expectedExecutionOrder.push_back(create_computation(1UL));
-    
+
     expectedExecutionOrder.push_back(create_computation(1UL));
-    
+
     expectedExecutionOrder.push_back(create_computation(0UL));
 
     LOG_DEBUG << "Expected order:";
     for (auto i = expectedExecutionOrder.begin(); i != expectedExecutionOrder.end(); ++i)
         LOG_DEBUG << "ID: " << prettyPrintString(i->computation());
-    
+
     // Create a permutation of all items that don't need to have a particular insersion order.
     std::vector<size_t> submissionOrder({0, 2, 3});
 
@@ -657,7 +657,7 @@ BOOST_AUTO_TEST_CASE( test_interrupt_computation )
     LocalComputationPriorityAndStatusChanged initialPriority = create_computation(2UL);
 
     pool->onComputationStatusChanged(initialPriority);
-    
+
     pool->startComputations();
 
     activeComputations->waitForComputationCountToBeNonzero();
@@ -667,7 +667,7 @@ BOOST_AUTO_TEST_CASE( test_interrupt_computation )
     for (int i = 0; i < 5; i++)
         {
         state->waitUntilComputing();
-        
+
         BOOST_CHECK_EQUAL(activeComputations->computationCount(), 1);
 
         BOOST_CHECK(state->isComputing());
@@ -680,7 +680,7 @@ BOOST_AUTO_TEST_CASE( test_interrupt_computation )
     CallbackScheduler::singletonForTesting()->blockUntilPendingHaveExecutedAndImmediateQueueIsEmpty();
 
     state->waitUntilComputing();
-    
+
     state->finish();
 
     BOOST_CHECK_EQUAL(activeComputations->computationCount(), 1);
@@ -732,7 +732,7 @@ BOOST_AUTO_TEST_CASE( test_verify_status_changes_during_checkin_work )
     {
     //verify that if we fire a state change off during the checkin function that
     //everything works.
-    
+
     //TODO write this test
     }
 

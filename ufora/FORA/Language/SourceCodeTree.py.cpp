@@ -29,17 +29,17 @@ public:
 		{
 		return "FORA";
 		}
-		
+
 	static Fora::SourceCodeTree constructModuleWithName(std::string name)
 		{
 		return Fora::SourceCodeTree::Module(name, null(), emptyTreeMap());
 		}
-		
+
 	static Fora::SourceCodeTree constructModuleWithNameAndText(std::string name, std::string text)
 		{
 		return Fora::SourceCodeTree::Module(name, null() << text, emptyTreeMap());
 		}
-		
+
 	static Fora::SourceCodeTree constructModuleWithNameAndChildren(std::string name, boost::python::list children)
 		{
 		ImmutableTreeMap<std::string, Fora::SourceCodeTree> childrenMap;
@@ -57,7 +57,7 @@ public:
 
 		return Fora::SourceCodeTree::Module(name, null(), childrenMap);
 		}
-		
+
 	static Fora::SourceCodeTree constructModuleWithNameAndTextAndChildren(std::string name, std::string text, boost::python::list children)
 		{
 		ImmutableTreeMap<std::string, Fora::SourceCodeTree> childrenMap;
@@ -75,7 +75,7 @@ public:
 
 		return Fora::SourceCodeTree::Module(name, null() << text, childrenMap);
 		}
-		
+
 	static Fora::SourceCodeTree constructScriptWithNameAndText(std::string name, std::string text)
 		{
 		return Fora::SourceCodeTree::Script(name, text);

@@ -28,7 +28,7 @@ using TypedFora::Abi::MutableVectorHandle;
 
 class TestMutableVectorHandleFixture {
 public:
-	TestMutableVectorHandleFixture() : 
+	TestMutableVectorHandleFixture() :
 			memoryPool(
 				0,
 				PolymorphicSharedPtr<VectorDataMemoryManager>(
@@ -84,13 +84,13 @@ BOOST_AUTO_TEST_CASE ( test_typed )
 	{
 	MutableVectorHandle handle(&memoryPool, JOV::OfType(Type::String()), hash_type());
 
-	ImplValContainer aString = 
+	ImplValContainer aString =
 		ImplValContainerUtilities::createString(String("this is a long string", &memoryPool));
 
-	ImplValContainer aDifferentString = 
+	ImplValContainer aDifferentString =
 		ImplValContainerUtilities::createString(String("this is another long string", &memoryPool));
 
-	ImplValContainer aThirdString = 
+	ImplValContainer aThirdString =
 		ImplValContainerUtilities::createString(String("this is a different one", &memoryPool));
 
 	handle.resize(10, aString);
@@ -117,10 +117,10 @@ BOOST_AUTO_TEST_CASE ( test_untyped )
 	{
 	MutableVectorHandle handle(&memoryPool, JOV(), hash_type());
 
-	ImplValContainer aString = 
+	ImplValContainer aString =
 		ImplValContainerUtilities::createString(String("this is a long string", &memoryPool));
 
-	ImplValContainer aDifferentString = 
+	ImplValContainer aDifferentString =
 		ImplValContainerUtilities::createString(String("this is another long string", &memoryPool));
 
 	ImplValContainer anInteger(CSTValue(10));
@@ -136,7 +136,7 @@ BOOST_AUTO_TEST_CASE ( test_untyped )
 	BOOST_CHECK(handle[2] == aString);
 	BOOST_CHECK(handle[3] == anInteger);
 	BOOST_CHECK(handle[4] == aString);
-	
+
 	handle.resize(10, anInteger);
 	BOOST_CHECK(handle[4] == aString);
 	BOOST_CHECK(handle[3] == anInteger);

@@ -41,11 +41,11 @@ boost::python::object Graph::getNode_(boost::python::object inNodeType, boost::p
 	PolymorphicSharedPtr<LocationType> typePtr = getLocationType(inNodeType);
 	bool needsInit;
 
-	Location location = 
+	Location location =
 		mInstanceData.getObject(
-			this->polymorphicSharedPtrFromThis(), 
-			typePtr, 
-			inInstanceData, 
+			this->polymorphicSharedPtrFromThis(),
+			typePtr,
+			inInstanceData,
 			needsInit
 			);
 
@@ -149,21 +149,21 @@ void Graph::flush(bool inRecomputeLazy, double inTimeout)
 	int32_t reLeveld = 0;
 	int32_t reComputed = 0;
 	int32_t orphaned = 0;
-	
+
 	std::set<LocationProperty> distinct, pending;
 	int32_t leveledSinceCompute = 0;
 	bool cleared = false;
-	
+
 	uint32_t lazyUpdateCt = 0;
 	uint32_t nonlazyUpdateCt = 0;
-	
+
 	while (mProperties.hasDirty(inRecomputeLazy) && (inTimeout < 0.0 || curClock() - t0 < inTimeout))
 		{
 		LocationProperty p = mProperties.getLowestDirty(inRecomputeLazy);
 		distinct.insert(p);
 
 		(mProperties.isLazy(p) ? lazyUpdateCt : nonlazyUpdateCt)++;
-		
+
 		if (mProperties.recomputeLaziness(p))
 			{
 			//pass and grab a new node
@@ -255,7 +255,7 @@ boost::python::object Graph::nodeAttribute(LocationProperty prop)
 
 	if (mComputeStack.size() == 0 && mRoots.size() == 0)
 		flushAll();
-	
+
 	if (mComputeStack.size() != 0)
 		mComputeStack.top().insert(prop);
 
@@ -332,7 +332,7 @@ void Graph::computeProperty(LocationProperty inNode)
 	boost::python::object val;
 
 	mCurrentlyComputing = inNode;
-	
+
 		{
 		val = mExecuteWithinTryBlock(inNode.propertyDefinition(), inNode.getLocation().getPythonObject());
 		}

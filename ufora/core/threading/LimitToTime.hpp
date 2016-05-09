@@ -22,7 +22,7 @@
 
 class LimitToTime {
 public:
-	LimitToTime(double maxTime) 
+	LimitToTime(double maxTime)
 		{
 		curQueue().write(std::make_pair(this, curClock() + maxTime));
 		ensureStarted();
@@ -59,7 +59,7 @@ private:
 
 					asm("int3");
 					}
-			}	
+			}
 		}
 
 	static void ensureStarted()

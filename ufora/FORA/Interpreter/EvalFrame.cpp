@@ -50,7 +50,7 @@ EvalFrame* EvalFrame::allocate(
 	if (!inWasEverMachineCodeFrame)
 		newEvalFramePtr->wasEverMachineCodeFrame = 0;
 	else
-		newEvalFramePtr->wasEverMachineCodeFrame = 
+		newEvalFramePtr->wasEverMachineCodeFrame =
 			new pair<TypedFora::MetadataInstruction, long>(
 				TypedFora::MetadataInstruction(*inWasEverMachineCodeFrame),
 				0

@@ -35,11 +35,11 @@ public:
 			{
 			return "FORA";
 			}
-			
+
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
+
 			Ufora::python::CPPMLWrapper<InstructionBody>(true).class_();
 			}
 };

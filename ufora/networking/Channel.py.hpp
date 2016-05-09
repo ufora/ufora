@@ -93,7 +93,7 @@ public:
 
 		if (hasValue)
 			return boost::python::object(out);
-		
+
 		return boost::python::object();
 		}
 
@@ -149,7 +149,7 @@ public:
 			makeQueuelikeChannel(inCallbackScheduler, channel_ptr_type(p.first)),
 			makeQueuelikeChannel(inCallbackScheduler, reverse_channel_ptr_type(p.second))
 			);
-		}		
+		}
 
 	static boost::python::object makeInMemoryChannel(
 			PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler

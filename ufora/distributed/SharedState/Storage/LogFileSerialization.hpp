@@ -74,20 +74,20 @@ bool deserializeVector(std::vector<std::string> elements, vector<T>& out)
 class OpenSerializers : public boost::enable_shared_from_this<OpenSerializers> {
 public:
     virtual void serializeLogEntryForPath(
-            const std::string& path, 
-            const LogEntry& inLog, 
+            const std::string& path,
+            const LogEntry& inLog,
             std::string& outSerialized) = 0;
 
     virtual std::string serializeStateForPath(
-            const std::string& path, 
+            const std::string& path,
             const map<SharedState::Key, SharedState::KeyState>& inState) = 0;
 
     virtual bool deserializeState(
-            const std::vector<std::string>& elements, 
+            const std::vector<std::string>& elements,
             std::map<SharedState::Key, SharedState::KeyState>& out) = 0;
 
     virtual bool deserializeLog(
-            const std::vector<std::string>& elements, 
+            const std::vector<std::string>& elements,
             vector<SharedState::LogEntry>& out) = 0;
 
     virtual void finishedWithSerializer(const std::string& path) = 0;
@@ -95,7 +95,7 @@ public:
 
 };
 
-class OpenJsonSerializers : public OpenSerializers { 
+class OpenJsonSerializers : public OpenSerializers {
 
 public:
 
@@ -105,7 +105,7 @@ typedef SerializedObjectStream<JsonMemoSerializer<BinaryStreamSerializer> >
 typedef boost::shared_ptr<serializer_type>
     serializer_ptr_type;
 
-typedef JsonMemoDeserializer<BinaryStreamDeserializer> 
+typedef JsonMemoDeserializer<BinaryStreamDeserializer>
     deserializer_type;
 
     void serializeLogEntryForPath(const std::string& path, const LogEntry& inLog, std::string& outSerialized)
@@ -114,7 +114,7 @@ typedef JsonMemoDeserializer<BinaryStreamDeserializer>
         }
 
     std::string serializeStateForPath(
-            const std::string& path, 
+            const std::string& path,
             const map<SharedState::Key, SharedState::KeyState>& inState)
         {
         serializer_type serializer;
@@ -122,14 +122,14 @@ typedef JsonMemoDeserializer<BinaryStreamDeserializer>
         }
 
     bool deserializeState(
-            const std::vector<std::string>& elements, 
+            const std::vector<std::string>& elements,
             std::map<SharedState::Key, SharedState::KeyState>& out)
         {
         return deserializeType<deserializer_type>(elements, out);
         }
 
     bool deserializeLog(
-            const std::vector<std::string>& elements, 
+            const std::vector<std::string>& elements,
             vector<SharedState::LogEntry>& out)
         {
         return deserializeVector<deserializer_type>(elements, out);

@@ -26,7 +26,7 @@
 //A simple malloc wrapper for the free store.
 class TrackingFreeStoreMallocPool : public MemoryPool {
 public:
-	TrackingFreeStoreMallocPool() : 
+	TrackingFreeStoreMallocPool() :
 			MemoryPool(MemoryPool::MemoryPoolType::FreeStore)
 		{
 		}
@@ -64,7 +64,7 @@ public:
 		return false;
 		}
 
-	virtual void free(uint8_t* inBytes) 
+	virtual void free(uint8_t* inBytes)
 		{
 		boost::mutex::scoped_lock lock(mMutex);
 		lassert(mByteCount.find(inBytes) != mByteCount.end());
@@ -119,7 +119,7 @@ class FreeStoreMallocPool : public MemoryPool {
 public:
 	const static bool kTrackPageletsInFreeStore = false;
 
-	FreeStoreMallocPool() : 
+	FreeStoreMallocPool() :
 			MemoryPool(MemoryPool::MemoryPoolType::FreeStore),
 			mBytesInPagelets(0)
 		{
@@ -152,7 +152,7 @@ public:
 		{
 		if (!kTrackPageletsInFreeStore)
 			return;
-		
+
 		boost::mutex::scoped_lock lock(mPageletRefcountMutex);
 
 		decref_(inPagelet);
@@ -195,7 +195,7 @@ public:
 		return (uint8_t*)malloc(inBytes);
 		}
 
-	virtual void free(uint8_t* inBytes) 
+	virtual void free(uint8_t* inBytes)
 		{
 		if (!Fora::ShareableMemoryBlock::isValidBaseAddress(inBytes))
 			{
@@ -265,7 +265,7 @@ private:
 			{
 			mBytesInPagelets += p->totalBytesAllocatedFromOS();
 
-			if (mBytesInPagelets / 1024 / 1024 / 100 != 
+			if (mBytesInPagelets / 1024 / 1024 / 100 !=
 					(mBytesInPagelets - p->totalBytesAllocatedFromOS()) / 1024 / 1024 / 100)
 				LOG_INFO << mBytesInPagelets / 1024 / 1024.0 << " MB of pagelets in the free store.";
 			}
@@ -279,7 +279,7 @@ private:
 			mBytesInPagelets -= p->totalBytesAllocatedFromOS();
 			mPageletRefcounts.erase(p);
 
-			if (mBytesInPagelets / 1024 / 1024 / 100 != 
+			if (mBytesInPagelets / 1024 / 1024 / 100 !=
 					(mBytesInPagelets + p->totalBytesAllocatedFromOS()) / 1024 / 1024 / 100)
 				LOG_INFO << mBytesInPagelets / 1024 / 1024.0 << " MB of pagelets in the free store.";
 			}
@@ -314,7 +314,7 @@ std::ostream& operator<<(std::ostream& s, MemoryPool* pool)
 		s << "MemoryPool(<null>)";
 	else
 		s << pool->stringRepresentation();
-	
+
 	return s;
 	}
 

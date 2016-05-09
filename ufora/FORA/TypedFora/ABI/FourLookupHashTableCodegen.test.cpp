@@ -25,7 +25,7 @@ using namespace TypedFora::Abi;
 
 class FourLookupHashTableCodegenTestFixture {
 public:
-	FourLookupHashTableCodegenTestFixture() : 
+	FourLookupHashTableCodegenTestFixture() :
 			compiler(Runtime::getRuntime().getTypedForaCompiler()),
 			sizeLLVM(
 				compiler,
@@ -42,14 +42,14 @@ public:
 		{
 		lassert(compiler);
 		}
-	
+
 	typedef FourLookupHashTable<long, long, false> table_type;
-	
+
 	static NativeExpression sizeExpression(NativeExpression e)
 		{
 		return TypedNativeExpression<table_type*>(e).size().getExpression();
 		}
-	
+
 	static NativeExpression containsExpression(NativeExpression e, NativeExpression key)
 		{
 		return TypedNativeExpression<table_type*>(e).contains(
@@ -58,8 +58,8 @@ public:
 		}
 
 	static NativeExpression insertExpression(
-								NativeExpression e, 
-								NativeExpression key, 
+								NativeExpression e,
+								NativeExpression key,
 								NativeExpression value
 								)
 		{

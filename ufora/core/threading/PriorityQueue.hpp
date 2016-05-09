@@ -37,29 +37,29 @@ public:
 			boost::mutex::scoped_lock lock(mMutex);
 			mElements[inPriority].insert(in);
 			mPriorities[in] = inPriority;
-			
+
 			mCondition.notify_all();
 			}
 		//returns true if the item exists and was sucessfully reprioritized
 		bool reprioritize(const T& in, priority_type inPriority)
 			{
 			boost::mutex::scoped_lock lock(mMutex);
-			
+
 			if (mPriorities.find(in) != mPriorities.end())
 				{
 				priority_type oldPriority = mPriorities.find(in)->second;
-				
+
 				mElements[oldPriority].erase(in);
 				mPriorities[in] = inPriority;
 				mElements[inPriority].insert(in);
-				
+
 				mCondition.notify_all();
 				return true;
 				}
-			
+
 			return false;
 			}
-		
+
 		long size()
 			{
 			boost::mutex::scoped_lock lock(mMutex);
@@ -69,7 +69,7 @@ public:
 		Nullable<priority_type> getPriority(const T& in)
 			{
 			boost::mutex::scoped_lock lock(mMutex);
-			
+
 			if (mPriorities.find(in) != mPriorities.end())
 				return null() << mPriorities[in];
 			return null();
@@ -77,13 +77,13 @@ public:
 		Nullable<T>	getNonblock(priority_type priorityOrHigher)
 			{
 			boost::mutex::scoped_lock lock(mMutex);
-			
+
 			T tr;
 			if (get(tr, priorityOrHigher))
 				return null() << tr;
 			return null();
 			}
-		
+
 		T get(priority_type priorityOrHigher)
 			{
 			boost::mutex::scoped_lock lock(mMutex);
@@ -91,7 +91,7 @@ public:
 			T tr;
 			while (!get(tr, priorityOrHigher))
 				mCondition.wait(lock);
-			
+
 			return tr;
 			}
 private:
@@ -114,7 +114,7 @@ private:
 					mPriorities.erase(in);
 					return true;
 					}
-			
+
 			return false;
 			}
 

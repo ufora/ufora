@@ -35,15 +35,15 @@ double curClock(void)
 	{
 	FILETIME lpSystemTimeAsFileTime;
 	GetSystemTimeAsFileTime(&lpSystemTimeAsFileTime);
-	
+
 	//unpack to a double.
 	//this technique comes from
 	//http://msdn.microsoft.com/en-us/library/windows/desktop/ms724284%28v=vs.85%29.aspx
-	
+
 	ULARGE_INTEGER largeInt;
 	largeInt.LowPart = lpSystemTimeAsFileTime.dwLowDateTime;
 	largeInt.HighPart = lpSystemTimeAsFileTime.dwHighDateTime;
-	
+
 	//precision is 100 nanoseconds
 	return (double)largeInt.QuadPart / (double)10000000;
 	}

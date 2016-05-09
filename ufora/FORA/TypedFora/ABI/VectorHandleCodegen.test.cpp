@@ -20,9 +20,9 @@
 
 using namespace TypedFora::Abi;
 
-class VectorHandleCodegenTestFixture : 
+class VectorHandleCodegenTestFixture :
 				public VectorHandleTestFixture,
-				public NativeCodeCompilerTestFixture 
+				public NativeCodeCompilerTestFixture
 {
 public:
 	VectorHandleCodegenTestFixture()

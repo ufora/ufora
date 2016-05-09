@@ -31,7 +31,7 @@ public:
 			{
 			return "FORA";
 			}
-		
+
 		static ImplValContainer    createFORAFreeBinaryVectorStatic(
 				                        const VectorDataID& inID,
 				                        uword_t nElements,
@@ -39,7 +39,7 @@ public:
 				                        )
 			{
 			return createFORAFreeBinaryVector(
-				inID, 
+				inID,
 				nElements,
 				MemoryPool::getFreeStorePool(),
 				&*inVDM
@@ -65,7 +65,7 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
+
 			def("createFORAFreeBinaryVector", createFORAFreeBinaryVector);
 			def("createFORAFreeBinaryVector", createFORAFreeBinaryVectorStatic);
 			def("createFORAFreeBinaryVectorFromSlices", createFORAFreeBinaryVectorFromSlicesStatic);

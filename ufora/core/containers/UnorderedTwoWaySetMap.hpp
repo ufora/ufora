@@ -44,7 +44,7 @@ public:
 			{
 			return getValues(key).find(value) != getValues(key).end();
 			}
-		
+
 		const boost::unordered_set<value_type>& getValues(const key_type& inKey) const
 			{
 			if (mKeysToValues.find(inKey) == mKeysToValues.end())
@@ -92,7 +92,7 @@ public:
 			for (auto it = inValues.begin(); it != inValues.end();++it)
 				insert(inKeys, *it);
 			}
-		
+
 		template<class iterator_type>
 		void insert(const key_type& inKey, iterator_type first, iterator_type second)
 			{
@@ -184,12 +184,12 @@ class Deserializer;
 
 template<class key_type, class value_type, class storage_type>
 class Serializer<
-	UnorderedTwoWaySetMap<key_type, value_type>, 
+	UnorderedTwoWaySetMap<key_type, value_type>,
 	storage_type
 	> {
 public:
 		static void serialize(
-				storage_type& s, 
+				storage_type& s,
 				const UnorderedTwoWaySetMap<key_type, value_type>& in
 				)
 			{
@@ -198,12 +198,12 @@ public:
 };
 template<class key_type, class value_type, class storage_type>
 class Deserializer<
-	UnorderedTwoWaySetMap<key_type, value_type>, 
+	UnorderedTwoWaySetMap<key_type, value_type>,
 	storage_type
 	> {
 public:
 		static void deserialize(
-					storage_type& s, 
+					storage_type& s,
 					UnorderedTwoWaySetMap<key_type, value_type>& out
 					)
 			{

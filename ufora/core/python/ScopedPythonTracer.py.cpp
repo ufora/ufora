@@ -29,7 +29,7 @@ public:
 
 	class ScopedPyTracerWrapper {
 	public:
-		ScopedPyTracerWrapper(boost::python::object o) : mFunction(o) 
+		ScopedPyTracerWrapper(boost::python::object o) : mFunction(o)
 			{
 			mTracer = 0;
 			}
@@ -66,7 +66,7 @@ public:
 	void exportPythonWrapper()
 		{
 		using namespace boost::python;
-		
+
 		def("extractTimings", &ScopedPythonTracer::extractTimings);
 		class_<ScopedPyTracerWrapper>("Tracer", init<boost::python::object>())
 			.def("__enter__", &ScopedPyTracerWrapper::enter)

@@ -34,10 +34,10 @@ public:
 	void checkInternalConsistency(void);
 
 	uword_t maxAllocatableBlockSize(void);
-	
+
 private:
 	MapWithIndex<uword_t, uword_t> mOffsetToBlocksizeMapUnallocated;
-	
+
 	MapWithIndex<uword_t, uword_t> mOffsetToBlocksizeMapAllocated;
 
 	std::map<uword_t, uword_t> mUnallocatedBlockUpperBoundsToOffsets;

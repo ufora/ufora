@@ -64,7 +64,7 @@ class StronglyConnectedComponentsTest(unittest.TestCase):
 
         for n in graph:
             r = reachable(n)
-            
+
             for reachableChild in r:
                 self.assertTrue(levels[n] >= levels[reachableChild], (n,levels[n],reachableChild,levels[reachableChild]))
 

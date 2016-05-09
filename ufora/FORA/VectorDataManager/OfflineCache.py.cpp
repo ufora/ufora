@@ -53,7 +53,7 @@ public:
 
 			if (tr)
 				return boost::python::object(tr);
-			
+
 			return boost::python::object();
 			}
 		static void	store(PolymorphicSharedPtr<OfflineCache>& cache,
@@ -75,7 +75,7 @@ public:
 
 			return cache->alreadyExists(inID);
 			}
-		
+
 		static uint64_t getCacheSizeUsedBytes(PolymorphicSharedPtr<OfflineCache>& cache)
 			{
 			ScopedPyThreads releaseTheGil;
@@ -107,7 +107,7 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
+
 			class_<PolymorphicSharedPtr<OfflineCache> >("OfflineCache", no_init)
 				.def("store", &store)
 				.def("alreadyExists", &alreadyExists)

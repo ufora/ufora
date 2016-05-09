@@ -41,7 +41,7 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
+
 
 			Ufora::python::CPPMLWrapper<VectorDataIDSlice>
 					("VectorDataIDSlice", false).class_()

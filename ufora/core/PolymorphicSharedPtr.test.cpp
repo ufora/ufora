@@ -22,11 +22,11 @@ unsigned long a_count = 0, b_count = 0;
 
 class A : public PolymorphicSharedPtrBase<A> {
 public:
-		A(int i) : m(i) 
+		A(int i) : m(i)
 			{
 			a_count++;
 			}
-		virtual ~A() 
+		virtual ~A()
 			{
 			a_count--;
 			}
@@ -37,11 +37,11 @@ public:
 
 class B : public A {
 public:
-		B(int i) : A(i), m2(i+1) 
+		B(int i) : A(i), m2(i+1)
 			{
 			b_count++;
 			}
-		virtual ~B() 
+		virtual ~B()
 			{
 			b_count--;
 			}
@@ -70,7 +70,7 @@ public:
 };
 
 BOOST_AUTO_TEST_SUITE( test_PolymorphicSharedPtr )
-	
+
 	typedef PolymorphicSharedPtr<A> a_ptr_type;
 	typedef PolymorphicSharedPtr<B, PolymorphicSharedPtr<A> > b_ptr_type;
 
@@ -158,13 +158,13 @@ BOOST_AUTO_TEST_CASE( test_weak_ptr )
 	}
 
 BOOST_AUTO_TEST_CASE( test_weakptr_base )
-	{ 
+	{
 	b.reset(new B(1));
-	
+
 	BOOST_CHECK(b == b->polymorphicSharedPtrFromThis());
 
 	bWeak = b;
-	
+
 	BOOST_CHECK(bWeak.lock());
 	BOOST_CHECK(&*bWeak.lock() == &*b);
 
@@ -189,11 +189,11 @@ BOOST_AUTO_TEST_CASE( test_polymophicSharedFromThis )
 	a.reset(new A(1));
 
 	BOOST_CHECK_EQUAL(a_count, 1);
-	
+
 	a2 = a->polymorphicSharedPtrFromThis();
-	
+
 	BOOST_CHECK(a == a2);
-	
+
 	a.reset();
 
 	BOOST_CHECK_EQUAL(a_count, 1);
@@ -225,7 +225,7 @@ BOOST_AUTO_TEST_CASE( test_dynamic_cast )
 	BOOST_CHECK(a2.dynamic_pointer_cast<a_ptr_type>());
 	BOOST_CHECK(a2.dynamic_pointer_cast<b_ptr_type>());
 	}
-	
+
 BOOST_AUTO_TEST_CASE( test_initializer_counter )
 	{
 	PolymorphicSharedPtr<InitializerTester> p1(new InitializerTester());

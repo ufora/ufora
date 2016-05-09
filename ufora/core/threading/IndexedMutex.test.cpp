@@ -32,7 +32,7 @@ BOOST_AUTO_TEST_CASE( test_Indexed_Mutex )
     lock1.unlock();
 
     IndexedMutex<string, boost::mutex>::scoped_lock lock2(stringMutex, "m2");
-    
+
     lock1.try_lock();
 
     //verify that we can lock both at the same time
@@ -45,6 +45,6 @@ BOOST_AUTO_TEST_CASE( test_Indexed_Mutex )
 	lock1.try_lock();
 
 	BOOST_CHECK(!lock1.owns_lock());
-    
+
 }
 

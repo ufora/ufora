@@ -42,23 +42,23 @@ class EvalFrameArgList;
 class InterpreterScratchSpace {
 public:
 	ImplVal& getImplval(uword_t ix);
-	
+
 	const ImplVal& getImplval(uword_t ix) const;
-	
+
 	void push(ImplVal evalFrameArg);
-	
+
 	void clear();
 
 	void loadAxiomSpilloverData(
 			const Fora::ApplyArgFrame& values,
 			uword_t offsetIntoValueList
 			);
-	
+
 	void loadAxiomSpilloverData(const EvalFrameArgList& argList);
 
 	const Type& getAxiomSpilloverType() const;
 
-	char* getAxiomSpilloverData(); 
+	char* getAxiomSpilloverData();
 
 	Fora::ApplyArgFrame argumentPackingTempStorage;
 

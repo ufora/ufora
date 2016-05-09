@@ -33,23 +33,23 @@ public:
 	//States whether this table has a function pointer slot
 	//for the given function.
 	bool hasSlot(const slot_identifier_type& name) const;
-	
+
 	//Returns true iff this table has a slot for the specified
 	//function and that slot's contents are nonnull.
 	bool hasNonNull(const slot_identifier_type& name) const;
-	
+
 	//Gets the slot for the specified function.
 	//It is illegal to call this function with a name that has
 	//not previously been passed to createNullSlot.
 	FunctionPointerHandle getExistingSlot(const slot_identifier_type& name) const;
-	
-	
+
+
 	//Creates a set of slots for each of the specified function names.
 	//The function names must be new, or a logic_error will be thrown.
 	//the functions are all tied together in a single FunctionPointerArray
 	//and must be initialized all at once
 	void createNullSlots(const std::vector<slot_identifier_type>& name);
-	
+
 	//initialize a set of slots.  If every FunctionPointerArray that is
 	//represented in the names must be fully represented (e.g. we have to
 	//be able to initialize the whole set of them) and they cannot ever
@@ -57,7 +57,7 @@ public:
 	void initializeSlotContents(
 			const std::map<slot_identifier_type, NativeFunctionPointerAndEntrypointId>& inDefinitions
 			);
-	
+
 	//Sets the contents of the slot for the specified function.
 	//This table must have a slot for that function, and the
 	//intended contents shall not have been used previously
@@ -67,7 +67,7 @@ public:
 					long versionNumber,
 					NativeFunctionPointerAndEntrypointId newContents
 					);
-	
+
 	void blockUntilSlotExists(const slot_identifier_type& name) const;
 
 private:

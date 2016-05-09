@@ -30,7 +30,7 @@ using namespace TypedFora::Abi;
 
 class ForaValueArrayCodegenTestFixture : public NativeCodeCompilerTestFixture {
 public:
-	ForaValueArrayCodegenTestFixture() : 
+	ForaValueArrayCodegenTestFixture() :
 			emptyArray(MemoryPool::getFreeStorePool()),
 			arrayWithOneInt(MemoryPool::getFreeStorePool()),
 			arrayWithAnIntAndABigTuple(MemoryPool::getFreeStorePool()),
@@ -52,35 +52,35 @@ public:
 			);
 
 		arrayWithAnIntAndABigTupleCompressed.append(arrayWithAnIntAndABigTuple);
-		
+
 		lassert(arrayWithAnIntAndABigTupleCompressed.usingJudgmentTable());
 		}
 
 	template<class F1, class F2>
-	void checkFunctionImplementation( 
+	void checkFunctionImplementation(
 				F1 f1,
 				F2 f2,
 				std::string name
 				)
 		{
-		lassert_dump( 
-			f1(&emptyArray) == f2(&emptyArray), 
+		lassert_dump(
+			f1(&emptyArray) == f2(&emptyArray),
 			name << " on emptyArray"
 			);
 
-		lassert_dump( 
-			f1(&arrayWithOneInt) == f2(&arrayWithOneInt), 
+		lassert_dump(
+			f1(&arrayWithOneInt) == f2(&arrayWithOneInt),
 			name << " on arrayWithOneInt"
 			);
 
-		lassert_dump( 
-			f1(&arrayWithAnIntAndABigTuple) == f2(&arrayWithAnIntAndABigTuple), 
+		lassert_dump(
+			f1(&arrayWithAnIntAndABigTuple) == f2(&arrayWithAnIntAndABigTuple),
 			name << " on arrayWithAnIntAndABigTuple"
 			);
 		}
 
 	template<class F1, class F2>
-	void checkFunctionImplementationOnValidIndices( 
+	void checkFunctionImplementationOnValidIndices(
 				F1 f1,
 				F2 f2,
 				std::string name
@@ -111,8 +111,8 @@ public:
 			)
 		{
 		for (long k = 0; k < array.size(); k++)
-			lassert_dump( 
-				f1(&array, k) == f2(&array, k), 
+			lassert_dump(
+				f1(&array, k) == f2(&array, k),
 				name << ": " << k
 				);
 		}
@@ -146,8 +146,8 @@ BOOST_AUTO_TEST_CASE( test_usingOffsetTableExpression )
 		usingOffsetTableExpression
 		);
 
-	checkFunctionImplementation( 
-		[](ForaValueArray* array) { return array->usingOffsetTable(); }, 
+	checkFunctionImplementation(
+		[](ForaValueArray* array) { return array->usingOffsetTable(); },
 		usingOffsetTableLLVM,
 		"usingOffsetTable"
 		);
@@ -160,8 +160,8 @@ BOOST_AUTO_TEST_CASE( test_sizeExpression )
 		sizeExpression
 		);
 
-	checkFunctionImplementation( 
-		[](ForaValueArray* array) { return array->size(); }, 
+	checkFunctionImplementation(
+		[](ForaValueArray* array) { return array->size(); },
 		sizeLLVM,
 		"size"
 		);
@@ -174,8 +174,8 @@ BOOST_AUTO_TEST_CASE( test_jovExpression )
 		jovForExpression
 		);
 
-	checkFunctionImplementationOnValidIndices( 
-		[](ForaValueArray* array, int32_t index) { return array->jovFor(index); }, 
+	checkFunctionImplementationOnValidIndices(
+		[](ForaValueArray* array, int32_t index) { return array->jovFor(index); },
 		jovForLLVM,
 		"jovFor"
 		);
@@ -188,8 +188,8 @@ BOOST_AUTO_TEST_CASE( test_offsetForExpression )
 		offsetForExpression
 		);
 
-	checkFunctionImplementationOnValidIndices( 
-		[](ForaValueArray* array, size_t index) { return array->offsetFor(index); }, 
+	checkFunctionImplementationOnValidIndices(
+		[](ForaValueArray* array, size_t index) { return array->offsetFor(index); },
 		offsetForLLVM,
 		"offsetFor"
 		);
@@ -200,7 +200,7 @@ BOOST_AUTO_TEST_CASE( test_append_2 )
 	ForaValueArrayImpl array(MemoryPool::getFreeStorePool());
 
 	JudgmentOnValue jovInt32 = JudgmentOnValue::OfType(Type::Integer(32, true));
-	TypedNativeFunctionPointer<bool (*)(ForaValueArray*, int32_t)> 
+	TypedNativeFunctionPointer<bool (*)(ForaValueArray*, int32_t)>
 		appendInt32LLVM(
 			compiler,
 			boost::bind(
@@ -218,7 +218,7 @@ BOOST_AUTO_TEST_CASE( test_append_2 )
 	array.append(ImplValContainer(CSTValue("haro")));
 	array.append(ImplValContainer(CSTValue(10)));
 	array.append(ImplValContainer(CSTValue(10)));
-	
+
 	BOOST_CHECK(appendInt32LLVM(&array, 13));
 
 	BOOST_CHECK(array.size() == 6);
@@ -231,7 +231,7 @@ BOOST_AUTO_TEST_CASE( test_append_vector )
 
 	JudgmentOnValue jovVec = jovEmptyVector();
 
-	TypedNativeFunctionPointer<bool (*)(ForaValueArray*, Fora::Nothing)> 
+	TypedNativeFunctionPointer<bool (*)(ForaValueArray*, Fora::Nothing)>
 		appendEmptyVectorLLVM(
 			compiler,
 			boost::bind(
@@ -258,7 +258,7 @@ BOOST_AUTO_TEST_CASE( test_append_vector )
 BOOST_AUTO_TEST_CASE( test_append )
 	{
 	JudgmentOnValue jovInt32 = JudgmentOnValue::OfType(Type::Integer(32, true));
-	TypedNativeFunctionPointer<bool (*)(ForaValueArray*, int32_t)> 
+	TypedNativeFunctionPointer<bool (*)(ForaValueArray*, int32_t)>
 		appendInt32LLVM(
 			compiler,
 			boost::bind(
@@ -270,7 +270,7 @@ BOOST_AUTO_TEST_CASE( test_append )
 			);
 
 	JudgmentOnValue jovString = JudgmentOnValue::OfType(Type::String());
-	TypedNativeFunctionPointer<bool (*)(ForaValueArray*, String)> 
+	TypedNativeFunctionPointer<bool (*)(ForaValueArray*, String)>
 		appendStringLLVM(
 			compiler,
 			boost::bind(
@@ -282,7 +282,7 @@ BOOST_AUTO_TEST_CASE( test_append )
 			);
 
 	JudgmentOnValue jovNothing = JudgmentOnValue::OfType(Type::Nothing());
-	TypedNativeFunctionPointer<bool (*)(ForaValueArray*, Fora::Nothing)> 
+	TypedNativeFunctionPointer<bool (*)(ForaValueArray*, Fora::Nothing)>
 		appendNothingLLVM(
 			compiler,
 			boost::bind(
@@ -302,7 +302,7 @@ BOOST_AUTO_TEST_CASE( test_append )
 		Ufora::math::Random::Uniform<float> random(seed);
 
 		ExecutionContextMemoryPool memoryPool(
-			0, 
+			0,
 			PolymorphicSharedPtr<VectorDataMemoryManager>(
 				new VectorDataMemoryManager(
 					CallbackScheduler::singletonForTesting(),
@@ -366,7 +366,7 @@ BOOST_AUTO_TEST_CASE( test_append )
 			}
 
 		lassert_dump(appended.size() == array.size(), appended.size() << " != " << array.size());
-		
+
 		for (long j = 0; j < appended.size();j++)
 			lassert(appended[j] == array[j]);
 		}

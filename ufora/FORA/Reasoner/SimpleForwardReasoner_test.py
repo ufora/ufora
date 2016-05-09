@@ -44,10 +44,10 @@ class TestSimpleForwardReasoner(unittest.TestCase):
 
         pyforaPath = os.path.join(os.path.split(pyfora.__file__)[0], "fora/purePython")
         self.purePythonAsJOV = FORANative.JudgmentOnValue.Constant(FORA.importModule(pyforaPath).implVal_)
-        
+
         self.instructionGraph = self.runtime.getInstructionGraph()
         self.reasoner = FORANative.SimpleForwardReasoner(self.compiler, self.instructionGraph, self.axioms)
-        
+
 
     def nodeAndFrameCounts(self, reasoner, frame):
         allFrames = set()
@@ -85,8 +85,8 @@ class TestSimpleForwardReasoner(unittest.TestCase):
 
         frame = self.reasoner.reasonAboutApply(
             makeJovt(
-                FORANative.parseStringToJOV(functionText), 
-                *[FORANative.parseStringToJOV(variableJudgments[k]) 
+                FORANative.parseStringToJOV(functionText),
+                *[FORANative.parseStringToJOV(variableJudgments[k])
                     if isinstance(variableJudgments[k],str) else variableJudgments[k] for k in keys]
                 )
             )
@@ -160,9 +160,9 @@ class TestSimpleForwardReasoner(unittest.TestCase):
 
     def test_loop_resolves(self):
         frame = self.reasonAboutExpression(
-            """let res = 0; 
-            while (x > 0) { 
-                x = x - 1; 
+            """let res = 0;
+            while (x > 0) {
+                x = x - 1;
                 res = res + x
                 }
             res""",
@@ -173,7 +173,7 @@ class TestSimpleForwardReasoner(unittest.TestCase):
 
     def test_loop_with_iterator(self):
         frame = self.reasonAboutExpression(
-            """let res = 0; 
+            """let res = 0;
             let sequence = fun(x) { while (x > 0) { yield x; x = x - 1 } };
             for ix in sequence(100) {
                 res = res + ix
@@ -196,7 +196,7 @@ class TestSimpleForwardReasoner(unittest.TestCase):
     def test_nested_recursion(self):
         frame = self.reasonAboutExpression(
             """
-            let sum = fun(a,b,f) { 
+            let sum = fun(a,b,f) {
                 let res = f(a)
                 a = a + 1
                 while (a<b) {
@@ -223,9 +223,9 @@ class TestSimpleForwardReasoner(unittest.TestCase):
 
     def test_tuple_loop_resolves(self):
         frame = self.reasonAboutExpression(
-            """let res = (); 
-            while (x > 0) { 
-                x = x - 1; 
+            """let res = ();
+            while (x > 0) {
+                x = x - 1;
                 res = res + (x,)
                 }
             res""",
@@ -239,9 +239,9 @@ class TestSimpleForwardReasoner(unittest.TestCase):
             """
             let f = fun(x) { x + 1 };
             let g = fun(x,y) { x + y };
-            let res = 0; 
-            while (x > 0) { 
-                x = x - 1; 
+            let res = 0;
+            while (x > 0) {
+                x = x - 1;
                 res = res + f(x) + g(x,10)
                 }
             res""",
@@ -264,7 +264,7 @@ class TestSimpleForwardReasoner(unittest.TestCase):
 
                 if (res > 10)
                     toCall = f
-                else   
+                else
                     toCall = g
 
                 res = res + toCall(res)
@@ -282,9 +282,9 @@ class TestSimpleForwardReasoner(unittest.TestCase):
             """
             let f = fun(x) { x + 1 };
             let g = fun(x) { x + 2 };
-            let res = 0; 
-            while (x > 0) { 
-                x = x - 1; 
+            let res = 0;
+            while (x > 0) {
+                x = x - 1;
                 if (x % 2 == 0)
                     res = res + f(x)
                 else
@@ -311,11 +311,11 @@ class TestSimpleForwardReasoner(unittest.TestCase):
     def test_simple_recursion(self):
         frame = self.reasonAboutExpression(
             """
-            let f = fun(x, res = 0) 
+            let f = fun(x, res = 0)
                 {
-                if (x == 0) 
-                    return res; 
-                return f(x-1,res+x) 
+                if (x == 0)
+                    return res;
+                return f(x-1,res+x)
                 };
 
             f(1000)
@@ -327,10 +327,10 @@ class TestSimpleForwardReasoner(unittest.TestCase):
     def test_simple_dual_recursion(self):
         frame = self.reasonAboutExpression(
             """
-            let f = fun(x1, x2, res = 0) 
+            let f = fun(x1, x2, res = 0)
                 {
-                if (x1 == 0 or x2 == 0) 
-                    return res; 
+                if (x1 == 0 or x2 == 0)
+                    return res;
                 return f(x1-1,x2,res+x1) + f(x1, x2 - 1, res+x2)
                 };
 
@@ -343,10 +343,10 @@ class TestSimpleForwardReasoner(unittest.TestCase):
     def test_simple_mutual_recursion(self):
         frame = self.reasonAboutExpression(
             """
-            let f = fun(x1, res = 0) 
+            let f = fun(x1, res = 0)
                 {
-                if (x1 == 0) 
-                    return res; 
+                if (x1 == 0)
+                    return res;
                 return g(x1-1,res+x1)
                 },
             g = fun(x2, res) {
@@ -363,7 +363,7 @@ class TestSimpleForwardReasoner(unittest.TestCase):
         frame = self.reasonAboutExpression(
             """
             let f = fun
-                (`int ) { 0 } 
+                (`int ) { 0 }
                 (`str) { "asdf" }
                 (`tuple) { (f(`int), f(`str)) }
                 ;
@@ -377,7 +377,7 @@ class TestSimpleForwardReasoner(unittest.TestCase):
     def test_recursion_on_tuples(self):
         frame = self.reasonAboutExpression(
             """
-            let f = fun(x, res=()) 
+            let f = fun(x, res=())
                 {
                 if (x == 0)
                     return res
@@ -402,7 +402,7 @@ class TestSimpleForwardReasoner(unittest.TestCase):
                 let f2 = fun(t) { let c = f; c((1,) + t) + c((2,) + t) + c((3,) + t) };
                 let f3 = fun(t) { let c = f2; c((1,) + t) + c((2,) + t) + c((3,) + t) };
                 let f4 = fun(t) { let c = f3; c((1,) + t) + c((2,) + t) + c((3,) + t) };
-                
+
                 f4((x,))
                 """, x = str(ix)
                 )
@@ -415,7 +415,7 @@ class TestSimpleForwardReasoner(unittest.TestCase):
     def test_recursion_on_tuples_2(self):
         frame = self.reasonAboutExpression(
             """
-            let f = fun((), soFar) { () } 
+            let f = fun((), soFar) { () }
                 (x, soFar) { (x[0]+soFar,) + f(x[1,], soFar+x[0]) }
 
             f((1,2,3), 0)
@@ -427,11 +427,11 @@ class TestSimpleForwardReasoner(unittest.TestCase):
     def test_two_layer_recursion(self):
         frame = self.reasonAboutExpression(
             """
-            let f = fun(x, res = 0) 
+            let f = fun(x, res = 0)
                 {
-                if (x == 0) 
-                    return res; 
-                return g(x-1,res+x) 
+                if (x == 0)
+                    return res;
+                return g(x-1,res+x)
                 },
             g = fun(x,res) { f(x,res) * 2 };
 
@@ -444,13 +444,13 @@ class TestSimpleForwardReasoner(unittest.TestCase):
     def test_same_function_called_with_different_arguments(self):
         frame = self.reasonAboutExpression(
             """
-            let f = fun(x) { 
-                let res = 2; 
+            let f = fun(x) {
+                let res = 2;
                 while (res>0) {
-                    res = res - 1; 
+                    res = res - 1;
                     x = x + x
-                    }; 
-                x 
+                    };
+                x
                 };
 
             (f(10),f("asdf"))
@@ -536,7 +536,7 @@ class TestSimpleForwardReasoner(unittest.TestCase):
             let f2 = {_+2};
             let f3 = {_+3};
             let f4 = {_+4};
-            
+
             let fs = (f1, f2, f3, f4);
 
             let res = 0
@@ -557,7 +557,7 @@ class TestSimpleForwardReasoner(unittest.TestCase):
             let f2 = {_+2};
             let f3 = {_+3};
             let f4 = {_+4};
-            
+
             let fs = (f1, f2, f3, f4);
 
             let res = 0
@@ -576,14 +576,14 @@ class TestSimpleForwardReasoner(unittest.TestCase):
         self.assertTrue(len(frame.exits().resultPart().vals) == 1, frame.exits())
         self.assertTrue(len(frame.exits().throwPart().vals) == 0, frame.exits())
         self.assertTrue(frame.exits().resultPart()[0].constant())
-        
+
     def assertFrameHasResultJOV(self, frame, resultJOV):
         if isinstance(resultJOV, str):
             resultJOV = FORANative.parseStringToJOV(resultJOV)
 
         self.assertTrue(len(frame.exits().resultPart().vals) == 1, frame.exits())
         self.assertEqual(frame.exits().resultPart()[0], resultJOV)
-        
+
     def assertFrameHasResultJOVs(self, frame, *resultJOVs):
         self.assertTrue(len(frame.unknownApplyNodes()) == 0)
 
@@ -595,16 +595,16 @@ class TestSimpleForwardReasoner(unittest.TestCase):
         resultJOVs = list(jovsToFind)
 
         for res in frame.exits().resultPart():
-            self.assertTrue(res in jovsToFind, 
-                "Code produced unexpected JOV: %s. Result was %s but expected %s" % 
+            self.assertTrue(res in jovsToFind,
+                "Code produced unexpected JOV: %s. Result was %s but expected %s" %
                     (res, frame.exits().resultPart(), resultJOVs)
                 )
             jovsToFind.remove(res)
 
         self.assertTrue(
-            len(jovsToFind) == 0, 
-            "Code didn't produce these jovs: %s. Produced %s instead." % 
+            len(jovsToFind) == 0,
+            "Code didn't produce these jovs: %s. Produced %s instead." %
                 (jovsToFind, frame.exits().resultPart())
             )
-        
-    
+
+

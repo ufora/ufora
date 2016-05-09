@@ -41,16 +41,16 @@ BOOST_AUTO_TEST_CASE( test_basic )
 
 	BOOST_CHECK(id3.slicesCoveringRange(0,1000) == emptyTreeVec() + element(0,0,1000));
 	BOOST_CHECK(id3.slicesCoveringRange(500,1000) == emptyTreeVec() + element(0,500,1000));
-	BOOST_CHECK(id3.slicesCoveringRange(500,1500) == 
+	BOOST_CHECK(id3.slicesCoveringRange(500,1500) ==
 								emptyTreeVec() + element(0,500,1000) + element(1,0,500));
 
-	BOOST_CHECK(id3.slicesCoveringRange(1000, 2000) == 
+	BOOST_CHECK(id3.slicesCoveringRange(1000, 2000) ==
 								emptyTreeVec() + element(1,0,1000));
 
-	BOOST_CHECK(id3.slicesCoveringRange(1000, 1500) == 
+	BOOST_CHECK(id3.slicesCoveringRange(1000, 1500) ==
 								emptyTreeVec() + element(1,0,500));
 
-	BOOST_CHECK(id3.slicesCoveringRange(1200, 1500) == 
+	BOOST_CHECK(id3.slicesCoveringRange(1200, 1500) ==
 								emptyTreeVec() + element(1,200,500));
 
 	BOOST_CHECK(id3.pageAtIndex(0) == element(0, 0, 1000).vector().getPage());
@@ -74,10 +74,10 @@ BOOST_AUTO_TEST_CASE( test_slicing )
 	BigVectorPageLayout id3(element(1, 0, 1), jor1, hash_type());
 	BigVectorPageLayout id4(element(1, 1, 2), jor1, hash_type());
 
-	BigVectorPageLayout id = 
+	BigVectorPageLayout id =
 		BigVectorPageLayout::concatenate(
 			BigVectorPageLayout::concatenate(id1, id2, hash_type()),
-			BigVectorPageLayout::concatenate(id3, id4, hash_type()), 
+			BigVectorPageLayout::concatenate(id3, id4, hash_type()),
 			hash_type()
 			);
 
@@ -88,17 +88,17 @@ BOOST_AUTO_TEST_CASE( test_slicing )
 	BOOST_CHECK_EQUAL_CPPML(id.slice(2,3, hash_type()), id3);
 	BOOST_CHECK_EQUAL_CPPML(id.slice(3,4, hash_type()), id4);
 
-	BOOST_CHECK_EQUAL_CPPML(id.slice(0, 5, 2, hash_type()), 
+	BOOST_CHECK_EQUAL_CPPML(id.slice(0, 5, 2, hash_type()),
 		BigVectorPageLayout::concatenate(
-			id1.slice(0, 1, 2, hash_type()), 
+			id1.slice(0, 1, 2, hash_type()),
 			id3.slice(0, 1, 2, hash_type()),
 			hash_type()
 			)
 		);
-	BOOST_CHECK_EQUAL_CPPML(id.slice(1, 5, 2, hash_type()), 
+	BOOST_CHECK_EQUAL_CPPML(id.slice(1, 5, 2, hash_type()),
 		BigVectorPageLayout::concatenate(
-			id2.slice(0, 1, 2, hash_type()), 
-			id4.slice(0, 1, 2, hash_type()), 
+			id2.slice(0, 1, 2, hash_type()),
+			id4.slice(0, 1, 2, hash_type()),
 			hash_type()
 			)
 		);
@@ -114,7 +114,7 @@ BOOST_AUTO_TEST_CASE( test_sliceAndConcat )
 
 	BigVectorPageLayout id1 = id.slice(0, 500, hash_type());
 	BigVectorPageLayout id2 = id.slice(500, 1000, hash_type());
-	
+
 	BigVectorPageLayout id3 = BigVectorPageLayout::concatenate(id1, id2, hash_type());
 
 	BOOST_CHECK_EQUAL_CPPML(id, id3);

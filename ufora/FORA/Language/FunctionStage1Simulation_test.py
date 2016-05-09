@@ -44,15 +44,15 @@ class FunctionStage1SimulationTest(unittest.TestCase):
             )
 
         self.assertEqual(res, ForaNative.ImplValContainer(n))
-        
+
     def test_unbind(self):
         ivc = FORA.eval(
             """let m = \"asdf\";
-               let C = class { 
+               let C = class {
                    member x;
                    member y;
                    f: fun() { m };
-                   }; 
+                   };
                let c = C(1,2);
                c"""
             ).implVal_
@@ -69,11 +69,11 @@ class FunctionStage1SimulationTest(unittest.TestCase):
 
     def test_pattern_matching(self):
         ivc = FORA.eval(
-            """let o = object { 
+            """let o = object {
                    ...(`Member, `x) { 1 };
                    y: 2;
                    ...(`Member, `z) { 3 };
-                   }; 
+                   };
                o"""
             ).implVal_
 
@@ -103,7 +103,7 @@ class FunctionStage1SimulationTest(unittest.TestCase):
 
         res = ForaNative.simulateApply(
             ForaNative.ImplValContainer(
-                (classIvc, makeSymbolIvc("CreateInstance"), 
+                (classIvc, makeSymbolIvc("CreateInstance"),
                  ForaNative.ImplValContainer(x), ForaNative.ImplValContainer(y)
                  )
             )
@@ -133,7 +133,7 @@ class FunctionStage1SimulationTest(unittest.TestCase):
 
         res = ForaNative.simulateApply(
             ForaNative.ImplValContainer(
-                (classIvc, makeSymbolIvc("CreateInstance"), 
+                (classIvc, makeSymbolIvc("CreateInstance"),
                  ForaNative.ImplValContainer(y), ForaNative.ImplValContainer(x)
                  )
             )

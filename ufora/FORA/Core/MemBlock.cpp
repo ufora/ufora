@@ -99,20 +99,20 @@ MemSlab* FORA_clib_allocNewEmptySlab(uword_t maxBytes)
 	//LOG_INFO << "total slab bytes: " << gTotalSlabsAllocated;
 	return slab;
 	}
-	
+
 BSA_DLLEXPORT
 void FORA_clib_freeSlab(MemSlab* slab)
 	{
 	do {
 		gTotalSlabsAllocated -= slab->slabSize;
-	
+
 		MemSlab* next = slab->nextSlab;
-		
+
 		Ufora::Memory::bsa_free(slab);
 
 		slab = next;
 		} while (slab);
-	
+
 	//LOG_INFO << "total slab bytes: " << gTotalSlabsAllocated;
 	}
 

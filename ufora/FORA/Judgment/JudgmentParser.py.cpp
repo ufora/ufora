@@ -30,28 +30,28 @@ public:
 			{
 			return "FORA";
 			}
-			
+
 		static JudgmentOnValueTuple parseJOVT(const string& inJOVString)
 			{
 			SimpleParseNode parseNode = parseStringToSimpleParse(inJOVString);
-			
+
 			return JudgmentParser::parseJOVT(parseNode);
 			}
-			
+
 		static JudgmentOnValue parseJOV(const string& inJOVString)
 			{
 			SimpleParseNode parseNode = parseStringToSimpleParse(inJOVString);
-			
+
 			return JudgmentParser::parseJOV(parseNode);
 			}
-			
+
         static JudgmentOnResult parseJOR(const string& inJORString)
             {
 			SimpleParseNode parseNode = parseStringToSimpleParse(inJORString);
-			
+
 			return JudgmentParser::parseJOR(parseNode);
 			}
-			
+
 		static void jpeErrorTranslator(JudgmentParseError arg)
 			{
 			PyErr_SetString(
@@ -59,13 +59,13 @@ public:
 				("JudgmentParseError: " + prettyPrintString(arg)).c_str()
 				);
 			}
-			
+
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
+
 			boost::python::register_exception_translator<JudgmentParseError>(&jpeErrorTranslator);
-			
+
 			def("parseStringToJOVT", &parseJOVT);
 			def("parseStringToJOV", &parseJOV);
             def("parseStringToJOR", &parseJOR);

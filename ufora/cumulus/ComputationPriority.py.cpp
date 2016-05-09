@@ -49,13 +49,13 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-				
-			object cls = 
+
+			object cls =
 				FORAPythonUtil::exposeValueLikeCppmlTypeSimpleSerializers<ComputationPriority>()
 					.class_()
 					.def("withPrioritySource", &ComputationPriority::withPrioritySource)
 					;
-					
+
 			def("ComputationPriority", cls);
 
 			def("ComputationPriority", makeCompPriorityFromInt);

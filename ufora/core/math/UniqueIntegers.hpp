@@ -19,7 +19,7 @@
 
 class UniqueIntegers {
 public:
-	static AO_t next() 
+	static AO_t next()
 		{
 		static AO_t currentInt = 0;
 

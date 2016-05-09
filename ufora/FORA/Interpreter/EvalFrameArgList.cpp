@@ -51,17 +51,17 @@ void EvalFrameArgList::push(const ImplVal& evalFrameArg)
 
 
 void EvalFrameArgList::unpackUnownedTupleIntoPooledArguments(
-											const ImplVal& tupleImplVal, 
+											const ImplVal& tupleImplVal,
 											RefcountPool* pool
 											)
 	{
 	clear();
 
 	lassert(TupleCategory::isTuple(tupleImplVal));
-	
+
 	typedef TupleCategory::iterator tuple_iterator;
 
-	for (tuple_iterator it = tuple_iterator::begin(tupleImplVal), 
+	for (tuple_iterator it = tuple_iterator::begin(tupleImplVal),
 					it2 = tuple_iterator::end(tupleImplVal); it != it2; ++it)
 		push(pool->add(*it));
 	}
@@ -103,7 +103,7 @@ void EvalFrameArgList::clear()
 
 void EvalFrameArgList::slice(uword_t ix)
 	{
-	if (ix >= mSize) 
+	if (ix >= mSize)
 		return;
 
 	mSize = ix;

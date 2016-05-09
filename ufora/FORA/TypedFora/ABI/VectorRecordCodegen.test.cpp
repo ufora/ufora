@@ -21,9 +21,9 @@
 
 using namespace TypedFora::Abi;
 
-class VectorRecordCodegenTestFixture : 
+class VectorRecordCodegenTestFixture :
 				public VectorHandleTestFixture,
-				public NativeCodeCompilerTestFixture 
+				public NativeCodeCompilerTestFixture
 {
 public:
 	VectorRecordCodegenTestFixture()
@@ -61,14 +61,14 @@ BOOST_AUTO_TEST_CASE( test_empty )
 BOOST_AUTO_TEST_CASE( test_index_and_offset_unpaged )
 	{
 	TypedFora::Abi::VectorRecord record(this->newUnpagedHandle(0, 10));
-	
+
 	BOOST_CHECK(
-		compile(&record_expr::arrayAndOffsetForWithFakeCallbacks)(record, 0) == 
+		compile(&record_expr::arrayAndOffsetForWithFakeCallbacks)(record, 0) ==
 			(pair<TypedFora::Abi::ForaValueArray*, int64_t>(record.unpagedValues(), 0))
 		);
-	
+
 	BOOST_CHECK(
-		compile(&record_expr::arrayAndOffsetForWithFakeCallbacks)(record, 9) == 
+		compile(&record_expr::arrayAndOffsetForWithFakeCallbacks)(record, 9) ==
 			(pair<TypedFora::Abi::ForaValueArray*, int64_t>(record.unpagedValues(), 9))
 		);
 	}
@@ -76,11 +76,11 @@ BOOST_AUTO_TEST_CASE( test_index_and_offset_unpaged )
 BOOST_AUTO_TEST_CASE( test_index_and_offset_paged )
 	{
 	TypedFora::Abi::VectorRecord record(this->newPagedHandle(0, ImmutableTreeVector<int64_t>() + 10));
-	
+
 	BOOST_CHECK(
-		compile(&record_expr::arrayAndOffsetForWithFakeCallbacks)(record, 0) == 
+		compile(&record_expr::arrayAndOffsetForWithFakeCallbacks)(record, 0) ==
 			(pair<TypedFora::Abi::ForaValueArray*, int64_t>(
-				nullptr, 
+				nullptr,
 				0
 				)
 			)
@@ -88,14 +88,14 @@ BOOST_AUTO_TEST_CASE( test_index_and_offset_paged )
 	}
 
 
-TypedNativeExpression<bool> 
+TypedNativeExpression<bool>
 				appendInt64Expression(
 					TypedNativeExpression<TypedFora::Abi::VectorRecord> vecExpr,
 					TypedNativeExpression<int64_t> intExpr
 					)
 	{
 	return vecExpr.appendAssumingAppendableAndPooled(
-		intExpr.getExpression(), 
+		intExpr.getExpression(),
 		JOV::OfType(Type::Integer(64, true))
 		);
 	}
@@ -106,7 +106,7 @@ BOOST_AUTO_TEST_CASE( test_appending )
 	{
 	TypedFora::Abi::VectorRecord record(this->newUnpagedHandle(0, 11));
 	TypedFora::Abi::VectorRecord record2(record.dataPtr(), 9, 0, 1);
-	
+
 	BOOST_CHECK(compile(&record_expr::isAppendable)(record));
 	BOOST_CHECK(!compile(&record_expr::isAppendable)(record2));
 

@@ -36,7 +36,7 @@ public:
 
 	/// \brief Return the current Protocol's and clear it.
 	PolymorphicSharedPtr<NoncontiguousByteBlock> getData(void);
-	
+
 private:
 	PolymorphicSharedPtr<NoncontiguousByteBlock> mData;
 

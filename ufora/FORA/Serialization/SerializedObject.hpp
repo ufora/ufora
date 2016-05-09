@@ -34,7 +34,7 @@ class SerializedObjectFlattenerSerializer;
 class SerializedObjectInflaterDeserializer;
 
 /*************
-SerializedObject 
+SerializedObject
 
 Holds the result serializing some object graph that has references to
 FORA values objects. The data holds the references by index
@@ -44,18 +44,18 @@ in the order in which they were encountered
 class SerializedObject : public PolymorphicSharedPtrBase<SerializedObject> {
 public:
 		typedef PolymorphicSharedPtr<SerializedObject> pointer_type;
-		
+
 		SerializedObject();
 
 		~SerializedObject();
-		
+
 		//create a SerializedObject that has no external dependencies whatsoever
 		SerializedObject(		const PolymorphicSharedPtr<NoncontiguousByteBlock>& inSerializedData);
 
-		SerializedObject(		const PolymorphicSharedPtr<NoncontiguousByteBlock>& inSerializedData, 
+		SerializedObject(		const PolymorphicSharedPtr<NoncontiguousByteBlock>& inSerializedData,
 								const PolymorphicSharedPtr<SerializedObjectContext>& inContext
 								);
-		
+
 		SerializedObject&	operator=(const SerializedObject& in);
 
 		static PolymorphicSharedPtr<SerializedObject> fromByteBlock(
@@ -68,7 +68,7 @@ public:
 
 		template<class T>
 		static PolymorphicSharedPtr<SerializedObject> serialize(
-			const T& inElt, 
+			const T& inElt,
 			PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM
 			);
 
@@ -81,7 +81,7 @@ public:
 
 
 		template<class serializer_type>
-		static void serialize(	serializer_type& s, 
+		static void serialize(	serializer_type& s,
 								const SerializedObject& t)
 			{
 			s.serialize(*t.mSerializedData);
@@ -93,7 +93,7 @@ public:
 			}
 
 		template<class serializer_type>
-		static void deserialize(	serializer_type& s, 
+		static void deserialize(	serializer_type& s,
 									SerializedObject& t)
 			{
 			t.mSerializedData.reset(new NoncontiguousByteBlock);
@@ -111,15 +111,15 @@ public:
 		long totalValues(void) const;
 private:
 		Fora::MemoizableDuringSerialization::MemoStorage mMemoStorage;
-		
+
 		PolymorphicSharedPtr<NoncontiguousByteBlock> mSerializedData;
-		
+
 		MapWithIndex<Type, uint32_t> mTypesReferenced;
-		
+
 		MapWithIndex<JudgmentOnValue, uint32_t> mJovsReferenced;
 
 		MapWithIndex<Expression, uint32_t> mExpressionsReferenced;
-		
+
 		MapWithIndex<ControlFlowGraph, uint32_t> mControlFlowGraphsReferenced;
 
 		mutable Nullable<hash_type> mHash;
@@ -129,10 +129,10 @@ private:
 		friend class SerializedObjectFlattenerSerializer;
 
 		friend class SerializedObjectInflaterDeserializer;
-		
+
 		template<class T, class serializer_type>
 		friend class Serializer;
-		
+
 		template<class T, class serializer_type>
 		friend class Deserializer;
 };
@@ -152,7 +152,7 @@ public:
 template<class serializer_type>
 class Serializer<PolymorphicSharedPtr<SerializedObject>, serializer_type> {
 public:
-		static void serialize(	serializer_type& s, 
+		static void serialize(	serializer_type& s,
 								const PolymorphicSharedPtr<SerializedObject>& t)
 			{
 			if (!t)
@@ -160,7 +160,7 @@ public:
 			else
 				{
 				s.serialize(true);
-				s.serialize(*t);	
+				s.serialize(*t);
 				}
 			}
 };
@@ -168,7 +168,7 @@ public:
 template<class serializer_type>
 class Deserializer<PolymorphicSharedPtr<SerializedObject>, serializer_type> {
 public:
-		static void deserialize(serializer_type& s, 
+		static void deserialize(serializer_type& s,
 								PolymorphicSharedPtr<SerializedObject>& t)
 			{
 			bool hasOne;
@@ -201,24 +201,24 @@ public:
 };
 
 template<class T>
-PolymorphicSharedPtr<SerializedObject> 
+PolymorphicSharedPtr<SerializedObject>
 SerializedObject::serialize(const T& inElt, PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM)
 	{
 	PolymorphicSharedPtr<SerializedObjectContext> context;
 	context.reset(new SerializedObjectContext(inVDMM));
-	
+
 	ONoncontiguousByteBlockProtocol				protocol;
 
 		{
 		OBinaryStream stream(protocol);
-	
+
 		SerializedObjectContextSerializer serializer(stream, *context);
 
 		Fora::VectorMemoizingForaValueSerializationStream valueStream(serializer);
 
 		valueStream.serialize(inElt);
 		}
-	
+
 	return PolymorphicSharedPtr<SerializedObject>(
 		new SerializedObject(
 			protocol.getData(),
@@ -239,12 +239,12 @@ void	SerializedObject::deserialize(
 	PolymorphicSharedPtr<SerializedObjectContext> context(
 		new SerializedObjectContext(inVDMM, inObject)
 		);
-	
+
 	IBinaryStream stream(protocol);
 
 	SerializedObjectContextDeserializer deserializer(
-		stream, 
-		*context, 
+		stream,
+		*context,
 		MemoryPool::getFreeStorePool()
 		);
 
@@ -289,7 +289,7 @@ class CPPMLTransform<PolymorphicSharedPtr<SerializedObject>, void> {
 public:
 		template<class F>
 		static Nullable<PolymorphicSharedPtr<SerializedObject> > apply(
-							const PolymorphicSharedPtr<SerializedObject>& in, 
+							const PolymorphicSharedPtr<SerializedObject>& in,
 							const F& f
 							)
 			{

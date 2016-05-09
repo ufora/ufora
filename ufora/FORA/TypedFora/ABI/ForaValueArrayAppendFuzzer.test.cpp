@@ -28,7 +28,7 @@ using TypedFora::Abi::ForaValueArraySpaceRequirements;
 
 class ForaValueArrayFuzzTest {
 public:
-	ForaValueArrayFuzzTest(long seed) : 
+	ForaValueArrayFuzzTest(long seed) :
 			mRandom(seed)
 		{
 		mMemoryPool = MemoryPool::getFreeStorePool();
@@ -247,8 +247,8 @@ public:
 			for (long k = 0; k < mValues[ix].size();k++)
 				lassert_dump(
 					mValues[ix][k] == (*mArrays[ix])[k],
-					"index " << k << ": " 
-						<< prettyPrintString(mValues[ix][k]) << " vs. " 
+					"index " << k << ": "
+						<< prettyPrintString(mValues[ix][k]) << " vs. "
 						<< prettyPrintString((*mArrays[ix])[k])
 					);
 			}

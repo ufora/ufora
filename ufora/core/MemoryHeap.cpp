@@ -90,7 +90,7 @@ MemoryHeap::~MemoryHeap()
 void MemoryHeap::initialize()
 	{
 	mMspace = create_mspace_with_granularity(mPageSize, 0, this);
-	
+
 	mspace_track_large_chunks(mMspace, 1);
 
 	lassert(mPageSize == mspace_footprint(mMspace));
@@ -144,7 +144,7 @@ void* MemoryHeap::mmap(size_t size)
 
 	if (newAddr != MAP_FAILED)
 		mark_allocated(newAddr, size, false);
-		
+
 	return newAddr;
 	}
 
@@ -154,13 +154,13 @@ int MemoryHeap::munmap(void* addr, size_t size)
 
 	if (result != -1)
 		mark_unallocated(addr, size);
-		
+
 	return result;
 	}
 
 void* MemoryHeap::mremap(void* addr, size_t oldSize, size_t newSize, int flags)
 	{
-	if (oldSize == newSize) 
+	if (oldSize == newSize)
 		return addr;
 
 	void* newAddr = mMRemapFun(addr, oldSize, newSize, flags);
@@ -176,9 +176,9 @@ void* MemoryHeap::mremap(void* addr, size_t oldSize, size_t newSize, int flags)
 
 void*	MemoryHeap::malloc(size_t size)
 	{
-	if (mMspace == NULL) 
+	if (mMspace == NULL)
 		initialize();
-	
+
 	if (size >= mPageSize)
 		{
 		void* newAddr = mMMapFun(size);
@@ -225,7 +225,7 @@ void MemoryHeap::free(void *ptr)
 
 void* MemoryHeap::realloc(void *ptr, size_t size)
 	{
-	if (mMspace == NULL) 
+	if (mMspace == NULL)
 		return 0;
 
 	auto itr = mPages.find(ptr);

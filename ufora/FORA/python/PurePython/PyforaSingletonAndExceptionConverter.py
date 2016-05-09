@@ -93,7 +93,7 @@ class PyforaSingletonAndExceptionConverter:
         return self.instanceToPythonName[instance]
 
     def convertExceptionInstance(self, exceptionInstance):
-        instanceClassName = exceptionInstance.getClassName()        
+        instanceClassName = exceptionInstance.getClassName()
         if instanceClassName == self.pyExceptionClassInstanceName:
             typeInstance = exceptionInstance.getObjectLexicalMember("@class")[0]
             typeInstanceName = self.convertInstanceToSingletonName(typeInstance)
@@ -117,7 +117,7 @@ class PyforaSingletonAndExceptionConverter:
             return (typeInstanceName, args)
 
         return None
-        
+
     def convertInvalidPyforaOperationInstance(self, instance):
         if instance.getClassName() == self.invalidPyforaOperationClassInstanceName:
             result = instance.getObjectLexicalMember("@message")[0]

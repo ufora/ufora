@@ -28,7 +28,7 @@ public:
 			{
 			return "FORA";
 			}
-			
+
 		static bool ExternalDatasetDescriptor_getstate_manages_dict(ExternalDatasetDescriptor& v)
 			{
 			return true;
@@ -37,7 +37,7 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
+
 			FORAPythonUtil::exposeValueLikeCppmlType<ExternalDatasetDescriptor>(false);
 			FORAPythonUtil::exposeValueLikeCppmlType<OdbcRequest>(false);
 			FORAPythonUtil::exposeValueLikeCppmlType<S3Dataset>(false);

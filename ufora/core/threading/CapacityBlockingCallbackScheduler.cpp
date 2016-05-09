@@ -17,9 +17,9 @@
 
 
 CapacityBlockingCallbackScheduler::CapacityBlockingCallbackScheduler(
-													PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler, 
+													PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
 													uint64_t inMaxCapacity
-													) : 
+													) :
 				mMaxCapacity(inMaxCapacity),
 				mCurSizeScheduled(0),
 				mCallbackScheduler(inCallbackScheduler)
@@ -27,7 +27,7 @@ CapacityBlockingCallbackScheduler::CapacityBlockingCallbackScheduler(
 	}
 
 void CapacityBlockingCallbackScheduler::scheduleButBlockIfCapacityIsExceeded(
-														boost::function0<void> inFunc, 
+														boost::function0<void> inFunc,
 														uint64_t inSize
 														)
 	{
@@ -49,7 +49,7 @@ void CapacityBlockingCallbackScheduler::scheduleButBlockIfCapacityIsExceeded(
 	}
 
 void CapacityBlockingCallbackScheduler::callAndDecrementCapacity(
-														boost::function0<void> inFunc, 
+														boost::function0<void> inFunc,
 														uint64_t capacity
 														)
 	{
@@ -68,16 +68,16 @@ void CapacityBlockingCallbackScheduler::callAndDecrementCapacity(
 void CapacityBlockingCallbackScheduler::decrementCapacity(uint64_t capacity)
 	{
 	boost::mutex::scoped_lock lock(mMutex);
-	
+
 	mCurSizeScheduled -= capacity;
 
 	mCurCapacityChanged.notify_all();
 	}
 
-void CapacityBlockingCallbackScheduler::setMaxCapacity(uint64_t inNewCapacity)	
+void CapacityBlockingCallbackScheduler::setMaxCapacity(uint64_t inNewCapacity)
 	{
 	boost::mutex::scoped_lock lock(mMutex);
-	
+
 	mMaxCapacity = inNewCapacity;
 
 	mCurCapacityChanged.notify_all();

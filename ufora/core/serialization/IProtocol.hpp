@@ -21,24 +21,24 @@
 
 class IProtocol {
 public:
-	//request bytes from the stream. returns the number of bytes read. 
+	//request bytes from the stream. returns the number of bytes read.
 	//If inBlock is false, and no bytes are available, we return zero.
 	//If inBlock is true, we return as many bytes as possible up to inByteCount.  If we return zero,
 	//we have reached the end of the stream.
 	//If the stream terminates unexpectedly, and we have unread bytes, we return those.
-	//If the stream terminated unexpectedly and we have no unread bytes, we throw 
+	//If the stream terminated unexpectedly and we have no unread bytes, we throw
 	//StreamTerminatedUnexpectedly
 	virtual uword_t read(uword_t inByteCount, void *inData, bool inBlock) = 0;
 
 	virtual uword_t position() = 0;
-	
+
 	class StreamTerminatedUnexpectedly : std::logic_error {
 	public:
 		StreamTerminatedUnexpectedly() : std::logic_error("Stream terminated unexpectedly")
 			{
 			}
 	};
-	
+
 };
 
 

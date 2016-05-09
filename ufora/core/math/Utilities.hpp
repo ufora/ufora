@@ -16,7 +16,7 @@
 #ifndef base_math_Utilities_HPP_
 #define base_math_Utilities_HPP_
 
-#include <complex> 
+#include <complex>
 
 namespace Ufora {
 namespace math {
@@ -37,8 +37,8 @@ inline scalar_type	sqrt2(void)
 	{
 	return 1.4142135623730951;
 	}
-	
-	
+
+
 template<class scalar_type>
 inline scalar_type pi(void)
 	{
@@ -56,7 +56,7 @@ template<class T>
 class VarianceFunction {
 public:
 		typedef T	result_type;
-		
+
 		T	operator()(T in) const
 			{
 			return in * in;
@@ -65,9 +65,9 @@ public:
 
 template<class T>
 class VarianceFunction<std::complex<T> > {
-public:	
+public:
 		typedef T	result_type;
-		
+
 		T	operator()(std::complex<T> in) const
 			{
 			return norm2(in);

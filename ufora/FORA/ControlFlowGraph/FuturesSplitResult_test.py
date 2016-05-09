@@ -33,12 +33,12 @@ from ufora.FORA.ControlFlowGraph.CFGWithFutures_test import \
 
 def callAndGetResult(funImplVal):
     vdm = ForaNative.VectorDataManager(callbackScheduler, 50 * 1024 * 1024)
-    
+
     context = ExecutionContext.ExecutionContext(
         dataManager = vdm,
         allowInterpreterTracing = False
         )
-        
+
     context.evaluate(funImplVal, ForaNative.symbol_Call)
 
     finishedResult = context.getFinishedResult()
@@ -47,7 +47,7 @@ def callAndGetResult(funImplVal):
 
 def finishPausedComputation(pausedComputation):
     vdm = ForaNative.VectorDataManager(callbackScheduler, 50 * 1024 * 1024)
-    
+
     context2 = ExecutionContext.ExecutionContext(
         dataManager = vdm,
         allowInterpreterTracing = False
@@ -101,11 +101,11 @@ def simulateWithFuturesInRandomOrder(cfgWithFutures):
 
         for ix in range(numpy.random.randint(3)):
             futuresToEvaluate.add(random.choice(submittableFutures))
-                
+
     def shouldEvaluateAFuture():
         if len(futuresToEvaluate) == 0:
             return False
-                
+
         return numpy.random.random_sample() < 0.5
 
     def continueSimulating():
@@ -115,11 +115,11 @@ def simulateWithFuturesInRandomOrder(cfgWithFutures):
     def evaluateAFuture():
         slotIx = random.choice(list(futuresToEvaluate))
         applyTuple = cfgWithFutures.submittableArgs(slotIx)
-        
+
         computationResult = finishPausedComputation(applyTuple.toPausedComputation())
 
         futuresToEvaluate.remove(slotIx)
-            
+
         return slotIx, computationResult
 
     shouldContinue = True
@@ -181,7 +181,7 @@ class FuturesSplitResultTest(unittest.TestCase):
         ix = low
         while (ix < high):
             ix += stride
-            
+
             try:
                 pausedComputation = callAndExtractPausedCompuationAfterSteps(
                     funImplVal, ix)
@@ -190,7 +190,7 @@ class FuturesSplitResultTest(unittest.TestCase):
 
             splitWithFutures = ForaNative.FuturesSplitResult\
                                          .splitPausedComputation(pausedComputation)
-                
+
             unsplitVal2 = finishPausedComputation(pausedComputation)
             self.assertEqual(unsplitVal, unsplitVal2)
 

@@ -31,7 +31,7 @@ public:
 			{
 			return "FORA";
 			}
-		static PolymorphicSharedPtr<NoncontiguousByteBlock>* 
+		static PolymorphicSharedPtr<NoncontiguousByteBlock>*
 		constructNoncontiguousByteBlock(std::string inString)
 			{
 			return new PolymorphicSharedPtr<NoncontiguousByteBlock>(
@@ -53,7 +53,7 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
+
 			class_<PolymorphicSharedPtr<NoncontiguousByteBlock> >("NoncontiguousByteBlock", no_init)
 				.def("__init__", make_constructor(constructNoncontiguousByteBlock))
 				.def("toString", toString)

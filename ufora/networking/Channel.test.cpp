@@ -51,7 +51,7 @@ BOOST_AUTO_TEST_CASE( test_SerializedChannelTest )
 
 	auto deserializedMessage = deserialize<MessageOut>(serializedMessage);
 	BOOST_CHECK_EQUAL(
-		messageOut.getMinimumIdResponse().id(), 
+		messageOut.getMinimumIdResponse().id(),
 		deserializedMessage.getMinimumIdResponse().id()
 		);
 

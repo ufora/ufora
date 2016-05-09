@@ -28,13 +28,13 @@ throttled channel.
 **************************/
 
 template<class TOut, class TIn>
-class RateLimitedChannelGroup : 
+class RateLimitedChannelGroup :
 						public PolymorphicSharedPtrBase<RateLimitedChannelGroup<TOut, TIn> > {
 public:
 	typedef PolymorphicSharedPtr<RateLimitedChannelGroup<TOut, TIn> > pointer_type;
 
 	typedef PolymorphicSharedWeakPtr<RateLimitedChannelGroup<TOut, TIn> > weak_ptr_type;
-	
+
 	RateLimitedChannelGroup(
 				PolymorphicSharedPtr<CallbackScheduler> inScheduler,
 				boost::function1<double, TOut> messageCostFunOut,

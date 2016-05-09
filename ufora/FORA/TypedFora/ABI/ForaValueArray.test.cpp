@@ -119,9 +119,9 @@ BOOST_AUTO_TEST_CASE ( test_append_constant_judgment )
 	CSTValue c(123);
 
 	JudgmentOnValue constantJOV = jovEmptyVector();
-	
+
 	array.append(ImplValContainer(CSTValue(0)));
-	
+
 	array.append(constantJOV, (uint8_t*)constantJOV.constant()->getReference().data(), 1, 0);
 
 	BOOST_CHECK(array[1] == ImplValContainer(*constantJOV.constant()));
@@ -172,7 +172,7 @@ BOOST_AUTO_TEST_CASE ( test_append_vector_of_vector_2 )
 	}
 
 BOOST_AUTO_TEST_CASE ( test_append_vector_of_vector_3 )
-	{	
+	{
 		{
 		ForaValueArrayImpl array(&memoryPool);
 
@@ -191,7 +191,7 @@ BOOST_AUTO_TEST_CASE ( test_append_vector_of_vector_3 )
 		array.append(emptyVector);
 		array.append(vectorOfEmptyVector);
 		array.append(vectorOfFloat);
-	
+
 		BOOST_CHECK(array[0] == emptyVector);
 		BOOST_CHECK(array[1] == vectorOfEmptyVector);
 		BOOST_CHECK(array[2] == vectorOfFloat);
@@ -239,7 +239,7 @@ BOOST_AUTO_TEST_CASE ( test_blit_strings_speed )
 
 	for (long k = 0; k < count; k++)
 		targets2[k] = &someData2[0] + sizeof(String) * k;
-	
+
 	double t3 = curClock();
 	s.initializeScattered((void**)&targets1[0], count, 0, &memoryPool);
 	LOG_INFO << "Took " << curClock() - t3 << " to initialize 1mm scattered";
@@ -247,7 +247,7 @@ BOOST_AUTO_TEST_CASE ( test_blit_strings_speed )
 	double t4 = curClock();
 	s.initializeScattered((void**)&targets2[0], (const void**)&targets1[0], count, 0, 0);
 	LOG_INFO << "Took " << curClock() - t4 << " to copy 1mm scattered";
-	
+
 	double t5 = curClock();
 	s.destroyScattered((void**)&targets2[0], count, 0);
 	LOG_INFO << "Took " << curClock() - t5 << " to destroy 1mm scattered";
@@ -391,14 +391,14 @@ BOOST_AUTO_TEST_CASE ( test_append_random )
 		implvals = implvals + ImplValContainer(CSTValue(10));
 
 		//we need to have a string allocated on the memory pool in here to catch refcount errors.
-		implvals = implvals + 
+		implvals = implvals +
 			ImplValContainerUtilities::createString(
 				String("this is big enough to be allocated on the heap", &memoryPool)
 				);
 		implvals = implvals + ImplValContainer(implvals); //a tuple - a bit bigger
 
 		ImmutableTreeVector<ImplValContainer> target;
-		
+
 		const static int maxValues = 20;
 
 		for (long j = 0; j < maxValues; j++)
@@ -423,7 +423,7 @@ BOOST_AUTO_TEST_CASE ( test_append_random )
 				}
 
 			long which = implvals.size() * generator();
-			
+
 			//how many times to append
 			long count = 1 + generator() * 4;
 
@@ -431,7 +431,7 @@ BOOST_AUTO_TEST_CASE ( test_append_random )
 				{
 				array.append(
 					PackedForaValues(
-						JOV::OfType(implvals[which].type()), 
+						JOV::OfType(implvals[which].type()),
 						&implvals[which].cast<uint8_t>(),
 						1,
 						PackedForaValues::strideFor(JOV::OfType(implvals[which].type()))
@@ -446,12 +446,12 @@ BOOST_AUTO_TEST_CASE ( test_append_random )
 				lassert_dump(array.size() == target.size(), "size mismatch for seed " << seed);
 				for (long k = 0; k < array.size(); k++)
 					lassert_dump(
-						array[k] == target[k], 
+						array[k] == target[k],
 						"item mismatch for seed " << seed << " at slot " << k
 						);
 				}
 			}
-		}	
+		}
 	}
 
 BOOST_AUTO_TEST_SUITE_END( )

@@ -31,7 +31,7 @@ public:
 	ArbitraryNativeConstantType* type();
 
 	NativeType nativeType();
-	
+
 	void* pointerToData();
 
 	std::string description();
@@ -41,7 +41,7 @@ public:
 	static NativeExpression expressionForCSTValueTyped(const CSTValue& in);
 
 	static NativeExpression expressionForCSTValueAsImplval(const CSTValue& in);
-	
+
 private:
 	friend class ArbitraryNativeConstantForCSTValueType;
 

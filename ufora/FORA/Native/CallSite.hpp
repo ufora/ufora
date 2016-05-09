@@ -26,15 +26,15 @@ class CallSite {
 public:
 	//The name of the function in which this call site resides.
 	std::string callerName;
-	
+
 	//The numeric id of this call site for all generations of the calling
 	//function. The actuall call operation in the NativeCFG is tagged with
 	//this id.
 	uint64_t siteId;
-	
+
 	//The name of the target function of this call site.
 	std::string calleeName;
-	
+
 	CallSite();
 	CallSite(const std::string& caller, uint64_t id, const std::string& callee);
 };

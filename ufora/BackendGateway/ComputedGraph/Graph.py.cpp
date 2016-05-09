@@ -23,7 +23,7 @@
 
 using namespace boost::python;
 using namespace ComputedGraph;
-    
+
 class ComputedGraphWrapper :
     public native::module::Exporter<ComputedGraphWrapper> {
 public:
@@ -87,7 +87,7 @@ public:
         {
         return new graph_ptr(new ComputedGraph::Graph());
         }
-    
+
     void exportPythonWrapper()
         {
         using namespace boost::python;

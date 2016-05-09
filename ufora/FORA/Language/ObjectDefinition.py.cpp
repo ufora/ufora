@@ -36,7 +36,7 @@ public:
 			}
 
 		static ControlFlowGraph objectDefinitionToCFGBasic(
-										ObjectDefinition& objectDefinition, 
+										ObjectDefinition& objectDefinition,
 										int argCount
 										)
 			{
@@ -58,7 +58,7 @@ public:
 			while (body.isTerm())
 				{
 				tr++;
-				body = body.getTerm().otherwise();	
+				body = body.getTerm().otherwise();
 				}
 
 			return tr;
@@ -67,7 +67,7 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
+
 			class_<ObjectDefinition>("ObjectDefinition", init<>())
 				.def("__str__", FORAPythonUtil::scopedPrettyPrinter<ObjectDefinition>)
 				.def("toCFG", &objectDefinitionToCFGBasic)
@@ -85,7 +85,7 @@ public:
 				;
 
 			Ufora::python::CPPMLWrapper<ClassDefinitionTerm>(true).class_()
-				;			
+				;
 			}
 };
 

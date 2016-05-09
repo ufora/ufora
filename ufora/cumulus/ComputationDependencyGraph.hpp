@@ -27,7 +27,7 @@ public:
 	ComputationDependencyGraph();
 
 	void setCumulusClientPriority(
-				const ComputationId& inId, 
+				const ComputationId& inId,
 				const CumulusClientId& inClientId,
 				const ComputationPriority& priority
 				);
@@ -37,7 +37,7 @@ public:
 				);
 
 	void setDependencies(
-				const ComputationId& inId, 
+				const ComputationId& inId,
 				const std::set<ComputationId>& ids
 				);
 
@@ -64,16 +64,16 @@ public:
 
 	ComputationPriority getLocalPriority(const ComputationId& inId) const;
 
-	const std::map<pair<CumulusClientId, ComputationId>, ComputationPriority>& 
+	const std::map<pair<CumulusClientId, ComputationId>, ComputationPriority>&
 														getClientPriorities() const;
 
 	const std::map<ComputationId, ComputationPriority>& getAllPriorities() const;
 
-	const std::set<ComputationId>& 
+	const std::set<ComputationId>&
 	getComputationsDependingOn(const ComputationId& in) const;
 
 	void getLocalComputationsDependingOn(
-					const ComputationId& in, 
+					const ComputationId& in,
 					std::set<ComputationId>& outComputations
 					) const;
 
@@ -101,14 +101,14 @@ public:
 		mOrphanedLocalSplitComputations.clear();
 		mOrphanedSplitComputations.clear();
 		}
-	
+
 private:
 	void ensureComputationInList_(const ComputationId& inId);
 
 	ComputationPriority computePriorityFor(const ComputationId& inId);
 
-    void updatePriority( 
-        const ComputationId& id, 
+    void updatePriority(
+        const ComputationId& id,
         const ComputationPriority& newPriority,
         std::set<ComputationId>& outLocalComputationsWithChangedPriorities,
         std::set<ComputationId>& outAllComputationsWithChangedPriorities

@@ -37,7 +37,7 @@ public:
 	uword_t read(uword_t inByteCount, void *inData, bool inBlock);
 
 	void reset(const char* inData, uword_t inSize, uword_t inPosition = 0);
-	
+
 	void reset(const std::string& inData, uword_t inPosition = 0);
 
 	void reset(const std::vector<char>& inData, uword_t inPosition = 0);
@@ -46,7 +46,7 @@ public:
 
 private:
 	const char* mData;
-	
+
 	uword_t	mDataSize;
 
 	uword_t mPosition;

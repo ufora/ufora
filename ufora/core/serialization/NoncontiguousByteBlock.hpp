@@ -47,7 +47,7 @@ public:
 
 	hash_type hash() const;
 private:
-	std::vector<std::string> mStrings;	
+	std::vector<std::string> mStrings;
 
 	mutable Nullable<hash_type> mHash;
 
@@ -77,16 +77,16 @@ public:
 		static void deserialize(storage_type& s, NoncontiguousByteBlock& t)
 			{
 			t.clear();
-			
+
 			uint32_t sz;
 			s.deserialize(sz);
-			
+
 			while (sz > 0)
 				{
 				std::string aString;
-				
+
 				s.deserialize(aString);
-				
+
 				t.push_back(std::move(aString));
 
 				sz--;
@@ -148,7 +148,7 @@ class CPPMLTransform<PolymorphicSharedPtr<NoncontiguousByteBlock>, void> {
 public:
 		template<class F>
 		static Nullable<PolymorphicSharedPtr<NoncontiguousByteBlock> > apply(
-							const PolymorphicSharedPtr<NoncontiguousByteBlock>& in, 
+							const PolymorphicSharedPtr<NoncontiguousByteBlock>& in,
 							const F& f
 							)
 			{

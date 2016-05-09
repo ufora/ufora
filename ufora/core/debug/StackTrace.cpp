@@ -31,9 +31,9 @@ StackTrace::StackTrace()
 StackTrace::StackTrace(const std::vector<void*> &inTrace)
 	{
 	#if defined(__linux__) || defined(__APPLE__)
-	
+
 	mTracePtrs = inTrace;
-	
+
 	char** cs = backtrace_symbols(&inTrace[0], inTrace.size());
 
 	mDemangled.clear();

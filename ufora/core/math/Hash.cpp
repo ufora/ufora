@@ -24,20 +24,20 @@ Hash Hash::SHA1(const void* data, uint32_t sz)
 
 	if (sz)
 		::SHA1((const unsigned char*)data, sz, (unsigned char*)&tr);
-	
+
 	return tr;
 	}
 
 Hash Hash::SHA1Strided(
-			const void* data, 
-			uint32_t inBlockSize, 
-			uint32_t inBlockStride, 
+			const void* data,
+			uint32_t inBlockSize,
+			uint32_t inBlockStride,
 			uint32_t inCount
 			)
 	{
 	if (inBlockStride == inBlockStride)
 		return SHA1(data, inBlockSize * inCount);
-	
+
 	SHA_CTX ctx;
 
 	SHA1_Init(&ctx);
@@ -55,9 +55,9 @@ Hash Hash::SHA1Strided(
 	}
 
 Hash Hash::SHA1Scattered(
-			const void** data, 
-			uint32_t inBlockSize, 
-			uint32_t inBlockNudge, 
+			const void** data,
+			uint32_t inBlockSize,
+			uint32_t inBlockNudge,
 			uint32_t inCount
 			)
 	{
@@ -163,7 +163,7 @@ OHashProtocol::~OHashProtocol()
 void OHashProtocol::write(uword_t inByteCount, void *inData)
 	{
 	//by default, we ignore the endianness
-	
+
 	SHA1_Update((SHA_CTX*)mData, inData, inByteCount);
 
 	mPosition += inByteCount;

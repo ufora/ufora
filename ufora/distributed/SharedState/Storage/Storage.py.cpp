@@ -60,7 +60,7 @@ public:
         return boost::shared_ptr<ChecksummedWriter>(new ChecksummedWriter(path));
         }
 
-    static std::string path(boost::shared_ptr<ChecksummedFile::ChecksummedWriter>& writer) 
+    static std::string path(boost::shared_ptr<ChecksummedFile::ChecksummedWriter>& writer)
         {
         return writer->path();
         }
@@ -70,12 +70,12 @@ public:
         writer->flush();
         }
 
-    static uint64_t written(boost::shared_ptr<ChecksummedFile::ChecksummedWriter>& writer) 
+    static uint64_t written(boost::shared_ptr<ChecksummedFile::ChecksummedWriter>& writer)
         {
         return writer->written();
         }
 
-    static uint64_t fileSize(boost::shared_ptr<ChecksummedFile::ChecksummedWriter>& writer) 
+    static uint64_t fileSize(boost::shared_ptr<ChecksummedFile::ChecksummedWriter>& writer)
         {
         return writer->fileSize();
         }
@@ -146,7 +146,7 @@ public:
             ;
         }
 };
-        
+
 
 class OpenFilesWrapper {
 public:
@@ -163,7 +163,7 @@ public:
         }
 
     static bool readToVector(
-            open_files_ptr files, 
+            open_files_ptr files,
             const std::string& path
             )
         {
@@ -229,8 +229,8 @@ public:
         }
 
     static std::string serializeVector(
-            boost::shared_ptr<OpenJsonSerializers>& serializers, 
-            const std::string& path, 
+            boost::shared_ptr<OpenJsonSerializers>& serializers,
+            const std::string& path,
             boost::python::list inList)
         {
 
@@ -243,8 +243,8 @@ public:
         }
 
     static std::string serialize(
-            boost::shared_ptr<OpenJsonSerializers>& serializers, 
-            const std::string& path, 
+            boost::shared_ptr<OpenJsonSerializers>& serializers,
+            const std::string& path,
             const std::string& value)
         {
         std::string out;
@@ -320,7 +320,7 @@ public:
 
     //
     // python wrapper stuff
-    
+
     static boost::shared_ptr<PythonOpenFiles> newPythonOpenFiles(
             boost::python::object inAppendFun,
             boost::python::object inWrittenFun,
@@ -407,23 +407,23 @@ public:
         }
 
     static boost::shared_ptr<FileKeyspaceStorage> newFileKeyspaceStorage(
-            string cacheDirectory, 
-            Keyspace inKeyspace, 
-            KeyRange inKeyRange, 
-            boost::shared_ptr<OpenFilesInterface> openFiles, 
+            string cacheDirectory,
+            Keyspace inKeyspace,
+            KeyRange inKeyRange,
+            boost::shared_ptr<OpenFilesInterface> openFiles,
             float maxLogSizeMB)
         {
         return boost::shared_ptr<FileKeyspaceStorage>(
             new FileKeyspaceStorage(
-                cacheDirectory, 
-                inKeyspace, 
-                inKeyRange, 
-                openFiles, 
+                cacheDirectory,
+                inKeyspace,
+                inKeyRange,
+                openFiles,
                 &newOpenJsonSerializers,
                 maxLogSizeMB)
             );
         }
-            
+
     static boost::python::tuple deserializeLogEntry(const std::string& serialized)
         {
         std::vector<std::string> elements;
@@ -464,7 +464,7 @@ class StorageTestNative {
 public:
     // place for putting c++ test functions
     static void writeToOpenFiles(
-            boost::shared_ptr<OpenFilesInterface> openFiles, 
+            boost::shared_ptr<OpenFilesInterface> openFiles,
             boost::python::list inFilenames,
             boost::python::list inStringsToWrite,
             uint64_t numIterations)

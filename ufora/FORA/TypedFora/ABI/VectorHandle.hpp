@@ -107,7 +107,7 @@ public:
 					VectorDataManager* inVDM,
 					IntegerSequence sequenceInHandle
 					);
-	
+
 	VectorHandlePtr slice(
 					IntegerSequence seq,
 					MemoryPool* inPool,
@@ -135,25 +135,25 @@ public:
 		int m;
 	public:
 		enum  { NonzeroRefcount, ZeroRefcount, NoExpectation };
-		
+
 		RefcountExpectation(int i) : m(i) {}
 		operator int () const { return m; }
 		bool operator==(const int i) { return m == i; }
 	};
-	
+
 	void assertValid(RefcountExpectation expectation =
 									RefcountExpectation::NonzeroRefcount);
-	
+
 	//atomically increment the refcount. threadsafe
 	void incrementRefcount();
-	
+
 	//atomically decrement the refcount. if the refcount goes to zero,
 	//destroy the value
 	void decrementRefcount();
 
 	LoadCheckResult attemptToLoadValues(
-							VectorDataManager* inVDM, 
-							int64_t lowIndex, 
+							VectorDataManager* inVDM,
+							int64_t lowIndex,
 							int64_t highIndex
 							);
 
@@ -262,29 +262,29 @@ public:
 		{
 		return mHomogenousVectorStash;
 		}
-	
+
 private:
 	friend ostream& operator<<(ostream& s, VectorHandle* handle);
 
-	AO_t mRefcount;		
-	
+	AO_t mRefcount;
+
 	mutable Fora::PageletTreePtr mPageletTreePtr;
 
 	mutable ForaValueArray* mUnpagedValues;
 
 	mutable uint64_t mPagedAndPageletTreeValueCount;
-	
+
 	MemoryPool* mOwningMemoryPool;	//who owns this VectorHandle?
 
 	uint64_t mSize;
 
 	uword_t mIsWriteable;	//is the VectorHandle's data is unpaged and contained within
 									//an execution context (e.g. not within a MemoryPool)?
-	
+
 	uword_t mValidityFlag;	//used by system internally to track valid vectors.
 
 	BigVectorHandle* mBigVectorHandleSlots[kMaxBigVectorHandles];
-	
+
 	hash_type mVectorHash;
 
 	//for small vectors, an HVS we can just read from

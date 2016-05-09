@@ -52,7 +52,7 @@ public:
 		Alternative& operator=(const Alternative<T1, T2>& in)
 			{
 			mData = in.mData;
-			
+
 			return *this;
 			}
 		Alternative& operator=(const T1& in)
@@ -91,7 +91,7 @@ public:
 		Alternative& operator=(const T3& in)
 			{
 			mData = T2(in);
-			
+
 			return *this;
 			}
 		bool isLeft(void) const

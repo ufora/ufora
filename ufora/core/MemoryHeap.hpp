@@ -60,7 +60,7 @@ public:
 	size_t msize(void *ptr);
 
 	bool trim(size_t size);
-	
+
 	// Accounting methods (not thread-safe)
 	size_t getBytesUsed() const;
 	size_t getHeapSize() const;
@@ -70,7 +70,7 @@ public:
 
 	//used only by free functions in the implementation
 	void* mmap(size_t size);
-    
+
     int munmap(void* addr, size_t size);
 
 	void* mremap(void* addr, size_t oldSize, size_t newSize, int flags);
@@ -118,7 +118,7 @@ private:
 	boost::function4<void*, void*, size_t, size_t, int> mMRemapFun;
 
 	size_t mPageSize;
-	
+
 public:
 	static const size_t DEFAULT_PAGE_SIZE;
 };

@@ -30,7 +30,7 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
+
 			FORAPythonUtil::exposeValueLikeCppmlType<Fora::InterpreterTraceTerm>();
 			}
 };

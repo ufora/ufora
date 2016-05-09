@@ -43,10 +43,10 @@ class DistributedDataTasksTests(unittest.TestCase):
                         throw (ix, v[ix], v[ix+1])
                 return true;
                 }
-            
+
             if (size(sortedVals) != size(values))
                 throw "expected " + String(size(values)) + ", not " + String(size(sortedVals))
-            sortedAndHomogenous(sortedVals[,ct]) and 
+            sortedAndHomogenous(sortedVals[,ct]) and
                 sortedAndHomogenous(sortedVals[ct,])
             """
 
@@ -156,7 +156,7 @@ class DistributedDataTasksTests(unittest.TestCase):
             let values = Vector.range(N, C).paged;
 
             let s1 = cached`(#ExternalIoTask(#DistributedDataOperation(#Sort(values))))
-            
+
             return size(s1) == N
             """.replace("__size__", str(sz)).replace("__use_class__", '1' if useClass else '0')
 
@@ -174,11 +174,11 @@ class DistributedDataTasksTests(unittest.TestCase):
 
     def test_class_sorting_is_fast(self):
         sz = 10000000
-        
+
         #burn the calculation in.
         self.classSortingTest(sz, useClass=True)
         self.classSortingTest(sz, useClass=False)
-        
+
         t0 = time.time()
 
         with PerformanceTestReporter.RecordAsPerfTest("python.datatasks.sort_class_instances"):

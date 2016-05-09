@@ -26,7 +26,7 @@ public:
 		{
 		return "FORA";
 		}
-		
+
 	void	getDefinedTypes(std::vector<std::string>& outTypes)
 		{
 		outTypes.push_back(typeid(PolymorphicSharedPtr<SystemwidePageRefcountTracker>).name());
@@ -98,16 +98,16 @@ public:
 		return Ufora::python::containerWithBeginEndToList(machineSet);
 		}
 
-	static bool pageIsInRam(PolymorphicSharedPtr<SystemwidePageRefcountTracker>& tracker, 
-							Fora::PageId inPageId, 
+	static bool pageIsInRam(PolymorphicSharedPtr<SystemwidePageRefcountTracker>& tracker,
+							Fora::PageId inPageId,
 							Cumulus::MachineId inMachineId
 							)
 		{
 		return tracker->pageIsInRam(inPageId, inMachineId);
 		}
 
-	static bool pageIsOnDisk(PolymorphicSharedPtr<SystemwidePageRefcountTracker>& tracker, 
-							Fora::PageId inPageId, 
+	static bool pageIsOnDisk(PolymorphicSharedPtr<SystemwidePageRefcountTracker>& tracker,
+							Fora::PageId inPageId,
 							Cumulus::MachineId inMachineId
 							)
 		{
@@ -124,9 +124,9 @@ public:
 	void exportPythonWrapper()
 		{
 		using namespace boost::python;
-		
+
 		class_<PolymorphicSharedPtr<SystemwidePageRefcountTracker> >(
-											"SystemwidePageRefcountTracker", 
+											"SystemwidePageRefcountTracker",
 											no_init
 											)
 			.def("getAllPages", getAllPages)

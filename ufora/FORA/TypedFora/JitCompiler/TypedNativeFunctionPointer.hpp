@@ -50,7 +50,7 @@ public:
 						const NativeFunctionPointer& inPtr,
 						uword_t inEntryBlock,
 						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler
-						) : 
+						) :
 			mPtr(inPtr, inEntryBlock),
 			mCompiler(inCompiler)
 		{
@@ -60,7 +60,7 @@ public:
 						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
 						NativeCFG inCFG,
 						uword_t inEntryBlock = 0
-						) : 
+						) :
 			mCompiler(inCompiler)
 		{
 		initializeFromCFG(inCFG, inEntryBlock);
@@ -70,7 +70,7 @@ public:
 	TypedNativeFunctionPointer(
 						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
 						expression_builder_type expressionBuilder
-						) : 
+						) :
 			mCompiler(inCompiler)
 		{
 		ImmutableTreeVector<NativeVariable> vars;
@@ -97,7 +97,7 @@ public:
 
 		std::vector<char> stackArgs;
 
-		NativeRuntimeContinuationValue<1> args = 
+		NativeRuntimeContinuationValue<1> args =
 			mCompiler->generateDummyContinuation(
 				&toReturn,
 				&whichContinuationWasFollowed,
@@ -122,7 +122,7 @@ public:
 private:
 	void initializeFromCFG(NativeCFG inCFG, long inEntryBlock)
 		{
-		ImmutableTreeVector<NativeType> ourReturnTypes = 
+		ImmutableTreeVector<NativeType> ourReturnTypes =
 			emptyTreeVec() + NativeTypeFor<R1>::get();
 
 		ImmutableTreeVector<NativeType> ourArgumentTypes;
@@ -135,10 +135,10 @@ private:
 
 		lassert_dump(
 			varsToTypes(inCFG[NativeBlockID::external(inEntryBlock)].args()) == ourArgumentTypes,
-			"native CFG had arguments " 
+			"native CFG had arguments "
 				<< prettyPrintString(
 					varsToTypes(inCFG[NativeBlockID::external(inEntryBlock)].args())
-					) 
+					)
 				<< " but our "
 				<< " signature has types " << prettyPrintString(ourArgumentTypes)
 			);
@@ -148,7 +148,7 @@ private:
 		if (!mCompiler->isDefined(name))
 			mCompiler->define(name, inCFG);
 
-		FunctionPointerHandle handle = 
+		FunctionPointerHandle handle =
 			mCompiler->getJumpTarget(name, NativeBlockID::external(inEntryBlock), true);
 
 		mPtr = handle.get();
@@ -167,7 +167,7 @@ public:
 						const NativeFunctionPointer& inPtr,
 						uword_t inEntryBlock,
 						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler
-						) : 
+						) :
 			mPtr(inPtr, inEntryBlock),
 			mCompiler(inCompiler)
 		{
@@ -177,7 +177,7 @@ public:
 						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
 						NativeCFG inCFG,
 						uword_t inEntryBlock = 0
-						) : 
+						) :
 			mCompiler(inCompiler)
 		{
 		initializeFromCFG(inCFG, inEntryBlock);
@@ -187,7 +187,7 @@ public:
 	TypedNativeFunctionPointer(
 						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
 						expression_builder_type expressionBuilder
-						) : 
+						) :
 			mCompiler(inCompiler)
 		{
 		ImmutableTreeVector<NativeVariable> vars;
@@ -215,7 +215,7 @@ public:
 
 		std::vector<char> stackArgs;
 
-		NativeRuntimeContinuationValue<1> args = 
+		NativeRuntimeContinuationValue<1> args =
 			mCompiler->generateDummyContinuation(
 				&toReturn,
 				&whichContinuationWasFollowed,
@@ -241,10 +241,10 @@ public:
 private:
 	void initializeFromCFG(NativeCFG inCFG, long inEntryBlock)
 		{
-		ImmutableTreeVector<NativeType> ourReturnTypes = 
+		ImmutableTreeVector<NativeType> ourReturnTypes =
 			emptyTreeVec() + NativeTypeFor<R1>::get();
 
-		ImmutableTreeVector<NativeType> ourArgumentTypes = 
+		ImmutableTreeVector<NativeType> ourArgumentTypes =
 			emptyTreeVec() + NativeTypeFor<A1>::get();
 
 		lassert_dump(
@@ -255,10 +255,10 @@ private:
 
 		lassert_dump(
 			varsToTypes(inCFG[NativeBlockID::external(inEntryBlock)].args()) == ourArgumentTypes,
-			"native CFG had arguments " 
+			"native CFG had arguments "
 				<< prettyPrintString(
 					varsToTypes(inCFG[NativeBlockID::external(inEntryBlock)].args())
-					) 
+					)
 				<< " but our "
 				<< " signature has types " << prettyPrintString(ourArgumentTypes)
 			);
@@ -268,7 +268,7 @@ private:
 		if (!mCompiler->isDefined(name))
 			mCompiler->define(name, inCFG);
 
-		FunctionPointerHandle handle = 
+		FunctionPointerHandle handle =
 			mCompiler->getJumpTarget(name, NativeBlockID::external(inEntryBlock), true);
 
 		mPtr = handle.get();
@@ -286,7 +286,7 @@ public:
 						const NativeFunctionPointer& inPtr,
 						uword_t inEntryBlock,
 						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler
-						) : 
+						) :
 			mPtr(inPtr, inEntryBlock),
 			mCompiler(inCompiler)
 		{
@@ -296,7 +296,7 @@ public:
 						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
 						NativeCFG inCFG,
 						uword_t inEntryBlock = 0
-						) : 
+						) :
 			mCompiler(inCompiler)
 		{
 		initializeFromCFG(inCFG, inEntryBlock);
@@ -306,7 +306,7 @@ public:
 	TypedNativeFunctionPointer(
 						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
 						expression_builder_type expressionBuilder
-						) : 
+						) :
 			mCompiler(inCompiler)
 		{
 		ImmutableTreeVector<NativeVariable> vars;
@@ -336,7 +336,7 @@ public:
 
 		std::vector<char> stackArgs;
 
-		NativeRuntimeContinuationValue<1> args = 
+		NativeRuntimeContinuationValue<1> args =
 			mCompiler->generateDummyContinuation(
 				&toReturn,
 				&whichContinuationWasFollowed,
@@ -363,10 +363,10 @@ public:
 private:
 	void initializeFromCFG(NativeCFG inCFG, long inEntryBlock)
 		{
-		ImmutableTreeVector<NativeType> ourReturnTypes = 
+		ImmutableTreeVector<NativeType> ourReturnTypes =
 			emptyTreeVec() + NativeTypeFor<R1>::get();
 
-		ImmutableTreeVector<NativeType> ourArgumentTypes = 
+		ImmutableTreeVector<NativeType> ourArgumentTypes =
 			emptyTreeVec() + NativeTypeFor<A1>::get() +
 			emptyTreeVec() + NativeTypeFor<A2>::get()
 			;
@@ -379,10 +379,10 @@ private:
 
 		lassert_dump(
 			varsToTypes(inCFG[NativeBlockID::external(inEntryBlock)].args()) == ourArgumentTypes,
-			"native CFG had arguments " 
+			"native CFG had arguments "
 				<< prettyPrintString(
 					varsToTypes(inCFG[NativeBlockID::external(inEntryBlock)].args())
-					) 
+					)
 				<< " but our "
 				<< " signature has types " << prettyPrintString(ourArgumentTypes)
 			);
@@ -392,7 +392,7 @@ private:
 		if (!mCompiler->isDefined(name))
 			mCompiler->define(name, inCFG);
 
-		FunctionPointerHandle handle = 
+		FunctionPointerHandle handle =
 			mCompiler->getJumpTarget(name, NativeBlockID::external(inEntryBlock), true);
 
 		mPtr = handle.get();
@@ -410,7 +410,7 @@ public:
 						const NativeFunctionPointer& inPtr,
 						uword_t inEntryBlock,
 						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler
-						) : 
+						) :
 			mPtr(inPtr, inEntryBlock),
 			mCompiler(inCompiler)
 		{
@@ -420,7 +420,7 @@ public:
 						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
 						NativeCFG inCFG,
 						uword_t inEntryBlock = 0
-						) : 
+						) :
 			mCompiler(inCompiler)
 		{
 		initializeFromCFG(inCFG, inEntryBlock);
@@ -430,7 +430,7 @@ public:
 	TypedNativeFunctionPointer(
 						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
 						expression_builder_type expressionBuilder
-						) : 
+						) :
 			mCompiler(inCompiler)
 		{
 		ImmutableTreeVector<NativeVariable> vars;
@@ -461,7 +461,7 @@ public:
 
 		std::vector<char> stackArgs;
 
-		NativeRuntimeContinuationValue<1> args = 
+		NativeRuntimeContinuationValue<1> args =
 			mCompiler->generateDummyContinuation(
 				&toReturn,
 				&whichContinuationWasFollowed,
@@ -489,10 +489,10 @@ public:
 private:
 	void initializeFromCFG(NativeCFG inCFG, long inEntryBlock)
 		{
-		ImmutableTreeVector<NativeType> ourReturnTypes = 
+		ImmutableTreeVector<NativeType> ourReturnTypes =
 			emptyTreeVec() + NativeTypeFor<R1>::get();
 
-		ImmutableTreeVector<NativeType> ourArgumentTypes = 
+		ImmutableTreeVector<NativeType> ourArgumentTypes =
 			emptyTreeVec() + NativeTypeFor<A1>::get() +
 			emptyTreeVec() + NativeTypeFor<A2>::get() +
 			emptyTreeVec() + NativeTypeFor<A3>::get()
@@ -506,10 +506,10 @@ private:
 
 		lassert_dump(
 			varsToTypes(inCFG[NativeBlockID::external(inEntryBlock)].args()) == ourArgumentTypes,
-			"native CFG had arguments " 
+			"native CFG had arguments "
 				<< prettyPrintString(
 					varsToTypes(inCFG[NativeBlockID::external(inEntryBlock)].args())
-					) 
+					)
 				<< " but our "
 				<< " signature has types " << prettyPrintString(ourArgumentTypes)
 			);
@@ -519,7 +519,7 @@ private:
 		if (!mCompiler->isDefined(name))
 			mCompiler->define(name, inCFG);
 
-		FunctionPointerHandle handle = 
+		FunctionPointerHandle handle =
 			mCompiler->getJumpTarget(name, NativeBlockID::external(inEntryBlock), true);
 
 		mPtr = handle.get();
@@ -569,7 +569,7 @@ public:
 						const NativeFunctionPointer& inPtr,
 						uword_t inEntryBlock,
 						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler
-						) : 
+						) :
 			mPtr(inPtr, inEntryBlock),
 			mCompiler(inCompiler)
 		{
@@ -579,7 +579,7 @@ public:
 						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
 						NativeCFG inCFG,
 						uword_t inEntryBlock = 0
-						) : 
+						) :
 			mCompiler(inCompiler)
 		{
 		initializeFromCFG(inCFG, inEntryBlock);
@@ -589,7 +589,7 @@ public:
 	TypedNativeFunctionPointer(
 						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
 						expression_builder_type expressionBuilder
-						) : 
+						) :
 			mCompiler(inCompiler)
 		{
 		ImmutableTreeVector<NativeVariable> vars;
@@ -616,7 +616,7 @@ public:
 
 		char toReturn;
 
-		NativeRuntimeContinuationValue<1> args = 
+		NativeRuntimeContinuationValue<1> args =
 			mCompiler->generateDummyContinuation(
 				&toReturn,
 				&whichContinuationWasFollowed,
@@ -639,10 +639,10 @@ public:
 private:
 	void initializeFromCFG(NativeCFG inCFG, long inEntryBlock)
 		{
-		ImmutableTreeVector<NativeType> ourReturnTypes = 
+		ImmutableTreeVector<NativeType> ourReturnTypes =
 			emptyTreeVec() + NativeTypeFor<void>::get();
 
-		ImmutableTreeVector<NativeType> ourArgumentTypes = 
+		ImmutableTreeVector<NativeType> ourArgumentTypes =
 			emptyTreeVec() + NativeTypeFor<A1>::get();
 
 		lassert_dump(
@@ -653,10 +653,10 @@ private:
 
 		lassert_dump(
 			varsToTypes(inCFG[NativeBlockID::external(inEntryBlock)].args()) == ourArgumentTypes,
-			"native CFG had arguments " 
+			"native CFG had arguments "
 				<< prettyPrintString(
 					varsToTypes(inCFG[NativeBlockID::external(inEntryBlock)].args())
-					) 
+					)
 				<< " but our "
 				<< " signature has types " << prettyPrintString(ourArgumentTypes)
 			);
@@ -666,7 +666,7 @@ private:
 		if (!mCompiler->isDefined(name))
 			mCompiler->define(name, inCFG);
 
-		FunctionPointerHandle handle = 
+		FunctionPointerHandle handle =
 			mCompiler->getJumpTarget(name, NativeBlockID::external(inEntryBlock), true);
 
 		mPtr = handle.get();
@@ -684,7 +684,7 @@ public:
 						const NativeFunctionPointer& inPtr,
 						uword_t inEntryBlock,
 						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler
-						) : 
+						) :
 			mPtr(inPtr, inEntryBlock),
 			mCompiler(inCompiler)
 		{
@@ -694,7 +694,7 @@ public:
 						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
 						NativeCFG inCFG,
 						uword_t inEntryBlock = 0
-						) : 
+						) :
 			mCompiler(inCompiler)
 		{
 		initializeFromCFG(inCFG, inEntryBlock);
@@ -704,7 +704,7 @@ public:
 	TypedNativeFunctionPointer(
 						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
 						expression_builder_type expressionBuilder
-						) : 
+						) :
 			mCompiler(inCompiler)
 		{
 		ImmutableTreeVector<NativeVariable> vars;
@@ -733,7 +733,7 @@ public:
 
 		std::vector<char> stackArgs;
 
-		NativeRuntimeContinuationValue<1> args = 
+		NativeRuntimeContinuationValue<1> args =
 			mCompiler->generateDummyContinuation(
 				&toReturn,
 				&whichContinuationWasFollowed,
@@ -758,10 +758,10 @@ public:
 private:
 	void initializeFromCFG(NativeCFG inCFG, long inEntryBlock)
 		{
-		ImmutableTreeVector<NativeType> ourReturnTypes = 
+		ImmutableTreeVector<NativeType> ourReturnTypes =
 			emptyTreeVec() + NativeTypeFor<void>::get();
 
-		ImmutableTreeVector<NativeType> ourArgumentTypes = 
+		ImmutableTreeVector<NativeType> ourArgumentTypes =
 			emptyTreeVec() + NativeTypeFor<A1>::get() +
 			emptyTreeVec() + NativeTypeFor<A2>::get()
 			;
@@ -774,10 +774,10 @@ private:
 
 		lassert_dump(
 			varsToTypes(inCFG[NativeBlockID::external(inEntryBlock)].args()) == ourArgumentTypes,
-			"native CFG had arguments " 
+			"native CFG had arguments "
 				<< prettyPrintString(
 					varsToTypes(inCFG[NativeBlockID::external(inEntryBlock)].args())
-					) 
+					)
 				<< " but our "
 				<< " signature has types " << prettyPrintString(ourArgumentTypes)
 			);
@@ -787,7 +787,7 @@ private:
 		if (!mCompiler->isDefined(name))
 			mCompiler->define(name, inCFG);
 
-		FunctionPointerHandle handle = 
+		FunctionPointerHandle handle =
 			mCompiler->getJumpTarget(name, NativeBlockID::external(inEntryBlock), true);
 
 		mPtr = handle.get();
@@ -805,7 +805,7 @@ public:
 						const NativeFunctionPointer& inPtr,
 						uword_t inEntryBlock,
 						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler
-						) : 
+						) :
 			mPtr(inPtr, inEntryBlock),
 			mCompiler(inCompiler)
 		{
@@ -815,7 +815,7 @@ public:
 						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
 						NativeCFG inCFG,
 						uword_t inEntryBlock = 0
-						) : 
+						) :
 			mCompiler(inCompiler)
 		{
 		initializeFromCFG(inCFG, inEntryBlock);
@@ -825,7 +825,7 @@ public:
 	TypedNativeFunctionPointer(
 						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
 						expression_builder_type expressionBuilder
-						) : 
+						) :
 			mCompiler(inCompiler)
 		{
 		ImmutableTreeVector<NativeVariable> vars;
@@ -855,7 +855,7 @@ public:
 
 		std::vector<char> stackArgs;
 
-		NativeRuntimeContinuationValue<1> args = 
+		NativeRuntimeContinuationValue<1> args =
 			mCompiler->generateDummyContinuation(
 				&toReturn,
 				&whichContinuationWasFollowed,
@@ -881,10 +881,10 @@ public:
 private:
 	void initializeFromCFG(NativeCFG inCFG, long inEntryBlock)
 		{
-		ImmutableTreeVector<NativeType> ourReturnTypes = 
+		ImmutableTreeVector<NativeType> ourReturnTypes =
 			emptyTreeVec() + NativeTypeFor<void>::get();
 
-		ImmutableTreeVector<NativeType> ourArgumentTypes = 
+		ImmutableTreeVector<NativeType> ourArgumentTypes =
 			emptyTreeVec() + NativeTypeFor<A1>::get() +
 			emptyTreeVec() + NativeTypeFor<A2>::get() +
 			emptyTreeVec() + NativeTypeFor<A3>::get()
@@ -898,10 +898,10 @@ private:
 
 		lassert_dump(
 			varsToTypes(inCFG[NativeBlockID::external(inEntryBlock)].args()) == ourArgumentTypes,
-			"native CFG had arguments " 
+			"native CFG had arguments "
 				<< prettyPrintString(
 					varsToTypes(inCFG[NativeBlockID::external(inEntryBlock)].args())
-					) 
+					)
 				<< " but our "
 				<< " signature has types " << prettyPrintString(ourArgumentTypes)
 			);
@@ -911,7 +911,7 @@ private:
 		if (!mCompiler->isDefined(name))
 			mCompiler->define(name, inCFG);
 
-		FunctionPointerHandle handle = 
+		FunctionPointerHandle handle =
 			mCompiler->getJumpTarget(name, NativeBlockID::external(inEntryBlock), true);
 
 		mPtr = handle.get();

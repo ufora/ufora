@@ -24,14 +24,14 @@ namespace Cumulus {
 
 class ComputationStateTestHarness {
 public:
-	ComputationStateTestHarness() : 
+	ComputationStateTestHarness() :
 			mCallbackScheduler(CallbackScheduler::singletonForTesting()),
 			mVdmMemorySize(10 * 1024 * 1024),
 			mVdm(new VectorDataManager(mCallbackScheduler, mVdmMemorySize))
 		{
 		}
 
-	ComputationStateTestHarness(PolymorphicSharedPtr<VectorDataManager> inVDM) : 
+	ComputationStateTestHarness(PolymorphicSharedPtr<VectorDataManager> inVDM) :
 			mVdmMemorySize(10 * 1024 * 1024),
 			mVdm(inVDM)
 		{
@@ -49,7 +49,7 @@ public:
 			);
 
 		newState->deserialize(state->serialize());
-		
+
 		return newState;
 		}
 
@@ -65,7 +65,7 @@ public:
 
 	static ComputationId newComputation(map<ComputationId, ComputationDefinition>* outComputations, ComputationDefinition threadDef)
 		{
-		ComputationId newComputation = 
+		ComputationId newComputation =
 			ComputationId::CreateIdForRootOnWorker(
 				threadDef,
 				RandomHashGenerator::singleton().generateRandomHash()
@@ -107,7 +107,7 @@ public:
 		lassert(state->currentComputationStatus().isUninitialized());
 
 		state->initialize(def);
-		
+
 		while (!state->currentComputationStatus().isFinished())
 			{
 			CreatedComputations threadsCreated;
@@ -168,7 +168,7 @@ public:
 		lassert(state->currentComputationStatus().isUninitialized());
 
 		state->initialize(def);
-		
+
 		lassert_dump(
 			state->currentComputationStatus().isComputable(),
 			prettyPrintString(state->currentComputationStatus())
@@ -201,15 +201,15 @@ public:
 			)
 		{
 		ImplValContainer binder = calculateSimple(
-			emptyTreeVec() + 
-				ImplValContainer(CSTValue(Symbol("Function"))) + 
-				ImplValContainer(CSTValue(Symbol("Call"))) + 
+			emptyTreeVec() +
+				ImplValContainer(CSTValue(Symbol("Function"))) +
+				ImplValContainer(CSTValue(Symbol("Call"))) +
 				ImplValContainer(CSTValue(inValue)),
 			keepalive
 			);
 
 		return calculateSimple(
-			emptyTreeVec() + binder + ImplValContainer(CSTValue(Symbol("Call"))), 
+			emptyTreeVec() + binder + ImplValContainer(CSTValue(Symbol("Call"))),
 			keepalive
 			);
 		}
@@ -224,15 +224,15 @@ public:
 	PolymorphicSharedPtr<ComputationState> createComputationEvaluating(std::string inValue)
 		{
 		ImplValContainer binder = calculateSimple(
-			emptyTreeVec() + 
-				ImplValContainer(CSTValue(Symbol("Function"))) + 
-				ImplValContainer(CSTValue(Symbol("Call"))) + 
+			emptyTreeVec() +
+				ImplValContainer(CSTValue(Symbol("Function"))) +
+				ImplValContainer(CSTValue(Symbol("Call"))) +
 				ImplValContainer(CSTValue(inValue))
 			);
 
 		return createComputationEvaluating(
 			ComputationDefinition::ApplyFromTuple(
-				ImplValContainer(emptyTreeVec() + 
+				ImplValContainer(emptyTreeVec() +
 					binder +
 					ImplValContainer(CSTValue(Symbol("Call")))
 					)
@@ -254,7 +254,7 @@ public:
 			);
 
 		state->initialize(def);
-		
+
 		return state;
 		}
 
@@ -265,7 +265,7 @@ public:
 
 private:
 	long mVdmMemorySize;
-	
+
 	PolymorphicSharedPtr<CallbackScheduler> mCallbackScheduler;
 
 	PolymorphicSharedPtr<VectorDataManager> mVdm;

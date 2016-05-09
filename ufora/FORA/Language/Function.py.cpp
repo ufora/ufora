@@ -40,7 +40,7 @@ public:
 			{
 			return "FORA";
 			}
-			
+
 		static uword_t functionLen(const Function& inFunction)
 			{
 			if (inFunction.isEmpty())
@@ -71,7 +71,7 @@ public:
 			TuplePatternElement p = inFunction.getTerm().pattern()[ix];
 
 			if (p.isNormal()) //&& p.getNormal().match().pattern().isAnything()
-                if (p.getNormal().match().pattern().isConstant() && 
+                if (p.getNormal().match().pattern().isConstant() &&
                 		p.getNormal().match().pattern().getConstant().value().isConstant())
                     return p.getNormal().match().pattern().getConstant().value().getConstant().val().toString();
 
@@ -84,7 +84,7 @@ public:
 			ScopedPyThreads threads;
 			return prettyPrintString(in);
 			}
-		
+
 		static void fpeErrorTranslator(FunctionParseError arg)
 			{
 			PyErr_SetString(PyExc_UserWarning, ("FunctionParseError: " + prettyPrintString(arg)).c_str());
@@ -105,7 +105,7 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
+
 			Ufora::python::CPPMLWrapper<Function>(true).class_()
 				.def("__str__", &FORAPythonUtil::scopedPrettyPrinter<Function>)
 				.def("__len__", &functionLen)

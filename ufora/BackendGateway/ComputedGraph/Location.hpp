@@ -60,32 +60,32 @@ public:
 	boost::python::object getMutable(id_type inPropID) const;
 
 	void setMutable(id_type inPropID, boost::python::object inO) const;
-	
+
 	boost::python::object getKey(id_type inPropID) const;
-	
+
 	bool hasProperty(id_type inProp) const;
-	
+
 	boost::python::object getProperty(id_type inProp) const;
-	
+
 	id_type getID(void) const;
-	
+
 	boost::python::object getClassAttribute(id_type inProp) const;
-	
+
 	boost::python::object getUnknown(id_type inProp) const;
-	
+
 	boost::python::object getFunction(id_type inProp) const;
 
 	boost::python::object getPropertyDefinition(id_type inProp) const;
-	
+
 	std::string name(void) const;
 
 	PolymorphicSharedPtr<Graph> getGraph(void) const;
-	
+
 	PolymorphicSharedPtr<LocationType> getType(void) const;
-	
+
 private:
 	PolymorphicSharedPtr<LocationType> mTypePtr;
-	
+
 	PolymorphicSharedPtr<Graph> mGraphWeakPtr;
 
 	id_type mObjectID;

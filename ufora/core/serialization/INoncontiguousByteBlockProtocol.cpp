@@ -17,7 +17,7 @@
 
 INoncontiguousByteBlockProtocol::INoncontiguousByteBlockProtocol(
 						PolymorphicSharedPtr<NoncontiguousByteBlock> inData
-						) : 
+						) :
 		mData(inData),
 		mCurrentVectorIx(0),
 		mByteOffsetWithinCurrentVector(0),
@@ -35,10 +35,10 @@ uword_t INoncontiguousByteBlockProtocol::read(uword_t inByteCount, void *inData,
 
 	while (inByteCount > 0)
 		{
-		uword_t bytesLeftInCurrentVector = 
+		uword_t bytesLeftInCurrentVector =
 			(*mData)[mCurrentVectorIx].size() - mByteOffsetWithinCurrentVector;
 
-		char* baseAddrWithinCurrentVector = 
+		char* baseAddrWithinCurrentVector =
 			&(*mData)[mCurrentVectorIx][mByteOffsetWithinCurrentVector];
 
 		if (inByteCount < bytesLeftInCurrentVector)
@@ -57,8 +57,8 @@ uword_t INoncontiguousByteBlockProtocol::read(uword_t inByteCount, void *inData,
 			{
 			//chunk is not entirely contained
 			memcpy(
-				inData, 
-				baseAddrWithinCurrentVector, 
+				inData,
+				baseAddrWithinCurrentVector,
 				bytesLeftInCurrentVector
 				);
 

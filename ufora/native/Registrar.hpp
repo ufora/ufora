@@ -43,11 +43,11 @@ public:
 			}
 		virtual void exportPythonWrapper() = 0;
 		virtual std::string		getModuleName(void)  = 0;
-		
+
 		//should return a list of typenames you define. may be empty if
 		//nobody else depends on those.
 		virtual void	getDefinedTypes(std::vector<std::string>& outTypes) {};
-		
+
 		virtual void 	dependencies(std::vector<std::string>& outDeps) {};
 private:
 		std::string 	mModuleName;
@@ -69,14 +69,14 @@ class Registry {
 public:
 		Registry() {}
 		~Registry() {}
-		
+
 		static Registry& 	getRegistry();
-		
+
 		//add a registrar to the global registry
 		void	addRegistrar(boost::shared_ptr<ExporterBase> inRegistrar);
-		
+
 		void	callAllRegistrars(void);
-		
+
 		void	callRegistrar(boost::shared_ptr<ExporterBase> exporter);
 private:
 		std::map<std::string,
@@ -100,7 +100,7 @@ public:
 				);
 			return 0;
 			}
-		
+
 		static char registerWrapper(std::string arg)
 			{
 			Registry::getRegistry().addRegistrar(

@@ -51,7 +51,7 @@ public:
 				}
 			return null();
 			}
-		
+
 		T get(void)
 			{
 			boost::mutex::scoped_lock lock(mMutex);
@@ -71,11 +71,11 @@ public:
 			boost::mutex::scoped_lock lock(mMutex);
 
 			bool retval = true;
-			
+
 			if (!mElements.size())
 				{
 				retval = mCondition.timed_wait(lock, boost::posix_time::milliseconds(timeoutSecs * 1000));
-				
+
 				if (!retval) // if we timed out then return false
 					return retval;
 				}
@@ -85,7 +85,7 @@ public:
 
 			out = mElements.front();
 			mElements.pop_front();
-			
+
 			return retval;
 			}
 		void wait(void)

@@ -78,14 +78,14 @@ public:
 	void exportPythonWrapper()
 		{
 		using namespace boost::python;
-		
+
 		class_<JudgmentOnValueTree>("JudgmentOnValueTree", no_init)
 			.def("__init__", make_constructor(treeFromList))
 			.def("__str__", prettyPrintString<JudgmentOnValueTree>)
 			.def("searchForJOVT", searchForJOVT)
 			;
 		}
-	
+
 };
 
 //explicitly instantiating the registration element causes the linker to need

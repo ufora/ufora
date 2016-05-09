@@ -47,7 +47,7 @@ namespace Ufora {
 			void spawnAndDetach(std::auto_ptr<ThreadFunc>, size_t inStackSize);
 			BsaThreadData spawnThread(std::auto_ptr<ThreadFunc>, size_t inStackSize);
 		}
-		
+
 		// Run a function in a raw pthread with a given stack size.
 		// Note that whether the resulting thread plays well in a
 		// boost::thread environment is undefined.

@@ -32,7 +32,7 @@ BOOST_AUTO_TEST_CASE( test_TypedFora_Abi_FourLookupHashTable_basic )
 	BOOST_CHECK(!hashTable.contains(10));
 	hashTable.insert(10,10);
 	BOOST_CHECK(hashTable.contains(10));
-	
+
 	hashTable[10] = 12;
 	hashTable[12] = 13;
 
@@ -59,14 +59,14 @@ BOOST_AUTO_TEST_CASE( test_TypedFora_Abi_FourLookupHashTable_equivalent_to_map )
 			{
 			long key = generator() * 50 + 1;
 			long value = generator() * 5000;
-			
+
 			hashTable[key] = value;
 			equivalentMap[key] = value;
 			}
 
 		lassert_dump(
-			hashTable.size() == equivalentMap.size(), 
-			hashTable.size() << " != " << equivalentMap.size() << " in seed " << seed 
+			hashTable.size() == equivalentMap.size(),
+			hashTable.size() << " != " << equivalentMap.size() << " in seed " << seed
 				<< " with " << totalValues << " total values."
 			);
 		for (auto it = equivalentMap.begin(); it != equivalentMap.end(); ++it)
@@ -77,7 +77,7 @@ BOOST_AUTO_TEST_CASE( test_TypedFora_Abi_FourLookupHashTable_equivalent_to_map )
 BOOST_AUTO_TEST_CASE( test_TypedFora_Abi_FourLookupHashTable_overhead_grows_as_root_N )
 	{
 	FourLookupHashTable<long, long, false> hashTable;
-	
+
 	Ufora::math::Random::Uniform<float> generator(1);
 
 	long k = 1;
@@ -94,7 +94,7 @@ BOOST_AUTO_TEST_CASE( test_TypedFora_Abi_FourLookupHashTable_overhead_grows_as_r
 
 			BOOST_CHECK(bloat < expectedBloat * 2);
 
-			LOG_INFO << "at table size " << hashTable.size() << ", bloat = " 
+			LOG_INFO << "at table size " << hashTable.size() << ", bloat = "
 				<< bloat << " and expected bloat = " << expectedBloat;
 			}
 		}
@@ -103,7 +103,7 @@ BOOST_AUTO_TEST_CASE( test_TypedFora_Abi_FourLookupHashTable_overhead_grows_as_r
 BOOST_AUTO_TEST_CASE( test_TypedFora_Abi_FourLookupHashTable_lookup_overhead )
 	{
 	FourLookupHashTable<long, long, false> hashTable;
-	
+
 	Ufora::math::Random::Uniform<float> generator(1);
 
 	for (long k = 0; k < 1000;k++)
@@ -131,7 +131,7 @@ BOOST_AUTO_TEST_CASE( test_TypedFora_Abi_FourLookupHashTable_lookup_overhead )
 			ct += hashTable.getValue((k * k) % 10000 + 1);
 
 	LOG_INFO << "FourLookupHashTable: 10 million getItems in " << curClock() - t0;
-	
+
 	t0 = curClock();
 	ct = 0;
 	for (long pass = 0; pass < 10000; pass++)
@@ -139,7 +139,7 @@ BOOST_AUTO_TEST_CASE( test_TypedFora_Abi_FourLookupHashTable_lookup_overhead )
 			ct += hashTable.contains((k * k) % 10000 + 1);
 
 	LOG_INFO << "FourLookupHashTable: 10 million containments in " << curClock() - t0;
-	
+
 	t0 = curClock();
 	ct = 0;
 	for (long pass = 0; pass < 10000; pass++)
@@ -197,8 +197,8 @@ BOOST_AUTO_TEST_CASE( test_TypedFora_Abi_FourLookupHashTable_test_multithreading
 			threads.push_back(
 				boost::thread(
 					boost::bind(
-						boost::function2<void, long, long>(insertFunction), 
-						o, 
+						boost::function2<void, long, long>(insertFunction),
+						o,
 						20
 						)
 					)

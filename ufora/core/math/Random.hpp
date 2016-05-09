@@ -30,7 +30,7 @@ public:
 			{
 			mGen.seed(boost::uint32_t(inSeed));
 			}
-		
+
 		scalar_type	operator()(void)
 			{
 			return mSampler();
@@ -59,8 +59,8 @@ private:
 		boost::mt19937 mGen;
 
 	    boost::variate_generator<boost::mt19937&, boost::normal_distribution<scalar_type> > mSampler;
-};							
-			
+};
+
 template<class scalar_type,
 	bool = std::is_integral<scalar_type>::value,
 	bool = std::is_floating_point<scalar_type>::value>
@@ -74,7 +74,7 @@ public:
 			{
 			mGen.seed(boost::uint32_t(inSeed));
 			}
-		
+
 		scalar_type	operator()(void)
 			{
 			return mSampler();
@@ -113,7 +113,7 @@ public:
 			{
 			mGen.seed(boost::uint32_t(inSeed));
 			}
-		
+
 		scalar_type	operator()(void)
 			{
 			return mSampler();
@@ -145,7 +145,7 @@ private:
 };
 
 template<class T, class scalar_type>
-decltype(*T().begin()) pickRandomlyFromSet(	
+decltype(*T().begin()) pickRandomlyFromSet(
 								const T& values,
 								Uniform<scalar_type>& random
 								)
@@ -167,7 +167,7 @@ decltype(*T().begin()) pickRandomlyFromSet(
 	}
 
 template<class T, class scalar_type, class weight_function_type>
-decltype(*T().begin()) pickRandomlyFromSetWithWeight(	
+decltype(*T().begin()) pickRandomlyFromSetWithWeight(
 								const T& values,
 								Uniform<scalar_type>& random,
 								weight_function_type weightFunction
@@ -179,7 +179,7 @@ decltype(*T().begin()) pickRandomlyFromSetWithWeight(
 		totalWeight += weightFunction(val);
 
 	lassert(totalWeight > 0.0);
-	
+
 	double w = totalWeight * random();
 
 	for (auto val: values)

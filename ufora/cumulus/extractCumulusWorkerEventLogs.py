@@ -164,7 +164,7 @@ class Filter:
                     elif self.currentComputationStates[s].isFinished():
                         print "ERROR: %s depends on %s which was finished!" % (comp, s)
 
-    
+
 def main(parsedArguments):
     if parsedArguments.summarize:
         summarize(parsedArguments.files)
@@ -172,7 +172,7 @@ def main(parsedArguments):
         eventFilter = Filter(parsedArguments)
 
         printDetails(parsedArguments, eventFilter)
-        
+
         eventFilter.summarize()
     return 0
 
@@ -196,7 +196,7 @@ and with inclusions and exclusions given
             epilog = epilog,
             formatter_class=argparse.RawDescriptionHelpFormatter
             )
-    
+
     parser.add_argument(
         '--summarize',
         help='only summarize',

@@ -30,10 +30,10 @@ NativeType	NativeTypeForImpl<MutableVectorHandle>::get()
 	{
 	return
 		NativeType::Composite("mRefcount", NativeType::uword()) +
-		NativeType::Composite("mSize", NativeType::uword()) + 
-		NativeType::Composite("mRawDataPtr", NativeType::uint8().ptr()) + 
-		NativeType::Composite("mOwningMemoryPool", NativeType::Nothing().ptr()) + 
-		NativeType::Composite("mElementJOV", NativeTypeFor<JudgmentOnValue>::get()) + 
+		NativeType::Composite("mSize", NativeType::uword()) +
+		NativeType::Composite("mRawDataPtr", NativeType::uint8().ptr()) +
+		NativeType::Composite("mOwningMemoryPool", NativeType::Nothing().ptr()) +
+		NativeType::Composite("mElementJOV", NativeTypeFor<JudgmentOnValue>::get()) +
 		NativeType::Composite("mVectorHash", NativeTypeFor<hash_type>::get())
 		;
 	}
@@ -83,7 +83,7 @@ NativeExpression decrementRefcountExpr(
 					)
 	{
 	lassert(*arrayPtrE.type() == NativeTypeFor<MutableVectorHandle>::get().ptr());
-	
+
 	return makeTypedNativeLibraryFunction(
 		&FORA_clib_decrementMutableVectorHandleRefcount
 		)(arrayPtrE).getExpression()
@@ -137,7 +137,7 @@ NativeExpression setItemExpr(
 			[indexE]
 		);
 
-	NativeExpression duplicatedVal = 
+	NativeExpression duplicatedVal =
 		builder.add(
 			TypedFora::Abi::duplicate(elementJov, dataE)
 			);

@@ -36,7 +36,7 @@ namespace ChecksummedFile {
 		uint64_t fileSize(FILE* inFile);
 		FILE*  openFile(const std::string& fileName, const FileMode::ModeType& mode);
 	}
-	
+
 	class ChecksummedWriter : public boost::enable_shared_from_this<ChecksummedWriter> {
 	public:
 			explicit ChecksummedWriter(std::string path);
@@ -52,7 +52,7 @@ namespace ChecksummedFile {
 			uint64_t fileSize() const;
 
 			void writeString(const std::string& str);
-			
+
 			bool isDirty() const;
 
 	private:
@@ -66,7 +66,7 @@ namespace ChecksummedFile {
 			bool					mDataError;
 			bool					mIsDirty;
 	};
-	
+
 
 	bool readString(FILE* inFile, std::string& outString, int64_t& remainingBytes);
 

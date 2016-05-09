@@ -71,8 +71,8 @@ BOOST_AUTO_TEST_CASE( test_page_serialization_preserves_hash )
 
 	BOOST_CHECK_EQUAL(page.getPageletTree()->size(), page2->getPageletTree()->size());
 	for (long k = 0; k < page.getPageletTree()->size();k++)
-		BOOST_CHECK( 
-			page.getPageletTree()->extractValueIntoFreeStore(k) == 
+		BOOST_CHECK(
+			page.getPageletTree()->extractValueIntoFreeStore(k) ==
 				page2->getPageletTree()->extractValueIntoFreeStore(k)
 			);
 
@@ -136,7 +136,7 @@ BOOST_AUTO_TEST_CASE( test_page_serialization_of_strings )
 
 	page->freeze();
 
-	auto duplicateSeveralTimes = 
+	auto duplicateSeveralTimes =
 		[=]() {
 			for (long j = 0; j < 10; j++)
 				{
@@ -170,9 +170,9 @@ BOOST_AUTO_TEST_CASE( test_page_serialization_of_strings )
 
 	BOOST_CHECK_MESSAGE(
 		multithreadedThroughputRatio > .5,
-		"Copying a million strings with 1 thread took " << singleThreadTime 
+		"Copying a million strings with 1 thread took " << singleThreadTime
 			<< ". copying 8 million with 8 threads took " << eightThreadsTime
-			<< ". the throughput of the multi-threaded case is " 
+			<< ". the throughput of the multi-threaded case is "
 			<< multithreadedThroughputRatio << " of the single-threaded case"
 		);
 	}

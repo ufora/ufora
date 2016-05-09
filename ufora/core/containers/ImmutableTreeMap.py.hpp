@@ -60,7 +60,7 @@ public:
 			return treeMap.contains(key);
 			}
 
-		static ImmutableTreeMap<T1, T2> addTuple(	ImmutableTreeMap<T1, T2>& lhs, 
+		static ImmutableTreeMap<T1, T2> addTuple(	ImmutableTreeMap<T1, T2>& lhs,
 													boost::python::object o
 													)
 			{
@@ -71,8 +71,8 @@ public:
 			boost::python::extract<T1> t1(o[0]);
 			boost::python::extract<T2> t2(o[1]);
 
-			lassert_dump(t1.check() && t2.check(), 
-				"Only pairs of (" << 
+			lassert_dump(t1.check() && t2.check(),
+				"Only pairs of (" <<
 					Ufora::debug::StackTrace::demangle(typeid(T1).name()) << ", " <<
 					Ufora::debug::StackTrace::demangle(typeid(T2).name()) << ")" <<
 					" or other instances of its own type may be added to " <<
@@ -82,7 +82,7 @@ public:
 			return lhs + t1() + t2();
 			}
 
-		static boost::python::class_<ImmutableTreeMap<T1, T2> > 
+		static boost::python::class_<ImmutableTreeMap<T1, T2> >
 							exportPythonInterface(const std::string& inTypename)
 			{
 			using namespace boost::python;

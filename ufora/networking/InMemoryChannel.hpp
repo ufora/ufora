@@ -22,9 +22,9 @@
 
 /********* InMemoryChannel
  *
- * Comes in std::pairs. If one channel is destroyed, it writes "null" to the other channel, 
- * indicating that the channels are no longer connected.  
- * The other channel puts any nulls back on the queue to indicate that the channel is permenantly 
+ * Comes in std::pairs. If one channel is destroyed, it writes "null" to the other channel,
+ * indicating that the channels are no longer connected.
+ * The other channel puts any nulls back on the queue to indicate that the channel is permenantly
  * disconnected.
  *****************************/
 
@@ -32,7 +32,7 @@
 template<class T>
 class InMemoryChannelCallbacks {
 public:
-	InMemoryChannelCallbacks(PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler) : 
+	InMemoryChannelCallbacks(PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler) :
 			mCallbackScheduler(inCallbackScheduler),
 			mCallbacksAreSet(false),
 			mIsDisconnected(false)
@@ -40,7 +40,7 @@ public:
 		}
 
 	void setHandlers(
-			boost::function1<void, T> inOnMessage, 
+			boost::function1<void, T> inOnMessage,
 			boost::function0<void> inOnDisconnected
 			)
 		{
@@ -81,7 +81,7 @@ public:
 			mUnconsumedMessages.write(in);
 			return;
 			}
-		
+
 		mCallbackScheduler->scheduleImmediately(
 			boost::bind(mOnMessageReceived, in),
 			"InMemoryChannel::onMessageReceived"
@@ -125,7 +125,7 @@ private:
 	Queue<T> mUnconsumedMessages;
 
 	boost::function1<void, T> mOnMessageReceived;
-	
+
 	boost::function0<void> mOnDisconnected;
 
 	boost::recursive_mutex mMutex;
@@ -151,21 +151,21 @@ class InMemoryChannel : public Channel<TOut, TIn> {
 
 public:
 	typedef PolymorphicSharedPtr<
-		InMemoryChannel<TOut, TIn>, 
+		InMemoryChannel<TOut, TIn>,
 		typename Channel<TOut, TIn>::pointer_type
 		> pointer_type;
 
 	typedef PolymorphicSharedWeakPtr<
-		InMemoryChannel<TOut, TIn>, 
+		InMemoryChannel<TOut, TIn>,
 		typename Channel<TOut, TIn>::weak_ptr_type
 		> weak_ptr_type;
-	
+
 	InMemoryChannel(
 				boost::shared_ptr<OutputCallbacks> inOutputCallbacks,
 				boost::shared_ptr<InputCallbacks> inInputCallbacks,
 				boost::shared_ptr<InMemoryChannelDisconnectFlag> inDisconnected
 				) :
-			mOutputCallbacks(inOutputCallbacks), 
+			mOutputCallbacks(inOutputCallbacks),
 			mInputCallbacks(inInputCallbacks),
 			mDisconnected(inDisconnected)
 
@@ -197,7 +197,7 @@ public:
 
 			mDisconnected->isDisconnected = true;
 			}
-		
+
 		mInputCallbacks->disconnect();
 		mOutputCallbacks->disconnect();
 		}
@@ -206,7 +206,7 @@ public:
 		{
 			{
 			boost::recursive_mutex::scoped_lock lock(mDisconnected->mutex);
-		
+
 			if (mDisconnected->isDisconnected)
 				throw ChannelDisconnected();
 			}
@@ -214,14 +214,14 @@ public:
 		mOutputCallbacks->onMessageReceived(message);
 		}
 
-	static std::pair<typename InMemoryChannel<TOut, TIn>::pointer_type, 
+	static std::pair<typename InMemoryChannel<TOut, TIn>::pointer_type,
 					 typename InMemoryChannel<TIn, TOut>::pointer_type> createChannelPair(
 							 PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler)
 		{
 		boost::shared_ptr<OutputCallbacks> output(new OutputCallbacks(inCallbackScheduler));
 		boost::shared_ptr<InputCallbacks> input(new InputCallbacks(inCallbackScheduler));
 		boost::shared_ptr<InMemoryChannelDisconnectFlag> disconnected(new InMemoryChannelDisconnectFlag());
-				
+
 		return std::make_pair(
 						typename InMemoryChannel<TOut, TIn>::pointer_type(
 							new InMemoryChannel<TOut, TIn>(output, input, disconnected)
@@ -234,7 +234,7 @@ public:
 
 
 	virtual void setHandlers(
-			boost::function1<void, TIn> inOnMessage, 
+			boost::function1<void, TIn> inOnMessage,
 			boost::function0<void> inOnDisconnected
 			)
 		{

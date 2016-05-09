@@ -30,7 +30,7 @@ Registry& 	Registry::getRegistry()
 void	Registry::addRegistrar(boost::shared_ptr<ExporterBase> inRegistrar)
 	{
 	mRegistrars[inRegistrar->getModuleName()].push_back(inRegistrar);
-	
+
 	std::vector<std::string> defined;
 	inRegistrar->getDefinedTypes(defined);
 	for (long k = 0; k < defined.size();k++)
@@ -40,26 +40,26 @@ void 	Registry::callRegistrar(boost::shared_ptr<ExporterBase> inRegistrar)
 	{
 	if (mRegistrarsCalled.find(inRegistrar) != mRegistrarsCalled.end())
 		return;
-	
+
 	std::vector<std::string> deps;
 	inRegistrar->dependencies(deps);
-	
+
 	for (long k = 0; k < deps.size();k++)
 		{
 		lassert_dump(mExportersByTypeInfo[deps[k]], "no exporter for " << deps[k]);
 		callRegistrar(mExportersByTypeInfo[deps[k]]);
 		}
-	
+
 	mRegistrarsCalled.insert(inRegistrar);
-	
-	
+
+
 	boost::python::scope scope(createModule(inRegistrar->getModuleName()));
 	inRegistrar->exportPythonWrapper();
 	}
 void	Registry::callAllRegistrars(void)
 	{
 	boost::python::scope scope(boost::python::import("ufora.native"));
-	
+
 	for (std::map<std::string,
 				std::vector<boost::shared_ptr<ExporterBase> > >::iterator
 			it = mRegistrars.begin(),

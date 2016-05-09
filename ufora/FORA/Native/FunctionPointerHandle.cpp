@@ -36,12 +36,12 @@ void FunctionPointerArray::fillArray(
 	{
 	lassert(!mArrayBase);
 	lassert(mSize == inPointers.size());
-	
+
 	NativeFunctionPointerAndEntrypointId* base = new NativeFunctionPointerAndEntrypointId[mSize];
-	
+
 	for (long k = 0; k < mSize;k++)
 		base[k] = inPointers[k];
-	
+
 	//now that everything is set, do the copy. other clients will immediately
 	//see all the values in the system
 	mArrayBase = base;
@@ -57,9 +57,9 @@ NativeFunctionPointerAndEntrypointId FunctionPointerArray::get(size_t ix) const
 	{
 	if (!mArrayBase)
 		return NativeFunctionPointerAndEntrypointId();
-	
+
 	lassert(ix < mSize);
-	
+
 	return mArrayBase[ix];
 	}
 

@@ -25,8 +25,8 @@ public:
 };
 
 template<class T>
-const bool is_pass_by_register_type<T>::value = 
-		boost::has_trivial_destructor<T>::value && 
+const bool is_pass_by_register_type<T>::value =
+		boost::has_trivial_destructor<T>::value &&
 		boost::has_trivial_copy_constructor<T>::value
 		;
 
@@ -90,9 +90,9 @@ public:
 				NativeLibraryFunctionTarget::ByPointer( (uword_t)mFunPtr ),
 				NativeTypeFor<return_type>::get(),
 				is_pass_by_register_type<return_type>::value,
-				emptyTreeVec() + 
+				emptyTreeVec() +
 					a1.getExpression(),
-				emptyTreeVec() + 
+				emptyTreeVec() +
 					is_pass_by_register_type<A1>::value
 				)
 			);
@@ -123,11 +123,11 @@ public:
 				NativeLibraryFunctionTarget::ByPointer( (uword_t)mFunPtr ),
 				NativeTypeFor<return_type>::get(),
 				is_pass_by_register_type<return_type>::value,
-				emptyTreeVec() + 
-					a1.getExpression() + 
+				emptyTreeVec() +
+					a1.getExpression() +
 					a2.getExpression(),
-				emptyTreeVec() + 
-					is_pass_by_register_type<A1>::value + 
+				emptyTreeVec() +
+					is_pass_by_register_type<A1>::value +
 					is_pass_by_register_type<A2>::value
 				)
 			);
@@ -158,13 +158,13 @@ public:
 				NativeLibraryFunctionTarget::ByPointer( (uword_t)mFunPtr ),
 				NativeTypeFor<return_type>::get(),
 				is_pass_by_register_type<return_type>::value,
-				emptyTreeVec() + 
-					a1.getExpression() + 
-					a2.getExpression() + 
+				emptyTreeVec() +
+					a1.getExpression() +
+					a2.getExpression() +
 					a3.getExpression(),
-				emptyTreeVec() + 
-					is_pass_by_register_type<A1>::value + 
-					is_pass_by_register_type<A2>::value + 
+				emptyTreeVec() +
+					is_pass_by_register_type<A1>::value +
+					is_pass_by_register_type<A2>::value +
 					is_pass_by_register_type<A3>::value
 				)
 			);
@@ -195,15 +195,15 @@ public:
 				NativeLibraryFunctionTarget::ByPointer( (uword_t)mFunPtr ),
 				NativeTypeFor<return_type>::get(),
 				is_pass_by_register_type<return_type>::value,
-				emptyTreeVec() + 
-					a1.getExpression() + 
-					a2.getExpression() + 
-					a3.getExpression() + 
+				emptyTreeVec() +
+					a1.getExpression() +
+					a2.getExpression() +
+					a3.getExpression() +
 					a4.getExpression(),
-				emptyTreeVec() + 
-					is_pass_by_register_type<A1>::value + 
-					is_pass_by_register_type<A2>::value + 
-					is_pass_by_register_type<A3>::value + 
+				emptyTreeVec() +
+					is_pass_by_register_type<A1>::value +
+					is_pass_by_register_type<A2>::value +
+					is_pass_by_register_type<A3>::value +
 					is_pass_by_register_type<A4>::value
 				)
 			);
@@ -235,16 +235,16 @@ public:
 				NativeLibraryFunctionTarget::ByPointer( (uword_t)mFunPtr ),
 				NativeTypeFor<return_type>::get(),
 				is_pass_by_register_type<return_type>::value,
-				emptyTreeVec() + 
-					a1.getExpression() + 
-					a2.getExpression() + 
-					a3.getExpression() + 
+				emptyTreeVec() +
+					a1.getExpression() +
+					a2.getExpression() +
+					a3.getExpression() +
 					a4.getExpression() +
 					a5.getExpression(),
-				emptyTreeVec() + 
-					is_pass_by_register_type<A1>::value + 
-					is_pass_by_register_type<A2>::value + 
-					is_pass_by_register_type<A3>::value + 
+				emptyTreeVec() +
+					is_pass_by_register_type<A1>::value +
+					is_pass_by_register_type<A2>::value +
+					is_pass_by_register_type<A3>::value +
 					is_pass_by_register_type<A4>::value +
 					is_pass_by_register_type<A5>::value
 				)
@@ -259,42 +259,42 @@ private:
 
 
 template<class return_type>
-TypedNativeLibraryFunction0<return_type> 
+TypedNativeLibraryFunction0<return_type>
 					makeTypedNativeLibraryFunction(return_type (*funPtr)())
 	{
 	return TypedNativeLibraryFunction0<return_type>(funPtr);
 	}
 
 template<class return_type, class A1>
-TypedNativeLibraryFunction1<return_type, A1> 
+TypedNativeLibraryFunction1<return_type, A1>
 					makeTypedNativeLibraryFunction(return_type (*funPtr)(A1))
 	{
 	return TypedNativeLibraryFunction1<return_type, A1>(funPtr);
 	}
 
 template<class return_type, class A1, class A2>
-TypedNativeLibraryFunction2<return_type, A1, A2> 
+TypedNativeLibraryFunction2<return_type, A1, A2>
 					makeTypedNativeLibraryFunction(return_type (*funPtr)(A1, A2))
 	{
 	return TypedNativeLibraryFunction2<return_type, A1, A2>(funPtr);
 	}
 
 template<class return_type, class A1, class A2, class A3>
-TypedNativeLibraryFunction3<return_type, A1, A2, A3> 
+TypedNativeLibraryFunction3<return_type, A1, A2, A3>
 					makeTypedNativeLibraryFunction(return_type (*funPtr)(A1, A2, A3))
 	{
 	return TypedNativeLibraryFunction3<return_type, A1, A2, A3>(funPtr);
 	}
 
 template<class return_type, class A1, class A2, class A3, class A4>
-TypedNativeLibraryFunction4<return_type, A1, A2, A3, A4> 
+TypedNativeLibraryFunction4<return_type, A1, A2, A3, A4>
 					makeTypedNativeLibraryFunction(return_type (*funPtr)(A1, A2, A3, A4))
 	{
 	return TypedNativeLibraryFunction4<return_type, A1, A2, A3, A4>(funPtr);
 	}
 
 template<class return_type, class A1, class A2, class A3, class A4, class A5>
-TypedNativeLibraryFunction5<return_type, A1, A2, A3, A4, A5> 
+TypedNativeLibraryFunction5<return_type, A1, A2, A3, A4, A5>
 makeTypedNativeLibraryFunction(return_type (*funPtr)(A1, A2, A3, A4, A5))
 	{
 	return TypedNativeLibraryFunction5<return_type, A1, A2, A3, A4, A5>(funPtr);

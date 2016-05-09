@@ -37,7 +37,7 @@ BOOST_AUTO_TEST_CASE( test_rate_limited_channel_group )
 		);
 
 	auto makeStringChannels = [&]() {
-		auto rawChannels = 
+		auto rawChannels =
 			InMemoryChannel<std::string, std::string>::createChannelPair(scheduler);
 
 		return pair<queuelike_channel, queuelike_channel>(
@@ -72,7 +72,7 @@ BOOST_AUTO_TEST_CASE( test_rate_limited_channel_group )
 	//test that we're rate limited on both channels and that messages arrive equally
 		{
 		double t0 = curClock();
-		
+
 		for (long k = 0; k < 1000; k++)
 			{
 			stringChannels1.first->write("a");

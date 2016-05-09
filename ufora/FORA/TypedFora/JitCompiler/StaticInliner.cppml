@@ -43,7 +43,7 @@ StaticInliner::StaticInliner(	uword_t inComplexity,
 	}
 
 void StaticInliner::setInlineComplexity(uword_t complexity)
-	{	
+	{
 	mMaxInlineComplexity = complexity;
 	}
 
@@ -52,36 +52,36 @@ void StaticInliner::define(	const string& name,
 							set<string>& outNewlyDefined)
 	{
     boost::lock_guard<boost::recursive_mutex> lock(mMutex);
-	
+
 	//map::insert(...).second is false if insertion failed due to
 	//preexisting element.
 	if (!mCFGs.insert(pair<string, NativeCFG>(name, def)).second)
 		throw logic_error("StaticInliner: Called define with already-defined"
 		                  " name: " + name);
-	
+
 	//get a list of other functions this thing calls
 	ImmutableTreeSet<std::string> targetFunctions = def.externalBranches();
-	
+
 	//mark them in the call graph
 	mCallGraphStructure.insert(name, targetFunctions.begin(), targetFunctions.end());
-	
+
 	//now we need to determine whether this function is fully defined (e.g.
 	//whether all the nodes it points to are also defined). There may be cycles
 	//in the graph.  So, we keep track of a TwoWaySetMap of 'undefinition'
 	//dependencies.  A pair (n1,n2) is in mUndefinedChildren if n2 is undefined
 	//and there is a path from n1 to n2.
-	
+
 	set<string> undefinedBecauseOfMe = mUndefinedChildren.getKeys(name);
-			
+
 	for (long k = 0; k < targetFunctions.size();k++)
 		{
 		string targetName = targetFunctions[k];
-		
+
 		//this target is undefined, so mark an 'undefined' dependency
 		if (mCFGs.find(targetName) == mCFGs.end())
 			{
 			mUndefinedChildren.insert(name, targetName);
-			
+
 			//mark all the guys who are undefined because of me as being
 			//undefined because of this guy.
 			mUndefinedChildren.insert(undefinedBecauseOfMe,targetName);
@@ -91,19 +91,19 @@ void StaticInliner::define(	const string& name,
 			//anything that make this function undefined make me undefined
 			set<string> makingTargetNameUndefined =
 					mUndefinedChildren.getValues(targetName);
-			
+
 			mUndefinedChildren.insert(undefinedBecauseOfMe,makingTargetNameUndefined);
 			mUndefinedChildren.insert(name,makingTargetNameUndefined);
 			}
 		}
-	
+
 	//nothing is being made undefined by me anymore
 	mUndefinedChildren.dropValue(name);
-	
+
 	//now lets check each of the strings - if they're defined now, go ahead
 	//and compute their levels and call groups
 	outNewlyDefined = set<string>();
-	
+
 	for (set<string>::iterator it = undefinedBecauseOfMe.begin(),
 							it_end = undefinedBecauseOfMe.end();
 					it != it_end;
@@ -112,18 +112,18 @@ void StaticInliner::define(	const string& name,
 		if (mUndefinedChildren.getValues(*it).size() == 0)
 			outNewlyDefined.insert(*it);
 		}
-	
+
 	if (mUndefinedChildren.getValues(name).size() == 0)
 		outNewlyDefined.insert(name);
-	
-	
+
+
 	LOG_INFO << "StaticInliner: defining " << name << " with deps "
 		<< prettyPrintString(targetFunctions) << ". fully defined are "
 		<< prettyPrintString(outNewlyDefined)
 		;
-		
+
 	computeCycles(outNewlyDefined);
-	
+
 	for (set<string>::iterator it = outNewlyDefined.begin(),
 							it_end = outNewlyDefined.end();
 					it != it_end;
@@ -142,7 +142,7 @@ uword_t StaticInliner::computeLevel(const string& s)
 	{
 	if (mCallLevels.count(s))
 		return mCallLevels[s];
-	
+
 	if (mCallGroups.count(s))
 		{
 		//we're in a cycle - all elements of the cycle must have the same depth
@@ -168,7 +168,7 @@ uword_t StaticInliner::computeLevel(const string& s)
 			level = std::max(level, computeLevel(*it2));
 		mCallLevels[s] = level + 1;
 		}
-	
+
 	return mCallLevels[s];
 	}
 
@@ -206,14 +206,14 @@ void StaticInliner::computeCycles(const set<string>& toAnalyze)
 					empty.insert(*it);
 				}
 			}
-		
+
 		if (graph.keyCount())
 			{
 			//now any node must be in a cycle
 			set<string> cycle;
 			set<string> cycleNew;
 			cycleNew.insert(graph.lowestKey());
-			
+
 			while (cycleNew.size())
 				{
 				string c = pop(cycleNew);
@@ -225,13 +225,13 @@ void StaticInliner::computeCycles(const set<string>& toAnalyze)
 					if (*it != cycle && *it != cycleNew)
 						cycleNew.insert(*it);
 				}
-			
+
 			ImmutableTreeSet<string> cycleSet(cycle.begin(), cycle.end());
-			
+
 			for (set<string>::iterator it = cycle.begin();
 						it != cycle.end(); ++it)
 				mCallGroups[*it] = cycleSet;
-			
+
 			//drop everything in the cycle
 			empty = cycle;
 			}
@@ -248,36 +248,36 @@ const NativeCFG& StaticInliner::getProcessed(const string& functionName)
 	{
 		{
         boost::lock_guard<boost::recursive_mutex> lock(mMutex);
-	
+
 		lassert(mCFGs.count(functionName));
-	
+
 		if (mProcessed.find(functionName) != mProcessed.end())
 			return mCFGs[functionName];
 		}
-	
+
 	//if we're here, we weren't processed. lock a mutex indexed
 	//by this function
-	
+
 	IndexedMutex<string>::scoped_lock lock(mProcessingMutexes, functionName);
-	
+
 	NativeCFG cfg;
-	
+
 		//check again - maybe another thread did this while
 		//we were getting the lock
 		{
         boost::lock_guard<boost::recursive_mutex> lock(mMutex);
-	
+
 		if (mProcessed.find(functionName) != mProcessed.end())
 			return mCFGs.at(functionName);
-		
+
 		cfg = mCFGs.at(functionName);
 		}
-	
-	
+
+
 	//Can we inline anything?
 	//Consider anything downstream from us that is not in our own cycle.
 	ImmutableTreeSet<string> cycle = getCallGroup(functionName);
-	
+
 	ImmutableTreeSet<string> targets = cfg.externalBranches();
 
 	bool inlinedAnything = false;
@@ -285,11 +285,11 @@ const NativeCFG& StaticInliner::getProcessed(const string& functionName)
 	for (long k = 0; k < targets.size();k++)
 		{
 		string target = targets[k];
-		
+
 		if (target != functionName && !cycle.contains(target))
 			{
 			NativeCFG targetCFG = getProcessed(target);
-			
+
 			if (targetCFG.complexity() < mMaxInlineComplexity)
 				{
 				auto oldCFG = cfg;
@@ -297,7 +297,7 @@ const NativeCFG& StaticInliner::getProcessed(const string& functionName)
 				cfg = NativeCFGTransforms::inlineCFG(cfg, targetCFG, target);
 
 				inlinedAnything = true;
-				
+
 				LOG_INFO << "inlining " << target << " into " << functionName << ". complexity is " << oldCFG.complexity() << " -> " << cfg.complexity();
 
 				lassert_dump(
@@ -317,18 +317,18 @@ const NativeCFG& StaticInliner::getProcessed(const string& functionName)
 					;
 				}
 			}
-		}	
+		}
 	//optimize the CFG now that we've successfully inlined
 	auto oldCFG = cfg;
 
-	cfg = 
+	cfg =
 		NativeCFGTransforms::optimize(
 			NativeCFGTransforms::renameVariables(cfg),
 			mRuntimeConfig
 			);
 
 	LOG_INFO << "Optimization changed " << functionName << " from " << oldCFG.complexity() << " to " << cfg.complexity();
-	
+
 	//put it back in the set
 		{
         boost::lock_guard<boost::recursive_mutex> lock(mMutex);
@@ -342,11 +342,11 @@ ImmutableTreeSet<string>
 StaticInliner::getFunctionsCalledBy(const string& name)
 	{
     boost::lock_guard<boost::recursive_mutex> lock(mMutex);
-	
+
 	if (mCallLevels.find(name) == mCallLevels.end())
 		throwLogicErrorWithStacktrace("can't get the callgroup of " + name +
 			" because it still has undefined dependencies");
-	
+
 	return ImmutableTreeSet<string>(mCallGraphStructure.getValues(name));
 	}
 
@@ -354,14 +354,14 @@ ImmutableTreeSet<string>
 StaticInliner::getCallGroup(const string& name)
 	{
     boost::lock_guard<boost::recursive_mutex> lock(mMutex);
-	
+
 	if (mCallLevels.find(name) == mCallLevels.end())
 		throwLogicErrorWithStacktrace("can't get the callgroup of " + name +
 			" because it still has undefined dependencies");
-	
+
 	if (mCallGroups.find(name) == mCallGroups.end())
 		return ImmutableTreeSet<string>();
-	
+
 	return mCallGroups.at(name);
 	}
 
@@ -375,12 +375,12 @@ public:
 	FunctionCallSignatureVerificationVisitor(
 					const std::map<std::string, NativeCFG>& inCFGs,
 					const std::string& inName
-					) : 
+					) :
 			mCFGs(inCFGs),
 			mName(inName)
 		{
 		}
-	
+
 	template<class T>
 	void processDown(const T& in, bool& out) const { }
 
@@ -390,14 +390,14 @@ public:
 	void processDown(const NativeType& in, bool& out) const { out = false; }
 
 	void processDown(const NativeConstant& in, bool& out) const { out = false; }
-	
+
 	void processDown(	const NativeExpression& ex,
 						bool& cont
 						) const
 		{
 		@match NativeExpression(ex)
 			-|	Call(External(name, id), rets, args, meta) ->> {
-				
+
 				try {
 					lassert(mCFGs.find(name) != mCFGs.end());
 
@@ -412,8 +412,8 @@ public:
 					for (long k = 0; k < args.size();k++)
 						if (args[k].type() && *args[k].type() != targetBlock.args()[k].type())
 							throw std::logic_error(
-								"argument " + boost::lexical_cast<string>(k) + 
-								" has wrong type: " + 
+								"argument " + boost::lexical_cast<string>(k) +
+								" has wrong type: " +
 									prettyPrintString(*args[k].type()) + " != " +
 									prettyPrintString(targetBlock.args()[k].type())
 								);
@@ -421,21 +421,21 @@ public:
 					//check that return types are OK
 					ImmutableTreeVector<NativeType> passedContinuationTypes;
 					for (long k = 0; k < rets.size();k++)
-						passedContinuationTypes = passedContinuationTypes + 
+						passedContinuationTypes = passedContinuationTypes +
 							rets[k].var().type();
 
 					if (passedContinuationTypes != targetCFG.returnTypes())
 						throw std::logic_error("invalid return continuations: expected " +
-							prettyPrintString(targetCFG.returnTypes()) + 
-							" but provided " + 
+							prettyPrintString(targetCFG.returnTypes()) +
+							" but provided " +
 							prettyPrintString(passedContinuationTypes)
 							);
 					}
 				catch(std::logic_error& ex)
 					{
 					throw standardLogicErrorWithStacktrace(
-						"Error calling " + name + ":" + prettyPrintString(id) + " from " + 
-						mName + ": " + ex.what() + "\n" + 
+						"Error calling " + name + ":" + prettyPrintString(id) + " from " +
+						mName + ": " + ex.what() + "\n" +
 						"cfg = " + prettyPrintString(mCFGs.find(mName)->second)
 						);
 					}

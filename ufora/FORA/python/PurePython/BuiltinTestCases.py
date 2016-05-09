@@ -54,7 +54,7 @@ class BuiltinTestCases(object):
     def test_builtins_max_2(self):
         def f():
             return max(xrange(5))
-            
+
         self.equivalentEvaluationTest(f)
 
     def test_builtins_max_3(self):
@@ -81,7 +81,7 @@ class BuiltinTestCases(object):
     def test_builtins_min_2(self):
         def f():
             return min(xrange(5))
-            
+
         self.equivalentEvaluationTest(f)
 
     def test_builtins_min_3(self):

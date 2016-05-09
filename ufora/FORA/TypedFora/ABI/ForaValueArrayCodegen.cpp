@@ -31,23 +31,23 @@ using TypedFora::Abi::ForaValueArray;
 
 NativeType	NativeTypeForImpl<ForaValueArray>::get()
 	{
-	NativeType packedValues = 
+	NativeType packedValues =
 		NativeType::Composite("VTablePtr", NativeType::uword().ptr()) +
 		NativeType::Composite("mIsWriteable", NativeType::uword()) +
-		NativeType::Composite("mOwningMemoryPool", NativeType::Nothing().ptr()) + 
-		NativeType::Composite("mDataPtr", NativeType::uint8().ptr()) + 
-		NativeType::Composite("mBytesReserved", NativeType::uword()) + 
-		NativeType::Composite("mOffsetTablePtr", NativeType::Integer(8, false).ptr().ptr()) + 
-		NativeType::Composite("mPerValueOffsetOrOffsetTableCountAllocated", NativeType::uword()) + 
-		NativeType::Composite("mJudgmentLookupTable", NativeTypeFor<JudgmentOnValue>::get().ptr()) + 
-		NativeType::Composite("mJudgmentLookupTableSize", NativeType::uword()) + 
-		NativeType::Composite("mPerValueJudgments", NativeType::Nothing().ptr()) + 
-		NativeType::Composite("mPerValueJudgmentsAllocated", NativeType::uword()) + 
+		NativeType::Composite("mOwningMemoryPool", NativeType::Nothing().ptr()) +
+		NativeType::Composite("mDataPtr", NativeType::uint8().ptr()) +
+		NativeType::Composite("mBytesReserved", NativeType::uword()) +
+		NativeType::Composite("mOffsetTablePtr", NativeType::Integer(8, false).ptr().ptr()) +
+		NativeType::Composite("mPerValueOffsetOrOffsetTableCountAllocated", NativeType::uword()) +
+		NativeType::Composite("mJudgmentLookupTable", NativeTypeFor<JudgmentOnValue>::get().ptr()) +
+		NativeType::Composite("mJudgmentLookupTableSize", NativeType::uword()) +
+		NativeType::Composite("mPerValueJudgments", NativeType::Nothing().ptr()) +
+		NativeType::Composite("mPerValueJudgmentsAllocated", NativeType::uword()) +
 		NativeType::Composite("mValueCount", NativeType::uword());
 
-	return packedValues + 
+	return packedValues +
 		NativeType::Composite(
-			"mPadding", 
+			"mPadding",
 			NativeType::Array(
 				NativeType::Integer(8,false),
 				sizeof(ForaValueArray) - packedValues.packedSize()
@@ -84,7 +84,7 @@ NativeExpression usingOffsetTableExpression(
 	{
 	lassert(*valueArrayPointerExpr.type() == NativeTypeFor<ForaValueArray>::get().ptr());
 
-	return 
+	return
 		valueArrayPointerExpr["mOffsetTablePtr"].load().isNotNull();
 	}
 
@@ -95,7 +95,7 @@ NativeExpression offsetForExpression(
 	{
 	lassert_dump(
 		*valueArrayPointerExpr.type() == NativeTypeFor<ForaValueArray>::get().ptr(),
-		"Expected ForaValueArray* but got " 
+		"Expected ForaValueArray* but got "
 			<< prettyPrintString(*valueArrayPointerExpr.type())
 		);
 
@@ -167,35 +167,35 @@ NativeExpression isSemiDirectFastAppendableExpression(
 					const JudgmentOnValue& valueJmt
 					)
 	{
-	return 
+	return
 		valueArrayPointerExpr["mJudgmentLookupTableSize"].load().isNull()
 			&& valueArrayPointerExpr["mPerValueJudgments"].load().isNotNull()
-			&& (valueArrayPointerExpr["mPerValueJudgmentsAllocated"].load() > 
+			&& (valueArrayPointerExpr["mPerValueJudgmentsAllocated"].load() >
 					valueArrayPointerExpr["mValueCount"].load())
 			&& (
 				NativeExpression::If(
 					valueArrayPointerExpr["mOffsetTablePtr"].load().isNull(),
 					//not using an offset table. make sure we're smaller than the offset!
-					( (valueArrayPointerExpr["mValueCount"].load() + NativeExpression::ConstantULong(1)) * 
-						valueArrayPointerExpr["mPerValueOffsetOrOffsetTableCountAllocated"].load() <= 
+					( (valueArrayPointerExpr["mValueCount"].load() + NativeExpression::ConstantULong(1)) *
+						valueArrayPointerExpr["mPerValueOffsetOrOffsetTableCountAllocated"].load() <=
 						valueArrayPointerExpr["mBytesReserved"].load()
-						) && 
-					valueArrayPointerExpr["mPerValueOffsetOrOffsetTableCountAllocated"].load() >= 
+						) &&
+					valueArrayPointerExpr["mPerValueOffsetOrOffsetTableCountAllocated"].load() >=
 						NativeExpression::ConstantULong(PackedForaValues::strideFor(valueJmt))
 						,
-					//using an offset table, so we need to check that we have both space in the 
+					//using an offset table, so we need to check that we have both space in the
 					//data table and also in the offset table
 					((valueArrayPointerExpr["mOffsetTablePtr"].load()
 							[valueArrayPointerExpr["mValueCount"].load()].load()[
 							NativeExpression::ConstantInt32(PackedForaValues::strideFor(valueJmt))
 							]).cast(NativeTypeFor<size_t>::get(), false)
-								<= 
+								<=
 							(valueArrayPointerExpr["mDataPtr"].load()[
 								valueArrayPointerExpr["mBytesReserved"].load()
 								])
 								.cast(NativeTypeFor<size_t>::get(), false)
 							)
-					&& (valueArrayPointerExpr["mPerValueOffsetOrOffsetTableCountAllocated"].load() > 
+					&& (valueArrayPointerExpr["mPerValueOffsetOrOffsetTableCountAllocated"].load() >
 						valueArrayPointerExpr["mValueCount"].load())
 					)
 				);
@@ -209,7 +209,7 @@ NativeExpression semiDirectFastAppendExpression(
 					)
 	{
 	lassert(*valueJmt.vectorElementJOV() == valueJmt);
-	
+
 	JOV storageJOV = JudgmentOnValue::OfType(*valueJmt.type());
 
 	//we can directly append this value to the end of the array
@@ -223,7 +223,7 @@ NativeExpression semiDirectFastAppendExpression(
 				[valueArrayPointerExpr["mValueCount"].load()].load(),
 			//use the stride table
 			valueArrayPointerExpr["mDataPtr"].load()[
-				(valueArrayPointerExpr["mPerValueOffsetOrOffsetTableCountAllocated"].load() * 
+				(valueArrayPointerExpr["mPerValueOffsetOrOffsetTableCountAllocated"].load() *
 					valueArrayPointerExpr["mValueCount"].load()).cast(NativeType::int32(), false)
 				]
 			)
@@ -252,7 +252,7 @@ NativeExpression semiDirectFastAppendExpression(
 	//increment mValueCount
 	builder.add(
 		valueArrayPointerExpr["mValueCount"].store(
-			valueArrayPointerExpr["mValueCount"].load() + 
+			valueArrayPointerExpr["mValueCount"].load() +
 				NativeExpression::ConstantULong(1)
 			)
 		);
@@ -280,13 +280,13 @@ NativeExpression isDirectFastAppendableExpression(
 					const JudgmentOnValue& valueJmt
 					)
 	{
-	return 
+	return
 		NativeExpression::If(
 			(valueArrayPointerExpr["mJudgmentLookupTableSize"].load() == NativeExpression::ConstantULong(1)),
-			
+
 			(valueArrayPointerExpr["mJudgmentLookupTable"].load().load() == jovAsNativeConstant(valueJmt))
-			&&	( (valueArrayPointerExpr["mValueCount"].load() + NativeExpression::ConstantULong(1)) * 
-					valueArrayPointerExpr["mPerValueOffsetOrOffsetTableCountAllocated"].load() <= 
+			&&	( (valueArrayPointerExpr["mValueCount"].load() + NativeExpression::ConstantULong(1)) *
+					valueArrayPointerExpr["mPerValueOffsetOrOffsetTableCountAllocated"].load() <=
 					valueArrayPointerExpr["mBytesReserved"].load()
 					),
 			NativeExpression::Constant(NativeConstant::Bool(false))
@@ -307,7 +307,7 @@ NativeExpression directFastAppendExpression(
 	NativeExpressionBuilder builder;
 
 	NativeExpression offsetExpr = builder.add(
-		valueArrayPointerExpr["mValueCount"].load() * 
+		valueArrayPointerExpr["mValueCount"].load() *
 				valueArrayPointerExpr["mPerValueOffsetOrOffsetTableCountAllocated"].load()
 		);
 
@@ -330,7 +330,7 @@ NativeExpression directFastAppendExpression(
 
 	builder.add(
 		valueArrayPointerExpr["mValueCount"].store(
-			valueArrayPointerExpr["mValueCount"].load() + 
+			valueArrayPointerExpr["mValueCount"].load() +
 				NativeExpression::ConstantULong(1)
 			)
 		);
@@ -348,7 +348,7 @@ NativeExpression appendExpression(
 
 	return NativeExpression::If(
 		isDirectFastAppendableExpression(valueArrayPointerExpr, valueJmt),
-		directFastAppendExpression(valueArrayPointerExpr, dataToAppendExpr, valueJmt) >> 
+		directFastAppendExpression(valueArrayPointerExpr, dataToAppendExpr, valueJmt) >>
 			NativeExpression::Constant(NativeConstant::Bool(true)),
 		NativeExpression::If(
 			isSemiDirectFastAppendableExpression(valueArrayPointerExpr, valueJmt),

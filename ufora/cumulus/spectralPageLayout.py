@@ -167,7 +167,7 @@ def constructPagewise(A,D):
 			pairCount = count * (count-1)/2
 
 			numToKeep = min(1000,pairCount)
-			
+
 			allPairs = randomPairs(count, numToKeep)
 
 			allPairs = [(pageNeighborhoods[p][ix],pageNeighborhoods[p][ix2]) for (ix,ix2) in allPairs]
@@ -208,7 +208,7 @@ def solveEigenspace(x, m = 2):
 	for ix in range(20):
 		t0 = time.time()
 		res = lobpcg(x,k,largest=False,maxiter=50)
-		
+
 		k = res[1]
 
 	return res
@@ -228,11 +228,11 @@ def solveAndPlotEigenspace(A,D,m=2):
 		per = ct / slices
 		for ix in range(slices):
 			ax.plot(
-				res[1][ix*per:(ix+1)*per,0], 
-				res[1][ix*per:(ix+1)*per,1], 
+				res[1][ix*per:(ix+1)*per,0],
+				res[1][ix*per:(ix+1)*per,1],
 				res[1][ix*per:(ix+1)*per,2]
 				)
-		
+
 		plt.show()
 
 	for ix in range(m):
@@ -303,7 +303,7 @@ def updateByAveragingAndStepping(A, D, x):
 	candidate = updateByAveraging(A, D, positionForT(optimalSteps))
 
 	return candidate
-	
+
 def updateSingleLOBPCG(AD, x):
 	x = normalizeAndDemean(x)
 	ADx = AD.dot(x)
@@ -335,7 +335,7 @@ def updateSingleLOBPCG(AD, x):
 		eigenvec = [0.0,1.0]
 
 	return normalizeAndDemean(x * eigenvec[0] + r * eigenvec[1])
-	
+
 def dFromA(A):
 	return (-1.0 / A.sum(1)).getA().reshape(A.shape[0])
 
@@ -448,7 +448,7 @@ def solveUsingBlockAveraging(AOrig, DOrig):
 		cut = sorted(x)[len(x)/2]
 		indicesL = (x>cut).reshape(len(x))
 		indicesR = (x<=cut).reshape(len(x))
-		
+
 		AL = A[:,indicesL]
 		AL = AL[indicesL,:]
 		DL = dFromA(AL)
@@ -483,7 +483,7 @@ def solveUsingBlockAveraging(AOrig, DOrig):
 
 	groups = sorted(subdivide(A,D,x3,30), key=lambda g: g[0])
 	x4 = optimizeGroups(A,D,x3,groups)
-	
+
 	for ix in range(100):
 		x4 = updateByAveragingAndStepping(A,D,x4)
 
@@ -509,7 +509,7 @@ def solveSimply(AOrig,DOrig):
 	x = normalizeAndDemean(x)
 
 	xSimple = x
-	
+
 	errors = []
 	separation = []
 
@@ -518,7 +518,7 @@ def solveSimply(AOrig,DOrig):
 		high = x[len(neighborhoods)/2:,0]
 
 		return abs((high.mean() - low.mean())/numpy.std(x))
-		
+
 
 	elapsed = 0.0
 	elapsedSimple = 0.0

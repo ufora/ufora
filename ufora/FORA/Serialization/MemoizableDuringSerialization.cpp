@@ -21,11 +21,11 @@ namespace Fora {
 
 namespace MemoizableDuringSerialization {
 
-MemoStorageBaseRegistry::MemoStorageBaseRegistry() : 
+MemoStorageBaseRegistry::MemoStorageBaseRegistry() :
 		mIsFrozen(false)
 	{
 	}
-	
+
 MemoStorageBaseRegistry& MemoStorageBaseRegistry::singleton()
 	{
 	static MemoStorageBaseRegistry registry;
@@ -87,7 +87,7 @@ void MemoStorageBaseRegistry::freeze_()
 	lassert(!mIsFrozen);
 
 	std::set<const char*> names;
-	
+
 	for (auto it = mFactories.begin(); it != mFactories.end(); it++)
 		names.insert(it->first);
 
@@ -100,12 +100,12 @@ void MemoStorageBaseRegistry::freeze_()
 
 	mIsFrozen = true;
 	}
-	
+
 MemoStorageBase* MemoStorageBaseRegistry::create(const char* inType)
 	{
 	boost::mutex::scoped_lock lock(mMutex);
 
-	auto it = mFactories.find(inType); 
+	auto it = mFactories.find(inType);
 
 	if (it == mFactories.end())
 		return 0;

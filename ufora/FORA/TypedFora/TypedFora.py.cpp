@@ -33,7 +33,7 @@ public:
 			{
 			return "FORA";
 			}
-			
+
 		static boost::python::object expressionType(const TypedFora::Expression& expr)
 			{
 			Nullable<TypedFora::Type> type = expr.type();
@@ -50,11 +50,11 @@ public:
 		static TypedFora::Expression createGetSlice(const TypedFora::Expression& expr, uword_t indexLow)
 			{
 			return TypedFora::Expression::GetSlice(expr, indexLow);
-			}	
+			}
 
 		static TypedFora::Expression createMakeTuple(
 				const ImmutableTreeVector<TypedFora::MakeTupleArgument>& arguments
-				)	
+				)
 			{
 			return TypedFora::Expression::MakeTuple(arguments);
 			}
@@ -62,14 +62,14 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
+
 
 			PythonWrapper<ImmutableTreeVector<TypedFora::Variable> >
 				::exportPythonInterface("TypedFora::Variable");
 
 			PythonWrapper<ImmutableTreeVector<TypedFora::MakeTupleArgument> >
 				::exportPythonInterface("TypedFora::MakeTupleArgument");
-				
+
 			PythonWrapper<ImmutableTreeVector<TypedFora::Type> >
 				::exportPythonInterface("TypedFora::Type");
 

@@ -51,7 +51,7 @@ ContinuationElement* ContinuationElement::nextContinuationElementPtr(void)
 	{
 	return mNextContinuationElementPtr;
 	}
-				
+
 bool ContinuationElement::isDestroyed(void) const
 	{
 	return mIsDestroyed;
@@ -62,19 +62,19 @@ uint64_t ContinuationElement::executionCount(void)
 	return 0;
 	}
 
-ContinuationElement::ContinuationElement() 
+ContinuationElement::ContinuationElement()
 	{
 	}
-					
-ContinuationElement::ContinuationElement(const ContinuationElement& in) 
+
+ContinuationElement::ContinuationElement(const ContinuationElement& in)
 	{
 	}
-					
+
 ContinuationElement& ContinuationElement::operator=(const ContinuationElement& in)
 	{
 	return *this;
 	}
-						
+
 ContinuationElement::ContinuationElement(
 						Continuation* continuationPtr,
 						const JudgmentOnValue& filter,
@@ -87,19 +87,19 @@ ContinuationElement::ContinuationElement(
 	//Be careful - the interpreter could read right into us!
 	mIsDestroyed = false;
 
-	mTargetJOVs = 
+	mTargetJOVs =
 			continuationArgs.targetJOV(
 				continuationPtr->getSourceInstruction()->jovs(),
 				filter
 				);
-	
+
 	mSourceInstructionPtr = continuationPtr->getSourceInstruction();
-	
+
 	InstructionGraph* instructionGraphPtr = &mSourceInstructionPtr->instructionGraph();
 
 	if (mSourceInstructionPtr->isRootInstruction())
 		{
-		mTargetInstructionPtr = 
+		mTargetInstructionPtr =
 			instructionGraphPtr->getRootInstruction(
 				*targetControlFlowGraph,
 				targetLabel
@@ -108,7 +108,7 @@ ContinuationElement::ContinuationElement(
 		}
 	else
 		{
-		mTargetInstructionPtr = 
+		mTargetInstructionPtr =
 			instructionGraphPtr->getInstruction(
 				*targetControlFlowGraph,
 				targetLabel,
@@ -134,7 +134,7 @@ bool ContinuationElement::recomputeTarget()
 		return false;
 
 	lassert(!mIsDestroyed);
-	
+
 	InstructionPtr newTargetInstruction =
 		mTargetInstructionPtr->instructionGraph().getInstruction(
 			mTargetInstructionPtr->getGraph(),
@@ -150,10 +150,10 @@ bool ContinuationElement::recomputeTarget()
 	mTargetInstructionPtr->addIncomingContinuationElement(this);
 
 	mTargetInstructionPtr->instructionGraph().onInstructionContinuationsChanged(mSourceInstructionPtr);
-	
+
 	return true;
 	}
-    
+
 string ContinuationElement::toString(void) const
 	{
 	if (mContinuationPtr->mRequiresResult)
@@ -183,7 +183,7 @@ void ContinuationElement::destroy(ContinuationElement* prev)
 		continuationElementPtr = continuationElementPtr-> mNextContinuationElementPtr;
 		}
 	}
-	
+
 }
 }
 }

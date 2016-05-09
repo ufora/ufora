@@ -303,7 +303,7 @@ class Expression(object):
 
         if isinstance(nativeExpressionOrParseError, ForaNative.FunctionParseError):
             raise ParseException.ParseException(
-                nativeExpressionOrParseError, 
+                nativeExpressionOrParseError,
                 codeDefinitionPoint
                 )
 

@@ -42,15 +42,15 @@ public:
 			{
 			mRoots.insert(inProp);
 			}
-			
+
 		static void enter(PolymorphicSharedPtr<Root>& inRoot)
 			{
 			inRoot->mGraph->pushRoot(inRoot->polymorphicSharedPtrFromThis());
 			}
 
-		static void exit(	PolymorphicSharedPtr<Root>& inRoot, 
-							boost::python::object o, 
-							boost::python::object o2, 
+		static void exit(	PolymorphicSharedPtr<Root>& inRoot,
+							boost::python::object o,
+							boost::python::object o2,
 							boost::python::object o3
 							)
 			{

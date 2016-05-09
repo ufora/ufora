@@ -38,19 +38,19 @@ public:
 			return *this;
 			}
 
-		uint32_t size(void) const 
-			{ 
-			return keyCount(); 
-			}
-		
-		uint32_t keyCount(void) const 
-			{ 
-			return mKeyToValue.size(); 
-			}
-		
-		uint32_t valueCount(void) const 
+		uint32_t size(void) const
 			{
-			return mValueToKeys.size(); 
+			return keyCount();
+			}
+
+		uint32_t keyCount(void) const
+			{
+			return mKeyToValue.size();
+			}
+
+		uint32_t valueCount(void) const
+			{
+			return mValueToKeys.size();
 			}
 
 		bool hasKey(const key_type& inKey) const
@@ -99,7 +99,7 @@ public:
 			if (hasKey(inKey))
 				drop(inKey);
 			}
-		
+
 		bool tryDrop(key_type inKey)
 			{
 			if (!hasKey(inKey))
@@ -197,7 +197,7 @@ public:
 			uint32_t sz = o.size();
 			s.serialize(sz);
 
-			for (auto it = o.getKeyToValue().begin(), it_end = o.getKeyToValue().end(); 
+			for (auto it = o.getKeyToValue().begin(), it_end = o.getKeyToValue().end();
 					it != it_end; ++it)
 				{
 				s.serialize(it->first);

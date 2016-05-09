@@ -215,7 +215,7 @@ TypedNativeExpression<bool> operator >(const TypedNativeExpressionBuiltinBehavio
 	return createTypedNativeExpression<bool>(lhs.getExpression() > other.getExpression());
 	}
 
-	
+
 template<class T>
 TypedNativeExpressionBuiltinBehaviors<T, TypedNativeExpressionBehaviorIntegerCategory>
 			::TypedNativeExpressionBuiltinBehaviors(const NativeExpression& e) : mExpression(e)
@@ -225,7 +225,7 @@ TypedNativeExpressionBuiltinBehaviors<T, TypedNativeExpressionBehaviorIntegerCat
 
 template<class T>
 TypedNativeExpressionBuiltinBehaviors<T, TypedNativeExpressionBehaviorIntegerCategory>::
-	TypedNativeExpressionBuiltinBehaviors(const T& in) : 
+	TypedNativeExpressionBuiltinBehaviors(const T& in) :
 			mExpression(TypedNativeExpressionConstantConversion<T>::get(in))
 	{
 
@@ -241,7 +241,7 @@ TypedNativeExpressionBuiltinBehaviors<T, TypedNativeExpressionBehaviorIntegerCat
 
 
 template<class T>
-NativeExpression 
+NativeExpression
 TypedNativeExpressionBuiltinBehaviors<T, TypedNativeExpressionBehaviorIntegerCategory>
 			::getExpression() const
 	{

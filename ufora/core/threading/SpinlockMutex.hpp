@@ -56,7 +56,7 @@ public:
 		if (mLocked)
 			{
 			mLocked = false;
-			AO_store(&mState, 0);	
+			AO_store(&mState, 0);
 			}
 		}
 
@@ -65,7 +65,7 @@ public:
 		if (!mLocked)
 			{
 			mLocked = true;
-			
+
 			while (!AO_compare_and_swap_full(&mState, 0, 1))
 				;
 			}

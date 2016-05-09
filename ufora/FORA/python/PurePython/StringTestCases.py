@@ -42,15 +42,15 @@ class StringTestCases(object):
 
         self.evaluateWithExecutor(f, 1000000, 1)
         self.evaluateWithExecutor(f, 10000, 1)
-        
+
         @PerformanceTestReporter.PerfTest("pyfora.string_indexing.large_string")
         def test1():
             self.evaluateWithExecutor(f, 1000000, 100)
-        
+
         @PerformanceTestReporter.PerfTest("pyfora.string_indexing.small_string")
         def test2():
             self.evaluateWithExecutor(f, 10000, 10000)
-        
+
         test1()
         test2()
 
@@ -66,10 +66,10 @@ class StringTestCases(object):
             return res
 
         self.evaluateWithExecutor(f, 1000000, 1)
-        
+
         with PerformanceTestReporter.RecordAsPerfTest("pyfora.string_to_int"):
             self.evaluateWithExecutor(f, 1000000, 10)
-        
+
 
     def test_string_slicing(self):
         def f(ct, passCt,chars):
@@ -82,7 +82,7 @@ class StringTestCases(object):
 
         self.evaluateWithExecutor(f, 1000000, 1, 2)
         self.evaluateWithExecutor(f, 10000, 1, 2)
-        
+
         def runTest(func, name):
             PerformanceTestReporter.PerfTest(name)(func)()
 
@@ -90,14 +90,14 @@ class StringTestCases(object):
         runTest(lambda: self.evaluateWithExecutor(f, 1000000, 10, 200), "pyfora.string_slicing_10mm.200_char_large_string.pyfora")
         runTest(lambda: self.evaluateWithExecutor(f, 10000, 1000, 2), "pyfora.string_slicing_10mm.2_char_small_string.pyfora")
         runTest(lambda: self.evaluateWithExecutor(f, 10000, 1000, 200), "pyfora.string_slicing_10mm.200_char_small_string.pyfora")
-        
+
         sys.setcheckinterval(100000)
 
         runTest(lambda: f(1000000, 10, 2), "pyfora.string_slicing_10mm.2_char_large_string.native")
         runTest(lambda: f(1000000, 10, 200), "pyfora.string_slicing_10mm.200_char_large_string.native")
         runTest(lambda: f(10000, 1000, 2), "pyfora.string_slicing_10mm.2_char_small_string.native")
         runTest(lambda: f(10000, 1000, 200), "pyfora.string_slicing_10mm.200_char_small_string.native")
-        
+
         sys.setcheckinterval(100)
 
     def test_string_slicing_into_vector(self):
@@ -113,7 +113,7 @@ class StringTestCases(object):
 
         self.evaluateWithExecutor(f, 1000000, 1, 2)
         self.evaluateWithExecutor(f, 10000, 1, 2)
-        
+
         def runTest(func, name):
             PerformanceTestReporter.PerfTest(name)(func)()
 
@@ -121,14 +121,14 @@ class StringTestCases(object):
         runTest(lambda: self.evaluateWithExecutor(f, 1000000, 1000, 200), "pyfora.string_slicing_into_vector_10mm.200_char_large_string.pyfora")
         runTest(lambda: self.evaluateWithExecutor(f, 10000, 1000, 2), "pyfora.string_slicing_into_vector_10mm.2_char_small_string.pyfora")
         runTest(lambda: self.evaluateWithExecutor(f, 10000, 100000, 200), "pyfora.string_slicing_into_vector_10mm.200_char_small_string.pyfora")
-        
+
         sys.setcheckinterval(100000)
 
         runTest(lambda: f(1000000, 10, 2), "pyfora.string_slicing_into_vector_10mm.2_char_large_string.native")
         runTest(lambda: f(1000000, 1000, 200), "pyfora.string_slicing_into_vector_10mm.200_char_large_string.native")
         runTest(lambda: f(10000, 1000, 2), "pyfora.string_slicing_into_vector_10mm.2_char_small_string.native")
         runTest(lambda: f(10000, 100000, 200), "pyfora.string_slicing_into_vector_10mm.200_char_small_string.native")
-        
+
         sys.setcheckinterval(100)
 
     def test_string_splitlines(self):

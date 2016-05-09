@@ -50,7 +50,7 @@ public:
 		{
 		return mTypePtr;
 		}
-	
+
 private:
 	T* mTypePtr;
 };
@@ -82,7 +82,7 @@ public:
 template<>
 class CPPMLEquality<boost::shared_ptr<ArbitraryNativeConstant>, void> {
 public:
-	static char cmp(const boost::shared_ptr<ArbitraryNativeConstant>& lhs, 
+	static char cmp(const boost::shared_ptr<ArbitraryNativeConstant>& lhs,
 					const boost::shared_ptr<ArbitraryNativeConstant>& rhs
 					)
 		{
@@ -99,7 +99,7 @@ template<>
 class Serializer<boost::shared_ptr<ArbitraryNativeConstant>, HashingStreamSerializer> {
 public:
 	static inline void serialize(
-						HashingStreamSerializer& s, 
+						HashingStreamSerializer& s,
 						const boost::shared_ptr<ArbitraryNativeConstant>& in
 						)
 		{

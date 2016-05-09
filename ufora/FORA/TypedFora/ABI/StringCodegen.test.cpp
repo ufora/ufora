@@ -34,7 +34,7 @@ public:
 
     };
 
-BOOST_FIXTURE_TEST_SUITE( test_TypedFora_Abi_StringCodegen, 
+BOOST_FIXTURE_TEST_SUITE( test_TypedFora_Abi_StringCodegen,
     StringCodegenTestFixture )
 
 BOOST_AUTO_TEST_CASE( test_string_size_codegen )
@@ -48,7 +48,7 @@ BOOST_AUTO_TEST_CASE( test_string_size_codegen )
         );
 
     String nonpackedString(
-        "mary had a little lamb its coat as white as snow", 
+        "mary had a little lamb its coat as white as snow",
         freePool
         );
 

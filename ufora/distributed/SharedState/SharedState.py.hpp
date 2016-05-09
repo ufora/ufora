@@ -168,7 +168,7 @@ public:
 			vector<KeyUpdate> updates;
 			updates.push_back(
 				KeyUpdate(
-					Key(client_info_keyspace, id), 
+					Key(client_info_keyspace, id),
 					null() << Ufora::Json::String(inMessage)
 					)
 				);
@@ -181,7 +181,7 @@ public:
 			{
 			return client_info_keyspace;
 			}
-		
+
 		static uint32_t view_id(PolymorphicSharedPtr<View>& v)
 			{
 			ScopedPyThreads scoper;
@@ -193,7 +193,7 @@ public:
 			tr = v->getClientIdNowait();
 			if (!tr)
 				return boost::python::object();
-			return boost::python::object(*tr);	
+			return boost::python::object(*tr);
 			}
 		static boost::python::object prevKey(PolymorphicSharedPtr<View>& v, const Key& key)
 			{
@@ -210,7 +210,7 @@ public:
 		static boost::python::object nextKey(PolymorphicSharedPtr<View>& v, const Key& key)
 			{
 			Nullable<Key> tr;
-			
+
 				{
 				ScopedPyThreads scoper;
 				tr = v->nextKey(key);
@@ -223,7 +223,7 @@ public:
 		static boost::python::object getValue(PolymorphicSharedPtr<View>& v, const Key& key)
 			{
 			Nullable<ValueType> tr;
-			
+
 				{
 				ScopedPyThreads scoper;
 				tr = v->getValue(key);
@@ -244,21 +244,21 @@ public:
 			{
             return v.id().eventId();
             }
-		
+
         static Nullable<Ufora::Json> pyToJson(boost::python::object o)
         	{
 			boost::python::extract<Ufora::Json> extractJson(o);
-			
+
 			if (extractJson.check())
 				return null() << extractJson();
 
 			return null();
-        	} 
-		
+        	}
+
         static Ufora::Json pyToJsonOrError(boost::python::object o)
         	{
 			boost::python::extract<Ufora::Json> extractJson(o);
-			
+
 			if (extractJson.check())
 				return extractJson();
 
@@ -273,7 +273,7 @@ public:
 				v->write(KeyUpdate(key, UpdateType()));
 				return;
 				}
-			
+
 			Nullable<Ufora::Json> json = pyToJson(o);
 
 			if (json)
@@ -282,8 +282,8 @@ public:
 				v->write(KeyUpdate(key, UpdateType(json)));
 				return;
 				}
-			
-			lassert_dump(false, "bad key value " << Ufora::python::pyToString(o) 
+
+			lassert_dump(false, "bad key value " << Ufora::python::pyToString(o)
 					<< ": should be string, Json, or None");
 			}
 
@@ -299,7 +299,7 @@ public:
 					new serialized_channel_type(inCallbackScheduler, pRaw.first)
 					),
 				makeQueuelikeChannel(
-					inCallbackScheduler, 
+					inCallbackScheduler,
 					new serialized_manager_channel_type(inCallbackScheduler, pRaw.second)
 					)
 				);
@@ -312,16 +312,16 @@ public:
 			{
 
 			typedef SerializedChannel<
-						MessageOut,  
-						MessageIn, 
-						BinaryStreamSerializer, 
+						MessageOut,
+						MessageIn,
+						BinaryStreamSerializer,
 						BinaryStreamDeserializer
 						>						 						view_channel_type;
 
 			typedef SerializedChannel<
-						MessageIn, 
-						MessageOut,  
-						BinaryStreamSerializer, 
+						MessageIn,
+						MessageOut,
+						BinaryStreamSerializer,
 						BinaryStreamDeserializer
 						>						 						manager_channel_type;
 
@@ -369,7 +369,7 @@ public:
 			return boost::python::make_tuple(
 				makeQueuelikeChannel(
 					inCallbackScheduler,
-					pRaw.second 
+					pRaw.second
 					),
 
 				makeQueuelikeChannel(
@@ -401,7 +401,7 @@ public:
 				PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
 				int32_t inFileDescriptor
 				)
-										
+
 			{
 			return boost::python::object(
 				makeQueuelikeChannel(
@@ -429,11 +429,11 @@ public:
 			}
 
 		static KeyRange makeKeyRange(
-							const Keyspace& keyspace, 
-							uint32_t index, 
-							boost::python::object leftBound, 
-							boost::python::object rightBound, 
-							bool leftInclusive, 
+							const Keyspace& keyspace,
+							uint32_t index,
+							boost::python::object leftBound,
+							boost::python::object rightBound,
+							bool leftInclusive,
 							bool rightInclusive)
 			{
 			using namespace boost::python;
@@ -515,7 +515,7 @@ public:
 
 			for(uint32_t i = 0; i < extract<uint32_t>(inTup.attr("__len__")()); i++)
 				tr.push_back(pyToJsonOrError(inTup[i]));
-			
+
 			lassert_dump(inKeyspace.dimension() == tr.size(),
 				"can't create a keyspace of dimension "
 					<< inKeyspace.dimension() << " with a tuple of dimension "
@@ -555,7 +555,7 @@ public:
 				else
 			if(inKey == otherKey)
 				return 0;
-			
+
 			return 1;
 			}
 
@@ -578,10 +578,10 @@ public:
 			std::ostringstream s;
 
 			s << "Key(" << prettyPrintString(inKey.keyspace().name()) << ", (";
-			
+
 			for (long k = 0; k < inKey.id().size();k++)
 				s << prettyPrintString(inKey.id()[k]) << (k + 1 < inKey.id().size() ? ", " : "");
-			
+
 			s << "))";
 
 			return s.str();
@@ -671,12 +671,12 @@ public:
 			{
 			v->teardown();
 			}
-		
+
 		static KeyspaceManager::pointer_type* createKeyspaceManager(
-				uint32_t inSeedVal, 
-				uint32_t numManagers, 
-				uint32_t backupInterval, 
-				double pingInterval, 
+				uint32_t inSeedVal,
+				uint32_t numManagers,
+				uint32_t backupInterval,
+				double pingInterval,
 				boost::python::object storageOrNone
 				)
 			{
@@ -687,10 +687,10 @@ public:
 
 			return new KeyspaceManager::pointer_type(
 				new KeyspaceManager(
-					inSeedVal, 
-					numManagers, 
-					backupInterval, 
-					pingInterval, 
+					inSeedVal,
+					numManagers,
+					backupInterval,
+					pingInterval,
 					inStorage
 					)
 				);
@@ -709,18 +709,18 @@ public:
 			}
 
 		static KeyspaceManager::pointer_type* createKeyspaceManager2(
-				uint32_t inSeedVal, 
-				uint32_t numManagers, 
-				uint32_t backupInterval, 
+				uint32_t inSeedVal,
+				uint32_t numManagers,
+				uint32_t backupInterval,
 				double pingInterval
 				)
 			{
 			return new KeyspaceManager::pointer_type(
 				new KeyspaceManager(
-					inSeedVal, 
-					numManagers, 
-					backupInterval, 
-					pingInterval, 
+					inSeedVal,
+					numManagers,
+					backupInterval,
+					pingInterval,
 					PolymorphicSharedPtr<FileStorage>()
 					)
 				);
@@ -728,14 +728,14 @@ public:
 
 
 
-		static void keyspace_manager_add(	KeyspaceManager::pointer_type& inHolder, 
+		static void keyspace_manager_add(	KeyspaceManager::pointer_type& inHolder,
 										manager_channel_ptr_type& inChannel
 										)
 			{
 			inHolder->add(inChannel);
 			}
 
-		static void keyspace_manager_add_event(	KeyspaceManager::pointer_type& inHolder, 
+		static void keyspace_manager_add_event(	KeyspaceManager::pointer_type& inHolder,
 										const PartialEvent& event
 										)
 			{
@@ -768,7 +768,7 @@ public:
 		static out_message_type channel_get(channel_type& channel)
 			{
 			ScopedPyThreads releasePythonGIL;
-			
+
 			return channel->get();
 			}
 
@@ -786,7 +786,7 @@ public:
 			channel->disconnect();
 			}
 
-        // this is necessary because the boost::python conversion doesn't 
+        // this is necessary because the boost::python conversion doesn't
         // seem to work correctly with a string&
 		static void serialized_channel_write(string_channel_ptr_type& channel, string in)
 			{
@@ -799,7 +799,7 @@ public:
 			{
 			if (!msg.isBundle())
 				return boost::python::object();
-			
+
 			boost::python::list l;
 
 			for (long k = 0; k < msg.getBundle().messages().size(); k++)
@@ -812,7 +812,7 @@ public:
 			{
 			if (!msg.isBundle())
 				return boost::python::object();
-			
+
 			boost::python::list l;
 
 			for (long k = 0; k < msg.getBundle().messages().size(); k++)
@@ -853,7 +853,7 @@ public:
 			{
 			return new Keyspace(type, pyToJsonOrError(name), dim);
 			}
-		
+
 		static KeyBound* CreateKeyBound(boost::python::object bound, bool isLeft)
 			{
 			return new KeyBound(pyToJsonOrError(bound), isLeft);
@@ -862,7 +862,7 @@ public:
 		static void exportPythonInterface()
 			{
 			using namespace boost::python;
- 
+
 			boost::python::register_exception_translator<Ufora::OsError>(&osErrorTranslator);
 
 			class_<channel_ptr_type>("ViewChannel", no_init)
@@ -876,7 +876,7 @@ public:
 				.def("write", &channel_write<manager_channel_ptr_type, MessageIn>)
 				.def("disconnect", &channel_disconnect<manager_channel_ptr_type>)
 				;
-				
+
 			class_<KeyspaceManager::pointer_type >("KeyspaceManager", no_init)
 				.def("__init__", make_constructor(&createKeyspaceManager))
 				.def("__init__", make_constructor(&createKeyspaceManager2))
@@ -957,7 +957,7 @@ public:
 				.staticmethod("MakeBundle")
 				;
 
-			
+
 			class_<KeyBound>("KeyBound", no_init)
 				.def("__init__", make_constructor(CreateKeyBound));
 
@@ -985,9 +985,9 @@ public:
 				.def("unsubscribe", &unsubscribe2)
 				.def("unsubscribe", &unsubscribe)
 				.def("getClientId", &view_get_client_id)
-				.def("waitConnect", &waitConnect) 
-				.def("waitConnectTimeout", &waitConnectTimeout) 
-				.def("teardown", &view_teardown) 
+				.def("waitConnect", &waitConnect)
+				.def("waitConnectTimeout", &waitConnectTimeout)
+				.def("teardown", &view_teardown)
 				.add_property("id", &view_id)
 				.add_property("isFrozen", &view_frozen)
 				.add_property("connected", &view_connected)

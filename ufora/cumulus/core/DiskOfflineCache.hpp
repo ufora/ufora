@@ -35,32 +35,32 @@ namespace Cumulus {
 class DiskOfflineCache : public OfflineCache {
 public:
 	typedef PolymorphicSharedPtr<DiskOfflineCache, OfflineCache::pointer_type> pointer_type;
-	
+
 	DiskOfflineCache(
 			PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
-			std::string basePath, 
-			uint64_t maxCacheSize, 
+			std::string basePath,
+			uint64_t maxCacheSize,
 			uint64_t maxCacheItemCount
 			);
 
 	DiskOfflineCache(
 			PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
-			boost::filesystem::path basePath, 
-			uint64_t maxCacheSize, 
+			boost::filesystem::path basePath,
+			uint64_t maxCacheSize,
 			uint64_t maxCacheItemCount
 			);
-	
+
 	//stores a value in the cache.
 	void store(		const Fora::PageId& inID,
 					const PolymorphicSharedPtr<SerializedObject>& inData
 					);
 
 	void drop(const Fora::PageId& inID);
-	
+
 	//checks whether a value for the given cache key definitely already
 	//exists.
 	bool alreadyExists(const Fora::PageId& inID);
-	
+
 	uint64_t getCacheSizeUsedBytes(void) const;
 	uint64_t getCacheItemCount(void) const;
 	uint64_t getCacheBytesDropped(void) const;
@@ -74,22 +74,22 @@ public:
 
 private:
 	boost::recursive_mutex			mMutex;
-	
+
 	// dropItemByName_ must be called with mMutex held
 	void dropItemByName_(std::string cacheItemToDelete);
 
 	boost::filesystem::path pathFor(const Fora::PageId& inID);
 
 	std::string filenameFor(const Fora::PageId& inID);
-	
+
 	void dropExcessCacheItemsExcluding(Fora::PageId itemName);
-	
+
 	Fora::PageId pickARandomCacheItem();
 
 	boost::filesystem::path	mBasePath;
 
     std::map<std::string, uint64_t> mFileSizes;
-    
+
     std::map<std::string, Fora::PageId> mPageIDs;
 
     std::set<Fora::PageId> mPagesHeld;
@@ -98,7 +98,7 @@ private:
 
     std::set<Fora::PageId> mPagesBeingRead;
 
-    std::map<Fora::PageId, 
+    std::map<Fora::PageId,
     	std::vector<
     		boost::shared_ptr<
     			Queue<PolymorphicSharedPtr<SerializedObject> >
@@ -107,19 +107,19 @@ private:
     	> mQueuesForBlockedReads;
 
     std::set<Fora::PageId> mPagesToDropAfterIO;
-    
+
     uint64_t mCacheSize;
-    
+
     uint64_t mCacheItemCount;
-    
+
     uint64_t mTotalBytesDumped;
-    
+
     uint64_t mTotalBytesLoaded;
-    
+
     uint64_t mTotalFilesDumped;
-    
+
     uint64_t mMaxCacheSize;
-    
+
     uint64_t mMaxCacheItemCount;
 
     hash_type mCurRandomHash;

@@ -51,7 +51,7 @@ class SerializedObjectContextSerializer;
 class SerializedObjectContextDeserializer;
 class SerializedObject;
 
-class SerializedObjectContext : 
+class SerializedObjectContext :
 		public PolymorphicSharedPtrBase<SerializedObjectContext>
 {
 public:
@@ -67,20 +67,20 @@ public:
 		void	serialize(SerializedObjectContextSerializer& serializer, const Expression& inVal);
 		void	serialize(SerializedObjectContextSerializer& serializer, const ControlFlowGraph& inVal);
 		void	serialize(SerializedObjectContextSerializer& serializer, const MutableVectorRecord& inVal);
-		
+
 		template<class T>
 		void serialize(SerializedObjectContextSerializer& serializer, const T& in)
 			{
 			mMemoStorage.serialize(serializer, in, false);
 			}
 
-		//deserialize a FORA value.  
+		//deserialize a FORA value.
 		void	deserialize(SerializedObjectContextDeserializer& deserializer, Type& outVal);
 		void	deserialize(SerializedObjectContextDeserializer& deserializer, JudgmentOnValue& outVal);
 		void	deserialize(SerializedObjectContextDeserializer& deserializer, Expression& outVal);
 		void	deserialize(SerializedObjectContextDeserializer& deserializer, ControlFlowGraph& outVal);
 		void	deserialize(SerializedObjectContextDeserializer& deserializer, MutableVectorRecord& outVal);
-		
+
 		template<class T>
 		void deserialize(SerializedObjectContextDeserializer& deserializer, T& out)
 			{
@@ -107,16 +107,16 @@ private:
 		MapWithIndex<MutableVectorRecord, uint32_t> mMutableVectorRecordsSerialized;
 
 		Fora::MemoizableDuringSerialization::MemoStorage mMemoStorage;
-		
+
 		friend class SerializedObject;
 };
 
 //serializer to use when serializing FORA values.
 class SerializedObjectContextSerializer : public Fora::ForaValueSerializationStream {
 public:
-		SerializedObjectContextSerializer(	OBinaryStream& s, 
+		SerializedObjectContextSerializer(	OBinaryStream& s,
 											SerializedObjectContext& context
-											) : 
+											) :
 				Fora::ForaValueSerializationStream(s),
 				mContext(context)
 			{
@@ -166,10 +166,10 @@ private:
 
 class SerializedObjectContextDeserializer : public Fora::ForaValueDeserializationStream {
 public:
-		SerializedObjectContextDeserializer(IBinaryStream& s, 
+		SerializedObjectContextDeserializer(IBinaryStream& s,
 											SerializedObjectContext& context,
 											MemoryPool* inTargetMemoryPool
-											) : 
+											) :
 				Fora::ForaValueDeserializationStream(s, inTargetMemoryPool, context.getVDMM()),
 				mContext(context)
 			{

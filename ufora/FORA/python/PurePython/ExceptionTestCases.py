@@ -704,7 +704,7 @@ class ExceptionTestCases(object):
             except pyfora.ComputationError as e:
                 self.assertTrue(isinstance(e.remoteException, pyfora.InvalidPyforaOperation))
 
-            
+
     def test_return_in_init_method(self):
         def f():
             class ClassReturnInInit:
@@ -851,7 +851,7 @@ class ExceptionTestCases(object):
 
         with self.assertRaises(pyfora.ComputationError) as raised:
             self.evaluateWithExecutor(f)
-            
+
         self.assertTrue(isinstance(raised.exception.remoteException, pyfora.Exceptions.InvalidPyforaOperation))
 
     def test_returning_slice_2(self):

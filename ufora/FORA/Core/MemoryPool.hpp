@@ -52,7 +52,7 @@ public:
 	};
 
 
-	MemoryPool(MemoryPoolType inType) : 
+	MemoryPool(MemoryPoolType inType) :
 			mType(inType)
 		{
 		}
@@ -149,7 +149,7 @@ public:
 
 		return result;
 		}
-	
+
 	template<class T, class A1>
 	T* construct(const A1& a1)
 		{
@@ -161,7 +161,7 @@ public:
 
 		return result;
 		}
-	
+
 	template<class T, class A1, class A2>
 	T* construct(const A1& a1, const A2 &a2)
 		{
@@ -173,7 +173,7 @@ public:
 
 		return result;
 		}
-	
+
 	template<class T, class A1, class A2, class A3>
 	T* construct(const A1& a1, const A2 &a2, const A3& a3)
 		{
@@ -185,7 +185,7 @@ public:
 
 		return result;
 		}
-	
+
 	template<class T, class A1, class A2, class A3, class A4>
 	T* construct(const A1& a1, const A2 &a2, const A3& a3, const A4& a4)
 		{
@@ -197,7 +197,7 @@ public:
 
 		return result;
 		}
-	
+
 	template<class T, class A1, class A2, class A3, class A4, class A5>
 	T* construct(const A1& a1, const A2 &a2, const A3& a3, const A4& a4, const A5& a5)
 		{
@@ -209,7 +209,7 @@ public:
 
 		return result;
 		}
-	
+
 	template<class T, class A1, class A2, class A3, class A4, class A5, class A6>
 	T* construct(const A1& a1, const A2 &a2, const A3& a3, const A4& a4, const A5& a5, const A6& a6)
 		{
@@ -221,7 +221,7 @@ public:
 
 		return result;
 		}
-	
+
 	template<class T, class A1, class A2, class A3, class A4, class A5, class A6, class A7>
 	T* construct(const A1& a1, const A2 &a2, const A3& a3, const A4& a4, const A5& a5, const A6& a6, const A7& a7)
 		{
@@ -233,7 +233,7 @@ public:
 
 		return result;
 		}
-	
+
 	template<class T, class A1, class A2, class A3, class A4, class A5, class A6, class A7, class A8>
 	T* construct(const A1& a1, const A2 &a2, const A3& a3, const A4& a4, const A5& a5, const A6& a6, const A7& a7, const A8& a8)
 		{
@@ -245,7 +245,7 @@ public:
 
 		return result;
 		}
-	
+
 	template<class T, class A1, class A2, class A3, class A4, class A5, class A6, class A7, class A8, class A9>
 	T* construct(const A1& a1, const A2 &a2, const A3& a3, const A4& a4, const A5& a5, const A6& a6, const A7& a7, const A8& a8, const A9& a9)
 		{
@@ -257,7 +257,7 @@ public:
 
 		return result;
 		}
-	
+
 	template<class T, class A1, class A2, class A3, class A4, class A5, class A6, class A7, class A8, class A9, class A10>
 	T* construct(const A1& a1, const A2 &a2, const A3& a3, const A4& a4, const A5& a5, const A6& a6, const A7& a7, const A8& a8, const A9& a9, const A10& a10)
 		{
@@ -269,7 +269,7 @@ public:
 
 		return result;
 		}
-	
+
 	template<class T, class A1, class A2, class A3, class A4, class A5, class A6, class A7, class A8, class A9, class A10, class A11>
 	T* construct(const A1& a1, const A2 &a2, const A3& a3, const A4& a4, const A5& a5, const A6& a6, const A7& a7, const A8& a8, const A9& a9, const A10& a10, const A11& a11)
 		{
@@ -281,7 +281,7 @@ public:
 
 		return result;
 		}
-	
+
 	template<class T, class A1, class A2, class A3, class A4, class A5, class A6, class A7, class A8, class A9, class A10, class A11, class A12>
 	T* construct(const A1& a1, const A2 &a2, const A3& a3, const A4& a4, const A5& a5, const A6& a6, const A7& a7, const A8& a8, const A9& a9, const A10& a10, const A11& a11, const A12& a12)
 		{

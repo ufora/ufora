@@ -27,7 +27,7 @@ public:
 	INoncontiguousByteBlockProtocol(PolymorphicSharedPtr<NoncontiguousByteBlock> inData);
 	INoncontiguousByteBlockProtocol(const INoncontiguousByteBlockProtocol& in) = delete;
 	INoncontiguousByteBlockProtocol& operator=(const INoncontiguousByteBlockProtocol& in) = delete;
-	
+
 	uword_t read(uword_t inByteCount, void *inData, bool inBlock);
 
 	uword_t position(void);

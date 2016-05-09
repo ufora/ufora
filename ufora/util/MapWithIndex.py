@@ -36,7 +36,7 @@ class MapWithIndex:
         self.dropKey(key)
     def __contains__(self, key):
         return key in self.keyVal
-        
+
     def hasKey(self, key):
         return self.keyVal.has_key(key)
     def hasVal(self, val):
@@ -63,5 +63,5 @@ class MapWithIndex:
         keys = set(self.keysFor(value))
         for k in keys:
             self.dropKey(k)
-        
+
 

@@ -30,7 +30,7 @@ class StatementTermTest(unittest.TestCase):
         self.whitespaceInserter = ForaNative.RandomWhitespaceInserter(42)
         random.seed(1337)
         np.random.seed(42)
-        
+
     def generateTestExpressions(self):
         return ParserTest.generateTestExpressions()
 
@@ -65,7 +65,7 @@ class StatementTermTest(unittest.TestCase):
     def getIds(self, terms):
         return [x.extractCodeLocationId() for x in terms]
 
-        
+
     def test_locationsRobustToInsertion(self):
         termList1 = self.parseTerms("""let s = 1 + 0; s; s;""")
         termList2 = self.parseTerms("""let s = 1 + 0; 123; s; s;""")
@@ -118,7 +118,7 @@ class StatementTermTest(unittest.TestCase):
 
         #check that we are robust to interior closure changes
         self.assertTrue(hashOf("let f = fun() { {_} }; f()") == hashOf("let f = fun() { 1; {_} }; f()"))
-    
+
     def insertRandomWhitespace(self, string):
         simpleParse = ForaNative.SimpleParseNode.parse(string)
         return \
@@ -143,10 +143,10 @@ class StatementTermTest(unittest.TestCase):
             h2 = [term.hash() for term in terms2]
 
             self.assertEqual(
-                h1, h2, "expressions did not parse equally!\n" + 
+                h1, h2, "expressions did not parse equally!\n" +
                 str(exprStr) + "\n\nvs\n\n" + str(exprStrWithWhitespace)
                 )
-        
+
     def test_insensitivityToWhitespace(self):
         testExprs = self.generateTestExpressions()
         for testExpr in testExprs:
@@ -161,8 +161,8 @@ class StatementTermTest(unittest.TestCase):
             # let's keep the values unique. we've seen that statement term
             # identities are not preserved under permutations in this case
             tr.append(list(set([testExprs[ix] for ix in randomIndices])))
-            
-        return tr                
+
+        return tr
 
     def test_identities_stable_under_appending(self):
         allTerms = self.generateTestStatementTerms()
@@ -192,14 +192,14 @@ class StatementTermTest(unittest.TestCase):
         codeLocationIdsAfterInsertion = self.getIds(termsAfterInsertion)
 
         self.assertEqual(
-            originalCodeLocationIds, 
+            originalCodeLocationIds,
             codeLocationIdsAfterInsertion[:len(originalCodeLocationIds)]
             )
 
         self.assertEqual(
             originalHashes,
             hashesAfterInsertion[:len(originalHashes)]
-            )      
+            )
 
     def test_identities_independent_of_order(self):
         testStatementTerms = self.generateTestStatementTerms()
@@ -214,14 +214,14 @@ class StatementTermTest(unittest.TestCase):
 
         permutation = np.random.permutation(len(h1))
         reorderedTerms = ';'.join([inTerms[ix] for ix in permutation])
-        
+
         terms2 = self.parseTerms(reorderedTerms)
         h2 = [term.hash() for term in terms2]
         ids2 = self.getIds(terms2)
 
-        self.assertEqual([ids1[ix] for ix in permutation], ids2, 
+        self.assertEqual([ids1[ix] for ix in permutation], ids2,
                          str(ix) + "\n" + str(inTerms) + "\nvs\n" + str([inTerms[ix] for ix in permutation]))
 
         self.assertEqual([h1[ix] for ix in permutation], h2)
-        
+
 

@@ -37,9 +37,9 @@ InstanceStorage::InstanceStorage()
 	mIDTable = evalInModule("InstanceDataToIDLookupTable()", "ufora.BackendGateway.ComputedGraph.ComputedGraph");
 	}
 
-Location InstanceStorage::getObject(	PolymorphicSharedPtr<Graph> inGraph, 
-										PolymorphicSharedPtr<LocationType> inLocationType, 
-										dict inInstanceData, 
+Location InstanceStorage::getObject(	PolymorphicSharedPtr<Graph> inGraph,
+										PolymorphicSharedPtr<LocationType> inLocationType,
+										dict inInstanceData,
 										bool& needsInitialization
 										)
 	{
@@ -105,5 +105,5 @@ size_t InstanceStorage::size(void) const
 	return mInstances.size();
 	}
 
-	
+
 }

@@ -129,7 +129,7 @@ class ThreadLocalStackPushable(object):
         toLookup = threadLocalStackPushClassFor_(type(self))
         if toLookup not in ThreadLocalStackPushable.classToStackMap:
             ThreadLocalStackPushable.classToStackMap[toLookup] = ThreadLocalStack()
-    
+
     def __enter__(self):
         toLookup = threadLocalStackPushClassFor_(type(self))
         ThreadLocalStackPushable.classToStackMap[toLookup].push(self)
@@ -145,7 +145,7 @@ class ThreadLocalStackPushable(object):
             return None
 
         return ThreadLocalStackPushable.classToStackMap[toLookup].topOrNone
-        
+
     @classmethod
     def getNullContext(cls):
         return NullContextPusher(cls)

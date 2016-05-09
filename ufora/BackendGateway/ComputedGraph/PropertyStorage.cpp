@@ -98,11 +98,11 @@ void PropertyStorage::setMutableProperty(LocationProperty inNode, const boost::p
 	lassert(inNode.attributeType() == attrMutable);
 
 	setProperty(inNode, inVal, std::set< LocationProperty >());
-	} 
+	}
 
 void PropertyStorage::setProperty(
-			LocationProperty inNode, 
-			const boost::python::object& inValue, 
+			LocationProperty inNode,
+			const boost::python::object& inValue,
 			const std::set< LocationProperty >& inNewDowntreeValues
 			)
 	{
@@ -255,7 +255,7 @@ int32_t PropertyStorage::calcLevel(LocationProperty inNode) const
 	for (std::set<LocationProperty>::const_iterator it = downtree.begin(); it != downtree.end(); ++it)
 		{
 		lassert(mNode_LazyCleanAndLevel.hasKey(*it));
-		
+
 		int32_t l = getLevel(*it);
 		if (myLevel < l+1)
 			myLevel = l+1;
@@ -282,7 +282,7 @@ bool PropertyStorage::computeLaziness(LocationProperty inNode)
 		return true;
 	if (isRoot(inNode))
 		return false;
-	
+
 	//we're not a lazy node, and not a root. So we're here because other nodes
 	//depend on us. Check them. If all are lazy, we're lazy.
 	//if none are lazy, we're not lazy (actually, we're orphaned)
@@ -290,7 +290,7 @@ bool PropertyStorage::computeLaziness(LocationProperty inNode)
 	for (std::set<LocationProperty>::const_iterator it = uptree.begin(); it != uptree.end(); ++it)
 		if (!isLazy(*it))
 			return false;
-	
+
 	return uptree.size();
 	}
 
@@ -300,7 +300,7 @@ bool PropertyStorage::recomputeLaziness(LocationProperty inNode)
 	bool curLaziness = isLazy(inNode);
 	bool newLaziness = computeLaziness(inNode);
 	setLazy(inNode, newLaziness);
-	
+
 	return curLaziness != newLaziness;
 	}
 
@@ -384,7 +384,7 @@ bool PropertyStorage::hasDirty(bool inIncludeLazy) const
 		return false;
 
 	std::pair<bool, bool> lazyAndClean = mNode_LazyCleanAndLevel.lowestValue().first;
-	
+
 	if (inIncludeLazy)
 		{
 		//if the lowest node is dirty, then it's dirty
@@ -393,17 +393,17 @@ bool PropertyStorage::hasDirty(bool inIncludeLazy) const
 		//if the lowest node is lazy and clean, then we're done
 		if (lazyAndClean.first)
 			return false;
-		
+
 		//the lowest node is not lazy, but it's clean. so we need to check the lowest nonlazy node
-		
+
 		//get the first node that's not less than <lazy, dirty>
 		std::map<pair<std::pair<bool, bool>, int32_t>, std::set<LocationProperty> >::const_iterator it;
 		it = mNode_LazyCleanAndLevel.getValueToKeys().lower_bound(std::make_pair(std::make_pair(true, false), 0));
-		
+
 		if (it == mNode_LazyCleanAndLevel.getValueToKeys().end())
 			//all nodes are nonlazy
 			return false;
-		
+
 		lassert(it->first.first.first); //it must be lazy
 		return !it->first.first.second; //return whether it's dirty
 		}
@@ -412,28 +412,28 @@ bool PropertyStorage::hasDirty(bool inIncludeLazy) const
 		//if the first node is lazy, there are no nonlazy nodes
 		if (lazyAndClean.first)
 			return false;
-		
+
 		return !lazyAndClean.second;
 		}
 	}
-	
+
 LocationProperty PropertyStorage::getLowestDirty(bool inIncludeLazy)
 	{
 	lassert(hasDirty(inIncludeLazy));
-	
+
 	std::map<std::pair<std::pair<bool, bool>, int32_t>, std::set<LocationProperty> >::const_iterator it;
 	it = mNode_LazyCleanAndLevel.getValueToKeys().lower_bound(make_pair(make_pair(false, false), 0));
-	
+
 	if (!it->first.first.second)
 		//it's dirty. MapWithIndex guarantees the std::set is not empty
 		return *it->second.begin();
-	
+
 	//if we're here, we must be allowed to include lazy.
 	//otherwise, there wouldn't be a dirty thing to return and we verified that at
 	//the beginning of the function
 	lassert(inIncludeLazy);
 	it = mNode_LazyCleanAndLevel.getValueToKeys().lower_bound(make_pair(make_pair(true, false), 0));
-	
+
 	lassert(it != mNode_LazyCleanAndLevel.getValueToKeys().end());
 	return *it->second.begin();
 	}

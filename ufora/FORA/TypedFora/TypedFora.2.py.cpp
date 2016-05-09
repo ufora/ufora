@@ -33,11 +33,11 @@ public:
 			{
 			return "FORA";
 			}
-			
+
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
+
 			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::ResultSignature>(false);
 			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::BlockID>(false);
 			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::Block>(false);

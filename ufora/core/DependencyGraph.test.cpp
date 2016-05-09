@@ -28,7 +28,7 @@ int addOne(boost::shared_ptr<Mutable<int> > in)
 	}
 
 float brownian(
-			boost::shared_ptr<ComputedProperty<float> > left, 
+			boost::shared_ptr<ComputedProperty<float> > left,
 			boost::shared_ptr<ComputedProperty<float> > right
 			)
 	{
@@ -59,7 +59,7 @@ BOOST_AUTO_TEST_CASE( test_basic )
 	graph.recompute();
 
 	BOOST_CHECK_EQUAL(aProperty->get(), 11);
-	
+
 	aMutable->set(20);
 
 	BOOST_CHECK_EQUAL(aProperty->get(), 11);
@@ -95,7 +95,7 @@ BOOST_AUTO_TEST_CASE( test_brownian )
 		std::vector<boost::shared_ptr<ComputedProperty<float> > > newProps;
 		for (long k = 0; k + 1 < properties.size(); k++)
 			newProps.push_back(
-				bind(graph, 
+				bind(graph,
 					boost::bind(
 						brownian,
 						properties[k],
@@ -119,7 +119,7 @@ BOOST_AUTO_TEST_CASE( test_brownian )
 	long recomputeCount = graph.recompute();
 
 	BOOST_CHECK_MESSAGE(
-		recomputeCount > 50 && recomputeCount < 100, 
+		recomputeCount > 50 && recomputeCount < 100,
 		"Expected recompute count < 100 but got " << recomputeCount
 		);
 

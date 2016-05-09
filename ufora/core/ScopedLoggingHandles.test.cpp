@@ -68,13 +68,13 @@ BOOST_AUTO_TEST_CASE( test_overrides )
 	BOOST_CHECK(**aHandle12 == LOG_LEVEL_ERROR);
 	BOOST_CHECK(**aHandle21 == LOG_LEVEL_WARN);
 	BOOST_CHECK(**aHandle22 == LOG_LEVEL_INFO);
-	
+
 	//verify that a new pattern will have the appropriate level
 	LogLevel** aHandle13 = handles.getHandle(ScopedLoggingEntry("scope1", "file3"));
 	LogLevel** aHandle31 = handles.getHandle(ScopedLoggingEntry("scope3", "file1"));
 	BOOST_CHECK(**aHandle31 == LOG_LEVEL_WARN);
 	BOOST_CHECK(**aHandle13 == LOG_LEVEL_ERROR);
-	
+
 	//verify we can override everything back to what it was
 	handles.addPattern(ScopedLoggingEntry(".*", ".*"), null());
 

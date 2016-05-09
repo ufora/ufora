@@ -32,7 +32,7 @@ T aValue(...);
 	{
 	ScopedThreadLocalContext<T> contextSetter(aValue);
 
-	//within subscopes: 
+	//within subscopes:
 	lassert(ScopedThreadLocalContext<T>::has());
 	lassert(&ScopedThreadLocalContext<T>::get() == &aValue);
 	lassert(ScopedThreadLocalContext<T>::getPtr() == &aValue);

@@ -49,8 +49,8 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
-			boost::python::object compDefCls = 
+
+			boost::python::object compDefCls =
 				FORAPythonUtil::exposeValueLikeCppmlType<ComputationDefinition>()
 					.class_()
 					.def("__init__", make_constructor(computationDefinitionFromIVC))
@@ -58,7 +58,7 @@ public:
 				;
 			def("ComputationDefinition", compDefCls);
 
-			boost::python::object compDefTermCls = 
+			boost::python::object compDefTermCls =
 				FORAPythonUtil::exposeValueLikeCppmlType<ComputationDefinitionTerm>()
 					.class_();
 

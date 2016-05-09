@@ -3,7 +3,7 @@
 #include "../../ufora/core/IntegerTypes.hpp"
 #include <dtoa/dtoa.hpp>
 
-#define IEEE_8087 
+#define IEEE_8087
 #define Long int32_t
 #define ULong uint32_t
 #define Llong int64_t

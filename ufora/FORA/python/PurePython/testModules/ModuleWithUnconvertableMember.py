@@ -18,7 +18,7 @@ def convertableMember(x):
 def unconvertableMember(x):
     # we're not imaginining being able to convert
     # augment assign, floor division, or finally's
-    x += 2        
+    x += 2
     x = x // 2
 
 

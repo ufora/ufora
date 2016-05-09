@@ -49,7 +49,7 @@ public:
 		using namespace boost::python;
 
 		def("SocketStringChannel", makeSocketStringChannel);
-		}	
+		}
 };
 
 //explicitly instantiating the registration element causes the linker to need

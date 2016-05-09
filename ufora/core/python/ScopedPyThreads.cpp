@@ -49,7 +49,7 @@ ScopedPyThreadsReacquire::ScopedPyThreadsReacquire() :
 			mAcquired(false)
 	{
 	PyThreadState** threadState = ScopedPyThreads::getPtr()->get();
-	
+
 	if (threadState)
 		{
 		PyEval_RestoreThread(*threadState);

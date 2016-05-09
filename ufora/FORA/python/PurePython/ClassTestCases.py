@@ -889,7 +889,7 @@ class ClassTestCases(object):
         c1 = self.evaluateWithExecutor(f, 1)
         c2 = f(-1)
         c3 = self.evaluateWithExecutor(f, -1)
-        
+
         self.assertEqual(c0.__dict__, c1.__dict__)
         self.assertEqual(c2.__dict__, c3.__dict__)
 
@@ -949,7 +949,7 @@ class ClassTestCases(object):
                     self.x4,
                     self.x5
                     )
-            
+
         def f():
             return A_lots_o_args_3(1, x3=3, x4=4, x2=2).vals()
 
@@ -968,7 +968,7 @@ class ClassTestCases(object):
             return c.pure_method()
 
         self.equivalentEvaluationTest(f)
-                
+
     def test_class_with_pure_and_impure_methods_2(self):
         import multiprocessing
 
@@ -984,7 +984,7 @@ class ClassTestCases(object):
             return c.pure_method()
 
         self.equivalentEvaluationTest(f)
-                
+
     def test_class_with_pure_and_impure_methods_3(self):
         import os
 
@@ -1000,7 +1000,7 @@ class ClassTestCases(object):
             return c.pure_method()
 
         self.equivalentEvaluationTest(f)
-                
+
     def test_class_with_pure_and_impure_methods_4(self):
         import sys
 
@@ -1016,7 +1016,7 @@ class ClassTestCases(object):
             return c.pure_method()
 
         self.equivalentEvaluationTest(f)
-                
+
     def test_class_with_pure_and_impure_methods_5(self):
         import time
 
@@ -1032,7 +1032,7 @@ class ClassTestCases(object):
             return c.pure_method()
 
         self.equivalentEvaluationTest(f)
-                
+
     def test_class_with_pure_and_impure_methods_6(self):
         import hashlib
 
@@ -1048,4 +1048,4 @@ class ClassTestCases(object):
             return c.pure_method()
 
         self.equivalentEvaluationTest(f)
-                
+

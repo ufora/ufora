@@ -34,7 +34,7 @@ public:
 
 	virtual std::string serialize(boost::shared_ptr<ArbitraryNativeConstant> constant)
 		{
-		boost::shared_ptr<ArbitraryNativeConstantForString> c = 
+		boost::shared_ptr<ArbitraryNativeConstantForString> c =
 			boost::dynamic_pointer_cast<ArbitraryNativeConstantForString>(constant);
 
 		lassert(c);
@@ -45,7 +45,7 @@ public:
 	static ArbitraryNativeConstantTypeRegistrar<ArbitraryNativeConstantForStringType> sRegistrar;
 };
 
-ArbitraryNativeConstantTypeRegistrar<ArbitraryNativeConstantForStringType> 
+ArbitraryNativeConstantTypeRegistrar<ArbitraryNativeConstantForStringType>
 	ArbitraryNativeConstantForStringType::sRegistrar;
 
 

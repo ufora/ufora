@@ -44,7 +44,7 @@ public:
 			{
 			return getValues(key).find(value) != getValues(key).end();
 			}
-		
+
 		const std::set<value_type, value_compare>& getValues(const key_type& inKey) const
 			{
 			if (mKeysToValues.find(inKey) == mKeysToValues.end())
@@ -88,7 +88,7 @@ public:
 			for (typename std::set<value_type, value_compare>::const_iterator it = inValues.begin(); it != inValues.end();++it)
 				insert(inKeys, *it);
 			}
-		
+
 		template<class iterator_type>
 		void insert(const key_type& inKey, iterator_type first, iterator_type second)
 			{
@@ -197,30 +197,30 @@ class Serializer;
 template<class T, class storage_type>
 class Deserializer;
 
-template<class key_type, class value_type, class key_compare_type, 
+template<class key_type, class value_type, class key_compare_type,
 											class value_compare_type, class storage_type>
 class Serializer<
-	TwoWaySetMap<key_type, value_type, key_compare_type, value_compare_type>, 
+	TwoWaySetMap<key_type, value_type, key_compare_type, value_compare_type>,
 	storage_type
 	> {
 public:
 		static void serialize(
-				storage_type& s, 
+				storage_type& s,
 				const TwoWaySetMap<key_type, value_type, key_compare_type, value_compare_type>& in
 				)
 			{
 			in.serialize(s);
 			}
 };
-template<class key_type, class value_type, class key_compare_type, 
+template<class key_type, class value_type, class key_compare_type,
 											class value_compare_type, class storage_type>
 class Deserializer<
-	TwoWaySetMap<key_type, value_type, key_compare_type, value_compare_type>, 
+	TwoWaySetMap<key_type, value_type, key_compare_type, value_compare_type>,
 	storage_type
 	> {
 public:
 		static void deserialize(
-					storage_type& s, 
+					storage_type& s,
 					TwoWaySetMap<key_type, value_type, key_compare_type, value_compare_type>& out
 					)
 			{

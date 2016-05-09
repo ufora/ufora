@@ -30,7 +30,7 @@ namespace Abi {
 
 class NativeCodeCompilerTestFixture {
 public:
-	NativeCodeCompilerTestFixture() : 
+	NativeCodeCompilerTestFixture() :
 			compiler(Runtime::getRuntime().getTypedForaCompiler())
 		{
 		lassert(compiler);
@@ -41,7 +41,7 @@ public:
 				TypedNativeExpression<R> fp()
 				)
 		{
-		return TypedNativeFunctionPointer<R (*)()>(compiler, 
+		return TypedNativeFunctionPointer<R (*)()>(compiler,
 			[&]()
 				{
 				return fp().getExpression();
@@ -56,7 +56,7 @@ public:
 						)
 				)
 		{
-		return TypedNativeFunctionPointer<R (*)(A1)>(compiler, 
+		return TypedNativeFunctionPointer<R (*)(A1)>(compiler,
 			[&](	const NativeExpression& a1)
 				{
 				return fp(
@@ -74,8 +74,8 @@ public:
 						)
 				)
 		{
-		return TypedNativeFunctionPointer<R (*)(A1, A2)>(compiler, 
-			[&](	const NativeExpression& a1, 
+		return TypedNativeFunctionPointer<R (*)(A1, A2)>(compiler,
+			[&](	const NativeExpression& a1,
 					const NativeExpression& a2)
 				{
 				return fp(
@@ -95,8 +95,8 @@ public:
 						)
 				)
 		{
-		return TypedNativeFunctionPointer<R (*)(A1, A2, A3)>(compiler, 
-			[&](	const NativeExpression& a1, 
+		return TypedNativeFunctionPointer<R (*)(A1, A2, A3)>(compiler,
+			[&](	const NativeExpression& a1,
 					const NativeExpression& a2,
 					const NativeExpression& a3)
 				{
@@ -115,9 +115,9 @@ public:
 				TypedNativeExpression<R> (TypedNativeExpression<A1>::*fp)() const
 				)
 		{
-		return TypedNativeFunctionPointer<R (*)(A1)>(compiler, 
-			[&](const NativeExpression& in) { 
-				return (TypedNativeExpression<A1>(in).*fp)().getExpression(); 
+		return TypedNativeFunctionPointer<R (*)(A1)>(compiler,
+			[&](const NativeExpression& in) {
+				return (TypedNativeExpression<A1>(in).*fp)().getExpression();
 				}
 			);
 		}
@@ -127,9 +127,9 @@ public:
 				TypedNativeExpression<R> (TypedNativeExpressionBehaviors<A1>::*fp)() const
 				)
 		{
-		return TypedNativeFunctionPointer<R (*)(A1)>(compiler, 
-			[&](const NativeExpression& in) { 
-				return (TypedNativeExpression<A1>(in).*fp)().getExpression(); 
+		return TypedNativeFunctionPointer<R (*)(A1)>(compiler,
+			[&](const NativeExpression& in) {
+				return (TypedNativeExpression<A1>(in).*fp)().getExpression();
 				}
 			);
 		}
@@ -141,13 +141,13 @@ public:
 						) const
 				)
 		{
-		return TypedNativeFunctionPointer<R (*)(A1, A2)>(compiler, 
-			[&](	const NativeExpression& in, 
+		return TypedNativeFunctionPointer<R (*)(A1, A2)>(compiler,
+			[&](	const NativeExpression& in,
 					const NativeExpression& a2
-					) { 
+					) {
 				return (TypedNativeExpression<A1>(in).*fp)(
 						TypedNativeExpression<A2>(a2)
-						).getExpression(); 
+						).getExpression();
 				}
 			);
 		}
@@ -159,13 +159,13 @@ public:
 						) const
 				)
 		{
-		return TypedNativeFunctionPointer<R (*)(A1, A2)>(compiler, 
-			[&](	const NativeExpression& in, 
+		return TypedNativeFunctionPointer<R (*)(A1, A2)>(compiler,
+			[&](	const NativeExpression& in,
 					const NativeExpression& a2
-					) { 
+					) {
 				return (TypedNativeExpression<A1>(in).*fp)(
 						TypedNativeExpression<A2>(a2)
-						).getExpression(); 
+						).getExpression();
 				}
 			);
 		}
@@ -178,15 +178,15 @@ public:
 						) const
 				)
 		{
-		return TypedNativeFunctionPointer<R (*)(A1, A2, A3)>(compiler, 
-			[&](	const NativeExpression& in, 
-					const NativeExpression& a2, 
+		return TypedNativeFunctionPointer<R (*)(A1, A2, A3)>(compiler,
+			[&](	const NativeExpression& in,
+					const NativeExpression& a2,
 					const NativeExpression& a3
-					) { 
+					) {
 				return (TypedNativeExpression<A1>(in).*fp)(
 						TypedNativeExpression<A2>(a2),
 						TypedNativeExpression<A3>(a3)
-						).getExpression(); 
+						).getExpression();
 				}
 			);
 		}
@@ -199,15 +199,15 @@ public:
 						) const
 				)
 		{
-		return TypedNativeFunctionPointer<R (*)(A1, A2, A3)>(compiler, 
-			[&](	const NativeExpression& in, 
-					const NativeExpression& a2, 
+		return TypedNativeFunctionPointer<R (*)(A1, A2, A3)>(compiler,
+			[&](	const NativeExpression& in,
+					const NativeExpression& a2,
 					const NativeExpression& a3
-					) { 
+					) {
 				return (TypedNativeExpression<A1>(in).*fp)(
 						TypedNativeExpression<A2>(a2),
 						TypedNativeExpression<A3>(a3)
-						).getExpression(); 
+						).getExpression();
 				}
 			);
 		}
@@ -216,8 +216,8 @@ public:
 	R callLibraryFunction(R (*funPtr)(A1), A1 a1)
 		{
 		TypedNativeFunctionPointer<R (*)(A1)> fun(
-			compiler, 
-			[&](NativeExpression a1E) { 
+			compiler,
+			[&](NativeExpression a1E) {
 				return makeTypedNativeLibraryFunction(funPtr)(
 					TypedNativeExpression<A1>(a1E)
 					).getExpression();
@@ -231,8 +231,8 @@ public:
 	R callLibraryFunction(R (*funPtr)(A1, A2), A1 a1, A2 a2)
 		{
 		TypedNativeFunctionPointer<R (*)(A1, A2)> fun(
-			compiler, 
-			[&](NativeExpression a1E, NativeExpression a2E) { 
+			compiler,
+			[&](NativeExpression a1E, NativeExpression a2E) {
 				return makeTypedNativeLibraryFunction(funPtr)(
 					TypedNativeExpression<A1>(a1E),
 					TypedNativeExpression<A2>(a2E)
@@ -242,7 +242,7 @@ public:
 
 		return fun(a1, a2);
 		}
-	
+
 	PolymorphicSharedPtr<TypedFora::Compiler> compiler;
 };
 

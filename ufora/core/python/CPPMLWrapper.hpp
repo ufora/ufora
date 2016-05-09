@@ -64,7 +64,7 @@ public:
 
 		try {
 			boost::python::object it = in.attr("__iter__")();
-			
+
 			while(true)
 				{
 				boost::python::object n = it.attr("next")();
@@ -87,10 +87,10 @@ public:
 
 		if (failed)
 			throw std::logic_error(
-				"One or more arguments couldn't be converted to " + 
+				"One or more arguments couldn't be converted to " +
 					Ufora::debug::StackTrace::demangle(typeid(T).name())
 				);
-		
+
 		return res;
 		}
 };
@@ -212,10 +212,10 @@ public:
 		void addMembers(typename wrapper_policy::boost_python_class& inClass, bool readonly)
 			{
 			if (readonly)
-				inClass.add_property(std::string(accessor_in::name()).c_str(), 
+				inClass.add_property(std::string(accessor_in::name()).c_str(),
 						boost::python::make_function(&get, boost::python::return_internal_reference<>()));
 				else
-				inClass.add_property(std::string(accessor_in::name()).c_str(), 
+				inClass.add_property(std::string(accessor_in::name()).c_str(),
 						boost::python::make_function(&get, boost::python::return_internal_reference<>()), &set);
 			}
 		void finish(typename wrapper_policy::boost_python_class& inClass)
@@ -246,12 +246,12 @@ public:
 			PythonWrapper<vec_type>::defineFactory("");
 
 			if (readonly)
-				inClass.add_property(std::string(accessor_in::name()).c_str(), 
-					boost::python::make_function(&get, 
+				inClass.add_property(std::string(accessor_in::name()).c_str(),
+					boost::python::make_function(&get,
 						boost::python::with_custodian_and_ward_postcall<0,1, boost::python::return_value_policy<boost::python::manage_new_object> >()));
 				else
-				inClass.add_property(std::string(accessor_in::name()).c_str(), 
-					boost::python::make_function(&get, 
+				inClass.add_property(std::string(accessor_in::name()).c_str(),
+					boost::python::make_function(&get,
 						boost::python::with_custodian_and_ward_postcall<0,1, boost::python::return_value_policy<boost::python::manage_new_object> >()), &set);
 			}
 		void finish(typename wrapper_policy::boost_python_class& inClass)
@@ -425,10 +425,10 @@ template<class T, class wrapper_policy, class A1, class A2, class A3, class A4, 
 class CPPMLAddTupleInit<T, wrapper_policy, CPPML::Chain<A1, CPPML::Chain<A2, CPPML::Chain<A3, CPPML::Chain<A4, CPPML::Chain<A5, CPPML::Null> > > > > > {
 public:
 		static typename wrapper_policy::python_held_type* func(
-								boost::python::object in1, 
-								boost::python::object in2, 
-								boost::python::object in3, 
-								boost::python::object in4, 
+								boost::python::object in1,
+								boost::python::object in2,
+								boost::python::object in3,
+								boost::python::object in4,
 								boost::python::object in5
 								)
 			{
@@ -470,11 +470,11 @@ template<class T, class wrapper_policy, class A1, class A2, class A3, class A4, 
 class CPPMLAddTupleInit<T, wrapper_policy, CPPML::Chain<A1, CPPML::Chain<A2, CPPML::Chain<A3, CPPML::Chain<A4, CPPML::Chain<A5, CPPML::Chain<A6, CPPML::Null> > > > > > > {
 public:
 		static typename wrapper_policy::python_held_type* func(
-								boost::python::object in1, 
-								boost::python::object in2, 
-								boost::python::object in3, 
-								boost::python::object in4, 
-								boost::python::object in5, 
+								boost::python::object in1,
+								boost::python::object in2,
+								boost::python::object in3,
+								boost::python::object in4,
+								boost::python::object in5,
 								boost::python::object in6
 								)
 			{
@@ -518,12 +518,12 @@ template<class T, class wrapper_policy, class A1, class A2, class A3, class A4, 
 class CPPMLAddTupleInit<T, wrapper_policy, CPPML::Chain<A1, CPPML::Chain<A2, CPPML::Chain<A3, CPPML::Chain<A4, CPPML::Chain<A5, CPPML::Chain<A6, CPPML::Chain<A7, CPPML::Null> > > > > > > > {
 public:
 		static typename wrapper_policy::python_held_type* func(
-								boost::python::object in1, 
-								boost::python::object in2, 
-								boost::python::object in3, 
-								boost::python::object in4, 
-								boost::python::object in5, 
-								boost::python::object in6, 
+								boost::python::object in1,
+								boost::python::object in2,
+								boost::python::object in3,
+								boost::python::object in4,
+								boost::python::object in5,
+								boost::python::object in6,
 								boost::python::object in7
 								)
 			{
@@ -629,7 +629,7 @@ public:
 		static member_type_in& get(typename wrapper_policy::python_held_type& self)
 			{
 			return accessor_in::getNonconst(
-				wrapper_policy::extractWrappedFromHeld(self), 
+				wrapper_policy::extractWrappedFromHeld(self),
 				true
 				);
 			}

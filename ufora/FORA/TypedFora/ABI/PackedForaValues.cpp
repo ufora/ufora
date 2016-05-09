@@ -40,17 +40,17 @@ void PackedForaValues::initialize(PackedForaValues target, PackedForaValues sour
 	lassert(target.count() == source.count());
 	lassert(target.elementJOV() == source.elementJOV());
 
-	lassert_dump(target.stride() >= strideFor(target.elementJOV()) || target.count() == 1, 
+	lassert_dump(target.stride() >= strideFor(target.elementJOV()) || target.count() == 1,
 		"Stride for " << prettyPrintString(target.elementJOV()) << " is "
 			<< strideFor(target.elementJOV())
-			<< " which is not less than target stride " 
+			<< " which is not less than target stride "
 			<< target.stride()
 		);
 
-	lassert_dump(source.stride() >= strideFor(source.elementJOV()) || target.count() == 1, 
+	lassert_dump(source.stride() >= strideFor(source.elementJOV()) || target.count() == 1,
 		"Stride for " << prettyPrintString(source.elementJOV()) << " is "
 			<< strideFor(source.elementJOV())
-			<< " which is not less than source stride " 
+			<< " which is not less than source stride "
 			<< source.stride()
 		);
 
@@ -74,6 +74,6 @@ size_t PackedForaValues::strideFor(JudgmentOnValue jmt)
 	{
 	if (jmt.type())
 		return jmt.type()->size();
-	
+
 	return sizeof(ImplValContainer);
 	}

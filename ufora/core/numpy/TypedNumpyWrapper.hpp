@@ -102,7 +102,7 @@ public:
 					+ std::string(typeid(T).name())
 					+ " but got "
 					+ numpyNumberToTypename(((PyArrayObject*)inPyArray.ptr())->descr->type_num));
-			
+
 			mPyArray = inPyArray;
 			mPtr = (PyArrayObject*)mPyArray.ptr();
 			}

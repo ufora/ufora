@@ -47,7 +47,7 @@ S&& forward(typename ::CPPML::remove_reference<S>::type& a) /* noexcept - remove
 	}
 
 //our version of move, which we need because we don't ahve 'std' here
-template<class T> 
+template<class T>
 typename ::CPPML::remove_reference<T>::type&& move(T&& a) /* noexcept - remove when gcc stops choking on it*/
 	{
 	typedef typename ::CPPML::remove_reference<T>::type&& RvalRef;
@@ -86,12 +86,12 @@ template<class self_type, class default_t>
 class Memovalid {
 public:
 	typedef char memovalid_type;
-	
+
 	static bool valid(memovalid_type& ioR)
 		{
 		return ioR == 1;
 		};
-	
+
 	class lock_type {
 	public:
 		lock_type(memovalid_type& in) : m(in)
@@ -127,7 +127,7 @@ template<class tagged_union_type, class in_common_type, class default_t = void>
 class TaggedUnionBase {
 public:
 		typedef typename tagged_union_type::tag_type tag_type;
-		
+
 		typedef in_common_type common_type;
 
 		TaggedUnionBase(tag_type inTag, const common_type& in) :
@@ -136,19 +136,19 @@ public:
 				refcount(1)
 			{
 			}
-		
+
 		typedef typename Refcount<tagged_union_type, void>::refcount_type refcount_type;
-		
+
 		refcount_type refcount;
 		common_type common;
-		
+
 		tag_type tag;
-		
+
 		void incrementRefcount(void)
 			{
 			Refcount<tagged_union_type, default_t>::increment(refcount);
 			}
-		
+
 		bool decrementRefcount(void)
 			{
 			return Refcount<tagged_union_type, default_t>::decrement(refcount);
@@ -169,10 +169,10 @@ public:
 		typedef in_data_type data_type;
 
 		typedef in_common_type common_type;
-		
+
 
 		template<class arg_common_type, class arg_data_type>
-		TaggedUnion(tag_type tag, arg_common_type&& inCommon, arg_data_type&& inData) : 
+		TaggedUnion(tag_type tag, arg_common_type&& inCommon, arg_data_type&& inData) :
 				TaggedUnionBase<tagged_union_type, common_type, default_t>(
 					tag,
 					::CPPML::move(inCommon)
@@ -189,24 +189,24 @@ template<class cppml_type, class default_t>
 class TaggedUnionReference {
 public:
 		typedef typename cppml_type::common_data_type common_data_type;
-		
+
 		typedef ::CPPML::TaggedUnionBase<cppml_type, common_data_type>
 			tagged_union_base_type;
-		
+
 		typedef TaggedUnionReference<cppml_type, default_t> self_type;
-		
+
 		TaggedUnionReference(tagged_union_base_type* inPointedTo) : mPointedTo(inPointedTo)
 			{
 			}
 		TaggedUnionReference() : mPointedTo()
 			{
 			}
-		
+
 		bool	valid(void)
 			{
 			return mPointedTo;
 			}
-		
+
 		tagged_union_base_type*	mPointedTo;
 
 		typename cppml_type::tag_type	getTag() const
@@ -217,7 +217,7 @@ public:
 			{
 			return mPointedTo->common;
 			}
-		
+
 		template<class subtype>
 		void destroyAs(subtype* deliberatelyNullPtr)
 			{
@@ -226,7 +226,7 @@ public:
 				>(mPointedTo);
 			mPointedTo = 0;
 			}
-		
+
 		template<class subtype>
 		subtype& getData(subtype* deliberatelyNullPtr)
 			{
@@ -241,12 +241,12 @@ public:
 				const ::CPPML::TaggedUnion<cppml_type, common_data_type, subtype>*
 				>(mPointedTo)->data;
 			}
-		
+
 		template<class in_subtype, class in_common_type>
 		static self_type create(typename cppml_type::tag_type tag, in_common_type&& inData, in_subtype&& inSubtype)
 			{
 			typedef typename remove_reference<in_subtype>::type real_subtype;
-			
+
 			return self_type(
 				new TaggedUnion<cppml_type, common_data_type, real_subtype, default_t>(
 					tag,
@@ -265,7 +265,7 @@ public:
 				return mPointedTo->decrementRefcount();
 			return false;
 			}
-		
+
 		unsigned long getRefcount() const
 			{
 			if (mPointedTo)
@@ -280,7 +280,7 @@ public:
 			other.mPointedTo = mPointedTo;
 			mPointedTo = temp;
 			}
-			
+
 };
 
 template<class T, class default_t>
@@ -349,7 +349,7 @@ class TupleMember {
 public:
 		typedef tuple_type_in tuple_type;
 		typedef member_type_in member_type;
-		typedef accessor_in accessor;  
+		typedef accessor_in accessor;
 		static const int member_index(void)
 			{
 			return member_index_in;
@@ -358,20 +358,20 @@ public:
 
 template<class alternative_type_in, class member_type_in, class accessor_in, const int member_index_in>
 class AlternativeCommonMember {
-public: 
-		typedef alternative_type_in alternative_type;  
-		typedef member_type_in member_type;  
-		typedef accessor_in accessor;  
-		static const int member_index(void) { return member_index_in; } 
+public:
+		typedef alternative_type_in alternative_type;
+		typedef member_type_in member_type;
+		typedef accessor_in accessor;
+		static const int member_index(void) { return member_index_in; }
 };
 
 template<class alternative_type_in, class data_type_in, class accessor_in>
-class Alternative { 
-public:  
-		typedef alternative_type_in alternative_type;  
-		typedef data_type_in data_type;  
-		typedef accessor_in accessor;  
-}; 
+class Alternative {
+public:
+		typedef alternative_type_in alternative_type;
+		typedef data_type_in data_type;
+		typedef accessor_in accessor;
+};
 
 template<class T>
 class Refholder {
@@ -403,10 +403,10 @@ Valueholder<T> grabMatchValue(T&& in)
 
 
 template<class T>
-class CommonDataReplacer1 {	
+class CommonDataReplacer1 {
 public:
-	CommonDataReplacer1(const typename T::member_0_type& in, T& inToInitialize) : 
-			m(in), 
+	CommonDataReplacer1(const typename T::member_0_type& in, T& inToInitialize) :
+			m(in),
 			toInitialize(inToInitialize)
 		{
 		}

@@ -24,7 +24,7 @@ class StatementTerm(object):
 
     def getNativeTerm(self):
         return self.nativeStatementTerm_
-        
+
     def unpackToExpression(self):
         """Returns the StatementTerm as an Expression.
 
@@ -46,9 +46,9 @@ class StatementTerm(object):
         return symbolsBoundInLetStatement, expression
 
     def extractCodeLocation(self):
-        """Return the codelocation for this statement term. 
+        """Return the codelocation for this statement term.
 
-        If this is an expression, returns a CodeLocation. If it's a let binding, it returns a 
+        If this is an expression, returns a CodeLocation. If it's a let binding, it returns a
         list of pairs containing the stringified let binding and to the code location.
         """
         return self.nativeStatementTerm_.extractCodeLocation()
@@ -61,7 +61,7 @@ class StatementTerm(object):
 
     def hash(self):
         return self.nativeStatementTerm_.hash()
-        
+
     @staticmethod
     def parseToStatementTermList(textToParse, codeDefinitionPoint, nameScope):
         """parse a string to a list of StatementTerms, or throw an exception.
