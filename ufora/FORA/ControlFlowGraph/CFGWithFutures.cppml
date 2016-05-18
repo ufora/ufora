@@ -15,74 +15,59 @@
 ****************************************************************************/
 #include "CFGWithFutures.hppml"
 #include "CFGWithFuturesImpl.hppml"
+#include "ControlFlowGraphUtil.hppml"
 #include "../../core/Logging.hpp"
+#include "../Core/ApplyArgFrame.hppml"
+#include "../Runtime.hppml"
+#include "../Interpreter/AxiomCache.hppml"
 
 using Fora::Interpreter::ComputationResult;
 using Fora::Interpreter::PausedComputation;
 using Fora::Interpreter::PausedComputationFrame;
 
-namespace {
-
-ImmutableTreeVector<ControlFlowApplyArg> applySignatureToControlFlowApplyArgs(
-        const ApplySignature& inApplySignature
-        )
-    {
-    ImmutableTreeVector<ControlFlowApplyArg> tr;
-
-    for (uint32_t ix = 0; ix < inApplySignature.terms().size(); ++ix)
-        {
-        ControlFlowArg arg = ControlFlowArg::Arg(ix);
-
-        @match ApplyArgumentSignature(inApplySignature.terms()[ix])
-            -|  Normal(name) ->> {
-                tr = tr + ControlFlowApplyArg::Normal(name, arg);
-                }
-            -|  TupleCall() ->> {
-                tr = tr + ControlFlowApplyArg::TupleCall(arg);
-                }
-            ;
-        }
-
-    return tr;
-    }
-
-}
-
 PausedComputation CFGWithFutures::SubmittableArgs::toPausedComputation() const
     {
     if (isApply())
         {
-        ImmutableTreeVector<ControlFlowApplyArg> applyArgs =
-            applySignatureToControlFlowApplyArgs(args().signature());
+        Fora::ApplyArgFrame argFrame;
 
-        ControlFlowGraph applyGraph(
-            ControlFlowNode(
-                args().values().size(),
-                ControlFlowNodeBody::Apply(
-                    applyArgs,
-                    ControlFlowContinuation::Return(
-                        ControlFlowContinuationArg::Result(),
-                        false
-                        ),
-                    ControlFlowContinuation::Return(
-                        ControlFlowContinuationArg::Result(),
-                        true
+        long k = 0;
+        for (auto a: args().signature().terms())
+            {
+            @match ApplyArgumentSignature(a)
+                -| Normal(n) ->> {
+                    argFrame.push_back(Fora::ApplyArg(args().values()[k].getReference(), n, false));
+                    }
+                -| TupleCall() ->> {
+                    argFrame.push_back(Fora::ApplyArg(args().values()[k].getReference(), null(), true));
+                    }
+            k++;
+            }
+        
+        auto cache = Runtime::getRuntime().getAxiomCache()->whichAxiom(argFrame);
+
+        if (cache && cache->isExpansion())
+            return PausedComputation(
+                emptyTreeVec() +
+                    PausedComputationFrame(
+                        args().values(),
+                        cache->getControlFlowGraph(args().signature()),
+                        null()
                         )
-                    )
-                ),
-            ""
-            );
-
-        return PausedComputation(
-            emptyTreeVec() +
-                PausedComputationFrame(
-                    args().values(),
-                    applyGraph,
-                    null()
-                    )
-            );
+                );
+        else
+            return PausedComputation(
+                emptyTreeVec() +
+                    PausedComputationFrame(
+                        args().values(),
+                        ControlFlowGraphUtil::canonicalApplyGraph(args().signature()),
+                        null()
+                        )
+                );
         }
-    else { // isCached() == true
+    else 
+        {
+        // isCached() == true
         ControlFlowGraph cachedGraph(
             ControlFlowNode(
                 1,
