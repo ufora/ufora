@@ -320,7 +320,8 @@ class NpArray(object):
 def _dotProduct(arr1, arr2):
     len1 = len(arr1)
     if len1 != len(arr2):
-        raise ValueError("Vector dimensions do not match")
+        raise ValueError("Vector dimensions do not match: " + \
+                         str(len1) + " vs " + str(len(arr2)))
     return sum(arr1[ix] * arr2[ix] for ix in xrange(len1))
 
 
@@ -334,7 +335,24 @@ def _dot(arr1, arr2):
             return _dot(arr1, arr2)[0]
 
         if len(arr1.shape) == 2 and len(arr2.shape) == 1:
-            return _dot(arr2, arr1.transpose())
+            # right now, values is stored in a row-major fashion
+            arr1_flat = arr1.values
+            arr2_flat = arr2.values
+            res = []
+            arr1_flat_ix = 0
+            while arr1_flat_ix < len(arr1_flat):
+                arr2_flat_ix = 0
+                dot = 0.0
+                while arr2_flat_ix < len(arr2_flat):
+                    dot = dot + arr1_flat[arr1_flat_ix] * arr2_flat[arr2_flat_ix]
+                    arr2_flat_ix = arr2_flat_ix + 1
+                    arr1_flat_ix = arr1_flat_ix + 1
+                res = res + [dot] 
+
+            return PurePythonNumpyArray(
+                values=res,
+                shape=(len(res),)
+                )
 
         if len(arr1.shape) != len(arr2.shape):
             raise ValueError("Matrix dimensions do not match")
