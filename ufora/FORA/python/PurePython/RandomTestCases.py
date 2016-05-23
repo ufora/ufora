@@ -25,7 +25,7 @@ class RandomTestCases(object):
     def test_random_1(self):
         def f():
             randomState = mtrand.RandomState(seed=42)
-            return randomState.rand()[0]
+            return randomState.rand()
 
         numpy.testing.assert_allclose(
             self.evaluateWithExecutor(f),
@@ -35,7 +35,7 @@ class RandomTestCases(object):
     def test_random_2(self):
         def f():
             randomState = mtrand.RandomState(seed=42)
-            return randomState.rand(size=10)[0]
+            return randomState.rand(size=10)
 
         numpy.testing.assert_allclose(
             self.evaluateWithExecutor(f),
@@ -48,9 +48,9 @@ class RandomTestCases(object):
     def test_random_repeated_sampling(self):
         def f():
             randomstate = mtrand.RandomState(seed=42)
-            rand0, randomstate = randomstate.rand()
-            rand1, randomstate = randomstate.rand()
-            rand2, randomstate = randomstate.rand()
+            rand0 = randomstate.rand()
+            rand1 = randomstate.rand()
+            rand2 = randomstate.rand()
 
             return (rand0, rand1, rand2)
 
@@ -62,7 +62,7 @@ class RandomTestCases(object):
     def test_random_normals_1(self):
         def f():
             randomstate = mtrand.RandomState(seed=42)
-            return randomstate.randn()[0]
+            return randomstate.randn()
 
         numpy.testing.assert_allclose(
             self.evaluateWithExecutor(f),
@@ -72,7 +72,7 @@ class RandomTestCases(object):
     def test_random_normals_2(self):
         def f():
             randomstate = mtrand.RandomState(seed=42)
-            return randomstate.randn(size=10)[0]
+            return randomstate.randn(size=10)
 
         numpy.testing.assert_allclose(
             self.evaluateWithExecutor(f),
@@ -85,8 +85,8 @@ class RandomTestCases(object):
     def test_random_normals_3(self):
         def f():
             randomstate = mtrand.RandomState(seed=42)
-            _, randomstate = randomstate.randn()
-            return randomstate.randn(size=9)[0]
+            randomstate.randn()
+            return randomstate.randn(size=9)
 
         numpy.testing.assert_allclose(
             self.evaluateWithExecutor(f),
@@ -98,8 +98,8 @@ class RandomTestCases(object):
     def test_various_randoms(self):
         def f():
             rng = mtrand.RandomState(seed=42)
-            f, rng = rng.rand(4)
-            p, rng = rng.rand()
+            f = rng.rand(4)
+            p = rng.rand()
 
             return p + f[0]
 
@@ -109,7 +109,7 @@ class RandomTestCases(object):
     def test_random_uniforms_1(self):
         def f():
             randomstate = mtrand.RandomState(seed=42)
-            unif, _ = randomstate.uniform(-1, 1)
+            unif = randomstate.uniform(-1, 1)
             return unif
 
         numpy.testing.assert_allclose(
@@ -120,7 +120,7 @@ class RandomTestCases(object):
     def test_random_uniforms_2(self):
         def f():
             randomstate = mtrand.RandomState(seed=42)
-            return randomstate.uniform(low=-1.0, high=1.0, size=9)[0]
+            return randomstate.uniform(low=-1.0, high=1.0, size=9)
 
         numpy.testing.assert_allclose(
             self.evaluateWithExecutor(f),
@@ -128,3 +128,4 @@ class RandomTestCases(object):
              -0.633130424275731, 0.463987876785922, 0.55938199498705,
              0.197316972725718, 0.193700323069072, -0.687962722571575]
             )
+

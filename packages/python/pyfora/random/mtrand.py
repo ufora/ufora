@@ -18,133 +18,180 @@ import numpy
 
 
 class RandomState(object):
-    """
-    represents a seeded Mersenne Twister
-    """
-    def __init__(self, seed=None, nativeRandomState=None, savedNormal=None):
-        if nativeRandomState is None:
-            assert seed is not None, "must pass in a seed or a randomState"
+    def __init__(self, seed=None):
+        assert seed is not None, "must pass in a seed"
 
-            self.nativeRandomState = RandomState.nativeRandomState_(seed)
-        else:
-            self.nativeRandomState = nativeRandomState
-
-        self.savedNormal = savedNormal
-
-    @staticmethod
-    def nativeRandomState_(seed):
-        return __inline_fora(
+        self.savedNormalPtr = __inline_fora(
+            """fun(*args) {
+                   MutableVector(Float64).create(1, 0.0)
+                   }"""
+            )()
+        
+        self.hasSavedNormalPtr = __inline_fora(
+            """fun(*args) {
+                   MutableVector(Bool).create(1, false)
+                   }"""
+            )()
+        
+        self.indexPtr = __inline_fora(
+            """fun(*args) {
+                   MutableVector(UInt32).create(1, 624u32)
+                   }"""
+            )()
+        self.stateVector = __inline_fora(
             """fun(@unnamed_args:(seed), *args) {
-                   return iterator(math.random.MersenneTwister(seed.@m))
+                   seed = UInt32(seed.@m)
+                   if (seed < 0)
+                       throw ValueError(PyString("seeds must be non-negative"))
+
+                   let stateVector = MutableVector(UInt32).create(624, 0u32);
+                   stateVector[0] = seed;
+
+                   let ix = 0u32;
+                   while (ix < 623u32) {
+                       seed = 1812433253u32 * (stateVector[ix] ^ (stateVector[ix] >> 30u32)) + ix + 1u32;
+                       ix = ix + 1u32
+                       stateVector[ix] = seed
+                       }
+
+                   return stateVector
                    }"""
             )(seed)
 
+
     def pull_int_(self):
-        val, newNativeRandomState = __inline_fora(
-            """fun(@unnamed_args:(stateVector), *args) {
-                   let intVal = PyInt(pull stateVector);
-                   return PyTuple((intVal, stateVector))
-                   }"""
-            )(self.nativeRandomState)
+        return __inline_fora(
+            """fun(@unnamed_args:(indexPtr, stateVector), *args) {
+                   let twist = fun() {
+                       let lookup = fun(ix) {
+                           if (ix < 624u32)
+                               return stateVector[ix]
 
-        return val, RandomState(nativeRandomState=newNativeRandomState)
+                           return stateVector[ix - 624u32]
+                           }
 
-    def pull_n_ints_(self, n):
-        vals, newNativeRandomState = __inline_fora(
-            """fun(@unnamed_args:(n, stateVector), *args) {
-                   n = n.@m
-                   let ix = 0;
-                   let vals = [];
-                   while (ix < n) {
-                       vals = vals :: PyInt(pull stateVector);
-                       ix = ix + 1
+                       let ix = 0u32;
+                       while (ix < 624u32) {
+                           let xL = lookup(ix + 1) & 2147483647u32
+                           let xU = stateVector[ix] & 2147483648u32
+                           let y = (xL | xU);
+
+                           if (y % 2u32 == 1u32)
+                               y = (y >> 1u32) ^ 2567483615u32
+                           else
+                               y = (y >> 1u32)
+
+
+                           stateVector[ix] = lookup(ix + 397u32) ^ y
+
+                           ix = ix + 1u32
+                           }
+
+                       indexPtr[0] = 0u32
+                       stateVector
                        }
-                   return PyTuple((PyList(vals), stateVector))
-                   }"""
-            )(n, self.nativeRandomState)
-            
-        return vals, RandomState(nativeRandomState=newNativeRandomState)
 
+                   if (indexPtr[0] >= 624u32)
+                       twist() // modifies indexPtr
+
+                   let index = indexPtr[0]
+                   let y = stateVector[index]
+
+                   y = y ^ (y >> 11u32);
+                   y = y ^ ((y << 7u32) & 2636928640u32);
+                   y = y ^ ((y << 15u32) & 4022730752u32);
+                   y = y ^ (y >> 18u32);
+
+                   indexPtr[0] = index + 1u32
+
+                   return PyInt(y);
+                   }"""
+            )(self.indexPtr, self.stateVector)
+        
     def pull_uniform_(self, low=0.0, high=1.0):
-        intVal, newRandomState = self.pull_int_()
+        intVal = self.pull_int_()
         val = low + (high - low) * (intVal + 1.0) / (4294967296.0 + 1.0)
-        return val, newRandomState
-
-    def pull_n_uniforms_(self, n, low=0.0, high=1.0):
-        vals, newNativeRandomState = __inline_fora(
-            """fun(@unnamed_args:(n, stateVector, low, high), *args) {
-                   n = n.@m
-                   low = Float64(low.@m)
-                   high = Float64(high.@m)
-                   let ix = 0;
-                   let vals = [];
-                   while (ix < n) {
-                       let integerVal = pull stateVector;
-                       // 4294967296 = 2 ** 32
-                       let floatVal = low + (high - low) * (integerVal + 1.0) / (4294967296.0 + 1.0)
-                       vals = vals :: PyFloat(floatVal);
-                       ix = ix + 1
-                       }
-                   return PyTuple((PyList(vals), stateVector))
-                   }"""
-            )(n, self.nativeRandomState, low, high)
-            
-        return vals, RandomState(nativeRandomState=newNativeRandomState)        
+        return val
 
     def pull_normal_(self):
-        if self.savedNormal is not None:
-            return self.savedNormal, RandomState(nativeRandomState=self.nativeRandomState)
+        if __inline_fora(
+                """fun(@unnamed_args:(hasSavedNormalPtr), *args) {
+                       PyBool(hasSavedNormalPtr[0])
+                       }"""
+                )(self.hasSavedNormalPtr):
+            tr = __inline_fora(
+                """fun(@unnamed_args:(savedNormalPtr), *args) {
+                       PyFloat(savedNormalPtr[0])
+                       }"""
+                )(self.savedNormalPtr)
+            __inline_fora(
+                """fun(@unnamed_args:(hasSavedNormalPtr), *args) {
+                       hasSavedNormalPtr[0] = false
+                       }"""
+                )(self.hasSavedNormalPtr)
+            return tr
+        
+        normal0, normal1 = self.pull_two_normals_()
 
-        normal0, normal1, randomState = self.pull_two_normals_()
+        __inline_fora(
+            """fun(@unnamed_args:(normalToSave, savedNormalPtr), *args) {
+                   savedNormalPtr[0] = normalToSave.@m
+                   }"""
+            )(normal1, self.savedNormalPtr)
 
-        return normal0, RandomState(
-            nativeRandomState=randomState.nativeRandomState,
-            savedNormal=normal1
-            )
+        __inline_fora(
+            """fun(@unnamed_args:(hasSavedNormalPtr), *args) {
+                   hasSavedNormalPtr[0] = true
+                   }"""
+            )(self.hasSavedNormalPtr)
+
+        return normal0
 
     def pull_two_normals_(self):
-        randomState = self
         tryIx = 0
         while tryIx < 1000000:
-            u, randomState = randomState.pull_uniform_(-1.0, 1.0)
-            v, randomState = randomState.pull_uniform_(-1.0, 1.0)
+            u = self.pull_uniform_(-1.0, 1.0)
+            v = self.pull_uniform_(-1.0, 1.0)
             s = u * u + v * v
             if s <= 1.0 and s != 0.0:
                 f = (-2.0 * math.log(s) / s) ** 0.5
-                return u * f, v * f, randomState
+                return u * f, v * f
 
             tryIx = tryIx + 1
                 
-        assert False, "too many tries in pull_two_normals_"
+        assert False, "too many tries in pull_two_normals_"            
+
+    def rand(self, size=None):
+        if size is None:
+            return self.pull_uniform_()
+
+        tr = []
+        for _ in xrange(size):
+            tr = tr + [self.pull_uniform_()]
+
+        return numpy.array(tr)
+
+    def randn(self, size=None):
+        if size is None:
+            return self.pull_normal_()
+
+        tr = []
+        ix = 0
+        while ix < size:
+            tr = tr + [self.pull_normal_()]
+            ix = ix + 1
+
+        return numpy.array(tr)
 
     def uniform(self, low=0.0, high=1.0, size=None):
         if size is None:
             return self.pull_uniform_(low=low, high=high)
 
-        return self.pull_n_uniforms_(n=size, low=low, high=high)
-
-    def rand(self, size=None):
-        if size is None:
-            val, nextRandomState = self.pull_uniform_()
-            return val, nextRandomState
-
-        vals, nextRandomState = self.pull_n_uniforms_(n=size)
-
-        return numpy.array(vals), nextRandomState
-
-    def randn(self, size=None):
-        if size is None:
-            val, nextRandomState = self.pull_normal_()
-            return val, nextRandomState
-
         tr = []
         ix = 0
-        randomState = self
         while ix < size:
-            val, randomState = randomState.pull_normal_()
-            tr = tr + [val]
+            tr = tr + [self.pull_uniform_(low=low, high=high)]
             ix = ix + 1
 
-        return numpy.array(tr), randomState
+        return numpy.array(tr)
 
-    
