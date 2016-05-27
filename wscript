@@ -132,6 +132,7 @@ def configure(conf):
         )
 
     conf.check(lib='cuda', uselib_store='CUDA', mandatory=True)
+    conf.check(lib='cudart', linkflags=['-L/usr/local/cuda-8.0/lib64'], uselib_store='CUDART', mandatory=True)
     
 boost_libs = [
     'boost_date_time',
@@ -348,7 +349,8 @@ def build(bld):
         'LLVM',
         'fortran',
         'fora_thirdparty',
-        'CUDA'
+        'CUDA',
+        'CUDART'
         ]
 
     bld.shlib(
