@@ -29,10 +29,19 @@ public:
 	~AlignmentManager();
 
 	uint8_t* getHandleToAlignedData(const ImplValContainer& value);
+	uint8_t* getHandleToCudaAlignedData(const ImplValContainer& value);
 	uint8_t* allocateAlignedData(const Type& type, uword_t count);
+	uint8_t* allocateCudaAlignedData(const Type& type, uword_t count);
 
 private:
 	std::set<uint8_t*> mManagedMemory;
+	std::set<uint8_t*> mCudaManagedMemory;
 	MemoryPool *mPool;
 	bool mFreeOnDestroy;
+
+	uint8_t* getHandleToAlignedDataGeneric(
+			const ImplValContainer& value,
+			uint8_t* (AlignmentManager::*fun)(const Type&, uword_t),
+			bool shouldAlwaysCopyData=true
+			);
 };

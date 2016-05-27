@@ -17,13 +17,16 @@
 #include "AlignmentManager.hpp"
 #include "ExecutionContext.hppml"
 #include "MemoryPool.hpp"
-
 #include "../TypedFora/ABI/VectorHandle.hpp"
 #include "../TypedFora/ABI/VectorRecord.hpp"
+
+#include <cuda_runtime_api.h>
+
 
 AlignmentManager::AlignmentManager(MemoryPool* pool, bool freeAllocatedMemoryOnDestroy)
 		: mPool(pool), mFreeOnDestroy(freeAllocatedMemoryOnDestroy)
 	{
+	lassert(mPool)
 	}
 
 AlignmentManager::AlignmentManager(bool freeAllocatedMemoryOnDestroy)
@@ -39,10 +42,18 @@ AlignmentManager::~AlignmentManager()
 		{
 		for (auto ptr: mManagedMemory)
 			mPool->free(ptr);
+
+		cudaDeviceSynchronize();
+		for (auto ptr: mCudaManagedMemory)
+		    cudaFree(ptr);
 		}
 	}
 
-uint8_t* AlignmentManager::getHandleToAlignedData(const ImplValContainer& value)
+uint8_t* AlignmentManager::getHandleToAlignedDataGeneric(
+		const ImplValContainer& value,
+		uint8_t* (AlignmentManager::*fun)(const Type&, uword_t),
+		bool shouldAlwaysCopyData
+		)
 	{
 	Type t = value.type();
 	Type elementType = t;
@@ -70,7 +81,10 @@ uint8_t* AlignmentManager::getHandleToAlignedData(const ImplValContainer& value)
 		lassert_dump(false, "not implemented for type" << t.toString());
 		}
 	-|	Class(elementTypes, body) ->> {
-		// nothing to update
+		for (long k = 0; k < elementTypes.size(); ++k)
+			{
+			// TODO
+			}
 		}
 	-|	_ ->>
 		{
@@ -83,16 +97,31 @@ uint8_t* AlignmentManager::getHandleToAlignedData(const ImplValContainer& value)
 	if (elementCount == 0)
 		return nullptr;
 
-	if (elementType.size() == elementType.alignedSize())
+	if (!shouldAlwaysCopyData && elementType.size() == elementType.alignedSize())
 		return packedDataPtr;
 
 	// Invariant: size > 0 && size != alignedSize
-	uint8_t* alignedDataPtr = allocateAlignedData(t, elementCount);
+	uint8_t* alignedDataPtr = (this->*fun)(elementType, elementCount);
 	if (alignedDataPtr)
 		for (long k = 0; k < elementCount; ++k)
-			copyPackedToAligned(elementType, packedDataPtr, alignedDataPtr);
-
+			{
+			copyPackedToAligned(
+					elementType,
+					packedDataPtr  + k * elementType.size(),
+					alignedDataPtr + k * elementType.alignedSize()
+					);
+			}
 	return alignedDataPtr;
+	}
+
+uint8_t* AlignmentManager::getHandleToAlignedData(const ImplValContainer& value)
+	{
+	return getHandleToAlignedDataGeneric(value, &AlignmentManager::allocateAlignedData, false);
+	}
+
+uint8_t* AlignmentManager::getHandleToCudaAlignedData(const ImplValContainer& value)
+	{
+	return getHandleToAlignedDataGeneric(value, &AlignmentManager::allocateCudaAlignedData, true);
 	}
 
 uint8_t* AlignmentManager::allocateAlignedData(const Type& t, uword_t elementCount)
@@ -104,9 +133,26 @@ uint8_t* AlignmentManager::allocateAlignedData(const Type& t, uword_t elementCou
 	alignedDataPtr = mPool->allocate(t.alignedSize() * elementCount);
 	if (!alignedDataPtr)
 		return nullptr;
+
 	lassert_dump(
 			mManagedMemory.insert(alignedDataPtr).second,
 			"failed to insert pointer to allocated data into AlignmentManager data-structure"
+			);
+
+	return alignedDataPtr;
+	}
+
+uint8_t* AlignmentManager::allocateCudaAlignedData(const Type& t, uword_t elementCount)
+	{
+	uint8_t* alignedDataPtr = nullptr;
+	cudaError_t err;
+	err = cudaMallocManaged((void**)&alignedDataPtr, t.alignedSize() * elementCount, cudaMemAttachGlobal);
+	if (err != cudaSuccess)
+		return nullptr;
+
+	lassert_dump(
+			mCudaManagedMemory.insert(alignedDataPtr).second,
+			"failed to insert pointer to CUDA-allocated data into AlignmentManager data-structure"
 			);
 
 	return alignedDataPtr;

@@ -37,6 +37,7 @@
 #include "../../core/threading/Queue.hpp"
 
 #include <cuda.h>
+#include <cuda_runtime_api.h>
 
 using TypedFora::Abi::VectorHandle;
 using TypedFora::Abi::VectorRecord;
@@ -67,7 +68,8 @@ public:
 			if (!isInitialized)
 				{
 				//initialize the driver
-				throwOnError("Initialize cuda", cuInit(0));
+				CUresult error = cuInit(0);
+				throwOnError("Initialize cuda", error);
 				isInitialized = true;
 				}
 			}
@@ -174,6 +176,7 @@ public:
 			jitOptVals[4] = (void *)(size_t)jitRegCount;
 
 			CUmodule	cuModule;
+
 			CUresult error = cuModuleLoadDataEx(&cuModule, inPTXCode.c_str(),
 							jitNumOptions, jitOptions, (void **)jitOptVals);
 
@@ -201,6 +204,7 @@ public:
 			if (error != CUDA_SUCCESS)
 				lassert_dump(false, "PTX code didn't define function " <<
 											inFunctionName);
+
 				{
 				boost::mutex::scoped_lock lock(mMutex);
 				mCuFunctionsByName[make_pair(context, inModuleName)] = cuFun;
@@ -217,68 +221,25 @@ public:
 		}
 
 	void executeFunction(	const std::string&				inModuleName,
-							void* 							inClosureData,
-							uword_t							inClosureSize,
+							uint8_t*						inCudaClosureData,
 							uword_t							inN,
-							void*							inSourceData,
-							uword_t							inSourceElementSize,
-							const std::vector<uint8_t*>&	outDestDataVectors,
-							const std::vector<uword_t>&		inDestElementSize,
-							void* 							outIndexData,
-							uword_t							inIndexElementSize
+							uint8_t*						inCudaSourceData,
+							std::vector<uint8_t*>&			outCudaDestDataVectors,
+							uint8_t*						outCudaIndexData
 							)
 		{
-		lassert(outDestDataVectors.size() > 0);
-		lassert(inDestElementSize.size() > 0);
-		lassert(outDestDataVectors.size() == inDestElementSize.size());
+		lassert(outCudaDestDataVectors.size() > 0);
 
-		uword_t outputTypesCount = outDestDataVectors.size();
+		uword_t outputTypesCount = outCudaDestDataVectors.size();
+		LOG_DEBUG << "executeFuntion : 1: outputTypesCount = " << outputTypesCount;
 
 		CUcontext contextToUse = mUnusedContexts.get();
 
 		try {
 			cuCtxSetCurrent(contextToUse);
-			CUdeviceptr d_closureData, d_sourceData, d_indexData;
 			std::vector<CUdeviceptr> d_destData(outputTypesCount);
 
 			CUresult error;
-			// Allocate and initialize device memory for closure data
-			if (inClosureSize > 0)
-				{
-				lassert(inClosureData);
-				error = cuMemAlloc(&d_closureData, inClosureSize);
-				throwOnError("Allocate Closure Memory", error);
-				error = cuMemcpyHtoD(d_closureData, inClosureData, inClosureSize);
-				throwOnError("Copy CUDA memory from source to host", error);
-				}
-
-			// Allocate and initialize device memory for type-index data (output)
-			if (outIndexData)
-				{
-				error = cuMemAlloc(&d_indexData, inIndexElementSize * inN);
-				throwOnError("Allocate Source Memory", error);
-
-				error = cuMemsetD8(d_indexData, 0xff, inIndexElementSize * inN);
-				throwOnError("Set Memory to Zero", error);
-				}
-
-			// Allocate and initialize device memory for input data
-			error = cuMemAlloc(&d_sourceData, inSourceElementSize * inN);
-			throwOnError("Allocate Source Memory", error);
-
-			error = cuMemcpyHtoD(d_sourceData, inSourceData, inSourceElementSize * inN);
-			throwOnError("Copy CUDA memory from source to host", error);
-
-			// Allocate device memory for output data
-			for (uword_t k = 0; k < outputTypesCount; ++k)
-				{
-				ostringstream msg;
-				msg << "Allocate Destination Memory: "
-					<< inDestElementSize[k] << " * " << inN;
-				LOG_DEBUG << msg.str();
-				error = cuMemAlloc(&d_destData[k], inDestElementSize[k] * inN);
-				throwOnError(msg.str(), error);
-				}
 
 			// Grid/Block configuration
 			int threadsPerBlock = 1024;
@@ -286,22 +247,22 @@ public:
 
 			uword_t kk = 0;
 			uword_t extraArgs = 2; // inN and sourceDataPtr
-			if (inClosureSize >0)
+			if (inCudaClosureData)
 				++extraArgs;
-			if (outIndexData)
+			if (outCudaIndexData)
 				++extraArgs;
 			uword_t argCount = outputTypesCount + extraArgs;
 			void **args = (void**) malloc(sizeof(void*) * (argCount));
-			if (inClosureSize > 0)
-				args[kk++] = &d_closureData;
+			if (inCudaClosureData)
+				args[kk++] = &inCudaClosureData;
 			args[kk++] = &inN;
-			args[kk++] = &d_sourceData;
-			if (outIndexData)
-				args[kk++] = &d_indexData;
+			args[kk++] = &inCudaSourceData;
+			if (outCudaIndexData)
+				args[kk++] = &outCudaIndexData;
 			for (uword_t k = 0; k < outputTypesCount; ++k)
 				{
 				lassert(kk < argCount);
-				args[kk++] = &d_destData[k];
+				args[kk++] = &outCudaDestDataVectors[k];
 				}
 			lassert(kk == argCount);
 
@@ -311,30 +272,10 @@ public:
 									threadsPerBlock, 1, 1,
 									0,
 									NULL, args, NULL);
-
+			throwOnError("Launch Kernel: ", error);
 			lassert_dump(error == CUDA_SUCCESS, "UNKNOWN CUDA ERROR");
-			//copy to target
-			if (outIndexData)
-				{
-				error = cuMemcpyDtoH(outIndexData, d_indexData, inIndexElementSize * inN);
-				throwOnError("Copy Index to Destination Memory", error);
-				}
-			for (uword_t k = 0; k < outputTypesCount; ++k)
-				{
-				error = cuMemcpyDtoH(	outDestDataVectors[k],
-										d_destData[k],
-										inDestElementSize[k] * inN
-										);
-				throwOnError("Copy output to Destination Memory", error);
-				}
+			cudaDeviceSynchronize();
 			//free cuda memory
-			if (inClosureSize > 0)
-				cuMemFree(d_closureData);
-			if (outIndexData)
-				cuMemFree(d_indexData);
-			cuMemFree(d_sourceData);
-			for (uword_t k = 0; k < outputTypesCount; ++k)
-				cuMemFree(d_destData[k]);
 			free(args);
 
 			mUnusedContexts.write(contextToUse);
@@ -415,7 +356,9 @@ ImplValContainer    createFORAVector(
 		{
 		for (uword_t k = 0; k < count; ++k)
 			{
+			lassert(indexData);
 			uint8_t index = indexData[k];
+			LOG_DEBUG << "createFORAVector: 3.0.2 (k=" << k << ")";
 			if (index == GPU_EXCEPTION_INDEX)
 				return ImplValContainerUtilities::createVector(VectorRecord());
 
@@ -526,9 +469,10 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 
 	//create a aligned vectors
 	AlignmentManager alignMgr;
-	uint8_t* rawClosureData = alignMgr.getHandleToAlignedData(inApplyObject);
-	uint8_t* rawInVecData   = alignMgr.getHandleToAlignedData(inSourceVector);
-	if (!rawInVecData || (!rawClosureData && inApplyObject.type().size() > 0))
+	uint8_t* cudaClosureData = alignMgr.getHandleToCudaAlignedData(inApplyObject);
+	uint8_t* cudaInVecData   = alignMgr.getHandleToCudaAlignedData(inSourceVector);
+
+	if (!cudaInVecData || (!cudaClosureData && inApplyObject.type().size() > 0))
 		return ImplValContainer(CSTValue::blankOf(Type::Vector()));
 
 	uword_t outputElementTypesCount = outputElementTypes->size();
@@ -536,20 +480,20 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 			"Too many output types for 8bit unsigned integer to encode");
 	Type indexElementType = Type::Integer(8, false);
 
-	uint8_t* rawOutVecIndex = nullptr;
+	uint8_t* cudaOutVecIndex = nullptr;
 	if (outputElementTypesCount > 1 || mayThrowException)
-		rawOutVecIndex = alignMgr.allocateAlignedData(indexElementType, elementCount);
+		cudaOutVecIndex = alignMgr.allocateCudaAlignedData(indexElementType, elementCount);
+	LOG_DEBUG << "executeKernel(2): 4";
 
-	std::vector<uint8_t*> rawOutVecDataVectors(outputElementTypesCount);
-	std::vector<uword_t> outputElementTypeSizes(outputElementTypesCount);
+	std::vector<uint8_t*> cudaOutVecDataVectors(outputElementTypesCount);
+
 	for (uword_t k = 0; k < outputElementTypesCount; ++k)
 		{
 		const Type& t = (*outputElementTypes)[k];
-		uint8_t* ptr = alignMgr.allocateAlignedData(t, elementCount);
+		uint8_t* ptr = alignMgr.allocateCudaAlignedData(t, elementCount);
 		if (!ptr)
 			return ImplValContainer(CSTValue::blankOf(Type::Vector()));
-		rawOutVecDataVectors[k] = ptr;
-		outputElementTypeSizes[k] = t.alignedSize();
+		cudaOutVecDataVectors[k] = ptr;
 		}
 
 	lassert(sourceVectorHandle.dataPtr()->unpagedValues());
@@ -557,21 +501,17 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 
 	mCUDAState->executeFunction(
 		inKernelName,
-		rawClosureData,
-		closureType.alignedSize(),
+		cudaClosureData,
 		elementCount,
-		rawInVecData,
-		inputElementType.alignedSize(),
-		rawOutVecDataVectors,
-		outputElementTypeSizes,
-		rawOutVecIndex,
-		indexElementType.alignedSize()
+		cudaInVecData,
+		cudaOutVecDataVectors,
+		cudaOutVecIndex
 		);
 	auto res = createFORAVector(
-					rawOutVecIndex,
+					cudaOutVecIndex,
 					indexElementType.alignedSize(),
 					*outputElementTypes,
-					rawOutVecDataVectors,
+					cudaOutVecDataVectors,
 					elementCount,
 					pool);
 
@@ -700,7 +640,7 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 						++k;
 						}
 					}
-
+				LOG_DEBUG << "executeKernel: 7";
 				define(kernelName, cfg, vecElementType, outputTypes);
 				}
 			catch(std::logic_error e)
