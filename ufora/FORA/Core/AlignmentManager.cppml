@@ -16,12 +16,12 @@
 #include "Alignment.hpp"
 #include "AlignmentManager.hpp"
 #include "ExecutionContext.hppml"
+#include "ImplValContainerUtilities.hppml"
 #include "MemoryPool.hpp"
 #include "../TypedFora/ABI/VectorHandle.hpp"
 #include "../TypedFora/ABI/VectorRecord.hpp"
 
 #include <cuda_runtime_api.h>
-
 
 AlignmentManager::AlignmentManager(MemoryPool* pool, bool freeAllocatedMemoryOnDestroy)
 		: mPool(pool), mFreeOnDestroy(freeAllocatedMemoryOnDestroy)
@@ -51,7 +51,7 @@ AlignmentManager::~AlignmentManager()
 
 uint8_t* AlignmentManager::getHandleToAlignedDataGeneric(
 		const ImplValContainer& value,
-		uint8_t* (AlignmentManager::*fun)(const Type&, uword_t),
+		uint8_t* (AlignmentManager::*allocator)(const Type&, uword_t),
 		bool shouldAlwaysCopyData
 		)
 	{
@@ -65,53 +65,84 @@ uint8_t* AlignmentManager::getHandleToAlignedDataGeneric(
 		{
 		TypedFora::Abi::VectorRecord vectorHandle =
 				value.cast<TypedFora::Abi::VectorRecord>();
+
+		lassert(vectorHandle.size() &&
+				vectorHandle.jor().size() == 1 &&
+				vectorHandle.jor()[0].type());
+
 		elementCount = vectorHandle.size();
+		if (elementCount == 0)
+			return nullptr;
+
 		auto res = vectorHandle.jor()[0].type();
 		if (!res)
 			return nullptr;
 		elementType = *res;
+		if (elementType.size() == 0)
+			return nullptr;
+
+		lassert(vectorHandle.dataPtr()->unpagedValues());
+		lassert(vectorHandle.dataPtr()->unpagedValues()->size() == elementCount);
+
 		packedDataPtr = vectorHandle.dataPtr()->unpagedValues()->offsetFor(0);
-		}
-	-|	MutableVector() ->>
-		{
-		lassert_dump(false, "not implemented for type" << t.toString());
-		}
-	-|	Dictionary(isCST) ->>
-		{
-		lassert_dump(false, "not implemented for type" << t.toString());
+
+		if (!shouldAlwaysCopyData && elementType.size() == elementType.alignedSize())
+			return packedDataPtr;
+
+		// Invariant: elementType.size() > 0
+		uint8_t* alignedDataPtr = (this->*allocator)(elementType, elementCount);
+		if (alignedDataPtr)
+			if (elementType.size() == elementType.alignedSize())
+				memcpy(alignedDataPtr, packedDataPtr, elementCount * elementType.alignedSize());
+			else
+				for (long k = 0; k < elementCount; ++k)
+					{
+					copyPackedToAligned(
+							elementType,
+							packedDataPtr  + k * elementType.size(),
+							alignedDataPtr + k * elementType.alignedSize()
+							);
+					}
+		return alignedDataPtr;
 		}
 	-|	Class(elementTypes, body) ->> {
+		if (elementType.size() == 0)
+			return nullptr;
+
+		uint8_t* alignedDataPtr = (this->*allocator)(elementType, elementCount);
+		if (!alignedDataPtr)
+			return nullptr;
+
+		uword_t offset = 0;
+		uint8_t* alignedData = alignedDataPtr;
+		uint8_t* packedData = packedDataPtr;
 		for (long k = 0; k < elementTypes.size(); ++k)
 			{
-			// TODO
+			uword_t padding = alignedOffset(elementTypes[k], offset) - offset;
+			alignedData = alignedData + padding;
+			copyPackedToAligned(elementTypes[k], packedData, alignedData);
+			if (elementTypes[k].isVector())
+				{
+				// replace the pointer to the VectorHandle with a pointer to a
+				// freshly allocated vector
+				uint8_t* vecPtr =
+						getHandleToAlignedDataGeneric(
+								ImplValContainerUtilities::createVector(*(TypedFora::Abi::VectorRecord*)packedData),
+								allocator,
+								shouldAlwaysCopyData
+								);
+				memcpy(alignedData, vecPtr, sizeof(uword_t)); // FIXME: is there a better way to get the size of the pointer?
+				}
+			alignedData = alignedData + elementTypes[k].alignedSize();
+			packedData  = packedData + elementTypes[k].size();
+			offset += padding + elementTypes[k].alignedSize();
 			}
+		return alignedDataPtr;
 		}
 	-|	_ ->>
 		{
 		lassert_dump(false, "not implemented for type" << t.toString());
 		}
-
-	if (elementType.size() == 0)
-		return nullptr;
-
-	if (elementCount == 0)
-		return nullptr;
-
-	if (!shouldAlwaysCopyData && elementType.size() == elementType.alignedSize())
-		return packedDataPtr;
-
-	// Invariant: size > 0 && size != alignedSize
-	uint8_t* alignedDataPtr = (this->*fun)(elementType, elementCount);
-	if (alignedDataPtr)
-		for (long k = 0; k < elementCount; ++k)
-			{
-			copyPackedToAligned(
-					elementType,
-					packedDataPtr  + k * elementType.size(),
-					alignedDataPtr + k * elementType.alignedSize()
-					);
-			}
-	return alignedDataPtr;
 	}
 
 uint8_t* AlignmentManager::getHandleToAlignedData(const ImplValContainer& value)
