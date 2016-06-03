@@ -16,7 +16,7 @@
 #include "NoncontiguousByteBlock.hpp"
 #include "../lassert.hpp"
 
-NoncontiguousByteBlock::NoncontiguousByteBlock() : 
+NoncontiguousByteBlock::NoncontiguousByteBlock() :
 		mTotalBytes(0)
 	{
 	}
@@ -84,14 +84,14 @@ std::string NoncontiguousByteBlock::toString(void) const
 	{
 	std::string tr;
 	tr.resize(mTotalBytes);
-	
+
 	char* offset = &tr[0];
 	for (const auto& str : mStrings)
 		{
 		memcpy(offset, &(str)[0], str.size());
 		offset += str.size();
 		}
-	
+
 	return tr;
 	}
 
@@ -116,7 +116,7 @@ void Serializer<NoncontiguousByteBlock, HashingStreamSerializer>::serialize(Hash
 	}
 
 void Serializer<PolymorphicSharedPtr<NoncontiguousByteBlock>, HashingStreamSerializer>::serialize(
-				HashingStreamSerializer& s, 
+				HashingStreamSerializer& s,
 				const PolymorphicSharedPtr<NoncontiguousByteBlock>& in
 				)
 	{

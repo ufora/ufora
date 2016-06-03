@@ -119,7 +119,7 @@ class PureMappingRegistry(object):
         return cls.mappings.get(root, [])
 
 
-def pureMapping(instance_or_mapping):
+def pureMapping(instance_or_mapping, module=None):
     def registerMapping(root_module, mapping):
         mappings = PureMappingRegistry.mappings.get(root_module)
         if mappings is None:
@@ -135,15 +135,16 @@ def pureMapping(instance_or_mapping):
         registerMapping(root_module, instance_or_mapping())
         return instance_or_mapping
 
-    def wrap(cls):
-        module = None
+    if module is None:
         if hasattr(instance_or_mapping, '__module__'):
             module = instance_or_mapping.__module__
         elif hasattr(instance_or_mapping, '__class__'):
             module = instance_or_mapping.__class__.__module__
 
-        assert module is not None, "Using @pureMapping with unsupported object %s" % (
-            instance_or_mapping,)
+    assert module is not None, "Using @pureMapping with unsupported object %s" % (
+        instance_or_mapping,)
+
+    def wrap(cls):
         root_module = module.split('.')[0]
         registerMapping(root_module, InstanceMapping(instance_or_mapping, cls))
         return cls

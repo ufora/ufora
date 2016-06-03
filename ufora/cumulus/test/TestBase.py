@@ -49,15 +49,15 @@ expensiveCalculationText = """fun(count) {
         res
         }
 
-    let StochGDPrimalForm = 
+    let StochGDPrimalForm =
         fun( X, Y, b, lambda, N ){
             let m = size(X);
             let d = size(X[0]);
-            
+
             let dims = (0,1);
-            
+
             let w = dims..apply(fun(d) { 0.0 });
-            
+
             let t = 1;
 
             for i in sequence(N){
@@ -67,13 +67,13 @@ expensiveCalculationText = """fun(count) {
                     if ( Y[jt]*( DotProduct( X[jt],w ))< 1.0 ){
 
                         let newW = []
-                        
+
                         let xJT = X[jt];
-                        
+
                         w = dims..apply({
                             xJT[_] * Y[jt] / (lambda * t) * (1.0 - 1.0 / t) + w[_]
                             })
-                        
+
                     } else {
                         w = dims..apply({ w[_] * (1.0 - 1.0 / t) } )
                     };
@@ -109,7 +109,7 @@ class CumulusTestCases(object):
         computationId = self.gateway.requestComputation(computationDefinition)
 
         try:
-            return self.gateway.finalResponses.get(timeout=240.0)
+            return self.gateway.finalResponses.get(timeout=timeout)
         finally:
             self.gateway.deprioritizeComputation(computationId)
 
@@ -117,11 +117,11 @@ class CumulusTestCases(object):
     @Teardown.Teardown
     def test_vecWithinVec(self):
         self.desirePublisher.desireNumberOfWorkers(4, blocking=True)
-        
+
         expr = FORA.extractImplValContainer(
             FORA.eval(
                 """fun() {
-                    let v = 
+                    let v =
                         Vector.range(10) ~~ fun(x) {
                             Vector.range(1000000 + x).paged
                             };
@@ -151,11 +151,11 @@ class CumulusTestCases(object):
     @Teardown.Teardown
     def test_mixedVecOfNothingAndFloat(self):
         self.desirePublisher.desireNumberOfWorkers(4, blocking=True)
-        
+
         expr = FORA.extractImplValContainer(
             FORA.eval(
                 """fun() {
-                    let v = Vector.range(1000000, fun(x) { if (x%5 == 0) nothing else x }); 
+                    let v = Vector.range(1000000, fun(x) { if (x%5 == 0) nothing else x });
 
                     sum(0,10, fun(ix) { v.apply(fun (nothing) { nothing } (elt) { elt + ix }).sum() })
                     }"""
@@ -171,12 +171,12 @@ class CumulusTestCases(object):
 
         self.assertTrue(response[1].isResult())
         self.assertTrue(response[1].asResult.result.pyval == 4000036000000, response[1].asResult.result.pyval)
-    
+
 
     @Teardown.Teardown
     def DISABLEDtest_repeatedCalculationOfSomethingComplex(self):
         self.desirePublisher.desireNumberOfWorkers(1, blocking=True)
-        
+
         expr = FORA.extractImplValContainer(FORA.eval(expensiveCalculationText))
 
         def calculateTime(count):
@@ -270,7 +270,7 @@ class CumulusTestCases(object):
                 ForaNative.makeSymbol("Call")
                 )
             )
-        
+
         try:
             response = self.gateway.finalResponses.get(timeout=60.0)
         except Queue.Empty:
@@ -284,7 +284,7 @@ class CumulusTestCases(object):
     @Teardown.Teardown
     def test_sortALargeVectorWithFourWorkers(self):
         self.desirePublisher.desireNumberOfWorkers(4, blocking=True)
-        
+
         expr = FORA.extractImplValContainer(
             FORA.eval(
                 """fun() {
@@ -321,7 +321,7 @@ class CumulusTestCases(object):
     @Teardown.Teardown
     def test_bigSumWithAdding(self):
         self.desirePublisher.desireNumberOfWorkers(1, blocking=True)
-        
+
         expr = FORA.extractImplValContainer(
             FORA.eval(
                 """fun() { if (sum(0, 10**11) > 0) 'big_enough' }"""
@@ -336,7 +336,7 @@ class CumulusTestCases(object):
             )
 
         time.sleep(5)
-        
+
         self.desirePublisher.desireNumberOfWorkers(2, blocking=True)
 
         try:
@@ -352,7 +352,7 @@ class CumulusTestCases(object):
                 logging.warn("Wanted to dump CumulusWorkerEvents, but couldn't");
 
         self.assertTrue(response is not None)
-        
+
         self.assertTrue(response[1].isResult())
         self.assertTrue(response[1].asResult.result.pyval == 'big_enough', response[1].asResult.result.pyval)
 
@@ -361,11 +361,11 @@ class CumulusTestCases(object):
     @Teardown.Teardown
     def test_manyDuplicateCachecallsAndAdding(self):
         self.desirePublisher.desireNumberOfWorkers(2, blocking=True)
-        
+
         expr = FORA.extractImplValContainer(
             FORA.eval(
-                """fun() { 
-                    Vector.range(20).papply(fun(x) { 
+                """fun() {
+                    Vector.range(20).papply(fun(x) {
                         x + cached(sum(0,10**11))[0]
                         })
                     }"""
@@ -380,7 +380,7 @@ class CumulusTestCases(object):
             )
 
         time.sleep(5)
-        
+
         self.desirePublisher.desireNumberOfWorkers(4, blocking=True)
 
         try:
@@ -389,7 +389,7 @@ class CumulusTestCases(object):
             response = None
 
         self.assertTrue(response is not None)
-        
+
         self.assertTrue(response[1].isResult())
 
         self.gateway.deprioritizeComputation(computationId)
@@ -397,7 +397,7 @@ class CumulusTestCases(object):
     @Teardown.Teardown
     def test_sortALargeVectorWithAdding(self):
         self.desirePublisher.desireNumberOfWorkers(2, blocking=True)
-        
+
         expr = FORA.extractImplValContainer(
             FORA.eval(
                 """fun() {
@@ -416,7 +416,7 @@ class CumulusTestCases(object):
             )
 
         time.sleep(10)
-        
+
         self.desirePublisher.desireNumberOfWorkers(4, blocking=True)
 
         try:
@@ -434,14 +434,14 @@ class CumulusTestCases(object):
                 logging.warn("Wanted to dump CumulusWorkerEvents, but couldn't");
 
         self.assertTrue(response is not None)
-        
+
         self.assertTrue(response[1].isResult())
         self.assertTrue(response[1].asResult.result.pyval == 'sorted_2', response[1].asResult.result.pyval)
 
     @Teardown.Teardown
     def test_sortALargeVectorWithRemoving(self):
         self.desirePublisher.desireNumberOfWorkers(4, blocking=True)
-        
+
         expr = FORA.extractImplValContainer(
             FORA.eval(
                 """fun() {
@@ -460,7 +460,7 @@ class CumulusTestCases(object):
             )
 
         time.sleep(10)
-        
+
         self.desirePublisher.desireNumberOfWorkers(3, blocking=True)
 
         try:
@@ -509,7 +509,7 @@ class CumulusTestCases(object):
             response = None
 
         self.assertTrue(response is None, response)
-        
+
         self.desirePublisher.desireNumberOfWorkers(3, blocking=True)
 
         response = self.gateway.finalResponses.get(timeout=240.0)
@@ -568,11 +568,11 @@ class CumulusTestCases(object):
     @Teardown.Teardown
     def test_sortManySmallVectors(self):
         self.desirePublisher.desireNumberOfWorkers(4, blocking=True)
-        
+
         expr = FORA.extractImplValContainer(
             FORA.eval(
                 """fun() {
-                    let shouldAllBeTrue = 
+                    let shouldAllBeTrue =
                     Vector.range(20, fun(o) {
                         sorting.isSorted(
                             sort(Vector.range(50000 + o, fun(x) { x / 10 }))

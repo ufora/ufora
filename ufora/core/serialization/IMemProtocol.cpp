@@ -15,10 +15,10 @@
 ****************************************************************************/
 #include "IMemProtocol.hpp"
 
-IMemProtocol::IMemProtocol(const char* inData, 
-						uword_t inSize, 
+IMemProtocol::IMemProtocol(const char* inData,
+						uword_t inSize,
 						uword_t inPosition
-						) : 
+						) :
 		mData(inData)
 	{
 	lassert(inPosition <= inSize);
@@ -26,7 +26,7 @@ IMemProtocol::IMemProtocol(const char* inData,
 	mDataSize = inSize;
 	}
 
-IMemProtocol::IMemProtocol(const std::string& inData, uword_t inPosition) : 
+IMemProtocol::IMemProtocol(const std::string& inData, uword_t inPosition) :
 		mData(&inData[0])
 	{
 	lassert(inPosition <= inData.size());
@@ -34,7 +34,7 @@ IMemProtocol::IMemProtocol(const std::string& inData, uword_t inPosition) :
 	mDataSize = inData.size();
 	}
 
-IMemProtocol::IMemProtocol(const std::vector<char>& inData, uword_t inPosition) : 
+IMemProtocol::IMemProtocol(const std::vector<char>& inData, uword_t inPosition) :
 		mData(&inData[0])
 	{
 	lassert(inPosition <= inData.size());

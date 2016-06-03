@@ -23,8 +23,8 @@ class MathTestCases(object):
         # not being tested: math.asinh, math.atanh, math.lgamma, math.erfc, math.acos
         def f():
             functions = [
-                math.sqrt, math.cos, math.sin, math.tan, math.asin, math.atan, 
-                math.acosh, math.cosh, math.sinh, math.tanh, math.ceil, 
+                math.sqrt, math.cos, math.sin, math.tan, math.asin, math.atan,
+                math.acosh, math.cosh, math.sinh, math.tanh, math.ceil,
                 math.erf, math.exp, math.expm1, math.factorial, math.floor,
                 math.log, math.log10, math.log1p
             ]

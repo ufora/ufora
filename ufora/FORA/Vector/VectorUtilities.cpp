@@ -98,11 +98,11 @@ ImplValContainer    createFORAVector(
 						)
 	{
 	return createFORAVector(
-		JudgmentOnResult(elementJOV), 
-		inID, 
-		nElements, 
-		bytecount, 
-		inPool, 
+		JudgmentOnResult(elementJOV),
+		inID,
+		nElements,
+		bytecount,
+		inPool,
 		inVDM
 		);
 	}
@@ -115,9 +115,9 @@ ImplValContainer    createFORAFreeBinaryVector(
 						)
 	{
 	return createFORAVector(
-		JOV::OfType(Type::Integer(8, false)), 
-		inID, 
-		nElements, 
+		JOV::OfType(Type::Integer(8, false)),
+		inID,
+		nElements,
 		nElements,
 		inPool,
 		inVDM
@@ -131,7 +131,7 @@ ImplValContainer    createFORAFreeBinaryVectorFromSlices(
 						)
 	{
 	return createFORAVector(
-		JudgmentOnResult(JOV::OfType(Type::Integer(8, false))), 
+		JudgmentOnResult(JOV::OfType(Type::Integer(8, false))),
 		inIDs,
 		inPool,
 		inVDM
@@ -146,15 +146,15 @@ ImplValContainer    createFORAVector(
 	{
 	if (elements.size() == 0)
 		return ImplValContainerUtilities::createVector(VectorRecord());
-	
+
 	lassert(inPool);
 
 	VectorRecord vec;
 
 	if (!elements.size())
 		ImplValContainerUtilities::createVector(VectorRecord());
-	
-	TypedFora::Abi::ForaValueArray* array = 
+
+	TypedFora::Abi::ForaValueArray* array =
 		TypedFora::Abi::ForaValueArray::Empty(inPool);
 
 	ValueDeepcopierState extractorState;

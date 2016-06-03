@@ -34,8 +34,8 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
-			boost::python::object cls = 
+
+			boost::python::object cls =
 				FORAPythonUtil::exposeValueLikeCppmlTypeSimpleSerializers<CumulusClientOrMachine>().class_();
 
 			def("CumulusClientOrMachine", cls);

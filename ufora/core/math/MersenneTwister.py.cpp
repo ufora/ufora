@@ -36,17 +36,17 @@ public:
 			{
 			return "MersenneTwister";
 			}
-            
+
         static boost::shared_ptr<boost::mt19937>
         makeClass(const int& seed = 5489)
             {
             return boost::shared_ptr<boost::mt19937>(new boost::mt19937(seed));
             }
-            
+
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-            
+
             class_<boost::mt19937, boost::shared_ptr<boost::mt19937> >
                 ("MersenneTwister")
                 .def("__init__", make_constructor(makeClass));

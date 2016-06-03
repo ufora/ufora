@@ -102,7 +102,7 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
         for machine, bytecount in s3.getPerMachineBytecounts().iteritems():
             totalBytecount += bytecount
 
-        self.assertTrue(totalBytecount / 1024 / 1024 <= 370, totalBytecount / 1024 / 1024)
+        self.assertTrue(totalBytecount / 1024 / 1024 <= 500, totalBytecount / 1024 / 1024)
 
     def test_PythonIoTaskServiceInLoop(self):
         bytesUsed = []
@@ -125,54 +125,6 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
             self.computeUsingSeveralWorkers(text, s3, 4, timeout = 120, blockUntilConnected=True)
 
         self.assertTrue(bytesUsed[0] < bytesUsed[-1] - 100, bytesUsed)
-
-    def test_CalculationRicochet(self):
-        s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
-
-        text = """
-            let f = fun(ct, seed = 1) {
-                let x = 0
-
-                let res = []
-
-                let it = iterator(math.random.UniformReal(0, size(v), seed))
-
-                for ix in sequence(ct) {
-                    let x = Int64(pull it)
-                    res = res :: (x / Float64(size(v)), v[x])
-                    }
-
-                return res
-                }
-
-            v[2]
-            f(__count__,__seed__)
-            """
-
-        vResult, sim = InMemoryCumulusSimulation.computeUsingSeveralWorkers(
-            "Vector.range(125000000, math.log)",
-            s3,
-            4,
-            timeout = 120,
-            memoryLimitMb=400,
-            threadCount = 1,
-            useInMemoryCache = True,
-            returnSimulation = True
-            )
-
-        try:
-            v = vResult.asResult.result
-
-            t0 = time.time()
-            sim.compute(text.replace("__seed__", "1").replace("__count__", "1000"), timeout = 120, v = v)
-            PerformanceTestReporter.recordTest("python.InMemoryCumulus.Ricochet1000.Pass1", time.time() - t0,None)
-
-            t0 = time.time()
-            sim.compute(text.replace("__seed__", "2").replace("__count__", "1000"), timeout = 120, v = v)
-            PerformanceTestReporter.recordTest("python.InMemoryCumulus.Ricochet1000.Pass2", time.time() - t0,None)
-        finally:
-            sim.teardown()
-
 
 
     def dataCreationTest(self, totalMB, workers = 1, threadsPerWorker = 4):
@@ -592,8 +544,7 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
             simulation.teardown()
 
     @PerformanceTestReporter.PerfTest("python.InMemoryCumulus.fanout")
-    def test_fanout(self):
-        #verify that the compiler doesn't crap out during many runs.
+    def test_fanout_1(self):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
 
         self.computeUsingSeveralWorkers("""
@@ -615,12 +566,46 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
             """, s3, 4, timeout=240
             )
 
+    @PerformanceTestReporter.PerfTest("python.InMemoryCumulus.fanout")
+    def test_fanout_2(self):
+        s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
+
+        self.computeUsingSeveralWorkers("""
+            let v = Vector.range(20000000)
+
+            let isPrime = fun(p) {
+                let x = 2;
+                while (x*x <= p) {
+                    if (p%x == 0)
+                        return 0
+                    x = x + 1
+                    }
+                return 1
+                }
+
+            v.sum(isPrime)
+            """, s3, 4, timeout=240,memoryLimitMb=100
+            )
+
+    def test_map_with_common(self):
+        s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
+
+        res = self.computeUsingSeveralWorkers("""
+            let v1 = Vector.range(1000000).paged;
+
+            let v2 = Vector.range(30000000)
+
+            v2.sum(fun(i) { v1[(i * 100) % size(v1)] })
+            """, s3, 8, timeout=240,memoryLimitMb=100
+            )
+        self.assertTrue(res.isResult())
+
     @PerformanceTestReporter.PerfTest("python.InMemoryCumulus.vector_string_apply")
     def test_vector_string_apply(self):
         #verify that the compiler doesn't crap out during many runs.
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
 
-        InMemoryCumulusSimulation.computeUsingSeveralWorkers("""
+        res = InMemoryCumulusSimulation.computeUsingSeveralWorkers("""
             let v = Vector.range(10000000)
 
             let v2 = v.apply(String)
@@ -631,8 +616,10 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
             """,
             s3,
             4,
-            timeout=240
+            timeout=120
             )
+
+        self.assertTrue(res is not None)
 
 
 
@@ -823,65 +810,6 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
             self.assertTrue(totalGb < 2.0, totalGb)
         finally:
             simulation.teardown()
-
-
-    def test_vectorCreateCloseToLimit(self):
-        s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
-
-        result, simulation = self.computeUsingSeveralWorkers("""
-            let bytes = 2 * 1024 * 1024 * 1024 * .7
-            let cols = 10
-            let rows = Int64(bytes / cols / 8)
-
-            let v = Vector.range(cols, fun(col) {
-                Vector.range(rows)
-                })
-
-            v ~~ {_.sum()}
-            """,
-            s3,
-            4,
-            memoryLimitMb = 500,
-            timeout=240,
-            returnSimulation = True,
-            useInMemoryCache = False
-            )
-
-        try:
-            #verify that simulation didn't write to disk
-            for ix in range(simulation.getWorkerCount()):
-                self.assertEqual(
-                    simulation.getWorkerVdm(ix).getOfflineCache().cacheItemCount,
-                    0
-                    )
-        except:
-            simulation.dumpSchedulerEventStreams()
-            raise
-        finally:
-            simulation.teardown()
-
-    def test_vecWithinVecReading(self):
-        s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
-
-        result = self.computeUsingSeveralWorkers("""
-            let v = Vector.range(Int64(5 * 10**4), fun(x) { [(x,x) for x in sequence(1000)] })
-
-            v.sum(fun(vec) {
-                let res = 0;
-                for e in vec
-                    res = res + e[0]
-                res
-                }) > 0
-            """,
-            s3,
-            4,
-            memoryLimitMb = 5000,
-            timeout=240,
-            useInMemoryCache = False
-            )
-
-        self.assertTrue(result.isResult())
-        self.assertTrue(result.asResult.result.pyval == True)
 
     def test_expansionWithVecOfVec(self):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()

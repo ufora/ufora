@@ -26,7 +26,7 @@ ComputationId idForInt(int i)
 	{
 	return ComputationId::CreateIdForTesting(hash_type(i));
 	}
-	
+
 ComputationId idForInts(int i, int j)
 	{
 	return ComputationId::CreateIdForTesting(hash_type(i, j));
@@ -61,9 +61,9 @@ void setDeps(ComputationDependencyGraph& graph, ComputationId base, ComputationI
 		graph.addRootToRootDependency(base, dep1);
 	}
 
-void setDeps(	ComputationDependencyGraph& graph, 
-				ComputationId base, 
-				ComputationId dep1, 
+void setDeps(	ComputationDependencyGraph& graph,
+				ComputationId base,
+				ComputationId dep1,
 				ComputationId dep2
 				)
 	{
@@ -192,42 +192,42 @@ BOOST_AUTO_TEST_CASE( test_external_clients )
 	assertPriorityRange(graph, 0, 3, priorityForInt(1));
 
 	BOOST_CHECK(true);
-	
+
 	//set a second priority
 	graph.setCumulusClientPriority(idForInt(0), clientIdForInt(1), priorityForInt(2));
 	update(graph);
 	assertPriorityRange(graph, 0, 3, priorityForInt(2));
 
 	BOOST_CHECK(true);
-	
+
 	//set the first priority up a second time
 	graph.setCumulusClientPriority(idForInt(0), clientIdForInt(0), priorityForInt(3));
 	update(graph);
 	assertPriorityRange(graph, 0, 3, priorityForInt(3));
 
 	BOOST_CHECK(true);
-	
+
 	//set the first priority to null
 	graph.setCumulusClientPriority(idForInt(0), clientIdForInt(0), ComputationPriority());
 	update(graph);
 	assertPriorityRange(graph, 0, 3, priorityForInt(2));
 
 	BOOST_CHECK(true);
-	
+
 	//put it back
 	graph.setCumulusClientPriority(idForInt(0), clientIdForInt(0), priorityForInt(2));
 	update(graph);
 	assertPriorityRange(graph, 0, 3, priorityForInt(2));
-	
+
 	BOOST_CHECK(true);
-	
+
 	//drop the entire client
 	graph.dropCumulusClient(clientIdForInt(0));
 	update(graph);
 	assertPriorityRange(graph, 0, 3, priorityForInt(2));
 
 	BOOST_CHECK(true);
-	
+
 	//drop the other client
 	graph.dropCumulusClient(clientIdForInt(1));
 	update(graph);

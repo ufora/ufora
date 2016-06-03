@@ -31,13 +31,13 @@ public:
 			mJumpPtr(in.mJumpPtr)
 		{
 		}
-	
+
 	NativeFunctionPointer& operator=(const NativeFunctionPointer& in)
 		{
 		mJumpPtr = in.mJumpPtr;
 		return *this;
 		}
-	
+
 	bool isEmpty() const
 		{
 		return mJumpPtr == 0;
@@ -61,6 +61,6 @@ public:
 		return mJumpPtr;
 		}
 private:
-	void*	mJumpPtr;		
+	void*	mJumpPtr;
 };
 

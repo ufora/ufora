@@ -79,7 +79,7 @@ public:
 		using namespace TypedNativeExpressionHelpers;
 
 		return let(
-			slice, 
+			slice,
 			this->sliceForOffset(index),
 			TypedNativeExpression<pair<TypedFora::Abi::ForaValueArray*, int64_t> >::create(
 				slice.array(),
@@ -98,12 +98,12 @@ public:
 
 		using namespace TypedNativeExpressionHelpers;
 
-		return 
+		return
 			let(fixedSizeCacheVar, fixedSizeCache()[0],
-			if_(fixedSizeCacheVar.firstContains(offset), 
-				fixedSizeCacheVar.slice1(), 
-				if_(fixedSizeCacheVar.secondContains(offset), 
-					fixedSizeCacheVar.slice2(), 
+			if_(fixedSizeCacheVar.firstContains(offset),
+				fixedSizeCacheVar.slice1(),
+				if_(fixedSizeCacheVar.secondContains(offset),
+					fixedSizeCacheVar.slice2(),
 					makeTypedNativeLibraryFunction(
 						&TypedFora::Abi::BigVectorHandle::retrieveSlice
 						)(self(), offset),

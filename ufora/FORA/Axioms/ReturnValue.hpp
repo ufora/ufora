@@ -53,7 +53,7 @@ namespace Fora {
 template<class T, int index>
 class IndexedReturnValue {
 public:
-	IndexedReturnValue(const T& in) : m(in) 
+	IndexedReturnValue(const T& in) : m(in)
 		{
 		}
 
@@ -73,7 +73,7 @@ public:
 	IndexedReturnValue<T, index> operator()(const T& in) const
 		{
 		return IndexedReturnValue<T, index>(in);
-		} 
+		}
 };
 
 class Empty {};
@@ -168,7 +168,7 @@ public:
 	public:
 		template<class T>
 		void operator()(T& toDestroy) const
-			{	
+			{
 			toDestroy.~T();
 			}
 	};
@@ -181,7 +181,7 @@ public:
 
 		template<class T>
 		void operator()(const T& toCopy)
-			{	
+			{
 			new ((T*)mTarget) T(toCopy);
 			}
 
@@ -228,7 +228,7 @@ public:
 		Destroy destroyer;
 
 		visit(destroyer);
-		
+
 		mWhich = 2;
 		new ((A2*)mData) A2(in.get());
 
@@ -241,7 +241,7 @@ public:
 		Destroy destroyer;
 
 		visit(destroyer);
-		
+
 		mWhich = 3;
 		new ((A3*)mData) A3(in.get());
 
@@ -254,7 +254,7 @@ public:
 		Destroy destroyer;
 
 		visit(destroyer);
-		
+
 		mWhich = 4;
 		new ((A4*)mData) A4(in.get());
 
@@ -267,7 +267,7 @@ public:
 		Destroy destroyer;
 
 		visit(destroyer);
-		
+
 		mWhich = 5;
 		new ((A5*)mData) A5(in.get());
 		}
@@ -295,7 +295,7 @@ public:
 		in.visit(duplicator);
 
 		mWhich = in.mWhich;
-		
+
 		return *this;
 		}
 
@@ -341,38 +341,38 @@ public:
 		return *(const A5*)mData;
 		}
 
-	A0& get0() 
+	A0& get0()
 		{
 		lassert(mWhich == 0);
 
 		return *( A0*)mData;
 		}
 
-	A1& get1() 
+	A1& get1()
 		{
 		lassert(mWhich == 1);
 		return *( A1*)mData;
 		}
 
-	A2& get2() 
+	A2& get2()
 		{
 		lassert(mWhich == 2);
 		return *( A2*)mData;
 		}
 
-	A3& get3() 
+	A3& get3()
 		{
 		lassert(mWhich == 3);
 		return *( A3*)mData;
 		}
 
-	A4& get4() 
+	A4& get4()
 		{
 		lassert(mWhich == 4);
 		return *( A4*)mData;
 		}
 
-	A5& get5() 
+	A5& get5()
 		{
 		lassert(mWhich == 5);
 		return *( A5*)mData;
@@ -430,7 +430,7 @@ private:
 	const static uint32_t sz3 = sizeof(A3) > sz2 ? sizeof(A3) : sz2;
 	const static uint32_t sz4 = sizeof(A4) > sz3 ? sizeof(A4) : sz3;
 	const static uint32_t sz5 = sizeof(A5) > sz4 ? sizeof(A5) : sz4;
-	
+
 	//round up to nearest 8 bytes
 	const static uint32_t finalSz = sz5 % 8 ? sz5 + (8 - sz5 % 8) : sz5;
 

@@ -70,7 +70,7 @@ ImmutableTreeVector<int> intersect(IntegerSequence s, ImmutableTreeVector<int> v
 	}
 
 ImmutableTreeVector<int> slice(
-					ImmutableTreeVector<int> i, 
+					ImmutableTreeVector<int> i,
 					IntegerSequence seq
 					)
 	{
@@ -87,14 +87,14 @@ ImmutableTreeVector<int> slice(
 	}
 
 ImmutableTreeVector<int> slice(
-					ImmutableTreeVector<int> i, 
-					Nullable<int64_t> s1, 
-					Nullable<int64_t> s2, 
+					ImmutableTreeVector<int> i,
+					Nullable<int64_t> s1,
+					Nullable<int64_t> s2,
 					Nullable<int64_t> s3
 					)
 	{
 	int64_t stride = (s3 ? *s3 : 1);
-	
+
 	lassert(stride != 0);
 
 	ImmutableTreeVector<int> tr;
@@ -102,7 +102,7 @@ ImmutableTreeVector<int> slice(
 	if (stride > 0)
 		{
 		int64_t start = (s1 ? *s1 : 0);
-		
+
 		if (start < 0)
 			start = start + i.size();
 
@@ -123,7 +123,7 @@ ImmutableTreeVector<int> slice(
 	else
 		{
 		int64_t start = (s1 ? *s1 : (int64_t)i.size() - 1);
-		
+
 		if (start < 0)
 			start = start + i.size();
 
@@ -159,7 +159,7 @@ BOOST_AUTO_TEST_CASE( test_math_IntegerSequence )
 
 	BOOST_CHECK_EQUAL_CPPML(S(3, 2), S(10).slice(2, 5));
 	BOOST_CHECK_EQUAL_CPPML(S(3, 2), S(10).slice(-8, 5));
-	
+
 	BOOST_CHECK_EQUAL_CPPML(S(10, 9, -1), S(10).slice(null(), null(), null() << (int64_t)-1));
 
 
@@ -197,12 +197,12 @@ BOOST_AUTO_TEST_CASE( test_math_IntegerSequence_Random )
 			seq.stride() = 1;
 
 		ImmutableTreeVector<int> vals = create(seq);
-		
+
 		Nullable<int64_t> s1, s2, s3;
 
 		if (generator() > .25)
 			s1 = (generator() - .5) * 5;
-		
+
 		if (generator() > .25)
 			s2 = (generator() - .5) * 5;
 
@@ -237,7 +237,7 @@ BOOST_AUTO_TEST_CASE( test_math_IntegerSequence_Slice_Random )
 
 		IntegerSequence seq(generator() * 20, (generator() - .5) * 20, (generator() - .5) * 8);
 		IntegerSequence seq2(generator() * 20, (generator() - .5) * 20, (generator() - .5) * 8);
-		
+
 		if (seq.stride() == 0)
 			seq.stride() = 1;
 
@@ -245,7 +245,7 @@ BOOST_AUTO_TEST_CASE( test_math_IntegerSequence_Slice_Random )
 			seq2.stride() = 1;
 
 		ImmutableTreeVector<int> vals = create(seq);
-		
+
 		ImmutableTreeVector<int> slicedVals = slice(vals, seq2);
 
 		IntegerSequence slicedSeq = seq.slice(seq2);
@@ -277,7 +277,7 @@ BOOST_AUTO_TEST_CASE( test_math_IntegerSequence_Intersection_Random )
 			toIntersectWith.stride() = 1;
 
 		ImmutableTreeVector<int> vals = create(seq);
-		
+
 		ImmutableTreeVector<int> intersectedVals = intersect(toIntersectWith, vals);
 
 		IntegerSequence intersectedSeq = seq.intersect(toIntersectWith);

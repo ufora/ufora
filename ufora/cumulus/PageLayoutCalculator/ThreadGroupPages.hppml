@@ -1,0 +1,299 @@
+/***************************************************************************
+    Copyright 2015 Ufora Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../../core/containers/SetWithChanges.hpp"
+#include "../MachineId.hppml"
+#include "../SystemwideComputationScheduler/ThreadGroup.hppml"
+#include "../SystemwideComputationScheduler/ThreadGroupStateUpdate.hppml"
+
+namespace Cumulus {
+
+namespace PageLayoutCalculator {
+
+class ThreadGroupPages {
+public:
+	ThreadGroupPages() :
+			mMaxActiveBytes(0),
+			mTotalBytes(0),
+			mActiveBytes(0)
+		{
+		}
+
+	const TwoWaySetMap<ThreadGroup, Fora::PageId>& getThreadGroupPages() const
+		{
+		return mPages;
+		}
+
+	const TwoWaySetMap<ThreadGroup, Fora::PageId>& getActivePages() const
+		{
+		return mActivePages;
+		}
+
+	void setMaxActiveBytes(int64_t inMaxActiveBytes)
+		{
+		mMaxActiveBytes = inMaxActiveBytes;
+
+		checkActivation();
+		}
+
+	int64_t maxActiveBytes() const
+		{
+		return mMaxActiveBytes;
+		}
+
+	int64_t activeBytes() const
+		{
+		return mActiveBytes;
+		}
+
+	void setGroupThreads(ThreadGroup group, int64_t threads)
+		{
+		if (!hasGroup(group))
+			{
+			lassert(!mPages.hasKey(group));
+
+			if (threads)
+				mActiveThreadGroups.insert(group);
+			else
+				mInactiveThreadGroupsWithoutThreads.insert(group);
+			}
+
+		if (mActiveThreadGroups.contains(group) && threads == 0)
+			{
+			//deactivate it
+			mActiveThreadGroups.erase(group);
+
+			if (threads)
+				mInactiveThreadGroupsWithThreads.insert(group);
+			else
+				mInactiveThreadGroupsWithoutThreads.insert(group);
+
+			mActivePages.dropKey(group);
+			for (auto p: mPages.getValues(group))
+				if (!mActivePages.hasValue(p))
+					mActiveBytes -= p.bytecount();
+			}
+			else
+		if (mInactiveThreadGroupsWithoutThreads.find(group) != mInactiveThreadGroupsWithoutThreads.end() && threads)
+			{
+			mInactiveThreadGroupsWithoutThreads.erase(group);
+			mInactiveThreadGroupsWithThreads.insert(group);
+			}
+			else
+		if (mInactiveThreadGroupsWithThreads.find(group) != mInactiveThreadGroupsWithThreads.end() && !threads)
+			{
+			mInactiveThreadGroupsWithThreads.erase(group);
+			mInactiveThreadGroupsWithoutThreads.insert(group);
+			}
+
+		checkActivation();
+		}
+
+	bool hasGroup(ThreadGroup group) const
+		{
+		return (mActiveThreadGroups.contains(group) ||
+			mInactiveThreadGroupsWithThreads.find(group) != mInactiveThreadGroupsWithThreads.end() ||
+			mInactiveThreadGroupsWithoutThreads.find(group) != mInactiveThreadGroupsWithoutThreads.end()
+			);
+		}
+
+
+	void add(ThreadGroup group, Fora::PageId page)
+		{
+		lassert(hasGroup(group));
+
+		if (!mPages.hasValue(page))
+			mTotalBytes += page.bytecount();
+
+		mPages.insert(group, page);
+
+		if (mActiveThreadGroups.contains(group))
+			{
+			if (!mActivePages.hasValue(page))
+				mActiveBytes += page.bytecount();
+			mActivePages.insert(group, page);
+			}
+
+		checkActivation();
+		}
+
+	void drop(ThreadGroup group, Fora::PageId page)
+		{
+		mPages.drop(group, page);
+
+		if (!mPages.hasValue(page))
+			mTotalBytes -= page.bytecount();
+
+		if (mActivePages.contains(group, page))
+			{
+			mActivePages.drop(group, page);
+			if (!mActivePages.hasValue(page))
+				mActiveBytes -= page.bytecount();
+			}
+
+		checkActivation();
+		}
+
+	void groupFinished(ThreadGroup group)
+		{
+		if (!hasGroup(group))
+			return;
+
+		std::set<Fora::PageId> pages = mPages.getValues(group);
+
+		for (auto p: pages)
+			drop(group, p);
+
+		mActiveThreadGroups.erase(group);
+		mActiveThreadGroups.removeFromTrackingSet(group);
+
+		mInactiveThreadGroupsWithoutThreads.erase(group);
+		mInactiveThreadGroupsWithThreads.erase(group);
+
+		checkActivation();
+		}
+
+	void extractActivatedOrDeactivatedThreadGroups(
+					std::set<ThreadGroup>& ioActivated,
+					std::set<ThreadGroup>& ioDeactivated
+					)
+		{
+		mActiveThreadGroups.extractChanges(ioActivated, ioDeactivated);
+		}
+
+	bool isActive(ThreadGroup group) const
+		{
+		return mActiveThreadGroups.contains(group);
+		}
+
+	void pageDroppedAcrossEntireSystem(Fora::PageId page)
+		{
+		if (mPages.hasValue(page))
+			mTotalBytes -= page.bytecount();
+
+		if (mActivePages.hasValue(page))
+			mActiveBytes -= page.bytecount();
+
+		mActivePages.dropValue(page);
+
+		mPages.dropValue(page);
+
+		checkActivation();
+		}
+
+	void validateState()
+		{
+		//every active thread group is correctly represented in mActivePages
+		for (auto active: mActiveThreadGroups)
+			for (auto p: mPages.getValues(active))
+				lassert(mActivePages.contains(active,p));
+
+		//contents of activePages is contained within mActiveThreadGroups
+		int64_t actuallyActive = 0;
+		for (auto& pageAndThreads: mActivePages.getValuesToKeys())
+			{
+			actuallyActive += pageAndThreads.first.bytecount();
+			for (auto t: pageAndThreads.second)
+				lassert(mActiveThreadGroups.contains(t));
+			}
+
+		lassert(actuallyActive == mActiveBytes);
+		}
+
+private:
+	void checkActivation()
+		{
+		while (mMaxActiveBytes < mActiveBytes)
+			deactivateOne();
+
+		while (mInactiveThreadGroupsWithThreads.size() && tryToActivateOne())
+			;
+		}
+
+	void deactivateOne()
+		{
+		lassert(mActiveThreadGroups.size());
+		ThreadGroup group = *mActiveThreadGroups.begin();
+
+		for (auto p: mPages.getValues(group))
+			{
+			mActivePages.drop(group, p);
+			if (!mActivePages.hasValue(p))
+				mActiveBytes -= p.bytecount();
+			}
+
+		mActiveThreadGroups.erase(group);
+		mInactiveThreadGroupsWithThreads.insert(group);
+		}
+
+	bool tryToActivateOne()
+		{
+		if (mInactiveThreadGroupsWithThreads.size() == 0)
+			return false;
+
+		for (auto group: mInactiveThreadGroupsWithThreads)
+			{
+			int64_t bytecount = 0;
+
+			for (auto p: mPages.getValues(group))
+				if (!mActivePages.hasValue(p))
+					bytecount += p.bytecount();
+
+			if (bytecount + mActiveBytes < mMaxActiveBytes)
+				{
+				mInactiveThreadGroupsWithThreads.erase(group);
+				mActiveThreadGroups.insert(group);
+
+				for (auto p: mPages.getValues(group))
+					{
+					if (!mActivePages.hasValue(p))
+						mActiveBytes += p.bytecount();
+					mActivePages.insert(group, p);
+					}
+
+				return true;
+				}
+			}
+
+		return false;
+		}
+
+	//all pages
+	TwoWaySetMap<ThreadGroup, Fora::PageId> mPages;
+
+	TwoWaySetMap<ThreadGroup, Fora::PageId> mActivePages;
+
+	//all active groups
+	SetWithChanges<ThreadGroup> mActiveThreadGroups;
+
+	//all inactive groups
+	std::set<ThreadGroup> mInactiveThreadGroupsWithThreads;
+
+	std::set<ThreadGroup> mInactiveThreadGroupsWithoutThreads;
+
+	//all bytes in all pages
+	int64_t mTotalBytes;
+
+	//all bytes in all pages in active threadgroups
+	int64_t mActiveBytes;
+
+	//maximum number of bytes we can have in active threadgroups at once
+	int64_t mMaxActiveBytes;
+};
+
+}
+}

@@ -51,16 +51,16 @@ MachineId machine1(hash_type(1));
 
 MachineId machine2(hash_type(2));
 
-ComputationSystemwideCpuAssignment computation1NoAssignment = 
+ComputationSystemwideCpuAssignment computation1NoAssignment =
 	ComputationSystemwideCpuAssignment::withNoChildren( computation1, 0, 0);
 
-ComputationSystemwideCpuAssignment computation1OneCpuDirect = 
+ComputationSystemwideCpuAssignment computation1OneCpuDirect =
 	ComputationSystemwideCpuAssignment::withNoChildren(computation1, 1, 0);
 
-ComputationSystemwideCpuAssignment computation2NoAssignment = 
+ComputationSystemwideCpuAssignment computation2NoAssignment =
 	ComputationSystemwideCpuAssignment::withNoChildren(computation2, 0, 0);
 
-ComputationSystemwideCpuAssignment computation2OneCpuDirect = 
+ComputationSystemwideCpuAssignment computation2OneCpuDirect =
 	ComputationSystemwideCpuAssignment::withNoChildren(computation2, 1, 0);
 
 ComputationSystemwideCpuAssignment computation2OneCpuChild(
@@ -169,7 +169,7 @@ BOOST_AUTO_TEST_CASE( test_dependency_graph_flows_correctly )
 	graph->updateDependencyGraph();
 
 	BOOST_CHECK(true);
-	
+
 	scheduler->blockUntilPendingHaveExecutedAndImmediateQueueIsEmpty();
 
 	assertQueueContainsAndRemoveRegardlessOfOrder(*queue, computation2NoAssignment, scheduler);
@@ -218,11 +218,11 @@ BOOST_AUTO_TEST_CASE( test_parent_cpu_counts )
 	graph->handleRootToRootDependencyCreated(RootToRootDependencyCreated(compByIx(2), compByIx(1)));
 
 	graph->markRootComputation(compByIx(4));
-	
+
 	graph->updateDependencyGraph();
 
 	BOOST_CHECK(true);
-	
+
 	drain();
 	BOOST_CHECK(assignmentMap.find(compByIx(4)) != assignmentMap.end());
 	BOOST_CHECK(assignmentMap[compByIx(4)].cpusAssigned() == 0);
@@ -232,7 +232,7 @@ BOOST_AUTO_TEST_CASE( test_parent_cpu_counts )
 	graph->updateDependencyGraph();
 
 	BOOST_CHECK(true);
-	
+
 	drain();
 	lassert(assignmentMap.find(compByIx(2)) != assignmentMap.end());
 	BOOST_CHECK(assignmentMap[compByIx(2)].cpusAssigned() == 0);

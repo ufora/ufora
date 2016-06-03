@@ -48,8 +48,8 @@ testSymbol = ForaNative.makeSymbol("test")
 
 def isTestCase(foraMemberMetadata):
     """
-    given a module metadata `foraMemberMetadata`, 
-    return true if the member is a test case, or false otherwise. 
+    given a module metadata `foraMemberMetadata`,
+    return true if the member is a test case, or false otherwise.
 
     as described above, a test case is one in which the metadata is either `test, or
     is a tuple containing the value `test (among possibly other things)
@@ -76,11 +76,11 @@ def extractModuleTestNames(foraModule):
     """
     get a a list of the module members which are test cases
     """
-    
+
     moduleMembersAndMetadataDict = FORA.objectMembers(foraModule)
 
     tr = []
-    
+
     for membername, memberMeta in moduleMembersAndMetadataDict.iteritems():
         if isTestCase(memberMeta):
             tr.append(membername)
@@ -90,11 +90,11 @@ def extractModuleTestNames(foraModule):
 def sanitizeErrString(errString):
     """pack the error string into a single line of a few characters. include the beginning and end"""
     errString = errString.replace("\n", " ").replace("\t", " ")
-    
+
     if len(errString) > 500:
         errString = errString[:250] + " ... " + errString[-250:]
     return errString
-    
+
 def printTestResults(moduleName, testName, testResultWithTimes, verbose = False):
     failct = 0
     passct = 0
@@ -103,7 +103,7 @@ def printTestResults(moduleName, testName, testResultWithTimes, verbose = False)
 
     if result is not True:
         failct += 1
-            
+
         print moduleName, ": ", testName,
 
         print time.strftime("%Y-%m-%d %H:%M:%S"), "--", "TEST FAILED:", moduleName, testName, ":",
@@ -113,25 +113,25 @@ def printTestResults(moduleName, testName, testResultWithTimes, verbose = False)
         else:
             print result,
         print "is not True"
-            
+
     else:
         passct += 1
         if verbose:
             print time.strftime("%Y-%m-%d %H:%M:%S"), "--", moduleName, testName, ": TEST SUCCEEDED in %2.4f" % timeElapsed, ". memory usage is ", TCMallocNative.getBytesUsed() / 1024 / 1024.0, " MB"
-            
+
     return (passct, failct)
 
 def executeFORATest(foraModule, moduleName, testname, verbose, testFunction):
     try:
         if verbose:
             print time.strftime("%Y-%m-%d %H:%M:%S"), "--", moduleName, testname, ": TEST STARTING"
-        
+
         return testFunction(foraModule, moduleName, testname)
 
 
     except FORAException as e:
         return e
-    
+
 def testModuleStr(modulePath, verbose, delay, testFilter, testFunction):
     """parse text in moduleText into a FORA module and execute tests within"""
     try:
@@ -179,7 +179,7 @@ def symbolJov(sym):
 def dumpReasonerSummary(moduleName, testName, reasoner, frame):
     allFrames = set()
     unknownWithStacks = []
-    
+
     def checkFrame(frame, curStack=()):
         if frame in allFrames:
             return
@@ -208,7 +208,7 @@ def dumpReasonerSummary(moduleName, testName, reasoner, frame):
     for frameAndStack in unknownWithStacks:
         frame = frameAndStack['frame']
         stack = frameAndStack['stack']
-        badApplyNodes += len(frame.unknownApplyNodes()) 
+        badApplyNodes += len(frame.unknownApplyNodes())
         print "Found ", len(frame.unknownApplyNodes()), " in "
         for f in stack + (frame,):
             print "\t", replaceWhitespace(f.graph().graphName + " " + str(f.entryJOVs()))
@@ -239,36 +239,36 @@ def reasonAboutForaCode(module, moduleName, testName):
 
 def test(verbose = False, testFilter=None, reasoning=False):
     """use all .fora files in this directory to generate a single unit test.
-    
+
     returns 1 on failure, 0 on success
 
     testFilter - a function from modulename and testname to a bool indicating whether to test
     """
     numPassed = 0
     numFailed = 0
-    
+
     curdir = os.path.split(__file__)[0]
     t0 = time.time()
-    
+
     for f in sorted(os.listdir(curdir)):
         if f.endswith(".fora"):
             passed, failed = testModuleStr(
-                os.path.join(curdir, f), 
-                verbose, 
-                0.0, 
-                testFilter, 
+                os.path.join(curdir, f),
+                verbose,
+                0.0,
+                testFilter,
                 executeForaCode if not reasoning else reasonAboutForaCode
                 )
 
             numPassed += passed
             numFailed += failed
-            
+
     print "FORA SEMANTIC TESTS EXECUTED. %d passed, %d failed." % (numPassed, numFailed),
     print " in ", time.time() - t0
-    
+
     time.sleep(.5)
-    
+
     if numFailed > 0:
         return 1
     return 0
-    
+

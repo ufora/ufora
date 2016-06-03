@@ -31,7 +31,7 @@ namespace {
 Keyspace getKeyspace(void)
 	{
 	return Keyspace("TakeHighestIdKeyType", Ufora::Json::String("data"), 1);
-	}	
+	}
 
 Key getKey(uword_t inIndex)
 	{
@@ -49,7 +49,7 @@ bool allThreadsHaveValue(PolymorphicSharedPtr<View> inView, uword_t inThreadCoun
 	inView->begin();
 
 	Keyspace keyspace("TakeHighestIdKeyType", Ufora::Json::String("data"), 1);
-	
+
 	for (long threadIndex = 0; threadIndex < inThreadCount;threadIndex++)
 		{
 		Key key = getKey(threadIndex);
@@ -67,17 +67,17 @@ bool allThreadsHaveValue(PolymorphicSharedPtr<View> inView, uword_t inThreadCoun
 	return true;
 	}
 
-void clientThread(	PolymorphicSharedPtr<View> inView, 
-					uword_t inThreadIndex, 
-					uword_t inPassIndex, 
-					uword_t totalThreadCount, 
+void clientThread(	PolymorphicSharedPtr<View> inView,
+					uword_t inThreadIndex,
+					uword_t inPassIndex,
+					uword_t totalThreadCount,
 					uword_t* ioSuccess
 					)
 	{
 	std::string passIndexAsString = boost::lexical_cast<string>(inPassIndex);
 
 	inView->waitConnect();
-	
+
 	inView->subscribe(
 		KeyRange(
 			getKeyspace(),
@@ -111,7 +111,7 @@ void clientThread(	PolymorphicSharedPtr<View> inView,
 			return;
 			}
 		}
-	
+
 	*ioSuccess = 1;
 	}
 
@@ -121,13 +121,13 @@ BOOST_AUTO_TEST_CASE( test_InMemorySharedState )
 	{
 	PolymorphicSharedPtr<CallbackScheduler> scheduler(CallbackScheduler::singletonForTesting());
 
-	//same test as SharedState_test.py 
+	//same test as SharedState_test.py
 	PolymorphicSharedPtr<KeyspaceManager> manager(
 		new KeyspaceManager(
-			0, 
-			1, 
-			60, 
-			2, 
+			0,
+			1,
+			60,
+			2,
 			PolymorphicSharedPtr<FileStorage>()
 			)
 		);
@@ -158,7 +158,7 @@ BOOST_AUTO_TEST_CASE( test_InMemorySharedState )
 					new serialized_manager_channel_type(scheduler, pRaw.second)
 					)
 				);
-			
+
 			newView->add(channelPair.first);
 			manager->add(channelPair.second);
 
@@ -166,11 +166,11 @@ BOOST_AUTO_TEST_CASE( test_InMemorySharedState )
 				boost::shared_ptr<boost::thread>(
 					new boost::thread(
 						boost::bind(
-							clientThread, 
-							newView, 
-							threadIx, 
-							passIx, 
-							threadCount, 
+							clientThread,
+							newView,
+							threadIx,
+							passIx,
+							threadCount,
 							&threadSuccesses[threadIx])
 						)
 					)
@@ -179,7 +179,7 @@ BOOST_AUTO_TEST_CASE( test_InMemorySharedState )
 
 		for (long k = 0; k < threads.size();k++)
 			threads[k]->join();
-		
+
 		uword_t totalSuccessCount = 0;
 		for (long k = 0; k < threadSuccesses.size();k++)
 			if (threadSuccesses[k])

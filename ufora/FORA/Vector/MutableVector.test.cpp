@@ -31,24 +31,24 @@ BOOST_AUTO_TEST_SUITE( test_FORA_MutableVector )
 BOOST_AUTO_TEST_CASE( test_FORA_MutableVector_create_destroy )
 {
 	boost::shared_ptr<ExecutionContextMemoryPool> pool(
-		new ExecutionContextMemoryPool(0, 
+		new ExecutionContextMemoryPool(0,
 			PolymorphicSharedPtr<VectorDataMemoryManager>(
 				new VectorDataMemoryManager(scheduler, scheduler)
 				)
 			)
 		);
 
-	MutableVectorRecord record = 
+	MutableVectorRecord record =
 		MutableVectorRecord::allocateNewMutableVectorRecordOfNothing(
 			pool.get()
 			);
 }
 
-	
+
 BOOST_AUTO_TEST_CASE( test_FORA_MutableVector_Type_Interface )
 {
 	boost::shared_ptr<ExecutionContextMemoryPool> pool(
-		new ExecutionContextMemoryPool(0, 
+		new ExecutionContextMemoryPool(0,
 			PolymorphicSharedPtr<VectorDataMemoryManager>(
 				new VectorDataMemoryManager(scheduler, scheduler)
 				)
@@ -68,21 +68,21 @@ BOOST_AUTO_TEST_CASE( test_FORA_MutableVector_Type_Interface )
 	vecType.initialize(recordStorage, pool.get());
 
 	BOOST_CHECK_EQUAL(
-		(**(TypedFora::Abi::MutableVectorHandle**)recordStorage).refcount(), 
+		(**(TypedFora::Abi::MutableVectorHandle**)recordStorage).refcount(),
 		1
 		);
 
 	vecType.initialize(&recordStorage2, &recordStorage);
 
 	BOOST_CHECK_EQUAL(
-		(**(TypedFora::Abi::MutableVectorHandle**)recordStorage).refcount(), 
+		(**(TypedFora::Abi::MutableVectorHandle**)recordStorage).refcount(),
 		2
-		);	
+		);
 
 	vecType.destroy(recordStorage);
 
 	BOOST_CHECK_EQUAL(
-		(**(TypedFora::Abi::MutableVectorHandle**)recordStorage).refcount(), 
+		(**(TypedFora::Abi::MutableVectorHandle**)recordStorage).refcount(),
 		1
 		);
 

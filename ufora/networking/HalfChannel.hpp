@@ -20,12 +20,12 @@ template<class TOut, class TIn>
 class HalfChannel : public Channel<TOut, TIn> {
 public:
 	typedef PolymorphicSharedPtr<
-		HalfChannel<TOut, TIn>, 
+		HalfChannel<TOut, TIn>,
 		typename Channel<TOut, TIn>::pointer_type
 		> pointer_type;
 
 	typedef PolymorphicSharedWeakPtr<
-		HalfChannel<TOut, TIn>, 
+		HalfChannel<TOut, TIn>,
 		typename Channel<TOut, TIn>::weak_ptr_type
 		> weak_ptr_type;
 
@@ -52,7 +52,7 @@ public:
 	virtual ~HalfChannel()
 		{
 		}
-	
+
 	virtual void write(const TOut& in)
 		{
 		boost::mutex::scoped_lock lock(mMutex);
@@ -84,7 +84,7 @@ public:
 		}
 
 	virtual void setHandlers(
-				boost::function1<void, TIn> inOnMessage, 
+				boost::function1<void, TIn> inOnMessage,
 				boost::function0<void> inOnDisconnected
 				)
 		{

@@ -56,7 +56,7 @@ long Graph::recompute()
 
 			if (dirtyPtr)
 				dirtyPtr->clean();
-			
+
 			count++;
 			}
 		else
@@ -65,7 +65,7 @@ long Graph::recompute()
 
 	mValuesComputed += count;
 	mTimeElapsed += curClock() - t0;
-	
+
 	return count;
 	}
 
@@ -89,7 +89,7 @@ long Graph::recomputeBelow(long dirtynessLevel)
 
 			if (dirtyPtr)
 				dirtyPtr->clean();
-			
+
 			count++;
 			}
 		else
@@ -98,12 +98,12 @@ long Graph::recomputeBelow(long dirtynessLevel)
 
 	mValuesComputed += count;
 	mTimeElapsed += curClock() - t0;
-	
+
 	return count;
 	}
 
 
-Dirtyable::Dirtyable(Graph& inGraph) : 
+Dirtyable::Dirtyable(Graph& inGraph) :
 		mGraph(&inGraph),
 		mDirty(false),
 		mIsInitialized(false)
@@ -118,7 +118,7 @@ void Dirtyable::initializeDirtyable()
 	mIsInitialized = true;
 	markDirty();
 	}
-	
+
 
 void Dirtyable::markDirty()
 	{

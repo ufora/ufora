@@ -51,7 +51,7 @@ BOOST_AUTO_TEST_CASE( test_resizeExpression )
 
 	ExecutionContextMemoryPool memoryPool(0, memoryManager);
 
-	BigVectorHandle* handle = 
+	BigVectorHandle* handle =
 		BigVectorHandle::create(&memoryPool, nullptr);
 
 	ForaValueArray* array = ForaValueArray::Empty(&memoryPool);

@@ -46,7 +46,7 @@ public:
 	void exportPythonWrapper()
 		{
 		using namespace boost::python;
-		
+
 		Ufora::python::CPPMLWrapper<CodeDefinitionPoint>().class_()
 			.def("__str__", FORAPythonUtil::scopedPrettyPrinter<CodeDefinitionPoint>)
 			.def("__repr__", FORAPythonUtil::scopedPrettyPrinter<CodeDefinitionPoint>)
@@ -56,7 +56,7 @@ public:
 			.def("__setstate__", &FORAPythonUtil::deserializer<CodeDefinitionPoint>)
 			.enable_pickling()
 			;
-		
+
 		Ufora::python::CPPMLWrapper<CodeLocation>().class_()
 			.def("__str__", FORAPythonUtil::scopedPrettyPrinter<CodeLocation>)
 			.def("__repr__", FORAPythonUtil::scopedPrettyPrinter<CodeLocation>)
@@ -78,7 +78,7 @@ public:
 
 		PythonWrapper<ImmutableTreeVector<CodeLocation> >::exportPythonInterface("CodeLocation");
 		}
-	
+
 };
 
 //explicitly instantiating the registration element causes the linker to need

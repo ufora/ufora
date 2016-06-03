@@ -21,7 +21,7 @@
 
 class TimedLock {
 public:
-	TimedLock(boost::recursive_mutex& m, const char* lockType, double timeout = 1.0) : 
+	TimedLock(boost::recursive_mutex& m, const char* lockType, double timeout = 1.0) :
 			preLockTimer(curClock()),
 			mLock(m),
 			postLockTimer(curClock()),
@@ -34,7 +34,7 @@ public:
 	~TimedLock()
 		{
 		if (curClock() - preLockTimer > mTimeout)
-			LOG_WARN << mLockType << " mLock held for " << curClock() - postLockTimer 
+			LOG_WARN << mLockType << " mLock held for " << curClock() - postLockTimer
 				<< " over " << mTimesAcquired << " instances. acquiring took "
 				<< postLockTimer - preLockTimer << ". trace =\n"
 				<< Ufora::debug::StackTrace::getStringTrace();

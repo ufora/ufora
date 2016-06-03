@@ -140,7 +140,7 @@ public:
 		boost::python::dict tr;
 
 		for (long k = 0; k < in.size();k++)
-			tr[cppmlToSimplePythonRepresentation(in.pairAtPosition(k).first)] = 
+			tr[cppmlToSimplePythonRepresentation(in.pairAtPosition(k).first)] =
 				cppmlToSimplePythonRepresentation(in.pairAtPosition(k).second);
 
 		return tr;
@@ -284,7 +284,7 @@ public:
 };
 
 template<class T, class member_type_in, class accessor_in, const int32_t ix>
-class CPPMLToSimpleGivenCppmlMetadata<T, ::CPPML::Kinds::tuple, 
+class CPPMLToSimpleGivenCppmlMetadata<T, ::CPPML::Kinds::tuple,
 							::CPPML::TupleMember<T, member_type_in, accessor_in, ix> > {
 public:
 	static void toSimple(boost::python::object& io, const T& in)
@@ -340,7 +340,7 @@ public:
 		{
 		if (CPPMLToSimpleGivenCppmlMetadata<T, ::CPPML::Kinds::alternative, A1>::fromSimple(out, tag, body))
 			return true;
-		
+
 		if (CPPMLToSimpleGivenCppmlMetadata<T, ::CPPML::Kinds::alternative, A2>::fromSimple(out, tag, body))
 			return true;
 
@@ -363,7 +363,7 @@ public:
 };
 
 template<class T, class member_type_in, class accessor_in>
-class CPPMLToSimpleGivenCppmlMetadata<T, ::CPPML::Kinds::alternative, 
+class CPPMLToSimpleGivenCppmlMetadata<T, ::CPPML::Kinds::alternative,
 					::CPPML::Alternative<T, member_type_in, accessor_in> > {
 public:
 
@@ -399,7 +399,7 @@ public:
 
 
 template<class T, class member_type_in, class accessor_in, const int32_t ix>
-class CPPMLToSimpleGivenCppmlMetadata<T, ::CPPML::Kinds::alternative, 
+class CPPMLToSimpleGivenCppmlMetadata<T, ::CPPML::Kinds::alternative,
 				::CPPML::AlternativeCommonMember<T, member_type_in, accessor_in, ix> > {
 public:
 	static bool toSimple(boost::python::object& out, const T& in)

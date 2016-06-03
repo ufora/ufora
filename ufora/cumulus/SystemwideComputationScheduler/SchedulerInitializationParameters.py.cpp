@@ -36,8 +36,8 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
-			object cls = 
+
+			object cls =
 				FORAPythonUtil::exposeValueLikeCppmlTypeSimpleSerializers<SchedulerInitializationParameters>()
 					.class_()
 				;

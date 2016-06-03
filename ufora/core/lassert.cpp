@@ -24,7 +24,7 @@ void lassert_check_interrupt(const string& inException)
 	if (getenv("LASSERT_INTERRUPTS"))
 		{
 		cout << inException << endl;
-		asm("int3");	
+		asm("int3");
 		}
 	}
 

@@ -38,7 +38,7 @@ BOOST_AUTO_TEST_CASE( test_basic )
 	JudgmentOnValue jovVectorOfAny = JOV::OfType(Type::Vector());
 	JudgmentOnValue jovVectorOfInt = jovVector(JOV::OfType(Type::Integer(32, true)) );
 	JudgmentOnValue jovVectorOfString = jovVector(JOV::OfType(Type::String()) );
-	
+
 
 	FastJORCoverageTable table1(
 			JudgmentOnResult(emptyTreeSet() + jovInteger + jovVectorOfAny)

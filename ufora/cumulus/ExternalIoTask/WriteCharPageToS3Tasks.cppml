@@ -21,7 +21,7 @@ using Cumulus::PersistentCache::PersistentCacheIndex;
 
 namespace Cumulus {
 
-WriteCharPageToS3Tasks::WriteCharPageToS3Tasks(	
+WriteCharPageToS3Tasks::WriteCharPageToS3Tasks(
 			PolymorphicSharedPtr<VectorDataManager> inVDM,
 			PolymorphicSharedPtr<SystemwidePageRefcountTracker> inSPRT,
 			PolymorphicSharedPtr<OfflineCache> inOfflineCache,
@@ -32,7 +32,7 @@ WriteCharPageToS3Tasks::WriteCharPageToS3Tasks(
 			boost::function2<void, ExternalIoTaskCreated, Cumulus::MachineId> inCreateNewRemoteIoTask,
 			boost::function1<void, CumulusComponentMessageCreated> inCumulusComponentMessageCreated,
 			MachineId inOwnMachineId
-			) : 
+			) :
 		mOwnMachineId(inOwnMachineId),
 		mVDM(inVDM),
 		mOfflineCache(inOfflineCache),
@@ -49,14 +49,20 @@ WriteCharPageToS3Tasks::WriteCharPageToS3Tasks(
 
 void WriteCharPageToS3Tasks::handleExternalIoTaskCompleted(ExternalIoTaskCompleted completed)
 	{
+	LOG_INFO << mOwnMachineId << ": task " << completed.taskId() << " completed";
+
 	if (mTasksPendingOnOtherMachines.hasValue(completed.taskId()))
 		{
-		std::set<WriteCharPageToS3Task> tasks = mTasksPendingOnOtherMachines.getKeys(completed.taskId());
+		std::set<ExternalIoTaskId> tasks = mTasksPendingOnOtherMachines.getKeys(completed.taskId());
+
+		LOG_INFO << mOwnMachineId << ": task " << completed.taskId() << " has dependent tasks: " << tasks;
 
 		mTasksPendingOnOtherMachines.dropValue(completed.taskId());
 
-		for (auto task: tasks)
-			handleWriteTaskComplete(task, completed.result());
+		for (auto taskId: tasks)
+			mOnExternalIoTaskCompleted(
+				ExternalIoTaskCompleted(taskId, completed.result())
+				);
 		}
 	}
 
@@ -85,9 +91,14 @@ void WriteCharPageToS3Tasks::checkDeferredTasks()
 		if (anyMachineContainsAllPages(p.first))
 			awake.insert(p.first);
 
+	LOG_INFO << mOwnMachineId << " found " << awake.size() << " of " << mTasksDeferredUntilPagesLoaded.size() << " tasks awake: " << awake;
+
 	for (auto task: awake)
 		{
 		hash_type guid = mTasksDeferredUntilPagesLoaded[task];
+
+		LOG_INFO << mOwnMachineId << " waking task " << task << " which completes TempPageGroup " << guid;
+
 		mTasksDeferredUntilPagesLoaded.erase(task);
 
 		mCumulusComponentMessageCreated(
@@ -114,25 +125,27 @@ void WriteCharPageToS3Tasks::handlePythonIoTaskResponse(PythonIoTaskResponse res
 		return;
 
 	WriteCharPageToS3Task task = mPythonIoTaskGuidToWriteTask[requestGuid];
-	
+
+	LOG_INFO << mOwnMachineId << " python completed " << task;
+
 	mPythonIoTaskGuidToWriteTask.erase(requestGuid);
 
 	@match PythonIoTaskResponse(response)
 		-| Success() ->> {
 			handleWriteTaskComplete(
-				task, 
+				task,
 				ExternalIoTaskResult::Success()
 				);
 			}
 		-| Failure(_, reason) ->> {
 			handleWriteTaskComplete(
-				task, 
+				task,
 				ExternalIoTaskResult::PythonIoFailure(reason)
 				);
 			}
 		-| UserCausedFailure(_, reason) ->> {
 			handleWriteTaskComplete(
-				task, 
+				task,
 				ExternalIoTaskResult::PythonIoFailure(reason)
 				);
 			}
@@ -156,6 +169,8 @@ void WriteCharPageToS3Tasks::scheduleExtractDataAndWrite_(WriteCharPageToS3Task 
 
 	if (allExist)
 		{
+		LOG_INFO << mOwnMachineId << " All data exists for " << task;
+
 		//make sure we hold onto the page data for the duration of the action
 		mLockedVectorPages[task] = pages;
 		extractDataAndScheduleWrite(task);
@@ -166,10 +181,14 @@ void WriteCharPageToS3Tasks::scheduleExtractDataAndWrite_(WriteCharPageToS3Task 
 
 void WriteCharPageToS3Tasks::schedulePageDumpOnAppropriateMachine(WriteCharPageToS3Task task)
 	{
+	LOG_INFO << mOwnMachineId << " Scheduling task " << task << " for dump somewhere";
+
 	Nullable<Cumulus::MachineId> idealMachine = pickRemoteMachineForTask(task);
 
 	if (idealMachine)
 		{
+		LOG_INFO << mOwnMachineId << " Scheduling task for slot " << task << " on " << *idealMachine;
+
 		ExternalIoTaskId newTaskId(mCreateNewHash());
 
 		mCreateNewRemoteIoTask(
@@ -180,7 +199,13 @@ void WriteCharPageToS3Tasks::schedulePageDumpOnAppropriateMachine(WriteCharPageT
 			*idealMachine
 			);
 
-		mTasksPendingOnOtherMachines.insert(task, newTaskId);
+		for (auto oldTask: mCurrentPersistenceTasks.getKeys(task))
+			mTasksPendingOnOtherMachines.insert(oldTask, newTaskId);
+
+		mCurrentPersistenceTasks.dropValue(task);
+
+		lassert(mTasksDeferredUntilPagesLoaded.find(task) == mTasksDeferredUntilPagesLoaded.end());
+		lassert(mLockedVectorPages.find(task) == mLockedVectorPages.end());
 		}
 	else
 		{
@@ -194,7 +219,7 @@ void WriteCharPageToS3Tasks::schedulePageDumpOnAppropriateMachine(WriteCharPageT
 				return;
 				}
 
-		LOG_INFO << "Deferring page load for " << task.pages();
+		LOG_INFO << mOwnMachineId << " Deferring page " << task;
 
 		deferTaskUntilPageLoaded(task);
 		}
@@ -245,7 +270,7 @@ Nullable<Cumulus::MachineId> WriteCharPageToS3Tasks::pickRemoteMachineForTask(Wr
 
 	if (machines.size())
 		return null() << Ufora::math::Random::pickRandomlyFromSet(machines, mRandomGenerator);
-		
+
 	mSPRT->machinesWithPageOnDisk(page, machines);
 
 	machines.erase(mOwnMachineId);
@@ -258,12 +283,19 @@ Nullable<Cumulus::MachineId> WriteCharPageToS3Tasks::pickRemoteMachineForTask(Wr
 
 void WriteCharPageToS3Tasks::deferTaskUntilPageLoaded(WriteCharPageToS3Task task)
 	{
+	LOG_INFO << mOwnMachineId << " Deferring task " << task << " until all pages loaded";
+
 	if (mTasksDeferredUntilPagesLoaded.find(task) != mTasksDeferredUntilPagesLoaded.end())
+		{
+		LOG_INFO << mOwnMachineId << " Task " << task << " already has pages loaded.";
 		return;
+		}
 
 	hash_type guid = mCreateNewHash();
 
 	mTasksDeferredUntilPagesLoaded[task] = guid;
+
+	LOG_INFO << mOwnMachineId << " deferring until TempPageGroup " << task << " is realized. " << mTasksDeferredUntilPagesLoaded.size() << " tasks deferred.";
 
 	mCumulusComponentMessageCreated(
 		CumulusComponentMessageCreated(
@@ -281,7 +313,7 @@ void WriteCharPageToS3Tasks::deferTaskUntilPageLoaded(WriteCharPageToS3Task task
 
 namespace {
 
-@type Bundle = 
+@type Bundle =
 	uint8_t* ptr,
 	int64_t bytecount,
 	int64_t stride
@@ -291,16 +323,16 @@ namespace {
 
 void WriteCharPageToS3Tasks::extractDataAndScheduleWrite(WriteCharPageToS3Task task)
 	{
-	bool allExist = true;
-
 	ImmutableTreeVector<pair<boost::shared_ptr<VectorPage>, IntegerSequence> > pages;
 	std::vector<boost::shared_ptr<Ufora::threading::Trigger> > triggers;
 
 	for (auto pageAndSlice: task.pages())
 		{
 		auto page = mVDM->getPageFor(pageAndSlice.first);
-		
-		auto trigger = page->attemptToMapTo();
+
+		boost::shared_ptr<Ufora::threading::Trigger> trigger;
+		if (page)
+			trigger = page->attemptToMapTo();
 
 		if (!page || !trigger)
 			{
@@ -332,11 +364,11 @@ void WriteCharPageToS3Tasks::extractDataAndScheduleWrite(WriteCharPageToS3Task t
 					IntegerSequence sequenceInPageletTree(subrange.size(), offsetInOrig);
 
 					//the subset of values in the pageletTree we actually plan on using from this slice
-					IntegerSequence sequenceInPageletTreeToKeep = 
+					IntegerSequence sequenceInPageletTreeToKeep =
 						sequenceInPageletTree.intersect(slice);
 
 					//subset of values in this Fora::Pagelet we want to keep
-					IntegerSequence sequenceInPageletToKeep = 
+					IntegerSequence sequenceInPageletToKeep =
 						sequenceInPageletTreeToKeep.offset(-offsetInOrig);
 
 					lassert(sequenceInPageletToKeep.offset() >= 0 && sequenceInPageletToKeep.offset() < foraValues->size());
@@ -403,7 +435,7 @@ void WriteCharPageToS3Tasks::extractDataAndScheduleWrite(WriteCharPageToS3Task t
 				)
 			);
 		}
-		
+
 	for (long k = 0; k < triggers.size(); k++)
 		pages[k].first->removeMapping(triggers[k]);
 	}

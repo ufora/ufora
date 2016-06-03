@@ -26,7 +26,7 @@ ArbitraryTypeMap::~ArbitraryTypeMap()
 ArbitraryTypeMap::ArbitraryTypeMap(const ArbitraryTypeMap& in)
 	{
 	boost::mutex::scoped_lock lock(mFunctionsMutex);
-	
+
 	for (auto it = in.mInstances.begin(); it != in.mInstances.end(); ++it)
 		mInstances[it->first] = mDuplicators[it->first](it->second);
 	}
@@ -34,10 +34,10 @@ ArbitraryTypeMap::ArbitraryTypeMap(const ArbitraryTypeMap& in)
 ArbitraryTypeMap& ArbitraryTypeMap::operator=(const ArbitraryTypeMap& in)
 	{
 	boost::mutex::scoped_lock lock(mFunctionsMutex);
-	
+
 	for (auto it = mInstances.begin(); it != mInstances.end(); ++it)
 		mDestructors[it->first](it->second);
-	
+
 	mInstances.clear();
 
 	for (auto it = in.mInstances.begin(); it != in.mInstances.end(); ++it)

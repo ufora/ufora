@@ -53,7 +53,7 @@ public:
 		{
 		return mTimeElapsed;
 		}
-	
+
 private:
 	std::map<long, std::vector<boost::shared_ptr<Dirtyable> > > mDirtyElementsByLevel;
 
@@ -67,7 +67,7 @@ public:
 	Dirtyable(Graph& inGraph);
 
 	virtual ~Dirtyable() {};
-	
+
 	void markDirty();
 
 	void clean();
@@ -140,7 +140,7 @@ private:
 template<class T>
 class ComputedProperty : public Dirtyable, public Changeable {
 public:
-	ComputedProperty(Graph& inGraph) : 
+	ComputedProperty(Graph& inGraph) :
 			Dirtyable(inGraph),
 			mLevel(0),
 			mMinLevel(0),
@@ -222,7 +222,7 @@ private:
 template<class result_type, class callable_type>
 class ComputedPropertyFromCallable : public ComputedProperty<result_type> {
 public:
-	ComputedPropertyFromCallable(Graph& inGraph, callable_type inCallable) : 
+	ComputedPropertyFromCallable(Graph& inGraph, callable_type inCallable) :
 			ComputedProperty<result_type>(inGraph),
 			mCallable(inCallable)
 		{
@@ -241,7 +241,7 @@ private:
 template<class result_type, class callable_type>
 class ComputedPropertyFromCallableWithPrior : public ComputedProperty<result_type> {
 public:
-	ComputedPropertyFromCallableWithPrior(Graph& inGraph, callable_type inCallable) : 
+	ComputedPropertyFromCallableWithPrior(Graph& inGraph, callable_type inCallable) :
 			ComputedProperty<result_type>(inGraph),
 			mCallable(inCallable)
 		{
@@ -266,7 +266,7 @@ public:
 };
 
 template<class callable_type>
-auto bind(Graph& inGraph, const callable_type& inCallable) -> 
+auto bind(Graph& inGraph, const callable_type& inCallable) ->
 		boost::shared_ptr<ComputedProperty<
 			typename ExtractCallableType<decltype(inCallable())>::result_type
 			> >
@@ -279,7 +279,7 @@ auto bind(Graph& inGraph, const callable_type& inCallable) ->
 	}
 
 template<class callable_type>
-auto bindWithPrior(Graph& inGraph, const callable_type& inCallable) -> 
+auto bindWithPrior(Graph& inGraph, const callable_type& inCallable) ->
 		boost::shared_ptr<ComputedProperty<
 			typename ExtractCallableType<decltype(inCallable())>::result_type
 			> >
@@ -294,7 +294,7 @@ auto bindWithPrior(Graph& inGraph, const callable_type& inCallable) ->
 template<class key_type, class result_type>
 class Index {
 public:
-	Index(Graph& inGraph) : 
+	Index(Graph& inGraph) :
 			mGraph(inGraph)
 		{
 		}
@@ -303,7 +303,7 @@ public:
 		{
 		boost::shared_ptr<Nullable<result_type> > lastValue(new Nullable<result_type>);
 
-		boost::shared_ptr<ComputedProperty<int> > updater = 
+		boost::shared_ptr<ComputedProperty<int> > updater =
 			::DependencyGraph::bind(mGraph, boost::bind(
 				&Index::updateKeyProperty,
 				this,
@@ -342,7 +342,7 @@ public:
 			mKeysetMutablesByResult[in].reset(
 				new Mutable<boost::shared_ptr<std::map<key_type, long> > >()
 				);
-			
+
 			mKeysetsByResult[in].reset(new std::map<key_type, long>());
 
 			mKeysetMutablesByResult[in]->set(mKeysetsByResult[in]);
@@ -372,7 +372,7 @@ private:
 			{
 			//this is a legal thing to do because we have just called 'markDirty' on the mutable.
 			//anybody listening will have to resubscribe if they need it. we will still end up
-			//leaving behind a bunch of 
+			//leaving behind a bunch of
 			mKeysetsByResult.erase(r);
 			mKeysetMutablesByResult.erase(r);
 			}

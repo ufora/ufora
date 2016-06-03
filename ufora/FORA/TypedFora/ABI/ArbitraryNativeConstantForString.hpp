@@ -30,7 +30,7 @@ public:
 	ArbitraryNativeConstantType* type();
 
 	NativeType nativeType();
-	
+
 	void* pointerToData();
 
 	std::string description();
@@ -43,7 +43,7 @@ public:
 		{
 		return mValue;
 		}
-	
+
 private:
 	friend class ArbitraryNativeConstantForStringType;
 

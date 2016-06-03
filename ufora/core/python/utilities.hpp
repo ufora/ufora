@@ -136,7 +136,7 @@ std::tuple<T> toTuple(boost::python::tuple pyTuple)
 	lassert(boost::python::len(pyTuple) == 1);
 	boost::python::extract<T> extractor(pyTuple[0]);
 	lassert(extractor.check());
-	
+
 	return std::make_tuple(extractor());
 	}
 
@@ -148,7 +148,7 @@ std::tuple<T1, T2> toTuple(boost::python::tuple pyTuple)
 	lassert(extractor1.check());
 	boost::python::extract<T2> extractor2(pyTuple[1]);
 	lassert(extractor2.check());
-	
+
 	return std::make_tuple(extractor1(), extractor2());
 	}
 
@@ -162,7 +162,7 @@ std::tuple<T1, T2, T3> toTuple(boost::python::tuple pyTuple)
 	lassert(extractor2.check());
 	boost::python::extract<T3> extractor3(pyTuple[2]);
 	lassert(extractor3.check());
-	
+
 	return std::make_tuple(extractor1(), extractor2(), extractor3());
 	}
 
@@ -178,7 +178,7 @@ std::tuple<T1, T2, T3, T4> toTuple(boost::python::tuple pyTuple)
 	lassert(extractor3.check());
 	boost::python::extract<T4> extractor4(pyTuple[3]);
 	lassert(extractor4.check());
-	
+
 	return std::make_tuple(extractor1(), extractor2(), extractor3(), extractor4());
 	}
 
@@ -469,7 +469,7 @@ public:
 				{
 				T1 t1;
 				T2 t2;
-				
+
 				boost::python::object key;
 				try {
 					key = it.attr("next")();
@@ -482,7 +482,7 @@ public:
 
 				Converter<T1>::toCPP(key, t1);
 				Converter<T2>::toCPP(o[key], t2);
-				
+
 				outT = outT + make_pair(t1, t2);
 				}
 			}

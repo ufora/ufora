@@ -24,7 +24,7 @@
 
 /******************
 
-A Protocol object that writes directly to a file descriptor. 
+A Protocol object that writes directly to a file descriptor.
 
 If 'alignment' is greater than one, writes are aligned to 'alignment' byte boundaries
 and the file is padded with zeros. this allows us to write using O_DIRECT.
@@ -39,9 +39,9 @@ public:
 	OFileDescriptorProtocol& operator=(const OFileDescriptorProtocol& in) = delete;
 
 	OFileDescriptorProtocol(
-				int fd, 
-				size_t alignment, 
-				size_t bufsize, 
+				int fd,
+				size_t alignment,
+				size_t bufsize,
 				CloseOnDestroy closeOnDestroy = CloseOnDestroy::False
 				) :
 			mFD(fd),
@@ -56,7 +56,7 @@ public:
 
 		mBufferHolder.resize(mAlignment * 2 + mBufferSize);
 		uword_t bufptr = (uword_t)&mBufferHolder[0];
-		
+
 		//make sure that the buffer is aligned to the alignment as well
 		if (bufptr % mAlignment)
 			bufptr += mAlignment - bufptr % mAlignment;

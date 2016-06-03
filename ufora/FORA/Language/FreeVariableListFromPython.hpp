@@ -23,8 +23,8 @@
 
 namespace Fora {
 
-inline ImmutableTreeMap<Symbol, pair<ImplValContainer, Nullable<Symbol> > > 
-						freeVariableListFromPython(boost::python::dict freeVariables)		
+inline ImmutableTreeMap<Symbol, pair<ImplValContainer, Nullable<Symbol> > >
+						freeVariableListFromPython(boost::python::dict freeVariables)
 	{
 	ImmutableTreeMap<Symbol, pair<ImplValContainer, Nullable<Symbol> > > result;
 

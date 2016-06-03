@@ -50,7 +50,7 @@ public:
 	void exportPythonWrapper()
 		{
 		using namespace boost::python;
-		
+
 		class_<CSTValue>("CSTValue", init<ImplValContainer>())
 			.def("__init__", make_constructor(constructFromCSTValue))
 			.def("__init__", make_constructor(constructFromNothing))
@@ -63,7 +63,7 @@ public:
 			.enable_pickling()
 			;
 		}
-	
+
 };
 
 //explicitly instantiating the registration element causes the linker to need

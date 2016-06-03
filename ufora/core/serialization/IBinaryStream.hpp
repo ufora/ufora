@@ -31,7 +31,7 @@ class IBinaryStream {
 public:
 	typedef uint32_t size_type;
 
-	IBinaryStream(IProtocol& inProtocol, size_type inBufferSize = 4096) : 
+	IBinaryStream(IProtocol& inProtocol, size_type inBufferSize = 4096) :
 			mProtocol(inProtocol), mBytesRead(0)
 		{
 		mBuffer.resize(0);
@@ -68,7 +68,7 @@ public:
 
 			if (inBytes == 0)
 				return;
-				
+
 			// We still have data left to read. We will either read directly through the protocol
 			// or fill up a buffer.
 			if (inBytes > mBufferPreferredSize)
@@ -113,7 +113,7 @@ public:
 			mBuffer.resize(bytesRead);
 			}
 
-		lassert_dump(bytesRead >= minBytes, "Needed to get " << minBytes << " but only got " 
+		lassert_dump(bytesRead >= minBytes, "Needed to get " << minBytes << " but only got "
 					<< bytesRead);
 		}
 

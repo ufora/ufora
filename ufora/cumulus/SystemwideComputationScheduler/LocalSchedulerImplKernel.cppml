@@ -17,7 +17,6 @@
 
 #include "../CumulusComponentMessageCreated.hppml"
 #include "../InitiateComputationMove.hppml"
-#include "../PageLayoutCalculator/NeighborhoodsOnMachines.hppml"
 #include "../SystemwidePageRefcountTracker.hppml"
 #include "../../core/Clock.hpp"
 #include "../../core/Logging.hpp"
@@ -29,7 +28,7 @@
 
 class SystemwidePageRefcountTrackerEvent;
 
-using namespace Cumulus::PageLayoutCalculator;
+//using namespace Cumulus::PageLayoutCalculator;
 
 namespace Cumulus {
 namespace SystemwideComputationScheduler {
@@ -45,49 +44,42 @@ LocalSchedulerImplKernel::LocalSchedulerImplKernel(
 			long inActiveThreadCount,
 			boost::function1<void, InitiateComputationMove> onInitiateComputationMoved,
 			boost::function1<void, CumulusComponentMessageCreated> onCumulusComponentMessageCreated
-			) : 
+			) :
 		mOwnMachineId(inOwnMachineId),
 		mOnInitiateComputationMoved(onInitiateComputationMoved),
 		mOnCumulusComponentMessageCreated(onCumulusComponentMessageCreated),
 		mActiveThreadCount(inActiveThreadCount),
-		mComputationPageDependencies(
-			boost::bind(&LocalSchedulerImplKernel::checkComputationsBlockedOnNonexistantPages_, this, boost::arg<1>())
-			),
 		mRandomGenerator(inOwnMachineId.guid()[0] + inOwnMachineId.guid()[1]),
-		mCliqueRequestGuid(inOwnMachineId.guid() + hash_type(1)),
-		mBigVectorLayouts(new TypedFora::Abi::BigVectorLayouts()),
-		mComputationBehaviorPredictor(
-			mBigVectorLayouts
-			),
 		mInitializationParameters(
 			vdmMaxPageSizeInBytes,
 			vdmMemoryLimitInBytes,
 			inOwnMachineId,
 			inActiveThreadCount
 			),
+		mFuturePagesRequestGuid(inOwnMachineId.guid() + hash_type(1)),
 		mComputationsMoved(0),
 		mLastDumpTime(0),
 		mMachineLoads(inOwnMachineId, inActiveThreadCount),
 		mTimesCalledSinceLastDump(0),
 		mLastBroadcast(0),
 		mLastBroadcastLoad(0),
-		mLocalToGlobalMessageThrottler(
-			boost::bind(&LocalSchedulerImplKernel::sendLocalToGlobalSchedulerMessage, this, boost::arg<1>())
-			),
 		mTotalMoveAttempts(0),
 		mTotalSplitAttempts(0),
-		mCalculationsCompleted(0)
+		mCalculationsCompleted(0),
+		mThreadGroupStatusTracker(
+			boost::bind(&LocalSchedulerImplKernel::sendLocalToLocalSchedulerMessage, this, boost::arg<1>()),
+			boost::bind(&LocalSchedulerImplKernel::sendLocalToGlobalSchedulerMessage, this, boost::arg<1>()),
+			mMachineHashTable,
+			inOwnMachineId
+			)
 	{
 	mCurrentMachines.insert(mOwnMachineId);
-	mComputationPageDependencies.addMachine(mOwnMachineId);
-	mSystemwidePageRefcountTracker.reset(
-		new SystemwidePageRefcountTracker(
-			mBigVectorLayouts,
-			CallbackScheduler::singletonForTesting(),
-			boost::function1<void, SystemwidePageRefcountTrackerEvent>()
-			)
-		);
-	mSystemwidePageRefcountTracker->addMachine(mOwnMachineId);
+	mMachineHashTable.addMachine(mOwnMachineId);
+	}
+
+LocalSchedulerImplKernel::~LocalSchedulerImplKernel()
+	{
+	logCurrentState_();
 	}
 
 void LocalSchedulerImplKernel::sendSchedulerToComputationMessage(SchedulerToComputationMessage msg)
@@ -112,83 +104,30 @@ void LocalSchedulerImplKernel::sendLocalToGlobalSchedulerMessage(LocalToGlobalSc
 		);
 	}
 
-Nullable<VectorDataID> LocalSchedulerImplKernel::pageToVectorDataId_(Fora::PageId inPage)
+void LocalSchedulerImplKernel::sendLocalToLocalSchedulerMessage(LocalToLocalSchedulerMessage msg)
 	{
-	if (inPage.isInternal())
-		return null() << VectorDataID::canonical(inPage);
-
-	auto it = mPageToVectorDataIdMap.find(inPage);
-
-	if (it != mPageToVectorDataIdMap.end())
-		return null() << it->second;
-
-	return null();
-	}
-
-void LocalSchedulerImplKernel::consumePageEvent(
-								const Fora::PageRefcountEvent& inEvent, 
-								Cumulus::MachineId onMachineId
-								)
-	{
-	mSystemwidePageRefcountTracker->consumePageEvent(inEvent, onMachineId);
-
-	@match Fora::PageRefcountEvent(inEvent)
-		-| BigVectorReferenced(newLayout) ->> {
-			mBigVectorLayouts->registerNewLayout(newLayout);
-
-			mBigVectorRefcounts[newLayout.identity()]++;
-
-			if (mBigVectorRefcounts[newLayout.identity()] == 1)
-				mBigVectorLayoutMap[newLayout.identity()] = newLayout;
-			}
-		-| BigVectorNoLongerReferenced(identity) ->> {
-			mBigVectorRefcounts[identity]--;
-
-			if (mBigVectorRefcounts[identity] == 0)
-				{
-				mBigVectorRefcounts.erase(identity);
-				mBigVectorLayoutMap.erase(identity);
-				}
-			}
-		-| PageAddedToRam(page) ->> {
-			mBytesAddedByMachine[onMachineId] += page.bytecount();
-
-			mComputationPageDependencies.handlePageRefcountEvent(inEvent, onMachineId);
-			}
-		-| PageDroppedFromRam(page) ->> {
-			mComputationPageDependencies.handlePageRefcountEvent(inEvent, onMachineId);
-			}
-		-| PageMarkedNotLoadable(page) ->> {
-			mComputationPageDependencies.pageDroppedAcrossEntireSystem(page);
-			}
-		-| PageAddedToDisk(page) ->> {
-			mBytesSentToDiskByMachine[onMachineId] += page.bytecount();
-			}
-		-| _ ->> {
-			}
+	mOnCumulusComponentMessageCreated(
+		CumulusComponentMessageCreated(
+			CumulusComponentMessage::LocalToLocalScheduler(msg),
+			CumulusComponentEndpointSet::SpecificWorker(msg.destMachine()),
+			CumulusComponentType::LocalScheduler()
+			)
+		);
 	}
 
 void LocalSchedulerImplKernel::pageNoLongerReferencedAcrossSystem(Fora::PageId page)
 	{
-	LOG_DEBUG << "On " << prettyPrintString(mOwnMachineId) 
+	LOG_DEBUG << "On " << prettyPrintString(mOwnMachineId)
 		<< ", page " << prettyPrintString(page) << " no longer referenced across system.";
 
-	mComputationPageDependencies.pageDroppedAcrossEntireSystem(page);
-	}
-
-bool LocalSchedulerImplKernel::hasPageBeenDroppedAcrossEntireSystem_(Fora::PageId page)
-	{
-	return mComputationPageDependencies.hasPageBeenDroppedAcrossEntireSystem(page) || 
-			mSystemwidePageRefcountTracker->isPageNotLoadable(page);
+	mThreadGroupStatusTracker.pageNoLongerReferencedAcrossSystem(page);
 	}
 
 void LocalSchedulerImplKernel::addMachine(MachineId inMachine)
 	{
 	mCurrentMachines.insert(inMachine);
 
-	mComputationPageDependencies.addMachine(inMachine);
-
-	mSystemwidePageRefcountTracker->addMachine(inMachine);
+	mMachineHashTable.addMachine(inMachine);
 
 	//make sure there's a processor load entry
 	mMachineLoads.addMachine(inMachine);
@@ -209,13 +148,10 @@ void LocalSchedulerImplKernel::computationStatusChanged(
 								double curTime
 								)
 	{
-	mComputationPageDependencies.dropComputation(change.computation());
-
-	mComputationBehaviorPredictor.computationStatusChanged(change);
+	mThreadGroupStatusTracker.handleStatusChanged(change);
 
 	@match LocalComputationPriorityAndStatusChanged(change)
 		-| Active(computation, priority, status, statistics) ->> {
-
 			if (status.isFinished() && !mLocalComputationStatuses[change.computation()].isFinished())
 				mCalculationsCompleted++;
 
@@ -235,7 +171,10 @@ void LocalSchedulerImplKernel::computationStatusChanged(
 			if (status.isBlockedOnVectorLoad())
 				mComputationsBlockedOnVectorsLocally.insert(change.computation());
 			else
+				{
 				mComputationsBlockedOnVectorsLocally.erase(change.computation());
+				mRecentlyCalculatedForFuturePages.erase(change.computation());
+				}
 
 			if (status.isBlockedOnComputations())
 				mComputationsBlockedOnComputationsLocally.insert(change.computation());
@@ -252,32 +191,17 @@ void LocalSchedulerImplKernel::computationStatusChanged(
 					}
 				-| Finished() ->> {
 					mCurrentlyComputingComputationsLastPageResetTimes.erase(computation);
-					mComputationPageDependencies.dropComputation(computation);
 					mTryingToSplit.erase(computation);
 					}
-				-| BlockedOnVectorLoad(slice) ->> {
+				-| BlockedOnVectorLoad(pages) ->> {
 					bool blocked = false;
-
-					for (auto v: convertBigVectorSliceToVDIDs_(slice))
-						if (v.isExternal())
-							{
-							auto it = mPageToVectorDataIdMap.find(v.getPage());
-
-							if (it == mPageToVectorDataIdMap.end())
-								{
-								mPageToVectorDataIdMap[v.getPage()] = v;
-								if (!mSystemwidePageRefcountTracker->isPageAnywhereInRam(v.getPage())
-										&& !mSystemwidePageRefcountTracker->isPageAnywhereOnDisk(v.getPage()))
-									blocked = true;
-								}
-							}
 
 					if (blocked)
 						sendLocalToGlobalSchedulerMessage(
 							LocalToGlobalSchedulerMessage::TriggerPageLayoutRecompute()
 							);
 
-					handleComputationBlocked_(computation, slice);
+					handleComputationBlocked_(computation, statistics.pagesCurrentlyBeingUsed());
 					}
 				-| _ ->> {}
 
@@ -295,33 +219,18 @@ void LocalSchedulerImplKernel::computationStatusChanged(
 			mTryingToSplit.erase(computation);
 			mSplitComputationsFinishedButUncollected.erase(computation);
 			}
-	
-	updatePageLoadForComputation_(change.computation(), curTime);
-
-	if (mComputationPageDependencies.isDeferred(change.computation()))
-		{
-		ImmutableTreeSet<Fora::PageId> currentActiveGroup = 
-			filterOutPagesDroppedAcrossSystem_(
-				mComputationBehaviorPredictor.getActivePageLoadGroup(change.computation()).pages()
-				);
-
-		mComputationPageDependencies.updateDeferredComputation(
-			change.computation(), 
-			currentActiveGroup
-			);
-		}
 	}
 
 
 void LocalSchedulerImplKernel::computationIsComputable_(ComputationId computation, ComputationPriority newPriority)
 	{
-	if (!mCurrentlyComputableComputations.hasKey(computation) || 
-			mCurrentlyComputableComputations.getValue(computation).second != 
+	if (!mCurrentlyComputableComputations.hasKey(computation) ||
+			mCurrentlyComputableComputations.getValue(computation).second !=
 				newPriority)
 		{
 		mCurrentlyComputableComputationsByPriority.set(computation, newPriority);
 		mCurrentlyComputableComputations.set(
-			computation, 
+			computation,
 			make_pair(0, newPriority)
 			);
 		}
@@ -338,167 +247,11 @@ void LocalSchedulerImplKernel::computationNotComputable_(ComputationId computati
 		}
 	}
 
-Neighborhood LocalSchedulerImplKernel::filterOutPagesDroppedAcrossSystem_(Neighborhood n)
-	{
-	ImmutableTreeSet<Fora::PageId> pageList = filterOutPagesDroppedAcrossSystem_(n.pages());
-
-	if (pageList.size() == n.pages().size())
-		return n;
-
-	return Neighborhood(pageList);
-	}
-
-ImmutableTreeSet<Fora::PageId> 
-		LocalSchedulerImplKernel::filterOutPagesDroppedAcrossSystem_(
+void LocalSchedulerImplKernel::handleComputationBlocked_(
+						const ComputationId& computation,
 						ImmutableTreeSet<Fora::PageId> pages
 						)
 	{
-	ImmutableTreeSet<Fora::PageId> result;
-	bool anyRemoved = false;
-
-	for (long ix = 0; ix < pages.size(); ix++)
-		{
-		Fora::PageId p = pages[ix];
-
-		if (hasPageBeenDroppedAcrossEntireSystem_(p))
-			{
-			if (!anyRemoved)
-				{
-				anyRemoved = true;
-				result = pages.slice(0,ix);
-				}
-			}
-		else
-			{
-			if (anyRemoved)
-				result = result + p;
-			}
-		}
-
-	if (!anyRemoved)
-		return pages;
-	else
-		return result;
-	}
-
-ImmutableTreeMap<Fora::PageId, double> 
-		LocalSchedulerImplKernel::filterOutPagesDroppedAcrossSystem_(
-						ImmutableTreeMap<Fora::PageId, double> pages
-						)
-	{
-	ImmutableTreeMap<Fora::PageId, double> result;
-
-	for (auto page: pages)
-		{
-		if (!hasPageBeenDroppedAcrossEntireSystem_(page.first))
-			result = result + page;
-		}
-
-	return result;
-	}
-
-void LocalSchedulerImplKernel::checkComputationsBlockedOnNonexistantPages_(ComputationId computation)
-	{
-	if (mLocalComputationStatuses.find(computation) == mLocalComputationStatuses.end())
-		return;
-
-	@match ComputationStatus(mLocalComputationStatuses[computation])
-		-| BlockedOnVectorLoad(slice) ->> {
-			handleComputationBlocked_(computation, slice);
-			}
-		-| _ ->> {
-			}
-	}
-
-ImmutableTreeSet<VectorDataID> LocalSchedulerImplKernel::convertBigVectorSliceToVDIDs_(
-																Fora::BigVectorSlice slice
-																)
-	{
-	ImmutableTreeVector<TypedFora::Abi::VectorDataIDSlice> slices = 
-		mBigVectorLayouts->getLayoutForId(slice.identity())
-			.slicesCoveringRange(slice.indexLow(), slice.indexHigh());
-
-	ImmutableTreeSet<VectorDataID> result;
-
-	for (auto s: slices)
-		{
-		Fora::PageId page = s.vector().getPage();
-
-		if (page != s.vector().getPage() && pageToVectorDataId_(page))
-			result = result + *pageToVectorDataId_(page);
-		else
-			result = result + s.vector();
-		}
-
-	return result;
-	}
-
-ComputationLoad LocalSchedulerImplKernel::calculateCurrentLoadForComputation(ComputationId computation)
-	{
-	auto statusIt = mLocalComputationStatuses.find(computation);
-
-	if (statusIt == mLocalComputationStatuses.end())
-		return ComputationLoad();
-
-	if (!statusIt->second.isComputable() && !statusIt->second.isBlockedOnVectorLoad())
-		return ComputationLoad();
-
-	if (mLocalComputationPriorities[computation].isNull())
-		return ComputationLoad();
-
-	pair<Neighborhood, double> load;
-
-	load = mComputationBehaviorPredictor.getActivePageLoadPrediction(computation);
-	load.first = filterOutPagesDroppedAcrossSystem_(load.first);
-
-	bool isRepresentedAnywhere = 
-		mComputationPageDependencies.machineHoldingAllPages(load.first.pages()).isValue();
-
-	return ComputationLoad(load.first, load.second, isRepresentedAnywhere);
-	}
-
-void LocalSchedulerImplKernel::updatePageLoadForComputation_(const ComputationId& id, double curTime)
-	{
-	ComputationLoad load = calculateCurrentLoadForComputation(id);
-
-	if (load == ComputationLoad())
-		{
-		if (mComputationLoadsBroadcast.find(id) != mComputationLoadsBroadcast.end())
-			{
-			mLocalToGlobalMessageThrottler.send(
-				LocalToGlobalSchedulerMessage::ErasePageLoad(id, mOwnMachineId),
-				curTime
-				);
-			mComputationLoadsBroadcast.erase(id);
-			}
-		}
-	else
-		{
-		if (mComputationLoadsBroadcast.find(id) == mComputationLoadsBroadcast.end() || 
-				mComputationLoadsBroadcast[id] != load)
-			{
-			mLocalToGlobalMessageThrottler.send(
-				LocalToGlobalSchedulerMessage::SetPageLoad(
-					id,
-					mOwnMachineId,
-					load.pages().pages(),
-					load.timeElapsed(),
-					!load.isRepresentedAnywhere()
-					),
-				curTime
-				);
-			mComputationLoadsBroadcast[id] = load;
-			}
-		}
-	}
-
-void LocalSchedulerImplKernel::handleComputationBlocked_(
-						const ComputationId& computation, 
-						const Fora::BigVectorSlice& slice
-						)
-	{
-	LOG_INFO << computation.guid() << " is blocked on " << slice;
-
 	if (mMachineLoads.computationsMoving().hasKey(computation))
 		{
 		LOG_INFO << "not worrying about " << computation.guid()
@@ -506,101 +259,34 @@ void LocalSchedulerImplKernel::handleComputationBlocked_(
 		return;
 		}
 
-	ImmutableTreeSet<VectorDataID> vdidsBlockedOn = convertBigVectorSliceToVDIDs_(slice);
-
 	if (mCurrentlyComputableComputations.hasKey(computation))
 		{
 		mCurrentlyComputableComputations.drop(computation);
 		mCurrentlyComputableComputationsByPriority.drop(computation);
 		}
 
-	ImmutableTreeSet<Fora::PageId> currentActiveGroup = 
-		filterOutPagesDroppedAcrossSystem_(
-			mComputationBehaviorPredictor.getActivePageLoadGroup(computation).pages()
-			);
-
-	for (auto vdid: vdidsBlockedOn)
-		currentActiveGroup = currentActiveGroup + vdid.getPage();
-
-	mComputationPageDependencies.deferComputation(computation, currentActiveGroup);
-
-	//if all the vectors are together in one place we can move to that machine and load
-	ImmutableTreeSet<Cumulus::MachineId> machinesWithPagesLoaded = 
-					mComputationPageDependencies.machinesHoldingAllPages(currentActiveGroup);
-
-	Nullable<Cumulus::MachineId> newMachine = 
-			pickMachineWithLeastLoad_(machinesWithPagesLoaded);
-
-	if (!newMachine)
-		{
-		LOG_INFO << "Can't activate computation " << computation.guid()
-			<< " depending on " << prettyPrintStringWithoutWrapping(currentActiveGroup)
-			<< " since they're not loaded all on one machine. Deferring."
-			;
-
-		if (currentActiveGroup.size() == 1 && 
-					mComputationPageDependencies.computationsDependingOn(
-												currentActiveGroup[0]
-												).size() == 1 &&
-					!currentActiveGroup[0].isInternal() && 
-					wantsToSplit_()
-					)
-			//attempt to split this computation
-			sendSchedulerToComputationMessage(
-				SchedulerToComputationMessage::Split(
-					computation, 
-					hash_type(), 
-					mOwnMachineId,
-					mOwnMachineId,
-					0.0
-					)
-				);
-
-		return;
-		}
-	
-	if (*newMachine == mOwnMachineId)
-		return;
-	
 	if (mMachineLoads.computationsMoving().hasKey(computation))
 		return;
 
-	mMachineLoads.taskIsMoving(computation, *newMachine);
+	//attempt to split this computation
+	Nullable<ThreadGroup> group = mAllThreadGroups.containingThread(ThreadGroup::groupFor(computation));
 
-	auto identity = mBigVectorLayouts->getLayoutForId(slice.identity()).identity();
+	if (group)
+		for (auto p: pages)
+			if (mSplitPages.find(make_pair(*group, p)) == mSplitPages.end())
+				{
+				mSplitPages.insert(make_pair(*group, p));
+				sendSchedulerToComputationMessage(
+					SchedulerToComputationMessage::Split(
+						computation,
+						hash_type(),
+						mOwnMachineId,
+						mOwnMachineId,
+						0.0
+						)
+					);
+				}
 
-	LOG_INFO << "moving blocked computation " << computation.guid() << " to " 
-			<< prettyPrintStringWithoutWrapping(*newMachine) 
-			<< ". moving=" << mMachineLoads.computationsMoving().size()
-			<< ". slice=["
-			<< slice.indexLow() << ","
-			<< slice.indexHigh() << "]. "
-			<< ". identity=" << prettyPrintStringWithoutWrapping(identity)
-			<< ". CAG of " << prettyPrintStringWithoutWrapping(
-				filterOutPagesDroppedAcrossSystem_(currentActiveGroup)
-				)
-			;
-
-	logTryingToMove_(computation, *newMachine);
-
-	mComputationsMoved++;
-
-	mOnInitiateComputationMoved(
-		InitiateComputationMove(
-			computation,
-			*newMachine
-			)
-		);
-	}
-
-Nullable<MachineId> LocalSchedulerImplKernel::pickMachineWithLeastLoad_(
-												ImmutableTreeSet<Cumulus::MachineId> machines
-												)
-	{
-	if (machines.size() == 0)
-		return null();
-
-	return null() << Ufora::math::Random::pickRandomlyFromSet(machines, mRandomGenerator);
 	}
 
 void LocalSchedulerImplKernel::logTryingToMove_(
@@ -610,16 +296,16 @@ void LocalSchedulerImplKernel::logTryingToMove_(
 	{
 	mComputationsMoved++;
 
-	LOG_DEBUG << "moving " << prettyPrintString(computation) << " from " 
+	LOG_DEBUG << "moving " << prettyPrintString(computation) << " from "
 		<< prettyPrintString(mOwnMachineId)
-		<< " to " 
+		<< " to "
 		<< prettyPrintString(machine)
 		;
 	}
 
 void LocalSchedulerImplKernel::handleCumulusComponentMessage(
-	            CumulusComponentMessage message, 
-    	        CumulusClientOrMachine source, 
+	            CumulusComponentMessage message,
+    	        CumulusClientOrMachine source,
         	    CumulusComponentType componentType,
         	    double curTime
         	    )
@@ -638,6 +324,12 @@ void LocalSchedulerImplKernel::handleCumulusComponentMessage(
 		-| LocalToLocalSchedulerBroadcast(msg) ->> {
 			handleLocalToLocalSchedulerBroadcastMessage(msg);
 			}
+		-| LocalToLocalScheduler(msg) ->> {
+			handleLocalToLocalSchedulerMessage(msg);
+			}
+		-| GlobalToLocalScheduler(msg) ->> {
+			handleGlobalToLocalSchedulerMessage(msg);
+			}
 		-| LocalComputationPriorityAndStatus(msg) ->> {
 			computationStatusChanged(msg, curTime);
 			}
@@ -652,9 +344,6 @@ void LocalSchedulerImplKernel::handleInitiateComputationMoveResponse(
 							)
 	{
 	mMachineLoads.taskIsNotMoving(inComputation);
-
-	if (!isSuccess)
-		checkComputationsBlockedOnNonexistantPages_(inComputation);
 	}
 
 void LocalSchedulerImplKernel::handleComputationToSchedulerMessage(
@@ -664,16 +353,10 @@ void LocalSchedulerImplKernel::handleComputationToSchedulerMessage(
 	{
 	if (response.isEvents())
 		{
-		mComputationBehaviorPredictor.handleComputationEvents(
-			response.computation(), 
+		mThreadGroupStatusTracker.handleComputationEvents(
+			response.computation(),
 			response.getEvents().events()
 			);
-
-		for (auto load: mComputationBehaviorPredictor.extractAndResetObservedLoads())
-			mLocalToGlobalMessageThrottler.send(
-				LocalToGlobalSchedulerMessage::RecordObservedLoad(load.first.pages(), load.second),
-				curTime
-				);
 
 		return;
 		}
@@ -681,54 +364,27 @@ void LocalSchedulerImplKernel::handleComputationToSchedulerMessage(
 	if (response.guid() == hash_type())
 		mTryingToSplit.erase(response.computation());
 
-	if (response.isCliques())
+	if (response.isFuturePageReads())
 		{
-		auto cliques = response.getCliques().cliques();
+		auto pages = response.getFuturePageReads().futurePageReads();
 
-		long already = 0;
-		long fresh = 0;
-
-		for (auto c: cliques)
-			{
-			PageLayoutCalculator::Neighborhood n(c);
-
-			if (mCliquesObservedAlready.find(n) != mCliquesObservedAlready.end())
-				already++;
-			else
-				{
-				fresh++;
-
-				mLocalToGlobalMessageThrottler.send(
-					LocalToGlobalSchedulerMessage::CliqueObserved(c),
-					curTime
-					);
-
-				mCliquesObservedAlready.insert(n);
-				}
-			}
-
-		LOG_INFO << mOwnMachineId << " observed " << cliques.size() 
-			<< " cliques from " << response.computation().guid() << ", of which " 
-			<< fresh << " were fresh. Total=" << mCliquesObservedAlready.size()
-			;
-
-		if (cliques.size() > 10 && fresh > 5 && 
-				mComputationsBlockedOnVectorsLocally.size() < mActiveThreadCount)
-			{
+		if (pages.size() > 10)
 			sendSchedulerToComputationMessage(
 				SchedulerToComputationMessage::Split(
-					response.computation(), 
-					hash_type(), 
+					response.computation(),
+					hash_type(),
 					mOwnMachineId,
 					mOwnMachineId,
-					0.0
+					0
 					)
 				);
-			}
+
+		for (auto p: pages)
+			mThreadGroupStatusTracker.pageUsedInFuture(response.computation(), p);
 		}
 
-	if (mBlockedAndWaitingForCliques.hasValue(response.guid()))
-		mBlockedAndWaitingForCliques.dropValue(response.guid());
+	if (mBlockedAndWaitingForFuturePages.hasValue(response.guid()))
+		mBlockedAndWaitingForFuturePages.dropValue(response.guid());
 	}
 
 Nullable<ComputationId> LocalSchedulerImplKernel::searchForSplittableComputation_()
@@ -740,7 +396,7 @@ Nullable<ComputationId> LocalSchedulerImplKernel::searchForSplittableComputation
 
 	while (true)
 		{
-		for (auto it = mCurrentlyComputableComputations.getValueToKeys().rbegin(); 
+		for (auto it = mCurrentlyComputableComputations.getValueToKeys().rbegin();
 					it != mCurrentlyComputableComputations.getValueToKeys().rend();
 					++it
 					)
@@ -775,10 +431,10 @@ void LocalSchedulerImplKernel::recyclePriorityList_()
 	//reset all pairs for which the first element is less than zero.
 	while (mCurrentlyComputableComputations.lowestValue().first < 0)
 		{
-		ComputationId id = 
+		ComputationId id =
 			*mCurrentlyComputableComputations.getValueToKeys().begin()->second.begin();
 
-		pair<long, ComputationPriority> priorityPair = 
+		pair<long, ComputationPriority> priorityPair =
 			mCurrentlyComputableComputations.getValue(id);
 
 		priorityPair.first = 0;
@@ -795,33 +451,32 @@ bool LocalSchedulerImplKernel::wantsToSplit_()
 	if (mMachineLoads.wantsDisableSplitDueToSystemCapacityOverload())
 		return false;
 
-	return mMachineLoads.computationsMoving().size() + 
+	return mMachineLoads.computationsMoving().size() +
 			mCurrentlyComputableComputations.size() +
-			mTryingToSplit.size() < 
+			mTryingToSplit.size() <
 				std::max<long>(mActiveThreadCount + 4, mActiveThreadCount * 2);
 	}
 
 void LocalSchedulerImplKernel::splitOrMoveIfNeeded(double curTime)
 	{
-	mLocalToGlobalMessageThrottler.sendIfNecessary(curTime);
-
 	resetPageDataIfNecessary_(curTime);
 
 	if (wantsToSplit_())
 		tryToSplitSomething_();
 
-	//this is not a very good way to determine whether we should issue 'SearchForCliques',
+	//this is not a very good way to determine whether we should issue 'SearchForFuturePageReads',
 	//because it doesn't track how many computations are blocked or active on a per machine basis
-	if (mCurrentlyComputableComputations.size() + mBlockedAndWaitingForCliques.size() < 
+	if (mCurrentlyComputableComputations.size() + mBlockedAndWaitingForFuturePages.size() <
 				mActiveThreadCount &&
-			mBlockedAndWaitingForCliques.size() < mComputationsBlockedOnVectorsLocally.size())
-		while (mBlockedAndWaitingForCliques.size() < mComputationsBlockedOnVectorsLocally.size())
-			if (!tryToCalculateCliquesForSomething_())
+			mBlockedAndWaitingForFuturePages.size() < mComputationsBlockedOnVectorsLocally.size())
+		while (mBlockedAndWaitingForFuturePages.size() < mComputationsBlockedOnVectorsLocally.size())
+			if (!tryToCalculateFuturePagesForSomething_())
 				break;
-	
+
 	updateCurrentProcessorLoadAndBroadcast_(curTime);
 
-	double t0 = curClock();
+	moveIncorrectlyScheduledTasks_();
+
 	long passes = 0;
 	while (mMachineLoads.shouldTryToMoveSomething())
 		{
@@ -829,132 +484,125 @@ void LocalSchedulerImplKernel::splitOrMoveIfNeeded(double curTime)
 		if (!tryToMoveSomething_())
 			break;
 		}
-	double t1 = curClock();
+
 	mTimesCalledSinceLastDump++;
 
 	if (curClock() > mLastDumpTime + 2.0)
 		{
-		LOGGER_INFO_T log = LOGGER_INFO;
+		logCurrentState_();
 
-		map<MachineId, long> recv;
-		for (const auto& mAB: mMostRecentBroadcasts)
-			for (auto machineAndCount: mAB.second.moveTargets())
-				recv[machineAndCount.first] += machineAndCount.second;
-		
-
-		for (auto machineAndLoad: mMachineLoads.getMachineLoads().getKeyToValue())
-			{
-			if (machineAndLoad.first == mOwnMachineId)
-				log << "** ";
-			else
-				log << "   ";
-
-			log << machineAndLoad.first << " -> " 
-				<< std::setw(6)
-				<< machineAndLoad.second << ". receiving " 
-				<< std::setw(6)
-				<< recv[machineAndLoad.first]
-				<< ". "
-				;
-
-			log << "comp: " << std::setw(6) << mMostRecentBroadcasts[machineAndLoad.first].computableComputations() << ". ";
-			log << "uncomp: " << std::setw(6) << mMostRecentBroadcasts[machineAndLoad.first].noncomputableComputations() << ". ";
-			log << "mov: " << std::setw(6) << mMostRecentBroadcasts[machineAndLoad.first].movingComputations() << ". ";
-			log << "splt: " << std::setw(6) << mMostRecentBroadcasts[machineAndLoad.first].splittingComputations() << ". ";
-			log << "moveLag: " << std::setprecision(2) << std::setw(6) << mMostRecentBroadcasts[machineAndLoad.first].ageOfOldestMove() << ". ";
-			log << "totMov: " << std::setw(6) << mMostRecentBroadcasts[machineAndLoad.first].totalMoves() << ". ";
-			log << "totSplt: " << std::setw(6) << mMostRecentBroadcasts[machineAndLoad.first].totalSplits() << ". ";
-			log << "everFin: " << std::setw(6) << mMostRecentBroadcasts[machineAndLoad.first].totalCompleted() << ". ";
-			log << "vecload: " << std::setw(6) << mMostRecentBroadcasts[machineAndLoad.first].blockedComputations() << ". ";
-			log << "onSubcomp: " << std::setw(6) << mMostRecentBroadcasts[machineAndLoad.first].blockedOnSubcomputations() << ". ";
-			log << "finished: " << std::setw(6) << mMostRecentBroadcasts[machineAndLoad.first].finishedButUncollected() << ". ";
-			log << "wantsMove: " << (mMachineLoads.shouldMoveToMachine(machineAndLoad.first) ?"yes":"no") << ". ";
-
-			log << "\n";
-			}
-
-		long moveable = 0;
-		for (auto compAndPri: mCurrentlyComputableComputationsByPriority.getKeyToValue())
-			{
-			auto comp = compAndPri.first;
-			if (mCurrentlyComputableComputations.hasKey(comp) && 
-						mTryingToSplit.find(comp) == mTryingToSplit.end() && 
-										!mMachineLoads.computationsMoving().hasKey(comp))
-				{
-				ImmutableTreeSet<MachineId> possibleMoves = 
-					mComputationPageDependencies.machinesHoldingAllPages(
-						filterOutPagesDroppedAcrossSystem_(
-							mComputationBehaviorPredictor.getActivePageLoadGroup(comp).pages()
-							)
-						);
-				if (possibleMoves.size())
-					moveable++;
-				}
-			}
-
-		log << "moveable: " << moveable << "\n";
-
-		log << "passes: " << passes << " over " << t1 - t0 << "\n";
-		log << "Called " << mTimesCalledSinceLastDump << " since last dump.\n";
 		mTimesCalledSinceLastDump = 0;
 
 		mLastDumpTime = curClock();
 		}
 	}
 
-bool LocalSchedulerImplKernel::tryToCalculateCliquesForSomething_()
+bool LocalSchedulerImplKernel::tryToCalculateFuturePagesForSomething_()
 	{
-	while (true)
-		{
-		for (auto id: mComputationsBlockedOnVectorsLocally)
-			if (mRecentlyCalculatedForCliques.find(id) == 
-					mRecentlyCalculatedForCliques.end() && 
-					!mBlockedAndWaitingForCliques.hasKey(id))
+	for (auto id: mComputationsBlockedOnVectorsLocally)
+		if (mRecentlyCalculatedForFuturePages.find(id) ==
+				mRecentlyCalculatedForFuturePages.end() &&
+				!mBlockedAndWaitingForFuturePages.hasKey(id))
+			{
+			if (mBlockedAndWaitingForFuturePages.size() < mActiveThreadCount)
 				{
-				if (mBlockedAndWaitingForCliques.size() < mActiveThreadCount)
-					{
-					hash_type guid = mCliqueRequestGuid;
-					mCliqueRequestGuid = mCliqueRequestGuid + hash_type(1);
+				hash_type guid = mFuturePagesRequestGuid;
+				mFuturePagesRequestGuid = mFuturePagesRequestGuid + hash_type(1);
 
-					mBlockedAndWaitingForCliques.set(id, guid);
-					mRecentlyCalculatedForCliques.insert(id);
+				mBlockedAndWaitingForFuturePages.set(id, guid);
+				mRecentlyCalculatedForFuturePages.insert(id);
 
-					LOG_INFO << "Requesting cliques for " << id.guid() << " on " << mOwnMachineId
-						<< ". Total computing cliques: " << mBlockedAndWaitingForCliques.size() 
-						<< "/" << mComputationsBlockedOnVectorsLocally.size();
+				LOG_INFO << "Requesting FuturePages for " << id.guid() << " on " << mOwnMachineId
+					<< ". Total computing FuturePages: " << mBlockedAndWaitingForFuturePages.size()
+					<< "/" << mComputationsBlockedOnVectorsLocally.size();
 
-					sendSchedulerToComputationMessage(
-						SchedulerToComputationMessage::SearchForCliques(
-							id,
-							guid,
-							mOwnMachineId,
-							mOwnMachineId,
-							1.0
-							)
-						);
+				sendSchedulerToComputationMessage(
+					SchedulerToComputationMessage::SearchForFuturePageReads(
+						id,
+						guid,
+						mOwnMachineId,
+						mOwnMachineId,
+						.25
+						)
+					);
 
-					return true;
-					}
+				return true;
 				}
+			}
 
-		if (!mRecentlyCalculatedForCliques.size())
-			return false;
+	return false;
+	}
 
-		//if we get here, reset the list and try again
-		mRecentlyCalculatedForCliques.clear();
+void LocalSchedulerImplKernel::logCurrentState_()
+	{
+	LOGGER_INFO_T log = LOGGER_INFO;
+
+	map<MachineId, long> recv;
+	for (const auto& mAB: mMostRecentBroadcasts)
+		for (auto machineAndCount: mAB.second.moveTargets())
+			recv[machineAndCount.first] += machineAndCount.second;
+
+
+	for (auto machineAndLoad: mMachineLoads.getMachineLoads().getKeyToValue())
+		{
+		if (machineAndLoad.first == mOwnMachineId)
+			log << "** ";
+		else
+			log << "   ";
+
+		log << machineAndLoad.first << " -> "
+			<< std::setw(6)
+			<< machineAndLoad.second << ". receiving "
+			<< std::setw(6)
+			<< recv[machineAndLoad.first]
+			<< ". "
+			;
+
+		log << "comp: " << std::setw(6) << mMostRecentBroadcasts[machineAndLoad.first].computableComputations() << ". ";
+		log << "uncomp: " << std::setw(6) << mMostRecentBroadcasts[machineAndLoad.first].noncomputableComputations() << ". ";
+		log << "mov: " << std::setw(6) << mMostRecentBroadcasts[machineAndLoad.first].movingComputations() << ". ";
+		log << "splt: " << std::setw(6) << mMostRecentBroadcasts[machineAndLoad.first].splittingComputations() << ". ";
+		log << "moveLag: " << std::setprecision(2) << std::setw(6) << mMostRecentBroadcasts[machineAndLoad.first].ageOfOldestMove() << ". ";
+		log << "totMov: " << std::setw(6) << mMostRecentBroadcasts[machineAndLoad.first].totalMoves() << ". ";
+		log << "totSplt: " << std::setw(6) << mMostRecentBroadcasts[machineAndLoad.first].totalSplits() << ". ";
+		log << "everFin: " << std::setw(6) << mMostRecentBroadcasts[machineAndLoad.first].totalCompleted() << ". ";
+		log << "vecload: " << std::setw(6) << mMostRecentBroadcasts[machineAndLoad.first].blockedComputations() << ". ";
+		log << "onSubcomp: " << std::setw(6) << mMostRecentBroadcasts[machineAndLoad.first].blockedOnSubcomputations() << ". ";
+		log << "finished: " << std::setw(6) << mMostRecentBroadcasts[machineAndLoad.first].finishedButUncollected() << ". ";
+		log << "wantsMove: " << (mMachineLoads.shouldMoveToMachine(machineAndLoad.first) ?"yes":"no") << ". ";
+
+		log << "\n";
 		}
+
+	log << "Called " << mTimesCalledSinceLastDump << " since last dump.\n";
+	log << mComputationsBlockedOnVectorsLocally.size() << " are blocked locally.\n";
+
+	int64_t belongsOnOther = 0;
+	int64_t confused = 0;
+
+	for (auto v: mComputationsBlockedOnVectorsLocally)
+		if (computationBelongsOnAnotherMachine_(v))
+			belongsOnOther++;
+			else
+		if (!mAllThreadGroups.containingThread(ThreadGroup::groupFor(v)))
+			confused++;
+
+	log << "Computations belonging elsewhere: " << belongsOnOther << "\n";
+	log << "Computations that don't know where they belong: " << confused << "\n";
+	log << "Computations currently moving: " << mMachineLoads.computationsMoving().size() << "\n";
+
 	}
 
 void LocalSchedulerImplKernel::resetPageDataIfNecessary_(double curTime)
 	{
 	for (auto computation: mCurrentlyComputingComputations)
 		{
-		if (mCurrentlyComputingComputationsLastPageResetTimes[computation] < 
+		if (mCurrentlyComputingComputationsLastPageResetTimes[computation] <
 													curTime - kTimeBetweenPageResets)
 			{
 			sendSchedulerToComputationMessage(
 				SchedulerToComputationMessage::ResetPageDataAndBroadcast(
-					computation, 
+					computation,
 					hash_type(1),
 					mOwnMachineId,
 					mOwnMachineId
@@ -973,12 +621,43 @@ void LocalSchedulerImplKernel::handleLocalToLocalSchedulerBroadcastMessage(
 	@match LocalToLocalSchedulerBroadcastMessage(message)
 		-| CurrentLoad() with (sourceMachine) ->> {
 			mMachineLoads.setLoad(
-				sourceMachine, 
+				sourceMachine,
 				message.getCurrentLoad().expectedCpusWorthOfCompute(),
 				message.getCurrentLoad().blockedComputations()
 				);
 
 			mMostRecentBroadcasts[sourceMachine] = message.getCurrentLoad();
+			}
+	}
+
+void LocalSchedulerImplKernel::handleLocalToLocalSchedulerMessage(
+										LocalToLocalSchedulerMessage message
+										)
+	{
+	mThreadGroupStatusTracker.handleLocalToLocalSchedulerMessage(message);
+	}
+
+void LocalSchedulerImplKernel::handleGlobalToLocalSchedulerMessage(
+										GlobalToLocalSchedulerMessage message
+										)
+	{
+	@match GlobalToLocalSchedulerMessage(message)
+		-| GlobalSchedulerToThreadGroup(msg) ->> {
+			mThreadGroupStatusTracker.handleGlobalToLocalSchedulerMessage(msg);
+			}
+		-| SetActiveThreadGroups(groups) ->> {
+			mAllThreadGroups.clear();
+
+			mAllThreadGroupsActiveOn = TwoWaySetMap<ThreadGroup, MachineId>();
+
+			for (auto machineAndGroups: groups)
+				for (auto group: machineAndGroups.second)
+					{
+					mAllThreadGroups.insert(group);
+					mAllThreadGroupsActiveOn.insert(group, machineAndGroups.first);
+					}
+
+			moveIncorrectlyScheduledTasks_();
 			}
 	}
 
@@ -991,7 +670,7 @@ void LocalSchedulerImplKernel::updateCurrentProcessorLoadAndBroadcast_(double cu
 	if (newLoadLevel != mMachineLoads.ownLoadRaw())
 		mMachineLoads.setLoad(mOwnMachineId, newLoadLevel, mComputationsBlockedOnVectorsLocally.size());
 
-	if (curTime - mLastBroadcast > kBroadcastInterval || 
+	if (curTime - mLastBroadcast > kBroadcastInterval ||
 			newLoadLevel > mActiveThreadCount && mLastBroadcastLoad < mActiveThreadCount ||
 			newLoadLevel < mActiveThreadCount && mLastBroadcastLoad > mActiveThreadCount
 			)
@@ -1003,10 +682,10 @@ void LocalSchedulerImplKernel::updateCurrentProcessorLoadAndBroadcast_(double cu
 		for (const auto& machineAndComps: mMachineLoads.computationsMoving().getValueToKeys())
 			sending = sending + machineAndComps.first + (long)machineAndComps.second.size();
 
-		LocalToLocalSchedulerBroadcastMessage msg = 
+		LocalToLocalSchedulerBroadcastMessage msg =
 			LocalToLocalSchedulerBroadcastMessage::CurrentLoad(
 				mOwnMachineId,
-				mCurrentlyComputableComputations.size(), 
+				mCurrentlyComputableComputations.size(),
 				mLocalComputationStatuses.size() - mCurrentlyComputableComputations.size(),
 				newLoadLevel,
 				mMachineLoads.computationsMoving().size(),
@@ -1035,6 +714,102 @@ void LocalSchedulerImplKernel::updateCurrentProcessorLoadAndBroadcast_(double cu
 		}
 	}
 
+bool LocalSchedulerImplKernel::computationBelongsOnAnotherMachine_(ComputationId comp)
+	{
+	const std::set<MachineId>& activeOn = validMachinesForComputation_(comp);
+
+	if (activeOn.size() && activeOn.find(mOwnMachineId) == activeOn.end())
+		return true;
+
+	return false;
+	}
+
+const std::set<MachineId>& LocalSchedulerImplKernel::validMachinesForComputation_(ComputationId comp)
+	{
+	static std::set<MachineId> empty;
+
+	Nullable<ThreadGroup> owningGroup =
+		mAllThreadGroups.containingThread(ThreadGroup::groupFor(comp));
+
+	if (!owningGroup)
+		return empty;
+
+	return mAllThreadGroupsActiveOn.getValues(*owningGroup);
+	}
+
+void LocalSchedulerImplKernel::moveIncorrectlyScheduledTasks_()
+	{
+	//don't schedule too many computations to move
+	if (mMachineLoads.computationsMoving().size() > 20)
+		return;
+
+	for (auto compAndPri: mCurrentlyComputableComputationsByPriority.getKeyToValue())
+		if (computationBelongsOnAnotherMachine_(compAndPri.first) && !mMachineLoads.computationsMoving().hasKey(compAndPri.first))
+			{
+			const auto& machines = validMachinesForComputation_(compAndPri.first);
+
+			tryToMoveComputationToOneOf_(compAndPri.first, machines, true);
+
+			if (mMachineLoads.computationsMoving().size() > 20)
+				return;
+			}
+
+	for (auto comp: mComputationsBlockedOnVectorsLocally)
+		{
+		if (computationBelongsOnAnotherMachine_(comp) && !mMachineLoads.computationsMoving().hasKey(comp))
+			{
+			const auto& machines = validMachinesForComputation_(comp);
+
+			tryToMoveComputationToOneOf_(comp, machines, true);
+
+			if (mMachineLoads.computationsMoving().size() > 20)
+				return;
+			}
+		}
+	}
+
+bool LocalSchedulerImplKernel::tryToMoveComputationToOneOf_(ComputationId comp, const std::set<MachineId>& activeOn, bool moveEvenIfOtherMachineIsLoaded)
+	{
+	if (activeOn.size())
+		{
+		std::vector<pair<hash_type, MachineId> > hashRing;
+		for (auto machine: activeOn)
+			if (machine != mOwnMachineId)
+				hashRing.push_back(make_pair(machine.guid() + mOwnMachineId.guid(), machine));
+
+		std::sort(hashRing.begin(), hashRing.end());
+
+		std::vector<MachineId> possible;
+
+		for (long k = 0; k < hashRing.size() && k < 5; k++)
+			possible.push_back(hashRing[k].second);
+
+		for (long k = 0; k + 1 < possible.size(); k++)
+			std::swap(
+				possible[k],
+				possible[k + (possible.size() - k) * mRandomGenerator()]
+				);
+
+		for (auto machine: possible)
+			if (mMachineLoads.shouldMoveToMachine(machine) || moveEvenIfOtherMachineIsLoaded)
+				{
+				logTryingToMove_(comp, machine);
+
+				mMachineLoads.taskIsMoving(comp, machine);
+
+				mComputationsMoved++;
+
+				mOnInitiateComputationMoved(
+					InitiateComputationMove(comp, machine)
+					);
+
+				return true;
+				}
+		}
+
+	return false;
+	}
+
 bool LocalSchedulerImplKernel::tryToMoveSomething_()
 	{
 	double t0 = curClock();
@@ -1045,7 +820,7 @@ bool LocalSchedulerImplKernel::tryToMoveSomething_()
 
 		for (long k = 0; k + 1 < mMoveCandidates.size(); k++)
 			std::swap(
-				mMoveCandidates[k], 
+				mMoveCandidates[k],
 				mMoveCandidates[k + (mMoveCandidates.size() - k) * mRandomGenerator()]
 				);
 		}
@@ -1055,50 +830,18 @@ bool LocalSchedulerImplKernel::tryToMoveSomething_()
 		ComputationId comp = mMoveCandidates.back();
 		mMoveCandidates.pop_back();
 
-		if (mCurrentlyComputableComputations.hasKey(comp) && 
-					mTryingToSplit.find(comp) == mTryingToSplit.end() && 
+		if (mCurrentlyComputableComputations.hasKey(comp) &&
+					mTryingToSplit.find(comp) == mTryingToSplit.end() &&
 									!mMachineLoads.computationsMoving().hasKey(comp))
 			{
-			ImmutableTreeSet<MachineId> possibleMoves = 
-				mComputationPageDependencies.machinesHoldingAllPages(
-					filterOutPagesDroppedAcrossSystem_(
-						mComputationBehaviorPredictor.getActivePageLoadGroup(comp).pages()
-						)
-					);
+			Nullable<ThreadGroup> owningGroup = mAllThreadGroups.containingThread(ThreadGroup::groupFor(comp));
 
-			if (possibleMoves.size())
+			if (owningGroup)
 				{
-				std::vector<pair<hash_type, MachineId> > hashRing;
-				for (auto machine: possibleMoves)
-					hashRing.push_back(make_pair(machine.guid() + mOwnMachineId.guid(), machine));
-				std::sort(hashRing.begin(), hashRing.end());
+				const std::set<MachineId>& activeOn = mAllThreadGroupsActiveOn.getValues(*owningGroup);
 
-				std::vector<MachineId> possible;
-
-				for (long k = 0; k < hashRing.size() && k < 5; k++)
-					possible.push_back(hashRing[k].second);
-
-				for (long k = 0; k + 1 < possible.size(); k++)
-					std::swap(
-						possible[k], 
-						possible[k + (possible.size() - k) * mRandomGenerator()]
-						);
-
-				for (auto machine: possible)
-					if (mMachineLoads.shouldMoveToMachine(machine))
-						{
-						logTryingToMove_(comp, machine);
-
-						mMachineLoads.taskIsMoving(comp, machine);
-
-						mComputationsMoved++;
-
-						mOnInitiateComputationMoved(
-							InitiateComputationMove(comp, machine)
-							);
-
-						return true;
-						}
+				if (tryToMoveComputationToOneOf_(comp, activeOn, false))
+					return true;
 				}
 			}
 		}
@@ -1130,8 +873,8 @@ void LocalSchedulerImplKernel::tryToSplitComputation_(ComputationId toSplit)
 
 	sendSchedulerToComputationMessage(
 		SchedulerToComputationMessage::Split(
-			toSplit, 
-			hash_type(), 
+			toSplit,
+			hash_type(),
 			mOwnMachineId,
 			mOwnMachineId,
 			kMinTimeToComputeBeforeSplitting
@@ -1140,7 +883,7 @@ void LocalSchedulerImplKernel::tryToSplitComputation_(ComputationId toSplit)
 
 	if (mCurrentlyComputableComputations.hasKey(toSplit))
 		{
-		pair<long, ComputationPriority> curPriorityPair = 
+		pair<long, ComputationPriority> curPriorityPair =
 			mCurrentlyComputableComputations.getValue(toSplit);
 
 		lassert(curPriorityPair.first == 0);

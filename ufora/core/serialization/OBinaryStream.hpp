@@ -32,7 +32,7 @@ class OBinaryStream {
 public:
 	typedef uint32_t size_type;
 
-	OBinaryStream(OProtocol& inProtocol, size_type inBufferSize = 4096 * 16) 
+	OBinaryStream(OProtocol& inProtocol, size_type inBufferSize = 4096 * 16)
 			: mProtocol(inProtocol), mBytesWritten(0)
 		{
 		mBuffer.resize(inBufferSize);
@@ -69,10 +69,10 @@ public:
 		mBufferPos += inBytes;
 		}
 
-	size_type bytesWritten() const 
+	size_type bytesWritten() const
 		{
 		return mBytesWritten;
-		}			
+		}
 
 private:
 	OProtocol& 			mProtocol;

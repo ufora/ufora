@@ -21,7 +21,7 @@
 template<>
 class SerializedObjectStream<SerializedObjectFlattenerSerializer> {
 public:
-	SerializedObjectStream() : 
+	SerializedObjectStream() :
 			mFlattener(),
 			mProtocol(mData),
 			mStream(mProtocol),
@@ -63,7 +63,7 @@ public:
 template<>
 class DeserializedObjectStream<SerializedObjectInflaterDeserializer> {
 public:
-	DeserializedObjectStream() : 
+	DeserializedObjectStream() :
 			mInflater(),
 			mProtocol((char*)0,0),
 			mStream(mProtocol),
@@ -79,10 +79,10 @@ public:
 		T out;
 
 		mDeserializer.deserialize(out);
-		
+
 		return out;
 		}
-	
+
 	SerializedObjectInflaterDeserializer& getDeserializer()
 		{
 		return mDeserializer;

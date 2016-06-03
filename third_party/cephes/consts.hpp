@@ -8,7 +8,7 @@ Direct inquiries to 30 Frost Street, Cambridge, MA 02140
 
 namespace cephes {
 
-// these are taken from the IEEE arithmetic (IBMPC) 
+// these are taken from the IEEE arithmetic (IBMPC)
 // defines in cephes
 
 constexpr double EUL = 0.57721566490153286061;

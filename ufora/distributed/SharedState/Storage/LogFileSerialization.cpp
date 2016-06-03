@@ -28,7 +28,7 @@ OpenJsonSerializers::serializer_ptr_type OpenJsonSerializers::getSerializerForPa
     // if we create a serializer, then make sure the underlying file is empty
     //lassert(mOpenFiles->isEmpty(path));
 
-    OpenJsonSerializers::serializer_ptr_type tr = 
+    OpenJsonSerializers::serializer_ptr_type tr =
         OpenJsonSerializers::serializer_ptr_type(new serializer_type());
 
     mSerializers[path] = tr;

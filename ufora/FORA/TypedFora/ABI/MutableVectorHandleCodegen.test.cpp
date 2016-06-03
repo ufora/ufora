@@ -32,27 +32,27 @@ using TypedFora::Abi::MutableVectorHandle;
 
 class MutableVectorHandleCodegenTestFixture {
 public:
-	MutableVectorHandleCodegenTestFixture() : 
+	MutableVectorHandleCodegenTestFixture() :
 			compiler(Runtime::getRuntime().getTypedForaCompiler()),
 			sizeFun(compiler, sizeExpression),
 			decrementRefcountFun(compiler, decrementRefcountExpr),
 			incrementRefcountFun(compiler, incrementRefcountExpr),
 			setItemStringFun(
-				compiler, 
+				compiler,
 				boost::bind(
-					setItemExpr, 
-					boost::arg<1>(), 
-					boost::arg<2>(), 
+					setItemExpr,
+					boost::arg<1>(),
+					boost::arg<2>(),
 					boost::arg<3>(),
 					JudgmentOnValue::OfType(Type::String())
 					)
 				),
 			setItemIvcFun(
-				compiler, 
+				compiler,
 				boost::bind(
-					setItemExpr, 
-					boost::arg<1>(), 
-					boost::arg<2>(), 
+					setItemExpr,
+					boost::arg<1>(),
+					boost::arg<2>(),
 					boost::arg<3>(),
 					JudgmentOnValue()
 					)
@@ -61,7 +61,7 @@ public:
 				compiler,
 				boost::bind(
 					getItemExpr,
-					boost::arg<1>(), 
+					boost::arg<1>(),
 					boost::arg<2>(),
 					JudgmentOnValue::OfType(Type::String())
 					)
@@ -70,8 +70,8 @@ public:
 				compiler,
 				boost::bind(
 					getItemExpr,
-					boost::arg<1>(), 
-					boost::arg<2>(), 
+					boost::arg<1>(),
+					boost::arg<2>(),
 					JudgmentOnValue()
 					)
 				),
@@ -93,13 +93,13 @@ public:
 	TypedNativeFunctionPointer<size_t (*)(MutableVectorHandle*)> sizeFun;
 
 	TypedNativeFunctionPointer<uint8_t (*)(MutableVectorHandle*)> decrementRefcountFun;
-	
+
 	TypedNativeFunctionPointer<Fora::Nothing (*)(MutableVectorHandle*)> incrementRefcountFun;
-	
-	TypedNativeFunctionPointer<Fora::Nothing (*)(MutableVectorHandle*, int64_t, String)> 
+
+	TypedNativeFunctionPointer<Fora::Nothing (*)(MutableVectorHandle*, int64_t, String)>
 																			setItemStringFun;
-	
-	TypedNativeFunctionPointer<Fora::Nothing (*)(MutableVectorHandle*, int64_t, ImplValContainer)> 
+
+	TypedNativeFunctionPointer<Fora::Nothing (*)(MutableVectorHandle*, int64_t, ImplValContainer)>
 																				setItemIvcFun;
 
 	TypedNativeFunctionPointer<String (*)(MutableVectorHandle*, int64_t)> getItemStringFun;
@@ -140,13 +140,13 @@ BOOST_AUTO_TEST_CASE ( test_typed )
 	{
 	MutableVectorHandle handle(&memoryPool, JOV::OfType(Type::String()), hash_type());
 
-	ImplValContainer aString = 
+	ImplValContainer aString =
 		ImplValContainerUtilities::createString(String("this is a long string", &memoryPool));
 
-	ImplValContainer aDifferentString = 
+	ImplValContainer aDifferentString =
 		ImplValContainerUtilities::createString(String("this is another long string", &memoryPool));
 
-	ImplValContainer aThirdString = 
+	ImplValContainer aThirdString =
 		ImplValContainerUtilities::createString(String("this is a different one", &memoryPool));
 
 	handle.resize(10, aString);
@@ -173,10 +173,10 @@ BOOST_AUTO_TEST_CASE ( test_untyped )
 	{
 	MutableVectorHandle handle(&memoryPool, JOV(), hash_type());
 
-	ImplValContainer aString = 
+	ImplValContainer aString =
 		ImplValContainerUtilities::createString(String("this is a long string", &memoryPool));
 
-	ImplValContainer aDifferentString = 
+	ImplValContainer aDifferentString =
 		ImplValContainerUtilities::createString(String("this is another long string", &memoryPool));
 
 	ImplValContainer anInteger(CSTValue(10));
@@ -192,7 +192,7 @@ BOOST_AUTO_TEST_CASE ( test_untyped )
 	BOOST_CHECK(getItemIvcFun(&handle, 2) == aString);
 	BOOST_CHECK(getItemIvcFun(&handle, 3) == anInteger);
 	BOOST_CHECK(getItemIvcFun(&handle, 4) == aString);
-	
+
 	handle.resize(10, anInteger);
 	BOOST_CHECK(getItemIvcFun(&handle, 4) == aString);
 	BOOST_CHECK(getItemIvcFun(&handle, 3) == anInteger);

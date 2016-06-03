@@ -1,0 +1,485 @@
+/***************************************************************************
+    Copyright 2015 Ufora Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../../core/containers/MapWithIndex.hpp"
+#include "../../core/containers/ImmutableTreeMap.hppml"
+#include "../../core/math/Smallest.hpp"
+#include "../../core/Logging.hpp"
+#include "PageMachineMap.hppml"
+#include "TaskAllocatorId.hppml"
+namespace Cumulus {
+
+namespace PageLayoutCalculator {
+
+class TaskCosts {
+public:
+	void touch(TaskAllocatorId task)
+		{
+		if (mTasks.find(task) != mTasks.end())
+			return;
+
+		mTasks.insert(task);
+
+		for (auto m: mMachines)
+			{
+			mCostsByMachine[m].set(task, 0);
+			mCostsByTask[task].set(m, 0);
+			}
+
+		mWholeTaskCosts.set(task, 0);
+		}
+
+	bool taskIsUnderallocated(TaskAllocatorId task) const
+		{
+		return mUnderallocatedTasks.find(task) != mUnderallocatedTasks.end();
+		}
+
+	void markTaskUnderallocated(TaskAllocatorId task)
+		{
+		lassert(mTasks.find(task) != mTasks.end());
+
+		if (mUnderallocatedTasks.find(task) != mUnderallocatedTasks.end())
+			return;
+
+		mUnderallocatedTasks.insert(task);
+
+		for (auto m: mMachines)
+			if (taskAllocatableOnMachine(task, m))
+				mAllocatableCostsByMachine[m].set(task, mCostsByMachine[m].getValue(task));
+		}
+
+	void markTaskFullyAllocated(TaskAllocatorId task)
+		{
+		lassert(mTasks.find(task) != mTasks.end());
+
+		if (mUnderallocatedTasks.find(task) == mUnderallocatedTasks.end())
+			return;
+
+		mUnderallocatedTasks.erase(task);
+
+		for (auto m: mMachines)
+			mAllocatableCostsByMachine[m].discard(task);
+		}
+
+	void machineAddPage(MachineId machine, Fora::PageId page)
+		{
+		touch(machine);
+
+		lassert(!mMachineHeldPages.contains(machine,page));
+		mMachineHeldPages.insert(machine, page);
+
+		checkPageOnMachine(machine, page);
+		}
+
+	void machineDropPage(MachineId machine, Fora::PageId page)
+		{
+		touch(machine);
+
+		lassert(mMachineHeldPages.contains(machine,page));
+		mMachineHeldPages.drop(machine, page);
+
+		checkPageOnMachine(machine, page);
+		}
+
+	void touch(MachineId m)
+		{
+		if (mMachines.find(m) != mMachines.end())
+			return;
+
+		mMachines.insert(m);
+
+		mCostsByMachine[m] = mWholeTaskCosts;
+
+		for (auto task: mTasks)
+			mCostsByTask[task].set(m, 0);
+		}
+
+	void taskAddPage(TaskAllocatorId task, Fora::PageId page)
+		{
+		touch(task);
+
+		lassert(!mTaskPages.contains(task,page));
+		mTaskPages.insert(task, page);
+
+		for (auto m: mMachines)
+			if (!mMachineHeldOrTaskPages.contains(m, page))
+				{
+				lassert(mCostsByMachine[m].hasKey(task));
+
+				int64_t newCost = mCostsByMachine[m].getValue(task) + page.bytecount();
+
+				setTaskCost(task, m, newCost);
+				}
+
+		for (auto machine: mLoadingTasks.getValues(task))
+			if (!mMachineTaskPages.contains(machine, page))
+				{
+				mMachineTaskPages.insert(machine, page);
+				checkPageOnMachine(machine, page);
+				}
+		}
+
+	void taskDropPage(TaskAllocatorId task, Fora::PageId page)
+		{
+		touch(task);
+
+		lassert(mTaskPages.contains(task,page));
+		mTaskPages.drop(task, page);
+
+		//for this task, on all machines that don't hold the page, our costs
+		//just went down
+		for (auto m: mMachines)
+			if (!mMachineHeldOrTaskPages.contains(m, page))
+				{
+				lassert(mCostsByMachine[m].hasKey(task));
+
+				int64_t newCost = mCostsByMachine[m].getValue(task) - page.bytecount();
+
+				setTaskCost(task, m, newCost);
+				}
+
+		for (auto machine: mLoadingTasks.getValues(task))
+			if (mMachineTaskPages.contains(machine, page))
+				{
+				if (!anyLoadingTaskHasPage(machine, page))
+					{
+					mMachineTaskPages.drop(machine, page);
+					checkPageOnMachine(machine, page);
+					}
+				}
+		}
+
+	bool anyLoadingTaskHasPage(MachineId machine, Fora::PageId page) const
+		{
+		for (auto task: mTaskPages.getKeys(page))
+			if (mLoadingTasks.contains(task, machine))
+				return true;
+		return false;
+		}
+
+	const MapWithIndex<MachineId, int64_t>& taskCosts(TaskAllocatorId task) const
+		{
+		static MapWithIndex<MachineId, int64_t> empty;
+
+		auto it = mCostsByTask.find(task);
+		if (it == mCostsByTask.end())
+			return empty;
+
+		return it->second;
+		}
+
+	const MapWithIndex<TaskAllocatorId, int64_t>& taskCosts(MachineId machine) const
+		{
+		static MapWithIndex<TaskAllocatorId, int64_t> empty;
+
+		auto it = mCostsByMachine.find(machine);
+		if (it == mCostsByMachine.end())
+			return empty;
+
+		return it->second;
+		}
+
+	void dropTask(TaskAllocatorId task)
+		{
+		if (mTasks.find(task) == mTasks.end())
+			return;
+
+		markTaskFullyAllocated(task);
+
+		auto pages = taskPages().getValues(task);
+		for (auto p: pages)
+			taskDropPage(task, p);
+
+		mTasks.erase(task);
+
+		std::set<MachineId> loaders = loadingTasks().getValues(task);
+		std::set<MachineId> runners = runningTasks().getValues(task);
+
+		for (auto m: loaders)
+			dropTaskLoading(task, m);
+
+		for (auto m: runners)
+			dropTaskRunning(task, m);
+
+		lassert(!mTaskPages.hasKey(task));
+
+		mCostsByTask.erase(task);
+		mWholeTaskCosts.discard(task);
+
+		for (auto m: mMachines)
+			mCostsByMachine[m].drop(task);
+		}
+
+	void addTaskLoading(TaskAllocatorId task, MachineId machine)
+		{
+		mLoadingTasks.insert(task, machine);
+
+		mAllocatableCostsByMachine[machine].discard(task);
+
+		for (auto page: mTaskPages.getValues(task))
+			if (!mMachineTaskPages.contains(machine, page))
+				{
+				mMachineTaskPages.insert(machine, page);
+				checkPageOnMachine(machine, page);
+				}
+		}
+
+	void addTaskRunning(TaskAllocatorId task, MachineId machine)
+		{
+		mAllocatableCostsByMachine[machine].discard(task);
+
+		mRunningTasks.insert(task, machine);
+		}
+
+	void dropTaskLoading(TaskAllocatorId task, MachineId machine)
+		{
+		mLoadingTasks.drop(task, machine);
+
+		for (auto page: mTaskPages.getValues(task))
+			if (mMachineTaskPages.contains(machine, page) && !anyLoadingTaskHasPage(machine, page))
+				{
+				mMachineTaskPages.drop(machine, page);
+				checkPageOnMachine(machine, page);
+				}
+
+		if (taskAllocatableOnMachine(task, machine))
+			mAllocatableCostsByMachine[machine].set(task, mCostsByMachine[machine].getValue(task));
+		}
+
+	void dropTaskRunning(TaskAllocatorId task, MachineId machine)
+		{
+		mRunningTasks.drop(task, machine);
+
+		if (taskAllocatableOnMachine(task, machine))
+			mAllocatableCostsByMachine[machine].set(task, mCostsByMachine[machine].getValue(task));
+		}
+
+	const TwoWaySetMap<TaskAllocatorId, MachineId>& loadingTasks() const
+		{
+		return mLoadingTasks;
+		}
+
+	const TwoWaySetMap<TaskAllocatorId, MachineId>& runningTasks() const
+		{
+		return mRunningTasks;
+		}
+
+	const TwoWaySetMap<TaskAllocatorId, Fora::PageId>& taskPages() const
+		{
+		return mTaskPages;
+		}
+
+	void validateState()
+		{
+		//all underallocated tasks are tasks
+		for (auto t: mUnderallocatedTasks)
+			lassert(mTasks.find(t) != mTasks.end());
+
+		//check that mMachineTaskPages is correct
+		for (auto& taskAndMachines: mLoadingTasks.getKeysToValues())
+			for (auto m: taskAndMachines.second)
+				for (auto p: mTaskPages.getValues(taskAndMachines.first))
+					lassert(mMachineTaskPages.contains(m, p));
+
+		for (auto& machineAndPages: mMachineTaskPages.getKeysToValues())
+			for (auto p: machineAndPages.second)
+				lassert(anyLoadingTaskHasPage(machineAndPages.first, p));
+
+		//check that mMachineHeldOrTaskPages is the union of mMachineTaskPages and mMachineHeldPages
+		for (auto& machineAndPages: mMachineHeldOrTaskPages.getKeysToValues())
+			for (auto p: machineAndPages.second)
+				lassert(mMachineTaskPages.contains(machineAndPages.first, p) ||
+						mMachineHeldPages.contains(machineAndPages.first, p));
+
+		for (auto& machineAndPages: mMachineTaskPages.getKeysToValues())
+			for (auto p: machineAndPages.second)
+				lassert(mMachineHeldOrTaskPages.contains(machineAndPages.first, p));
+
+		for (auto& machineAndPages: mMachineHeldPages.getKeysToValues())
+			for (auto p: machineAndPages.second)
+				lassert(mMachineHeldOrTaskPages.contains(machineAndPages.first, p));
+
+		//check the contents of mCostsByMachine and mCostsByTask
+		for (auto m: mMachines)
+			for (auto t: mTasks)
+				{
+				lassert(mCostsByMachine.find(m) != mCostsByMachine.end());
+				lassert(mCostsByTask.find(t) != mCostsByTask.end());
+				lassert(mCostsByMachine[m].hasKey(t));
+				lassert(mCostsByTask[t].hasKey(m));
+				}
+
+		//verify that mCostsByMachine and mCostsByTask are the same
+		for (auto& machineAndTaskCosts: mCostsByMachine)
+			for (auto taskAndCost: machineAndTaskCosts.second.getKeyToValue())
+				lassert(mCostsByTask[taskAndCost.first].getValue(machineAndTaskCosts.first) == taskAndCost.second);
+
+		//verify that actual cost calculation is consistent with mTaskPages and mMachineHeldOrTaskPages
+		for (auto& machineAndTaskCosts: mCostsByMachine)
+			for (auto taskAndCost: machineAndTaskCosts.second.getKeyToValue())
+				lassert_dump(
+					taskAndCost.second == computeActualTaskCost(taskAndCost.first, machineAndTaskCosts.first),
+					taskAndCost.second << " != " <<
+						computeActualTaskCost(taskAndCost.first, machineAndTaskCosts.first) << " on machine "
+						<< prettyPrintString(machineAndTaskCosts.first) << " with task " << prettyPrintString(taskAndCost.first.guid())
+					);
+
+		for (auto m: mMachines)
+			for (auto t: mTasks)
+				if (!taskAllocatableOnMachine(t,m))
+					{
+					lassert(!mAllocatableCostsByMachine[m].hasKey(t));
+					}
+				else
+					{
+					lassert(mAllocatableCostsByMachine[m].hasKey(t));
+					lassert(mAllocatableCostsByMachine[m].getValue(t) ==
+							mCostsByMachine[m].getValue(t));
+					}
+		}
+
+	bool taskAllocatableOnMachine(TaskAllocatorId t, MachineId m)
+		{
+		return !mRunningTasks.contains(t,m) && !mLoadingTasks.contains(t,m) &&
+				mUnderallocatedTasks.find(t) != mUnderallocatedTasks.end();
+		}
+
+	int64_t computeActualTaskCost(TaskAllocatorId task, MachineId machine)
+		{
+		int64_t bytes = 0;
+
+		for (auto page: mTaskPages.getValues(task))
+			if (!mMachineHeldOrTaskPages.contains(machine, page))
+				bytes += page.bytecount();
+
+		return bytes;
+		}
+
+	const TwoWaySetMap<MachineId, Fora::PageId>& machinePages() const
+		{
+		return mMachineHeldPages;
+		}
+
+	const MapWithIndex<TaskAllocatorId, int64_t>& allocatableTasksForMachine(MachineId m) const
+		{
+		static MapWithIndex<TaskAllocatorId, int64_t> empty;
+
+		auto it = mAllocatableCostsByMachine.find(m);
+		if (it == mAllocatableCostsByMachine.end())
+			return empty;
+
+		return it->second;
+		}
+
+private:
+	void checkPageOnMachine(MachineId machine, Fora::PageId page)
+		{
+		if (mMachineHeldOrTaskPages.contains(machine, page) && !shouldBeHeldOrTaskPage(machine, page))
+			machineOrHeldTaskDropPage(machine, page);
+			else
+		if (!mMachineHeldOrTaskPages.contains(machine, page) && shouldBeHeldOrTaskPage(machine, page))
+			machineOrHeldTaskAddPage(machine, page);
+		}
+
+	void machineOrHeldTaskAddPage(MachineId machine, Fora::PageId page)
+		{
+		touch(machine);
+
+		lassert(!mMachineHeldOrTaskPages.contains(machine,page));
+		mMachineHeldOrTaskPages.insert(machine, page);
+
+		for (auto task: mTaskPages.getKeys(page))
+			{
+			lassert(mCostsByMachine[machine].hasKey(task));
+
+			int64_t newCost = mCostsByMachine[machine].getValue(task) - page.bytecount();
+
+			setTaskCost(task, machine, newCost);
+			}
+		}
+
+	void machineOrHeldTaskDropPage(MachineId machine, Fora::PageId page)
+		{
+		touch(machine);
+
+		lassert(mMachineHeldOrTaskPages.contains(machine,page));
+		mMachineHeldOrTaskPages.drop(machine, page);
+
+		for (auto task: mTaskPages.getKeys(page))
+			{
+			lassert(mCostsByMachine[machine].hasKey(task));
+
+			int64_t newCost = mCostsByMachine[machine].getValue(task) + page.bytecount();
+
+			setTaskCost(task, machine, newCost);
+			}
+		}
+
+	void setTaskCost(TaskAllocatorId task, MachineId machine, int64_t cost)
+		{
+		mCostsByMachine[machine].set(task, cost);
+		mCostsByTask[task].set(machine, cost);
+
+		if (taskAllocatableOnMachine(task, machine))
+			mAllocatableCostsByMachine[machine].set(task, cost);
+		}
+
+	bool shouldBeHeldOrTaskPage(MachineId machine, Fora::PageId page) const
+		{
+		if (mMachineHeldPages.contains(machine, page))
+			return true;
+
+		if (mMachineTaskPages.contains(machine, page))
+			return true;
+
+		return false;
+		}
+
+	std::set<TaskAllocatorId> mTasks;
+
+	std::set<TaskAllocatorId> mUnderallocatedTasks;
+
+	std::set<MachineId> mMachines;
+
+	//pages that are actually considered loaded
+	TwoWaySetMap<MachineId, Fora::PageId> mMachineHeldPages;
+
+	//pages that are used by a loading or running task
+	TwoWaySetMap<MachineId, Fora::PageId> mMachineTaskPages;
+
+	TwoWaySetMap<MachineId, Fora::PageId> mMachineHeldOrTaskPages;
+
+	TwoWaySetMap<TaskAllocatorId, Fora::PageId> mTaskPages;
+
+	//task costs if there's nothing on the box
+	MapWithIndex<TaskAllocatorId, int64_t> mWholeTaskCosts;
+
+	TwoWaySetMap<TaskAllocatorId, MachineId> mLoadingTasks;
+
+	TwoWaySetMap<TaskAllocatorId, MachineId> mRunningTasks;
+
+	std::set<TaskAllocatorId> mTasksNeedingMore;
+
+	map<TaskAllocatorId, MapWithIndex<MachineId, int64_t> > mCostsByTask;
+
+	map<MachineId, MapWithIndex<TaskAllocatorId, int64_t> > mCostsByMachine;
+
+	map<MachineId, MapWithIndex<TaskAllocatorId, int64_t> > mAllocatableCostsByMachine;
+};
+
+}
+}

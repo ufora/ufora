@@ -28,7 +28,7 @@ std::string oneLineSanitization(const std::string& inText, uint32_t width)
 		toUse.resize(width);
 
 	if (inText.size() > width * 100)
-		LOG_WARN << "Warning: oneLineSanitization chopping a string from " 
+		LOG_WARN << "Warning: oneLineSanitization chopping a string from "
 			<< inText.size() << " to " << width;
 
 	return substitute(substitute(toUse, "\n", " "), "\t", " ");
@@ -39,15 +39,15 @@ std::string sanitizeFilename(const std::string& inFilename)
 	std::string tr = inFilename;
 
 	for (long k = 0; k < tr.size();k++)
-		if (!isalnum(tr[k]) 
-				&& tr[k] != '.' 
+		if (!isalnum(tr[k])
+				&& tr[k] != '.'
 				&& tr[k] != '-'
 				&& tr[k] != '<'
 				&& tr[k] != '>'
 				&& tr[k] != ':'
 				)
 			tr[k] = '_';
-	
+
 	return tr;
 	}
 
@@ -58,8 +58,8 @@ std::string tabs(int32_t num)
 		tr += "\t";
 	return tr;
 	}
-	
-	
+
+
 std::string pad(const std::string& inText, long exactWidth, bool onRight, char sep)
 	{
 	if (onRight)
@@ -90,7 +90,7 @@ std::string blockify(const std::string& inText)
 	{
 	return "    {\n    " + Ufora::substitute(inText, "\n", "\n    ") + "\n    }\n";
 	}
-	
+
 std::string indent(const std::string& inText, int32_t times)
 	{
 	if (times <= 0)
@@ -126,7 +126,7 @@ bool beginsWith(const std::string& toLookInside, const std::string& toFind)
 	{
 	if (toLookInside.size() < toFind.size())
 		return false;
-		
+
 	return toLookInside.substr(0, toFind.size()) == toFind;
 	}
 
@@ -134,7 +134,7 @@ bool endsWith(const std::string& toLookInside, const std::string& toFind)
 	{
 	if (toLookInside.size() < toFind.size())
 		return false;
-		
+
 	return toLookInside.substr(toLookInside.size() - toFind.size()) == toFind;
 	}
 

@@ -28,7 +28,7 @@ PolymorphicSharedPtr<CallbackScheduler> fourLookupHashTableDeletionCallbackSched
 template<class key_type, class value_type>
 class UnresizableFourLookupHashTable {
 	key_type* mKeys;
-	
+
 	value_type* mValues;
 
 	size_t mBucketCount;
@@ -41,7 +41,7 @@ public:
 	const static long PRIME_3 = 19;
 	const static long PRIME_4 = 503;
 
-	UnresizableFourLookupHashTable(long inCount) : 
+	UnresizableFourLookupHashTable(long inCount) :
 			mBucketCount(inCount),
 			mElementCount(0)
 		{
@@ -135,7 +135,7 @@ public:
 			return s3;
 		if (mKeys[s3] == 0)
 			return -1;
-		
+
 		size_t s4 = fourthSlotFor(k);
 		if (mKeys[s4] == k)
 			return s4;
@@ -186,7 +186,7 @@ public:
 			{
 			mValues[s3] = v;
 			fullMemoryBarrier();
-			
+
 			mKeys[s3] = k;
 			mElementCount++;
 			return true;
@@ -197,7 +197,7 @@ public:
 			{
 			mValues[s4] = v;
 			fullMemoryBarrier();
-			
+
 			mKeys[s4] = k;
 			mElementCount++;
 			return true;
@@ -222,7 +222,7 @@ template<>
 class FourLookupHashTableMutexType<false> {
 public:
 	class mutex_type {};
-	
+
 	class lock_type { public: lock_type(mutex_type&) {} };
 };
 
@@ -232,7 +232,7 @@ public:
 template<class key_type, class value_type, bool threadsafe>
 class FourLookupHashTable {
 public:
-	FourLookupHashTable(const FourLookupHashTable& in) : 
+	FourLookupHashTable(const FourLookupHashTable& in) :
 			mTable(new UnresizableFourLookupHashTable<key_type, value_type>(in.bucketCount()))
 		{
 		lassert(in.mTable->hashInto(*mTable));
@@ -249,7 +249,7 @@ public:
 		return *this;
 		}
 
-	FourLookupHashTable() : 
+	FourLookupHashTable() :
 			mTable(new UnresizableFourLookupHashTable<key_type, value_type>(11))
 		{
 		}
@@ -262,21 +262,21 @@ public:
 	bool contains(key_type key) const
 		{
 		lassert(key != 0);
-		
+
 		return mTable->contains(key);
 		}
 
 	const value_type& getValue(key_type key) const
 		{
 		lassert(key != 0);
-		
+
 		return mTable->getValue(key);
 		}
 
 	value_type& getValue(key_type key)
 		{
 		lassert(key != 0);
-		
+
 		return mTable->getValue(key);
 		}
 
@@ -307,7 +307,7 @@ public:
 	bool insert(key_type key, value_type value)
 		{
 		lassert(key != 0);
-		
+
 		typename FourLookupHashTableMutexType<threadsafe>::lock_type lock(mMutex);
 
 		if (contains(key))
@@ -357,7 +357,7 @@ private:
 			62877277,69165005,76081505,83689655,92058621,101264483,111390931,122530025,
 			134783027,148261329,163087461,179396207,197335827,217069409,238776349,
 			262653983,288919381,317811319,349592451,384551697,423006867,465307553,511838309,
-			563022139,619324353,681256789,749382467,824320713,906752785,997428063,1097170869 
+			563022139,619324353,681256789,749382467,824320713,906752785,997428063,1097170869
 			};
 
 		long ix = 0;
@@ -369,7 +369,7 @@ private:
 
 	bool tryToReplaceTableWithSize(long newSize, key_type key, value_type value)
 		{
-		UnresizableFourLookupHashTable<key_type, value_type>* newTable = 
+		UnresizableFourLookupHashTable<key_type, value_type>* newTable =
 			new UnresizableFourLookupHashTable<key_type, value_type>(newSize);
 
 		if (!mTable->hashInto(*newTable) || !newTable->insert(key, value))
@@ -380,7 +380,7 @@ private:
 
 		UnresizableFourLookupHashTable<key_type, value_type>* oldTable = mTable;
 		mTable = newTable;
-		
+
 		if (threadsafe)
 			//schedule this to be deleted on a background thread at some point in the future
 			fourLookupHashTableDeletionCallbackScheduler()->schedule(

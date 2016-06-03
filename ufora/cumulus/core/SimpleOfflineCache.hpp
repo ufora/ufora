@@ -51,17 +51,17 @@ public:
 		boost::recursive_mutex::scoped_lock lock(mMutex);
 
 		mPageTouchSequence.set(page, mEventId++);
-		
-		PolymorphicSharedPtr<NoncontiguousByteBlock> stringData = 
+
+		PolymorphicSharedPtr<NoncontiguousByteBlock> stringData =
 			SerializedObjectFlattener::flattenOnce(inData);
 
 		if (mData.find(page) != mData.end())
 			mBytes -= mData[page]->totalByteCount();
-		
+
 		mData[page] = stringData;
-		
+
 		mBytes += mData[page]->totalByteCount();
-		
+
 		while (mBytes >= mMaxBytes)
 			{
 			//drop oldest pages first, by checking in mPageTouchSequence
@@ -75,7 +75,7 @@ public:
 			drop(dropCandidate);
 			}
 		}
-	
+
 	//checks whether a value for the given cache key definitely already
 	//exists.
 	bool	alreadyExists(const Fora::PageId& inPage)
@@ -87,7 +87,7 @@ public:
 
 		return mData.find(inPage) != mData.end();
 		}
-	
+
 	//return the data if we have it
 	PolymorphicSharedPtr<SerializedObject> loadIfExists(const Fora::PageId& page)
 		{
@@ -98,7 +98,7 @@ public:
 			mPageTouchSequence.set(page, mEventId++);
 
 			mTotalReloads += mData[page]->totalByteCount();
-			
+
 			return SerializedObjectInflater::inflateOnce(mData[page]);
 			}
 		return PolymorphicSharedPtr<SerializedObject>();
@@ -107,11 +107,11 @@ public:
 	static uint64_t 	totalBytesStatic(SimpleOfflineCache::pointer_type& self)
 		{
 		return self->totalBytes();
-		}				
+		}
 	static uint64_t 	totalBytesLoadedStatic(SimpleOfflineCache::pointer_type& self)
 		{
 		return self->totalBytesLoaded();
-		}				
+		}
 
 	uint64_t 	totalBytes(void)
 		{
@@ -122,7 +122,7 @@ public:
 		return mTotalReloads;
 		}
 	static void dropCacheTermStatic(
-						SimpleOfflineCache::pointer_type& self, 
+						SimpleOfflineCache::pointer_type& self,
 						const Fora::PageId& source
 						)
 		{
@@ -132,22 +132,22 @@ public:
 	void drop(const Fora::PageId& page)
 		{
 		boost::recursive_mutex::scoped_lock lock(mMutex);
-		
+
 		mPageTouchSequence.discard(page);
 
 		if (!mData.size())
 			return;
-		
+
 		if (mData.find(page) != mData.end())
 			{
 			LOG_INFO << "SimpleOfflineCache dropping " << prettyPrintString(page);
 
 			onPageDropped().broadcast(page);
-			
+
 			mItemsDropped++;
 
 			mBytesDropped += mData[page]->totalByteCount();
-			
+
 			mBytes -= mData[page]->totalByteCount();
 			mData.erase(page);
 			}
@@ -168,7 +168,7 @@ public:
 		{
 		return mItemsDropped;
 		}
-	
+
 private:
 	boost::recursive_mutex mMutex;
 

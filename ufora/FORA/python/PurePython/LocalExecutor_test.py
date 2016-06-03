@@ -39,6 +39,8 @@ import ufora.FORA.python.PurePython.TrustRegionTests as TrustRegionTests
 import ufora.FORA.python.PurePython.StringTestCases as StringTestCases
 import ufora.FORA.python.PurePython.ClassTestCases as ClassTestCases
 import ufora.FORA.python.PurePython.TupleTestCases as TupleTestCases
+import ufora.FORA.python.PurePython.RandomTestCases as RandomTestCases
+
 
 import unittest
 
@@ -65,7 +67,8 @@ class TestLocalExecutor(
         StringTestCases.StringTestCases,
         PrimitiveTestCases.PrimitiveTestCases,
         ClassTestCases.ClassTestCases,
-        TupleTestCases.TupleTestCases
+        TupleTestCases.TupleTestCases,
+        RandomTestCases.RandomTestCases
         ):
     @classmethod
     def setUpClass(cls):

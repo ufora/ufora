@@ -17,7 +17,7 @@ from ufora.util.DefaultDict import DefaultDict
 class TwoWaySetMap:
     """a multimap - tracks a map from keys to multiple values and
     allows users to query the reverse map"""
-    
+
     def __init__(self):
         self.keyVal = DefaultDict(lambda key: set())
         self.valKeys = DefaultDict(lambda key: set())
@@ -34,7 +34,7 @@ class TwoWaySetMap:
         self.keyVal[key] = vals
         if not self.keyVal[key]:
             del self.keyVal[key]
-        
+
     def add(self, key, value):
         self.keyVal[key].add(value)
         self.valKeys[value].add(key)
@@ -67,7 +67,7 @@ class TwoWaySetMap:
                 del self.valKeys[val]
     def dropKey(self, key):
         del self[key]
-    
+
     def hasKey(self, key):
         return self.keyVal.has_key(key)
     def hasVal(self, val):
@@ -82,7 +82,7 @@ class TwoWaySetMap:
             return self.keyVal[key]
         else:
             return set()
-    
+
     def __contains__(self, k):
         return k in self.keyVal
     def keys(self):

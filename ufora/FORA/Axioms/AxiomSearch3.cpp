@@ -23,7 +23,7 @@ Nullable<uword_t> lookupAgainstRule(
 						const JudgmentOnValueTuple& vals,
 						const JudgmentOnValueTreeBinaryRule& rule,
 						const std::set<uword_t>& commonSubIndices,
-						long indexIfTrue, 
+						long indexIfTrue,
 						long indexIfFalse
 						)
 	{
@@ -43,7 +43,7 @@ Nullable<uword_t> lookupAgainstRule(
 
 	Nullable<uword_t> fromFalse = Fora::searchJOVTree(vals, indexIfFalse);
 
-	if (!fromFalse || fromFalse != fromTrue || 
+	if (!fromFalse || fromFalse != fromTrue ||
 				commonSubIndices.find(*fromFalse) == commonSubIndices.end())
 		return null();
 

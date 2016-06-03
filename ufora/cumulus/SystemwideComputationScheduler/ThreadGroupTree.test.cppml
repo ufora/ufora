@@ -1,0 +1,111 @@
+/***************************************************************************
+    Copyright 2015 Ufora Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+#include "ThreadGroupTree.hppml"
+#include "../ComputationDefinition.hppml"
+#include "../../core/UnitTest.hpp"
+
+using namespace Cumulus;
+using namespace Fora::Interpreter;
+
+namespace {
+
+ComputationId root()
+	{
+	return ComputationId::Root(hash_type(1));
+	}
+
+ComputationId split(ComputationId comp, long ix)
+	{
+	return ComputationId::CreateIdForSplit(
+		ComputationDefinition::Split(comp, PausedComputation()),
+		hashValue(comp) + hash_type(ix),
+		ix
+		);
+	}
+
+ComputationId split(ImmutableTreeVector<int> ix)
+	{
+	ComputationId res = root();
+	for (auto i: ix)
+		res = split(res, i);
+	return res;
+	}
+
+Nullable<ThreadGroup> containingThreadBruteForce(ThreadGroupTree& tree, ThreadGroup group)
+	{
+	Nullable<ThreadGroup> res;
+
+	for (auto g: tree.groups())
+		if (g.contains(group))
+			{
+			if (!res || res->contains(g))
+				res = g;
+			}
+
+	return res;
+	}
+
+}
+
+BOOST_AUTO_TEST_CASE( test_cumulus_ThreadGroupTree )
+{
+	std::vector<ThreadGroup> groups;
+	groups.push_back(ThreadGroup::groupFor(root()));
+
+	for (int k = 0; k < 2; k++)
+		{
+		groups.push_back(ThreadGroup::groupFor(split(emptyTreeVec() + k)));
+
+		for (int j = 0; j < 2; j++)
+			{
+			groups.push_back(ThreadGroup::groupFor(split(emptyTreeVec() + k + j)));
+			for (int i = 0; i < 2; i++)
+				{
+				groups.push_back(ThreadGroup::groupFor(split(emptyTreeVec() + k + j + i)));
+				}
+			}
+		}
+
+	std::vector<long> include;
+	include.resize(groups.size());
+
+	while (include.back() < 2)
+		{
+		ThreadGroupTree tree;
+
+		for (int ix = 0; ix < include.size(); ix++)
+			if (include[ix])
+				tree.insert(groups[ix]);
+
+		for (auto g: groups)
+			lassert_dump(
+				tree.containingThread(g) == containingThreadBruteForce(tree, g),
+				"For " + g.prefix() + ": " +
+				(tree.containingThread(g) ? tree.containingThread(g)->prefix() : std::string("<null>")) + " vs. "
+					+ (containingThreadBruteForce(tree, g) ? containingThreadBruteForce(tree, g)->prefix() : std::string("<null>"))
+				);
+
+		include[0]++;
+		for (int ix = 0; ix + 1 < include.size(); ix++)
+			if (include[ix] > 1)
+				{
+				include[ix+1]++;
+				include[ix] = 0;
+				}
+			else
+				break;
+		}
+}

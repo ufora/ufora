@@ -34,10 +34,10 @@ public:
 /*****************
 Channel
 
-Allows you to read and write messages. Throws "ChannelDisconnected" when the channel is known 
-to be disconnected. Channels are required to block (holding onto received messages) until 
+Allows you to read and write messages. Throws "ChannelDisconnected" when the channel is known
+to be disconnected. Channels are required to block (holding onto received messages) until
 their handlers are set.
- 
+
 ******************/
 
 
@@ -58,7 +58,7 @@ public:
 	typedef boost::function0<void> on_disconnected_handler_type;
 
 	virtual ~Channel() {}
-	
+
 	virtual void write(const message_out_type& in) = 0;
 
 	virtual void disconnect() = 0;

@@ -39,7 +39,7 @@ class MultimachineLinearRegressionSimulationTest(unittest.TestCase):
                 .replace("__rows__", str(rowCount))
             )
 
-    def largeDatasetBigLMTest(self, mbOfData, columns, threads, machineCount, ratio = .5):
+    def largeDatasetBigLMTest(self, mbOfData, columns, threads, machineCount, ratio = .4):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
 
         t0 = time.time()
@@ -62,7 +62,7 @@ class MultimachineLinearRegressionSimulationTest(unittest.TestCase):
             dfResponse, dfPredictors = result.asResult.result
 
             regressionScript = """
-                    let model = math.regression.LinearRegression(dfPredictors, dfResponse,coefficientsOnly:true);
+                    let model = math.regression.LinearRegression(dfPredictors, dfResponse,coefficientsOnly:true, splitLimit: 50000);
                     let coefficients = model.coefficients();
                     coefficients[0]
                     """
@@ -85,7 +85,7 @@ class MultimachineLinearRegressionSimulationTest(unittest.TestCase):
             regressionScript2 = """
                     let newCol = dfPredictors.rowApply(fun(row) { math.sin(row[0] ) })
                     let newCol2 = dfPredictors.rowApply(fun(row) { math.sin(row[0] + 1) })
-                    let model2 = math.regression.LinearRegression(dfPredictors.addColumn(newCol).addColumn(newCol2), dfResponse, coefficientsOnly:true)
+                    let model2 = math.regression.LinearRegression(dfPredictors.addColumn(newCol).addColumn(newCol2), dfResponse, coefficientsOnly:true, splitLimit: 50000)
                     model2.coefficients()[0]
                     """
 

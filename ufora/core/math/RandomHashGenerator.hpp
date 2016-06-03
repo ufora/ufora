@@ -22,7 +22,7 @@ class RandomHashGenerator {
 public:
 	RandomHashGenerator();
 	RandomHashGenerator(hash_type seed);
-	
+
 	hash_type generateRandomHash();
 
 	static RandomHashGenerator& singleton();

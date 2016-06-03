@@ -179,16 +179,16 @@ public:
 			std::vector<serialized_worker_to_worker_channel_type::pointer_type> serializedChannels1;
 			serializedChannels1.reserve(boost::python::len(channels));
 
-			PolymorphicSharedPtr<CallbackScheduler> subScheduler = 
+			PolymorphicSharedPtr<CallbackScheduler> subScheduler =
 				inCallbackScheduler->getFactory()->createScheduler("SocketConnectionTo_" + prettyPrintString(machine));
 
 			for (int i = 0, len = boost::python::len(channels); i < len; i++)
 				{
-				string_channel_ptr stringChannel = 
+				string_channel_ptr stringChannel =
 					boost::python::extract<string_channel_ptr>(channels[i])();
 
 				stringChannel->setCallbackScheduler(subScheduler);
-				
+
 				serialized_worker_to_worker_channel_type::pointer_type channelPtr(
 					new serialized_worker_to_worker_channel_type(
 						subScheduler,
@@ -280,7 +280,7 @@ public:
 					);
 
 			worker->addCumulusClient(
-				clientId, 
+				clientId,
 				worker_to_client_channel_ptr_type(multiChannel)
 				);
 			}
@@ -350,50 +350,50 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
+
 			class_<PolymorphicSharedPtr<CumulusWorker> >("CumulusWorker", no_init)
 				.def("__init__", make_constructor(constructCumulusWorker))
 				.def("__init__", make_constructor(constructCumulusWorker2))
-				.def("startComputations", 
+				.def("startComputations",
 						macro_polymorphicSharedPtrFuncFromMemberFunc(CumulusWorker::startComputations)
 						)
 				.def("teardown", teardown)
 				.def("addMachine", addMachine)
 				.def("dropMachine", dropMachine)
 				.def("addCumulusClient", addCumulusClient)
-				.def("dropCumulusClient", 
+				.def("dropCumulusClient",
 						macro_polymorphicSharedPtrFuncFromMemberFunc(CumulusWorker::dropCumulusClient)
 						)
-				.def("getExternalDatasetRequestChannel", 
+				.def("getExternalDatasetRequestChannel",
 						getExternalDatasetRequestChannel
 						)
-				.def("getSystemwidePageRefcountTracker", 
+				.def("getSystemwidePageRefcountTracker",
 						macro_polymorphicSharedPtrFuncFromMemberFunc(
 							CumulusWorker::getSystemwidePageRefcountTracker
 							)
 						)
-				.def("triggerRegimeChange", 
+				.def("triggerRegimeChange",
 						macro_polymorphicSharedPtrFuncFromMemberFunc(
 							CumulusWorker::triggerRegimeChange
 							)
 						)
 				.def("getRegimeHash", &getRegimeHash)
-				.def("hasEstablishedHandshakeWithExistingMachines", 
+				.def("hasEstablishedHandshakeWithExistingMachines",
 						macro_polymorphicSharedPtrFuncFromMemberFunc(
 							CumulusWorker::hasEstablishedHandshakeWithExistingMachines
 							)
 						)
-				.def("currentlyActiveWorkerThreads", 
+				.def("currentlyActiveWorkerThreads",
 						macro_polymorphicSharedPtrFuncFromMemberFunc(
 							CumulusWorker::currentlyActiveWorkerThreads
 							)
 						)
-				.def("getLocalScheduler", 
+				.def("getLocalScheduler",
 						macro_polymorphicSharedPtrFuncFromMemberFunc(
 							CumulusWorker::getLocalScheduler
 							)
 						)
-				.def("dumpStateToLog", 
+				.def("dumpStateToLog",
 						macro_polymorphicSharedPtrFuncFromMemberFunc(
 							CumulusWorker::dumpStateToLog
 							)

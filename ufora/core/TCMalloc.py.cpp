@@ -38,7 +38,7 @@ public:
 			{
 			return "TCMalloc";
 			}
-		
+
 		static bool tcMallocIsEnabled()
 			{
 			return true;
@@ -50,7 +50,7 @@ public:
 
 			if (MallocExtension::instance()->GetNumericProperty(inName.c_str(), &out))
 				return boost::python::object(out);
-			
+
 			return boost::python::object();
 			}
 
@@ -120,10 +120,10 @@ public:
 
 			#ifdef CPPML_TRACK_INSTANCE_COUNTS
 
-			std::map<std::string, unsigned long> counts = 
+			std::map<std::string, unsigned long> counts =
 				CPPML::AllInstanceCounts::singleton().getCounts();
 
-			std::map<std::string, unsigned long> byteCounts = 
+			std::map<std::string, unsigned long> byteCounts =
 				CPPML::AllInstanceCounts::singleton().getByteCounts();
 
 			for (auto it = counts.begin(); it != counts.end(); ++it)
@@ -178,11 +178,11 @@ public:
 
 			return ct / (curClock() - t0);
 			}
-		
+
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
+
 			def("getMemBenchmark", &getMemBenchmark);
 			def("getLoopBenchmark", &getLoopBenchmark);
 			def("getClockBenchmark", &getClockBenchmark);

@@ -56,7 +56,7 @@ void* bsa_malloc(size_t size)
 
 	if (!tr)
 		onAllocationFailed();
-	
+
 	return tr;
 	}
 

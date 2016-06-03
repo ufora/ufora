@@ -35,7 +35,7 @@ public:
 		JudgmentOnValue inElementJOV,
 		hash_type hash
 		);
-	
+
 	~MutableVectorHandle();
 
 	size_t size() const { return mSize; }
@@ -59,7 +59,7 @@ public:
 	void setItem(int index, const ImplValContainer& inValue);
 
 	void incrementRefcount();
-	
+
 	bool decrementRefcount(); //returns 'true' if we destroyed the object
 
 	//swap the data owned by these two handles. The two handles must have the same identity,
@@ -76,7 +76,7 @@ private:
 	size_t mSize;			//how many elements are populated
 
 	uint8_t* mRawDataPtr;	//null only if the vector is empty
-	
+
 	MemoryPool* mOwningMemoryPool;	//who owns this MutableVectorHandle?
 
 	JudgmentOnValue mElementJOV;	 	//A judgment on the elements in the vector, which must

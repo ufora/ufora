@@ -28,7 +28,7 @@ ScopedPythonTracer::ScopedPythonTracer(boost::python::object inObject)
 ScopedPythonTracer::~ScopedPythonTracer()
 	{
 	boost::recursive_mutex::scoped_lock lock(sMutex);
-	
+
 	double finTime = curClock();
 
 	double totalTimeWithin = finTime - mCreationTime;
@@ -58,7 +58,7 @@ boost::python::object ScopedPythonTracer::extractTimings(void)
 boost::recursive_mutex ScopedPythonTracer::sMutex;
 
 std::map<
-	boost::python::object, 
+	boost::python::object,
 	StatisticsAccumulator<double, double>,
 	ComparePythonObjectsByID
 	> ScopedPythonTracer::sObjectEntrytimes;

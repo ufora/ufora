@@ -30,14 +30,14 @@ typedef boost::python::list py_list;
 typedef unsigned long id_type;
 typedef std::pair<id_type, id_type> class_id_type;
 
-typedef enum { 
-	attrKey, 
-	attrMutable, 
-	attrProperty, 
-	attrFunction, 
-	attrNotCached, 
-	attrClassAttribute, 
-	attrUnknown 
+typedef enum {
+	attrKey,
+	attrMutable,
+	attrProperty,
+	attrFunction,
+	attrNotCached,
+	attrClassAttribute,
+	attrUnknown
 } attr_type;
 
 class Graph;

@@ -33,8 +33,8 @@ namespace Abi {
 
 class VectorHandleTestFixture {
 public:
-	VectorHandleTestFixture() : 
-			vdm(	
+	VectorHandleTestFixture() :
+			vdm(
 				new VectorDataManager(
 					CallbackScheduler::singletonForTesting(),
 					10*1024*1024

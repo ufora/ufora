@@ -29,11 +29,11 @@ def test(listOnly = False, testFilter = None):
 
 class LocalPerf(PerfTestBase.PerfTestBase):
     def test(self, listOnly = False, testFilter = None):
-        perfTestCases, metaDataForPerfTests = self.getPerfTestsInLangTests()        
+        perfTestCases, metaDataForPerfTests = self.getPerfTestsInLangTests()
 
         numPassed = 0
         numFailed = 0
-        failures = []        
+        failures = []
 
         t0 = time.time()
         for filename, perfTestCasesInModule in perfTestCases.iteritems():
@@ -44,16 +44,16 @@ class LocalPerf(PerfTestBase.PerfTestBase):
                         logging.info("%s:%s" % (filename, testCase))
                         print "%s:%s" % (filename, testCase)
                         continue
-                
+
                     try:
                         logging.info("measuring perf for %s:%s" % (filename, testCase))
                         print "measuring perf for %s:%s" % (filename, testCase)
 
                         filenameAsModuleName = os.path.splitext(filename)[0]
-                    
+
                         res = self.validatePerfForModuleMember(
                             "LangTestPerf." + filenameAsModuleName + "." + testCase,
-                            filename, testCase, 
+                            filename, testCase,
                             metaDataForPerfTests[(filename, testCase)]
                             )
                         numPassed += 1
@@ -67,7 +67,7 @@ class LocalPerf(PerfTestBase.PerfTestBase):
             return 0
 
         print "numPassed = %s, numFailed = %s, failures = %s\nbaseTiming = %s" % (
-            numPassed, numFailed, failures, self.baseTiming), 
+            numPassed, numFailed, failures, self.baseTiming),
         print " in ", time.time() - t0
 
         time.sleep(0.5)
@@ -85,7 +85,7 @@ class LocalPerf(PerfTestBase.PerfTestBase):
             if Symbol_perf in foraMemberMetadata.outer:
                 return True
 
-        return False            
+        return False
 
     def getPerfTestsInLangTests(self):
         perfTestCases = dict()
@@ -123,5 +123,5 @@ if __name__ == "__main__":
             logging.critical(traceback.format_exc())
             result = 1
 
-        
+
 

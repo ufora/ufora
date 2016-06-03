@@ -54,16 +54,16 @@ public:
 
 		using namespace TypedNativeExpressionHelpers;
 
-		auto lookupFun = 
+		auto lookupFun =
 				makeTypedNativeLibraryFunction(
 					&TypedFora::Abi::FastJORCoverageTable::staticLookup
 					);
 
-		return 
+		return
 			let(slot, lookupTable().slotFor(pointerAsWord),
-				if_(slot == (sword_t)-1, 
+				if_(slot == (sword_t)-1,
 					lookupFun(
-						TypedNativeExpression<TypedFora::Abi::FastJORCoverageTable*>(mThis), 
+						TypedNativeExpression<TypedFora::Abi::FastJORCoverageTable*>(mThis),
 						jov
 						),
 					lookupTable().valueForSlot(slot).forceCast<JudgmentOnValue>(false)

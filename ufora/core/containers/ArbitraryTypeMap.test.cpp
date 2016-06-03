@@ -26,7 +26,7 @@ public:
 		instanceCount++;
 		}
 
-	Type(const Type& in) : 
+	Type(const Type& in) :
 			val(in.val)
 		{
 		instanceCount++;
@@ -87,7 +87,7 @@ BOOST_AUTO_TEST_CASE( test_ArbitraryTypeMap_copy )
 	m2 = m1;
 
 	BOOST_CHECK_EQUAL(Type<int>::instanceCount, 2);
-	
+
 	m1.get<Type<int> >().val = 20;
 
 	BOOST_CHECK_EQUAL(m1.get<Type<int> >().val, 20);

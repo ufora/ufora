@@ -16,7 +16,7 @@
 #include "OQueueProtocol.hpp"
 
 
-OQueueProtocol::OQueueProtocol(Queue<std::string>& inQueue) : 
+OQueueProtocol::OQueueProtocol(Queue<std::string>& inQueue) :
 	mQueue(inQueue),
 	mPosition(0)
 	{

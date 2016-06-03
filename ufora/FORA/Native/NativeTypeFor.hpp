@@ -69,8 +69,8 @@ class NativeTypeForImpl<std::pair<T1, T2> > {
 public:
 	static NativeType get()
 		{
-		return 
-			NativeType::Composite(NativeTypeForImpl<T1>::get()) + 
+		return
+			NativeType::Composite(NativeTypeForImpl<T1>::get()) +
 			NativeType::Composite(NativeTypeForImpl<T2>::get())
 			;
 		}
@@ -145,11 +145,11 @@ public:
 	static NativeType get()
 		{
 		static_assert(sizeof(hash_type) == 5 * sizeof(uint32_t), "hash type layout will be wrong");
-		
-		return NativeType::Composite(NativeType::uint32()) + 
-			NativeType::Composite(NativeType::uint32()) + 
-			NativeType::Composite(NativeType::uint32()) + 
-			NativeType::Composite(NativeType::uint32()) + 
+
+		return NativeType::Composite(NativeType::uint32()) +
+			NativeType::Composite(NativeType::uint32()) +
+			NativeType::Composite(NativeType::uint32()) +
+			NativeType::Composite(NativeType::uint32()) +
 			NativeType::Composite(NativeType::uint32())
 			;
 		}
@@ -180,8 +180,8 @@ macro_defineNativeTypeForImpl(long, NativeType::Integer(64,true));
 macro_defineNativeTypeForImpl(unsigned long, NativeType::Integer(64,false));
 #endif
 
-namespace Fora { 
-	class Nothing; 
+namespace Fora {
+	class Nothing;
 	class Empty;
 };
 

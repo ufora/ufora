@@ -34,9 +34,9 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
 
-			boost::python::object cls = 
+
+			boost::python::object cls =
 				FORAPythonUtil::exposeValueLikeCppmlType<PythonIoTaskResponse>()
 					.class_()
 					;

@@ -22,7 +22,7 @@
 //model for a value that gets initialized (once) by some
 //background process. Clients who try to access it will block if
 //it hasn't been initialized. If it has been invalidated, any
-//calls to get() that are pending or made in the future will throw an 
+//calls to get() that are pending or made in the future will throw an
 //exception. getNonblocking is unchanged since it makes no guarantees.
 
 template<class T>
@@ -53,7 +53,7 @@ public:
 
 		mCondition.notify_all();
 		}
-	
+
 	//set the value. it must never have been set before.
 	void set(const T& in)
 		{

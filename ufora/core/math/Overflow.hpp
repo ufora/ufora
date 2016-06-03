@@ -42,7 +42,7 @@ template <class T> class Overflow
 			{
 			return std::numeric_limits<T>::max() / left > right;
 			}
-		
+
 		static T safeMul(T left, T right)
 			{
 			lassert(checkMul(left, right));

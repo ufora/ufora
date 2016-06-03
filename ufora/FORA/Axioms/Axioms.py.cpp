@@ -45,13 +45,13 @@ public:
                 return boost::python::object();
             return boost::python::object(*axiom);
             }
-        
+
         static size_t AxiomsGetAxiomListSize(PolymorphicSharedPtr<Axioms>& a)
             {
             return a->interpreterAxioms().size();
             }
-        
-        static PolymorphicSharedPtr<AxiomGroup> 
+
+        static PolymorphicSharedPtr<AxiomGroup>
         AxiomsGetAxiomGroupByIndex(PolymorphicSharedPtr<Axioms>& a, int64_t ix)
             {
             if (ix < 0 || ix >= a->interpreterAxioms().size())
@@ -59,7 +59,7 @@ public:
             return a->interpreterAxioms()[ix].second;
             }
 
-        static boost::python::object 
+        static boost::python::object
         axiomSearchLinear(PolymorphicSharedPtr<Axioms>& a, const JudgmentOnValueTuple& s)
             {
             Nullable<uword_t> index = a->axiomSearchLinear(s);
@@ -68,7 +68,7 @@ public:
             return boost::python::object(*index);
             }
 
-        static boost::python::object 
+        static boost::python::object
         axiomSearchTree(PolymorphicSharedPtr<Axioms>& a, const JudgmentOnValueTuple& s)
             {
             Nullable<uword_t> index = a->axiomSearchTree(s);
@@ -79,7 +79,7 @@ public:
 
         static boost::python::object
         AxiomsResolveAxiomDirectly(
-                    PolymorphicSharedPtr<Axioms>& axioms, 
+                    PolymorphicSharedPtr<Axioms>& axioms,
                     PolymorphicSharedPtr<TypedFora::Compiler>& compiler,
                     const JOVT& jovt
                     )
@@ -93,7 +93,7 @@ public:
                     )
             {
             pair<std::string, std::string> code = axioms->getCppWrapperCode();
-            
+
             return boost::python::make_tuple(code.first, code.second);
             }
 

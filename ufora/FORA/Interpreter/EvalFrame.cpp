@@ -50,7 +50,7 @@ EvalFrame* EvalFrame::allocate(
 	if (!inWasEverMachineCodeFrame)
 		newEvalFramePtr->wasEverMachineCodeFrame = 0;
 	else
-		newEvalFramePtr->wasEverMachineCodeFrame = 
+		newEvalFramePtr->wasEverMachineCodeFrame =
 			new pair<TypedFora::MetadataInstruction, long>(
 				TypedFora::MetadataInstruction(*inWasEverMachineCodeFrame),
 				0
@@ -65,14 +65,6 @@ void EvalFrame::setInstructionPtr(InstructionPtr newInstructionPtr)
 
 	if (wasEverMachineCodeFrame)
 		wasEverMachineCodeFrame->second++;
-	}
-
-void EvalFrame::zeroOutUnusedContinuationArgs()
-	{
-	ImplVal nothing;
-
-	for (auto index: instructionPtr->getVariablesUnusedInContinuations())
-		(*mEvalFrameArgList)[index] = nothing;
 	}
 
 void EvalFrame::free(EvalFrame* frame, MemBlockAllocator& allocator)

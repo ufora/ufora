@@ -101,7 +101,7 @@ public:
 
 
 template<class T>
-boost::function1<void, PolymorphicSharedWeakPtr<T> > 
+boost::function1<void, PolymorphicSharedWeakPtr<T> >
 memberFunctionToWeakPtrFunction(void (T::* in)())
 	{
 	using namespace boost;
@@ -114,7 +114,7 @@ memberFunctionToWeakPtrFunction(void (T::* in)())
 	}
 
 template<class T, class A1>
-boost::function2<void, PolymorphicSharedWeakPtr<T>, A1> 
+boost::function2<void, PolymorphicSharedWeakPtr<T>, A1>
 memberFunctionToWeakPtrFunction(void (T::* in)(A1))
 	{
 	using namespace boost;
@@ -128,7 +128,7 @@ memberFunctionToWeakPtrFunction(void (T::* in)(A1))
 	}
 
 template<class T, class A1, class A2>
-boost::function3<void, PolymorphicSharedWeakPtr<T>, A1, A2> 
+boost::function3<void, PolymorphicSharedWeakPtr<T>, A1, A2>
 memberFunctionToWeakPtrFunction(void (T::* in)(A1, A2))
 	{
 	using namespace boost;
@@ -143,7 +143,7 @@ memberFunctionToWeakPtrFunction(void (T::* in)(A1, A2))
 	}
 
 template<class T, class A1, class A2, class A3>
-boost::function4<void, PolymorphicSharedWeakPtr<T>, A1, A2, A3> 
+boost::function4<void, PolymorphicSharedWeakPtr<T>, A1, A2, A3>
 memberFunctionToWeakPtrFunction(void (T::* in)(A1, A2, A3))
 	{
 	using namespace boost;
@@ -159,7 +159,7 @@ memberFunctionToWeakPtrFunction(void (T::* in)(A1, A2, A3))
 	}
 
 template<class T, class A1, class A2, class A3, class A4>
-boost::function5<void, PolymorphicSharedWeakPtr<T>, A1, A2, A3, A4> 
+boost::function5<void, PolymorphicSharedWeakPtr<T>, A1, A2, A3, A4>
 memberFunctionToWeakPtrFunction(void (T::* in)(A1, A2, A3, A4))
 	{
 	using namespace boost;
@@ -176,7 +176,7 @@ memberFunctionToWeakPtrFunction(void (T::* in)(A1, A2, A3, A4))
 	}
 
 template<class T, class A1, class A2, class A3, class A4, class A5>
-boost::function6<void, PolymorphicSharedWeakPtr<T>, A1, A2, A3, A4, A5> 
+boost::function6<void, PolymorphicSharedWeakPtr<T>, A1, A2, A3, A4, A5>
 memberFunctionToWeakPtrFunction(void (T::* in)(A1, A2, A3, A4, A5))
 	{
 	using namespace boost;
@@ -307,7 +307,7 @@ public:
 
 
 template<class T>
-boost::function1<bool, PolymorphicSharedWeakPtr<T> > 
+boost::function1<bool, PolymorphicSharedWeakPtr<T> >
 memberFunctionToWeakPtrFunctionOrReturnFalse(void (T::* in)())
 	{
 	using namespace boost;
@@ -320,7 +320,7 @@ memberFunctionToWeakPtrFunctionOrReturnFalse(void (T::* in)())
 	}
 
 template<class T, class A1>
-boost::function2<bool, PolymorphicSharedWeakPtr<T>, A1> 
+boost::function2<bool, PolymorphicSharedWeakPtr<T>, A1>
 memberFunctionToWeakPtrFunctionOrReturnFalse(void (T::* in)(A1))
 	{
 	using namespace boost;
@@ -334,7 +334,7 @@ memberFunctionToWeakPtrFunctionOrReturnFalse(void (T::* in)(A1))
 	}
 
 template<class T, class A1, class A2>
-boost::function3<bool, PolymorphicSharedWeakPtr<T>, A1, A2> 
+boost::function3<bool, PolymorphicSharedWeakPtr<T>, A1, A2>
 memberFunctionToWeakPtrFunctionOrReturnFalse(void (T::* in)(A1, A2))
 	{
 	using namespace boost;
@@ -349,7 +349,7 @@ memberFunctionToWeakPtrFunctionOrReturnFalse(void (T::* in)(A1, A2))
 	}
 
 template<class T, class A1, class A2, class A3>
-boost::function4<bool, PolymorphicSharedWeakPtr<T>, A1, A2, A3> 
+boost::function4<bool, PolymorphicSharedWeakPtr<T>, A1, A2, A3>
 memberFunctionToWeakPtrFunctionOrReturnFalse(void (T::* in)(A1, A2, A3))
 	{
 	using namespace boost;
@@ -365,7 +365,7 @@ memberFunctionToWeakPtrFunctionOrReturnFalse(void (T::* in)(A1, A2, A3))
 	}
 
 template<class T, class A1, class A2, class A3, class A4>
-boost::function5<bool, PolymorphicSharedWeakPtr<T>, A1, A2, A3, A4> 
+boost::function5<bool, PolymorphicSharedWeakPtr<T>, A1, A2, A3, A4>
 memberFunctionToWeakPtrFunctionOrReturnFalse(void (T::* in)(A1, A2, A3, A4))
 	{
 	using namespace boost;
@@ -382,7 +382,7 @@ memberFunctionToWeakPtrFunctionOrReturnFalse(void (T::* in)(A1, A2, A3, A4))
 	}
 
 template<class T, class A1, class A2, class A3, class A4, class A5>
-boost::function6<bool, PolymorphicSharedWeakPtr<T>, A1, A2, A3, A4, A5> 
+boost::function6<bool, PolymorphicSharedWeakPtr<T>, A1, A2, A3, A4, A5>
 memberFunctionToWeakPtrFunctionOrReturnFalse(void (T::* in)(A1, A2, A3, A4, A5))
 	{
 	using namespace boost;

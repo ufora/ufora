@@ -15,11 +15,11 @@
 ****************************************************************************/
 #include "SimpleMemoryAllocator.hpp"
 
-SimpleMemoryAllocator::SimpleMemoryAllocator(uword_t totalSize, uword_t inAlignment) : 
+SimpleMemoryAllocator::SimpleMemoryAllocator(uword_t totalSize, uword_t inAlignment) :
 		mAlignment(inAlignment),
 		mTotalSize(totalSize)
 	{
-	lassert_dump(totalSize % mAlignment == 0, 
+	lassert_dump(totalSize % mAlignment == 0,
 			"memory size must be " << mAlignment << "-byte aligned");
 
 	mOffsetToBlocksizeMapUnallocated.insert(0, totalSize);
@@ -81,7 +81,7 @@ void SimpleMemoryAllocator::freeAtOffset(uword_t blockOffset)
 	//check if the block above us is deallocated, and if so, glom it onto us
 	if (mOffsetToBlocksizeMapUnallocated.hasKey(blockOffset + bytesAllocated))
 		{
-		uword_t sizeOfBlockToGlom = 
+		uword_t sizeOfBlockToGlom =
 			mOffsetToBlocksizeMapUnallocated.getValue(blockOffset + bytesAllocated);
 
 		//drop the deallocated block
@@ -93,11 +93,11 @@ void SimpleMemoryAllocator::freeAtOffset(uword_t blockOffset)
 		}
 
 	//now check if our bottom-end range is the top-end of a deallocated block
-	if (mUnallocatedBlockUpperBoundsToOffsets.find(blockOffset) != 
+	if (mUnallocatedBlockUpperBoundsToOffsets.find(blockOffset) !=
 				mUnallocatedBlockUpperBoundsToOffsets.end())
 		{
 		uword_t newOffset = mUnallocatedBlockUpperBoundsToOffsets[blockOffset];
-		
+
 		mUnallocatedBlockUpperBoundsToOffsets.erase(blockOffset);
 
 		mOffsetToBlocksizeMapUnallocated.drop(newOffset);
@@ -117,7 +117,7 @@ uword_t SimpleMemoryAllocator::maxAllocatableBlockSize(void)
 		return 0;
 	return mOffsetToBlocksizeMapUnallocated.highestValue();
 	}
-	
+
 
 void SimpleMemoryAllocator::checkInternalConsistency(void)
 	{
@@ -126,7 +126,7 @@ void SimpleMemoryAllocator::checkInternalConsistency(void)
 
 	uword_t totalBytesAllocated = 0;
 	uword_t totalBytesUnallocated = 0;
-	
+
 	//loop over all pairs of allocated blocks
 	for (auto it = allocatedBlockSizes.begin(); it != allocatedBlockSizes.end(); ++it)
 		{
@@ -143,7 +143,7 @@ void SimpleMemoryAllocator::checkInternalConsistency(void)
 				lassert_dump(mOffsetToBlocksizeMapUnallocated.hasKey(it->first + it->second),
 					"unallocated block was missing");
 
-				lassert_dump(mOffsetToBlocksizeMapUnallocated.getValue(it->first + it->second) == 
+				lassert_dump(mOffsetToBlocksizeMapUnallocated.getValue(it->first + it->second) ==
 					it2->first - (it->first + it->second),
 					"unallocated block had incorrect size");
 				}
@@ -165,14 +165,14 @@ void SimpleMemoryAllocator::checkInternalConsistency(void)
 
 			//verify that there are allocated blocks in between
 			lassert_dump(
-				mOffsetToBlocksizeMapAllocated.hasKey(it->first + it->second) || 
+				mOffsetToBlocksizeMapAllocated.hasKey(it->first + it->second) ||
 				it->first + it->second == mTotalSize,
 				"top end of unallocated block wasn't an allocated block."
 				);
 
 			//verify that the upper-bound map has the entry
 			lassert_dump(
-				mUnallocatedBlockUpperBoundsToOffsets.find(it->first + it->second) != 
+				mUnallocatedBlockUpperBoundsToOffsets.find(it->first + it->second) !=
 					mUnallocatedBlockUpperBoundsToOffsets.end(),
 				"upper bound map doesn't have an entry at " << (it->first + it->second)
 				);
@@ -180,16 +180,16 @@ void SimpleMemoryAllocator::checkInternalConsistency(void)
 			lassert_dump(
 				mUnallocatedBlockUpperBoundsToOffsets[it->first + it->second] == it->first,
 				"upper bound map corrupt: we have an entry at " << (it->first + it->second)
-					<< " that points at " 
-					<< mUnallocatedBlockUpperBoundsToOffsets[it->first + it->second] 
+					<< " that points at "
+					<< mUnallocatedBlockUpperBoundsToOffsets[it->first + it->second]
 					<< " instead of " << it->first
 
 				);
 			}
 		}
 
-	lassert_dump(totalBytesAllocated + totalBytesUnallocated == mTotalSize, 
-		"sizes of allocated/deallocated regions didn't add up to total size: " << 
+	lassert_dump(totalBytesAllocated + totalBytesUnallocated == mTotalSize,
+		"sizes of allocated/deallocated regions didn't add up to total size: " <<
 			totalBytesAllocated << " + " << totalBytesUnallocated << " != " << mTotalSize
 		);
 	}

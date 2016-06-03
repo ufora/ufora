@@ -113,7 +113,7 @@ void OpenFiles::closeAFile()
 	uint64_t lowestFileIx = mFileAccesses.lowestValue();
 	std::string toClose = getFileNameFromAccessId(lowestFileIx);
 
-	LOG_INFO << "closing file " << toClose 
+	LOG_INFO << "closing file " << toClose
 		<< " because we have too many open files (" << mOpenFiles.size() << ")";
 
 	mOpenFiles.erase(toClose);
@@ -218,7 +218,7 @@ void OpenFiles::flushFiles(uint64_t fromAccess, uint64_t toAccess)
 				}
 			}
 		}
-	
+
 	for (writer_ptr_type fileWriter: accessedFiles)
 		{
 		if (fileWriter->isDirty())

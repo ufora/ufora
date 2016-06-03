@@ -32,8 +32,8 @@ namespace Cumulus {
 
 DiskOfflineCache::DiskOfflineCache(
 			PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
-			std::string basePath, 
-			uint64_t maxCacheSize, 
+			std::string basePath,
+			uint64_t maxCacheSize,
 			uint64_t maxCacheItemCount
 			) :
 		DiskOfflineCache::DiskOfflineCache(
@@ -46,12 +46,12 @@ DiskOfflineCache::DiskOfflineCache(
 
 DiskOfflineCache::DiskOfflineCache(
 			PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
-			boost::filesystem::path basePath, 
-			uint64_t maxCacheSize, 
+			boost::filesystem::path basePath,
+			uint64_t maxCacheSize,
 			uint64_t maxCacheItemCount
 			) :
 		OfflineCache(inCallbackScheduler),
-		mCacheSize(0), 
+		mCacheSize(0),
 		mCacheItemCount(0),
 		mMaxCacheSize(maxCacheSize),
 		mMaxCacheItemCount(maxCacheItemCount),
@@ -63,12 +63,12 @@ DiskOfflineCache::DiskOfflineCache(
 	{
 	lassert(mMaxCacheItemCount > 0);
 	lassert(mMaxCacheSize > 0);
-	
+
 	if (!boost::filesystem::exists(mBasePath))
 		boost::filesystem::create_directories(mBasePath);
 
-	for (boost::filesystem::directory_iterator dIt(mBasePath); 
-			dIt != boost::filesystem::directory_iterator(); ++dIt) 
+	for (boost::filesystem::directory_iterator dIt(mBasePath);
+			dIt != boost::filesystem::directory_iterator(); ++dIt)
 		{
 		lassert_dump(false, "Expected DiskOfflineCache to be empty.");
 		}
@@ -93,16 +93,16 @@ uint64_t DiskOfflineCache::getCacheBytesDropped(void) const
 	{
 	return mTotalBytesDumped;
 	}
-	
+
 uint64_t DiskOfflineCache::getCacheItemsDropped(void) const
 	{
 	return mTotalFilesDumped;
 	}
 
-void DiskOfflineCache::store(		
+void DiskOfflineCache::store(
 				const Fora::PageId& inDataID,
 				const PolymorphicSharedPtr<SerializedObject>& inSerializedData
-				) 
+				)
 	{
 		{
 		boost::recursive_mutex::scoped_lock		lock(mMutex);
@@ -143,21 +143,21 @@ void DiskOfflineCache::store(
 
 		{
 		OFileDescriptorProtocol protocol(
-			fd, 
+			fd,
 			512,
-			1024 * 1024 * 20, 
+			1024 * 1024 * 20,
 			OFileDescriptorProtocol::CloseOnDestroy::True
 			);
 
 			{
 			OBinaryStream stream(protocol);
-		
+
 			SerializedObjectFlattener::flattenOnce(stream, inSerializedData);
 			}
 
-		LOG_INFO << "Disk cache stored " 
+		LOG_INFO << "Disk cache stored "
 			<< protocol.position() / 1024 / 1024.0 << " MB. "
-			<< " Holding " << mCacheSize / 1024.0 / 1024.0 
+			<< " Holding " << mCacheSize / 1024.0 / 1024.0
 			<< " of a maximum " << mMaxCacheSize / 1024.0 / 1024.0 << " MB and "
 			<< mCacheItemCount << " of " << mMaxCacheItemCount << " items."
 			<< " path = " << datPath.string()
@@ -174,7 +174,7 @@ void DiskOfflineCache::store(
 
 		mFileSizes.insert(make_pair(datPath.filename().string(), bytesWritten));
 		mPageIDs[datPath.filename().string()] = inDataID;
-		
+
 		LOG_DEBUG << "DOC " << this << " finished storing " << inDataID;
 
 		mPagesHeld.insert(inDataID);
@@ -182,7 +182,7 @@ void DiskOfflineCache::store(
 
 		if (mPagesToDropAfterIO.find(inDataID) != mPagesToDropAfterIO.end())
 			{
-			LOG_DEBUG << "DOC " << this << " dropping " << inDataID 
+			LOG_DEBUG << "DOC " << this << " dropping " << inDataID
 				<< " because it was scheduled for dropAfterIO.";
 
 			mPagesToDropAfterIO.erase(inDataID);
@@ -191,13 +191,13 @@ void DiskOfflineCache::store(
 
 		dropExcessCacheItemsExcluding(inDataID);
 		}
-	}		
+	}
 
 bool DiskOfflineCache::alreadyExists(const Fora::PageId& inID)
 	{
 	boost::recursive_mutex::scoped_lock lock(mMutex);
 
-	if (mPagesHeld.find(inID) != mPagesHeld.end() || 
+	if (mPagesHeld.find(inID) != mPagesHeld.end() ||
 				mPagesBeingWritten.find(inID) != mPagesBeingWritten.end())
 		return true;
 
@@ -230,7 +230,7 @@ PolymorphicSharedPtr<SerializedObject> DiskOfflineCache::loadIfExists(const Fora
 			boost::shared_ptr<Queue<PolymorphicSharedPtr<SerializedObject> > > queuePtr(
 					new Queue<PolymorphicSharedPtr<SerializedObject> >()
 					);
-				
+
 			mQueuesForBlockedReads[inID].push_back(queuePtr);
 
 			LOG_DEBUG << "DOC " << this << " waiting for read of " << inID << ".";
@@ -250,28 +250,28 @@ PolymorphicSharedPtr<SerializedObject> DiskOfflineCache::loadIfExists(const Fora
 	int fd = open(datPath.string().c_str(), O_DIRECT | O_RDONLY, S_IRWXU);
 
 	lassert_dump(fd != -1, "failed to open " << datPath.string() << ": " << strerror(errno));
-	
+
 	IFileDescriptorProtocol protocol(
-		fd, 
-		512, 
-		20 * 1024 * 1024, 
+		fd,
+		512,
+		20 * 1024 * 1024,
 		IFileDescriptorProtocol::CloseOnDestroy::True
 		);
 
 	PolymorphicSharedPtr<SerializedObject> result;
-	
+
 	uint64_t origMem = Ufora::Memory::getTotalBytesAllocated();
 
 		{
 		IBinaryStream stream(protocol);
-		
+
 		result = SerializedObjectInflater::inflateOnce(stream);
 		}
-	
+
 	lassert(result);
 
-	LOG_INFO << "Disk cache loaded " 
-		<< protocol.position() / 1024.0 / 1024.0 << " MB from " 
+	LOG_INFO << "Disk cache loaded "
+		<< protocol.position() / 1024.0 / 1024.0 << " MB from "
 		<< datPath.filename().string() << ". ram = " << origMem / 1024 / 1024.0 << " -> "
 		<< Ufora::Memory::getTotalBytesAllocated() / 1024 / 1024.0
 		;
@@ -306,7 +306,7 @@ PolymorphicSharedPtr<SerializedObject> DiskOfflineCache::loadIfExists(const Fora
 boost::filesystem::path  DiskOfflineCache::pathFor(const Fora::PageId& inID)
 	{
 	// the /= operator appends the native directory seperator
-	return mBasePath / filenameFor(inID);	
+	return mBasePath / filenameFor(inID);
 	}
 
 std::string  DiskOfflineCache::filenameFor(const Fora::PageId& inID)
@@ -320,7 +320,7 @@ void DiskOfflineCache::drop(const Fora::PageId& inID)
 
 	LOG_DEBUG << "DOC " << this << " dropping " << inID;
 
-	if (mPagesBeingWritten.find(inID) != mPagesBeingWritten.end() || 
+	if (mPagesBeingWritten.find(inID) != mPagesBeingWritten.end() ||
 				mPagesBeingRead.find(inID) != mPagesBeingRead.end())
 		{
 		LOG_DEBUG << "DOC " << this << " deferring drop of " << inID << " until after IO.";
@@ -337,30 +337,30 @@ void DiskOfflineCache::drop(const Fora::PageId& inID)
 
 	if (mPagesToDropAfterIO.find(inID) != mPagesToDropAfterIO.end())
 		{
-		LOG_DEBUG << "DOC " << this << " deferring drop of " << inID 
+		LOG_DEBUG << "DOC " << this << " deferring drop of " << inID
 			<< " because it's already scheduled to drop after IO";
 
 		return;
 		}
 
 	mPagesHeld.erase(inID);
-	
-	dropItemByName_(filenameFor(inID));	
+
+	dropItemByName_(filenameFor(inID));
 	}
 
 void	DiskOfflineCache::dropExcessCacheItemsExcluding(Fora::PageId itemToExclude)
 	{
 	boost::recursive_mutex::scoped_lock		lock(mMutex);
-	
+
 	long failedPasses = 0;
 
 	while (mCacheItemCount > mMaxCacheItemCount || mCacheSize > mMaxCacheSize)
 		{
 		Fora::PageId cacheItemToDelete = pickARandomCacheItem();
 
-		if (cacheItemToDelete != itemToExclude && 
-				mPagesToDropAfterIO.find(cacheItemToDelete) == mPagesToDropAfterIO.end() && 
-				mPagesBeingWritten.find(cacheItemToDelete) == mPagesBeingWritten.end() && 
+		if (cacheItemToDelete != itemToExclude &&
+				mPagesToDropAfterIO.find(cacheItemToDelete) == mPagesToDropAfterIO.end() &&
+				mPagesBeingWritten.find(cacheItemToDelete) == mPagesBeingWritten.end() &&
 				mPagesBeingRead.find(cacheItemToDelete) == mPagesBeingRead.end()
 				)
 			{
@@ -400,7 +400,7 @@ void DiskOfflineCache::dropItemByName_(std::string cacheItemToDelete)
 
 	if (mPageIDs.find(cacheItemToDelete) == mPageIDs.end())
 		{
-		LOG_WARN << "DiskOfflineCache dropping an unknown file " << cacheItemToDelete 
+		LOG_WARN << "DiskOfflineCache dropping an unknown file " << cacheItemToDelete
 			<< ". probably this was already in the cache when we started.";
 		return;
 		}
@@ -410,18 +410,18 @@ void DiskOfflineCache::dropItemByName_(std::string cacheItemToDelete)
 		mPageIDs.erase(cacheItemToDelete);
 		}
 
-	LOG_INFO << "DiskOfflineCache dropping " << cacheItemToDelete 
-		<< " with " << mFileSizes[cacheItemToDelete] << " bytes. " 
-		<< " Holding " << mCacheSize / 1024.0 / 1024.0 
+	LOG_INFO << "DiskOfflineCache dropping " << cacheItemToDelete
+		<< " with " << mFileSizes[cacheItemToDelete] << " bytes. "
+		<< " Holding " << mCacheSize / 1024.0 / 1024.0
 		<< " of a maximum " << mMaxCacheSize / 1024.0 / 1024.0 << " MB and "
 		<< mCacheItemCount << " of " << mMaxCacheItemCount << " items."
 		;
-	
+
 	if (!boost::filesystem::remove(mBasePath / cacheItemToDelete))
 		throw standardLogicErrorWithStacktrace(
 			"Cache File " + cacheItemToDelete + " not deleted successfully."
 			);
-	
+
 	mTotalFilesDumped += 1;
 	mTotalBytesDumped += mFileSizes[cacheItemToDelete];
 
@@ -434,21 +434,21 @@ void DiskOfflineCache::dropItemByName_(std::string cacheItemToDelete)
 Fora::PageId DiskOfflineCache::pickARandomCacheItem()
 	{
 	boost::recursive_mutex::scoped_lock		lock(mMutex);
-	
+
 	lassert(mPageIDs.size());
 
 	if (mPageIDs.size() == 1)
 		return mPageIDs.begin()->second;
-	
+
 	mCurRandomHash = mCurRandomHash + hash_type(1);
 	std::string candidateFilename = hashToString(mCurRandomHash);
 
-	std::map<std::string, Fora::PageId>::iterator it = 
+	std::map<std::string, Fora::PageId>::iterator it =
 		mPageIDs.lower_bound(candidateFilename);
-	
+
 	if (it == mPageIDs.end())
 		it = mPageIDs.begin();
-	
+
 	return it->second;
 	}
 

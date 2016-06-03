@@ -31,7 +31,7 @@ def f3(x):
 
 def f4(x):
     return f5(x) + f2(x - 1)(x - 1)
-    
+
 def f5(x):
     return aGlobal + x
 

@@ -35,7 +35,7 @@ public:
 			{
 			outTypes.push_back(typeid(Hash).name());
 			}
-		
+
 		static Hash hashString(std::string s)
 			{
 			ScopedPyThreads threads;
@@ -83,7 +83,7 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
+
 			using namespace boost::python;
 			class_<Hash >("Hash", init<>() )
 				.def("__init__", make_constructor(CreateHash) )

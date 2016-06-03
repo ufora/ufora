@@ -22,7 +22,7 @@
 /*******
 ScopedPythonTracer
 
-Keeps track of entry/exit from specific python objects. 
+Keeps track of entry/exit from specific python objects.
 
 Clients create a ScopedPythonTracer on the stack with the python object they're about to call.
 The system allocates time spent in the objects, tracking them in a list.
@@ -48,13 +48,13 @@ private:
 	static boost::recursive_mutex sMutex;
 
 	static std::map<
-				boost::python::object, 
+				boost::python::object,
 				StatisticsAccumulator<double, double>,
 				ComparePythonObjectsByID
 				> sObjectEntrytimes;
 
 	double mCreationTime;
-	
+
 	double mTimeSpentByChildren;
 
 	boost::python::object mCalledPythonObject;

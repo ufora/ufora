@@ -33,9 +33,9 @@ class InstanceStorage {
 public:
 	InstanceStorage();
 
-	Location getObject(	PolymorphicSharedPtr<Graph> inGraph, 
-						PolymorphicSharedPtr<LocationType> inLocationType, 
-						boost::python::dict inInstanceData, 
+	Location getObject(	PolymorphicSharedPtr<Graph> inGraph,
+						PolymorphicSharedPtr<LocationType> inLocationType,
+						boost::python::dict inInstanceData,
 						bool& needsInitialization
 						);
 
@@ -48,7 +48,7 @@ public:
 	void remove(id_type inNodeID);
 
 	size_t size(void) const;
-	
+
 private:
 	boost::python::object mIDTable;
 

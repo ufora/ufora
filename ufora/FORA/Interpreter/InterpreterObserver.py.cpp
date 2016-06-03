@@ -52,7 +52,7 @@ public:
 	void exportPythonWrapper()
 		{
 		using namespace boost::python;
-		
+
 		class_<PolymorphicSharedPtr<InterpreterObserver> >("InterpreterObserver", no_init)
 			;
 		}

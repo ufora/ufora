@@ -39,9 +39,9 @@ public:
 	ImplVal& operator[](uword_t index);
 
 	const ImplVal& operator[](uword_t index) const;
-	
+
 	uword_t size() const;
-	
+
 	void copyPooledImplValsIntoFrame(const vector<ImplVal>& args);
 
 	void unpackUnownedTupleIntoPooledArguments(const ImplVal& tupleImplVal, RefcountPool* refcountPool);
@@ -50,9 +50,9 @@ public:
 	void copyApplyArgsIntoArgSlots(const Fora::ApplyArgFrame& args, RefcountPool* refcountPool);
 
 	void clear();
-	
+
 	void slice(uword_t ix);
-	
+
 	string toString() const;
 
 	static EvalFrameArgList* allocate(uword_t capacity, MemBlockAllocator& allocator);
@@ -69,7 +69,7 @@ private:
 	//DANGER! member field-order is important here! we manipulate memory hanging off the end here!
 	//mImplVals must be the last declared field. in order to avoid such worries, we
 	//could instead hold a pointer to an alloc'd block.
-	ImplVal mImplVals[1]; 
+	ImplVal mImplVals[1];
 };
 
 }

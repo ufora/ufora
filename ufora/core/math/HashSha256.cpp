@@ -28,7 +28,7 @@ HashSha256 HashSha256::Sha256(const void* data, uint32_t sz)
 
 	if (sz)
 		::SHA256((const unsigned char*)data, sz, (unsigned char*)&tr);
-	
+
 	return tr;
 	}
 HashSha256 operator+(const HashSha256& l, const HashSha256& r)

@@ -25,11 +25,11 @@ void OMemProtocol::write(uword_t inByteCount, void *inData)
 	{
 	if (inByteCount == 0)
 		return;
-	
+
 	uword_t oldSize = mData.size();
 
 	mData.resize(oldSize + inByteCount);
-	
+
 	memcpy(&mData[oldSize], inData, inByteCount);
 	}
 

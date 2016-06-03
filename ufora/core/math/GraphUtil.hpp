@@ -57,9 +57,9 @@ void	computeReachableNodes(
 	if (outReachable.find(inNode) == outReachable.end())
 		{
 		outReachable.insert(inNode);
-		
+
 		auto map_it = inEdges.find(inNode);
-		
+
 		if (map_it != inEdges.end())
 			for (auto edge: map_it->second)
 				computeReachableNodes(inEdges, outReachable, edge);
@@ -104,10 +104,10 @@ void	computeStronglyConnectedComponents(
 		return;
 	using namespace boost;
 	using namespace std;
-	
+
 	map<T, uint32_t> 				nodeToIndex;
 	map<uint32_t, T> 				indexToNode;
-	
+
 	uint32_t ix = 0;
 	for (typename map<T, set<T> >::const_iterator
 			it = inEdges.begin(); it!= inEdges.end(); ++it)
@@ -116,11 +116,11 @@ void	computeStronglyConnectedComponents(
 		indexToNode[ix] = it->first;
 		ix++;
 		}
-	
+
 	typedef adjacency_list<vecS, vecS, bidirectionalS> Graph;
-	
+
 	Graph g(nodeToIndex.size());
-	
+
 	//add any edges that stay within the graph
 	for (typename map<T, set<T> >::const_iterator
 			node_it = inEdges.begin(); node_it != inEdges.end(); ++node_it)
@@ -130,18 +130,18 @@ void	computeStronglyConnectedComponents(
 			{
 			typename map<T, uint32_t>::iterator  index_it =
 					nodeToIndex.find(*edge_it);
-			
+
 			if (index_it != nodeToIndex.end())
 				add_edge(nodeToIndex[node_it->first], index_it->second, g);
 			}
-	
+
 	map<int, int>	components;
-	
+
 	boost::associative_property_map< std::map<int, int> >
 		  components_prop_map(components);
 
 	int totalComponents = strong_components(g, components_prop_map);
-	
+
 	outComponents.resize(totalComponents);
 	for (map<int,int>::iterator  it = components.begin();
 											it != components.end(); ++it)
@@ -149,22 +149,22 @@ void	computeStronglyConnectedComponents(
 		lassert(it->second >= 0 && it->second < totalComponents);
 		outComponents[it->second].insert(indexToNode[it->first]);
 		}
-	
+
 	if (onlyIncludeFreeComponents)
 		{
 		set<int> badComponents;
-		
+
 		//for each edge, check which components are being crossed and mark
 		//destination components as 'bad' when they're different
-		
+
 		for (long k = 0; k < outComponents.size();k++)
 			for (typename set<T>::const_iterator it = outComponents[k].begin();
 					it != outComponents[k].end(); ++it)
 				{
 				const T& node = *it;
-				
+
 				int componentIndex = components[nodeToIndex[node]];
-				
+
 				typename map<T, set<T> >::const_iterator edgeIt = inEdges.find(node);
 
 				for (typename set<T>::const_iterator
@@ -191,12 +191,12 @@ void	computeStronglyConnectedComponents(
 			if (outComponents[k].size() == 1)
 				{
 				const T& node = *outComponents[k].begin();
-				
+
 				typename map<T, set<T> >::const_iterator it = inEdges.find(node);
 
 				bool mapsToSelf = (it != inEdges.end() &&
 								it->second.find(node) != it->second.end());
-				
+
 				if (!mapsToSelf)
 					{
 					std::swap(outComponents[k], outComponents.back());
@@ -205,7 +205,7 @@ void	computeStronglyConnectedComponents(
 					}
 				}
 	}
-	
+
 
 template<class T>
 void	computeStronglyConnectedComponents(

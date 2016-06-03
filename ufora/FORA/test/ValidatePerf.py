@@ -26,7 +26,7 @@ testPath = os.path.split(FORATestModule.__file__)[0]
 
 def evalTimingsForModuleMember(filename, memberName, callResult = False):
     foraModule = FORA.importModule(os.path.join(testPath, filename))
-    
+
     if callResult:
         toCall = getattr(foraModule, memberName)
         evalFun = lambda n: FORA.eval(
@@ -87,8 +87,8 @@ def measureTimingsInLoop(evalFun):
 
 def main(argv):
     """
-    expects arguments of the form: 
-    (1) sys.argv = [__file__, foraExpr, 
+    expects arguments of the form:
+    (1) sys.argv = [__file__, foraExpr,
                        <"callResult">]
         for single fora expressions, or
     (2) sys.argv = [__file__, foraFileName, moduleMemberName, "moduleMember", <"callResult">]
@@ -98,7 +98,7 @@ def main(argv):
 
     if "moduleMember" in sys.argv:
         evalTimingsForModuleMember(
-            filename = sys.argv[1], memberName = sys.argv[2], 
+            filename = sys.argv[1], memberName = sys.argv[2],
             callResult = callResult
             )
     else:

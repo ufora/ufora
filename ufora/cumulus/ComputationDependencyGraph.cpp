@@ -37,9 +37,9 @@ void ComputationDependencyGraph::ensureComputationInList_(const ComputationId& i
 		mDirtySplitPriorities.insert(inId);
 		}
 	}
-	
+
 void ComputationDependencyGraph::setCumulusClientPriority(
-				const ComputationId& inId, 
+				const ComputationId& inId,
 				const CumulusClientId& inClientId,
 				const ComputationPriority& priority
 				)
@@ -77,7 +77,7 @@ void ComputationDependencyGraph::dropCumulusClient(
 				const CumulusClientId& inClientId
 				)
 	{
-	const std::set<ComputationId>& current = 
+	const std::set<ComputationId>& current =
 										mClientIdToRootComputations.getValues(inClientId);
 
 	for (auto it = current.begin(); it != current.end(); ++it)
@@ -90,7 +90,7 @@ void ComputationDependencyGraph::dropCumulusClient(
 	}
 
 void ComputationDependencyGraph::setDependencies(
-			const ComputationId& inId, 
+			const ComputationId& inId,
 			const std::set<ComputationId>& ids
 			)
 	{
@@ -102,7 +102,7 @@ void ComputationDependencyGraph::setDependencies(
 		return;
 
 	for (auto id: current)
-		if (!id.isRoot() && ids.find(id) == ids.end() && 
+		if (!id.isRoot() && ids.find(id) == ids.end() &&
 				mDependencies.getKeys(id).size() == 1)
 		{
 		mOrphanedSplitComputations.insert(id);
@@ -149,7 +149,7 @@ void ComputationDependencyGraph::dropComputation(const ComputationId& inId)
 		{
 		for (auto child: mRootToRootDependencies.getValues(inId))
 			mDirtyPriorities.insert(child);
-	
+
 		for (auto child: mRootToSplitDependencies.getValues(inId))
 			mDirtySplitPriorities.insert(child);
 		}
@@ -197,7 +197,7 @@ void ComputationDependencyGraph::update(
 				mAllPriorities[id] = newPriority;
 
 				const std::set<ComputationId>& children = mRootToRootDependencies.getValues(id);
-	
+
 				newDirty.insert(id);
 
 				for (auto it = children.begin(); it != children.end(); ++it)
@@ -221,10 +221,10 @@ void ComputationDependencyGraph::update(
 			mDirtyPriorities = newDirty;
 			passesWhereSetIsStable = 0;
 			}
-		else 
+		else
 			{
 			passesWhereSetIsStable++;
-			
+
 			if (passesWhereSetIsStable > 1)
 				{
 				// this subset is circular
@@ -264,8 +264,8 @@ void ComputationDependencyGraph::update(
 	mDirtySplitPriorities.clear();
 	}
 
-inline void ComputationDependencyGraph::updatePriority( 
-			const ComputationId& id, 
+inline void ComputationDependencyGraph::updatePriority(
+			const ComputationId& id,
 			const ComputationPriority& newPriority,
 			std::set<ComputationId>& outLocalComputationsWithChangedPriorities,
 			std::set<ComputationId>& outAllComputationsWithChangedPriorities
@@ -284,7 +284,7 @@ void ComputationDependencyGraph::update(
 			)
 	{
 	std::set<ComputationId> throwAway;
-	
+
 	update(outLocalComputationsWithChangedPriorities, throwAway);
 	}
 
@@ -308,9 +308,9 @@ ComputationPriority ComputationDependencyGraph::computePriorityFor(const Computa
 
 	for (auto it = clients.begin(); it != clients.end(); ++it)
 		{
-		ComputationPriority clientPriority = 
+		ComputationPriority clientPriority =
 			mClientPriorities[make_pair(*it, inId)].priorityForDependentComputation();
-		
+
 		if (priority.isShallower(clientPriority))
 			priority = clientPriority;
 		}
@@ -338,26 +338,26 @@ ComputationPriority ComputationDependencyGraph::getPriority(const ComputationId&
 	return ComputationPriority();
 	}
 
-const std::map<pair<CumulusClientId, ComputationId>, ComputationPriority>& 
+const std::map<pair<CumulusClientId, ComputationId>, ComputationPriority>&
 ComputationDependencyGraph::getClientPriorities() const
 	{
 	return mClientPriorities;
 	}
 
-const std::map<ComputationId, ComputationPriority>& 
+const std::map<ComputationId, ComputationPriority>&
 ComputationDependencyGraph::getAllPriorities() const
 	{
 	return mAllPriorities;
 	}
 
-const std::set<ComputationId>& 
+const std::set<ComputationId>&
 ComputationDependencyGraph::getComputationsDependingOn(const ComputationId& in) const
 	{
 	return mDependencies.getKeys(in);
 	}
 
 void ComputationDependencyGraph::getLocalComputationsDependingOn(
-				const ComputationId& in, 
+				const ComputationId& in,
 				std::set<ComputationId>& outComputations
 				) const
 	{
@@ -393,12 +393,12 @@ bool ComputationDependencyGraph::checkInternalState()
 			isValid = false;
 			}
 
-	for (auto it = mRootToRootDependencies.getKeysToValues().begin(); 
+	for (auto it = mRootToRootDependencies.getKeysToValues().begin();
 									it != mRootToRootDependencies.getKeysToValues().end();++it)
-		if (mAllPriorities.find(it->first) == mAllPriorities.end() && 
+		if (mAllPriorities.find(it->first) == mAllPriorities.end() &&
 				!computePriorityFor(it->first).isNull())
 			{
-			LOG_WARN 
+			LOG_WARN
 				<< "ComputationDependencyGraph had dependencies for "
 				<< prettyPrintString(it->first) << " but no priority."
 				;

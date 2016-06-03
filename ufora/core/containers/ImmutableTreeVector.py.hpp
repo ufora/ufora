@@ -138,7 +138,7 @@ template<class T>
 ImmutableTreeVector<T> extractItvFromPythonList(boost::python::object o)
 	{
 	ImmutableTreeVector<T> tr;
-	
+
 	for (long k = 0; k < boost::python::len(o);k++)
 		tr = tr + T(boost::python::extract<T>(o[k])());
 

@@ -30,10 +30,10 @@ void assertQueueContainsAndRemove(Queue<T>& queue, T in, PolymorphicSharedPtr<Ca
 	scheduler->blockUntilPendingHaveExecuted();
 
 	Nullable<T> elt = queue.getNonblock();
-	
+
 	lassert_dump(
 		elt && cppmlCmp(*elt, in) == 0,
-		"In " << __PRETTY_FUNCTION__ << "\nExpected\n\t" << prettyPrintString(in) 
+		"In " << __PRETTY_FUNCTION__ << "\nExpected\n\t" << prettyPrintString(in)
 			<< "\nbut got\n\t" << prettyPrintString(elt) << "\n"
 		);
 	}
@@ -44,7 +44,7 @@ void assertQueueContainsPredicateAndRemove(Queue<T>& queue, boost::function<bool
 	scheduler->blockUntilPendingHaveExecuted();
 
 	Nullable<T> elt = queue.getNonblock();
-	
+
 	lassert_dump(
 		elt && predicate(*elt),
 		"In " << __PRETTY_FUNCTION__ << ", got\n\t" << prettyPrintString(elt) << "\n"
@@ -74,7 +74,7 @@ void assertQueueContainsAndRemoveRegardlessOfOrder(Queue<T>& queue, T in, Polymo
 
 	lassert_dump(found,
 		"In " << __PRETTY_FUNCTION__ << "\n"
-			<< "Couldn't find " << prettyPrintString(in) 
+			<< "Couldn't find " << prettyPrintString(in)
 			<< " within " << prettyPrintString(other)
 		);
 	}
@@ -85,10 +85,10 @@ void assertQueueContains(Queue<T>& queue, T in, PolymorphicSharedPtr<CallbackSch
 	scheduler->blockUntilPendingHaveExecuted();
 
 	Nullable<T> elt = queue.getNonblock();
-	
+
 	lassert_dump(
 		elt && cppmlCmp(*elt, in) == 0,
-		"In " << __PRETTY_FUNCTION__ << "\nExpected\n\t" << prettyPrintString(in) 
+		"In " << __PRETTY_FUNCTION__ << "\nExpected\n\t" << prettyPrintString(in)
 			<< "\nbut got\n\t" << prettyPrintString(elt) << "\n"
 		);
 

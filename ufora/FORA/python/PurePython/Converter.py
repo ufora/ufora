@@ -1012,7 +1012,7 @@ class Converter(object):
 
             newId = str(len(objectDefinitions))
             objectDefinitions[newId] = None
-            
+
             hashToObjectId[implval.hash] = newId
 
             objectDefinitions[newId] = transformBody(implval)

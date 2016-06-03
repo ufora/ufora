@@ -26,8 +26,8 @@ public:
 		{
 		AO_fetch_and_add_full(&mCounts, 1);
 
-		LOG_DEBUG << "Create " 
-			<< Ufora::debug::StackTrace::demangle(typeid(T).name()) 
+		LOG_DEBUG << "Create "
+			<< Ufora::debug::StackTrace::demangle(typeid(T).name())
 			<< ". Total = " << totalCount();
 		}
 	virtual ~InstanceCounter()
@@ -35,8 +35,8 @@ public:
 		if (!mDontIncludeInCounts)
 			AO_fetch_and_add_full(&mCounts, -1);
 
-		LOG_DEBUG << "Destroy " 
-			<< Ufora::debug::StackTrace::demangle(typeid(T).name()) 
+		LOG_DEBUG << "Destroy "
+			<< Ufora::debug::StackTrace::demangle(typeid(T).name())
 			<< ". Total = " << totalCount();
 		}
 

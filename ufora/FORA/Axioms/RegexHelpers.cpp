@@ -37,7 +37,7 @@ boost::regex getRegexFromCache(const String& inString)
 		boost::regex regex(inString.c_str());
 
 		parsedRegexes.set(
-			inString.hash(), 
+			inString.hash(),
 			regex
 			);
 
@@ -49,5 +49,5 @@ boost::regex getRegexFromCache(const String& inString)
 		throw std::logic_error(err.what());
 		}
 	}
-		
+
 

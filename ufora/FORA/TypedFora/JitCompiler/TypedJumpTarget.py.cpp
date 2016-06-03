@@ -37,7 +37,7 @@ public:
 	void exportPythonWrapper()
 		{
 		using namespace boost::python;
-		
+
 		class_<TypedFora::TypedJumpTarget>(
                     "TypedJumpTarget",
                     no_init
@@ -45,7 +45,7 @@ public:
 			.add_property("functionName", functionName)
 			;
 		}
-	
+
 };
 
 //explicitly instantiating the registration element causes the linker to need

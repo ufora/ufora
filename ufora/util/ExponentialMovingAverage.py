@@ -23,7 +23,7 @@ class ExponentialMovingAverage:
     You can add additional rectangles with increasing timestamps, and each time we'll discount
     the existing rectangles and add the new one.
 
-    Note that the EMA of a rectangle of height h and width w (under decay d) is 
+    Note that the EMA of a rectangle of height h and width w (under decay d) is
 
         h * (1.0 - e^(-w/d))
 

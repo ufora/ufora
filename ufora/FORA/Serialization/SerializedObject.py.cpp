@@ -35,7 +35,7 @@ public:
 		{
 		return "FORA";
 		}
-	
+
 	void	getDefinedTypes(std::vector<std::string>& outTypes)
 		{
 		outTypes.push_back(typeid(PolymorphicSharedPtr<SerializedObject>).name());
@@ -47,18 +47,18 @@ public:
 		if (e.check())
 			{
 			PolymorphicSharedPtr<SerializedObject> soPtr2 = e();
-			
+
 			ScopedPyThreads releaseTheGil;
-		
+
 			return so1->hash().cmp(soPtr2->hash());
 			}
 		return -1;
 		}
-		
+
 	static long 	SerializedObjectPyHash(PolymorphicSharedPtr<SerializedObject>& so1)
 		{
 		ScopedPyThreads releaseTheGil;
-		
+
 		return so1->hash()[0];
 		}
 
@@ -76,7 +76,7 @@ public:
 		}
 
 	static void SerializedObjectDeserializer(
-								PolymorphicSharedPtr<SerializedObject>& inObj, 
+								PolymorphicSharedPtr<SerializedObject>& inObj,
 								std::string inData
 								)
 		{
@@ -89,7 +89,7 @@ public:
 		*inObj = *toReturn;
 		}
 
-	static PolymorphicSharedPtr<SerializedObject> 
+	static PolymorphicSharedPtr<SerializedObject>
 					deserializeEntireObjectGraphFromString(std::string dataStr)
 		{
 		return SerializedObjectInflater::inflateOnce(
@@ -124,7 +124,7 @@ public:
 	void exportPythonWrapper()
 		{
 		using namespace boost::python;
-		
+
 		class_<PolymorphicSharedPtr<SerializedObject> >(
 					"SerializedObject",
 					no_init
@@ -140,11 +140,11 @@ public:
 			.def("__len__", SerializedObjectSize)
 			.enable_pickling()
 			;
-		
+
 		def("deserializeEntireObjectGraphFromString", &deserializeEntireObjectGraphFromString);
 		def("encodeStringInSerializedObject", &encodeStringInSerializedObject);
 		}
-	
+
 };
 
 //explicitly instantiating the registration element causes the linker to need

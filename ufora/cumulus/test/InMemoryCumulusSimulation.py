@@ -385,7 +385,7 @@ class InMemoryCumulusSimulation(object):
     def cacheFunction(self):
         if self.useInMemoryCache:
             return CumulusNative.SimpleOfflineCache(
-                self.callbackScheduler, 
+                self.callbackScheduler,
                 1000 * 1024 * 1024 if self.useInMemoryCache is True else self.useInMemoryCache * 1024 * 1024
                 )
         else:

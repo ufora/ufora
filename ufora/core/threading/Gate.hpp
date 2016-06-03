@@ -31,12 +31,12 @@ may open or close the gate.
 
 class Gate {
 public:
-	Gate() : 
+	Gate() :
 			mIsOpen(true)
 		{
 		}
 
-	Gate(bool isOpen) : 
+	Gate(bool isOpen) :
 			mIsOpen(isOpen)
 		{
 		}
@@ -52,7 +52,7 @@ public:
 	bool open()
 		{
 		boost::mutex::scoped_lock lock(mMutex);
-		
+
 		if (mIsOpen)
 			return false;
 
@@ -67,7 +67,7 @@ public:
 	bool close()
 		{
 		boost::mutex::scoped_lock lock(mMutex);
-		
+
 		if (!mIsOpen)
 			return false;
 
@@ -93,7 +93,7 @@ public:
 				lock,
 				boost::posix_time::milliseconds(timeoutSecs * 1000)
 				);
-		
+
 		return mIsOpen;
 		}
 

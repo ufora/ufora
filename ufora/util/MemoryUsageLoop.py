@@ -23,7 +23,7 @@ def memoryWriteLoop(logfileLocation, interval):
         if isinstance(logfileLocation, file):
             outputFile = logfileLocation
         else:
-            outputFile = open(logfileLocation, "w", 0) 
+            outputFile = open(logfileLocation, "w", 0)
 
         def pad(s, finalLength):
             return s + " " * (finalLength - len(s))

@@ -34,13 +34,13 @@ public:
 		{
 		return "FORA";
 		}
-	
+
 	void	dependencies(std::vector<std::string>& outTypes)
 		{
 		outTypes.push_back(typeid(PolymorphicSharedPtr<SerializedObject>).name());
 		}
-		
-	static PolymorphicSharedPtr<NoncontiguousByteBlock> 
+
+	static PolymorphicSharedPtr<NoncontiguousByteBlock>
 	flatten(PolymorphicSharedPtr<SerializedObjectFlattener>& flattener,
 			PolymorphicSharedPtr<SerializedObject>& spo
 			)
@@ -49,8 +49,8 @@ public:
 
 		return flattener->flatten(spo);
 		}
-	
-	static PolymorphicSharedPtr<SerializedObject> 
+
+	static PolymorphicSharedPtr<SerializedObject>
 	inflate(PolymorphicSharedPtr<SerializedObjectInflater>& inflater,
 			const PolymorphicSharedPtr<NoncontiguousByteBlock>& flattenedData
 			)
@@ -61,10 +61,10 @@ public:
 			inflater->inflate(flattenedData)
 			);
 		}
-	
+
 	static PolymorphicSharedPtr<NoncontiguousByteBlock>
-	flattenPythonObjectUsingPickler(	
-							PolymorphicSharedPtr<SerializedObjectFlattener>& flattener, 
+	flattenPythonObjectUsingPickler(
+							PolymorphicSharedPtr<SerializedObjectFlattener>& flattener,
 							boost::python::object inObj,
 							boost::python::object inPickleFunction,
 							boost::python::object inPickleStreamExtractFunction,
@@ -76,7 +76,7 @@ public:
 		context_ptr context(new SerializedObjectContext(inVDMM));
 
 		Ufora::threading::ScopedThreadLocalContext<context_ptr> contextSetter(context);
-		
+
 		inPickleFunction(inObj);
 
 		boost::python::object res = inPickleStreamExtractFunction();
@@ -91,17 +91,17 @@ public:
 				context
 				)
 			);
-		
-		
+
+
 			{
 			ScopedPyThreads threads;
-			
+
 			return flattener->flatten(serializedObj);
 			}
 		}
-	
-	static boost::python::object 
-	inflatePythonObjectUsingPickler(	
+
+	static boost::python::object
+	inflatePythonObjectUsingPickler(
 					PolymorphicSharedPtr<SerializedObjectInflater>& inflater,
 					boost::python::object pushBytesFunction,
 					boost::python::object loadFunction,
@@ -115,14 +115,14 @@ public:
 
 			{
 			ScopedPyThreads threads;
-			
+
 			serializedObj = inflater->inflate(inStr);
 			}
 
 		context_ptr context(new SerializedObjectContext(inVDMM, serializedObj));
 
 		Ufora::threading::ScopedThreadLocalContext<context_ptr> contextSetter(context);
-		
+
 		pushBytesFunction(serializedObj->getSerializedData()->toString());
 
 		return loadFunction();
@@ -132,11 +132,11 @@ public:
 		{
 		return inFlattener->getMemoizedSize();
 		}
-	
+
 	void exportPythonWrapper()
 		{
 		using namespace boost::python;
-		
+
 		class_<PolymorphicSharedPtr<SerializedObjectFlattener> >
 				("SerializedObjectFlattener", no_init)
 			.def("__init__", make_constructor(PolymorphicSharedPtr<SerializedObjectFlattener>::Constructor0))
@@ -144,7 +144,7 @@ public:
 			.def("getMemoizedSize", &getMemoizedSize)
 			.def("flattenPythonObjectUsingPickler", &flattenPythonObjectUsingPickler)
 			;
-		
+
 		class_<PolymorphicSharedPtr<SerializedObjectInflater> >
 				("SerializedObjectInflater", no_init)
 			.def("__init__", make_constructor(PolymorphicSharedPtr<SerializedObjectInflater>::Constructor0))
@@ -157,7 +157,7 @@ public:
 //explicitly instantiating the registration element causes the linker to need
 //this file
 template<>
-char 
+char
 native::module::Exporter<SerializedObjectFlattenerWrapper>::mEnforceRegistration =
 	native::module::ExportRegistrar<SerializedObjectFlattenerWrapper>::registerWrapper();
 

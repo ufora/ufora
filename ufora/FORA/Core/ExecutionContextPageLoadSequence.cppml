@@ -28,11 +28,12 @@ const static double kPruneWindow = 0.01;
 }
 
 bool ExecutionContextPageLoadSequence::observeAndReturnWantsReset(
-							ImmutableTreeSet<Fora::PageId> pages, 
-							double timeElapsed
+							ImmutableTreeSet<Fora::PageId> pages,
+							double timeElapsed,
+							int64_t maxBytesAllowedInClique
 							)
 	{
-	//check each page - if it's been accessed recently, it's part of the current 
+	//check each page - if it's been accessed recently, it's part of the current
 	//group and we can add and not reset
 	Nullable<double> minTimestamp = minTimestampFor(pages);
 
@@ -55,7 +56,12 @@ bool ExecutionContextPageLoadSequence::observeAndReturnWantsReset(
 			while (it != it2)
 				{
 				for (auto page: it->second)
+					{
+					if (!mCurrentActivePages.contains(page))
+						mCurrentActivePagesBytes += page.bytecount();
+
 					mCurrentActivePages = mCurrentActivePages + page;
+					}
 
 				it++;
 				}
@@ -63,12 +69,19 @@ bool ExecutionContextPageLoadSequence::observeAndReturnWantsReset(
 			mCurrentCliqueAccessTime = minTimestamp;
 			}
 
-		return false;
+		if (mCurrentActivePagesBytes < maxBytesAllowedInClique)
+			return false;
 		}
+
 
 	//reset the clique
 	mCurrentCliqueAccessTime = timeElapsed;
 	mCurrentActivePages = pages;
+
+	mCurrentActivePagesBytes = 0;
+
+	for (auto p: pages)
+		mCurrentActivePagesBytes += p.bytecount();
 
 	pruneOldPageTimes();
 
@@ -81,13 +94,13 @@ void ExecutionContextPageLoadSequence::pruneOldPageTimes()
 		return;
 
 	//prune anything before the current clique start time
-	while (mPageAccessTimes.keyCount() && 
-			mPageAccessTimes.getValuesToKeys().begin()->first 
+	while (mPageAccessTimes.keyCount() &&
+			mPageAccessTimes.getValuesToKeys().begin()->first
 				< *mCurrentCliqueAccessTime - kPruneWindow)
 		mPageAccessTimes.dropValue(
 			mPageAccessTimes.getValuesToKeys().begin()->first
 			);
-	}	
+	}
 
 Nullable<double> ExecutionContextPageLoadSequence::minTimestampFor(ImmutableTreeSet<Fora::PageId> pages)
 	{
@@ -106,7 +119,7 @@ Nullable<double> ExecutionContextPageLoadSequence::minTimestampFor(ImmutableTree
 
 	return smallest;
 	}
-	
+
 ImmutableTreeSet<Fora::PageId> ExecutionContextPageLoadSequence::currentActivePages() const
 	{
 	return mCurrentActivePages;

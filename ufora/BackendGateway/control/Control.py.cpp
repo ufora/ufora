@@ -41,13 +41,13 @@ public:
 		}
 
 	static ControlInstancePtr createControlInstanceRoot(
-					const Control& c, 
-					PolymorphicSharedPtr<ComputedGraph::Graph>& inGraph, 
+					const Control& c,
+					PolymorphicSharedPtr<ComputedGraph::Graph>& inGraph,
 					boost::python::object inRoot
 					)
 		{
 		ControlInstancePtr tr(
-			new ControlInstance(c, 
+			new ControlInstance(c,
 				PolymorphicSharedPtr< ControlInstanceRoot>(
 					new ControlInstanceRoot(inGraph, inRoot)
 					)
@@ -79,24 +79,24 @@ public:
 		}
 
 	static Control layoutGenNoIdentifier(
-					const LayoutRule& r, 
-					boost::python::object keygen, 
-					boost::python::object controlgen, 
+					const LayoutRule& r,
+					boost::python::object keygen,
+					boost::python::object controlgen,
 					uword_t maxKeysToCache
 					)
 		{
 		return layoutGen(r, keygen, controlgen, maxKeysToCache, "");
 		}
 	static Control layoutGen(
-					const LayoutRule& r, 
-					boost::python::object keygen, 
-					boost::python::object controlgen, 
+					const LayoutRule& r,
+					boost::python::object keygen,
+					boost::python::object controlgen,
 					uword_t maxKeysToCache,
 					string identifier
 					)
 		{
 		return Control::Layout(
-			r, 
+			r,
 			LayoutGenerator::Variable(keygen, controlgen, maxKeysToCache, identifier)
 			);
 		}

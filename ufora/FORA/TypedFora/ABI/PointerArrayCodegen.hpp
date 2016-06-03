@@ -48,7 +48,7 @@ public:
 
 	TypedNativeExpression<void> resize(TypedNativeExpression<long> inCount) const
 		{
-		auto lookupFun = 
+		auto lookupFun =
 				makeTypedNativeLibraryFunction(
 					&TypedFora::Abi::PointerArray<T>::resizeStatic
 					);

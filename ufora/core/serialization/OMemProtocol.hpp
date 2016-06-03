@@ -28,7 +28,7 @@ public:
 	OMemProtocol(std::vector<char>& inData);
 
 	void write(uword_t inByteCount, void *inData);
-	
+
 	uword_t position(void)
 		{
 		return mData.size();

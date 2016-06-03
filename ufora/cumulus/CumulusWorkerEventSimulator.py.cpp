@@ -59,7 +59,7 @@ public:
 			FILE* f = fopen(filename.c_str(),"rb");
 
 			lassert_dump(f, "couldn't open " << filename);
-			
+
 			IFileProtocol protocol(f);
 
 			IBinaryStream stream(protocol);
@@ -67,7 +67,7 @@ public:
 			SerializedObjectInflater inflater;
 
 			SerializedObjectInflaterDeserializer deserializer(
-				inflater, 
+				inflater,
 				stream,
 				PolymorphicSharedPtr<VectorDataMemoryManager>()
 				);
@@ -75,7 +75,7 @@ public:
 			while (true)
 				{
 				Cumulus::CumulusWorkerEvent event;
-	
+
 				try {
 					deserializer.deserialize(event);
 					}
@@ -93,7 +93,7 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
+
 			def("replayCumulusWorkerEventStream", replayCumulusWorkerEventStream);
 			def("replayCumulusWorkerEventStreamFromFile", replayCumulusWorkerEventStreamFromFile);
 			}

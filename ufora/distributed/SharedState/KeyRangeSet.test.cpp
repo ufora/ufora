@@ -49,13 +49,13 @@ std::pair<Nullable<KeyBound>, bool> positiveInfinity()
 namespace SharedState {
 
 void verifyKeybounds(
-		std::string leftString, 
-		bool leftIsLeft, 
-		std::string rightString, 
+		std::string leftString,
+		bool leftIsLeft,
+		std::string rightString,
 		bool rightIsLeft,
 
 		// the predicted values of == and <
-		bool eq, 
+		bool eq,
 		bool lt)
 	{
 	KeyBound left(Json::String(leftString), leftIsLeft);
@@ -84,8 +84,8 @@ void verifyKeyLimits(
 	{
 
 	// In this funciton and boundLT and boundEQ, firstIsLeft and secondIsLeft or here...
-	// firstIsNegativeInfinityIfNull or secondIsNegativeInfinityIfNull is a boolean that 
-	// denotes whether this bound refers to negative or positive infinity if and only if it is null. 
+	// firstIsNegativeInfinityIfNull or secondIsNegativeInfinityIfNull is a boolean that
+	// denotes whether this bound refers to negative or positive infinity if and only if it is null.
 	//
 	Nullable<KeyBound> left = leftBoundAndWhichInfinityIfNull.first;
 	bool leftIsNegativeInfinityIfNull = leftBoundAndWhichInfinityIfNull.second;
@@ -94,22 +94,22 @@ void verifyKeyLimits(
 	bool rightIsNegativeInfinityIfNull = rightBoundAndWhichInfinityIfNull.second;
 
 
-	//cout << "testing " 
-		//<< prettyPrintString(left) << " "  << prettyPrintString(leftIsNegativeInfinityIfNull) << " and " 
+	//cout << "testing "
+		//<< prettyPrintString(left) << " "  << prettyPrintString(leftIsNegativeInfinityIfNull) << " and "
 		//<< prettyPrintString(right) << " " <<  prettyPrintString(leftIsNegativeInfinityIfNull) << endl;
 
 	lassert(
 			boundLT(
-				left, 
-				leftIsNegativeInfinityIfNull, 
-				right, 
+				left,
+				leftIsNegativeInfinityIfNull,
+				right,
 				rightIsNegativeInfinityIfNull
 				) == lt);
 	lassert(
 			boundEQ(
-				left, 
-				leftIsNegativeInfinityIfNull, 
-				right, 
+				left,
+				leftIsNegativeInfinityIfNull,
+				right,
 				rightIsNegativeInfinityIfNull
 				) == eq);
 	}
@@ -132,7 +132,7 @@ BOOST_AUTO_TEST_CASE( test_keybounds )
 	verifyKeybounds("abcd", true, "abcd", false,   	false, true);
 	verifyKeybounds("abc", true, "abcd", false, 	false, true);
 	verifyKeybounds("abcde", true, "abcd", false, 	false, false);
-	
+
 	// both are right bounds
 	verifyKeybounds("abcd", false, "abcd", true,   	false, false);
 	verifyKeybounds("abc", false, "abcd", true, 	false, true);
@@ -211,7 +211,7 @@ std::string nextGreatest(std::string in)
 
 const Key produceKeyInRange(const KeyRange& range)
 	{
-	
+
 	std::string keyString = nextGreatest("");
 
 	if (range.left())
@@ -222,7 +222,7 @@ const Key produceKeyInRange(const KeyRange& range)
 		keyName.push_back(Json::String(keyString));
 
 	return Key(range.keyspace(), keyName);
-	
+
 	}
 
 
@@ -278,14 +278,14 @@ void verifyIntersectingKeyranges(
 	bool threw = adjacent;
 	// should not be able to insert intersecting keyranges
 	// user should instead take the difference and insert it
-	try 
+	try
 		{
 		s.insert(rightRange);
 		}
 	catch (std::logic_error e)
 		{
 		threw = true;
-		}	
+		}
 	lassert(threw);
 	if (!adjacent)
 		{

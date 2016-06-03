@@ -198,7 +198,7 @@ public:
 			lassert_dump(index == mIndicesToSharedPtrs.size(),
 				"index: " << index << " .vs . " << mIndicesToSharedPtrs.size()
 				);
-			
+
 			outPtr.reset(new T());
 
 			mIndicesToSharedPtrs[index] = outPtr;
@@ -218,7 +218,7 @@ template <class T, class serializer_type>
 std::string serializeTemplate(const T& in)
 	{
 	std::vector<char> dat;
-	
+
 		{
 		OMemProtocol protocol(dat);
 		OBinaryStream stream(protocol);
@@ -229,7 +229,7 @@ std::string serializeTemplate(const T& in)
 
 	return std::string(dat.begin(), dat.end());
 	}
-	
+
 template <class T>
 std::string serialize(const T& in)
 	{
@@ -475,7 +475,7 @@ public:
 		{
 		uint32_t bytes = o.size();
 		s.serialize(bytes);
-		
+
 		if (bytes)
 			s.writeBytes((void*)&o[0], bytes);
 		}
@@ -523,12 +523,12 @@ public:
 									)
 		{
 		ScopedPyThreadsReacquire reaquire;
-		
+
 		boost::python::object cPickleModule =
 						boost::python::import("cPickle");
 		boost::python::object res =
 			cPickleModule.attr("dumps")(o, 2);
-		
+
 		boost::python::extract<string> extracter(res);
 		if (extracter.check())
 			s.serialize(extracter());
@@ -548,9 +548,9 @@ public:
 		{
 		std::string pickledData;
 		s.deserialize(pickledData);
-		
+
 		ScopedPyThreadsReacquire reaquire;
-		
+
 		boost::python::object cPickleModule =
 						boost::python::import("cPickle");
 		o = cPickleModule.attr("loads")(pickledData);

@@ -74,10 +74,10 @@ public:
 			{
 			return mSymbolDataPtr == in.mSymbolDataPtr;
 			}
-		
+
 		#define Symbol__cache_item(x,y)	\
 		static Symbol x();
-		
+
 		Symbol__cache_item(Call, "Call")
 		Symbol__cache_item(SetCall, "SetCall")
 		Symbol__cache_item(Member, "Member")
@@ -116,7 +116,7 @@ public:
 		Symbol__cache_item(DateTime, "DateTime")
 		Symbol__cache_item(TimeDuration, "TimeDuration")
 		Symbol__cache_item(Extras, "Extras")
-		
+
 private:
 		static const hash_type& hashFor(const SymbolData* symbol)
 			{
@@ -147,7 +147,7 @@ private:
 
 			return symbol->string.size();
 			}
-		
+
 		SymbolData*	mSymbolDataPtr;	//the first part is the first few bytes
 											//of the hash. the second part is
 											//a counter of the number of times

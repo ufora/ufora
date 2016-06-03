@@ -49,9 +49,9 @@ class PerfTestBase(object):
         return _baseTiming
 
     def validateTimingsForSubprocessCall(
-                self, 
+                self,
                 testName,
-                subprocessArgs, 
+                subprocessArgs,
                 meta,
                 timeout = 600.0
                 ):
@@ -92,7 +92,7 @@ class PerfTestBase(object):
 
         return False
 
-    def validatePerfForModuleMember(self, testName, moduleFileName, testCaseMemberName, 
+    def validatePerfForModuleMember(self, testName, moduleFileName, testCaseMemberName,
                                     metadataForMember):
         subprocessArgs = [sys.executable, ValidatePerf.__file__, moduleFileName, \
                               testCaseMemberName, "moduleMember"]
@@ -102,7 +102,7 @@ class PerfTestBase(object):
 
         self.validateTimingsForSubprocessCall(
             testName,
-            subprocessArgs, 
+            subprocessArgs,
             {'file': "ufora/FORA/test/" + moduleFileName}
             )
 
@@ -115,7 +115,7 @@ class PerfTestBase(object):
 
         self.validateTimingsForSubprocessCall(
             testName,
-            subprocessArgs, 
+            subprocessArgs,
             PerformanceTestReporter.getCurrentStackframeFileAndLine(framesAbove=2)
             )
 

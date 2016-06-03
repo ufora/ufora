@@ -19,37 +19,37 @@
 #include "../core/threading/CallbackScheduler.hppml"
 #include "../core/InstanceCounter.hpp"
 
-template<class TOut, class TIn, 
-			class serializer_type = BinaryStreamSerializer, 
+template<class TOut, class TIn,
+			class serializer_type = BinaryStreamSerializer,
 			class deserializer_type = BinaryStreamDeserializer
 			>
 class SerializedChannel : public Channel<TOut, TIn>, InstanceCounter<SerializedChannel<TOut, TIn> > {
 public:
 	typedef PolymorphicSharedPtr<
-				SerializedChannel<TOut, TIn, serializer_type, deserializer_type>, 
+				SerializedChannel<TOut, TIn, serializer_type, deserializer_type>,
 				typename Channel<TOut, TIn>::pointer_type
 			> pointer_type;
 
 	typedef PolymorphicSharedWeakPtr<
-				SerializedChannel<TOut, TIn, serializer_type, deserializer_type>, 
+				SerializedChannel<TOut, TIn, serializer_type, deserializer_type>,
 				typename Channel<TOut, TIn>::weak_ptr_type
 			> weak_ptr_type;
 
 	typedef PolymorphicSharedPtr<
-				SerializedChannel<TIn, TOut, serializer_type, deserializer_type>, 
+				SerializedChannel<TIn, TOut, serializer_type, deserializer_type>,
 				typename Channel<TIn, TOut>::pointer_type
 			> reverse_pointer_type;
 
 	typedef PolymorphicSharedWeakPtr<
-				SerializedChannel<TIn, TOut, serializer_type, deserializer_type>, 
+				SerializedChannel<TIn, TOut, serializer_type, deserializer_type>,
 				typename Channel<TIn, TOut>::weak_ptr_type
 			> weak_reverse_pointer_type;
-	
+
 
 	SerializedChannel(
 				PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
 				PolymorphicSharedPtr<Channel<std::string, std::string> > inInnerChannel
-				) : 
+				) :
 			mCallbackScheduler(inCallbackScheduler),
 			mInnerChannel(inInnerChannel),
 			mIsDisconnected(false)
@@ -93,7 +93,7 @@ public:
 
 			mIsDisconnected = true;
 			}
-		
+
 		getCallbackScheduler()->scheduleImmediately(
 			boost::bind(
 				disconnectChannelPreHop,
@@ -117,7 +117,7 @@ public:
 		}
 
 	void setHandlers(
-				boost::function1<void, TIn> inOnMessage, 
+				boost::function1<void, TIn> inOnMessage,
 				boost::function0<void> inOnDisconnected
 				)
 		{
@@ -152,7 +152,7 @@ private:
 		boost::recursive_mutex::scoped_lock lock(mSerializeMutex);
 
 		std::string toWrite = mSerializer.serialize(in);
-		
+
 		getCallbackScheduler()->scheduleImmediately(
 			boost::bind(
 				writeToChannel,
@@ -244,14 +244,14 @@ private:
 		double t0 = curClock();
 
 		TIn value = ptr->mDeserializer.template deserialize<TIn>(inString);
-		
+
 		if (curClock() - t0 > .1)
-			LOG_INFO << "Took " << curClock() - t0 << " to deserialize " 
+			LOG_INFO << "Took " << curClock() - t0 << " to deserialize "
 				<< inString.size() / 1024 / 1024.0 << " MB."
 				<< " into "
 				<< Ufora::debug::StackTrace::demangle(typeid(TIn).name())
 				;
-		
+
 		inCallbackScheduler->scheduleImmediately(
 			boost::bind(
 				callInOnMessage,
@@ -279,7 +279,7 @@ private:
 	SerializedObjectStream<serializer_type> mSerializer;
 
 	DeserializedObjectStream<deserializer_type> mDeserializer;
-	
+
 	PolymorphicSharedPtr<Channel<std::string, std::string> > mInnerChannel;
 
 	boost::recursive_mutex mDisconnectMutex;

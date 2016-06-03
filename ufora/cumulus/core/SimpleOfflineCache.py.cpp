@@ -42,11 +42,11 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
+
 			class_<SimpleOfflineCache::pointer_type,
 					boost::python::bases<OfflineCache::pointer_type >
 				>("SimpleOfflineCache", no_init)
-				.def("__init__", 
+				.def("__init__",
 						make_constructor(
 							SimpleOfflineCache::pointer_type::Constructor2<PolymorphicSharedPtr<CallbackScheduler>, uword_t>
 							)

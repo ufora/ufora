@@ -29,7 +29,7 @@ public:
 			{
 			return "FORA";
 			}
-			
+
 		static bool VectorDataID_getstate_manages_dict(VectorDataID& v)
 			{
 			return true;
@@ -38,7 +38,7 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
+
 			Ufora::python::CPPMLWrapper<VectorDataID>
 					("VectorDataID", false).class_()
 				.def("__str__", &FORAPythonUtil::scopedPrettyPrinter<VectorDataID>)

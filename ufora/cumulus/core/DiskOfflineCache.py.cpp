@@ -38,7 +38,7 @@ public:
 			}
 		void dependencies(std::vector<std::string>& outTypes)
 			{
-			outTypes.push_back(typeid(OfflineCache::pointer_type).name());				
+			outTypes.push_back(typeid(OfflineCache::pointer_type).name());
 			}
 		std::string		getModuleName(void)
 			{
@@ -46,8 +46,8 @@ public:
 			}
 		static DiskOfflineCache::pointer_type* Init(
 				PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
-				std::string basePath, 
-				uword_t maxCacheSize, 
+				std::string basePath,
+				uword_t maxCacheSize,
 				uword_t maxCacheItemCount
 				)
 			{
@@ -60,7 +60,7 @@ public:
 					)
 				);
 			}
-		
+
 		static uword_t getTotalBytesLoaded(DiskOfflineCache::pointer_type cache)
 			{
 			return cache->getTotalBytesLoaded();
@@ -69,7 +69,7 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
+
 			class_<DiskOfflineCache::pointer_type,
 					boost::python::bases<OfflineCache::pointer_type>
 				>("DiskOfflineCache", no_init)

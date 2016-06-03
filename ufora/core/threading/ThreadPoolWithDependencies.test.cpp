@@ -34,10 +34,10 @@ BOOST_AUTO_TEST_CASE( test_execute_a_task )
     Queue<long> resultQueue;
 
     pool.addTask(
-        "task", 
+        "task",
         boost::function0<void>(
             [&]() { resultQueue.write(0); }
-            ), 
+            ),
         0,
         std::set<std::string>(),
         false
@@ -56,10 +56,10 @@ BOOST_AUTO_TEST_CASE( test_out_of_order_definition )
     Queue<long> resultQueue;
 
     pool.addTask(
-        "task", 
+        "task",
         boost::function0<void>(
             [&]() { resultQueue.write(0); }
-            ), 
+            ),
         0,
         ImmutableTreeSet<std::string>() + std::string("subtask"),
         false
@@ -71,10 +71,10 @@ BOOST_AUTO_TEST_CASE( test_out_of_order_definition )
     BOOST_CHECK(!resultQueue.getTimeout(res, .01));
 
     pool.addTask(
-        "subtask", 
+        "subtask",
         boost::function0<void>(
             [&]() { resultQueue.write(1); }
-            ), 
+            ),
         0,
         ImmutableTreeSet<std::string>(),
         false
@@ -107,24 +107,24 @@ BOOST_AUTO_TEST_CASE( test_task_tree )
             deps.insert(k/2+1);
 
         pool.addTask(
-            k, 
+            k,
             boost::function0<void>(
                 boost::bind(
                     boost::function1<void, long>(
-                        [&](long k) { 
+                        [&](long k) {
                             if (k/2 < k)
                                 lassert(pool.hasTaskExecuted(k/2));
                             if (k/2+1 < k)
                                 lassert(pool.hasTaskExecuted(k/2+1));
 
-                            resultQueue.write(k); 
+                            resultQueue.write(k);
 
                             sleepSeconds(.0001);
                             }
                         ),
                     k
                     )
-                ), 
+                ),
             0,
             deps,
             false

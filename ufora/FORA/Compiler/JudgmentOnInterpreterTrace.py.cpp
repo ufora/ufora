@@ -64,7 +64,7 @@ public:
 			}
 
 		static Fora::JudgmentOnInterpreterTrace::Term withFinalResultOf(
-								Fora::JudgmentOnInterpreterTrace::Term& term, 
+								Fora::JudgmentOnInterpreterTrace::Term& term,
 								JOV& jov
 								)
 			{
@@ -105,7 +105,7 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
+
 			FORAPythonUtil::exposeValueLikeCppmlType<Fora::JudgmentOnInterpreterTrace::Term>()
 				.class_()
 				.def("withFinalResultOf", withFinalResultOf)

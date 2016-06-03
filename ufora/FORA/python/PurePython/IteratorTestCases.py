@@ -284,7 +284,7 @@ class IteratorTestCases(object):
             return [val for val in c]
 
         self.equivalentEvaluationTest(f, C_5773())
-        
+
     def test_custom_iterators_4(self):
         class C_5774(object):
             def __getitem__(self, ix):
@@ -296,4 +296,4 @@ class IteratorTestCases(object):
             return [val for val in c]
 
         self.equivalentEvaluationTest(f, C_5774())
-        
+

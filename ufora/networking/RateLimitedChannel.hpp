@@ -146,7 +146,7 @@ private:
 		}
 
 	static void interiorReadMessageHandler(
-						weak_ptr_type self, 
+						weak_ptr_type self,
 						on_message_handler_type handler,
 						TIn message
 						)

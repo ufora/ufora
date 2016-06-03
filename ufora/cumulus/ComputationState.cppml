@@ -29,8 +29,12 @@
 #include "../core/threading/CallbackScheduler.hppml"
 #include "../FORA/VectorDataManager/PageRefcountTracker.hppml"
 #include "../FORA/VectorDataManager/BigVectorSliceSet.hppml"
+#include "../FORA/TypedFora/ABI/BigVectorLayouts.hppml"
 #include "../FORA/Serialization/ForaValueSerializationStream.hppml"
 #include "../core/PolymorphicSharedPtrBinder.hpp"
+#include "SystemwideComputationScheduler/ThreadGroup.hppml"
+#include "SystemwideComputationScheduler/RuntimePrediction/RuntimePredictionValue.hppml"
+#include "SystemwideComputationScheduler/RuntimePrediction/RuntimePredictionSignature.hppml"
 
 using Fora::Interpreter::ExecutionContext;
 using Fora::Interpreter::PausedComputation;
@@ -48,7 +52,7 @@ public:
 	ComputationStateValuesOutsideOfExecutionContext(
 								PolymorphicSharedPtr<VectorDataManager> inVDM,
 								ComputationId inId
-								) : 
+								) :
 			mRefcountKeepaliveExecutionContext(inVDM),
 			mId(inId)
 		{
@@ -70,7 +74,7 @@ public:
 		if (mRefcountKeepaliveExecutionContext.getMemoryPool()->totalBytesAllocated() > 0)
 			{
 			LOG_CRITICAL << "ComputationStateValuesOutsideOfExecutionContext has "
-				<< mRefcountKeepaliveExecutionContext.getMemoryPool()->totalBytesAllocated() 
+				<< mRefcountKeepaliveExecutionContext.getMemoryPool()->totalBytesAllocated()
 				<< " bytes still allocated.";
 			}
 		}
@@ -210,11 +214,11 @@ public:
 				mExternalIoTaskResult = copyToKeepalive(computationResult);
 				}
 			-| S3KeyDoesNotExist() ->> {
-				mExternalIoTaskResult = 
+				mExternalIoTaskResult =
 					Fora::Interpreter::ComputationResult::Exception(
 						ImplValContainerUtilities::createString(
 							String(
-								"No such key exists", 
+								"No such key exists",
 								mRefcountKeepaliveExecutionContext.getMemoryPool()
 								)
 							),
@@ -222,11 +226,11 @@ public:
 						);
 				}
 			-| S3PermissionError() ->> {
-				mExternalIoTaskResult = 
+				mExternalIoTaskResult =
 					Fora::Interpreter::ComputationResult::Exception(
 						ImplValContainerUtilities::createString(
 							String(
-								"S3 credentials error", 
+								"S3 credentials error",
 								mRefcountKeepaliveExecutionContext.getMemoryPool()
 								)
 							),
@@ -284,12 +288,12 @@ public:
 			{
 			Nullable<ComputationDefinition> unconsumedDefinition;
 			Nullable<ComputationDefinition> consumedDefinition;
-			
+
 			boost::shared_ptr<ValueDeepcopierState> state(new ValueDeepcopierState());
 			unconsumedDefinition = copyTo(mUnconsumedDefinition, c.getMemoryPool(), *state);
 			consumedDefinition = copyTo(mConsumedDefinition, c.getMemoryPool(), *state);
 			state.reset();
-				
+
 			clearCompletely();
 
 			state.reset(new ValueDeepcopierState());
@@ -298,7 +302,7 @@ public:
 			}
 		}
 
-	//this function is only used for testing. This function verifies that the contents of 
+	//this function is only used for testing. This function verifies that the contents of
 	//mRefcountKeepaliveExecutionContext consist only of the members of this function.
 	void recycle(std::string name = "")
 		{
@@ -397,7 +401,7 @@ public:
 		return mRefcountKeepaliveExecutionContext.getMemoryPool()->totalBytesAllocatedFromOS();
 		}
 
-private:	
+private:
 	template<class T>
 	static T copyToFreeStore(const T& in)
 		{
@@ -433,9 +437,9 @@ private:
 	static T copyTo(const T& in, MemoryPool* pool, ValueDeepcopierState& state)
 		{
 		ValueDeepcopier deepcopier(
-			state, 
-			false, 
-			pool, 
+			state,
+			false,
+			pool,
 			false,
 			false
 			);
@@ -445,24 +449,24 @@ private:
 
 	void tryToTeardown_(std::string name = "")
 		{
-		if (!mUnconsumedDefinition && 
+		if (!mUnconsumedDefinition &&
 				!mConsumedDefinition &&
-				!mPartialComputationResults.size() && 
-				!mSplitComputation && 
+				!mPartialComputationResults.size() &&
+				!mSplitComputation &&
 				!mPendingCacheResult
 				)
 			{
 			if (mRefcountKeepaliveExecutionContext.getMemoryPool()->totalBytesAllocated() > 0)
 				{
-				LOG_ERROR << " still has bytes allocated: " << name 
-					<< "\n" 
-					<< "Total bytes: " 
+				LOG_ERROR << " still has bytes allocated: " << name
+					<< "\n"
+					<< "Total bytes: "
 					<< mRefcountKeepaliveExecutionContext.getMemoryPool()
 						->totalBytesAllocatedFromOS() / 1024 / 1024.0 << " MB."
-					<< "Total bytes in Pagelets: " 
+					<< "Total bytes in Pagelets: "
 					<< mRefcountKeepaliveExecutionContext.getExecutionContextMemoryPool()
 						->totalBytesFromOSHeldInPagelets() / 1024 / 1024.0 << " MB."
-					<< "\n" 
+					<< "\n"
 					<< Ufora::debug::StackTrace::getStringTrace()
 					;
 				}
@@ -497,6 +501,7 @@ public:
 					PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler
 					) :
 			mTimesReset(0),
+			mTimesEverSplit(0),
 			mOwnComputationId(computationId),
 			mExecutionContext(new ExecutionContext(inVDM)),
 			mOutsideEcValues(inVDM, computationId),
@@ -508,7 +513,7 @@ public:
 			mInterruptTriggered(false),
 			mTimesComputedButMadeNoProgress(0),
 			mIsPagingDisabled(false),
-			mTimesCalculatedCliques(0)
+			mTimesCalculatedFuturePages(0)
 		{
 		mExecutionContext->initialize();
 		*mExecutionContext->getConfiguration() = config;
@@ -542,17 +547,17 @@ public:
 		mComputationStatisticsOutsideOfEC = ComputationStatistics();
 		mCumulativeTimeAtLastSplitAttempt = 0.0;
 		mIsComputing = false;
-		mTotalTimeSpentCalculatingCliques = 0.0;
-		mTimesCalculatedCliques = 0;
+		mTotalTimeSpentCalculatingFuturePages = 0.0;
+		mTimesCalculatedFuturePages = 0;
 		mCurrentPageLoadGroup = emptyTreeSet();
-		mCurrentCliques = emptyTreeVec();
-		
+		mFuturePageReads = emptyTreeVec();
+
 			{
 			boost::mutex::scoped_lock lock(mComputationEventsMutex);
 			mComputationEvents.clear();
 			}
 
-		mFutureCliqueFinder.reset();
+		mFuturePageFinder.reset();
 		mExecutionContext->teardown();
 		mExecutionContext->resetMemoryPoolPageSize();
 		}
@@ -576,11 +581,11 @@ public:
 	void onPageCreated(Fora::PageId inPageId)
 		{
 		boost::mutex::scoped_lock lock(mComputationEventsMutex);
-		
+
 		mComputationEvents.push_back(
 			ComputationEvent::PageCreated(
-				inPageId, 
-				mExecutionContext->getTimeSpentInInterpreter() + 
+				inPageId,
+				mExecutionContext->getTimeSpentInInterpreter() +
 					mExecutionContext->getTimeSpentInCompiledCode()
 				)
 			);
@@ -591,14 +596,14 @@ public:
 	void onCurrentActivePageGroupChanged(ImmutableTreeSet<Fora::PageId> pages, double timeElapsed)
 		{
 		boost::mutex::scoped_lock lock(mComputationEventsMutex);
-		
+
 		mCurrentPageLoadGroup = pages;
 
 		while (mComputationEvents.size() && mComputationEvents.back().isLoad())
 			{
 			ImmutableTreeSet<Fora::PageId> lastPages = mComputationEvents.back().getLoad().pagesUsed();
 			double lastTimeElapsed = mComputationEvents.back().getLoad().timeElapsed();
-			
+
 			//compress pages we send out
 			if (timeElapsed - lastTimeElapsed < kSmallTimeInterval && covers(pages, lastPages))
 				mComputationEvents.pop_back();
@@ -635,7 +640,7 @@ public:
 		mIsTemporary = definition.isTemporary();
 
 		mOutsideEcValues.clearCompletely();
-		
+
 		mComputationStatus = ComputationStatus::Computable();
 
 		mBlockingComputationsInOrder.clear();
@@ -646,11 +651,13 @@ public:
 
 		mExecutionContext->teardown();
 		mExecutionContext->resetInterruptState();
-		
+
 		mOutsideEcValues.setUnconsumedDefinition(definition);
 
 		//import any values we can into the ExecutionContext
 		resumeUnconsumedDefinition_(false);
+
+		mTimesEverSplit = 0;
 
 		mTimesReset++;
 		}
@@ -676,7 +683,7 @@ public:
 	ImmutableTreeVector<ComputationEvent> extractRecentEvents()
 		{
 		boost::mutex::scoped_lock lock(mComputationEventsMutex);
-		
+
 		ImmutableTreeVector<ComputationEvent> result(mComputationEvents);
 		mComputationEvents.clear();
 
@@ -701,7 +708,7 @@ public:
 					stepComputation_();
 
 					if (!postComputationStateUpdate_(
-							computations, 
+							computations,
 							guid
 							))
 						{
@@ -721,7 +728,7 @@ public:
 				}
 			-|	_ ->> {
 				lassert_dump(
-					false, 
+					false,
 					"doesn't make sense to 'compute' a thread in state " << mComputationStatus.tagName()
 					);
 				}
@@ -760,7 +767,7 @@ public:
 
 			CreatedComputations res;
 
-			res.computations() = res.computations() + 
+			res.computations() = res.computations() +
 				*mPassthroughTo + def;
 
 			return res;
@@ -772,12 +779,12 @@ public:
 			mExecutionContext->isCacheRequest() || mOutsideEcValues.getUnconsumedDefinition(),
 			prettyPrintString(mComputationStatus)
 			);
-		
+
 		mBlockingComputationsInOrder.clear();
 		mChildCheckpointStatuses.clear();
 
 		mOutsideEcValues.clearPartialComputationResults();
-		
+
 		CreatedComputations computations;
 
 		postComputationStateUpdate_(
@@ -790,7 +797,7 @@ public:
 
 	bool isBlockedOnExternalIoTask_()
 		{
-		return mOutsideEcValues.hasExternalIoTaskResult() 
+		return mOutsideEcValues.hasExternalIoTaskResult()
 					|| mComputationStatus.isBlockedOnExternalIoTask();
 		}
 
@@ -814,13 +821,13 @@ public:
 				}
 		}
 
-	Fora::Interpreter::ComputationResult 
+	Fora::Interpreter::ComputationResult
 					assembleInitialEvaluate_(
 						const ImmutableTreeVector<ComputationDefinitionTerm>& terms
 						)
-		{		
+		{
 		ImmutableTreeVector<std::pair<ImplValContainer, Nullable<Symbol>>> arguments;
-		
+
 		long subdefsConsumed = 0;
 
 		for (long k = 0; k < terms.size();k++)
@@ -847,7 +854,7 @@ public:
 							arguments = arguments + std::make_pair(res, null());
 							}
 					}
-		
+
 		return Fora::Interpreter::ComputationResult::Result(
 			ImplValContainer(arguments),
 			ImplValContainer()
@@ -856,7 +863,7 @@ public:
 
 	bool allComputationsHaveResults_()
 		{
-		for (auto it = mBlockingComputationsInOrder.begin(); 
+		for (auto it = mBlockingComputationsInOrder.begin();
 					it != mBlockingComputationsInOrder.end(); ++it)
 			if (!mOutsideEcValues.hasPartialComputationResult(*it))
 				return false;
@@ -873,10 +880,10 @@ public:
 			{
 			@match ComputationDefinition(*mOutsideEcValues.getUnconsumedDefinition())
 				-| Root(terms) ->> {
-					ImmutableTreeVector<ComputationDefinition> subdefs = 
+					ImmutableTreeVector<ComputationDefinition> subdefs =
 						currentUnconsumedDefinitionSubcomputations_();
 
-					if (subdefs.size() == 0 || 
+					if (subdefs.size() == 0 ||
 								mBlockingComputationsInOrder.size() && allComputationsHaveResults_())
 						{
 						Fora::Interpreter::ComputationResult toCompute = assembleInitialEvaluate_(terms);
@@ -890,6 +897,14 @@ public:
 							-| Result(r, logs) ->> {
 								mExecutionContext->placeInEvaluationState(r);
 
+								mInitialRuntimePredictionSignature =
+									RuntimePredictionSignature::Root(
+										RuntimePredictionValue::FromValue(
+											r,
+											mExecutionContext->getVDM().polymorphicSharedPtrFromThis()
+											)
+										);
+
 								if (actuallyCalculate)
 									wantsCalculate = true;
 								}
@@ -900,20 +915,32 @@ public:
 					else
 						{
 						lassert_dump(
-							mBlockingComputationsInOrder.size() == 0, 
+							mBlockingComputationsInOrder.size() == 0,
 							"Subdefs: " << prettyPrintString(subdefs) << "\n"
-								<< "mPartialComputationResults: " 
+								<< "mPartialComputationResults: "
 									<< prettyPrintString(mOutsideEcValues.getPartialComputationResults()) << "\n"
-								<< "mBlockingComputationsInOrder: " 
+								<< "mBlockingComputationsInOrder: "
 									<< prettyPrintString(mBlockingComputationsInOrder) << "\n"
 							);
 
 						return;
 						}
-					}	
+					}
 				-| Split(parentId, pausedComputation) ->> {
+					if (pausedComputation.frames().size() == 1 &&
+							!pausedComputation.pendingResult())
+						mInitialRuntimePredictionSignature =
+							RuntimePredictionSignature::Split(
+								hashValue(pausedComputation.frames()[0].graph()),
+								pausedComputation.frames()[0].label(),
+								RuntimePredictionValue::FromValue(
+									pausedComputation.frames()[0].values(),
+									mExecutionContext->getVDM().polymorphicSharedPtrFromThis()
+									)
+								);
+
 					mExecutionContext->resumePausedComputation(pausedComputation);
-					
+
 					mBlockingComputationsInOrder.clear();
 					mChildCheckpointStatuses.clear();
 
@@ -927,7 +954,7 @@ public:
 			mOutsideEcValues.clearUnconsumedDefinition();
 		else
 			mOutsideEcValues.placeUnconsumedDefinitionIntoConsumedDefinition();
-		
+
 		mOutsideEcValues.clear();
 
 		if (wantsCalculate)
@@ -943,7 +970,7 @@ public:
 			LOG_ERROR << "triggered but made no progress " << mTimesComputedButMadeNoProgress
 				<< ". mInterruptTriggered = " << (mInterruptTriggered?"true":"false")
 				<< ". gate blocked? " << (
-						mExecutionContext->getVDM().executionContextsCanRunGate().isOpen() ? 
+						mExecutionContext->getVDM().executionContextsCanRunGate().isOpen() ?
 							"false":"true"
 						);
 			}
@@ -962,7 +989,7 @@ public:
 
 			if (mOutsideEcValues.getUnconsumedDefinition())
 				resumeUnconsumedDefinition_(true);
-				else 
+				else
 			if (mOutsideEcValues.getPendingCacheResult())
 				{
 					{
@@ -996,7 +1023,7 @@ public:
 					mExecutionContext->resumeComputation();
 				}
 
-			if (mExecutionContext->isInterrupted() && 
+			if (mExecutionContext->isInterrupted() &&
 						!mExecutionContext->wasLastInterruptTriggeredExternally())
 				{
 				if (!mExecutionContext->resetInterruptStateIfOnlyTriggeredInternally())
@@ -1023,7 +1050,7 @@ public:
 
 		if (!mExecutionContext->isInterrupted())
 			mTimesComputedButMadeNoProgress = 0;
-			
+
 		mExecutionContext->resumeComputation();
 		}
 
@@ -1034,11 +1061,11 @@ public:
 
 		for (long k = 0; k < 2; k++)
 			{
-			Fora::Interpreter::ComputationResult result = 
+			Fora::Interpreter::ComputationResult result =
 				mOutsideEcValues.getPartialComputationResult(mBlockingComputationsInOrder[k]);
 
 			@match Fora::Interpreter::ComputationResult(result)
-				-| Result(res, log) ->> { 
+				-| Result(res, log) ->> {
 					if (k == 0)
 						{
 						applyResult = res;
@@ -1050,7 +1077,7 @@ public:
 						splitLog = log;
 						}
 					}
-				-| Exception(e) ->> { 
+				-| Exception(e) ->> {
 					mTimesComputedButMadeNoProgress = 0;
 					mExecutionContext->setFinishedResult(
 						Fora::Interpreter::ComputationResult::Failure(
@@ -1068,7 +1095,7 @@ public:
 					}
 			}
 
-		Fora::Interpreter::PausedComputation joined = 
+		Fora::Interpreter::PausedComputation joined =
 			ControlFlowGraphSplitter::join(
 				*mOutsideEcValues.getSplitComputation(),
 				applyResult,
@@ -1112,7 +1139,7 @@ public:
 		return result;
 		}
 
-	ImmutableTreeVector<pair<ForaStackTrace, Fora::Interpreter::StackframeMetadata> > 
+	ImmutableTreeVector<pair<ForaStackTrace, Fora::Interpreter::StackframeMetadata> >
 														extractStacktrace(bool extractValues)
 		{
 		ImmutableTreeVector<pair<ForaStackTrace, Fora::Interpreter::StackframeMetadata> >  result;
@@ -1120,9 +1147,9 @@ public:
 		result = mExecutionContext->extractStacktrace(extractValues);
 
 		if (mOutsideEcValues.getSplitComputation())
-			result = 
+			result =
 				result.slice(
-					0, 
+					0,
 					mOutsideEcValues.getSplitComputation()->toResumeCaller().frames().size()
 					);
 
@@ -1205,7 +1232,7 @@ public:
 	void assertAllComputationsCompleted_()
 		{
 		lassert_dump(mOutsideEcValues.getPartialComputationResults().size() == mBlockingComputationsInOrder.size(),
-			prettyPrintString(mBlockingComputationsInOrder) << " vs. " 
+			prettyPrintString(mBlockingComputationsInOrder) << " vs. "
 				<< prettyPrintString(mOutsideEcValues.getPartialComputationResults())
 			);
 
@@ -1215,16 +1242,16 @@ public:
 
 	bool postComputationStateUpdate_(CreatedComputations& ioComputations, hash_type& ioGuid)
 		{
-		mFutureCliqueFinder.reset();
-		mCurrentCliques = emptyTreeVec();
+		mFuturePageFinder.reset();
+		mFuturePageReads = emptyTreeVec();
 
 		if (mOutsideEcValues.getUnconsumedDefinition())
 			{
-			ImmutableTreeVector<ComputationDefinition> subdefs = 
+			ImmutableTreeVector<ComputationDefinition> subdefs =
 					currentUnconsumedDefinitionSubcomputations_();
 
 			lassert_dump(
-				mBlockingComputationsInOrder.size() == 0, 
+				mBlockingComputationsInOrder.size() == 0,
 				prettyPrintString(mComputationStatus)
 				);
 
@@ -1234,8 +1261,8 @@ public:
 
 				ioGuid = ioGuid + computationStateHashIncrement;
 
-				ComputationId subcompId = 
-					ComputationId::CreateIdOnWorker(
+				ComputationId subcompId =
+					ComputationId::CreateIdForRootOnWorker(
 						def,
 						ioGuid
 						);
@@ -1244,6 +1271,8 @@ public:
 
 				mBlockingComputationsInOrder.push_back(subcompId);
 				}
+
+			mComputationStatisticsOutsideOfEC.timesComputed()++;
 
 			mComputationStatus = ComputationStatus::BlockedOnComputations(
 				ImmutableTreeSet<ComputationId>(
@@ -1274,14 +1303,14 @@ public:
 
 			if (isExternalIoTaskCacheLoad_(cacheLoadRequest))
 				return stateChangeToExternalIoTaskCacheLoad_(
-						cacheLoadRequest, 
+						cacheLoadRequest,
 						ioComputations,
 						ioGuid
 						);
 				else
 			if (isValidCacheLoad_(cacheLoadRequest))
 				return stateChangeToRegularCacheLoad_(
-						cacheLoadRequest, 
+						cacheLoadRequest,
 						ioComputations,
 						ioGuid
 						);
@@ -1300,16 +1329,17 @@ public:
 		if (mExecutionContext->isVectorLoad())
 			{
 			mComputationStatus = ComputationStatus::BlockedOnVectorLoad(
-				mExecutionContext->getVectorLoad()
+				mExecutionContext->getVDM().getBigVectorLayouts()
+					->convertSliceToPages(mExecutionContext->getVectorLoad())
 				);
 
-			updateCurrentCliques();
+			updateFuturePageReads();
 			}
 			else
 		if (mExecutionContext->isFinished())
 			{
 			mExecutionContext->pageLargeVectorHandles(
-				mIsTemporary ? 
+				mIsTemporary ?
 					mExecutionContext->getVDM().maxPageSizeInBytes()
 				:	mExecutionContext->getVDM().getMemoryManager()->getSlabSize()
 				);
@@ -1335,24 +1365,24 @@ public:
 		}
 
 
-	void updateCurrentCliques()
+	void updateFuturePageReads()
 		{
-		mFutureCliqueFinder.reset(
+		mFuturePageFinder.reset(
 			new FuturesCliqueFinder::CliqueFinder(
 				mExecutionContext
 				)
 			);
 
-		mTotalTimeSpentCalculatingCliques = 0;
+		mTotalTimeSpentCalculatingFuturePages = 0;
 
-		ImmutableTreeVector<ImmutableTreeSet<Fora::PageId> > cliques;
+		ImmutableTreeVector<Fora::PageId> pages;
 
 		try {
 			double t0 = curClock();
-			mFutureCliqueFinder->getRootTask()->rollForwardUntilACliqueIsProduced(1, 100);
-			mTotalTimeSpentCalculatingCliques += curClock() - t0;
+			mFuturePageFinder->getRootTask()->rollForwardUntilACliqueIsProduced(10, 100);
+			mTotalTimeSpentCalculatingFuturePages += curClock() - t0;
 
-			cliques = mFutureCliqueFinder->cliques();
+			pages = mFuturePageFinder->pages();
 			}
 		catch(std::logic_error& e)
 			{
@@ -1363,38 +1393,43 @@ public:
 			LOG_ERROR << "FuturesCliqueFinder threw an unknown exception";
 			}
 
-		mCurrentCliques = cliques;
-		}
-
-	ImmutableTreeVector<ImmutableTreeSet<Fora::PageId> > continueToSearchForCliques(double maxTimeElapsed)
-		{
-		if (!mFutureCliqueFinder)
-			return emptyTreeVec();
-
-		mFutureCliqueFinder.reset(
+		mFuturePageReads = pages;
+		mFuturePageFinder.reset(
 			new FuturesCliqueFinder::CliqueFinder(
 				mExecutionContext
 				)
 			);
-		
+		}
+
+	ImmutableTreeVector<Fora::PageId> continueToSearchForFuturePages(double maxTimeElapsed)
+		{
+		if (!mFuturePageFinder)
+			return emptyTreeVec();
+
+		mFuturePageFinder.reset(
+			new FuturesCliqueFinder::CliqueFinder(
+				mExecutionContext
+				)
+			);
+
 		double t0 = curClock();
 
-		ImmutableTreeVector<ImmutableTreeSet<Fora::PageId> > cliques;
+		ImmutableTreeVector<Fora::PageId> pages;
 
 		try {
-			mTimesCalculatedCliques++;
+			mTimesCalculatedFuturePages++;
 
-			Ufora::math::Random::Uniform<float> rand( (mOwnComputationId.guid() + hash_type(mTimesCalculatedCliques))[0] + 1 );
+			Ufora::math::Random::Uniform<float> rand( (mOwnComputationId.guid() + hash_type(mTimesCalculatedFuturePages))[0] + 1 );
 
 			for (long k = 0; k < 1000;k++)
 				rand();
 
-			mFutureCliqueFinder->searchFromTopOfTreeReturningCliquesCreated(
-				curClock() + maxTimeElapsed, 
+			mFuturePageFinder->searchFromTopOfTreeReturningCliquesCreated(
+				curClock() + maxTimeElapsed,
 				rand
 				);
 
-			cliques = mFutureCliqueFinder->cliques();
+			pages = mFuturePageFinder->pages();
 			}
 		catch(std::logic_error& e)
 			{
@@ -1405,16 +1440,22 @@ public:
 			LOG_ERROR << "FuturesCliqueFinder threw an unknown exception";
 			}
 
-		mTotalTimeSpentCalculatingCliques += curClock() - t0;
+		mTotalTimeSpentCalculatingFuturePages += curClock() - t0;
 
-		LOG_DEBUG << mOwnComputationId.guid() << ": after " 
-			<< mTotalTimeSpentCalculatingCliques << ", cliques are " 
-			<< cliques.size()
+		LOG_DEBUG << mOwnComputationId.guid() << ": after "
+			<< mTotalTimeSpentCalculatingFuturePages << ", pages are "
+			<< pages.size()
 			<< ".\n"
-			<< mFutureCliqueFinder->getRootTask()->toString()
+			<< mFuturePageFinder->getRootTask()->toString()
 			;
 
-		return cliques;
+		mFuturePageFinder.reset(
+			new FuturesCliqueFinder::CliqueFinder(
+				mExecutionContext
+				)
+			);
+
+		return pages;
 		}
 
 	bool isExternalIoTaskCacheLoad_(ImplValContainer cacheLoadRequest)
@@ -1424,7 +1465,7 @@ public:
 
 		if (*cacheLoadRequest.tupleGetSize() == 1)
 			return (bool)convertImplValContainerToExternalIoTask(
-				*cacheLoadRequest.tupleGetItem(0), 
+				*cacheLoadRequest.tupleGetItem(0),
 				false
 				);
 
@@ -1441,15 +1482,15 @@ public:
 
 		if (*cacheLoadRequest.tupleGetSize() == 1)
 			task = *convertImplValContainerToExternalIoTask(
-						*cacheLoadRequest.tupleGetItem(0), 
+						*cacheLoadRequest.tupleGetItem(0),
 						false
 						);
 		else
 			task = *convertImplValContainerToExternalIoTask(
-						*cacheLoadRequest.tupleGetItem(1), 
+						*cacheLoadRequest.tupleGetItem(1),
 						true
 						);
-		
+
 		ioGuid = ioGuid + computationStateHashIncrement;
 		ExternalIoTaskId taskId = ExternalIoTaskId(ioGuid);
 
@@ -1467,7 +1508,7 @@ public:
 				)
 		{
 		lassert(mBlockingComputationsInOrder.size() == 0);
-		
+
 		long tupleCt = *cacheLoadRequest.tupleGetSize();
 
 		for (long k = 0; k < tupleCt; k++)
@@ -1476,25 +1517,27 @@ public:
 
 			ioGuid = ioGuid + computationStateHashIncrement;
 
-			ComputationDefinition def = 
+			ComputationDefinition def =
 				ComputationDefinition::ApplyFromTuple(
 					copyToFreeStore(elt)
 					);
 
-			ComputationId computation = 
-				ComputationId::CreateIdOnWorker(
+			ComputationId computation =
+				ComputationId::CreateIdForRootOnWorker(
 					def,
 					ioGuid
 					);
 
-			ioComputations.computations() = 
-				ioComputations.computations() + 
-					computation + 
+			ioComputations.computations() =
+				ioComputations.computations() +
+					computation +
 					def;
 
 			mBlockingComputationsInOrder.push_back(computation);
 			}
-		
+
+		mComputationStatisticsOutsideOfEC.timesComputed()++;
+
 		mComputationStatus = ComputationStatus::BlockedOnComputations(
 			ImmutableTreeSet<ComputationId>(
 				mBlockingComputationsInOrder.begin(),
@@ -1538,7 +1581,7 @@ public:
 
 		for (long k = 0; k < tupleCt; k++)
 			{
-			ImplValContainer elt = *cacheLoadRequest.tupleGetItem(k);	
+			ImplValContainer elt = *cacheLoadRequest.tupleGetItem(k);
 
 			if (!elt.tupleGetSize() || *elt.tupleGetSize() != 2)
 				return false;
@@ -1567,7 +1610,7 @@ public:
 
 
 	void addComputationResult(
-			ComputationId computation, 
+			ComputationId computation,
 			Fora::Interpreter::ComputationResult result,
 			ComputationStatistics statistics
 			)
@@ -1579,9 +1622,9 @@ public:
 				mComputationStatisticsOutsideOfEC.timesComputed()++;
 
 				lassert_dump(
-					newSubthreads.size() < subthreads.size(), 
-					"dependency list " 
-						<< prettyPrintString(subthreads) 
+					newSubthreads.size() < subthreads.size(),
+					"dependency list "
+						<< prettyPrintString(subthreads)
 						<< " didn't contain "
 						<< prettyPrintString(computation)
 					);
@@ -1589,7 +1632,7 @@ public:
 				mOutsideEcValues.setPartialComputationResult(computation, result);
 
 				if (computation.isSplit())
-					mComputationStatisticsOutsideOfEC = 
+					mComputationStatisticsOutsideOfEC =
 						ComputationStatistics::merge(
 							mComputationStatisticsOutsideOfEC,
 							statistics,
@@ -1603,9 +1646,9 @@ public:
 						auto& blockingOn = mOutsideEcValues.getPartialComputationResults();
 
 						lassert_dump(
-							blockingOn.size() == 1 && 
+							blockingOn.size() == 1 &&
 								blockingOn.find(*mPassthroughTo) != blockingOn.end(),
-							"Computation " << prettyPrintString(mOwnComputationId) 
+							"Computation " << prettyPrintString(mOwnComputationId)
 								<< " passthrough to "
 								<< prettyPrintString(*mPassthroughTo)
 								<< " is blocked on " << prettyPrintString(blockingOn)
@@ -1621,7 +1664,7 @@ public:
 						mOutsideEcValues.clear();
 
 						mExecutionContext->pageLargeVectorHandles(
-							mIsTemporary ? 
+							mIsTemporary ?
 								mExecutionContext->getVDM().maxPageSizeInBytes()
 							:	mExecutionContext->getVDM().getMemoryManager()->getSlabSize()
 							);
@@ -1629,7 +1672,7 @@ public:
 						mComputationStatus = ComputationStatus::Finished();
 
 						if (!mOwnComputationId.isTemporary())
-							LOG_DEBUG << "Computation " << mOwnComputationId.getRoot().computationHash() 
+							LOG_DEBUG << "Computation " << mOwnComputationId.getRoot().computationHash()
 								<< " / " << mOwnComputationId.guid()
 								<< " finishing after "
 								<< currentComputationStatistics().estimatedTotalRuntime()
@@ -1647,8 +1690,8 @@ public:
 					mComputationStatus = ComputationStatus::BlockedOnComputations(newSubthreads);
 				}
 			-| _ ->> {
-				lassert_dump(false, 
-					"Illegal to add a thread result for a thread in state " << 
+				lassert_dump(false,
+					"Illegal to add a thread result for a thread in state " <<
 						mComputationStatus.tagName()
 					);
 				}
@@ -1659,17 +1702,17 @@ public:
 		mOutsideEcValues.setExternalIoTaskResult(completed.result());
 
 		mComputationStatus = ComputationStatus::Computable();
-		
+
 		mIsRejoinedSplitThatHasNotComputed = false;
 		}
 
 	void markComputationCircular()
 		{
-		LOG_WARN << "Marking " << prettyPrintStringWithoutWrapping(mOwnComputationId) 
+		LOG_WARN << "Marking " << prettyPrintStringWithoutWrapping(mOwnComputationId)
 			<< " circular. Current state is "
 			<< prettyPrintStringWithoutWrapping(mComputationStatus)
 			;
-		
+
 		mExecutionContext->teardown();
 		mOutsideEcValues.clearCompletely();
 		mBlockingComputationsInOrder.clear();
@@ -1685,7 +1728,7 @@ public:
 				)
 			);
 		mComputationStatus = ComputationStatus::Finished();
-		}		
+		}
 
 	void markSliceLoadFailedPermanently()
 		{
@@ -1708,13 +1751,13 @@ public:
 				mComputationStatus = ComputationStatus::Computable();
 				}
 			-| _ ->> {
-				lassert_dump(false, 
-					"Not blocked on a vectorload. state is " 
+				lassert_dump(false,
+					"Not blocked on a vectorload. state is "
 						<< prettyPrintString(mComputationStatus)
 					);
 				}
 		}
-	
+
 	void resetInterruptState()
 		{
 		mExecutionContext->resetInterruptState();
@@ -1758,9 +1801,9 @@ public:
 
 		if (mIsRejoinedSplitThatHasNotComputed)
 			return CreatedComputations();
-		
-		if (mExecutionContext->getInterpreterHistory().isTracing() && 
-				curClock() - mExecutionContext->getInterpreterHistory().timeOfLastTraceEvent() < 
+
+		if (mExecutionContext->getInterpreterHistory().isTracing() &&
+				curClock() - mExecutionContext->getInterpreterHistory().timeOfLastTraceEvent() <
 					kMinTimeInCompiledCodeToDisableTracing)
 			{
 			return CreatedComputations();
@@ -1790,7 +1833,7 @@ public:
 
 	bool canExtractPausedComputation() const
 		{
-		return (mComputationStatus.isComputable() || mComputationStatus.isBlockedOnVectorLoad()) 
+		return (mComputationStatus.isComputable() || mComputationStatus.isBlockedOnVectorLoad())
 					&& !mOutsideEcValues.getUnconsumedDefinition();
 		}
 
@@ -1807,7 +1850,7 @@ public:
 
 		auto createThread = [&](ComputationDefinition def) {
 			ioGuid = ioGuid + computationStateHashIncrement;
-			ComputationId id = ComputationId::CreateIdOnWorker(def, ioGuid);
+			ComputationId id = ComputationId::CreateIdForSplit(def, ioGuid, mTimesEverSplit++);
 			result.computations() = result.computations() + id + def;
 			return id;
 			};
@@ -1834,6 +1877,8 @@ public:
 				)
 			);
 
+		mComputationStatisticsOutsideOfEC.timesComputed()++;
+
 		mComputationStatus = ComputationStatus::BlockedOnComputations(
 			ImmutableTreeSet<ComputationId>(
 				mBlockingComputationsInOrder.begin(),
@@ -1851,7 +1896,7 @@ public:
 			);
 		}
 
-	Nullable<pair<CheckpointStatus, CheckpointRequest> > 
+	Nullable<pair<CheckpointStatus, CheckpointRequest> >
 					setCheckpointStatusTimestamp(CheckpointRequest timestamp)
 		{
 		if (mCheckpointStatusTimestamp && timestamp < *mCheckpointStatusTimestamp)
@@ -1867,7 +1912,7 @@ public:
 		return computeCurrentCheckpointStatus();
 		}
 
-	Nullable<pair<CheckpointStatus, CheckpointRequest> > 
+	Nullable<pair<CheckpointStatus, CheckpointRequest> >
 					addChildComputationCheckpointStatus(
 							ComputationId childComputation,
 							CheckpointStatus stats,
@@ -1884,13 +1929,13 @@ public:
 		return computeCurrentCheckpointStatus();
 		}
 
-	Nullable<pair<CheckpointStatus, CheckpointRequest> > 
+	Nullable<pair<CheckpointStatus, CheckpointRequest> >
 					getCheckpointStatus() const
 		{
 		return mLastBroadcastCheckpointStatus;
 		}
 
-	Nullable<pair<CheckpointStatus, CheckpointRequest> > 
+	Nullable<pair<CheckpointStatus, CheckpointRequest> >
 					computeCurrentCheckpointStatus()
 		{
 		//if we have no status ourselves
@@ -1898,12 +1943,12 @@ public:
 			return null();
 
 		//if we have already broadcast
-		if (mLastBroadcastCheckpointStatus && 
+		if (mLastBroadcastCheckpointStatus &&
 				mLastBroadcastCheckpointStatus->second == *mCheckpointStatusTimestamp)
 			return null();
 
 		CheckpointStatus result(
-			currentComputationStatistics(), 
+			currentComputationStatistics(),
 			getReferencedBigVectors()
 			);
 
@@ -1967,9 +2012,9 @@ public:
 		ONoncontiguousByteBlockProtocol				protocol;
 
 		PolymorphicSharedPtr<SerializedObjectContext> context;
-		
+
 		context.reset(new SerializedObjectContext(mExecutionContext->getVDM().getMemoryManager()));
-		
+
 			{
 			OBinaryStream stream(protocol);
 
@@ -1982,8 +2027,10 @@ public:
 			valueStream.serialize(mComputationStatus);
 
 			mOutsideEcValues.serialize(valueStream);
-			
+
 			valueStream.serialize(mBlockingComputationsInOrder);
+			valueStream.serialize(mTimesEverSplit);
+			valueStream.serialize(mInitialRuntimePredictionSignature);
 			valueStream.serialize(mPassthroughTo);
 			valueStream.serialize(mWasPassthroughTo);
 			valueStream.serialize(mIsTemporary);
@@ -1992,7 +2039,7 @@ public:
 			valueStream.serialize(mIsRejoinedSplitThatHasNotComputed);
 
 			valueStream.serialize(mCurrentPageLoadGroup);
-			valueStream.serialize(mCurrentCliques);
+			valueStream.serialize(mFuturePageReads);
 
 			valueStream.serialize(mLastPersistedCheckpointTimestamp);
 			valueStream.serialize(mCheckpointStatusTimestamp);
@@ -2004,12 +2051,12 @@ public:
 				valueStream.serialize(mComputationEvents);
 				}
 
-			valueStream.serialize(mTimesCalculatedCliques);
+			valueStream.serialize(mTimesCalculatedFuturePages);
 
 			valueStream.serialize(mIsPagingDisabled);
 			valueStream.serialize(mTimesReset);
 			}
-		
+
 		return PolymorphicSharedPtr<SerializedObject>(
 			new SerializedObject(
 				protocol.getData(),
@@ -2029,12 +2076,12 @@ public:
 		PolymorphicSharedPtr<SerializedObjectContext> context(
 			new SerializedObjectContext(mExecutionContext->getVDM().getMemoryManager(), object)
 			);
-		
+
 		IBinaryStream stream(protocol);
 
 		SerializedObjectContextDeserializer deserializer(
-			stream, 
-			*context, 
+			stream,
+			*context,
 			MemoryPool::getFreeStorePool()
 			);
 
@@ -2049,6 +2096,8 @@ public:
 		mOutsideEcValues.deserialize(valueStream);
 
 		valueStream.deserialize(mBlockingComputationsInOrder);
+		valueStream.deserialize(mTimesEverSplit);
+		valueStream.deserialize(mInitialRuntimePredictionSignature);
 		valueStream.deserialize(mPassthroughTo);
 		valueStream.deserialize(mWasPassthroughTo);
 		valueStream.deserialize(mIsTemporary);
@@ -2056,13 +2105,13 @@ public:
 		valueStream.deserialize(mCumulativeTimeAtLastSplitAttempt);
 		valueStream.deserialize(mIsRejoinedSplitThatHasNotComputed);
 		valueStream.deserialize(mCurrentPageLoadGroup);
-		valueStream.deserialize(mCurrentCliques);
+		valueStream.deserialize(mFuturePageReads);
 		valueStream.deserialize(mLastPersistedCheckpointTimestamp);
 		valueStream.deserialize(mCheckpointStatusTimestamp);
 		valueStream.deserialize(mLastBroadcastCheckpointStatus);
 		valueStream.deserialize(mChildCheckpointStatuses);
 		valueStream.deserialize(mComputationEvents);
-		valueStream.deserialize(mTimesCalculatedCliques);
+		valueStream.deserialize(mTimesCalculatedFuturePages);
 		valueStream.deserialize(mIsPagingDisabled);
 		valueStream.deserialize(mTimesReset);
 
@@ -2082,7 +2131,7 @@ public:
 			lassert(mExecutionContext->isCacheRequest());
 
 		mComputationStatisticsOutsideOfEC.timesMoved()++;
-		mComputationStatisticsOutsideOfEC.timesMovedTimesBytesMoved() += 
+		mComputationStatisticsOutsideOfEC.timesMovedTimesBytesMoved() +=
 													object->getSerializedData()->totalByteCount();
 
 		if (mExecutionContext->isFinished() && !mIsTemporary)
@@ -2090,20 +2139,22 @@ public:
 				mExecutionContext->getVDM().getMemoryManager()->getVerySmallAllocSize()
 				);
 		}
-	
+
 	void becomePassthroughTo(ComputationId inId)
 		{
-		LOG_INFO << "Computation " 
+		LOG_INFO << "Computation "
 			<< prettyPrintStringWithoutWrapping(mOwnComputationId) << " becoming passthrough to "
 			<< prettyPrintStringWithoutWrapping(inId)
 			;
 
+		mTimesEverSplit = 0;
+
 		mTimesReset++;
 
 		if (computeCurrentTimeElapsed() > 1.0)
-			LOG_WARN << "Becoming passthrough with stats=" << 
+			LOG_WARN << "Becoming passthrough with stats=" <<
 				prettyPrintString(currentComputationStatistics());
-		
+
 		mExecutionContext->teardown();
 
 		mOutsideEcValues.becomePassthroughTo();
@@ -2126,7 +2177,7 @@ public:
 		{
 		return mIsTemporary;
 		}
-	
+
 	void interruptAfterCycleCount(sword_t checks)
 		{
 		mExecutionContext->interruptAfterCycleCount(checks);
@@ -2134,38 +2185,40 @@ public:
 
 	ImmutableTreeSet<Fora::BigVectorId> getReferencedBigVectors()
 		{
-		return mExecutionContext->getReferencedBigVectors() + 
+		return mExecutionContext->getReferencedBigVectors() +
 			mOutsideEcValues.getReferencedBigVectors();
 		}
 
 	ComputationStatistics currentComputationStatistics() const
 		{
-		return 
+		return
 			ComputationStatistics::merge(
 				mComputationStatisticsOutsideOfEC,
 				computationStatisticsForEC(),
 				true
-				).withTimesReset(mTimesReset);
+				).withTimesReset(mTimesReset)
+				.withInitialRuntimePrediction(mInitialRuntimePredictionSignature);
 		}
 
 	//this function is not safe to be called from another thread while we are computing
 	ComputationStatistics computationStatisticsForEC() const
 		{
 		return ComputationStatistics(
+			mInitialRuntimePredictionSignature,
 			mExecutionContext->getTimeSpentInInterpreter(),
 			mExecutionContext->getTimeSpentInCompiledCode(),
 			mExecutionContext->getTimeSpentGarbageCollecting(),
 			0,
 			0,
-			//min memory used is 4096, a single page, which is a crude proxy for the 
+			//min memory used is 4096, a single page, which is a crude proxy for the
 			//fact that we're allocating cumulus data structures etc.
 			std::max<int64_t>(
-				mExecutionContext->getMemoryUsageAtLastEvent().first + 
+				mExecutionContext->getMemoryUsageAtLastEvent().first +
 					mOutsideEcValues.getMemoryPool()->totalBytesAllocated(),
 				4096
 				),
 			std::max<int64_t>(
-				mExecutionContext->getMemoryUsageAtLastEvent().second + 
+				mExecutionContext->getMemoryUsageAtLastEvent().second +
 					mOutsideEcValues.getMemoryPool()->totalBytesAllocatedFromOS(),
 				4096
 				),
@@ -2174,7 +2227,7 @@ public:
 			0,
 			0,
 			mCurrentPageLoadGroup,
-			mCurrentCliques,
+			mFuturePageReads,
 			0
 			);
 		}
@@ -2187,8 +2240,8 @@ public:
 			timeElapsed += curClock() - mComputingStartTime;
 
 		timeElapsed +=
-			mExecutionContext->getTimeSpentInInterpreter() + 
-			mExecutionContext->getTimeSpentInCompiledCode() + 
+			mExecutionContext->getTimeSpentInInterpreter() +
+			mExecutionContext->getTimeSpentInCompiledCode() +
 			mExecutionContext->getTimeSpentGarbageCollecting()
 			;
 
@@ -2237,6 +2290,11 @@ public:
 			;
 		}
 
+	Nullable<RuntimePredictionSignature> getRuntimePredictionSignature()
+		{
+		return mInitialRuntimePredictionSignature;
+		}
+
 private:
 	Nullable<double> mLastPersistedCheckpointTimestamp;
 
@@ -2256,9 +2314,13 @@ private:
 
 	int32_t mTimesReset;
 
+	int64_t mTimesEverSplit;
+
 	ComputationId mOwnComputationId;
 
 	ComputationStatus mComputationStatus;
+
+	Nullable<RuntimePredictionSignature> mInitialRuntimePredictionSignature;
 
 	ComputationStateValuesOutsideOfExecutionContext mOutsideEcValues;
 
@@ -2280,19 +2342,19 @@ private:
 
 	double mComputingStartTime;
 
-	double mTotalTimeSpentCalculatingCliques;
+	double mTotalTimeSpentCalculatingFuturePages;
 
-	long mTimesCalculatedCliques;
+	long mTimesCalculatedFuturePages;
 
 	ImmutableTreeSet<Fora::PageId> mCurrentPageLoadGroup;
 
-	ImmutableTreeVector<ImmutableTreeSet<Fora::PageId> > mCurrentCliques;
+	ImmutableTreeVector<Fora::PageId> mFuturePageReads;
 
 	std::vector<ComputationEvent> mComputationEvents;
 
 	boost::mutex mComputationEventsMutex;
 
-	PolymorphicSharedPtr<FuturesCliqueFinder::CliqueFinder> mFutureCliqueFinder;
+	PolymorphicSharedPtr<FuturesCliqueFinder::CliqueFinder> mFuturePageFinder;
 };
 
 
@@ -2305,8 +2367,8 @@ ComputationState::ComputationState(
 	{
 	mImpl.reset(
 		new ComputationStateImpl(
-			computationId, 
-			inVDM, 
+			computationId,
+			inVDM,
 			config,
 			inCallbackScheduler
 			)
@@ -2375,7 +2437,7 @@ void ComputationState::addComputationResult(const Cumulus::ComputationResult& in
 	}
 
 void ComputationState::addComputationResult(
-			ComputationId computation, 
+			ComputationId computation,
 			Fora::Interpreter::ComputationResult result,
 			ComputationStatistics statistics
 			)
@@ -2442,7 +2504,7 @@ ImmutableTreeSet<Fora::BigVectorId> ComputationState::getReferencedBigVectors()
 	{
 	return mImpl->getReferencedBigVectors();
 	}
-		
+
 bool ComputationState::hasEnoughComputeTimeElapsedToSplit(double inThreshold)
 	{
 	return mImpl->hasEnoughComputeTimeElapsedToSplit(inThreshold);
@@ -2468,7 +2530,7 @@ void ComputationState::pageLargeVectorHandles()
 	{
 	mImpl->pageLargeVectorHandles();
 	}
-	
+
 void ComputationState::disableVectorPaging()
 	{
 	mImpl->disableVectorPaging();
@@ -2489,9 +2551,9 @@ void ComputationState::unloadAllVectorHandles()
 	mImpl->unloadAllVectorHandles();
 	}
 
-ImmutableTreeVector<ImmutableTreeSet<Fora::PageId> > ComputationState::continueToSearchForCliques(double maxTimeElapsed)
+ImmutableTreeVector<Fora::PageId> ComputationState::continueToSearchForFuturePages(double maxTimeElapsed)
 	{
-	return mImpl->continueToSearchForCliques(maxTimeElapsed);
+	return mImpl->continueToSearchForFuturePages(maxTimeElapsed);
 	}
 
 ImmutableTreeVector<ComputationEvent> ComputationState::extractRecentEvents()
@@ -2499,19 +2561,19 @@ ImmutableTreeVector<ComputationEvent> ComputationState::extractRecentEvents()
 	return mImpl->extractRecentEvents();
 	}
 
-Nullable<pair<CheckpointStatus, CheckpointRequest> > 
+Nullable<pair<CheckpointStatus, CheckpointRequest> >
 				ComputationState::setCheckpointStatusTimestamp(CheckpointRequest timestamp)
 	{
 	return mImpl->setCheckpointStatusTimestamp(timestamp);
 	}
 
-Nullable<pair<CheckpointStatus, CheckpointRequest> > 
+Nullable<pair<CheckpointStatus, CheckpointRequest> >
 				ComputationState::getCheckpointStatus()
 	{
 	return mImpl->getCheckpointStatus();
 	}
 
-Nullable<pair<CheckpointStatus, CheckpointRequest> > 
+Nullable<pair<CheckpointStatus, CheckpointRequest> >
 				ComputationState::addChildComputationCheckpointStatus(
 						ComputationId childComputation,
 						CheckpointStatus stats,
@@ -2526,5 +2588,9 @@ void ComputationState::resetStateForAddDrop()
 	mImpl->resetStateForAddDrop();
 	}
 
+Nullable<RuntimePredictionSignature> ComputationState::getRuntimePredictionSignature()
+	{
+	return mImpl->getRuntimePredictionSignature();
+	}
 }
 

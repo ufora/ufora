@@ -25,6 +25,7 @@ callbackScheduler = CallbackScheduler.singletonForTesting()
 TIMEOUT=120
 
 class DistributedDataTasksTests(unittest.TestCase):
+    @PerformanceTestReporter.PerfTest("python.datatasks.heterogeneous")
     def test_sortHeterogeneous(self):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
 
@@ -42,10 +43,10 @@ class DistributedDataTasksTests(unittest.TestCase):
                         throw (ix, v[ix], v[ix+1])
                 return true;
                 }
-            
+
             if (size(sortedVals) != size(values))
                 throw "expected " + String(size(values)) + ", not " + String(size(sortedVals))
-            sortedAndHomogenous(sortedVals[,ct]) and 
+            sortedAndHomogenous(sortedVals[,ct]) and
                 sortedAndHomogenous(sortedVals[ct,])
             """
 
@@ -96,9 +97,11 @@ class DistributedDataTasksTests(unittest.TestCase):
     def test_basicTaskPathwaySmall(self):
         self.basicTaskPathwayTest(100)
 
+    @PerformanceTestReporter.PerfTest("python.datatasks.singlebox_80mb")
     def test_basicTaskPathwayBig(self):
         self.basicTaskPathwayTest(10000000)
 
+    @PerformanceTestReporter.PerfTest("python.datatasks.multibox_80mb")
     def test_basicTaskPathwayMultibox(self):
         self.basicTaskPathwayTest(10000000, 4, 250)
 
@@ -134,9 +137,11 @@ class DistributedDataTasksTests(unittest.TestCase):
         self.assertTrue(result.isResult(), result)
         self.assertTrue(result.asResult.result.pyval == True, result)
 
+    @PerformanceTestReporter.PerfTest("python.datatasks.weird_string_sort_1")
     def test_weirdStringSort_1(self):
         self.weirdStringSort(10000, 1, 1000)
 
+    @PerformanceTestReporter.PerfTest("python.datatasks.weird_string_sort_2")
     def test_weirdStringSort_2(self):
         self.weirdStringSort(10000, 4, 250)
 
@@ -151,7 +156,7 @@ class DistributedDataTasksTests(unittest.TestCase):
             let values = Vector.range(N, C).paged;
 
             let s1 = cached`(#ExternalIoTask(#DistributedDataOperation(#Sort(values))))
-            
+
             return size(s1) == N
             """.replace("__size__", str(sz)).replace("__use_class__", '1' if useClass else '0')
 
@@ -169,11 +174,11 @@ class DistributedDataTasksTests(unittest.TestCase):
 
     def test_class_sorting_is_fast(self):
         sz = 10000000
-        
+
         #burn the calculation in.
         self.classSortingTest(sz, useClass=True)
         self.classSortingTest(sz, useClass=False)
-        
+
         t0 = time.time()
 
         with PerformanceTestReporter.RecordAsPerfTest("python.datatasks.sort_class_instances"):

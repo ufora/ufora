@@ -43,7 +43,7 @@ namespace {
 			boost::scoped_ptr<Ufora::thread::detail::ThreadFunc>
 				f(static_cast<Ufora::thread::detail::ThreadFunc*>(inThreadFuncPtr));
 			f->call();
-			
+
 			return 0;
 		}
 	}
@@ -51,8 +51,8 @@ namespace {
 
 
 
-namespace Ufora { 
-    namespace thread { 
+namespace Ufora {
+    namespace thread {
 
         void joinThread(BsaThreadData threadData)
             {
@@ -121,7 +121,7 @@ public:
 		ThreadFuncCaller(std::auto_ptr<ThreadFunc>& tf) : m(tf.release())
 			{
 			}
-		void operator()() 
+		void operator()()
 			{
 			m->call();
 			}
@@ -134,7 +134,7 @@ void spawnAndDetach(std::auto_ptr<ThreadFunc> inFunc,
 										 size_t inStackSize)
 	{
 	//TODO BUG ronen: we're not implementing this correctly. Do you know the Win32 thread API?
-	
+
 	//for now, just use boost threads
 	new boost::thread(ThreadFuncCaller(inFunc));
 	}

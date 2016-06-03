@@ -21,12 +21,12 @@
 namespace Ufora {
 class OsError : public std::exception {
 public:
-    OsError(std::string inMessage, int inErrno) : 
+    OsError(std::string inMessage, int inErrno) :
         mMessage(inMessage),
         mErrno(inErrno)
         {
         }
-    ~OsError() throw() 
+    ~OsError() throw()
         {
         }
     std::string getMessage()

@@ -212,7 +212,7 @@ TypedFora::Abi::ForaValueArraySlice VectorRecord::sliceForOffset(int64_t index) 
 	}
 
 VectorRecord VectorRecord::append(
-						MemoryPool* inPool, 
+						MemoryPool* inPool,
 						ImplValContainer toAppend,
 						VectorDataManager* inVDM,
 						const boost::function0<hash_type>& hashCreatorFun
@@ -281,7 +281,7 @@ VectorRecord VectorRecord::append(
 	}
 
 VectorRecord VectorRecord::append(
-						MemoryPool* inPool, 
+						MemoryPool* inPool,
 						void* dataToAppend,
 						JOV jovToAppend,
 						VectorDataManager* inVDM,
@@ -312,7 +312,7 @@ VectorRecord VectorRecord::append(
 
 		mDataPtr->unpagedValues()->append(jovToAppend, (uint8_t*)dataToAppend, 1, 0);
 		mDataPtr->valueAppendedToUnpagedData();
-		
+
 		return VectorRecord(mDataPtr, mSize+1, mOffset, 1);
 		}
 
@@ -353,7 +353,7 @@ VectorRecord VectorRecord::append(
 		}
 	}
 
-Fora::ReturnValue<VectorRecord, VectorLoadRequest> 
+Fora::ReturnValue<VectorRecord, VectorLoadRequest>
 		VectorRecord::appropriateForConcatenation(MemoryPool* inPool, VectorDataManager* inVDM) const
 	{
 	//if we are a very small slice of a vector page, or if we are a very small vector page,
@@ -368,8 +368,8 @@ Fora::ReturnValue<VectorRecord, VectorLoadRequest>
 	}
 
 VectorRecord VectorRecord::concatenate(
-							const VectorRecord& inLHS, 
-							const VectorRecord& inRHS, 
+							const VectorRecord& inLHS,
+							const VectorRecord& inRHS,
 							MemoryPool* inPool,
 							VectorDataManager* inVDM,
 							hash_type inVectorHash
@@ -412,8 +412,8 @@ VectorRecord VectorRecord::concatenate(
 	}
 
 VectorRecord VectorRecord::slice(
-					Nullable<int64_t> nLow, 
-					Nullable<int64_t> nHigh, 
+					Nullable<int64_t> nLow,
+					Nullable<int64_t> nHigh,
 					Nullable<int64_t> nStride
 					)  const
 	{
@@ -423,23 +423,23 @@ VectorRecord VectorRecord::slice(
 	if (nStride && *nStride == 0)
 		return VectorRecord();
 
-	IntegerSequence sequenceToUse = 
+	IntegerSequence sequenceToUse =
 		IntegerSequence(size(), offset(), stride()).slice(nLow, nHigh, nStride);
 
 	if (!sequenceToUse.size())
 		return VectorRecord();
 
 	return VectorRecord(
-		mDataPtr, 
-		sequenceToUse.size(), 
-		sequenceToUse.offset(), 
+		mDataPtr,
+		sequenceToUse.size(),
+		sequenceToUse.offset(),
 		sequenceToUse.stride()
 		);
 	}
 
 PooledVectorRecord PooledVectorRecord::slice(
-					Nullable<int64_t> nLow, 
-					Nullable<int64_t> nHigh, 
+					Nullable<int64_t> nLow,
+					Nullable<int64_t> nHigh,
 					Nullable<int64_t> nStride
 					)  const
 	{
@@ -449,16 +449,16 @@ PooledVectorRecord PooledVectorRecord::slice(
 	if (nStride && *nStride == 0)
 		return PooledVectorRecord();
 
-	IntegerSequence sequenceToUse = 
+	IntegerSequence sequenceToUse =
 		IntegerSequence(mSize, mOffset, mStride).slice(nLow, nHigh, nStride);
 
 	if (!sequenceToUse.size())
 		return PooledVectorRecord();
 
 	return PooledVectorRecord(
-		mDataPtr, 
-		sequenceToUse.size(), 
-		sequenceToUse.offset(), 
+		mDataPtr,
+		sequenceToUse.size(),
+		sequenceToUse.offset(),
 		sequenceToUse.stride()
 		);
 	}
@@ -479,15 +479,15 @@ VectorRecord VectorRecord::canonicallySliced(
 
 	VectorRecord res(
 		mDataPtr->slice(
-			indicesWithinHandle(), 
-			inPool, 
-			inVDM, 
+			indicesWithinHandle(),
+			inPool,
+			inVDM,
 			newVectorHash
 			)
 		);
 
 	lassert_dump(
-		res.size() == size(), 
+		res.size() == size(),
 		"Slicing a vector of size " << mDataPtr->size() << " with " << prettyPrintString(indicesWithinHandle())
 			<< " produced " << res.size() << ". Expected " << indicesWithinHandle().size()
 			<< "\n\nHandle = "
@@ -499,7 +499,7 @@ VectorRecord VectorRecord::canonicallySliced(
 
 VectorRecord VectorRecord::createWithinExecutionContext(ForaValueArray* array)
 	{
-	Fora::Interpreter::ExecutionContext* curExecutionContext = 
+	Fora::Interpreter::ExecutionContext* curExecutionContext =
 			Fora::Interpreter::ExecutionContext::currentExecutionContext();
 
 	MemoryPool* pool = curExecutionContext->getMemoryPool();
@@ -521,8 +521,8 @@ VectorRecord VectorRecord::createVectorForEntirePageLayout(
 									)
 	{
 	MemoryPool* pool = (
-		withinThisContext ? 
-			withinThisContext->getMemoryPool() 
+		withinThisContext ?
+			withinThisContext->getMemoryPool()
 		:	MemoryPool::getFreeStorePool()
 		);
 
@@ -550,8 +550,8 @@ VectorRecord VectorRecord::pagedPortion() const
 
 	return VectorRecord(
 		dataPtr(),
-		restrictedSlice.size(), 
-		restrictedSlice.offset(), 
+		restrictedSlice.size(),
+		restrictedSlice.offset(),
 		restrictedSlice.stride()
 		);
 	}
@@ -566,8 +566,8 @@ VectorRecord VectorRecord::pagedAndPageletTreePortion() const
 
 	return VectorRecord(
 		dataPtr(),
-		restrictedSlice.size(), 
-		restrictedSlice.offset(), 
+		restrictedSlice.size(),
+		restrictedSlice.offset(),
 		restrictedSlice.stride()
 		);
 	}
@@ -586,9 +586,9 @@ VectorRecord VectorRecord::unpagedPortion() const
 		return VectorRecord();
 
 	return VectorRecord(
-		dataPtr(), 
-		restrictedSlice.size(), 
-		restrictedSlice.offset(), 
+		dataPtr(),
+		restrictedSlice.size(),
+		restrictedSlice.offset(),
 		restrictedSlice.stride()
 		);
 	}
@@ -607,9 +607,9 @@ VectorRecord VectorRecord::pageletTreePortion() const
 		return VectorRecord();
 
 	return VectorRecord(
-		dataPtr(), 
-		restrictedSlice.size(), 
-		restrictedSlice.offset(), 
+		dataPtr(),
+		restrictedSlice.size(),
+		restrictedSlice.offset(),
 		restrictedSlice.stride()
 		);
 	}
@@ -628,9 +628,9 @@ VectorRecord VectorRecord::unpagedAndPageletTreePortion() const
 		return VectorRecord();
 
 	return VectorRecord(
-		dataPtr(), 
-		restrictedSlice.size(), 
-		restrictedSlice.offset(), 
+		dataPtr(),
+		restrictedSlice.size(),
+		restrictedSlice.offset(),
 		restrictedSlice.stride()
 		);
 	}
@@ -654,7 +654,7 @@ bool VectorRecord::allValuesAreLoaded() const
 		slotIndex = context->getCurrentBigvecSlotIndex();
 	else
 		slotIndex = 0;
-	
+
 	lassert(slotIndex);
 
 	if (!dataPtr()->bigvecHandleForSlot(*slotIndex))
@@ -672,7 +672,7 @@ bool VectorRecord::allValuesAreLoaded() const
 namespace {
 
 Nullable<pair<int64_t, int64_t> > extractPageableIndices(
-								const BigVectorPageLayout& layout, 
+								const BigVectorPageLayout& layout,
 								uint64_t maxPageSizeInBytes
 								)
 	{
@@ -687,8 +687,8 @@ Nullable<pair<int64_t, int64_t> > extractPageableIndices(
 			long high = k+2;
 			long bytecount = firstPage.bytecount() + secondPage.bytecount();
 
-			while (high < layout.vectorIdentities().size() && 
-					bytecount + layout.vectorIdentities()[high].vector().getPage().bytecount() < 
+			while (high < layout.vectorIdentities().size() &&
+					bytecount + layout.vectorIdentities()[high].vector().getPage().bytecount() <
 																				maxPageSizeInBytes)
 				{
 				bytecount += layout.vectorIdentities()[high].vector().getPage().bytecount();
@@ -704,7 +704,7 @@ Nullable<pair<int64_t, int64_t> > extractPageableIndices(
 
 }
 
-Fora::ReturnValue<VectorRecord, VectorLoadRequest> 
+Fora::ReturnValue<VectorRecord, VectorLoadRequest>
 			VectorRecord::deepcopiedAndContiguous(MemoryPool* inPool, VectorDataManager* inVDM) const
 	{
 	if (!dataPtr())
@@ -732,15 +732,15 @@ Fora::ReturnValue<VectorRecord, VectorLoadRequest>
 			"We should have guaranteed that this value was loaded by calling 'allValuesAreLoaded'"
 			);
 
-		Nullable<int64_t> unmappedIndex = 
+		Nullable<int64_t> unmappedIndex =
 			slice.firstValueNotLoadedInRange(
 				curIndex,
 				slice.mapping().highIndex()
 				);
 
 		lassert_dump(
-			!unmappedIndex, 
-			"Index " << *unmappedIndex << " is unmapped in " 
+			!unmappedIndex,
+			"Index " << *unmappedIndex << " is unmapped in "
 				<< prettyPrintString(slice) << " of size " << size()
 			);
 
@@ -818,8 +818,8 @@ bool VectorRecord::entirelyCoveredByJOV(const JudgmentOnValue& inJOV) const
 				};
 
 			slice.array()->visitValuesSequentially(
-				visitor, 
-				slice.mapping().range().offset(), 
+				visitor,
+				slice.mapping().range().offset(),
 				slice.mapping().range().endValue()
 				);
 
@@ -860,13 +860,13 @@ bool VectorRecord::visitAnyLoadedValues(
 		);
 
 	return dataPtr()->visitAnyLoadedValues(
-		inVDM, 
-		visitor, 
+		inVDM,
+		visitor,
 		subsequenceWithinVH
 		);
 	}
 
-	
+
 }
 }
 

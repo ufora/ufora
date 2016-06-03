@@ -45,11 +45,11 @@ public:
 					)
 				);
 			}
-				
+
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-				
+
 			typedef RateLimitedChannelGroup<std::string, std::string> group_type;
 
 			typedef typename group_type::pointer_type ptr_type;

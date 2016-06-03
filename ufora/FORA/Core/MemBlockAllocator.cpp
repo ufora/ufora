@@ -17,7 +17,7 @@
 
 #include "../../core/lassert.hpp"
 
-MemBlockAllocator::MemBlockAllocator(size_t inSlabSize) : 
+MemBlockAllocator::MemBlockAllocator(size_t inSlabSize) :
 		mSlabSize(inSlabSize),
 		mBaseMemBlock(0),
 		mFirstMemBlock(0)
@@ -78,7 +78,7 @@ size_t MemBlockAllocator::totalBytesReserved(void)
 	{
 	if (!mBaseMemBlock)
 		return 0;
-	
+
 	size_t tr = 0;
 
 	MemSlab* slab = mFirstMemBlock->rootSlab;

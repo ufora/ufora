@@ -41,7 +41,7 @@ SerializedObject::SerializedObject(	const PolymorphicSharedPtr<NoncontiguousByte
 		mMemoStorage(inContext->mMemoStorage)
 	{
 	}
-	
+
 SerializedObject&	SerializedObject::operator=(const SerializedObject& in)
 	{
 	mSerializedData = in.mSerializedData;
@@ -55,7 +55,7 @@ SerializedObject&	SerializedObject::operator=(const SerializedObject& in)
 	return *this;
 	}
 
-PolymorphicSharedPtr<SerializedObject> 
+PolymorphicSharedPtr<SerializedObject>
 SerializedObject::fromByteBlock(const PolymorphicSharedPtr<NoncontiguousByteBlock>& inBytes)
 	{
 	return PolymorphicSharedPtr<SerializedObject>(
@@ -65,7 +65,7 @@ SerializedObject::fromByteBlock(const PolymorphicSharedPtr<NoncontiguousByteBloc
 		);
 	}
 
-hash_type	
+hash_type
 SerializedObject::hash(void) const
 	{
 	if (!mHash)
@@ -77,14 +77,14 @@ SerializedObject::hash(void) const
 		h = h + hashValue(mExpressionsReferenced);
 		h = h + hashValue(mControlFlowGraphsReferenced);
 		h = h + mMemoStorage.hash();
-		
+
 		mHash = h;
 		}
-	
+
 	return *mHash;
 	}
 
-const PolymorphicSharedPtr<NoncontiguousByteBlock>&	
+const PolymorphicSharedPtr<NoncontiguousByteBlock>&
 SerializedObject::getSerializedData()
 	{
 	return mSerializedData;
@@ -96,7 +96,7 @@ void Serializer<SerializedObject, HashingStreamSerializer>::serialize(HashingStr
 	}
 
 void Serializer<PolymorphicSharedPtr<SerializedObject>, HashingStreamSerializer>::serialize(
-				HashingStreamSerializer& s, 
+				HashingStreamSerializer& s,
 				const PolymorphicSharedPtr<SerializedObject>& in
 				)
 	{
@@ -120,10 +120,10 @@ std::string SerializedObject::toString(void) const
 
 long  SerializedObject::totalValues(void) const
 	{
-	return mTypesReferenced.size() + 
-		mJovsReferenced.size() + 
-		mExpressionsReferenced.size() + 
-		mControlFlowGraphsReferenced.size() + 
+	return mTypesReferenced.size() +
+		mJovsReferenced.size() +
+		mExpressionsReferenced.size() +
+		mControlFlowGraphsReferenced.size() +
 		mMemoStorage.size()
 		;
 	}

@@ -114,13 +114,13 @@ class ModuleBindingTest(unittest.TestCase):
             tree = sourceCodeTree(tree)
 
         result = parser.parse(
-            tree, 
-            True, 
+            tree,
+            True,
             ForaNative.CodeDefinitionPoint.ExternalFromStringList([])
             )
 
         return parser.bind(result, freeVars, performDecomposition)
-        
+
     def test_parse_basic(self):
         result = self.parseAndBind(
             ("builtin", "f:10;", [
@@ -135,20 +135,20 @@ class ModuleBindingTest(unittest.TestCase):
         self.assertTrue(result.asModule.result.getObjectMember('f').pyval == 10)
         self.assertTrue(result.asModule.result.getObjectMember('math').getObjectMember('a').pyval == 11)
         self.assertTrue(result.asModule.result.getObjectMember('regression').getObjectMember('b').pyval == 12)
-    
+
     def test_root_module_can_refer_to_self(self):
         result = self.parseAndBind(
             ("builtin", "f: builtin", [])
             )
         self.assertTrue(result.asModule.result is not None)
-    
+
     def test_root_module_doesnt_bind_self(self):
         result = self.parseAndBind(
             ("builtin", "f: self", [])
             )
 
         self.assertTrue(result.asModule.result is None)
-    
+
     def test_parse_empty_module(self):
         result = self.parseAndBind(
             ("asdf", "", [])
@@ -172,7 +172,7 @@ class ModuleBindingTest(unittest.TestCase):
                 z: fun(x) { x+1 }
                 """, [])
             ).asModule.result
-        
+
 
         self.assertTrue(m1 != m2)
         self.assertTrue(m1.getObjectMember('f') is not None)
@@ -186,7 +186,7 @@ class ModuleBindingTest(unittest.TestCase):
                 f: fun(0) { 'f' } (x){ g(x-1) };
                 g: fun(0) { 'g' } (x){ f(x-1) };
                 z: fun(x) { x }
-                """, []), 
+                """, []),
             performDecomposition=False
             ).asModule.result
 
@@ -198,7 +198,7 @@ class ModuleBindingTest(unittest.TestCase):
                 """, []),
             performDecomposition=False
             ).asModule.result
-        
+
 
         self.assertTrue(m1 != m2)
         self.assertTrue(m1.getObjectMember('f') is not None)
@@ -292,10 +292,10 @@ class ModuleBindingTest(unittest.TestCase):
 
         for seed in range(1, 10):
             moduleDef = randomModule(
-                depth=2, 
-                memberCount=5, 
-                varnameCount=varnameCount, 
-                seed=seed, 
+                depth=2,
+                memberCount=5,
+                varnameCount=varnameCount,
+                seed=seed,
                 coverFree=True
                 )
 
@@ -313,10 +313,10 @@ class ModuleBindingTest(unittest.TestCase):
 
         for seed in range(1, 100):
             moduleDef = randomModule(
-                depth=2, 
-                memberCount=5, 
-                varnameCount=varnameCount, 
-                seed=seed, 
+                depth=2,
+                memberCount=5,
+                varnameCount=varnameCount,
+                seed=seed,
                 coverFree=False
                 )
 
@@ -330,9 +330,9 @@ class ModuleBindingTest(unittest.TestCase):
             for seed in range(1, 100):
                 moduleDef = randomModule(
                     depth=2,
-                    memberCount=memberCount, 
-                    varnameCount=varnameCount, 
-                    seed=seed, 
+                    memberCount=memberCount,
+                    varnameCount=varnameCount,
+                    seed=seed,
                     coverFree=False
                     )
                 mDecomp = self.parseAndBind(moduleDef, performDecomposition=True)
@@ -357,7 +357,7 @@ class ModuleBindingTest(unittest.TestCase):
                 ('a.script', 'let f = fun(x) { x }; let g = fun(){}; f(10)')
                 ])
             )
-        
+
         child1Name = m1['a.module'].asModule.parseMetadata.asScriptModule.symbols[0]
         child2Name = m2['a.module'].asModule.parseMetadata.asScriptModule.symbols[0]
 
@@ -387,7 +387,7 @@ class ModuleBindingTest(unittest.TestCase):
             m1 = self.parseAndBind(
                 ("builtin", text, [])
                 )
-            
+
             times.append(time.time() - t0)
 
         self.assertTrue(times[1] < times[0] * 100)

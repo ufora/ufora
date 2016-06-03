@@ -32,7 +32,7 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
+
 			FORAPythonUtil::exposeValueLikeCppmlType<FunctionStage1::Function>();
 			FORAPythonUtil::exposeValueLikeCppmlType<FunctionStage1::Expression>();
 			}

@@ -211,4 +211,4 @@ class TupleTestCases(object):
             self.evaluateWithExecutor(compare_some_tuples)
             )
 
-        
+

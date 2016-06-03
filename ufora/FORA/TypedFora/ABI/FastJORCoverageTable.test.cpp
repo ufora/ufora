@@ -33,7 +33,7 @@ BOOST_AUTO_TEST_CASE( test_TypedFora_Abi_FastJORCoverageTable_basic )
 	JudgmentOnValue jovVectorOfAny = JOV::OfType(Type::Vector());
 	JudgmentOnValue jovVectorOfInt = jovVector(JOV::OfType(Type::Integer(32, true)) );
 	JudgmentOnValue jovVectorOfString = jovVector(JOV::OfType(Type::String()) );
-	
+
 
 	FastJORCoverageTable table1(
                 JudgmentOnResult(emptyTreeSet() + jovInteger + jovVectorOfAny)
@@ -106,7 +106,7 @@ BOOST_AUTO_TEST_CASE( test_TypedFora_Abi_FastJORCoverageTable_test_multithreadin
 			threads.push_back(
 				boost::thread(
 					boost::bind(
-						boost::function1<void, long>(insertFunction), 
+						boost::function1<void, long>(insertFunction),
 						o
 						)
 					)
@@ -119,7 +119,7 @@ BOOST_AUTO_TEST_CASE( test_TypedFora_Abi_FastJORCoverageTable_test_multithreadin
 	while (curClock() - t0 < 2.0)
 		{
 		count++;
-		
+
 		hash_table_type table(
 			JudgmentOnResult(emptyTreeSet() + JOV::Unknown())
 			);

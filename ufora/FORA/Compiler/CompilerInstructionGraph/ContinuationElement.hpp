@@ -47,18 +47,18 @@ class ContinuationElement {
 	friend class Continuation;
 
 	//remove "this" and put in mContinuationPtr->mOldContinuationElements
-	void destroy(ContinuationElement* inPrevious);	
+	void destroy(ContinuationElement* inPrevious);
 
 	//reattach the continuation to the appropriate instruction
 	bool recomputeTarget();
-	
+
 public:
 	Continuation* getContinuationPtr(void) const;
-	
+
 	InstructionPtr getSourceInstructionPtr(void) const;
-	
+
 	InstructionPtr getTargetInstructionPtr(void) const;
-	
+
 	const JudgmentOnValue& getFilter(void) const;
 
 	const ContinuationArgs&	getContinuationArgs(void) const;
@@ -74,7 +74,7 @@ public:
 		{
 		return mTargetJOVs;
 		}
-	
+
 private:
 	bool mIsDestroyed;
 
@@ -88,7 +88,7 @@ private:
 
 	ContinuationArgs mContinuationArgs;
 
-	JudgmentOnValue	mFilter; 
+	JudgmentOnValue	mFilter;
 
 	ImmutableTreeVector<JudgmentOnValue> mTargetJOVs;
 };

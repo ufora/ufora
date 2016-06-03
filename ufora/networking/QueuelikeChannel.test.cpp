@@ -61,7 +61,7 @@ BOOST_AUTO_TEST_CASE( test_QueuelikeChannel_BecomesNormalChannel )
 	BOOST_CHECK_EQUAL(vec[1], "C");
 
 	pRaw.second->write("D");
-	
+
 	scheduler->blockUntilPendingHaveExecutedAndImmediateQueueIsEmpty();
 
 	BOOST_CHECK_EQUAL(vec.size(), 3);

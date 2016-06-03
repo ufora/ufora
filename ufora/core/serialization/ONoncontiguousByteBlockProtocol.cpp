@@ -15,7 +15,7 @@
 ****************************************************************************/
 #include "ONoncontiguousByteBlockProtocol.hpp"
 
-ONoncontiguousByteBlockProtocol::ONoncontiguousByteBlockProtocol() : 
+ONoncontiguousByteBlockProtocol::ONoncontiguousByteBlockProtocol() :
 		mPosition(0),
 		mData(new NoncontiguousByteBlock())
 	{

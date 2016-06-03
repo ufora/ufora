@@ -31,7 +31,7 @@ public:
 			{
 			return "FORA";
 			}
-            
+
 		static PolymorphicSharedPtr<RandomJOVGenerator>*
         makeClassBySeed(
                 int seed,
@@ -42,7 +42,7 @@ public:
                             new RandomJOVGenerator(seed, context)
                             );
 			}
-			
+
 		static PolymorphicSharedPtr<RandomJOVGenerator>*
         makeClassByGenerator(
                 boost::mt19937& generator,
@@ -53,7 +53,7 @@ public:
                             new RandomJOVGenerator(generator, context)
                             );
 			}
-			
+
 		static boost::python::object RJOVGRandomValue(
 										PolymorphicSharedPtr<RandomJOVGenerator>& rjovg,
 										const JOV& jov
@@ -63,7 +63,7 @@ public:
 			if (!r) return boost::python::object();
 			return boost::python::object(*r);
 			}
-		
+
 		static boost::python::object RJOVTGRandomValue(
 										PolymorphicSharedPtr<RandomJOVGenerator>& rjovg,
 										const JOVT& jovt
@@ -71,16 +71,16 @@ public:
 			{
 			return RJOVGRandomValue(rjovg, JOV::Tuple(jovt));
 			}
-			
+
 		static PolymorphicSharedPtr<RandomJOVGenerator>
         RJOVGSymbolStrings(
                 PolymorphicSharedPtr<RandomJOVGenerator>& rjovg,
                 boost::python::list symbolStringsList
-                )	
+                )
             {
 			std::vector<std::string> symbol_strings;
 			int length = boost::python::len(symbolStringsList);
-			
+
 			for (long k = 0; k < length; k++)
 				{
 				if (boost::python::extract<std::string>(symbolStringsList[k]).check())
@@ -89,10 +89,10 @@ public:
 					lassert(false);
 				}
 			rjovg->setSymbolStrings(symbol_strings);
-			
+
 			return rjovg;
 			}
-			
+
 		static PolymorphicSharedPtr<RandomJOVGenerator> RJOVGsetMaxUnsignedInt(
 														PolymorphicSharedPtr<RandomJOVGenerator>& rjovg,
 														unsigned int i
@@ -101,7 +101,7 @@ public:
 			rjovg->setLikelyMaxUnsignedInt(i);
 			return rjovg;
 			}
-			
+
 		static PolymorphicSharedPtr<RandomJOVGenerator> RJOVGsetMaxReal(
 														PolymorphicSharedPtr<RandomJOVGenerator>& rjovg,
 														double d
@@ -110,7 +110,7 @@ public:
 			rjovg->setMaxReal(d);
 			return rjovg;
 			}
-			
+
 		static PolymorphicSharedPtr<RandomJOVGenerator> setMaxStringLength(
 														PolymorphicSharedPtr<RandomJOVGenerator>& rjovg,
 														int i
@@ -119,7 +119,7 @@ public:
 			rjovg->setMaxStringLength(i);
 			return rjovg;
 			}
-			
+
 		static PolymorphicSharedPtr<RandomJOVGenerator> RJOVGsetMinReal(
 														PolymorphicSharedPtr<RandomJOVGenerator>& rjovg,
 														double d
@@ -128,11 +128,11 @@ public:
 			rjovg->setMinReal(d);
 			return rjovg;
 			}
-			
+
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
+
 			class_<PolymorphicSharedPtr<RandomJOVGenerator> >("RandomJOVGenerator", no_init)
 				.def("__init__", make_constructor(makeClassBySeed))
 				.def("__init__", make_constructor(makeClassByGenerator))

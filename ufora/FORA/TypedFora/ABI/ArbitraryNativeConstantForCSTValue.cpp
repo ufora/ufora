@@ -51,7 +51,7 @@ public:
 
 	virtual std::string serialize(boost::shared_ptr<ArbitraryNativeConstant> constant)
 		{
-		boost::shared_ptr<ArbitraryNativeConstantForCSTValue> c = 
+		boost::shared_ptr<ArbitraryNativeConstantForCSTValue> c =
 			boost::dynamic_pointer_cast<ArbitraryNativeConstantForCSTValue>(constant);
 
 		lassert(c);
@@ -69,14 +69,14 @@ public:
 	static ArbitraryNativeConstantTypeRegistrar<ArbitraryNativeConstantForCSTValueType> sRegistrar;
 };
 
-ArbitraryNativeConstantTypeRegistrar<ArbitraryNativeConstantForCSTValueType> 
+ArbitraryNativeConstantTypeRegistrar<ArbitraryNativeConstantForCSTValueType>
 	ArbitraryNativeConstantForCSTValueType::sRegistrar;
 
 
 
 
 ArbitraryNativeConstantForCSTValue::ArbitraryNativeConstantForCSTValue(
-														const CSTValue& in, 
+														const CSTValue& in,
 														bool asImplval) :
 											mValue(in),
 											mAsImplval(asImplval)
@@ -110,7 +110,7 @@ std::string ArbitraryNativeConstantForCSTValue::description()
 	if (mAsImplval)
 		return "ImplValContainer(" + prettyPrintString(mValue) + ")";
 	else
-		return "TypedValue(type=" + prettyPrintString(mValue.type()) + 
+		return "TypedValue(type=" + prettyPrintString(mValue.type()) +
 			",data=" + prettyPrintString(mValue) + ")";
 	}
 

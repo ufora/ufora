@@ -40,7 +40,7 @@ public:
 		if (mCloseOnDestroy == CloseOnDestroy::True && mFile)
 			fclose(mFile);
 		}
-		
+
 	void write(uword_t inByteCount, void *inData)
 		{
 		mPosition += inByteCount;

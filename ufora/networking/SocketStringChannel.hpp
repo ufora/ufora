@@ -86,12 +86,12 @@ public:
 		if (!mIsDisconnected)
 			{
 			// we only want to disconnect from one thread a single time so if we find
-			// out that lock is false, then someone else is actively disconnecting and 
-			// we should bail. 
+			// out that lock is false, then someone else is actively disconnecting and
+			// we should bail.
 			mIsDisconnected = true;
 
-			LOG_INFO << "SocketStringChannel disconnecting. Closing file descriptor" 
-				<< mFileDescriptor 
+			LOG_INFO << "SocketStringChannel disconnecting. Closing file descriptor"
+				<< mFileDescriptor
 				<< "\n"
 				;
 
@@ -107,13 +107,13 @@ public:
 			if (mThreadsStarted)
 				{
 				scopedLock.unlock();
-				
+
 				if (!Ufora::thread::currentlyOnThread(mWriteThread))
 					Ufora::thread::joinThread(mWriteThread);
 
 				if (!Ufora::thread::currentlyOnThread(mReadThread))
 					Ufora::thread::joinThread(mReadThread);
-				
+
    				scopedLock.lock();
 				}
 
@@ -155,7 +155,7 @@ public:
 
 
 	void setHandlers(
-				boost::function1<void, std::string> inOnMessage, 
+				boost::function1<void, std::string> inOnMessage,
 				boost::function0<void> inOnDisconnected
 				)
 		{
@@ -167,7 +167,7 @@ public:
 		mHandlersSet = true;
 
 		if (mIsDisconnected)
-			inOnDisconnected();			
+			inOnDisconnected();
 
 		ensureThreadsStarted();
 		}
@@ -195,14 +195,14 @@ private:
 
 		mReadThread = Ufora::thread::spawnThread(
 			boost::bind(
-				readloopStatic, 
+				readloopStatic,
 				weakToThis
 				),
 			kStackSize
 			);
 
 		mWriteThread = Ufora::thread::spawnThread(
-			boost::bind(writeloopStatic, 
+			boost::bind(writeloopStatic,
 				weakToThis
 				),
 			kStackSize
@@ -259,7 +259,7 @@ private:
 		{
 		readBytes(fd, &out, sizeof(T));
 		}
-	
+
 	template<class T>
 	void write(const T& out, int32_t fd)
 		{
@@ -271,7 +271,7 @@ private:
 		int32_t bytesRead = 0;
 		double totalWaitTime = 0.0;
 		double nextSleepPeriod = 0.001;
-		
+
 
 		while (bytesRead < bytes)
 			{
@@ -304,8 +304,8 @@ private:
 				else
 					{
 					if (res != 0)
-						LOG_WARN << "Disconnecting a SocketStringChannel during read because of error " 
-							<< strerror(err) << ". " << bytesRead << " read out of " 
+						LOG_WARN << "Disconnecting a SocketStringChannel during read because of error "
+							<< strerror(err) << ". " << bytesRead << " read out of "
 							<< bytes << " expected."
 							;
 					LOG_DEBUG << "Disconnecting a SocketStringChannel because res is " << res;
@@ -338,14 +338,14 @@ private:
 					{
 					if (mIsDisconnected)
 						throw ChannelDisconnected();
-					
+
 					boost::thread::yield();
 					}
 				else
 					{
 					if (res != 0)
-						LOG_DEBUG << "Disconnecting a SocketStringChannel during write because of error " 
-							<< strerror(errno) << ". " << bytesWritten << " written out of " 
+						LOG_DEBUG << "Disconnecting a SocketStringChannel during write because of error "
+							<< strerror(errno) << ". " << bytesWritten << " written out of "
 							<< bytes << " expected."
 							;
 
@@ -416,9 +416,9 @@ private:
 				if (dat)
 					{
 					uint32_t sz = dat->size();
-					
+
 					write(sz, mFileDescriptor);
-					
+
 					writeBytes(mFileDescriptor, &(*dat)[0], sz);
 					}
 				else
@@ -477,7 +477,7 @@ private:
 				if (msgSize < 1024*1024)
 					{
 					toWrite.resize(msgSize);
-					
+
 					readBytes(mFileDescriptor, &toWrite[0], toWrite.size());
 					}
 				else
@@ -496,7 +496,7 @@ private:
 
 					toWrite = str.str();
 					}
-				
+
 				onMessage(toWrite);
 				}
 			}
@@ -530,11 +530,11 @@ private:
 	Ufora::thread::BsaThreadData mWriteThread;
 
 	string	mDescription;
-	
+
 	boost::shared_ptr<Queue<Nullable<std::string> > > mQueuedItemsToWritePtr;
 
 	int64_t	mBytesWritten;
-	
+
 	bool mIsDisconnected;
 
 	bool mThreadsStarted;

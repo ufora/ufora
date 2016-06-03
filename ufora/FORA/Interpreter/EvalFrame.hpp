@@ -34,9 +34,9 @@ namespace Interpreter {
 class EvalFrame {
 public:
 	CallFrame callFrame;
-	
+
 	InstructionPtr instructionPtr;
-	
+
 	ImplVal	resultValue;
 
 	uint64_t uniqueId;
@@ -45,7 +45,7 @@ public:
 	pair<TypedFora::MetadataInstruction, long>* wasEverMachineCodeFrame;
 
 	EvalFrameArgList& evalFrameArgList();
-	
+
 	static EvalFrame* allocate(
 						const ControlFlowGraph& controlFlowGraph,
 						Nullable<string> label,
@@ -55,8 +55,6 @@ public:
 						);
 
 	static void free(EvalFrame* frame, MemBlockAllocator& allocator);
-
-	void zeroOutUnusedContinuationArgs();
 
 	void copyApplyArgsIntoArgSlots(const Fora::ApplyArgFrame& args, RefcountPool* inPool);
 

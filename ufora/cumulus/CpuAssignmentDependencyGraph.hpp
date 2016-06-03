@@ -39,7 +39,7 @@ and determining how many CPUs are assigned to root computations.
 
 class CpuAssignmentDependencyGraphImpl;
 
-class CpuAssignmentDependencyGraph : 
+class CpuAssignmentDependencyGraph :
 			public PolymorphicSharedPtrBase<CpuAssignmentDependencyGraph> {
 public:
 	CpuAssignmentDependencyGraph(

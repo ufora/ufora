@@ -32,7 +32,7 @@ public:
 			{
 			sleepSeconds(.1);
 			tries++;
-			}	
+			}
 
 		if (InstanceCounter<T>::totalCount() != mCount)
 			{

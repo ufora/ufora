@@ -52,7 +52,7 @@ public:
 	static void exportPythonInterface()
 		{
 		using namespace boost::python;
-			
+
 		class_<boost::shared_ptr<KeyspaceCache> >("KeyspaceCache")
 			.def("newMinimumId", &newMinimumId)
 			.def("addEvent", &addEvent)
@@ -66,25 +66,25 @@ public:
 namespace {
 
 using namespace SharedState;
-class OpenBinarySerializers : public OpenSerializers { 
+class OpenBinarySerializers : public OpenSerializers {
 	// implementation of OpenSerializers interface without JsonMemo
 	// to aid in testing
 public:
 	typedef boost::shared_ptr<SerializedObjectStream<BinaryStreamSerializer > > serializer_ptr_type;
     void serializeLogEntryForPath(
-			const std::string& path, 
-			const LogEntry& inLog, 
+			const std::string& path,
+			const LogEntry& inLog,
 			std::string& outSerialized)
         {
         serializeForPath(path, inLog, outSerialized);
         }
 
 	std::string serializeStateForPath(
-            const std::string& path, 
+            const std::string& path,
             const map<SharedState::Key, SharedState::KeyState>& inState)
         {
 		// no need to keep track of this it will not be kept open.
-		serializer_ptr_type serializer = 
+		serializer_ptr_type serializer =
 			serializer_ptr_type(new SerializedObjectStream<BinaryStreamSerializer>());
 		return serializer->serialize(inState);
         }
@@ -96,14 +96,14 @@ public:
 			mSerializers.erase(it);
 		}
     bool deserializeState(
-            const std::vector<std::string>& elements, 
+            const std::vector<std::string>& elements,
             std::map<SharedState::Key, SharedState::KeyState>& out)
 		{
 		return deserializeType<BinaryStreamDeserializer>(elements, out);
 		}
 
     bool deserializeLog(
-            const std::vector<std::string>& elements, 
+            const std::vector<std::string>& elements,
             vector<SharedState::LogEntry>& out)
 		{
 		return deserializeVector<BinaryStreamDeserializer>(elements, out);
@@ -151,15 +151,15 @@ struct StorageWrapper {
 		}
 
 	static PolymorphicSharedPtr<FileStorage> createFileStorage(
-				string cacheRoot, 
+				string cacheRoot,
 				uint32_t maxOpenFiles,
 				float maxLogFileSizeMb
 				)
 		{
 		return PolymorphicSharedPtr<FileStorage>(
 			new FileStorage(
-				maxLogFileSizeMb, 
-				maxOpenFiles, 
+				maxLogFileSizeMb,
+				maxOpenFiles,
 				cacheRoot,
 				jsonSerializersFactory
 				)
@@ -167,7 +167,7 @@ struct StorageWrapper {
 		}
 
 	static PolymorphicSharedPtr<FileStorage> createFileStorageMemoOptional(
-				string cacheRoot, 
+				string cacheRoot,
 				uint32_t maxOpenFiles,
 				float maxLogFileSizeMb,
 				bool useMemoChannel
@@ -175,8 +175,8 @@ struct StorageWrapper {
 		{
 		return PolymorphicSharedPtr<FileStorage>(
 			new FileStorage(
-				maxLogFileSizeMb, 
-				maxOpenFiles, 
+				maxLogFileSizeMb,
+				maxOpenFiles,
 				cacheRoot,
 				(useMemoChannel ? &jsonSerializersFactory  : &binarySerializersFactory)
 				)
@@ -220,8 +220,8 @@ struct KeyspaceStorageWrapper {
 		{
 		inStorage->compress();
 		}
-	
-	static boost::python::object readState( 
+
+	static boost::python::object readState(
 											PolymorphicSharedPtr<KeyspaceStorage>& inStorage
 											)
 		{
@@ -239,9 +239,9 @@ struct KeyspaceStorageWrapper {
 			Ufora::python::containerWithBeginEndToList(state.second)
 			);
 		}
-	
 
-	static void writeKeyValueMap( 
+
+	static void writeKeyValueMap(
 							PolymorphicSharedPtr<KeyspaceStorage>& inStorage,
 							boost::python::dict& keysAndValues
 							)
@@ -254,7 +254,7 @@ struct KeyspaceStorageWrapper {
 
 		for (long k = 0; k < len; k++)
 			{
-			state[boost::python::extract<SharedState::Key>(keys[k])()] = 
+			state[boost::python::extract<SharedState::Key>(keys[k])()] =
 				KeyState(
 					null() << ValueType(
 						null() << PythonWrapper<SharedState::View>::pyToJsonOrError(keysAndValues[keys[k]]),
@@ -275,7 +275,7 @@ struct KeyspaceStorageWrapper {
 		pair<map<SharedState::Key, KeyState>, vector<LogEntry> > state;
 
 		inStorage->readState(state);
-		
+
 		inStorage->compressKeyStates(state.first, state.second);
 
 		const KeyType& keyType = KeyTypeFactory::getTypeFor(inStorage->getKeyspace().type());

@@ -54,12 +54,12 @@ FunctionPointerTable::getExistingSlot(const slot_identifier_type& name) const
 void FunctionPointerTable::createNullSlots(const std::vector<slot_identifier_type>& names)
 	{
     boost::recursive_mutex::scoped_lock lock(mMutex);
-	
+
 	for (long k = 0; k < names.size();k++)
 		if (mSlots.count(names[k]) != 0)
 			throw logic_error("Already have function pointer slot for " +
 							  names[k].first + ".");
-	
+
 	FunctionPointerArray*	array = new FunctionPointerArray(names.size());
 
 	for (long k = 0; k < names.size();k++)
@@ -77,7 +77,7 @@ void FunctionPointerTable::updateSlotContents(
 	if (newContents.isEmpty())
 		throwLogicErrorWithStacktrace(
 			"Cannot place a null pointer in the slot contents.");
-	
+
     boost::recursive_mutex::scoped_lock lock(mMutex);
 
     if (mSlotVersionNumbers.find(name) != mSlotVersionNumbers.end() &&
@@ -85,20 +85,20 @@ void FunctionPointerTable::updateSlotContents(
     	return;
 
     mSlotVersionNumbers[name] = versionNumber;
-	
+
 	if (mSlots.count(name) == 0)
 		throwLogicErrorWithStacktrace(
 			"FuncPtrSlot not yet created for " + name.first + ".");
-	
+
 	//verify that the slot has been initialized
 	FunctionPointerHandle slot = mSlots.find(name)->second;
-	
+
 	if (slot.isEmpty())
 		throwLogicErrorWithStacktrace(
 			"FuncPtrSlot not yet initialized for " + name.first
 					+ " but we're trying to initialize it."
 					);
-	
+
 	slot.update(newContents);
 	}
 
@@ -109,7 +109,7 @@ void FunctionPointerTable::initializeSlotContents(
     boost::recursive_mutex::scoped_lock lock(mMutex);
 
 	map<FunctionPointerArray*, std::vector<NativeFunctionPointerAndEntrypointId> > pointers;
-	
+
 	for (std::map<slot_identifier_type, NativeFunctionPointerAndEntrypointId>::const_iterator it =
 				inDefinitions.begin(), it_end = inDefinitions.end();
 			it != it_end;
@@ -120,20 +120,20 @@ void FunctionPointerTable::initializeSlotContents(
 				"not defined.");
 
 		FunctionPointerHandle handle = getExistingSlot(it->first);
-		
+
 		FunctionPointerArray* array = handle.getArray();
-		
+
 		if (!array->isEmpty())
 			throwLogicErrorWithStacktrace("array at " + it->first.first + " is already"
 				" initialized.");
-		
+
 		//make sure all the slots are filled out
 		if (pointers.find(array) == pointers.end())
 			pointers[array].resize(array->size());
-		
+
 		pointers[array][handle.getIndex()] = it->second;
 		}
-	
+
 	for (std::map<FunctionPointerArray*,
 			std::vector<NativeFunctionPointerAndEntrypointId> >::const_iterator
 				it = pointers.begin(),
@@ -145,7 +145,7 @@ void FunctionPointerTable::initializeSlotContents(
 			if (it->second[k].isEmpty())
 				throwLogicErrorWithStacktrace("didn't initialize an "
 					"array slot.");
-		
+
 		//initialize this array with these pointers
 		it->first->fillArray(it->second);
 		}

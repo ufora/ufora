@@ -24,7 +24,7 @@ class CallSiteCounter {
 private:
 	//Right now, the referenced memory is never deallocated.
 	uint64_t* const mPtr;
-	
+
 public:
 	CallSiteCounter();
 	//Use the default destructor.

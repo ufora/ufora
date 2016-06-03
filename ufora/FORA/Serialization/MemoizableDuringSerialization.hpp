@@ -109,7 +109,7 @@ private:
 
 	std::map<const char*, const char*> mNamesToTypeinfos;
 
-	std::vector<const char*> mTypeinfos; 
+	std::vector<const char*> mTypeinfos;
 
 	std::map<const char*, boost::function0<MemoStorageBase*> > mFactories;
 };
@@ -134,8 +134,8 @@ class MemoizeFun<true> {
 public:
 	template<class stream_type, class T>
 	static void serialize(
-			stream_type& inStream, 
-			const T& in, 
+			stream_type& inStream,
+			const T& in,
 			map<const char*, boost::shared_ptr<MemoStorageBase> >& ioMemos,
 			bool alsoSerializeValue
 			)
@@ -175,8 +175,8 @@ public:
 
 	template<class stream_type, class T>
 	static void deserialize(
-				stream_type& inStream, 
-				T& out, 
+				stream_type& inStream,
+				T& out,
 				map<const char*, boost::shared_ptr<MemoStorageBase> >& ioMemos,
 				bool populateMemo
 				)
@@ -192,7 +192,7 @@ public:
 				ioMemos[typeid(T).name()].reset(
 					MemoStorageBaseRegistry::singleton().create(typeid(T).name())
 					);
-			
+
 			lassert(ioMemos[typeid(T).name()]);
 
 			memoPtr = dynamic_cast<MemoStorageBase*>(ioMemos[typeid(T).name()].get());
@@ -226,8 +226,8 @@ class MemoizeFun<false> {
 public:
 	template<class stream_type, class T>
 	static void serialize(
-				stream_type& inStream, 
-				const T& in, 
+				stream_type& inStream,
+				const T& in,
 				map<const char*, boost::shared_ptr<MemoStorageBase> >& ioMemos,
 				bool alsoSerializeValue
 				)
@@ -237,8 +237,8 @@ public:
 
 	template<class stream_type, class T>
 	static void deserialize(
-				stream_type& inStream, 
-				T& out, 
+				stream_type& inStream,
+				T& out,
 				map<const char*, boost::shared_ptr<MemoStorageBase> >& ioMemos,
 				bool populateMemo
 				)
@@ -246,7 +246,7 @@ public:
 		Deserializer<T, stream_type>::deserialize(inStream, out);
 		}
 
-	
+
 };
 
 
@@ -257,7 +257,7 @@ public:
 		{
 		}
 
-	MemoStorage(const MemoStorage& in) : 
+	MemoStorage(const MemoStorage& in) :
 			mMemos(in.mMemos)
 		{
 		}
@@ -271,7 +271,7 @@ public:
 
 	template<class stream_type, class T>
 	void serialize(
-				stream_type& inStream, 
+				stream_type& inStream,
 				const T& in,
 				bool alsoSerializeValue
 				)
@@ -280,27 +280,27 @@ public:
 			mMemos.reset(new map<const char*, boost::shared_ptr<MemoStorageBase> >());
 
 		return MemoizeFun<IsMemoizable<T>::isMemoizable>::serialize(
-			inStream, 
-			in, 
-			*mMemos, 
+			inStream,
+			in,
+			*mMemos,
 			alsoSerializeValue
 			);
 		}
 
 	template<class stream_type, class T>
 	void deserialize(
-				stream_type& inStream, 
+				stream_type& inStream,
 				T& out,
 				bool populateMemo
 				)
 		{
 		if (!mMemos)
 			mMemos.reset(new map<const char*, boost::shared_ptr<MemoStorageBase> >());
-		
+
 		return MemoizeFun<IsMemoizable<T>::isMemoizable>::deserialize(
-			inStream, 
-			out, 
-			*mMemos, 
+			inStream,
+			out,
+			*mMemos,
 			populateMemo
 			);
 		}
@@ -383,7 +383,7 @@ private:
 template<class serializer_type>
 class Serializer<boost::shared_ptr<Fora::MemoizableDuringSerialization::MemoStorage>, serializer_type> {
 public:
-		static void serialize(	serializer_type& s, 
+		static void serialize(	serializer_type& s,
 								const boost::shared_ptr<Fora::MemoizableDuringSerialization::MemoStorage>& t)
 			{
 			if (!t)
@@ -391,7 +391,7 @@ public:
 			else
 				{
 				s.serialize(true);
-				s.serialize(*t);	
+				s.serialize(*t);
 				}
 			}
 };
@@ -399,7 +399,7 @@ public:
 template<class serializer_type>
 class Deserializer<boost::shared_ptr<Fora::MemoizableDuringSerialization::MemoStorage>, serializer_type> {
 public:
-		static void deserialize(serializer_type& s, 
+		static void deserialize(serializer_type& s,
 								boost::shared_ptr<Fora::MemoizableDuringSerialization::MemoStorage>& t)
 			{
 			bool hasOne;

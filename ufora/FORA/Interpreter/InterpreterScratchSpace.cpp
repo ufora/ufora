@@ -66,7 +66,7 @@ void InterpreterScratchSpace::loadAxiomSpilloverData(
 		memcpy(dataPtr, p.first.data(), p.first.type().size());
 		types = types + p.first.type();
 		symbols = symbols + p.second;
-		
+
 		dataPtr += p.first.type().size();
 		}
 
@@ -77,9 +77,9 @@ void InterpreterScratchSpace::loadAxiomSpilloverData(const EvalFrameArgList& arg
 	{
 	mAxiomSpilloverData.resize((argList.size() + 1) * sizeof(ImplVal));
 	ImplVal* dataPtr = (ImplVal*)&mAxiomSpilloverData[0];
-	
+
 	ImmutableTreeVector<Type> types;
-	
+
 	for (uword_t j = 0; j < argList.size(); j++)
 		{
 		dataPtr[j] = argList[j];

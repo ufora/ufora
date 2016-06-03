@@ -15,7 +15,7 @@
 ****************************************************************************/
 #include "IQueueProtocol.hpp"
 
-IQueueProtocol::IQueueProtocol(Queue<std::string>& inQueue) : 
+IQueueProtocol::IQueueProtocol(Queue<std::string>& inQueue) :
     mQueue(inQueue),
     mCurrentString(""),
     mBytesReadFromCurrentString(0)

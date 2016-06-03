@@ -65,14 +65,14 @@ public:
 
 			if (it == m.end())
 				return boost::python::object();
-			
+
 			if (inKey < it->first)
 				return boost::python::object(it->first);
 
 			++it;
 			if (it == m.end())
 				return boost::python::object();
-			
+
 			return boost::python::object(it->first);
 			}
 
@@ -87,7 +87,7 @@ public:
 
 			if (it == m.end())
 				{
-				it--;	
+				it--;
 				return boost::python::object(it->first);
 				}
 

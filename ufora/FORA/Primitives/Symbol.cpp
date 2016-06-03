@@ -34,9 +34,9 @@ boost::recursive_mutex				FORA_Symbol__mutex;
 Symbol::SymbolData*	Symbol::intern(const std::string& data)
 	{
 	Hash hash = Hash::CityHash(data);
-	
+
 	boost::recursive_mutex::scoped_lock lock(FORA_Symbol__mutex);
-	
+
 	static boost::unordered_map<hash_type, SymbolData*> symbolMap;
 
 	if (!symbolMap.size())
@@ -63,7 +63,7 @@ Symbol Symbol::x()						\
 	if (!s)								\
 		s = new Symbol(Symbol(y));		\
 	return *s;							\
-	}									
+	}
 
 Symbol__cache_item_body(Call, "Call")
 Symbol__cache_item_body(SetCall, "SetCall")
@@ -107,7 +107,7 @@ Symbol stringToSymbolSafe(std::string s)
 	for (long k = 0; k < s.size(); k++)
 		if (!isalnum(s[k]) && s[k] != '_')
 			s[k] = '_';
-		
+
 	return Symbol(s);
 	}
 

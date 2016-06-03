@@ -34,7 +34,7 @@ using boost::asio::ip::udp;
 class StatsdImpl
 {
 public:
-    StatsdImpl(const std::string& host, const std::string& port) : 
+    StatsdImpl(const std::string& host, const std::string& port) :
             mSocket(mIoService),
             mIsValid(false)
         {
@@ -135,12 +135,12 @@ private:
         if (error)
             LOG_ERROR << "Failed to async send statsd udp packet: " << error.message();
         }
-        
+
 
     boost::asio::io_service mIoService;
-    
+
     udp::socket mSocket;
-    
+
     udp::endpoint mServerEndpoint;
 
     bool mIsValid;

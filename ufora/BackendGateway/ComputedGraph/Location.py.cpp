@@ -29,7 +29,7 @@ class ComputedGraphLocationWrapper :
 	public native::module::Exporter<ComputedGraphLocationWrapper> {
 public:
 	typedef ComputedGraph::Location location_type;
-	
+
 	typedef ComputedGraph::LocationProperty LocationProperty;
 
 	typedef PolymorphicSharedPtr<ComputedGraph::Graph> graph_ptr;
@@ -38,7 +38,7 @@ public:
 		{
 		return "ComputedGraph";
 		}
-	
+
 	static object getattr(location_type& in, object attr)
 		{
 		ComputedGraph::LocationProperty p(in, Ufora::python::id(attr));
@@ -48,22 +48,22 @@ public:
 
 		return in.getGraph()->nodeAttribute(p);
 		}
-	
+
 	static void setattr(location_type& in, object attr, object inVal)
 		{
 		in.getGraph()->setnodeProperty(in.getID(), attr, inVal);
 		}
-	
+
 	static bool eq(location_type& in, object attr)
 		{
 		return Ufora::python::id(in.getPythonObject()) == Ufora::python::id(attr);
 		}
-	
+
 	static int32_t hash(location_type& in)
 		{
 		return in.getID();
 		}
-	
+
 	static object name(location_type& in)
 		{
 		Ufora::python::Holder h("intern('__str__')", "ufora.BackendGateway.ComputedGraph.ComputedGraph");
@@ -77,7 +77,7 @@ public:
 
 		return object(in.name());
 		}
-	
+
 	static object add(location_type& in, object o)
 		{
 		static object s;

@@ -12,18 +12,18 @@ namespace {
 		);
 
 	void set_parameter(
-		svm_parameter* parameter, int64_t kernelType, int64_t degree, double gamma, 
+		svm_parameter* parameter, int64_t kernelType, int64_t degree, double gamma,
 		double coef0, double cacheSize, double C, double tol, int64_t shrinking,
 		int64_t maxIter, int64_t svmTypeIndex, double epsilon
 		);
 
 	void set_model(
-		svm_model* model, const svm_parameter&, int64_t nClasses, 
-		int64_t nSupportVectors, int64_t nFeatures, const double* supportVectorsData, 
-		double* dualCoefficients, const double* rho, 
+		svm_model* model, const svm_parameter&, int64_t nClasses,
+		int64_t nSupportVectors, int64_t nFeatures, const double* supportVectorsData,
+		double* dualCoefficients, const double* rho,
 		const int64_t* supportVectorLabels, const int64_t* nSupportVectorsByClass
 		);
-	
+
 	void getNSupportVectorsByClass(int64_t* ioNSupportVectorsByClass, const svm_model* model);
 	void getSupportVectorCoefficients(double* ioSupportVectorCoefficients, const svm_model*);
 	void getSupportVectorIndices(int64_t* ioSupportVectorIndices, const svm_model*);
@@ -65,25 +65,25 @@ extern "C" {
 			)
 		{
 		svm_parameter parameter;
-		
+
 		set_parameter(
 		 	&parameter, *kernelType, *degree, *gamma,
 		 	*coef0, *cacheSize, *C, *tol, *shrinking,
 		 	*maxIter, *svmTypeIndex, *epsilon
 			);
-		
+
 		svm_model model;
 
 		set_model(
-		  	&model, 
-		  	parameter, *nClasses, *nSupportVectors, *nFeatures, 
-		  	supportVectorsData, dualCoefficients, 
-		  	rho, supportVectorLabels, 
+		  	&model,
+		  	parameter, *nClasses, *nSupportVectors, *nFeatures,
+		  	supportVectorsData, dualCoefficients,
+		  	rho, supportVectorLabels,
 		  	nSupportVectorsByClass
 		  	);
 
 		svm_node** XAsSvmNode = dense_to_libsvm(X, *nSamples, *nFeatures);
-		
+
 		for (int64_t ix = 0; ix < *nSamples; ++ix)
 			ioPredictedValues[ix] = svm_predict(&model, XAsSvmNode[ix]);
 
@@ -93,17 +93,17 @@ extern "C" {
 		}
 
 	void svm_train_fora_wrapper(
-			const double* X, double* Y, const int64_t* nSamples, const int64_t* nFeatures, 
-			const int64_t* kernelType, const int64_t* degree, const double* gamma, const double* coef0, 
+			const double* X, double* Y, const int64_t* nSamples, const int64_t* nFeatures,
+			const int64_t* kernelType, const int64_t* degree, const double* gamma, const double* coef0,
 			const double* cacheSize, const double* C, const double* tol, const int64_t* shrinking, const int64_t* maxIter,
 			const int64_t* svmTypeIndex, const double* epsilon,
 			int64_t* ioNSupportVectors,
 			double* ioSupportVectorCoefficients,
 			double* ioIntercept,
 			int64_t* ioSupportVectorIndices,
-			int64_t* ioNSupportVectorsByClass, 
+			int64_t* ioNSupportVectorsByClass,
 			int64_t* ioSupportVectorLabels
-			) 
+			)
 		{
 		svm_problem problem;
 		svm_parameter parameter;
@@ -125,12 +125,12 @@ extern "C" {
 		getSupportVectorCoefficients(ioSupportVectorCoefficients, model);
 		getIntercept(ioIntercept, model);
 		getSupportVectorIndices(ioSupportVectorIndices, model);
-		getNSupportVectorsByClass(ioNSupportVectorsByClass, model);		
+		getNSupportVectorsByClass(ioNSupportVectorsByClass, model);
 
-		if (*svmTypeIndex != EPSILON_SVR and 
-			*svmTypeIndex != ONE_CLASS and 
+		if (*svmTypeIndex != EPSILON_SVR and
+			*svmTypeIndex != ONE_CLASS and
 			*svmTypeIndex != NU_SVR)
-			getSupportVectorLabels(ioSupportVectorLabels, model);		
+			getSupportVectorLabels(ioSupportVectorLabels, model);
 
 		svm_free_and_destroy_model(&model);
 		free_problem(&problem);
@@ -143,7 +143,7 @@ namespace {
 	void set_problem(
 			svm_problem* problem, const double* X, double* Y,
 			int64_t nSamples, int64_t nFeatures
-			) 
+			)
 		{
 		problem->l = nSamples;
 		problem->y = Y;
@@ -166,14 +166,14 @@ namespace {
 
 		free(model->rho);
 		free(model->label);
-		free(model->nSV);	
+		free(model->nSV);
 		}
 
 	void set_model(
- 	 		svm_model* model, 
+ 	 		svm_model* model,
 			const svm_parameter& param, int64_t nClasses, int64_t nSupportVectors, int64_t nFeatures,
-			const double* supportVectorsData, double* dualCoefficients, 
-			const double* rho, const int64_t* supportVectorLabels, 
+			const double* supportVectorsData, double* dualCoefficients,
+			const double* rho, const int64_t* supportVectorLabels,
 			const int64_t* nSupportVectorsByClass
 			)
 		{
@@ -191,7 +191,7 @@ namespace {
 
 		int64_t m = (nClasses * (nClasses - 1) / 2);
 
-		model->rho = (double*) malloc(m * sizeof(double));		
+		model->rho = (double*) malloc(m * sizeof(double));
 		if (model->rho == NULL) printf("rho is NULL!!\n");
 		for (int64_t ix = 0; ix < m; ++ix)
 			(model->rho)[ix] = -rho[ix];
@@ -205,23 +205,23 @@ namespace {
 			param.svm_type == NU_SVR)
 			{
 			model->label = NULL;
-			model->nSV = NULL;				
+			model->nSV = NULL;
 			}
-		else {			
-			model->label = (int64_t*) malloc(nClasses * sizeof(int64_t));		
+		else {
+			model->label = (int64_t*) malloc(nClasses * sizeof(int64_t));
 			if (model->label == NULL) printf("NULL label!\n");
 			memcpy(model->label, supportVectorLabels, nClasses * sizeof(int64_t));
 
 			model->nSV = (int64_t*) malloc(nClasses * sizeof(int64_t));
 			if (model->nSV == NULL) printf("NULL nSV!!!!\n");
-			memcpy(model->nSV, nSupportVectorsByClass, nClasses * sizeof(int64_t));	
+			memcpy(model->nSV, nSupportVectorsByClass, nClasses * sizeof(int64_t));
 			}
 
 		model->free_sv = 1;
 		}
 
 	void set_parameter(
-			svm_parameter* parameter, int64_t kernelType, int64_t degree, double gamma, 
+			svm_parameter* parameter, int64_t kernelType, int64_t degree, double gamma,
 			double coef0, double cacheSize, double C, double tol, int64_t shrinking,
 			int64_t maxIter, int64_t svmTypeIndex, double epsilon
 			)
@@ -236,8 +236,8 @@ namespace {
 		parameter->eps = tol; // this is the tol arg (in Fora-land) which sets convergence tolerance.
 		parameter->C = C;
 		parameter->nr_weight = 0;
-		parameter->weight_label = NULL; 
-		parameter->weight = NULL; 
+		parameter->weight_label = NULL;
+		parameter->weight = NULL;
 		parameter->nu = 0.0; // not used for C_SVC
 		parameter->p = epsilon;  // yep, names suck. this is used for SVR, NOT related to convergence cond.
 		parameter->shrinking = shrinking;
@@ -254,7 +254,7 @@ namespace {
 		if (svm_node_ptr_ptr == NULL) printf("svm_node_ptr_ptr NULL!!\n");
 
 		svm_node* svm_node_ptr = (svm_node*) malloc(sizeof(svm_node) * nSamples * (nFeatures + 1));
-		
+
 		if (svm_node_ptr == NULL) printf("svm_node_ptr NULL!!\n");
 
 		int64_t ix = (int64_t) 0;
@@ -273,7 +273,7 @@ namespace {
 
 			svm_node_ptr->index = -1;
 			svm_node_ptr->value = 0.0;
-			
+
 			++svm_node_ptr;
 			}
 

@@ -36,11 +36,11 @@ def configureContextConfiguration(
 
 def createContextConfiguration(*args, **kwds):
     configuration = FORANative.ExecutionContextConfiguration.defaultConfiguration()
-    
+
     configureContextConfiguration(configuration, *args, **kwds)
 
     return configuration
-    
+
 
 def ExecutionContext(	stackIncrement = 32 * 1024,
                         dataManager = None,
@@ -48,13 +48,13 @@ def ExecutionContext(	stackIncrement = 32 * 1024,
                         blockUntilTracesAreCompiled = False
                         ):
     """Create a new execution context and return it"""
-    
+
     assert dataManager is not None
 
     tr = FORANative.ExecutionContext(dataManager, stackIncrement)
-    
+
     configureContextConfiguration(
-            tr.configuration, 
+            tr.configuration,
             allowInterpreterTracing,
             blockUntilTracesAreCompiled
             )
@@ -64,7 +64,7 @@ def ExecutionContext(	stackIncrement = 32 * 1024,
 
 def simpleEval(callbackScheduler, *args):
     """convert 'args' to FORA ImplValContainers, evaluates, and returns a python value.
-    
+
     Assumes you don't use cache or vector loads.  If you return an exception, this function
     asserts false. Otherwise, it returns the ImplValContainer result.
     """
@@ -81,6 +81,6 @@ def simpleEval(callbackScheduler, *args):
         return tr.asResult.result.pyval
     except:
         return tr.asResult.result
-        
+
 
 

@@ -36,11 +36,11 @@ namespace {
         }
 
     std::string getMessagePrefix(
-            const std::string& logLevelLabel, 
+            const std::string& logLevelLabel,
             const char* inSourceFile,
             int inLineNumber)
         {
-        char lineNoStr[10]; 
+        char lineNoStr[10];
         snprintf(lineNoStr, sizeof(lineNoStr), ":%-6d: ", inLineNumber);
 
         std::stringstream s;
@@ -92,9 +92,9 @@ namespace Ufora {
 namespace Logging {
 
 void writeLog(
-        LogLevel level, 
-        const char*  filename, 
-        int lineNumber, 
+        LogLevel level,
+        const char*  filename,
+        int lineNumber,
         const std::string& message)
     {
     std::string logLevelLabel(Ufora::Logging::Logger::logLevelToString(level));
@@ -120,7 +120,7 @@ void setLogLevel(LogLevel logLevel)
     getLogLevel() = logLevel;
     }
 
-Logger::Logger(LogLevel logLevel, const char * file, int line, bool shouldLog) : 
+Logger::Logger(LogLevel logLevel, const char * file, int line, bool shouldLog) :
         mFileName(file),
         mLineNumber(line),
         mLogLevel(logLevel),
@@ -135,17 +135,17 @@ Logger::Logger(const Logger& other)
 
 
 
-void Logger::logToStream(std::ostream& stream, LogLevel level, const char* filename, 
+void Logger::logToStream(std::ostream& stream, LogLevel level, const char* filename,
         int lineNumber, const std::string& message)
     {
     indentLogOstream(
         message,
-        getMessagePrefix(logLevelToString(level), filename, lineNumber), 
+        getMessagePrefix(logLevelToString(level), filename, lineNumber),
         stream
         );
     }
 
-void Logger::logToStderr(LogLevel level, const char* filename, 
+void Logger::logToStderr(LogLevel level, const char* filename,
         int lineNumber, const std::string& message)
     {
     logToStream(std::cerr, level, filename, lineNumber, message);

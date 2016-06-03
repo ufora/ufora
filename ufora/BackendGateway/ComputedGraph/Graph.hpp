@@ -71,7 +71,7 @@ public:
 
 		RootPtr getCurRoot(void);
 
-private:		
+private:
 		std::map<id_type, boost::python::object> mKeepAlive;
 
 		std::map<class_id_type, PolymorphicSharedPtr<LocationType> > mNodeTypeMap;	//id of Location class -> class

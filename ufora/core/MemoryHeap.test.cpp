@@ -44,9 +44,9 @@ boost::shared_ptr<MemoryHeap> newStandardHeap()
 				&::mmap,
 				(void*)0,
 				boost::arg<1>(),
-				PROT_READ | PROT_WRITE, 
-				MAP_ANONYMOUS | MAP_PRIVATE, 
-				-1, 
+				PROT_READ | PROT_WRITE,
+				MAP_ANONYMOUS | MAP_PRIVATE,
+				-1,
 				0
 				),
 			::munmap,
@@ -84,7 +84,7 @@ BOOST_AUTO_TEST_CASE( test_MemoryHeap_fillAndEmpty )
 
 			allocs.push_back(ptr);
 
-			if (heap->getHeapSize() > MEDIUM_HEAP_SIZE) 
+			if (heap->getHeapSize() > MEDIUM_HEAP_SIZE)
 				break;
 
 			ptr = heap->malloc(MemoryHeap::DEFAULT_PAGE_SIZE + 8);
@@ -92,7 +92,7 @@ BOOST_AUTO_TEST_CASE( test_MemoryHeap_fillAndEmpty )
 
 			allocs.push_back(ptr);
 
-			if (heap->getHeapSize() > MEDIUM_HEAP_SIZE) 
+			if (heap->getHeapSize() > MEDIUM_HEAP_SIZE)
 				break;
 			}
 
@@ -403,7 +403,7 @@ namespace {
 
 struct thread_args {
 	std::vector<boost::shared_ptr<MemoryHeap> > heaps;
-	int idx;	
+	int idx;
 };
 
 }
@@ -485,13 +485,13 @@ BOOST_AUTO_TEST_CASE( test_MemoryHeap_multithreaded )
 
 	for (int i=0; i<8; ++i)
 		heaps.push_back(newStandardHeap());
-		
+
 	for (int i=0; i<8; ++i)
 		heaps.push_back(newStandardHeap());
-		
+
 	for (int i=0; i<8; ++i)
 		heaps.push_back(newStandardHeap());
-		
+
 	std::vector<pthread_t> threads(heaps.size());
 	for (int i=0; i<threads.size(); ++i)
 		{
@@ -500,7 +500,7 @@ BOOST_AUTO_TEST_CASE( test_MemoryHeap_multithreaded )
 		args->idx = i;
 		int result = pthread_create(&threads[i], NULL, &thread, args);
 		BOOST_CHECK_EQUAL(result, 0);
-		}	
+		}
 
 	for (int i=0; i<threads.size(); ++i)
 		{

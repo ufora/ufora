@@ -21,7 +21,7 @@ namespace Ufora {
 
 class ScopedTimingAccumulator {
 public:
-	ScopedTimingAccumulator() : 
+	ScopedTimingAccumulator() :
 			mTimeElapsed(0),
 			mCount(0)
 		{
@@ -54,7 +54,7 @@ public:
 	template<class callback_type>
 	class Scope {
 	public:
-		Scope(ScopedTimingAccumulator& accumulator, const callback_type& callback) : 
+		Scope(ScopedTimingAccumulator& accumulator, const callback_type& callback) :
 				mT0(curClock()),
 				mAccumulator(accumulator),
 				mCallback(callback)
@@ -86,7 +86,7 @@ public:
 
 	class NoCallback {
 	public:
-		void operator()(const ScopedTimingAccumulator& original, 
+		void operator()(const ScopedTimingAccumulator& original,
 						const ScopedTimingAccumulator& final)
 			{
 			}
@@ -99,7 +99,7 @@ public:
 
 private:
 	double mTimeElapsed;
-	
+
 	long mCount;
 };
 

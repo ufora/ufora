@@ -43,7 +43,7 @@ class TrustRegionTests(object):
         numpy.testing.assert_allclose(res.weights, scikit_weights,
                                       atol=1e-4, rtol=1e-4)
         self.assertEqual(res.iterations, 2)
-            
+
     def test_trust_region_2(self):
         X, y = self.trustRegionData()
 
@@ -93,7 +93,7 @@ class TrustRegionTests(object):
             res.weights,
             [-1.78096818,  3.42088899]
             )
-        
+
     def test_trust_region_5(self):
         # corresponds to the fora test: logisticregressionTests.basic_4
 

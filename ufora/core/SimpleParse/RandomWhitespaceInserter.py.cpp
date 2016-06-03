@@ -60,12 +60,12 @@ public:
         class_<PolymorphicSharedPtr<RandomWhitespaceInserter> >(
         "RandomWhitespaceInserter", no_init)
             .def("__init__", make_constructor(makeClassBySeed))
-            .def("stringifyWithRandomWhitespaceAndComments", 
+            .def("stringifyWithRandomWhitespaceAndComments",
                 &stringifyWithRandomWhitespaceAndComments)
             .def("seed", &seed)
             ;
         }
-       
+
     };
 
 template<>

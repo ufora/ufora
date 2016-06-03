@@ -38,9 +38,9 @@ public:
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
-			
-			
-			boost::python::class_<VariableAllocator, 
+
+
+			boost::python::class_<VariableAllocator,
 					boost::shared_ptr<VariableAllocator> >("VariableAllocator");
 			}
 };

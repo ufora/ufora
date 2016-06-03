@@ -34,17 +34,17 @@ public:
 	static NativeType get(void)
 		{
 		NativeType hashTableBody =
-			NativeType::Composite("mKeys", NativeTypeFor<key_type>::get().ptr()) + 
-			NativeType::Composite("mValues", NativeTypeFor<value_type>::get().ptr()) + 
-			NativeType::Composite("mBucketCount", NativeTypeFor<size_t>::get()) + 
+			NativeType::Composite("mKeys", NativeTypeFor<key_type>::get().ptr()) +
+			NativeType::Composite("mValues", NativeTypeFor<value_type>::get().ptr()) +
+			NativeType::Composite("mBucketCount", NativeTypeFor<size_t>::get()) +
 			NativeType::Composite("mElementCount", NativeTypeFor<size_t>::get())
 			;
 
-		return 
-			NativeType::Composite("mTablePtr", hashTableBody.ptr()) + 
+		return
+			NativeType::Composite("mTablePtr", hashTableBody.ptr()) +
 			NativeType::Composite(
 				NativeType::Array(
-					NativeType::Integer(8,false), 
+					NativeType::Integer(8,false),
 					sizeof(table_type) - hashTableBody.ptr().packedSize()
 					)
 				)
@@ -60,7 +60,7 @@ class TypedNativeExpressionBehaviors<
 public:
 	typedef TypedFora::Abi::FourLookupHashTable<key_type, value_type, threadsafe> table_type;
 	typedef TypedFora::Abi::UnresizableFourLookupHashTable<key_type, value_type> inner_table_type;
-	
+
 
 	TypedNativeExpressionBehaviors(NativeExpression e) : mThis(e)
 		{
@@ -108,7 +108,7 @@ public:
 		if (index == 2)
 			whichPrime = inner_table_type::PRIME_3;
 
-		return (key * key_type(whichPrime) + key_type(1)) % 
+		return (key * key_type(whichPrime) + key_type(1)) %
 			((TypedNativeExpression<key_type>)bucketCount());
 		}
 
@@ -121,7 +121,7 @@ public:
 
 		using namespace TypedNativeExpressionHelpers;
 
-		return 
+		return
 			let(v1, slotFor(key, 0),
 			if_(keys()[v1] == key, v1,
 			let(v2, slotFor(key, 1),
@@ -143,7 +143,7 @@ public:
 		{
 		return keys()[slot];
 		}
-	
+
 	TypedNativeExpression<sword_t> slotForOrInsertionPoint(TypedNativeExpression<key_type> key) const
 		{
 		TypedNativeVariable<sword_t> v1;
@@ -153,7 +153,7 @@ public:
 
 		using namespace TypedNativeExpressionHelpers;
 
-		return 
+		return
 			let(v1, slotFor(key, 0),
 			if_(keys()[v1] == key || keys()[v1] == (key_type)0, v1,
 			let(v2, slotFor(key, 1),
@@ -167,7 +167,7 @@ public:
 		}
 
 	TypedNativeExpression<void> insert(
-									TypedNativeExpression<key_type> key, 
+									TypedNativeExpression<key_type> key,
 									TypedNativeExpression<value_type> value
 									) const
 		{
@@ -179,9 +179,9 @@ public:
 
 		if (threadsafe)
 			return insertFunction(self(), key, value);
-		return 
-			let(slot, 
-				slotForOrInsertionPoint(key), 
+		return
+			let(slot,
+				slotForOrInsertionPoint(key),
 				if_(slot == (sword_t)-1,
 					//call the library function
 					insertFunction(self(), key, value),

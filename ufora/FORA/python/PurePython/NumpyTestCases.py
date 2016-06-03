@@ -669,7 +669,7 @@ class NumpyTestCases(object):
                 self.evaluateWithExecutor(f, sliced_array),
                 msg=str(sliced_array)
                 )
-        
+
     def check_svd(self, x):
         def svd(a):
             return numpy.linalg.svd(a)
@@ -767,7 +767,7 @@ class NumpyTestCases(object):
     def test_numpy_inv_2(self):
         def f(x):
             return numpy.linalg.inv(x)
-            
+
         x = numpy.array([[1,1],[1,1]])
 
         try:
@@ -789,7 +789,7 @@ class NumpyTestCases(object):
 
         res1 = f(x)
         res2 = self.evaluateWithExecutor(f, x)
-        
+
         numpy.testing.assert_allclose(res1[0], res2[0])
         numpy.testing.assert_allclose(res1[1], res1[1])
 

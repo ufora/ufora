@@ -55,7 +55,7 @@ public:
 
 		if (mInstances.find(tname) == mInstances.end())
 			mInstances[tname] = (void*)new T();
-			
+
 		return *(T*)mInstances[tname];
 		}
 

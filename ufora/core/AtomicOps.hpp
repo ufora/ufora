@@ -26,27 +26,27 @@
 #if defined(BSA_PLATFORM_LINUX) || defined(BSA_PLATFORM_APPLE)
 
 	#if __x86_64__ || _WIN64
-		
+
 		typedef volatile int64_t AO_t;
 
 	#else
-		
+
 		typedef volatile int32_t AO_t;
 
 	#endif
 
-	
+
 	inline AO_t AO_fetch_and_add_full(AO_t* refcount, AO_t ct)
 		{
 		return __sync_fetch_and_add(refcount, ct);
 		}
-	
+
 	inline AO_t AO_load(AO_t* value)
 		{
 		__sync_synchronize();
 		return *value;
 		}
-	
+
 	inline void AO_store(AO_t* value, AO_t toStore)
 		{
 		__sync_synchronize();
@@ -67,11 +67,11 @@
 #else
 
 	#if __x86_64__ || _WIN64
-		
+
 		typedef volatile uint64_t AO_t;
 
 	#else
-		
+
 		typedef volatile __int32 AO_t;
 
 	#endif

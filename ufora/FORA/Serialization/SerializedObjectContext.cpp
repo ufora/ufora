@@ -23,15 +23,15 @@
 #include "../TypedFora/ABI/ForaValueArray.hppml"
 
 
-SerializedObjectContext::SerializedObjectContext(PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM) : 
+SerializedObjectContext::SerializedObjectContext(PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM) :
 		mVDMM(inVDMM)
 	{
 	}
 
 SerializedObjectContext::SerializedObjectContext(
-									PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM, 
+									PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM,
 									PolymorphicSharedPtr<SerializedObject> inObject
-									) : 
+									) :
 		mTypesReferenced(inObject->mTypesReferenced),
 		mJovsReferenced(inObject->mJovsReferenced),
 		mExpressionsReferenced(inObject->mExpressionsReferenced),
@@ -45,7 +45,7 @@ SerializedObjectContext&		SerializedObjectContext::currentContext()
 	typedef Ufora::threading::ScopedThreadLocalContext<
 							PolymorphicSharedPtr<SerializedObjectContext> > context_type;
 
-	lassert_dump(context_type::has(), 
+	lassert_dump(context_type::has(),
 		"SerializedObjectContext context not set. "
 		"Please use 'with ufora.native.FORA.SerializedObjectContextSetter' "
 		"to push one before pickling"
@@ -62,7 +62,7 @@ uint32_t	addToIndex(map_type& inMap, const T& inVal)
 	{
 	if (inMap.hasKey(inVal))
 		return inMap.getValue(inVal);
-	
+
 	//not there. add it on the end
 	uint32_t index = inMap.size();
 	inMap.set(inVal, index);
@@ -115,11 +115,11 @@ void	SerializedObjectContext::serialize(SerializedObjectContextSerializer& seria
 	uint32_t newIndex = addToIndex(mMutableVectorRecordsSerialized, vecRecord);
 	serializer.serialize(newIndex);
 
-	Serializer<MutableVectorRecord, 
+	Serializer<MutableVectorRecord,
 			   Fora::ForaValueSerializationStream>::serialize(serializer, vecRecord);
 	}
 
-//deserialize a FORA value.  
+//deserialize a FORA value.
 void	SerializedObjectContext::deserialize(SerializedObjectContextDeserializer& deserializer, Type& outType)
 	{
 	uint32_t index;
@@ -166,7 +166,7 @@ void	SerializedObjectContext::deserialize(SerializedObjectContextDeserializer& d
 		return;
 		}
 
-	Deserializer<MutableVectorRecord, 
+	Deserializer<MutableVectorRecord,
 				 Fora::ForaValueDeserializationStream>::deserialize(deserializer, vecRecord);
 
 	mMutableVectorRecordsSerialized.set(vecRecord, index);
@@ -198,7 +198,7 @@ void SerializedObjectContextSerializer::serialize(boost::shared_ptr<Fora::Pagele
 
 	Fora::VectorMemoizingForaValueSerializationStream stream(*this);
 
-	Serializer<TypedFora::Abi::ForaValueArray, 
+	Serializer<TypedFora::Abi::ForaValueArray,
 		Fora::ForaValueSerializationStream>::serialize(stream, *in->getValues());
 	}
 
@@ -231,11 +231,11 @@ void SerializedObjectContextDeserializer::deserialize(boost::shared_ptr<Fora::Pa
 
 	if (int(elapsed+timeElapsed) != int(timeElapsed))
 		LOG_INFO << timeElapsed + elapsed << " total spent deserializing Pagelets. "
-			<< elapsed << " deserializing " << out->getValues()->size() 
+			<< elapsed << " deserializing " << out->getValues()->size()
 			<< " x " << out->getValues()->currentJor()
 			<< ". MB/sec = " << totalBytes / 1024.0 / 1024.0 / (timeElapsed + elapsed)
 			;
-	
+
 	timeElapsed += elapsed;
 	}
 

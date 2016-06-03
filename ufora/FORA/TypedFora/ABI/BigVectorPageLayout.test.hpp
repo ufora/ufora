@@ -24,9 +24,9 @@ class BigVectorPageLayoutTestFixture {
 public:
 	VectorDataID vdid(int64_t index)
 		{
-		return 
+		return
 			VectorDataID::Internal(
-				Fora::PageId(hash_type(index), 1024, 1024), 
+				Fora::PageId(hash_type(index), 1024, 1024),
 				0
 				);
 		}
@@ -62,7 +62,7 @@ public:
 
 		return layout;
 		}
-		
+
 };
 
 

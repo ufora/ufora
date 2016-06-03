@@ -38,7 +38,7 @@ def main(parsedArguments):
             CumulusNative.replayCumulusWorkerEventStream(events, parsedArguments.validation)
     else:
         CumulusNative.replayCumulusWorkerEventStreamFromFile(
-            parsedArguments.file, 
+            parsedArguments.file,
             parsedArguments.validation
             )
 

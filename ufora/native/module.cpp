@@ -25,10 +25,10 @@ namespace native {
 namespace module {
 
 	boost::python::scope createModule(const std::string& inModuleName) {
-	
+
 		boost::python::object thePackage = boost::python::scope();
 
-		std::string currentPackageName = 
+		std::string currentPackageName =
 			boost::python::extract<string>(thePackage.attr("__name__"))();
 
 		boost::python::object module(
@@ -38,12 +38,12 @@ namespace module {
 		);
 
 		thePackage.attr(inModuleName.c_str()) = module;
-		
+
 		// I think this is required to get pickling to work
         module.attr("__path__") = currentPackageName + "." + inModuleName;
-        
+
 		return boost::python::scope(module);
 	}
-} 
+}
 }
 

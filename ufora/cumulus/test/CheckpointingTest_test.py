@@ -88,7 +88,7 @@ simpleSumInLoopText = """
     let ix = 0
     while (ix < 100) {
         ix = ix + 1
-        res = res + sum(ix, 10**9, {if (_ % 16 == 0) v[0] else _ });
+        res = res + sum(ix, Int64(10**9), {if (_ % 16 == 0) v[(_ * 1024) % size(v)] else _ });
         }
 
     res
@@ -535,7 +535,7 @@ class CheckpointingTest(unittest.TestCase):
             else:
                 toDelete = keys[int(random.random() * len(keys))][0];
 
-                logging.info("Deleting %s", toDelete)
+                logging.info("Deleting %s of %s", toDelete, keys)
 
                 #delete a random value
                 simulation.objectStore.deleteValue(toDelete)
@@ -988,7 +988,7 @@ class CheckpointingTest(unittest.TestCase):
                                 simulation.getGlobalScheduler().triggerFullCheckpointsOnOutstandingComputations()
 
             #make sure we're still able to reliably checkpoint
-            self.assertLess(time.time() - lastFullTimestamp, 5.0)
+            self.assertLess(time.time() - lastFullTimestamp, 8.0)
         finally:
             simulation.teardown()
 
@@ -1046,7 +1046,7 @@ class CheckpointingTest(unittest.TestCase):
         for ix in range(len(comps)-1):
             self.assertTrue(comps[ix+1] > comps[ix])
 
-    def loadCheckpointFromFreshSimulationTest(self, calculationText, timestampsPerPassList, clientCount=1, timestep = .5):
+    def loadCheckpointFromFreshSimulationTest(self, calculationText, timestampsPerPassList, clientCount=1, timestep = 1.0):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
 
         statuses = []

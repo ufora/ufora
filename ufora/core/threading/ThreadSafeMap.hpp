@@ -49,7 +49,7 @@ public:
 
 		return mMap.find(in)->second;
 		}
-	
+
 	//returns true if the map contains key 'in'
 	bool contains(const K& in) const
 		{
@@ -57,13 +57,13 @@ public:
 
 		return mMap.find(in) != mMap.end();
 		}
-	
+
 	//set 'in' to value 'inV'
 	void	set(const K& in, const V& inV)
 		{
 		set(in, null() << inV);
 		}
-	
+
 	//set 'in' to value inV. if inV is null, remove it
 	void	set(const K& in, const Nullable<V>& inV)
 		{
@@ -92,10 +92,10 @@ public:
 			mMap[in] = *inUpdateVal;
 			else
 			mMap.erase(in);
-		
+
 		return true;
 		}
-	
+
 	size_t size() const
 		{
 		scoped_lock_type lock(mMutex);

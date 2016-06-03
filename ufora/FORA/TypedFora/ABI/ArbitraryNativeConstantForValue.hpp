@@ -28,7 +28,7 @@ class ArbitraryNativeConstantForValueType : public ArbitraryNativeConstantType {
 public:
 	virtual std::string getTypename()
 		{
-		return "ArbitraryNativeConstantForValue<" + 
+		return "ArbitraryNativeConstantForValue<" +
 			Ufora::debug::StackTrace::demangle(typeid(T).name()) + ">";
 		}
 
@@ -40,7 +40,7 @@ public:
 };
 
 template<class T>
-ArbitraryNativeConstantTypeRegistrar<ArbitraryNativeConstantForValueType<T> > 
+ArbitraryNativeConstantTypeRegistrar<ArbitraryNativeConstantForValueType<T> >
 ArbitraryNativeConstantForValueType<T>::sRegistrar;
 
 template<class T>
@@ -60,7 +60,7 @@ public:
 		{
 		return NativeTypeFor<T>::get();
 		}
-	
+
 	void* pointerToData()
 		{
 		return &mValue;
@@ -68,7 +68,7 @@ public:
 
 	std::string description()
 		{
-		return Ufora::debug::StackTrace::demangle(typeid(T).name()) + "(" + 
+		return Ufora::debug::StackTrace::demangle(typeid(T).name()) + "(" +
 				prettyPrintString(mValue) + ")";
 		}
 
@@ -92,13 +92,13 @@ public:
 		{
 		return mValue;
 		}
-	
+
 private:
 	T mValue;
 };
 
 template<class T>
-boost::shared_ptr<ArbitraryNativeConstant> 
+boost::shared_ptr<ArbitraryNativeConstant>
 ArbitraryNativeConstantForValueType<T>::deserialize(std::string s)
 	{
 	SerializedObjectInflater inflater;
@@ -118,10 +118,10 @@ ArbitraryNativeConstantForValueType<T>::deserialize(std::string s)
 	}
 
 template<class T>
-std::string 
+std::string
 ArbitraryNativeConstantForValueType<T>::serialize(boost::shared_ptr<ArbitraryNativeConstant> constant)
 	{
-	boost::shared_ptr<ArbitraryNativeConstantForValue<T> > c = 
+	boost::shared_ptr<ArbitraryNativeConstantForValue<T> > c =
 		boost::dynamic_pointer_cast<ArbitraryNativeConstantForValue<T> >(constant);
 
 	lassert(c);

@@ -30,7 +30,7 @@ public:
 
 	//free some memory
 	void free(void* block);
-	
+
 	//allocate some memory
 	void* allocate(size_t inByteCount);
 
@@ -45,7 +45,7 @@ private:
 	//the current memory block that's on the top of the stack. This is the address that
 	//getMemBlockPtr() points to
 	MemBlock* mBaseMemBlock;
-	
+
 	//the root block in the sequence of slabs, so that we can know where to start deallocating
 	//if we have to rip this down.
 	MemBlock* mFirstMemBlock;

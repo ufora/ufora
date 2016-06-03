@@ -24,7 +24,7 @@ using namespace TypedFora::Abi;
 BOOST_AUTO_TEST_CASE( test_pointerArray )
 	{
 	ExecutionContextMemoryPool memoryPool(
-		0, 
+		0,
 		PolymorphicSharedPtr<VectorDataMemoryManager>(
 			new VectorDataMemoryManager(
 				SimpleCallbackSchedulerFactory::singletonSchedulerForTesting(),

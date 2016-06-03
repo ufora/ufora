@@ -66,7 +66,7 @@ public:
 
                 )
             );
-        
+
         multiChannel2.reset(
             new string_multi_channel(
                 { stringChannelPair1.second, stringChannelPair2.second},
@@ -160,13 +160,13 @@ public:
         multiChannel2->write(message);
         writtenMessageCount++;
         }
-   
+
     PolymorphicSharedPtr<CallbackScheduler>    mCallbackScheduler;
 };
 
 class MultiChannelTestFixture {
 public:
-    MultiChannelTestFixture() : 
+    MultiChannelTestFixture() :
         scheduler(CallbackScheduler::singletonForTesting()),
         testHarness(scheduler)
         {
@@ -214,13 +214,13 @@ BOOST_AUTO_TEST_CASE( test_3 )
     {
     testHarness.write("0,1:hello");
     testHarness.write("1,2:hello");
-    
+
     //these messages should be delayed
-    testHarness.write("1,4:hello"); 
-    testHarness.write("1,5:hello"); 
-    testHarness.write("1,6:hello"); 
-    testHarness.write("1,7:hello"); 
-    
+    testHarness.write("1,4:hello");
+    testHarness.write("1,5:hello");
+    testHarness.write("1,6:hello");
+    testHarness.write("1,7:hello");
+
     //and sent when we send this one:
     testHarness.write("0,3:hello");
     }
@@ -240,11 +240,11 @@ BOOST_AUTO_TEST_CASE( test_random )
 
         for (long k = 0; k < count; k++)
             if (rnd() < .5)
-                channel0Messages.push_back("0," + 
+                channel0Messages.push_back("0," +
                     boost::lexical_cast<string>(k) + ":hello"
                     );
             else
-                channel1Messages.push_back("1," + 
+                channel1Messages.push_back("1," +
                     boost::lexical_cast<string>(k) + ":hello"
                     );
 
