@@ -494,13 +494,22 @@ class CheckpointingTest(unittest.TestCase):
         finally:
             simulation.teardown()
 
-    def test_checkpointingRecoveryFromCorruptedCacheStateOne(self):
-        self.checkpointingRecoveryFromCorruptedCacheState(False)
+    def test_checkpointingRecoveryFromCorruptedCacheStatePage(self):
+        self.checkpointingRecoveryFromCorruptedCacheState("_page")
+
+    def test_checkpointingRecoveryFromCorruptedCacheStateSummary(self):
+        self.checkpointingRecoveryFromCorruptedCacheState("_summary")
+
+    def test_checkpointingRecoveryFromCorruptedCacheStateSlice(self):
+        self.checkpointingRecoveryFromCorruptedCacheState("_slice")
+
+    def test_checkpointingRecoveryFromCorruptedCacheStateBigvec(self):
+        self.checkpointingRecoveryFromCorruptedCacheState("_bigvec")
 
     def test_checkpointingRecoveryFromCorruptedCacheStateAll(self):
-        self.checkpointingRecoveryFromCorruptedCacheState(True)
+        self.checkpointingRecoveryFromCorruptedCacheState("")
 
-    def checkpointingRecoveryFromCorruptedCacheState(self, deleteAll):
+    def checkpointingRecoveryFromCorruptedCacheState(self, suffix):
         simulation = self.createSimulation(workerCount=1)
         self.assertTrue(len(simulation.objectStore.listValues()) == 0)
 
@@ -528,18 +537,11 @@ class CheckpointingTest(unittest.TestCase):
             #delete everything in the object store
             keys = simulation.objectStore.listValues()
 
-            if deleteAll:
-                logging.info("Deleting all values")
-                for k in keys:
+            for k in keys:
+                if k[0].endswith(suffix):
+                    logging.info("Deleting %s", k[0])
                     simulation.objectStore.deleteValue(k[0])
-            else:
-                toDelete = keys[int(random.random() * len(keys))][0];
-
-                logging.info("Deleting %s of %s", toDelete, keys)
-
-                #delete a random value
-                simulation.objectStore.deleteValue(toDelete)
-
+    
             #give the simulation a couple of seconds to pick a scheduler
             simulation.addWorker()
 
