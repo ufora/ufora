@@ -16,11 +16,24 @@ import unittest
 
 class GpuFeatureTestCases:
 
+    def test_conversions(self):
+        s_integers = ["2s16", "3s32", "4s64", "5"]
+        u_integers = ["2u16", "3u32", "4u64"]
+        floats = ["2.2f32", "3.3f64", "4.4"]
+
+        numbers = s_integers + u_integers + floats
+        for n1 in numbers:
+            for n2 in numbers:
+                for op in ["+", "-", "*" ]:    # TODO: add division, currently broken
+                    self.compareCudaToCPU(
+                            "fun((a,b)) { a " + op + " b }",
+                            "[(" + n1 + ", " + n2 + ")]"
+                            )
+
     def test_closure(self):
         captureExpr = """
                 let capT = (3s32, 4s64, 5s32);
                 let cap64 = 9s64;
-                let vec = [1, 2, 3]
                 """
         functionExpr = """
                 fun(ct) {
@@ -33,7 +46,51 @@ class GpuFeatureTestCases:
                     }
                 res
                 }"""
+        self.compareCudaToCPU(functionExpr, "[0]", captureExpr)
         self.compareCudaToCPU(functionExpr, "[1]", captureExpr)
+        self.compareCudaToCPU(functionExpr, "[1, 3, 100]", captureExpr)
+
+    def test_closure_vec_int(self):
+        captureExpr = """
+                let capT = (3s32, 4s64, 5s32);
+                let cap64 = 9s64;
+                let vec = [1, 2, 3]
+                """
+        functionExpr = """
+                fun(ct) {
+                let res = 0
+                let x = 0
+                while (x < ct)
+                    {
+                    x = x + 1
+                    res = res + x + cap64 + capT[0] + capT[1] + capT[2] + vec[0]
+                    }
+                res
+                }"""
+        self.compareCudaToCPU(functionExpr, "[0]", captureExpr)
+        self.compareCudaToCPU(functionExpr, "[1]", captureExpr)
+        self.compareCudaToCPU(functionExpr, "[1, 3, 100]", captureExpr)
+
+    def test_closure_vec_float(self):
+        captureExpr = """
+                let capT = (3s32, 4s64, 5s32);
+                let cap64 = 9s64;
+                let vec = [1.0, 2.5, 3.9]
+                """
+        functionExpr = """
+                fun(ct) {
+                let res = 0.0;
+                let x = 0;
+                while (x < ct)
+                    {
+                    x = x + 1
+                    res = res + x + cap64 + capT[0] + capT[1] + capT[2] + vec[0]
+                    };
+                res
+                }"""
+        self.compareCudaToCPU(functionExpr, "[0]", captureExpr)
+        self.compareCudaToCPU(functionExpr, "[1]", captureExpr)
+        self.compareCudaToCPU(functionExpr, "[1, 3, 100]", captureExpr)
 
     def test_read_tuples(self):
         self.compareCudaToCPU("fun((a,b)) { (b,a) }", "[(1,2)]")
@@ -84,20 +141,6 @@ class GpuFeatureTestCases:
             """
         self.checkCudaRaises(functionExpr, "[0]", "")
         self.checkCudaRaises(functionExpr, "[1]", "")
-
-    def test_conversions(self):
-        s_integers = ["2s16", "3s32", "4s64", "5"]
-        u_integers = ["2u16", "3u32", "4u64"]
-        floats = ["2.2f32", "3.3f64", "4.4"]
-
-        numbers = s_integers + u_integers + floats
-        for n1 in numbers:
-            for n2 in numbers:
-                for op in ["+", "-", "*" ]:    # TODO: add division, currently broken
-                    self.compareCudaToCPU(
-                            "fun((a,b)) { a " + op + " b }",
-                            "[(" + n1 + ", " + n2 + ")]"
-                            )
 
     def test_two_return_types(self):
         functionExpr = """

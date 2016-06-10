@@ -1,14 +1,21 @@
 #include "ConvertForGPUExecution.hppml"
 #include "../NativeCode.hppml"
+#include "../NativeTypeFor.hpp"
+#include "../NativeVariable.hppml"
+#include "../../TypedFora/ABI/VectorRecord.hpp"
+#include "../../TypedFora/ABI/VectorRecordCodegen.hppml"
 #include "../../../core/cppml/CPPMLTransform.hppml"
-
-#include "../../../core/Logging.hpp"
 
 namespace NativeCFGTransforms {
 
 class IncrementReturnIndexTransformer {
 public:
-	IncrementReturnIndexTransformer(uword_t maxIdx) : mMaxIdx(maxIdx) {}
+	IncrementReturnIndexTransformer(uword_t maxIdx) {
+	mMaxIdx.push_back(maxIdx);
+	mNullCont = NativeContinuation(
+					NativeVariable::Temp(NativeType::Nothing()),
+					NativeExpression::Return(0, NativeConstant::Nothing().expr()));
+	}
 
 	template<class T>
 	Nullable<T> processDown(const T& in, bool& out) const
@@ -21,6 +28,17 @@ public:
 		return null();
 		}
 
+	Nullable<NativeCFG> processDown(const NativeCFG& inCFG, bool& cont) const
+		{
+		mMaxIdx.push_back(inCFG.returnTypes().size());
+		return null();
+		}
+	Nullable<NativeCFG> processUp(const NativeCFG& inCFG) const
+		{
+		mMaxIdx.pop_back();
+		return null();
+		}
+
 	//strip out the callback variables and replace with 'nothing'
 	//won't be a problem unless they get used
 	NativeVariable 		processDown(const NativeVariable& t, bool& cont) const
@@ -29,10 +47,9 @@ public:
 			return NativeVariable(t.varID(), NativeType::Nothing());
 		return t;
 		}
+
 	NativeExpression	processDown(const NativeExpression& inExp, bool& ioCont) const
 		{
-		LOG_DEBUG << "IncrementReturnIndexTr::processUp::NativeExpression:"
-				<< prettyPrintString(inExp);
 		@match NativeExpression(inExp)
 			-|	Tagged(_, Interrupt()) ->> {
 				return  NativeExpression::Nothing();
@@ -40,22 +57,10 @@ public:
 			-|	Tagged(_, KickToInterpreterCheck()) ->> {
 				return  NativeExpression::Nothing();
 				}
-			-|	Tagged(e, HomogenousVectorLookup(vectorRecord, index, type)) ->> {
-				LOG_DEBUG << "unwrapping HomogenousVectorLookup tagged exp";
-				LOG_DEBUG << "inExp::" << prettyPrintString(inExp);
-				LOG_DEBUG << "e::" << prettyPrintString(e);
-//				LOG_DEBUG << "t::" << prettyPrintString(t);
-				LOG_DEBUG << "type: " << prettyPrintString(type);
-				LOG_DEBUG << "vectorRecord.type(): " << prettyPrintString(vectorRecord.type());
-				NativeExpression exp = NativeExpression::BinaryOp(
-								NativeBinaryOpcode::Add(),
-								vectorRecord,
-								index
-								);
-				LOG_DEBUG << "resulting expression:" << prettyPrintString(exp);
-				LOG_DEBUG << "resulting expression type:" << prettyPrintString(exp.type());
-				return exp;
-				}
+//			Why are we not discarding 'TransferToInterpreter' tagged expressions?
+//			-|	Tagged(_, TransferToInterpreter()) ->> {
+//				return  NativeExpression::Nothing();
+//			}
 			-|	_ ->> {
 				return inExp;
 				}
@@ -64,45 +69,46 @@ public:
 
 	NativeExpression	processUp(const NativeExpression& inExp) const
 		{
-		LOG_DEBUG << "IncrementReturnIndexTr::processUp::NativeExpression:"
-				<< prettyPrintString(inExp);
 		@match NativeExpression(inExp)
 			-|	Return(idx, val) ->> {
-				if (idx < mMaxIdx)
+				if (idx < mMaxIdx.back())
 					return NativeExpression::Return(idx+1, val);
 				else
 					return NativeExpression::Return(0, val);
 				}
 			-|	Call(f, continuations, args, meta) ->> {
-				LOG_DEBUG << "Updating continuations of Call expr";
-				NativeContinuation nullCont =
-						NativeContinuation(
-								NativeVariable::Temp(NativeType::Nothing()),
-								NativeExpression::Return(0, NativeConstant::Nothing().expr()));
+				auto newF = f;
 				@match NativeCallTarget(f)
-				-|	Inline(fun, block) ->> {
-					NativeCFG cfg(fun);
-					cfg.returnTypes() =
-							emptyTreeVec() + NativeType::Nothing() + cfg.returnTypes();
-					LOG_DEBUG << "Added a Nothing as first return type of CFG " << cfg.name()
-							<<". returnTypes.size = "
-							<< cfg.returnTypes().size();
-					for (auto t : cfg.returnTypes())
-						LOG_DEBUG << "retTyp: " << prettyPrintString(t);
-					return NativeExpression::Call(
-							NativeCallTarget::Inline(cfg, block),
-							emptyTreeVec() + nullCont + continuations,
-							args,
-							meta);
+				-|	Inline(cfg, block) ->> {
+					newF = NativeCallTarget::Inline(prependNothingToReturnTypes(cfg), block);
 					}
-				-|	_ ->> {
-					return NativeExpression::Call(
-							f,
-							emptyTreeVec() + nullCont + continuations,
-							args,
-							meta);
-					}
+				-| _ ->> {}
+				return NativeExpression::Call(
+						newF,
+						emptyTreeVec() + mNullCont + continuations,
+						args,
+						meta);
 				}
+
+			-|	Tagged(e, HomogenousVectorLookup(vectorRecord, index, type)) ->> {
+				lassert(vectorRecord.isVariable());
+				NativeVariable vrv = vectorRecord.getVariable().var();
+				lassert(vrv.type().isComposite());
+				auto comp = vrv.type().getComposite();
+				lassert(comp.elements().size()==4);
+				vrv.type().getComposite().elements() =
+						emptyTreeVec() + type.ptr()
+							+ comp.elements().slice(1, comp.elements().size());
+
+				return NativeExpression::BinaryOp(
+								NativeBinaryOpcode::Add(),
+								NativeExpression::ValueExtract(
+										emptyTreeVec() + (uword_t)0,
+										vectorRecord),
+								index
+								);
+				}
+
 			-|	_ ->> {
 				return inExp;
 				}
@@ -110,7 +116,68 @@ public:
 		}
 
 private:
-	uword_t mMaxIdx;
+	NativeCFG prependNothingToReturnTypes(const NativeCFG& inCfg) const {
+		NativeCFG cfg(inCfg);
+		cfg.returnTypes() = emptyTreeVec() + NativeType::Nothing() + cfg.returnTypes();
+		return cfg;
+
+		}
+	mutable std::vector<uword_t> mMaxIdx;
+	NativeContinuation mNullCont;
+};
+
+class VectorRecordForGpuTransformer {
+public:
+	VectorRecordForGpuTransformer() {
+		mVectorDataType = NativeTypeFor<TypedFora::Abi::VectorRecord>::get();
+		lassert(mVectorDataType.isComposite());
+		NativeType_CompositeType comp = mVectorDataType.getComposite();
+		lassert(comp.elements().size()==4);
+		mGpuVectorDataType = NativeType::Composite(
+				emptyTreeVec() +
+				NativeType::uint8().ptr() +
+				comp.elements().slice(1, comp.elements().size())
+				);
+		}
+
+	template<class T>
+	Nullable<T> processDown(const T& in, bool& out) const
+		{
+		return null();
+		}
+	template<class T>
+	Nullable<T> processUp(const T& in) const
+		{
+		return null();
+		}
+
+	Nullable<NativeVariable> processDown(const NativeVariable& var, bool& cont) const
+		{
+		if (var.type() == mVectorDataType)
+			{
+			if (mGpuVectorsForForaVectors.find(var) == mGpuVectorsForForaVectors.end())
+				{
+				mGpuVectorsForForaVectors[var] = NativeVariable::Temp(mGpuVectorDataType);
+				}
+			cont = false;
+			return null() << mGpuVectorsForForaVectors[var];
+			}
+		return null();
+		}
+
+	Nullable<NativeType> processUp(const NativeType& typ) const
+		{
+		if (typ == mVectorDataType)
+			{
+			return null() << mGpuVectorDataType;
+			}
+		return null();
+		}
+
+private:
+	mutable std::map<NativeVariable, NativeVariable> mGpuVectorsForForaVectors;
+	NativeType mVectorDataType;
+	NativeType mGpuVectorDataType;
 };
 
 class StripIncompatibleForGpuTransformer {
@@ -126,22 +193,22 @@ public:
 		return null();
 		}
 
-	NativeExpression	processUp(const NativeExpression& t) const
+	NativeExpression processUp(const NativeExpression& inExp) const
 		{
-		@match NativeExpression(t)
+		@match NativeExpression(inExp)
 			-|	Let(v, exp, within) ->> {
 				if (exp.type())
-					return t;
+					return inExp;
 				else
-					return NativeExpression::Return(0, NativeConstant::Nothing().expr());
+					return mUnsupported;
 				}
 			-|	_ ->> {
-				return t;
+				return inExp;
 				}
 			;
 		}
 
-	NativeExpression	processDown(const NativeExpression& inExp, bool& ioCont) const
+	NativeExpression processDown(const NativeExpression& inExp, bool& ioCont) const
 		{
 		@match NativeExpression(inExp)
 			-|	Alloc(_) ->> {
@@ -185,7 +252,14 @@ NativeCFG convertForGpuExecution(const NativeCFG& in, unsigned int resultPartSiz
 	cfg.returnTypes() =
 			emptyTreeVec() + NativeType::Nothing() +
 			cfg.returnTypes().slice(0, resultPartSize);
+
+	// 1. Convert VectorRecords to GPU VectorRecords.
+	cfg = transform(cfg, VectorRecordForGpuTransformer());
+	// 2. Add a Nothing as the first return type, update continuations,
+	//    and remove some runtime stuff
 	cfg = transform(cfg, IncrementReturnIndexTransformer(resultPartSize));
+	// 3. Remove unsupported code and rewire it to return to that 1st 'Nothing'
+	//    type which we added in an earlier pass
 	cfg = transform(cfg, StripIncompatibleForGpuTransformer());
 	return cfg;
 	}

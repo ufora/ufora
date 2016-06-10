@@ -318,7 +318,7 @@ private:
 		bool hasResultIndex = (mayThrowException || returnTypesCount > 1) ? true : false;
 		LOG_DEBUG << "hasResultIndex = " << hasResultIndex;
 		// at least one and at most two of the inputs should be not "Nothing",
-		// the first is the input data
+		// the last is the input data
 		Nullable<uint32_t> inputIndex, closureIndex;
 		uint32_t inCFGArgsSize = inCFG[NativeBlockID::entry()].args().size();
 		for (long k = 0; k < inCFGArgsSize; k++)
@@ -474,6 +474,7 @@ private:
 
 	void buildResult(const NativeCFG& inCFG, string inEntryFunctionName)
 		{
+		LOG_DEBUG << "CFG to wrap::\n\n" << prettyPrintString(inCFG);
 		NativeType offsetType = NativeType::uint64();
 		NativeType indexType  = NativeType::uint8();
 
@@ -868,8 +869,8 @@ private:
 				*entrypoints[inToCall]
 				);
 		}
-	Nullable<PTXValueRepresentation>
-		computeBinaryOpWithPointerArithmetic(
+
+	Nullable<PTXValueRepresentation> computeBinaryOpWithPointerArithmetic(
 				const NativeBinaryOpcode& opcode,
 				const NativeExpression& ptr,
 				const NativeExpression& offset,
@@ -877,48 +878,51 @@ private:
 				const PTXValueRepresentation& offsetVal,
 				ostringstream&	ioSideEffectStream
 				)
-	{
-	lassert(ptr.type()->isPointer());
-	const NativeType& pointedType = ptr.type()->getPointer().element();
-	string ptxInstruction;
-	@match NativeBinaryOpcode(opcode)
-			-| Add() ->> {
-				ptxInstruction =  "mad.lo";
-				}
-			-| _ ->> {
-				throw UnableToConvertToPTX(
-						"cannot perform pointer arithmetic with operator "
-						+ prettyPrintString(opcode));
-				}
-	PTXValueRepresentation outReg =
-		mRegisters.allocateValue(*ptr.type());
-	//write a comment so we can tell what is
-	//going on in the PTX string
-	ioSideEffectStream << "// "
-		<< prettyPrintString(opcode) << " on "
-		<< prettyPrintString(*ptr.type()) << " and "
-		<< prettyPrintString(*offset.type()) << "\n"
-		;
-	//write an instruction pushing this into the new value
-	ioSideEffectStream
-		<< ptxInstruction << "."
-		<< nativeTypeToPTXType(
-				*ptr.type(),
-				isByteInstruction(opcode)
-				)
-		<< "\t"
-		//write the target register
-		<< outReg.getAtom().registerName() << ", "
-		<< offsetVal.toString() << ", "
-		<< pointedType.alignedSize() << "U" << ", "
-		<< ptrVal.toString()
-		<< ";\n"
-		;
+		{
+		lassert(ptr.type() && ptr.type()->isPointer());
+		LOG_DEBUG << "computeBinaryOpWithPointerArithmetic on: "
+				<< prettyPrintString(ptr)
+				<< ", type: " << prettyPrintString(*ptr.type());
+		lassert(!ptr.type()->getPointer().element().isNothing());
+		const NativeType& pointedType = ptr.type()->getPointer().element();
+		string ptxInstruction;
+		@match NativeBinaryOpcode(opcode)
+				-| Add() ->> {
+					ptxInstruction =  "mad.lo";
+					}
+				-| _ ->> {
+					throw UnableToConvertToPTX(
+							"cannot perform pointer arithmetic with operator "
+							+ prettyPrintString(opcode));
+					}
+		PTXValueRepresentation outReg =
+			mRegisters.allocateValue(*ptr.type());
+		//write a comment so we can tell what is
+		//going on in the PTX string
+		ioSideEffectStream << "// "
+			<< prettyPrintString(opcode) << " on "
+			<< prettyPrintString(*ptr.type()) << " and "
+			<< prettyPrintString(*offset.type()) << "\n"
+			;
+		//write an instruction pushing this into the new value
+		ioSideEffectStream
+			<< ptxInstruction << "."
+			<< nativeTypeToPTXType(
+					*ptr.type(),
+					isByteInstruction(opcode)
+					)
+			<< "\t\t"
+			//write the target register
+			<< outReg.getAtom().registerName() << ", "
+			<< offsetVal.toString() << ", "
+			<< pointedType.alignedSize() << "U" << ", "
+			<< ptrVal.toString()
+			<< ";\n"
+			;
 
-	//the output register is the relevant one
-	return null() << outReg;
-
-	}
+		//the output register is the relevant one
+		return null() << outReg;
+		}
 
 	//compute the PTX text representation of an expression
 	//given the environment in which the expression is being
@@ -940,6 +944,7 @@ private:
 				ostringstream&	ioSideEffectStream
 				)
 		{
+		LOG_DEBUG << "computeExpression on :" << prettyPrintString(inNativeExpression);
 		@match NativeExpression(inNativeExpression)
 			-| Constant(NullPointer()) ->>
 					{ throw UnableToConvertToPTX(
@@ -1901,7 +1906,9 @@ private:
 						<< ";\n";
 					;}
 			-| Tuple(t, elts) ->> {
-					lassert(destVal.isTuple());
+					lassert_dump(
+							destVal.isTuple(),
+							"Expected tuple but found " << destVal.toString());
 					for (long k = 0; k < elts.size();k++)
 						copyFromPTXToPTX(
 							elts[k],
