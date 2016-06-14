@@ -15,6 +15,7 @@
 import ufora.FORA.python.Expression as Expression
 import ufora.FORA.python.PurePython.PythonAstConverter as PythonAstConverter
 import ufora.FORA.python.PurePython.ConstantConverter as ConstantConverter
+import ufora.FORA.python.PurePython.NativeConverterAdaptor as NativeConverterAdaptor
 import ufora.FORA.python.ForaValue as ForaValue
 import ufora.BackendGateway.ComputedValue.ComputedValue as ComputedValue
 
@@ -98,6 +99,8 @@ class Converter(object):
             purePythonModuleImplVal,
             builtinMemberMapping
             )
+
+        self.nativeConverterAdaptor = NativeConverterAdaptor.NativeConverterAdaptor()
 
     @staticmethod
     def computeBuiltinMemberMapping(purePythonModuleImplVal, foraBuiltinsImplVal):
@@ -716,34 +719,14 @@ class Converter(object):
         return tr
 
     def convertClassInstanceDescription(self, objectId, classInstanceDescription):
-        classMemberNameToImplVal = {
-            classMemberName: self.convertedValues[memberId]
-            for classMemberName, memberId in
-            classInstanceDescription.classMemberNameToClassMemberId.iteritems()
-            }
-        classImplVal = self.convertedValues[classInstanceDescription.classId]
-
-        if classImplVal.isSymbol():
-            self.convertedValues[objectId] = classImplVal
+        if objectId in self.convertedValues:
             return
 
-        memberNames = tuple(sorted(name for name in classMemberNameToImplVal.iterkeys()))
-        memberValues = tuple(classMemberNameToImplVal[name] for name in memberNames)
-        convertedValueOrNone = ForaNative.simulateApply(
-            ForaNative.ImplValContainer(
-                (classImplVal,
-                 Symbol_CreateInstance,
-                 ForaNative.CreateNamedTuple(memberValues, memberNames))
-                )
+        self.nativeConverterAdaptor.convertClassInstanceDescription(
+            objectId,
+            classInstanceDescription,
+            self.convertedValues
             )
-
-        if convertedValueOrNone is None:
-            raise pyfora.PythonToForaConversionError(
-                ("An internal error occurred: " +
-                 "function stage 1 simulation unexpectedly returned None")
-                )
-
-        self.convertedValues[objectId] = convertedValueOrNone
 
     def convertStronglyConnectedComponentWithOneFunctionOrClass(self,
                                                                 objectId,
@@ -937,6 +920,7 @@ class Converter(object):
                 objectIdToFreeVar[baseId].split('.')
                 for baseId in classOrFunctionDefinition.baseClassIds
                 ]
+            
             tr = self.nativeConverter.convertPythonAstClassDefToForaOrParseError(
                 pyAst.asClassDef,
                 pyAst.extent,
