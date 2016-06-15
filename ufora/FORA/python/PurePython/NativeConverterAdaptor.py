@@ -13,8 +13,9 @@
 #   limitations under the License.
 
 
-import pyfora
+import ufora.FORA.python.PurePython.ConstantConverter as ConstantConverter
 
+import pyfora
 
 import ufora.native.FORA as ForaNative
 
@@ -24,10 +25,40 @@ Symbol_CreateInstance = ForaNative.makeSymbol("CreateInstance")
 
 class NativeConverterAdaptor(object):
     def __init__(self,
+                 nativeConstantConverter,
                  nativeDictConverter,
-                 nativeTupleConverter):
+                 nativeTupleConverter,
+                 nativeListConverter,
+                 vdmOverride):
+        self.constantConverter = ConstantConverter.ConstantConverter(
+            nativeConstantConverter=nativeConstantConverter
+            )
         self.nativeDictConverter = nativeDictConverter
         self.nativeTupleConverter = nativeTupleConverter
+        self.nativeListConverter = nativeListConverter
+        self.vdm_ = vdmOverride
+
+    def createList(self, listOfConvertedValues):
+        return self.nativeListConverter.createList(
+            listOfConvertedValues,
+            self.vdm_
+            )
+
+    def invertList(self, implval):
+        return self.nativeListConverter.invertList(implval)
+
+    def createListOfPrimitives(self, value):
+        return self.nativeListConverter.createListOfPrimitives(
+            value,
+            self.constantConverter.nativeConstantConverter,
+            self.vdm_
+            )
+
+    def convertConstant(self, value):
+        return self.constantConverter.convert(value)
+
+    def invertForaConstant(self, foraConstant):
+        return self.constantConverter.invertForaConstant(foraConstant)
 
     def createTuple(self, listOfConvertedValues):
         return self.nativeTupleConverter.createTuple(listOfConvertedValues)

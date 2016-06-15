@@ -14,7 +14,6 @@
 
 import ufora.FORA.python.Expression as Expression
 import ufora.FORA.python.PurePython.PythonAstConverter as PythonAstConverter
-import ufora.FORA.python.PurePython.ConstantConverter as ConstantConverter
 import ufora.FORA.python.PurePython.NativeConverterAdaptor as NativeConverterAdaptor
 import ufora.FORA.python.ForaValue as ForaValue
 import ufora.BackendGateway.ComputedValue.ComputedValue as ComputedValue
@@ -70,15 +69,7 @@ class Converter(object):
 
         self.boundExpressions = {}
 
-        self.constantConverter = ConstantConverter.ConstantConverter(
-            nativeConstantConverter=nativeConstantConverter
-            )
-
         self.singletonAndExceptionConverter = singletonAndExceptionConverter
-
-        self.nativeListConverter = nativeListConverter
-
-        self.vdm_ = vdmOverride
 
         self.pyforaBoundMethodClass = purePythonModuleImplVal.getObjectMember("PyBoundMethod")
 
@@ -89,7 +80,7 @@ class Converter(object):
 
         self.nativeConverter = ForaNative.makePythonAstConverter(
             nativeConstantConverter,
-            self.nativeListConverter,
+            nativeListConverter,
             nativeTupleConverter,
             nativeDictConverter,
             purePythonModuleImplVal,
@@ -97,8 +88,11 @@ class Converter(object):
             )
 
         self.nativeConverterAdaptor = NativeConverterAdaptor.NativeConverterAdaptor(
+            nativeConstantConverter=nativeConstantConverter,
             nativeDictConverter=nativeDictConverter,
-            nativeTupleConverter=nativeTupleConverter)
+            nativeTupleConverter=nativeTupleConverter,
+            nativeListConverter=nativeListConverter,
+            vdmOverride=vdmOverride)
 
         self.convertedStronglyConnectedComponents = set()
 
@@ -280,15 +274,12 @@ class Converter(object):
 
     def convertPrimitive(self, value):
         if isinstance(value, list):
-            return self.nativeListConverter.createListOfPrimitives(
-                value,
-                self.constantConverter.nativeConstantConverter,
-                self.vdm_
-                )
+            return self.nativeConverterAdaptor.createListOfPrimitives(value)
+
         if isinstance(value, str):
             value = base64.b64decode(value)
 
-        return self.constantConverter.convert(value)
+        return self.nativeConverterAdaptor.convertConstant(value)
 
     def _assertContainerDoesNotReferenceItself(self,
                                                containerId,
@@ -306,9 +297,8 @@ class Converter(object):
         self._convertListMembers(listId, dependencyGraph, objectIdToObjectDefinition)
         memberIds = objectIdToObjectDefinition[listId].memberIds
 
-        return self.nativeListConverter.createList(
-            [self.convertedValues[memberId] for memberId in memberIds],
-            self.vdm_
+        return self.nativeConverterAdaptor.createList(
+            [self.convertedValues[memberId] for memberId in memberIds]
             )
 
     def convertTuple(self, tupleId, dependencyGraph, objectIdToObjectDefinition):
@@ -973,7 +963,7 @@ class Converter(object):
 
         for pyforaKey, pyforaValue in pyforaDict.iteritems():
             if pyforaValue != Symbol_uninitialized and pyforaValue != Symbol_invalid:
-                maybePyforaKeyString = self.constantConverter.invertForaConstant(pyforaKey)
+                maybePyforaKeyString = self.nativeConverterAdaptor.invertForaConstant(pyforaKey)
                 if isinstance(maybePyforaKeyString, tuple) and isinstance(maybePyforaKeyString[0], str):
                     res[maybePyforaKeyString[0]] = pyforaValue
                 else:
@@ -1013,7 +1003,7 @@ class Converter(object):
             return newId
 
         def transformBody(implval):
-            value = self.constantConverter.invertForaConstant(implval)
+            value = self.nativeConverterAdaptor.invertForaConstant(implval)
             if value is not None:
                 if isinstance(value, tuple):
                     #this is a simple constant
@@ -1067,7 +1057,7 @@ class Converter(object):
                     values=[transform(v) for v in value.values()]
                     )
 
-            listItemsAsVector = self.nativeListConverter.invertList(implval)
+            listItemsAsVector = self.nativeConverterAdaptor.invertList(implval)
             if listItemsAsVector is not None:
                 contents = vectorContentsExtractor(listItemsAsVector)
 
