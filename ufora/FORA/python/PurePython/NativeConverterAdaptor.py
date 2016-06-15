@@ -23,6 +23,24 @@ Symbol_CreateInstance = ForaNative.makeSymbol("CreateInstance")
 
 
 class NativeConverterAdaptor(object):
+    def __init__(self,
+                 nativeDictConverter,
+                 nativeTupleConverter):
+        self.nativeDictConverter = nativeDictConverter
+        self.nativeTupleConverter = nativeTupleConverter
+
+    def createTuple(self, listOfConvertedValues):
+        return self.nativeTupleConverter.createTuple(listOfConvertedValues)
+
+    def invertTuple(self, tupleIVC):
+        return self.nativeTupleConverter.invertTuple(tupleIVC)
+
+    def createDict(self, convertedKeysAndVals):
+        return self.nativeDictConverter.createDict(convertedKeysAndVals)
+
+    def invertDict(self, dictIVC):
+        return self.nativeDictConverter.invertDict(dictIVC)
+
     def convertClassInstanceDescription(self, objectId, classInstanceDescription, convertedValues):
         classMemberNameToImplVal = {
             classMemberName: convertedValues[memberId]

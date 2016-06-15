@@ -78,10 +78,6 @@ class Converter(object):
 
         self.nativeListConverter = nativeListConverter
 
-        self.nativeTupleConverter = nativeTupleConverter
-
-        self.nativeDictConverter = nativeDictConverter
-
         self.vdm_ = vdmOverride
 
         self.pyforaBoundMethodClass = purePythonModuleImplVal.getObjectMember("PyBoundMethod")
@@ -94,13 +90,15 @@ class Converter(object):
         self.nativeConverter = ForaNative.makePythonAstConverter(
             nativeConstantConverter,
             self.nativeListConverter,
-            self.nativeTupleConverter,
-            self.nativeDictConverter,
+            nativeTupleConverter,
+            nativeDictConverter,
             purePythonModuleImplVal,
             builtinMemberMapping
             )
 
-        self.nativeConverterAdaptor = NativeConverterAdaptor.NativeConverterAdaptor()
+        self.nativeConverterAdaptor = NativeConverterAdaptor.NativeConverterAdaptor(
+            nativeDictConverter=nativeDictConverter,
+            nativeTupleConverter=nativeTupleConverter)
 
         self.convertedStronglyConnectedComponents = set()
 
@@ -271,7 +269,7 @@ class Converter(object):
             for keyId, valId in zip(objectDefinition.keyIds, objectDefinition.valueIds)
             }
 
-        return self.nativeDictConverter.createDict(convertedKeysAndVals)
+        return self.nativeConverterAdaptor.createDict(convertedKeysAndVals)
 
     def convertUnconvertibleValue(self, objectId):
         # uh, yeah ... this guy probably needs a better name. Sorry.
@@ -317,7 +315,7 @@ class Converter(object):
         self._convertListMembers(tupleId, dependencyGraph, objectIdToObjectDefinition)
         memberIds = objectIdToObjectDefinition[tupleId].memberIds
 
-        return self.nativeTupleConverter.createTuple(
+        return self.nativeConverterAdaptor.createTuple(
             [self.convertedValues[memberId] for memberId in memberIds]
             )
 
@@ -967,7 +965,7 @@ class Converter(object):
 
     def unwrapPyforaDictToDictOfAssignedVars(self, dictIVC):
         """Take a Pyfora dictionary, and return a dict {string->IVC}. Returns None if not possible."""
-        pyforaDict = self.nativeDictConverter.invertDict(dictIVC)
+        pyforaDict = self.nativeConverterAdaptor.invertDict(dictIVC)
         if pyforaDict is None:
             return None
 
@@ -984,7 +982,7 @@ class Converter(object):
         return res
 
     def unwrapPyforaTupleToTuple(self, tupleIVC):
-        pyforaTuple = self.nativeTupleConverter.invertTuple(tupleIVC)
+        pyforaTuple = self.nativeConverterAdaptor.invertTuple(tupleIVC)
         if pyforaTuple is None:
             return None
 
@@ -1058,11 +1056,11 @@ class Converter(object):
                         transform(value[1])
                         )
 
-            value = self.nativeTupleConverter.invertTuple(implval)
+            value = self.nativeConverterAdaptor.invertTuple(implval)
             if value is not None:
                 return transformer.transformTuple([transform(x) for x in value])
 
-            value = self.nativeDictConverter.invertDict(implval)
+            value = self.nativeConverterAdaptor.invertDict(implval)
             if value is not None:
                 return transformer.transformDict(
                     keys=[transform(k) for k in value.keys()],
