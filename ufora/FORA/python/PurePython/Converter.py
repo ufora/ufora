@@ -102,6 +102,8 @@ class Converter(object):
 
         self.nativeConverterAdaptor = NativeConverterAdaptor.NativeConverterAdaptor()
 
+        self.convertedStronglyConnectedComponents = set()
+
     @staticmethod
     def computeBuiltinMemberMapping(purePythonModuleImplVal, foraBuiltinsImplVal):
         builtinMemberMapping = {}
@@ -340,6 +342,9 @@ class Converter(object):
                 )
 
     def convertObjectWithDependencies(self, objectId, dependencyGraph, objectIdToObjectDefinition):
+        if objectId in self.convertedValues:
+            return self.convertedValues[objectId]
+
         stronglyConnectedComponents = \
             StronglyConnectedComponents.stronglyConnectedComponents(
                 dependencyGraph
@@ -358,6 +363,9 @@ class Converter(object):
                                           dependencyGraph,
                                           stronglyConnectedComponent,
                                           objectIdToObjectDefinition):
+        if stronglyConnectedComponent in self.convertedStronglyConnectedComponents:
+            return
+
         if len(stronglyConnectedComponent) == 1:
             self.convertStronglyConnectedComponentWithOneNode(
                 dependencyGraph,
@@ -370,9 +378,12 @@ class Converter(object):
                 stronglyConnectedComponent
                 )
 
+        self.convertedStronglyConnectedComponents.add(stronglyConnectedComponent)
+
     def convertStronglyConnectedComponentWithMoreThanOneNode(self,
                                                              objectIdToObjectDefinition,
                                                              stronglyConnectedComponent):
+
         (createObjectExpression, memberToObjectIdMap) = \
             self.getCreateObjectExpressionAndMemberToObjectIdMap(
                 objectIdToObjectDefinition,
