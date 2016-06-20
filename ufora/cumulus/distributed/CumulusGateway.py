@@ -97,6 +97,10 @@ class CumulusGateway(Stoppable.Stoppable):
         self.cpuMessagesSinceLastUpdate = 0
         self.lastSystemwideUpdateTime = time.time()
 
+
+    def getClusterStatus(self):
+        raise NotImplementedError("Method must be implemented by derived class")
+
     def bytecountForBigvecs(self, bigvecHashes):
         return self.cpuAssignmentDependencyGraph.computeBytecountForHashes(bigvecHashes)
 

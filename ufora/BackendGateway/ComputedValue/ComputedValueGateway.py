@@ -213,7 +213,8 @@ class CumulusComputedValueGateway(CacheLoader, ComputedValueGateway, Stoppable.S
 
         Stoppable.Stoppable.__init__(self)
 
-        CacheLoader.__init__(self,
+        CacheLoader.__init__(
+            self,
             callbackSchedulerFactory,
             callbackScheduler,
             Setup.config().computedValueGatewayRAMCacheMB * 1024 * 1024
@@ -223,7 +224,7 @@ class CumulusComputedValueGateway(CacheLoader, ComputedValueGateway, Stoppable.S
 
         self.cumulusGateway = cumulusGatewayFactory(self.callbackScheduler, self.vdm)
         self.externalIoTaskCallbacks_ = {}
-        
+
         self.refcountTracker = self.cumulusGateway.cumulusClient.getSystemwidePageRefcountTracker()
 
         self.cumulusGateway.onNewGlobalUserFacingLogMessage = self.onNewGlobalUserFacingLogMessage
@@ -296,7 +297,7 @@ class CumulusComputedValueGateway(CacheLoader, ComputedValueGateway, Stoppable.S
             if ViewOfEntireCumulusSystem is None:
                 import ufora.BackendGateway.ComputedValue.ViewOfEntireCumulusSystem as ViewOfEntireCumulusSystem
                 import ufora.BackendGateway.ComputedValue.PersistentCacheIndex as PersistentCacheIndex
-                
+
             ViewOfEntireCumulusSystem.ViewOfEntireCumulusSystem().pushNewGlobalUserFacingLogMessage(newMsg)
 
         BackgroundUpdateQueue.push(updater)
@@ -395,7 +396,7 @@ class CumulusComputedValueGateway(CacheLoader, ComputedValueGateway, Stoppable.S
             for vecId in self.vectorDataIDToVectorSlices_:
                 for cgLocation in self.vectorDataIDToVectorSlices_[vecId]:
                     BackgroundUpdateQueue.push(self.createSetIsLoadedFun(cgLocation, False))
-            
+
             self.vectorDataIDRequestCount_ = {}
             self.vectorDataIDToVectorSlices_ = {}
 
@@ -411,7 +412,7 @@ class CumulusComputedValueGateway(CacheLoader, ComputedValueGateway, Stoppable.S
                         CumulusNative.ComputationPriority()
                         )
                     self.refcountsForCompIds_[compId] = 0
-            
+
             if resetCompletely:
                 self.cumulusGateway.resetStateCompletely()
 

@@ -592,3 +592,9 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
             with self.assertRaises(pyfora.PyforaError):
                 executor.importRemoteFile('/foo/bar.baz').result()
 
+
+    def test_worker_count(self):
+        with self.create_executor() as executor:
+            worker_count = executor.getWorkerCount()
+            self.assertEqual(worker_count, 1)
+

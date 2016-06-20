@@ -12,6 +12,7 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+import time
 import unittest
 import pyfora
 import ufora.config.Setup as Setup
@@ -47,6 +48,25 @@ class ExecutorSimulationTest(
             cls.executor = pyfora.connect('http://localhost:30000')
             cls.executor.stayOpenOnExit = True
         return cls.executor
+
+    def test_worker_count_changes(self):
+        with self.create_executor() as executor:
+            worker_count = executor.getWorkerCount()
+            self.assertEqual(worker_count, 1)
+
+            self.simulation.getDesirePublisher().desireNumberOfWorkers(2)
+            t0 = time.time()
+            try:
+                while (time.time() - t0 < 10):
+                    worker_count = executor.getWorkerCount()
+                    if worker_count is 2:
+                        return
+                self.fail("Worker count failed to update")
+            finally:
+                self.simulation.getDesirePublisher().desireNumberOfWorkers(1)
+
+
+
 
 
 if __name__ == '__main__':

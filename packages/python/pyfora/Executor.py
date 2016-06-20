@@ -78,6 +78,28 @@ class Executor(object):
             )
         self.lock = threading.Lock()
 
+
+    def getWorkerCount(self):
+        """Returns the number of workers connected to the cluster.
+
+        Returns:
+            int: The number of workers currently available in the cluster.
+        """
+        event = threading.Event()
+        res = [None]
+        def onCompleted(result):
+            res[0] = result
+            event.set()
+
+        self.connection.getClusterStatus(onCompleted)
+        event.wait()
+
+        res = res[0]
+        assert res is not None
+        if isinstance(res, Exception):
+            raise res
+        return res['workerCount']
+
     def importS3Dataset(self, bucketname, keyname, verify=True):
         """Creates a :class:`~RemotePythonObject.RemotePythonObject` that represents
         the content of an S3 key as a string.
@@ -412,7 +434,7 @@ class Executor(object):
                 self._resolve_future(future, result)
                 return
             computation = result
-            
+
             future.setComputedValue(computation)
             self._prioritizeComputation(future)
 
