@@ -124,6 +124,9 @@ class WorkerProcesses(object):
 
                 env = dict(os.environ)
                 env['UFORA_WORKER_BASE_PORT'] = str(30009 + 2*self.num_ever_started)
+                core_log = log_path.split('.')
+                core_log.insert(-1, 'core')
+                env['UFORA_WORKER_CORE_LOG_FILE'] = '.'.join(core_log)
                 self.num_ever_started += 1
                 proc = SubprocessRunner.SubprocessRunner(
                     [sys.executable, '-u', self.worker_path],
@@ -156,7 +159,7 @@ class RunForeverCommand:
             response.append("FOREVER(%s) OUT> %s" % (self.script, msg))
         def foreverStdErr(msg):
             response.append("FOREVER(%s) ERR> %s" % (self.script, msg))
-        
+
         subprocess = SubprocessRunner.SubprocessRunner(args,
                                                        foreverStdOut,
                                                        foreverStdErr,
@@ -238,6 +241,7 @@ class Simulator(object):
             newDirName = makeUniqueDir()
             fakeAwsBase = Setup.config().fakeAwsBaseDir
             Setup.config().fakeAwsBaseDir = newDirName
+            Setup.config().logDir = newDirName
             latestLinkPath = os.path.join(fakeAwsBase, 'latest')
             if os.path.exists(latestLinkPath):
                 os.unlink(latestLinkPath)
@@ -399,7 +403,7 @@ class Simulator(object):
 
         for line in result[0].split("\n"):
             logging.info(line)
-        
+
 
     def stopForeverProcess(self, script, timeout=60.0):
         self.runForeverCommand(script, 'stop', timeout)

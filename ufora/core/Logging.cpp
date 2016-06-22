@@ -97,17 +97,10 @@ void writeLog(
         int lineNumber,
         const std::string& message)
     {
-    std::string logLevelLabel(Ufora::Logging::Logger::logLevelToString(level));
-    std::string firstLinePrefix(getMessagePrefix(logLevelLabel, filename, lineNumber));
-
-    static boost::mutex m;
-    boost::lock_guard<boost::mutex> g(m);
-    std::ostringstream stream;
-
-    indentLogOstream(message, firstLinePrefix, stream);
-
-    std::cerr << stream.str() << std::endl;
+    Logger::logToStream(std::cerr, level, filename, lineNumber, message);
     }
+
+LogWriter Logger::logWriter = writeLog;
 
 LogLevel& getLogLevel(void)
     {
@@ -118,6 +111,26 @@ LogLevel& getLogLevel(void)
 void setLogLevel(LogLevel logLevel)
     {
     getLogLevel() = logLevel;
+    }
+
+void Logger::setLogWriter(LogWriter logWriter)
+    {
+    Logger::logWriter = logWriter;
+    }
+
+void Logger::logToStream(std::ostream& stream, LogLevel level, const char* filename, int lineNumber,
+                         const std::string& message)
+    {
+    std::string logLevelLabel(Ufora::Logging::Logger::logLevelToString(level));
+    std::string firstLinePrefix(getMessagePrefix(logLevelLabel, filename, lineNumber));
+
+    static boost::mutex m;
+    boost::lock_guard<boost::mutex> g(m);
+    std::ostringstream strstream;
+
+    indentLogOstream(message, firstLinePrefix, strstream);
+
+    stream << strstream.str() << std::endl;
     }
 
 Logger::Logger(LogLevel logLevel, const char * file, int line, bool shouldLog) :
@@ -134,27 +147,10 @@ Logger::Logger(const Logger& other)
     {}
 
 
-
-void Logger::logToStream(std::ostream& stream, LogLevel level, const char* filename,
-        int lineNumber, const std::string& message)
-    {
-    indentLogOstream(
-        message,
-        getMessagePrefix(logLevelToString(level), filename, lineNumber),
-        stream
-        );
-    }
-
-void Logger::logToStderr(LogLevel level, const char* filename,
-        int lineNumber, const std::string& message)
-    {
-    logToStream(std::cerr, level, filename, lineNumber, message);
-    }
-
 Logger::~Logger()
     {
     if (mShouldLog)
-        writeLog(mLogLevel, mFileName, mLineNumber, mStringstream.str());
+        Logger::logWriter(mLogLevel, mFileName, mLineNumber, mStringstream.str());
     }
 
 Logger& Logger::operator<<( std::ostream&(*streamer)(std::ostream& ) )

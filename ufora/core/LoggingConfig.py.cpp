@@ -17,10 +17,13 @@
 #include "Platform.hpp"
 #include "Logging.hpp"
 
+#include <fstream>
+#include <utility>
 #include <stdint.h>
 #include <boost/python.hpp>
 #include "../native/Registrar.hpp"
 #include "python/CPPMLWrapper.hpp"
+
 
 class LoggingConfigWrapper :
 	public native::module::Exporter<LoggingConfigWrapper> {
@@ -105,10 +108,27 @@ public:
 		Ufora::Logging::resetScopedLoggingLevelToDefault(scopeRegex, fileRegex);
 		}
 
+	static void setFileLogger(const std::string& filename)
+		{
+		static ofstream filestream;
+		filestream.open(filename, ios_base::app);
+		Ufora::Logging::Logger::setLogWriter(
+				std::bind(
+					Ufora::Logging::Logger::logToStream,
+					std::ref(filestream),
+					std::placeholders::_1,
+					std::placeholders::_2,
+					std::placeholders::_3,
+					std::placeholders::_4
+					)
+				);
+		}
+
 	void exportPythonWrapper()
 		{
 		using namespace boost::python;
 		def("setLogLevel", setLogLevelPy);
+		def("setFileLogger", setFileLogger);
 		def("shouldLog", shouldLog);
 		def("log", logPy);
 		def("logInfo", logInfo);

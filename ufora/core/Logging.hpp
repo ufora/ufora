@@ -85,17 +85,23 @@ enum LogLevel {
 #define LOGGER_CRITICAL_T ::Ufora::Logging::Logger
 #define LOGGER_TEST_T ::Ufora::Logging::Logger
 
-extern void (*pOnMessageLogged)(LogLevel level, const char* filename,
-        int lineNumber, const std::string& message);
 
 namespace Ufora {
 
 namespace Logging {
 
+using LogWriter = std::function<void(LogLevel level, const char* filename, int lineNumber,
+                                     const std::string& message)>;
+
 void setLogLevel(LogLevel logLevel);
 
 class Logger {
 public:
+    static void setLogWriter(LogWriter writer);
+
+    static void logToStream(std::ostream& stream, LogLevel level, const char* filename, int lineNumber,
+                            const std::string& message);
+
     Logger(LogLevel logLevel, const char * file, int line, bool shouldLog = true);
 
     Logger(const Logger& other);
@@ -205,17 +211,11 @@ public:
         }
 
 
-    static void indentLog(const std::string& message, const std::string& indent, std::ostream& out);
-
-    static void logToStream(std::ostream& stream, LogLevel level, const char* filename,
-            int lineNumber, const std::string& message);
-
-    static void logToStderr(LogLevel level, const char* filename,
-            int lineNumber, const std::string& message);
-
     static std::string logLevelToString(LogLevel level);
 
 private:
+    static LogWriter logWriter;
+
     const char* mFileName;
 
     int mLineNumber;
