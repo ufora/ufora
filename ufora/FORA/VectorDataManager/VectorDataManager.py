@@ -16,12 +16,10 @@ import ufora.config.Setup as Setup
 import ufora.native.FORA as FORANative
 import logging
 
-def constructVDM(
-        callbackScheduler,
-        vectorRamCacheBytes = None,
-        maxRamCacheBytes = None,
-        maxVectorChunkSize = None
-        ):
+def constructVDM(callbackScheduler,
+                 vectorRamCacheBytes=None,
+                 maxRamCacheBytes=None,
+                 maxVectorChunkSize=None):
     if vectorRamCacheBytes is None:
         vectorRamCacheBytes = Setup.config().cumulusVectorRamCacheMB * 1024 * 1024
 
@@ -41,10 +39,9 @@ def constructVDM(
 
             maxVectorChunkSize = vectorRamCacheBytes / 32
 
-    logging.info("Creating a VDM with %s MB of memory and %s max vector size",
-        vectorRamCacheBytes / 1024.0 / 1024.0,
-        maxVectorChunkSize / 1024.0 / 1024.0
-        )
+    logging.debug("Creating a VDM with %s MB of memory and %s max vector size",
+                  vectorRamCacheBytes / 1024.0 / 1024.0,
+                  maxVectorChunkSize / 1024.0 / 1024.0)
 
     VDM = FORANative.VectorDataManager(callbackScheduler, maxVectorChunkSize)
     VDM.setMemoryLimit(vectorRamCacheBytes, maxRamCacheBytes)

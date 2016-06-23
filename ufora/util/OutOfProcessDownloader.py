@@ -30,7 +30,7 @@ BYTE_EXCEPTION = "E"
 FORK_START_TIMEOUT = 5.0
 
 class HeartbeatLogger:
-    def __init__(self, msg, timeout = 1.0):
+    def __init__(self, msg, timeout=1.0):
         self.msg = msg
         self.t0 = None
         self.timeout = timeout
@@ -45,7 +45,7 @@ class HeartbeatLogger:
         while True:
             try:
                 self.completedQueue.get(True, self.timeout)
-                logging.info("Heartbeat %s completed after %s", self.msg, time.time() - self.t0)
+                logging.debug("Heartbeat %s completed after %s", self.msg, time.time() - self.t0)
                 return
             except Queue.Empty:
                 logging.info(
@@ -141,7 +141,7 @@ class OutOfProcessDownloader:
             self.hasStarted = False
 
     def executeChild_(self):
-        logging.info("Child started with %s, %s", self.childWriteFD, self.childReadFD)
+        logging.debug("Child started with %s, %s", self.childWriteFD, self.childReadFD)
         self.hasStarted = True
         self.isChild = True
 

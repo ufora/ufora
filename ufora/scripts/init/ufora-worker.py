@@ -98,6 +98,22 @@ def createService(args):
     own_address = args.own_address or get_own_ip()
     print "Listening on", own_address, "ports:", args.base_port, "and", args.base_port+1
 
+    config = Setup.config()
+    print "RAM cache of %d / %d MB and %d threads. Track tcmalloc: %s" % (
+        config.cumulusVectorRamCacheMB,
+        config.cumulusMaxRamCacheMB,
+        config.cumulusServiceThreadCount,
+        config.cumulusTrackTcmalloc
+        )
+
+    print "Ufora store at %s:%s" % (args.manager_address, args.manager_port)
+
+    s3InterfaceFactory = ActualS3Interface.ActualS3InterfaceFactory()
+    print "PythonIoTasks threads: %d. Out of process: %s" % (
+        config.externalDatasetLoaderServiceThreads,
+        s3InterfaceFactory.isCompatibleWithOutOfProcessDownloadPool
+        )
+
     return CumulusService.CumulusService(
         own_address,
         channelListener,
@@ -107,7 +123,7 @@ def createService(args):
         diagnostics_dir,
         Setup.config(),
         viewFactory=sharedStateViewFactory,
-        s3InterfaceFactory=ActualS3Interface.ActualS3InterfaceFactory(),
+        s3InterfaceFactory=s3InterfaceFactory,
         objectStore=NullObjectStore.NullObjectStore()
         )
 
@@ -119,7 +135,7 @@ def main(args):
     setup = defaultSetup()
     with Setup.PushSetup(setup):
         setup.config.configureLoggingForBackgroundProgram()
-        
+
         worker = createService(args)
         worker.startService(None)
 

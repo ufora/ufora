@@ -50,7 +50,6 @@ class MultiChannelListener(object):
         """
         assert(len(ports) > 0)
         self.callbackScheduler = callbackScheduler
-        logging.info("Creating MultiChannelListener on ports: %s", ports)
         self.lock_ = threading.Lock()
         self.ACCEPT_TIMEOUT_IN_SECONDS = 10.0
         self.GROUP_COMPLETION_TIMEOUT_IN_SECONDS = 20.0
@@ -129,7 +128,7 @@ class MultiChannelListener(object):
 
         if callbackArgsToFire is not None:
             #don't fire under a lock
-            logging.info("Firing callback for %s", groupId)
+            logging.debug("Firing callback for %s", groupId)
             self.completionCallback(callbackArgsToFire, groupId)
 
     def rejectIncomingChannel(self, channel):
@@ -143,8 +142,10 @@ class MultiChannelListener(object):
         self.listeners[portIndex].connectionCallback = callback
 
         def connectCallback(channel):
-            logging.info("MultiChannelListener accepted a channel on port %d", self.listeners[portIndex].port)
-            self.acceptedChannels[channel] = (portIndex, time.time() + self.ACCEPT_TIMEOUT_IN_SECONDS)
+            logging.debug("MultiChannelListener accepted a channel on port %d",
+                          self.listeners[portIndex].port)
+            self.acceptedChannels[channel] = (portIndex,
+                                              time.time() + self.ACCEPT_TIMEOUT_IN_SECONDS)
             callback(portIndex, channel)
 
             # For simplicity, we don't create a dedicated gc thread or schedule a cleanup
