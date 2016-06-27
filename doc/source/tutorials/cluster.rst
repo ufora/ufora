@@ -47,11 +47,12 @@ There are several environment variable that can be set when launching a pyfora c
   Without this variable, the container runs both manager and worker services.
 
 * :envvar:`UFORA_WORKER_OWN_ADDRESS`: the host-name or IP address that the worker uses to register
-  itself with the manager. Other workers will try to connect to it using this address.
+  itself with the manager. The manager and other workers try to connect to it using this address.
   This is useful in situations where you have multiple network interfaces (public and private,
   or a docker container running in bridge mode) and you want to tell the worker which address to register.
-  The variable is optional and if omitted, the worker tries to figure out its own address using
-  ``socket.gethostbyname(socket.getfqdn())``.
+  The variable is required unless the worker container is started with the ``--net=host`` option,
+  in which case the worker tries to figure out its own address using
+  ``socket.gethostbyname(socket.getfqdn())`` if the variable isn't set.
 
 * :envvar:`UFORA_WORKER_BASE_PORT`: the first of two consecutive ports that the worker listens on.
   This is useful if you want to run multiple workers side-by-side.
@@ -145,12 +146,12 @@ To run the manager service without a worker run:
 Workers
 ^^^^^^^
 
-If your manager is running, for example, at ``192.168.1.15``, start a worker using:
+If your manager is running, for example, at ``192.168.1.15``, and the worker is at ``192.168.2.11``, start a worker using:
 
 
 .. code-block:: bash
 
-    $ sudo docker run -d --name pyfora_worker -e UFORA_MANAGER_ADDRESS=192.168.1.15 -p 30009:30009 -p 30010:30010 -v /home/user/ufora:/var/ufora ufora/service
+    $ sudo docker run -d --name pyfora_worker -e UFORA_MANAGER_ADDRESS=192.168.1.15 -e UFORA_WORKER_OWN_ADDRESS=192.168.2.11 -p 30009:30009 -p 30010:30010 -v /home/user/ufora:/var/ufora ufora/service
 
 Repeat this on every machine you want to use as a worker in your cluster.
 

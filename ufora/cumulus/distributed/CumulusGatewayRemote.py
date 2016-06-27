@@ -57,6 +57,13 @@ class RemoteGateway(CumulusGateway.CumulusGateway,
 
         self.activeMachines.startService()
 
+
+    def getClusterStatus(self):
+        return {
+            "workerCount": len(self.activeMachines.activeMachineIds)
+            }
+
+
     def teardown(self):
         with self.lock_:
             self.isTornDown_ = True

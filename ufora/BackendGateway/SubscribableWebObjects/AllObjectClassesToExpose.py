@@ -21,6 +21,8 @@ import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.PyforaC
     as PyforaComputedValue
 import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.WriteToS3Task \
     as WriteToS3Task
+import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.PyforaCluster \
+    as PyforaCluster
 
 import ufora.BackendGateway.ComputedValue.ComputedValue as ComputedValue
 import ufora.BackendGateway.ComputedValue.PersistentCacheIndex as PersistentCacheIndex
@@ -38,7 +40,8 @@ classMap = {
     "WriteToS3Task": WriteToS3Task.WriteToS3Task,
     "PyforaDictionaryElement": PyforaComputedValue.PyforaDictionaryElement,
     "PyforaTupleElement": PyforaComputedValue.PyforaTupleElement,
-    "PyforaResultAsJson": PyforaComputedValue.PyforaResultAsJson
+    "PyforaResultAsJson": PyforaComputedValue.PyforaResultAsJson,
+    "PyforaCluster": PyforaCluster.PyforaCluster
     }
 
 def construct(json):

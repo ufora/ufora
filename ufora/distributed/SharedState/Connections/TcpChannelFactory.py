@@ -29,15 +29,15 @@ class TcpChannelFactory(ChannelFactory.ChannelFactory):
 
     def establishConnection_(self, host, port):
         try:
-            logging.info("Opening TCP channel to: %s:%s", host, port)
+            logging.debug("Opening TCP channel to: %s:%s", host, port)
 
             sock = SimpleServer.SimpleServer.connect(host, port)
 
-            logging.info("TcpChannel: %s ", sock.fileno())
+            logging.debug("TcpChannel: %s ", sock.fileno())
 
             channel = self.createSocketChannel(sock)
 
-            logging.info('TcpChannelFactory %s connected: %s:%s', self, host, port)
+            logging.debug('TcpChannelFactory %s connected: %s:%s', self, host, port)
 
             return channel
         except socket.error as exc:

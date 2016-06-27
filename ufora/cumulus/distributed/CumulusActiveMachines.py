@@ -58,10 +58,7 @@ class CumulusActiveMachines(Stoppable.Stoppable):
         self._registeredIpPortAndMachineId = None
 
 
-        logging.info(
-            "CumulusActiveMachines connecting to shared state: %s",
-            viewFactory
-            )
+        logging.debug("Connecting to shared state: %s", viewFactory)
 
         self.listeners_ = set()
         self.clientID = None
@@ -152,11 +149,11 @@ class CumulusActiveMachines(Stoppable.Stoppable):
                 nowAliveMachineId = self.clientIdToMachineIdAsString(newlyAliveClientId)
 
                 if nowAliveMachineId is not None and nowAliveMachineId not in self.activeMachineIds:
-                    logging.info(
-                            "Worker clientId=%s added with IP %s and ports %s, machineIdAsString=%s",
-                            nowAliveMachineId,
-                            *self.clientIdToIpPortAndMachineIdAsString[newlyAliveClientId]
-                            )
+                    logging.debug(
+                        "Worker clientId=%s added with IP %s and ports %s, machineIdAsString=%s",
+                        nowAliveMachineId,
+                        *self.clientIdToIpPortAndMachineIdAsString[newlyAliveClientId]
+                        )
                     self.activeMachineIds.add(nowAliveMachineId)
 
                     # Defer onWorkerAdd notifications.
@@ -257,7 +254,7 @@ class CumulusActiveMachines(Stoppable.Stoppable):
         address, ports, machineIdAsString = self._registeredIpPortAndMachineId
 
         logging.info(
-            "CumulusActiveMachine registering worker %s at %s:%s with id %s",
+            "Registering worker %s at %s:%s with id %s",
             self.clientID,
             address,
             ports,
@@ -285,9 +282,7 @@ class CumulusActiveMachines(Stoppable.Stoppable):
 
     def connectView(self):
         try:
-            succeeded = False
-
-            logging.info(
+            logging.debug(
                 "CumulusActiveMachines connecting to sharedState. %s",
                 self._registeredIpPortAndMachineId or ""
                 )
@@ -302,10 +297,8 @@ class CumulusActiveMachines(Stoppable.Stoppable):
             def onConnect(value):
                 self.clientID = self.asyncView.id
                 connected.set()
-                logging.info(
-                        "CumulusActiveMachines created SharedState view with client id %s",
-                        str(self.clientID)
-                        )
+                logging.debug("Created SharedState view with client id %s",
+                              str(self.clientID))
 
             if self.asyncView is not None:
                 self.asyncView.stopService()
@@ -328,11 +321,17 @@ class CumulusActiveMachines(Stoppable.Stoppable):
 
             def subscribe():
                 try:
-                    self.asyncView.subscribeToKeyspace(SharedStateNative.getClientInfoKeyspace(), 1, self.onNewClientInfo)
-                    doneDeferred = self.asyncView.subscribeToKeyspace(self.workerStatusKeyspace, 0, self.onNewWorkerStatus)
-                    doneDeferred.addCallbacks(subscribeCallback, lambda exception : None)
+                    self.asyncView.subscribeToKeyspace(SharedStateNative.getClientInfoKeyspace(),
+                                                       1,
+                                                       self.onNewClientInfo)
+                    doneDeferred = self.asyncView.subscribeToKeyspace(self.workerStatusKeyspace,
+                                                                      0,
+                                                                      self.onNewWorkerStatus)
+                    doneDeferred.addCallbacks(subscribeCallback, lambda exception: None)
                 except UserWarning as ex:
-                    logging.warn("Failed to subscribe to asyncView keyspace because we disconnected from shared state while reconnecting to shared state")
+                    logging.warn("Failed to subscribe to asyncView keyspace because we "
+                                 "disconnected from shared state while reconnecting to "
+                                 "shared state")
 
             self.asyncView.reactorThreadCall(subscribe)
             while not self._stopFlag.is_set() and not done.wait(.1) and not self.disconnectedWhileConnecting:
@@ -341,8 +340,6 @@ class CumulusActiveMachines(Stoppable.Stoppable):
             self.writeOwnRegistrationInformationIntoView_()
 
             self._lastReconnectTime = time.time()
-
-            succeeded = True
         except UserWarning as ex:
             logging.warn("Exception thrown during connect view, because we disconnected while reconnecting")
         finally:

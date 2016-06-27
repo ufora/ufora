@@ -114,6 +114,14 @@ class Config(object):
             )
         self.setRootDataDir(rootDataDir)
 
+        self.logDir = self.getConfigValue("UFORA_LOG_DIR",
+                                          default=os.path.join(rootDataDir, "logs"),
+                                          checkEnviron=True)
+
+
+        self.workerCoreLogFile = self.getConfigValue("UFORA_WORKER_CORE_LOG_FILE",
+                                                     checkEnviron=True)
+
         self.setAllPorts(int(self.getConfigValue("BASE_PORT", 30000)))
 
         # FORA CONFIG
@@ -203,7 +211,7 @@ class Config(object):
         # LOGGING_OVERRIDES may be empty, or may contain a list of tuples.
         # Each tuple should look like (scopeRegex, fileRegex, logLevel)
         loggingLevelOverridesString = self.getConfigValue("LOGGING_OVERRIDES", None)
-        
+
         if loggingLevelOverridesString:
             overrides = json.loads(loggingLevelOverridesString)
             self.scopedLoggingLevelOverrides = []
@@ -330,6 +338,8 @@ class Config(object):
         assert level in validLevels
         import ufora.native.Logging as NativeLogging
         NativeLogging.setLogLevel(level)
+        if self.workerCoreLogFile:
+            NativeLogging.setFileLogger(self.workerCoreLogFile)
 
     def configureLogging(self, level):
         logging.getLogger().setLevel(level)

@@ -350,7 +350,7 @@ def initialize(setupObjectToUse = None, reimport = False):
 
     _builtinModuleMembers = _builtinModuleImplVal.objectMembers
 
-    logging.info("Initialized ModuleImporter with builtin hash of '%s'", hash(_builtinModuleImplVal))
+    logging.info("Builtin module hash: %s", hash(_builtinModuleImplVal))
 
 def pathToBuiltins():
     return _builtinPath

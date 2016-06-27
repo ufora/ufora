@@ -32,7 +32,11 @@ load_config() {
     fi
 
     if [ -z $UFORA_LOG_DIR ]; then
-      UFORA_LOG_DIR=$ROOT_DATA_DIR/logs
+      export UFORA_LOG_DIR=$ROOT_DATA_DIR/logs
+    fi
+
+    if [ -z $UFORA_WORKER_CORE_LOG_FILE ]; then
+      export UFORA_WORKER_CORE_LOG_FILE=$UFORA_LOG_DIR/ufora-worker.core.log
     fi
 
     if [ -z $UFORA_MANAGER_PORT ]; then

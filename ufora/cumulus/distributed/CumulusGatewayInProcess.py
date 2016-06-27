@@ -68,6 +68,13 @@ class InProcessGateway(CumulusGateway.CumulusGateway):
 
         self.loadingService = self.simulation.loadingServices[0]
 
+
+    def getClusterStatus(self):
+        return {
+            "workerCount": self.simulation.workerCount
+            }
+
+
     def teardown(self):
         self.loadingService = None
         self.worker = None

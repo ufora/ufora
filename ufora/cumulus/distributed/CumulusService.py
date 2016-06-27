@@ -89,14 +89,6 @@ class CumulusService(Stoppable.Stoppable):
             self.cumulusDiskCacheWantsDeletionOnTeardown = False
             self.cumulusDiskCacheStorageDir = config.cumulusDiskCacheStorageDir
 
-
-        logging.info(
-            "Creating a CumulusService with ram cache of %s / %s MB and %s threads",
-            self.cumulusVectorRamCacheSizeOverride / 1024.0 / 1024.0,
-            self.cumulusMaxRamCacheSizeOverride / 1024.0 / 1024.0,
-            self.cumulusThreadCountOverride
-            )
-
         self._stopEvent = threading.Event()
 
         self._channelListener = channelListener
@@ -121,10 +113,6 @@ class CumulusService(Stoppable.Stoppable):
             )
 
         if self.cumulusTrackTcmalloc:
-            logging.info(
-                "CumulusService enabling track-tc-malloc memory with a max cache of %s MB",
-                self.cumulusMaxRamCacheSizeOverride / 1024 / 1024.0
-                )
             self.vdm.getMemoryManager().enableCountTcMallocMemoryAsEcMemory()
 
         self.persistentCacheIndex = CumulusNative.PersistentCacheIndex(
@@ -253,7 +241,7 @@ class CumulusService(Stoppable.Stoppable):
 
 
     def onChannelConnect(self, portIndex, cumulusChannel):
-        logging.info("Received incoming connection on port id %d", portIndex)
+        logging.debug("Received incoming connection on port id %d", portIndex)
         with self.lock:
             if self.shouldStop():
                 logging.info("Rejecting a connection because we are no longer active")
@@ -268,10 +256,11 @@ class CumulusService(Stoppable.Stoppable):
 
     def doChannelHandshake(self, channel):
         try:
-            logging.info("CumulusService %s beginning channel handshake on channel %s", self.machineId, channel)
+            logging.debug("Worker %s beginning channel handshake", self.machineId)
             version = channel.getTimeout(HANDSHAKE_TIMEOUT)
             if version is None:
                 logging.error(
+                    "CAN'T ACCEPT CONNECTION!\n"
                     "CumulusService %s couldn't read client version within the configured timeout",
                     self.machineId
                     )
@@ -281,7 +270,7 @@ class CumulusService(Stoppable.Stoppable):
                 channel.disconnect()
                 return
 
-            logging.info(
+            logging.debug(
                 "CumulusService %s accepted connection from client with version %s",
                 self.machineId,
                 version
@@ -295,7 +284,8 @@ class CumulusService(Stoppable.Stoppable):
             msg = channel.getTimeout(HANDSHAKE_TIMEOUT)
             if msg is None:
                 logging.error(
-                    "CumulusService %s didn't received remote machine Id in handshake",
+                    "CAN'T ACCEPT CONNECTION!\n"
+                    "Worker %s didn't received remote machine ID during handshake",
                     self.machineId
                     )
                 channel.disconnect()
@@ -311,13 +301,17 @@ class CumulusService(Stoppable.Stoppable):
             hashGuid = Hash.Hash(0)
             msg = channel.getTimeout(HANDSHAKE_TIMEOUT)
             if msg is None:
-                logging.error("CumulusService %s didn't received handshake GUID", self.machineId)
+                logging.error(
+                    "CAN'T ACCEPT CONNECTION!\n"
+                    "Worker %s didn't received handshake GUID",
+                    self.machineId
+                    )
                 channel.disconnect()
                 return
 
             hashGuid.__setstate__(msg)
-            logging.info(
-                "CumulusService %s accepted connection of guid %s for client %s",
+            logging.debug(
+                "Worker %s accepted connection with guid %s from %s",
                 self.machineId,
                 hashGuid,
                 clientOrMachine
@@ -333,11 +327,11 @@ class CumulusService(Stoppable.Stoppable):
                     (clientOrMachine, hashGuid)
                     )
 
-            logging.info("CumulusService %s added a channel to group %s",
-                         self.machineId,
-                         (clientOrMachine, hashGuid))
+            logging.debug("CumulusService %s added a channel to group %s",
+                          self.machineId,
+                          (clientOrMachine, hashGuid))
         except:
-            logging.error("Failed to process incoming connection: %s", traceback.format_exc())
+            logging.error("FAILED TO PROCESS INCOMING CONNECTION: %s", traceback.format_exc())
             channel.disconnect()
 
     def logBadUforaVersionOnChannel(self, version):
@@ -359,7 +353,9 @@ class CumulusService(Stoppable.Stoppable):
 
     def isOwnHashInHandshakeMessage(self, message):
         if message is None:
-            logging.error("CumulusService %s didn't receive own Id in handshake.", self.machineId)
+            logging.error("CAN'T ACCEPT CONNECTION!\n"
+                          "Worker %s didn't receive an ID message during handshake.",
+                          self.machineId)
             return False
 
         try:
@@ -370,7 +366,8 @@ class CumulusService(Stoppable.Stoppable):
 
         if isinstance(machineId, str) or machineId != self.machineId:
             logging.error(
-                "CumulusWorker %s received connection intended for another machine (%s). %s != %s",
+                "CAN'T ACCESPT CONNECTION!\n"
+                "Worker %s received connection intended for another machine (%s). %s != %s",
                 self.machineId,
                 machineId,
                 repr(message),
@@ -422,8 +419,8 @@ class CumulusService(Stoppable.Stoppable):
         if onErrorCallback is not None:
             logging.info("CumulusService handed a non-empty onErrorCallback which it will never use.")
 
-        logging.info(
-            "CumulusService: starting %s and waiting for it to be ready",
+        logging.debug(
+            "Starting %s and waiting for it to be ready",
             self._channelListener
             )
 
@@ -432,7 +429,7 @@ class CumulusService(Stoppable.Stoppable):
         self.cumulusChannelFactoryThread.start()
         self._channelListener.blockUntilReady()
 
-        logging.info("Registering machineId %s in CumulusActiveMachines", str(self.machineId.guid))
+        logging.debug("Registering machineId %s in CumulusActiveMachines", str(self.machineId.guid))
 
         self.cumulusActiveMachines.registerSelfAsActive(
             self.ownAddress,
@@ -440,7 +437,7 @@ class CumulusService(Stoppable.Stoppable):
             str(self.machineId.guid)
             )
 
-        logging.info("CumulusService: starting threads")
+        logging.debug("CumulusService: starting threads")
         self.startThreads()
 
     def updatePersistentCacheView(self):
@@ -495,7 +492,7 @@ class CumulusService(Stoppable.Stoppable):
         machineId = CumulusNative.MachineId(Hash.Hash.stringToHash(machineIdAsString))
 
         if machineId <= self.machineId:
-            logging.info("CumulusService %s adding worker %s, and waiting for incoming connection",
+            logging.info("Worker %s detected worker %s, and waiting for incoming connection",
                          self.machineId,
                          machineId)
 
@@ -505,7 +502,7 @@ class CumulusService(Stoppable.Stoppable):
         guid = Hash.Hash.sha1(str(uuid.uuid4()))
 
         logging.info(
-            "CumulusService %s adding worker %s and starting connection thread with guid %s",
+            "Worker %s detected worker %s and initiating connection with guid %s",
             self.machineId,
             machineId,
             guid
@@ -520,7 +517,7 @@ class CumulusService(Stoppable.Stoppable):
             ).start()
 
     def onWorkerAdd2(self, machineId, ip, ports, guid):
-        logging.info(
+        logging.debug(
             "CumulusService %s adding worker %s and connecting to it with guid %s",
             self.machineId,
             machineId,
@@ -567,6 +564,10 @@ class CumulusService(Stoppable.Stoppable):
                         ModuleImporter.builtinModuleImplVal(),
                         self.callbackScheduler
                         )
+
+                logging.info("Connection is available to Worker %s with guid %s",
+                             machineId,
+                             guid)
                 return
             except:
                 logging.error("Failed to add worker %s: %s", machineId, traceback.format_exc())
@@ -576,12 +577,20 @@ class CumulusService(Stoppable.Stoppable):
             return machineId in self.connectingMachines and not self.shouldStop()
 
     def connectToRemoteWorker(self, machineId, ip, port, guid):
-        logging.info("Attempting to connect to machine %s on %s:%s with guid %s",
-                     machineId,
-                     ip,
-                     port,
-                     guid)
-        stringChannel = self._channelFactory.createChannel((ip, port))
+        logging.debug("Attempting to connect to machine %s on %s:%s with guid %s",
+                      machineId,
+                      ip,
+                      port,
+                      guid)
+        try:
+            stringChannel = self._channelFactory.createChannel((ip, port))
+        except:
+            logging.error("CAN'T CONNECT TO WORKER ON %s:%s!\n"
+                          "This may be a temporary failure but if the problem persists, "
+                          "check the workers' network configuration and verify "
+                          "that the machines can see each other.",
+                          ip, port)
+            raise
 
         stringChannel.write(ufora.version)
 
@@ -596,23 +605,24 @@ class CumulusService(Stoppable.Stoppable):
 
         stringChannel.write(guid.__getstate__())
 
-        logging.info("CumulusService %s wrote handshake for %s with guid %s",
-            self.machineId,
-            machineId,
-            guid
-            )
+        logging.debug("CumulusService %s wrote handshake for %s with guid %s",
+                      self.machineId,
+                      machineId,
+                      guid)
 
         channelAsQueue = stringChannel.makeQueuelike(self.callbackScheduler)
 
         msg = channelAsQueue.getTimeout(HANDSHAKE_TIMEOUT)
 
         if msg is None:
-            logging.error("While attempting to add worker %s with guid %s, " +
-                "CumulusWorker %s did not receive a builtin hash message during handshake",
-                machineId,
-                guid,
-                self.machineId
-                )
+            logging.error("CAN'T CONNECT TO WORKER ON %s:%s!\n"
+                          "While attempting to add worker %s with guid %s, "
+                          "Worker %s did not receive a builtin hash message "
+                          "during handshake.\n"
+                          "Verify that the ufora worker is running on the remote machine.",
+                          ip, port,
+                          machineId, guid,
+                          self.machineId)
             return None
 
         otherWorkersBuiltinHash = Hash.Hash(0)
@@ -621,14 +631,16 @@ class CumulusService(Stoppable.Stoppable):
         builtinsAgree = otherWorkersBuiltinHash == ModuleImporter.builtinModuleImplVal().hash
 
         if not builtinsAgree:
-            logging.critical("CumulusWorker %s could not connect to CumulusWorker %s as they have " + \
-                             "different builtins; former's builtin hash: %s, latter's builtin hash: " + \
-                             "%s",
+            logging.critical("CAN'T CONNECT TO WORKER ON %s:%s!\n"
+                             "Worker %s could not connect to Worker %s as they have "
+                             "different builtins; former's builtin hash: %s, latter's builtin hash: "
+                             "%s\n"
+                             "Verify that both machines run the same ufora version.",
+                             ip, port,
                              self.machineId,
                              machineId,
                              ModuleImporter.builtinModuleImplVal().hash,
-                             otherWorkersBuiltinHash
-                             )
+                             otherWorkersBuiltinHash)
 
             channelAsQueue.disconnect()
             return None

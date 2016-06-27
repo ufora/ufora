@@ -55,7 +55,7 @@ class PythonIoTaskService(object):
         self.totalTasks = 0
         self.threadcount = threadCount or Setup.config().externalDatasetLoaderServiceThreads
 
-        logging.info(
+        logging.debug(
             "OutOfProcessDownloader is %s",
             "out of process" if s3Interface.isCompatibleWithOutOfProcessDownloadPool else \
                 "in memory"
@@ -70,7 +70,7 @@ class PythonIoTaskService(object):
                 )
 
     def loadLoop(self):
-        logging.info("PythonIoTaskService thread starting")
+        logging.debug("Thread starting")
 
         while not self.teardown_:
             #serialize access to the channel
@@ -496,7 +496,7 @@ class PythonIoTaskService(object):
             if self.threads_:
                 return
 
-            logging.info(
+            logging.debug(
                 "Starting %s PythonIoTasks service threads",
                 Setup.config().externalDatasetLoaderServiceThreads
                 )

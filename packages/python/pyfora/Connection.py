@@ -105,6 +105,20 @@ class Connection(object):
             )
 
 
+    def getClusterStatus(self, onCompletedCallback):
+        clusterStatus = self.webObjectFactory.PyforaCluster({})
+        def onSuccess(clusterStatus):
+            onCompletedCallback(clusterStatus)
+
+        def onFailure(err):
+            onCompletedCallback(Exceptions.PyforaError(err['message']))
+
+        clusterStatus.getClusterStatus({}, {
+            'onSuccess': onSuccess,
+            'onFailure': onFailure
+            })
+
+
     def triggerS3DatasetExportOnFinishedCalculation(self,
                                                     computedValue,
                                                     bucketname,

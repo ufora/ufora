@@ -18,7 +18,6 @@ import ufora.BackendGateway.ComputedGraph.ComputedGraph as ComputedGraph
 import ufora.native.Cumulus as CumulusNative
 import ufora.native.FORA as ForaNative
 import ufora.BackendGateway.ComputedValue.ComputedValueGateway as ComputedValueGateway
-import time
 import ufora.BackendGateway.ComputedGraph.BackgroundUpdateQueue as BackgroundUpdateQueue
 
 _no_tsunami_reload = True
@@ -42,12 +41,14 @@ class PersistentCacheIndex(ComputedGraph.Location):
 
     @ComputedGraph.ExposedFunction()
     def triggerGarbageCollectionImmediately(self, completePurge):
-        ComputedValueGateway.getGateway().triggerPerstistentCacheGarbageCollection(True if completePurge else False)
+        ComputedValueGateway.getGateway().triggerPerstistentCacheGarbageCollection(
+            True if completePurge else False
+            )
 
     @ComputedGraph.ExposedFunction()
     def setMaxBytesInCache(self, *args):
         ComputedValueGateway.getGateway().getPersistentCacheIndex().setMaxBytesInCache(args[0])
-    
+
     @ComputedGraph.ExposedProperty()
     def maxBytesInCache(self):
         if ComputedValueGateway.getGateway().getPersistentCacheIndex() is None:
@@ -59,7 +60,7 @@ class PersistentCacheIndex(ComputedGraph.Location):
     def update(self):
         if ComputedValueGateway.getGateway().getPersistentCacheIndex() is None:
             return
-        
+
         self.totalBytesInCache = ComputedValueGateway.getGateway().getPersistentCacheIndex().totalBytesInCache()
         self.totalObjectsInCache = ComputedValueGateway.getGateway().getPersistentCacheIndex().totalObjectsInCache()
         self.totalComputationsInCache = ComputedValueGateway.getGateway().getPersistentCacheIndex().totalComputationsInCache()

@@ -45,7 +45,7 @@ class SocketListener(object):
 
     def start(self):
         assert not self.tornDown
-        logging.info("Starting %s", str(self))
+        logging.debug("Starting %s", str(self))
         while not self.boundEvent_.isSet():
             try:
                 self.socketServer.bindListener(self.port)
@@ -108,7 +108,7 @@ class ChannelListener(SocketListener):
         return "ChannelListener(port=%d, portScanIncrement=%d)" % (self.port, self.portScanIncrement)
 
     def onSocketConnect(self, sock, address):
-        logging.info("Accepted socket from %s", address)
+        logging.debug("Accepted socket from %s", address)
         channel = self.createSocketChannel(sock).makeQueuelike(self.callbackScheduler)
         assert not self.tornDown
         self.channelsToTeardown.add(channel)
