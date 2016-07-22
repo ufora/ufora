@@ -318,6 +318,12 @@ class NativeConverterAdaptor(object):
         assert pyAst is not None
 
         sourcePath = objectIdToObjectDefinition[classOrFunctionDefinition.sourceFileId].path
+        sourceText = objectIdToObjectDefinition[classOrFunctionDefinition.sourceFileId].text
+
+        newMetadata = ForaNative.CreateNamedTuple(
+            (ForaNative.encodeImplvalAsEmptyObjectMetadata(ForaNative.ImplValContainer(sourceText)),),
+            ("sourceText",)
+            )
 
         tr = None
         if isinstance(classOrFunctionDefinition, TypeDescription.FunctionDefinition):
@@ -325,14 +331,16 @@ class NativeConverterAdaptor(object):
                 tr = self.nativeConverter.convertPythonAstFunctionDefToForaOrParseError(
                     pyAst.asFunctionDef,
                     pyAst.extent,
-                    ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath])
+                    ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath]),
+                    newMetadata
                     )
             else:
                 assert pyAst.isLambda()
                 tr = self.nativeConverter.convertPythonAstLambdaToForaOrParseError(
                     pyAst.asLambda,
                     pyAst.extent,
-                    ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath])
+                    ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath]),
+                    newMetadata
                     )
 
         elif isinstance(classOrFunctionDefinition, TypeDescription.ClassDefinition):
@@ -349,7 +357,8 @@ class NativeConverterAdaptor(object):
                 pyAst.asClassDef,
                 pyAst.extent,
                 ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath]),
-                baseClasses
+                baseClasses,
+                newMetadata
                 )
 
         else:
@@ -542,13 +551,20 @@ class NativeConverterAdaptor(object):
             )
 
         sourcePath = objectIdToObjectDefinition[withBlockDescription.sourceFileId].path
+        sourceText = objectIdToObjectDefinition[withBlockDescription.sourceFileId].text
+
+        newMetadata = ForaNative.CreateNamedTuple(
+            (ForaNative.encodeImplvalAsEmptyObjectMetadata(ForaNative.ImplValContainer(sourceText)),),
+            ("sourceText",)
+            )
 
         foraFunctionExpression = \
             self.nativeConverter.convertPythonAstWithBlockFunctionDefToForaOrParseError(
                 nativeWithBodyAst.asFunctionDef,
                 nativeWithBodyAst.extent,
                 ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath]),
-                [x.split(".")[0] for x in withBlockDescription.freeVariableMemberAccessChainsToId]
+                [x.split(".")[0] for x in withBlockDescription.freeVariableMemberAccessChainsToId],
+                newMetadata
                 )
 
         if isinstance(foraFunctionExpression, ForaNative.PythonToForaConversionError):

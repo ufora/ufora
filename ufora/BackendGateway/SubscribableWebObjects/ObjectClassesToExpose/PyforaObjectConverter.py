@@ -31,70 +31,15 @@ class PyforaObjectConverter(ComputedGraph.Location):
     @ComputedGraph.ExposedFunction(expandArgs=True)
     def initialize(self, purePythonMDSAsJson):
         """Initialize the converter assuming a set of pyfora builtins"""
+        import pyfora.ObjectRegistry as ObjectRegistry
+        import ufora.FORA.python.PurePython.Converter as Converter
+
         try:
-            import pyfora.ObjectRegistry as ObjectRegistry
-            import ufora.FORA.python.PurePython.Converter as Converter
-            import ufora.FORA.python.PurePython.PyforaSingletonAndExceptionConverter as PyforaSingletonAndExceptionConverter
-            import ufora.native.FORA as ForaNative
-            import ufora.FORA.python.ModuleImporter as ModuleImporter
-
-
             logging.info("Initializing the PyforaObjectConverter")
 
             objectRegistry_[0] = ObjectRegistry.ObjectRegistry()
 
-            if purePythonMDSAsJson is None:
-                converter_[0] = Converter.Converter()
-            else:
-                purePythonModuleImplval = ModuleImporter.importModuleFromMDS(
-                    ModuleDirectoryStructure.ModuleDirectoryStructure.fromJson(purePythonMDSAsJson),
-                    "fora",
-                    "purePython",
-                    searchForFreeVariables=True
-                    )
-
-                singletonAndExceptionConverter = \
-                    PyforaSingletonAndExceptionConverter.PyforaSingletonAndExceptionConverter(
-                        purePythonModuleImplval
-                        )
-
-                primitiveTypeMapping = {
-                    bool: purePythonModuleImplval.getObjectMember("PyBool"),
-                    str: purePythonModuleImplval.getObjectMember("PyString"),
-                    int: purePythonModuleImplval.getObjectMember("PyInt"),
-                    float: purePythonModuleImplval.getObjectMember("PyFloat"),
-                    type(None): purePythonModuleImplval.getObjectMember("PyNone"),
-                    }
-
-
-                nativeConstantConverter = ForaNative.PythonConstantConverter(
-                    primitiveTypeMapping
-                    )
-
-                nativeListConverter = ForaNative.makePythonListConverter(
-                    purePythonModuleImplval.getObjectMember("PyList")
-                    )
-
-                nativeTupleConverter = ForaNative.makePythonTupleConverter(
-                    purePythonModuleImplval.getObjectMember("PyTuple")
-                    )
-
-                nativeDictConverter = ForaNative.makePythonDictConverter(
-                    purePythonModuleImplval.getObjectMember("PyDict")
-                    )
-
-                foraBuiltinsImplVal = ModuleImporter.builtinModuleImplVal()
-
-                converter_[0] = Converter.Converter(
-                    nativeListConverter=nativeListConverter,
-                    nativeTupleConverter=nativeTupleConverter,
-                    nativeDictConverter=nativeDictConverter,
-                    nativeConstantConverter=nativeConstantConverter,
-                    singletonAndExceptionConverter=singletonAndExceptionConverter,
-                    vdmOverride=ComputedValueGateway.getGateway().vdm,
-                    purePythonModuleImplVal=purePythonModuleImplval,
-                    foraBuiltinsImplVal=foraBuiltinsImplVal
-                    )
+            converter_[0] = Converter.constructConverter(purePythonMDSAsJson, ComputedValueGateway.getGateway().vdm)
         except:
             logging.critical("Failed to initialize the PyforaObjectConverter: %s", traceback.format_exc())
             raise

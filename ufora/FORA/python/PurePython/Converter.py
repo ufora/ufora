@@ -12,8 +12,12 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import ufora.FORA.python.PurePython.NativeConverterAdaptor as NativeConverterAdaptor
 import ufora.FORA.python.ForaValue as ForaValue
+import ufora.FORA.python.ModuleImporter as ModuleImporter
+import ufora.FORA.python.PurePython.NativeConverterAdaptor as NativeConverterAdaptor
+import ufora.FORA.python.ModuleDirectoryStructure as ModuleDirectoryStructure
+import ufora.FORA.python.PurePython.PyforaSingletonAndExceptionConverter as PyforaSingletonAndExceptionConverter
+import ufora.native.FORA as ForaNative
 
 import pyfora.TypeDescription as TypeDescription
 import pyfora.StronglyConnectedComponents as StronglyConnectedComponents
@@ -23,6 +27,7 @@ import base64
 import logging
 
 import ufora.native.FORA as ForaNative
+
 
 
 Symbol_uninitialized = ForaNative.makeSymbol("PyforaUninitializedVariable")
@@ -120,16 +125,19 @@ class Converter(object):
 
     def convert(self, objectId, objectRegistry, callback):
         try:
-            dependencyGraph = objectRegistry.computeDependencyGraph(objectId)
-            objectIdToObjectDefinition = {
-                objId: objectRegistry.getDefinition(objId)
-                for objId in dependencyGraph.iterkeys()
-                }
-            convertedValue = self._convert(objectId, dependencyGraph, objectIdToObjectDefinition)
-            self.convertedValues[objectId] = convertedValue
-            callback(convertedValue)
+            callback(self.convertDirectly(objectId, objectRegistry))
         except pyfora.PythonToForaConversionError as e:
             callback(e)
+
+    def convertDirectly(self, objectId, objectRegistry):
+        dependencyGraph = objectRegistry.computeDependencyGraph(objectId)
+        objectIdToObjectDefinition = {
+            objId: objectRegistry.getDefinition(objId)
+            for objId in dependencyGraph.iterkeys()
+            }
+        convertedValue = self._convert(objectId, dependencyGraph, objectIdToObjectDefinition)
+        self.convertedValues[objectId] = convertedValue
+        return convertedValue
 
     def _convert(self, objectId, dependencyGraph, objectIdToObjectDefinition):
         objectDefinition = objectIdToObjectDefinition[objectId]
@@ -568,7 +576,11 @@ class Converter(object):
             return newId
 
         def transformBody(implval):
-            value = self.nativeConverterAdaptor.invertForaConstant(implval)
+            if implval.isString():
+                value = (implval.pyval,)
+            else:
+                value = self.nativeConverterAdaptor.invertForaConstant(implval)
+
             if value is not None:
                 if isinstance(value, tuple):
                     #this is a simple constant
@@ -687,7 +699,8 @@ class Converter(object):
                                 memberName = memberAndBindingSequence[0]
                                 member = implval.getObjectLexicalMember(memberName)
                                 if member is not None and member[1] is None:
-                                    members[str(memberName)] = transform(member[0])
+                                    if member[0] != Symbol_uninitialized and member[0] != Symbol_unconvertible:
+                                        members[str(memberName)] = transform(member[0])
 
                         return transformer.transformFunctionInstance(
                             defPoint.defPoint.asExternal.paths[0],
@@ -708,9 +721,18 @@ class Converter(object):
                         if member is not None and member[1] is None:
                             members[str(memberName)] = transform(member[0])
 
-                return transformer.transformClassObject(defPoint.defPoint.asExternal.paths[0],
+                sourcePath = defPoint.defPoint.asExternal.paths[0]
+
+                om = implval.objectMetadata
+                if 'classMetadata' in om:
+                    om = om['classMetadata']
+                om = om['sourceText'].objectMetadata
+                
+                return transformer.transformClassObject(sourcePath,
                                                         defPoint.range.start.line,
-                                                        members)
+                                                        members,
+                                                        transform(om)
+                                                        )
 
             logging.error("Failed to convert %s of type %s back to python", implval, str(implval.type))
 
@@ -763,3 +785,58 @@ class Converter(object):
                 x for x in [formatCodeLocation(c) for c in codeLocations] if x is not None
                 ]
             }
+
+def constructConverter(purePythonMDSAsJson, vdm):
+    if purePythonMDSAsJson is None:
+        return Converter(vdmOverride=vdm)
+    else:
+        purePythonModuleImplval = ModuleImporter.importModuleFromMDS(
+            ModuleDirectoryStructure.ModuleDirectoryStructure.fromJson(purePythonMDSAsJson),
+            "fora",
+            "purePython",
+            searchForFreeVariables=True
+            )
+
+        singletonAndExceptionConverter = \
+            PyforaSingletonAndExceptionConverter.PyforaSingletonAndExceptionConverter(
+                purePythonModuleImplval
+                )
+
+        primitiveTypeMapping = {
+            bool: purePythonModuleImplval.getObjectMember("PyBool"),
+            str: purePythonModuleImplval.getObjectMember("PyString"),
+            int: purePythonModuleImplval.getObjectMember("PyInt"),
+            float: purePythonModuleImplval.getObjectMember("PyFloat"),
+            type(None): purePythonModuleImplval.getObjectMember("PyNone"),
+            }
+
+
+        nativeConstantConverter = ForaNative.PythonConstantConverter(
+            primitiveTypeMapping
+            )
+
+        nativeListConverter = ForaNative.makePythonListConverter(
+            purePythonModuleImplval.getObjectMember("PyList")
+            )
+
+        nativeTupleConverter = ForaNative.makePythonTupleConverter(
+            purePythonModuleImplval.getObjectMember("PyTuple")
+            )
+
+        nativeDictConverter = ForaNative.makePythonDictConverter(
+            purePythonModuleImplval.getObjectMember("PyDict")
+            )
+
+        foraBuiltinsImplVal = ModuleImporter.builtinModuleImplVal()
+
+        return Converter(
+            nativeListConverter=nativeListConverter,
+            nativeTupleConverter=nativeTupleConverter,
+            nativeDictConverter=nativeDictConverter,
+            nativeConstantConverter=nativeConstantConverter,
+            singletonAndExceptionConverter=singletonAndExceptionConverter,
+            vdmOverride=vdm,
+            purePythonModuleImplVal=purePythonModuleImplval,
+            foraBuiltinsImplVal=foraBuiltinsImplVal
+            )
+

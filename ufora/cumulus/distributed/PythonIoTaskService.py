@@ -16,6 +16,7 @@ import logging
 import threading
 import time
 import traceback
+import os
 
 import ufora.distributed.S3.S3Interface as S3Interface
 import ufora.FORA.python.PythonIoTasks as PythonIoTasks
@@ -25,6 +26,11 @@ import ufora.util.ManagedThread as ManagedThread
 import ufora.config.Setup as Setup
 import ufora.native.FORA as FORANative
 import ufora.native.ImmutableTreeVector as NativeImmutableTreeVector
+
+import ufora.FORA.python.PurePython.Converter as Converter
+import ufora.FORA.python.PurePython.PyforaToJsonTransformer as PyforaToJsonTransformer
+import ufora.FORA.python.ModuleDirectoryStructure as ModuleDirectoryStructure
+import pyfora
 
 class PythonIoTaskService(object):
     def __init__(self,
@@ -109,6 +115,8 @@ class PythonIoTaskService(object):
                 self.handleExtractPersistedObject(request)
             elif request.isListPersistedObjects():
                 self.handleListPersistedObjects(request)
+            elif request.isOutOfProcessPythonCall():
+                self.handleOutOfProcessPythonCall(request)
             else:
                 raise UserWarning("Invalid request: %s" % request)
 
@@ -314,6 +322,32 @@ class PythonIoTaskService(object):
                     traceback.format_exc()
                     )
                 return message
+
+    def handleOutOfProcessPythonCall(self, request):
+        #this should happen at bootup
+        path = os.path.join(os.path.abspath(os.path.split(pyfora.__file__)[0]), "fora")
+        moduleTree = ModuleDirectoryStructure.ModuleDirectoryStructure.read(path, "purePython", "fora")
+        converter = Converter.constructConverter(moduleTree.toJson(), None)
+
+        transformer = PyforaToJsonTransformer.PyforaToJsonTransformer()
+
+        anObjAsJson = converter.transformPyforaImplval(
+            request.asOutOfProcessPythonCall.toCall,
+            transformer,
+            PyforaToJsonTransformer.ExtractVectorContents(None)
+            )
+
+        result = PythonIoTasks.outOfProcessPythonCall(
+            self.outOfProcessDownloaderPool,
+            anObjAsJson
+            )
+
+        self.datasetRequestChannel_.write(
+            CumulusNative.PythonIoTaskResponse.OutOfProcessPythonCallResponse(
+                request.guid,
+                result
+                )
+            )
 
     def handleListPersistedObjects(self, request):
         while True:

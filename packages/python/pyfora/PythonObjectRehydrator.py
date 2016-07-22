@@ -17,6 +17,7 @@ import pyfora.PyforaInspect as PyforaInspect
 import pyfora.Exceptions as Exceptions
 import pyfora.NamedSingletons as NamedSingletons
 import pyfora.PyAbortSingletons as PyAbortSingletons
+import pyfora.pyAst.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
 import sys
 import os
 import ast
@@ -37,7 +38,8 @@ def sanitizeModulePath(pathToModule):
 class PythonObjectRehydrator(object):
     """PythonObjectRehydrator - responsible for building local copies of objects
                                 produced by the server."""
-    def __init__(self, purePythonClassMapping):
+    def __init__(self, purePythonClassMapping, allowModuleLevelLookups=True):
+        self.allowModuleLevelLookups = allowModuleLevelLookups
         self.moduleClassesAndFunctionsByPath = {}
         self.pathsToModules = {}
         self.purePythonClassMapping = purePythonClassMapping
@@ -51,6 +53,9 @@ class PythonObjectRehydrator(object):
 
 
     def moduleLevelObject(self, path, lineNumber):
+        if not self.allowModuleLevelLookups:
+            return None
+
         if path not in self.moduleClassesAndFunctionsByPath:
             self.populateModuleMembers(path)
 
@@ -216,6 +221,17 @@ class PythonObjectRehydrator(object):
                 return self._instantiateFunction(objectDef['functionInstance'][0],
                                                  objectDef['functionInstance'][1],
                                                  members)
+            if 'withBlock' in objectDef:
+                members = {
+                    k: convert(v)
+                    for k, v in objectDef['members'].iteritems()
+                    }
+                return self._withBlockAsClassObjectFromFilenameAndLine(objectDef['classObject'][0],
+                                                            objectDef['classObject'][1],
+                                                            members,
+                                                            convert(objectDef['file_text'])
+                                                            )
+
             if 'classObject' in objectDef:
                 members = {
                     k: convert(v)
@@ -223,7 +239,9 @@ class PythonObjectRehydrator(object):
                     }
                 return self._classObjectFromFilenameAndLine(objectDef['classObject'][0],
                                                             objectDef['classObject'][1],
-                                                            members)
+                                                            members,
+                                                            convert(objectDef['file_text'])
+                                                            )
             if 'stacktrace' in objectDef:
                 return objectDef['stacktrace']
 
@@ -238,14 +256,49 @@ class PythonObjectRehydrator(object):
             return self.purePythonClassMapping.pureInstanceToMappable(instance)
         return instance
 
-    def _classObjectFromFilenameAndLine(self, filename, lineNumber, members):
-        """Construct a class object given its textual definition."""        
+    def _withBlockAsClassObjectFromFilenameAndLine(self, filename, lineNumber, members, fileText):
+        """Construct a class object given its textual definition."""
+        assert fileText is not None
+
+        sourceAst = PyAstUtil.pyAstFromText(fileText)
+        withBlockAst = PyAstUtil.withBlockAtLineNumber(sourceAst, lineNumber)
+
+        print withBlockAst
+
+        outputLocals = {}
+        globalScope = {}
+        globalScope.update(members)
+
+        self.importModuleMagicVariables(globalScope, filename)
+
+        try:
+            code = compile(ast.Module([classAst]), filename, 'exec')
+
+            exec code in globalScope, outputLocals
+        except:
+            logging.error("Failed to instantiate class at %s:%s\n%s",
+                          filename,
+                          lineNumber,
+                          traceback.format_exc())
+            raise Exceptions.PyforaError(
+                "Failed to instantiate class at %s:%s" % (filename, lineNumber)
+                )
+
+        assert len(outputLocals) == 1
+
+        return list(outputLocals.values())[0]
+
+
+    def _classObjectFromFilenameAndLine(self, filename, lineNumber, members, fileText):
+        """Construct a class object given its textual definition."""
+        assert fileText is not None
+
         objectOrNone = self.moduleLevelObject(filename, lineNumber)
         
         if objectOrNone is not None:
             return objectOrNone
 
-        sourceAst = PyAstUtil.getAstFromFilePath(filename)
+        sourceAst = PyAstUtil.pyAstFromText(fileText)
         classAst = PyAstUtil.classDefAtLineNumber(sourceAst, lineNumber)
 
         outputLocals = {}
@@ -296,7 +349,7 @@ class PythonObjectRehydrator(object):
             return objectOrNone
 
         sourceAst = PyAstUtil.getAstFromFilePath(filename)
-        functionAst = PyAstUtil.functionDefOrLambdaAtLineNumber(sourceAst, lineNumber)
+        functionAst = PyAstUtil.functionDefOrLambdaOrWithBlockAtLineNumber(sourceAst, lineNumber)
 
         outputLocals = {}
         globalScope = {}
@@ -312,6 +365,67 @@ class PythonObjectRehydrator(object):
             code = compile(expr, filename, 'eval')
 
             return eval(code, globalScope, outputLocals)
+        elif isinstance(functionAst, ast.With):
+            expr = ast.FunctionDef()
+            expr.name = '__pyfora_with_block_as_function__'
+            expr.args = ast.arguments()
+            expr.args.args = []
+            expr.args.defaults = []
+            expr.args.vararg = None
+            expr.args.kwarg = None
+
+            expr.decorator_list = []
+            expr.body = functionAst.body
+            expr.lineno = functionAst.lineno-1
+            expr.col_offset = functionAst.col_offset
+
+            free_variables = PyAstFreeVariableAnalyses.getFreeVariables(expr, isClassContext=True)
+            bound_variables = PyAstFreeVariableAnalyses.collectBoundValuesInScope(expr)
+
+            return_statement = ast.Return(
+                    ast.Tuple([
+                        ast.Dict(
+                            keys=[ast.Str(x,lineno=1,col_offset=0) for x in bound_variables],
+                            values=[ast.Name(x, ast.Load(), lineno=1,col_offset=1) for x in bound_variables],
+                            lineno=1,
+                            col_offset=0
+                            ),
+                        ast.Num(0,lineno=1,col_offset=0),
+                        ast.Num(0,lineno=1,col_offset=0)
+                        ],
+                    ast.Load(),
+                    lineno=1,
+                    col_offset=0
+                    ),
+                lineno=1,
+                col_offset=0
+                )
+
+            expr.body.append(return_statement)
+
+            #for every incoming variable 'x' that's also assigned to, create a dummy '__pyfora_var_guard_x' that actually
+            #takes the value in from the surrounding scope, and immediately assign it
+            for var in memberDictionary:
+                if var in bound_variables:
+                    newVar = "__pyfora_var_guard_" + var
+
+                    var_copy_expr = ast.Assign(
+                        targets=[ast.Name(var, ast.Store(),lineno=0,col_offset=0)],
+                        value=ast.Name(newVar, ast.Load(),lineno=1,col_offset=0),
+                        lineno=1,
+                        col_offset=0
+                        )
+
+                    globalScope[newVar] = globalScope[var]
+                    del globalScope[var]
+
+                    expr.body = [var_copy_expr] + expr.body
+
+            code = compile(ast.Module([expr]), filename, 'exec')
+
+            exec code in globalScope, outputLocals
+            assert len(outputLocals) == 1
+            return list(outputLocals.values())[0]
         else:
             code = compile(ast.Module([functionAst]), filename, 'exec')
             exec code in globalScope, outputLocals

@@ -210,6 +210,24 @@ def functionDefOrLambdaAtLineNumber(sourceAst, lineNumber):
 
     return subnodesAtLineNumber[0]
 
+@CachedByArgs
+def functionDefOrLambdaOrWithBlockAtLineNumber(sourceAst, lineNumber):
+    visitor = _AtLineNumberVisitor(lineNumber)
+    visitor.visit(sourceAst)
+
+    subnodesAtLineNumber = visitor.funcDefSubnodesAtLineNumber + visitor.lambdaSubnodesAtLineNumber + visitor.withBlockSubnodesAtLineNumber
+
+    if len(subnodesAtLineNumber) == 0:
+        raise Exceptions.CantGetSourceTextError(
+            "can't find a function definition at line %s." % lineNumber
+            )
+    if len(subnodesAtLineNumber) > 1:
+        raise Exceptions.CantGetSourceTextError(
+            "can't find a unique function definition at line %s. Do you have two lambdas on the same line?" % lineNumber
+            )
+
+    return subnodesAtLineNumber[0]
+
 
 def collectDataMembersSetInInit(pyClassObject):
     # Return a list of data members set in the '__init__' method.

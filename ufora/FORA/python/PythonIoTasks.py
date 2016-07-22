@@ -18,6 +18,16 @@ import ufora.native.FORA as ForaNative
 import ufora.native.Cumulus as CumulusNative
 import ufora.config.Setup as Setup
 import ufora.util.ExponentialMovingAverage as ExponentialMovingAverage
+import pyfora.PureImplementationMappings as PureImplementationMappings
+import pyfora.PureImplementationMapping as PureImplementationMapping
+import pyfora.PythonObjectRehydrator as PythonObjectRehydrator
+import pyfora.PyObjectWalker as PyObjectWalker
+import pyfora.ObjectRegistry as ObjectRegistry
+import pyfora.ObjectRegistry as ObjectRegistry
+import ufora.FORA.python.ModuleDirectoryStructure as ModuleDirectoryStructure
+import ufora.FORA.python.PurePython.Converter as Converter
+import pyfora
+import cPickle as pickle
 import logging
 import os
 import requests
@@ -285,6 +295,60 @@ def completeMultipartS3Upload(s3InterfaceFactory,
     outOfProcessDownloaderPool.getDownloader() \
             .executeAndCallbackWithString(completer,
                                           outputCallback)
+
+class OutOfProcessPythonCallExecutor:
+    def __init__(self, objAsJson):
+        self.objAsJson = objAsJson
+
+    def __call__(self, data):
+        mappings = PureImplementationMappings.PureImplementationMappings()
+        rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(mappings, allowModuleLevelLookups=False)
+        convertedInstance = rehydrator.convertJsonResultToPythonObject(self.objAsJson)
+
+        result = convertedInstance()
+
+        registry = ObjectRegistry.ObjectRegistry()
+
+        walker = PyObjectWalker.PyObjectWalker(
+            purePythonClassMapping=mappings,
+            objectRegistry=registry
+            )
+
+        objId = walker.walkPyObject(result)
+
+        return pickle.dumps((objId, registry))
+
+        
+
+        
+
+
+
+def outOfProcessPythonCall(downloaderPool, objectAsJson):
+    writer = OutOfProcessPythonCallExecutor(objectAsJson)
+
+    result = [None]
+    def outputCallback(response):
+        result[0] = response
+
+    def inputCallback(fd):
+        data = ""
+        os.write(fd, common.prependSize(data))
+
+    downloaderPool.getDownloader() \
+            .executeAndCallbackWithString(writer, outputCallback, inputCallback)
+
+    objId, objectRegistry = pickle.loads(result[0])
+
+    path = os.path.join(os.path.abspath(os.path.split(pyfora.__file__)[0]), "fora")
+    moduleTree = ModuleDirectoryStructure.ModuleDirectoryStructure.read(path, "purePython", "fora")
+    converter = Converter.constructConverter(moduleTree.toJson(), None)
+
+    anObjAsImplval = converter.convertDirectly(objId, objectRegistry)
+
+    return anObjAsImplval
+
+
 
 def writeMultipartS3UploadPart(s3InterfaceFactory,
                                outOfProcessDownloaderPool,
