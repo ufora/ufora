@@ -12,6 +12,4 @@ command_to_run="$clean_command ; $build_command && $package_command"
 
 echo "Running command: $command_to_run"
 
-cd /volumes/src; 
-
 eval $command_to_run
