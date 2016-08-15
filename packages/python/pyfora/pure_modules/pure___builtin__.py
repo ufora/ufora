@@ -380,19 +380,24 @@ class XRange(object):
 
 @pureMapping(sorted)
 class Sorted(object):
-    def __call__(self, iterable):
+    def __call__(self, iterable, _ufora_cutoff=1000000):
         if isinstance(iterable, list):
-            return Sorted._sortList(iterable)
+            return Sorted._sortList(iterable,
+                                    _ufora_cutoff=_ufora_cutoff)
         else:
-            return Sorted._sortList([val for val in iterable])
+            return Sorted._sortList([val for val in iterable],
+                                    _ufora_cutoff=_ufora_cutoff)
 
     @staticmethod
-    def _sortList(xs):
+    def _sortList(xs, _ufora_cutoff):
         return __inline_fora(
-            """fun(@unnamed_args:(xs), *args) {
-                   return purePython.PyforaBuiltins.sorted(xs)
+            """fun(@unnamed_args:(xs), @named_args:(cutoff:), *args) {
+                   if (size(xs.@m) < cutoff.@m)
+                       return purePython.PyforaBuiltins.sorted(xs)
+
+                   return PyList(cached`(#ExternalIoTask(#DistributedDataOperation(#Sort(xs.@m.paged)))))
                    }"""
-            )(xs)
+            )(xs, cutoff=_ufora_cutoff)
 
 
 @pureMapping(round)

@@ -15,6 +15,7 @@
 import pyfora
 import pyfora.Exceptions as Exceptions
 
+import numpy.random.mtrand as mtrand
 import time
 
 
@@ -214,6 +215,32 @@ class BuiltinTestCases(object):
         xs = { 1: 2, 3: 4, 5: 6, 7: 8, 9: 10 }
         def f():
             return sorted(xs)
+
+        self.equivalentEvaluationTest(f)
+
+    def test_sorted_large_1(self):
+        def f():
+            rng = mtrand.RandomState(seed=250015)
+            x = rng.uniform(size=1000)
+            res = sorted(x)
+            return all(
+                [res[ix] <= res[ix + 1]
+                for ix in xrange(len(res) - 1)]
+                )
+
+        self.equivalentEvaluationTest(f)
+
+
+    def test_sorted_large_2(self):
+        def f():
+            rng = mtrand.RandomState(seed=250015)
+            x = rng.uniform(size=1000000)
+            res = sorted(x)
+            return all(
+                [res[ix] <= res[ix + 1]
+                for ix in xrange(len(res) - 1)]
+                )
+
 
         self.equivalentEvaluationTest(f)
 
