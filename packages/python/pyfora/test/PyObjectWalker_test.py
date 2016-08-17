@@ -60,6 +60,9 @@ class PyObjectWalkerTest(unittest.TestCase):
                 objectRegistry=None
                 )
 
+    def test_fail_for_fun(self):
+        assert False, "failed for fun!"
+
 
 if __name__ == "__main__":
     unittest.main()
