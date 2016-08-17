@@ -27,9 +27,24 @@ echo "**************************************************************************
 echo
 kill_all_running_procs
 
+echo "running git show --shortstat"
+echo `git show --shortstat`
+
 nosetests $WORKSPACE/packages/python &> $WORKSPACE/sdk.log
 
 if [ $? -ne 0 ]; then
+    echo "got a nonzero exit code (fail)"
+    echo "<log output>"
+    cat $WORKSPACE/sdk.log
+    echo "</log output>"
+
 	cat $WORKSPACE/sdk.log
 	exit 1
+else
+    echo "got a zero exit code (pass)"
+    echo "<log output>"
+    cat $WORKSPACE/sdk.log
+    echo "</log output>"
+
 fi
+
