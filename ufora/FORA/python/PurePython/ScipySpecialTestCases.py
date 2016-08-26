@@ -120,6 +120,8 @@ class ScipySpecialTestCases(object):
             rtol=1e-13, atol=0
             )
 
+        assert False
+
     def test_betaln_2(self):
         def f(a, b):
             return scipy.special.betaln(a, b)
