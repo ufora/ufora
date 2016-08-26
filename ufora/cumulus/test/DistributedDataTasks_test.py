@@ -62,6 +62,38 @@ class DistributedDataTasksTests(unittest.TestCase):
         self.assertTrue(result.isResult(), result)
         self.assertTrue(result.asResult.result.pyval == True, result)
 
+    @PerformanceTestReporter.PerfTest("python.datatasks.vec_of_vec")
+    def test_sortVecOfVec(self):
+        s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
+
+        text = """
+            let values = []
+            let ct = 100000
+            for ix in sequence(ct)
+                values = values :: (ix % 100, [ix])
+
+            let res = cached`(#ExternalIoTask(#DistributedDataOperation(#Sort(values.paged))));
+
+            let firstAreSorted = true;
+            for ix in sequence(size(res)-1)
+                if (res[ix][0] > res[ix+1][0])
+                    firstAreSorted = false;
+
+            size(res) == size(values) and firstAreSorted
+            """
+
+        result = InMemoryCumulusSimulation.computeUsingSeveralWorkers(
+            text,
+            s3,
+            1,
+            timeout=TIMEOUT,
+            memoryLimitMb=1000
+            )
+
+        self.assertTrue(result is not None)
+        self.assertTrue(result.isResult(), result)
+        self.assertTrue(result.asResult.result.pyval == True, result)
+
     def basicTaskPathwayTest(self, sz, machines=1, memory=1000):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
 
