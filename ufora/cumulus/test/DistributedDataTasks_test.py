@@ -68,9 +68,9 @@ class DistributedDataTasksTests(unittest.TestCase):
 
         text = """
             let values = []
-            let ct = 100000
-            for ix in sequence(ct)
-                values = values :: (ix % 100, [ix])
+            let ct = 500000
+
+            values = [(ix % 100, Vector.range(40)) for ix in sequence(ct)]
 
             let res = cached`(#ExternalIoTask(#DistributedDataOperation(#Sort(values.paged))));
 
@@ -87,7 +87,7 @@ class DistributedDataTasksTests(unittest.TestCase):
             s3,
             1,
             timeout=TIMEOUT,
-            memoryLimitMb=1000
+            memoryLimitMb=3000
             )
 
         self.assertTrue(result is not None)
