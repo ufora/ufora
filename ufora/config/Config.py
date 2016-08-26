@@ -137,7 +137,7 @@ class Config(object):
             )
 
         self.maxMemoryMB = long(self.getConfigValue("FORA_MAX_MEM_MB",
-                                                    (psutil.virtual_memory().total * 0.75) / (1024 ** 2),
+                                                    (psutil.virtual_memory().total * 0.90) / (1024 ** 2),
                                                     checkEnviron=True))
         self.cumulusTrackTcmalloc = parseBool(self.getConfigValue("CUMULUS_TRACK_TCMALLOC",
                                                                   default=True,
