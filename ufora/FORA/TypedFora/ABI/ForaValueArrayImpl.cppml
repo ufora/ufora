@@ -688,6 +688,135 @@ void ForaValueArrayImpl::append(
 		);
 	}
 
+namespace {
+
+JOV entupleJOV(JOV jov, JOV toAdd)
+	{
+	return JOV::Tuple(JudgmentOnValueTuple::Unnamed(emptyTreeVec() + jov + toAdd));
+	}
+	
+JOV detupleJOV(JOV jov, JOV toDrop)
+	{
+	lassert(jov.isTuple());
+	lassert(jov.getTuple().jov().jovs().size() == 2);
+	lassert(jov.getTuple().jov().jovs()[1] == toDrop);
+	lassert(!jov.getTuple().jov().hasExtras());
+	return jov.getTuple().jov().jovs()[0];
+	}
+	
+
+
+}
+
+void ForaValueArrayImpl::entuple(Type elementType)
+	{
+	lassert(mIsWriteable);
+
+	//ensure we have enough space
+	reserveBytes(mBytesReserved + mValueCount * elementType.size());
+
+	//move the data over
+	if (usingOffsetTable())
+		{
+		int64_t extraStride = elementType.size();
+
+		for (long curValue = mValueCount - 1; curValue >= 0; curValue--)
+			memmove(mOffsetTablePtr[curValue] + curValue * extraStride, mOffsetTablePtr[curValue], mOffsetTablePtr[curValue+1] - mOffsetTablePtr[curValue]);
+
+		for (long curValue = mValueCount; curValue >= 0; curValue--)
+			mOffsetTablePtr[curValue] += curValue * extraStride;
+		}
+	else
+		{
+		expandHomogenousStride(homogenousStride() + elementType.size());
+		}
+
+	if (isHomogenous())
+		{
+		mJudgmentLookupTable[0] = entupleJOV(mJudgmentLookupTable[0], JOV::OfType(elementType));
+		mJovToJudgmentTableSlot.clear();
+		mJovToJudgmentTableSlot[mJudgmentLookupTable[0]] = 0;
+		}
+		else
+	if (usingJudgmentTable())
+		{
+		mJovToJudgmentTableSlot.clear();
+		for (long k = 0; k < judgmentCount(); k++)
+			{
+			mJudgmentLookupTable[k] = entupleJOV(mJudgmentLookupTable[k], JOV::OfType(elementType));
+			mJovToJudgmentTableSlot[mJudgmentLookupTable[k]] = k;
+			}
+		}
+	else
+		{
+		JOV* jovs = (JOV*)mPerValueJudgments;
+
+		for (long k = 0; k < mValueCount; k++)
+			jovs[k] = entupleJOV(jovs[k], JOV::OfType(elementType));
+		}
+
+	if (mCurrentJOR)
+		{
+		delete mCurrentJOR;
+		mCurrentJOR = nullptr;
+		mCurrentJORIncludesValuesTo = 0;
+		}
+	}
+
+void ForaValueArrayImpl::detuple(Type elementType)
+	{
+	lassert(mIsWriteable);
+
+	if (isHomogenous())
+		{
+		mJudgmentLookupTable[0] = detupleJOV(mJudgmentLookupTable[0], JOV::OfType(elementType));
+		mJovToJudgmentTableSlot.clear();
+		mJovToJudgmentTableSlot[mJudgmentLookupTable[0]] = 0;
+		}
+		else
+	if (usingJudgmentTable())
+		{
+		mJovToJudgmentTableSlot.clear();
+		for (long k = 0; k < judgmentCount(); k++)
+			{
+			mJudgmentLookupTable[k] = detupleJOV(mJudgmentLookupTable[k], JOV::OfType(elementType));
+			mJovToJudgmentTableSlot[mJudgmentLookupTable[k]] = k;
+			}
+		}
+	else
+		{
+		JOV* jovs = (JOV*)mPerValueJudgments;
+
+		for (long k = 0; k < mValueCount; k++)
+			jovs[k] = detupleJOV(jovs[k], JOV::OfType(elementType));
+		}
+
+	//move the data over
+	if (usingOffsetTable())
+		{
+		int64_t extraStride = elementType.size();
+
+		for (long curValue = 1; curValue < mValueCount; curValue++)
+			memmove(mOffsetTablePtr[curValue], mOffsetTablePtr[curValue] - curValue * extraStride, mOffsetTablePtr[curValue] - mOffsetTablePtr[curValue-1] - extraStride);
+
+		for (long curValue = 1; curValue <= mValueCount; curValue++)
+			mOffsetTablePtr[curValue] -= curValue * extraStride;
+		}
+	else
+		{
+		contractHomogenousStride(homogenousStride() - elementType.size());
+		}
+
+	//release unused space
+	reserveBytes(mBytesReserved - mValueCount * elementType.size());
+
+	if (mCurrentJOR)
+		{
+		delete mCurrentJOR;
+		mCurrentJOR = nullptr;
+		mCurrentJORIncludesValuesTo = 0;
+		}
+	}
 
 void ForaValueArrayImpl::append(
 				const ForaValueArray& inOtherArrayBase,
@@ -1216,6 +1345,17 @@ void expandStride(uint8_t* ptr, long valueCount, size_t newStride)
 		((T*)(ptr + curValue * newStride))[0] = target[curValue];
 	}
 
+//if we have values that we want packed as 'T', but that are spread more widely,
+//repack them. this is just a direct memory copy
+template<class T>
+void contractStride(uint8_t* ptr, long valueCount, size_t origStride)
+	{
+	T* target = (T*)ptr;
+
+	for (long curValue = 0; curValue < valueCount; curValue++)
+		target[curValue] = ((T*)(ptr + curValue * origStride))[0];
+	}
+
 template<class T>
 void copyStridedWhereSourceIsT(
 			uint8_t* target,
@@ -1239,6 +1379,8 @@ void ForaValueArrayImpl::expandHomogenousStride(size_t newStride)
 
 	size_t curStride = homogenousStride();
 
+	lassert(newStride >= curStride);
+
 	if (newStride == curStride)
 		return;
 
@@ -1256,6 +1398,37 @@ void ForaValueArrayImpl::expandHomogenousStride(size_t newStride)
 	else
 		{
 		for (long curValue = mValueCount - 1; curValue >= 0; curValue--)
+			memmove(mDataPtr + curValue * newStride, mDataPtr + curValue * curStride, curStride);
+		}
+
+	mPerValueOffsetOrOffsetTableCountAllocated = newStride;
+	}
+
+void ForaValueArrayImpl::contractHomogenousStride(size_t newStride)
+	{
+	lassert(mValueCount * newStride <= mBytesReserved);
+
+	size_t curStride = homogenousStride();
+
+	lassert_dump(newStride <= curStride, newStride << " vs " << curStride);
+
+	if (newStride == curStride)
+		return;
+
+	if (newStride == sizeof(uint8_t))
+		contractStride<uint8_t>(mDataPtr, mValueCount, curStride);
+		else
+	if (newStride == sizeof(uint16_t))
+		contractStride<uint16_t>(mDataPtr, mValueCount, curStride);
+		else
+	if (newStride == sizeof(uint32_t))
+		contractStride<uint32_t>(mDataPtr, mValueCount, curStride);
+		else
+	if (newStride == sizeof(uint64_t))
+		contractStride<uint64_t>(mDataPtr, mValueCount, curStride);
+	else
+		{
+		for (long curValue = 0; curValue < mValueCount; curValue++)
 			memmove(mDataPtr + curValue * newStride, mDataPtr + curValue * curStride, curStride);
 		}
 
