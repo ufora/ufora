@@ -1301,6 +1301,12 @@ public:
 
 			ImplValContainer cacheLoadRequest = mExecutionContext->getCacheRequest();
 
+			if (isLogMessageCacheLoad_(cacheLoadRequest))
+				return stateChangeToLogMessageCacheLoad_(
+						cacheLoadRequest,
+						ioComputations,
+						ioGuid
+						);
 			if (isExternalIoTaskCacheLoad_(cacheLoadRequest))
 				return stateChangeToExternalIoTaskCacheLoad_(
 						cacheLoadRequest,
@@ -1456,6 +1462,67 @@ public:
 			);
 
 		return pages;
+		}
+
+	bool isLogMessageCacheLoad_(ImplValContainer cacheLoadRequest)
+		{
+		if (!cacheLoadRequest.tupleGetSize())
+			return false;
+
+		if (*cacheLoadRequest.tupleGetSize() == 1)
+			{
+			Nullable<pair<Symbol, ImplValContainer> > alt =
+				ImplValContainerUtilities::extractAsAlternative(*cacheLoadRequest.tupleGetItem(0));
+
+			if (!alt)
+				return false;
+
+			if (alt->first != Symbol("Print"))
+				return false;
+
+			if (!alt->second.type().isTuple() || *alt->second.tupleGetSize() != 1)
+				return false;
+
+			auto msg = *alt->second.tupleGetItem(0);
+			if (!msg.type().isString())
+				return false;
+
+			return true;
+			}
+
+		return false;
+		}
+
+	bool stateChangeToLogMessageCacheLoad_(
+				ImplValContainer cacheLoadRequest,
+				CreatedComputations& computations,
+				hash_type& ioGuid
+				)
+		{
+		mOutsideEcValues.setPendingCacheResult(
+			Fora::Interpreter::ComputationResult::Result(
+				ImplValContainer(CSTValue()),
+				ImplValContainer()
+				)
+			);
+
+		Nullable<pair<Symbol, ImplValContainer> > alt =
+			ImplValContainerUtilities::extractAsAlternative(*cacheLoadRequest.tupleGetItem(0));
+
+		auto msg = *alt->second.tupleGetItem(0);
+		lassert(msg.type().isString());
+
+			{
+			boost::mutex::scoped_lock lock(mComputationEventsMutex);
+			mComputationEvents.push_back(
+				ComputationEvent::GlobalUserFacingLog(
+					GlobalUserFacingLogMessage(msg.cast<String>().stdString(),false,curClock())
+					)
+				);
+			}
+				
+		//don't resume, since we want it to collect the result
+		return false;
 		}
 
 	bool isExternalIoTaskCacheLoad_(ImplValContainer cacheLoadRequest)

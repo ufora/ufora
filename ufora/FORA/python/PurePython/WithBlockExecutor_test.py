@@ -17,7 +17,7 @@ import ufora.FORA.python.PurePython.InMemorySimulationExecutorFactory as \
 import pyfora.RemotePythonObject as RemotePythonObject
 import pyfora.Exceptions as Exceptions
 import pyfora.pure_modules.pure_pandas as PurePandas
-
+import time
 
 import unittest
 import traceback
@@ -86,6 +86,53 @@ class WithBlockExecutors_test(unittest.TestCase):
 
             ix_result = ix.toLocal().result()
             self.assertEqual(ix_result, 11)
+
+    def test_printing_in_with_block_1(self):
+        with self.create_executor() as fora:
+            messages = []
+            def logMessageHandler(msg):
+                if not msg['isDeveloperFacing']:
+                    messages.append(msg['message'])
+
+            fora.connection.logMessageHandler = logMessageHandler
+            
+            with fora.remotely:
+                print 1, sum(x for x in xrange(10**9))
+                print 2, sum(x for x in xrange(10**9))
+                print 3, sum(x for x in xrange(10**9))
+                print 4, sum(x for x in xrange(10**9))
+
+            t0 = time.time()
+            while len(messages) < 4 and time.time() - t0 < 10:
+                time.sleep(1.0)
+
+        self.assertEqual(len(messages), 4)
+        self.assertEqual(messages[0][:2], "1 ")
+        self.assertEqual(messages[1][:2], "2 ")
+        self.assertEqual(messages[2][:2], "3 ")
+        self.assertEqual(messages[3][:2], "4 ")
+
+    def test_printing_in_with_block_2(self):
+        with self.create_executor() as fora:
+            messages = []
+            def logMessageHandler(msg):
+                if not msg['isDeveloperFacing']:
+                    messages.append(msg['message'])
+
+            fora.connection.logMessageHandler = logMessageHandler
+
+            with fora.remotely:
+                def f(x):
+                    print x,
+                    return x
+
+                print sum(f(x) for x in xrange(100))
+
+            t0 = time.time()
+            while len(messages) < 101 and time.time() - t0 < 10:
+                time.sleep(1.0)
+
+            self.assertEqual(len(messages), 101)
 
     def test_with_block_reassignments(self):
         fora = self.create_executor()

@@ -26,8 +26,6 @@ import ufora.util.ThreadLocalStack as ThreadLocalStack
 import ufora.FORA.VectorDataManager.VectorDataManager as VectorDataManager
 import traceback
 
-_no_tsunami_reload = True
-
 ViewOfEntireCumulusSystem = None
 PersistentCacheIndex = None
 

@@ -2587,6 +2587,24 @@ void ActiveComputationsKernel::sendClientComputationCreatedResponse(const Client
 		);
 	}
 
+void ActiveComputationsKernel::sendGlobalUserFacingLogMessage(const ComputationId& id, const ImmutableTreeVector<GlobalUserFacingLogMessage>& messages)
+	{
+	std::set<CumulusClientId> clients;
+
+	mDependencyGraph.clientsRequesting(id, clients);
+
+	for (auto c: clients)
+		mExternalInterface->onCumulusComponentMessageCreated(
+			CumulusComponentMessageCreated(
+				CumulusComponentMessage::ActiveComputationsToCumulusClient(
+					ActiveComputationsToCumulusClientMessage::LogMessage(id, messages)
+					),
+				CumulusComponentEndpointSet::SpecificClient(c),
+				CumulusComponentType::CumulusClient()
+				)
+			);
+	}
+
 void ActiveComputationsKernel::handleClientComputationCreated(
 												const ClientComputationCreated& created,
 												bool isTemporary,
@@ -2692,15 +2710,27 @@ void ActiveComputationsKernel::stopComputation(ComputationId computation, Create
 
 	ImmutableTreeVector<ComputationEvent> events = mExternalInterface->extractRecentComputationEventsForId(computation);
 
-	if (events.size())
+	ImmutableTreeVector<GlobalUserFacingLogMessage> logEvents;
+	ImmutableTreeVector<ComputationEvent> schedulerEvents;
+
+	for (auto e: events)
+		if (e.isGlobalUserFacingLog())
+			logEvents = logEvents + e.getGlobalUserFacingLog().message();
+		else
+			schedulerEvents = schedulerEvents + e;
+
+	if (schedulerEvents.size())
 		sendComputationToSchedulerMessage(
 			ComputationToSchedulerMessage::Events(
 				computation,
 				hash_type(), //OK to use an empty guid, since we're not planning on getting a response
 				mOwnMachineId,
-				events
+				schedulerEvents
 				)
 			);
+
+	if (logEvents.size())
+		sendGlobalUserFacingLogMessage(computation, logEvents);
 
 	auto waitingForDropIt = mWaitingToBeDropped.find(computation);
 	if (waitingForDropIt != mWaitingToBeDropped.end())

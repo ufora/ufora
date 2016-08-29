@@ -20,8 +20,6 @@ import ufora.native.FORA as ForaNative
 import ufora.BackendGateway.ComputedValue.ComputedValueGateway as ComputedValueGateway
 import ufora.BackendGateway.ComputedGraph.BackgroundUpdateQueue as BackgroundUpdateQueue
 
-_no_tsunami_reload = True
-
 getGateway = ComputedValueGateway.getGateway
 
 class PersistentCacheIndex(ComputedGraph.Location):

@@ -24,6 +24,7 @@ import pyfora.ObjectConverter as ObjectConverter
 import pyfora.RemotePythonObject as RemotePythonObject
 import pyfora.SocketIoJsonInterface as SocketIoJsonInterface
 import pyfora.ModuleDirectoryStructure as ModuleDirectoryStructure
+import threading
 
 # We defer importing SubscribableWebObjects.py to support auto doc generation
 # on readthedocs.org without running a full build.
@@ -49,6 +50,64 @@ class Connection(object):
         self.objectConverter = converter
         self.webObjectFactory = webObjectFactory
         self.closed = False
+
+        self.viewOfEntireSystem = self.webObjectFactory.ViewOfEntireCumulusSystem({})
+
+        self.subscribeToMessages()
+        self.logMessageHandler = None
+
+    def subscribeToMessages(self):
+        def onSuccess(messages):
+            if self.closed:
+                return
+            
+            self.pullAllMessages()
+
+        def onChanged(messages):
+            if self.closed:
+                return
+
+            self.pullAllMessages()
+
+            self.subscribeToMessages()
+
+        def onFailure(err):
+            pass
+
+        self.viewOfEntireSystem.subscribe_totalMessagesEver({
+            'onSuccess': onSuccess,
+            'onFailure': onFailure,
+            'onChanged': onChanged
+            })
+
+    def pullAllMessages(self):
+        processed = threading.Event()
+
+        def onSuccess(messages):
+            try:
+                for m in messages:
+                        if self.logMessageHandler:
+                            self.logMessageHandler(m)
+                        else:
+                            if not m['isDeveloperFacing']:
+                                print m['message'],
+            finally:
+                processed.set()
+
+        def onFailure(err):
+            processed.set()
+
+        self.viewOfEntireSystem.clearAndReturnMostRecentMessages({}, {
+            'onSuccess': onSuccess,
+            'onFailure': onFailure
+            })
+
+        return processed
+
+    def pullAllMessagesAndProcess(self):
+        self.pullAllMessages().wait()
+
+
 
 
     def triggerS3DatasetExport(self,

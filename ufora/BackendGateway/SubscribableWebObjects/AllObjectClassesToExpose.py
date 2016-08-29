@@ -26,6 +26,7 @@ import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.PyforaC
 
 import ufora.BackendGateway.ComputedValue.ComputedValue as ComputedValue
 import ufora.BackendGateway.ComputedValue.PersistentCacheIndex as PersistentCacheIndex
+import ufora.BackendGateway.ComputedValue.ViewOfEntireCumulusSystem as ViewOfEntireCumulusSystem
 
 classMap = {
     "Test": Test.Test,
@@ -37,6 +38,7 @@ classMap = {
     "PersistentCacheIndex": PersistentCacheIndex.PersistentCacheIndex,
     "PyforaObjectConverter": PyforaObjectConverter.PyforaObjectConverter,
     "PyforaComputedValue": PyforaComputedValue.PyforaComputedValue,
+    "ViewOfEntireCumulusSystem": ViewOfEntireCumulusSystem.ViewOfEntireCumulusSystem,
     "WriteToS3Task": WriteToS3Task.WriteToS3Task,
     "PyforaDictionaryElement": PyforaComputedValue.PyforaDictionaryElement,
     "PyforaTupleElement": PyforaComputedValue.PyforaTupleElement,
