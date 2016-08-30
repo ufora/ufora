@@ -434,9 +434,8 @@ class Launcher(object):
         unfulfilled_spot_requests = [r for r in spot_requests if not r.instance_id]
 
         all_instances = instances.values() + \
-                        self.ec2.get_only_instances(
-                            instance_ids=spot_instance_ids
-                            ) if spot_instance_ids else []
+                        (self.ec2.get_only_instances(instance_ids=spot_instance_ids)
+                         if spot_instance_ids else [])
         return {
             'instances': all_instances,
             'unfulfilled_spot_requests': unfulfilled_spot_requests
