@@ -305,6 +305,8 @@ class WithBlockExecutor(object):
             frame.f_lineno = frame.f_lineno-1
             raise exceptionValue, None, tb
 
+        self.executor.connection.pullAllMessagesAndProcess()
+
         raise WithBlockCompleted()
 
 class WithBlockCompleted(Exception):

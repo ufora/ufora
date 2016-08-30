@@ -54,6 +54,30 @@ BOOST_AUTO_TEST_CASE ( test_append_POD )
 	BOOST_CHECK(array.isHomogenous());
 	}
 
+BOOST_AUTO_TEST_CASE ( test_entuple_POD )
+	{
+	ForaValueArrayImpl array(&memoryPool);
+
+	for (int64_t k = 0; k < 100; k++)
+		array.append(ImplValContainer(CSTValue((uint64_t)k)));
+
+	array.entuple(Type::Integer(32,true));
+
+	BOOST_CHECK_EQUAL(array.size(), 100);
+	BOOST_CHECK(array.isHomogenous());
+	BOOST_CHECK_EQUAL(array.getHomogenousJOV().type()->size(), 12);
+
+	BOOST_CHECK_EQUAL(((uint64_t*)array.offsetFor(0))[0], 0);
+	BOOST_CHECK_EQUAL(((uint64_t*)array.offsetFor(90))[0], 90);
+
+	array.detuple(Type::Integer(32,true));
+
+	BOOST_CHECK(array.getHomogenousJOV().type()->size() == 8);
+
+	BOOST_CHECK_EQUAL(((uint64_t*)array.offsetFor(0))[0], 0);
+	BOOST_CHECK_EQUAL(((uint64_t*)array.offsetFor(90))[0], 90);
+	}
+
 BOOST_AUTO_TEST_CASE ( test_append_and_pack )
 	{
 	ForaValueArrayImpl array1(&memoryPool);
@@ -204,6 +228,23 @@ BOOST_AUTO_TEST_CASE ( test_append_non_POD_mixed_2 )
 
 	array.append(ImplValContainerUtilities::createString(String("this is a big string", &memoryPool)));
 	array.append(ImplValContainerUtilities::createBool(false));
+	}
+
+BOOST_AUTO_TEST_CASE ( test_append_non_POD_mixed_and_entuple )
+	{
+	ForaValueArrayImpl array(&memoryPool);
+
+	array.append(ImplValContainerUtilities::createString(String("this is a big string", &memoryPool)));
+	array.append(ImplValContainerUtilities::createBool(false));
+	array.append(ImplValContainerUtilities::createString(String("this is a big string", &memoryPool)));
+	
+	array.entuple(Type::Integer(32,false));
+
+	BOOST_CHECK_EQUAL( ((String*)array.offsetFor(2))->stdString(), "this is a big string" );
+
+	array.detuple(Type::Integer(32,false));
+
+	BOOST_CHECK_EQUAL( ((String*)array.offsetFor(2))->stdString(), "this is a big string" );
 	}
 
 BOOST_AUTO_TEST_CASE ( test_blit_strings_speed )

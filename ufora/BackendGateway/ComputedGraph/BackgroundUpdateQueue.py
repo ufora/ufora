@@ -39,10 +39,6 @@ queues = {}
 nextFrameQueues = {}
 queuesLock = threading.Lock()
 
-#tell Tsunami not to reload this module if we hit F5
-_no_tsunami_reload = True
-
-
 def getDeferredUpdateQueue(isNextFrameQueue = False):
     graph = ComputedGraph.ComputedGraph.currentGraph()
     assert graph is not None, "Called without a ComputedGraph on the stack."

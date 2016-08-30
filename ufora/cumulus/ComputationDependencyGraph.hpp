@@ -96,6 +96,8 @@ public:
 		return mOrphanedLocalSplitComputations;
 		}
 
+	void clientsRequesting(ComputationId id, std::set<CumulusClientId>& outClients) const;
+
 	void clearOrphans()
 		{
 		mOrphanedLocalSplitComputations.clear();

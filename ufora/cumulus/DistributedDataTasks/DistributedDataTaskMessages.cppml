@@ -24,7 +24,6 @@
 #include "../../FORA/Core/ImplValContainerUtilities.hppml"
 #include "../../FORA/Serialization/SerializedObject.hpp"
 #include "../../FORA/Serialization/ForaValueSerializationStream.hppml"
-#include "ForaValueLexicalComparison.hppml"
 #include "ForaValueLexicalComparisonForSingleJOV.hppml"
 
 #include "SlottedForaValueArrayAppend.hppml"
@@ -89,6 +88,42 @@ void DistributedDataTaskMessages::writeMessages(TypedFora::Abi::ForaValueArray* 
 			ValueDeepcopier deepcopier(deepcopierState, false, array->getOwningMemoryPool(), false, true);
 			
 			deepcopier.duplicate(array, inMessages);
+			}
+		);
+	}
+
+void DistributedDataTaskMessages::writeMessagesWithIndices(TypedFora::Abi::ForaValueArray* inMessages, int64_t offset)
+	{
+	writeMessages(
+		[&](TypedFora::Abi::ForaValueArray* array) {
+			TypedFora::Abi::ForaValueArray* newArray = TypedFora::Abi::ForaValueArray::Empty(mMemoryPool);
+
+			newArray->append(*inMessages);
+			newArray->entuple(Type::Integer(64, true));
+
+			int64_t sz = newArray->size();
+
+			if (newArray->isHomogenous())
+				{
+				uint8_t* base = newArray->offsetPlusStrideFor(0) - sizeof(int64_t);
+				int64_t stride = newArray->offsetFor(1) - newArray->offsetFor(0);
+				
+				for (long k = 0; k < sz; k++)
+					((int64_t*)(base + stride * k))[0] = offset + k;
+				}
+			else
+				{
+				for (long k = 0; k < sz; k++)
+					((int64_t*)newArray->offsetPlusStrideFor(k))[-1] = offset+k;
+				}
+
+			ValueDeepcopierState deepcopierState;
+
+			ValueDeepcopier deepcopier(deepcopierState, false, array->getOwningMemoryPool(), false, true);
+			
+			deepcopier.duplicate(array, newArray);
+
+			mMemoryPool->destroy(newArray);
 			}
 		);
 	}
@@ -201,21 +236,31 @@ DataTaskMemoryFootprint DistributedDataTaskMessages::currentMemoryFootprint()
 		);
 	}
 
-void DistributedDataTaskMessages::sortLexically()
+void DistributedDataTaskMessages::sortLexicallyAndDropRightTupleElement()
+	{
+	sortLexically(true);
+	}
+
+void DistributedDataTaskMessages::sortLexically(bool dropRightTupleElement)
 	{
 	if (!mValueArray || !mValueArray->size())
 		return;
 
 	if (mValueArray->isHomogenous() && mValueArray->currentJor()[0] == JOV::OfType(Type::Integer(64, true)))
 		{
-		double t0 = curClock();
 		std::sort((int64_t*)mValueArray->offsetFor(0), (int64_t*)mValueArray->offsetFor(mValueArray->size()));
+		
+		if (dropRightTupleElement)
+			mValueArray->detuple(Type::Integer(64, true));
 		return;
 		}
 
 	if (mValueArray->isHomogenous() && mValueArray->currentJor()[0] == JOV::Tuple(JOVT() + JOV::OfType(Type::Integer(64, true)) + JOV::OfType(Type::Integer(64, true))))
 		{
 		std::sort((pair<int64_t, int64_t>*)mValueArray->offsetFor(0), (pair<int64_t, int64_t>*)mValueArray->offsetFor(mValueArray->size()));
+
+		if (dropRightTupleElement)
+			mValueArray->detuple(Type::Integer(64, true));
 		return;
 		}
 
@@ -272,6 +317,9 @@ void DistributedDataTaskMessages::sortLexically()
 	mMemoryPool->destroy(mValueArray);
 
 	mValueArray = newValueArray;
+
+	if (dropRightTupleElement)
+		mValueArray->detuple(Type::Integer(64, true));
 	}
 
 TypedFora::Abi::ForaValueArray* DistributedDataTaskMessages::getValues()

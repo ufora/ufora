@@ -62,6 +62,74 @@ class DistributedDataTasksTests(unittest.TestCase):
         self.assertTrue(result.isResult(), result)
         self.assertTrue(result.asResult.result.pyval == True, result)
 
+    @PerformanceTestReporter.PerfTest("python.datatasks.equal_values")
+    def test_sortManySimilarValues(self):
+        s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
+
+        text = """
+            let values = []
+            let ct = 1000000
+            for ix in sequence(ct)
+                values = values :: (ix%2)
+
+            let sortedVals = cached`(#ExternalIoTask(#DistributedDataOperation(#Sort(values.paged))))
+
+            let sortedAndHomogenous = fun(v) {
+                for ix in sequence(size(v)-1)
+                    if (v[ix] > v[ix+1] or `TypeJOV(v[ix]) is not `TypeJOV(v[ix+1]))
+                        throw (ix, v[ix], v[ix+1], `TypeJOV(v[ix]), `TypeJOV(v[ix+1]))
+                return true;
+                }
+
+            if (size(sortedVals) != size(values))
+                throw "expected " + String(size(values)) + ", not " + String(size(sortedVals))
+            sortedAndHomogenous(sortedVals)
+            """
+
+        result = InMemoryCumulusSimulation.computeUsingSeveralWorkers(
+            text,
+            s3,
+            1,
+            timeout=TIMEOUT,
+            memoryLimitMb=1000
+            )
+
+        self.assertTrue(result is not None)
+        self.assertTrue(result.isResult(), result)
+        self.assertTrue(result.asResult.result.pyval == True, result)
+
+    @PerformanceTestReporter.PerfTest("python.datatasks.vec_of_vec")
+    def test_sortVecOfVec(self):
+        s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
+
+        text = """
+            let values = []
+            let ct = 500000
+
+            values = [(ix % 100, Vector.range(40)) for ix in sequence(ct)]
+
+            let res = cached`(#ExternalIoTask(#DistributedDataOperation(#Sort(values.paged))));
+
+            let firstAreSorted = true;
+            for ix in sequence(size(res)-1)
+                if (res[ix][0] > res[ix+1][0])
+                    firstAreSorted = false;
+
+            size(res) == size(values) and firstAreSorted
+            """
+
+        result = InMemoryCumulusSimulation.computeUsingSeveralWorkers(
+            text,
+            s3,
+            1,
+            timeout=TIMEOUT,
+            memoryLimitMb=3000
+            )
+
+        self.assertTrue(result is not None)
+        self.assertTrue(result.isResult(), result)
+        self.assertTrue(result.asResult.result.pyval == True, result)
+
     def basicTaskPathwayTest(self, sz, machines=1, memory=1000):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
 

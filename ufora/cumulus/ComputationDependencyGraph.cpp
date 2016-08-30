@@ -413,5 +413,31 @@ const std::set<ComputationId>& ComputationDependencyGraph::getLocalComputations(
 	return mLocalComputations;
 	}
 
+void ComputationDependencyGraph::clientsRequesting(ComputationId id, std::set<CumulusClientId>& outClients) const
+	{
+	std::set<ComputationId> rootsSeen;
+	std::set<ComputationId> rootsToCheck;
+
+	rootsToCheck.insert(id.rootComputation());
+	
+	while (rootsToCheck.size())
+		{
+		ComputationId id = *rootsToCheck.begin();
+		rootsToCheck.erase(id);
+
+		if (rootsSeen.find(id) == rootsSeen.end())
+			{
+			for (auto rootComputation: mRootToRootDependencies.getKeys(id))
+				rootsToCheck.insert(rootComputation);
+
+			rootsSeen.insert(id);
+
+			for (auto client: mClientIdToRootComputations.getKeys(id))
+				outClients.insert(client);
+			}
+		}
+	}
+
+
 }
 

@@ -1,4 +1,4 @@
-#   Copyright 2015 Ufora Inc.
+#   Copyright 2016 Ufora Inc.
 #
 #   Licensed under the Apache License, Version 2.0 (the "License");
 #   you may not use this file except in compliance with the License.
@@ -12,4 +12,20 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-__version__ = '0.5.7'
+
+"""Pure Python Implementations of Python builtins (in alphabetical order)."""
+
+import pyfora.PureImplementationMapping as PureImplementationMapping
+from pyfora.PureImplementationMapping import pureMapping
+import time
+
+
+@pureMapping(time.time)
+class Time(object):
+    def __call__(self):
+        return __inline_fora(
+            """fun(@unnamed_args:(), @named_args: (), *args) {
+                  return PyFloat(cached`(#Time()))
+                  }"""
+            )()
+

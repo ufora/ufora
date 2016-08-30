@@ -14,6 +14,7 @@
    limitations under the License.
 ****************************************************************************/
 #include "DistributedDataTasksImpl.hppml"
+#include "PlacePageInSortingQueueTask.hppml"
 #include "../../core/threading/CallbackSchedulerFactory.hppml"
 #include "../../core/PolymorphicSharedPtrBinder.hpp"
 #include "../../core/threading/TimedLock.hpp"
@@ -247,7 +248,7 @@ void DistributedDataTasksImpl::onTaskFinished_(hash_type taskGuid, ImplValContai
 
 	for (auto guidAndPage: mTaskPageRequestGuids[taskGuid])
 		mOnDataTasksToGlobalSchedulerMessage.broadcast(
-			DataTasksToGlobalSchedulerMessage::DropTaskDependency(guidAndPage.first, guidAndPage.second)
+			DataTasksToGlobalSchedulerMessage::DropTaskDependency(guidAndPage.first, guidAndPage.second.page())
 			);
 	mTaskPageRequestGuids.erase(taskGuid);
 
@@ -364,16 +365,24 @@ void DistributedDataTasksImpl::handleTaskCreatedOnLeader_(hash_type taskId, Dist
 				layout.bytecount()
 				);
 
-			for (auto page: layout.getPagesReferenced())
-				schedulePageToBePushedIntoPipeline_(taskId, page);
+			int64_t valuesSoFar = 0;
+
+			for (auto slice: layout.vectorIdentities())
+				{
+				schedulePageToBePushedIntoPipeline_(
+					taskId, 
+					PlacePageInSortingQueueTask(slice.vector().getPage(), slice.slice(), valuesSoFar)
+					);
+				valuesSoFar += slice.size();
+				}
 			}
 	}
 
-void DistributedDataTasksImpl::schedulePageToBePushedIntoPipeline_(hash_type taskId, Fora::PageId page)
+void DistributedDataTasksImpl::schedulePageToBePushedIntoPipeline_(hash_type taskId, PlacePageInSortingQueueTask page)
 	{
 	std::set<Cumulus::MachineId> machines;
 
-	mSPRT->machinesWithPageInRam(page, machines);
+	mSPRT->machinesWithPageInRam(page.page(), machines);
 	if (machines.size())
 		{
 		MachineId machine = Ufora::math::Random::pickRandomlyFromSet(machines, mRandom);
@@ -399,17 +408,17 @@ void DistributedDataTasksImpl::schedulePageToBePushedIntoPipeline_(hash_type tas
 		mTaskPageRequestGuids[taskId].push_back(make_pair(guid, page));
 
 		mOnDataTasksToGlobalSchedulerMessage.broadcast(
-			DataTasksToGlobalSchedulerMessage::CreateTaskDependency(guid, page)
+			DataTasksToGlobalSchedulerMessage::CreateTaskDependency(guid, page.page())
 			);
 		}
 	}
 
-void DistributedDataTasksImpl::tryToQueuePageInPipeline_(hash_type taskId, Fora::PageId pageId, MachineId sourceMachine)
+void DistributedDataTasksImpl::tryToQueuePageInPipeline_(hash_type taskId, PlacePageInSortingQueueTask pageId, MachineId sourceMachine)
 	{
 	mMessagePipeline->queuePageForSorting(taskId, pageId);
 	}
 
-void DistributedDataTasksImpl::cannotAcquireLockOnPage(hash_type task, Fora::PageId page)
+void DistributedDataTasksImpl::cannotAcquireLockOnPage(hash_type task, PlacePageInSortingQueueTask page)
 	{
 	TimedLock lock(mMutex, "DistributedDataTasks");
 
@@ -427,7 +436,7 @@ void DistributedDataTasksImpl::cannotAcquireLockOnPage(hash_type task, Fora::Pag
 			);
 	}
 
-void DistributedDataTasksImpl::pageNotFoundInVDM_(hash_type task, Fora::PageId page)
+void DistributedDataTasksImpl::pageNotFoundInVDM_(hash_type task, PlacePageInSortingQueueTask page)
 	{
 	mPagesToPushIntoMessagePipeline.push_back(make_pair(task, page));
 	}
