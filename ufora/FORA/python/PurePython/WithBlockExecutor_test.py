@@ -87,6 +87,17 @@ class WithBlockExecutors_test(unittest.TestCase):
             ix_result = ix.toLocal().result()
             self.assertEqual(ix_result, 11)
 
+    def test_using_time_within_with_block(self):
+        with self.create_executor() as fora:
+            with fora.remotely:
+                t0 = time.time()
+                res = sum(x for x in xrange(10**9))
+                if res is not None:
+                    elapsed = time.time() - t0
+
+
+        self.assertTrue(elapsed > 1.0)
+
     def test_printing_in_with_block_1(self):
         with self.create_executor() as fora:
             messages = []
