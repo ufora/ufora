@@ -33,6 +33,7 @@ def sanitizeModulePath(pathToModule):
         res = res[:-1]
     return res
 
+
 class PythonObjectRehydrator(object):
     """PythonObjectRehydrator - responsible for building local copies of objects
                                 produced by the server."""
@@ -55,7 +56,7 @@ class PythonObjectRehydrator(object):
 
         if lineNumber in self.moduleClassesAndFunctionsByPath[path]:
             return self.moduleClassesAndFunctionsByPath[path][lineNumber]
-
+ 
         return None
 
     def populateModuleMembers(self, path):
@@ -68,10 +69,33 @@ class PythonObjectRehydrator(object):
 
                 if PyforaInspect.isclass(leafItemValue) or PyforaInspect.isfunction(leafItemValue):
                     try:
-                        _, lineNumber = PyforaInspect.findsource(leafItemValue)
-                        res[lineNumber+1] = leafItemValue
-                    except:
-                        pass
+                        sourcePath = PyforaInspect.getsourcefile(leafItemValue)
+
+                        if os.path.samefile(path, sourcePath):
+                            _, lineNumber = PyforaInspect.findsource(leafItemValue)
+
+                            lineNumberToUse = lineNumber + 1
+
+                            if lineNumberToUse in res:
+                                raise Exceptions.ForaToPythonConversionError(
+                                    ("PythonObjectRehydrator got a line number collision at lineNumber %s"
+                                     ", between %s and %s"),
+                                    lineNumberToUse,
+                                    leafItemValue,
+                                    res[lineNumber + 1]
+                                    )
+
+
+                            res[lineNumberToUse] = leafItemValue
+                        else:
+                            self.populateModuleMembers(sourcePath)
+                        
+                    except Exceptions.ForaToPythonConversionError:
+                        raise
+                    except Exception as e:
+                        logging.critical("PyforaInspect threw an exception: %s. tb = %s",
+                                         e,
+                                         traceback.format_exc())
 
         self.moduleClassesAndFunctionsByPath[path] = res
 
