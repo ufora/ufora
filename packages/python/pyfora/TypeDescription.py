@@ -110,5 +110,5 @@ InstanceMethod = type_description(
     )
 Unconvertible = type_description(
     'Unconvertible',
-    ''
+    'module_path'
     )

@@ -40,6 +40,12 @@ Symbol_Call = ForaNative.makeSymbol("Call")
 Symbol_CreateInstance = ForaNative.makeSymbol("CreateInstance")
 Symbol_unconvertible = ForaNative.makeSymbol("PyforaUnconvertibleValue")
 
+def isUnconvertibleValueTuple(implVal):
+    if isinstance(implVal, ForaNative.ImplValContainer) and implVal.isTuple() and len(implVal) == 1:
+        if implVal.getTupleNames()[0] == "PyforaUnconvertibleValue":
+            return True
+    return False
+
 
 def convertNativePythonToForaConversionError(err, path):
     """Convert a ForaNative.PythonToForaConversionError to a python version of the exception"""
@@ -435,7 +441,7 @@ class NativeConverterAdaptor(object):
                 renamedVariableMapping[chain[0]] = implval
             else:
                 newName = Expression.freshVarname(
-                    '_'.join(chain),
+                    '.'.join(chain),
                     set(expr.mentionedVariables)
                     )
                 renamedVariableMapping[newName] = implval
@@ -471,8 +477,8 @@ class NativeConverterAdaptor(object):
             renamedVariableMapping
             ):
         unconvertibles = [
-            k for k, v in renamedVariableMapping.iteritems() \
-            if v == Symbol_unconvertible
+            k for k, v in renamedVariableMapping.iteritems()
+                if isUnconvertibleValueTuple(v)
             ]
 
         foraExpression = self.nativeConverter.replaceUnconvertiblesWithThrowExprs(

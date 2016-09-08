@@ -20,6 +20,7 @@ import pyfora.NamedSingletons as NamedSingletons
 import pyfora.PyforaWithBlock as PyforaWithBlock
 import pyfora.PyforaInspect as PyforaInspect
 import pyfora.pyAst.PyAstUtil as PyAstUtil
+import pyfora.ModuleLevelObjectIndex as ModuleLevelObjectIndex
 from pyfora.TypeDescription import isPrimitive
 from pyfora.PyforaInspect import PyforaInspectError
 
@@ -27,7 +28,6 @@ import logging
 import traceback
 import __builtin__
 import ast
-
 
 class UnresolvedFreeVariableException(Exception):
     def __init__(self, freeVariable, contextName):
@@ -75,7 +75,8 @@ instancemethod = type(_AClassWithAMethod().f)
 
 
 class _Unconvertible(object):
-    pass
+    def __init__(self, objectThatsNotConvertible):
+        self.objectThatsNotConvertible = objectThatsNotConvertible
 
 
 class _FunctionDefinition(object):
@@ -146,11 +147,13 @@ class PyObjectWalker(object):
         self._purePythonClassMapping = purePythonClassMapping
         self._convertedObjectCache = {}
         self._pyObjectIdToObjectId = {}
+        self._pyObjectIdToObject = {}
         self._objectRegistry = objectRegistry
 
     def _allocateId(self, pyObject):
         objectId = self._objectRegistry.allocateObject()
         self._pyObjectIdToObjectId[id(pyObject)] = objectId
+        self._pyObjectIdToObject[id(pyObject)] = pyObject
 
         return objectId
 
@@ -159,10 +162,6 @@ class PyObjectWalker(object):
         `walkPyObject`: recursively traverse a live python object,
         registering its "pieces" with an `ObjectRegistry`
         (`self.objectRegistry`).
-
-        Note that we use python `id`s for caching in this class,
-        which means it cannot be used in cases where `id`s might get
-        reused (recall they are just memory addresses).
 
         `objectId`s are assigned to all pieces of the python object.
 
@@ -184,17 +183,25 @@ class PyObjectWalker(object):
         objectId = self._allocateId(pyObject)
 
         if pyObject is pyfora.connect:
-            self._registerUnconvertible(objectId)
+            self._registerUnconvertible(objectId, None)
             return objectId
 
         try:
             self._walkPyObject(pyObject, objectId)
         except Exceptions.CantGetSourceTextError:
-            self._registerUnconvertible(objectId)
+            self._registerUnconvertible(objectId, self.getModulePathForObject(pyObject))
         except PyforaInspectError:
-            self._registerUnconvertible(objectId)
+            self._registerUnconvertible(objectId, self.getModulePathForObject(pyObject))
 
         return objectId
+
+    def getModulePathForObject(self, pyObject):
+        """Return a module-centric path to the object if one exists.
+
+        If not None, then the result is a tuple (modulename, objectname) that gives a path to the object,
+        where all modules are system or package modules (which we assume are the same on client and server).
+        """
+        return ModuleLevelObjectIndex.ModuleLevelObjectIndex.singleton().getPathToObject(pyObject)
 
     def _walkPyObject(self, pyObject, objectId):
         if isinstance(pyObject, RemotePythonObject.RemotePythonObject):
@@ -216,7 +223,7 @@ class PyObjectWalker(object):
         elif isinstance(pyObject, PyforaWithBlock.PyforaWithBlock):
             self._registerWithBlock(objectId, pyObject)
         elif isinstance(pyObject, _Unconvertible):
-            self._registerUnconvertible(objectId)
+            self._registerUnconvertible(objectId, self.getModulePathForObject(pyObject.objectThatsNotConvertible))
         elif isinstance(pyObject, tuple):
             self._registerTuple(objectId, pyObject)
         elif isinstance(pyObject, list):
@@ -369,6 +376,10 @@ class PyObjectWalker(object):
         classObject = classInstance.__class__
         classId = self.walkPyObject(classObject)
 
+        if self._objectRegistry.isUnconvertible(classId):
+            self._objectRegistry.defineUnconvertible(objectId, self.getModulePathForObject(classInstance))
+            return
+
         dataMemberNames = classInstance.__dict__.keys() if hasattr(classInstance, '__dict__') \
             else PyAstUtil.collectDataMembersSetInInit(classObject)
         classMemberNameToClassMemberId = {}
@@ -504,8 +515,8 @@ class PyObjectWalker(object):
             baseClassIds=[self._pyObjectIdToObjectId[id(base)] for base in pyObject.__bases__]
             )
 
-    def _registerUnconvertible(self, objectId):
-        self._objectRegistry.defineUnconvertible(objectId)
+    def _registerUnconvertible(self, objectId, modulePath):
+        self._objectRegistry.defineUnconvertible(objectId, modulePath)
 
     def _classOrFunctionDefinition(self, pyObject, classOrFunction):
         """
@@ -733,6 +744,7 @@ class PyObjectWalker(object):
             rootValue = getattr(__builtin__, freeVariable)
 
         else:
+            print "failed to find ", chainWithPosition, " within ", pyFunction.func_name
             raise UnresolvedFreeVariableException(
                 chainWithPosition, pyFunction.func_name)
 
@@ -750,7 +762,7 @@ class PyObjectWalker(object):
         while PyforaInspect.ismodule(terminalValue):
             if ix >= len(chain):
                 #we're terminating at a module
-                terminalValue = _Unconvertible()
+                terminalValue = _Unconvertible(terminalValue)
                 break
 
             if not hasattr(terminalValue, chain[ix]):

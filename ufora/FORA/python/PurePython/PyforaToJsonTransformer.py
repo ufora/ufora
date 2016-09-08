@@ -109,9 +109,13 @@ class PyforaToJsonTransformer(object):
         self.accumulateObjects(1)
         return {'classObject': (filename, linenumber), 'members': members, 'file_text': file_text_id }
 
-    def transformFunctionInstance(self, filename, linenumber, members):
+    def transformFunctionInstance(self, filename, linenumber, members, file_text_id):
         self.accumulateObjects(1)
-        return {'functionInstance': (filename, linenumber), 'members': members }
+        return {'functionInstance': (filename, linenumber), 'members': members, 'file_text': file_text_id}
+
+    def transformModuleLevelObject(self, object_path):
+        self.accumulateObjects(1)
+        return {'moduleLevelObject': object_path}
 
     def accumulateObjects(self, objectCount, extraBytes=0):
         self.bytesEncoded += objectCount * ASSUMED_OBJECT_BYTECOUNT_OVERHEAD + extraBytes

@@ -23,6 +23,7 @@ import pyfora.helpers as helpers
 import unittest
 import traceback
 import pandas
+import numpy
 
 class EvaluateBodyAndReturnContext:
     def __enter__(self):
@@ -85,20 +86,18 @@ class WithRegularPython_test(unittest.TestCase):
             result = z.toLocal().result()
             self.assertEqual(result, 205)
 
-    def test_basic_out_of_process(self):
+    def test_basic_out_of_process_1(self):
         with self.create_executor() as fora:
             x = 5
 
             with fora.remotely:
-                z = 100
-
                 with helpers.python:
-                    z = z + x + 100
+                    z = x + 100
 
             result = z.toLocal().result()
-            self.assertEqual(result, 205)
+            self.assertEqual(result, 105)
 
-    def test_basic_out_of_process(self):
+    def test_basic_out_of_process_2(self):
         with self.create_executor() as fora:
             x = 5
 
@@ -126,4 +125,62 @@ class WithRegularPython_test(unittest.TestCase):
 
             self.assertEqual(x, {})
             self.assertEqual(y, {10:20})
+
+    def test_functions_with_variables(self):
+        aBoundVariable = 10
+        def aFunc(x):
+            return x + aBoundVariable
+
+        with self.create_executor() as fora:
+            with fora.remotely.downloadAll():
+                with helpers.python:
+                    #'x' is local to the with block - it won't be updated
+                    x = aFunc(20)
+
+            self.assertEqual(x, 30)
+
+    def test_module_references(self):
+        with self.create_executor() as fora:
+            with fora.remotely.downloadAll():
+                with helpers.python:
+                    x = numpy.ones(10).shape[0]
+
+            self.assertEqual(x, 10)
+
+    def test_module_references_inside_of_functions(self):
+        def f():
+            #this can't work in pyfora right now
+            z = {}
+            z[10] = 10
+            return numpy.ones(z[10]).shape[0]
+
+        with self.create_executor() as fora:
+            with fora.remotely.downloadAll():
+                with helpers.python:
+                    x = f()
+
+            self.assertEqual(x, 10)
+
+
+    def test_module_references_inside_of_lambdas(self):
+        f = lambda: numpy.ones(10).shape[0]
+
+        with self.create_executor() as fora:
+            with fora.remotely.downloadAll():
+                with helpers.python:
+                    x = f()
+
+            self.assertEqual(x, 10)
+
+    def test_module_references_inside_of_class_functions(self):
+        class AClassReferencingNumpy:
+            def f(self):
+                return numpy.ones(10).shape[0]
+
+        with self.create_executor() as fora:
+            with fora.remotely.downloadAll():
+                with helpers.python:
+                    x = AClassReferencingNumpy().f()
+
+            self.assertEqual(x, 10)
 

@@ -89,9 +89,14 @@ class ObjectRegistry(object):
                 baseClassIds=baseClassIds
                 )
 
-    def defineUnconvertible(self, objectId):
+    def isUnconvertible(self, objectId):
+        return objectId in self.objectIdToObjectDefinition and isinstance(self.objectIdToObjectDefinition[objectId], TypeDescription.Unconvertible)
+
+    def defineUnconvertible(self, objectId, modulePath):
+        assert objectId not in self.objectIdToObjectDefinition
+
         self.objectIdToObjectDefinition[objectId] = \
-            TypeDescription.Unconvertible()
+            TypeDescription.Unconvertible(modulePath)
 
     def _processFreeVariableMemberAccessChainResolution(
             self,

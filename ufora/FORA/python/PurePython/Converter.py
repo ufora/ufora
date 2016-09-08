@@ -19,6 +19,7 @@ import ufora.FORA.python.ModuleDirectoryStructure as ModuleDirectoryStructure
 import ufora.FORA.python.PurePython.PyforaSingletonAndExceptionConverter as PyforaSingletonAndExceptionConverter
 import ufora.native.FORA as ForaNative
 
+import pyfora.ModuleLevelObjectIndex as ModuleLevelObjectIndex
 import pyfora.TypeDescription as TypeDescription
 import pyfora.StronglyConnectedComponents as StronglyConnectedComponents
 import pyfora
@@ -28,12 +29,18 @@ import logging
 
 import ufora.native.FORA as ForaNative
 
-
-
 Symbol_uninitialized = ForaNative.makeSymbol("PyforaUninitializedVariable")
 Symbol_invalid = ForaNative.makeSymbol("PyforaInvalidVariable")
 Symbol_unconvertible = ForaNative.makeSymbol("PyforaUnconvertibleValue")
 
+class UnconvertibleToken:
+    pass
+
+def isUnconvertibleValueTuple(implVal):
+    if isinstance(implVal, ForaNative.ImplValContainer) and implVal.isTuple() and len(implVal) == 1:
+        if implVal.getTupleNames()[0] == "PyforaUnconvertibleValue":
+            return True
+    return False
 
 def convertNativePythonToForaConversionError(err, path):
     """Convert a ForaNative.PythonToForaConversionError to a python version of the exception"""
@@ -135,6 +142,7 @@ class Converter(object):
             objId: objectRegistry.getDefinition(objId)
             for objId in dependencyGraph.iterkeys()
             }
+
         convertedValue = self._convert(objectId, dependencyGraph, objectIdToObjectDefinition)
         self.convertedValues[objectId] = convertedValue
         return convertedValue
@@ -198,7 +206,7 @@ class Converter(object):
                     )
                 )
         elif isinstance(objectDefinition, TypeDescription.Unconvertible):
-            return self.convertUnconvertibleValue(objectId)
+            return self.convertUnconvertibleValue(objectId, objectDefinition.module_path)
         else:
             raise pyfora.PythonToForaConversionError(
                 "don't know how to convert %s of type %s" % (
@@ -250,10 +258,9 @@ class Converter(object):
 
         return self.nativeConverterAdaptor.createDict(convertedKeysAndVals)
 
-    def convertUnconvertibleValue(self, objectId):
+    def convertUnconvertibleValue(self, objectId, module_path):
         # uh, yeah ... this guy probably needs a better name. Sorry.
-
-        tr = Symbol_unconvertible
+        tr = ForaNative.CreateNamedTuple((tuple(module_path) if module_path is not None else None,), ("PyforaUnconvertibleValue",))
         self.convertedValues[objectId] = tr
         return tr
 
@@ -465,7 +472,7 @@ class Converter(object):
                                                                         objectIdToObjectDefinition)
 
         elif isinstance(objectDefinition, TypeDescription.Unconvertible):
-            self.convertedValues[objectId] = Symbol_unconvertible
+            self.convertUnconvertibleValue(objectId, objectDefinition.module_path)
 
         else:
             assert False, "haven't gotten to this yet %s" % type(objectDefinition)
@@ -481,7 +488,8 @@ class Converter(object):
         tr = self.nativeConverterAdaptor.convertWithBlock(
             withBlockDescription,
             objectIdToObjectDefinition,
-            self.convertedValues)
+            self.convertedValues
+            )
 
         self.convertedValues[objectId] = tr
 
@@ -576,6 +584,11 @@ class Converter(object):
             return newId
 
         def transformBody(implval):
+            if isUnconvertibleValueTuple(implval):
+                path = implval[0].pyval
+
+                return transformer.transformModuleLevelObject(path)
+
             if implval.isString():
                 value = (implval.pyval,)
             else:
@@ -687,7 +700,10 @@ class Converter(object):
                                     membersTuple = member[0]
                                     memberNames = membersTuple.getTupleNames()
                                     for i, name in enumerate(memberNames):
-                                        members[str(name)] = transform(membersTuple[i])
+                                        result = transform(membersTuple[i])
+
+                                        if result is not UnconvertibleToken:
+                                            members[str(name)] = transform(membersTuple[i])
 
                         return transformer.transformClassInstance(classObject, members)
                     else:
@@ -699,13 +715,22 @@ class Converter(object):
                                 memberName = memberAndBindingSequence[0]
                                 member = implval.getObjectLexicalMember(memberName)
                                 if member is not None and member[1] is None:
-                                    if member[0] != Symbol_uninitialized and member[0] != Symbol_unconvertible:
-                                        members[str(memberName)] = transform(member[0])
+                                    if member[0] != Symbol_uninitialized:
+                                        transformed = transform(member[0])
+
+                                        if transformed is not UnconvertibleToken:
+                                            members[str(memberName)] = transformed
+
+                        om = implval.objectMetadata
+                        if 'classMetadata' in om:
+                            om = om['classMetadata']
+                        om = om['sourceText'].objectMetadata
 
                         return transformer.transformFunctionInstance(
                             defPoint.defPoint.asExternal.paths[0],
                             defPoint.range.start.line,
-                            members
+                            members,
+                            transform(om)
                             )
 
             elif implval.isClass():
@@ -719,7 +744,9 @@ class Converter(object):
                         memberName = memberAndBindingSequence[0]
                         member = implval.getObjectLexicalMember(memberName)
                         if member is not None and member[1] is None:
-                            members[str(memberName)] = transform(member[0])
+                            result = transform(member[0])
+                            if result is not UnconvertibleToken:
+                                members[str(memberName)] = result
 
                 sourcePath = defPoint.defPoint.asExternal.paths[0]
 

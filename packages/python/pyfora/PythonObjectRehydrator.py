@@ -17,7 +17,9 @@ import pyfora.PyforaInspect as PyforaInspect
 import pyfora.Exceptions as Exceptions
 import pyfora.NamedSingletons as NamedSingletons
 import pyfora.PyAbortSingletons as PyAbortSingletons
+import pyfora.ModuleLevelObjectIndex as ModuleLevelObjectIndex
 import pyfora.pyAst.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
+import cPickle as pickle
 import sys
 import os
 import ast
@@ -34,6 +36,28 @@ def sanitizeModulePath(pathToModule):
         res = res[:-1]
     return res
 
+
+@PyAstUtil.CachedByArgs
+def updatePyAstMemberChains(pyAst, variablesInScope, isClassContext):
+    #in the variables we've been handed, every member access chain 'x.y.z' has been
+    #replaced with an actual variable lookup of the form 'x.y.z'. We need to perform
+    #this same replacement in the actual python source code we're running, since
+    #we may not actually have enough information to recover 'x'
+
+    replacements = {}
+    for possible_replacement in variablesInScope:
+        if '.' in possible_replacement:
+            replacements[tuple(possible_replacement.split('.'))] = possible_replacement
+
+    #we need to deepcopy the AST since the collapser modifies the AST, and this is just a 
+    #slice of a cached tree.
+    pyAst = pickle.loads(pickle.dumps(pyAst))
+
+    pyAst = PyAstFreeVariableAnalyses.collapseFreeVariableMemberAccessChains(pyAst, replacements, isClassContext=isClassContext)
+
+    ast.fix_missing_locations(pyAst)
+
+    return pyAst
 
 class PythonObjectRehydrator(object):
     """PythonObjectRehydrator - responsible for building local copies of objects
@@ -213,6 +237,9 @@ class PythonObjectRehydrator(object):
                             instance,
                             objectDef['methodName'])
                         )
+            if 'moduleLevelObject' in objectDef:
+                return ModuleLevelObjectIndex.ModuleLevelObjectIndex.singleton().getObjectFromPath(objectDef['moduleLevelObject'])
+
             if 'functionInstance' in objectDef:
                 members = {
                     k: convert(v)
@@ -220,7 +247,9 @@ class PythonObjectRehydrator(object):
                     }
                 return self._instantiateFunction(objectDef['functionInstance'][0],
                                                  objectDef['functionInstance'][1],
-                                                 members)
+                                                 members,
+                                                 convert(objectDef['file_text'])
+                                                 )
             if 'withBlock' in objectDef:
                 members = {
                     k: convert(v)
@@ -263,8 +292,6 @@ class PythonObjectRehydrator(object):
         sourceAst = PyAstUtil.pyAstFromText(fileText)
         withBlockAst = PyAstUtil.withBlockAtLineNumber(sourceAst, lineNumber)
 
-        print withBlockAst
-
         outputLocals = {}
         globalScope = {}
         globalScope.update(members)
@@ -272,7 +299,9 @@ class PythonObjectRehydrator(object):
         self.importModuleMagicVariables(globalScope, filename)
 
         try:
-            code = compile(ast.Module([classAst]), filename, 'exec')
+            moduleAst = updatePyAstMemberChains(ast.Module([classAst]), tuple(globalScope.keys()), isClassContext=False)
+
+            code = compile(moduleAst, filename, 'exec')
 
             exec code in globalScope, outputLocals
         except:
@@ -308,7 +337,9 @@ class PythonObjectRehydrator(object):
         self.importModuleMagicVariables(globalScope, filename)
 
         try:
-            code = compile(ast.Module([classAst]), filename, 'exec')
+            moduleAst = updatePyAstMemberChains(ast.Module([classAst]), tuple(globalScope.keys()), isClassContext=False)
+
+            code = compile(moduleAst, filename, 'exec')
 
             exec code in globalScope, outputLocals
         except:
@@ -342,13 +373,14 @@ class PythonObjectRehydrator(object):
 
         return res
 
-    def _instantiateFunction(self, filename, lineNumber, memberDictionary):
+
+    def _instantiateFunction(self, filename, lineNumber, memberDictionary, file_text):
         """Instantiate a function instance."""
         objectOrNone = self.moduleLevelObject(filename, lineNumber)
         if objectOrNone is not None:
             return objectOrNone
 
-        sourceAst = PyAstUtil.getAstFromFilePath(filename)
+        sourceAst = PyAstUtil.pyAstFromText(file_text)
         functionAst = PyAstUtil.functionDefOrLambdaOrWithBlockAtLineNumber(sourceAst, lineNumber)
 
         outputLocals = {}
@@ -357,14 +389,29 @@ class PythonObjectRehydrator(object):
         self.importModuleMagicVariables(globalScope, filename)
 
         if isinstance(functionAst, ast.Lambda):
-            expr = ast.Expression()
-            expr.body = functionAst
-            expr.lineno = functionAst.lineno
+            expr = ast.FunctionDef()
+            expr.name = '__pyfora_lambda_builder__'
+            expr.args = ast.arguments()
+            expr.args.args = []
+            expr.args.defaults = []
+            expr.args.vararg = None
+            expr.args.kwarg = None
+
+            expr.decorator_list = []
+            expr.lineno = functionAst.lineno-1
             expr.col_offset = functionAst.col_offset
 
-            code = compile(expr, filename, 'eval')
+            return_statement = ast.Return(functionAst)
+            expr.body = [return_statement]
 
-            return eval(code, globalScope, outputLocals)
+            expr = updatePyAstMemberChains(ast.Module([expr], lineno=1,col_offset=0), tuple(globalScope.keys()), isClassContext=True)
+
+            code = compile(expr, filename, 'exec')
+
+            exec code in globalScope, outputLocals
+
+            return list(outputLocals.values())[0]()
+
         elif isinstance(functionAst, ast.With):
             expr = ast.FunctionDef()
             expr.name = '__pyfora_with_block_as_function__'
@@ -421,13 +468,18 @@ class PythonObjectRehydrator(object):
 
                     expr.body = [var_copy_expr] + expr.body
 
+            expr = updatePyAstMemberChains(expr, tuple(globalScope.keys()), isClassContext=True)
+
             code = compile(ast.Module([expr]), filename, 'exec')
 
             exec code in globalScope, outputLocals
             assert len(outputLocals) == 1
             return list(outputLocals.values())[0]
         else:
-            code = compile(ast.Module([functionAst]), filename, 'exec')
+            functionAst = updatePyAstMemberChains(ast.Module([functionAst], lineno=1,col_offset=0), tuple(globalScope.keys()), isClassContext=False)
+
+            code = compile(functionAst, filename, 'exec')
+
             exec code in globalScope, outputLocals
             assert len(outputLocals) == 1
             return list(outputLocals.values())[0]
