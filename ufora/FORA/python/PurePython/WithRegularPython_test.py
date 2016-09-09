@@ -30,7 +30,7 @@ class EvaluateBodyAndReturnContext:
         pass
 
     def __pyfora_context_apply__(self, body):
-        res =  __inline_fora(
+        res = __inline_fora(
             """fun(@unnamed_args:(body), ...) {
                        body()
                        }"""
@@ -126,11 +126,11 @@ class WithRegularPython_test(unittest.TestCase):
 
             with fora.remotely.downloadAll():
                 with helpers.python:
-                    #'x' is local to the with block - it won't be updated
+                    # 'x' is local to the with block - it won't be updated
                     x[10] = 20
 
-                    #but the copy we send back will be because it gets 
-                    #duplicated back into the surrounding context
+                    # but the copy we send back will be because it gets
+                    # duplicated back into the surrounding context
                     y = x
 
             self.assertEqual(x, {})
@@ -144,7 +144,7 @@ class WithRegularPython_test(unittest.TestCase):
         with self.create_executor() as fora:
             with fora.remotely.downloadAll():
                 with helpers.python:
-                    #'x' is local to the with block - it won't be updated
+                    # 'x' is local to the with block - it won't be updated
                     x = aFunc(20)
 
             self.assertEqual(x, 30)
@@ -159,7 +159,7 @@ class WithRegularPython_test(unittest.TestCase):
 
     def test_module_references_inside_of_functions(self):
         def f():
-            #this can't work in pyfora right now
+            # this can't work in pyfora right now
             z = {}
             z[10] = 10
             return numpy.ones(z[10]).shape[0]
@@ -205,16 +205,16 @@ class WithRegularPython_test(unittest.TestCase):
     def test_numpy_arrays_out_of_process(self):
         with self.create_executor() as fora:
             with fora.remotely.downloadAll():
-                x = numpy.array([1,2,3,4])
+                x = numpy.array([1, 2, 3, 4])
 
                 with helpers.python:
                     x = x + x
 
-            self.assertTrue(numpy.all(x == numpy.array([2,4,6,8])))
+            self.assertTrue(numpy.all(x == numpy.array([2, 4, 6, 8])))
 
     def test_with_block_in_loop(self):
         with self.create_executor() as fora:
-            for sz in [1,2,3,4]:
+            for sz in [1, 2, 3, 4]:
                 with fora.remotely.downloadAll():
                     with helpers.python:
                         x = sz
@@ -223,7 +223,7 @@ class WithRegularPython_test(unittest.TestCase):
     def test_import_large_numpy_arrays(self):
         with self.create_executor() as fora:
             sz = 1000000
-            
+
             with fora.remotely.downloadAll():
                 with helpers.python:
                     x = numpy.ones(sz)
@@ -256,9 +256,9 @@ class WithRegularPython_test(unittest.TestCase):
 
                     if path.endswith("pyc"):
                         path = path[:-1]
-                    
+
                     x = open(path, "rb").readline()
-                    
+
             self.assertTrue("Ufora Inc." in x)
 
 
