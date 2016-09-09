@@ -219,6 +219,7 @@ class WithRegularPython_test(unittest.TestCase):
                     with helpers.python:
                         x = sz
 
+                self.assertTrue(x == sz)
 
     def test_import_large_numpy_arrays(self):
         with self.create_executor() as fora:
