@@ -67,7 +67,7 @@ class ScopedSaveRestoreComputedValue(object):
 ##########################################################################
 # Visitor Base Classes
 class NodeVisitorBase(ast.NodeVisitor):
-    """Extends ast.NodeVisitor.generic_visit to also visit lists of ast.Node."""
+    """Modifies ast.NodeVisitor visitation order and enables to visit lists of ast.Node."""
     def generic_visit(self, node):
         if isinstance(node, list):
             self._generic_visit_list(node)
@@ -129,7 +129,7 @@ class GenericInScopeVisitor(NodeVisitorBase):
         return self._isInDefinition
     def _setIsInDefinition(self, value):
         self._isInDefinition = value
-    def _isInDefinitionMgr(self, newValue = True):
+    def _isInDefinitionMgr(self, newValue=True):
         self._isInDefinitionValueManager.newValue = newValue
         return self._isInDefinitionValueManager
 
